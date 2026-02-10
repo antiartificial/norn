@@ -32,6 +32,10 @@ func (db *DB) Close() {
 	db.pool.Close()
 }
 
+func (db *DB) QueryRow(ctx context.Context, sql string, args ...interface{}) interface{ Scan(...interface{}) error } {
+	return db.pool.QueryRow(ctx, sql, args...)
+}
+
 func Migrate(db *DB) error {
 	ctx := context.Background()
 	_, err := db.pool.Exec(ctx, `

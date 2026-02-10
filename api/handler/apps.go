@@ -29,30 +29,32 @@ func (h *Handler) ListApps(w http.ResponseWriter, r *http.Request) {
 	for _, spec := range specs {
 		status := model.AppStatus{Spec: spec, Healthy: false, Ready: "0/0"}
 
-		pods, err := h.kube.GetPods(ctx, "default", spec.App)
-		if err == nil {
-			var readyCount int
-			for _, p := range pods {
-				pi := model.PodInfo{
-					Name:     p.Name,
-					Status:   string(p.Status.Phase),
-					Restarts: 0,
+		if h.kube != nil {
+			pods, err := h.kube.GetPods(ctx, "default", spec.App)
+			if err == nil {
+				var readyCount int
+				for _, p := range pods {
+					pi := model.PodInfo{
+						Name:     p.Name,
+						Status:   string(p.Status.Phase),
+						Restarts: 0,
+					}
+					if len(p.Status.ContainerStatuses) > 0 {
+						pi.Ready = p.Status.ContainerStatuses[0].Ready
+						pi.Restarts = p.Status.ContainerStatuses[0].RestartCount
+					}
+					if p.Status.StartTime != nil {
+						pi.StartedAt = p.Status.StartTime.Format(time.RFC3339)
+					}
+					if pi.Ready {
+						readyCount++
+					}
+					status.Pods = append(status.Pods, pi)
 				}
-				if len(p.Status.ContainerStatuses) > 0 {
-					pi.Ready = p.Status.ContainerStatuses[0].Ready
-					pi.Restarts = p.Status.ContainerStatuses[0].RestartCount
-				}
-				if p.Status.StartTime != nil {
-					pi.StartedAt = p.Status.StartTime.Format(time.RFC3339)
-				}
-				if pi.Ready {
-					readyCount++
-				}
-				status.Pods = append(status.Pods, pi)
+				total := len(pods)
+				status.Ready = formatReady(readyCount, total)
+				status.Healthy = readyCount == total && total > 0
 			}
-			total := len(pods)
-			status.Ready = formatReady(readyCount, total)
-			status.Healthy = readyCount == total && total > 0
 		}
 
 		deploys, _ := h.db.ListDeployments(ctx, spec.App, 1)
@@ -81,28 +83,30 @@ func (h *Handler) GetApp(w http.ResponseWriter, r *http.Request) {
 
 	status := model.AppStatus{Spec: spec, Healthy: false, Ready: "0/0"}
 
-	pods, err := h.kube.GetPods(ctx, "default", spec.App)
-	if err == nil {
-		var readyCount int
-		for _, p := range pods {
-			pi := model.PodInfo{
-				Name:   p.Name,
-				Status: string(p.Status.Phase),
+	if h.kube != nil {
+		pods, err := h.kube.GetPods(ctx, "default", spec.App)
+		if err == nil {
+			var readyCount int
+			for _, p := range pods {
+				pi := model.PodInfo{
+					Name:   p.Name,
+					Status: string(p.Status.Phase),
+				}
+				if len(p.Status.ContainerStatuses) > 0 {
+					pi.Ready = p.Status.ContainerStatuses[0].Ready
+					pi.Restarts = p.Status.ContainerStatuses[0].RestartCount
+				}
+				if p.Status.StartTime != nil {
+					pi.StartedAt = p.Status.StartTime.Format(time.RFC3339)
+				}
+				if pi.Ready {
+					readyCount++
+				}
+				status.Pods = append(status.Pods, pi)
 			}
-			if len(p.Status.ContainerStatuses) > 0 {
-				pi.Ready = p.Status.ContainerStatuses[0].Ready
-				pi.Restarts = p.Status.ContainerStatuses[0].RestartCount
-			}
-			if p.Status.StartTime != nil {
-				pi.StartedAt = p.Status.StartTime.Format(time.RFC3339)
-			}
-			if pi.Ready {
-				readyCount++
-			}
-			status.Pods = append(status.Pods, pi)
+			status.Ready = formatReady(readyCount, len(pods))
+			status.Healthy = readyCount == len(pods) && len(pods) > 0
 		}
-		status.Ready = formatReady(readyCount, len(pods))
-		status.Healthy = readyCount == len(pods) && len(pods) > 0
 	}
 
 	deploys, _ := h.db.ListDeployments(ctx, appID, 10)
@@ -118,6 +122,11 @@ func (h *Handler) GetApp(w http.ResponseWriter, r *http.Request) {
 }
 
 func (h *Handler) StreamLogs(w http.ResponseWriter, r *http.Request) {
+	if h.kube == nil {
+		http.Error(w, "log streaming requires Kubernetes", http.StatusServiceUnavailable)
+		return
+	}
+
 	appID := chi.URLParam(r, "id")
 	podName := r.URL.Query().Get("pod")
 
@@ -156,6 +165,11 @@ func (h *Handler) StreamLogs(w http.ResponseWriter, r *http.Request) {
 }
 
 func (h *Handler) Restart(w http.ResponseWriter, r *http.Request) {
+	if h.kube == nil {
+		http.Error(w, "restart requires Kubernetes", http.StatusServiceUnavailable)
+		return
+	}
+
 	appID := chi.URLParam(r, "id")
 
 	if err := h.kube.RestartDeployment(r.Context(), "default", appID); err != nil {

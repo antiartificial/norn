@@ -18,6 +18,11 @@ type DeployRequest struct {
 }
 
 func (h *Handler) Deploy(w http.ResponseWriter, r *http.Request) {
+	if h.kube == nil {
+		http.Error(w, "deploy requires Kubernetes", http.StatusServiceUnavailable)
+		return
+	}
+
 	appID := chi.URLParam(r, "id")
 
 	var req DeployRequest
@@ -54,6 +59,11 @@ func (h *Handler) Deploy(w http.ResponseWriter, r *http.Request) {
 }
 
 func (h *Handler) Rollback(w http.ResponseWriter, r *http.Request) {
+	if h.kube == nil {
+		http.Error(w, "rollback requires Kubernetes", http.StatusServiceUnavailable)
+		return
+	}
+
 	appID := chi.URLParam(r, "id")
 
 	var req struct {
