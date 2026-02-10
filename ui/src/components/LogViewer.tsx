@@ -46,10 +46,10 @@ export function LogViewer({ appId, onClose }: Props) {
     <div className="log-viewer">
       <div className="log-viewer-header">
         <h3>
-          <i className="fa-solid fa-terminal" /> {appId}
+          <i className="fawsb fa-rectangle-code" /> {appId}
         </h3>
         <button onClick={onClose} className="btn btn-close">
-          <i className="fa-solid fa-xmark" />
+          <i className="fawsb fa-xmark" />
         </button>
       </div>
       <pre ref={logRef} className="log-viewer-output">{logs || 'Waiting for logs...'}</pre>

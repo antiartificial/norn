@@ -5,26 +5,32 @@ interface Props {
   steps: StepLog[]
   status: string
   error?: string
+  title?: string
 }
 
 const stepIcons: Record<string, string> = {
-  build: 'fa-hammer',
-  test: 'fa-vial',
+  build: 'fa-wrench',
+  test: 'fa-bug',
   snapshot: 'fa-camera',
   migrate: 'fa-database',
-  deploy: 'fa-rocket',
+  deploy: 'fa-rocket-launch',
+  'create-deployment': 'fa-box',
+  'create-service': 'fa-link',
+  'patch-cloudflared': 'fa-cloud',
+  'create-dns-route': 'fa-globe',
+  'restart-cloudflared': 'fa-arrows-rotate',
 }
 
-export function DeployPanel({ appId, steps, status, error }: Props) {
+export function DeployPanel({ appId, steps, status, error, title = 'Deploying' }: Props) {
   return (
     <div className="deploy-panel">
       <h4>
-        <i className="fa-solid fa-list-check" /> Deploying {appId}
+        <i className="fawsb fa-clipboard-check" /> {title} {appId}
       </h4>
       <div className="deploy-steps">
         {steps.map((step) => (
           <div key={step.step} className={`deploy-step ${step.status}`}>
-            <i className={`fa-solid ${stepIcons[step.step] ?? 'fa-circle'}`} />
+            <i className={`fawsb ${stepIcons[step.step] ?? 'fa-circle'}`} />
             <span className="step-name">{step.step}</span>
             <span className="step-status">{step.status}</span>
             {step.durationMs != null && (
@@ -35,7 +41,7 @@ export function DeployPanel({ appId, steps, status, error }: Props) {
       </div>
       {status === 'failed' && error && (
         <div className="deploy-error">
-          <i className="fa-solid fa-triangle-exclamation" /> {error}
+          <i className="fawsb fa-circle-exclamation" /> {error}
         </div>
       )}
     </div>
