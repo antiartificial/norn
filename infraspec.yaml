@@ -1,0 +1,10 @@
+app: norn
+role: webserver
+port: 8800
+healthcheck: /api/apps
+hosts:
+  internal: norn-service
+build:
+  dockerfile: Dockerfile
+artifacts:
+  retain: 3

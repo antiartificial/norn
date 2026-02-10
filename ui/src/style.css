@@ -1,0 +1,294 @@
+:root {
+  --bg: #0f1117;
+  --surface: #1a1d27;
+  --surface-hover: #222633;
+  --border: #2a2e3d;
+  --text: #e4e6ed;
+  --text-dim: #8b8fa3;
+  --green: #34d399;
+  --red: #f87171;
+  --blue: #60a5fa;
+  --amber: #fbbf24;
+  --purple: #a78bfa;
+  --radius: 8px;
+  --font: 'Inter', -apple-system, system-ui, sans-serif;
+  --mono: 'JetBrains Mono', 'Fira Code', monospace;
+}
+
+* { box-sizing: border-box; margin: 0; padding: 0; }
+
+body {
+  font-family: var(--font);
+  background: var(--bg);
+  color: var(--text);
+  line-height: 1.5;
+}
+
+.norn { max-width: 960px; margin: 0 auto; padding: 16px; }
+
+/* Header */
+.norn-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  padding: 16px 0;
+  border-bottom: 1px solid var(--border);
+  margin-bottom: 24px;
+}
+
+.norn-header h1 {
+  font-size: 18px;
+  font-weight: 700;
+  letter-spacing: 2px;
+  color: var(--text);
+}
+
+.norn-header h1 i { color: var(--purple); margin-right: 8px; }
+
+.ws-status {
+  font-size: 12px;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+.ws-status.connected { color: var(--green); }
+.ws-status.disconnected { color: var(--red); }
+
+/* App Grid */
+.app-grid { display: flex; flex-direction: column; gap: 12px; }
+
+/* App Card */
+.app-card {
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  padding: 16px;
+  transition: border-color 0.15s;
+}
+.app-card:hover { border-color: #3a3e4d; }
+.app-card.healthy { border-left: 3px solid var(--green); }
+.app-card.unhealthy { border-left: 3px solid var(--red); }
+
+.app-card-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  margin-bottom: 8px;
+}
+
+.app-card-title {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+
+.app-card-title h3 { font-size: 15px; font-weight: 600; }
+
+.health-dot {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  display: inline-block;
+}
+.health-dot.green { background: var(--green); box-shadow: 0 0 6px var(--green); }
+.health-dot.red { background: var(--red); box-shadow: 0 0 6px var(--red); }
+
+.role-badge {
+  font-size: 11px;
+  padding: 2px 8px;
+  border-radius: 4px;
+  background: var(--surface-hover);
+  color: var(--text-dim);
+  display: flex;
+  align-items: center;
+  gap: 4px;
+}
+
+.health-label {
+  font-size: 11px;
+  font-weight: 500;
+}
+.health-label.green { color: var(--green); }
+.health-label.red { color: var(--red); }
+
+.app-card-ready {
+  font-size: 13px;
+  font-family: var(--mono);
+  color: var(--text-dim);
+}
+
+.app-card-meta {
+  display: flex;
+  gap: 16px;
+  font-size: 12px;
+  color: var(--text-dim);
+  margin-bottom: 8px;
+}
+
+.app-card-meta .commit {
+  font-family: var(--mono);
+  color: var(--blue);
+}
+
+.app-card-hosts {
+  display: flex;
+  gap: 16px;
+  font-size: 12px;
+  color: var(--text-dim);
+  margin-bottom: 12px;
+}
+
+.app-card-hosts i { margin-right: 4px; }
+.host.external { color: var(--amber); }
+.host.internal { color: var(--text-dim); }
+
+/* Buttons */
+.app-card-actions { display: flex; gap: 8px; }
+
+.btn {
+  font-size: 12px;
+  padding: 5px 10px;
+  border-radius: 4px;
+  border: 1px solid var(--border);
+  background: var(--surface-hover);
+  color: var(--text-dim);
+  cursor: pointer;
+  display: flex;
+  align-items: center;
+  gap: 5px;
+  transition: all 0.15s;
+  font-family: var(--font);
+}
+.btn:hover {
+  background: #2d3145;
+  color: var(--text);
+  border-color: #4a4e5d;
+}
+.btn-primary {
+  background: #2563eb;
+  border-color: #3b82f6;
+  color: #fff;
+}
+.btn-primary:hover {
+  background: #1d4ed8;
+}
+.btn-close {
+  background: none;
+  border: none;
+  color: var(--text-dim);
+  font-size: 16px;
+}
+.btn-close:hover { color: var(--text); }
+
+/* Deploy Panel */
+.deploy-panel {
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  padding: 16px;
+  margin-top: 16px;
+}
+
+.deploy-panel h4 {
+  font-size: 14px;
+  margin-bottom: 12px;
+  color: var(--blue);
+}
+
+.deploy-steps { display: flex; flex-direction: column; gap: 6px; }
+
+.deploy-step {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 13px;
+  padding: 6px 10px;
+  border-radius: 4px;
+  background: var(--surface-hover);
+}
+
+.deploy-step.deployed i { color: var(--green); }
+.deploy-step.failed i { color: var(--red); }
+.deploy-step .step-name { font-weight: 500; min-width: 80px; }
+.deploy-step .step-status { color: var(--text-dim); flex: 1; }
+.deploy-step .step-duration { font-family: var(--mono); font-size: 11px; color: var(--text-dim); }
+
+.deploy-error {
+  margin-top: 10px;
+  padding: 10px;
+  border-radius: 4px;
+  background: rgba(248, 113, 113, 0.1);
+  border: 1px solid rgba(248, 113, 113, 0.3);
+  color: var(--red);
+  font-size: 13px;
+}
+
+/* Log Viewer */
+.log-viewer {
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  margin-top: 16px;
+  overflow: hidden;
+}
+
+.log-viewer-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  padding: 10px 16px;
+  border-bottom: 1px solid var(--border);
+}
+
+.log-viewer-header h3 {
+  font-size: 13px;
+  color: var(--blue);
+}
+
+.log-viewer-output {
+  padding: 12px 16px;
+  font-family: var(--mono);
+  font-size: 12px;
+  line-height: 1.6;
+  color: var(--text-dim);
+  max-height: 400px;
+  overflow-y: auto;
+  white-space: pre-wrap;
+  word-break: break-all;
+}
+
+/* States */
+.loading {
+  text-align: center;
+  padding: 40px;
+  color: var(--text-dim);
+}
+
+.error-banner {
+  padding: 12px 16px;
+  border-radius: var(--radius);
+  background: rgba(248, 113, 113, 0.1);
+  border: 1px solid rgba(248, 113, 113, 0.3);
+  color: var(--red);
+  font-size: 13px;
+  margin-bottom: 16px;
+}
+
+.empty-state {
+  text-align: center;
+  padding: 60px 20px;
+  color: var(--text-dim);
+}
+.empty-state i {
+  font-size: 48px;
+  margin-bottom: 16px;
+  display: block;
+  color: var(--border);
+}
+.empty-state code {
+  background: var(--surface-hover);
+  padding: 2px 6px;
+  border-radius: 3px;
+  font-family: var(--mono);
+  font-size: 12px;
+}

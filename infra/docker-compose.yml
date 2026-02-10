@@ -1,0 +1,49 @@
+version: '3.8'
+
+services:
+  valkey:
+    image: valkey/valkey:8-alpine
+    container_name: norn-valkey
+    command: >
+      valkey-server
+      --aclfile /etc/valkey/users.acl
+      --save 60 1
+      --loglevel notice
+    ports:
+      - "6379:6379"
+    volumes:
+      - valkey_data:/data
+      - ./valkey-acl.conf:/etc/valkey/users.acl
+
+  redpanda:
+    image: docker.redpanda.com/redpandadata/redpanda:v24.3.1
+    container_name: norn-redpanda
+    command:
+      - redpanda
+      - start
+      - --kafka-addr internal://0.0.0.0:9092,external://0.0.0.0:19092
+      - --advertise-kafka-addr internal://redpanda:9092,external://localhost:19092
+      - --smp 1
+      - --memory 512M
+      - --mode dev-container
+    ports:
+      - "19092:19092"   # kafka API
+      - "18081:18081"   # schema registry
+      - "18082:18082"   # HTTP proxy
+      - "9644:9644"     # admin API
+    volumes:
+      - redpanda_data:/var/lib/redpanda/data
+
+  redpanda-console:
+    image: docker.redpanda.com/redpandadata/console:v2.8.0
+    container_name: norn-redpanda-console
+    ports:
+      - "8090:8080"
+    environment:
+      KAFKA_BROKERS: redpanda:9092
+    depends_on:
+      - redpanda
+
+volumes:
+  valkey_data:
+  redpanda_data:

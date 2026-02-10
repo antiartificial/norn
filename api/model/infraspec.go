@@ -1,0 +1,73 @@
+package model
+
+import (
+	"os"
+
+	"gopkg.in/yaml.v3"
+)
+
+type InfraSpec struct {
+	App         string       `yaml:"app" json:"app"`
+	Role        string       `yaml:"role" json:"role"` // webserver, worker, cron
+	Port        int          `yaml:"port,omitempty" json:"port,omitempty"`
+	Healthcheck string       `yaml:"healthcheck,omitempty" json:"healthcheck,omitempty"`
+	Hosts       *Hosts       `yaml:"hosts,omitempty" json:"hosts,omitempty"`
+	Build       *BuildSpec   `yaml:"build,omitempty" json:"build,omitempty"`
+	Services    *ServiceDeps `yaml:"services,omitempty" json:"services,omitempty"`
+	Secrets     []string     `yaml:"secrets,omitempty" json:"secrets,omitempty"`
+	Migrations  *Migration   `yaml:"migrations,omitempty" json:"migrations,omitempty"`
+	Artifacts   *Artifacts   `yaml:"artifacts,omitempty" json:"artifacts,omitempty"`
+}
+
+type Hosts struct {
+	External string `yaml:"external,omitempty" json:"external,omitempty"`
+	Internal string `yaml:"internal,omitempty" json:"internal,omitempty"`
+}
+
+type BuildSpec struct {
+	Dockerfile string `yaml:"dockerfile" json:"dockerfile"`
+	Test       string `yaml:"test,omitempty" json:"test,omitempty"`
+}
+
+type ServiceDeps struct {
+	Postgres *PostgresDep `yaml:"postgres,omitempty" json:"postgres,omitempty"`
+	KV       *KVDep       `yaml:"kv,omitempty" json:"kv,omitempty"`
+	Events   *EventsDep   `yaml:"events,omitempty" json:"events,omitempty"`
+}
+
+type PostgresDep struct {
+	Database   string `yaml:"database" json:"database"`
+	Migrations string `yaml:"migrations,omitempty" json:"migrations,omitempty"`
+}
+
+type KVDep struct {
+	Namespace string `yaml:"namespace" json:"namespace"`
+}
+
+type EventsDep struct {
+	Topics []string `yaml:"topics" json:"topics"`
+}
+
+type Migration struct {
+	Command  string `yaml:"command" json:"command"`
+	Database string `yaml:"database" json:"database"`
+}
+
+type Artifacts struct {
+	Retain int `yaml:"retain" json:"retain"`
+}
+
+func LoadInfraSpec(path string) (*InfraSpec, error) {
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return nil, err
+	}
+	var spec InfraSpec
+	if err := yaml.Unmarshal(data, &spec); err != nil {
+		return nil, err
+	}
+	if spec.Artifacts == nil {
+		spec.Artifacts = &Artifacts{Retain: 5}
+	}
+	return &spec, nil
+}
