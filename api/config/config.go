@@ -7,6 +7,7 @@ type Config struct {
 	DatabaseURL string
 	UIDir       string
 	AppsDir     string // directory containing app repos with infraspec.yaml
+	TunnelName  string // cloudflared tunnel name for DNS routes
 }
 
 func Load() *Config {
@@ -15,6 +16,7 @@ func Load() *Config {
 		DatabaseURL: envOr("NORN_DATABASE_URL", "postgres://norn:norn@localhost:5432/norn_db?sslmode=disable"),
 		UIDir:       envOr("NORN_UI_DIR", ""),
 		AppsDir:     envOr("NORN_APPS_DIR", os.Getenv("HOME")+"/projects"),
+		TunnelName:  envOr("NORN_TUNNEL_NAME", "norn"),
 	}
 }
 

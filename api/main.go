@@ -35,7 +35,7 @@ func main() {
 
 	kube, err := k8s.NewClient()
 	if err != nil {
-		log.Fatalf("k8s client: %v", err)
+		log.Printf("WARNING: k8s unavailable (%v) — running in local-only mode", err)
 	}
 
 	ws := hub.New()
@@ -54,10 +54,12 @@ func main() {
 	}))
 
 	r.Route("/api", func(r chi.Router) {
+		r.Get("/health", h.Health)
 		r.Get("/apps", h.ListApps)
 		r.Get("/apps/{id}", h.GetApp)
 		r.Get("/apps/{id}/logs", h.StreamLogs)
 		r.Post("/apps/{id}/deploy", h.Deploy)
+		r.Post("/apps/{id}/forge", h.Forge)
 		r.Post("/apps/{id}/restart", h.Restart)
 		r.Post("/apps/{id}/rollback", h.Rollback)
 		r.Get("/apps/{id}/artifacts", h.ListArtifacts)

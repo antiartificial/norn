@@ -4,11 +4,13 @@ import (
 	"context"
 	"fmt"
 	"io"
-	"path/filepath"
 	"os"
+	"path/filepath"
 
+	appsv1 "k8s.io/api/apps/v1"
 	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/util/intstr"
 	"k8s.io/client-go/kubernetes"
 	"k8s.io/client-go/rest"
 	"k8s.io/client-go/tools/clientcmd"
@@ -108,6 +110,108 @@ type DeploymentInfo struct {
 	Replicas  int
 	Ready     int
 	Image     string
+}
+
+type DeploymentOpts struct {
+	Name        string
+	Image       string
+	Port        int
+	Healthcheck string
+	Env         []corev1.EnvVar
+}
+
+func (c *Client) GetDeployment(ctx context.Context, namespace, name string) (*appsv1.Deployment, error) {
+	return c.cs.AppsV1().Deployments(namespace).Get(ctx, name, metav1.GetOptions{})
+}
+
+func (c *Client) CreateDeployment(ctx context.Context, namespace string, opts DeploymentOpts) error {
+	dep := &appsv1.Deployment{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      opts.Name,
+			Namespace: namespace,
+			Labels:    map[string]string{"managed-by": "norn", "app": opts.Name},
+		},
+		Spec: appsv1.DeploymentSpec{
+			Replicas: ptr(int32(1)),
+			Selector: &metav1.LabelSelector{
+				MatchLabels: map[string]string{"app": opts.Name},
+			},
+			Template: corev1.PodTemplateSpec{
+				ObjectMeta: metav1.ObjectMeta{
+					Labels: map[string]string{"app": opts.Name, "managed-by": "norn"},
+				},
+				Spec: corev1.PodSpec{
+					Containers: []corev1.Container{{
+						Name:            opts.Name,
+						Image:           opts.Image,
+						ImagePullPolicy: corev1.PullNever,
+						Ports: []corev1.ContainerPort{{
+							ContainerPort: int32(opts.Port),
+						}},
+						Env: opts.Env,
+					}},
+				},
+			},
+		},
+	}
+
+	if opts.Healthcheck != "" {
+		probe := &corev1.Probe{
+			ProbeHandler: corev1.ProbeHandler{
+				HTTPGet: &corev1.HTTPGetAction{
+					Path: opts.Healthcheck,
+					Port: intstr.FromInt32(int32(opts.Port)),
+				},
+			},
+			InitialDelaySeconds: 5,
+			PeriodSeconds:       10,
+		}
+		dep.Spec.Template.Spec.Containers[0].ReadinessProbe = probe
+		dep.Spec.Template.Spec.Containers[0].LivenessProbe = &corev1.Probe{
+			ProbeHandler: probe.ProbeHandler,
+			InitialDelaySeconds: 10,
+			PeriodSeconds:       30,
+		}
+	}
+
+	_, err := c.cs.AppsV1().Deployments(namespace).Create(ctx, dep, metav1.CreateOptions{})
+	return err
+}
+
+func (c *Client) CreateService(ctx context.Context, namespace, appName, serviceName string, targetPort int) error {
+	svc := &corev1.Service{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      serviceName,
+			Namespace: namespace,
+			Labels:    map[string]string{"managed-by": "norn", "app": appName},
+		},
+		Spec: corev1.ServiceSpec{
+			Selector: map[string]string{"app": appName},
+			Type:     corev1.ServiceTypeClusterIP,
+			Ports: []corev1.ServicePort{{
+				Port:       80,
+				TargetPort: intstr.FromInt32(int32(targetPort)),
+				Protocol:   corev1.ProtocolTCP,
+			}},
+		},
+	}
+	_, err := c.cs.CoreV1().Services(namespace).Create(ctx, svc, metav1.CreateOptions{})
+	return err
+}
+
+func (c *Client) PatchConfigMap(ctx context.Context, namespace, name, dataKey string, patchFn func(string) (string, error)) error {
+	cm, err := c.cs.CoreV1().ConfigMaps(namespace).Get(ctx, name, metav1.GetOptions{})
+	if err != nil {
+		return fmt.Errorf("get configmap %s: %w", name, err)
+	}
+	original := cm.Data[dataKey]
+	patched, err := patchFn(original)
+	if err != nil {
+		return fmt.Errorf("patch configmap data: %w", err)
+	}
+	cm.Data[dataKey] = patched
+	_, err = c.cs.CoreV1().ConfigMaps(namespace).Update(ctx, cm, metav1.UpdateOptions{})
+	return err
 }
 
 func ptr[T any](v T) *T { return &v }
