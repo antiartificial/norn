@@ -1,0 +1,36 @@
+# Build artifacts
+bin/
+dist/
+
+# Go
+*.exe
+*.test
+*.out
+vendor/
+
+# Node
+node_modules/
+
+# Environment & secrets
+.env
+.env.*
+*.enc.yaml
+!.sops.yaml
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Editors
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# Docker
+.docker/
+
+# Temporary
+*.tmp
+*.log
