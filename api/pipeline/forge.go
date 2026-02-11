@@ -13,9 +13,11 @@ import (
 	"norn/api/hub"
 	"norn/api/k8s"
 	"norn/api/model"
+	"norn/api/store"
 )
 
 type ForgePipeline struct {
+	DB         *store.DB
 	Kube       *k8s.Client
 	WS         *hub.Hub
 	TunnelName string
@@ -23,10 +25,10 @@ type ForgePipeline struct {
 
 type forgeStep struct {
 	name string
-	fn   func(ctx context.Context, spec *model.InfraSpec) (string, error)
+	fn   func(ctx context.Context, spec *model.InfraSpec, res *model.ForgeResources) (string, error)
 }
 
-func (f *ForgePipeline) Run(spec *model.InfraSpec) {
+func (f *ForgePipeline) Run(state *model.ForgeState, spec *model.InfraSpec, resumeFrom int) {
 	ctx := context.Background()
 	steps := []forgeStep{
 		{name: "create-deployment", fn: f.createDeployment},
@@ -36,23 +38,55 @@ func (f *ForgePipeline) Run(spec *model.InfraSpec) {
 		{name: "restart-cloudflared", fn: f.restartCloudflared},
 	}
 
-	for _, s := range steps {
+	for i, s := range steps {
+		if i < resumeFrom {
+			// Already completed in a prior run — mark skipped in this run's step log
+			state.Steps = append(state.Steps, model.ForgeStepLog{
+				Step:   s.name,
+				Status: "skipped",
+			})
+			f.WS.Broadcast(hub.Event{Type: "forge.step", AppID: spec.App, Payload: map[string]string{
+				"step":   s.name,
+				"status": "skipped",
+			}})
+			continue
+		}
+
 		f.WS.Broadcast(hub.Event{Type: "forge.step", AppID: spec.App, Payload: map[string]string{
 			"step":   s.name,
 			"status": "running",
 		}})
 
 		start := time.Now()
-		output, err := s.fn(ctx, spec)
+		output, err := s.fn(ctx, spec, &state.Resources)
 		elapsed := time.Since(start).Milliseconds()
 
 		if err != nil {
+			state.Steps = append(state.Steps, model.ForgeStepLog{
+				Step:       s.name,
+				Status:     "failed",
+				DurationMs: elapsed,
+				Output:     err.Error(),
+			})
+			state.Status = model.ForgeFailed
+			state.Error = fmt.Sprintf("%s: %v", s.name, err)
+			f.DB.UpdateForgeState(ctx, state.App, state.Status, state.Steps, state.Resources, state.Error)
+
 			f.WS.Broadcast(hub.Event{Type: "forge.failed", AppID: spec.App, Payload: map[string]string{
 				"step":  s.name,
-				"error": fmt.Sprintf("%s: %v", s.name, err),
+				"error": state.Error,
 			}})
 			return
 		}
+
+		state.Steps = append(state.Steps, model.ForgeStepLog{
+			Step:       s.name,
+			Status:     "completed",
+			DurationMs: elapsed,
+			Output:     output,
+		})
+		// Persist after each step for crash safety
+		f.DB.UpdateForgeState(ctx, state.App, model.ForgeForging, state.Steps, state.Resources, "")
 
 		f.WS.Broadcast(hub.Event{Type: "forge.step", AppID: spec.App, Payload: map[string]string{
 			"step":       s.name,
@@ -62,10 +96,14 @@ func (f *ForgePipeline) Run(spec *model.InfraSpec) {
 		}})
 	}
 
+	state.Status = model.ForgeForged
+	state.Error = ""
+	f.DB.UpdateForgeState(ctx, state.App, state.Status, state.Steps, state.Resources, "")
+
 	f.WS.Broadcast(hub.Event{Type: "forge.completed", AppID: spec.App, Payload: map[string]string{}})
 }
 
-func (f *ForgePipeline) createDeployment(ctx context.Context, spec *model.InfraSpec) (string, error) {
+func (f *ForgePipeline) createDeployment(ctx context.Context, spec *model.InfraSpec, res *model.ForgeResources) (string, error) {
 	opts := k8s.DeploymentOpts{
 		Name:        spec.App,
 		Image:       spec.App + ":latest",
@@ -80,23 +118,56 @@ func (f *ForgePipeline) createDeployment(ctx context.Context, spec *model.InfraS
 		})
 	}
 
-	if err := f.Kube.CreateDeployment(ctx, "default", opts); err != nil {
+	// Create PVCs and add volume mounts
+	for _, vol := range spec.Volumes {
+		pvcName := fmt.Sprintf("%s-%s", spec.App, vol.Name)
+		labels := map[string]string{"managed-by": "norn", "app": spec.App}
+		err := f.Kube.CreatePVC(ctx, "default", pvcName, vol.Size, labels)
+		if err != nil && !k8s.IsAlreadyExists(err) {
+			return "", fmt.Errorf("create PVC %s: %w", pvcName, err)
+		}
+		opts.Volumes = append(opts.Volumes, k8s.VolumeMount{
+			Name:      vol.Name,
+			MountPath: vol.MountPath,
+			PVCName:   pvcName,
+		})
+	}
+
+	err := f.Kube.CreateDeployment(ctx, "default", opts)
+	if err != nil {
+		if k8s.IsAlreadyExists(err) {
+			res.DeploymentName = spec.App
+			res.DeploymentNS = "default"
+			return fmt.Sprintf("deployment %s already exists, skipping", spec.App), nil
+		}
 		return "", err
 	}
+	res.DeploymentName = spec.App
+	res.DeploymentNS = "default"
 	return fmt.Sprintf("created deployment %s with image %s", spec.App, opts.Image), nil
 }
 
-func (f *ForgePipeline) createService(ctx context.Context, spec *model.InfraSpec) (string, error) {
+func (f *ForgePipeline) createService(ctx context.Context, spec *model.InfraSpec, res *model.ForgeResources) (string, error) {
 	if spec.Hosts == nil || spec.Hosts.Internal == "" {
 		return "skipped (no internal host)", nil
 	}
-	if err := f.Kube.CreateService(ctx, "default", spec.App, spec.Hosts.Internal, spec.Port); err != nil {
+	err := f.Kube.CreateService(ctx, "default", spec.App, spec.Hosts.Internal, spec.Port)
+	if err != nil {
+		if k8s.IsAlreadyExists(err) {
+			res.ServiceName = spec.Hosts.Internal
+			res.ServiceNS = "default"
+			res.InternalHost = spec.Hosts.Internal
+			return fmt.Sprintf("service %s already exists, skipping", spec.Hosts.Internal), nil
+		}
 		return "", err
 	}
+	res.ServiceName = spec.Hosts.Internal
+	res.ServiceNS = "default"
+	res.InternalHost = spec.Hosts.Internal
 	return fmt.Sprintf("created service %s → port %d", spec.Hosts.Internal, spec.Port), nil
 }
 
-func (f *ForgePipeline) patchCloudflared(ctx context.Context, spec *model.InfraSpec) (string, error) {
+func (f *ForgePipeline) patchCloudflared(ctx context.Context, spec *model.InfraSpec, res *model.ForgeResources) (string, error) {
 	if spec.Hosts == nil || spec.Hosts.External == "" {
 		return "skipped (no external host)", nil
 	}
@@ -112,12 +183,22 @@ func (f *ForgePipeline) patchCloudflared(ctx context.Context, spec *model.InfraS
 			return "", fmt.Errorf("parse cloudflared config: %w", err)
 		}
 
-		tunnelKey := "tunnel"
 		ingressKey := "ingress"
 
 		ingress, ok := cfg[ingressKey].([]interface{})
 		if !ok {
 			return "", fmt.Errorf("cloudflared config missing ingress rules")
+		}
+
+		// Check if hostname already exists in ingress (idempotent)
+		for _, rule := range ingress {
+			if ruleMap, ok := rule.(map[string]interface{}); ok {
+				if hostname, _ := ruleMap["hostname"].(string); hostname == spec.Hosts.External {
+					res.ExternalHost = spec.Hosts.External
+					res.CloudflaredRule = true
+					return data, nil // no change needed
+				}
+			}
 		}
 
 		newRule := map[string]interface{}{
@@ -132,7 +213,6 @@ func (f *ForgePipeline) patchCloudflared(ctx context.Context, spec *model.InfraS
 			ingress = append(ingress, newRule)
 		}
 		cfg[ingressKey] = ingress
-		_ = tunnelKey
 
 		out, err := yaml.Marshal(cfg)
 		if err != nil {
@@ -141,14 +221,23 @@ func (f *ForgePipeline) patchCloudflared(ctx context.Context, spec *model.InfraS
 		return string(out), nil
 	})
 	if err != nil {
+		if k8s.IsNotFound(err) {
+			return "skipped (cloudflared not deployed)", nil
+		}
 		return "", err
 	}
+	res.ExternalHost = spec.Hosts.External
+	res.CloudflaredRule = true
 	return fmt.Sprintf("added ingress rule: %s → %s", spec.Hosts.External, serviceURL), nil
 }
 
-func (f *ForgePipeline) createDNSRoute(ctx context.Context, spec *model.InfraSpec) (string, error) {
+func (f *ForgePipeline) createDNSRoute(ctx context.Context, spec *model.InfraSpec, res *model.ForgeResources) (string, error) {
 	if spec.Hosts == nil || spec.Hosts.External == "" {
 		return "skipped (no external host)", nil
+	}
+
+	if _, err := exec.LookPath("cloudflared"); err != nil {
+		return "skipped (cloudflared CLI not found)", nil
 	}
 
 	cmd := exec.CommandContext(ctx, "cloudflared", "tunnel", "route", "dns", f.TunnelName, spec.Hosts.External)
@@ -157,14 +246,18 @@ func (f *ForgePipeline) createDNSRoute(ctx context.Context, spec *model.InfraSpe
 	if err != nil {
 		return output, fmt.Errorf("cloudflared tunnel route: %s", output)
 	}
+	res.DNSRoute = true
 	return output, nil
 }
 
-func (f *ForgePipeline) restartCloudflared(ctx context.Context, spec *model.InfraSpec) (string, error) {
+func (f *ForgePipeline) restartCloudflared(ctx context.Context, spec *model.InfraSpec, res *model.ForgeResources) (string, error) {
 	if spec.Hosts == nil || spec.Hosts.External == "" {
 		return "skipped (no external host)", nil
 	}
 	if err := f.Kube.RestartDeployment(ctx, "cloudflared", "cloudflared"); err != nil {
+		if k8s.IsNotFound(err) {
+			return "skipped (cloudflared not deployed)", nil
+		}
 		return "", err
 	}
 	return "restarted cloudflared deployment", nil

@@ -9,6 +9,8 @@ import (
 
 	appsv1 "k8s.io/api/apps/v1"
 	corev1 "k8s.io/api/core/v1"
+	k8serrors "k8s.io/apimachinery/pkg/api/errors"
+	"k8s.io/apimachinery/pkg/api/resource"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/util/intstr"
 	"k8s.io/client-go/kubernetes"
@@ -112,12 +114,19 @@ type DeploymentInfo struct {
 	Image     string
 }
 
+type VolumeMount struct {
+	Name      string
+	MountPath string
+	PVCName   string
+}
+
 type DeploymentOpts struct {
 	Name        string
 	Image       string
 	Port        int
 	Healthcheck string
 	Env         []corev1.EnvVar
+	Volumes     []VolumeMount
 }
 
 func (c *Client) GetDeployment(ctx context.Context, namespace, name string) (*appsv1.Deployment, error) {
@@ -155,6 +164,27 @@ func (c *Client) CreateDeployment(ctx context.Context, namespace string, opts De
 		},
 	}
 
+	if len(opts.Volumes) > 0 {
+		var volumes []corev1.Volume
+		var mounts []corev1.VolumeMount
+		for _, v := range opts.Volumes {
+			volumes = append(volumes, corev1.Volume{
+				Name: v.Name,
+				VolumeSource: corev1.VolumeSource{
+					PersistentVolumeClaim: &corev1.PersistentVolumeClaimVolumeSource{
+						ClaimName: v.PVCName,
+					},
+				},
+			})
+			mounts = append(mounts, corev1.VolumeMount{
+				Name:      v.Name,
+				MountPath: v.MountPath,
+			})
+		}
+		dep.Spec.Template.Spec.Volumes = volumes
+		dep.Spec.Template.Spec.Containers[0].VolumeMounts = mounts
+	}
+
 	if opts.Healthcheck != "" {
 		probe := &corev1.Probe{
 			ProbeHandler: corev1.ProbeHandler{
@@ -175,6 +205,30 @@ func (c *Client) CreateDeployment(ctx context.Context, namespace string, opts De
 	}
 
 	_, err := c.cs.AppsV1().Deployments(namespace).Create(ctx, dep, metav1.CreateOptions{})
+	return err
+}
+
+func (c *Client) CreatePVC(ctx context.Context, namespace, name, size string, labels map[string]string) error {
+	quantity, err := resource.ParseQuantity(size)
+	if err != nil {
+		return fmt.Errorf("invalid size %q: %w", size, err)
+	}
+	pvc := &corev1.PersistentVolumeClaim{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      name,
+			Namespace: namespace,
+			Labels:    labels,
+		},
+		Spec: corev1.PersistentVolumeClaimSpec{
+			AccessModes: []corev1.PersistentVolumeAccessMode{corev1.ReadWriteOnce},
+			Resources: corev1.VolumeResourceRequirements{
+				Requests: corev1.ResourceList{
+					corev1.ResourceStorage: quantity,
+				},
+			},
+		},
+	}
+	_, err = c.cs.CoreV1().PersistentVolumeClaims(namespace).Create(ctx, pvc, metav1.CreateOptions{})
 	return err
 }
 
@@ -212,6 +266,30 @@ func (c *Client) PatchConfigMap(ctx context.Context, namespace, name, dataKey st
 	cm.Data[dataKey] = patched
 	_, err = c.cs.CoreV1().ConfigMaps(namespace).Update(ctx, cm, metav1.UpdateOptions{})
 	return err
+}
+
+func (c *Client) DeleteDeployment(ctx context.Context, namespace, name string) error {
+	err := c.cs.AppsV1().Deployments(namespace).Delete(ctx, name, metav1.DeleteOptions{})
+	if k8serrors.IsNotFound(err) {
+		return nil
+	}
+	return err
+}
+
+func (c *Client) DeleteService(ctx context.Context, namespace, name string) error {
+	err := c.cs.CoreV1().Services(namespace).Delete(ctx, name, metav1.DeleteOptions{})
+	if k8serrors.IsNotFound(err) {
+		return nil
+	}
+	return err
+}
+
+func IsAlreadyExists(err error) bool {
+	return k8serrors.IsAlreadyExists(err)
+}
+
+func IsNotFound(err error) bool {
+	return k8serrors.IsNotFound(err)
 }
 
 func ptr[T any](v T) *T { return &v }
