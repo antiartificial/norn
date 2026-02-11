@@ -6,6 +6,7 @@ interface Props {
   status: string
   error?: string
   title?: string
+  onClose?: () => void
 }
 
 const stepIcons: Record<string, string> = {
@@ -19,14 +20,24 @@ const stepIcons: Record<string, string> = {
   'patch-cloudflared': 'fa-cloud',
   'create-dns-route': 'fa-globe',
   'restart-cloudflared': 'fa-arrows-rotate',
+  'remove-dns-route': 'fa-globe',
+  'unpatch-cloudflared': 'fa-cloud',
+  'delete-service': 'fa-link',
+  'delete-deployment': 'fa-box',
 }
 
-export function DeployPanel({ appId, steps, status, error, title = 'Deploying' }: Props) {
+export function DeployPanel({ appId, steps, status, error, title = 'Deploying', onClose }: Props) {
+  const isDone = status === 'failed' || status === 'deployed' || status === 'completed'
   return (
     <div className="deploy-panel">
-      <h4>
-        <i className="fawsb fa-clipboard-check" /> {title} {appId}
-      </h4>
+      <div className="deploy-panel-header">
+        <h4>
+          <i className="fawsb fa-clipboard-check" /> {title} {appId}
+        </h4>
+        {isDone && onClose && (
+          <button className="btn-close" onClick={onClose}>&times;</button>
+        )}
+      </div>
       <div className="deploy-steps">
         {steps.map((step) => (
           <div key={step.step} className={`deploy-step ${step.status}`}>
