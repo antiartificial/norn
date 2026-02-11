@@ -1,5 +1,6 @@
 app: norn
 role: webserver
+core: true
 port: 8800
 healthcheck: /api/apps
 hosts:

@@ -9,6 +9,7 @@ import (
 type InfraSpec struct {
 	App         string       `yaml:"app" json:"app"`
 	Role        string       `yaml:"role" json:"role"` // webserver, worker, cron
+	Core        bool         `yaml:"core,omitempty" json:"core,omitempty"` // norn infrastructure component
 	Port        int          `yaml:"port,omitempty" json:"port,omitempty"`
 	Healthcheck string       `yaml:"healthcheck,omitempty" json:"healthcheck,omitempty"`
 	Hosts       *Hosts       `yaml:"hosts,omitempty" json:"hosts,omitempty"`

@@ -26,6 +26,7 @@ func New(baseURL string) *Client {
 type InfraSpec struct {
 	App         string `json:"app"`
 	Role        string `json:"role"`
+	Core        bool   `json:"core,omitempty"`
 	Port        int    `json:"port"`
 	Healthcheck string `json:"healthcheck"`
 	Hosts       *struct {
