@@ -14,6 +14,7 @@ export interface VolumeSpec {
 export interface InfraSpec {
   app: string
   role: 'webserver' | 'worker' | 'cron'
+  core?: boolean
   port?: number
   healthcheck?: string
   hosts?: {

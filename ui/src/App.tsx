@@ -45,6 +45,24 @@ export function App() {
   } | null>(null)
 
   const [webhookToast, setWebhookToast] = useState<string | null>(null)
+  const [restartingApp, setRestartingApp] = useState<string | null>(null)
+  const [rollingBackApp, setRollingBackApp] = useState<string | null>(null)
+
+  // Derive which apps are busy and with what operation
+  const getAppBusy = (appId: string): { busy: boolean; activeOp?: string } => {
+    if (deployState?.appId === appId && deployState.status !== 'deployed' && deployState.status !== 'failed') {
+      return { busy: true, activeOp: 'deploying' }
+    }
+    if (forgeState?.appId === appId && forgeState.status !== 'completed' && forgeState.status !== 'failed') {
+      return { busy: true, activeOp: 'forging' }
+    }
+    if (teardownState?.appId === appId && teardownState.status !== 'completed' && teardownState.status !== 'failed') {
+      return { busy: true, activeOp: 'tearing_down' }
+    }
+    if (restartingApp === appId) return { busy: true, activeOp: 'restarting' }
+    if (rollingBackApp === appId) return { busy: true, activeOp: 'rolling_back' }
+    return { busy: false }
+  }
 
   const handleWsEvent = useCallback((event: WSEvent) => {
     if (event.type === 'deploy.webhook') {
@@ -102,6 +120,11 @@ export function App() {
       }
     }
     if (event.type === 'app.restarted') {
+      setRestartingApp(null)
+      refetch()
+    }
+    if (event.type === 'deploy.rollback') {
+      setRollingBackApp(null)
       refetch()
     }
   }, [refetch])
@@ -136,6 +159,16 @@ export function App() {
     const app = apps.find((a) => a.spec.app === appId)
     let sha: string | null
     if (app?.spec.repo) {
+      // Warn if last deploy was very recent (< 2 min)
+      if (app.deployedAt) {
+        const ago = Date.now() - new Date(app.deployedAt).getTime()
+        if (ago < 120_000) {
+          const mins = Math.floor(ago / 60_000)
+          const secs = Math.floor((ago % 60_000) / 1000)
+          const timeStr = mins > 0 ? `${mins}m ${secs}s` : `${secs}s`
+          if (!window.confirm(`Last deploy was ${timeStr} ago. Deploy latest anyway?`)) return
+        }
+      }
       sha = 'HEAD'
     } else {
       sha = prompt('Commit SHA to deploy:')
@@ -150,15 +183,20 @@ export function App() {
   }
 
   const handleRestart = async (appId: string) => {
+    setRestartingApp(appId)
     await fetch(`/api/apps/${appId}/restart`, { method: 'POST' })
+    // Clear after a timeout in case WS event doesn't arrive
+    setTimeout(() => setRestartingApp((cur) => cur === appId ? null : cur), 10_000)
   }
 
   const handleRollback = async (appId: string) => {
+    setRollingBackApp(appId)
     await fetch(`/api/apps/${appId}/rollback`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({}),
     })
+    setTimeout(() => setRollingBackApp((cur) => cur === appId ? null : cur), 10_000)
   }
 
   return (
@@ -204,18 +242,23 @@ export function App() {
         )}
 
         <div className="app-grid">
-          {apps.map((app) => (
-            <AppCard
-              key={app.spec.app}
-              app={app}
-              onDeploy={handleDeploy}
-              onForge={handleForge}
-              onTeardown={handleTeardown}
-              onRestart={handleRestart}
-              onRollback={handleRollback}
-              onViewLogs={setLogApp}
-            />
-          ))}
+          {apps.map((app) => {
+            const { busy, activeOp } = getAppBusy(app.spec.app)
+            return (
+              <AppCard
+                key={app.spec.app}
+                app={app}
+                busy={busy}
+                activeOp={activeOp}
+                onDeploy={handleDeploy}
+                onForge={handleForge}
+                onTeardown={handleTeardown}
+                onRestart={handleRestart}
+                onRollback={handleRollback}
+                onViewLogs={setLogApp}
+              />
+            )
+          })}
         </div>
 
         {apps.length === 0 && !loading && !error && (
