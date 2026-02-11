@@ -63,6 +63,9 @@ func (h *Handler) ListApps(w http.ResponseWriter, r *http.Request) {
 			status.DeployedAt = deploys[0].StartedAt.Format(time.RFC3339)
 		}
 
+		forgeState, _ := h.db.GetForgeState(ctx, spec.App)
+		status.ForgeState = forgeState
+
 		apps = append(apps, status)
 	}
 
@@ -114,6 +117,9 @@ func (h *Handler) GetApp(w http.ResponseWriter, r *http.Request) {
 		status.CommitSHA = deploys[0].CommitSHA
 		status.DeployedAt = deploys[0].StartedAt.Format(time.RFC3339)
 	}
+
+	forgeState, _ := h.db.GetForgeState(ctx, appID)
+	status.ForgeState = forgeState
 
 	writeJSON(w, map[string]interface{}{
 		"status":      status,

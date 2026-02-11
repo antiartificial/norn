@@ -1,12 +1,13 @@
 package model
 
 type AppStatus struct {
-	Spec       *InfraSpec `json:"spec"`
-	Healthy    bool       `json:"healthy"`
-	Ready      string     `json:"ready"`       // "2/2"
-	CommitSHA  string     `json:"commitSha"`
-	DeployedAt string     `json:"deployedAt"`
-	Pods       []PodInfo  `json:"pods"`
+	Spec       *InfraSpec  `json:"spec"`
+	Healthy    bool        `json:"healthy"`
+	Ready      string      `json:"ready"`       // "2/2"
+	CommitSHA  string      `json:"commitSha"`
+	DeployedAt string      `json:"deployedAt"`
+	Pods       []PodInfo   `json:"pods"`
+	ForgeState *ForgeState `json:"forgeState,omitempty"`
 }
 
 type PodInfo struct {

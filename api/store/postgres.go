@@ -3,8 +3,10 @@ package store
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"time"
 
+	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
 
 	"norn/api/model"
@@ -52,6 +54,16 @@ func Migrate(db *DB) error {
 		);
 		CREATE INDEX IF NOT EXISTS idx_deployments_app ON deployments(app);
 		CREATE INDEX IF NOT EXISTS idx_deployments_status ON deployments(status);
+
+		CREATE TABLE IF NOT EXISTS forge_states (
+			app         TEXT PRIMARY KEY,
+			status      TEXT NOT NULL DEFAULT 'unforged',
+			steps       JSONB NOT NULL DEFAULT '[]',
+			resources   JSONB NOT NULL DEFAULT '{}',
+			error       TEXT NOT NULL DEFAULT '',
+			started_at  TIMESTAMPTZ,
+			finished_at TIMESTAMPTZ
+		);
 	`)
 	return err
 }
@@ -109,6 +121,68 @@ func (db *DB) RecoverInFlightDeployments(ctx context.Context) error {
 		`UPDATE deployments
 		 SET status = 'failed', error = 'norn restarted during deployment', finished_at = now()
 		 WHERE status NOT IN ('deployed', 'failed', 'rolled_back')`,
+	)
+	return err
+}
+
+// --- Forge State ---
+
+func (db *DB) UpsertForgeState(ctx context.Context, state *model.ForgeState) error {
+	stepsJSON, _ := json.Marshal(state.Steps)
+	resJSON, _ := json.Marshal(state.Resources)
+	_, err := db.pool.Exec(ctx,
+		`INSERT INTO forge_states (app, status, steps, resources, error, started_at, finished_at)
+		 VALUES ($1, $2, $3, $4, $5, $6, $7)
+		 ON CONFLICT (app) DO UPDATE SET
+		   status = EXCLUDED.status,
+		   steps = EXCLUDED.steps,
+		   resources = EXCLUDED.resources,
+		   error = EXCLUDED.error,
+		   started_at = EXCLUDED.started_at,
+		   finished_at = EXCLUDED.finished_at`,
+		state.App, state.Status, stepsJSON, resJSON, state.Error, state.StartedAt, state.FinishedAt,
+	)
+	return err
+}
+
+func (db *DB) UpdateForgeState(ctx context.Context, app string, status model.ForgeStatus, steps []model.ForgeStepLog, resources model.ForgeResources, errMsg string) error {
+	stepsJSON, _ := json.Marshal(steps)
+	resJSON, _ := json.Marshal(resources)
+	var finished *time.Time
+	if status.IsTerminal() {
+		now := time.Now()
+		finished = &now
+	}
+	_, err := db.pool.Exec(ctx,
+		`UPDATE forge_states SET status = $1, steps = $2, resources = $3, error = $4, finished_at = $5 WHERE app = $6`,
+		status, stepsJSON, resJSON, errMsg, finished, app,
+	)
+	return err
+}
+
+func (db *DB) GetForgeState(ctx context.Context, app string) (*model.ForgeState, error) {
+	var state model.ForgeState
+	var stepsJSON, resJSON []byte
+	err := db.pool.QueryRow(ctx,
+		`SELECT app, status, steps, resources, error, started_at, finished_at
+		 FROM forge_states WHERE app = $1`, app,
+	).Scan(&state.App, &state.Status, &stepsJSON, &resJSON, &state.Error, &state.StartedAt, &state.FinishedAt)
+	if err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			return nil, nil
+		}
+		return nil, err
+	}
+	json.Unmarshal(stepsJSON, &state.Steps)
+	json.Unmarshal(resJSON, &state.Resources)
+	return &state, nil
+}
+
+func (db *DB) RecoverInFlightForges(ctx context.Context) error {
+	_, err := db.pool.Exec(ctx,
+		`UPDATE forge_states
+		 SET status = 'forge_failed', error = 'norn restarted during operation', finished_at = now()
+		 WHERE status IN ('forging', 'tearing_down')`,
 	)
 	return err
 }
