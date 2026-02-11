@@ -1,3 +1,16 @@
+export interface RepoSpec {
+  url: string
+  branch?: string
+  webhookSecret?: string
+  autoDeploy?: boolean
+}
+
+export interface VolumeSpec {
+  name: string
+  mountPath: string
+  size: string
+}
+
 export interface InfraSpec {
   app: string
   role: 'webserver' | 'worker' | 'cron'
@@ -19,6 +32,8 @@ export interface InfraSpec {
   secrets?: string[]
   migrations?: { command: string; database: string }
   artifacts?: { retain: number }
+  repo?: RepoSpec
+  volumes?: VolumeSpec[]
 }
 
 export interface PodInfo {
@@ -29,6 +44,29 @@ export interface PodInfo {
   startedAt: string
 }
 
+export type ForgeStatus = 'unforged' | 'forging' | 'forged' | 'forge_failed' | 'tearing_down'
+
+export interface ForgeResources {
+  deploymentName?: string
+  deploymentNs?: string
+  serviceName?: string
+  serviceNs?: string
+  externalHost?: string
+  internalHost?: string
+  cloudflaredRule?: boolean
+  dnsRoute?: boolean
+}
+
+export interface ForgeState {
+  app: string
+  status: ForgeStatus
+  steps: StepLog[]
+  resources: ForgeResources
+  error?: string
+  startedAt?: string
+  finishedAt?: string
+}
+
 export interface AppStatus {
   spec: InfraSpec
   healthy: boolean
@@ -36,6 +74,7 @@ export interface AppStatus {
   commitSha: string
   deployedAt: string
   pods: PodInfo[]
+  forgeState?: ForgeState
 }
 
 export interface StepLog {

@@ -1,4 +1,4 @@
-import type { AppStatus } from '../types/index.ts'
+import type { AppStatus, ForgeStatus } from '../types/index.ts'
 import { Tooltip } from './Tooltip.tsx'
 
 const roleIcons: Record<string, string> = {
@@ -13,6 +13,13 @@ const roleDescriptions: Record<string, string> = {
   cron: 'Scheduled task runner',
 }
 
+function truncateURL(url: string): string {
+  // Show last path segments: norn/hello-norn.git → norn/hello-norn
+  const stripped = url.replace(/\.git$/, '')
+  const parts = stripped.split('/')
+  return parts.slice(-2).join('/')
+}
+
 function timeAgo(iso: string): string {
   if (!iso) return ''
   const seconds = Math.floor((Date.now() - new Date(iso).getTime()) / 1000)
@@ -22,17 +29,60 @@ function timeAgo(iso: string): string {
   return `${Math.floor(seconds / 86400)}d ago`
 }
 
+function forgeBadge(status: ForgeStatus) {
+  switch (status) {
+    case 'forged':
+      return (
+        <Tooltip text="Infrastructure fully provisioned">
+          <span className="forge-badge forged">
+            <i className="fawsb fa-hammer" /> forged
+          </span>
+        </Tooltip>
+      )
+    case 'forge_failed':
+      return (
+        <Tooltip text="Forge partially completed — can resume or tear down">
+          <span className="forge-badge partial">
+            <i className="fawsb fa-circle-exclamation" /> partial
+          </span>
+        </Tooltip>
+      )
+    case 'forging':
+      return (
+        <Tooltip text="Forge in progress">
+          <span className="forge-badge in-progress">
+            <span className="badge-spinner" /> forging
+          </span>
+        </Tooltip>
+      )
+    case 'tearing_down':
+      return (
+        <Tooltip text="Teardown in progress">
+          <span className="forge-badge in-progress">
+            <span className="badge-spinner" /> tearing down
+          </span>
+        </Tooltip>
+      )
+    default:
+      return null
+  }
+}
+
 interface Props {
   app: AppStatus
   onDeploy: (appId: string) => void
   onForge: (appId: string) => void
+  onTeardown: (appId: string) => void
   onRestart: (appId: string) => void
   onRollback: (appId: string) => void
   onViewLogs: (appId: string) => void
 }
 
-export function AppCard({ app, onDeploy, onForge, onRestart, onRollback, onViewLogs }: Props) {
+export function AppCard({ app, onDeploy, onForge, onTeardown, onRestart, onRollback, onViewLogs }: Props) {
   const { spec, healthy, ready, commitSha, deployedAt } = app
+  const forgeStatus: ForgeStatus = app.forgeState?.status ?? 'unforged'
+  const isForged = forgeStatus === 'forged'
+  const hasPods = app.pods && app.pods.length > 0
 
   return (
     <div className={`app-card ${healthy ? 'healthy' : 'unhealthy'}`}>
@@ -48,6 +98,7 @@ export function AppCard({ app, onDeploy, onForge, onRestart, onRollback, onViewL
               {spec.role}
             </span>
           </Tooltip>
+          {forgeBadge(forgeStatus)}
           <span className={`health-label ${healthy ? 'green' : 'red'}`}>
             {healthy ? 'healthy' : 'unhealthy'}
           </span>
@@ -76,6 +127,21 @@ export function AppCard({ app, onDeploy, onForge, onRestart, onRollback, onViewL
           <span className="no-deploys">never deployed</span>
         )}
       </div>
+
+      {spec.repo && (
+        <div className="app-card-repo">
+          <Tooltip text={spec.repo.url}>
+            <span className="repo-badge">
+              <i className="fawsb fa-code-branch" /> {truncateURL(spec.repo.url)}
+            </span>
+          </Tooltip>
+          {spec.repo.autoDeploy && (
+            <Tooltip text="Pushes to this repo auto-trigger deploys">
+              <span className="auto-deploy-badge">auto-deploy</span>
+            </Tooltip>
+          )}
+        </div>
+      )}
 
       <div className="app-card-hosts">
         {spec.hosts?.external && (
@@ -122,33 +188,55 @@ export function AppCard({ app, onDeploy, onForge, onRestart, onRollback, onViewL
       )}
 
       <div className="app-card-actions">
-        {ready === '0/0' && !commitSha && !deployedAt && (
+        {(forgeStatus === 'unforged') && (
           <Tooltip text="Provision K8s deployment, service, and DNS">
             <button onClick={() => onForge(spec.app)} className="btn btn-forge">
               <i className="fawsb fa-wand-magic-sparkles" /> Forge
             </button>
           </Tooltip>
         )}
-        <Tooltip text="Build, test, and deploy a commit">
-          <button onClick={() => onDeploy(spec.app)} className="btn btn-primary">
-            <i className="fawsb fa-rocket-launch" /> Deploy
-          </button>
-        </Tooltip>
-        <Tooltip text="Rolling restart of all pods">
-          <button onClick={() => onRestart(spec.app)} className="btn">
-            <i className="fawsb fa-arrows-rotate" /> Restart
-          </button>
-        </Tooltip>
-        <Tooltip text="Revert to the previous image">
-          <button onClick={() => onRollback(spec.app)} className="btn">
-            <i className="fawsb fa-arrow-rotate-left" /> Rollback
-          </button>
-        </Tooltip>
-        <Tooltip text="Stream live pod logs">
-          <button onClick={() => onViewLogs(spec.app)} className="btn">
-            <i className="fawsb fa-rectangle-code" /> Logs
-          </button>
-        </Tooltip>
+        {forgeStatus === 'forge_failed' && (
+          <Tooltip text="Resume forge from the last completed step">
+            <button onClick={() => onForge(spec.app)} className="btn btn-forge">
+              <i className="fawsb fa-wand-magic-sparkles" /> Resume Forge
+            </button>
+          </Tooltip>
+        )}
+        {(forgeStatus === 'forged' || forgeStatus === 'forge_failed') && (
+          <Tooltip text="Remove all forged infrastructure">
+            <button onClick={() => onTeardown(spec.app)} className="btn btn-danger">
+              <i className="fawsb fa-trash" /> Teardown
+            </button>
+          </Tooltip>
+        )}
+        {isForged && (
+          <Tooltip text={spec.repo ? "Deploy latest from repo" : "Build, test, and deploy a commit"}>
+            <button onClick={() => onDeploy(spec.app)} className="btn btn-primary">
+              <i className="fawsb fa-rocket-launch" /> {spec.repo ? 'Deploy Latest' : 'Deploy'}
+            </button>
+          </Tooltip>
+        )}
+        {isForged && commitSha && (
+          <>
+            <Tooltip text="Rolling restart of all pods">
+              <button onClick={() => onRestart(spec.app)} className="btn">
+                <i className="fawsb fa-arrows-rotate" /> Restart
+              </button>
+            </Tooltip>
+            <Tooltip text="Revert to the previous image">
+              <button onClick={() => onRollback(spec.app)} className="btn">
+                <i className="fawsb fa-arrow-rotate-left" /> Rollback
+              </button>
+            </Tooltip>
+          </>
+        )}
+        {hasPods && (
+          <Tooltip text="Stream live pod logs">
+            <button onClick={() => onViewLogs(spec.app)} className="btn">
+              <i className="fawsb fa-rectangle-code" /> Logs
+            </button>
+          </Tooltip>
+        )}
       </div>
     </div>
   )

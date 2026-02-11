@@ -178,6 +178,40 @@ body {
   gap: 4px;
 }
 
+.forge-badge {
+  font-size: 10px;
+  padding: 2px 8px;
+  border-radius: 10px;
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  font-weight: 500;
+}
+.forge-badge.forged {
+  background: rgba(52, 211, 153, 0.12);
+  border: 1px solid rgba(52, 211, 153, 0.3);
+  color: var(--green);
+}
+.forge-badge.partial {
+  background: rgba(251, 191, 36, 0.12);
+  border: 1px solid rgba(251, 191, 36, 0.3);
+  color: var(--amber);
+}
+.forge-badge.in-progress {
+  background: rgba(167, 139, 250, 0.12);
+  border: 1px solid rgba(167, 139, 250, 0.3);
+  color: var(--purple);
+}
+.badge-spinner {
+  width: 8px;
+  height: 8px;
+  border: 1.5px solid currentColor;
+  border-top-color: transparent;
+  border-radius: 50%;
+  animation: spin 0.8s linear infinite;
+  display: inline-block;
+}
+
 .health-label { font-size: 11px; font-weight: 500; }
 .health-label.green { color: var(--green); }
 .health-label.red { color: var(--red); }
@@ -230,6 +264,53 @@ body {
 }
 .service-badge.secrets { color: var(--amber); border-color: rgba(251, 191, 36, 0.3); }
 
+/* ─── Repo Badge ─── */
+.app-card-repo {
+  display: flex;
+  gap: 8px;
+  align-items: center;
+  margin-bottom: 8px;
+}
+
+.repo-badge {
+  font-size: 11px;
+  font-family: var(--mono);
+  padding: 2px 8px;
+  border-radius: 4px;
+  background: var(--surface-hover);
+  color: var(--text-dim);
+  border: 1px solid var(--border);
+  display: flex;
+  align-items: center;
+  gap: 5px;
+}
+
+.auto-deploy-badge {
+  font-size: 10px;
+  padding: 2px 8px;
+  border-radius: 10px;
+  background: rgba(52, 211, 153, 0.12);
+  border: 1px solid rgba(52, 211, 153, 0.3);
+  color: var(--green);
+  font-weight: 500;
+}
+
+/* ─── Webhook Toast ─── */
+.webhook-toast {
+  position: fixed;
+  top: 16px;
+  right: 16px;
+  background: var(--surface);
+  border: 1px solid rgba(52, 211, 153, 0.4);
+  color: var(--green);
+  padding: 10px 16px;
+  border-radius: var(--radius);
+  font-size: 13px;
+  z-index: 500;
+  animation: slide-up 0.25s ease-out;
+  box-shadow: 0 4px 12px rgba(0, 0, 0, 0.4);
+}
+
 /* ─── Buttons ─── */
 .app-card-actions { display: flex; gap: 8px; }
 
@@ -258,6 +339,15 @@ body {
   color: #fff;
 }
 .btn-primary:hover { background: #1d4ed8; }
+.btn-danger {
+  border-color: rgba(248, 113, 113, 0.4);
+  color: var(--red);
+}
+.btn-danger:hover {
+  background: rgba(248, 113, 113, 0.15);
+  border-color: var(--red);
+  color: var(--red);
+}
 .btn-close {
   background: none;
   border: none;
@@ -305,9 +395,15 @@ body {
   margin-top: 16px;
 }
 
+.deploy-panel-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  margin-bottom: 12px;
+}
+
 .deploy-panel h4 {
   font-size: 14px;
-  margin-bottom: 12px;
   color: var(--blue);
 }
 

@@ -9,6 +9,16 @@ import { StatusBar } from './components/StatusBar.tsx'
 import { Tooltip } from './components/Tooltip.tsx'
 import type { WSEvent, StepLog } from './types/index.ts'
 
+function upsertStep(steps: StepLog[], incoming: StepLog): StepLog[] {
+  const idx = steps.findIndex((s) => s.step === incoming.step)
+  if (idx >= 0) {
+    const updated = [...steps]
+    updated[idx] = { ...updated[idx], ...incoming }
+    return updated
+  }
+  return [...steps, incoming]
+}
+
 const TOUR_KEY = 'norn:tour-complete'
 
 export function App() {
@@ -27,14 +37,28 @@ export function App() {
     status: string
     error?: string
   } | null>(null)
+  const [teardownState, setTeardownState] = useState<{
+    appId: string
+    steps: StepLog[]
+    status: string
+    error?: string
+  } | null>(null)
+
+  const [webhookToast, setWebhookToast] = useState<string | null>(null)
 
   const handleWsEvent = useCallback((event: WSEvent) => {
+    if (event.type === 'deploy.webhook') {
+      const payload = event.payload as Record<string, string>
+      const msg = `Auto-deployed ${event.appId} from push ${payload['commitSha']?.slice(0, 8)}`
+      setWebhookToast(msg)
+      setTimeout(() => setWebhookToast(null), 5000)
+    }
     if (event.type === 'deploy.step' || event.type === 'deploy.completed' || event.type === 'deploy.failed') {
       const payload = event.payload as Record<string, unknown>
       if (event.type === 'deploy.step') {
         setDeployState((prev) => ({
           appId: event.appId,
-          steps: [...(prev?.steps ?? []), { step: payload['step'] as string, status: payload['status'] as string }],
+          steps: upsertStep(prev?.steps ?? [], { step: payload['step'] as string, status: payload['status'] as string }),
           status: payload['status'] as string,
         }))
       } else if (event.type === 'deploy.completed') {
@@ -50,7 +74,7 @@ export function App() {
       if (event.type === 'forge.step') {
         setForgeState((prev) => ({
           appId: event.appId,
-          steps: [...(prev?.steps ?? []), { step: payload['step'] as string, status: payload['status'] as string }],
+          steps: upsertStep(prev?.steps ?? [], { step: payload['step'] as string, status: payload['status'] as string }),
           status: payload['status'] as string,
         }))
       } else if (event.type === 'forge.completed') {
@@ -58,6 +82,22 @@ export function App() {
         refetch()
       } else if (event.type === 'forge.failed') {
         setForgeState((prev) => prev ? { ...prev, status: 'failed', error: (payload as Record<string, string>)['error'] } : null)
+        refetch()
+      }
+    }
+    if (event.type === 'teardown.step' || event.type === 'teardown.completed' || event.type === 'teardown.failed') {
+      const payload = event.payload as Record<string, unknown>
+      if (event.type === 'teardown.step') {
+        setTeardownState((prev) => ({
+          appId: event.appId,
+          steps: upsertStep(prev?.steps ?? [], { step: payload['step'] as string, status: payload['status'] as string }),
+          status: payload['status'] as string,
+        }))
+      } else if (event.type === 'teardown.completed') {
+        setTeardownState((prev) => prev ? { ...prev, status: 'completed' } : null)
+        refetch()
+      } else if (event.type === 'teardown.failed') {
+        setTeardownState((prev) => prev ? { ...prev, status: 'failed', error: (payload as Record<string, string>)['error'] } : null)
         refetch()
       }
     }
@@ -82,9 +122,25 @@ export function App() {
     })
   }
 
+  const handleTeardown = async (appId: string) => {
+    if (!window.confirm(`Tear down all infrastructure for ${appId}?`)) return
+    setTeardownState({ appId, steps: [], status: 'queued' })
+    await fetch(`/api/apps/${appId}/teardown`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({}),
+    })
+  }
+
   const handleDeploy = async (appId: string) => {
-    const sha = prompt('Commit SHA to deploy:')
-    if (!sha) return
+    const app = apps.find((a) => a.spec.app === appId)
+    let sha: string | null
+    if (app?.spec.repo) {
+      sha = 'HEAD'
+    } else {
+      sha = prompt('Commit SHA to deploy:')
+      if (!sha) return
+    }
     setDeployState({ appId, steps: [], status: 'queued' })
     await fetch(`/api/apps/${appId}/deploy`, {
       method: 'POST',
@@ -128,6 +184,10 @@ export function App() {
         </div>
       </header>
 
+      {webhookToast && (
+        <div className="webhook-toast">{webhookToast}</div>
+      )}
+
       <main className="norn-main">
         {error && (
           <div className="error-banner">
@@ -150,6 +210,7 @@ export function App() {
               app={app}
               onDeploy={handleDeploy}
               onForge={handleForge}
+              onTeardown={handleTeardown}
               onRestart={handleRestart}
               onRollback={handleRollback}
               onViewLogs={setLogApp}
@@ -213,6 +274,7 @@ artifacts:
             steps={deployState.steps}
             status={deployState.status}
             error={deployState.error}
+            onClose={() => setDeployState(null)}
           />
         )}
 
@@ -223,6 +285,18 @@ artifacts:
             status={forgeState.status}
             error={forgeState.error}
             title="Forging"
+            onClose={() => setForgeState(null)}
+          />
+        )}
+
+        {teardownState && (
+          <DeployPanel
+            appId={teardownState.appId}
+            steps={teardownState.steps}
+            status={teardownState.status}
+            error={teardownState.error}
+            title="Tearing Down"
+            onClose={() => setTeardownState(null)}
           />
         )}
 
