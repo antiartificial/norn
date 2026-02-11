@@ -256,6 +256,13 @@ body {
 .app-card-hosts i { margin-right: 4px; }
 .host.external { color: var(--amber); }
 .host.internal { color: var(--text-dim); }
+.host.copyable {
+  cursor: pointer;
+  border-radius: 3px;
+  padding: 1px 4px;
+  transition: background 0.15s;
+}
+.host.copyable:hover { background: var(--surface-hover); }
 
 .app-card-services {
   display: flex;

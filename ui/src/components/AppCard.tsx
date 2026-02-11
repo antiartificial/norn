@@ -1,3 +1,4 @@
+import { useState } from 'react'
 import type { AppStatus, ForgeStatus, HealthCheck } from '../types/index.ts'
 import { Tooltip } from './Tooltip.tsx'
 import { Sparkline } from './Sparkline.tsx'
@@ -88,6 +89,13 @@ export function AppCard({ app, busy, activeOp, healthChecks, onDeploy, onForge, 
   const forgeStatus: ForgeStatus = app.forgeState?.status ?? 'unforged'
   const isForged = forgeStatus === 'forged'
   const hasPods = app.pods && app.pods.length > 0
+  const [copiedHost, setCopiedHost] = useState<string | null>(null)
+
+  const copyHost = (value: string) => {
+    navigator.clipboard.writeText(value)
+    setCopiedHost(value)
+    setTimeout(() => setCopiedHost(null), 1500)
+  }
 
   return (
     <div className={`app-card ${healthy ? 'healthy' : 'unhealthy'}`}>
@@ -162,16 +170,16 @@ export function AppCard({ app, busy, activeOp, healthChecks, onDeploy, onForge, 
 
       <div className="app-card-hosts">
         {spec.hosts?.external && (
-          <Tooltip text="Publicly accessible hostname (via Cloudflare Tunnel)">
-            <span className="host external">
-              <i className="fawsb fa-globe" /> {spec.hosts.external}
+          <Tooltip text={copiedHost === spec.hosts.external ? 'Copied!' : 'Click to copy'}>
+            <span className="host external copyable" onClick={() => copyHost(spec.hosts!.external!)}>
+              <i className={`fawsb ${copiedHost === spec.hosts.external ? 'fa-check' : 'fa-globe'}`} /> {spec.hosts.external}
             </span>
           </Tooltip>
         )}
         {spec.hosts?.internal && (
-          <Tooltip text="Cluster-internal service DNS">
-            <span className="host internal">
-              <i className="fawsb fa-link" /> {spec.hosts.internal}
+          <Tooltip text={copiedHost === spec.hosts.internal ? 'Copied!' : 'Click to copy'}>
+            <span className="host internal copyable" onClick={() => copyHost(spec.hosts!.internal!)}>
+              <i className={`fawsb ${copiedHost === spec.hosts.internal ? 'fa-check' : 'fa-link'}`} /> {spec.hosts.internal}
             </span>
           </Tooltip>
         )}
