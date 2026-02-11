@@ -43,7 +43,15 @@ type InfraSpec struct {
 			Topics []string `json:"topics"`
 		} `json:"events"`
 	} `json:"services"`
-	Secrets []string `json:"secrets"`
+	Secrets []string  `json:"secrets"`
+	Repo    *RepoSpec `json:"repo,omitempty"`
+}
+
+type RepoSpec struct {
+	URL           string `json:"url"`
+	Branch        string `json:"branch,omitempty"`
+	WebhookSecret string `json:"webhookSecret,omitempty"`
+	AutoDeploy    bool   `json:"autoDeploy,omitempty"`
 }
 
 type AppStatus struct {
@@ -118,8 +126,16 @@ func (c *Client) Rollback(appID string) error {
 	return c.post("/api/apps/"+appID+"/rollback", "{}")
 }
 
-func (c *Client) Forge(appID string) error {
-	return c.post("/api/apps/"+appID+"/forge", "{}")
+func (c *Client) Forge(appID string, force bool) error {
+	body := "{}"
+	if force {
+		body = `{"force":true}`
+	}
+	return c.post("/api/apps/"+appID+"/forge", body)
+}
+
+func (c *Client) Teardown(appID string) error {
+	return c.post("/api/apps/"+appID+"/teardown", "{}")
 }
 
 func (c *Client) StreamLogs(appID string) (io.ReadCloser, error) {

@@ -17,6 +17,21 @@ type InfraSpec struct {
 	Secrets     []string     `yaml:"secrets,omitempty" json:"secrets,omitempty"`
 	Migrations  *Migration   `yaml:"migrations,omitempty" json:"migrations,omitempty"`
 	Artifacts   *Artifacts   `yaml:"artifacts,omitempty" json:"artifacts,omitempty"`
+	Repo        *RepoSpec    `yaml:"repo,omitempty" json:"repo,omitempty"`
+	Volumes     []VolumeSpec `yaml:"volumes,omitempty" json:"volumes,omitempty"`
+}
+
+type RepoSpec struct {
+	URL           string `yaml:"url" json:"url"`
+	Branch        string `yaml:"branch,omitempty" json:"branch,omitempty"`
+	WebhookSecret string `yaml:"webhookSecret,omitempty" json:"webhookSecret,omitempty"`
+	AutoDeploy    bool   `yaml:"autoDeploy,omitempty" json:"autoDeploy,omitempty"`
+}
+
+type VolumeSpec struct {
+	Name      string `yaml:"name" json:"name"`
+	MountPath string `yaml:"mountPath" json:"mountPath"`
+	Size      string `yaml:"size" json:"size"`
 }
 
 type Hosts struct {
@@ -68,6 +83,9 @@ func LoadInfraSpec(path string) (*InfraSpec, error) {
 	}
 	if spec.Artifacts == nil {
 		spec.Artifacts = &Artifacts{Retain: 5}
+	}
+	if spec.Repo != nil && spec.Repo.Branch == "" {
+		spec.Repo.Branch = "main"
 	}
 	return &spec, nil
 }

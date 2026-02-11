@@ -26,6 +26,7 @@ type Deployment struct {
 	Error      string       `json:"error,omitempty" db:"error"`
 	StartedAt  time.Time    `json:"startedAt" db:"started_at"`
 	FinishedAt *time.Time   `json:"finishedAt,omitempty" db:"finished_at"`
+	WorkDir    string       `json:"-" db:"-"` // temp dir for build, not persisted
 }
 
 type StepLog struct {
