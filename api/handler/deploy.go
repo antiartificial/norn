@@ -37,11 +37,20 @@ func (h *Handler) Deploy(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	commitSHA := req.CommitSHA
+	imageTag := fmt.Sprintf("%s:%s", appID, commitSHA[:min(12, len(commitSHA))])
+
+	// For repo-backed apps with "HEAD", the clone step resolves the real SHA
+	if spec.Repo != nil && (commitSHA == "" || commitSHA == "HEAD") {
+		commitSHA = "HEAD"
+		imageTag = fmt.Sprintf("%s:pending", appID)
+	}
+
 	deploy := &model.Deployment{
 		ID:        uuid.NewString(),
 		App:       appID,
-		CommitSHA: req.CommitSHA,
-		ImageTag:  fmt.Sprintf("%s:%s", appID, req.CommitSHA[:12]),
+		CommitSHA: commitSHA,
+		ImageTag:  imageTag,
 		Status:    model.StatusQueued,
 		StartedAt: time.Now(),
 	}

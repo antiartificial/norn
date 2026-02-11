@@ -99,7 +99,17 @@ func (p *Pipeline) clone(ctx context.Context, d *model.Deployment, s *model.Infr
 		if err != nil {
 			return string(out), fmt.Errorf("git clone: %w", err)
 		}
-		return fmt.Sprintf("cloned %s (branch %s) into %s", s.Repo.URL, s.Repo.Branch, workDir), nil
+
+		// Resolve actual HEAD SHA from the cloned repo
+		revCmd := exec.CommandContext(ctx, "git", "-C", workDir, "rev-parse", "HEAD")
+		shaOut, err := revCmd.Output()
+		if err == nil {
+			sha := strings.TrimSpace(string(shaOut))
+			d.CommitSHA = sha
+			d.ImageTag = fmt.Sprintf("%s:%s", d.App, sha[:12])
+		}
+
+		return fmt.Sprintf("cloned %s (branch %s) at %s", s.Repo.URL, s.Repo.Branch, d.CommitSHA[:12]), nil
 	}
 
 	// Local fallback: copy from appsDir
