@@ -15,6 +15,7 @@ import (
 
 	"norn/api/config"
 	"norn/api/handler"
+	"norn/api/health"
 	"norn/api/hub"
 	"norn/api/k8s"
 	"norn/api/store"
@@ -45,6 +46,16 @@ func main() {
 	ws := hub.New()
 	go ws.Run()
 
+	poller := &health.Poller{
+		DB:      db,
+		WS:      ws,
+		AppsDir: cfg.AppsDir,
+	}
+
+	pollerCtx, pollerCancel := context.WithCancel(context.Background())
+	defer pollerCancel()
+	go poller.Run(pollerCtx)
+
 	h := handler.New(db, kube, ws, cfg)
 
 	r := chi.NewRouter()
@@ -66,6 +77,7 @@ func main() {
 		r.Post("/apps/{id}/deploy", h.Deploy)
 		r.Post("/apps/{id}/forge", h.Forge)
 		r.Post("/apps/{id}/teardown", h.Teardown)
+		r.Get("/apps/{id}/health-checks", h.GetHealthHistory)
 		r.Get("/apps/{id}/forge-state", h.GetForgeState)
 		r.Post("/apps/{id}/restart", h.Restart)
 		r.Post("/apps/{id}/rollback", h.Rollback)

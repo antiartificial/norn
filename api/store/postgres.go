@@ -55,6 +55,16 @@ func Migrate(db *DB) error {
 		CREATE INDEX IF NOT EXISTS idx_deployments_app ON deployments(app);
 		CREATE INDEX IF NOT EXISTS idx_deployments_status ON deployments(status);
 
+		CREATE TABLE IF NOT EXISTS health_checks (
+			id          TEXT PRIMARY KEY,
+			app         TEXT NOT NULL,
+			healthy     BOOLEAN NOT NULL,
+			response_ms INTEGER NOT NULL DEFAULT 0,
+			checked_at  TIMESTAMPTZ NOT NULL DEFAULT now()
+		);
+		CREATE INDEX IF NOT EXISTS idx_health_checks_app_time
+			ON health_checks(app, checked_at DESC);
+
 		CREATE TABLE IF NOT EXISTS forge_states (
 			app         TEXT PRIMARY KEY,
 			status      TEXT NOT NULL DEFAULT 'unforged',
@@ -185,4 +195,48 @@ func (db *DB) RecoverInFlightForges(ctx context.Context) error {
 		 WHERE status IN ('forging', 'tearing_down')`,
 	)
 	return err
+}
+
+// --- Health Checks ---
+
+func (db *DB) InsertHealthCheck(ctx context.Context, hc *model.HealthCheck) error {
+	_, err := db.pool.Exec(ctx,
+		`INSERT INTO health_checks (id, app, healthy, response_ms, checked_at)
+		 VALUES ($1, $2, $3, $4, $5)`,
+		hc.ID, hc.App, hc.Healthy, hc.ResponseMs, hc.CheckedAt,
+	)
+	return err
+}
+
+func (db *DB) ListHealthChecks(ctx context.Context, app string, since time.Time) ([]model.HealthCheck, error) {
+	rows, err := db.pool.Query(ctx,
+		`SELECT id, app, healthy, response_ms, checked_at
+		 FROM health_checks WHERE app = $1 AND checked_at >= $2
+		 ORDER BY checked_at ASC`,
+		app, since,
+	)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	var checks []model.HealthCheck
+	for rows.Next() {
+		var hc model.HealthCheck
+		if err := rows.Scan(&hc.ID, &hc.App, &hc.Healthy, &hc.ResponseMs, &hc.CheckedAt); err != nil {
+			return nil, err
+		}
+		checks = append(checks, hc)
+	}
+	return checks, nil
+}
+
+func (db *DB) PruneHealthChecks(ctx context.Context) (int64, error) {
+	tag, err := db.pool.Exec(ctx,
+		`DELETE FROM health_checks WHERE checked_at < now() - interval '24 hours'`,
+	)
+	if err != nil {
+		return 0, err
+	}
+	return tag.RowsAffected(), nil
 }

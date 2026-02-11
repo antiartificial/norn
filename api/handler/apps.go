@@ -5,7 +5,6 @@ import (
 	"encoding/json"
 	"fmt"
 	"net/http"
-	"os"
 	"path/filepath"
 	"time"
 
@@ -187,25 +186,40 @@ func (h *Handler) Restart(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, map[string]string{"status": "restarting"})
 }
 
-func (h *Handler) discoverApps() ([]*model.InfraSpec, error) {
-	entries, err := os.ReadDir(h.cfg.AppsDir)
+func (h *Handler) GetHealthHistory(w http.ResponseWriter, r *http.Request) {
+	appID := chi.URLParam(r, "id")
+
+	rangeStr := r.URL.Query().Get("range")
+	if rangeStr == "" {
+		rangeStr = "1h"
+	}
+	dur, err := time.ParseDuration(rangeStr)
 	if err != nil {
-		return nil, err
+		http.Error(w, "invalid range parameter", http.StatusBadRequest)
+		return
 	}
 
-	var specs []*model.InfraSpec
-	for _, entry := range entries {
-		if !entry.IsDir() {
-			continue
-		}
-		specPath := filepath.Join(h.cfg.AppsDir, entry.Name(), "infraspec.yaml")
-		spec, err := model.LoadInfraSpec(specPath)
-		if err != nil {
-			continue
-		}
-		specs = append(specs, spec)
+	since := time.Now().Add(-dur)
+	checks, err := h.db.ListHealthChecks(r.Context(), appID, since)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
 	}
-	return specs, nil
+
+	spec, _ := h.loadSpec(appID)
+	var alerts *model.AlertConfig
+	if spec != nil {
+		alerts = spec.Alerts
+	}
+
+	writeJSON(w, map[string]interface{}{
+		"checks": checks,
+		"alerts": alerts,
+	})
+}
+
+func (h *Handler) discoverApps() ([]*model.InfraSpec, error) {
+	return model.DiscoverApps(h.cfg.AppsDir)
 }
 
 func (h *Handler) loadSpec(appID string) (*model.InfraSpec, error) {

@@ -18,8 +18,10 @@ type InfraSpec struct {
 	Secrets     []string     `yaml:"secrets,omitempty" json:"secrets,omitempty"`
 	Migrations  *Migration   `yaml:"migrations,omitempty" json:"migrations,omitempty"`
 	Artifacts   *Artifacts   `yaml:"artifacts,omitempty" json:"artifacts,omitempty"`
-	Repo        *RepoSpec    `yaml:"repo,omitempty" json:"repo,omitempty"`
-	Volumes     []VolumeSpec `yaml:"volumes,omitempty" json:"volumes,omitempty"`
+	Repo        *RepoSpec         `yaml:"repo,omitempty" json:"repo,omitempty"`
+	Volumes     []VolumeSpec      `yaml:"volumes,omitempty" json:"volumes,omitempty"`
+	Env         map[string]string `yaml:"env,omitempty" json:"env,omitempty"`
+	Alerts      *AlertConfig      `yaml:"alerts,omitempty" json:"alerts,omitempty"`
 }
 
 type RepoSpec struct {
@@ -87,6 +89,9 @@ func LoadInfraSpec(path string) (*InfraSpec, error) {
 	}
 	if spec.Repo != nil && spec.Repo.Branch == "" {
 		spec.Repo.Branch = "main"
+	}
+	if spec.Alerts == nil {
+		spec.Alerts = &AlertConfig{Window: "5m", Threshold: 3}
 	}
 	return &spec, nil
 }
