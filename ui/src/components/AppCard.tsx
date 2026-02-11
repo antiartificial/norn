@@ -1,5 +1,6 @@
-import type { AppStatus, ForgeStatus } from '../types/index.ts'
+import type { AppStatus, ForgeStatus, HealthCheck } from '../types/index.ts'
 import { Tooltip } from './Tooltip.tsx'
+import { Sparkline } from './Sparkline.tsx'
 
 const roleIcons: Record<string, string> = {
   webserver: 'fa-server',
@@ -72,15 +73,17 @@ interface Props {
   app: AppStatus
   busy?: boolean
   activeOp?: string // 'deploying' | 'forging' | 'tearing_down' | 'restarting' | 'rolling_back'
+  healthChecks?: HealthCheck[]
   onDeploy: (appId: string) => void
   onForge: (appId: string) => void
   onTeardown: (appId: string) => void
   onRestart: (appId: string) => void
   onRollback: (appId: string) => void
   onViewLogs: (appId: string) => void
+  onHealthClick?: () => void
 }
 
-export function AppCard({ app, busy, activeOp, onDeploy, onForge, onTeardown, onRestart, onRollback, onViewLogs }: Props) {
+export function AppCard({ app, busy, activeOp, healthChecks, onDeploy, onForge, onTeardown, onRestart, onRollback, onViewLogs, onHealthClick }: Props) {
   const { spec, healthy, ready, commitSha, deployedAt } = app
   const forgeStatus: ForgeStatus = app.forgeState?.status ?? 'unforged'
   const isForged = forgeStatus === 'forged'
@@ -111,6 +114,9 @@ export function AppCard({ app, busy, activeOp, onDeploy, onForge, onTeardown, on
           <span className={`health-label ${healthy ? 'green' : 'red'}`}>
             {healthy ? 'healthy' : 'unhealthy'}
           </span>
+          {healthChecks && healthChecks.length > 0 && (
+            <Sparkline checks={healthChecks} onClick={onHealthClick} />
+          )}
         </div>
         <Tooltip text={`${ready} pods ready`}>
           <div className="app-card-ready">{ready}</div>
@@ -146,7 +152,9 @@ export function AppCard({ app, busy, activeOp, onDeploy, onForge, onTeardown, on
           </Tooltip>
           {spec.repo.autoDeploy && (
             <Tooltip text="Pushes to this repo auto-trigger deploys">
-              <span className="auto-deploy-badge">auto-deploy</span>
+              <span className="auto-deploy-badge">
+                <i className="fawsb fa-arrows-spin" /> auto-deploy
+              </span>
             </Tooltip>
           )}
         </div>

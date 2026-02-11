@@ -35,6 +35,7 @@ export interface InfraSpec {
   artifacts?: { retain: number }
   repo?: RepoSpec
   volumes?: VolumeSpec[]
+  alerts?: AlertConfig
 }
 
 export interface PodInfo {
@@ -95,6 +96,19 @@ export interface Deployment {
   error?: string
   startedAt: string
   finishedAt?: string
+}
+
+export interface HealthCheck {
+  id: string
+  app: string
+  healthy: boolean
+  responseMs: number
+  checkedAt: string
+}
+
+export interface AlertConfig {
+  window: string
+  threshold: number
 }
 
 export interface WSEvent {

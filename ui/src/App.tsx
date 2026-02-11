@@ -1,13 +1,14 @@
-import { useState, useCallback } from 'react'
+import { useState, useCallback, useEffect } from 'react'
 import { useApps } from './hooks/useApps.ts'
 import { useWebSocket } from './hooks/useWebSocket.ts'
 import { AppCard } from './components/AppCard.tsx'
 import { LogViewer } from './components/LogViewer.tsx'
 import { DeployPanel } from './components/DeployPanel.tsx'
+import { HealthPanel } from './components/HealthPanel.tsx'
 import { Welcome } from './components/Welcome.tsx'
 import { StatusBar } from './components/StatusBar.tsx'
 import { Tooltip } from './components/Tooltip.tsx'
-import type { WSEvent, StepLog } from './types/index.ts'
+import type { WSEvent, StepLog, HealthCheck } from './types/index.ts'
 
 function upsertStep(steps: StepLog[], incoming: StepLog): StepLog[] {
   const idx = steps.findIndex((s) => s.step === incoming.step)
@@ -47,6 +48,8 @@ export function App() {
   const [webhookToast, setWebhookToast] = useState<string | null>(null)
   const [restartingApp, setRestartingApp] = useState<string | null>(null)
   const [rollingBackApp, setRollingBackApp] = useState<string | null>(null)
+  const [healthHistory, setHealthHistory] = useState<Record<string, HealthCheck[]>>({})
+  const [healthApp, setHealthApp] = useState<string | null>(null)
 
   // Derive which apps are busy and with what operation
   const getAppBusy = (appId: string): { busy: boolean; activeOp?: string } => {
@@ -119,6 +122,21 @@ export function App() {
         refetch()
       }
     }
+    if (event.type === 'health.check') {
+      const p = event.payload as Record<string, unknown>
+      const hc: HealthCheck = {
+        id: p['id'] as string,
+        app: event.appId,
+        healthy: p['healthy'] as boolean,
+        responseMs: p['responseMs'] as number,
+        checkedAt: p['checkedAt'] as string,
+      }
+      setHealthHistory((prev) => {
+        const existing = prev[event.appId] ?? []
+        const updated = [...existing, hc].slice(-120)
+        return { ...prev, [event.appId]: updated }
+      })
+    }
     if (event.type === 'app.restarted') {
       setRestartingApp(null)
       refetch()
@@ -130,6 +148,22 @@ export function App() {
   }, [refetch])
 
   const { connected } = useWebSocket(handleWsEvent)
+
+  // Load initial health history for all discovered apps
+  useEffect(() => {
+    if (apps.length === 0) return
+    for (const app of apps) {
+      fetch(`/api/apps/${app.spec.app}/health-checks?range=1h`)
+        .then(r => r.json())
+        .then(data => {
+          const checks: HealthCheck[] = data.checks ?? []
+          if (checks.length > 0) {
+            setHealthHistory(prev => ({ ...prev, [app.spec.app]: checks.slice(-120) }))
+          }
+        })
+        .catch(() => {})
+    }
+  }, [apps.length]) // eslint-disable-line react-hooks/exhaustive-deps
 
   const dismissTour = () => {
     localStorage.setItem(TOUR_KEY, '1')
@@ -250,12 +284,14 @@ export function App() {
                 app={app}
                 busy={busy}
                 activeOp={activeOp}
+                healthChecks={healthHistory[app.spec.app]}
                 onDeploy={handleDeploy}
                 onForge={handleForge}
                 onTeardown={handleTeardown}
                 onRestart={handleRestart}
                 onRollback={handleRollback}
                 onViewLogs={setLogApp}
+                onHealthClick={() => setHealthApp(app.spec.app)}
               />
             )
           })}
@@ -340,6 +376,15 @@ artifacts:
             error={teardownState.error}
             title="Tearing Down"
             onClose={() => setTeardownState(null)}
+          />
+        )}
+
+        {healthApp && (
+          <HealthPanel
+            appId={healthApp}
+            checks={healthHistory[healthApp] ?? []}
+            alerts={apps.find(a => a.spec.app === healthApp)?.spec.alerts}
+            onClose={() => setHealthApp(null)}
           />
         )}
 

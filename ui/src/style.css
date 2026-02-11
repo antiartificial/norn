@@ -306,6 +306,9 @@ body {
   border: 1px solid rgba(52, 211, 153, 0.3);
   color: var(--green);
   font-weight: 500;
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
 }
 
 /* ─── Webhook Toast ─── */
@@ -433,6 +436,12 @@ body {
   margin-bottom: 12px;
 }
 
+.deploy-panel-actions {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
 .deploy-panel h4 {
   font-size: 14px;
   color: var(--blue);
@@ -455,6 +464,22 @@ body {
 .deploy-step .step-name { font-weight: 500; min-width: 80px; }
 .deploy-step .step-status { color: var(--text-dim); flex: 1; }
 .deploy-step .step-duration { font-family: var(--mono); font-size: 11px; color: var(--text-dim); }
+
+.deploy-step.step-child {
+  margin-left: 16px;
+  border-left: 2px solid var(--border);
+}
+
+.deploy-step.step-active {
+  border-left: 2px solid var(--green);
+  color: var(--text);
+  animation: step-pulse 1.5s ease-in-out infinite;
+}
+
+@keyframes step-pulse {
+  0%, 100% { border-left-color: var(--green); }
+  50% { border-left-color: transparent; }
+}
 
 .deploy-error {
   margin-top: 10px;
@@ -757,6 +782,110 @@ body {
   font-family: var(--font);
 }
 .welcome-skip:hover { color: var(--text); text-decoration: underline; }
+
+/* ─── Sparkline ─── */
+.sparkline {
+  display: inline-block;
+  cursor: pointer;
+  vertical-align: middle;
+  border-radius: 3px;
+  transition: background 0.15s;
+}
+.sparkline:hover {
+  background: var(--surface-hover);
+}
+
+/* ─── Health Panel ─── */
+.health-panel {
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  padding: 16px;
+  margin-top: 16px;
+}
+
+.health-panel-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  margin-bottom: 12px;
+  gap: 12px;
+}
+
+.health-panel-header h4 {
+  font-size: 14px;
+  color: var(--green);
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.range-selector {
+  display: flex;
+  gap: 2px;
+  background: var(--bg);
+  border-radius: 6px;
+  padding: 2px;
+}
+
+.range-btn {
+  font-size: 11px;
+  font-family: var(--mono);
+  padding: 3px 8px;
+  border-radius: 4px;
+  border: none;
+  background: transparent;
+  color: var(--text-dim);
+  cursor: pointer;
+  transition: all 0.15s;
+}
+.range-btn:hover { color: var(--text); }
+.range-btn.active {
+  background: var(--surface-hover);
+  color: var(--green);
+}
+
+.health-panel-stats {
+  display: flex;
+  gap: 24px;
+  margin-bottom: 12px;
+}
+
+.health-stat {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.health-stat .stat-value {
+  font-size: 16px;
+  font-family: var(--mono);
+  font-weight: 600;
+  color: var(--text);
+}
+
+.health-stat .stat-label {
+  font-size: 10px;
+  color: var(--text-dim);
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+}
+
+.health-timeline {
+  display: block;
+  width: 100%;
+  border-radius: 4px;
+  background: var(--bg);
+  padding: 4px;
+}
+
+.health-timeline-loading,
+.health-timeline-empty {
+  text-align: center;
+  padding: 24px;
+  font-size: 12px;
+  color: var(--text-dim);
+}
 
 /* ─── Footer ─── */
 .norn-footer {
