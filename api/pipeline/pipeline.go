@@ -97,6 +97,17 @@ func (p *Pipeline) clone(ctx context.Context, d *model.Deployment, s *model.Infr
 		cmd.Env = append(os.Environ(), p.gitEnv(s.Repo.URL)...)
 		out, err := cmd.CombinedOutput()
 		if err != nil {
+			// Fall back to local copy if repo is unreachable
+			srcDir := filepath.Join(p.AppsDir, d.App)
+			if _, statErr := os.Stat(srcDir); statErr == nil {
+				log.Printf("clone: git clone failed (%v), falling back to local copy from %s", err, srcDir)
+				cpCmd := exec.CommandContext(ctx, "cp", "-a", srcDir+"/.", workDir)
+				cpOut, cpErr := cpCmd.CombinedOutput()
+				if cpErr != nil {
+					return string(cpOut), fmt.Errorf("git clone failed and local fallback failed: %w", cpErr)
+				}
+				return fmt.Sprintf("git clone failed, used local copy from %s (repo: %s)", srcDir, string(out)), nil
+			}
 			return string(out), fmt.Errorf("git clone: %w", err)
 		}
 

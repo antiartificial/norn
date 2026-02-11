@@ -186,21 +186,25 @@ func (c *Client) CreateDeployment(ctx context.Context, namespace string, opts De
 	}
 
 	if opts.Healthcheck != "" {
-		probe := &corev1.Probe{
-			ProbeHandler: corev1.ProbeHandler{
-				HTTPGet: &corev1.HTTPGetAction{
-					Path: opts.Healthcheck,
-					Port: intstr.FromInt32(int32(opts.Port)),
-				},
+		handler := corev1.ProbeHandler{
+			HTTPGet: &corev1.HTTPGetAction{
+				Path: opts.Healthcheck,
+				Port: intstr.FromInt32(int32(opts.Port)),
 			},
-			InitialDelaySeconds: 5,
-			PeriodSeconds:       10,
 		}
-		dep.Spec.Template.Spec.Containers[0].ReadinessProbe = probe
+		dep.Spec.Template.Spec.Containers[0].StartupProbe = &corev1.Probe{
+			ProbeHandler:     handler,
+			PeriodSeconds:    5,
+			FailureThreshold: 30, // 5s * 30 = 150s to start
+		}
+		dep.Spec.Template.Spec.Containers[0].ReadinessProbe = &corev1.Probe{
+			ProbeHandler:  handler,
+			PeriodSeconds: 10,
+		}
 		dep.Spec.Template.Spec.Containers[0].LivenessProbe = &corev1.Probe{
-			ProbeHandler: probe.ProbeHandler,
-			InitialDelaySeconds: 10,
-			PeriodSeconds:       30,
+			ProbeHandler:     handler,
+			PeriodSeconds:    30,
+			FailureThreshold: 3,
 		}
 	}
 
