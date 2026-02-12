@@ -112,6 +112,19 @@ func Migrate(db *DB) error {
 			created_at   TIMESTAMPTZ NOT NULL DEFAULT now(),
 			updated_at   TIMESTAMPTZ NOT NULL DEFAULT now()
 		);
+
+		CREATE TABLE IF NOT EXISTS func_executions (
+			id          BIGSERIAL PRIMARY KEY,
+			app         TEXT NOT NULL,
+			image_tag   TEXT NOT NULL DEFAULT '',
+			status      TEXT NOT NULL DEFAULT 'running',
+			exit_code   INT NOT NULL DEFAULT -1,
+			output      TEXT NOT NULL DEFAULT '',
+			duration_ms BIGINT NOT NULL DEFAULT 0,
+			started_at  TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+			finished_at TIMESTAMPTZ
+		);
+		CREATE INDEX IF NOT EXISTS idx_func_exec_app ON func_executions(app, started_at DESC);
 	`)
 	return err
 }

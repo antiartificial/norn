@@ -25,11 +25,17 @@ features:
     details: Provisions Kubernetes infrastructure for an app — deployment, service, Cloudflare tunnel, DNS — in a single command.
   - title: Monitor
     details: Health checks, pod status, log streaming, and deployment history — from the dashboard or the terminal.
+  - title: Functions
+    details: HTTP-triggered ephemeral containers — invoke from the dashboard, CLI, or API with automatic execution tracking.
+  - title: Object Storage
+    details: S3-compatible storage with MinIO for local dev and Cloudflare R2, AWS S3, or GCS for production.
 ---
 
 ## What is Norn?
 
 Norn is a personal control plane for self-hosted infrastructure. It discovers your apps, shows their health, and lets you deploy, restart, roll back, and stream logs — from a React dashboard or a Charm-powered CLI.
+
+![Norn Dashboard](/screenshots/dashboard.png)
 
 Each app declares its needs in an `infraspec.yaml`: role, port, services, secrets, migrations. Norn reads these specs and handles the rest — building Docker images, running migrations, syncing secrets, managing Kubernetes deployments, and routing traffic through Cloudflare tunnels.
 
@@ -48,3 +54,5 @@ norn deploy myapp HEAD # deploy with live pipeline progress
 norn health            # check backing services
 norn logs myapp        # stream pod logs
 ```
+
+![CLI status](/screenshots/cli-status.png)

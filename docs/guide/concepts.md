@@ -69,6 +69,21 @@ command: node generate-report.js
 timeout: 300
 ```
 
+### `function`
+
+HTTP-triggered ephemeral container. Like cron, but invoked on-demand rather than on a schedule.
+
+```yaml
+app: thumbnail-gen
+role: function
+build:
+  dockerfile: Dockerfile
+function:
+  timeout: 30
+  trigger: http
+  memory: 256m
+```
+
 ## Service dependencies
 
 Apps can declare dependencies on shared services. Norn provisions namespaced access to each:
@@ -101,6 +116,17 @@ Event streaming with per-app topic prefixes and ACLs.
 services:
   events:
     topics: [mail.inbound, mail.processed]
+```
+
+### Object Storage (S3-compatible)
+
+S3-compatible bucket storage. Uses MinIO locally, or Cloudflare R2 / AWS S3 / GCS in production.
+
+```yaml
+services:
+  storage:
+    bucket: my-app-uploads
+    provider: minio
 ```
 
 ## Core apps

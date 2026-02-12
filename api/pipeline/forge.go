@@ -13,6 +13,7 @@ import (
 	"norn/api/hub"
 	"norn/api/k8s"
 	"norn/api/model"
+	"norn/api/storage"
 	"norn/api/store"
 )
 
@@ -23,6 +24,7 @@ type ForgePipeline struct {
 	TunnelName string
 	PGHost     string
 	PGUser     string
+	S3         *storage.Client
 }
 
 type forgeStep struct {
@@ -33,18 +35,28 @@ type forgeStep struct {
 func (f *ForgePipeline) Run(state *model.ForgeState, spec *model.InfraSpec, resumeFrom int) {
 	ctx := context.Background()
 
-	// Cron apps skip K8s infrastructure — just mark as forged
-	if spec.IsCron() {
+	// Cron and function apps skip K8s infrastructure — just mark as forged
+	if spec.IsCron() || spec.IsFunction() {
+		stepName := "cron-register"
+		stepOutput := fmt.Sprintf("cron app registered (schedule: %s)", spec.Schedule)
+		if spec.IsFunction() {
+			stepName = "function-register"
+			timeout := 30
+			if spec.Function != nil && spec.Function.Timeout > 0 {
+				timeout = spec.Function.Timeout
+			}
+			stepOutput = fmt.Sprintf("function app registered (timeout: %ds)", timeout)
+		}
 		state.Steps = append(state.Steps, model.ForgeStepLog{
-			Step:   "cron-register",
+			Step:   stepName,
 			Status: "completed",
-			Output: fmt.Sprintf("cron app registered (schedule: %s)", spec.Schedule),
+			Output: stepOutput,
 		})
 		state.Status = model.ForgeForged
 		state.Error = ""
 		f.DB.UpdateForgeState(ctx, state.App, state.Status, state.Steps, state.Resources, "")
 		f.WS.Broadcast(hub.Event{Type: "forge.step", AppID: spec.App, Payload: map[string]string{
-			"step":   "cron-register",
+			"step":   stepName,
 			"status": "completed",
 		}})
 		f.WS.Broadcast(hub.Event{Type: "forge.completed", AppID: spec.App, Payload: map[string]string{}})
@@ -52,6 +64,7 @@ func (f *ForgePipeline) Run(state *model.ForgeState, spec *model.InfraSpec, resu
 	}
 
 	steps := []forgeStep{
+		{name: "create-bucket", fn: f.createBucket},
 		{name: "create-deployment", fn: f.createDeployment},
 		{name: "create-service", fn: f.createService},
 		{name: "patch-cloudflared", fn: f.patchCloudflared},
@@ -155,6 +168,15 @@ func (f *ForgePipeline) createDeployment(ctx context.Context, spec *model.InfraS
 			Name:  "DATABASE_URL",
 			Value: fmt.Sprintf("postgres://%s%s:5432/%s?sslmode=disable", userPart, pgHost, spec.Services.Postgres.Database),
 		})
+	}
+
+	if spec.Services != nil && spec.Services.Storage != nil && f.S3 != nil {
+		opts.Env = append(opts.Env,
+			corev1.EnvVar{Name: "S3_ENDPOINT", Value: f.S3.Endpoint()},
+			corev1.EnvVar{Name: "S3_BUCKET", Value: spec.Services.Storage.Bucket},
+			corev1.EnvVar{Name: "AWS_ACCESS_KEY_ID", Value: "norn"},
+			corev1.EnvVar{Name: "AWS_SECRET_ACCESS_KEY", Value: "nornnorn"},
+		)
 	}
 
 	// Create volume mounts (PVC or hostPath)
@@ -312,4 +334,17 @@ func (f *ForgePipeline) restartCloudflared(ctx context.Context, spec *model.Infr
 		return "", err
 	}
 	return "restarted cloudflared deployment", nil
+}
+
+func (f *ForgePipeline) createBucket(ctx context.Context, spec *model.InfraSpec, res *model.ForgeResources) (string, error) {
+	if spec.Services == nil || spec.Services.Storage == nil {
+		return "skipped (no storage configured)", nil
+	}
+	if f.S3 == nil {
+		return "skipped (S3 client not configured)", nil
+	}
+	if err := f.S3.CreateBucket(ctx, spec.Services.Storage.Bucket); err != nil {
+		return "", err
+	}
+	return fmt.Sprintf("bucket %s ready", spec.Services.Storage.Bucket), nil
 }

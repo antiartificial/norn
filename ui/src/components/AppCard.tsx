@@ -7,12 +7,14 @@ const roleIcons: Record<string, string> = {
   webserver: 'fa-server',
   worker: 'fa-gear',
   cron: 'fa-clock',
+  function: 'fa-bolt',
 }
 
 const roleDescriptions: Record<string, string> = {
   webserver: 'Serves HTTP traffic',
   worker: 'Background job processor',
   cron: 'Scheduled task runner',
+  function: 'HTTP-triggered function',
 }
 
 function truncateURL(url: string): string {
@@ -101,6 +103,8 @@ interface Props {
   onHealthClick?: () => void
   onCronPanel?: (appId: string) => void
   onCronTrigger?: (appId: string) => void
+  onFuncInvoke?: (appId: string) => void
+  onFuncPanel?: (appId: string) => void
 }
 
 function cronStateBadge(cronState?: CronState) {
@@ -123,11 +127,12 @@ function cronStateBadge(cronState?: CronState) {
   )
 }
 
-export function AppCard({ app, busy, activeOp, healthChecks, onDeploy, onForge, onTeardown, onRestart, onRollback, onViewLogs, onScale, onCommands, onHealthClick, onCronPanel, onCronTrigger }: Props) {
+export function AppCard({ app, busy, activeOp, healthChecks, onDeploy, onForge, onTeardown, onRestart, onRollback, onViewLogs, onScale, onCommands, onHealthClick, onCronPanel, onCronTrigger, onFuncInvoke, onFuncPanel }: Props) {
   const { spec, healthy, ready, commitSha, deployedAt } = app
   const forgeStatus: ForgeStatus = app.forgeState?.status ?? 'unforged'
   const isForged = forgeStatus === 'forged'
   const isCron = spec.role === 'cron'
+  const isFunction = spec.role === 'function'
   const hasPods = app.pods && app.pods.length > 0
   const [copiedHost, setCopiedHost] = useState<string | null>(null)
 
@@ -188,7 +193,7 @@ export function AppCard({ app, busy, activeOp, healthChecks, onDeploy, onForge, 
               <div className="app-card-ready">{ready}</div>
             </Tooltip>
           )}
-          {!isCron && isForged && onScale && (
+          {!isCron && !isFunction && isForged && onScale && (
             <div className="scale-controls">
               <Tooltip text="Scale down">
                 <button
@@ -304,6 +309,11 @@ export function AppCard({ app, busy, activeOp, healthChecks, onDeploy, onForge, 
               <span className="service-badge"><i className="fawsb fa-bolt" /> Events</span>
             </Tooltip>
           )}
+          {spec.services.storage && (
+            <Tooltip text={`Bucket: ${spec.services.storage.bucket}`}>
+              <span className="service-badge"><i className="fawsb fa-box-archive" /> S3</span>
+            </Tooltip>
+          )}
           {spec.secrets && spec.secrets.length > 0 && (
             <Tooltip text={`${spec.secrets.length} secret(s): ${spec.secrets.join(', ')}`}>
               <span className="service-badge secrets">
@@ -316,7 +326,7 @@ export function AppCard({ app, busy, activeOp, healthChecks, onDeploy, onForge, 
 
       <div className="app-card-actions">
         {(forgeStatus === 'unforged') && (
-          <Tooltip text={isCron ? "Register cron job" : "Provision K8s deployment, service, and DNS"}>
+          <Tooltip text={isCron ? "Register cron job" : isFunction ? "Register function" : "Provision K8s deployment, service, and DNS"}>
             <button onClick={() => onForge(spec.app)} disabled={busy} className={`btn btn-forge ${activeOp === 'forging' ? 'btn-busy' : ''}`}>
               {activeOp === 'forging' ? <span className="btn-spinner" /> : <i className="fawsb fa-wand-magic-sparkles" />} Forge
             </button>
@@ -350,7 +360,21 @@ export function AppCard({ app, busy, activeOp, healthChecks, onDeploy, onForge, 
             </button>
           </Tooltip>
         )}
-        {isForged && !isCron && (
+        {isForged && isFunction && onFuncInvoke && (
+          <Tooltip text="Invoke the function">
+            <button onClick={() => onFuncInvoke(spec.app)} disabled={busy} className="btn btn-primary">
+              <i className="fawsb fa-play" /> Invoke
+            </button>
+          </Tooltip>
+        )}
+        {isForged && isFunction && onFuncPanel && (
+          <Tooltip text="View invocation history">
+            <button onClick={() => onFuncPanel(spec.app)} className="btn">
+              <i className="fawsb fa-clock-rotate-left" /> History
+            </button>
+          </Tooltip>
+        )}
+        {isForged && !isCron && !isFunction && (
           <Tooltip text={spec.repo ? "Deploy latest from repo" : "Build, test, and deploy a commit"}>
             <button onClick={() => onDeploy(spec.app)} disabled={busy} className={`btn btn-primary ${activeOp === 'deploying' ? 'btn-busy' : ''}`}>
               {activeOp === 'deploying' ? <span className="btn-spinner" /> : <i className="fawsb fa-rocket-launch" />} {spec.repo ? 'Deploy Latest' : 'Deploy'}
@@ -364,7 +388,14 @@ export function AppCard({ app, busy, activeOp, healthChecks, onDeploy, onForge, 
             </button>
           </Tooltip>
         )}
-        {isForged && !isCron && commitSha && (
+        {isForged && isFunction && (
+          <Tooltip text={spec.repo ? "Deploy latest image for function" : "Build and register function image"}>
+            <button onClick={() => onDeploy(spec.app)} disabled={busy} className={`btn ${activeOp === 'deploying' ? 'btn-busy' : ''}`}>
+              {activeOp === 'deploying' ? <span className="btn-spinner" /> : <i className="fawsb fa-rocket-launch" />} Deploy
+            </button>
+          </Tooltip>
+        )}
+        {isForged && !isCron && !isFunction && commitSha && (
           <>
             <Tooltip text="Rolling restart of all pods">
               <button onClick={() => onRestart(spec.app)} disabled={busy} className={`btn ${activeOp === 'restarting' ? 'btn-busy' : ''}`}>

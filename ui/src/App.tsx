@@ -6,6 +6,7 @@ import { AppCard } from './components/AppCard.tsx'
 import { LogViewer } from './components/LogViewer.tsx'
 import { DeployPanel } from './components/DeployPanel.tsx'
 import { CronPanel } from './components/CronPanel.tsx'
+import { FunctionPanel } from './components/FunctionPanel.tsx'
 import { HealthPanel } from './components/HealthPanel.tsx'
 import { Welcome } from './components/Welcome.tsx'
 import { CommandsModal } from './components/CommandsModal.tsx'
@@ -58,6 +59,8 @@ export function App() {
   const [commandsApp, setCommandsApp] = useState<string | null>(null)
   const [rollbackApp, setRollbackApp] = useState<string | null>(null)
   const [cronPanelApp, setCronPanelApp] = useState<string | null>(null)
+  const [funcPanelApp, setFuncPanelApp] = useState<string | null>(null)
+  const [apiVersion, setApiVersion] = useState<string | null>(null)
   const [filter, setFilter] = useState<'all' | 'healthy' | 'unhealthy' | 'core'>('all')
   const [view, setView] = useState<'apps' | 'history'>('apps')
 
@@ -162,6 +165,9 @@ export function App() {
     if (event.type === 'cron.started' || event.type === 'cron.completed' || event.type === 'cron.failed') {
       refetch()
     }
+    if (event.type === 'func.started' || event.type === 'func.completed' || event.type === 'func.failed') {
+      refetch()
+    }
   }, [refetch])
 
   const { connected } = useWebSocket(handleWsEvent)
@@ -182,6 +188,13 @@ export function App() {
         .catch(() => {})
     }
   }, [apps.length]) // eslint-disable-line react-hooks/exhaustive-deps
+
+  useEffect(() => {
+    fetch(apiUrl('/api/version'), fetchOpts)
+      .then(r => r.json())
+      .then(data => setApiVersion(data.version))
+      .catch(() => {})
+  }, [])
 
   const dismissTour = () => {
     localStorage.setItem(TOUR_KEY, '1')
@@ -293,6 +306,15 @@ export function App() {
     refetch()
   }
 
+  const handleFuncInvoke = async (appId: string) => {
+    await fetch(apiUrl(`/api/apps/${appId}/invoke`), {
+      ...fetchOpts,
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({}),
+    })
+  }
+
   return (
     <div className="norn">
       {showTour && <Welcome onDismiss={dismissTour} />}
@@ -388,6 +410,8 @@ export function App() {
                 onHealthClick={() => setHealthApp(app.spec.app)}
                 onCronPanel={setCronPanelApp}
                 onCronTrigger={handleCronTrigger}
+                onFuncInvoke={handleFuncInvoke}
+                onFuncPanel={setFuncPanelApp}
               />
             )
           })}
@@ -501,6 +525,14 @@ artifacts:
           />
         )}
 
+        {funcPanelApp && (
+          <FunctionPanel
+            appId={funcPanelApp}
+            onClose={() => setFuncPanelApp(null)}
+            onInvoke={handleFuncInvoke}
+          />
+        )}
+
         {commandsApp && (() => {
           const cApp = apps.find(a => a.spec.app === commandsApp)
           return cApp ? (
@@ -530,7 +562,7 @@ artifacts:
       </main>
 
       <footer className="norn-footer">
-        <span>norn v0.1.0</span>
+        <span>norn {apiVersion ?? 'dev'}</span>
         <span className="footer-sep">&middot;</span>
         <span>{apps.length} app{apps.length !== 1 ? 's' : ''}</span>
       </footer>

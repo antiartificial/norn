@@ -56,6 +56,18 @@ erDiagram
         timestamptz updated_at
     }
 
+    FUNC_EXECUTIONS {
+        bigserial id PK
+        text app
+        text image_tag
+        text status
+        integer exit_code
+        text output
+        bigint duration_ms
+        timestamptz started_at
+        timestamptz finished_at
+    }
+
     CLUSTER_NODES {
         text id PK
         text name
@@ -75,6 +87,7 @@ erDiagram
     DEPLOYMENTS }o--|| FORGE_STATES : "app"
     HEALTH_CHECKS }o--|| FORGE_STATES : "app"
     CRON_EXECUTIONS }o--|| CRON_STATES : "app"
+    FUNC_EXECUTIONS }o--|| FORGE_STATES : "app"
 ```
 
 ## Tables
@@ -137,6 +150,22 @@ Tracks every cron job execution.
 | `app` | `TEXT` | App identifier |
 | `image_tag` | `TEXT` | Docker image used |
 | `status` | `TEXT` | `running`, `completed`, `failed` |
+| `exit_code` | `INT` | Container exit code |
+| `output` | `TEXT` | Container stdout/stderr |
+| `duration_ms` | `BIGINT` | Execution duration |
+| `started_at` | `TIMESTAMPTZ` | When execution started |
+| `finished_at` | `TIMESTAMPTZ` | When execution completed |
+
+### `func_executions`
+
+Tracks every function invocation.
+
+| Column | Type | Description |
+|--------|------|-------------|
+| `id` | `BIGSERIAL PK` | Auto-increment |
+| `app` | `TEXT` | App identifier |
+| `image_tag` | `TEXT` | Docker image used |
+| `status` | `TEXT` | `running`, `succeeded`, `failed`, `timed_out` |
 | `exit_code` | `INT` | Container exit code |
 | `output` | `TEXT` | Container stdout/stderr |
 | `duration_ms` | `BIGINT` | Execution duration |

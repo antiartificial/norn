@@ -8,11 +8,13 @@ import (
 
 	"norn/api/config"
 	ncron "norn/api/cron"
+	"norn/api/function"
 	"norn/api/hub"
 	"norn/api/k8s"
 	"norn/api/model"
 	"norn/api/pipeline"
 	"norn/api/secrets"
+	"norn/api/storage"
 	"norn/api/store"
 )
 
@@ -28,15 +30,19 @@ type Handler struct {
 	teardownPipeline *pipeline.TeardownPipeline
 	secrets          *secrets.Manager
 	scheduler        *ncron.Scheduler
+	funcExecutor     *function.Executor
+	s3Client         *storage.Client
 }
 
-func New(db *store.DB, kube *k8s.Client, ws *hub.Hub, cfg *config.Config, scheduler *ncron.Scheduler) *Handler {
+func New(db *store.DB, kube *k8s.Client, ws *hub.Hub, cfg *config.Config, scheduler *ncron.Scheduler, funcExecutor *function.Executor, s3Client *storage.Client) *Handler {
 	return &Handler{
-		db:        db,
-		kube:      kube,
-		ws:        ws,
-		cfg:       cfg,
-		scheduler: scheduler,
+		db:           db,
+		kube:         kube,
+		ws:           ws,
+		cfg:          cfg,
+		scheduler:    scheduler,
+		funcExecutor: funcExecutor,
+		s3Client:     s3Client,
 		pipeline: &pipeline.Pipeline{
 			DB:          db,
 			Kube:        kube,
@@ -54,6 +60,7 @@ func New(db *store.DB, kube *k8s.Client, ws *hub.Hub, cfg *config.Config, schedu
 			TunnelName: cfg.TunnelName,
 			PGHost:     cfg.PGHost,
 			PGUser:     cfg.PGUser,
+			S3:         s3Client,
 		},
 		teardownPipeline: &pipeline.TeardownPipeline{
 			DB:         db,

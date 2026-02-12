@@ -9,6 +9,8 @@ norn status            # list all apps
 norn status <app>      # detailed view for a specific app
 ```
 
+![norn status](/screenshots/cli-status.png)
+
 ### List view
 
 Shows a styled table with:
@@ -126,6 +128,8 @@ Show version and API endpoint info.
 norn version
 ```
 
+![norn version](/screenshots/cli-version.png)
+
 Displays:
 - CLI version (from git describe)
 - API URL
@@ -161,3 +165,19 @@ norn teardown <app>
 ```
 
 Reverse of forge — removes DNS, tunnel config, service, and deployment. Shows live progress via TUI.
+
+## invoke
+
+Invoke a function app.
+
+```bash
+norn invoke <app>                     # invoke with empty body
+norn invoke <app> --body '{"key": "value"}'  # with JSON body
+norn invoke <app> --body @request.json       # from file
+```
+
+Shows the function execution result:
+- Status (succeeded/failed/timed_out)
+- Exit code
+- Duration
+- Container output

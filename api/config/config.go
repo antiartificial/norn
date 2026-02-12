@@ -16,6 +16,11 @@ type Config struct {
 	CronRuntime string // "docker" (default) or "incus"
 	APIToken    string // optional bearer token for API auth
 	RegistryURL string // container registry URL (e.g. ghcr.io/username)
+	S3Endpoint  string // S3-compatible endpoint (e.g. "localhost:9000")
+	S3AccessKey string
+	S3SecretKey string
+	S3Region    string
+	S3UseSSL    bool
 
 	AllowedOrigins     string // comma-separated allowed origins for CORS (e.g. "https://app.norn.dev")
 	CFAccessTeamDomain string // CF Access team domain (e.g. "myteam.cloudflareaccess.com")
@@ -37,6 +42,11 @@ func Load() *Config {
 		CronRuntime: envOr("NORN_CRON_RUNTIME", "docker"),
 		APIToken:    os.Getenv("NORN_API_TOKEN"),
 		RegistryURL: os.Getenv("NORN_REGISTRY_URL"),
+		S3Endpoint:  envOr("NORN_S3_ENDPOINT", "localhost:9000"),
+		S3AccessKey: envOr("NORN_S3_ACCESS_KEY", "norn"),
+		S3SecretKey: envOr("NORN_S3_SECRET_KEY", "nornnorn"),
+		S3Region:    envOr("NORN_S3_REGION", "us-east-1"),
+		S3UseSSL:    os.Getenv("NORN_S3_USE_SSL") == "true",
 
 		AllowedOrigins:     os.Getenv("NORN_ALLOWED_ORIGINS"),
 		CFAccessTeamDomain: os.Getenv("NORN_CF_ACCESS_TEAM_DOMAIN"),

@@ -15,7 +15,7 @@ export interface VolumeSpec {
 
 export interface InfraSpec {
   app: string
-  role: 'webserver' | 'worker' | 'cron'
+  role: 'webserver' | 'worker' | 'cron' | 'function'
   core?: boolean
   deploy?: boolean
   port?: number
@@ -32,6 +32,7 @@ export interface InfraSpec {
     postgres?: { database: string; migrations?: string }
     kv?: { namespace: string }
     events?: { topics: string[] }
+    storage?: { bucket: string; provider?: string }
   }
   secrets?: string[]
   migrations?: { command: string; database: string }
@@ -44,6 +45,11 @@ export interface InfraSpec {
   command?: string
   runtime?: string
   timeout?: number
+  function?: {
+    timeout?: number
+    trigger?: string
+    memory?: string
+  }
 }
 
 export interface PodInfo {
@@ -153,6 +159,18 @@ export interface CronState {
   schedule: string
   paused: boolean
   nextRunAt?: string
+}
+
+export interface FuncExecution {
+  id: number
+  app: string
+  imageTag: string
+  status: 'running' | 'succeeded' | 'failed' | 'timed_out'
+  exitCode: number
+  output: string
+  durationMs: number
+  startedAt: string
+  finishedAt?: string
 }
 
 export interface WSEvent {

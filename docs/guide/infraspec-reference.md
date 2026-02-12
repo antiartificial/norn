@@ -42,7 +42,7 @@ alerts:
 | Field | Type | Required | Default | Description |
 |-------|------|----------|---------|-------------|
 | `app` | string | Yes | — | Unique app identifier. Must match the directory name under `NORN_APPS_DIR`. |
-| `role` | string | Yes | — | One of `webserver`, `worker`, `cron`. Determines infrastructure behavior. |
+| `role` | string | Yes | — | One of `webserver`, `worker`, `cron`, `function`. Determines infrastructure behavior. |
 | `core` | bool | No | `false` | Marks the app as a Norn infrastructure component. |
 | `port` | int | No | — | Container port. Required for `webserver` role. |
 | `healthcheck` | string | No | — | HTTP path for health checks (e.g. `/health`). |
@@ -106,6 +106,13 @@ Shared service dependencies. Each service is provisioned with per-app isolation.
 |-------|------|-------------|
 | `services.events.topics` | string[] | Redpanda topic names. |
 
+#### `services.storage`
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `services.storage.bucket` | string | S3 bucket name. |
+| `services.storage.provider` | string | Provider hint: `minio`, `r2`, `s3`, `gcs`, `spaces`. |
+
 ### `secrets`
 
 A list of secret key names the app requires. Values are stored encrypted via SOPS + age in `secrets.enc.yaml`.
@@ -161,6 +168,16 @@ Health check alert configuration.
 |-------|------|---------|-------------|
 | `alerts.window` | string | `"5m"` | Time window for counting failures. |
 | `alerts.threshold` | int | `3` | Number of failures in window to trigger alert. |
+
+### `function`
+
+Function-specific configuration (only for `role: function` apps).
+
+| Field | Type | Default | Description |
+|-------|------|---------|-------------|
+| `function.timeout` | int | `30` | Maximum execution time in seconds. |
+| `function.trigger` | string | `"http"` | Trigger type (currently only `http`). |
+| `function.memory` | string | `"256m"` | Container memory limit. |
 
 ## Real example: Norn itself
 

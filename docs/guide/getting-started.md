@@ -43,12 +43,22 @@ This starts two processes in parallel:
 
 Open the UI and you'll see a welcome tour walking you through the basics.
 
+![Norn Dashboard](/screenshots/dashboard.png)
+
 ## Build the CLI
 
 ```bash
 make cli        # build to bin/norn
 make install    # build + symlink to /usr/local/bin/norn
 ```
+
+Verify the installation:
+
+```bash
+norn version
+```
+
+![norn version](/screenshots/cli-version.png)
 
 The CLI connects to the API at `http://localhost:8800` by default. Override with `NORN_URL` or `--api`:
 

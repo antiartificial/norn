@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"crypto/subtle"
+	"encoding/json"
 	"log"
 	"net/http"
 	"os"
@@ -18,7 +19,9 @@ import (
 	"norn/api/auth"
 	"norn/api/config"
 	ncron "norn/api/cron"
+	"norn/api/function"
 	"norn/api/handler"
+	"norn/api/storage"
 	"norn/api/health"
 	"norn/api/hub"
 	"norn/api/k8s"
@@ -47,6 +50,23 @@ func main() {
 	kube, err := k8s.NewClient()
 	if err != nil {
 		log.Printf("WARNING: k8s unavailable (%v) — running in local-only mode", err)
+	}
+
+	var s3Client *storage.Client
+	if cfg.S3Endpoint != "" {
+		var err error
+		s3Client, err = storage.NewClient(storage.Config{
+			Endpoint:  cfg.S3Endpoint,
+			AccessKey: cfg.S3AccessKey,
+			SecretKey: cfg.S3SecretKey,
+			Region:    cfg.S3Region,
+			UseSSL:    cfg.S3UseSSL,
+		})
+		if err != nil {
+			log.Printf("WARNING: S3/MinIO unavailable (%v)", err)
+		} else {
+			log.Println("S3/MinIO connected at " + cfg.S3Endpoint)
+		}
 	}
 
 	// Parse allowed origins: always include localhost, plus configured extras.
@@ -87,7 +107,9 @@ func main() {
 		scheduler.Sync(specs)
 	}
 
-	h := handler.New(db, kube, ws, cfg, scheduler)
+	funcExec := function.NewExecutor(runner, db, ws)
+
+	h := handler.New(db, kube, ws, cfg, scheduler, funcExec, s3Client)
 
 	r := chi.NewRouter()
 	r.Use(middleware.Logger)
@@ -114,6 +136,10 @@ func main() {
 
 	r.Route("/api", func(r chi.Router) {
 		r.Get("/health", h.Health)
+		r.Get("/version", func(w http.ResponseWriter, r *http.Request) {
+			w.Header().Set("Content-Type", "application/json")
+			json.NewEncoder(w).Encode(map[string]string{"version": Version})
+		})
 		r.Post("/webhooks/push", h.WebhookPush)
 		r.Get("/apps", h.ListApps)
 		r.Get("/deployments", h.ListAllDeployments)
@@ -139,6 +165,8 @@ func main() {
 			r.Post("/cron/pause", h.CronPause)
 			r.Post("/cron/resume", h.CronResume)
 			r.Put("/cron/schedule", h.CronUpdateSchedule)
+			r.Post("/invoke", h.FuncInvoke)
+			r.Get("/function/history", h.FuncHistory)
 		})
 		r.Route("/cluster", func(r chi.Router) {
 			r.Get("/nodes", h.ListClusterNodes)
@@ -161,7 +189,7 @@ func main() {
 	}
 
 	go func() {
-		log.Printf("norn listening on %s:%s", cfg.BindAddr, cfg.Port)
+		log.Printf("norn %s listening on %s:%s", Version, cfg.BindAddr, cfg.Port)
 		if err := srv.ListenAndServe(); err != nil && err != http.ErrServerClosed {
 			log.Fatalf("server: %v", err)
 		}
@@ -182,7 +210,7 @@ func bearerAuth(token string) func(http.Handler) http.Handler {
 	return func(next http.Handler) http.Handler {
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 			// Skip auth for WebSocket upgrade and health check
-			if r.URL.Path == "/ws" || r.URL.Path == "/api/health" || r.URL.Path == "/api/webhooks/push" {
+			if r.URL.Path == "/ws" || r.URL.Path == "/api/health" || r.URL.Path == "/api/version" || r.URL.Path == "/api/webhooks/push" {
 				next.ServeHTTP(w, r)
 				return
 			}

@@ -23,6 +23,10 @@ export default withMermaid(
             { text: 'Getting Started', link: '/guide/getting-started' },
             { text: 'Concepts', link: '/guide/concepts' },
             { text: 'Infraspec Reference', link: '/guide/infraspec-reference' },
+            { text: 'Hello World', link: '/guide/hello-world' },
+            { text: 'Roles', link: '/guide/roles' },
+            { text: 'Functions', link: '/guide/functions' },
+            { text: 'Object Storage', link: '/guide/object-storage' },
           ],
         },
         {
@@ -50,6 +54,8 @@ export default withMermaid(
             { text: 'Shared Services', link: '/infrastructure/shared-services' },
             { text: 'Secrets', link: '/infrastructure/secrets' },
             { text: 'Terraform', link: '/infrastructure/terraform' },
+            { text: 'Cloudflare', link: '/infrastructure/cloudflare' },
+            { text: 'Cloud Providers', link: '/infrastructure/cloud-providers' },
           ],
         },
         {

@@ -21,4 +21,6 @@ type RunOpts struct {
 	Command []string
 	Env     map[string]string
 	Timeout time.Duration
+	Memory  string // e.g. "256m" — empty means default (512m)
+	Network string // e.g. "host", "bridge" — empty means "none"
 }

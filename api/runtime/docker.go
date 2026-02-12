@@ -27,10 +27,19 @@ func (d *DockerRunner) Run(ctx context.Context, opts RunOpts) (*RunResult, error
 
 	name := fmt.Sprintf("norn-cron-%s", randomSuffix())
 
+	memory := "512m"
+	if opts.Memory != "" {
+		memory = opts.Memory
+	}
+	network := "none"
+	if opts.Network != "" {
+		network = opts.Network
+	}
+
 	args := []string{
 		"run", "--rm", "--name", name,
-		"--memory=512m", "--cpus=1", "--pids-limit=256",
-		"--network=none",
+		"--memory=" + memory, "--cpus=1", "--pids-limit=256",
+		"--network=" + network,
 	}
 	for k, v := range opts.Env {
 		args = append(args, "-e", fmt.Sprintf("%s=%s", k, v))

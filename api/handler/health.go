@@ -22,6 +22,7 @@ func (h *Handler) Health(w http.ResponseWriter, r *http.Request) {
 		h.checkKubernetes(ctx),
 		h.checkValkey(ctx),
 		h.checkRedpanda(ctx),
+		h.checkS3(ctx),
 		h.checkSOPS(),
 	}
 
@@ -78,6 +79,16 @@ func (h *Handler) checkRedpanda(_ context.Context) ServiceHealth {
 		return ServiceHealth{Name: "redpanda", Status: "unknown", Details: "not checked"}
 	}
 	return ServiceHealth{Name: "redpanda", Status: "up"}
+}
+
+func (h *Handler) checkS3(ctx context.Context) ServiceHealth {
+	if h.s3Client == nil {
+		return ServiceHealth{Name: "s3/minio", Status: "unknown", Details: "not configured"}
+	}
+	if err := h.s3Client.Healthy(ctx); err != nil {
+		return ServiceHealth{Name: "s3/minio", Status: "down", Details: err.Error()}
+	}
+	return ServiceHealth{Name: "s3/minio", Status: "up"}
 }
 
 func (h *Handler) checkSOPS() ServiceHealth {

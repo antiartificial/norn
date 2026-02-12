@@ -8,7 +8,7 @@ import (
 
 type InfraSpec struct {
 	App         string       `yaml:"app" json:"app"`
-	Role        string       `yaml:"role" json:"role"` // webserver, worker, cron
+	Role        string       `yaml:"role" json:"role"` // webserver, worker, cron, function
 	Core        bool         `yaml:"core,omitempty" json:"core,omitempty"` // norn infrastructure component
 	Port        int          `yaml:"port,omitempty" json:"port,omitempty"`
 	Healthcheck string       `yaml:"healthcheck,omitempty" json:"healthcheck,omitempty"`
@@ -27,10 +27,18 @@ type InfraSpec struct {
 	Command     string            `yaml:"command,omitempty" json:"command,omitempty"`     // command to run in container
 	Runtime     string            `yaml:"runtime,omitempty" json:"runtime,omitempty"`     // "docker" (default) or "incus"
 	Timeout     int               `yaml:"timeout,omitempty" json:"timeout,omitempty"`     // max seconds per execution (default 300)
+	Function    *FunctionSpec     `yaml:"function,omitempty" json:"function,omitempty"`
 	Deploy      bool              `yaml:"deploy,omitempty" json:"deploy,omitempty"`       // must be true to appear in norn
 }
 
-func (s *InfraSpec) IsCron() bool { return s.Role == "cron" }
+func (s *InfraSpec) IsCron() bool     { return s.Role == "cron" }
+func (s *InfraSpec) IsFunction() bool { return s.Role == "function" }
+
+type FunctionSpec struct {
+	Timeout int    `yaml:"timeout,omitempty" json:"timeout,omitempty"`
+	Trigger string `yaml:"trigger,omitempty" json:"trigger,omitempty"` // "http" (default)
+	Memory  string `yaml:"memory,omitempty" json:"memory,omitempty"`   // e.g. "256m"
+}
 
 type RepoSpec struct {
 	URL           string `yaml:"url" json:"url"`
@@ -61,6 +69,7 @@ type ServiceDeps struct {
 	Postgres *PostgresDep `yaml:"postgres,omitempty" json:"postgres,omitempty"`
 	KV       *KVDep       `yaml:"kv,omitempty" json:"kv,omitempty"`
 	Events   *EventsDep   `yaml:"events,omitempty" json:"events,omitempty"`
+	Storage  *StorageDep  `yaml:"storage,omitempty" json:"storage,omitempty"`
 }
 
 type PostgresDep struct {
@@ -74,6 +83,11 @@ type KVDep struct {
 
 type EventsDep struct {
 	Topics []string `yaml:"topics" json:"topics"`
+}
+
+type StorageDep struct {
+	Bucket   string `yaml:"bucket" json:"bucket"`
+	Provider string `yaml:"provider,omitempty" json:"provider,omitempty"` // minio, r2, s3, gcs, spaces
 }
 
 type Migration struct {
@@ -105,6 +119,18 @@ func LoadInfraSpec(path string) (*InfraSpec, error) {
 	}
 	if spec.Alerts == nil {
 		spec.Alerts = &AlertConfig{Window: "5m", Threshold: 3}
+	}
+	if spec.IsFunction() && spec.Function == nil {
+		spec.Function = &FunctionSpec{Timeout: 30, Trigger: "http", Memory: "256m"}
+	}
+	if spec.IsFunction() && spec.Function.Timeout == 0 {
+		spec.Function.Timeout = 30
+	}
+	if spec.IsFunction() && spec.Function.Trigger == "" {
+		spec.Function.Trigger = "http"
+	}
+	if spec.IsFunction() && spec.Function.Memory == "" {
+		spec.Function.Memory = "256m"
 	}
 	return &spec, nil
 }
