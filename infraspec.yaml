@@ -2,10 +2,18 @@ app: norn
 role: webserver
 core: true
 port: 8800
-healthcheck: /api/apps
+healthcheck: /api/health
 hosts:
   internal: norn-service
 build:
   dockerfile: Dockerfile
 artifacts:
   retain: 3
+env:
+  NORN_DATABASE_URL: "postgres://norn:norn@localhost:5432/norn_db?sslmode=disable"
+  NORN_BIND_ADDR: "0.0.0.0"
+  NORN_APPS_DIR: "/projects"
+volumes:
+  - name: projects
+    mountPath: /projects
+    hostPath: /Users/0xadb/projects

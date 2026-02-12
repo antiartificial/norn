@@ -3,18 +3,21 @@ export interface RepoSpec {
   branch?: string
   webhookSecret?: string
   autoDeploy?: boolean
+  repoWeb?: string
 }
 
 export interface VolumeSpec {
   name: string
   mountPath: string
-  size: string
+  size?: string
+  hostPath?: string
 }
 
 export interface InfraSpec {
   app: string
   role: 'webserver' | 'worker' | 'cron'
   core?: boolean
+  deploy?: boolean
   port?: number
   healthcheck?: string
   hosts?: {
@@ -32,10 +35,15 @@ export interface InfraSpec {
   }
   secrets?: string[]
   migrations?: { command: string; database: string }
+  replicas?: number
   artifacts?: { retain: number }
   repo?: RepoSpec
   volumes?: VolumeSpec[]
   alerts?: AlertConfig
+  schedule?: string
+  command?: string
+  runtime?: string
+  timeout?: number
 }
 
 export interface PodInfo {
@@ -77,6 +85,7 @@ export interface AppStatus {
   deployedAt: string
   pods: PodInfo[]
   forgeState?: ForgeState
+  cronState?: CronState
 }
 
 export interface StepLog {
@@ -84,6 +93,7 @@ export interface StepLog {
   status: string
   durationMs?: number
   output?: string
+  startedAt?: number
 }
 
 export interface Deployment {
@@ -109,6 +119,40 @@ export interface HealthCheck {
 export interface AlertConfig {
   window: string
   threshold: number
+}
+
+export interface Artifact {
+  imageTag: string
+  commitSha: string
+  status: string
+  deployedAt: string
+}
+
+export interface Snapshot {
+  filename: string
+  database: string
+  commitSha: string
+  timestamp: string
+  sizeBytes: number
+}
+
+export interface CronExecution {
+  id: number
+  app: string
+  imageTag: string
+  status: 'running' | 'succeeded' | 'failed' | 'timed_out'
+  exitCode: number
+  output: string
+  durationMs: number
+  startedAt: string
+  finishedAt?: string
+}
+
+export interface CronState {
+  app: string
+  schedule: string
+  paused: boolean
+  nextRunAt?: string
 }
 
 export interface WSEvent {

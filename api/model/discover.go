@@ -23,6 +23,9 @@ func DiscoverApps(appsDir string) ([]*InfraSpec, error) {
 		if err != nil {
 			continue
 		}
+		if !spec.Deploy {
+			continue
+		}
 		specs = append(specs, spec)
 	}
 	return specs, nil

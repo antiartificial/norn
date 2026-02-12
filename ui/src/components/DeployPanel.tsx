@@ -1,4 +1,4 @@
-import { useState } from 'react'
+import { useState, useEffect } from 'react'
 import { Tooltip } from './Tooltip.tsx'
 import type { StepLog } from '../types/index.ts'
 
@@ -9,6 +9,7 @@ interface Props {
   error?: string
   title?: string
   onClose?: () => void
+  onRetry?: () => void
 }
 
 const stepIcons: Record<string, string> = {
@@ -49,6 +50,14 @@ const stepGroups: Record<string, string> = {
   'delete-deployment': 'infra',
 }
 
+function formatElapsed(ms: number): string {
+  const s = ms / 1000
+  if (s < 60) return `${s.toFixed(1)}s`
+  const m = Math.floor(s / 60)
+  const rem = Math.floor(s % 60)
+  return `${m}m ${rem}s`
+}
+
 function formatOutput(appId: string, title: string, steps: StepLog[], status: string, error?: string): string {
   const lines: string[] = []
   lines.push(`=== ${title} ${appId} ===`)
@@ -74,9 +83,32 @@ function formatOutput(appId: string, title: string, steps: StepLog[], status: st
   return lines.join('\n')
 }
 
-export function DeployPanel({ appId, steps, status, error, title = 'Deploying', onClose }: Props) {
+const STUCK_THRESHOLD_MS = 120_000 // 2 minutes
+
+export function DeployPanel({ appId, steps, status, error, title = 'Deploying', onClose, onRetry }: Props) {
   const isDone = status === 'failed' || status === 'deployed' || status === 'completed'
+  const isSuccess = isDone && status !== 'failed'
   const [copied, setCopied] = useState(false)
+  const [now, setNow] = useState(Date.now())
+
+  useEffect(() => {
+    if (isDone) return
+    const id = setInterval(() => setNow(Date.now()), 1000)
+    return () => clearInterval(id)
+  }, [isDone])
+
+  // Total elapsed: first step start → now (or final duration sum when done)
+  const totalElapsed = steps.length > 0 && steps[0].startedAt != null
+    ? (isDone
+        ? steps.reduce((sum, s) => sum + (s.durationMs ?? 0), 0)
+          || (now - steps[0].startedAt)
+        : now - steps[0].startedAt)
+    : null
+
+  // Detect stuck: active step running > threshold
+  const activeStep = !isDone && steps.length > 0 ? steps[steps.length - 1] : null
+  const activeElapsed = activeStep?.startedAt != null ? now - activeStep.startedAt : 0
+  const isStuck = activeElapsed > STUCK_THRESHOLD_MS
 
   const handleCopy = () => {
     const text = formatOutput(appId, title, steps, status, error)
@@ -86,12 +118,25 @@ export function DeployPanel({ appId, steps, status, error, title = 'Deploying', 
   }
 
   return (
-    <div className="deploy-panel">
+    <div className={`deploy-panel${isSuccess ? ' deploy-success' : ''}`}>
       <div className="deploy-panel-header">
         <h4>
-          <i className="fawsb fa-clipboard-check" /> {title} {appId}
+          <i className={`fawsb ${isSuccess ? 'fa-circle-check' : 'fa-clipboard-check'}`} />{' '}
+          {isSuccess ? `${title === 'Deploying' ? 'Deployed' : title.replace(/ing$/, 'ed')}` : title} {appId}
         </h4>
         <div className="deploy-panel-actions">
+          {totalElapsed != null && (
+            <span className={`deploy-total-time${!isDone ? ' step-duration-live' : ''}`}>
+              {formatElapsed(totalElapsed)}
+            </span>
+          )}
+          {isStuck && onRetry && (
+            <Tooltip text="Step appears stuck — cancel and retry">
+              <button className="btn btn-danger deploy-retry" onClick={onRetry}>
+                <i className="fawsb fa-arrows-rotate" /> Retry
+              </button>
+            </Tooltip>
+          )}
           <Tooltip text={copied ? 'Copied!' : 'Copy output'}>
             <button className="btn-icon" onClick={handleCopy}>
               <i className={`fawsb ${copied ? 'fa-check' : 'fa-copy'}`} />
@@ -107,15 +152,23 @@ export function DeployPanel({ appId, steps, status, error, title = 'Deploying', 
           const group = stepGroups[step.step]
           const prevGroup = i > 0 ? stepGroups[steps[i - 1].step] : null
           const isChild = group === prevGroup && i > 0
-          const isActive = !isDone && step.status === status
+          const isLast = i === steps.length - 1
+          const isActive = !isDone && isLast
+          const stepDone = isSuccess || (!isLast && !isDone)
+          const elapsed = step.durationMs != null
+            ? step.durationMs
+            : step.startedAt != null
+              ? (steps[i + 1]?.startedAt ?? now) - step.startedAt
+              : null
+
           return (
             <div key={step.step}
-                 className={`deploy-step ${step.status}${isChild ? ' step-child' : ''}${isActive ? ' step-active' : ''}`}>
-              <i className={`fawsb ${stepIcons[step.step] ?? 'fa-circle'}`} />
+                 className={`deploy-step ${step.status}${isChild ? ' step-child' : ''}${isActive ? ' step-active' : ''}${stepDone ? ' step-done' : ''}`}>
+              <i className={`fawsb ${stepDone ? 'fa-circle-check' : stepIcons[step.step] ?? 'fa-circle'}`} />
               <span className="step-name">{step.step}</span>
-              <span className="step-status">{step.status}</span>
-              {step.durationMs != null && (
-                <span className="step-duration">{(step.durationMs / 1000).toFixed(1)}s</span>
+              <span className="step-status">{stepDone ? 'done' : step.status}</span>
+              {elapsed != null && (
+                <span className={`step-duration${isActive ? ' step-duration-live' : ''}`}>{formatElapsed(elapsed)}</span>
               )}
             </div>
           )

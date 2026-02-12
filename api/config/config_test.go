@@ -25,6 +25,24 @@ func TestLoadDefaults(t *testing.T) {
 	}
 }
 
+func TestPGHostDefault(t *testing.T) {
+	os.Unsetenv("NORN_PG_HOST")
+
+	cfg := Load()
+	if cfg.PGHost != "localhost" {
+		t.Errorf("PGHost = %q, want localhost", cfg.PGHost)
+	}
+}
+
+func TestRegistryURL(t *testing.T) {
+	t.Setenv("NORN_REGISTRY_URL", "ghcr.io/testuser")
+
+	cfg := Load()
+	if cfg.RegistryURL != "ghcr.io/testuser" {
+		t.Errorf("RegistryURL = %q, want ghcr.io/testuser", cfg.RegistryURL)
+	}
+}
+
 func TestLoadFromEnv(t *testing.T) {
 	t.Setenv("NORN_PORT", "9999")
 	t.Setenv("NORN_DATABASE_URL", "postgres://test:test@db:5432/test_db")
@@ -44,5 +62,23 @@ func TestLoadFromEnv(t *testing.T) {
 	}
 	if cfg.AppsDir != "/opt/apps" {
 		t.Errorf("AppsDir = %q, want /opt/apps", cfg.AppsDir)
+	}
+}
+
+func TestCFAccessConfig(t *testing.T) {
+	t.Setenv("NORN_ALLOWED_ORIGINS", "https://app.norn.dev,https://norn-abc.vercel.app")
+	t.Setenv("NORN_CF_ACCESS_TEAM_DOMAIN", "myteam.cloudflareaccess.com")
+	t.Setenv("NORN_CF_ACCESS_AUD", "some-aud-tag")
+
+	cfg := Load()
+
+	if cfg.AllowedOrigins != "https://app.norn.dev,https://norn-abc.vercel.app" {
+		t.Errorf("AllowedOrigins = %q", cfg.AllowedOrigins)
+	}
+	if cfg.CFAccessTeamDomain != "myteam.cloudflareaccess.com" {
+		t.Errorf("CFAccessTeamDomain = %q", cfg.CFAccessTeamDomain)
+	}
+	if cfg.CFAccessAUD != "some-aud-tag" {
+		t.Errorf("CFAccessAUD = %q", cfg.CFAccessAUD)
 	}
 }

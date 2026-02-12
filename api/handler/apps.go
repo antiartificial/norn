@@ -65,6 +65,10 @@ func (h *Handler) ListApps(w http.ResponseWriter, r *http.Request) {
 		forgeState, _ := h.db.GetForgeState(ctx, spec.App)
 		status.ForgeState = forgeState
 
+		if spec.IsCron() && h.scheduler != nil {
+			status.CronState = h.scheduler.GetState(spec.App)
+		}
+
 		apps = append(apps, status)
 	}
 
@@ -119,6 +123,10 @@ func (h *Handler) GetApp(w http.ResponseWriter, r *http.Request) {
 
 	forgeState, _ := h.db.GetForgeState(ctx, appID)
 	status.ForgeState = forgeState
+
+	if spec.IsCron() && h.scheduler != nil {
+		status.CronState = h.scheduler.GetState(appID)
+	}
 
 	writeJSON(w, map[string]interface{}{
 		"status":      status,

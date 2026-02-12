@@ -8,6 +8,7 @@ type AppStatus struct {
 	DeployedAt string      `json:"deployedAt"`
 	Pods       []PodInfo   `json:"pods"`
 	ForgeState *ForgeState `json:"forgeState,omitempty"`
+	CronState  *CronState `json:"cronState,omitempty"`
 }
 
 type PodInfo struct {

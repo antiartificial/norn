@@ -1,5 +1,6 @@
 import { useEffect, useRef, useCallback, useState } from 'react'
 import type { WSEvent } from '../types/index.ts'
+import { wsUrl } from '../lib/api.ts'
 
 export function useWebSocket(onEvent: (event: WSEvent) => void) {
   const wsRef = useRef<WebSocket | null>(null)
@@ -7,8 +8,7 @@ export function useWebSocket(onEvent: (event: WSEvent) => void) {
   const reconnectTimer = useRef<ReturnType<typeof setTimeout>>(undefined)
 
   const connect = useCallback(() => {
-    const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:'
-    const ws = new WebSocket(`${protocol}//${window.location.host}/ws`)
+    const ws = new WebSocket(wsUrl())
 
     ws.onopen = () => setConnected(true)
 

@@ -1,0 +1,54 @@
+# ---------------------------------------------------------------------------
+# Provider credentials
+# ---------------------------------------------------------------------------
+
+# hcloud_token = "hc-..."           # Hetzner Cloud API token
+# do_token     = "dop_v1_..."       # DigitalOcean API token
+# vultr_api_key = "..."             # Vultr API key
+
+# ---------------------------------------------------------------------------
+# Cluster secrets
+# ---------------------------------------------------------------------------
+
+# k3s_token          = "some-random-secret"   # Shared k3s join token
+# tailscale_auth_key = "tskey-auth-..."        # Tailscale auth key (reusable, ephemeral recommended)
+
+# ---------------------------------------------------------------------------
+# SSH key IDs (per-provider, obtained after uploading your public key)
+# ---------------------------------------------------------------------------
+
+# hetzner_ssh_key_id      = "12345678"
+# digitalocean_ssh_key_id = "ab:cd:ef:..."     # Can be ID or fingerprint
+# vultr_ssh_key_id        = "xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx"
+
+# ssh_public_key = "ssh-ed25519 AAAA..."
+
+# ---------------------------------------------------------------------------
+# Node definitions
+# ---------------------------------------------------------------------------
+
+nodes = {
+  # First server node -- will run --cluster-init
+  norn-cp-1 = {
+    provider = "hetzner"
+    region   = "fsn1"
+    size     = "cx22"
+    role     = "server"
+  }
+
+  # Example: additional server on DigitalOcean
+  # norn-cp-2 = {
+  #   provider = "digitalocean"
+  #   region   = "nyc1"
+  #   size     = "s-2vcpu-4gb"
+  #   role     = "server"
+  # }
+
+  # Example: agent on Vultr
+  # norn-worker-1 = {
+  #   provider = "vultr"
+  #   region   = "ewr"
+  #   size     = "vc2-2c-4gb"
+  #   role     = "agent"
+  # }
+}

@@ -1,5 +1,5 @@
 import { useState } from 'react'
-import type { AppStatus, ForgeStatus, HealthCheck } from '../types/index.ts'
+import type { AppStatus, CronState, ForgeStatus, HealthCheck, RepoSpec } from '../types/index.ts'
 import { Tooltip } from './Tooltip.tsx'
 import { Sparkline } from './Sparkline.tsx'
 
@@ -29,6 +29,21 @@ function timeAgo(iso: string): string {
   if (seconds < 3600) return `${Math.floor(seconds / 60)}m ago`
   if (seconds < 86400) return `${Math.floor(seconds / 3600)}h ago`
   return `${Math.floor(seconds / 86400)}d ago`
+}
+
+function repoWebURL(repo: RepoSpec): string | null {
+  if (repo.repoWeb) return repo.repoWeb
+  const gitea = repo.url.match(/gitea\.default\.svc\.cluster\.local:\d+\/(.+?)(?:\.git)?$/)
+  if (gitea) return `https://gitea.slopistry.com/${gitea[1]}`
+  const gh = repo.url.match(/github\.com[:/](.+?)(?:\.git)?$/)
+  if (gh) return `https://github.com/${gh[1]}`
+  return null
+}
+
+function commitURL(repo: RepoSpec, sha: string): string | null {
+  const base = repoWebURL(repo)
+  if (!base) return null
+  return `${base}/commit/${sha}`
 }
 
 function forgeBadge(status: ForgeStatus) {
@@ -81,13 +96,38 @@ interface Props {
   onRestart: (appId: string) => void
   onRollback: (appId: string) => void
   onViewLogs: (appId: string) => void
+  onScale?: (appId: string, replicas: number) => void
+  onCommands?: () => void
   onHealthClick?: () => void
+  onCronPanel?: (appId: string) => void
+  onCronTrigger?: (appId: string) => void
 }
 
-export function AppCard({ app, busy, activeOp, healthChecks, onDeploy, onForge, onTeardown, onRestart, onRollback, onViewLogs, onHealthClick }: Props) {
+function cronStateBadge(cronState?: CronState) {
+  if (!cronState) return null
+  if (cronState.paused) {
+    return (
+      <Tooltip text="Cron schedule is paused">
+        <span className="cron-state-badge paused">
+          <i className="fawsb fa-pause" /> paused
+        </span>
+      </Tooltip>
+    )
+  }
+  return (
+    <Tooltip text={`Schedule: ${cronState.schedule}`}>
+      <span className="cron-state-badge active">
+        <i className="fawsb fa-clock" /> {cronState.schedule}
+      </span>
+    </Tooltip>
+  )
+}
+
+export function AppCard({ app, busy, activeOp, healthChecks, onDeploy, onForge, onTeardown, onRestart, onRollback, onViewLogs, onScale, onCommands, onHealthClick, onCronPanel, onCronTrigger }: Props) {
   const { spec, healthy, ready, commitSha, deployedAt } = app
   const forgeStatus: ForgeStatus = app.forgeState?.status ?? 'unforged'
   const isForged = forgeStatus === 'forged'
+  const isCron = spec.role === 'cron'
   const hasPods = app.pods && app.pods.length > 0
   const [copiedHost, setCopiedHost] = useState<string | null>(null)
 
@@ -98,12 +138,14 @@ export function AppCard({ app, busy, activeOp, healthChecks, onDeploy, onForge, 
   }
 
   return (
-    <div className={`app-card ${healthy ? 'healthy' : 'unhealthy'}`}>
+    <div className={`app-card ${!deployedAt ? '' : healthy ? 'healthy' : 'unhealthy'}`}>
       <div className="app-card-header">
         <div className="app-card-title">
-          <Tooltip text={healthy ? 'All pods healthy' : 'One or more pods unhealthy'}>
-            <span className={`health-dot ${healthy ? 'green' : 'red'}`} />
-          </Tooltip>
+          {deployedAt && (
+            <Tooltip text={healthy ? 'All pods healthy' : 'One or more pods unhealthy'}>
+              <span className={`health-dot ${healthy ? 'green' : 'red'}`} />
+            </Tooltip>
+          )}
           <h3>{spec.app}</h3>
           {spec.core && (
             <Tooltip text="Core norn infrastructure component">
@@ -119,26 +161,74 @@ export function AppCard({ app, busy, activeOp, healthChecks, onDeploy, onForge, 
             </span>
           </Tooltip>
           {forgeBadge(forgeStatus)}
-          <span className={`health-label ${healthy ? 'green' : 'red'}`}>
-            {healthy ? 'healthy' : 'unhealthy'}
-          </span>
+          {isCron && cronStateBadge(app.cronState)}
+          {deployedAt && (
+            <span className={`health-label ${healthy ? 'green' : 'red'}`}>
+              {healthy ? 'healthy' : 'unhealthy'}
+            </span>
+          )}
           {healthChecks && healthChecks.length > 0 && (
             <Sparkline checks={healthChecks} onClick={onHealthClick} />
           )}
         </div>
-        <Tooltip text={`${ready} pods ready`}>
-          <div className="app-card-ready">{ready}</div>
-        </Tooltip>
+        <div className="app-card-ready-group">
+          {isCron ? (
+            app.cronState?.nextRunAt ? (
+              <Tooltip text={`Next run: ${new Date(app.cronState.nextRunAt).toLocaleString()}`}>
+                <div className="app-card-ready">
+                  <i className="fawsb fa-clock" style={{ fontSize: '10px', marginRight: '4px' }} />
+                  {new Date(app.cronState.nextRunAt).toLocaleTimeString()}
+                </div>
+              </Tooltip>
+            ) : (
+              <div className="app-card-ready">no schedule</div>
+            )
+          ) : (
+            <Tooltip text={`${ready} pods ready`}>
+              <div className="app-card-ready">{ready}</div>
+            </Tooltip>
+          )}
+          {!isCron && isForged && onScale && (
+            <div className="scale-controls">
+              <Tooltip text="Scale down">
+                <button
+                  className="scale-btn"
+                  disabled={busy || (spec.replicas ?? 1) <= 0}
+                  onClick={() => onScale(spec.app, Math.max(0, (spec.replicas ?? 1) - 1))}
+                >
+                  <i className="fawsb fa-minus" />
+                </button>
+              </Tooltip>
+              <Tooltip text="Scale up">
+                <button
+                  className="scale-btn"
+                  disabled={busy || (spec.replicas ?? 1) >= 10}
+                  onClick={() => onScale(spec.app, (spec.replicas ?? 1) + 1)}
+                >
+                  <i className="fawsb fa-plus" />
+                </button>
+              </Tooltip>
+            </div>
+          )}
+        </div>
       </div>
 
       <div className="app-card-meta">
-        {commitSha && (
-          <Tooltip text={`Full SHA: ${commitSha}`}>
-            <span className="commit">
+        {commitSha && (() => {
+          const cUrl = spec.repo ? commitURL(spec.repo, commitSha) : null
+          return cUrl ? (
+            <a href={cUrl} target="_blank" rel="noopener noreferrer" className="commit-link">
               <i className="fawsb fa-code" /> {commitSha.slice(0, 7)}
-            </span>
-          </Tooltip>
-        )}
+              <i className="fawsb fa-arrow-up-right-from-square repo-external-icon" />
+            </a>
+          ) : (
+            <Tooltip text={`Full SHA: ${commitSha}`}>
+              <span className="commit">
+                <i className="fawsb fa-code" /> {commitSha.slice(0, 7)}
+              </span>
+            </Tooltip>
+          )
+        })()}
         {deployedAt && (
           <Tooltip text={new Date(deployedAt).toLocaleString()}>
             <span className="deployed">
@@ -151,13 +241,24 @@ export function AppCard({ app, busy, activeOp, healthChecks, onDeploy, onForge, 
         )}
       </div>
 
-      {spec.repo && (
+      {spec.repo && (() => {
+        const rUrl = repoWebURL(spec.repo)
+        return (
         <div className="app-card-repo">
-          <Tooltip text={spec.repo.url}>
-            <span className="repo-badge">
-              <i className="fawsb fa-code-branch" /> {truncateURL(spec.repo.url)}
-            </span>
-          </Tooltip>
+          {rUrl ? (
+            <a href={rUrl} target="_blank" rel="noopener noreferrer" className="repo-link">
+              <span className="repo-badge">
+                <i className="fawsb fa-code-branch" /> {truncateURL(spec.repo.url)}
+                <i className="fawsb fa-arrow-up-right-from-square repo-external-icon" />
+              </span>
+            </a>
+          ) : (
+            <Tooltip text={spec.repo.url}>
+              <span className="repo-badge">
+                <i className="fawsb fa-code-branch" /> {truncateURL(spec.repo.url)}
+              </span>
+            </Tooltip>
+          )}
           {spec.repo.autoDeploy && (
             <Tooltip text="Pushes to this repo auto-trigger deploys">
               <span className="auto-deploy-badge">
@@ -166,7 +267,8 @@ export function AppCard({ app, busy, activeOp, healthChecks, onDeploy, onForge, 
             </Tooltip>
           )}
         </div>
-      )}
+        )
+      })()}
 
       <div className="app-card-hosts">
         {spec.hosts?.external && (
@@ -214,7 +316,7 @@ export function AppCard({ app, busy, activeOp, healthChecks, onDeploy, onForge, 
 
       <div className="app-card-actions">
         {(forgeStatus === 'unforged') && (
-          <Tooltip text="Provision K8s deployment, service, and DNS">
+          <Tooltip text={isCron ? "Register cron job" : "Provision K8s deployment, service, and DNS"}>
             <button onClick={() => onForge(spec.app)} disabled={busy} className={`btn btn-forge ${activeOp === 'forging' ? 'btn-busy' : ''}`}>
               {activeOp === 'forging' ? <span className="btn-spinner" /> : <i className="fawsb fa-wand-magic-sparkles" />} Forge
             </button>
@@ -234,14 +336,35 @@ export function AppCard({ app, busy, activeOp, healthChecks, onDeploy, onForge, 
             </button>
           </Tooltip>
         )}
-        {isForged && (
+        {isForged && isCron && onCronTrigger && (
+          <Tooltip text="Run the cron job immediately">
+            <button onClick={() => onCronTrigger(spec.app)} disabled={busy} className="btn btn-primary">
+              <i className="fawsb fa-play" /> Run Now
+            </button>
+          </Tooltip>
+        )}
+        {isForged && isCron && onCronPanel && (
+          <Tooltip text="View execution history and schedule">
+            <button onClick={() => onCronPanel(spec.app)} className="btn">
+              <i className="fawsb fa-clock-rotate-left" /> History
+            </button>
+          </Tooltip>
+        )}
+        {isForged && !isCron && (
           <Tooltip text={spec.repo ? "Deploy latest from repo" : "Build, test, and deploy a commit"}>
             <button onClick={() => onDeploy(spec.app)} disabled={busy} className={`btn btn-primary ${activeOp === 'deploying' ? 'btn-busy' : ''}`}>
               {activeOp === 'deploying' ? <span className="btn-spinner" /> : <i className="fawsb fa-rocket-launch" />} {spec.repo ? 'Deploy Latest' : 'Deploy'}
             </button>
           </Tooltip>
         )}
-        {isForged && commitSha && (
+        {isForged && isCron && (
+          <Tooltip text={spec.repo ? "Deploy latest image for cron" : "Build and register cron image"}>
+            <button onClick={() => onDeploy(spec.app)} disabled={busy} className={`btn ${activeOp === 'deploying' ? 'btn-busy' : ''}`}>
+              {activeOp === 'deploying' ? <span className="btn-spinner" /> : <i className="fawsb fa-rocket-launch" />} Deploy
+            </button>
+          </Tooltip>
+        )}
+        {isForged && !isCron && commitSha && (
           <>
             <Tooltip text="Rolling restart of all pods">
               <button onClick={() => onRestart(spec.app)} disabled={busy} className={`btn ${activeOp === 'restarting' ? 'btn-busy' : ''}`}>
@@ -259,6 +382,13 @@ export function AppCard({ app, busy, activeOp, healthChecks, onDeploy, onForge, 
           <Tooltip text="Stream live pod logs">
             <button onClick={() => onViewLogs(spec.app)} className="btn">
               <i className="fawsb fa-rectangle-code" /> Logs
+            </button>
+          </Tooltip>
+        )}
+        {hasPods && onCommands && (
+          <Tooltip text="Show kubectl / norn commands">
+            <button onClick={onCommands} className="btn">
+              <i className="fawsb fa-terminal" /> Commands
             </button>
           </Tooltip>
         )}

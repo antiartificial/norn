@@ -67,6 +67,11 @@ func (p *Poller) pollAll(ctx context.Context) {
 		if spec.Healthcheck == "" || spec.Hosts == nil || spec.Hosts.Internal == "" {
 			continue
 		}
+		// Only check forged (deployed) apps
+		fs, err := p.DB.GetForgeState(ctx, spec.App)
+		if err != nil || fs == nil || fs.Status != model.ForgeForged {
+			continue
+		}
 		go p.checkOne(ctx, spec)
 	}
 }

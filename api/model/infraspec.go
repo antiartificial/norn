@@ -20,21 +20,31 @@ type InfraSpec struct {
 	Artifacts   *Artifacts   `yaml:"artifacts,omitempty" json:"artifacts,omitempty"`
 	Repo        *RepoSpec         `yaml:"repo,omitempty" json:"repo,omitempty"`
 	Volumes     []VolumeSpec      `yaml:"volumes,omitempty" json:"volumes,omitempty"`
+	Replicas    int               `yaml:"replicas,omitempty" json:"replicas,omitempty"`
 	Env         map[string]string `yaml:"env,omitempty" json:"env,omitempty"`
 	Alerts      *AlertConfig      `yaml:"alerts,omitempty" json:"alerts,omitempty"`
+	Schedule    string            `yaml:"schedule,omitempty" json:"schedule,omitempty"`   // cron expression e.g. "*/5 * * * *"
+	Command     string            `yaml:"command,omitempty" json:"command,omitempty"`     // command to run in container
+	Runtime     string            `yaml:"runtime,omitempty" json:"runtime,omitempty"`     // "docker" (default) or "incus"
+	Timeout     int               `yaml:"timeout,omitempty" json:"timeout,omitempty"`     // max seconds per execution (default 300)
+	Deploy      bool              `yaml:"deploy,omitempty" json:"deploy,omitempty"`       // must be true to appear in norn
 }
+
+func (s *InfraSpec) IsCron() bool { return s.Role == "cron" }
 
 type RepoSpec struct {
 	URL           string `yaml:"url" json:"url"`
 	Branch        string `yaml:"branch,omitempty" json:"branch,omitempty"`
-	WebhookSecret string `yaml:"webhookSecret,omitempty" json:"webhookSecret,omitempty"`
+	WebhookSecret string `yaml:"webhookSecret,omitempty" json:"-"`
 	AutoDeploy    bool   `yaml:"autoDeploy,omitempty" json:"autoDeploy,omitempty"`
+	RepoWeb       string `yaml:"repoWeb,omitempty" json:"repoWeb,omitempty"`
 }
 
 type VolumeSpec struct {
 	Name      string `yaml:"name" json:"name"`
 	MountPath string `yaml:"mountPath" json:"mountPath"`
-	Size      string `yaml:"size" json:"size"`
+	Size      string `yaml:"size,omitempty" json:"size,omitempty"`         // for PVC
+	HostPath  string `yaml:"hostPath,omitempty" json:"hostPath,omitempty"` // for host mounts
 }
 
 type Hosts struct {
@@ -83,6 +93,9 @@ func LoadInfraSpec(path string) (*InfraSpec, error) {
 	var spec InfraSpec
 	if err := yaml.Unmarshal(data, &spec); err != nil {
 		return nil, err
+	}
+	if spec.Replicas < 1 {
+		spec.Replicas = 1
 	}
 	if spec.Artifacts == nil {
 		spec.Artifacts = &Artifacts{Retain: 5}

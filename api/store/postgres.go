@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"time"
 
 	"github.com/jackc/pgx/v5"
@@ -74,6 +75,43 @@ func Migrate(db *DB) error {
 			started_at  TIMESTAMPTZ,
 			finished_at TIMESTAMPTZ
 		);
+
+		CREATE TABLE IF NOT EXISTS cron_executions (
+			id          BIGSERIAL PRIMARY KEY,
+			app         TEXT NOT NULL,
+			image_tag   TEXT NOT NULL DEFAULT '',
+			status      TEXT NOT NULL DEFAULT 'running',
+			exit_code   INT NOT NULL DEFAULT -1,
+			output      TEXT NOT NULL DEFAULT '',
+			duration_ms BIGINT NOT NULL DEFAULT 0,
+			started_at  TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+			finished_at TIMESTAMPTZ
+		);
+		CREATE INDEX IF NOT EXISTS idx_cron_exec_app ON cron_executions(app, started_at DESC);
+
+		CREATE TABLE IF NOT EXISTS cron_states (
+			app         TEXT PRIMARY KEY,
+			schedule    TEXT NOT NULL DEFAULT '',
+			paused      BOOLEAN NOT NULL DEFAULT FALSE,
+			next_run_at TIMESTAMPTZ,
+			updated_at  TIMESTAMPTZ NOT NULL DEFAULT NOW()
+		);
+
+		CREATE TABLE IF NOT EXISTS cluster_nodes (
+			id           TEXT PRIMARY KEY,
+			name         TEXT NOT NULL,
+			provider     TEXT NOT NULL,
+			region       TEXT NOT NULL DEFAULT '',
+			size         TEXT NOT NULL DEFAULT '',
+			role         TEXT NOT NULL,
+			public_ip    TEXT NOT NULL DEFAULT '',
+			tailscale_ip TEXT NOT NULL DEFAULT '',
+			status       TEXT NOT NULL DEFAULT 'provisioning',
+			provider_id  TEXT NOT NULL DEFAULT '',
+			error        TEXT NOT NULL DEFAULT '',
+			created_at   TIMESTAMPTZ NOT NULL DEFAULT now(),
+			updated_at   TIMESTAMPTZ NOT NULL DEFAULT now()
+		);
 	`)
 	return err
 }
@@ -100,6 +138,65 @@ func (db *DB) UpdateDeployment(ctx context.Context, id string, status model.Depl
 		status, stepsJSON, errMsg, finished, id,
 	)
 	return err
+}
+
+type DeploymentFilter struct {
+	App    string
+	Status string
+	Limit  int
+	Offset int
+}
+
+func (db *DB) ListAllDeployments(ctx context.Context, f DeploymentFilter) ([]model.Deployment, int, error) {
+	where := ""
+	args := []interface{}{}
+	argN := 1
+
+	if f.App != "" {
+		where += fmt.Sprintf(" AND app = $%d", argN)
+		args = append(args, f.App)
+		argN++
+	}
+	if f.Status != "" {
+		where += fmt.Sprintf(" AND status = $%d", argN)
+		args = append(args, f.Status)
+		argN++
+	}
+
+	limit := f.Limit
+	if limit <= 0 || limit > 200 {
+		limit = 50
+	}
+
+	var total int
+	countSQL := "SELECT COUNT(*) FROM deployments WHERE 1=1" + where
+	if err := db.pool.QueryRow(ctx, countSQL, args...).Scan(&total); err != nil {
+		return nil, 0, err
+	}
+
+	querySQL := fmt.Sprintf(
+		"SELECT id, app, commit_sha, image_tag, status, steps, error, started_at, finished_at FROM deployments WHERE 1=1%s ORDER BY started_at DESC LIMIT $%d OFFSET $%d",
+		where, argN, argN+1,
+	)
+	args = append(args, limit, f.Offset)
+
+	rows, err := db.pool.Query(ctx, querySQL, args...)
+	if err != nil {
+		return nil, 0, err
+	}
+	defer rows.Close()
+
+	var deployments []model.Deployment
+	for rows.Next() {
+		var d model.Deployment
+		var stepsJSON []byte
+		if err := rows.Scan(&d.ID, &d.App, &d.CommitSHA, &d.ImageTag, &d.Status, &stepsJSON, &d.Error, &d.StartedAt, &d.FinishedAt); err != nil {
+			return nil, 0, err
+		}
+		json.Unmarshal(stepsJSON, &d.Steps)
+		deployments = append(deployments, d)
+	}
+	return deployments, total, nil
 }
 
 func (db *DB) ListDeployments(ctx context.Context, app string, limit int) ([]model.Deployment, error) {

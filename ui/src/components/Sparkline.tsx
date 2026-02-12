@@ -1,66 +1,39 @@
 import type { HealthCheck } from '../types/index.ts'
 
+const SLOTS = 12
+
 interface Props {
   checks: HealthCheck[]
-  width?: number
-  height?: number
   onClick?: () => void
 }
 
-export function Sparkline({ checks, width = 60, height = 20, onClick }: Props) {
-  const mid = height / 2
-  const spikeUp = height * 0.35
-  const spikeDown = height * 0.25
+export function Sparkline({ checks, onClick }: Props) {
+  // Bucket all checks into SLOTS segments for a cleaner summary
+  const buckets: Array<'empty' | 'up' | 'down' | 'mixed'> = []
 
   if (checks.length === 0) {
-    return (
-      <svg className="sparkline" width={width} height={height} onClick={onClick}>
-        <line x1={0} y1={mid} x2={width} y2={mid}
-              stroke="var(--text-dim)" strokeWidth={1} opacity={0.3} />
-      </svg>
-    )
-  }
-
-  // Build EKG path segments, colored by health status
-  const spacing = checks.length === 1 ? width / 2 : width / (checks.length - 1)
-  const segments: { d: string; color: string }[] = []
-
-  for (let i = 0; i < checks.length; i++) {
-    const x = checks.length === 1 ? width / 2 : i * spacing
-    const prevX = i === 0 ? 0 : (checks.length === 1 ? 0 : (i - 1) * spacing)
-    const check = checks[i]
-    const color = check.healthy ? 'var(--green)' : 'var(--red)'
-
-    let d = ''
-    // Flat line from previous point to just before this spike
-    if (i === 0) {
-      d += `M 0 ${mid} L ${Math.max(0, x - 3)} ${mid} `
-    } else {
-      d += `M ${prevX + 3} ${mid} L ${Math.max(prevX + 3, x - 3)} ${mid} `
+    for (let i = 0; i < SLOTS; i++) buckets.push('empty')
+  } else {
+    const bucketSize = Math.max(1, Math.ceil(checks.length / SLOTS))
+    for (let i = 0; i < SLOTS; i++) {
+      const start = i * bucketSize
+      const slice = checks.slice(start, start + bucketSize)
+      if (slice.length === 0) {
+        buckets.push('empty')
+      } else {
+        const healthy = slice.filter(c => c.healthy).length
+        if (healthy === slice.length) buckets.push('up')
+        else if (healthy === 0) buckets.push('down')
+        else buckets.push('mixed')
+      }
     }
-
-    // The spike
-    if (check.healthy) {
-      // QRS-style upward blip
-      d += `L ${x - 1} ${mid} L ${x} ${mid - spikeUp} L ${x + 1} ${mid + spikeDown * 0.3} L ${x + 2} ${mid} `
-    } else {
-      // Downward dip
-      d += `L ${x - 1} ${mid} L ${x} ${mid + spikeDown} L ${x + 1} ${mid} `
-    }
-
-    // Flat line after last spike to edge
-    if (i === checks.length - 1) {
-      d += `L ${width} ${mid}`
-    }
-
-    segments.push({ d, color })
   }
 
   return (
-    <svg className="sparkline" width={width} height={height} onClick={onClick}>
-      {segments.map((seg, i) => (
-        <path key={i} d={seg.d} fill="none" stroke={seg.color} strokeWidth={1.5} />
+    <div className="sparkline-strip" onClick={onClick}>
+      {buckets.map((status, i) => (
+        <span key={i} className={`sparkline-seg ${status}`} />
       ))}
-    </svg>
+    </div>
   )
 }

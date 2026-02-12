@@ -1,5 +1,6 @@
-import { useState, useEffect } from 'react'
+import { useState, useEffect, useRef } from 'react'
 import type { HealthCheck, AlertConfig } from '../types/index.ts'
+import { apiUrl, fetchOpts } from '../lib/api.ts'
 
 interface Props {
   appId: string
@@ -56,13 +57,15 @@ function computeAlertWindows(
 }
 
 export function HealthPanel({ appId, checks: initialChecks, alerts, onClose }: Props) {
-  const [range_, setRange] = useState<string>('1h')
+  const [range_, setRange] = useState<string>('15m')
+  const scrollRef = useRef<HTMLDivElement>(null)
   const [checks, setChecks] = useState<HealthCheck[]>(initialChecks)
   const [loading, setLoading] = useState(false)
+  const [containerWidth, setContainerWidth] = useState(0)
 
   useEffect(() => {
     setLoading(true)
-    fetch(`/api/apps/${appId}/health-checks?range=${range_}`)
+    fetch(apiUrl(`/api/apps/${appId}/health-checks?range=${range_}`), fetchOpts)
       .then(r => r.json())
       .then(data => {
         setChecks(data.checks ?? [])
@@ -70,6 +73,25 @@ export function HealthPanel({ appId, checks: initialChecks, alerts, onClose }: P
       })
       .catch(() => setLoading(false))
   }, [appId, range_])
+
+  // Measure container width
+  useEffect(() => {
+    if (!scrollRef.current) return
+    const observer = new ResizeObserver((entries) => {
+      for (const entry of entries) {
+        setContainerWidth(entry.contentRect.width)
+      }
+    })
+    observer.observe(scrollRef.current)
+    return () => observer.disconnect()
+  }, [])
+
+  // Auto-scroll to latest checks
+  useEffect(() => {
+    if (scrollRef.current && checks.length > 0) {
+      scrollRef.current.scrollLeft = scrollRef.current.scrollWidth
+    }
+  }, [checks])
 
   // Stats
   const healthyCount = checks.filter(c => c.healthy).length
@@ -86,8 +108,8 @@ export function HealthPanel({ appId, checks: initialChecks, alerts, onClose }: P
   const threshold = alerts?.threshold ?? 3
   const alertWindows = computeAlertWindows(checks, windowMs, threshold)
 
-  // Timeline dimensions
-  const svgWidth = 700
+  // Timeline dimensions — fill container, scroll only if data needs more space
+  const svgWidth = Math.max(containerWidth || 700, checks.length * 8)
   const svgHeight = 120
   const plotTop = 10
   const plotBottom = svgHeight - 20
@@ -139,7 +161,8 @@ export function HealthPanel({ appId, checks: initialChecks, alerts, onClose }: P
       ) : checks.length === 0 ? (
         <div className="health-timeline-empty">No health checks in this range</div>
       ) : (
-        <svg className="health-timeline" width="100%" height={svgHeight}
+        <div className="health-timeline-scroll" ref={scrollRef}>
+        <svg className="health-timeline" width={svgWidth} height={svgHeight}
              viewBox={`0 0 ${svgWidth} ${svgHeight}`} preserveAspectRatio="none">
           {/* Alert windows */}
           {alertWindows.map((w, i) => {
@@ -194,6 +217,7 @@ export function HealthPanel({ appId, checks: initialChecks, alerts, onClose }: P
             )
           })}
         </svg>
+        </div>
       )}
     </div>
   )

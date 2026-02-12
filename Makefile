@@ -8,7 +8,7 @@ CHECK  := \xE2\x9C\x94
 CROSS  := \xE2\x9C\x98
 ARROW  := \xE2\x86\x92
 
-.PHONY: help setup prereqs db dev api ui infra infra-stop build cli install test clean doctor
+.PHONY: help setup prereqs db dev api ui infra infra-stop build cli install test clean doctor docs docs-build
 
 # ──────────────────────────────────────────────
 # The one command to rule them all
@@ -170,3 +170,13 @@ doctor: ## Check health of all services
 		&& printf "  $(GREEN)$(CHECK)$(RESET) SOPS age key      configured\n" \
 		|| printf "  $(CROSS) SOPS age key      missing $(DIM)(age-keygen -o ~/.config/sops/age/keys.txt)$(RESET)\n"
 	@echo ""
+
+# ──────────────────────────────────────────────
+# Documentation
+# ──────────────────────────────────────────────
+
+docs: ## Start docs dev server
+	@cd docs && pnpm dev
+
+docs-build: ## Build docs for production
+	@cd docs && pnpm build

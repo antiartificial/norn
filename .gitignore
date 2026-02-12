@@ -1,6 +1,10 @@
 # Build artifacts
 bin/
 dist/
+api/api
+
+# Snapshots
+api/snapshots/*.dump
 
 # Go
 *.exe
@@ -34,3 +38,10 @@ Thumbs.db
 # Temporary
 *.tmp
 *.log
+
+# Terraform
+*.tfstate
+*.tfstate.*
+.terraform/
+*.tfvars
+!terraform.tfvars.example

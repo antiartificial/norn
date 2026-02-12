@@ -161,6 +161,91 @@ func TestRecoverInFlightDeployments(t *testing.T) {
 	db.pool.Exec(ctx, "DELETE FROM deployments WHERE id = $1", id)
 }
 
+func TestClusterNodeCRUD(t *testing.T) {
+	db := getTestDB(t)
+	ctx := context.Background()
+
+	if err := Migrate(db); err != nil {
+		t.Fatalf("Migrate: %v", err)
+	}
+
+	id := "cluster-test-" + time.Now().Format("20060102150405.000")
+	node := &model.ClusterNode{
+		ID:        id,
+		Name:      "test-node-crud",
+		Provider:  "hetzner",
+		Region:    "fsn1",
+		Size:      "cx22",
+		Role:      "server",
+		Status:    "provisioning",
+		CreatedAt: time.Now(),
+	}
+
+	// Insert
+	if err := db.InsertClusterNode(ctx, node); err != nil {
+		t.Fatalf("InsertClusterNode: %v", err)
+	}
+
+	// Cleanup
+	t.Cleanup(func() {
+		db.pool.Exec(ctx, "DELETE FROM cluster_nodes WHERE id = $1", id)
+	})
+
+	// List
+	nodes, err := db.ListClusterNodes(ctx)
+	if err != nil {
+		t.Fatalf("ListClusterNodes: %v", err)
+	}
+	found := false
+	for _, n := range nodes {
+		if n.ID == id {
+			found = true
+			if n.Name != "test-node-crud" {
+				t.Errorf("Name = %q", n.Name)
+			}
+		}
+	}
+	if !found {
+		t.Error("inserted node not found in list")
+	}
+
+	// Get
+	got, err := db.GetClusterNode(ctx, id)
+	if err != nil {
+		t.Fatalf("GetClusterNode: %v", err)
+	}
+	if got == nil {
+		t.Fatal("GetClusterNode returned nil")
+	}
+	if got.Provider != "hetzner" {
+		t.Errorf("Provider = %q", got.Provider)
+	}
+	if got.Status != "provisioning" {
+		t.Errorf("Status = %q", got.Status)
+	}
+
+	// UpdateStatus
+	if err := db.UpdateClusterNodeStatus(ctx, id, "ready", ""); err != nil {
+		t.Fatalf("UpdateClusterNodeStatus: %v", err)
+	}
+	got, _ = db.GetClusterNode(ctx, id)
+	if got.Status != "ready" {
+		t.Errorf("Status after update = %q, want ready", got.Status)
+	}
+
+	// Delete
+	if err := db.DeleteClusterNode(ctx, id); err != nil {
+		t.Fatalf("DeleteClusterNode: %v", err)
+	}
+	got, err = db.GetClusterNode(ctx, id)
+	if err != nil {
+		t.Fatalf("GetClusterNode after delete: %v", err)
+	}
+	if got != nil {
+		t.Error("expected nil after delete")
+	}
+}
+
 func TestConnect_BadURL(t *testing.T) {
 	_, err := Connect("postgres://nobody:nope@localhost:59999/nonexistent?sslmode=disable&connect_timeout=1")
 	if err == nil {

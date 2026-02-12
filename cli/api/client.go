@@ -192,6 +192,65 @@ func (c *Client) post(path, body string) error {
 	return nil
 }
 
+func (c *Client) delete(path string) error {
+	req, err := http.NewRequest(http.MethodDelete, c.BaseURL+path, nil)
+	if err != nil {
+		return err
+	}
+	resp, err := c.HTTPClient.Do(req)
+	if err != nil {
+		return fmt.Errorf("request failed: %w", err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode >= 400 {
+		b, _ := io.ReadAll(resp.Body)
+		return fmt.Errorf("HTTP %d: %s", resp.StatusCode, string(b))
+	}
+	return nil
+}
+
+// --- Cluster ---
+
+type ClusterNode struct {
+	ID          string `json:"id"`
+	Name        string `json:"name"`
+	Provider    string `json:"provider"`
+	Region      string `json:"region"`
+	Size        string `json:"size"`
+	Role        string `json:"role"`
+	PublicIP    string `json:"publicIp"`
+	TailscaleIP string `json:"tailscaleIp"`
+	Status      string `json:"status"`
+	ProviderID  string `json:"providerId"`
+	Error       string `json:"error,omitempty"`
+	CreatedAt   string `json:"createdAt"`
+}
+
+func (c *Client) ListClusterNodes() ([]ClusterNode, error) {
+	var nodes []ClusterNode
+	if err := c.get("/api/cluster/nodes", &nodes); err != nil {
+		return nil, err
+	}
+	return nodes, nil
+}
+
+func (c *Client) GetClusterNode(id string) (*ClusterNode, error) {
+	var node ClusterNode
+	if err := c.get("/api/cluster/nodes/"+id, &node); err != nil {
+		return nil, err
+	}
+	return &node, nil
+}
+
+func (c *Client) AddClusterNode(node ClusterNode) error {
+	body, _ := json.Marshal(node)
+	return c.post("/api/cluster/nodes", string(body))
+}
+
+func (c *Client) RemoveClusterNode(id string) error {
+	return c.delete("/api/cluster/nodes/" + id)
+}
+
 func (c *Client) WebSocketURL() string {
 	base := c.BaseURL
 	base = strings.Replace(base, "http://", "ws://", 1)

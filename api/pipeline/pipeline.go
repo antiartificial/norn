@@ -10,6 +10,7 @@ import (
 	"strings"
 	"time"
 
+	ncron "norn/api/cron"
 	"norn/api/hub"
 	"norn/api/k8s"
 	"norn/api/model"
@@ -17,12 +18,14 @@ import (
 )
 
 type Pipeline struct {
-	DB        *store.DB
-	Kube      *k8s.Client
-	WS        *hub.Hub
-	AppsDir   string
-	GitToken  string
-	GitSSHKey string
+	DB          *store.DB
+	Kube        *k8s.Client
+	WS          *hub.Hub
+	Scheduler   *ncron.Scheduler
+	AppsDir     string
+	GitToken    string
+	GitSSHKey   string
+	RegistryURL string
 }
 
 func (p *Pipeline) Run(deploy *model.Deployment, spec *model.InfraSpec) {
@@ -94,7 +97,11 @@ func (p *Pipeline) clone(ctx context.Context, d *model.Deployment, s *model.Infr
 	if s.Repo != nil {
 		args := []string{"clone", "--depth", "1", "--branch", s.Repo.Branch, s.Repo.URL, workDir}
 		cmd := exec.CommandContext(ctx, "git", args...)
-		cmd.Env = append(os.Environ(), p.gitEnv(s.Repo.URL)...)
+		gitEnv, cleanup := p.gitEnv(s.Repo.URL)
+		if cleanup != nil {
+			defer cleanup()
+		}
+		cmd.Env = append(os.Environ(), gitEnv...)
 		out, err := cmd.CombinedOutput()
 		if err != nil {
 			// Fall back to local copy if repo is unreachable
@@ -106,7 +113,18 @@ func (p *Pipeline) clone(ctx context.Context, d *model.Deployment, s *model.Infr
 				if cpErr != nil {
 					return string(cpOut), fmt.Errorf("git clone failed and local fallback failed: %w", cpErr)
 				}
-				return fmt.Sprintf("git clone failed, used local copy from %s (repo: %s)", srcDir, string(out)), nil
+				// Resolve SHA from local source git repo
+				revCmd := exec.CommandContext(ctx, "git", "-C", srcDir, "rev-parse", "HEAD")
+				if shaOut, revErr := revCmd.Output(); revErr == nil {
+					sha := strings.TrimSpace(string(shaOut))
+					d.CommitSHA = sha
+					d.ImageTag = fmt.Sprintf("%s:%s", d.App, sha[:min(12, len(sha))])
+				} else {
+					ts := time.Now().Format("20060102150405")
+					d.CommitSHA = "local-" + ts
+					d.ImageTag = fmt.Sprintf("%s:local-%s", d.App, ts)
+				}
+				return fmt.Sprintf("git clone failed, used local copy from %s", srcDir), nil
 			}
 			return string(out), fmt.Errorf("git clone: %w", err)
 		}
@@ -120,7 +138,7 @@ func (p *Pipeline) clone(ctx context.Context, d *model.Deployment, s *model.Infr
 			d.ImageTag = fmt.Sprintf("%s:%s", d.App, sha[:12])
 		}
 
-		return fmt.Sprintf("cloned %s (branch %s) at %s", s.Repo.URL, s.Repo.Branch, d.CommitSHA[:12]), nil
+		return fmt.Sprintf("cloned %s (branch %s) at %s", s.Repo.URL, s.Repo.Branch, d.CommitSHA[:min(12, len(d.CommitSHA))]), nil
 	}
 
 	// Local fallback: copy from appsDir
@@ -133,18 +151,18 @@ func (p *Pipeline) clone(ctx context.Context, d *model.Deployment, s *model.Infr
 	return fmt.Sprintf("copied %s into %s", srcDir, workDir), nil
 }
 
-func (p *Pipeline) gitEnv(url string) []string {
+func (p *Pipeline) gitEnv(url string) (env []string, cleanup func()) {
 	if isSSHURL(url) && p.GitSSHKey != "" {
 		return []string{
-			fmt.Sprintf("GIT_SSH_COMMAND=ssh -i %s -o StrictHostKeyChecking=no", p.GitSSHKey),
-		}
+			fmt.Sprintf("GIT_SSH_COMMAND=ssh -i %s -o StrictHostKeyChecking=accept-new", p.GitSSHKey),
+		}, nil
 	}
 	if !isSSHURL(url) && p.GitToken != "" {
 		// Write a temp askpass script
 		script, err := os.CreateTemp("", "norn-askpass-*")
 		if err != nil {
 			log.Printf("WARNING: could not create askpass script: %v", err)
-			return nil
+			return nil, nil
 		}
 		fmt.Fprintf(script, "#!/bin/sh\necho '%s'\n", p.GitToken)
 		script.Close()
@@ -152,9 +170,9 @@ func (p *Pipeline) gitEnv(url string) []string {
 		return []string{
 			"GIT_ASKPASS=" + script.Name(),
 			"GIT_TERMINAL_PROMPT=0",
-		}
+		}, func() { os.Remove(script.Name()) }
 	}
-	return nil
+	return nil, nil
 }
 
 func isSSHURL(url string) bool {
@@ -171,14 +189,49 @@ func (p *Pipeline) build(ctx context.Context, d *model.Deployment, s *model.Infr
 	}
 	cmd := exec.CommandContext(ctx, "docker", "build", "-t", d.ImageTag, workDir)
 	out, err := cmd.CombinedOutput()
-	return string(out), err
+	if err != nil {
+		return string(out), err
+	}
+
+	// Push to container registry if configured
+	if p.RegistryURL != "" {
+		registryTag := fmt.Sprintf("%s/%s", p.RegistryURL, d.ImageTag)
+		tagCmd := exec.CommandContext(ctx, "docker", "tag", d.ImageTag, registryTag)
+		if tagOut, tagErr := tagCmd.CombinedOutput(); tagErr != nil {
+			return string(out), fmt.Errorf("docker tag: %s", string(tagOut))
+		}
+		pushCmd := exec.CommandContext(ctx, "docker", "push", registryTag)
+		pushOut, pushErr := pushCmd.CombinedOutput()
+		if pushErr != nil {
+			return string(out), fmt.Errorf("docker push: %s", string(pushOut))
+		}
+		d.ImageTag = registryTag
+		return string(out) + "\npushed image to " + registryTag, nil
+	}
+
+	// Legacy: load image into minikube if available
+	if _, lookErr := exec.LookPath("minikube"); lookErr == nil {
+		loadCmd := exec.CommandContext(ctx, "minikube", "image", "load", d.ImageTag)
+		loadOut, loadErr := loadCmd.CombinedOutput()
+		if loadErr != nil {
+			return string(out), fmt.Errorf("minikube image load: %s", string(loadOut))
+		}
+		return string(out) + "\nloaded image into minikube", nil
+	}
+
+	return string(out), nil
 }
 
 func (p *Pipeline) test(ctx context.Context, d *model.Deployment, s *model.InfraSpec) (string, error) {
 	if s.Build == nil || s.Build.Test == "" {
 		return "skipped (no test command)", nil
 	}
-	cmd := exec.CommandContext(ctx, "docker", "run", "--rm", d.ImageTag, "sh", "-c", s.Build.Test)
+	workDir := d.WorkDir
+	if workDir == "" {
+		return "", fmt.Errorf("no work dir for test")
+	}
+	cmd := exec.CommandContext(ctx, "sh", "-c", s.Build.Test)
+	cmd.Dir = workDir
 	out, err := cmd.CombinedOutput()
 	return string(out), err
 }
@@ -188,7 +241,14 @@ func (p *Pipeline) snapshot(ctx context.Context, d *model.Deployment, s *model.I
 		return "skipped (no postgres)", nil
 	}
 	db := s.Services.Postgres.Database
-	filename := fmt.Sprintf("snapshots/%s_%s_%s.dump", db, d.CommitSHA[:12], time.Now().Format("20060102T150405"))
+	sha := d.CommitSHA
+	if len(sha) > 12 {
+		sha = sha[:12]
+	}
+	filename := fmt.Sprintf("snapshots/%s_%s_%s.dump", db, sha, time.Now().Format("20060102T150405"))
+	if err := os.MkdirAll(filepath.Dir(filename), 0o755); err != nil {
+		return "", fmt.Errorf("create snapshots dir: %w", err)
+	}
 	cmd := exec.CommandContext(ctx, "pg_dump", "-Fc", "-d", db, "-f", filename)
 	out, err := cmd.CombinedOutput()
 	return string(out), err
@@ -204,6 +264,10 @@ func (p *Pipeline) migrate(ctx context.Context, d *model.Deployment, s *model.In
 }
 
 func (p *Pipeline) deploy(ctx context.Context, d *model.Deployment, s *model.InfraSpec) (string, error) {
+	if s.IsCron() && p.Scheduler != nil {
+		p.Scheduler.SetImage(d.App, d.ImageTag)
+		return fmt.Sprintf("registered image %s with cron scheduler", d.ImageTag), nil
+	}
 	err := p.Kube.SetImage(ctx, "default", d.App, d.App, d.ImageTag)
 	if err != nil {
 		return "", err

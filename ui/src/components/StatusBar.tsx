@@ -1,4 +1,5 @@
 import { useState, useEffect } from 'react'
+import { apiUrl, fetchOpts } from '../lib/api.ts'
 
 interface ServiceHealth {
   name: string
@@ -25,7 +26,7 @@ export function StatusBar() {
   useEffect(() => {
     async function check() {
       try {
-        const res = await fetch('/api/health')
+        const res = await fetch(apiUrl('/api/health'), fetchOpts)
         if (res.ok) setHealth(await res.json())
       } catch {
         setHealth(null)

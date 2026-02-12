@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"log"
 	"net/http"
+	"net/url"
 	"sync"
 
 	"github.com/gorilla/websocket"
@@ -29,14 +30,36 @@ type Hub struct {
 	upgrader   websocket.Upgrader
 }
 
-func New() *Hub {
+func New(allowedOrigins []string) *Hub {
+	// Build a set of allowed origin strings for fast lookup.
+	allowed := make(map[string]bool, len(allowedOrigins))
+	for _, o := range allowedOrigins {
+		allowed[o] = true
+	}
+
 	return &Hub{
 		clients:    make(map[*client]bool),
 		broadcast:  make(chan []byte, 256),
 		register:   make(chan *client),
 		unregister: make(chan *client),
 		upgrader: websocket.Upgrader{
-			CheckOrigin: func(r *http.Request) bool { return true },
+			CheckOrigin: func(r *http.Request) bool {
+				origin := r.Header.Get("Origin")
+				if origin == "" {
+					return true // non-browser clients (CLI, curl)
+				}
+				// Check against configured origins list.
+				if allowed[origin] {
+					return true
+				}
+				// Always allow localhost.
+				u, err := url.Parse(origin)
+				if err != nil {
+					return false
+				}
+				host := u.Hostname()
+				return host == "localhost" || host == "127.0.0.1" || host == "::1"
+			},
 		},
 	}
 }

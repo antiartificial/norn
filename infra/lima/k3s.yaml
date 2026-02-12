@@ -1,0 +1,53 @@
+# Lima VM for k3s server on macOS
+# Usage: limactl start infra/lima/k3s.yaml
+
+images:
+  - location: "https://cloud-images.ubuntu.com/releases/24.04/release/ubuntu-24.04-server-cloudimg-amd64.img"
+    arch: "x86_64"
+  - location: "https://cloud-images.ubuntu.com/releases/24.04/release/ubuntu-24.04-server-cloudimg-arm64.img"
+    arch: "aarch64"
+
+cpus: 4
+memory: "8GiB"
+disk: "50GiB"
+
+mounts:
+  - location: "~/projects"
+    writable: true
+
+provision:
+  - mode: system
+    script: |
+      #!/bin/bash
+      set -eux
+
+      # Install Tailscale
+      curl -fsSL https://tailscale.com/install.sh | sh
+
+      # Install k3s as first server (cluster-init for HA etcd)
+      # Tailscale auth key and k3s token should be provided via environment
+      if [ -n "${TAILSCALE_AUTH_KEY:-}" ]; then
+        tailscale up --auth-key="$TAILSCALE_AUTH_KEY" --hostname="norn-mac"
+        # Wait for Tailscale interface
+        for i in $(seq 1 30); do
+          if tailscale ip -4 2>/dev/null; then break; fi
+          sleep 2
+        done
+        TS_IP=$(tailscale ip -4)
+      fi
+
+      curl -sfL https://get.k3s.io | INSTALL_K3S_EXEC="server" sh -s - \
+        --cluster-init \
+        --tls-san "$(hostname -I | awk '{print $1}')" \
+        ${TS_IP:+--tls-san "$TS_IP"} \
+        ${TS_IP:+--node-ip "$TS_IP"} \
+        ${TS_IP:+--flannel-iface tailscale0} \
+        --disable traefik \
+        --write-kubeconfig-mode 644
+
+      # Wait for k3s to be ready
+      until kubectl get nodes 2>/dev/null; do sleep 2; done
+
+portForwards:
+  - guestPort: 6443
+    hostIP: "127.0.0.1"

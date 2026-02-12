@@ -6,6 +6,7 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"strings"
 
 	appsv1 "k8s.io/api/apps/v1"
 	corev1 "k8s.io/api/core/v1"
@@ -117,16 +118,19 @@ type DeploymentInfo struct {
 type VolumeMount struct {
 	Name      string
 	MountPath string
-	PVCName   string
+	PVCName   string // mutually exclusive with HostPath
+	HostPath  string
 }
 
 type DeploymentOpts struct {
 	Name        string
 	Image       string
 	Port        int
+	Replicas    int
 	Healthcheck string
 	Env         []corev1.EnvVar
 	Volumes     []VolumeMount
+	SecretName  string // K8s Secret to inject as env vars via envFrom
 }
 
 func (c *Client) GetDeployment(ctx context.Context, namespace, name string) (*appsv1.Deployment, error) {
@@ -141,7 +145,7 @@ func (c *Client) CreateDeployment(ctx context.Context, namespace string, opts De
 			Labels:    map[string]string{"managed-by": "norn", "app": opts.Name},
 		},
 		Spec: appsv1.DeploymentSpec{
-			Replicas: ptr(int32(1)),
+			Replicas: ptr(int32(max(opts.Replicas, 1))),
 			Selector: &metav1.LabelSelector{
 				MatchLabels: map[string]string{"app": opts.Name},
 			},
@@ -153,11 +157,12 @@ func (c *Client) CreateDeployment(ctx context.Context, namespace string, opts De
 					Containers: []corev1.Container{{
 						Name:            opts.Name,
 						Image:           opts.Image,
-						ImagePullPolicy: corev1.PullNever,
+						ImagePullPolicy: imagePullPolicy(opts.Image),
 						Ports: []corev1.ContainerPort{{
 							ContainerPort: int32(opts.Port),
 						}},
-						Env: opts.Env,
+						Env:     opts.Env,
+						EnvFrom: envFromSecret(opts.SecretName),
 					}},
 				},
 			},
@@ -168,14 +173,21 @@ func (c *Client) CreateDeployment(ctx context.Context, namespace string, opts De
 		var volumes []corev1.Volume
 		var mounts []corev1.VolumeMount
 		for _, v := range opts.Volumes {
-			volumes = append(volumes, corev1.Volume{
-				Name: v.Name,
-				VolumeSource: corev1.VolumeSource{
+			vol := corev1.Volume{Name: v.Name}
+			if v.HostPath != "" {
+				vol.VolumeSource = corev1.VolumeSource{
+					HostPath: &corev1.HostPathVolumeSource{
+						Path: v.HostPath,
+					},
+				}
+			} else {
+				vol.VolumeSource = corev1.VolumeSource{
 					PersistentVolumeClaim: &corev1.PersistentVolumeClaimVolumeSource{
 						ClaimName: v.PVCName,
 					},
-				},
-			})
+				}
+			}
+			volumes = append(volumes, vol)
 			mounts = append(mounts, corev1.VolumeMount{
 				Name:      v.Name,
 				MountPath: v.MountPath,
@@ -294,6 +306,37 @@ func IsAlreadyExists(err error) bool {
 
 func IsNotFound(err error) bool {
 	return k8serrors.IsNotFound(err)
+}
+
+func (c *Client) SetReplicas(ctx context.Context, namespace, name string, replicas int32) error {
+	dep, err := c.cs.AppsV1().Deployments(namespace).Get(ctx, name, metav1.GetOptions{})
+	if err != nil {
+		return err
+	}
+	dep.Spec.Replicas = ptr(replicas)
+	_, err = c.cs.AppsV1().Deployments(namespace).Update(ctx, dep, metav1.UpdateOptions{})
+	return err
+}
+
+func envFromSecret(name string) []corev1.EnvFromSource {
+	if name == "" {
+		return nil
+	}
+	return []corev1.EnvFromSource{{
+		SecretRef: &corev1.SecretEnvSource{
+			LocalObjectReference: corev1.LocalObjectReference{Name: name},
+			Optional:             ptr(true),
+		},
+	}}
+}
+
+func imagePullPolicy(image string) corev1.PullPolicy {
+	// Images with a registry prefix (containing /) should be pulled
+	// Local-only images (e.g. "myapp:latest") use PullNever
+	if strings.Contains(image, "/") {
+		return corev1.PullIfNotPresent
+	}
+	return corev1.PullNever
 }
 
 func ptr[T any](v T) *T { return &v }

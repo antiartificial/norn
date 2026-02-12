@@ -1,5 +1,6 @@
 import { useState, useEffect, useCallback } from 'react'
 import type { AppStatus } from '../types/index.ts'
+import { apiUrl, fetchOpts } from '../lib/api.ts'
 
 export function useApps() {
   const [apps, setApps] = useState<AppStatus[]>([])
@@ -8,7 +9,7 @@ export function useApps() {
 
   const fetchApps = useCallback(async () => {
     try {
-      const res = await fetch('/api/apps')
+      const res = await fetch(apiUrl('/api/apps'), fetchOpts)
       if (!res.ok) throw new Error(`${res.status} ${res.statusText}`)
       const data = await res.json()
       setApps(data ?? [])
@@ -22,9 +23,10 @@ export function useApps() {
 
   useEffect(() => {
     fetchApps()
-    const interval = setInterval(fetchApps, 15000)
+    // Poll faster (3s) when in error state, normal (15s) otherwise
+    const interval = setInterval(fetchApps, error ? 3000 : 15000)
     return () => clearInterval(interval)
-  }, [fetchApps])
+  }, [fetchApps, error])
 
   return { apps, loading, error, refetch: fetchApps }
 }

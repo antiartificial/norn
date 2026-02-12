@@ -1,4 +1,5 @@
 import { useEffect, useRef, useState } from 'react'
+import { apiUrl, fetchOpts } from '../lib/api.ts'
 
 interface Props {
   appId: string
@@ -14,7 +15,8 @@ export function LogViewer({ appId, onClose }: Props) {
 
     async function streamLogs() {
       try {
-        const res = await fetch(`/api/apps/${appId}/logs?follow=true`, {
+        const res = await fetch(apiUrl(`/api/apps/${appId}/logs?follow=true`), {
+          ...fetchOpts,
           signal: controller.signal,
         })
         const reader = res.body?.getReader()

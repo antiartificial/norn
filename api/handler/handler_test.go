@@ -18,7 +18,7 @@ import (
 // Useful for testing endpoints that only need app discovery.
 func newTestHandler(t *testing.T, appsDir string) *Handler {
 	t.Helper()
-	ws := hub.New()
+	ws := hub.New(nil)
 	go ws.Run()
 	cfg := &config.Config{
 		Port:    "0",
@@ -45,8 +45,8 @@ func writeInfraSpec(t *testing.T, dir, app, content string) {
 
 func TestDiscoverApps(t *testing.T) {
 	dir := t.TempDir()
-	writeInfraSpec(t, dir, "app-a", "app: app-a\nrole: webserver\nport: 3000\n")
-	writeInfraSpec(t, dir, "app-b", "app: app-b\nrole: worker\n")
+	writeInfraSpec(t, dir, "app-a", "app: app-a\nrole: webserver\nport: 3000\ndeploy: true\n")
+	writeInfraSpec(t, dir, "app-b", "app: app-b\nrole: worker\ndeploy: true\n")
 	// app-c has no infraspec — should be skipped
 	os.MkdirAll(filepath.Join(dir, "app-c"), 0755)
 

@@ -1,11 +1,16 @@
 import { useState, useCallback, useEffect } from 'react'
+import { apiUrl, fetchOpts } from './lib/api.ts'
 import { useApps } from './hooks/useApps.ts'
 import { useWebSocket } from './hooks/useWebSocket.ts'
 import { AppCard } from './components/AppCard.tsx'
 import { LogViewer } from './components/LogViewer.tsx'
 import { DeployPanel } from './components/DeployPanel.tsx'
+import { CronPanel } from './components/CronPanel.tsx'
 import { HealthPanel } from './components/HealthPanel.tsx'
 import { Welcome } from './components/Welcome.tsx'
+import { CommandsModal } from './components/CommandsModal.tsx'
+import { RollbackModal } from './components/RollbackModal.tsx'
+import { DeployHistory } from './components/DeployHistory.tsx'
 import { StatusBar } from './components/StatusBar.tsx'
 import { Tooltip } from './components/Tooltip.tsx'
 import type { WSEvent, StepLog, HealthCheck } from './types/index.ts'
@@ -50,6 +55,11 @@ export function App() {
   const [rollingBackApp, setRollingBackApp] = useState<string | null>(null)
   const [healthHistory, setHealthHistory] = useState<Record<string, HealthCheck[]>>({})
   const [healthApp, setHealthApp] = useState<string | null>(null)
+  const [commandsApp, setCommandsApp] = useState<string | null>(null)
+  const [rollbackApp, setRollbackApp] = useState<string | null>(null)
+  const [cronPanelApp, setCronPanelApp] = useState<string | null>(null)
+  const [filter, setFilter] = useState<'all' | 'healthy' | 'unhealthy' | 'core'>('all')
+  const [view, setView] = useState<'apps' | 'history'>('apps')
 
   // Derive which apps are busy and with what operation
   const getAppBusy = (appId: string): { busy: boolean; activeOp?: string } => {
@@ -79,7 +89,7 @@ export function App() {
       if (event.type === 'deploy.step') {
         setDeployState((prev) => ({
           appId: event.appId,
-          steps: upsertStep(prev?.steps ?? [], { step: payload['step'] as string, status: payload['status'] as string }),
+          steps: upsertStep(prev?.steps ?? [], { step: payload['step'] as string, status: payload['status'] as string, startedAt: Date.now() }),
           status: payload['status'] as string,
         }))
       } else if (event.type === 'deploy.completed') {
@@ -95,7 +105,7 @@ export function App() {
       if (event.type === 'forge.step') {
         setForgeState((prev) => ({
           appId: event.appId,
-          steps: upsertStep(prev?.steps ?? [], { step: payload['step'] as string, status: payload['status'] as string }),
+          steps: upsertStep(prev?.steps ?? [], { step: payload['step'] as string, status: payload['status'] as string, startedAt: Date.now() }),
           status: payload['status'] as string,
         }))
       } else if (event.type === 'forge.completed') {
@@ -111,7 +121,7 @@ export function App() {
       if (event.type === 'teardown.step') {
         setTeardownState((prev) => ({
           appId: event.appId,
-          steps: upsertStep(prev?.steps ?? [], { step: payload['step'] as string, status: payload['status'] as string }),
+          steps: upsertStep(prev?.steps ?? [], { step: payload['step'] as string, status: payload['status'] as string, startedAt: Date.now() }),
           status: payload['status'] as string,
         }))
       } else if (event.type === 'teardown.completed') {
@@ -132,8 +142,9 @@ export function App() {
         checkedAt: p['checkedAt'] as string,
       }
       setHealthHistory((prev) => {
-        const existing = prev[event.appId] ?? []
-        const updated = [...existing, hc].slice(-120)
+        // Only track health for apps that already have history (i.e. deployed apps)
+        if (!prev[event.appId]) return prev
+        const updated = [...prev[event.appId], hc].slice(-120)
         return { ...prev, [event.appId]: updated }
       })
     }
@@ -145,6 +156,12 @@ export function App() {
       setRollingBackApp(null)
       refetch()
     }
+    if (event.type === 'app.scaled') {
+      refetch()
+    }
+    if (event.type === 'cron.started' || event.type === 'cron.completed' || event.type === 'cron.failed') {
+      refetch()
+    }
   }, [refetch])
 
   const { connected } = useWebSocket(handleWsEvent)
@@ -153,7 +170,8 @@ export function App() {
   useEffect(() => {
     if (apps.length === 0) return
     for (const app of apps) {
-      fetch(`/api/apps/${app.spec.app}/health-checks?range=1h`)
+      if (!app.deployedAt) continue
+      fetch(apiUrl(`/api/apps/${app.spec.app}/health-checks?range=1h`), fetchOpts)
         .then(r => r.json())
         .then(data => {
           const checks: HealthCheck[] = data.checks ?? []
@@ -172,7 +190,8 @@ export function App() {
 
   const handleForge = async (appId: string) => {
     setForgeState({ appId, steps: [], status: 'queued' })
-    await fetch(`/api/apps/${appId}/forge`, {
+    await fetch(apiUrl(`/api/apps/${appId}/forge`), {
+      ...fetchOpts,
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({}),
@@ -182,7 +201,8 @@ export function App() {
   const handleTeardown = async (appId: string) => {
     if (!window.confirm(`Tear down all infrastructure for ${appId}?`)) return
     setTeardownState({ appId, steps: [], status: 'queued' })
-    await fetch(`/api/apps/${appId}/teardown`, {
+    await fetch(apiUrl(`/api/apps/${appId}/teardown`), {
+      ...fetchOpts,
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({}),
@@ -209,7 +229,8 @@ export function App() {
       if (!sha) return
     }
     setDeployState({ appId, steps: [], status: 'queued' })
-    await fetch(`/api/apps/${appId}/deploy`, {
+    await fetch(apiUrl(`/api/apps/${appId}/deploy`), {
+      ...fetchOpts,
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ commitSha: sha }),
@@ -218,19 +239,58 @@ export function App() {
 
   const handleRestart = async (appId: string) => {
     setRestartingApp(appId)
-    await fetch(`/api/apps/${appId}/restart`, { method: 'POST' })
+    await fetch(apiUrl(`/api/apps/${appId}/restart`), { ...fetchOpts, method: 'POST' })
     // Clear after a timeout in case WS event doesn't arrive
     setTimeout(() => setRestartingApp((cur) => cur === appId ? null : cur), 10_000)
   }
 
-  const handleRollback = async (appId: string) => {
+  const handleRollbackOpen = (appId: string) => {
+    setRollbackApp(appId)
+  }
+
+  const handlePromote = async (appId: string, imageTag: string) => {
     setRollingBackApp(appId)
-    await fetch(`/api/apps/${appId}/rollback`, {
+    await fetch(apiUrl(`/api/apps/${appId}/rollback`), {
+      ...fetchOpts,
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({}),
+      body: JSON.stringify({ imageTag }),
     })
     setTimeout(() => setRollingBackApp((cur) => cur === appId ? null : cur), 10_000)
+  }
+
+  const handleScale = async (appId: string, replicas: number) => {
+    await fetch(apiUrl(`/api/apps/${appId}/scale`), {
+      ...fetchOpts,
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ replicas }),
+    })
+    refetch()
+  }
+
+  const handleCronTrigger = async (appId: string) => {
+    await fetch(apiUrl(`/api/apps/${appId}/cron/trigger`), { ...fetchOpts, method: 'POST' })
+  }
+
+  const handleCronPause = async (appId: string) => {
+    await fetch(apiUrl(`/api/apps/${appId}/cron/pause`), { ...fetchOpts, method: 'POST' })
+    refetch()
+  }
+
+  const handleCronResume = async (appId: string) => {
+    await fetch(apiUrl(`/api/apps/${appId}/cron/resume`), { ...fetchOpts, method: 'POST' })
+    refetch()
+  }
+
+  const handleCronScheduleUpdate = async (appId: string, schedule: string) => {
+    await fetch(apiUrl(`/api/apps/${appId}/cron/schedule`), {
+      ...fetchOpts,
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ schedule }),
+    })
+    refetch()
   }
 
   return (
@@ -243,6 +303,12 @@ export function App() {
           <span className="header-tagline">control plane</span>
         </div>
         <div className="header-right">
+          <button
+            className={`filter-btn ${view === 'history' ? 'active' : ''}`}
+            onClick={() => setView(v => v === 'apps' ? 'history' : 'apps')}
+          >
+            {view === 'apps' ? 'History' : 'Apps'}
+          </button>
           <StatusBar />
           <span className={`ws-status ${connected ? 'connected' : 'disconnected'}`}>
             <span className={`ws-dot ${connected ? 'green' : 'red'}`} />
@@ -275,8 +341,34 @@ export function App() {
           </div>
         )}
 
+        {view === 'history' ? (
+          <DeployHistory
+            apps={apps.map(a => a.spec.app)}
+            onClose={() => setView('apps')}
+          />
+        ) : (
+        <>
+        {apps.length > 0 && (
+          <div className="app-filters">
+            {(['all', 'healthy', 'unhealthy', 'core'] as const).map(f => (
+              <button key={f} className={`filter-btn ${filter === f ? 'active' : ''}`} onClick={() => setFilter(f)}>
+                {f === 'all' ? 'All' : f === 'healthy' ? 'Healthy' : f === 'unhealthy' ? 'Unhealthy' : 'Core'}
+                {f === 'all' && <span className="filter-count">{apps.length}</span>}
+                {f === 'healthy' && <span className="filter-count">{apps.filter(a => a.healthy).length}</span>}
+                {f === 'unhealthy' && <span className="filter-count">{apps.filter(a => !a.healthy).length}</span>}
+                {f === 'core' && <span className="filter-count">{apps.filter(a => a.spec.core).length}</span>}
+              </button>
+            ))}
+          </div>
+        )}
+
         <div className="app-grid">
-          {apps.map((app) => {
+          {apps.filter(app => {
+            if (filter === 'healthy') return app.healthy
+            if (filter === 'unhealthy') return !app.healthy
+            if (filter === 'core') return app.spec.core
+            return true
+          }).map((app) => {
             const { busy, activeOp } = getAppBusy(app.spec.app)
             return (
               <AppCard
@@ -289,9 +381,13 @@ export function App() {
                 onForge={handleForge}
                 onTeardown={handleTeardown}
                 onRestart={handleRestart}
-                onRollback={handleRollback}
+                onRollback={handleRollbackOpen}
+                onScale={handleScale}
                 onViewLogs={setLogApp}
+                onCommands={() => setCommandsApp(app.spec.app)}
                 onHealthClick={() => setHealthApp(app.spec.app)}
+                onCronPanel={setCronPanelApp}
+                onCronTrigger={handleCronTrigger}
               />
             )
           })}
@@ -346,6 +442,8 @@ artifacts:
             </div>
           </div>
         )}
+        </>
+        )}
 
         {deployState && (
           <DeployPanel
@@ -354,6 +452,7 @@ artifacts:
             status={deployState.status}
             error={deployState.error}
             onClose={() => setDeployState(null)}
+            onRetry={() => { setDeployState(null); handleDeploy(deployState.appId) }}
           />
         )}
 
@@ -365,6 +464,7 @@ artifacts:
             error={forgeState.error}
             title="Forging"
             onClose={() => setForgeState(null)}
+            onRetry={() => { setForgeState(null); handleForge(forgeState.appId) }}
           />
         )}
 
@@ -376,6 +476,7 @@ artifacts:
             error={teardownState.error}
             title="Tearing Down"
             onClose={() => setTeardownState(null)}
+            onRetry={() => { setTeardownState(null); handleTeardown(teardownState.appId) }}
           />
         )}
 
@@ -387,6 +488,43 @@ artifacts:
             onClose={() => setHealthApp(null)}
           />
         )}
+
+        {cronPanelApp && (
+          <CronPanel
+            appId={cronPanelApp}
+            cronState={apps.find(a => a.spec.app === cronPanelApp)?.cronState}
+            onClose={() => setCronPanelApp(null)}
+            onTrigger={handleCronTrigger}
+            onPause={handleCronPause}
+            onResume={handleCronResume}
+            onScheduleUpdate={handleCronScheduleUpdate}
+          />
+        )}
+
+        {commandsApp && (() => {
+          const cApp = apps.find(a => a.spec.app === commandsApp)
+          return cApp ? (
+            <CommandsModal
+              appId={commandsApp}
+              pods={cApp.pods ?? []}
+              secrets={cApp.spec.secrets ?? []}
+              onClose={() => setCommandsApp(null)}
+            />
+          ) : null
+        })()}
+
+        {rollbackApp && (() => {
+          const rApp = apps.find(a => a.spec.app === rollbackApp)
+          return rApp ? (
+            <RollbackModal
+              appId={rollbackApp}
+              currentImage={`${rollbackApp}:${rApp.commitSha?.slice(0, 12) ?? ''}`}
+              hasPostgres={!!rApp.spec.services?.postgres}
+              onClose={() => setRollbackApp(null)}
+              onPromote={(imageTag) => handlePromote(rollbackApp, imageTag)}
+            />
+          ) : null
+        })()}
 
         {logApp && <LogViewer appId={logApp} onClose={() => setLogApp(null)} />}
       </main>

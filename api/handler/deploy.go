@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"net/http"
+	"strconv"
 	"time"
 
 	"github.com/go-chi/chi/v5"
@@ -11,6 +12,7 @@ import (
 
 	"norn/api/hub"
 	"norn/api/model"
+	"norn/api/store"
 )
 
 type DeployRequest struct {
@@ -18,22 +20,22 @@ type DeployRequest struct {
 }
 
 func (h *Handler) Deploy(w http.ResponseWriter, r *http.Request) {
-	if h.kube == nil {
-		http.Error(w, "deploy requires Kubernetes", http.StatusServiceUnavailable)
-		return
-	}
-
 	appID := chi.URLParam(r, "id")
-
-	var req DeployRequest
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		http.Error(w, "invalid request body", http.StatusBadRequest)
-		return
-	}
 
 	spec, err := h.loadSpec(appID)
 	if err != nil {
 		http.Error(w, "app not found", http.StatusNotFound)
+		return
+	}
+
+	if h.kube == nil && !spec.IsCron() {
+		http.Error(w, "deploy requires Kubernetes", http.StatusServiceUnavailable)
+		return
+	}
+
+	var req DeployRequest
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		http.Error(w, "invalid request body", http.StatusBadRequest)
 		return
 	}
 
@@ -127,4 +129,27 @@ func (h *Handler) ListArtifacts(w http.ResponseWriter, r *http.Request) {
 	}
 
 	writeJSON(w, artifacts)
+}
+
+func (h *Handler) ListAllDeployments(w http.ResponseWriter, r *http.Request) {
+	limit, _ := strconv.Atoi(r.URL.Query().Get("limit"))
+	offset, _ := strconv.Atoi(r.URL.Query().Get("offset"))
+
+	f := store.DeploymentFilter{
+		App:    r.URL.Query().Get("app"),
+		Status: r.URL.Query().Get("status"),
+		Limit:  limit,
+		Offset: offset,
+	}
+
+	deployments, total, err := h.db.ListAllDeployments(r.Context(), f)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+
+	writeJSON(w, map[string]interface{}{
+		"deployments": deployments,
+		"total":       total,
+	})
 }

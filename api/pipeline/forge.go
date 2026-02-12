@@ -21,6 +21,8 @@ type ForgePipeline struct {
 	Kube       *k8s.Client
 	WS         *hub.Hub
 	TunnelName string
+	PGHost     string
+	PGUser     string
 }
 
 type forgeStep struct {
@@ -30,6 +32,25 @@ type forgeStep struct {
 
 func (f *ForgePipeline) Run(state *model.ForgeState, spec *model.InfraSpec, resumeFrom int) {
 	ctx := context.Background()
+
+	// Cron apps skip K8s infrastructure — just mark as forged
+	if spec.IsCron() {
+		state.Steps = append(state.Steps, model.ForgeStepLog{
+			Step:   "cron-register",
+			Status: "completed",
+			Output: fmt.Sprintf("cron app registered (schedule: %s)", spec.Schedule),
+		})
+		state.Status = model.ForgeForged
+		state.Error = ""
+		f.DB.UpdateForgeState(ctx, state.App, state.Status, state.Steps, state.Resources, "")
+		f.WS.Broadcast(hub.Event{Type: "forge.step", AppID: spec.App, Payload: map[string]string{
+			"step":   "cron-register",
+			"status": "completed",
+		}})
+		f.WS.Broadcast(hub.Event{Type: "forge.completed", AppID: spec.App, Payload: map[string]string{}})
+		return
+	}
+
 	steps := []forgeStep{
 		{name: "create-deployment", fn: f.createDeployment},
 		{name: "create-service", fn: f.createService},
@@ -108,29 +129,55 @@ func (f *ForgePipeline) createDeployment(ctx context.Context, spec *model.InfraS
 		Name:        spec.App,
 		Image:       spec.App + ":latest",
 		Port:        spec.Port,
+		Replicas:    spec.Replicas,
 		Healthcheck: spec.Healthcheck,
 	}
 
+	if len(spec.Secrets) > 0 {
+		opts.SecretName = spec.App + "-secrets"
+	}
+
+	for k, v := range spec.Env {
+		opts.Env = append(opts.Env, corev1.EnvVar{Name: k, Value: v})
+	}
+
 	if spec.Services != nil && spec.Services.Postgres != nil {
+		pgHost := f.PGHost
+		if pgHost == "" {
+			pgHost = "localhost"
+		}
+		pgUser := f.PGUser
+		userPart := ""
+		if pgUser != "" {
+			userPart = pgUser + "@"
+		}
 		opts.Env = append(opts.Env, corev1.EnvVar{
 			Name:  "DATABASE_URL",
-			Value: fmt.Sprintf("postgres://norn:norn@postgres:5432/%s?sslmode=disable", spec.Services.Postgres.Database),
+			Value: fmt.Sprintf("postgres://%s%s:5432/%s?sslmode=disable", userPart, pgHost, spec.Services.Postgres.Database),
 		})
 	}
 
-	// Create PVCs and add volume mounts
+	// Create volume mounts (PVC or hostPath)
 	for _, vol := range spec.Volumes {
-		pvcName := fmt.Sprintf("%s-%s", spec.App, vol.Name)
-		labels := map[string]string{"managed-by": "norn", "app": spec.App}
-		err := f.Kube.CreatePVC(ctx, "default", pvcName, vol.Size, labels)
-		if err != nil && !k8s.IsAlreadyExists(err) {
-			return "", fmt.Errorf("create PVC %s: %w", pvcName, err)
+		if vol.HostPath != "" {
+			opts.Volumes = append(opts.Volumes, k8s.VolumeMount{
+				Name:      vol.Name,
+				MountPath: vol.MountPath,
+				HostPath:  vol.HostPath,
+			})
+		} else {
+			pvcName := fmt.Sprintf("%s-%s", spec.App, vol.Name)
+			labels := map[string]string{"managed-by": "norn", "app": spec.App}
+			err := f.Kube.CreatePVC(ctx, "default", pvcName, vol.Size, labels)
+			if err != nil && !k8s.IsAlreadyExists(err) {
+				return "", fmt.Errorf("create PVC %s: %w", pvcName, err)
+			}
+			opts.Volumes = append(opts.Volumes, k8s.VolumeMount{
+				Name:      vol.Name,
+				MountPath: vol.MountPath,
+				PVCName:   pvcName,
+			})
 		}
-		opts.Volumes = append(opts.Volumes, k8s.VolumeMount{
-			Name:      vol.Name,
-			MountPath: vol.MountPath,
-			PVCName:   pvcName,
-		})
 	}
 
 	err := f.Kube.CreateDeployment(ctx, "default", opts)
@@ -244,6 +291,10 @@ func (f *ForgePipeline) createDNSRoute(ctx context.Context, spec *model.InfraSpe
 	out, err := cmd.CombinedOutput()
 	output := strings.TrimSpace(string(out))
 	if err != nil {
+		if strings.Contains(output, "already exists") {
+			res.DNSRoute = true
+			return fmt.Sprintf("DNS record for %s already exists", spec.Hosts.External), nil
+		}
 		return output, fmt.Errorf("cloudflared tunnel route: %s", output)
 	}
 	res.DNSRoute = true

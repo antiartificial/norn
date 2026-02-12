@@ -71,6 +71,7 @@ func (m *Manager) Delete(appID string, key string) error {
 }
 
 // SyncToK8s creates or updates a K8s secret from the decrypted values.
+// Secrets are piped via stdin to avoid exposing values in process args.
 func (m *Manager) SyncToK8s(ctx context.Context, appID, namespace string) error {
 	data, err := m.decrypt(appID)
 	if err != nil {
@@ -84,25 +85,27 @@ func (m *Manager) SyncToK8s(ctx context.Context, appID, namespace string) error 
 		return nil
 	}
 
-	args := []string{
-		"-n", namespace, "create", "secret", "generic",
-		appID + "-secrets",
-		"--dry-run=client", "-o", "yaml",
-	}
-	for k, v := range data {
-		args = append(args, fmt.Sprintf("--from-literal=%s=%s", k, v))
+	// Build a K8s Secret manifest and pipe it via stdin
+	manifest := map[string]interface{}{
+		"apiVersion": "v1",
+		"kind":       "Secret",
+		"metadata": map[string]interface{}{
+			"name":      appID + "-secrets",
+			"namespace": namespace,
+		},
+		"type":       "Opaque",
+		"stringData": data,
 	}
 
-	create := exec.CommandContext(ctx, "kubectl", args...)
-	out, err := create.Output()
+	manifestYAML, err := yaml.Marshal(manifest)
 	if err != nil {
-		return fmt.Errorf("kubectl create secret: %w", err)
+		return fmt.Errorf("marshal secret manifest: %w", err)
 	}
 
 	apply := exec.CommandContext(ctx, "kubectl", "apply", "-f", "-")
-	apply.Stdin = bytes.NewReader(out)
-	if applyOut, err := apply.CombinedOutput(); err != nil {
-		return fmt.Errorf("kubectl apply: %s: %w", string(applyOut), err)
+	apply.Stdin = bytes.NewReader(manifestYAML)
+	if out, err := apply.CombinedOutput(); err != nil {
+		return fmt.Errorf("kubectl apply secret: %s: %w", string(out), err)
 	}
 
 	return nil
@@ -141,7 +144,8 @@ func (m *Manager) encrypt(appID string, data map[string]string) error {
 	}
 	defer os.Remove(tmpFile)
 
-	cmd := exec.Command("sops", "--encrypt", "--input-type", "yaml", "--output-type", "yaml", tmpFile)
+	configFile := filepath.Join(m.appsDir, appID, ".sops.yaml")
+	cmd := exec.Command("sops", "--config", configFile, "--encrypt", "--input-type", "yaml", "--output-type", "yaml", tmpFile)
 	encrypted, err := cmd.Output()
 	if err != nil {
 		if exitErr, ok := err.(*exec.ExitError); ok {

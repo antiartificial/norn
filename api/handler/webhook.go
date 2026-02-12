@@ -7,6 +7,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"log"
 	"net/http"
 	"strings"
 	"time"
@@ -96,12 +97,14 @@ func (h *Handler) WebhookPush(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Verify HMAC signature
+	// Verify HMAC signature — required when webhookSecret is configured
 	if matched.Repo.WebhookSecret != "" {
 		if signature == "" || !verifySignature(body, matched.Repo.WebhookSecret, signature) {
 			http.Error(w, "invalid signature", http.StatusForbidden)
 			return
 		}
+	} else {
+		log.Printf("WARNING: webhook for %s accepted without signature (set webhookSecret in infraspec.yaml)", matched.App)
 	}
 
 	_ = provider // provider detected above, used for logging context
