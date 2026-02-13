@@ -5,7 +5,11 @@ import (
 	"encoding/json"
 	"fmt"
 	"net/http"
+	"os"
+	"os/exec"
 	"path/filepath"
+	"strings"
+	"sync"
 	"time"
 
 	"github.com/go-chi/chi/v5"
@@ -72,7 +76,43 @@ func (h *Handler) ListApps(w http.ResponseWriter, r *http.Request) {
 		apps = append(apps, status)
 	}
 
+	// Populate remote heads concurrently
+	var wg sync.WaitGroup
+	for i := range apps {
+		if apps[i].Spec.Repo != nil && apps[i].CommitSHA != "" {
+			wg.Add(1)
+			go func(idx int) {
+				defer wg.Done()
+				apps[idx].RemoteHeadSHA = h.getRemoteHead(ctx, apps[idx].Spec)
+			}(i)
+		}
+	}
+	wg.Wait()
+
 	writeJSON(w, apps)
+}
+
+func (h *Handler) getRemoteHead(ctx context.Context, spec *model.InfraSpec) string {
+	if spec.Repo == nil || h.pipeline == nil {
+		return ""
+	}
+	ctx, cancel := context.WithTimeout(ctx, 5*time.Second)
+	defer cancel()
+	cmd := exec.CommandContext(ctx, "git", "ls-remote", spec.Repo.URL, "refs/heads/"+spec.Repo.Branch)
+	gitEnv, cleanup := h.pipeline.GitEnv(spec.Repo.URL)
+	if cleanup != nil {
+		defer cleanup()
+	}
+	cmd.Env = append(os.Environ(), gitEnv...)
+	out, err := cmd.Output()
+	if err != nil {
+		return ""
+	}
+	parts := strings.Fields(string(out))
+	if len(parts) >= 1 {
+		return parts[0]
+	}
+	return ""
 }
 
 func (h *Handler) GetApp(w http.ResponseWriter, r *http.Request) {

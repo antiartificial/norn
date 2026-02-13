@@ -271,6 +271,13 @@ export function AppCard({ app, busy, activeOp, healthChecks, onDeploy, onForge, 
               </span>
             </Tooltip>
           )}
+          {app.remoteHeadSha && commitSha && app.remoteHeadSha !== commitSha && (
+            <Tooltip text={`Remote HEAD: ${app.remoteHeadSha.slice(0, 7)} — deployed: ${commitSha.slice(0, 7)}`}>
+              <span className="update-available-badge">
+                <i className="fawsb fa-arrow-up" /> update available
+              </span>
+            </Tooltip>
+          )}
         </div>
         )
       })()}

@@ -92,6 +92,7 @@ export interface AppStatus {
   pods: PodInfo[]
   forgeState?: ForgeState
   cronState?: CronState
+  remoteHeadSha?: string
 }
 
 export interface StepLog {

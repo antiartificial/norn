@@ -7,8 +7,9 @@ type AppStatus struct {
 	CommitSHA  string      `json:"commitSha"`
 	DeployedAt string      `json:"deployedAt"`
 	Pods       []PodInfo   `json:"pods"`
-	ForgeState *ForgeState `json:"forgeState,omitempty"`
-	CronState  *CronState `json:"cronState,omitempty"`
+	ForgeState    *ForgeState `json:"forgeState,omitempty"`
+	CronState     *CronState `json:"cronState,omitempty"`
+	RemoteHeadSHA string     `json:"remoteHeadSha,omitempty"`
 }
 
 type PodInfo struct {

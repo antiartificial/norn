@@ -104,7 +104,7 @@ func (p *Pipeline) clone(ctx context.Context, d *model.Deployment, s *model.Infr
 	if s.Repo != nil {
 		args := []string{"clone", "--depth", "1", "--branch", s.Repo.Branch, s.Repo.URL, workDir}
 		cmd := exec.CommandContext(ctx, "git", args...)
-		gitEnv, cleanup := p.gitEnv(s.Repo.URL)
+		gitEnv, cleanup := p.GitEnv(s.Repo.URL)
 		if cleanup != nil {
 			defer cleanup()
 		}
@@ -158,7 +158,7 @@ func (p *Pipeline) clone(ctx context.Context, d *model.Deployment, s *model.Infr
 	return fmt.Sprintf("copied %s into %s", srcDir, workDir), nil
 }
 
-func (p *Pipeline) gitEnv(url string) (env []string, cleanup func()) {
+func (p *Pipeline) GitEnv(url string) (env []string, cleanup func()) {
 	if isSSHURL(url) && p.GitSSHKey != "" {
 		return []string{
 			fmt.Sprintf("GIT_SSH_COMMAND=ssh -i %s -o StrictHostKeyChecking=accept-new", p.GitSSHKey),
@@ -194,8 +194,16 @@ func (p *Pipeline) build(ctx context.Context, d *model.Deployment, s *model.Infr
 	if workDir == "" {
 		workDir = "."
 	}
+	// Compute monotonic build number from git commit count
+	buildNumber := "0"
+	revListCmd := exec.CommandContext(ctx, "git", "-C", workDir, "rev-list", "--count", "HEAD")
+	if revOut, revErr := revListCmd.Output(); revErr == nil {
+		buildNumber = strings.TrimSpace(string(revOut))
+	}
+
 	cmd := exec.CommandContext(ctx, "docker", "build",
 		"--build-arg", fmt.Sprintf("VERSION=%s", d.CommitSHA),
+		"--build-arg", fmt.Sprintf("BUILD_NUMBER=%s", buildNumber),
 		"-t", d.ImageTag, workDir)
 	out, err := cmd.CombinedOutput()
 	if err != nil {
