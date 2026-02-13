@@ -92,7 +92,7 @@ ui:
 
 infra: ## Start Valkey + Redpanda (docker compose)
 	@cd infra && docker compose up -d
-	@printf "  $(GREEN)$(CHECK)$(RESET) Valkey on :6379 · Redpanda on :19092 · Console on :8090 · MinIO on :9000\n"
+	@printf "  $(GREEN)$(CHECK)$(RESET) Valkey on :6379 · Redpanda on :19092 · Console on :8090\n"
 
 infra-stop: ## Stop shared infrastructure
 	@cd infra && docker compose down
@@ -163,9 +163,6 @@ doctor: ## Check health of all services
 	@docker compose -f infra/docker-compose.yml ps --status running 2>/dev/null | grep -q redpanda \
 		&& printf "  $(GREEN)$(CHECK)$(RESET) Redpanda          running on :19092\n" \
 		|| printf "  $(DIM)·$(RESET) Redpanda          not running $(DIM)(run: make infra)$(RESET)\n"
-	@curl -sf http://localhost:9000/minio/health/live >/dev/null 2>&1 \
-		&& printf "  $(GREEN)$(CHECK)$(RESET) MinIO             running on :9000\n" \
-		|| printf "  $(DIM)·$(RESET) MinIO             not running $(DIM)(run: make infra)$(RESET)\n"
 	@kubectl cluster-info >/dev/null 2>&1 \
 		&& printf "  $(GREEN)$(CHECK)$(RESET) Kubernetes        $$(kubectl config current-context)\n" \
 		|| printf "  $(DIM)·$(RESET) Kubernetes        not connected $(DIM)(start minikube)$(RESET)\n"

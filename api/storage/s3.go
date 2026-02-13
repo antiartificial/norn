@@ -70,3 +70,11 @@ func (c *Client) Healthy(ctx context.Context) error {
 func (c *Client) Endpoint() string {
 	return c.config.Endpoint
 }
+
+func (c *Client) AccessKey() string {
+	return c.config.AccessKey
+}
+
+func (c *Client) SecretKey() string {
+	return c.config.SecretKey
+}

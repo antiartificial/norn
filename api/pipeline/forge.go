@@ -174,8 +174,8 @@ func (f *ForgePipeline) createDeployment(ctx context.Context, spec *model.InfraS
 		opts.Env = append(opts.Env,
 			corev1.EnvVar{Name: "S3_ENDPOINT", Value: f.S3.Endpoint()},
 			corev1.EnvVar{Name: "S3_BUCKET", Value: spec.Services.Storage.Bucket},
-			corev1.EnvVar{Name: "AWS_ACCESS_KEY_ID", Value: "norn"},
-			corev1.EnvVar{Name: "AWS_SECRET_ACCESS_KEY", Value: "nornnorn"},
+			corev1.EnvVar{Name: "AWS_ACCESS_KEY_ID", Value: f.S3.AccessKey()},
+			corev1.EnvVar{Name: "AWS_SECRET_ACCESS_KEY", Value: f.S3.SecretKey()},
 		)
 	}
 

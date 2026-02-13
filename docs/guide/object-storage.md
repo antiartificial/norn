@@ -1,6 +1,6 @@
 # Object Storage
 
-Norn supports S3-compatible object storage as a shared service. Locally, it runs MinIO; in production, you can use Cloudflare R2, AWS S3, Google Cloud Storage, or DigitalOcean Spaces.
+Norn supports S3-compatible object storage as a shared service. Configure it with Cloudflare R2, AWS S3, Google Cloud Storage, DigitalOcean Spaces, or any S3-compatible provider.
 
 ## infraspec
 
@@ -8,7 +8,7 @@ Norn supports S3-compatible object storage as a shared service. Locally, it runs
 services:
   storage:
     bucket: my-app-uploads
-    provider: minio  # or r2, s3, gcs, spaces
+    provider: r2  # or s3, gcs, spaces
 ```
 
 ### Fields
@@ -30,31 +30,21 @@ services:
 | `AWS_ACCESS_KEY_ID` | Access key |
 | `AWS_SECRET_ACCESS_KEY` | Secret key |
 
-## Local development (MinIO)
+## Configuration
 
-MinIO runs as part of Norn's shared infrastructure:
-
-```bash
-make infra   # starts Valkey, Redpanda, and MinIO
-```
-
-- **API**: `localhost:9000`
-- **Console**: `localhost:9001`
-- **Credentials**: `norn` / `nornnorn`
-
-The MinIO console at [localhost:9001](http://localhost:9001) provides a web UI for browsing buckets and objects.
+S3 storage is opt-in. Set `NORN_S3_ENDPOINT` and credentials to enable it. When unconfigured, Norn starts without S3 (no error).
 
 ### Environment variables
 
 | Variable | Default | Description |
 |----------|---------|-------------|
-| `NORN_S3_ENDPOINT` | `localhost:9000` | S3 endpoint |
-| `NORN_S3_ACCESS_KEY` | `norn` | Access key |
-| `NORN_S3_SECRET_KEY` | `nornnorn` | Secret key |
-| `NORN_S3_REGION` | `us-east-1` | Region |
-| `NORN_S3_USE_SSL` | `false` | Use HTTPS |
+| `NORN_S3_ENDPOINT` | _(none)_ | S3 endpoint (required to enable storage) |
+| `NORN_S3_ACCESS_KEY` | _(none)_ | Access key |
+| `NORN_S3_SECRET_KEY` | _(none)_ | Secret key |
+| `NORN_S3_REGION` | `auto` | Region (`auto` works for R2) |
+| `NORN_S3_USE_SSL` | `true` | Use HTTPS (set to `false` for local endpoints) |
 
-## Production providers
+## Providers
 
 All providers use the same S3-compatible protocol. The `provider` field in the infraspec is informational — Norn connects to whatever endpoint is configured.
 
@@ -64,7 +54,6 @@ All providers use the same S3-compatible protocol. The `provider` field in the i
 export NORN_S3_ENDPOINT=<account-id>.r2.cloudflarestorage.com
 export NORN_S3_ACCESS_KEY=<r2-access-key>
 export NORN_S3_SECRET_KEY=<r2-secret-key>
-export NORN_S3_USE_SSL=true
 ```
 
 R2 has no egress fees, making it ideal for serving user-uploaded content.
@@ -76,7 +65,6 @@ export NORN_S3_ENDPOINT=s3.amazonaws.com
 export NORN_S3_ACCESS_KEY=<aws-access-key>
 export NORN_S3_SECRET_KEY=<aws-secret-key>
 export NORN_S3_REGION=us-east-1
-export NORN_S3_USE_SSL=true
 ```
 
 ### Google Cloud Storage
@@ -85,7 +73,6 @@ export NORN_S3_USE_SSL=true
 export NORN_S3_ENDPOINT=storage.googleapis.com
 export NORN_S3_ACCESS_KEY=<gcs-hmac-key>
 export NORN_S3_SECRET_KEY=<gcs-hmac-secret>
-export NORN_S3_USE_SSL=true
 ```
 
 GCS supports S3-compatible access via HMAC keys.
@@ -97,7 +84,6 @@ export NORN_S3_ENDPOINT=<region>.digitaloceanspaces.com
 export NORN_S3_ACCESS_KEY=<spaces-key>
 export NORN_S3_SECRET_KEY=<spaces-secret>
 export NORN_S3_REGION=<region>
-export NORN_S3_USE_SSL=true
 ```
 
 ## SDK examples
@@ -145,10 +131,10 @@ await s3.send(new PutObjectCommand({
 
 ## Health check
 
-Norn's `/api/health` endpoint includes S3/MinIO connectivity. Check with:
+Norn's `/api/health` endpoint includes S3 connectivity. Check with:
 
 ```bash
 norn health
 # or
-curl http://localhost:8800/api/health | jq '.services[] | select(.name == "s3/minio")'
+curl http://localhost:8800/api/health | jq '.services[] | select(.name == "s3")'
 ```

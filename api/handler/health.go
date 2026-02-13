@@ -83,12 +83,12 @@ func (h *Handler) checkRedpanda(_ context.Context) ServiceHealth {
 
 func (h *Handler) checkS3(ctx context.Context) ServiceHealth {
 	if h.s3Client == nil {
-		return ServiceHealth{Name: "s3/minio", Status: "unknown", Details: "not configured"}
+		return ServiceHealth{Name: "s3", Status: "unknown", Details: "not configured"}
 	}
 	if err := h.s3Client.Healthy(ctx); err != nil {
-		return ServiceHealth{Name: "s3/minio", Status: "down", Details: err.Error()}
+		return ServiceHealth{Name: "s3", Status: "down", Details: err.Error()}
 	}
-	return ServiceHealth{Name: "s3/minio", Status: "up"}
+	return ServiceHealth{Name: "s3", Status: "up"}
 }
 
 func (h *Handler) checkSOPS() ServiceHealth {

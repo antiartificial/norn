@@ -44,20 +44,6 @@ services:
     depends_on:
       - redpanda
 
-  minio:
-    image: minio/minio:latest
-    container_name: norn-minio
-    command: server /data --console-address ":9001"
-    ports:
-      - "9000:9000"
-      - "9001:9001"
-    environment:
-      MINIO_ROOT_USER: norn
-      MINIO_ROOT_PASSWORD: nornnorn
-    volumes:
-      - minio_data:/data
-
 volumes:
   valkey_data:
   redpanda_data:
-  minio_data:

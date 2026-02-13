@@ -63,9 +63,9 @@ func main() {
 			UseSSL:    cfg.S3UseSSL,
 		})
 		if err != nil {
-			log.Printf("WARNING: S3/MinIO unavailable (%v)", err)
+			log.Printf("WARNING: S3 storage unavailable (%v)", err)
 		} else {
-			log.Println("S3/MinIO connected at " + cfg.S3Endpoint)
+			log.Println("S3 storage connected at " + cfg.S3Endpoint)
 		}
 	}
 

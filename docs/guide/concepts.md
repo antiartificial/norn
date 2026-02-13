@@ -120,13 +120,13 @@ services:
 
 ### Object Storage (S3-compatible)
 
-S3-compatible bucket storage. Uses MinIO locally, or Cloudflare R2 / AWS S3 / GCS in production.
+S3-compatible bucket storage. Configure with Cloudflare R2, AWS S3, GCS, or any S3-compatible provider.
 
 ```yaml
 services:
   storage:
     bucket: my-app-uploads
-    provider: minio
+    provider: r2
 ```
 
 ## Core apps

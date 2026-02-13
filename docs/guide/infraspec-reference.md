@@ -111,7 +111,7 @@ Shared service dependencies. Each service is provisioned with per-app isolation.
 | Field | Type | Description |
 |-------|------|-------------|
 | `services.storage.bucket` | string | S3 bucket name. |
-| `services.storage.provider` | string | Provider hint: `minio`, `r2`, `s3`, `gcs`, `spaces`. |
+| `services.storage.provider` | string | Provider hint: `r2`, `s3`, `gcs`, `spaces`. |
 
 ### `secrets`
 

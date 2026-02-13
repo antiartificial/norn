@@ -28,7 +28,7 @@ features:
   - title: Functions
     details: HTTP-triggered ephemeral containers — invoke from the dashboard, CLI, or API with automatic execution tracking.
   - title: Object Storage
-    details: S3-compatible storage with MinIO for local dev and Cloudflare R2, AWS S3, or GCS for production.
+    details: S3-compatible storage with Cloudflare R2, AWS S3, GCS, or any S3-compatible provider.
 ---
 
 ## What is Norn?
