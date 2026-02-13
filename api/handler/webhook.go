@@ -148,12 +148,27 @@ func verifySignature(payload []byte, secret, signature string) bool {
 }
 
 func matchesRepoURL(specURL, cloneURL, sshURL string) bool {
-	return normalizeURL(specURL) == normalizeURL(cloneURL) ||
-		normalizeURL(specURL) == normalizeURL(sshURL)
+	specPath := repoPath(specURL)
+	return specPath == repoPath(cloneURL) || specPath == repoPath(sshURL)
 }
 
-func normalizeURL(u string) string {
+// repoPath extracts the owner/repo path from any git URL format.
+// e.g. "http://gitea.local:3000/norn/myapp.git" → "norn/myapp"
+//      "ssh://git@host:2222/norn/myapp.git"     → "norn/myapp"
+//      "git@github.com:norn/myapp.git"           → "norn/myapp"
+func repoPath(u string) string {
 	u = strings.TrimSuffix(u, ".git")
 	u = strings.TrimRight(u, "/")
+	// SSH shorthand: git@host:owner/repo
+	if i := strings.Index(u, ":"); i > 0 && !strings.Contains(u, "://") {
+		return strings.ToLower(u[i+1:])
+	}
+	// URL with scheme: extract path after host
+	if i := strings.Index(u, "://"); i >= 0 {
+		rest := u[i+3:] // strip scheme
+		if j := strings.Index(rest, "/"); j >= 0 {
+			return strings.ToLower(rest[j+1:])
+		}
+	}
 	return strings.ToLower(u)
 }
