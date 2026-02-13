@@ -64,6 +64,13 @@ func (p *Pipeline) Run(deploy *model.Deployment, spec *model.InfraSpec) {
 			Output:     output,
 		})
 
+		p.WS.Broadcast(hub.Event{Type: "deploy.step", AppID: deploy.App, Payload: map[string]string{
+			"step":       s.name,
+			"status":     string(stepStatus),
+			"output":     output,
+			"durationMs": fmt.Sprintf("%d", elapsed),
+		}})
+
 		if err != nil {
 			deploy.Status = model.StatusFailed
 			deploy.Error = fmt.Sprintf("%s: %v", s.name, err)
@@ -187,7 +194,9 @@ func (p *Pipeline) build(ctx context.Context, d *model.Deployment, s *model.Infr
 	if workDir == "" {
 		workDir = "."
 	}
-	cmd := exec.CommandContext(ctx, "docker", "build", "-t", d.ImageTag, workDir)
+	cmd := exec.CommandContext(ctx, "docker", "build",
+		"--build-arg", fmt.Sprintf("VERSION=%s", d.CommitSHA),
+		"-t", d.ImageTag, workDir)
 	out, err := cmd.CombinedOutput()
 	if err != nil {
 		return string(out), err
@@ -259,6 +268,9 @@ func (p *Pipeline) migrate(ctx context.Context, d *model.Deployment, s *model.In
 		return "skipped (no migrations)", nil
 	}
 	cmd := exec.CommandContext(ctx, "sh", "-c", s.Migrations.Command)
+	if d.WorkDir != "" {
+		cmd.Dir = d.WorkDir
+	}
 	out, err := cmd.CombinedOutput()
 	return string(out), err
 }
