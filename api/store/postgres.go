@@ -341,6 +341,49 @@ func (db *DB) ListHealthChecks(ctx context.Context, app string, since time.Time)
 	return checks, nil
 }
 
+// --- Daily Stats ---
+
+type DailyStats struct {
+	TotalBuilds    int    `json:"totalBuilds"`
+	TotalDeploys   int    `json:"totalDeploys"`
+	TotalFailures  int    `json:"totalFailures"`
+	MostPopularApp string `json:"mostPopularApp"`
+	MostPopularN   int    `json:"mostPopularN"`
+}
+
+func (db *DB) GetDailyStats(ctx context.Context) (*DailyStats, error) {
+	s := &DailyStats{}
+
+	row := db.pool.QueryRow(ctx, `
+		SELECT
+			COUNT(*),
+			COUNT(*) FILTER (WHERE status = 'deployed'),
+			COUNT(*) FILTER (WHERE status = 'failed')
+		FROM deployments
+		WHERE started_at >= CURRENT_DATE
+	`)
+	if err := row.Scan(&s.TotalBuilds, &s.TotalDeploys, &s.TotalFailures); err != nil {
+		return nil, err
+	}
+
+	var app *string
+	var n *int
+	err := db.pool.QueryRow(ctx, `
+		SELECT app, COUNT(*) AS n
+		FROM deployments
+		WHERE started_at >= CURRENT_DATE
+		GROUP BY app
+		ORDER BY n DESC
+		LIMIT 1
+	`).Scan(&app, &n)
+	if err == nil && app != nil {
+		s.MostPopularApp = *app
+		s.MostPopularN = *n
+	}
+
+	return s, nil
+}
+
 func (db *DB) PruneHealthChecks(ctx context.Context) (int64, error) {
 	tag, err := db.pool.Exec(ctx,
 		`DELETE FROM health_checks WHERE checked_at < now() - interval '24 hours'`,

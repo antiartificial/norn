@@ -12,6 +12,7 @@ import { Welcome } from './components/Welcome.tsx'
 import { CommandsModal } from './components/CommandsModal.tsx'
 import { RollbackModal } from './components/RollbackModal.tsx'
 import { DeployHistory } from './components/DeployHistory.tsx'
+import { StatsPanel } from './components/StatsPanel.tsx'
 import { StatusBar } from './components/StatusBar.tsx'
 import { Tooltip } from './components/Tooltip.tsx'
 import type { WSEvent, StepLog, HealthCheck } from './types/index.ts'
@@ -90,9 +91,17 @@ export function App() {
     if (event.type === 'deploy.step' || event.type === 'deploy.completed' || event.type === 'deploy.failed') {
       const payload = event.payload as Record<string, unknown>
       if (event.type === 'deploy.step') {
+        const output = payload['output'] as string | undefined
+        const durationMs = payload['durationMs'] ? Number(payload['durationMs']) : undefined
         setDeployState((prev) => ({
           appId: event.appId,
-          steps: upsertStep(prev?.steps ?? [], { step: payload['step'] as string, status: payload['status'] as string, startedAt: Date.now() }),
+          steps: upsertStep(prev?.steps ?? [], {
+            step: payload['step'] as string,
+            status: payload['status'] as string,
+            startedAt: Date.now(),
+            ...(output && { output }),
+            ...(durationMs != null && { durationMs }),
+          }),
           status: payload['status'] as string,
         }))
       } else if (event.type === 'deploy.completed') {
@@ -370,6 +379,8 @@ export function App() {
           />
         ) : (
         <>
+        {apps.length > 0 && <StatsPanel />}
+
         {apps.length > 0 && (
           <div className="app-filters">
             {(['all', 'healthy', 'unhealthy', 'core'] as const).map(f => (
