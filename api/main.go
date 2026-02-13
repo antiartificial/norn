@@ -142,6 +142,7 @@ func main() {
 		})
 		r.Post("/webhooks/push", h.WebhookPush)
 		r.Get("/apps", h.ListApps)
+		r.Get("/validate", h.ValidateAllApps)
 		r.Get("/deployments", h.ListAllDeployments)
 		r.Route("/apps/{id}", func(r chi.Router) {
 			r.Use(handler.ValidateAppID)
@@ -167,6 +168,7 @@ func main() {
 			r.Put("/cron/schedule", h.CronUpdateSchedule)
 			r.Post("/invoke", h.FuncInvoke)
 			r.Get("/function/history", h.FuncHistory)
+			r.Get("/validate", h.ValidateApp)
 		})
 		r.Route("/cluster", func(r chi.Router) {
 			r.Get("/nodes", h.ListClusterNodes)

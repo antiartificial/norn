@@ -251,6 +251,39 @@ func (c *Client) RemoveClusterNode(id string) error {
 	return c.delete("/api/cluster/nodes/" + id)
 }
 
+// --- Validation ---
+
+type ValidationFinding struct {
+	Check    string `json:"check"`
+	Severity string `json:"severity"`
+	Message  string `json:"message"`
+	Field    string `json:"field,omitempty"`
+}
+
+type ValidationResult struct {
+	App      string              `json:"app"`
+	Errors   int                 `json:"errors"`
+	Warnings int                 `json:"warnings"`
+	Infos    int                 `json:"infos"`
+	Findings []ValidationFinding `json:"findings"`
+}
+
+func (c *Client) ValidateApp(id string) (*ValidationResult, error) {
+	var result ValidationResult
+	if err := c.get("/api/apps/"+id+"/validate", &result); err != nil {
+		return nil, err
+	}
+	return &result, nil
+}
+
+func (c *Client) ValidateAll() ([]ValidationResult, error) {
+	var results []ValidationResult
+	if err := c.get("/api/validate", &results); err != nil {
+		return nil, err
+	}
+	return results, nil
+}
+
 func (c *Client) WebSocketURL() string {
 	base := c.BaseURL
 	base = strings.Replace(base, "http://", "ws://", 1)

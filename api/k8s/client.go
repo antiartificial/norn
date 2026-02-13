@@ -284,6 +284,17 @@ func (c *Client) PatchConfigMap(ctx context.Context, namespace, name, dataKey st
 	return err
 }
 
+func (c *Client) SecretExists(ctx context.Context, namespace, name string) (bool, error) {
+	_, err := c.cs.CoreV1().Secrets(namespace).Get(ctx, name, metav1.GetOptions{})
+	if err != nil {
+		if k8serrors.IsNotFound(err) {
+			return false, nil
+		}
+		return false, err
+	}
+	return true, nil
+}
+
 func (c *Client) DeleteDeployment(ctx context.Context, namespace, name string) error {
 	err := c.cs.AppsV1().Deployments(namespace).Delete(ctx, name, metav1.DeleteOptions{})
 	if k8serrors.IsNotFound(err) {
