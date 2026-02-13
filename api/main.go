@@ -137,6 +137,7 @@ func main() {
 	r.Route("/api", func(r chi.Router) {
 		r.Get("/health", h.Health)
 		r.Get("/stats", h.GetStats)
+		r.Get("/stats/uptime-leaderboard", h.GetUptimeLeaderboard)
 		r.Get("/version", func(w http.ResponseWriter, r *http.Request) {
 			w.Header().Set("Content-Type", "application/json")
 			json.NewEncoder(w).Encode(map[string]string{"version": Version})

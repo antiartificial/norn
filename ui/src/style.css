@@ -1715,3 +1715,35 @@ body {
 .stat-card-value { font-size: 18px; font-weight: 600; font-family: var(--mono); margin-top: 2px; }
 .stat-card-value.fail { color: var(--red); }
 .stat-card-detail { font-size: 10px; color: var(--text-dim); margin-top: 2px; font-family: var(--mono); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+
+/* Clickable stat cards */
+.stat-card-clickable { cursor: pointer; transition: border-color 0.15s; }
+.stat-card-clickable:hover { border-color: var(--blue); }
+.stat-card-clickable.active { border-color: var(--blue); background: var(--surface-hover); }
+
+/* Stats Drilldown Panel */
+.stats-drilldown { background: var(--surface); border: 1px solid var(--border); border-radius: var(--radius); padding: 16px; margin-bottom: 16px; animation: fade-in 0.15s ease-out; }
+.stats-drilldown-header { display: flex; justify-content: space-between; align-items: center; margin-bottom: 12px; }
+.stats-drilldown-header h4 { font-size: 14px; display: flex; align-items: center; gap: 6px; }
+.stats-drilldown-list { display: flex; flex-direction: column; gap: 4px; }
+.drilldown-loading, .drilldown-empty { text-align: center; padding: 24px; font-size: 12px; color: var(--text-dim); }
+
+/* Drilldown deployment rows */
+.drilldown-row { display: flex; align-items: center; gap: 10px; background: var(--surface-hover); padding: 8px 10px; border-radius: 4px; font-size: 12px; }
+.drilldown-app { font-weight: 500; min-width: 100px; }
+.drilldown-sha { font-family: var(--mono); color: var(--blue); min-width: 56px; }
+.drilldown-error { color: var(--red); font-size: 11px; flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.drilldown-time { color: var(--text-dim); font-size: 11px; min-width: 56px; text-align: right; }
+
+/* Uptime leaderboard */
+.leaderboard-row { display: flex; align-items: center; gap: 12px; background: var(--surface-hover); padding: 10px 12px; border-radius: 4px; }
+.leaderboard-rank { width: 28px; height: 28px; border-radius: 50%; display: flex; align-items: center; justify-content: center; font-weight: 700; font-size: 13px; font-family: var(--mono); background: var(--surface); border: 1px solid var(--border); flex-shrink: 0; }
+.leaderboard-rank.gold { color: #ffd700; border-color: #ffd700; }
+.leaderboard-rank.silver { color: #c0c0c0; border-color: #c0c0c0; }
+.leaderboard-rank.bronze { color: #cd7f32; border-color: #cd7f32; }
+.leaderboard-info { flex: 1; min-width: 0; }
+.leaderboard-pod { font-family: var(--mono); font-size: 11px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.leaderboard-app { font-size: 10px; color: var(--text-dim); }
+.leaderboard-uptime { font-family: var(--mono); font-size: 16px; font-weight: 600; min-width: 80px; text-align: right; }
+.leaderboard-meta { font-size: 10px; color: var(--text-dim); min-width: 56px; text-align: right; }
+.leaderboard-restarts { color: var(--amber); }
