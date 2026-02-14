@@ -140,7 +140,7 @@ Checks the health of PostgreSQL, the API, UI, Valkey, Redpanda, Kubernetes, and 
 
 ## Next steps
 
-- [Concepts](/guide/concepts) — understand infraspec anatomy and app roles
-- [Infraspec Reference](/guide/infraspec-reference) — every field documented
-- [Architecture Overview](/architecture/overview) — how the pieces fit together
-- [CLI Commands](/cli/commands) — full command reference
+- [Concepts](/v1/guide/concepts) — understand infraspec anatomy and app roles
+- [Infraspec Reference](/v1/guide/infraspec-reference) — every field documented
+- [Architecture Overview](/v1/architecture/overview) — how the pieces fit together
+- [CLI Commands](/v1/cli/commands) — full command reference
