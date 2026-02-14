@@ -42,17 +42,17 @@ Default: `http://localhost:8800`
 
 | Command | Description |
 |---------|-------------|
-| [`norn status`](/cli/commands#status) | List all apps with health, commit, hosts, services |
-| [`norn deploy`](/cli/commands#deploy) | Deploy a commit with live pipeline progress |
-| [`norn restart`](/cli/commands#restart) | Rolling restart with spinner |
-| [`norn rollback`](/cli/commands#rollback) | Rollback to previous deployment |
-| [`norn logs`](/cli/commands#logs) | Stream pod logs (fullscreen, scrollable) |
-| [`norn secrets`](/cli/commands#secrets) | List secret names |
-| [`norn health`](/cli/commands#health) | Check all backing services |
-| [`norn version`](/cli/commands#version) | Version and API endpoint info |
-| [`norn forge`](/cli/commands#forge) | Provision infrastructure for an app |
-| [`norn teardown`](/cli/commands#teardown) | Remove infrastructure for an app |
-| [`norn cluster`](/cli/cluster) | Manage k3s cluster nodes |
+| [`norn status`](/v1/cli/commands#status) | List all apps with health, commit, hosts, services |
+| [`norn deploy`](/v1/cli/commands#deploy) | Deploy a commit with live pipeline progress |
+| [`norn restart`](/v1/cli/commands#restart) | Rolling restart with spinner |
+| [`norn rollback`](/v1/cli/commands#rollback) | Rollback to previous deployment |
+| [`norn logs`](/v1/cli/commands#logs) | Stream pod logs (fullscreen, scrollable) |
+| [`norn secrets`](/v1/cli/commands#secrets) | List secret names |
+| [`norn health`](/v1/cli/commands#health) | Check all backing services |
+| [`norn version`](/v1/cli/commands#version) | Version and API endpoint info |
+| [`norn forge`](/v1/cli/commands#forge) | Provision infrastructure for an app |
+| [`norn teardown`](/v1/cli/commands#teardown) | Remove infrastructure for an app |
+| [`norn cluster`](/v1/cli/cluster) | Manage k3s cluster nodes |
 
 ## Charm libraries
 

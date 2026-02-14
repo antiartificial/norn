@@ -8,27 +8,27 @@ hero:
   actions:
     - theme: brand
       text: Get Started
-      link: /guide/getting-started
+      link: /v2/guide/getting-started
     - theme: alt
       text: Architecture
-      link: /architecture/overview
+      link: /v2/architecture/overview
     - theme: alt
       text: CLI Reference
-      link: /cli/commands
+      link: /v2/cli/commands
 
 features:
   - title: Discover
     details: Scans ~/projects for infraspec.yaml files and automatically registers apps with their infrastructure dependencies.
   - title: Deploy
-    details: Seven-step pipeline — clone, build, test, snapshot, migrate, deploy, cleanup — with real-time progress over WebSocket.
-  - title: Forge
-    details: Provisions Kubernetes infrastructure for an app — deployment, service, Cloudflare tunnel, DNS — in a single command.
+    details: Nine-step pipeline — clone, build, test, snapshot, migrate, submit, healthy, forge, cleanup — with real-time saga events over WebSocket.
+  - title: Orchestrate
+    details: Translates infraspec processes to Nomad jobs — services, periodic batch for cron, one-shot batch for functions — with Consul service discovery.
   - title: Monitor
-    details: Health checks, pod status, log streaming, and deployment history — from the dashboard or the terminal.
+    details: Health checks, allocation status, log streaming, and deployment history — from the dashboard or the terminal.
   - title: Functions
-    details: HTTP-triggered ephemeral containers — invoke from the dashboard, CLI, or API with automatic execution tracking.
-  - title: Object Storage
-    details: S3-compatible storage with Cloudflare R2, AWS S3, GCS, or any S3-compatible provider.
+    details: HTTP-triggered ephemeral containers — invoke from the dashboard, CLI, or API with automatic execution tracking via Nomad batch jobs.
+  - title: Saga Events
+    details: Append-only event log for every operation — deploys, restarts, scales — providing an immutable audit trail.
 ---
 
 ## What is Norn?
@@ -37,12 +37,13 @@ Norn is a personal control plane for self-hosted infrastructure. It discovers yo
 
 ![Norn Dashboard](/screenshots/dashboard.png)
 
-Each app declares its needs in an `infraspec.yaml`: role, port, services, secrets, migrations. Norn reads these specs and handles the rest — building Docker images, running migrations, syncing secrets, managing Kubernetes deployments, and routing traffic through Cloudflare tunnels.
+Each app declares its needs in an `infraspec.yaml`: processes, ports, services, secrets, migrations. Norn reads these specs and handles the rest — building Docker images, running migrations, resolving secrets, submitting Nomad jobs, and routing traffic through Cloudflare tunnels.
 
 ### Quick start
 
 ```bash
-make setup   # check prereqs, create database, install deps
+cd norn/v2
+make build   # build API + CLI
 make dev     # start API (:8800) + UI (:5173)
 ```
 
@@ -52,7 +53,7 @@ make dev     # start API (:8800) + UI (:5173)
 norn status            # list all apps
 norn deploy myapp HEAD # deploy with live pipeline progress
 norn health            # check backing services
-norn logs myapp        # stream pod logs
+norn logs myapp        # stream live logs
 ```
 
 ![CLI status](/screenshots/cli-status.png)

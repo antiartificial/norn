@@ -116,6 +116,6 @@ norn health              # check all services
 
 ## Next steps
 
-- [Concepts](/guide/concepts) — understand roles, services, and forge vs deploy
-- [Infraspec Reference](/guide/infraspec-reference) — all configuration fields
-- [Roles Guide](/guide/roles) — webserver, worker, cron, function examples
+- [Concepts](/v1/guide/concepts) — understand roles, services, and forge vs deploy
+- [Infraspec Reference](/v1/guide/infraspec-reference) — all configuration fields
+- [Roles Guide](/v1/guide/roles) — webserver, worker, cron, function examples

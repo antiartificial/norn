@@ -28,7 +28,7 @@ The infraspec is the single source of truth for an app's infrastructure requirem
 - **Migrations**: command to run schema migrations
 - **Artifacts**: how many image tags to retain
 
-See the [Infraspec Reference](/guide/infraspec-reference) for every field.
+See the [Infraspec Reference](/v1/guide/infraspec-reference) for every field.
 
 ## App roles
 
