@@ -1,0 +1,101 @@
+#cloud-config
+
+# Norn v2 worker node bootstrap
+# Usage: doctl compute droplet create norn-worker-1 \
+#   --region sfo3 --size s-1vcpu-1gb --image ubuntu-24-04-x64 \
+#   --ssh-keys <fingerprint> --user-data-file v2/dev/cloud-init.yaml \
+#   --tag-name norn-worker
+
+# Secrets are baked in -- regenerate tokens before reuse.
+
+write_files:
+  - path: /etc/nomad.d/client.hcl
+    content: |
+      data_dir = "/opt/nomad"
+      datacenter = "dc1"
+
+      client {
+        enabled = true
+        servers = ["100.89.46.50:4647"]
+      }
+
+      plugin "docker" {
+        config {
+          auth {
+            config = "/root/.docker/config.json"
+          }
+        }
+      }
+
+  - path: /etc/consul.d/client.hcl
+    content: |
+      data_dir = "/opt/consul"
+      datacenter = "dc1"
+      bind_addr = "{{ GetInterfaceIP \"tailscale0\" }}"
+      retry_join = ["100.89.46.50"]
+
+  - path: /root/.docker/config.json
+    permissions: "0600"
+    content: |
+      {
+        "auths": {
+          "ghcr.io": {
+            "auth": "YW50aWFydGlmaWNpYWw6Z2hwX3BwYTlOSTY4NldFR1ZVZlJINk10YWhtd0NEYk5PdDJMaE5xOQ=="
+          }
+        }
+      }
+
+  - path: /etc/systemd/system/nomad.service
+    content: |
+      [Unit]
+      Description=Nomad Client
+      After=network-online.target docker.service tailscaled.service
+      Wants=network-online.target
+
+      [Service]
+      ExecStart=/usr/bin/nomad agent -config /etc/nomad.d/client.hcl
+      Restart=on-failure
+      RestartSec=5
+
+      [Install]
+      WantedBy=multi-user.target
+
+  - path: /etc/systemd/system/consul.service
+    content: |
+      [Unit]
+      Description=Consul Client
+      After=network-online.target tailscaled.service
+      Wants=network-online.target
+
+      [Service]
+      ExecStart=/usr/bin/consul agent -config-dir /etc/consul.d
+      Restart=on-failure
+      RestartSec=5
+
+      [Install]
+      WantedBy=multi-user.target
+
+packages:
+  - docker.io
+  - curl
+  - jq
+
+runcmd:
+  # Install Tailscale
+  - curl -fsSL https://tailscale.com/install.sh | sh
+  - tailscale up --auth-key=tskey-auth-kBd9oTpamC21CNTRL-Aa3ohqLJGZ71fSQxUtNJZ7nZ1Z8MktqnN --hostname=norn-worker-1
+
+  # Install Nomad
+  - curl -fsSL https://apt.releases.hashicorp.com/gpg | gpg --dearmor -o /usr/share/keyrings/hashicorp-archive-keyring.gpg
+  - echo "deb [signed-by=/usr/share/keyrings/hashicorp-archive-keyring.gpg] https://apt.releases.hashicorp.com $(lsb_release -cs) main" > /etc/apt/sources.list.d/hashicorp.list
+  - apt-get update
+  - apt-get install -y nomad consul
+
+  # Create data directories
+  - mkdir -p /opt/nomad /opt/consul
+
+  # Enable and start services
+  - systemctl daemon-reload
+  - systemctl enable --now docker
+  - systemctl enable --now consul
+  - systemctl enable --now nomad
