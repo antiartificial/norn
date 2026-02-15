@@ -45,7 +45,13 @@ function nodeLabel(provider?: string, region?: string, name?: string): { icon: s
   }
 }
 
-function EndpointBadges({ spec, allocations }: { spec: AppStatus['spec'], allocations: AppStatus['allocations'] }) {
+function EndpointBadges({ spec, allocations, activeIngress, appId, onToggleEndpoint }: {
+  spec: AppStatus['spec'],
+  allocations: AppStatus['allocations'],
+  activeIngress?: Set<string>,
+  appId: string,
+  onToggleEndpoint?: (appId: string, hostname: string, enabled: boolean) => void,
+}) {
   const external = spec.endpoints ?? []
   // Dedupe internal addresses from running allocations
   const seen = new Set<string>()
@@ -60,11 +66,26 @@ function EndpointBadges({ spec, allocations }: { spec: AppStatus['spec'], alloca
     internal.push({ host, url, provider: a.nodeProvider, region: a.nodeRegion, nodeName: a.nodeName })
   }
   if (external.length === 0 && internal.length === 0) return null
+  const hasIngress = activeIngress && activeIngress.size > 0
   return (
     <div className="app-card-endpoints">
-      {external.map(ep => (
-        <CopyBadge key={ep.url} url={ep.url} icon="fa-globe" label={new URL(ep.url).hostname} region={ep.region} className="external" />
-      ))}
+      {external.map(ep => {
+        const hostname = new URL(ep.url).hostname
+        const isActive = activeIngress?.has(hostname) ?? false
+        return (
+          <span key={ep.url} className="endpoint-group">
+            <CopyBadge url={ep.url} icon="fa-globe" label={hostname} region={ep.region} className="external" />
+            {hasIngress && onToggleEndpoint && (
+              <Tooltip text={isActive ? 'Disable endpoint' : 'Enable endpoint'}>
+                <i
+                  className={`fawsb endpoint-toggle ${isActive ? 'fa-cloud active' : 'fa-cloud-slash'}`}
+                  onClick={() => onToggleEndpoint(appId, hostname, !isActive)}
+                />
+              </Tooltip>
+            )}
+          </span>
+        )
+      })}
       {internal.map(ep => {
         const node = nodeLabel(ep.provider, ep.region, ep.nodeName)
         return (
@@ -83,6 +104,7 @@ function EndpointBadges({ spec, allocations }: { spec: AppStatus['spec'], alloca
 interface Props {
   app: AppStatus
   busy: boolean
+  activeIngress?: Set<string>
   onDeploy: (appId: string) => void
   onRestart: (appId: string) => void
   onScale: (appId: string) => void
@@ -91,9 +113,10 @@ interface Props {
   onSnapshots?: (appId: string) => void
   onCron?: (appId: string) => void
   onFunction?: (appId: string) => void
+  onToggleEndpoint?: (appId: string, hostname: string, enabled: boolean) => void
 }
 
-export function AppCard({ app, busy, onDeploy, onRestart, onScale, onViewLogs, onExec, onSnapshots, onCron, onFunction }: Props) {
+export function AppCard({ app, busy, activeIngress, onDeploy, onRestart, onScale, onViewLogs, onExec, onSnapshots, onCron, onFunction, onToggleEndpoint }: Props) {
   const { spec, healthy, nomadStatus } = app
   const allocations = app.allocations ?? []
 
@@ -205,7 +228,7 @@ export function AppCard({ app, busy, onDeploy, onRestart, onScale, onViewLogs, o
       })()}
 
       {/* Endpoints */}
-      <EndpointBadges spec={spec} allocations={allocations} />
+      <EndpointBadges spec={spec} allocations={allocations} activeIngress={activeIngress} appId={spec.name} onToggleEndpoint={onToggleEndpoint} />
 
       <div className="app-card-actions">
         <Tooltip text="Deploy latest from repo">

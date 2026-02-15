@@ -50,10 +50,13 @@ make dev     # start API (:8800) + UI (:5173)
 ### From the terminal
 
 ```bash
-norn status            # list all apps
-norn deploy myapp HEAD # deploy with live pipeline progress
-norn health            # check backing services
-norn logs myapp        # stream live logs
+norn status                   # list all apps
+norn deploy myapp HEAD        # deploy with live pipeline progress
+norn health                   # check backing services
+norn logs myapp               # stream live logs
+norn endpoints myapp          # view cloudflared routing status
+norn endpoints toggle myapp \ # toggle a single endpoint
+  myapp.example.com
 ```
 
 ![CLI status](/screenshots/cli-status.png)

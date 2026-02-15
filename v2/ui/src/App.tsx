@@ -66,6 +66,7 @@ export function App() {
   const [filter, setFilter] = useState<'all' | 'healthy' | 'unhealthy'>('all')
   const [view, setView] = useState<'apps' | 'history' | 'stats'>('apps')
   const [apiVersion, setApiVersion] = useState<string | null>(null)
+  const [activeIngress, setActiveIngress] = useState<Set<string>>(new Set())
 
   const handleWsEvent = useCallback((event: WSEvent) => {
     if (event.type === 'deploy.step' || event.type === 'deploy.completed' || event.type === 'deploy.failed') {
@@ -115,12 +116,30 @@ export function App() {
 
   const { connected } = useWebSocket(handleWsEvent)
 
+  const fetchIngress = useCallback(() => {
+    fetch(apiUrl('/api/cloudflared/ingress'), fetchOpts)
+      .then(r => r.json())
+      .then(data => setActiveIngress(new Set(data.hostnames ?? [])))
+      .catch(() => {})
+  }, [])
+
   useEffect(() => {
     fetch(apiUrl('/api/version'), fetchOpts)
       .then(r => r.json())
       .then(data => setApiVersion(data.version))
       .catch(() => {})
-  }, [])
+    fetchIngress()
+  }, [fetchIngress])
+
+  const handleToggleEndpoint = async (appId: string, hostname: string, enabled: boolean) => {
+    await fetch(apiUrl(`/api/apps/${appId}/endpoints/toggle`), {
+      ...fetchOpts,
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ hostname, enabled }),
+    })
+    fetchIngress()
+  }
 
   const handleDeploy = async (appId: string) => {
     setDeployState({ appId, steps: [], status: 'queued' })
@@ -238,6 +257,7 @@ export function App() {
                 key={appId}
                 app={app}
                 busy={isBusy(appId)}
+                activeIngress={activeIngress}
                 onDeploy={handleDeploy}
                 onRestart={handleRestart}
                 onScale={handleScale}
@@ -246,6 +266,7 @@ export function App() {
                 onSnapshots={setSnapshotsApp}
                 onCron={setCronApp}
                 onFunction={setFunctionApp}
+                onToggleEndpoint={handleToggleEndpoint}
               />
             )
           })}

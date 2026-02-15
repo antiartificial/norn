@@ -26,7 +26,8 @@ type Config struct {
 	CFAccessTeamDomain string
 	CFAccessAUD        string
 
-	WebhookSecret string // NORN_WEBHOOK_SECRET
+	WebhookSecret      string // NORN_WEBHOOK_SECRET
+	CloudflaredConfig  string // NORN_CLOUDFLARED_CONFIG
 }
 
 func Load() *Config {
@@ -54,7 +55,8 @@ func Load() *Config {
 		CFAccessTeamDomain: os.Getenv("NORN_CF_ACCESS_TEAM_DOMAIN"),
 		CFAccessAUD:        os.Getenv("NORN_CF_ACCESS_AUD"),
 
-		WebhookSecret: os.Getenv("NORN_WEBHOOK_SECRET"),
+		WebhookSecret:     os.Getenv("NORN_WEBHOOK_SECRET"),
+		CloudflaredConfig: envOr("NORN_CLOUDFLARED_CONFIG", os.Getenv("HOME")+"/.cloudflared/config.yml"),
 	}
 }
 

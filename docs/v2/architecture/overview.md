@@ -73,6 +73,7 @@ v2/cli/
 │   ├── saga.go
 │   ├── validate.go
 │   ├── forge.go
+│   ├── endpoints.go
 │   ├── stream.go
 │   └── version.go
 └── api/               # HTTP client for the Norn API
@@ -109,6 +110,7 @@ v2/ui/
 | GET | `/api/validate/{id}` | Validate a single infraspec |
 | GET | `/api/saga` | List recent saga events |
 | GET | `/api/saga/{sagaId}` | Get all events for a saga |
+| GET | `/api/cloudflared/ingress` | List active cloudflared hostnames |
 | POST | `/api/webhooks/{provider}` | Webhook receiver (GitHub) |
 
 ### Per-App (`/api/apps/{id}/...`)
@@ -135,6 +137,7 @@ v2/ui/
 | GET | `/function/history` | Function execution history |
 | POST | `/forge` | Set up cloudflared routing |
 | POST | `/teardown` | Remove cloudflared routing |
+| POST | `/endpoints/toggle` | Toggle a single cloudflared endpoint |
 | GET | `/exec` | Exec into a running allocation |
 
 ### WebSocket

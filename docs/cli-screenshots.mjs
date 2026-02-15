@@ -11,7 +11,7 @@ import { execSync } from 'child_process'
 const OUT = join(import.meta.dirname, 'public/screenshots')
 mkdirSync(OUT, { recursive: true })
 
-const NORN = '/Users/0xadb/projects/norn/bin/norn'
+const NORN = '/Users/0xadb/projects/norn/v2/bin/norn'
 
 // Simple ANSI to HTML converter
 function ansiToHtml(text) {
@@ -157,6 +157,9 @@ async function main() {
 
   await captureTerminal(browser, 'cli-status.png', 'norn status', `${NORN} status`)
   await captureTerminal(browser, 'cli-version.png', 'norn version', `${NORN} version`)
+
+  // Endpoints — requires API to be running
+  await captureTerminal(browser, 'cli-endpoints.png', 'norn endpoints signal-sideband', `${NORN} endpoints signal-sideband`)
 
   await browser.close()
   console.log(`\n  ✔ CLI screenshots saved to docs/public/screenshots/`)
