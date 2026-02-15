@@ -4,13 +4,18 @@ import (
 	"encoding/json"
 	"fmt"
 	"log"
+	"os"
+	"strconv"
 	"time"
 
 	"github.com/charmbracelet/lipgloss"
 	"github.com/gorilla/websocket"
+	"github.com/mattn/go-isatty"
 
 	"norn/v2/cli/style"
 )
+
+const stepNameWidth = 8 // longest step name is "snapshot"
 
 type wsEvent struct {
 	Type    string            `json:"type"`
@@ -38,6 +43,8 @@ func streamViaWebSocket(sagaID string) error {
 	defer conn.Close()
 
 	conn.SetReadDeadline(time.Now().Add(5 * time.Minute))
+	tty := isatty.IsTerminal(os.Stdout.Fd())
+	stepRunning := false
 
 	for {
 		_, msg, err := conn.ReadMessage()
@@ -50,32 +57,80 @@ func streamViaWebSocket(sagaID string) error {
 			continue
 		}
 
-		// Filter to our saga
 		if evt.Payload["sagaId"] != sagaID {
 			continue
 		}
 
-		icon, s := eventStyle(evt)
-		fmt.Printf("  %s %s\n", s.Render(icon), eventMessage(evt))
+		switch evt.Type {
+		case "deploy.step":
+			step := evt.Payload["step"]
+			idx := evt.Payload["index"]
+			total := evt.Payload["total"]
+			status := evt.Payload["status"]
 
-		if evt.Type == "deploy.completed" {
+			switch status {
+			case "running":
+				if tty && stepRunning {
+					// Clear previous running line (shouldn't happen, but be safe)
+					fmt.Print("\r\033[2K")
+				}
+				line := formatStepLine("▶", style.StepRunning, step, "...", idx, total)
+				if tty {
+					fmt.Print(line)
+					stepRunning = true
+				} else {
+					fmt.Println(line)
+				}
+			case "complete":
+				dur := formatDuration(evt.Payload["durationMs"])
+				line := formatStepLine("✓", style.StepDone, step, dur, idx, total)
+				if tty && stepRunning {
+					fmt.Printf("\r\033[2K%s\n", line)
+				} else {
+					fmt.Println(line)
+				}
+				stepRunning = false
+			case "failed":
+				dur := formatDuration(evt.Payload["durationMs"])
+				line := formatStepLine("✗", style.StepFailed, step, dur, idx, total)
+				if tty && stepRunning {
+					fmt.Printf("\r\033[2K%s\n", line)
+				} else {
+					fmt.Println(line)
+				}
+				stepRunning = false
+			}
+
+		case "deploy.progress":
+			if tty && stepRunning {
+				// Print progress as sub-line below the running step
+				fmt.Println() // finish current running line
+				stepRunning = false
+			}
+			msg := evt.Payload["message"]
+			fmt.Printf("    %s %s\n", style.DimText.Render("·"), msg)
+
+		case "deploy.completed":
 			fmt.Println()
 			fmt.Println(style.SuccessBox.Render("complete"))
 			return nil
-		}
-		if evt.Type == "deploy.failed" {
+
+		case "deploy.failed":
 			fmt.Println()
+			fmt.Printf("  %s %s\n", style.Unhealthy.Render("✗"), evt.Payload["error"])
 			fmt.Println(style.ErrorBox.Render("failed"))
 			return nil
 		}
 
-		// Reset deadline on each message
 		conn.SetReadDeadline(time.Now().Add(5 * time.Minute))
 	}
 }
 
 func streamViaPolling(sagaID string) error {
 	seen := map[string]bool{}
+	// Track step count for index/total from saga metadata
+	stepCount := 0
+
 	for i := 0; i < 150; i++ {
 		events, err := client.GetSagaEvents(sagaID)
 		if err != nil {
@@ -89,35 +144,33 @@ func streamViaPolling(sagaID string) error {
 			}
 			seen[evt.ID] = true
 
-			icon := "·"
-			s := style.DimText
 			switch evt.Action {
 			case "step.start":
-				icon = "▶"
-				s = style.StepRunning
+				stepCount++
+				// Skip start events in polling — we'll show the completed line
 			case "step.complete":
-				icon = "✓"
-				s = style.StepDone
+				step := evt.Metadata["step"]
+				dur := formatDuration(evt.Metadata["durationMs"])
+				line := formatStepLine("✓", style.StepDone, step, dur, "", "")
+				fmt.Println(line)
 			case "step.failed":
-				icon = "✗"
-				s = style.StepFailed
+				step := evt.Metadata["step"]
+				dur := formatDuration(evt.Metadata["durationMs"])
+				line := formatStepLine("✗", style.StepFailed, step, dur, "", "")
+				fmt.Println(line)
 			case "deploy.complete":
-				icon = "✓"
-				s = style.Healthy
-			case "deploy.failed":
-				icon = "✗"
-				s = style.Unhealthy
-			}
-			fmt.Printf("  %s %s\n", s.Render(icon), evt.Message)
-
-			if evt.Action == "deploy.complete" || evt.Action == "deploy.failed" {
 				fmt.Println()
-				if evt.Action == "deploy.complete" {
-					fmt.Println(style.SuccessBox.Render("complete"))
-				} else {
-					fmt.Println(style.ErrorBox.Render("failed"))
-				}
+				fmt.Println(style.SuccessBox.Render("complete"))
 				return nil
+			case "deploy.failed":
+				fmt.Println()
+				fmt.Println(style.ErrorBox.Render("failed"))
+				return nil
+			default:
+				// Log/progress events
+				if evt.Action != "step.start" {
+					fmt.Printf("    %s %s\n", style.DimText.Render("·"), evt.Message)
+				}
 			}
 		}
 
@@ -127,40 +180,31 @@ func streamViaPolling(sagaID string) error {
 	return fmt.Errorf("timeout waiting for completion")
 }
 
-func eventStyle(evt wsEvent) (string, lipgloss.Style) {
-	switch evt.Type {
-	case "deploy.step":
-		switch evt.Payload["status"] {
-		case "running":
-			return "▶", style.StepRunning
-		case "complete":
-			return "✓", style.StepDone
-		case "failed":
-			return "✗", style.StepFailed
-		}
-	case "deploy.progress":
-		return "·", style.DimText
-	case "deploy.completed":
-		return "✓", style.Healthy
-	case "deploy.failed":
-		return "✗", style.Unhealthy
+func formatStepLine(icon string, iconStyle lipgloss.Style, step, duration, idx, total string) string {
+	paddedStep := fmt.Sprintf("%-*s", stepNameWidth, step)
+	paddedDur := fmt.Sprintf("%6s", duration)
+	counter := ""
+	if idx != "" && total != "" {
+		counter = fmt.Sprintf("   [%s/%s]", idx, total)
 	}
-	return "·", style.DimText
+	return fmt.Sprintf("  %s %s %s%s",
+		iconStyle.Render(icon),
+		paddedStep,
+		style.DimText.Render(paddedDur),
+		style.DimText.Render(counter),
+	)
 }
 
-func eventMessage(evt wsEvent) string {
-	switch evt.Type {
-	case "deploy.step":
-		return fmt.Sprintf("%s %s", evt.Payload["step"], evt.Payload["status"])
-	case "deploy.progress":
-		if msg, ok := evt.Payload["message"]; ok {
-			return msg
-		}
-		return "progress"
-	case "deploy.completed":
-		return fmt.Sprintf("deployed %s", evt.Payload["imageTag"])
-	case "deploy.failed":
-		return evt.Payload["error"]
+func formatDuration(msStr string) string {
+	ms, err := strconv.ParseInt(msStr, 10, 64)
+	if err != nil {
+		return "..."
 	}
-	return evt.Type
+	if ms >= 60000 {
+		m := ms / 60000
+		s := (ms % 60000) / 1000
+		return fmt.Sprintf("%dm%ds", m, s)
+	}
+	sec := float64(ms) / 1000.0
+	return fmt.Sprintf("%.1fs", sec)
 }
