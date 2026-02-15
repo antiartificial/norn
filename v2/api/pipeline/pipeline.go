@@ -82,12 +82,16 @@ func (p *Pipeline) run(ctx context.Context, spec *model.InfraSpec, deploy *model
 		{name: "cleanup", fn: p.cleanup},
 	}
 
-	for _, s := range steps {
+	total := fmt.Sprintf("%d", len(steps))
+	for i, s := range steps {
+		idx := fmt.Sprintf("%d", i+1)
 		sg.StepStart(ctx, s.name)
 		p.WS.Broadcast(hub.Event{Type: "deploy.step", AppID: spec.App, Payload: map[string]string{
 			"step":   s.name,
 			"sagaId": sg.ID,
 			"status": "running",
+			"index":  idx,
+			"total":  total,
 		}})
 
 		start := time.Now()
@@ -97,9 +101,12 @@ func (p *Pipeline) run(ctx context.Context, spec *model.InfraSpec, deploy *model
 		if err != nil {
 			sg.StepFailed(ctx, s.name, err)
 			p.WS.Broadcast(hub.Event{Type: "deploy.step", AppID: spec.App, Payload: map[string]string{
-				"step":   s.name,
-				"sagaId": sg.ID,
-				"status": "failed",
+				"step":       s.name,
+				"sagaId":     sg.ID,
+				"status":     "failed",
+				"index":      idx,
+				"total":      total,
+				"durationMs": fmt.Sprintf("%d", elapsed),
 			}})
 			deploy.Status = model.StatusFailed
 			p.DB.UpdateDeployment(ctx, deploy.ID, deploy.Status)
@@ -113,9 +120,12 @@ func (p *Pipeline) run(ctx context.Context, spec *model.InfraSpec, deploy *model
 
 		sg.StepComplete(ctx, s.name, elapsed)
 		p.WS.Broadcast(hub.Event{Type: "deploy.step", AppID: spec.App, Payload: map[string]string{
-			"step":   s.name,
-			"sagaId": sg.ID,
-			"status": "complete",
+			"step":       s.name,
+			"sagaId":     sg.ID,
+			"status":     "complete",
+			"index":      idx,
+			"total":      total,
+			"durationMs": fmt.Sprintf("%d", elapsed),
 		}})
 	}
 
