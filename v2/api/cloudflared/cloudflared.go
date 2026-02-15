@@ -3,11 +3,29 @@ package cloudflared
 import (
 	"context"
 	"fmt"
+	"net/url"
+	"os"
 	"os/exec"
+	"path/filepath"
 	"strings"
 
 	"gopkg.in/yaml.v3"
 )
+
+// NormalizeHostname strips the scheme and path from a URL, returning just the
+// hostname. Bare hostnames are returned as-is. This ensures cloudflared ingress
+// rules always contain plain hostnames (e.g. "sideband.slopistry.com") rather
+// than full URLs (e.g. "https://sideband.slopistry.com").
+func NormalizeHostname(raw string) string {
+	if !strings.Contains(raw, "://") {
+		return raw
+	}
+	u, err := url.Parse(raw)
+	if err != nil {
+		return raw
+	}
+	return u.Hostname()
+}
 
 type Config struct {
 	Tunnel          string        `yaml:"tunnel"`
@@ -20,31 +38,41 @@ type IngressRule struct {
 	Service  string `yaml:"service"`
 }
 
-const (
-	configMapName = "cloudflared"
-	namespace     = "cloudflared"
-	deployment    = "cloudflared"
-)
+var configPath string
 
-// ReadConfig reads the cloudflared config from the Kubernetes ConfigMap.
-func ReadConfig(ctx context.Context) (*Config, error) {
-	cmd := exec.CommandContext(ctx, "kubectl", "get", "configmap", configMapName,
-		"-n", namespace, "-o", "jsonpath={.data.config\\.yaml}")
-	out, err := cmd.Output()
+// SetConfigPath sets the path to the local cloudflared config file.
+func SetConfigPath(path string) {
+	configPath = path
+}
+
+func getConfigPath() string {
+	if configPath != "" {
+		return configPath
+	}
+	home, _ := os.UserHomeDir()
+	return filepath.Join(home, ".cloudflared", "config.yml")
+}
+
+// ReadConfig reads the cloudflared config from the local config file.
+func ReadConfig(_ context.Context) (*Config, error) {
+	data, err := os.ReadFile(getConfigPath())
 	if err != nil {
-		return nil, fmt.Errorf("kubectl get configmap: %w", err)
+		return nil, fmt.Errorf("read cloudflared config: %w", err)
 	}
 
 	var cfg Config
-	if err := yaml.Unmarshal(out, &cfg); err != nil {
+	if err := yaml.Unmarshal(data, &cfg); err != nil {
 		return nil, fmt.Errorf("parse cloudflared config: %w", err)
 	}
 	return &cfg, nil
 }
 
 // AddIngress adds or updates an ingress rule for the given hostname.
+// The hostname is normalized (scheme/path stripped) before storing.
 // Returns true if the config was changed.
 func AddIngress(cfg *Config, hostname, service string) bool {
+	hostname = NormalizeHostname(hostname)
+
 	// Check if rule already exists with same service
 	for i, rule := range cfg.Ingress {
 		if rule.Hostname == hostname {
@@ -67,8 +95,11 @@ func AddIngress(cfg *Config, hostname, service string) bool {
 }
 
 // RemoveIngress removes ingress rules matching the given hostname.
+// The hostname is normalized (scheme/path stripped) before matching.
 // Returns true if the config was changed.
 func RemoveIngress(cfg *Config, hostname string) bool {
+	hostname = NormalizeHostname(hostname)
+
 	var filtered []IngressRule
 	changed := false
 	for _, rule := range cfg.Ingress {
@@ -84,46 +115,26 @@ func RemoveIngress(cfg *Config, hostname string) bool {
 	return changed
 }
 
-// ApplyConfig writes the config back to the Kubernetes ConfigMap.
-func ApplyConfig(ctx context.Context, cfg *Config) error {
+// ApplyConfig writes the config to the local cloudflared config file.
+func ApplyConfig(_ context.Context, cfg *Config) error {
 	data, err := yaml.Marshal(cfg)
 	if err != nil {
 		return fmt.Errorf("marshal config: %w", err)
 	}
-
-	manifest := fmt.Sprintf(`apiVersion: v1
-kind: ConfigMap
-metadata:
-  name: %s
-  namespace: %s
-data:
-  config.yaml: |
-%s`, configMapName, namespace, indent(string(data), "    "))
-
-	cmd := exec.CommandContext(ctx, "kubectl", "apply", "-f", "-")
-	cmd.Stdin = strings.NewReader(manifest)
-	if out, err := cmd.CombinedOutput(); err != nil {
-		return fmt.Errorf("kubectl apply: %s: %w", string(out), err)
+	if err := os.WriteFile(getConfigPath(), data, 0644); err != nil {
+		return fmt.Errorf("write cloudflared config: %w", err)
 	}
 	return nil
 }
 
-// Restart triggers a rolling restart of the cloudflared deployment.
-func Restart(ctx context.Context) error {
-	cmd := exec.CommandContext(ctx, "kubectl", "rollout", "restart",
-		"deployment/"+deployment, "-n", namespace)
+// Restart restarts the cloudflared tunnel via launchctl kickstart -k,
+// which kills the running process and immediately relaunches it with
+// the updated config. This avoids the KeepAlive/SuccessfulExit issue
+// where a clean SIGTERM exit (code 0) would not trigger auto-restart.
+func Restart(_ context.Context) error {
+	cmd := exec.Command("launchctl", "kickstart", "-k", "gui/501/homebrew.mxcl.cloudflared")
 	if out, err := cmd.CombinedOutput(); err != nil {
-		return fmt.Errorf("kubectl rollout restart: %s: %w", string(out), err)
+		return fmt.Errorf("launchctl kickstart cloudflared: %s: %w", string(out), err)
 	}
 	return nil
-}
-
-func indent(s, prefix string) string {
-	lines := strings.Split(s, "\n")
-	for i, line := range lines {
-		if line != "" {
-			lines[i] = prefix + line
-		}
-	}
-	return strings.Join(lines, "\n")
 }

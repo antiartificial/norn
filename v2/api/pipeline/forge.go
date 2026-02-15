@@ -15,11 +15,6 @@ func (p *Pipeline) forge(ctx context.Context, st *state, sg *saga.Saga) error {
 		return nil
 	}
 
-	if p.RegistryURL == "" {
-		sg.Log(ctx, "forge.skip", "dev mode — skipping cloudflared (no K8s)", nil)
-		return nil
-	}
-
 	// Get node address from running allocations
 	allocs, err := p.Nomad.PollAllocations(st.spec.App)
 	if err != nil {

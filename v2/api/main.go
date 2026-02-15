@@ -17,6 +17,7 @@ import (
 	"github.com/go-chi/cors"
 
 	"norn/v2/api/auth"
+	"norn/v2/api/cloudflared"
 	"norn/v2/api/config"
 	"norn/v2/api/consul"
 	"norn/v2/api/handler"
@@ -31,6 +32,8 @@ import (
 
 func main() {
 	cfg := config.Load()
+
+	cloudflared.SetConfigPath(cfg.CloudflaredConfig)
 
 	// Database
 	db, err := store.Connect(cfg.DatabaseURL)
@@ -163,6 +166,7 @@ func main() {
 		r.Get("/validate/{id}", h.ValidateApp)
 		r.Get("/saga", h.ListRecentSaga)
 		r.Get("/saga/{sagaId}", h.GetSagaEvents)
+		r.Get("/cloudflared/ingress", h.CloudflaredIngress)
 
 		r.Route("/apps/{id}", func(r chi.Router) {
 			r.Use(handler.ValidateAppID)
@@ -186,6 +190,7 @@ func main() {
 			r.Get("/function/history", h.FunctionHistory)
 			r.Post("/forge", h.Forge)
 			r.Post("/teardown", h.Teardown)
+			r.Post("/endpoints/toggle", h.ToggleEndpoint)
 			r.Get("/exec", h.ExecAlloc)
 		})
 	})

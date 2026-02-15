@@ -32,10 +32,16 @@ type AppStatus struct {
 	Allocations []Allocation `json:"allocations"`
 }
 
+type Endpoint struct {
+	URL    string `json:"url"`
+	Region string `json:"region,omitempty"`
+}
+
 type InfraSpec struct {
 	App       string              `json:"name"`
 	Processes map[string]Process  `json:"processes"`
 	Repo      *RepoSpec           `json:"repo,omitempty"`
+	Endpoints []Endpoint          `json:"endpoints,omitempty"`
 }
 
 type Process struct {
@@ -261,6 +267,21 @@ func (c *Client) Forge(appID string) error {
 
 func (c *Client) Teardown(appID string) error {
 	return c.post("/api/apps/"+appID+"/teardown", "{}")
+}
+
+func (c *Client) CloudflaredIngress() ([]string, error) {
+	var resp struct {
+		Hostnames []string `json:"hostnames"`
+	}
+	if err := c.get("/api/cloudflared/ingress", &resp); err != nil {
+		return nil, err
+	}
+	return resp.Hostnames, nil
+}
+
+func (c *Client) ToggleEndpoint(appID, hostname string, enabled bool) error {
+	body := fmt.Sprintf(`{"hostname":%q,"enabled":%t}`, hostname, enabled)
+	return c.post("/api/apps/"+appID+"/endpoints/toggle", body)
 }
 
 func (c *Client) ValidateAll() ([]ValidationResult, error) {

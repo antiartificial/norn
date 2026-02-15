@@ -209,25 +209,70 @@ norn validate
 
 Reports errors and warnings for each infraspec field.
 
+## endpoints
+
+List an app's configured endpoints with their cloudflared status.
+
+```bash
+norn endpoints <app>
+```
+
+Output shows each endpoint with a status indicator:
+
+```
+endpoints for signal-sideband
+
+  ● sideband.slopistry.com    active
+  ○ api.slopistry.com         inactive
+```
+
+- `●` active — hostname is routed in cloudflared
+- `○` inactive — hostname is not in cloudflared ingress
+- `?` unknown — cloudflared config is unavailable (dev mode)
+
+### endpoints toggle
+
+Toggle a single endpoint on or off in cloudflared.
+
+```bash
+norn endpoints toggle <app> <hostname>
+```
+
+| Argument | Description |
+|----------|-------------|
+| `app` | App name |
+| `hostname` | The hostname to toggle (e.g. `sideband.slopistry.com`) |
+
+Determines the current state from the cloudflared ingress list and flips it. If the endpoint is active, it will be disabled; if inactive, it will be enabled.
+
+```
+$ norn endpoints toggle signal-sideband sideband.slopistry.com
+toggling sideband.slopistry.com → disabled
+
+╭──────────────────────╮
+│ cloudflared updated  │
+╰──────────────────────╯
+```
+
 ## forge
 
-Set up cloudflared tunnel routing for an app's endpoints.
+Set up cloudflared tunnel routing for all of an app's endpoints at once.
 
 ```bash
 norn forge <app>
 ```
 
-Configures cloudflared ingress rules based on the app's `endpoints` in its infraspec.
+Configures cloudflared ingress rules based on the app's `endpoints` in its infraspec. Use `norn endpoints toggle` for per-hostname control.
 
 ## teardown {#teardown}
 
-Remove cloudflared tunnel routing for an app.
+Remove cloudflared tunnel routing for all of an app's endpoints at once.
 
 ```bash
 norn teardown <app>
 ```
 
-Removes the app's entries from the cloudflared ingress configuration.
+Removes the app's entries from the cloudflared ingress configuration. Use `norn endpoints toggle` for per-hostname control.
 
 ## version
 
