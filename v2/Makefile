@@ -1,5 +1,8 @@
+SHELL := /bin/bash
+
 .PHONY: dev api cli build doctor clean ui \
-	consul-dev nomad-dev consul-server nomad-server
+	consul-dev nomad-dev consul-server nomad-server \
+	up up-fed down logs
 
 VERSION ?= $(shell git rev-parse --short HEAD 2>/dev/null || echo "dev")
 
@@ -30,14 +33,52 @@ doctor:
 clean:
 	rm -rf bin/
 
+# --- Orchestrated dev (background, logs to dev/logs/) ---
+
+up: doctor
+	@mkdir -p dev/logs
+	@echo "starting consul..."
+	@consul agent -dev > dev/logs/consul.log 2>&1 &
+	@sleep 1
+	@echo "starting nomad..."
+	@nomad agent -dev -bind 0.0.0.0 -config dev/nomad-dev.hcl \
+	  > dev/logs/nomad.log 2>&1 &
+	@sleep 2
+	@echo "starting api..."
+	@cd api && go run . > ../dev/logs/api.log 2>&1 &
+	@sleep 1
+	@echo "all services started. logs in dev/logs/"
+
+up-fed: doctor
+	@mkdir -p dev/logs
+	@echo "starting consul..."
+	@consul agent -config-file dev/consul-server.hcl > dev/logs/consul.log 2>&1 &
+	@sleep 1
+	@echo "starting nomad (requires sudo)..."
+	@sudo nomad agent -config dev/nomad-server.hcl > dev/logs/nomad.log 2>&1 &
+	@sleep 2
+	@echo "starting api..."
+	@cd api && NORN_REGISTRY_URL=ghcr.io/antiartificial go run . > ../dev/logs/api.log 2>&1 &
+	@sleep 1
+	@echo "all services started. logs in dev/logs/"
+
+down:
+	@echo "stopping services..."
+	@-lsof -ti :8800 | xargs kill 2>/dev/null; true
+	@-pkill -f "nomad agent" 2>/dev/null; true
+	@-pkill -f "consul agent" 2>/dev/null; true
+	@echo "all services stopped"
+
+logs:
+	@tail -f dev/logs/*.log
+
 # --- Local dev (single-node, fast iteration) ---
 
 consul-dev:
 	consul agent -dev
 
 nomad-dev:
-	nomad agent -dev -bind 0.0.0.0 \
-	  -config <(echo 'client { cpu_total_compute = 4000 }')
+	nomad agent -dev -bind 0.0.0.0 -config dev/nomad-dev.hcl
 
 # --- Federated mode (for DO worker testing) ---
 

@@ -6,6 +6,17 @@ import (
 	"gopkg.in/yaml.v3"
 )
 
+type VolumeSpec struct {
+	Name     string `yaml:"name" json:"name"`
+	Mount    string `yaml:"mount" json:"mount"`
+	ReadOnly bool   `yaml:"readOnly,omitempty" json:"readOnly,omitempty"`
+}
+
+type FunctionSpec struct {
+	Timeout string `yaml:"timeout,omitempty" json:"timeout,omitempty"`
+	Memory  int    `yaml:"memory,omitempty" json:"memory,omitempty"`
+}
+
 type InfraSpec struct {
 	App            string               `yaml:"name" json:"name"`
 	Repo           *RepoSpec            `yaml:"repo,omitempty" json:"repo,omitempty"`
@@ -17,6 +28,7 @@ type InfraSpec struct {
 	Env            map[string]string    `yaml:"env,omitempty" json:"env,omitempty"`
 	Infrastructure *Infrastructure      `yaml:"infrastructure,omitempty" json:"infrastructure,omitempty"`
 	Endpoints      []Endpoint           `yaml:"endpoints,omitempty" json:"endpoints,omitempty"`
+	Volumes        []VolumeSpec         `yaml:"volumes,omitempty" json:"volumes,omitempty"`
 	Deploy         bool                 `yaml:"deploy,omitempty" json:"deploy,omitempty"`
 }
 
@@ -26,13 +38,14 @@ type Endpoint struct {
 }
 
 type Process struct {
-	Port      int         `yaml:"port,omitempty" json:"port,omitempty"`
-	Command   string      `yaml:"command,omitempty" json:"command,omitempty"`
-	Schedule  string      `yaml:"schedule,omitempty" json:"schedule,omitempty"`
-	Health    *HealthSpec `yaml:"health,omitempty" json:"health,omitempty"`
-	Scaling   *Scaling    `yaml:"scaling,omitempty" json:"scaling,omitempty"`
-	Drain     *Drain      `yaml:"drain,omitempty" json:"drain,omitempty"`
-	Resources *Resources  `yaml:"resources,omitempty" json:"resources,omitempty"`
+	Port      int           `yaml:"port,omitempty" json:"port,omitempty"`
+	Command   string        `yaml:"command,omitempty" json:"command,omitempty"`
+	Schedule  string        `yaml:"schedule,omitempty" json:"schedule,omitempty"`
+	Function  *FunctionSpec `yaml:"function,omitempty" json:"function,omitempty"`
+	Health    *HealthSpec   `yaml:"health,omitempty" json:"health,omitempty"`
+	Scaling   *Scaling      `yaml:"scaling,omitempty" json:"scaling,omitempty"`
+	Drain     *Drain        `yaml:"drain,omitempty" json:"drain,omitempty"`
+	Resources *Resources    `yaml:"resources,omitempty" json:"resources,omitempty"`
 }
 
 type HealthSpec struct {

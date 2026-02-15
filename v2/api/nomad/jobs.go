@@ -125,7 +125,7 @@ func (c *Client) PollAllocations(jobID string) ([]AllocStatus, error) {
 			ID:           short(a.ID, 8),
 			TaskGroup:    a.TaskGroup,
 			ClientStatus: a.ClientStatus,
-			NodeID:       short(a.NodeID, 8),
+			NodeID:       a.NodeID,
 			NodeName:     a.NodeID, // enrichable later via node cache
 		}
 		if a.DeploymentStatus != nil {
@@ -188,4 +188,211 @@ func (c *Client) NodeInfo(nodeID string) (*NodeInfo, error) {
 func (c *Client) ScaleJob(jobID, group string, count int) error {
 	_, _, err := c.api.Jobs().Scale(jobID, group, &count, "scaled via norn", false, nil, nil)
 	return err
+}
+
+// UptimeEntry describes a long-running allocation for the uptime leaderboard.
+type UptimeEntry struct {
+	AllocID   string `json:"allocId"`
+	JobID     string `json:"jobId"`
+	TaskGroup string `json:"taskGroup"`
+	Uptime    string `json:"uptime"`
+	NodeName  string `json:"nodeName"`
+	StartedAt string `json:"startedAt"`
+}
+
+// ClusterStats gathers allocation counts and an uptime leaderboard across all jobs.
+func (c *Client) ClusterStats() (totalAllocs, runningAllocs int, leaderboard []UptimeEntry, err error) {
+	jobs, _, err := c.api.Jobs().List(nil)
+	if err != nil {
+		return 0, 0, nil, fmt.Errorf("list jobs: %w", err)
+	}
+
+	type allocInfo struct {
+		allocID   string
+		jobID     string
+		taskGroup string
+		nodeID    string
+		createTime int64
+	}
+
+	var running []allocInfo
+
+	for _, job := range jobs {
+		if job.Status != "running" {
+			continue
+		}
+		allocs, _, listErr := c.api.Jobs().Allocations(job.ID, false, nil)
+		if listErr != nil {
+			continue
+		}
+		for _, a := range allocs {
+			totalAllocs++
+			if a.ClientStatus == "running" {
+				runningAllocs++
+				running = append(running, allocInfo{
+					allocID:    short(a.ID, 8),
+					jobID:      job.ID,
+					taskGroup:  a.TaskGroup,
+					nodeID:     a.NodeID,
+					createTime: a.CreateTime,
+				})
+			}
+		}
+	}
+
+	// Sort by createTime ascending (longest running first)
+	for i := 0; i < len(running); i++ {
+		for j := i + 1; j < len(running); j++ {
+			if running[j].createTime < running[i].createTime {
+				running[i], running[j] = running[j], running[i]
+			}
+		}
+	}
+
+	// Take top 10
+	limit := 10
+	if len(running) < limit {
+		limit = len(running)
+	}
+
+	nodeCache := make(map[string]string)
+	now := time.Now()
+
+	for _, a := range running[:limit] {
+		started := time.Unix(0, a.createTime)
+		uptime := now.Sub(started)
+
+		nodeName := a.nodeID
+		if cached, ok := nodeCache[a.nodeID]; ok {
+			nodeName = cached
+		} else if ni, niErr := c.NodeInfo(a.nodeID); niErr == nil {
+			nodeName = ni.Name
+			nodeCache[a.nodeID] = ni.Name
+		}
+
+		leaderboard = append(leaderboard, UptimeEntry{
+			AllocID:   a.allocID,
+			JobID:     a.jobID,
+			TaskGroup: a.taskGroup,
+			Uptime:    formatDuration(uptime),
+			NodeName:  nodeName,
+			StartedAt: started.Format(time.RFC3339),
+		})
+	}
+
+	return totalAllocs, runningAllocs, leaderboard, nil
+}
+
+// ListJobs returns the count of registered jobs.
+func (c *Client) ListJobs() (int, error) {
+	jobs, _, err := c.api.Jobs().List(nil)
+	if err != nil {
+		return 0, err
+	}
+	return len(jobs), nil
+}
+
+// PeriodicForce triggers a periodic job.
+func (c *Client) PeriodicForce(jobID string) (string, error) {
+	evalID, _, err := c.api.Jobs().PeriodicForce(jobID, nil)
+	if err != nil {
+		return "", fmt.Errorf("periodic force: %w", err)
+	}
+	return evalID, nil
+}
+
+// JobInfo returns the full job specification.
+func (c *Client) JobInfo(jobID string) (*nomadapi.Job, error) {
+	job, _, err := c.api.Jobs().Info(jobID, nil)
+	if err != nil {
+		return nil, err
+	}
+	return job, nil
+}
+
+// PeriodicChildren lists child dispatches of a periodic job.
+func (c *Client) PeriodicChildren(parentJobID string) ([]CronRun, error) {
+	jobs, _, err := c.api.Jobs().List(&nomadapi.QueryOptions{
+		Prefix: parentJobID + "/periodic-",
+	})
+	if err != nil {
+		return nil, fmt.Errorf("list periodic children: %w", err)
+	}
+
+	var runs []CronRun
+	for _, j := range jobs {
+		run := CronRun{
+			JobID:     j.ID,
+			Status:    j.Status,
+			StartedAt: time.Unix(0, j.SubmitTime).Format(time.RFC3339),
+		}
+		runs = append(runs, run)
+	}
+	return runs, nil
+}
+
+// CronRun describes a single execution of a periodic job.
+type CronRun struct {
+	JobID      string `json:"jobId"`
+	Status     string `json:"status"`
+	StartedAt  string `json:"startedAt"`
+	FinishedAt string `json:"finishedAt,omitempty"`
+	ExitCode   int    `json:"exitCode,omitempty"`
+}
+
+// WaitBatchComplete polls a batch job until it reaches a terminal state.
+func (c *Client) WaitBatchComplete(ctx context.Context, jobID string, timeout time.Duration) (string, int, error) {
+	deadline := time.After(timeout)
+	ticker := time.NewTicker(2 * time.Second)
+	defer ticker.Stop()
+
+	for {
+		select {
+		case <-ctx.Done():
+			return "", 0, ctx.Err()
+		case <-deadline:
+			return "timeout", 0, fmt.Errorf("timeout waiting for batch job %s", jobID)
+		case <-ticker.C:
+			allocs, err := c.JobAllocations(jobID)
+			if err != nil {
+				continue
+			}
+			for _, a := range allocs {
+				if a.ClientStatus == "complete" {
+					exitCode := 0
+					for _, ts := range a.TaskStates {
+						if ts.State == "dead" && ts.Failed {
+							exitCode = 1
+						}
+					}
+					// Purge the job
+					c.StopJob(jobID, true)
+					return "complete", exitCode, nil
+				}
+				if a.ClientStatus == "failed" {
+					exitCode := 1
+					for _, ts := range a.TaskStates {
+						if ts.State == "dead" && ts.Failed {
+							exitCode = 1
+						}
+					}
+					c.StopJob(jobID, true)
+					return "failed", exitCode, nil
+				}
+			}
+		}
+	}
+}
+
+func formatDuration(d time.Duration) string {
+	days := int(d.Hours()) / 24
+	hours := int(d.Hours()) % 24
+	mins := int(d.Minutes()) % 60
+	if days > 0 {
+		return fmt.Sprintf("%dd %dh %dm", days, hours, mins)
+	}
+	if hours > 0 {
+		return fmt.Sprintf("%dh %dm", hours, mins)
+	}
+	return fmt.Sprintf("%dm", mins)
 }

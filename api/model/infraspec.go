@@ -28,6 +28,7 @@ type InfraSpec struct {
 	Runtime     string            `yaml:"runtime,omitempty" json:"runtime,omitempty"`     // "docker" (default) or "incus"
 	Timeout     int               `yaml:"timeout,omitempty" json:"timeout,omitempty"`     // max seconds per execution (default 300)
 	Function    *FunctionSpec     `yaml:"function,omitempty" json:"function,omitempty"`
+	Target      *TargetSpec       `yaml:"target,omitempty" json:"target,omitempty"`
 	Deploy      bool              `yaml:"deploy,omitempty" json:"deploy,omitempty"`       // must be true to appear in norn
 }
 
@@ -38,6 +39,11 @@ type FunctionSpec struct {
 	Timeout int    `yaml:"timeout,omitempty" json:"timeout,omitempty"`
 	Trigger string `yaml:"trigger,omitempty" json:"trigger,omitempty"` // "http" (default)
 	Memory  string `yaml:"memory,omitempty" json:"memory,omitempty"`   // e.g. "256m"
+}
+
+type TargetSpec struct {
+	Worker       string   `yaml:"worker,omitempty" json:"worker,omitempty"`             // pin to specific worker
+	Capabilities []string `yaml:"capabilities,omitempty" json:"capabilities,omitempty"` // required capabilities
 }
 
 type RepoSpec struct {

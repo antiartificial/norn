@@ -284,6 +284,21 @@ func (c *Client) ValidateAll() ([]ValidationResult, error) {
 	return results, nil
 }
 
+// GetJSON fetches a path and decodes the response into v.
+func (c *Client) GetJSON(path string, v any) error {
+	return c.get(path, v)
+}
+
+// PostJSON posts a JSON body to a path.
+func (c *Client) PostJSON(path, body string) error {
+	return c.post(path, body)
+}
+
+// Delete sends a DELETE request to a path.
+func (c *Client) Delete(path string) error {
+	return c.delete(path)
+}
+
 func (c *Client) WebSocketURL() string {
 	base := c.BaseURL
 	base = strings.Replace(base, "http://", "ws://", 1)

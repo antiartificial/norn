@@ -13,7 +13,10 @@ import (
 	"norn/cli/style"
 )
 
-var invokeBody string
+var (
+	invokeBody   string
+	invokeWorker string
+)
 
 var invokeCmd = &cobra.Command{
 	Use:   "invoke <app>",
@@ -36,8 +39,13 @@ var invokeCmd = &cobra.Command{
 			body = string(data)
 		}
 
+		url := client.BaseURL + "/api/apps/" + app + "/invoke"
+		if invokeWorker != "" {
+			url = client.BaseURL + "/api/apps/" + app + "/invoke?worker=" + invokeWorker
+		}
+
 		resp, err := client.HTTPClient.Post(
-			client.BaseURL+"/api/apps/"+app+"/invoke",
+			url,
 			"application/json",
 			strings.NewReader(body),
 		)
@@ -83,5 +91,6 @@ var invokeCmd = &cobra.Command{
 
 func init() {
 	invokeCmd.Flags().StringVar(&invokeBody, "body", "", "Request body (or @filename)")
+	invokeCmd.Flags().StringVar(&invokeWorker, "worker", "", "Route to specific worker")
 	rootCmd.AddCommand(invokeCmd)
 }

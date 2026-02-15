@@ -60,6 +60,27 @@ func Migrate(db *DB) error {
 			finished_at TIMESTAMPTZ
 		);
 		CREATE INDEX IF NOT EXISTS idx_deployments_app ON deployments(app, started_at DESC);
+
+		CREATE TABLE IF NOT EXISTS cron_states (
+			app        TEXT NOT NULL,
+			process    TEXT NOT NULL,
+			paused     BOOLEAN NOT NULL DEFAULT false,
+			schedule   TEXT NOT NULL DEFAULT '',
+			updated_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+			PRIMARY KEY (app, process)
+		);
+
+		CREATE TABLE IF NOT EXISTS func_executions (
+			id          TEXT PRIMARY KEY,
+			app         TEXT NOT NULL,
+			process     TEXT NOT NULL,
+			status      TEXT NOT NULL DEFAULT 'running',
+			exit_code   INT,
+			started_at  TIMESTAMPTZ NOT NULL DEFAULT now(),
+			finished_at TIMESTAMPTZ,
+			duration_ms BIGINT
+		);
+		CREATE INDEX IF NOT EXISTS idx_func_exec_app ON func_executions(app, started_at DESC);
 	`)
 	return err
 }
@@ -149,9 +170,11 @@ func (db *DB) Healthy(ctx context.Context) error {
 
 // DailyStats returns basic deployment statistics for today.
 type DailyStats struct {
-	Total   int `json:"total"`
-	Success int `json:"success"`
-	Failed  int `json:"failed"`
+	Total          int    `json:"total"`
+	Success        int    `json:"success"`
+	Failed         int    `json:"failed"`
+	MostPopularApp string `json:"mostPopularApp,omitempty"`
+	MostPopularN   int    `json:"mostPopularN,omitempty"`
 }
 
 func (db *DB) GetDailyStats(ctx context.Context) (*DailyStats, error) {
@@ -167,5 +190,123 @@ func (db *DB) GetDailyStats(ctx context.Context) (*DailyStats, error) {
 	if err != nil {
 		return nil, fmt.Errorf("daily stats: %w", err)
 	}
+
+	// Most popular app today
+	var app *string
+	var n *int
+	_ = db.Pool.QueryRow(ctx, `
+		SELECT app, COUNT(*) as n FROM deployments
+		WHERE started_at >= CURRENT_DATE
+		GROUP BY app ORDER BY n DESC LIMIT 1
+	`).Scan(&app, &n)
+	if app != nil {
+		s.MostPopularApp = *app
+		s.MostPopularN = *n
+	}
+
 	return s, nil
+}
+
+// CronState represents the pause/schedule state of a cron process.
+type CronState struct {
+	App      string    `json:"app"`
+	Process  string    `json:"process"`
+	Paused   bool      `json:"paused"`
+	Schedule string    `json:"schedule"`
+	UpdatedAt time.Time `json:"updatedAt"`
+}
+
+func (db *DB) GetCronState(ctx context.Context, app, process string) (*CronState, error) {
+	var cs CronState
+	err := db.Pool.QueryRow(ctx,
+		`SELECT app, process, paused, schedule, updated_at FROM cron_states WHERE app = $1 AND process = $2`,
+		app, process,
+	).Scan(&cs.App, &cs.Process, &cs.Paused, &cs.Schedule, &cs.UpdatedAt)
+	if err != nil {
+		return nil, err
+	}
+	return &cs, nil
+}
+
+func (db *DB) GetCronStates(ctx context.Context, app string) ([]CronState, error) {
+	rows, err := db.Pool.Query(ctx,
+		`SELECT app, process, paused, schedule, updated_at FROM cron_states WHERE app = $1 ORDER BY process`,
+		app,
+	)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	var states []CronState
+	for rows.Next() {
+		var cs CronState
+		if err := rows.Scan(&cs.App, &cs.Process, &cs.Paused, &cs.Schedule, &cs.UpdatedAt); err != nil {
+			return nil, err
+		}
+		states = append(states, cs)
+	}
+	return states, nil
+}
+
+func (db *DB) UpsertCronState(ctx context.Context, app, process string, paused bool, schedule string) error {
+	_, err := db.Pool.Exec(ctx, `
+		INSERT INTO cron_states (app, process, paused, schedule, updated_at)
+		VALUES ($1, $2, $3, $4, now())
+		ON CONFLICT (app, process) DO UPDATE SET paused = $3, schedule = $4, updated_at = now()
+	`, app, process, paused, schedule)
+	return err
+}
+
+// FuncExecution represents a function invocation record.
+type FuncExecution struct {
+	ID         string     `json:"id"`
+	App        string     `json:"app"`
+	Process    string     `json:"process"`
+	Status     string     `json:"status"`
+	ExitCode   *int       `json:"exitCode,omitempty"`
+	StartedAt  time.Time  `json:"startedAt"`
+	FinishedAt *time.Time `json:"finishedAt,omitempty"`
+	DurationMs *int64     `json:"durationMs,omitempty"`
+}
+
+func (db *DB) InsertFuncExecution(ctx context.Context, fe *FuncExecution) error {
+	_, err := db.Pool.Exec(ctx,
+		`INSERT INTO func_executions (id, app, process, status, started_at) VALUES ($1, $2, $3, $4, $5)`,
+		fe.ID, fe.App, fe.Process, fe.Status, fe.StartedAt,
+	)
+	return err
+}
+
+func (db *DB) UpdateFuncExecution(ctx context.Context, id, status string, exitCode int, durationMs int64) error {
+	_, err := db.Pool.Exec(ctx,
+		`UPDATE func_executions SET status = $1, exit_code = $2, finished_at = now(), duration_ms = $3 WHERE id = $4`,
+		status, exitCode, durationMs, id,
+	)
+	return err
+}
+
+func (db *DB) ListFuncExecutions(ctx context.Context, app string, limit int) ([]FuncExecution, error) {
+	if limit <= 0 {
+		limit = 20
+	}
+	rows, err := db.Pool.Query(ctx,
+		`SELECT id, app, process, status, exit_code, started_at, finished_at, duration_ms
+		 FROM func_executions WHERE app = $1 ORDER BY started_at DESC LIMIT $2`,
+		app, limit,
+	)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	var execs []FuncExecution
+	for rows.Next() {
+		var fe FuncExecution
+		if err := rows.Scan(&fe.ID, &fe.App, &fe.Process, &fe.Status, &fe.ExitCode, &fe.StartedAt, &fe.FinishedAt, &fe.DurationMs); err != nil {
+			return nil, err
+		}
+		execs = append(execs, fe)
+	}
+	return execs, nil
 }
