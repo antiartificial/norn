@@ -7,8 +7,12 @@ import { LogViewer } from './components/LogViewer.tsx'
 import { DeployPanel } from './components/DeployPanel.tsx'
 import { DeployHistory } from './components/DeployHistory.tsx'
 import { StatusBar } from './components/StatusBar.tsx'
+import { StatsPanel } from './components/StatsPanel.tsx'
 import { ScaleModal } from './components/ScaleModal.tsx'
 import { ExecTerminal } from './components/ExecTerminal.tsx'
+import { SnapshotsPanel } from './components/SnapshotsPanel.tsx'
+import { CronPanel } from './components/CronPanel.tsx'
+import { FunctionPanel } from './components/FunctionPanel.tsx'
 import type { AppStatus, WSEvent } from './types/index.ts'
 
 export interface StepEvent {
@@ -56,8 +60,11 @@ export function App() {
   const [restartingApp, setRestartingApp] = useState<string | null>(null)
   const [scaleState, setScaleState] = useState<{ appId: string; groups: { name: string; current: number }[] } | null>(null)
   const [execApp, setExecApp] = useState<string | null>(null)
+  const [snapshotsApp, setSnapshotsApp] = useState<string | null>(null)
+  const [cronApp, setCronApp] = useState<string | null>(null)
+  const [functionApp, setFunctionApp] = useState<string | null>(null)
   const [filter, setFilter] = useState<'all' | 'healthy' | 'unhealthy'>('all')
-  const [view, setView] = useState<'apps' | 'history'>('apps')
+  const [view, setView] = useState<'apps' | 'history' | 'stats'>('apps')
   const [apiVersion, setApiVersion] = useState<string | null>(null)
 
   const handleWsEvent = useCallback((event: WSEvent) => {
@@ -165,12 +172,15 @@ export function App() {
           <span className="header-tagline">control plane</span>
         </div>
         <div className="header-right">
-          <button
-            className={`filter-btn ${view === 'history' ? 'active' : ''}`}
-            onClick={() => setView(v => v === 'apps' ? 'history' : 'apps')}
-          >
-            {view === 'apps' ? 'History' : 'Apps'}
-          </button>
+          {(['apps', 'history', 'stats'] as const).map(v => (
+            <button
+              key={v}
+              className={`filter-btn ${view === v ? 'active' : ''}`}
+              onClick={() => setView(v)}
+            >
+              {v === 'apps' ? 'Apps' : v === 'history' ? 'History' : 'Stats'}
+            </button>
+          ))}
           <StatusBar />
           <span className={`ws-status ${connected ? 'connected' : 'disconnected'}`}>
             <span className={`ws-dot ${connected ? 'green' : 'red'}`} />
@@ -194,7 +204,9 @@ export function App() {
           </div>
         )}
 
-        {view === 'history' ? (
+        {view === 'stats' ? (
+          <StatsPanel />
+        ) : view === 'history' ? (
           <DeployHistory
             apps={apps.map(a => a.spec.name)}
             onClose={() => setView('apps')}
@@ -231,6 +243,9 @@ export function App() {
                 onScale={handleScale}
                 onViewLogs={setLogApp}
                 onExec={setExecApp}
+                onSnapshots={setSnapshotsApp}
+                onCron={setCronApp}
+                onFunction={setFunctionApp}
               />
             )
           })}
@@ -313,6 +328,30 @@ secrets:
         )}
 
         {execApp && <ExecTerminal appId={execApp} onClose={() => setExecApp(null)} />}
+
+        {snapshotsApp && (
+          <SnapshotsPanel appId={snapshotsApp} onClose={() => setSnapshotsApp(null)} />
+        )}
+
+        {cronApp && (
+          <CronPanel appId={cronApp} onClose={() => setCronApp(null)} />
+        )}
+
+        {functionApp && (() => {
+          const app = apps.find((a: AppStatus) => a.spec.name === functionApp)
+          const funcProcesses = app
+            ? Object.entries(app.spec.processes)
+                .filter(([, p]) => p.function)
+                .map(([name]) => name)
+            : []
+          return (
+            <FunctionPanel
+              appId={functionApp}
+              processes={funcProcesses}
+              onClose={() => setFunctionApp(null)}
+            />
+          )
+        })()}
       </main>
 
       <footer className="norn-footer">

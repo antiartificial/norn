@@ -21,7 +21,7 @@ type IngressRule struct {
 }
 
 const (
-	configMapName = "cloudflared-config"
+	configMapName = "cloudflared"
 	namespace     = "cloudflared"
 	deployment    = "cloudflared"
 )

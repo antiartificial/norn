@@ -187,6 +187,88 @@ norn/
 | GET | `/api/apps/:id/snapshots` | List DB snapshots |
 | WS | `/ws` | Real-time events |
 
+## v2 (Nomad/Consul/Tailscale)
+
+v2 replaces Kubernetes with Nomad + Consul for orchestration and Tailscale for networking. See `v2/` for the full source.
+
+### Quick start (dev mode)
+
+```bash
+cd v2
+make up       # starts consul, nomad, api in background
+make logs     # tail all logs
+make down     # stop everything
+```
+
+### Access points (dev mode)
+
+| Service | URL |
+|---------|-----|
+| Norn API | http://localhost:8800 |
+| Norn UI | http://localhost:5173 (vite dev) |
+| Nomad UI | http://localhost:4646/ui |
+| Consul UI | http://localhost:8500/ui |
+| signal-sideband | http://localhost:3001 |
+| mail-agent | http://localhost:80 |
+| mail-indexer | http://localhost:8090 |
+| signal-cli | http://localhost:8080 |
+| gitea | http://localhost:{dynamic} |
+
+Apps with `endpoints` in their infraspec get static ports. Gitea uses a dynamic port — check the Nomad UI for the current assignment.
+
+### v2 CLI
+
+```bash
+cd v2 && make build    # builds bin/norn-api + bin/norn
+bin/norn status        # list all apps
+bin/norn deploy <app> HEAD   # deploy latest commit
+bin/norn scale <app> <n>     # scale up/down
+bin/norn logs <app>          # stream allocation logs
+```
+
+### v2 infraspec format
+
+```yaml
+name: my-app
+deploy: true
+repo:
+  url: http://host.docker.internal:3000/norn/my-app.git
+  branch: master
+  autoDeploy: true
+build:
+  dockerfile: Dockerfile
+processes:
+  web:
+    port: 8080
+    health:
+      path: /health
+    scaling:
+      min: 1
+    resources:
+      cpu: 200
+      memory: 256
+env:
+  KEY: "value"
+secrets:
+  - SECRET_NAME
+endpoints:
+  - url: https://my-app.example.com
+volumes:
+  - name: my-data
+    mount: /data
+infrastructure:
+  postgres:
+    database: myapp_db
+```
+
+See [docs/v2/guide/dev-environment.md](docs/v2/guide/dev-environment.md) for the full dev environment guide.
+
+---
+
+## v1 (Kubernetes/minikube) — frozen
+
+> v1 is tagged as `v1.0` and is no longer actively developed. The docs below describe the v1 architecture.
+
 ## Configuration
 
 | Environment variable | Default | Description |

@@ -25,6 +25,8 @@ type Config struct {
 	AllowedOrigins     string // comma-separated allowed origins for CORS (e.g. "https://app.norn.dev")
 	CFAccessTeamDomain string // CF Access team domain (e.g. "myteam.cloudflareaccess.com")
 	CFAccessAUD        string // CF Access Application AUD tag
+
+	WorkerEnabled bool // enable distributed worker dispatch
 }
 
 func Load() *Config {
@@ -51,6 +53,8 @@ func Load() *Config {
 		AllowedOrigins:     os.Getenv("NORN_ALLOWED_ORIGINS"),
 		CFAccessTeamDomain: os.Getenv("NORN_CF_ACCESS_TEAM_DOMAIN"),
 		CFAccessAUD:        os.Getenv("NORN_CF_ACCESS_AUD"),
+
+		WorkerEnabled: os.Getenv("NORN_WORKER_ENABLED") == "true",
 	}
 }
 

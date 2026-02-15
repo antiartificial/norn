@@ -9,6 +9,10 @@ export interface Process {
   port?: number
   command?: string
   schedule?: string
+  function?: {
+    timeout?: string
+    memory?: number
+  }
   health?: {
     path: string
     interval?: string

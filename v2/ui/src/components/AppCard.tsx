@@ -88,9 +88,12 @@ interface Props {
   onScale: (appId: string) => void
   onViewLogs: (appId: string) => void
   onExec: (appId: string) => void
+  onSnapshots?: (appId: string) => void
+  onCron?: (appId: string) => void
+  onFunction?: (appId: string) => void
 }
 
-export function AppCard({ app, busy, onDeploy, onRestart, onScale, onViewLogs, onExec }: Props) {
+export function AppCard({ app, busy, onDeploy, onRestart, onScale, onViewLogs, onExec, onSnapshots, onCron, onFunction }: Props) {
   const { spec, healthy, nomadStatus } = app
   const allocations = app.allocations ?? []
 
@@ -104,6 +107,10 @@ export function AppCard({ app, busy, onDeploy, onRestart, onScale, onViewLogs, o
     groups[alloc.taskGroup].total++
     if (alloc.status === 'running') groups[alloc.taskGroup].running++
   }
+
+  const processes = spec.processes ?? {}
+  const hasCron = Object.values(processes).some(p => p.schedule)
+  const hasFunctions = Object.values(processes).some(p => p.function)
 
   return (
     <div className={`app-card ${healthy ? 'healthy' : 'unhealthy'}`}>
@@ -226,6 +233,27 @@ export function AppCard({ app, busy, onDeploy, onRestart, onScale, onViewLogs, o
             <i className="fawsb fa-terminal" /> Shell
           </button>
         </Tooltip>
+        {spec.infrastructure?.postgres && onSnapshots && (
+          <Tooltip text="Database snapshots">
+            <button onClick={() => onSnapshots(spec.name)} className="btn">
+              <i className="fawsb fa-database" />
+            </button>
+          </Tooltip>
+        )}
+        {hasCron && onCron && (
+          <Tooltip text="Cron jobs">
+            <button onClick={() => onCron(spec.name)} className="btn">
+              <i className="fawsb fa-clock" />
+            </button>
+          </Tooltip>
+        )}
+        {hasFunctions && onFunction && (
+          <Tooltip text="Functions">
+            <button onClick={() => onFunction(spec.name)} className="btn">
+              <i className="fawsb fa-bolt" />
+            </button>
+          </Tooltip>
+        )}
       </div>
     </div>
   )

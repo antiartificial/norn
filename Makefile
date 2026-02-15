@@ -8,7 +8,7 @@ CHECK  := \xE2\x9C\x94
 CROSS  := \xE2\x9C\x98
 ARROW  := \xE2\x86\x92
 
-.PHONY: help setup prereqs db dev api ui infra infra-stop build cli install test clean doctor docs docs-build
+.PHONY: help setup prereqs db dev api ui infra infra-stop build cli worker install test clean doctor docs docs-build
 
 # ──────────────────────────────────────────────
 # The one command to rule them all
@@ -67,6 +67,9 @@ deps: ## Install all dependencies
 	@printf "  $(ARROW) Downloading Go modules (CLI)...\n"
 	@cd cli && go mod download 2>/dev/null
 	@printf "  $(GREEN)$(CHECK)$(RESET) CLI modules downloaded\n"
+	@printf "  $(ARROW) Downloading Go modules (Worker)...\n"
+	@cd worker && go mod download 2>/dev/null
+	@printf "  $(GREEN)$(CHECK)$(RESET) Worker modules downloaded\n"
 
 # ──────────────────────────────────────────────
 # Development
@@ -101,7 +104,7 @@ infra-stop: ## Stop shared infrastructure
 # Build & Package
 # ──────────────────────────────────────────────
 
-build: ## Production build (API server + CLI + UI static)
+build: ## Production build (API server + CLI + Worker + UI static)
 	@printf "  $(ARROW) Building UI...\n"
 	@cd ui && pnpm build
 	@printf "  $(ARROW) Building API server...\n"
@@ -111,11 +114,19 @@ build: ## Production build (API server + CLI + UI static)
 	@printf "  $(ARROW) Building CLI...\n"
 	@cd cli && CGO_ENABLED=0 go build -ldflags "-X norn/cli/cmd.Version=$$(git describe --tags --always --dirty 2>/dev/null || echo dev)" -o ../bin/norn .
 	@printf "  $(GREEN)$(CHECK)$(RESET) bin/norn ready\n"
+	@printf "  $(ARROW) Building Worker...\n"
+	@cd worker && go build -ldflags "-X main.Version=$$(git describe --tags --always --dirty 2>/dev/null || echo dev)" -o ../bin/norn-worker .
+	@printf "  $(GREEN)$(CHECK)$(RESET) bin/norn-worker ready\n"
 
 cli: ## Build just the CLI
 	@mkdir -p bin
 	@cd cli && CGO_ENABLED=0 go build -ldflags "-X norn/cli/cmd.Version=$$(git describe --tags --always --dirty 2>/dev/null || echo dev)" -o ../bin/norn .
 	@printf "  $(GREEN)$(CHECK)$(RESET) bin/norn ready\n"
+
+worker: ## Build the worker binary
+	@mkdir -p bin
+	@cd worker && go build -ldflags "-X main.Version=$$(git describe --tags --always --dirty 2>/dev/null || echo dev)" -o ../bin/norn-worker .
+	@printf "  $(GREEN)$(CHECK)$(RESET) bin/norn-worker ready\n"
 
 install: cli ## Build CLI and symlink to /usr/local/bin/norn
 	@ln -sf $(CURDIR)/bin/norn /usr/local/bin/norn

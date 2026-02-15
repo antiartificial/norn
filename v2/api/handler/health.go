@@ -2,6 +2,9 @@ package handler
 
 import (
 	"net/http"
+	"os"
+	"os/exec"
+	"path/filepath"
 )
 
 func (h *Handler) Health(w http.ResponseWriter, r *http.Request) {
@@ -26,6 +29,27 @@ func (h *Handler) Health(w http.ResponseWriter, r *http.Request) {
 			services["consul"] = "down"
 		} else {
 			services["consul"] = "up"
+		}
+	}
+
+	if h.s3 != nil {
+		if err := h.s3.Healthy(r.Context()); err != nil {
+			services["s3"] = "down"
+		} else {
+			services["s3"] = "up"
+		}
+	}
+
+	// SOPS check: binary on PATH + age key file
+	if _, err := exec.LookPath("sops"); err != nil {
+		services["sops"] = "down"
+	} else {
+		home, _ := os.UserHomeDir()
+		keyFile := filepath.Join(home, ".config", "sops", "age", "keys.txt")
+		if _, err := os.Stat(keyFile); err != nil {
+			services["sops"] = "down"
+		} else {
+			services["sops"] = "up"
 		}
 	}
 

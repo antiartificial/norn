@@ -1,4 +1,4 @@
-import { useState, useEffect } from 'react'
+import { useState, useEffect, useRef } from 'react'
 import { Tooltip } from './Tooltip.tsx'
 import type { StepLog } from '../types/index.ts'
 
@@ -83,6 +83,11 @@ function formatOutput(appId: string, title: string, steps: StepLog[], status: st
   return lines.join('\n')
 }
 
+function lastNLines(text: string, n: number): string {
+  const lines = text.split('\n').filter(l => l.trim() !== '')
+  return lines.slice(-n).join('\n')
+}
+
 const STUCK_THRESHOLD_MS = 120_000 // 2 minutes
 
 export function DeployPanel({ appId, steps, status, error, title = 'Deploying', onClose, onRetry }: Props) {
@@ -90,12 +95,64 @@ export function DeployPanel({ appId, steps, status, error, title = 'Deploying', 
   const isSuccess = isDone && status !== 'failed'
   const [copied, setCopied] = useState(false)
   const [now, setNow] = useState(Date.now())
+  const [expandedSteps, setExpandedSteps] = useState<Set<string>>(new Set())
+  const prevStepsRef = useRef<StepLog[]>(steps)
 
   useEffect(() => {
     if (isDone) return
     const id = setInterval(() => setNow(Date.now()), 1000)
     return () => clearInterval(id)
   }, [isDone])
+
+  // Auto-expand active step, auto-collapse when step completes, keep failed expanded
+  useEffect(() => {
+    const prev = prevStepsRef.current
+    prevStepsRef.current = steps
+
+    setExpandedSteps(cur => {
+      const next = new Set(cur)
+
+      for (const step of steps) {
+        const prevStep = prev.find(s => s.step === step.step)
+
+        // Failed step: always expand
+        if (step.status === 'failed') {
+          next.add(step.step)
+          continue
+        }
+
+        // Step just got output (transitioned from active to done): auto-collapse
+        if (prevStep && !prevStep.output && step.output && step.status !== 'failed') {
+          next.delete(step.step)
+          continue
+        }
+      }
+
+      // Auto-expand current active step (last step when not done)
+      if (!isDone && steps.length > 0) {
+        const activeStepName = steps[steps.length - 1].step
+        // Only auto-expand if it doesn't have output yet (still running)
+        const activeStepData = steps[steps.length - 1]
+        if (!activeStepData.output) {
+          next.add(activeStepName)
+        }
+      }
+
+      return next
+    })
+  }, [steps, isDone])
+
+  const toggleStep = (stepName: string) => {
+    setExpandedSteps(cur => {
+      const next = new Set(cur)
+      if (next.has(stepName)) {
+        next.delete(stepName)
+      } else {
+        next.add(stepName)
+      }
+      return next
+    })
+  }
 
   // Total elapsed: first step start → now (or final duration sum when done)
   const totalElapsed = steps.length > 0 && steps[0].startedAt != null
@@ -155,20 +212,36 @@ export function DeployPanel({ appId, steps, status, error, title = 'Deploying', 
           const isLast = i === steps.length - 1
           const isActive = !isDone && isLast
           const stepDone = isSuccess || (!isLast && !isDone)
+          const isFailed = step.status === 'failed'
           const elapsed = step.durationMs != null
             ? step.durationMs
             : step.startedAt != null
               ? (steps[i + 1]?.startedAt ?? now) - step.startedAt
               : null
 
+          const isExpanded = expandedSteps.has(step.step)
+          const hasOutput = !!step.output
+
           return (
-            <div key={step.step}
-                 className={`deploy-step ${step.status}${isChild ? ' step-child' : ''}${isActive ? ' step-active' : ''}${stepDone ? ' step-done' : ''}`}>
-              <i className={`fawsb ${stepDone ? 'fa-circle-check' : stepIcons[step.step] ?? 'fa-circle'}`} />
-              <span className="step-name">{step.step}</span>
-              <span className="step-status">{stepDone ? 'done' : step.status}</span>
-              {elapsed != null && (
-                <span className={`step-duration${isActive ? ' step-duration-live' : ''}`}>{formatElapsed(elapsed)}</span>
+            <div key={step.step} className="deploy-step-wrapper">
+              <div
+                className={`deploy-step ${step.status}${isChild ? ' step-child' : ''}${isActive ? ' step-active' : ''}${stepDone ? ' step-done' : ''}${hasOutput ? ' step-expandable' : ''}`}
+                onClick={hasOutput ? () => toggleStep(step.step) : undefined}
+              >
+                {hasOutput && (
+                  <i className={`fawsb step-chevron ${isExpanded ? 'fa-chevron-down' : 'fa-chevron-right'}`} />
+                )}
+                <i className={`fawsb ${stepDone ? 'fa-circle-check' : stepIcons[step.step] ?? 'fa-circle'}`} />
+                <span className="step-name">{step.step}</span>
+                <span className="step-status">{stepDone ? 'done' : step.status}</span>
+                {elapsed != null && (
+                  <span className={`step-duration${isActive ? ' step-duration-live' : ''}`}>{formatElapsed(elapsed)}</span>
+                )}
+              </div>
+              {isExpanded && hasOutput && (
+                <pre className={`step-output${isFailed ? ' step-output-failed' : ''}`}>
+                  {lastNLines(step.output!, 5)}
+                </pre>
               )}
             </div>
           )

@@ -125,6 +125,28 @@ func Migrate(db *DB) error {
 			finished_at TIMESTAMPTZ
 		);
 		CREATE INDEX IF NOT EXISTS idx_func_exec_app ON func_executions(app, started_at DESC);
+
+		CREATE TABLE IF NOT EXISTS worker_tasks (
+			id          TEXT PRIMARY KEY,
+			type        TEXT NOT NULL,
+			app         TEXT NOT NULL,
+			worker_id   TEXT NOT NULL,
+			image       TEXT NOT NULL,
+			status      TEXT NOT NULL DEFAULT 'dispatched',
+			exit_code   INTEGER NOT NULL DEFAULT -1,
+			output      TEXT NOT NULL DEFAULT '',
+			duration_ms BIGINT NOT NULL DEFAULT 0,
+			created_at  TIMESTAMPTZ NOT NULL DEFAULT now(),
+			started_at  TIMESTAMPTZ,
+			finished_at TIMESTAMPTZ
+		);
+		CREATE INDEX IF NOT EXISTS idx_worker_tasks_worker ON worker_tasks(worker_id, created_at DESC);
+
+		ALTER TABLE cluster_nodes ADD COLUMN IF NOT EXISTS capabilities TEXT[] DEFAULT '{}';
+		ALTER TABLE cluster_nodes ADD COLUMN IF NOT EXISTS last_heartbeat TIMESTAMPTZ;
+		ALTER TABLE cluster_nodes ADD COLUMN IF NOT EXISTS tasks_active INTEGER DEFAULT 0;
+		ALTER TABLE cluster_nodes ADD COLUMN IF NOT EXISTS max_concurrent INTEGER DEFAULT 4;
+		ALTER TABLE cluster_nodes ADD COLUMN IF NOT EXISTS public_url TEXT DEFAULT '';
 	`)
 	return err
 }

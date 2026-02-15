@@ -97,6 +97,61 @@ type ValidationFinding struct {
 	Message  string `json:"message"`
 }
 
+type StatsResponse struct {
+	Deploys struct {
+		Total          int    `json:"total"`
+		Success        int    `json:"success"`
+		Failed         int    `json:"failed"`
+		MostPopularApp string `json:"mostPopularApp,omitempty"`
+		MostPopularN   int    `json:"mostPopularN,omitempty"`
+	} `json:"deploys"`
+	AppCount         int           `json:"appCount"`
+	TotalAllocs      int           `json:"totalAllocs"`
+	RunningAllocs    int           `json:"runningAllocs"`
+	UptimeLeaderboard []UptimeEntry `json:"uptimeLeaderboard"`
+}
+
+type UptimeEntry struct {
+	AllocID   string `json:"allocId"`
+	JobID     string `json:"jobId"`
+	TaskGroup string `json:"taskGroup"`
+	Uptime    string `json:"uptime"`
+	NodeName  string `json:"nodeName"`
+	StartedAt string `json:"startedAt"`
+}
+
+type Snapshot struct {
+	Filename  string `json:"filename"`
+	Database  string `json:"database"`
+	Timestamp string `json:"timestamp"`
+	Size      int64  `json:"size"`
+}
+
+type CronState struct {
+	App      string    `json:"app"`
+	Process  string    `json:"process"`
+	Paused   bool      `json:"paused"`
+	Schedule string    `json:"schedule"`
+	Runs     []CronRun `json:"runs,omitempty"`
+}
+
+type CronRun struct {
+	JobID     string `json:"jobId"`
+	Status    string `json:"status"`
+	StartedAt string `json:"startedAt"`
+}
+
+type FuncExecution struct {
+	ID         string `json:"id"`
+	App        string `json:"app"`
+	Process    string `json:"process"`
+	Status     string `json:"status"`
+	ExitCode   int    `json:"exitCode,omitempty"`
+	StartedAt  string `json:"startedAt"`
+	FinishedAt string `json:"finishedAt,omitempty"`
+	DurationMs int64  `json:"durationMs,omitempty"`
+}
+
 // API methods
 
 func (c *Client) Health() (*HealthStatus, error) {
@@ -239,6 +294,71 @@ func (c *Client) DeleteSecret(appID, key string) error {
 func (c *Client) Scale(appID, group string, count int) error {
 	body := fmt.Sprintf(`{"group":%q,"count":%d}`, group, count)
 	return c.post("/api/apps/"+appID+"/scale", body)
+}
+
+func (c *Client) Stats() (*StatsResponse, error) {
+	var s StatsResponse
+	if err := c.get("/api/stats", &s); err != nil {
+		return nil, err
+	}
+	return &s, nil
+}
+
+func (c *Client) ListSnapshots(appID string) ([]Snapshot, error) {
+	var snaps []Snapshot
+	if err := c.get("/api/apps/"+appID+"/snapshots", &snaps); err != nil {
+		return nil, err
+	}
+	return snaps, nil
+}
+
+func (c *Client) RestoreSnapshot(appID, ts string) error {
+	return c.post("/api/apps/"+appID+"/snapshots/"+ts+"/restore", "{}")
+}
+
+func (c *Client) CronHistory(appID string) ([]CronState, error) {
+	var states []CronState
+	if err := c.get("/api/apps/"+appID+"/cron/history", &states); err != nil {
+		return nil, err
+	}
+	return states, nil
+}
+
+func (c *Client) CronTrigger(appID, process string) error {
+	body := fmt.Sprintf(`{"process":%q}`, process)
+	return c.post("/api/apps/"+appID+"/cron/trigger", body)
+}
+
+func (c *Client) CronPause(appID, process string) error {
+	body := fmt.Sprintf(`{"process":%q}`, process)
+	return c.post("/api/apps/"+appID+"/cron/pause", body)
+}
+
+func (c *Client) CronResume(appID, process string) error {
+	body := fmt.Sprintf(`{"process":%q}`, process)
+	return c.post("/api/apps/"+appID+"/cron/resume", body)
+}
+
+func (c *Client) CronUpdateSchedule(appID, process, schedule string) error {
+	body := fmt.Sprintf(`{"process":%q,"schedule":%q}`, process, schedule)
+	return c.put("/api/apps/"+appID+"/cron/schedule", body)
+}
+
+func (c *Client) InvokeFunction(appID, process, body string) (*FuncExecution, error) {
+	reqBody := fmt.Sprintf(`{"process":%q,"body":%q}`, process, body)
+	var exec FuncExecution
+	if err := c.postJSON("/api/apps/"+appID+"/invoke", reqBody, &exec); err != nil {
+		return nil, err
+	}
+	return &exec, nil
+}
+
+func (c *Client) FunctionHistory(appID string) ([]FuncExecution, error) {
+	var execs []FuncExecution
+	if err := c.get("/api/apps/"+appID+"/function/history", &execs); err != nil {
+		return nil, err
+	}
+	return execs, nil
 }
 
 func (c *Client) WebSocketURL() string {

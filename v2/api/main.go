@@ -156,6 +156,7 @@ func main() {
 
 		r.Post("/webhooks/{provider}", h.Webhook)
 
+		r.Get("/stats", h.Stats)
 		r.Get("/apps", h.ListApps)
 		r.Get("/deployments", h.ListDeployments)
 		r.Get("/validate", h.ValidateAll)
@@ -174,6 +175,15 @@ func main() {
 			r.Get("/secrets", h.ListSecrets)
 			r.Put("/secrets", h.UpdateSecrets)
 			r.Delete("/secrets/{key}", h.DeleteSecret)
+			r.Get("/snapshots", h.ListSnapshots)
+			r.Post("/snapshots/{ts}/restore", h.RestoreSnapshot)
+			r.Get("/cron/history", h.CronHistory)
+			r.Post("/cron/trigger", h.CronTrigger)
+			r.Post("/cron/pause", h.CronPause)
+			r.Post("/cron/resume", h.CronResume)
+			r.Put("/cron/schedule", h.CronUpdateSchedule)
+			r.Post("/invoke", h.InvokeFunction)
+			r.Get("/function/history", h.FunctionHistory)
 			r.Post("/forge", h.Forge)
 			r.Post("/teardown", h.Teardown)
 			r.Get("/exec", h.ExecAlloc)

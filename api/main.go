@@ -19,6 +19,7 @@ import (
 	"norn/api/auth"
 	"norn/api/config"
 	ncron "norn/api/cron"
+	"norn/api/dispatch"
 	"norn/api/function"
 	"norn/api/handler"
 	"norn/api/storage"
@@ -99,6 +100,22 @@ func main() {
 	default:
 		runner = runtime.NewDockerRunner()
 	}
+
+	// Worker dispatch: wrap runner with DispatchRunner when enabled
+	var workerRegistry *dispatch.Registry
+	var workerDispatcher *dispatch.Dispatcher
+	var workerWSHandler *dispatch.WSHandler
+	var workerHandler *handler.WorkerHandler
+
+	if cfg.WorkerEnabled {
+		workerRegistry = dispatch.NewRegistry()
+		workerDispatcher = dispatch.NewDispatcher(workerRegistry, db)
+		runner = dispatch.NewDispatchRunner(workerRegistry, workerDispatcher, runner)
+		workerWSHandler = dispatch.NewWSHandler(workerRegistry, workerDispatcher)
+		workerHandler = handler.NewWorkerHandler(workerRegistry)
+		log.Println("worker dispatch enabled")
+	}
+
 	scheduler := ncron.New(runner, db, ws)
 	scheduler.Start()
 
@@ -180,7 +197,22 @@ func main() {
 		})
 	})
 
+	// Worker management routes (when enabled)
+	if workerHandler != nil {
+		r.Route("/api/workers", func(r chi.Router) {
+			r.Get("/", workerHandler.ListWorkers)
+			r.Get("/{id}", workerHandler.GetWorker)
+			r.Post("/{id}/drain", workerHandler.DrainWorker)
+			r.Delete("/{id}", workerHandler.RemoveWorker)
+		})
+	}
+
 	r.Get("/ws", ws.HandleConnect)
+
+	// Worker WebSocket endpoint
+	if workerWSHandler != nil {
+		r.Get("/ws/worker", workerWSHandler.ServeHTTP)
+	}
 
 	// Serve UI static files in production
 	if cfg.UIDir != "" {
@@ -214,7 +246,7 @@ func bearerAuth(token string) func(http.Handler) http.Handler {
 	return func(next http.Handler) http.Handler {
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 			// Skip auth for WebSocket upgrade and health check
-			if r.URL.Path == "/ws" || r.URL.Path == "/api/health" || r.URL.Path == "/api/version" || r.URL.Path == "/api/webhooks/push" {
+			if r.URL.Path == "/ws" || r.URL.Path == "/ws/worker" || r.URL.Path == "/api/health" || r.URL.Path == "/api/version" || r.URL.Path == "/api/webhooks/push" {
 				next.ServeHTTP(w, r)
 				return
 			}

@@ -156,6 +156,23 @@ func Translate(spec *model.InfraSpec, imageTag string, env map[string]string) *n
 			}
 		}
 
+		// Volume mounts
+		for _, vol := range spec.Volumes {
+			tg.Volumes = map[string]*nomadapi.VolumeRequest{
+				vol.Name: {
+					Name:     vol.Name,
+					Type:     "host",
+					Source:   vol.Name,
+					ReadOnly: vol.ReadOnly,
+				},
+			}
+			task.VolumeMounts = append(task.VolumeMounts, &nomadapi.VolumeMount{
+				Volume:      &vol.Name,
+				Destination: &vol.Mount,
+				ReadOnly:    &vol.ReadOnly,
+			})
+		}
+
 		tg.Tasks = []*nomadapi.Task{task}
 		job.TaskGroups = append(job.TaskGroups, tg)
 	}
@@ -211,6 +228,101 @@ func TranslatePeriodic(spec *model.InfraSpec, procName string, proc model.Proces
 	task.Resources = &nomadapi.Resources{
 		CPU:      &cpu,
 		MemoryMB: &mem,
+	}
+
+	// Volume mounts for periodic jobs
+	for _, vol := range spec.Volumes {
+		tg.Volumes = map[string]*nomadapi.VolumeRequest{
+			vol.Name: {
+				Name:     vol.Name,
+				Type:     "host",
+				Source:   vol.Name,
+				ReadOnly: vol.ReadOnly,
+			},
+		}
+		task.VolumeMounts = append(task.VolumeMounts, &nomadapi.VolumeMount{
+			Volume:      &vol.Name,
+			Destination: &vol.Mount,
+			ReadOnly:    &vol.ReadOnly,
+		})
+	}
+
+	tg.Tasks = []*nomadapi.Task{task}
+	job.TaskGroups = []*nomadapi.TaskGroup{tg}
+
+	return job
+}
+
+// TranslateBatch creates a one-shot Nomad batch job for a function invocation.
+func TranslateBatch(spec *model.InfraSpec, procName string, proc model.Process, imageTag string, env map[string]string, jobID string) *nomadapi.Job {
+	job := nomadapi.NewBatchJob(jobID, jobID, "global", 50)
+	job.Datacenters = []string{"dc1"}
+
+	mergedEnv := make(map[string]string)
+	for k, v := range spec.Env {
+		mergedEnv[k] = v
+	}
+	for k, v := range env {
+		mergedEnv[k] = v
+	}
+
+	tg := nomadapi.NewTaskGroup(procName, 1)
+
+	// No retries for batch jobs
+	attempts := 0
+	interval := 1 * time.Minute
+	delay := 5 * time.Second
+	mode := "fail"
+	tg.RestartPolicy = &nomadapi.RestartPolicy{
+		Attempts: &attempts,
+		Interval: &interval,
+		Delay:    &delay,
+		Mode:     &mode,
+	}
+
+	task := nomadapi.NewTask(procName, "docker")
+	task.Config = map[string]interface{}{
+		"image": imageTag,
+	}
+	if proc.Command != "" {
+		task.Config["command"] = "/bin/sh"
+		task.Config["args"] = []string{"-c", proc.Command}
+	}
+	task.Env = mergedEnv
+
+	cpu := 100
+	mem := 128
+	if proc.Resources != nil {
+		if proc.Resources.CPU > 0 {
+			cpu = proc.Resources.CPU
+		}
+		if proc.Resources.Memory > 0 {
+			mem = proc.Resources.Memory
+		}
+	}
+	if proc.Function != nil && proc.Function.Memory > 0 {
+		mem = proc.Function.Memory
+	}
+	task.Resources = &nomadapi.Resources{
+		CPU:      &cpu,
+		MemoryMB: &mem,
+	}
+
+	// Volume mounts for batch jobs
+	for _, vol := range spec.Volumes {
+		tg.Volumes = map[string]*nomadapi.VolumeRequest{
+			vol.Name: {
+				Name:     vol.Name,
+				Type:     "host",
+				Source:   vol.Name,
+				ReadOnly: vol.ReadOnly,
+			},
+		}
+		task.VolumeMounts = append(task.VolumeMounts, &nomadapi.VolumeMount{
+			Volume:      &vol.Name,
+			Destination: &vol.Mount,
+			ReadOnly:    &vol.ReadOnly,
+		})
 	}
 
 	tg.Tasks = []*nomadapi.Task{task}

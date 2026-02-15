@@ -45,3 +45,6 @@ Thumbs.db
 .terraform/
 *.tfvars
 !terraform.tfvars.example
+v2/api/snapshots/
+v2/snapshots/
+v2/dev/logs/

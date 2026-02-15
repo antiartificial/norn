@@ -84,6 +84,19 @@ func ValidateSpec(spec *InfraSpec) *ValidationResult {
 		}
 	}
 
+	// Volumes
+	for i, vol := range spec.Volumes {
+		field := fmt.Sprintf("volumes[%d]", i)
+		if vol.Name == "" {
+			r.add("error", field+".name", "volume name is required")
+		}
+		if vol.Mount == "" {
+			r.add("error", field+".mount", "volume mount path is required")
+		} else if !strings.HasPrefix(vol.Mount, "/") {
+			r.add("error", field+".mount", "volume mount path must be absolute")
+		}
+	}
+
 	// Postgres infra requires database name
 	if spec.Infrastructure != nil && spec.Infrastructure.Postgres != nil {
 		if spec.Infrastructure.Postgres.Database == "" {
