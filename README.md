@@ -2,7 +2,7 @@
 
 A personal control plane for self-hosted infrastructure. Named after the three Norse fates who determine the destiny of all beings — **Urd** (past), **Verdandi** (present), and **Skuld** (future).
 
-Norn discovers your apps, shows their health, and lets you deploy, restart, and roll back from a dashboard or the terminal.
+Norn discovers your apps, shows their health, and lets you deploy, restart, and roll back from a dashboard or the terminal. [Read the docs](https://antiartificial.github.io/norn/)!
 
 ## Quick start
 
