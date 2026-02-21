@@ -39,6 +39,87 @@ Norn is a personal control plane for self-hosted infrastructure. It discovers yo
 
 Each app declares its needs in an `infraspec.yaml`: processes, ports, services, secrets, migrations. Norn reads these specs and handles the rest — building Docker images, running migrations, resolving secrets, submitting Nomad jobs, and routing traffic through Cloudflare tunnels.
 
+### One file. Entire app.
+
+Drop an `infraspec.yaml` in your project and Norn handles the rest — build pipeline, service discovery, database snapshots, secret injection, Cloudflare tunnel routing:
+
+```yaml
+name: auricle
+
+repo:
+  url: git@github.com:antiartificial/auricle.git
+  branch: main
+  autoDeploy: true               # push to main → auto deploy
+
+build:
+  dockerfile: Dockerfile
+  test: go test ./...             # tests gate every deploy
+
+processes:
+  api:                            # → Nomad service, Consul registered
+    port: 8080
+    command: ./auricle serve
+    health:
+      path: /health
+    scaling:
+      min: 2                      # always 2 instances
+    resources:
+      cpu: 200                    # MHz
+      memory: 512                 # MB
+    drain:
+      signal: SIGTERM
+      timeout: 30s
+
+  worker:                         # → Nomad service (no port)
+    command: ./auricle worker
+    scaling:
+      min: 1
+      auto:
+        metric: kafka_lag         # scale on consumer lag
+        target: 100
+        topic: audio.transcribed
+
+  digest:                         # → Nomad periodic batch
+    schedule: "0 7 * * *"         # daily at 7am
+    command: ./auricle digest
+
+  reindex:                        # → Nomad batch (HTTP-triggered)
+    function:
+      timeout: 10m
+      memory: 1024
+    command: ./auricle reindex
+
+secrets:
+  - DATABASE_URL
+  - OPENAI_API_KEY
+  - S3_ACCESS_KEY
+
+migrations: ./migrations          # run before every deploy
+
+env:
+  LOG_LEVEL: info
+  TZ: America/Chicago
+
+infrastructure:
+  postgres:
+    database: auricle_db          # auto snapshot + migrate
+  redis:
+    namespace: auricle            # key-prefixed isolation
+  kafka:
+    topics:                       # auto-created via Redpanda
+      - audio.uploaded
+      - audio.transcribed
+
+endpoints:
+  - url: auricle.0xadb.com       # → cloudflared tunnel, TLS included
+
+volumes:
+  - name: audio-cache
+    mount: /var/cache/auricle
+```
+
+That's it. `norn deploy auricle HEAD` runs the full pipeline — clone, build, test, snapshot, migrate, submit to Nomad, wait for healthy, provision Cloudflare tunnel, cleanup — with real-time progress in the dashboard and CLI.
+
 ### Quick start
 
 ```bash
