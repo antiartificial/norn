@@ -65,6 +65,25 @@ See [Deploy Pipeline](/v2/architecture/deploy-pipeline) for detailed documentati
 | forge | Update cloudflared ingress |
 | cleanup | Remove temp files |
 
+## Port Conflict Detection
+
+During the **submit** step, norn checks for port conflicts with other running Nomad jobs. If the app's requested static port is already in use by a different job, norn logs a warning with a suggested alternative port:
+
+```
+port.conflict: port 8090 is used by mail-indexer — suggest 8092
+```
+
+Apps with `endpoints:` in their infraspec use **static ports** (Nomad `ReservedPorts`), meaning the container binds to the exact port specified. If another service already occupies that port on IPv4, Nomad may fall back to IPv6-only binding, which causes cloudflared routing to hit the wrong service.
+
+### Checking used ports
+
+The Nomad client exposes `UsedPorts()` and `SuggestPort(base)`:
+
+- `UsedPorts()` — returns all static ports currently claimed by running jobs
+- `SuggestPort(base)` — returns the lowest unused port starting from `base`
+
+To avoid conflicts, pick a port not in use. Currently allocated ports can be queried through the Nomad API or by running `norn status` and inspecting allocations.
+
 ## Auto-Deploy
 
 Enable auto-deploy by setting `autoDeploy: true` in the infraspec's repo config and configuring a GitHub webhook.

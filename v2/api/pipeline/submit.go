@@ -22,6 +22,23 @@ func (p *Pipeline) submit(ctx context.Context, st *state, sg *saga.Saga) error {
 		}
 	}
 
+	// Check for port conflicts before submitting
+	for _, proc := range st.spec.Processes {
+		if proc.Port > 0 && len(st.spec.Endpoints) > 0 {
+			if used, err := p.Nomad.UsedPorts(); err == nil {
+				for _, pa := range used {
+					if pa.Port == proc.Port && pa.JobID != st.spec.App {
+						suggested, _ := p.Nomad.SuggestPort(proc.Port)
+						sg.Log(ctx, "port.conflict",
+							fmt.Sprintf("port %d is used by %s — suggest %d", proc.Port, pa.JobID, suggested),
+							map[string]string{"step": "submit"})
+					}
+				}
+			}
+			break
+		}
+	}
+
 	// Translate infraspec → Nomad job
 	job := nomad.Translate(st.spec, st.imageTag, env)
 

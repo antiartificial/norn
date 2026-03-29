@@ -384,6 +384,62 @@ func (c *Client) WaitBatchComplete(ctx context.Context, jobID string, timeout ti
 	}
 }
 
+// PortAllocation describes a port in use by a running job.
+type PortAllocation struct {
+	JobID string `json:"jobId"`
+	Port  int    `json:"port"`
+	Label string `json:"label"`
+}
+
+// UsedPorts returns all static/reserved ports currently claimed by running Nomad jobs.
+func (c *Client) UsedPorts() ([]PortAllocation, error) {
+	jobs, _, err := c.api.Jobs().List(nil)
+	if err != nil {
+		return nil, fmt.Errorf("list jobs: %w", err)
+	}
+
+	var used []PortAllocation
+	for _, stub := range jobs {
+		if stub.Status != "running" {
+			continue
+		}
+		job, _, err := c.api.Jobs().Info(stub.ID, nil)
+		if err != nil {
+			continue
+		}
+		for _, tg := range job.TaskGroups {
+			for _, net := range tg.Networks {
+				for _, p := range net.ReservedPorts {
+					used = append(used, PortAllocation{
+						JobID: stub.ID,
+						Port:  p.Value,
+						Label: p.Label,
+					})
+				}
+			}
+		}
+	}
+	return used, nil
+}
+
+// SuggestPort returns the lowest unused port starting from the given base,
+// skipping any ports already claimed by running Nomad jobs.
+func (c *Client) SuggestPort(base int) (int, error) {
+	used, err := c.UsedPorts()
+	if err != nil {
+		return base, err
+	}
+	taken := make(map[int]bool, len(used))
+	for _, p := range used {
+		taken[p.Port] = true
+	}
+	port := base
+	for taken[port] {
+		port++
+	}
+	return port, nil
+}
+
 func formatDuration(d time.Duration) string {
 	days := int(d.Hours()) / 24
 	hours := int(d.Hours()) % 24
