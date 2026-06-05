@@ -18,18 +18,18 @@ type FunctionSpec struct {
 }
 
 type InfraSpec struct {
-	App            string               `yaml:"name" json:"name"`
-	Repo           *RepoSpec            `yaml:"repo,omitempty" json:"repo,omitempty"`
-	Build          *BuildSpec           `yaml:"build,omitempty" json:"build,omitempty"`
-	Processes      map[string]Process   `yaml:"processes" json:"processes"`
-	Services       []string             `yaml:"services,omitempty" json:"services,omitempty"`
-	Secrets        []string             `yaml:"secrets,omitempty" json:"secrets,omitempty"`
-	Migrations     string               `yaml:"migrations,omitempty" json:"migrations,omitempty"`
-	Env            map[string]string    `yaml:"env,omitempty" json:"env,omitempty"`
-	Infrastructure *Infrastructure      `yaml:"infrastructure,omitempty" json:"infrastructure,omitempty"`
-	Endpoints      []Endpoint           `yaml:"endpoints,omitempty" json:"endpoints,omitempty"`
-	Volumes        []VolumeSpec         `yaml:"volumes,omitempty" json:"volumes,omitempty"`
-	Deploy         bool                 `yaml:"deploy,omitempty" json:"deploy,omitempty"`
+	App            string             `yaml:"name" json:"name"`
+	Repo           *RepoSpec          `yaml:"repo,omitempty" json:"repo,omitempty"`
+	Build          *BuildSpec         `yaml:"build,omitempty" json:"build,omitempty"`
+	Processes      map[string]Process `yaml:"processes" json:"processes"`
+	Services       []string           `yaml:"services,omitempty" json:"services,omitempty"`
+	Secrets        []string           `yaml:"secrets,omitempty" json:"secrets,omitempty"`
+	Migrations     string             `yaml:"migrations,omitempty" json:"migrations,omitempty"`
+	Env            map[string]string  `yaml:"env,omitempty" json:"-"`
+	Infrastructure *Infrastructure    `yaml:"infrastructure,omitempty" json:"infrastructure,omitempty"`
+	Endpoints      []Endpoint         `yaml:"endpoints,omitempty" json:"endpoints,omitempty"`
+	Volumes        []VolumeSpec       `yaml:"volumes,omitempty" json:"volumes,omitempty"`
+	Deploy         bool               `yaml:"deploy,omitempty" json:"deploy,omitempty"`
 }
 
 type Endpoint struct {
@@ -38,14 +38,15 @@ type Endpoint struct {
 }
 
 type Process struct {
-	Port      int           `yaml:"port,omitempty" json:"port,omitempty"`
-	Command   string        `yaml:"command,omitempty" json:"command,omitempty"`
-	Schedule  string        `yaml:"schedule,omitempty" json:"schedule,omitempty"`
-	Function  *FunctionSpec `yaml:"function,omitempty" json:"function,omitempty"`
-	Health    *HealthSpec   `yaml:"health,omitempty" json:"health,omitempty"`
-	Scaling   *Scaling      `yaml:"scaling,omitempty" json:"scaling,omitempty"`
-	Drain     *Drain        `yaml:"drain,omitempty" json:"drain,omitempty"`
-	Resources *Resources    `yaml:"resources,omitempty" json:"resources,omitempty"`
+	Port      int               `yaml:"port,omitempty" json:"port,omitempty"`
+	Command   string            `yaml:"command,omitempty" json:"command,omitempty"`
+	Schedule  string            `yaml:"schedule,omitempty" json:"schedule,omitempty"`
+	Function  *FunctionSpec     `yaml:"function,omitempty" json:"function,omitempty"`
+	Health    *HealthSpec       `yaml:"health,omitempty" json:"health,omitempty"`
+	Scaling   *Scaling          `yaml:"scaling,omitempty" json:"scaling,omitempty"`
+	Drain     *Drain            `yaml:"drain,omitempty" json:"drain,omitempty"`
+	Resources *Resources        `yaml:"resources,omitempty" json:"resources,omitempty"`
+	Env       map[string]string `yaml:"env,omitempty" json:"-"`
 }
 
 type HealthSpec struct {

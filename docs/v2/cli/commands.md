@@ -230,7 +230,7 @@ norn validate <app>
 norn validate
 ```
 
-Reports errors and warnings for each infraspec field.
+Reports errors and warnings for each infraspec field. Validation warns when secret-like values such as DSNs, passwords, tokens, API keys, or client secrets appear in plain `env` blocks. Move those values to `secrets.enc.yaml` and list the key under `secrets`.
 
 ## endpoints
 
