@@ -23,6 +23,10 @@ var appNameRe = regexp.MustCompile(`^[a-z0-9][a-z0-9-]*$`)
 
 func ValidateSpec(spec *InfraSpec) *ValidationResult {
 	r := &ValidationResult{App: spec.App, Valid: true}
+	declaredSecrets := map[string]bool{}
+	for _, key := range spec.Secrets {
+		declaredSecrets[strings.ToUpper(strings.TrimSpace(key))] = true
+	}
 
 	// App name
 	if spec.App == "" {
@@ -61,7 +65,11 @@ func ValidateSpec(spec *InfraSpec) *ValidationResult {
 				r.add("error", field+".schedule", fmt.Sprintf("cron expression should have 5-6 fields, got %d", len(fields)))
 			}
 		}
+
+		validateEnvSecrets(r, field+".env", proc.Env, declaredSecrets)
 	}
+
+	validateEnvSecrets(r, "env", spec.Env, declaredSecrets)
 
 	// Build requires dockerfile
 	if spec.Build != nil && spec.Build.Dockerfile == "" {
@@ -105,6 +113,47 @@ func ValidateSpec(spec *InfraSpec) *ValidationResult {
 	}
 
 	return r
+}
+
+func validateEnvSecrets(r *ValidationResult, field string, env map[string]string, declaredSecrets map[string]bool) {
+	for key, value := range env {
+		if !looksSecretLike(key, value) {
+			continue
+		}
+		secretKey := strings.ToUpper(strings.TrimSpace(key))
+		if declaredSecrets[secretKey] {
+			r.add("warning", field+"."+key, "secret-like value is declared in secrets but also appears in plain env; remove the plaintext env entry")
+			continue
+		}
+		r.add("warning", field+"."+key, "secret-like value should move to secrets.enc.yaml and be listed in secrets")
+	}
+}
+
+func looksSecretLike(key, value string) bool {
+	upper := strings.ToUpper(strings.TrimSpace(key))
+	secretMarkers := []string{
+		"API_KEY",
+		"AUTH_TOKEN",
+		"CLIENT_SECRET",
+		"CREDENTIAL",
+		"DATABASE_URL",
+		"DB_PASSWORD",
+		"DSN",
+		"PASSWORD",
+		"PRIVATE_KEY",
+		"SECRET",
+		"TOKEN",
+	}
+	for _, marker := range secretMarkers {
+		if strings.Contains(upper, marker) {
+			return true
+		}
+	}
+	lowerValue := strings.ToLower(strings.TrimSpace(value))
+	return strings.HasPrefix(lowerValue, "postgres://") ||
+		strings.HasPrefix(lowerValue, "mysql://") ||
+		strings.HasPrefix(lowerValue, "mongodb://") ||
+		strings.HasPrefix(lowerValue, "redis://")
 }
 
 func (r *ValidationResult) add(severity, field, message string) {
