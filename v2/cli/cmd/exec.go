@@ -5,7 +5,6 @@ import (
 	"fmt"
 	"io"
 	"os"
-	"strings"
 
 	"github.com/gorilla/websocket"
 	"github.com/spf13/cobra"
@@ -24,9 +23,8 @@ var execCmd = &cobra.Command{
 	Args:  cobra.MinimumNArgs(2),
 	RunE: func(cmd *cobra.Command, args []string) error {
 		appID := args[0]
-		command := strings.Join(args[1:], " ")
 
-		conn, err := client.Exec(appID, execProcess, command)
+		conn, err := client.Exec(appID, execProcess, args[1:])
 		if err != nil {
 			return err
 		}
