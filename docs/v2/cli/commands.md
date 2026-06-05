@@ -163,6 +163,17 @@ norn stats
 
 Shows total apps, recent deployments, active allocations, and other cluster metrics.
 
+## access
+
+Show recent Norn API access events.
+
+```bash
+norn access
+norn access --limit 100
+```
+
+The table includes request time, status, method, path, client IP, Cloudflare Access user metadata when present, and duration. Norn does not expose request bodies, authorization headers, or secret values in this view.
+
 ## secrets
 
 Manage SOPS-encrypted secrets for an app.

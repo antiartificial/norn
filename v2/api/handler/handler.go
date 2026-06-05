@@ -30,6 +30,7 @@ type Handler struct {
 	secrets   *secrets.Manager
 	sagaStore saga.Store
 	s3        *storage.Client
+	access    *AccessLog
 }
 
 func New(db *store.DB, n *nomad.Client, c *consul.Client, ws *hub.Hub, cfg *config.Config, p *pipeline.Pipeline, sec *secrets.Manager, ss saga.Store, s3 *storage.Client) *Handler {
@@ -43,6 +44,7 @@ func New(db *store.DB, n *nomad.Client, c *consul.Client, ws *hub.Hub, cfg *conf
 		secrets:   sec,
 		sagaStore: ss,
 		s3:        s3,
+		access:    NewAccessLog(defaultAccessLogLimit),
 	}
 }
 

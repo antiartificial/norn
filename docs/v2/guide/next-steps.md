@@ -98,10 +98,13 @@ Planned work:
 
 The next operational layer is to show who is reaching Norn-managed services and make temporary access explicit.
 
+Current state:
+
+- Norn records recent API access events in memory after auth middleware runs.
+- `norn access [--limit N]` shows method, path, status, client IP, Cloudflare Access metadata, and duration without request bodies or authorization headers.
+
 Planned work:
 
-- Add Norn API request logging middleware with method, path, status, user agent, and client IP.
-- Preserve Cloudflare client IP metadata when available.
 - Add a traffic/access page in the UI.
 - Explore a shared gateway for app-level request logging.
 - Add temporary access grants, such as expiring JWT links or expiring IP allowlist entries.

@@ -149,6 +149,7 @@ func main() {
 		r.Use(bearerAuth(cfg.APIToken))
 		log.Println("API token auth enabled")
 	}
+	r.Use(h.AccessMiddleware)
 
 	r.Route("/api", func(r chi.Router) {
 		r.Get("/health", h.Health)
@@ -169,6 +170,7 @@ func main() {
 		r.Get("/saga", h.ListRecentSaga)
 		r.Get("/saga/{sagaId}", h.GetSagaEvents)
 		r.Get("/cloudflared/ingress", h.CloudflaredIngress)
+		r.Get("/access/events", h.AccessEvents)
 
 		r.Route("/apps/{id}", func(r chi.Router) {
 			r.Use(handler.ValidateAppID)
