@@ -123,12 +123,13 @@ Current state:
 - One-shot worker dry runs work through `norn exec contextdb --process review-worker -- /contextdb worker review ... --report`.
 - ContextDB records durable review worker summaries through its own API surface.
 - `norn contextdb worker-runs <namespace>` surfaces those summaries in Norn CLI table or JSON output.
+- `norn contextdb worker-runs <namespace> --decisions` shows dry-run decision details, including action, applied flag, node id, and reason.
 
 Planned work:
 
 - Decide when a namespace is allowed to move from dry-run to conservative execution.
 - Surface ContextDB worker run summaries as Norn metrics, Norn saga events, or UI output.
-- Add worker logs and dry-run decision reports to the UI or CLI.
+- Add worker logs and dry-run decision reports to the UI.
 
 ### Evaluators
 
