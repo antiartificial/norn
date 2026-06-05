@@ -160,6 +160,7 @@ func main() {
 		r.Post("/webhooks/{provider}", h.Webhook)
 
 		r.Get("/stats", h.Stats)
+		r.Get("/services/manifest", h.ServiceManifest)
 		r.Get("/apps", h.ListApps)
 		r.Get("/deployments", h.ListDeployments)
 		r.Get("/validate", h.ValidateAll)

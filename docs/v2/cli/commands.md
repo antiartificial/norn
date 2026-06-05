@@ -130,6 +130,20 @@ norn secrets delete <app> KEY
 | `set` | Set or update a secret key-value pair |
 | `delete` | Remove a secret |
 
+## services
+
+Inspect the service manifest used by agents, dashboards, and external tooling to answer what Norn is hosting.
+
+```bash
+# Human-readable table
+norn services
+
+# Raw JSON contract
+norn services manifest
+```
+
+The table separates app-level endpoints from process reachability. Service processes can list public or local endpoints; worker, cron, and function entries expose process type, status, health path, and instances without inheriting unrelated app endpoints.
+
 ## snapshots
 
 Manage PostgreSQL database snapshots.
