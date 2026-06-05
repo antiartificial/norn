@@ -166,6 +166,10 @@ Manage SOPS-encrypted secrets for an app.
 # List secret keys
 norn secrets <app>
 
+# Compare declared, encrypted, and plaintext secret state
+norn secrets status
+norn secrets status <app>
+
 # Set a secret
 norn secrets set <app> KEY=VALUE
 
@@ -176,6 +180,7 @@ norn secrets delete <app> KEY
 | Subcommand | Description |
 |------------|-------------|
 | (none) | List secret key names (values are not shown) |
+| `status` | Show declared-vs-encrypted drift and plaintext env warnings |
 | `set` | Set or update a secret key-value pair |
 | `delete` | Remove a secret |
 

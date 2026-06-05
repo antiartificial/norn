@@ -74,11 +74,12 @@ Current state:
 
 - `norn validate` warns when top-level or process-level `env` blocks contain secret-like DSNs, passwords, tokens, API keys, client secrets, or provider keys.
 - App and process `env` values are parsed for validation but omitted from API JSON responses.
+- `norn secrets status [app]` compares declared secret keys, encrypted keys, and plaintext env warnings without printing secret values.
 
 Planned work:
 
 - Move sensitive DSNs and API keys into `secrets.enc.yaml`.
-- Improve `norn secrets` UX for set, delete, list, and deploy-time resolution.
+- Improve deploy-time secret resolution reporting.
 - Show secret names, never values, in UI and CLI app detail views.
 
 ### Snapshot Semantics
