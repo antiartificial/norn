@@ -223,13 +223,13 @@ Manage PostgreSQL database snapshots.
 norn snapshots <app>
 
 # Restore a snapshot
-norn snapshots <app> restore <timestamp>
+norn snapshots <app> restore <timestamp> --yes
 ```
 
 | Subcommand | Description |
 |------------|-------------|
-| (none) | List available snapshots with timestamps |
-| `restore` | Restore from a snapshot at the given timestamp |
+| (none) | List available snapshots with timestamps, source commit, created time, size, and filename |
+| `restore` | Restore from a snapshot at the given timestamp; requires `--yes` and prints a restore receipt |
 
 ## cron
 

@@ -177,8 +177,18 @@ type UptimeEntry struct {
 type Snapshot struct {
 	Filename  string `json:"filename"`
 	Database  string `json:"database"`
+	CommitSHA string `json:"commitSha,omitempty"`
 	Timestamp string `json:"timestamp"`
+	CreatedAt string `json:"createdAt,omitempty"`
 	Size      int64  `json:"size"`
+}
+
+type RestoreReceipt struct {
+	Status     string   `json:"status"`
+	App        string   `json:"app"`
+	Database   string   `json:"database"`
+	Snapshot   Snapshot `json:"snapshot"`
+	RestoredAt string   `json:"restoredAt"`
 }
 
 type AccessEvent struct {
@@ -441,8 +451,16 @@ func (c *Client) ListSnapshots(appID string) ([]Snapshot, error) {
 	return snaps, nil
 }
 
-func (c *Client) RestoreSnapshot(appID, ts string) error {
-	return c.post("/api/apps/"+appID+"/snapshots/"+ts+"/restore", "{}")
+func (c *Client) RestoreSnapshot(appID, ts string, confirm bool) (*RestoreReceipt, error) {
+	var receipt RestoreReceipt
+	path := "/api/apps/" + appID + "/snapshots/" + ts + "/restore"
+	if confirm {
+		path += "?confirm=true"
+	}
+	if err := c.postJSON(path, "{}", &receipt); err != nil {
+		return nil, err
+	}
+	return &receipt, nil
 }
 
 func (c *Client) AccessEvents(limit int) ([]AccessEvent, error) {

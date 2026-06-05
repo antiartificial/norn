@@ -11,8 +11,11 @@ import (
 )
 
 func init() {
+	snapshotsCmd.Flags().BoolVar(&snapshotRestoreYes, "yes", false, "Confirm snapshot restore")
 	rootCmd.AddCommand(snapshotsCmd)
 }
+
+var snapshotRestoreYes bool
 
 var snapshotsCmd = &cobra.Command{
 	Use:   "snapshots <app> [restore <timestamp>]",
@@ -23,11 +26,23 @@ var snapshotsCmd = &cobra.Command{
 
 		if len(args) >= 3 && args[1] == "restore" {
 			ts := args[2]
+			if !snapshotRestoreYes {
+				return fmt.Errorf("restore is destructive; rerun with --yes to confirm")
+			}
 			fmt.Printf("%s restoring snapshot %s for %s...\n", style.DotWarning, ts, appID)
-			if err := client.RestoreSnapshot(appID, ts); err != nil {
+			receipt, err := client.RestoreSnapshot(appID, ts, true)
+			if err != nil {
 				return fmt.Errorf("restore failed: %w", err)
 			}
 			fmt.Println(style.SuccessBox.Render("snapshot restored"))
+			if receipt != nil {
+				fmt.Printf("  %s %s\n", style.Key.Render("database"), receipt.Database)
+				fmt.Printf("  %s %s\n", style.Key.Render("snapshot"), receipt.Snapshot.Filename)
+				if receipt.Snapshot.CommitSHA != "" {
+					fmt.Printf("  %s %s\n", style.Key.Render("commit"), receipt.Snapshot.CommitSHA)
+				}
+				fmt.Printf("  %s %s\n", style.Key.Render("restored"), receipt.RestoredAt)
+			}
 			return nil
 		}
 
@@ -47,14 +62,16 @@ var snapshotsCmd = &cobra.Command{
 		w := tabwriter.NewWriter(os.Stdout, 0, 0, 2, ' ', 0)
 		fmt.Fprintln(w, "  "+
 			style.TableHeader.Render("TIMESTAMP")+"\t"+
+			style.TableHeader.Render("CREATED")+"\t"+
+			style.TableHeader.Render("COMMIT")+"\t"+
 			style.TableHeader.Render("DATABASE")+"\t"+
 			style.TableHeader.Render("SIZE")+"\t"+
 			style.TableHeader.Render("FILE"))
 
 		for _, s := range snaps {
 			size := formatBytes(s.Size)
-			fmt.Fprintf(w, "  %s\t%s\t%s\t%s\n",
-				s.Timestamp, s.Database, size, s.Filename)
+			fmt.Fprintf(w, "  %s\t%s\t%s\t%s\t%s\t%s\n",
+				s.Timestamp, s.CreatedAt, s.CommitSHA, s.Database, size, s.Filename)
 		}
 		w.Flush()
 
