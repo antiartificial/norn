@@ -2,6 +2,7 @@ package model
 
 import (
 	"fmt"
+	"net"
 	"net/url"
 	"regexp"
 	"strings"
@@ -21,8 +22,17 @@ type ValidationFinding struct {
 
 var appNameRe = regexp.MustCompile(`^[a-z0-9][a-z0-9-]*$`)
 
+type ValidationOptions struct {
+	NetworkMode string
+}
+
 func ValidateSpec(spec *InfraSpec) *ValidationResult {
+	return ValidateSpecWithOptions(spec, ValidationOptions{NetworkMode: "local"})
+}
+
+func ValidateSpecWithOptions(spec *InfraSpec, opts ValidationOptions) *ValidationResult {
 	r := &ValidationResult{App: spec.App, Valid: true}
+	networkMode := normalizeNetworkMode(opts.NetworkMode)
 	declaredSecrets := map[string]bool{}
 	for _, key := range spec.Secrets {
 		declaredSecrets[strings.ToUpper(strings.TrimSpace(key))] = true
@@ -89,7 +99,9 @@ func ValidateSpec(spec *InfraSpec) *ValidationResult {
 		}
 		if _, err := url.Parse(ep.URL); err != nil {
 			r.add("error", fmt.Sprintf("endpoints[%d].url", i), fmt.Sprintf("invalid URL: %v", err))
+			continue
 		}
+		validateEndpointReachability(r, fmt.Sprintf("endpoints[%d].url", i), ep.URL, networkMode)
 	}
 
 	// Volumes
@@ -113,6 +125,51 @@ func ValidateSpec(spec *InfraSpec) *ValidationResult {
 	}
 
 	return r
+}
+
+func normalizeNetworkMode(mode string) string {
+	switch strings.ToLower(strings.TrimSpace(mode)) {
+	case "tailnet", "tailscale":
+		return "tailnet"
+	case "public":
+		return "public"
+	default:
+		return "local"
+	}
+}
+
+func validateEndpointReachability(r *ValidationResult, field, rawURL, networkMode string) {
+	parsed, err := url.Parse(rawURL)
+	if err != nil {
+		return
+	}
+	scope := hostScope(parsed.Hostname())
+	switch {
+	case networkMode != "local" && scope == "local":
+		r.add("warning", field, fmt.Sprintf("local endpoint may not be reachable in %s network mode", networkMode))
+	case networkMode == "local" && scope == "public":
+		r.add("warning", field, "public endpoint in local network mode needs cloudflared/forge routing to be reachable")
+	case networkMode == "public" && scope == "private":
+		r.add("warning", field, "private endpoint may not be reachable in public network mode")
+	}
+}
+
+func hostScope(host string) string {
+	host = strings.ToLower(strings.TrimSpace(host))
+	if host == "" || host == "localhost" {
+		return "local"
+	}
+	if ip := net.ParseIP(host); ip != nil {
+		switch {
+		case ip.IsLoopback():
+			return "local"
+		case ip.IsPrivate():
+			return "private"
+		default:
+			return "public"
+		}
+	}
+	return "public"
 }
 
 func validateEnvSecrets(r *ValidationResult, field string, env map[string]string, declaredSecrets map[string]bool) {

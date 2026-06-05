@@ -5,6 +5,7 @@ import "time"
 type ServiceManifest struct {
 	Version     int                    `json:"version"`
 	GeneratedAt time.Time              `json:"generatedAt"`
+	NetworkMode string                 `json:"networkMode,omitempty"`
 	Services    []ServiceManifestEntry `json:"services"`
 }
 

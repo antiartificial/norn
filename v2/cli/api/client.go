@@ -43,6 +43,7 @@ type Endpoint struct {
 type ServiceManifest struct {
 	Version     int                    `json:"version"`
 	GeneratedAt string                 `json:"generatedAt"`
+	NetworkMode string                 `json:"networkMode,omitempty"`
 	Services    []ServiceManifestEntry `json:"services"`
 }
 
@@ -96,6 +97,14 @@ type Allocation struct {
 type HealthStatus struct {
 	Status   string            `json:"status"`
 	Services map[string]string `json:"services"`
+	Network  NetworkStatus     `json:"network,omitempty"`
+}
+
+type NetworkStatus struct {
+	Mode       string `json:"mode,omitempty"`
+	BindAddr   string `json:"bindAddr,omitempty"`
+	NomadAddr  string `json:"nomadAddr,omitempty"`
+	ConsulAddr string `json:"consulAddr,omitempty"`
 }
 
 type Deployment struct {

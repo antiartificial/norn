@@ -64,5 +64,11 @@ func (h *Handler) Health(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, map[string]interface{}{
 		"status":   status,
 		"services": services,
+		"network": map[string]string{
+			"mode":       h.cfg.NetworkMode,
+			"bindAddr":   h.cfg.BindAddr,
+			"nomadAddr":  h.cfg.NomadAddr,
+			"consulAddr": h.cfg.ConsulAddr,
+		},
 	})
 }

@@ -24,6 +24,13 @@ var healthCmd = &cobra.Command{
 
 		fmt.Println(style.Title.Render("norn health"))
 		fmt.Println()
+		if h.Network.Mode != "" {
+			fmt.Printf("  %s network mode: %s\n", style.DotHealthy, h.Network.Mode)
+			if h.Network.BindAddr != "" {
+				fmt.Printf("    bind: %s\n", style.DimText.Render(h.Network.BindAddr))
+			}
+			fmt.Println()
+		}
 
 		for svc, status := range h.Services {
 			dot := style.DotHealthy

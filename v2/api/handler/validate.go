@@ -18,7 +18,7 @@ func (h *Handler) ValidateAll(w http.ResponseWriter, r *http.Request) {
 
 	var results []model.ValidationResult
 	for _, spec := range specs {
-		results = append(results, *model.ValidateSpec(spec))
+		results = append(results, *model.ValidateSpecWithOptions(spec, model.ValidationOptions{NetworkMode: h.cfg.NetworkMode}))
 	}
 	writeJSON(w, results)
 }
@@ -34,7 +34,7 @@ func (h *Handler) ValidateApp(w http.ResponseWriter, r *http.Request) {
 
 	for _, spec := range specs {
 		if spec.App == id {
-			writeJSON(w, model.ValidateSpec(spec))
+			writeJSON(w, model.ValidateSpecWithOptions(spec, model.ValidationOptions{NetworkMode: h.cfg.NetworkMode}))
 			return
 		}
 	}

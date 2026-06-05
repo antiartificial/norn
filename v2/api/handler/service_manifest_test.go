@@ -41,7 +41,7 @@ endpoints:
 		t.Fatal(err)
 	}
 
-	h := &Handler{cfg: &config.Config{AppsDir: appsDir}}
+	h := &Handler{cfg: &config.Config{AppsDir: appsDir, NetworkMode: "local"}}
 	req := httptest.NewRequest(http.MethodGet, "/api/services/manifest", nil)
 	rec := httptest.NewRecorder()
 
@@ -53,6 +53,9 @@ endpoints:
 	var manifest model.ServiceManifest
 	if err := json.Unmarshal(rec.Body.Bytes(), &manifest); err != nil {
 		t.Fatal(err)
+	}
+	if manifest.NetworkMode != "local" {
+		t.Fatalf("networkMode = %q, want local", manifest.NetworkMode)
 	}
 
 	entries := map[string]model.ServiceManifestEntry{}
@@ -69,6 +72,9 @@ endpoints:
 	}
 	if web.Metadata["endpointScope"] != "local" {
 		t.Fatalf("web endpointScope = %q, want local", web.Metadata["endpointScope"])
+	}
+	if web.Metadata["networkMode"] != "local" {
+		t.Fatalf("web networkMode = %q, want local", web.Metadata["networkMode"])
 	}
 
 	worker := entries["review-worker"]

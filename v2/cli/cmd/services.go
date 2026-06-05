@@ -52,6 +52,9 @@ func printServices(manifest *api.ServiceManifest) {
 	}
 
 	fmt.Println(style.Title.Render("hosted services"))
+	if manifest.NetworkMode != "" {
+		fmt.Println(style.DimText.Render("network mode: " + manifest.NetworkMode))
+	}
 	fmt.Println()
 
 	w := tabwriter.NewWriter(os.Stdout, 0, 0, 2, ' ', 0)

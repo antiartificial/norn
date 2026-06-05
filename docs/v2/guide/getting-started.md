@@ -66,6 +66,7 @@ All configuration is via environment variables:
 | `NORN_GIT_SSH_KEY` | — | SSH key path for git operations |
 | `NORN_API_TOKEN` | — | Bearer token for API authentication |
 | `NORN_REGISTRY_URL` | — | Container registry URL (e.g. `ghcr.io/username`) |
+| `NORN_NETWORK_MODE` | `local` | Reachability mode used by health, manifest, and validation (`local`, `tailnet`, or `public`) |
 | `NORN_NOMAD_ADDR` | `http://localhost:4646` | Nomad API address |
 | `NORN_CONSUL_ADDR` | `http://localhost:8500` | Consul API address |
 | `NORN_S3_ENDPOINT` | — | S3-compatible storage endpoint |

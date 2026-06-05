@@ -21,6 +21,7 @@ func (h *Handler) ServiceManifest(w http.ResponseWriter, r *http.Request) {
 	manifest := model.ServiceManifest{
 		Version:     1,
 		GeneratedAt: time.Now().UTC(),
+		NetworkMode: h.cfg.NetworkMode,
 	}
 
 	for _, spec := range specs {
@@ -35,6 +36,7 @@ func (h *Handler) ServiceManifest(w http.ResponseWriter, r *http.Request) {
 				Status:   "unknown",
 				Metadata: serviceMetadata(spec.App, processName, serviceName),
 			}
+			entry.Metadata["networkMode"] = h.cfg.NetworkMode
 			entry.Metadata["instanceScope"] = "none"
 			if processType == "service" {
 				entry.Endpoints = usableEndpoints(spec.Endpoints)
