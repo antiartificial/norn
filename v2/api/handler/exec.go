@@ -25,6 +25,7 @@ func (h *Handler) ExecAlloc(w http.ResponseWriter, r *http.Request) {
 	}
 
 	allocID := r.URL.Query().Get("allocId")
+	processName := r.URL.Query().Get("process")
 	command := r.URL.Query().Get("command")
 	if command == "" {
 		command = "/bin/sh"
@@ -33,15 +34,17 @@ func (h *Handler) ExecAlloc(w http.ResponseWriter, r *http.Request) {
 	var taskName string
 
 	if allocID == "" {
-		aID, tName, err := h.nomad.FindRunningAlloc(id)
+		aID, tName, err := h.nomad.FindRunningAlloc(id, processName)
 		if err != nil {
 			writeError(w, http.StatusNotFound, err.Error())
 			return
 		}
 		allocID = aID
 		taskName = tName
+	} else if processName != "" {
+		taskName = processName
 	} else {
-		_, tName, err := h.nomad.FindRunningAlloc(id)
+		_, tName, err := h.nomad.FindRunningAlloc(id, "")
 		if err != nil {
 			writeError(w, http.StatusNotFound, err.Error())
 			return
