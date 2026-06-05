@@ -131,6 +131,7 @@ Current state:
 - The deployed Hermes policy runs the review worker in dry-run mode with the keyless `rules` evaluator, `stale-only` policy preset, and conservative allowed actions.
 - One-shot worker dry runs work through `norn exec contextdb --process review-worker -- /contextdb worker review ... --report`.
 - ContextDB records durable review worker summaries through its own API surface.
+- `norn contextdb review` summarizes queue counts and recent worker runs for a namespace.
 - `norn contextdb worker-runs <namespace>` surfaces those summaries in Norn CLI table or JSON output.
 - `norn contextdb worker-runs <namespace> --decisions` shows dry-run decision details, including action, applied flag, node id, and reason.
 

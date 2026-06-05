@@ -78,10 +78,17 @@ type contextDBRetrieveResponse struct {
 }
 
 type contextDBReviewQueueResponse struct {
-	Items []struct {
-		NodeID string `json:"node_id"`
-		Type   string `json:"type"`
-	} `json:"items"`
+	Items []contextDBReviewItem `json:"items"`
+}
+
+type contextDBReviewItem struct {
+	ReviewID string `json:"review_id"`
+	Type     string `json:"type"`
+	NodeID   string `json:"node_id"`
+	Status   string `json:"status"`
+	Owner    string `json:"owner"`
+	SourceID string `json:"source_id"`
+	Reason   string `json:"reason"`
 }
 
 type contextDBWorkerReport struct {
