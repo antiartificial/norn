@@ -108,12 +108,12 @@ Current state:
 - ContextDB is managed by Norn as separate `web` and `review-worker` processes.
 - The service manifest reports ContextDB web as a routable service and the review worker as a non-public worker.
 - ContextDB ships a Norn smoke script that checks web health, worker health, write/retrieve behavior, review queue setup, and an in-allocation worker dry run.
+- `norn smoke contextdb` promotes that smoke flow into a first-class Norn command.
 - ContextDB validates cleanly under Norn's plaintext-secret checks: `CONTEXTDB_DSN` is present as a Norn secret and is not duplicated into plain `env`.
 
 Planned work:
 
 - Decide whether ContextDB should expose only local Norn endpoints, a Tailscale endpoint, a cloudflared endpoint, or some combination.
-- Promote the smoke script into a first-class Norn runbook or `norn smoke contextdb` command.
 
 ### Worker Operations
 
@@ -167,9 +167,8 @@ Planned work:
 ## Suggested Order
 
 1. Finish moving app plaintext secrets into `secrets.enc.yaml`, using `norn validate` as the guardrail.
-2. Promote the ContextDB smoke script into a first-class Norn smoke/runbook command.
-3. Improve networking truth in app detail and manifest output.
-4. Surface ContextDB worker run summaries and review metrics in Norn.
-5. Wire Hermes to ContextDB review APIs for queue inspection, claim validation, refutation, and pruning.
-6. Add provider-backed evaluator secrets and smoke checks only when a namespace is ready to leave the keyless rules path.
-7. Build the access/traffic dashboard.
+2. Improve networking truth in app detail and manifest output.
+3. Surface ContextDB worker run summaries and review metrics in Norn.
+4. Wire Hermes to ContextDB review APIs for queue inspection, claim validation, refutation, and pruning.
+5. Add provider-backed evaluator secrets and smoke checks only when a namespace is ready to leave the keyless rules path.
+6. Build the access/traffic dashboard.

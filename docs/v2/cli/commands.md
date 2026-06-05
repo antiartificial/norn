@@ -96,6 +96,24 @@ norn exec contextdb --process review-worker -- \
   /contextdb worker review --namespaces hermes-agent --mode agent_memory --dry-run --smoke-evaluator --report
 ```
 
+## smoke
+
+Run app-specific operational smoke checks.
+
+```bash
+norn smoke contextdb
+```
+
+`norn smoke contextdb` discovers ContextDB web and review-worker reachability from the service manifest, validates the infraspec, checks web and worker health, writes and retrieves a low-confidence smoke claim, verifies the review queue, runs the review worker in dry-run mode, and checks the resulting worker-run receipt.
+
+| Flag | Default | Description |
+|------|---------|-------------|
+| `--namespace` | `norn-smoke-<timestamp>` | ContextDB namespace used for the smoke claim |
+| `--mode` | `agent_memory` | ContextDB write/retrieve/review mode |
+| `--web-url` | manifest endpoint | Override ContextDB web URL |
+| `--worker-url` | manifest instance | Override ContextDB review worker health URL |
+| `--low-confidence-threshold` | `0.35` | Threshold used when checking the review queue |
+
 ## health
 
 Check the health of all backing services (Nomad, Consul, PostgreSQL, S3).
