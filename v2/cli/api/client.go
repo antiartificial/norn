@@ -258,13 +258,17 @@ func (c *Client) StreamLogs(appID string) (io.ReadCloser, error) {
 	return resp.Body, nil
 }
 
-func (c *Client) Exec(appID, process, command string) (*websocket.Conn, error) {
+func (c *Client) Exec(appID, process string, argv []string) (*websocket.Conn, error) {
 	params := url.Values{}
 	if process != "" {
 		params.Set("process", process)
 	}
-	if command != "" {
-		params.Set("command", command)
+	if len(argv) > 0 {
+		encoded, err := json.Marshal(argv)
+		if err != nil {
+			return nil, err
+		}
+		params.Set("argv", string(encoded))
 	}
 	wsURL := c.WebSocketURLFor("/api/apps/" + appID + "/exec")
 	if encoded := params.Encode(); encoded != "" {

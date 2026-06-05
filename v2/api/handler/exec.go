@@ -1,6 +1,7 @@
 package handler
 
 import (
+	"encoding/json"
 	"log"
 	"net/http"
 	"strings"
@@ -29,6 +30,13 @@ func (h *Handler) ExecAlloc(w http.ResponseWriter, r *http.Request) {
 	command := r.URL.Query().Get("command")
 	if command == "" {
 		command = "/bin/sh"
+	}
+	cmd := []string(nil)
+	if rawArgv := r.URL.Query().Get("argv"); rawArgv != "" {
+		if err := json.Unmarshal([]byte(rawArgv), &cmd); err != nil {
+			writeError(w, http.StatusBadRequest, "invalid argv")
+			return
+		}
 	}
 
 	var taskName string
@@ -59,9 +67,11 @@ func (h *Handler) ExecAlloc(w http.ResponseWriter, r *http.Request) {
 	}
 	defer ws.Close()
 
-	cmd := strings.Fields(command)
 	if len(cmd) == 0 {
-		cmd = []string{"/bin/sh"}
+		cmd = strings.Fields(command)
+		if len(cmd) == 0 {
+			cmd = []string{"/bin/sh"}
+		}
 	}
 
 	if err := h.nomad.ExecWebSocket(allocID, taskName, cmd, ws); err != nil {
