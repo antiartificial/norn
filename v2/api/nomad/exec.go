@@ -142,6 +142,9 @@ func (c *Client) FindRunningAlloc(jobID, taskGroup string) (allocID, taskName st
 				continue
 			}
 			for _, tg := range full.Job.TaskGroups {
+				if tg == nil || tg.Name == nil || *tg.Name != a.TaskGroup {
+					continue
+				}
 				if len(tg.Tasks) > 0 {
 					return a.ID, tg.Tasks[0].Name, nil
 				}
