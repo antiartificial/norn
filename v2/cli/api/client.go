@@ -5,8 +5,11 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"net/url"
 	"strings"
 	"time"
+
+	"github.com/gorilla/websocket"
 )
 
 type Client struct {
@@ -255,6 +258,25 @@ func (c *Client) StreamLogs(appID string) (io.ReadCloser, error) {
 	return resp.Body, nil
 }
 
+func (c *Client) Exec(appID, process, command string) (*websocket.Conn, error) {
+	params := url.Values{}
+	if process != "" {
+		params.Set("process", process)
+	}
+	if command != "" {
+		params.Set("command", command)
+	}
+	wsURL := c.WebSocketURLFor("/api/apps/" + appID + "/exec")
+	if encoded := params.Encode(); encoded != "" {
+		wsURL += "?" + encoded
+	}
+	conn, _, err := websocket.DefaultDialer.Dial(wsURL, nil)
+	if err != nil {
+		return nil, fmt.Errorf("exec websocket: %w", err)
+	}
+	return conn, nil
+}
+
 func (c *Client) GetSagaEvents(sagaID string) ([]SagaEvent, error) {
 	var events []SagaEvent
 	if err := c.get("/api/saga/"+sagaID, &events); err != nil {
@@ -417,10 +439,14 @@ func (c *Client) FunctionHistory(appID string) ([]FuncExecution, error) {
 }
 
 func (c *Client) WebSocketURL() string {
+	return c.WebSocketURLFor("/ws")
+}
+
+func (c *Client) WebSocketURLFor(path string) string {
 	base := c.BaseURL
 	base = strings.Replace(base, "http://", "ws://", 1)
 	base = strings.Replace(base, "https://", "wss://", 1)
-	return base + "/ws"
+	return base + path
 }
 
 // HTTP helpers

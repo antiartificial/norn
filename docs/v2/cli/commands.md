@@ -87,6 +87,15 @@ norn logs <app>
 
 Opens a fullscreen, scrollable log viewer (Bubble Tea TUI). Press `q` or `Ctrl+C` to exit.
 
+## exec
+
+Run a command inside a running allocation. Use `--process` for multi-process apps so Norn targets the intended task group.
+
+```bash
+norn exec contextdb --process review-worker -- \
+  /contextdb worker review --namespaces hermes-agent --mode agent_memory --dry-run --smoke-evaluator --report
+```
+
 ## health
 
 Check the health of all backing services (Nomad, Consul, PostgreSQL, S3).

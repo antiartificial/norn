@@ -110,7 +110,7 @@ ContextDB is now a useful proving ground for Norn because it has both a web proc
 - Decide the default worker mode for production: dry-run only, execute conservative decisions, or hybrid.
 - Add per-namespace worker config, including thresholds, allowed actions, owners, and evaluation mode.
 - Expose worker run summaries as metrics or Norn saga events.
-- Add a way to trigger a one-shot worker dry run from Norn.
+- Add a way to trigger a one-shot worker dry run from Norn. The first CLI path is `norn exec contextdb --process review-worker -- /contextdb worker review ... --dry-run --report`.
 - Add worker logs and dry-run decision reports to the UI or CLI.
 
 ### Evaluators

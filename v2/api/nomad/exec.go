@@ -7,8 +7,8 @@ import (
 	"io"
 	"sync"
 
-	nomadapi "github.com/hashicorp/nomad/api"
 	"github.com/gorilla/websocket"
+	nomadapi "github.com/hashicorp/nomad/api"
 )
 
 // wsWriter serializes writes to a gorilla/websocket connection.
@@ -125,13 +125,17 @@ func (c *Client) ExecWebSocket(allocID, task string, command []string, ws *webso
 }
 
 // FindRunningAlloc returns the first running allocation and its main task name for a job.
-func (c *Client) FindRunningAlloc(jobID string) (allocID, taskName string, err error) {
+// When taskGroup is non-empty, only allocations from that task group are considered.
+func (c *Client) FindRunningAlloc(jobID, taskGroup string) (allocID, taskName string, err error) {
 	allocs, err := c.JobAllocations(jobID)
 	if err != nil {
 		return "", "", err
 	}
 
 	for _, a := range allocs {
+		if taskGroup != "" && a.TaskGroup != taskGroup {
+			continue
+		}
 		if a.ClientStatus == "running" {
 			full, _, err := c.api.Allocations().Info(a.ID, nil)
 			if err != nil {
@@ -145,5 +149,8 @@ func (c *Client) FindRunningAlloc(jobID string) (allocID, taskName string, err e
 		}
 	}
 
+	if taskGroup != "" {
+		return "", "", fmt.Errorf("no running allocations for job %s task group %s", jobID, taskGroup)
+	}
 	return "", "", fmt.Errorf("no running allocations for job %s", jobID)
 }
