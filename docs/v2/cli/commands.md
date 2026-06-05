@@ -121,6 +121,8 @@ Inspect ContextDB-specific integration state from Norn.
 
 ```bash
 norn contextdb review
+norn contextdb policy
+norn contextdb policy --json
 norn contextdb review --namespace hermes-agent
 norn contextdb worker-runs <namespace>
 norn contextdb worker-runs <namespace> --decisions
@@ -128,6 +130,8 @@ norn contextdb worker-runs <namespace> --json
 ```
 
 `norn contextdb review` summarizes the review queue and recent worker runs for a namespace. It defaults to `hermes-agent` in `agent_memory` mode.
+
+`norn contextdb policy` discovers the review worker instance from the service manifest and reads its live `/v1/status` policy report. The report is value-safe: it shows dry-run state, policy preset, evaluator type, whether provider keys are required/configured, allowed actions, mutation status, warnings, and errors without exposing secret values.
 
 `norn contextdb worker-runs` discovers the ContextDB web endpoint from the service manifest and lists durable review worker summaries for a namespace. The table includes generated time, cycle id, mode, evaluator, dry-run flag, scanned/applied/skipped/error counts, and decision count. Use `--decisions` to include each decision's type, action, applied flag, node id, and reason.
 
