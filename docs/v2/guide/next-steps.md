@@ -44,7 +44,7 @@ Planned work:
 - Detect dirty local trees during deploy.
 - Record dirty state and changed-file summary in the deployment record and saga. The first slice records a `source.provenance` saga event for clone, local-copy, and local-fallback sources.
 - Use an image tag or metadata suffix that makes local dirty builds obvious. Local dirty builds now append `-dirty` to the image tag's commit segment.
-- Show dirty/deployed provenance in `norn app`, `norn status`, and the UI.
+- Show dirty/deployed provenance in `norn app`, `norn status`, and the UI. `norn app` now surfaces the latest deployment status, image tag, resolved commit, and saga id.
 - Preserve the exact commit SHA and build timestamp for every deployed image.
 
 ### Networking Truth
