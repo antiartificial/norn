@@ -29,10 +29,15 @@ type Pipeline struct {
 }
 
 type state struct {
-	spec      *model.InfraSpec
-	workDir   string
-	commitSHA string
-	imageTag  string
+	spec          *model.InfraSpec
+	workDir       string
+	commitSHA     string
+	imageTag      string
+	sourceKind    string
+	sourcePath    string
+	sourceDirty   bool
+	sourceChanges []string
+	sourceRef     string
 }
 
 type step struct {
@@ -68,6 +73,7 @@ func (p *Pipeline) run(ctx context.Context, spec *model.InfraSpec, deploy *model
 	st := &state{
 		spec:      spec,
 		commitSHA: deploy.CommitSHA,
+		sourceRef: deploy.CommitSHA,
 	}
 
 	steps := []step{

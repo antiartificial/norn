@@ -39,6 +39,9 @@ func (p *Pipeline) clone(ctx context.Context, st *state, sg *saga.Saga) error {
 					return fmt.Errorf("git clone failed and local fallback failed: %s", string(cpOut))
 				}
 				p.resolveLocalSHA(ctx, srcDir, st)
+				st.sourceKind = "local_fallback"
+				st.sourcePath = srcDir
+				p.recordSourceProvenance(ctx, st, sg)
 				return nil
 			}
 			return fmt.Errorf("git clone: %s", string(out))
@@ -49,6 +52,9 @@ func (p *Pipeline) clone(ctx context.Context, st *state, sg *saga.Saga) error {
 		if shaOut, revErr := revCmd.Output(); revErr == nil {
 			st.commitSHA = strings.TrimSpace(string(shaOut))
 		}
+		st.sourceKind = "git_clone"
+		st.sourcePath = st.spec.Repo.URL
+		p.recordSourceProvenance(ctx, st, sg)
 		return nil
 	}
 
@@ -60,6 +66,9 @@ func (p *Pipeline) clone(ctx context.Context, st *state, sg *saga.Saga) error {
 		return fmt.Errorf("copy source: %s", string(out))
 	}
 	p.resolveLocalSHA(ctx, srcDir, st)
+	st.sourceKind = "local_copy"
+	st.sourcePath = srcDir
+	p.recordSourceProvenance(ctx, st, sg)
 	return nil
 }
 
@@ -71,6 +80,7 @@ func (p *Pipeline) resolveLocalSHA(ctx context.Context, srcDir string, st *state
 		ts := time.Now().Format("20060102150405")
 		st.commitSHA = "local-" + ts
 	}
+	st.sourceDirty, st.sourceChanges = localGitChanges(ctx, srcDir)
 }
 
 func (p *Pipeline) gitEnv(url string) (env []string, cleanup func()) {
