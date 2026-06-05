@@ -28,6 +28,19 @@ var statusCmd = &cobra.Command{
 			fmt.Println(style.DimText.Render("no apps discovered"))
 			return nil
 		}
+		deployments, err := client.ListDeployments("")
+		if err != nil {
+			return fmt.Errorf("failed to fetch deployments: %w", err)
+		}
+		latestByApp := map[string]apiDeployment{}
+		for _, deployment := range deployments {
+			if _, ok := latestByApp[deployment.App]; !ok {
+				latestByApp[deployment.App] = apiDeployment{
+					imageTag:  deployment.ImageTag,
+					commitSHA: deployment.CommitSHA,
+				}
+			}
+		}
 
 		fmt.Println(style.Title.Render("norn v2 status"))
 		fmt.Println()
@@ -36,6 +49,8 @@ var statusCmd = &cobra.Command{
 		fmt.Fprintln(w, style.TableHeader.Render("APP")+"\t"+
 			style.TableHeader.Render("STATUS")+"\t"+
 			style.TableHeader.Render("ALLOCS")+"\t"+
+			style.TableHeader.Render("IMAGE")+"\t"+
+			style.TableHeader.Render("COMMIT")+"\t"+
 			style.TableHeader.Render("PROCESSES"))
 
 		for _, app := range apps {
@@ -57,16 +72,32 @@ var statusCmd = &cobra.Command{
 			for pName := range app.Spec.Processes {
 				procs = append(procs, pName)
 			}
+			deployment := latestByApp[name]
+			image := deployment.imageTag
+			if image == "" {
+				image = "-"
+			}
+			commit := shortValue(deployment.commitSHA, 12)
+			if commit == "" {
+				commit = "-"
+			}
 
-			fmt.Fprintf(w, "%s %s\t%s\t%s\t%s\n",
+			fmt.Fprintf(w, "%s %s\t%s\t%s\t%s\t%s\t%s\n",
 				dot,
 				style.Bold.Render(name),
 				app.NomadStatus,
 				allocStr,
+				image,
+				commit,
 				strings.Join(procs, ", "),
 			)
 		}
 		w.Flush()
 		return nil
 	},
+}
+
+type apiDeployment struct {
+	imageTag  string
+	commitSHA string
 }
