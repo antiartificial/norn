@@ -107,6 +107,21 @@ func (db *DB) UpdateDeployment(ctx context.Context, id string, status model.Depl
 	return err
 }
 
+func (db *DB) UpdateDeploymentResult(ctx context.Context, d *model.Deployment) error {
+	var finished *time.Time
+	if d.Status == model.StatusDeployed || d.Status == model.StatusFailed {
+		now := time.Now()
+		finished = &now
+	}
+	_, err := db.Pool.Exec(ctx,
+		`UPDATE deployments
+		 SET status = $1, commit_sha = $2, image_tag = $3, finished_at = $4
+		 WHERE id = $5`,
+		d.Status, d.CommitSHA, d.ImageTag, finished, d.ID,
+	)
+	return err
+}
+
 func (db *DB) ListDeployments(ctx context.Context, app string, limit int) ([]model.Deployment, error) {
 	if limit <= 0 {
 		limit = 20
@@ -209,10 +224,10 @@ func (db *DB) GetDailyStats(ctx context.Context) (*DailyStats, error) {
 
 // CronState represents the pause/schedule state of a cron process.
 type CronState struct {
-	App      string    `json:"app"`
-	Process  string    `json:"process"`
-	Paused   bool      `json:"paused"`
-	Schedule string    `json:"schedule"`
+	App       string    `json:"app"`
+	Process   string    `json:"process"`
+	Paused    bool      `json:"paused"`
+	Schedule  string    `json:"schedule"`
 	UpdatedAt time.Time `json:"updatedAt"`
 }
 

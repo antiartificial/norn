@@ -138,7 +138,7 @@ func (p *Pipeline) run(ctx context.Context, spec *model.InfraSpec, deploy *model
 	deploy.CommitSHA = st.commitSHA
 	deploy.ImageTag = st.imageTag
 	deploy.Status = model.StatusDeployed
-	p.DB.UpdateDeployment(ctx, deploy.ID, deploy.Status)
+	p.DB.UpdateDeploymentResult(ctx, deploy)
 	sg.Log(ctx, "deploy.complete", fmt.Sprintf("deploy complete: %s → %s", spec.App, st.imageTag), nil)
 	p.WS.Broadcast(hub.Event{Type: "deploy.completed", AppID: spec.App, Payload: map[string]string{
 		"sagaId":   sg.ID,
