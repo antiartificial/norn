@@ -146,6 +146,7 @@ norn doctor
 ```
 
 Displays a checklist of service statuses with pass/fail indicators.
+The output also shows the configured Norn network mode from `NORN_NETWORK_MODE`.
 
 ## stats
 
@@ -190,7 +191,7 @@ norn services
 norn services manifest
 ```
 
-The table separates app-level endpoints from process reachability. Service processes can list public or local endpoints; worker, cron, and function entries expose process type, status, health path, and instances without inheriting unrelated app endpoints. The `REACH` column summarizes endpoint and instance scope, for example `local`, `public/private`, or `internal/local`.
+The table separates app-level endpoints from process reachability. Service processes can list public or local endpoints; worker, cron, and function entries expose process type, status, health path, instances, network mode, and reachability metadata without inheriting unrelated app endpoints. The `REACH` column summarizes endpoint and instance scope, for example `local`, `public/private`, or `internal/local`.
 
 ## snapshots
 
@@ -269,7 +270,7 @@ norn validate <app>
 norn validate
 ```
 
-Reports errors and warnings for each infraspec field. Validation warns when secret-like values such as DSNs, passwords, tokens, API keys, or client secrets appear in plain `env` blocks. Move those values to `secrets.enc.yaml` and list the key under `secrets`.
+Reports errors and warnings for each infraspec field. Validation warns when secret-like values such as DSNs, passwords, tokens, API keys, or client secrets appear in plain `env` blocks. Move those values to `secrets.enc.yaml` and list the key under `secrets`. Validation also uses `NORN_NETWORK_MODE` to warn when endpoint hosts look mismatched for the active mode, such as localhost endpoints in `tailnet` or `public` mode.
 
 ## endpoints
 

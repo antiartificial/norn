@@ -56,13 +56,14 @@ Norn dev mode binds Nomad container ports to `127.0.0.1`, while some app endpoin
 
 Current state:
 
-- The service manifest classifies endpoint and instance scope as `local`, `private`, `public`, or `none`.
+- The service manifest exposes `networkMode` and classifies endpoint and instance scope as `local`, `private`, `public`, or `none`.
 - `norn services` renders combined reachability such as `local`, `public/private`, or `internal/local`.
+- `norn health` shows the configured network mode.
+- `norn validate` warns when endpoint hosts look mismatched for the active network mode.
 
 Planned work:
 
-- Warn when an endpoint points at an address that is not actually reachable in the current Nomad mode.
-- Add an explicit networking mode indicator to `norn health`, `norn app`, and the service manifest.
+- Add an explicit networking mode indicator to `norn app`.
 - Document when to use `host.docker.internal`, `127.0.0.1`, Tailscale IPs, and cloudflared hostnames.
 
 ### Secrets Hygiene

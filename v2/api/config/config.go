@@ -1,6 +1,9 @@
 package config
 
-import "os"
+import (
+	"os"
+	"strings"
+)
 
 type Config struct {
 	Port        string
@@ -12,6 +15,7 @@ type Config struct {
 	GitSSHKey   string
 	APIToken    string
 	RegistryURL string // GHCR registry (e.g. ghcr.io/username)
+	NetworkMode string // local, tailnet, public
 
 	NomadAddr  string // Nomad API address
 	ConsulAddr string // Consul API address
@@ -26,8 +30,8 @@ type Config struct {
 	CFAccessTeamDomain string
 	CFAccessAUD        string
 
-	WebhookSecret      string // NORN_WEBHOOK_SECRET
-	CloudflaredConfig  string // NORN_CLOUDFLARED_CONFIG
+	WebhookSecret     string // NORN_WEBHOOK_SECRET
+	CloudflaredConfig string // NORN_CLOUDFLARED_CONFIG
 }
 
 func Load() *Config {
@@ -41,6 +45,7 @@ func Load() *Config {
 		GitSSHKey:   os.Getenv("NORN_GIT_SSH_KEY"),
 		APIToken:    os.Getenv("NORN_API_TOKEN"),
 		RegistryURL: os.Getenv("NORN_REGISTRY_URL"),
+		NetworkMode: networkMode(envOr("NORN_NETWORK_MODE", "local")),
 
 		NomadAddr:  envOr("NORN_NOMAD_ADDR", "http://localhost:4646"),
 		ConsulAddr: envOr("NORN_CONSUL_ADDR", "http://localhost:8500"),
@@ -65,4 +70,15 @@ func envOr(key, fallback string) string {
 		return v
 	}
 	return fallback
+}
+
+func networkMode(mode string) string {
+	switch strings.ToLower(strings.TrimSpace(mode)) {
+	case "tailnet", "tailscale":
+		return "tailnet"
+	case "public":
+		return "public"
+	default:
+		return "local"
+	}
 }

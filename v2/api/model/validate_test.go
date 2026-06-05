@@ -83,6 +83,43 @@ func TestInfraSpecEnvValidatesButDoesNotMarshalToJSON(t *testing.T) {
 	}
 }
 
+func TestValidateSpecWarnsForLocalEndpointOutsideLocalMode(t *testing.T) {
+	spec := &InfraSpec{
+		App:       "network-app",
+		Processes: map[string]Process{"web": {}},
+		Endpoints: []Endpoint{{URL: "http://127.0.0.1:8080"}},
+	}
+
+	result := ValidateSpecWithOptions(spec, ValidationOptions{NetworkMode: "tailnet"})
+	assertFinding(t, result, "endpoints[0].url")
+}
+
+func TestValidateSpecWarnsForPublicEndpointInLocalMode(t *testing.T) {
+	spec := &InfraSpec{
+		App:       "network-app",
+		Processes: map[string]Process{"web": {}},
+		Endpoints: []Endpoint{{URL: "https://app.example.test"}},
+	}
+
+	result := ValidateSpecWithOptions(spec, ValidationOptions{NetworkMode: "local"})
+	assertFinding(t, result, "endpoints[0].url")
+}
+
+func TestValidateSpecAcceptsLocalEndpointInLocalMode(t *testing.T) {
+	spec := &InfraSpec{
+		App:       "network-app",
+		Processes: map[string]Process{"web": {}},
+		Endpoints: []Endpoint{{URL: "http://127.0.0.1:8080"}},
+	}
+
+	result := ValidateSpecWithOptions(spec, ValidationOptions{NetworkMode: "local"})
+	for _, finding := range result.Findings {
+		if finding.Field == "endpoints[0].url" {
+			t.Fatalf("unexpected endpoint finding: %+v", finding)
+		}
+	}
+}
+
 func assertFinding(t *testing.T, result *ValidationResult, field string) {
 	t.Helper()
 	for _, finding := range result.Findings {
