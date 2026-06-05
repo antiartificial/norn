@@ -74,6 +74,10 @@ The `secrets` list is informational — it tells the UI and CLI which keys to ex
 # List secret keys for an app
 norn secrets myapp
 
+# Compare declared, encrypted, and plaintext secret state
+norn secrets status
+norn secrets status myapp
+
 # Set or update a secret
 norn secrets set myapp DATABASE_URL=postgres://...
 
@@ -81,7 +85,7 @@ norn secrets set myapp DATABASE_URL=postgres://...
 norn secrets delete myapp OLD_KEY
 ```
 
-The `set` command decrypts the file, updates the key, and re-encrypts.
+The `status` command compares the `secrets` list in `infraspec.yaml` with encrypted keys in `secrets.enc.yaml` and reports plaintext secret-like values still present in `env` blocks. Secret values are never printed. The `set` command decrypts the file, updates the key, and re-encrypts.
 
 ## Secrets Flow
 

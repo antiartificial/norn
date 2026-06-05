@@ -100,6 +100,16 @@ type HealthStatus struct {
 	Network  NetworkStatus     `json:"network,omitempty"`
 }
 
+type SecretStatus struct {
+	App                 string   `json:"app"`
+	Declared            []string `json:"declared"`
+	Encrypted           []string `json:"encrypted"`
+	MissingEncrypted    []string `json:"missingEncrypted"`
+	EncryptedUndeclared []string `json:"encryptedUndeclared"`
+	PlainEnvWarnings    []string `json:"plainEnvWarnings"`
+	OK                  bool     `json:"ok"`
+}
+
 type NetworkStatus struct {
 	Mode       string `json:"mode,omitempty"`
 	BindAddr   string `json:"bindAddr,omitempty"`
@@ -328,6 +338,22 @@ func (c *Client) ListSecrets(appID string) ([]string, error) {
 		return nil, err
 	}
 	return secrets, nil
+}
+
+func (c *Client) SecretsStatusAll() ([]SecretStatus, error) {
+	var statuses []SecretStatus
+	if err := c.get("/api/secrets/status", &statuses); err != nil {
+		return nil, err
+	}
+	return statuses, nil
+}
+
+func (c *Client) SecretsStatusApp(appID string) (*SecretStatus, error) {
+	var status SecretStatus
+	if err := c.get("/api/apps/"+appID+"/secrets/status", &status); err != nil {
+		return nil, err
+	}
+	return &status, nil
 }
 
 func (c *Client) Forge(appID string) error {
