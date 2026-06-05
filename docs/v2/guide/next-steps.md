@@ -62,10 +62,14 @@ Planned work:
 
 Several app specs still carry sensitive DSNs or credentials in plain `env` blocks. Norn should make the secure path easier than the unsafe path.
 
+Current state:
+
+- `norn validate` warns when top-level or process-level `env` blocks contain secret-like DSNs, passwords, tokens, API keys, client secrets, or provider keys.
+- App and process `env` values are parsed for validation but omitted from API JSON responses.
+
 Planned work:
 
 - Move sensitive DSNs and API keys into `secrets.enc.yaml`.
-- Add validation warnings for env keys that look secret-like.
 - Improve `norn secrets` UX for set, delete, list, and deploy-time resolution.
 - Show secret names, never values, in UI and CLI app detail views.
 
@@ -99,27 +103,46 @@ ContextDB is now a useful proving ground for Norn because it has both a web proc
 
 ### Deployment Hygiene
 
-- Keep ContextDB managed by Norn rather than a LaunchAgent.
-- Move `CONTEXTDB_DSN` into SOPS-managed secrets.
+Current state:
+
+- ContextDB is managed by Norn as separate `web` and `review-worker` processes.
+- The service manifest reports ContextDB web as a routable service and the review worker as a non-public worker.
+- ContextDB ships a Norn smoke script that checks web health, worker health, write/retrieve behavior, review queue setup, and an in-allocation worker dry run.
+- ContextDB validates cleanly under Norn's plaintext-secret checks: `CONTEXTDB_DSN` is present as a Norn secret and is not duplicated into plain `env`.
+
+Planned work:
+
 - Decide whether ContextDB should expose only local Norn endpoints, a Tailscale endpoint, a cloudflared endpoint, or some combination.
-- Make the ContextDB Norn spec describe web and review worker reachability separately.
-- Add a Norn smoke command or runbook that checks web health, worker health, write, retrieve, review queue, and worker dry run.
+- Promote the smoke script into a first-class Norn runbook or `norn smoke contextdb` command.
 
 ### Worker Operations
 
-- Decide the default worker mode for production: dry-run only, execute conservative decisions, or hybrid.
-- Add per-namespace worker config, including thresholds, allowed actions, owners, and evaluation mode.
-- Expose worker run summaries as metrics or Norn saga events.
-- Add a way to trigger a one-shot worker dry run from Norn. The first CLI path is `norn exec contextdb --process review-worker -- /contextdb worker review ... --dry-run --report`.
+Current state:
+
+- The deployed Hermes policy runs the review worker in dry-run mode with the keyless `rules` evaluator, `stale-only` policy preset, and conservative allowed actions.
+- One-shot worker dry runs work through `norn exec contextdb --process review-worker -- /contextdb worker review ... --report`.
+- ContextDB records durable review worker summaries through its own API surface.
+
+Planned work:
+
+- Decide when a namespace is allowed to move from dry-run to conservative execution.
+- Surface ContextDB worker run summaries as Norn metrics, Norn saga events, or CLI/UI output.
 - Add worker logs and dry-run decision reports to the UI or CLI.
 
 ### Evaluators
 
-- Keep rules mode as the no-key default.
-- Add clear config for webhook and provider-backed evaluators.
-- Store evaluator keys as Norn secrets.
-- Add evaluator smoke tests that verify provider configuration without mutating claims.
-- Make the worker report whether a decision came from rules, webhook, or provider-backed evaluation.
+Current state:
+
+- `rules` is the no-key default evaluator.
+- `webhook`, `openai`, `anthropic`, `xai`, and provider-backed `hybrid` evaluators are implemented and explicitly configured.
+- `--smoke-evaluator` checks evaluator configuration without opening the database or mutating claims.
+- Worker reports include the effective evaluator for each namespace.
+
+Planned work:
+
+- Store provider evaluator keys as Norn secrets when enabling provider-backed policies.
+- Add a Norn-level provider evaluator smoke/runbook before allowing provider-backed policies in production.
+- Add UI/CLI affordances that clearly distinguish rules, webhook, and provider-backed worker decisions.
 
 ### Context Quality
 
@@ -131,17 +154,22 @@ ContextDB is now a useful proving ground for Norn because it has both a web proc
 
 ### Agent Integration
 
+Current state:
+
+- Claim execution remains centralized in the ContextDB worker rather than per application.
+- Agents can discover ContextDB web and worker health through the Norn service manifest.
+
+Planned work:
+
 - Make Hermes use ContextDB review APIs for queue inspection, claim validation, refutation, and pruning.
-- Let agents query the Norn service manifest to discover ContextDB and its worker health.
-- Keep claim execution centralized in the ContextDB worker rather than per application.
 - Add a "human review required" lane for decisions the worker will not execute automatically.
 
 ## Suggested Order
 
-1. Finish and test the Norn service manifest.
-2. Add deploy provenance for dirty/local builds.
-3. Move ContextDB DSN and evaluator keys into Norn secrets.
-4. Add a ContextDB smoke/runbook command that exercises web, review queue, and worker dry run.
-5. Improve networking truth in app detail and manifest output.
-6. Add worker run summaries and review metrics.
+1. Finish moving app plaintext secrets into `secrets.enc.yaml`, using `norn validate` as the guardrail.
+2. Promote the ContextDB smoke script into a first-class Norn smoke/runbook command.
+3. Improve networking truth in app detail and manifest output.
+4. Surface ContextDB worker run summaries and review metrics in Norn.
+5. Wire Hermes to ContextDB review APIs for queue inspection, claim validation, refutation, and pruning.
+6. Add provider-backed evaluator secrets and smoke checks only when a namespace is ready to leave the keyless rules path.
 7. Build the access/traffic dashboard.
