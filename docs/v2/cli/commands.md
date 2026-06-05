@@ -120,16 +120,18 @@ Inspect ContextDB-specific integration state from Norn.
 
 ```bash
 norn contextdb worker-runs <namespace>
+norn contextdb worker-runs <namespace> --decisions
 norn contextdb worker-runs <namespace> --json
 ```
 
-`norn contextdb worker-runs` discovers the ContextDB web endpoint from the service manifest and lists durable review worker summaries for a namespace. The table includes generated time, cycle id, mode, evaluator, dry-run flag, scanned/applied/skipped/error counts, and decision count.
+`norn contextdb worker-runs` discovers the ContextDB web endpoint from the service manifest and lists durable review worker summaries for a namespace. The table includes generated time, cycle id, mode, evaluator, dry-run flag, scanned/applied/skipped/error counts, and decision count. Use `--decisions` to include each decision's type, action, applied flag, node id, and reason.
 
 | Flag | Default | Description |
 |------|---------|-------------|
 | `--mode` | `agent_memory` | ContextDB mode |
 | `--after` | — | Only show runs after this RFC3339 timestamp |
 | `--limit` | `10` | Maximum runs to show after fetching |
+| `--decisions` | `false` | Print decision details below each run |
 | `--json` | `false` | Print raw JSON |
 | `--web-url` | manifest endpoint | Override ContextDB web URL |
 

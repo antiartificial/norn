@@ -16,11 +16,12 @@ import (
 )
 
 var (
-	contextDBWorkerRunsMode   string
-	contextDBWorkerRunsAfter  string
-	contextDBWorkerRunsLimit  int
-	contextDBWorkerRunsJSON   bool
-	contextDBWorkerRunsWebURL string
+	contextDBWorkerRunsMode          string
+	contextDBWorkerRunsAfter         string
+	contextDBWorkerRunsLimit         int
+	contextDBWorkerRunsJSON          bool
+	contextDBWorkerRunsShowDecisions bool
+	contextDBWorkerRunsWebURL        string
 )
 
 func init() {
@@ -30,6 +31,7 @@ func init() {
 	contextDBWorkerRunsCmd.Flags().StringVar(&contextDBWorkerRunsAfter, "after", "", "Only show runs after this RFC3339 timestamp")
 	contextDBWorkerRunsCmd.Flags().IntVar(&contextDBWorkerRunsLimit, "limit", 10, "Maximum runs to show")
 	contextDBWorkerRunsCmd.Flags().BoolVar(&contextDBWorkerRunsJSON, "json", false, "Print raw JSON")
+	contextDBWorkerRunsCmd.Flags().BoolVar(&contextDBWorkerRunsShowDecisions, "decisions", false, "Print decision details below each run")
 	contextDBWorkerRunsCmd.Flags().StringVar(&contextDBWorkerRunsWebURL, "web-url", "", "Override ContextDB web URL")
 }
 
@@ -56,7 +58,7 @@ var contextDBWorkerRunsCmd = &cobra.Command{
 			enc.SetIndent("", "  ")
 			return enc.Encode(runs)
 		}
-		printContextDBWorkerRuns(namespace, runs.Runs)
+		printContextDBWorkerRuns(namespace, runs.Runs, contextDBWorkerRunsShowDecisions)
 		return nil
 	},
 }
@@ -93,7 +95,7 @@ func fetchContextDBWorkerRuns(namespace, mode, after, webURL string) (*contextDB
 	return &runs, nil
 }
 
-func printContextDBWorkerRuns(namespace string, runs []contextDBWorkerRun) {
+func printContextDBWorkerRuns(namespace string, runs []contextDBWorkerRun, showDecisions bool) {
 	if len(runs) == 0 {
 		fmt.Println(style.DimText.Render("no worker runs found for " + namespace))
 		return
@@ -137,4 +139,44 @@ func printContextDBWorkerRuns(namespace string, runs []contextDBWorkerRun) {
 		)
 	}
 	w.Flush()
+
+	if showDecisions {
+		printContextDBWorkerRunDecisions(runs)
+	}
+}
+
+func printContextDBWorkerRunDecisions(runs []contextDBWorkerRun) {
+	fmt.Println()
+	for _, run := range runs {
+		cycle := run.CycleID
+		if len(cycle) > 8 {
+			cycle = cycle[:8]
+		}
+		if len(run.Decisions) == 0 {
+			fmt.Printf("%s %s\n", style.DimText.Render(cycle), style.DimText.Render("no decisions"))
+			continue
+		}
+
+		fmt.Printf("%s decisions\n", style.Bold.Render(cycle))
+		w := tabwriter.NewWriter(os.Stdout, 0, 0, 2, ' ', 0)
+		fmt.Fprintln(w, "  "+style.TableHeader.Render("TYPE")+"\t"+
+			style.TableHeader.Render("ACTION")+"\t"+
+			style.TableHeader.Render("APPLIED")+"\t"+
+			style.TableHeader.Render("NODE")+"\t"+
+			style.TableHeader.Render("REASON"))
+		for _, decision := range run.Decisions {
+			nodeID := decision.NodeID
+			if len(nodeID) > 8 {
+				nodeID = nodeID[:8]
+			}
+			fmt.Fprintf(w, "  %s\t%s\t%t\t%s\t%s\n",
+				decision.Type,
+				decision.Action,
+				decision.Applied,
+				nodeID,
+				decision.Reason,
+			)
+		}
+		w.Flush()
+	}
 }
