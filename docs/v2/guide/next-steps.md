@@ -122,11 +122,12 @@ Current state:
 - The deployed Hermes policy runs the review worker in dry-run mode with the keyless `rules` evaluator, `stale-only` policy preset, and conservative allowed actions.
 - One-shot worker dry runs work through `norn exec contextdb --process review-worker -- /contextdb worker review ... --report`.
 - ContextDB records durable review worker summaries through its own API surface.
+- `norn contextdb worker-runs <namespace>` surfaces those summaries in Norn CLI table or JSON output.
 
 Planned work:
 
 - Decide when a namespace is allowed to move from dry-run to conservative execution.
-- Surface ContextDB worker run summaries as Norn metrics, Norn saga events, or CLI/UI output.
+- Surface ContextDB worker run summaries as Norn metrics, Norn saga events, or UI output.
 - Add worker logs and dry-run decision reports to the UI or CLI.
 
 ### Evaluators
@@ -168,7 +169,7 @@ Planned work:
 
 1. Finish moving app plaintext secrets into `secrets.enc.yaml`, using `norn validate` as the guardrail.
 2. Improve networking truth in app detail and manifest output.
-3. Surface ContextDB worker run summaries and review metrics in Norn.
+3. Surface ContextDB worker run summaries in Norn metrics/UI and add review metrics.
 4. Wire Hermes to ContextDB review APIs for queue inspection, claim validation, refutation, and pruning.
 5. Add provider-backed evaluator secrets and smoke checks only when a namespace is ready to leave the keyless rules path.
 6. Build the access/traffic dashboard.

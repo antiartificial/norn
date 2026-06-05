@@ -98,15 +98,32 @@ type contextDBWorkerReport struct {
 }
 
 type contextDBWorkerRunsResponse struct {
-	Runs []struct {
-		DryRun    bool   `json:"dry_run"`
-		Evaluator string `json:"evaluator"`
-		Scanned   int    `json:"scanned"`
-		Decisions []struct {
-			NodeID  string `json:"node_id"`
-			Applied bool   `json:"applied"`
-		} `json:"decisions"`
-	} `json:"runs"`
+	Runs []contextDBWorkerRun `json:"runs"`
+}
+
+type contextDBWorkerRun struct {
+	EventID     string                    `json:"event_id"`
+	CycleID     string                    `json:"cycle_id"`
+	Namespace   string                    `json:"namespace"`
+	Mode        string                    `json:"mode"`
+	GeneratedAt string                    `json:"generated_at"`
+	DryRun      bool                      `json:"dry_run"`
+	Evaluator   string                    `json:"evaluator"`
+	Scanned     int                       `json:"scanned"`
+	Applied     int                       `json:"applied"`
+	Skipped     int                       `json:"skipped"`
+	Errors      int                       `json:"errors"`
+	Decisions   []contextDBWorkerDecision `json:"decisions"`
+	TxTime      string                    `json:"tx_time"`
+}
+
+type contextDBWorkerDecision struct {
+	ReviewID string `json:"review_id"`
+	Type     string `json:"type"`
+	NodeID   string `json:"node_id"`
+	Action   string `json:"action"`
+	Reason   string `json:"reason"`
+	Applied  bool   `json:"applied"`
 }
 
 func runContextDBSmoke(cfg contextDBSmokeConfig) error {
