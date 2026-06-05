@@ -8,6 +8,7 @@ import (
 
 	"github.com/spf13/cobra"
 
+	"norn/v2/cli/api"
 	"norn/v2/cli/style"
 )
 
@@ -90,6 +91,12 @@ var appCmd = &cobra.Command{
 			fmt.Println()
 		}
 
+		manifest, err := client.ServiceManifest()
+		if err != nil {
+			return fmt.Errorf("failed to fetch service manifest: %w", err)
+		}
+		printAppReachability(appID, manifest)
+
 		// Allocations table
 		if len(app.Allocations) > 0 {
 			fmt.Println(style.Subtitle.Render("  allocations"))
@@ -147,6 +154,67 @@ var appCmd = &cobra.Command{
 
 		return nil
 	},
+}
+
+func printAppReachability(appID string, manifest *api.ServiceManifest) {
+	var services []api.ServiceManifestEntry
+	for _, svc := range manifest.Services {
+		if svc.App == appID {
+			services = append(services, svc)
+		}
+	}
+	if len(services) == 0 {
+		return
+	}
+
+	fmt.Println(style.Subtitle.Render("  reachability"))
+	if manifest.NetworkMode != "" {
+		fmt.Printf("  %s %s\n", style.Key.Render("network"), manifest.NetworkMode)
+	}
+	w := tabwriter.NewWriter(os.Stdout, 0, 0, 2, ' ', 0)
+	fmt.Fprintln(w, "  "+style.TableHeader.Render("PROCESS")+"\t"+
+		style.TableHeader.Render("TYPE")+"\t"+
+		style.TableHeader.Render("STATUS")+"\t"+
+		style.TableHeader.Render("REACH")+"\t"+
+		style.TableHeader.Render("ENDPOINTS")+"\t"+
+		style.TableHeader.Render("INSTANCES"))
+	for _, svc := range services {
+		endpoints := "-"
+		if len(svc.Endpoints) > 0 {
+			values := make([]string, 0, len(svc.Endpoints))
+			for _, endpoint := range svc.Endpoints {
+				values = append(values, endpoint.URL)
+			}
+			endpoints = strings.Join(values, ", ")
+		}
+
+		instances := "-"
+		if len(svc.Instances) > 0 {
+			parts := make([]string, 0, len(svc.Instances))
+			for _, inst := range svc.Instances {
+				target := inst.Address
+				if inst.Port > 0 {
+					target = fmt.Sprintf("%s:%d", target, inst.Port)
+				}
+				if inst.Status != "" {
+					target += " " + inst.Status
+				}
+				parts = append(parts, target)
+			}
+			instances = strings.Join(parts, ", ")
+		}
+
+		fmt.Fprintf(w, "  %s\t%s\t%s\t%s\t%s\t%s\n",
+			svc.Process,
+			svc.Type,
+			renderServiceStatus(svc.Status),
+			renderServiceReachability(svc),
+			endpoints,
+			instances,
+		)
+	}
+	w.Flush()
+	fmt.Println()
 }
 
 func shortValue(value string, n int) string {
