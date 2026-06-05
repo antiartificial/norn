@@ -37,11 +37,37 @@ type Endpoint struct {
 	Region string `json:"region,omitempty"`
 }
 
+type ServiceManifest struct {
+	Version     int                    `json:"version"`
+	GeneratedAt string                 `json:"generatedAt"`
+	Services    []ServiceManifestEntry `json:"services"`
+}
+
+type ServiceManifestEntry struct {
+	Name       string            `json:"name"`
+	App        string            `json:"app"`
+	Process    string            `json:"process"`
+	Type       string            `json:"type"`
+	Status     string            `json:"status"`
+	HealthPath string            `json:"healthPath,omitempty"`
+	Endpoints  []Endpoint        `json:"endpoints,omitempty"`
+	Instances  []ServiceInstance `json:"instances,omitempty"`
+	Metadata   map[string]string `json:"metadata,omitempty"`
+}
+
+type ServiceInstance struct {
+	ID      string `json:"id,omitempty"`
+	Node    string `json:"node,omitempty"`
+	Address string `json:"address,omitempty"`
+	Port    int    `json:"port,omitempty"`
+	Status  string `json:"status,omitempty"`
+}
+
 type InfraSpec struct {
-	App       string              `json:"name"`
-	Processes map[string]Process  `json:"processes"`
-	Repo      *RepoSpec           `json:"repo,omitempty"`
-	Endpoints []Endpoint          `json:"endpoints,omitempty"`
+	App       string             `json:"name"`
+	Processes map[string]Process `json:"processes"`
+	Repo      *RepoSpec          `json:"repo,omitempty"`
+	Endpoints []Endpoint         `json:"endpoints,omitempty"`
 }
 
 type Process struct {
@@ -111,9 +137,9 @@ type StatsResponse struct {
 		MostPopularApp string `json:"mostPopularApp,omitempty"`
 		MostPopularN   int    `json:"mostPopularN,omitempty"`
 	} `json:"deploys"`
-	AppCount         int           `json:"appCount"`
-	TotalAllocs      int           `json:"totalAllocs"`
-	RunningAllocs    int           `json:"runningAllocs"`
+	AppCount          int           `json:"appCount"`
+	TotalAllocs       int           `json:"totalAllocs"`
+	RunningAllocs     int           `json:"runningAllocs"`
 	UptimeLeaderboard []UptimeEntry `json:"uptimeLeaderboard"`
 }
 
@@ -174,6 +200,14 @@ func (c *Client) ListApps() ([]AppStatus, error) {
 		return nil, err
 	}
 	return apps, nil
+}
+
+func (c *Client) ServiceManifest() (*ServiceManifest, error) {
+	var manifest ServiceManifest
+	if err := c.get("/api/services/manifest", &manifest); err != nil {
+		return nil, err
+	}
+	return &manifest, nil
 }
 
 func (c *Client) GetApp(id string) (*AppStatus, error) {

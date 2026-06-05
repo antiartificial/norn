@@ -32,6 +32,7 @@ export default withMermaid(
               { text: 'Concepts', link: '/v2/guide/concepts' },
               { text: 'Infraspec Reference', link: '/v2/guide/infraspec-reference' },
               { text: 'Functions', link: '/v2/guide/functions' },
+              { text: 'Next Steps', link: '/v2/guide/next-steps' },
             ],
           },
           {

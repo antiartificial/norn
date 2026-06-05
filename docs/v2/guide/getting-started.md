@@ -115,3 +115,4 @@ The pipeline runs 9 steps with real-time progress: clone, build, test, snapshot,
 - [Infraspec Reference](/v2/guide/infraspec-reference) — every field documented
 - [Architecture Overview](/v2/architecture/overview) — how the pieces fit together
 - [CLI Commands](/v2/cli/commands) — full command reference
+- [Next Steps](/v2/guide/next-steps) — current development priorities
