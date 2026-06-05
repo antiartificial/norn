@@ -41,6 +41,26 @@ var appCmd = &cobra.Command{
 			fmt.Println()
 		}
 
+		deployments, err := client.ListDeployments(appID)
+		if err != nil {
+			return fmt.Errorf("failed to fetch deployments: %w", err)
+		}
+		if len(deployments) > 0 {
+			latest := deployments[0]
+			fmt.Println(style.Subtitle.Render("  deployment"))
+			fmt.Printf("  %s %s\n", style.Key.Render("status"), latest.Status)
+			if latest.ImageTag != "" {
+				fmt.Printf("  %s %s\n", style.Key.Render("image"), latest.ImageTag)
+			}
+			if latest.CommitSHA != "" {
+				fmt.Printf("  %s %s\n", style.Key.Render("commit"), shortValue(latest.CommitSHA, 12))
+			}
+			if latest.SagaID != "" {
+				fmt.Printf("  %s %s\n", style.Key.Render("saga"), shortValue(latest.SagaID, 8))
+			}
+			fmt.Println()
+		}
+
 		// Processes table
 		if len(app.Spec.Processes) > 0 {
 			fmt.Println(style.Subtitle.Render("  processes"))
@@ -127,4 +147,11 @@ var appCmd = &cobra.Command{
 
 		return nil
 	},
+}
+
+func shortValue(value string, n int) string {
+	if len(value) <= n {
+		return value
+	}
+	return value[:n]
 }
