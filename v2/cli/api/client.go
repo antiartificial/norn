@@ -181,6 +181,19 @@ type Snapshot struct {
 	Size      int64  `json:"size"`
 }
 
+type AccessEvent struct {
+	Timestamp  string `json:"timestamp"`
+	Method     string `json:"method"`
+	Path       string `json:"path"`
+	Status     int    `json:"status"`
+	DurationMs int64  `json:"durationMs"`
+	ClientIP   string `json:"clientIp,omitempty"`
+	Forwarded  string `json:"forwarded,omitempty"`
+	CFIP       string `json:"cfConnectingIp,omitempty"`
+	CFEmail    string `json:"cfAccessEmail,omitempty"`
+	UserAgent  string `json:"userAgent,omitempty"`
+}
+
 type CronState struct {
 	App      string    `json:"app"`
 	Process  string    `json:"process"`
@@ -430,6 +443,17 @@ func (c *Client) ListSnapshots(appID string) ([]Snapshot, error) {
 
 func (c *Client) RestoreSnapshot(appID, ts string) error {
 	return c.post("/api/apps/"+appID+"/snapshots/"+ts+"/restore", "{}")
+}
+
+func (c *Client) AccessEvents(limit int) ([]AccessEvent, error) {
+	var events []AccessEvent
+	if limit <= 0 {
+		limit = 50
+	}
+	if err := c.get(fmt.Sprintf("/api/access/events?limit=%d", limit), &events); err != nil {
+		return nil, err
+	}
+	return events, nil
 }
 
 func (c *Client) CronHistory(appID string) ([]CronState, error) {
