@@ -1,7 +1,9 @@
 package handler
 
 import (
+	"net"
 	"net/http"
+	"net/url"
 	"strings"
 	"time"
 
@@ -33,8 +35,12 @@ func (h *Handler) ServiceManifest(w http.ResponseWriter, r *http.Request) {
 				Status:   "unknown",
 				Metadata: serviceMetadata(spec.App, processName, serviceName),
 			}
+			entry.Metadata["instanceScope"] = "none"
 			if processType == "service" {
 				entry.Endpoints = usableEndpoints(spec.Endpoints)
+				entry.Metadata["endpointScope"] = endpointScope(entry.Endpoints)
+			} else {
+				entry.Metadata["endpointScope"] = "none"
 			}
 
 			if process.Health != nil && process.Health.Path != "" {
@@ -58,6 +64,7 @@ func (h *Handler) ServiceManifest(w http.ResponseWriter, r *http.Request) {
 							Status:  instance.Status,
 						})
 					}
+					entry.Metadata["instanceScope"] = instanceScope(entry.Instances)
 				}
 			}
 
@@ -66,6 +73,61 @@ func (h *Handler) ServiceManifest(w http.ResponseWriter, r *http.Request) {
 	}
 
 	writeJSON(w, manifest)
+}
+
+func endpointScope(endpoints []model.Endpoint) string {
+	if len(endpoints) == 0 {
+		return "none"
+	}
+	scope := "public"
+	for _, endpoint := range endpoints {
+		parsed, err := url.Parse(endpoint.URL)
+		if err != nil {
+			continue
+		}
+		host := strings.ToLower(parsed.Hostname())
+		switch classifyHostScope(host) {
+		case "local":
+			return "local"
+		case "private":
+			scope = "private"
+		}
+	}
+	return scope
+}
+
+func instanceScope(instances []model.ServiceInstance) string {
+	if len(instances) == 0 {
+		return "none"
+	}
+	scope := "public"
+	for _, instance := range instances {
+		switch classifyHostScope(instance.Address) {
+		case "local":
+			return "local"
+		case "private":
+			scope = "private"
+		}
+	}
+	return scope
+}
+
+func classifyHostScope(host string) string {
+	host = strings.ToLower(strings.TrimSpace(host))
+	if host == "" || host == "localhost" {
+		return "local"
+	}
+	if ip := net.ParseIP(host); ip != nil {
+		switch {
+		case ip.IsLoopback():
+			return "local"
+		case ip.IsPrivate():
+			return "private"
+		default:
+			return "public"
+		}
+	}
+	return "public"
 }
 
 func manifestProcessType(name string, process model.Process) string {

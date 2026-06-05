@@ -25,14 +25,17 @@ The current working feature set includes:
 
 The service manifest is the next discovery surface for agents, dashboards, and external tooling. It should become the compact answer to "what is hosted, where is it, and is it healthy?"
 
+Current state:
+
+- `/api/services/manifest` exposes process type, status, health path, app endpoints, instances, and reachability metadata.
+- `norn services` renders endpoint/instance reachability in a `REACH` column.
+
 Planned work:
 
 - Finish `/api/services/manifest` and add tests for the manifest schema. The first schema test now covers ContextDB-style web plus review-worker specs.
 - Distinguish app-level endpoints from process-level reachability. The manifest now only attaches app endpoints to service processes.
 - Mark service processes, worker processes, cron jobs, and functions with explicit process type metadata.
 - Avoid giving a worker or cron process a public endpoint inherited from the app unless that endpoint is actually routable to it.
-- Include internal Consul/Nomad addresses separately from public or cloudflared endpoints.
-- Add CLI support, for example `norn services` and `norn services manifest`. The first CLI slice is available.
 - Document the manifest contract for agents and MCP/tool discovery.
 
 ### Deploy Provenance
@@ -51,9 +54,13 @@ Planned work:
 
 Norn dev mode binds Nomad container ports to `127.0.0.1`, while some app endpoints may refer to Tailscale or public hostnames. The docs and manifest need to make the difference visible.
 
+Current state:
+
+- The service manifest classifies endpoint and instance scope as `local`, `private`, `public`, or `none`.
+- `norn services` renders combined reachability such as `local`, `public/private`, or `internal/local`.
+
 Planned work:
 
-- Separate `localhost`, Tailscale, cloudflared, and internal Consul addresses in app status and service manifest output.
 - Warn when an endpoint points at an address that is not actually reachable in the current Nomad mode.
 - Add an explicit networking mode indicator to `norn health`, `norn app`, and the service manifest.
 - Document when to use `host.docker.internal`, `127.0.0.1`, Tailscale IPs, and cloudflared hostnames.
@@ -106,7 +113,7 @@ ContextDB is now a useful proving ground for Norn because it has both a web proc
 Current state:
 
 - ContextDB is managed by Norn as separate `web` and `review-worker` processes.
-- The service manifest reports ContextDB web as a routable service and the review worker as a non-public worker.
+- The service manifest reports ContextDB web as a local routable service and the review worker as an internal local worker.
 - ContextDB ships a Norn smoke script that checks web health, worker health, write/retrieve behavior, review queue setup, and an in-allocation worker dry run.
 - `norn smoke contextdb` promotes that smoke flow into a first-class Norn command.
 - ContextDB validates cleanly under Norn's plaintext-secret checks: `CONTEXTDB_DSN` is present as a Norn secret and is not duplicated into plain `env`.

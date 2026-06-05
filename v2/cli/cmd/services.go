@@ -60,6 +60,7 @@ func printServices(manifest *api.ServiceManifest) {
 		style.TableHeader.Render("PROCESS")+"\t"+
 		style.TableHeader.Render("TYPE")+"\t"+
 		style.TableHeader.Render("STATUS")+"\t"+
+		style.TableHeader.Render("REACH")+"\t"+
 		style.TableHeader.Render("ENDPOINTS")+"\t"+
 		style.TableHeader.Render("INSTANCES"))
 
@@ -89,17 +90,36 @@ func printServices(manifest *api.ServiceManifest) {
 			instances = strings.Join(parts, ", ")
 		}
 
-		fmt.Fprintf(w, "%s\t%s\t%s\t%s\t%s\t%s\t%s\n",
+		fmt.Fprintf(w, "%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n",
 			style.Bold.Render(svc.Name),
 			svc.App,
 			svc.Process,
 			svc.Type,
 			renderServiceStatus(svc.Status),
+			renderServiceReachability(svc),
 			endpoints,
 			instances,
 		)
 	}
 	w.Flush()
+}
+
+func renderServiceReachability(svc api.ServiceManifestEntry) string {
+	endpointScope := svc.Metadata["endpointScope"]
+	instanceScope := svc.Metadata["instanceScope"]
+	if endpointScope == "" {
+		endpointScope = "unknown"
+	}
+	if instanceScope == "" {
+		instanceScope = "unknown"
+	}
+	if endpointScope == "none" {
+		return "internal/" + instanceScope
+	}
+	if endpointScope == instanceScope {
+		return endpointScope
+	}
+	return endpointScope + "/" + instanceScope
 }
 
 func renderServiceStatus(status string) string {

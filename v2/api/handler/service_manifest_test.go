@@ -67,6 +67,9 @@ endpoints:
 	if got := len(web.Endpoints); got != 1 {
 		t.Fatalf("web endpoints = %d, want 1", got)
 	}
+	if web.Metadata["endpointScope"] != "local" {
+		t.Fatalf("web endpointScope = %q, want local", web.Metadata["endpointScope"])
+	}
 
 	worker := entries["review-worker"]
 	if worker.Type != "worker" {
@@ -78,6 +81,9 @@ endpoints:
 	if worker.HealthPath != "/v1/ping" {
 		t.Fatalf("worker health path = %q, want /v1/ping", worker.HealthPath)
 	}
+	if worker.Metadata["endpointScope"] != "none" {
+		t.Fatalf("worker endpointScope = %q, want none", worker.Metadata["endpointScope"])
+	}
 
 	cron := entries["nightly"]
 	if cron.Type != "cron" {
@@ -88,5 +94,28 @@ endpoints:
 	}
 	if got := len(cron.Endpoints); got != 0 {
 		t.Fatalf("cron endpoints = %d, want 0", got)
+	}
+}
+
+func TestManifestReachabilityScopes(t *testing.T) {
+	tests := []struct {
+		name string
+		host string
+		want string
+	}{
+		{name: "localhost", host: "localhost", want: "local"},
+		{name: "loopback", host: "127.0.0.1", want: "local"},
+		{name: "private ten", host: "10.0.0.5", want: "private"},
+		{name: "private one seven two", host: "172.20.0.5", want: "private"},
+		{name: "private one nine two", host: "192.168.1.5", want: "private"},
+		{name: "public", host: "contextdb.example.test", want: "public"},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := classifyHostScope(tt.host); got != tt.want {
+				t.Fatalf("classifyHostScope(%q) = %q, want %q", tt.host, got, tt.want)
+			}
+		})
 	}
 }

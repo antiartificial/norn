@@ -190,7 +190,7 @@ norn services
 norn services manifest
 ```
 
-The table separates app-level endpoints from process reachability. Service processes can list public or local endpoints; worker, cron, and function entries expose process type, status, health path, and instances without inheriting unrelated app endpoints.
+The table separates app-level endpoints from process reachability. Service processes can list public or local endpoints; worker, cron, and function entries expose process type, status, health path, and instances without inheriting unrelated app endpoints. The `REACH` column summarizes endpoint and instance scope, for example `local`, `public/private`, or `internal/local`.
 
 ## snapshots
 
