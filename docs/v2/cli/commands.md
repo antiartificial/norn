@@ -10,7 +10,7 @@ List all apps with their health, current commit, endpoints, and services.
 norn status
 ```
 
-Displays a table of all discovered apps with live health indicators.
+Displays a table of all discovered apps with live health indicators, latest deployment image, and resolved commit.
 
 ## app
 
