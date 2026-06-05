@@ -90,8 +90,9 @@ Planned work:
 
 - Clarify local snapshot storage versus S3-backed storage.
 - Add retention policy and pruning.
-- Add restore safety rails, including optional pre-restore snapshot and confirmation.
-- Emit restore and snapshot receipts into the saga log.
+- Restore now requires explicit CLI confirmation with `--yes`, the API requires `confirm=true`, and restore responses include database, snapshot, commit, and restored-at receipt data.
+- Snapshot listing now parses provenance from snapshot filenames, including source commit and RFC3339 created time even when database names include underscores.
+- Emit snapshot creation receipts into the saga log and add optional pre-restore snapshots.
 - Show snapshot provenance in app detail and deploy history.
 
 ### Observability And Access

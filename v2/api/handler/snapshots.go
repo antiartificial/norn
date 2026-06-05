@@ -8,6 +8,7 @@ import (
 	"path/filepath"
 	"sort"
 	"strings"
+	"time"
 
 	"github.com/go-chi/chi/v5"
 
@@ -18,8 +19,18 @@ import (
 type snapshotEntry struct {
 	Filename  string `json:"filename"`
 	Database  string `json:"database"`
+	CommitSHA string `json:"commitSha,omitempty"`
 	Timestamp string `json:"timestamp"`
+	CreatedAt string `json:"createdAt,omitempty"`
 	Size      int64  `json:"size"`
+}
+
+type restoreReceipt struct {
+	Status     string        `json:"status"`
+	App        string        `json:"app"`
+	Database   string        `json:"database"`
+	Snapshot   snapshotEntry `json:"snapshot"`
+	RestoredAt string        `json:"restoredAt"`
 }
 
 func (h *Handler) ListSnapshots(w http.ResponseWriter, r *http.Request) {
@@ -56,19 +67,12 @@ func (h *Handler) ListSnapshots(w http.ResponseWriter, r *http.Request) {
 			continue
 		}
 
-		// Parse timestamp from filename: {db}_{sha}_{timestamp}.dump
-		parts := strings.SplitN(strings.TrimSuffix(name, ".dump"), "_", 3)
-		ts := ""
-		if len(parts) == 3 {
-			ts = parts[2]
+		snapshot := parseSnapshotEntry(dbName, name, info.Size())
+		if snapshot == nil {
+			continue
 		}
 
-		snapshots = append(snapshots, snapshotEntry{
-			Filename:  name,
-			Database:  dbName,
-			Timestamp: ts,
-			Size:      info.Size(),
-		})
+		snapshots = append(snapshots, *snapshot)
 	}
 
 	sort.Slice(snapshots, func(i, j int) bool {
@@ -93,6 +97,10 @@ func (h *Handler) RestoreSnapshot(w http.ResponseWriter, r *http.Request) {
 	}
 
 	dbName := spec.Infrastructure.Postgres.Database
+	if r.URL.Query().Get("confirm") != "true" {
+		writeError(w, http.StatusBadRequest, "restore requires confirm=true")
+		return
+	}
 
 	// Find matching snapshot file
 	entries, err := os.ReadDir("snapshots")
@@ -101,21 +109,28 @@ func (h *Handler) RestoreSnapshot(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	var matchFile string
+	var match *snapshotEntry
 	for _, entry := range entries {
 		name := entry.Name()
 		if strings.HasPrefix(name, dbName+"_") && strings.Contains(name, ts) && strings.HasSuffix(name, ".dump") {
-			matchFile = name
+			info, err := entry.Info()
+			if err != nil {
+				continue
+			}
+			parsed := parseSnapshotEntry(dbName, name, info.Size())
+			if parsed != nil {
+				match = parsed
+			}
 			break
 		}
 	}
 
-	if matchFile == "" {
+	if match == nil {
 		writeError(w, http.StatusNotFound, fmt.Sprintf("no snapshot found for timestamp %s", ts))
 		return
 	}
 
-	snapshotPath := filepath.Join("snapshots", matchFile)
+	snapshotPath := filepath.Join("snapshots", match.Filename)
 	cmd := exec.CommandContext(r.Context(), "pg_restore", "--clean", "-d", dbName, snapshotPath)
 	out, err := cmd.CombinedOutput()
 	if err != nil {
@@ -126,21 +141,67 @@ func (h *Handler) RestoreSnapshot(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	h.ws.Broadcast(hub.Event{
-		Type:  "snapshot.restored",
-		AppID: id,
-		Payload: map[string]string{
-			"database":  dbName,
-			"snapshot":  matchFile,
-			"timestamp": ts,
-		},
-	})
+	if h.ws != nil {
+		h.ws.Broadcast(hub.Event{
+			Type:  "snapshot.restored",
+			AppID: id,
+			Payload: map[string]string{
+				"database":  dbName,
+				"snapshot":  match.Filename,
+				"timestamp": ts,
+			},
+		})
+	}
 
-	writeJSON(w, map[string]string{
-		"status":   "restored",
-		"snapshot": matchFile,
-		"database": dbName,
+	writeJSON(w, restoreReceipt{
+		Status:     "restored",
+		App:        id,
+		Database:   dbName,
+		Snapshot:   *match,
+		RestoredAt: timeNowUTC(),
 	})
+}
+
+func parseSnapshotEntry(dbName, filename string, size int64) *snapshotEntry {
+	if !strings.HasPrefix(filename, dbName+"_") || !strings.HasSuffix(filename, ".dump") {
+		return nil
+	}
+	stem := strings.TrimSuffix(filename, ".dump")
+	timestampSep := strings.LastIndex(stem, "_")
+	if timestampSep < 0 || timestampSep == len(stem)-1 {
+		return nil
+	}
+	prefix := stem[:timestampSep]
+	timestamp := stem[timestampSep+1:]
+	shaSep := strings.LastIndex(prefix, "_")
+	if shaSep < 0 || shaSep == len(prefix)-1 {
+		return nil
+	}
+	database := prefix[:shaSep]
+	if database != dbName {
+		return nil
+	}
+	commitSHA := prefix[shaSep+1:]
+	return &snapshotEntry{
+		Filename:  filename,
+		Database:  database,
+		CommitSHA: commitSHA,
+		Timestamp: timestamp,
+		CreatedAt: snapshotTimestampRFC3339(timestamp),
+		Size:      size,
+	}
+}
+
+func snapshotTimestampRFC3339(ts string) string {
+	t, err := time.Parse("20060102T150405", ts)
+	if err != nil {
+		return ""
+	}
+	return t.UTC().Format(time.RFC3339)
+}
+
+func timeNowUTC() string {
+	return time.Now().UTC().Format(time.RFC3339)
 }
 
 func (h *Handler) findSpec(appID string) *model.InfraSpec {
