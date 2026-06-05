@@ -28,12 +28,16 @@ var (
 	contextDBWorkerRunsJSON          bool
 	contextDBWorkerRunsShowDecisions bool
 	contextDBWorkerRunsWebURL        string
+
+	contextDBPolicyWorkerURL string
+	contextDBPolicyJSON      bool
 )
 
 func init() {
 	rootCmd.AddCommand(contextDBCmd)
 	contextDBCmd.AddCommand(contextDBReviewCmd)
 	contextDBCmd.AddCommand(contextDBWorkerRunsCmd)
+	contextDBCmd.AddCommand(contextDBPolicyCmd)
 	contextDBReviewCmd.Flags().StringVar(&contextDBReviewNamespace, "namespace", "hermes-agent", "ContextDB namespace")
 	contextDBReviewCmd.Flags().StringVar(&contextDBReviewMode, "mode", "agent_memory", "ContextDB mode")
 	contextDBReviewCmd.Flags().IntVar(&contextDBReviewLimit, "limit", 50, "Maximum review queue items to inspect")
@@ -44,6 +48,8 @@ func init() {
 	contextDBWorkerRunsCmd.Flags().BoolVar(&contextDBWorkerRunsJSON, "json", false, "Print raw JSON")
 	contextDBWorkerRunsCmd.Flags().BoolVar(&contextDBWorkerRunsShowDecisions, "decisions", false, "Print decision details below each run")
 	contextDBWorkerRunsCmd.Flags().StringVar(&contextDBWorkerRunsWebURL, "web-url", "", "Override ContextDB web URL")
+	contextDBPolicyCmd.Flags().StringVar(&contextDBPolicyWorkerURL, "worker-url", "", "Override ContextDB review worker URL")
+	contextDBPolicyCmd.Flags().BoolVar(&contextDBPolicyJSON, "json", false, "Print raw JSON")
 }
 
 var contextDBCmd = &cobra.Command{
@@ -92,6 +98,143 @@ var contextDBWorkerRunsCmd = &cobra.Command{
 		printContextDBWorkerRuns(namespace, runs.Runs, contextDBWorkerRunsShowDecisions)
 		return nil
 	},
+}
+
+var contextDBPolicyCmd = &cobra.Command{
+	Use:   "policy",
+	Short: "Show live ContextDB review worker policy status",
+	RunE: func(cmd *cobra.Command, args []string) error {
+		status, err := fetchContextDBWorkerStatus(contextDBPolicyWorkerURL)
+		if err != nil {
+			return err
+		}
+		if contextDBPolicyJSON {
+			enc := json.NewEncoder(os.Stdout)
+			enc.SetIndent("", "  ")
+			return enc.Encode(status)
+		}
+		printContextDBWorkerPolicy(status)
+		return nil
+	},
+}
+
+type contextDBWorkerStatus struct {
+	Status string                `json:"status"`
+	Worker string                `json:"worker"`
+	DryRun bool                  `json:"dry_run"`
+	Policy contextDBPolicyReport `json:"policy"`
+}
+
+type contextDBPolicyReport struct {
+	GeneratedAt string                     `json:"generated_at"`
+	DryRun      bool                       `json:"dry_run"`
+	Namespaces  []contextDBNamespacePolicy `json:"namespaces"`
+	Totals      contextDBPolicyTotals      `json:"totals"`
+}
+
+type contextDBNamespacePolicy struct {
+	Namespace              string   `json:"namespace"`
+	Mode                   string   `json:"mode"`
+	PolicyPreset           string   `json:"policy_preset"`
+	DryRun                 bool     `json:"dry_run"`
+	Evaluator              string   `json:"evaluator"`
+	Provider               string   `json:"provider"`
+	ProviderKeyRequired    bool     `json:"provider_key_required"`
+	ProviderKeyConfigured  bool     `json:"provider_key_configured"`
+	AllowedActions         []string `json:"allowed_actions"`
+	Types                  []string `json:"types"`
+	LowConfidenceThreshold float64  `json:"low_confidence_threshold"`
+	PruneConfidence        float64  `json:"prune_confidence"`
+	Limit                  int      `json:"limit"`
+	Owner                  string   `json:"owner"`
+	MutationAllowed        bool     `json:"mutation_allowed"`
+	Warnings               []string `json:"warnings"`
+	OK                     bool     `json:"ok"`
+	Error                  string   `json:"error"`
+}
+
+type contextDBPolicyTotals struct {
+	Namespaces          int `json:"namespaces"`
+	MutationEnabled     int `json:"mutation_enabled"`
+	ProviderBacked      int `json:"provider_backed"`
+	MissingProviderKeys int `json:"missing_provider_keys"`
+	Warnings            int `json:"warnings"`
+	Errors              int `json:"errors"`
+}
+
+func fetchContextDBWorkerStatus(workerURL string) (*contextDBWorkerStatus, error) {
+	cfg := contextDBSmokeConfig{WorkerURL: workerURL}
+	if err := discoverContextDBURLs(&cfg); err != nil {
+		return nil, err
+	}
+	var status contextDBWorkerStatus
+	httpClient := &http.Client{Timeout: 10 * time.Second}
+	if err := contextDBGetJSON(httpClient, cfg.WorkerURL+"/v1/status", &status); err != nil {
+		return nil, fmt.Errorf("worker policy status: %w", err)
+	}
+	return &status, nil
+}
+
+func printContextDBWorkerPolicy(status *contextDBWorkerStatus) {
+	fmt.Println(style.Title.Render("contextdb worker policy"))
+	fmt.Printf("status=%s worker=%s dry_run=%t\n\n", status.Status, status.Worker, status.DryRun)
+	fmt.Printf("totals namespaces=%d mutation_enabled=%d provider_backed=%d missing_provider_keys=%d warnings=%d errors=%d\n\n",
+		status.Policy.Totals.Namespaces,
+		status.Policy.Totals.MutationEnabled,
+		status.Policy.Totals.ProviderBacked,
+		status.Policy.Totals.MissingProviderKeys,
+		status.Policy.Totals.Warnings,
+		status.Policy.Totals.Errors,
+	)
+	if len(status.Policy.Namespaces) == 0 {
+		fmt.Println(style.DimText.Render("no namespace policies reported"))
+		return
+	}
+	w := tabwriter.NewWriter(os.Stdout, 0, 0, 2, ' ', 0)
+	fmt.Fprintln(w, style.TableHeader.Render("NAMESPACE")+"\t"+
+		style.TableHeader.Render("MODE")+"\t"+
+		style.TableHeader.Render("PRESET")+"\t"+
+		style.TableHeader.Render("EVALUATOR")+"\t"+
+		style.TableHeader.Render("DRY")+"\t"+
+		style.TableHeader.Render("MUTATE")+"\t"+
+		style.TableHeader.Render("KEY")+"\t"+
+		style.TableHeader.Render("ACTIONS")+"\t"+
+		style.TableHeader.Render("WARN")+"\t"+
+		style.TableHeader.Render("OK"))
+	for _, ns := range status.Policy.Namespaces {
+		keyState := "-"
+		if ns.ProviderKeyRequired {
+			keyState = "missing"
+			if ns.ProviderKeyConfigured {
+				keyState = "configured"
+			}
+		}
+		fmt.Fprintf(w, "%s\t%s\t%s\t%s\t%t\t%t\t%s\t%s\t%d\t%t\n",
+			ns.Namespace,
+			ns.Mode,
+			ns.PolicyPreset,
+			ns.Evaluator,
+			ns.DryRun,
+			ns.MutationAllowed,
+			keyState,
+			strings.Join(ns.AllowedActions, ","),
+			len(ns.Warnings),
+			ns.OK,
+		)
+	}
+	w.Flush()
+	for _, ns := range status.Policy.Namespaces {
+		if ns.Error == "" && len(ns.Warnings) == 0 {
+			continue
+		}
+		fmt.Printf("\n%s\n", style.Bold.Render(ns.Namespace))
+		if ns.Error != "" {
+			fmt.Printf("  %s %s\n", style.Unhealthy.Render("error"), ns.Error)
+		}
+		for _, warning := range ns.Warnings {
+			fmt.Printf("  %s %s\n", style.Warning.Render("warning"), warning)
+		}
+	}
 }
 
 func fetchContextDBReviewQueue(namespace, mode string, limit int, webURL string) (*contextDBReviewQueueResponse, error) {
