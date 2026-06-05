@@ -3,8 +3,8 @@ package cmd
 import (
 	"fmt"
 	"os"
-	"text/tabwriter"
 	"strings"
+	"text/tabwriter"
 
 	"github.com/spf13/cobra"
 
