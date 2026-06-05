@@ -19,6 +19,9 @@ func (p *Pipeline) build(ctx context.Context, st *state, sg *saga.Saga) error {
 	if len(sha) > 12 {
 		sha = sha[:12]
 	}
+	if st.sourceDirty {
+		sha += "-dirty"
+	}
 	localTag := fmt.Sprintf("%s:%s", st.spec.App, sha)
 
 	// Build number from git commit count
