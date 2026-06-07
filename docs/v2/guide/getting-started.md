@@ -113,6 +113,7 @@ The pipeline runs 9 steps with real-time progress: clone, build, test, snapshot,
 ## Next Steps
 
 - [Concepts](/v2/guide/concepts) — understand the infraspec model and process types
+- [Release Recap](/v2/guide/release-recap) — review what the current v2 release line includes
 - [Infraspec Reference](/v2/guide/infraspec-reference) — every field documented
 - [Architecture Overview](/v2/architecture/overview) — how the pieces fit together
 - [CLI Commands](/v2/cli/commands) — full command reference

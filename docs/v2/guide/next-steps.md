@@ -19,6 +19,8 @@ The current working feature set includes:
 - Basic local snapshot listing and restore
 - Port conflict detection before Nomad submit
 
+For a compact summary of the current release line, see the [Norn v2 Release Recap](/v2/guide/release-recap).
+
 ## Immediate Norn Items
 
 ### Service Manifest
