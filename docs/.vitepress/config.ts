@@ -67,6 +67,7 @@ export default withMermaid(
               { text: 'Deploying', link: '/v2/operations/deploying' },
               { text: 'Cron Jobs', link: '/v2/operations/cron' },
               { text: 'Snapshots', link: '/v2/operations/snapshots' },
+              { text: 'Upgrading', link: '/v2/operations/upgrading' },
               { text: 'Troubleshooting', link: '/v2/operations/troubleshooting' },
             ],
           },
