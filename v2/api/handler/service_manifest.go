@@ -12,16 +12,29 @@ import (
 )
 
 func (h *Handler) ServiceManifest(w http.ResponseWriter, r *http.Request) {
-	specs, err := model.DiscoverApps(h.cfg.AppsDir)
+	manifest, err := h.buildServiceManifest()
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, err.Error())
 		return
+	}
+	writeJSON(w, manifest)
+}
+
+func (h *Handler) buildServiceManifest() (model.ServiceManifest, error) {
+	specs, err := model.DiscoverApps(h.cfg.AppsDir)
+	if err != nil {
+		return model.ServiceManifest{}, err
 	}
 
 	manifest := model.ServiceManifest{
 		Version:     1,
 		GeneratedAt: time.Now().UTC(),
 		NetworkMode: h.cfg.NetworkMode,
+		Contract: model.ServiceManifestContract{
+			Schema:             "norn.service-manifest.v1",
+			ProcessTypes:       []string{"service", "worker", "cron", "function"},
+			ReachabilityScopes: []string{"none", "local", "private", "public"},
+		},
 	}
 
 	for _, spec := range specs {
@@ -69,12 +82,32 @@ func (h *Handler) ServiceManifest(w http.ResponseWriter, r *http.Request) {
 					entry.Metadata["instanceScope"] = instanceScope(entry.Instances)
 				}
 			}
+			entry.Reachability = serviceReachability(entry.Metadata["endpointScope"], entry.Metadata["instanceScope"])
 
 			manifest.Services = append(manifest.Services, entry)
 		}
 	}
 
-	writeJSON(w, manifest)
+	return manifest, nil
+}
+
+func serviceReachability(endpointScope, instanceScope string) model.ServiceReachability {
+	if endpointScope == "" {
+		endpointScope = "none"
+	}
+	if instanceScope == "" {
+		instanceScope = "none"
+	}
+	exposure := endpointScope
+	if exposure == "none" {
+		exposure = "internal"
+	}
+	return model.ServiceReachability{
+		EndpointScope: endpointScope,
+		InstanceScope: instanceScope,
+		Exposure:      exposure,
+		Routable:      endpointScope != "none" || instanceScope != "none",
+	}
 }
 
 func endpointScope(endpoints []model.Endpoint) string {

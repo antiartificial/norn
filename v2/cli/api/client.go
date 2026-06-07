@@ -41,22 +41,37 @@ type Endpoint struct {
 }
 
 type ServiceManifest struct {
-	Version     int                    `json:"version"`
-	GeneratedAt string                 `json:"generatedAt"`
-	NetworkMode string                 `json:"networkMode,omitempty"`
-	Services    []ServiceManifestEntry `json:"services"`
+	Version     int                     `json:"version"`
+	GeneratedAt string                  `json:"generatedAt"`
+	NetworkMode string                  `json:"networkMode,omitempty"`
+	Contract    ServiceManifestContract `json:"contract"`
+	Services    []ServiceManifestEntry  `json:"services"`
 }
 
 type ServiceManifestEntry struct {
-	Name       string            `json:"name"`
-	App        string            `json:"app"`
-	Process    string            `json:"process"`
-	Type       string            `json:"type"`
-	Status     string            `json:"status"`
-	HealthPath string            `json:"healthPath,omitempty"`
-	Endpoints  []Endpoint        `json:"endpoints,omitempty"`
-	Instances  []ServiceInstance `json:"instances,omitempty"`
-	Metadata   map[string]string `json:"metadata,omitempty"`
+	Name         string              `json:"name"`
+	App          string              `json:"app"`
+	Process      string              `json:"process"`
+	Type         string              `json:"type"`
+	Status       string              `json:"status"`
+	HealthPath   string              `json:"healthPath,omitempty"`
+	Reachability ServiceReachability `json:"reachability"`
+	Endpoints    []Endpoint          `json:"endpoints,omitempty"`
+	Instances    []ServiceInstance   `json:"instances,omitempty"`
+	Metadata     map[string]string   `json:"metadata,omitempty"`
+}
+
+type ServiceManifestContract struct {
+	Schema             string   `json:"schema"`
+	ProcessTypes       []string `json:"processTypes"`
+	ReachabilityScopes []string `json:"reachabilityScopes"`
+}
+
+type ServiceReachability struct {
+	EndpointScope string `json:"endpointScope"`
+	InstanceScope string `json:"instanceScope"`
+	Exposure      string `json:"exposure"`
+	Routable      bool   `json:"routable"`
 }
 
 type ServiceInstance struct {
@@ -118,13 +133,17 @@ type NetworkStatus struct {
 }
 
 type Deployment struct {
-	ID        string `json:"id"`
-	App       string `json:"app"`
-	CommitSHA string `json:"commitSha"`
-	ImageTag  string `json:"imageTag"`
-	SagaID    string `json:"sagaId"`
-	Status    string `json:"status"`
-	StartedAt string `json:"startedAt"`
+	ID            string   `json:"id"`
+	App           string   `json:"app"`
+	CommitSHA     string   `json:"commitSha"`
+	ImageTag      string   `json:"imageTag"`
+	SagaID        string   `json:"sagaId"`
+	Status        string   `json:"status"`
+	SourceKind    string   `json:"sourceKind,omitempty"`
+	SourceRef     string   `json:"sourceRef,omitempty"`
+	SourceDirty   bool     `json:"sourceDirty,omitempty"`
+	SourceChanges []string `json:"sourceChanges,omitempty"`
+	StartedAt     string   `json:"startedAt"`
 }
 
 type SagaEvent struct {
@@ -191,6 +210,17 @@ type RestoreReceipt struct {
 	RestoredAt string   `json:"restoredAt"`
 }
 
+type SnapshotRetentionReceipt struct {
+	Status     string     `json:"status"`
+	App        string     `json:"app"`
+	Keep       int        `json:"keep"`
+	DryRun     bool       `json:"dryRun"`
+	Kept       []Snapshot `json:"kept"`
+	Pruned     []Snapshot `json:"pruned"`
+	WouldPrune []Snapshot `json:"wouldPrune,omitempty"`
+	AppliedAt  string     `json:"appliedAt"`
+}
+
 type AccessEvent struct {
 	Timestamp  string `json:"timestamp"`
 	Method     string `json:"method"`
@@ -229,6 +259,195 @@ type FuncExecution struct {
 	DurationMs int64  `json:"durationMs,omitempty"`
 }
 
+type ContextDBOpsSummary struct {
+	GeneratedAt    string                      `json:"generatedAt"`
+	App            *AppStatus                  `json:"app,omitempty"`
+	Services       []ServiceManifestEntry      `json:"services"`
+	WebURL         string                      `json:"webUrl,omitempty"`
+	WorkerURL      string                      `json:"workerUrl,omitempty"`
+	Worker         *ContextDBWorkerStatus      `json:"worker,omitempty"`
+	ProviderGate   ContextDBProviderGate       `json:"providerGate"`
+	Queue          ContextDBReviewQueue        `json:"queue"`
+	WorkerRuns     []ContextDBWorkerRun        `json:"workerRuns"`
+	FeedbackEvents []ContextDBFeedbackEvent    `json:"feedbackEvents"`
+	Rollbacks      []ContextDBFeedbackRollback `json:"rollbacks"`
+	Snapshots      []Snapshot                  `json:"snapshots"`
+	Deployments    []Deployment                `json:"deployments"`
+	Secrets        *SecretStatus               `json:"secrets,omitempty"`
+	AccessEvents   []AccessEvent               `json:"accessEvents"`
+	Warnings       []string                    `json:"warnings,omitempty"`
+}
+
+type ContextDBProviderGate struct {
+	Ready               bool   `json:"ready"`
+	Reason              string `json:"reason,omitempty"`
+	ProviderBacked      int    `json:"providerBacked"`
+	MutationEnabled     int    `json:"mutationEnabled"`
+	MissingProviderKeys int    `json:"missingProviderKeys"`
+	Warnings            int    `json:"warnings"`
+	Errors              int    `json:"errors"`
+}
+
+type ContextDBReviewQueue struct {
+	Items []ContextDBReviewItem `json:"items"`
+	Total int                   `json:"total"`
+	Error string                `json:"error,omitempty"`
+}
+
+type ContextDBReviewItem struct {
+	ReviewID string `json:"review_id"`
+	NodeID   string `json:"node_id"`
+	Type     string `json:"type"`
+	Status   string `json:"status"`
+	Owner    string `json:"owner"`
+	Reason   string `json:"reason"`
+}
+
+type ContextDBWorkerStatus struct {
+	Status string                `json:"status"`
+	Worker string                `json:"worker"`
+	DryRun bool                  `json:"dry_run"`
+	Policy ContextDBPolicyReport `json:"policy"`
+}
+
+type ContextDBPolicyReport struct {
+	GeneratedAt string                     `json:"generated_at"`
+	DryRun      bool                       `json:"dry_run"`
+	Namespaces  []ContextDBNamespacePolicy `json:"namespaces"`
+	Totals      ContextDBPolicyTotals      `json:"totals"`
+}
+
+type ContextDBNamespacePolicy struct {
+	Namespace             string   `json:"namespace"`
+	Mode                  string   `json:"mode"`
+	PolicyPreset          string   `json:"policy_preset"`
+	DryRun                bool     `json:"dry_run"`
+	Evaluator             string   `json:"evaluator"`
+	Provider              string   `json:"provider"`
+	ProviderKeyRequired   bool     `json:"provider_key_required"`
+	ProviderKeyConfigured bool     `json:"provider_key_configured"`
+	AllowedActions        []string `json:"allowed_actions"`
+	MutationAllowed       bool     `json:"mutation_allowed"`
+	Warnings              []string `json:"warnings"`
+	OK                    bool     `json:"ok"`
+	Error                 string   `json:"error"`
+}
+
+type ContextDBPolicyTotals struct {
+	Namespaces          int `json:"namespaces"`
+	MutationEnabled     int `json:"mutation_enabled"`
+	ProviderBacked      int `json:"provider_backed"`
+	MissingProviderKeys int `json:"missing_provider_keys"`
+	Warnings            int `json:"warnings"`
+	Errors              int `json:"errors"`
+}
+
+type ContextDBWorkerRun struct {
+	CycleID     string                       `json:"cycle_id"`
+	Namespace   string                       `json:"namespace"`
+	Mode        string                       `json:"mode"`
+	Evaluator   string                       `json:"evaluator"`
+	DryRun      bool                         `json:"dry_run"`
+	Scanned     int                          `json:"scanned"`
+	Applied     int                          `json:"applied"`
+	Skipped     int                          `json:"skipped"`
+	Errors      int                          `json:"errors"`
+	GeneratedAt string                       `json:"generated_at"`
+	Decisions   []ContextDBWorkerRunDecision `json:"decisions,omitempty"`
+}
+
+type ContextDBWorkerRunDecision struct {
+	ReviewID              string `json:"review_id"`
+	NodeID                string `json:"node_id"`
+	Type                  string `json:"type"`
+	Action                string `json:"action"`
+	Applied               bool   `json:"applied"`
+	Reason                string `json:"reason"`
+	FeedbackEventID       string `json:"feedback_event_id,omitempty"`
+	ReviewDecisionEventID string `json:"review_decision_event_id,omitempty"`
+}
+
+type ContextDBFeedbackEvent struct {
+	EventID    string  `json:"event_id"`
+	Namespace  string  `json:"namespace"`
+	NodeID     string  `json:"node_id"`
+	Action     string  `json:"action"`
+	Reason     string  `json:"reason"`
+	Confidence float64 `json:"confidence"`
+	TxTime     string  `json:"tx_time"`
+}
+
+type ContextDBFeedbackRollback struct {
+	EventID            string  `json:"event_id"`
+	RolledBackEventID  string  `json:"rolled_back_event_id"`
+	NodeID             string  `json:"node_id"`
+	Action             string  `json:"action"`
+	PreviousConfidence float64 `json:"previous_confidence"`
+	RestoredConfidence float64 `json:"restored_confidence"`
+	Reason             string  `json:"reason"`
+	Owner              string  `json:"owner"`
+	TxTime             string  `json:"tx_time"`
+}
+
+type PlatformOpsSummary struct {
+	GeneratedAt   string                   `json:"generatedAt"`
+	NetworkMode   string                   `json:"networkMode,omitempty"`
+	Services      PlatformServiceSummary   `json:"services"`
+	Deployments   PlatformDeploySummary    `json:"deployments"`
+	Secrets       PlatformSecretSummary    `json:"secrets"`
+	Snapshots     []PlatformSnapshotStatus `json:"snapshots"`
+	Access        PlatformAccessSummary    `json:"access"`
+	Observability PlatformObserveSummary   `json:"observability"`
+	Warnings      []string                 `json:"warnings,omitempty"`
+}
+
+type PlatformServiceSummary struct {
+	Total    int            `json:"total"`
+	ByType   map[string]int `json:"byType"`
+	ByStatus map[string]int `json:"byStatus"`
+	Public   int            `json:"public"`
+	Private  int            `json:"private"`
+	Local    int            `json:"local"`
+	Internal int            `json:"internal"`
+}
+
+type PlatformDeploySummary struct {
+	Recent     []Deployment `json:"recent"`
+	Dirty      []Deployment `json:"dirty"`
+	Failed     int          `json:"failed"`
+	Successful int          `json:"successful"`
+}
+
+type PlatformSecretSummary struct {
+	OK             int            `json:"ok"`
+	NeedsAttention int            `json:"needsAttention"`
+	Apps           []SecretStatus `json:"apps"`
+}
+
+type PlatformSnapshotStatus struct {
+	App       string    `json:"app"`
+	Database  string    `json:"database,omitempty"`
+	Keep      int       `json:"keep"`
+	Count     int       `json:"count"`
+	OverLimit int       `json:"overLimit"`
+	Latest    *Snapshot `json:"latest,omitempty"`
+}
+
+type PlatformAccessSummary struct {
+	Recent      []AccessEvent  `json:"recent"`
+	TotalRecent int            `json:"totalRecent"`
+	ByStatus    map[string]int `json:"byStatus"`
+	ByClientIP  map[string]int `json:"byClientIp"`
+}
+
+type PlatformObserveSummary struct {
+	Enabled      bool   `json:"enabled"`
+	LogsEnabled  bool   `json:"logsEnabled"`
+	LogFormat    string `json:"logFormat"`
+	ServiceName  string `json:"serviceName,omitempty"`
+	OTLPEndpoint string `json:"otlpEndpoint,omitempty"`
+}
+
 // API methods
 
 func (c *Client) Health() (*HealthStatus, error) {
@@ -253,6 +472,56 @@ func (c *Client) ServiceManifest() (*ServiceManifest, error) {
 		return nil, err
 	}
 	return &manifest, nil
+}
+
+func (c *Client) ContextDBOps(namespace, mode string, limit int) (*ContextDBOpsSummary, error) {
+	values := url.Values{}
+	if namespace != "" {
+		values.Set("namespace", namespace)
+	}
+	if mode != "" {
+		values.Set("mode", mode)
+	}
+	if limit > 0 {
+		values.Set("limit", fmt.Sprintf("%d", limit))
+	}
+	path := "/api/ops/contextdb"
+	if encoded := values.Encode(); encoded != "" {
+		path += "?" + encoded
+	}
+	var summary ContextDBOpsSummary
+	if err := c.get(path, &summary); err != nil {
+		return nil, err
+	}
+	return &summary, nil
+}
+
+func (c *Client) PlatformOps() (*PlatformOpsSummary, error) {
+	var summary PlatformOpsSummary
+	if err := c.get("/api/ops/platform", &summary); err != nil {
+		return nil, err
+	}
+	return &summary, nil
+}
+
+func (c *Client) ContextDBRollbackFeedback(eventID, namespace, mode, reason, owner string) (*ContextDBFeedbackRollback, error) {
+	values := url.Values{}
+	if namespace != "" {
+		values.Set("namespace", namespace)
+	}
+	if mode != "" {
+		values.Set("mode", mode)
+	}
+	path := "/api/ops/contextdb/feedback/" + url.PathEscape(eventID) + "/rollback"
+	if encoded := values.Encode(); encoded != "" {
+		path += "?" + encoded
+	}
+	body, _ := json.Marshal(map[string]string{"reason": reason, "owner": owner})
+	var receipt ContextDBFeedbackRollback
+	if err := c.postJSON(path, string(body), &receipt); err != nil {
+		return nil, err
+	}
+	return &receipt, nil
 }
 
 func (c *Client) GetApp(id string) (*AppStatus, error) {
@@ -457,6 +726,18 @@ func (c *Client) RestoreSnapshot(appID, ts string, confirm bool) (*RestoreReceip
 	if confirm {
 		path += "?confirm=true"
 	}
+	if err := c.postJSON(path, "{}", &receipt); err != nil {
+		return nil, err
+	}
+	return &receipt, nil
+}
+
+func (c *Client) ApplySnapshotRetention(appID string, keep int, confirm bool) (*SnapshotRetentionReceipt, error) {
+	path := fmt.Sprintf("/api/apps/%s/snapshots/retention?keep=%d", appID, keep)
+	if confirm {
+		path += "&confirm=true"
+	}
+	var receipt SnapshotRetentionReceipt
 	if err := c.postJSON(path, "{}", &receipt); err != nil {
 		return nil, err
 	}

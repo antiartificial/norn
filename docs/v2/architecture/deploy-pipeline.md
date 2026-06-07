@@ -107,3 +107,14 @@ The CLI connects to the WebSocket during `norn deploy` and renders a live progre
 ## Saga Event Log
 
 Every step transition is recorded as an immutable saga event. See [Saga Events](/v2/architecture/saga-events) for the full event model.
+
+## Provenance
+
+Deployments record source provenance in the deployment row as well as saga events. `norn status`, `norn ops platform`, and deployment history can show:
+
+- `sourceKind`: `git_clone`, `local_copy`, `local_fallback`, or `rollback`
+- `sourceRef`: the requested git ref, local fallback ref, or rollback source deployment
+- `sourceDirty`: whether the local source tree had uncommitted changes
+- `sourceChanges`: a value-safe list of changed file paths
+
+Dirty local builds also receive an image tag suffix ending in `-dirty`, making runtime state visibly different from a clean commit build.

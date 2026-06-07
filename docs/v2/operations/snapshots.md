@@ -12,6 +12,9 @@ Snapshots are only created for apps that declare postgres infrastructure:
 infrastructure:
   postgres:
     database: myapp
+
+snapshots:
+  keep: 3
 ```
 
 ## Listing Snapshots
@@ -22,7 +25,18 @@ infrastructure:
 norn snapshots myapp
 ```
 
-Displays a table of available snapshots with timestamps and sizes.
+Displays a table of available snapshots with timestamps, source commit, created time, size, and filename.
+
+## Retention
+
+```bash
+norn snapshots myapp retention --keep 3
+norn snapshots myapp retention --keep 3 --execute --yes
+```
+
+Retention previews by default. The command marks the newest snapshots as `keep` and older snapshots as `would-prune` without deleting files. If `--keep` is omitted, Norn uses `snapshots.keep` from `infraspec.yaml`, falling back to 3. Add `--execute --yes` to delete older local snapshot files and print an applied retention receipt.
+
+`norn ops platform` also reports per-app snapshot counts, policy keep counts, and over-limit totals.
 
 ### API
 
@@ -35,13 +49,13 @@ curl http://localhost:8800/api/apps/myapp/snapshots
 ### CLI
 
 ```bash
-norn snapshots myapp restore 2025-01-15T14:30:00
+norn snapshots myapp restore 2025-01-15T14:30:00 --yes
 ```
 
 ### API
 
 ```bash
-curl -X POST http://localhost:8800/api/apps/myapp/snapshots/2025-01-15T14:30:00/restore
+curl -X POST 'http://localhost:8800/api/apps/myapp/snapshots/2025-01-15T14:30:00/restore?confirm=true'
 ```
 
 ::: warning

@@ -57,6 +57,7 @@ func (p *Pipeline) Run(spec *model.InfraSpec, ref string) string {
 		CommitSHA: ref,
 		SagaID:    sg.ID,
 		Status:    model.StatusQueued,
+		SourceRef: ref,
 		StartedAt: time.Now(),
 	}
 	if err := p.DB.InsertDeployment(ctx, deploy); err != nil {
@@ -137,9 +138,18 @@ func (p *Pipeline) run(ctx context.Context, spec *model.InfraSpec, deploy *model
 
 	deploy.CommitSHA = st.commitSHA
 	deploy.ImageTag = st.imageTag
+	deploy.SourceKind = st.sourceKind
+	deploy.SourceRef = st.sourceRef
+	deploy.SourceDirty = st.sourceDirty
+	deploy.SourceChanges = st.sourceChanges
 	deploy.Status = model.StatusDeployed
 	p.DB.UpdateDeploymentResult(ctx, deploy)
-	sg.Log(ctx, "deploy.complete", fmt.Sprintf("deploy complete: %s → %s", spec.App, st.imageTag), nil)
+	sg.Log(ctx, "deploy.complete", fmt.Sprintf("deploy complete: %s → %s", spec.App, st.imageTag), map[string]string{
+		"commitSha":  st.commitSHA,
+		"imageTag":   st.imageTag,
+		"sourceKind": st.sourceKind,
+		"sourceRef":  st.sourceRef,
+	})
 	p.WS.Broadcast(hub.Event{Type: "deploy.completed", AppID: spec.App, Payload: map[string]string{
 		"sagaId":   sg.ID,
 		"imageTag": st.imageTag,

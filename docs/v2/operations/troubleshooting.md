@@ -16,6 +16,28 @@ This checks connectivity to:
 - PostgreSQL database
 - S3 storage (if configured)
 
+## OpenTelemetry and Grafana
+
+Norn can export OTLP traces and logs to an OpenTelemetry Collector, Grafana Alloy, or Grafana Cloud OTLP endpoint.
+
+```bash
+export NORN_OTEL_ENABLED=true
+export NORN_OTEL_LOGS=true
+export NORN_LOG_FORMAT=json
+export OTEL_SERVICE_NAME=norn-api
+export OTEL_EXPORTER_OTLP_ENDPOINT=http://127.0.0.1:4318
+```
+
+The API wraps HTTP traffic with OpenTelemetry spans. `NORN_LOG_FORMAT=json` keeps stdout logs easy to collect with a Collector `filelog` receiver even when OTLP logs are disabled.
+
+Use Norn's platform ops rollup to verify what the API sees at runtime:
+
+```bash
+norn ops platform
+```
+
+The rollup reports OTEL enablement, log export state, log format, service name, and OTLP endpoint without printing secrets. It also summarizes recent access status buckets, service exposure, dirty deployments, snapshot retention pressure, and secret hygiene.
+
 ## Common Issues
 
 ### Nomad Not Running

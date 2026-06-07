@@ -60,13 +60,17 @@ func (h *Handler) Rollback(w http.ResponseWriter, r *http.Request) {
 
 	// Create deployment record
 	deploy := &model.Deployment{
-		ID:        uuid.New().String(),
-		App:       id,
-		CommitSHA: prev.CommitSHA,
-		ImageTag:  prev.ImageTag,
-		SagaID:    sg.ID,
-		Status:    model.StatusQueued,
-		StartedAt: time.Now(),
+		ID:            uuid.New().String(),
+		App:           id,
+		CommitSHA:     prev.CommitSHA,
+		ImageTag:      prev.ImageTag,
+		SagaID:        sg.ID,
+		Status:        model.StatusQueued,
+		SourceKind:    "rollback",
+		SourceRef:     prev.ID,
+		SourceDirty:   prev.SourceDirty,
+		SourceChanges: prev.SourceChanges,
+		StartedAt:     time.Now(),
 	}
 	if err := h.db.InsertDeployment(ctx, deploy); err != nil {
 		log.Printf("rollback: insert deployment: %v", err)

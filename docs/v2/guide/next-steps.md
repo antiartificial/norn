@@ -28,14 +28,11 @@ The service manifest is the next discovery surface for agents, dashboards, and e
 Current state:
 
 - `/api/services/manifest` exposes process type, status, health path, app endpoints, instances, and reachability metadata.
+- The manifest includes a small contract block plus structured reachability fields for endpoint scope, instance scope, exposure, and routability.
 - `norn services` renders endpoint/instance reachability in a `REACH` column.
 
 Planned work:
 
-- Finish `/api/services/manifest` and add tests for the manifest schema. The first schema test now covers ContextDB-style web plus review-worker specs.
-- Distinguish app-level endpoints from process-level reachability. The manifest now only attaches app endpoints to service processes.
-- Mark service processes, worker processes, cron jobs, and functions with explicit process type metadata.
-- Avoid giving a worker or cron process a public endpoint inherited from the app unless that endpoint is actually routable to it.
 - Document the manifest contract for agents and MCP/tool discovery.
 
 ### Deploy Provenance
@@ -45,9 +42,9 @@ Norn can deploy from a local working tree fallback, but local dirty builds curre
 Planned work:
 
 - Detect dirty local trees during deploy.
-- Record dirty state and changed-file summary in the deployment record and saga. The first slice records a `source.provenance` saga event for clone, local-copy, and local-fallback sources.
+- Record dirty state and changed-file summary in the deployment record and saga.
 - Use an image tag or metadata suffix that makes local dirty builds obvious. Local dirty builds now append `-dirty` to the image tag's commit segment.
-- Show dirty/deployed provenance in `norn app`, `norn status`, and the UI. `norn app` now surfaces the latest deployment status, image tag, resolved commit, and saga id; `norn status` shows latest image and commit columns.
+- Show dirty/deployed provenance in `norn app`, `norn status`, `norn ops platform`, and the UI. `norn app` now surfaces the latest deployment status, image tag, resolved commit, and saga id; `norn status` shows latest image, commit, source kind, and dirty state.
 - Preserve the exact commit SHA and build timestamp for every deployed image.
 
 ### Networking Truth
@@ -92,6 +89,8 @@ Planned work:
 - Add retention policy and pruning.
 - Restore now requires explicit CLI confirmation with `--yes`, the API requires `confirm=true`, and restore responses include database, snapshot, commit, and restored-at receipt data.
 - Snapshot listing now parses provenance from snapshot filenames, including source commit and RFC3339 created time even when database names include underscores.
+- Snapshot retention uses `snapshots.keep` from `infraspec.yaml` when a command does not pass `--keep`.
+- `norn ops platform` reports per-app snapshot counts, keep policy, and over-limit totals.
 - Emit snapshot creation receipts into the saga log and add optional pre-restore snapshots.
 - Show snapshot provenance in app detail and deploy history.
 
@@ -103,10 +102,10 @@ Current state:
 
 - Norn records recent API access events in memory after auth middleware runs.
 - `norn access [--limit N]` shows method, path, status, client IP, Cloudflare Access metadata, and duration without request bodies or authorization headers.
+- `norn ops platform` and the UI Platform tab summarize recent access, service exposure, OTEL/Grafana configuration, dirty deployments, secret hygiene, and snapshot retention.
 
 Planned work:
 
-- Add a traffic/access page in the UI.
 - Explore a shared gateway for app-level request logging.
 - Add temporary access grants, such as expiring JWT links or expiring IP allowlist entries.
 
@@ -137,14 +136,17 @@ Current state:
 - ContextDB records durable review worker summaries through its own API surface.
 - `norn contextdb review` summarizes queue counts and recent worker runs for a namespace.
 - `norn contextdb policy` reads the live worker policy report, including dry-run state, policy preset, evaluator, provider key readiness, allowed actions, mutation status, warnings, and errors.
+- `norn contextdb evaluator-smoke` runs the deployed evaluator smoke in the review-worker allocation without mutating claims.
+- `norn contextdb audit` lists recent append-only feedback events for mutation review.
 - `norn contextdb worker-runs <namespace>` surfaces those summaries in Norn CLI table or JSON output.
 - `norn contextdb worker-runs <namespace> --decisions` shows dry-run decision details, including action, applied flag, node id, and reason.
+- `norn ops contextdb` and the UI Ops tab combine app health, worker policy, provider rollout gates, queue size, worker runs, audit events, snapshots, secrets, and deployments.
 
 Planned work:
 
 - Decide when a namespace is allowed to move from dry-run to conservative execution using the live policy report as the gate.
-- Surface ContextDB worker run summaries as Norn metrics, Norn saga events, or UI output.
-- Add worker logs and dry-run decision reports to the UI.
+- Promote the provider gate into an explicit guarded rollout action once a non-rules evaluator is configured.
+- Add worker logs and per-decision drill-down to the UI.
 
 ### Evaluators
 

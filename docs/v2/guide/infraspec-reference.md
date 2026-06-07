@@ -18,6 +18,7 @@ Complete field reference for `infraspec.yaml`.
 | `infrastructure` | [Infrastructure](#infrastructure) | no | Backing service declarations |
 | `endpoints` | [Endpoint](#endpoints)[] | no | External URL mappings |
 | `volumes` | [VolumeSpec](#volumes)[] | no | Host volume mounts |
+| `snapshots` | [SnapshotPolicy](#snapshotpolicy) | no | Snapshot retention defaults |
 
 ## Process
 
@@ -120,6 +121,14 @@ Each key in the `processes` map is the process name. The process type is inferre
 | `mount` | string | — | Mount path inside the container |
 | `readOnly` | bool | `false` | Mount as read-only |
 
+## SnapshotPolicy
+
+| Field | Type | Default | Description |
+|-------|------|---------|-------------|
+| `keep` | int | `3` | Newest local snapshots to keep when retention runs without `--keep` |
+| `preRestore` | bool | `false` | Reserved flag for creating a safety snapshot before restore |
+| `retentionEnabled` | bool | `false` | Reserved flag for scheduled retention automation |
+
 ## Defaults Summary
 
 | Setting | Default Value |
@@ -130,6 +139,7 @@ Each key in the `processes` map is the process name. The process type is inferre
 | `health.timeout` | 5s |
 | `scaling.min` | 1 |
 | `repo.branch` | main |
+| `snapshots.keep` | 3 |
 
 ## Full Example
 
@@ -182,6 +192,9 @@ env:
 infrastructure:
   postgres:
     database: signal_sideband
+
+snapshots:
+  keep: 5
 
 endpoints:
   - url: signal.example.com

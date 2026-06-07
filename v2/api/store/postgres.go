@@ -2,6 +2,7 @@ package store
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"time"
 
@@ -56,10 +57,19 @@ func Migrate(db *DB) error {
 			image_tag   TEXT NOT NULL,
 			saga_id     TEXT NOT NULL,
 			status      TEXT NOT NULL DEFAULT 'running',
+			source_kind TEXT NOT NULL DEFAULT '',
+			source_ref  TEXT NOT NULL DEFAULT '',
+			source_dirty BOOLEAN NOT NULL DEFAULT false,
+			source_changes JSONB NOT NULL DEFAULT '[]',
 			started_at  TIMESTAMPTZ NOT NULL DEFAULT now(),
 			finished_at TIMESTAMPTZ
 		);
 		CREATE INDEX IF NOT EXISTS idx_deployments_app ON deployments(app, started_at DESC);
+
+		ALTER TABLE deployments ADD COLUMN IF NOT EXISTS source_kind TEXT NOT NULL DEFAULT '';
+		ALTER TABLE deployments ADD COLUMN IF NOT EXISTS source_ref TEXT NOT NULL DEFAULT '';
+		ALTER TABLE deployments ADD COLUMN IF NOT EXISTS source_dirty BOOLEAN NOT NULL DEFAULT false;
+		ALTER TABLE deployments ADD COLUMN IF NOT EXISTS source_changes JSONB NOT NULL DEFAULT '[]';
 
 		CREATE TABLE IF NOT EXISTS cron_states (
 			app        TEXT NOT NULL,
@@ -86,10 +96,11 @@ func Migrate(db *DB) error {
 }
 
 func (db *DB) InsertDeployment(ctx context.Context, d *model.Deployment) error {
+	changes, _ := json.Marshal(d.SourceChanges)
 	_, err := db.Pool.Exec(ctx,
-		`INSERT INTO deployments (id, app, commit_sha, image_tag, saga_id, status, started_at)
-		 VALUES ($1, $2, $3, $4, $5, $6, $7)`,
-		d.ID, d.App, d.CommitSHA, d.ImageTag, d.SagaID, d.Status, d.StartedAt,
+		`INSERT INTO deployments (id, app, commit_sha, image_tag, saga_id, status, source_kind, source_ref, source_dirty, source_changes, started_at)
+		 VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)`,
+		d.ID, d.App, d.CommitSHA, d.ImageTag, d.SagaID, d.Status, d.SourceKind, d.SourceRef, d.SourceDirty, changes, d.StartedAt,
 	)
 	return err
 }
@@ -108,6 +119,7 @@ func (db *DB) UpdateDeployment(ctx context.Context, id string, status model.Depl
 }
 
 func (db *DB) UpdateDeploymentResult(ctx context.Context, d *model.Deployment) error {
+	changes, _ := json.Marshal(d.SourceChanges)
 	var finished *time.Time
 	if d.Status == model.StatusDeployed || d.Status == model.StatusFailed {
 		now := time.Now()
@@ -115,9 +127,9 @@ func (db *DB) UpdateDeploymentResult(ctx context.Context, d *model.Deployment) e
 	}
 	_, err := db.Pool.Exec(ctx,
 		`UPDATE deployments
-		 SET status = $1, commit_sha = $2, image_tag = $3, finished_at = $4
-		 WHERE id = $5`,
-		d.Status, d.CommitSHA, d.ImageTag, finished, d.ID,
+		 SET status = $1, commit_sha = $2, image_tag = $3, source_kind = $4, source_ref = $5, source_dirty = $6, source_changes = $7, finished_at = $8
+		 WHERE id = $9`,
+		d.Status, d.CommitSHA, d.ImageTag, d.SourceKind, d.SourceRef, d.SourceDirty, changes, finished, d.ID,
 	)
 	return err
 }
@@ -126,7 +138,7 @@ func (db *DB) ListDeployments(ctx context.Context, app string, limit int) ([]mod
 	if limit <= 0 {
 		limit = 20
 	}
-	query := `SELECT id, app, commit_sha, image_tag, saga_id, status, started_at, finished_at
+	query := `SELECT id, app, commit_sha, image_tag, saga_id, status, source_kind, source_ref, source_dirty, source_changes, started_at, finished_at
 		 FROM deployments`
 	args := []interface{}{}
 	if app != "" {
@@ -146,9 +158,11 @@ func (db *DB) ListDeployments(ctx context.Context, app string, limit int) ([]mod
 	var deployments []model.Deployment
 	for rows.Next() {
 		var d model.Deployment
-		if err := rows.Scan(&d.ID, &d.App, &d.CommitSHA, &d.ImageTag, &d.SagaID, &d.Status, &d.StartedAt, &d.FinishedAt); err != nil {
+		var changes []byte
+		if err := rows.Scan(&d.ID, &d.App, &d.CommitSHA, &d.ImageTag, &d.SagaID, &d.Status, &d.SourceKind, &d.SourceRef, &d.SourceDirty, &changes, &d.StartedAt, &d.FinishedAt); err != nil {
 			return nil, err
 		}
+		_ = json.Unmarshal(changes, &d.SourceChanges)
 		deployments = append(deployments, d)
 	}
 	return deployments, nil
@@ -156,16 +170,18 @@ func (db *DB) ListDeployments(ctx context.Context, app string, limit int) ([]mod
 
 func (db *DB) LastSuccessfulDeployment(ctx context.Context, app, excludeID string) (*model.Deployment, error) {
 	var d model.Deployment
+	var changes []byte
 	err := db.Pool.QueryRow(ctx,
-		`SELECT id, app, commit_sha, image_tag, saga_id, status, started_at, finished_at
+		`SELECT id, app, commit_sha, image_tag, saga_id, status, source_kind, source_ref, source_dirty, source_changes, started_at, finished_at
 		 FROM deployments
 		 WHERE app = $1 AND status = 'deployed' AND id != $2
 		 ORDER BY started_at DESC LIMIT 1`,
 		app, excludeID,
-	).Scan(&d.ID, &d.App, &d.CommitSHA, &d.ImageTag, &d.SagaID, &d.Status, &d.StartedAt, &d.FinishedAt)
+	).Scan(&d.ID, &d.App, &d.CommitSHA, &d.ImageTag, &d.SagaID, &d.Status, &d.SourceKind, &d.SourceRef, &d.SourceDirty, &changes, &d.StartedAt, &d.FinishedAt)
 	if err != nil {
 		return nil, err
 	}
+	_ = json.Unmarshal(changes, &d.SourceChanges)
 	return &d, nil
 }
 

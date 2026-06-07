@@ -226,6 +226,40 @@ bin/norn scale <app> <n>     # scale up/down
 bin/norn logs <app>          # stream allocation logs
 ```
 
+### v2 safe upgrade
+
+When Norn is running as the local LaunchAgent `com.norn.api`, upgrade only the API/CLI binaries and built UI. Do not use `make down` unless you intend to stop Nomad and Consul too.
+
+```bash
+cd /Users/0xadb/projects/norn
+
+stamp=$(date +%Y%m%dT%H%M%S)
+mkdir -p /Users/0xadb/go/bin/norn-backups/$stamp
+cp -p /Users/0xadb/go/bin/norn-api /Users/0xadb/go/bin/norn-backups/$stamp/
+cp -p /Users/0xadb/go/bin/norn /Users/0xadb/go/bin/norn-backups/$stamp/
+
+cd v2/ui && pnpm build
+cd /Users/0xadb/projects/norn/v2 && make build
+
+install -m 0755 bin/norn-api /Users/0xadb/go/bin/norn-api
+install -m 0755 bin/norn /Users/0xadb/go/bin/norn
+
+launchctl kickstart -k gui/$(id -u)/com.norn.api
+norn version
+norn ops platform
+```
+
+Rollback is just as direct:
+
+```bash
+backup=/Users/0xadb/go/bin/norn-backups/YYYYMMDDTHHMMSS
+install -m 0755 "$backup/norn-api" /Users/0xadb/go/bin/norn-api
+install -m 0755 "$backup/norn" /Users/0xadb/go/bin/norn
+launchctl kickstart -k gui/$(id -u)/com.norn.api
+```
+
+See [docs/v2/operations/upgrading.md](docs/v2/operations/upgrading.md) for the full runbook.
+
 ### v2 infraspec format
 
 ```yaml

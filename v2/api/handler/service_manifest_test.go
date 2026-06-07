@@ -76,6 +76,9 @@ endpoints:
 	if web.Metadata["networkMode"] != "local" {
 		t.Fatalf("web networkMode = %q, want local", web.Metadata["networkMode"])
 	}
+	if web.Reachability.EndpointScope != "local" || !web.Reachability.Routable {
+		t.Fatalf("web reachability = %+v, want local routable", web.Reachability)
+	}
 
 	worker := entries["review-worker"]
 	if worker.Type != "worker" {
@@ -89,6 +92,9 @@ endpoints:
 	}
 	if worker.Metadata["endpointScope"] != "none" {
 		t.Fatalf("worker endpointScope = %q, want none", worker.Metadata["endpointScope"])
+	}
+	if worker.Reachability.Exposure != "internal" {
+		t.Fatalf("worker exposure = %q, want internal", worker.Reachability.Exposure)
 	}
 
 	cron := entries["nightly"]

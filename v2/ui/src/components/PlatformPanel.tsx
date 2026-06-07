@@ -1,0 +1,244 @@
+import { useEffect, useState } from 'react'
+import { apiUrl, fetchOpts } from '../lib/api.ts'
+
+interface PlatformSummary {
+  generatedAt: string
+  networkMode?: string
+  services: {
+    total: number
+    public: number
+    private: number
+    local: number
+    internal: number
+    byType: Record<string, number>
+    byStatus: Record<string, number>
+  }
+  deployments: {
+    recent: Array<{
+      app: string
+      commitSha: string
+      imageTag: string
+      status: string
+      sourceKind?: string
+      sourceDirty?: boolean
+      sourceChanges?: string[]
+      startedAt: string
+    }>
+    dirty: Array<{
+      app: string
+      commitSha: string
+      imageTag: string
+      sourceChanges?: string[]
+    }>
+    failed: number
+    successful: number
+  }
+  secrets: {
+    ok: number
+    needsAttention: number
+    apps: Array<{
+      app: string
+      ok: boolean
+      missingEncrypted: string[]
+      encryptedUndeclared: string[]
+      plainEnvWarnings: string[]
+    }>
+  }
+  snapshots: Array<{
+    app: string
+    database: string
+    keep: number
+    count: number
+    overLimit: number
+    latest?: { timestamp: string; commitSha?: string }
+  }>
+  access: {
+    totalRecent: number
+    byStatus: Record<string, number>
+    byClientIp: Record<string, number>
+    recent: Array<{
+      timestamp: string
+      method: string
+      path: string
+      status: number
+      clientIp?: string
+      cfAccessEmail?: string
+      durationMs: number
+    }>
+  }
+  observability: {
+    enabled: boolean
+    logsEnabled: boolean
+    logFormat: string
+    serviceName?: string
+    otlpEndpoint?: string
+  }
+  warnings?: string[]
+}
+
+export function PlatformPanel() {
+  const [summary, setSummary] = useState<PlatformSummary | null>(null)
+  const [error, setError] = useState<string | null>(null)
+
+  useEffect(() => {
+    let cancelled = false
+    async function load() {
+      try {
+        const res = await fetch(apiUrl('/api/ops/platform'), fetchOpts)
+        if (!res.ok) throw new Error(await res.text())
+        const data = await res.json()
+        if (!cancelled) {
+          setSummary(data)
+          setError(null)
+        }
+      } catch (err) {
+        if (!cancelled) setError(String(err))
+      }
+    }
+    load()
+    const interval = setInterval(load, 15000)
+    return () => {
+      cancelled = true
+      clearInterval(interval)
+    }
+  }, [])
+
+  if (error) return <div className="error-banner"><strong>Platform error</strong>{error}</div>
+  if (!summary) return <div className="ops-panel"><div className="ops-empty">Loading platform operations...</div></div>
+
+  const snapshots = summary.snapshots ?? []
+  const recentDeployments = summary.deployments.recent ?? []
+  const dirtyDeployments = summary.deployments.dirty ?? []
+  const accessEvents = summary.access.recent ?? []
+  const secretTone = summary.secrets.needsAttention > 0 ? 'warn' : 'ok'
+  const dirtyTone = dirtyDeployments.length > 0 ? 'warn' : 'ok'
+  const snapshotTone = snapshots.some((s) => s.overLimit > 0) ? 'warn' : 'ok'
+
+  return (
+    <div className="ops-panel">
+      <div className="ops-header">
+        <div>
+          <h2>Norn Platform</h2>
+          <p>{summary.networkMode || 'network unknown'} &middot; generated {formatTime(summary.generatedAt)}</p>
+        </div>
+        <span className={`ops-status ${summary.observability.enabled ? 'ok' : 'warn'}`}>
+          {summary.observability.enabled ? 'otel enabled' : 'otel disabled'}
+        </span>
+      </div>
+
+      <div className="ops-metrics">
+        <Metric label="Services" value={String(summary.services.total)} />
+        <Metric label="Public" value={String(summary.services.public)} tone={summary.services.public > 0 ? 'warn' : 'ok'} />
+        <Metric label="Dirty Deploys" value={String(dirtyDeployments.length)} tone={dirtyTone} />
+        <Metric label="Secrets" value={`${summary.secrets.ok}/${summary.secrets.ok + summary.secrets.needsAttention}`} tone={secretTone} />
+        <Metric label="Snapshots" value={String(snapshots.length)} tone={snapshotTone} />
+        <Metric label="Access" value={String(summary.access.totalRecent)} />
+      </div>
+
+      <div className="ops-two">
+        <section className="ops-section">
+          <h3>Observability</h3>
+          <div className="ops-kv">
+            <span>enabled</span><strong>{String(summary.observability.enabled)}</strong>
+            <span>logs</span><strong>{String(summary.observability.logsEnabled)}</strong>
+            <span>format</span><strong>{summary.observability.logFormat}</strong>
+            <span>service</span><strong>{summary.observability.serviceName || '-'}</strong>
+            <span>otlp</span><strong>{summary.observability.otlpEndpoint || '-'}</strong>
+          </div>
+        </section>
+
+        <section className="ops-section">
+          <h3>Service Exposure</h3>
+          <div className="ops-kv">
+            <span>public</span><strong>{summary.services.public}</strong>
+            <span>private</span><strong>{summary.services.private}</strong>
+            <span>local</span><strong>{summary.services.local}</strong>
+            <span>internal</span><strong>{summary.services.internal}</strong>
+            <span>types</span><strong>{joinCounts(summary.services.byType)}</strong>
+          </div>
+        </section>
+      </div>
+
+      <section className="ops-section">
+        <h3>Snapshot Lifecycle</h3>
+        {snapshots.length > 0 ? (
+          <div className="ops-table">
+            <div className="ops-row ops-row-head">
+              <span>App</span><span>Database</span><span>Count</span><span>Keep</span><span>Over</span><span>Latest</span><span>Commit</span>
+            </div>
+            {snapshots.map((snapshot) => (
+              <div className="ops-row" key={`${snapshot.app}:${snapshot.database}`}>
+                <span>{snapshot.app}</span><span>{snapshot.database}</span><span>{snapshot.count}</span><span>{snapshot.keep}</span><span>{snapshot.overLimit}</span><span>{snapshot.latest?.timestamp || '-'}</span><span>{short(snapshot.latest?.commitSha)}</span>
+              </div>
+            ))}
+          </div>
+        ) : <div className="ops-empty">No snapshot-backed apps found</div>}
+      </section>
+
+      <section className="ops-section">
+        <h3>Recent Deployments</h3>
+        {recentDeployments.length > 0 ? (
+          <div className="ops-table">
+            <div className="ops-row ops-row-head ops-row-wide">
+              <span>App</span><span>Status</span><span>Commit</span><span>Source</span><span>Image</span><span>Started</span><span>Changes</span>
+            </div>
+            {recentDeployments.slice(0, 8).map((deployment) => (
+              <div className="ops-row ops-row-wide" key={`${deployment.app}:${deployment.startedAt}`}>
+                <span>{deployment.app}</span><span>{deployment.status}</span><span>{short(deployment.commitSha)}</span><span>{deployment.sourceKind || '-'}{deployment.sourceDirty ? '*' : ''}</span><span>{deployment.imageTag || '-'}</span><span>{formatTime(deployment.startedAt)}</span><span>{deployment.sourceChanges?.length ?? 0}</span>
+              </div>
+            ))}
+          </div>
+        ) : <div className="ops-empty">No deployments recorded</div>}
+      </section>
+
+      <section className="ops-section">
+        <h3>Access</h3>
+        {accessEvents.length > 0 ? (
+          <div className="ops-table">
+            <div className="ops-row ops-row-head">
+              <span>Time</span><span>Status</span><span>Method</span><span>Path</span><span>Client</span><span>User</span><span>MS</span>
+            </div>
+            {accessEvents.slice(0, 8).map((event, i) => (
+              <div className="ops-row" key={`${event.timestamp}:${event.path}:${i}`}>
+                <span>{formatTime(event.timestamp)}</span><span>{event.status}</span><span>{event.method}</span><span>{event.path}</span><span>{event.clientIp || '-'}</span><span>{event.cfAccessEmail || '-'}</span><span>{event.durationMs}</span>
+              </div>
+            ))}
+          </div>
+        ) : <div className="ops-empty">No access events recorded</div>}
+      </section>
+
+      {(summary.warnings && summary.warnings.length > 0) && (
+        <section className="ops-section ops-warnings">
+          <h3>Warnings</h3>
+          {summary.warnings.map((warning) => <p key={warning}>{warning}</p>)}
+        </section>
+      )}
+    </div>
+  )
+}
+
+function Metric({ label, value, tone }: { label: string; value: string; tone?: 'ok' | 'warn' | 'bad' }) {
+  return (
+    <div className={`ops-metric ${tone || ''}`}>
+      <span>{label}</span>
+      <strong>{value}</strong>
+    </div>
+  )
+}
+
+function formatTime(value?: string) {
+  if (!value) return '-'
+  const date = new Date(value)
+  if (Number.isNaN(date.getTime())) return value
+  return date.toLocaleString()
+}
+
+function short(value?: string) {
+  if (!value) return '-'
+  return value.length > 10 ? value.slice(0, 10) : value
+}
+
+function joinCounts(values: Record<string, number>) {
+  const parts = Object.entries(values).map(([key, value]) => `${key} ${value}`)
+  return parts.length > 0 ? parts.join(', ') : '-'
+}
