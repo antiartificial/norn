@@ -13,6 +13,8 @@ import { ExecTerminal } from './components/ExecTerminal.tsx'
 import { SnapshotsPanel } from './components/SnapshotsPanel.tsx'
 import { CronPanel } from './components/CronPanel.tsx'
 import { FunctionPanel } from './components/FunctionPanel.tsx'
+import { OpsPanel } from './components/OpsPanel.tsx'
+import { PlatformPanel } from './components/PlatformPanel.tsx'
 import type { AppStatus, WSEvent } from './types/index.ts'
 
 export interface StepEvent {
@@ -64,7 +66,7 @@ export function App() {
   const [cronApp, setCronApp] = useState<string | null>(null)
   const [functionApp, setFunctionApp] = useState<string | null>(null)
   const [filter, setFilter] = useState<'all' | 'healthy' | 'unhealthy'>('all')
-  const [view, setView] = useState<'apps' | 'history' | 'stats'>('apps')
+  const [view, setView] = useState<'apps' | 'history' | 'stats' | 'platform' | 'ops'>('apps')
   const [apiVersion, setApiVersion] = useState<string | null>(null)
   const [activeIngress, setActiveIngress] = useState<Set<string>>(new Set())
 
@@ -191,13 +193,13 @@ export function App() {
           <span className="header-tagline">control plane</span>
         </div>
         <div className="header-right">
-          {(['apps', 'history', 'stats'] as const).map(v => (
+          {(['apps', 'history', 'stats', 'platform', 'ops'] as const).map(v => (
             <button
               key={v}
               className={`filter-btn ${view === v ? 'active' : ''}`}
               onClick={() => setView(v)}
             >
-              {v === 'apps' ? 'Apps' : v === 'history' ? 'History' : 'Stats'}
+              {v === 'apps' ? 'Apps' : v === 'history' ? 'History' : v === 'stats' ? 'Stats' : v === 'platform' ? 'Platform' : 'ContextDB'}
             </button>
           ))}
           <StatusBar />
@@ -225,6 +227,10 @@ export function App() {
 
         {view === 'stats' ? (
           <StatsPanel />
+        ) : view === 'platform' ? (
+          <PlatformPanel />
+        ) : view === 'ops' ? (
+          <OpsPanel />
         ) : view === 'history' ? (
           <DeployHistory
             apps={apps.map(a => a.spec.name)}

@@ -15,6 +15,7 @@ import (
 	"github.com/go-chi/chi/v5"
 	"github.com/go-chi/chi/v5/middleware"
 	"github.com/go-chi/cors"
+	"go.opentelemetry.io/contrib/instrumentation/net/http/otelhttp"
 
 	"norn/v2/api/auth"
 	"norn/v2/api/cloudflared"
@@ -23,6 +24,7 @@ import (
 	"norn/v2/api/handler"
 	"norn/v2/api/hub"
 	"norn/v2/api/nomad"
+	"norn/v2/api/observe"
 	"norn/v2/api/pipeline"
 	"norn/v2/api/saga"
 	"norn/v2/api/secrets"
@@ -32,6 +34,20 @@ import (
 
 func main() {
 	cfg := config.Load()
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	shutdownOTEL, err := observe.Setup(ctx, observe.ConfigFromEnv("norn-api"))
+	cancel()
+	if err != nil {
+		log.Printf("WARNING: otel setup: %v", err)
+	}
+	observe.ConfigureLogging("norn-api")
+	defer func() {
+		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cancel()
+		if shutdownOTEL != nil {
+			_ = shutdownOTEL(ctx)
+		}
+	}()
 
 	cloudflared.SetConfigPath(cfg.CloudflaredConfig)
 
@@ -162,6 +178,9 @@ func main() {
 
 		r.Get("/stats", h.Stats)
 		r.Get("/services/manifest", h.ServiceManifest)
+		r.Get("/ops/platform", h.PlatformOps)
+		r.Get("/ops/contextdb", h.ContextDBOps)
+		r.Post("/ops/contextdb/feedback/{eventID}/rollback", h.ContextDBRollbackFeedback)
 		r.Get("/apps", h.ListApps)
 		r.Get("/deployments", h.ListDeployments)
 		r.Get("/validate", h.ValidateAll)
@@ -185,6 +204,7 @@ func main() {
 			r.Put("/secrets", h.UpdateSecrets)
 			r.Delete("/secrets/{key}", h.DeleteSecret)
 			r.Get("/snapshots", h.ListSnapshots)
+			r.Post("/snapshots/retention", h.ApplySnapshotRetention)
 			r.Post("/snapshots/{ts}/restore", h.RestoreSnapshot)
 			r.Get("/cron/history", h.CronHistory)
 			r.Post("/cron/trigger", h.CronTrigger)
@@ -209,7 +229,7 @@ func main() {
 
 	srv := &http.Server{
 		Addr:    cfg.BindAddr + ":" + cfg.Port,
-		Handler: r,
+		Handler: otelhttp.NewHandler(r, "norn.api"),
 	}
 
 	go func() {
@@ -224,9 +244,9 @@ func main() {
 	<-quit
 
 	log.Println("shutting down...")
-	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
-	defer cancel()
-	srv.Shutdown(ctx)
+	shutdownCtx, shutdownCancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer shutdownCancel()
+	srv.Shutdown(shutdownCtx)
 }
 
 func bearerAuth(token string) func(http.Handler) http.Handler {

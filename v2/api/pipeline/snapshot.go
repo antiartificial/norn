@@ -30,5 +30,10 @@ func (p *Pipeline) snapshot(ctx context.Context, st *state, sg *saga.Saga) error
 	if err != nil {
 		return fmt.Errorf("pg_dump: %s", string(out))
 	}
+	_ = sg.Log(ctx, "snapshot.created", fmt.Sprintf("snapshot created: %s", filename), map[string]string{
+		"database":  db,
+		"snapshot":  filename,
+		"commitSha": st.commitSHA,
+	})
 	return nil
 }

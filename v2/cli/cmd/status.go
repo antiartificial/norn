@@ -36,8 +36,10 @@ var statusCmd = &cobra.Command{
 		for _, deployment := range deployments {
 			if _, ok := latestByApp[deployment.App]; !ok {
 				latestByApp[deployment.App] = apiDeployment{
-					imageTag:  deployment.ImageTag,
-					commitSHA: deployment.CommitSHA,
+					imageTag:    deployment.ImageTag,
+					commitSHA:   deployment.CommitSHA,
+					sourceKind:  deployment.SourceKind,
+					sourceDirty: deployment.SourceDirty,
 				}
 			}
 		}
@@ -51,6 +53,7 @@ var statusCmd = &cobra.Command{
 			style.TableHeader.Render("ALLOCS")+"\t"+
 			style.TableHeader.Render("IMAGE")+"\t"+
 			style.TableHeader.Render("COMMIT")+"\t"+
+			style.TableHeader.Render("SOURCE")+"\t"+
 			style.TableHeader.Render("PROCESSES"))
 
 		for _, app := range apps {
@@ -81,14 +84,22 @@ var statusCmd = &cobra.Command{
 			if commit == "" {
 				commit = "-"
 			}
+			source := deployment.sourceKind
+			if source == "" {
+				source = "-"
+			}
+			if deployment.sourceDirty {
+				source += "*"
+			}
 
-			fmt.Fprintf(w, "%s %s\t%s\t%s\t%s\t%s\t%s\n",
+			fmt.Fprintf(w, "%s %s\t%s\t%s\t%s\t%s\t%s\t%s\n",
 				dot,
 				style.Bold.Render(name),
 				app.NomadStatus,
 				allocStr,
 				image,
 				commit,
+				source,
 				strings.Join(procs, ", "),
 			)
 		}
@@ -98,6 +109,8 @@ var statusCmd = &cobra.Command{
 }
 
 type apiDeployment struct {
-	imageTag  string
-	commitSHA string
+	imageTag    string
+	commitSHA   string
+	sourceKind  string
+	sourceDirty bool
 }

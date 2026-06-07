@@ -105,3 +105,7 @@ norn rollback <app>
 ```
 
 Finds the most recent successful deployment and re-deploys its image tag. This skips the clone/build/test steps and goes straight to submit with the previous image.
+
+## Upgrading Norn Itself
+
+When upgrading the Norn control plane, restart only the Norn API LaunchAgent and leave Nomad, Consul, Postgres, and hosted apps running. See [Upgrading Norn](/v2/operations/upgrading) for the safe local upgrade and rollback runbook.

@@ -65,9 +65,11 @@ func (h *Handler) SecretsStatusApp(w http.ResponseWriter, r *http.Request) {
 
 func (h *Handler) secretStatus(spec *model.InfraSpec) SecretStatus {
 	declared := normalizeSecretKeys(spec.Secrets)
-	encrypted, err := h.secrets.List(spec.App)
-	if err != nil {
-		encrypted = []string{}
+	encrypted := []string{}
+	if h.secrets != nil {
+		if keys, err := h.secrets.List(spec.App); err == nil {
+			encrypted = keys
+		}
 	}
 	encrypted = normalizeSecretKeys(encrypted)
 

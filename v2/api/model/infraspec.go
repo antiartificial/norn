@@ -29,6 +29,7 @@ type InfraSpec struct {
 	Infrastructure *Infrastructure    `yaml:"infrastructure,omitempty" json:"infrastructure,omitempty"`
 	Endpoints      []Endpoint         `yaml:"endpoints,omitempty" json:"endpoints,omitempty"`
 	Volumes        []VolumeSpec       `yaml:"volumes,omitempty" json:"volumes,omitempty"`
+	Snapshots      *SnapshotPolicy    `yaml:"snapshots,omitempty" json:"snapshots,omitempty"`
 	Deploy         bool               `yaml:"deploy,omitempty" json:"deploy,omitempty"`
 }
 
@@ -88,6 +89,12 @@ type RepoSpec struct {
 type BuildSpec struct {
 	Dockerfile string `yaml:"dockerfile,omitempty" json:"dockerfile,omitempty"`
 	Test       string `yaml:"test,omitempty" json:"test,omitempty"`
+}
+
+type SnapshotPolicy struct {
+	Keep             int  `yaml:"keep,omitempty" json:"keep,omitempty"`
+	PreRestore       bool `yaml:"preRestore,omitempty" json:"preRestore,omitempty"`
+	RetentionEnabled bool `yaml:"retentionEnabled,omitempty" json:"retentionEnabled,omitempty"`
 }
 
 type Infrastructure struct {

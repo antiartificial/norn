@@ -122,6 +122,68 @@ processes:
 	}
 }
 
+func TestSnapshotRetentionUsesSpecPolicyDefault(t *testing.T) {
+	root := t.TempDir()
+	appsDir := filepath.Join(root, "apps")
+	appDir := filepath.Join(appsDir, "contextdb")
+	if err := os.MkdirAll(filepath.Join(root, "snapshots"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(appDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	spec := []byte(`
+name: contextdb
+deploy: true
+snapshots:
+  keep: 2
+infrastructure:
+  postgres:
+    database: hermes_contextdb
+processes:
+  web:
+    port: 7701
+`)
+	if err := os.WriteFile(filepath.Join(appDir, "infraspec.yaml"), spec, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	for _, name := range []string{
+		"hermes_contextdb_aaaaaa_20260605T171500.dump",
+		"hermes_contextdb_bbbbbb_20260606T171500.dump",
+		"hermes_contextdb_cccccc_20260607T171500.dump",
+	} {
+		if err := os.WriteFile(filepath.Join(root, "snapshots", name), []byte("dump"), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	oldWD, err := os.Getwd()
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer os.Chdir(oldWD)
+	if err := os.Chdir(root); err != nil {
+		t.Fatal(err)
+	}
+
+	h := &Handler{cfg: &config.Config{AppsDir: appsDir}}
+	req := httptest.NewRequest(http.MethodPost, "/api/apps/contextdb/snapshots/retention", nil)
+	req = withAppID(req, "contextdb")
+	rec := httptest.NewRecorder()
+
+	h.ApplySnapshotRetention(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d body=%s", rec.Code, rec.Body.String())
+	}
+	var receipt snapshotRetentionReceipt
+	if err := json.Unmarshal(rec.Body.Bytes(), &receipt); err != nil {
+		t.Fatal(err)
+	}
+	if receipt.Keep != 2 || len(receipt.Kept) != 2 || len(receipt.WouldPrune) != 1 {
+		t.Fatalf("receipt = %+v, want keep=2 kept=2 wouldPrune=1", receipt)
+	}
+}
+
 func withAppID(r *http.Request, appID string) *http.Request {
 	ctx := chi.NewRouteContext()
 	ctx.URLParams.Add("id", appID)

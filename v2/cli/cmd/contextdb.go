@@ -31,6 +31,19 @@ var (
 
 	contextDBPolicyWorkerURL string
 	contextDBPolicyJSON      bool
+
+	contextDBAuditNamespace string
+	contextDBAuditMode      string
+	contextDBAuditLimit     int
+	contextDBAuditAfter     string
+	contextDBAuditWebURL    string
+
+	contextDBSmokeJSON bool
+
+	contextDBRollbackNamespace string
+	contextDBRollbackMode      string
+	contextDBRollbackReason    string
+	contextDBRollbackOwner     string
 )
 
 func init() {
@@ -38,6 +51,9 @@ func init() {
 	contextDBCmd.AddCommand(contextDBReviewCmd)
 	contextDBCmd.AddCommand(contextDBWorkerRunsCmd)
 	contextDBCmd.AddCommand(contextDBPolicyCmd)
+	contextDBCmd.AddCommand(contextDBAuditCmd)
+	contextDBCmd.AddCommand(contextDBEvaluatorSmokeCmd)
+	contextDBCmd.AddCommand(contextDBRollbackCmd)
 	contextDBReviewCmd.Flags().StringVar(&contextDBReviewNamespace, "namespace", "hermes-agent", "ContextDB namespace")
 	contextDBReviewCmd.Flags().StringVar(&contextDBReviewMode, "mode", "agent_memory", "ContextDB mode")
 	contextDBReviewCmd.Flags().IntVar(&contextDBReviewLimit, "limit", 50, "Maximum review queue items to inspect")
@@ -50,6 +66,16 @@ func init() {
 	contextDBWorkerRunsCmd.Flags().StringVar(&contextDBWorkerRunsWebURL, "web-url", "", "Override ContextDB web URL")
 	contextDBPolicyCmd.Flags().StringVar(&contextDBPolicyWorkerURL, "worker-url", "", "Override ContextDB review worker URL")
 	contextDBPolicyCmd.Flags().BoolVar(&contextDBPolicyJSON, "json", false, "Print raw JSON")
+	contextDBAuditCmd.Flags().StringVar(&contextDBAuditNamespace, "namespace", "hermes-agent", "ContextDB namespace")
+	contextDBAuditCmd.Flags().StringVar(&contextDBAuditMode, "mode", "agent_memory", "ContextDB mode")
+	contextDBAuditCmd.Flags().IntVar(&contextDBAuditLimit, "limit", 20, "Maximum audit events to show")
+	contextDBAuditCmd.Flags().StringVar(&contextDBAuditAfter, "after", "", "Only show events after this RFC3339 timestamp")
+	contextDBAuditCmd.Flags().StringVar(&contextDBAuditWebURL, "web-url", "", "Override ContextDB web URL")
+	contextDBEvaluatorSmokeCmd.Flags().BoolVar(&contextDBSmokeJSON, "json", false, "Print raw JSON")
+	contextDBRollbackCmd.Flags().StringVar(&contextDBRollbackNamespace, "namespace", "hermes-agent", "ContextDB namespace")
+	contextDBRollbackCmd.Flags().StringVar(&contextDBRollbackMode, "mode", "agent_memory", "ContextDB mode")
+	contextDBRollbackCmd.Flags().StringVar(&contextDBRollbackReason, "reason", "operator rollback through norn", "Rollback reason")
+	contextDBRollbackCmd.Flags().StringVar(&contextDBRollbackOwner, "owner", "norn", "Rollback owner")
 }
 
 var contextDBCmd = &cobra.Command{
@@ -118,6 +144,54 @@ var contextDBPolicyCmd = &cobra.Command{
 	},
 }
 
+var contextDBAuditCmd = &cobra.Command{
+	Use:   "audit",
+	Short: "List recent ContextDB claim mutation audit events",
+	RunE: func(cmd *cobra.Command, args []string) error {
+		events, err := fetchContextDBFeedbackEvents(contextDBAuditNamespace, contextDBAuditMode, contextDBAuditAfter, contextDBAuditLimit, contextDBAuditWebURL)
+		if err != nil {
+			return err
+		}
+		printContextDBAuditEvents(contextDBAuditNamespace, events)
+		return nil
+	},
+}
+
+var contextDBEvaluatorSmokeCmd = &cobra.Command{
+	Use:   "evaluator-smoke",
+	Short: "Run the deployed ContextDB review worker evaluator smoke",
+	RunE: func(cmd *cobra.Command, args []string) error {
+		report, raw, err := runContextDBEvaluatorSmoke()
+		if err != nil {
+			return err
+		}
+		if contextDBSmokeJSON {
+			fmt.Println(raw)
+			return nil
+		}
+		printContextDBEvaluatorSmoke(report)
+		return nil
+	},
+}
+
+var contextDBRollbackCmd = &cobra.Command{
+	Use:   "rollback-feedback <event-id>",
+	Short: "Rollback a ContextDB feedback event through the Norn-hosted web service",
+	Args:  cobra.ExactArgs(1),
+	RunE: func(cmd *cobra.Command, args []string) error {
+		receipt, err := client.ContextDBRollbackFeedback(args[0], contextDBRollbackNamespace, contextDBRollbackMode, contextDBRollbackReason, contextDBRollbackOwner)
+		if err != nil {
+			return err
+		}
+		fmt.Println(style.SuccessBox.Render("feedback rollback recorded"))
+		fmt.Printf("  %s %s\n", style.Key.Render("rollback"), receipt.EventID)
+		fmt.Printf("  %s %s\n", style.Key.Render("event"), receipt.RolledBackEventID)
+		fmt.Printf("  %s %s\n", style.Key.Render("node"), receipt.NodeID)
+		fmt.Printf("  %s %.2f -> %.2f\n", style.Key.Render("confidence"), receipt.PreviousConfidence, receipt.RestoredConfidence)
+		return nil
+	},
+}
+
 type contextDBWorkerStatus struct {
 	Status string                `json:"status"`
 	Worker string                `json:"worker"`
@@ -162,6 +236,42 @@ type contextDBPolicyTotals struct {
 	Errors              int `json:"errors"`
 }
 
+type contextDBFeedbackEventsResponse struct {
+	Events []contextDBFeedbackEvent `json:"events"`
+}
+
+type contextDBFeedbackEvent struct {
+	EventID     string  `json:"event_id"`
+	Namespace   string  `json:"namespace"`
+	NodeID      string  `json:"node_id"`
+	NodeVersion int64   `json:"node_version"`
+	Action      string  `json:"action"`
+	Confidence  float64 `json:"confidence"`
+	Reason      string  `json:"reason"`
+	TxTime      string  `json:"tx_time"`
+}
+
+type contextDBEvaluatorSmokeReport struct {
+	GeneratedAt string `json:"generated_at"`
+	DryRun      bool   `json:"dry_run"`
+	Namespaces  []struct {
+		Namespace          string   `json:"namespace"`
+		Mode               string   `json:"mode"`
+		PolicyPreset       string   `json:"policy_preset"`
+		DryRun             bool     `json:"dry_run"`
+		Evaluator          string   `json:"evaluator"`
+		AllowedActions     []string `json:"allowed_actions"`
+		DisagreesWithRules bool     `json:"disagrees_with_rules"`
+		OK                 bool     `json:"ok"`
+		Error              string   `json:"error"`
+	} `json:"namespaces"`
+	Totals struct {
+		Checked int `json:"checked"`
+		Passed  int `json:"passed"`
+		Failed  int `json:"failed"`
+	} `json:"totals"`
+}
+
 func fetchContextDBWorkerStatus(workerURL string) (*contextDBWorkerStatus, error) {
 	cfg := contextDBSmokeConfig{WorkerURL: workerURL}
 	if err := discoverContextDBURLs(&cfg); err != nil {
@@ -173,6 +283,68 @@ func fetchContextDBWorkerStatus(workerURL string) (*contextDBWorkerStatus, error
 		return nil, fmt.Errorf("worker policy status: %w", err)
 	}
 	return &status, nil
+}
+
+func fetchContextDBFeedbackEvents(namespace, mode, after string, limit int, webURL string) ([]contextDBFeedbackEvent, error) {
+	if strings.TrimSpace(after) != "" {
+		if _, err := time.Parse(time.RFC3339, strings.TrimSpace(after)); err != nil {
+			return nil, fmt.Errorf("invalid --after timestamp: %w", err)
+		}
+	}
+	cfg := contextDBSmokeConfig{WebURL: webURL}
+	if err := discoverContextDBURLs(&cfg); err != nil {
+		return nil, err
+	}
+
+	values := url.Values{}
+	if mode != "" {
+		values.Set("mode", mode)
+	}
+	if after != "" {
+		values.Set("after", after)
+	}
+	path := fmt.Sprintf("%s/v1/namespaces/%s/feedback/events", cfg.WebURL, url.PathEscape(namespace))
+	if encoded := values.Encode(); encoded != "" {
+		path += "?" + encoded
+	}
+	var out contextDBFeedbackEventsResponse
+	httpClient := &http.Client{Timeout: 10 * time.Second}
+	if err := contextDBGetJSON(httpClient, path, &out); err != nil {
+		return nil, fmt.Errorf("feedback events: %w", err)
+	}
+	if limit > 0 && len(out.Events) > limit {
+		out.Events = out.Events[:limit]
+	}
+	return out.Events, nil
+}
+
+func runContextDBEvaluatorSmoke() (*contextDBEvaluatorSmokeReport, string, error) {
+	conn, err := client.Exec("contextdb", "review-worker", []string{
+		"/contextdb", "worker", "review",
+		"--config", "/etc/contextdb/review-worker.hermes.json",
+		"--smoke-evaluator",
+		"--report",
+	})
+	if err != nil {
+		return nil, "", fmt.Errorf("evaluator smoke exec: %w", err)
+	}
+	defer conn.Close()
+	stdout, stderr, err := captureExec(conn)
+	if err != nil {
+		if strings.TrimSpace(stderr) != "" {
+			return nil, "", fmt.Errorf("evaluator smoke: %w: %s", err, strings.TrimSpace(stderr))
+		}
+		return nil, "", fmt.Errorf("evaluator smoke: %w", err)
+	}
+	raw, err := extractJSONObject(stdout)
+	if err != nil {
+		return nil, "", fmt.Errorf("evaluator smoke report: %w", err)
+	}
+	var report contextDBEvaluatorSmokeReport
+	if err := json.Unmarshal([]byte(raw), &report); err != nil {
+		return nil, "", fmt.Errorf("evaluator smoke report: %w", err)
+	}
+	return &report, raw, nil
 }
 
 func printContextDBWorkerPolicy(status *contextDBWorkerStatus) {
@@ -235,6 +407,68 @@ func printContextDBWorkerPolicy(status *contextDBWorkerStatus) {
 			fmt.Printf("  %s %s\n", style.Warning.Render("warning"), warning)
 		}
 	}
+}
+
+func printContextDBAuditEvents(namespace string, events []contextDBFeedbackEvent) {
+	fmt.Println(style.Title.Render("contextdb audit for " + namespace))
+	if len(events) == 0 {
+		fmt.Println(style.DimText.Render("no feedback events found"))
+		return
+	}
+	w := tabwriter.NewWriter(os.Stdout, 0, 0, 2, ' ', 0)
+	fmt.Fprintln(w, style.TableHeader.Render("TIME")+"\t"+
+		style.TableHeader.Render("ACTION")+"\t"+
+		style.TableHeader.Render("CONF")+"\t"+
+		style.TableHeader.Render("NODE")+"\t"+
+		style.TableHeader.Render("REASON"))
+	for _, event := range events {
+		txTime := event.TxTime
+		if ts, err := time.Parse(time.RFC3339Nano, event.TxTime); err == nil {
+			txTime = ts.Local().Format("2006-01-02 15:04:05")
+		}
+		nodeID := event.NodeID
+		if len(nodeID) > 8 {
+			nodeID = nodeID[:8]
+		}
+		fmt.Fprintf(w, "%s\t%s\t%.2f\t%s\t%s\n", txTime, event.Action, event.Confidence, nodeID, event.Reason)
+	}
+	w.Flush()
+}
+
+func printContextDBEvaluatorSmoke(report *contextDBEvaluatorSmokeReport) {
+	fmt.Println(style.Title.Render("contextdb evaluator smoke"))
+	fmt.Printf("checked=%d passed=%d failed=%d dry_run=%t\n\n",
+		report.Totals.Checked,
+		report.Totals.Passed,
+		report.Totals.Failed,
+		report.DryRun,
+	)
+	if len(report.Namespaces) == 0 {
+		fmt.Println(style.DimText.Render("no namespace evaluators checked"))
+		return
+	}
+	w := tabwriter.NewWriter(os.Stdout, 0, 0, 2, ' ', 0)
+	fmt.Fprintln(w, style.TableHeader.Render("NAMESPACE")+"\t"+
+		style.TableHeader.Render("MODE")+"\t"+
+		style.TableHeader.Render("PRESET")+"\t"+
+		style.TableHeader.Render("EVALUATOR")+"\t"+
+		style.TableHeader.Render("DRY")+"\t"+
+		style.TableHeader.Render("DIFF")+"\t"+
+		style.TableHeader.Render("OK")+"\t"+
+		style.TableHeader.Render("ERROR"))
+	for _, ns := range report.Namespaces {
+		fmt.Fprintf(w, "%s\t%s\t%s\t%s\t%t\t%t\t%t\t%s\n",
+			ns.Namespace,
+			ns.Mode,
+			ns.PolicyPreset,
+			ns.Evaluator,
+			ns.DryRun,
+			ns.DisagreesWithRules,
+			ns.OK,
+			ns.Error,
+		)
+	}
+	w.Flush()
 }
 
 func fetchContextDBReviewQueue(namespace, mode string, limit int, webURL string) (*contextDBReviewQueueResponse, error) {

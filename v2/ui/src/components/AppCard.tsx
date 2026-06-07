@@ -17,6 +17,14 @@ function repoWebURL(repo: RepoSpec): string | null {
   return null
 }
 
+function endpointHostname(value: string): string {
+  try {
+    return new URL(value).hostname
+  } catch {
+    return value.split('/')[0]
+  }
+}
+
 function CopyBadge({ url, icon, label, region, className }: {
   url: string, icon: string, label: string, region?: string, className: string
 }) {
@@ -70,7 +78,7 @@ function EndpointBadges({ spec, allocations, activeIngress, appId, onToggleEndpo
   return (
     <div className="app-card-endpoints">
       {external.map(ep => {
-        const hostname = new URL(ep.url).hostname
+        const hostname = endpointHostname(ep.url)
         const isActive = activeIngress?.has(hostname) ?? false
         return (
           <span key={ep.url} className="endpoint-group">

@@ -123,6 +123,9 @@ Inspect ContextDB-specific integration state from Norn.
 norn contextdb review
 norn contextdb policy
 norn contextdb policy --json
+norn contextdb audit
+norn contextdb evaluator-smoke
+norn contextdb rollback-feedback <event-id> --reason "bad feedback"
 norn contextdb review --namespace hermes-agent
 norn contextdb worker-runs <namespace>
 norn contextdb worker-runs <namespace> --decisions
@@ -132,6 +135,12 @@ norn contextdb worker-runs <namespace> --json
 `norn contextdb review` summarizes the review queue and recent worker runs for a namespace. It defaults to `hermes-agent` in `agent_memory` mode.
 
 `norn contextdb policy` discovers the review worker instance from the service manifest and reads its live `/v1/status` policy report. The report is value-safe: it shows dry-run state, policy preset, evaluator type, whether provider keys are required/configured, allowed actions, mutation status, warnings, and errors without exposing secret values.
+
+`norn contextdb audit` reads recent feedback events from ContextDB so operators can inspect claim validation, refutation, stale marking, and worker-applied mutation receipts.
+
+`norn contextdb evaluator-smoke` runs the deployed review worker's configured evaluator smoke test inside the `review-worker` allocation. It does not open the database or mutate claims; provider-backed evaluators use their configured provider/webhook and report missing keys, policy blocks, malformed decisions, or rate-limit failures before rollout.
+
+`norn contextdb rollback-feedback` proxies a ContextDB feedback rollback through the hosted web service and prints the rollback receipt. Use the feedback event id from `norn contextdb audit`, `norn ops contextdb`, or the Ops UI.
 
 `norn contextdb worker-runs` discovers the ContextDB web endpoint from the service manifest and lists durable review worker summaries for a namespace. The table includes generated time, cycle id, mode, evaluator, dry-run flag, scanned/applied/skipped/error counts, and decision count. Use `--decisions` to include each decision's type, action, applied flag, node id, and reason.
 
@@ -143,6 +152,19 @@ norn contextdb worker-runs <namespace> --json
 | `--decisions` | `false` | Print decision details below each run |
 | `--json` | `false` | Print raw JSON |
 | `--web-url` | manifest endpoint | Override ContextDB web URL |
+
+## ops
+
+Show operator rollups for hosted services.
+
+```bash
+norn ops platform
+norn ops contextdb
+```
+
+`norn ops platform` calls Norn's platform operations endpoint and summarizes service exposure, recent deployment provenance, dirty local builds, secret hygiene, snapshot retention state, recent access status buckets, and OpenTelemetry/Grafana configuration.
+
+`norn ops contextdb` calls Norn's ContextDB operations endpoint and summarizes app health, web/worker reachability, value-safe worker policy, provider rollout gate, review queue size, recent worker runs, recent feedback audit events, snapshots, secrets, and recent deployments.
 
 ## health
 
@@ -228,12 +250,20 @@ norn snapshots <app>
 
 # Restore a snapshot
 norn snapshots <app> restore <timestamp> --yes
+
+# Preview retention
+norn snapshots <app> retention --keep 3
+norn snapshots <app> retention
+
+# Execute retention
+norn snapshots <app> retention --keep 3 --execute --yes
 ```
 
 | Subcommand | Description |
 |------------|-------------|
 | (none) | List available snapshots with timestamps, source commit, created time, size, and filename |
 | `restore` | Restore from a snapshot at the given timestamp; requires `--yes` and prints a restore receipt |
+| `retention` | Preview newest-N retention without deleting snapshots; defaults to `snapshots.keep` from the app spec or 3; add `--execute --yes` to prune and print a receipt |
 
 ## cron
 

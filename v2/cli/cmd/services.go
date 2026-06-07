@@ -108,6 +108,15 @@ func printServices(manifest *api.ServiceManifest) {
 }
 
 func renderServiceReachability(svc api.ServiceManifestEntry) string {
+	if svc.Reachability.EndpointScope != "" || svc.Reachability.InstanceScope != "" {
+		if svc.Reachability.EndpointScope == "none" {
+			return "internal/" + emptyDash(svc.Reachability.InstanceScope)
+		}
+		if svc.Reachability.EndpointScope == svc.Reachability.InstanceScope {
+			return svc.Reachability.EndpointScope
+		}
+		return svc.Reachability.EndpointScope + "/" + emptyDash(svc.Reachability.InstanceScope)
+	}
 	endpointScope := svc.Metadata["endpointScope"]
 	instanceScope := svc.Metadata["instanceScope"]
 	if endpointScope == "" {
