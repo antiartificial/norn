@@ -6,6 +6,7 @@ import (
 
 	"github.com/go-chi/chi/v5"
 
+	"norn/api/beacon"
 	"norn/api/config"
 	ncron "norn/api/cron"
 	"norn/api/function"
@@ -32,9 +33,10 @@ type Handler struct {
 	scheduler        *ncron.Scheduler
 	funcExecutor     *function.Executor
 	s3Client         *storage.Client
+	beacon           *beacon.Service
 }
 
-func New(db *store.DB, kube *k8s.Client, ws *hub.Hub, cfg *config.Config, scheduler *ncron.Scheduler, funcExecutor *function.Executor, s3Client *storage.Client) *Handler {
+func New(db *store.DB, kube *k8s.Client, ws *hub.Hub, cfg *config.Config, scheduler *ncron.Scheduler, funcExecutor *function.Executor, s3Client *storage.Client, beaconSvc *beacon.Service) *Handler {
 	return &Handler{
 		db:           db,
 		kube:         kube,
@@ -43,10 +45,12 @@ func New(db *store.DB, kube *k8s.Client, ws *hub.Hub, cfg *config.Config, schedu
 		scheduler:    scheduler,
 		funcExecutor: funcExecutor,
 		s3Client:     s3Client,
+		beacon:       beaconSvc,
 		pipeline: &pipeline.Pipeline{
 			DB:          db,
 			Kube:        kube,
 			WS:          ws,
+			Beacon:      beaconSvc,
 			Scheduler:   scheduler,
 			AppsDir:     cfg.AppsDir,
 			GitToken:    cfg.GitToken,

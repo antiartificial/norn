@@ -7,6 +7,7 @@ import (
 
 	"github.com/go-chi/chi/v5"
 
+	"norn/v2/api/beacon"
 	"norn/v2/api/config"
 	"norn/v2/api/consul"
 	"norn/v2/api/hub"
@@ -27,13 +28,14 @@ type Handler struct {
 	ws        *hub.Hub
 	cfg       *config.Config
 	pipeline  *pipeline.Pipeline
+	beacon    *beacon.Service
 	secrets   *secrets.Manager
 	sagaStore saga.Store
 	s3        *storage.Client
 	access    *AccessLog
 }
 
-func New(db *store.DB, n *nomad.Client, c *consul.Client, ws *hub.Hub, cfg *config.Config, p *pipeline.Pipeline, sec *secrets.Manager, ss saga.Store, s3 *storage.Client) *Handler {
+func New(db *store.DB, n *nomad.Client, c *consul.Client, ws *hub.Hub, cfg *config.Config, p *pipeline.Pipeline, beaconSvc *beacon.Service, sec *secrets.Manager, ss saga.Store, s3 *storage.Client) *Handler {
 	return &Handler{
 		db:        db,
 		nomad:     n,
@@ -41,6 +43,7 @@ func New(db *store.DB, n *nomad.Client, c *consul.Client, ws *hub.Hub, cfg *conf
 		ws:        ws,
 		cfg:       cfg,
 		pipeline:  p,
+		beacon:    beaconSvc,
 		secrets:   sec,
 		sagaStore: ss,
 		s3:        s3,

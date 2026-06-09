@@ -43,6 +43,28 @@ func TestRegistryURL(t *testing.T) {
 	}
 }
 
+func TestBeaconConfig(t *testing.T) {
+	t.Setenv("NORN_BEACON_ENVIRONMENT", "mini")
+	t.Setenv("NORN_BEACON_SINK_URL", "https://vigil.example.test/events")
+	t.Setenv("NORN_BEACON_SINK_KEY_ID", "norn-mini")
+	t.Setenv("NORN_BEACON_SINK_SECRET", "secret")
+
+	cfg := Load()
+
+	if cfg.BeaconEnvironment != "mini" {
+		t.Errorf("BeaconEnvironment = %q, want mini", cfg.BeaconEnvironment)
+	}
+	if cfg.BeaconSinkURL != "https://vigil.example.test/events" {
+		t.Errorf("BeaconSinkURL = %q", cfg.BeaconSinkURL)
+	}
+	if cfg.BeaconSinkKeyID != "norn-mini" {
+		t.Errorf("BeaconSinkKeyID = %q", cfg.BeaconSinkKeyID)
+	}
+	if cfg.BeaconSinkSecret != "secret" {
+		t.Errorf("BeaconSinkSecret = %q", cfg.BeaconSinkSecret)
+	}
+}
+
 func TestLoadFromEnv(t *testing.T) {
 	t.Setenv("NORN_PORT", "9999")
 	t.Setenv("NORN_DATABASE_URL", "postgres://test:test@db:5432/test_db")

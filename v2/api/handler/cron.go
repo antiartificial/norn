@@ -7,13 +7,14 @@ import (
 
 	"github.com/go-chi/chi/v5"
 
+	"norn/v2/api/model"
 	"norn/v2/api/nomad"
 )
 
 type cronHistoryEntry struct {
-	Process  string         `json:"process"`
-	Schedule string         `json:"schedule"`
-	Paused   bool           `json:"paused"`
+	Process  string          `json:"process"`
+	Schedule string          `json:"schedule"`
+	Paused   bool            `json:"paused"`
 	Runs     []nomad.CronRun `json:"runs"`
 }
 
@@ -91,6 +92,18 @@ func (h *Handler) CronTrigger(w http.ResponseWriter, r *http.Request) {
 		"status": "triggered",
 		"evalId": evalID,
 	})
+	h.emitBeacon(r.Context(), model.BeaconEvent{
+		App:       id,
+		Type:      "job.triggered",
+		Severity:  model.BeaconInfo,
+		Title:     fmt.Sprintf("%s %s job triggered", id, req.Process),
+		Body:      fmt.Sprintf("Cron process %s was triggered manually.", req.Process),
+		DedupeKey: fmt.Sprintf("%s:%s:cron", id, req.Process),
+		Metadata: map[string]interface{}{
+			"process": req.Process,
+			"evalId":  evalID,
+		},
+	})
 }
 
 func (h *Handler) CronPause(w http.ResponseWriter, r *http.Request) {
@@ -132,6 +145,18 @@ func (h *Handler) CronPause(w http.ResponseWriter, r *http.Request) {
 	h.db.UpsertCronState(r.Context(), id, req.Process, true, schedule)
 
 	writeJSON(w, map[string]string{"status": "paused"})
+	h.emitBeacon(r.Context(), model.BeaconEvent{
+		App:       id,
+		Type:      "job.paused",
+		Severity:  model.BeaconWarning,
+		Title:     fmt.Sprintf("%s %s job paused", id, req.Process),
+		Body:      fmt.Sprintf("Cron process %s was paused.", req.Process),
+		DedupeKey: fmt.Sprintf("%s:%s:cron", id, req.Process),
+		Metadata: map[string]interface{}{
+			"process":  req.Process,
+			"schedule": schedule,
+		},
+	})
 }
 
 func (h *Handler) CronResume(w http.ResponseWriter, r *http.Request) {
@@ -200,6 +225,19 @@ func (h *Handler) CronResume(w http.ResponseWriter, r *http.Request) {
 	h.db.UpsertCronState(r.Context(), id, req.Process, false, proc.Schedule)
 
 	writeJSON(w, map[string]string{"status": "resumed"})
+	h.emitBeacon(r.Context(), model.BeaconEvent{
+		App:       id,
+		Type:      "job.resumed",
+		Severity:  model.BeaconInfo,
+		Title:     fmt.Sprintf("%s %s job resumed", id, req.Process),
+		Body:      fmt.Sprintf("Cron process %s was resumed.", req.Process),
+		DedupeKey: fmt.Sprintf("%s:%s:cron", id, req.Process),
+		Metadata: map[string]interface{}{
+			"process":  req.Process,
+			"schedule": proc.Schedule,
+			"imageTag": imageTag,
+		},
+	})
 }
 
 func (h *Handler) CronUpdateSchedule(w http.ResponseWriter, r *http.Request) {
@@ -268,5 +306,18 @@ func (h *Handler) CronUpdateSchedule(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, map[string]string{
 		"status":   "updated",
 		"schedule": req.Schedule,
+	})
+	h.emitBeacon(r.Context(), model.BeaconEvent{
+		App:       id,
+		Type:      "job.schedule_updated",
+		Severity:  model.BeaconInfo,
+		Title:     fmt.Sprintf("%s %s schedule updated", id, req.Process),
+		Body:      fmt.Sprintf("Cron process %s schedule changed.", req.Process),
+		DedupeKey: fmt.Sprintf("%s:%s:cron", id, req.Process),
+		Metadata: map[string]interface{}{
+			"process":  req.Process,
+			"schedule": req.Schedule,
+			"imageTag": imageTag,
+		},
 	})
 }

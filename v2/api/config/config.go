@@ -26,6 +26,11 @@ type Config struct {
 	S3Region    string
 	S3UseSSL    bool
 
+	BeaconEnvironment string
+	BeaconSinkURL     string
+	BeaconSinkKeyID   string
+	BeaconSinkSecret  string
+
 	AllowedOrigins     string
 	CFAccessTeamDomain string
 	CFAccessAUD        string
@@ -55,6 +60,11 @@ func Load() *Config {
 		S3SecretKey: os.Getenv("NORN_S3_SECRET_KEY"),
 		S3Region:    envOr("NORN_S3_REGION", "auto"),
 		S3UseSSL:    os.Getenv("NORN_S3_USE_SSL") != "false",
+
+		BeaconEnvironment: envOr("NORN_BEACON_ENVIRONMENT", "mini"),
+		BeaconSinkURL:     os.Getenv("NORN_BEACON_SINK_URL"),
+		BeaconSinkKeyID:   os.Getenv("NORN_BEACON_SINK_KEY_ID"),
+		BeaconSinkSecret:  os.Getenv("NORN_BEACON_SINK_SECRET"),
 
 		AllowedOrigins:     os.Getenv("NORN_ALLOWED_ORIGINS"),
 		CFAccessTeamDomain: os.Getenv("NORN_CF_ACCESS_TEAM_DOMAIN"),

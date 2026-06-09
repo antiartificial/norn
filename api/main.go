@@ -17,17 +17,18 @@ import (
 	"github.com/go-chi/cors"
 
 	"norn/api/auth"
+	"norn/api/beacon"
 	"norn/api/config"
 	ncron "norn/api/cron"
 	"norn/api/dispatch"
 	"norn/api/function"
 	"norn/api/handler"
-	"norn/api/storage"
 	"norn/api/health"
 	"norn/api/hub"
 	"norn/api/k8s"
 	"norn/api/model"
 	"norn/api/runtime"
+	"norn/api/storage"
 	"norn/api/store"
 )
 
@@ -84,6 +85,16 @@ func main() {
 	ws := hub.New(allowedOrigins)
 	go ws.Run()
 
+	beaconSvc := beacon.New(db, ws, beacon.Config{
+		Environment: cfg.BeaconEnvironment,
+		SinkURL:     cfg.BeaconSinkURL,
+		SinkKeyID:   cfg.BeaconSinkKeyID,
+		SinkSecret:  cfg.BeaconSinkSecret,
+	})
+	if cfg.BeaconSinkURL != "" {
+		log.Println("beacon sink configured")
+	}
+
 	poller := &health.Poller{
 		DB:      db,
 		WS:      ws,
@@ -116,7 +127,7 @@ func main() {
 		log.Println("worker dispatch enabled")
 	}
 
-	scheduler := ncron.New(runner, db, ws)
+	scheduler := ncron.New(runner, db, ws, beaconSvc)
 	scheduler.Start()
 
 	// Discover apps and sync cron schedules
@@ -126,7 +137,7 @@ func main() {
 
 	funcExec := function.NewExecutor(runner, db, ws)
 
-	h := handler.New(db, kube, ws, cfg, scheduler, funcExec, s3Client)
+	h := handler.New(db, kube, ws, cfg, scheduler, funcExec, s3Client, beaconSvc)
 
 	r := chi.NewRouter()
 	r.Use(middleware.Logger)
@@ -163,6 +174,10 @@ func main() {
 		r.Get("/apps", h.ListApps)
 		r.Get("/validate", h.ValidateAllApps)
 		r.Get("/deployments", h.ListAllDeployments)
+		r.Get("/events", h.ListEvents)
+		r.Post("/events", h.CreateEvent)
+		r.Get("/events/sinks", h.EventSinks)
+		r.Post("/events/test", h.TestEvent)
 		r.Route("/apps/{id}", func(r chi.Router) {
 			r.Use(handler.ValidateAppID)
 			r.Get("/", h.GetApp)

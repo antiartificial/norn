@@ -4,7 +4,7 @@ SHELL := /bin/bash
 	consul-dev nomad-dev consul-server nomad-server \
 	up up-fed down logs
 
-VERSION ?= $(shell git rev-parse --short HEAD 2>/dev/null || echo "dev")
+VERSION ?= $(shell git describe --tags --always --dirty 2>/dev/null || echo "dev")
 
 dev: doctor
 	cd api && NORN_REGISTRY_URL=ghcr.io/antiartificial go run .

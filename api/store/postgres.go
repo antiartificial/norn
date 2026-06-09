@@ -142,6 +142,24 @@ func Migrate(db *DB) error {
 		);
 		CREATE INDEX IF NOT EXISTS idx_worker_tasks_worker ON worker_tasks(worker_id, created_at DESC);
 
+		CREATE TABLE IF NOT EXISTS beacon_events (
+			id          TEXT PRIMARY KEY,
+			source      TEXT NOT NULL DEFAULT 'norn',
+			app         TEXT NOT NULL DEFAULT '',
+			environment TEXT NOT NULL DEFAULT '',
+			type        TEXT NOT NULL,
+			severity    TEXT NOT NULL DEFAULT 'info',
+			title       TEXT NOT NULL,
+			body        TEXT NOT NULL DEFAULT '',
+			dedupe_key  TEXT NOT NULL DEFAULT '',
+			occurred_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+			metadata    JSONB NOT NULL DEFAULT '{}'
+		);
+		CREATE INDEX IF NOT EXISTS idx_beacon_events_time ON beacon_events(occurred_at DESC);
+		CREATE INDEX IF NOT EXISTS idx_beacon_events_app ON beacon_events(app, occurred_at DESC);
+		CREATE INDEX IF NOT EXISTS idx_beacon_events_type ON beacon_events(type, occurred_at DESC);
+		CREATE INDEX IF NOT EXISTS idx_beacon_events_dedupe ON beacon_events(dedupe_key, occurred_at DESC);
+
 		ALTER TABLE cluster_nodes ADD COLUMN IF NOT EXISTS capabilities TEXT[] DEFAULT '{}';
 		ALTER TABLE cluster_nodes ADD COLUMN IF NOT EXISTS last_heartbeat TIMESTAMPTZ;
 		ALTER TABLE cluster_nodes ADD COLUMN IF NOT EXISTS tasks_active INTEGER DEFAULT 0;
