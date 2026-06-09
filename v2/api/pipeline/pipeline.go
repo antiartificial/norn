@@ -8,6 +8,7 @@ import (
 
 	"github.com/google/uuid"
 
+	"norn/v2/api/beacon"
 	"norn/v2/api/hub"
 	"norn/v2/api/model"
 	"norn/v2/api/nomad"
@@ -26,6 +27,7 @@ type Pipeline struct {
 	GitToken    string
 	GitSSHKey   string
 	RegistryURL string
+	Beacon      *beacon.Service
 }
 
 type state struct {
@@ -122,6 +124,21 @@ func (p *Pipeline) run(ctx context.Context, spec *model.InfraSpec, deploy *model
 				"sagaId": sg.ID,
 				"error":  err.Error(),
 			}})
+			p.emitBeacon(ctx, model.BeaconEvent{
+				App:       spec.App,
+				Type:      "deploy.failed",
+				Severity:  model.BeaconCritical,
+				Title:     fmt.Sprintf("%s deploy failed", spec.App),
+				Body:      fmt.Sprintf("Deploy failed at %s: %v", s.name, err),
+				DedupeKey: fmt.Sprintf("%s:deploy", spec.App),
+				Metadata: map[string]interface{}{
+					"deploymentId": deploy.ID,
+					"sagaId":       sg.ID,
+					"commitSha":    st.commitSHA,
+					"imageTag":     st.imageTag,
+					"step":         s.name,
+				},
+			})
 			return
 		}
 
@@ -154,4 +171,29 @@ func (p *Pipeline) run(ctx context.Context, spec *model.InfraSpec, deploy *model
 		"sagaId":   sg.ID,
 		"imageTag": st.imageTag,
 	}})
+	p.emitBeacon(ctx, model.BeaconEvent{
+		App:       spec.App,
+		Type:      "deploy.succeeded",
+		Severity:  model.BeaconInfo,
+		Title:     fmt.Sprintf("%s deploy succeeded", spec.App),
+		Body:      fmt.Sprintf("Deployment %s completed successfully.", deploy.ID),
+		DedupeKey: fmt.Sprintf("%s:deploy", spec.App),
+		Metadata: map[string]interface{}{
+			"deploymentId": deploy.ID,
+			"sagaId":       sg.ID,
+			"commitSha":    st.commitSHA,
+			"imageTag":     st.imageTag,
+			"sourceKind":   st.sourceKind,
+			"sourceRef":    st.sourceRef,
+		},
+	})
+}
+
+func (p *Pipeline) emitBeacon(ctx context.Context, event model.BeaconEvent) {
+	if p.Beacon == nil {
+		return
+	}
+	if _, err := p.Beacon.Emit(ctx, event); err != nil {
+		log.Printf("pipeline: beacon emit %s/%s: %v", event.App, event.Type, err)
+	}
 }

@@ -84,6 +84,20 @@ Each execution shows:
 - Exit code
 - Nomad allocation ID
 
+## Beacon Events
+
+Cron control actions also emit Beacon events for notification and audit workflows:
+
+| Event | When |
+|-------|------|
+| `job.triggered` | A periodic process is manually triggered |
+| `job.paused` | A periodic process is paused |
+| `job.resumed` | A periodic process is resumed |
+| `job.schedule_updated` | A periodic process schedule changes |
+
+Use `/api/events?app=myapp&type=job.triggered` to inspect recent cron actions,
+or configure a Beacon sink to forward events to an external incident app.
+
 ## Multiple Cron Processes
 
 An app can have multiple cron processes — each becomes a separate Nomad periodic job:

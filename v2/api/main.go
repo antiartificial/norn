@@ -18,6 +18,7 @@ import (
 	"go.opentelemetry.io/contrib/instrumentation/net/http/otelhttp"
 
 	"norn/v2/api/auth"
+	"norn/v2/api/beacon"
 	"norn/v2/api/cloudflared"
 	"norn/v2/api/config"
 	"norn/v2/api/consul"
@@ -120,6 +121,16 @@ func main() {
 	ws := hub.New(allowedOrigins)
 	go ws.Run()
 
+	beaconSvc := beacon.New(db, ws, beacon.Config{
+		Environment: cfg.BeaconEnvironment,
+		SinkURL:     cfg.BeaconSinkURL,
+		SinkKeyID:   cfg.BeaconSinkKeyID,
+		SinkSecret:  cfg.BeaconSinkSecret,
+	})
+	if cfg.BeaconSinkURL != "" {
+		log.Println("beacon sink configured")
+	}
+
 	// Saga store
 	sagaStore := saga.NewPostgresStore(db.Pool)
 
@@ -137,10 +148,11 @@ func main() {
 		GitToken:    cfg.GitToken,
 		GitSSHKey:   cfg.GitSSHKey,
 		RegistryURL: cfg.RegistryURL,
+		Beacon:      beaconSvc,
 	}
 
 	// Handler
-	h := handler.New(db, nomadClient, consulClient, ws, cfg, pipe, sec, sagaStore, s3Client)
+	h := handler.New(db, nomadClient, consulClient, ws, cfg, pipe, beaconSvc, sec, sagaStore, s3Client)
 
 	// Router
 	r := chi.NewRouter()
@@ -183,6 +195,10 @@ func main() {
 		r.Post("/ops/contextdb/feedback/{eventID}/rollback", h.ContextDBRollbackFeedback)
 		r.Get("/apps", h.ListApps)
 		r.Get("/deployments", h.ListDeployments)
+		r.Get("/events", h.ListEvents)
+		r.Post("/events", h.CreateEvent)
+		r.Get("/events/sinks", h.EventSinks)
+		r.Post("/events/test", h.TestEvent)
 		r.Get("/validate", h.ValidateAll)
 		r.Get("/validate/{id}", h.ValidateApp)
 		r.Get("/secrets/status", h.SecretsStatusAll)

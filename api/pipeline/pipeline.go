@@ -10,6 +10,7 @@ import (
 	"strings"
 	"time"
 
+	"norn/api/beacon"
 	ncron "norn/api/cron"
 	"norn/api/hub"
 	"norn/api/k8s"
@@ -21,6 +22,7 @@ type Pipeline struct {
 	DB          *store.DB
 	Kube        *k8s.Client
 	WS          *hub.Hub
+	Beacon      *beacon.Service
 	Scheduler   *ncron.Scheduler
 	AppsDir     string
 	GitToken    string
@@ -76,6 +78,20 @@ func (p *Pipeline) Run(deploy *model.Deployment, spec *model.InfraSpec) {
 			deploy.Error = fmt.Sprintf("%s: %v", s.name, err)
 			p.DB.UpdateDeployment(ctx, deploy.ID, deploy.Status, deploy.Steps, deploy.Error)
 			p.WS.Broadcast(hub.Event{Type: "deploy.failed", AppID: deploy.App, Payload: deploy})
+			p.emitBeacon(ctx, model.BeaconEvent{
+				App:       deploy.App,
+				Type:      "deploy.failed",
+				Severity:  model.BeaconCritical,
+				Title:     fmt.Sprintf("%s deploy failed", deploy.App),
+				Body:      deploy.Error,
+				DedupeKey: fmt.Sprintf("%s:deploy", deploy.App),
+				Metadata: map[string]interface{}{
+					"deploymentId": deploy.ID,
+					"commitSha":    deploy.CommitSHA,
+					"imageTag":     deploy.ImageTag,
+					"step":         s.name,
+				},
+			})
 			// Clean up work dir on failure
 			if deploy.WorkDir != "" {
 				os.RemoveAll(deploy.WorkDir)
@@ -87,6 +103,28 @@ func (p *Pipeline) Run(deploy *model.Deployment, spec *model.InfraSpec) {
 	deploy.Status = model.StatusDeployed
 	p.DB.UpdateDeployment(ctx, deploy.ID, deploy.Status, deploy.Steps, "")
 	p.WS.Broadcast(hub.Event{Type: "deploy.completed", AppID: deploy.App, Payload: deploy})
+	p.emitBeacon(ctx, model.BeaconEvent{
+		App:       deploy.App,
+		Type:      "deploy.succeeded",
+		Severity:  model.BeaconInfo,
+		Title:     fmt.Sprintf("%s deploy succeeded", deploy.App),
+		Body:      fmt.Sprintf("Deployment %s completed successfully.", deploy.ID),
+		DedupeKey: fmt.Sprintf("%s:deploy", deploy.App),
+		Metadata: map[string]interface{}{
+			"deploymentId": deploy.ID,
+			"commitSha":    deploy.CommitSHA,
+			"imageTag":     deploy.ImageTag,
+		},
+	})
+}
+
+func (p *Pipeline) emitBeacon(ctx context.Context, event model.BeaconEvent) {
+	if p.Beacon == nil {
+		return
+	}
+	if _, err := p.Beacon.Emit(ctx, event); err != nil {
+		log.Printf("pipeline: beacon emit %s/%s: %v", event.App, event.Type, err)
+	}
 }
 
 type step struct {

@@ -10,6 +10,7 @@ import (
 
 	"github.com/robfig/cron/v3"
 
+	"norn/api/beacon"
 	"norn/api/hub"
 	"norn/api/model"
 	"norn/api/runtime"
@@ -24,10 +25,11 @@ type Scheduler struct {
 	specs   map[string]*model.InfraSpec // app → spec
 	entries map[string]cron.EntryID     // app → cron entry ID
 	images  map[string]string           // app → latest image tag
+	beacon  *beacon.Service
 	mu      sync.Mutex
 }
 
-func New(runner runtime.Runner, db *store.DB, ws *hub.Hub) *Scheduler {
+func New(runner runtime.Runner, db *store.DB, ws *hub.Hub, beaconSvc *beacon.Service) *Scheduler {
 	return &Scheduler{
 		cron:    cron.New(),
 		runner:  runner,
@@ -36,6 +38,7 @@ func New(runner runtime.Runner, db *store.DB, ws *hub.Hub) *Scheduler {
 		specs:   make(map[string]*model.InfraSpec),
 		entries: make(map[string]cron.EntryID),
 		images:  make(map[string]string),
+		beacon:  beaconSvc,
 	}
 }
 
@@ -76,6 +79,9 @@ func (s *Scheduler) Sync(specs []*model.InfraSpec) {
 		paused := false
 		if state != nil {
 			paused = state.Paused
+		}
+		if !paused {
+			s.emitMissedIfStale(spec, state)
 		}
 
 		// Persist state
@@ -133,6 +139,35 @@ func (s *Scheduler) addOrUpdate(app, schedule string, paused bool) {
 	log.Printf("cron: scheduled %s with '%s', next run: %s", app, schedule, entry.Next.Format(time.RFC3339))
 }
 
+func (s *Scheduler) emitMissedIfStale(spec *model.InfraSpec, state *model.CronState) {
+	if state == nil || state.NextRunAt == nil {
+		return
+	}
+
+	grace := time.Duration(spec.Timeout) * time.Second
+	if grace == 0 {
+		grace = 5 * time.Minute
+	}
+	if time.Now().Before(state.NextRunAt.Add(grace)) {
+		return
+	}
+
+	s.emitBeacon(model.BeaconEvent{
+		App:       spec.App,
+		Type:      "job.missed",
+		Severity:  model.BeaconCritical,
+		Title:     fmt.Sprintf("%s job missed its schedule", spec.App),
+		Body:      fmt.Sprintf("Scheduled job %s did not run after its expected time.", spec.App),
+		DedupeKey: fmt.Sprintf("%s:cron", spec.App),
+		Metadata: map[string]interface{}{
+			"schedule":     spec.Schedule,
+			"nextRunAt":    state.NextRunAt.Format(time.RFC3339),
+			"missedAfter":  grace.String(),
+			"detectedFrom": "scheduler.sync",
+		},
+	})
+}
+
 func (s *Scheduler) execute(app string) {
 	s.mu.Lock()
 	spec := s.specs[app]
@@ -179,6 +214,20 @@ func (s *Scheduler) execute(app string) {
 		"executionId": id,
 		"imageTag":    imageTag,
 	}})
+	s.emitBeacon(model.BeaconEvent{
+		App:       app,
+		Type:      "job.started",
+		Severity:  model.BeaconInfo,
+		Title:     fmt.Sprintf("%s job started", app),
+		Body:      fmt.Sprintf("Scheduled job %s started.", app),
+		DedupeKey: fmt.Sprintf("%s:cron", app),
+		Metadata: map[string]interface{}{
+			"executionId": id,
+			"imageTag":    imageTag,
+			"schedule":    spec.Schedule,
+			"timeout":     timeout.String(),
+		},
+	})
 
 	result, runErr := s.runner.Run(context.Background(), runtime.RunOpts{
 		Image:   imageTag,
@@ -223,6 +272,7 @@ func (s *Scheduler) execute(app string) {
 		"exitCode":    exitCode,
 		"durationMs":  durationMs,
 	}})
+	s.emitCronFinished(app, id, status, exitCode, durationMs, output)
 
 	// Update next run time
 	s.mu.Lock()
@@ -233,6 +283,66 @@ func (s *Scheduler) execute(app string) {
 		}
 	}
 	s.mu.Unlock()
+}
+
+func (s *Scheduler) emitCronFinished(app string, executionID int64, status model.CronExecStatus, exitCode int, durationMs int64, output string) {
+	if status == model.CronSucceeded {
+		s.emitBeacon(model.BeaconEvent{
+			App:       app,
+			Type:      "job.succeeded",
+			Severity:  model.BeaconInfo,
+			Title:     fmt.Sprintf("%s job succeeded", app),
+			Body:      fmt.Sprintf("Scheduled job %s completed successfully.", app),
+			DedupeKey: fmt.Sprintf("%s:cron", app),
+			Metadata: map[string]interface{}{
+				"executionId": executionID,
+				"exitCode":    exitCode,
+				"durationMs":  durationMs,
+			},
+		})
+		return
+	}
+
+	eventType := "job.failed"
+	title := fmt.Sprintf("%s job failed", app)
+	body := fmt.Sprintf("Scheduled job %s failed with exit code %d.", app, exitCode)
+	if status == model.CronTimedOut {
+		eventType = "job.hung"
+		title = fmt.Sprintf("%s job timed out", app)
+		body = fmt.Sprintf("Scheduled job %s exceeded its configured runtime.", app)
+	}
+
+	s.emitBeacon(model.BeaconEvent{
+		App:       app,
+		Type:      eventType,
+		Severity:  model.BeaconCritical,
+		Title:     title,
+		Body:      body,
+		DedupeKey: fmt.Sprintf("%s:cron", app),
+		Metadata: map[string]interface{}{
+			"executionId": executionID,
+			"status":      string(status),
+			"exitCode":    exitCode,
+			"durationMs":  durationMs,
+			"output":      truncate(output, 2000),
+		},
+	})
+}
+
+func (s *Scheduler) emitBeacon(event model.BeaconEvent) {
+	if s.beacon == nil {
+		return
+	}
+	if _, err := s.beacon.Emit(context.Background(), event); err != nil {
+		log.Printf("cron: beacon emit %s/%s: %v", event.App, event.Type, err)
+	}
+}
+
+func truncate(value string, max int) string {
+	if len(value) <= max {
+		return value
+	}
+	return value[:max]
 }
 
 func (s *Scheduler) UpdateSchedule(app, schedule string) error {

@@ -66,6 +66,7 @@ export default withMermaid(
             text: 'Operations',
             items: [
               { text: 'Deploying', link: '/v2/operations/deploying' },
+              { text: 'Beacon Events', link: '/v2/operations/beacon' },
               { text: 'Cron Jobs', link: '/v2/operations/cron' },
               { text: 'Snapshots', link: '/v2/operations/snapshots' },
               { text: 'Upgrading', link: '/v2/operations/upgrading' },

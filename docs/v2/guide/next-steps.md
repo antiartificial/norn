@@ -16,6 +16,7 @@ The current working feature set includes:
 - Cloudflared endpoint forge, teardown, and endpoint toggles
 - CLI workflows for status, app detail, deploy, logs, health, stats, secrets, snapshots, cron, invoke, saga, validate, forge, and endpoints
 - Saga event log and WebSocket deploy progress
+- Beacon operational events for cron, deploys, manual test events, and signed event sinks
 - Basic local snapshot listing and restore
 - Port conflict detection before Nomad submit
 
@@ -102,12 +103,18 @@ The next operational layer is to show who is reaching Norn-managed services and 
 
 Current state:
 
+- Norn records Beacon events for deploy successes, deploy failures, cron control actions, and manual test events.
+- `/api/events` lists durable Beacon events with app, type, severity, limit, and offset filters.
+- Beacon can forward signed event JSON to an external sink using `NORN_BEACON_*` environment variables.
 - Norn records recent API access events in memory after auth middleware runs.
 - `norn access [--limit N]` shows method, path, status, client IP, Cloudflare Access metadata, and duration without request bodies or authorization headers.
 - `norn ops platform` and the UI Platform tab summarize recent access, service exposure, OTEL/Grafana configuration, dirty deployments, secret hygiene, and snapshot retention.
 
 Planned work:
 
+- Add UI and CLI views for recent Beacon events.
+- Add Nomad allocation watchers for cron success, failure, hung, and missed-run Beacon events.
+- Add health-transition Beacon events once the health poller tracks previous state.
 - Explore a shared gateway for app-level request logging.
 - Add temporary access grants, such as expiring JWT links or expiring IP allowlist entries.
 
