@@ -40,6 +40,14 @@ func (h *Handler) Health(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
+	if h.redpanda != nil {
+		if err := h.redpanda.Healthy(r.Context()); err != nil {
+			services["redpanda"] = "down"
+		} else {
+			services["redpanda"] = "up"
+		}
+	}
+
 	// SOPS check: binary on PATH + age key file
 	if _, err := exec.LookPath("sops"); err != nil {
 		services["sops"] = "down"

@@ -103,11 +103,26 @@ type RepoSpec struct {
 
 type Infrastructure struct {
 	Postgres      *PostgresInfra      `json:"postgres,omitempty"`
+	Kafka         *KafkaInfra         `json:"kafka,omitempty"`
+	Redis         *RedisInfra         `json:"redis,omitempty"`
+	NATS          *NATSInfra          `json:"nats,omitempty"`
 	ObjectStorage *ObjectStorageInfra `json:"objectStorage,omitempty"`
 }
 
 type PostgresInfra struct {
 	Database string `json:"database"`
+}
+
+type KafkaInfra struct {
+	Topics []string `json:"topics,omitempty"`
+}
+
+type RedisInfra struct {
+	Namespace string `json:"namespace,omitempty"`
+}
+
+type NATSInfra struct {
+	Streams []string `json:"streams,omitempty"`
 }
 
 type ObjectStorageInfra struct {

@@ -1,6 +1,9 @@
 package config
 
-import "testing"
+import (
+	"strings"
+	"testing"
+)
 
 func TestBeaconConfig(t *testing.T) {
 	t.Setenv("NORN_BEACON_ENVIRONMENT", "mini")
@@ -44,5 +47,19 @@ func TestNetworkMode(t *testing.T) {
 				t.Fatalf("networkMode(%q) = %q, want %q", tt.in, got, tt.want)
 			}
 		})
+	}
+}
+
+func TestRedpandaConfig(t *testing.T) {
+	t.Setenv("NORN_REDPANDA_BROKERS", "127.0.0.1:9092, redpanda.service.consul:9092")
+	t.Setenv("NORN_RPK_PATH", "/opt/redpanda/bin/rpk")
+
+	cfg := Load()
+
+	if got, want := strings.Join(cfg.RedpandaBrokers, ","), "127.0.0.1:9092,redpanda.service.consul:9092"; got != want {
+		t.Fatalf("RedpandaBrokers = %q, want %q", got, want)
+	}
+	if cfg.RedpandaRPKPath != "/opt/redpanda/bin/rpk" {
+		t.Fatalf("RedpandaRPKPath = %q", cfg.RedpandaRPKPath)
 	}
 }

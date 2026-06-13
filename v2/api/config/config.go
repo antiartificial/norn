@@ -31,6 +31,9 @@ type Config struct {
 	GarageAdminEndpoint string
 	GarageAdminToken    string
 
+	RedpandaBrokers []string
+	RedpandaRPKPath string
+
 	BeaconEnvironment string
 	BeaconSinkURL     string
 	BeaconSinkKeyID   string
@@ -70,6 +73,9 @@ func Load() *Config {
 		GarageAdminEndpoint: os.Getenv("NORN_GARAGE_ADMIN_ENDPOINT"),
 		GarageAdminToken:    os.Getenv("NORN_GARAGE_ADMIN_TOKEN"),
 
+		RedpandaBrokers: splitCSV(os.Getenv("NORN_REDPANDA_BROKERS")),
+		RedpandaRPKPath: envOr("NORN_RPK_PATH", "rpk"),
+
 		BeaconEnvironment: envOr("NORN_BEACON_ENVIRONMENT", "mini"),
 		BeaconSinkURL:     os.Getenv("NORN_BEACON_SINK_URL"),
 		BeaconSinkKeyID:   os.Getenv("NORN_BEACON_SINK_KEY_ID"),
@@ -89,6 +95,17 @@ func envOr(key, fallback string) string {
 		return v
 	}
 	return fallback
+}
+
+func splitCSV(value string) []string {
+	var out []string
+	for _, part := range strings.Split(value, ",") {
+		part = strings.TrimSpace(part)
+		if part != "" {
+			out = append(out, part)
+		}
+	}
+	return out
 }
 
 func networkMode(mode string) string {

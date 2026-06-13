@@ -27,6 +27,7 @@ import (
 	"norn/v2/api/nomad"
 	"norn/v2/api/observe"
 	"norn/v2/api/pipeline"
+	"norn/v2/api/redpanda"
 	"norn/v2/api/saga"
 	"norn/v2/api/secrets"
 	"norn/v2/api/storage"
@@ -114,6 +115,22 @@ func main() {
 		}
 	}
 
+	// Redpanda / Kafka
+	var redpandaClient *redpanda.Client
+	if len(cfg.RedpandaBrokers) > 0 {
+		redpandaClient, err = redpanda.NewClient(redpanda.Config{
+			Brokers: cfg.RedpandaBrokers,
+			RPKPath: cfg.RedpandaRPKPath,
+		})
+		if err != nil {
+			log.Printf("WARNING: redpanda unavailable (%v)", err)
+		} else if err := redpandaClient.Healthy(context.Background()); err != nil {
+			log.Printf("WARNING: redpanda not healthy (%v)", err)
+		} else {
+			log.Println("redpanda connected at " + strings.Join(cfg.RedpandaBrokers, ","))
+		}
+	}
+
 	// WebSocket hub
 	allowedOrigins := []string{"http://localhost:5173", "http://localhost:3000"}
 	if cfg.AllowedOrigins != "" {
@@ -157,10 +174,11 @@ func main() {
 		NetworkMode: cfg.NetworkMode,
 		Beacon:      beaconSvc,
 		Storage:     s3Client,
+		Redpanda:    redpandaClient,
 	}
 
 	// Handler
-	h := handler.New(db, nomadClient, consulClient, ws, cfg, pipe, beaconSvc, sec, sagaStore, s3Client)
+	h := handler.New(db, nomadClient, consulClient, ws, cfg, pipe, beaconSvc, sec, sagaStore, s3Client, redpandaClient)
 
 	// Router
 	r := chi.NewRouter()

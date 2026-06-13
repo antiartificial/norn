@@ -127,6 +127,22 @@ var appCmd = &cobra.Command{
 			fmt.Println()
 		}
 
+		if app.Spec.Infrastructure != nil && app.Spec.Infrastructure.Kafka != nil {
+			fmt.Println(style.Subtitle.Render("  kafka"))
+			topics := app.Spec.Infrastructure.Kafka.Topics
+			if len(topics) == 0 {
+				fmt.Printf("  %s\n", style.DimText.Render("no declared topics"))
+			} else {
+				w := tabwriter.NewWriter(os.Stdout, 0, 0, 2, ' ', 0)
+				fmt.Fprintln(w, "  "+style.TableHeader.Render("TOPIC"))
+				for _, topic := range topics {
+					fmt.Fprintf(w, "  %s\n", style.Bold.Render(topic))
+				}
+				w.Flush()
+			}
+			fmt.Println()
+		}
+
 		manifest, err := client.ServiceManifest()
 		if err != nil {
 			return fmt.Errorf("failed to fetch service manifest: %w", err)

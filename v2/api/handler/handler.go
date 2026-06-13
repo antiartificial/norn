@@ -13,6 +13,7 @@ import (
 	"norn/v2/api/hub"
 	"norn/v2/api/nomad"
 	"norn/v2/api/pipeline"
+	"norn/v2/api/redpanda"
 	"norn/v2/api/saga"
 	"norn/v2/api/secrets"
 	"norn/v2/api/storage"
@@ -32,10 +33,11 @@ type Handler struct {
 	secrets   *secrets.Manager
 	sagaStore saga.Store
 	s3        *storage.Client
+	redpanda  *redpanda.Client
 	access    *AccessLog
 }
 
-func New(db *store.DB, n *nomad.Client, c *consul.Client, ws *hub.Hub, cfg *config.Config, p *pipeline.Pipeline, beaconSvc *beacon.Service, sec *secrets.Manager, ss saga.Store, s3 *storage.Client) *Handler {
+func New(db *store.DB, n *nomad.Client, c *consul.Client, ws *hub.Hub, cfg *config.Config, p *pipeline.Pipeline, beaconSvc *beacon.Service, sec *secrets.Manager, ss saga.Store, s3 *storage.Client, rp *redpanda.Client) *Handler {
 	return &Handler{
 		db:        db,
 		nomad:     n,
@@ -47,6 +49,7 @@ func New(db *store.DB, n *nomad.Client, c *consul.Client, ws *hub.Hub, cfg *conf
 		secrets:   sec,
 		sagaStore: ss,
 		s3:        s3,
+		redpanda:  rp,
 		access:    NewAccessLog(defaultAccessLogLimit),
 	}
 }
