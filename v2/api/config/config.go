@@ -25,6 +25,11 @@ type Config struct {
 	S3SecretKey string
 	S3Region    string
 	S3UseSSL    bool
+	S3Provider  string
+	S3ForcePath bool
+
+	GarageAdminEndpoint string
+	GarageAdminToken    string
 
 	BeaconEnvironment string
 	BeaconSinkURL     string
@@ -55,11 +60,15 @@ func Load() *Config {
 		NomadAddr:  envOr("NORN_NOMAD_ADDR", "http://localhost:4646"),
 		ConsulAddr: envOr("NORN_CONSUL_ADDR", "http://localhost:8500"),
 
-		S3Endpoint:  os.Getenv("NORN_S3_ENDPOINT"),
-		S3AccessKey: os.Getenv("NORN_S3_ACCESS_KEY"),
-		S3SecretKey: os.Getenv("NORN_S3_SECRET_KEY"),
-		S3Region:    envOr("NORN_S3_REGION", "auto"),
-		S3UseSSL:    os.Getenv("NORN_S3_USE_SSL") != "false",
+		S3Endpoint:          os.Getenv("NORN_S3_ENDPOINT"),
+		S3AccessKey:         os.Getenv("NORN_S3_ACCESS_KEY"),
+		S3SecretKey:         os.Getenv("NORN_S3_SECRET_KEY"),
+		S3Region:            envOr("NORN_S3_REGION", "auto"),
+		S3UseSSL:            os.Getenv("NORN_S3_USE_SSL") != "false",
+		S3Provider:          envOr("NORN_S3_PROVIDER", "s3"),
+		S3ForcePath:         os.Getenv("NORN_S3_FORCE_PATH_STYLE") == "true" || envOr("NORN_S3_PROVIDER", "s3") == "garage",
+		GarageAdminEndpoint: os.Getenv("NORN_GARAGE_ADMIN_ENDPOINT"),
+		GarageAdminToken:    os.Getenv("NORN_GARAGE_ADMIN_TOKEN"),
 
 		BeaconEnvironment: envOr("NORN_BEACON_ENVIRONMENT", "mini"),
 		BeaconSinkURL:     os.Getenv("NORN_BEACON_SINK_URL"),

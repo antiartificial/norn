@@ -83,10 +83,11 @@ type ServiceInstance struct {
 }
 
 type InfraSpec struct {
-	App       string             `json:"name"`
-	Processes map[string]Process `json:"processes"`
-	Repo      *RepoSpec          `json:"repo,omitempty"`
-	Endpoints []Endpoint         `json:"endpoints,omitempty"`
+	App            string             `json:"name"`
+	Processes      map[string]Process `json:"processes"`
+	Repo           *RepoSpec          `json:"repo,omitempty"`
+	Endpoints      []Endpoint         `json:"endpoints,omitempty"`
+	Infrastructure *Infrastructure    `json:"infrastructure,omitempty"`
 }
 
 type Process struct {
@@ -98,6 +99,28 @@ type Process struct {
 type RepoSpec struct {
 	URL    string `json:"url"`
 	Branch string `json:"branch,omitempty"`
+}
+
+type Infrastructure struct {
+	Postgres      *PostgresInfra      `json:"postgres,omitempty"`
+	ObjectStorage *ObjectStorageInfra `json:"objectStorage,omitempty"`
+}
+
+type PostgresInfra struct {
+	Database string `json:"database"`
+}
+
+type ObjectStorageInfra struct {
+	Provider string                `json:"provider,omitempty"`
+	Buckets  []ObjectStorageBucket `json:"buckets,omitempty"`
+}
+
+type ObjectStorageBucket struct {
+	Name   string `json:"name"`
+	Access string `json:"access,omitempty"`
+	Public bool   `json:"public,omitempty"`
+	Prefix string `json:"prefix,omitempty"`
+	Env    string `json:"env,omitempty"`
 }
 
 type Allocation struct {

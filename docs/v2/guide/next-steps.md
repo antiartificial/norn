@@ -86,15 +86,19 @@ Planned work:
 
 Snapshots exist, but the current implementation is closer to local operational support than production-grade backup management.
 
-Planned work:
+Current state:
 
-- Clarify local snapshot storage versus S3-backed storage.
-- Add retention policy and pruning.
-- Restore now requires explicit CLI confirmation with `--yes`, the API requires `confirm=true`, and restore responses include database, snapshot, commit, and restored-at receipt data.
-- Snapshot listing now parses provenance from snapshot filenames, including source commit and RFC3339 created time even when database names include underscores.
+- Snapshots are stored locally under `snapshots/` in the Norn API working directory.
+- Restore requires explicit CLI confirmation with `--yes`; the API requires `confirm=true`.
+- Restore responses include database, snapshot, commit, and restored-at receipt data.
+- Snapshot listing parses provenance from filenames, including source commit and RFC3339 created time even when database names include underscores.
 - Snapshot retention uses `snapshots.keep` from `infraspec.yaml` when a command does not pass `--keep`.
 - `norn ops platform` reports per-app snapshot counts, keep policy, and over-limit totals.
-- Emit snapshot creation receipts into the saga log and add optional pre-restore snapshots.
+
+Planned work:
+
+- Archive snapshots to the configured object-storage provider after local restore semantics are covered by tests.
+- Emit optional pre-restore snapshots.
 - Show snapshot provenance in app detail and deploy history.
 
 ### Observability And Access

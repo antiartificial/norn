@@ -14,6 +14,7 @@ import (
 	"norn/v2/api/nomad"
 	"norn/v2/api/saga"
 	"norn/v2/api/secrets"
+	"norn/v2/api/storage"
 	"norn/v2/api/store"
 )
 
@@ -28,6 +29,7 @@ type Pipeline struct {
 	GitSSHKey   string
 	RegistryURL string
 	Beacon      *beacon.Service
+	Storage     *storage.Client
 }
 
 type state struct {

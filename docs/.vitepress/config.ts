@@ -59,6 +59,7 @@ export default withMermaid(
               { text: 'Nomad & Consul', link: '/v2/infrastructure/nomad-consul' },
               { text: 'Secrets', link: '/v2/infrastructure/secrets' },
               { text: 'Volumes', link: '/v2/infrastructure/volumes' },
+              { text: 'Object Storage', link: '/v2/infrastructure/object-storage' },
               { text: 'Cloudflare', link: '/v2/infrastructure/cloudflare' },
             ],
           },

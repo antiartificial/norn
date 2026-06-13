@@ -30,6 +30,16 @@ client {
     path      = "/Users/0xadb/volumes/signal-cli-data"
     read_only = false
   }
+
+  host_volume "garage-meta" {
+    path      = "/Users/0xadb/volumes/garage-meta"
+    read_only = false
+  }
+
+  host_volume "garage-data" {
+    path      = "/Users/0xadb/volumes/garage-data"
+    read_only = false
+  }
 }
 
 plugin "docker" {}
