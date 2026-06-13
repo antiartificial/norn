@@ -8,7 +8,7 @@ import (
 	"norn/v2/cli/style"
 )
 
-var Version = "v2.2.1-platform"
+var Version = "v2.3.0-operations"
 
 func init() {
 	rootCmd.AddCommand(versionCmd)

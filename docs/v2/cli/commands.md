@@ -65,16 +65,47 @@ Manage the Norn control plane itself with a release-oriented upgrade lane.
 ```bash
 norn platform preflight [ref]
 norn platform upgrade [ref]
+norn platform releases
+norn platform rollback <sha-prefix>
 ```
 
 `norn platform preflight` builds Norn from an isolated git worktree into `$HOME/norn/releases/<sha>`, starts the candidate API on `127.0.0.1:18800`, and verifies health/version without restarting the active API.
 
 `norn platform upgrade` performs the same preflight, promotes `$HOME/norn/current`, installs compatibility binaries into `$HOME/go/bin`, restarts only `com.norn.api`, and rolls back to the previous release if postflight health fails.
 
+`norn platform releases` lists local release directories. `norn platform rollback <sha-prefix>` promotes a previous local release and runs the same postflight health check.
+
 | Flag | Default | Description |
 |------|---------|-------------|
 | `--repo` | `NORN_PLATFORM_REPO` | Norn checkout containing `v2/scripts/platform-upgrade` |
 | `--script` | `NORN_PLATFORM_SCRIPT` | Explicit platform-upgrade script path |
+
+## operations
+
+List durable operation records.
+
+```bash
+norn operations
+norn operations --active
+```
+
+Operations summarize long-running work such as app preflights, deploys, and rollbacks. Use `--active` before invasive platform work to see queued or running operations.
+
+| Flag | Default | Description |
+|------|---------|-------------|
+| `--active` | `false` | Only show queued/running operations |
+| `--limit` | `25` | Maximum operations to show |
+
+## webhooks
+
+List recent webhook deliveries.
+
+```bash
+norn webhooks
+norn webhooks --limit 50
+```
+
+The webhook inbox shows delivery status, matched app, branch, and ignored or failed reason for GitHub and Gitea webhook deliveries.
 
 ## restart
 

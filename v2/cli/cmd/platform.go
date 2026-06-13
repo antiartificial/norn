@@ -20,6 +20,8 @@ func init() {
 	platformCmd.PersistentFlags().StringVar(&platformScript, "script", os.Getenv("NORN_PLATFORM_SCRIPT"), "platform-upgrade script path")
 	platformCmd.AddCommand(platformPreflightCmd)
 	platformCmd.AddCommand(platformUpgradeCmd)
+	platformCmd.AddCommand(platformReleasesCmd)
+	platformCmd.AddCommand(platformRollbackCmd)
 }
 
 var platformCmd = &cobra.Command{
@@ -53,12 +55,34 @@ var platformUpgradeCmd = &cobra.Command{
 	},
 }
 
+var platformReleasesCmd = &cobra.Command{
+	Use:   "releases",
+	Short: "List local Norn platform releases",
+	Args:  cobra.NoArgs,
+	RunE: func(cmd *cobra.Command, args []string) error {
+		return runPlatformUpgradeScript("releases", "")
+	},
+}
+
+var platformRollbackCmd = &cobra.Command{
+	Use:   "rollback <sha-prefix>",
+	Short: "Rollback to a previous local Norn platform release",
+	Args:  cobra.ExactArgs(1),
+	RunE: func(cmd *cobra.Command, args []string) error {
+		return runPlatformUpgradeScript("rollback", args[0])
+	},
+}
+
 func runPlatformUpgradeScript(mode, ref string) error {
 	script, err := resolvePlatformScript()
 	if err != nil {
 		return err
 	}
-	command := exec.Command(script, mode, ref)
+	args := []string{mode}
+	if ref != "" {
+		args = append(args, ref)
+	}
+	command := exec.Command(script, args...)
 	command.Stdout = os.Stdout
 	command.Stderr = os.Stderr
 	command.Stdin = os.Stdin

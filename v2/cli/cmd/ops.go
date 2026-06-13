@@ -74,6 +74,11 @@ func printOpsPlatform(summary *api.PlatformOpsSummary) {
 		summary.Deployments.Failed,
 		len(summary.Deployments.Dirty),
 	)
+	fmt.Printf("ops:      recent=%d active=%d status=%s\n",
+		len(summary.Operations.Recent),
+		len(summary.Operations.Active),
+		mapCounts(summary.Operations.ByStatus),
+	)
 	fmt.Printf("secrets:  ok=%d needs_attention=%d\n", summary.Secrets.OK, summary.Secrets.NeedsAttention)
 	fmt.Printf("access:   recent=%d status=%s\n", summary.Access.TotalRecent, mapCounts(summary.Access.ByStatus))
 	fmt.Printf("otel:     enabled=%t logs=%t format=%s endpoint=%s\n\n",

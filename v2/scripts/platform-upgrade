@@ -6,6 +6,8 @@ usage() {
 Usage:
   platform-upgrade preflight [ref]
   platform-upgrade upgrade [ref]
+  platform-upgrade releases
+  platform-upgrade rollback <sha-prefix>
 
 Builds Norn into a versioned release directory. Preflight starts the candidate
 API on an alternate local port and verifies health/version without touching the
@@ -19,7 +21,10 @@ Environment:
   NORN_BIN_DIR             Compatibility bin dir. Defaults to $HOME/go/bin.
   NORN_LAUNCH_LABEL        LaunchAgent label. Defaults to com.norn.api.
   NORN_API_BASE            Running API base. Defaults to http://127.0.0.1:8800.
+  NORN_TOKEN               Optional bearer token for operation drain checks.
+  NORN_API_TOKEN           Optional bearer token for operation drain checks.
   NORN_CANDIDATE_PORT      Candidate API port. Defaults to 18800.
+  NORN_DRAIN_MODE          fail, wait, or force. Defaults to fail.
   NORN_SKIP_CANDIDATE_API  Set true to skip candidate API boot.
 USAGE
 }
@@ -45,7 +50,7 @@ fi
 shift || true
 
 case "$mode" in
-  preflight|upgrade) ;;
+  preflight|upgrade|releases|rollback) ;;
   *) usage >&2; exit 2 ;;
 esac
 
@@ -60,6 +65,7 @@ bin_dir="${NORN_BIN_DIR:-$HOME/go/bin}"
 launch_label="${NORN_LAUNCH_LABEL:-com.norn.api}"
 api_base="${NORN_API_BASE:-http://127.0.0.1:8800}"
 candidate_port="${NORN_CANDIDATE_PORT:-18800}"
+drain_mode="${NORN_DRAIN_MODE:-fail}"
 skip_candidate="${NORN_SKIP_CANDIDATE_API:-false}"
 
 require_cmd git
@@ -69,6 +75,112 @@ require_cmd install
 
 [[ -d "$repo/.git" ]] || fail "$repo is not a git checkout"
 [[ -d "$v2/api" && -d "$v2/cli" ]] || fail "$repo does not look like a Norn v2 checkout"
+
+api_get() {
+  local path="$1"
+  local token="${NORN_TOKEN:-${NORN_API_TOKEN:-}}"
+  if [[ -n "$token" ]]; then
+    curl -fsS -H "Authorization: Bearer ${token}" "$api_base$path"
+  else
+    curl -fsS "$api_base$path"
+  fi
+}
+
+active_operation_count() {
+  local response
+  response="$(api_get "/api/operations/active" 2>/dev/null)" || return 2
+  printf '%s\n' "$response" | sed -n 's/.*"count":[[:space:]]*\([0-9][0-9]*\).*/\1/p'
+}
+
+drain_check() {
+  case "$drain_mode" in
+    force)
+      log "operation drain bypassed"
+      return
+      ;;
+    fail|wait) ;;
+    *) fail "invalid NORN_DRAIN_MODE: $drain_mode" ;;
+  esac
+
+  local count
+  if ! count="$(active_operation_count)"; then
+    log "operation drain check unavailable; continuing"
+    return
+  fi
+  count="${count:-0}"
+  if [[ "$count" == "0" ]]; then
+    log "operation drain clear"
+    return
+  fi
+  if [[ "$drain_mode" == "fail" ]]; then
+    fail "$count active operation(s); set NORN_DRAIN_MODE=wait or force to continue"
+  fi
+
+  log "waiting for $count active operation(s)"
+  while [[ "$count" != "0" ]]; do
+    sleep 5
+    if ! count="$(active_operation_count)"; then
+      log "operation drain check unavailable while waiting; continuing"
+      return
+    fi
+    count="${count:-0}"
+  done
+  log "operation drain clear"
+}
+
+list_releases() {
+  [[ -d "$releases" ]] || return 0
+  printf 'SHA\tVERSION\tCREATED\tCURRENT\tPATH\n'
+  local current=""
+  if [[ -L "$current_link" ]]; then
+    current="$(readlink "$current_link")"
+  fi
+  local dir
+  for dir in "$releases"/*; do
+    [[ -d "$dir" ]] || continue
+    local sha version created marker
+    sha="$(basename "$dir")"
+    version="$sha"
+    created="-"
+    if [[ -f "$dir/release.env" ]]; then
+      version="$(grep '^NORN_RELEASE_VERSION=' "$dir/release.env" | head -1 | cut -d= -f2- || true)"
+      created="$(grep '^NORN_RELEASE_CREATED_AT=' "$dir/release.env" | head -1 | cut -d= -f2- || true)"
+    fi
+    marker=""
+    if [[ "$current" == "$dir" ]]; then
+      marker="yes"
+    fi
+    printf '%s\t%s\t%s\t%s\t%s\n' "${sha:0:12}" "${version:-$sha}" "${created:--}" "$marker" "$dir"
+  done | sort -r
+}
+
+resolve_release() {
+  local wanted="$1"
+  [[ -n "$wanted" ]] || fail "rollback requires a release sha or prefix"
+  if [[ -d "$releases/$wanted" ]]; then
+    printf '%s\n' "$releases/$wanted"
+    return
+  fi
+  local matches=()
+  local dir
+  for dir in "$releases"/"$wanted"*; do
+    [[ -d "$dir" ]] || continue
+    matches+=("$dir")
+  done
+  if [[ "${#matches[@]}" -eq 1 ]]; then
+    printf '%s\n' "${matches[0]}"
+    return
+  fi
+  if [[ "${#matches[@]}" -gt 1 ]]; then
+    fail "release prefix $wanted is ambiguous"
+  fi
+  fail "release not found: $wanted"
+}
+
+if [[ "$mode" == "releases" ]]; then
+  list_releases
+  exit 0
+fi
 
 if [[ "$ref" != "HEAD" ]]; then
   git -C "$repo" fetch --tags --prune origin >/dev/null 2>&1 || log "warning: git fetch failed; using local refs"
@@ -124,6 +236,15 @@ NORN_RELEASE_VERSION=$version
 NORN_RELEASE_CREATED_AT=$(date -u +%Y-%m-%dT%H:%M:%SZ)
 NORN_UI_DIR=$release/ui
 EOF
+  cat > "$release/release.json" <<EOF
+{
+  "sha": "$sha",
+  "version": "$version",
+  "createdAt": "$(date -u +%Y-%m-%dT%H:%M:%SZ)",
+  "path": "$release",
+  "uiDir": "$release/ui"
+}
+EOF
   log "release ready: $release"
 }
 
@@ -153,6 +274,7 @@ candidate_preflight() {
     NORN_BIND_ADDR="${NORN_BIND_ADDR:-127.0.0.1}" \
     NORN_UI_DIR="$release/ui" \
     NORN_SKIP_DEPLOYMENT_RECOVERY=true \
+    NORN_SKIP_OPERATION_RECOVERY=true \
     "$release/bin/norn-api" >"$release/logs/candidate-api.log" 2>&1 &
   candidate_pid="$!"
   popd >/dev/null
@@ -206,10 +328,23 @@ promote_release() {
   fail "upgrade failed and no previous release symlink was available"
 }
 
+if [[ "$mode" == "rollback" ]]; then
+  release="$(resolve_release "${1:-}")"
+  version="$(basename "$release")"
+  if [[ -f "$release/release.env" ]]; then
+    version="$(grep '^NORN_RELEASE_VERSION=' "$release/release.env" | head -1 | cut -d= -f2- || true)"
+    version="${version:-$(basename "$release")}"
+  fi
+  drain_check
+  promote_release
+  exit 0
+fi
+
 build_release
 candidate_preflight
 
 if [[ "$mode" == "upgrade" ]]; then
+  drain_check
   promote_release
 else
   log "preflight complete: $version"

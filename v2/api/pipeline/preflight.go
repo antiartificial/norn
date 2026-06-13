@@ -4,10 +4,13 @@ import (
 	"context"
 	"fmt"
 	"io/fs"
+	"log"
 	"os"
 	"path/filepath"
 	"strings"
 	"time"
+
+	"github.com/google/uuid"
 
 	"norn/v2/api/hub"
 	"norn/v2/api/model"
@@ -21,14 +24,30 @@ import (
 func (p *Pipeline) Preflight(spec *model.InfraSpec, ref string) string {
 	sg := saga.New(p.SagaStore, spec.App, "pipeline", "preflight")
 	ctx := context.Background()
+	operationID := uuid.New().String()
+	if err := p.DB.InsertOperation(ctx, &model.Operation{
+		ID:        operationID,
+		Kind:      "app.preflight",
+		App:       spec.App,
+		SagaID:    sg.ID,
+		Ref:       ref,
+		Status:    model.OperationRunning,
+		Risk:      "read-only",
+		Source:    "pipeline",
+		Message:   fmt.Sprintf("preflighting %s", spec.App),
+		StartedAt: time.Now(),
+	}); err != nil {
+		log.Printf("preflight: insert operation: %v", err)
+		operationID = ""
+	}
 
 	sg.Log(ctx, "preflight.start", fmt.Sprintf("preflighting %s (ref: %s)", spec.App, ref), nil)
 
-	go p.runPreflight(ctx, spec, ref, sg)
+	go p.runPreflight(ctx, spec, ref, sg, operationID)
 	return sg.ID
 }
 
-func (p *Pipeline) runPreflight(ctx context.Context, spec *model.InfraSpec, ref string, sg *saga.Saga) {
+func (p *Pipeline) runPreflight(ctx context.Context, spec *model.InfraSpec, ref string, sg *saga.Saga, operationID string) {
 	st := &state{
 		spec:      spec,
 		commitSHA: ref,
@@ -63,6 +82,11 @@ func (p *Pipeline) runPreflight(ctx context.Context, spec *model.InfraSpec, ref 
 			sg.StepFailed(ctx, s.name, err)
 			p.broadcastPreflightStep(spec.App, sg.ID, s.name, "failed", idx, total, elapsed)
 			sg.Log(ctx, "preflight.failed", fmt.Sprintf("preflight failed at %s: %v", s.name, err), nil)
+			if operationID != "" {
+				_ = p.DB.FinishOperation(ctx, operationID, model.OperationFailed, fmt.Sprintf("preflight failed at %s: %v", s.name, err), map[string]interface{}{
+					"step": s.name,
+				})
+			}
 			p.broadcastPreflightDone("preflight.failed", spec.App, sg.ID, map[string]string{"error": err.Error()})
 			return
 		}
@@ -77,6 +101,12 @@ func (p *Pipeline) runPreflight(ctx context.Context, spec *model.InfraSpec, ref 
 		"sourceKind": st.sourceKind,
 		"sourceRef":  st.sourceRef,
 	})
+	if operationID != "" {
+		_ = p.DB.FinishOperation(ctx, operationID, model.OperationSucceeded, fmt.Sprintf("preflight complete: %s", spec.App), map[string]interface{}{
+			"commitSha": st.commitSHA,
+			"imageTag":  st.imageTag,
+		})
+	}
 	p.broadcastPreflightDone("preflight.completed", spec.App, sg.ID, map[string]string{
 		"imageTag":  st.imageTag,
 		"commitSha": st.commitSHA,

@@ -26,7 +26,9 @@ This recap summarizes the current Norn v2 release line: the Nomad/Consul control
 | Cron eventing | `job.triggered`, `job.paused`, `job.resumed`, `job.schedule_updated` | Makes operator-level scheduled-work changes visible as durable operational events |
 | Deploy eventing | `deploy.succeeded`, `deploy.failed` | Turns deployment outcomes into durable events that can feed notification and incident workflows |
 | Observability | OTEL logs/traces, `/metrics`, generated Prometheus scrape config | Keeps local logs useful while enabling bounded local Prometheus/Grafana metrics |
-| Upgrade path | LaunchAgent-safe upgrade runbook | Upgrades Norn API, CLI, and built UI without stopping Nomad, Consul, Postgres, or hosted apps |
+| Operations ledger | `norn operations`, `/api/operations`, operation metrics | Records app preflights, deploys, and rollbacks as compact durable rows for drain gates and operator summaries |
+| Webhook inbox | `norn webhooks`, `/api/webhooks/deliveries`, webhook metrics | Makes webhook auto-deploy deliveries inspectable without scraping logs |
+| Upgrade path | `norn platform preflight`, `upgrade`, `releases`, `rollback` | Upgrades Norn API, CLI, and built UI without stopping Nomad, Consul, Postgres, or hosted apps |
 
 ## Operator Impact
 
@@ -39,6 +41,8 @@ Beacon adds the first durable event surface for notification-oriented operations
 Object storage now follows the same local-infra posture as the rest of v2: Garage can run as a platform-scoped service, while app specs declare buckets and Norn provisions them during deploy. Apps receive S3-compatible env vars, including Garage path-style flags, without hardcoding bucket credentials into plaintext specs.
 
 Metrics now follow the same local-first model: Norn exposes control-plane counters at `/metrics`, apps can opt into process-level scrape targets with `metrics.enabled`, and `/api/observability/prometheus.yml` generates a Prometheus config for Norn plus live app targets. A local Prometheus with a 30-day/8GB cap is the recommended default.
+
+The operations ledger gives platform upgrades a real drain source. Deploys, preflights, and rollbacks create durable rows with risk labels and saga links; platform upgrades can fail, wait, or force based on active rows. Webhook deliveries now get their own inbox, which makes ignored branches, signature failures, unmatched repositories, and auto-deploy saga ids visible through the API and CLI.
 
 ## Verification
 
@@ -54,6 +58,9 @@ The current release line has been exercised with:
 - `launchctl kickstart -k gui/$(id -u)/com.norn.api`
 - `norn version`
 - `norn ops platform`
+- `norn operations`
+- `norn webhooks`
+- `norn platform releases`
 - `norn services`
 - `norn status`
 - `norn smoke contextdb`

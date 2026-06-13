@@ -225,6 +225,9 @@ bin/norn preflight <app> HEAD # validate, build, and test without deploying
 bin/norn deploy <app> HEAD   # deploy latest commit
 bin/norn platform preflight HEAD # build and health-check a candidate Norn release
 bin/norn platform upgrade HEAD   # promote Norn itself with rollback-capable postflight
+bin/norn platform releases       # list local Norn release dirs
+bin/norn operations --active     # inspect active operation drain state
+bin/norn webhooks                # inspect webhook delivery inbox
 bin/norn scale <app> <n>     # scale up/down
 bin/norn logs <app>          # stream allocation logs
 ```
