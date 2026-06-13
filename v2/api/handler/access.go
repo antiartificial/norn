@@ -78,7 +78,7 @@ func (l *AccessLog) Recent(limit int) []AccessEvent {
 
 func (h *Handler) AccessMiddleware(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if r.URL.Path == "/ws" || strings.HasSuffix(r.URL.Path, "/exec") {
+		if r.URL.Path == "/ws" || r.URL.Path == "/metrics" || r.URL.Path == "/api/metrics" || strings.HasSuffix(r.URL.Path, "/exec") {
 			next.ServeHTTP(w, r)
 			return
 		}

@@ -256,6 +256,42 @@ func (db *DB) GetDailyStats(ctx context.Context) (*DailyStats, error) {
 	return s, nil
 }
 
+type DeploymentMetric struct {
+	App             string             `json:"app"`
+	Status          model.DeployStatus `json:"status"`
+	Count           int64              `json:"count"`
+	DurationSeconds float64            `json:"durationSeconds"`
+	LastStartedUnix float64            `json:"lastStartedUnix"`
+}
+
+func (db *DB) DeploymentMetrics(ctx context.Context) ([]DeploymentMetric, error) {
+	rows, err := db.Pool.Query(ctx, `
+		SELECT
+			app,
+			status,
+			COUNT(*)::bigint,
+			COALESCE(SUM(EXTRACT(EPOCH FROM (finished_at - started_at))) FILTER (WHERE finished_at IS NOT NULL), 0)::float8,
+			COALESCE(EXTRACT(EPOCH FROM MAX(started_at)), 0)::float8
+		FROM deployments
+		GROUP BY app, status
+		ORDER BY app, status
+	`)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	var metrics []DeploymentMetric
+	for rows.Next() {
+		var metric DeploymentMetric
+		if err := rows.Scan(&metric.App, &metric.Status, &metric.Count, &metric.DurationSeconds, &metric.LastStartedUnix); err != nil {
+			return nil, err
+		}
+		metrics = append(metrics, metric)
+	}
+	return metrics, rows.Err()
+}
+
 // CronState represents the pause/schedule state of a cron process.
 type CronState struct {
 	App       string    `json:"app"`

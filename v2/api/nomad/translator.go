@@ -62,9 +62,9 @@ func Translate(spec *model.InfraSpec, imageTag string, env map[string]string) *n
 		healthy := 30 * time.Second
 		autoRevert := true
 		tg.Update = &nomadapi.UpdateStrategy{
-			MaxParallel:     &maxParallel,
-			MinHealthyTime:  &healthy,
-			AutoRevert:      &autoRevert,
+			MaxParallel:    &maxParallel,
+			MinHealthyTime: &healthy,
+			AutoRevert:     &autoRevert,
 		}
 
 		// Task
@@ -77,52 +77,7 @@ func Translate(spec *model.InfraSpec, imageTag string, env map[string]string) *n
 			task.Config["args"] = []string{"-c", proc.Command}
 		}
 
-		// Port mapping
-		if proc.Port > 0 {
-			portLabel := fmt.Sprintf("%s-http", procName)
-			task.Config["ports"] = []string{portLabel}
-
-			net := &nomadapi.NetworkResource{}
-			if len(spec.Endpoints) > 0 {
-				// Static port for apps with external endpoints (predictable routing)
-				net.ReservedPorts = []nomadapi.Port{
-					{Label: portLabel, Value: proc.Port},
-				}
-			} else {
-				net.DynamicPorts = []nomadapi.Port{
-					{Label: portLabel, To: proc.Port},
-				}
-			}
-			tg.Networks = []*nomadapi.NetworkResource{net}
-
-			// Service registration with Consul
-			svc := &nomadapi.Service{
-				Name:      fmt.Sprintf("%s-%s", spec.App, procName),
-				PortLabel: portLabel,
-				Provider:  "consul",
-			}
-
-			if proc.Health != nil {
-				interval, _ := time.ParseDuration(proc.Health.Interval)
-				timeout, _ := time.ParseDuration(proc.Health.Timeout)
-				if interval == 0 {
-					interval = 10 * time.Second
-				}
-				if timeout == 0 {
-					timeout = 5 * time.Second
-				}
-				svc.Checks = []nomadapi.ServiceCheck{
-					{
-						Type:     "http",
-						Path:     proc.Health.Path,
-						Interval: interval,
-						Timeout:  timeout,
-					},
-				}
-			}
-
-			tg.Services = []*nomadapi.Service{svc}
-		}
+		configureProcessNetworking(spec, procName, proc, task, tg)
 
 		// Environment
 		task.Env = mergedEnv
@@ -183,6 +138,88 @@ func Translate(spec *model.InfraSpec, imageTag string, env map[string]string) *n
 	}
 
 	return job
+}
+
+func configureProcessNetworking(spec *model.InfraSpec, procName string, proc model.Process, task *nomadapi.Task, tg *nomadapi.TaskGroup) {
+	ports := []string{}
+	net := &nomadapi.NetworkResource{}
+	services := []*nomadapi.Service{}
+
+	if proc.Port > 0 {
+		portLabel := fmt.Sprintf("%s-http", procName)
+		ports = append(ports, portLabel)
+		if len(spec.Endpoints) > 0 {
+			net.ReservedPorts = append(net.ReservedPorts, nomadapi.Port{Label: portLabel, Value: proc.Port})
+		} else {
+			net.DynamicPorts = append(net.DynamicPorts, nomadapi.Port{Label: portLabel, To: proc.Port})
+		}
+		svc := &nomadapi.Service{
+			Name:      fmt.Sprintf("%s-%s", spec.App, procName),
+			PortLabel: portLabel,
+			Provider:  "consul",
+		}
+		if proc.Health != nil {
+			interval, _ := time.ParseDuration(proc.Health.Interval)
+			timeout, _ := time.ParseDuration(proc.Health.Timeout)
+			if interval == 0 {
+				interval = 10 * time.Second
+			}
+			if timeout == 0 {
+				timeout = 5 * time.Second
+			}
+			svc.Checks = []nomadapi.ServiceCheck{
+				{
+					Type:     "http",
+					Path:     proc.Health.Path,
+					Interval: interval,
+					Timeout:  timeout,
+				},
+			}
+		}
+		services = append(services, svc)
+	}
+
+	if proc.Metrics != nil && proc.Metrics.Enabled {
+		metricsPort := proc.Metrics.Port
+		if metricsPort == 0 {
+			metricsPort = proc.Port
+		}
+		metricsPath := proc.Metrics.Path
+		if metricsPath == "" {
+			metricsPath = "/metrics"
+		}
+		metricsLabel := fmt.Sprintf("%s-metrics", procName)
+		if metricsPort > 0 && metricsPort != proc.Port {
+			ports = append(ports, metricsLabel)
+			net.DynamicPorts = append(net.DynamicPorts, nomadapi.Port{Label: metricsLabel, To: metricsPort})
+		} else if proc.Port > 0 {
+			metricsLabel = fmt.Sprintf("%s-http", procName)
+		}
+		if metricsPort > 0 {
+			services = append(services, &nomadapi.Service{
+				Name:      fmt.Sprintf("%s-%s-metrics", spec.App, procName),
+				PortLabel: metricsLabel,
+				Provider:  "consul",
+				Tags:      []string{"metrics", "prometheus"},
+				Checks: []nomadapi.ServiceCheck{
+					{
+						Type:     "http",
+						Path:     metricsPath,
+						Interval: 30 * time.Second,
+						Timeout:  5 * time.Second,
+					},
+				},
+			})
+		}
+	}
+
+	if len(ports) > 0 {
+		task.Config["ports"] = ports
+		tg.Networks = []*nomadapi.NetworkResource{net}
+	}
+	if len(services) > 0 {
+		tg.Services = services
+	}
 }
 
 // TranslatePeriodic creates a separate Nomad periodic batch job for a scheduled process.

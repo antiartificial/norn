@@ -26,11 +26,18 @@ processes:
     port: 7701
     health:
       path: /v1/ping
+    metrics:
+      enabled: true
+      path: /metrics
   review-worker:
     port: 7790
     command: /contextdb worker review --dry-run --health-addr :7790
     health:
       path: /v1/ping
+    metrics:
+      enabled: true
+      path: /metrics
+      port: 7791
   nightly:
     schedule: "0 3 * * *"
     command: /contextdb snapshot export
@@ -79,6 +86,9 @@ endpoints:
 	if web.Reachability.EndpointScope != "local" || !web.Reachability.Routable {
 		t.Fatalf("web reachability = %+v, want local routable", web.Reachability)
 	}
+	if web.Metrics == nil || !web.Metrics.Enabled || web.Metrics.Path != "/metrics" {
+		t.Fatalf("web metrics = %+v, want enabled /metrics", web.Metrics)
+	}
 
 	worker := entries["review-worker"]
 	if worker.Type != "worker" {
@@ -95,6 +105,9 @@ endpoints:
 	}
 	if worker.Reachability.Exposure != "internal" {
 		t.Fatalf("worker exposure = %q, want internal", worker.Reachability.Exposure)
+	}
+	if worker.Metrics == nil || worker.Metrics.ServiceName != "contextdb-review-worker-metrics" {
+		t.Fatalf("worker metrics = %+v, want metrics service", worker.Metrics)
 	}
 
 	cron := entries["nightly"]

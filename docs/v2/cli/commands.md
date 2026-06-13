@@ -215,6 +215,17 @@ norn doctor
 Displays a checklist of service statuses with pass/fail indicators.
 The output also shows the configured Norn network mode from `NORN_NETWORK_MODE`.
 
+## metrics
+
+Norn exposes Prometheus-compatible metrics over HTTP rather than a CLI command:
+
+```bash
+curl http://127.0.0.1:8800/metrics
+curl http://127.0.0.1:8800/api/observability/prometheus.yml
+```
+
+The generated Prometheus config includes Norn itself and any app process that declares `metrics.enabled: true`.
+
 ## stats
 
 Display deployment and cluster statistics.

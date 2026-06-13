@@ -204,9 +204,11 @@ func main() {
 		log.Println("API token auth enabled")
 	}
 	r.Use(h.AccessMiddleware)
+	r.Get("/metrics", h.Metrics)
 
 	r.Route("/api", func(r chi.Router) {
 		r.Get("/health", h.Health)
+		r.Get("/metrics", h.Metrics)
 		r.Get("/version", func(w http.ResponseWriter, r *http.Request) {
 			w.Header().Set("Content-Type", "application/json")
 			json.NewEncoder(w).Encode(map[string]string{"version": Version})
@@ -215,6 +217,7 @@ func main() {
 		r.Post("/webhooks/{provider}", h.Webhook)
 
 		r.Get("/stats", h.Stats)
+		r.Get("/observability/prometheus.yml", h.PrometheusConfig)
 		r.Get("/services/manifest", h.ServiceManifest)
 		r.Get("/ops/platform", h.PlatformOps)
 		r.Get("/ops/contextdb", h.ContextDBOps)
@@ -295,7 +298,7 @@ func main() {
 func bearerAuth(token string) func(http.Handler) http.Handler {
 	return func(next http.Handler) http.Handler {
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-			if r.URL.Path == "/ws" || r.URL.Path == "/api/health" || r.URL.Path == "/api/version" || strings.HasPrefix(r.URL.Path, "/api/webhooks/") || strings.HasSuffix(r.URL.Path, "/exec") {
+			if r.URL.Path == "/ws" || r.URL.Path == "/metrics" || r.URL.Path == "/api/metrics" || r.URL.Path == "/api/health" || r.URL.Path == "/api/version" || strings.HasPrefix(r.URL.Path, "/api/webhooks/") || strings.HasSuffix(r.URL.Path, "/exec") {
 				next.ServeHTTP(w, r)
 				return
 			}

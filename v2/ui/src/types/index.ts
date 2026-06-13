@@ -18,6 +18,11 @@ export interface Process {
     interval?: string
     timeout?: string
   }
+  metrics?: {
+    enabled?: boolean
+    path?: string
+    port?: number
+  }
   scaling?: {
     min?: number
     max?: number

@@ -102,6 +102,9 @@ v2/ui/
 | Method | Path | Description |
 |--------|------|-------------|
 | GET | `/api/health` | Service health check |
+| GET | `/metrics` | Prometheus-compatible Norn control-plane metrics |
+| GET | `/api/metrics` | Same metrics endpoint under the API prefix |
+| GET | `/api/observability/prometheus.yml` | Generated Prometheus scrape config |
 | GET | `/api/version` | API version |
 | GET | `/api/stats` | Deployment and cluster statistics |
 | GET | `/api/apps` | List all discovered apps |

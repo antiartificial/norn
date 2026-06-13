@@ -113,13 +113,16 @@ Current state:
 - Norn records recent API access events in memory after auth middleware runs.
 - `norn access [--limit N]` shows method, path, status, client IP, Cloudflare Access metadata, and duration without request bodies or authorization headers.
 - `norn ops platform` and the UI Platform tab summarize recent access, service exposure, OTEL/Grafana configuration, dirty deployments, secret hygiene, and snapshot retention.
+- `/metrics` and `/api/metrics` expose Prometheus-compatible Norn control-plane metrics.
+- App processes can declare `metrics.enabled: true`; Norn registers companion metrics services and includes live scrape targets in `/api/observability/prometheus.yml`.
 
 Planned work:
 
+- Package local Prometheus, Grafana, and cAdvisor as Norn platform services with 30-day/8GB default Prometheus retention.
 - Add UI and CLI views for recent Beacon events.
 - Add Nomad allocation watchers for cron success, failure, hung, and missed-run Beacon events.
 - Add health-transition Beacon events once the health poller tracks previous state.
-- Explore a shared gateway for app-level request logging.
+- Add alert rules for deploy failures, service down, high restart rate, and low disk headroom.
 - Add temporary access grants, such as expiring JWT links or expiring IP allowlist entries.
 
 ## ContextDB Items

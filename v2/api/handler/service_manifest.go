@@ -1,6 +1,7 @@
 package handler
 
 import (
+	"fmt"
 	"net"
 	"net/http"
 	"net/url"
@@ -82,6 +83,7 @@ func (h *Handler) buildServiceManifest() (model.ServiceManifest, error) {
 					entry.Metadata["instanceScope"] = instanceScope(entry.Instances)
 				}
 			}
+			entry.Metrics = h.serviceMetrics(spec.App, processName, process, entry.Instances)
 			entry.Reachability = serviceReachability(entry.Metadata["endpointScope"], entry.Metadata["instanceScope"])
 
 			manifest.Services = append(manifest.Services, entry)
@@ -89,6 +91,39 @@ func (h *Handler) buildServiceManifest() (model.ServiceManifest, error) {
 	}
 
 	return manifest, nil
+}
+
+func (h *Handler) serviceMetrics(app, processName string, process model.Process, fallbackInstances []model.ServiceInstance) *model.ServiceMetrics {
+	if process.Metrics == nil || !process.Metrics.Enabled {
+		return nil
+	}
+	path := process.Metrics.Path
+	if path == "" {
+		path = "/metrics"
+	}
+	serviceName := fmt.Sprintf("%s-%s-metrics", app, processName)
+	metrics := &model.ServiceMetrics{
+		Enabled:     true,
+		Path:        path,
+		ServiceName: serviceName,
+	}
+	if h.consul != nil {
+		if health, err := h.consul.ServiceHealthChecks(serviceName); err == nil {
+			for _, instance := range health {
+				metrics.Instances = append(metrics.Instances, model.ServiceInstance{
+					Node:    instance.Node,
+					Address: instance.Address,
+					Port:    instance.Port,
+					Status:  instance.Status,
+				})
+			}
+		}
+	}
+	if len(metrics.Instances) == 0 && process.Metrics.Port == 0 && process.Port > 0 {
+		metrics.Instances = append(metrics.Instances, fallbackInstances...)
+	}
+	metrics.Reachability = serviceReachability("none", instanceScope(metrics.Instances))
+	return metrics
 }
 
 func serviceReachability(endpointScope, instanceScope string) model.ServiceReachability {

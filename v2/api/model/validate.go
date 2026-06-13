@@ -79,6 +79,18 @@ func ValidateSpecWithOptions(spec *InfraSpec, opts ValidationOptions) *Validatio
 			}
 		}
 
+		if proc.Metrics != nil && proc.Metrics.Enabled {
+			if proc.Metrics.Path != "" && !strings.HasPrefix(proc.Metrics.Path, "/") {
+				r.add("error", field+".metrics.path", "metrics path must start with /")
+			}
+			if proc.Metrics.Port < 0 || proc.Metrics.Port > 65535 {
+				r.add("error", field+".metrics.port", "metrics port must be between 1 and 65535")
+			}
+			if proc.Metrics.Port == 0 && proc.Port == 0 {
+				r.add("error", field+".metrics.port", "metrics requires process port or metrics.port")
+			}
+		}
+
 		validateEnvSecrets(r, field+".env", proc.Env, declaredSecrets)
 	}
 
