@@ -93,6 +93,15 @@ The `status` command compares the `secrets` list in `infraspec.yaml` with encryp
 
 The `migrate-plan` command turns those plaintext findings into a value-safe checklist. It shows the app, field, key, whether the key is declared in `secrets`, whether it already exists in `secrets.enc.yaml`, and the recommended action. It does not print or move secret values; operators still make the actual `secrets.enc.yaml` change with SOPS or `norn secrets set`.
 
+Use the strict gate when you want plaintext secret-like env values to block validation:
+
+```bash
+norn validate --strict-secrets
+NORN_STRICT_SECRETS=true norn preflight myapp HEAD
+```
+
+The gate is opt-in so older apps can be migrated deliberately. Once an app is clean, keep `NORN_STRICT_SECRETS=true` in the platform runtime env to prevent drift.
+
 The `set` command decrypts the file, updates the key, and re-encrypts.
 
 ## Secrets Flow

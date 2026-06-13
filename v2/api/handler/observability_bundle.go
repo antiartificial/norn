@@ -5,6 +5,10 @@ import (
 	"encoding/json"
 	"fmt"
 	"net/http"
+	"os"
+	"path/filepath"
+	"sort"
+	"strings"
 	"time"
 )
 
@@ -18,6 +22,14 @@ type observabilityBundle struct {
 	ServiceSpecs      map[string]string `json:"serviceSpecs"`
 }
 
+type observabilityInstallReceipt struct {
+	Status    string   `json:"status"`
+	AppsDir   string   `json:"appsDir"`
+	Installed []string `json:"installed"`
+	Skipped   []string `json:"skipped,omitempty"`
+	Files     []string `json:"files"`
+}
+
 func (h *Handler) ObservabilityBundle(w http.ResponseWriter, r *http.Request) {
 	bundle, err := h.buildObservabilityBundle()
 	if err != nil {
@@ -25,6 +37,20 @@ func (h *Handler) ObservabilityBundle(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, bundle)
+}
+
+func (h *Handler) ObservabilityServicesInstall(w http.ResponseWriter, r *http.Request) {
+	overwrite := r.URL.Query().Get("overwrite") == "true"
+	receipt, err := h.installObservabilityServices(overwrite)
+	if err != nil {
+		status := http.StatusInternalServerError
+		if strings.Contains(err.Error(), "already exists") {
+			status = http.StatusConflict
+		}
+		writeError(w, status, err.Error())
+		return
+	}
+	writeJSON(w, receipt)
 }
 
 func (h *Handler) PrometheusAlerts(w http.ResponseWriter, r *http.Request) {
@@ -41,7 +67,7 @@ func (h *Handler) buildObservabilityBundle() (observabilityBundle, error) {
 	fmt.Fprintf(&prometheus, "global:\n  scrape_interval: 30s\n  evaluation_interval: 30s\n\n")
 	fmt.Fprintf(&prometheus, "rule_files:\n  - /etc/prometheus/rules/norn-alerts.yml\n\n")
 	fmt.Fprintf(&prometheus, "scrape_configs:\n")
-	fmt.Fprintf(&prometheus, "  - job_name: norn\n    metrics_path: /metrics\n    static_configs:\n      - targets: [%q]\n", h.cfg.BindAddr+":"+h.cfg.Port)
+	fmt.Fprintf(&prometheus, "  - job_name: norn\n    metrics_path: /metrics\n    static_configs:\n      - targets: [%q]\n", h.observabilityNornTarget())
 	writeAppScrapeConfigs(&prometheus, manifest)
 
 	datasource := map[string]interface{}{
@@ -72,6 +98,97 @@ func (h *Handler) buildObservabilityBundle() (observabilityBundle, error) {
 			"cadvisor":   cadvisorServiceSpec(),
 		},
 	}, nil
+}
+
+func (h *Handler) observabilityNornTarget() string {
+	if target := strings.TrimSpace(os.Getenv("NORN_OBSERVABILITY_NORN_TARGET")); target != "" {
+		return target
+	}
+	host := strings.TrimSpace(h.cfg.BindAddr)
+	if host == "" || host == "127.0.0.1" || host == "localhost" {
+		host = "host.docker.internal"
+	}
+	return host + ":" + h.cfg.Port
+}
+
+func (h *Handler) installObservabilityServices(overwrite bool) (observabilityInstallReceipt, error) {
+	if strings.TrimSpace(h.cfg.AppsDir) == "" {
+		return observabilityInstallReceipt{}, fmt.Errorf("apps dir is not configured")
+	}
+	bundle, err := h.buildObservabilityBundle()
+	if err != nil {
+		return observabilityInstallReceipt{}, err
+	}
+	services := observabilityServiceFiles(bundle)
+	receipt := observabilityInstallReceipt{
+		Status:  "installed",
+		AppsDir: h.cfg.AppsDir,
+	}
+	apps := make([]string, 0, len(services))
+	for app := range services {
+		apps = append(apps, app)
+	}
+	sort.Strings(apps)
+	for _, app := range apps {
+		files := services[app]
+		appDir := filepath.Join(h.cfg.AppsDir, app)
+		if _, err := os.Stat(appDir); err == nil && !overwrite {
+			return receipt, fmt.Errorf("%s already exists; pass overwrite=true to replace generated files", app)
+		}
+		if err := os.MkdirAll(appDir, 0o755); err != nil {
+			return receipt, err
+		}
+		names := make([]string, 0, len(files))
+		for rel := range files {
+			names = append(names, rel)
+		}
+		sort.Strings(names)
+		for _, rel := range names {
+			content := files[rel]
+			path := filepath.Join(appDir, rel)
+			if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+				return receipt, err
+			}
+			if err := os.WriteFile(path, []byte(content), 0o644); err != nil {
+				return receipt, err
+			}
+			receipt.Files = append(receipt.Files, filepath.Join(app, rel))
+		}
+		receipt.Installed = append(receipt.Installed, app)
+	}
+	return receipt, nil
+}
+
+func observabilityServiceFiles(bundle observabilityBundle) map[string]map[string]string {
+	return map[string]map[string]string{
+		"norn-prometheus": {
+			"infraspec.yaml": prometheusServiceSpec(),
+			"Dockerfile": `FROM prom/prometheus:v2.55.1
+COPY prometheus.yml /etc/prometheus/prometheus.yml
+COPY rules /etc/prometheus/rules
+`,
+			"prometheus.yml":        bundle.PrometheusConfig,
+			"rules/norn-alerts.yml": bundle.AlertRules,
+			"README.md":             observabilityServiceReadme("Prometheus", "norn-prometheus"),
+		},
+		"norn-grafana": {
+			"infraspec.yaml": grafanaServiceSpec(),
+			"Dockerfile": `FROM grafana/grafana:11.5.2
+COPY provisioning /etc/grafana/provisioning
+COPY dashboards /var/lib/grafana/dashboards
+`,
+			"provisioning/datasources/norn-prometheus.yaml": grafanaDatasourceYAML(),
+			"provisioning/dashboards/norn.yaml":             grafanaDashboardProviderYAML(),
+			"dashboards/norn-platform.json":                 bundle.GrafanaDashboard,
+			"README.md":                                     observabilityServiceReadme("Grafana", "norn-grafana"),
+		},
+		"norn-cadvisor": {
+			"infraspec.yaml": cadvisorServiceSpec(),
+			"Dockerfile": `FROM gcr.io/cadvisor/cadvisor:v0.49.1
+`,
+			"README.md": observabilityServiceReadme("cAdvisor", "norn-cadvisor"),
+		},
+	}
 }
 
 func prometheusAlertRules() string {
@@ -124,44 +241,48 @@ func prometheusAlertRules() string {
 
 func prometheusServiceSpec() string {
 	return `name: norn-prometheus
+deploy: true
+build:
+  dockerfile: Dockerfile
 processes:
   web:
     port: 9090
-    command: prometheus --config.file=/etc/prometheus/prometheus.yml --storage.tsdb.path=/prometheus --storage.tsdb.retention.time=30d --storage.tsdb.retention.size=8GB
+    command: prometheus --config.file=/etc/prometheus/prometheus.yml --storage.tsdb.path=/prometheus --storage.tsdb.retention.time=30d --storage.tsdb.retention.size=8GB --web.enable-lifecycle
+    metrics:
+      enabled: true
+      path: /metrics
     health:
       path: /-/healthy
     resources:
       cpu: 200
       memory: 512
-volumes:
-  - name: prometheus-data
-    mount: /prometheus
 `
 }
 
 func grafanaServiceSpec() string {
 	return `name: norn-grafana
+deploy: true
+build:
+  dockerfile: Dockerfile
 processes:
   web:
     port: 3000
-    command: grafana server --homepath=/usr/share/grafana
     health:
       path: /api/health
     resources:
       cpu: 200
       memory: 512
-volumes:
-  - name: grafana-data
-    mount: /var/lib/grafana
 `
 }
 
 func cadvisorServiceSpec() string {
 	return `name: norn-cadvisor
+deploy: true
+build:
+  dockerfile: Dockerfile
 processes:
   web:
     port: 8080
-    command: cadvisor
     metrics:
       enabled: true
       path: /metrics
@@ -171,6 +292,44 @@ processes:
       cpu: 200
       memory: 256
 `
+}
+
+func grafanaDatasourceYAML() string {
+	return `apiVersion: 1
+datasources:
+  - name: Norn Prometheus
+    type: prometheus
+    access: proxy
+    url: http://norn-prometheus-web.service.consul:9090
+    isDefault: true
+`
+}
+
+func grafanaDashboardProviderYAML() string {
+	return `apiVersion: 1
+providers:
+  - name: Norn
+    orgId: 1
+    folder: Norn
+    type: file
+    disableDeletion: false
+    updateIntervalSeconds: 30
+    options:
+      path: /var/lib/grafana/dashboards
+`
+}
+
+func observabilityServiceReadme(displayName, app string) string {
+	return fmt.Sprintf(`# %s
+
+Generated by Norn as a managed observability service app.
+
+Validate and deploy with:
+
+`+"```bash\nnorn validate %s\nnorn preflight %s HEAD\nnorn deploy %s HEAD\n```"+`
+
+Review ports, host volume needs, and local policy before deploying on a shared host.
+`, displayName, app, app, app)
 }
 
 func grafanaDashboard() map[string]interface{} {

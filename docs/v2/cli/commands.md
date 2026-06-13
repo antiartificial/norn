@@ -68,6 +68,7 @@ Manage the Norn control plane itself with a release-oriented upgrade lane.
 ```bash
 norn platform preflight [ref]
 norn platform upgrade [ref]
+norn platform upgrade [ref] --proxy
 norn platform releases
 norn platform rollback <sha-prefix>
 norn platform smoke
@@ -82,6 +83,8 @@ norn platform proxy-switch <port|host:port>
 
 `norn platform upgrade` performs the same preflight, promotes `$HOME/norn/current`, installs compatibility binaries into `$HOME/go/bin`, restarts only `com.norn.api`, and rolls back to the previous release if postflight health fails.
 
+`norn platform upgrade --proxy` uses the managed proxy lane. It boots the candidate API on the private candidate port, switches the managed Caddy upstream, keeps the new API alive behind the proxy, and stops the previous proxy-managed API pid after postflight succeeds. Use it only after the host is intentionally proxy-fronted and `NORN_PROXY_RELOAD=true` is configured.
+
 `norn platform releases` lists local release directories. `norn platform rollback <sha-prefix>` promotes a previous local release and runs the same postflight health check.
 
 `norn platform smoke` runs `norn smoke platform` with the API runtime environment loaded from the encrypted SOPS JSON env file.
@@ -94,6 +97,7 @@ norn platform proxy-switch <port|host:port>
 |------|---------|-------------|
 | `--repo` | `NORN_PLATFORM_REPO` | Norn checkout containing `v2/scripts/platform-upgrade` |
 | `--script` | `NORN_PLATFORM_SCRIPT` | Explicit platform-upgrade script path |
+| `--proxy` | `false` | Use managed proxy cutover mode for `platform upgrade` |
 
 ## operations
 
@@ -141,9 +145,23 @@ Generate Norn's Prometheus and Grafana starter bundle.
 ```bash
 norn observability bundle
 norn observability bundle --out ./norn-observability
+norn observability install
+norn observability install --overwrite
 ```
 
 The bundle includes Prometheus scrape config, Prometheus alert rules, a Grafana datasource, a starter dashboard, and suggested Norn service specs for Prometheus, Grafana, and cAdvisor. The default retention target is 30 days or 8GB.
+
+`norn observability install` writes generated Norn app directories into `NORN_APPS_DIR`: `norn-prometheus`, `norn-grafana`, and `norn-cadvisor`. Review ports and host policy, then validate, preflight, and deploy them like normal Norn apps.
+
+## network
+
+Summarize service reachability and network-mode guidance.
+
+```bash
+norn network
+```
+
+The command combines `/api/services/manifest` with validation hints to show service exposure, endpoint scope, instance scope, and guidance for `local`, `tailnet`, or `public` mode.
 
 ## alerts
 
@@ -479,9 +497,12 @@ norn validate <app>
 
 # Validate all discovered apps
 norn validate
+
+# Treat plaintext secret-like env values as errors
+norn validate --strict-secrets
 ```
 
-Reports errors and warnings for each infraspec field. Validation warns when secret-like values such as DSNs, passwords, tokens, API keys, or client secrets appear in plain `env` blocks. Move those values to `secrets.enc.yaml` and list the key under `secrets`. Validation also uses `NORN_NETWORK_MODE` to warn when endpoint hosts look mismatched for the active mode, such as localhost endpoints in `tailnet` or `public` mode.
+Reports errors and warnings for each infraspec field. Validation warns when secret-like values such as DSNs, passwords, tokens, API keys, or client secrets appear in plain `env` blocks. Move those values to `secrets.enc.yaml` and list the key under `secrets`. Add `--strict-secrets`, or set `NORN_STRICT_SECRETS=true` for deploy/preflight validation, to make plaintext secret-like env values fail the gate. Validation also uses `NORN_NETWORK_MODE` to warn when endpoint hosts look mismatched for the active mode, such as localhost endpoints in `tailnet` or `public` mode.
 
 ## endpoints
 

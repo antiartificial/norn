@@ -26,7 +26,7 @@ This recap summarizes the current Norn v2 release line: the Nomad/Consul control
 | Alert catalogue | `/api/alerts/rules`, `norn alerts` | Defines the built-in event-to-alert contract for deploy, service, cron, and recovery signals |
 | Cron eventing | `job.triggered`, `job.paused`, `job.resumed`, `job.schedule_updated` | Makes operator-level scheduled-work changes visible as durable operational events |
 | Deploy eventing | `deploy.succeeded`, `deploy.failed` | Turns deployment outcomes into durable events that can feed notification and incident workflows |
-| Observability | OTEL logs/traces, `/metrics`, generated Prometheus scrape config, observability bundle | Keeps local logs useful while enabling bounded local Prometheus/Grafana metrics |
+| Observability | OTEL logs/traces, `/metrics`, generated Prometheus scrape config, observability bundle, managed observability app install | Keeps local logs useful while enabling bounded local Prometheus/Grafana metrics |
 | Operations ledger | `norn operations`, `/api/operations`, operation metrics | Records app preflights, deploys, and rollbacks as compact durable rows for drain gates and operator summaries |
 | Durable operation queue | Postgres-backed operation claims, API worker, retries | Moves app deploy and preflight requests out of in-memory request goroutines and into a first-class worker lane |
 | Deploy checkpoints | `deployment_steps`, deploy/rollback stage markers | Records durable stage evidence and safely requeues interrupted deploys only before mutable stages |
@@ -35,8 +35,8 @@ This recap summarizes the current Norn v2 release line: the Nomad/Consul control
 | Beacon event visibility | `norn events`, `norn events show/ack/snooze/open`, Platform tab actions | Makes Norn-emitted operational events visible and operable from terminal and dashboard |
 | Platform smoke | `norn smoke platform`, `norn platform smoke`, `norn platform env` | Checks health, drain, release marker, and events after upgrades, including SOPS-backed auth env shells |
 | Runtime watcher | Beacon events for failed/lost/unhealthy allocations, Consul health transitions, and cron success/failure/hung runs | Turns service, allocation, and scheduled-work transitions into durable operational events |
-| Proxy cutover scaffold | `norn platform proxy-plan/status/render/switch` | Stages a managed local reverse-proxy path for stable ingress and private API release ports |
-| Assurance surfaces | `norn observability bundle`, `norn secrets migrate-plan`, platform rollup fields | Packages local monitoring assets and secret migration planning into first-class operator commands |
+| Proxy cutover lane | `norn platform proxy-plan/status/render/switch`, `norn platform upgrade --proxy` | Supports stable ingress and private old/new API release ports on proxy-fronted hosts |
+| Assurance surfaces | `norn observability install`, `norn secrets migrate-plan`, `norn validate --strict-secrets`, `norn network` | Packages local monitoring, secret drift gates, and network truth into first-class operator commands |
 | Upgrade path | `norn platform preflight`, `upgrade`, `releases`, `rollback` | Upgrades Norn API, CLI, and built UI without stopping Nomad, Consul, Postgres, or hosted apps |
 
 ## Operator Impact
@@ -49,15 +49,19 @@ Beacon adds the first durable event surface for notification-oriented operations
 
 Object storage now follows the same local-infra posture as the rest of v2: Garage can run as a platform-scoped service, while app specs declare buckets and Norn provisions them during deploy. Apps receive S3-compatible env vars, including Garage path-style flags, without hardcoding bucket credentials into plaintext specs.
 
-Metrics now follow the same local-first model: Norn exposes control-plane counters at `/metrics`, apps can opt into process-level scrape targets with `metrics.enabled`, and `/api/observability/prometheus.yml` generates a Prometheus config for Norn plus live app targets. `/api/observability/bundle` and `norn observability bundle --out <dir>` package Prometheus config, alert rules, Grafana provisioning, a starter dashboard, and starter service specs for a 30-day/8GB local setup.
+Metrics now follow the same local-first model: Norn exposes control-plane counters at `/metrics`, apps can opt into process-level scrape targets with `metrics.enabled`, and `/api/observability/prometheus.yml` generates a Prometheus config for Norn plus live app targets. `/api/observability/bundle` and `norn observability bundle --out <dir>` package Prometheus config, alert rules, Grafana provisioning, a starter dashboard, and service specs for a 30-day/8GB local setup. `norn observability install` writes `norn-prometheus`, `norn-grafana`, and `norn-cadvisor` app directories into `NORN_APPS_DIR` so they can be validated, preflighted, and deployed as normal Norn apps.
 
-Secret migration is now easier to do deliberately. `norn secrets migrate-plan [app]` reports plaintext secret-like env keys, declared state, encrypted state, and recommended action without printing values. The platform rollup and UI include the count so teams can see when insecure env drift is still present.
+Secret migration is now easier to do deliberately. `norn secrets migrate-plan [app]` reports plaintext secret-like env keys, declared state, encrypted state, and recommended action without printing values. The platform rollup and UI include the count so teams can see when insecure env drift is still present. `norn validate --strict-secrets` and `NORN_STRICT_SECRETS=true` turn those findings into an opt-in validation/preflight gate.
+
+Network truth is now easier to read from the terminal. `norn network` summarizes service exposure, endpoint scope, instance scope, validation hints, and guidance for local, tailnet, and public network modes.
 
 Snapshot restores can now create a safety snapshot immediately before destructive restore. The restore receipt includes the pre-restore filename, and snapshot restore/retention actions emit Beacon events.
 
 The operations ledger gives platform upgrades a real drain source. Deploys and preflights are now queued in control-plane Postgres and claimed by the API worker with leases, attempts, retry timing, and saga links. Platform upgrades can fail, wait, or force based on active rows. Webhook deliveries now get their own inbox, which makes ignored branches, signature failures, unmatched repositories, auto-deploy saga ids, replay, and preflight replay visible through the API and CLI.
 
 The durable worker lane now records deploy and rollback stage checkpoints. Read-only preflight jobs can retry safely. App deploy jobs can requeue after an API restart only when no mutable stage has started; once snapshot, migration, submit, health, forge, or cleanup has started, interruption fails visibly for operator review instead of blindly replaying runtime mutation.
+
+Proxy-backed platform upgrades are available for hosts that intentionally run Norn behind the managed Caddy upstream. `norn platform upgrade --proxy` keeps old and new APIs side by side on private ports, switches the upstream, then stops the previous proxy-managed API after postflight succeeds.
 
 ## Verification
 
@@ -78,7 +82,10 @@ The current release line has been exercised with:
 - `norn events show <event-id>`
 - `norn alerts`
 - `norn observability bundle`
+- `norn observability install`
 - `norn secrets migrate-plan`
+- `norn validate --strict-secrets`
+- `norn network`
 - `norn smoke platform`
 - `norn platform smoke`
 - `norn webhooks`

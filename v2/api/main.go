@@ -244,6 +244,7 @@ func main() {
 		r.Get("/observability/bundle", h.ObservabilityBundle)
 		r.Get("/observability/alerts.yml", h.PrometheusAlerts)
 		r.Get("/observability/prometheus.yml", h.PrometheusConfig)
+		r.Post("/observability/services/install", h.ObservabilityServicesInstall)
 		r.Get("/services/manifest", h.ServiceManifest)
 		r.Get("/ops/platform", h.PlatformOps)
 		r.Get("/platform/releases", h.PlatformReleases)

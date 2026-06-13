@@ -646,6 +646,14 @@ type ObservabilityBundle struct {
 	ServiceSpecs      map[string]string `json:"serviceSpecs"`
 }
 
+type ObservabilityInstallReceipt struct {
+	Status    string   `json:"status"`
+	AppsDir   string   `json:"appsDir"`
+	Installed []string `json:"installed"`
+	Skipped   []string `json:"skipped,omitempty"`
+	Files     []string `json:"files"`
+}
+
 // API methods
 
 func (c *Client) Health() (*HealthStatus, error) {
@@ -708,6 +716,18 @@ func (c *Client) ObservabilityBundle() (*ObservabilityBundle, error) {
 		return nil, err
 	}
 	return &bundle, nil
+}
+
+func (c *Client) InstallObservabilityServices(overwrite bool) (*ObservabilityInstallReceipt, error) {
+	path := "/api/observability/services/install"
+	if overwrite {
+		path += "?overwrite=true"
+	}
+	var receipt ObservabilityInstallReceipt
+	if err := c.postJSON(path, "{}", &receipt); err != nil {
+		return nil, err
+	}
+	return &receipt, nil
 }
 
 func (c *Client) ListOperations(active bool, limit int) ([]Operation, error) {
@@ -1048,17 +1068,25 @@ func (c *Client) ToggleEndpoint(appID, hostname string, enabled bool) error {
 	return c.post("/api/apps/"+appID+"/endpoints/toggle", body)
 }
 
-func (c *Client) ValidateAll() ([]ValidationResult, error) {
+func (c *Client) ValidateAll(strictSecrets bool) ([]ValidationResult, error) {
 	var results []ValidationResult
-	if err := c.get("/api/validate", &results); err != nil {
+	path := "/api/validate"
+	if strictSecrets {
+		path += "?strictSecrets=true"
+	}
+	if err := c.get(path, &results); err != nil {
 		return nil, err
 	}
 	return results, nil
 }
 
-func (c *Client) ValidateApp(appID string) (*ValidationResult, error) {
+func (c *Client) ValidateApp(appID string, strictSecrets bool) (*ValidationResult, error) {
 	var result ValidationResult
-	if err := c.get("/api/validate/"+appID, &result); err != nil {
+	path := "/api/validate/" + appID
+	if strictSecrets {
+		path += "?strictSecrets=true"
+	}
+	if err := c.get(path, &result); err != nil {
 		return nil, err
 	}
 	return &result, nil

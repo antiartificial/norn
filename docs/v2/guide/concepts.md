@@ -136,7 +136,18 @@ processes:
       path: /metrics
 ```
 
-Norn exposes its own control-plane metrics at `/metrics` and can generate Prometheus scrape config at `/api/observability/prometheus.yml`. See [Observability](/v2/infrastructure/observability) for the local 30-day Prometheus/Grafana setup.
+Norn exposes its own control-plane metrics at `/metrics`, can generate Prometheus scrape config at `/api/observability/prometheus.yml`, and can install generated `norn-prometheus`, `norn-grafana`, and `norn-cadvisor` app directories with `norn observability install`. See [Observability](/v2/infrastructure/observability) for the local 30-day Prometheus/Grafana setup.
+
+## Networking Truth
+
+Norn classifies endpoints and live service instances as `local`, `private`, `public`, or `none`. Use:
+
+```bash
+norn services
+norn network
+```
+
+`norn services` shows the service manifest table. `norn network` adds validation hints and guidance for the active `NORN_NETWORK_MODE`, including when to use `127.0.0.1`, `host.docker.internal`, Tailscale/private addresses, and cloudflared/public hostnames.
 
 ## Deploy Pipeline
 

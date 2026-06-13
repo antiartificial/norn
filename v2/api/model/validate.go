@@ -26,7 +26,8 @@ var envNameRe = regexp.MustCompile(`^[A-Za-z][A-Za-z0-9_]*$`)
 var kafkaTopicNameRe = regexp.MustCompile(`^[A-Za-z0-9._-]+$`)
 
 type ValidationOptions struct {
-	NetworkMode string
+	NetworkMode   string
+	StrictSecrets bool
 }
 
 func ValidateSpec(spec *InfraSpec) *ValidationResult {
@@ -91,10 +92,10 @@ func ValidateSpecWithOptions(spec *InfraSpec, opts ValidationOptions) *Validatio
 			}
 		}
 
-		validateEnvSecrets(r, field+".env", proc.Env, declaredSecrets)
+		validateEnvSecrets(r, field+".env", proc.Env, declaredSecrets, opts.StrictSecrets)
 	}
 
-	validateEnvSecrets(r, "env", spec.Env, declaredSecrets)
+	validateEnvSecrets(r, "env", spec.Env, declaredSecrets, opts.StrictSecrets)
 
 	// Build requires dockerfile
 	if spec.Build != nil && spec.Build.Dockerfile == "" {
@@ -248,17 +249,21 @@ func hostScope(host string) string {
 	return "public"
 }
 
-func validateEnvSecrets(r *ValidationResult, field string, env map[string]string, declaredSecrets map[string]bool) {
+func validateEnvSecrets(r *ValidationResult, field string, env map[string]string, declaredSecrets map[string]bool, strict bool) {
 	for key, value := range env {
 		if !looksSecretLike(key, value) {
 			continue
 		}
 		secretKey := strings.ToUpper(strings.TrimSpace(key))
+		severity := "warning"
+		if strict {
+			severity = "error"
+		}
 		if declaredSecrets[secretKey] {
-			r.add("warning", field+"."+key, "secret-like value is declared in secrets but also appears in plain env; remove the plaintext env entry")
+			r.add(severity, field+"."+key, "secret-like value is declared in secrets but also appears in plain env; remove the plaintext env entry")
 			continue
 		}
-		r.add("warning", field+"."+key, "secret-like value should move to secrets.enc.yaml and be listed in secrets")
+		r.add(severity, field+"."+key, "secret-like value should move to secrets.enc.yaml and be listed in secrets")
 	}
 }
 

@@ -25,13 +25,16 @@ The current working feature set includes:
 - Beacon event detail, acknowledgement, snooze, and reopen state
 - Built-in alert rule catalogue for deploy, service, cron, and recovery events
 - Observability bundle for local Prometheus, alert rules, Grafana provisioning, and starter service specs
+- Managed observability app installation for Prometheus, Grafana, and cAdvisor
 - Platform smoke checks for health, drain, release marker, and recent warning/critical events
 - Authenticated platform smoke through the encrypted API runtime env
 - Runtime watcher events for failed, lost, and unhealthy allocations, Consul health transitions, and cron run outcomes
 - Proxy cutover plan and optional managed proxy config/upstream commands for no-blip API upgrades
+- Proxy-backed platform upgrade mode for hosts that intentionally run Norn behind the managed Caddy upstream
 - Basic local snapshot listing and restore
 - Pre-restore safety snapshots for destructive restores
 - Value-safe secret migration planning
+- Opt-in strict plaintext-secret validation gate
 - Port conflict detection before Nomad submit
 
 For a compact summary of the current release line, see the [Norn v2 Release Recap](/v2/guide/release-recap).
@@ -72,10 +75,11 @@ Current state:
 - `norn health` shows the configured network mode.
 - `norn app <id>` shows network mode and per-process reachability from the service manifest.
 - `norn validate` warns when endpoint hosts look mismatched for the active network mode.
+- `norn network` summarizes exposure, endpoint scope, instance scope, validation hints, and mode-specific guidance.
 
 Planned work:
 
-- Document when to use `host.docker.internal`, `127.0.0.1`, Tailscale IPs, and cloudflared hostnames.
+- Add clickable network drill-downs to the dashboard.
 
 ### Secrets Hygiene
 
@@ -87,10 +91,11 @@ Current state:
 - App and process `env` values are parsed for validation but omitted from API JSON responses.
 - `norn secrets status [app]` compares declared secret keys, encrypted keys, and plaintext env warnings without printing secret values.
 - `norn secrets migrate-plan [app]` turns plaintext findings into a value-safe migration checklist with declared/encrypted status and recommended actions.
+- `norn validate --strict-secrets` and `NORN_STRICT_SECRETS=true` make plaintext secret-like env findings fail validation/preflight.
 
 Planned work:
 
-- Move sensitive DSNs and API keys into `secrets.enc.yaml`.
+- Move the remaining sensitive DSNs and API keys into `secrets.enc.yaml`.
 - Improve deploy-time secret resolution reporting.
 - Show secret names, never values, in UI and CLI app detail views.
 
@@ -131,11 +136,12 @@ Current state:
 - `/metrics` and `/api/metrics` expose Prometheus-compatible Norn control-plane metrics.
 - App processes can declare `metrics.enabled: true`; Norn registers companion metrics services and includes live scrape targets in `/api/observability/prometheus.yml`.
 - `/api/observability/bundle`, `/api/observability/alerts.yml`, and `norn observability bundle --out <dir>` package Prometheus config, alert rules, Grafana provisioning, a starter dashboard, and starter Prometheus/Grafana/cAdvisor service specs.
+- `POST /api/observability/services/install` and `norn observability install` write generated `norn-prometheus`, `norn-grafana`, and `norn-cadvisor` app directories into `NORN_APPS_DIR`.
 - `norn ops platform` and the UI Platform tab show observability bundle availability, retention target, and secret migration item counts.
 
 Planned work:
 
-- Turn the generated Prometheus, Grafana, and cAdvisor starter specs into installed managed platform services after local path and port choices are confirmed.
+- Deploy the generated observability apps on hosts that have accepted the local port and container policy choices.
 - Add downstream incident-tool links for acknowledged/snoozed Beacon events.
 - Extend runtime watchers with schedule-aware missed-run detection.
 - Add high restart rate alert rules once those signals are measured.
@@ -152,13 +158,14 @@ Current state:
 - Interrupted deploys can requeue automatically only before mutable stages begin.
 - Read-only preflights retry safely through the worker.
 - Platform candidate APIs start with recovery and workers disabled so side-by-side preflight cannot claim live work.
+- `norn platform upgrade --proxy` can boot the candidate API on a private port, switch the managed Caddy upstream, and stop the previous proxy-managed API pid after postflight.
 - `/api/platform/releases`, `norn platform releases`, and the Platform tab list installed releases.
 - Rollbacks can be started from the CLI or Platform tab through the same platform lane script.
 
 Planned work:
 
 - Add deeper stage-level resume data before enabling automatic retry after snapshot, migration, submit, or route mutation.
-- Wire optional managed local reverse proxy mode into the platform upgrade lane so port `8800` stays stable while old and new APIs run on private ports during cutover.
+- Add a host setup command that moves an existing LaunchAgent install to proxy-fronted private API ports.
 - Queue platform preflight and upgrade jobs themselves once the worker supports platform-scoped operations.
 
 ## ContextDB Items

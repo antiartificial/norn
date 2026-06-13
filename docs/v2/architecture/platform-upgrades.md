@@ -7,6 +7,7 @@ Norn treats upgrades to Norn itself as a separate platform lane. App deploys mut
 ```bash
 norn platform preflight HEAD
 norn platform upgrade HEAD
+norn platform upgrade HEAD --proxy
 ```
 
 The command shells out to `v2/scripts/platform-upgrade` on the host that owns the Norn checkout. The script:
@@ -17,7 +18,7 @@ The command shells out to `v2/scripts/platform-upgrade` on the host that owns th
 4. Starts the candidate API on `127.0.0.1:18800`.
 5. Sets `NORN_SKIP_DEPLOYMENT_RECOVERY=true`, `NORN_SKIP_OPERATION_RECOVERY=true`, and `NORN_SKIP_OPERATION_WORKER=true` for the candidate so it does not mark running work failed or claim queued work.
 6. Checks `/api/health` and `/api/version`.
-7. On upgrade, flips `$HOME/norn/current`, installs compatibility binaries to `$HOME/go/bin`, restarts `com.norn.api`, and runs postflight health.
+7. On normal upgrade, flips `$HOME/norn/current`, installs compatibility binaries to `$HOME/go/bin`, restarts `com.norn.api`, and runs postflight health.
 8. If postflight fails and a previous current release exists, flips back, reinstalls the previous binaries, and restarts again.
 
 This is low-invasive: active dashboard sessions and websocket streams reconnect, but hosted apps continue running.
@@ -94,7 +95,7 @@ The implemented preflight already runs old and new APIs side by side on differen
 | Current | `8800` | Serves users and active CLI commands |
 | Candidate | `18800` | Serves local health/version preflight only |
 
-That confirms the candidate can boot against the live environment before restart. It is not yet no-blip traffic switching.
+That confirms the candidate can boot against the live environment before restart. For hosts that have moved API ingress behind the managed proxy, `norn platform upgrade --proxy` can use side-by-side traffic switching instead of a LaunchAgent restart.
 
 Two no-blip designs are viable:
 
@@ -114,6 +115,18 @@ The platform script also provides optional managed proxy primitives:
 | `norn platform proxy-switch <port|host:port>` | Update the upstream state file and write the managed Caddyfile |
 
 `proxy-switch` reloads Caddy only when `NORN_PROXY_RELOAD=true`. This keeps the feature safe to stage before the host is intentionally moved to proxy-fronted API ports.
+
+`norn platform upgrade --proxy` sets `NORN_PLATFORM_UPGRADE_MODE=proxy` for the platform script. In that mode, the script:
+
+1. Boots the candidate API on `NORN_PROXY_CANDIDATE_PORT` unless `NORN_CANDIDATE_PORT` is set.
+2. Promotes the release symlink and compatibility binaries.
+3. Writes the managed Caddyfile with the candidate upstream.
+4. Requires `NORN_PROXY_RELOAD=true` and reloads Caddy.
+5. Runs postflight through the stable API base.
+6. Records the new API pid in `NORN_PROXY_PID_FILE`.
+7. Stops the previous proxy-managed API pid after postflight succeeds.
+
+If postflight fails after switching, the script writes the previous upstream back, reloads Caddy best-effort, and stops the failed candidate.
 
 ## Webhook Replay
 

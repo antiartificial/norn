@@ -13,11 +13,14 @@ import (
 )
 
 var observabilityOutDir string
+var observabilityInstallOverwrite bool
 
 func init() {
 	rootCmd.AddCommand(observabilityCmd)
 	observabilityCmd.AddCommand(observabilityBundleCmd)
+	observabilityCmd.AddCommand(observabilityInstallCmd)
 	observabilityBundleCmd.Flags().StringVar(&observabilityOutDir, "out", "", "Write bundle files to this directory")
+	observabilityInstallCmd.Flags().BoolVar(&observabilityInstallOverwrite, "overwrite", false, "Replace generated observability app files if they already exist")
 }
 
 var observabilityCmd = &cobra.Command{
@@ -38,6 +41,31 @@ var observabilityBundleCmd = &cobra.Command{
 			return writeObservabilityBundle(observabilityOutDir, bundle)
 		}
 		printObservabilityBundle(bundle)
+		return nil
+	},
+}
+
+var observabilityInstallCmd = &cobra.Command{
+	Use:   "install",
+	Short: "Install generated observability service apps into NORN_APPS_DIR",
+	Args:  cobra.NoArgs,
+	RunE: func(cmd *cobra.Command, args []string) error {
+		receipt, err := client.InstallObservabilityServices(observabilityInstallOverwrite)
+		if err != nil {
+			return err
+		}
+		fmt.Println(style.SuccessBox.Render("observability services installed"))
+		fmt.Printf("apps_dir=%s status=%s\n", receipt.AppsDir, receipt.Status)
+		for _, app := range receipt.Installed {
+			fmt.Printf("  app %s\n", app)
+		}
+		if len(receipt.Files) > 0 {
+			fmt.Println()
+			fmt.Println(style.Subtitle.Render("  files"))
+			for _, file := range receipt.Files {
+				fmt.Printf("  %s\n", file)
+			}
+		}
 		return nil
 	},
 }

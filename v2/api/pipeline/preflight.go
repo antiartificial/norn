@@ -50,6 +50,15 @@ func (p *Pipeline) Preflight(spec *model.InfraSpec, ref string) string {
 	return sg.ID
 }
 
+func truthyEnv(key string) bool {
+	switch strings.ToLower(strings.TrimSpace(os.Getenv(key))) {
+	case "1", "true", "yes", "on":
+		return true
+	default:
+		return false
+	}
+}
+
 func (p *Pipeline) runPreflight(ctx context.Context, spec *model.InfraSpec, ref string, sg *saga.Saga, operationID string) {
 	st := &state{
 		spec:      spec,
@@ -117,7 +126,10 @@ func (p *Pipeline) runPreflight(ctx context.Context, spec *model.InfraSpec, ref 
 }
 
 func (p *Pipeline) preflightValidate(ctx context.Context, st *state, sg *saga.Saga) error {
-	result := model.ValidateSpecWithOptions(st.spec, model.ValidationOptions{NetworkMode: p.NetworkMode})
+	result := model.ValidateSpecWithOptions(st.spec, model.ValidationOptions{
+		NetworkMode:   p.NetworkMode,
+		StrictSecrets: truthyEnv("NORN_STRICT_SECRETS"),
+	})
 	for _, finding := range result.Findings {
 		p.preflightProgress(ctx, st.spec.App, sg, fmt.Sprintf("%s %s: %s", finding.Severity, finding.Field, finding.Message), map[string]string{
 			"severity": finding.Severity,

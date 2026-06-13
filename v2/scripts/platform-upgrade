@@ -32,6 +32,7 @@ Environment:
   NORN_CANDIDATE_PORT      Candidate API port. Defaults to 18800.
   NORN_DRAIN_MODE          fail, wait, or force. Defaults to fail.
   NORN_SKIP_CANDIDATE_API  Set true to skip candidate API boot.
+  NORN_PLATFORM_UPGRADE_MODE restart or proxy. Defaults to restart.
   NORN_PROXY_LISTEN        Stable proxy listen address. Defaults to :8800.
   NORN_PROXY_ACTIVE_PORT   Active API private port. Defaults to 18801.
   NORN_PROXY_CANDIDATE_PORT Candidate API private port. Defaults to 18802.
@@ -86,9 +87,15 @@ proxy_candidate_port="${NORN_PROXY_CANDIDATE_PORT:-18802}"
 proxy_dir="${NORN_PROXY_DIR:-$HOME/norn/proxy}"
 proxy_upstream_file="${NORN_PROXY_UPSTREAM_FILE:-$proxy_dir/upstream}"
 proxy_caddyfile="${NORN_PROXY_CADDYFILE:-$proxy_dir/Caddyfile}"
+proxy_pid_file="${NORN_PROXY_PID_FILE:-$proxy_dir/api.pid}"
 proxy_reload="${NORN_PROXY_RELOAD:-false}"
+upgrade_mode="${NORN_PLATFORM_UPGRADE_MODE:-restart}"
 api_env_file="${NORN_API_ENV_FILE:-$HOME/.config/norn/api.env.enc.json}"
 sops_bin="${NORN_SOPS_BIN:-sops}"
+
+if [[ "$upgrade_mode" == "proxy" && -z "${NORN_CANDIDATE_PORT:-}" ]]; then
+  candidate_port="$proxy_candidate_port"
+fi
 
 run_with_api_env() {
   require_cmd python3
@@ -185,8 +192,12 @@ EOF
 fi
 
 if [[ "$mode" == "proxy-status" ]]; then
-  printf 'LISTEN\tUPSTREAM\tCADDYFILE\tRELOAD\n'
-  printf '%s\t%s\t%s\t%s\n' "$proxy_listen" "$(current_proxy_upstream)" "$proxy_caddyfile" "$proxy_reload"
+  printf 'LISTEN\tUPSTREAM\tPID\tCADDYFILE\tRELOAD\n'
+  current_pid="-"
+  if [[ -f "$proxy_pid_file" ]]; then
+    current_pid="$(head -1 "$proxy_pid_file")"
+  fi
+  printf '%s\t%s\t%s\t%s\t%s\n' "$proxy_listen" "$(current_proxy_upstream)" "$current_pid" "$proxy_caddyfile" "$proxy_reload"
   exit 0
 fi
 
@@ -337,8 +348,12 @@ release="$releases/$sha"
 work_root="$(mktemp -d "${TMPDIR:-/tmp}/norn-platform.XXXXXX")"
 worktree="$work_root/src"
 candidate_pid=""
+keep_candidate=false
 
 cleanup() {
+  if [[ "$keep_candidate" == "true" ]]; then
+    candidate_pid=""
+  fi
   if [[ -n "$candidate_pid" ]] && kill -0 "$candidate_pid" >/dev/null 2>&1; then
     kill "$candidate_pid" >/dev/null 2>&1 || true
     for _ in 1 2 3 4 5 6 7 8 9 10; do
@@ -414,7 +429,17 @@ candidate_preflight() {
 
   log "starting candidate API on 127.0.0.1:$candidate_port"
   pushd "$repo" >/dev/null
-  env \
+  if [[ "$upgrade_mode" == "proxy" ]]; then
+    nohup env \
+      NORN_PORT="$candidate_port" \
+      NORN_BIND_ADDR="${NORN_BIND_ADDR:-127.0.0.1}" \
+      NORN_UI_DIR="$release/ui" \
+      NORN_SKIP_DEPLOYMENT_RECOVERY=true \
+      NORN_SKIP_OPERATION_RECOVERY=true \
+      NORN_SKIP_OPERATION_WORKER=true \
+      "$release/bin/norn-api" >"$release/logs/proxy-candidate-api.log" 2>&1 &
+  else
+    env \
     NORN_PORT="$candidate_port" \
     NORN_BIND_ADDR="${NORN_BIND_ADDR:-127.0.0.1}" \
     NORN_UI_DIR="$release/ui" \
@@ -422,11 +447,13 @@ candidate_preflight() {
     NORN_SKIP_OPERATION_RECOVERY=true \
     NORN_SKIP_OPERATION_WORKER=true \
     "$release/bin/norn-api" >"$release/logs/candidate-api.log" 2>&1 &
+  fi
   candidate_pid="$!"
   popd >/dev/null
 
   if ! wait_health "http://127.0.0.1:$candidate_port" 30; then
     tail -80 "$release/logs/candidate-api.log" >&2 || true
+    tail -80 "$release/logs/proxy-candidate-api.log" >&2 || true
     fail "candidate API did not become healthy"
   fi
   curl -fsS "http://127.0.0.1:$candidate_port/api/version" | tee "$release/logs/candidate-version.json"
@@ -474,6 +501,68 @@ promote_release() {
   fail "upgrade failed and no previous release symlink was available"
 }
 
+stop_pid_if_running() {
+  local pid="$1"
+  [[ -n "$pid" && "$pid" != "-" ]] || return 0
+  kill -0 "$pid" >/dev/null 2>&1 || return 0
+  kill "$pid" >/dev/null 2>&1 || true
+  for _ in 1 2 3 4 5; do
+    if ! kill -0 "$pid" >/dev/null 2>&1; then
+      return 0
+    fi
+    sleep 1
+  done
+  kill -9 "$pid" >/dev/null 2>&1 || true
+}
+
+reload_proxy() {
+  if [[ "$proxy_reload" != "true" ]]; then
+    fail "proxy upgrade requires NORN_PROXY_RELOAD=true so the stable listener actually switches upstream"
+  fi
+  require_cmd caddy
+  caddy reload --config "$proxy_caddyfile"
+}
+
+promote_release_proxy() {
+  [[ -n "$candidate_pid" ]] || fail "proxy upgrade requires a running candidate API"
+  mkdir -p "$(dirname "$current_link")" "$bin_dir" "$proxy_dir"
+  previous_upstream="$(current_proxy_upstream)"
+  previous_pid="-"
+  if [[ -f "$proxy_pid_file" ]]; then
+    previous_pid="$(head -1 "$proxy_pid_file")"
+  fi
+
+  log "promoting $release with proxy cutover"
+  ln -sfn "$release" "$current_link"
+  install -m 0755 "$release/bin/norn-api" "$bin_dir/norn-api"
+  install -m 0755 "$release/bin/norn" "$bin_dir/norn"
+
+  printf '127.0.0.1:%s\n' "$candidate_port" > "$proxy_upstream_file"
+  write_proxy_config
+  if ! reload_proxy; then
+    printf '%s\n' "$previous_upstream" > "$proxy_upstream_file"
+    write_proxy_config
+    fail "proxy reload failed before cutover"
+  fi
+
+  if postflight; then
+    printf '%s\n' "$candidate_pid" > "$proxy_pid_file"
+    keep_candidate=true
+    if [[ "$previous_pid" != "$candidate_pid" ]]; then
+      stop_pid_if_running "$previous_pid"
+    fi
+    log "proxy upgrade complete: $version"
+    return 0
+  fi
+
+  log "postflight failed; restoring previous proxy upstream"
+  printf '%s\n' "$previous_upstream" > "$proxy_upstream_file"
+  write_proxy_config
+  caddy reload --config "$proxy_caddyfile" >/dev/null 2>&1 || true
+  stop_pid_if_running "$candidate_pid"
+  fail "proxy upgrade failed and previous upstream restored"
+}
+
 if [[ "$mode" == "rollback" ]]; then
   release="$(resolve_release "${1:-}")"
   version="$(basename "$release")"
@@ -491,7 +580,11 @@ candidate_preflight
 
 if [[ "$mode" == "upgrade" ]]; then
   drain_check
-  promote_release
+  if [[ "$upgrade_mode" == "proxy" ]]; then
+    promote_release_proxy
+  else
+    promote_release
+  fi
 else
   log "preflight complete: $version"
 fi
