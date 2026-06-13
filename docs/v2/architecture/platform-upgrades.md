@@ -27,9 +27,12 @@ The platform lane also supports:
 ```bash
 norn platform releases
 norn platform rollback <sha-prefix>
+norn platform proxy-plan
 ```
 
 Release metadata is written to each release directory as `release.env` and `release.json`.
+
+`norn smoke platform` is the post-upgrade smoke surface for authenticated shells. It checks `/api/health`, platform operations, active operation drain, current release marker, and recent warning/critical Beacon events.
 
 ## Drain Gate
 
@@ -64,6 +67,9 @@ Current queued job types:
 |------|---------|
 | `app.preflight` | Run validation, source prep, build, and tests with safe retries |
 | `app.deploy` | Queue app deploys and run them under worker/drain visibility |
+| `app.rollback` | Queue app rollback through the same worker/drain lane |
+
+Deploy and rollback execution writes durable stage rows to `deployment_steps`. On restart, interrupted deploys are requeued only if no mutable stage has started. Mutable stages include snapshot, migration, Nomad submit, health, forge, and cleanup.
 
 Good next queued job types:
 
@@ -71,7 +77,6 @@ Good next queued job types:
 |------|---------|
 | `platform.preflight` | Build and candidate-health-check a platform release from the API/UI |
 | `platform.upgrade` | Promote a preflighted release and run rollback-capable postflight |
-| `app.rollback` | Move app rollback into the same worker lane |
 
 ## Old/New API Side By Side
 
@@ -90,6 +95,8 @@ Two no-blip designs are viable:
 2. **launchd socket activation.** Let launchd own the listening socket and pass it to the API process. The replacement process can accept on the same socket after launchd restarts it. This is elegant on macOS but requires API support for inherited sockets.
 
 The proxy path is the more straightforward next step because it does not require changing Go's listener startup model. The durable queue is still necessary for truly graceful operations, because a proxy can preserve traffic availability but cannot make an in-memory deploy goroutine survive process exit.
+
+`norn platform proxy-plan` prints a Caddy-style local reverse-proxy plan with stable ingress on one port and old/new API releases on private ports. It is a scaffold only; it does not install or mutate local proxy state.
 
 ## Webhook Replay
 

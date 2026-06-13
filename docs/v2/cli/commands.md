@@ -67,6 +67,7 @@ norn platform preflight [ref]
 norn platform upgrade [ref]
 norn platform releases
 norn platform rollback <sha-prefix>
+norn platform proxy-plan
 ```
 
 `norn platform preflight` builds Norn from an isolated git worktree into `$HOME/norn/releases/<sha>`, starts the candidate API on `127.0.0.1:18800`, and verifies health/version without restarting the active API.
@@ -74,6 +75,8 @@ norn platform rollback <sha-prefix>
 `norn platform upgrade` performs the same preflight, promotes `$HOME/norn/current`, installs compatibility binaries into `$HOME/go/bin`, restarts only `com.norn.api`, and rolls back to the previous release if postflight health fails.
 
 `norn platform releases` lists local release directories. `norn platform rollback <sha-prefix>` promotes a previous local release and runs the same postflight health check.
+
+`norn platform proxy-plan` prints a no-blip reverse-proxy cutover plan. It does not install or mutate proxy state.
 
 | Flag | Default | Description |
 |------|---------|-------------|
@@ -95,6 +98,34 @@ Operations summarize long-running work such as app preflights, deploys, and roll
 |------|---------|-------------|
 | `--active` | `false` | Only show queued/running operations |
 | `--limit` | `25` | Maximum operations to show |
+
+## events
+
+Show recent Norn Beacon events.
+
+```bash
+norn events
+norn events --severity critical
+norn events --app contextdb --limit 10
+```
+
+| Flag | Default | Description |
+|------|---------|-------------|
+| `--app` | — | Filter events by app |
+| `--type` | — | Filter events by type |
+| `--severity` | — | Filter events by severity |
+| `--limit` | `25` | Maximum events to show |
+
+## smoke
+
+Run operational smoke checks.
+
+```bash
+norn smoke platform
+norn smoke contextdb
+```
+
+`norn smoke platform` checks API health, platform rollup, active operation drain, current release marker, and recent warning/critical Beacon events. It requires authenticated API access when the platform is protected.
 
 ## webhooks
 

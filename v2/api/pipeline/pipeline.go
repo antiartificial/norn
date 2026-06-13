@@ -84,7 +84,7 @@ func (p *Pipeline) Run(spec *model.InfraSpec, ref string) string {
 		Source:      "pipeline",
 		Message:     fmt.Sprintf("queued deploy for %s", spec.App),
 		StartedAt:   deploy.StartedAt,
-		MaxAttempts: 1,
+		MaxAttempts: 2,
 		Payload: map[string]interface{}{
 			"deploymentId": deploy.ID,
 			"app":          spec.App,
@@ -141,7 +141,33 @@ func (p *Pipeline) ExecuteOperation(ctx context.Context, op *model.Operation) er
 			"deploymentId": deploymentID,
 			"attempt":      strconv.Itoa(op.Attempts),
 		})
-		p.run(ctx, spec, deploy, sg, op.ID)
+		p.run(ctx, spec, deploy, sg, op.ID, op.Attempts)
+		return nil
+	case "app.rollback":
+		deploymentID := stringFromMap(op.Payload, "deploymentId")
+		if deploymentID == "" {
+			deploymentID = stringFromMap(op.Metadata, "deploymentId")
+		}
+		if deploymentID == "" {
+			return fmt.Errorf("operation %s missing deployment id", op.ID)
+		}
+		imageTag := stringFromMap(op.Payload, "imageTag")
+		if imageTag == "" {
+			imageTag = stringFromMap(op.Metadata, "imageTag")
+		}
+		if imageTag == "" {
+			return fmt.Errorf("operation %s missing rollback image tag", op.ID)
+		}
+		deploy, err := p.DB.GetDeployment(ctx, deploymentID)
+		if err != nil {
+			return fmt.Errorf("load deployment %s: %w", deploymentID, err)
+		}
+		sg.Log(ctx, "rollback.start", fmt.Sprintf("rolling back %s to %s", spec.App, imageTag), map[string]string{
+			"operationId":  op.ID,
+			"deploymentId": deploymentID,
+			"attempt":      strconv.Itoa(op.Attempts),
+		})
+		p.runRollback(ctx, spec, deploy, sg, imageTag, op.ID, op.Attempts)
 		return nil
 	case "app.preflight":
 		sg.Log(ctx, "preflight.start", fmt.Sprintf("preflighting %s (ref: %s)", spec.App, op.Ref), map[string]string{
@@ -173,7 +199,7 @@ func stringFromMap(values map[string]interface{}, key string) string {
 	}
 }
 
-func (p *Pipeline) run(ctx context.Context, spec *model.InfraSpec, deploy *model.Deployment, sg *saga.Saga, operationID string) {
+func (p *Pipeline) run(ctx context.Context, spec *model.InfraSpec, deploy *model.Deployment, sg *saga.Saga, operationID string, attempt int) {
 	st := &state{
 		spec:      spec,
 		commitSHA: deploy.CommitSHA,
@@ -196,6 +222,7 @@ func (p *Pipeline) run(ctx context.Context, spec *model.InfraSpec, deploy *model
 	for i, s := range steps {
 		idx := fmt.Sprintf("%d", i+1)
 		sg.StepStart(ctx, s.name)
+		p.recordDeploymentStepStart(ctx, deploy, sg, s.name, operationID, attempt)
 		p.WS.Broadcast(hub.Event{Type: "deploy.step", AppID: spec.App, Payload: map[string]string{
 			"step":   s.name,
 			"sagaId": sg.ID,
@@ -210,6 +237,9 @@ func (p *Pipeline) run(ctx context.Context, spec *model.InfraSpec, deploy *model
 
 		if err != nil {
 			sg.StepFailed(ctx, s.name, err)
+			p.recordDeploymentStepFinish(ctx, deploy.ID, s.name, model.DeploymentStepFailed, elapsed, err.Error(), map[string]interface{}{
+				"operationId": operationID,
+			})
 			p.WS.Broadcast(hub.Event{Type: "deploy.step", AppID: spec.App, Payload: map[string]string{
 				"step":       s.name,
 				"sagaId":     sg.ID,
@@ -250,6 +280,9 @@ func (p *Pipeline) run(ctx context.Context, spec *model.InfraSpec, deploy *model
 		}
 
 		sg.StepComplete(ctx, s.name, elapsed)
+		p.recordDeploymentStepFinish(ctx, deploy.ID, s.name, model.DeploymentStepComplete, elapsed, "", map[string]interface{}{
+			"operationId": operationID,
+		})
 		p.WS.Broadcast(hub.Event{Type: "deploy.step", AppID: spec.App, Payload: map[string]string{
 			"step":       s.name,
 			"sagaId":     sg.ID,
@@ -301,6 +334,31 @@ func (p *Pipeline) run(ctx context.Context, spec *model.InfraSpec, deploy *model
 			"sourceRef":    st.sourceRef,
 		},
 	})
+}
+
+func (p *Pipeline) recordDeploymentStepStart(ctx context.Context, deploy *model.Deployment, sg *saga.Saga, stepName, operationID string, attempt int) {
+	if p.DB == nil || deploy == nil {
+		return
+	}
+	_ = p.DB.StartDeploymentStep(ctx, model.DeploymentStep{
+		DeploymentID: deploy.ID,
+		App:          deploy.App,
+		SagaID:       sg.ID,
+		Step:         stepName,
+		Status:       model.DeploymentStepRunning,
+		Attempt:      attempt,
+		Message:      "step started",
+		Metadata: map[string]interface{}{
+			"operationId": operationID,
+		},
+	})
+}
+
+func (p *Pipeline) recordDeploymentStepFinish(ctx context.Context, deploymentID, stepName string, status model.DeploymentStepStatus, durationMs int64, message string, metadata map[string]interface{}) {
+	if p.DB == nil || deploymentID == "" {
+		return
+	}
+	_ = p.DB.FinishDeploymentStep(ctx, deploymentID, stepName, status, durationMs, message, metadata)
 }
 
 func (p *Pipeline) emitBeacon(ctx context.Context, event model.BeaconEvent) {

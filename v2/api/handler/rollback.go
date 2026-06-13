@@ -1,27 +1,18 @@
 package handler
 
 import (
-	"context"
 	"fmt"
-	"log"
 	"net/http"
-	"os"
-	"time"
 
 	"github.com/go-chi/chi/v5"
-	"github.com/google/uuid"
 
-	"norn/v2/api/hub"
 	"norn/v2/api/model"
-	"norn/v2/api/nomad"
-	"norn/v2/api/saga"
 )
 
 func (h *Handler) Rollback(w http.ResponseWriter, r *http.Request) {
 	id := chi.URLParam(r, "id")
 	ctx := r.Context()
 
-	// Find app spec
 	specs, err := model.DiscoverApps(h.cfg.AppsDir)
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, err.Error())
@@ -39,7 +30,6 @@ func (h *Handler) Rollback(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Get current deployment
 	deployments, err := h.db.ListDeployments(ctx, id, 1)
 	if err != nil || len(deployments) == 0 {
 		writeError(w, http.StatusNotFound, "no current deployment found")
@@ -47,133 +37,16 @@ func (h *Handler) Rollback(w http.ResponseWriter, r *http.Request) {
 	}
 	current := deployments[0]
 
-	// Find previous successful deployment
 	prev, err := h.db.LastSuccessfulDeployment(ctx, id, current.ID)
 	if err != nil {
 		writeError(w, http.StatusNotFound, "no previous successful deployment to roll back to")
 		return
 	}
 
-	// Create saga
-	sg := saga.New(h.sagaStore, id, "api", "rollback")
-	sg.Log(ctx, "rollback.start", fmt.Sprintf("rolling back %s to %s", id, prev.ImageTag), nil)
-
-	// Create deployment record
-	deploy := &model.Deployment{
-		ID:            uuid.New().String(),
-		App:           id,
-		CommitSHA:     prev.CommitSHA,
-		ImageTag:      prev.ImageTag,
-		SagaID:        sg.ID,
-		Status:        model.StatusQueued,
-		SourceKind:    "rollback",
-		SourceRef:     prev.ID,
-		SourceDirty:   prev.SourceDirty,
-		SourceChanges: prev.SourceChanges,
-		StartedAt:     time.Now(),
-	}
-	if err := h.db.InsertDeployment(ctx, deploy); err != nil {
-		log.Printf("rollback: insert deployment: %v", err)
-	}
-	operationID := uuid.New().String()
-	if err := h.db.InsertOperation(ctx, &model.Operation{
-		ID:        operationID,
-		Kind:      "app.rollback",
-		App:       id,
-		SagaID:    sg.ID,
-		Ref:       prev.ID,
-		Status:    model.OperationRunning,
-		Risk:      "app rolling update",
-		Source:    "api",
-		Message:   fmt.Sprintf("rolling back %s", id),
-		StartedAt: deploy.StartedAt,
-		Metadata: map[string]interface{}{
-			"deploymentId": deploy.ID,
-			"imageTag":     prev.ImageTag,
-		},
-	}); err != nil {
-		log.Printf("rollback: insert operation: %v", err)
-		operationID = ""
-	}
-
-	// Run rollback async
-	go h.runRollback(spec, deploy, sg, prev.ImageTag, operationID)
-
+	sagaID := h.pipeline.Rollback(spec, current, prev)
 	writeJSON(w, map[string]string{
-		"sagaId":   sg.ID,
-		"status":   "rolling_back",
+		"sagaId":   sagaID,
+		"status":   "queued",
 		"imageTag": prev.ImageTag,
 	})
-}
-
-func (h *Handler) runRollback(spec *model.InfraSpec, deploy *model.Deployment, sg *saga.Saga, imageTag string, operationID string) {
-	ctx := context.Background()
-
-	steps := []struct {
-		name string
-		fn   func() error
-	}{
-		{"resolve-secrets", func() error {
-			env := make(map[string]string)
-			if h.secrets != nil {
-				secretEnv, err := h.secrets.EnvMap(spec.App)
-				if err != nil && !os.IsNotExist(err) {
-					return fmt.Errorf("resolve secrets: %w", err)
-				}
-				for k, v := range secretEnv {
-					env[k] = v
-				}
-			}
-			job := nomad.Translate(spec, imageTag, env)
-			_, err := h.nomad.SubmitJob(job)
-			return err
-		}},
-		{"healthy", func() error {
-			return h.nomad.WaitHealthy(ctx, spec.App, 5*time.Minute)
-		}},
-	}
-
-	for _, s := range steps {
-		sg.StepStart(ctx, s.name)
-		h.ws.Broadcast(hub.Event{Type: "deploy.step", AppID: spec.App, Payload: map[string]string{
-			"step": s.name, "sagaId": sg.ID, "status": "running",
-		}})
-
-		if err := s.fn(); err != nil {
-			sg.StepFailed(ctx, s.name, err)
-			h.ws.Broadcast(hub.Event{Type: "deploy.step", AppID: spec.App, Payload: map[string]string{
-				"step": s.name, "sagaId": sg.ID, "status": "failed",
-			}})
-			h.db.UpdateDeployment(ctx, deploy.ID, model.StatusFailed)
-			if operationID != "" {
-				_ = h.db.FinishOperation(ctx, operationID, model.OperationFailed, fmt.Sprintf("rollback failed at %s: %v", s.name, err), map[string]interface{}{
-					"deploymentId": deploy.ID,
-					"step":         s.name,
-				})
-			}
-			sg.Log(ctx, "deploy.failed", fmt.Sprintf("rollback failed at %s: %v", s.name, err), nil)
-			h.ws.Broadcast(hub.Event{Type: "deploy.failed", AppID: spec.App, Payload: map[string]string{
-				"sagaId": sg.ID, "error": err.Error(),
-			}})
-			return
-		}
-
-		sg.StepComplete(ctx, s.name, 0)
-		h.ws.Broadcast(hub.Event{Type: "deploy.step", AppID: spec.App, Payload: map[string]string{
-			"step": s.name, "sagaId": sg.ID, "status": "complete",
-		}})
-	}
-
-	deploy.Status = model.StatusDeployed
-	h.db.UpdateDeployment(ctx, deploy.ID, deploy.Status)
-	if operationID != "" {
-		_ = h.db.FinishOperation(ctx, operationID, model.OperationSucceeded, fmt.Sprintf("rollback complete: %s", spec.App), map[string]interface{}{
-			"deploymentId": deploy.ID,
-			"imageTag":     imageTag,
-		})
-	}
-	sg.Log(ctx, "deploy.complete", fmt.Sprintf("rollback complete: %s → %s", spec.App, imageTag), nil)
-	h.ws.Broadcast(hub.Event{Type: "deploy.completed", AppID: spec.App, Payload: map[string]string{
-		"sagaId": sg.ID, "imageTag": imageTag,
-	}})
 }

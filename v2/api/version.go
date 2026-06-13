@@ -1,3 +1,3 @@
 package main
 
-var Version = "v2.4.0-workers"
+var Version = "v2.5.0-continuity"

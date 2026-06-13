@@ -22,6 +22,7 @@ func init() {
 	platformCmd.AddCommand(platformUpgradeCmd)
 	platformCmd.AddCommand(platformReleasesCmd)
 	platformCmd.AddCommand(platformRollbackCmd)
+	platformCmd.AddCommand(platformProxyPlanCmd)
 }
 
 var platformCmd = &cobra.Command{
@@ -70,6 +71,15 @@ var platformRollbackCmd = &cobra.Command{
 	Args:  cobra.ExactArgs(1),
 	RunE: func(cmd *cobra.Command, args []string) error {
 		return runPlatformUpgradeScript("rollback", args[0])
+	},
+}
+
+var platformProxyPlanCmd = &cobra.Command{
+	Use:   "proxy-plan",
+	Short: "Print a no-blip local reverse-proxy cutover plan",
+	Args:  cobra.NoArgs,
+	RunE: func(cmd *cobra.Command, args []string) error {
+		return runPlatformUpgradeScript("proxy-plan", "")
 	},
 }
 

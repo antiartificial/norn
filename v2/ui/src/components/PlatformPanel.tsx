@@ -112,9 +112,22 @@ interface PlatformReleaseList {
   }>
 }
 
+interface BeaconEventList {
+  total: number
+  events: Array<{
+    id: string
+    app?: string
+    type: string
+    severity: string
+    title: string
+    occurredAt: string
+  }>
+}
+
 export function PlatformPanel() {
   const [summary, setSummary] = useState<PlatformSummary | null>(null)
   const [releases, setReleases] = useState<PlatformReleaseList | null>(null)
+  const [beaconEvents, setBeaconEvents] = useState<BeaconEventList | null>(null)
   const [busyRelease, setBusyRelease] = useState<string | null>(null)
   const [error, setError] = useState<string | null>(null)
 
@@ -122,17 +135,21 @@ export function PlatformPanel() {
     let cancelled = false
     async function load() {
       try {
-        const [opsRes, releasesRes] = await Promise.all([
+        const [opsRes, releasesRes, eventsRes] = await Promise.all([
           fetch(apiUrl('/api/ops/platform'), fetchOpts),
           fetch(apiUrl('/api/platform/releases'), fetchOpts),
+          fetch(apiUrl('/api/events?limit=8'), fetchOpts),
         ])
         if (!opsRes.ok) throw new Error(await opsRes.text())
         if (!releasesRes.ok) throw new Error(await releasesRes.text())
+        if (!eventsRes.ok) throw new Error(await eventsRes.text())
         const data = await opsRes.json()
         const releaseData = await releasesRes.json()
+        const eventData = await eventsRes.json()
         if (!cancelled) {
           setSummary(data)
           setReleases(releaseData)
+          setBeaconEvents(eventData)
           setError(null)
         }
       } catch (err) {
@@ -160,6 +177,7 @@ export function PlatformPanel() {
   const dirtyTone = dirtyDeployments.length > 0 ? 'warn' : 'ok'
   const snapshotTone = snapshots.some((s) => s.overLimit > 0) ? 'warn' : 'ok'
   const platformReleases = releases?.releases ?? []
+  const recentBeaconEvents = beaconEvents?.events ?? []
 
   async function rollbackRelease(sha: string) {
     setBusyRelease(sha)
@@ -288,6 +306,22 @@ export function PlatformPanel() {
             ))}
           </div>
         ) : <div className="ops-empty">No platform releases found</div>}
+      </section>
+
+      <section className="ops-section">
+        <h3>Beacon Events</h3>
+        {recentBeaconEvents.length > 0 ? (
+          <div className="ops-table">
+            <div className="ops-row ops-row-head ops-row-events">
+              <span>Time</span><span>Severity</span><span>Type</span><span>App</span><span>Title</span>
+            </div>
+            {recentBeaconEvents.map((event) => (
+              <div className="ops-row ops-row-events" key={event.id}>
+                <span>{formatTime(event.occurredAt)}</span><span>{event.severity}</span><span>{event.type}</span><span>{event.app || '-'}</span><span>{event.title}</span>
+              </div>
+            ))}
+          </div>
+        ) : <div className="ops-empty">No Beacon events recorded</div>}
       </section>
 
       <section className="ops-section">

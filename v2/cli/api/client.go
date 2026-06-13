@@ -201,6 +201,20 @@ type Deployment struct {
 	StartedAt     string   `json:"startedAt"`
 }
 
+type DeploymentStep struct {
+	DeploymentID string                 `json:"deploymentId"`
+	App          string                 `json:"app"`
+	SagaID       string                 `json:"sagaId"`
+	Step         string                 `json:"step"`
+	Status       string                 `json:"status"`
+	Attempt      int                    `json:"attempt,omitempty"`
+	StartedAt    string                 `json:"startedAt"`
+	FinishedAt   string                 `json:"finishedAt,omitempty"`
+	DurationMs   int64                  `json:"durationMs,omitempty"`
+	Message      string                 `json:"message,omitempty"`
+	Metadata     map[string]interface{} `json:"metadata,omitempty"`
+}
+
 type SagaEvent struct {
 	ID        string            `json:"id"`
 	SagaID    string            `json:"sagaId"`
@@ -287,6 +301,20 @@ type AccessEvent struct {
 	CFIP       string `json:"cfConnectingIp,omitempty"`
 	CFEmail    string `json:"cfAccessEmail,omitempty"`
 	UserAgent  string `json:"userAgent,omitempty"`
+}
+
+type BeaconEvent struct {
+	ID          string                 `json:"id"`
+	Source      string                 `json:"source"`
+	App         string                 `json:"app,omitempty"`
+	Environment string                 `json:"environment,omitempty"`
+	Type        string                 `json:"type"`
+	Severity    string                 `json:"severity"`
+	Title       string                 `json:"title"`
+	Body        string                 `json:"body"`
+	DedupeKey   string                 `json:"dedupeKey"`
+	OccurredAt  string                 `json:"occurredAt"`
+	Metadata    map[string]interface{} `json:"metadata,omitempty"`
 }
 
 type CronState struct {
@@ -514,6 +542,19 @@ type WebhookReplayResponse struct {
 	Status string `json:"status"`
 }
 
+type PlatformReleaseList struct {
+	Current  string            `json:"current,omitempty"`
+	Releases []PlatformRelease `json:"releases"`
+}
+
+type PlatformRelease struct {
+	SHA       string `json:"sha"`
+	Version   string `json:"version"`
+	CreatedAt string `json:"createdAt"`
+	Path      string `json:"path"`
+	Current   bool   `json:"current"`
+}
+
 type PlatformServiceSummary struct {
 	Total    int            `json:"total"`
 	ByType   map[string]int `json:"byType"`
@@ -636,6 +677,52 @@ func (c *Client) ListOperations(active bool, limit int) ([]Operation, error) {
 		return nil, err
 	}
 	return resp.Operations, nil
+}
+
+func (c *Client) ListEvents(app, eventType, severity string, limit int) ([]BeaconEvent, int, error) {
+	values := url.Values{}
+	if app != "" {
+		values.Set("app", app)
+	}
+	if eventType != "" {
+		values.Set("type", eventType)
+	}
+	if severity != "" {
+		values.Set("severity", severity)
+	}
+	if limit > 0 {
+		values.Set("limit", fmt.Sprintf("%d", limit))
+	}
+	path := "/api/events"
+	if encoded := values.Encode(); encoded != "" {
+		path += "?" + encoded
+	}
+	var resp struct {
+		Events []BeaconEvent `json:"events"`
+		Total  int           `json:"total"`
+	}
+	if err := c.get(path, &resp); err != nil {
+		return nil, 0, err
+	}
+	return resp.Events, resp.Total, nil
+}
+
+func (c *Client) PlatformReleases() (*PlatformReleaseList, error) {
+	var releases PlatformReleaseList
+	if err := c.get("/api/platform/releases", &releases); err != nil {
+		return nil, err
+	}
+	return &releases, nil
+}
+
+func (c *Client) DeploymentSteps(deploymentID string) ([]DeploymentStep, error) {
+	var resp struct {
+		Steps []DeploymentStep `json:"steps"`
+	}
+	if err := c.get("/api/deployments/"+url.PathEscape(deploymentID)+"/steps", &resp); err != nil {
+		return nil, err
+	}
+	return resp.Steps, nil
 }
 
 func (c *Client) ListWebhookDeliveries(limit int) ([]WebhookDelivery, error) {

@@ -250,6 +250,7 @@ func main() {
 		r.Post("/ops/contextdb/feedback/{eventID}/rollback", h.ContextDBRollbackFeedback)
 		r.Get("/apps", h.ListApps)
 		r.Get("/deployments", h.ListDeployments)
+		r.Get("/deployments/{id}/steps", h.ListDeploymentSteps)
 		r.Get("/operations", h.ListOperations)
 		r.Get("/operations/active", h.ActiveOperations)
 		r.Get("/events", h.ListEvents)
