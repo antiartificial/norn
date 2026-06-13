@@ -164,6 +164,7 @@ func observabilityServiceFiles(bundle observabilityBundle) map[string]map[string
 		"norn-prometheus": {
 			"infraspec.yaml": prometheusServiceSpec(),
 			"Dockerfile": `FROM prom/prometheus:v2.55.1
+ENTRYPOINT []
 COPY prometheus.yml /etc/prometheus/prometheus.yml
 COPY rules /etc/prometheus/rules
 `,
@@ -174,6 +175,7 @@ COPY rules /etc/prometheus/rules
 		"norn-grafana": {
 			"infraspec.yaml": grafanaServiceSpec(),
 			"Dockerfile": `FROM grafana/grafana:11.5.2
+ENTRYPOINT []
 COPY provisioning /etc/grafana/provisioning
 COPY dashboards /var/lib/grafana/dashboards
 `,
@@ -185,6 +187,7 @@ COPY dashboards /var/lib/grafana/dashboards
 		"norn-cadvisor": {
 			"infraspec.yaml": cadvisorServiceSpec(),
 			"Dockerfile": `FROM gcr.io/cadvisor/cadvisor:v0.49.1
+ENTRYPOINT []
 `,
 			"README.md": observabilityServiceReadme("cAdvisor", "norn-cadvisor"),
 		},
@@ -247,7 +250,7 @@ build:
 processes:
   web:
     port: 9090
-    command: prometheus --config.file=/etc/prometheus/prometheus.yml --storage.tsdb.path=/prometheus --storage.tsdb.retention.time=30d --storage.tsdb.retention.size=8GB --web.enable-lifecycle
+    command: /bin/prometheus --config.file=/etc/prometheus/prometheus.yml --storage.tsdb.path=/prometheus --storage.tsdb.retention.time=30d --storage.tsdb.retention.size=8GB --web.enable-lifecycle
     metrics:
       enabled: true
       path: /metrics
@@ -267,6 +270,7 @@ build:
 processes:
   web:
     port: 3000
+    command: /run.sh
     health:
       path: /api/health
     resources:
@@ -283,6 +287,7 @@ build:
 processes:
   web:
     port: 8080
+    command: /usr/bin/cadvisor
     metrics:
       enabled: true
       path: /metrics
