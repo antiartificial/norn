@@ -34,9 +34,10 @@ Runs database migrations from the `migrations` directory if specified. Migration
 The core translation step:
 
 1. Resolves secrets from SOPS-encrypted `secrets.enc.yaml`
-2. Calls `nomad.Translate()` to convert the infraspec into a Nomad service job
-3. For each process with a `schedule`, calls `nomad.TranslatePeriodic()` to create separate periodic batch jobs
-4. Submits all jobs to Nomad via the API
+2. Provisions declared `infrastructure.objectStorage` buckets and app-scoped S3 env
+3. Calls `nomad.Translate()` to convert the infraspec into a Nomad service job
+4. For each process with a `schedule`, calls `nomad.TranslatePeriodic()` to create separate periodic batch jobs
+5. Submits all jobs to Nomad via the API
 
 ### 7. Healthy
 

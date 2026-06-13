@@ -74,6 +74,10 @@ All configuration is via environment variables:
 | `NORN_S3_SECRET_KEY` | — | S3 secret key |
 | `NORN_S3_REGION` | `auto` | S3 region |
 | `NORN_S3_USE_SSL` | `true` | Use SSL for S3 (set `false` to disable) |
+| `NORN_S3_PROVIDER` | `s3` | Storage provider hint (`garage` enables path-style defaults) |
+| `NORN_S3_FORCE_PATH_STYLE` | `false` | Force path-style S3 bucket lookup |
+| `NORN_GARAGE_ADMIN_ENDPOINT` | — | Garage admin API URL for managed buckets and app keys |
+| `NORN_GARAGE_ADMIN_TOKEN` | — | Garage admin API token |
 | `NORN_ALLOWED_ORIGINS` | — | Comma-separated additional CORS origins |
 | `NORN_CF_ACCESS_TEAM_DOMAIN` | — | Cloudflare Access team domain |
 | `NORN_CF_ACCESS_AUD` | — | Cloudflare Access AUD tag |
@@ -116,5 +120,6 @@ The pipeline runs 9 steps with real-time progress: clone, build, test, snapshot,
 - [Release Recap](/v2/guide/release-recap) — review what the current v2 release line includes
 - [Infraspec Reference](/v2/guide/infraspec-reference) — every field documented
 - [Architecture Overview](/v2/architecture/overview) — how the pieces fit together
+- [Object Storage](/v2/infrastructure/object-storage) — Garage-backed buckets for local apps
 - [CLI Commands](/v2/cli/commands) — full command reference
 - [Next Steps](/v2/guide/next-steps) — current development priorities

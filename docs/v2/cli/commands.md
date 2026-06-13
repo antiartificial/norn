@@ -14,7 +14,7 @@ Displays a table of all discovered apps with live health indicators, latest depl
 
 ## app
 
-Detailed view of a single app including processes, recent deployments, and infrastructure.
+Detailed view of a single app including processes, object storage buckets, recent deployments, and infrastructure.
 The output includes service-manifest reachability, network mode, endpoints, and instances when available.
 
 ```bash
@@ -168,7 +168,7 @@ norn ops contextdb
 
 ## health
 
-Check the health of all backing services (Nomad, Consul, PostgreSQL, S3).
+Check the health of all backing services (Nomad, Consul, PostgreSQL, and configured S3-compatible object storage such as Garage).
 
 ```bash
 norn health

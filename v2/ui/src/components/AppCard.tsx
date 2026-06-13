@@ -206,6 +206,11 @@ export function AppCard({ app, busy, activeIngress, onDeploy, onRestart, onScale
               <span className="infra-badge"><i className="fawsb fa-bolt" /> NATS</span>
             </Tooltip>
           )}
+          {spec.infrastructure.objectStorage && (
+            <Tooltip text={`Object storage: ${spec.infrastructure.objectStorage.buckets?.map(b => b.name).join(', ') ?? 'no buckets'}`}>
+              <span className="infra-badge"><i className="fawsb fa-hard-drive" /> S3</span>
+            </Tooltip>
+          )}
         </div>
       )}
 

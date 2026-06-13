@@ -48,6 +48,12 @@ env:
 infrastructure:
   postgres:
     database: myapp
+  objectStorage:
+    provider: garage
+    buckets:
+      - name: myapp-uploads
+        access: readWrite
+        env: UPLOADS
 
 endpoints:
   - url: myapp.example.com
@@ -82,6 +88,9 @@ The `infrastructure` block declares backing services your app needs. Norn uses t
 | `redis` | `namespace` | Redis namespace prefix |
 | `kafka` | `topics` | Kafka topic list |
 | `nats` | `streams` | NATS JetStream stream names |
+| `objectStorage` | `provider`, `buckets` | S3-compatible buckets provisioned through Garage or another S3 endpoint |
+
+Object storage is platform-scoped but app-declared: a single local Garage service can host many buckets, while each app declares the buckets and access it needs. See [Object Storage](/v2/infrastructure/object-storage) for Garage setup and runtime env details.
 
 ## Volumes
 

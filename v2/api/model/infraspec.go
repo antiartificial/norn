@@ -98,10 +98,11 @@ type SnapshotPolicy struct {
 }
 
 type Infrastructure struct {
-	Kafka    *KafkaInfra    `yaml:"kafka,omitempty" json:"kafka,omitempty"`
-	Postgres *PostgresInfra `yaml:"postgres,omitempty" json:"postgres,omitempty"`
-	Redis    *RedisInfra    `yaml:"redis,omitempty" json:"redis,omitempty"`
-	NATS     *NATSInfra     `yaml:"nats,omitempty" json:"nats,omitempty"`
+	Kafka         *KafkaInfra         `yaml:"kafka,omitempty" json:"kafka,omitempty"`
+	Postgres      *PostgresInfra      `yaml:"postgres,omitempty" json:"postgres,omitempty"`
+	Redis         *RedisInfra         `yaml:"redis,omitempty" json:"redis,omitempty"`
+	NATS          *NATSInfra          `yaml:"nats,omitempty" json:"nats,omitempty"`
+	ObjectStorage *ObjectStorageInfra `yaml:"objectStorage,omitempty" json:"objectStorage,omitempty"`
 }
 
 type KafkaInfra struct {
@@ -120,6 +121,19 @@ type NATSInfra struct {
 	Streams []string `yaml:"streams,omitempty" json:"streams,omitempty"`
 }
 
+type ObjectStorageInfra struct {
+	Provider string                `yaml:"provider,omitempty" json:"provider,omitempty"`
+	Buckets  []ObjectStorageBucket `yaml:"buckets,omitempty" json:"buckets,omitempty"`
+}
+
+type ObjectStorageBucket struct {
+	Name   string `yaml:"name" json:"name"`
+	Access string `yaml:"access,omitempty" json:"access,omitempty"`
+	Public bool   `yaml:"public,omitempty" json:"public,omitempty"`
+	Prefix string `yaml:"prefix,omitempty" json:"prefix,omitempty"`
+	Env    string `yaml:"env,omitempty" json:"env,omitempty"`
+}
+
 func LoadInfraSpec(path string) (*InfraSpec, error) {
 	data, err := os.ReadFile(path)
 	if err != nil {
@@ -136,6 +150,17 @@ func LoadInfraSpec(path string) (*InfraSpec, error) {
 func applyDefaults(spec *InfraSpec) {
 	if spec.Repo != nil && spec.Repo.Branch == "" {
 		spec.Repo.Branch = "main"
+	}
+	if spec.Infrastructure != nil && spec.Infrastructure.ObjectStorage != nil {
+		if spec.Infrastructure.ObjectStorage.Provider == "" {
+			spec.Infrastructure.ObjectStorage.Provider = "garage"
+		}
+		for i, bucket := range spec.Infrastructure.ObjectStorage.Buckets {
+			if bucket.Access == "" {
+				bucket.Access = "readWrite"
+			}
+			spec.Infrastructure.ObjectStorage.Buckets[i] = bucket
+		}
 	}
 	for name, p := range spec.Processes {
 		if p.Health != nil {

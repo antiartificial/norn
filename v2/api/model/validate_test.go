@@ -120,6 +120,47 @@ func TestValidateSpecAcceptsLocalEndpointInLocalMode(t *testing.T) {
 	}
 }
 
+func TestValidateSpecAcceptsObjectStorageBuckets(t *testing.T) {
+	spec := &InfraSpec{
+		App:       "storage-app",
+		Processes: map[string]Process{"web": {}},
+		Infrastructure: &Infrastructure{
+			ObjectStorage: &ObjectStorageInfra{
+				Provider: "garage",
+				Buckets: []ObjectStorageBucket{
+					{Name: "storage-app-media", Access: "readWrite", Env: "MEDIA"},
+					{Name: "storage-app-snapshots", Access: "readOnly"},
+				},
+			},
+		},
+	}
+
+	result := ValidateSpec(spec)
+	if !result.Valid {
+		t.Fatalf("expected valid object storage spec, got %+v", result.Findings)
+	}
+}
+
+func TestValidateSpecRejectsInvalidObjectStorageBuckets(t *testing.T) {
+	spec := &InfraSpec{
+		App:       "storage-app",
+		Processes: map[string]Process{"web": {}},
+		Infrastructure: &Infrastructure{
+			ObjectStorage: &ObjectStorageInfra{
+				Buckets: []ObjectStorageBucket{
+					{Name: "Bad_Bucket", Access: "admin"},
+					{Name: "Bad_Bucket"},
+				},
+			},
+		},
+	}
+
+	result := ValidateSpec(spec)
+	assertErrorFinding(t, result, "infrastructure.objectStorage.buckets[0].name")
+	assertErrorFinding(t, result, "infrastructure.objectStorage.buckets[0].access")
+	assertErrorFinding(t, result, "infrastructure.objectStorage.buckets[1].name")
+}
+
 func assertFinding(t *testing.T, result *ValidationResult, field string) {
 	t.Helper()
 	for _, finding := range result.Findings {
@@ -128,4 +169,14 @@ func assertFinding(t *testing.T, result *ValidationResult, field string) {
 		}
 	}
 	t.Fatalf("missing warning for %s in %+v", field, result.Findings)
+}
+
+func assertErrorFinding(t *testing.T, result *ValidationResult, field string) {
+	t.Helper()
+	for _, finding := range result.Findings {
+		if finding.Field == field && finding.Severity == "error" {
+			return
+		}
+	}
+	t.Fatalf("missing error for %s in %+v", field, result.Findings)
 }

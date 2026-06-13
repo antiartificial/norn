@@ -21,6 +21,8 @@ type ValidationFinding struct {
 }
 
 var appNameRe = regexp.MustCompile(`^[a-z0-9][a-z0-9-]*$`)
+var bucketNameRe = regexp.MustCompile(`^[a-z0-9][a-z0-9.-]{1,61}[a-z0-9]$`)
+var envNameRe = regexp.MustCompile(`^[A-Za-z][A-Za-z0-9_]*$`)
 
 type ValidationOptions struct {
 	NetworkMode string
@@ -121,6 +123,42 @@ func ValidateSpecWithOptions(spec *InfraSpec, opts ValidationOptions) *Validatio
 	if spec.Infrastructure != nil && spec.Infrastructure.Postgres != nil {
 		if spec.Infrastructure.Postgres.Database == "" {
 			r.add("error", "infrastructure.postgres.database", "postgres database name is required")
+		}
+	}
+
+	if spec.Infrastructure != nil && spec.Infrastructure.ObjectStorage != nil {
+		ospec := spec.Infrastructure.ObjectStorage
+		if ospec.Provider != "" && ospec.Provider != "garage" && ospec.Provider != "s3" {
+			r.add("warning", "infrastructure.objectStorage.provider", "provider should be garage or s3-compatible")
+		}
+		if len(ospec.Buckets) == 0 {
+			r.add("error", "infrastructure.objectStorage.buckets", "at least one object storage bucket is required")
+		}
+		seen := map[string]bool{}
+		for i, bucket := range ospec.Buckets {
+			field := fmt.Sprintf("infrastructure.objectStorage.buckets[%d]", i)
+			if bucket.Name == "" {
+				r.add("error", field+".name", "bucket name is required")
+			} else {
+				if !bucketNameRe.MatchString(bucket.Name) {
+					r.add("error", field+".name", "bucket name must be DNS-compatible")
+				}
+				if seen[bucket.Name] {
+					r.add("error", field+".name", "bucket name must be unique within the app")
+				}
+				seen[bucket.Name] = true
+			}
+			switch bucket.Access {
+			case "", "readOnly", "readWrite", "owner":
+			default:
+				r.add("error", field+".access", "access must be readOnly, readWrite, or owner")
+			}
+			if bucket.Env != "" && !envNameRe.MatchString(bucket.Env) {
+				r.add("error", field+".env", "env alias must contain only letters, numbers, and underscores")
+			}
+			if bucket.Public {
+				r.add("warning", field+".public", "public bucket exposure is declared but not automatically exposed yet")
+			}
 		}
 	}
 

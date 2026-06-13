@@ -52,6 +52,16 @@ export interface InfraSpec {
     postgres?: { database: string }
     redis?: { namespace?: string }
     nats?: { streams?: string[] }
+    objectStorage?: {
+      provider?: string
+      buckets?: Array<{
+        name: string
+        access?: string
+        public?: boolean
+        prefix?: string
+        env?: string
+      }>
+    }
   }
   endpoints?: Endpoint[]
 }

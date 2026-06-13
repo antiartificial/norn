@@ -91,6 +91,42 @@ var appCmd = &cobra.Command{
 			fmt.Println()
 		}
 
+		if app.Spec.Infrastructure != nil && app.Spec.Infrastructure.ObjectStorage != nil {
+			fmt.Println(style.Subtitle.Render("  object storage"))
+			provider := app.Spec.Infrastructure.ObjectStorage.Provider
+			if provider == "" {
+				provider = "garage"
+			}
+			fmt.Printf("  %s %s\n", style.Key.Render("provider"), provider)
+			w := tabwriter.NewWriter(os.Stdout, 0, 0, 2, ' ', 0)
+			fmt.Fprintln(w, "  "+style.TableHeader.Render("BUCKET")+"\t"+
+				style.TableHeader.Render("ACCESS")+"\t"+
+				style.TableHeader.Render("ENV")+"\t"+
+				style.TableHeader.Render("PREFIX"))
+			for _, bucket := range app.Spec.Infrastructure.ObjectStorage.Buckets {
+				access := bucket.Access
+				if access == "" {
+					access = "readWrite"
+				}
+				envAlias := bucket.Env
+				if envAlias == "" {
+					envAlias = "-"
+				}
+				prefix := bucket.Prefix
+				if prefix == "" {
+					prefix = "-"
+				}
+				fmt.Fprintf(w, "  %s\t%s\t%s\t%s\n",
+					style.Bold.Render(bucket.Name),
+					access,
+					envAlias,
+					style.DimText.Render(prefix),
+				)
+			}
+			w.Flush()
+			fmt.Println()
+		}
+
 		manifest, err := client.ServiceManifest()
 		if err != nil {
 			return fmt.Errorf("failed to fetch service manifest: %w", err)

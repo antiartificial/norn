@@ -95,11 +95,15 @@ func main() {
 	var s3Client *storage.Client
 	if cfg.S3Endpoint != "" {
 		s3Client, err = storage.NewClient(storage.Config{
-			Endpoint:  cfg.S3Endpoint,
-			AccessKey: cfg.S3AccessKey,
-			SecretKey: cfg.S3SecretKey,
-			Region:    cfg.S3Region,
-			UseSSL:    cfg.S3UseSSL,
+			Endpoint:            cfg.S3Endpoint,
+			AccessKey:           cfg.S3AccessKey,
+			SecretKey:           cfg.S3SecretKey,
+			Region:              cfg.S3Region,
+			UseSSL:              cfg.S3UseSSL,
+			Provider:            cfg.S3Provider,
+			ForcePathStyle:      cfg.S3ForcePath,
+			GarageAdminEndpoint: cfg.GarageAdminEndpoint,
+			GarageAdminToken:    cfg.GarageAdminToken,
 		})
 		if err != nil {
 			log.Printf("WARNING: S3 storage unavailable (%v)", err)
@@ -149,6 +153,7 @@ func main() {
 		GitSSHKey:   cfg.GitSSHKey,
 		RegistryURL: cfg.RegistryURL,
 		Beacon:      beaconSvc,
+		Storage:     s3Client,
 	}
 
 	// Handler

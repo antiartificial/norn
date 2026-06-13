@@ -22,6 +22,35 @@ func (p *Pipeline) submit(ctx context.Context, st *state, sg *saga.Saga) error {
 		}
 	}
 
+	if st.spec.Infrastructure != nil && st.spec.Infrastructure.ObjectStorage != nil {
+		if p.Storage == nil {
+			return fmt.Errorf("object storage declared but NORN_S3_ENDPOINT is not configured")
+		}
+		storageEnv, err := p.Storage.ProvisionAppStorage(ctx, st.spec.App, st.spec.Infrastructure.ObjectStorage, env)
+		if err != nil {
+			return fmt.Errorf("provision object storage: %w", err)
+		}
+		if len(storageEnv.Secrets) > 0 && p.Secrets != nil {
+			if err := p.Secrets.Set(st.spec.App, storageEnv.Secrets); err != nil {
+				_ = sg.Log(ctx, "object_storage.secrets", fmt.Sprintf("object storage secrets were generated but not persisted: %v", err), map[string]string{
+					"step": "submit",
+				})
+			}
+		}
+		for k, v := range storageEnv.Env {
+			env[k] = v
+		}
+		for _, bucket := range storageEnv.Buckets {
+			_ = sg.Log(ctx, "object_storage.bucket", fmt.Sprintf("object storage bucket ready: %s", bucket.Name), map[string]string{
+				"step":     "submit",
+				"provider": bucket.Provider,
+				"bucket":   bucket.Name,
+				"access":   bucket.Access,
+				"mode":     bucket.Mode,
+			})
+		}
+	}
+
 	// Check for port conflicts before submitting
 	for _, proc := range st.spec.Processes {
 		if proc.Port > 0 && len(st.spec.Endpoints) > 0 {

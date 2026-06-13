@@ -105,6 +105,18 @@ Each key in the `processes` map is the process name. The process type is inferre
 | `redis.namespace` | string | Redis key namespace |
 | `kafka.topics` | string[] | Kafka topics to declare |
 | `nats.streams` | string[] | NATS JetStream stream names |
+| `objectStorage.provider` | string | S3-compatible provider hint; defaults to `garage` |
+| `objectStorage.buckets` | ObjectStorageBucket[] | Buckets to provision and expose to the app |
+
+### ObjectStorageBucket
+
+| Field | Type | Default | Description |
+|-------|------|---------|-------------|
+| `name` | string | — | DNS-compatible bucket name |
+| `access` | string | `readWrite` | `readOnly`, `readWrite`, or `owner` |
+| `public` | bool | `false` | Reserved for future public exposure policy |
+| `prefix` | string | — | Optional object key prefix exposed as `S3_PREFIX...` |
+| `env` | string | derived from bucket name | Env alias for `S3_BUCKET_<ENV>` |
 
 ## Endpoints
 
@@ -192,6 +204,12 @@ env:
 infrastructure:
   postgres:
     database: signal_sideband
+  objectStorage:
+    provider: garage
+    buckets:
+      - name: signal-sideband-attachments
+        access: readWrite
+        env: ATTACHMENTS
 
 snapshots:
   keep: 5

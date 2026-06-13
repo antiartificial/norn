@@ -64,14 +64,4 @@ Restoring a snapshot replaces the current database contents. Make sure to snapsh
 
 ## Storage
 
-Snapshots are stored via the S3-compatible storage backend. Configure with:
-
-| Variable | Description |
-|----------|-------------|
-| `NORN_S3_ENDPOINT` | S3-compatible endpoint URL |
-| `NORN_S3_ACCESS_KEY` | Access key |
-| `NORN_S3_SECRET_KEY` | Secret key |
-| `NORN_S3_REGION` | Region (default: `auto`) |
-| `NORN_S3_USE_SSL` | Use SSL (default: `true`) |
-
-If S3 is not configured, the snapshot step is skipped.
+Snapshots are currently stored as local files under the Norn API working directory's `snapshots/` folder. The object-storage provider can now provision Garage-backed app buckets, but snapshot archival to Garage is a separate follow-up so restore and retention semantics stay explicit.
