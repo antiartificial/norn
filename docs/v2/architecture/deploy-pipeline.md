@@ -1,6 +1,6 @@
 # Deploy Pipeline
 
-The deploy pipeline is Norn's core orchestration flow. It takes an app from source code to running Nomad allocations in 9 sequential steps.
+The deploy pipeline is Norn's core orchestration flow. It takes an app from source code to running Nomad allocations in 9 sequential steps. For a deploy rehearsal that stops before runtime mutation, use `norn preflight`.
 
 ## Pipeline Steps
 
@@ -56,6 +56,27 @@ Updates cloudflared tunnel ingress rules if the app defines `endpoints`. Maps ea
 
 Removes temporary build artifacts (cloned repo, build context).
 
+## Preflight Pipeline
+
+`norn preflight <app> [ref]` runs the front half of the deploy path without creating a deployment record or touching Nomad, Postgres snapshots, migrations, or cloudflared routing.
+
+```mermaid
+graph LR
+    A[Validate] --> B[Clone] --> C[Inspect] --> D[Build] --> E[Test]
+```
+
+| Step | What it checks |
+|------|----------------|
+| `validate` | Runs infraspec validation using the configured Norn network mode |
+| `clone` | Prepares the same source tree deploy would use, including repo auth and local fallback behavior |
+| `inspect` | Verifies `infraspec.yaml`, the configured Dockerfile, declared encrypted secrets, and known source footguns |
+| `build` | Runs a local Docker build with the same build args as deploy, but does not push to the registry |
+| `test` | Runs `build.test` from the prepared source tree |
+
+Preflight warnings are emitted as saga progress events. They do not fail the run unless they reveal a hard deploy blocker. Current warnings include disabled `repo.autoDeploy` and Go module `replace` directives pointing at parent directories, because those can make host-side tests differ from the Docker build context.
+
+The Docker image/layer cache may remain locally after preflight. Norn runtime state does not change.
+
 ## Sequence Diagram
 
 ```mermaid
@@ -102,8 +123,12 @@ The pipeline broadcasts WebSocket events at each step transition:
 | `deploy.step` | `{step, sagaId, status}` | Step starts, completes, or fails |
 | `deploy.failed` | `{sagaId, error}` | Pipeline fails |
 | `deploy.completed` | `{sagaId, imageTag}` | Pipeline succeeds |
+| `preflight.step` | `{step, sagaId, status}` | Preflight step starts, completes, or fails |
+| `preflight.progress` | `{sagaId, message}` | Preflight warning or informational check |
+| `preflight.failed` | `{sagaId, error}` | Preflight fails |
+| `preflight.completed` | `{sagaId, imageTag}` | Preflight succeeds |
 
-The CLI connects to the WebSocket during `norn deploy` and renders a live progress display. The UI dashboard updates the deploy panel in real time.
+The CLI connects to the WebSocket during `norn deploy` and `norn preflight` and renders a live progress display. The UI dashboard updates the deploy panel in real time.
 
 ## Saga Event Log
 

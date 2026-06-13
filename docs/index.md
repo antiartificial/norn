@@ -20,7 +20,7 @@ features:
   - title: Discover
     details: Scans ~/projects for infraspec.yaml files and automatically registers apps with their infrastructure dependencies.
   - title: Deploy
-    details: Nine-step pipeline - clone, build, test, snapshot, migrate, submit, healthy, forge, cleanup - with real-time saga events over WebSocket.
+    details: Preflight checks plus a nine-step deploy pipeline - clone, build, test, snapshot, migrate, submit, healthy, forge, cleanup - with real-time saga events over WebSocket.
   - title: Orchestrate
     details: Translates infraspec processes to Nomad jobs - services, periodic batch for cron, one-shot batch for functions - with Consul service discovery.
   - title: Monitor
@@ -118,7 +118,7 @@ volumes:
     mount: /var/cache/auricle
 ```
 
-That's it. `norn deploy auricle HEAD` runs the full pipeline - clone, build, test, snapshot, migrate, submit to Nomad, wait for healthy, provision Cloudflare tunnel, cleanup - with real-time progress in the dashboard and CLI.
+That's it. `norn preflight auricle HEAD` rehearses validation, source prep, Docker build, and tests. `norn deploy auricle HEAD` runs the full pipeline - clone, build, test, snapshot, migrate, submit to Nomad, wait for healthy, provision Cloudflare tunnel, cleanup - with real-time progress in the dashboard and CLI.
 
 ### Quick start
 
@@ -132,6 +132,7 @@ make dev     # start API (:8800) + UI (:5173)
 
 ```bash
 norn status                   # list all apps
+norn preflight myapp HEAD     # rehearse build/test without deploying
 norn deploy myapp HEAD        # deploy with live pipeline progress
 norn health                   # check backing services
 norn logs myapp               # stream live logs

@@ -40,6 +40,24 @@ norn deploy <app> [ref]
 
 Connects to the WebSocket and renders a real-time progress display showing each pipeline step. The saga ID is printed on completion for later inspection.
 
+## preflight
+
+Run a deploy rehearsal without changing Norn runtime state.
+
+```bash
+norn preflight <app> [ref]
+norn check <app> [ref]
+```
+
+| Argument | Default | Description |
+|----------|---------|-------------|
+| `app` | - | App name |
+| `ref` | `HEAD` | Git ref (commit SHA, branch, tag) |
+
+Preflight validates the infraspec, prepares the deploy source tree, checks the configured Dockerfile and declared encrypted secrets, runs a local Docker build, and runs `build.test` when configured. It does not create a deployment record, snapshot a database, run migrations, submit Nomad jobs, wait for health, or update cloudflared.
+
+Warnings are streamed inline for conditions that are worth seeing before deploy, such as `repo.autoDeploy: false` or Go module `replace` directives that point outside the prepared build context.
+
 ## restart
 
 Perform a rolling restart of all allocations for an app.

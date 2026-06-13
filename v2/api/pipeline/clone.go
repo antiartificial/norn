@@ -46,6 +46,9 @@ func (p *Pipeline) clone(ctx context.Context, st *state, sg *saga.Saga) error {
 			}
 			return fmt.Errorf("git clone: %s", string(out))
 		}
+		if err := p.checkoutRequestedRef(ctx, workDir, st.sourceRef, st.spec.Repo.URL); err != nil {
+			return err
+		}
 
 		// Resolve HEAD SHA
 		revCmd := exec.CommandContext(ctx, "git", "-C", workDir, "rev-parse", "HEAD")
@@ -69,6 +72,27 @@ func (p *Pipeline) clone(ctx context.Context, st *state, sg *saga.Saga) error {
 	st.sourceKind = "local_copy"
 	st.sourcePath = srcDir
 	p.recordSourceProvenance(ctx, st, sg)
+	return nil
+}
+
+func (p *Pipeline) checkoutRequestedRef(ctx context.Context, workDir, ref, repoURL string) error {
+	ref = strings.TrimSpace(ref)
+	if ref == "" || ref == "HEAD" {
+		return nil
+	}
+	fetchCmd := exec.CommandContext(ctx, "git", "-C", workDir, "fetch", "--depth", "1", "origin", ref)
+	gitEnv, cleanup := p.gitEnv(repoURL)
+	if cleanup != nil {
+		defer cleanup()
+	}
+	fetchCmd.Env = append(os.Environ(), gitEnv...)
+	if out, err := fetchCmd.CombinedOutput(); err != nil {
+		return fmt.Errorf("git fetch ref %s: %s", ref, string(out))
+	}
+	checkoutCmd := exec.CommandContext(ctx, "git", "-C", workDir, "checkout", "--detach", "FETCH_HEAD")
+	if out, err := checkoutCmd.CombinedOutput(); err != nil {
+		return fmt.Errorf("git checkout ref %s: %s", ref, string(out))
+	}
 	return nil
 }
 

@@ -13,6 +13,7 @@ This recap summarizes the current Norn v2 release line: the Nomad/Consul control
 | Runtime platform | Nomad, Consul, local Docker builds, cloudflared | Replaces the v1 Kubernetes path with a smaller local control plane suited to self-hosted apps |
 | App model | Multi-process `infraspec.yaml` | Lets one app define web, worker, cron, and function processes without splitting deployment ownership |
 | Deploy pipeline | Clone, build, test, snapshot, migrate, submit, healthy, forge, cleanup | Makes deploys repeatable and auditable from the CLI, API, and dashboard |
+| Preflight pipeline | `norn preflight`, `norn check`, `/api/apps/{id}/preflight` | Rehearses validation, source prep, Docker build, and tests before runtime mutation |
 | Service discovery | `/api/services/manifest` and `norn services` | Gives operators and agents a compact view of hosted services, process reachability, endpoint scope, and health |
 | Operations dashboard | Platform and ContextDB ops panels | Surfaces service exposure, deploy provenance, snapshot retention, access events, OTEL/Grafana status, and ContextDB worker posture |
 | CLI operations | `norn ops platform`, `norn ops contextdb`, `norn smoke contextdb` | Turns platform health and ContextDB worker readiness into repeatable terminal checks |
@@ -45,6 +46,7 @@ The current release line has been exercised with:
 - `cd v2 && make build`
 - `go test ./...` in `v2/api`
 - `go test ./...` in `v2/cli`
+- `norn preflight <app> HEAD`
 - `go test ./...` in `api`
 - `cd docs && pnpm build`
 - `launchctl kickstart -k gui/$(id -u)/com.norn.api`

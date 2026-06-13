@@ -28,6 +28,7 @@ type Pipeline struct {
 	GitToken    string
 	GitSSHKey   string
 	RegistryURL string
+	NetworkMode string
 	Beacon      *beacon.Service
 	Storage     *storage.Client
 }
@@ -42,6 +43,7 @@ type state struct {
 	sourceDirty   bool
 	sourceChanges []string
 	sourceRef     string
+	preflight     bool
 }
 
 type step struct {

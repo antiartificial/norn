@@ -54,6 +54,7 @@ export function App() {
   const [logApp, setLogApp] = useState<string | null>(null)
   const [deployState, setDeployState] = useState<{
     appId: string
+    operation: 'deploy' | 'preflight'
     steps: DeployStep[]
     status: string
     sagaId?: string
@@ -71,11 +72,13 @@ export function App() {
   const [activeIngress, setActiveIngress] = useState<Set<string>>(new Set())
 
   const handleWsEvent = useCallback((event: WSEvent) => {
-    if (event.type === 'deploy.step' || event.type === 'deploy.completed' || event.type === 'deploy.failed') {
+    if (event.type === 'deploy.step' || event.type === 'deploy.completed' || event.type === 'deploy.failed' || event.type === 'preflight.step' || event.type === 'preflight.completed' || event.type === 'preflight.failed') {
       const payload = event.payload as Record<string, unknown>
-      if (event.type === 'deploy.step') {
+      const operation = event.type.startsWith('preflight') ? 'preflight' : 'deploy'
+      if (event.type === 'deploy.step' || event.type === 'preflight.step') {
         setDeployState((prev) => ({
           appId: event.appId,
+          operation,
           steps: upsertStep(prev?.steps ?? [], {
             step: payload['step'] as string,
             status: payload['status'] as string,
@@ -86,18 +89,24 @@ export function App() {
       } else if (event.type === 'deploy.completed') {
         setDeployState((prev) => prev ? { ...prev, status: 'deployed' } : null)
         refetch()
+      } else if (event.type === 'preflight.completed') {
+        setDeployState((prev) => prev ? { ...prev, status: 'passed' } : null)
       } else if (event.type === 'deploy.failed') {
         setDeployState((prev) => prev ? { ...prev, status: 'failed', error: (payload as Record<string, string>)['error'] } : null)
         refetch()
+      } else if (event.type === 'preflight.failed') {
+        setDeployState((prev) => prev ? { ...prev, status: 'failed', error: (payload as Record<string, string>)['error'] } : null)
       }
     }
-    if (event.type === 'deploy.progress') {
+    if (event.type === 'deploy.progress' || event.type === 'preflight.progress') {
       const payload = event.payload as Record<string, string>
       setDeployState((prev) => {
         if (!prev) return null
+        const step = payload['step']
+        if (!step) return prev
         return {
           ...prev,
-          steps: appendStepEvent(prev.steps, payload['step'], {
+          steps: appendStepEvent(prev.steps, step, {
             message: payload['message'],
             timestamp: Date.now(),
             allocId: payload['allocId'],
@@ -144,8 +153,18 @@ export function App() {
   }
 
   const handleDeploy = async (appId: string) => {
-    setDeployState({ appId, steps: [], status: 'queued' })
+    setDeployState({ appId, operation: 'deploy', steps: [], status: 'queued' })
     await fetch(apiUrl(`/api/apps/${appId}/deploy`), {
+      ...fetchOpts,
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ ref: 'HEAD' }),
+    })
+  }
+
+  const handlePreflight = async (appId: string) => {
+    setDeployState({ appId, operation: 'preflight', steps: [], status: 'queued' })
+    await fetch(apiUrl(`/api/apps/${appId}/preflight`), {
       ...fetchOpts,
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
@@ -180,7 +199,7 @@ export function App() {
   }
 
   const isBusy = (appId: string): boolean => {
-    if (deployState?.appId === appId && deployState.status !== 'deployed' && deployState.status !== 'failed') return true
+    if (deployState?.appId === appId && deployState.status !== 'deployed' && deployState.status !== 'passed' && deployState.status !== 'failed') return true
     if (restartingApp === appId) return true
     return false
   }
@@ -264,6 +283,7 @@ export function App() {
                 app={app}
                 busy={isBusy(appId)}
                 activeIngress={activeIngress}
+                onPreflight={handlePreflight}
                 onDeploy={handleDeploy}
                 onRestart={handleRestart}
                 onScale={handleScale}
@@ -329,12 +349,13 @@ secrets:
         {deployState && (
           <DeployPanel
             appId={deployState.appId}
+            operation={deployState.operation}
             steps={deployState.steps}
             status={deployState.status}
             error={deployState.error}
             sagaId={deployState.sagaId}
             onClose={() => setDeployState(null)}
-            onRetry={() => { setDeployState(null); handleDeploy(deployState.appId) }}
+            onRetry={() => { const { appId, operation } = deployState; setDeployState(null); operation === 'preflight' ? handlePreflight(appId) : handleDeploy(appId) }}
           />
         )}
 

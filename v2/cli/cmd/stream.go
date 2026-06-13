@@ -62,7 +62,7 @@ func streamViaWebSocket(sagaID string) error {
 		}
 
 		switch evt.Type {
-		case "deploy.step":
+		case "deploy.step", "preflight.step":
 			step := evt.Payload["step"]
 			idx := evt.Payload["index"]
 			total := evt.Payload["total"]
@@ -101,7 +101,7 @@ func streamViaWebSocket(sagaID string) error {
 				stepRunning = false
 			}
 
-		case "deploy.progress":
+		case "deploy.progress", "preflight.progress":
 			if tty && stepRunning {
 				// Print progress as sub-line below the running step
 				fmt.Println() // finish current running line
@@ -110,12 +110,12 @@ func streamViaWebSocket(sagaID string) error {
 			msg := evt.Payload["message"]
 			fmt.Printf("    %s %s\n", style.DimText.Render("·"), msg)
 
-		case "deploy.completed":
+		case "deploy.completed", "preflight.completed":
 			fmt.Println()
 			fmt.Println(style.SuccessBox.Render("complete"))
 			return nil
 
-		case "deploy.failed":
+		case "deploy.failed", "preflight.failed":
 			fmt.Println()
 			fmt.Printf("  %s %s\n", style.Unhealthy.Render("✗"), evt.Payload["error"])
 			fmt.Println(style.ErrorBox.Render("failed"))
@@ -158,11 +158,11 @@ func streamViaPolling(sagaID string) error {
 				dur := formatDuration(evt.Metadata["durationMs"])
 				line := formatStepLine("✗", style.StepFailed, step, dur, "", "")
 				fmt.Println(line)
-			case "deploy.complete":
+			case "deploy.complete", "preflight.complete":
 				fmt.Println()
 				fmt.Println(style.SuccessBox.Render("complete"))
 				return nil
-			case "deploy.failed":
+			case "deploy.failed", "preflight.failed":
 				fmt.Println()
 				fmt.Println(style.ErrorBox.Render("failed"))
 				return nil

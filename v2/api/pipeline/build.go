@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"os/exec"
+	"path/filepath"
 	"strings"
 
 	"norn/v2/api/saga"
@@ -23,6 +24,11 @@ func (p *Pipeline) build(ctx context.Context, st *state, sg *saga.Saga) error {
 		sha += "-dirty"
 	}
 	localTag := fmt.Sprintf("%s:%s", st.spec.App, sha)
+	dockerfile := "Dockerfile"
+	if st.spec.Build.Dockerfile != "" {
+		dockerfile = st.spec.Build.Dockerfile
+	}
+	dockerfilePath := filepath.Join(st.workDir, dockerfile)
 
 	// Build number from git commit count
 	buildNumber := "0"
@@ -33,13 +39,14 @@ func (p *Pipeline) build(ctx context.Context, st *state, sg *saga.Saga) error {
 		}
 	}
 
-	if p.RegistryURL != "" {
+	if p.RegistryURL != "" && !st.preflight {
 		registryTag := fmt.Sprintf("%s/%s", p.RegistryURL, localTag)
 		// Use buildx to build multi-arch and push in one step
 		cmd := exec.CommandContext(ctx, "docker", "buildx", "build",
 			"--platform", "linux/amd64,linux/arm64",
 			"--build-arg", fmt.Sprintf("VERSION=%s", st.commitSHA),
 			"--build-arg", fmt.Sprintf("BUILD_NUMBER=%s", buildNumber),
+			"-f", dockerfilePath,
 			"-t", registryTag,
 			"--push",
 			st.workDir)
@@ -52,6 +59,7 @@ func (p *Pipeline) build(ctx context.Context, st *state, sg *saga.Saga) error {
 		cmd := exec.CommandContext(ctx, "docker", "build",
 			"--build-arg", fmt.Sprintf("VERSION=%s", st.commitSHA),
 			"--build-arg", fmt.Sprintf("BUILD_NUMBER=%s", buildNumber),
+			"-f", dockerfilePath,
 			"-t", localTag, st.workDir)
 		out, err := cmd.CombinedOutput()
 		if err != nil {
