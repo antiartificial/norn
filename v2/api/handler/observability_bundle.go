@@ -257,8 +257,8 @@ processes:
     health:
       path: /-/healthy
     resources:
-      cpu: 200
-      memory: 512
+      cpu: 50
+      memory: 256
 `
 }
 
@@ -274,8 +274,8 @@ processes:
     health:
       path: /api/health
     resources:
-      cpu: 200
-      memory: 512
+      cpu: 50
+      memory: 256
 `
 }
 
@@ -294,8 +294,8 @@ processes:
     health:
       path: /healthz
     resources:
-      cpu: 200
-      memory: 256
+      cpu: 50
+      memory: 128
 `
 }
 
