@@ -25,7 +25,7 @@ This recap summarizes the current Norn v2 release line: the Nomad/Consul control
 | Beacon events | `/api/events`, `/api/events/test`, signed sink forwarding | Records Norn-observed operational events and forwards selected signals to downstream systems such as Vigil |
 | Cron eventing | `job.triggered`, `job.paused`, `job.resumed`, `job.schedule_updated` | Makes operator-level scheduled-work changes visible as durable operational events |
 | Deploy eventing | `deploy.succeeded`, `deploy.failed` | Turns deployment outcomes into durable events that can feed notification and incident workflows |
-| Observability | OTEL configuration and slog fan-out | Prepares the API for Grafana-backed logs, traces, and metrics while keeping local logs useful |
+| Observability | OTEL logs/traces, `/metrics`, generated Prometheus scrape config | Keeps local logs useful while enabling bounded local Prometheus/Grafana metrics |
 | Upgrade path | LaunchAgent-safe upgrade runbook | Upgrades Norn API, CLI, and built UI without stopping Nomad, Consul, Postgres, or hosted apps |
 
 ## Operator Impact
@@ -37,6 +37,8 @@ The biggest practical change is that Norn can host long-lived background work be
 Beacon adds the first durable event surface for notification-oriented operations. Norn now records events it can observe directly, such as deploy outcomes, cron control actions, and manual test events. Those events can stay local for audit/debugging or be forwarded to a signed sink so a separate app such as Vigil can handle incident state, push notifications, acknowledgement, and resolution. Cron allocation outcome events such as success, failure, hung, and missed-run detection remain a follow-up for a Nomad allocation watcher.
 
 Object storage now follows the same local-infra posture as the rest of v2: Garage can run as a platform-scoped service, while app specs declare buckets and Norn provisions them during deploy. Apps receive S3-compatible env vars, including Garage path-style flags, without hardcoding bucket credentials into plaintext specs.
+
+Metrics now follow the same local-first model: Norn exposes control-plane counters at `/metrics`, apps can opt into process-level scrape targets with `metrics.enabled`, and `/api/observability/prometheus.yml` generates a Prometheus config for Norn plus live app targets. A local Prometheus with a 30-day/8GB cap is the recommended default.
 
 ## Verification
 
@@ -68,6 +70,7 @@ Norn v2 is the active development path and is intentionally separate from the v1
 - [Next Steps](/v2/guide/next-steps)
 - [Deploy Pipeline](/v2/architecture/deploy-pipeline)
 - [Object Storage](/v2/infrastructure/object-storage)
+- [Observability](/v2/infrastructure/observability)
 - [Beacon Events](/v2/operations/beacon)
 - [CLI Commands](/v2/cli/commands)
 - [Upgrading Norn](/v2/operations/upgrading)

@@ -55,10 +55,19 @@ type ServiceManifestEntry struct {
 	Type         string              `json:"type"`
 	Status       string              `json:"status"`
 	HealthPath   string              `json:"healthPath,omitempty"`
+	Metrics      *ServiceMetrics     `json:"metrics,omitempty"`
 	Reachability ServiceReachability `json:"reachability"`
 	Endpoints    []Endpoint          `json:"endpoints,omitempty"`
 	Instances    []ServiceInstance   `json:"instances,omitempty"`
 	Metadata     map[string]string   `json:"metadata,omitempty"`
+}
+
+type ServiceMetrics struct {
+	Enabled      bool                `json:"enabled"`
+	Path         string              `json:"path"`
+	ServiceName  string              `json:"serviceName,omitempty"`
+	Reachability ServiceReachability `json:"reachability"`
+	Instances    []ServiceInstance   `json:"instances,omitempty"`
 }
 
 type ServiceManifestContract struct {
@@ -94,6 +103,11 @@ type Process struct {
 	Port     int    `json:"port,omitempty"`
 	Command  string `json:"command,omitempty"`
 	Schedule string `json:"schedule,omitempty"`
+	Metrics  *struct {
+		Enabled bool   `json:"enabled,omitempty"`
+		Path    string `json:"path,omitempty"`
+		Port    int    `json:"port,omitempty"`
+	} `json:"metrics,omitempty"`
 }
 
 type RepoSpec struct {

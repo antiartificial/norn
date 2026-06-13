@@ -31,6 +31,7 @@ Each key in the `processes` map is the process name. The process type is inferre
 | `schedule` | string | — | Cron expression (makes this a periodic batch job) |
 | `function` | [FunctionSpec](#functionspec) | — | Function configuration (makes this a batch job) |
 | `health` | [HealthSpec](#health) | — | HTTP health check (only for processes with a port) |
+| `metrics` | [MetricsSpec](#metricsspec) | — | Prometheus scrape endpoint for this process |
 | `scaling` | [Scaling](#scaling) | — | Instance count and autoscaling |
 | `drain` | [Drain](#drain) | — | Graceful shutdown configuration |
 | `resources` | [Resources](#resources) | `cpu: 100, memory: 128` | CPU (MHz) and memory (MB) limits |
@@ -42,6 +43,14 @@ Each key in the `processes` map is the process name. The process type is inferre
 | `path` | string | — | HTTP health check path (e.g. `/health`) |
 | `interval` | string | `10s` | Check interval (Go duration) |
 | `timeout` | string | `5s` | Check timeout (Go duration) |
+
+## MetricsSpec
+
+| Field | Type | Default | Description |
+|-------|------|---------|-------------|
+| `enabled` | bool | `false` | Register this process as a Prometheus scrape target |
+| `path` | string | `/metrics` | Metrics path |
+| `port` | int | process `port` | Internal metrics port when separate from the main process port |
 
 ## Scaling
 
@@ -176,6 +185,9 @@ processes:
     command: ./signal-sideband
     health:
       path: /health
+    metrics:
+      enabled: true
+      path: /metrics
     scaling:
       min: 1
     resources:

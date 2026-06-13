@@ -120,6 +120,51 @@ func TestValidateSpecAcceptsLocalEndpointInLocalMode(t *testing.T) {
 	}
 }
 
+func TestValidateSpecAcceptsProcessMetrics(t *testing.T) {
+	spec := &InfraSpec{
+		App: "metrics-app",
+		Processes: map[string]Process{
+			"web": {
+				Port: 8080,
+				Metrics: &MetricsSpec{
+					Enabled: true,
+					Path:    "/metrics",
+				},
+			},
+			"worker": {
+				Metrics: &MetricsSpec{
+					Enabled: true,
+					Path:    "/internal/metrics",
+					Port:    9090,
+				},
+			},
+		},
+	}
+
+	result := ValidateSpec(spec)
+	if !result.Valid {
+		t.Fatalf("expected valid metrics spec, got %+v", result.Findings)
+	}
+}
+
+func TestValidateSpecRejectsInvalidProcessMetrics(t *testing.T) {
+	spec := &InfraSpec{
+		App: "metrics-app",
+		Processes: map[string]Process{
+			"worker": {
+				Metrics: &MetricsSpec{
+					Enabled: true,
+					Path:    "metrics",
+				},
+			},
+		},
+	}
+
+	result := ValidateSpec(spec)
+	assertErrorFinding(t, result, "processes.worker.metrics.path")
+	assertErrorFinding(t, result, "processes.worker.metrics.port")
+}
+
 func TestValidateSpecAcceptsObjectStorageBuckets(t *testing.T) {
 	spec := &InfraSpec{
 		App:       "storage-app",

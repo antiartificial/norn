@@ -28,6 +28,9 @@ processes:
     command: ./server
     health:
       path: /health
+    metrics:
+      enabled: true
+      path: /metrics
     scaling:
       min: 2
   worker:
@@ -119,6 +122,21 @@ secrets:
 ```
 
 See [Secrets](/v2/infrastructure/secrets) for the full workflow.
+
+## Metrics
+
+Long-running services and workers can expose Prometheus-compatible metrics. Add a `metrics` block to the process:
+
+```yaml
+processes:
+  web:
+    port: 8080
+    metrics:
+      enabled: true
+      path: /metrics
+```
+
+Norn exposes its own control-plane metrics at `/metrics` and can generate Prometheus scrape config at `/api/observability/prometheus.yml`. See [Observability](/v2/infrastructure/observability) for the local 30-day Prometheus/Grafana setup.
 
 ## Deploy Pipeline
 

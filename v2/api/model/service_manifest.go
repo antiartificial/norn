@@ -17,6 +17,7 @@ type ServiceManifestEntry struct {
 	Type         string              `json:"type"`
 	Status       string              `json:"status"`
 	HealthPath   string              `json:"healthPath,omitempty"`
+	Metrics      *ServiceMetrics     `json:"metrics,omitempty"`
 	Reachability ServiceReachability `json:"reachability"`
 	Endpoints    []Endpoint          `json:"endpoints,omitempty"`
 	Instances    []ServiceInstance   `json:"instances,omitempty"`
@@ -34,6 +35,14 @@ type ServiceReachability struct {
 	InstanceScope string `json:"instanceScope"`
 	Exposure      string `json:"exposure"`
 	Routable      bool   `json:"routable"`
+}
+
+type ServiceMetrics struct {
+	Enabled      bool                `json:"enabled"`
+	Path         string              `json:"path"`
+	ServiceName  string              `json:"serviceName,omitempty"`
+	Reachability ServiceReachability `json:"reachability"`
+	Instances    []ServiceInstance   `json:"instances,omitempty"`
 }
 
 type ServiceInstance struct {

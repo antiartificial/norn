@@ -68,6 +68,7 @@ var appCmd = &cobra.Command{
 			w := tabwriter.NewWriter(os.Stdout, 0, 0, 2, ' ', 0)
 			fmt.Fprintln(w, "  "+style.TableHeader.Render("NAME")+"\t"+
 				style.TableHeader.Render("PORT")+"\t"+
+				style.TableHeader.Render("METRICS")+"\t"+
 				style.TableHeader.Render("COMMAND"))
 			for name, proc := range app.Spec.Processes {
 				port := "-"
@@ -81,9 +82,22 @@ var appCmd = &cobra.Command{
 				if len(command) > 60 {
 					command = command[:57] + "..."
 				}
-				fmt.Fprintf(w, "  %s\t%s\t%s\n",
+				metrics := "-"
+				if proc.Metrics != nil && proc.Metrics.Enabled {
+					path := proc.Metrics.Path
+					if path == "" {
+						path = "/metrics"
+					}
+					if proc.Metrics.Port > 0 {
+						metrics = fmt.Sprintf(":%d%s", proc.Metrics.Port, path)
+					} else {
+						metrics = path
+					}
+				}
+				fmt.Fprintf(w, "  %s\t%s\t%s\t%s\n",
 					style.Bold.Render(name),
 					port,
+					metrics,
 					style.DimText.Render(command),
 				)
 			}

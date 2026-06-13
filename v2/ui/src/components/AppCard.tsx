@@ -168,6 +168,7 @@ export function AppCard({ app, busy, activeIngress, onPreflight, onDeploy, onRes
             <span key={name} className="process-badge">
               {name}
               {proc.port ? `:${proc.port}` : ''}
+              {proc.metrics?.enabled ? ' metrics' : ''}
             </span>
           ))}
         </div>

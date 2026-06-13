@@ -44,6 +44,7 @@ type Process struct {
 	Schedule  string            `yaml:"schedule,omitempty" json:"schedule,omitempty"`
 	Function  *FunctionSpec     `yaml:"function,omitempty" json:"function,omitempty"`
 	Health    *HealthSpec       `yaml:"health,omitempty" json:"health,omitempty"`
+	Metrics   *MetricsSpec      `yaml:"metrics,omitempty" json:"metrics,omitempty"`
 	Scaling   *Scaling          `yaml:"scaling,omitempty" json:"scaling,omitempty"`
 	Drain     *Drain            `yaml:"drain,omitempty" json:"drain,omitempty"`
 	Resources *Resources        `yaml:"resources,omitempty" json:"resources,omitempty"`
@@ -54,6 +55,12 @@ type HealthSpec struct {
 	Path     string `yaml:"path" json:"path"`
 	Interval string `yaml:"interval,omitempty" json:"interval,omitempty"`
 	Timeout  string `yaml:"timeout,omitempty" json:"timeout,omitempty"`
+}
+
+type MetricsSpec struct {
+	Enabled bool   `yaml:"enabled,omitempty" json:"enabled,omitempty"`
+	Path    string `yaml:"path,omitempty" json:"path,omitempty"`
+	Port    int    `yaml:"port,omitempty" json:"port,omitempty"`
 }
 
 type Scaling struct {
@@ -170,6 +177,9 @@ func applyDefaults(spec *InfraSpec) {
 			if p.Health.Timeout == "" {
 				p.Health.Timeout = "5s"
 			}
+		}
+		if p.Metrics != nil && p.Metrics.Enabled && p.Metrics.Path == "" {
+			p.Metrics.Path = "/metrics"
 		}
 		if p.Scaling != nil && p.Scaling.Min == 0 {
 			p.Scaling.Min = 1
