@@ -223,6 +223,8 @@ cd v2 && make build    # builds bin/norn-api + bin/norn
 bin/norn status        # list all apps
 bin/norn preflight <app> HEAD # validate, build, and test without deploying
 bin/norn deploy <app> HEAD   # deploy latest commit
+bin/norn platform preflight HEAD # build and health-check a candidate Norn release
+bin/norn platform upgrade HEAD   # promote Norn itself with rollback-capable postflight
 bin/norn scale <app> <n>     # scale up/down
 bin/norn logs <app>          # stream allocation logs
 ```
@@ -233,30 +235,10 @@ When Norn is running as the local LaunchAgent `com.norn.api`, upgrade only the A
 
 ```bash
 cd /Users/0xadb/projects/norn
-
-stamp=$(date +%Y%m%dT%H%M%S)
-mkdir -p /Users/0xadb/go/bin/norn-backups/$stamp
-cp -p /Users/0xadb/go/bin/norn-api /Users/0xadb/go/bin/norn-backups/$stamp/
-cp -p /Users/0xadb/go/bin/norn /Users/0xadb/go/bin/norn-backups/$stamp/
-
-cd v2/ui && pnpm build
-cd /Users/0xadb/projects/norn/v2 && make build
-
-install -m 0755 bin/norn-api /Users/0xadb/go/bin/norn-api
-install -m 0755 bin/norn /Users/0xadb/go/bin/norn
-
-launchctl kickstart -k gui/$(id -u)/com.norn.api
+norn platform preflight HEAD
+norn platform upgrade HEAD
 norn version
 norn ops platform
-```
-
-Rollback is just as direct:
-
-```bash
-backup=/Users/0xadb/go/bin/norn-backups/YYYYMMDDTHHMMSS
-install -m 0755 "$backup/norn-api" /Users/0xadb/go/bin/norn-api
-install -m 0755 "$backup/norn" /Users/0xadb/go/bin/norn
-launchctl kickstart -k gui/$(id -u)/com.norn.api
 ```
 
 See [docs/v2/operations/upgrading.md](docs/v2/operations/upgrading.md) for the full runbook.

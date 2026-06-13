@@ -58,6 +58,24 @@ Preflight validates the infraspec, prepares the deploy source tree, checks the c
 
 Warnings are streamed inline for conditions that are worth seeing before deploy, such as `repo.autoDeploy: false` or Go module `replace` directives that point outside the prepared build context.
 
+## platform
+
+Manage the Norn control plane itself with a release-oriented upgrade lane.
+
+```bash
+norn platform preflight [ref]
+norn platform upgrade [ref]
+```
+
+`norn platform preflight` builds Norn from an isolated git worktree into `$HOME/norn/releases/<sha>`, starts the candidate API on `127.0.0.1:18800`, and verifies health/version without restarting the active API.
+
+`norn platform upgrade` performs the same preflight, promotes `$HOME/norn/current`, installs compatibility binaries into `$HOME/go/bin`, restarts only `com.norn.api`, and rolls back to the previous release if postflight health fails.
+
+| Flag | Default | Description |
+|------|---------|-------------|
+| `--repo` | `NORN_PLATFORM_REPO` | Norn checkout containing `v2/scripts/platform-upgrade` |
+| `--script` | `NORN_PLATFORM_SCRIPT` | Explicit platform-upgrade script path |
+
 ## restart
 
 Perform a rolling restart of all allocations for an app.

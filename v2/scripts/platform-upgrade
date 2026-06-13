@@ -1,0 +1,207 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+usage() {
+  cat <<'USAGE'
+Usage:
+  platform-upgrade preflight [ref]
+  platform-upgrade upgrade [ref]
+
+Builds Norn into a versioned release directory. Preflight starts the candidate
+API on an alternate local port and verifies health/version without touching the
+running LaunchAgent. Upgrade promotes the release, restarts com.norn.api, and
+rolls back if postflight health fails.
+
+Environment:
+  NORN_PLATFORM_REPO       Norn repo path. Defaults to this script's repo.
+  NORN_RELEASES_DIR        Release root. Defaults to $HOME/norn/releases.
+  NORN_CURRENT_LINK        Current-release symlink. Defaults to $HOME/norn/current.
+  NORN_BIN_DIR             Compatibility bin dir. Defaults to $HOME/go/bin.
+  NORN_LAUNCH_LABEL        LaunchAgent label. Defaults to com.norn.api.
+  NORN_API_BASE            Running API base. Defaults to http://127.0.0.1:8800.
+  NORN_CANDIDATE_PORT      Candidate API port. Defaults to 18800.
+  NORN_SKIP_CANDIDATE_API  Set true to skip candidate API boot.
+USAGE
+}
+
+log() {
+  printf '[platform] %s\n' "$*"
+}
+
+fail() {
+  printf '[platform] error: %s\n' "$*" >&2
+  exit 1
+}
+
+require_cmd() {
+  command -v "$1" >/dev/null 2>&1 || fail "$1 not found"
+}
+
+mode="${1:-}"
+if [[ -z "$mode" || "$mode" == "-h" || "$mode" == "--help" ]]; then
+  usage
+  exit 0
+fi
+shift || true
+
+case "$mode" in
+  preflight|upgrade) ;;
+  *) usage >&2; exit 2 ;;
+esac
+
+ref="${1:-HEAD}"
+script_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+default_repo="$(cd "$script_dir/../.." && pwd)"
+repo="${NORN_PLATFORM_REPO:-$default_repo}"
+v2="$repo/v2"
+releases="${NORN_RELEASES_DIR:-$HOME/norn/releases}"
+current_link="${NORN_CURRENT_LINK:-$HOME/norn/current}"
+bin_dir="${NORN_BIN_DIR:-$HOME/go/bin}"
+launch_label="${NORN_LAUNCH_LABEL:-com.norn.api}"
+api_base="${NORN_API_BASE:-http://127.0.0.1:8800}"
+candidate_port="${NORN_CANDIDATE_PORT:-18800}"
+skip_candidate="${NORN_SKIP_CANDIDATE_API:-false}"
+
+require_cmd git
+require_cmd go
+require_cmd curl
+require_cmd install
+
+[[ -d "$repo/.git" ]] || fail "$repo is not a git checkout"
+[[ -d "$v2/api" && -d "$v2/cli" ]] || fail "$repo does not look like a Norn v2 checkout"
+
+if [[ "$ref" != "HEAD" ]]; then
+  git -C "$repo" fetch --tags --prune origin >/dev/null 2>&1 || log "warning: git fetch failed; using local refs"
+fi
+sha="$(git -C "$repo" rev-parse --verify "$ref^{commit}")"
+short_sha="${sha:0:12}"
+version="$(git -C "$repo" describe --tags --always --dirty "$sha" 2>/dev/null || printf '%s' "$short_sha")"
+release="$releases/$sha"
+work_root="$(mktemp -d "${TMPDIR:-/tmp}/norn-platform.XXXXXX")"
+worktree="$work_root/src"
+candidate_pid=""
+
+cleanup() {
+  if [[ -n "$candidate_pid" ]] && kill -0 "$candidate_pid" >/dev/null 2>&1; then
+    kill "$candidate_pid" >/dev/null 2>&1 || true
+    wait "$candidate_pid" >/dev/null 2>&1 || true
+  fi
+  if [[ -d "$worktree/.git" ]]; then
+    git -C "$repo" worktree remove --force "$worktree" >/dev/null 2>&1 || true
+  fi
+  rm -rf "$work_root"
+}
+trap cleanup EXIT
+
+build_release() {
+  log "building $sha"
+  rm -rf "$release"
+  mkdir -p "$release/bin" "$release/ui" "$release/logs"
+
+  git -C "$repo" worktree add --detach "$worktree" "$sha" >/dev/null
+
+  if [[ -d "$worktree/v2/ui" ]]; then
+    require_cmd pnpm
+    (cd "$worktree/v2/ui" && pnpm install --frozen-lockfile && pnpm build)
+    cp -R "$worktree/v2/ui/dist/." "$release/ui/"
+  fi
+
+  (cd "$worktree/v2/api" && go build -ldflags "-X main.Version=$version" -o "$release/bin/norn-api" .)
+  (cd "$worktree/v2/cli" && go build -ldflags "-X norn/v2/cli/cmd.Version=$version" -o "$release/bin/norn" .)
+
+  cat > "$release/release.env" <<EOF
+NORN_RELEASE_SHA=$sha
+NORN_RELEASE_VERSION=$version
+NORN_RELEASE_CREATED_AT=$(date -u +%Y-%m-%dT%H:%M:%SZ)
+NORN_UI_DIR=$release/ui
+EOF
+  log "release ready: $release"
+}
+
+wait_health() {
+  local base="$1"
+  local tries="${2:-30}"
+  local i
+  for ((i = 1; i <= tries; i++)); do
+    if curl -fsS "$base/api/health" >/dev/null 2>&1; then
+      return 0
+    fi
+    sleep 1
+  done
+  return 1
+}
+
+candidate_preflight() {
+  if [[ "$skip_candidate" == "true" ]]; then
+    log "candidate API boot skipped"
+    return
+  fi
+
+  log "starting candidate API on 127.0.0.1:$candidate_port"
+  (
+    cd "$repo"
+    NORN_PORT="$candidate_port" \
+    NORN_BIND_ADDR="${NORN_BIND_ADDR:-127.0.0.1}" \
+    NORN_UI_DIR="$release/ui" \
+    NORN_SKIP_DEPLOYMENT_RECOVERY=true \
+    "$release/bin/norn-api"
+  ) >"$release/logs/candidate-api.log" 2>&1 &
+  candidate_pid="$!"
+
+  if ! wait_health "http://127.0.0.1:$candidate_port" 30; then
+    tail -80 "$release/logs/candidate-api.log" >&2 || true
+    fail "candidate API did not become healthy"
+  fi
+  curl -fsS "http://127.0.0.1:$candidate_port/api/version" | tee "$release/logs/candidate-version.json"
+  printf '\n'
+  log "candidate healthy"
+}
+
+postflight() {
+  log "waiting for running API"
+  wait_health "$api_base" 30 || return 1
+  curl -fsS "$api_base/api/version" | tee "$release/logs/postflight-version.json"
+  printf '\n'
+}
+
+restart_api() {
+  launchctl kickstart -k "gui/$(id -u)/$launch_label"
+}
+
+promote_release() {
+  mkdir -p "$(dirname "$current_link")" "$bin_dir"
+  previous=""
+  if [[ -L "$current_link" ]]; then
+    previous="$(readlink "$current_link")"
+  fi
+  log "promoting $release"
+  ln -sfn "$release" "$current_link"
+  install -m 0755 "$release/bin/norn-api" "$bin_dir/norn-api"
+  install -m 0755 "$release/bin/norn" "$bin_dir/norn"
+
+  restart_api
+  if postflight; then
+    log "upgrade complete: $version"
+    return 0
+  fi
+
+  log "postflight failed; rolling back"
+  if [[ -n "$previous" && -d "$previous" ]]; then
+    ln -sfn "$previous" "$current_link"
+    install -m 0755 "$previous/bin/norn-api" "$bin_dir/norn-api"
+    install -m 0755 "$previous/bin/norn" "$bin_dir/norn"
+    restart_api
+    wait_health "$api_base" 30 || fail "rollback health check failed"
+    fail "upgrade failed and rollback completed"
+  fi
+  fail "upgrade failed and no previous release symlink was available"
+}
+
+build_release
+candidate_preflight
+
+if [[ "$mode" == "upgrade" ]]; then
+  promote_release
+else
+  log "preflight complete: $version"
+fi

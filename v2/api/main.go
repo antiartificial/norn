@@ -63,7 +63,9 @@ func main() {
 		log.Fatalf("migration: %v", err)
 	}
 
-	if err := db.RecoverInFlightDeployments(context.Background()); err != nil {
+	if os.Getenv("NORN_SKIP_DEPLOYMENT_RECOVERY") == "true" {
+		log.Println("deployment recovery skipped")
+	} else if err := db.RecoverInFlightDeployments(context.Background()); err != nil {
 		log.Printf("WARNING: deployment recovery: %v", err)
 	}
 
