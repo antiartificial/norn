@@ -26,6 +26,22 @@ func TestValidateSpecWarnsForPlainSecretLikeEnv(t *testing.T) {
 	assertFinding(t, result, "processes.web.env.OIDC_CLIENT_SECRET")
 }
 
+func TestValidateSpecStrictSecretsTurnsPlainEnvWarningsIntoErrors(t *testing.T) {
+	spec := &InfraSpec{
+		App:       "secret-app",
+		Processes: map[string]Process{"web": {}},
+		Env: map[string]string{
+			"DATABASE_URL": "postgres://user:pass@localhost:5432/app",
+		},
+	}
+
+	result := ValidateSpecWithOptions(spec, ValidationOptions{NetworkMode: "local", StrictSecrets: true})
+	if result.Valid {
+		t.Fatalf("expected strict secret validation to fail")
+	}
+	assertErrorFinding(t, result, "env.DATABASE_URL")
+}
+
 func TestValidateSpecWarnsWhenDeclaredSecretAlsoAppearsInEnv(t *testing.T) {
 	spec := &InfraSpec{
 		App:       "secret-app",

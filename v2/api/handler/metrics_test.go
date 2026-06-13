@@ -102,4 +102,53 @@ func TestObservabilityBundleIncludesAlertsAndServiceSpecs(t *testing.T) {
 			t.Fatalf("missing service spec %q: %+v", name, bundle.ServiceSpecs)
 		}
 	}
+	if !strings.Contains(bundle.PrometheusConfig, "host.docker.internal:8800") {
+		t.Fatalf("bundle prometheus config should target host from containers:\n%s", bundle.PrometheusConfig)
+	}
+}
+
+func TestObservabilityServicesInstallWritesManagedAppDirs(t *testing.T) {
+	appsDir := t.TempDir()
+	h := &Handler{cfg: &config.Config{AppsDir: appsDir, NetworkMode: "local", BindAddr: "127.0.0.1", Port: "8800"}}
+	req := httptest.NewRequest(http.MethodPost, "/api/observability/services/install", nil)
+	rec := httptest.NewRecorder()
+
+	h.ObservabilityServicesInstall(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200; body=%s", rec.Code, rec.Body.String())
+	}
+	var receipt observabilityInstallReceipt
+	if err := json.Unmarshal(rec.Body.Bytes(), &receipt); err != nil {
+		t.Fatal(err)
+	}
+	if len(receipt.Installed) != 3 {
+		t.Fatalf("installed = %+v, want 3 apps", receipt.Installed)
+	}
+	for _, path := range []string{
+		"norn-prometheus/infraspec.yaml",
+		"norn-prometheus/prometheus.yml",
+		"norn-grafana/provisioning/datasources/norn-prometheus.yaml",
+		"norn-cadvisor/Dockerfile",
+	} {
+		if _, err := os.Stat(filepath.Join(appsDir, path)); err != nil {
+			t.Fatalf("expected generated file %s: %v", path, err)
+		}
+	}
+}
+
+func TestObservabilityServicesInstallRejectsExistingWithoutOverwrite(t *testing.T) {
+	appsDir := t.TempDir()
+	if err := os.Mkdir(filepath.Join(appsDir, "norn-prometheus"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	h := &Handler{cfg: &config.Config{AppsDir: appsDir, NetworkMode: "local", BindAddr: "127.0.0.1", Port: "8800"}}
+	req := httptest.NewRequest(http.MethodPost, "/api/observability/services/install", nil)
+	rec := httptest.NewRecorder()
+
+	h.ObservabilityServicesInstall(rec, req)
+
+	if rec.Code != http.StatusConflict {
+		t.Fatalf("status = %d, want 409; body=%s", rec.Code, rec.Body.String())
+	}
 }

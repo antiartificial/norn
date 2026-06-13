@@ -18,7 +18,9 @@ norn webhooks replay <delivery-id>
 norn webhooks replay <delivery-id> --preflight
 norn ops platform
 norn observability bundle
+norn observability install
 norn secrets migrate-plan
+norn network
 ```
 
 API endpoints:
@@ -34,8 +36,9 @@ API endpoints:
 | `POST` | `/api/events/{id}/snooze` | Snooze a Beacon event until a duration or timestamp |
 | `POST` | `/api/events/{id}/open` | Reopen a Beacon event |
 | `GET` | `/api/alerts/rules` | Built-in alert rule catalogue derived from Beacon event types |
-| `GET` | `/api/observability/bundle` | Prometheus, alert, Grafana, and starter service bundle |
+| `GET` | `/api/observability/bundle` | Prometheus, alert, Grafana, and service bundle |
 | `GET` | `/api/observability/alerts.yml` | Prometheus alert rules from the observability bundle |
+| `POST` | `/api/observability/services/install` | Install generated observability app directories |
 | `GET` | `/api/secrets/migration-plan` | Value-safe plaintext secret migration plan |
 | `GET` | `/api/webhooks/deliveries` | Recent webhook delivery inbox |
 | `POST` | `/api/webhooks/deliveries/{id}/replay` | Replay a delivery as a deploy or preflight |
@@ -99,6 +102,8 @@ norn webhooks replay <delivery-id> --preflight
 ## Platform Drains
 
 `norn platform upgrade` and `norn platform rollback` call the platform script. When `NORN_API_TOKEN` or `NORN_TOKEN` is available, the script checks `/api/operations/active` before mutating the running platform.
+
+`norn platform upgrade --proxy` uses the same drain gate before switching the managed reverse-proxy upstream on hosts that are intentionally proxy-fronted.
 
 Set `NORN_DRAIN_MODE` to choose behavior:
 

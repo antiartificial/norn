@@ -274,7 +274,7 @@ func runContextDBSmoke(cfg contextDBSmokeConfig) error {
 }
 
 func validateContextDBSpec() error {
-	result, err := client.ValidateApp("contextdb")
+	result, err := client.ValidateApp("contextdb", false)
 	if err != nil {
 		return fmt.Errorf("validate contextdb: %w", err)
 	}

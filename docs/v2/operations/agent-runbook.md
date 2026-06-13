@@ -21,8 +21,9 @@ Useful surfaces:
 | Platform release history | `GET /api/platform/releases`, `norn platform releases` |
 | Operational events | `GET /api/events`, `GET /api/events/{id}`, `norn events`, `norn alerts` |
 | Control-plane health | `/api/health`, `/api/version`, `/metrics`, `norn smoke platform`, `norn platform smoke` |
-| Observability bundle | `GET /api/observability/bundle`, `norn observability bundle --out <dir>` |
+| Observability bundle/services | `GET /api/observability/bundle`, `POST /api/observability/services/install`, `norn observability install` |
 | Secret migration plan | `GET /api/secrets/migration-plan`, `norn secrets migrate-plan` |
+| Networking truth | `GET /api/services/manifest`, `norn network` |
 
 If a protected endpoint returns `401`, do not assume the platform is unhealthy. Verify auth context separately and fall back to public health/version endpoints, local DB checks, process manager state, or an authenticated shell when available.
 
@@ -81,6 +82,7 @@ Norn control-plane upgrades should use the platform lane rather than rebuilding 
 ```bash
 norn platform preflight HEAD
 norn platform upgrade HEAD
+norn platform upgrade HEAD --proxy
 norn platform releases
 norn platform rollback <sha-prefix>
 norn platform smoke
@@ -91,11 +93,13 @@ norn platform proxy-render
 norn platform proxy-switch <port|host:port>
 ```
 
-The platform lane builds an isolated release, boots a candidate API on an alternate port, checks health/version, promotes the release symlink, restarts only the Norn API process, and runs postflight health.
+The default platform lane builds an isolated release, boots a candidate API on an alternate port, checks health/version, promotes the release symlink, restarts only the Norn API process, and runs postflight health.
+
+On a proxy-fronted host, `norn platform upgrade --proxy` keeps old and new APIs on private ports, switches the managed Caddy upstream, then stops the previous proxy-managed API after postflight succeeds. Do not use it on a direct LaunchAgent `:8800` install until the host has intentionally moved to proxy-fronted ingress.
 
 `norn smoke platform` is the preferred post-upgrade smoke command when authenticated API access is available. It checks health, operation drain, current release marker, and recent warning/critical Beacon events. Use `norn platform smoke` when auth lives in the API runtime env rather than the interactive shell.
 
-`norn platform proxy-plan` prints a no-blip reverse-proxy cutover plan. `proxy-status`, `proxy-render`, and `proxy-switch` manage optional local proxy state; they do not enable proxy-fronted upgrades by themselves.
+`norn platform proxy-plan` prints a no-blip reverse-proxy cutover plan. `proxy-status`, `proxy-render`, and `proxy-switch` manage optional local proxy state; they do not move a direct LaunchAgent install by themselves.
 
 Candidate APIs must not claim live queue work. The platform script runs candidates with operation recovery and operation workers disabled.
 
@@ -115,9 +119,13 @@ Beacon events can be acknowledged, snoozed, or reopened from the CLI, API, and P
 
 ## Assurance Surfaces
 
-Use `norn observability bundle --out <dir>` when you need a reproducible local Prometheus/Grafana/cAdvisor starting point. The generated files are intended for review before deployment as managed Norn services.
+Use `norn observability install` when you need managed local Prometheus/Grafana/cAdvisor app directories. Review the generated app ports and host policy before deployment.
 
 Use `norn secrets migrate-plan [app]` before touching plaintext env secrets. It prints only keys, locations, declared/encrypted status, and recommended action; it never prints values.
+
+Use `norn validate --strict-secrets` or `NORN_STRICT_SECRETS=true` when a repo or host is ready for plaintext secret-like env findings to block validation/preflight.
+
+Use `norn network` when endpoint reachability is confusing. It summarizes service exposure, endpoint scope, instance scope, and mode-specific guidance.
 
 For destructive database restores, prefer `norn snapshots <app> restore <timestamp> --yes --pre-restore` so the receipt includes a fresh pre-restore snapshot.
 

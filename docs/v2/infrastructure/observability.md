@@ -91,6 +91,7 @@ The CLI can inspect it or write the files to disk:
 ```bash
 norn observability bundle
 norn observability bundle --out ./norn-observability
+norn observability install
 ```
 
 The bundle contains:
@@ -101,9 +102,25 @@ The bundle contains:
 | `prometheus/rules/norn-alerts.yml` | Prometheus alert rules for Norn service health, deploy failures, cron failures, snapshot pressure, and low disk headroom |
 | `grafana/provisioning/datasources/norn-prometheus.json` | Starter Grafana datasource |
 | `grafana/dashboards/norn-platform.json` | Starter platform dashboard |
-| `services/*.infraspec.yaml` | Starter Norn service specs for Prometheus, Grafana, and cAdvisor |
+| `services/*.infraspec.yaml` | Norn service specs for Prometheus, Grafana, and cAdvisor |
 
-The generated service specs are a handoff artifact: review paths, ports, and storage locations before placing them under `NORN_APPS_DIR` and deploying them as managed platform services.
+`norn observability install` writes managed app directories under `NORN_APPS_DIR`:
+
+| App | Purpose |
+|-----|---------|
+| `norn-prometheus` | Scrapes Norn, app metrics services, and alert rules with 30-day/8GB retention |
+| `norn-grafana` | Provisions the Norn Prometheus datasource and starter platform dashboard |
+| `norn-cadvisor` | Provides container-level metrics for Prometheus when host policy allows it |
+
+The generated apps are normal Norn apps. Review ports, container privileges, and host policy before deploying:
+
+```bash
+norn validate norn-prometheus
+norn preflight norn-prometheus HEAD
+norn deploy norn-prometheus HEAD
+```
+
+When the API binds to loopback, the managed Prometheus config targets `host.docker.internal:<port>` so Prometheus can scrape the host-local Norn API from inside Docker. Override this with `NORN_OBSERVABILITY_NORN_TARGET` if the Docker host path differs.
 
 ## App Metrics
 

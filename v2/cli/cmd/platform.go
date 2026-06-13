@@ -12,6 +12,7 @@ import (
 var (
 	platformRepo   string
 	platformScript string
+	platformProxy  bool
 )
 
 func init() {
@@ -28,6 +29,7 @@ func init() {
 	platformCmd.AddCommand(platformProxyStatusCmd)
 	platformCmd.AddCommand(platformProxyRenderCmd)
 	platformCmd.AddCommand(platformProxySwitchCmd)
+	platformUpgradeCmd.Flags().BoolVar(&platformProxy, "proxy", false, "Use managed proxy cutover mode instead of LaunchAgent restart")
 }
 
 var platformCmd = &cobra.Command{
@@ -56,6 +58,9 @@ var platformUpgradeCmd = &cobra.Command{
 		ref := "HEAD"
 		if len(args) == 1 {
 			ref = args[0]
+		}
+		if platformProxy {
+			return runPlatformUpgradeScriptEnv([]string{"NORN_PLATFORM_UPGRADE_MODE=proxy"}, "upgrade", ref)
 		}
 		return runPlatformUpgradeScript("upgrade", ref)
 	},
@@ -146,6 +151,10 @@ func runPlatformUpgradeScript(mode, ref string) error {
 }
 
 func runPlatformUpgradeScriptArgs(args ...string) error {
+	return runPlatformUpgradeScriptEnv(nil, args...)
+}
+
+func runPlatformUpgradeScriptEnv(extraEnv []string, args ...string) error {
 	script, err := resolvePlatformScript()
 	if err != nil {
 		return err
@@ -158,6 +167,7 @@ func runPlatformUpgradeScriptArgs(args ...string) error {
 	if platformRepo != "" {
 		command.Env = append(command.Env, "NORN_PLATFORM_REPO="+platformRepo)
 	}
+	command.Env = append(command.Env, extraEnv...)
 	return command.Run()
 }
 
