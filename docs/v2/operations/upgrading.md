@@ -29,6 +29,7 @@ Use these environment variables when the repo or host layout differs:
 | `NORN_CURRENT_LINK` | `$HOME/norn/current` | Current-release symlink |
 | `NORN_BIN_DIR` | `$HOME/go/bin` | Compatibility install directory |
 | `NORN_CANDIDATE_PORT` | `18800` | Alternate-port candidate API |
+| `NORN_TOKEN` / `NORN_API_TOKEN` | — | Optional bearer token for active-operation drain checks |
 | `NORN_DRAIN_MODE` | `fail` | `fail`, `wait`, or `force` for active-operation drains |
 | `NORN_SKIP_CANDIDATE_API` | `false` | Skip side-by-side candidate boot |
 
