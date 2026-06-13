@@ -48,15 +48,21 @@ func printOperations(ops []api.Operation) {
 		style.TableHeader.Render("KIND")+"\t"+
 		style.TableHeader.Render("APP")+"\t"+
 		style.TableHeader.Render("REF")+"\t"+
+		style.TableHeader.Render("TRY")+"\t"+
 		style.TableHeader.Render("RISK")+"\t"+
 		style.TableHeader.Render("MESSAGE"))
 	for _, op := range ops {
-		fmt.Fprintf(w, "%s\t%s\t%s\t%s\t%s\t%s\t%s\n",
+		attempts := "-"
+		if op.MaxAttempts > 0 {
+			attempts = fmt.Sprintf("%d/%d", op.Attempts, op.MaxAttempts)
+		}
+		fmt.Fprintf(w, "%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n",
 			localTime(op.StartedAt),
 			op.Status,
 			op.Kind,
 			emptyDash(op.App),
 			shortValue(op.Ref, 12),
+			attempts,
 			emptyDash(op.Risk),
 			emptyDash(op.Message),
 		)

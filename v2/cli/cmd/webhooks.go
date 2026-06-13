@@ -11,11 +11,16 @@ import (
 	"norn/v2/cli/style"
 )
 
-var webhookLimit int
+var (
+	webhookLimit           int
+	webhookReplayPreflight bool
+)
 
 func init() {
 	rootCmd.AddCommand(webhooksCmd)
 	webhooksCmd.Flags().IntVar(&webhookLimit, "limit", 25, "Maximum deliveries to show")
+	webhooksCmd.AddCommand(webhooksReplayCmd)
+	webhooksReplayCmd.Flags().BoolVar(&webhookReplayPreflight, "preflight", false, "Queue a preflight instead of a deploy")
 }
 
 var webhooksCmd = &cobra.Command{
@@ -27,6 +32,24 @@ var webhooksCmd = &cobra.Command{
 			return err
 		}
 		printWebhookDeliveries(deliveries)
+		return nil
+	},
+}
+
+var webhooksReplayCmd = &cobra.Command{
+	Use:   "replay <delivery-id>",
+	Short: "Replay a webhook delivery through the durable operation queue",
+	Args:  cobra.ExactArgs(1),
+	RunE: func(cmd *cobra.Command, args []string) error {
+		mode := "deploy"
+		if webhookReplayPreflight {
+			mode = "preflight"
+		}
+		resp, err := client.ReplayWebhookDelivery(args[0], mode)
+		if err != nil {
+			return err
+		}
+		fmt.Printf("%s queued %s for %s saga=%s\n", style.Healthy.Render("replay"), resp.Mode, resp.App, resp.SagaID)
 		return nil
 	},
 }

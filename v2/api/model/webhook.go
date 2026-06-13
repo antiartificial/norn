@@ -16,6 +16,7 @@ type WebhookDelivery struct {
 	Reason     string                 `json:"reason,omitempty"`
 	RemoteAddr string                 `json:"remoteAddr,omitempty"`
 	UserAgent  string                 `json:"userAgent,omitempty"`
+	Payload    map[string]interface{} `json:"payload,omitempty"`
 	Metadata   map[string]interface{} `json:"metadata,omitempty"`
 	ReceivedAt time.Time              `json:"receivedAt"`
 	UpdatedAt  time.Time              `json:"updatedAt"`

@@ -26,24 +26,27 @@ func (p *Pipeline) Preflight(spec *model.InfraSpec, ref string) string {
 	ctx := context.Background()
 	operationID := uuid.New().String()
 	if err := p.DB.InsertOperation(ctx, &model.Operation{
-		ID:        operationID,
-		Kind:      "app.preflight",
-		App:       spec.App,
-		SagaID:    sg.ID,
-		Ref:       ref,
-		Status:    model.OperationRunning,
-		Risk:      "read-only",
-		Source:    "pipeline",
-		Message:   fmt.Sprintf("preflighting %s", spec.App),
-		StartedAt: time.Now(),
+		ID:          operationID,
+		Kind:        "app.preflight",
+		App:         spec.App,
+		SagaID:      sg.ID,
+		Ref:         ref,
+		Status:      model.OperationQueued,
+		Risk:        "read-only",
+		Source:      "pipeline",
+		Message:     fmt.Sprintf("queued preflight for %s", spec.App),
+		StartedAt:   time.Now(),
+		MaxAttempts: 3,
+		Payload: map[string]interface{}{
+			"app": spec.App,
+			"ref": ref,
+		},
 	}); err != nil {
 		log.Printf("preflight: insert operation: %v", err)
 		operationID = ""
 	}
 
-	sg.Log(ctx, "preflight.start", fmt.Sprintf("preflighting %s (ref: %s)", spec.App, ref), nil)
-
-	go p.runPreflight(ctx, spec, ref, sg, operationID)
+	sg.Log(ctx, "preflight.queued", fmt.Sprintf("queued preflight for %s (ref: %s)", spec.App, ref), nil)
 	return sg.ID
 }
 

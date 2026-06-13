@@ -120,7 +120,14 @@ func Migrate(db *DB) error {
 			risk        TEXT NOT NULL DEFAULT '',
 			source      TEXT NOT NULL DEFAULT '',
 			message     TEXT NOT NULL DEFAULT '',
+			payload     JSONB NOT NULL DEFAULT '{}',
 			metadata    JSONB NOT NULL DEFAULT '{}',
+			attempts    INT NOT NULL DEFAULT 0,
+			max_attempts INT NOT NULL DEFAULT 1,
+			locked_by  TEXT NOT NULL DEFAULT '',
+			locked_until TIMESTAMPTZ,
+			next_attempt_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+			last_error TEXT NOT NULL DEFAULT '',
 			started_at  TIMESTAMPTZ NOT NULL DEFAULT now(),
 			updated_at  TIMESTAMPTZ NOT NULL DEFAULT now(),
 			finished_at TIMESTAMPTZ
@@ -129,6 +136,15 @@ func Migrate(db *DB) error {
 		CREATE INDEX IF NOT EXISTS idx_operations_app ON operations(app, started_at DESC);
 		CREATE INDEX IF NOT EXISTS idx_operations_saga ON operations(saga_id);
 		CREATE INDEX IF NOT EXISTS idx_operations_kind ON operations(kind, started_at DESC);
+		CREATE INDEX IF NOT EXISTS idx_operations_queue ON operations(status, next_attempt_at, kind);
+
+		ALTER TABLE operations ADD COLUMN IF NOT EXISTS payload JSONB NOT NULL DEFAULT '{}';
+		ALTER TABLE operations ADD COLUMN IF NOT EXISTS attempts INT NOT NULL DEFAULT 0;
+		ALTER TABLE operations ADD COLUMN IF NOT EXISTS max_attempts INT NOT NULL DEFAULT 1;
+		ALTER TABLE operations ADD COLUMN IF NOT EXISTS locked_by TEXT NOT NULL DEFAULT '';
+		ALTER TABLE operations ADD COLUMN IF NOT EXISTS locked_until TIMESTAMPTZ;
+		ALTER TABLE operations ADD COLUMN IF NOT EXISTS next_attempt_at TIMESTAMPTZ NOT NULL DEFAULT now();
+		ALTER TABLE operations ADD COLUMN IF NOT EXISTS last_error TEXT NOT NULL DEFAULT '';
 
 		CREATE TABLE IF NOT EXISTS webhook_deliveries (
 			id          TEXT PRIMARY KEY,
@@ -144,6 +160,7 @@ func Migrate(db *DB) error {
 			reason      TEXT NOT NULL DEFAULT '',
 			remote_addr TEXT NOT NULL DEFAULT '',
 			user_agent  TEXT NOT NULL DEFAULT '',
+			payload     JSONB NOT NULL DEFAULT '{}',
 			metadata    JSONB NOT NULL DEFAULT '{}',
 			received_at TIMESTAMPTZ NOT NULL DEFAULT now(),
 			updated_at  TIMESTAMPTZ NOT NULL DEFAULT now()
@@ -151,6 +168,8 @@ func Migrate(db *DB) error {
 		CREATE INDEX IF NOT EXISTS idx_webhook_deliveries_received ON webhook_deliveries(received_at DESC);
 		CREATE INDEX IF NOT EXISTS idx_webhook_deliveries_provider ON webhook_deliveries(provider, received_at DESC);
 		CREATE INDEX IF NOT EXISTS idx_webhook_deliveries_status ON webhook_deliveries(status, received_at DESC);
+
+		ALTER TABLE webhook_deliveries ADD COLUMN IF NOT EXISTS payload JSONB NOT NULL DEFAULT '{}';
 	`)
 	return err
 }
@@ -226,6 +245,22 @@ func (db *DB) ListDeployments(ctx context.Context, app string, limit int) ([]mod
 		deployments = append(deployments, d)
 	}
 	return deployments, nil
+}
+
+func (db *DB) GetDeployment(ctx context.Context, id string) (*model.Deployment, error) {
+	var d model.Deployment
+	var changes []byte
+	err := db.Pool.QueryRow(ctx,
+		`SELECT id, app, commit_sha, image_tag, saga_id, status, source_kind, source_ref, source_dirty, source_changes, started_at, finished_at
+		 FROM deployments
+		 WHERE id = $1`,
+		id,
+	).Scan(&d.ID, &d.App, &d.CommitSHA, &d.ImageTag, &d.SagaID, &d.Status, &d.SourceKind, &d.SourceRef, &d.SourceDirty, &changes, &d.StartedAt, &d.FinishedAt)
+	if err != nil {
+		return nil, err
+	}
+	_ = json.Unmarshal(changes, &d.SourceChanges)
+	return &d, nil
 }
 
 func (db *DB) LastSuccessfulDeployment(ctx context.Context, app, excludeID string) (*model.Deployment, error) {

@@ -46,6 +46,19 @@ func New(store Store, app, source, category string) *Saga {
 	}
 }
 
+func NewWithID(store Store, id, app, source, category string) *Saga {
+	if id == "" {
+		id = uuid.New().String()
+	}
+	return &Saga{
+		ID:       id,
+		App:      app,
+		Source:   source,
+		Category: category,
+		store:    store,
+	}
+}
+
 func (s *Saga) Log(ctx context.Context, action, message string, metadata map[string]string) error {
 	evt := &Event{
 		ID:        uuid.New().String(),

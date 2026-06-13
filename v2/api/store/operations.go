@@ -7,6 +7,8 @@ import (
 	"strings"
 	"time"
 
+	"github.com/jackc/pgx/v5"
+
 	"norn/v2/api/model"
 )
 
@@ -30,17 +32,27 @@ func (db *DB) InsertOperation(ctx context.Context, op *model.Operation) error {
 	if op.Metadata == nil {
 		op.Metadata = map[string]interface{}{}
 	}
+	if op.Payload == nil {
+		op.Payload = map[string]interface{}{}
+	}
 	if op.Status == "" {
-		op.Status = model.OperationRunning
+		op.Status = model.OperationQueued
 	}
 	if op.StartedAt.IsZero() {
 		op.StartedAt = time.Now()
 	}
+	if op.MaxAttempts <= 0 {
+		op.MaxAttempts = 1
+	}
+	if op.NextAttemptAt.IsZero() {
+		op.NextAttemptAt = op.StartedAt
+	}
+	payload, _ := json.Marshal(op.Payload)
 	metadata, _ := json.Marshal(op.Metadata)
 	_, err := db.Pool.Exec(ctx, `
-		INSERT INTO operations (id, kind, app, saga_id, ref, status, risk, source, message, metadata, started_at, updated_at)
-		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, now())
-	`, op.ID, op.Kind, op.App, op.SagaID, op.Ref, op.Status, op.Risk, op.Source, op.Message, metadata, op.StartedAt)
+		INSERT INTO operations (id, kind, app, saga_id, ref, status, risk, source, message, payload, metadata, attempts, max_attempts, next_attempt_at, started_at, updated_at)
+		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, now())
+	`, op.ID, op.Kind, op.App, op.SagaID, op.Ref, op.Status, op.Risk, op.Source, op.Message, payload, metadata, op.Attempts, op.MaxAttempts, op.NextAttemptAt, op.StartedAt)
 	return err
 }
 
@@ -51,7 +63,7 @@ func (db *DB) FinishOperation(ctx context.Context, id string, status model.Opera
 	data, _ := json.Marshal(metadata)
 	_, err := db.Pool.Exec(ctx, `
 		UPDATE operations
-		SET status = $1, message = $2, metadata = metadata || $3::jsonb, updated_at = now(), finished_at = now()
+		SET status = $1, message = $2, metadata = metadata || $3::jsonb, locked_by = '', locked_until = NULL, updated_at = now(), finished_at = now()
 		WHERE id = $4
 	`, status, message, data, id)
 	return err
@@ -64,10 +76,85 @@ func (db *DB) FinishOperationBySaga(ctx context.Context, sagaID string, status m
 	data, _ := json.Marshal(metadata)
 	_, err := db.Pool.Exec(ctx, `
 		UPDATE operations
-		SET status = $1, message = $2, metadata = metadata || $3::jsonb, updated_at = now(), finished_at = now()
+		SET status = $1, message = $2, metadata = metadata || $3::jsonb, locked_by = '', locked_until = NULL, updated_at = now(), finished_at = now()
 		WHERE saga_id = $4 AND status IN ('queued', 'running')
 	`, status, message, data, sagaID)
 	return err
+}
+
+func (db *DB) RetryOperation(ctx context.Context, id, message, lastError string, nextAttemptAt time.Time, metadata map[string]interface{}) error {
+	if metadata == nil {
+		metadata = map[string]interface{}{}
+	}
+	data, _ := json.Marshal(metadata)
+	_, err := db.Pool.Exec(ctx, `
+		UPDATE operations
+		SET status = 'queued',
+		    message = $1,
+		    last_error = $2,
+		    next_attempt_at = $3,
+		    metadata = metadata || $4::jsonb,
+		    locked_by = '',
+		    locked_until = NULL,
+		    updated_at = now()
+		WHERE id = $5
+	`, message, lastError, nextAttemptAt, data, id)
+	return err
+}
+
+func (db *DB) ClaimNextOperation(ctx context.Context, workerID string, lease time.Duration, kinds []string) (*model.Operation, error) {
+	args := []interface{}{workerID, time.Now().Add(lease)}
+	kindClause := ""
+	if len(kinds) > 0 {
+		holders := make([]string, 0, len(kinds))
+		for _, kind := range kinds {
+			args = append(args, kind)
+			holders = append(holders, fmt.Sprintf("$%d", len(args)))
+		}
+		kindClause = "AND kind IN (" + strings.Join(holders, ", ") + ")"
+	}
+	query := fmt.Sprintf(`
+		WITH candidate AS (
+			SELECT id
+			FROM operations
+			WHERE status = 'queued'
+			  AND next_attempt_at <= now()
+			  AND attempts < max_attempts
+			  AND (locked_until IS NULL OR locked_until < now())
+			  %s
+			ORDER BY started_at ASC
+			LIMIT 1
+			FOR UPDATE SKIP LOCKED
+		)
+		UPDATE operations o
+		SET status = 'running',
+		    attempts = attempts + 1,
+		    locked_by = $1,
+		    locked_until = $2,
+		    updated_at = now()
+		FROM candidate
+		WHERE o.id = candidate.id
+		RETURNING o.id, o.kind, o.app, o.saga_id, o.ref, o.status, o.risk, o.source, o.message, o.payload, o.metadata,
+		          o.attempts, o.max_attempts, o.locked_by, o.locked_until, o.next_attempt_at, o.last_error,
+		          o.started_at, o.updated_at, o.finished_at
+	`, kindClause)
+
+	var op model.Operation
+	var payload, metadata []byte
+	err := db.Pool.QueryRow(ctx, query, args...).Scan(
+		&op.ID, &op.Kind, &op.App, &op.SagaID, &op.Ref, &op.Status, &op.Risk, &op.Source, &op.Message, &payload, &metadata,
+		&op.Attempts, &op.MaxAttempts, &op.LockedBy, &op.LockedUntil, &op.NextAttemptAt, &op.LastError,
+		&op.StartedAt, &op.UpdatedAt, &op.FinishedAt,
+	)
+	if err == pgx.ErrNoRows {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, err
+	}
+	_ = json.Unmarshal(payload, &op.Payload)
+	_ = json.Unmarshal(metadata, &op.Metadata)
+	return &op, nil
 }
 
 func (db *DB) ListOperations(ctx context.Context, filter OperationFilter) ([]model.Operation, error) {
@@ -93,7 +180,7 @@ func (db *DB) ListOperations(ctx context.Context, filter OperationFilter) ([]mod
 		clauses = append(clauses, "status IN ('queued', 'running')")
 	}
 
-	query := `SELECT id, kind, app, saga_id, ref, status, risk, source, message, metadata, started_at, updated_at, finished_at FROM operations`
+	query := `SELECT id, kind, app, saga_id, ref, status, risk, source, message, payload, metadata, attempts, max_attempts, locked_by, locked_until, next_attempt_at, last_error, started_at, updated_at, finished_at FROM operations`
 	if len(clauses) > 0 {
 		query += " WHERE " + strings.Join(clauses, " AND ")
 	}
@@ -109,10 +196,11 @@ func (db *DB) ListOperations(ctx context.Context, filter OperationFilter) ([]mod
 	var out []model.Operation
 	for rows.Next() {
 		var op model.Operation
-		var metadata []byte
-		if err := rows.Scan(&op.ID, &op.Kind, &op.App, &op.SagaID, &op.Ref, &op.Status, &op.Risk, &op.Source, &op.Message, &metadata, &op.StartedAt, &op.UpdatedAt, &op.FinishedAt); err != nil {
+		var payload, metadata []byte
+		if err := rows.Scan(&op.ID, &op.Kind, &op.App, &op.SagaID, &op.Ref, &op.Status, &op.Risk, &op.Source, &op.Message, &payload, &metadata, &op.Attempts, &op.MaxAttempts, &op.LockedBy, &op.LockedUntil, &op.NextAttemptAt, &op.LastError, &op.StartedAt, &op.UpdatedAt, &op.FinishedAt); err != nil {
 			return nil, err
 		}
+		_ = json.Unmarshal(payload, &op.Payload)
 		_ = json.Unmarshal(metadata, &op.Metadata)
 		out = append(out, op)
 	}
@@ -122,11 +210,23 @@ func (db *DB) ListOperations(ctx context.Context, filter OperationFilter) ([]mod
 func (db *DB) RecoverInFlightOperations(ctx context.Context) error {
 	_, err := db.Pool.Exec(ctx, `
 		UPDATE operations
+		SET status = 'queued',
+		    message = CASE WHEN message = '' THEN 'operation recovered after API restart' ELSE message END,
+		    locked_by = '',
+		    locked_until = NULL,
+		    next_attempt_at = now(),
+		    updated_at = now()
+		WHERE status = 'running'
+		  AND attempts < max_attempts;
+
+		UPDATE operations
 		SET status = 'failed',
 		    message = CASE WHEN message = '' THEN 'operation interrupted by API restart' ELSE message END,
+		    locked_by = '',
+		    locked_until = NULL,
 		    updated_at = now(),
 		    finished_at = now()
-		WHERE status IN ('queued', 'running')
+		WHERE status = 'running'
 	`)
 	return err
 }

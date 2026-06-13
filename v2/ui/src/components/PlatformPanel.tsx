@@ -101,19 +101,38 @@ interface PlatformSummary {
   warnings?: string[]
 }
 
+interface PlatformReleaseList {
+  current?: string
+  releases: Array<{
+    sha: string
+    version: string
+    createdAt: string
+    path: string
+    current: boolean
+  }>
+}
+
 export function PlatformPanel() {
   const [summary, setSummary] = useState<PlatformSummary | null>(null)
+  const [releases, setReleases] = useState<PlatformReleaseList | null>(null)
+  const [busyRelease, setBusyRelease] = useState<string | null>(null)
   const [error, setError] = useState<string | null>(null)
 
   useEffect(() => {
     let cancelled = false
     async function load() {
       try {
-        const res = await fetch(apiUrl('/api/ops/platform'), fetchOpts)
-        if (!res.ok) throw new Error(await res.text())
-        const data = await res.json()
+        const [opsRes, releasesRes] = await Promise.all([
+          fetch(apiUrl('/api/ops/platform'), fetchOpts),
+          fetch(apiUrl('/api/platform/releases'), fetchOpts),
+        ])
+        if (!opsRes.ok) throw new Error(await opsRes.text())
+        if (!releasesRes.ok) throw new Error(await releasesRes.text())
+        const data = await opsRes.json()
+        const releaseData = await releasesRes.json()
         if (!cancelled) {
           setSummary(data)
+          setReleases(releaseData)
           setError(null)
         }
       } catch (err) {
@@ -140,6 +159,22 @@ export function PlatformPanel() {
   const secretTone = summary.secrets.needsAttention > 0 ? 'warn' : 'ok'
   const dirtyTone = dirtyDeployments.length > 0 ? 'warn' : 'ok'
   const snapshotTone = snapshots.some((s) => s.overLimit > 0) ? 'warn' : 'ok'
+  const platformReleases = releases?.releases ?? []
+
+  async function rollbackRelease(sha: string) {
+    setBusyRelease(sha)
+    try {
+      const res = await fetch(apiUrl(`/api/platform/releases/${encodeURIComponent(sha)}/rollback`), {
+        ...fetchOpts,
+        method: 'POST',
+      })
+      if (!res.ok) throw new Error(await res.text())
+    } catch (err) {
+      setError(String(err))
+    } finally {
+      setBusyRelease(null)
+    }
+  }
 
   return (
     <div className="ops-panel">
@@ -233,6 +268,26 @@ export function PlatformPanel() {
             ))}
           </div>
         ) : <div className="ops-empty">No operations recorded</div>}
+      </section>
+
+      <section className="ops-section">
+        <h3>Platform Releases</h3>
+        {platformReleases.length > 0 ? (
+          <div className="ops-table">
+            <div className="ops-row ops-row-head ops-row-wide">
+              <span>Created</span><span>Version</span><span>SHA</span><span>Status</span><span>Path</span><span>Action</span>
+            </div>
+            {platformReleases.slice(0, 8).map((release) => (
+              <div className="ops-row ops-row-wide" key={release.sha}>
+                <span>{formatTime(release.createdAt)}</span><span>{release.version}</span><span>{short(release.sha)}</span><span>{release.current ? 'current' : '-'}</span><span>{release.path}</span><span>{release.current ? '-' : (
+                  <button className="btn btn-small" disabled={busyRelease === release.sha} onClick={() => rollbackRelease(release.sha)}>
+                    {busyRelease === release.sha ? 'starting' : 'rollback'}
+                  </button>
+                )}</span>
+              </div>
+            ))}
+          </div>
+        ) : <div className="ops-empty">No platform releases found</div>}
       </section>
 
       <section className="ops-section">

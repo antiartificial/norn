@@ -103,9 +103,13 @@ List recent webhook deliveries.
 ```bash
 norn webhooks
 norn webhooks --limit 50
+norn webhooks replay <delivery-id>
+norn webhooks replay <delivery-id> --preflight
 ```
 
 The webhook inbox shows delivery status, matched app, branch, and ignored or failed reason for GitHub and Gitea webhook deliveries.
+
+`norn webhooks replay` queues a delivery again through the durable operation queue. Use `--preflight` to run the same matched app/ref through the read-only preflight lane instead of deploying it.
 
 ## restart
 
