@@ -15,16 +15,39 @@ The command shells out to `v2/scripts/platform-upgrade` on the host that owns th
 2. Creates an isolated git worktree for that exact commit.
 3. Builds UI, API, and CLI into `$HOME/norn/releases/<sha>`.
 4. Starts the candidate API on `127.0.0.1:18800`.
-5. Sets `NORN_SKIP_DEPLOYMENT_RECOVERY=true` for the candidate so it does not mark running deployments failed.
+5. Sets `NORN_SKIP_DEPLOYMENT_RECOVERY=true` and `NORN_SKIP_OPERATION_RECOVERY=true` for the candidate so it does not mark running work failed.
 6. Checks `/api/health` and `/api/version`.
 7. On upgrade, flips `$HOME/norn/current`, installs compatibility binaries to `$HOME/go/bin`, restarts `com.norn.api`, and runs postflight health.
 8. If postflight fails and a previous current release exists, flips back, reinstalls the previous binaries, and restarts again.
 
 This is low-invasive: active dashboard sessions and websocket streams reconnect, but hosted apps continue running.
 
-## Durable API Jobs
+The platform lane also supports:
 
-The durable queue should live in Norn's control-plane Postgres, not in Nomad, Redis, Valkey, or an app container.
+```bash
+norn platform releases
+norn platform rollback <sha-prefix>
+```
+
+Release metadata is written to each release directory as `release.env` and `release.json`.
+
+## Drain Gate
+
+Before `upgrade` or `rollback`, the script checks `/api/operations/active` when `NORN_API_TOKEN` or `NORN_TOKEN` is available. `NORN_DRAIN_MODE` controls behavior:
+
+| Mode | Behavior |
+|------|----------|
+| `fail` | Default. Stop if active operations exist |
+| `wait` | Wait until active operations finish |
+| `force` | Skip the drain check |
+
+If the active API is too old or auth is unavailable, the drain check logs a warning and continues so bootstrap upgrades still work.
+
+## Operations Ledger
+
+Norn now stores a durable operations ledger in control-plane Postgres. App deploys, app preflights, and app rollbacks create operation rows with compact status, risk, app, ref, saga id, and timing. On API restart, queued/running rows are marked failed so interrupted work is visible.
+
+The future durable queue should build on this same control-plane Postgres table family, not Nomad, Redis, Valkey, or an app container.
 
 Reasons:
 
@@ -33,24 +56,18 @@ Reasons:
 - The API can claim rows with `FOR UPDATE SKIP LOCKED`, making workers safe across restart or future multiple API instances.
 - Saga events remain the immutable user-facing log; queue rows only track claim state, retries, and resumability.
 
-Proposed table:
+Future queued workers should add claim and retry fields such as:
 
 ```sql
-CREATE TABLE platform_jobs (
+CREATE TABLE operation_claims (
   id TEXT PRIMARY KEY,
-  kind TEXT NOT NULL,
-  status TEXT NOT NULL,
-  ref TEXT NOT NULL DEFAULT '',
-  saga_id TEXT NOT NULL,
-  payload JSONB NOT NULL DEFAULT '{}',
+  operation_id TEXT NOT NULL,
   attempts INT NOT NULL DEFAULT 0,
   locked_by TEXT NOT NULL DEFAULT '',
   locked_until TIMESTAMPTZ,
   next_attempt_at TIMESTAMPTZ NOT NULL DEFAULT now(),
   last_error TEXT NOT NULL DEFAULT '',
-  created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
-  updated_at TIMESTAMPTZ NOT NULL DEFAULT now(),
-  finished_at TIMESTAMPTZ
+  updated_at TIMESTAMPTZ NOT NULL DEFAULT now()
 );
 ```
 

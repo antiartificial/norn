@@ -109,6 +109,48 @@ func Migrate(db *DB) error {
 		CREATE INDEX IF NOT EXISTS idx_beacon_events_app ON beacon_events(app, occurred_at DESC);
 		CREATE INDEX IF NOT EXISTS idx_beacon_events_type ON beacon_events(type, occurred_at DESC);
 		CREATE INDEX IF NOT EXISTS idx_beacon_events_dedupe ON beacon_events(dedupe_key, occurred_at DESC);
+
+		CREATE TABLE IF NOT EXISTS operations (
+			id          TEXT PRIMARY KEY,
+			kind        TEXT NOT NULL,
+			app         TEXT NOT NULL DEFAULT '',
+			saga_id     TEXT NOT NULL DEFAULT '',
+			ref         TEXT NOT NULL DEFAULT '',
+			status      TEXT NOT NULL DEFAULT 'running',
+			risk        TEXT NOT NULL DEFAULT '',
+			source      TEXT NOT NULL DEFAULT '',
+			message     TEXT NOT NULL DEFAULT '',
+			metadata    JSONB NOT NULL DEFAULT '{}',
+			started_at  TIMESTAMPTZ NOT NULL DEFAULT now(),
+			updated_at  TIMESTAMPTZ NOT NULL DEFAULT now(),
+			finished_at TIMESTAMPTZ
+		);
+		CREATE INDEX IF NOT EXISTS idx_operations_status ON operations(status, started_at DESC);
+		CREATE INDEX IF NOT EXISTS idx_operations_app ON operations(app, started_at DESC);
+		CREATE INDEX IF NOT EXISTS idx_operations_saga ON operations(saga_id);
+		CREATE INDEX IF NOT EXISTS idx_operations_kind ON operations(kind, started_at DESC);
+
+		CREATE TABLE IF NOT EXISTS webhook_deliveries (
+			id          TEXT PRIMARY KEY,
+			provider    TEXT NOT NULL,
+			event       TEXT NOT NULL DEFAULT '',
+			delivery_id TEXT NOT NULL DEFAULT '',
+			repository  TEXT NOT NULL DEFAULT '',
+			ref         TEXT NOT NULL DEFAULT '',
+			branch      TEXT NOT NULL DEFAULT '',
+			app         TEXT NOT NULL DEFAULT '',
+			saga_id     TEXT NOT NULL DEFAULT '',
+			status      TEXT NOT NULL DEFAULT 'received',
+			reason      TEXT NOT NULL DEFAULT '',
+			remote_addr TEXT NOT NULL DEFAULT '',
+			user_agent  TEXT NOT NULL DEFAULT '',
+			metadata    JSONB NOT NULL DEFAULT '{}',
+			received_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+			updated_at  TIMESTAMPTZ NOT NULL DEFAULT now()
+		);
+		CREATE INDEX IF NOT EXISTS idx_webhook_deliveries_received ON webhook_deliveries(received_at DESC);
+		CREATE INDEX IF NOT EXISTS idx_webhook_deliveries_provider ON webhook_deliveries(provider, received_at DESC);
+		CREATE INDEX IF NOT EXISTS idx_webhook_deliveries_status ON webhook_deliveries(status, received_at DESC);
 	`)
 	return err
 }

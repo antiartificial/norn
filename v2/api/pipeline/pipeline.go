@@ -71,14 +71,32 @@ func (p *Pipeline) Run(spec *model.InfraSpec, ref string) string {
 	if err := p.DB.InsertDeployment(ctx, deploy); err != nil {
 		log.Printf("pipeline: insert deployment: %v", err)
 	}
+	operationID := uuid.New().String()
+	if err := p.DB.InsertOperation(ctx, &model.Operation{
+		ID:        operationID,
+		Kind:      "app.deploy",
+		App:       spec.App,
+		SagaID:    sg.ID,
+		Ref:       ref,
+		Status:    model.OperationRunning,
+		Risk:      "app rolling update",
+		Source:    "pipeline",
+		Message:   fmt.Sprintf("deploying %s", spec.App),
+		StartedAt: deploy.StartedAt,
+		Metadata: map[string]interface{}{
+			"deploymentId": deploy.ID,
+		},
+	}); err != nil {
+		log.Printf("pipeline: insert operation: %v", err)
+	}
 
 	sg.Log(ctx, "deploy.start", fmt.Sprintf("deploying %s (ref: %s)", spec.App, ref), nil)
 
-	go p.run(ctx, spec, deploy, sg)
+	go p.run(ctx, spec, deploy, sg, operationID)
 	return sg.ID
 }
 
-func (p *Pipeline) run(ctx context.Context, spec *model.InfraSpec, deploy *model.Deployment, sg *saga.Saga) {
+func (p *Pipeline) run(ctx context.Context, spec *model.InfraSpec, deploy *model.Deployment, sg *saga.Saga, operationID string) {
 	st := &state{
 		spec:      spec,
 		commitSHA: deploy.CommitSHA,
@@ -125,6 +143,12 @@ func (p *Pipeline) run(ctx context.Context, spec *model.InfraSpec, deploy *model
 			}})
 			deploy.Status = model.StatusFailed
 			p.DB.UpdateDeployment(ctx, deploy.ID, deploy.Status)
+			if operationID != "" {
+				_ = p.DB.FinishOperation(ctx, operationID, model.OperationFailed, fmt.Sprintf("deploy failed at %s: %v", s.name, err), map[string]interface{}{
+					"deploymentId": deploy.ID,
+					"step":         s.name,
+				})
+			}
 			sg.Log(ctx, "deploy.failed", fmt.Sprintf("deploy failed at %s: %v", s.name, err), nil)
 			p.WS.Broadcast(hub.Event{Type: "deploy.failed", AppID: spec.App, Payload: map[string]string{
 				"sagaId": sg.ID,
@@ -167,6 +191,13 @@ func (p *Pipeline) run(ctx context.Context, spec *model.InfraSpec, deploy *model
 	deploy.SourceChanges = st.sourceChanges
 	deploy.Status = model.StatusDeployed
 	p.DB.UpdateDeploymentResult(ctx, deploy)
+	if operationID != "" {
+		_ = p.DB.FinishOperation(ctx, operationID, model.OperationSucceeded, fmt.Sprintf("deploy complete: %s", spec.App), map[string]interface{}{
+			"deploymentId": deploy.ID,
+			"commitSha":    st.commitSHA,
+			"imageTag":     st.imageTag,
+		})
+	}
 	sg.Log(ctx, "deploy.complete", fmt.Sprintf("deploy complete: %s → %s", spec.App, st.imageTag), map[string]string{
 		"commitSha":  st.commitSHA,
 		"imageTag":   st.imageTag,

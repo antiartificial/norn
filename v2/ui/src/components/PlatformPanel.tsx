@@ -33,6 +33,31 @@ interface PlatformSummary {
     failed: number
     successful: number
   }
+  operations: {
+    recent: Array<{
+      id: string
+      kind: string
+      app?: string
+      sagaId?: string
+      ref?: string
+      status: string
+      risk?: string
+      message?: string
+      startedAt: string
+      finishedAt?: string
+    }>
+    active: Array<{
+      id: string
+      kind: string
+      app?: string
+      status: string
+      risk?: string
+      message?: string
+      startedAt: string
+    }>
+    byKind: Record<string, number>
+    byStatus: Record<string, number>
+  }
   secrets: {
     ok: number
     needsAttention: number
@@ -108,6 +133,8 @@ export function PlatformPanel() {
 
   const snapshots = summary.snapshots ?? []
   const recentDeployments = summary.deployments.recent ?? []
+  const recentOperations = summary.operations?.recent ?? []
+  const activeOperations = summary.operations?.active ?? []
   const dirtyDeployments = summary.deployments.dirty ?? []
   const accessEvents = summary.access.recent ?? []
   const secretTone = summary.secrets.needsAttention > 0 ? 'warn' : 'ok'
@@ -128,6 +155,7 @@ export function PlatformPanel() {
 
       <div className="ops-metrics">
         <Metric label="Services" value={String(summary.services.total)} />
+        <Metric label="Active Ops" value={String(activeOperations.length)} tone={activeOperations.length > 0 ? 'warn' : 'ok'} />
         <Metric label="Public" value={String(summary.services.public)} tone={summary.services.public > 0 ? 'warn' : 'ok'} />
         <Metric label="Dirty Deploys" value={String(dirtyDeployments.length)} tone={dirtyTone} />
         <Metric label="Secrets" value={`${summary.secrets.ok}/${summary.secrets.ok + summary.secrets.needsAttention}`} tone={secretTone} />
@@ -189,6 +217,22 @@ export function PlatformPanel() {
             ))}
           </div>
         ) : <div className="ops-empty">No deployments recorded</div>}
+      </section>
+
+      <section className="ops-section">
+        <h3>Operations</h3>
+        {recentOperations.length > 0 ? (
+          <div className="ops-table">
+            <div className="ops-row ops-row-head ops-row-wide">
+              <span>Time</span><span>Status</span><span>Kind</span><span>App</span><span>Ref</span><span>Risk</span><span>Message</span>
+            </div>
+            {recentOperations.slice(0, 8).map((operation) => (
+              <div className="ops-row ops-row-wide" key={operation.id}>
+                <span>{formatTime(operation.startedAt)}</span><span>{operation.status}</span><span>{operation.kind}</span><span>{operation.app || '-'}</span><span>{short(operation.ref)}</span><span>{operation.risk || '-'}</span><span>{operation.message || '-'}</span>
+              </div>
+            ))}
+          </div>
+        ) : <div className="ops-empty">No operations recorded</div>}
       </section>
 
       <section className="ops-section">

@@ -44,6 +44,7 @@ func (h *Handler) Metrics(w http.ResponseWriter, r *http.Request) {
 		} else if svc.Status == "unknown" && serviceStatusByApp[svc.App] == "passing" {
 			serviceStatusByApp[svc.App] = "unknown"
 		}
+
 	}
 	for _, spec := range specs {
 		fmt.Fprintf(&b, "norn_app_info{app=%q} 1\n", promLabel(spec.App))
@@ -70,7 +71,7 @@ func (h *Handler) Metrics(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	if h.db != nil {
+	if h.db != nil && h.db.Pool != nil {
 		writeMetricHeader(&b, "norn_deploys_total", "Deployments recorded by Norn, grouped by app and status.", "counter")
 		writeMetricHeader(&b, "norn_deploy_duration_seconds_count", "Completed deployments with a recorded duration.", "counter")
 		writeMetricHeader(&b, "norn_deploy_duration_seconds_sum", "Total deployment duration in seconds.", "counter")
@@ -82,6 +83,30 @@ func (h *Handler) Metrics(w http.ResponseWriter, r *http.Request) {
 				fmt.Fprintf(&b, "norn_deploy_duration_seconds_count{%s} %d\n", labels, metric.Count)
 				fmt.Fprintf(&b, "norn_deploy_duration_seconds_sum{%s} %.3f\n", labels, metric.DurationSeconds)
 				fmt.Fprintf(&b, "norn_deploy_last_started_timestamp_seconds{%s} %.0f\n", labels, metric.LastStartedUnix)
+			}
+		}
+
+		writeMetricHeader(&b, "norn_operations_total", "Operations recorded by Norn, grouped by kind and status.", "counter")
+		writeMetricHeader(&b, "norn_operation_duration_seconds_count", "Completed operations with a recorded duration.", "counter")
+		writeMetricHeader(&b, "norn_operation_duration_seconds_sum", "Total operation duration in seconds.", "counter")
+		writeMetricHeader(&b, "norn_operation_last_started_timestamp_seconds", "Unix timestamp of the last operation start.", "gauge")
+		if operationMetrics, err := h.db.OperationMetrics(r.Context()); err == nil {
+			for _, metric := range operationMetrics {
+				labels := fmt.Sprintf("kind=%q,status=%q", promLabel(metric.Kind), promLabel(string(metric.Status)))
+				fmt.Fprintf(&b, "norn_operations_total{%s} %d\n", labels, metric.Count)
+				fmt.Fprintf(&b, "norn_operation_duration_seconds_count{%s} %d\n", labels, metric.Count)
+				fmt.Fprintf(&b, "norn_operation_duration_seconds_sum{%s} %.3f\n", labels, metric.DurationSeconds)
+				fmt.Fprintf(&b, "norn_operation_last_started_timestamp_seconds{%s} %.0f\n", labels, metric.LastStartedUnix)
+			}
+		}
+
+		writeMetricHeader(&b, "norn_webhook_deliveries_total", "Webhook deliveries recorded by Norn, grouped by provider and status.", "counter")
+		writeMetricHeader(&b, "norn_webhook_last_received_timestamp_seconds", "Unix timestamp of the last webhook delivery.", "gauge")
+		if webhookMetrics, err := h.db.WebhookMetrics(r.Context()); err == nil {
+			for _, metric := range webhookMetrics {
+				labels := fmt.Sprintf("provider=%q,status=%q", promLabel(metric.Provider), promLabel(metric.Status))
+				fmt.Fprintf(&b, "norn_webhook_deliveries_total{%s} %d\n", labels, metric.Count)
+				fmt.Fprintf(&b, "norn_webhook_last_received_timestamp_seconds{%s} %.0f\n", labels, metric.LastReceivedUnix)
 			}
 		}
 	}

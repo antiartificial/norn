@@ -75,9 +75,29 @@ func (h *Handler) Rollback(w http.ResponseWriter, r *http.Request) {
 	if err := h.db.InsertDeployment(ctx, deploy); err != nil {
 		log.Printf("rollback: insert deployment: %v", err)
 	}
+	operationID := uuid.New().String()
+	if err := h.db.InsertOperation(ctx, &model.Operation{
+		ID:        operationID,
+		Kind:      "app.rollback",
+		App:       id,
+		SagaID:    sg.ID,
+		Ref:       prev.ID,
+		Status:    model.OperationRunning,
+		Risk:      "app rolling update",
+		Source:    "api",
+		Message:   fmt.Sprintf("rolling back %s", id),
+		StartedAt: deploy.StartedAt,
+		Metadata: map[string]interface{}{
+			"deploymentId": deploy.ID,
+			"imageTag":     prev.ImageTag,
+		},
+	}); err != nil {
+		log.Printf("rollback: insert operation: %v", err)
+		operationID = ""
+	}
 
 	// Run rollback async
-	go h.runRollback(spec, deploy, sg, prev.ImageTag)
+	go h.runRollback(spec, deploy, sg, prev.ImageTag, operationID)
 
 	writeJSON(w, map[string]string{
 		"sagaId":   sg.ID,
@@ -86,7 +106,7 @@ func (h *Handler) Rollback(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
-func (h *Handler) runRollback(spec *model.InfraSpec, deploy *model.Deployment, sg *saga.Saga, imageTag string) {
+func (h *Handler) runRollback(spec *model.InfraSpec, deploy *model.Deployment, sg *saga.Saga, imageTag string, operationID string) {
 	ctx := context.Background()
 
 	steps := []struct {
@@ -125,6 +145,12 @@ func (h *Handler) runRollback(spec *model.InfraSpec, deploy *model.Deployment, s
 				"step": s.name, "sagaId": sg.ID, "status": "failed",
 			}})
 			h.db.UpdateDeployment(ctx, deploy.ID, model.StatusFailed)
+			if operationID != "" {
+				_ = h.db.FinishOperation(ctx, operationID, model.OperationFailed, fmt.Sprintf("rollback failed at %s: %v", s.name, err), map[string]interface{}{
+					"deploymentId": deploy.ID,
+					"step":         s.name,
+				})
+			}
 			sg.Log(ctx, "deploy.failed", fmt.Sprintf("rollback failed at %s: %v", s.name, err), nil)
 			h.ws.Broadcast(hub.Event{Type: "deploy.failed", AppID: spec.App, Payload: map[string]string{
 				"sagaId": sg.ID, "error": err.Error(),
@@ -140,6 +166,12 @@ func (h *Handler) runRollback(spec *model.InfraSpec, deploy *model.Deployment, s
 
 	deploy.Status = model.StatusDeployed
 	h.db.UpdateDeployment(ctx, deploy.ID, deploy.Status)
+	if operationID != "" {
+		_ = h.db.FinishOperation(ctx, operationID, model.OperationSucceeded, fmt.Sprintf("rollback complete: %s", spec.App), map[string]interface{}{
+			"deploymentId": deploy.ID,
+			"imageTag":     imageTag,
+		})
+	}
 	sg.Log(ctx, "deploy.complete", fmt.Sprintf("rollback complete: %s → %s", spec.App, imageTag), nil)
 	h.ws.Broadcast(hub.Event{Type: "deploy.completed", AppID: spec.App, Payload: map[string]string{
 		"sagaId": sg.ID, "imageTag": imageTag,

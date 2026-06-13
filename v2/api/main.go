@@ -69,6 +69,11 @@ func main() {
 	} else if err := db.RecoverInFlightDeployments(context.Background()); err != nil {
 		log.Printf("WARNING: deployment recovery: %v", err)
 	}
+	if os.Getenv("NORN_SKIP_OPERATION_RECOVERY") == "true" {
+		log.Println("operation recovery skipped")
+	} else if err := db.RecoverInFlightOperations(context.Background()); err != nil {
+		log.Printf("WARNING: operation recovery: %v", err)
+	}
 
 	// Nomad
 	nomadClient, err := nomad.NewClient(cfg.NomadAddr)
@@ -215,6 +220,7 @@ func main() {
 		})
 
 		r.Post("/webhooks/{provider}", h.Webhook)
+		r.Get("/webhooks/deliveries", h.ListWebhookDeliveries)
 
 		r.Get("/stats", h.Stats)
 		r.Get("/observability/prometheus.yml", h.PrometheusConfig)
@@ -224,6 +230,8 @@ func main() {
 		r.Post("/ops/contextdb/feedback/{eventID}/rollback", h.ContextDBRollbackFeedback)
 		r.Get("/apps", h.ListApps)
 		r.Get("/deployments", h.ListDeployments)
+		r.Get("/operations", h.ListOperations)
+		r.Get("/operations/active", h.ActiveOperations)
 		r.Get("/events", h.ListEvents)
 		r.Post("/events", h.CreateEvent)
 		r.Get("/events/sinks", h.EventSinks)

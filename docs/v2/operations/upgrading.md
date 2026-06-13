@@ -14,9 +14,11 @@ norn platform preflight HEAD
 
 # Promote the release, restart only com.norn.api, and rollback if postflight fails.
 norn platform upgrade HEAD
+norn platform releases
+norn platform rollback <sha-prefix>
 ```
 
-The platform lane builds from an isolated git worktree into `$HOME/norn/releases/<sha>`, writes a `$HOME/norn/current` symlink, installs compatibility binaries into `$HOME/go/bin`, and health-checks a candidate API with `NORN_SKIP_DEPLOYMENT_RECOVERY=true` so preflight does not mark running deployments failed.
+The platform lane builds from an isolated git worktree into `$HOME/norn/releases/<sha>`, writes a `$HOME/norn/current` symlink, installs compatibility binaries into `$HOME/go/bin`, and health-checks a candidate API with recovery disabled so preflight does not mark running deployments or operations failed.
 
 Use these environment variables when the repo or host layout differs:
 
@@ -27,6 +29,7 @@ Use these environment variables when the repo or host layout differs:
 | `NORN_CURRENT_LINK` | `$HOME/norn/current` | Current-release symlink |
 | `NORN_BIN_DIR` | `$HOME/go/bin` | Compatibility install directory |
 | `NORN_CANDIDATE_PORT` | `18800` | Alternate-port candidate API |
+| `NORN_DRAIN_MODE` | `fail` | `fail`, `wait`, or `force` for active-operation drains |
 | `NORN_SKIP_CANDIDATE_API` | `false` | Skip side-by-side candidate boot |
 
 ## Manual Fallback
@@ -59,7 +62,14 @@ Open `http://127.0.0.1:8800` and check the Platform tab. The Platform tab should
 
 `norn platform upgrade` rolls back automatically when postflight health fails and `$HOME/norn/current` pointed at a previous release.
 
-Manual rollback is a symlink flip plus compatibility binary install:
+Prefer the first-class rollback command:
+
+```bash
+norn platform releases
+norn platform rollback <sha-prefix>
+```
+
+Manual rollback is still a symlink flip plus compatibility binary install:
 
 ```bash
 backup=$HOME/norn/releases/<previous-sha>

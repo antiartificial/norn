@@ -6,6 +6,7 @@ import (
 	"io"
 	"net/http"
 	"net/url"
+	"os"
 	"strings"
 	"time"
 
@@ -14,12 +15,14 @@ import (
 
 type Client struct {
 	BaseURL    string
+	Token      string
 	HTTPClient *http.Client
 }
 
 func New(baseURL string) *Client {
 	return &Client{
 		BaseURL: strings.TrimRight(baseURL, "/"),
+		Token:   firstNonEmpty(os.Getenv("NORN_TOKEN"), os.Getenv("NORN_API_TOKEN")),
 		HTTPClient: &http.Client{
 			Timeout: 30 * time.Second,
 		},
@@ -446,11 +449,54 @@ type PlatformOpsSummary struct {
 	NetworkMode   string                   `json:"networkMode,omitempty"`
 	Services      PlatformServiceSummary   `json:"services"`
 	Deployments   PlatformDeploySummary    `json:"deployments"`
+	Operations    PlatformOperationSummary `json:"operations"`
 	Secrets       PlatformSecretSummary    `json:"secrets"`
 	Snapshots     []PlatformSnapshotStatus `json:"snapshots"`
 	Access        PlatformAccessSummary    `json:"access"`
 	Observability PlatformObserveSummary   `json:"observability"`
 	Warnings      []string                 `json:"warnings,omitempty"`
+}
+
+type Operation struct {
+	ID         string                 `json:"id"`
+	Kind       string                 `json:"kind"`
+	App        string                 `json:"app,omitempty"`
+	SagaID     string                 `json:"sagaId,omitempty"`
+	Ref        string                 `json:"ref,omitempty"`
+	Status     string                 `json:"status"`
+	Risk       string                 `json:"risk,omitempty"`
+	Source     string                 `json:"source,omitempty"`
+	Message    string                 `json:"message,omitempty"`
+	Metadata   map[string]interface{} `json:"metadata,omitempty"`
+	StartedAt  string                 `json:"startedAt"`
+	UpdatedAt  string                 `json:"updatedAt"`
+	FinishedAt string                 `json:"finishedAt,omitempty"`
+}
+
+type PlatformOperationSummary struct {
+	Recent   []Operation    `json:"recent"`
+	Active   []Operation    `json:"active"`
+	ByKind   map[string]int `json:"byKind"`
+	ByStatus map[string]int `json:"byStatus"`
+}
+
+type WebhookDelivery struct {
+	ID         string                 `json:"id"`
+	Provider   string                 `json:"provider"`
+	Event      string                 `json:"event,omitempty"`
+	DeliveryID string                 `json:"deliveryId,omitempty"`
+	Repository string                 `json:"repository,omitempty"`
+	Ref        string                 `json:"ref,omitempty"`
+	Branch     string                 `json:"branch,omitempty"`
+	App        string                 `json:"app,omitempty"`
+	SagaID     string                 `json:"sagaId,omitempty"`
+	Status     string                 `json:"status"`
+	Reason     string                 `json:"reason,omitempty"`
+	RemoteAddr string                 `json:"remoteAddr,omitempty"`
+	UserAgent  string                 `json:"userAgent,omitempty"`
+	Metadata   map[string]interface{} `json:"metadata,omitempty"`
+	ReceivedAt string                 `json:"receivedAt"`
+	UpdatedAt  string                 `json:"updatedAt"`
 }
 
 type PlatformServiceSummary struct {
@@ -556,6 +602,45 @@ func (c *Client) PlatformOps() (*PlatformOpsSummary, error) {
 	return &summary, nil
 }
 
+func (c *Client) ListOperations(active bool, limit int) ([]Operation, error) {
+	values := url.Values{}
+	if active {
+		values.Set("active", "true")
+	}
+	if limit > 0 {
+		values.Set("limit", fmt.Sprintf("%d", limit))
+	}
+	path := "/api/operations"
+	if encoded := values.Encode(); encoded != "" {
+		path += "?" + encoded
+	}
+	var resp struct {
+		Operations []Operation `json:"operations"`
+	}
+	if err := c.get(path, &resp); err != nil {
+		return nil, err
+	}
+	return resp.Operations, nil
+}
+
+func (c *Client) ListWebhookDeliveries(limit int) ([]WebhookDelivery, error) {
+	values := url.Values{}
+	if limit > 0 {
+		values.Set("limit", fmt.Sprintf("%d", limit))
+	}
+	path := "/api/webhooks/deliveries"
+	if encoded := values.Encode(); encoded != "" {
+		path += "?" + encoded
+	}
+	var resp struct {
+		Deliveries []WebhookDelivery `json:"deliveries"`
+	}
+	if err := c.get(path, &resp); err != nil {
+		return nil, err
+	}
+	return resp.Deliveries, nil
+}
+
 func (c *Client) ContextDBRollbackFeedback(eventID, namespace, mode, reason, owner string) (*ContextDBFeedbackRollback, error) {
 	values := url.Values{}
 	if namespace != "" {
@@ -621,7 +706,12 @@ func (c *Client) Restart(appID string) error {
 }
 
 func (c *Client) StreamLogs(appID string) (io.ReadCloser, error) {
-	resp, err := c.HTTPClient.Get(c.BaseURL + "/api/apps/" + appID + "/logs?follow=true")
+	req, err := http.NewRequest(http.MethodGet, c.BaseURL+"/api/apps/"+appID+"/logs?follow=true", nil)
+	if err != nil {
+		return nil, err
+	}
+	c.authorize(req)
+	resp, err := c.HTTPClient.Do(req)
 	if err != nil {
 		return nil, err
 	}
@@ -877,7 +967,12 @@ func (c *Client) WebSocketURLFor(path string) string {
 // HTTP helpers
 
 func (c *Client) get(path string, v any) error {
-	resp, err := c.HTTPClient.Get(c.BaseURL + path)
+	req, err := http.NewRequest(http.MethodGet, c.BaseURL+path, nil)
+	if err != nil {
+		return fmt.Errorf("request failed: %w", err)
+	}
+	c.authorize(req)
+	resp, err := c.HTTPClient.Do(req)
 	if err != nil {
 		return fmt.Errorf("request failed: %w", err)
 	}
@@ -890,7 +985,13 @@ func (c *Client) get(path string, v any) error {
 }
 
 func (c *Client) post(path, body string) error {
-	resp, err := c.HTTPClient.Post(c.BaseURL+path, "application/json", strings.NewReader(body))
+	req, err := http.NewRequest(http.MethodPost, c.BaseURL+path, strings.NewReader(body))
+	if err != nil {
+		return fmt.Errorf("request failed: %w", err)
+	}
+	req.Header.Set("Content-Type", "application/json")
+	c.authorize(req)
+	resp, err := c.HTTPClient.Do(req)
 	if err != nil {
 		return fmt.Errorf("request failed: %w", err)
 	}
@@ -903,7 +1004,13 @@ func (c *Client) post(path, body string) error {
 }
 
 func (c *Client) postJSON(path, body string, v any) error {
-	resp, err := c.HTTPClient.Post(c.BaseURL+path, "application/json", strings.NewReader(body))
+	req, err := http.NewRequest(http.MethodPost, c.BaseURL+path, strings.NewReader(body))
+	if err != nil {
+		return fmt.Errorf("request failed: %w", err)
+	}
+	req.Header.Set("Content-Type", "application/json")
+	c.authorize(req)
+	resp, err := c.HTTPClient.Do(req)
 	if err != nil {
 		return fmt.Errorf("request failed: %w", err)
 	}
@@ -921,6 +1028,7 @@ func (c *Client) put(path, body string) error {
 		return fmt.Errorf("request failed: %w", err)
 	}
 	req.Header.Set("Content-Type", "application/json")
+	c.authorize(req)
 	resp, err := c.HTTPClient.Do(req)
 	if err != nil {
 		return fmt.Errorf("request failed: %w", err)
@@ -938,6 +1046,7 @@ func (c *Client) del(path string) error {
 	if err != nil {
 		return fmt.Errorf("request failed: %w", err)
 	}
+	c.authorize(req)
 	resp, err := c.HTTPClient.Do(req)
 	if err != nil {
 		return fmt.Errorf("request failed: %w", err)
@@ -948,4 +1057,19 @@ func (c *Client) del(path string) error {
 		return fmt.Errorf("HTTP %d: %s", resp.StatusCode, string(b))
 	}
 	return nil
+}
+
+func (c *Client) authorize(req *http.Request) {
+	if c.Token != "" {
+		req.Header.Set("Authorization", "Bearer "+c.Token)
+	}
+}
+
+func firstNonEmpty(values ...string) string {
+	for _, value := range values {
+		if strings.TrimSpace(value) != "" {
+			return strings.TrimSpace(value)
+		}
+	}
+	return ""
 }

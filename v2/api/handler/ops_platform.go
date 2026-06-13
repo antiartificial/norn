@@ -6,6 +6,7 @@ import (
 	"time"
 
 	"norn/v2/api/model"
+	"norn/v2/api/store"
 )
 
 type platformOpsSummary struct {
@@ -13,6 +14,7 @@ type platformOpsSummary struct {
 	NetworkMode   string                   `json:"networkMode,omitempty"`
 	Services      platformServiceSummary   `json:"services"`
 	Deployments   platformDeploySummary    `json:"deployments"`
+	Operations    platformOperationSummary `json:"operations"`
 	Secrets       platformSecretSummary    `json:"secrets"`
 	Snapshots     []platformSnapshotStatus `json:"snapshots"`
 	Access        platformAccessSummary    `json:"access"`
@@ -35,6 +37,13 @@ type platformDeploySummary struct {
 	Dirty      []model.Deployment `json:"dirty"`
 	Failed     int                `json:"failed"`
 	Successful int                `json:"successful"`
+}
+
+type platformOperationSummary struct {
+	Recent   []model.Operation `json:"recent"`
+	Active   []model.Operation `json:"active"`
+	ByKind   map[string]int    `json:"byKind"`
+	ByStatus map[string]int    `json:"byStatus"`
 }
 
 type platformSecretSummary struct {
@@ -89,6 +98,12 @@ func (h *Handler) buildPlatformOps(r *http.Request) (platformOpsSummary, error) 
 			ByStatus:   map[string]int{},
 			ByClientIP: map[string]int{},
 		},
+		Operations: platformOperationSummary{
+			Recent:   []model.Operation{},
+			Active:   []model.Operation{},
+			ByKind:   map[string]int{},
+			ByStatus: map[string]int{},
+		},
 		Observability: platformObserveSummary{
 			Enabled:      truthyEnv("NORN_OTEL_ENABLED"),
 			LogsEnabled:  envDefaultTrue("NORN_OTEL_LOGS"),
@@ -132,7 +147,7 @@ func (h *Handler) buildPlatformOps(r *http.Request) (platformOpsSummary, error) 
 		out.Secrets.Apps = []SecretStatus{}
 	}
 
-	if h.db != nil {
+	if h.db != nil && h.db.Pool != nil {
 		deployments, err := h.db.ListDeployments(r.Context(), "", 20)
 		if err != nil {
 			out.Warnings = append(out.Warnings, "deployments: "+err.Error())
@@ -147,6 +162,19 @@ func (h *Handler) buildPlatformOps(r *http.Request) (platformOpsSummary, error) 
 					out.Deployments.Successful++
 				case model.StatusFailed:
 					out.Deployments.Failed++
+				}
+			}
+		}
+		operations, err := h.db.ListOperations(r.Context(), store.OperationFilter{Limit: 20})
+		if err != nil {
+			out.Warnings = append(out.Warnings, "operations: "+err.Error())
+		} else {
+			out.Operations.Recent = operations
+			for _, operation := range operations {
+				out.Operations.ByKind[operation.Kind]++
+				out.Operations.ByStatus[string(operation.Status)]++
+				if operation.Active() {
+					out.Operations.Active = append(out.Operations.Active, operation)
 				}
 			}
 		}
