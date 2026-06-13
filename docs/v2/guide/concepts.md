@@ -136,6 +136,8 @@ When you deploy an app, Norn runs a 9-step pipeline:
 
 Each step emits saga events and WebSocket broadcasts for real-time progress tracking.
 
+Before the full deploy, `norn preflight <app> [ref]` runs the non-mutating rehearsal path: validate, clone, inspect, build, and test. It catches missing Dockerfiles, unreadable declared secrets, build failures, test failures, and source-shape surprises before snapshot, migration, Nomad submit, or cloudflared changes happen.
+
 See [Deploy Pipeline](/v2/architecture/deploy-pipeline) for the full architecture.
 
 ## Endpoints

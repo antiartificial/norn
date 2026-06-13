@@ -152,6 +152,7 @@ func main() {
 		GitToken:    cfg.GitToken,
 		GitSSHKey:   cfg.GitSSHKey,
 		RegistryURL: cfg.RegistryURL,
+		NetworkMode: cfg.NetworkMode,
 		Beacon:      beaconSvc,
 		Storage:     s3Client,
 	}
@@ -215,6 +216,7 @@ func main() {
 		r.Route("/apps/{id}", func(r chi.Router) {
 			r.Use(handler.ValidateAppID)
 			r.Get("/", h.GetApp)
+			r.Post("/preflight", h.Preflight)
 			r.Post("/deploy", h.Deploy)
 			r.Get("/logs", h.StreamLogs)
 			r.Post("/restart", h.RestartApp)

@@ -10,6 +10,16 @@ norn deploy <app> [ref]
 - The CLI connects to the WebSocket and shows real-time progress for each pipeline step
 - On completion, prints the saga ID for later inspection
 
+Run a preflight first when you want the build/test confidence without runtime mutation:
+
+```bash
+norn preflight <app> [ref]
+# alias
+norn check <app> [ref]
+```
+
+Preflight runs `validate`, `clone`, `inspect`, `build`, and `test`. It intentionally skips `snapshot`, `migrate`, `submit`, `healthy`, and `forge`.
+
 Example:
 
 ```bash
@@ -55,7 +65,9 @@ See [Deploy Pipeline](/v2/architecture/deploy-pipeline) for detailed documentati
 
 | Step | Description |
 |------|-------------|
+| validate | Check infraspec shape and reachability assumptions (preflight only) |
 | clone | Checkout repo at ref |
+| inspect | Check Dockerfile, declared encrypted secrets, and known source footguns (preflight only) |
 | build | Build and push Docker image |
 | test | Run test command |
 | snapshot | pg_dump database |

@@ -566,6 +566,17 @@ func (c *Client) Deploy(appID, ref string) (string, error) {
 	return resp.SagaID, nil
 }
 
+func (c *Client) Preflight(appID, ref string) (string, error) {
+	body := fmt.Sprintf(`{"ref":%q}`, ref)
+	var resp struct {
+		SagaID string `json:"sagaId"`
+	}
+	if err := c.postJSON("/api/apps/"+appID+"/preflight", body, &resp); err != nil {
+		return "", err
+	}
+	return resp.SagaID, nil
+}
+
 func (c *Client) Rollback(appID string) (string, error) {
 	var resp struct {
 		SagaID string `json:"sagaId"`

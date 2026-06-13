@@ -106,7 +106,15 @@ processes:
 
 2. Open the dashboard at `http://localhost:5173` — your app should appear automatically.
 
-3. Deploy from the CLI:
+3. Rehearse the deploy from the CLI:
+
+```bash
+norn preflight hello-world HEAD
+```
+
+Preflight validates the infraspec, prepares source, builds locally, and runs tests without touching Nomad or cloudflared.
+
+4. Deploy from the CLI:
 
 ```bash
 norn deploy hello-world HEAD

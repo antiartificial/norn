@@ -1,3 +1,3 @@
 package main
 
-var Version = "dev"
+var Version = "v2.1.0-preflight"

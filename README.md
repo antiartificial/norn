@@ -221,6 +221,7 @@ Apps with `endpoints` in their infraspec get static ports. Gitea uses a dynamic 
 ```bash
 cd v2 && make build    # builds bin/norn-api + bin/norn
 bin/norn status        # list all apps
+bin/norn preflight <app> HEAD # validate, build, and test without deploying
 bin/norn deploy <app> HEAD   # deploy latest commit
 bin/norn scale <app> <n>     # scale up/down
 bin/norn logs <app>          # stream allocation logs

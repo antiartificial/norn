@@ -11,6 +11,7 @@ interface DeployStep {
 
 interface Props {
   appId: string
+  operation: 'deploy' | 'preflight'
   steps: DeployStep[]
   status: string
   error?: string
@@ -19,10 +20,13 @@ interface Props {
   onRetry: () => void
 }
 
-const KNOWN_STEPS = ['clone', 'build', 'test', 'snapshot', 'migrate', 'submit', 'healthy', 'cleanup']
+const DEPLOY_STEPS = ['clone', 'build', 'test', 'snapshot', 'migrate', 'submit', 'healthy', 'cleanup']
+const PREFLIGHT_STEPS = ['validate', 'clone', 'inspect', 'build', 'test']
 
 const stepIcons: Record<string, string> = {
+  validate: 'fa-list-check',
   clone: 'fa-clone',
+  inspect: 'fa-magnifying-glass',
   build: 'fa-wrench',
   test: 'fa-bug',
   snapshot: 'fa-camera',
@@ -45,9 +49,10 @@ function formatEventTime(ts: number | string): string {
   return d.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit' })
 }
 
-export function DeployPanel({ appId, steps, status, error, sagaId, onClose, onRetry }: Props) {
-  const isDone = status === 'deployed' || status === 'failed'
-  const isSuccess = status === 'deployed'
+export function DeployPanel({ appId, operation, steps, status, error, sagaId, onClose, onRetry }: Props) {
+  const knownSteps = operation === 'preflight' ? PREFLIGHT_STEPS : DEPLOY_STEPS
+  const isDone = status === 'deployed' || status === 'passed' || status === 'failed'
+  const isSuccess = status === 'deployed' || status === 'passed'
   const [startedAt] = useState(() => Date.now())
   const [now, setNow] = useState(Date.now())
   const [expanded, setExpanded] = useState<string | null>(null)
@@ -77,7 +82,7 @@ export function DeployPanel({ appId, steps, status, error, sagaId, onClose, onRe
   }, [expanded, isDone, sagaId, sagaEvents])
 
   const stepMap = new Map(steps.map(s => [s.step, s]))
-  const currentIdx = KNOWN_STEPS.findIndex(s => !stepMap.has(s)) - 1
+  const currentIdx = knownSteps.findIndex(s => !stepMap.has(s)) - 1
 
   function getEventsForStep(stepName: string): StepEvent[] {
     // During live deploy: use WS events from step
@@ -118,7 +123,9 @@ export function DeployPanel({ appId, steps, status, error, sagaId, onClose, onRe
       <div className="deploy-panel-header">
         <h4>
           <i className={`fawsb ${isSuccess ? 'fa-circle-check' : 'fa-clipboard-check'}`} />{' '}
-          {isSuccess ? 'Deployed' : 'Deploying'} {appId}
+          {operation === 'preflight'
+            ? (isSuccess ? 'Preflight passed' : 'Preflighting')
+            : (isSuccess ? 'Deployed' : 'Deploying')} {appId}
         </h4>
         <div className="deploy-panel-actions">
           <span className={`deploy-total-time${!isDone ? ' step-duration-live' : ''}`}>
@@ -130,7 +137,7 @@ export function DeployPanel({ appId, steps, status, error, sagaId, onClose, onRe
         </div>
       </div>
       <div className="deploy-steps">
-        {KNOWN_STEPS.map((stepName, i) => {
+        {knownSteps.map((stepName, i) => {
           const stepStatus = stepMap.get(stepName)?.status
           const isActive = !isDone && stepStatus === 'running'
           const isComplete = stepStatus === 'complete' || stepStatus === 'done'

@@ -113,6 +113,7 @@ interface Props {
   app: AppStatus
   busy: boolean
   activeIngress?: Set<string>
+  onPreflight: (appId: string) => void
   onDeploy: (appId: string) => void
   onRestart: (appId: string) => void
   onScale: (appId: string) => void
@@ -124,7 +125,7 @@ interface Props {
   onToggleEndpoint?: (appId: string, hostname: string, enabled: boolean) => void
 }
 
-export function AppCard({ app, busy, activeIngress, onDeploy, onRestart, onScale, onViewLogs, onExec, onSnapshots, onCron, onFunction, onToggleEndpoint }: Props) {
+export function AppCard({ app, busy, activeIngress, onPreflight, onDeploy, onRestart, onScale, onViewLogs, onExec, onSnapshots, onCron, onFunction, onToggleEndpoint }: Props) {
   const { spec, healthy, nomadStatus } = app
   const allocations = app.allocations ?? []
 
@@ -244,6 +245,11 @@ export function AppCard({ app, busy, activeIngress, onDeploy, onRestart, onScale
       <EndpointBadges spec={spec} allocations={allocations} activeIngress={activeIngress} appId={spec.name} onToggleEndpoint={onToggleEndpoint} />
 
       <div className="app-card-actions">
+        <Tooltip text="Validate, build, and test without deploying">
+          <button onClick={() => onPreflight(spec.name)} disabled={busy} className="btn">
+            <i className="fawsb fa-clipboard-check" /> Check
+          </button>
+        </Tooltip>
         <Tooltip text="Deploy latest from repo">
           <button onClick={() => onDeploy(spec.name)} disabled={busy} className="btn btn-primary">
             <i className="fawsb fa-rocket-launch" /> Deploy
