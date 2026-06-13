@@ -25,4 +25,9 @@ client {
     path      = "/Users/0xadb/volumes/garage-data"
     read_only = false
   }
+
+  host_volume "redpanda-data" {
+    path      = "/Users/0xadb/volumes/redpanda-data"
+    read_only = false
+  }
 }

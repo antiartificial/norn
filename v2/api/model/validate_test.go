@@ -161,6 +161,40 @@ func TestValidateSpecRejectsInvalidObjectStorageBuckets(t *testing.T) {
 	assertErrorFinding(t, result, "infrastructure.objectStorage.buckets[1].name")
 }
 
+func TestValidateSpecAcceptsKafkaTopics(t *testing.T) {
+	spec := &InfraSpec{
+		App:       "kafka-app",
+		Processes: map[string]Process{"worker": {}},
+		Infrastructure: &Infrastructure{
+			Kafka: &KafkaInfra{
+				Topics: []string{"mail.events", "archive-events", "archive_events"},
+			},
+		},
+	}
+
+	result := ValidateSpec(spec)
+	if !result.Valid {
+		t.Fatalf("expected valid kafka spec, got %+v", result.Findings)
+	}
+}
+
+func TestValidateSpecRejectsInvalidKafkaTopics(t *testing.T) {
+	spec := &InfraSpec{
+		App:       "kafka-app",
+		Processes: map[string]Process{"worker": {}},
+		Infrastructure: &Infrastructure{
+			Kafka: &KafkaInfra{
+				Topics: []string{"bad topic", ".", "events", "events"},
+			},
+		},
+	}
+
+	result := ValidateSpec(spec)
+	assertErrorFinding(t, result, "infrastructure.kafka.topics[0]")
+	assertErrorFinding(t, result, "infrastructure.kafka.topics[1]")
+	assertErrorFinding(t, result, "infrastructure.kafka.topics[3]")
+}
+
 func assertFinding(t *testing.T, result *ValidationResult, field string) {
 	t.Helper()
 	for _, finding := range result.Findings {

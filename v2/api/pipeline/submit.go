@@ -51,6 +51,25 @@ func (p *Pipeline) submit(ctx context.Context, st *state, sg *saga.Saga) error {
 		}
 	}
 
+	if st.spec.Infrastructure != nil && st.spec.Infrastructure.Kafka != nil {
+		if p.Redpanda == nil {
+			return fmt.Errorf("kafka declared but NORN_REDPANDA_BROKERS is not configured")
+		}
+		kafkaEnv, err := p.Redpanda.ProvisionAppKafka(ctx, st.spec.App, st.spec.Infrastructure.Kafka)
+		if err != nil {
+			return fmt.Errorf("provision kafka topics: %w", err)
+		}
+		for k, v := range kafkaEnv.Env {
+			env[k] = v
+		}
+		for _, topic := range kafkaEnv.Topics {
+			_ = sg.Log(ctx, "kafka.topic", fmt.Sprintf("kafka topic ready: %s", topic.Name), map[string]string{
+				"step":  "submit",
+				"topic": topic.Name,
+			})
+		}
+	}
+
 	// Check for port conflicts before submitting
 	for _, proc := range st.spec.Processes {
 		if proc.Port > 0 && len(st.spec.Endpoints) > 0 {

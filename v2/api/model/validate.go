@@ -23,6 +23,7 @@ type ValidationFinding struct {
 var appNameRe = regexp.MustCompile(`^[a-z0-9][a-z0-9-]*$`)
 var bucketNameRe = regexp.MustCompile(`^[a-z0-9][a-z0-9.-]{1,61}[a-z0-9]$`)
 var envNameRe = regexp.MustCompile(`^[A-Za-z][A-Za-z0-9_]*$`)
+var kafkaTopicNameRe = regexp.MustCompile(`^[A-Za-z0-9._-]+$`)
 
 type ValidationOptions struct {
 	NetworkMode string
@@ -159,6 +160,31 @@ func ValidateSpecWithOptions(spec *InfraSpec, opts ValidationOptions) *Validatio
 			if bucket.Public {
 				r.add("warning", field+".public", "public bucket exposure is declared but not automatically exposed yet")
 			}
+		}
+	}
+
+	if spec.Infrastructure != nil && spec.Infrastructure.Kafka != nil {
+		seen := map[string]bool{}
+		for i, topic := range spec.Infrastructure.Kafka.Topics {
+			field := fmt.Sprintf("infrastructure.kafka.topics[%d]", i)
+			topic = strings.TrimSpace(topic)
+			if topic == "" {
+				r.add("error", field, "topic name is required")
+				continue
+			}
+			if len(topic) > 249 {
+				r.add("error", field, "topic name must be 249 characters or fewer")
+			}
+			if topic == "." || topic == ".." {
+				r.add("error", field, "topic name is reserved")
+			}
+			if !kafkaTopicNameRe.MatchString(topic) {
+				r.add("error", field, "topic name must contain only letters, numbers, dots, underscores, or hyphens")
+			}
+			if seen[topic] {
+				r.add("error", field, "topic name must be unique within the app")
+			}
+			seen[topic] = true
 		}
 	}
 
