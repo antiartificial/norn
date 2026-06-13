@@ -84,6 +84,15 @@ candidate_pid=""
 cleanup() {
   if [[ -n "$candidate_pid" ]] && kill -0 "$candidate_pid" >/dev/null 2>&1; then
     kill "$candidate_pid" >/dev/null 2>&1 || true
+    for _ in 1 2 3 4 5 6 7 8 9 10; do
+      if ! kill -0 "$candidate_pid" >/dev/null 2>&1; then
+        break
+      fi
+      sleep 1
+    done
+    if kill -0 "$candidate_pid" >/dev/null 2>&1; then
+      kill -9 "$candidate_pid" >/dev/null 2>&1 || true
+    fi
     wait "$candidate_pid" >/dev/null 2>&1 || true
   fi
   if [[ -d "$worktree/.git" ]]; then
@@ -138,15 +147,15 @@ candidate_preflight() {
   fi
 
   log "starting candidate API on 127.0.0.1:$candidate_port"
-  (
-    cd "$repo"
+  pushd "$repo" >/dev/null
+  env \
     NORN_PORT="$candidate_port" \
     NORN_BIND_ADDR="${NORN_BIND_ADDR:-127.0.0.1}" \
     NORN_UI_DIR="$release/ui" \
     NORN_SKIP_DEPLOYMENT_RECOVERY=true \
-    "$release/bin/norn-api"
-  ) >"$release/logs/candidate-api.log" 2>&1 &
+    "$release/bin/norn-api" >"$release/logs/candidate-api.log" 2>&1 &
   candidate_pid="$!"
+  popd >/dev/null
 
   if ! wait_health "http://127.0.0.1:$candidate_port" 30; then
     tail -80 "$release/logs/candidate-api.log" >&2 || true
