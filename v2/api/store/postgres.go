@@ -136,7 +136,6 @@ func Migrate(db *DB) error {
 		CREATE INDEX IF NOT EXISTS idx_operations_app ON operations(app, started_at DESC);
 		CREATE INDEX IF NOT EXISTS idx_operations_saga ON operations(saga_id);
 		CREATE INDEX IF NOT EXISTS idx_operations_kind ON operations(kind, started_at DESC);
-		CREATE INDEX IF NOT EXISTS idx_operations_queue ON operations(status, next_attempt_at, kind);
 
 		ALTER TABLE operations ADD COLUMN IF NOT EXISTS payload JSONB NOT NULL DEFAULT '{}';
 		ALTER TABLE operations ADD COLUMN IF NOT EXISTS attempts INT NOT NULL DEFAULT 0;
@@ -145,6 +144,7 @@ func Migrate(db *DB) error {
 		ALTER TABLE operations ADD COLUMN IF NOT EXISTS locked_until TIMESTAMPTZ;
 		ALTER TABLE operations ADD COLUMN IF NOT EXISTS next_attempt_at TIMESTAMPTZ NOT NULL DEFAULT now();
 		ALTER TABLE operations ADD COLUMN IF NOT EXISTS last_error TEXT NOT NULL DEFAULT '';
+		CREATE INDEX IF NOT EXISTS idx_operations_queue ON operations(status, next_attempt_at, kind);
 
 		CREATE TABLE IF NOT EXISTS webhook_deliveries (
 			id          TEXT PRIMARY KEY,
