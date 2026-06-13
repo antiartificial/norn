@@ -47,7 +47,7 @@ func (h *Handler) Deploy(w http.ResponseWriter, r *http.Request) {
 
 	writeJSON(w, map[string]string{
 		"sagaId": sagaID,
-		"status": "deploying",
+		"status": "queued",
 	})
 }
 
@@ -87,7 +87,7 @@ func (h *Handler) Preflight(w http.ResponseWriter, r *http.Request) {
 
 	writeJSON(w, map[string]string{
 		"sagaId": sagaID,
-		"status": "preflighting",
+		"status": "queued",
 	})
 }
 

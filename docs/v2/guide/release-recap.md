@@ -27,7 +27,10 @@ This recap summarizes the current Norn v2 release line: the Nomad/Consul control
 | Deploy eventing | `deploy.succeeded`, `deploy.failed` | Turns deployment outcomes into durable events that can feed notification and incident workflows |
 | Observability | OTEL logs/traces, `/metrics`, generated Prometheus scrape config | Keeps local logs useful while enabling bounded local Prometheus/Grafana metrics |
 | Operations ledger | `norn operations`, `/api/operations`, operation metrics | Records app preflights, deploys, and rollbacks as compact durable rows for drain gates and operator summaries |
-| Webhook inbox | `norn webhooks`, `/api/webhooks/deliveries`, webhook metrics | Makes webhook auto-deploy deliveries inspectable without scraping logs |
+| Durable operation queue | Postgres-backed operation claims, API worker, retries | Moves app deploy and preflight requests out of in-memory request goroutines and into a first-class worker lane |
+| Webhook inbox | `norn webhooks`, replay, preflight replay, webhook metrics | Makes webhook auto-deploy deliveries inspectable and replayable without scraping logs |
+| Platform release surface | Platform tab releases, `/api/platform/releases`, `norn platform releases`, rollback | Makes the installed Norn release history visible from API, CLI, and dashboard |
+| Nomad allocation watcher | Beacon events for failed, lost, and unhealthy allocations | Turns runtime allocation transitions into durable operational events |
 | Upgrade path | `norn platform preflight`, `upgrade`, `releases`, `rollback` | Upgrades Norn API, CLI, and built UI without stopping Nomad, Consul, Postgres, or hosted apps |
 
 ## Operator Impact
@@ -36,13 +39,15 @@ Norn v2 is now useful as a real local operations surface rather than just a depl
 
 The biggest practical change is that Norn can host long-lived background work beside web processes. ContextDB is the proving case: its web API and review worker run as separate processes, while Norn exposes worker health, evaluator readiness, dry-run policy posture, audit events, and recent worker runs.
 
-Beacon adds the first durable event surface for notification-oriented operations. Norn now records events it can observe directly, such as deploy outcomes, cron control actions, and manual test events. Those events can stay local for audit/debugging or be forwarded to a signed sink so a separate app such as Vigil can handle incident state, push notifications, acknowledgement, and resolution. Cron allocation outcome events such as success, failure, hung, and missed-run detection remain a follow-up for a Nomad allocation watcher.
+Beacon adds the first durable event surface for notification-oriented operations. Norn now records events it can observe directly, such as deploy outcomes, cron control actions, manual test events, and Nomad allocation transitions to failed, lost, or unhealthy. Those events can stay local for audit/debugging or be forwarded to a signed sink so a separate app such as Vigil can handle incident state, push notifications, acknowledgement, and resolution. Cron-specific success, hung, and missed-run detection remain follow-up watcher work.
 
 Object storage now follows the same local-infra posture as the rest of v2: Garage can run as a platform-scoped service, while app specs declare buckets and Norn provisions them during deploy. Apps receive S3-compatible env vars, including Garage path-style flags, without hardcoding bucket credentials into plaintext specs.
 
 Metrics now follow the same local-first model: Norn exposes control-plane counters at `/metrics`, apps can opt into process-level scrape targets with `metrics.enabled`, and `/api/observability/prometheus.yml` generates a Prometheus config for Norn plus live app targets. A local Prometheus with a 30-day/8GB cap is the recommended default.
 
-The operations ledger gives platform upgrades a real drain source. Deploys, preflights, and rollbacks create durable rows with risk labels and saga links; platform upgrades can fail, wait, or force based on active rows. Webhook deliveries now get their own inbox, which makes ignored branches, signature failures, unmatched repositories, and auto-deploy saga ids visible through the API and CLI.
+The operations ledger gives platform upgrades a real drain source. Deploys and preflights are now queued in control-plane Postgres and claimed by the API worker with leases, attempts, retry timing, and saga links. Platform upgrades can fail, wait, or force based on active rows. Webhook deliveries now get their own inbox, which makes ignored branches, signature failures, unmatched repositories, auto-deploy saga ids, replay, and preflight replay visible through the API and CLI.
+
+The first durable worker lane intentionally keeps deploy retries conservative. Read-only preflight jobs can retry safely. App deploy jobs are queued and survive before-claim restarts, but a process interruption during mutable deploy execution is marked failed rather than blindly replaying snapshot, migration, or submit stages. Stage-level resume markers are the next reliability step.
 
 ## Verification
 
@@ -60,6 +65,7 @@ The current release line has been exercised with:
 - `norn ops platform`
 - `norn operations`
 - `norn webhooks`
+- `norn webhooks replay <delivery-id> --preflight`
 - `norn platform releases`
 - `norn services`
 - `norn status`

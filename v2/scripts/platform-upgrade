@@ -275,6 +275,7 @@ candidate_preflight() {
     NORN_UI_DIR="$release/ui" \
     NORN_SKIP_DEPLOYMENT_RECOVERY=true \
     NORN_SKIP_OPERATION_RECOVERY=true \
+    NORN_SKIP_OPERATION_WORKER=true \
     "$release/bin/norn-api" >"$release/logs/candidate-api.log" 2>&1 &
   candidate_pid="$!"
   popd >/dev/null

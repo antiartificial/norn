@@ -32,6 +32,8 @@ import (
 	"norn/v2/api/secrets"
 	"norn/v2/api/storage"
 	"norn/v2/api/store"
+	"norn/v2/api/watch"
+	"norn/v2/api/worker"
 )
 
 func main() {
@@ -182,6 +184,21 @@ func main() {
 		Redpanda:    redpandaClient,
 	}
 
+	workerCtx, workerCancel := context.WithCancel(context.Background())
+	defer workerCancel()
+	if os.Getenv("NORN_SKIP_OPERATION_WORKER") == "true" {
+		log.Println("operation worker skipped")
+	} else {
+		opWorker := worker.NewOperationWorker(db, pipe)
+		go opWorker.Run(workerCtx)
+	}
+	if os.Getenv("NORN_SKIP_NOMAD_WATCHER") == "true" {
+		log.Println("nomad allocation watcher skipped")
+	} else {
+		nomadWatcher := watch.NewNomadAllocationWatcher(nomadClient, beaconSvc, cfg.AppsDir)
+		go nomadWatcher.Run(workerCtx)
+	}
+
 	// Handler
 	h := handler.New(db, nomadClient, consulClient, ws, cfg, pipe, beaconSvc, sec, sagaStore, s3Client, redpandaClient)
 
@@ -221,11 +238,14 @@ func main() {
 
 		r.Post("/webhooks/{provider}", h.Webhook)
 		r.Get("/webhooks/deliveries", h.ListWebhookDeliveries)
+		r.Post("/webhooks/deliveries/{id}/replay", h.ReplayWebhookDelivery)
 
 		r.Get("/stats", h.Stats)
 		r.Get("/observability/prometheus.yml", h.PrometheusConfig)
 		r.Get("/services/manifest", h.ServiceManifest)
 		r.Get("/ops/platform", h.PlatformOps)
+		r.Get("/platform/releases", h.PlatformReleases)
+		r.Post("/platform/releases/{sha}/rollback", h.PlatformRollbackRelease)
 		r.Get("/ops/contextdb", h.ContextDBOps)
 		r.Post("/ops/contextdb/feedback/{eventID}/rollback", h.ContextDBRollbackFeedback)
 		r.Get("/apps", h.ListApps)
@@ -298,6 +318,7 @@ func main() {
 	<-quit
 
 	log.Println("shutting down...")
+	workerCancel()
 	shutdownCtx, shutdownCancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer shutdownCancel()
 	srv.Shutdown(shutdownCtx)
@@ -306,7 +327,7 @@ func main() {
 func bearerAuth(token string) func(http.Handler) http.Handler {
 	return func(next http.Handler) http.Handler {
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-			if r.URL.Path == "/ws" || r.URL.Path == "/metrics" || r.URL.Path == "/api/metrics" || r.URL.Path == "/api/health" || r.URL.Path == "/api/version" || strings.HasPrefix(r.URL.Path, "/api/webhooks/") || strings.HasSuffix(r.URL.Path, "/exec") {
+			if r.URL.Path == "/ws" || r.URL.Path == "/metrics" || r.URL.Path == "/api/metrics" || r.URL.Path == "/api/health" || r.URL.Path == "/api/version" || r.URL.Path == "/api/webhooks/github" || r.URL.Path == "/api/webhooks/gitea" || strings.HasSuffix(r.URL.Path, "/exec") {
 				next.ServeHTTP(w, r)
 				return
 			}

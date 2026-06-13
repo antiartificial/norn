@@ -109,12 +109,18 @@ v2/ui/
 | GET | `/api/stats` | Deployment and cluster statistics |
 | GET | `/api/apps` | List all discovered apps |
 | GET | `/api/deployments` | List recent deployments |
+| GET | `/api/operations` | List recent operation queue rows |
+| GET | `/api/operations/active` | List queued/running operations for drains |
 | GET | `/api/validate` | Validate all infraspecs |
 | GET | `/api/validate/{id}` | Validate a single infraspec |
 | GET | `/api/saga` | List recent saga events |
 | GET | `/api/saga/{sagaId}` | Get all events for a saga |
 | GET | `/api/cloudflared/ingress` | List active cloudflared hostnames |
 | POST | `/api/webhooks/{provider}` | Webhook receiver (GitHub) |
+| GET | `/api/webhooks/deliveries` | List recent webhook deliveries |
+| POST | `/api/webhooks/deliveries/{id}/replay` | Replay a webhook delivery |
+| GET | `/api/platform/releases` | List installed platform releases |
+| POST | `/api/platform/releases/{sha}/rollback` | Roll back to a platform release |
 
 ### Per-App (`/api/apps/{id}/...`)
 
@@ -157,4 +163,4 @@ Norn supports three auth modes (can be combined):
 2. **Bearer Token** — validates `Authorization: Bearer <token>` header. Set `NORN_API_TOKEN`.
 3. **Open** — if neither is configured, all endpoints are open (suitable for local dev).
 
-Auth-exempt routes: `/ws`, `/api/health`, `/api/version`, `/api/webhooks/*`, `/api/apps/*/exec`.
+Auth-exempt routes: `/ws`, `/api/health`, `/api/version`, `/api/webhooks/github`, `/api/webhooks/gitea`, `/api/apps/*/exec`.

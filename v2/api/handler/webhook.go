@@ -5,6 +5,7 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
+	"fmt"
 	"io"
 	"log"
 	"net/http"
@@ -102,6 +103,12 @@ func (h *Handler) Webhook(w http.ResponseWriter, r *http.Request) {
 	delivery.Ref = payload.Ref
 	delivery.Branch = branch
 	delivery.Repository = payload.Repository.CloneURL
+	delivery.Payload = map[string]interface{}{
+		"ref":       payload.Ref,
+		"clone_url": payload.Repository.CloneURL,
+		"ssh_url":   payload.Repository.SSHURL,
+		"branch":    branch,
+	}
 
 	// Discover apps and find match
 	specs, err := model.DiscoverApps(h.cfg.AppsDir)
@@ -133,8 +140,128 @@ func (h *Handler) Webhook(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, map[string]string{
 		"sagaId": sagaID,
 		"app":    spec.App,
-		"status": "deploying",
+		"status": "queued",
 	})
+}
+
+func (h *Handler) ReplayWebhookDelivery(w http.ResponseWriter, r *http.Request) {
+	id := chi.URLParam(r, "id")
+	var req struct {
+		Mode string `json:"mode"`
+	}
+	if err := decodeJSON(r, &req); err != nil {
+		writeError(w, http.StatusBadRequest, err.Error())
+		return
+	}
+	if req.Mode == "" {
+		req.Mode = "deploy"
+	}
+	if req.Mode != "deploy" && req.Mode != "preflight" {
+		writeError(w, http.StatusBadRequest, "mode must be deploy or preflight")
+		return
+	}
+
+	delivery, err := h.db.GetWebhookDelivery(r.Context(), id)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	if delivery == nil {
+		writeError(w, http.StatusNotFound, "webhook delivery not found")
+		return
+	}
+
+	spec, err := h.specForWebhookDelivery(delivery)
+	if err != nil {
+		writeError(w, http.StatusBadRequest, err.Error())
+		return
+	}
+	ref := delivery.Ref
+	if ref == "" {
+		ref = mapString(delivery.Payload, "ref")
+	}
+	if ref == "" {
+		ref = "HEAD"
+	}
+
+	var sagaID string
+	if req.Mode == "preflight" {
+		sagaID = h.pipeline.Preflight(spec, ref)
+	} else {
+		sagaID = h.pipeline.Run(spec, ref)
+	}
+
+	delivery.App = spec.App
+	delivery.Ref = ref
+	if delivery.Branch == "" {
+		delivery.Branch = strings.TrimPrefix(ref, "refs/heads/")
+	}
+	delivery.SagaID = sagaID
+	delivery.Status = "replayed"
+	delivery.Reason = "replayed as " + req.Mode
+	if delivery.Metadata == nil {
+		delivery.Metadata = map[string]interface{}{}
+	}
+	delivery.Metadata["replayMode"] = req.Mode
+	delivery.Metadata["replayedAt"] = time.Now().UTC().Format(time.RFC3339)
+	if err := h.db.UpdateWebhookDelivery(r.Context(), delivery); err != nil {
+		log.Printf("webhook: replay update delivery %s: %v", delivery.ID, err)
+	}
+
+	writeJSON(w, map[string]string{
+		"sagaId": sagaID,
+		"app":    spec.App,
+		"mode":   req.Mode,
+		"status": "queued",
+	})
+}
+
+func (h *Handler) specForWebhookDelivery(delivery *model.WebhookDelivery) (*model.InfraSpec, error) {
+	specs, err := model.DiscoverApps(h.cfg.AppsDir)
+	if err != nil {
+		return nil, err
+	}
+	if delivery.App != "" {
+		for _, spec := range specs {
+			if spec.App == delivery.App {
+				return spec, nil
+			}
+		}
+	}
+	branch := delivery.Branch
+	if branch == "" && delivery.Ref != "" {
+		branch = strings.TrimPrefix(delivery.Ref, "refs/heads/")
+	}
+	cloneURL := delivery.Repository
+	if cloneURL == "" {
+		cloneURL = mapString(delivery.Payload, "clone_url")
+	}
+	sshURL := mapString(delivery.Payload, "ssh_url")
+	if cloneURL != "" {
+		if spec := model.FindByRepoURL(specs, cloneURL, branch); spec != nil {
+			return spec, nil
+		}
+	}
+	if sshURL != "" {
+		if spec := model.FindByRepoURL(specs, sshURL, branch); spec != nil {
+			return spec, nil
+		}
+	}
+	return nil, fmt.Errorf("no matching app for webhook delivery")
+}
+
+func mapString(values map[string]interface{}, key string) string {
+	if values == nil {
+		return ""
+	}
+	value, ok := values[key]
+	if !ok || value == nil {
+		return ""
+	}
+	if s, ok := value.(string); ok {
+		return s
+	}
+	return fmt.Sprintf("%v", value)
 }
 
 func (h *Handler) finishWebhookDelivery(r *http.Request, delivery *model.WebhookDelivery, status, reason string) {

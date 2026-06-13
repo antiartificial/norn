@@ -458,19 +458,26 @@ type PlatformOpsSummary struct {
 }
 
 type Operation struct {
-	ID         string                 `json:"id"`
-	Kind       string                 `json:"kind"`
-	App        string                 `json:"app,omitempty"`
-	SagaID     string                 `json:"sagaId,omitempty"`
-	Ref        string                 `json:"ref,omitempty"`
-	Status     string                 `json:"status"`
-	Risk       string                 `json:"risk,omitempty"`
-	Source     string                 `json:"source,omitempty"`
-	Message    string                 `json:"message,omitempty"`
-	Metadata   map[string]interface{} `json:"metadata,omitempty"`
-	StartedAt  string                 `json:"startedAt"`
-	UpdatedAt  string                 `json:"updatedAt"`
-	FinishedAt string                 `json:"finishedAt,omitempty"`
+	ID            string                 `json:"id"`
+	Kind          string                 `json:"kind"`
+	App           string                 `json:"app,omitempty"`
+	SagaID        string                 `json:"sagaId,omitempty"`
+	Ref           string                 `json:"ref,omitempty"`
+	Status        string                 `json:"status"`
+	Risk          string                 `json:"risk,omitempty"`
+	Source        string                 `json:"source,omitempty"`
+	Message       string                 `json:"message,omitempty"`
+	Payload       map[string]interface{} `json:"payload,omitempty"`
+	Metadata      map[string]interface{} `json:"metadata,omitempty"`
+	Attempts      int                    `json:"attempts,omitempty"`
+	MaxAttempts   int                    `json:"maxAttempts,omitempty"`
+	LockedBy      string                 `json:"lockedBy,omitempty"`
+	LockedUntil   string                 `json:"lockedUntil,omitempty"`
+	NextAttemptAt string                 `json:"nextAttemptAt,omitempty"`
+	LastError     string                 `json:"lastError,omitempty"`
+	StartedAt     string                 `json:"startedAt"`
+	UpdatedAt     string                 `json:"updatedAt"`
+	FinishedAt    string                 `json:"finishedAt,omitempty"`
 }
 
 type PlatformOperationSummary struct {
@@ -494,9 +501,17 @@ type WebhookDelivery struct {
 	Reason     string                 `json:"reason,omitempty"`
 	RemoteAddr string                 `json:"remoteAddr,omitempty"`
 	UserAgent  string                 `json:"userAgent,omitempty"`
+	Payload    map[string]interface{} `json:"payload,omitempty"`
 	Metadata   map[string]interface{} `json:"metadata,omitempty"`
 	ReceivedAt string                 `json:"receivedAt"`
 	UpdatedAt  string                 `json:"updatedAt"`
+}
+
+type WebhookReplayResponse struct {
+	SagaID string `json:"sagaId"`
+	App    string `json:"app"`
+	Mode   string `json:"mode"`
+	Status string `json:"status"`
 }
 
 type PlatformServiceSummary struct {
@@ -639,6 +654,15 @@ func (c *Client) ListWebhookDeliveries(limit int) ([]WebhookDelivery, error) {
 		return nil, err
 	}
 	return resp.Deliveries, nil
+}
+
+func (c *Client) ReplayWebhookDelivery(id, mode string) (*WebhookReplayResponse, error) {
+	body := fmt.Sprintf(`{"mode":%q}`, mode)
+	var resp WebhookReplayResponse
+	if err := c.postJSON("/api/webhooks/deliveries/"+url.PathEscape(id)+"/replay", body, &resp); err != nil {
+		return nil, err
+	}
+	return &resp, nil
 }
 
 func (c *Client) ContextDBRollbackFeedback(eventID, namespace, mode, reason, owner string) (*ContextDBFeedbackRollback, error) {

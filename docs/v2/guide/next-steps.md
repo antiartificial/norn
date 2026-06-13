@@ -17,6 +17,10 @@ The current working feature set includes:
 - CLI workflows for status, app detail, deploy, logs, health, stats, secrets, snapshots, cron, invoke, saga, validate, forge, and endpoints
 - Saga event log and WebSocket deploy progress
 - Beacon operational events for cron, deploys, manual test events, and signed event sinks
+- Durable Postgres-backed operation queue for app deploy and preflight jobs
+- Webhook delivery inbox with replay and preflight replay
+- Platform release history and rollback from CLI, API, and dashboard
+- Nomad allocation watcher events for failed, lost, and unhealthy allocations
 - Basic local snapshot listing and restore
 - Port conflict detection before Nomad submit
 
@@ -108,6 +112,7 @@ The next operational layer is to show who is reaching Norn-managed services and 
 Current state:
 
 - Norn records Beacon events for deploy successes, deploy failures, cron control actions, and manual test events.
+- Norn records Beacon events when Nomad allocations transition to failed, lost, or unhealthy.
 - `/api/events` lists durable Beacon events with app, type, severity, limit, and offset filters.
 - Beacon can forward signed event JSON to an external sink using `NORN_BEACON_*` environment variables.
 - Norn records recent API access events in memory after auth middleware runs.
@@ -120,10 +125,28 @@ Planned work:
 
 - Package local Prometheus, Grafana, and cAdvisor as Norn platform services with 30-day/8GB default Prometheus retention.
 - Add UI and CLI views for recent Beacon events.
-- Add Nomad allocation watchers for cron success, failure, hung, and missed-run Beacon events.
+- Extend Nomad watchers with cron success, hung, and missed-run Beacon events.
 - Add health-transition Beacon events once the health poller tracks previous state.
 - Add alert rules for deploy failures, service down, high restart rate, and low disk headroom.
 - Add temporary access grants, such as expiring JWT links or expiring IP allowlist entries.
+
+### Platform Upgrade Continuity
+
+Current state:
+
+- App deploy and preflight requests enqueue durable operation rows and return saga ids immediately.
+- The API worker claims queued operations with a lease and records attempts, next attempt, and last error.
+- Read-only preflights retry safely through the worker.
+- Platform candidate APIs start with recovery and workers disabled so side-by-side preflight cannot claim live work.
+- `/api/platform/releases`, `norn platform releases`, and the Platform tab list installed releases.
+- Rollbacks can be started from the CLI or Platform tab through the same platform lane script.
+
+Planned work:
+
+- Add stage-level deploy resume markers before enabling automatic retry of interrupted mutable deploys.
+- Move app rollback into the durable worker lane.
+- Add optional local reverse proxy mode so port `8800` stays stable while old and new APIs run on private ports during cutover.
+- Queue platform preflight and upgrade jobs themselves once the worker supports platform-scoped operations.
 
 ## ContextDB Items
 

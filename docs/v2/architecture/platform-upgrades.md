@@ -15,7 +15,7 @@ The command shells out to `v2/scripts/platform-upgrade` on the host that owns th
 2. Creates an isolated git worktree for that exact commit.
 3. Builds UI, API, and CLI into `$HOME/norn/releases/<sha>`.
 4. Starts the candidate API on `127.0.0.1:18800`.
-5. Sets `NORN_SKIP_DEPLOYMENT_RECOVERY=true` and `NORN_SKIP_OPERATION_RECOVERY=true` for the candidate so it does not mark running work failed.
+5. Sets `NORN_SKIP_DEPLOYMENT_RECOVERY=true`, `NORN_SKIP_OPERATION_RECOVERY=true`, and `NORN_SKIP_OPERATION_WORKER=true` for the candidate so it does not mark running work failed or claim queued work.
 6. Checks `/api/health` and `/api/version`.
 7. On upgrade, flips `$HOME/norn/current`, installs compatibility binaries to `$HOME/go/bin`, restarts `com.norn.api`, and runs postflight health.
 8. If postflight fails and a previous current release exists, flips back, reinstalls the previous binaries, and restarts again.
@@ -43,11 +43,11 @@ Before `upgrade` or `rollback`, the script checks `/api/operations/active` when 
 
 If the active API is too old or auth is unavailable, the drain check logs a warning and continues so bootstrap upgrades still work.
 
-## Operations Ledger
+## Durable Operations Queue
 
-Norn now stores a durable operations ledger in control-plane Postgres. App deploys, app preflights, and app rollbacks create operation rows with compact status, risk, app, ref, saga id, and timing. On API restart, queued/running rows are marked failed so interrupted work is visible.
+Norn now stores a durable operations queue in control-plane Postgres. App deploys, app preflights, and app rollbacks create operation rows with compact status, risk, app, ref, saga id, timing, payload, attempts, lease owner, lease expiry, next attempt, and last error.
 
-The future durable queue should build on this same control-plane Postgres table family, not Nomad, Redis, Valkey, or an app container.
+The queue lives in the same control-plane Postgres table family, not Nomad, Redis, Valkey, or an app container.
 
 Reasons:
 
@@ -56,31 +56,22 @@ Reasons:
 - The API can claim rows with `FOR UPDATE SKIP LOCKED`, making workers safe across restart or future multiple API instances.
 - Saga events remain the immutable user-facing log; queue rows only track claim state, retries, and resumability.
 
-Future queued workers should add claim and retry fields such as:
+The first worker runs inside `norn-api` and executes one job at a time. API handlers enqueue work and return a saga id immediately. A restarted API reclaims queued jobs and failed/expired preflight attempts. Read-only preflight jobs can retry safely. App deploy jobs are queued and protected by drain gates, but a process interruption during mutable deploy execution is marked failed instead of blindly replaying snapshot, migration, or Nomad submit stages.
 
-```sql
-CREATE TABLE operation_claims (
-  id TEXT PRIMARY KEY,
-  operation_id TEXT NOT NULL,
-  attempts INT NOT NULL DEFAULT 0,
-  locked_by TEXT NOT NULL DEFAULT '',
-  locked_until TIMESTAMPTZ,
-  next_attempt_at TIMESTAMPTZ NOT NULL DEFAULT now(),
-  last_error TEXT NOT NULL DEFAULT '',
-  updated_at TIMESTAMPTZ NOT NULL DEFAULT now()
-);
-```
-
-The first worker should run inside `norn-api` and execute one job at a time. API handlers enqueue work and return a saga id immediately. A restarted API reclaims expired jobs, resumes from persisted stage markers, or marks a non-resumable stage failed with a clear saga event.
-
-Good first queued job types:
+Current queued job types:
 
 | Kind | Purpose |
 |------|---------|
-| `platform.preflight` | Build and candidate-health-check a platform release |
+| `app.preflight` | Run validation, source prep, build, and tests with safe retries |
+| `app.deploy` | Queue app deploys and run them under worker/drain visibility |
+
+Good next queued job types:
+
+| Kind | Purpose |
+|------|---------|
+| `platform.preflight` | Build and candidate-health-check a platform release from the API/UI |
 | `platform.upgrade` | Promote a preflighted release and run rollback-capable postflight |
-| `app.preflight` | Move the current in-memory app preflight goroutine into the durable queue |
-| `app.deploy` | Move app deploys into the durable queue after stages are restart-aware |
+| `app.rollback` | Move app rollback into the same worker lane |
 
 ## Old/New API Side By Side
 
@@ -99,3 +90,15 @@ Two no-blip designs are viable:
 2. **launchd socket activation.** Let launchd own the listening socket and pass it to the API process. The replacement process can accept on the same socket after launchd restarts it. This is elegant on macOS but requires API support for inherited sockets.
 
 The proxy path is the more straightforward next step because it does not require changing Go's listener startup model. The durable queue is still necessary for truly graceful operations, because a proxy can preserve traffic availability but cannot make an in-memory deploy goroutine survive process exit.
+
+## Webhook Replay
+
+Webhook deliveries are stored with provider, event, repo, branch, ref, parsed payload, saga id, status, and reason. Operators can replay a delivery through the queue:
+
+```bash
+norn webhooks
+norn webhooks replay <delivery-id>
+norn webhooks replay <delivery-id> --preflight
+```
+
+Replay is authenticated through the normal API token path. GitHub and Gitea ingress endpoints remain public so signed webhook delivery still works.

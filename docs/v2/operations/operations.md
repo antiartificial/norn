@@ -8,6 +8,8 @@ Norn records long-running and externally triggered work in a durable PostgreSQL 
 norn operations
 norn operations --active
 norn webhooks
+norn webhooks replay <delivery-id>
+norn webhooks replay <delivery-id> --preflight
 norn ops platform
 ```
 
@@ -18,6 +20,7 @@ API endpoints:
 | `GET` | `/api/operations` | Recent operations, filterable by app, kind, status, and active state |
 | `GET` | `/api/operations/active` | Queued/running operations for drain gates |
 | `GET` | `/api/webhooks/deliveries` | Recent webhook delivery inbox |
+| `POST` | `/api/webhooks/deliveries/{id}/replay` | Replay a delivery as a deploy or preflight |
 | `GET` | `/metrics` | Prometheus counters for operations and webhooks |
 
 ## Recorded Operations
@@ -30,7 +33,9 @@ The current release records these operation kinds:
 | `app.deploy` | `norn deploy`, webhook auto-deploy, API deploy | app rolling update |
 | `app.rollback` | `norn rollback` / API rollback | app rolling update |
 
-Operations are marked `failed` on API restart if they were still `queued` or `running`, matching the existing deployment recovery behavior. That makes interrupted work explicit instead of leaving stale active rows.
+App preflights and deploys are queued in the operations table and claimed by the API worker with `FOR UPDATE SKIP LOCKED`. Queue rows include payload, attempt count, max attempts, lease owner, lease expiry, next attempt, and last error.
+
+Read-only preflights can retry safely. App deploys are queued and visible to drain gates, but an interruption during mutable deploy execution is marked failed rather than replaying snapshot, migration, or Nomad submit stages blindly.
 
 ## Webhook Inbox
 
@@ -43,7 +48,15 @@ Delivery statuses include:
 | `received` | Delivery row was created |
 | `ignored` | Valid delivery, but Norn intentionally ignored it |
 | `failed` | Validation, parsing, or discovery failed |
-| `deploying` | Delivery matched an app and started an app deploy |
+| `deploying` | Delivery matched an app and queued an app deploy |
+| `replayed` | Operator replayed the delivery as a deploy or preflight |
+
+Replay uses the normal authenticated API path:
+
+```bash
+norn webhooks replay <delivery-id>
+norn webhooks replay <delivery-id> --preflight
+```
 
 ## Platform Drains
 
@@ -74,5 +87,4 @@ The metrics endpoint exports:
 
 ## Next Step
 
-The ledger is the foundation for a true worker queue. A future release can add row claiming with `FOR UPDATE SKIP LOCKED`, retries, resumable stage checkpoints, and background workers that claim operation rows instead of launching goroutines directly from HTTP handlers.
-
+Add stage-level deploy resume checkpoints before enabling automatic retries for interrupted mutable deploys. Move app rollback and platform preflight/upgrade jobs into the same durable worker lane after that checkpoint model exists.

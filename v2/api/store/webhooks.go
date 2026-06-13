@@ -7,6 +7,8 @@ import (
 	"strings"
 	"time"
 
+	"github.com/jackc/pgx/v5"
+
 	"norn/v2/api/model"
 )
 
@@ -28,29 +30,56 @@ func (db *DB) InsertWebhookDelivery(ctx context.Context, d *model.WebhookDeliver
 	if d.Metadata == nil {
 		d.Metadata = map[string]interface{}{}
 	}
+	if d.Payload == nil {
+		d.Payload = map[string]interface{}{}
+	}
 	if d.Status == "" {
 		d.Status = "received"
 	}
 	if d.ReceivedAt.IsZero() {
 		d.ReceivedAt = time.Now()
 	}
+	payload, _ := json.Marshal(d.Payload)
 	metadata, _ := json.Marshal(d.Metadata)
 	_, err := db.Pool.Exec(ctx, `
-		INSERT INTO webhook_deliveries (id, provider, event, delivery_id, repository, ref, branch, app, saga_id, status, reason, remote_addr, user_agent, metadata, received_at, updated_at)
-		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, now())
-	`, d.ID, d.Provider, d.Event, d.DeliveryID, d.Repository, d.Ref, d.Branch, d.App, d.SagaID, d.Status, d.Reason, d.RemoteAddr, d.UserAgent, metadata, d.ReceivedAt)
+		INSERT INTO webhook_deliveries (id, provider, event, delivery_id, repository, ref, branch, app, saga_id, status, reason, remote_addr, user_agent, payload, metadata, received_at, updated_at)
+		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, now())
+	`, d.ID, d.Provider, d.Event, d.DeliveryID, d.Repository, d.Ref, d.Branch, d.App, d.SagaID, d.Status, d.Reason, d.RemoteAddr, d.UserAgent, payload, metadata, d.ReceivedAt)
 	return err
 }
 
 func (db *DB) UpdateWebhookDelivery(ctx context.Context, d *model.WebhookDelivery) error {
+	if d.Payload == nil {
+		d.Payload = map[string]interface{}{}
+	}
+	payload, _ := json.Marshal(d.Payload)
 	metadata, _ := json.Marshal(d.Metadata)
 	_, err := db.Pool.Exec(ctx, `
 		UPDATE webhook_deliveries
 		SET event = $1, delivery_id = $2, repository = $3, ref = $4, branch = $5, app = $6, saga_id = $7,
-		    status = $8, reason = $9, metadata = metadata || $10::jsonb, updated_at = now()
-		WHERE id = $11
-	`, d.Event, d.DeliveryID, d.Repository, d.Ref, d.Branch, d.App, d.SagaID, d.Status, d.Reason, metadata, d.ID)
+		    status = $8, reason = $9, payload = payload || $10::jsonb, metadata = metadata || $11::jsonb, updated_at = now()
+		WHERE id = $12
+	`, d.Event, d.DeliveryID, d.Repository, d.Ref, d.Branch, d.App, d.SagaID, d.Status, d.Reason, payload, metadata, d.ID)
 	return err
+}
+
+func (db *DB) GetWebhookDelivery(ctx context.Context, id string) (*model.WebhookDelivery, error) {
+	var d model.WebhookDelivery
+	var payload, metadata []byte
+	err := db.Pool.QueryRow(ctx, `
+		SELECT id, provider, event, delivery_id, repository, ref, branch, app, saga_id, status, reason, remote_addr, user_agent, payload, metadata, received_at, updated_at
+		FROM webhook_deliveries
+		WHERE id = $1
+	`, id).Scan(&d.ID, &d.Provider, &d.Event, &d.DeliveryID, &d.Repository, &d.Ref, &d.Branch, &d.App, &d.SagaID, &d.Status, &d.Reason, &d.RemoteAddr, &d.UserAgent, &payload, &metadata, &d.ReceivedAt, &d.UpdatedAt)
+	if err == pgx.ErrNoRows {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, err
+	}
+	_ = json.Unmarshal(payload, &d.Payload)
+	_ = json.Unmarshal(metadata, &d.Metadata)
+	return &d, nil
 }
 
 func (db *DB) ListWebhookDeliveries(ctx context.Context, filter WebhookFilter) ([]model.WebhookDelivery, error) {
@@ -73,7 +102,7 @@ func (db *DB) ListWebhookDeliveries(ctx context.Context, filter WebhookFilter) (
 		add("app = $%d", filter.App)
 	}
 
-	query := `SELECT id, provider, event, delivery_id, repository, ref, branch, app, saga_id, status, reason, remote_addr, user_agent, metadata, received_at, updated_at FROM webhook_deliveries`
+	query := `SELECT id, provider, event, delivery_id, repository, ref, branch, app, saga_id, status, reason, remote_addr, user_agent, payload, metadata, received_at, updated_at FROM webhook_deliveries`
 	if len(clauses) > 0 {
 		query += " WHERE " + strings.Join(clauses, " AND ")
 	}
@@ -89,10 +118,11 @@ func (db *DB) ListWebhookDeliveries(ctx context.Context, filter WebhookFilter) (
 	var out []model.WebhookDelivery
 	for rows.Next() {
 		var d model.WebhookDelivery
-		var metadata []byte
-		if err := rows.Scan(&d.ID, &d.Provider, &d.Event, &d.DeliveryID, &d.Repository, &d.Ref, &d.Branch, &d.App, &d.SagaID, &d.Status, &d.Reason, &d.RemoteAddr, &d.UserAgent, &metadata, &d.ReceivedAt, &d.UpdatedAt); err != nil {
+		var payload, metadata []byte
+		if err := rows.Scan(&d.ID, &d.Provider, &d.Event, &d.DeliveryID, &d.Repository, &d.Ref, &d.Branch, &d.App, &d.SagaID, &d.Status, &d.Reason, &d.RemoteAddr, &d.UserAgent, &payload, &metadata, &d.ReceivedAt, &d.UpdatedAt); err != nil {
 			return nil, err
 		}
+		_ = json.Unmarshal(payload, &d.Payload)
 		_ = json.Unmarshal(metadata, &d.Metadata)
 		out = append(out, d)
 	}
