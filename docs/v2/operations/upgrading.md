@@ -16,7 +16,12 @@ norn platform preflight HEAD
 norn platform upgrade HEAD
 norn platform releases
 norn platform rollback <sha-prefix>
+norn platform smoke
+norn platform env -- norn smoke platform
 norn platform proxy-plan
+norn platform proxy-status
+norn platform proxy-render
+norn platform proxy-switch 18802
 norn smoke platform
 ```
 
@@ -34,6 +39,10 @@ Use these environment variables when the repo or host layout differs:
 | `NORN_TOKEN` / `NORN_API_TOKEN` | — | Optional bearer token for active-operation drain checks |
 | `NORN_DRAIN_MODE` | `fail` | `fail`, `wait`, or `force` for active-operation drains |
 | `NORN_SKIP_CANDIDATE_API` | `false` | Skip side-by-side candidate boot |
+| `NORN_API_ENV_FILE` | `$HOME/.config/norn/api.env.enc.json` | SOPS JSON env file for `platform smoke` and `platform env` |
+| `NORN_SOPS_BIN` | `sops` | SOPS executable used for encrypted env loading |
+| `NORN_PROXY_DIR` | `$HOME/norn/proxy` | Managed proxy state directory |
+| `NORN_PROXY_RELOAD` | `false` | Reload Caddy after `proxy-switch` |
 
 ## Manual Fallback
 
@@ -71,6 +80,18 @@ norn smoke platform
 
 This checks health, operation drain, current release metadata, and recent warning/critical Beacon events.
 
+If the API token is only available through the LaunchAgent/SOPS runtime env, use:
+
+```bash
+norn platform smoke
+```
+
+For arbitrary authenticated checks under the same env:
+
+```bash
+norn platform env -- norn events --severity critical --limit 5
+```
+
 ## Rollback
 
 `norn platform upgrade` rolls back automatically when postflight health fails and `$HOME/norn/current` pointed at a previous release.
@@ -101,4 +122,4 @@ Then rerun the smoke checks.
 - Keep Nomad, Consul, Postgres, and app allocations running during a Norn API upgrade unless you are intentionally rebuilding the whole dev environment.
 - A candidate API is a preflight check, not the active control plane. Full no-blip cutover requires a local reverse proxy or launchd socket activation; see [Platform Upgrades](/v2/architecture/platform-upgrades).
 - App deploys, preflights, and rollbacks are queued in control-plane Postgres. The drain gate checks those active rows before platform upgrades; read-only preflights can retry, while interrupted mutable deploy stages fail visibly rather than being replayed blindly.
-- `norn platform proxy-plan` prints the no-blip proxy design but does not install or reload a proxy.
+- `norn platform proxy-plan` prints the no-blip proxy design. `proxy-status`, `proxy-render`, and `proxy-switch` manage an optional local proxy config and upstream state, but the platform lane does not enable proxy mode automatically.

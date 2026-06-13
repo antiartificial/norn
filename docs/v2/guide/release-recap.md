@@ -22,7 +22,8 @@ This recap summarizes the current Norn v2 release line: the Nomad/Consul control
 | Secrets hygiene | SOPS/age, secret status checks, plaintext env warnings | Keeps secret values out of API/UI responses while making missing or unsafe secret wiring visible |
 | Garage object storage | `infrastructure.objectStorage`, managed buckets, app-scoped S3 env | Lets one local Garage service host many app buckets without making each app manually own storage credentials |
 | Snapshot operations | Snapshot listing, restore confirmation, retention reporting | Adds safer database restore flows and platform-level visibility into snapshot drift and over-limit state |
-| Beacon events | `/api/events`, `/api/events/test`, signed sink forwarding | Records Norn-observed operational events and forwards selected signals to downstream systems such as Vigil |
+| Beacon events | `/api/events`, event detail, ack, snooze, reopen, signed sink forwarding | Records Norn-observed operational events and lets operators manage event state without changing the event payload |
+| Alert catalogue | `/api/alerts/rules`, `norn alerts` | Defines the built-in event-to-alert contract for deploy, service, cron, and recovery signals |
 | Cron eventing | `job.triggered`, `job.paused`, `job.resumed`, `job.schedule_updated` | Makes operator-level scheduled-work changes visible as durable operational events |
 | Deploy eventing | `deploy.succeeded`, `deploy.failed` | Turns deployment outcomes into durable events that can feed notification and incident workflows |
 | Observability | OTEL logs/traces, `/metrics`, generated Prometheus scrape config | Keeps local logs useful while enabling bounded local Prometheus/Grafana metrics |
@@ -31,10 +32,10 @@ This recap summarizes the current Norn v2 release line: the Nomad/Consul control
 | Deploy checkpoints | `deployment_steps`, deploy/rollback stage markers | Records durable stage evidence and safely requeues interrupted deploys only before mutable stages |
 | Webhook inbox | `norn webhooks`, replay, preflight replay, webhook metrics | Makes webhook auto-deploy deliveries inspectable and replayable without scraping logs |
 | Platform release surface | Platform tab releases, `/api/platform/releases`, `norn platform releases`, rollback | Makes the installed Norn release history visible from API, CLI, and dashboard |
-| Beacon event visibility | `norn events`, Platform tab Beacon table | Makes Norn-emitted operational events visible from terminal and dashboard |
-| Platform smoke | `norn smoke platform` | Checks health, operations drain, release marker, and recent critical/warning events after upgrades |
-| Nomad allocation and cron watcher | Beacon events for failed/lost/unhealthy allocations plus cron success/failure/hung runs | Turns runtime allocation and scheduled-work transitions into durable operational events |
-| Proxy cutover scaffold | `norn platform proxy-plan` | Prints a no-blip reverse-proxy plan for running stable ingress on one port and APIs on private ports |
+| Beacon event visibility | `norn events`, `norn events show/ack/snooze/open`, Platform tab actions | Makes Norn-emitted operational events visible and operable from terminal and dashboard |
+| Platform smoke | `norn smoke platform`, `norn platform smoke`, `norn platform env` | Checks health, drain, release marker, and events after upgrades, including SOPS-backed auth env shells |
+| Runtime watcher | Beacon events for failed/lost/unhealthy allocations, Consul health transitions, and cron success/failure/hung runs | Turns service, allocation, and scheduled-work transitions into durable operational events |
+| Proxy cutover scaffold | `norn platform proxy-plan/status/render/switch` | Stages a managed local reverse-proxy path for stable ingress and private API release ports |
 | Upgrade path | `norn platform preflight`, `upgrade`, `releases`, `rollback` | Upgrades Norn API, CLI, and built UI without stopping Nomad, Consul, Postgres, or hosted apps |
 
 ## Operator Impact
@@ -43,7 +44,7 @@ Norn v2 is now useful as a real local operations surface rather than just a depl
 
 The biggest practical change is that Norn can host long-lived background work beside web processes. ContextDB is the proving case: its web API and review worker run as separate processes, while Norn exposes worker health, evaluator readiness, dry-run policy posture, audit events, and recent worker runs.
 
-Beacon adds the first durable event surface for notification-oriented operations. Norn now records events it can observe directly, such as deploy outcomes, cron control actions, manual test events, and Nomad allocation transitions to failed, lost, or unhealthy. Those events can stay local for audit/debugging or be forwarded to a signed sink so a separate app such as Vigil can handle incident state, push notifications, acknowledgement, and resolution. Cron-specific success, hung, and missed-run detection remain follow-up watcher work.
+Beacon adds the first durable event surface for notification-oriented operations. Norn now records events it can observe directly, such as deploy outcomes, cron control actions, manual test events, Nomad allocation transitions, Consul health transitions, and cron run outcomes. Those events can stay local for audit/debugging or be forwarded to a signed sink. Norn also supports local operator state: events can be acknowledged, snoozed, and reopened from the CLI and Platform tab.
 
 Object storage now follows the same local-infra posture as the rest of v2: Garage can run as a platform-scoped service, while app specs declare buckets and Norn provisions them during deploy. Apps receive S3-compatible env vars, including Garage path-style flags, without hardcoding bucket credentials into plaintext specs.
 
@@ -69,11 +70,15 @@ The current release line has been exercised with:
 - `norn ops platform`
 - `norn operations`
 - `norn events`
+- `norn events show <event-id>`
+- `norn alerts`
 - `norn smoke platform`
+- `norn platform smoke`
 - `norn webhooks`
 - `norn webhooks replay <delivery-id> --preflight`
 - `norn platform releases`
 - `norn platform proxy-plan`
+- `norn platform proxy-status`
 - `norn services`
 - `norn status`
 - `norn smoke contextdb`

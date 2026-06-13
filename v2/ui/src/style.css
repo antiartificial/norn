@@ -995,13 +995,67 @@ body {
 }
 
 .ops-row-events {
-  grid-template-columns: 1fr 0.8fr 1.1fr 0.8fr 2fr;
+  grid-template-columns: 1fr 0.8fr 0.8fr 1.1fr 0.8fr 2fr 1.4fr;
 }
 
 .ops-row span {
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
+}
+
+.ops-link {
+  border: 0;
+  padding: 0;
+  color: var(--text);
+  background: transparent;
+  text-align: left;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  cursor: pointer;
+}
+
+.ops-link:hover {
+  color: var(--blue);
+}
+
+.ops-actions {
+  display: flex;
+  gap: 6px;
+  align-items: center;
+}
+
+.ops-event-detail {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 8px 16px;
+  margin: 2px 8px 8px;
+  padding: 10px;
+  border-left: 2px solid var(--border);
+  color: var(--text-muted);
+  font-size: 12px;
+}
+
+.ops-event-detail div {
+  min-width: 0;
+}
+
+.ops-event-detail span {
+  display: block;
+  color: var(--text-dim);
+  font-size: 10px;
+  text-transform: uppercase;
+}
+
+.ops-event-detail strong,
+.ops-event-detail p {
+  overflow-wrap: anywhere;
+}
+
+.ops-event-detail p {
+  grid-column: 1 / -1;
+  margin: 0;
 }
 
 .ops-row-head {

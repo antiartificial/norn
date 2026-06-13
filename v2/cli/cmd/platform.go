@@ -22,7 +22,12 @@ func init() {
 	platformCmd.AddCommand(platformUpgradeCmd)
 	platformCmd.AddCommand(platformReleasesCmd)
 	platformCmd.AddCommand(platformRollbackCmd)
+	platformCmd.AddCommand(platformSmokeCmd)
+	platformCmd.AddCommand(platformEnvCmd)
 	platformCmd.AddCommand(platformProxyPlanCmd)
+	platformCmd.AddCommand(platformProxyStatusCmd)
+	platformCmd.AddCommand(platformProxyRenderCmd)
+	platformCmd.AddCommand(platformProxySwitchCmd)
 }
 
 var platformCmd = &cobra.Command{
@@ -74,6 +79,28 @@ var platformRollbackCmd = &cobra.Command{
 	},
 }
 
+var platformSmokeCmd = &cobra.Command{
+	Use:   "smoke",
+	Short: "Run authenticated platform smoke using the API runtime env",
+	Args:  cobra.NoArgs,
+	RunE: func(cmd *cobra.Command, args []string) error {
+		return runPlatformUpgradeScript("smoke", "")
+	},
+}
+
+var platformEnvCmd = &cobra.Command{
+	Use:                "env -- <command> [args...]",
+	Short:              "Run a command with the API runtime env loaded",
+	Args:               cobra.MinimumNArgs(1),
+	DisableFlagParsing: true,
+	RunE: func(cmd *cobra.Command, args []string) error {
+		if len(args) > 0 && args[0] == "--" {
+			args = args[1:]
+		}
+		return runPlatformUpgradeScriptArgs(append([]string{"env-exec"}, args...)...)
+	},
+}
+
 var platformProxyPlanCmd = &cobra.Command{
 	Use:   "proxy-plan",
 	Short: "Print a no-blip local reverse-proxy cutover plan",
@@ -83,14 +110,45 @@ var platformProxyPlanCmd = &cobra.Command{
 	},
 }
 
+var platformProxyStatusCmd = &cobra.Command{
+	Use:   "proxy-status",
+	Short: "Show managed local proxy state",
+	Args:  cobra.NoArgs,
+	RunE: func(cmd *cobra.Command, args []string) error {
+		return runPlatformUpgradeScript("proxy-status", "")
+	},
+}
+
+var platformProxyRenderCmd = &cobra.Command{
+	Use:   "proxy-render",
+	Short: "Render the managed local proxy config",
+	Args:  cobra.NoArgs,
+	RunE: func(cmd *cobra.Command, args []string) error {
+		return runPlatformUpgradeScript("proxy-render", "")
+	},
+}
+
+var platformProxySwitchCmd = &cobra.Command{
+	Use:   "proxy-switch <port|host:port>",
+	Short: "Switch the managed local proxy upstream",
+	Args:  cobra.ExactArgs(1),
+	RunE: func(cmd *cobra.Command, args []string) error {
+		return runPlatformUpgradeScriptArgs("proxy-switch", args[0])
+	},
+}
+
 func runPlatformUpgradeScript(mode, ref string) error {
-	script, err := resolvePlatformScript()
-	if err != nil {
-		return err
-	}
 	args := []string{mode}
 	if ref != "" {
 		args = append(args, ref)
+	}
+	return runPlatformUpgradeScriptArgs(args...)
+}
+
+func runPlatformUpgradeScriptArgs(args ...string) error {
+	script, err := resolvePlatformScript()
+	if err != nil {
+		return err
 	}
 	command := exec.Command(script, args...)
 	command.Stdout = os.Stdout

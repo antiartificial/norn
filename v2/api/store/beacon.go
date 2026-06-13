@@ -6,6 +6,9 @@ import (
 	"fmt"
 	"time"
 
+	"github.com/jackc/pgx/v5"
+	"github.com/jackc/pgx/v5/pgtype"
+
 	"norn/v2/api/model"
 )
 
@@ -71,7 +74,8 @@ func (db *DB) ListBeaconEvents(ctx context.Context, filter BeaconFilter) ([]mode
 
 	querySQL := fmt.Sprintf(`
 		SELECT id, source, app, environment, type, severity, title, body,
-		       dedupe_key, occurred_at, metadata
+		       dedupe_key, occurred_at, acknowledged_at, acknowledged_by,
+		       acknowledgement_note, snoozed_until, metadata
 		FROM beacon_events
 		WHERE 1=1%s
 		ORDER BY occurred_at DESC
@@ -87,32 +91,133 @@ func (db *DB) ListBeaconEvents(ctx context.Context, filter BeaconFilter) ([]mode
 
 	var events []model.BeaconEvent
 	for rows.Next() {
-		var event model.BeaconEvent
-		var metadata []byte
-		if err := rows.Scan(
-			&event.ID,
-			&event.Source,
-			&event.App,
-			&event.Environment,
-			&event.Type,
-			&event.Severity,
-			&event.Title,
-			&event.Body,
-			&event.DedupeKey,
-			&event.OccurredAt,
-			&metadata,
-		); err != nil {
+		event, err := scanBeaconEvent(rows)
+		if err != nil {
 			return nil, 0, err
-		}
-		if len(metadata) > 0 {
-			_ = json.Unmarshal(metadata, &event.Metadata)
 		}
 		events = append(events, event)
 	}
+	if err := rows.Err(); err != nil {
+		return nil, 0, err
+	}
 	return events, total, nil
+}
+
+func (db *DB) GetBeaconEvent(ctx context.Context, id string) (*model.BeaconEvent, error) {
+	row := db.Pool.QueryRow(ctx, `
+		SELECT id, source, app, environment, type, severity, title, body,
+		       dedupe_key, occurred_at, acknowledged_at, acknowledged_by,
+		       acknowledgement_note, snoozed_until, metadata
+		FROM beacon_events
+		WHERE id = $1
+	`, id)
+	event, err := scanBeaconEvent(row)
+	if err != nil {
+		if err == pgx.ErrNoRows {
+			return nil, err
+		}
+		return nil, err
+	}
+	return &event, nil
+}
+
+func (db *DB) AcknowledgeBeaconEvent(ctx context.Context, id, by, note string) (*model.BeaconEvent, error) {
+	_, err := db.Pool.Exec(ctx, `
+		UPDATE beacon_events
+		SET acknowledged_at = now(),
+		    acknowledged_by = $2,
+		    acknowledgement_note = $3,
+		    snoozed_until = NULL
+		WHERE id = $1
+	`, id, by, note)
+	if err != nil {
+		return nil, err
+	}
+	return db.GetBeaconEvent(ctx, id)
+}
+
+func (db *DB) SnoozeBeaconEvent(ctx context.Context, id, by, note string, until time.Time) (*model.BeaconEvent, error) {
+	_, err := db.Pool.Exec(ctx, `
+		UPDATE beacon_events
+		SET snoozed_until = $2,
+		    acknowledged_by = $3,
+		    acknowledgement_note = $4
+		WHERE id = $1
+	`, id, until, by, note)
+	if err != nil {
+		return nil, err
+	}
+	return db.GetBeaconEvent(ctx, id)
+}
+
+func (db *DB) OpenBeaconEvent(ctx context.Context, id string) (*model.BeaconEvent, error) {
+	_, err := db.Pool.Exec(ctx, `
+		UPDATE beacon_events
+		SET acknowledged_at = NULL,
+		    acknowledged_by = '',
+		    acknowledgement_note = '',
+		    snoozed_until = NULL
+		WHERE id = $1
+	`, id)
+	if err != nil {
+		return nil, err
+	}
+	return db.GetBeaconEvent(ctx, id)
 }
 
 func (db *DB) PruneBeaconEvents(ctx context.Context, olderThan time.Time) error {
 	_, err := db.Pool.Exec(ctx, `DELETE FROM beacon_events WHERE occurred_at < $1`, olderThan)
 	return err
+}
+
+type beaconScanner interface {
+	Scan(dest ...interface{}) error
+}
+
+func scanBeaconEvent(row beaconScanner) (model.BeaconEvent, error) {
+	var event model.BeaconEvent
+	var metadata []byte
+	var acknowledgedAt pgtype.Timestamptz
+	var snoozedUntil pgtype.Timestamptz
+	if err := row.Scan(
+		&event.ID,
+		&event.Source,
+		&event.App,
+		&event.Environment,
+		&event.Type,
+		&event.Severity,
+		&event.Title,
+		&event.Body,
+		&event.DedupeKey,
+		&event.OccurredAt,
+		&acknowledgedAt,
+		&event.AcknowledgedBy,
+		&event.AcknowledgementNote,
+		&snoozedUntil,
+		&metadata,
+	); err != nil {
+		return event, err
+	}
+	if acknowledgedAt.Valid {
+		event.AcknowledgedAt = &acknowledgedAt.Time
+	}
+	if snoozedUntil.Valid {
+		event.SnoozedUntil = &snoozedUntil.Time
+	}
+	if len(metadata) > 0 {
+		_ = json.Unmarshal(metadata, &event.Metadata)
+	}
+	event.State = beaconEventState(event)
+	return event, nil
+}
+
+func beaconEventState(event model.BeaconEvent) string {
+	now := time.Now()
+	if event.SnoozedUntil != nil && event.SnoozedUntil.After(now) {
+		return "snoozed"
+	}
+	if event.AcknowledgedAt != nil {
+		return "acknowledged"
+	}
+	return "open"
 }

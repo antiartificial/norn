@@ -27,12 +27,19 @@ The platform lane also supports:
 ```bash
 norn platform releases
 norn platform rollback <sha-prefix>
+norn platform smoke
+norn platform env -- <command>
 norn platform proxy-plan
+norn platform proxy-status
+norn platform proxy-render
+norn platform proxy-switch <port|host:port>
 ```
 
 Release metadata is written to each release directory as `release.env` and `release.json`.
 
 `norn smoke platform` is the post-upgrade smoke surface for authenticated shells. It checks `/api/health`, platform operations, active operation drain, current release marker, and recent warning/critical Beacon events.
+
+`norn platform smoke` runs the same smoke through the encrypted API runtime env. This is useful on hosts where the LaunchAgent has the token but non-interactive shells do not.
 
 ## Drain Gate
 
@@ -96,7 +103,17 @@ Two no-blip designs are viable:
 
 The proxy path is the more straightforward next step because it does not require changing Go's listener startup model. The durable queue is still necessary for truly graceful operations, because a proxy can preserve traffic availability but cannot make an in-memory deploy goroutine survive process exit.
 
-`norn platform proxy-plan` prints a Caddy-style local reverse-proxy plan with stable ingress on one port and old/new API releases on private ports. It is a scaffold only; it does not install or mutate local proxy state.
+`norn platform proxy-plan` prints a Caddy-style local reverse-proxy plan with stable ingress on one port and old/new API releases on private ports.
+
+The platform script also provides optional managed proxy primitives:
+
+| Command | Purpose |
+|---------|---------|
+| `norn platform proxy-status` | Show listen address, current upstream, Caddyfile path, and reload mode |
+| `norn platform proxy-render` | Render the managed Caddy config to stdout |
+| `norn platform proxy-switch <port|host:port>` | Update the upstream state file and write the managed Caddyfile |
+
+`proxy-switch` reloads Caddy only when `NORN_PROXY_RELOAD=true`. This keeps the feature safe to stage before the host is intentionally moved to proxy-fronted API ports.
 
 ## Webhook Replay
 

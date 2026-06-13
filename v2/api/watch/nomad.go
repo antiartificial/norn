@@ -8,12 +8,14 @@ import (
 	"time"
 
 	"norn/v2/api/beacon"
+	"norn/v2/api/consul"
 	"norn/v2/api/model"
 	"norn/v2/api/nomad"
 )
 
 type NomadAllocationWatcher struct {
 	nomad     *nomad.Client
+	consul    *consul.Client
 	beacon    *beacon.Service
 	appsDir   string
 	poll      time.Duration
@@ -21,9 +23,10 @@ type NomadAllocationWatcher struct {
 	hungAfter time.Duration
 }
 
-func NewNomadAllocationWatcher(n *nomad.Client, b *beacon.Service, appsDir string) *NomadAllocationWatcher {
+func NewNomadAllocationWatcher(n *nomad.Client, c *consul.Client, b *beacon.Service, appsDir string) *NomadAllocationWatcher {
 	return &NomadAllocationWatcher{
 		nomad:     n,
+		consul:    c,
 		beacon:    b,
 		appsDir:   appsDir,
 		poll:      60 * time.Second,
@@ -33,7 +36,7 @@ func NewNomadAllocationWatcher(n *nomad.Client, b *beacon.Service, appsDir strin
 }
 
 func (w *NomadAllocationWatcher) Run(ctx context.Context) {
-	if w.nomad == nil || w.beacon == nil {
+	if (w.nomad == nil && w.consul == nil) || w.beacon == nil {
 		return
 	}
 	log.Println("nomad allocation watcher started")
@@ -58,51 +61,131 @@ func (w *NomadAllocationWatcher) check(ctx context.Context) {
 		return
 	}
 	for _, spec := range specs {
-		allocs, err := w.nomad.JobAllocations(spec.App)
-		if err != nil {
-			continue
+		if w.nomad != nil {
+			allocs, err := w.nomad.JobAllocations(spec.App)
+			if err == nil {
+				for _, alloc := range allocs {
+					state := alloc.ClientStatus
+					unhealthy := alloc.DeploymentStatus != nil && alloc.DeploymentStatus.Healthy != nil && !*alloc.DeploymentStatus.Healthy
+					if unhealthy && state == "running" {
+						state = "unhealthy"
+					}
+					if state != "failed" && state != "lost" && state != "unhealthy" {
+						continue
+					}
+					key := fmt.Sprintf("%s:%s:%s", spec.App, shortAlloc(alloc.ID), alloc.TaskGroup)
+					if w.seen[key] == state {
+						continue
+					}
+					w.seen[key] = state
+					severity := model.BeaconWarning
+					if state == "failed" || state == "lost" {
+						severity = model.BeaconCritical
+					}
+					_, err := w.beacon.Emit(ctx, model.BeaconEvent{
+						App:       spec.App,
+						Type:      "nomad.allocation." + state,
+						Severity:  severity,
+						Title:     fmt.Sprintf("%s allocation %s", spec.App, state),
+						Body:      fmt.Sprintf("Allocation %s task group %s is %s.", shortAlloc(alloc.ID), alloc.TaskGroup, state),
+						DedupeKey: fmt.Sprintf("%s:%s:%s", spec.App, shortAlloc(alloc.ID), state),
+						Metadata: map[string]interface{}{
+							"allocationId": alloc.ID,
+							"taskGroup":    alloc.TaskGroup,
+							"clientStatus": alloc.ClientStatus,
+							"nodeId":       alloc.NodeID,
+						},
+					})
+					if err != nil {
+						log.Printf("nomad watcher: beacon emit: %v", err)
+					}
+				}
+			}
+			w.checkCron(ctx, spec)
 		}
-		for _, alloc := range allocs {
-			state := alloc.ClientStatus
-			unhealthy := alloc.DeploymentStatus != nil && alloc.DeploymentStatus.Healthy != nil && !*alloc.DeploymentStatus.Healthy
-			if unhealthy && state == "running" {
-				state = "unhealthy"
-			}
-			if state != "failed" && state != "lost" && state != "unhealthy" {
-				continue
-			}
-			key := fmt.Sprintf("%s:%s:%s", spec.App, shortAlloc(alloc.ID), alloc.TaskGroup)
-			if w.seen[key] == state {
-				continue
-			}
-			w.seen[key] = state
-			severity := model.BeaconWarning
-			if state == "failed" || state == "lost" {
-				severity = model.BeaconCritical
-			}
-			_, err := w.beacon.Emit(ctx, model.BeaconEvent{
-				App:       spec.App,
-				Type:      "nomad.allocation." + state,
-				Severity:  severity,
-				Title:     fmt.Sprintf("%s allocation %s", spec.App, state),
-				Body:      fmt.Sprintf("Allocation %s task group %s is %s.", shortAlloc(alloc.ID), alloc.TaskGroup, state),
-				DedupeKey: fmt.Sprintf("%s:%s:%s", spec.App, shortAlloc(alloc.ID), state),
-				Metadata: map[string]interface{}{
-					"allocationId": alloc.ID,
-					"taskGroup":    alloc.TaskGroup,
-					"clientStatus": alloc.ClientStatus,
-					"nodeId":       alloc.NodeID,
-				},
-			})
-			if err != nil {
-				log.Printf("nomad watcher: beacon emit: %v", err)
-			}
-		}
-		w.checkCron(ctx, spec)
+		w.checkServiceHealth(ctx, spec)
 	}
 }
 
+func (w *NomadAllocationWatcher) checkServiceHealth(ctx context.Context, spec *model.InfraSpec) {
+	if w.consul == nil {
+		return
+	}
+	for processName := range spec.Processes {
+		serviceName := spec.App + "-" + processName
+		health, err := w.consul.ServiceHealthChecks(serviceName)
+		if (err != nil || len(health) == 0) && spec.App != serviceName {
+			health, err = w.consul.ServiceHealthChecks(spec.App)
+		}
+		if err != nil || len(health) == 0 {
+			continue
+		}
+		state := aggregateServiceHealth(health)
+		key := fmt.Sprintf("health:%s:%s", spec.App, processName)
+		previous := w.seen[key]
+		if previous == state {
+			continue
+		}
+		w.seen[key] = state
+		if previous == "" && state == "passing" {
+			continue
+		}
+		eventType := "service.health." + state
+		severity := model.BeaconWarning
+		title := fmt.Sprintf("%s %s health %s", spec.App, processName, state)
+		if state == "critical" {
+			severity = model.BeaconCritical
+		}
+		if state == "passing" {
+			eventType = "service.health.recovered"
+			severity = model.BeaconInfo
+			title = fmt.Sprintf("%s %s recovered", spec.App, processName)
+		}
+		_, err = w.beacon.Emit(ctx, model.BeaconEvent{
+			App:       spec.App,
+			Type:      eventType,
+			Severity:  severity,
+			Title:     title,
+			Body:      fmt.Sprintf("Service %s changed from %s to %s.", serviceName, emptyState(previous), state),
+			DedupeKey: fmt.Sprintf("%s:%s:health", spec.App, processName),
+			Metadata: map[string]interface{}{
+				"process":       processName,
+				"service":       serviceName,
+				"previous":      previous,
+				"status":        state,
+				"instanceCount": len(health),
+			},
+		})
+		if err != nil {
+			log.Printf("nomad watcher: health beacon emit: %v", err)
+		}
+	}
+}
+
+func aggregateServiceHealth(health []consul.ServiceHealth) string {
+	state := "passing"
+	for _, instance := range health {
+		switch instance.Status {
+		case "critical":
+			return "critical"
+		case "warning":
+			state = "warning"
+		}
+	}
+	return state
+}
+
+func emptyState(state string) string {
+	if state == "" {
+		return "unknown"
+	}
+	return state
+}
+
 func (w *NomadAllocationWatcher) checkCron(ctx context.Context, spec *model.InfraSpec) {
+	if w.nomad == nil {
+		return
+	}
 	for process, proc := range spec.Processes {
 		if strings.TrimSpace(proc.Schedule) == "" {
 			continue

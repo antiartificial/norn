@@ -304,17 +304,31 @@ type AccessEvent struct {
 }
 
 type BeaconEvent struct {
-	ID          string                 `json:"id"`
-	Source      string                 `json:"source"`
-	App         string                 `json:"app,omitempty"`
-	Environment string                 `json:"environment,omitempty"`
-	Type        string                 `json:"type"`
-	Severity    string                 `json:"severity"`
-	Title       string                 `json:"title"`
-	Body        string                 `json:"body"`
-	DedupeKey   string                 `json:"dedupeKey"`
-	OccurredAt  string                 `json:"occurredAt"`
-	Metadata    map[string]interface{} `json:"metadata,omitempty"`
+	ID                  string                 `json:"id"`
+	Source              string                 `json:"source"`
+	App                 string                 `json:"app,omitempty"`
+	Environment         string                 `json:"environment,omitempty"`
+	Type                string                 `json:"type"`
+	Severity            string                 `json:"severity"`
+	State               string                 `json:"state,omitempty"`
+	Title               string                 `json:"title"`
+	Body                string                 `json:"body"`
+	DedupeKey           string                 `json:"dedupeKey"`
+	OccurredAt          string                 `json:"occurredAt"`
+	AcknowledgedAt      string                 `json:"acknowledgedAt,omitempty"`
+	AcknowledgedBy      string                 `json:"acknowledgedBy,omitempty"`
+	AcknowledgementNote string                 `json:"acknowledgementNote,omitempty"`
+	SnoozedUntil        string                 `json:"snoozedUntil,omitempty"`
+	Metadata            map[string]interface{} `json:"metadata,omitempty"`
+}
+
+type AlertRule struct {
+	ID          string   `json:"id"`
+	Name        string   `json:"name"`
+	Severity    string   `json:"severity"`
+	EventTypes  []string `json:"eventTypes"`
+	Description string   `json:"description"`
+	Runbook     string   `json:"runbook,omitempty"`
 }
 
 type CronState struct {
@@ -705,6 +719,55 @@ func (c *Client) ListEvents(app, eventType, severity string, limit int) ([]Beaco
 		return nil, 0, err
 	}
 	return resp.Events, resp.Total, nil
+}
+
+func (c *Client) GetEvent(id string) (*BeaconEvent, error) {
+	var event BeaconEvent
+	if err := c.get("/api/events/"+url.PathEscape(id), &event); err != nil {
+		return nil, err
+	}
+	return &event, nil
+}
+
+func (c *Client) AcknowledgeEvent(id, by, note string) (*BeaconEvent, error) {
+	body, _ := json.Marshal(map[string]string{"by": by, "note": note})
+	var event BeaconEvent
+	if err := c.postJSON("/api/events/"+url.PathEscape(id)+"/ack", string(body), &event); err != nil {
+		return nil, err
+	}
+	return &event, nil
+}
+
+func (c *Client) SnoozeEvent(id, by, note, duration, until string) (*BeaconEvent, error) {
+	body, _ := json.Marshal(map[string]string{
+		"by":       by,
+		"note":     note,
+		"duration": duration,
+		"until":    until,
+	})
+	var event BeaconEvent
+	if err := c.postJSON("/api/events/"+url.PathEscape(id)+"/snooze", string(body), &event); err != nil {
+		return nil, err
+	}
+	return &event, nil
+}
+
+func (c *Client) OpenEvent(id string) (*BeaconEvent, error) {
+	var event BeaconEvent
+	if err := c.postJSON("/api/events/"+url.PathEscape(id)+"/open", "{}", &event); err != nil {
+		return nil, err
+	}
+	return &event, nil
+}
+
+func (c *Client) AlertRules() ([]AlertRule, error) {
+	var resp struct {
+		Rules []AlertRule `json:"rules"`
+	}
+	if err := c.get("/api/alerts/rules", &resp); err != nil {
+		return nil, err
+	}
+	return resp.Rules, nil
 }
 
 func (c *Client) PlatformReleases() (*PlatformReleaseList, error) {

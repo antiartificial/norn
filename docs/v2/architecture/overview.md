@@ -112,6 +112,12 @@ v2/ui/
 | GET | `/api/deployments/{id}/steps` | List deployment stage checkpoints |
 | GET | `/api/operations` | List recent operation queue rows |
 | GET | `/api/operations/active` | List queued/running operations for drains |
+| GET | `/api/alerts/rules` | Built-in alert rule catalogue |
+| GET | `/api/events` | List Beacon events |
+| GET | `/api/events/{id}` | Beacon event detail |
+| POST | `/api/events/{id}/ack` | Acknowledge a Beacon event |
+| POST | `/api/events/{id}/snooze` | Snooze a Beacon event |
+| POST | `/api/events/{id}/open` | Reopen a Beacon event |
 | GET | `/api/validate` | Validate all infraspecs |
 | GET | `/api/validate/{id}` | Validate a single infraspec |
 | GET | `/api/saga` | List recent saga events |
