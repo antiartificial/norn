@@ -134,6 +134,17 @@ norn events open <event-id>
 
 Events include `open`, `snoozed`, or `acknowledged` state. Detail output prints related metadata such as saga, deployment, operation, process, service, or job ids when Norn recorded them.
 
+## observability
+
+Generate Norn's Prometheus and Grafana starter bundle.
+
+```bash
+norn observability bundle
+norn observability bundle --out ./norn-observability
+```
+
+The bundle includes Prometheus scrape config, Prometheus alert rules, a Grafana datasource, a starter dashboard, and suggested Norn service specs for Prometheus, Grafana, and cAdvisor. The default retention target is 30 days or 8GB.
+
 ## alerts
 
 Show built-in alert rules derived from Beacon event types.
@@ -366,6 +377,7 @@ norn secrets delete <app> KEY
 |------------|-------------|
 | (none) | List secret key names (values are not shown) |
 | `status` | Show declared-vs-encrypted drift and plaintext env warnings |
+| `migrate-plan` | Show value-safe plaintext env entries that should move to `secrets.enc.yaml` |
 | `set` | Set or update a secret key-value pair |
 | `delete` | Remove a secret |
 
@@ -393,6 +405,7 @@ norn snapshots <app>
 
 # Restore a snapshot
 norn snapshots <app> restore <timestamp> --yes
+norn snapshots <app> restore <timestamp> --yes --pre-restore
 
 # Preview retention
 norn snapshots <app> retention --keep 3
@@ -405,7 +418,7 @@ norn snapshots <app> retention --keep 3 --execute --yes
 | Subcommand | Description |
 |------------|-------------|
 | (none) | List available snapshots with timestamps, source commit, created time, size, and filename |
-| `restore` | Restore from a snapshot at the given timestamp; requires `--yes` and prints a restore receipt |
+| `restore` | Restore from a snapshot at the given timestamp; requires `--yes` and prints a restore receipt. `--pre-restore` creates a fresh snapshot before the restore |
 | `retention` | Preview newest-N retention without deleting snapshots; defaults to `snapshots.keep` from the app spec or 3; add `--execute --yes` to prune and print a receipt |
 
 ## cron

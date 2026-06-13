@@ -13,12 +13,14 @@ import (
 
 func init() {
 	snapshotsCmd.Flags().BoolVar(&snapshotRestoreYes, "yes", false, "Confirm snapshot restore")
+	snapshotsCmd.Flags().BoolVar(&snapshotPreRestore, "pre-restore", false, "Create a fresh snapshot before restoring")
 	snapshotsCmd.Flags().IntVar(&snapshotRetentionKeep, "keep", 3, "Number of newest snapshots to keep in retention preview")
 	snapshotsCmd.Flags().BoolVar(&snapshotRetentionExecute, "execute", false, "Apply snapshot retention pruning")
 	rootCmd.AddCommand(snapshotsCmd)
 }
 
 var snapshotRestoreYes bool
+var snapshotPreRestore bool
 var snapshotRetentionKeep int
 var snapshotRetentionExecute bool
 
@@ -35,7 +37,7 @@ var snapshotsCmd = &cobra.Command{
 				return fmt.Errorf("restore is destructive; rerun with --yes to confirm")
 			}
 			fmt.Printf("%s restoring snapshot %s for %s...\n", style.DotWarning, ts, appID)
-			receipt, err := client.RestoreSnapshot(appID, ts, true)
+			receipt, err := client.RestoreSnapshot(appID, ts, true, snapshotPreRestore)
 			if err != nil {
 				return fmt.Errorf("restore failed: %w", err)
 			}
@@ -45,6 +47,9 @@ var snapshotsCmd = &cobra.Command{
 				fmt.Printf("  %s %s\n", style.Key.Render("snapshot"), receipt.Snapshot.Filename)
 				if receipt.Snapshot.CommitSHA != "" {
 					fmt.Printf("  %s %s\n", style.Key.Render("commit"), receipt.Snapshot.CommitSHA)
+				}
+				if receipt.PreRestoreSnapshot != nil {
+					fmt.Printf("  %s %s\n", style.Key.Render("pre-restore"), receipt.PreRestoreSnapshot.Filename)
 				}
 				fmt.Printf("  %s %s\n", style.Key.Render("restored"), receipt.RestoredAt)
 			}

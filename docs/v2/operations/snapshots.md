@@ -50,17 +50,21 @@ curl http://localhost:8800/api/apps/myapp/snapshots
 
 ```bash
 norn snapshots myapp restore 2025-01-15T14:30:00 --yes
+norn snapshots myapp restore 2025-01-15T14:30:00 --yes --pre-restore
 ```
 
 ### API
 
 ```bash
 curl -X POST 'http://localhost:8800/api/apps/myapp/snapshots/2025-01-15T14:30:00/restore?confirm=true'
+curl -X POST 'http://localhost:8800/api/apps/myapp/snapshots/2025-01-15T14:30:00/restore?confirm=true&preRestore=true'
 ```
 
 ::: warning
-Restoring a snapshot replaces the current database contents. Make sure to snapshot the current state first if you need to preserve it.
+Restoring a snapshot replaces the current database contents. Use `--pre-restore` or `preRestore=true` to create a fresh safety snapshot immediately before the destructive restore.
 :::
+
+Restore receipts include the restored snapshot and, when requested, the pre-restore snapshot filename. Restore and retention actions also emit Beacon events so the operation appears in the same event ledger as deploy and service health changes.
 
 ## Storage
 

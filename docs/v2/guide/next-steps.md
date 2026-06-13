@@ -24,11 +24,14 @@ The current working feature set includes:
 - Beacon event CLI and Platform tab visibility
 - Beacon event detail, acknowledgement, snooze, and reopen state
 - Built-in alert rule catalogue for deploy, service, cron, and recovery events
+- Observability bundle for local Prometheus, alert rules, Grafana provisioning, and starter service specs
 - Platform smoke checks for health, drain, release marker, and recent warning/critical events
 - Authenticated platform smoke through the encrypted API runtime env
 - Runtime watcher events for failed, lost, and unhealthy allocations, Consul health transitions, and cron run outcomes
 - Proxy cutover plan and optional managed proxy config/upstream commands for no-blip API upgrades
 - Basic local snapshot listing and restore
+- Pre-restore safety snapshots for destructive restores
+- Value-safe secret migration planning
 - Port conflict detection before Nomad submit
 
 For a compact summary of the current release line, see the [Norn v2 Release Recap](/v2/guide/release-recap).
@@ -83,6 +86,7 @@ Current state:
 - `norn validate` warns when top-level or process-level `env` blocks contain secret-like DSNs, passwords, tokens, API keys, client secrets, or provider keys.
 - App and process `env` values are parsed for validation but omitted from API JSON responses.
 - `norn secrets status [app]` compares declared secret keys, encrypted keys, and plaintext env warnings without printing secret values.
+- `norn secrets migrate-plan [app]` turns plaintext findings into a value-safe migration checklist with declared/encrypted status and recommended actions.
 
 Planned work:
 
@@ -99,14 +103,15 @@ Current state:
 - Snapshots are stored locally under `snapshots/` in the Norn API working directory.
 - Restore requires explicit CLI confirmation with `--yes`; the API requires `confirm=true`.
 - Restore responses include database, snapshot, commit, and restored-at receipt data.
+- Restore can create a fresh safety snapshot first with `--pre-restore` or `preRestore=true`.
 - Snapshot listing parses provenance from filenames, including source commit and RFC3339 created time even when database names include underscores.
 - Snapshot retention uses `snapshots.keep` from `infraspec.yaml` when a command does not pass `--keep`.
 - `norn ops platform` reports per-app snapshot counts, keep policy, and over-limit totals.
+- Snapshot restore and retention actions emit Beacon events.
 
 Planned work:
 
 - Archive snapshots to the configured object-storage provider after local restore semantics are covered by tests.
-- Emit optional pre-restore snapshots.
 - Show snapshot provenance in app detail and deploy history.
 
 ### Observability And Access
@@ -125,13 +130,15 @@ Current state:
 - `norn ops platform` and the UI Platform tab summarize recent access, service exposure, OTEL/Grafana configuration, dirty deployments, secret hygiene, and snapshot retention.
 - `/metrics` and `/api/metrics` expose Prometheus-compatible Norn control-plane metrics.
 - App processes can declare `metrics.enabled: true`; Norn registers companion metrics services and includes live scrape targets in `/api/observability/prometheus.yml`.
+- `/api/observability/bundle`, `/api/observability/alerts.yml`, and `norn observability bundle --out <dir>` package Prometheus config, alert rules, Grafana provisioning, a starter dashboard, and starter Prometheus/Grafana/cAdvisor service specs.
+- `norn ops platform` and the UI Platform tab show observability bundle availability, retention target, and secret migration item counts.
 
 Planned work:
 
-- Package local Prometheus, Grafana, and cAdvisor as Norn platform services with 30-day/8GB default Prometheus retention.
+- Turn the generated Prometheus, Grafana, and cAdvisor starter specs into installed managed platform services after local path and port choices are confirmed.
 - Add downstream incident-tool links for acknowledged/snoozed Beacon events.
 - Extend runtime watchers with schedule-aware missed-run detection.
-- Add high restart rate and low disk headroom alert rules once those signals are measured.
+- Add high restart rate alert rules once those signals are measured.
 - Add temporary access grants, such as expiring JWT links or expiring IP allowlist entries.
 
 ### Platform Upgrade Continuity

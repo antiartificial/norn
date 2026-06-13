@@ -61,6 +61,7 @@ interface PlatformSummary {
   secrets: {
     ok: number
     needsAttention: number
+    migrationItems: number
     apps: Array<{
       app: string
       ok: boolean
@@ -97,6 +98,8 @@ interface PlatformSummary {
     logFormat: string
     serviceName?: string
     otlpEndpoint?: string
+    bundleAvailable?: boolean
+    retention?: string
   }
   warnings?: string[]
 }
@@ -241,6 +244,7 @@ export function PlatformPanel() {
         <Metric label="Public" value={String(summary.services.public)} tone={summary.services.public > 0 ? 'warn' : 'ok'} />
         <Metric label="Dirty Deploys" value={String(dirtyDeployments.length)} tone={dirtyTone} />
         <Metric label="Secrets" value={`${summary.secrets.ok}/${summary.secrets.ok + summary.secrets.needsAttention}`} tone={secretTone} />
+        <Metric label="Secret Moves" value={String(summary.secrets.migrationItems || 0)} tone={(summary.secrets.migrationItems || 0) > 0 ? 'warn' : 'ok'} />
         <Metric label="Snapshots" value={String(snapshots.length)} tone={snapshotTone} />
         <Metric label="Access" value={String(summary.access.totalRecent)} />
       </div>
@@ -254,6 +258,8 @@ export function PlatformPanel() {
             <span>format</span><strong>{summary.observability.logFormat}</strong>
             <span>service</span><strong>{summary.observability.serviceName || '-'}</strong>
             <span>otlp</span><strong>{summary.observability.otlpEndpoint || '-'}</strong>
+            <span>bundle</span><strong>{summary.observability.bundleAvailable ? 'available' : '-'}</strong>
+            <span>retention</span><strong>{summary.observability.retention || '-'}</strong>
           </div>
         </section>
 

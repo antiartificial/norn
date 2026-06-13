@@ -241,6 +241,8 @@ func main() {
 		r.Post("/webhooks/deliveries/{id}/replay", h.ReplayWebhookDelivery)
 
 		r.Get("/stats", h.Stats)
+		r.Get("/observability/bundle", h.ObservabilityBundle)
+		r.Get("/observability/alerts.yml", h.PrometheusAlerts)
 		r.Get("/observability/prometheus.yml", h.PrometheusConfig)
 		r.Get("/services/manifest", h.ServiceManifest)
 		r.Get("/ops/platform", h.PlatformOps)
@@ -265,6 +267,7 @@ func main() {
 		r.Get("/validate", h.ValidateAll)
 		r.Get("/validate/{id}", h.ValidateApp)
 		r.Get("/secrets/status", h.SecretsStatusAll)
+		r.Get("/secrets/migration-plan", h.SecretsMigrationPlan)
 		r.Get("/saga", h.ListRecentSaga)
 		r.Get("/saga/{sagaId}", h.GetSagaEvents)
 		r.Get("/cloudflared/ingress", h.CloudflaredIngress)

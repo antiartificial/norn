@@ -79,13 +79,15 @@ func printOpsPlatform(summary *api.PlatformOpsSummary) {
 		len(summary.Operations.Active),
 		mapCounts(summary.Operations.ByStatus),
 	)
-	fmt.Printf("secrets:  ok=%d needs_attention=%d\n", summary.Secrets.OK, summary.Secrets.NeedsAttention)
+	fmt.Printf("secrets:  ok=%d needs_attention=%d migration_items=%d\n", summary.Secrets.OK, summary.Secrets.NeedsAttention, summary.Secrets.MigrationItems)
 	fmt.Printf("access:   recent=%d status=%s\n", summary.Access.TotalRecent, mapCounts(summary.Access.ByStatus))
-	fmt.Printf("otel:     enabled=%t logs=%t format=%s endpoint=%s\n\n",
+	fmt.Printf("otel:     enabled=%t logs=%t format=%s endpoint=%s bundle=%t retention=%s\n\n",
 		summary.Observability.Enabled,
 		summary.Observability.LogsEnabled,
 		summary.Observability.LogFormat,
 		emptyDash(summary.Observability.OTLPEndpoint),
+		summary.Observability.BundleAvailable,
+		emptyDash(summary.Observability.Retention),
 	)
 
 	if len(summary.Snapshots) > 0 {
