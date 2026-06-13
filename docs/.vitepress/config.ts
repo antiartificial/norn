@@ -41,6 +41,7 @@ export default withMermaid(
             items: [
               { text: 'Overview', link: '/v2/architecture/overview' },
               { text: 'Deploy Pipeline', link: '/v2/architecture/deploy-pipeline' },
+              { text: 'Platform Upgrades', link: '/v2/architecture/platform-upgrades' },
               { text: 'Nomad Translator', link: '/v2/architecture/nomad-translator' },
               { text: 'Saga Events', link: '/v2/architecture/saga-events' },
               { text: 'WebSocket', link: '/v2/architecture/websocket' },

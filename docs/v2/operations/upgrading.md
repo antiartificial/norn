@@ -4,22 +4,42 @@ Use this runbook when Norn itself is installed as the local LaunchAgent `com.nor
 
 The safe upgrade path restarts only the Norn API process. Do not use `make down` for a production-ish local upgrade because it also stops Nomad and Consul, which can disrupt hosted apps.
 
-## Safe Local Upgrade
+## First-Class Platform Lane
 
 ```bash
 cd /Users/0xadb/projects/norn
 
-stamp=$(date +%Y%m%dT%H%M%S)
-mkdir -p /Users/0xadb/go/bin/norn-backups/$stamp
-cp -p /Users/0xadb/go/bin/norn-api /Users/0xadb/go/bin/norn-backups/$stamp/
-cp -p /Users/0xadb/go/bin/norn /Users/0xadb/go/bin/norn-backups/$stamp/
+# Build into a versioned release directory and boot a candidate API on :18800.
+norn platform preflight HEAD
 
-cd v2/ui && pnpm build
-cd /Users/0xadb/projects/norn/v2 && make build
+# Promote the release, restart only com.norn.api, and rollback if postflight fails.
+norn platform upgrade HEAD
+```
 
+The platform lane builds from an isolated git worktree into `$HOME/norn/releases/<sha>`, writes a `$HOME/norn/current` symlink, installs compatibility binaries into `$HOME/go/bin`, and health-checks a candidate API with `NORN_SKIP_DEPLOYMENT_RECOVERY=true` so preflight does not mark running deployments failed.
+
+Use these environment variables when the repo or host layout differs:
+
+| Variable | Default | Description |
+|----------|---------|-------------|
+| `NORN_PLATFORM_REPO` | script repo | Norn checkout to build |
+| `NORN_RELEASES_DIR` | `$HOME/norn/releases` | Versioned release directory |
+| `NORN_CURRENT_LINK` | `$HOME/norn/current` | Current-release symlink |
+| `NORN_BIN_DIR` | `$HOME/go/bin` | Compatibility install directory |
+| `NORN_CANDIDATE_PORT` | `18800` | Alternate-port candidate API |
+| `NORN_SKIP_CANDIDATE_API` | `false` | Skip side-by-side candidate boot |
+
+## Manual Fallback
+
+The old direct-binary path still works when the platform lane itself is broken:
+
+```bash
+cd /Users/0xadb/projects/norn/v2
+cd ui && pnpm build
+cd ..
+make build
 install -m 0755 bin/norn-api /Users/0xadb/go/bin/norn-api
 install -m 0755 bin/norn /Users/0xadb/go/bin/norn
-
 launchctl kickstart -k gui/$(id -u)/com.norn.api
 ```
 
@@ -37,13 +57,15 @@ Open `http://127.0.0.1:8800` and check the Platform tab. The Platform tab should
 
 ## Rollback
 
-Use the backup path printed or recorded during the upgrade:
+`norn platform upgrade` rolls back automatically when postflight health fails and `$HOME/norn/current` pointed at a previous release.
+
+Manual rollback is a symlink flip plus compatibility binary install:
 
 ```bash
-backup=/Users/0xadb/go/bin/norn-backups/YYYYMMDDTHHMMSS
+backup=$HOME/norn/releases/<previous-sha>
 
-install -m 0755 "$backup/norn-api" /Users/0xadb/go/bin/norn-api
-install -m 0755 "$backup/norn" /Users/0xadb/go/bin/norn
+install -m 0755 "$backup/bin/norn-api" /Users/0xadb/go/bin/norn-api
+install -m 0755 "$backup/bin/norn" /Users/0xadb/go/bin/norn
 launchctl kickstart -k gui/$(id -u)/com.norn.api
 ```
 
@@ -54,3 +76,4 @@ Then rerun the smoke checks.
 - The root `Makefile` still targets the older non-v2 tree. Use `v2/Makefile` for v2 releases.
 - `NORN_UI_DIR` should point at `/Users/0xadb/projects/norn/v2/ui/dist` when the API serves the built dashboard.
 - Keep Nomad, Consul, Postgres, and app allocations running during a Norn API upgrade unless you are intentionally rebuilding the whole dev environment.
+- A candidate API is a preflight check, not the active control plane. Full no-blip cutover requires a local reverse proxy or launchd socket activation; see [Platform Upgrades](/v2/architecture/platform-upgrades).
