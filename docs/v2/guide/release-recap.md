@@ -28,9 +28,13 @@ This recap summarizes the current Norn v2 release line: the Nomad/Consul control
 | Observability | OTEL logs/traces, `/metrics`, generated Prometheus scrape config | Keeps local logs useful while enabling bounded local Prometheus/Grafana metrics |
 | Operations ledger | `norn operations`, `/api/operations`, operation metrics | Records app preflights, deploys, and rollbacks as compact durable rows for drain gates and operator summaries |
 | Durable operation queue | Postgres-backed operation claims, API worker, retries | Moves app deploy and preflight requests out of in-memory request goroutines and into a first-class worker lane |
+| Deploy checkpoints | `deployment_steps`, deploy/rollback stage markers | Records durable stage evidence and safely requeues interrupted deploys only before mutable stages |
 | Webhook inbox | `norn webhooks`, replay, preflight replay, webhook metrics | Makes webhook auto-deploy deliveries inspectable and replayable without scraping logs |
 | Platform release surface | Platform tab releases, `/api/platform/releases`, `norn platform releases`, rollback | Makes the installed Norn release history visible from API, CLI, and dashboard |
-| Nomad allocation watcher | Beacon events for failed, lost, and unhealthy allocations | Turns runtime allocation transitions into durable operational events |
+| Beacon event visibility | `norn events`, Platform tab Beacon table | Makes Norn-emitted operational events visible from terminal and dashboard |
+| Platform smoke | `norn smoke platform` | Checks health, operations drain, release marker, and recent critical/warning events after upgrades |
+| Nomad allocation and cron watcher | Beacon events for failed/lost/unhealthy allocations plus cron success/failure/hung runs | Turns runtime allocation and scheduled-work transitions into durable operational events |
+| Proxy cutover scaffold | `norn platform proxy-plan` | Prints a no-blip reverse-proxy plan for running stable ingress on one port and APIs on private ports |
 | Upgrade path | `norn platform preflight`, `upgrade`, `releases`, `rollback` | Upgrades Norn API, CLI, and built UI without stopping Nomad, Consul, Postgres, or hosted apps |
 
 ## Operator Impact
@@ -47,7 +51,7 @@ Metrics now follow the same local-first model: Norn exposes control-plane counte
 
 The operations ledger gives platform upgrades a real drain source. Deploys and preflights are now queued in control-plane Postgres and claimed by the API worker with leases, attempts, retry timing, and saga links. Platform upgrades can fail, wait, or force based on active rows. Webhook deliveries now get their own inbox, which makes ignored branches, signature failures, unmatched repositories, auto-deploy saga ids, replay, and preflight replay visible through the API and CLI.
 
-The first durable worker lane intentionally keeps deploy retries conservative. Read-only preflight jobs can retry safely. App deploy jobs are queued and survive before-claim restarts, but a process interruption during mutable deploy execution is marked failed rather than blindly replaying snapshot, migration, or submit stages. Stage-level resume markers are the next reliability step.
+The durable worker lane now records deploy and rollback stage checkpoints. Read-only preflight jobs can retry safely. App deploy jobs can requeue after an API restart only when no mutable stage has started; once snapshot, migration, submit, health, forge, or cleanup has started, interruption fails visibly for operator review instead of blindly replaying runtime mutation.
 
 ## Verification
 
@@ -64,9 +68,12 @@ The current release line has been exercised with:
 - `norn version`
 - `norn ops platform`
 - `norn operations`
+- `norn events`
+- `norn smoke platform`
 - `norn webhooks`
 - `norn webhooks replay <delivery-id> --preflight`
 - `norn platform releases`
+- `norn platform proxy-plan`
 - `norn services`
 - `norn status`
 - `norn smoke contextdb`

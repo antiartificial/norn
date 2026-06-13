@@ -30,7 +30,7 @@ func NewOperationWorker(db *store.DB, p *pipeline.Pipeline) *OperationWorker {
 		db:       db,
 		pipeline: p,
 		id:       fmt.Sprintf("%s:%d", host, os.Getpid()),
-		kinds:    []string{"app.preflight", "app.deploy"},
+		kinds:    []string{"app.preflight", "app.deploy", "app.rollback"},
 		lease:    45 * time.Minute,
 		poll:     2 * time.Second,
 	}

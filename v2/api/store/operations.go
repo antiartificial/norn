@@ -217,11 +217,25 @@ func (db *DB) RecoverInFlightOperations(ctx context.Context) error {
 		    next_attempt_at = now(),
 		    updated_at = now()
 		WHERE status = 'running'
-		  AND attempts < max_attempts;
+		  AND attempts < max_attempts
+		  AND (
+		    kind != 'app.deploy'
+		    OR NOT EXISTS (
+		      SELECT 1
+		      FROM deployment_steps ds
+		      WHERE ds.deployment_id = operations.payload->>'deploymentId'
+		        AND ds.step IN ('snapshot', 'migrate', 'submit', 'healthy', 'forge', 'cleanup')
+		        AND ds.status IN ('running', 'complete')
+		    )
+		  );
 
 		UPDATE operations
 		SET status = 'failed',
-		    message = CASE WHEN message = '' THEN 'operation interrupted by API restart' ELSE message END,
+		    message = CASE
+		      WHEN kind = 'app.deploy' THEN 'deploy interrupted after mutable stage; manual review required before retry'
+		      WHEN message = '' THEN 'operation interrupted by API restart'
+		      ELSE message
+		    END,
 		    locked_by = '',
 		    locked_until = NULL,
 		    updated_at = now(),

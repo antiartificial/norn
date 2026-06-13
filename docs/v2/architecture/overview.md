@@ -109,6 +109,7 @@ v2/ui/
 | GET | `/api/stats` | Deployment and cluster statistics |
 | GET | `/api/apps` | List all discovered apps |
 | GET | `/api/deployments` | List recent deployments |
+| GET | `/api/deployments/{id}/steps` | List deployment stage checkpoints |
 | GET | `/api/operations` | List recent operation queue rows |
 | GET | `/api/operations/active` | List queued/running operations for drains |
 | GET | `/api/validate` | Validate all infraspecs |

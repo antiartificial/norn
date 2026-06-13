@@ -23,16 +23,19 @@ var (
 	smokeContextDBWebURL                 string
 	smokeContextDBWorkerURL              string
 	smokeContextDBLowConfidenceThreshold string
+	smokePlatformEventLimit              int
 )
 
 func init() {
 	rootCmd.AddCommand(smokeCmd)
 	smokeCmd.AddCommand(smokeContextDBCmd)
+	smokeCmd.AddCommand(smokePlatformCmd)
 	smokeContextDBCmd.Flags().StringVar(&smokeContextDBNamespace, "namespace", "", "ContextDB namespace for the smoke claim")
 	smokeContextDBCmd.Flags().StringVar(&smokeContextDBMode, "mode", "agent_memory", "ContextDB mode for write/retrieve/review checks")
 	smokeContextDBCmd.Flags().StringVar(&smokeContextDBWebURL, "web-url", "", "Override ContextDB web URL")
 	smokeContextDBCmd.Flags().StringVar(&smokeContextDBWorkerURL, "worker-url", "", "Override ContextDB review worker health URL")
 	smokeContextDBCmd.Flags().StringVar(&smokeContextDBLowConfidenceThreshold, "low-confidence-threshold", "0.35", "Review queue low-confidence threshold")
+	smokePlatformCmd.Flags().IntVar(&smokePlatformEventLimit, "events", 10, "Recent critical/warning events to inspect")
 }
 
 var smokeCmd = &cobra.Command{
@@ -56,6 +59,75 @@ var smokeContextDBCmd = &cobra.Command{
 		}
 		return runContextDBSmoke(cfg)
 	},
+}
+
+var smokePlatformCmd = &cobra.Command{
+	Use:   "platform",
+	Short: "Exercise Norn platform health, queue, release, and event surfaces",
+	RunE: func(cmd *cobra.Command, args []string) error {
+		return runPlatformSmoke()
+	},
+}
+
+func runPlatformSmoke() error {
+	fmt.Println(style.Title.Render("platform smoke"))
+
+	health, err := client.Health()
+	if err != nil {
+		return fmt.Errorf("health: %w", err)
+	}
+	if health.Status != "ok" {
+		return fmt.Errorf("health status is %q", health.Status)
+	}
+	printSmokeStep("health")
+
+	summary, err := client.PlatformOps()
+	if err != nil {
+		return fmt.Errorf("platform ops: %w", err)
+	}
+	if len(summary.Operations.Active) > 0 {
+		return fmt.Errorf("%d active operation(s)", len(summary.Operations.Active))
+	}
+	printSmokeStep("operation drain")
+
+	releases, err := client.PlatformReleases()
+	if err != nil {
+		return fmt.Errorf("platform releases: %w", err)
+	}
+	if len(releases.Releases) == 0 {
+		return fmt.Errorf("no platform releases found")
+	}
+	hasCurrent := false
+	for _, release := range releases.Releases {
+		if release.Current {
+			hasCurrent = true
+			break
+		}
+	}
+	if !hasCurrent {
+		return fmt.Errorf("no current platform release marker")
+	}
+	printSmokeStep("platform releases")
+
+	critical, _, err := client.ListEvents("", "", "critical", smokePlatformEventLimit)
+	if err != nil {
+		return fmt.Errorf("critical events: %w", err)
+	}
+	warnings, _, err := client.ListEvents("", "", "warning", smokePlatformEventLimit)
+	if err != nil {
+		return fmt.Errorf("warning events: %w", err)
+	}
+	fmt.Printf("services=%d activeOps=%d releases=%d critical=%d warning=%d\n",
+		summary.Services.Total,
+		len(summary.Operations.Active),
+		len(releases.Releases),
+		len(critical),
+		len(warnings),
+	)
+	printSmokeStep("events")
+	fmt.Println()
+	fmt.Println("ok platform")
+	return nil
 }
 
 type contextDBSmokeConfig struct {

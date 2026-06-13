@@ -16,6 +16,8 @@ norn platform preflight HEAD
 norn platform upgrade HEAD
 norn platform releases
 norn platform rollback <sha-prefix>
+norn platform proxy-plan
+norn smoke platform
 ```
 
 The platform lane builds from an isolated git worktree into `$HOME/norn/releases/<sha>`, writes a `$HOME/norn/current` symlink, installs compatibility binaries into `$HOME/go/bin`, and health-checks a candidate API with recovery and operation workers disabled so preflight does not mark running work failed or claim queued jobs.
@@ -61,6 +63,14 @@ Open `http://127.0.0.1:8800` and check the Platform tab. The Platform tab should
 
 The Platform tab also lists installed platform releases and can start a rollback through the same `platform-upgrade` script used by the CLI.
 
+When an authenticated API token is available, run:
+
+```bash
+norn smoke platform
+```
+
+This checks health, operation drain, current release metadata, and recent warning/critical Beacon events.
+
 ## Rollback
 
 `norn platform upgrade` rolls back automatically when postflight health fails and `$HOME/norn/current` pointed at a previous release.
@@ -90,4 +100,5 @@ Then rerun the smoke checks.
 - `NORN_UI_DIR` should point at `/Users/0xadb/projects/norn/v2/ui/dist` when the API serves the built dashboard.
 - Keep Nomad, Consul, Postgres, and app allocations running during a Norn API upgrade unless you are intentionally rebuilding the whole dev environment.
 - A candidate API is a preflight check, not the active control plane. Full no-blip cutover requires a local reverse proxy or launchd socket activation; see [Platform Upgrades](/v2/architecture/platform-upgrades).
-- App deploys and preflights are queued in control-plane Postgres. The drain gate checks those active rows before platform upgrades; read-only preflights can retry, while interrupted mutable deploy stages fail visibly rather than being replayed blindly.
+- App deploys, preflights, and rollbacks are queued in control-plane Postgres. The drain gate checks those active rows before platform upgrades; read-only preflights can retry, while interrupted mutable deploy stages fail visibly rather than being replayed blindly.
+- `norn platform proxy-plan` prints the no-blip proxy design but does not install or reload a proxy.

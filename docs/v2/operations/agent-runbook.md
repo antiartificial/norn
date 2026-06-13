@@ -13,18 +13,20 @@ Useful surfaces:
 | Hosted services and reachability | `GET /api/services/manifest`, `norn services manifest` |
 | Platform rollup | `GET /api/ops/platform`, `norn ops platform` |
 | Active queue/drain state | `GET /api/operations/active`, `norn operations --active` |
+| Stage checkpoints | `GET /api/deployments/{id}/steps` |
 | App specs and runtime status | `GET /api/apps`, `GET /api/apps/{id}`, local `infraspec.yaml` |
 | Validation and rehearsal | `GET /api/validate`, `POST /api/apps/{id}/preflight`, `norn preflight <app> [ref]` |
 | Deploy progress | `POST /api/apps/{id}/deploy`, `GET /api/saga/{sagaId}`, `norn saga <saga-id>` |
 | Webhook delivery triage | `GET /api/webhooks/deliveries`, `norn webhooks` |
 | Platform release history | `GET /api/platform/releases`, `norn platform releases` |
-| Control-plane health | `/api/health`, `/api/version`, `/metrics` |
+| Operational events | `GET /api/events`, `norn events` |
+| Control-plane health | `/api/health`, `/api/version`, `/metrics`, `norn smoke platform` |
 
 If a protected endpoint returns `401`, do not assume the platform is unhealthy. Verify auth context separately and fall back to public health/version endpoints, local DB checks, process manager state, or an authenticated shell when available.
 
 ## Durable Operations
 
-App deploys and app preflights are queued in control-plane Postgres and claimed by the API worker. Operation rows include status, kind, app, ref, saga id, payload, attempts, max attempts, lock owner, lock expiry, next attempt, and last error.
+App deploys, app preflights, and app rollbacks are queued in control-plane Postgres and claimed by the API worker. Operation rows include status, kind, app, ref, saga id, payload, attempts, max attempts, lock owner, lock expiry, next attempt, and last error.
 
 Use active operations as the drain source before invasive work:
 
@@ -36,6 +38,8 @@ Semantics:
 
 - `app.preflight` is read-only and can retry safely.
 - `app.deploy` is queued and drain-visible.
+- Deploy and rollback stages are recorded in `deployment_steps`.
+- Interrupted deploys can be requeued automatically only before mutable stages begin.
 - Interrupted mutable deploy stages should be treated as failed unless there is explicit stage-level resume evidence.
 - Saga events remain the detailed timeline. Operation rows are the compact queue and drain index.
 
@@ -76,9 +80,14 @@ norn platform preflight HEAD
 norn platform upgrade HEAD
 norn platform releases
 norn platform rollback <sha-prefix>
+norn platform proxy-plan
 ```
 
 The platform lane builds an isolated release, boots a candidate API on an alternate port, checks health/version, promotes the release symlink, restarts only the Norn API process, and runs postflight health.
+
+`norn smoke platform` is the preferred post-upgrade smoke command when authenticated API access is available. It checks health, operation drain, current release marker, and recent warning/critical Beacon events.
+
+`norn platform proxy-plan` prints a no-blip reverse-proxy cutover plan. It does not install or mutate the proxy.
 
 Candidate APIs must not claim live queue work. The platform script runs candidates with operation recovery and operation workers disabled.
 
@@ -92,7 +101,7 @@ Before `upgrade` or `rollback`, check active operations when auth is available. 
 
 ## Runtime Watchers
 
-The API starts a Nomad allocation watcher when Nomad and Beacon are available. It emits Beacon events when allocations transition to failed, lost, or unhealthy. Cron-specific success, hung, and missed-run detection require additional watcher logic.
+The API starts a Nomad allocation watcher when Nomad and Beacon are available. It emits Beacon events when allocations transition to failed, lost, or unhealthy. It also inspects periodic child jobs for scheduled processes and emits cron success, failure, lost, and hung events. Missed-run detection requires additional schedule-aware logic.
 
 ## Safe Repo Guidance
 
@@ -102,4 +111,3 @@ Keep this runbook portable:
 - Use environment variables such as `NORN_API`, `NORN_TOKEN`, `NORN_API_TOKEN`, and `NORN_DRAIN_MODE`.
 - Do not include private host aliases, personal usernames, local tunnel hostnames, bearer tokens, or machine-only paths.
 - Put machine-specific shortcuts in local agent skills or private operator notes.
-

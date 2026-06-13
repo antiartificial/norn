@@ -71,6 +71,23 @@ func Migrate(db *DB) error {
 		ALTER TABLE deployments ADD COLUMN IF NOT EXISTS source_dirty BOOLEAN NOT NULL DEFAULT false;
 		ALTER TABLE deployments ADD COLUMN IF NOT EXISTS source_changes JSONB NOT NULL DEFAULT '[]';
 
+		CREATE TABLE IF NOT EXISTS deployment_steps (
+			deployment_id TEXT NOT NULL,
+			app           TEXT NOT NULL DEFAULT '',
+			saga_id       TEXT NOT NULL DEFAULT '',
+			step          TEXT NOT NULL,
+			status        TEXT NOT NULL DEFAULT 'running',
+			attempt       INT NOT NULL DEFAULT 0,
+			started_at    TIMESTAMPTZ NOT NULL DEFAULT now(),
+			finished_at   TIMESTAMPTZ,
+			duration_ms   BIGINT NOT NULL DEFAULT 0,
+			message       TEXT NOT NULL DEFAULT '',
+			metadata      JSONB NOT NULL DEFAULT '{}',
+			PRIMARY KEY (deployment_id, step)
+		);
+		CREATE INDEX IF NOT EXISTS idx_deployment_steps_saga ON deployment_steps(saga_id, started_at);
+		CREATE INDEX IF NOT EXISTS idx_deployment_steps_app ON deployment_steps(app, started_at DESC);
+
 		CREATE TABLE IF NOT EXISTS cron_states (
 			app        TEXT NOT NULL,
 			process    TEXT NOT NULL,
