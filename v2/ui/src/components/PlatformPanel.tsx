@@ -119,8 +119,16 @@ interface BeaconEventList {
     app?: string
     type: string
     severity: string
+    state?: string
     title: string
+    body?: string
+    dedupeKey?: string
     occurredAt: string
+    acknowledgedAt?: string
+    acknowledgedBy?: string
+    acknowledgementNote?: string
+    snoozedUntil?: string
+    metadata?: Record<string, unknown>
   }>
 }
 
@@ -129,6 +137,9 @@ export function PlatformPanel() {
   const [releases, setReleases] = useState<PlatformReleaseList | null>(null)
   const [beaconEvents, setBeaconEvents] = useState<BeaconEventList | null>(null)
   const [busyRelease, setBusyRelease] = useState<string | null>(null)
+  const [busyEvent, setBusyEvent] = useState<string | null>(null)
+  const [selectedEvent, setSelectedEvent] = useState<string | null>(null)
+  const [reloadNonce, setReloadNonce] = useState(0)
   const [error, setError] = useState<string | null>(null)
 
   useEffect(() => {
@@ -162,7 +173,7 @@ export function PlatformPanel() {
       cancelled = true
       clearInterval(interval)
     }
-  }, [])
+  }, [reloadNonce])
 
   if (error) return <div className="error-banner"><strong>Platform error</strong>{error}</div>
   if (!summary) return <div className="ops-panel"><div className="ops-empty">Loading platform operations...</div></div>
@@ -191,6 +202,24 @@ export function PlatformPanel() {
       setError(String(err))
     } finally {
       setBusyRelease(null)
+    }
+  }
+
+  async function eventAction(id: string, action: 'ack' | 'snooze' | 'open') {
+    setBusyEvent(id)
+    try {
+      const body = action === 'snooze' ? { duration: '1h', note: 'snoozed from platform panel' } : {}
+      const res = await fetch(apiUrl(`/api/events/${encodeURIComponent(id)}/${action}`), {
+        ...fetchOpts,
+        method: 'POST',
+        body: JSON.stringify(body),
+      })
+      if (!res.ok) throw new Error(await res.text())
+      setReloadNonce((value) => value + 1)
+    } catch (err) {
+      setError(String(err))
+    } finally {
+      setBusyEvent(null)
     }
   }
 
@@ -313,11 +342,31 @@ export function PlatformPanel() {
         {recentBeaconEvents.length > 0 ? (
           <div className="ops-table">
             <div className="ops-row ops-row-head ops-row-events">
-              <span>Time</span><span>Severity</span><span>Type</span><span>App</span><span>Title</span>
+              <span>Time</span><span>Severity</span><span>State</span><span>Type</span><span>App</span><span>Title</span><span>Action</span>
             </div>
             {recentBeaconEvents.map((event) => (
-              <div className="ops-row ops-row-events" key={event.id}>
-                <span>{formatTime(event.occurredAt)}</span><span>{event.severity}</span><span>{event.type}</span><span>{event.app || '-'}</span><span>{event.title}</span>
+              <div key={event.id}>
+                <div className="ops-row ops-row-events">
+                  <span>{formatTime(event.occurredAt)}</span><span>{event.severity}</span><span>{event.state || 'open'}</span><span>{event.type}</span><span>{event.app || '-'}</span><button className="ops-link" onClick={() => setSelectedEvent(selectedEvent === event.id ? null : event.id)}>{event.title}</button><span className="ops-actions">
+                    {(event.state || 'open') === 'acknowledged' ? (
+                      <button className="btn btn-small" disabled={busyEvent === event.id} onClick={() => eventAction(event.id, 'open')}>open</button>
+                    ) : (
+                      <button className="btn btn-small" disabled={busyEvent === event.id} onClick={() => eventAction(event.id, 'ack')}>ack</button>
+                    )}
+                    {(event.state || 'open') !== 'snoozed' && <button className="btn btn-small" disabled={busyEvent === event.id} onClick={() => eventAction(event.id, 'snooze')}>snooze</button>}
+                  </span>
+                </div>
+                {selectedEvent === event.id && (
+                  <div className="ops-event-detail">
+                    <div><span>ID</span><strong>{event.id}</strong></div>
+                    <div><span>Dedupe</span><strong>{event.dedupeKey || '-'}</strong></div>
+                    <div><span>Ack</span><strong>{event.acknowledgedAt ? `${formatTime(event.acknowledgedAt)} ${event.acknowledgedBy || ''}` : '-'}</strong></div>
+                    <div><span>Snoozed</span><strong>{event.snoozedUntil ? formatTime(event.snoozedUntil) : '-'}</strong></div>
+                    {event.body && <p>{event.body}</p>}
+                    {event.acknowledgementNote && <p>{event.acknowledgementNote}</p>}
+                    {event.metadata && <p>{formatMetadata(event.metadata)}</p>}
+                  </div>
+                )}
               </div>
             ))}
           </div>
@@ -374,4 +423,9 @@ function short(value?: string) {
 function joinCounts(values: Record<string, number>) {
   const parts = Object.entries(values).map(([key, value]) => `${key} ${value}`)
   return parts.length > 0 ? parts.join(', ') : '-'
+}
+
+function formatMetadata(values: Record<string, unknown>) {
+  const parts = Object.entries(values).map(([key, value]) => `${key}: ${String(value)}`)
+  return parts.length > 0 ? parts.join(' · ') : '-'
 }

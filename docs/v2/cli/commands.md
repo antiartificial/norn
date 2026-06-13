@@ -31,6 +31,7 @@ Deploy an app at a specific git ref with live pipeline progress.
 
 ```bash
 norn deploy <app> [ref]
+norn deploy steps <deployment-id>
 ```
 
 | Argument | Default | Description |
@@ -39,6 +40,8 @@ norn deploy <app> [ref]
 | `ref` | `HEAD` | Git ref (commit SHA, branch, tag) |
 
 Connects to the WebSocket and renders a real-time progress display showing each pipeline step. The saga ID is printed on completion for later inspection.
+
+`norn deploy steps <deployment-id>` shows durable deploy or rollback checkpoints from `deployment_steps`.
 
 ## preflight
 
@@ -67,7 +70,12 @@ norn platform preflight [ref]
 norn platform upgrade [ref]
 norn platform releases
 norn platform rollback <sha-prefix>
+norn platform smoke
+norn platform env -- <command> [args...]
 norn platform proxy-plan
+norn platform proxy-status
+norn platform proxy-render
+norn platform proxy-switch <port|host:port>
 ```
 
 `norn platform preflight` builds Norn from an isolated git worktree into `$HOME/norn/releases/<sha>`, starts the candidate API on `127.0.0.1:18800`, and verifies health/version without restarting the active API.
@@ -76,7 +84,11 @@ norn platform proxy-plan
 
 `norn platform releases` lists local release directories. `norn platform rollback <sha-prefix>` promotes a previous local release and runs the same postflight health check.
 
-`norn platform proxy-plan` prints a no-blip reverse-proxy cutover plan. It does not install or mutate proxy state.
+`norn platform smoke` runs `norn smoke platform` with the API runtime environment loaded from the encrypted SOPS JSON env file.
+
+`norn platform env -- <command>` runs an arbitrary command with that same API runtime environment loaded without printing secret values.
+
+`norn platform proxy-plan` prints a no-blip reverse-proxy cutover plan. `proxy-status`, `proxy-render`, and `proxy-switch` manage an optional local Caddy config and upstream state file. They do not change the live topology unless explicitly invoked.
 
 | Flag | Default | Description |
 |------|---------|-------------|
@@ -107,6 +119,10 @@ Show recent Norn Beacon events.
 norn events
 norn events --severity critical
 norn events --app contextdb --limit 10
+norn events show <event-id>
+norn events ack <event-id> --note "investigating"
+norn events snooze <event-id> --for 2h
+norn events open <event-id>
 ```
 
 | Flag | Default | Description |
@@ -115,6 +131,18 @@ norn events --app contextdb --limit 10
 | `--type` | — | Filter events by type |
 | `--severity` | — | Filter events by severity |
 | `--limit` | `25` | Maximum events to show |
+
+Events include `open`, `snoozed`, or `acknowledged` state. Detail output prints related metadata such as saga, deployment, operation, process, service, or job ids when Norn recorded them.
+
+## alerts
+
+Show built-in alert rules derived from Beacon event types.
+
+```bash
+norn alerts
+```
+
+The rule catalogue is intentionally declarative. It gives CLI, UI, and downstream sinks a shared contract for deploy failure, service down/degraded, cron failure, and recovery events.
 
 ## smoke
 
@@ -126,6 +154,8 @@ norn smoke contextdb
 ```
 
 `norn smoke platform` checks API health, platform rollup, active operation drain, current release marker, and recent warning/critical Beacon events. It requires authenticated API access when the platform is protected.
+
+Use `norn platform smoke` on hosts where the API token lives in the encrypted runtime env rather than the interactive shell.
 
 ## webhooks
 

@@ -6,6 +6,9 @@ import (
 	"strconv"
 	"time"
 
+	"github.com/go-chi/chi/v5"
+	"github.com/jackc/pgx/v5"
+
 	"norn/v2/api/model"
 	"norn/v2/api/store"
 )
@@ -30,6 +33,95 @@ func (h *Handler) ListEvents(w http.ResponseWriter, r *http.Request) {
 		"events": events,
 		"total":  total,
 	})
+}
+
+func (h *Handler) GetEvent(w http.ResponseWriter, r *http.Request) {
+	event, err := h.db.GetBeaconEvent(r.Context(), chi.URLParam(r, "id"))
+	if err != nil {
+		if err == pgx.ErrNoRows {
+			writeError(w, http.StatusNotFound, "event not found")
+			return
+		}
+		writeError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	writeJSON(w, event)
+}
+
+func (h *Handler) AcknowledgeEvent(w http.ResponseWriter, r *http.Request) {
+	var body struct {
+		By   string `json:"by"`
+		Note string `json:"note"`
+	}
+	_ = json.NewDecoder(r.Body).Decode(&body)
+	if body.By == "" {
+		body.By = "operator"
+	}
+	event, err := h.db.AcknowledgeBeaconEvent(r.Context(), chi.URLParam(r, "id"), body.By, body.Note)
+	if err != nil {
+		if err == pgx.ErrNoRows {
+			writeError(w, http.StatusNotFound, "event not found")
+			return
+		}
+		writeError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	writeJSON(w, event)
+}
+
+func (h *Handler) SnoozeEvent(w http.ResponseWriter, r *http.Request) {
+	var body struct {
+		By       string `json:"by"`
+		Note     string `json:"note"`
+		Until    string `json:"until"`
+		Duration string `json:"duration"`
+	}
+	_ = json.NewDecoder(r.Body).Decode(&body)
+	if body.By == "" {
+		body.By = "operator"
+	}
+	until := time.Time{}
+	if body.Until != "" {
+		parsed, err := time.Parse(time.RFC3339, body.Until)
+		if err != nil {
+			writeError(w, http.StatusBadRequest, "until must be RFC3339")
+			return
+		}
+		until = parsed
+	} else {
+		if body.Duration == "" {
+			body.Duration = "1h"
+		}
+		duration, err := time.ParseDuration(body.Duration)
+		if err != nil || duration <= 0 {
+			writeError(w, http.StatusBadRequest, "duration must be a positive Go duration such as 1h or 30m")
+			return
+		}
+		until = time.Now().UTC().Add(duration)
+	}
+	event, err := h.db.SnoozeBeaconEvent(r.Context(), chi.URLParam(r, "id"), body.By, body.Note, until)
+	if err != nil {
+		if err == pgx.ErrNoRows {
+			writeError(w, http.StatusNotFound, "event not found")
+			return
+		}
+		writeError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	writeJSON(w, event)
+}
+
+func (h *Handler) OpenEvent(w http.ResponseWriter, r *http.Request) {
+	event, err := h.db.OpenBeaconEvent(r.Context(), chi.URLParam(r, "id"))
+	if err != nil {
+		if err == pgx.ErrNoRows {
+			writeError(w, http.StatusNotFound, "event not found")
+			return
+		}
+		writeError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	writeJSON(w, event)
 }
 
 func (h *Handler) CreateEvent(w http.ResponseWriter, r *http.Request) {

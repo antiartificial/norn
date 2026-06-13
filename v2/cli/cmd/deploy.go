@@ -2,6 +2,8 @@ package cmd
 
 import (
 	"fmt"
+	"os"
+	"text/tabwriter"
 
 	"github.com/spf13/cobra"
 
@@ -10,6 +12,7 @@ import (
 
 func init() {
 	rootCmd.AddCommand(deployCmd)
+	deployCmd.AddCommand(deployStepsCmd)
 }
 
 var deployCmd = &cobra.Command{
@@ -34,5 +37,41 @@ var deployCmd = &cobra.Command{
 		fmt.Printf("  saga: %s\n\n", style.DimText.Render(sagaID))
 
 		return streamSagaEvents(sagaID)
+	},
+}
+
+var deployStepsCmd = &cobra.Command{
+	Use:   "steps <deployment-id>",
+	Short: "Show recorded deploy or rollback stage checkpoints",
+	Args:  cobra.ExactArgs(1),
+	RunE: func(cmd *cobra.Command, args []string) error {
+		steps, err := client.DeploymentSteps(args[0])
+		if err != nil {
+			return err
+		}
+		fmt.Println(style.Title.Render("deployment steps"))
+		if len(steps) == 0 {
+			fmt.Println(style.DimText.Render("  no steps recorded"))
+			return nil
+		}
+		w := tabwriter.NewWriter(os.Stdout, 0, 0, 2, ' ', 0)
+		fmt.Fprintln(w, style.TableHeader.Render("STEP")+"\t"+
+			style.TableHeader.Render("STATUS")+"\t"+
+			style.TableHeader.Render("ATTEMPT")+"\t"+
+			style.TableHeader.Render("STARTED")+"\t"+
+			style.TableHeader.Render("MS")+"\t"+
+			style.TableHeader.Render("MESSAGE"))
+		for _, step := range steps {
+			fmt.Fprintf(w, "%s\t%s\t%d\t%s\t%d\t%s\n",
+				step.Step,
+				step.Status,
+				step.Attempt,
+				localTime(step.StartedAt),
+				step.DurationMs,
+				emptyDash(step.Message),
+			)
+		}
+		w.Flush()
+		return nil
 	},
 }

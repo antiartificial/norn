@@ -8,7 +8,12 @@ Usage:
   platform-upgrade upgrade [ref]
   platform-upgrade releases
   platform-upgrade rollback <sha-prefix>
+  platform-upgrade smoke
+  platform-upgrade env-exec -- <command> [args...]
   platform-upgrade proxy-plan
+  platform-upgrade proxy-status
+  platform-upgrade proxy-render
+  platform-upgrade proxy-switch <port>
 
 Builds Norn into a versioned release directory. Preflight starts the candidate
 API on an alternate local port and verifies health/version without touching the
@@ -30,6 +35,10 @@ Environment:
   NORN_PROXY_LISTEN        Stable proxy listen address. Defaults to :8800.
   NORN_PROXY_ACTIVE_PORT   Active API private port. Defaults to 18801.
   NORN_PROXY_CANDIDATE_PORT Candidate API private port. Defaults to 18802.
+  NORN_PROXY_DIR           Proxy state dir. Defaults to $HOME/norn/proxy.
+  NORN_PROXY_CADDYFILE     Managed Caddyfile path.
+  NORN_PROXY_RELOAD        Set true to reload caddy after proxy-switch.
+  NORN_API_ENV_FILE        SOPS JSON env file for smoke/env-exec.
 USAGE
 }
 
@@ -54,7 +63,7 @@ fi
 shift || true
 
 case "$mode" in
-  preflight|upgrade|releases|rollback|proxy-plan) ;;
+  preflight|upgrade|releases|rollback|smoke|env-exec|proxy-plan|proxy-status|proxy-render|proxy-switch) ;;
   *) usage >&2; exit 2 ;;
 esac
 
@@ -74,6 +83,135 @@ skip_candidate="${NORN_SKIP_CANDIDATE_API:-false}"
 proxy_listen="${NORN_PROXY_LISTEN:-:8800}"
 proxy_active_port="${NORN_PROXY_ACTIVE_PORT:-18801}"
 proxy_candidate_port="${NORN_PROXY_CANDIDATE_PORT:-18802}"
+proxy_dir="${NORN_PROXY_DIR:-$HOME/norn/proxy}"
+proxy_upstream_file="${NORN_PROXY_UPSTREAM_FILE:-$proxy_dir/upstream}"
+proxy_caddyfile="${NORN_PROXY_CADDYFILE:-$proxy_dir/Caddyfile}"
+proxy_reload="${NORN_PROXY_RELOAD:-false}"
+api_env_file="${NORN_API_ENV_FILE:-$HOME/.config/norn/api.env.enc.json}"
+sops_bin="${NORN_SOPS_BIN:-sops}"
+
+run_with_api_env() {
+  require_cmd python3
+  require_cmd "$sops_bin"
+  [[ -f "$api_env_file" ]] || fail "API env file not found: $api_env_file"
+  if [[ "${1:-}" == "--" ]]; then
+    shift
+  fi
+  [[ "$#" -gt 0 ]] || fail "env-exec requires a command"
+  python3 - "$api_env_file" "$sops_bin" "$@" <<'PY'
+import json
+import os
+import subprocess
+import sys
+
+env_file = sys.argv[1]
+sops_bin = sys.argv[2]
+argv = sys.argv[3:]
+raw = subprocess.check_output([sops_bin, "--decrypt", "--output-type", "json", os.path.expanduser(env_file)])
+env = os.environ.copy()
+env.update({str(k): str(v) for k, v in json.loads(raw).items()})
+if "NORN_TOKEN" not in env and "NORN_API_BEARER_TOKEN" in env:
+    env["NORN_TOKEN"] = env["NORN_API_BEARER_TOKEN"]
+if "NORN_API_TOKEN" not in env and "NORN_API_BEARER_TOKEN" in env:
+    env["NORN_API_TOKEN"] = env["NORN_API_BEARER_TOKEN"]
+os.execvpe(argv[0], argv, env)
+PY
+}
+
+current_proxy_upstream() {
+  if [[ -f "$proxy_upstream_file" ]]; then
+    head -1 "$proxy_upstream_file"
+    return
+  fi
+  printf '127.0.0.1:%s\n' "$proxy_active_port"
+}
+
+render_proxy_config() {
+  local upstream
+  upstream="$(current_proxy_upstream)"
+  cat <<EOF
+${proxy_listen} {
+  reverse_proxy ${upstream}
+}
+EOF
+}
+
+write_proxy_config() {
+  mkdir -p "$proxy_dir"
+  render_proxy_config > "$proxy_caddyfile"
+}
+
+if [[ "$mode" == "smoke" ]]; then
+  run_with_api_env norn smoke platform
+  exit 0
+fi
+
+if [[ "$mode" == "env-exec" ]]; then
+  run_with_api_env "$@"
+  exit 0
+fi
+
+if [[ "$mode" == "proxy-plan" ]]; then
+  cat <<EOF
+# Norn no-blip proxy plan
+#
+# Goal:
+#   Keep a stable listener at ${proxy_listen}; run API releases on private ports;
+#   prewarm candidate releases, then switch the proxy upstream.
+#
+# Managed proxy files:
+#   State:  ${proxy_upstream_file}
+#   Config: ${proxy_caddyfile}
+#
+# Example Caddy config:
+$(render_proxy_config)
+
+# Candidate preflight should run with:
+NORN_BIND_ADDR=127.0.0.1
+NORN_PORT=${proxy_candidate_port}
+NORN_SKIP_DEPLOYMENT_RECOVERY=true
+NORN_SKIP_OPERATION_RECOVERY=true
+NORN_SKIP_OPERATION_WORKER=true
+
+# Cutover steps:
+#   1. Start current API on ${proxy_active_port} and proxy ${proxy_listen} to it.
+#   2. Build candidate release and boot it on ${proxy_candidate_port}.
+#   3. Check http://127.0.0.1:${proxy_candidate_port}/api/health and /api/version.
+#   4. Check active operations or wait for drain.
+#   5. Run: norn platform proxy-switch ${proxy_candidate_port}
+#   6. Stop the old API after in-flight requests drain.
+EOF
+  exit 0
+fi
+
+if [[ "$mode" == "proxy-status" ]]; then
+  printf 'LISTEN\tUPSTREAM\tCADDYFILE\tRELOAD\n'
+  printf '%s\t%s\t%s\t%s\n' "$proxy_listen" "$(current_proxy_upstream)" "$proxy_caddyfile" "$proxy_reload"
+  exit 0
+fi
+
+if [[ "$mode" == "proxy-render" ]]; then
+  render_proxy_config
+  exit 0
+fi
+
+if [[ "$mode" == "proxy-switch" ]]; then
+  target="${1:-}"
+  [[ -n "$target" ]] || fail "proxy-switch requires a target port or host:port"
+  if [[ "$target" =~ ^[0-9]+$ ]]; then
+    target="127.0.0.1:$target"
+  fi
+  mkdir -p "$proxy_dir"
+  printf '%s\n' "$target" > "$proxy_upstream_file"
+  write_proxy_config
+  log "proxy upstream set to $target"
+  log "wrote $proxy_caddyfile"
+  if [[ "$proxy_reload" == "true" ]]; then
+    require_cmd caddy
+    caddy reload --config "$proxy_caddyfile"
+  fi
+  exit 0
+fi
 
 require_cmd git
 require_cmd go
@@ -186,37 +324,6 @@ resolve_release() {
 
 if [[ "$mode" == "releases" ]]; then
   list_releases
-  exit 0
-fi
-
-if [[ "$mode" == "proxy-plan" ]]; then
-  cat <<EOF
-# Norn no-blip proxy plan
-#
-# Goal:
-#   Keep a stable listener at ${proxy_listen}; run API releases on private ports;
-#   prewarm candidate releases, then switch the proxy upstream.
-#
-# Example Caddy config:
-${proxy_listen} {
-  reverse_proxy 127.0.0.1:${proxy_active_port}
-}
-
-# Candidate preflight should run with:
-NORN_BIND_ADDR=127.0.0.1
-NORN_PORT=${proxy_candidate_port}
-NORN_SKIP_DEPLOYMENT_RECOVERY=true
-NORN_SKIP_OPERATION_RECOVERY=true
-NORN_SKIP_OPERATION_WORKER=true
-
-# Cutover steps:
-#   1. Start current API on ${proxy_active_port} and proxy ${proxy_listen} to it.
-#   2. Build candidate release and boot it on ${proxy_candidate_port}.
-#   3. Check http://127.0.0.1:${proxy_candidate_port}/api/health and /api/version.
-#   4. Check active operations or wait for drain.
-#   5. Change proxy upstream to 127.0.0.1:${proxy_candidate_port} and reload proxy.
-#   6. Stop the old API after in-flight requests drain.
-EOF
   exit 0
 fi
 

@@ -120,12 +120,21 @@ func Migrate(db *DB) error {
 			body        TEXT NOT NULL DEFAULT '',
 			dedupe_key  TEXT NOT NULL DEFAULT '',
 			occurred_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+			acknowledged_at TIMESTAMPTZ,
+			acknowledged_by TEXT NOT NULL DEFAULT '',
+			acknowledgement_note TEXT NOT NULL DEFAULT '',
+			snoozed_until TIMESTAMPTZ,
 			metadata    JSONB NOT NULL DEFAULT '{}'
 		);
 		CREATE INDEX IF NOT EXISTS idx_beacon_events_time ON beacon_events(occurred_at DESC);
 		CREATE INDEX IF NOT EXISTS idx_beacon_events_app ON beacon_events(app, occurred_at DESC);
 		CREATE INDEX IF NOT EXISTS idx_beacon_events_type ON beacon_events(type, occurred_at DESC);
 		CREATE INDEX IF NOT EXISTS idx_beacon_events_dedupe ON beacon_events(dedupe_key, occurred_at DESC);
+		ALTER TABLE beacon_events ADD COLUMN IF NOT EXISTS acknowledged_at TIMESTAMPTZ;
+		ALTER TABLE beacon_events ADD COLUMN IF NOT EXISTS acknowledged_by TEXT NOT NULL DEFAULT '';
+		ALTER TABLE beacon_events ADD COLUMN IF NOT EXISTS acknowledgement_note TEXT NOT NULL DEFAULT '';
+		ALTER TABLE beacon_events ADD COLUMN IF NOT EXISTS snoozed_until TIMESTAMPTZ;
+		CREATE INDEX IF NOT EXISTS idx_beacon_events_ack ON beacon_events(acknowledged_at, snoozed_until, occurred_at DESC);
 
 		CREATE TABLE IF NOT EXISTS operations (
 			id          TEXT PRIMARY KEY,

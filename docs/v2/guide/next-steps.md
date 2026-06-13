@@ -22,9 +22,12 @@ The current working feature set includes:
 - Webhook delivery inbox with replay and preflight replay
 - Platform release history and rollback from CLI, API, and dashboard
 - Beacon event CLI and Platform tab visibility
+- Beacon event detail, acknowledgement, snooze, and reopen state
+- Built-in alert rule catalogue for deploy, service, cron, and recovery events
 - Platform smoke checks for health, drain, release marker, and recent warning/critical events
-- Nomad allocation watcher events for failed, lost, and unhealthy allocations plus cron run outcomes
-- Proxy cutover plan scaffold for no-blip API upgrades
+- Authenticated platform smoke through the encrypted API runtime env
+- Runtime watcher events for failed, lost, and unhealthy allocations, Consul health transitions, and cron run outcomes
+- Proxy cutover plan and optional managed proxy config/upstream commands for no-blip API upgrades
 - Basic local snapshot listing and restore
 - Port conflict detection before Nomad submit
 
@@ -41,10 +44,7 @@ Current state:
 - `/api/services/manifest` exposes process type, status, health path, app endpoints, instances, and reachability metadata.
 - The manifest includes a small contract block plus structured reachability fields for endpoint scope, instance scope, exposure, and routability.
 - `norn services` renders endpoint/instance reachability in a `REACH` column.
-
-Planned work:
-
-- Document the manifest contract for agents and MCP/tool discovery.
+- `norn services manifest` is the raw JSON contract for agents and MCP/tool discovery.
 
 ### Deploy Provenance
 
@@ -129,10 +129,9 @@ Current state:
 Planned work:
 
 - Package local Prometheus, Grafana, and cAdvisor as Norn platform services with 30-day/8GB default Prometheus retention.
-- Add Beacon event drill-down and acknowledgement links to downstream incident tooling.
-- Extend Nomad watchers with schedule-aware missed-run detection.
-- Add health-transition Beacon events once the health poller tracks previous state.
-- Add alert rules for deploy failures, service down, high restart rate, and low disk headroom.
+- Add downstream incident-tool links for acknowledged/snoozed Beacon events.
+- Extend runtime watchers with schedule-aware missed-run detection.
+- Add high restart rate and low disk headroom alert rules once those signals are measured.
 - Add temporary access grants, such as expiring JWT links or expiring IP allowlist entries.
 
 ### Platform Upgrade Continuity
@@ -152,7 +151,7 @@ Current state:
 Planned work:
 
 - Add deeper stage-level resume data before enabling automatic retry after snapshot, migration, submit, or route mutation.
-- Turn the proxy plan into an optional managed local reverse proxy so port `8800` stays stable while old and new APIs run on private ports during cutover.
+- Wire optional managed local reverse proxy mode into the platform upgrade lane so port `8800` stays stable while old and new APIs run on private ports during cutover.
 - Queue platform preflight and upgrade jobs themselves once the worker supports platform-scoped operations.
 
 ## ContextDB Items

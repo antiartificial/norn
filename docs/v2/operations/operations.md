@@ -8,7 +8,11 @@ Norn records long-running and externally triggered work in a durable PostgreSQL 
 norn operations
 norn operations --active
 norn events
+norn events show <event-id>
+norn events ack <event-id>
+norn alerts
 norn smoke platform
+norn platform smoke
 norn webhooks
 norn webhooks replay <delivery-id>
 norn webhooks replay <delivery-id> --preflight
@@ -23,6 +27,11 @@ API endpoints:
 | `GET` | `/api/operations/active` | Queued/running operations for drain gates |
 | `GET` | `/api/deployments/{id}/steps` | Durable deploy or rollback stage checkpoints |
 | `GET` | `/api/events` | Recent Beacon events, filterable by app, type, and severity |
+| `GET` | `/api/events/{id}` | Beacon event detail with operator state and metadata |
+| `POST` | `/api/events/{id}/ack` | Acknowledge a Beacon event |
+| `POST` | `/api/events/{id}/snooze` | Snooze a Beacon event until a duration or timestamp |
+| `POST` | `/api/events/{id}/open` | Reopen a Beacon event |
+| `GET` | `/api/alerts/rules` | Built-in alert rule catalogue derived from Beacon event types |
 | `GET` | `/api/webhooks/deliveries` | Recent webhook delivery inbox |
 | `POST` | `/api/webhooks/deliveries/{id}/replay` | Replay a delivery as a deploy or preflight |
 | `GET` | `/metrics` | Prometheus counters for operations and webhooks |
@@ -40,6 +49,26 @@ The current release records these operation kinds:
 App preflights, deploys, and rollbacks are queued in the operations table and claimed by the API worker with `FOR UPDATE SKIP LOCKED`. Queue rows include payload, attempt count, max attempts, lease owner, lease expiry, next attempt, and last error.
 
 Deploy and rollback stages are written to `deployment_steps`. Read-only preflights can retry safely. App deploys are queued and visible to drain gates; after an API restart, a running deploy can be requeued only if no mutable stage checkpoint has started. If interruption happens during or after snapshot, migration, submit, health, forge, or cleanup, the operation fails visibly for manual review rather than replaying side effects blindly.
+
+Operators can inspect checkpoint evidence with:
+
+```bash
+norn deploy steps <deployment-id>
+```
+
+This is the supported pre-resume surface. Automatic mutable-stage resume remains intentionally disabled until each mutable stage records enough receipt data for safe operator confirmation.
+
+## Event Operations
+
+Beacon events now carry operator state:
+
+| State | Meaning |
+|-------|---------|
+| `open` | Event is active or a previous snooze has expired |
+| `snoozed` | Event is hidden from immediate attention until `snoozedUntil` |
+| `acknowledged` | An operator has accepted/handled the event |
+
+Acknowledgement and snooze metadata is stored beside the immutable event payload. The Platform tab and `norn events` expose the same state. Related saga, deployment, operation, service, process, and cron ids are carried through event metadata when available.
 
 ## Webhook Inbox
 

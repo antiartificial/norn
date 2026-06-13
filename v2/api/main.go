@@ -195,7 +195,7 @@ func main() {
 	if os.Getenv("NORN_SKIP_NOMAD_WATCHER") == "true" {
 		log.Println("nomad allocation watcher skipped")
 	} else {
-		nomadWatcher := watch.NewNomadAllocationWatcher(nomadClient, beaconSvc, cfg.AppsDir)
+		nomadWatcher := watch.NewNomadAllocationWatcher(nomadClient, consulClient, beaconSvc, cfg.AppsDir)
 		go nomadWatcher.Run(workerCtx)
 	}
 
@@ -253,8 +253,13 @@ func main() {
 		r.Get("/deployments/{id}/steps", h.ListDeploymentSteps)
 		r.Get("/operations", h.ListOperations)
 		r.Get("/operations/active", h.ActiveOperations)
+		r.Get("/alerts/rules", h.AlertRules)
 		r.Get("/events", h.ListEvents)
 		r.Post("/events", h.CreateEvent)
+		r.Get("/events/{id}", h.GetEvent)
+		r.Post("/events/{id}/ack", h.AcknowledgeEvent)
+		r.Post("/events/{id}/snooze", h.SnoozeEvent)
+		r.Post("/events/{id}/open", h.OpenEvent)
 		r.Get("/events/sinks", h.EventSinks)
 		r.Post("/events/test", h.TestEvent)
 		r.Get("/validate", h.ValidateAll)

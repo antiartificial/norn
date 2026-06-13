@@ -12,9 +12,14 @@ incidents, notifications, or app timelines.
 
 ```http
 GET  /api/events
+GET  /api/events/{id}
 POST /api/events
+POST /api/events/{id}/ack
+POST /api/events/{id}/snooze
+POST /api/events/{id}/open
 GET  /api/events/sinks
 POST /api/events/test
+GET  /api/alerts/rules
 ```
 
 `GET /api/events` accepts optional filters:
@@ -46,6 +51,7 @@ optional body:
   "environment": "mini",
   "type": "deploy.failed",
   "severity": "critical",
+  "state": "open",
   "title": "field-harbor deploy failed",
   "body": "Deploy failed at healthy: service did not become healthy.",
   "dedupeKey": "field-harbor:deploy",
@@ -58,6 +64,28 @@ optional body:
 }
 ```
 
+## Operator State
+
+Beacon events can be acknowledged, snoozed, and reopened without mutating the
+original event body or metadata.
+
+```bash
+norn events
+norn events show <event-id>
+norn events ack <event-id> --note "investigating"
+norn events snooze <event-id> --for 2h
+norn events open <event-id>
+```
+
+Snoozes are time-bound. Once `snoozedUntil` is in the past, the event reads as
+`open` again. Acknowledgements record operator and note fields, but never store
+secret values.
+
+`GET /api/alerts/rules` returns Norn's built-in event-to-alert catalogue for
+deploy failures, service health, cron failures, and recovery events. It is a
+shared contract for the CLI, dashboard, and downstream sinks; it is not a
+separate paging engine.
+
 ## Built-In Events
 
 Deploys emit:
@@ -66,6 +94,13 @@ Deploys emit:
 | --- | --- | --- |
 | `deploy.succeeded` | `info` | A deployment completes |
 | `deploy.failed` | `critical` | A deployment fails at a pipeline step |
+
+Rollbacks emit:
+
+| Type | Severity | When |
+| --- | --- | --- |
+| `rollback.succeeded` | `info` | A rollback completes |
+| `rollback.failed` | `critical` | A rollback fails |
 
 Cron control actions emit:
 
@@ -76,10 +111,23 @@ Cron control actions emit:
 | `job.resumed` | `info` | An operator resumes a periodic process |
 | `job.schedule_updated` | `info` | An operator changes a periodic process schedule |
 
-The v2 runtime uses Nomad periodic jobs for scheduled work. Beacon records
-operator-level cron actions today. Allocation outcome events such as
-`job.succeeded`, `job.failed`, `job.hung`, and `job.missed` belong in the next
-Nomad allocation watcher layer.
+The v2 runtime uses Nomad periodic jobs for scheduled work. The Nomad watcher
+emits cron outcome events:
+
+| Type | Severity | When |
+| --- | --- | --- |
+| `cron.succeeded` | `info` | A periodic child run completed |
+| `cron.failed` | `critical` | A periodic child allocation failed |
+| `cron.lost` | `critical` | A periodic child allocation was lost |
+| `cron.hung` | `critical` | A periodic child appears stuck beyond the watcher threshold |
+
+Service health transitions emit:
+
+| Type | Severity | When |
+| --- | --- | --- |
+| `service.health.warning` | `warning` | Consul health changes to warning |
+| `service.health.critical` | `critical` | Consul health changes to critical |
+| `service.health.recovered` | `info` | A previously non-passing service returns to passing |
 
 ## Sink Configuration
 
