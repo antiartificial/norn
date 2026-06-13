@@ -1,6 +1,7 @@
 package handler
 
 import (
+	"encoding/json"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -71,5 +72,34 @@ func TestPrometheusConfigIncludesNornScrape(t *testing.T) {
 	body := rec.Body.String()
 	if !strings.Contains(body, "job_name: norn") || !strings.Contains(body, "127.0.0.1:8800") {
 		t.Fatalf("prometheus config missing norn scrape:\n%s", body)
+	}
+}
+
+func TestObservabilityBundleIncludesAlertsAndServiceSpecs(t *testing.T) {
+	h := &Handler{cfg: &config.Config{AppsDir: t.TempDir(), NetworkMode: "local", BindAddr: "127.0.0.1", Port: "8800"}}
+	req := httptest.NewRequest(http.MethodGet, "/api/observability/bundle", nil)
+	rec := httptest.NewRecorder()
+
+	h.ObservabilityBundle(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200; body=%s", rec.Code, rec.Body.String())
+	}
+	var bundle observabilityBundle
+	if err := json.Unmarshal(rec.Body.Bytes(), &bundle); err != nil {
+		t.Fatal(err)
+	}
+	if bundle.Retention != "30d or 8GB" {
+		t.Fatalf("retention = %q", bundle.Retention)
+	}
+	for _, want := range []string{"NornServiceDown", "NornDiskLow"} {
+		if !strings.Contains(bundle.AlertRules, want) {
+			t.Fatalf("alert rules missing %q:\n%s", want, bundle.AlertRules)
+		}
+	}
+	for _, name := range []string{"prometheus", "grafana", "cadvisor"} {
+		if bundle.ServiceSpecs[name] == "" {
+			t.Fatalf("missing service spec %q: %+v", name, bundle.ServiceSpecs)
+		}
 	}
 }

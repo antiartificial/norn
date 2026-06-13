@@ -49,6 +49,7 @@ type platformOperationSummary struct {
 type platformSecretSummary struct {
 	OK             int            `json:"ok"`
 	NeedsAttention int            `json:"needsAttention"`
+	MigrationItems int            `json:"migrationItems"`
 	Apps           []SecretStatus `json:"apps"`
 }
 
@@ -69,11 +70,13 @@ type platformAccessSummary struct {
 }
 
 type platformObserveSummary struct {
-	Enabled      bool   `json:"enabled"`
-	LogsEnabled  bool   `json:"logsEnabled"`
-	LogFormat    string `json:"logFormat"`
-	ServiceName  string `json:"serviceName,omitempty"`
-	OTLPEndpoint string `json:"otlpEndpoint,omitempty"`
+	Enabled         bool   `json:"enabled"`
+	LogsEnabled     bool   `json:"logsEnabled"`
+	LogFormat       string `json:"logFormat"`
+	ServiceName     string `json:"serviceName,omitempty"`
+	OTLPEndpoint    string `json:"otlpEndpoint,omitempty"`
+	BundleAvailable bool   `json:"bundleAvailable"`
+	Retention       string `json:"retention,omitempty"`
 }
 
 func (h *Handler) PlatformOps(w http.ResponseWriter, r *http.Request) {
@@ -105,11 +108,13 @@ func (h *Handler) buildPlatformOps(r *http.Request) (platformOpsSummary, error) 
 			ByStatus: map[string]int{},
 		},
 		Observability: platformObserveSummary{
-			Enabled:      truthyEnv("NORN_OTEL_ENABLED"),
-			LogsEnabled:  envDefaultTrue("NORN_OTEL_LOGS"),
-			LogFormat:    envDefault("NORN_LOG_FORMAT", "text"),
-			ServiceName:  os.Getenv("OTEL_SERVICE_NAME"),
-			OTLPEndpoint: os.Getenv("OTEL_EXPORTER_OTLP_ENDPOINT"),
+			Enabled:         truthyEnv("NORN_OTEL_ENABLED"),
+			LogsEnabled:     envDefaultTrue("NORN_OTEL_LOGS"),
+			LogFormat:       envDefault("NORN_LOG_FORMAT", "text"),
+			ServiceName:     os.Getenv("OTEL_SERVICE_NAME"),
+			OTLPEndpoint:    os.Getenv("OTEL_EXPORTER_OTLP_ENDPOINT"),
+			BundleAvailable: true,
+			Retention:       "30d or 8GB",
 		},
 	}
 
@@ -127,6 +132,7 @@ func (h *Handler) buildPlatformOps(r *http.Request) (platformOpsSummary, error) 
 	for _, spec := range specs {
 		status := h.secretStatus(spec)
 		out.Secrets.Apps = append(out.Secrets.Apps, status)
+		out.Secrets.MigrationItems += len(h.secretMigrationItems(spec))
 		if status.OK {
 			out.Secrets.OK++
 		} else {

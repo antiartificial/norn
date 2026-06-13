@@ -15,6 +15,7 @@ import (
 func init() {
 	secretsCmd.AddCommand(secretsListCmd)
 	secretsCmd.AddCommand(secretsStatusCmd)
+	secretsCmd.AddCommand(secretsMigratePlanCmd)
 	secretsCmd.AddCommand(secretsSetCmd)
 	secretsCmd.AddCommand(secretsDeleteCmd)
 	rootCmd.AddCommand(secretsCmd)
@@ -57,6 +58,24 @@ var secretsStatusCmd = &cobra.Command{
 			return fmt.Errorf("failed to fetch secrets status: %w", err)
 		}
 		printSecretStatusTable(statuses)
+		return nil
+	},
+}
+
+var secretsMigratePlanCmd = &cobra.Command{
+	Use:   "migrate-plan [app]",
+	Short: "Plan plaintext env migration into encrypted secrets",
+	Args:  cobra.MaximumNArgs(1),
+	RunE: func(cmd *cobra.Command, args []string) error {
+		appID := ""
+		if len(args) == 1 {
+			appID = args[0]
+		}
+		plan, err := client.SecretsMigrationPlan(appID)
+		if err != nil {
+			return fmt.Errorf("failed to fetch migration plan: %w", err)
+		}
+		printSecretMigrationPlan(plan)
 		return nil
 	},
 }
@@ -178,4 +197,35 @@ func printSecretKeyList(title string, values []string) {
 	for _, value := range values {
 		fmt.Printf("  %s %s\n", style.DimText.Render("•"), value)
 	}
+}
+
+func printSecretMigrationPlan(plan *api.SecretMigrationPlan) {
+	title := "secrets migration plan"
+	if plan.App != "" {
+		title += " for " + plan.App
+	}
+	fmt.Println(style.Title.Render(title))
+	fmt.Printf("generated=%s items=%d\n\n", plan.GeneratedAt, plan.Count)
+	if len(plan.Items) == 0 {
+		fmt.Println(style.DimText.Render("no plaintext secret-like env entries found"))
+		return
+	}
+	w := tabwriter.NewWriter(os.Stdout, 0, 0, 2, ' ', 0)
+	fmt.Fprintln(w, style.TableHeader.Render("APP")+"\t"+
+		style.TableHeader.Render("KEY")+"\t"+
+		style.TableHeader.Render("FIELD")+"\t"+
+		style.TableHeader.Render("DECLARED")+"\t"+
+		style.TableHeader.Render("ENCRYPTED")+"\t"+
+		style.TableHeader.Render("ACTION"))
+	for _, item := range plan.Items {
+		fmt.Fprintf(w, "%s\t%s\t%s\t%t\t%t\t%s\n",
+			item.App,
+			item.Key,
+			item.Field,
+			item.Declared,
+			item.Encrypted,
+			item.Action,
+		)
+	}
+	w.Flush()
 }

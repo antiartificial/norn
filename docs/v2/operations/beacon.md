@@ -129,6 +129,13 @@ Service health transitions emit:
 | `service.health.critical` | `critical` | Consul health changes to critical |
 | `service.health.recovered` | `info` | A previously non-passing service returns to passing |
 
+Snapshot operations emit:
+
+| Type | Severity | When |
+| --- | --- | --- |
+| `snapshot.restored` | `warning` | An operator restores a local database snapshot |
+| `snapshot.retention.applied` | `info` | Snapshot retention is applied and older local snapshot files are pruned |
+
 ## Sink Configuration
 
 Beacon sink delivery is configured by environment variables:

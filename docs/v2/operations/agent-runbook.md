@@ -21,6 +21,8 @@ Useful surfaces:
 | Platform release history | `GET /api/platform/releases`, `norn platform releases` |
 | Operational events | `GET /api/events`, `GET /api/events/{id}`, `norn events`, `norn alerts` |
 | Control-plane health | `/api/health`, `/api/version`, `/metrics`, `norn smoke platform`, `norn platform smoke` |
+| Observability bundle | `GET /api/observability/bundle`, `norn observability bundle --out <dir>` |
+| Secret migration plan | `GET /api/secrets/migration-plan`, `norn secrets migrate-plan` |
 
 If a protected endpoint returns `401`, do not assume the platform is unhealthy. Verify auth context separately and fall back to public health/version endpoints, local DB checks, process manager state, or an authenticated shell when available.
 
@@ -110,6 +112,14 @@ Before `upgrade` or `rollback`, check active operations when auth is available. 
 The API starts a runtime watcher when Nomad or Consul and Beacon are available. It emits Beacon events when allocations transition to failed, lost, or unhealthy; when Consul service health changes to warning, critical, or recovered; and when periodic child jobs succeed, fail, are lost, or appear hung. Missed-run detection requires additional schedule-aware logic.
 
 Beacon events can be acknowledged, snoozed, or reopened from the CLI, API, and Platform tab. Treat event state as operator workflow state, not a replacement for the original event payload or saga.
+
+## Assurance Surfaces
+
+Use `norn observability bundle --out <dir>` when you need a reproducible local Prometheus/Grafana/cAdvisor starting point. The generated files are intended for review before deployment as managed Norn services.
+
+Use `norn secrets migrate-plan [app]` before touching plaintext env secrets. It prints only keys, locations, declared/encrypted status, and recommended action; it never prints values.
+
+For destructive database restores, prefer `norn snapshots <app> restore <timestamp> --yes --pre-restore` so the receipt includes a fresh pre-restore snapshot.
 
 ## Safe Repo Guidance
 

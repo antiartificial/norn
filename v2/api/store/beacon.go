@@ -20,6 +20,13 @@ type BeaconFilter struct {
 	Offset   int
 }
 
+type BeaconMetric struct {
+	Type             string
+	Severity         string
+	Count            int
+	LastOccurredUnix float64
+}
+
 func (db *DB) InsertBeaconEvent(ctx context.Context, event *model.BeaconEvent) error {
 	metadata, err := json.Marshal(event.Metadata)
 	if err != nil {
@@ -168,6 +175,31 @@ func (db *DB) OpenBeaconEvent(ctx context.Context, id string) (*model.BeaconEven
 func (db *DB) PruneBeaconEvents(ctx context.Context, olderThan time.Time) error {
 	_, err := db.Pool.Exec(ctx, `DELETE FROM beacon_events WHERE occurred_at < $1`, olderThan)
 	return err
+}
+
+func (db *DB) BeaconMetrics(ctx context.Context) ([]BeaconMetric, error) {
+	rows, err := db.Pool.Query(ctx, `
+		SELECT type, severity, COUNT(*), EXTRACT(EPOCH FROM MAX(occurred_at))
+		FROM beacon_events
+		GROUP BY type, severity
+		ORDER BY type, severity
+	`)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var metrics []BeaconMetric
+	for rows.Next() {
+		var metric BeaconMetric
+		if err := rows.Scan(&metric.Type, &metric.Severity, &metric.Count, &metric.LastOccurredUnix); err != nil {
+			return nil, err
+		}
+		metrics = append(metrics, metric)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return metrics, nil
 }
 
 type beaconScanner interface {

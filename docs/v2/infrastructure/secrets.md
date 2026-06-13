@@ -78,6 +78,10 @@ norn secrets myapp
 norn secrets status
 norn secrets status myapp
 
+# Plan value-safe plaintext env migrations
+norn secrets migrate-plan
+norn secrets migrate-plan myapp
+
 # Set or update a secret
 norn secrets set myapp DATABASE_URL=postgres://...
 
@@ -85,7 +89,11 @@ norn secrets set myapp DATABASE_URL=postgres://...
 norn secrets delete myapp OLD_KEY
 ```
 
-The `status` command compares the `secrets` list in `infraspec.yaml` with encrypted keys in `secrets.enc.yaml` and reports plaintext secret-like values still present in `env` blocks. Secret values are never printed. The `set` command decrypts the file, updates the key, and re-encrypts.
+The `status` command compares the `secrets` list in `infraspec.yaml` with encrypted keys in `secrets.enc.yaml` and reports plaintext secret-like values still present in `env` blocks. Secret values are never printed.
+
+The `migrate-plan` command turns those plaintext findings into a value-safe checklist. It shows the app, field, key, whether the key is declared in `secrets`, whether it already exists in `secrets.enc.yaml`, and the recommended action. It does not print or move secret values; operators still make the actual `secrets.enc.yaml` change with SOPS or `norn secrets set`.
+
+The `set` command decrypts the file, updates the key, and re-encrypts.
 
 ## Secrets Flow
 

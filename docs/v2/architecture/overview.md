@@ -105,6 +105,9 @@ v2/ui/
 | GET | `/metrics` | Prometheus-compatible Norn control-plane metrics |
 | GET | `/api/metrics` | Same metrics endpoint under the API prefix |
 | GET | `/api/observability/prometheus.yml` | Generated Prometheus scrape config |
+| GET | `/api/observability/bundle` | Prometheus, alert, Grafana, and starter service bundle |
+| GET | `/api/observability/alerts.yml` | Prometheus alert rules from the observability bundle |
+| GET | `/api/secrets/migration-plan` | Value-safe plaintext secret migration plan across apps |
 | GET | `/api/version` | API version |
 | GET | `/api/stats` | Deployment and cluster statistics |
 | GET | `/api/apps` | List all discovered apps |

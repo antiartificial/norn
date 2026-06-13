@@ -7,6 +7,7 @@ import (
 	"sort"
 	"strconv"
 	"strings"
+	"syscall"
 	"time"
 
 	"norn/v2/api/model"
@@ -29,8 +30,10 @@ func (h *Handler) Metrics(w http.ResponseWriter, r *http.Request) {
 	writeMetricHeader(&b, "norn_app_info", "Discovered Norn application metadata.", "gauge")
 	writeMetricHeader(&b, "norn_process_info", "Discovered Norn process metadata.", "gauge")
 	writeMetricHeader(&b, "norn_app_health", "Application health derived from the service manifest, 1 for healthy/passing.", "gauge")
+	writeMetricHeader(&b, "norn_service_status", "Service health status from the service manifest, 1 for the current status label.", "gauge")
 	writeMetricHeader(&b, "norn_object_storage_buckets", "Declared object storage buckets per application.", "gauge")
 	writeMetricHeader(&b, "norn_snapshots_total", "Local PostgreSQL snapshots per application.", "gauge")
+	writeMetricHeader(&b, "norn_snapshot_over_limit_total", "Local PostgreSQL snapshots above declared retention per application.", "gauge")
 
 	serviceStatusByApp := map[string]string{}
 	for _, svc := range manifest.Services {
@@ -44,7 +47,14 @@ func (h *Handler) Metrics(w http.ResponseWriter, r *http.Request) {
 		} else if svc.Status == "unknown" && serviceStatusByApp[svc.App] == "passing" {
 			serviceStatusByApp[svc.App] = "unknown"
 		}
-
+		for _, status := range []string{"passing", "warning", "critical", "unknown"} {
+			value := 0
+			if svc.Status == status {
+				value = 1
+			}
+			fmt.Fprintf(&b, "norn_service_status{app=%q,process=%q,service=%q,status=%q} %d\n",
+				promLabel(svc.App), promLabel(svc.Process), promLabel(svc.Name), promLabel(status), value)
+		}
 	}
 	for _, spec := range specs {
 		fmt.Fprintf(&b, "norn_app_info{app=%q} 1\n", promLabel(spec.App))
@@ -68,6 +78,7 @@ func (h *Handler) Metrics(w http.ResponseWriter, r *http.Request) {
 		}
 		if snapshotStatus := summarizeSnapshots(spec); snapshotStatus != nil {
 			fmt.Fprintf(&b, "norn_snapshots_total{app=%q,database=%q} %d\n", promLabel(spec.App), promLabel(snapshotStatus.Database), snapshotStatus.Count)
+			fmt.Fprintf(&b, "norn_snapshot_over_limit_total{app=%q,database=%q} %d\n", promLabel(spec.App), promLabel(snapshotStatus.Database), snapshotStatus.OverLimit)
 		}
 	}
 
@@ -109,6 +120,16 @@ func (h *Handler) Metrics(w http.ResponseWriter, r *http.Request) {
 				fmt.Fprintf(&b, "norn_webhook_last_received_timestamp_seconds{%s} %.0f\n", labels, metric.LastReceivedUnix)
 			}
 		}
+
+		writeMetricHeader(&b, "norn_beacon_events_total", "Beacon events recorded by Norn, grouped by type and severity.", "counter")
+		writeMetricHeader(&b, "norn_beacon_last_occurred_timestamp_seconds", "Unix timestamp of the last Beacon event by type and severity.", "gauge")
+		if beaconMetrics, err := h.db.BeaconMetrics(r.Context()); err == nil {
+			for _, metric := range beaconMetrics {
+				labels := fmt.Sprintf("type=%q,severity=%q", promLabel(metric.Type), promLabel(metric.Severity))
+				fmt.Fprintf(&b, "norn_beacon_events_total{%s} %d\n", labels, metric.Count)
+				fmt.Fprintf(&b, "norn_beacon_last_occurred_timestamp_seconds{%s} %.0f\n", labels, metric.LastOccurredUnix)
+			}
+		}
 	}
 
 	if h.access != nil {
@@ -121,6 +142,8 @@ func (h *Handler) Metrics(w http.ResponseWriter, r *http.Request) {
 			fmt.Fprintf(&b, "norn_access_events_recent_total{status_bucket=%q} %d\n", promLabel(bucket), byStatus[bucket])
 		}
 	}
+
+	writeHostDiskMetrics(&b, ".")
 
 	fmt.Fprintf(&b, "norn_metrics_generated_timestamp_seconds %.0f\n", float64(time.Now().Unix()))
 	_, _ = w.Write(b.Bytes())
@@ -205,4 +228,17 @@ func quotedList(values []string) string {
 
 func yamlString(value string) string {
 	return strconv.Quote(value)
+}
+
+func writeHostDiskMetrics(b *bytes.Buffer, path string) {
+	var stat syscall.Statfs_t
+	if err := syscall.Statfs(path, &stat); err != nil {
+		return
+	}
+	total := float64(stat.Blocks) * float64(stat.Bsize)
+	free := float64(stat.Bavail) * float64(stat.Bsize)
+	writeMetricHeader(b, "norn_host_disk_total_bytes", "Total bytes on the filesystem containing Norn's working directory.", "gauge")
+	writeMetricHeader(b, "norn_host_disk_free_bytes", "Free bytes available on the filesystem containing Norn's working directory.", "gauge")
+	fmt.Fprintf(b, "norn_host_disk_total_bytes{path=%q} %.0f\n", promLabel(path), total)
+	fmt.Fprintf(b, "norn_host_disk_free_bytes{path=%q} %.0f\n", promLabel(path), free)
 }

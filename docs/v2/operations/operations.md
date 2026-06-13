@@ -17,6 +17,8 @@ norn webhooks
 norn webhooks replay <delivery-id>
 norn webhooks replay <delivery-id> --preflight
 norn ops platform
+norn observability bundle
+norn secrets migrate-plan
 ```
 
 API endpoints:
@@ -32,6 +34,9 @@ API endpoints:
 | `POST` | `/api/events/{id}/snooze` | Snooze a Beacon event until a duration or timestamp |
 | `POST` | `/api/events/{id}/open` | Reopen a Beacon event |
 | `GET` | `/api/alerts/rules` | Built-in alert rule catalogue derived from Beacon event types |
+| `GET` | `/api/observability/bundle` | Prometheus, alert, Grafana, and starter service bundle |
+| `GET` | `/api/observability/alerts.yml` | Prometheus alert rules from the observability bundle |
+| `GET` | `/api/secrets/migration-plan` | Value-safe plaintext secret migration plan |
 | `GET` | `/api/webhooks/deliveries` | Recent webhook delivery inbox |
 | `POST` | `/api/webhooks/deliveries/{id}/replay` | Replay a delivery as a deploy or preflight |
 | `GET` | `/metrics` | Prometheus counters for operations and webhooks |
@@ -117,6 +122,21 @@ The metrics endpoint exports:
 | `norn_operation_last_started_timestamp_seconds` | Last operation start time |
 | `norn_webhook_deliveries_total` | Webhook delivery count by provider and status |
 | `norn_webhook_last_received_timestamp_seconds` | Last webhook delivery time |
+| `norn_service_status` | Live service status by app/process/service/status |
+| `norn_snapshot_over_limit_total` | Snapshot retention pressure |
+| `norn_beacon_events_total` | Beacon events by type and severity |
+| `norn_beacon_last_occurred_timestamp_seconds` | Last Beacon event time by type and severity |
+| `norn_host_disk_free_bytes` | Host disk free space visible to the API process |
+
+## Platform Rollup
+
+`norn ops platform` includes assurance fields alongside the existing service, deployment, access, and release summaries:
+
+| Field | Meaning |
+|-------|---------|
+| `secrets.migrationItems` | Count of plaintext secret-like env keys that have a migration plan action |
+| `observability.bundleAvailable` | Whether the API can generate the local observability bundle |
+| `observability.retention` | Recommended local Prometheus retention target |
 
 ## Next Step
 

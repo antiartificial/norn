@@ -1,6 +1,7 @@
 package handler
 
 import (
+	"context"
 	"fmt"
 	"net/http"
 	"os"
@@ -26,11 +27,12 @@ type snapshotEntry struct {
 }
 
 type restoreReceipt struct {
-	Status     string        `json:"status"`
-	App        string        `json:"app"`
-	Database   string        `json:"database"`
-	Snapshot   snapshotEntry `json:"snapshot"`
-	RestoredAt string        `json:"restoredAt"`
+	Status             string         `json:"status"`
+	App                string         `json:"app"`
+	Database           string         `json:"database"`
+	Snapshot           snapshotEntry  `json:"snapshot"`
+	PreRestoreSnapshot *snapshotEntry `json:"preRestoreSnapshot,omitempty"`
+	RestoredAt         string         `json:"restoredAt"`
 }
 
 type snapshotRetentionReceipt struct {
@@ -148,6 +150,17 @@ func (h *Handler) RestoreSnapshot(w http.ResponseWriter, r *http.Request) {
 	}
 
 	snapshotPath := filepath.Join("snapshots", match.Filename)
+	var preRestore *snapshotEntry
+	preRestoreRequested := r.URL.Query().Get("preRestore") == "true" || (spec.Snapshots != nil && spec.Snapshots.PreRestore)
+	if preRestoreRequested {
+		created, err := createSnapshotForSpec(r.Context(), spec, "pre-restore")
+		if err != nil {
+			writeError(w, http.StatusInternalServerError, fmt.Sprintf("pre-restore snapshot: %v", err))
+			return
+		}
+		preRestore = created
+	}
+
 	cmd := exec.CommandContext(r.Context(), "pg_restore", "--clean", "-d", dbName, snapshotPath)
 	out, err := cmd.CombinedOutput()
 	if err != nil {
@@ -169,13 +182,25 @@ func (h *Handler) RestoreSnapshot(w http.ResponseWriter, r *http.Request) {
 			},
 		})
 	}
+	if h.beacon != nil {
+		metadata := map[string]interface{}{
+			"database":  dbName,
+			"snapshot":  match.Filename,
+			"timestamp": ts,
+		}
+		if preRestore != nil {
+			metadata["preRestoreSnapshot"] = preRestore.Filename
+		}
+		h.emitSnapshotEvent(r, id, "snapshot.restored", model.BeaconWarning, "snapshot restored", fmt.Sprintf("%s restored snapshot %s", id, match.Filename), metadata)
+	}
 
 	writeJSON(w, restoreReceipt{
-		Status:     "restored",
-		App:        id,
-		Database:   dbName,
-		Snapshot:   *match,
-		RestoredAt: timeNowUTC(),
+		Status:             "restored",
+		App:                id,
+		Database:           dbName,
+		Snapshot:           *match,
+		PreRestoreSnapshot: preRestore,
+		RestoredAt:         timeNowUTC(),
 	})
 }
 
@@ -227,8 +252,57 @@ func (h *Handler) ApplySnapshotRetention(w http.ResponseWriter, r *http.Request)
 				},
 			})
 		}
+		h.emitSnapshotEvent(r, id, "snapshot.retention.applied", model.BeaconInfo, "snapshot retention applied", fmt.Sprintf("%s pruned %d snapshot(s)", id, len(receipt.Pruned)), map[string]interface{}{
+			"keep":   keep,
+			"pruned": len(receipt.Pruned),
+		})
 	}
 	writeJSON(w, receipt)
+}
+
+func createSnapshotForSpec(ctx context.Context, spec *model.InfraSpec, commitSHA string) (*snapshotEntry, error) {
+	if spec == nil || spec.Infrastructure == nil || spec.Infrastructure.Postgres == nil {
+		return nil, fmt.Errorf("app has no postgres database")
+	}
+	dbName := spec.Infrastructure.Postgres.Database
+	sha := commitSHA
+	if sha == "" {
+		sha = "manual"
+	}
+	if len(sha) > 12 {
+		sha = sha[:12]
+	}
+	timestamp := time.Now().UTC().Format("20060102T150405")
+	filename := fmt.Sprintf("%s_%s_%s.dump", dbName, sha, timestamp)
+	path := filepath.Join("snapshots", filename)
+	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+		return nil, fmt.Errorf("create snapshots dir: %w", err)
+	}
+	cmd := exec.CommandContext(ctx, "pg_dump", "-Fc", "-d", dbName, "-f", path)
+	out, err := cmd.CombinedOutput()
+	if err != nil {
+		return nil, fmt.Errorf("pg_dump: %s", string(out))
+	}
+	info, err := os.Stat(path)
+	if err != nil {
+		return nil, err
+	}
+	return parseSnapshotEntry(dbName, filename, info.Size()), nil
+}
+
+func (h *Handler) emitSnapshotEvent(r *http.Request, app, eventType string, severity model.BeaconSeverity, title, body string, metadata map[string]interface{}) {
+	if h.beacon == nil {
+		return
+	}
+	_, _ = h.beacon.Emit(r.Context(), model.BeaconEvent{
+		App:       app,
+		Type:      eventType,
+		Severity:  severity,
+		Title:     title,
+		Body:      body,
+		DedupeKey: app + ":" + eventType,
+		Metadata:  metadata,
+	})
 }
 
 func parseSnapshotEntry(dbName, filename string, size int64) *snapshotEntry {

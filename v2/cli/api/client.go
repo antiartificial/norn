@@ -180,6 +180,22 @@ type SecretStatus struct {
 	OK                  bool     `json:"ok"`
 }
 
+type SecretMigrationPlan struct {
+	GeneratedAt string                `json:"generatedAt"`
+	App         string                `json:"app,omitempty"`
+	Items       []SecretMigrationItem `json:"items"`
+	Count       int                   `json:"count"`
+}
+
+type SecretMigrationItem struct {
+	App       string `json:"app"`
+	Field     string `json:"field"`
+	Key       string `json:"key"`
+	Declared  bool   `json:"declared"`
+	Encrypted bool   `json:"encrypted"`
+	Action    string `json:"action"`
+}
+
 type NetworkStatus struct {
 	Mode       string `json:"mode,omitempty"`
 	BindAddr   string `json:"bindAddr,omitempty"`
@@ -272,11 +288,12 @@ type Snapshot struct {
 }
 
 type RestoreReceipt struct {
-	Status     string   `json:"status"`
-	App        string   `json:"app"`
-	Database   string   `json:"database"`
-	Snapshot   Snapshot `json:"snapshot"`
-	RestoredAt string   `json:"restoredAt"`
+	Status             string    `json:"status"`
+	App                string    `json:"app"`
+	Database           string    `json:"database"`
+	Snapshot           Snapshot  `json:"snapshot"`
+	PreRestoreSnapshot *Snapshot `json:"preRestoreSnapshot,omitempty"`
+	RestoredAt         string    `json:"restoredAt"`
 }
 
 type SnapshotRetentionReceipt struct {
@@ -589,6 +606,7 @@ type PlatformDeploySummary struct {
 type PlatformSecretSummary struct {
 	OK             int            `json:"ok"`
 	NeedsAttention int            `json:"needsAttention"`
+	MigrationItems int            `json:"migrationItems"`
 	Apps           []SecretStatus `json:"apps"`
 }
 
@@ -609,11 +627,23 @@ type PlatformAccessSummary struct {
 }
 
 type PlatformObserveSummary struct {
-	Enabled      bool   `json:"enabled"`
-	LogsEnabled  bool   `json:"logsEnabled"`
-	LogFormat    string `json:"logFormat"`
-	ServiceName  string `json:"serviceName,omitempty"`
-	OTLPEndpoint string `json:"otlpEndpoint,omitempty"`
+	Enabled         bool   `json:"enabled"`
+	LogsEnabled     bool   `json:"logsEnabled"`
+	LogFormat       string `json:"logFormat"`
+	ServiceName     string `json:"serviceName,omitempty"`
+	OTLPEndpoint    string `json:"otlpEndpoint,omitempty"`
+	BundleAvailable bool   `json:"bundleAvailable"`
+	Retention       string `json:"retention,omitempty"`
+}
+
+type ObservabilityBundle struct {
+	GeneratedAt       string            `json:"generatedAt"`
+	Retention         string            `json:"retention"`
+	PrometheusConfig  string            `json:"prometheusConfig"`
+	AlertRules        string            `json:"alertRules"`
+	GrafanaDatasource string            `json:"grafanaDatasource"`
+	GrafanaDashboard  string            `json:"grafanaDashboard"`
+	ServiceSpecs      map[string]string `json:"serviceSpecs"`
 }
 
 // API methods
@@ -670,6 +700,14 @@ func (c *Client) PlatformOps() (*PlatformOpsSummary, error) {
 		return nil, err
 	}
 	return &summary, nil
+}
+
+func (c *Client) ObservabilityBundle() (*ObservabilityBundle, error) {
+	var bundle ObservabilityBundle
+	if err := c.get("/api/observability/bundle", &bundle); err != nil {
+		return nil, err
+	}
+	return &bundle, nil
 }
 
 func (c *Client) ListOperations(active bool, limit int) ([]Operation, error) {
@@ -975,6 +1013,18 @@ func (c *Client) SecretsStatusApp(appID string) (*SecretStatus, error) {
 	return &status, nil
 }
 
+func (c *Client) SecretsMigrationPlan(appID string) (*SecretMigrationPlan, error) {
+	path := "/api/secrets/migration-plan"
+	if appID != "" {
+		path += "?app=" + url.QueryEscape(appID)
+	}
+	var plan SecretMigrationPlan
+	if err := c.get(path, &plan); err != nil {
+		return nil, err
+	}
+	return &plan, nil
+}
+
 func (c *Client) Forge(appID string) error {
 	return c.post("/api/apps/"+appID+"/forge", "{}")
 }
@@ -1047,11 +1097,18 @@ func (c *Client) ListSnapshots(appID string) ([]Snapshot, error) {
 	return snaps, nil
 }
 
-func (c *Client) RestoreSnapshot(appID, ts string, confirm bool) (*RestoreReceipt, error) {
+func (c *Client) RestoreSnapshot(appID, ts string, confirm bool, preRestore bool) (*RestoreReceipt, error) {
 	var receipt RestoreReceipt
 	path := "/api/apps/" + appID + "/snapshots/" + ts + "/restore"
+	values := url.Values{}
 	if confirm {
-		path += "?confirm=true"
+		values.Set("confirm", "true")
+	}
+	if preRestore {
+		values.Set("preRestore", "true")
+	}
+	if encoded := values.Encode(); encoded != "" {
+		path += "?" + encoded
 	}
 	if err := c.postJSON(path, "{}", &receipt); err != nil {
 		return nil, err

@@ -147,7 +147,7 @@ Each key in the `processes` map is the process name. The process type is inferre
 | Field | Type | Default | Description |
 |-------|------|---------|-------------|
 | `keep` | int | `3` | Newest local snapshots to keep when retention runs without `--keep` |
-| `preRestore` | bool | `false` | Reserved flag for creating a safety snapshot before restore |
+| `preRestore` | bool | `false` | Create a safety snapshot before restore when the API or CLI does not override the restore request |
 | `retentionEnabled` | bool | `false` | Reserved flag for scheduled retention automation |
 
 ## Defaults Summary

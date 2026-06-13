@@ -36,7 +36,13 @@ The endpoint includes low-cardinality control-plane metrics:
 | `norn_deploy_last_started_timestamp_seconds` | Last deployment start timestamp |
 | `norn_object_storage_buckets` | Declared object-storage buckets by app/provider |
 | `norn_snapshots_total` | Local snapshots by app/database |
+| `norn_snapshot_over_limit_total` | Snapshot retention pressure by app/database |
 | `norn_access_events_recent_total` | Recent in-memory API access events by status bucket |
+| `norn_service_status` | Live service status by app/process/service/status |
+| `norn_beacon_events_total` | Beacon event count by type and severity |
+| `norn_beacon_last_occurred_timestamp_seconds` | Last Beacon event time by type and severity |
+| `norn_host_disk_total_bytes` | Host disk capacity visible to the API process |
+| `norn_host_disk_free_bytes` | Host disk free space visible to the API process |
 
 Prometheus scrape traffic is excluded from Norn's recent access event buffer so it does not dominate `norn ops platform`.
 
@@ -70,6 +76,34 @@ curl -fsS http://127.0.0.1:8800/api/observability/prometheus.yml > v2/dev/norn-p
 ```
 
 Keep `remote_write` empty for local-only operation. Add a remote backend later only for a curated low-cardinality subset if you want offsite alerting.
+
+## Observability Bundle
+
+Norn also exposes a value-safe starter bundle for local Prometheus, Grafana, and cAdvisor:
+
+```text
+/api/observability/bundle
+/api/observability/alerts.yml
+```
+
+The CLI can inspect it or write the files to disk:
+
+```bash
+norn observability bundle
+norn observability bundle --out ./norn-observability
+```
+
+The bundle contains:
+
+| File | Purpose |
+|------|---------|
+| `prometheus/prometheus.yml` | Norn plus app scrape config with rule loading |
+| `prometheus/rules/norn-alerts.yml` | Prometheus alert rules for Norn service health, deploy failures, cron failures, snapshot pressure, and low disk headroom |
+| `grafana/provisioning/datasources/norn-prometheus.json` | Starter Grafana datasource |
+| `grafana/dashboards/norn-platform.json` | Starter platform dashboard |
+| `services/*.infraspec.yaml` | Starter Norn service specs for Prometheus, Grafana, and cAdvisor |
+
+The generated service specs are a handoff artifact: review paths, ports, and storage locations before placing them under `NORN_APPS_DIR` and deploying them as managed platform services.
 
 ## App Metrics
 
