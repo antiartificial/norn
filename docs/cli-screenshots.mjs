@@ -7,11 +7,13 @@ import { chromium } from 'playwright'
 import { mkdirSync, writeFileSync } from 'fs'
 import { join } from 'path'
 import { execSync } from 'child_process'
+import { cliOutput } from './screenshot-fixtures.mjs'
 
 const OUT = join(import.meta.dirname, 'public/screenshots')
 mkdirSync(OUT, { recursive: true })
 
-const NORN = '/Users/0xadb/projects/norn/v2/bin/norn'
+const NORN = process.env.NORN_BIN || '/Users/0xadb/projects/norn/v2/bin/norn'
+const USE_FIXTURES = process.env.NORN_LIVE_CLI !== '1'
 
 // Simple ANSI to HTML converter
 function ansiToHtml(text) {
@@ -122,12 +124,16 @@ function renderTerminal(title, content) {
 }
 
 async function captureTerminal(browser, name, title, command) {
-  console.log(`  → ${name}`)
+  console.log(`  -> ${name}`)
   let output
-  try {
-    output = execSync(command, { encoding: 'utf-8', env: { ...process.env, TERM: 'xterm-256color', FORCE_COLOR: '1' }, timeout: 10000 })
-  } catch (err) {
-    output = err.stdout || err.message
+  if (USE_FIXTURES) {
+    output = cliOutput(name.replace(/^cli-/, '').replace(/\.png$/, ''))
+  } else {
+    try {
+      output = execSync(command, { encoding: 'utf-8', env: { ...process.env, TERM: 'xterm-256color', FORCE_COLOR: '1' }, timeout: 10000 })
+    } catch (err) {
+      output = err.stdout || err.message
+    }
   }
 
   const html = renderTerminal(title, output)
@@ -156,13 +162,13 @@ async function main() {
   const browser = await chromium.launch({ headless: true })
 
   await captureTerminal(browser, 'cli-status.png', 'norn status', `${NORN} status`)
-  await captureTerminal(browser, 'cli-version.png', 'norn version', `${NORN} version`)
-
-  // Endpoints — requires API to be running
+  await captureTerminal(browser, 'cli-operations.png', 'norn operations --active', `${NORN} operations --active`)
+  await captureTerminal(browser, 'cli-platform.png', 'norn ops platform', `${NORN} ops platform`)
+  await captureTerminal(browser, 'cli-proxy-plan.png', 'norn platform proxy-plan', `${NORN} platform proxy-plan`)
   await captureTerminal(browser, 'cli-endpoints.png', 'norn endpoints signal-sideband', `${NORN} endpoints signal-sideband`)
 
   await browser.close()
-  console.log(`\n  ✔ CLI screenshots saved to docs/public/screenshots/`)
+  console.log(`\n  OK CLI screenshots saved to docs/public/screenshots/`)
 }
 
 main().catch(err => {
