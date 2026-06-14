@@ -172,12 +172,15 @@ Current state:
 - Beacon events carry `correlationKey` in metadata to group related events into incident arcs (e.g. `service.health.critical` → `service.health.recovered` share the same key). Events also include `previousState` and `previousEventType` for transition context.
 - `GET /api/events/correlated?key=<key>` and `norn events correlated <key>` return chronological event timelines for a correlation key.
 - Vigil-gateway indexes `correlationKey`, exposes `GET /api/incidents` grouped by correlation key, and uses `correlationKey` as APNs `thread-id` for iOS notification threading.
+- `POST /api/access/tokens` creates JWT access tokens with TTL for URL sharing. Tokens are accepted as `Bearer` headers or `?token=` query parameters.
+- `norn access token --ttl 2h` generates shareable tokens from the CLI.
+- The dashboard Platform tab has a token creation form in the Access section.
+- `norn events show <id>` displays incident timeline links for events with correlation keys.
 
 Planned work:
 
 - Deploy the generated observability apps on hosts that have accepted the local port and container policy choices.
 - Add downstream incident-tool links for acknowledged/snoozed Beacon events.
-- Add JWT-based temporary access tokens for URL sharing.
 
 ### Platform Upgrade Continuity
 
@@ -287,5 +290,4 @@ Planned work:
 2. Surface ContextDB worker run summaries in Norn metrics/UI and add review metrics.
 3. Wire Hermes to ContextDB review APIs for queue inspection, claim validation, refutation, and pruning.
 4. Store provider evaluator keys as Norn secrets and use the evaluator readiness gate to transition namespaces from dry-run.
-5. Add JWT-based temporary access tokens for URL sharing.
-6. Add per-endpoint latency indicators to the network drill-down.
+5. Add per-endpoint latency indicators to the network drill-down.

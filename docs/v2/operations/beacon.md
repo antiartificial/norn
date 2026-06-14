@@ -25,6 +25,7 @@ GET  /api/notifications/channels
 POST /api/notifications/channels
 POST /api/notifications/channels/{id}/test
 DELETE /api/notifications/channels/{id}
+POST /api/access/tokens
 ```
 
 `GET /api/events` accepts optional filters:
@@ -233,6 +234,17 @@ status, and the full event timeline.
 APNs push notifications use `correlationKey` as the `thread-id` so iOS groups
 related notifications into a single thread. Recovery events update the existing
 thread rather than creating a new notification.
+
+### CLI incident links
+
+`norn events show <id>` displays the correlation key and the command to view
+the full incident timeline when the event has a `correlationKey` in metadata:
+
+```bash
+norn events show evt_abc123
+# ...
+# incident  norn events correlated contextdb:web:health
+```
 
 ## Sink Configuration
 

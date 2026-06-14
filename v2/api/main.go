@@ -291,6 +291,7 @@ func main() {
 		r.Get("/access/grants", h.ListAccessGrants)
 		r.Post("/access/grants", h.CreateAccessGrant)
 		r.Delete("/access/grants/{id}", h.DeleteAccessGrant)
+		r.Post("/access/tokens", h.CreateAccessToken)
 
 		r.Get("/ops/contextdb/evaluator-readiness", h.EvaluatorReadiness)
 
@@ -368,6 +369,14 @@ func bearerAuth(token string, h *handler.Handler) func(http.Handler) http.Handle
 			}
 			auth := r.Header.Get("Authorization")
 			if strings.HasPrefix(auth, "Bearer ") && subtle.ConstantTimeCompare([]byte(auth[7:]), []byte(token)) == 1 {
+				next.ServeHTTP(w, r)
+				return
+			}
+			if strings.HasPrefix(auth, "Bearer ") && h != nil && h.VerifyAccessToken(auth[7:]) {
+				next.ServeHTTP(w, r)
+				return
+			}
+			if qToken := r.URL.Query().Get("token"); qToken != "" && h != nil && h.VerifyAccessToken(qToken) {
 				next.ServeHTTP(w, r)
 				return
 			}
