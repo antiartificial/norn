@@ -12,6 +12,7 @@ incidents, notifications, or app timelines.
 
 ```http
 GET  /api/events
+GET  /api/events/correlated
 GET  /api/events/{id}
 POST /api/events
 POST /api/events/{id}/ack
@@ -199,38 +200,39 @@ without querying prior events.
 | Service health | `{app}:{process}:health` | `contextdb:web:health` |
 | Allocation state | `{app}:{taskGroup}:allocation` | `signal-sideband:web:allocation` |
 | Task restarts / OOM | `{app}:{taskGroup}:{task}:restarts` | `contextdb:web:contextdb-web:restarts` |
+| Deploy lifecycle | `{app}:deploy` | `field-harbor:deploy` |
+| Rollback lifecycle | `{app}:rollback` | `field-harbor:rollback` |
+| Canary promotion | `{app}:deploy` | `contextdb:deploy` |
+| Snapshot operations | `{app}:snapshots` | `field-harbor:snapshots` |
 | Cron outcomes | `{app}:{process}:cron` | `field-harbor:backup:cron` |
 
-### Consumer guidance (vigil-gateway, mobile)
+### Querying correlated events
 
-Norn emits correlation keys; it does not track open/resolved incident state
-itself. Consumers are responsible for:
+`GET /api/events/correlated?key=<correlationKey>` returns all events sharing
+the given correlation key, ordered chronologically (oldest first):
 
-1. **Grouping**: query events sharing the same `correlationKey` to build an
-   incident timeline.
-2. **Resolution**: when the most recent event in a correlation group is
-   `severity: info` (e.g. `service.health.recovered`), treat the incident as
-   resolved. An incident with only `warning`/`critical` events and no recovery
-   is still open.
-3. **Display**: show the correlation group as a single row with the most recent
-   severity as the headline, expandable to the full timeline.
-4. **Push suppression**: consider suppressing push notifications for `info`
-   recovery events that arrive within a short window of the triggering event
-   (e.g. a health blip that resolves in under 60 seconds).
+```bash
+norn events correlated contextdb:web:health
+norn events correlated field-harbor:deploy --limit 10
+```
 
-Vigil-gateway currently stores events flat. To support grouped display in the
-mobile app, vigil should:
+### Resolution semantics
 
-- Index `metadata->>'correlationKey'` in its `beacon_events` table.
-- Expose a `GET /api/incidents` endpoint that groups by correlation key,
-  returns the most recent severity, and includes a timeline of constituent
-  events.
-- Forward the `correlationKey` and `previousEventType` fields in APNs payloads
-  so the mobile app can update existing notification threads rather than
-  creating new ones.
+An incident is **resolved** when the most recent event in a correlation group
+has `severity: info` (e.g. `service.health.recovered`, `deploy.succeeded`).
+An incident with only `warning`/`critical` events and no recovery is still
+**open**.
 
-These changes are additive — the existing flat event list continues to work
-unchanged.
+### Vigil-gateway integration
+
+Vigil-gateway indexes `metadata->>'correlationKey'` and exposes
+`GET /api/incidents` to group events by correlation key. Each incident includes
+the most recent severity, event count, first/last seen timestamps, resolved
+status, and the full event timeline.
+
+APNs push notifications use `correlationKey` as the `thread-id` so iOS groups
+related notifications into a single thread. Recovery events update the existing
+thread rather than creating a new notification.
 
 ## Sink Configuration
 

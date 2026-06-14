@@ -57,6 +57,9 @@ This recap summarizes the current Norn v2 release line: the Nomad/Consul control
 | Evaluator readiness | `norn contextdb evaluator-readiness`, `/api/ops/contextdb/evaluator-readiness` | Synthesized per-namespace readiness assessment for provider-backed evaluator rollout with blockers |
 | Dashboard evaluator readiness | ContextDB ops panel evaluator section | Shows evaluator mode, key status, and readiness per namespace with ready/blocked badges |
 | Dashboard access grants | Platform tab access grants section | View active grants, create new grants with IP/TTL/note, and revoke grants inline |
+| Event correlation | `correlationKey` in beacon event metadata | Groups related events into incident arcs so consumers can track flare-up to resolution |
+| Correlated events query | `GET /api/events/correlated`, `norn events correlated` | Retrieves chronological event timeline for a correlation key |
+| Allocation lifecycle | `lifecycle` field on allocations, `allocationSummary` on app status | Separates active from retained allocations so CLI and dashboard show live capacity |
 | Upgrade path | `norn platform preflight`, `upgrade`, `releases`, `rollback` | Upgrades Norn API, CLI, and built UI without stopping Nomad, Consul, Postgres, or hosted apps |
 
 ## Operator Impact
