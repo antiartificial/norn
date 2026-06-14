@@ -143,6 +143,30 @@ func (h *Handler) Metrics(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
+	if h.nomad != nil {
+		writeMetricHeader(&b, "norn_task_restarts_total", "Current restart count for running tasks.", "gauge")
+		writeMetricHeader(&b, "norn_task_oom_kills_total", "Tasks that have been OOM killed in current allocations.", "gauge")
+		oomByProc := map[string]int{}
+		for _, spec := range specs {
+			infos, err := h.nomad.TaskRestartSummary(spec.App)
+			if err != nil {
+				continue
+			}
+			for _, info := range infos {
+				if info.Restarts > 0 {
+					fmt.Fprintf(&b, "norn_task_restarts_total{app=%q,process=%q,task=%q} %d\n",
+						promLabel(spec.App), promLabel(info.TaskGroup), promLabel(info.Task), info.Restarts)
+				}
+				if info.OOMKilled {
+					key := spec.App + ":" + info.TaskGroup + ":" + info.Task
+					oomByProc[key]++
+					fmt.Fprintf(&b, "norn_task_oom_kills_total{app=%q,process=%q,task=%q} %d\n",
+						promLabel(spec.App), promLabel(info.TaskGroup), promLabel(info.Task), oomByProc[key])
+				}
+			}
+		}
+	}
+
 	writeHostDiskMetrics(&b, ".")
 
 	fmt.Fprintf(&b, "norn_metrics_generated_timestamp_seconds %.0f\n", float64(time.Now().Unix()))

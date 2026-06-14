@@ -28,7 +28,9 @@ The current working feature set includes:
 - Managed observability app installation for Prometheus, Grafana, and cAdvisor
 - Platform smoke checks for health, drain, release marker, and recent warning/critical events
 - Authenticated platform smoke through the encrypted API runtime env
-- Runtime watcher events for failed, lost, and unhealthy allocations, Consul health transitions, and cron run outcomes
+- Runtime watcher events for failed, lost, and unhealthy allocations, task restarts, OOM kills, Consul health transitions, and cron run outcomes
+- Task-level restart and OOM tracking with Beacon events and Prometheus metrics
+- Resource right-sizing suggestions comparing declared limits against live Nomad allocation stats
 - Proxy cutover plan and optional managed proxy config/upstream commands for no-blip API upgrades
 - Proxy-backed platform upgrade mode for hosts that intentionally run Norn behind the managed Caddy upstream
 - Basic local snapshot listing and restore
@@ -144,7 +146,6 @@ Planned work:
 - Deploy the generated observability apps on hosts that have accepted the local port and container policy choices.
 - Add downstream incident-tool links for acknowledged/snoozed Beacon events.
 - Extend runtime watchers with schedule-aware missed-run detection.
-- Add high restart rate alert rules once those signals are measured.
 - Add temporary access grants, such as expiring JWT links or expiring IP allowlist entries.
 
 ### Platform Upgrade Continuity

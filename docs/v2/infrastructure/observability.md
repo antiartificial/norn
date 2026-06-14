@@ -175,6 +175,49 @@ Container metrics answer "is this process using resources?" App metrics answer "
 
 For cron and short-lived jobs, prefer Norn-recorded outcomes first: deployment steps, saga events, function execution history, cron history, and Beacon events. Use Pushgateway only when a batch job produces metrics that would disappear before Prometheus can scrape them.
 
+## Restart and OOM Tracking
+
+Norn tracks task-level restarts and OOM kills from Nomad allocation state. The allocation watcher inspects `TaskStates` every 60 seconds and emits Beacon events when restarts are detected:
+
+| Event Type | Severity | Trigger |
+|------------|----------|---------|
+| `nomad.task.oom_killed` | critical | A task was killed by the OOM killer |
+| `nomad.task.restarted` | warning | A task restarted for any reason |
+
+Each event includes the task name, task group, allocation ID, restart count, and last event message from Nomad.
+
+The `/metrics` endpoint exposes corresponding gauges:
+
+| Metric | Labels | Description |
+|--------|--------|-------------|
+| `norn_task_restarts_total` | app, process, task | Current restart count for running tasks |
+| `norn_task_oom_kills_total` | app, process, task | Tasks OOM killed in current allocations |
+
+The observability bundle includes Prometheus alert rules for these signals:
+
+- **NornTaskOOMRisk** — fires when a task has been OOM killed
+- **NornTaskRestartLoop** — fires when a task has restarted more than 3 times
+
+## Resource Right-sizing
+
+Norn can compare declared resource limits from `infraspec.yaml` against live Nomad allocation stats:
+
+```bash
+norn resources
+```
+
+The output classifies each running process:
+
+| Status | Meaning |
+|--------|---------|
+| `at risk` | Peak memory exceeds 80% of declared limit |
+| `right sized` | Memory usage is between 30% and 80% of limit |
+| `overprovisioned` | Peak memory is below 30% of declared limit |
+
+The API endpoint is `GET /api/resources/suggestions`.
+
+Use this to catch underprovisioned apps before they OOM and overprovisioned apps that waste capacity. Adjust `resources.memory` in the app's `infraspec.yaml` and redeploy.
+
 ## External Plumbing
 
 The local-first path is:

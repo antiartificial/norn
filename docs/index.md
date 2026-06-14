@@ -10,11 +10,11 @@ hero:
       text: Get Started
       link: /v2/guide/getting-started
     - theme: alt
+      text: Why Norn
+      link: /v2/guide/why-norn
+    - theme: alt
       text: Architecture
       link: /v2/architecture/overview
-    - theme: alt
-      text: CLI Reference
-      link: /v2/cli/commands
 
 features:
   - title: Discover
@@ -24,7 +24,7 @@ features:
   - title: Orchestrate
     details: Translates infraspec processes to Nomad jobs - services, periodic batch for cron, one-shot batch for functions - with Consul service discovery.
   - title: Monitor
-    details: Health checks, allocation status, log streaming, and deployment history - from the dashboard or the terminal.
+    details: Health checks, restart/OOM tracking, resource right-sizing, Beacon events, and Prometheus metrics - from the dashboard or the terminal.
   - title: Functions
     details: HTTP-triggered ephemeral containers - invoke from the dashboard, CLI, or API with automatic execution tracking via Nomad batch jobs.
   - title: Saga Events

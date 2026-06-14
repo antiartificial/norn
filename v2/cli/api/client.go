@@ -1324,6 +1324,28 @@ func (c *Client) authorize(req *http.Request) {
 	}
 }
 
+type ResourceSuggestion struct {
+	App            string  `json:"app"`
+	Process        string  `json:"process"`
+	DeclaredMemMB  int     `json:"declaredMemoryMB"`
+	DeclaredCPUMHz int     `json:"declaredCpuMHz"`
+	UsedMemMB      int     `json:"usedMemoryMB"`
+	PeakMemMB      int     `json:"peakMemoryMB"`
+	CPUPercent     float64 `json:"cpuPercent"`
+	Status         string  `json:"status"`
+	Reason         string  `json:"reason"`
+}
+
+func (c *Client) ResourceSuggestions() ([]ResourceSuggestion, error) {
+	var resp struct {
+		Suggestions []ResourceSuggestion `json:"suggestions"`
+	}
+	if err := c.get("/api/resources/suggestions", &resp); err != nil {
+		return nil, err
+	}
+	return resp.Suggestions, nil
+}
+
 func firstNonEmpty(values ...string) string {
 	for _, value := range values {
 		if strings.TrimSpace(value) != "" {

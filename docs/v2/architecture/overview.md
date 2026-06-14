@@ -73,6 +73,7 @@ v2/cli/
 │   ├── saga.go
 │   ├── validate.go
 │   ├── forge.go
+│   ├── resources.go
 │   ├── endpoints.go
 │   ├── stream.go
 │   └── version.go
@@ -117,6 +118,7 @@ v2/ui/
 | GET | `/api/operations` | List recent operation queue rows |
 | GET | `/api/operations/active` | List queued/running operations for drains |
 | GET | `/api/alerts/rules` | Built-in alert rule catalogue |
+| GET | `/api/resources/suggestions` | Resource right-sizing suggestions based on live Nomad allocation stats |
 | GET | `/api/events` | List Beacon events |
 | GET | `/api/events/{id}` | Beacon event detail |
 | POST | `/api/events/{id}/ack` | Acknowledge a Beacon event |

@@ -440,6 +440,117 @@ func (c *Client) SuggestPort(base int) (int, error) {
 	return port, nil
 }
 
+// TaskRestartInfo summarizes restart state for a single task within an allocation.
+type TaskRestartInfo struct {
+	App         string    `json:"app"`
+	TaskGroup   string    `json:"taskGroup"`
+	AllocID     string    `json:"allocId"`
+	Task        string    `json:"task"`
+	Restarts    uint64    `json:"restarts"`
+	LastRestart time.Time `json:"lastRestart,omitempty"`
+	OOMKilled   bool      `json:"oomKilled"`
+	LastEvent   string    `json:"lastEvent,omitempty"`
+}
+
+// TaskRestartSummary returns restart info for all tasks in non-terminal allocations.
+func (c *Client) TaskRestartSummary(jobID string) ([]TaskRestartInfo, error) {
+	allocs, err := c.JobAllocations(jobID)
+	if err != nil {
+		return nil, err
+	}
+	var out []TaskRestartInfo
+	for _, a := range allocs {
+		if a.ClientStatus == "complete" || a.ClientStatus == "failed" || a.ClientStatus == "lost" {
+			continue
+		}
+		for taskName, ts := range a.TaskStates {
+			if ts.Restarts == 0 && len(ts.Events) == 0 {
+				continue
+			}
+			info := TaskRestartInfo{
+				App:       jobID,
+				TaskGroup: a.TaskGroup,
+				AllocID:   short(a.ID, 8),
+				Task:      taskName,
+				Restarts:  ts.Restarts,
+			}
+			if !ts.LastRestart.IsZero() {
+				info.LastRestart = ts.LastRestart
+			}
+			for _, ev := range ts.Events {
+				if ev.Type == "OOM Killed" {
+					info.OOMKilled = true
+				}
+			}
+			if len(ts.Events) > 0 {
+				last := ts.Events[len(ts.Events)-1]
+				info.LastEvent = last.DisplayMessage
+				if info.LastEvent == "" {
+					info.LastEvent = last.Type
+				}
+			}
+			out = append(out, info)
+		}
+	}
+	return out, nil
+}
+
+// ResourceUsage describes live resource consumption for an allocation.
+type ResourceUsage struct {
+	AllocID          string  `json:"allocId"`
+	TaskGroup        string  `json:"taskGroup"`
+	MemoryUsageBytes uint64  `json:"memoryUsageBytes"`
+	MemoryMaxBytes   uint64  `json:"memoryMaxBytes"`
+	CPUPercent       float64 `json:"cpuPercent"`
+}
+
+// AllocResourceUsage returns live resource stats for a specific allocation.
+func (c *Client) AllocResourceUsage(allocID string) (*ResourceUsage, error) {
+	alloc, _, err := c.api.Allocations().Info(allocID, nil)
+	if err != nil {
+		return nil, fmt.Errorf("alloc info: %w", err)
+	}
+
+	stats, err := c.api.Allocations().Stats(alloc, nil)
+	if err != nil {
+		return nil, fmt.Errorf("alloc stats: %w", err)
+	}
+
+	usage := &ResourceUsage{
+		AllocID:   short(allocID, 8),
+		TaskGroup: alloc.TaskGroup,
+	}
+	if stats.ResourceUsage != nil && stats.ResourceUsage.MemoryStats != nil {
+		usage.MemoryUsageBytes = stats.ResourceUsage.MemoryStats.RSS
+		usage.MemoryMaxBytes = stats.ResourceUsage.MemoryStats.MaxUsage
+	}
+	if stats.ResourceUsage != nil && stats.ResourceUsage.CpuStats != nil {
+		usage.CPUPercent = stats.ResourceUsage.CpuStats.Percent
+	}
+	return usage, nil
+}
+
+// JobResourceUsage returns live resource stats for all running allocations of a job.
+func (c *Client) JobResourceUsage(jobID string) ([]ResourceUsage, error) {
+	allocs, err := c.JobAllocations(jobID)
+	if err != nil {
+		return nil, err
+	}
+	var out []ResourceUsage
+	for _, a := range allocs {
+		if a.ClientStatus != "running" {
+			continue
+		}
+		usage, err := c.AllocResourceUsage(a.ID)
+		if err != nil {
+			continue
+		}
+		usage.TaskGroup = a.TaskGroup
+		out = append(out, *usage)
+	}
+	return out, nil
+}
+
 func formatDuration(d time.Duration) string {
 	days := int(d.Hours()) / 24
 	hours := int(d.Hours()) % 24

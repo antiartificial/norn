@@ -101,6 +101,7 @@ func (w *NomadAllocationWatcher) check(ctx context.Context) {
 					}
 				}
 			}
+			w.checkTaskRestarts(ctx, spec)
 			w.checkCron(ctx, spec)
 		}
 		w.checkServiceHealth(ctx, spec)
@@ -259,6 +260,68 @@ func (w *NomadAllocationWatcher) cronRunState(jobID, jobStatus string) string {
 		return "running"
 	}
 	return "complete"
+}
+
+func (w *NomadAllocationWatcher) checkTaskRestarts(ctx context.Context, spec *model.InfraSpec) {
+	infos, err := w.nomad.TaskRestartSummary(spec.App)
+	if err != nil {
+		return
+	}
+	for _, info := range infos {
+		if info.Restarts == 0 {
+			continue
+		}
+		key := fmt.Sprintf("restart:%s:%s:%s:%s", spec.App, info.TaskGroup, info.AllocID, info.Task)
+		prevStr := w.seen[key]
+		prev := uint64(0)
+		if prevStr != "" {
+			fmt.Sscanf(prevStr, "%d", &prev)
+		}
+		if info.Restarts <= prev {
+			continue
+		}
+		w.seen[key] = fmt.Sprintf("%d", info.Restarts)
+
+		if info.OOMKilled {
+			_, err := w.beacon.Emit(ctx, model.BeaconEvent{
+				App:      spec.App,
+				Type:     "nomad.task.oom_killed",
+				Severity: model.BeaconCritical,
+				Title:    fmt.Sprintf("%s %s OOM killed", spec.App, info.Task),
+				Body:     fmt.Sprintf("Task %s in %s was killed by the OOM killer (restarts: %d). %s", info.Task, info.TaskGroup, info.Restarts, info.LastEvent),
+				DedupeKey: fmt.Sprintf("%s:%s:%s:oom:%d", spec.App, info.AllocID, info.Task, info.Restarts),
+				Metadata: map[string]interface{}{
+					"task":      info.Task,
+					"taskGroup": info.TaskGroup,
+					"allocId":   info.AllocID,
+					"restarts":  info.Restarts,
+					"lastEvent": info.LastEvent,
+				},
+			})
+			if err != nil {
+				log.Printf("nomad watcher: oom beacon emit: %v", err)
+			}
+		} else {
+			_, err := w.beacon.Emit(ctx, model.BeaconEvent{
+				App:      spec.App,
+				Type:     "nomad.task.restarted",
+				Severity: model.BeaconWarning,
+				Title:    fmt.Sprintf("%s %s restarted", spec.App, info.Task),
+				Body:     fmt.Sprintf("Task %s in %s restarted (count: %d). %s", info.Task, info.TaskGroup, info.Restarts, info.LastEvent),
+				DedupeKey: fmt.Sprintf("%s:%s:%s:restart:%d", spec.App, info.AllocID, info.Task, info.Restarts),
+				Metadata: map[string]interface{}{
+					"task":      info.Task,
+					"taskGroup": info.TaskGroup,
+					"allocId":   info.AllocID,
+					"restarts":  info.Restarts,
+					"lastEvent": info.LastEvent,
+				},
+			})
+			if err != nil {
+				log.Printf("nomad watcher: restart beacon emit: %v", err)
+			}
+		}
+	}
 }
 
 func shortAlloc(id string) string {
