@@ -20,16 +20,20 @@ type resourceSuggestion struct {
 	Reason         string `json:"reason"`
 }
 
-func classifyMemory(declaredMB, peakMB int) (string, string) {
-	if declaredMB == 0 || peakMB == 0 {
+func classifyMemory(declaredMB, usedMB, peakMB int) (string, string) {
+	highMB := peakMB
+	if highMB == 0 {
+		highMB = usedMB
+	}
+	if declaredMB == 0 || highMB == 0 {
 		return "unknown", "no usage data"
 	}
-	ratio := float64(peakMB) / float64(declaredMB)
+	ratio := float64(highMB) / float64(declaredMB)
 	if ratio > 0.80 {
-		return "at_risk", "peak memory exceeds 80% of limit"
+		return "at_risk", "memory exceeds 80% of limit"
 	}
 	if ratio < 0.30 {
-		return "overprovisioned", "peak memory below 30% of limit"
+		return "overprovisioned", "memory below 30% of limit"
 	}
 	return "right_sized", ""
 }
@@ -89,7 +93,7 @@ func (h *Handler) ResourceSuggestions(w http.ResponseWriter, r *http.Request) {
 
 			usedMB := int(u.MemoryUsageBytes / (1024 * 1024))
 			peakMB := int(u.MemoryMaxBytes / (1024 * 1024))
-			status, reason := classifyMemory(declaredMem, peakMB)
+			status, reason := classifyMemory(declaredMem, usedMB, peakMB)
 
 			suggestions = append(suggestions, resourceSuggestion{
 				App:            spec.App,
