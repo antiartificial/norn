@@ -20,10 +20,11 @@ func (db *DB) StartDeploymentStep(ctx context.Context, step model.DeploymentStep
 	}
 	metadata, _ := json.Marshal(step.Metadata)
 	_, err := db.Pool.Exec(ctx, `
-		INSERT INTO deployment_steps (deployment_id, app, saga_id, step, status, attempt, started_at, duration_ms, message, metadata)
-		VALUES ($1, $2, $3, $4, $5, $6, $7, 0, $8, $9)
+		INSERT INTO deployment_steps (deployment_id, app, saga_id, step, status, kind, attempt, started_at, duration_ms, message, metadata)
+		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, 0, $9, $10)
 		ON CONFLICT (deployment_id, step) DO UPDATE
 		SET status = EXCLUDED.status,
+		    kind = EXCLUDED.kind,
 		    attempt = EXCLUDED.attempt,
 		    started_at = EXCLUDED.started_at,
 		    finished_at = NULL,
@@ -32,7 +33,7 @@ func (db *DB) StartDeploymentStep(ctx context.Context, step model.DeploymentStep
 		    metadata = deployment_steps.metadata || EXCLUDED.metadata,
 		    app = EXCLUDED.app,
 		    saga_id = EXCLUDED.saga_id
-	`, step.DeploymentID, step.App, step.SagaID, step.Step, step.Status, step.Attempt, step.StartedAt, step.Message, metadata)
+	`, step.DeploymentID, step.App, step.SagaID, step.Step, step.Status, step.Kind, step.Attempt, step.StartedAt, step.Message, metadata)
 	return err
 }
 
@@ -55,7 +56,7 @@ func (db *DB) FinishDeploymentStep(ctx context.Context, deploymentID, step strin
 
 func (db *DB) ListDeploymentSteps(ctx context.Context, deploymentID string) ([]model.DeploymentStep, error) {
 	rows, err := db.Pool.Query(ctx, `
-		SELECT deployment_id, app, saga_id, step, status, attempt, started_at, finished_at, duration_ms, message, metadata
+		SELECT deployment_id, app, saga_id, step, status, kind, attempt, started_at, finished_at, duration_ms, message, metadata
 		FROM deployment_steps
 		WHERE deployment_id = $1
 		ORDER BY started_at ASC
@@ -69,7 +70,7 @@ func (db *DB) ListDeploymentSteps(ctx context.Context, deploymentID string) ([]m
 	for rows.Next() {
 		var step model.DeploymentStep
 		var metadata []byte
-		if err := rows.Scan(&step.DeploymentID, &step.App, &step.SagaID, &step.Step, &step.Status, &step.Attempt, &step.StartedAt, &step.FinishedAt, &step.DurationMs, &step.Message, &metadata); err != nil {
+		if err := rows.Scan(&step.DeploymentID, &step.App, &step.SagaID, &step.Step, &step.Status, &step.Kind, &step.Attempt, &step.StartedAt, &step.FinishedAt, &step.DurationMs, &step.Message, &metadata); err != nil {
 			return nil, err
 		}
 		_ = json.Unmarshal(metadata, &step.Metadata)

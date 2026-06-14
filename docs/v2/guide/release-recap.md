@@ -44,6 +44,14 @@ This recap summarizes the current Norn v2 release line: the Nomad/Consul control
 | Snapshot export | `norn snapshots export/remote/import`, `snapshots.exportBucket` | Archives database snapshots to S3-compatible object storage and imports them back for disaster recovery |
 | Deploy groups | `norn deploy-groups`, `deploy-groups/*.yaml` | Defines ordered multi-app deployment sequences with optional wait-ready gates between apps |
 | Canary deploys | `canary` process config, `norn canary/promote` | Deploys canary allocations first, evaluates health after a configurable window, then promotes or fails automatically |
+| Webhook notifications | `webhook` notification provider | Sends Beacon events as JSON to any HTTP endpoint with optional bearer auth, useful for wiring to custom notification services |
+| Cron missed-run detection | `cron.missed_run` Beacon events, `norn_cron_missed_runs_total` metric | Detects when scheduled processes fail to dispatch by comparing cron expressions against actual run history |
+| Secrets migration | `norn secrets migrate [app]` | Generates SOPS commands and optionally modifies infraspecs to move plaintext env secrets to encrypted secrets |
+| Deploy checkpoint enrichment | `kind` field on `deployment_steps` | Records whether each deploy step is read-only or mutable to support future stage-level resume |
+| Dashboard notifications | Platform tab notifications section | Manage notification channels from the dashboard with test, remove, and add-channel form |
+| Dashboard deploy groups | Platform tab deploy groups section | View and trigger deploy groups from the dashboard |
+| Dashboard canary status | Per-app canary badge in AppCard | Shows active canary deployments with promote action inline |
+| Dashboard remote snapshots | Remote tab in SnapshotsPanel | Export, list, and import remote snapshots from the dashboard |
 | Upgrade path | `norn platform preflight`, `upgrade`, `releases`, `rollback` | Upgrades Norn API, CLI, and built UI without stopping Nomad, Consul, Postgres, or hosted apps |
 
 ## Operator Impact

@@ -75,6 +75,8 @@ func (n *Notifier) send(ctx context.Context, ch model.NotificationChannel, event
 		err = n.sendNtfy(ctx, ch, event)
 	case "pushover":
 		err = n.sendPushover(ctx, ch, event)
+	case "webhook":
+		err = n.sendWebhook(ctx, ch, event)
 	default:
 		err = fmt.Errorf("unknown provider %q", ch.Provider)
 	}
@@ -165,6 +167,43 @@ func (n *Notifier) sendPushover(ctx context.Context, ch model.NotificationChanne
 
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
 		return fmt.Errorf("pushover returned %s", resp.Status)
+	}
+	return nil
+}
+
+func (n *Notifier) sendWebhook(ctx context.Context, ch model.NotificationChannel, event model.BeaconEvent) error {
+	payload := map[string]interface{}{
+		"id":       event.ID,
+		"app":      event.App,
+		"type":     event.Type,
+		"severity": event.Severity,
+		"title":    event.Title,
+		"body":     event.Body,
+		"metadata": event.Metadata,
+	}
+
+	body, err := json.Marshal(payload)
+	if err != nil {
+		return fmt.Errorf("marshal webhook payload: %w", err)
+	}
+
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, ch.URL, bytes.NewReader(body))
+	if err != nil {
+		return fmt.Errorf("create webhook request: %w", err)
+	}
+	req.Header.Set("Content-Type", "application/json")
+	if ch.Token != "" {
+		req.Header.Set("Authorization", "Bearer "+ch.Token)
+	}
+
+	resp, err := n.client.Do(req)
+	if err != nil {
+		return fmt.Errorf("webhook delivery: %w", err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+		return fmt.Errorf("webhook returned %s", resp.Status)
 	}
 	return nil
 }

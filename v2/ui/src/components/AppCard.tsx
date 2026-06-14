@@ -1,5 +1,6 @@
-import { useState } from 'react'
-import type { AppStatus, RepoSpec } from '../types/index.ts'
+import { useState, useEffect } from 'react'
+import type { AppStatus, RepoSpec, CanaryStatus } from '../types/index.ts'
+import { apiUrl, fetchOpts } from '../lib/api.ts'
 import { Tooltip } from './Tooltip.tsx'
 
 function truncateURL(url: string): string {
@@ -51,6 +52,59 @@ function nodeLabel(provider?: string, region?: string, name?: string): { icon: s
     case 'hz': return { icon: 'fa-cloud', text: region ? `hz-${region}` : 'hz' }
     default: return { icon: 'fa-server', text: name ?? 'remote' }
   }
+}
+
+function CanaryIndicator({ appId }: { appId: string }) {
+  const [canary, setCanary] = useState<CanaryStatus | null>(null)
+  const [promoting, setPromoting] = useState(false)
+  const [promoteMsg, setPromoteMsg] = useState<{ type: 'success' | 'error'; text: string } | null>(null)
+
+  useEffect(() => {
+    let cancelled = false
+    fetch(apiUrl(`/api/apps/${appId}/canary`), fetchOpts)
+      .then(res => res.ok ? res.json() : null)
+      .then(data => { if (!cancelled && data) setCanary(data) })
+      .catch(() => {})
+    return () => { cancelled = true }
+  }, [appId])
+
+  if (!canary || !canary.isCanary) return null
+
+  const handlePromote = async () => {
+    setPromoting(true)
+    setPromoteMsg(null)
+    try {
+      const res = await fetch(apiUrl(`/api/apps/${appId}/promote`), { ...fetchOpts, method: 'POST' })
+      if (res.ok) {
+        setPromoteMsg({ type: 'success', text: 'Promoted' })
+        setCanary(prev => prev ? { ...prev, isCanary: false, status: 'promoted' } : prev)
+      } else {
+        const data = await res.json().catch(() => ({ error: 'Unknown error' }))
+        setPromoteMsg({ type: 'error', text: data.error || 'Promote failed' })
+      }
+    } catch (e) {
+      setPromoteMsg({ type: 'error', text: `Promote failed: ${e}` })
+    }
+    setPromoting(false)
+  }
+
+  return (
+    <div className="app-card-canary">
+      <Tooltip text={canary.statusDescription ?? canary.status}>
+        <span className="canary-badge">
+          <i className="fawsb fa-bird" /> Canary: {canary.status}
+        </span>
+      </Tooltip>
+      {promoteMsg ? (
+        <span className={`canary-msg canary-msg-${promoteMsg.type}`}>{promoteMsg.text}</span>
+      ) : (
+        <button className="btn btn-small" disabled={promoting} onClick={handlePromote}>
+          {promoting ? <span className="btn-spinner" /> : <i className="fawsb fa-arrow-up" />}
+          Promote
+        </button>
+      )}
+    </div>
+  )
 }
 
 function EndpointBadges({ spec, allocations, activeIngress, appId, onToggleEndpoint }: {
@@ -244,6 +298,9 @@ export function AppCard({ app, busy, activeIngress, onPreflight, onDeploy, onRes
 
       {/* Endpoints */}
       <EndpointBadges spec={spec} allocations={allocations} activeIngress={activeIngress} appId={spec.name} onToggleEndpoint={onToggleEndpoint} />
+
+      {/* Canary status */}
+      <CanaryIndicator appId={spec.name} />
 
       <div className="app-card-actions">
         <Tooltip text="Validate, build, and test without deploying">

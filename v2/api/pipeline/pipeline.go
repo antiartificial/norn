@@ -385,6 +385,7 @@ func (p *Pipeline) recordDeploymentStepStart(ctx context.Context, deploy *model.
 		App:          deploy.App,
 		SagaID:       sg.ID,
 		Step:         stepName,
+		Kind:         model.StepKind(stepName),
 		Status:       model.DeploymentStepRunning,
 		Attempt:      attempt,
 		Message:      "step started",

@@ -7,6 +7,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/hashicorp/cronexpr"
 	"norn/v2/api/beacon"
 	"norn/v2/api/consul"
 	"norn/v2/api/model"
@@ -103,6 +104,7 @@ func (w *NomadAllocationWatcher) check(ctx context.Context) {
 			}
 			w.checkTaskRestarts(ctx, spec)
 			w.checkCron(ctx, spec)
+			w.checkCronMissedRuns(ctx, spec)
 		}
 		w.checkServiceHealth(ctx, spec)
 	}
@@ -320,6 +322,116 @@ func (w *NomadAllocationWatcher) checkTaskRestarts(ctx context.Context, spec *mo
 			if err != nil {
 				log.Printf("nomad watcher: restart beacon emit: %v", err)
 			}
+		}
+	}
+}
+
+const cronMissedGracePeriod = 5 * time.Minute
+
+func (w *NomadAllocationWatcher) checkCronMissedRuns(ctx context.Context, spec *model.InfraSpec) {
+	if w.nomad == nil {
+		return
+	}
+	for process, proc := range spec.Processes {
+		if strings.TrimSpace(proc.Schedule) == "" {
+			continue
+		}
+		parentJobID := fmt.Sprintf("%s-%s", spec.App, process)
+		missedKey := fmt.Sprintf("missed:%s:%s", spec.App, process)
+
+		info, err := w.nomad.PeriodicJobSchedule(parentJobID)
+		if err != nil || info == nil {
+			continue
+		}
+		if info.Paused || info.Status == "dead" {
+			// Job is intentionally stopped; clear any prior missed-run alert state.
+			delete(w.seen, missedKey)
+			continue
+		}
+		schedule := strings.TrimSpace(info.Schedule)
+		if schedule == "" {
+			continue
+		}
+
+		// Parse the cron expression safely.
+		var expr *cronexpr.Expression
+		func() {
+			defer func() { recover() }() //nolint:errcheck
+			expr = cronexpr.MustParse(schedule)
+		}()
+		if expr == nil {
+			continue
+		}
+
+		// Find the latest run's start time.
+		runs, err := w.nomad.PeriodicChildren(parentJobID)
+		if err != nil {
+			continue
+		}
+		var lastRunTime time.Time
+		for _, run := range runs {
+			t, parseErr := time.Parse(time.RFC3339, run.StartedAt)
+			if parseErr != nil {
+				continue
+			}
+			if t.After(lastRunTime) {
+				lastRunTime = t
+			}
+		}
+
+		// If we have never seen a run, use a reference point far enough back
+		// so that at least one interval has elapsed. Use one full interval
+		// before now as the reference so we don't false-alert on first start.
+		reference := lastRunTime
+		if reference.IsZero() {
+			// Seed from a point far enough in the past that Next() gives us
+			// the most recently expected run.
+			reference = time.Now().Add(-24 * time.Hour)
+		}
+
+		expectedNextRun := expr.Next(reference)
+		if expectedNextRun.IsZero() {
+			continue
+		}
+
+		deadline := expectedNextRun.Add(cronMissedGracePeriod)
+		if time.Now().Before(deadline) {
+			// The expected run hasn't been missed yet; clear any stale alert key
+			// so we re-alert if a future window is missed.
+			if w.seen[missedKey] == expectedNextRun.Format(time.RFC3339) {
+				// still the same window and still within grace — do nothing
+			}
+			continue
+		}
+
+		// We're past the grace period. Check whether we already alerted for this window.
+		windowKey := expectedNextRun.Format(time.RFC3339)
+		if w.seen[missedKey] == windowKey {
+			continue
+		}
+		w.seen[missedKey] = windowKey
+
+		_, emitErr := w.beacon.Emit(ctx, model.BeaconEvent{
+			App:      spec.App,
+			Type:     "cron.missed_run",
+			Severity: model.BeaconCritical,
+			Title:    fmt.Sprintf("%s %s cron missed run", spec.App, process),
+			Body: fmt.Sprintf(
+				"Cron process %s was expected to run at %s but no dispatch was recorded. The Nomad periodic dispatcher may be stuck or the job may be paused.",
+				process, expectedNextRun.UTC().Format(time.RFC3339),
+			),
+			DedupeKey: fmt.Sprintf("%s:%s:missed:%s", spec.App, process, windowKey),
+			Metadata: map[string]interface{}{
+				"process":         process,
+				"jobId":           parentJobID,
+				"schedule":        schedule,
+				"expectedRunAt":   expectedNextRun.UTC().Format(time.RFC3339),
+				"lastRunAt":       lastRunTime.UTC().Format(time.RFC3339),
+				"gracePeriod":     cronMissedGracePeriod.String(),
+			},
+		})
+		if emitErr != nil {
+			log.Printf("nomad watcher: missed-run beacon emit: %v", emitErr)
 		}
 	}
 }

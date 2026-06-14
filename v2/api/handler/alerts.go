@@ -47,6 +47,14 @@ func (h *Handler) AlertRules(w http.ResponseWriter, r *http.Request) {
 				Runbook:     "/v2/operations/cron",
 			},
 			{
+				ID:          "cron-missed-run",
+				Name:        "Cron missed run",
+				Severity:    "critical",
+				EventTypes:  []string{"cron.missed_run"},
+				Description: "A scheduled process did not run when expected — the Nomad periodic dispatcher may be stuck or the job may be paused.",
+				Runbook:     "/v2/operations/cron",
+			},
+			{
 				ID:          "service-recovered",
 				Name:        "Service recovered",
 				Severity:    "info",

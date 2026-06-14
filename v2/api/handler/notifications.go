@@ -39,10 +39,10 @@ func (h *Handler) CreateNotificationChannel(w http.ResponseWriter, r *http.Reque
 	}
 
 	switch ch.Provider {
-	case "discord", "ntfy", "pushover":
+	case "discord", "ntfy", "pushover", "webhook":
 		// valid
 	default:
-		writeError(w, http.StatusBadRequest, "provider must be discord, ntfy, or pushover")
+		writeError(w, http.StatusBadRequest, "provider must be discord, ntfy, pushover, or webhook")
 		return
 	}
 

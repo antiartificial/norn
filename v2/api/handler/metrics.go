@@ -10,6 +10,7 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/hashicorp/cronexpr"
 	"norn/v2/api/model"
 )
 
@@ -165,6 +166,50 @@ func (h *Handler) Metrics(w http.ResponseWriter, r *http.Request) {
 				}
 			}
 		}
+
+		writeMetricHeader(&b, "norn_cron_missed_runs_total", "Whether a cron process missed its most recent expected run window (1 = missed, 0 = ok).", "gauge")
+		now := time.Now()
+		for _, spec := range specs {
+			for processName, proc := range spec.Processes {
+				if strings.TrimSpace(proc.Schedule) == "" {
+					continue
+				}
+				parentJobID := fmt.Sprintf("%s-%s", spec.App, processName)
+				missed := 0
+				info, err := h.nomad.PeriodicJobSchedule(parentJobID)
+				if err == nil && info != nil && !info.Paused && info.Status != "dead" {
+					schedule := strings.TrimSpace(info.Schedule)
+					if schedule != "" {
+						expr, parseErr := tryParseCronExpr(schedule)
+						if parseErr == nil && expr != nil {
+							runs, runsErr := h.nomad.PeriodicChildren(parentJobID)
+							if runsErr == nil {
+								var lastRunTime time.Time
+								for _, run := range runs {
+									t, tErr := time.Parse(time.RFC3339, run.StartedAt)
+									if tErr != nil {
+										continue
+									}
+									if t.After(lastRunTime) {
+										lastRunTime = t
+									}
+								}
+								reference := lastRunTime
+								if reference.IsZero() {
+									reference = now.Add(-24 * time.Hour)
+								}
+								expectedNext := expr.Next(reference)
+								if !expectedNext.IsZero() && now.After(expectedNext.Add(5*time.Minute)) {
+									missed = 1
+								}
+							}
+						}
+					}
+				}
+				fmt.Fprintf(&b, "norn_cron_missed_runs_total{app=%q,process=%q} %d\n",
+					promLabel(spec.App), promLabel(processName), missed)
+			}
+		}
 	}
 
 	writeHostDiskMetrics(&b, ".")
@@ -252,6 +297,16 @@ func quotedList(values []string) string {
 
 func yamlString(value string) string {
 	return strconv.Quote(value)
+}
+
+func tryParseCronExpr(schedule string) (expr *cronexpr.Expression, err error) {
+	defer func() {
+		if r := recover(); r != nil {
+			err = fmt.Errorf("invalid cron expression %q: %v", schedule, r)
+		}
+	}()
+	expr = cronexpr.MustParse(schedule)
+	return expr, nil
 }
 
 func writeHostDiskMetrics(b *bytes.Buffer, path string) {
