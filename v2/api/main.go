@@ -370,7 +370,12 @@ func bearerAuth(token string, h *handler.Handler) func(http.Handler) http.Handle
 				next.ServeHTTP(w, r)
 				return
 			}
-			if h != nil && h.HasActiveGrant(clientIPFromRequest(r)) {
+			ip := clientIPFromRequest(r)
+			if loopback := net.ParseIP(ip); loopback != nil && loopback.IsLoopback() {
+				next.ServeHTTP(w, r)
+				return
+			}
+			if h != nil && h.HasActiveGrant(ip) {
 				next.ServeHTTP(w, r)
 				return
 			}
