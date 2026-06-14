@@ -31,6 +31,11 @@ client {
     read_only = false
   }
 
+  host_volume "ft-bookmarks" {
+    path      = "/Users/0xadb/.ft-bookmarks"
+    read_only = false
+  }
+
   host_volume "garage-meta" {
     path      = "/Users/0xadb/volumes/garage-meta"
     read_only = false
