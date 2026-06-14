@@ -31,14 +31,22 @@ norn --api=https://norn.example.com status
 | [`norn status`](/v2/cli/commands#status) | List all apps with health and status |
 | [`norn app`](/v2/cli/commands#app) | Detailed view of a single app |
 | [`norn deploy`](/v2/cli/commands#deploy) | Deploy with live pipeline progress |
+| [`norn preflight`](/v2/cli/commands#preflight) | Rehearse build/test without runtime mutation |
+| [`norn operations`](/v2/cli/commands#operations) | Inspect durable operation rows and drain state |
+| [`norn resources`](/v2/cli/commands#resources) | Resource usage and right-sizing suggestions |
+| [`norn notifications`](/v2/cli/commands#notifications) | Manage Beacon notification channels |
+| [`norn canary`](/v2/cli/commands#canary) | Inspect and promote canary deployments |
+| [`norn deploy-groups`](/v2/cli/commands#deploy-groups) | Run ordered multi-app deploy groups |
 | [`norn restart`](/v2/cli/commands#restart) | Rolling restart |
 | [`norn rollback`](/v2/cli/commands#rollback) | Rollback to previous deployment |
 | [`norn scale`](/v2/cli/commands#scale) | Scale a task group |
 | [`norn logs`](/v2/cli/commands#logs) | Stream live logs |
 | [`norn health`](/v2/cli/commands#health) | Check backing service health |
 | [`norn stats`](/v2/cli/commands#stats) | Deployment and cluster statistics |
+| [`norn access`](/v2/cli/commands#access) | Access events and temporary IP grants |
 | [`norn secrets`](/v2/cli/commands#secrets) | Manage app secrets |
 | [`norn snapshots`](/v2/cli/commands#snapshots) | Database snapshot management |
+| [`norn services`](/v2/cli/commands#services) | Service manifest and reachability |
 | [`norn cron`](/v2/cli/commands#cron) | Cron job management |
 | [`norn invoke`](/v2/cli/commands#invoke) | Invoke a function |
 | [`norn saga`](/v2/cli/commands#saga) | View saga event log |

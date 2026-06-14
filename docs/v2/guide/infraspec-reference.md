@@ -19,6 +19,7 @@ Complete field reference for `infraspec.yaml`.
 | `endpoints` | [Endpoint](#endpoints)[] | no | External URL mappings |
 | `volumes` | [VolumeSpec](#volumes)[] | no | Host volume mounts |
 | `snapshots` | [SnapshotPolicy](#snapshotpolicy) | no | Snapshot retention defaults |
+| `deployPolicy` | [DeployPolicy](#deploypolicy) | no | Deploy safety policy such as auto-rollback |
 
 ## Process
 
@@ -35,6 +36,7 @@ Each key in the `processes` map is the process name. The process type is inferre
 | `scaling` | [Scaling](#scaling) | — | Instance count and autoscaling |
 | `drain` | [Drain](#drain) | — | Graceful shutdown configuration |
 | `resources` | [Resources](#resources) | `cpu: 100, memory: 128` | CPU (MHz) and memory (MB) limits |
+| `canary` | [CanaryConfig](#canaryconfig) | — | Canary allocation count and evaluation window |
 
 ## Health
 
@@ -82,6 +84,15 @@ Each key in the `processes` map is the process name. The process type is inferre
 |-------|------|---------|-------------|
 | `cpu` | int | `100` | CPU allocation in MHz |
 | `memory` | int | `128` | Memory allocation in MB |
+
+## CanaryConfig
+
+| Field | Type | Default | Description |
+|-------|------|---------|-------------|
+| `count` | int | — | Number of canary allocations to start before full promotion |
+| `evaluateAfter` | string | — | Duration to wait before evaluating canary health, such as `2m` |
+
+When a process declares canary settings, Norn submits the Nomad deployment with canary allocations, waits through the normal health gate, then evaluates allocation health after `evaluateAfter`. Operators can inspect and promote with `norn canary <app>` and `norn promote <app>`.
 
 ## FunctionSpec
 
@@ -149,6 +160,15 @@ Each key in the `processes` map is the process name. The process type is inferre
 | `keep` | int | `3` | Newest local snapshots to keep when retention runs without `--keep` |
 | `preRestore` | bool | `false` | Create a safety snapshot before restore when the API or CLI does not override the restore request |
 | `retentionEnabled` | bool | `false` | Reserved flag for scheduled retention automation |
+| `exportBucket` | string | — | S3-compatible bucket for `norn snapshots export/remote/import` |
+
+## DeployPolicy
+
+| Field | Type | Default | Description |
+|-------|------|---------|-------------|
+| `autoRollback` | bool | `true` | Queue rollback to the last successful deployment when the deploy health gate fails |
+
+Because `autoRollback` defaults to enabled, omit `deployPolicy` for normal apps. Set `autoRollback: false` when a failed health gate should stop for manual operator review.
 
 ## Defaults Summary
 
@@ -161,6 +181,7 @@ Each key in the `processes` map is the process name. The process type is inferre
 | `scaling.min` | 1 |
 | `repo.branch` | main |
 | `snapshots.keep` | 3 |
+| `deployPolicy.autoRollback` | true |
 
 ## Full Example
 
@@ -193,6 +214,9 @@ processes:
     resources:
       cpu: 200
       memory: 256
+    canary:
+      count: 1
+      evaluateAfter: 2m
   poller:
     command: ./signal-sideband --mode=poller
     resources:
@@ -225,6 +249,10 @@ infrastructure:
 
 snapshots:
   keep: 5
+  exportBucket: signal-sideband-snapshots
+
+deployPolicy:
+  autoRollback: true
 
 endpoints:
   - url: signal.example.com
