@@ -51,51 +51,93 @@ Check for:
 - **overprovisioned** — app is using much less than declared, limit could be lowered
 - **right sized** — no action needed
 
-### 5. Recent Deploys
+### 5. Service Manifest
 
 ```bash
-source ~/.config/norn/cli.env && norn operations --limit 5
+source ~/.config/norn/cli.env && norn services
 ```
 
-Check for failed or stuck operations. Note any dirty deploys.
+This is the platform's service directory — what's hosted, what type each process is, whether it's reachable, and from where. Report:
 
-### 6. Cluster Stats
+- Total services by type (service, worker, cron, function)
+- Health status (passing, warning, critical, unknown)
+- Public endpoints and their URLs
+- Any services with `unknown` status or `none` reachability (usually means no running allocation)
+- Network mode (local, tailnet, public)
+
+For the raw JSON contract (useful for agents and MCP discovery):
+```bash
+source ~/.config/norn/cli.env && norn services manifest
+```
+
+### 6. Recent Deploys and Operations
+
+```bash
+source ~/.config/norn/cli.env && norn operations --limit 10
+```
+
+Check for:
+- Failed or stuck operations — what app, what step failed, when
+- Dirty deploys (local working tree changes that weren't committed)
+- Recent rollbacks
+
+For deploy history of a specific app:
+```bash
+source ~/.config/norn/cli.env && norn app <app-name>
+```
+
+This shows the latest deployment status, image tag, commit SHA, source kind (git/local), dirty state, and saga ID.
+
+### 7. Cluster Stats
 
 ```bash
 source ~/.config/norn/cli.env && norn stats
 ```
 
-Shows allocation counts and uptime leaderboard.
+Shows allocation counts and uptime leaderboard — which allocations have been running longest and on which nodes.
 
-### 7. Deeper Inspection (if problems found)
+### 8. Platform Ops Summary
 
-For a specific app:
-```bash
-source ~/.config/norn/cli.env && norn app <app-name>
-source ~/.config/norn/cli.env && norn logs <app-name>
-```
-
-For platform-wide ops summary:
 ```bash
 source ~/.config/norn/cli.env && norn ops platform
 ```
 
-For observability stack status:
+The single-command platform overview. Surfaces service exposure, deploy provenance, snapshot retention, access events, observability status, secret hygiene, and recent beacon events all in one view. Use this when you want the full picture in one pass.
+
+### 9. Deeper Inspection (if problems found)
+
+For a specific app's full status, allocations, and endpoints:
 ```bash
-source ~/.config/norn/cli.env && norn observability bundle
+source ~/.config/norn/cli.env && norn app <app-name>
+```
+
+For live log streaming:
+```bash
+source ~/.config/norn/cli.env && norn logs <app-name>
+```
+
+For deployment step-by-step history (saga trail):
+```bash
+source ~/.config/norn/cli.env && norn saga <saga-id>
+```
+
+For validation issues across all apps:
+```bash
+source ~/.config/norn/cli.env && norn validate
 ```
 
 ## Reporting Format
 
 After running the checks, report:
 
-1. **Platform health** — one line: all services up, or which are down
-2. **Problems** — any critical/warning events, unhealthy apps, at-risk resources, failed deploys. Include the app name, what happened, and a recommended action
-3. **Resource summary** — how many apps are right-sized, overprovisioned, or at risk. Call out specific apps that need attention
-4. **Recent activity** — notable deploys, restarts, or events in the last 24h
-5. **Recommendations** — concrete next steps if any problems were found
+1. **Platform health** — one line: all services up, or which are down. Include network mode.
+2. **Service inventory** — total apps and services by type/status. Call out any with unknown status or no running allocations. Mention public endpoints by name.
+3. **Problems** — any critical/warning events, unhealthy apps, at-risk resources, failed deploys. Include the app name, what happened, and a recommended action.
+4. **Resource summary** — how many apps are right-sized, overprovisioned, or at risk. Call out specific apps that need attention with their declared vs used memory.
+5. **Recent activity** — notable deploys, restarts, or events. Include dirty deploys and rollbacks.
+6. **Recommendations** — concrete next steps if any problems were found.
 
-Keep it concise. Don't dump raw command output — synthesize it.
+Keep it concise. Don't dump raw command output — synthesize it into a readable report. Use tables for the service inventory and resource summary when there are more than a few entries.
 
 ## Common Operations
 
@@ -109,9 +151,16 @@ If the user asks you to take action:
 | Rollback | `norn rollback <app>` |
 | Stream logs | `norn logs <app>` |
 | Scale | `norn scale <app> --group <group> --count <n>` |
+| App detail | `norn app <app>` |
+| Service manifest | `norn services` |
+| Service manifest JSON | `norn services manifest` |
+| Deploy history | `norn operations --limit 20` |
+| Saga trail | `norn saga <saga-id>` |
 | View secrets status | `norn secrets status <app>` |
 | Acknowledge event | `norn events ack <event-id>` |
 | Validate all | `norn validate` |
+| Platform ops | `norn ops platform` |
+| Resource suggestions | `norn resources` |
 
 Always source `~/.config/norn/cli.env` before running any `norn` command.
 
