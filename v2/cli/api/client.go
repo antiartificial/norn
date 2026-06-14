@@ -1217,6 +1217,21 @@ func (c *Client) ApplySnapshotRetention(appID string, keep int, confirm bool) (*
 	return &receipt, nil
 }
 
+type AccessToken struct {
+	Token     string `json:"token"`
+	ExpiresAt string `json:"expiresAt"`
+	Note      string `json:"note"`
+}
+
+func (c *Client) CreateAccessToken(note, ttl string) (*AccessToken, error) {
+	body, _ := json.Marshal(map[string]string{"note": note, "ttl": ttl})
+	var token AccessToken
+	if err := c.postJSON("/api/access/tokens", string(body), &token); err != nil {
+		return nil, err
+	}
+	return &token, nil
+}
+
 func (c *Client) AccessEvents(limit int) ([]AccessEvent, error) {
 	var events []AccessEvent
 	if limit <= 0 {

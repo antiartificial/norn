@@ -154,6 +154,12 @@ export function PlatformPanel() {
   const [grantIp, setGrantIp] = useState('')
   const [grantTtl, setGrantTtl] = useState('24h')
   const [grantNote, setGrantNote] = useState('')
+  const [tokenTTL, setTokenTTL] = useState('2h')
+  const [tokenNote, setTokenNote] = useState('')
+  const [createdToken, setCreatedToken] = useState<string | null>(null)
+  const [tokenExpiry, setTokenExpiry] = useState<string | null>(null)
+  const [incidentKey, setIncidentKey] = useState<string | null>(null)
+  const [incidentEvents, setIncidentEvents] = useState<BeaconEventList['events']>([])
 
   useEffect(() => {
     let cancelled = false
@@ -238,6 +244,32 @@ export function PlatformPanel() {
     } finally {
       setBusyEvent(null)
     }
+  }
+
+  async function createToken() {
+    const res = await fetch(apiUrl('/api/access/tokens'), {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ ttl: tokenTTL, note: tokenNote }),
+    })
+    if (!res.ok) return
+    const data = await res.json()
+    setCreatedToken(data.token)
+    setTokenExpiry(data.expiresAt)
+    setTokenNote('')
+  }
+
+  async function loadIncidentTimeline(key: string) {
+    if (incidentKey === key) {
+      setIncidentKey(null)
+      setIncidentEvents([])
+      return
+    }
+    const res = await fetch(apiUrl(`/api/events/correlated?key=${encodeURIComponent(key)}`))
+    if (!res.ok) return
+    const data = await res.json()
+    setIncidentKey(key)
+    setIncidentEvents(data.events ?? [])
   }
 
   return (
@@ -376,6 +408,13 @@ export function PlatformPanel() {
                     {event.body && <p>{event.body}</p>}
                     {event.acknowledgementNote && <p>{event.acknowledgementNote}</p>}
                     {event.metadata && <p>{formatMetadata(event.metadata)}</p>}
+                    {!!event.metadata?.correlationKey && (
+                      <div style={{ marginTop: '0.5rem' }}>
+                        <button className="ops-link" onClick={() => loadIncidentTimeline(String(event.metadata!.correlationKey))}>
+                          View incident timeline →
+                        </button>
+                      </div>
+                    )}
                   </div>
                 )}
               </div>
@@ -383,6 +422,27 @@ export function PlatformPanel() {
           </div>
         ) : <div className="ops-empty">No Beacon events recorded</div>}
       </section>
+
+      {incidentKey && (
+        <section className="ops-section">
+          <h3>Incident Timeline: {incidentKey} <button className="btn btn-small" onClick={() => { setIncidentKey(null); setIncidentEvents([]) }}>close</button></h3>
+          {incidentEvents.length > 0 ? (
+            <div className="ops-table">
+              <div className="ops-row ops-row-head ops-row-events">
+                <span>Time</span><span>Severity</span><span>Type</span><span>Title</span>
+              </div>
+              {incidentEvents.map((ev: any) => (
+                <div key={ev.id} className="ops-row ops-row-events">
+                  <span>{formatTime(ev.occurredAt)}</span>
+                  <span>{ev.severity}</span>
+                  <span>{ev.type}</span>
+                  <span>{ev.title}</span>
+                </div>
+              ))}
+            </div>
+          ) : <div className="ops-empty">No correlated events found</div>}
+        </section>
+      )}
 
       <NotificationsSection />
 
@@ -439,6 +499,26 @@ export function PlatformPanel() {
           </form>
         ) : (
           <button className="btn btn-small" style={{ margin: '8px 0 12px' }} onClick={() => setShowGrantForm(true)}>+ grant IP access</button>
+        )}
+        <h4 style={{ fontSize: '12px', color: 'var(--amber)', margin: '12px 0 6px' }}>Access Tokens</h4>
+        <div style={{ display: 'flex', gap: '0.5rem', flexWrap: 'wrap', margin: '8px 0' }}>
+          <input placeholder="TTL (e.g. 2h)" value={tokenTTL} onChange={e => setTokenTTL(e.target.value)} style={{ width: '100px' }} />
+          <input placeholder="Note (optional)" value={tokenNote} onChange={e => setTokenNote(e.target.value)} style={{ width: '160px' }} />
+          <button className="btn btn-small" onClick={createToken}>Create token</button>
+        </div>
+        {createdToken && (
+          <div style={{ margin: '8px 0' }}>
+            <textarea
+              readOnly
+              value={createdToken}
+              rows={3}
+              style={{ width: '100%', fontFamily: 'monospace', wordBreak: 'break-all', resize: 'vertical' }}
+              onClick={e => (e.target as HTMLTextAreaElement).select()}
+            />
+            {tokenExpiry && <p style={{ margin: '4px 0', fontSize: '12px' }}>Expires: {formatTime(tokenExpiry)}</p>}
+            <p style={{ margin: '4px 0', fontSize: '12px', color: 'var(--muted)' }}>Append ?token=&lt;value&gt; to share dashboard URLs</p>
+            <button className="btn btn-small" style={{ marginTop: '4px' }} onClick={() => { setCreatedToken(null); setTokenExpiry(null) }}>Clear</button>
+          </div>
         )}
         {accessEvents.length > 0 ? (
           <div className="ops-table">

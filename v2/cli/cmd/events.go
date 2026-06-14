@@ -218,6 +218,10 @@ func printBeaconEventDetail(event api.BeaconEvent) {
 			fmt.Printf("  %s: %v\n", key, event.Metadata[key])
 		}
 	}
+	if correlationKey, ok := event.Metadata["correlationKey"].(string); ok && correlationKey != "" {
+		fmt.Println()
+		fmt.Printf("%s norn events correlated %s\n", style.Key.Render("incident"), correlationKey)
+	}
 }
 
 func renderSeverity(severity string) string {

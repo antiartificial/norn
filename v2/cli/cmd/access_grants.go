@@ -11,9 +11,11 @@ import (
 )
 
 var (
-	grantIP   string
-	grantTTL  string
-	grantNote string
+	grantIP    string
+	grantTTL   string
+	grantNote  string
+	tokenTTL   string
+	tokenNote  string
 )
 
 func init() {
@@ -23,9 +25,14 @@ func init() {
 	_ = accessGrantCmd.MarkFlagRequired("ip")
 	_ = accessGrantCmd.MarkFlagRequired("ttl")
 
+	accessTokenCmd.Flags().StringVar(&tokenTTL, "ttl", "", "Token lifetime, e.g. 2h (required)")
+	accessTokenCmd.Flags().StringVar(&tokenNote, "note", "", "Description for the token")
+	_ = accessTokenCmd.MarkFlagRequired("ttl")
+
 	accessCmd.AddCommand(accessGrantCmd)
 	accessCmd.AddCommand(accessGrantsCmd)
 	accessCmd.AddCommand(accessRevokeCmd)
+	accessCmd.AddCommand(accessTokenCmd)
 }
 
 var accessGrantCmd = &cobra.Command{
@@ -99,6 +106,34 @@ var accessRevokeCmd = &cobra.Command{
 			return fmt.Errorf("failed to revoke access grant: %w", err)
 		}
 		fmt.Println(style.SuccessBox.Render(fmt.Sprintf("access grant revoked\n\n%s %s", style.Key.Render("id"), id)))
+		return nil
+	},
+}
+
+var accessTokenCmd = &cobra.Command{
+	Use:     "token",
+	Short:   "Create a temporary access token for URL sharing",
+	Example: "  norn access token --ttl 2h --note \"dashboard sharing\"",
+	RunE: func(cmd *cobra.Command, args []string) error {
+		token, err := client.CreateAccessToken(tokenNote, tokenTTL)
+		if err != nil {
+			return fmt.Errorf("failed to create access token: %w", err)
+		}
+		note := token.Note
+		if note == "" {
+			note = "-"
+		}
+		msg := fmt.Sprintf(
+			"%s %s\n%s %s\n%s %s\n\n%s",
+			style.Key.Render("token"),
+			token.Token,
+			style.Key.Render("expires"),
+			localTime(token.ExpiresAt),
+			style.Key.Render("note"),
+			note,
+			style.DimText.Render("Use as Bearer token or append ?token="+token.Token+" to dashboard URLs"),
+		)
+		fmt.Println(style.SuccessBox.Render("access token created\n\n" + msg))
 		return nil
 	},
 }
