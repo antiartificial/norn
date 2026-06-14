@@ -170,12 +170,12 @@ Current state:
 - `/api/access/grants` provides CRUD for access grants.
 
 - Beacon events carry `correlationKey` in metadata to group related events into incident arcs (e.g. `service.health.critical` → `service.health.recovered` share the same key). Events also include `previousState` and `previousEventType` for transition context.
+- `GET /api/events/correlated?key=<key>` and `norn events correlated <key>` return chronological event timelines for a correlation key.
+- Vigil-gateway indexes `correlationKey`, exposes `GET /api/incidents` grouped by correlation key, and uses `correlationKey` as APNs `thread-id` for iOS notification threading.
 
 Planned work:
 
 - Deploy the generated observability apps on hosts that have accepted the local port and container policy choices.
-- Vigil-gateway: index `metadata.correlationKey`, expose `GET /api/incidents` grouped by correlation key with most-recent-severity headline and event timeline.
-- Mobile app: use `correlationKey` in APNs thread-id so recovery events update existing notification threads instead of creating new ones.
 - Add downstream incident-tool links for acknowledged/snoozed Beacon events.
 - Add JWT-based temporary access tokens for URL sharing.
 

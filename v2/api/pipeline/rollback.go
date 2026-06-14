@@ -86,9 +86,10 @@ func (p *Pipeline) runRollback(ctx context.Context, spec *model.InfraSpec, deplo
 			Body:      "Rollback could not start because Nomad is not connected.",
 			DedupeKey: fmt.Sprintf("%s:rollback", spec.App),
 			Metadata: map[string]interface{}{
-				"deploymentId": deploy.ID,
-				"sagaId":       sg.ID,
-				"imageTag":     imageTag,
+				"deploymentId":   deploy.ID,
+				"sagaId":         sg.ID,
+				"imageTag":       imageTag,
+				"correlationKey": fmt.Sprintf("%s:rollback", spec.App),
 			},
 		})
 		return
@@ -162,10 +163,11 @@ func (p *Pipeline) runRollback(ctx context.Context, spec *model.InfraSpec, deplo
 				Body:      fmt.Sprintf("Rollback failed at %s: %v", s.name, err),
 				DedupeKey: fmt.Sprintf("%s:rollback", spec.App),
 				Metadata: map[string]interface{}{
-					"deploymentId": deploy.ID,
-					"sagaId":       sg.ID,
-					"imageTag":     imageTag,
-					"step":         s.name,
+					"deploymentId":   deploy.ID,
+					"sagaId":         sg.ID,
+					"imageTag":       imageTag,
+					"step":           s.name,
+					"correlationKey": fmt.Sprintf("%s:rollback", spec.App),
 				},
 			})
 			return
@@ -202,9 +204,10 @@ func (p *Pipeline) runRollback(ctx context.Context, spec *model.InfraSpec, deplo
 		Body:      fmt.Sprintf("Rollback to %s completed successfully.", imageTag),
 		DedupeKey: fmt.Sprintf("%s:rollback", spec.App),
 		Metadata: map[string]interface{}{
-			"deploymentId": deploy.ID,
-			"sagaId":       sg.ID,
-			"imageTag":     imageTag,
+			"deploymentId":   deploy.ID,
+			"sagaId":         sg.ID,
+			"imageTag":       imageTag,
+			"correlationKey": fmt.Sprintf("%s:rollback", spec.App),
 		},
 	})
 }

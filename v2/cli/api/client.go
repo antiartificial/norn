@@ -810,6 +810,22 @@ func (c *Client) ListEvents(app, eventType, severity string, limit int) ([]Beaco
 	return resp.Events, resp.Total, nil
 }
 
+func (c *Client) ListCorrelatedEvents(correlationKey string, limit int) ([]BeaconEvent, error) {
+	values := url.Values{}
+	values.Set("key", correlationKey)
+	if limit > 0 {
+		values.Set("limit", fmt.Sprintf("%d", limit))
+	}
+	path := "/api/events/correlated?" + values.Encode()
+	var resp struct {
+		Events []BeaconEvent `json:"events"`
+	}
+	if err := c.get(path, &resp); err != nil {
+		return nil, err
+	}
+	return resp.Events, nil
+}
+
 func (c *Client) GetEvent(id string) (*BeaconEvent, error) {
 	var event BeaconEvent
 	if err := c.get("/api/events/"+url.PathEscape(id), &event); err != nil {

@@ -283,11 +283,12 @@ func (p *Pipeline) run(ctx context.Context, spec *model.InfraSpec, deploy *model
 				Body:      fmt.Sprintf("Deploy failed at %s: %v", s.name, err),
 				DedupeKey: fmt.Sprintf("%s:deploy", spec.App),
 				Metadata: map[string]interface{}{
-					"deploymentId": deploy.ID,
-					"sagaId":       sg.ID,
-					"commitSha":    st.commitSHA,
-					"imageTag":     st.imageTag,
-					"step":         s.name,
+					"deploymentId":   deploy.ID,
+					"sagaId":         sg.ID,
+					"commitSha":      st.commitSHA,
+					"imageTag":       st.imageTag,
+					"step":           s.name,
+					"correlationKey": fmt.Sprintf("%s:deploy", spec.App),
 				},
 			})
 
@@ -312,6 +313,7 @@ func (p *Pipeline) run(ctx context.Context, spec *model.InfraSpec, deploy *model
 							"sagaId":               sg.ID,
 							"previousDeploymentId": prev.ID,
 							"imageTag":             prev.ImageTag,
+							"correlationKey":       fmt.Sprintf("%s:deploy", spec.App),
 						},
 					})
 				}
@@ -366,12 +368,13 @@ func (p *Pipeline) run(ctx context.Context, spec *model.InfraSpec, deploy *model
 		Body:      fmt.Sprintf("Deployment %s completed successfully.", deploy.ID),
 		DedupeKey: fmt.Sprintf("%s:deploy", spec.App),
 		Metadata: map[string]interface{}{
-			"deploymentId": deploy.ID,
-			"sagaId":       sg.ID,
-			"commitSha":    st.commitSHA,
-			"imageTag":     st.imageTag,
-			"sourceKind":   st.sourceKind,
-			"sourceRef":    st.sourceRef,
+			"deploymentId":   deploy.ID,
+			"sagaId":         sg.ID,
+			"commitSha":      st.commitSHA,
+			"imageTag":       st.imageTag,
+			"sourceKind":     st.sourceKind,
+			"sourceRef":      st.sourceRef,
+			"correlationKey": fmt.Sprintf("%s:deploy", spec.App),
 		},
 	})
 }

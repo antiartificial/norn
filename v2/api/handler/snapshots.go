@@ -295,6 +295,10 @@ func (h *Handler) emitSnapshotEvent(r *http.Request, app, eventType string, seve
 	if h.beacon == nil {
 		return
 	}
+	if metadata == nil {
+		metadata = map[string]interface{}{}
+	}
+	metadata["correlationKey"] = app + ":snapshots"
 	_, _ = h.beacon.Emit(r.Context(), model.BeaconEvent{
 		App:       app,
 		Type:      eventType,

@@ -45,8 +45,9 @@ func (h *Handler) PromoteCanary(w http.ResponseWriter, r *http.Request) {
 			Body:      fmt.Sprintf("Canary deployment for %s was manually promoted.", id),
 			DedupeKey: fmt.Sprintf("%s:canary", id),
 			Metadata: map[string]interface{}{
-				"app":    id,
-				"source": "api",
+				"app":            id,
+				"source":         "api",
+				"correlationKey": fmt.Sprintf("%s:deploy", id),
 			},
 		})
 	}

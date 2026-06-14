@@ -14,14 +14,15 @@ import (
 )
 
 var (
-	eventsApp      string
-	eventsType     string
-	eventsSeverity string
-	eventsLimit    int
-	eventActor     string
-	eventNote      string
-	eventDuration  string
-	eventUntil     string
+	eventsApp             string
+	eventsType            string
+	eventsSeverity        string
+	eventsLimit           int
+	eventsCorrelatedLimit int
+	eventActor            string
+	eventNote             string
+	eventDuration         string
+	eventUntil            string
 )
 
 func init() {
@@ -34,6 +35,8 @@ func init() {
 	eventsCmd.AddCommand(eventsAckCmd)
 	eventsCmd.AddCommand(eventsSnoozeCmd)
 	eventsCmd.AddCommand(eventsOpenCmd)
+	eventsCmd.AddCommand(eventsCorrelatedCmd)
+	eventsCorrelatedCmd.Flags().IntVar(&eventsCorrelatedLimit, "limit", 50, "Maximum events to show")
 	eventsAckCmd.Flags().StringVar(&eventActor, "by", "", "Operator name")
 	eventsAckCmd.Flags().StringVar(&eventNote, "note", "", "Acknowledgement note")
 	eventsSnoozeCmd.Flags().StringVar(&eventActor, "by", "", "Operator name")
@@ -107,6 +110,44 @@ var eventsOpenCmd = &cobra.Command{
 			return err
 		}
 		fmt.Printf("opened %s (%s)\n", shortID(event.ID), event.State)
+		return nil
+	},
+}
+
+var eventsCorrelatedCmd = &cobra.Command{
+	Use:   "correlated <key>",
+	Short: "Show correlated events for an incident timeline",
+	Args:  cobra.ExactArgs(1),
+	RunE: func(cmd *cobra.Command, args []string) error {
+		events, err := client.ListCorrelatedEvents(args[0], eventsCorrelatedLimit)
+		if err != nil {
+			return err
+		}
+		fmt.Printf("%s %s\n\n", style.Title.Render("incident timeline:"), args[0])
+		if len(events) == 0 {
+			fmt.Println(style.DimText.Render("  no events"))
+			return nil
+		}
+		w := tabwriter.NewWriter(os.Stdout, 0, 0, 2, ' ', 0)
+		fmt.Fprintln(w, style.TableHeader.Render("ID")+"\t"+
+			style.TableHeader.Render("TIME")+"\t"+
+			style.TableHeader.Render("SEVERITY")+"\t"+
+			style.TableHeader.Render("STATE")+"\t"+
+			style.TableHeader.Render("TYPE")+"\t"+
+			style.TableHeader.Render("APP")+"\t"+
+			style.TableHeader.Render("TITLE"))
+		for _, event := range events {
+			fmt.Fprintf(w, "%s\t%s\t%s\t%s\t%s\t%s\t%s\n",
+				shortID(event.ID),
+				localTime(event.OccurredAt),
+				renderSeverity(event.Severity),
+				renderEventState(event.State),
+				event.Type,
+				emptyDash(event.App),
+				emptyDash(event.Title),
+			)
+		}
+		w.Flush()
 		return nil
 	},
 }

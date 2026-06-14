@@ -172,6 +172,39 @@ func (db *DB) OpenBeaconEvent(ctx context.Context, id string) (*model.BeaconEven
 	return db.GetBeaconEvent(ctx, id)
 }
 
+func (db *DB) ListCorrelatedEvents(ctx context.Context, correlationKey string, limit int) ([]model.BeaconEvent, error) {
+	if limit <= 0 || limit > 200 {
+		limit = 50
+	}
+
+	rows, err := db.Pool.Query(ctx, `
+		SELECT id, source, app, environment, type, severity, title, body,
+		       dedupe_key, occurred_at, acknowledged_at, acknowledged_by,
+		       acknowledgement_note, snoozed_until, metadata
+		FROM beacon_events
+		WHERE metadata->>'correlationKey' = $1
+		ORDER BY occurred_at ASC
+		LIMIT $2
+	`, correlationKey, limit)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	var events []model.BeaconEvent
+	for rows.Next() {
+		event, err := scanBeaconEvent(rows)
+		if err != nil {
+			return nil, err
+		}
+		events = append(events, event)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return events, nil
+}
+
 func (db *DB) PruneBeaconEvents(ctx context.Context, olderThan time.Time) error {
 	_, err := db.Pool.Exec(ctx, `DELETE FROM beacon_events WHERE occurred_at < $1`, olderThan)
 	return err

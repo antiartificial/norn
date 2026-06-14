@@ -35,6 +35,24 @@ func (h *Handler) ListEvents(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
+func (h *Handler) CorrelatedEvents(w http.ResponseWriter, r *http.Request) {
+	key := r.URL.Query().Get("key")
+	if key == "" {
+		writeError(w, http.StatusBadRequest, "key parameter is required")
+		return
+	}
+	limit, _ := strconv.Atoi(r.URL.Query().Get("limit"))
+	events, err := h.db.ListCorrelatedEvents(r.Context(), key, limit)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	writeJSON(w, map[string]interface{}{
+		"events":         events,
+		"correlationKey": key,
+	})
+}
+
 func (h *Handler) GetEvent(w http.ResponseWriter, r *http.Request) {
 	event, err := h.db.GetBeaconEvent(r.Context(), chi.URLParam(r, "id"))
 	if err != nil {

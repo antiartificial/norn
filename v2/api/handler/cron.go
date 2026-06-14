@@ -100,8 +100,9 @@ func (h *Handler) CronTrigger(w http.ResponseWriter, r *http.Request) {
 		Body:      fmt.Sprintf("Cron process %s was triggered manually.", req.Process),
 		DedupeKey: fmt.Sprintf("%s:%s:cron", id, req.Process),
 		Metadata: map[string]interface{}{
-			"process": req.Process,
-			"evalId":  evalID,
+			"process":        req.Process,
+			"evalId":         evalID,
+			"correlationKey": fmt.Sprintf("%s:%s:cron", id, req.Process),
 		},
 	})
 }
@@ -153,8 +154,9 @@ func (h *Handler) CronPause(w http.ResponseWriter, r *http.Request) {
 		Body:      fmt.Sprintf("Cron process %s was paused.", req.Process),
 		DedupeKey: fmt.Sprintf("%s:%s:cron", id, req.Process),
 		Metadata: map[string]interface{}{
-			"process":  req.Process,
-			"schedule": schedule,
+			"process":        req.Process,
+			"schedule":       schedule,
+			"correlationKey": fmt.Sprintf("%s:%s:cron", id, req.Process),
 		},
 	})
 }
@@ -233,9 +235,10 @@ func (h *Handler) CronResume(w http.ResponseWriter, r *http.Request) {
 		Body:      fmt.Sprintf("Cron process %s was resumed.", req.Process),
 		DedupeKey: fmt.Sprintf("%s:%s:cron", id, req.Process),
 		Metadata: map[string]interface{}{
-			"process":  req.Process,
-			"schedule": proc.Schedule,
-			"imageTag": imageTag,
+			"process":        req.Process,
+			"schedule":       proc.Schedule,
+			"imageTag":       imageTag,
+			"correlationKey": fmt.Sprintf("%s:%s:cron", id, req.Process),
 		},
 	})
 }
@@ -315,9 +318,10 @@ func (h *Handler) CronUpdateSchedule(w http.ResponseWriter, r *http.Request) {
 		Body:      fmt.Sprintf("Cron process %s schedule changed.", req.Process),
 		DedupeKey: fmt.Sprintf("%s:%s:cron", id, req.Process),
 		Metadata: map[string]interface{}{
-			"process":  req.Process,
-			"schedule": req.Schedule,
-			"imageTag": imageTag,
+			"process":        req.Process,
+			"schedule":       req.Schedule,
+			"imageTag":       imageTag,
+			"correlationKey": fmt.Sprintf("%s:%s:cron", id, req.Process),
 		},
 	})
 }

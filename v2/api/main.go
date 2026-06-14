@@ -265,6 +265,7 @@ func main() {
 		r.Get("/resources/suggestions", h.ResourceSuggestions)
 		r.Get("/events", h.ListEvents)
 		r.Post("/events", h.CreateEvent)
+		r.Get("/events/correlated", h.CorrelatedEvents)
 		r.Get("/events/{id}", h.GetEvent)
 		r.Post("/events/{id}/ack", h.AcknowledgeEvent)
 		r.Post("/events/{id}/snooze", h.SnoozeEvent)
