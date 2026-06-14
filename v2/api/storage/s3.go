@@ -3,11 +3,14 @@ package storage
 import (
 	"context"
 	"fmt"
+	"io"
 	"log"
 	"net/url"
+	"os"
 	"regexp"
 	"sort"
 	"strings"
+	"time"
 
 	"github.com/minio/minio-go/v7"
 	"github.com/minio/minio-go/v7/pkg/credentials"
@@ -190,6 +193,66 @@ func (c *Client) ProvisionAppStorage(ctx context.Context, appID string, spec *mo
 	}
 
 	return result, nil
+}
+
+// PutObject uploads a file to a bucket.
+func (c *Client) PutObject(ctx context.Context, bucket, key, filePath string) error {
+	file, err := os.Open(filePath)
+	if err != nil {
+		return fmt.Errorf("open %s: %w", filePath, err)
+	}
+	defer file.Close()
+	stat, err := file.Stat()
+	if err != nil {
+		return fmt.Errorf("stat %s: %w", filePath, err)
+	}
+	_, err = c.mc.PutObject(ctx, bucket, key, file, stat.Size(), minio.PutObjectOptions{})
+	if err != nil {
+		return fmt.Errorf("put object %s/%s: %w", bucket, key, err)
+	}
+	return nil
+}
+
+// GetObject downloads an object from a bucket to a local file.
+func (c *Client) GetObject(ctx context.Context, bucket, key, destPath string) error {
+	obj, err := c.mc.GetObject(ctx, bucket, key, minio.GetObjectOptions{})
+	if err != nil {
+		return fmt.Errorf("get object %s/%s: %w", bucket, key, err)
+	}
+	defer obj.Close()
+	dest, err := os.Create(destPath)
+	if err != nil {
+		return fmt.Errorf("create %s: %w", destPath, err)
+	}
+	defer dest.Close()
+	if _, err := io.Copy(dest, obj); err != nil {
+		os.Remove(destPath)
+		return fmt.Errorf("download %s/%s: %w", bucket, key, err)
+	}
+	return nil
+}
+
+// ObjectInfo describes a remote object.
+type ObjectInfo struct {
+	Key          string    `json:"key"`
+	Size         int64     `json:"size"`
+	LastModified time.Time `json:"lastModified"`
+}
+
+// ListObjects lists objects in a bucket with an optional prefix.
+func (c *Client) ListObjects(ctx context.Context, bucket, prefix string) ([]ObjectInfo, error) {
+	var objects []ObjectInfo
+	for obj := range c.mc.ListObjects(ctx, bucket, minio.ListObjectsOptions{Prefix: prefix}) {
+		if obj.Err != nil {
+			return objects, obj.Err
+		}
+		objects = append(objects, ObjectInfo{
+			Key:          obj.Key,
+			Size:         obj.Size,
+			LastModified: obj.LastModified,
+		})
+	}
+	return objects, nil
 }
 
 func (c *Client) Endpoint() string  { return c.config.Endpoint }

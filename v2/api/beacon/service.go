@@ -27,10 +27,11 @@ type Config struct {
 }
 
 type Service struct {
-	db     *store.DB
-	ws     *hub.Hub
-	cfg    Config
-	client *http.Client
+	db       *store.DB
+	ws       *hub.Hub
+	cfg      Config
+	client   *http.Client
+	notifier *Notifier
 }
 
 func New(db *store.DB, ws *hub.Hub, cfg Config) *Service {
@@ -42,6 +43,12 @@ func New(db *store.DB, ws *hub.Hub, cfg Config) *Service {
 			Timeout: 10 * time.Second,
 		},
 	}
+}
+
+// SetNotifier attaches a Notifier to the service so that emitted events are
+// dispatched to configured notification channels.
+func (s *Service) SetNotifier(n *Notifier) {
+	s.notifier = n
 }
 
 func (s *Service) SinkStatus() model.BeaconSinkStatus {
@@ -85,6 +92,10 @@ func (s *Service) Emit(ctx context.Context, event model.BeaconEvent) (*model.Bea
 
 	if s.cfg.SinkURL != "" {
 		go s.forward(context.Background(), event)
+	}
+
+	if s.notifier != nil {
+		go s.notifier.Dispatch(context.Background(), event)
 	}
 
 	return &event, nil

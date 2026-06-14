@@ -31,6 +31,7 @@ type InfraSpec struct {
 	Volumes        []VolumeSpec       `yaml:"volumes,omitempty" json:"volumes,omitempty"`
 	Snapshots      *SnapshotPolicy    `yaml:"snapshots,omitempty" json:"snapshots,omitempty"`
 	Deploy         bool               `yaml:"deploy,omitempty" json:"deploy,omitempty"`
+	DeployPolicy   *DeployPolicy      `yaml:"deployPolicy,omitempty" json:"deployPolicy,omitempty"`
 }
 
 type Endpoint struct {
@@ -48,6 +49,7 @@ type Process struct {
 	Scaling   *Scaling          `yaml:"scaling,omitempty" json:"scaling,omitempty"`
 	Drain     *Drain            `yaml:"drain,omitempty" json:"drain,omitempty"`
 	Resources *Resources        `yaml:"resources,omitempty" json:"resources,omitempty"`
+	Canary    *CanaryConfig     `yaml:"canary,omitempty" json:"canary,omitempty"`
 	Env       map[string]string `yaml:"env,omitempty" json:"-"`
 }
 
@@ -99,9 +101,19 @@ type BuildSpec struct {
 }
 
 type SnapshotPolicy struct {
-	Keep             int  `yaml:"keep,omitempty" json:"keep,omitempty"`
-	PreRestore       bool `yaml:"preRestore,omitempty" json:"preRestore,omitempty"`
-	RetentionEnabled bool `yaml:"retentionEnabled,omitempty" json:"retentionEnabled,omitempty"`
+	Keep             int    `yaml:"keep,omitempty" json:"keep,omitempty"`
+	PreRestore       bool   `yaml:"preRestore,omitempty" json:"preRestore,omitempty"`
+	RetentionEnabled bool   `yaml:"retentionEnabled,omitempty" json:"retentionEnabled,omitempty"`
+	ExportBucket     string `yaml:"exportBucket,omitempty" json:"exportBucket,omitempty"`
+}
+
+type DeployPolicy struct {
+	AutoRollback bool `yaml:"autoRollback,omitempty" json:"autoRollback,omitempty"`
+}
+
+type CanaryConfig struct {
+	Count         int    `yaml:"count,omitempty" json:"count,omitempty"`
+	EvaluateAfter string `yaml:"evaluateAfter,omitempty" json:"evaluateAfter,omitempty"`
 }
 
 type Infrastructure struct {
@@ -199,6 +211,14 @@ func (s *InfraSpec) HasScheduledProcess() bool {
 		}
 	}
 	return false
+}
+
+// AutoRollbackEnabled returns true unless explicitly disabled via deployPolicy.
+func (s *InfraSpec) AutoRollbackEnabled() bool {
+	if s.DeployPolicy == nil {
+		return true
+	}
+	return s.DeployPolicy.AutoRollback
 }
 
 // ProcessCount returns the total number of instances across all processes.

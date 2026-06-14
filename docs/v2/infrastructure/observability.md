@@ -218,6 +218,40 @@ The API endpoint is `GET /api/resources/suggestions`.
 
 Use this to catch underprovisioned apps before they OOM and overprovisioned apps that waste capacity. Adjust `resources.memory` in the app's `infraspec.yaml` and redeploy.
 
+## Event Notifications
+
+Beacon events can push notifications to external channels. Norn supports three providers:
+
+| Provider | Delivery | Configuration |
+|----------|----------|---------------|
+| Discord | Webhook with color-coded severity embeds | Webhook URL |
+| ntfy | HTTP POST with priority headers | Topic URL |
+| Pushover | Form POST with priority mapping | App token + user key |
+
+Each channel can filter by severity (`info`, `warning`, `critical`). Channels without a severity filter receive all events.
+
+Manage channels from the CLI:
+
+```bash
+norn notifications list
+norn notifications add discord ops https://discord.com/api/webhooks/...
+norn notifications add ntfy alerts https://ntfy.sh/norn-alerts
+norn notifications add pushover mobile https://api.pushover.net/1/messages.json --token <token> --user-key <key>
+norn notifications test <channel-id>
+norn notifications remove <channel-id>
+```
+
+Or through the API:
+
+```text
+GET    /api/notifications/channels
+POST   /api/notifications/channels
+POST   /api/notifications/channels/{id}/test
+DELETE /api/notifications/channels/{id}
+```
+
+Notifications dispatch asynchronously after each Beacon event is emitted. A failing channel does not block event recording or other channels.
+
 ## External Plumbing
 
 The local-first path is:

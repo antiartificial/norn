@@ -38,6 +38,11 @@ The current working feature set includes:
 - Value-safe secret migration planning
 - Opt-in strict plaintext-secret validation gate
 - Port conflict detection before Nomad submit
+- Event notifications to Discord, ntfy, and Pushover with per-channel severity filtering
+- Auto-rollback on deploy health failure with Beacon event and saga trail
+- Snapshot export/import to S3-compatible object storage with optional auto-export after deploy
+- Deploy groups for ordered multi-app deployment sequences with wait-ready gates
+- Canary deploys with configurable count, evaluation window, and automatic promote/fail
 
 For a compact summary of the current release line, see the [Norn v2 Release Recap](/v2/guide/release-recap).
 
@@ -116,9 +121,12 @@ Current state:
 - `norn ops platform` reports per-app snapshot counts, keep policy, and over-limit totals.
 - Snapshot restore and retention actions emit Beacon events.
 
+- Snapshot export to S3-compatible storage is available via `norn snapshots export <app>`, `norn snapshots remote <app>`, and `norn snapshots import <app> <key>`.
+- Apps can declare `snapshots.exportBucket` to auto-export after deploy snapshots.
+- The API exposes `POST /api/apps/{id}/snapshots/export`, `GET /api/apps/{id}/snapshots/remote`, and `POST /api/apps/{id}/snapshots/import`.
+
 Planned work:
 
-- Archive snapshots to the configured object-storage provider after local restore semantics are covered by tests.
 - Show snapshot provenance in app detail and deploy history.
 
 ### Observability And Access
@@ -140,6 +148,10 @@ Current state:
 - `/api/observability/bundle`, `/api/observability/alerts.yml`, and `norn observability bundle --out <dir>` package Prometheus config, alert rules, Grafana provisioning, a starter dashboard, and starter Prometheus/Grafana/cAdvisor service specs.
 - `POST /api/observability/services/install` and `norn observability install` write generated `norn-prometheus`, `norn-grafana`, and `norn-cadvisor` app directories into `NORN_APPS_DIR`.
 - `norn ops platform` and the UI Platform tab show observability bundle availability, retention target, and secret migration item counts.
+
+- Beacon events can push notifications to configured channels (Discord webhooks, ntfy topics, Pushover) with per-channel severity filtering.
+- `norn notifications list|add|remove|test` manages notification channels from the CLI.
+- `/api/notifications/channels` provides CRUD for notification channels.
 
 Planned work:
 

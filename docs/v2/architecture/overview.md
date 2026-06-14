@@ -44,6 +44,7 @@ v2/api/
 ├── saga/              # Saga event log system
 ├── secrets/           # SOPS-based secrets manager
 ├── storage/           # S3-compatible object storage client
+├── beacon/            # Beacon event service and notification dispatch
 ├── auth/              # CF Access JWT validator
 └── model/             # Shared types (InfraSpec, Deployment, etc.)
 ```
@@ -74,6 +75,10 @@ v2/cli/
 │   ├── validate.go
 │   ├── forge.go
 │   ├── resources.go
+│   ├── notifications.go
+│   ├── canary.go
+│   ├── deploy_group.go
+│   ├── snapshots_export.go
 │   ├── endpoints.go
 │   ├── stream.go
 │   └── version.go
@@ -134,6 +139,12 @@ v2/ui/
 | POST | `/api/webhooks/deliveries/{id}/replay` | Replay a webhook delivery |
 | GET | `/api/platform/releases` | List installed platform releases |
 | POST | `/api/platform/releases/{sha}/rollback` | Roll back to a platform release |
+| GET | `/api/notifications/channels` | List notification channels |
+| POST | `/api/notifications/channels` | Create a notification channel |
+| POST | `/api/notifications/channels/{id}/test` | Send a test notification |
+| DELETE | `/api/notifications/channels/{id}` | Delete a notification channel |
+| GET | `/api/deploy-groups` | List deploy groups |
+| POST | `/api/deploy-groups/{name}/deploy` | Deploy a deploy group |
 
 ### Per-App (`/api/apps/{id}/...`)
 
@@ -157,6 +168,11 @@ v2/ui/
 | PUT | `/cron/schedule` | Update cron schedule |
 | POST | `/invoke` | Invoke a function |
 | GET | `/function/history` | Function execution history |
+| GET | `/canary` | Canary deployment status |
+| POST | `/promote` | Promote canary allocations |
+| POST | `/snapshots/export` | Export latest snapshot to S3 |
+| GET | `/snapshots/remote` | List remote snapshots |
+| POST | `/snapshots/import` | Import snapshot from S3 |
 | POST | `/forge` | Set up cloudflared routing |
 | POST | `/teardown` | Remove cloudflared routing |
 | POST | `/endpoints/toggle` | Toggle a single cloudflared endpoint |

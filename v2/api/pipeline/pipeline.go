@@ -220,6 +220,18 @@ func (p *Pipeline) run(ctx context.Context, spec *model.InfraSpec, deploy *model
 		{name: "cleanup", fn: p.cleanup},
 	}
 
+	// Insert canary step between healthy and forge when any process has canary config
+	if hasCanaryConfig(spec) {
+		var withCanary []step
+		for _, s := range steps {
+			withCanary = append(withCanary, s)
+			if s.name == "healthy" {
+				withCanary = append(withCanary, step{name: "canary", fn: p.canary})
+			}
+		}
+		steps = withCanary
+	}
+
 	total := fmt.Sprintf("%d", len(steps))
 	for i, s := range steps {
 		idx := fmt.Sprintf("%d", i+1)
@@ -278,6 +290,32 @@ func (p *Pipeline) run(ctx context.Context, spec *model.InfraSpec, deploy *model
 					"step":         s.name,
 				},
 			})
+
+			// Auto-rollback: only when the healthy step fails and policy allows
+			if s.name == "healthy" && spec.AutoRollbackEnabled() {
+				prev, prevErr := p.DB.LastSuccessfulDeployment(ctx, deploy.App, deploy.ID)
+				if prevErr == nil && prev != nil {
+					sg.Log(ctx, "deploy.auto_rollback.start", fmt.Sprintf("auto-rollback %s to %s", spec.App, prev.ImageTag), map[string]string{
+						"previousDeploymentId": prev.ID,
+						"imageTag":             prev.ImageTag,
+					})
+					p.Rollback(spec, *deploy, prev)
+					p.emitBeacon(ctx, model.BeaconEvent{
+						App:       spec.App,
+						Type:      "deploy.auto_rollback",
+						Severity:  model.BeaconWarning,
+						Title:     fmt.Sprintf("%s auto-rollback triggered", spec.App),
+						Body:      fmt.Sprintf("Deploy failed at healthy check; auto-rolling back to %s.", prev.ImageTag),
+						DedupeKey: fmt.Sprintf("%s:auto_rollback", spec.App),
+						Metadata: map[string]interface{}{
+							"deploymentId":         deploy.ID,
+							"sagaId":               sg.ID,
+							"previousDeploymentId": prev.ID,
+							"imageTag":             prev.ImageTag,
+						},
+					})
+				}
+			}
 			return
 		}
 
@@ -370,4 +408,14 @@ func (p *Pipeline) emitBeacon(ctx context.Context, event model.BeaconEvent) {
 	if _, err := p.Beacon.Emit(ctx, event); err != nil {
 		log.Printf("pipeline: beacon emit %s/%s: %v", event.App, event.Type, err)
 	}
+}
+
+// hasCanaryConfig returns true if any process in the spec has a canary configuration.
+func hasCanaryConfig(spec *model.InfraSpec) bool {
+	for _, proc := range spec.Processes {
+		if proc.Canary != nil && proc.Canary.Count > 0 {
+			return true
+		}
+	}
+	return false
 }

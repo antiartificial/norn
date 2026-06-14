@@ -35,5 +35,23 @@ func (p *Pipeline) snapshot(ctx context.Context, st *state, sg *saga.Saga) error
 		"snapshot":  filename,
 		"commitSha": st.commitSHA,
 	})
+
+	// Auto-export to S3 if configured
+	if st.spec.Snapshots != nil && st.spec.Snapshots.ExportBucket != "" && p.Storage != nil {
+		exportBucket := st.spec.Snapshots.ExportBucket
+		key := "snapshots/" + st.spec.App + "/" + filepath.Base(filename)
+		if err := p.Storage.PutObject(ctx, exportBucket, key, filename); err != nil {
+			_ = sg.Log(ctx, "snapshot.export_failed", fmt.Sprintf("snapshot export failed: %v", err), map[string]string{
+				"bucket": exportBucket,
+				"key":    key,
+			})
+		} else {
+			_ = sg.Log(ctx, "snapshot.exported", fmt.Sprintf("snapshot exported to %s/%s", exportBucket, key), map[string]string{
+				"bucket": exportBucket,
+				"key":    key,
+			})
+		}
+	}
+
 	return nil
 }

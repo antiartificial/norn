@@ -67,6 +67,14 @@ func Translate(spec *model.InfraSpec, imageTag string, env map[string]string) *n
 			AutoRevert:     &autoRevert,
 		}
 
+		// Canary deployment: Norn manages promotion/failure instead of Nomad auto-revert
+		if proc.Canary != nil && proc.Canary.Count > 0 {
+			canaryCount := proc.Canary.Count
+			tg.Update.Canary = &canaryCount
+			autoRevert = false
+			tg.Update.AutoRevert = &autoRevert
+		}
+
 		// Task
 		task := nomadapi.NewTask(procName, "docker")
 		task.Config = map[string]interface{}{
