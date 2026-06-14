@@ -1,5 +1,7 @@
 import { useEffect, useState } from 'react'
 import { apiUrl, fetchOpts } from '../lib/api.ts'
+import { NotificationsSection } from './NotificationsSection.tsx'
+import { DeployGroupsSection } from './DeployGroupsSection.tsx'
 
 interface PlatformSummary {
   generatedAt: string
@@ -378,6 +380,10 @@ export function PlatformPanel() {
           </div>
         ) : <div className="ops-empty">No Beacon events recorded</div>}
       </section>
+
+      <NotificationsSection />
+
+      <DeployGroupsSection />
 
       <section className="ops-section">
         <h3>Access</h3>

@@ -85,6 +85,7 @@ func Migrate(db *DB) error {
 			metadata      JSONB NOT NULL DEFAULT '{}',
 			PRIMARY KEY (deployment_id, step)
 		);
+		ALTER TABLE deployment_steps ADD COLUMN IF NOT EXISTS kind TEXT NOT NULL DEFAULT '';
 		CREATE INDEX IF NOT EXISTS idx_deployment_steps_saga ON deployment_steps(saga_id, started_at);
 		CREATE INDEX IF NOT EXISTS idx_deployment_steps_app ON deployment_steps(app, started_at DESC);
 

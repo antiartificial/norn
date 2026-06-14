@@ -198,6 +198,18 @@ The observability bundle includes Prometheus alert rules for these signals:
 - **NornTaskOOMRisk** — fires when a task has been OOM killed
 - **NornTaskRestartLoop** — fires when a task has restarted more than 3 times
 
+## Cron Missed-Run Detection
+
+Norn compares cron schedule expressions against actual periodic job dispatch history. When a scheduled run does not appear within 5 minutes of its expected time, a `cron.missed_run` Beacon event fires with critical severity.
+
+The `/metrics` endpoint exposes:
+
+| Metric | Labels | Description |
+|--------|--------|-------------|
+| `norn_cron_missed_runs_total` | app, process | 1 when a cron process missed its expected run, 0 otherwise |
+
+The alert catalogue includes a `cron-missed-run` rule for this signal. Paused and stopped periodic jobs are excluded from detection.
+
 ## Resource Right-sizing
 
 Norn can compare declared resource limits from `infraspec.yaml` against live Nomad allocation stats:

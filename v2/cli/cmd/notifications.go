@@ -74,7 +74,7 @@ var notificationsListCmd = &cobra.Command{
 
 var notificationsAddCmd = &cobra.Command{
 	Use:   "add <provider> <name> <url>",
-	Short: "Add a notification channel",
+	Short: "Add a notification channel (discord, ntfy, pushover, webhook)",
 	Args:  cobra.ExactArgs(3),
 	RunE: func(cmd *cobra.Command, args []string) error {
 		provider := args[0]

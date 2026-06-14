@@ -196,6 +196,19 @@ type SecretMigrationItem struct {
 	Action    string `json:"action"`
 }
 
+type MigrationPlanApp struct {
+	App   string              `json:"app"`
+	Items []MigrationPlanItem `json:"items"`
+}
+
+type MigrationPlanItem struct {
+	Key        string `json:"key"`
+	Declared   bool   `json:"declared"`
+	Encrypted  bool   `json:"encrypted"`
+	InPlainEnv bool   `json:"inPlainEnv"`
+	Action     string `json:"action"`
+}
+
 type NetworkStatus struct {
 	Mode       string `json:"mode,omitempty"`
 	BindAddr   string `json:"bindAddr,omitempty"`
@@ -1043,6 +1056,20 @@ func (c *Client) SecretsMigrationPlan(appID string) (*SecretMigrationPlan, error
 		return nil, err
 	}
 	return &plan, nil
+}
+
+func (c *Client) SecretsMigrationPlanApps(app string) ([]MigrationPlanApp, error) {
+	path := "/api/secrets/migration-plan"
+	if app != "" {
+		path += "?app=" + url.QueryEscape(app)
+	}
+	var resp struct {
+		Apps []MigrationPlanApp `json:"apps"`
+	}
+	if err := c.get(path, &resp); err != nil {
+		return nil, err
+	}
+	return resp.Apps, nil
 }
 
 func (c *Client) Forge(appID string) error {

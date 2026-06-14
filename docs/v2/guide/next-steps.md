@@ -43,6 +43,11 @@ The current working feature set includes:
 - Snapshot export/import to S3-compatible object storage with optional auto-export after deploy
 - Deploy groups for ordered multi-app deployment sequences with wait-ready gates
 - Canary deploys with configurable count, evaluation window, and automatic promote/fail
+- Webhook notification provider for arbitrary HTTP endpoints
+- Schedule-aware missed-run detection for cron processes with Beacon events and Prometheus metric
+- Automated secrets migration CLI with dry-run and apply modes
+- Deploy checkpoint enrichment with read-only/mutable step classification
+- Dashboard views for notification channels, deploy groups, canary status, and remote snapshots
 
 For a compact summary of the current release line, see the [Norn v2 Release Recap](/v2/guide/release-recap).
 

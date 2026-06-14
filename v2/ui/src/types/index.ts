@@ -119,3 +119,36 @@ export interface WSEvent {
   appId: string
   payload: unknown
 }
+
+export interface NotificationChannel {
+  id: string
+  provider: string
+  name: string
+  url: string
+  token?: string
+  userKey?: string
+  severities?: string[]
+  createdAt: string
+}
+
+export interface DeployGroup {
+  name: string
+  apps: Array<{
+    app: string
+    waitReady?: boolean
+  }>
+}
+
+export interface RemoteSnapshot {
+  key: string
+  size: number
+  lastModified: string
+}
+
+export interface CanaryStatus {
+  id?: string
+  jobId?: string
+  status: string
+  statusDescription?: string
+  isCanary?: boolean
+}
