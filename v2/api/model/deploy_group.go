@@ -31,7 +31,7 @@ func LoadDeployGroup(path string) (*DeployGroup, error) {
 }
 
 func DiscoverDeployGroups(appsDir string) ([]*DeployGroup, error) {
-	groupsDir := filepath.Join(filepath.Dir(appsDir), "deploy-groups")
+	groupsDir := filepath.Join(appsDir, "deploy-groups")
 	entries, err := os.ReadDir(groupsDir)
 	if err != nil {
 		if os.IsNotExist(err) {
