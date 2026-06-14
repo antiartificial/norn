@@ -208,6 +208,17 @@ func Migrate(db *DB) error {
 			severities JSONB NOT NULL DEFAULT '[]',
 			created_at TIMESTAMPTZ NOT NULL DEFAULT now()
 		);
+
+		CREATE TABLE IF NOT EXISTS access_grants (
+			id         TEXT PRIMARY KEY,
+			ip         TEXT NOT NULL,
+			note       TEXT NOT NULL DEFAULT '',
+			created_by TEXT NOT NULL DEFAULT '',
+			created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+			expires_at TIMESTAMPTZ NOT NULL
+		);
+		CREATE INDEX IF NOT EXISTS idx_access_grants_ip ON access_grants(ip, expires_at);
+		CREATE INDEX IF NOT EXISTS idx_access_grants_expires ON access_grants(expires_at);
 	`)
 	return err
 }

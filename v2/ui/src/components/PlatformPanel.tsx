@@ -2,6 +2,8 @@ import { useEffect, useState } from 'react'
 import { apiUrl, fetchOpts } from '../lib/api.ts'
 import { NotificationsSection } from './NotificationsSection.tsx'
 import { DeployGroupsSection } from './DeployGroupsSection.tsx'
+import { NetworkSection } from './NetworkSection.tsx'
+import type { AccessGrant } from '../types/index.ts'
 
 interface PlatformSummary {
   generatedAt: string
@@ -146,6 +148,12 @@ export function PlatformPanel() {
   const [selectedEvent, setSelectedEvent] = useState<string | null>(null)
   const [reloadNonce, setReloadNonce] = useState(0)
   const [error, setError] = useState<string | null>(null)
+  const [accessGrants, setAccessGrants] = useState<AccessGrant[]>([])
+  const [grantBusy, setGrantBusy] = useState(false)
+  const [showGrantForm, setShowGrantForm] = useState(false)
+  const [grantIp, setGrantIp] = useState('')
+  const [grantTtl, setGrantTtl] = useState('24h')
+  const [grantNote, setGrantNote] = useState('')
 
   useEffect(() => {
     let cancelled = false
@@ -168,6 +176,10 @@ export function PlatformPanel() {
           setBeaconEvents(eventData)
           setError(null)
         }
+        fetch(apiUrl('/api/access/grants'), fetchOpts)
+          .then(r => r.ok ? r.json() : { grants: [] })
+          .then(data => { if (!cancelled) setAccessGrants(data.grants ?? []) })
+          .catch(() => {})
       } catch (err) {
         if (!cancelled) setError(String(err))
       }
@@ -265,16 +277,7 @@ export function PlatformPanel() {
           </div>
         </section>
 
-        <section className="ops-section">
-          <h3>Service Exposure</h3>
-          <div className="ops-kv">
-            <span>public</span><strong>{summary.services.public}</strong>
-            <span>private</span><strong>{summary.services.private}</strong>
-            <span>local</span><strong>{summary.services.local}</strong>
-            <span>internal</span><strong>{summary.services.internal}</strong>
-            <span>types</span><strong>{joinCounts(summary.services.byType)}</strong>
-          </div>
-        </section>
+        <NetworkSection services={summary.services} />
       </div>
 
       <section className="ops-section">
@@ -387,6 +390,56 @@ export function PlatformPanel() {
 
       <section className="ops-section">
         <h3>Access</h3>
+        {accessGrants.length > 0 && (
+          <>
+            <h4 style={{ fontSize: '12px', color: 'var(--amber)', margin: '0 0 6px' }}>Active Grants</h4>
+            <div className="ops-table grants-list">
+              <div className="ops-row ops-row-head">
+                <span>IP</span><span>Note</span><span>Created</span><span>By</span><span>Expires</span><span>Action</span>
+              </div>
+              {accessGrants.map((g) => (
+                <div className="ops-row" key={g.id}>
+                  <span>{g.ip}</span>
+                  <span>{g.note || '-'}</span>
+                  <span>{formatTime(g.createdAt)}</span>
+                  <span>{g.createdBy || '-'}</span>
+                  <span>{formatTime(g.expiresAt)}</span>
+                  <span>
+                    <button className="btn btn-small btn-danger" onClick={async () => {
+                      await fetch(apiUrl(`/api/access/grants/${encodeURIComponent(g.id)}`), { ...fetchOpts, method: 'DELETE' })
+                      setReloadNonce(v => v + 1)
+                    }}>revoke</button>
+                  </span>
+                </div>
+              ))}
+            </div>
+          </>
+        )}
+        {showGrantForm ? (
+          <form style={{ display: 'flex', gap: '0.5rem', flexWrap: 'wrap', margin: '8px 0' }} onSubmit={async (e) => {
+            e.preventDefault()
+            setGrantBusy(true)
+            try {
+              const res = await fetch(apiUrl('/api/access/grants'), {
+                ...fetchOpts, method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ ip: grantIp, ttl: grantTtl, note: grantNote }),
+              })
+              if (!res.ok) throw new Error(await res.text())
+              setGrantIp(''); setGrantTtl('24h'); setGrantNote(''); setShowGrantForm(false)
+              setReloadNonce(v => v + 1)
+            } catch (err) { setError(String(err)) }
+            finally { setGrantBusy(false) }
+          }}>
+            <input placeholder="IP address" value={grantIp} onChange={e => setGrantIp(e.target.value)} required style={{ width: '120px' }} />
+            <input placeholder="TTL (e.g. 24h)" value={grantTtl} onChange={e => setGrantTtl(e.target.value)} required style={{ width: '100px' }} />
+            <input placeholder="Note (optional)" value={grantNote} onChange={e => setGrantNote(e.target.value)} style={{ width: '160px' }} />
+            <button type="submit" className="btn btn-small" disabled={grantBusy}>{grantBusy ? 'granting' : 'grant'}</button>
+            <button type="button" className="btn btn-small" onClick={() => setShowGrantForm(false)}>cancel</button>
+          </form>
+        ) : (
+          <button className="btn btn-small" style={{ margin: '8px 0 12px' }} onClick={() => setShowGrantForm(true)}>+ grant IP access</button>
+        )}
         {accessEvents.length > 0 ? (
           <div className="ops-table">
             <div className="ops-row ops-row-head">
@@ -430,11 +483,6 @@ function formatTime(value?: string) {
 function short(value?: string) {
   if (!value) return '-'
   return value.length > 10 ? value.slice(0, 10) : value
-}
-
-function joinCounts(values: Record<string, number>) {
-  const parts = Object.entries(values).map(([key, value]) => `${key} ${value}`)
-  return parts.length > 0 ? parts.join(', ') : '-'
 }
 
 function formatMetadata(values: Record<string, unknown>) {

@@ -5,6 +5,7 @@ import (
 	"crypto/subtle"
 	"encoding/json"
 	"log"
+	"net"
 	"net/http"
 	"os"
 	"os/signal"
@@ -226,7 +227,7 @@ func main() {
 
 	// Bearer token auth
 	if cfg.APIToken != "" {
-		r.Use(bearerAuth(cfg.APIToken))
+		r.Use(bearerAuth(cfg.APIToken, h))
 		log.Println("API token auth enabled")
 	}
 	r.Use(h.AccessMiddleware)
@@ -285,6 +286,12 @@ func main() {
 		r.Delete("/notifications/channels/{id}", h.DeleteNotificationChannel)
 		r.Get("/deploy-groups", h.ListDeployGroups)
 		r.Post("/deploy-groups/{name}/deploy", h.DeployGroup)
+
+		r.Get("/access/grants", h.ListAccessGrants)
+		r.Post("/access/grants", h.CreateAccessGrant)
+		r.Delete("/access/grants/{id}", h.DeleteAccessGrant)
+
+		r.Get("/ops/contextdb/evaluator-readiness", h.EvaluatorReadiness)
 
 		r.Route("/apps/{id}", func(r chi.Router) {
 			r.Use(handler.ValidateAppID)
@@ -351,7 +358,7 @@ func main() {
 	srv.Shutdown(shutdownCtx)
 }
 
-func bearerAuth(token string) func(http.Handler) http.Handler {
+func bearerAuth(token string, h *handler.Handler) func(http.Handler) http.Handler {
 	return func(next http.Handler) http.Handler {
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 			if r.URL.Path == "/ws" || r.URL.Path == "/metrics" || r.URL.Path == "/api/metrics" || r.URL.Path == "/api/health" || r.URL.Path == "/api/version" || r.URL.Path == "/api/webhooks/github" || r.URL.Path == "/api/webhooks/gitea" || strings.HasSuffix(r.URL.Path, "/exec") {
@@ -359,17 +366,32 @@ func bearerAuth(token string) func(http.Handler) http.Handler {
 				return
 			}
 			auth := r.Header.Get("Authorization")
-			if !strings.HasPrefix(auth, "Bearer ") {
-				http.Error(w, "unauthorized", http.StatusUnauthorized)
+			if strings.HasPrefix(auth, "Bearer ") && subtle.ConstantTimeCompare([]byte(auth[7:]), []byte(token)) == 1 {
+				next.ServeHTTP(w, r)
 				return
 			}
-			if subtle.ConstantTimeCompare([]byte(auth[7:]), []byte(token)) != 1 {
-				http.Error(w, "unauthorized", http.StatusUnauthorized)
+			if h != nil && h.HasActiveGrant(clientIPFromRequest(r)) {
+				next.ServeHTTP(w, r)
 				return
 			}
-			next.ServeHTTP(w, r)
+			http.Error(w, "unauthorized", http.StatusUnauthorized)
 		})
 	}
+}
+
+func clientIPFromRequest(r *http.Request) string {
+	if cfIP := strings.TrimSpace(r.Header.Get("CF-Connecting-IP")); cfIP != "" {
+		return cfIP
+	}
+	if forwarded := r.Header.Get("X-Forwarded-For"); forwarded != "" {
+		parts := strings.Split(forwarded, ",")
+		return strings.TrimSpace(parts[0])
+	}
+	host, _, err := net.SplitHostPort(r.RemoteAddr)
+	if err != nil {
+		return r.RemoteAddr
+	}
+	return host
 }
 
 func fileServer(r chi.Router, dir string) {

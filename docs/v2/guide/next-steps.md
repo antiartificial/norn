@@ -38,7 +38,7 @@ The current working feature set includes:
 - Value-safe secret migration planning
 - Opt-in strict plaintext-secret validation gate
 - Port conflict detection before Nomad submit
-- Event notifications to Discord, ntfy, and Pushover with per-channel severity filtering
+- Event notifications to Discord, ntfy, Pushover, and webhook providers with per-channel severity filtering
 - Auto-rollback on deploy health failure with Beacon event and saga trail
 - Snapshot export/import to S3-compatible object storage with optional auto-export after deploy
 - Deploy groups for ordered multi-app deployment sequences with wait-ready gates
@@ -47,7 +47,9 @@ The current working feature set includes:
 - Schedule-aware missed-run detection for cron processes with Beacon events and Prometheus metric
 - Automated secrets migration CLI with dry-run and apply modes
 - Deploy checkpoint enrichment with read-only/mutable step classification
-- Dashboard views for notification channels, deploy groups, canary status, and remote snapshots
+- Dashboard views for notification channels, deploy groups, canary status, remote snapshots, and network truth drill-down
+- Temporary IP access grants with TTL-based expiry via CLI and dashboard
+- Evaluator readiness assessment for ContextDB provider-backed evaluator rollout
 
 For a compact summary of the current release line, see the [Norn v2 Release Recap](/v2/guide/release-recap).
 
@@ -89,9 +91,13 @@ Current state:
 - `norn validate` warns when endpoint hosts look mismatched for the active network mode.
 - `norn network` summarizes exposure, endpoint scope, instance scope, validation hints, and mode-specific guidance.
 
+Current state (continued):
+
+- The Platform tab Service Exposure section is clickable, expanding to show the full service manifest with per-service reachability, endpoint scope, instance scope, and endpoint URLs.
+
 Planned work:
 
-- Add clickable network drill-downs to the dashboard.
+- Add per-endpoint latency or health indicators to the network drill-down.
 
 ### Secrets Hygiene
 
@@ -158,12 +164,16 @@ Current state:
 - `norn notifications list|add|remove|test` manages notification channels from the CLI.
 - `/api/notifications/channels` provides CRUD for notification channels.
 
+- Temporary IP access grants allow time-limited API access from specific IPs without bearer auth.
+- `norn access grant --ip <ip> --ttl <ttl>`, `norn access grants`, and `norn access revoke <id>` manage grants from the CLI.
+- The dashboard Platform tab shows active grants with revoke actions and a form to create new grants.
+- `/api/access/grants` provides CRUD for access grants.
+
 Planned work:
 
 - Deploy the generated observability apps on hosts that have accepted the local port and container policy choices.
 - Add downstream incident-tool links for acknowledged/snoozed Beacon events.
-- Extend runtime watchers with schedule-aware missed-run detection.
-- Add temporary access grants, such as expiring JWT links or expiring IP allowlist entries.
+- Add JWT-based temporary access tokens for URL sharing.
 
 ### Platform Upgrade Continuity
 
@@ -235,11 +245,17 @@ Current state:
 - Evaluator smoke reports include the rules baseline decision and whether the configured evaluator disagrees with that baseline.
 - Worker reports include the effective evaluator for each namespace.
 
+Current state (continued):
+
+- `norn contextdb evaluator-readiness` synthesizes policy, key, and dry-run state into a per-namespace readiness assessment for provider-backed evaluator rollout.
+- `/api/ops/contextdb/evaluator-readiness` provides the readiness data for dashboard consumption.
+- The ContextDB ops panel shows evaluator readiness per namespace with blockers and ready/blocked badges.
+
 Planned work:
 
 - Store provider evaluator keys as Norn secrets when enabling provider-backed policies.
-- Add a Norn-level provider evaluator smoke/runbook before allowing provider-backed policies in production.
-- Add UI/CLI affordances that clearly distinguish rules, webhook, and provider-backed worker decisions.
+- Add a guarded rollout action that transitions a namespace from dry-run to live execution using the readiness assessment as the gate.
+- Add per-decision drill-down in the UI for worker run decisions.
 
 ### Context Quality
 
@@ -264,8 +280,8 @@ Planned work:
 ## Suggested Order
 
 1. Finish moving app plaintext secrets into `secrets.enc.yaml`, using `norn validate` as the guardrail.
-2. Improve networking truth in app detail and manifest output.
-3. Surface ContextDB worker run summaries in Norn metrics/UI and add review metrics.
-4. Wire Hermes to ContextDB review APIs for queue inspection, claim validation, refutation, and pruning.
-5. Add provider-backed evaluator secrets and smoke checks only when a namespace is ready to leave the keyless rules path.
-6. Build the access/traffic dashboard.
+2. Surface ContextDB worker run summaries in Norn metrics/UI and add review metrics.
+3. Wire Hermes to ContextDB review APIs for queue inspection, claim validation, refutation, and pruning.
+4. Store provider evaluator keys as Norn secrets and use the evaluator readiness gate to transition namespaces from dry-run.
+5. Add JWT-based temporary access tokens for URL sharing.
+6. Add per-endpoint latency indicators to the network drill-down.

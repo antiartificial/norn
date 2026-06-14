@@ -52,6 +52,11 @@ This recap summarizes the current Norn v2 release line: the Nomad/Consul control
 | Dashboard deploy groups | Platform tab deploy groups section | View and trigger deploy groups from the dashboard |
 | Dashboard canary status | Per-app canary badge in AppCard | Shows active canary deployments with promote action inline |
 | Dashboard remote snapshots | Remote tab in SnapshotsPanel | Export, list, and import remote snapshots from the dashboard |
+| Network truth dashboard | Clickable Service Exposure in Platform tab | Expands to show the full service manifest with per-service reachability, endpoint scope, and instance scope |
+| Temporary access grants | `norn access grant/grants/revoke`, `/api/access/grants` | Time-limited IP-based API access bypass with TTL expiry, dashboard management, and CLI CRUD |
+| Evaluator readiness | `norn contextdb evaluator-readiness`, `/api/ops/contextdb/evaluator-readiness` | Synthesized per-namespace readiness assessment for provider-backed evaluator rollout with blockers |
+| Dashboard evaluator readiness | ContextDB ops panel evaluator section | Shows evaluator mode, key status, and readiness per namespace with ready/blocked badges |
+| Dashboard access grants | Platform tab access grants section | View active grants, create new grants with IP/TTL/note, and revoke grants inline |
 | Upgrade path | `norn platform preflight`, `upgrade`, `releases`, `rollback` | Upgrades Norn API, CLI, and built UI without stopping Nomad, Consul, Postgres, or hosted apps |
 
 ## Operator Impact

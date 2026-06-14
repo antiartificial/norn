@@ -13,6 +13,7 @@ import (
 
 	"github.com/spf13/cobra"
 
+	"norn/v2/cli/api"
 	"norn/v2/cli/style"
 )
 
@@ -40,6 +41,8 @@ var (
 
 	contextDBSmokeJSON bool
 
+	contextDBEvaluatorReadinessJSON bool
+
 	contextDBRollbackNamespace string
 	contextDBRollbackMode      string
 	contextDBRollbackReason    string
@@ -53,6 +56,7 @@ func init() {
 	contextDBCmd.AddCommand(contextDBPolicyCmd)
 	contextDBCmd.AddCommand(contextDBAuditCmd)
 	contextDBCmd.AddCommand(contextDBEvaluatorSmokeCmd)
+	contextDBCmd.AddCommand(contextDBEvaluatorReadinessCmd)
 	contextDBCmd.AddCommand(contextDBRollbackCmd)
 	contextDBReviewCmd.Flags().StringVar(&contextDBReviewNamespace, "namespace", "hermes-agent", "ContextDB namespace")
 	contextDBReviewCmd.Flags().StringVar(&contextDBReviewMode, "mode", "agent_memory", "ContextDB mode")
@@ -72,6 +76,7 @@ func init() {
 	contextDBAuditCmd.Flags().StringVar(&contextDBAuditAfter, "after", "", "Only show events after this RFC3339 timestamp")
 	contextDBAuditCmd.Flags().StringVar(&contextDBAuditWebURL, "web-url", "", "Override ContextDB web URL")
 	contextDBEvaluatorSmokeCmd.Flags().BoolVar(&contextDBSmokeJSON, "json", false, "Print raw JSON")
+	contextDBEvaluatorReadinessCmd.Flags().BoolVar(&contextDBEvaluatorReadinessJSON, "json", false, "Print raw JSON")
 	contextDBRollbackCmd.Flags().StringVar(&contextDBRollbackNamespace, "namespace", "hermes-agent", "ContextDB namespace")
 	contextDBRollbackCmd.Flags().StringVar(&contextDBRollbackMode, "mode", "agent_memory", "ContextDB mode")
 	contextDBRollbackCmd.Flags().StringVar(&contextDBRollbackReason, "reason", "operator rollback through norn", "Rollback reason")
@@ -170,6 +175,24 @@ var contextDBEvaluatorSmokeCmd = &cobra.Command{
 			return nil
 		}
 		printContextDBEvaluatorSmoke(report)
+		return nil
+	},
+}
+
+var contextDBEvaluatorReadinessCmd = &cobra.Command{
+	Use:   "evaluator-readiness",
+	Short: "Show synthesized evaluator readiness assessment for ContextDB namespaces",
+	RunE: func(cmd *cobra.Command, args []string) error {
+		readiness, err := client.EvaluatorReadiness()
+		if err != nil {
+			return err
+		}
+		if contextDBEvaluatorReadinessJSON {
+			enc := json.NewEncoder(os.Stdout)
+			enc.SetIndent("", "  ")
+			return enc.Encode(readiness)
+		}
+		printContextDBEvaluatorReadiness(readiness)
 		return nil
 	},
 }
@@ -431,6 +454,54 @@ func printContextDBAuditEvents(namespace string, events []contextDBFeedbackEvent
 			nodeID = nodeID[:8]
 		}
 		fmt.Fprintf(w, "%s\t%s\t%.2f\t%s\t%s\n", txTime, event.Action, event.Confidence, nodeID, event.Reason)
+	}
+	w.Flush()
+}
+
+func printContextDBEvaluatorReadiness(r *api.EvaluatorReadiness) {
+	fmt.Println(style.Title.Render("contextdb evaluator readiness"))
+
+	overallDot := style.DotUnhealthy
+	if r.OverallReady {
+		overallDot = style.DotHealthy
+	}
+	fmt.Printf("%s %s\n\n", overallDot, r.Summary)
+
+	if len(r.Namespaces) == 0 {
+		fmt.Println(style.DimText.Render("no namespace evaluators reported"))
+		return
+	}
+
+	w := tabwriter.NewWriter(os.Stdout, 0, 0, 2, ' ', 0)
+	fmt.Fprintln(w, style.TableHeader.Render("NAMESPACE")+"\t"+
+		style.TableHeader.Render("EVALUATOR")+"\t"+
+		style.TableHeader.Render("PROVIDER")+"\t"+
+		style.TableHeader.Render("DRY")+"\t"+
+		style.TableHeader.Render("KEY")+"\t"+
+		style.TableHeader.Render("READY")+"\t"+
+		style.TableHeader.Render("BLOCKERS"))
+	for _, ns := range r.Namespaces {
+		keyState := "-"
+		if ns.ProviderKeyRequired {
+			keyState = "missing"
+			if ns.ProviderKeyConfigured {
+				keyState = "ok"
+			}
+		}
+		readyStr := style.Unhealthy.Render("no")
+		if ns.Ready {
+			readyStr = style.Healthy.Render("yes")
+		}
+		blockers := strings.Join(ns.Blockers, "; ")
+		fmt.Fprintf(w, "%s\t%s\t%s\t%t\t%s\t%s\t%s\n",
+			ns.Namespace,
+			ns.Evaluator,
+			ns.Provider,
+			ns.DryRun,
+			keyState,
+			readyStr,
+			blockers,
+		)
 	}
 	w.Flush()
 }
