@@ -161,6 +161,9 @@ func main() {
 		log.Println("beacon sink configured")
 	}
 
+	notifier := beacon.NewNotifier(db)
+	beaconSvc.SetNotifier(notifier)
+
 	// Saga store
 	sagaStore := saga.NewPostgresStore(db.Pool)
 
@@ -276,6 +279,13 @@ func main() {
 		r.Get("/cloudflared/ingress", h.CloudflaredIngress)
 		r.Get("/access/events", h.AccessEvents)
 
+		r.Get("/notifications/channels", h.ListNotificationChannels)
+		r.Post("/notifications/channels", h.CreateNotificationChannel)
+		r.Post("/notifications/channels/{id}/test", h.TestNotificationChannel)
+		r.Delete("/notifications/channels/{id}", h.DeleteNotificationChannel)
+		r.Get("/deploy-groups", h.ListDeployGroups)
+		r.Post("/deploy-groups/{name}/deploy", h.DeployGroup)
+
 		r.Route("/apps/{id}", func(r chi.Router) {
 			r.Use(handler.ValidateAppID)
 			r.Get("/", h.GetApp)
@@ -299,6 +309,11 @@ func main() {
 			r.Put("/cron/schedule", h.CronUpdateSchedule)
 			r.Post("/invoke", h.InvokeFunction)
 			r.Get("/function/history", h.FunctionHistory)
+			r.Get("/canary", h.CanaryStatus)
+			r.Post("/promote", h.PromoteCanary)
+			r.Post("/snapshots/export", h.ExportSnapshot)
+			r.Get("/snapshots/remote", h.ListRemoteSnapshots)
+			r.Post("/snapshots/import", h.ImportSnapshot)
 			r.Post("/forge", h.Forge)
 			r.Post("/teardown", h.Teardown)
 			r.Post("/endpoints/toggle", h.ToggleEndpoint)

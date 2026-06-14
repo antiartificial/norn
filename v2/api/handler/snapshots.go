@@ -15,6 +15,7 @@ import (
 
 	"norn/v2/api/hub"
 	"norn/v2/api/model"
+	"norn/v2/api/storage"
 )
 
 type snapshotEntry struct {
@@ -345,6 +346,156 @@ func snapshotTimestampRFC3339(ts string) string {
 
 func timeNowUTC() string {
 	return time.Now().UTC().Format(time.RFC3339)
+}
+
+func (h *Handler) ExportSnapshot(w http.ResponseWriter, r *http.Request) {
+	id := chi.URLParam(r, "id")
+
+	spec := h.findSpec(id)
+	if spec == nil {
+		writeError(w, http.StatusNotFound, fmt.Sprintf("app %s not found", id))
+		return
+	}
+	if spec.Infrastructure == nil || spec.Infrastructure.Postgres == nil {
+		writeError(w, http.StatusBadRequest, "app has no postgres database")
+		return
+	}
+	if h.s3 == nil {
+		writeError(w, http.StatusBadRequest, "object storage not configured")
+		return
+	}
+	exportBucket := ""
+	if spec.Snapshots != nil {
+		exportBucket = spec.Snapshots.ExportBucket
+	}
+	if exportBucket == "" {
+		writeError(w, http.StatusBadRequest, "no export bucket configured")
+		return
+	}
+
+	snapshots := listSnapshotsForSpec(spec)
+	if len(snapshots) == 0 {
+		writeError(w, http.StatusNotFound, "no local snapshots available")
+		return
+	}
+	snapshot := snapshots[0] // latest
+
+	key := "snapshots/" + id + "/" + snapshot.Filename
+	localPath := filepath.Join("snapshots", snapshot.Filename)
+	if err := h.s3.PutObject(r.Context(), exportBucket, key, localPath); err != nil {
+		writeError(w, http.StatusInternalServerError, fmt.Sprintf("upload snapshot: %v", err))
+		return
+	}
+
+	h.emitSnapshotEvent(r, id, "snapshot.exported", model.BeaconInfo, "snapshot exported",
+		fmt.Sprintf("%s exported snapshot %s to %s", id, snapshot.Filename, exportBucket),
+		map[string]interface{}{
+			"bucket":   exportBucket,
+			"key":      key,
+			"snapshot": snapshot.Filename,
+		})
+
+	writeJSON(w, map[string]interface{}{
+		"status":   "exported",
+		"app":      id,
+		"snapshot": snapshot,
+		"bucket":   exportBucket,
+		"key":      key,
+	})
+}
+
+func (h *Handler) ListRemoteSnapshots(w http.ResponseWriter, r *http.Request) {
+	id := chi.URLParam(r, "id")
+
+	spec := h.findSpec(id)
+	if spec == nil {
+		writeError(w, http.StatusNotFound, fmt.Sprintf("app %s not found", id))
+		return
+	}
+	if h.s3 == nil {
+		writeError(w, http.StatusBadRequest, "object storage not configured")
+		return
+	}
+	exportBucket := ""
+	if spec.Snapshots != nil {
+		exportBucket = spec.Snapshots.ExportBucket
+	}
+	if exportBucket == "" {
+		writeError(w, http.StatusBadRequest, "no export bucket configured")
+		return
+	}
+
+	objects, err := h.s3.ListObjects(r.Context(), exportBucket, "snapshots/"+id+"/")
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, fmt.Sprintf("list remote snapshots: %v", err))
+		return
+	}
+	if objects == nil {
+		objects = []storage.ObjectInfo{}
+	}
+
+	writeJSON(w, map[string]interface{}{
+		"snapshots": objects,
+	})
+}
+
+func (h *Handler) ImportSnapshot(w http.ResponseWriter, r *http.Request) {
+	id := chi.URLParam(r, "id")
+
+	spec := h.findSpec(id)
+	if spec == nil {
+		writeError(w, http.StatusNotFound, fmt.Sprintf("app %s not found", id))
+		return
+	}
+	if h.s3 == nil {
+		writeError(w, http.StatusBadRequest, "object storage not configured")
+		return
+	}
+	exportBucket := ""
+	if spec.Snapshots != nil {
+		exportBucket = spec.Snapshots.ExportBucket
+	}
+	if exportBucket == "" {
+		writeError(w, http.StatusBadRequest, "no export bucket configured")
+		return
+	}
+
+	var req struct {
+		Key string `json:"key"`
+	}
+	if err := decodeJSON(r, &req); err != nil {
+		writeError(w, http.StatusBadRequest, err.Error())
+		return
+	}
+	if req.Key == "" {
+		writeError(w, http.StatusBadRequest, "key is required")
+		return
+	}
+
+	localPath := filepath.Join("snapshots", filepath.Base(req.Key))
+	if err := os.MkdirAll("snapshots", 0o755); err != nil {
+		writeError(w, http.StatusInternalServerError, fmt.Sprintf("create snapshots dir: %v", err))
+		return
+	}
+	if err := h.s3.GetObject(r.Context(), exportBucket, req.Key, localPath); err != nil {
+		writeError(w, http.StatusInternalServerError, fmt.Sprintf("download snapshot: %v", err))
+		return
+	}
+
+	h.emitSnapshotEvent(r, id, "snapshot.imported", model.BeaconInfo, "snapshot imported",
+		fmt.Sprintf("%s imported snapshot %s from %s", id, filepath.Base(req.Key), exportBucket),
+		map[string]interface{}{
+			"bucket":    exportBucket,
+			"key":       req.Key,
+			"localPath": "snapshots/" + filepath.Base(req.Key),
+		})
+
+	writeJSON(w, map[string]interface{}{
+		"status":    "imported",
+		"app":       id,
+		"key":       req.Key,
+		"localPath": "snapshots/" + filepath.Base(req.Key),
+	})
 }
 
 func (h *Handler) findSpec(appID string) *model.InfraSpec {

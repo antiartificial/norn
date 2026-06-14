@@ -1336,6 +1336,154 @@ type ResourceSuggestion struct {
 	Reason         string  `json:"reason"`
 }
 
+// Notification channels
+
+type NotificationChannel struct {
+	ID         string   `json:"id"`
+	Provider   string   `json:"provider"`
+	Name       string   `json:"name"`
+	URL        string   `json:"url"`
+	Severities []string `json:"severities"`
+	CreatedAt  string   `json:"createdAt"`
+}
+
+func (c *Client) ListNotificationChannels() ([]NotificationChannel, error) {
+	var resp struct {
+		Channels []NotificationChannel `json:"channels"`
+	}
+	if err := c.get("/api/notifications/channels", &resp); err != nil {
+		return nil, err
+	}
+	return resp.Channels, nil
+}
+
+func (c *Client) CreateNotificationChannel(provider, name, url, token, userKey string, severities []string) (*NotificationChannel, error) {
+	body, _ := json.Marshal(map[string]interface{}{
+		"provider":   provider,
+		"name":       name,
+		"url":        url,
+		"token":      token,
+		"userKey":    userKey,
+		"severities": severities,
+	})
+	var ch NotificationChannel
+	if err := c.postJSON("/api/notifications/channels", string(body), &ch); err != nil {
+		return nil, err
+	}
+	return &ch, nil
+}
+
+func (c *Client) DeleteNotificationChannel(id string) error {
+	return c.del("/api/notifications/channels/" + url.PathEscape(id))
+}
+
+func (c *Client) TestNotificationChannel(id string) error {
+	return c.post("/api/notifications/channels/"+url.PathEscape(id)+"/test", "{}")
+}
+
+// Deploy groups
+
+type DeployGroupInfo struct {
+	Name string           `json:"name"`
+	Apps []DeployGroupApp `json:"apps"`
+}
+
+type DeployGroupApp struct {
+	App       string `json:"app"`
+	WaitReady bool   `json:"waitReady"`
+}
+
+type DeployGroupResult struct {
+	Group   string        `json:"group"`
+	Ref     string        `json:"ref"`
+	Deploys []GroupDeploy `json:"deploys"`
+}
+
+type GroupDeploy struct {
+	App    string `json:"app"`
+	SagaID string `json:"sagaId,omitempty"`
+	Error  string `json:"error,omitempty"`
+}
+
+func (c *Client) ListDeployGroups() ([]DeployGroupInfo, error) {
+	var resp struct {
+		Groups []DeployGroupInfo `json:"groups"`
+	}
+	if err := c.get("/api/deploy-groups", &resp); err != nil {
+		return nil, err
+	}
+	return resp.Groups, nil
+}
+
+func (c *Client) RunDeployGroup(name, ref string) (*DeployGroupResult, error) {
+	body := fmt.Sprintf(`{"ref":%q}`, ref)
+	var result DeployGroupResult
+	if err := c.postJSON("/api/deploy-groups/"+url.PathEscape(name)+"/deploy", body, &result); err != nil {
+		return nil, err
+	}
+	return &result, nil
+}
+
+// Canary
+
+type CanaryStatusResponse struct {
+	ID                string `json:"id"`
+	JobID             string `json:"jobId"`
+	Status            string `json:"status"`
+	StatusDescription string `json:"statusDescription"`
+	IsCanary          bool   `json:"isCanary"`
+}
+
+func (c *Client) CanaryStatus(appID string) (*CanaryStatusResponse, error) {
+	var resp CanaryStatusResponse
+	if err := c.get("/api/apps/"+url.PathEscape(appID)+"/canary", &resp); err != nil {
+		return nil, err
+	}
+	return &resp, nil
+}
+
+func (c *Client) PromoteCanary(appID string) error {
+	return c.post("/api/apps/"+url.PathEscape(appID)+"/promote", "{}")
+}
+
+// Snapshot export/import
+
+type SnapshotExportResult struct {
+	Status string `json:"status"`
+	App    string `json:"app"`
+	Bucket string `json:"bucket"`
+	Key    string `json:"key"`
+}
+
+type RemoteSnapshot struct {
+	Key          string `json:"key"`
+	Size         int64  `json:"size"`
+	LastModified string `json:"lastModified"`
+}
+
+func (c *Client) ExportSnapshot(appID string) (*SnapshotExportResult, error) {
+	var result SnapshotExportResult
+	if err := c.postJSON("/api/apps/"+url.PathEscape(appID)+"/snapshots/export", "{}", &result); err != nil {
+		return nil, err
+	}
+	return &result, nil
+}
+
+func (c *Client) ListRemoteSnapshots(appID string) ([]RemoteSnapshot, error) {
+	var resp struct {
+		Snapshots []RemoteSnapshot `json:"snapshots"`
+	}
+	if err := c.get("/api/apps/"+url.PathEscape(appID)+"/snapshots/remote", &resp); err != nil {
+		return nil, err
+	}
+	return resp.Snapshots, nil
+}
+
+func (c *Client) ImportSnapshot(appID, key string) error {
+	body, _ := json.Marshal(map[string]string{"key": key})
+	return c.post("/api/apps/"+url.PathEscape(appID)+"/snapshots/import", string(body))
+}
+
 func (c *Client) ResourceSuggestions() ([]ResourceSuggestion, error) {
 	var resp struct {
 		Suggestions []ResourceSuggestion `json:"suggestions"`

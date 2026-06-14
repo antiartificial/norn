@@ -196,6 +196,17 @@ func Migrate(db *DB) error {
 		CREATE INDEX IF NOT EXISTS idx_webhook_deliveries_status ON webhook_deliveries(status, received_at DESC);
 
 		ALTER TABLE webhook_deliveries ADD COLUMN IF NOT EXISTS payload JSONB NOT NULL DEFAULT '{}';
+
+		CREATE TABLE IF NOT EXISTS notification_channels (
+			id         TEXT PRIMARY KEY,
+			provider   TEXT NOT NULL,
+			name       TEXT NOT NULL,
+			url        TEXT NOT NULL DEFAULT '',
+			token      TEXT NOT NULL DEFAULT '',
+			user_key   TEXT NOT NULL DEFAULT '',
+			severities JSONB NOT NULL DEFAULT '[]',
+			created_at TIMESTAMPTZ NOT NULL DEFAULT now()
+		);
 	`)
 	return err
 }

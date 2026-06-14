@@ -551,6 +551,78 @@ func (c *Client) JobResourceUsage(jobID string) ([]ResourceUsage, error) {
 	return out, nil
 }
 
+// DeploymentInfo describes a Nomad deployment's state.
+type DeploymentInfo struct {
+	ID         string `json:"id"`
+	JobID      string `json:"jobId"`
+	Status     string `json:"status"`
+	StatusDesc string `json:"statusDescription"`
+	IsCanary   bool   `json:"isCanary"`
+}
+
+// LatestDeployment returns the most recent deployment for a job.
+func (c *Client) LatestDeployment(jobID string) (*DeploymentInfo, error) {
+	deploys, _, err := c.api.Jobs().Deployments(jobID, false, nil)
+	if err != nil {
+		return nil, fmt.Errorf("list deployments: %w", err)
+	}
+	if len(deploys) == 0 {
+		return nil, nil
+	}
+	latest := deploys[0]
+	for _, d := range deploys[1:] {
+		if d.CreateIndex > latest.CreateIndex {
+			latest = d
+		}
+	}
+	hasCanary := false
+	for _, tg := range latest.TaskGroups {
+		if len(tg.PlacedCanaries) > 0 {
+			hasCanary = true
+			break
+		}
+	}
+	return &DeploymentInfo{
+		ID:         latest.ID,
+		JobID:      latest.JobID,
+		Status:     latest.Status,
+		StatusDesc: latest.StatusDescription,
+		IsCanary:   hasCanary,
+	}, nil
+}
+
+// PromoteDeployment promotes all canary allocations in the latest deployment.
+func (c *Client) PromoteDeployment(jobID string) error {
+	info, err := c.LatestDeployment(jobID)
+	if err != nil {
+		return err
+	}
+	if info == nil {
+		return fmt.Errorf("no deployment found for %s", jobID)
+	}
+	_, _, err = c.api.Deployments().PromoteAll(info.ID, nil)
+	if err != nil {
+		return fmt.Errorf("promote deployment: %w", err)
+	}
+	return nil
+}
+
+// FailDeployment marks the latest deployment as failed, triggering auto-revert if configured.
+func (c *Client) FailDeployment(jobID string) error {
+	info, err := c.LatestDeployment(jobID)
+	if err != nil {
+		return err
+	}
+	if info == nil {
+		return fmt.Errorf("no deployment found for %s", jobID)
+	}
+	_, _, err = c.api.Deployments().Fail(info.ID, nil)
+	if err != nil {
+		return fmt.Errorf("fail deployment: %w", err)
+	}
+	return nil
+}
+
 func formatDuration(d time.Duration) string {
 	days := int(d.Hours()) / 24
 	hours := int(d.Hours()) % 24

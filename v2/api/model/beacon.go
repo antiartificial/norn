@@ -34,3 +34,14 @@ type BeaconSinkStatus struct {
 	URL        string `json:"url,omitempty"`
 	KeyID      string `json:"keyId,omitempty"`
 }
+
+type NotificationChannel struct {
+	ID         string   `json:"id"`
+	Provider   string   `json:"provider"` // discord, ntfy, pushover
+	Name       string   `json:"name"`
+	URL        string   `json:"url"`
+	Token      string   `json:"token,omitempty"`
+	UserKey    string   `json:"userKey,omitempty"`
+	Severities []string `json:"severities,omitempty"`
+	CreatedAt  time.Time `json:"createdAt"`
+}

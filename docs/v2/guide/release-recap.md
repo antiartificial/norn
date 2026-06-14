@@ -39,6 +39,11 @@ This recap summarizes the current Norn v2 release line: the Nomad/Consul control
 | Assurance surfaces | `norn observability install`, `norn secrets migrate-plan`, `norn validate --strict-secrets`, `norn network` | Packages local monitoring, secret drift gates, and network truth into first-class operator commands |
 | Restart and OOM tracking | Task-level restart/OOM Beacon events, `norn_task_restarts_total` and `norn_task_oom_kills_total` metrics, Prometheus alert rules | Detects task restarts and OOM kills from Nomad allocation state with cause classification |
 | Resource right-sizing | `norn resources`, `/api/resources/suggestions` | Compares declared infraspec resource limits against live Nomad allocation stats to flag overprovisioned and at-risk apps |
+| Event notifications | `norn notifications`, `/api/notifications/channels` | Pushes Beacon events to Discord webhooks, ntfy topics, and Pushover with severity filtering and per-channel configuration |
+| Auto-rollback | `deployPolicy.autoRollback` in infraspec | Automatically rolls back to the last successful deployment when the healthy step fails, with Beacon event and saga trail |
+| Snapshot export | `norn snapshots export/remote/import`, `snapshots.exportBucket` | Archives database snapshots to S3-compatible object storage and imports them back for disaster recovery |
+| Deploy groups | `norn deploy-groups`, `deploy-groups/*.yaml` | Defines ordered multi-app deployment sequences with optional wait-ready gates between apps |
+| Canary deploys | `canary` process config, `norn canary/promote` | Deploys canary allocations first, evaluates health after a configurable window, then promotes or fails automatically |
 | Upgrade path | `norn platform preflight`, `upgrade`, `releases`, `rollback` | Upgrades Norn API, CLI, and built UI without stopping Nomad, Consul, Postgres, or hosted apps |
 
 ## Operator Impact
@@ -47,7 +52,15 @@ Norn v2 is now useful as a real local operations surface rather than just a depl
 
 The biggest practical change is that Norn can host long-lived background work beside web processes. ContextDB is the proving case: its web API and review worker run as separate processes, while Norn exposes worker health, evaluator readiness, dry-run policy posture, audit events, and recent worker runs.
 
-Beacon adds the first durable event surface for notification-oriented operations. Norn now records events it can observe directly, such as deploy outcomes, cron control actions, manual test events, Nomad allocation transitions, Consul health transitions, and cron run outcomes. Those events can stay local for audit/debugging or be forwarded to a signed sink. Norn also supports local operator state: events can be acknowledged, snoozed, and reopened from the CLI and Platform tab.
+Beacon adds the first durable event surface for notification-oriented operations. Norn now records events it can observe directly, such as deploy outcomes, cron control actions, manual test events, Nomad allocation transitions, Consul health transitions, and cron run outcomes. Those events can stay local for audit/debugging or be forwarded to a signed sink. Norn also supports local operator state: events can be acknowledged, snoozed, and reopened from the CLI and Platform tab. Beacon events can now push notifications to Discord webhooks, ntfy topics, and Pushover channels with per-channel severity filtering.
+
+Auto-rollback is now built into the deploy pipeline. When a deployment's healthy step fails and the app has not explicitly disabled auto-rollback, Norn queues a rollback to the last successful deployment, emits a `deploy.auto_rollback` Beacon event, and records the sequence in the saga trail.
+
+Canary deploys let operators roll out new versions to a subset of allocations before promoting to the full group. The canary count and evaluation window are declared in `infraspec.yaml`; Norn inserts a canary evaluation step between healthy and forge, waits the configured duration, checks allocation health, and either promotes or fails the Nomad deployment automatically. Manual promotion is available via `norn promote <app>` or the API.
+
+Deploy groups define ordered multi-app deployment sequences in YAML files under `deploy-groups/`. Each group lists apps with optional `waitReady` gates. `norn deploy-group <name> [ref]` deploys each app in order, optionally waiting for health before continuing to the next.
+
+Snapshot export adds off-site durability for database snapshots. Apps can declare an `exportBucket` in their snapshot policy; Norn auto-exports snapshots to S3-compatible storage after successful `pg_dump`. Manual export, listing, and import are available through the CLI and API.
 
 Object storage now follows the same local-infra posture as the rest of v2: Garage can run as a platform-scoped service, while app specs declare buckets and Norn provisions them during deploy. Apps receive S3-compatible env vars, including Garage path-style flags, without hardcoding bucket credentials into plaintext specs.
 
@@ -100,6 +113,11 @@ The current release line has been exercised with:
 - `norn smoke contextdb`
 - `curl -sf http://127.0.0.1:8800/api/health`
 - `curl -sf -X POST http://127.0.0.1:8800/api/events/test -H 'Content-Type: application/json' -d '{"app":"field-harbor"}'`
+- `norn notifications list`
+- `norn canary <app>`
+- `norn deploy-groups`
+- `norn snapshots export <app>`
+- `norn snapshots remote <app>`
 
 ## Compatibility
 

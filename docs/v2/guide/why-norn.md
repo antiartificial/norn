@@ -122,7 +122,10 @@ norn snapshots restore myapp <timestamp> --pre-restore --yes
 | Secrets | `.env` files or Docker secrets | SOPS/age encrypted, injected at deploy |
 | Observability | None built-in | Prometheus, Grafana, cAdvisor, Beacon events |
 | Restart tracking | Docker restart policy | OOM cause classification, Beacon events, metrics |
-| Database backups | Manual | Auto-snapshot before deploy, restore with safety net |
+| Auto-rollback | None | Automatic rollback on deploy health failure |
+| Canary deploys | None | Canary allocations with timed evaluation and auto-promote |
+| Database backups | Manual | Auto-snapshot before deploy, restore with safety net, S3 export |
+| Notifications | None | Discord, ntfy, Pushover with severity filtering |
 | Cron jobs | Separate compose service or host cron | First-class process type with execution history |
 | Service discovery | Docker DNS | Consul with health, reachability, manifest |
 | TLS / routing | Reverse proxy setup | Cloudflare tunnel with auto-forge |
@@ -137,10 +140,10 @@ norn snapshots restore myapp <timestamp> --pre-restore --yes
 | Control plane overhead | 1-2 GB RAM | ~50 MB (Norn API + CLI) |
 | App spec | Deployment + Service + Ingress + ConfigMap + Secret + HPA | Single `infraspec.yaml` |
 | Learning curve | Kubernetes concepts, kubectl, Helm | infraspec.yaml + `norn deploy` |
-| Deploy pipeline | kubectl apply or Helm upgrade | Built-in 9-step with preflight and rollback |
+| Deploy pipeline | kubectl apply or Helm upgrade | Built-in 9-step with preflight, rollback, canary, and auto-rollback |
 | Secrets | Kubernetes secrets (base64, not encrypted) | SOPS/age encrypted at rest |
 | Observability | kube-prometheus-stack (~2 GB) | Lightweight local stack (~400 MB) |
-| Database snapshots | No built-in support | Auto-snapshot before deploy |
+| Database snapshots | No built-in support | Auto-snapshot before deploy with S3 export |
 | Failure debugging | `kubectl describe pod`, events scattered across resources | Saga trail, Beacon events, `norn events show` |
 | Scaling | HPA with metrics-server | Infraspec scaling with min/max |
 | Host compatibility | Needs VM on macOS | Native Docker on macOS |
@@ -151,8 +154,12 @@ After setup (`make build && make dev`), you have:
 
 - A dashboard at `localhost:5173` showing all your apps, their health, and deploy history
 - A CLI that deploys, rolls back, streams logs, and shows operational events
-- Automatic database snapshots before every deploy
+- Automatic database snapshots before every deploy with optional S3 export
 - Encrypted secret management
+- Event notifications to Discord, ntfy, and Pushover
+- Auto-rollback on deploy health failure
+- Canary deployments with timed health evaluation
+- Deploy groups for ordered multi-app deployments
 - Health monitoring with Beacon events for failures, restarts, and OOM kills
 - Resource usage tracking that tells you when to resize
 - Cloudflare tunnel routing with TLS — no reverse proxy configuration

@@ -20,11 +20,11 @@ features:
   - title: Discover
     details: Scans ~/projects for infraspec.yaml files and automatically registers apps with their infrastructure dependencies.
   - title: Deploy
-    details: Preflight checks plus a nine-step deploy pipeline - clone, build, test, snapshot, migrate, submit, healthy, forge, cleanup - with real-time saga events over WebSocket.
+    details: Preflight checks plus a multi-step deploy pipeline with auto-rollback, canary evaluation, deploy groups, and real-time saga events over WebSocket.
   - title: Orchestrate
     details: Translates infraspec processes to Nomad jobs - services, periodic batch for cron, one-shot batch for functions - with Consul service discovery.
   - title: Monitor
-    details: Health checks, restart/OOM tracking, resource right-sizing, Beacon events, and Prometheus metrics - from the dashboard or the terminal.
+    details: Health checks, restart/OOM tracking, resource right-sizing, Beacon events with Discord/ntfy/Pushover notifications, and Prometheus metrics.
   - title: Functions
     details: HTTP-triggered ephemeral containers - invoke from the dashboard, CLI, or API with automatic execution tracking via Nomad batch jobs.
   - title: Saga Events
