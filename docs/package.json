@@ -5,7 +5,10 @@
   "scripts": {
     "dev": "vitepress dev",
     "build": "vitepress build",
-    "preview": "vitepress preview"
+    "preview": "vitepress preview",
+    "screenshots": "node screenshots.mjs && node cli-screenshots.mjs",
+    "screenshots:ui": "node screenshots.mjs",
+    "screenshots:cli": "node cli-screenshots.mjs"
   },
   "dependencies": {
     "mermaid": "^11.4.1",
