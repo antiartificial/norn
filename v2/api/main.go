@@ -361,7 +361,7 @@ func main() {
 func bearerAuth(token string, h *handler.Handler) func(http.Handler) http.Handler {
 	return func(next http.Handler) http.Handler {
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-			if r.URL.Path == "/ws" || r.URL.Path == "/metrics" || r.URL.Path == "/api/metrics" || r.URL.Path == "/api/health" || r.URL.Path == "/api/version" || r.URL.Path == "/api/webhooks/github" || r.URL.Path == "/api/webhooks/gitea" || strings.HasSuffix(r.URL.Path, "/exec") {
+			if !strings.HasPrefix(r.URL.Path, "/api/") || r.URL.Path == "/api/metrics" || r.URL.Path == "/api/health" || r.URL.Path == "/api/version" || r.URL.Path == "/api/webhooks/github" || r.URL.Path == "/api/webhooks/gitea" || strings.HasSuffix(r.URL.Path, "/exec") {
 				next.ServeHTTP(w, r)
 				return
 			}
