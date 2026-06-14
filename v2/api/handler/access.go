@@ -1,6 +1,7 @@
 package handler
 
 import (
+	"context"
 	"net"
 	"net/http"
 	"sort"
@@ -140,6 +141,17 @@ func clientIP(r *http.Request) string {
 		return r.RemoteAddr
 	}
 	return host
+}
+
+func (h *Handler) HasActiveGrant(ip string) bool {
+	if h.db == nil {
+		return false
+	}
+	matched, err := h.db.MatchAccessGrant(context.Background(), ip)
+	if err != nil {
+		return false
+	}
+	return matched
 }
 
 func firstForwardedFor(value string) string {

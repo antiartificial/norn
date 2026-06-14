@@ -103,11 +103,31 @@ interface OpsSummary {
   warnings?: string[]
 }
 
+interface EvaluatorNamespaceReadiness {
+  namespace: string
+  evaluator: string
+  provider: string
+  dryRun: boolean
+  providerKeyRequired: boolean
+  providerKeyConfigured: boolean
+  mutationAllowed: boolean
+  ready: boolean
+  blockers: string[]
+}
+
+interface EvaluatorReadinessData {
+  generatedAt: string
+  namespaces: EvaluatorNamespaceReadiness[]
+  overallReady: boolean
+  summary: string
+}
+
 export function OpsPanel() {
   const [summary, setSummary] = useState<OpsSummary | null>(null)
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState<string | null>(null)
   const [busyRollback, setBusyRollback] = useState<string | null>(null)
+  const [evalReadiness, setEvalReadiness] = useState<EvaluatorReadinessData | null>(null)
 
   const loadSummary = () => {
     let cancelled = false
@@ -129,6 +149,10 @@ export function OpsPanel() {
       .finally(() => {
         if (!cancelled) setLoading(false)
       })
+    fetch(apiUrl('/api/ops/contextdb/evaluator-readiness'), fetchOpts)
+      .then(r => r.ok ? r.json() : null)
+      .then(data => { if (!cancelled && data) setEvalReadiness(data) })
+      .catch(() => {})
     return () => { cancelled = true }
   }
 
@@ -207,6 +231,36 @@ export function OpsPanel() {
           <p className="ops-footnote">
             provider-backed {policy.totals.provider_backed}, missing keys {policy.totals.missing_provider_keys}, warnings {policy.totals.warnings}, errors {policy.totals.errors}
           </p>
+        </section>
+      )}
+
+      {evalReadiness && (
+        <section className="ops-section">
+          <h3>Evaluator Readiness</h3>
+          <p style={{ fontSize: '12px', color: 'var(--text-dim)', marginBottom: '8px' }}>
+            {evalReadiness.summary}
+            <span className={`readiness-badge ${evalReadiness.overallReady ? 'ready' : 'blocked'}`} style={{ marginLeft: '8px' }}>
+              {evalReadiness.overallReady ? 'ready' : 'not ready'}
+            </span>
+          </p>
+          {evalReadiness.namespaces.length > 0 && (
+            <div className="ops-table evaluator-readiness">
+              <div className="ops-row ops-row-head">
+                <span>Namespace</span><span>Evaluator</span><span>Provider</span><span>Dry</span><span>Key</span><span>Ready</span><span>Blockers</span>
+              </div>
+              {evalReadiness.namespaces.map((ns) => (
+                <div className="ops-row" key={ns.namespace}>
+                  <span>{ns.namespace}</span>
+                  <span>{ns.evaluator}</span>
+                  <span>{ns.provider || '-'}</span>
+                  <span>{String(ns.dryRun)}</span>
+                  <span>{ns.providerKeyRequired ? (ns.providerKeyConfigured ? 'configured' : 'missing') : '-'}</span>
+                  <span><span className={`readiness-badge ${ns.ready ? 'ready' : 'blocked'}`}>{ns.ready ? 'ready' : 'blocked'}</span></span>
+                  <span style={{ fontSize: '11px', color: 'var(--text-dim)' }}>{ns.blockers.length > 0 ? ns.blockers.join(', ') : '-'}</span>
+                </div>
+              ))}
+            </div>
+          )}
         </section>
       )}
 

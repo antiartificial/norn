@@ -1823,6 +1823,55 @@ body {
   color: var(--text-dim);
 }
 
+/* ─── Network Section ─── */
+.network-toggle {
+  cursor: pointer;
+  user-select: none;
+}
+.network-toggle:hover .ops-kv strong {
+  color: var(--blue);
+}
+
+.network-services {
+  margin-top: 8px;
+}
+.network-services .ops-row {
+  grid-template-columns: 1.5fr 1fr 0.8fr 0.8fr 0.8fr 0.8fr 2fr;
+}
+.network-services .ops-row-head {
+  grid-template-columns: 1.5fr 1fr 0.8fr 0.8fr 0.8fr 0.8fr 2fr;
+}
+
+/* ─── Access Grants ─── */
+.grants-list {
+  margin-top: 8px;
+}
+.grants-list .ops-row {
+  grid-template-columns: 1.2fr 1.5fr 2fr 1fr 1.5fr 0.8fr;
+}
+.grants-list .ops-row-head {
+  grid-template-columns: 1.2fr 1.5fr 2fr 1fr 1.5fr 0.8fr;
+}
+
+/* ─── Evaluator Readiness ─── */
+.evaluator-readiness .ops-row {
+  grid-template-columns: 1.5fr 1fr 0.8fr 0.8fr 0.8fr 0.8fr 2fr;
+}
+.evaluator-readiness .ops-row-head {
+  grid-template-columns: 1.5fr 1fr 0.8fr 0.8fr 0.8fr 0.8fr 2fr;
+}
+
+.readiness-badge {
+  display: inline-block;
+  padding: 1px 6px;
+  border-radius: 3px;
+  font-size: 11px;
+  font-weight: 600;
+}
+.readiness-badge.ready { background: rgba(52, 211, 153, 0.15); color: var(--green); }
+.readiness-badge.blocked { background: rgba(248, 113, 113, 0.15); color: var(--red); }
+.readiness-badge.partial { background: rgba(251, 191, 36, 0.15); color: var(--amber); }
+
 /* ─── Animations ─── */
 @keyframes fade-in {
   from { opacity: 0; }

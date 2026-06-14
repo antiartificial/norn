@@ -152,3 +152,58 @@ export interface CanaryStatus {
   statusDescription?: string
   isCanary?: boolean
 }
+
+export interface AccessGrant {
+  id: string
+  ip: string
+  note: string
+  createdBy: string
+  createdAt: string
+  expiresAt: string
+}
+
+export interface ServiceManifestEntry {
+  name: string
+  app: string
+  process: string
+  type: string
+  status: string
+  healthPath?: string
+  reachability: {
+    endpointScope: string
+    instanceScope: string
+    exposure: string
+    routable: boolean
+  }
+  endpoints?: Array<{ url: string; region?: string }>
+  instances?: Array<{ node: string; address: string; port: number; status: string }>
+  metadata?: Record<string, string>
+}
+
+export interface ServiceManifest {
+  version: number
+  generatedAt: string
+  networkMode: string
+  services: ServiceManifestEntry[]
+}
+
+export interface EvaluatorNamespaceReadiness {
+  namespace: string
+  evaluator: string
+  provider: string
+  dryRun: boolean
+  providerKeyRequired: boolean
+  providerKeyConfigured: boolean
+  mutationAllowed: boolean
+  smokeOk?: boolean
+  smokeError?: string
+  ready: boolean
+  blockers: string[]
+}
+
+export interface EvaluatorReadiness {
+  generatedAt: string
+  namespaces: EvaluatorNamespaceReadiness[]
+  overallReady: boolean
+  summary: string
+}
