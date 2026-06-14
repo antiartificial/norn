@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"net/http"
+	"sort"
 
 	"github.com/go-chi/chi/v5"
 
@@ -37,32 +38,11 @@ func (h *Handler) Forge(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Get node address from running allocations
-	allocs, err := h.nomad.PollAllocations(id)
-	if err != nil || len(allocs) == 0 {
-		writeError(w, http.StatusInternalServerError, "no running allocations")
-		return
-	}
-
-	nodeInfo, err := h.nomad.NodeInfo(allocs[0].NodeID)
+	service, err := h.cloudflaredService(spec)
 	if err != nil {
-		writeError(w, http.StatusInternalServerError, fmt.Sprintf("node info: %v", err))
+		writeError(w, http.StatusInternalServerError, err.Error())
 		return
 	}
-
-	var port int
-	for _, proc := range spec.Processes {
-		if proc.Port > 0 {
-			port = proc.Port
-			break
-		}
-	}
-	if port == 0 {
-		writeError(w, http.StatusBadRequest, "no port found in spec")
-		return
-	}
-
-	service := fmt.Sprintf("http://%s:%d", nodeInfo.Address, port)
 
 	cfg, err := cloudflared.ReadConfig(ctx)
 	if err != nil {
@@ -221,28 +201,11 @@ func (h *Handler) ToggleEndpoint(w http.ResponseWriter, r *http.Request) {
 
 	var changed bool
 	if req.Enabled {
-		allocs, err := h.nomad.PollAllocations(id)
-		if err != nil || len(allocs) == 0 {
-			writeError(w, http.StatusInternalServerError, "no running allocations")
-			return
-		}
-		nodeInfo, err := h.nomad.NodeInfo(allocs[0].NodeID)
+		service, err := h.cloudflaredService(spec)
 		if err != nil {
-			writeError(w, http.StatusInternalServerError, fmt.Sprintf("node info: %v", err))
+			writeError(w, http.StatusInternalServerError, err.Error())
 			return
 		}
-		var port int
-		for _, proc := range spec.Processes {
-			if proc.Port > 0 {
-				port = proc.Port
-				break
-			}
-		}
-		if port == 0 {
-			writeError(w, http.StatusBadRequest, "no port found in spec")
-			return
-		}
-		service := fmt.Sprintf("http://%s:%d", nodeInfo.Address, port)
 		changed = cloudflared.AddIngress(cfg, matchedURL, service)
 	} else {
 		changed = cloudflared.RemoveIngress(cfg, matchedURL)
@@ -267,4 +230,59 @@ func (h *Handler) ToggleEndpoint(w http.ResponseWriter, r *http.Request) {
 		action = "enabled"
 	}
 	writeJSON(w, map[string]string{"status": action, "hostname": hostname})
+}
+
+func (h *Handler) cloudflaredService(spec *model.InfraSpec) (string, error) {
+	processName, process, ok := handlerCloudflaredProcess(spec)
+	if !ok {
+		return "", fmt.Errorf("no port found in spec")
+	}
+
+	serviceName := fmt.Sprintf("%s-%s", spec.App, processName)
+	if h.consul != nil {
+		instances, err := h.consul.ServiceHealthChecks(serviceName)
+		if err == nil {
+			for _, instance := range instances {
+				if instance.Status == "passing" && instance.Address != "" && instance.Port > 0 {
+					return fmt.Sprintf("http://%s:%d", instance.Address, instance.Port), nil
+				}
+			}
+			for _, instance := range instances {
+				if instance.Address != "" && instance.Port > 0 {
+					return fmt.Sprintf("http://%s:%d", instance.Address, instance.Port), nil
+				}
+			}
+		}
+	}
+
+	allocs, err := h.nomad.PollAllocations(spec.App)
+	if err != nil {
+		return "", fmt.Errorf("poll allocations: %w", err)
+	}
+	if len(allocs) == 0 {
+		return "", fmt.Errorf("no running allocations")
+	}
+	nodeInfo, err := h.nomad.NodeInfo(allocs[0].NodeID)
+	if err != nil {
+		return "", fmt.Errorf("node info: %w", err)
+	}
+	return fmt.Sprintf("http://%s:%d", nodeInfo.Address, process.Port), nil
+}
+
+func handlerCloudflaredProcess(spec *model.InfraSpec) (string, model.Process, bool) {
+	if process, ok := spec.Processes["web"]; ok && process.Port > 0 {
+		return "web", process, true
+	}
+	names := make([]string, 0, len(spec.Processes))
+	for name := range spec.Processes {
+		names = append(names, name)
+	}
+	sort.Strings(names)
+	for _, name := range names {
+		process := spec.Processes[name]
+		if process.Port > 0 {
+			return name, process, true
+		}
+	}
+	return "", model.Process{}, false
 }

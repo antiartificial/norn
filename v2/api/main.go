@@ -171,6 +171,7 @@ func main() {
 	pipe := &pipeline.Pipeline{
 		DB:          db,
 		Nomad:       nomadClient,
+		Consul:      consulClient,
 		WS:          ws,
 		SagaStore:   sagaStore,
 		Secrets:     sec,
@@ -257,6 +258,7 @@ func main() {
 		r.Get("/operations", h.ListOperations)
 		r.Get("/operations/active", h.ActiveOperations)
 		r.Get("/alerts/rules", h.AlertRules)
+		r.Get("/resources/suggestions", h.ResourceSuggestions)
 		r.Get("/events", h.ListEvents)
 		r.Post("/events", h.CreateEvent)
 		r.Get("/events/{id}", h.GetEvent)

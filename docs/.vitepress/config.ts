@@ -28,6 +28,7 @@ export default withMermaid(
           {
             text: 'Guide',
             items: [
+              { text: 'Why Norn', link: '/v2/guide/why-norn' },
               { text: 'Getting Started', link: '/v2/guide/getting-started' },
               { text: 'Release Recap', link: '/v2/guide/release-recap' },
               { text: 'Concepts', link: '/v2/guide/concepts' },

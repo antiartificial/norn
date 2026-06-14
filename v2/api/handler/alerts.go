@@ -53,6 +53,22 @@ func (h *Handler) AlertRules(w http.ResponseWriter, r *http.Request) {
 				EventTypes:  []string{"service.health.recovered"},
 				Description: "A previously degraded service returned to passing health.",
 			},
+			{
+				ID:          "task-oom-killed",
+				Name:        "Task OOM killed",
+				Severity:    "critical",
+				EventTypes:  []string{"nomad.task.oom_killed"},
+				Description: "A task was killed by the OOM killer — review resource limits.",
+				Runbook:     "/v2/operations/troubleshooting",
+			},
+			{
+				ID:          "task-restarted",
+				Name:        "Task restarted",
+				Severity:    "warning",
+				EventTypes:  []string{"nomad.task.restarted"},
+				Description: "A task restarted — may indicate a crash, resource pressure, or configuration error.",
+				Runbook:     "/v2/operations/troubleshooting",
+			},
 		},
 	})
 }

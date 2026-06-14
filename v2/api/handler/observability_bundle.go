@@ -239,6 +239,20 @@ func prometheusAlertRules() string {
           severity: critical
         annotations:
           summary: "Norn host disk free space below 10%"
+      - alert: NornTaskOOMRisk
+        expr: norn_task_restarts_total > 0 and norn_task_oom_kills_total > 0
+        labels:
+          severity: critical
+        annotations:
+          summary: "{{ $labels.app }} {{ $labels.task }} has been OOM killed"
+          description: "Task was killed by the OOM killer — review memory limits in infraspec."
+      - alert: NornTaskRestartLoop
+        expr: norn_task_restarts_total > 3
+        labels:
+          severity: warning
+        annotations:
+          summary: "{{ $labels.app }} {{ $labels.task }} has restarted {{ $value }} times"
+          description: "Frequent restarts may indicate resource pressure, crashes, or misconfiguration."
 `
 }
 

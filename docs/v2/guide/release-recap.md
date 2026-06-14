@@ -37,6 +37,8 @@ This recap summarizes the current Norn v2 release line: the Nomad/Consul control
 | Runtime watcher | Beacon events for failed/lost/unhealthy allocations, Consul health transitions, and cron success/failure/hung runs | Turns service, allocation, and scheduled-work transitions into durable operational events |
 | Proxy cutover lane | `norn platform proxy-plan/status/render/switch`, `norn platform upgrade --proxy` | Supports stable ingress and private old/new API release ports on proxy-fronted hosts |
 | Assurance surfaces | `norn observability install`, `norn secrets migrate-plan`, `norn validate --strict-secrets`, `norn network` | Packages local monitoring, secret drift gates, and network truth into first-class operator commands |
+| Restart and OOM tracking | Task-level restart/OOM Beacon events, `norn_task_restarts_total` and `norn_task_oom_kills_total` metrics, Prometheus alert rules | Detects task restarts and OOM kills from Nomad allocation state with cause classification |
+| Resource right-sizing | `norn resources`, `/api/resources/suggestions` | Compares declared infraspec resource limits against live Nomad allocation stats to flag overprovisioned and at-risk apps |
 | Upgrade path | `norn platform preflight`, `upgrade`, `releases`, `rollback` | Upgrades Norn API, CLI, and built UI without stopping Nomad, Consul, Postgres, or hosted apps |
 
 ## Operator Impact
