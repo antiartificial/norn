@@ -20,6 +20,10 @@ POST /api/events/{id}/open
 GET  /api/events/sinks
 POST /api/events/test
 GET  /api/alerts/rules
+GET  /api/notifications/channels
+POST /api/notifications/channels
+POST /api/notifications/channels/{id}/test
+DELETE /api/notifications/channels/{id}
 ```
 
 `GET /api/events` accepts optional filters:
@@ -94,6 +98,8 @@ Deploys emit:
 | --- | --- | --- |
 | `deploy.succeeded` | `info` | A deployment completes |
 | `deploy.failed` | `critical` | A deployment fails at a pipeline step |
+| `deploy.auto_rollback` | `warning` | A failed health gate queues rollback to the previous successful deployment |
+| `canary.promoted` | `info` | An operator manually promotes a canary deployment |
 
 Rollbacks emit:
 
@@ -120,6 +126,16 @@ emits cron outcome events:
 | `cron.failed` | `critical` | A periodic child allocation failed |
 | `cron.lost` | `critical` | A periodic child allocation was lost |
 | `cron.hung` | `critical` | A periodic child appears stuck beyond the watcher threshold |
+| `cron.missed_run` | `critical` | A scheduled process missed its expected dispatch window |
+
+Nomad allocation watcher events emit:
+
+| Type | Severity | When |
+| --- | --- | --- |
+| `nomad.allocation.failed` | `critical` | An allocation fails |
+| `nomad.allocation.lost` | `critical` | Nomad reports an allocation as lost |
+| `nomad.task.restarted` | `warning` | A task restart is observed in allocation state |
+| `nomad.task.oom_killed` | `critical` | A task was killed by the OOM killer |
 
 Service health transitions emit:
 
@@ -135,6 +151,34 @@ Snapshot operations emit:
 | --- | --- | --- |
 | `snapshot.restored` | `warning` | An operator restores a local database snapshot |
 | `snapshot.retention.applied` | `info` | Snapshot retention is applied and older local snapshot files are pruned |
+| `snapshot.exported` | `info` | A local snapshot is exported to remote object storage |
+| `snapshot.imported` | `info` | A remote snapshot is imported back into local storage |
+
+## Notification Channels
+
+Beacon can deliver events to configured notification channels in addition to the signed sink. Channels are managed from the CLI, API, or dashboard Platform tab:
+
+```bash
+norn notifications list
+norn notifications add discord ops https://discord.com/api/webhooks/... --severity critical
+norn notifications add ntfy alerts https://ntfy.sh/norn-alerts --severity warning,critical
+norn notifications add pushover mobile https://api.pushover.net/1/messages.json \
+  --token <app-token> --user-key <user-key> --severity critical
+norn notifications add webhook vigil https://vigil.example.com/api/events
+norn notifications test <channel-id>
+norn notifications remove <channel-id>
+```
+
+Providers:
+
+| Provider | Use |
+| --- | --- |
+| `discord` | Sends color-coded webhook embeds |
+| `ntfy` | Sends HTTP posts with priority headers |
+| `pushover` | Sends mobile notifications with token and user-key auth |
+| `webhook` | Sends JSON events to an arbitrary HTTP endpoint, optionally with bearer auth |
+
+Severity filters are per channel. If no filter is configured, the channel receives all Beacon severities.
 
 ## Sink Configuration
 

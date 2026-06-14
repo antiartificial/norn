@@ -173,6 +173,41 @@ norn alerts
 
 The rule catalogue is intentionally declarative. It gives CLI, UI, and downstream sinks a shared contract for deploy failure, service down/degraded, cron failure, and recovery events.
 
+## resources
+
+Show live memory usage against declared infraspec limits and print right-sizing suggestions.
+
+```bash
+norn resources
+```
+
+The command calls `/api/resources/suggestions` and compares Nomad allocation stats with each process's declared `resources.memory` value.
+
+| Status | Meaning |
+|--------|---------|
+| `at_risk` | Live or peak memory is close to the declared limit; consider increasing `resources.memory` |
+| `overprovisioned` | Declared memory is much higher than observed use; the limit may be reducible |
+| `right_sized` | Live usage is comfortably inside the declared limit |
+
+Use this after restart loops, OOM events, or a new workload rollout to decide whether an app spec needs resource changes before the next deploy.
+
+## notifications
+
+Manage Beacon notification channels.
+
+```bash
+norn notifications list
+norn notifications add discord ops https://discord.com/api/webhooks/...
+norn notifications add ntfy alerts https://ntfy.sh/norn-alerts --severity warning,critical
+norn notifications add pushover mobile https://api.pushover.net/1/messages.json \
+  --token <app-token> --user-key <user-key> --severity critical
+norn notifications add webhook vigil https://vigil.example.com/api/events --severity critical
+norn notifications test <channel-id>
+norn notifications remove <channel-id>
+```
+
+Supported providers are `discord`, `ntfy`, `pushover`, and `webhook`. Severity filters are optional; when omitted, the channel receives all Beacon severities. Notification channel configuration is stored by the Norn control plane and managed through `/api/notifications/channels`.
+
 ## smoke
 
 Run operational smoke checks.
@@ -220,6 +255,32 @@ norn rollback <app>
 ```
 
 Finds the last successful deployment and re-deploys its image tag.
+
+## canary
+
+Inspect and promote active canary deployments.
+
+```bash
+norn canary <app>
+norn promote <app>
+```
+
+`norn canary <app>` prints the latest Nomad deployment id, job id, deployment status, status description, and whether the active deployment still has canary allocations. `norn promote <app>` promotes the canary deployment through Nomad and emits a Beacon event.
+
+Canary behavior is declared per process with `canary.count` and `canary.evaluateAfter` in `infraspec.yaml`. During deploy, Norn waits for the configured evaluation window after the healthy step, checks allocation health, then promotes or fails the deployment.
+
+## deploy groups
+
+List and run ordered multi-app deployment groups.
+
+```bash
+norn deploy-groups
+norn deploy-group <name> [ref]
+```
+
+Deploy group definitions live under `deploy-groups/*.yaml` and list apps in the order they should roll out. Each app entry may request a `waitReady` gate so Norn waits for health before moving to the next app.
+
+`norn deploy-groups` shows configured groups, apps, and wait-ready settings. `norn deploy-group <name> [ref]` starts each app deploy in order and prints the saga id or error for each app.
 
 ## scale
 
@@ -286,6 +347,8 @@ norn contextdb policy
 norn contextdb policy --json
 norn contextdb audit
 norn contextdb evaluator-smoke
+norn contextdb evaluator-readiness
+norn contextdb evaluator-readiness --json
 norn contextdb rollback-feedback <event-id> --reason "bad feedback"
 norn contextdb review --namespace hermes-agent
 norn contextdb worker-runs <namespace>
@@ -300,6 +363,8 @@ norn contextdb worker-runs <namespace> --json
 `norn contextdb audit` reads recent feedback events from ContextDB so operators can inspect claim validation, refutation, stale marking, and worker-applied mutation receipts.
 
 `norn contextdb evaluator-smoke` runs the deployed review worker's configured evaluator smoke test inside the `review-worker` allocation. It does not open the database or mutate claims; provider-backed evaluators use their configured provider/webhook and report missing keys, policy blocks, malformed decisions, or rate-limit failures before rollout.
+
+`norn contextdb evaluator-readiness` synthesizes policy, key availability, dry-run state, and evaluator configuration into a per-namespace readiness assessment. Use it before moving a namespace from the rules evaluator or dry-run mode to a provider-backed evaluator.
 
 `norn contextdb rollback-feedback` proxies a ContextDB feedback rollback through the hosted web service and prints the rollback receipt. Use the feedback event id from `norn contextdb audit`, `norn ops contextdb`, or the Ops UI.
 
@@ -372,6 +437,16 @@ norn access --limit 100
 
 The table includes request time, status, method, path, client IP, Cloudflare Access user metadata when present, and duration. Norn does not expose request bodies, authorization headers, or secret values in this view.
 
+Temporary IP grants are managed under the same command group:
+
+```bash
+norn access grant --ip 1.2.3.4 --ttl 24h --note "CI server"
+norn access grants
+norn access revoke <grant-id>
+```
+
+Grants bypass bearer auth for a single IP until their TTL expires. Use them for short-lived operator or automation access, and prefer the narrowest practical TTL. The dashboard Platform tab exposes the same grant list/create/revoke flow via `/api/access/grants`.
+
 ## secrets
 
 Manage SOPS-encrypted secrets for an app.
@@ -389,6 +464,11 @@ norn secrets set <app> KEY=VALUE
 
 # Delete a secret
 norn secrets delete <app> KEY
+
+# Generate migration commands for plaintext env secrets
+norn secrets migrate
+norn secrets migrate <app>
+norn secrets migrate <app> --apply --apps-dir ~/projects
 ```
 
 | Subcommand | Description |
@@ -396,8 +476,11 @@ norn secrets delete <app> KEY
 | (none) | List secret key names (values are not shown) |
 | `status` | Show declared-vs-encrypted drift and plaintext env warnings |
 | `migrate-plan` | Show value-safe plaintext env entries that should move to `secrets.enc.yaml` |
+| `migrate` | Generate SOPS commands for plaintext env secrets; with `--apply`, update infraspec files by moving keys from `env` to `secrets` |
 | `set` | Set or update a secret key-value pair |
 | `delete` | Remove a secret |
+
+`norn secrets migrate` is intentionally two-phase. Dry-run prints the affected keys and SOPS commands without writing files. `--apply` edits `infraspec.yaml`, but you still run the generated SOPS commands manually so secret values never pass through the API or docs output.
 
 ## services
 
@@ -431,6 +514,11 @@ norn snapshots <app> retention
 
 # Execute retention
 norn snapshots <app> retention --keep 3 --execute --yes
+
+# Remote export/import
+norn snapshots export <app>
+norn snapshots remote <app>
+norn snapshots import <app> snapshots/<app>/<filename>.dump
 ```
 
 | Subcommand | Description |
@@ -438,6 +526,9 @@ norn snapshots <app> retention --keep 3 --execute --yes
 | (none) | List available snapshots with timestamps, source commit, created time, size, and filename |
 | `restore` | Restore from a snapshot at the given timestamp; requires `--yes` and prints a restore receipt. `--pre-restore` creates a fresh snapshot before the restore |
 | `retention` | Preview newest-N retention without deleting snapshots; defaults to `snapshots.keep` from the app spec or 3; add `--execute --yes` to prune and print a receipt |
+| `export` | Upload the latest local snapshot to the app's configured `snapshots.exportBucket` |
+| `remote` | List remote snapshots in the configured export bucket |
+| `import` | Download a remote snapshot key back into the local snapshots directory |
 
 ## cron
 

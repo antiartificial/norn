@@ -15,6 +15,7 @@ infrastructure:
 
 snapshots:
   keep: 3
+  exportBucket: myapp-snapshots
 ```
 
 ## Listing Snapshots
@@ -66,6 +67,32 @@ Restoring a snapshot replaces the current database contents. Use `--pre-restore`
 
 Restore receipts include the restored snapshot and, when requested, the pre-restore snapshot filename. Restore and retention actions also emit Beacon events so the operation appears in the same event ledger as deploy and service health changes.
 
-## Storage
+## Remote Export And Import
 
-Snapshots are currently stored as local files under the Norn API working directory's `snapshots/` folder. The object-storage provider can now provision Garage-backed app buckets, but snapshot archival to Garage is a separate follow-up so restore and retention semantics stay explicit.
+Snapshots are stored first as local files under the Norn API working directory's `snapshots/` folder. Apps can also declare `snapshots.exportBucket` to archive local dumps to S3-compatible object storage such as Garage.
+
+```yaml
+snapshots:
+  keep: 5
+  exportBucket: myapp-snapshots
+```
+
+Manual export uploads the latest local snapshot:
+
+```bash
+norn snapshots export myapp
+```
+
+List remote snapshots:
+
+```bash
+norn snapshots remote myapp
+```
+
+Import downloads a remote object key back into the local snapshots directory:
+
+```bash
+norn snapshots import myapp snapshots/myapp/myapp_db_abcdef_20260614T181100.dump
+```
+
+Remote export/import requires the platform S3 configuration used by managed object storage, including `NORN_S3_ENDPOINT`, `NORN_S3_ACCESS_KEY`, `NORN_S3_SECRET_KEY`, and provider-specific path-style settings when using Garage. Export and import actions emit Beacon events (`snapshot.exported`, `snapshot.imported`) so off-host backup movement is auditable.

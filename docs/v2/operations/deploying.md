@@ -110,6 +110,64 @@ Enable auto-deploy by setting `autoDeploy: true` in the infraspec's repo config 
 
 When a push event is received for an app with `autoDeploy: true`, Norn automatically triggers a deploy with the pushed commit SHA.
 
+## Auto-Rollback
+
+App deploys auto-rollback by default when the `healthy` step fails and Norn can find a previous successful deployment.
+
+```yaml
+deployPolicy:
+  autoRollback: true
+```
+
+Set `deployPolicy.autoRollback: false` only when a failed health gate should stop for manual review. When auto-rollback runs, Norn queues an app rollback through the durable operation worker, emits a `deploy.auto_rollback` Beacon event, and keeps the rollback steps visible in `deployment_steps`.
+
+## Canary Deploys
+
+Declare canary behavior on a service process:
+
+```yaml
+processes:
+  web:
+    port: 8080
+    health:
+      path: /health
+    canary:
+      count: 1
+      evaluateAfter: 2m
+```
+
+During deploy, Norn submits the Nomad job with canary allocations, waits for the normal health gate, then evaluates canary health after the configured window. Healthy canaries are promoted automatically by the pipeline; operators can also inspect or promote manually:
+
+```bash
+norn canary myapp
+norn promote myapp
+```
+
+The dashboard shows canary status on the app card when a deployment is active.
+
+## Deploy Groups
+
+Deploy groups roll out multiple apps in a declared order. Place group files under `deploy-groups/*.yaml`:
+
+```yaml
+name: field-harbor-stack
+apps:
+  - app: contextdb
+    waitReady: true
+  - app: field-harbor
+    waitReady: true
+  - app: field-harbor-digest
+```
+
+Run a group from the CLI:
+
+```bash
+norn deploy-groups
+norn deploy-group field-harbor-stack HEAD
+```
+
+Each app deploy still creates its own saga and operation row. `waitReady` gates keep later apps from starting until the earlier app is healthy.
+
 ## Rollback
 
 ```bash
