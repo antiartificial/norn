@@ -75,6 +75,7 @@ export interface Allocation {
   id: string
   taskGroup: string
   status: string
+  lifecycle: 'active' | 'retained'
   healthy?: boolean
   nodeId?: string
   nodeAddress?: string
@@ -84,11 +85,28 @@ export interface Allocation {
   startedAt?: string
 }
 
+export interface ProcessAllocationCount {
+  running: number
+  active: number
+  retained: number
+  total: number
+}
+
+export interface AllocationSummary {
+  running: number
+  active: number
+  retained: number
+  total: number
+  byProcess?: Record<string, ProcessAllocationCount>
+  byStatus?: Record<string, number>
+}
+
 export interface AppStatus {
   spec: InfraSpec
   nomadStatus: string
   healthy: boolean
   allocations: Allocation[]
+  allocationSummary: AllocationSummary
 }
 
 export interface SagaEvent {

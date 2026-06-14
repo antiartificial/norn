@@ -183,15 +183,27 @@ export function AppCard({ app, busy, activeIngress, onPreflight, onDeploy, onRes
   const { spec, healthy, nomadStatus } = app
   const allocations = app.allocations ?? []
 
-  const runningCount = allocations.filter(a => a.status === 'running').length
-  const totalCount = allocations.length
+  const allocationSummary = app.allocationSummary ?? {
+    running: allocations.filter(a => a.status === 'running').length,
+    active: allocations.filter(a => a.lifecycle !== 'retained' && !['complete', 'failed', 'lost'].includes(a.status)).length,
+    retained: allocations.filter(a => a.lifecycle === 'retained' || ['complete', 'failed', 'lost'].includes(a.status)).length,
+    total: allocations.length,
+  }
+  const runningCount = allocationSummary.running
+  const activeCount = allocationSummary.active
+  const retainedCount = allocationSummary.retained
 
   // Group breakdown
-  const groups: Record<string, { running: number; total: number }> = {}
+  const groups: Record<string, { running: number; active: number; retained: number; total: number }> = {}
   for (const alloc of allocations) {
-    if (!groups[alloc.taskGroup]) groups[alloc.taskGroup] = { running: 0, total: 0 }
+    if (!groups[alloc.taskGroup]) groups[alloc.taskGroup] = { running: 0, active: 0, retained: 0, total: 0 }
     groups[alloc.taskGroup].total++
     if (alloc.status === 'running') groups[alloc.taskGroup].running++
+    if (alloc.lifecycle === 'retained' || ['complete', 'failed', 'lost'].includes(alloc.status)) {
+      groups[alloc.taskGroup].retained++
+    } else {
+      groups[alloc.taskGroup].active++
+    }
   }
 
   const processes = spec.processes ?? {}
@@ -209,8 +221,8 @@ export function AppCard({ app, busy, activeIngress, onPreflight, onDeploy, onRes
           <span className="nomad-status">{nomadStatus}</span>
         </div>
         <div className="app-card-ready-group">
-          <Tooltip text={`${runningCount} of ${totalCount} allocations running`}>
-            <div className="alloc-summary">{runningCount}/{totalCount}</div>
+          <Tooltip text={`${runningCount} running, ${activeCount} active, ${retainedCount} retained`}>
+            <div className="alloc-summary">{runningCount} live</div>
           </Tooltip>
         </div>
       </div>
@@ -233,7 +245,7 @@ export function AppCard({ app, busy, activeIngress, onPreflight, onDeploy, onRes
         <div className="app-card-meta">
           {Object.entries(groups).map(([group, counts]) => (
             <span key={group} className="process-badge">
-              {group}: {counts.running}/{counts.total}
+              {group}: {counts.running} live{counts.retained ? `, ${counts.retained} retained` : ''}
             </span>
           ))}
         </div>

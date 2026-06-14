@@ -32,10 +32,11 @@ func New(baseURL string) *Client {
 // App types matching API responses
 
 type AppStatus struct {
-	Spec        *InfraSpec   `json:"spec"`
-	NomadStatus string       `json:"nomadStatus"`
-	Healthy     bool         `json:"healthy"`
-	Allocations []Allocation `json:"allocations"`
+	Spec              *InfraSpec        `json:"spec"`
+	NomadStatus       string            `json:"nomadStatus"`
+	Healthy           bool              `json:"healthy"`
+	Allocations       []Allocation      `json:"allocations"`
+	AllocationSummary AllocationSummary `json:"allocationSummary"`
 }
 
 type Endpoint struct {
@@ -159,9 +160,26 @@ type Allocation struct {
 	ID        string `json:"id"`
 	TaskGroup string `json:"taskGroup"`
 	Status    string `json:"status"`
+	Lifecycle string `json:"lifecycle"`
 	Healthy   *bool  `json:"healthy,omitempty"`
 	NodeID    string `json:"nodeId,omitempty"`
 	StartedAt string `json:"startedAt,omitempty"`
+}
+
+type AllocationSummary struct {
+	Running   int                               `json:"running"`
+	Active    int                               `json:"active"`
+	Retained  int                               `json:"retained"`
+	Total     int                               `json:"total"`
+	ByProcess map[string]ProcessAllocationCount `json:"byProcess,omitempty"`
+	ByStatus  map[string]int                    `json:"byStatus,omitempty"`
+}
+
+type ProcessAllocationCount struct {
+	Running  int `json:"running"`
+	Active   int `json:"active"`
+	Retained int `json:"retained"`
+	Total    int `json:"total"`
 }
 
 type HealthStatus struct {
