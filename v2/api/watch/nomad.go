@@ -75,7 +75,8 @@ func (w *NomadAllocationWatcher) check(ctx context.Context) {
 						continue
 					}
 					key := fmt.Sprintf("%s:%s:%s", spec.App, shortAlloc(alloc.ID), alloc.TaskGroup)
-					if w.seen[key] == state {
+					prev := w.seen[key]
+					if prev == state {
 						continue
 					}
 					w.seen[key] = state
@@ -83,6 +84,7 @@ func (w *NomadAllocationWatcher) check(ctx context.Context) {
 					if state == "failed" || state == "lost" {
 						severity = model.BeaconCritical
 					}
+					correlationKey := fmt.Sprintf("%s:%s:allocation", spec.App, alloc.TaskGroup)
 					_, err := w.beacon.Emit(ctx, model.BeaconEvent{
 						App:       spec.App,
 						Type:      "nomad.allocation." + state,
@@ -91,10 +93,12 @@ func (w *NomadAllocationWatcher) check(ctx context.Context) {
 						Body:      fmt.Sprintf("Allocation %s task group %s is %s.", shortAlloc(alloc.ID), alloc.TaskGroup, state),
 						DedupeKey: fmt.Sprintf("%s:%s:%s", spec.App, shortAlloc(alloc.ID), state),
 						Metadata: map[string]interface{}{
-							"allocationId": alloc.ID,
-							"taskGroup":    alloc.TaskGroup,
-							"clientStatus": alloc.ClientStatus,
-							"nodeId":       alloc.NodeID,
+							"allocationId":   alloc.ID,
+							"taskGroup":      alloc.TaskGroup,
+							"clientStatus":   alloc.ClientStatus,
+							"nodeId":         alloc.NodeID,
+							"correlationKey": correlationKey,
+							"previousState":  prev,
 						},
 					})
 					if err != nil {
@@ -144,19 +148,26 @@ func (w *NomadAllocationWatcher) checkServiceHealth(ctx context.Context, spec *m
 			severity = model.BeaconInfo
 			title = fmt.Sprintf("%s %s recovered", spec.App, processName)
 		}
+		correlationKey := fmt.Sprintf("%s:%s:health", spec.App, processName)
+		previousEventType := ""
+		if previous != "" && previous != "passing" {
+			previousEventType = "service.health." + previous
+		}
 		_, err = w.beacon.Emit(ctx, model.BeaconEvent{
 			App:       spec.App,
 			Type:      eventType,
 			Severity:  severity,
 			Title:     title,
 			Body:      fmt.Sprintf("Service %s changed from %s to %s.", serviceName, emptyState(previous), state),
-			DedupeKey: fmt.Sprintf("%s:%s:health", spec.App, processName),
+			DedupeKey: correlationKey,
 			Metadata: map[string]interface{}{
-				"process":       processName,
-				"service":       serviceName,
-				"previous":      previous,
-				"status":        state,
-				"instanceCount": len(health),
+				"process":           processName,
+				"service":           serviceName,
+				"previous":          previous,
+				"status":            state,
+				"instanceCount":     len(health),
+				"correlationKey":    correlationKey,
+				"previousEventType": previousEventType,
 			},
 		})
 		if err != nil {
@@ -283,6 +294,7 @@ func (w *NomadAllocationWatcher) checkTaskRestarts(ctx context.Context, spec *mo
 			continue
 		}
 		w.seen[key] = fmt.Sprintf("%d", info.Restarts)
+		correlationKey := fmt.Sprintf("%s:%s:%s:restarts", spec.App, info.TaskGroup, info.Task)
 
 		if info.OOMKilled {
 			_, err := w.beacon.Emit(ctx, model.BeaconEvent{
@@ -293,11 +305,12 @@ func (w *NomadAllocationWatcher) checkTaskRestarts(ctx context.Context, spec *mo
 				Body:     fmt.Sprintf("Task %s in %s was killed by the OOM killer (restarts: %d). %s", info.Task, info.TaskGroup, info.Restarts, info.LastEvent),
 				DedupeKey: fmt.Sprintf("%s:%s:%s:oom:%d", spec.App, info.AllocID, info.Task, info.Restarts),
 				Metadata: map[string]interface{}{
-					"task":      info.Task,
-					"taskGroup": info.TaskGroup,
-					"allocId":   info.AllocID,
-					"restarts":  info.Restarts,
-					"lastEvent": info.LastEvent,
+					"task":           info.Task,
+					"taskGroup":      info.TaskGroup,
+					"allocId":        info.AllocID,
+					"restarts":       info.Restarts,
+					"lastEvent":      info.LastEvent,
+					"correlationKey": correlationKey,
 				},
 			})
 			if err != nil {
@@ -312,11 +325,12 @@ func (w *NomadAllocationWatcher) checkTaskRestarts(ctx context.Context, spec *mo
 				Body:     fmt.Sprintf("Task %s in %s restarted (count: %d). %s", info.Task, info.TaskGroup, info.Restarts, info.LastEvent),
 				DedupeKey: fmt.Sprintf("%s:%s:%s:restart:%d", spec.App, info.AllocID, info.Task, info.Restarts),
 				Metadata: map[string]interface{}{
-					"task":      info.Task,
-					"taskGroup": info.TaskGroup,
-					"allocId":   info.AllocID,
-					"restarts":  info.Restarts,
-					"lastEvent": info.LastEvent,
+					"task":           info.Task,
+					"taskGroup":      info.TaskGroup,
+					"allocId":        info.AllocID,
+					"restarts":       info.Restarts,
+					"lastEvent":      info.LastEvent,
+					"correlationKey": correlationKey,
 				},
 			})
 			if err != nil {
@@ -422,12 +436,13 @@ func (w *NomadAllocationWatcher) checkCronMissedRuns(ctx context.Context, spec *
 			),
 			DedupeKey: fmt.Sprintf("%s:%s:missed:%s", spec.App, process, windowKey),
 			Metadata: map[string]interface{}{
-				"process":         process,
-				"jobId":           parentJobID,
-				"schedule":        schedule,
-				"expectedRunAt":   expectedNextRun.UTC().Format(time.RFC3339),
-				"lastRunAt":       lastRunTime.UTC().Format(time.RFC3339),
-				"gracePeriod":     cronMissedGracePeriod.String(),
+				"process":        process,
+				"jobId":          parentJobID,
+				"schedule":       schedule,
+				"expectedRunAt":  expectedNextRun.UTC().Format(time.RFC3339),
+				"lastRunAt":      lastRunTime.UTC().Format(time.RFC3339),
+				"gracePeriod":    cronMissedGracePeriod.String(),
+				"correlationKey": fmt.Sprintf("%s:%s:cron", spec.App, process),
 			},
 		})
 		if emitErr != nil {

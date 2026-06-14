@@ -8,6 +8,7 @@ import (
 
 	"github.com/spf13/cobra"
 
+	"norn/v2/cli/api"
 	"norn/v2/cli/style"
 )
 
@@ -60,15 +61,13 @@ var statusCmd = &cobra.Command{
 			name := app.Spec.App
 			dot := style.NomadStatusDot(app.NomadStatus)
 
-			allocStr := fmt.Sprintf("%d", len(app.Allocations))
-			runningCount := 0
-			for _, a := range app.Allocations {
-				if a.Status == "running" {
-					runningCount++
+			allocStr := "0"
+			allocationSummary := summarizedAllocations(app)
+			if allocationSummary.Total > 0 {
+				allocStr = fmt.Sprintf("%d live", allocationSummary.Running)
+				if allocationSummary.Retained > 0 {
+					allocStr += fmt.Sprintf(" (%d retained)", allocationSummary.Retained)
 				}
-			}
-			if len(app.Allocations) > 0 {
-				allocStr = fmt.Sprintf("%d/%d", runningCount, len(app.Allocations))
 			}
 
 			var procs []string
@@ -113,4 +112,24 @@ type apiDeployment struct {
 	commitSHA   string
 	sourceKind  string
 	sourceDirty bool
+}
+
+func summarizedAllocations(app api.AppStatus) api.AllocationSummary {
+	if app.AllocationSummary.Total > 0 {
+		return app.AllocationSummary
+	}
+	var s api.AllocationSummary
+	for _, a := range app.Allocations {
+		s.Total++
+		if a.Status == "running" {
+			s.Running++
+		}
+		switch a.Status {
+		case "complete", "failed", "lost":
+			s.Retained++
+		default:
+			s.Active++
+		}
+	}
+	return s
 }

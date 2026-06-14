@@ -16,10 +16,11 @@ func enrichAllocations(allocs []*nomadapi.AllocationListStub, n *nomad.Client) [
 	var out []model.Allocation
 	for _, a := range allocs {
 		alloc := model.Allocation{
-			ID:        a.ID[:8],
+			ID:        shortID(a.ID),
 			TaskGroup: a.TaskGroup,
 			Status:    a.ClientStatus,
-			NodeID:    a.NodeID[:8],
+			Lifecycle: allocationLifecycle(a.ClientStatus),
+			NodeID:    shortID(a.NodeID),
 		}
 		if a.DeploymentStatus != nil {
 			alloc.Healthy = a.DeploymentStatus.Healthy
@@ -39,6 +40,62 @@ func enrichAllocations(allocs []*nomadapi.AllocationListStub, n *nomad.Client) [
 		out = append(out, alloc)
 	}
 	return out
+}
+
+func allocationLifecycle(status string) string {
+	switch status {
+	case "complete", "failed", "lost":
+		return "retained"
+	default:
+		return "active"
+	}
+}
+
+func shortID(id string) string {
+	if len(id) <= 8 {
+		return id
+	}
+	return id[:8]
+}
+
+func summarizeAllocations(allocations []model.Allocation) model.AllocationSummary {
+	summary := model.AllocationSummary{
+		Total:     len(allocations),
+		ByProcess: make(map[string]model.ProcessAllocationCount),
+		ByStatus:  make(map[string]int),
+	}
+
+	for _, alloc := range allocations {
+		summary.ByStatus[alloc.Status]++
+		if alloc.Status == "running" {
+			summary.Running++
+		}
+		if alloc.Lifecycle == "retained" {
+			summary.Retained++
+		} else {
+			summary.Active++
+		}
+
+		group := summary.ByProcess[alloc.TaskGroup]
+		group.Total++
+		if alloc.Status == "running" {
+			group.Running++
+		}
+		if alloc.Lifecycle == "retained" {
+			group.Retained++
+		} else {
+			group.Active++
+		}
+		summary.ByProcess[alloc.TaskGroup] = group
+	}
+
+	if len(summary.ByProcess) == 0 {
+		summary.ByProcess = nil
+	}
+	if len(summary.ByStatus) == 0 {
+		summary.ByStatus = nil
+	}
+	return summary
 }
 
 func (h *Handler) ListApps(w http.ResponseWriter, r *http.Request) {
@@ -64,6 +121,7 @@ func (h *Handler) ListApps(w http.ResponseWriter, r *http.Request) {
 			allocs, err := h.nomad.JobAllocations(spec.App)
 			if err == nil {
 				status.Allocations = enrichAllocations(allocs, h.nomad)
+				status.AllocationSummary = summarizeAllocations(status.Allocations)
 
 				for _, a := range allocs {
 					if a.ClientStatus == "running" && a.DeploymentStatus != nil && a.DeploymentStatus.Healthy != nil && *a.DeploymentStatus.Healthy {
@@ -114,6 +172,7 @@ func (h *Handler) GetApp(w http.ResponseWriter, r *http.Request) {
 		allocs, err := h.nomad.JobAllocations(spec.App)
 		if err == nil {
 			status.Allocations = enrichAllocations(allocs, h.nomad)
+			status.AllocationSummary = summarizeAllocations(status.Allocations)
 			for _, a := range allocs {
 				if a.ClientStatus == "running" && a.DeploymentStatus != nil && a.DeploymentStatus.Healthy != nil && *a.DeploymentStatus.Healthy {
 					status.Healthy = true

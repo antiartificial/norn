@@ -169,9 +169,13 @@ Current state:
 - The dashboard Platform tab shows active grants with revoke actions and a form to create new grants.
 - `/api/access/grants` provides CRUD for access grants.
 
+- Beacon events carry `correlationKey` in metadata to group related events into incident arcs (e.g. `service.health.critical` → `service.health.recovered` share the same key). Events also include `previousState` and `previousEventType` for transition context.
+
 Planned work:
 
 - Deploy the generated observability apps on hosts that have accepted the local port and container policy choices.
+- Vigil-gateway: index `metadata.correlationKey`, expose `GET /api/incidents` grouped by correlation key with most-recent-severity headline and event timeline.
+- Mobile app: use `correlationKey` in APNs thread-id so recovery events update existing notification threads instead of creating new ones.
 - Add downstream incident-tool links for acknowledged/snoozed Beacon events.
 - Add JWT-based temporary access tokens for URL sharing.
 

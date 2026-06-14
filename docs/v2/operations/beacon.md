@@ -180,6 +180,58 @@ Providers:
 
 Severity filters are per channel. If no filter is configured, the channel receives all Beacon severities.
 
+## Event Correlation
+
+Beacon events carry a `correlationKey` field in `metadata` that ties related
+events into a single incident arc. The key is stable across state transitions
+for the same subject — for example, `contextdb:web:health` is the correlation
+key for every service health event on that process, whether the event type is
+`service.health.critical` or `service.health.recovered`.
+
+Events that represent a state change also carry `previousState` and/or
+`previousEventType` in metadata so consumers can reconstruct the transition
+without querying prior events.
+
+### Correlation keys by event family
+
+| Event family | Correlation key pattern | Example |
+| --- | --- | --- |
+| Service health | `{app}:{process}:health` | `contextdb:web:health` |
+| Allocation state | `{app}:{taskGroup}:allocation` | `signal-sideband:web:allocation` |
+| Task restarts / OOM | `{app}:{taskGroup}:{task}:restarts` | `contextdb:web:contextdb-web:restarts` |
+| Cron outcomes | `{app}:{process}:cron` | `field-harbor:backup:cron` |
+
+### Consumer guidance (vigil-gateway, mobile)
+
+Norn emits correlation keys; it does not track open/resolved incident state
+itself. Consumers are responsible for:
+
+1. **Grouping**: query events sharing the same `correlationKey` to build an
+   incident timeline.
+2. **Resolution**: when the most recent event in a correlation group is
+   `severity: info` (e.g. `service.health.recovered`), treat the incident as
+   resolved. An incident with only `warning`/`critical` events and no recovery
+   is still open.
+3. **Display**: show the correlation group as a single row with the most recent
+   severity as the headline, expandable to the full timeline.
+4. **Push suppression**: consider suppressing push notifications for `info`
+   recovery events that arrive within a short window of the triggering event
+   (e.g. a health blip that resolves in under 60 seconds).
+
+Vigil-gateway currently stores events flat. To support grouped display in the
+mobile app, vigil should:
+
+- Index `metadata->>'correlationKey'` in its `beacon_events` table.
+- Expose a `GET /api/incidents` endpoint that groups by correlation key,
+  returns the most recent severity, and includes a timeline of constituent
+  events.
+- Forward the `correlationKey` and `previousEventType` fields in APNs payloads
+  so the mobile app can update existing notification threads rather than
+  creating new ones.
+
+These changes are additive — the existing flat event list continues to work
+unchanged.
+
 ## Sink Configuration
 
 Beacon sink delivery is configured by environment variables:
