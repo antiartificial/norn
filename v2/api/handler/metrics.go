@@ -197,6 +197,11 @@ func (h *Handler) Metrics(w http.ResponseWriter, r *http.Request) {
 									}
 								}
 								reference := lastRunTime
+								if info.SubmittedAt != "" {
+									if submittedAt, submitErr := time.Parse(time.RFC3339, info.SubmittedAt); submitErr == nil && submittedAt.In(location).After(reference) {
+										reference = submittedAt.In(location)
+									}
+								}
 								if reference.IsZero() {
 									reference = now.Add(-24 * time.Hour)
 								}
