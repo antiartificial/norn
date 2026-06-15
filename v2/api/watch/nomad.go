@@ -298,11 +298,11 @@ func (w *NomadAllocationWatcher) checkTaskRestarts(ctx context.Context, spec *mo
 
 		if info.OOMKilled {
 			_, err := w.beacon.Emit(ctx, model.BeaconEvent{
-				App:      spec.App,
-				Type:     "nomad.task.oom_killed",
-				Severity: model.BeaconCritical,
-				Title:    fmt.Sprintf("%s %s OOM killed", spec.App, info.Task),
-				Body:     fmt.Sprintf("Task %s in %s was killed by the OOM killer (restarts: %d). %s", info.Task, info.TaskGroup, info.Restarts, info.LastEvent),
+				App:       spec.App,
+				Type:      "nomad.task.oom_killed",
+				Severity:  model.BeaconCritical,
+				Title:     fmt.Sprintf("%s %s OOM killed", spec.App, info.Task),
+				Body:      fmt.Sprintf("Task %s in %s was killed by the OOM killer (restarts: %d). %s", info.Task, info.TaskGroup, info.Restarts, info.LastEvent),
 				DedupeKey: fmt.Sprintf("%s:%s:%s:oom:%d", spec.App, info.AllocID, info.Task, info.Restarts),
 				Metadata: map[string]interface{}{
 					"task":           info.Task,
@@ -318,11 +318,11 @@ func (w *NomadAllocationWatcher) checkTaskRestarts(ctx context.Context, spec *mo
 			}
 		} else {
 			_, err := w.beacon.Emit(ctx, model.BeaconEvent{
-				App:      spec.App,
-				Type:     "nomad.task.restarted",
-				Severity: model.BeaconWarning,
-				Title:    fmt.Sprintf("%s %s restarted", spec.App, info.Task),
-				Body:     fmt.Sprintf("Task %s in %s restarted (count: %d). %s", info.Task, info.TaskGroup, info.Restarts, info.LastEvent),
+				App:       spec.App,
+				Type:      "nomad.task.restarted",
+				Severity:  model.BeaconWarning,
+				Title:     fmt.Sprintf("%s %s restarted", spec.App, info.Task),
+				Body:      fmt.Sprintf("Task %s in %s restarted (count: %d). %s", info.Task, info.TaskGroup, info.Restarts, info.LastEvent),
 				DedupeKey: fmt.Sprintf("%s:%s:%s:restart:%d", spec.App, info.AllocID, info.Task, info.Restarts),
 				Metadata: map[string]interface{}{
 					"task":           info.Task,
@@ -341,6 +341,24 @@ func (w *NomadAllocationWatcher) checkTaskRestarts(ctx context.Context, spec *mo
 }
 
 const cronMissedGracePeriod = 5 * time.Minute
+
+func cronEvaluationLocation(spec *model.InfraSpec, proc model.Process, info *nomad.PeriodicJobInfo) *time.Location {
+	timezone := ""
+	if info != nil {
+		timezone = strings.TrimSpace(info.TimeZone)
+	}
+	if timezone == "" {
+		timezone = strings.TrimSpace(model.ResolveProcessTimezone(spec, proc))
+	}
+	if timezone == "" {
+		timezone = "UTC"
+	}
+	loc, err := time.LoadLocation(timezone)
+	if err != nil {
+		return time.UTC
+	}
+	return loc
+}
 
 func (w *NomadAllocationWatcher) checkCronMissedRuns(ctx context.Context, spec *model.InfraSpec) {
 	if w.nomad == nil {
@@ -376,6 +394,8 @@ func (w *NomadAllocationWatcher) checkCronMissedRuns(ctx context.Context, spec *
 		if expr == nil {
 			continue
 		}
+		location := cronEvaluationLocation(spec, proc, info)
+		now := time.Now().In(location)
 
 		// Find the latest run's start time.
 		runs, err := w.nomad.PeriodicChildren(parentJobID)
@@ -388,6 +408,7 @@ func (w *NomadAllocationWatcher) checkCronMissedRuns(ctx context.Context, spec *
 			if parseErr != nil {
 				continue
 			}
+			t = t.In(location)
 			if t.After(lastRunTime) {
 				lastRunTime = t
 			}
@@ -400,7 +421,7 @@ func (w *NomadAllocationWatcher) checkCronMissedRuns(ctx context.Context, spec *
 		if reference.IsZero() {
 			// Seed from a point far enough in the past that Next() gives us
 			// the most recently expected run.
-			reference = time.Now().Add(-24 * time.Hour)
+			reference = now.Add(-24 * time.Hour)
 		}
 
 		expectedNextRun := expr.Next(reference)
@@ -409,7 +430,7 @@ func (w *NomadAllocationWatcher) checkCronMissedRuns(ctx context.Context, spec *
 		}
 
 		deadline := expectedNextRun.Add(cronMissedGracePeriod)
-		if time.Now().Before(deadline) {
+		if now.Before(deadline) {
 			// The expected run hasn't been missed yet; clear any stale alert key
 			// so we re-alert if a future window is missed.
 			if w.seen[missedKey] == expectedNextRun.Format(time.RFC3339) {
@@ -439,6 +460,7 @@ func (w *NomadAllocationWatcher) checkCronMissedRuns(ctx context.Context, spec *
 				"process":        process,
 				"jobId":          parentJobID,
 				"schedule":       schedule,
+				"timezone":       location.String(),
 				"expectedRunAt":  expectedNextRun.UTC().Format(time.RFC3339),
 				"lastRunAt":      lastRunTime.UTC().Format(time.RFC3339),
 				"gracePeriod":    cronMissedGracePeriod.String(),

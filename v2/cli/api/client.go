@@ -107,6 +107,7 @@ type Process struct {
 	Port     int    `json:"port,omitempty"`
 	Command  string `json:"command,omitempty"`
 	Schedule string `json:"schedule,omitempty"`
+	Timezone string `json:"timezone,omitempty"`
 	Metrics  *struct {
 		Enabled bool   `json:"enabled,omitempty"`
 		Path    string `json:"path,omitempty"`

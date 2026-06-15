@@ -127,6 +127,7 @@ All service TaskGroups use this update strategy:
 
 - Job ID: `{appName}-{processName}`
 - Periodic config uses the cron spec type
+- `process.timezone`, `process.env.TZ`, or app `env.TZ` sets the Nomad periodic `time_zone`
 - Same environment, resource, and volume handling as service jobs
 - No health checks or Consul registration
 
@@ -135,6 +136,7 @@ All service TaskGroups use this update strategy:
 processes:
   cleanup:
     schedule: "0 3 * * *"
+    timezone: America/Chicago
     command: ./cleanup
 ```
 
@@ -145,6 +147,7 @@ job "myapp-cleanup" {
   type = "batch"
   periodic {
     cron     = "0 3 * * *"
+    time_zone = "America/Chicago"
     enabled  = true
   }
   # ...

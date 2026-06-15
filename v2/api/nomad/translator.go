@@ -240,6 +240,9 @@ func TranslatePeriodic(spec *model.InfraSpec, procName string, proc model.Proces
 		SpecType: strPtr("cron"),
 		Spec:     &proc.Schedule,
 	}
+	if timezone := model.ResolveProcessTimezone(spec, proc); timezone != "" {
+		job.Periodic.TimeZone = &timezone
+	}
 
 	mergedEnv := make(map[string]string)
 	for k, v := range spec.Env {
