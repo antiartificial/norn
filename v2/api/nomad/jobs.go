@@ -333,11 +333,12 @@ func (c *Client) PeriodicChildren(parentJobID string) ([]CronRun, error) {
 
 // PeriodicJobInfo holds scheduling metadata for a periodic job.
 type PeriodicJobInfo struct {
-	JobID    string `json:"jobId"`
-	Schedule string `json:"schedule"`
-	TimeZone string `json:"timezone,omitempty"`
-	Paused   bool   `json:"paused"`
-	Status   string `json:"status"`
+	JobID       string `json:"jobId"`
+	Schedule    string `json:"schedule"`
+	TimeZone    string `json:"timezone,omitempty"`
+	SubmittedAt string `json:"submittedAt,omitempty"`
+	Paused      bool   `json:"paused"`
+	Status      string `json:"status"`
 }
 
 // PeriodicJobSchedule returns the cron spec and status for a periodic parent job.
@@ -352,6 +353,9 @@ func (c *Client) PeriodicJobSchedule(jobID string) (*PeriodicJobInfo, error) {
 	info := &PeriodicJobInfo{
 		JobID:  jobID,
 		Status: *job.Status,
+	}
+	if job.SubmitTime != nil {
+		info.SubmittedAt = time.Unix(0, *job.SubmitTime).Format(time.RFC3339)
 	}
 	if job.Periodic.Spec != nil {
 		info.Schedule = *job.Periodic.Spec

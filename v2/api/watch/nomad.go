@@ -418,6 +418,11 @@ func (w *NomadAllocationWatcher) checkCronMissedRuns(ctx context.Context, spec *
 		// so that at least one interval has elapsed. Use one full interval
 		// before now as the reference so we don't false-alert on first start.
 		reference := lastRunTime
+		if info.SubmittedAt != "" {
+			if submittedAt, parseErr := time.Parse(time.RFC3339, info.SubmittedAt); parseErr == nil && submittedAt.In(location).After(reference) {
+				reference = submittedAt.In(location)
+			}
+		}
 		if reference.IsZero() {
 			// Seed from a point far enough in the past that Next() gives us
 			// the most recently expected run.
