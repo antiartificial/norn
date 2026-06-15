@@ -6,6 +6,7 @@ import (
 	"net/url"
 	"regexp"
 	"strings"
+	"time"
 )
 
 type ValidationResult struct {
@@ -77,6 +78,11 @@ func ValidateSpecWithOptions(spec *InfraSpec, opts ValidationOptions) *Validatio
 			fields := strings.Fields(proc.Schedule)
 			if len(fields) < 5 || len(fields) > 6 {
 				r.add("error", field+".schedule", fmt.Sprintf("cron expression should have 5-6 fields, got %d", len(fields)))
+			}
+			if timezone := strings.TrimSpace(ResolveProcessTimezone(spec, proc)); timezone != "" {
+				if _, err := time.LoadLocation(timezone); err != nil {
+					r.add("error", field+".timezone", fmt.Sprintf("invalid timezone %q", timezone))
+				}
 			}
 		}
 

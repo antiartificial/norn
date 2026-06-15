@@ -168,7 +168,6 @@ func (h *Handler) Metrics(w http.ResponseWriter, r *http.Request) {
 		}
 
 		writeMetricHeader(&b, "norn_cron_missed_runs_total", "Whether a cron process missed its most recent expected run window (1 = missed, 0 = ok).", "gauge")
-		now := time.Now()
 		for _, spec := range specs {
 			for processName, proc := range spec.Processes {
 				if strings.TrimSpace(proc.Schedule) == "" {
@@ -182,6 +181,8 @@ func (h *Handler) Metrics(w http.ResponseWriter, r *http.Request) {
 					if schedule != "" {
 						expr, parseErr := tryParseCronExpr(schedule)
 						if parseErr == nil && expr != nil {
+							location := cronMetricLocation(spec, proc, info.TimeZone)
+							now := time.Now().In(location)
 							runs, runsErr := h.nomad.PeriodicChildren(parentJobID)
 							if runsErr == nil {
 								var lastRunTime time.Time
@@ -190,6 +191,7 @@ func (h *Handler) Metrics(w http.ResponseWriter, r *http.Request) {
 									if tErr != nil {
 										continue
 									}
+									t = t.In(location)
 									if t.After(lastRunTime) {
 										lastRunTime = t
 									}
@@ -257,6 +259,21 @@ func writeAppScrapeConfigs(b *bytes.Buffer, manifest model.ServiceManifest) {
 			yamlString(svc.Process),
 		)
 	}
+}
+
+func cronMetricLocation(spec *model.InfraSpec, proc model.Process, jobTimezone string) *time.Location {
+	timezone := strings.TrimSpace(jobTimezone)
+	if timezone == "" {
+		timezone = strings.TrimSpace(model.ResolveProcessTimezone(spec, proc))
+	}
+	if timezone == "" {
+		timezone = "UTC"
+	}
+	loc, err := time.LoadLocation(timezone)
+	if err != nil {
+		return time.UTC
+	}
+	return loc
 }
 
 func writeMetricHeader(b *bytes.Buffer, name, help, typ string) {

@@ -107,9 +107,12 @@ processes:
   daily-cleanup:
     schedule: "0 3 * * *"
     command: ./cleanup
+    timezone: America/Chicago
   hourly-digest:
     schedule: "0 * * * *"
     command: ./digest
 ```
 
 This creates two Nomad jobs: `myapp-daily-cleanup` and `myapp-hourly-digest`.
+
+Cron expressions are evaluated in the process `timezone` when set. If the process omits `timezone`, Norn falls back to `process.env.TZ`, then app-level `env.TZ`, then Nomad's UTC default. Missed-run detection uses the same timezone as the submitted Nomad periodic job.

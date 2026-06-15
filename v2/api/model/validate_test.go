@@ -136,6 +136,24 @@ func TestValidateSpecAcceptsLocalEndpointInLocalMode(t *testing.T) {
 	}
 }
 
+func TestValidateSpecRejectsInvalidScheduleTimezone(t *testing.T) {
+	spec := &InfraSpec{
+		App: "bad-cron-timezone",
+		Processes: map[string]Process{
+			"job": {
+				Schedule: "10 8 * * *",
+				Timezone: "Mars/Olympus",
+			},
+		},
+	}
+
+	result := ValidateSpec(spec)
+	if result.Valid {
+		t.Fatal("expected invalid timezone to fail validation")
+	}
+	assertErrorFinding(t, result, "processes.job.timezone")
+}
+
 func TestValidateSpecAcceptsProcessMetrics(t *testing.T) {
 	spec := &InfraSpec{
 		App: "metrics-app",

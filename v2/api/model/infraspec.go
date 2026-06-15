@@ -43,6 +43,7 @@ type Process struct {
 	Port      int               `yaml:"port,omitempty" json:"port,omitempty"`
 	Command   string            `yaml:"command,omitempty" json:"command,omitempty"`
 	Schedule  string            `yaml:"schedule,omitempty" json:"schedule,omitempty"`
+	Timezone  string            `yaml:"timezone,omitempty" json:"timezone,omitempty"`
 	Function  *FunctionSpec     `yaml:"function,omitempty" json:"function,omitempty"`
 	Health    *HealthSpec       `yaml:"health,omitempty" json:"health,omitempty"`
 	Metrics   *MetricsSpec      `yaml:"metrics,omitempty" json:"metrics,omitempty"`
@@ -51,6 +52,19 @@ type Process struct {
 	Resources *Resources        `yaml:"resources,omitempty" json:"resources,omitempty"`
 	Canary    *CanaryConfig     `yaml:"canary,omitempty" json:"canary,omitempty"`
 	Env       map[string]string `yaml:"env,omitempty" json:"-"`
+}
+
+func ResolveProcessTimezone(spec *InfraSpec, proc Process) string {
+	if proc.Timezone != "" {
+		return proc.Timezone
+	}
+	if proc.Env != nil && proc.Env["TZ"] != "" {
+		return proc.Env["TZ"]
+	}
+	if spec != nil && spec.Env != nil && spec.Env["TZ"] != "" {
+		return spec.Env["TZ"]
+	}
+	return ""
 }
 
 type HealthSpec struct {

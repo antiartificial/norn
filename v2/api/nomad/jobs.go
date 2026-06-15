@@ -102,11 +102,11 @@ func (c *Client) WaitHealthy(ctx context.Context, jobID string, timeout time.Dur
 
 // AllocStatus is a summary of a single non-terminal allocation.
 type AllocStatus struct {
-	ID           string `json:"id"`           // first 8 chars
+	ID           string `json:"id"` // first 8 chars
 	TaskGroup    string `json:"taskGroup"`
 	ClientStatus string `json:"clientStatus"` // pending, running
 	Healthy      *bool  `json:"healthy"`
-	NodeID       string `json:"nodeId"`   // first 8 chars
+	NodeID       string `json:"nodeId"` // first 8 chars
 	NodeName     string `json:"nodeName"`
 }
 
@@ -208,10 +208,10 @@ func (c *Client) ClusterStats() (totalAllocs, runningAllocs int, leaderboard []U
 	}
 
 	type allocInfo struct {
-		allocID   string
-		jobID     string
-		taskGroup string
-		nodeID    string
+		allocID    string
+		jobID      string
+		taskGroup  string
+		nodeID     string
 		createTime int64
 	}
 
@@ -335,6 +335,7 @@ func (c *Client) PeriodicChildren(parentJobID string) ([]CronRun, error) {
 type PeriodicJobInfo struct {
 	JobID    string `json:"jobId"`
 	Schedule string `json:"schedule"`
+	TimeZone string `json:"timezone,omitempty"`
 	Paused   bool   `json:"paused"`
 	Status   string `json:"status"`
 }
@@ -354,6 +355,9 @@ func (c *Client) PeriodicJobSchedule(jobID string) (*PeriodicJobInfo, error) {
 	}
 	if job.Periodic.Spec != nil {
 		info.Schedule = *job.Periodic.Spec
+	}
+	if job.Periodic.TimeZone != nil {
+		info.TimeZone = *job.Periodic.TimeZone
 	}
 	if job.Stop != nil {
 		info.Paused = *job.Stop
