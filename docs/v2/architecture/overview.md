@@ -123,6 +123,8 @@ v2/ui/
 | GET | `/api/operations` | List recent operation queue rows |
 | GET | `/api/operations/active` | List queued/running operations for drains |
 | GET | `/api/alerts/rules` | Built-in alert rule catalogue |
+| GET | `/api/access/patterns` | Hosted-service access pattern rollups and idle candidates |
+| POST | `/api/access/observations` | Record aggregate hosted-service access observations |
 | GET | `/api/resources/suggestions` | Resource right-sizing suggestions based on live Nomad allocation stats |
 | GET | `/api/tuning/recommendations` | Advisory CPU, memory, and scale recommendations from live tuning signals |
 | GET | `/api/events` | List Beacon events |

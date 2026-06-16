@@ -4,6 +4,7 @@ import (
 	"math"
 	"net/http"
 	"sort"
+	"time"
 
 	"norn/v2/api/model"
 	"norn/v2/api/nomad"
@@ -29,12 +30,16 @@ type tuningResourceState struct {
 }
 
 type tuningObserved struct {
-	UsedMemoryMB      int     `json:"usedMemoryMB"`
-	PeakMemoryMB      int     `json:"peakMemoryMB"`
-	MemoryUtilization float64 `json:"memoryUtilization"`
-	CPUPercent        float64 `json:"cpuPercent"`
-	AllocationCount   int     `json:"allocationCount"`
-	Source            string  `json:"source"`
+	UsedMemoryMB      int        `json:"usedMemoryMB"`
+	PeakMemoryMB      int        `json:"peakMemoryMB"`
+	MemoryUtilization float64    `json:"memoryUtilization"`
+	CPUPercent        float64    `json:"cpuPercent"`
+	AllocationCount   int        `json:"allocationCount"`
+	Source            string     `json:"source"`
+	AccessRequests    int64      `json:"accessRequests,omitempty"`
+	LastAccessAt      *time.Time `json:"lastAccessAt,omitempty"`
+	QuietForHours     *float64   `json:"quietForHours,omitempty"`
+	IdleCandidate     bool       `json:"idleCandidate,omitempty"`
 }
 
 type tuningSignalResult struct {
@@ -70,6 +75,14 @@ func (h *Handler) TuningRecommendations(w http.ResponseWriter, r *http.Request) 
 	sort.Slice(specs, func(i, j int) bool { return specs[i].App < specs[j].App })
 
 	var recommendations []tuningRecommendation
+	accessByGroup := map[string]accessPatternSummary{}
+	if h.db != nil {
+		if patterns, err := h.buildAccessPatternSummaries(r.Context(), defaultAccessPatternWindow, defaultIdleCandidateAfter); err == nil {
+			for _, pattern := range patterns {
+				accessByGroup[accessPatternKey(pattern.App, pattern.Process)] = pattern
+			}
+		}
+	}
 	for _, spec := range specs {
 		usage, err := h.nomad.JobResourceUsage(spec.App)
 		if err != nil || len(usage) == 0 {
@@ -81,13 +94,60 @@ func (h *Handler) TuningRecommendations(w http.ResponseWriter, r *http.Request) 
 			if !ok {
 				continue
 			}
-			recommendations = append(recommendations, buildTuningRecommendation(spec.App, procName, proc, u))
+			rec := buildTuningRecommendation(spec.App, procName, proc, u)
+			if pattern, ok := accessByGroup[accessPatternKey(spec.App, procName)]; ok {
+				enrichTuningWithAccess(&rec, pattern)
+			}
+			recommendations = append(recommendations, rec)
 		}
 	}
 
 	writeJSON(w, map[string]interface{}{
 		"recommendations": recommendations,
 	})
+}
+
+func enrichTuningWithAccess(rec *tuningRecommendation, pattern accessPatternSummary) {
+	rec.Observed.AccessRequests = pattern.TotalRequests
+	rec.Observed.LastAccessAt = pattern.LastSeen
+	rec.Observed.QuietForHours = pattern.QuietForHours
+	rec.Observed.IdleCandidate = pattern.IdleCandidate
+	rec.Signals = append(rec.Signals, tuningSignalResult{
+		Name:      "access_requests",
+		Source:    "norn",
+		Metric:    "access_requests",
+		Window:    "14d",
+		Aggregate: "sum",
+		Value:     float64(pattern.TotalRequests),
+		Unit:      "requests",
+		Available: true,
+	})
+	if pattern.QuietForHours != nil {
+		rec.Signals = append(rec.Signals, tuningSignalResult{
+			Name:      "quiet_for",
+			Source:    "norn",
+			Metric:    "quiet_for_hours",
+			Window:    "14d",
+			Aggregate: "current",
+			Value:     *pattern.QuietForHours,
+			Unit:      "hours",
+			Available: true,
+		})
+	}
+	if !pattern.IdleCandidate {
+		return
+	}
+	action := "candidate_idle"
+	if pattern.RecommendedAction == "observe_before_idle" {
+		action = "observe_access"
+	}
+	rec.Actions = append(rec.Actions, action)
+	if pattern.IdleReason != "" {
+		rec.Reasons = append(rec.Reasons, pattern.IdleReason)
+	}
+	if rec.Confidence == "medium" && pattern.Confidence == "low" {
+		rec.Confidence = "low"
+	}
 }
 
 func aggregateTuningUsage(usage []nomad.ResourceUsage) map[string]tuningUsage {

@@ -352,6 +352,48 @@ type AccessEvent struct {
 	UserAgent  string `json:"userAgent,omitempty"`
 }
 
+type AccessObservation struct {
+	App        string `json:"app"`
+	Process    string `json:"process,omitempty"`
+	Endpoint   string `json:"endpoint,omitempty"`
+	Source     string `json:"source,omitempty"`
+	ObservedAt string `json:"observedAt,omitempty"`
+	Count      int64  `json:"count,omitempty"`
+	Status     int    `json:"status,omitempty"`
+}
+
+type AccessPatternResponse struct {
+	WindowHours    int             `json:"windowHours"`
+	IdleAfterHours int             `json:"idleAfterHours"`
+	Patterns       []AccessPattern `json:"patterns"`
+}
+
+type AccessPattern struct {
+	App               string           `json:"app"`
+	Process           string           `json:"process"`
+	Type              string           `json:"type"`
+	Status            string           `json:"status"`
+	Endpoints         []string         `json:"endpoints,omitempty"`
+	Sources           []string         `json:"sources,omitempty"`
+	WindowHours       int              `json:"windowHours"`
+	TotalRequests     int64            `json:"totalRequests"`
+	Successes         int64            `json:"successes"`
+	ClientErrors      int64            `json:"clientErrors"`
+	ServerErrors      int64            `json:"serverErrors"`
+	FirstSeen         string           `json:"firstSeen,omitempty"`
+	LastSeen          string           `json:"lastSeen,omitempty"`
+	QuietForHours     *float64         `json:"quietForHours,omitempty"`
+	ActiveHours       int              `json:"activeHours"`
+	ActiveWeekdays    []int            `json:"activeWeekdays,omitempty"`
+	PeakHourUTC       *int             `json:"peakHourUtc,omitempty"`
+	HourlyUTC         map[string]int64 `json:"hourlyUtc"`
+	WeekdayUTC        map[string]int64 `json:"weekdayUtc"`
+	IdleCandidate     bool             `json:"idleCandidate"`
+	IdleReason        string           `json:"idleReason,omitempty"`
+	RecommendedAction string           `json:"recommendedAction"`
+	Confidence        string           `json:"confidence"`
+}
+
 type BeaconEvent struct {
 	ID                  string                 `json:"id"`
 	Source              string                 `json:"source"`
@@ -1275,6 +1317,36 @@ func (c *Client) AccessEvents(limit int) ([]AccessEvent, error) {
 	return events, nil
 }
 
+func (c *Client) AccessPatterns(window, idleAfter string) (*AccessPatternResponse, error) {
+	values := url.Values{}
+	if strings.TrimSpace(window) != "" {
+		values.Set("window", strings.TrimSpace(window))
+	}
+	if strings.TrimSpace(idleAfter) != "" {
+		values.Set("idleAfter", strings.TrimSpace(idleAfter))
+	}
+	path := "/api/access/patterns"
+	if encoded := values.Encode(); encoded != "" {
+		path += "?" + encoded
+	}
+	var resp AccessPatternResponse
+	if err := c.get(path, &resp); err != nil {
+		return nil, err
+	}
+	return &resp, nil
+}
+
+func (c *Client) RecordAccessObservations(observations []AccessObservation) (int, error) {
+	body, _ := json.Marshal(map[string]interface{}{"observations": observations})
+	var resp struct {
+		Recorded int `json:"recorded"`
+	}
+	if err := c.postJSON("/api/access/observations", string(body), &resp); err != nil {
+		return 0, err
+	}
+	return resp.Recorded, nil
+}
+
 func (c *Client) CronHistory(appID string) ([]CronState, error) {
 	var states []CronState
 	if err := c.get("/api/apps/"+appID+"/cron/history", &states); err != nil {
@@ -1464,12 +1536,16 @@ type TuningResourceState struct {
 }
 
 type TuningObserved struct {
-	UsedMemoryMB      int     `json:"usedMemoryMB"`
-	PeakMemoryMB      int     `json:"peakMemoryMB"`
-	MemoryUtilization float64 `json:"memoryUtilization"`
-	CPUPercent        float64 `json:"cpuPercent"`
-	AllocationCount   int     `json:"allocationCount"`
-	Source            string  `json:"source"`
+	UsedMemoryMB      int      `json:"usedMemoryMB"`
+	PeakMemoryMB      int      `json:"peakMemoryMB"`
+	MemoryUtilization float64  `json:"memoryUtilization"`
+	CPUPercent        float64  `json:"cpuPercent"`
+	AllocationCount   int      `json:"allocationCount"`
+	Source            string   `json:"source"`
+	AccessRequests    int64    `json:"accessRequests,omitempty"`
+	LastAccessAt      string   `json:"lastAccessAt,omitempty"`
+	QuietForHours     *float64 `json:"quietForHours,omitempty"`
+	IdleCandidate     bool     `json:"idleCandidate,omitempty"`
 }
 
 type TuningSignal struct {
