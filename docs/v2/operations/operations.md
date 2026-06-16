@@ -39,6 +39,8 @@ API endpoints:
 | `GET` | `/api/observability/bundle` | Prometheus, alert, Grafana, and service bundle |
 | `GET` | `/api/observability/alerts.yml` | Prometheus alert rules from the observability bundle |
 | `POST` | `/api/observability/services/install` | Install generated observability app directories |
+| `GET` | `/api/access/patterns` | Hosted-service access pattern rollups and idle candidate hints |
+| `POST` | `/api/access/observations` | Record aggregate hosted-service access observations |
 | `GET` | `/api/tuning/recommendations` | Advisory resource tuning recommendations from live signals |
 | `GET` | `/api/secrets/migration-plan` | Value-safe plaintext secret migration plan |
 | `GET` | `/api/webhooks/deliveries` | Recent webhook delivery inbox |

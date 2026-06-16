@@ -111,7 +111,7 @@ func formatObserved(observed api.TuningObserved) string {
 	if peak == 0 {
 		peak = observed.UsedMemoryMB
 	}
-	return fmt.Sprintf("mem %d/%d MB, cpu %.1f%%", observed.UsedMemoryMB, peak, observed.CPUPercent)
+	return fmt.Sprintf("mem %d/%d MB, cpu %.1f%%, access %d", observed.UsedMemoryMB, peak, observed.CPUPercent, observed.AccessRequests)
 }
 
 func formatConfidence(confidence string) string {

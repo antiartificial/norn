@@ -201,7 +201,7 @@ norn tune recommend
 norn tune status
 ```
 
-The command calls `/api/tuning/recommendations`. It uses live Nomad allocation signals by default and includes any process-level `tuning.signals` declarations from `infraspec.yaml`. Recommendations are advisory only: Norn reports the suggested target state but does not update a job or rewrite an app spec.
+The command calls `/api/tuning/recommendations`. It uses live Nomad allocation signals by default, includes any process-level `tuning.signals` declarations from `infraspec.yaml`, and folds in hosted-service access patterns when `/api/access/observations` has data. Recommendations are advisory only: Norn reports the suggested target state but does not update a job or rewrite an app spec.
 
 | Field | Meaning |
 |-------|---------|
@@ -209,6 +209,8 @@ The command calls `/api/tuning/recommendations`. It uses live Nomad allocation s
 | `recommended` | Advisory CPU, memory, and scale target after applying thresholds and `tuning.limits` |
 | `signals` | Live or declared signals that informed the recommendation |
 | `confidence` | `low` when only current live data is available; higher confidence is reserved for historical signal support |
+
+Access-pattern signals add `observe_access` or `candidate_idle` actions. `observe_access` means the service has no access observations in the lookback window, so Norn needs traffic data before recommending scale-to-zero. `candidate_idle` means access was observed previously, but the service has been quiet beyond the idle threshold.
 
 ## notifications
 
@@ -452,9 +454,17 @@ Show recent Norn API access events.
 ```bash
 norn access
 norn access --limit 100
+norn access patterns --window 14d --idle-after 7d
+norn access observe ft-trove --process web --endpoint https://trove.example.com --source gateway --status 200
 ```
 
 The table includes request time, status, method, path, client IP, Cloudflare Access user metadata when present, and duration. Norn does not expose request bodies, authorization headers, or secret values in this view.
+
+`norn access patterns` summarizes durable hosted-service access observations by app and process. It reports request totals, last observed access, quiet duration, peak UTC hour, idle-candidate action, and confidence. The data comes from hourly aggregate buckets, not raw request logs.
+
+`norn access observe` records an aggregate observation for a hosted service. It is intended for a future wake gateway, reverse proxy, cloudflared log shipper, or small operator script. Observations include app, process, endpoint/source labels, status bucket, count, and optional timestamp; they do not include request bodies or credentials.
+
+The advisory tuner consumes these access patterns. A service with no observations in the lookback window is marked `observe_before_idle`; a service whose last access is older than `--idle-after` is marked `consider_idle`.
 
 Temporary IP grants are managed under the same command group:
 

@@ -219,6 +219,23 @@ func Migrate(db *DB) error {
 		);
 		CREATE INDEX IF NOT EXISTS idx_access_grants_ip ON access_grants(ip, expires_at);
 		CREATE INDEX IF NOT EXISTS idx_access_grants_expires ON access_grants(expires_at);
+
+		CREATE TABLE IF NOT EXISTS access_observation_buckets (
+			app            TEXT NOT NULL,
+			process        TEXT NOT NULL DEFAULT '',
+			endpoint       TEXT NOT NULL DEFAULT '',
+			source         TEXT NOT NULL DEFAULT '',
+			bucket_start   TIMESTAMPTZ NOT NULL,
+			requests       BIGINT NOT NULL DEFAULT 0,
+			successes      BIGINT NOT NULL DEFAULT 0,
+			client_errors  BIGINT NOT NULL DEFAULT 0,
+			server_errors  BIGINT NOT NULL DEFAULT 0,
+			first_seen     TIMESTAMPTZ NOT NULL,
+			last_seen      TIMESTAMPTZ NOT NULL,
+			PRIMARY KEY (app, process, endpoint, source, bucket_start)
+		);
+		CREATE INDEX IF NOT EXISTS idx_access_observation_app_last ON access_observation_buckets(app, process, last_seen DESC);
+		CREATE INDEX IF NOT EXISTS idx_access_observation_bucket ON access_observation_buckets(bucket_start DESC);
 	`)
 	return err
 }

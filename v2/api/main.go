@@ -282,6 +282,8 @@ func main() {
 		r.Get("/saga/{sagaId}", h.GetSagaEvents)
 		r.Get("/cloudflared/ingress", h.CloudflaredIngress)
 		r.Get("/access/events", h.AccessEvents)
+		r.Get("/access/patterns", h.AccessPatterns)
+		r.Post("/access/observations", h.RecordAccessObservations)
 
 		r.Get("/notifications/channels", h.ListNotificationChannels)
 		r.Post("/notifications/channels", h.CreateNotificationChannel)
