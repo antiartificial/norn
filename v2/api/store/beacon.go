@@ -205,6 +205,24 @@ func (db *DB) ListCorrelatedEvents(ctx context.Context, correlationKey string, l
 	return events, nil
 }
 
+func (db *DB) AutoAckCorrelatedEvents(ctx context.Context, correlationKey, resolvingEventID string) (int, error) {
+	tag, err := db.Pool.Exec(ctx, `
+		UPDATE beacon_events
+		SET acknowledged_at = now(),
+		    acknowledged_by = 'system',
+		    acknowledgement_note = 'resolved by ' || $2,
+		    snoozed_until = NULL
+		WHERE metadata->>'correlationKey' = $1
+		  AND severity IN ('warning', 'critical')
+		  AND acknowledged_at IS NULL
+		  AND id != $2
+	`, correlationKey, resolvingEventID)
+	if err != nil {
+		return 0, err
+	}
+	return int(tag.RowsAffected()), nil
+}
+
 func (db *DB) PruneBeaconEvents(ctx context.Context, olderThan time.Time) error {
 	_, err := db.Pool.Exec(ctx, `DELETE FROM beacon_events WHERE occurred_at < $1`, olderThan)
 	return err

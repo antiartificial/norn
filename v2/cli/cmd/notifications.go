@@ -22,6 +22,7 @@ func init() {
 	notificationsCmd.AddCommand(notificationsAddCmd)
 	notificationsCmd.AddCommand(notificationsRemoveCmd)
 	notificationsCmd.AddCommand(notificationsTestCmd)
+	notificationsCmd.AddCommand(notificationsBootstrapCmd)
 
 	notificationsAddCmd.Flags().StringVar(&notifyToken, "token", "", "API token (for pushover)")
 	notificationsAddCmd.Flags().StringVar(&notifyUserKey, "user-key", "", "User key (for pushover)")
@@ -116,6 +117,33 @@ var notificationsTestCmd = &cobra.Command{
 			return fmt.Errorf("test notification failed: %w", err)
 		}
 		fmt.Println(style.SuccessBox.Render("test notification sent"))
+		return nil
+	},
+}
+
+var notificationsBootstrapCmd = &cobra.Command{
+	Use:   "bootstrap",
+	Short: "Auto-discover services and create default notification channels",
+	RunE: func(cmd *cobra.Command, args []string) error {
+		result, err := client.BootstrapNotificationChannels()
+		if err != nil {
+			return fmt.Errorf("bootstrap failed: %w", err)
+		}
+
+		for _, msg := range result.Skipped {
+			fmt.Printf("  %s %s\n", style.DimText.Render("skip"), msg)
+		}
+		if len(result.Created) == 0 && len(result.Skipped) == 0 {
+			fmt.Println(style.DimText.Render("no channels to bootstrap (vigil-gateway not found)"))
+			return nil
+		}
+		for _, ch := range result.Created {
+			fmt.Println(style.SuccessBox.Render("created " + ch.Provider + " channel"))
+			fmt.Printf("  %s %s\n", style.Key.Render("id"), ch.ID)
+			fmt.Printf("  %s %s\n", style.Key.Render("name"), ch.Name)
+			fmt.Printf("  %s %s\n", style.Key.Render("url"), ch.URL)
+			fmt.Printf("  %s %s\n", style.Key.Render("severities"), strings.Join(ch.Severities, ", "))
+		}
 		return nil
 	},
 }

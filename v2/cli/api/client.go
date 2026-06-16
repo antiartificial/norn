@@ -1458,6 +1458,19 @@ func (c *Client) TestNotificationChannel(id string) error {
 	return c.post("/api/notifications/channels/"+url.PathEscape(id)+"/test", "{}")
 }
 
+type BootstrapResult struct {
+	Created []NotificationChannel `json:"created"`
+	Skipped []string              `json:"skipped"`
+}
+
+func (c *Client) BootstrapNotificationChannels() (*BootstrapResult, error) {
+	var result BootstrapResult
+	if err := c.postJSON("/api/notifications/channels/bootstrap", "{}", &result); err != nil {
+		return nil, err
+	}
+	return &result, nil
+}
+
 // Deploy groups
 
 type DeployGroupInfo struct {

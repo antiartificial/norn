@@ -182,6 +182,14 @@ Providers:
 
 Severity filters are per channel. If no filter is configured, the channel receives all Beacon severities.
 
+### Bootstrap
+
+`norn notifications bootstrap` auto-discovers services from the service manifest and creates default notification channels. Currently it discovers vigil-gateway and creates a webhook channel pointing to its `/api/events` endpoint, filtered to `warning` and `critical` severities. If a vigil webhook channel already exists, it is skipped.
+
+```bash
+norn notifications bootstrap
+```
+
 ## Event Correlation
 
 Beacon events carry a `correlationKey` field in `metadata` that ties related
@@ -216,6 +224,17 @@ the given correlation key, ordered chronologically (oldest first):
 norn events correlated contextdb:web:health
 norn events correlated field-harbor:deploy --limit 10
 ```
+
+### Auto-acknowledgement on resolution
+
+When an `info`-severity event with a `correlationKey` is emitted (e.g.
+`service.health.recovered`, `deploy.succeeded`), Norn automatically
+acknowledges all open `warning` and `critical` events that share the same
+correlation key. The acknowledgement note records which event resolved the
+incident, e.g. `resolved by evt_abc123`.
+
+This keeps `norn events` focused on what still needs attention rather than
+showing resolved noise alongside active incidents.
 
 ### Resolution semantics
 
