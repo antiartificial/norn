@@ -199,6 +199,70 @@ func TestValidateSpecRejectsInvalidProcessMetrics(t *testing.T) {
 	assertErrorFinding(t, result, "processes.worker.metrics.port")
 }
 
+func TestValidateSpecAcceptsTuningPolicy(t *testing.T) {
+	spec := &InfraSpec{
+		App: "tuned-app",
+		Processes: map[string]Process{
+			"web": {
+				Tuning: &TuningPolicy{
+					Mode:     "advisory",
+					Cooldown: "6h",
+					Profiles: map[string]TuningProfile{
+						"quiet":  {CPU: 25, Memory: 256, Scale: 1},
+						"normal": {CPU: 50, Memory: 512, Scale: 1},
+					},
+					Limits: &TuningLimits{
+						Min: TuningProfile{CPU: 25, Memory: 128, Scale: 1},
+						Max: TuningProfile{CPU: 500, Memory: 2048, Scale: 3},
+					},
+					Signals: []TuningSignal{
+						{Source: "nomad", Metric: "memory_rss", Aggregate: "current"},
+						{Source: "prometheus", Metric: "container_memory_working_set_bytes", Window: "24h", Aggregate: "p95"},
+					},
+				},
+			},
+		},
+	}
+
+	result := ValidateSpec(spec)
+	if !result.Valid {
+		t.Fatalf("expected valid tuning policy, got %+v", result.Findings)
+	}
+}
+
+func TestValidateSpecRejectsInvalidTuningPolicy(t *testing.T) {
+	spec := &InfraSpec{
+		App: "bad-tuning-app",
+		Processes: map[string]Process{
+			"web": {
+				Tuning: &TuningPolicy{
+					Mode:     "aggressive",
+					Cooldown: "soon",
+					Limits: &TuningLimits{
+						Min: TuningProfile{CPU: 200, Memory: 1024, Scale: 2},
+						Max: TuningProfile{CPU: 100, Memory: 512, Scale: 1},
+					},
+					Signals: []TuningSignal{
+						{Source: "mystery"},
+					},
+				},
+			},
+		},
+	}
+
+	result := ValidateSpec(spec)
+	if result.Valid {
+		t.Fatal("expected invalid tuning policy to fail validation")
+	}
+	assertErrorFinding(t, result, "processes.web.tuning.mode")
+	assertErrorFinding(t, result, "processes.web.tuning.cooldown")
+	assertErrorFinding(t, result, "processes.web.tuning.limits.cpu")
+	assertErrorFinding(t, result, "processes.web.tuning.limits.memory")
+	assertErrorFinding(t, result, "processes.web.tuning.limits.scale")
+	assertErrorFinding(t, result, "processes.web.tuning.signals[0].source")
+	assertErrorFinding(t, result, "processes.web.tuning.signals[0].metric")
+}
+
 func TestValidateSpecAcceptsObjectStorageBuckets(t *testing.T) {
 	spec := &InfraSpec{
 		App:       "storage-app",

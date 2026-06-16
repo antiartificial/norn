@@ -191,6 +191,25 @@ The command calls `/api/resources/suggestions` and compares Nomad allocation sta
 
 Use this after restart loops, OOM events, or a new workload rollout to decide whether an app spec needs resource changes before the next deploy.
 
+## tune
+
+Show advisory CPU, memory, and scale recommendations from live tuning signals.
+
+```bash
+norn tune
+norn tune recommend
+norn tune status
+```
+
+The command calls `/api/tuning/recommendations`. It uses live Nomad allocation signals by default and includes any process-level `tuning.signals` declarations from `infraspec.yaml`. Recommendations are advisory only: Norn reports the suggested target state but does not update a job or rewrite an app spec.
+
+| Field | Meaning |
+|-------|---------|
+| `current` | Declared CPU, memory, and observed running allocation count |
+| `recommended` | Advisory CPU, memory, and scale target after applying thresholds and `tuning.limits` |
+| `signals` | Live or declared signals that informed the recommendation |
+| `confidence` | `low` when only current live data is available; higher confidence is reserved for historical signal support |
+
 ## notifications
 
 Manage Beacon notification channels.
