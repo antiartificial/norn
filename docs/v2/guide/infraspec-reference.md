@@ -36,6 +36,7 @@ Each key in the `processes` map is the process name. The process type is inferre
 | `scaling` | [Scaling](#scaling) | — | Instance count and autoscaling |
 | `drain` | [Drain](#drain) | — | Graceful shutdown configuration |
 | `resources` | [Resources](#resources) | `cpu: 100, memory: 128` | CPU (MHz) and memory (MB) limits |
+| `tuning` | [TuningPolicy](#tuningpolicy) | — | Advisory resource tuning policy and signal declarations |
 | `canary` | [CanaryConfig](#canaryconfig) | — | Canary allocation count and evaluation window |
 
 ## Health
@@ -84,6 +85,82 @@ Each key in the `processes` map is the process name. The process type is inferre
 |-------|------|---------|-------------|
 | `cpu` | int | `100` | CPU allocation in MHz |
 | `memory` | int | `128` | Memory allocation in MB |
+
+## TuningPolicy
+
+`tuning` declares how Norn should interpret resource signals for a process. The first implementation is advisory: `norn tune` and `/api/tuning/recommendations` report current signals and recommended `resources` or `scaling` changes, but they do not mutate Nomad jobs.
+
+```yaml
+processes:
+  web:
+    resources:
+      cpu: 25
+      memory: 256
+    tuning:
+      mode: advisory
+      cooldown: 6h
+      profiles:
+        quiet:
+          cpu: 25
+          memory: 256
+          scale: 1
+        normal:
+          cpu: 50
+          memory: 512
+          scale: 1
+      limits:
+        min:
+          cpu: 25
+          memory: 128
+          scale: 1
+        max:
+          cpu: 500
+          memory: 2048
+          scale: 3
+      signals:
+        - name: live-rss
+          source: nomad
+          metric: memory_rss
+          aggregate: current
+        - name: memory-p95
+          source: prometheus
+          metric: container_memory_working_set_bytes
+          window: 24h
+          aggregate: p95
+```
+
+| Field | Type | Default | Description |
+|-------|------|---------|-------------|
+| `mode` | string | `advisory` | `advisory` reports recommendations; `auto` is reserved for future guarded application |
+| `cooldown` | duration | — | Minimum interval between automated changes when auto mode is implemented |
+| `profiles` | map[string][TuningProfile](#tuningprofile) | — | Named target CPU, memory, and scale profiles such as `quiet` or `busy` |
+| `limits` | [TuningLimits](#tuninglimits) | — | Minimum and maximum recommendation bounds |
+| `signals` | [TuningSignal](#tuningsignal)[] | built-in Nomad live signals | Signal declarations used to explain recommendations |
+
+### TuningProfile
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `cpu` | int | CPU allocation in MHz |
+| `memory` | int | Memory allocation in MB |
+| `scale` | int | Desired instance count |
+
+### TuningLimits
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `min` | [TuningProfile](#tuningprofile) | Lower bound for recommended CPU, memory, and scale |
+| `max` | [TuningProfile](#tuningprofile) | Upper bound for recommended CPU, memory, and scale |
+
+### TuningSignal
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `name` | string | Human-readable signal name |
+| `source` | string | `nomad`, `prometheus`, or `app` |
+| `metric` | string | Signal metric, such as `memory_rss`, `memory_max`, or `cpu_percent` |
+| `window` | duration | Lookback window for historical sources |
+| `aggregate` | string | Aggregation such as `current`, `max`, or `p95` |
 
 ## CanaryConfig
 

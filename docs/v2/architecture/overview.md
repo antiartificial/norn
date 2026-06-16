@@ -124,6 +124,7 @@ v2/ui/
 | GET | `/api/operations/active` | List queued/running operations for drains |
 | GET | `/api/alerts/rules` | Built-in alert rule catalogue |
 | GET | `/api/resources/suggestions` | Resource right-sizing suggestions based on live Nomad allocation stats |
+| GET | `/api/tuning/recommendations` | Advisory CPU, memory, and scale recommendations from live tuning signals |
 | GET | `/api/events` | List Beacon events |
 | GET | `/api/events/{id}` | Beacon event detail |
 | POST | `/api/events/{id}/ack` | Acknowledge a Beacon event |

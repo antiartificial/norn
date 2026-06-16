@@ -1444,6 +1444,46 @@ type ResourceSuggestion struct {
 	Reason         string  `json:"reason"`
 }
 
+type TuningRecommendation struct {
+	App         string              `json:"app"`
+	Process     string              `json:"process"`
+	Mode        string              `json:"mode"`
+	Confidence  string              `json:"confidence"`
+	Current     TuningResourceState `json:"current"`
+	Recommended TuningResourceState `json:"recommended"`
+	Observed    TuningObserved      `json:"observed"`
+	Signals     []TuningSignal      `json:"signals"`
+	Actions     []string            `json:"actions"`
+	Reasons     []string            `json:"reasons"`
+}
+
+type TuningResourceState struct {
+	CPU    int `json:"cpuMHz"`
+	Memory int `json:"memoryMB"`
+	Scale  int `json:"scale"`
+}
+
+type TuningObserved struct {
+	UsedMemoryMB      int     `json:"usedMemoryMB"`
+	PeakMemoryMB      int     `json:"peakMemoryMB"`
+	MemoryUtilization float64 `json:"memoryUtilization"`
+	CPUPercent        float64 `json:"cpuPercent"`
+	AllocationCount   int     `json:"allocationCount"`
+	Source            string  `json:"source"`
+}
+
+type TuningSignal struct {
+	Name      string  `json:"name"`
+	Source    string  `json:"source"`
+	Metric    string  `json:"metric"`
+	Window    string  `json:"window,omitempty"`
+	Aggregate string  `json:"aggregate,omitempty"`
+	Value     float64 `json:"value,omitempty"`
+	Unit      string  `json:"unit,omitempty"`
+	Available bool    `json:"available"`
+	Reason    string  `json:"reason,omitempty"`
+}
+
 // Notification channels
 
 type NotificationChannel struct {
@@ -1613,6 +1653,16 @@ func (c *Client) ResourceSuggestions() ([]ResourceSuggestion, error) {
 		return nil, err
 	}
 	return resp.Suggestions, nil
+}
+
+func (c *Client) TuningRecommendations() ([]TuningRecommendation, error) {
+	var resp struct {
+		Recommendations []TuningRecommendation `json:"recommendations"`
+	}
+	if err := c.get("/api/tuning/recommendations", &resp); err != nil {
+		return nil, err
+	}
+	return resp.Recommendations, nil
 }
 
 func firstNonEmpty(values ...string) string {

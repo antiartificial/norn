@@ -263,6 +263,7 @@ func main() {
 		r.Get("/operations/active", h.ActiveOperations)
 		r.Get("/alerts/rules", h.AlertRules)
 		r.Get("/resources/suggestions", h.ResourceSuggestions)
+		r.Get("/tuning/recommendations", h.TuningRecommendations)
 		r.Get("/events", h.ListEvents)
 		r.Post("/events", h.CreateEvent)
 		r.Get("/events/active", h.ActiveIncidents)

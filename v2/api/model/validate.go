@@ -98,6 +98,7 @@ func ValidateSpecWithOptions(spec *InfraSpec, opts ValidationOptions) *Validatio
 			}
 		}
 
+		validateTuningPolicy(r, field+".tuning", proc.Tuning)
 		validateEnvSecrets(r, field+".env", proc.Env, declaredSecrets, opts.StrictSecrets)
 	}
 
@@ -253,6 +254,66 @@ func hostScope(host string) string {
 		}
 	}
 	return "public"
+}
+
+func validateTuningPolicy(r *ValidationResult, field string, tuning *TuningPolicy) {
+	if tuning == nil {
+		return
+	}
+	switch tuning.Mode {
+	case "", "advisory", "auto":
+	default:
+		r.add("error", field+".mode", "tuning mode must be advisory or auto")
+	}
+	if tuning.Cooldown != "" {
+		if _, err := time.ParseDuration(tuning.Cooldown); err != nil {
+			r.add("error", field+".cooldown", fmt.Sprintf("invalid cooldown duration %q", tuning.Cooldown))
+		}
+	}
+	for name, profile := range tuning.Profiles {
+		validateTuningProfile(r, field+".profiles."+name, profile)
+	}
+	if tuning.Limits != nil {
+		validateTuningProfile(r, field+".limits.min", tuning.Limits.Min)
+		validateTuningProfile(r, field+".limits.max", tuning.Limits.Max)
+		if tuning.Limits.Min.CPU > 0 && tuning.Limits.Max.CPU > 0 && tuning.Limits.Min.CPU > tuning.Limits.Max.CPU {
+			r.add("error", field+".limits.cpu", "min cpu must be less than or equal to max cpu")
+		}
+		if tuning.Limits.Min.Memory > 0 && tuning.Limits.Max.Memory > 0 && tuning.Limits.Min.Memory > tuning.Limits.Max.Memory {
+			r.add("error", field+".limits.memory", "min memory must be less than or equal to max memory")
+		}
+		if tuning.Limits.Min.Scale > 0 && tuning.Limits.Max.Scale > 0 && tuning.Limits.Min.Scale > tuning.Limits.Max.Scale {
+			r.add("error", field+".limits.scale", "min scale must be less than or equal to max scale")
+		}
+	}
+	for i, signal := range tuning.Signals {
+		signalField := fmt.Sprintf("%s.signals[%d]", field, i)
+		switch signal.Source {
+		case "", "nomad", "prometheus", "app":
+		default:
+			r.add("error", signalField+".source", "signal source must be nomad, prometheus, or app")
+		}
+		if signal.Metric == "" {
+			r.add("error", signalField+".metric", "signal metric is required")
+		}
+		if signal.Window != "" {
+			if _, err := time.ParseDuration(signal.Window); err != nil {
+				r.add("error", signalField+".window", fmt.Sprintf("invalid window duration %q", signal.Window))
+			}
+		}
+	}
+}
+
+func validateTuningProfile(r *ValidationResult, field string, profile TuningProfile) {
+	if profile.CPU < 0 {
+		r.add("error", field+".cpu", "cpu must be non-negative")
+	}
+	if profile.Memory < 0 {
+		r.add("error", field+".memory", "memory must be non-negative")
+	}
+	if profile.Scale < 0 {
+		r.add("error", field+".scale", "scale must be non-negative")
+	}
 }
 
 func validateEnvSecrets(r *ValidationResult, field string, env map[string]string, declaredSecrets map[string]bool, strict bool) {
