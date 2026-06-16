@@ -57,6 +57,66 @@ func (h *Handler) CreateNotificationChannel(w http.ResponseWriter, r *http.Reque
 	writeJSON(w, ch)
 }
 
+func (h *Handler) BootstrapNotificationChannels(w http.ResponseWriter, r *http.Request) {
+	manifest, err := h.buildServiceManifest()
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "failed to build service manifest")
+		return
+	}
+
+	existing, err := h.db.ListNotificationChannels(r.Context())
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+
+	var created []model.NotificationChannel
+	var skipped []string
+
+	for _, svc := range manifest.Services {
+		if svc.App != "vigil-gateway" || svc.Type != "service" {
+			continue
+		}
+		for _, ch := range existing {
+			if ch.Provider == "webhook" && ch.Name == "vigil" {
+				skipped = append(skipped, "vigil webhook already exists")
+				goto done
+			}
+		}
+		{
+			var baseURL string
+			for _, inst := range svc.Instances {
+				if inst.Address != "" {
+					baseURL = "http://" + inst.Address
+					break
+				}
+			}
+			if baseURL == "" {
+				writeError(w, http.StatusUnprocessableEntity, "vigil-gateway has no reachable instance")
+				return
+			}
+			ch := model.NotificationChannel{
+				ID:         "nch_" + uuid.NewString(),
+				Provider:   "webhook",
+				Name:       "vigil",
+				URL:        baseURL + "/api/events",
+				Severities: []string{"warning", "critical"},
+				CreatedAt:  time.Now().UTC(),
+			}
+			if err := h.db.InsertNotificationChannel(r.Context(), &ch); err != nil {
+				writeError(w, http.StatusInternalServerError, err.Error())
+				return
+			}
+			created = append(created, ch)
+		}
+	}
+done:
+	writeJSON(w, map[string]interface{}{
+		"created": created,
+		"skipped": skipped,
+	})
+}
+
 func (h *Handler) DeleteNotificationChannel(w http.ResponseWriter, r *http.Request) {
 	id := chi.URLParam(r, "id")
 	if id == "" {

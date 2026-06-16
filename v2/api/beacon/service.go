@@ -86,6 +86,16 @@ func (s *Service) Emit(ctx context.Context, event model.BeaconEvent) (*model.Bea
 		return nil, err
 	}
 
+	if event.Severity == model.BeaconInfo {
+		if ck, ok := event.Metadata["correlationKey"].(string); ok && ck != "" {
+			if n, err := s.db.AutoAckCorrelatedEvents(ctx, ck, event.ID); err != nil {
+				log.Printf("beacon: auto-ack correlated events for %s: %v", ck, err)
+			} else if n > 0 {
+				log.Printf("beacon: auto-acked %d events for %s", n, ck)
+			}
+		}
+	}
+
 	if s.ws != nil {
 		s.ws.Broadcast(hub.Event{Type: "beacon.event", AppID: event.App, Payload: event})
 	}

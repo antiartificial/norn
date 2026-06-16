@@ -176,6 +176,8 @@ Current state:
 - `norn access token --ttl 2h` generates shareable tokens from the CLI.
 - The dashboard Platform tab has a token creation form in the Access section.
 - `norn events show <id>` displays incident timeline links for events with correlation keys.
+- When an `info`-severity event resolves a correlation group, Norn auto-acknowledges open `warning`/`critical` events in that group so `norn events` shows only active incidents.
+- `norn notifications bootstrap` auto-discovers vigil-gateway and creates a default webhook notification channel for `warning` and `critical` events.
 
 Planned work:
 

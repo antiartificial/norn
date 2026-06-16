@@ -62,6 +62,8 @@ This recap summarizes the current Norn v2 release line: the Nomad/Consul control
 | JWT access tokens | `POST /api/access/tokens`, `norn access token`, dashboard form | Time-limited shareable tokens for dashboard URL sharing without bearer auth or IP grants |
 | Incident timeline links | `norn events show`, dashboard event detail | Shows correlation key and incident timeline command/link for events in an incident arc |
 | Allocation lifecycle | `lifecycle` field on allocations, `allocationSummary` on app status | Separates active from retained allocations so CLI and dashboard show live capacity |
+| Auto-ack on resolution | Beacon emit path auto-acknowledges correlated events | Keeps `norn events` focused on active incidents by clearing resolved warning/critical events |
+| Notification bootstrap | `norn notifications bootstrap`, `POST /api/notifications/channels/bootstrap` | Auto-discovers vigil-gateway and creates a default webhook notification channel |
 | Upgrade path | `norn platform preflight`, `upgrade`, `releases`, `rollback` | Upgrades Norn API, CLI, and built UI without stopping Nomad, Consul, Postgres, or hosted apps |
 
 ## Operator Impact

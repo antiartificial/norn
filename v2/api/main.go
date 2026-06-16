@@ -283,6 +283,7 @@ func main() {
 
 		r.Get("/notifications/channels", h.ListNotificationChannels)
 		r.Post("/notifications/channels", h.CreateNotificationChannel)
+		r.Post("/notifications/channels/bootstrap", h.BootstrapNotificationChannels)
 		r.Post("/notifications/channels/{id}/test", h.TestNotificationChannel)
 		r.Delete("/notifications/channels/{id}", h.DeleteNotificationChannel)
 		r.Get("/deploy-groups", h.ListDeployGroups)
