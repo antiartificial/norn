@@ -35,6 +35,21 @@ func (h *Handler) ListEvents(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
+func (h *Handler) ActiveIncidents(w http.ResponseWriter, r *http.Request) {
+	limit, _ := strconv.Atoi(r.URL.Query().Get("limit"))
+	incidents, err := h.db.ListActiveIncidents(r.Context(), limit)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	if incidents == nil {
+		incidents = []store.ActiveIncident{}
+	}
+	writeJSON(w, map[string]interface{}{
+		"incidents": incidents,
+	})
+}
+
 func (h *Handler) CorrelatedEvents(w http.ResponseWriter, r *http.Request) {
 	key := r.URL.Query().Get("key")
 	if key == "" {

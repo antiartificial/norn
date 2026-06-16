@@ -178,11 +178,14 @@ Current state:
 - `norn events show <id>` displays incident timeline links for events with correlation keys.
 - When an `info`-severity event resolves a correlation group, Norn auto-acknowledges open `warning`/`critical` events in that group so `norn events` shows only active incidents.
 - `norn notifications bootstrap` auto-discovers vigil-gateway and creates a default webhook notification channel for `warning` and `critical` events.
+- Beacon suppresses duplicate events at emit time: events with a `dedupeKey` matching one emitted within the last hour are dropped, preventing event storms after API restarts.
+- `GET /api/events/active` and `norn events active` show unresolved incident groups — correlation keys where open warning/critical events remain.
 
 Planned work:
 
 - Deploy the generated observability apps on hosts that have accepted the local port and container policy choices.
 - Add downstream incident-tool links for acknowledged/snoozed Beacon events.
+- Complete plaintext secret migration for remaining apps (its-alive-api DATABASE_URL, mail-mcp TAILSCALE_AUTHKEY, and other migration plan items).
 
 ### Platform Upgrade Continuity
 

@@ -150,7 +150,7 @@ func processMigrateGroup(group appMigrationGroup, appsDir string, apply bool) (i
 	// Only items that are in a plaintext env field and need encryption.
 	var toMigrate []api.SecretMigrationItem
 	for _, item := range group.items {
-		if item.Field == "env" || strings.Contains(strings.ToLower(item.Action), "encrypt") {
+		if strings.HasPrefix(item.Field, "env") || strings.Contains(strings.ToLower(item.Action), "encrypt") {
 			toMigrate = append(toMigrate, item)
 		}
 	}
