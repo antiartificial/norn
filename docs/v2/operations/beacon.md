@@ -265,6 +265,35 @@ norn events show evt_abc123
 # incident  norn events correlated contextdb:web:health
 ```
 
+## Event Deduplication
+
+Beacon suppresses duplicate events at emit time. When an event has a
+`dedupeKey` that matches an event emitted within the last hour, the new
+event is silently dropped. This prevents event storms from repeated watcher
+detections of the same condition — for example, a hung cron job or a
+persistently failed allocation will emit one event per condition rather
+than one per check cycle.
+
+The watcher's in-memory `seen` map provides first-pass dedup within a
+single API process lifetime. The database-backed dedup window survives
+API restarts, so a platform upgrade does not re-emit all previously
+observed conditions.
+
+## Active Incidents
+
+`GET /api/events/active` returns unresolved incident groups — correlation
+keys where the latest event is `warning` or `critical` and at least one
+event in the group is still open (not acknowledged or snoozed).
+
+```bash
+norn events active
+norn events active --limit 10
+```
+
+Each incident shows the correlation key, app, latest severity, event count,
+and first/last seen timestamps. Use `norn events correlated <key>` to drill
+into a specific incident's full timeline.
+
 ## Sink Configuration
 
 Beacon sink delivery is configured by environment variables:

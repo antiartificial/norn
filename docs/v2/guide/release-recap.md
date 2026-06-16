@@ -64,6 +64,10 @@ This recap summarizes the current Norn v2 release line: the Nomad/Consul control
 | Allocation lifecycle | `lifecycle` field on allocations, `allocationSummary` on app status | Separates active from retained allocations so CLI and dashboard show live capacity |
 | Auto-ack on resolution | Beacon emit path auto-acknowledges correlated events | Keeps `norn events` focused on active incidents by clearing resolved warning/critical events |
 | Notification bootstrap | `norn notifications bootstrap`, `POST /api/notifications/channels/bootstrap` | Auto-discovers vigil-gateway and creates a default webhook notification channel |
+| Event dedup suppression | Beacon emit-level dedupeKey check with 1h window | Prevents event storms from repeated watcher detection after API restarts |
+| Active incidents view | `GET /api/events/active`, `norn events active` | Shows unresolved incident groups collapsed by correlation key |
+| Secrets migration fix | `norn secrets migrate --apply` field matching fix | Fixes `env.KEY` field matching so plaintext env secrets are correctly identified for migration |
+| Secrets hygiene push | Infraspec declarations for ft-trove, its-alive-api, mail-indexer, mail-mcp | Resolves undeclared encrypted secrets warnings from platform ops |
 | Upgrade path | `norn platform preflight`, `upgrade`, `releases`, `rollback` | Upgrades Norn API, CLI, and built UI without stopping Nomad, Consul, Postgres, or hosted apps |
 
 ## Operator Impact

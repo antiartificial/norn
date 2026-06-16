@@ -205,6 +205,97 @@ func (db *DB) ListCorrelatedEvents(ctx context.Context, correlationKey string, l
 	return events, nil
 }
 
+func (db *DB) RecentDedupeExists(ctx context.Context, dedupeKey string, within time.Duration) (bool, error) {
+	var exists bool
+	err := db.Pool.QueryRow(ctx, `
+		SELECT EXISTS(
+			SELECT 1 FROM beacon_events
+			WHERE dedupe_key = $1 AND occurred_at > $2
+		)
+	`, dedupeKey, time.Now().UTC().Add(-within)).Scan(&exists)
+	return exists, err
+}
+
+type ActiveIncident struct {
+	CorrelationKey string             `json:"correlationKey"`
+	App            string             `json:"app"`
+	LatestSeverity string             `json:"latestSeverity"`
+	LatestType     string             `json:"latestType"`
+	LatestTitle    string             `json:"latestTitle"`
+	EventCount     int                `json:"eventCount"`
+	FirstSeen      time.Time          `json:"firstSeen"`
+	LastSeen       time.Time          `json:"lastSeen"`
+	OpenCount      int                `json:"openCount"`
+	LatestEventID  string             `json:"latestEventId"`
+}
+
+func (db *DB) ListActiveIncidents(ctx context.Context, limit int) ([]ActiveIncident, error) {
+	if limit <= 0 || limit > 100 {
+		limit = 25
+	}
+	rows, err := db.Pool.Query(ctx, `
+		WITH ranked AS (
+			SELECT
+				metadata->>'correlationKey' AS correlation_key,
+				app,
+				severity,
+				type,
+				title,
+				id,
+				occurred_at,
+				acknowledged_at,
+				snoozed_until,
+				ROW_NUMBER() OVER (
+					PARTITION BY metadata->>'correlationKey'
+					ORDER BY occurred_at DESC
+				) AS rn
+			FROM beacon_events
+			WHERE metadata->>'correlationKey' IS NOT NULL
+			  AND metadata->>'correlationKey' != ''
+		),
+		groups AS (
+			SELECT
+				correlation_key,
+				app,
+				severity AS latest_severity,
+				type AS latest_type,
+				title AS latest_title,
+				id AS latest_event_id,
+				COUNT(*) OVER (PARTITION BY correlation_key) AS event_count,
+				MIN(occurred_at) OVER (PARTITION BY correlation_key) AS first_seen,
+				MAX(occurred_at) OVER (PARTITION BY correlation_key) AS last_seen,
+				SUM(CASE WHEN acknowledged_at IS NULL AND (snoozed_until IS NULL OR snoozed_until < now()) THEN 1 ELSE 0 END) OVER (PARTITION BY correlation_key) AS open_count
+			FROM ranked
+			WHERE rn = 1
+		)
+		SELECT correlation_key, app, latest_severity, latest_type, latest_title,
+		       event_count, first_seen, last_seen, open_count, latest_event_id
+		FROM groups
+		WHERE open_count > 0
+		  AND latest_severity IN ('warning', 'critical')
+		ORDER BY last_seen DESC
+		LIMIT $1
+	`, limit)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	var incidents []ActiveIncident
+	for rows.Next() {
+		var inc ActiveIncident
+		if err := rows.Scan(
+			&inc.CorrelationKey, &inc.App, &inc.LatestSeverity, &inc.LatestType,
+			&inc.LatestTitle, &inc.EventCount, &inc.FirstSeen, &inc.LastSeen,
+			&inc.OpenCount, &inc.LatestEventID,
+		); err != nil {
+			return nil, err
+		}
+		incidents = append(incidents, inc)
+	}
+	return incidents, rows.Err()
+}
+
 func (db *DB) AutoAckCorrelatedEvents(ctx context.Context, correlationKey, resolvingEventID string) (int, error) {
 	tag, err := db.Pool.Exec(ctx, `
 		UPDATE beacon_events

@@ -32,10 +32,12 @@ func init() {
 	eventsCmd.Flags().StringVar(&eventsSeverity, "severity", "", "Filter events by severity")
 	eventsCmd.Flags().IntVar(&eventsLimit, "limit", 25, "Maximum events to show")
 	eventsCmd.AddCommand(eventsShowCmd)
+	eventsCmd.AddCommand(eventsActiveCmd)
 	eventsCmd.AddCommand(eventsAckCmd)
 	eventsCmd.AddCommand(eventsSnoozeCmd)
 	eventsCmd.AddCommand(eventsOpenCmd)
 	eventsCmd.AddCommand(eventsCorrelatedCmd)
+	eventsActiveCmd.Flags().IntVar(&eventsLimit, "limit", 25, "Maximum incidents to show")
 	eventsCorrelatedCmd.Flags().IntVar(&eventsCorrelatedLimit, "limit", 50, "Maximum events to show")
 	eventsAckCmd.Flags().StringVar(&eventActor, "by", "", "Operator name")
 	eventsAckCmd.Flags().StringVar(&eventNote, "note", "", "Acknowledgement note")
@@ -110,6 +112,44 @@ var eventsOpenCmd = &cobra.Command{
 			return err
 		}
 		fmt.Printf("opened %s (%s)\n", shortID(event.ID), event.State)
+		return nil
+	},
+}
+
+var eventsActiveCmd = &cobra.Command{
+	Use:   "active",
+	Short: "Show active incidents (unresolved correlation groups)",
+	RunE: func(cmd *cobra.Command, args []string) error {
+		incidents, err := client.ListActiveIncidents(eventsLimit)
+		if err != nil {
+			return err
+		}
+		fmt.Println(style.Title.Render("active incidents"))
+		if len(incidents) == 0 {
+			fmt.Println(style.Healthy.Render("  no active incidents"))
+			return nil
+		}
+		fmt.Printf("%s %d\n\n", style.Key.Render("count"), len(incidents))
+		w := tabwriter.NewWriter(os.Stdout, 0, 0, 2, ' ', 0)
+		fmt.Fprintln(w, style.TableHeader.Render("CORRELATION")+"\t"+
+			style.TableHeader.Render("APP")+"\t"+
+			style.TableHeader.Render("SEVERITY")+"\t"+
+			style.TableHeader.Render("TYPE")+"\t"+
+			style.TableHeader.Render("EVENTS")+"\t"+
+			style.TableHeader.Render("LAST SEEN")+"\t"+
+			style.TableHeader.Render("TITLE"))
+		for _, inc := range incidents {
+			fmt.Fprintf(w, "%s\t%s\t%s\t%s\t%d\t%s\t%s\n",
+				inc.CorrelationKey,
+				emptyDash(inc.App),
+				renderSeverity(inc.LatestSeverity),
+				inc.LatestType,
+				inc.EventCount,
+				localTime(inc.LastSeen),
+				emptyDash(inc.LatestTitle),
+			)
+		}
+		w.Flush()
 		return nil
 	},
 }

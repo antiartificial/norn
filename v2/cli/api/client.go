@@ -827,6 +827,37 @@ func (c *Client) ListCorrelatedEvents(correlationKey string, limit int) ([]Beaco
 	return resp.Events, nil
 }
 
+type ActiveIncident struct {
+	CorrelationKey string `json:"correlationKey"`
+	App            string `json:"app"`
+	LatestSeverity string `json:"latestSeverity"`
+	LatestType     string `json:"latestType"`
+	LatestTitle    string `json:"latestTitle"`
+	EventCount     int    `json:"eventCount"`
+	FirstSeen      string `json:"firstSeen"`
+	LastSeen       string `json:"lastSeen"`
+	OpenCount      int    `json:"openCount"`
+	LatestEventID  string `json:"latestEventId"`
+}
+
+func (c *Client) ListActiveIncidents(limit int) ([]ActiveIncident, error) {
+	values := url.Values{}
+	if limit > 0 {
+		values.Set("limit", fmt.Sprintf("%d", limit))
+	}
+	path := "/api/events/active"
+	if encoded := values.Encode(); encoded != "" {
+		path += "?" + encoded
+	}
+	var resp struct {
+		Incidents []ActiveIncident `json:"incidents"`
+	}
+	if err := c.get(path, &resp); err != nil {
+		return nil, err
+	}
+	return resp.Incidents, nil
+}
+
 func (c *Client) GetEvent(id string) (*BeaconEvent, error) {
 	var event BeaconEvent
 	if err := c.get("/api/events/"+url.PathEscape(id), &event); err != nil {

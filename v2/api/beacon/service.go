@@ -82,6 +82,12 @@ func (s *Service) Emit(ctx context.Context, event model.BeaconEvent) (*model.Bea
 		event.Metadata = map[string]interface{}{}
 	}
 
+	if event.DedupeKey != "" {
+		if dup, err := s.db.RecentDedupeExists(ctx, event.DedupeKey, 1*time.Hour); err == nil && dup {
+			return nil, nil
+		}
+	}
+
 	if err := s.db.InsertBeaconEvent(ctx, &event); err != nil {
 		return nil, err
 	}
