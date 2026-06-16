@@ -2,6 +2,7 @@ package handler
 
 import (
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"time"
 
@@ -87,7 +88,11 @@ func (h *Handler) BootstrapNotificationChannels(w http.ResponseWriter, r *http.R
 			var baseURL string
 			for _, inst := range svc.Instances {
 				if inst.Address != "" {
-					baseURL = "http://" + inst.Address
+					if inst.Port > 0 {
+						baseURL = fmt.Sprintf("http://%s:%d", inst.Address, inst.Port)
+					} else {
+						baseURL = "http://" + inst.Address
+					}
 					break
 				}
 			}
