@@ -9,10 +9,11 @@ import (
 	"norn/v2/api/model"
 )
 
-// Translate converts an InfraSpec into a Nomad job specification.
-// Each process in the infraspec becomes a TaskGroup within the job.
-// Scheduled processes (cron) are translated into separate periodic batch jobs.
 func Translate(spec *model.InfraSpec, imageTag string, env map[string]string) *nomadapi.Job {
+	return TranslateWithDriver(spec, imageTag, env, "docker")
+}
+
+func TranslateWithDriver(spec *model.InfraSpec, imageTag string, env map[string]string, taskDriver string) *nomadapi.Job {
 	jobID := spec.App
 	jobType := "service"
 
@@ -76,7 +77,7 @@ func Translate(spec *model.InfraSpec, imageTag string, env map[string]string) *n
 		}
 
 		// Task
-		task := nomadapi.NewTask(procName, "docker")
+		task := nomadapi.NewTask(procName, taskDriver)
 		task.Config = map[string]interface{}{
 			"image": imageTag,
 		}
@@ -230,8 +231,11 @@ func configureProcessNetworking(spec *model.InfraSpec, procName string, proc mod
 	}
 }
 
-// TranslatePeriodic creates a separate Nomad periodic batch job for a scheduled process.
 func TranslatePeriodic(spec *model.InfraSpec, procName string, proc model.Process, imageTag string, env map[string]string) *nomadapi.Job {
+	return TranslatePeriodicWithDriver(spec, procName, proc, imageTag, env, "docker")
+}
+
+func TranslatePeriodicWithDriver(spec *model.InfraSpec, procName string, proc model.Process, imageTag string, env map[string]string, taskDriver string) *nomadapi.Job {
 	jobID := fmt.Sprintf("%s-%s", spec.App, procName)
 	job := nomadapi.NewBatchJob(jobID, jobID, "global", 50)
 	job.Datacenters = []string{"dc1"}
@@ -253,7 +257,7 @@ func TranslatePeriodic(spec *model.InfraSpec, procName string, proc model.Proces
 	}
 
 	tg := nomadapi.NewTaskGroup(procName, 1)
-	task := nomadapi.NewTask(procName, "docker")
+	task := nomadapi.NewTask(procName, taskDriver)
 	task.Config = map[string]interface{}{
 		"image": imageTag,
 	}
@@ -301,8 +305,11 @@ func TranslatePeriodic(spec *model.InfraSpec, procName string, proc model.Proces
 	return job
 }
 
-// TranslateBatch creates a one-shot Nomad batch job for a function invocation.
 func TranslateBatch(spec *model.InfraSpec, procName string, proc model.Process, imageTag string, env map[string]string, jobID string) *nomadapi.Job {
+	return TranslateBatchWithDriver(spec, procName, proc, imageTag, env, jobID, "docker")
+}
+
+func TranslateBatchWithDriver(spec *model.InfraSpec, procName string, proc model.Process, imageTag string, env map[string]string, jobID string, taskDriver string) *nomadapi.Job {
 	job := nomadapi.NewBatchJob(jobID, jobID, "global", 50)
 	job.Datacenters = []string{"dc1"}
 
@@ -328,7 +335,7 @@ func TranslateBatch(spec *model.InfraSpec, procName string, proc model.Process, 
 		Mode:     &mode,
 	}
 
-	task := nomadapi.NewTask(procName, "docker")
+	task := nomadapi.NewTask(procName, taskDriver)
 	task.Config = map[string]interface{}{
 		"image": imageTag,
 	}

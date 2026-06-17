@@ -107,7 +107,11 @@ func (p *Pipeline) runRollback(ctx context.Context, spec *model.InfraSpec, deplo
 					env[k] = v
 				}
 			}
-			job := nomad.Translate(spec, imageTag, env)
+			taskDriver := "docker"
+			if p.Runtime != nil {
+				taskDriver = p.Runtime.TaskDriver()
+			}
+			job := nomad.TranslateWithDriver(spec, imageTag, env, taskDriver)
 			_, err := p.Nomad.SubmitJob(job)
 			return err
 		}},

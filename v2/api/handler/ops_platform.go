@@ -6,20 +6,22 @@ import (
 	"time"
 
 	"norn/v2/api/model"
+	"norn/v2/api/runtime"
 	"norn/v2/api/store"
 )
 
 type platformOpsSummary struct {
-	GeneratedAt   string                   `json:"generatedAt"`
-	NetworkMode   string                   `json:"networkMode,omitempty"`
-	Services      platformServiceSummary   `json:"services"`
-	Deployments   platformDeploySummary    `json:"deployments"`
-	Operations    platformOperationSummary `json:"operations"`
-	Secrets       platformSecretSummary    `json:"secrets"`
-	Snapshots     []platformSnapshotStatus `json:"snapshots"`
-	Access        platformAccessSummary    `json:"access"`
-	Observability platformObserveSummary   `json:"observability"`
-	Warnings      []string                 `json:"warnings,omitempty"`
+	GeneratedAt      string                   `json:"generatedAt"`
+	NetworkMode      string                   `json:"networkMode,omitempty"`
+	ContainerRuntime *runtime.Info             `json:"containerRuntime,omitempty"`
+	Services         platformServiceSummary   `json:"services"`
+	Deployments      platformDeploySummary    `json:"deployments"`
+	Operations       platformOperationSummary `json:"operations"`
+	Secrets          platformSecretSummary    `json:"secrets"`
+	Snapshots        []platformSnapshotStatus `json:"snapshots"`
+	Access           platformAccessSummary    `json:"access"`
+	Observability    platformObserveSummary   `json:"observability"`
+	Warnings         []string                 `json:"warnings,omitempty"`
 }
 
 type platformServiceSummary struct {
@@ -89,9 +91,14 @@ func (h *Handler) PlatformOps(w http.ResponseWriter, r *http.Request) {
 }
 
 func (h *Handler) buildPlatformOps(r *http.Request) (platformOpsSummary, error) {
+	var rtInfo *runtime.Info
+	if h.rt != nil {
+		rtInfo = h.rt.Info(r.Context())
+	}
 	out := platformOpsSummary{
-		GeneratedAt: time.Now().UTC().Format(time.RFC3339),
-		NetworkMode: h.cfg.NetworkMode,
+		GeneratedAt:      time.Now().UTC().Format(time.RFC3339),
+		NetworkMode:      h.cfg.NetworkMode,
+		ContainerRuntime: rtInfo,
 		Services: platformServiceSummary{
 			ByType:   map[string]int{},
 			ByStatus: map[string]int{},

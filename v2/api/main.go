@@ -29,6 +29,7 @@ import (
 	"norn/v2/api/observe"
 	"norn/v2/api/pipeline"
 	"norn/v2/api/redpanda"
+	"norn/v2/api/runtime"
 	"norn/v2/api/saga"
 	"norn/v2/api/secrets"
 	"norn/v2/api/storage"
@@ -171,6 +172,15 @@ func main() {
 	// Secrets manager
 	sec := secrets.NewManager(cfg.AppsDir)
 
+	// Container runtime
+	runtimeBackend, err := runtime.ParseBackend(cfg.ContainerRuntime)
+	if err != nil {
+		log.Printf("WARNING: %v, falling back to auto-detect", err)
+		runtimeBackend = runtime.Detect()
+	}
+	rt := runtime.New(runtimeBackend, cfg.RegistryURL)
+	log.Printf("container runtime: %s (driver: %s)", rt.Backend(), rt.TaskDriver())
+
 	// Deploy pipeline
 	pipe := &pipeline.Pipeline{
 		DB:          db,
@@ -187,6 +197,7 @@ func main() {
 		Beacon:      beaconSvc,
 		Storage:     s3Client,
 		Redpanda:    redpandaClient,
+		Runtime:     rt,
 	}
 
 	workerCtx, workerCancel := context.WithCancel(context.Background())
@@ -205,7 +216,7 @@ func main() {
 	}
 
 	// Handler
-	h := handler.New(db, nomadClient, consulClient, ws, cfg, pipe, beaconSvc, sec, sagaStore, s3Client, redpandaClient)
+	h := handler.New(db, nomadClient, consulClient, ws, cfg, pipe, beaconSvc, sec, sagaStore, s3Client, redpandaClient, rt)
 
 	// Router
 	r := chi.NewRouter()
@@ -237,6 +248,7 @@ func main() {
 	r.Route("/api", func(r chi.Router) {
 		r.Get("/health", h.Health)
 		r.Get("/metrics", h.Metrics)
+		r.Get("/runtime", h.RuntimeInfo)
 		r.Get("/version", func(w http.ResponseWriter, r *http.Request) {
 			w.Header().Set("Content-Type", "application/json")
 			json.NewEncoder(w).Encode(map[string]string{"version": Version})
@@ -269,6 +281,7 @@ func main() {
 		r.Post("/events", h.CreateEvent)
 		r.Get("/events/active", h.ActiveIncidents)
 		r.Get("/events/correlated", h.CorrelatedEvents)
+		r.Post("/events/reconcile", h.ReconcileEvents)
 		r.Get("/events/{id}", h.GetEvent)
 		r.Post("/events/{id}/ack", h.AcknowledgeEvent)
 		r.Post("/events/{id}/snooze", h.SnoozeEvent)

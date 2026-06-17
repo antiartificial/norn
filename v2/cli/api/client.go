@@ -235,6 +235,26 @@ type NetworkStatus struct {
 	ConsulAddr string `json:"consulAddr,omitempty"`
 }
 
+type RuntimeInfo struct {
+	Backend      string   `json:"backend"`
+	Version      string   `json:"version"`
+	Available    bool     `json:"available"`
+	TaskDriver   string   `json:"taskDriver"`
+	BuildCmd     string   `json:"buildCmd"`
+	Capabilities []string `json:"capabilities"`
+}
+
+type RuntimeBackend struct {
+	Name      string `json:"name"`
+	Available bool   `json:"available"`
+	Current   bool   `json:"current"`
+}
+
+type RuntimeResponse struct {
+	Active   RuntimeInfo      `json:"active"`
+	Backends []RuntimeBackend `json:"backends"`
+}
+
 type Deployment struct {
 	ID            string   `json:"id"`
 	App           string   `json:"app"`
@@ -605,16 +625,17 @@ type ContextDBFeedbackRollback struct {
 }
 
 type PlatformOpsSummary struct {
-	GeneratedAt   string                   `json:"generatedAt"`
-	NetworkMode   string                   `json:"networkMode,omitempty"`
-	Services      PlatformServiceSummary   `json:"services"`
-	Deployments   PlatformDeploySummary    `json:"deployments"`
-	Operations    PlatformOperationSummary `json:"operations"`
-	Secrets       PlatformSecretSummary    `json:"secrets"`
-	Snapshots     []PlatformSnapshotStatus `json:"snapshots"`
-	Access        PlatformAccessSummary    `json:"access"`
-	Observability PlatformObserveSummary   `json:"observability"`
-	Warnings      []string                 `json:"warnings,omitempty"`
+	GeneratedAt      string                   `json:"generatedAt"`
+	NetworkMode      string                   `json:"networkMode,omitempty"`
+	ContainerRuntime *RuntimeInfo             `json:"containerRuntime,omitempty"`
+	Services         PlatformServiceSummary   `json:"services"`
+	Deployments      PlatformDeploySummary    `json:"deployments"`
+	Operations       PlatformOperationSummary `json:"operations"`
+	Secrets          PlatformSecretSummary    `json:"secrets"`
+	Snapshots        []PlatformSnapshotStatus `json:"snapshots"`
+	Access           PlatformAccessSummary    `json:"access"`
+	Observability    PlatformObserveSummary   `json:"observability"`
+	Warnings         []string                 `json:"warnings,omitempty"`
 }
 
 type Operation struct {
@@ -765,6 +786,14 @@ func (c *Client) Health() (*HealthStatus, error) {
 	return &h, nil
 }
 
+func (c *Client) RuntimeInfo() (*RuntimeResponse, error) {
+	var r RuntimeResponse
+	if err := c.get("/api/runtime", &r); err != nil {
+		return nil, err
+	}
+	return &r, nil
+}
+
 func (c *Client) ListApps() ([]AppStatus, error) {
 	var apps []AppStatus
 	if err := c.get("/api/apps", &apps); err != nil {
@@ -909,6 +938,25 @@ type ActiveIncident struct {
 	LatestEventID  string `json:"latestEventId"`
 }
 
+type EventReconcileDecision struct {
+	EventID  string   `json:"eventId"`
+	App      string   `json:"app,omitempty"`
+	Type     string   `json:"type"`
+	Severity string   `json:"severity"`
+	Title    string   `json:"title"`
+	Action   string   `json:"action"`
+	Reason   string   `json:"reason"`
+	Evidence []string `json:"evidence,omitempty"`
+}
+
+type EventReconcileResponse struct {
+	DryRun      bool                     `json:"dryRun"`
+	Scanned     int                      `json:"scanned"`
+	Reconciled  int                      `json:"reconciled"`
+	NeedsReview int                      `json:"needsReview"`
+	Decisions   []EventReconcileDecision `json:"decisions"`
+}
+
 func (c *Client) ListActiveIncidents(limit int) ([]ActiveIncident, error) {
 	values := url.Values{}
 	if limit > 0 {
@@ -925,6 +973,20 @@ func (c *Client) ListActiveIncidents(limit int) ([]ActiveIncident, error) {
 		return nil, err
 	}
 	return resp.Incidents, nil
+}
+
+func (c *Client) ReconcileEvents(app string, limit int, dryRun bool, by string) (*EventReconcileResponse, error) {
+	body, _ := json.Marshal(map[string]interface{}{
+		"app":    app,
+		"limit":  limit,
+		"dryRun": dryRun,
+		"by":     by,
+	})
+	var resp EventReconcileResponse
+	if err := c.postJSON("/api/events/reconcile", string(body), &resp); err != nil {
+		return nil, err
+	}
+	return &resp, nil
 }
 
 func (c *Client) GetEvent(id string) (*BeaconEvent, error) {
