@@ -70,6 +70,21 @@ func TestCloudflareSyncChunksSplitsLongWindows(t *testing.T) {
 	}
 }
 
+func TestCloudflareEffectiveSinceClampsToLookback(t *testing.T) {
+	until := time.Date(2026, 6, 17, 12, 0, 0, 0, time.UTC)
+	got := cloudflareEffectiveSince(until.Add(-14*24*time.Hour), until, 7*24*time.Hour)
+	want := until.Add(-7 * 24 * time.Hour)
+	if !got.Equal(want) {
+		t.Fatalf("effective since = %s, want %s", got, want)
+	}
+
+	inside := until.Add(-2 * 24 * time.Hour)
+	got = cloudflareEffectiveSince(inside, until, 7*24*time.Hour)
+	if !got.Equal(inside) {
+		t.Fatalf("effective since inside lookback = %s, want %s", got, inside)
+	}
+}
+
 func TestParseCloudflareLogpushEventsSupportsArrayAndNDJSON(t *testing.T) {
 	arrayPayload := []byte(`[
 		{"ClientRequestHost":"harbor.example.com","EdgeStartTimestamp":"2026-06-17T10:15:00Z","EdgeResponseStatus":200},

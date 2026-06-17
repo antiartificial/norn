@@ -20,8 +20,9 @@ import (
 )
 
 const (
-	cloudflareMaxGraphQLWindow = 24 * time.Hour
-	cloudflareGraphQLQuery     = `
+	cloudflareMaxGraphQLWindow   = 24 * time.Hour
+	cloudflareMaxGraphQLLookback = 7 * 24 * time.Hour
+	cloudflareGraphQLQuery       = `
 query NornRequestsByHostname($zoneTag: string, $filter: filter) {
   viewer {
     zones(filter: {zoneTag: $zoneTag}) {
@@ -133,9 +134,9 @@ func (h *Handler) CloudflareAccessSync(w http.ResponseWriter, r *http.Request) {
 	}
 	window := durationQuery(r, "window", defaultAccessPatternWindow)
 	until := time.Now().UTC().Truncate(time.Hour)
-	since := until.Add(-window)
+	since := cloudflareEffectiveSince(until.Add(-window), until, cloudflareMaxGraphQLLookback)
 	receipt := cloudflareSyncReceipt{
-		WindowHours: int(window.Hours()),
+		WindowHours: int(until.Sub(since).Hours()),
 		Since:       since,
 		Until:       until,
 	}
@@ -250,6 +251,19 @@ func cloudflareSyncChunks(since, until time.Time, maxWindow time.Duration) []clo
 		start = end
 	}
 	return chunks
+}
+
+func cloudflareEffectiveSince(requestedSince, until time.Time, maxLookback time.Duration) time.Time {
+	requestedSince = requestedSince.UTC()
+	until = until.UTC()
+	if maxLookback <= 0 {
+		return requestedSince
+	}
+	earliest := until.Add(-maxLookback)
+	if requestedSince.Before(earliest) {
+		return earliest
+	}
+	return requestedSince
 }
 
 func (h *Handler) syncCloudflareHost(ctx context.Context, hostname string, target accessHostTarget, since, until time.Time) (int, error) {
