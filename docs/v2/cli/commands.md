@@ -470,6 +470,8 @@ The table includes request time, status, method, path, client IP, Cloudflare Acc
 
 `norn access cloudflare sync` imports hourly request observations from Cloudflare's GraphQL Analytics API for each mapped public hostname. The sync requires `NORN_CLOUDFLARE_API_TOKEN` and `NORN_CLOUDFLARE_ZONE_ID`. The token should have read access to zone analytics for the target zone. Imported observations are stored as hourly aggregates with source `cloudflare-graphql`.
 
+The sync chunks long windows into day-sized Cloudflare queries and clamps the effective lookback to the configured GraphQL retention ceiling. GraphQL aggregate buckets are replaced on conflict, which makes repeated syncs safe after timeouts or partial imports.
+
 The Logpush receiver is `POST /api/access/cloudflare/logpush`. It requires `NORN_CLOUDFLARE_LOGPUSH_TOKEN` and accepts the token in `X-Norn-Logpush-Token`, `X-Logpush-Secret`, or a bearer header. Configure Cloudflare HTTP Logpush to send HTTP request logs to this endpoint over HTTPS with a secret header. Imported observations are stored with source `cloudflare-logpush`.
 
 The advisory tuner consumes these access patterns. A service with no observations in the lookback window is marked `observe_before_idle`; a service whose last access is older than `--idle-after` is marked `consider_idle`.
