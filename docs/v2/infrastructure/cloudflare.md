@@ -211,6 +211,7 @@ Exempt routes (no auth required):
 - `/api/health` — health check
 - `/api/version` — version endpoint
 - `/api/webhooks/*` — webhook receivers
+- `/api/access/cloudflare/logpush` — Cloudflare Logpush receiver with its own shared-secret header
 - `/api/apps/*/exec` — exec into allocations
 
 ### Combining with Bearer Token
@@ -223,3 +224,34 @@ export NORN_CF_ACCESS_TEAM_DOMAIN=myteam.cloudflareaccess.com
 export NORN_CF_ACCESS_AUD=abc123...
 export NORN_API_TOKEN=secret-token
 ```
+
+## Access Observations
+
+Norn can use Cloudflare traffic data as an access-pattern signal for the advisory resource tuner. This is useful when public services are reached through cloudflared and the Norn control plane would otherwise only see API traffic, not app traffic.
+
+There are two supported ingestion paths:
+
+| Path | Use | Required configuration |
+| --- | --- | --- |
+| GraphQL sync | Backfill or periodically import hourly request counts by hostname | `NORN_CLOUDFLARE_API_TOKEN`, `NORN_CLOUDFLARE_ZONE_ID` |
+| HTTP Logpush | Continuously receive request logs from Cloudflare | `NORN_CLOUDFLARE_LOGPUSH_TOKEN` |
+
+`norn access cloudflare status` reports whether the GraphQL and Logpush credentials are configured and lists the public service hostnames Norn can map to app/process pairs.
+
+`norn access cloudflare sync --window 14d` queries Cloudflare's GraphQL Analytics API for each mapped public hostname and records hourly aggregate observations as `cloudflare-graphql`. The Cloudflare token must be able to read analytics for the configured zone. Norn records only aggregate counts and status buckets; it does not persist request bodies or authorization headers.
+
+Cloudflare Logpush can deliver HTTP request logs to:
+
+```text
+https://<norn-host>/api/access/cloudflare/logpush
+```
+
+Set a secret header in the Logpush destination URL, for example:
+
+```text
+?header_X-Norn-Logpush-Token=<random-token>
+```
+
+Store the same value as `NORN_CLOUDFLARE_LOGPUSH_TOKEN` in the Norn API secret bundle. The receiver also accepts `X-Logpush-Secret` and `Authorization: Bearer <token>` for compatibility with existing Logpush setups. Keep this endpoint HTTPS-only and protected by the shared secret.
+
+Imported observations feed `/api/access/patterns` and `/api/tuning/recommendations`, allowing idle candidates and active windows to be based on Cloudflare traffic instead of manual observations.

@@ -43,8 +43,12 @@ type Config struct {
 	CFAccessTeamDomain string
 	CFAccessAUD        string
 
-	WebhookSecret     string // NORN_WEBHOOK_SECRET
-	CloudflaredConfig string // NORN_CLOUDFLARED_CONFIG
+	WebhookSecret          string // NORN_WEBHOOK_SECRET
+	CloudflaredConfig      string // NORN_CLOUDFLARED_CONFIG
+	CloudflareAPIToken     string // NORN_CLOUDFLARE_API_TOKEN
+	CloudflareZoneID       string // NORN_CLOUDFLARE_ZONE_ID
+	CloudflareLogpushToken string // NORN_CLOUDFLARE_LOGPUSH_TOKEN
+	CloudflareAPIBaseURL   string // NORN_CLOUDFLARE_API_BASE_URL
 }
 
 func Load() *Config {
@@ -85,8 +89,12 @@ func Load() *Config {
 		CFAccessTeamDomain: os.Getenv("NORN_CF_ACCESS_TEAM_DOMAIN"),
 		CFAccessAUD:        os.Getenv("NORN_CF_ACCESS_AUD"),
 
-		WebhookSecret:     os.Getenv("NORN_WEBHOOK_SECRET"),
-		CloudflaredConfig: envOr("NORN_CLOUDFLARED_CONFIG", os.Getenv("HOME")+"/.cloudflared/config.yml"),
+		WebhookSecret:          os.Getenv("NORN_WEBHOOK_SECRET"),
+		CloudflaredConfig:      envOr("NORN_CLOUDFLARED_CONFIG", os.Getenv("HOME")+"/.cloudflared/config.yml"),
+		CloudflareAPIToken:     firstEnv("NORN_CLOUDFLARE_API_TOKEN", "CLOUDFLARE_API_TOKEN"),
+		CloudflareZoneID:       firstEnv("NORN_CLOUDFLARE_ZONE_ID", "CLOUDFLARE_ZONE_ID"),
+		CloudflareLogpushToken: os.Getenv("NORN_CLOUDFLARE_LOGPUSH_TOKEN"),
+		CloudflareAPIBaseURL:   envOr("NORN_CLOUDFLARE_API_BASE_URL", "https://api.cloudflare.com/client/v4"),
 	}
 }
 
@@ -106,6 +114,15 @@ func splitCSV(value string) []string {
 		}
 	}
 	return out
+}
+
+func firstEnv(keys ...string) string {
+	for _, key := range keys {
+		if v := os.Getenv(key); v != "" {
+			return v
+		}
+	}
+	return ""
 }
 
 func networkMode(mode string) string {

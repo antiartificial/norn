@@ -456,6 +456,8 @@ norn access
 norn access --limit 100
 norn access patterns --window 14d --idle-after 7d
 norn access observe ft-trove --process web --endpoint https://trove.example.com --source gateway --status 200
+norn access cloudflare status
+norn access cloudflare sync --window 14d
 ```
 
 The table includes request time, status, method, path, client IP, Cloudflare Access user metadata when present, and duration. Norn does not expose request bodies, authorization headers, or secret values in this view.
@@ -463,6 +465,12 @@ The table includes request time, status, method, path, client IP, Cloudflare Acc
 `norn access patterns` summarizes durable hosted-service access observations by app and process. It reports request totals, last observed access, quiet duration, peak UTC hour, idle-candidate action, and confidence. The data comes from hourly aggregate buckets, not raw request logs.
 
 `norn access observe` records an aggregate observation for a hosted service. It is intended for a future wake gateway, reverse proxy, cloudflared log shipper, or small operator script. Observations include app, process, endpoint/source labels, status bucket, count, and optional timestamp; they do not include request bodies or credentials.
+
+`norn access cloudflare status` reports whether Cloudflare GraphQL sync and Logpush receiver secrets are configured, and shows the public service hostnames Norn can map back to app/process pairs.
+
+`norn access cloudflare sync` imports hourly request observations from Cloudflare's GraphQL Analytics API for each mapped public hostname. The sync requires `NORN_CLOUDFLARE_API_TOKEN` and `NORN_CLOUDFLARE_ZONE_ID`. The token should have read access to zone analytics for the target zone. Imported observations are stored as hourly aggregates with source `cloudflare-graphql`.
+
+The Logpush receiver is `POST /api/access/cloudflare/logpush`. It requires `NORN_CLOUDFLARE_LOGPUSH_TOKEN` and accepts the token in `X-Norn-Logpush-Token`, `X-Logpush-Secret`, or a bearer header. Configure Cloudflare HTTP Logpush to send HTTP request logs to this endpoint over HTTPS with a secret header. Imported observations are stored with source `cloudflare-logpush`.
 
 The advisory tuner consumes these access patterns. A service with no observations in the lookback window is marked `observe_before_idle`; a service whose last access is older than `--idle-after` is marked `consider_idle`.
 

@@ -21,6 +21,7 @@ var accessObserveSource string
 var accessObserveStatus int
 var accessObserveCount int64
 var accessObserveAt string
+var accessCloudflareSyncWindow string
 
 func init() {
 	accessCmd.Flags().IntVar(&accessLimit, "limit", 25, "Number of recent access events")
@@ -32,8 +33,12 @@ func init() {
 	accessObserveCmd.Flags().IntVar(&accessObserveStatus, "status", 200, "HTTP status bucket for the observation")
 	accessObserveCmd.Flags().Int64Var(&accessObserveCount, "count", 1, "Number of requests represented by this observation")
 	accessObserveCmd.Flags().StringVar(&accessObserveAt, "at", "", "Observation timestamp in RFC3339 format")
+	accessCloudflareSyncCmd.Flags().StringVar(&accessCloudflareSyncWindow, "window", "14d", "Cloudflare GraphQL lookback window")
 	accessCmd.AddCommand(accessPatternsCmd)
 	accessCmd.AddCommand(accessObserveCmd)
+	accessCmd.AddCommand(accessCloudflareCmd)
+	accessCloudflareCmd.AddCommand(accessCloudflareStatusCmd)
+	accessCloudflareCmd.AddCommand(accessCloudflareSyncCmd)
 	rootCmd.AddCommand(accessCmd)
 }
 
@@ -137,6 +142,60 @@ var accessObserveCmd = &cobra.Command{
 		}
 		fmt.Printf("recorded %d access observation(s)\n", recorded)
 		return nil
+	},
+}
+
+var accessCloudflareCmd = &cobra.Command{
+	Use:   "cloudflare",
+	Short: "Inspect and import Cloudflare access observations",
+}
+
+var accessCloudflareStatusCmd = &cobra.Command{
+	Use:   "status",
+	Short: "Show Cloudflare access observation readiness",
+	RunE: func(cmd *cobra.Command, args []string) error {
+		status, err := client.CloudflareAccessStatus()
+		if err != nil {
+			return fmt.Errorf("failed to fetch cloudflare status: %w", err)
+		}
+		fmt.Println(style.Title.Render("cloudflare access"))
+		fmt.Println()
+		fmt.Printf("  graphql: token=%t zone=%t configured=%t\n", status.APITokenConfigured, status.ZoneIDConfigured, status.Configured)
+		fmt.Printf("  logpush: token=%t\n", status.LogpushConfigured)
+		fmt.Printf("  hostnames: %d\n", status.HostnameCount)
+		for _, hostname := range status.Hostnames {
+			fmt.Printf("    %s\n", hostname)
+		}
+		return nil
+	},
+}
+
+var accessCloudflareSyncCmd = &cobra.Command{
+	Use:   "sync",
+	Short: "Sync hosted-service access observations from Cloudflare GraphQL",
+	RunE: func(cmd *cobra.Command, args []string) error {
+		receipt, err := client.CloudflareAccessSync(accessCloudflareSyncWindow)
+		if err != nil {
+			return fmt.Errorf("failed to sync cloudflare access observations: %w", err)
+		}
+		fmt.Println(style.Title.Render("cloudflare sync"))
+		fmt.Println()
+		fmt.Printf("  window=%dh recorded=%d errors=%d\n\n", receipt.WindowHours, receipt.Recorded, len(receipt.Errors))
+		w := tabwriter.NewWriter(os.Stdout, 0, 0, 2, ' ', 0)
+		fmt.Fprintln(w, "  "+
+			style.TableHeader.Render("HOST")+"\t"+
+			style.TableHeader.Render("APP")+"\t"+
+			style.TableHeader.Render("PROCESS")+"\t"+
+			style.TableHeader.Render("BUCKETS")+"\t"+
+			style.TableHeader.Render("STATUS"))
+		for _, host := range receipt.Hosts {
+			status := style.Healthy.Render("ok")
+			if host.Error != "" {
+				status = style.Unhealthy.Render(host.Error)
+			}
+			fmt.Fprintf(w, "  %s\t%s\t%s\t%d\t%s\n", host.Hostname, host.App, host.Process, host.Recorded, status)
+		}
+		return w.Flush()
 	},
 }
 
