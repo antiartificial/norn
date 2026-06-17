@@ -36,7 +36,34 @@ func (h *Handler) WakeGateway(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, "wake gateway hostname is required")
 		return
 	}
+	h.serveWakeGateway(w, r, hostname, true)
+}
 
+func (h *Handler) WakeGatewayHostMiddleware(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if strings.HasPrefix(r.URL.Path, "/api/wake-gateway/") {
+			next.ServeHTTP(w, r)
+			return
+		}
+		hostname := requestHostname(r)
+		if hostname == "" || endpointHostname("https://"+hostname) == "" {
+			next.ServeHTTP(w, r)
+			return
+		}
+		manifest, err := h.buildServiceManifest()
+		if err != nil {
+			next.ServeHTTP(w, r)
+			return
+		}
+		if _, ok := wakeGatewayTargetForHost(manifest.Services, hostname); !ok {
+			next.ServeHTTP(w, r)
+			return
+		}
+		h.serveWakeGateway(w, r, hostname, false)
+	})
+}
+
+func (h *Handler) serveWakeGateway(w http.ResponseWriter, r *http.Request, hostname string, stripGatewayPrefix bool) {
 	manifest, err := h.buildServiceManifest()
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, err.Error())
@@ -77,7 +104,10 @@ func (h *Handler) WakeGateway(w http.ResponseWriter, r *http.Request) {
 		Scheme: "http",
 		Host:   net.JoinHostPort(instance.Address, strconv.Itoa(instance.Port)),
 	}
-	upstreamPath := wakeGatewayUpstreamPath(r, hostname)
+	upstreamPath := r.URL.Path
+	if stripGatewayPrefix {
+		upstreamPath = wakeGatewayUpstreamPath(r, hostname)
+	}
 	proxy := httputil.NewSingleHostReverseProxy(upstream)
 	proxy.Director = func(out *http.Request) {
 		query := r.URL.Query()
@@ -240,6 +270,20 @@ func wakeGatewayUpstreamPath(r *http.Request, hostname string) string {
 		return "/" + path
 	}
 	return path
+}
+
+func requestHostname(r *http.Request) string {
+	host := strings.TrimSpace(r.Host)
+	if host == "" {
+		host = strings.TrimSpace(r.Header.Get("X-Forwarded-Host"))
+	}
+	if host == "" {
+		return ""
+	}
+	if parsedHost, _, err := net.SplitHostPort(host); err == nil {
+		host = parsedHost
+	}
+	return strings.ToLower(strings.TrimSuffix(host, "."))
 }
 
 func forwardedProto(r *http.Request) string {

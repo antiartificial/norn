@@ -68,3 +68,11 @@ func TestWakeGatewayUpstreamPathStripsGatewayPrefix(t *testing.T) {
 		t.Fatalf("root path = %q, want /", got)
 	}
 }
+
+func TestRequestHostnameNormalizesHostHeader(t *testing.T) {
+	req := httptest.NewRequest(http.MethodGet, "http://127.0.0.1/api", nil)
+	req.Host = "Trove.Example.Com:8443"
+	if got := requestHostname(req); got != "trove.example.com" {
+		t.Fatalf("hostname = %q, want trove.example.com", got)
+	}
+}
