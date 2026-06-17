@@ -310,10 +310,10 @@ func endpointHostname(raw string) string {
 		return ""
 	}
 	host := strings.ToLower(parsed.Hostname())
-	if host == "localhost" {
+	if host == "localhost" || strings.HasSuffix(host, ".internal") || strings.HasSuffix(host, ".ts.net") {
 		return ""
 	}
-	if ip := net.ParseIP(host); ip != nil && (ip.IsLoopback() || ip.IsPrivate()) {
+	if ip := net.ParseIP(host); ip != nil {
 		return ""
 	}
 	return host

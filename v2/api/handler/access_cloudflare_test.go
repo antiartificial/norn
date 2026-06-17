@@ -16,6 +16,8 @@ func TestAccessHostnameMapIncludesPublicServiceEndpoints(t *testing.T) {
 			Endpoints: []model.Endpoint{
 				{URL: "https://harbor.example.com"},
 				{URL: "http://127.0.0.1:8080"},
+				{URL: "https://gitea.internal"},
+				{URL: "https://aarons-mac-mini.tail113139.ts.net"},
 			},
 		},
 		{
@@ -38,6 +40,12 @@ func TestAccessHostnameMapIncludesPublicServiceEndpoints(t *testing.T) {
 	}
 	if _, ok := hostMap["127.0.0.1"]; ok {
 		t.Fatalf("loopback endpoint should not be mapped: %#v", hostMap)
+	}
+	if _, ok := hostMap["gitea.internal"]; ok {
+		t.Fatalf("internal endpoint should not be mapped: %#v", hostMap)
+	}
+	if _, ok := hostMap["aarons-mac-mini.tail113139.ts.net"]; ok {
+		t.Fatalf("tailnet endpoint should not be mapped: %#v", hostMap)
 	}
 	if _, ok := hostMap["cron.example.com"]; ok {
 		t.Fatalf("cron endpoint should not be mapped: %#v", hostMap)
