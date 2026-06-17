@@ -125,6 +125,7 @@ v2/ui/
 | GET | `/api/alerts/rules` | Built-in alert rule catalogue |
 | GET | `/api/access/patterns` | Hosted-service access pattern rollups and idle candidates |
 | POST | `/api/access/observations` | Record aggregate hosted-service access observations |
+| * | `/api/wake-gateway/{host}/*` | Record, wake, and proxy a mapped public service endpoint |
 | GET | `/api/resources/suggestions` | Resource right-sizing suggestions based on live Nomad allocation stats |
 | GET | `/api/tuning/recommendations` | Advisory CPU, memory, and scale recommendations from live tuning signals |
 | GET | `/api/events` | List Beacon events |

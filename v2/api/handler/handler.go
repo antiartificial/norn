@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"net/http"
 	"regexp"
+	"sync"
 
 	"github.com/go-chi/chi/v5"
 
@@ -35,6 +36,7 @@ type Handler struct {
 	s3        *storage.Client
 	redpanda  *redpanda.Client
 	access    *AccessLog
+	wakeLocks sync.Map
 }
 
 func New(db *store.DB, n *nomad.Client, c *consul.Client, ws *hub.Hub, cfg *config.Config, p *pipeline.Pipeline, beaconSvc *beacon.Service, sec *secrets.Manager, ss saga.Store, s3 *storage.Client, rp *redpanda.Client) *Handler {
