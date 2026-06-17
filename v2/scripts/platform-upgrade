@@ -343,7 +343,7 @@ if [[ "$ref" != "HEAD" ]]; then
 fi
 sha="$(git -C "$repo" rev-parse --verify "$ref^{commit}")"
 short_sha="${sha:0:12}"
-version="$(git -C "$repo" describe --tags --always --dirty "$sha" 2>/dev/null || printf '%s' "$short_sha")"
+version="$(git -C "$repo" describe --tags --always "$sha" 2>/dev/null || printf '%s' "$short_sha")"
 release="$releases/$sha"
 work_root="$(mktemp -d "${TMPDIR:-/tmp}/norn-platform.XXXXXX")"
 worktree="$work_root/src"
