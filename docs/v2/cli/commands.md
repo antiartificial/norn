@@ -474,6 +474,14 @@ The sync chunks long windows into day-sized Cloudflare queries and clamps the ef
 
 The Logpush receiver is `POST /api/access/cloudflare/logpush`. It requires `NORN_CLOUDFLARE_LOGPUSH_TOKEN` and accepts the token in `X-Norn-Logpush-Token`, `X-Logpush-Secret`, or a bearer header. Configure Cloudflare HTTP Logpush to send HTTP request logs to this endpoint over HTTPS with a secret header. Imported observations are stored with source `cloudflare-logpush`.
 
+The wake gateway can record live accesses and wake a scaled-down service on demand. For production, point each wakeable public hostname at the Norn API origin, usually `http://127.0.0.1:8800` on the Norn host, and preserve the original `Host` header. cloudflared hostname ingress preserves this automatically. Generic proxies should pass `Host`, `X-Forwarded-Host`, `X-Forwarded-Proto`, and `X-Forwarded-For`. The local smoke test is:
+
+```bash
+curl -i -H "Host: trove.example.com" http://127.0.0.1:8800/health
+```
+
+For path-based testing, use `GET /api/wake-gateway/<public-hostname>/<original-path>`. A gateway-handled response includes `X-Norn-Wake-Gateway: true` and `X-Norn-Wake-Action: ready` or `scaled`.
+
 The advisory tuner consumes these access patterns. A service with no observations in the lookback window is marked `observe_before_idle`; a service whose last access is older than `--idle-after` is marked `consider_idle`.
 
 Temporary IP grants are managed under the same command group:

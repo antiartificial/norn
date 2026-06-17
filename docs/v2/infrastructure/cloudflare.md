@@ -260,14 +260,82 @@ Imported observations feed `/api/access/patterns` and `/api/tuning/recommendatio
 
 ## Wake Gateway
 
-Norn can sit on the live request path for selected public endpoints through the wake gateway:
+Norn can sit on the live request path for selected public endpoints through the wake gateway. Use this when a public service may be scaled down and should wake on the next request.
+
+### Production Setup
+
+Point each wakeable public hostname at the Norn API origin. Do not add a path prefix.
+
+```yaml
+ingress:
+  - hostname: trove.example.com
+    service: http://127.0.0.1:8800
+  - hostname: sideband.example.com
+    service: http://127.0.0.1:8800
+  - service: http_status:404
+```
+
+The only required routing header is the original public `Host` header. cloudflared preserves this automatically for hostname ingress rules. Generic reverse proxies must do the same:
+
+```nginx
+proxy_set_header Host $host;
+proxy_set_header X-Forwarded-Host $host;
+proxy_set_header X-Forwarded-Proto $scheme;
+proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+proxy_pass http://127.0.0.1:8800;
+```
+
+With host-based routing, a request stays in its normal shape:
+
+```text
+https://trove.example.com/archive/123
+```
+
+Norn receives `Host: trove.example.com`, maps that hostname to a public endpoint from the service manifest, wakes the mapped app/process if needed, and proxies `/archive/123` unchanged to the service.
+
+### Local Smoke Test
+
+From the Norn host:
+
+```bash
+curl -i -H "Host: trove.example.com" http://127.0.0.1:8800/health
+```
+
+A gateway-handled response includes:
+
+```text
+X-Norn-Wake-Gateway: true
+X-Norn-Wake-Action: ready
+```
+
+`X-Norn-Wake-Action: scaled` means Norn had to scale the mapped process from zero before proxying the request.
+
+### Explicit Path Form
+
+The explicit API route is useful for local tests or proxies that cannot preserve the original `Host` header:
 
 ```text
 https://<norn-host>/api/wake-gateway/<public-hostname>/<original-path>
 ```
 
-For production routing, point the public hostname at the Norn API through cloudflared or a local proxy and preserve the original `Host` header. Norn's host-based wake middleware maps that host back to a service endpoint and proxies the original path unchanged. The explicit `/api/wake-gateway/<public-hostname>/...` form is useful for local testing and proxies that prefer path-based routing.
+Example:
+
+```bash
+curl -i http://127.0.0.1:8800/api/wake-gateway/trove.example.com/health
+```
+
+This strips `/api/wake-gateway/trove.example.com` before proxying, so the service receives `/health`.
+
+### Behavior
 
 The gateway maps the public hostname back to a service endpoint from the service manifest, records a `wake-gateway` access observation, checks for a passing Consul instance, and reverse-proxies to that instance. If no passing instance exists, it scales the mapped Nomad task group to `1`, waits for readiness, then proxies the request. Requests that cannot wake before the bounded timeout return `504` with `Retry-After`.
+
+The default wake wait is `30s`. A request can override it with `wakeTimeout`, up to `2m`:
+
+```text
+https://trove.example.com/archive/123?wakeTimeout=60s
+```
+
+The gateway removes `wakeTimeout` before forwarding the request to the service.
 
 This route is intentionally hostname-mapped and does not proxy arbitrary upstream URLs. Point only selected cloudflared or local proxy rules at it, and keep direct Norn API access controlled separately.
