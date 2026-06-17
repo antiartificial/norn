@@ -19,7 +19,9 @@ import (
 	"norn/v2/api/store"
 )
 
-const cloudflareGraphQLQuery = `
+const (
+	cloudflareMaxGraphQLWindow = 24 * time.Hour
+	cloudflareGraphQLQuery     = `
 query NornRequestsByHostname($zoneTag: string, $filter: filter) {
   viewer {
     zones(filter: {zoneTag: $zoneTag}) {
@@ -32,6 +34,7 @@ query NornRequestsByHostname($zoneTag: string, $filter: filter) {
     }
   }
 }`
+)
 
 type cloudflareStatusResponse struct {
 	Configured         bool     `json:"configured"`
@@ -138,7 +141,7 @@ func (h *Handler) CloudflareAccessSync(w http.ResponseWriter, r *http.Request) {
 	}
 	for _, hostname := range sortedHostnames(hostMap) {
 		target := hostMap[hostname]
-		recorded, err := h.syncCloudflareHost(r.Context(), hostname, target, since, until)
+		recorded, err := h.syncCloudflareHostWindow(r.Context(), hostname, target, since, until)
 		info := cloudflareHostSyncInfo{
 			Hostname: hostname,
 			App:      target.App,
@@ -153,6 +156,18 @@ func (h *Handler) CloudflareAccessSync(w http.ResponseWriter, r *http.Request) {
 		receipt.Hosts = append(receipt.Hosts, info)
 	}
 	writeJSON(w, receipt)
+}
+
+func (h *Handler) syncCloudflareHostWindow(ctx context.Context, hostname string, target accessHostTarget, since, until time.Time) (int, error) {
+	recorded := 0
+	for _, chunk := range cloudflareSyncChunks(since, until, cloudflareMaxGraphQLWindow) {
+		chunkRecorded, err := h.syncCloudflareHost(ctx, hostname, target, chunk.Since, chunk.Until)
+		recorded += chunkRecorded
+		if err != nil {
+			return recorded, err
+		}
+	}
+	return recorded, nil
 }
 
 func (h *Handler) CloudflareLogpush(w http.ResponseWriter, r *http.Request) {
@@ -209,6 +224,32 @@ func (h *Handler) CloudflareLogpush(w http.ResponseWriter, r *http.Request) {
 	}
 	receipt.UnknownHosts = sortedBoolKeys(unknown)
 	writeJSON(w, receipt)
+}
+
+type cloudflareSyncChunk struct {
+	Since time.Time
+	Until time.Time
+}
+
+func cloudflareSyncChunks(since, until time.Time, maxWindow time.Duration) []cloudflareSyncChunk {
+	since = since.UTC()
+	until = until.UTC()
+	if !since.Before(until) {
+		return nil
+	}
+	if maxWindow <= 0 {
+		maxWindow = cloudflareMaxGraphQLWindow
+	}
+	var chunks []cloudflareSyncChunk
+	for start := since; start.Before(until); {
+		end := start.Add(maxWindow)
+		if end.After(until) {
+			end = until
+		}
+		chunks = append(chunks, cloudflareSyncChunk{Since: start, Until: end})
+		start = end
+	}
+	return chunks
 }
 
 func (h *Handler) syncCloudflareHost(ctx context.Context, hostname string, target accessHostTarget, since, until time.Time) (int, error) {

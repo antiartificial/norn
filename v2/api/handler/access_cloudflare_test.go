@@ -52,6 +52,24 @@ func TestAccessHostnameMapIncludesPublicServiceEndpoints(t *testing.T) {
 	}
 }
 
+func TestCloudflareSyncChunksSplitsLongWindows(t *testing.T) {
+	since := time.Date(2026, 6, 1, 6, 0, 0, 0, time.UTC)
+	until := since.Add(49 * time.Hour)
+	chunks := cloudflareSyncChunks(since, until, 24*time.Hour)
+	if len(chunks) != 3 {
+		t.Fatalf("chunks = %d, want 3", len(chunks))
+	}
+	if chunks[0].Since != since || chunks[0].Until != since.Add(24*time.Hour) {
+		t.Fatalf("first chunk = %#v", chunks[0])
+	}
+	if chunks[1].Since != since.Add(24*time.Hour) || chunks[1].Until != since.Add(48*time.Hour) {
+		t.Fatalf("second chunk = %#v", chunks[1])
+	}
+	if chunks[2].Since != since.Add(48*time.Hour) || chunks[2].Until != until {
+		t.Fatalf("third chunk = %#v", chunks[2])
+	}
+}
+
 func TestParseCloudflareLogpushEventsSupportsArrayAndNDJSON(t *testing.T) {
 	arrayPayload := []byte(`[
 		{"ClientRequestHost":"harbor.example.com","EdgeStartTimestamp":"2026-06-17T10:15:00Z","EdgeResponseStatus":200},
