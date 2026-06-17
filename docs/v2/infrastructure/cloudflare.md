@@ -257,3 +257,15 @@ Set a secret header in the Logpush destination URL, for example:
 Store the same value as `NORN_CLOUDFLARE_LOGPUSH_TOKEN` in the Norn API secret bundle. The receiver also accepts `X-Logpush-Secret` and `Authorization: Bearer <token>` for compatibility with existing Logpush setups. Keep this endpoint HTTPS-only and protected by the shared secret.
 
 Imported observations feed `/api/access/patterns` and `/api/tuning/recommendations`, allowing idle candidates and active windows to be based on Cloudflare traffic instead of manual observations.
+
+## Wake Gateway
+
+Norn can sit on the live request path for selected public endpoints through the wake gateway:
+
+```text
+https://<norn-host>/api/wake-gateway/<public-hostname>/<original-path>
+```
+
+The gateway maps `<public-hostname>` back to a service endpoint from the service manifest, records a `wake-gateway` access observation, checks for a passing Consul instance, and reverse-proxies to that instance. If no passing instance exists, it scales the mapped Nomad task group to `1`, waits for readiness, then proxies the request. Requests that cannot wake before the bounded timeout return `504` with `Retry-After`.
+
+This route is intentionally hostname-mapped and does not proxy arbitrary upstream URLs. Point only selected cloudflared or local proxy rules at it, and keep direct Norn API access controlled separately.

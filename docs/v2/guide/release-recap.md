@@ -41,6 +41,7 @@ This recap summarizes the current Norn v2 release line: the Nomad/Consul control
 | Resource right-sizing | `norn resources`, `/api/resources/suggestions` | Compares declared infraspec resource limits against live Nomad allocation stats to flag overprovisioned and at-risk apps |
 | Advisory tuner | `norn tune`, `/api/tuning/recommendations`, `tuning` process policy | Produces bounded CPU, memory, and scale recommendations from live Nomad usage, declared tuning signals, and hosted-service access patterns |
 | Access-pattern observations | `norn access patterns`, `/api/access/patterns`, Cloudflare GraphQL/Logpush ingestion | Records hourly access aggregates so idle candidates and active windows can be based on real public traffic |
+| Wake gateway | `/api/wake-gateway/{host}/*` | Records live gateway accesses, scales mapped service groups from zero to one, waits for readiness, and reverse-proxies the request |
 | Event notifications | `norn notifications`, `/api/notifications/channels` | Pushes Beacon events to Discord webhooks, ntfy topics, and Pushover with severity filtering and per-channel configuration |
 | Auto-rollback | `deployPolicy.autoRollback` in infraspec | Automatically rolls back to the last successful deployment when the healthy step fails, with Beacon event and saga trail |
 | Snapshot export | `norn snapshots export/remote/import`, `snapshots.exportBucket` | Archives database snapshots to S3-compatible object storage and imports them back for disaster recovery |
@@ -104,7 +105,9 @@ The durable worker lane now records deploy and rollback stage checkpoints. Read-
 
 Proxy-backed platform upgrades are available for hosts that intentionally run Norn behind the managed Caddy upstream. `norn platform upgrade --proxy` keeps old and new APIs side by side on private ports, switches the upstream, then stops the previous proxy-managed API after postflight succeeds.
 
-The advisory tuner now has a traffic-signal path instead of relying only on allocation resource usage. Operators can declare process-level `tuning` policy, inspect current recommendations with `norn tune`, and import hosted-service access observations through `norn access observe`, Cloudflare GraphQL sync, or the Cloudflare Logpush receiver. GraphQL syncs are chunked into day-sized requests, clamped to the available analytics lookback, and idempotent for hourly aggregate buckets so retries do not inflate counts.
+The advisory tuner now has a traffic-signal path instead of relying only on allocation resource usage. Operators can declare process-level `tuning` policy, inspect current recommendations with `norn tune`, and import hosted-service access observations through `norn access observe`, Cloudflare GraphQL sync, the Cloudflare Logpush receiver, or the live wake gateway. GraphQL syncs are chunked into day-sized requests, clamped to the available analytics lookback, and idempotent for hourly aggregate buckets so retries do not inflate counts.
+
+The wake gateway is the first live request-path mechanism for scale-from-idle. It maps public service hostnames from the service manifest, records the access as `wake-gateway`, scales the corresponding Nomad task group to one instance when no passing instance exists, waits for Consul readiness, and then proxies the original request to the service.
 
 ## Verification
 
