@@ -266,6 +266,8 @@ Norn can sit on the live request path for selected public endpoints through the 
 https://<norn-host>/api/wake-gateway/<public-hostname>/<original-path>
 ```
 
-The gateway maps `<public-hostname>` back to a service endpoint from the service manifest, records a `wake-gateway` access observation, checks for a passing Consul instance, and reverse-proxies to that instance. If no passing instance exists, it scales the mapped Nomad task group to `1`, waits for readiness, then proxies the request. Requests that cannot wake before the bounded timeout return `504` with `Retry-After`.
+For production routing, point the public hostname at the Norn API through cloudflared or a local proxy and preserve the original `Host` header. Norn's host-based wake middleware maps that host back to a service endpoint and proxies the original path unchanged. The explicit `/api/wake-gateway/<public-hostname>/...` form is useful for local testing and proxies that prefer path-based routing.
+
+The gateway maps the public hostname back to a service endpoint from the service manifest, records a `wake-gateway` access observation, checks for a passing Consul instance, and reverse-proxies to that instance. If no passing instance exists, it scales the mapped Nomad task group to `1`, waits for readiness, then proxies the request. Requests that cannot wake before the bounded timeout return `504` with `Retry-After`.
 
 This route is intentionally hostname-mapped and does not proxy arbitrary upstream URLs. Point only selected cloudflared or local proxy rules at it, and keep direct Norn API access controlled separately.

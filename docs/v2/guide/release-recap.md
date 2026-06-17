@@ -107,7 +107,7 @@ Proxy-backed platform upgrades are available for hosts that intentionally run No
 
 The advisory tuner now has a traffic-signal path instead of relying only on allocation resource usage. Operators can declare process-level `tuning` policy, inspect current recommendations with `norn tune`, and import hosted-service access observations through `norn access observe`, Cloudflare GraphQL sync, the Cloudflare Logpush receiver, or the live wake gateway. GraphQL syncs are chunked into day-sized requests, clamped to the available analytics lookback, and idempotent for hourly aggregate buckets so retries do not inflate counts.
 
-The wake gateway is the first live request-path mechanism for scale-from-idle. It maps public service hostnames from the service manifest, records the access as `wake-gateway`, scales the corresponding Nomad task group to one instance when no passing instance exists, waits for Consul readiness, and then proxies the original request to the service.
+The wake gateway is the first live request-path mechanism for scale-from-idle. It maps public service hostnames from the service manifest, records the access as `wake-gateway`, scales the corresponding Nomad task group to one instance when no passing instance exists, waits for Consul readiness, and then proxies the original request to the service. It supports both host-based routing for cloudflared/proxy ingress and an explicit `/api/wake-gateway/{host}` path for local testing.
 
 ## Verification
 

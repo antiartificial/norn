@@ -224,6 +224,7 @@ func main() {
 		r.Use(cfValidator.Middleware)
 		log.Println("CF Access auth enabled")
 	}
+	r.Use(h.WakeGatewayHostMiddleware)
 
 	// Bearer token auth
 	if cfg.APIToken != "" {
