@@ -394,6 +394,33 @@ type AccessPattern struct {
 	Confidence        string           `json:"confidence"`
 }
 
+type CloudflareAccessStatus struct {
+	Configured         bool     `json:"configured"`
+	APITokenConfigured bool     `json:"apiTokenConfigured"`
+	ZoneIDConfigured   bool     `json:"zoneIdConfigured"`
+	LogpushConfigured  bool     `json:"logpushConfigured"`
+	HostnameCount      int      `json:"hostnameCount"`
+	Hostnames          []string `json:"hostnames,omitempty"`
+}
+
+type CloudflareSyncReceipt struct {
+	WindowHours int                      `json:"windowHours"`
+	Since       string                   `json:"since"`
+	Until       string                   `json:"until"`
+	Hosts       []CloudflareHostSyncInfo `json:"hosts"`
+	Recorded    int                      `json:"recorded"`
+	Skipped     int                      `json:"skipped"`
+	Errors      []string                 `json:"errors,omitempty"`
+}
+
+type CloudflareHostSyncInfo struct {
+	Hostname string `json:"hostname"`
+	App      string `json:"app"`
+	Process  string `json:"process"`
+	Recorded int    `json:"recorded"`
+	Error    string `json:"error,omitempty"`
+}
+
 type BeaconEvent struct {
 	ID                  string                 `json:"id"`
 	Source              string                 `json:"source"`
@@ -1345,6 +1372,30 @@ func (c *Client) RecordAccessObservations(observations []AccessObservation) (int
 		return 0, err
 	}
 	return resp.Recorded, nil
+}
+
+func (c *Client) CloudflareAccessStatus() (*CloudflareAccessStatus, error) {
+	var status CloudflareAccessStatus
+	if err := c.get("/api/access/cloudflare/status", &status); err != nil {
+		return nil, err
+	}
+	return &status, nil
+}
+
+func (c *Client) CloudflareAccessSync(window string) (*CloudflareSyncReceipt, error) {
+	values := url.Values{}
+	if strings.TrimSpace(window) != "" {
+		values.Set("window", strings.TrimSpace(window))
+	}
+	path := "/api/access/cloudflare/sync"
+	if encoded := values.Encode(); encoded != "" {
+		path += "?" + encoded
+	}
+	var receipt CloudflareSyncReceipt
+	if err := c.postJSON(path, "{}", &receipt); err != nil {
+		return nil, err
+	}
+	return &receipt, nil
 }
 
 func (c *Client) CronHistory(appID string) ([]CronState, error) {

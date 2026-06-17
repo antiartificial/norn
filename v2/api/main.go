@@ -284,6 +284,9 @@ func main() {
 		r.Get("/access/events", h.AccessEvents)
 		r.Get("/access/patterns", h.AccessPatterns)
 		r.Post("/access/observations", h.RecordAccessObservations)
+		r.Get("/access/cloudflare/status", h.CloudflareAccessStatus)
+		r.Post("/access/cloudflare/sync", h.CloudflareAccessSync)
+		r.Post("/access/cloudflare/logpush", h.CloudflareLogpush)
 
 		r.Get("/notifications/channels", h.ListNotificationChannels)
 		r.Post("/notifications/channels", h.CreateNotificationChannel)
@@ -368,7 +371,7 @@ func main() {
 func bearerAuth(token string, h *handler.Handler) func(http.Handler) http.Handler {
 	return func(next http.Handler) http.Handler {
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-			if !strings.HasPrefix(r.URL.Path, "/api/") || r.URL.Path == "/api/metrics" || r.URL.Path == "/api/health" || r.URL.Path == "/api/version" || r.URL.Path == "/api/webhooks/github" || r.URL.Path == "/api/webhooks/gitea" || strings.HasSuffix(r.URL.Path, "/exec") {
+			if !strings.HasPrefix(r.URL.Path, "/api/") || r.URL.Path == "/api/metrics" || r.URL.Path == "/api/health" || r.URL.Path == "/api/version" || r.URL.Path == "/api/webhooks/github" || r.URL.Path == "/api/webhooks/gitea" || r.URL.Path == "/api/access/cloudflare/logpush" || strings.HasSuffix(r.URL.Path, "/exec") {
 				next.ServeHTTP(w, r)
 				return
 			}
