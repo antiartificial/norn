@@ -15,7 +15,8 @@ type Config struct {
 	GitSSHKey   string
 	APIToken    string
 	RegistryURL string // GHCR registry (e.g. ghcr.io/username)
-	NetworkMode string // local, tailnet, public
+	NetworkMode      string // local, tailnet, public
+	ContainerRuntime string // docker, container, auto
 
 	NomadAddr  string // Nomad API address
 	ConsulAddr string // Consul API address
@@ -62,7 +63,8 @@ func Load() *Config {
 		GitSSHKey:   os.Getenv("NORN_GIT_SSH_KEY"),
 		APIToken:    os.Getenv("NORN_API_TOKEN"),
 		RegistryURL: os.Getenv("NORN_REGISTRY_URL"),
-		NetworkMode: networkMode(envOr("NORN_NETWORK_MODE", "local")),
+		NetworkMode:      networkMode(envOr("NORN_NETWORK_MODE", "local")),
+		ContainerRuntime: envOr("NORN_CONTAINER_RUNTIME", "auto"),
 
 		NomadAddr:  envOr("NORN_NOMAD_ADDR", "http://localhost:4646"),
 		ConsulAddr: envOr("NORN_CONSUL_ADDR", "http://localhost:8500"),

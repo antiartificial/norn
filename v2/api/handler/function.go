@@ -108,7 +108,7 @@ func (h *Handler) InvokeFunction(w http.ResponseWriter, r *http.Request) {
 	h.db.InsertFuncExecution(r.Context(), fe)
 
 	// Build and submit batch job
-	batchJob := nomad.TranslateBatch(spec, procName, proc, imageTag, env, jobID)
+	batchJob := nomad.TranslateBatchWithDriver(spec, procName, proc, imageTag, env, jobID, h.taskDriver())
 	_, err = h.nomad.SubmitJob(batchJob)
 	if err != nil {
 		h.db.UpdateFuncExecution(r.Context(), execID, "failed", 1, 0)

@@ -15,6 +15,7 @@ import (
 	"norn/v2/api/nomad"
 	"norn/v2/api/pipeline"
 	"norn/v2/api/redpanda"
+	"norn/v2/api/runtime"
 	"norn/v2/api/saga"
 	"norn/v2/api/secrets"
 	"norn/v2/api/storage"
@@ -35,11 +36,12 @@ type Handler struct {
 	sagaStore saga.Store
 	s3        *storage.Client
 	redpanda  *redpanda.Client
+	rt        *runtime.Runtime
 	access    *AccessLog
 	wakeLocks sync.Map
 }
 
-func New(db *store.DB, n *nomad.Client, c *consul.Client, ws *hub.Hub, cfg *config.Config, p *pipeline.Pipeline, beaconSvc *beacon.Service, sec *secrets.Manager, ss saga.Store, s3 *storage.Client, rp *redpanda.Client) *Handler {
+func New(db *store.DB, n *nomad.Client, c *consul.Client, ws *hub.Hub, cfg *config.Config, p *pipeline.Pipeline, beaconSvc *beacon.Service, sec *secrets.Manager, ss saga.Store, s3 *storage.Client, rp *redpanda.Client, rt *runtime.Runtime) *Handler {
 	return &Handler{
 		db:        db,
 		nomad:     n,
@@ -52,8 +54,16 @@ func New(db *store.DB, n *nomad.Client, c *consul.Client, ws *hub.Hub, cfg *conf
 		sagaStore: ss,
 		s3:        s3,
 		redpanda:  rp,
+		rt:        rt,
 		access:    NewAccessLog(defaultAccessLogLimit),
 	}
+}
+
+func (h *Handler) taskDriver() string {
+	if h.rt != nil {
+		return h.rt.TaskDriver()
+	}
+	return "docker"
 }
 
 // ValidateAppID is middleware that rejects requests with invalid app IDs.

@@ -15,6 +15,7 @@ import (
 	"norn/v2/api/model"
 	"norn/v2/api/nomad"
 	"norn/v2/api/redpanda"
+	"norn/v2/api/runtime"
 	"norn/v2/api/saga"
 	"norn/v2/api/secrets"
 	"norn/v2/api/storage"
@@ -36,6 +37,7 @@ type Pipeline struct {
 	Beacon      *beacon.Service
 	Storage     *storage.Client
 	Redpanda    *redpanda.Client
+	Runtime     *runtime.Runtime
 }
 
 type state struct {

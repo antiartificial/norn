@@ -88,15 +88,20 @@ func (p *Pipeline) submit(ctx context.Context, st *state, sg *saga.Saga) error {
 	}
 
 	// Translate infraspec → Nomad job
-	job := nomad.Translate(st.spec, st.imageTag, env)
+	taskDriver := "docker"
+	if p.Runtime != nil {
+		taskDriver = p.Runtime.TaskDriver()
+	}
+	job := nomad.TranslateWithDriver(st.spec, st.imageTag, env, taskDriver)
 
 	evalID, err := p.Nomad.SubmitJob(job)
 	if err != nil {
 		return fmt.Errorf("submit nomad job: %w", err)
 	}
-	sg.Log(ctx, "nomad.submitted", fmt.Sprintf("nomad job submitted (eval: %s)", evalID), map[string]string{
-		"step":   "submit",
-		"evalId": evalID,
+	sg.Log(ctx, "nomad.submitted", fmt.Sprintf("nomad job submitted (eval: %s, driver: %s)", evalID, taskDriver), map[string]string{
+		"step":       "submit",
+		"evalId":     evalID,
+		"taskDriver": taskDriver,
 	})
 
 	// Submit periodic jobs for scheduled processes
@@ -104,7 +109,7 @@ func (p *Pipeline) submit(ctx context.Context, st *state, sg *saga.Saga) error {
 		if proc.Schedule == "" {
 			continue
 		}
-		periodicJob := nomad.TranslatePeriodic(st.spec, procName, proc, st.imageTag, env)
+		periodicJob := nomad.TranslatePeriodicWithDriver(st.spec, procName, proc, st.imageTag, env, taskDriver)
 		periodicEvalID, err := p.Nomad.SubmitJob(periodicJob)
 		if err != nil {
 			return fmt.Errorf("submit periodic job %s: %w", procName, err)
