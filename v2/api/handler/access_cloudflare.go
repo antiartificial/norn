@@ -322,7 +322,7 @@ func (h *Handler) syncCloudflareHost(ctx context.Context, hostname string, targe
 			Count:      group.Count,
 			Status:     200,
 		}
-		if err := h.db.RecordAccessObservation(ctx, obs); err != nil {
+		if err := h.db.ReplaceAccessObservation(ctx, obs); err != nil {
 			return recorded, err
 		}
 		recorded++

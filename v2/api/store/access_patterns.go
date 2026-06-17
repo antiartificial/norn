@@ -32,20 +32,7 @@ type AccessPatternRow struct {
 }
 
 func (db *DB) RecordAccessObservation(ctx context.Context, obs AccessObservation) error {
-	obs.App = strings.TrimSpace(obs.App)
-	obs.Process = strings.TrimSpace(obs.Process)
-	obs.Endpoint = strings.TrimSpace(obs.Endpoint)
-	obs.Source = strings.TrimSpace(obs.Source)
-	if obs.Source == "" {
-		obs.Source = "external"
-	}
-	if obs.ObservedAt.IsZero() {
-		obs.ObservedAt = time.Now().UTC()
-	}
-	obs.ObservedAt = obs.ObservedAt.UTC()
-	if obs.Count <= 0 {
-		obs.Count = 1
-	}
+	obs = normalizeAccessObservation(obs)
 	successes, clientErrors, serverErrors := statusBuckets(obs.Count, obs.Status)
 	_, err := db.Pool.Exec(ctx, `
 		INSERT INTO access_observation_buckets (
@@ -64,6 +51,46 @@ func (db *DB) RecordAccessObservation(ctx context.Context, obs AccessObservation
 			last_seen = GREATEST(access_observation_buckets.last_seen, EXCLUDED.last_seen)
 	`, obs.App, obs.Process, obs.Endpoint, obs.Source, obs.ObservedAt, obs.Count, successes, clientErrors, serverErrors)
 	return err
+}
+
+func (db *DB) ReplaceAccessObservation(ctx context.Context, obs AccessObservation) error {
+	obs = normalizeAccessObservation(obs)
+	successes, clientErrors, serverErrors := statusBuckets(obs.Count, obs.Status)
+	_, err := db.Pool.Exec(ctx, `
+		INSERT INTO access_observation_buckets (
+			app, process, endpoint, source, bucket_start,
+			requests, successes, client_errors, server_errors, first_seen, last_seen
+		)
+		VALUES ($1, $2, $3, $4, date_trunc('hour', $5::timestamptz),
+		        $6, $7, $8, $9, $5, $5)
+		ON CONFLICT (app, process, endpoint, source, bucket_start)
+		DO UPDATE SET
+			requests = EXCLUDED.requests,
+			successes = EXCLUDED.successes,
+			client_errors = EXCLUDED.client_errors,
+			server_errors = EXCLUDED.server_errors,
+			first_seen = EXCLUDED.first_seen,
+			last_seen = EXCLUDED.last_seen
+	`, obs.App, obs.Process, obs.Endpoint, obs.Source, obs.ObservedAt, obs.Count, successes, clientErrors, serverErrors)
+	return err
+}
+
+func normalizeAccessObservation(obs AccessObservation) AccessObservation {
+	obs.App = strings.TrimSpace(obs.App)
+	obs.Process = strings.TrimSpace(obs.Process)
+	obs.Endpoint = strings.TrimSpace(obs.Endpoint)
+	obs.Source = strings.TrimSpace(obs.Source)
+	if obs.Source == "" {
+		obs.Source = "external"
+	}
+	if obs.ObservedAt.IsZero() {
+		obs.ObservedAt = time.Now().UTC()
+	}
+	obs.ObservedAt = obs.ObservedAt.UTC()
+	if obs.Count <= 0 {
+		obs.Count = 1
+	}
+	return obs
 }
 
 func (db *DB) ListAccessPatternRows(ctx context.Context, since time.Time) ([]AccessPatternRow, error) {
