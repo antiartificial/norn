@@ -8,8 +8,11 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"norn/v2/api/config"
+	"norn/v2/api/model"
+	"norn/v2/api/nomad"
 )
 
 func TestMetricsEmitsPrometheusText(t *testing.T) {
@@ -150,5 +153,46 @@ func TestObservabilityServicesInstallRejectsExistingWithoutOverwrite(t *testing.
 
 	if rec.Code != http.StatusConflict {
 		t.Fatalf("status = %d, want 409; body=%s", rec.Code, rec.Body.String())
+	}
+}
+
+func TestCronMissedRunTreatsPrunedNomadChildrenAsHistory(t *testing.T) {
+	spec := &model.InfraSpec{App: "field-harbor", Env: map[string]string{"TZ": "America/Chicago"}}
+	proc := model.Process{Schedule: "10 20 * * *"}
+	info := &nomad.PeriodicJobInfo{
+		JobID:        "field-harbor-field-harbor-sync-pm",
+		Schedule:     "10 20 * * *",
+		TimeZone:     "America/Chicago",
+		SubmittedAt:  "2026-06-16T12:42:47-05:00",
+		Status:       "running",
+		ChildrenDead: 28,
+	}
+	now, err := time.Parse(time.RFC3339, "2026-06-17T01:20:00-05:00")
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if got := cronMissedRun(now, spec, proc, info, nil); got != 0 {
+		t.Fatalf("cronMissedRun = %d, want 0 for pruned child history", got)
+	}
+}
+
+func TestCronMissedRunFlagsMissingFirstDispatch(t *testing.T) {
+	spec := &model.InfraSpec{App: "field-harbor", Env: map[string]string{"TZ": "America/Chicago"}}
+	proc := model.Process{Schedule: "10 20 * * *"}
+	info := &nomad.PeriodicJobInfo{
+		JobID:       "field-harbor-field-harbor-sync-pm",
+		Schedule:    "10 20 * * *",
+		TimeZone:    "America/Chicago",
+		SubmittedAt: "2026-06-16T12:42:47-05:00",
+		Status:      "running",
+	}
+	now, err := time.Parse(time.RFC3339, "2026-06-17T01:20:00-05:00")
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if got := cronMissedRun(now, spec, proc, info, []nomad.CronRun{}); got != 1 {
+		t.Fatalf("cronMissedRun = %d, want 1 without dispatch evidence", got)
 	}
 }
