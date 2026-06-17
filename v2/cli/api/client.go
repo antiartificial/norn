@@ -1391,6 +1391,15 @@ func (c *Client) CloudflareAccessSync(window string) (*CloudflareSyncReceipt, er
 	if encoded := values.Encode(); encoded != "" {
 		path += "?" + encoded
 	}
+	if c.HTTPClient != nil {
+		previousTimeout := c.HTTPClient.Timeout
+		if previousTimeout < 5*time.Minute {
+			c.HTTPClient.Timeout = 5 * time.Minute
+			defer func() {
+				c.HTTPClient.Timeout = previousTimeout
+			}()
+		}
+	}
 	var receipt CloudflareSyncReceipt
 	if err := c.postJSON(path, "{}", &receipt); err != nil {
 		return nil, err
