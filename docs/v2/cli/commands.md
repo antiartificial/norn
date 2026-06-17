@@ -464,7 +464,7 @@ The table includes request time, status, method, path, client IP, Cloudflare Acc
 
 `norn access patterns` summarizes durable hosted-service access observations by app and process. It reports request totals, last observed access, quiet duration, peak UTC hour, idle-candidate action, and confidence. The data comes from hourly aggregate buckets, not raw request logs.
 
-`norn access observe` records an aggregate observation for a hosted service. It is intended for a future wake gateway, reverse proxy, cloudflared log shipper, or small operator script. Observations include app, process, endpoint/source labels, status bucket, count, and optional timestamp; they do not include request bodies or credentials.
+`norn access observe` records an aggregate observation for a hosted service. It is intended for the wake gateway, reverse proxies, cloudflared log shippers, or small operator scripts. Observations include app, process, endpoint/source labels, status bucket, count, and optional timestamp; they do not include request bodies or credentials.
 
 `norn access cloudflare status` reports whether Cloudflare GraphQL sync and Logpush receiver secrets are configured, and shows the public service hostnames Norn can map back to app/process pairs.
 
