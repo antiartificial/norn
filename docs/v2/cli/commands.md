@@ -455,7 +455,7 @@ Show recent Norn API access events.
 norn access
 norn access --limit 100
 norn access patterns --window 14d --idle-after 7d
-norn access observe ft-trove --process web --endpoint https://trove.example.com --source gateway --status 200
+norn access observe myapp --process web --endpoint https://app.example.com --source gateway --status 200
 norn access cloudflare status
 norn access cloudflare sync --window 14d
 ```
@@ -477,7 +477,7 @@ The Logpush receiver is `POST /api/access/cloudflare/logpush`. It requires `NORN
 The wake gateway can record live accesses and wake a scaled-down service on demand. For production, point each wakeable public hostname at the Norn API origin, usually `http://127.0.0.1:8800` on the Norn host, and preserve the original `Host` header. cloudflared hostname ingress preserves this automatically. Generic proxies should pass `Host`, `X-Forwarded-Host`, `X-Forwarded-Proto`, and `X-Forwarded-For`. The local smoke test is:
 
 ```bash
-curl -i -H "Host: trove.example.com" http://127.0.0.1:8800/health
+curl -i -H "Host: app.example.com" http://127.0.0.1:8800/health
 ```
 
 For path-based testing, use `GET /api/wake-gateway/<public-hostname>/<original-path>`. A gateway-handled response includes `X-Norn-Wake-Gateway: true` and `X-Norn-Wake-Action: ready` or `scaled`.
@@ -653,10 +653,10 @@ norn endpoints <app>
 Output shows each endpoint with a status indicator:
 
 ```
-endpoints for signal-sideband
+endpoints for myapp
 
-  ● sideband.slopistry.com    active
-  ○ api.slopistry.com         inactive
+  ● app.example.com    active
+  ○ api.example.com    inactive
 ```
 
 - `●` active — hostname is routed in cloudflared
@@ -674,13 +674,13 @@ norn endpoints toggle <app> <hostname>
 | Argument | Description |
 |----------|-------------|
 | `app` | App name |
-| `hostname` | The hostname to toggle (e.g. `sideband.slopistry.com`) |
+| `hostname` | The hostname to toggle (e.g. `app.example.com`) |
 
 Determines the current state from the cloudflared ingress list and flips it. If the endpoint is active, it will be disabled; if inactive, it will be enabled.
 
 ```
-$ norn endpoints toggle signal-sideband sideband.slopistry.com
-toggling sideband.slopistry.com → disabled
+$ norn endpoints toggle myapp app.example.com
+toggling app.example.com → disabled
 
 ╭──────────────────────╮
 │ cloudflared updated  │

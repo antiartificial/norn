@@ -94,10 +94,10 @@ You can enable or disable individual endpoints without affecting the rest of the
 
 ```bash
 # List endpoints with their cloudflared status
-norn endpoints signal-sideband
+norn endpoints myapp
 
 # Toggle a single hostname
-norn endpoints toggle signal-sideband sideband.slopistry.com
+norn endpoints toggle myapp app.example.com
 ```
 
 **Via API:**
@@ -107,14 +107,14 @@ norn endpoints toggle signal-sideband sideband.slopistry.com
 curl http://localhost:8800/api/cloudflared/ingress
 
 # Enable an endpoint
-curl -X POST http://localhost:8800/api/apps/signal-sideband/endpoints/toggle \
+curl -X POST http://localhost:8800/api/apps/myapp/endpoints/toggle \
   -H "Content-Type: application/json" \
-  -d '{"hostname": "sideband.slopistry.com", "enabled": true}'
+  -d '{"hostname": "app.example.com", "enabled": true}'
 
 # Disable an endpoint
-curl -X POST http://localhost:8800/api/apps/signal-sideband/endpoints/toggle \
+curl -X POST http://localhost:8800/api/apps/myapp/endpoints/toggle \
   -H "Content-Type: application/json" \
-  -d '{"hostname": "sideband.slopistry.com", "enabled": false}'
+  -d '{"hostname": "app.example.com", "enabled": false}'
 ```
 
 ### Configuration
@@ -268,9 +268,7 @@ Point each wakeable public hostname at the Norn API origin. Do not add a path pr
 
 ```yaml
 ingress:
-  - hostname: trove.example.com
-    service: http://127.0.0.1:8800
-  - hostname: sideband.example.com
+  - hostname: app.example.com
     service: http://127.0.0.1:8800
   - service: http_status:404
 ```
@@ -288,17 +286,17 @@ proxy_pass http://127.0.0.1:8800;
 With host-based routing, a request stays in its normal shape:
 
 ```text
-https://trove.example.com/archive/123
+https://app.example.com/archive/123
 ```
 
-Norn receives `Host: trove.example.com`, maps that hostname to a public endpoint from the service manifest, wakes the mapped app/process if needed, and proxies `/archive/123` unchanged to the service.
+Norn receives `Host: app.example.com`, maps that hostname to a public endpoint from the service manifest, wakes the mapped app/process if needed, and proxies `/archive/123` unchanged to the service.
 
 ### Local Smoke Test
 
 From the Norn host:
 
 ```bash
-curl -i -H "Host: trove.example.com" http://127.0.0.1:8800/health
+curl -i -H "Host: app.example.com" http://127.0.0.1:8800/health
 ```
 
 A gateway-handled response includes:
@@ -321,10 +319,10 @@ https://<norn-host>/api/wake-gateway/<public-hostname>/<original-path>
 Example:
 
 ```bash
-curl -i http://127.0.0.1:8800/api/wake-gateway/trove.example.com/health
+curl -i http://127.0.0.1:8800/api/wake-gateway/app.example.com/health
 ```
 
-This strips `/api/wake-gateway/trove.example.com` before proxying, so the service receives `/health`.
+This strips `/api/wake-gateway/app.example.com` before proxying, so the service receives `/health`.
 
 ### Behavior
 
@@ -333,7 +331,7 @@ The gateway maps the public hostname back to a service endpoint from the service
 The default wake wait is `30s`. A request can override it with `wakeTimeout`, up to `2m`:
 
 ```text
-https://trove.example.com/archive/123?wakeTimeout=60s
+https://app.example.com/archive/123?wakeTimeout=60s
 ```
 
 The gateway removes `wakeTimeout` before forwarding the request to the service.
