@@ -319,7 +319,7 @@ func (c *Client) PeriodicChildren(parentJobID string) ([]CronRun, error) {
 		return nil, fmt.Errorf("list periodic children: %w", err)
 	}
 
-	var runs []CronRun
+	runs := []CronRun{}
 	for _, j := range jobs {
 		run := CronRun{
 			JobID:     j.ID,
@@ -333,12 +333,15 @@ func (c *Client) PeriodicChildren(parentJobID string) ([]CronRun, error) {
 
 // PeriodicJobInfo holds scheduling metadata for a periodic job.
 type PeriodicJobInfo struct {
-	JobID       string `json:"jobId"`
-	Schedule    string `json:"schedule"`
-	TimeZone    string `json:"timezone,omitempty"`
-	SubmittedAt string `json:"submittedAt,omitempty"`
-	Paused      bool   `json:"paused"`
-	Status      string `json:"status"`
+	JobID           string `json:"jobId"`
+	Schedule        string `json:"schedule"`
+	TimeZone        string `json:"timezone,omitempty"`
+	SubmittedAt     string `json:"submittedAt,omitempty"`
+	Paused          bool   `json:"paused"`
+	Status          string `json:"status"`
+	ChildrenPending int64  `json:"childrenPending,omitempty"`
+	ChildrenRunning int64  `json:"childrenRunning,omitempty"`
+	ChildrenDead    int64  `json:"childrenDead,omitempty"`
 }
 
 // PeriodicJobSchedule returns the cron spec and status for a periodic parent job.
@@ -365,6 +368,17 @@ func (c *Client) PeriodicJobSchedule(jobID string) (*PeriodicJobInfo, error) {
 	}
 	if job.Stop != nil {
 		info.Paused = *job.Stop
+	}
+	if jobs, _, listErr := c.api.Jobs().List(&nomadapi.QueryOptions{Prefix: jobID}); listErr == nil {
+		for _, j := range jobs {
+			if j.ID != jobID || j.JobSummary == nil || j.JobSummary.Children == nil {
+				continue
+			}
+			info.ChildrenPending = j.JobSummary.Children.Pending
+			info.ChildrenRunning = j.JobSummary.Children.Running
+			info.ChildrenDead = j.JobSummary.Children.Dead
+			break
+		}
 	}
 	return info, nil
 }

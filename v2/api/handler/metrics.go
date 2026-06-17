@@ -12,6 +12,7 @@ import (
 
 	"github.com/hashicorp/cronexpr"
 	"norn/v2/api/model"
+	"norn/v2/api/nomad"
 )
 
 func (h *Handler) Metrics(w http.ResponseWriter, r *http.Request) {
@@ -176,41 +177,9 @@ func (h *Handler) Metrics(w http.ResponseWriter, r *http.Request) {
 				parentJobID := fmt.Sprintf("%s-%s", spec.App, processName)
 				missed := 0
 				info, err := h.nomad.PeriodicJobSchedule(parentJobID)
-				if err == nil && info != nil && !info.Paused && info.Status != "dead" {
-					schedule := strings.TrimSpace(info.Schedule)
-					if schedule != "" {
-						expr, parseErr := tryParseCronExpr(schedule)
-						if parseErr == nil && expr != nil {
-							location := cronMetricLocation(spec, proc, info.TimeZone)
-							now := time.Now().In(location)
-							runs, runsErr := h.nomad.PeriodicChildren(parentJobID)
-							if runsErr == nil {
-								var lastRunTime time.Time
-								for _, run := range runs {
-									t, tErr := time.Parse(time.RFC3339, run.StartedAt)
-									if tErr != nil {
-										continue
-									}
-									t = t.In(location)
-									if t.After(lastRunTime) {
-										lastRunTime = t
-									}
-								}
-								reference := lastRunTime
-								if info.SubmittedAt != "" {
-									if submittedAt, submitErr := time.Parse(time.RFC3339, info.SubmittedAt); submitErr == nil && submittedAt.In(location).After(reference) {
-										reference = submittedAt.In(location)
-									}
-								}
-								if reference.IsZero() {
-									reference = now.Add(-24 * time.Hour)
-								}
-								expectedNext := expr.Next(reference)
-								if !expectedNext.IsZero() && now.After(expectedNext.Add(5*time.Minute)) {
-									missed = 1
-								}
-							}
-						}
+				if err == nil {
+					if runs, runsErr := h.nomad.PeriodicChildren(parentJobID); runsErr == nil {
+						missed = cronMissedRun(time.Now(), spec, proc, info, runs)
 					}
 				}
 				fmt.Fprintf(&b, "norn_cron_missed_runs_total{app=%q,process=%q} %d\n",
@@ -279,6 +248,57 @@ func cronMetricLocation(spec *model.InfraSpec, proc model.Process, jobTimezone s
 		return time.UTC
 	}
 	return loc
+}
+
+func cronMissedRun(now time.Time, spec *model.InfraSpec, proc model.Process, info *nomad.PeriodicJobInfo, runs []nomad.CronRun) int {
+	if info == nil || info.Paused || info.Status == "dead" {
+		return 0
+	}
+
+	schedule := strings.TrimSpace(info.Schedule)
+	if schedule == "" {
+		return 0
+	}
+	expr, err := tryParseCronExpr(schedule)
+	if err != nil || expr == nil {
+		return 0
+	}
+
+	location := cronMetricLocation(spec, proc, info.TimeZone)
+	now = now.In(location)
+
+	var lastRunTime time.Time
+	for _, run := range runs {
+		t, tErr := time.Parse(time.RFC3339, run.StartedAt)
+		if tErr != nil {
+			continue
+		}
+		t = t.In(location)
+		if t.After(lastRunTime) {
+			lastRunTime = t
+		}
+	}
+
+	// Nomad can retain periodic child counts after pruning the detailed child
+	// jobs. That means the scheduler did dispatch work, even if history is gone.
+	if lastRunTime.IsZero() && info.ChildrenPending+info.ChildrenRunning+info.ChildrenDead > 0 {
+		return 0
+	}
+
+	reference := lastRunTime
+	if info.SubmittedAt != "" {
+		if submittedAt, submitErr := time.Parse(time.RFC3339, info.SubmittedAt); submitErr == nil && submittedAt.In(location).After(reference) {
+			reference = submittedAt.In(location)
+		}
+	}
+	if reference.IsZero() {
+		reference = now.Add(-24 * time.Hour)
+	}
+	expectedNext := expr.Next(reference)
+	if !expectedNext.IsZero() && now.After(expectedNext.Add(5*time.Minute)) {
+		return 1
+	}
+	return 0
 }
 
 func writeMetricHeader(b *bytes.Buffer, name, help, typ string) {
