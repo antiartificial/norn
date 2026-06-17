@@ -23,6 +23,7 @@ var (
 	eventNote             string
 	eventDuration         string
 	eventUntil            string
+	eventsReconcileDryRun bool
 )
 
 func init() {
@@ -37,8 +38,13 @@ func init() {
 	eventsCmd.AddCommand(eventsSnoozeCmd)
 	eventsCmd.AddCommand(eventsOpenCmd)
 	eventsCmd.AddCommand(eventsCorrelatedCmd)
+	eventsCmd.AddCommand(eventsReconcileCmd)
 	eventsActiveCmd.Flags().IntVar(&eventsLimit, "limit", 25, "Maximum incidents to show")
 	eventsCorrelatedCmd.Flags().IntVar(&eventsCorrelatedLimit, "limit", 50, "Maximum events to show")
+	eventsReconcileCmd.Flags().StringVar(&eventsApp, "app", "", "Filter events by app")
+	eventsReconcileCmd.Flags().IntVar(&eventsLimit, "limit", 200, "Maximum events to inspect")
+	eventsReconcileCmd.Flags().BoolVar(&eventsReconcileDryRun, "dry-run", false, "Preview reconciliation decisions without acknowledging events")
+	eventsReconcileCmd.Flags().StringVar(&eventActor, "by", "system", "Operator name")
 	eventsAckCmd.Flags().StringVar(&eventActor, "by", "", "Operator name")
 	eventsAckCmd.Flags().StringVar(&eventNote, "note", "", "Acknowledgement note")
 	eventsSnoozeCmd.Flags().StringVar(&eventActor, "by", "", "Operator name")
@@ -192,6 +198,19 @@ var eventsCorrelatedCmd = &cobra.Command{
 	},
 }
 
+var eventsReconcileCmd = &cobra.Command{
+	Use:   "reconcile",
+	Short: "Mechanically reconcile stale warning and critical events",
+	RunE: func(cmd *cobra.Command, args []string) error {
+		resp, err := client.ReconcileEvents(eventsApp, eventsLimit, eventsReconcileDryRun, eventActor)
+		if err != nil {
+			return err
+		}
+		printEventReconcileResponse(resp)
+		return nil
+	},
+}
+
 func printBeaconEvents(events []api.BeaconEvent, total int) {
 	fmt.Println(style.Title.Render("norn events"))
 	if len(events) == 0 {
@@ -219,6 +238,42 @@ func printBeaconEvents(events []api.BeaconEvent, total int) {
 		)
 	}
 	w.Flush()
+}
+
+func printEventReconcileResponse(resp *api.EventReconcileResponse) {
+	fmt.Println(style.Title.Render("event reconciliation"))
+	fmt.Printf("%s %d\n", style.Key.Render("scanned"), resp.Scanned)
+	fmt.Printf("%s %d\n", style.Key.Render("reconciled"), resp.Reconciled)
+	fmt.Printf("%s %d\n", style.Key.Render("needs review"), resp.NeedsReview)
+	if resp.DryRun {
+		fmt.Println(style.DimText.Render("dry-run: no events were acknowledged"))
+	}
+	if len(resp.Decisions) == 0 {
+		return
+	}
+	fmt.Println()
+	w := tabwriter.NewWriter(os.Stdout, 0, 0, 2, ' ', 0)
+	fmt.Fprintln(w, style.TableHeader.Render("ID")+"\t"+
+		style.TableHeader.Render("APP")+"\t"+
+		style.TableHeader.Render("TYPE")+"\t"+
+		style.TableHeader.Render("ACTION")+"\t"+
+		style.TableHeader.Render("REASON"))
+	for _, decision := range resp.Decisions {
+		fmt.Fprintf(w, "%s\t%s\t%s\t%s\t%s\n",
+			shortID(decision.EventID),
+			emptyDash(decision.App),
+			decision.Type,
+			decision.Action,
+			decision.Reason,
+		)
+	}
+	w.Flush()
+	for _, decision := range resp.Decisions {
+		if len(decision.Evidence) == 0 {
+			continue
+		}
+		fmt.Printf("%s %s\n", style.Key.Render(shortID(decision.EventID)+" evidence"), strings.Join(decision.Evidence, "; "))
+	}
 }
 
 func printBeaconEventDetail(event api.BeaconEvent) {

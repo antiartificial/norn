@@ -909,6 +909,25 @@ type ActiveIncident struct {
 	LatestEventID  string `json:"latestEventId"`
 }
 
+type EventReconcileDecision struct {
+	EventID  string   `json:"eventId"`
+	App      string   `json:"app,omitempty"`
+	Type     string   `json:"type"`
+	Severity string   `json:"severity"`
+	Title    string   `json:"title"`
+	Action   string   `json:"action"`
+	Reason   string   `json:"reason"`
+	Evidence []string `json:"evidence,omitempty"`
+}
+
+type EventReconcileResponse struct {
+	DryRun      bool                     `json:"dryRun"`
+	Scanned     int                      `json:"scanned"`
+	Reconciled  int                      `json:"reconciled"`
+	NeedsReview int                      `json:"needsReview"`
+	Decisions   []EventReconcileDecision `json:"decisions"`
+}
+
 func (c *Client) ListActiveIncidents(limit int) ([]ActiveIncident, error) {
 	values := url.Values{}
 	if limit > 0 {
@@ -925,6 +944,20 @@ func (c *Client) ListActiveIncidents(limit int) ([]ActiveIncident, error) {
 		return nil, err
 	}
 	return resp.Incidents, nil
+}
+
+func (c *Client) ReconcileEvents(app string, limit int, dryRun bool, by string) (*EventReconcileResponse, error) {
+	body, _ := json.Marshal(map[string]interface{}{
+		"app":    app,
+		"limit":  limit,
+		"dryRun": dryRun,
+		"by":     by,
+	})
+	var resp EventReconcileResponse
+	if err := c.postJSON("/api/events/reconcile", string(body), &resp); err != nil {
+		return nil, err
+	}
+	return &resp, nil
 }
 
 func (c *Client) GetEvent(id string) (*BeaconEvent, error) {

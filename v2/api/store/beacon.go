@@ -110,6 +110,50 @@ func (db *DB) ListBeaconEvents(ctx context.Context, filter BeaconFilter) ([]mode
 	return events, total, nil
 }
 
+func (db *DB) ListOpenBeaconEvents(ctx context.Context, app string, limit int) ([]model.BeaconEvent, error) {
+	if limit <= 0 || limit > 500 {
+		limit = 200
+	}
+	where := `
+		severity IN ('warning', 'critical')
+		AND acknowledged_at IS NULL
+		AND (snoozed_until IS NULL OR snoozed_until < now())
+	`
+	args := []interface{}{}
+	if app != "" {
+		args = append(args, app)
+		where += fmt.Sprintf(" AND app = $%d", len(args))
+	}
+	args = append(args, limit)
+
+	rows, err := db.Pool.Query(ctx, fmt.Sprintf(`
+		SELECT id, source, app, environment, type, severity, title, body,
+		       dedupe_key, occurred_at, acknowledged_at, acknowledged_by,
+		       acknowledgement_note, snoozed_until, metadata
+		FROM beacon_events
+		WHERE %s
+		ORDER BY occurred_at DESC
+		LIMIT $%d
+	`, where, len(args)), args...)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	var events []model.BeaconEvent
+	for rows.Next() {
+		event, err := scanBeaconEvent(rows)
+		if err != nil {
+			return nil, err
+		}
+		events = append(events, event)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return events, nil
+}
+
 func (db *DB) GetBeaconEvent(ctx context.Context, id string) (*model.BeaconEvent, error) {
 	row := db.Pool.QueryRow(ctx, `
 		SELECT id, source, app, environment, type, severity, title, body,
@@ -205,6 +249,19 @@ func (db *DB) ListCorrelatedEvents(ctx context.Context, correlationKey string, l
 	return events, nil
 }
 
+func (db *DB) LaterBeaconEventExists(ctx context.Context, app, eventType string, after time.Time) (bool, error) {
+	var exists bool
+	err := db.Pool.QueryRow(ctx, `
+		SELECT EXISTS(
+			SELECT 1 FROM beacon_events
+			WHERE app = $1
+			  AND type = $2
+			  AND occurred_at > $3
+		)
+	`, app, eventType, after).Scan(&exists)
+	return exists, err
+}
+
 func (db *DB) RecentDedupeExists(ctx context.Context, dedupeKey string, within time.Duration) (bool, error) {
 	var exists bool
 	err := db.Pool.QueryRow(ctx, `
@@ -217,16 +274,16 @@ func (db *DB) RecentDedupeExists(ctx context.Context, dedupeKey string, within t
 }
 
 type ActiveIncident struct {
-	CorrelationKey string             `json:"correlationKey"`
-	App            string             `json:"app"`
-	LatestSeverity string             `json:"latestSeverity"`
-	LatestType     string             `json:"latestType"`
-	LatestTitle    string             `json:"latestTitle"`
-	EventCount     int                `json:"eventCount"`
-	FirstSeen      time.Time          `json:"firstSeen"`
-	LastSeen       time.Time          `json:"lastSeen"`
-	OpenCount      int                `json:"openCount"`
-	LatestEventID  string             `json:"latestEventId"`
+	CorrelationKey string    `json:"correlationKey"`
+	App            string    `json:"app"`
+	LatestSeverity string    `json:"latestSeverity"`
+	LatestType     string    `json:"latestType"`
+	LatestTitle    string    `json:"latestTitle"`
+	EventCount     int       `json:"eventCount"`
+	FirstSeen      time.Time `json:"firstSeen"`
+	LastSeen       time.Time `json:"lastSeen"`
+	OpenCount      int       `json:"openCount"`
+	LatestEventID  string    `json:"latestEventId"`
 }
 
 func (db *DB) ListActiveIncidents(ctx context.Context, limit int) ([]ActiveIncident, error) {
