@@ -269,6 +269,7 @@ func main() {
 		r.Post("/events", h.CreateEvent)
 		r.Get("/events/active", h.ActiveIncidents)
 		r.Get("/events/correlated", h.CorrelatedEvents)
+		r.Post("/events/reconcile", h.ReconcileEvents)
 		r.Get("/events/{id}", h.GetEvent)
 		r.Post("/events/{id}/ack", h.AcknowledgeEvent)
 		r.Post("/events/{id}/snooze", h.SnoozeEvent)
