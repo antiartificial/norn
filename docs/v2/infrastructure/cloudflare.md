@@ -240,6 +240,8 @@ There are two supported ingestion paths:
 
 `norn access cloudflare sync --window 14d` queries Cloudflare's GraphQL Analytics API for each mapped public hostname and records hourly aggregate observations as `cloudflare-graphql`. The Cloudflare token must be able to read analytics for the configured zone. Norn records only aggregate counts and status buckets; it does not persist request bodies or authorization headers.
 
+GraphQL syncs are split into day-sized Cloudflare queries and clamped to Norn's configured GraphQL lookback ceiling. A requested 14-day import can therefore produce a shorter effective window when the Cloudflare zone only exposes recent analytics. Re-running the sync is idempotent for the same hourly aggregate buckets: GraphQL-imported buckets replace the previous `cloudflare-graphql` value instead of adding to it, so retries and interrupted runs do not inflate traffic counts.
+
 Cloudflare Logpush can deliver HTTP request logs to:
 
 ```text
