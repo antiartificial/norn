@@ -231,6 +231,7 @@ func (w *NomadAllocationWatcher) checkCron(ctx context.Context, spec *model.Infr
 				severity = model.BeaconCritical
 				eventType = "cron." + state
 			}
+			correlationKey := cronCorrelationKey(spec.App, process)
 			_, err := w.beacon.Emit(ctx, model.BeaconEvent{
 				App:       spec.App,
 				Type:      eventType,
@@ -243,6 +244,8 @@ func (w *NomadAllocationWatcher) checkCron(ctx context.Context, spec *model.Infr
 					"jobId":     run.JobID,
 					"status":    run.Status,
 					"startedAt": run.StartedAt,
+					// Lets cron.succeeded resolve prior cron.missed_run/hung/failed incidents.
+					"correlationKey": correlationKey,
 				},
 			})
 			if err != nil {
@@ -413,6 +416,10 @@ func (w *NomadAllocationWatcher) checkCronMissedRuns(ctx context.Context, spec *
 				lastRunTime = t
 			}
 		}
+		if lastRunTime.IsZero() && cronHasPrunedChildHistory(info, runs) {
+			delete(w.seen, missedKey)
+			continue
+		}
 
 		// If we have never seen a run, use a reference point far enough back
 		// so that at least one interval has elapsed. Use one full interval
@@ -469,13 +476,24 @@ func (w *NomadAllocationWatcher) checkCronMissedRuns(ctx context.Context, spec *
 				"expectedRunAt":  expectedNextRun.UTC().Format(time.RFC3339),
 				"lastRunAt":      lastRunTime.UTC().Format(time.RFC3339),
 				"gracePeriod":    cronMissedGracePeriod.String(),
-				"correlationKey": fmt.Sprintf("%s:%s:cron", spec.App, process),
+				"correlationKey": cronCorrelationKey(spec.App, process),
 			},
 		})
 		if emitErr != nil {
 			log.Printf("nomad watcher: missed-run beacon emit: %v", emitErr)
 		}
 	}
+}
+
+func cronCorrelationKey(app, process string) string {
+	return fmt.Sprintf("%s:%s:cron", app, process)
+}
+
+func cronHasPrunedChildHistory(info *nomad.PeriodicJobInfo, runs []nomad.CronRun) bool {
+	if info == nil || len(runs) > 0 {
+		return false
+	}
+	return info.ChildrenPending+info.ChildrenRunning+info.ChildrenDead > 0
 }
 
 func shortAlloc(id string) string {
