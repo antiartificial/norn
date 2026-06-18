@@ -10,7 +10,6 @@ import (
 	"github.com/google/uuid"
 
 	"norn/v2/api/hub"
-	"norn/v2/api/nomad"
 	"norn/v2/api/store"
 )
 
@@ -28,8 +27,8 @@ func (h *Handler) InvokeFunction(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	if h.nomad == nil {
-		writeError(w, http.StatusServiceUnavailable, "nomad not connected")
+	if h.engine == nil {
+		writeError(w, http.StatusServiceUnavailable, "engine not available")
 		return
 	}
 
@@ -93,9 +92,8 @@ func (h *Handler) InvokeFunction(w http.ResponseWriter, r *http.Request) {
 		env["NORN_REQUEST_PATH"] = req.Path
 	}
 
-	// Create unique job ID
+	// Create unique execution ID
 	execID := uuid.New().String()
-	jobID := fmt.Sprintf("%s-%s-%d", id, procName, time.Now().UnixMilli())
 
 	// Record execution
 	fe := &store.FuncExecution{
@@ -107,9 +105,8 @@ func (h *Handler) InvokeFunction(w http.ResponseWriter, r *http.Request) {
 	}
 	h.db.InsertFuncExecution(r.Context(), fe)
 
-	// Build and submit batch job
-	batchJob := nomad.TranslateBatchWithDriver(spec, procName, proc, imageTag, env, jobID, h.taskDriver())
-	_, err = h.nomad.SubmitJob(batchJob)
+	// Run batch container
+	containerName, err := h.engine.RunBatch(r.Context(), spec, procName, proc, imageTag, env)
 	if err != nil {
 		h.db.UpdateFuncExecution(r.Context(), execID, "failed", 1, 0)
 		writeError(w, http.StatusInternalServerError, err.Error())
@@ -126,7 +123,7 @@ func (h *Handler) InvokeFunction(w http.ResponseWriter, r *http.Request) {
 		}
 
 		start := time.Now()
-		status, exitCode, _ := h.nomad.WaitBatchComplete(r.Context(), jobID, timeout)
+		status, exitCode, _ := h.engine.WaitBatchComplete(r.Context(), containerName, timeout)
 		durationMs := time.Since(start).Milliseconds()
 
 		h.db.UpdateFuncExecution(r.Context(), execID, status, exitCode, durationMs)
@@ -144,7 +141,7 @@ func (h *Handler) InvokeFunction(w http.ResponseWriter, r *http.Request) {
 
 	writeJSON(w, map[string]string{
 		"id":      execID,
-		"jobId":   jobID,
+		"jobId":   containerName,
 		"status":  "running",
 		"process": procName,
 	})

@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"time"
 
+	"norn/v2/api/engine"
 	"norn/v2/api/saga"
 )
 
@@ -37,22 +38,22 @@ func (p *Pipeline) canary(ctx context.Context, st *state, sg *saga.Saga) error {
 	case <-time.After(evaluateAfter):
 	}
 
-	// Check allocation health after the evaluation period
-	allocs, err := p.Nomad.PollAllocations(spec.App)
+	// Check instance health after the evaluation period
+	instances, err := p.Engine.PollInstances(spec.App)
 	if err != nil {
-		_ = p.Nomad.FailDeployment(spec.App)
-		return fmt.Errorf("canary poll allocations: %w", err)
+		_ = p.Engine.FailDeployment(ctx, spec.App)
+		return fmt.Errorf("canary poll instances: %w", err)
 	}
 
-	for _, alloc := range allocs {
-		if alloc.Healthy == nil || !*alloc.Healthy {
-			_ = p.Nomad.FailDeployment(spec.App)
-			return fmt.Errorf("canary allocation %s unhealthy (status: %s)", alloc.ID, alloc.ClientStatus)
+	for _, inst := range instances {
+		if inst.Healthy == nil || !*inst.Healthy {
+			_ = p.Engine.FailDeployment(ctx, spec.App)
+			return fmt.Errorf("canary instance %s unhealthy (status: %s)", engine.ShortID(inst.ContainerName), inst.Status)
 		}
 	}
 
-	// All canary allocations healthy — promote
-	if err := p.Nomad.PromoteDeployment(spec.App); err != nil {
+	// All canary instances healthy — promote
+	if err := p.Engine.PromoteDeployment(ctx, spec.App); err != nil {
 		return fmt.Errorf("canary promote: %w", err)
 	}
 

@@ -9,14 +9,12 @@ import (
 
 	"github.com/hashicorp/cronexpr"
 	"norn/v2/api/beacon"
-	"norn/v2/api/consul"
+	"norn/v2/api/engine"
 	"norn/v2/api/model"
-	"norn/v2/api/nomad"
 )
 
-type NomadAllocationWatcher struct {
-	nomad     *nomad.Client
-	consul    *consul.Client
+type EngineWatcher struct {
+	engine    *engine.Engine
 	beacon    *beacon.Service
 	appsDir   string
 	poll      time.Duration
@@ -24,10 +22,9 @@ type NomadAllocationWatcher struct {
 	hungAfter time.Duration
 }
 
-func NewNomadAllocationWatcher(n *nomad.Client, c *consul.Client, b *beacon.Service, appsDir string) *NomadAllocationWatcher {
-	return &NomadAllocationWatcher{
-		nomad:     n,
-		consul:    c,
+func NewEngineWatcher(eng *engine.Engine, b *beacon.Service, appsDir string) *EngineWatcher {
+	return &EngineWatcher{
+		engine:    eng,
 		beacon:    b,
 		appsDir:   appsDir,
 		poll:      60 * time.Second,
@@ -36,17 +33,17 @@ func NewNomadAllocationWatcher(n *nomad.Client, c *consul.Client, b *beacon.Serv
 	}
 }
 
-func (w *NomadAllocationWatcher) Run(ctx context.Context) {
-	if (w.nomad == nil && w.consul == nil) || w.beacon == nil {
+func (w *EngineWatcher) Run(ctx context.Context) {
+	if w.engine == nil || w.beacon == nil {
 		return
 	}
-	log.Println("nomad allocation watcher started")
+	log.Println("engine watcher started")
 	timer := time.NewTimer(5 * time.Second)
 	defer timer.Stop()
 	for {
 		select {
 		case <-ctx.Done():
-			log.Println("nomad allocation watcher stopped")
+			log.Println("engine watcher stopped")
 			return
 		case <-timer.C:
 			w.check(ctx)
@@ -55,79 +52,77 @@ func (w *NomadAllocationWatcher) Run(ctx context.Context) {
 	}
 }
 
-func (w *NomadAllocationWatcher) check(ctx context.Context) {
+func (w *EngineWatcher) check(ctx context.Context) {
 	specs, err := model.DiscoverApps(w.appsDir)
 	if err != nil {
-		log.Printf("nomad watcher: discover apps: %v", err)
+		log.Printf("engine watcher: discover apps: %v", err)
 		return
 	}
 	for _, spec := range specs {
-		if w.nomad != nil {
-			allocs, err := w.nomad.JobAllocations(spec.App)
-			if err == nil {
-				for _, alloc := range allocs {
-					state := alloc.ClientStatus
-					unhealthy := alloc.DeploymentStatus != nil && alloc.DeploymentStatus.Healthy != nil && !*alloc.DeploymentStatus.Healthy
-					if unhealthy && state == "running" {
-						state = "unhealthy"
-					}
-					if state != "failed" && state != "lost" && state != "unhealthy" {
-						continue
-					}
-					key := fmt.Sprintf("%s:%s:%s", spec.App, shortAlloc(alloc.ID), alloc.TaskGroup)
-					prev := w.seen[key]
-					if prev == state {
-						continue
-					}
-					w.seen[key] = state
-					severity := model.BeaconWarning
-					if state == "failed" || state == "lost" {
-						severity = model.BeaconCritical
-					}
-					correlationKey := fmt.Sprintf("%s:%s:allocation", spec.App, alloc.TaskGroup)
-					_, err := w.beacon.Emit(ctx, model.BeaconEvent{
-						App:       spec.App,
-						Type:      "nomad.allocation." + state,
-						Severity:  severity,
-						Title:     fmt.Sprintf("%s allocation %s", spec.App, state),
-						Body:      fmt.Sprintf("Allocation %s task group %s is %s.", shortAlloc(alloc.ID), alloc.TaskGroup, state),
-						DedupeKey: fmt.Sprintf("%s:%s:%s", spec.App, shortAlloc(alloc.ID), state),
-						Metadata: map[string]interface{}{
-							"allocationId":   alloc.ID,
-							"taskGroup":      alloc.TaskGroup,
-							"clientStatus":   alloc.ClientStatus,
-							"nodeId":         alloc.NodeID,
-							"correlationKey": correlationKey,
-							"previousState":  prev,
-						},
-					})
-					if err != nil {
-						log.Printf("nomad watcher: beacon emit: %v", err)
-					}
-				}
-			}
-			w.checkTaskRestarts(ctx, spec)
-			w.checkCron(ctx, spec)
-			w.checkCronMissedRuns(ctx, spec)
-		}
+		w.checkInstances(ctx, spec)
+		w.checkTaskRestarts(ctx, spec)
+		w.checkCron(ctx, spec)
+		w.checkCronMissedRuns(ctx, spec)
 		w.checkServiceHealth(ctx, spec)
 	}
 }
 
-func (w *NomadAllocationWatcher) checkServiceHealth(ctx context.Context, spec *model.InfraSpec) {
-	if w.consul == nil {
+func (w *EngineWatcher) checkInstances(ctx context.Context, spec *model.InfraSpec) {
+	instances, err := w.engine.JobInstances(spec.App)
+	if err != nil {
 		return
 	}
+	for _, inst := range instances {
+		state := inst.Status
+		if inst.Healthy != nil && !*inst.Healthy && inst.IsRunning() {
+			state = "unhealthy"
+		}
+		if state != "failed" && state != "unhealthy" {
+			continue
+		}
+		key := fmt.Sprintf("%s:%s:%s", spec.App, engine.ShortID(inst.ContainerName), inst.Process)
+		prev := w.seen[key]
+		if prev == state {
+			continue
+		}
+		w.seen[key] = state
+		severity := model.BeaconWarning
+		if state == "failed" {
+			severity = model.BeaconCritical
+		}
+		correlationKey := fmt.Sprintf("%s:%s:instance", spec.App, inst.Process)
+		_, err := w.beacon.Emit(ctx, model.BeaconEvent{
+			App:       spec.App,
+			Type:      "instance." + state,
+			Severity:  severity,
+			Title:     fmt.Sprintf("%s instance %s", spec.App, state),
+			Body:      fmt.Sprintf("Instance %s process %s is %s.", engine.ShortID(inst.ContainerName), inst.Process, state),
+			DedupeKey: fmt.Sprintf("%s:%s:%s", spec.App, engine.ShortID(inst.ContainerName), state),
+			Metadata: map[string]interface{}{
+				"container":      inst.ContainerName,
+				"process":        inst.Process,
+				"status":         inst.Status,
+				"correlationKey": correlationKey,
+				"previousState":  prev,
+			},
+		})
+		if err != nil {
+			log.Printf("engine watcher: beacon emit: %v", err)
+		}
+	}
+}
+
+func (w *EngineWatcher) checkServiceHealth(ctx context.Context, spec *model.InfraSpec) {
 	for processName := range spec.Processes {
 		serviceName := spec.App + "-" + processName
-		health, err := w.consul.ServiceHealthChecks(serviceName)
+		health, err := w.engine.ServiceHealthChecks(serviceName)
 		if (err != nil || len(health) == 0) && spec.App != serviceName {
-			health, err = w.consul.ServiceHealthChecks(spec.App)
+			health, err = w.engine.ServiceHealthChecks(spec.App)
 		}
 		if err != nil || len(health) == 0 {
 			continue
 		}
-		state := aggregateServiceHealth(health)
+		state := aggregateHealth(health)
 		key := fmt.Sprintf("health:%s:%s", spec.App, processName)
 		previous := w.seen[key]
 		if previous == state {
@@ -171,12 +166,19 @@ func (w *NomadAllocationWatcher) checkServiceHealth(ctx context.Context, spec *m
 			},
 		})
 		if err != nil {
-			log.Printf("nomad watcher: health beacon emit: %v", err)
+			log.Printf("engine watcher: health beacon emit: %v", err)
 		}
 	}
 }
 
-func aggregateServiceHealth(health []consul.ServiceHealth) string {
+func emptyState(state string) string {
+	if state == "" {
+		return "unknown"
+	}
+	return state
+}
+
+func aggregateHealth(health []engine.ServiceHealth) string {
 	state := "passing"
 	for _, instance := range health {
 		switch instance.Status {
@@ -189,45 +191,35 @@ func aggregateServiceHealth(health []consul.ServiceHealth) string {
 	return state
 }
 
-func emptyState(state string) string {
-	if state == "" {
-		return "unknown"
-	}
-	return state
-}
-
-func (w *NomadAllocationWatcher) checkCron(ctx context.Context, spec *model.InfraSpec) {
-	if w.nomad == nil {
-		return
-	}
+func (w *EngineWatcher) checkCron(ctx context.Context, spec *model.InfraSpec) {
 	for process, proc := range spec.Processes {
 		if strings.TrimSpace(proc.Schedule) == "" {
 			continue
 		}
 		parentJobID := fmt.Sprintf("%s-%s", spec.App, process)
-		runs, err := w.nomad.PeriodicChildren(parentJobID)
+		runs, err := w.engine.CronHistory(parentJobID)
 		if err != nil {
 			continue
 		}
 		for _, run := range runs {
-			state := w.cronRunState(run.JobID, run.Status)
+			state := run.Status
 			startedAt, _ := time.Parse(time.RFC3339, run.StartedAt)
 			if state == "running" && !startedAt.IsZero() && time.Since(startedAt) > w.hungAfter {
 				state = "hung"
 			}
 			switch state {
-			case "complete", "dead", "failed", "lost", "hung":
+			case "complete", "failed", "hung":
 			default:
 				continue
 			}
-			key := fmt.Sprintf("cron:%s:%s:%s", spec.App, process, run.JobID)
+			key := fmt.Sprintf("cron:%s:%s:%s", spec.App, process, run.ID)
 			if w.seen[key] == state {
 				continue
 			}
 			w.seen[key] = state
 			severity := model.BeaconInfo
 			eventType := "cron.succeeded"
-			if state == "failed" || state == "lost" || state == "hung" {
+			if state == "failed" || state == "hung" {
 				severity = model.BeaconCritical
 				eventType = "cron." + state
 			}
@@ -236,47 +228,24 @@ func (w *NomadAllocationWatcher) checkCron(ctx context.Context, spec *model.Infr
 				Type:      eventType,
 				Severity:  severity,
 				Title:     fmt.Sprintf("%s %s cron %s", spec.App, process, state),
-				Body:      fmt.Sprintf("Cron process %s run %s is %s.", process, run.JobID, state),
-				DedupeKey: fmt.Sprintf("%s:%s:%s:%s", spec.App, process, run.JobID, state),
+				Body:      fmt.Sprintf("Cron process %s run %s is %s.", process, run.ID, state),
+				DedupeKey: fmt.Sprintf("%s:%s:%s:%s", spec.App, process, run.ID, state),
 				Metadata: map[string]interface{}{
 					"process":   process,
-					"jobId":     run.JobID,
+					"runId":     run.ID,
 					"status":    run.Status,
 					"startedAt": run.StartedAt,
 				},
 			})
 			if err != nil {
-				log.Printf("nomad watcher: cron beacon emit: %v", err)
+				log.Printf("engine watcher: cron beacon emit: %v", err)
 			}
 		}
 	}
 }
 
-func (w *NomadAllocationWatcher) cronRunState(jobID, jobStatus string) string {
-	allocs, err := w.nomad.JobAllocations(jobID)
-	if err != nil {
-		return jobStatus
-	}
-	if len(allocs) == 0 {
-		return jobStatus
-	}
-	running := false
-	for _, alloc := range allocs {
-		switch alloc.ClientStatus {
-		case "failed", "lost":
-			return alloc.ClientStatus
-		case "running", "pending":
-			running = true
-		}
-	}
-	if running {
-		return "running"
-	}
-	return "complete"
-}
-
-func (w *NomadAllocationWatcher) checkTaskRestarts(ctx context.Context, spec *model.InfraSpec) {
-	infos, err := w.nomad.TaskRestartSummary(spec.App)
+func (w *EngineWatcher) checkTaskRestarts(ctx context.Context, spec *model.InfraSpec) {
+	infos, err := w.engine.TaskRestartSummary(spec.App)
 	if err != nil {
 		return
 	}
@@ -299,7 +268,7 @@ func (w *NomadAllocationWatcher) checkTaskRestarts(ctx context.Context, spec *mo
 		if info.OOMKilled {
 			_, err := w.beacon.Emit(ctx, model.BeaconEvent{
 				App:       spec.App,
-				Type:      "nomad.task.oom_killed",
+				Type:      "instance.oom_killed",
 				Severity:  model.BeaconCritical,
 				Title:     fmt.Sprintf("%s %s OOM killed", spec.App, info.Task),
 				Body:      fmt.Sprintf("Task %s in %s was killed by the OOM killer (restarts: %d). %s", info.Task, info.TaskGroup, info.Restarts, info.LastEvent),
@@ -314,12 +283,12 @@ func (w *NomadAllocationWatcher) checkTaskRestarts(ctx context.Context, spec *mo
 				},
 			})
 			if err != nil {
-				log.Printf("nomad watcher: oom beacon emit: %v", err)
+				log.Printf("engine watcher: oom beacon emit: %v", err)
 			}
 		} else {
 			_, err := w.beacon.Emit(ctx, model.BeaconEvent{
 				App:       spec.App,
-				Type:      "nomad.task.restarted",
+				Type:      "instance.restarted",
 				Severity:  model.BeaconWarning,
 				Title:     fmt.Sprintf("%s %s restarted", spec.App, info.Task),
 				Body:      fmt.Sprintf("Task %s in %s restarted (count: %d). %s", info.Task, info.TaskGroup, info.Restarts, info.LastEvent),
@@ -334,7 +303,7 @@ func (w *NomadAllocationWatcher) checkTaskRestarts(ctx context.Context, spec *mo
 				},
 			})
 			if err != nil {
-				log.Printf("nomad watcher: restart beacon emit: %v", err)
+				log.Printf("engine watcher: restart beacon emit: %v", err)
 			}
 		}
 	}
@@ -342,7 +311,7 @@ func (w *NomadAllocationWatcher) checkTaskRestarts(ctx context.Context, spec *mo
 
 const cronMissedGracePeriod = 5 * time.Minute
 
-func cronEvaluationLocation(spec *model.InfraSpec, proc model.Process, info *nomad.PeriodicJobInfo) *time.Location {
+func cronEvaluationLocation(spec *model.InfraSpec, proc model.Process, info *engine.CronJobInfo) *time.Location {
 	timezone := ""
 	if info != nil {
 		timezone = strings.TrimSpace(info.TimeZone)
@@ -360,10 +329,7 @@ func cronEvaluationLocation(spec *model.InfraSpec, proc model.Process, info *nom
 	return loc
 }
 
-func (w *NomadAllocationWatcher) checkCronMissedRuns(ctx context.Context, spec *model.InfraSpec) {
-	if w.nomad == nil {
-		return
-	}
+func (w *EngineWatcher) checkCronMissedRuns(ctx context.Context, spec *model.InfraSpec) {
 	for process, proc := range spec.Processes {
 		if strings.TrimSpace(proc.Schedule) == "" {
 			continue
@@ -371,12 +337,11 @@ func (w *NomadAllocationWatcher) checkCronMissedRuns(ctx context.Context, spec *
 		parentJobID := fmt.Sprintf("%s-%s", spec.App, process)
 		missedKey := fmt.Sprintf("missed:%s:%s", spec.App, process)
 
-		info, err := w.nomad.PeriodicJobSchedule(parentJobID)
+		info, err := w.engine.CronScheduleInfo(parentJobID)
 		if err != nil || info == nil {
 			continue
 		}
 		if info.Paused || info.Status == "dead" {
-			// Job is intentionally stopped; clear any prior missed-run alert state.
 			delete(w.seen, missedKey)
 			continue
 		}
@@ -385,10 +350,9 @@ func (w *NomadAllocationWatcher) checkCronMissedRuns(ctx context.Context, spec *
 			continue
 		}
 
-		// Parse the cron expression safely.
 		var expr *cronexpr.Expression
 		func() {
-			defer func() { recover() }() //nolint:errcheck
+			defer func() { recover() }()
 			expr = cronexpr.MustParse(schedule)
 		}()
 		if expr == nil {
@@ -397,8 +361,7 @@ func (w *NomadAllocationWatcher) checkCronMissedRuns(ctx context.Context, spec *
 		location := cronEvaluationLocation(spec, proc, info)
 		now := time.Now().In(location)
 
-		// Find the latest run's start time.
-		runs, err := w.nomad.PeriodicChildren(parentJobID)
+		runs, err := w.engine.CronHistory(parentJobID)
 		if err != nil {
 			continue
 		}
@@ -414,9 +377,6 @@ func (w *NomadAllocationWatcher) checkCronMissedRuns(ctx context.Context, spec *
 			}
 		}
 
-		// If we have never seen a run, use a reference point far enough back
-		// so that at least one interval has elapsed. Use one full interval
-		// before now as the reference so we don't false-alert on first start.
 		reference := lastRunTime
 		if info.SubmittedAt != "" {
 			if submittedAt, parseErr := time.Parse(time.RFC3339, info.SubmittedAt); parseErr == nil && submittedAt.In(location).After(reference) {
@@ -424,8 +384,6 @@ func (w *NomadAllocationWatcher) checkCronMissedRuns(ctx context.Context, spec *
 			}
 		}
 		if reference.IsZero() {
-			// Seed from a point far enough in the past that Next() gives us
-			// the most recently expected run.
 			reference = now.Add(-24 * time.Hour)
 		}
 
@@ -436,15 +394,9 @@ func (w *NomadAllocationWatcher) checkCronMissedRuns(ctx context.Context, spec *
 
 		deadline := expectedNextRun.Add(cronMissedGracePeriod)
 		if now.Before(deadline) {
-			// The expected run hasn't been missed yet; clear any stale alert key
-			// so we re-alert if a future window is missed.
-			if w.seen[missedKey] == expectedNextRun.Format(time.RFC3339) {
-				// still the same window and still within grace — do nothing
-			}
 			continue
 		}
 
-		// We're past the grace period. Check whether we already alerted for this window.
 		windowKey := expectedNextRun.Format(time.RFC3339)
 		if w.seen[missedKey] == windowKey {
 			continue
@@ -457,7 +409,7 @@ func (w *NomadAllocationWatcher) checkCronMissedRuns(ctx context.Context, spec *
 			Severity: model.BeaconCritical,
 			Title:    fmt.Sprintf("%s %s cron missed run", spec.App, process),
 			Body: fmt.Sprintf(
-				"Cron process %s was expected to run at %s but no dispatch was recorded. The Nomad periodic dispatcher may be stuck or the job may be paused.",
+				"Cron process %s was expected to run at %s but no dispatch was recorded.",
 				process, expectedNextRun.UTC().Format(time.RFC3339),
 			),
 			DedupeKey: fmt.Sprintf("%s:%s:missed:%s", spec.App, process, windowKey),
@@ -473,14 +425,7 @@ func (w *NomadAllocationWatcher) checkCronMissedRuns(ctx context.Context, spec *
 			},
 		})
 		if emitErr != nil {
-			log.Printf("nomad watcher: missed-run beacon emit: %v", emitErr)
+			log.Printf("engine watcher: missed-run beacon emit: %v", emitErr)
 		}
 	}
-}
-
-func shortAlloc(id string) string {
-	if len(id) <= 8 {
-		return id
-	}
-	return id[:8]
 }

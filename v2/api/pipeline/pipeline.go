@@ -10,10 +10,9 @@ import (
 	"github.com/google/uuid"
 
 	"norn/v2/api/beacon"
-	"norn/v2/api/consul"
+	"norn/v2/api/engine"
 	"norn/v2/api/hub"
 	"norn/v2/api/model"
-	"norn/v2/api/nomad"
 	"norn/v2/api/redpanda"
 	"norn/v2/api/runtime"
 	"norn/v2/api/saga"
@@ -24,8 +23,7 @@ import (
 
 type Pipeline struct {
 	DB          *store.DB
-	Nomad       *nomad.Client
-	Consul      *consul.Client
+	Engine      *engine.Engine
 	WS          *hub.Hub
 	SagaStore   saga.Store
 	Secrets     *secrets.Manager

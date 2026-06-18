@@ -5,39 +5,15 @@ import (
 	"net/http"
 
 	"github.com/go-chi/chi/v5"
-	nomadapi "github.com/hashicorp/nomad/api"
 
+	"norn/v2/api/engine"
 	"norn/v2/api/model"
-	"norn/v2/api/nomad"
 )
 
-func enrichAllocations(allocs []*nomadapi.AllocationListStub, n *nomad.Client) []model.Allocation {
-	nodeCache := make(map[string]*nomad.NodeInfo)
+func instancesToAllocations(instances []engine.Instance) []model.Allocation {
 	var out []model.Allocation
-	for _, a := range allocs {
-		alloc := model.Allocation{
-			ID:        shortID(a.ID),
-			TaskGroup: a.TaskGroup,
-			Status:    a.ClientStatus,
-			Lifecycle: allocationLifecycle(a.ClientStatus),
-			NodeID:    shortID(a.NodeID),
-		}
-		if a.DeploymentStatus != nil {
-			alloc.Healthy = a.DeploymentStatus.Healthy
-		}
-		if ni, ok := nodeCache[a.NodeID]; ok {
-			alloc.NodeAddress = ni.Address
-			alloc.NodeName = ni.Name
-			alloc.NodeProvider = ni.Provider
-			alloc.NodeRegion = ni.Region
-		} else if ni, err := n.NodeInfo(a.NodeID); err == nil {
-			nodeCache[a.NodeID] = ni
-			alloc.NodeAddress = ni.Address
-			alloc.NodeName = ni.Name
-			alloc.NodeProvider = ni.Provider
-			alloc.NodeRegion = ni.Region
-		}
-		out = append(out, alloc)
+	for _, inst := range instances {
+		out = append(out, inst.ToAllocation())
 	}
 	return out
 }
@@ -112,19 +88,19 @@ func (h *Handler) ListApps(w http.ResponseWriter, r *http.Request) {
 			Healthy: false,
 		}
 
-		if h.nomad != nil {
-			jobStatus, err := h.nomad.JobStatus(spec.App)
+		if h.engine != nil {
+			jobStatus, err := h.engine.JobStatus(spec.App)
 			if err == nil {
 				status.NomadStatus = jobStatus
 			}
 
-			allocs, err := h.nomad.JobAllocations(spec.App)
+			instances, err := h.engine.JobInstances(spec.App)
 			if err == nil {
-				status.Allocations = enrichAllocations(allocs, h.nomad)
+				status.Allocations = instancesToAllocations(instances)
 				status.AllocationSummary = summarizeAllocations(status.Allocations)
 
-				for _, a := range allocs {
-					if a.ClientStatus == "running" && a.DeploymentStatus != nil && a.DeploymentStatus.Healthy != nil && *a.DeploymentStatus.Healthy {
+				for _, inst := range instances {
+					if inst.Healthy != nil && *inst.Healthy && inst.IsRunning() {
 						status.Healthy = true
 						break
 					}
@@ -163,31 +139,21 @@ func (h *Handler) GetApp(w http.ResponseWriter, r *http.Request) {
 		Healthy: false,
 	}
 
-	if h.nomad != nil {
-		jobStatus, err := h.nomad.JobStatus(spec.App)
+	if h.engine != nil {
+		jobStatus, err := h.engine.JobStatus(spec.App)
 		if err == nil {
 			status.NomadStatus = jobStatus
 		}
 
-		allocs, err := h.nomad.JobAllocations(spec.App)
+		instances, err := h.engine.JobInstances(spec.App)
 		if err == nil {
-			status.Allocations = enrichAllocations(allocs, h.nomad)
+			status.Allocations = instancesToAllocations(instances)
 			status.AllocationSummary = summarizeAllocations(status.Allocations)
-			for _, a := range allocs {
-				if a.ClientStatus == "running" && a.DeploymentStatus != nil && a.DeploymentStatus.Healthy != nil && *a.DeploymentStatus.Healthy {
+			for _, inst := range instances {
+				if inst.Healthy != nil && *inst.Healthy && inst.IsRunning() {
 					status.Healthy = true
 					break
 				}
-			}
-		}
-	}
-
-	if h.consul != nil {
-		for procName := range spec.Processes {
-			svcName := fmt.Sprintf("%s-%s", spec.App, procName)
-			health, err := h.consul.ServiceHealthChecks(svcName)
-			if err == nil {
-				_ = health
 			}
 		}
 	}
@@ -197,11 +163,11 @@ func (h *Handler) GetApp(w http.ResponseWriter, r *http.Request) {
 
 func (h *Handler) RestartApp(w http.ResponseWriter, r *http.Request) {
 	id := chi.URLParam(r, "id")
-	if h.nomad == nil {
-		writeError(w, http.StatusServiceUnavailable, "nomad not connected")
+	if h.engine == nil {
+		writeError(w, http.StatusServiceUnavailable, "engine not available")
 		return
 	}
-	if err := h.nomad.RestartJob(id); err != nil {
+	if err := h.engine.RestartJob(r.Context(), id); err != nil {
 		writeError(w, http.StatusInternalServerError, err.Error())
 		return
 	}
@@ -210,8 +176,8 @@ func (h *Handler) RestartApp(w http.ResponseWriter, r *http.Request) {
 
 func (h *Handler) ScaleApp(w http.ResponseWriter, r *http.Request) {
 	id := chi.URLParam(r, "id")
-	if h.nomad == nil {
-		writeError(w, http.StatusServiceUnavailable, "nomad not connected")
+	if h.engine == nil {
+		writeError(w, http.StatusServiceUnavailable, "engine not available")
 		return
 	}
 
@@ -228,7 +194,7 @@ func (h *Handler) ScaleApp(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	if err := h.nomad.ScaleJob(id, req.Group, req.Count); err != nil {
+	if err := h.engine.ScaleJob(r.Context(), id, req.Group, req.Count); err != nil {
 		writeError(w, http.StatusInternalServerError, err.Error())
 		return
 	}

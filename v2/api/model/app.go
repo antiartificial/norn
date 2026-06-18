@@ -1,9 +1,8 @@
 package model
 
-// AppStatus represents the status of a discovered app backed by Nomad.
 type AppStatus struct {
 	Spec              *InfraSpec        `json:"spec"`
-	NomadStatus       string            `json:"nomadStatus"` // running, pending, dead
+	NomadStatus       string            `json:"nomadStatus"` // running, pending, dead — kept for API compat
 	Healthy           bool              `json:"healthy"`
 	Allocations       []Allocation      `json:"allocations"`
 	AllocationSummary AllocationSummary `json:"allocationSummary"`

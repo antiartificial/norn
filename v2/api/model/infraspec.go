@@ -124,7 +124,7 @@ type TuningLimits struct {
 
 type TuningSignal struct {
 	Name      string `yaml:"name,omitempty" json:"name,omitempty"`
-	Source    string `yaml:"source,omitempty" json:"source,omitempty"`       // nomad, prometheus, app
+	Source    string `yaml:"source,omitempty" json:"source,omitempty"`       // engine, prometheus, app
 	Metric    string `yaml:"metric,omitempty" json:"metric,omitempty"`       // memory_rss, memory_max, cpu_percent, custom
 	Window    string `yaml:"window,omitempty" json:"window,omitempty"`       // e.g. 30m, 24h
 	Aggregate string `yaml:"aggregate,omitempty" json:"aggregate,omitempty"` // current, max, p95

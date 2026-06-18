@@ -11,8 +11,8 @@ import (
 	"time"
 
 	"norn/v2/api/config"
+	"norn/v2/api/engine"
 	"norn/v2/api/model"
-	"norn/v2/api/nomad"
 )
 
 func TestMetricsEmitsPrometheusText(t *testing.T) {
@@ -156,31 +156,33 @@ func TestObservabilityServicesInstallRejectsExistingWithoutOverwrite(t *testing.
 	}
 }
 
-func TestCronMissedRunTreatsPrunedNomadChildrenAsHistory(t *testing.T) {
+func TestCronMissedRunReturnsZeroWhenLastRunRecent(t *testing.T) {
 	spec := &model.InfraSpec{App: "field-harbor", Env: map[string]string{"TZ": "America/Chicago"}}
 	proc := model.Process{Schedule: "10 20 * * *"}
-	info := &nomad.PeriodicJobInfo{
-		JobID:        "field-harbor-field-harbor-sync-pm",
-		Schedule:     "10 20 * * *",
-		TimeZone:     "America/Chicago",
-		SubmittedAt:  "2026-06-16T12:42:47-05:00",
-		Status:       "running",
-		ChildrenDead: 28,
+	info := &engine.CronJobInfo{
+		JobID:       "field-harbor-field-harbor-sync-pm",
+		Schedule:    "10 20 * * *",
+		TimeZone:    "America/Chicago",
+		SubmittedAt: "2026-06-16T12:42:47-05:00",
+		Status:      "running",
+	}
+	runs := []engine.CronRun{
+		{ID: "run-1", StartedAt: "2026-06-16T20:10:00-05:00", Status: "complete"},
 	}
 	now, err := time.Parse(time.RFC3339, "2026-06-17T01:20:00-05:00")
 	if err != nil {
 		t.Fatal(err)
 	}
 
-	if got := cronMissedRun(now, spec, proc, info, nil); got != 0 {
-		t.Fatalf("cronMissedRun = %d, want 0 for pruned child history", got)
+	if got := cronMissedRun(now, spec, proc, info, runs); got != 0 {
+		t.Fatalf("cronMissedRun = %d, want 0 when last run is recent", got)
 	}
 }
 
 func TestCronMissedRunFlagsMissingFirstDispatch(t *testing.T) {
 	spec := &model.InfraSpec{App: "field-harbor", Env: map[string]string{"TZ": "America/Chicago"}}
 	proc := model.Process{Schedule: "10 20 * * *"}
-	info := &nomad.PeriodicJobInfo{
+	info := &engine.CronJobInfo{
 		JobID:       "field-harbor-field-harbor-sync-pm",
 		Schedule:    "10 20 * * *",
 		TimeZone:    "America/Chicago",
@@ -192,7 +194,7 @@ func TestCronMissedRunFlagsMissingFirstDispatch(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	if got := cronMissedRun(now, spec, proc, info, []nomad.CronRun{}); got != 1 {
+	if got := cronMissedRun(now, spec, proc, info, []engine.CronRun{}); got != 1 {
 		t.Fatalf("cronMissedRun = %d, want 1 without dispatch evidence", got)
 	}
 }

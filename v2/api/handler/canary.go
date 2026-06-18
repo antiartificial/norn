@@ -9,12 +9,12 @@ import (
 	"norn/v2/api/model"
 )
 
-// CanaryStatus returns the latest Nomad deployment status for an app,
-// including whether canary allocations are in progress.
+// CanaryStatus returns the latest deployment status for an app,
+// including whether canary instances are in progress.
 func (h *Handler) CanaryStatus(w http.ResponseWriter, r *http.Request) {
 	id := chi.URLParam(r, "id")
 
-	info, err := h.nomad.LatestDeployment(id)
+	info, err := h.engine.LatestDeployment(id)
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, fmt.Sprintf("latest deployment: %v", err))
 		return
@@ -31,7 +31,7 @@ func (h *Handler) CanaryStatus(w http.ResponseWriter, r *http.Request) {
 func (h *Handler) PromoteCanary(w http.ResponseWriter, r *http.Request) {
 	id := chi.URLParam(r, "id")
 
-	if err := h.nomad.PromoteDeployment(id); err != nil {
+	if err := h.engine.PromoteDeployment(r.Context(), id); err != nil {
 		writeError(w, http.StatusInternalServerError, fmt.Sprintf("promote canary: %v", err))
 		return
 	}

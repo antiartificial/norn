@@ -65,34 +65,14 @@ func (p *Pipeline) cloudflaredService(spec *model.InfraSpec) (string, error) {
 	}
 
 	serviceName := fmt.Sprintf("%s-%s", spec.App, processName)
-	if p.Consul != nil {
-		instances, err := p.Consul.ServiceHealthChecks(serviceName)
+	if p.Engine != nil {
+		addr, err := p.Engine.ServiceAddress(serviceName)
 		if err == nil {
-			for _, instance := range instances {
-				if instance.Status == "passing" && instance.Address != "" && instance.Port > 0 {
-					return fmt.Sprintf("http://%s:%d", instance.Address, instance.Port), nil
-				}
-			}
-			for _, instance := range instances {
-				if instance.Address != "" && instance.Port > 0 {
-					return fmt.Sprintf("http://%s:%d", instance.Address, instance.Port), nil
-				}
-			}
+			return "http://" + addr, nil
 		}
 	}
 
-	allocs, err := p.Nomad.PollAllocations(spec.App)
-	if err != nil {
-		return "", fmt.Errorf("poll allocations: %w", err)
-	}
-	if len(allocs) == 0 {
-		return "", fmt.Errorf("no running allocations for %s", spec.App)
-	}
-	nodeInfo, err := p.Nomad.NodeInfo(allocs[0].NodeID)
-	if err != nil {
-		return "", fmt.Errorf("node info: %w", err)
-	}
-	return fmt.Sprintf("http://%s:%d", nodeInfo.Address, process.Port), nil
+	return fmt.Sprintf("http://127.0.0.1:%d", process.Port), nil
 }
 
 func cloudflaredProcess(spec *model.InfraSpec) (string, model.Process, bool) {

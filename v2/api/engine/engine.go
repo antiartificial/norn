@@ -270,15 +270,7 @@ func (e *Engine) JobStatus(appID string) (string, error) {
 	return "pending", nil
 }
 
-// placeholder loops — implemented in supervisor.go, health.go, scheduler.go
-func (e *Engine) supervisorLoop(ctx context.Context) {
-	// Implemented in supervisor.go
-}
-
-func (e *Engine) healthCheckLoop(ctx context.Context) {
-	// Implemented in health.go
-}
-
-func (e *Engine) cronLoop(ctx context.Context) {
-	// Implemented in scheduler.go
-}
+// Background loops delegate to implementations in supervisor.go, health.go, scheduler.go.
+func (e *Engine) supervisorLoop(ctx context.Context) { e.runSupervisor(ctx) }
+func (e *Engine) healthCheckLoop(ctx context.Context) { e.runHealthChecker(ctx) }
+func (e *Engine) cronLoop(ctx context.Context)        { e.runCronScheduler(ctx) }

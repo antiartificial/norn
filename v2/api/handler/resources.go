@@ -4,8 +4,8 @@ import (
 	"net/http"
 	"sort"
 
+	"norn/v2/api/engine"
 	"norn/v2/api/model"
-	"norn/v2/api/nomad"
 )
 
 type resourceSuggestion struct {
@@ -39,8 +39,8 @@ func classifyMemory(declaredMB, usedMB, peakMB int) (string, string) {
 }
 
 func (h *Handler) ResourceSuggestions(w http.ResponseWriter, r *http.Request) {
-	if h.nomad == nil {
-		writeError(w, http.StatusServiceUnavailable, "nomad not connected")
+	if h.engine == nil {
+		writeError(w, http.StatusServiceUnavailable, "engine not available")
 		return
 	}
 
@@ -53,8 +53,8 @@ func (h *Handler) ResourceSuggestions(w http.ResponseWriter, r *http.Request) {
 
 	var suggestions []resourceSuggestion
 	for _, spec := range specs {
-		usageByGroup := map[string]*nomad.ResourceUsage{}
-		usage, err := h.nomad.JobResourceUsage(spec.App)
+		usageByGroup := map[string]*engine.ResourceUsage{}
+		usage, err := h.engine.JobResourceUsage(r.Context(), spec.App)
 		if err != nil || len(usage) == 0 {
 			continue
 		}

@@ -3,19 +3,18 @@ package handler
 import (
 	"fmt"
 	"net/http"
-	"os"
 
 	"github.com/go-chi/chi/v5"
 
+	"norn/v2/api/engine"
 	"norn/v2/api/model"
-	"norn/v2/api/nomad"
 )
 
 type cronHistoryEntry struct {
 	Process  string          `json:"process"`
 	Schedule string          `json:"schedule"`
 	Paused   bool            `json:"paused"`
-	Runs     []nomad.CronRun `json:"runs"`
+	Runs     []engine.CronRun `json:"runs"`
 }
 
 func (h *Handler) CronHistory(w http.ResponseWriter, r *http.Request) {
@@ -47,10 +46,10 @@ func (h *Handler) CronHistory(w http.ResponseWriter, r *http.Request) {
 			}
 		}
 
-		// Get recent runs from Nomad
-		if h.nomad != nil {
+		// Get recent runs from engine
+		if h.engine != nil {
 			jobID := fmt.Sprintf("%s-%s", id, procName)
-			runs, err := h.nomad.PeriodicChildren(jobID)
+			runs, err := h.engine.CronHistory(jobID)
 			if err == nil {
 				entry.Runs = runs
 			}
@@ -76,13 +75,13 @@ func (h *Handler) CronTrigger(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	if h.nomad == nil {
-		writeError(w, http.StatusServiceUnavailable, "nomad not connected")
+	if h.engine == nil {
+		writeError(w, http.StatusServiceUnavailable, "engine not available")
 		return
 	}
 
 	jobID := fmt.Sprintf("%s-%s", id, req.Process)
-	evalID, err := h.nomad.PeriodicForce(jobID)
+	evalID, err := h.engine.CronForce(r.Context(), jobID)
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, err.Error())
 		return
@@ -118,16 +117,13 @@ func (h *Handler) CronPause(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	if h.nomad == nil {
-		writeError(w, http.StatusServiceUnavailable, "nomad not connected")
+	if h.engine == nil {
+		writeError(w, http.StatusServiceUnavailable, "engine not available")
 		return
 	}
 
 	jobID := fmt.Sprintf("%s-%s", id, req.Process)
-	if err := h.nomad.StopJob(jobID, false); err != nil {
-		writeError(w, http.StatusInternalServerError, err.Error())
-		return
-	}
+	h.engine.UnregisterCron(jobID)
 
 	// Persist the schedule so we can resume later
 	spec := h.findSpec(id)
@@ -172,59 +168,23 @@ func (h *Handler) CronResume(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	if h.nomad == nil {
-		writeError(w, http.StatusServiceUnavailable, "nomad not connected")
+	if h.engine == nil {
+		writeError(w, http.StatusServiceUnavailable, "engine not available")
 		return
 	}
 
-	spec := h.findSpec(id)
-	if spec == nil {
-		writeError(w, http.StatusNotFound, fmt.Sprintf("app %s not found", id))
-		return
-	}
-
-	proc, ok := spec.Processes[req.Process]
-	if !ok {
-		writeError(w, http.StatusNotFound, fmt.Sprintf("process %s not found", req.Process))
-		return
-	}
-
-	// Check for custom schedule
-	state, err := h.db.GetCronState(r.Context(), id, req.Process)
-	if err == nil && state.Schedule != "" {
-		proc.Schedule = state.Schedule
-	}
-
-	// Resolve image tag from last deployment
-	deps, err := h.db.ListDeployments(r.Context(), id, 1)
-	if err != nil || len(deps) == 0 {
-		writeError(w, http.StatusBadRequest, "no previous deployment found")
-		return
-	}
-	imageTag := deps[0].ImageTag
-
-	// Resolve secrets
-	env := make(map[string]string)
-	if h.secrets != nil {
-		secretEnv, err := h.secrets.EnvMap(id)
-		if err != nil && !os.IsNotExist(err) {
-			writeError(w, http.StatusInternalServerError, fmt.Sprintf("resolve secrets: %v", err))
-			return
-		}
-		for k, v := range secretEnv {
-			env[k] = v
-		}
-	}
-
-	// Re-submit periodic job
-	periodicJob := nomad.TranslatePeriodicWithDriver(spec, req.Process, proc, imageTag, env, h.taskDriver())
-	_, err = h.nomad.SubmitJob(periodicJob)
-	if err != nil {
+	jobID := fmt.Sprintf("%s-%s", id, req.Process)
+	if err := h.engine.ResumeCron(jobID); err != nil {
 		writeError(w, http.StatusInternalServerError, err.Error())
 		return
 	}
 
-	h.db.UpsertCronState(r.Context(), id, req.Process, false, proc.Schedule)
+	state, err := h.db.GetCronState(r.Context(), id, req.Process)
+	if err == nil && state.Schedule != "" {
+		h.engine.UpdateCronSchedule(jobID, state.Schedule)
+	}
+
+	h.db.UpsertCronState(r.Context(), id, req.Process, false, "")
 
 	writeJSON(w, map[string]string{"status": "resumed"})
 	h.emitBeacon(r.Context(), model.BeaconEvent{
@@ -236,8 +196,6 @@ func (h *Handler) CronResume(w http.ResponseWriter, r *http.Request) {
 		DedupeKey: fmt.Sprintf("%s:%s:cron", id, req.Process),
 		Metadata: map[string]interface{}{
 			"process":        req.Process,
-			"schedule":       proc.Schedule,
-			"imageTag":       imageTag,
 			"correlationKey": fmt.Sprintf("%s:%s:cron", id, req.Process),
 		},
 	})
@@ -255,51 +213,13 @@ func (h *Handler) CronUpdateSchedule(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	if h.nomad == nil {
-		writeError(w, http.StatusServiceUnavailable, "nomad not connected")
+	if h.engine == nil {
+		writeError(w, http.StatusServiceUnavailable, "engine not available")
 		return
 	}
 
-	spec := h.findSpec(id)
-	if spec == nil {
-		writeError(w, http.StatusNotFound, fmt.Sprintf("app %s not found", id))
-		return
-	}
-
-	proc, ok := spec.Processes[req.Process]
-	if !ok {
-		writeError(w, http.StatusNotFound, fmt.Sprintf("process %s not found", req.Process))
-		return
-	}
-
-	// Use the new schedule
-	proc.Schedule = req.Schedule
-
-	// Resolve image tag from last deployment
-	deps, err := h.db.ListDeployments(r.Context(), id, 1)
-	if err != nil || len(deps) == 0 {
-		writeError(w, http.StatusBadRequest, "no previous deployment found")
-		return
-	}
-	imageTag := deps[0].ImageTag
-
-	// Resolve secrets
-	env := make(map[string]string)
-	if h.secrets != nil {
-		secretEnv, err := h.secrets.EnvMap(id)
-		if err != nil && !os.IsNotExist(err) {
-			writeError(w, http.StatusInternalServerError, fmt.Sprintf("resolve secrets: %v", err))
-			return
-		}
-		for k, v := range secretEnv {
-			env[k] = v
-		}
-	}
-
-	// Re-submit periodic job with new schedule
-	periodicJob := nomad.TranslatePeriodicWithDriver(spec, req.Process, proc, imageTag, env, h.taskDriver())
-	_, err = h.nomad.SubmitJob(periodicJob)
-	if err != nil {
+	jobID := fmt.Sprintf("%s-%s", id, req.Process)
+	if err := h.engine.UpdateCronSchedule(jobID, req.Schedule); err != nil {
 		writeError(w, http.StatusInternalServerError, err.Error())
 		return
 	}
@@ -320,7 +240,6 @@ func (h *Handler) CronUpdateSchedule(w http.ResponseWriter, r *http.Request) {
 		Metadata: map[string]interface{}{
 			"process":        req.Process,
 			"schedule":       req.Schedule,
-			"imageTag":       imageTag,
 			"correlationKey": fmt.Sprintf("%s:%s:cron", id, req.Process),
 		},
 	})
