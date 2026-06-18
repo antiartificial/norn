@@ -18,6 +18,7 @@ POST /api/events
 POST /api/events/{id}/ack
 POST /api/events/{id}/snooze
 POST /api/events/{id}/open
+POST /api/incidents/action
 GET  /api/events/sinks
 POST /api/events/test
 GET  /api/alerts/rules
@@ -91,6 +92,28 @@ secret values.
 deploy failures, service health, cron failures, and recovery events. It is a
 shared contract for the CLI, dashboard, and downstream sinks; it is not a
 separate paging engine.
+
+Incident groups can also be acted on directly. Use `correlationKey` for modern
+Beacon event families and `dedupeKey` for older or external events that do not
+carry a correlation key.
+
+```http
+POST /api/incidents/action
+```
+
+```json
+{
+  "action": "resolve",
+  "correlationKey": "field-harbor:field-harbor-sync-pm:cron",
+  "app": "field-harbor",
+  "by": "operator",
+  "note": "periodic parent is healthy"
+}
+```
+
+`resolve` acknowledges existing warning/critical events and emits an
+`incident.resolved` info event through Beacon, so sinks such as Vigil see a real
+recovery event rather than a silent local state change.
 
 ## Built-In Events
 

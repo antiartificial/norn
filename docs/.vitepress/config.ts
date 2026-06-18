@@ -71,6 +71,7 @@ export default withMermaid(
             items: [
               { text: 'Deploying', link: '/v2/operations/deploying' },
               { text: 'Agent Runbook', link: '/v2/operations/agent-runbook' },
+              { text: 'Operator Confidence', link: '/v2/operations/operator-confidence' },
               { text: 'Operations Ledger', link: '/v2/operations/operations' },
               { text: 'Beacon Events', link: '/v2/operations/beacon' },
               { text: 'Cron Jobs', link: '/v2/operations/cron' },

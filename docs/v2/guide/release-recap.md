@@ -69,6 +69,7 @@ This recap summarizes the current Norn v2 release line: the Nomad/Consul control
 | Notification bootstrap | `norn notifications bootstrap`, `POST /api/notifications/channels/bootstrap` | Auto-discovers vigil-gateway and creates a default webhook notification channel |
 | Event dedup suppression | Beacon emit-level dedupeKey check with 1h window | Prevents event storms from repeated watcher detection after API restarts |
 | Active incidents view | `GET /api/events/active`, `norn events active` | Shows unresolved incident groups collapsed by correlation key |
+| Operator confidence release | `/api/operator/*`, `norn operator *`, `/api/incidents/action` | Unifies incident lifecycle, cron overview, wake targets, deploy confidence, snapshot readiness, secret-safe auth hints, and mobile-ready actions |
 | Secrets migration fix | `norn secrets migrate --apply` field matching fix | Fixes `env.KEY` field matching so plaintext env secrets are correctly identified for migration |
 | Secrets hygiene push | Infraspec declarations for ft-trove, its-alive-api, mail-indexer, mail-mcp | Resolves undeclared encrypted secrets warnings from platform ops |
 | Upgrade path | `norn platform preflight`, `upgrade`, `releases`, `rollback` | Upgrades Norn API, CLI, and built UI without stopping Nomad, Consul, Postgres, or hosted apps |
@@ -108,6 +109,14 @@ Proxy-backed platform upgrades are available for hosts that intentionally run No
 The advisory tuner now has a traffic-signal path instead of relying only on allocation resource usage. Operators can declare process-level `tuning` policy, inspect current recommendations with `norn tune`, and import hosted-service access observations through `norn access observe`, Cloudflare GraphQL sync, the Cloudflare Logpush receiver, or the live wake gateway. GraphQL syncs are chunked into day-sized requests, clamped to the available analytics lookback, and idempotent for hourly aggregate buckets so retries do not inflate counts.
 
 The wake gateway is the first live request-path mechanism for scale-from-idle. It maps public service hostnames from the service manifest, records the access as `wake-gateway`, scales the corresponding Nomad task group to one instance when no passing instance exists, waits for Consul readiness, and then proxies the original request to the service. It supports both host-based routing for cloudflared/proxy ingress and an explicit `/api/wake-gateway/{host}` path for local testing.
+
+The operator-confidence release ties the incident, cron, deploy, snapshot, wake,
+auth, and mobile action surfaces together. `norn operator inbox` is the entry
+point for "what needs attention right now?" while the narrower subcommands show
+cron schedules, wake targets, deploy confidence, restore readiness, secret-safe
+auth patterns, and mobile-ready action descriptors. Incident group actions now
+resolve through Beacon so sinks receive a real recovery event instead of only a
+local acknowledgement.
 
 ## Verification
 
@@ -153,6 +162,11 @@ The current release line has been exercised with:
 - `norn access patterns --window 7d --idle-after 7d`
 - `norn access cloudflare status`
 - `norn access cloudflare sync --window 14d`
+- `norn operator inbox`
+- `norn operator cron`
+- `norn operator deploy-confidence`
+- `norn operator snapshot-readiness`
+- `norn operator auth-hints`
 
 ## Compatibility
 

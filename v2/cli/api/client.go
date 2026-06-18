@@ -909,6 +909,148 @@ type ActiveIncident struct {
 	LatestEventID  string `json:"latestEventId"`
 }
 
+type OperatorInbox struct {
+	GeneratedAt string                     `json:"generatedAt"`
+	Summary     OperatorInboxSummary       `json:"summary"`
+	Items       []OperatorInboxItem        `json:"items"`
+	Actions     []OperatorActionDescriptor `json:"actions"`
+}
+
+type OperatorInboxSummary struct {
+	OpenIncidents      int `json:"openIncidents"`
+	ActiveOperations   int `json:"activeOperations"`
+	DeployRisks        int `json:"deployRisks"`
+	CronRisks          int `json:"cronRisks"`
+	SnapshotRisks      int `json:"snapshotRisks"`
+	SecretRisks        int `json:"secretRisks"`
+	WakeTargets        int `json:"wakeTargets"`
+	RecommendedActions int `json:"recommendedActions"`
+}
+
+type OperatorInboxItem struct {
+	ID             string                 `json:"id"`
+	Kind           string                 `json:"kind"`
+	App            string                 `json:"app,omitempty"`
+	Process        string                 `json:"process,omitempty"`
+	Severity       string                 `json:"severity"`
+	Status         string                 `json:"status,omitempty"`
+	Title          string                 `json:"title"`
+	Body           string                 `json:"body,omitempty"`
+	CorrelationKey string                 `json:"correlationKey,omitempty"`
+	DedupeKey      string                 `json:"dedupeKey,omitempty"`
+	OccurredAt     string                 `json:"occurredAt,omitempty"`
+	Action         string                 `json:"action,omitempty"`
+	ActionURL      string                 `json:"actionUrl,omitempty"`
+	Evidence       []string               `json:"evidence,omitempty"`
+	Metadata       map[string]interface{} `json:"metadata,omitempty"`
+}
+
+type OperatorCronOverview struct {
+	GeneratedAt string              `json:"generatedAt"`
+	Entries     []OperatorCronEntry `json:"entries"`
+}
+
+type OperatorCronEntry struct {
+	App             string   `json:"app"`
+	Process         string   `json:"process"`
+	Schedule        string   `json:"schedule"`
+	Timezone        string   `json:"timezone"`
+	Paused          bool     `json:"paused"`
+	Status          string   `json:"status,omitempty"`
+	ParentJobID     string   `json:"parentJobId"`
+	LastRunAtLocal  string   `json:"lastRunAtLocal,omitempty"`
+	NextRunAtLocal  string   `json:"nextRunAtLocal,omitempty"`
+	ChildrenPending int64    `json:"childrenPending,omitempty"`
+	ChildrenRunning int64    `json:"childrenRunning,omitempty"`
+	ChildrenDead    int64    `json:"childrenDead,omitempty"`
+	Risk            string   `json:"risk,omitempty"`
+	Evidence        []string `json:"evidence,omitempty"`
+}
+
+type OperatorWakeTargets struct {
+	GeneratedAt string               `json:"generatedAt"`
+	Targets     []OperatorWakeTarget `json:"targets"`
+}
+
+type OperatorWakeTarget struct {
+	App       string   `json:"app"`
+	Process   string   `json:"process"`
+	Endpoint  string   `json:"endpoint"`
+	Exposure  string   `json:"exposure"`
+	Status    string   `json:"status"`
+	Instances int      `json:"instances"`
+	Ready     bool     `json:"ready"`
+	WakeURL   string   `json:"wakeUrl"`
+	Evidence  []string `json:"evidence,omitempty"`
+}
+
+type OperatorDeployConfidence struct {
+	GeneratedAt string                        `json:"generatedAt"`
+	Apps        []OperatorDeployConfidenceApp `json:"apps"`
+}
+
+type OperatorDeployConfidenceApp struct {
+	App             string       `json:"app"`
+	Confidence      string       `json:"confidence"`
+	Recent          []Deployment `json:"recent"`
+	LastStatus      string       `json:"lastStatus,omitempty"`
+	AutoRollback    bool         `json:"autoRollback"`
+	CanaryProcesses []string     `json:"canaryProcesses,omitempty"`
+	Evidence        []string     `json:"evidence,omitempty"`
+	PreflightURL    string       `json:"preflightUrl"`
+	DeployURL       string       `json:"deployUrl"`
+}
+
+type OperatorSnapshotReadiness struct {
+	GeneratedAt string                         `json:"generatedAt"`
+	Apps        []OperatorSnapshotReadinessApp `json:"apps"`
+}
+
+type OperatorSnapshotReadinessApp struct {
+	App          string    `json:"app"`
+	Database     string    `json:"database,omitempty"`
+	Status       string    `json:"status"`
+	Keep         int       `json:"keep"`
+	Count        int       `json:"count"`
+	OverLimit    int       `json:"overLimit"`
+	Latest       *Snapshot `json:"latest,omitempty"`
+	RemoteExport bool      `json:"remoteExport"`
+	PreRestore   bool      `json:"preRestore"`
+	Evidence     []string  `json:"evidence,omitempty"`
+	ListURL      string    `json:"listUrl"`
+	ExportURL    string    `json:"exportUrl"`
+}
+
+type OperatorAuthHints struct {
+	GeneratedAt string             `json:"generatedAt"`
+	Principles  []string           `json:"principles"`
+	Patterns    []OperatorAuthHint `json:"patterns"`
+}
+
+type OperatorAuthHint struct {
+	Name       string   `json:"name"`
+	UseWhen    string   `json:"useWhen"`
+	Command    string   `json:"command"`
+	Evidence   []string `json:"evidence,omitempty"`
+	SecretSafe bool     `json:"secretSafe"`
+}
+
+type OperatorActionCatalog struct {
+	GeneratedAt string                     `json:"generatedAt"`
+	Actions     []OperatorActionDescriptor `json:"actions"`
+}
+
+type OperatorActionDescriptor struct {
+	ID          string   `json:"id"`
+	Label       string   `json:"label"`
+	Method      string   `json:"method"`
+	Path        string   `json:"path"`
+	BodySchema  string   `json:"bodySchema,omitempty"`
+	Risk        string   `json:"risk"`
+	MobileReady bool     `json:"mobileReady"`
+	Requires    []string `json:"requires,omitempty"`
+}
+
 type EventReconcileDecision struct {
 	EventID  string   `json:"eventId"`
 	App      string   `json:"app,omitempty"`
@@ -944,6 +1086,62 @@ func (c *Client) ListActiveIncidents(limit int) ([]ActiveIncident, error) {
 		return nil, err
 	}
 	return resp.Incidents, nil
+}
+
+func (c *Client) OperatorInbox() (*OperatorInbox, error) {
+	var resp OperatorInbox
+	if err := c.get("/api/operator/inbox", &resp); err != nil {
+		return nil, err
+	}
+	return &resp, nil
+}
+
+func (c *Client) OperatorCronOverview() (*OperatorCronOverview, error) {
+	var resp OperatorCronOverview
+	if err := c.get("/api/operator/cron", &resp); err != nil {
+		return nil, err
+	}
+	return &resp, nil
+}
+
+func (c *Client) OperatorWakeTargets() (*OperatorWakeTargets, error) {
+	var resp OperatorWakeTargets
+	if err := c.get("/api/operator/wake-targets", &resp); err != nil {
+		return nil, err
+	}
+	return &resp, nil
+}
+
+func (c *Client) OperatorDeployConfidence() (*OperatorDeployConfidence, error) {
+	var resp OperatorDeployConfidence
+	if err := c.get("/api/operator/deploy-confidence", &resp); err != nil {
+		return nil, err
+	}
+	return &resp, nil
+}
+
+func (c *Client) OperatorSnapshotReadiness() (*OperatorSnapshotReadiness, error) {
+	var resp OperatorSnapshotReadiness
+	if err := c.get("/api/operator/snapshot-readiness", &resp); err != nil {
+		return nil, err
+	}
+	return &resp, nil
+}
+
+func (c *Client) OperatorAuthHints() (*OperatorAuthHints, error) {
+	var resp OperatorAuthHints
+	if err := c.get("/api/operator/auth-hints", &resp); err != nil {
+		return nil, err
+	}
+	return &resp, nil
+}
+
+func (c *Client) OperatorActions() (*OperatorActionCatalog, error) {
+	var resp OperatorActionCatalog
+	if err := c.get("/api/operator/actions", &resp); err != nil {
+		return nil, err
+	}
+	return &resp, nil
 }
 
 func (c *Client) ReconcileEvents(app string, limit int, dryRun bool, by string) (*EventReconcileResponse, error) {
