@@ -457,6 +457,8 @@ func (w *NomadAllocationWatcher) checkCronMissedRuns(ctx context.Context, spec *
 			continue
 		}
 		w.seen[missedKey] = windowKey
+		expectedRunAtLocal := formatCronLocalTime(expectedNextRun, location)
+		lastRunAtLocal := formatCronLocalTime(lastRunTime, location)
 
 		_, emitErr := w.beacon.Emit(ctx, model.BeaconEvent{
 			App:      spec.App,
@@ -465,18 +467,20 @@ func (w *NomadAllocationWatcher) checkCronMissedRuns(ctx context.Context, spec *
 			Title:    fmt.Sprintf("%s %s cron missed run", spec.App, process),
 			Body: fmt.Sprintf(
 				"Cron process %s was expected to run at %s but no dispatch was recorded. The Nomad periodic dispatcher may be stuck or the job may be paused.",
-				process, expectedNextRun.UTC().Format(time.RFC3339),
+				process, expectedRunAtLocal,
 			),
 			DedupeKey: fmt.Sprintf("%s:%s:missed:%s", spec.App, process, windowKey),
 			Metadata: map[string]interface{}{
-				"process":        process,
-				"jobId":          parentJobID,
-				"schedule":       schedule,
-				"timezone":       location.String(),
-				"expectedRunAt":  expectedNextRun.UTC().Format(time.RFC3339),
-				"lastRunAt":      lastRunTime.UTC().Format(time.RFC3339),
-				"gracePeriod":    cronMissedGracePeriod.String(),
-				"correlationKey": cronCorrelationKey(spec.App, process),
+				"process":            process,
+				"jobId":              parentJobID,
+				"schedule":           schedule,
+				"timezone":           location.String(),
+				"expectedRunAt":      expectedNextRun.UTC().Format(time.RFC3339),
+				"expectedRunAtLocal": expectedRunAtLocal,
+				"lastRunAt":          lastRunTime.UTC().Format(time.RFC3339),
+				"lastRunAtLocal":     lastRunAtLocal,
+				"gracePeriod":        cronMissedGracePeriod.String(),
+				"correlationKey":     cronCorrelationKey(spec.App, process),
 			},
 		})
 		if emitErr != nil {
@@ -487,6 +491,16 @@ func (w *NomadAllocationWatcher) checkCronMissedRuns(ctx context.Context, spec *
 
 func cronCorrelationKey(app, process string) string {
 	return fmt.Sprintf("%s:%s:cron", app, process)
+}
+
+func formatCronLocalTime(t time.Time, loc *time.Location) string {
+	if t.IsZero() {
+		return "never"
+	}
+	if loc == nil {
+		loc = time.UTC
+	}
+	return t.In(loc).Format("Mon Jan 2, 2006 3:04 PM MST")
 }
 
 func cronHasPrunedChildHistory(info *nomad.PeriodicJobInfo, runs []nomad.CronRun) bool {
