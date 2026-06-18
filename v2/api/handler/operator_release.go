@@ -198,7 +198,8 @@ func (h *Handler) OperatorInbox(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		for _, op := range ops {
-			if !op.Active() && op.Status != model.OperationFailed {
+			recentFailure := op.Status == model.OperationFailed && time.Since(op.UpdatedAt) <= 24*time.Hour
+			if !op.Active() && !recentFailure {
 				continue
 			}
 			severity := "info"
@@ -648,12 +649,16 @@ func (h *Handler) buildOperatorDeployConfidence(r *http.Request) (operatorDeploy
 				}
 				if deployment.SourceDirty {
 					app.Confidence = "caution"
-					app.Evidence = append(app.Evidence, "recent deployment came from dirty source")
+					app.Evidence = appendUniqueEvidence(app.Evidence, "recent deployment came from dirty source")
 				}
 			}
 			if failures >= 2 {
-				app.Confidence = "blocked"
-				app.Evidence = append(app.Evidence, fmt.Sprintf("%d recent failures", failures))
+				if recent[0].Status == model.StatusFailed {
+					app.Confidence = "blocked"
+				} else if app.Confidence == "ready" {
+					app.Confidence = "caution"
+				}
+				app.Evidence = appendUniqueEvidence(app.Evidence, fmt.Sprintf("%d recent failures", failures))
 			}
 		}
 		if app.AutoRollback {
@@ -846,4 +851,17 @@ func compactEvidence(values ...string) []string {
 		}
 	}
 	return out
+}
+
+func appendUniqueEvidence(values []string, value string) []string {
+	value = strings.TrimSpace(value)
+	if value == "" {
+		return values
+	}
+	for _, existing := range values {
+		if existing == value {
+			return values
+		}
+	}
+	return append(values, value)
 }
