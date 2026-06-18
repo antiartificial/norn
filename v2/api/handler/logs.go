@@ -9,14 +9,14 @@ import (
 
 func (h *Handler) StreamLogs(w http.ResponseWriter, r *http.Request) {
 	id := chi.URLParam(r, "id")
-	if h.nomad == nil {
-		writeError(w, http.StatusServiceUnavailable, "nomad not connected")
+	if h.engine == nil {
+		writeError(w, http.StatusServiceUnavailable, "engine not available")
 		return
 	}
 
 	follow := r.URL.Query().Get("follow") == "true"
 
-	reader, err := h.nomad.StreamLogs(id, follow)
+	reader, err := h.engine.StreamLogs(id, follow)
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, err.Error())
 		return

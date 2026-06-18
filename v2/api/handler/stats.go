@@ -23,8 +23,8 @@ func (h *Handler) Stats(w http.ResponseWriter, r *http.Request) {
 		"appCount": appCount,
 	}
 
-	if h.nomad != nil {
-		totalAllocs, runningAllocs, leaderboard, err := h.nomad.ClusterStats()
+	if h.engine != nil {
+		totalAllocs, runningAllocs, leaderboard, err := h.engine.ClusterStats()
 		if err == nil {
 			result["totalAllocs"] = totalAllocs
 			result["runningAllocs"] = runningAllocs

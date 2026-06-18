@@ -11,8 +11,8 @@ import (
 	"time"
 
 	"github.com/hashicorp/cronexpr"
+	"norn/v2/api/engine"
 	"norn/v2/api/model"
-	"norn/v2/api/nomad"
 )
 
 func (h *Handler) Metrics(w http.ResponseWriter, r *http.Request) {
@@ -145,12 +145,12 @@ func (h *Handler) Metrics(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	if h.nomad != nil {
+	if h.engine != nil {
 		writeMetricHeader(&b, "norn_task_restarts_total", "Current restart count for running tasks.", "gauge")
 		writeMetricHeader(&b, "norn_task_oom_kills_total", "Tasks that have been OOM killed in current allocations.", "gauge")
 		oomByProc := map[string]int{}
 		for _, spec := range specs {
-			infos, err := h.nomad.TaskRestartSummary(spec.App)
+			infos, err := h.engine.TaskRestartSummary(spec.App)
 			if err != nil {
 				continue
 			}
@@ -176,9 +176,9 @@ func (h *Handler) Metrics(w http.ResponseWriter, r *http.Request) {
 				}
 				parentJobID := fmt.Sprintf("%s-%s", spec.App, processName)
 				missed := 0
-				info, err := h.nomad.PeriodicJobSchedule(parentJobID)
+				info, err := h.engine.CronScheduleInfo(parentJobID)
 				if err == nil {
-					if runs, runsErr := h.nomad.PeriodicChildren(parentJobID); runsErr == nil {
+					if runs, runsErr := h.engine.CronHistory(parentJobID); runsErr == nil {
 						missed = cronMissedRun(time.Now(), spec, proc, info, runs)
 					}
 				}
@@ -250,7 +250,7 @@ func cronMetricLocation(spec *model.InfraSpec, proc model.Process, jobTimezone s
 	return loc
 }
 
-func cronMissedRun(now time.Time, spec *model.InfraSpec, proc model.Process, info *nomad.PeriodicJobInfo, runs []nomad.CronRun) int {
+func cronMissedRun(now time.Time, spec *model.InfraSpec, proc model.Process, info *engine.CronJobInfo, runs []engine.CronRun) int {
 	if info == nil || info.Paused || info.Status == "dead" {
 		return 0
 	}
@@ -277,12 +277,6 @@ func cronMissedRun(now time.Time, spec *model.InfraSpec, proc model.Process, inf
 		if t.After(lastRunTime) {
 			lastRunTime = t
 		}
-	}
-
-	// Nomad can retain periodic child counts after pruning the detailed child
-	// jobs. That means the scheduler did dispatch work, even if history is gone.
-	if lastRunTime.IsZero() && info.ChildrenPending+info.ChildrenRunning+info.ChildrenDead > 0 {
-		return 0
 	}
 
 	reference := lastRunTime

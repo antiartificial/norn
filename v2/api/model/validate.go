@@ -289,9 +289,9 @@ func validateTuningPolicy(r *ValidationResult, field string, tuning *TuningPolic
 	for i, signal := range tuning.Signals {
 		signalField := fmt.Sprintf("%s.signals[%d]", field, i)
 		switch signal.Source {
-		case "", "nomad", "prometheus", "app":
+		case "", "engine", "nomad", "prometheus", "app":
 		default:
-			r.add("error", signalField+".source", "signal source must be nomad, prometheus, or app")
+			r.add("error", signalField+".source", "signal source must be engine, prometheus, or app")
 		}
 		if signal.Metric == "" {
 			r.add("error", signalField+".metric", "signal metric is required")

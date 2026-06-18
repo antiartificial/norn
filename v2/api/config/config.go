@@ -18,8 +18,6 @@ type Config struct {
 	NetworkMode      string // local, tailnet, public
 	ContainerRuntime string // docker, container, auto
 
-	NomadAddr  string // Nomad API address
-	ConsulAddr string // Consul API address
 
 	S3Endpoint  string
 	S3AccessKey string
@@ -66,8 +64,6 @@ func Load() *Config {
 		NetworkMode:      networkMode(envOr("NORN_NETWORK_MODE", "local")),
 		ContainerRuntime: envOr("NORN_CONTAINER_RUNTIME", "auto"),
 
-		NomadAddr:  envOr("NORN_NOMAD_ADDR", "http://localhost:4646"),
-		ConsulAddr: envOr("NORN_CONSUL_ADDR", "http://localhost:8500"),
 
 		S3Endpoint:          os.Getenv("NORN_S3_ENDPOINT"),
 		S3AccessKey:         os.Getenv("NORN_S3_ACCESS_KEY"),

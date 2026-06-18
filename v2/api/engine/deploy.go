@@ -495,6 +495,19 @@ func (e *Engine) removeInstance(name string) {
 	delete(e.restarts, name)
 }
 
+// RunBatch starts a one-shot batch container for a function invocation.
+// It returns the container name so callers can wait on completion.
+func (e *Engine) RunBatch(ctx context.Context, spec *model.InfraSpec, procName string, proc model.Process, imageTag string, env map[string]string) (string, error) {
+	name := BatchName(spec.App, procName, time.Now().Unix())
+	mergedEnv := mergeEnv(spec.Env, proc.Env, env)
+	opts := buildRunOpts(name, spec, procName, proc, imageTag, mergedEnv)
+	if err := containerRun(ctx, opts); err != nil {
+		return "", fmt.Errorf("run batch %s: %w", name, err)
+	}
+	e.registerInstance(name, spec.App, procName, 0, "batch", imageTag, proc.Port)
+	return name, nil
+}
+
 func buildRunOpts(name string, spec *model.InfraSpec, procName string, proc model.Process, imageTag string, env map[string]string) RunOpts {
 	opts := RunOpts{
 		Name:    name,

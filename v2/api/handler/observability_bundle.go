@@ -77,7 +77,7 @@ func (h *Handler) buildObservabilityBundle() (observabilityBundle, error) {
 				"name":      "Norn Prometheus",
 				"type":      "prometheus",
 				"access":    "proxy",
-				"url":       "http://prometheus.service.consul:9090",
+				"url":       "http://norn-prometheus-web:9090",
 				"isDefault": true,
 			},
 		},
@@ -319,7 +319,7 @@ datasources:
   - name: Norn Prometheus
     type: prometheus
     access: proxy
-    url: http://norn-prometheus-web.service.consul:9090
+    url: http://norn-prometheus-web:9090
     isDefault: true
 `
 }

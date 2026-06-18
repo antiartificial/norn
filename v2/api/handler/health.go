@@ -16,19 +16,11 @@ func (h *Handler) Health(w http.ResponseWriter, r *http.Request) {
 		services["postgres"] = "up"
 	}
 
-	if h.nomad != nil {
-		if err := h.nomad.Healthy(); err != nil {
-			services["nomad"] = "down"
+	if h.engine != nil {
+		if err := h.engine.Healthy(); err != nil {
+			services["engine"] = "down"
 		} else {
-			services["nomad"] = "up"
-		}
-	}
-
-	if h.consul != nil {
-		if err := h.consul.Healthy(); err != nil {
-			services["consul"] = "down"
-		} else {
-			services["consul"] = "up"
+			services["engine"] = "up"
 		}
 	}
 
@@ -73,10 +65,8 @@ func (h *Handler) Health(w http.ResponseWriter, r *http.Request) {
 		"status":   status,
 		"services": services,
 		"network": map[string]string{
-			"mode":       h.cfg.NetworkMode,
-			"bindAddr":   h.cfg.BindAddr,
-			"nomadAddr":  h.cfg.NomadAddr,
-			"consulAddr": h.cfg.ConsulAddr,
+			"mode":     h.cfg.NetworkMode,
+			"bindAddr": h.cfg.BindAddr,
 		},
 	})
 }

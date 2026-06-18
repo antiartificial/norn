@@ -10,9 +10,8 @@ import (
 
 	"norn/v2/api/beacon"
 	"norn/v2/api/config"
-	"norn/v2/api/consul"
+	"norn/v2/api/engine"
 	"norn/v2/api/hub"
-	"norn/v2/api/nomad"
 	"norn/v2/api/pipeline"
 	"norn/v2/api/redpanda"
 	"norn/v2/api/runtime"
@@ -26,8 +25,7 @@ var validAppIDRe = regexp.MustCompile(`^[a-z0-9][a-z0-9-]*$`)
 
 type Handler struct {
 	db        *store.DB
-	nomad     *nomad.Client
-	consul    *consul.Client
+	engine    *engine.Engine
 	ws        *hub.Hub
 	cfg       *config.Config
 	pipeline  *pipeline.Pipeline
@@ -41,11 +39,10 @@ type Handler struct {
 	wakeLocks sync.Map
 }
 
-func New(db *store.DB, n *nomad.Client, c *consul.Client, ws *hub.Hub, cfg *config.Config, p *pipeline.Pipeline, beaconSvc *beacon.Service, sec *secrets.Manager, ss saga.Store, s3 *storage.Client, rp *redpanda.Client, rt *runtime.Runtime) *Handler {
+func New(db *store.DB, eng *engine.Engine, ws *hub.Hub, cfg *config.Config, p *pipeline.Pipeline, beaconSvc *beacon.Service, sec *secrets.Manager, ss saga.Store, s3 *storage.Client, rp *redpanda.Client, rt *runtime.Runtime) *Handler {
 	return &Handler{
 		db:        db,
-		nomad:     n,
-		consul:    c,
+		engine:    eng,
 		ws:        ws,
 		cfg:       cfg,
 		pipeline:  p,
@@ -57,13 +54,6 @@ func New(db *store.DB, n *nomad.Client, c *consul.Client, ws *hub.Hub, cfg *conf
 		rt:        rt,
 		access:    NewAccessLog(defaultAccessLogLimit),
 	}
-}
-
-func (h *Handler) taskDriver() string {
-	if h.rt != nil {
-		return h.rt.TaskDriver()
-	}
-	return "docker"
 }
 
 // ValidateAppID is middleware that rejects requests with invalid app IDs.

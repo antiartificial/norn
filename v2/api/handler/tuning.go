@@ -6,8 +6,8 @@ import (
 	"sort"
 	"time"
 
+	"norn/v2/api/engine"
 	"norn/v2/api/model"
-	"norn/v2/api/nomad"
 )
 
 type tuningRecommendation struct {
@@ -62,8 +62,8 @@ type tuningUsage struct {
 }
 
 func (h *Handler) TuningRecommendations(w http.ResponseWriter, r *http.Request) {
-	if h.nomad == nil {
-		writeError(w, http.StatusServiceUnavailable, "nomad not connected")
+	if h.engine == nil {
+		writeError(w, http.StatusServiceUnavailable, "engine not available")
 		return
 	}
 
@@ -84,7 +84,7 @@ func (h *Handler) TuningRecommendations(w http.ResponseWriter, r *http.Request) 
 		}
 	}
 	for _, spec := range specs {
-		usage, err := h.nomad.JobResourceUsage(spec.App)
+		usage, err := h.engine.JobResourceUsage(r.Context(), spec.App)
 		if err != nil || len(usage) == 0 {
 			continue
 		}
@@ -150,7 +150,7 @@ func enrichTuningWithAccess(rec *tuningRecommendation, pattern accessPatternSumm
 	}
 }
 
-func aggregateTuningUsage(usage []nomad.ResourceUsage) map[string]tuningUsage {
+func aggregateTuningUsage(usage []engine.ResourceUsage) map[string]tuningUsage {
 	usageByGroup := map[string]tuningUsage{}
 	for _, u := range usage {
 		current := usageByGroup[u.TaskGroup]
@@ -218,7 +218,7 @@ func buildTuningRecommendation(app, process string, proc model.Process, usage tu
 			MemoryUtilization: memUtil,
 			CPUPercent:        usage.CPUPercent,
 			AllocationCount:   usage.Allocations,
-			Source:            "nomad.live",
+			Source:            "engine.live",
 		},
 	}
 
@@ -316,9 +316,9 @@ func recommendScale(rec *tuningRecommendation, proc model.Process, cpuPercent, m
 
 func defaultTuningSignals(usage tuningUsage) []tuningSignalResult {
 	return []tuningSignalResult{
-		{Name: "memory_rss", Source: "nomad", Metric: "memory_rss", Aggregate: "current", Value: float64(usage.UsedMemoryMB), Unit: "MB", Available: usage.UsedMemoryMB > 0},
-		{Name: "memory_max", Source: "nomad", Metric: "memory_max", Aggregate: "max", Value: float64(usage.PeakMemoryMB), Unit: "MB", Available: usage.PeakMemoryMB > 0, Reason: unavailableReason(usage.PeakMemoryMB > 0, "nomad did not report a peak memory value")},
-		{Name: "cpu_percent", Source: "nomad", Metric: "cpu_percent", Aggregate: "current", Value: usage.CPUPercent, Unit: "percent", Available: true},
+		{Name: "memory_rss", Source: "engine", Metric: "memory_rss", Aggregate: "current", Value: float64(usage.UsedMemoryMB), Unit: "MB", Available: usage.UsedMemoryMB > 0},
+		{Name: "memory_max", Source: "engine", Metric: "memory_max", Aggregate: "max", Value: float64(usage.PeakMemoryMB), Unit: "MB", Available: usage.PeakMemoryMB > 0, Reason: unavailableReason(usage.PeakMemoryMB > 0, "no peak memory value reported")},
+		{Name: "cpu_percent", Source: "engine", Metric: "cpu_percent", Aggregate: "current", Value: usage.CPUPercent, Unit: "percent", Available: true},
 	}
 }
 
@@ -327,23 +327,23 @@ func tuningSignalsFromPolicy(signals []model.TuningSignal, usage tuningUsage) []
 	for _, signal := range signals {
 		result := tuningSignalResult{
 			Name:      firstNonEmptyString(signal.Name, signal.Metric),
-			Source:    firstNonEmptyString(signal.Source, "nomad"),
+			Source:    firstNonEmptyString(signal.Source, "engine"),
 			Metric:    signal.Metric,
 			Window:    signal.Window,
 			Aggregate: signal.Aggregate,
 		}
 		switch result.Source + ":" + result.Metric {
-		case "nomad:memory_rss":
+		case "engine:memory_rss":
 			result.Value = float64(usage.UsedMemoryMB)
 			result.Unit = "MB"
 			result.Available = usage.UsedMemoryMB > 0
-			result.Reason = unavailableReason(result.Available, "nomad did not report live memory")
-		case "nomad:memory_max":
+			result.Reason = unavailableReason(result.Available, "no live memory value reported")
+		case "engine:memory_max":
 			result.Value = float64(usage.PeakMemoryMB)
 			result.Unit = "MB"
 			result.Available = usage.PeakMemoryMB > 0
-			result.Reason = unavailableReason(result.Available, "nomad did not report a peak memory value")
-		case "nomad:cpu_percent":
+			result.Reason = unavailableReason(result.Available, "no peak memory value reported")
+		case "engine:cpu_percent":
 			result.Value = usage.CPUPercent
 			result.Unit = "percent"
 			result.Available = true

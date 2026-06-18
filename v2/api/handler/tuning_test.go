@@ -56,7 +56,7 @@ func TestBuildTuningRecommendationReportsDeclaredSignals(t *testing.T) {
 		Resources: &model.Resources{CPU: 50, Memory: 512},
 		Tuning: &model.TuningPolicy{
 			Signals: []model.TuningSignal{
-				{Name: "rss", Source: "nomad", Metric: "memory_rss"},
+				{Name: "rss", Source: "engine", Metric: "memory_rss"},
 				{Name: "p95", Source: "prometheus", Metric: "container_memory_working_set_bytes", Window: "24h", Aggregate: "p95"},
 			},
 		},
@@ -70,7 +70,7 @@ func TestBuildTuningRecommendationReportsDeclaredSignals(t *testing.T) {
 		t.Fatalf("signals = %+v, want 2", rec.Signals)
 	}
 	if !rec.Signals[0].Available || rec.Signals[0].Value != 120 {
-		t.Fatalf("nomad signal = %+v, want available value 120", rec.Signals[0])
+		t.Fatalf("engine signal = %+v, want available value 120", rec.Signals[0])
 	}
 	if rec.Signals[1].Available || rec.Signals[1].Reason == "" {
 		t.Fatalf("prometheus signal = %+v, want unavailable with reason", rec.Signals[1])

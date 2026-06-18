@@ -22,10 +22,9 @@ import (
 	"norn/v2/api/beacon"
 	"norn/v2/api/cloudflared"
 	"norn/v2/api/config"
-	"norn/v2/api/consul"
+	"norn/v2/api/engine"
 	"norn/v2/api/handler"
 	"norn/v2/api/hub"
-	"norn/v2/api/nomad"
 	"norn/v2/api/observe"
 	"norn/v2/api/pipeline"
 	"norn/v2/api/redpanda"
@@ -77,30 +76,6 @@ func main() {
 		log.Println("operation recovery skipped")
 	} else if err := db.RecoverInFlightOperations(context.Background()); err != nil {
 		log.Printf("WARNING: operation recovery: %v", err)
-	}
-
-	// Nomad
-	nomadClient, err := nomad.NewClient(cfg.NomadAddr)
-	if err != nil {
-		log.Printf("WARNING: nomad unavailable (%v)", err)
-	} else {
-		if err := nomadClient.Healthy(); err != nil {
-			log.Printf("WARNING: nomad not healthy (%v)", err)
-		} else {
-			log.Println("nomad connected at " + cfg.NomadAddr)
-		}
-	}
-
-	// Consul
-	consulClient, err := consul.NewClient(cfg.ConsulAddr)
-	if err != nil {
-		log.Printf("WARNING: consul unavailable (%v)", err)
-	} else {
-		if err := consulClient.Healthy(); err != nil {
-			log.Printf("WARNING: consul not healthy (%v)", err)
-		} else {
-			log.Println("consul connected at " + cfg.ConsulAddr)
-		}
 	}
 
 	// S3
@@ -181,11 +156,22 @@ func main() {
 	rt := runtime.New(runtimeBackend, cfg.RegistryURL)
 	log.Printf("container runtime: %s (driver: %s)", rt.Backend(), rt.TaskDriver())
 
+	// Engine
+	eng, err := engine.New(db, beaconSvc, cfg.AppsDir)
+	if err != nil {
+		log.Printf("WARNING: engine init: %v", err)
+	} else {
+		if err := eng.Healthy(); err != nil {
+			log.Printf("WARNING: engine not healthy (%v)", err)
+		} else {
+			log.Println("engine started")
+		}
+	}
+
 	// Deploy pipeline
 	pipe := &pipeline.Pipeline{
 		DB:          db,
-		Nomad:       nomadClient,
-		Consul:      consulClient,
+		Engine:      eng,
 		WS:          ws,
 		SagaStore:   sagaStore,
 		Secrets:     sec,
@@ -202,21 +188,27 @@ func main() {
 
 	workerCtx, workerCancel := context.WithCancel(context.Background())
 	defer workerCancel()
+
+	if eng != nil {
+		eng.Start(workerCtx)
+		defer eng.Stop()
+	}
+
 	if os.Getenv("NORN_SKIP_OPERATION_WORKER") == "true" {
 		log.Println("operation worker skipped")
 	} else {
 		opWorker := worker.NewOperationWorker(db, pipe)
 		go opWorker.Run(workerCtx)
 	}
-	if os.Getenv("NORN_SKIP_NOMAD_WATCHER") == "true" {
-		log.Println("nomad allocation watcher skipped")
+	if os.Getenv("NORN_SKIP_ENGINE_WATCHER") == "true" {
+		log.Println("engine watcher skipped")
 	} else {
-		nomadWatcher := watch.NewNomadAllocationWatcher(nomadClient, consulClient, beaconSvc, cfg.AppsDir)
-		go nomadWatcher.Run(workerCtx)
+		engineWatcher := watch.NewEngineWatcher(eng, beaconSvc, cfg.AppsDir)
+		go engineWatcher.Run(workerCtx)
 	}
 
 	// Handler
-	h := handler.New(db, nomadClient, consulClient, ws, cfg, pipe, beaconSvc, sec, sagaStore, s3Client, redpandaClient, rt)
+	h := handler.New(db, eng, ws, cfg, pipe, beaconSvc, sec, sagaStore, s3Client, redpandaClient, rt)
 
 	// Router
 	r := chi.NewRouter()

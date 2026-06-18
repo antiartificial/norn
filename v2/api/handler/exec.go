@@ -20,12 +20,12 @@ var execUpgrader = websocket.Upgrader{
 
 func (h *Handler) ExecAlloc(w http.ResponseWriter, r *http.Request) {
 	id := chi.URLParam(r, "id")
-	if h.nomad == nil {
-		writeError(w, http.StatusServiceUnavailable, "nomad not connected")
+	if h.engine == nil {
+		writeError(w, http.StatusServiceUnavailable, "engine not available")
 		return
 	}
 
-	allocID := r.URL.Query().Get("allocId")
+	containerName := r.URL.Query().Get("allocId") // legacy param name
 	processName := r.URL.Query().Get("process")
 	command := r.URL.Query().Get("command")
 	if command == "" {
@@ -39,25 +39,13 @@ func (h *Handler) ExecAlloc(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	var taskName string
-
-	if allocID == "" {
-		aID, tName, err := h.nomad.FindRunningAlloc(id, processName)
+	if containerName == "" {
+		var err error
+		containerName, err = h.engine.FindRunningInstance(id, processName)
 		if err != nil {
 			writeError(w, http.StatusNotFound, err.Error())
 			return
 		}
-		allocID = aID
-		taskName = tName
-	} else if processName != "" {
-		taskName = processName
-	} else {
-		_, tName, err := h.nomad.FindRunningAlloc(id, "")
-		if err != nil {
-			writeError(w, http.StatusNotFound, err.Error())
-			return
-		}
-		taskName = tName
 	}
 
 	ws, err := execUpgrader.Upgrade(w, r, nil)
@@ -74,7 +62,7 @@ func (h *Handler) ExecAlloc(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	if err := h.nomad.ExecWebSocket(allocID, taskName, cmd, ws); err != nil {
-		log.Printf("exec error for %s/%s: %v", id, allocID, err)
+	if err := h.engine.ExecWebSocket(containerName, cmd, ws); err != nil {
+		log.Printf("exec error for %s/%s: %v", id, containerName, err)
 	}
 }

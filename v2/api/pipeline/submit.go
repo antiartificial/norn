@@ -5,7 +5,6 @@ import (
 	"fmt"
 	"os"
 
-	"norn/v2/api/nomad"
 	"norn/v2/api/saga"
 )
 
@@ -73,12 +72,12 @@ func (p *Pipeline) submit(ctx context.Context, st *state, sg *saga.Saga) error {
 	// Check for port conflicts before submitting
 	for _, proc := range st.spec.Processes {
 		if proc.Port > 0 && len(st.spec.Endpoints) > 0 {
-			if used, err := p.Nomad.UsedPorts(); err == nil {
+			if used, err := p.Engine.UsedPorts(); err == nil {
 				for _, pa := range used {
-					if pa.Port == proc.Port && pa.JobID != st.spec.App {
-						suggested, _ := p.Nomad.SuggestPort(proc.Port)
+					if pa.Port == proc.Port && pa.App != st.spec.App {
+						suggested, _ := p.Engine.SuggestPort(proc.Port)
 						sg.Log(ctx, "port.conflict",
-							fmt.Sprintf("port %d is used by %s — suggest %d", proc.Port, pa.JobID, suggested),
+							fmt.Sprintf("port %d is used by %s — suggest %d", proc.Port, pa.App, suggested),
 							map[string]string{"step": "submit"})
 					}
 				}
@@ -87,34 +86,22 @@ func (p *Pipeline) submit(ctx context.Context, st *state, sg *saga.Saga) error {
 		}
 	}
 
-	// Translate infraspec → Nomad job
-	taskDriver := "docker"
-	if p.Runtime != nil {
-		taskDriver = p.Runtime.TaskDriver()
+	if err := p.Engine.SubmitJob(ctx, st.spec, st.imageTag, env); err != nil {
+		return fmt.Errorf("submit job: %w", err)
 	}
-	job := nomad.TranslateWithDriver(st.spec, st.imageTag, env, taskDriver)
-
-	evalID, err := p.Nomad.SubmitJob(job)
-	if err != nil {
-		return fmt.Errorf("submit nomad job: %w", err)
-	}
-	sg.Log(ctx, "nomad.submitted", fmt.Sprintf("nomad job submitted (eval: %s, driver: %s)", evalID, taskDriver), map[string]string{
-		"step":       "submit",
-		"evalId":     evalID,
-		"taskDriver": taskDriver,
+	sg.Log(ctx, "engine.submitted", fmt.Sprintf("job submitted for %s", st.spec.App), map[string]string{
+		"step": "submit",
 	})
 
-	// Submit periodic jobs for scheduled processes
+	// Register cron jobs for scheduled processes
 	for procName, proc := range st.spec.Processes {
 		if proc.Schedule == "" {
 			continue
 		}
-		periodicJob := nomad.TranslatePeriodicWithDriver(st.spec, procName, proc, st.imageTag, env, taskDriver)
-		periodicEvalID, err := p.Nomad.SubmitJob(periodicJob)
-		if err != nil {
-			return fmt.Errorf("submit periodic job %s: %w", procName, err)
+		if err := p.Engine.RegisterCron(st.spec, procName, proc, st.imageTag, env); err != nil {
+			return fmt.Errorf("register cron %s: %w", procName, err)
 		}
-		sg.Log(ctx, "nomad.submitted", fmt.Sprintf("periodic job %s submitted (eval: %s)", procName, periodicEvalID), map[string]string{
+		sg.Log(ctx, "engine.cron_registered", fmt.Sprintf("cron job %s registered", procName), map[string]string{
 			"step": "submit",
 		})
 	}

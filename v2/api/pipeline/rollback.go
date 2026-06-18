@@ -10,7 +10,6 @@ import (
 
 	"norn/v2/api/hub"
 	"norn/v2/api/model"
-	"norn/v2/api/nomad"
 	"norn/v2/api/saga"
 )
 
@@ -70,8 +69,8 @@ func (p *Pipeline) Rollback(spec *model.InfraSpec, current model.Deployment, pre
 }
 
 func (p *Pipeline) runRollback(ctx context.Context, spec *model.InfraSpec, deploy *model.Deployment, sg *saga.Saga, imageTag string, operationID string, attempt int) {
-	if p.Nomad == nil {
-		err := fmt.Errorf("nomad not connected")
+	if p.Engine == nil {
+		err := fmt.Errorf("engine not available")
 		_ = p.DB.UpdateDeployment(ctx, deploy.ID, model.StatusFailed)
 		_ = p.DB.FinishOperation(ctx, operationID, model.OperationFailed, err.Error(), map[string]interface{}{
 			"deploymentId": deploy.ID,
@@ -83,7 +82,7 @@ func (p *Pipeline) runRollback(ctx context.Context, spec *model.InfraSpec, deplo
 			Type:      "rollback.failed",
 			Severity:  model.BeaconCritical,
 			Title:     fmt.Sprintf("%s rollback failed", spec.App),
-			Body:      "Rollback could not start because Nomad is not connected.",
+			Body:      "Rollback could not start because the engine is not available.",
 			DedupeKey: fmt.Sprintf("%s:rollback", spec.App),
 			Metadata: map[string]interface{}{
 				"deploymentId":   deploy.ID,
@@ -107,16 +106,10 @@ func (p *Pipeline) runRollback(ctx context.Context, spec *model.InfraSpec, deplo
 					env[k] = v
 				}
 			}
-			taskDriver := "docker"
-			if p.Runtime != nil {
-				taskDriver = p.Runtime.TaskDriver()
-			}
-			job := nomad.TranslateWithDriver(spec, imageTag, env, taskDriver)
-			_, err := p.Nomad.SubmitJob(job)
-			return err
+			return p.Engine.SubmitJob(ctx, spec, imageTag, env)
 		}},
 		{name: "healthy", fn: func(ctx context.Context, st *state, sg *saga.Saga) error {
-			return p.Nomad.WaitHealthy(ctx, spec.App, 5*time.Minute)
+			return p.Engine.WaitHealthy(ctx, spec.App, 5*time.Minute)
 		}},
 	}
 
