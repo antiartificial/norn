@@ -115,6 +115,35 @@ Operations summarize long-running work such as app preflights, deploys, and roll
 | `--active` | `false` | Only show queued/running operations |
 | `--limit` | `25` | Maximum operations to show |
 
+## operator
+
+Show the operator-confidence release surfaces.
+
+```bash
+norn operator inbox
+norn operator cron
+norn operator wake-targets
+norn operator deploy-confidence
+norn operator snapshot-readiness
+norn operator auth-hints
+norn operator actions
+```
+
+`norn operator inbox` is the high-signal entry point. It combines active
+incidents, active or failed durable operations, deploy-confidence warnings,
+cron risks, snapshot readiness, secret status, and wake target counts into one
+recommended-action list.
+
+| Command | Purpose |
+| --- | --- |
+| `inbox` | Show recommended operator actions across the platform |
+| `cron` | Show schedules, local next/last run times, Nomad child counts, and cron risk |
+| `wake-targets` | Show endpoint readiness and wake-gateway URLs |
+| `deploy-confidence` | Show recent deploy health, auto-rollback, canary, and preflight guidance |
+| `snapshot-readiness` | Show local restore points, retention overages, and remote export readiness |
+| `auth-hints` | Show secret-safe operational authentication patterns |
+| `actions` | Show mobile-ready action descriptors and risk levels |
+
 ## events
 
 Show recent Norn Beacon events.
