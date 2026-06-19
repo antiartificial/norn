@@ -166,7 +166,7 @@ func (h *Handler) serveWakeGatewayTarget(w http.ResponseWriter, r *http.Request,
 			resp.Header.Set("X-Norn-Wake-Action", "ready")
 		}
 		if aliasPrefix != "" {
-			return rewriteWakeGatewayAliasHTML(resp, aliasPrefix)
+			return rewriteWakeGatewayAliasResponse(resp, aliasPrefix)
 		}
 		return nil
 	}
@@ -349,9 +349,11 @@ func firstReadyInstance(service model.ServiceManifestEntry) (model.ServiceInstan
 	return model.ServiceInstance{}, false
 }
 
-func rewriteWakeGatewayAliasHTML(resp *http.Response, aliasPrefix string) error {
+func rewriteWakeGatewayAliasResponse(resp *http.Response, aliasPrefix string) error {
 	contentType := strings.ToLower(resp.Header.Get("Content-Type"))
-	if !strings.Contains(contentType, "text/html") {
+	isHTML := strings.Contains(contentType, "text/html")
+	isJS := strings.Contains(contentType, "javascript") || strings.Contains(contentType, "ecmascript")
+	if !isHTML && !isJS {
 		return nil
 	}
 	if encoding := strings.TrimSpace(resp.Header.Get("Content-Encoding")); encoding != "" && !strings.EqualFold(encoding, "identity") {
@@ -367,12 +369,23 @@ func rewriteWakeGatewayAliasHTML(resp *http.Response, aliasPrefix string) error 
 	}
 	_ = resp.Body.Close()
 	rewritten := body
-	for _, pair := range [][2][]byte{
-		{[]byte(`src="/`), []byte(`src="` + aliasPrefix + `/`)},
-		{[]byte(`href="/`), []byte(`href="` + aliasPrefix + `/`)},
-		{[]byte(`url(/`), []byte(`url(` + aliasPrefix + `/`)},
-	} {
-		rewritten = bytes.ReplaceAll(rewritten, pair[0], pair[1])
+	if isHTML {
+		for _, pair := range [][2][]byte{
+			{[]byte(`src="/`), []byte(`src="` + aliasPrefix + `/`)},
+			{[]byte(`href="/`), []byte(`href="` + aliasPrefix + `/`)},
+			{[]byte(`url(/`), []byte(`url(` + aliasPrefix + `/`)},
+		} {
+			rewritten = bytes.ReplaceAll(rewritten, pair[0], pair[1])
+		}
+	}
+	if isJS {
+		for _, pair := range [][2][]byte{
+			{[]byte(`"/api/`), []byte(`"` + aliasPrefix + `/api/`)},
+			{[]byte(`'/api/`), []byte(`'` + aliasPrefix + `/api/`)},
+			{[]byte("`/api/"), []byte("`" + aliasPrefix + "/api/")},
+		} {
+			rewritten = bytes.ReplaceAll(rewritten, pair[0], pair[1])
+		}
 	}
 	resp.Body = io.NopCloser(bytes.NewReader(rewritten))
 	resp.ContentLength = int64(len(rewritten))
