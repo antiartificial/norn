@@ -124,7 +124,7 @@ Then rerun the smoke checks.
 ## Notes
 
 - The root `Makefile` still targets the older non-v2 tree. Use `v2/Makefile` for v2 releases.
-- `NORN_UI_DIR` should point at `/Users/0xadb/projects/norn/v2/ui/dist` when the API serves the built dashboard.
+- `NORN_UI_DIR` can point at an explicit dashboard build. If it is unset, the API serves `$HOME/norn/current/ui` when that release directory exists.
 - Keep Nomad, Consul, Postgres, and app allocations running during a Norn API upgrade unless you are intentionally rebuilding the whole dev environment.
 - A normal candidate API is a preflight check, not the active control plane. On proxy-fronted hosts, `norn platform upgrade --proxy` performs a managed upstream cutover; see [Platform Upgrades](/v2/architecture/platform-upgrades).
 - App deploys, preflights, and rollbacks are queued in control-plane Postgres. The drain gate checks those active rows before platform upgrades; read-only preflights can retry, while interrupted mutable deploy stages fail visibly rather than being replayed blindly.
