@@ -37,7 +37,26 @@ func (h *Handler) WakeGateway(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, "wake gateway target is required")
 		return
 	}
-	h.serveWakeGateway(w, r, targetKey, true)
+	h.serveWakeGateway(w, r, targetKey, wakeGatewayUpstreamPath(r, targetKey))
+}
+
+func (h *Handler) WakeGatewayAppAlias(w http.ResponseWriter, r *http.Request) {
+	app := strings.ToLower(strings.TrimSpace(chi.URLParam(r, "app")))
+	if app == "" {
+		writeError(w, http.StatusBadRequest, "wake gateway app is required")
+		return
+	}
+	manifest, err := h.buildServiceManifest()
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	target, ok := wakeGatewayTargetForApp(manifest.Services, app)
+	if !ok {
+		writeError(w, http.StatusNotFound, "wake gateway app is not mapped to a service endpoint")
+		return
+	}
+	h.serveWakeGatewayTarget(w, r, target, wakeGatewayAliasUpstreamPath(r, app))
 }
 
 func (h *Handler) WakeGatewayHostMiddleware(next http.Handler) http.Handler {
@@ -60,11 +79,11 @@ func (h *Handler) WakeGatewayHostMiddleware(next http.Handler) http.Handler {
 			next.ServeHTTP(w, r)
 			return
 		}
-		h.serveWakeGateway(w, r, hostname, false)
+		h.serveWakeGateway(w, r, hostname, r.URL.Path)
 	})
 }
 
-func (h *Handler) serveWakeGateway(w http.ResponseWriter, r *http.Request, targetKey string, stripGatewayPrefix bool) {
+func (h *Handler) serveWakeGateway(w http.ResponseWriter, r *http.Request, targetKey string, upstreamPath string) {
 	manifest, err := h.buildServiceManifest()
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, err.Error())
@@ -75,7 +94,10 @@ func (h *Handler) serveWakeGateway(w http.ResponseWriter, r *http.Request, targe
 		writeError(w, http.StatusNotFound, "wake gateway target is not mapped to a service endpoint")
 		return
 	}
+	h.serveWakeGatewayTarget(w, r, target, upstreamPath)
+}
 
+func (h *Handler) serveWakeGatewayTarget(w http.ResponseWriter, r *http.Request, target wakeGatewayTarget, upstreamPath string) {
 	status := http.StatusOK
 	defer func() {
 		ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
@@ -104,10 +126,6 @@ func (h *Handler) serveWakeGateway(w http.ResponseWriter, r *http.Request, targe
 	upstream := &url.URL{
 		Scheme: "http",
 		Host:   net.JoinHostPort(instance.Address, strconv.Itoa(instance.Port)),
-	}
-	upstreamPath := r.URL.Path
-	if stripGatewayPrefix {
-		upstreamPath = wakeGatewayUpstreamPath(r, targetKey)
 	}
 	proxy := httputil.NewSingleHostReverseProxy(upstream)
 	proxy.Director = func(out *http.Request) {
@@ -230,6 +248,41 @@ func wakeGatewayTargetForHost(services []model.ServiceManifestEntry, hostname st
 	return wakeGatewayTarget{}, false
 }
 
+func wakeGatewayTargetForApp(services []model.ServiceManifestEntry, app string) (wakeGatewayTarget, bool) {
+	app = strings.ToLower(strings.TrimSpace(app))
+	if app == "" {
+		return wakeGatewayTarget{}, false
+	}
+	var fallback wakeGatewayTarget
+	hasFallback := false
+	for _, service := range services {
+		if service.Type != "service" || strings.ToLower(service.App) != app {
+			continue
+		}
+		for _, endpoint := range service.Endpoints {
+			keys := wakeGatewayEndpointKeys(endpoint.URL)
+			if len(keys) == 0 {
+				continue
+			}
+			target := wakeGatewayTarget{
+				App:      service.App,
+				Process:  service.Process,
+				Endpoint: endpoint.URL,
+				Key:      keys[0],
+				Service:  service,
+			}
+			if service.Process == "web" {
+				return target, true
+			}
+			if !hasFallback {
+				fallback = target
+				hasFallback = true
+			}
+		}
+	}
+	return fallback, hasFallback
+}
+
 func wakeGatewayEndpointKeys(raw string) []string {
 	raw = strings.TrimSpace(raw)
 	if raw == "" {
@@ -316,6 +369,18 @@ func wakeGatewayTimeout(r *http.Request) time.Duration {
 
 func wakeGatewayUpstreamPath(r *http.Request, targetKey string) string {
 	prefix := "/api/wake-gateway/" + targetKey
+	path := strings.TrimPrefix(r.URL.Path, prefix)
+	if path == "" {
+		return "/"
+	}
+	if !strings.HasPrefix(path, "/") {
+		return "/" + path
+	}
+	return path
+}
+
+func wakeGatewayAliasUpstreamPath(r *http.Request, app string) string {
+	prefix := "/api/a/" + app
 	path := strings.TrimPrefix(r.URL.Path, prefix)
 	if path == "" {
 		return "/"
