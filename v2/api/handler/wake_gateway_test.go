@@ -4,9 +4,12 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 
+	"norn/v2/api/config"
 	"norn/v2/api/model"
 )
 
@@ -152,13 +155,45 @@ func TestWakeGatewayTargetForHostDoesNotUseCloudflarePublicFilter(t *testing.T) 
 	}
 }
 
-func TestWakeGatewayHostMiddlewareSkipsControlPlaneAPIPaths(t *testing.T) {
-	h := &Handler{}
+func TestWakeGatewayHostMiddlewareRoutesMappedAPIPaths(t *testing.T) {
+	appsDir := t.TempDir()
+	appDir := filepath.Join(appsDir, "trove")
+	if err := os.MkdirAll(appDir, 0755); err != nil {
+		t.Fatalf("mkdir app dir: %v", err)
+	}
+	spec := `name: trove
+deploy: true
+processes:
+  web:
+    port: 4173
+endpoints:
+  - url: https://trove.example.com:4173
+`
+	if err := os.WriteFile(filepath.Join(appDir, "infraspec.yaml"), []byte(spec), 0644); err != nil {
+		t.Fatalf("write spec: %v", err)
+	}
+	h := &Handler{cfg: &config.Config{AppsDir: appsDir}}
+	next := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusNoContent)
+	})
+	req := httptest.NewRequest(http.MethodGet, "/api/session", nil)
+	req.Host = "trove.example.com:4173"
+	rec := httptest.NewRecorder()
+
+	h.WakeGatewayHostMiddleware(next).ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusGatewayTimeout {
+		t.Fatalf("status = %d, want 504 from routed app host", rec.Code)
+	}
+}
+
+func TestWakeGatewayHostMiddlewarePassesUnmappedAPIPaths(t *testing.T) {
+	h := &Handler{cfg: &config.Config{AppsDir: t.TempDir()}}
 	next := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusNoContent)
 	})
 	req := httptest.NewRequest(http.MethodGet, "/api/health", nil)
-	req.Host = "trove.example.com"
+	req.Host = "norn.example.com"
 	rec := httptest.NewRecorder()
 
 	h.WakeGatewayHostMiddleware(next).ServeHTTP(rec, req)

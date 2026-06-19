@@ -63,12 +63,8 @@ func (h *Handler) WakeGatewayAppAlias(w http.ResponseWriter, r *http.Request) {
 
 func (h *Handler) WakeGatewayHostMiddleware(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if strings.HasPrefix(r.URL.Path, "/api/") {
-			next.ServeHTTP(w, r)
-			return
-		}
-		hostname := normalizeWakeGatewayKey(requestHostname(r))
-		if hostname == "" {
+		targetKey := requestHostKey(r)
+		if targetKey == "" {
 			next.ServeHTTP(w, r)
 			return
 		}
@@ -77,11 +73,19 @@ func (h *Handler) WakeGatewayHostMiddleware(next http.Handler) http.Handler {
 			next.ServeHTTP(w, r)
 			return
 		}
-		if _, ok := wakeGatewayTargetForHost(manifest.Services, hostname); !ok {
-			next.ServeHTTP(w, r)
-			return
+		if _, ok := wakeGatewayTargetForHost(manifest.Services, targetKey); !ok {
+			hostname := normalizeWakeGatewayKey(requestHostname(r))
+			if hostname == "" || hostname == targetKey {
+				next.ServeHTTP(w, r)
+				return
+			}
+			if _, ok := wakeGatewayTargetForHost(manifest.Services, hostname); !ok {
+				next.ServeHTTP(w, r)
+				return
+			}
+			targetKey = hostname
 		}
-		h.serveWakeGateway(w, r, hostname, r.URL.Path, "")
+		h.serveWakeGateway(w, r, targetKey, r.URL.Path, "")
 	})
 }
 
@@ -452,6 +456,14 @@ func requestHostname(r *http.Request) string {
 		host = parsedHost
 	}
 	return strings.ToLower(strings.TrimSuffix(host, "."))
+}
+
+func requestHostKey(r *http.Request) string {
+	host := strings.TrimSpace(r.Host)
+	if host == "" {
+		host = strings.TrimSpace(r.Header.Get("X-Forwarded-Host"))
+	}
+	return normalizeWakeGatewayKey(host)
 }
 
 func forwardedProto(r *http.Request) string {
