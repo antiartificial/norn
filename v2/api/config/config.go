@@ -56,7 +56,7 @@ func Load() *Config {
 		Port:        envOr("NORN_PORT", "8800"),
 		BindAddr:    envOr("NORN_BIND_ADDR", "127.0.0.1"),
 		DatabaseURL: envOr("NORN_DATABASE_URL", "postgres://norn:norn@localhost:5432/norn_v2?sslmode=disable"),
-		UIDir:       envOr("NORN_UI_DIR", defaultUIDir()),
+		UIDir:       uiDir(),
 		AppsDir:     envOr("NORN_APPS_DIR", os.Getenv("HOME")+"/projects"),
 		GitToken:    os.Getenv("NORN_GIT_TOKEN"),
 		GitSSHKey:   os.Getenv("NORN_GIT_SSH_KEY"),
@@ -96,6 +96,15 @@ func Load() *Config {
 		CloudflareLogpushToken: os.Getenv("NORN_CLOUDFLARE_LOGPUSH_TOKEN"),
 		CloudflareAPIBaseURL:   envOr("NORN_CLOUDFLARE_API_BASE_URL", "https://api.cloudflare.com/client/v4"),
 	}
+}
+
+func uiDir() string {
+	if explicit := strings.TrimSpace(os.Getenv("NORN_UI_DIR")); explicit != "" {
+		if info, err := os.Stat(explicit); err == nil && info.IsDir() {
+			return explicit
+		}
+	}
+	return defaultUIDir()
 }
 
 func defaultUIDir() string {
