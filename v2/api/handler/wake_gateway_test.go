@@ -81,6 +81,30 @@ func TestWakeGatewayTargetForHostMapsTailnetEndpointWithPort(t *testing.T) {
 	}
 }
 
+func TestWakeGatewayTargetForHostMapsBarePrivateEndpoint(t *testing.T) {
+	services := []model.ServiceManifestEntry{
+		{
+			App:     "ft-trove",
+			Process: "web",
+			Type:    "service",
+			Endpoints: []model.Endpoint{
+				{URL: "ft-trove.norn"},
+			},
+			Instances: []model.ServiceInstance{
+				{Address: "127.0.0.1", Port: 21485, Status: "passing"},
+			},
+		},
+	}
+
+	target, ok := wakeGatewayTargetForHost(services, "ft-trove.norn")
+	if !ok {
+		t.Fatalf("expected bare private endpoint target")
+	}
+	if target.App != "ft-trove" || target.Process != "web" || target.Endpoint != "ft-trove.norn" {
+		t.Fatalf("target = %+v", target)
+	}
+}
+
 func TestWakeGatewayTargetForHostDoesNotUseCloudflarePublicFilter(t *testing.T) {
 	services := []model.ServiceManifestEntry{
 		{

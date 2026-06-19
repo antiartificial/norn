@@ -121,6 +121,21 @@ func TestValidateSpecWarnsForPublicEndpointInLocalMode(t *testing.T) {
 	assertFinding(t, result, "endpoints[0].url")
 }
 
+func TestValidateSpecAcceptsBarePrivateEndpointInTailnetMode(t *testing.T) {
+	spec := &InfraSpec{
+		App:       "network-app",
+		Processes: map[string]Process{"web": {}},
+		Endpoints: []Endpoint{{URL: "ft-trove.norn"}},
+	}
+
+	result := ValidateSpecWithOptions(spec, ValidationOptions{NetworkMode: "tailnet"})
+	for _, finding := range result.Findings {
+		if finding.Field == "endpoints[0].url" {
+			t.Fatalf("unexpected endpoint finding: %+v", finding)
+		}
+	}
+}
+
 func TestValidateSpecAcceptsLocalEndpointInLocalMode(t *testing.T) {
 	spec := &InfraSpec{
 		App:       "network-app",

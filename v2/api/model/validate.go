@@ -227,7 +227,7 @@ func validateEndpointReachability(r *ValidationResult, field, rawURL, networkMod
 	if err != nil {
 		return
 	}
-	scope := hostScope(parsed.Hostname())
+	scope := hostScope(endpointHost(rawURL, parsed))
 	switch {
 	case networkMode != "local" && scope == "local":
 		r.add("warning", field, fmt.Sprintf("local endpoint may not be reachable in %s network mode", networkMode))
@@ -238,22 +238,44 @@ func validateEndpointReachability(r *ValidationResult, field, rawURL, networkMod
 	}
 }
 
+func endpointHost(raw string, parsed *url.URL) string {
+	if parsed != nil && parsed.Hostname() != "" {
+		return parsed.Hostname()
+	}
+	raw = strings.TrimSpace(raw)
+	if raw == "" || strings.Contains(raw, "://") || strings.ContainsAny(raw, "/?#") {
+		return ""
+	}
+	if host, _, err := net.SplitHostPort(raw); err == nil {
+		return strings.Trim(strings.TrimSpace(host), "[]")
+	}
+	return strings.TrimSuffix(strings.Trim(strings.TrimSpace(raw), "[]"), ".")
+}
+
 func hostScope(host string) string {
 	host = strings.ToLower(strings.TrimSpace(host))
 	if host == "" || host == "localhost" {
 		return "local"
 	}
+	if strings.HasSuffix(host, ".ts.net") || strings.HasSuffix(host, ".norn") {
+		return "private"
+	}
 	if ip := net.ParseIP(host); ip != nil {
 		switch {
 		case ip.IsLoopback():
 			return "local"
-		case ip.IsPrivate():
+		case ip.IsPrivate() || isTailnetIP(ip):
 			return "private"
 		default:
 			return "public"
 		}
 	}
 	return "public"
+}
+
+func isTailnetIP(ip net.IP) bool {
+	ip4 := ip.To4()
+	return ip4 != nil && ip4[0] == 100 && ip4[1]&0xc0 == 64
 }
 
 func validateTuningPolicy(r *ValidationResult, field string, tuning *TuningPolicy) {
