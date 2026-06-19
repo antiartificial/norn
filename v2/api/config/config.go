@@ -100,7 +100,7 @@ func Load() *Config {
 
 func uiDir() string {
 	if explicit := strings.TrimSpace(os.Getenv("NORN_UI_DIR")); explicit != "" {
-		if info, err := os.Stat(explicit); err == nil && info.IsDir() {
+		if validUIDir(explicit) {
 			return explicit
 		}
 	}
@@ -113,10 +113,19 @@ func defaultUIDir() string {
 		return ""
 	}
 	candidate := home + "/norn/current/ui"
-	if info, err := os.Stat(candidate); err == nil && info.IsDir() {
+	if validUIDir(candidate) {
 		return candidate
 	}
 	return ""
+}
+
+func validUIDir(dir string) bool {
+	info, err := os.Stat(dir)
+	if err != nil || !info.IsDir() {
+		return false
+	}
+	index, err := os.Stat(dir + "/index.html")
+	return err == nil && !index.IsDir()
 }
 
 func envOr(key, fallback string) string {
