@@ -151,11 +151,7 @@ func endpointScope(endpoints []model.Endpoint) string {
 	}
 	scope := "public"
 	for _, endpoint := range endpoints {
-		parsed, err := url.Parse(endpoint.URL)
-		if err != nil {
-			continue
-		}
-		host := strings.ToLower(parsed.Hostname())
+		host := endpointHostname(endpoint.URL)
 		switch classifyHostScope(host) {
 		case "local":
 			return "local"
@@ -164,6 +160,23 @@ func endpointScope(endpoints []model.Endpoint) string {
 		}
 	}
 	return scope
+}
+
+func endpointHostname(raw string) string {
+	raw = strings.TrimSpace(raw)
+	if raw == "" {
+		return ""
+	}
+	if parsed, err := url.Parse(raw); err == nil && parsed.Hostname() != "" {
+		return strings.ToLower(parsed.Hostname())
+	}
+	if strings.Contains(raw, "://") || strings.ContainsAny(raw, "/?#") {
+		return ""
+	}
+	if host, _, err := net.SplitHostPort(raw); err == nil {
+		return strings.ToLower(strings.Trim(strings.TrimSpace(host), "[]"))
+	}
+	return strings.ToLower(strings.TrimSuffix(strings.Trim(strings.TrimSpace(raw), "[]"), "."))
 }
 
 func instanceScope(instances []model.ServiceInstance) string {
@@ -188,6 +201,9 @@ func classifyHostScope(host string) string {
 		return "local"
 	}
 	if strings.HasSuffix(host, ".ts.net") {
+		return "private"
+	}
+	if strings.HasSuffix(host, ".norn") {
 		return "private"
 	}
 	if ip := net.ParseIP(host); ip != nil {

@@ -135,6 +135,7 @@ func TestManifestReachabilityScopes(t *testing.T) {
 		{name: "private one nine two", host: "192.168.1.5", want: "private"},
 		{name: "tailnet ip", host: "100.88.12.4", want: "private"},
 		{name: "tailnet magicdns", host: "aarons-mac-mini.tail113139.ts.net", want: "private"},
+		{name: "norn private host", host: "ft-trove.norn", want: "private"},
 		{name: "public", host: "contextdb.example.test", want: "public"},
 	}
 
@@ -144,5 +145,12 @@ func TestManifestReachabilityScopes(t *testing.T) {
 				t.Fatalf("classifyHostScope(%q) = %q, want %q", tt.host, got, tt.want)
 			}
 		})
+	}
+}
+
+func TestEndpointScopeUsesBareHostEndpoints(t *testing.T) {
+	endpoints := []model.Endpoint{{URL: "ft-trove.norn"}}
+	if got := endpointScope(endpoints); got != "private" {
+		t.Fatalf("endpointScope = %q, want private", got)
 	}
 }

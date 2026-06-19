@@ -231,18 +231,29 @@ func wakeGatewayTargetForHost(services []model.ServiceManifestEntry, hostname st
 }
 
 func wakeGatewayEndpointKeys(raw string) []string {
-	parsed, err := url.Parse(strings.TrimSpace(raw))
-	if err != nil || parsed.Hostname() == "" {
+	raw = strings.TrimSpace(raw)
+	if raw == "" {
 		return nil
 	}
-	host := normalizeWakeGatewayKey(parsed.Hostname())
-	if host == "" {
+	if parsed, err := url.Parse(raw); err == nil && parsed.Hostname() != "" {
+		host := normalizeWakeGatewayKey(parsed.Hostname())
+		if host == "" {
+			return nil
+		}
+		if port := strings.TrimSpace(parsed.Port()); port != "" {
+			return []string{normalizeWakeGatewayKey(net.JoinHostPort(host, port))}
+		}
+		return []string{host}
+	}
+
+	if strings.Contains(raw, "://") || strings.ContainsAny(raw, "/?#") {
 		return nil
 	}
-	if port := strings.TrimSpace(parsed.Port()); port != "" {
-		return []string{normalizeWakeGatewayKey(net.JoinHostPort(host, port))}
+	key := normalizeWakeGatewayKey(raw)
+	if key == "" {
+		return nil
 	}
-	return []string{host}
+	return []string{key}
 }
 
 func normalizeWakeGatewayKey(raw string) string {
