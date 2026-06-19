@@ -15,6 +15,7 @@ import { CronPanel } from './components/CronPanel.tsx'
 import { FunctionPanel } from './components/FunctionPanel.tsx'
 import { OpsPanel } from './components/OpsPanel.tsx'
 import { PlatformPanel } from './components/PlatformPanel.tsx'
+import { TopologyView } from './components/TopologyView.tsx'
 import type { AccessPattern, AccessPatternResponse, AppStatus, ServiceManifest, WSEvent } from './types/index.ts'
 
 export interface StepEvent {
@@ -67,7 +68,7 @@ export function App() {
   const [cronApp, setCronApp] = useState<string | null>(null)
   const [functionApp, setFunctionApp] = useState<string | null>(null)
   const [filter, setFilter] = useState<'all' | 'healthy' | 'unhealthy'>('all')
-  const [view, setView] = useState<'apps' | 'history' | 'stats' | 'platform' | 'ops'>('apps')
+  const [view, setView] = useState<'apps' | 'topology' | 'history' | 'stats' | 'platform' | 'ops'>('apps')
   const [apiVersion, setApiVersion] = useState<string | null>(null)
   const [activeIngress, setActiveIngress] = useState<Set<string>>(new Set())
   const [serviceManifest, setServiceManifest] = useState<ServiceManifest | null>(null)
@@ -229,20 +230,20 @@ export function App() {
   }
 
   return (
-    <div className="norn">
+    <div className={`norn ${view === 'topology' ? 'norn-topology-mode' : ''}`}>
       <header className="norn-header">
         <div className="header-left">
           <h1>NORN</h1>
           <span className="header-tagline">control plane</span>
         </div>
         <div className="header-right">
-          {(['apps', 'history', 'stats', 'platform', 'ops'] as const).map(v => (
+          {(['apps', 'topology', 'history', 'stats', 'platform', 'ops'] as const).map(v => (
             <button
               key={v}
               className={`filter-btn ${view === v ? 'active' : ''}`}
               onClick={() => setView(v)}
             >
-              {v === 'apps' ? 'Apps' : v === 'history' ? 'History' : v === 'stats' ? 'Stats' : v === 'platform' ? 'Platform' : 'ContextDB'}
+              {v === 'apps' ? 'Apps' : v === 'topology' ? 'Topology' : v === 'history' ? 'History' : v === 'stats' ? 'Stats' : v === 'platform' ? 'Platform' : 'ContextDB'}
             </button>
           ))}
           <StatusBar />
@@ -268,7 +269,14 @@ export function App() {
           </div>
         )}
 
-        {view === 'stats' ? (
+        {view === 'topology' ? (
+          <TopologyView
+            apps={apps}
+            serviceManifest={serviceManifest}
+            accessPatterns={accessPatterns}
+            activeIngress={activeIngress}
+          />
+        ) : view === 'stats' ? (
           <StatsPanel />
         ) : view === 'platform' ? (
           <PlatformPanel />
