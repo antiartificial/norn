@@ -218,7 +218,7 @@ func TestWakeGatewayAliasUpstreamPathStripsAppPrefix(t *testing.T) {
 	}
 }
 
-func TestRewriteWakeGatewayAliasHTMLPrefixesRootAssets(t *testing.T) {
+func TestRewriteWakeGatewayAliasResponsePrefixesRootAssets(t *testing.T) {
 	resp := &http.Response{
 		Header: http.Header{"Content-Type": []string{"text/html; charset=utf-8"}},
 		Body: io.NopCloser(strings.NewReader(`<!doctype html>
@@ -227,7 +227,7 @@ func TestRewriteWakeGatewayAliasHTMLPrefixesRootAssets(t *testing.T) {
 <link rel="icon" href="/favicon.svg">`)),
 	}
 
-	if err := rewriteWakeGatewayAliasHTML(resp, "/api/a/ft-trove"); err != nil {
+	if err := rewriteWakeGatewayAliasResponse(resp, "/api/a/ft-trove"); err != nil {
 		t.Fatalf("rewrite html: %v", err)
 	}
 	body, err := io.ReadAll(resp.Body)
@@ -246,6 +246,31 @@ func TestRewriteWakeGatewayAliasHTMLPrefixesRootAssets(t *testing.T) {
 	}
 	if got := resp.Header.Get("Content-Length"); got == "" {
 		t.Fatalf("expected content-length to be updated")
+	}
+}
+
+func TestRewriteWakeGatewayAliasResponsePrefixesRootAPIStrings(t *testing.T) {
+	resp := &http.Response{
+		Header: http.Header{"Content-Type": []string{"text/javascript; charset=utf-8"}},
+		Body:   io.NopCloser(strings.NewReader("fetch('/api/session');fetch(\"/api/items?x=1\");const media=`/api/media/${key}`")),
+	}
+
+	if err := rewriteWakeGatewayAliasResponse(resp, "/api/a/ft-trove"); err != nil {
+		t.Fatalf("rewrite js: %v", err)
+	}
+	body, err := io.ReadAll(resp.Body)
+	if err != nil {
+		t.Fatalf("read rewritten body: %v", err)
+	}
+	js := string(body)
+	for _, want := range []string{
+		`'/api/a/ft-trove/api/session'`,
+		`"/api/a/ft-trove/api/items?x=1"`,
+		"`/api/a/ft-trove/api/media/${key}`",
+	} {
+		if !strings.Contains(js, want) {
+			t.Fatalf("rewritten js missing %q in %s", want, js)
+		}
 	}
 }
 
