@@ -2086,6 +2086,17 @@ body {
   line-height: 1.25;
 }
 
+.topology-node-address {
+  margin-top: 7px;
+  max-width: 178px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: #0f766e;
+  font: 10px var(--mono);
+  letter-spacing: 0;
+}
+
 .topology-node-meta {
   display: flex;
   flex-wrap: wrap;
@@ -2164,6 +2175,30 @@ body {
 .scope-lan { color: #eab308; }
 .scope-local { color: #64748b; }
 .scope-internal { color: #8b5cf6; }
+
+.topology-inspector-address {
+  display: grid;
+  gap: 6px;
+}
+
+.topology-inspector-address span {
+  color: #64748b;
+  font-size: 10px;
+  font-weight: 800;
+  text-transform: uppercase;
+  letter-spacing: 0.8px;
+}
+
+.topology-inspector-address code {
+  display: block;
+  padding: 8px 9px;
+  border-radius: 6px;
+  background: #ecfeff;
+  color: #0f766e;
+  font-size: 11px;
+  white-space: normal;
+  overflow-wrap: anywhere;
+}
 
 .topology-inspector-list {
   display: flex;
