@@ -40,10 +40,9 @@ function endpointLabel(value: string): string {
 }
 
 function isCleanGatewayEndpoint(value: string): boolean {
-  if (typeof window === 'undefined') return false
   try {
     const parsed = new URL(value)
-    return parsed.protocol === 'https:' && parsed.hostname === window.location.hostname && parsed.port !== ''
+    return parsed.protocol === 'https:' && parsed.hostname.endsWith('.ts.net') && parsed.port !== ''
   } catch {
     return false
   }
