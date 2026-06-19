@@ -15,7 +15,7 @@ import { CronPanel } from './components/CronPanel.tsx'
 import { FunctionPanel } from './components/FunctionPanel.tsx'
 import { OpsPanel } from './components/OpsPanel.tsx'
 import { PlatformPanel } from './components/PlatformPanel.tsx'
-import type { AppStatus, WSEvent } from './types/index.ts'
+import type { AccessPattern, AccessPatternResponse, AppStatus, ServiceManifest, WSEvent } from './types/index.ts'
 
 export interface StepEvent {
   message: string
@@ -70,6 +70,22 @@ export function App() {
   const [view, setView] = useState<'apps' | 'history' | 'stats' | 'platform' | 'ops'>('apps')
   const [apiVersion, setApiVersion] = useState<string | null>(null)
   const [activeIngress, setActiveIngress] = useState<Set<string>>(new Set())
+  const [serviceManifest, setServiceManifest] = useState<ServiceManifest | null>(null)
+  const [accessPatterns, setAccessPatterns] = useState<AccessPattern[]>([])
+
+  const fetchServiceManifest = useCallback(() => {
+    fetch(apiUrl('/api/services/manifest'), fetchOpts)
+      .then(r => r.ok ? r.json() : null)
+      .then((data: ServiceManifest | null) => setServiceManifest(data))
+      .catch(() => {})
+  }, [])
+
+  const fetchAccessPatterns = useCallback(() => {
+    fetch(apiUrl('/api/access/patterns'), fetchOpts)
+      .then(r => r.ok ? r.json() : null)
+      .then((data: AccessPatternResponse | null) => setAccessPatterns(data?.patterns ?? []))
+      .catch(() => {})
+  }, [])
 
   const handleWsEvent = useCallback((event: WSEvent) => {
     if (event.type === 'deploy.step' || event.type === 'deploy.completed' || event.type === 'deploy.failed' || event.type === 'preflight.step' || event.type === 'preflight.completed' || event.type === 'preflight.failed') {
@@ -89,11 +105,14 @@ export function App() {
       } else if (event.type === 'deploy.completed') {
         setDeployState((prev) => prev ? { ...prev, status: 'deployed' } : null)
         refetch()
+        fetchServiceManifest()
+        fetchAccessPatterns()
       } else if (event.type === 'preflight.completed') {
         setDeployState((prev) => prev ? { ...prev, status: 'passed' } : null)
       } else if (event.type === 'deploy.failed') {
         setDeployState((prev) => prev ? { ...prev, status: 'failed', error: (payload as Record<string, string>)['error'] } : null)
         refetch()
+        fetchServiceManifest()
       } else if (event.type === 'preflight.failed') {
         setDeployState((prev) => prev ? { ...prev, status: 'failed', error: (payload as Record<string, string>)['error'] } : null)
       }
@@ -119,11 +138,14 @@ export function App() {
     if (event.type === 'app.restarted') {
       setRestartingApp(null)
       refetch()
+      fetchServiceManifest()
     }
     if (event.type === 'app.scaled') {
       refetch()
+      fetchServiceManifest()
+      fetchAccessPatterns()
     }
-  }, [refetch])
+  }, [fetchAccessPatterns, fetchServiceManifest, refetch])
 
   const { connected } = useWebSocket(handleWsEvent)
 
@@ -140,7 +162,9 @@ export function App() {
       .then(data => setApiVersion(data.version))
       .catch(() => {})
     fetchIngress()
-  }, [fetchIngress])
+    fetchServiceManifest()
+    fetchAccessPatterns()
+  }, [fetchAccessPatterns, fetchIngress, fetchServiceManifest])
 
   const handleToggleEndpoint = async (appId: string, hostname: string, enabled: boolean) => {
     await fetch(apiUrl(`/api/apps/${appId}/endpoints/toggle`), {
@@ -282,6 +306,8 @@ export function App() {
                 key={appId}
                 app={app}
                 busy={isBusy(appId)}
+                services={serviceManifest?.services.filter(s => s.app === appId) ?? []}
+                idleCandidates={accessPatterns.filter(p => p.app === appId && p.idleCandidate)}
                 activeIngress={activeIngress}
                 onPreflight={handlePreflight}
                 onDeploy={handleDeploy}

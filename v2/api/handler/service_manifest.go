@@ -187,17 +187,25 @@ func classifyHostScope(host string) string {
 	if host == "" || host == "localhost" {
 		return "local"
 	}
+	if strings.HasSuffix(host, ".ts.net") {
+		return "private"
+	}
 	if ip := net.ParseIP(host); ip != nil {
 		switch {
 		case ip.IsLoopback():
 			return "local"
-		case ip.IsPrivate():
+		case ip.IsPrivate() || isTailnetIP(ip):
 			return "private"
 		default:
 			return "public"
 		}
 	}
 	return "public"
+}
+
+func isTailnetIP(ip net.IP) bool {
+	ip4 := ip.To4()
+	return ip4 != nil && ip4[0] == 100 && ip4[1]&0xc0 == 64
 }
 
 func manifestProcessType(name string, process model.Process) string {

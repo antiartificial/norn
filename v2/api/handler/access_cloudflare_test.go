@@ -52,6 +52,24 @@ func TestAccessHostnameMapIncludesPublicServiceEndpoints(t *testing.T) {
 	}
 }
 
+func TestPublicEndpointHostnameFiltersTailnetAndPrivateEndpoints(t *testing.T) {
+	tests := []struct {
+		raw  string
+		want string
+	}{
+		{raw: "https://harbor.example.com", want: "harbor.example.com"},
+		{raw: "https://aarons-mac-mini.tail113139.ts.net", want: ""},
+		{raw: "http://100.88.12.4:7070", want: ""},
+		{raw: "http://127.0.0.1:8080", want: ""},
+		{raw: "https://gitea.internal", want: ""},
+	}
+	for _, tt := range tests {
+		if got := publicEndpointHostname(tt.raw); got != tt.want {
+			t.Fatalf("publicEndpointHostname(%q) = %q, want %q", tt.raw, got, tt.want)
+		}
+	}
+}
+
 func TestCloudflareSyncChunksSplitsLongWindows(t *testing.T) {
 	since := time.Date(2026, 6, 1, 6, 0, 0, 0, time.UTC)
 	until := since.Add(49 * time.Hour)

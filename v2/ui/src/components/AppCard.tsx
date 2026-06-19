@@ -1,5 +1,5 @@
 import { useState, useEffect } from 'react'
-import type { AppStatus, RepoSpec, CanaryStatus } from '../types/index.ts'
+import type { AccessPattern, AppStatus, RepoSpec, CanaryStatus, ServiceManifestEntry } from '../types/index.ts'
 import { apiUrl, fetchOpts } from '../lib/api.ts'
 import { Tooltip } from './Tooltip.tsx'
 
@@ -24,6 +24,22 @@ function endpointHostname(value: string): string {
   } catch {
     return value.split('/')[0]
   }
+}
+
+function endpointAuthority(value: string): string {
+  try {
+    const parsed = new URL(value)
+    return parsed.port ? `${parsed.hostname}:${parsed.port}` : parsed.hostname
+  } catch {
+    return value.split('/')[0]
+  }
+}
+
+function gatewayURL(value: string): string | null {
+  if (typeof window === 'undefined') return null
+  const authority = endpointAuthority(value)
+  if (!authority) return null
+  return `${window.location.origin}/api/wake-gateway/${encodeURIComponent(authority)}`
 }
 
 function CopyBadge({ url, icon, label, region, className }: {
@@ -107,25 +123,39 @@ function CanaryIndicator({ appId }: { appId: string }) {
   )
 }
 
-function EndpointBadges({ spec, allocations, activeIngress, appId, onToggleEndpoint }: {
+function EndpointBadges({ spec, allocations, services, activeIngress, appId, onToggleEndpoint }: {
   spec: AppStatus['spec'],
   allocations: AppStatus['allocations'],
+  services?: ServiceManifestEntry[],
   activeIngress?: Set<string>,
   appId: string,
   onToggleEndpoint?: (appId: string, hostname: string, enabled: boolean) => void,
 }) {
-  const external = spec.endpoints ?? []
-  // Dedupe internal addresses from running allocations
+  const serviceEndpoints = (services ?? [])
+    .filter(service => service.type === 'service')
+    .flatMap(service => service.endpoints ?? [])
+  const external = serviceEndpoints.length > 0 ? serviceEndpoints : (spec.endpoints ?? [])
   const seen = new Set<string>()
   const internal: { host: string; url: string; provider?: string; region?: string; nodeName?: string }[] = []
-  for (const a of allocations) {
-    if (a.status !== 'running' || !a.nodeAddress) continue
-    const port = Object.values(spec.processes).find(p => p.port)?.port
-    const url = port ? `http://${a.nodeAddress}:${port}` : `http://${a.nodeAddress}`
-    const host = port ? `${a.nodeAddress}:${port}` : a.nodeAddress
-    if (seen.has(a.nodeAddress)) continue
-    seen.add(a.nodeAddress)
-    internal.push({ host, url, provider: a.nodeProvider, region: a.nodeRegion, nodeName: a.nodeName })
+  for (const service of services ?? []) {
+    if (service.type !== 'service') continue
+    for (const instance of service.instances ?? []) {
+      if (!instance.address || !instance.port || seen.has(`${instance.address}:${instance.port}`)) continue
+      const host = `${instance.address}:${instance.port}`
+      seen.add(host)
+      internal.push({ host, url: `http://${host}`, nodeName: instance.node })
+    }
+  }
+  if (internal.length === 0) {
+    for (const a of allocations) {
+      if (a.status !== 'running' || !a.nodeAddress) continue
+      const port = Object.values(spec.processes).find(p => p.port)?.port
+      const url = port ? `http://${a.nodeAddress}:${port}` : `http://${a.nodeAddress}`
+      const host = port ? `${a.nodeAddress}:${port}` : a.nodeAddress
+      if (seen.has(host)) continue
+      seen.add(host)
+      internal.push({ host, url, provider: a.nodeProvider, region: a.nodeRegion, nodeName: a.nodeName })
+    }
   }
   if (external.length === 0 && internal.length === 0) return null
   const hasIngress = activeIngress && activeIngress.size > 0
@@ -134,9 +164,13 @@ function EndpointBadges({ spec, allocations, activeIngress, appId, onToggleEndpo
       {external.map(ep => {
         const hostname = endpointHostname(ep.url)
         const isActive = activeIngress?.has(hostname) ?? false
+        const gateway = gatewayURL(ep.url)
         return (
           <span key={ep.url} className="endpoint-group">
             <CopyBadge url={ep.url} icon="fa-globe" label={hostname} region={ep.region} className="external" />
+            {gateway && (
+              <CopyBadge url={gateway} icon="fa-route" label="gateway" className="gateway" />
+            )}
             {hasIngress && onToggleEndpoint && (
               <Tooltip text={isActive ? 'Disable endpoint' : 'Enable endpoint'}>
                 <i
@@ -163,10 +197,22 @@ function EndpointBadges({ spec, allocations, activeIngress, appId, onToggleEndpo
   )
 }
 
+function idleCandidateTooltip(patterns: AccessPattern[]): string {
+  return patterns
+    .map(pattern => {
+      const quiet = pattern.quietForHours !== undefined ? `, quiet ${Math.round(pattern.quietForHours)}h` : ''
+      const reason = pattern.idleReason ? `: ${pattern.idleReason}` : ''
+      return `${pattern.process}${quiet}${reason}`
+    })
+    .join('\n')
+}
+
 interface Props {
   app: AppStatus
   busy: boolean
   activeIngress?: Set<string>
+  services?: ServiceManifestEntry[]
+  idleCandidates?: AccessPattern[]
   onPreflight: (appId: string) => void
   onDeploy: (appId: string) => void
   onRestart: (appId: string) => void
@@ -179,7 +225,7 @@ interface Props {
   onToggleEndpoint?: (appId: string, hostname: string, enabled: boolean) => void
 }
 
-export function AppCard({ app, busy, activeIngress, onPreflight, onDeploy, onRestart, onScale, onViewLogs, onExec, onSnapshots, onCron, onFunction, onToggleEndpoint }: Props) {
+export function AppCard({ app, busy, activeIngress, services, idleCandidates = [], onPreflight, onDeploy, onRestart, onScale, onViewLogs, onExec, onSnapshots, onCron, onFunction, onToggleEndpoint }: Props) {
   const { spec, healthy, nomadStatus } = app
   const allocations = app.allocations ?? []
 
@@ -219,6 +265,13 @@ export function AppCard({ app, busy, activeIngress, onPreflight, onDeploy, onRes
           </Tooltip>
           <h3>{spec.name}</h3>
           <span className="nomad-status">{nomadStatus}</span>
+          {idleCandidates.length > 0 && (
+            <Tooltip text={idleCandidateTooltip(idleCandidates)}>
+              <span className="idle-candidate-badge" aria-label="Idle candidate">
+                <i className="fawsb fa-moon" />
+              </span>
+            </Tooltip>
+          )}
         </div>
         <div className="app-card-ready-group">
           <Tooltip text={`${runningCount} running, ${activeCount} active, ${retainedCount} retained`}>
@@ -309,7 +362,7 @@ export function AppCard({ app, busy, activeIngress, onPreflight, onDeploy, onRes
       })()}
 
       {/* Endpoints */}
-      <EndpointBadges spec={spec} allocations={allocations} activeIngress={activeIngress} appId={spec.name} onToggleEndpoint={onToggleEndpoint} />
+      <EndpointBadges spec={spec} allocations={allocations} services={services} activeIngress={activeIngress} appId={spec.name} onToggleEndpoint={onToggleEndpoint} />
 
       {/* Canary status */}
       <CanaryIndicator appId={spec.name} />

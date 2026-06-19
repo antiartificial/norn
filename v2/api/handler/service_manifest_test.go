@@ -133,6 +133,8 @@ func TestManifestReachabilityScopes(t *testing.T) {
 		{name: "private ten", host: "10.0.0.5", want: "private"},
 		{name: "private one seven two", host: "172.20.0.5", want: "private"},
 		{name: "private one nine two", host: "192.168.1.5", want: "private"},
+		{name: "tailnet ip", host: "100.88.12.4", want: "private"},
+		{name: "tailnet magicdns", host: "aarons-mac-mini.tail113139.ts.net", want: "private"},
 		{name: "public", host: "contextdb.example.test", want: "public"},
 	}
 
