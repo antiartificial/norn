@@ -68,6 +68,14 @@ func TestWakeGatewayTargetForHostMapsTailnetEndpointWithPort(t *testing.T) {
 			t.Fatalf("target = %+v, want harbor/web", target)
 		}
 	}
+
+	target, ok := wakeGatewayTargetForHost(services, "100.88.12.4%3A7070")
+	if !ok {
+		t.Fatalf("expected target for escaped host:port")
+	}
+	if target.App != "harbor" || target.Process != "web" {
+		t.Fatalf("escaped target = %+v, want harbor/web", target)
+	}
 }
 
 func TestWakeGatewayTargetForHostDoesNotUseCloudflarePublicFilter(t *testing.T) {

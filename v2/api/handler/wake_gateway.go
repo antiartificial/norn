@@ -251,6 +251,9 @@ func normalizeWakeGatewayKey(raw string) string {
 	if raw == "" {
 		return ""
 	}
+	if unescaped, err := url.PathUnescape(raw); err == nil {
+		raw = unescaped
+	}
 	if parsed, err := url.Parse(raw); err == nil && parsed.Hostname() != "" {
 		raw = parsed.Host
 	}
