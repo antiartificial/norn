@@ -1,8 +1,10 @@
 package handler
 
 import (
+	"bytes"
 	"context"
 	"fmt"
+	"io"
 	"net"
 	"net/http"
 	"net/http/httputil"
@@ -37,7 +39,7 @@ func (h *Handler) WakeGateway(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, "wake gateway target is required")
 		return
 	}
-	h.serveWakeGateway(w, r, targetKey, wakeGatewayUpstreamPath(r, targetKey))
+	h.serveWakeGateway(w, r, targetKey, wakeGatewayUpstreamPath(r, targetKey), "")
 }
 
 func (h *Handler) WakeGatewayAppAlias(w http.ResponseWriter, r *http.Request) {
@@ -56,7 +58,7 @@ func (h *Handler) WakeGatewayAppAlias(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusNotFound, "wake gateway app is not mapped to a service endpoint")
 		return
 	}
-	h.serveWakeGatewayTarget(w, r, target, wakeGatewayAliasUpstreamPath(r, app))
+	h.serveWakeGatewayTarget(w, r, target, wakeGatewayAliasUpstreamPath(r, app), "/api/a/"+app)
 }
 
 func (h *Handler) WakeGatewayHostMiddleware(next http.Handler) http.Handler {
@@ -79,11 +81,11 @@ func (h *Handler) WakeGatewayHostMiddleware(next http.Handler) http.Handler {
 			next.ServeHTTP(w, r)
 			return
 		}
-		h.serveWakeGateway(w, r, hostname, r.URL.Path)
+		h.serveWakeGateway(w, r, hostname, r.URL.Path, "")
 	})
 }
 
-func (h *Handler) serveWakeGateway(w http.ResponseWriter, r *http.Request, targetKey string, upstreamPath string) {
+func (h *Handler) serveWakeGateway(w http.ResponseWriter, r *http.Request, targetKey string, upstreamPath string, aliasPrefix string) {
 	manifest, err := h.buildServiceManifest()
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, err.Error())
@@ -94,10 +96,10 @@ func (h *Handler) serveWakeGateway(w http.ResponseWriter, r *http.Request, targe
 		writeError(w, http.StatusNotFound, "wake gateway target is not mapped to a service endpoint")
 		return
 	}
-	h.serveWakeGatewayTarget(w, r, target, upstreamPath)
+	h.serveWakeGatewayTarget(w, r, target, upstreamPath, aliasPrefix)
 }
 
-func (h *Handler) serveWakeGatewayTarget(w http.ResponseWriter, r *http.Request, target wakeGatewayTarget, upstreamPath string) {
+func (h *Handler) serveWakeGatewayTarget(w http.ResponseWriter, r *http.Request, target wakeGatewayTarget, upstreamPath string, aliasPrefix string) {
 	status := http.StatusOK
 	defer func() {
 		ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
@@ -162,6 +164,9 @@ func (h *Handler) serveWakeGatewayTarget(w http.ResponseWriter, r *http.Request,
 			resp.Header.Set("X-Norn-Wake-Action", "scaled")
 		} else {
 			resp.Header.Set("X-Norn-Wake-Action", "ready")
+		}
+		if aliasPrefix != "" {
+			return rewriteWakeGatewayAliasHTML(resp, aliasPrefix)
 		}
 		return nil
 	}
@@ -342,6 +347,37 @@ func firstReadyInstance(service model.ServiceManifestEntry) (model.ServiceInstan
 		}
 	}
 	return model.ServiceInstance{}, false
+}
+
+func rewriteWakeGatewayAliasHTML(resp *http.Response, aliasPrefix string) error {
+	contentType := strings.ToLower(resp.Header.Get("Content-Type"))
+	if !strings.Contains(contentType, "text/html") {
+		return nil
+	}
+	if encoding := strings.TrimSpace(resp.Header.Get("Content-Encoding")); encoding != "" && !strings.EqualFold(encoding, "identity") {
+		return nil
+	}
+	aliasPrefix = "/" + strings.Trim(strings.TrimSpace(aliasPrefix), "/")
+	if aliasPrefix == "/" {
+		return nil
+	}
+	body, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return err
+	}
+	_ = resp.Body.Close()
+	rewritten := body
+	for _, pair := range [][2][]byte{
+		{[]byte(`src="/`), []byte(`src="` + aliasPrefix + `/`)},
+		{[]byte(`href="/`), []byte(`href="` + aliasPrefix + `/`)},
+		{[]byte(`url(/`), []byte(`url(` + aliasPrefix + `/`)},
+	} {
+		rewritten = bytes.ReplaceAll(rewritten, pair[0], pair[1])
+	}
+	resp.Body = io.NopCloser(bytes.NewReader(rewritten))
+	resp.ContentLength = int64(len(rewritten))
+	resp.Header.Set("Content-Length", strconv.Itoa(len(rewritten)))
+	return nil
 }
 
 func (h *Handler) recordWakeGatewayObservation(ctx context.Context, target wakeGatewayTarget, status int) {

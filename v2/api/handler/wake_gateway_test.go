@@ -1,8 +1,10 @@
 package handler
 
 import (
+	"io"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 
 	"norn/v2/api/model"
@@ -213,6 +215,37 @@ func TestWakeGatewayAliasUpstreamPathStripsAppPrefix(t *testing.T) {
 	rootReq := httptest.NewRequest(http.MethodGet, "/api/a/ft-trove", nil)
 	if got := wakeGatewayAliasUpstreamPath(rootReq, "ft-trove"); got != "/" {
 		t.Fatalf("root path = %q, want /", got)
+	}
+}
+
+func TestRewriteWakeGatewayAliasHTMLPrefixesRootAssets(t *testing.T) {
+	resp := &http.Response{
+		Header: http.Header{"Content-Type": []string{"text/html; charset=utf-8"}},
+		Body: io.NopCloser(strings.NewReader(`<!doctype html>
+<script type="module" src="/assets/index.js"></script>
+<link rel="stylesheet" href="/assets/index.css">
+<link rel="icon" href="/favicon.svg">`)),
+	}
+
+	if err := rewriteWakeGatewayAliasHTML(resp, "/api/a/ft-trove"); err != nil {
+		t.Fatalf("rewrite html: %v", err)
+	}
+	body, err := io.ReadAll(resp.Body)
+	if err != nil {
+		t.Fatalf("read rewritten body: %v", err)
+	}
+	html := string(body)
+	for _, want := range []string{
+		`src="/api/a/ft-trove/assets/index.js"`,
+		`href="/api/a/ft-trove/assets/index.css"`,
+		`href="/api/a/ft-trove/favicon.svg"`,
+	} {
+		if !strings.Contains(html, want) {
+			t.Fatalf("rewritten html missing %q in %s", want, html)
+		}
+	}
+	if got := resp.Header.Get("Content-Length"); got == "" {
+		t.Fatalf("expected content-length to be updated")
 	}
 }
 
