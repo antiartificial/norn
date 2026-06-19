@@ -59,7 +59,7 @@ func TestWakeGatewayTargetForHostMapsTailnetEndpointWithPort(t *testing.T) {
 		},
 	}
 
-	for _, host := range []string{"100.88.12.4", "100.88.12.4:7070", "harbor.tail113139.ts.net:8443"} {
+	for _, host := range []string{"100.88.12.4:7070", "harbor.tail113139.ts.net:8443"} {
 		target, ok := wakeGatewayTargetForHost(services, host)
 		if !ok {
 			t.Fatalf("expected target for %s", host)
@@ -75,6 +75,9 @@ func TestWakeGatewayTargetForHostMapsTailnetEndpointWithPort(t *testing.T) {
 	}
 	if target.App != "harbor" || target.Process != "web" {
 		t.Fatalf("escaped target = %+v, want harbor/web", target)
+	}
+	if _, ok := wakeGatewayTargetForHost(services, "100.88.12.4"); ok {
+		t.Fatalf("host without declared endpoint port should not match")
 	}
 }
 

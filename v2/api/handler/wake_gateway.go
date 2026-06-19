@@ -239,11 +239,10 @@ func wakeGatewayEndpointKeys(raw string) []string {
 	if host == "" {
 		return nil
 	}
-	keys := []string{host}
 	if port := strings.TrimSpace(parsed.Port()); port != "" {
-		keys = append(keys, normalizeWakeGatewayKey(net.JoinHostPort(host, port)))
+		return []string{normalizeWakeGatewayKey(net.JoinHostPort(host, port))}
 	}
-	return keys
+	return []string{host}
 }
 
 func normalizeWakeGatewayKey(raw string) string {
