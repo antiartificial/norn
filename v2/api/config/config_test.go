@@ -1,6 +1,8 @@
 package config
 
 import (
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 )
@@ -47,6 +49,38 @@ func TestNetworkMode(t *testing.T) {
 				t.Fatalf("networkMode(%q) = %q, want %q", tt.in, got, tt.want)
 			}
 		})
+	}
+}
+
+func TestDefaultUIDirUsesCurrentReleaseUI(t *testing.T) {
+	home := t.TempDir()
+	uiDir := filepath.Join(home, "norn", "current", "ui")
+	if err := os.MkdirAll(uiDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("HOME", home)
+	t.Setenv("NORN_UI_DIR", "")
+
+	cfg := Load()
+
+	if cfg.UIDir != uiDir {
+		t.Fatalf("UIDir = %q, want %q", cfg.UIDir, uiDir)
+	}
+}
+
+func TestExplicitUIDirOverridesCurrentReleaseUI(t *testing.T) {
+	home := t.TempDir()
+	if err := os.MkdirAll(filepath.Join(home, "norn", "current", "ui"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	explicit := filepath.Join(t.TempDir(), "dist")
+	t.Setenv("HOME", home)
+	t.Setenv("NORN_UI_DIR", explicit)
+
+	cfg := Load()
+
+	if cfg.UIDir != explicit {
+		t.Fatalf("UIDir = %q, want explicit %q", cfg.UIDir, explicit)
 	}
 }
 
