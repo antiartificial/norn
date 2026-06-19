@@ -205,6 +205,38 @@ export interface ServiceManifest {
   services: ServiceManifestEntry[]
 }
 
+export interface AccessPattern {
+  app: string
+  process: string
+  type: string
+  status: string
+  endpoints?: string[]
+  sources?: string[]
+  windowHours: number
+  totalRequests: number
+  successes: number
+  clientErrors: number
+  serverErrors: number
+  firstSeen?: string
+  lastSeen?: string
+  quietForHours?: number
+  activeHours: number
+  activeWeekdays?: number[]
+  peakHourUtc?: number
+  hourlyUtc: Record<string, number>
+  weekdayUtc: Record<string, number>
+  idleCandidate: boolean
+  idleReason?: string
+  recommendedAction: string
+  confidence: string
+}
+
+export interface AccessPatternResponse {
+  windowHours: number
+  idleAfterHours: number
+  patterns: AccessPattern[]
+}
+
 export interface EvaluatorNamespaceReadiness {
   namespace: string
   evaluator: string

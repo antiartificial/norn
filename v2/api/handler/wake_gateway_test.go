@@ -43,6 +43,49 @@ func TestWakeGatewayTargetForHostMapsPublicServiceEndpoint(t *testing.T) {
 	}
 }
 
+func TestWakeGatewayTargetForHostMapsTailnetEndpointWithPort(t *testing.T) {
+	services := []model.ServiceManifestEntry{
+		{
+			App:     "harbor",
+			Process: "web",
+			Type:    "service",
+			Endpoints: []model.Endpoint{
+				{URL: "http://100.88.12.4:7070"},
+				{URL: "https://harbor.tail113139.ts.net:8443"},
+			},
+			Instances: []model.ServiceInstance{
+				{Address: "100.88.12.4", Port: 7070, Status: "passing"},
+			},
+		},
+	}
+
+	for _, host := range []string{"100.88.12.4", "100.88.12.4:7070", "harbor.tail113139.ts.net:8443"} {
+		target, ok := wakeGatewayTargetForHost(services, host)
+		if !ok {
+			t.Fatalf("expected target for %s", host)
+		}
+		if target.App != "harbor" || target.Process != "web" {
+			t.Fatalf("target = %+v, want harbor/web", target)
+		}
+	}
+}
+
+func TestWakeGatewayTargetForHostDoesNotUseCloudflarePublicFilter(t *testing.T) {
+	services := []model.ServiceManifestEntry{
+		{
+			App:     "mini",
+			Process: "web",
+			Type:    "service",
+			Endpoints: []model.Endpoint{
+				{URL: "https://aarons-mac-mini.tail113139.ts.net"},
+			},
+		},
+	}
+	if _, ok := wakeGatewayTargetForHost(services, "aarons-mac-mini.tail113139.ts.net"); !ok {
+		t.Fatalf("expected tailnet MagicDNS endpoint to be wake-routable")
+	}
+}
+
 func TestFirstReadyInstanceRequiresRoutablePassingInstance(t *testing.T) {
 	instance, ok := firstReadyInstance(model.ServiceManifestEntry{
 		Instances: []model.ServiceInstance{
@@ -66,6 +109,18 @@ func TestWakeGatewayUpstreamPathStripsGatewayPrefix(t *testing.T) {
 	rootReq := httptest.NewRequest(http.MethodGet, "/api/wake-gateway/trove.example.com", nil)
 	if got := wakeGatewayUpstreamPath(rootReq, "trove.example.com"); got != "/" {
 		t.Fatalf("root path = %q, want /", got)
+	}
+}
+
+func TestWakeGatewayUpstreamPathStripsPortTargetPrefix(t *testing.T) {
+	req := httptest.NewRequest(http.MethodGet, "/api/wake-gateway/100.88.12.4:7070/assets/app.js?x=1", nil)
+	if got := wakeGatewayUpstreamPath(req, "100.88.12.4:7070"); got != "/assets/app.js" {
+		t.Fatalf("path = %q, want /assets/app.js", got)
+	}
+
+	encodedReq := httptest.NewRequest(http.MethodGet, "/api/wake-gateway/100.88.12.4%3A7070/assets/app.js?x=1", nil)
+	if got := wakeGatewayUpstreamPath(encodedReq, "100.88.12.4:7070"); got != "/assets/app.js" {
+		t.Fatalf("encoded path = %q, want /assets/app.js", got)
 	}
 }
 

@@ -345,7 +345,7 @@ func accessHostnameMap(services []model.ServiceManifestEntry) map[string]accessH
 			continue
 		}
 		for _, endpoint := range service.Endpoints {
-			hostname := endpointHostname(endpoint.URL)
+			hostname := publicEndpointHostname(endpoint.URL)
 			if hostname == "" {
 				continue
 			}
@@ -359,7 +359,7 @@ func accessHostnameMap(services []model.ServiceManifestEntry) map[string]accessH
 	return out
 }
 
-func endpointHostname(raw string) string {
+func publicEndpointHostname(raw string) string {
 	parsed, err := url.Parse(strings.TrimSpace(raw))
 	if err != nil || parsed.Hostname() == "" {
 		return ""
