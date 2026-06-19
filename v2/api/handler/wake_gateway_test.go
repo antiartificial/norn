@@ -105,6 +105,35 @@ func TestWakeGatewayTargetForHostMapsBarePrivateEndpoint(t *testing.T) {
 	}
 }
 
+func TestWakeGatewayTargetForAppPrefersWebService(t *testing.T) {
+	services := []model.ServiceManifestEntry{
+		{
+			App:     "ft-trove",
+			Process: "worker",
+			Type:    "service",
+			Endpoints: []model.Endpoint{
+				{URL: "ft-trove-worker.norn"},
+			},
+		},
+		{
+			App:     "ft-trove",
+			Process: "web",
+			Type:    "service",
+			Endpoints: []model.Endpoint{
+				{URL: "ft-trove.norn"},
+			},
+		},
+	}
+
+	target, ok := wakeGatewayTargetForApp(services, "ft-trove")
+	if !ok {
+		t.Fatalf("expected app target")
+	}
+	if target.Process != "web" || target.Key != "ft-trove.norn" {
+		t.Fatalf("target = %+v, want web ft-trove.norn", target)
+	}
+}
+
 func TestWakeGatewayTargetForHostDoesNotUseCloudflarePublicFilter(t *testing.T) {
 	services := []model.ServiceManifestEntry{
 		{
@@ -172,6 +201,18 @@ func TestWakeGatewayUpstreamPathStripsPortTargetPrefix(t *testing.T) {
 	encodedReq := httptest.NewRequest(http.MethodGet, "/api/wake-gateway/100.88.12.4%3A7070/assets/app.js?x=1", nil)
 	if got := wakeGatewayUpstreamPath(encodedReq, "100.88.12.4:7070"); got != "/assets/app.js" {
 		t.Fatalf("encoded path = %q, want /assets/app.js", got)
+	}
+}
+
+func TestWakeGatewayAliasUpstreamPathStripsAppPrefix(t *testing.T) {
+	req := httptest.NewRequest(http.MethodGet, "/api/a/ft-trove/assets/app.js?x=1", nil)
+	if got := wakeGatewayAliasUpstreamPath(req, "ft-trove"); got != "/assets/app.js" {
+		t.Fatalf("path = %q, want /assets/app.js", got)
+	}
+
+	rootReq := httptest.NewRequest(http.MethodGet, "/api/a/ft-trove", nil)
+	if got := wakeGatewayAliasUpstreamPath(rootReq, "ft-trove"); got != "/" {
+		t.Fatalf("root path = %q, want /", got)
 	}
 }
 
