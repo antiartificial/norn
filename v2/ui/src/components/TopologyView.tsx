@@ -23,6 +23,8 @@ interface TopologyNodeData extends Record<string, unknown> {
   scope: TopologyScope
   status?: string
   detail?: string
+  address?: string
+  addresses?: string[]
   meta?: string[]
 }
 
@@ -80,6 +82,7 @@ function TopologyNode({ data, selected }: NodeProps<TopologyNodeType>) {
       </div>
       <div className="topology-node-label">{data.label}</div>
       {data.detail && <div className="topology-node-detail">{data.detail}</div>}
+      {data.address && <div className="topology-node-address">{data.address}</div>}
       {data.meta && data.meta.length > 0 && (
         <div className="topology-node-meta">
           {data.meta.slice(0, 3).map(item => <span key={item}>{item}</span>)}
@@ -151,11 +154,54 @@ function servicePrimaryScope(service: ServiceManifestEntry, activeIngress: Set<s
 }
 
 function publicIngressCount(activeIngress: Set<string>): number {
-  let count = 0
+  return publicIngressHosts(activeIngress).length
+}
+
+function publicIngressHosts(activeIngress: Set<string>): string[] {
+  const hosts: string[] = []
   for (const hostname of activeIngress) {
-    if (endpointScope(hostname, new Set()) === 'public') count += 1
+    if (endpointScope(hostname, new Set()) === 'public') hosts.push(hostname)
   }
-  return count
+  return hosts.sort()
+}
+
+function controlPlaneAddress(): string {
+  if (typeof window === 'undefined' || !window.location.host) return 'dashboard host'
+  return window.location.host
+}
+
+function routeAddresses(scope: TopologyScope, services: ServiceManifestEntry[], activeIngress: Set<string>): string[] {
+  const addresses = new Set<string>()
+  for (const service of services) {
+    for (const endpoint of service.endpoints ?? []) {
+      if (endpointScope(endpoint.url, activeIngress) === scope) addresses.add(endpoint.url)
+    }
+    if (scope === 'local') {
+      for (const instance of service.instances ?? []) {
+        if (instance.address && instance.port > 0) addresses.add(`${instance.address}:${instance.port}`)
+      }
+    }
+  }
+  return [...addresses].sort()
+}
+
+function ingressAddresses(scope: TopologyScope, services: ServiceManifestEntry[], activeIngress: Set<string>): string[] {
+  if (scope === 'public') return publicIngressHosts(activeIngress)
+  return routeAddresses(scope, services, activeIngress)
+}
+
+function firstAddress(addresses: string[], fallback: string): string {
+  return addresses[0] ?? fallback
+}
+
+function moreAddressCount(addresses: string[]): string[] {
+  return addresses.length > 1 ? [`+${addresses.length - 1} more`] : []
+}
+
+function instanceAddresses(service: ServiceManifestEntry): string[] {
+  return (service.instances ?? [])
+    .filter(instance => instance.address && instance.port > 0)
+    .map(instance => `${instance.address}:${instance.port}`)
 }
 
 function appDependencies(spec: InfraSpec): Array<{ id: string; label: string; detail: string }> {
@@ -233,6 +279,7 @@ function buildTopology(
     const y = scopeY(scope)
     const originId = `origin-${scope}`
     const ingressId = `ingress-${scope}`
+    const addresses = ingressAddresses(scope, services, activeIngress)
     addNode({
       id: originId,
       type: 'topology',
@@ -243,6 +290,8 @@ function buildTopology(
         kind: 'origin',
         scope,
         detail: scopeLabels[scope],
+        address: scope === 'public' ? '0.0.0.0/0' : scope === 'tailnet' ? '100.64.0.0/10' : scope === 'lan' ? 'RFC1918' : scope === 'local' ? '127.0.0.1' : 'cluster',
+        addresses: scope === 'tailnet' ? ['100.64.0.0/10', '*.ts.net', '*.norn'] : undefined,
         meta: scope === 'public' ? ['Cloudflare edge'] : scope === 'tailnet' ? ['Tailscale DNS', '100.x routes'] : [],
       },
     })
@@ -256,6 +305,9 @@ function buildTopology(
         kind: 'ingress',
         scope,
         detail: scope === 'public' ? `${publicHosts} public hosts` : scopeLabels[scope],
+        address: firstAddress(addresses, scope === 'public' ? 'cloudflared' : scope === 'tailnet' ? 'tailscale serve' : scope === 'lan' ? 'LAN bind' : scope === 'local' ? controlPlaneAddress() : 'service mesh'),
+        addresses,
+        meta: moreAddressCount(addresses),
       },
     })
     edges.push(edge(`route-${scope}-origin-ingress`, originId, ingressId, scope, scopeLabels[scope]))
@@ -273,6 +325,8 @@ function buildTopology(
       scope: 'tailnet',
       status: 'passing',
       detail: 'Norn route broker',
+      address: `${controlPlaneAddress()}/api/wake-gateway`,
+      addresses: [`${controlPlaneAddress()}/api/wake-gateway/{endpoint}`],
       meta: ['Host + /api/wake-gateway', 'scale-to-ready'],
     },
   })
@@ -287,6 +341,7 @@ function buildTopology(
     const serviceId = `service-${service.app}-${service.process}`
     const instances = service.instances ?? []
     const endpoints = service.endpoints?.map(endpoint => endpoint.url) ?? []
+    const runtimeAddresses = instanceAddresses(service)
     addNode({
       id: serviceId,
       type: 'topology',
@@ -298,7 +353,9 @@ function buildTopology(
         scope,
         status: service.status,
         detail: `${service.type} · ${service.reachability.exposure}`,
-        meta: endpoints.length > 0 ? endpoints : [service.healthPath ?? 'no endpoint'],
+        address: firstAddress(endpoints, runtimeAddresses[0] ?? service.healthPath ?? 'no endpoint'),
+        addresses: endpoints.length > 0 ? endpoints : runtimeAddresses,
+        meta: endpoints.length > 0 ? moreAddressCount(endpoints) : [service.healthPath ?? 'no endpoint'],
       },
     })
     edges.push(edge(`route-${serviceId}`, gatewayId, serviceId, scope, service.type))
@@ -317,7 +374,9 @@ function buildTopology(
           scope: service.reachability.instanceScope === 'local' ? 'local' : 'lan',
           status: passing > 0 ? 'passing' : service.status,
           detail: `${passing}/${instances.length} passing`,
-          meta: instances.map(instance => `${instance.address}:${instance.port}`),
+          address: firstAddress(runtimeAddresses, 'no routable instance'),
+          addresses: runtimeAddresses,
+          meta: moreAddressCount(runtimeAddresses),
         },
       })
       edges.push(edge(`runtime-${serviceId}`, serviceId, allocationId, 'internal', 'runs on'))
@@ -335,6 +394,7 @@ function buildTopology(
           kind: 'dependency',
           scope: 'internal',
           detail: dep.detail,
+          address: dep.detail,
         },
       })
       edges.push(edge(`dep-${serviceId}-${dep.id}`, serviceId, depId, 'internal'))
@@ -434,6 +494,17 @@ export function TopologyView({ apps, serviceManifest, accessPatterns, activeIngr
                 {scopeLabels[selectedNode.data.scope]}
               </div>
               {selectedNode.data.detail && <p>{selectedNode.data.detail}</p>}
+              {selectedNode.data.address && (
+                <div className="topology-inspector-address">
+                  <span>Address</span>
+                  <code>{selectedNode.data.address}</code>
+                </div>
+              )}
+              {selectedNode.data.addresses && selectedNode.data.addresses.length > 1 && (
+                <div className="topology-inspector-list">
+                  {selectedNode.data.addresses.map(item => <code key={item}>{item}</code>)}
+                </div>
+              )}
               {selectedNode.data.meta && selectedNode.data.meta.length > 0 && (
                 <div className="topology-inspector-list">
                   {selectedNode.data.meta.map(item => <code key={item}>{item}</code>)}
