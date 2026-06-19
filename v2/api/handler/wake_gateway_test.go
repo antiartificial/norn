@@ -86,6 +86,22 @@ func TestWakeGatewayTargetForHostDoesNotUseCloudflarePublicFilter(t *testing.T) 
 	}
 }
 
+func TestWakeGatewayHostMiddlewareSkipsControlPlaneAPIPaths(t *testing.T) {
+	h := &Handler{}
+	next := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusNoContent)
+	})
+	req := httptest.NewRequest(http.MethodGet, "/api/health", nil)
+	req.Host = "trove.example.com"
+	rec := httptest.NewRecorder()
+
+	h.WakeGatewayHostMiddleware(next).ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusNoContent {
+		t.Fatalf("status = %d, want 204", rec.Code)
+	}
+}
+
 func TestFirstReadyInstanceRequiresRoutablePassingInstance(t *testing.T) {
 	instance, ok := firstReadyInstance(model.ServiceManifestEntry{
 		Instances: []model.ServiceInstance{
