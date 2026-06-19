@@ -58,6 +58,9 @@ func TestDefaultUIDirUsesCurrentReleaseUI(t *testing.T) {
 	if err := os.MkdirAll(uiDir, 0o755); err != nil {
 		t.Fatal(err)
 	}
+	if err := os.WriteFile(filepath.Join(uiDir, "index.html"), []byte("<html></html>"), 0o644); err != nil {
+		t.Fatal(err)
+	}
 	t.Setenv("HOME", home)
 	t.Setenv("NORN_UI_DIR", "")
 
@@ -77,6 +80,9 @@ func TestExistingExplicitUIDirOverridesCurrentReleaseUI(t *testing.T) {
 	if err := os.MkdirAll(explicit, 0o755); err != nil {
 		t.Fatal(err)
 	}
+	if err := os.WriteFile(filepath.Join(explicit, "index.html"), []byte("<html></html>"), 0o644); err != nil {
+		t.Fatal(err)
+	}
 	t.Setenv("HOME", home)
 	t.Setenv("NORN_UI_DIR", explicit)
 
@@ -93,8 +99,34 @@ func TestMissingExplicitUIDirFallsBackToCurrentReleaseUI(t *testing.T) {
 	if err := os.MkdirAll(uiDir, 0o755); err != nil {
 		t.Fatal(err)
 	}
+	if err := os.WriteFile(filepath.Join(uiDir, "index.html"), []byte("<html></html>"), 0o644); err != nil {
+		t.Fatal(err)
+	}
 	t.Setenv("HOME", home)
 	t.Setenv("NORN_UI_DIR", filepath.Join(t.TempDir(), "missing"))
+
+	cfg := Load()
+
+	if cfg.UIDir != uiDir {
+		t.Fatalf("UIDir = %q, want fallback %q", cfg.UIDir, uiDir)
+	}
+}
+
+func TestExplicitUIDirWithoutIndexFallsBackToCurrentReleaseUI(t *testing.T) {
+	home := t.TempDir()
+	uiDir := filepath.Join(home, "norn", "current", "ui")
+	if err := os.MkdirAll(uiDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(uiDir, "index.html"), []byte("<html></html>"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	explicit := filepath.Join(t.TempDir(), "dist")
+	if err := os.MkdirAll(explicit, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("HOME", home)
+	t.Setenv("NORN_UI_DIR", explicit)
 
 	cfg := Load()
 
