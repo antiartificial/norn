@@ -42,7 +42,7 @@ func (h *Handler) WakeGateway(w http.ResponseWriter, r *http.Request) {
 
 func (h *Handler) WakeGatewayHostMiddleware(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if strings.HasPrefix(r.URL.Path, "/api/wake-gateway/") {
+		if strings.HasPrefix(r.URL.Path, "/api/") {
 			next.ServeHTTP(w, r)
 			return
 		}
