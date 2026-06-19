@@ -35,6 +35,20 @@ function endpointAuthority(value: string): string {
   }
 }
 
+function endpointLabel(value: string): string {
+  return endpointAuthority(value) || endpointHostname(value)
+}
+
+function isCleanGatewayEndpoint(value: string): boolean {
+  if (typeof window === 'undefined') return false
+  try {
+    const parsed = new URL(value)
+    return parsed.protocol === 'https:' && parsed.hostname === window.location.hostname && parsed.port !== ''
+  } catch {
+    return false
+  }
+}
+
 function gatewayURL(value: string): string | null {
   if (typeof window === 'undefined') return null
   const authority = endpointAuthority(value)
@@ -159,15 +173,17 @@ function EndpointBadges({ spec, allocations, services, activeIngress, appId, onT
   }
   if (external.length === 0 && internal.length === 0) return null
   const hasIngress = activeIngress && activeIngress.size > 0
+  const hasCleanGateway = external.some(ep => isCleanGatewayEndpoint(ep.url))
   return (
     <div className="app-card-endpoints">
       {external.map(ep => {
         const hostname = endpointHostname(ep.url)
+        const label = endpointLabel(ep.url)
         const isActive = activeIngress?.has(hostname) ?? false
-        const gateway = gatewayURL(ep.url)
+        const gateway = hasCleanGateway ? null : gatewayURL(ep.url)
         return (
           <span key={ep.url} className="endpoint-group">
-            <CopyBadge url={ep.url} icon="fa-globe" label={hostname} region={ep.region} className="external" />
+            <CopyBadge url={ep.url} icon="fa-globe" label={label} region={ep.region} className="external" />
             {gateway && (
               <CopyBadge url={gateway} icon="fa-route" label="gateway" className="gateway" />
             )}
