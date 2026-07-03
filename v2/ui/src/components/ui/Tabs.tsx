@@ -45,7 +45,7 @@ export function TabsList({ children, 'aria-label': ariaLabel }: { children: Reac
           : (index - 1 + values.length) % values.length
     const next = values[nextIndex]
     setValue(next)
-    const tabs = Array.from(document.querySelectorAll<HTMLElement>('[data-tab-value]'))
+    const tabs = Array.from(event.currentTarget.querySelectorAll<HTMLElement>('[data-tab-value]'))
     tabs.find((tab) => tab.dataset.tabValue === next)?.focus()
   }
 

@@ -43,7 +43,7 @@ describe('useHubEvents', () => {
 
     invalidateForHubEvent({ type: 'deploy.completed', appId: 'api', payload: {} }, invalidate)
     invalidateForHubEvent({ type: 'beacon.event', payload: { severity: 'critical' } }, invalidate)
-    invalidateForHubEvent({ type: 'snapshot.completed', appId: 'web', payload: {} }, invalidate)
+    invalidateForHubEvent({ type: 'snapshot.restored', appId: 'web', payload: {} }, invalidate)
     invalidateForHubEvent({ type: 'canary.promoted', appId: 'web', payload: {} }, invalidate)
 
     expect(invalidated).toContainEqual(['deployments'])

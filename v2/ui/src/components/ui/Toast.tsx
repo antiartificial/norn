@@ -1,4 +1,4 @@
-import { createContext, useCallback, useContext, useMemo, useRef, useState, type ReactNode } from 'react'
+import { createContext, useCallback, useContext, useEffect, useMemo, useRef, useState, type ReactNode } from 'react'
 
 export type ToastKind = 'success' | 'error' | 'info'
 
@@ -54,6 +54,15 @@ export function ToastProvider({ children }: { children: ReactNode }) {
     return id
   }, [schedule])
 
+  useEffect(() => {
+    const currentTimers = timers.current
+    return () => {
+      for (const timer of currentTimers.values()) clearTimeout(timer)
+      currentTimers.clear()
+      paused.current.clear()
+    }
+  }, [])
+
   const value = useMemo(() => ({ toast, dismiss }), [dismiss, toast])
 
   return (
@@ -71,6 +80,17 @@ export function ToastProvider({ children }: { children: ReactNode }) {
               if (timer) clearTimeout(timer)
             }}
             onMouseLeave={() => {
+              if (!paused.current.has(item.id)) return
+              paused.current.delete(item.id)
+              schedule(item.id, item.durationMs)
+            }}
+            onFocus={() => {
+              paused.current.add(item.id)
+              const timer = timers.current.get(item.id)
+              if (timer) clearTimeout(timer)
+            }}
+            onBlur={(event) => {
+              if (event.currentTarget.contains(event.relatedTarget)) return
               if (!paused.current.has(item.id)) return
               paused.current.delete(item.id)
               schedule(item.id, item.durationMs)

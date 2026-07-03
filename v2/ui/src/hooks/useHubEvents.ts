@@ -1,4 +1,4 @@
-import { useEffect } from 'react'
+import { useEffect, useState } from 'react'
 import { useQueryClient } from '@tanstack/react-query'
 import { wsUrl } from '../lib/api.ts'
 import type { HubEvent } from '../types/ws.ts'
@@ -6,17 +6,25 @@ import type { HubEvent } from '../types/ws.ts'
 type HubSubscriber = (event: HubEvent) => void
 
 const subscribers = new Set<HubSubscriber>()
+const connectionSubscribers = new Set<(connected: boolean) => void>()
 let ws: WebSocket | null = null
 let reconnectTimer: ReturnType<typeof setTimeout> | undefined
 let active = false
+let connected = false
 
 function emit(event: HubEvent) {
   for (const subscriber of subscribers) subscriber(event)
 }
 
+function setConnected(next: boolean) {
+  connected = next
+  for (const subscriber of connectionSubscribers) subscriber(next)
+}
+
 function connect() {
   if (!active || ws) return
   ws = new WebSocket(wsUrl())
+  ws.onopen = () => setConnected(true)
   ws.onmessage = (message) => {
     try {
       emit(JSON.parse(message.data) as HubEvent)
@@ -26,6 +34,7 @@ function connect() {
   }
   ws.onclose = () => {
     ws = null
+    setConnected(false)
     if (active) reconnectTimer = setTimeout(connect, 3000)
   }
   ws.onerror = () => ws?.close()
@@ -43,13 +52,14 @@ function releaseSocket() {
   clearTimeout(reconnectTimer)
   ws?.close()
   ws = null
+  setConnected(false)
 }
 
 export function invalidateForHubEvent(event: HubEvent, invalidate: (queryKey: readonly unknown[]) => void) {
   if (event.type.startsWith('deploy.') || event.type.startsWith('preflight.')) {
     invalidate(['deployments'])
     if (event.appId) invalidate(['app', event.appId])
-    if (event.type === 'deploy.completed' || event.type === 'deploy.failed') invalidate(['apps'])
+    if (event.type === 'deploy.completed' || event.type === 'deploy.succeeded' || event.type === 'deploy.auto_rollback' || event.type === 'deploy.failed') invalidate(['apps'])
     return
   }
   if (event.type.startsWith('snapshot.')) {
@@ -84,6 +94,7 @@ export function invalidateForHubEvent(event: HubEvent, invalidate: (queryKey: re
 
 export function useHubEvents(onEvent?: HubSubscriber) {
   const queryClient = useQueryClient()
+  const [isConnected, setIsConnected] = useState(connected)
 
   useEffect(() => {
     const subscriber: HubSubscriber = (event) => {
@@ -91,10 +102,15 @@ export function useHubEvents(onEvent?: HubSubscriber) {
       onEvent?.(event)
     }
     subscribers.add(subscriber)
+    connectionSubscribers.add(setIsConnected)
+    setIsConnected(connected)
     ensureSocket()
     return () => {
       subscribers.delete(subscriber)
+      connectionSubscribers.delete(setIsConnected)
       releaseSocket()
     }
   }, [onEvent, queryClient])
+
+  return { connected: isConnected }
 }
