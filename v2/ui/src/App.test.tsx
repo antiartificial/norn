@@ -24,6 +24,15 @@ const unhealthyApp = {
   nomadStatus: 'failed',
 }
 
+function appWith(name: string, healthy = true) {
+  return {
+    ...app,
+    spec: { ...app.spec, name, endpoints: [] },
+    healthy,
+    nomadStatus: healthy ? 'running' : 'failed',
+  }
+}
+
 class MockWebSocket {
   onopen: (() => void) | null = null
   onclose: (() => void) | null = null
@@ -130,10 +139,29 @@ describe('App shell routing', () => {
     expect(document.querySelector('.norn-shell')).toHaveClass('sidebar-collapsed')
   })
 
+  it('toggles the document theme from the page header', async () => {
+    document.documentElement.dataset.theme = 'dark'
+    installFetch()
+    renderApp('/overview')
+
+    await screen.findByRole('heading', { name: 'Overview' })
+    await screen.findAllByText('PG')
+    const switchToLight = screen.getByRole('button', { name: 'Switch to light theme' })
+    expect(switchToLight.querySelector('.fa-moon')).toBeInTheDocument()
+
+    fireEvent.click(switchToLight)
+    expect(document.documentElement.dataset.theme).toBe('light')
+    expect(localStorage.getItem('norn-theme')).toBe('light')
+
+    const switchToDark = screen.getByRole('button', { name: 'Switch to dark theme' })
+    expect(switchToDark.querySelector('.fa-sun')).toBeInTheDocument()
+  })
+
   it('opens, filters, executes, and escapes the command palette', async () => {
     const { calls } = installFetch()
     renderApp('/overview')
     await screen.findByRole('heading', { name: 'Overview' })
+    await screen.findByText('healthy')
 
     fireEvent.keyDown(window, { key: 'k', ctrlKey: true })
     const input = screen.getByPlaceholderText('Search apps, views, actions')
@@ -239,6 +267,111 @@ describe('App shell routing', () => {
     fireEvent.popState(window)
     expect(await screen.findByText('Latency elevated')).toBeInTheDocument()
     expect(screen.getByText('p95 above threshold')).toBeInTheDocument()
+  })
+
+  it('renders fleet health issue rows and caps each group at 5', async () => {
+    const names = ['api', 'worker', 'queue', 'cron', 'billing', 'search']
+    installFetch({
+      '/api/apps': () => json(names.map(name => appWith(name, false))),
+      '/api/access/patterns': () => json({
+        windowHours: 24,
+        idleAfterHours: 72,
+        patterns: names.map(name => ({
+          app: name,
+          process: 'web',
+          type: 'http',
+          status: 'idle',
+          windowHours: 24,
+          totalRequests: 0,
+          successes: 0,
+          clientErrors: 0,
+          serverErrors: 0,
+          activeHours: 0,
+          hourlyUtc: {},
+          weekdayUtc: {},
+          idleCandidate: true,
+          recommendedAction: 'scale down',
+          confidence: 'high',
+        })),
+      }),
+    })
+    renderApp('/overview')
+
+    await screen.findByRole('heading', { name: 'Overview' })
+    await waitFor(() => expect(document.querySelectorAll('.fleet-health-row .ui-status-chip.ui-status-danger')).toHaveLength(5))
+    expect(document.querySelectorAll('.fleet-health-row .ui-status-chip.ui-status-warning')).toHaveLength(5)
+    expect(screen.getAllByText(/\+1 more/)).toHaveLength(2)
+  })
+
+  it('caps overview incident groups at 5 inside a scroll container', async () => {
+    const now = new Date().toISOString()
+    installFetch({
+      '/api/events/active': () => json({
+        incidents: Array.from({ length: 6 }, (_, index) => ({
+          correlationKey: `api:incident-${index}`,
+          app: 'api',
+          latestSeverity: index === 0 ? 'critical' : 'warning',
+          latestType: 'health',
+          latestTitle: `Incident ${index}`,
+          eventCount: 1,
+          firstSeen: now,
+          lastSeen: now,
+          openCount: 1,
+          latestEventId: `evt-${index}`,
+        })),
+      }),
+    })
+    renderApp('/overview')
+
+    await screen.findByText('Incident 0')
+    expect(document.querySelector('.incident-panel-scroll')).toBeInTheDocument()
+    expect(document.querySelectorAll('.incident-panel-scroll .compact-row')).toHaveLength(5)
+    expect(screen.queryByText('Incident 5')).not.toBeInTheDocument()
+    expect(screen.getByRole('link', { name: /All incidents/i })).toHaveAttribute('href', '/incidents')
+  })
+
+  it('opens the incident drawer from overview, renders timeline, and acknowledges the latest event', async () => {
+    const now = new Date().toISOString()
+    const { calls } = installFetch({
+      '/api/events/active': () => json({
+        incidents: [{
+          correlationKey: 'api:db-down',
+          app: 'api',
+          latestSeverity: 'critical',
+          latestType: 'health',
+          latestTitle: 'Database unreachable',
+          eventCount: 2,
+          firstSeen: now,
+          lastSeen: now,
+          openCount: 2,
+          latestEventId: 'evt-latest',
+        }],
+      }),
+      '/api/events/correlated': () => json({
+        correlationKey: 'api:db-down',
+        events: [
+          { id: 'evt-latest', app: 'api', type: 'health', severity: 'critical', state: 'open', title: 'Database unreachable', body: 'postgres timed out', occurredAt: now, metadata: { correlationKey: 'api:db-down' } },
+          { id: 'evt-prior', app: 'api', type: 'health', severity: 'warning', state: 'open', title: 'Database slow', occurredAt: now, metadata: { correlationKey: 'api:db-down' } },
+        ],
+      }),
+      '/api/events?app=': () => json({
+        total: 2,
+        events: [
+          { id: 'evt-latest', app: 'api', type: 'health', severity: 'critical', state: 'open', title: 'Database unreachable', occurredAt: now, metadata: { correlationKey: 'api:db-down' } },
+          { id: 'evt-deploy', app: 'api', type: 'deploy', severity: 'info', state: 'open', title: 'Deploy finished', occurredAt: now, metadata: {} },
+        ],
+      }),
+      '/api/events/evt-latest/ack': () => json({ ok: true }),
+    })
+    renderApp('/overview')
+
+    fireEvent.click(await screen.findByRole('button', { name: /Database unreachable/i }))
+    expect(await screen.findByRole('dialog', { name: 'Incident context' })).toBeInTheDocument()
+    expect(await screen.findByText('Database slow')).toBeInTheDocument()
+    expect(screen.getByText('Deploy finished')).toBeInTheDocument()
+    fireEvent.click(screen.getByRole('button', { name: 'Ack' }))
+    await waitFor(() => expect(calls).toContain('POST /api/events/evt-latest/ack'))
+    await waitFor(() => expect(calls.filter(call => call === 'GET /api/events/active').length).toBeGreaterThan(1))
   })
 
   it('syncs platform sub-tabs to routes', async () => {
@@ -377,27 +510,29 @@ describe('App shell routing', () => {
     expect(screen.getByText('API slow')).toBeInTheDocument()
   })
 
-  it('snoozes incidents with selected duration', async () => {
+  it('snoozes incidents from the drawer with selected duration', async () => {
     const now = new Date().toISOString()
     const { calls } = installFetch({
       '/api/events': () => json({ events: [{ id: 'evt-1', app: 'api', type: 'health', severity: 'critical', state: 'open', title: 'API down', occurredAt: now, metadata: {} }] }),
+      '/api/events?app=': () => json({ events: [], total: 0 }),
       '/api/events/evt-1/snooze': () => json({ ok: true }),
     })
     renderApp('/incidents')
-    await screen.findByText('API down')
-    fireEvent.change(screen.getByLabelText(/Snooze/i), { target: { value: '8h' } })
+    fireEvent.click(await screen.findByRole('button', { name: /API down/i }))
+    fireEvent.change(await screen.findByLabelText(/Snooze/i), { target: { value: '8h' } })
     fireEvent.click(screen.getByRole('button', { name: 'Snooze' }))
     await waitFor(() => expect(calls).toContain('POST /api/events/evt-1/snooze'))
   })
 
-  it('acknowledges incidents from the list', async () => {
+  it('acknowledges incidents from the drawer', async () => {
     const now = new Date().toISOString()
     const { calls } = installFetch({
       '/api/events': () => json({ events: [{ id: 'evt-1', app: 'api', type: 'health', severity: 'critical', state: 'open', title: 'API down', occurredAt: now, metadata: {} }] }),
+      '/api/events?app=': () => json({ events: [], total: 0 }),
       '/api/events/evt-1/ack': () => json({ ok: true }),
     })
     renderApp('/incidents')
-    await screen.findByText('API down')
+    fireEvent.click(await screen.findByRole('button', { name: /API down/i }))
     fireEvent.click(screen.getByRole('button', { name: 'Ack' }))
     await waitFor(() => expect(calls).toContain('POST /api/events/evt-1/ack'))
   })

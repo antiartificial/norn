@@ -1,17 +1,23 @@
+import { useState } from 'react'
 import { NavLink } from 'react-router-dom'
 import { useQuery } from '@tanstack/react-query'
 import { apiFetch } from '../lib/api.ts'
 import { useRuntimeContext } from '../runtime/AppRuntime.tsx'
-import type { ActiveIncidentsResponse, Deployment, OperationsResponse, VersionResponse } from '../types/index.ts'
+import type { ActiveIncidentsResponse, AppStatus, Deployment, OperationsResponse, VersionResponse } from '../types/index.ts'
 import { DeployList } from '../components/panels/DeployList.tsx'
 import { ActiveIncidentList } from '../components/panels/IncidentList.tsx'
 import { Metric, Panel } from '../components/panels/Panel.tsx'
 import { OperationList } from '../components/panels/OperationList.tsx'
 import { StatusBar } from '../components/StatusBar.tsx'
-import { EmptyState } from '../components/ui/index.ts'
+import { EmptyState, StatusChip } from '../components/ui/index.ts'
+import { IncidentDrawer, type IncidentSelection } from '../components/incidents/IncidentDrawer.tsx'
+
+const healthRowLimit = 5
+const incidentLimit = 5
 
 export function OverviewPage() {
   const ctx = useRuntimeContext()
+  const [selection, setSelection] = useState<IncidentSelection | null>(null)
   const incidents = useQuery({ queryKey: ['events', 'active'], queryFn: () => apiFetch<ActiveIncidentsResponse>('/api/events/active'), staleTime: 15_000 })
   const operations = useQuery({ queryKey: ['operations', 'active'], queryFn: () => apiFetch<OperationsResponse>('/api/operations/active'), staleTime: 15_000 })
   const deploys = useQuery({ queryKey: ['deployments', { limit: 5 }], queryFn: () => apiFetch<Deployment[]>('/api/deployments?limit=5'), staleTime: 15_000 })
@@ -19,6 +25,7 @@ export function OverviewPage() {
   const healthy = ctx.apps.filter((app) => app.healthy).length
   const unhealthy = ctx.apps.filter((app) => !app.healthy)
   const idle = ctx.accessPatterns.filter((pattern) => pattern.idleCandidate)
+  const idleApps = idle.map(pattern => pattern.app)
 
   return (
     <div className="overview-grid">
@@ -28,10 +35,14 @@ export function OverviewPage() {
           <Metric label="unhealthy" value={unhealthy.length} tone={unhealthy.length ? 'danger' : 'neutral'} />
           <Metric label="idle" value={idle.length} tone={idle.length ? 'warning' : 'neutral'} />
         </div>
-        {unhealthy.length > 0 && <div className="compact-list">{unhealthy.map((app) => <NavLink key={app.spec.name} to={`/apps/${app.spec.name}/overview`}>{app.spec.name}</NavLink>)}</div>}
+        <FleetHealthRows apps={unhealthy} names={[]} tone="danger" label="unhealthy" filter="unhealthy" />
+        <FleetHealthRows apps={[]} names={idleApps} tone="warning" label="idle" filter="idle" />
       </Panel>
       <Panel title="Active incidents" loading={incidents.isLoading} error={incidents.error instanceof Error ? incidents.error.message : null} onRetry={() => incidents.refetch()}>
-        <ActiveIncidentList items={incidents.data?.incidents ?? []} />
+        <div className="incident-panel-scroll">
+          <ActiveIncidentList items={incidents.data?.incidents ?? []} limit={incidentLimit} onSelect={(incident) => setSelection({ kind: 'correlated', incident })} />
+        </div>
+        {(incidents.data?.incidents.length ?? 0) > 0 && <NavLink className="panel-footer-link" to="/incidents">All incidents <i className="fawsb fa-arrow-right" aria-hidden="true" /></NavLink>}
       </Panel>
       <Panel title="Running operations" loading={operations.isLoading} error={operations.error instanceof Error ? operations.error.message : null} onRetry={() => operations.refetch()}>
         <OperationList items={operations.data?.operations ?? []} />
@@ -53,6 +64,28 @@ export function OverviewPage() {
           </div>
         )}
       </section>
+      <IncidentDrawer selection={selection} onClose={() => setSelection(null)} />
+    </div>
+  )
+}
+
+function FleetHealthRows({ apps, names, tone, label, filter }: { apps: AppStatus[]; names: string[]; tone: 'danger' | 'warning'; label: string; filter: string }) {
+  const appNames = apps.length > 0 ? apps.map(app => app.spec.name) : names
+  if (appNames.length === 0) return null
+  const visible = appNames.slice(0, healthRowLimit)
+  const more = appNames.length - visible.length
+  return (
+    <div className="fleet-health-group">
+      <div className="compact-list">
+        {visible.map(name => (
+          <NavLink className="compact-row fleet-health-row" key={`${label}-${name}`} to={`/apps/${name}/overview`}>
+            <StatusChip tone={tone} label={label} />
+            <span className="compact-row-title">{name}</span>
+            <i className="fawsb fa-angle-right compact-row-chevron" aria-hidden="true" />
+          </NavLink>
+        ))}
+      </div>
+      {more > 0 && <NavLink className="panel-footer-link" to={`/apps?filter=${filter}`}>+{more} more <i className="fawsb fa-arrow-right" aria-hidden="true" /> Apps</NavLink>}
     </div>
   )
 }

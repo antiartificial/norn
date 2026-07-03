@@ -187,10 +187,16 @@ export interface Operation {
 
 export interface EventsResponse {
   events: BeaconEvent[]
+  total?: number
 }
 
 export interface ActiveIncidentsResponse {
   incidents: CorrelatedIncident[]
+}
+
+export interface CorrelatedEventsResponse {
+  correlationKey: string
+  events: BeaconEvent[]
 }
 
 export interface OperationsResponse {

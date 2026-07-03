@@ -7,10 +7,15 @@ export interface ConfirmDialogProps {
   message: string
   consequence?: string
   confirmLabel?: string
+  confirmIcon?: string
   cancelLabel?: string
   danger?: boolean
   onConfirm: () => void
   onClose: () => void
+}
+
+function destructiveIcon(label: string): string {
+  return /(rollback|restore)/i.test(label) ? 'fa-arrow-rotate-left' : 'fa-trash'
 }
 
 export function ConfirmDialog({
@@ -19,11 +24,14 @@ export function ConfirmDialog({
   message,
   consequence,
   confirmLabel = 'Confirm',
+  confirmIcon,
   cancelLabel = 'Cancel',
   danger = false,
   onConfirm,
   onClose,
 }: ConfirmDialogProps) {
+  const icon = confirmIcon ?? (danger ? destructiveIcon(confirmLabel) : 'fa-check')
+
   return (
     <Modal
       open={open}
@@ -32,8 +40,8 @@ export function ConfirmDialog({
       size="sm"
       footer={(
         <>
-          <Button variant="ghost" onClick={onClose}>{cancelLabel}</Button>
-          <Button variant={danger ? 'danger' : 'primary'} onClick={onConfirm}>{confirmLabel}</Button>
+          <Button variant="ghost" icon="fa-xmark" onClick={onClose}>{cancelLabel}</Button>
+          <Button variant={danger ? 'danger' : 'primary'} icon={icon} onClick={onConfirm}>{confirmLabel}</Button>
         </>
       )}
     >

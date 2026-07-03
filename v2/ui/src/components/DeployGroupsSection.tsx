@@ -53,7 +53,7 @@ export function DeployGroupsSection() {
             <div key={group.name} className="deploy-group-card">
               <div className="deploy-group-head">
                 <strong>{group.name}</strong>
-                <Button size="sm" loading={busy === group.name} onClick={() => deployGroup(group.name)}>Deploy</Button>
+                <Button size="sm" icon="fa-rocket-launch" loading={busy === group.name} onClick={() => deployGroup(group.name)}>Deploy</Button>
               </div>
               <ol className="deploy-group-apps">
                 {group.apps.map((entry) => (

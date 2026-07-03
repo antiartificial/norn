@@ -294,6 +294,44 @@ body {
   color: var(--text-2);
   font-size: 12px;
 }
+.fleet-health-group {
+  display: grid;
+  gap: 8px;
+  margin-top: 10px;
+}
+.fleet-health-row .ui-status-chip {
+  min-width: 88px;
+}
+.panel-footer-link {
+  align-items: center;
+  color: var(--text-2);
+  display: inline-flex;
+  font-size: 12px;
+  font-weight: 650;
+  gap: 6px;
+  justify-self: start;
+  margin-top: 10px;
+  text-decoration: none;
+}
+.panel-footer-link:hover {
+  color: var(--text-1);
+}
+.incident-panel-scroll {
+  max-height: 280px;
+  overflow-y: auto;
+  padding-right: 2px;
+  scrollbar-color: var(--border-strong) transparent;
+  scrollbar-width: thin;
+}
+.incident-panel-scroll::-webkit-scrollbar,
+.ui-layer-body::-webkit-scrollbar {
+  width: 8px;
+}
+.incident-panel-scroll::-webkit-scrollbar-thumb,
+.ui-layer-body::-webkit-scrollbar-thumb {
+  background: var(--border-strong);
+  border-radius: 999px;
+}
 .compact-list,
 .activity-list {
   display: grid;
@@ -311,6 +349,26 @@ body {
   min-height: 34px;
   padding: 7px 8px;
   text-decoration: none;
+}
+.compact-row-button {
+  cursor: pointer;
+  font: inherit;
+  text-align: left;
+  width: 100%;
+}
+.compact-row:hover,
+.compact-row-button:hover {
+  background: var(--surface-3);
+  border-color: var(--border-strong);
+}
+.compact-row-title {
+  flex: 1 1 160px;
+  min-width: 0;
+}
+.compact-row-chevron {
+  color: var(--text-3);
+  font-size: 11px;
+  margin-left: auto;
 }
 .compact-row small,
 .activity-list small {
@@ -584,8 +642,6 @@ body {
   transition: border-color 0.15s;
 }
 .app-card:hover { border-color: #3a3e4d; }
-.app-card.healthy { border-left: 3px solid var(--green); }
-.app-card.unhealthy { border-left: 3px solid var(--red); }
 
 .app-card-header {
   display: flex;
@@ -812,7 +868,7 @@ body {
 .btn:hover .fa-rocket-launch       { transform: translateY(-2px) scale(1.1); }
 .btn:hover .fa-arrows-rotate        { transform: rotate(90deg); }
 .btn:hover .fa-rectangle-code       { transform: scale(1.1); }
-.btn:hover .fa-terminal             { transform: scale(1.1); }
+.btn:hover .fa-rectangle-code             { transform: scale(1.1); }
 .btn-primary {
   background: #2563eb;
   border-color: #3b82f6;
@@ -2437,6 +2493,123 @@ body {
 .incident-row,
 .operation-row {
   align-items: flex-start;
+}
+
+.incident-drawer {
+  display: grid;
+  gap: 16px;
+}
+
+.incident-drawer-head {
+  align-items: flex-start;
+  border-bottom: 1px solid var(--border);
+  display: flex;
+  gap: 12px;
+  justify-content: space-between;
+  padding-bottom: 14px;
+}
+
+.incident-drawer-head > div:first-child {
+  display: grid;
+  gap: 4px;
+  min-width: 0;
+}
+
+.incident-drawer-head strong {
+  font-size: 15px;
+}
+
+.incident-drawer-head small,
+.incident-timeline-row small {
+  color: var(--text-3);
+  font-size: 12px;
+}
+
+.incident-drawer-status,
+.incident-drawer-actions,
+.incident-timeline-meta {
+  align-items: center;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.incident-drawer-actions {
+  background: var(--surface-2);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  padding: 8px;
+}
+
+.incident-drawer-section {
+  display: grid;
+  gap: 10px;
+}
+
+.incident-drawer-section h3 {
+  font-size: 13px;
+  margin: 0;
+}
+
+.incident-timeline {
+  display: grid;
+  gap: 10px;
+}
+
+.incident-timeline-row {
+  display: grid;
+  gap: 10px;
+  grid-template-columns: 10px minmax(0, 1fr);
+}
+
+.incident-timeline-marker {
+  background: var(--border-strong);
+  border-radius: 999px;
+  height: 10px;
+  margin-top: 8px;
+  width: 10px;
+}
+
+.incident-timeline-content {
+  background: var(--surface-2);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  display: grid;
+  gap: 6px;
+  min-width: 0;
+  padding: 9px 10px;
+}
+
+.incident-timeline-content p {
+  color: var(--text-2);
+  font-size: 12px;
+  margin: 0;
+}
+
+.incident-timeline-content code {
+  color: var(--text-2);
+  font: 11px var(--mono);
+}
+
+.incident-timeline-content details {
+  color: var(--text-2);
+  font-size: 12px;
+}
+
+.incident-timeline-content summary {
+  cursor: pointer;
+}
+
+.incident-timeline-content pre {
+  background: var(--surface-3);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  color: var(--text-1);
+  font: 11px var(--mono);
+  margin: 6px 0 0;
+  max-height: 180px;
+  overflow: auto;
+  padding: 8px;
 }
 
 .operation-error {

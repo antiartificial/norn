@@ -118,7 +118,7 @@ function CanaryIndicator({ appId }: { appId: string }) {
     <div className="app-card-canary">
       <Tooltip text={canary.statusDescription ?? canary.status}>
         <span className="canary-badge">
-          <i className="fawsb fa-bird" /> Canary: {canary.status}
+          <i className="fawsb fa-feather" /> Canary: {canary.status}
         </span>
       </Tooltip>
       {promoteMsg ? (
@@ -181,7 +181,7 @@ function EndpointBadges({ spec, allocations, services, activeIngress, appId, onT
           <span key={ep.url} className="endpoint-group">
             <CopyBadge url={ep.url} icon="fa-globe" label={label} region={ep.region} className="external" />
             {gateway && (
-              <CopyBadge url={gateway} icon="fa-route" label="gateway" className="gateway" />
+              <CopyBadge url={gateway} icon="fa-signal" label="gateway" className="gateway" />
             )}
             {hasIngress && onToggleEndpoint && (
               <Tooltip text={isActive ? 'Disable endpoint' : 'Enable endpoint'}>
@@ -360,14 +360,14 @@ export function AppCard({ app, busy, activeIngress, services, idleCandidates = [
             {rUrl ? (
               <a href={rUrl} target="_blank" rel="noopener noreferrer" className="repo-link">
                 <span className="repo-badge">
-                  <i className="fawsb fa-code-branch" /> {truncateURL(spec.repo.url)}
+                  <i className="fawsb fa-code" /> {truncateURL(spec.repo.url)}
                   <i className="fawsb fa-arrow-up-right-from-square repo-external-icon" />
                 </span>
               </a>
             ) : (
               <Tooltip text={spec.repo.url}>
                 <span className="repo-badge">
-                  <i className="fawsb fa-code-branch" /> {truncateURL(spec.repo.url)}
+                  <i className="fawsb fa-code" /> {truncateURL(spec.repo.url)}
                 </span>
               </Tooltip>
             )}
@@ -402,7 +402,7 @@ export function AppCard({ app, busy, activeIngress, services, idleCandidates = [
         </Tooltip>
         <Tooltip text="Scale a task group">
           <button onClick={() => onScale(spec.name)} disabled={busy} className="btn">
-            <i className="fawsb fa-up-right-and-down-left-from-center" /> Scale
+            <i className="fawsb fa-expand" /> Scale
           </button>
         </Tooltip>
         <Tooltip text="Stream live logs">
@@ -412,7 +412,7 @@ export function AppCard({ app, busy, activeIngress, services, idleCandidates = [
         </Tooltip>
         <Tooltip text="Open shell in running container">
           <button onClick={() => onExec(spec.name)} disabled={runningCount === 0} className="btn">
-            <i className="fawsb fa-terminal" /> Shell
+            <i className="fawsb fa-rectangle-code" /> Shell
           </button>
         </Tooltip>
         {spec.infrastructure?.postgres && onSnapshots && (
