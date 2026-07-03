@@ -13,7 +13,7 @@ import type { HubEvent } from '../types/ws.ts'
 export type AppAction = 'preflight' | 'deploy' | 'restart'
 
 export interface DeploymentStep { step?: string; kind?: string; status?: string; attempt?: number; durationMs?: number; message?: string }
-export interface ActivityEntry { id: number; event: HubEvent }
+export interface ActivityEntry { id: number; event: HubEvent; capturedAt: string }
 
 export interface RuntimeContext {
   apps: AppStatus[]
@@ -139,7 +139,7 @@ function RuntimeInner({ children }: { children: (runtime: RuntimeContext & { con
   const { deployState, setDeployState, applyDeployEvent } = useDeployProgressContext()
 
   const handleWsEvent = useCallback((event: HubEvent) => {
-    setActivity((items) => [{ id: ++activityId.current, event }, ...items].slice(0, 20))
+    setActivity((items) => [{ id: ++activityId.current, event, capturedAt: new Date().toISOString() }, ...items].slice(0, 20))
     if (event.type.startsWith('deploy.') || event.type.startsWith('preflight.')) applyDeployEvent(event)
     const appId = eventAppId(event)
     const key = runKey(event)

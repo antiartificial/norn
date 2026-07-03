@@ -436,7 +436,6 @@ export function TopologyView({ apps, serviceManifest, accessPatterns, activeIngr
     <section className="topology-view">
       <div className="topology-toolbar">
         <div>
-          <h2>Topology</h2>
           <p>{activeAppCount} app{activeAppCount !== 1 ? 's' : ''} · {nodes.length} nodes · {edges.length} routes · {idleCandidates} idle candidates</p>
         </div>
         <div className="topology-controls">
