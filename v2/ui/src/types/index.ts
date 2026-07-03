@@ -159,6 +159,10 @@ export interface BeaconEvent {
   body?: string
   dedupeKey?: string
   occurredAt: string
+  acknowledgedAt?: string
+  acknowledgedBy?: string
+  acknowledgementNote?: string
+  snoozedUntil?: string
   metadata?: Record<string, unknown>
 }
 
@@ -171,6 +175,10 @@ export interface Operation {
   attempt?: number
   attempts?: number
   maxAttempts?: number
+  risk?: string
+  message?: string
+  lastError?: string
+  nextAttemptAt?: string
   createdAt?: string
   startedAt?: string
   updatedAt?: string

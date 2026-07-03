@@ -9,7 +9,6 @@ import { IncidentsPage } from './pages/IncidentsPage.tsx'
 import { OperationsPage } from './pages/OperationsPage.tsx'
 import { TopologyView } from './components/TopologyView.tsx'
 import { PlatformPanel } from './components/PlatformPanel.tsx'
-import { OpsPanel } from './components/OpsPanel.tsx'
 
 function NavigateToAppOverview() {
   const { id } = useParams()
@@ -49,8 +48,7 @@ export function App() {
                   />
                 )}
               />
-              <Route path="/platform" element={<PlatformPanel />} />
-              <Route path="/platform/contextdb" element={<OpsPanel />} />
+              <Route path="/platform" element={<Navigate to="/platform/releases" replace />} />
               <Route path="/platform/*" element={<PlatformPanel />} />
             </Routes>
           </Shell>

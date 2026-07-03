@@ -1,6 +1,7 @@
 import { useState, useEffect } from 'react'
 import { apiUrl, fetchOpts } from '../lib/api.ts'
 import type { RemoteSnapshot } from '../types/index.ts'
+import { ConfirmDialog } from './ui/index.ts'
 
 interface Snapshot {
   filename: string
@@ -46,6 +47,7 @@ export function SnapshotsPanel({ appId, onClose }: Props) {
   const [snapshots, setSnapshots] = useState<Snapshot[]>([])
   const [loading, setLoading] = useState(true)
   const [restoring, setRestoring] = useState<string | null>(null)
+  const [restoreTarget, setRestoreTarget] = useState<string | null>(null)
   const [exporting, setExporting] = useState(false)
 
   // Remote state
@@ -54,6 +56,7 @@ export function SnapshotsPanel({ appId, onClose }: Props) {
   const [remoteLoaded, setRemoteLoaded] = useState(false)
   const [remoteUnavailable, setRemoteUnavailable] = useState(false)
   const [importing, setImporting] = useState<string | null>(null)
+  const [importTarget, setImportTarget] = useState<string | null>(null)
 
   const [message, setMessage] = useState<{ type: 'success' | 'error'; text: string } | null>(null)
 
@@ -62,7 +65,9 @@ export function SnapshotsPanel({ appId, onClose }: Props) {
     try {
       const res = await fetch(apiUrl(`/api/apps/${appId}/snapshots`), fetchOpts)
       if (res.ok) setSnapshots(await res.json())
-    } catch { /* */ }
+    } catch (err) {
+      setMessage({ type: 'error', text: `Load snapshots failed: ${err}` })
+    }
     setLoading(false)
   }
 
@@ -94,7 +99,6 @@ export function SnapshotsPanel({ appId, onClose }: Props) {
   }
 
   const handleRestore = async (ts: string) => {
-    if (!confirm(`Restore snapshot ${ts}? This will replace the current database.`)) return
     setRestoring(ts)
     setMessage(null)
     try {
@@ -104,6 +108,7 @@ export function SnapshotsPanel({ appId, onClose }: Props) {
       })
       if (res.ok) {
         setMessage({ type: 'success', text: `Snapshot ${ts} restored successfully` })
+        setRestoreTarget(null)
       } else {
         const data = await res.json().catch(() => ({ error: 'Unknown error' }))
         setMessage({ type: 'error', text: data.error || 'Restore failed' })
@@ -137,7 +142,6 @@ export function SnapshotsPanel({ appId, onClose }: Props) {
   }
 
   const handleImport = async (key: string) => {
-    if (!confirm(`Import remote snapshot "${key}"? This will replace the current database.`)) return
     setImporting(key)
     setMessage(null)
     try {
@@ -149,6 +153,7 @@ export function SnapshotsPanel({ appId, onClose }: Props) {
       })
       if (res.ok) {
         setMessage({ type: 'success', text: `Remote snapshot imported successfully` })
+        setImportTarget(null)
       } else {
         const data = await res.json().catch(() => ({ error: 'Unknown error' }))
         setMessage({ type: 'error', text: data.error || 'Import failed' })
@@ -182,8 +187,7 @@ export function SnapshotsPanel({ appId, onClose }: Props) {
           </button>
           {tab === 'local' && (
             <button
-              className="btn btn-small"
-              style={{ marginLeft: 'auto' }}
+              className="btn btn-small panel-tab-action"
               disabled={exporting || snapshots.length === 0}
               onClick={handleExport}
             >
@@ -223,7 +227,7 @@ export function SnapshotsPanel({ appId, onClose }: Props) {
                       <button
                         className="btn btn-danger btn-small"
                         disabled={restoring !== null}
-                        onClick={() => handleRestore(snap.timestamp)}
+                        onClick={() => setRestoreTarget(snap.timestamp)}
                       >
                         {restoring === snap.timestamp ? <span className="btn-spinner" /> : <i className="fawsb fa-arrow-rotate-left" />}
                         Restore
@@ -266,7 +270,7 @@ export function SnapshotsPanel({ appId, onClose }: Props) {
                       <button
                         className="btn btn-small"
                         disabled={importing !== null}
-                        onClick={() => handleImport(snap.key)}
+                        onClick={() => setImportTarget(snap.key)}
                       >
                         {importing === snap.key ? <span className="btn-spinner" /> : <i className="fawsb fa-cloud-arrow-down" />}
                         Import
@@ -278,6 +282,26 @@ export function SnapshotsPanel({ appId, onClose }: Props) {
             )}
           </>
         )}
+        <ConfirmDialog
+          open={!!restoreTarget}
+          title="Restore snapshot"
+          message={`Restore snapshot ${restoreTarget}?`}
+          consequence="This will replace the current database."
+          confirmLabel="Restore"
+          danger
+          onClose={() => setRestoreTarget(null)}
+          onConfirm={() => restoreTarget && handleRestore(restoreTarget)}
+        />
+        <ConfirmDialog
+          open={!!importTarget}
+          title="Import remote snapshot"
+          message={`Import remote snapshot "${importTarget}"?`}
+          consequence="This will replace the current database."
+          confirmLabel="Import"
+          danger
+          onClose={() => setImportTarget(null)}
+          onConfirm={() => importTarget && handleImport(importTarget)}
+        />
       </div>
     </div>
   )

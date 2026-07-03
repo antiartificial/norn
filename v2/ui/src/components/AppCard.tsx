@@ -67,10 +67,10 @@ function CopyBadge({ url, icon, label, region, className }: {
   }
   return (
     <Tooltip text={copied ? 'Copied!' : url}>
-      <span className={`endpoint-badge ${className}`} onClick={handleCopy}>
-        <i className={`fawsb ${icon}`} /> {label}
+      <button type="button" className={`endpoint-badge ${className}`} onClick={handleCopy} aria-label={`Copy ${label} endpoint`}>
+        <i className={`fawsb ${icon}`} aria-hidden="true" /> {label}
         {region && <span className="endpoint-region">{region}</span>}
-      </span>
+      </button>
     </Tooltip>
   )
 }
@@ -274,7 +274,7 @@ export function AppCard({ app, busy, activeIngress, services, idleCandidates = [
       <div className="app-card-header">
         <div className="app-card-title">
           <Tooltip text={healthy ? 'All allocations healthy' : 'Unhealthy'}>
-            <span className={`health-dot ${healthy ? 'green' : 'red'}`} />
+            <span className={`health-dot ${healthy ? 'green' : 'red'}`} role="img" aria-label={healthy ? 'App healthy' : 'App unhealthy'} />
           </Tooltip>
           {onOpen ? (
             <button type="button" className="app-card-open" onClick={() => onOpen(spec.name)}>{spec.name}</button>
