@@ -1,6 +1,7 @@
 import { useState, useCallback, useEffect } from 'react'
 import { apiUrl, fetchOpts } from './lib/api.ts'
 import { useApps } from './hooks/useApps.ts'
+import { useDeployProgress } from './hooks/useDeployProgress.ts'
 import { useWebSocket } from './hooks/useWebSocket.ts'
 import { AppCard } from './components/AppCard.tsx'
 import { LogViewer } from './components/LogViewer.tsx'
@@ -16,51 +17,13 @@ import { FunctionPanel } from './components/FunctionPanel.tsx'
 import { OpsPanel } from './components/OpsPanel.tsx'
 import { PlatformPanel } from './components/PlatformPanel.tsx'
 import { TopologyView } from './components/TopologyView.tsx'
-import type { AccessPattern, AccessPatternResponse, AppStatus, ServiceManifest, WSEvent } from './types/index.ts'
-
-export interface StepEvent {
-  message: string
-  timestamp: number
-  allocId?: string
-  node?: string
-  allocStatus?: string
-}
-
-interface DeployStep {
-  step: string
-  status: string
-  events?: StepEvent[]
-}
-
-function upsertStep(steps: DeployStep[], incoming: DeployStep): DeployStep[] {
-  const idx = steps.findIndex((s) => s.step === incoming.step)
-  if (idx >= 0) {
-    const updated = [...steps]
-    updated[idx] = { ...updated[idx], ...incoming, events: updated[idx].events }
-    return updated
-  }
-  return [...steps, incoming]
-}
-
-function appendStepEvent(steps: DeployStep[], stepName: string, event: StepEvent): DeployStep[] {
-  const idx = steps.findIndex((s) => s.step === stepName)
-  if (idx < 0) return steps
-  const updated = [...steps]
-  updated[idx] = { ...updated[idx], events: [...(updated[idx].events ?? []), event] }
-  return updated
-}
+import type { AccessPattern, AccessPatternResponse, AppStatus, ServiceManifest } from './types/index.ts'
+import type { HubEvent } from './types/ws.ts'
 
 export function App() {
   const { apps, loading, error, refetch } = useApps()
   const [logApp, setLogApp] = useState<string | null>(null)
-  const [deployState, setDeployState] = useState<{
-    appId: string
-    operation: 'deploy' | 'preflight'
-    steps: DeployStep[]
-    status: string
-    sagaId?: string
-    error?: string
-  } | null>(null)
+  const { deployState, setDeployState, applyDeployEvent } = useDeployProgress()
   const [restartingApp, setRestartingApp] = useState<string | null>(null)
   const [scaleState, setScaleState] = useState<{ appId: string; groups: { name: string; current: number }[] } | null>(null)
   const [execApp, setExecApp] = useState<string | null>(null)
@@ -88,53 +51,21 @@ export function App() {
       .catch(() => {})
   }, [])
 
-  const handleWsEvent = useCallback((event: WSEvent) => {
+  const handleWsEvent = useCallback((event: HubEvent) => {
     if (event.type === 'deploy.step' || event.type === 'deploy.completed' || event.type === 'deploy.failed' || event.type === 'preflight.step' || event.type === 'preflight.completed' || event.type === 'preflight.failed') {
-      const payload = event.payload as Record<string, unknown>
-      const operation = event.type.startsWith('preflight') ? 'preflight' : 'deploy'
-      if (event.type === 'deploy.step' || event.type === 'preflight.step') {
-        setDeployState((prev) => ({
-          appId: event.appId,
-          operation,
-          steps: upsertStep(prev?.steps ?? [], {
-            step: payload['step'] as string,
-            status: payload['status'] as string,
-          }),
-          status: payload['status'] as string,
-          sagaId: (payload['sagaId'] as string) || prev?.sagaId,
-        }))
-      } else if (event.type === 'deploy.completed') {
-        setDeployState((prev) => prev ? { ...prev, status: 'deployed' } : null)
+      applyDeployEvent(event)
+      if (event.type === 'deploy.completed') {
         refetch()
         fetchServiceManifest()
         fetchAccessPatterns()
       } else if (event.type === 'preflight.completed') {
-        setDeployState((prev) => prev ? { ...prev, status: 'passed' } : null)
       } else if (event.type === 'deploy.failed') {
-        setDeployState((prev) => prev ? { ...prev, status: 'failed', error: (payload as Record<string, string>)['error'] } : null)
         refetch()
         fetchServiceManifest()
-      } else if (event.type === 'preflight.failed') {
-        setDeployState((prev) => prev ? { ...prev, status: 'failed', error: (payload as Record<string, string>)['error'] } : null)
       }
     }
     if (event.type === 'deploy.progress' || event.type === 'preflight.progress') {
-      const payload = event.payload as Record<string, string>
-      setDeployState((prev) => {
-        if (!prev) return null
-        const step = payload['step']
-        if (!step) return prev
-        return {
-          ...prev,
-          steps: appendStepEvent(prev.steps, step, {
-            message: payload['message'],
-            timestamp: Date.now(),
-            allocId: payload['allocId'],
-            node: payload['node'],
-            allocStatus: payload['allocStatus'],
-          }),
-        }
-      })
+      applyDeployEvent(event)
     }
     if (event.type === 'app.restarted') {
       setRestartingApp(null)
@@ -146,7 +77,7 @@ export function App() {
       fetchServiceManifest()
       fetchAccessPatterns()
     }
-  }, [fetchAccessPatterns, fetchServiceManifest, refetch])
+  }, [applyDeployEvent, fetchAccessPatterns, fetchServiceManifest, refetch])
 
   const { connected } = useWebSocket(handleWsEvent)
 

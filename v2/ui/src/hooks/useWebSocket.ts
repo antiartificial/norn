@@ -1,8 +1,8 @@
 import { useEffect, useRef, useCallback, useState } from 'react'
-import type { WSEvent } from '../types/index.ts'
+import type { HubEvent } from '../types/ws.ts'
 import { wsUrl } from '../lib/api.ts'
 
-export function useWebSocket(onEvent: (event: WSEvent) => void) {
+export function useWebSocket(onEvent: (event: HubEvent) => void) {
   const wsRef = useRef<WebSocket | null>(null)
   const [connected, setConnected] = useState(false)
   const timerRef = useRef<ReturnType<typeof setTimeout>>(undefined)
@@ -16,7 +16,7 @@ export function useWebSocket(onEvent: (event: WSEvent) => void) {
 
     ws.onmessage = (e) => {
       try {
-        const event: WSEvent = JSON.parse(e.data)
+        const event: HubEvent = JSON.parse(e.data)
         onEvent(event)
       } catch {
         // ignore malformed messages
