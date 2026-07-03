@@ -1,6 +1,6 @@
 import { useState, useEffect } from 'react'
 import { apiUrl, fetchOpts } from '../lib/api.ts'
-import type { StepEvent } from '../App.tsx'
+import type { StepEvent } from '../hooks/useDeployProgress.ts'
 import type { SagaEvent } from '../types/index.ts'
 
 interface DeployStep {

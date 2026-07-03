@@ -1,18 +1,13 @@
 :root {
-  --bg: #0f1117;
-  --surface: #1a1d27;
-  --surface-hover: #222633;
-  --border: #2a2e3d;
-  --text: #e4e6ed;
-  --text-dim: #8b8fa3;
-  --green: #34d399;
-  --red: #f87171;
-  --blue: #60a5fa;
-  --amber: #fbbf24;
-  --purple: #a78bfa;
-  --radius: 8px;
-  --font: 'Inter', -apple-system, system-ui, sans-serif;
-  --mono: 'JetBrains Mono', 'Fira Code', monospace;
+  --surface: var(--surface-1);
+  --surface-hover: var(--surface-2);
+  --text: var(--text-1);
+  --text-dim: var(--text-2);
+  --green: var(--ok);
+  --red: var(--danger);
+  --blue: var(--info);
+  --amber: var(--warn);
+  --purple: var(--accent);
 }
 
 * { box-sizing: border-box; margin: 0; padding: 0; }

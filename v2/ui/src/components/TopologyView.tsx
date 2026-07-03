@@ -410,7 +410,7 @@ function selectedNodeFor(nodes: TopologyNodeType[], id: string | null): Topology
 }
 
 export function TopologyView({ apps, serviceManifest, accessPatterns, activeIngress }: TopologyViewProps) {
-  const preferredApp = apps.some(app => app.spec.name === 'ft-trove') ? 'ft-trove' : apps[0]?.spec.name ?? 'all'
+  const preferredApp = apps[0]?.spec.name ?? 'all'
   const [selectedApp, setSelectedApp] = useState('')
   const [enabledScopes, setEnabledScopes] = useState<Set<TopologyScope>>(new Set(['public', 'tailnet', 'lan', 'local', 'internal']))
   const [selectedNodeId, setSelectedNodeId] = useState<string | null>(null)
