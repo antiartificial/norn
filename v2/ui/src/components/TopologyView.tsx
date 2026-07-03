@@ -38,11 +38,11 @@ interface TopologyViewProps {
 }
 
 const scopeColors: Record<TopologyScope, string> = {
-  public: '#f97316',
-  tailnet: '#14b8a6',
-  lan: '#eab308',
-  local: '#64748b',
-  internal: '#8b5cf6',
+  public: 'var(--topology-public)',
+  tailnet: 'var(--topology-tailnet)',
+  lan: 'var(--topology-lan)',
+  local: 'var(--topology-local)',
+  internal: 'var(--topology-internal)',
 }
 
 const scopeLabels: Record<TopologyScope, string> = {
@@ -78,7 +78,7 @@ function TopologyNode({ data, selected }: NodeProps<TopologyNodeType>) {
       <Handle type="target" position={Position.Left} className="topology-handle" />
       <div className="topology-node-topline">
         <span className="topology-node-eyebrow">{data.eyebrow}</span>
-        <span className={`topology-node-status ${data.status === 'critical' || data.status === 'failed' ? 'bad' : ''}`} />
+        <span className={`topology-node-status ${data.status === 'critical' || data.status === 'failed' ? 'bad' : ''}`} aria-label={`Status ${data.status ?? 'unknown'}`} />
       </div>
       <div className="topology-node-label">{data.label}</div>
       {data.detail && <div className="topology-node-detail">{data.detail}</div>}
@@ -232,8 +232,8 @@ function edge(id: string, source: string, target: string, scope: TopologyScope, 
     animated: scope === 'public' || scope === 'tailnet',
     markerEnd: { type: MarkerType.ArrowClosed, color: scopeColors[scope] },
     style: { stroke: scopeColors[scope], strokeWidth: scope === 'internal' ? 2 : 3 },
-    labelStyle: { fill: '#475569', fontSize: 11, fontWeight: 700 },
-    labelBgStyle: { fill: '#f8fafc', fillOpacity: 0.92 },
+    labelStyle: { fill: 'var(--topology-edge-label)', fontSize: 11, fontWeight: 700 },
+    labelBgStyle: { fill: 'var(--surface-1)', fillOpacity: 0.92 },
   }
 }
 
@@ -479,7 +479,7 @@ export function TopologyView({ apps, serviceManifest, accessPatterns, activeIngr
             onPaneClick={() => setSelectedNodeId(null)}
             proOptions={{ hideAttribution: true }}
           >
-            <Background color="#dbe3ef" gap={24} />
+            <Background color="var(--topology-grid)" gap={24} />
             <Controls position="bottom-left" />
             <MiniMap position="bottom-right" nodeColor={node => scopeColors[(node.data.scope as TopologyScope) ?? 'internal']} pannable zoomable />
           </ReactFlow>

@@ -136,7 +136,7 @@ export function DeployPanel({ appId, operation, steps, status, error, sagaId, on
           )}
         </div>
       </div>
-      <div className="deploy-steps">
+      <div className="deploy-steps" aria-live="polite">
         {knownSteps.map((stepName, i) => {
           const stepStatus = stepMap.get(stepName)?.status
           const isActive = !isDone && stepStatus === 'running'
@@ -166,15 +166,17 @@ export function DeployPanel({ appId, operation, steps, status, error, sagaId, on
 
           return (
             <div key={stepName}>
-              <div
+              <button
+                type="button"
                 className={className}
+                disabled={isPending}
                 onClick={() => !isPending && toggleExpand(stepName)}
-                style={{ cursor: isPending ? 'default' : 'pointer' }}
+                aria-expanded={!isPending ? isExpanded : undefined}
               >
                 {isActive ? (
-                  <span className="btn-spinner" />
+                  <span className="btn-spinner" aria-hidden="true" />
                 ) : (
-                  <i className={`fawsb ${icon}`} />
+                  <i className={`fawsb ${icon}`} aria-hidden="true" />
                 )}
                 <span className="step-name">{stepName}</span>
                 <span className="step-status">
@@ -182,10 +184,10 @@ export function DeployPanel({ appId, operation, steps, status, error, sagaId, on
                 </span>
                 {!isPending && (hasEvents || isComplete || isFailed || isActive) && (
                   <span className="step-expand">
-                    <i className={`fawsb fa-chevron-${isExpanded ? 'up' : 'down'}`} />
+                    <i className={`fawsb fa-chevron-${isExpanded ? 'up' : 'down'}`} aria-hidden="true" />
                   </span>
                 )}
-              </div>
+              </button>
               {isExpanded && (
                 <div className="step-events">
                   {sagaLoading && isDone && (

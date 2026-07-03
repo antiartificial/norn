@@ -1,6 +1,7 @@
 import { useState, useEffect } from 'react'
-import { apiUrl, fetchOpts } from '../lib/api.ts'
+import { apiFetch } from '../lib/api.ts'
 import type { ServiceManifest, ServiceManifestEntry } from '../types/index.ts'
+import { ErrorState, Skeleton } from './ui/index.ts'
 
 interface NetworkSectionProps {
   services: {
@@ -33,14 +34,20 @@ export function NetworkSection({ services }: NetworkSectionProps) {
   const [expanded, setExpanded] = useState(false)
   const [manifest, setManifest] = useState<ServiceManifest | null>(null)
   const [loading, setLoading] = useState(false)
+  const [error, setError] = useState<string | null>(null)
 
   useEffect(() => {
     if (!expanded || manifest !== null) return
     setLoading(true)
-    fetch(apiUrl('/api/services/manifest'), fetchOpts)
-      .then(r => r.json())
-      .then((data: ServiceManifest) => setManifest(data))
-      .catch(() => setManifest(null))
+    apiFetch<ServiceManifest>('/api/services/manifest')
+      .then((data) => {
+        setManifest(data)
+        setError(null)
+      })
+      .catch((err) => {
+        setManifest(null)
+        setError(err instanceof Error ? err.message : String(err))
+      })
       .finally(() => setLoading(false))
   }, [expanded, manifest])
 
@@ -48,10 +55,10 @@ export function NetworkSection({ services }: NetworkSectionProps) {
 
   return (
     <section className="ops-section">
-      <h3 onClick={() => setExpanded(e => !e)} style={{ cursor: 'pointer', userSelect: 'none' }}>
-        {expanded ? '▾' : '▸'} Service Exposure
-      </h3>
-      <div className="network-toggle" onClick={() => setExpanded(e => !e)} style={{ cursor: 'pointer' }}>
+      <button className="network-section-toggle" type="button" aria-expanded={expanded} onClick={() => setExpanded(e => !e)}>
+        <span aria-hidden="true">{expanded ? '▾' : '▸'}</span> Service Exposure
+      </button>
+      <div className="network-toggle">
         <div className="ops-kv">
           <span>public</span><strong>{services.public}</strong>
           <span>private</span><strong>{services.private}</strong>
@@ -62,7 +69,8 @@ export function NetworkSection({ services }: NetworkSectionProps) {
       </div>
       {expanded && (
         <div className="network-services">
-          {loading && <span style={{ color: 'var(--text-dim)' }}>loading…</span>}
+          {loading && <Skeleton height={72} label="Loading service manifest" />}
+          {error && <ErrorState message={error} />}
           {!loading && manifest && (
             <div className="ops-table">
               <div className="ops-row ops-row-head">

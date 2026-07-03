@@ -41,6 +41,13 @@
   --blue: var(--info);
   --amber: var(--warn);
   --purple: var(--accent);
+  --topology-public: var(--warn);
+  --topology-tailnet: var(--ok);
+  --topology-lan: var(--info);
+  --topology-local: var(--text-3);
+  --topology-internal: var(--accent);
+  --topology-grid: var(--border-strong);
+  --topology-edge-label: var(--text-2);
 }
 
 [data-theme="light"] {

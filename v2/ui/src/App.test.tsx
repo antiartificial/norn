@@ -59,12 +59,31 @@ function installFetch(overrides: Record<string, Response | (() => Response)> = {
     if (url.includes('/api/events/active')) return json({ incidents: [] })
     if (url.endsWith('/api/events')) return json({ events: [] })
     if (url.includes('/api/operations/active') || url.endsWith('/api/operations')) return json({ count: 0, operations: [] })
+    if (url.includes('/api/ops/platform')) return json(platformSummary())
+    if (url.includes('/api/platform/releases')) return json({ current: 'abc123', releases: [] })
+    if (url.includes('/api/deploy-groups')) return json({ groups: [] })
+    if (url.includes('/api/notifications/channels')) return json({ channels: [] })
+    if (url.includes('/api/access/grants')) return json({ grants: [] })
     if (url.includes('/api/deployments')) return json([])
     if (url.includes('/api/saga')) return json([])
     return json({})
   })
   vi.stubGlobal('fetch', fetchMock)
   return { fetchMock, calls }
+}
+
+function platformSummary() {
+  return {
+    generatedAt: new Date().toISOString(),
+    networkMode: 'dev',
+    services: { total: 2, public: 1, private: 1, local: 0, internal: 0, byType: { web: 2 }, byStatus: { passing: 2 } },
+    deployments: { recent: [], dirty: [], failed: 0, successful: 0 },
+    operations: { recent: [], active: [], byKind: {}, byStatus: {} },
+    secrets: { ok: 1, needsAttention: 0, migrationItems: 0, apps: [] },
+    snapshots: [],
+    access: { totalRecent: 1, byStatus: { '200': 1 }, byClientIp: { '127.0.0.1': 1 }, recent: [{ timestamp: new Date().toISOString(), method: 'GET', path: '/overview', status: 200, clientIp: '127.0.0.1', durationMs: 12 }] },
+    observability: { enabled: true, logsEnabled: true, logFormat: 'json', serviceName: 'norn', bundleAvailable: true, retention: '30d' },
+  }
 }
 
 function renderApp(path = '/overview') {
@@ -82,6 +101,11 @@ function renderApp(path = '/overview') {
 describe('App shell routing', () => {
   beforeEach(() => {
     vi.stubGlobal('WebSocket', MockWebSocket)
+    vi.stubGlobal('ResizeObserver', class {
+      observe() {}
+      unobserve() {}
+      disconnect() {}
+    })
     const store = new Map<string, string>()
     vi.stubGlobal('localStorage', {
       getItem: (key: string) => store.get(key) ?? null,
@@ -209,11 +233,217 @@ describe('App shell routing', () => {
     window.history.pushState({}, '', '/operations')
     fireEvent.popState(window)
     expect(await screen.findByText('preflight')).toBeInTheDocument()
-    expect(screen.getByText('2/4')).toBeInTheDocument()
+    expect(screen.getByText('attempt 2/4')).toBeInTheDocument()
 
     window.history.pushState({}, '', '/incidents')
     fireEvent.popState(window)
     expect(await screen.findByText('Latency elevated')).toBeInTheDocument()
     expect(screen.getByText('p95 above threshold')).toBeInTheDocument()
+  })
+
+  it('syncs platform sub-tabs to routes', async () => {
+    installFetch({
+      '/api/platform/releases': () => json({ current: 'sha-current', releases: [{ sha: 'sha-current', version: 'v1', createdAt: new Date().toISOString(), path: '/releases/v1', current: true }] }),
+    })
+    renderApp('/platform/releases')
+
+    await screen.findByRole('heading', { name: 'Norn Platform' })
+    expect(screen.getByRole('tab', { name: 'Releases' })).toHaveAttribute('aria-selected', 'true')
+    expect(await screen.findByText('v1')).toBeInTheDocument()
+
+    fireEvent.click(screen.getByRole('tab', { name: 'Observability' }))
+    expect(window.location.pathname).toBe('/platform/observability')
+    expect(await screen.findByText('Metrics Configuration')).toBeInTheDocument()
+  })
+
+  it('groups incidents by severity and filters by app', async () => {
+    const now = new Date().toISOString()
+    installFetch({
+      '/api/events': () => json({
+        events: [
+          { id: 'evt-critical', app: 'api', type: 'health', severity: 'critical', state: 'open', title: 'API down', occurredAt: now, metadata: {} },
+          { id: 'evt-warning', app: 'worker', type: 'latency', severity: 'warning', state: 'open', title: 'Worker slow', occurredAt: now, metadata: {} },
+        ],
+      }),
+    })
+    renderApp('/incidents')
+
+    expect(await screen.findByText('API down')).toBeInTheDocument()
+    expect(screen.getByText('Worker slow')).toBeInTheDocument()
+    expect(screen.getByRole('heading', { name: /critical/i })).toBeInTheDocument()
+    fireEvent.change(screen.getByLabelText(/App/i), { target: { value: 'worker' } })
+    expect(screen.queryByText('API down')).not.toBeInTheDocument()
+    expect(screen.getByText('Worker slow')).toBeInTheDocument()
+  })
+
+  it('filters operations and renders next attempt countdown', async () => {
+    const nextAttemptAt = new Date(Date.now() + 60_000).toISOString()
+    installFetch({
+      '/api/operations': () => json({
+        count: 2,
+        operations: [
+          { id: 'op-1', sagaId: 'saga-1', kind: 'deploy', app: 'api', status: 'failed', attempts: 2, maxAttempts: 4, risk: 'high', lastError: 'boom', nextAttemptAt },
+          { id: 'op-2', sagaId: 'saga-2', kind: 'restart', app: 'worker', status: 'succeeded', attempts: 1, maxAttempts: 1, risk: 'low' },
+        ],
+      }),
+    })
+    renderApp('/operations')
+
+    expect(await screen.findByText('deploy')).toBeInTheDocument()
+    expect(screen.getByText('attempt 2/4')).toBeInTheDocument()
+    expect(screen.getByText(/next in/)).toBeInTheDocument()
+    fireEvent.click(screen.getByRole('button', { name: 'succeeded' }))
+    expect(screen.queryByText('deploy')).not.toBeInTheDocument()
+    expect(screen.getByText('restart')).toBeInTheDocument()
+  })
+
+  it('renders topology with token-themed classes', async () => {
+    installFetch({
+      '/api/services/manifest': () => json({
+        version: 1,
+        generatedAt: new Date().toISOString(),
+        networkMode: 'dev',
+        services: [{
+          name: 'api-web',
+          app: 'api',
+          process: 'web',
+          type: 'http',
+          status: 'passing',
+          reachability: { endpointScope: 'public', instanceScope: 'lan', exposure: 'public', routable: true },
+          endpoints: [{ url: 'https://api.example.test' }],
+          instances: [{ node: 'node-1', address: '127.0.0.1', port: 8800, status: 'passing' }],
+        }],
+      }),
+      '/api/cloudflared/ingress': () => json({ hostnames: ['api.example.test'] }),
+    })
+    renderApp('/topology')
+
+    expect(await screen.findByRole('application', { name: /traffic topology/i })).toBeInTheDocument()
+    expect(document.querySelector('.topology-view')).toBeInTheDocument()
+    expect(document.querySelector('.topology-scope-public')).toBeInTheDocument()
+  })
+
+  it('redirects bare platform route to releases', async () => {
+    installFetch()
+    renderApp('/platform')
+    expect(await screen.findByRole('tab', { name: 'Releases' })).toHaveAttribute('aria-selected', 'true')
+    expect(window.location.pathname).toBe('/platform/releases')
+  })
+
+  it('renders platform network service exposure', async () => {
+    installFetch()
+    renderApp('/platform/network')
+    expect(await screen.findByRole('tab', { name: 'Network' })).toHaveAttribute('aria-selected', 'true')
+    expect(await screen.findByText('Service Exposure')).toBeInTheDocument()
+    expect(screen.getByText('Services')).toBeInTheDocument()
+  })
+
+  it('renders platform access grants and patterns', async () => {
+    installFetch({
+      '/api/access/grants': () => json({ grants: [{ id: 'grant-1', ip: '10.0.0.1', note: 'office', createdBy: 'me', createdAt: new Date().toISOString(), expiresAt: new Date().toISOString() }] }),
+    })
+    renderApp('/platform/access')
+    expect(await screen.findByText('10.0.0.1')).toBeInTheDocument()
+    expect(screen.getAllByText('127.0.0.1').length).toBeGreaterThan(0)
+  })
+
+  it('renders empty notifications tab state', async () => {
+    installFetch()
+    renderApp('/platform/notifications')
+    expect(await screen.findByText('No notification channels')).toBeInTheDocument()
+  })
+
+  it('posts observability install action', async () => {
+    const { calls } = installFetch()
+    renderApp('/platform/observability')
+    fireEvent.click(await screen.findByRole('button', { name: 'Install services' }))
+    await waitFor(() => expect(calls).toContain('POST /api/observability/services/install'))
+  })
+
+  it('filters incidents by severity', async () => {
+    const now = new Date().toISOString()
+    installFetch({
+      '/api/events': () => json({
+        events: [
+          { id: 'evt-critical', app: 'api', type: 'health', severity: 'critical', state: 'open', title: 'API down', occurredAt: now, metadata: {} },
+          { id: 'evt-warning', app: 'api', type: 'latency', severity: 'warning', state: 'open', title: 'API slow', occurredAt: now, metadata: {} },
+        ],
+      }),
+    })
+    renderApp('/incidents')
+    expect(await screen.findByText('API down')).toBeInTheDocument()
+    fireEvent.click(screen.getByRole('button', { name: 'warning' }))
+    expect(screen.queryByText('API down')).not.toBeInTheDocument()
+    expect(screen.getByText('API slow')).toBeInTheDocument()
+  })
+
+  it('snoozes incidents with selected duration', async () => {
+    const now = new Date().toISOString()
+    const { calls } = installFetch({
+      '/api/events': () => json({ events: [{ id: 'evt-1', app: 'api', type: 'health', severity: 'critical', state: 'open', title: 'API down', occurredAt: now, metadata: {} }] }),
+      '/api/events/evt-1/snooze': () => json({ ok: true }),
+    })
+    renderApp('/incidents')
+    await screen.findByText('API down')
+    fireEvent.change(screen.getByLabelText(/Snooze/i), { target: { value: '8h' } })
+    fireEvent.click(screen.getByRole('button', { name: 'Snooze' }))
+    await waitFor(() => expect(calls).toContain('POST /api/events/evt-1/snooze'))
+  })
+
+  it('acknowledges incidents from the list', async () => {
+    const now = new Date().toISOString()
+    const { calls } = installFetch({
+      '/api/events': () => json({ events: [{ id: 'evt-1', app: 'api', type: 'health', severity: 'critical', state: 'open', title: 'API down', occurredAt: now, metadata: {} }] }),
+      '/api/events/evt-1/ack': () => json({ ok: true }),
+    })
+    renderApp('/incidents')
+    await screen.findByText('API down')
+    fireEvent.click(screen.getByRole('button', { name: 'Ack' }))
+    await waitFor(() => expect(calls).toContain('POST /api/events/evt-1/ack'))
+  })
+
+  it('renders operation last error details', async () => {
+    installFetch({
+      '/api/operations': () => json({ count: 1, operations: [{ id: 'op-1', sagaId: 'saga-1', kind: 'deploy', app: 'api', status: 'failed', attempts: 2, maxAttempts: 4, risk: 'high', lastError: 'boom' }] }),
+    })
+    renderApp('/operations')
+    expect(await screen.findByText('last error')).toBeInTheDocument()
+    expect(screen.getByText('boom')).toBeInTheDocument()
+  })
+
+  it('renders saga timeline payloads and event deltas', async () => {
+    const start = new Date('2026-07-03T12:00:00Z').toISOString()
+    const end = new Date('2026-07-03T12:00:03Z').toISOString()
+    installFetch({
+      '/api/saga/saga-1': () => json([
+        { id: 'e1', timestamp: start, event: 'queued', status: 'queued', payload: { step: 1 } },
+        { id: 'e2', timestamp: end, event: 'running', status: 'running', payload: { step: 2 } },
+      ]),
+    })
+    renderApp('/operations/saga-1')
+    expect((await screen.findAllByText('queued')).length).toBeGreaterThan(0)
+    expect(screen.getByText((_, node) => node?.textContent === '+3s')).toBeInTheDocument()
+    expect(screen.getAllByText('payload')).toHaveLength(2)
+  })
+
+  it('toggles topology scope controls', async () => {
+    installFetch()
+    renderApp('/topology')
+    const publicScope = await screen.findByRole('button', { name: 'Public' })
+    expect(publicScope).toHaveClass('active')
+    fireEvent.click(publicScope)
+    expect(publicScope).not.toHaveClass('active')
+  })
+
+  it('shows platform release rollback confirmation', async () => {
+    installFetch({
+      '/api/platform/releases': () => json({ current: 'current', releases: [
+        { sha: 'current', version: 'v2', createdAt: new Date().toISOString(), path: '/releases/v2', current: true },
+        { sha: 'previous', version: 'v1', createdAt: new Date().toISOString(), path: '/releases/v1', current: false },
+      ] }),
+    })
+    renderApp('/platform/releases')
+    fireEvent.click(await screen.findByRole('button', { name: 'Rollback' }))
+    expect(screen.getByRole('dialog', { name: 'Rollback platform release' })).toBeInTheDocument()
   })
 })

@@ -1,5 +1,6 @@
 import { useEffect, useState } from 'react'
 import { apiUrl, fetchOpts } from '../lib/api.ts'
+import { ConfirmDialog, ErrorState, Skeleton, useToast } from './ui/index.ts'
 
 interface OpsSummary {
   generatedAt: string
@@ -128,6 +129,9 @@ export function OpsPanel() {
   const [error, setError] = useState<string | null>(null)
   const [busyRollback, setBusyRollback] = useState<string | null>(null)
   const [evalReadiness, setEvalReadiness] = useState<EvaluatorReadinessData | null>(null)
+  const [readinessError, setReadinessError] = useState<string | null>(null)
+  const [rollbackTarget, setRollbackTarget] = useState<string | null>(null)
+  const { toast } = useToast()
 
   const loadSummary = () => {
     let cancelled = false
@@ -151,8 +155,8 @@ export function OpsPanel() {
       })
     fetch(apiUrl('/api/ops/contextdb/evaluator-readiness'), fetchOpts)
       .then(r => r.ok ? r.json() : null)
-      .then(data => { if (!cancelled && data) setEvalReadiness(data) })
-      .catch(() => {})
+      .then(data => { if (!cancelled && data) { setEvalReadiness(data); setReadinessError(null) } })
+      .catch((err) => { if (!cancelled) setReadinessError(String(err)) })
     return () => { cancelled = true }
   }
 
@@ -161,10 +165,10 @@ export function OpsPanel() {
   }, [])
 
   if (loading) {
-    return <div className="ops-panel"><div className="ops-empty">Loading ContextDB operations...</div></div>
+    return <div className="ops-panel"><Skeleton height={96} label="Loading ContextDB operations" /></div>
   }
   if (error) {
-    return <div className="error-banner"><strong>Ops error</strong>{error}</div>
+    return <ErrorState title="Ops error" message={error} />
   }
   if (!summary) {
     return <div className="ops-panel"><div className="ops-empty">No operations summary available</div></div>
@@ -176,7 +180,6 @@ export function OpsPanel() {
   const rollbackTargets = new Set(summary.rollbacks.map((receipt) => receipt.rolled_back_event_id))
 
   const rollbackFeedback = async (eventID: string) => {
-    if (!confirm(`Rollback feedback event ${short(eventID)}?`)) return
     setBusyRollback(eventID)
     try {
       const res = await fetch(apiUrl(`/api/ops/contextdb/feedback/${eventID}/rollback`), {
@@ -186,9 +189,12 @@ export function OpsPanel() {
         body: JSON.stringify({ reason: 'operator rollback from norn ops', owner: 'norn-ui' }),
       })
       if (!res.ok) throw new Error(await res.text())
+      toast({ kind: 'success', title: 'Feedback rollback started', description: short(eventID) })
+      setRollbackTarget(null)
       loadSummary()
     } catch (err) {
       setError(String(err))
+      toast({ kind: 'error', title: 'Feedback rollback failed', description: String(err) })
     } finally {
       setBusyRollback(null)
     }
@@ -237,9 +243,9 @@ export function OpsPanel() {
       {evalReadiness && (
         <section className="ops-section">
           <h3>Evaluator Readiness</h3>
-          <p style={{ fontSize: '12px', color: 'var(--text-dim)', marginBottom: '8px' }}>
+          <p className="ops-footnote">
             {evalReadiness.summary}
-            <span className={`readiness-badge ${evalReadiness.overallReady ? 'ready' : 'blocked'}`} style={{ marginLeft: '8px' }}>
+            <span className={`readiness-badge readiness-badge-inline ${evalReadiness.overallReady ? 'ready' : 'blocked'}`}>
               {evalReadiness.overallReady ? 'ready' : 'not ready'}
             </span>
           </p>
@@ -256,13 +262,14 @@ export function OpsPanel() {
                   <span>{String(ns.dryRun)}</span>
                   <span>{ns.providerKeyRequired ? (ns.providerKeyConfigured ? 'configured' : 'missing') : '-'}</span>
                   <span><span className={`readiness-badge ${ns.ready ? 'ready' : 'blocked'}`}>{ns.ready ? 'ready' : 'blocked'}</span></span>
-                  <span style={{ fontSize: '11px', color: 'var(--text-dim)' }}>{ns.blockers.length > 0 ? ns.blockers.join(', ') : '-'}</span>
+                  <span className="ops-muted-cell">{ns.blockers.length > 0 ? ns.blockers.join(', ') : '-'}</span>
                 </div>
               ))}
             </div>
           )}
         </section>
       )}
+      {readinessError && <ErrorState title="Evaluator readiness error" message={readinessError} />}
 
       <div className="ops-two">
         <section className="ops-section">
@@ -320,7 +327,7 @@ export function OpsPanel() {
                 <span>{formatTime(event.tx_time)}</span><span>{event.action}</span><span>{event.confidence.toFixed(2)}</span><span>{short(event.node_id)}</span><span>{short(event.event_id)}</span>
                 <span>
                   {rollbackTargets.has(event.event_id) ? 'rolled back' : (
-                    <button className="btn btn-small" disabled={busyRollback === event.event_id} onClick={() => rollbackFeedback(event.event_id)}>
+                    <button className="btn btn-small" disabled={busyRollback === event.event_id} onClick={() => setRollbackTarget(event.event_id)}>
                       {busyRollback === event.event_id ? '...' : 'Rollback'}
                     </button>
                   )}
@@ -355,6 +362,16 @@ export function OpsPanel() {
           {summary.warnings?.map((warning) => <p key={warning}>{warning}</p>)}
         </section>
       )}
+      <ConfirmDialog
+        open={!!rollbackTarget}
+        title="Rollback feedback event"
+        message={`Rollback feedback event ${short(rollbackTarget ?? undefined)}?`}
+        consequence="ContextDB will write a rollback receipt and restore the previous confidence value."
+        confirmLabel="Rollback"
+        danger
+        onClose={() => setRollbackTarget(null)}
+        onConfirm={() => rollbackTarget && rollbackFeedback(rollbackTarget)}
+      />
     </div>
   )
 }
