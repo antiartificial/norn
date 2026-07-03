@@ -2,6 +2,7 @@ import { useState } from 'react'
 import { NavLink } from 'react-router-dom'
 import { useQuery } from '@tanstack/react-query'
 import { apiFetch } from '../lib/api.ts'
+import { collapseActivity } from '../lib/activity.ts'
 import { useRuntimeContext } from '../runtime/AppRuntime.tsx'
 import type { ActiveIncidentsResponse, AppStatus, Deployment, OperationsResponse, VersionResponse } from '../types/index.ts'
 import { DeployList } from '../components/panels/DeployList.tsx'
@@ -9,11 +10,21 @@ import { ActiveIncidentList } from '../components/panels/IncidentList.tsx'
 import { Metric, Panel } from '../components/panels/Panel.tsx'
 import { OperationList } from '../components/panels/OperationList.tsx'
 import { StatusBar } from '../components/StatusBar.tsx'
-import { EmptyState, StatusChip } from '../components/ui/index.ts'
+import { EmptyState, StatusChip, StatusDot } from '../components/ui/index.ts'
 import { IncidentDrawer, type IncidentSelection } from '../components/incidents/IncidentDrawer.tsx'
 
 const healthRowLimit = 5
 const incidentLimit = 5
+
+function relativeTime(iso: string): string {
+  const seconds = Math.max(0, Math.floor((Date.now() - new Date(iso).getTime()) / 1000))
+  if (seconds < 60) return `${seconds}s ago`
+  const minutes = Math.floor(seconds / 60)
+  if (minutes < 60) return `${minutes}m ago`
+  const hours = Math.floor(minutes / 60)
+  if (hours < 24) return `${hours}h ago`
+  return `${Math.floor(hours / 24)}d ago`
+}
 
 export function OverviewPage() {
   const ctx = useRuntimeContext()
@@ -26,6 +37,7 @@ export function OverviewPage() {
   const unhealthy = ctx.apps.filter((app) => !app.healthy)
   const idle = ctx.accessPatterns.filter((pattern) => pattern.idleCandidate)
   const idleApps = idle.map(pattern => pattern.app)
+  const activityRows = collapseActivity(ctx.activity)
 
   return (
     <div className="overview-grid">
@@ -60,7 +72,13 @@ export function OverviewPage() {
         <h2>Activity</h2>
         {ctx.activity.length === 0 ? <EmptyState icon="•" title="No activity yet" hint="Hub events will appear here as they arrive." /> : (
           <div className="activity-list">
-            {ctx.activity.map((entry) => <div key={entry.id}><span>{entry.event.type}</span><small>{entry.event.appId ?? ''}</small></div>)}
+            {activityRows.map((entry) => (
+              <NavLink className="activity-row" key={entry.id} to={entry.href}>
+                <StatusDot tone={entry.tone} label={entry.sentence} />
+                {entry.count > 1 && <StatusChip tone="neutral" label={`\u00d7${entry.count}`} />}
+                <small>{relativeTime(entry.capturedAt)}</small>
+              </NavLink>
+            ))}
           </div>
         )}
       </section>
