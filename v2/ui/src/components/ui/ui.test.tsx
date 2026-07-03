@@ -21,6 +21,22 @@ function ModalProbe() {
   )
 }
 
+function StackedModalProbe() {
+  const [outer, setOuter] = useState(false)
+  const [inner, setInner] = useState(false)
+  return (
+    <>
+      <button type="button" onClick={() => setOuter(true)}>Open outer</button>
+      <Modal open={outer} title="Outer" onClose={() => setOuter(false)}>
+        <button type="button" onClick={() => setInner(true)}>Open inner</button>
+        <Modal open={inner} title="Inner" onClose={() => setInner(false)}>
+          <button type="button">Inner action</button>
+        </Modal>
+      </Modal>
+    </>
+  )
+}
+
 describe('ui primitives', () => {
   afterEach(() => {
     vi.useRealTimers()
@@ -104,6 +120,36 @@ describe('ui primitives', () => {
     expect(screen.queryByText('Saved')).not.toBeInTheDocument()
   })
 
+  it('ToastProvider pauses auto-dismiss while focused', () => {
+    vi.useFakeTimers()
+    render(
+      <ToastProvider>
+        <ToastProbe />
+      </ToastProvider>,
+    )
+
+    act(() => fireEvent.click(screen.getByRole('button', { name: 'Show toast' })))
+    const toast = screen.getByText('Saved').closest('.ui-toast')!
+    fireEvent.focus(toast)
+    act(() => vi.advanceTimersByTime(1200))
+    expect(screen.getByText('Saved')).toBeInTheDocument()
+    fireEvent.blur(toast)
+    act(() => vi.advanceTimersByTime(1000))
+    expect(screen.queryByText('Saved')).not.toBeInTheDocument()
+  })
+
+  it('only the top focus layer handles Escape', async () => {
+    render(<StackedModalProbe />)
+
+    fireEvent.click(screen.getByRole('button', { name: 'Open outer' }))
+    fireEvent.click(await screen.findByRole('button', { name: 'Open inner' }))
+    expect(screen.getByRole('dialog', { name: 'Outer' })).toBeInTheDocument()
+    expect(screen.getByRole('dialog', { name: 'Inner' })).toBeInTheDocument()
+    fireEvent.keyDown(document, { key: 'Escape' })
+    await waitFor(() => expect(screen.queryByRole('dialog', { name: 'Inner' })).not.toBeInTheDocument())
+    expect(screen.getByRole('dialog', { name: 'Outer' })).toBeInTheDocument()
+  })
+
   it('Tabs use roving tabindex and arrow-key activation', async () => {
     render(
       <Tabs defaultValue="overview">
@@ -132,6 +178,35 @@ describe('ui primitives', () => {
     fireEvent.keyDown(screen.getByRole('tablist'), { key: 'End' })
     await act(async () => undefined)
     expect(screen.getByRole('tab', { name: 'Deploys' })).toHaveFocus()
+  })
+
+  it('Tabs keyboard navigation is scoped to the active tablist', async () => {
+    render(
+      <>
+        <Tabs defaultValue="a">
+          <TabsList aria-label="First">
+            <Tab value="a">First A</Tab>
+            <Tab value="b">First B</Tab>
+          </TabsList>
+          <TabPanel value="a">First A panel</TabPanel>
+          <TabPanel value="b">First B panel</TabPanel>
+        </Tabs>
+        <Tabs defaultValue="a">
+          <TabsList aria-label="Second">
+            <Tab value="a">Second A</Tab>
+            <Tab value="b">Second B</Tab>
+          </TabsList>
+          <TabPanel value="a">Second A panel</TabPanel>
+          <TabPanel value="b">Second B panel</TabPanel>
+        </Tabs>
+      </>,
+    )
+
+    screen.getByRole('tab', { name: 'Second A' }).focus()
+    fireEvent.keyDown(screen.getByRole('tablist', { name: 'Second' }), { key: 'ArrowRight' })
+    await act(async () => undefined)
+    expect(screen.getByRole('tab', { name: 'Second B' })).toHaveFocus()
+    expect(screen.getByRole('tab', { name: 'First A' })).toHaveAttribute('aria-selected', 'true')
   })
 
   it('EmptyState and ErrorState expose expected content and retry action', () => {

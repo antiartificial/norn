@@ -1,6 +1,7 @@
-import { useState, useEffect } from 'react'
+import { useState } from 'react'
+import { useQuery, useQueryClient } from '@tanstack/react-query'
 import type { AccessPattern, AppStatus, RepoSpec, CanaryStatus, ServiceManifestEntry } from '../types/index.ts'
-import { apiUrl, fetchOpts } from '../lib/api.ts'
+import { apiFetch, apiUrl, fetchOpts } from '../lib/api.ts'
 import { Tooltip } from './Tooltip.tsx'
 
 function truncateURL(url: string): string {
@@ -84,18 +85,14 @@ function nodeLabel(provider?: string, region?: string, name?: string): { icon: s
 }
 
 function CanaryIndicator({ appId }: { appId: string }) {
-  const [canary, setCanary] = useState<CanaryStatus | null>(null)
+  const queryClient = useQueryClient()
+  const { data: canary } = useQuery({
+    queryKey: ['canary', appId],
+    queryFn: () => apiFetch<CanaryStatus | null>(`/api/apps/${appId}/canary`),
+    staleTime: 60_000,
+  })
   const [promoting, setPromoting] = useState(false)
   const [promoteMsg, setPromoteMsg] = useState<{ type: 'success' | 'error'; text: string } | null>(null)
-
-  useEffect(() => {
-    let cancelled = false
-    fetch(apiUrl(`/api/apps/${appId}/canary`), fetchOpts)
-      .then(res => res.ok ? res.json() : null)
-      .then(data => { if (!cancelled && data) setCanary(data) })
-      .catch(() => {})
-    return () => { cancelled = true }
-  }, [appId])
 
   if (!canary || !canary.isCanary) return null
 
@@ -106,7 +103,7 @@ function CanaryIndicator({ appId }: { appId: string }) {
       const res = await fetch(apiUrl(`/api/apps/${appId}/promote`), { ...fetchOpts, method: 'POST' })
       if (res.ok) {
         setPromoteMsg({ type: 'success', text: 'Promoted' })
-        setCanary(prev => prev ? { ...prev, isCanary: false, status: 'promoted' } : prev)
+        queryClient.invalidateQueries({ queryKey: ['canary', appId] })
       } else {
         const data = await res.json().catch(() => ({ error: 'Unknown error' }))
         setPromoteMsg({ type: 'error', text: data.error || 'Promote failed' })
@@ -238,9 +235,10 @@ interface Props {
   onCron?: (appId: string) => void
   onFunction?: (appId: string) => void
   onToggleEndpoint?: (appId: string, hostname: string, enabled: boolean) => void
+  onOpen?: (appId: string) => void
 }
 
-export function AppCard({ app, busy, activeIngress, services, idleCandidates = [], onPreflight, onDeploy, onRestart, onScale, onViewLogs, onExec, onSnapshots, onCron, onFunction, onToggleEndpoint }: Props) {
+export function AppCard({ app, busy, activeIngress, services, idleCandidates = [], onPreflight, onDeploy, onRestart, onScale, onViewLogs, onExec, onSnapshots, onCron, onFunction, onToggleEndpoint, onOpen }: Props) {
   const { spec, healthy, nomadStatus } = app
   const allocations = app.allocations ?? []
 
@@ -278,7 +276,11 @@ export function AppCard({ app, busy, activeIngress, services, idleCandidates = [
           <Tooltip text={healthy ? 'All allocations healthy' : 'Unhealthy'}>
             <span className={`health-dot ${healthy ? 'green' : 'red'}`} />
           </Tooltip>
-          <h3>{spec.name}</h3>
+          {onOpen ? (
+            <button type="button" className="app-card-open" onClick={() => onOpen(spec.name)}>{spec.name}</button>
+          ) : (
+            <h3>{spec.name}</h3>
+          )}
           <span className="nomad-status">{nomadStatus}</span>
           {idleCandidates.length > 0 && (
             <Tooltip text={idleCandidateTooltip(idleCandidates)}>
@@ -382,7 +384,7 @@ export function AppCard({ app, busy, activeIngress, services, idleCandidates = [
       {/* Canary status */}
       <CanaryIndicator appId={spec.name} />
 
-      <div className="app-card-actions">
+      <div className="app-card-actions" onClick={(event) => event.stopPropagation()}>
         <Tooltip text="Validate, build, and test without deploying">
           <button onClick={() => onPreflight(spec.name)} disabled={busy} className="btn">
             <i className="fawsb fa-clipboard-check" /> Check
