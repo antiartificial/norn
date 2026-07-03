@@ -55,6 +55,19 @@ describe('ui primitives', () => {
     expect(onClick).not.toHaveBeenCalled()
   })
 
+  it('renders Button icons accessibly and replaces them with the loading spinner', () => {
+    const { rerender } = render(<Button icon="fa-rocket-launch">Deploy</Button>)
+
+    const button = screen.getByRole('button', { name: /deploy/i })
+    const icon = button.querySelector('.fa-rocket-launch')
+    expect(icon).toBeInTheDocument()
+    expect(icon).toHaveAttribute('aria-hidden', 'true')
+
+    rerender(<Button icon="fa-rocket-launch" loading>Deploy</Button>)
+    expect(button.querySelector('.fa-rocket-launch')).not.toBeInTheDocument()
+    expect(button.querySelector('.ui-button-spinner')).toBeInTheDocument()
+  })
+
   it('Modal traps focus, closes with Escape, and returns focus', async () => {
     render(<ModalProbe />)
 

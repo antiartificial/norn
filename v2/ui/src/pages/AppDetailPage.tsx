@@ -39,14 +39,14 @@ export function AppDetailPage() {
           </div>
           <div className="endpoint-line">
             {endpoints.map((endpoint) => <span key={endpoint.url}><a href={endpoint.url} target="_blank" rel="noreferrer">{endpoint.url}</a><CopyButton value={endpoint.url} label="Copy endpoint" /></span>)}
-            {repo && <a href={repo} target="_blank" rel="noreferrer"><i className="fawsb fa-code-branch" aria-hidden /> repo</a>}
+            {repo && <a href={repo} target="_blank" rel="noreferrer"><i className="fawsb fa-code" aria-hidden /> repo</a>}
           </div>
         </div>
         <div className="app-detail-actions">
-          <Button variant="secondary" onClick={() => ctx.mutations.run(appId, 'preflight')}>Preflight</Button>
-          <Button variant="primary" onClick={() => ctx.mutations.run(appId, 'deploy')}>Deploy</Button>
-          <Button variant="secondary" onClick={() => ctx.mutations.run(appId, 'restart')}>Restart</Button>
-          <Button variant="secondary" onClick={() => ctx.mutations.scale(app)}>Scale</Button>
+          <Button variant="secondary" icon="fa-clipboard-check" onClick={() => ctx.mutations.run(appId, 'preflight')}>Preflight</Button>
+          <Button variant="primary" icon="fa-rocket-launch" onClick={() => ctx.mutations.run(appId, 'deploy')}>Deploy</Button>
+          <Button variant="secondary" icon="fa-arrows-rotate" onClick={() => ctx.mutations.run(appId, 'restart')}>Restart</Button>
+          <Button variant="secondary" icon="fa-arrow-up-arrow-down" onClick={() => ctx.mutations.scale(app)}>Scale</Button>
         </div>
       </div>
       {ctx.deployState?.appId === appId && <div className="deploy-inline-note" aria-live="polite">Live {ctx.deployState.operation} is running for this app.</div>}

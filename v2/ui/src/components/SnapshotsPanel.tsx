@@ -288,6 +288,7 @@ export function SnapshotsPanel({ appId, onClose }: Props) {
           message={`Restore snapshot ${restoreTarget}?`}
           consequence="This will replace the current database."
           confirmLabel="Restore"
+          confirmIcon="fa-arrow-rotate-left"
           danger
           onClose={() => setRestoreTarget(null)}
           onConfirm={() => restoreTarget && handleRestore(restoreTarget)}
@@ -298,6 +299,7 @@ export function SnapshotsPanel({ appId, onClose }: Props) {
           message={`Import remote snapshot "${importTarget}"?`}
           consequence="This will replace the current database."
           confirmLabel="Import"
+          confirmIcon="fa-arrow-rotate-left"
           danger
           onClose={() => setImportTarget(null)}
           onConfirm={() => importTarget && handleImport(importTarget)}

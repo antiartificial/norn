@@ -143,7 +143,7 @@ function ReleasesTab() {
     { key: 'sha', header: 'SHA', cell: row => <code>{short(row.sha)}</code> },
     { key: 'status', header: 'Status', cell: row => row.current ? <StatusChip tone="success" label="current" /> : '-' },
     { key: 'path', header: 'Path', cell: row => <code>{row.path}</code> },
-    { key: 'action', header: 'Action', cell: row => row.current ? '-' : <Button size="sm" variant="danger" loading={rollback.isPending && rollback.variables === row.sha} onClick={() => setRollbackTarget(row)}>Rollback</Button> },
+    { key: 'action', header: 'Action', cell: row => row.current ? '-' : <Button size="sm" variant="danger" icon="fa-arrow-rotate-left" loading={rollback.isPending && rollback.variables === row.sha} onClick={() => setRollbackTarget(row)}>Rollback</Button> },
   ]
 
   return (
@@ -159,6 +159,7 @@ function ReleasesTab() {
         message={`Rollback to ${rollbackTarget?.version ?? short(rollbackTarget?.sha)}?`}
         consequence="This is a platform-level change and may affect all Norn services."
         confirmLabel="Rollback"
+        confirmIcon="fa-arrow-rotate-left"
         danger
         onClose={() => setRollbackTarget(null)}
         onConfirm={() => rollbackTarget && rollback.mutate(rollbackTarget.sha)}
@@ -279,7 +280,7 @@ function AccessControls() {
     { key: 'created', header: 'Created', cell: row => formatTime(row.createdAt) },
     { key: 'by', header: 'By', cell: row => row.createdBy || '-' },
     { key: 'expires', header: 'Expires', cell: row => formatTime(row.expiresAt) },
-    { key: 'action', header: 'Action', cell: row => <Button size="sm" variant="danger" onClick={() => setRevokeTarget(row)}>Revoke</Button> },
+    { key: 'action', header: 'Action', cell: row => <Button size="sm" variant="danger" icon="fa-trash" onClick={() => setRevokeTarget(row)}>Revoke</Button> },
   ]
 
   return (
@@ -291,25 +292,25 @@ function AccessControls() {
           <input className="platform-input-sm" placeholder="IP address" value={grantIp} onChange={event => setGrantIp(event.target.value)} required />
           <input className="platform-input-xs" placeholder="TTL" value={grantTtl} onChange={event => setGrantTtl(event.target.value)} required />
           <input className="platform-input-md" placeholder="Note (optional)" value={grantNote} onChange={event => setGrantNote(event.target.value)} />
-          <Button type="submit" size="sm" loading={createGrant.isPending}>Grant</Button>
-          <Button type="button" size="sm" variant="ghost" onClick={() => setShowGrantForm(false)}>Cancel</Button>
+          <Button type="submit" size="sm" icon="fa-user-plus" loading={createGrant.isPending}>Grant</Button>
+          <Button type="button" size="sm" variant="ghost" icon="fa-xmark" onClick={() => setShowGrantForm(false)}>Cancel</Button>
         </form>
       ) : (
-        <Button size="sm" variant="secondary" className="platform-spaced-button" onClick={() => setShowGrantForm(true)}>Grant IP access</Button>
+        <Button size="sm" variant="secondary" icon="fa-user-plus" className="platform-spaced-button" onClick={() => setShowGrantForm(true)}>Grant IP access</Button>
       )}
 
       <h4 className="platform-subhead">Access Tokens</h4>
       <div className="platform-inline-form">
         <input className="platform-input-xs" placeholder="TTL" value={tokenTTL} onChange={event => setTokenTTL(event.target.value)} />
         <input className="platform-input-md" placeholder="Note (optional)" value={tokenNote} onChange={event => setTokenNote(event.target.value)} />
-        <Button size="sm" loading={createToken.isPending} onClick={() => createToken.mutate()}>Create token</Button>
+        <Button size="sm" icon="fa-key" loading={createToken.isPending} onClick={() => createToken.mutate()}>Create token</Button>
       </div>
       {createdToken && (
         <div className="platform-token-result">
           <textarea readOnly value={createdToken} rows={3} onClick={event => event.currentTarget.select()} />
           {tokenExpiry && <p>Expires: {formatTime(tokenExpiry)}</p>}
           <p>Append ?token=&lt;value&gt; to share dashboard URLs.</p>
-          <Button size="sm" variant="ghost" onClick={() => { setCreatedToken(null); setTokenExpiry(null) }}>Clear</Button>
+          <Button size="sm" variant="ghost" icon="fa-xmark" onClick={() => { setCreatedToken(null); setTokenExpiry(null) }}>Clear</Button>
         </div>
       )}
       <ConfirmDialog
@@ -354,7 +355,7 @@ function ObservabilityTab({ summary, loading, error, onRetry }: { summary?: Plat
         <div className="platform-action-row">
           <a className="btn btn-small" href="/api/observability/prometheus.yml">Prometheus config</a>
           <a className="btn btn-small" href="/api/observability/alerts.yml">Alert rules</a>
-          <Button size="sm" loading={install.isPending} onClick={() => install.mutate()}>Install services</Button>
+          <Button size="sm" icon="fa-gear" loading={install.isPending} onClick={() => install.mutate()}>Install services</Button>
         </div>
       </section>
       {(summary.warnings && summary.warnings.length > 0) && (

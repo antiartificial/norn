@@ -108,8 +108,8 @@ export function NotificationsSection() {
       header: 'Actions',
       cell: ch => (
         <span className="ops-actions">
-          <Button size="sm" loading={busy === `${ch.id}:test`} onClick={() => testChannel(ch.id)}>Test</Button>
-          <Button size="sm" variant="danger" loading={busy === `${ch.id}:remove`} onClick={() => setRemoveTarget(ch)}>Remove</Button>
+          <Button size="sm" icon="fa-paper-plane" loading={busy === `${ch.id}:test`} onClick={() => testChannel(ch.id)}>Test</Button>
+          <Button size="sm" variant="danger" icon="fa-trash" loading={busy === `${ch.id}:remove`} onClick={() => setRemoveTarget(ch)}>Remove</Button>
         </span>
       ),
     },
@@ -142,12 +142,12 @@ export function NotificationsSection() {
             <span>(none = all)</span>
           </div>
           <div className="platform-action-row">
-            <Button type="submit" size="sm" loading={adding}>Add channel</Button>
-            <Button type="button" size="sm" variant="ghost" onClick={() => setShowForm(false)}>Cancel</Button>
+            <Button type="submit" size="sm" icon="fa-plus" loading={adding}>Add channel</Button>
+            <Button type="button" size="sm" variant="ghost" icon="fa-xmark" onClick={() => setShowForm(false)}>Cancel</Button>
           </div>
         </form>
       ) : (
-        <Button size="sm" variant="secondary" className="platform-spaced-button" onClick={() => setShowForm(true)}>Add channel</Button>
+        <Button size="sm" variant="secondary" icon="fa-plus" className="platform-spaced-button" onClick={() => setShowForm(true)}>Add channel</Button>
       )}
       <ConfirmDialog
         open={!!removeTarget}

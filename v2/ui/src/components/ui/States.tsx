@@ -21,7 +21,7 @@ export function ErrorState({ title = 'Something went wrong', message, onRetry }:
     <div className="ui-error" role="alert">
       <h2 className="ui-error-title">{title}</h2>
       <p className="ui-error-message">{message}</p>
-      {onRetry && <Button variant="secondary" onClick={onRetry}>Retry</Button>}
+      {onRetry && <Button variant="secondary" icon="fa-arrow-rotate-right" onClick={onRetry}>Retry</Button>}
     </div>
   )
 }

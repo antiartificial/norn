@@ -1,20 +1,22 @@
 import { useEffect, useMemo, useState, type ReactNode } from 'react'
 import { NavLink, useLocation } from 'react-router-dom'
-import { setStoredTheme } from '../lib/theme.ts'
+import { setStoredTheme, type Theme } from '../lib/theme.ts'
 import { StatusBar } from '../components/StatusBar.tsx'
+import { Button } from '../components/ui/index.ts'
 import type { AppAction, ActivityEntry } from '../runtime/AppRuntime.tsx'
 import type { AppStatus } from '../types/index.ts'
 import { CommandPalette } from './CommandPalette.tsx'
 
 const navGroups = [
-  { label: 'Operate', items: [['/overview', 'Overview', 'fa-gauge-high'], ['/apps', 'Apps', 'fa-grid-2'], ['/deploys', 'Deploys', 'fa-rocket-launch'], ['/incidents', 'Incidents', 'fa-triangle-exclamation'], ['/operations', 'Operations', 'fa-list-check']] },
-  { label: 'Understand', items: [['/topology', 'Topology', 'fa-diagram-project']] },
+  { label: 'Operate', items: [['/overview', 'Overview', 'fa-gauge-high'], ['/apps', 'Apps', 'fa-grid'], ['/deploys', 'Deploys', 'fa-rocket-launch'], ['/incidents', 'Incidents', 'fa-circle-exclamation'], ['/operations', 'Operations', 'fa-clipboard-check']] },
+  { label: 'Understand', items: [['/topology', 'Topology', 'fa-map']] },
   { label: 'Configure', items: [['/platform', 'Platform', 'fa-sliders']] },
 ] as const
 
 export function Shell({ children, connected, version, apps, activity, runAction }: { children: ReactNode; connected: boolean; version: string; apps: AppStatus[]; activity: ActivityEntry[]; runAction: (appId: string, action: AppAction) => void }) {
   const [collapsed, setCollapsed] = useState(() => localStorage.getItem('norn.sidebar.collapsed') === 'true')
   const [paletteOpen, setPaletteOpen] = useState(false)
+  const [theme, setTheme] = useState<Theme>(() => document.documentElement.dataset.theme === 'light' ? 'light' : 'dark')
   const location = useLocation()
   const pageTitle = useMemo(() => {
     if (location.pathname.startsWith('/apps/')) return location.pathname.split('/')[2] ?? 'App'
@@ -43,6 +45,12 @@ export function Shell({ children, connected, version, apps, activity, runAction 
     localStorage.setItem('norn.sidebar.collapsed', String(next))
   }
 
+  const switchTheme = () => {
+    const next = theme === 'light' ? 'dark' : 'light'
+    setTheme(next)
+    setStoredTheme(next)
+  }
+
   return (
     <div className={`norn-shell ${collapsed ? 'sidebar-collapsed' : ''}`}>
       <a className="skip-link" href="#main-content">Skip to content</a>
@@ -51,7 +59,7 @@ export function Shell({ children, connected, version, apps, activity, runAction 
           <span className="sidebar-mark">N</span>
           <span className="sidebar-title">NORN</span>
           <button className="sidebar-collapse" type="button" aria-label={collapsed ? 'Expand sidebar' : 'Collapse sidebar'} onClick={() => updateCollapsed(!collapsed)}>
-            <i className={`fawsb ${collapsed ? 'fa-chevron-right' : 'fa-chevron-left'}`} aria-hidden />
+            <i className={`fawsb ${collapsed ? 'fa-angle-right' : 'fa-angle-left'}`} aria-hidden />
           </button>
         </div>
         <nav className="sidebar-nav">
@@ -68,10 +76,6 @@ export function Shell({ children, connected, version, apps, activity, runAction 
           ))}
         </nav>
         <div className="sidebar-footer">
-          <button className="sidebar-link sidebar-button" type="button" onClick={() => setStoredTheme(document.documentElement.dataset.theme === 'light' ? 'dark' : 'light')}>
-            <i className="fawsb fa-circle-half-stroke" aria-hidden />
-            <span>Theme</span>
-          </button>
           <span className="sidebar-version">norn {version}</span>
           <span className={`ws-status ${connected ? 'connected' : 'disconnected'}`}><span className={`ws-dot ${connected ? 'green' : 'red'}`} />{connected ? 'Live' : 'Reconnecting...'}</span>
         </div>
@@ -83,6 +87,13 @@ export function Shell({ children, connected, version, apps, activity, runAction 
           </div>
           <div className="page-header-actions">
             <button className="command-button" type="button" onClick={() => setPaletteOpen(true)}><i className="fawsb fa-magnifying-glass" aria-hidden /> Search <kbd>⌘K</kbd></button>
+            <Button
+              variant="ghost"
+              size="sm"
+              icon={theme === 'dark' ? 'fa-moon' : 'fa-sun'}
+              aria-label={theme === 'dark' ? 'Switch to light theme' : 'Switch to dark theme'}
+              onClick={switchTheme}
+            />
             <StatusBar />
           </div>
         </header>

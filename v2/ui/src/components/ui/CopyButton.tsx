@@ -12,7 +12,7 @@ export function CopyButton({ value, label = 'Copy' }: { value: string; label?: s
 
   return (
     <span className="ui-copy-wrap">
-      <Button variant="ghost" size="sm" type="button" onClick={onCopy} aria-label={`${label} to clipboard`}>
+      <Button variant="ghost" size="sm" type="button" icon="fa-copy" onClick={onCopy} aria-label={`${label} to clipboard`}>
         {label}
       </Button>
       {copied && <span className="ui-copy-tip" role="status">Copied</span>}
