@@ -38,9 +38,9 @@ features:
 
 `signal-sideband` was the kind of app that makes a local platform earn its keep: one allocation stayed alive, the other kept restarting, and the fix needed a new image plus careful route and dependency handling. Norn turns that from a pile of tabs into one flow.
 
-![Norn dashboard showing signal-sideband unhealthy with update and dependency badges](/screenshots/dashboard.png)
+![Norn Overview workspace showing fleet health, active incidents, running operations, recent deploys, and platform status](/screenshots/dashboard.png)
 
-First, the dashboard shows the real shape of the app: repo state, update availability, health, instances, endpoints, Postgres, KV, object storage, event topics, secrets, and live logs. It is not just "is a container running?" It answers what the service is, what it depends on, and whether the deployed commit is behind the repo.
+First, the Overview workspace puts fleet health, correlated incidents, active operations, recent deploys, and platform status in one place. From the Apps workspace, each service opens into its own overview, logs, deploys, snapshots, cron, functions, and shell tabs. It is not just "is a container running?" It answers what the service is, what it depends on, and what needs operator attention.
 
 ## Deploy Without Guessing
 
@@ -60,7 +60,7 @@ norn deploy signal-sideband HEAD
 
 The live deploy panel and CLI both stream the pipeline. Norn records detailed stage evidence in `deployment_steps`, while the operations ledger stays compact enough for drain checks, metrics, and incident review.
 
-![Norn deployment history with signal-sideband failure evidence expanded](/screenshots/operations-history.png)
+![Norn Deploys workspace showing current and earlier signal-sideband deployment records](/screenshots/operations-history.png)
 
 If an API restart interrupts read-only work, Norn can retry it. If a mutable stage has already started, such as snapshot, migration, Nomad submit, health, forge, or cleanup, Norn fails visibly for operator review instead of blindly replaying side effects.
 
@@ -137,7 +137,7 @@ secrets:
   - GARAGE_ACCESS_KEY
 
 endpoints:
-  - url: sideband.slopistry.com
+  - url: https://sideband.example.com
 
 volumes:
   - name: signal-sideband-media
@@ -146,9 +146,9 @@ volumes:
 
 The same model covers web services, workers, cron, and functions:
 
-![Norn cron panel showing scheduled field-harbor digest history and output](/screenshots/cron-panel.png)
+![Norn app Cron tab showing the field-harbor digest schedule, controls, and recent runs](/screenshots/cron-panel.png)
 
-![Norn function panel showing archive-thumb invocation history and request body](/screenshots/function-panel.png)
+![Norn app Functions tab showing an archive-thumb request body and execution history](/screenshots/function-panel.png)
 
 Routes are inspectable before and after deployment:
 
@@ -158,8 +158,8 @@ Routes are inspectable before and after deployment:
 
 When the fix is not obvious, the operator surfaces stay close:
 
-- Health history shows if the failure is transient, sustained, or tied to a deploy.
-- Logs stream from the affected app card.
+- The app overview combines process, allocation, infrastructure, service, secret, and idle-analysis context.
+- Logs stream from the affected app's Logs tab.
 - Deployment history keeps the failing stage and output.
 - Beacon events and alerts make deploy failures, service degradation, cron failures, and recoveries durable.
 - Webhook deliveries are replayable as deploys or read-only preflights.
@@ -167,9 +167,9 @@ When the fix is not obvious, the operator surfaces stay close:
 - The host runtime lane persists Nomad and Consul state, orders launchd recovery,
   adapts to DHCP address changes, and can trigger bounded cron catch-ups.
 
-![Norn health panel showing recent signal-sideband health checks](/screenshots/health-panel.png)
+![Norn signal-sideband app overview showing processes, allocations, infrastructure, services, secrets, and idle analysis](/screenshots/health-panel.png)
 
-![Norn log viewer showing signal-sideband restart and health output](/screenshots/log-viewer.png)
+![Norn signal-sideband Logs tab showing restart and health output](/screenshots/log-viewer.png)
 
 ## From The Terminal
 
