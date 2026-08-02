@@ -33,6 +33,8 @@ The current working feature set includes:
 - Resource right-sizing suggestions comparing declared limits against live Nomad allocation stats
 - Proxy cutover plan and optional managed proxy config/upstream commands for no-blip API upgrades
 - Proxy-backed platform upgrade mode for hosts that intentionally run Norn behind the managed Caddy upstream
+- Persistent macOS host runtime with launchd recovery, dynamic address
+  rendering, state migration, diagnostics, and bounded cron catch-up
 - Basic local snapshot listing and restore
 - Pre-restore safety snapshots for destructive restores
 - Value-safe secret migration planning
@@ -54,6 +56,28 @@ The current working feature set includes:
 For a compact summary of the current release line, see the [Norn v2 Release Recap](/v2/guide/release-recap).
 
 ## Immediate Norn Items
+
+### Host Runtime Continuity
+
+Current state:
+
+- `norn host install` creates persistent Nomad and Consul state directories and
+  managed user LaunchAgents without interrupting live agents.
+- `norn host migrate-state` performs a guarded one-time state copy after both
+  agents stop.
+- `norn host recover` starts Docker, Consul, Nomad, and Norn in dependency order
+  and retries launchd transitions.
+- The one-shot login supervisor re-renders the current IPv4 advertise address,
+  preserving recovery across DHCP changes.
+- Optional `app:process` catch-ups trigger bounded cron ingestion through the
+  encrypted API runtime environment.
+- `norn host status` and `norn host doctor` provide compact boot readiness and
+  configuration diagnostics.
+
+Planned work:
+
+- Decide whether hosts that need pre-login recovery should use root
+  LaunchDaemons or move the runtime to a Linux systemd service.
 
 ### Service Manifest
 

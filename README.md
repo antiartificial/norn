@@ -226,6 +226,8 @@ bin/norn deploy <app> HEAD   # deploy latest commit
 bin/norn platform preflight HEAD # build and health-check a candidate Norn release
 bin/norn platform upgrade HEAD   # promote Norn itself with rollback-capable postflight
 bin/norn platform releases       # list local Norn release dirs
+bin/norn host status             # check persistent host runtime readiness
+bin/norn host recover            # recover Docker, Consul, Nomad, and Norn
 bin/norn operations --active     # inspect active operation drain state
 bin/norn webhooks                # inspect webhook delivery inbox
 bin/norn scale <app> <n>     # scale up/down
@@ -245,6 +247,22 @@ norn ops platform
 ```
 
 See [docs/v2/operations/upgrading.md](docs/v2/operations/upgrading.md) for the full runbook.
+
+### v2 host recovery
+
+On a persistent macOS host, install the launchd recovery lane and keep Nomad
+and Consul state outside `/tmp`:
+
+```bash
+norn host install --repo /path/to/norn
+norn host status
+norn host doctor
+```
+
+For an existing installation, stop Nomad and Consul before the guarded one-time
+state migration, then run `norn host recover`. See
+[docs/v2/operations/host-recovery.md](docs/v2/operations/host-recovery.md) for
+the migration, catch-up, and pre-login limitations.
 
 ### v2 infraspec format
 
