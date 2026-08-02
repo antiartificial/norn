@@ -31,7 +31,7 @@ features:
   - title: Coordinate
     details: Provisions dependencies such as Postgres, Garage buckets, Valkey, Redpanda topics, cron jobs, functions, and Cloudflare endpoints from the app spec.
   - title: Recover
-    details: Keeps Beacon events, restart/OOM tracking, notifications, webhook deliveries, deployment history, logs, and rollback releases close to the operator.
+    details: Restores Docker, Consul, Nomad, Norn, persisted jobs, and bounded cron catch-ups after a macOS restart, with status and diagnostic commands for operators.
 ---
 
 ## The Operator Story
@@ -164,6 +164,8 @@ When the fix is not obvious, the operator surfaces stay close:
 - Beacon events and alerts make deploy failures, service degradation, cron failures, and recoveries durable.
 - Webhook deliveries are replayable as deploys or read-only preflights.
 - Observability bundle generation gives Prometheus and Grafana a bounded local setup.
+- The host runtime lane persists Nomad and Consul state, orders launchd recovery,
+  adapts to DHCP address changes, and can trigger bounded cron catch-ups.
 
 ![Norn health panel showing recent signal-sideband health checks](/screenshots/health-panel.png)
 

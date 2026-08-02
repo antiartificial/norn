@@ -99,6 +99,37 @@ norn platform proxy-switch <port|host:port>
 | `--script` | `NORN_PLATFORM_SCRIPT` | Explicit platform-upgrade script path |
 | `--proxy` | `false` | Use managed proxy cutover mode for `platform upgrade` |
 
+## host
+
+Install, recover, and diagnose a persistent macOS Norn runtime.
+
+```bash
+norn host install --repo /path/to/norn
+norn host migrate-state \
+  --from-nomad /path/to/current/nomad-data \
+  --from-consul /path/to/current/consul-data
+norn host recover
+norn host status
+norn host doctor
+```
+
+`host install` writes managed Nomad and Consul configs, persistent state
+directories, and user LaunchAgents without interrupting live agents. It can
+also configure a bounded post-recovery cron trigger:
+
+```bash
+norn host install --repo /path/to/norn --catch-up app-name:daily-capture
+```
+
+`host migrate-state` is the one-time cutover command. It refuses to copy state
+while the Nomad or Consul HTTP API remains reachable. `host recover` starts
+Docker, Consul, Nomad, and the Norn API in dependency order; `status` is the
+compact operator view and `doctor` validates tools, plists, persistence, and
+runtime health.
+
+See [Host Recovery](/v2/operations/host-recovery) for the full migration and
+failure-recovery procedure.
+
 ## operations
 
 List durable operation records.

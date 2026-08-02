@@ -19,6 +19,7 @@ Useful surfaces:
 | Deploy progress | `POST /api/apps/{id}/deploy`, `GET /api/saga/{sagaId}`, `norn saga <saga-id>` |
 | Webhook delivery triage | `GET /api/webhooks/deliveries`, `norn webhooks` |
 | Platform release history | `GET /api/platform/releases`, `norn platform releases` |
+| Host boot/recovery state | `norn host status`, `norn host doctor` |
 | Operational events | `GET /api/events`, `GET /api/events/{id}`, `norn events`, `norn alerts` |
 | Control-plane health | `/api/health`, `/api/version`, `/metrics`, `norn smoke platform`, `norn platform smoke` |
 | Observability bundle/services | `GET /api/observability/bundle`, `POST /api/observability/services/install`, `norn observability install` |
@@ -110,6 +111,34 @@ Before `upgrade` or `rollback`, check active operations when auth is available. 
 | `fail` | Refuse to proceed while active operations exist |
 | `wait` | Wait for active operations to finish |
 | `force` | Skip the drain gate |
+
+## Host Runtime Recovery
+
+On a persistent macOS host, use the host runtime lane instead of ad hoc agents
+whose state lives under `/tmp`:
+
+```bash
+norn host install --repo /path/to/norn
+norn host status
+norn host doctor
+```
+
+Before a one-time state migration, drain active operations and important batch
+allocations. Stop the current Nomad and Consul agents, migrate both state
+directories, then recover in dependency order:
+
+```bash
+norn host migrate-state \
+  --from-nomad /path/to/current/nomad-data \
+  --from-consul /path/to/current/consul-data
+norn host recover
+```
+
+The managed launchd supervisor starts Docker, renders the current advertise
+address, restores Consul and Nomad, restarts the Norn API, and runs configured
+bounded cron catch-ups. Verify important app endpoints after recovery. User
+LaunchAgents begin after login; use a system service or Linux host when the
+runtime must recover before a user session exists.
 
 ## Runtime Watchers
 
