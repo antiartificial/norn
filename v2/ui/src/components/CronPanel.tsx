@@ -127,7 +127,7 @@ export function CronPanel({ appId, onClose }: Props) {
                     disabled={busy !== null}
                     onClick={() => action('resume', entry.process)}
                   >
-                    <i className="fawsb fa-circle-play" /> Resume
+                    <i className="fawsb fa-play" /> Resume
                   </button>
                 ) : (
                   <button
@@ -135,7 +135,7 @@ export function CronPanel({ appId, onClose }: Props) {
                     disabled={busy !== null}
                     onClick={() => action('pause', entry.process)}
                   >
-                    <i className="fawsb fa-circle-pause" /> Pause
+                    <i className="fawsb fa-pause" /> Pause
                   </button>
                 )}
                 <button
