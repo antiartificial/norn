@@ -4,14 +4,14 @@ title: Norn v2 Release Recap
 
 # Norn v2 Release Recap
 
-This recap summarizes the current Norn v2 release line: the Nomad/Consul control plane, the operator-facing dashboard and CLI, the ContextDB worker deployment path, Beacon operational events, and the upgrade posture for the local LaunchAgent install.
+This recap summarizes the current Norn v2 release line: the Nomad/Consul control plane, the operator-facing dashboard and CLI, the ContextDB worker deployment path, Beacon operational events, and the upgrade posture for the local LaunchAgent install. The `v2.15.0-platform` release adds restart-time and periodic host assurance with explicit repair boundaries and end-to-end probes.
 
 ## What Shipped
 
 | Area | Surface | Why it matters |
 |:-----|:--------|:---------------|
 | Runtime platform | Nomad, Consul, local Docker builds, cloudflared | Replaces the v1 Kubernetes path with a smaller local control plane suited to self-hosted apps |
-| Host recovery | `norn host install/status/doctor/recover`, persistent state, launchd supervisor | Restores the local control plane after login or reboot without rebuilding app jobs, and supports bounded ingestion catch-up |
+| Host recovery and assurance | `norn host install/status/doctor/recover/assure`, persistent state, launchd supervisor and assurance agent | Restores the local control plane, repairs explicitly required apps and routes, probes real entrypoints, and supports bounded ingestion catch-up |
 | App model | Multi-process `infraspec.yaml` | Lets one app define web, worker, cron, and function processes without splitting deployment ownership |
 | Deploy pipeline | Clone, build, test, snapshot, migrate, submit, healthy, forge, cleanup | Makes deploys repeatable and auditable from the CLI, API, and dashboard |
 | Preflight pipeline | `norn preflight`, `norn check`, `/api/apps/{id}/preflight` | Rehearses validation, source prep, Docker build, and tests before runtime mutation |
@@ -85,6 +85,11 @@ The macOS host runtime lane now closes the reboot gap around that work. Nomad
 and Consul state can move out of `/tmp`, managed LaunchAgents recover the
 dependency chain, the supervisor adapts advertise addresses after DHCP changes,
 and selected cron processes can run a bounded catch-up once Norn is healthy.
+The assurance stage then checks required services on IPv4, safely deploys
+missing apps or restarts unhealthy apps, reconciles public Cloudflare and
+private Tailscale routes, and probes the real user-facing HTTP entrypoints. A
+periodic LaunchAgent repeats the same idempotent pass and sends correlated
+failure/recovery events through Beacon.
 
 Beacon adds the first durable event surface for notification-oriented operations. Norn now records events it can observe directly, such as deploy outcomes, cron control actions, manual test events, Nomad allocation transitions, Consul health transitions, and cron run outcomes. Those events can stay local for audit/debugging or be forwarded to a signed sink. Norn also supports local operator state: events can be acknowledged, snoozed, and reopened from the CLI and Platform tab. Beacon events can now push notifications to Discord webhooks, ntfy topics, and Pushover channels with per-channel severity filtering.
 
@@ -157,6 +162,7 @@ The current release line has been exercised with:
 - `norn host status`
 - `norn host doctor`
 - `norn host recover`
+- `norn host assure`
 - `norn services`
 - `norn status`
 - `norn smoke contextdb`

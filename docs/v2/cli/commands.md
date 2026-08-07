@@ -101,7 +101,7 @@ norn platform proxy-switch <port|host:port>
 
 ## host
 
-Install, recover, and diagnose a persistent macOS Norn runtime.
+Install, recover, assure, and diagnose a persistent macOS Norn runtime.
 
 ```bash
 norn host install --repo /path/to/norn
@@ -109,6 +109,7 @@ norn host migrate-state \
   --from-nomad /path/to/current/nomad-data \
   --from-consul /path/to/current/consul-data
 norn host recover
+norn host assure
 norn host status
 norn host doctor
 ```
@@ -121,9 +122,36 @@ also configure a bounded post-recovery cron trigger:
 norn host install --repo /path/to/norn --catch-up app-name:daily-capture
 ```
 
+The install command also accepts an explicit assurance policy:
+
+```bash
+norn host install --repo /path/to/norn \
+  --required api:web \
+  --forge api \
+  --serve '8443=http://{address}:8443' \
+  --probe api-public=https://api.example.com/health \
+  --assure-interval 300
+```
+
+| Flag | Meaning |
+|------|---------|
+| `--required APP:PROCESS` | Require a passing IPv4 Consul service; deploy an absent app or restart an unhealthy app |
+| `--forge APP` | Reconcile the app's public Cloudflare routes and prune stale private ingress rules |
+| `--serve PORT=TARGET` | Reconcile a Tailscale Serve listener; `{address}` expands to the current host IPv4 address |
+| `--probe NAME=URL` | Retry an unauthenticated HTTP GET against the route users actually reach |
+| `--assure-interval SECONDS` | Set the periodic assurance interval; minimum 60, default 300 |
+
+Flags that define policy are repeatable. Only explicitly required apps may be
+deployed or restarted. `norn host assure` runs the same idempotent pass used by
+the login supervisor and the periodic `com.norn.host-assurance` LaunchAgent.
+Persistent failures emit a deduplicated critical Beacon event; the first
+subsequent passing run emits a correlated recovery event.
+
 `host migrate-state` is the one-time cutover command. It refuses to copy state
 while the Nomad or Consul HTTP API remains reachable. `host recover` starts
-Docker, Consul, Nomad, and the Norn API in dependency order; `status` is the
+Docker, Consul, Nomad, and the Norn API in dependency order, runs configured
+catch-ups, and invokes assurance. `host assure` verifies and repairs the
+explicit policy without restarting the core host runtime. `status` is the
 compact operator view and `doctor` validates tools, plists, persistence, and
 runtime health.
 

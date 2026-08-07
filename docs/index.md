@@ -31,7 +31,7 @@ features:
   - title: Coordinate
     details: Provisions dependencies such as Postgres, Garage buckets, Valkey, Redpanda topics, cron jobs, functions, and Cloudflare endpoints from the app spec.
   - title: Recover
-    details: Restores Docker, Consul, Nomad, Norn, persisted jobs, and bounded cron catch-ups after a macOS restart, with status and diagnostic commands for operators.
+    details: Restores Docker, Consul, Nomad, and Norn after a macOS restart, then assures required apps, routes, and real user-facing endpoints on a periodic loop.
 ---
 
 ## The Operator Story
@@ -82,6 +82,26 @@ For proxy-fronted hosts, the same release path can switch a managed upstream ins
 ![CLI proxy plan showing old and candidate Norn API ports with rollback path](/screenshots/cli-proxy-plan.png)
 
 That gives the platform a clean answer to "can I upgrade Norn while this app is deploying?" Active operations are the drain source. Finished releases remain visible and rollbackable.
+
+## Recover And Assure The Host
+
+On macOS, the host lane restores Docker, Consul, Nomad, and the Norn API in
+dependency order. Recovery then runs bounded catch-ups and an explicit
+assurance policy. The same idempotent pass repeats every five minutes by
+default, so a restored Nomad database is not mistaken for a working public
+service.
+
+```bash
+norn host recover
+norn host assure
+norn host status
+```
+
+Assurance can deploy an explicitly required missing app, restart an unhealthy
+one, reconcile Cloudflare and Tailscale routes, and probe the entrypoints users
+actually reach. Persistent failures and recovery become correlated Beacon
+events. See [Host Recovery and Assurance](/v2/operations/host-recovery) for the
+policy reference and safety boundaries.
 
 ## Apps, Dependencies, And Routes
 

@@ -33,7 +33,7 @@ norn --api=https://norn.example.com status
 | [`norn deploy`](/v2/cli/commands#deploy) | Deploy with live pipeline progress |
 | [`norn preflight`](/v2/cli/commands#preflight) | Rehearse build/test without runtime mutation |
 | [`norn platform`](/v2/cli/commands#platform) | Upgrade and inspect the Norn control plane |
-| [`norn host`](/v2/cli/commands#host) | Install, recover, and diagnose the local host runtime |
+| [`norn host`](/v2/cli/commands#host) | Install, recover, assure, and diagnose the local host runtime |
 | [`norn operations`](/v2/cli/commands#operations) | Inspect durable operation rows and drain state |
 | [`norn resources`](/v2/cli/commands#resources) | Resource usage and right-sizing suggestions |
 | [`norn notifications`](/v2/cli/commands#notifications) | Manage Beacon notification channels |
