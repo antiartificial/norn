@@ -103,7 +103,7 @@ export function ExecTerminal({ appId, onClose }: Props) {
     <div className="exec-terminal">
       <div className="exec-terminal-header">
         <h3>
-          <i className="fawsb fa-terminal" /> {appId}
+          <i className="fawsb fa-rectangle-code" /> {appId}
         </h3>
         <button onClick={onClose} className="btn btn-close">
           <i className="fawsb fa-xmark" />

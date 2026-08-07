@@ -1,9 +1,15 @@
-import { useEffect, useState } from 'react'
-import { apiUrl, fetchOpts } from '../lib/api.ts'
+import { useState, type FormEvent } from 'react'
+import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
+import { Navigate, useLocation, useNavigate } from 'react-router-dom'
+import { apiFetch } from '../lib/api.ts'
 import { NotificationsSection } from './NotificationsSection.tsx'
 import { DeployGroupsSection } from './DeployGroupsSection.tsx'
 import { NetworkSection } from './NetworkSection.tsx'
+import { OpsPanel } from './OpsPanel.tsx'
 import type { AccessGrant } from '../types/index.ts'
+import { Button, ConfirmDialog, DataTable, EmptyState, ErrorState, Skeleton, StatusChip, Tabs, TabsList, Tab, useToast, type DataTableColumn } from './ui/index.ts'
+
+type PlatformTab = 'releases' | 'network' | 'access' | 'notifications' | 'observability' | 'contextdb'
 
 interface PlatformSummary {
   generatedAt: string
@@ -18,83 +24,16 @@ interface PlatformSummary {
     byStatus: Record<string, number>
   }
   deployments: {
-    recent: Array<{
-      app: string
-      commitSha: string
-      imageTag: string
-      status: string
-      sourceKind?: string
-      sourceDirty?: boolean
-      sourceChanges?: string[]
-      startedAt: string
-    }>
-    dirty: Array<{
-      app: string
-      commitSha: string
-      imageTag: string
-      sourceChanges?: string[]
-    }>
+    recent: Array<{ app: string; commitSha: string; imageTag: string; status: string; sourceKind?: string; sourceDirty?: boolean; sourceChanges?: string[]; startedAt: string }>
+    dirty: Array<{ app: string; commitSha: string; imageTag: string; sourceChanges?: string[] }>
     failed: number
     successful: number
   }
-  operations: {
-    recent: Array<{
-      id: string
-      kind: string
-      app?: string
-      sagaId?: string
-      ref?: string
-      status: string
-      risk?: string
-      message?: string
-      startedAt: string
-      finishedAt?: string
-    }>
-    active: Array<{
-      id: string
-      kind: string
-      app?: string
-      status: string
-      risk?: string
-      message?: string
-      startedAt: string
-    }>
-    byKind: Record<string, number>
-    byStatus: Record<string, number>
-  }
-  secrets: {
-    ok: number
-    needsAttention: number
-    migrationItems: number
-    apps: Array<{
-      app: string
-      ok: boolean
-      missingEncrypted: string[]
-      encryptedUndeclared: string[]
-      plainEnvWarnings: string[]
-    }>
-  }
-  snapshots: Array<{
-    app: string
-    database: string
-    keep: number
-    count: number
-    overLimit: number
-    latest?: { timestamp: string; commitSha?: string }
-  }>
   access: {
     totalRecent: number
     byStatus: Record<string, number>
     byClientIp: Record<string, number>
-    recent: Array<{
-      timestamp: string
-      method: string
-      path: string
-      status: number
-      clientIp?: string
-      cfAccessEmail?: string
-      durationMs: number
-    }>
+    recent: Array<{ timestamp: string; method: string; path: string; status: number; clientIp?: string; cfAccessEmail?: string; durationMs: number }>
   }
   observability: {
     enabled: boolean
@@ -108,48 +47,182 @@ interface PlatformSummary {
   warnings?: string[]
 }
 
-interface PlatformReleaseList {
-  current?: string
-  releases: Array<{
-    sha: string
-    version: string
-    createdAt: string
-    path: string
-    current: boolean
-  }>
+interface PlatformRelease {
+  sha: string
+  version: string
+  createdAt: string
+  path: string
+  current: boolean
 }
 
-interface BeaconEventList {
-  total: number
-  events: Array<{
-    id: string
-    app?: string
-    type: string
-    severity: string
-    state?: string
-    title: string
-    body?: string
-    dedupeKey?: string
-    occurredAt: string
-    acknowledgedAt?: string
-    acknowledgedBy?: string
-    acknowledgementNote?: string
-    snoozedUntil?: string
-    metadata?: Record<string, unknown>
-  }>
+interface PlatformReleaseList {
+  current?: string
+  releases: PlatformRelease[]
+}
+
+interface AccessEvent {
+  timestamp: string
+  method: string
+  path: string
+  status: number
+  clientIp?: string
+  cfAccessEmail?: string
+  durationMs: number
+}
+
+const tabs: Array<{ value: PlatformTab; label: string }> = [
+  { value: 'releases', label: 'Releases' },
+  { value: 'network', label: 'Network' },
+  { value: 'access', label: 'Access' },
+  { value: 'notifications', label: 'Notifications' },
+  { value: 'observability', label: 'Observability' },
+  { value: 'contextdb', label: 'ContextDB' },
+]
+
+function tabFromPath(pathname: string): PlatformTab | null {
+  const value = pathname.split('/').filter(Boolean).at(-1)
+  return tabs.some(tab => tab.value === value) ? value as PlatformTab : null
 }
 
 export function PlatformPanel() {
-  const [summary, setSummary] = useState<PlatformSummary | null>(null)
-  const [releases, setReleases] = useState<PlatformReleaseList | null>(null)
-  const [beaconEvents, setBeaconEvents] = useState<BeaconEventList | null>(null)
-  const [busyRelease, setBusyRelease] = useState<string | null>(null)
-  const [busyEvent, setBusyEvent] = useState<string | null>(null)
-  const [selectedEvent, setSelectedEvent] = useState<string | null>(null)
-  const [reloadNonce, setReloadNonce] = useState(0)
-  const [error, setError] = useState<string | null>(null)
-  const [accessGrants, setAccessGrants] = useState<AccessGrant[]>([])
-  const [grantBusy, setGrantBusy] = useState(false)
+  const navigate = useNavigate()
+  const location = useLocation()
+  const activeTab = tabFromPath(location.pathname)
+  const summary = useQuery({ queryKey: ['platform', 'summary'], queryFn: () => apiFetch<PlatformSummary>('/api/ops/platform'), staleTime: 15_000, refetchInterval: 15_000 })
+
+  if (!activeTab) return <Navigate to="/platform/releases" replace />
+
+  return (
+    <div className="ops-panel platform-panel">
+      <div className="ops-header">
+        <div>
+          <h2>Norn Platform</h2>
+          <p>{summary.data?.networkMode || 'network unknown'} · generated {formatTime(summary.data?.generatedAt)}</p>
+        </div>
+        {summary.data && (
+          <StatusChip tone={summary.data.observability.enabled ? 'success' : 'warning'} label={summary.data.observability.enabled ? 'otel enabled' : 'otel disabled'} />
+        )}
+      </div>
+
+      <Tabs value={activeTab} onValueChange={(value) => navigate(`/platform/${value}`)}>
+        <TabsList aria-label="Platform sections">
+          {tabs.map(tab => <Tab key={tab.value} value={tab.value}>{tab.label}</Tab>)}
+        </TabsList>
+      </Tabs>
+
+      <div className="platform-tab-body">
+        {activeTab === 'releases' && <ReleasesTab />}
+        {activeTab === 'network' && <NetworkTab summary={summary.data} loading={summary.isLoading} error={errorMessage(summary.error)} onRetry={() => summary.refetch()} />}
+        {activeTab === 'access' && <AccessTab summary={summary.data} loading={summary.isLoading} error={errorMessage(summary.error)} onRetry={() => summary.refetch()} />}
+        {activeTab === 'notifications' && <NotificationsSection />}
+        {activeTab === 'observability' && <ObservabilityTab summary={summary.data} loading={summary.isLoading} error={errorMessage(summary.error)} onRetry={() => summary.refetch()} />}
+        {activeTab === 'contextdb' && <OpsPanel />}
+      </div>
+    </div>
+  )
+}
+
+function ReleasesTab() {
+  const queryClient = useQueryClient()
+  const { toast } = useToast()
+  const releases = useQuery({ queryKey: ['platform', 'releases'], queryFn: () => apiFetch<PlatformReleaseList>('/api/platform/releases'), staleTime: 15_000 })
+  const [rollbackTarget, setRollbackTarget] = useState<PlatformRelease | null>(null)
+  const rollback = useMutation({
+    mutationFn: (sha: string) => apiFetch(`/api/platform/releases/${encodeURIComponent(sha)}/rollback`, { method: 'POST' }),
+    onSuccess: () => {
+      toast({ kind: 'success', title: 'Platform rollback started', description: rollbackTarget?.version ?? rollbackTarget?.sha })
+      queryClient.invalidateQueries({ queryKey: ['platform', 'releases'] })
+      setRollbackTarget(null)
+    },
+    onError: (error) => toast({ kind: 'error', title: 'Rollback failed', description: errorMessage(error) }),
+  })
+  const rows = releases.data?.releases ?? []
+  const columns: DataTableColumn<PlatformRelease>[] = [
+    { key: 'created', header: 'Created', cell: row => formatTime(row.createdAt) },
+    { key: 'version', header: 'Version', cell: row => row.version },
+    { key: 'sha', header: 'SHA', cell: row => <code>{short(row.sha)}</code> },
+    { key: 'status', header: 'Status', cell: row => row.current ? <StatusChip tone="success" label="current" /> : '-' },
+    { key: 'path', header: 'Path', cell: row => <code>{row.path}</code> },
+    { key: 'action', header: 'Action', cell: row => row.current ? '-' : <Button size="sm" variant="danger" icon="fa-arrow-rotate-left" loading={rollback.isPending && rollback.variables === row.sha} onClick={() => setRollbackTarget(row)}>Rollback</Button> },
+  ]
+
+  return (
+    <>
+      <section className="ops-section">
+        <h3>Platform Releases</h3>
+        <DataTable columns={columns} rows={rows} getRowKey={row => row.sha} loading={releases.isLoading} error={errorMessage(releases.error)} emptyTitle="No platform releases" emptyHint="Release metadata has not been recorded yet." onRetry={() => releases.refetch()} />
+      </section>
+      <DeployGroupsSection />
+      <ConfirmDialog
+        open={!!rollbackTarget}
+        title="Rollback platform release"
+        message={`Rollback to ${rollbackTarget?.version ?? short(rollbackTarget?.sha)}?`}
+        consequence="This is a platform-level change and may affect all Norn services."
+        confirmLabel="Rollback"
+        confirmIcon="fa-arrow-rotate-left"
+        danger
+        onClose={() => setRollbackTarget(null)}
+        onConfirm={() => rollbackTarget && rollback.mutate(rollbackTarget.sha)}
+      />
+    </>
+  )
+}
+
+function NetworkTab({ summary, loading, error, onRetry }: { summary?: PlatformSummary; loading: boolean; error: string | null; onRetry: () => void }) {
+  if (loading) return <Skeleton height={160} label="Loading platform network" />
+  if (error) return <ErrorState message={error} onRetry={onRetry} />
+  if (!summary) return <EmptyState title="No network summary" hint="Platform network data is unavailable." />
+  return (
+    <>
+      <div className="ops-metrics">
+        <Metric label="Services" value={String(summary.services.total)} />
+        <Metric label="Public" value={String(summary.services.public)} tone={summary.services.public > 0 ? 'warn' : 'ok'} />
+        <Metric label="Private" value={String(summary.services.private)} />
+        <Metric label="Local" value={String(summary.services.local)} />
+        <Metric label="Internal" value={String(summary.services.internal)} />
+      </div>
+      <NetworkSection services={summary.services} />
+    </>
+  )
+}
+
+function AccessTab({ summary, loading, error, onRetry }: { summary?: PlatformSummary; loading: boolean; error: string | null; onRetry: () => void }) {
+  const accessEvents = summary?.access.recent ?? []
+  const eventColumns: DataTableColumn<AccessEvent>[] = [
+    { key: 'time', header: 'Time', cell: row => formatTime(row.timestamp) },
+    { key: 'status', header: 'Status', cell: row => <StatusChip tone={row.status >= 500 ? 'danger' : row.status >= 400 ? 'warning' : 'success'} label={String(row.status)} /> },
+    { key: 'method', header: 'Method', cell: row => row.method },
+    { key: 'path', header: 'Path', cell: row => <code>{row.path}</code> },
+    { key: 'client', header: 'Client', cell: row => row.clientIp || '-' },
+    { key: 'user', header: 'User', cell: row => row.cfAccessEmail || '-' },
+    { key: 'ms', header: 'MS', cell: row => row.durationMs, numeric: true },
+  ]
+  if (loading) return <Skeleton height={160} label="Loading access controls" />
+  if (error) return <ErrorState message={error} onRetry={onRetry} />
+  if (!summary) return <EmptyState title="No access summary" hint="Access data is unavailable." />
+  return (
+    <>
+      <AccessControls />
+      <section className="ops-section">
+        <h3>Access Events</h3>
+        <DataTable columns={eventColumns} rows={accessEvents.slice(0, 12)} getRowKey={(row, i?: number) => `${row.timestamp}:${row.path}:${i ?? row.durationMs}`} emptyTitle="No access events" emptyHint="No dashboard access requests have been recorded." />
+      </section>
+      <section className="ops-section">
+        <h3>Access Patterns</h3>
+        {Object.keys(summary.access.byClientIp ?? {}).length > 0 ? (
+          <div className="platform-kv-list">
+            {Object.entries(summary.access.byClientIp).map(([client, count]) => <div key={client}><span>{client}</span><strong>{count}</strong></div>)}
+          </div>
+        ) : <EmptyState title="No access patterns" hint="Pattern summaries will appear after access observations are recorded." />}
+      </section>
+    </>
+  )
+}
+
+function AccessControls() {
+  const queryClient = useQueryClient()
+  const { toast } = useToast()
+  const grants = useQuery({ queryKey: ['access', 'grants'], queryFn: () => apiFetch<{ grants?: AccessGrant[] }>('/api/access/grants'), staleTime: 20_000 })
   const [showGrantForm, setShowGrantForm] = useState(false)
   const [grantIp, setGrantIp] = useState('')
   const [grantTtl, setGrantTtl] = useState('24h')
@@ -158,389 +231,140 @@ export function PlatformPanel() {
   const [tokenNote, setTokenNote] = useState('')
   const [createdToken, setCreatedToken] = useState<string | null>(null)
   const [tokenExpiry, setTokenExpiry] = useState<string | null>(null)
-  const [incidentKey, setIncidentKey] = useState<string | null>(null)
-  const [incidentEvents, setIncidentEvents] = useState<BeaconEventList['events']>([])
+  const [revokeTarget, setRevokeTarget] = useState<AccessGrant | null>(null)
+  const grantRows = grants.data?.grants ?? []
 
-  useEffect(() => {
-    let cancelled = false
-    async function load() {
-      try {
-        const [opsRes, releasesRes, eventsRes] = await Promise.all([
-          fetch(apiUrl('/api/ops/platform'), fetchOpts),
-          fetch(apiUrl('/api/platform/releases'), fetchOpts),
-          fetch(apiUrl('/api/events?limit=8'), fetchOpts),
-        ])
-        if (!opsRes.ok) throw new Error(await opsRes.text())
-        if (!releasesRes.ok) throw new Error(await releasesRes.text())
-        if (!eventsRes.ok) throw new Error(await eventsRes.text())
-        const data = await opsRes.json()
-        const releaseData = await releasesRes.json()
-        const eventData = await eventsRes.json()
-        if (!cancelled) {
-          setSummary(data)
-          setReleases(releaseData)
-          setBeaconEvents(eventData)
-          setError(null)
-        }
-        fetch(apiUrl('/api/access/grants'), fetchOpts)
-          .then(r => r.ok ? r.json() : { grants: [] })
-          .then(data => { if (!cancelled) setAccessGrants(data.grants ?? []) })
-          .catch(() => {})
-      } catch (err) {
-        if (!cancelled) setError(String(err))
-      }
-    }
-    load()
-    const interval = setInterval(load, 15000)
-    return () => {
-      cancelled = true
-      clearInterval(interval)
-    }
-  }, [reloadNonce])
-
-  if (error) return <div className="error-banner"><strong>Platform error</strong>{error}</div>
-  if (!summary) return <div className="ops-panel"><div className="ops-empty">Loading platform operations...</div></div>
-
-  const snapshots = summary.snapshots ?? []
-  const recentDeployments = summary.deployments.recent ?? []
-  const recentOperations = summary.operations?.recent ?? []
-  const activeOperations = summary.operations?.active ?? []
-  const dirtyDeployments = summary.deployments.dirty ?? []
-  const accessEvents = summary.access.recent ?? []
-  const secretTone = summary.secrets.needsAttention > 0 ? 'warn' : 'ok'
-  const dirtyTone = dirtyDeployments.length > 0 ? 'warn' : 'ok'
-  const snapshotTone = snapshots.some((s) => s.overLimit > 0) ? 'warn' : 'ok'
-  const platformReleases = releases?.releases ?? []
-  const recentBeaconEvents = beaconEvents?.events ?? []
-
-  async function rollbackRelease(sha: string) {
-    setBusyRelease(sha)
-    try {
-      const res = await fetch(apiUrl(`/api/platform/releases/${encodeURIComponent(sha)}/rollback`), {
-        ...fetchOpts,
-        method: 'POST',
-      })
-      if (!res.ok) throw new Error(await res.text())
-    } catch (err) {
-      setError(String(err))
-    } finally {
-      setBusyRelease(null)
-    }
-  }
-
-  async function eventAction(id: string, action: 'ack' | 'snooze' | 'open') {
-    setBusyEvent(id)
-    try {
-      const body = action === 'snooze' ? { duration: '1h', note: 'snoozed from platform panel' } : {}
-      const res = await fetch(apiUrl(`/api/events/${encodeURIComponent(id)}/${action}`), {
-        ...fetchOpts,
-        method: 'POST',
-        body: JSON.stringify(body),
-      })
-      if (!res.ok) throw new Error(await res.text())
-      setReloadNonce((value) => value + 1)
-    } catch (err) {
-      setError(String(err))
-    } finally {
-      setBusyEvent(null)
-    }
-  }
-
-  async function createToken() {
-    const res = await fetch(apiUrl('/api/access/tokens'), {
+  const createGrant = useMutation({
+    mutationFn: () => apiFetch('/api/access/grants', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ ip: grantIp, ttl: grantTtl, note: grantNote }),
+    }),
+    onSuccess: () => {
+      toast({ kind: 'success', title: 'Access grant created', description: grantIp })
+      setGrantIp('')
+      setGrantTtl('24h')
+      setGrantNote('')
+      setShowGrantForm(false)
+      queryClient.invalidateQueries({ queryKey: ['access', 'grants'] })
+    },
+    onError: (error) => toast({ kind: 'error', title: 'Grant failed', description: errorMessage(error) }),
+  })
+  const revokeGrant = useMutation({
+    mutationFn: (id: string) => apiFetch(`/api/access/grants/${encodeURIComponent(id)}`, { method: 'DELETE' }),
+    onSuccess: () => {
+      toast({ kind: 'success', title: 'Access grant revoked', description: revokeTarget?.ip })
+      setRevokeTarget(null)
+      queryClient.invalidateQueries({ queryKey: ['access', 'grants'] })
+    },
+    onError: (error) => toast({ kind: 'error', title: 'Revoke failed', description: errorMessage(error) }),
+  })
+  const createToken = useMutation({
+    mutationFn: () => apiFetch<{ token: string; expiresAt?: string }>('/api/access/tokens', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ ttl: tokenTTL, note: tokenNote }),
-    })
-    if (!res.ok) return
-    const data = await res.json()
-    setCreatedToken(data.token)
-    setTokenExpiry(data.expiresAt)
-    setTokenNote('')
-  }
+    }),
+    onSuccess: (data) => {
+      setCreatedToken(data.token)
+      setTokenExpiry(data.expiresAt ?? null)
+      setTokenNote('')
+      toast({ kind: 'success', title: 'Access token created', description: data.expiresAt ? `Expires ${formatTime(data.expiresAt)}` : undefined })
+    },
+    onError: (error) => toast({ kind: 'error', title: 'Token failed', description: errorMessage(error) }),
+  })
 
-  async function loadIncidentTimeline(key: string) {
-    if (incidentKey === key) {
-      setIncidentKey(null)
-      setIncidentEvents([])
-      return
-    }
-    const res = await fetch(apiUrl(`/api/events/correlated?key=${encodeURIComponent(key)}`))
-    if (!res.ok) return
-    const data = await res.json()
-    setIncidentKey(key)
-    setIncidentEvents(data.events ?? [])
-  }
+  const columns: DataTableColumn<AccessGrant>[] = [
+    { key: 'ip', header: 'IP', cell: row => row.ip },
+    { key: 'note', header: 'Note', cell: row => row.note || '-' },
+    { key: 'created', header: 'Created', cell: row => formatTime(row.createdAt) },
+    { key: 'by', header: 'By', cell: row => row.createdBy || '-' },
+    { key: 'expires', header: 'Expires', cell: row => formatTime(row.expiresAt) },
+    { key: 'action', header: 'Action', cell: row => <Button size="sm" variant="danger" icon="fa-trash" onClick={() => setRevokeTarget(row)}>Revoke</Button> },
+  ]
 
   return (
-    <div className="ops-panel">
-      <div className="ops-header">
-        <div>
-          <h2>Norn Platform</h2>
-          <p>{summary.networkMode || 'network unknown'} &middot; generated {formatTime(summary.generatedAt)}</p>
-        </div>
-        <span className={`ops-status ${summary.observability.enabled ? 'ok' : 'warn'}`}>
-          {summary.observability.enabled ? 'otel enabled' : 'otel disabled'}
-        </span>
-      </div>
-
-      <div className="ops-metrics">
-        <Metric label="Services" value={String(summary.services.total)} />
-        <Metric label="Active Ops" value={String(activeOperations.length)} tone={activeOperations.length > 0 ? 'warn' : 'ok'} />
-        <Metric label="Public" value={String(summary.services.public)} tone={summary.services.public > 0 ? 'warn' : 'ok'} />
-        <Metric label="Dirty Deploys" value={String(dirtyDeployments.length)} tone={dirtyTone} />
-        <Metric label="Secrets" value={`${summary.secrets.ok}/${summary.secrets.ok + summary.secrets.needsAttention}`} tone={secretTone} />
-        <Metric label="Secret Moves" value={String(summary.secrets.migrationItems || 0)} tone={(summary.secrets.migrationItems || 0) > 0 ? 'warn' : 'ok'} />
-        <Metric label="Snapshots" value={String(snapshots.length)} tone={snapshotTone} />
-        <Metric label="Access" value={String(summary.access.totalRecent)} />
-      </div>
-
-      <div className="ops-two">
-        <section className="ops-section">
-          <h3>Observability</h3>
-          <div className="ops-kv">
-            <span>enabled</span><strong>{String(summary.observability.enabled)}</strong>
-            <span>logs</span><strong>{String(summary.observability.logsEnabled)}</strong>
-            <span>format</span><strong>{summary.observability.logFormat}</strong>
-            <span>service</span><strong>{summary.observability.serviceName || '-'}</strong>
-            <span>otlp</span><strong>{summary.observability.otlpEndpoint || '-'}</strong>
-            <span>bundle</span><strong>{summary.observability.bundleAvailable ? 'available' : '-'}</strong>
-            <span>retention</span><strong>{summary.observability.retention || '-'}</strong>
-          </div>
-        </section>
-
-        <NetworkSection services={summary.services} />
-      </div>
-
-      <section className="ops-section">
-        <h3>Snapshot Lifecycle</h3>
-        {snapshots.length > 0 ? (
-          <div className="ops-table">
-            <div className="ops-row ops-row-head">
-              <span>App</span><span>Database</span><span>Count</span><span>Keep</span><span>Over</span><span>Latest</span><span>Commit</span>
-            </div>
-            {snapshots.map((snapshot) => (
-              <div className="ops-row" key={`${snapshot.app}:${snapshot.database}`}>
-                <span>{snapshot.app}</span><span>{snapshot.database}</span><span>{snapshot.count}</span><span>{snapshot.keep}</span><span>{snapshot.overLimit}</span><span>{snapshot.latest?.timestamp || '-'}</span><span>{short(snapshot.latest?.commitSha)}</span>
-              </div>
-            ))}
-          </div>
-        ) : <div className="ops-empty">No snapshot-backed apps found</div>}
-      </section>
-
-      <section className="ops-section">
-        <h3>Recent Deployments</h3>
-        {recentDeployments.length > 0 ? (
-          <div className="ops-table">
-            <div className="ops-row ops-row-head ops-row-wide">
-              <span>App</span><span>Status</span><span>Commit</span><span>Source</span><span>Image</span><span>Started</span><span>Changes</span>
-            </div>
-            {recentDeployments.slice(0, 8).map((deployment) => (
-              <div className="ops-row ops-row-wide" key={`${deployment.app}:${deployment.startedAt}`}>
-                <span>{deployment.app}</span><span>{deployment.status}</span><span>{short(deployment.commitSha)}</span><span>{deployment.sourceKind || '-'}{deployment.sourceDirty ? '*' : ''}</span><span>{deployment.imageTag || '-'}</span><span>{formatTime(deployment.startedAt)}</span><span>{deployment.sourceChanges?.length ?? 0}</span>
-              </div>
-            ))}
-          </div>
-        ) : <div className="ops-empty">No deployments recorded</div>}
-      </section>
-
-      <section className="ops-section">
-        <h3>Operations</h3>
-        {recentOperations.length > 0 ? (
-          <div className="ops-table">
-            <div className="ops-row ops-row-head ops-row-wide">
-              <span>Time</span><span>Status</span><span>Kind</span><span>App</span><span>Ref</span><span>Risk</span><span>Message</span>
-            </div>
-            {recentOperations.slice(0, 8).map((operation) => (
-              <div className="ops-row ops-row-wide" key={operation.id}>
-                <span>{formatTime(operation.startedAt)}</span><span>{operation.status}</span><span>{operation.kind}</span><span>{operation.app || '-'}</span><span>{short(operation.ref)}</span><span>{operation.risk || '-'}</span><span>{operation.message || '-'}</span>
-              </div>
-            ))}
-          </div>
-        ) : <div className="ops-empty">No operations recorded</div>}
-      </section>
-
-      <section className="ops-section">
-        <h3>Platform Releases</h3>
-        {platformReleases.length > 0 ? (
-          <div className="ops-table">
-            <div className="ops-row ops-row-head ops-row-wide">
-              <span>Created</span><span>Version</span><span>SHA</span><span>Status</span><span>Path</span><span>Action</span>
-            </div>
-            {platformReleases.slice(0, 8).map((release) => (
-              <div className="ops-row ops-row-wide" key={release.sha}>
-                <span>{formatTime(release.createdAt)}</span><span>{release.version}</span><span>{short(release.sha)}</span><span>{release.current ? 'current' : '-'}</span><span>{release.path}</span><span>{release.current ? '-' : (
-                  <button className="btn btn-small" disabled={busyRelease === release.sha} onClick={() => rollbackRelease(release.sha)}>
-                    {busyRelease === release.sha ? 'starting' : 'rollback'}
-                  </button>
-                )}</span>
-              </div>
-            ))}
-          </div>
-        ) : <div className="ops-empty">No platform releases found</div>}
-      </section>
-
-      <section className="ops-section">
-        <h3>Beacon Events</h3>
-        {recentBeaconEvents.length > 0 ? (
-          <div className="ops-table">
-            <div className="ops-row ops-row-head ops-row-events">
-              <span>Time</span><span>Severity</span><span>State</span><span>Type</span><span>App</span><span>Title</span><span>Action</span>
-            </div>
-            {recentBeaconEvents.map((event) => (
-              <div key={event.id}>
-                <div className="ops-row ops-row-events">
-                  <span>{formatTime(event.occurredAt)}</span><span>{event.severity}</span><span>{event.state || 'open'}</span><span>{event.type}</span><span>{event.app || '-'}</span><button className="ops-link" onClick={() => setSelectedEvent(selectedEvent === event.id ? null : event.id)}>{event.title}</button><span className="ops-actions">
-                    {(event.state || 'open') === 'acknowledged' ? (
-                      <button className="btn btn-small" disabled={busyEvent === event.id} onClick={() => eventAction(event.id, 'open')}>open</button>
-                    ) : (
-                      <button className="btn btn-small" disabled={busyEvent === event.id} onClick={() => eventAction(event.id, 'ack')}>ack</button>
-                    )}
-                    {(event.state || 'open') !== 'snoozed' && <button className="btn btn-small" disabled={busyEvent === event.id} onClick={() => eventAction(event.id, 'snooze')}>snooze</button>}
-                  </span>
-                </div>
-                {selectedEvent === event.id && (
-                  <div className="ops-event-detail">
-                    <div><span>ID</span><strong>{event.id}</strong></div>
-                    <div><span>Dedupe</span><strong>{event.dedupeKey || '-'}</strong></div>
-                    <div><span>Ack</span><strong>{event.acknowledgedAt ? `${formatTime(event.acknowledgedAt)} ${event.acknowledgedBy || ''}` : '-'}</strong></div>
-                    <div><span>Snoozed</span><strong>{event.snoozedUntil ? formatTime(event.snoozedUntil) : '-'}</strong></div>
-                    {event.body && <p>{event.body}</p>}
-                    {event.acknowledgementNote && <p>{event.acknowledgementNote}</p>}
-                    {event.metadata && <p>{formatMetadata(event.metadata)}</p>}
-                    {!!event.metadata?.correlationKey && (
-                      <div style={{ marginTop: '0.5rem' }}>
-                        <button className="ops-link" onClick={() => loadIncidentTimeline(String(event.metadata!.correlationKey))}>
-                          View incident timeline →
-                        </button>
-                      </div>
-                    )}
-                  </div>
-                )}
-              </div>
-            ))}
-          </div>
-        ) : <div className="ops-empty">No Beacon events recorded</div>}
-      </section>
-
-      {incidentKey && (
-        <section className="ops-section">
-          <h3>Incident Timeline: {incidentKey} <button className="btn btn-small" onClick={() => { setIncidentKey(null); setIncidentEvents([]) }}>close</button></h3>
-          {incidentEvents.length > 0 ? (
-            <div className="ops-table">
-              <div className="ops-row ops-row-head ops-row-events">
-                <span>Time</span><span>Severity</span><span>Type</span><span>Title</span>
-              </div>
-              {incidentEvents.map((ev: any) => (
-                <div key={ev.id} className="ops-row ops-row-events">
-                  <span>{formatTime(ev.occurredAt)}</span>
-                  <span>{ev.severity}</span>
-                  <span>{ev.type}</span>
-                  <span>{ev.title}</span>
-                </div>
-              ))}
-            </div>
-          ) : <div className="ops-empty">No correlated events found</div>}
-        </section>
+    <section className="ops-section">
+      <h3>Grants & Tokens</h3>
+      <DataTable columns={columns} rows={grantRows} getRowKey={row => row.id} loading={grants.isLoading} error={errorMessage(grants.error)} emptyTitle="No active grants" emptyHint="Temporary IP grants will appear here." onRetry={() => grants.refetch()} />
+      {showGrantForm ? (
+        <form className="platform-inline-form" onSubmit={(event: FormEvent) => { event.preventDefault(); createGrant.mutate() }}>
+          <input className="platform-input-sm" placeholder="IP address" value={grantIp} onChange={event => setGrantIp(event.target.value)} required />
+          <input className="platform-input-xs" placeholder="TTL" value={grantTtl} onChange={event => setGrantTtl(event.target.value)} required />
+          <input className="platform-input-md" placeholder="Note (optional)" value={grantNote} onChange={event => setGrantNote(event.target.value)} />
+          <Button type="submit" size="sm" icon="fa-user-plus" loading={createGrant.isPending}>Grant</Button>
+          <Button type="button" size="sm" variant="ghost" icon="fa-xmark" onClick={() => setShowGrantForm(false)}>Cancel</Button>
+        </form>
+      ) : (
+        <Button size="sm" variant="secondary" icon="fa-user-plus" className="platform-spaced-button" onClick={() => setShowGrantForm(true)}>Grant IP access</Button>
       )}
 
-      <NotificationsSection />
-
-      <DeployGroupsSection />
-
-      <section className="ops-section">
-        <h3>Access</h3>
-        {accessGrants.length > 0 && (
-          <>
-            <h4 style={{ fontSize: '12px', color: 'var(--amber)', margin: '0 0 6px' }}>Active Grants</h4>
-            <div className="ops-table grants-list">
-              <div className="ops-row ops-row-head">
-                <span>IP</span><span>Note</span><span>Created</span><span>By</span><span>Expires</span><span>Action</span>
-              </div>
-              {accessGrants.map((g) => (
-                <div className="ops-row" key={g.id}>
-                  <span>{g.ip}</span>
-                  <span>{g.note || '-'}</span>
-                  <span>{formatTime(g.createdAt)}</span>
-                  <span>{g.createdBy || '-'}</span>
-                  <span>{formatTime(g.expiresAt)}</span>
-                  <span>
-                    <button className="btn btn-small btn-danger" onClick={async () => {
-                      await fetch(apiUrl(`/api/access/grants/${encodeURIComponent(g.id)}`), { ...fetchOpts, method: 'DELETE' })
-                      setReloadNonce(v => v + 1)
-                    }}>revoke</button>
-                  </span>
-                </div>
-              ))}
-            </div>
-          </>
-        )}
-        {showGrantForm ? (
-          <form style={{ display: 'flex', gap: '0.5rem', flexWrap: 'wrap', margin: '8px 0' }} onSubmit={async (e) => {
-            e.preventDefault()
-            setGrantBusy(true)
-            try {
-              const res = await fetch(apiUrl('/api/access/grants'), {
-                ...fetchOpts, method: 'POST',
-                headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({ ip: grantIp, ttl: grantTtl, note: grantNote }),
-              })
-              if (!res.ok) throw new Error(await res.text())
-              setGrantIp(''); setGrantTtl('24h'); setGrantNote(''); setShowGrantForm(false)
-              setReloadNonce(v => v + 1)
-            } catch (err) { setError(String(err)) }
-            finally { setGrantBusy(false) }
-          }}>
-            <input placeholder="IP address" value={grantIp} onChange={e => setGrantIp(e.target.value)} required style={{ width: '120px' }} />
-            <input placeholder="TTL (e.g. 24h)" value={grantTtl} onChange={e => setGrantTtl(e.target.value)} required style={{ width: '100px' }} />
-            <input placeholder="Note (optional)" value={grantNote} onChange={e => setGrantNote(e.target.value)} style={{ width: '160px' }} />
-            <button type="submit" className="btn btn-small" disabled={grantBusy}>{grantBusy ? 'granting' : 'grant'}</button>
-            <button type="button" className="btn btn-small" onClick={() => setShowGrantForm(false)}>cancel</button>
-          </form>
-        ) : (
-          <button className="btn btn-small" style={{ margin: '8px 0 12px' }} onClick={() => setShowGrantForm(true)}>+ grant IP access</button>
-        )}
-        <h4 style={{ fontSize: '12px', color: 'var(--amber)', margin: '12px 0 6px' }}>Access Tokens</h4>
-        <div style={{ display: 'flex', gap: '0.5rem', flexWrap: 'wrap', margin: '8px 0' }}>
-          <input placeholder="TTL (e.g. 2h)" value={tokenTTL} onChange={e => setTokenTTL(e.target.value)} style={{ width: '100px' }} />
-          <input placeholder="Note (optional)" value={tokenNote} onChange={e => setTokenNote(e.target.value)} style={{ width: '160px' }} />
-          <button className="btn btn-small" onClick={createToken}>Create token</button>
+      <h4 className="platform-subhead">Access Tokens</h4>
+      <div className="platform-inline-form">
+        <input className="platform-input-xs" placeholder="TTL" value={tokenTTL} onChange={event => setTokenTTL(event.target.value)} />
+        <input className="platform-input-md" placeholder="Note (optional)" value={tokenNote} onChange={event => setTokenNote(event.target.value)} />
+        <Button size="sm" icon="fa-key" loading={createToken.isPending} onClick={() => createToken.mutate()}>Create token</Button>
+      </div>
+      {createdToken && (
+        <div className="platform-token-result">
+          <textarea readOnly value={createdToken} rows={3} onClick={event => event.currentTarget.select()} />
+          {tokenExpiry && <p>Expires: {formatTime(tokenExpiry)}</p>}
+          <p>Append ?token=&lt;value&gt; to share dashboard URLs.</p>
+          <Button size="sm" variant="ghost" icon="fa-xmark" onClick={() => { setCreatedToken(null); setTokenExpiry(null) }}>Clear</Button>
         </div>
-        {createdToken && (
-          <div style={{ margin: '8px 0' }}>
-            <textarea
-              readOnly
-              value={createdToken}
-              rows={3}
-              style={{ width: '100%', fontFamily: 'monospace', wordBreak: 'break-all', resize: 'vertical' }}
-              onClick={e => (e.target as HTMLTextAreaElement).select()}
-            />
-            {tokenExpiry && <p style={{ margin: '4px 0', fontSize: '12px' }}>Expires: {formatTime(tokenExpiry)}</p>}
-            <p style={{ margin: '4px 0', fontSize: '12px', color: 'var(--muted)' }}>Append ?token=&lt;value&gt; to share dashboard URLs</p>
-            <button className="btn btn-small" style={{ marginTop: '4px' }} onClick={() => { setCreatedToken(null); setTokenExpiry(null) }}>Clear</button>
-          </div>
-        )}
-        {accessEvents.length > 0 ? (
-          <div className="ops-table">
-            <div className="ops-row ops-row-head">
-              <span>Time</span><span>Status</span><span>Method</span><span>Path</span><span>Client</span><span>User</span><span>MS</span>
-            </div>
-            {accessEvents.slice(0, 8).map((event, i) => (
-              <div className="ops-row" key={`${event.timestamp}:${event.path}:${i}`}>
-                <span>{formatTime(event.timestamp)}</span><span>{event.status}</span><span>{event.method}</span><span>{event.path}</span><span>{event.clientIp || '-'}</span><span>{event.cfAccessEmail || '-'}</span><span>{event.durationMs}</span>
-              </div>
-            ))}
-          </div>
-        ) : <div className="ops-empty">No access events recorded</div>}
-      </section>
+      )}
+      <ConfirmDialog
+        open={!!revokeTarget}
+        title="Revoke access grant"
+        message={`Revoke access for ${revokeTarget?.ip}?`}
+        consequence="Existing sessions using this temporary grant may lose access."
+        confirmLabel="Revoke"
+        danger
+        onClose={() => setRevokeTarget(null)}
+        onConfirm={() => revokeTarget && revokeGrant.mutate(revokeTarget.id)}
+      />
+    </section>
+  )
+}
 
+function ObservabilityTab({ summary, loading, error, onRetry }: { summary?: PlatformSummary; loading: boolean; error: string | null; onRetry: () => void }) {
+  const { toast } = useToast()
+  const install = useMutation({
+    mutationFn: () => apiFetch('/api/observability/services/install', { method: 'POST' }),
+    onSuccess: () => toast({ kind: 'success', title: 'Observability install requested' }),
+    onError: (err) => toast({ kind: 'error', title: 'Install failed', description: errorMessage(err) }),
+  })
+  if (loading) return <Skeleton height={160} label="Loading observability" />
+  if (error) return <ErrorState message={error} onRetry={onRetry} />
+  if (!summary) return <EmptyState title="No observability summary" hint="Metrics configuration is unavailable." />
+  return (
+    <>
+      <div className="ops-metrics">
+        <Metric label="Enabled" value={String(summary.observability.enabled)} tone={summary.observability.enabled ? 'ok' : 'warn'} />
+        <Metric label="Logs" value={String(summary.observability.logsEnabled)} tone={summary.observability.logsEnabled ? 'ok' : 'warn'} />
+        <Metric label="Format" value={summary.observability.logFormat || '-'} />
+        <Metric label="Retention" value={summary.observability.retention || '-'} />
+      </div>
+      <section className="ops-section">
+        <h3>Metrics Configuration</h3>
+        <div className="ops-kv">
+          <span>service</span><strong>{summary.observability.serviceName || '-'}</strong>
+          <span>otlp</span><strong>{summary.observability.otlpEndpoint || '-'}</strong>
+          <span>bundle</span><strong>{summary.observability.bundleAvailable ? 'available' : '-'}</strong>
+        </div>
+        <div className="platform-action-row">
+          <a className="btn btn-small" href="/api/observability/prometheus.yml">Prometheus config</a>
+          <a className="btn btn-small" href="/api/observability/alerts.yml">Alert rules</a>
+          <Button size="sm" icon="fa-gear" loading={install.isPending} onClick={() => install.mutate()}>Install services</Button>
+        </div>
+      </section>
       {(summary.warnings && summary.warnings.length > 0) && (
         <section className="ops-section ops-warnings">
           <h3>Warnings</h3>
-          {summary.warnings.map((warning) => <p key={warning}>{warning}</p>)}
+          {summary.warnings.map(warning => <p key={warning}>{warning}</p>)}
         </section>
       )}
-    </div>
+    </>
   )
 }
 
@@ -553,6 +377,10 @@ function Metric({ label, value, tone }: { label: string; value: string; tone?: '
   )
 }
 
+function errorMessage(error: unknown): string {
+  return error instanceof Error ? error.message : error ? String(error) : ''
+}
+
 function formatTime(value?: string) {
   if (!value) return '-'
   const date = new Date(value)
@@ -563,9 +391,4 @@ function formatTime(value?: string) {
 function short(value?: string) {
   if (!value) return '-'
   return value.length > 10 ? value.slice(0, 10) : value
-}
-
-function formatMetadata(values: Record<string, unknown>) {
-  const parts = Object.entries(values).map(([key, value]) => `${key}: ${String(value)}`)
-  return parts.length > 0 ? parts.join(' · ') : '-'
 }

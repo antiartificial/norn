@@ -43,7 +43,7 @@ This starts two processes in parallel:
 
 Open the UI and you'll see a welcome tour walking you through the basics.
 
-![Norn Dashboard](/screenshots/dashboard.png)
+![Norn Dashboard](/screenshots/dashboard-v1.png)
 
 ## Build the CLI
 
@@ -58,7 +58,7 @@ Verify the installation:
 norn version
 ```
 
-![norn version](/screenshots/cli-version.png)
+![norn version](/screenshots/cli-version-v1.png)
 
 The CLI connects to the API at `http://localhost:8800` by default. Override with `NORN_URL` or `--api`:
 

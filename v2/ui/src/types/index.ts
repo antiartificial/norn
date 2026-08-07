@@ -132,6 +132,82 @@ export interface Deployment {
   finishedAt?: string
 }
 
+export type EventSeverity = 'info' | 'warning' | 'critical'
+
+export interface CorrelatedIncident {
+  correlationKey: string
+  app: string
+  latestSeverity: EventSeverity
+  latestType: string
+  latestTitle: string
+  eventCount: number
+  firstSeen: string
+  lastSeen: string
+  openCount: number
+  latestEventId: string
+}
+
+export interface BeaconEvent {
+  id: string
+  source?: string
+  app: string
+  environment?: string
+  type: string
+  severity: EventSeverity
+  state: string
+  title: string
+  body?: string
+  dedupeKey?: string
+  occurredAt: string
+  acknowledgedAt?: string
+  acknowledgedBy?: string
+  acknowledgementNote?: string
+  snoozedUntil?: string
+  metadata?: Record<string, unknown>
+}
+
+export interface Operation {
+  id?: string
+  sagaId?: string
+  kind?: string
+  app?: string
+  status?: string
+  attempt?: number
+  attempts?: number
+  maxAttempts?: number
+  risk?: string
+  message?: string
+  lastError?: string
+  nextAttemptAt?: string
+  createdAt?: string
+  startedAt?: string
+  updatedAt?: string
+  finishedAt?: string
+}
+
+export interface EventsResponse {
+  events: BeaconEvent[]
+  total?: number
+}
+
+export interface ActiveIncidentsResponse {
+  incidents: CorrelatedIncident[]
+}
+
+export interface CorrelatedEventsResponse {
+  correlationKey: string
+  events: BeaconEvent[]
+}
+
+export interface OperationsResponse {
+  count: number
+  operations: Operation[]
+}
+
+export interface VersionResponse {
+  version: string
+}
+
 export interface WSEvent {
   type: string
   appId: string
