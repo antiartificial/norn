@@ -61,7 +61,7 @@ func (h *Handler) Forge(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	changed := false
+	changed := cloudflared.PrunePrivateIngress(cfg)
 	for _, ep := range publicEndpoints {
 		if cloudflared.AddIngress(cfg, ep.URL, service) {
 			changed = true

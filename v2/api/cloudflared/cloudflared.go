@@ -132,6 +132,24 @@ func RemoveIngress(cfg *Config, hostname string) bool {
 	return changed
 }
 
+// PrunePrivateIngress removes hostname rules that do not belong in a public
+// Cloudflare tunnel while preserving the catch-all rule.
+func PrunePrivateIngress(cfg *Config) bool {
+	filtered := make([]IngressRule, 0, len(cfg.Ingress))
+	changed := false
+	for _, rule := range cfg.Ingress {
+		if rule.Hostname != "" && !IsPublicEndpoint(rule.Hostname) {
+			changed = true
+			continue
+		}
+		filtered = append(filtered, rule)
+	}
+	if changed {
+		cfg.Ingress = filtered
+	}
+	return changed
+}
+
 // ApplyConfig writes the config to the local cloudflared config file.
 func ApplyConfig(_ context.Context, cfg *Config) error {
 	data, err := yaml.Marshal(cfg)
