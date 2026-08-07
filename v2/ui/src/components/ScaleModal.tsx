@@ -44,7 +44,7 @@ export function ScaleModal({ appId, groups, onClose, onScaled }: Props) {
     <div className="scale-modal-backdrop" onClick={onClose}>
       <div className="scale-modal" onClick={e => e.stopPropagation()}>
         <div className="scale-modal-header">
-          <h4><i className="fawsb fa-up-right-and-down-left-from-center" /> Scale {appId}</h4>
+          <h4><i className="fawsb fa-expand" /> Scale {appId}</h4>
           <button onClick={onClose} className="btn btn-close">
             <i className="fawsb fa-xmark" />
           </button>
@@ -89,7 +89,7 @@ export function ScaleModal({ appId, groups, onClose, onScaled }: Props) {
         <div className="scale-modal-actions">
           <button onClick={onClose} className="btn">Cancel</button>
           <button onClick={handleScale} disabled={submitting} className="btn btn-primary">
-            {submitting ? <span className="btn-spinner" /> : <i className="fawsb fa-up-right-and-down-left-from-center" />}
+            {submitting ? <span className="btn-spinner" /> : <i className="fawsb fa-expand" />}
             Scale to {count}
           </button>
         </div>

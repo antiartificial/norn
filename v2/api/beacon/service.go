@@ -51,6 +51,10 @@ func (s *Service) SetNotifier(n *Notifier) {
 	s.notifier = n
 }
 
+func (s *Service) RecentWatcherEvents(ctx context.Context, since time.Duration) ([]model.BeaconEvent, error) {
+	return s.db.RecentWatcherEvents(ctx, since)
+}
+
 func (s *Service) SinkStatus() model.BeaconSinkStatus {
 	return model.BeaconSinkStatus{
 		Configured: s.cfg.SinkURL != "",
