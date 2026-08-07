@@ -17,6 +17,19 @@ func (p *Pipeline) forge(ctx context.Context, st *state, sg *saga.Saga) error {
 		return nil
 	}
 
+	publicEndpoints := make([]model.Endpoint, 0, len(st.spec.Endpoints))
+	for _, endpoint := range st.spec.Endpoints {
+		if cloudflared.IsPublicEndpoint(endpoint.URL) {
+			publicEndpoints = append(publicEndpoints, endpoint)
+		} else {
+			sg.Log(ctx, "forge.skip_private", fmt.Sprintf("leaving private endpoint %s to its native router", endpoint.URL), nil)
+		}
+	}
+	if len(publicEndpoints) == 0 {
+		sg.Log(ctx, "forge.skip", "no public endpoints configured, skipping cloudflared", nil)
+		return nil
+	}
+
 	service, err := p.cloudflaredService(st.spec)
 	if err != nil {
 		return err
@@ -28,8 +41,11 @@ func (p *Pipeline) forge(ctx context.Context, st *state, sg *saga.Saga) error {
 		return fmt.Errorf("read cloudflared config: %w", err)
 	}
 
-	changed := false
-	for _, ep := range st.spec.Endpoints {
+	changed := cloudflared.PrunePrivateIngress(cfg)
+	if changed {
+		sg.Log(ctx, "forge.prune_private", "removing stale private endpoints from cloudflared", nil)
+	}
+	for _, ep := range publicEndpoints {
 		if cloudflared.AddIngress(cfg, ep.URL, service) {
 			changed = true
 			sg.Log(ctx, "forge.route", fmt.Sprintf("routing %s → %s", ep.URL, service), nil)

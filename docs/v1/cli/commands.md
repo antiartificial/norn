@@ -9,7 +9,7 @@ norn status            # list all apps
 norn status <app>      # detailed view for a specific app
 ```
 
-![norn status](/screenshots/cli-status.png)
+![norn status](/screenshots/cli-status-v1.png)
 
 ### List view
 
@@ -128,7 +128,7 @@ Show version and API endpoint info.
 norn version
 ```
 
-![norn version](/screenshots/cli-version.png)
+![norn version](/screenshots/cli-version-v1.png)
 
 Displays:
 - CLI version (from git describe)

@@ -448,6 +448,35 @@ func (db *DB) AutoAckCorrelatedEvents(ctx context.Context, correlationKey, resol
 	return int(tag.RowsAffected()), nil
 }
 
+func (db *DB) RecentWatcherEvents(ctx context.Context, since time.Duration) ([]model.BeaconEvent, error) {
+	rows, err := db.Pool.Query(ctx, `
+		SELECT id, source, app, environment, type, severity, title, body,
+		       dedupe_key, occurred_at, acknowledged_at, acknowledged_by,
+		       acknowledgement_note, snoozed_until, metadata
+		FROM beacon_events
+		WHERE occurred_at > $1
+		  AND type LIKE ANY(ARRAY[
+		      'nomad.allocation.%', 'service.health.%',
+		      'cron.%', 'nomad.task.%'
+		  ])
+		ORDER BY occurred_at ASC
+	`, time.Now().UTC().Add(-since))
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	var events []model.BeaconEvent
+	for rows.Next() {
+		event, err := scanBeaconEvent(rows)
+		if err != nil {
+			return nil, err
+		}
+		events = append(events, event)
+	}
+	return events, rows.Err()
+}
+
 func (db *DB) PruneBeaconEvents(ctx context.Context, olderThan time.Time) error {
 	_, err := db.Pool.Exec(ctx, `DELETE FROM beacon_events WHERE occurred_at < $1`, olderThan)
 	return err

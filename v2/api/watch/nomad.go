@@ -40,6 +40,7 @@ func (w *NomadAllocationWatcher) Run(ctx context.Context) {
 	if (w.nomad == nil && w.consul == nil) || w.beacon == nil {
 		return
 	}
+	w.seed(ctx)
 	log.Println("nomad allocation watcher started")
 	timer := time.NewTimer(5 * time.Second)
 	defer timer.Stop()
@@ -51,6 +52,74 @@ func (w *NomadAllocationWatcher) Run(ctx context.Context) {
 		case <-timer.C:
 			w.check(ctx)
 			timer.Reset(w.poll)
+		}
+	}
+}
+
+func (w *NomadAllocationWatcher) seed(ctx context.Context) {
+	events, err := w.beacon.RecentWatcherEvents(ctx, 24*time.Hour)
+	if err != nil {
+		log.Printf("nomad watcher: seed seen map: %v", err)
+		return
+	}
+	for _, event := range events {
+		w.seedFromEvent(event)
+	}
+	if len(w.seen) > 0 {
+		log.Printf("nomad watcher: seeded %d entries from %d events", len(w.seen), len(events))
+	}
+}
+
+func (w *NomadAllocationWatcher) seedFromEvent(event model.BeaconEvent) {
+	meta := event.Metadata
+	if meta == nil {
+		return
+	}
+
+	switch {
+	case strings.HasPrefix(event.Type, "nomad.allocation."):
+		state := strings.TrimPrefix(event.Type, "nomad.allocation.")
+		allocID, _ := meta["allocationId"].(string)
+		taskGroup, _ := meta["taskGroup"].(string)
+		if allocID != "" && taskGroup != "" {
+			w.seen[fmt.Sprintf("%s:%s:%s", event.App, shortAlloc(allocID), taskGroup)] = state
+		}
+
+	case event.Type == "service.health.recovered":
+		process, _ := meta["process"].(string)
+		if process != "" {
+			w.seen[fmt.Sprintf("health:%s:%s", event.App, process)] = "passing"
+		}
+
+	case strings.HasPrefix(event.Type, "service.health."):
+		process, _ := meta["process"].(string)
+		status, _ := meta["status"].(string)
+		if process != "" && status != "" {
+			w.seen[fmt.Sprintf("health:%s:%s", event.App, process)] = status
+		}
+
+	case event.Type == "cron.missed_run":
+		process, _ := meta["process"].(string)
+		windowKey, _ := meta["windowKey"].(string)
+		if process != "" && windowKey != "" {
+			w.seen[fmt.Sprintf("missed:%s:%s", event.App, process)] = windowKey
+		}
+
+	case strings.HasPrefix(event.Type, "cron."):
+		process, _ := meta["process"].(string)
+		jobID, _ := meta["jobId"].(string)
+		state := strings.TrimPrefix(event.Type, "cron.")
+		if process != "" && jobID != "" {
+			w.seen[fmt.Sprintf("cron:%s:%s:%s", event.App, process, jobID)] = state
+		}
+
+	case event.Type == "nomad.task.oom_killed" || event.Type == "nomad.task.restarted":
+		taskGroup, _ := meta["taskGroup"].(string)
+		allocID, _ := meta["allocId"].(string)
+		task, _ := meta["task"].(string)
+		restarts, _ := meta["restarts"].(float64)
+		if taskGroup != "" && allocID != "" && task != "" && restarts > 0 {
+			w.seen[fmt.Sprintf("restart:%s:%s:%s:%s", event.App, taskGroup, allocID, task)] = fmt.Sprintf("%d", int(restarts))
 		}
 	}
 }
@@ -475,6 +544,7 @@ func (w *NomadAllocationWatcher) checkCronMissedRuns(ctx context.Context, spec *
 				"jobId":              parentJobID,
 				"schedule":           schedule,
 				"timezone":           location.String(),
+				"windowKey":          windowKey,
 				"expectedRunAt":      expectedNextRun.UTC().Format(time.RFC3339),
 				"expectedRunAtLocal": expectedRunAtLocal,
 				"lastRunAt":          lastRunTime.UTC().Format(time.RFC3339),
