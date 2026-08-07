@@ -41,7 +41,10 @@ func (p *Pipeline) forge(ctx context.Context, st *state, sg *saga.Saga) error {
 		return fmt.Errorf("read cloudflared config: %w", err)
 	}
 
-	changed := false
+	changed := cloudflared.PrunePrivateIngress(cfg)
+	if changed {
+		sg.Log(ctx, "forge.prune_private", "removing stale private endpoints from cloudflared", nil)
+	}
 	for _, ep := range publicEndpoints {
 		if cloudflared.AddIngress(cfg, ep.URL, service) {
 			changed = true

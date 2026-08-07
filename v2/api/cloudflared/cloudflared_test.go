@@ -25,3 +25,21 @@ func TestIsPublicEndpoint(t *testing.T) {
 		})
 	}
 }
+
+func TestPrunePrivateIngress(t *testing.T) {
+	cfg := &Config{Ingress: []IngressRule{
+		{Hostname: "api.example.com", Service: "http://192.0.2.10:8080"},
+		{Hostname: "api.norn", Service: "http://192.0.2.10:8080"},
+		{Hostname: "host.example.ts.net", Service: "http://192.0.2.10:8080"},
+		{Service: "http_status:404"},
+	}}
+	if !PrunePrivateIngress(cfg) {
+		t.Fatal("PrunePrivateIngress did not report a change")
+	}
+	if len(cfg.Ingress) != 2 || cfg.Ingress[0].Hostname != "api.example.com" || cfg.Ingress[1].Hostname != "" {
+		t.Fatalf("unexpected ingress after prune: %#v", cfg.Ingress)
+	}
+	if PrunePrivateIngress(cfg) {
+		t.Fatal("second PrunePrivateIngress unexpectedly reported a change")
+	}
+}
