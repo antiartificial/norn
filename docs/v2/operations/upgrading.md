@@ -56,6 +56,7 @@ Use these environment variables when the repo or host layout differs:
 | `NORN_PLATFORM_UPGRADE_MODE` | `restart` | `restart` or `proxy`; `--proxy` sets this for upgrades |
 | `NORN_API_ENV_FILE` | `$HOME/.config/norn/api.env.enc.json` | SOPS JSON env file for `platform smoke` and `platform env` |
 | `NORN_SOPS_BIN` | `sops` | SOPS executable used for encrypted env loading |
+| `NORN_NODE_BIN` | `node` | Node.js 24 executable used for UI release builds |
 | `NORN_PROXY_DIR` | `$HOME/norn/proxy` | Managed proxy state directory |
 | `NORN_PROXY_CANDIDATE_PORT` | `18802` | Private candidate API port used by proxy upgrade mode |
 | `NORN_PROXY_PID_FILE` | `$NORN_PROXY_DIR/api.pid` | Current proxy-managed API pid |

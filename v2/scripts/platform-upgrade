@@ -41,6 +41,7 @@ Environment:
   NORN_PROXY_CADDYFILE     Managed Caddyfile path.
   NORN_PROXY_RELOAD        Set true to reload caddy after proxy-switch.
   NORN_API_ENV_FILE        SOPS JSON env file for smoke/env-exec.
+  NORN_NODE_BIN            Node.js 24 executable used for UI release builds.
 USAGE
 }
 
@@ -97,6 +98,7 @@ proxy_reload="${NORN_PROXY_RELOAD:-false}"
 upgrade_mode="${NORN_PLATFORM_UPGRADE_MODE:-restart}"
 api_env_file="${NORN_API_ENV_FILE:-$HOME/.config/norn/api.env.enc.json}"
 sops_bin="${NORN_SOPS_BIN:-sops}"
+node_bin="${NORN_NODE_BIN:-node}"
 
 if [[ "$upgrade_mode" == "proxy" && -z "${NORN_CANDIDATE_PORT:-}" ]]; then
   candidate_port="$proxy_candidate_port"
@@ -234,7 +236,7 @@ require_cmd go
 require_cmd curl
 require_cmd install
 
-[[ -d "$repo/.git" ]] || fail "$repo is not a git checkout"
+git -C "$repo" rev-parse --is-inside-work-tree >/dev/null 2>&1 || fail "$repo is not a git checkout"
 [[ -d "$v2/api" && -d "$v2/cli" ]] || fail "$repo does not look like a Norn v2 checkout"
 
 api_get() {
@@ -375,7 +377,7 @@ cleanup() {
     fi
     wait "$candidate_pid" >/dev/null 2>&1 || true
   fi
-  if [[ -d "$worktree/.git" ]]; then
+  if [[ -e "$worktree/.git" ]]; then
     git -C "$repo" worktree remove --force "$worktree" >/dev/null 2>&1 || true
   fi
   rm -rf "$work_root"
@@ -391,7 +393,11 @@ build_release() {
 
   if [[ -d "$worktree/v2/ui" ]]; then
     require_cmd pnpm
-    (cd "$worktree/v2/ui" && pnpm install --frozen-lockfile && pnpm build)
+    require_cmd "$node_bin"
+    node_major="$("$node_bin" -p 'process.versions.node.split(".")[0]')"
+    [[ "$node_major" == "24" ]] || fail "Node.js 24 is required for UI release builds (got $("$node_bin" --version))"
+    pnpm_bin="$(command -v pnpm)"
+    (cd "$worktree/v2/ui" && "$node_bin" "$pnpm_bin" install --frozen-lockfile && "$node_bin" "$pnpm_bin" build)
     cp -R "$worktree/v2/ui/dist/." "$release/ui/"
   fi
 
