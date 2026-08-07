@@ -19,7 +19,7 @@ Useful surfaces:
 | Deploy progress | `POST /api/apps/{id}/deploy`, `GET /api/saga/{sagaId}`, `norn saga <saga-id>` |
 | Webhook delivery triage | `GET /api/webhooks/deliveries`, `norn webhooks` |
 | Platform release history | `GET /api/platform/releases`, `norn platform releases` |
-| Host boot/recovery state | `norn host status`, `norn host doctor` |
+| Host boot/recovery state | `norn host status`, `norn host doctor`, `norn host assure` |
 | Operational events | `GET /api/events`, `GET /api/events/{id}`, `norn events`, `norn alerts` |
 | Control-plane health | `/api/health`, `/api/version`, `/metrics`, `norn smoke platform`, `norn platform smoke` |
 | Observability bundle/services | `GET /api/observability/bundle`, `POST /api/observability/services/install`, `norn observability install` |
@@ -135,8 +135,13 @@ norn host recover
 ```
 
 The managed launchd supervisor starts Docker, renders the current advertise
-address, restores Consul and Nomad, restarts the Norn API, and runs configured
-bounded cron catch-ups. Verify important app endpoints after recovery. User
+address, restores Consul and Nomad, restarts the Norn API, runs configured
+bounded cron catch-ups, and invokes the assurance stage. A periodic LaunchAgent
+repeats assurance: it verifies required IPv4 services, repairs explicitly
+allowed missing or unhealthy apps, reconciles public and tailnet routes, and
+probes the real user-facing endpoints. Persistent failures and recovery are
+reported through correlated Beacon events. Run `norn host assure` for an
+operator-triggered pass. User
 LaunchAgents begin after login; use a system service or Linux host when the
 runtime must recover before a user session exists.
 

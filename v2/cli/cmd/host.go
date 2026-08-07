@@ -20,6 +20,7 @@ func init() {
 	hostCmd.PersistentFlags().StringVar(&hostScript, "script", os.Getenv("NORN_HOST_SCRIPT"), "host-runtime script path")
 	hostCmd.AddCommand(hostInstallCmd)
 	hostCmd.AddCommand(hostDoctorCmd)
+	hostCmd.AddCommand(hostAssureCmd)
 	hostCmd.AddCommand(hostRecoverCmd)
 	hostCmd.AddCommand(hostRenderCmd)
 	hostCmd.AddCommand(hostMigrateStateCmd)
@@ -45,6 +46,7 @@ func hostScriptCommand(use, short, mode string) *cobra.Command {
 
 var hostInstallCmd = hostScriptCommand("install [host-runtime flags]", "Install persistent configs and launchd jobs without interrupting live services", "install")
 var hostDoctorCmd = hostScriptCommand("doctor [host-runtime flags]", "Check host dependencies, managed files, launchd state, and runtime health", "doctor")
+var hostAssureCmd = hostScriptCommand("assure [host-runtime flags]", "Repair required apps and routes, then probe user-facing endpoints", "assure")
 var hostRecoverCmd = hostScriptCommand("recover [host-runtime flags]", "Start dependencies in order and recover the Norn API", "recover")
 var hostRenderCmd = hostScriptCommand("render [host-runtime flags]", "Render persistent Nomad and Consul configs for the current host address", "render")
 var hostMigrateStateCmd = hostScriptCommand("migrate-state [host-runtime flags]", "Copy stopped Nomad and Consul state into persistent managed directories", "migrate-state")
