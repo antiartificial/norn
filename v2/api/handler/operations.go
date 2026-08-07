@@ -4,6 +4,9 @@ import (
 	"net/http"
 	"strconv"
 
+	"github.com/go-chi/chi/v5"
+	"github.com/jackc/pgx/v5"
+
 	"norn/v2/api/model"
 	"norn/v2/api/store"
 )
@@ -32,7 +35,7 @@ func (h *Handler) ListOperations(w http.ResponseWriter, r *http.Request) {
 }
 
 func (h *Handler) ActiveOperations(w http.ResponseWriter, r *http.Request) {
-	ops, err := h.db.ListOperations(r.Context(), store.OperationFilter{Active: true, Limit: 100})
+	ops, err := h.db.ListOperations(r.Context(), store.OperationFilter{Active: true, ExcludeID: r.URL.Query().Get("excludeId"), Limit: 100})
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, err.Error())
 		return
@@ -44,4 +47,17 @@ func (h *Handler) ActiveOperations(w http.ResponseWriter, r *http.Request) {
 		"operations": ops,
 		"count":      len(ops),
 	})
+}
+
+func (h *Handler) GetOperation(w http.ResponseWriter, r *http.Request) {
+	op, err := h.db.GetOperation(r.Context(), chi.URLParam(r, "id"))
+	if err == pgx.ErrNoRows {
+		writeError(w, http.StatusNotFound, "operation not found")
+		return
+	}
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	writeJSON(w, op)
 }

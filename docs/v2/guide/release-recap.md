@@ -4,7 +4,7 @@ title: Norn v2 Release Recap
 
 # Norn v2 Release Recap
 
-This recap summarizes the current Norn v2 release line: the Nomad/Consul control plane, the operator-facing dashboard and CLI, the ContextDB worker deployment path, Beacon operational events, and the upgrade posture for the local LaunchAgent install. The `v2.15.0-platform` release adds restart-time and periodic host assurance with explicit repair boundaries and end-to-end probes.
+This recap summarizes the current Norn v2 release line: the Nomad/Consul control plane, the operator-facing dashboard and CLI, the ContextDB worker deployment path, Beacon operational events, and the upgrade posture for the local LaunchAgent install. The `v2.16.0-control` release adds a scoped, versioned control protocol, durable event replay, and an independent host agent for restart-safe platform and assurance operations.
 
 ## What Shipped
 
@@ -63,7 +63,7 @@ This recap summarizes the current Norn v2 release line: the Nomad/Consul control
 | Dashboard access grants | Platform tab access grants section | View active grants, create new grants with IP/TTL/note, and revoke grants inline |
 | Event correlation | `correlationKey` in beacon event metadata | Groups related events into incident arcs so consumers can track flare-up to resolution |
 | Correlated events query | `GET /api/events/correlated`, `norn events correlated` | Retrieves chronological event timeline for a correlation key |
-| JWT access tokens | `POST /api/access/tokens`, `norn access token`, dashboard form | Time-limited shareable tokens for dashboard URL sharing without bearer auth or IP grants |
+| Scoped access tokens | `POST /api/access/tokens`, `norn access token`, dashboard form | Time-limited bearer credentials with explicit read, event, exec, platform, and host scopes; never placed in URLs |
 | Incident timeline links | `norn events show`, dashboard event detail | Shows correlation key and incident timeline command/link for events in an incident arc |
 | Allocation lifecycle | `lifecycle` field on allocations, `allocationSummary` on app status | Separates active from retained allocations so CLI and dashboard show live capacity |
 | Auto-ack on resolution | Beacon emit path auto-acknowledges correlated events | Keeps `norn events` focused on active incidents by clearing resolved warning/critical events |
@@ -73,7 +73,7 @@ This recap summarizes the current Norn v2 release line: the Nomad/Consul control
 | Operator confidence release | `/api/operator/*`, `norn operator *`, `/api/incidents/action` | Unifies incident lifecycle, cron overview, wake targets, deploy confidence, snapshot readiness, secret-safe auth hints, and mobile-ready actions |
 | Secrets migration fix | `norn secrets migrate --apply` field matching fix | Fixes `env.KEY` field matching so plaintext env secrets are correctly identified for migration |
 | Secrets hygiene push | Infraspec declarations for ft-trove, its-alive-api, mail-indexer, mail-mcp | Resolves undeclared encrypted secrets warnings from platform ops |
-| Upgrade path | `norn platform preflight`, `upgrade`, `releases`, `rollback` | Upgrades Norn API, CLI, and built UI without stopping Nomad, Consul, Postgres, or hosted apps |
+| Upgrade path | direct and queued platform commands | Upgrades Norn API, CLI, UI, host agent, and managed scripts without stopping hosted apps; queued upgrades survive the API restart |
 
 ## Operator Impact
 

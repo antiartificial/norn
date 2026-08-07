@@ -206,13 +206,16 @@ Norn can validate Cloudflare Access JWTs to authenticate API requests.
 
 When both variables are set, the API middleware validates the `Cf-Access-Jwt-Assertion` header on every request (except exempt routes).
 
-Exempt routes (no auth required):
-- `/ws` — WebSocket
+Public control-plane routes are intentionally narrow:
 - `/api/health` — health check
 - `/api/version` — version endpoint
 - `/api/webhooks/*` — webhook receivers
 - `/api/access/cloudflare/logpush` — Cloudflare Logpush receiver with its own shared-secret header
-- `/api/apps/*/exec` — exec into allocations
+
+`/api/v1/events` (and its `/ws` compatibility alias) and
+`/api/apps/*/exec` are not bearer-auth exemptions. Scoped access tokens require
+`events:read` and `apps:exec` respectively; Cloudflare Access can protect the
+same paths at the edge.
 
 ### Combining with Bearer Token
 

@@ -113,6 +113,8 @@ log_dir="$(expand_home "$log_dir")"
 launch_agents="$HOME/Library/LaunchAgents"
 runtime_copy="$config_dir/bin/host-runtime"
 norn_copy="$config_dir/bin/norn"
+agent_copy="$config_dir/bin/norn-host-agent"
+platform_copy="$config_dir/bin/platform-upgrade"
 catch_up_file="$config_dir/catch-up-jobs"
 required_file="$config_dir/assure-required"
 probe_file="$config_dir/assure-probes"
@@ -130,6 +132,7 @@ nomad_label="com.norn.nomad"
 consul_label="com.norn.consul"
 supervisor_label="com.norn.host-supervisor"
 assurance_label="com.norn.host-assurance"
+agent_label="com.norn.host-agent"
 
 if [ -z "$repo" ]; then
   script_dir="$(cd "$(dirname "$0")" && pwd)"
@@ -359,6 +362,39 @@ $repo_args
 EOF
 }
 
+agent_plist() {
+  local repo_args=""
+  if [ -n "$repo" ]; then
+    repo_args="    <string>--repo</string><string>$repo</string>"
+  fi
+  cat <<EOF
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+  <key>Label</key><string>$agent_label</string>
+  <key>ProgramArguments</key>
+  <array>
+    <string>$platform_copy</string>
+    <string>env-exec</string>
+    <string>$agent_copy</string>
+$repo_args
+    <string>--platform-script</string><string>$platform_copy</string>
+    <string>--host-script</string><string>$runtime_copy</string>
+  </array>
+  <key>RunAtLoad</key><true/>
+  <key>KeepAlive</key><true/>
+  <key>ProcessType</key><string>Background</string>
+  <key>EnvironmentVariables</key>
+  <dict><key>PATH</key><string>$config_dir/bin:/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin</string></dict>
+  <key>ThrottleInterval</key><integer>10</integer>
+  <key>StandardOutPath</key><string>$log_dir/$agent_label.log</string>
+  <key>StandardErrorPath</key><string>$log_dir/$agent_label.log</string>
+</dict>
+</plist>
+EOF
+}
+
 validate_install_specs() {
   local spec name value extra
   case "$assure_interval" in
@@ -398,7 +434,7 @@ install_files() {
   [ "$(uname -s)" = "Darwin" ] || die "launchd host install currently supports macOS only"
   [ -f "$nomad_source" ] || die "Nomad source config not found: $nomad_source"
   [ -f "$consul_source" ] || die "Consul source config not found: $consul_source"
-  local nomad_bin consul_bin script_self norn_cli spec
+  local nomad_bin consul_bin script_self norn_cli host_agent platform_script spec
   validate_install_specs
   nomad_bin="$(command_path nomad)" || die "nomad binary not found"
   consul_bin="$(command_path consul)" || die "consul binary not found"
@@ -407,6 +443,16 @@ install_files() {
   if [ -z "$norn_cli" ]; then
     norn_cli="$(command_path norn 2>/dev/null || true)"
   fi
+  host_agent="${NORN_HOST_AGENT:-}"
+  if [ -z "$host_agent" ] && [ -n "$norn_cli" ]; then
+    host_agent="$(dirname "$norn_cli")/norn-host-agent"
+  fi
+  if [ -z "$host_agent" ] || [ ! -x "$host_agent" ]; then
+    host_agent="$(command_path norn-host-agent 2>/dev/null || true)"
+  fi
+  [ -n "$host_agent" ] && [ -x "$host_agent" ] || die "norn-host-agent binary not found; run make build"
+  platform_script="${NORN_PLATFORM_SCRIPT:-${repo:+$repo/v2/scripts/platform-upgrade}}"
+  [ -n "$platform_script" ] && [ -f "$platform_script" ] || die "platform-upgrade script not found"
   while IFS= read -r spec; do
     [ -n "$spec" ] || continue
     case "$spec" in
@@ -430,6 +476,10 @@ EOF
     cp "$norn_cli" "$norn_copy"
     chmod 755 "$norn_copy"
   fi
+  cp "$host_agent" "$agent_copy"
+  chmod 755 "$agent_copy"
+  cp "$platform_script" "$platform_copy"
+  chmod 755 "$platform_copy"
   cp "$nomad_source" "$nomad_source_copy"
   cp "$consul_source" "$consul_source_copy"
   render_configs
@@ -437,6 +487,7 @@ EOF
   plist "$nomad_label" "$nomad_bin" "-config" "$nomad_config" | write_file "$launch_agents/$nomad_label.plist" 644
   supervisor_plist | write_file "$launch_agents/$supervisor_label.plist" 644
   assurance_plist | write_file "$launch_agents/$assurance_label.plist" 644
+  agent_plist | write_file "$launch_agents/$agent_label.plist" 644
   if [ -n "$catch_up_specs" ]; then
     printf '%s\n' "$catch_up_specs" | write_file "$catch_up_file" 600
   fi
@@ -811,6 +862,7 @@ recover_host() {
   wait_leader "$(runtime_url nomad)" nomad
   launchctl kickstart -k "gui/$(id -u)/$api_label"
   wait_http "$(runtime_url norn)" norn
+  bootstrap_label "$agent_label" "$launch_agents/$agent_label.plist"
   run_catchups
   if ! assure_host; then
     note "warning: host assurance failed; periodic assurance will retry"
@@ -845,7 +897,7 @@ run_catchups() {
 doctor() {
   local failures=0 item path
   [ "$(uname -s)" = "Darwin" ] && echo "ok   platform=macOS" || { echo "fail platform=$(uname -s)"; failures=$((failures + 1)); }
-  for item in docker nomad consul curl launchctl plutil python3; do
+  for item in docker nomad consul curl launchctl plutil python3 sops; do
     if path="$(command_path "$item" 2>/dev/null)"; then
       echo "ok   $item=$path"
     else
@@ -853,10 +905,10 @@ doctor() {
       failures=$((failures + 1))
     fi
   done
-  for path in "$nomad_config" "$consul_config" "$launch_agents/$nomad_label.plist" "$launch_agents/$consul_label.plist" "$launch_agents/$supervisor_label.plist" "$launch_agents/$assurance_label.plist"; do
+  for path in "$nomad_config" "$consul_config" "$agent_copy" "$platform_copy" "$launch_agents/$nomad_label.plist" "$launch_agents/$consul_label.plist" "$launch_agents/$supervisor_label.plist" "$launch_agents/$assurance_label.plist" "$launch_agents/$agent_label.plist"; do
     if [ -f "$path" ]; then echo "ok   file=$path"; else echo "fail file=$path"; failures=$((failures + 1)); fi
   done
-  for path in "$launch_agents/$nomad_label.plist" "$launch_agents/$consul_label.plist" "$launch_agents/$supervisor_label.plist" "$launch_agents/$assurance_label.plist"; do
+  for path in "$launch_agents/$nomad_label.plist" "$launch_agents/$consul_label.plist" "$launch_agents/$supervisor_label.plist" "$launch_agents/$assurance_label.plist" "$launch_agents/$agent_label.plist"; do
     if [ -f "$path" ] && plutil -lint "$path" >/dev/null 2>&1; then
       echo "ok   plist=$path"
     elif [ -f "$path" ]; then
@@ -876,7 +928,7 @@ doctor() {
 
 status() {
   local label supervisor_output supervisor_state supervisor_exit
-  for label in "$consul_label" "$nomad_label" "$api_label"; do
+  for label in "$consul_label" "$nomad_label" "$api_label" "$agent_label"; do
     if launchctl print "gui/$(id -u)/$label" >/dev/null 2>&1; then echo "up   $label"; else echo "down $label"; fi
   done
   if supervisor_output="$(launchctl print "gui/$(id -u)/$supervisor_label" 2>/dev/null)"; then

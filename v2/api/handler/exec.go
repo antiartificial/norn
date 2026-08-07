@@ -8,15 +8,9 @@ import (
 
 	"github.com/go-chi/chi/v5"
 	"github.com/gorilla/websocket"
-)
 
-var execUpgrader = websocket.Upgrader{
-	ReadBufferSize:  4096,
-	WriteBufferSize: 4096,
-	CheckOrigin: func(r *http.Request) bool {
-		return true // Rely on outer auth (CF Access cookies pass through)
-	},
-}
+	"norn/v2/api/hub"
+)
 
 func (h *Handler) ExecAlloc(w http.ResponseWriter, r *http.Request) {
 	id := chi.URLParam(r, "id")
@@ -60,6 +54,24 @@ func (h *Handler) ExecAlloc(w http.ResponseWriter, r *http.Request) {
 		taskName = tName
 	}
 
+	allowedOrigins := map[string]bool{
+		"http://localhost:5173": true,
+		"http://localhost:3000": true,
+	}
+	if h.cfg != nil {
+		for _, origin := range strings.Split(h.cfg.AllowedOrigins, ",") {
+			if origin = strings.TrimSpace(origin); origin != "" {
+				allowedOrigins[origin] = true
+			}
+		}
+	}
+	execUpgrader := websocket.Upgrader{
+		ReadBufferSize:  4096,
+		WriteBufferSize: 4096,
+		CheckOrigin: func(req *http.Request) bool {
+			return hub.OriginAllowed(req, allowedOrigins)
+		},
+	}
 	ws, err := execUpgrader.Upgrade(w, r, nil)
 	if err != nil {
 		log.Printf("exec websocket upgrade: %v", err)

@@ -12,6 +12,8 @@ reboot, and Docker Desktop restarts without rebuilding every app.
   and performs an assurance pass before an optional post-recovery hook.
 - A periodic assurance LaunchAgent that repairs explicitly required apps and
   routes, then probes the endpoints users actually reach.
+- An independent `com.norn.host-agent` process that claims durable, allow-listed
+  platform and host maintenance operations from PostgreSQL.
 - Host diagnostics and concise status output.
 - Optional bounded cron catch-ups loaded through the encrypted API runtime
   environment.
@@ -28,9 +30,10 @@ The login supervisor and `norn host recover` use the same ordered flow:
 3. Start Consul and wait for a leader.
 4. Start Nomad and wait for a leader.
 5. Restart the Norn API and wait for `/api/health`.
-6. Trigger configured bounded cron catch-ups.
-7. Run host assurance.
-8. Run the optional installation-specific `post-recover` hook.
+6. Start the host maintenance agent.
+7. Trigger configured bounded cron catch-ups.
+8. Run host assurance.
+9. Run the optional installation-specific `post-recover` hook.
 
 Core recovery completes even when assurance still has a failing endpoint. The
 failure is recorded through Beacon, and the periodic assurance agent retries
@@ -44,8 +47,10 @@ norn host doctor
 ```
 
 `install` writes managed configuration and launchd files but deliberately does
-not stop live services. Re-running it refreshes the managed script, CLI copy,
-configs, and plists while preserving the persistent state directories.
+not stop live services. Re-running it refreshes the managed scripts, CLI,
+`norn-host-agent`, configs, and plists while preserving the persistent state
+directories. The host agent loads the existing encrypted API environment at
+process start; database credentials are not written into the plist.
 
 For a bounded cron process that should run once after recovery, configure one
 or more catch-ups at install time:
@@ -134,10 +139,15 @@ It also rejects broad or empty destination paths.
 ```bash
 norn host recover
 norn host assure
+norn host queue-assure
 norn host status
 norn host doctor
 norn smoke platform
 ```
+
+`queue-assure` submits `host.assure` through the control API and waits on its
+durable receipt. Use the direct `host assure` command for local bootstrap or
+when the API/agent lane itself is under repair.
 
 At login, `com.norn.host-supervisor` performs the same ordered recovery. The
 assurance stage then checks required allocations and routes before probing the

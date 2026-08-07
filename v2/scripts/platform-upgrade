@@ -31,6 +31,7 @@ Environment:
   NORN_API_TOKEN           Optional bearer token for operation drain checks.
   NORN_CANDIDATE_PORT      Candidate API port. Defaults to 18800.
   NORN_DRAIN_MODE          fail, wait, or force. Defaults to fail.
+  NORN_DRAIN_EXCLUDE_OPERATION_ID Exclude the executor's own durable operation.
   NORN_SKIP_CANDIDATE_API  Set true to skip candidate API boot.
   NORN_PLATFORM_UPGRADE_MODE restart or proxy. Defaults to restart.
   NORN_PROXY_LISTEN        Stable proxy listen address. Defaults to :8800.
@@ -76,10 +77,14 @@ v2="$repo/v2"
 releases="${NORN_RELEASES_DIR:-$HOME/norn/releases}"
 current_link="${NORN_CURRENT_LINK:-$HOME/norn/current}"
 bin_dir="${NORN_BIN_DIR:-$HOME/go/bin}"
+host_agent_bin="${NORN_HOST_AGENT_BIN:-$HOME/.config/norn/host/bin/norn-host-agent}"
+platform_script_bin="${NORN_PLATFORM_SCRIPT_BIN:-$HOME/.config/norn/host/bin/platform-upgrade}"
+host_runtime_bin="${NORN_HOST_RUNTIME_BIN:-$HOME/.config/norn/host/bin/host-runtime}"
 launch_label="${NORN_LAUNCH_LABEL:-com.norn.api}"
 api_base="${NORN_API_BASE:-http://127.0.0.1:8800}"
 candidate_port="${NORN_CANDIDATE_PORT:-18800}"
 drain_mode="${NORN_DRAIN_MODE:-fail}"
+drain_exclude_operation_id="${NORN_DRAIN_EXCLUDE_OPERATION_ID:-}"
 skip_candidate="${NORN_SKIP_CANDIDATE_API:-false}"
 proxy_listen="${NORN_PROXY_LISTEN:-:8800}"
 proxy_active_port="${NORN_PROXY_ACTIVE_PORT:-18801}"
@@ -243,8 +248,11 @@ api_get() {
 }
 
 active_operation_count() {
-  local response
-  response="$(api_get "/api/operations/active" 2>/dev/null)" || return 2
+  local response path="/api/operations/active"
+  if [[ -n "$drain_exclude_operation_id" ]]; then
+    path="${path}?excludeId=${drain_exclude_operation_id}"
+  fi
+  response="$(api_get "$path" 2>/dev/null)" || return 2
   printf '%s\n' "$response" | sed -n 's/.*"count":[[:space:]]*\([0-9][0-9]*\).*/\1/p'
 }
 
@@ -388,7 +396,10 @@ build_release() {
   fi
 
   (cd "$worktree/v2/api" && go build -ldflags "-X main.Version=$version" -o "$release/bin/norn-api" .)
+  (cd "$worktree/v2/api" && go build -o "$release/bin/norn-host-agent" ./cmd/norn-host-agent)
   (cd "$worktree/v2/cli" && go build -ldflags "-X norn/v2/cli/cmd.Version=$version" -o "$release/bin/norn" .)
+  install -m 0755 "$worktree/v2/scripts/platform-upgrade" "$release/bin/platform-upgrade"
+  install -m 0755 "$worktree/v2/scripts/host-runtime" "$release/bin/host-runtime"
 
   cat > "$release/release.env" <<EOF
 NORN_RELEASE_SHA=$sha
@@ -482,6 +493,10 @@ promote_release() {
   ln -sfn "$release" "$current_link"
   install -m 0755 "$release/bin/norn-api" "$bin_dir/norn-api"
   install -m 0755 "$release/bin/norn" "$bin_dir/norn"
+  mkdir -p "$(dirname "$host_agent_bin")"
+  install -m 0755 "$release/bin/norn-host-agent" "$host_agent_bin"
+  install -m 0755 "$release/bin/platform-upgrade" "$platform_script_bin"
+  install -m 0755 "$release/bin/host-runtime" "$host_runtime_bin"
 
   restart_api
   if postflight; then
@@ -494,6 +509,15 @@ promote_release() {
     ln -sfn "$previous" "$current_link"
     install -m 0755 "$previous/bin/norn-api" "$bin_dir/norn-api"
     install -m 0755 "$previous/bin/norn" "$bin_dir/norn"
+    if [[ -f "$previous/bin/norn-host-agent" ]]; then
+      install -m 0755 "$previous/bin/norn-host-agent" "$host_agent_bin"
+    fi
+    if [[ -f "$previous/bin/platform-upgrade" ]]; then
+      install -m 0755 "$previous/bin/platform-upgrade" "$platform_script_bin"
+    fi
+    if [[ -f "$previous/bin/host-runtime" ]]; then
+      install -m 0755 "$previous/bin/host-runtime" "$host_runtime_bin"
+    fi
     restart_api
     wait_health "$api_base" 30 || fail "rollback health check failed"
     fail "upgrade failed and rollback completed"
@@ -523,9 +547,27 @@ reload_proxy() {
   caddy reload --config "$proxy_caddyfile"
 }
 
+restore_release_artifacts() {
+  local target="$1"
+  if [[ -z "$target" || ! -d "$target" ]]; then
+    log "warning: no previous release artifacts were available to restore"
+    return 0
+  fi
+  ln -sfn "$target" "$current_link"
+  [[ -f "$target/bin/norn-api" ]] && install -m 0755 "$target/bin/norn-api" "$bin_dir/norn-api"
+  [[ -f "$target/bin/norn" ]] && install -m 0755 "$target/bin/norn" "$bin_dir/norn"
+  [[ -f "$target/bin/norn-host-agent" ]] && install -m 0755 "$target/bin/norn-host-agent" "$host_agent_bin"
+  [[ -f "$target/bin/platform-upgrade" ]] && install -m 0755 "$target/bin/platform-upgrade" "$platform_script_bin"
+  [[ -f "$target/bin/host-runtime" ]] && install -m 0755 "$target/bin/host-runtime" "$host_runtime_bin"
+}
+
 promote_release_proxy() {
   [[ -n "$candidate_pid" ]] || fail "proxy upgrade requires a running candidate API"
   mkdir -p "$(dirname "$current_link")" "$bin_dir" "$proxy_dir"
+  local previous_release=""
+  if [[ -L "$current_link" ]]; then
+    previous_release="$(readlink "$current_link")"
+  fi
   previous_upstream="$(current_proxy_upstream)"
   previous_pid="-"
   if [[ -f "$proxy_pid_file" ]]; then
@@ -536,12 +578,17 @@ promote_release_proxy() {
   ln -sfn "$release" "$current_link"
   install -m 0755 "$release/bin/norn-api" "$bin_dir/norn-api"
   install -m 0755 "$release/bin/norn" "$bin_dir/norn"
+  mkdir -p "$(dirname "$host_agent_bin")"
+  install -m 0755 "$release/bin/norn-host-agent" "$host_agent_bin"
+  install -m 0755 "$release/bin/platform-upgrade" "$platform_script_bin"
+  install -m 0755 "$release/bin/host-runtime" "$host_runtime_bin"
 
   printf '127.0.0.1:%s\n' "$candidate_port" > "$proxy_upstream_file"
   write_proxy_config
   if ! reload_proxy; then
     printf '%s\n' "$previous_upstream" > "$proxy_upstream_file"
     write_proxy_config
+    restore_release_artifacts "$previous_release"
     fail "proxy reload failed before cutover"
   fi
 
@@ -560,6 +607,7 @@ promote_release_proxy() {
   write_proxy_config
   caddy reload --config "$proxy_caddyfile" >/dev/null 2>&1 || true
   stop_pid_if_running "$candidate_pid"
+  restore_release_artifacts "$previous_release"
   fail "proxy upgrade failed and previous upstream restored"
 }
 

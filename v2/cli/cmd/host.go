@@ -68,11 +68,19 @@ func runHostScript(args ...string) error {
 	command.Env = os.Environ()
 	if executable, executableErr := os.Executable(); executableErr == nil {
 		command.Env = append(command.Env, "NORN_HOST_CLI="+executable)
+		if agent := filepath.Join(filepath.Dir(executable), "norn-host-agent"); hostFileExists(agent) {
+			command.Env = append(command.Env, "NORN_HOST_AGENT="+agent)
+		}
 	}
 	if repo != "" {
 		command.Env = append(command.Env, "NORN_HOST_REPO="+repo)
 	}
 	return command.Run()
+}
+
+func hostFileExists(path string) bool {
+	info, err := os.Stat(path)
+	return err == nil && !info.IsDir()
 }
 
 func resolveHostScript() (string, error) {

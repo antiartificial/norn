@@ -150,6 +150,7 @@ func main() {
 		}
 	}
 	ws := hub.New(allowedOrigins)
+	ws.SetStore(db)
 	go ws.Run()
 
 	beaconSvc := beacon.New(db, ws, beacon.Config{
@@ -269,6 +270,7 @@ func main() {
 		r.Get("/deployments/{id}/steps", h.ListDeploymentSteps)
 		r.Get("/operations", h.ListOperations)
 		r.Get("/operations/active", h.ActiveOperations)
+		r.Get("/operations/{id}", h.GetOperation)
 		r.Get("/alerts/rules", h.AlertRules)
 		r.Get("/resources/suggestions", h.ResourceSuggestions)
 		r.Get("/tuning/recommendations", h.TuningRecommendations)
@@ -316,6 +318,17 @@ func main() {
 		r.Post("/access/tokens", h.CreateAccessToken)
 
 		r.Get("/ops/contextdb/evaluator-readiness", h.EvaluatorReadiness)
+
+		r.Get("/v1/capabilities", func(w http.ResponseWriter, r *http.Request) {
+			writeControlCapabilities(w)
+		})
+		r.Get("/v1/events", ws.HandleConnect)
+		r.Get("/v1/operations/{id}", h.GetOperation)
+		r.Post("/v1/platform/preflights", h.QueuePlatformPreflight)
+		r.Post("/v1/platform/upgrades", h.QueuePlatformUpgrade)
+		r.Post("/v1/platform/rollbacks", h.QueuePlatformRollback)
+		r.Post("/v1/platform/smoke", h.QueuePlatformSmoke)
+		r.Post("/v1/host/assurances", h.QueueHostAssurance)
 
 		r.Route("/apps/{id}", func(r chi.Router) {
 			r.Use(handler.ValidateAppID)
@@ -385,22 +398,25 @@ func main() {
 func bearerAuth(token string, h *handler.Handler) func(http.Handler) http.Handler {
 	return func(next http.Handler) http.Handler {
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-			if !strings.HasPrefix(r.URL.Path, "/api/") || r.URL.Path == "/api/metrics" || r.URL.Path == "/api/health" || r.URL.Path == "/api/version" || r.URL.Path == "/api/services/manifest" || r.URL.Path == "/api/webhooks/github" || r.URL.Path == "/api/webhooks/gitea" || strings.HasPrefix(r.URL.Path, "/api/a/") || strings.HasPrefix(r.URL.Path, "/api/wake-gateway/") || r.URL.Path == "/api/access/cloudflare/logpush" || strings.HasSuffix(r.URL.Path, "/exec") {
+			if publicControlPath(r.URL.Path) {
 				next.ServeHTTP(w, r)
 				return
 			}
+			requiredScope := controlScopeForRequest(r)
 			auth := r.Header.Get("Authorization")
 			if strings.HasPrefix(auth, "Bearer ") && subtle.ConstantTimeCompare([]byte(auth[7:]), []byte(token)) == 1 {
 				next.ServeHTTP(w, r)
 				return
 			}
-			if strings.HasPrefix(auth, "Bearer ") && h != nil && h.VerifyAccessToken(auth[7:]) {
-				next.ServeHTTP(w, r)
-				return
-			}
-			if qToken := r.URL.Query().Get("token"); qToken != "" && h != nil && h.VerifyAccessToken(qToken) {
-				next.ServeHTTP(w, r)
-				return
+			if strings.HasPrefix(auth, "Bearer ") && h != nil {
+				if principal, ok := h.VerifyAccessToken(auth[7:]); ok {
+					if !principal.Allows(requiredScope) {
+						http.Error(w, "forbidden: token lacks "+requiredScope, http.StatusForbidden)
+						return
+					}
+					next.ServeHTTP(w, r)
+					return
+				}
 			}
 			ip := clientIPFromRequest(r)
 			if loopback := net.ParseIP(ip); loopback != nil && loopback.IsLoopback() {
@@ -414,6 +430,59 @@ func bearerAuth(token string, h *handler.Handler) func(http.Handler) http.Handle
 			http.Error(w, "unauthorized", http.StatusUnauthorized)
 		})
 	}
+}
+
+func publicControlPath(path string) bool {
+	if path == "/metrics" || path == "/api/metrics" || path == "/api/health" || path == "/api/version" || path == "/api/services/manifest" {
+		return true
+	}
+	return path == "/api/webhooks/github" || path == "/api/webhooks/gitea" ||
+		strings.HasPrefix(path, "/api/a/") || strings.HasPrefix(path, "/api/wake-gateway/") ||
+		path == "/api/access/cloudflare/logpush" || (!strings.HasPrefix(path, "/api/") && path != "/ws")
+}
+
+func controlScopeForRequest(r *http.Request) string {
+	path := r.URL.Path
+	switch {
+	case path == "/ws" || path == "/api/v1/events":
+		return handler.ScopeEventsRead
+	case strings.HasSuffix(path, "/exec"):
+		return handler.ScopeAppsExec
+	case path == "/api/access/tokens":
+		return handler.ScopeAdmin
+	case strings.HasPrefix(path, "/api/v1/platform/"):
+		return handler.ScopePlatformOperate
+	case strings.HasPrefix(path, "/api/v1/host/"):
+		return handler.ScopeHostOperate
+	case strings.HasPrefix(path, "/api/platform/") && r.Method != http.MethodGet && r.Method != http.MethodHead:
+		return handler.ScopePlatformOperate
+	case r.Method == http.MethodGet || r.Method == http.MethodHead:
+		return handler.ScopeAPIRead
+	default:
+		return handler.ScopeAPIWrite
+	}
+}
+
+func writeControlCapabilities(w http.ResponseWriter) {
+	w.Header().Set("Content-Type", "application/json")
+	_ = json.NewEncoder(w).Encode(map[string]interface{}{
+		"protocolVersion": 1,
+		"serverVersion":   Version,
+		"features": []string{
+			"durable-operations", "event-cursor-replay", "platform-preflight", "platform-upgrade",
+			"platform-rollback", "platform-smoke", "host-assurance", "scoped-access-tokens",
+		},
+		"auth": map[string]interface{}{
+			"scopes":                handler.AccessTokenScopeNames(),
+			"websocketBearerHeader": true,
+			"websocketQueryToken":   false,
+		},
+		"endpoints": map[string]string{
+			"events": "/api/v1/events", "operations": "/api/v1/operations/{id}",
+			"platformPreflights": "/api/v1/platform/preflights", "platformUpgrades": "/api/v1/platform/upgrades",
+			"platformRollbacks": "/api/v1/platform/rollbacks", "platformSmoke": "/api/v1/platform/smoke", "hostAssurances": "/api/v1/host/assurances",
+		},
+	})
 }
 
 func clientIPFromRequest(r *http.Request) string {

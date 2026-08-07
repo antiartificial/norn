@@ -50,6 +50,16 @@ func Migrate(db *DB) error {
 		CREATE INDEX IF NOT EXISTS idx_saga_saga_id ON saga_events(saga_id, timestamp);
 		CREATE INDEX IF NOT EXISTS idx_saga_app ON saga_events(app, timestamp DESC);
 
+		CREATE TABLE IF NOT EXISTS control_events (
+			id         BIGSERIAL PRIMARY KEY,
+			timestamp  TIMESTAMPTZ NOT NULL DEFAULT now(),
+			type       TEXT NOT NULL,
+			app_id     TEXT NOT NULL DEFAULT '',
+			payload    JSONB NOT NULL DEFAULT '{}'
+		);
+		CREATE INDEX IF NOT EXISTS idx_control_events_time ON control_events(timestamp DESC);
+		CREATE INDEX IF NOT EXISTS idx_control_events_app ON control_events(app_id, id DESC);
+
 		CREATE TABLE IF NOT EXISTS deployments (
 			id          TEXT PRIMARY KEY,
 			app         TEXT NOT NULL,
@@ -163,6 +173,9 @@ func Migrate(db *DB) error {
 		CREATE INDEX IF NOT EXISTS idx_operations_app ON operations(app, started_at DESC);
 		CREATE INDEX IF NOT EXISTS idx_operations_saga ON operations(saga_id);
 		CREATE INDEX IF NOT EXISTS idx_operations_kind ON operations(kind, started_at DESC);
+		CREATE UNIQUE INDEX IF NOT EXISTS idx_operations_idempotency
+			ON operations ((metadata->>'idempotencyKey'))
+			WHERE metadata ? 'idempotencyKey' AND metadata->>'idempotencyKey' <> '';
 
 		ALTER TABLE operations ADD COLUMN IF NOT EXISTS payload JSONB NOT NULL DEFAULT '{}';
 		ALTER TABLE operations ADD COLUMN IF NOT EXISTS attempts INT NOT NULL DEFAULT 0;

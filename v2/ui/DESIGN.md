@@ -12,7 +12,7 @@ is silent, match the existing codebase's conventions.
 
 1. **Ops console, not marketing site.** Dense, legible, monospace-forward for data.
    Every screen answers "is it healthy, what changed, what do I do next".
-2. **Live-first.** The websocket hub (`/ws`) drives the UI. State changes (deploys,
+2. **Live-first.** The versioned websocket hub (`/api/v1/events`) drives the UI. State changes (deploys,
    incidents, restarts, snapshots) appear without refresh, announced via toasts and
    an activity feed — never via silent mutation alone.
 3. **Keyboard-first.** Command palette (⌘K), Escape closes any layer, full tab
@@ -198,7 +198,7 @@ Build once, use everywhere. All keyboard/a11y complete:
 - React Query provider at root. Query keys: `['apps']`, `['app', id]`, `['deployments', filters]`,
   `['events', filters]`, `['operations']`, `['saga', id]`, etc. Sensible staleTimes;
   polling only where ws doesn't cover (stats 30s, health 30s).
-- `useHubEvents()`: single `/ws` subscription (keep reconnect logic) that (a) exposes
+- `useHubEvents()`: single `/api/v1/events` subscription with last-event cursor replay that (a) exposes
   typed events to subscribers, (b) invalidates matching query keys per event type
   (`deploy.* → ['deployments'], ['app', appId]`; `beacon.event → ['events']`; etc.),
   (c) feeds the toast system and activity ticker. Discriminated-union type
@@ -241,7 +241,7 @@ collapse into an overflow menu). No page-level horizontal scroll ever.
 - Keep pnpm; commit `pnpm-lock.yaml` changes.
 - Keep the vendored FontAwesome icon usage (`fawsb` classes) — do not swap icon systems.
 - Preserve all existing functionality: nothing that works today may be lost.
-- Vite dev proxy (`/api`, `/ws` → 127.0.0.1:8800) stays as is.
+- Vite dev proxy (`/api` → 127.0.0.1:8800) carries the versioned WebSocket endpoint.
 
 ## 12. Milestones
 

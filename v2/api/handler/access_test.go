@@ -82,3 +82,26 @@ func TestAccessMiddlewareBypassesExecWebSocket(t *testing.T) {
 		t.Fatalf("access events = %d, want 0", got)
 	}
 }
+
+func TestAccessMiddlewareBypassesVersionedEventWebSocket(t *testing.T) {
+	h := &Handler{access: NewAccessLog(10)}
+	called := false
+	next := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		called = true
+		w.WriteHeader(http.StatusSwitchingProtocols)
+	})
+	req := httptest.NewRequest(http.MethodGet, "/api/v1/events", nil)
+	rec := httptest.NewRecorder()
+
+	h.AccessMiddleware(next).ServeHTTP(rec, req)
+
+	if !called {
+		t.Fatal("next handler was not called")
+	}
+	if rec.Code != http.StatusSwitchingProtocols {
+		t.Fatalf("status = %d, want %d", rec.Code, http.StatusSwitchingProtocols)
+	}
+	if got := len(h.access.Recent(10)); got != 0 {
+		t.Fatalf("access events = %d, want 0", got)
+	}
+}

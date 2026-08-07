@@ -1,6 +1,8 @@
 package main
 
 import (
+	"bytes"
+	"encoding/json"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -8,6 +10,9 @@ import (
 	"testing"
 
 	"github.com/go-chi/chi/v5"
+
+	"norn/v2/api/config"
+	"norn/v2/api/handler"
 )
 
 func TestFileServerServesRootAndIndexFallback(t *testing.T) {
@@ -63,5 +68,60 @@ func TestBearerAuthAllowsServiceManifestDiscovery(t *testing.T) {
 				t.Fatalf("status = %d, want %d; body=%s", rec.Code, tt.wantStatus, rec.Body.String())
 			}
 		})
+	}
+}
+
+func TestBearerAuthProtectsWebSocketsAndEnforcesScopes(t *testing.T) {
+	if got := controlScopeForRequest(httptest.NewRequest(http.MethodGet, "/ws", nil)); got != handler.ScopeEventsRead {
+		t.Fatalf("/ws scope = %q", got)
+	}
+	if got := controlScopeForRequest(httptest.NewRequest(http.MethodGet, "/api/apps/demo/exec", nil)); got != handler.ScopeAppsExec {
+		t.Fatalf("exec scope = %q", got)
+	}
+	if publicControlPath("/ws") {
+		t.Fatal("/ws must not be public when API token auth is enabled")
+	}
+	if publicControlPath("/api/apps/demo/exec") {
+		t.Fatal("exec must not be public when API token auth is enabled")
+	}
+}
+
+func TestBearerAuthEnforcesIssuedTokenScopes(t *testing.T) {
+	cfg := &config.Config{APIToken: "control-plane-token"}
+	h := handler.New(nil, nil, nil, nil, cfg, nil, nil, nil, nil, nil, nil)
+	issue := httptest.NewRequest(http.MethodPost, "/api/access/tokens", bytes.NewBufferString(`{
+		"ttl":"1h","note":"read client","scopes":["api:read","events:read"]
+	}`))
+	issued := httptest.NewRecorder()
+	h.CreateAccessToken(issued, issue)
+	if issued.Code != http.StatusCreated {
+		t.Fatalf("issue status = %d: %s", issued.Code, issued.Body.String())
+	}
+	var token struct {
+		Token string `json:"token"`
+	}
+	if err := json.Unmarshal(issued.Body.Bytes(), &token); err != nil {
+		t.Fatal(err)
+	}
+	next := http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) { w.WriteHeader(http.StatusNoContent) })
+	authenticated := bearerAuth(cfg.APIToken, h)(next)
+
+	for _, tt := range []struct {
+		path string
+		want int
+	}{
+		{path: "/api/apps", want: http.StatusNoContent},
+		{path: "/ws", want: http.StatusNoContent},
+		{path: "/api/apps/demo/exec", want: http.StatusForbidden},
+		{path: "/api/v1/platform/upgrades", want: http.StatusForbidden},
+	} {
+		req := httptest.NewRequest(http.MethodGet, tt.path, nil)
+		req.RemoteAddr = "100.64.0.2:1234"
+		req.Header.Set("Authorization", "Bearer "+token.Token)
+		rec := httptest.NewRecorder()
+		authenticated.ServeHTTP(rec, req)
+		if rec.Code != tt.want {
+			t.Errorf("%s status = %d, want %d; body=%s", tt.path, rec.Code, tt.want, rec.Body.String())
+		}
 	}
 }

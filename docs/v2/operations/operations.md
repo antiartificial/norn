@@ -7,6 +7,7 @@ Norn records long-running and externally triggered work in a durable PostgreSQL 
 ```bash
 norn operations
 norn operations --active
+norn operations <operation-id>
 norn events
 norn events show <event-id>
 norn events ack <event-id>
@@ -29,6 +30,13 @@ API endpoints:
 |--------|------|---------|
 | `GET` | `/api/operations` | Recent operations, filterable by app, kind, status, and active state |
 | `GET` | `/api/operations/active` | Queued/running operations for drain gates |
+| `GET` | `/api/v1/operations/{id}` | Authoritative status and receipt for one durable operation |
+| `GET` | `/api/v1/capabilities` | Protocol version, supported features, endpoints, and token scopes |
+| `POST` | `/api/v1/platform/preflights` | Queue a candidate platform build and health check |
+| `POST` | `/api/v1/platform/upgrades` | Queue a restart-safe platform upgrade |
+| `POST` | `/api/v1/platform/smoke` | Queue authenticated platform smoke |
+| `POST` | `/api/v1/host/assurances` | Queue host assurance |
+| `WS` | `/api/v1/events?after=<cursor>` | Authenticated durable control events with cursor replay |
 | `GET` | `/api/deployments/{id}/steps` | Durable deploy or rollback stage checkpoints |
 | `GET` | `/api/events` | Recent Beacon events, filterable by app, type, and severity |
 | `GET` | `/api/events/{id}` | Beacon event detail with operator state and metadata |
@@ -56,8 +64,20 @@ The current release records these operation kinds:
 | `app.preflight` | `norn preflight` / API preflight | read-only |
 | `app.deploy` | `norn deploy`, webhook auto-deploy, API deploy | app rolling update |
 | `app.rollback` | `norn rollback` / API rollback | app rolling update |
+| `platform.preflight` | v1 control API / `platform queue-preflight` | read-only candidate build |
+| `platform.upgrade` | v1 control API / `platform queue-upgrade` | control-plane replacement |
+| `platform.rollback` | v1 control API / `platform queue-rollback` | control-plane replacement |
+| `platform.smoke` | v1 control API / `platform queue-smoke` | read-only platform assurance |
+| `host.assure` | v1 control API / `host queue-assure` | bounded host repair and endpoint probes |
 
 App preflights, deploys, and rollbacks are queued in the operations table and claimed by the API worker with `FOR UPDATE SKIP LOCKED`. Queue rows include payload, attempt count, max attempts, lease owner, lease expiry, next attempt, and last error.
+
+Platform and host operations are claimed by `norn-host-agent`, an independent
+process installed as `com.norn.host-agent`. The API process never executes
+arbitrary shell input: the agent maps the five known operation kinds to fixed
+script subcommands, validates refs and modes again, renews its lease, and stores
+a bounded output receipt. Because the agent is not the API process, it remains
+alive while an upgrade restarts Norn.
 
 Deploy and rollback stages are written to `deployment_steps`. Read-only preflights can retry safely. App deploys are queued and visible to drain gates; after an API restart, a running deploy can be requeued only if no mutable stage checkpoint has started. If interruption happens during or after snapshot, migration, submit, health, forge, or cleanup, the operation fails visibly for manual review rather than replaying side effects blindly.
 
@@ -104,7 +124,12 @@ norn webhooks replay <delivery-id> --preflight
 
 ## Platform Drains
 
-`norn platform upgrade` and `norn platform rollback` call the platform script. When `NORN_API_TOKEN` or `NORN_TOKEN` is available, the script checks `/api/operations/active` before mutating the running platform.
+Direct `norn platform upgrade` and rollback commands still call the local
+platform script. The preferred remote/operator path is `norn platform
+queue-upgrade`, which creates a durable operation and waits for the independent
+host agent. The script excludes that operation's own ID from the drain query,
+so it still blocks on unrelated app or maintenance work without deadlocking on
+itself.
 
 `norn platform upgrade --proxy` uses the same drain gate before switching the managed reverse-proxy upstream on hosts that are intentionally proxy-fronted.
 
@@ -148,4 +173,5 @@ The metrics endpoint exports:
 
 ## Next Step
 
-Add deeper stage-level resume data for mutable stages before enabling automatic retries after snapshot, migration, submit, or route changes. Move platform preflight/upgrade jobs into the same durable worker lane once platform-scoped operations are modeled.
+Add deeper stage-level resume data for mutable app stages before enabling
+automatic retries after snapshot, migration, submit, or route changes.
