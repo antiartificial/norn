@@ -1,4 +1,4 @@
-# Host Recovery on macOS
+# Host Recovery and Assurance on macOS
 
 Use the host runtime lane to make a local Norn installation survive logout,
 reboot, and Docker Desktop restarts without rebuilding every app.
@@ -18,6 +18,23 @@ reboot, and Docker Desktop restarts without rebuilding every app.
 
 The existing Norn API and cloudflared launchd jobs remain independently
 managed. The host lane does not embed API tokens or app secrets in plists.
+
+## Recovery order
+
+The login supervisor and `norn host recover` use the same ordered flow:
+
+1. Re-render Nomad and Consul configuration with the current host IPv4 address.
+2. Start Docker and wait for it to accept commands.
+3. Start Consul and wait for a leader.
+4. Start Nomad and wait for a leader.
+5. Restart the Norn API and wait for `/api/health`.
+6. Trigger configured bounded cron catch-ups.
+7. Run host assurance.
+8. Run the optional installation-specific `post-recover` hook.
+
+Core recovery completes even when assurance still has a failing endpoint. The
+failure is recorded through Beacon, and the periodic assurance agent retries
+the idempotent repair pass without repeatedly restarting the core runtime.
 
 ## Install
 
@@ -55,11 +72,47 @@ norn host install --repo /path/to/norn \
   --probe api-tailnet=https://host.example.ts.net:8443/health
 ```
 
+| Policy | Behavior |
+|--------|----------|
+| `--required APP:PROCESS` | Require a passing Consul instance on IPv4. Deploy `HEAD` when the app's Nomad job is absent; restart the app when the job exists but remains unhealthy after retries. |
+| `--forge APP` | Reconcile the app's public endpoints through cloudflared. Private and literal-IP endpoints are rejected, and stale private ingress rules are pruned. |
+| `--serve PORT=TARGET` | Reapply an idempotent Tailscale Serve listener. `{address}` expands to the current detected IPv4 address. |
+| `--probe NAME=URL` | Retry an unauthenticated HTTP GET against the actual public or tailnet entrypoint. Redirects are followed and HTTP error responses fail. |
+| `--assure-interval SECONDS` | Set the launchd interval. The default is 300 seconds and the minimum is 60. |
+
+Each policy flag is repeatable. Re-running `host install` with a non-empty
+policy refreshes the corresponding managed file under
+`~/.config/norn/host/`. Existing policy files are preserved when a flag class
+is omitted, which makes it safe to refresh the managed binaries and plists
+without accidentally clearing host-specific policy.
+
 `{address}` is replaced with the host's current IPv4 address on every pass, so
 Tailscale Serve does not retain a stale DHCP address. Only apps named with
 `--required` can be automatically deployed or restarted. Only apps named with
 `--forge` have public routes reconciled. Cloudflare reconciliation ignores
 `.norn`, `.ts.net`, local, internal, and literal-IP endpoints.
+
+Choose probes that exercise dependencies without returning sensitive data. A
+good probe is the same route a client uses, backed by a dependency-aware health
+handler. For an authenticated product API, expose a narrow unauthenticated
+health endpoint rather than placing a bearer token in the assurance policy.
+
+## Assurance behavior
+
+`norn host assure` is safe to run interactively. The same command is invoked by
+the recovery supervisor and by `com.norn.host-assurance`.
+
+- A filesystem lock suppresses overlapping passes and recovers from a stale
+  lock left by a terminated process.
+- Required services are retried before any repair to avoid reacting to a short
+  Consul transition.
+- Only entries in `--required` authorize deploy or restart actions.
+- Route reconciliation runs before endpoint probes.
+- HTTP probes retry with bounded backoff.
+- A failing pass exits non-zero and emits `host.assurance.failed` through
+  Beacon, deduplicated for one hour.
+- The first passing run after a failure emits `host.assurance.recovered` with
+  the same correlation key so the incident can be resolved automatically.
 
 ## One-time state migration
 
@@ -102,7 +155,14 @@ finishing a prior stop.
 
 `norn host status` reports each managed service plus the supervisor's last exit
 code. A completed one-shot supervisor appears as `ready`, not as a continuously
-running daemon.
+running daemon. The periodic agent appears as `armed`.
+
+For launchd-level verification, inspect the managed log after a pass:
+
+```bash
+tail -100 ~/.local/log/com.norn.host-assurance.log
+launchctl print "gui/$(id -u)/com.norn.host-assurance"
+```
 
 ## Optional post-recovery hook
 

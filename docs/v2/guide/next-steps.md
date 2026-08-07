@@ -71,6 +71,12 @@ Current state:
   preserving recovery across DHCP changes.
 - Optional `app:process` catch-ups trigger bounded cron ingestion through the
   encrypted API runtime environment.
+- `norn host assure` and the periodic `com.norn.host-assurance` LaunchAgent
+  verify explicitly required IPv4 services, deploy missing apps, restart
+  unhealthy apps, reconcile Cloudflare and Tailscale routes, and probe the
+  user-facing HTTP entrypoints.
+- Assurance uses an explicit repair allowlist, suppresses overlapping runs,
+  and reports persistent failure and recovery through correlated Beacon events.
 - `norn host status` and `norn host doctor` provide compact boot readiness and
   configuration diagnostics.
 
