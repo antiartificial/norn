@@ -3,6 +3,7 @@ package cloudflared
 import (
 	"context"
 	"fmt"
+	"net"
 	"net/url"
 	"os"
 	"os/exec"
@@ -25,6 +26,22 @@ func NormalizeHostname(raw string) string {
 		return raw
 	}
 	return u.Hostname()
+}
+
+// IsPublicEndpoint reports whether an endpoint is suitable for a Cloudflare
+// tunnel ingress rule. Private discovery names, tailnet names, localhost, and
+// literal IP addresses must be handled by their native routing layers instead.
+func IsPublicEndpoint(raw string) bool {
+	hostname := strings.TrimSuffix(strings.ToLower(strings.TrimSpace(NormalizeHostname(raw))), ".")
+	if hostname == "" || hostname == "localhost" || net.ParseIP(hostname) != nil || !strings.Contains(hostname, ".") {
+		return false
+	}
+	for _, suffix := range []string{".internal", ".local", ".localhost", ".norn", ".ts.net"} {
+		if strings.HasSuffix(hostname, suffix) {
+			return false
+		}
+	}
+	return true
 }
 
 type Config struct {
@@ -104,6 +121,24 @@ func RemoveIngress(cfg *Config, hostname string) bool {
 	changed := false
 	for _, rule := range cfg.Ingress {
 		if rule.Hostname == hostname {
+			changed = true
+			continue
+		}
+		filtered = append(filtered, rule)
+	}
+	if changed {
+		cfg.Ingress = filtered
+	}
+	return changed
+}
+
+// PrunePrivateIngress removes hostname rules that do not belong in a public
+// Cloudflare tunnel while preserving the catch-all rule.
+func PrunePrivateIngress(cfg *Config) bool {
+	filtered := make([]IngressRule, 0, len(cfg.Ingress))
+	changed := false
+	for _, rule := range cfg.Ingress {
+		if rule.Hostname != "" && !IsPublicEndpoint(rule.Hostname) {
 			changed = true
 			continue
 		}
