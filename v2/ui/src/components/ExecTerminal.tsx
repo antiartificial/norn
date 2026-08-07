@@ -35,9 +35,9 @@ export function ExecTerminal({ appId, onClose }: Props) {
     fitAddon.fit()
     terminalRef.current = terminal
 
-    // Build WebSocket URL — exec endpoint is under /api, not /ws
-    const base = wsUrl() // gives ws://host/ws
-    const wsBase = base.replace(/\/ws$/, '')
+    // Build the separately scoped exec WebSocket URL from the event endpoint.
+    const base = wsUrl()
+    const wsBase = base.replace(/\/api\/v1\/events$/, '')
     const execUrl = `${wsBase}/api/apps/${appId}/exec?command=/bin/sh`
 
     const ws = new WebSocket(execUrl)

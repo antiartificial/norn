@@ -69,7 +69,7 @@ describe('useHubEvents', () => {
 
     act(() => vi.advanceTimersByTime(0))
     expect(MockWebSocket.instances).toHaveLength(1)
-    expect(MockWebSocket.instances[0].url).toContain('/ws')
+    expect(MockWebSocket.instances[0].url).toContain('/api/v1/events')
 
     act(() => {
       MockWebSocket.instances[0].sendEvent({ type: 'deploy.step', appId: 'api', payload: { step: 'build', status: 'running' } })

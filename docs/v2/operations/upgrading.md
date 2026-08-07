@@ -26,9 +26,19 @@ norn platform proxy-status
 norn platform proxy-render
 norn platform proxy-switch 18802
 norn smoke platform
+
+# Preferred remote/UI lane: durable and restart-safe.
+norn platform queue-preflight HEAD
+norn platform queue-upgrade HEAD
+norn platform queue-rollback <sha-prefix>
+norn platform queue-smoke
 ```
 
 The platform lane builds from an isolated git worktree into `$HOME/norn/releases/<sha>`, writes a `$HOME/norn/current` symlink, installs compatibility binaries into `$HOME/go/bin`, and health-checks a candidate API with recovery and operation workers disabled so preflight does not mark running work failed or claim queued jobs.
+
+The queued lane is preferred when the operator is not already on the host. It
+returns a durable operation ID, is executed by `com.norn.host-agent`, and can be
+followed with `norn operations <operation-id>` even after the API restarts.
 
 Use these environment variables when the repo or host layout differs:
 
@@ -41,6 +51,7 @@ Use these environment variables when the repo or host layout differs:
 | `NORN_CANDIDATE_PORT` | `18800` | Alternate-port candidate API |
 | `NORN_TOKEN` / `NORN_API_TOKEN` | — | Optional bearer token for active-operation drain checks |
 | `NORN_DRAIN_MODE` | `fail` | `fail`, `wait`, or `force` for active-operation drains |
+| `NORN_DRAIN_EXCLUDE_OPERATION_ID` | — | Host-agent operation omitted from its own drain query |
 | `NORN_SKIP_CANDIDATE_API` | `false` | Skip side-by-side candidate boot |
 | `NORN_PLATFORM_UPGRADE_MODE` | `restart` | `restart` or `proxy`; `--proxy` sets this for upgrades |
 | `NORN_API_ENV_FILE` | `$HOME/.config/norn/api.env.enc.json` | SOPS JSON env file for `platform smoke` and `platform env` |

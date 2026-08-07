@@ -77,6 +77,10 @@ norn platform proxy-plan
 norn platform proxy-status
 norn platform proxy-render
 norn platform proxy-switch <port|host:port>
+norn platform queue-preflight [ref]
+norn platform queue-upgrade [ref] --mode restart --drain fail
+norn platform queue-rollback <sha-prefix>
+norn platform queue-smoke
 ```
 
 `norn platform preflight` builds Norn from an isolated git worktree into `$HOME/norn/releases/<sha>`, starts the candidate API on `127.0.0.1:18800`, and verifies health/version without restarting the active API.
@@ -92,6 +96,12 @@ norn platform proxy-switch <port|host:port>
 `norn platform env -- <command>` runs an arbitrary command with that same API runtime environment loaded without printing secret values.
 
 `norn platform proxy-plan` prints a no-blip reverse-proxy cutover plan. `proxy-status`, `proxy-render`, and `proxy-switch` manage an optional local Caddy config and upstream state file. They do not change the live topology unless explicitly invoked.
+
+The `queue-*` commands use the authenticated v1 control protocol. They create
+durable operations, wait by default, and are executed by the independent host
+agent, so `queue-upgrade` can remain in progress across the API restart it
+causes. Pass `--wait=false` to return after enqueueing and inspect the receipt
+with `norn operations <operation-id>`.
 
 | Flag | Default | Description |
 |------|---------|-------------|
@@ -110,6 +120,7 @@ norn host migrate-state \
   --from-consul /path/to/current/consul-data
 norn host recover
 norn host assure
+norn host queue-assure
 norn host status
 norn host doctor
 ```
@@ -165,9 +176,12 @@ List durable operation records.
 ```bash
 norn operations
 norn operations --active
+norn operations <operation-id>
 ```
 
-Operations summarize long-running work such as app preflights, deploys, and rollbacks. Use `--active` before invasive platform work to see queued or running operations.
+Operations summarize long-running app, platform, and host work. Use `--active`
+before invasive platform work; pass an operation ID to retrieve its current
+lease state and final receipt.
 
 | Flag | Default | Description |
 |------|---------|-------------|

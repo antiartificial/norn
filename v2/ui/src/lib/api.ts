@@ -20,10 +20,10 @@ export function wsUrl(): string {
   if (API_BASE) {
     const url = new URL(API_BASE)
     const protocol = url.protocol === 'https:' ? 'wss:' : 'ws:'
-    return `${protocol}//${url.host}/ws`
+    return `${protocol}//${url.host}/api/v1/events`
   }
   const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:'
-  return `${protocol}//${window.location.host}/ws`
+  return `${protocol}//${window.location.host}/api/v1/events`
 }
 
 // Include credentials for cross-origin requests (CF Access cookies).

@@ -3,6 +3,7 @@ package cmd
 import (
 	"fmt"
 	"os"
+	"strings"
 	"text/tabwriter"
 
 	"github.com/spf13/cobra"
@@ -11,11 +12,12 @@ import (
 )
 
 var (
-	grantIP    string
-	grantTTL   string
-	grantNote  string
-	tokenTTL   string
-	tokenNote  string
+	grantIP     string
+	grantTTL    string
+	grantNote   string
+	tokenTTL    string
+	tokenNote   string
+	tokenScopes []string
 )
 
 func init() {
@@ -27,6 +29,7 @@ func init() {
 
 	accessTokenCmd.Flags().StringVar(&tokenTTL, "ttl", "", "Token lifetime, e.g. 2h (required)")
 	accessTokenCmd.Flags().StringVar(&tokenNote, "note", "", "Description for the token")
+	accessTokenCmd.Flags().StringSliceVar(&tokenScopes, "scope", nil, "Token scope (repeat or comma-separate): api:read, api:write, events:read, apps:exec, platform:operate, host:operate")
 	_ = accessTokenCmd.MarkFlagRequired("ttl")
 
 	accessCmd.AddCommand(accessGrantCmd)
@@ -36,8 +39,8 @@ func init() {
 }
 
 var accessGrantCmd = &cobra.Command{
-	Use:   "grant",
-	Short: "Create a temporary IP access grant",
+	Use:     "grant",
+	Short:   "Create a temporary IP access grant",
 	Example: "  norn access grant --ip 1.2.3.4 --ttl 24h --note \"CI server\"",
 	RunE: func(cmd *cobra.Command, args []string) error {
 		grant, err := client.CreateAccessGrant(grantIP, grantNote, grantTTL)
@@ -113,9 +116,9 @@ var accessRevokeCmd = &cobra.Command{
 var accessTokenCmd = &cobra.Command{
 	Use:     "token",
 	Short:   "Create a temporary access token for URL sharing",
-	Example: "  norn access token --ttl 2h --note \"dashboard sharing\"",
+	Example: "  norn access token --ttl 2h --note \"Mac client\" --scope api:read,events:read",
 	RunE: func(cmd *cobra.Command, args []string) error {
-		token, err := client.CreateAccessToken(tokenNote, tokenTTL)
+		token, err := client.CreateAccessToken(tokenNote, tokenTTL, tokenScopes)
 		if err != nil {
 			return fmt.Errorf("failed to create access token: %w", err)
 		}
@@ -124,14 +127,16 @@ var accessTokenCmd = &cobra.Command{
 			note = "-"
 		}
 		msg := fmt.Sprintf(
-			"%s %s\n%s %s\n%s %s\n\n%s",
+			"%s %s\n%s %s\n%s %s\n%s %s\n\n%s",
 			style.Key.Render("token"),
 			token.Token,
 			style.Key.Render("expires"),
 			localTime(token.ExpiresAt),
 			style.Key.Render("note"),
 			note,
-			style.DimText.Render("Use as Bearer token or append ?token="+token.Token+" to dashboard URLs"),
+			style.Key.Render("scopes"),
+			strings.Join(token.Scopes, ", "),
+			style.DimText.Render("Use as an Authorization: Bearer token; tokens are never accepted in URLs."),
 		)
 		fmt.Println(style.SuccessBox.Render("access token created\n\n" + msg))
 		return nil

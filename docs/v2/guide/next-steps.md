@@ -202,8 +202,8 @@ Current state:
 - Beacon events carry `correlationKey` in metadata to group related events into incident arcs (e.g. `service.health.critical` → `service.health.recovered` share the same key). Events also include `previousState` and `previousEventType` for transition context.
 - `GET /api/events/correlated?key=<key>` and `norn events correlated <key>` return chronological event timelines for a correlation key.
 - Vigil-gateway indexes `correlationKey`, exposes `GET /api/incidents` grouped by correlation key, and uses `correlationKey` as APNs `thread-id` for iOS notification threading.
-- `POST /api/access/tokens` creates JWT access tokens with TTL for URL sharing. Tokens are accepted as `Bearer` headers or `?token=` query parameters.
-- `norn access token --ttl 2h` generates shareable tokens from the CLI.
+- `POST /api/access/tokens` creates short-lived JWT access tokens with explicit scopes. Tokens are accepted only as `Authorization: Bearer` headers, never URL query parameters.
+- `norn access token --ttl 2h --scope api:read,events:read` generates a least-privilege client token from the CLI.
 - The dashboard Platform tab has a token creation form in the Access section.
 - `norn events show <id>` displays incident timeline links for events with correlation keys.
 - When an `info`-severity event resolves a correlation group, Norn auto-acknowledges open `warning`/`critical` events in that group so `norn events` shows only active incidents.
@@ -236,7 +236,7 @@ Planned work:
 
 - Add deeper stage-level resume data before enabling automatic retry after snapshot, migration, submit, or route mutation.
 - Add a host setup command that moves an existing LaunchAgent install to proxy-fronted private API ports.
-- Queue platform preflight and upgrade jobs themselves once the worker supports platform-scoped operations.
+- Add deeper mutable-stage receipts before allowing interrupted app deploys to resume automatically.
 
 ## ContextDB Items
 

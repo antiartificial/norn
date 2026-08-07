@@ -19,7 +19,8 @@ Useful surfaces:
 | Deploy progress | `POST /api/apps/{id}/deploy`, `GET /api/saga/{sagaId}`, `norn saga <saga-id>` |
 | Webhook delivery triage | `GET /api/webhooks/deliveries`, `norn webhooks` |
 | Platform release history | `GET /api/platform/releases`, `norn platform releases` |
-| Host boot/recovery state | `norn host status`, `norn host doctor`, `norn host assure` |
+| Versioned client contract | `GET /api/v1/capabilities`, `WS /api/v1/events`, `GET /api/v1/operations/{id}` |
+| Host boot/recovery state | `norn host status`, `norn host doctor`, `norn host assure`, `norn host queue-assure` |
 | Operational events | `GET /api/events`, `GET /api/events/{id}`, `norn events`, `norn alerts` |
 | Control-plane health | `/api/health`, `/api/version`, `/metrics`, `norn smoke platform`, `norn platform smoke` |
 | Observability bundle/services | `GET /api/observability/bundle`, `POST /api/observability/services/install`, `norn observability install` |
@@ -84,6 +85,8 @@ Norn control-plane upgrades should use the platform lane rather than rebuilding 
 norn platform preflight HEAD
 norn platform upgrade HEAD
 norn platform upgrade HEAD --proxy
+norn platform queue-preflight HEAD
+norn platform queue-upgrade HEAD
 norn platform releases
 norn platform rollback <sha-prefix>
 norn platform smoke
@@ -95,6 +98,12 @@ norn platform proxy-switch <port|host:port>
 ```
 
 The default platform lane builds an isolated release, boots a candidate API on an alternate port, checks health/version, promotes the release symlink, restarts only the Norn API process, and runs postflight health.
+
+The queued lane records `platform.preflight`, `platform.upgrade`, and
+`platform.smoke` in the durable operations table. `com.norn.host-agent` claims
+those allow-listed kinds and survives an API restart. Prefer the queued lane
+for remote clients and UI-driven maintenance; keep direct script commands for
+bootstrap and repair.
 
 On a proxy-fronted host, `norn platform upgrade --proxy` keeps old and new APIs on private ports, switches the managed Caddy upstream, then stops the previous proxy-managed API after postflight succeeds. Do not use it on a direct LaunchAgent `:8800` install until the host has intentionally moved to proxy-fronted ingress.
 

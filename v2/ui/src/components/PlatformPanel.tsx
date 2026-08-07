@@ -229,8 +229,10 @@ function AccessControls() {
   const [grantNote, setGrantNote] = useState('')
   const [tokenTTL, setTokenTTL] = useState('2h')
   const [tokenNote, setTokenNote] = useState('')
+  const [tokenScopes, setTokenScopes] = useState<string[]>(['api:read', 'events:read'])
   const [createdToken, setCreatedToken] = useState<string | null>(null)
   const [tokenExpiry, setTokenExpiry] = useState<string | null>(null)
+  const [createdTokenScopes, setCreatedTokenScopes] = useState<string[]>([])
   const [revokeTarget, setRevokeTarget] = useState<AccessGrant | null>(null)
   const grantRows = grants.data?.grants ?? []
 
@@ -260,14 +262,15 @@ function AccessControls() {
     onError: (error) => toast({ kind: 'error', title: 'Revoke failed', description: errorMessage(error) }),
   })
   const createToken = useMutation({
-    mutationFn: () => apiFetch<{ token: string; expiresAt?: string }>('/api/access/tokens', {
+    mutationFn: () => apiFetch<{ token: string; expiresAt?: string; scopes?: string[] }>('/api/access/tokens', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ ttl: tokenTTL, note: tokenNote }),
+      body: JSON.stringify({ ttl: tokenTTL, note: tokenNote, scopes: tokenScopes }),
     }),
     onSuccess: (data) => {
       setCreatedToken(data.token)
       setTokenExpiry(data.expiresAt ?? null)
+      setCreatedTokenScopes(data.scopes ?? tokenScopes)
       setTokenNote('')
       toast({ kind: 'success', title: 'Access token created', description: data.expiresAt ? `Expires ${formatTime(data.expiresAt)}` : undefined })
     },
@@ -303,14 +306,27 @@ function AccessControls() {
       <div className="platform-inline-form">
         <input className="platform-input-xs" placeholder="TTL" value={tokenTTL} onChange={event => setTokenTTL(event.target.value)} />
         <input className="platform-input-md" placeholder="Note (optional)" value={tokenNote} onChange={event => setTokenNote(event.target.value)} />
-        <Button size="sm" icon="fa-key" loading={createToken.isPending} onClick={() => createToken.mutate()}>Create token</Button>
+        <Button size="sm" icon="fa-key" loading={createToken.isPending} disabled={tokenScopes.length === 0} onClick={() => createToken.mutate()}>Create token</Button>
+      </div>
+      <div className="platform-checkbox-row" role="group" aria-label="Access token scopes">
+        {['api:read', 'api:write', 'events:read', 'apps:exec', 'platform:operate', 'host:operate'].map(scope => (
+          <label key={scope}>
+            <input
+              type="checkbox"
+              checked={tokenScopes.includes(scope)}
+              onChange={event => setTokenScopes(current => event.target.checked ? [...current, scope] : current.filter(item => item !== scope))}
+            />
+            {scope}
+          </label>
+        ))}
       </div>
       {createdToken && (
         <div className="platform-token-result">
           <textarea readOnly value={createdToken} rows={3} onClick={event => event.currentTarget.select()} />
           {tokenExpiry && <p>Expires: {formatTime(tokenExpiry)}</p>}
-          <p>Append ?token=&lt;value&gt; to share dashboard URLs.</p>
-          <Button size="sm" variant="ghost" icon="fa-xmark" onClick={() => { setCreatedToken(null); setTokenExpiry(null) }}>Clear</Button>
+          <p>Scopes: {createdTokenScopes.join(', ')}</p>
+          <p>Send this value only as an Authorization: Bearer header. Norn does not accept access tokens in URLs.</p>
+          <Button size="sm" variant="ghost" icon="fa-xmark" onClick={() => { setCreatedToken(null); setTokenExpiry(null); setCreatedTokenScopes([]) }}>Clear</Button>
         </div>
       )}
       <ConfirmDialog

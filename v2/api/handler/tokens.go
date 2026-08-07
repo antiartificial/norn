@@ -12,10 +12,67 @@ import (
 )
 
 type tokenClaims struct {
-	Sub string `json:"sub"`
-	Exp int64  `json:"exp"`
-	Iat int64  `json:"iat"`
-	Jti string `json:"jti"`
+	Sub    string   `json:"sub"`
+	Exp    int64    `json:"exp"`
+	Iat    int64    `json:"iat"`
+	Jti    string   `json:"jti"`
+	Scopes []string `json:"scp,omitempty"`
+}
+
+const (
+	ScopeAPIRead         = "api:read"
+	ScopeAPIWrite        = "api:write"
+	ScopeEventsRead      = "events:read"
+	ScopeAppsExec        = "apps:exec"
+	ScopePlatformOperate = "platform:operate"
+	ScopeHostOperate     = "host:operate"
+	ScopeAdmin           = "admin"
+)
+
+var accessTokenScopes = map[string]struct{}{
+	ScopeAPIRead: {}, ScopeAPIWrite: {}, ScopeEventsRead: {}, ScopeAppsExec: {},
+	ScopePlatformOperate: {}, ScopeHostOperate: {}, ScopeAdmin: {},
+}
+
+func AccessTokenScopeNames() []string {
+	return []string{ScopeAPIRead, ScopeAPIWrite, ScopeEventsRead, ScopeAppsExec, ScopePlatformOperate, ScopeHostOperate, ScopeAdmin}
+}
+
+type AccessPrincipal struct {
+	Subject string   `json:"subject,omitempty"`
+	Scopes  []string `json:"scopes"`
+	Legacy  bool     `json:"legacy,omitempty"`
+}
+
+func (p AccessPrincipal) Allows(scope string) bool {
+	if scope == "" || p.Legacy {
+		return true
+	}
+	for _, candidate := range p.Scopes {
+		if candidate == ScopeAdmin || candidate == scope {
+			return true
+		}
+	}
+	return false
+}
+
+func normalizeAccessTokenScopes(scopes []string) ([]string, error) {
+	if len(scopes) == 0 {
+		return []string{ScopeAPIRead, ScopeEventsRead}, nil
+	}
+	seen := map[string]bool{}
+	out := make([]string, 0, len(scopes))
+	for _, scope := range scopes {
+		scope = strings.TrimSpace(scope)
+		if _, ok := accessTokenScopes[scope]; !ok {
+			return nil, fmt.Errorf("unsupported scope %q", scope)
+		}
+		if !seen[scope] {
+			seen[scope] = true
+			out = append(out, scope)
+		}
+	}
+	return out, nil
 }
 
 func signToken(secret string, claims tokenClaims) (string, error) {
@@ -59,8 +116,9 @@ func verifyToken(secret, token string) (*tokenClaims, error) {
 
 func (h *Handler) CreateAccessToken(w http.ResponseWriter, r *http.Request) {
 	var req struct {
-		TTL  string `json:"ttl"`
-		Note string `json:"note"`
+		TTL    string   `json:"ttl"`
+		Note   string   `json:"note"`
+		Scopes []string `json:"scopes"`
 	}
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		writeError(w, http.StatusBadRequest, "invalid request body")
@@ -79,12 +137,18 @@ func (h *Handler) CreateAccessToken(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, "ttl must not exceed 72h")
 		return
 	}
+	scopes, err := normalizeAccessTokenScopes(req.Scopes)
+	if err != nil {
+		writeError(w, http.StatusBadRequest, err.Error())
+		return
+	}
 	now := time.Now().UTC()
 	claims := tokenClaims{
-		Sub: req.Note,
-		Iat: now.Unix(),
-		Exp: now.Add(ttl).Unix(),
-		Jti: fmt.Sprintf("norn_%d", now.UnixNano()),
+		Sub:    req.Note,
+		Iat:    now.Unix(),
+		Exp:    now.Add(ttl).Unix(),
+		Jti:    fmt.Sprintf("norn_%d", now.UnixNano()),
+		Scopes: scopes,
 	}
 	token, err := signToken(h.cfg.APIToken, claims)
 	if err != nil {
@@ -96,13 +160,17 @@ func (h *Handler) CreateAccessToken(w http.ResponseWriter, r *http.Request) {
 		"token":     token,
 		"expiresAt": now.Add(ttl).Format(time.RFC3339),
 		"note":      req.Note,
+		"scopes":    scopes,
 	})
 }
 
-func (h *Handler) VerifyAccessToken(token string) bool {
+func (h *Handler) VerifyAccessToken(token string) (*AccessPrincipal, bool) {
 	if h.cfg.APIToken == "" {
-		return false
+		return nil, false
 	}
-	_, err := verifyToken(h.cfg.APIToken, token)
-	return err == nil
+	claims, err := verifyToken(h.cfg.APIToken, token)
+	if err != nil {
+		return nil, false
+	}
+	return &AccessPrincipal{Subject: claims.Sub, Scopes: claims.Scopes, Legacy: len(claims.Scopes) == 0}, true
 }

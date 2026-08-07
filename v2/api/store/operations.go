@@ -13,11 +13,12 @@ import (
 )
 
 type OperationFilter struct {
-	App    string
-	Kind   string
-	Status string
-	Active bool
-	Limit  int
+	App       string
+	Kind      string
+	Status    string
+	ExcludeID string
+	Active    bool
+	Limit     int
 }
 
 type OperationMetric struct {
@@ -176,6 +177,9 @@ func (db *DB) ListOperations(ctx context.Context, filter OperationFilter) ([]mod
 	if filter.Status != "" {
 		add("status = $%d", filter.Status)
 	}
+	if filter.ExcludeID != "" {
+		add("id != $%d", filter.ExcludeID)
+	}
 	if filter.Active {
 		clauses = append(clauses, "status IN ('queued', 'running')")
 	}
@@ -207,6 +211,61 @@ func (db *DB) ListOperations(ctx context.Context, filter OperationFilter) ([]mod
 	return out, rows.Err()
 }
 
+func (db *DB) GetOperation(ctx context.Context, id string) (*model.Operation, error) {
+	var op model.Operation
+	var payload, metadata []byte
+	err := db.Pool.QueryRow(ctx, `
+		SELECT id, kind, app, saga_id, ref, status, risk, source, message, payload, metadata,
+		       attempts, max_attempts, locked_by, locked_until, next_attempt_at, last_error,
+		       started_at, updated_at, finished_at
+		FROM operations WHERE id = $1
+	`, id).Scan(
+		&op.ID, &op.Kind, &op.App, &op.SagaID, &op.Ref, &op.Status, &op.Risk, &op.Source, &op.Message,
+		&payload, &metadata, &op.Attempts, &op.MaxAttempts, &op.LockedBy, &op.LockedUntil,
+		&op.NextAttemptAt, &op.LastError, &op.StartedAt, &op.UpdatedAt, &op.FinishedAt,
+	)
+	if err != nil {
+		return nil, err
+	}
+	_ = json.Unmarshal(payload, &op.Payload)
+	_ = json.Unmarshal(metadata, &op.Metadata)
+	return &op, nil
+}
+
+func (db *DB) GetOperationByIdempotencyKey(ctx context.Context, key string) (*model.Operation, error) {
+	var id string
+	err := db.Pool.QueryRow(ctx, `SELECT id FROM operations WHERE metadata->>'idempotencyKey' = $1`, key).Scan(&id)
+	if err != nil {
+		return nil, err
+	}
+	return db.GetOperation(ctx, id)
+}
+
+func (db *DB) RenewOperationLease(ctx context.Context, id, workerID string, until time.Time) error {
+	_, err := db.Pool.Exec(ctx, `
+		UPDATE operations SET locked_until = $1, updated_at = now()
+		WHERE id = $2 AND locked_by = $3 AND status = 'running'
+	`, until, id, workerID)
+	return err
+}
+
+func (db *DB) RecoverMaintenanceOperations(ctx context.Context) error {
+	_, err := db.Pool.Exec(ctx, `
+		UPDATE operations
+		SET status = 'failed',
+		    message = 'maintenance executor stopped before recording completion; inspect host state before retrying',
+		    last_error = 'maintenance executor lease expired',
+		    locked_by = '',
+		    locked_until = NULL,
+		    updated_at = now(),
+		    finished_at = now()
+		WHERE status = 'running'
+		  AND (kind LIKE 'platform.%' OR kind LIKE 'host.%')
+		  AND (locked_until IS NULL OR locked_until < now())
+	`)
+	return err
+}
+
 func (db *DB) RecoverInFlightOperations(ctx context.Context) error {
 	_, err := db.Pool.Exec(ctx, `
 		UPDATE operations
@@ -217,6 +276,7 @@ func (db *DB) RecoverInFlightOperations(ctx context.Context) error {
 		    next_attempt_at = now(),
 		    updated_at = now()
 		WHERE status = 'running'
+		  AND kind LIKE 'app.%'
 		  AND attempts < max_attempts
 		  AND (
 		    kind != 'app.deploy'
@@ -241,6 +301,7 @@ func (db *DB) RecoverInFlightOperations(ctx context.Context) error {
 		    updated_at = now(),
 		    finished_at = now()
 		WHERE status = 'running'
+		  AND kind LIKE 'app.%'
 	`)
 	return err
 }

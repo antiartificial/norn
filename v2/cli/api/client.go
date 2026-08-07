@@ -852,6 +852,43 @@ func (c *Client) ListOperations(active bool, limit int) ([]Operation, error) {
 	return resp.Operations, nil
 }
 
+func (c *Client) GetOperation(id string) (*Operation, error) {
+	var op Operation
+	if err := c.get("/api/v1/operations/"+url.PathEscape(id), &op); err != nil {
+		return nil, err
+	}
+	return &op, nil
+}
+
+func (c *Client) QueuePlatformPreflight(ref string) (*Operation, error) {
+	return c.queueMaintenance("/api/v1/platform/preflights", map[string]interface{}{"ref": ref})
+}
+
+func (c *Client) QueuePlatformUpgrade(ref, mode, drainMode string) (*Operation, error) {
+	return c.queueMaintenance("/api/v1/platform/upgrades", map[string]interface{}{"ref": ref, "mode": mode, "drainMode": drainMode})
+}
+
+func (c *Client) QueuePlatformSmoke() (*Operation, error) {
+	return c.queueMaintenance("/api/v1/platform/smoke", map[string]interface{}{})
+}
+
+func (c *Client) QueuePlatformRollback(sha string) (*Operation, error) {
+	return c.queueMaintenance("/api/v1/platform/rollbacks", map[string]interface{}{"sha": sha})
+}
+
+func (c *Client) QueueHostAssurance() (*Operation, error) {
+	return c.queueMaintenance("/api/v1/host/assurances", map[string]interface{}{})
+}
+
+func (c *Client) queueMaintenance(path string, request map[string]interface{}) (*Operation, error) {
+	body, _ := json.Marshal(request)
+	var op Operation
+	if err := c.postJSON(path, string(body), &op); err != nil {
+		return nil, err
+	}
+	return &op, nil
+}
+
 func (c *Client) ListEvents(app, eventType, severity string, limit int) ([]BeaconEvent, int, error) {
 	values := url.Values{}
 	if app != "" {
@@ -1349,7 +1386,7 @@ func (c *Client) Exec(appID, process string, argv []string) (*websocket.Conn, er
 	if encoded := params.Encode(); encoded != "" {
 		wsURL += "?" + encoded
 	}
-	conn, _, err := websocket.DefaultDialer.Dial(wsURL, nil)
+	conn, _, err := websocket.DefaultDialer.Dial(wsURL, c.WebSocketHeaders())
 	if err != nil {
 		return nil, fmt.Errorf("exec websocket: %w", err)
 	}
@@ -1550,13 +1587,14 @@ func (c *Client) ApplySnapshotRetention(appID string, keep int, confirm bool) (*
 }
 
 type AccessToken struct {
-	Token     string `json:"token"`
-	ExpiresAt string `json:"expiresAt"`
-	Note      string `json:"note"`
+	Token     string   `json:"token"`
+	ExpiresAt string   `json:"expiresAt"`
+	Note      string   `json:"note"`
+	Scopes    []string `json:"scopes"`
 }
 
-func (c *Client) CreateAccessToken(note, ttl string) (*AccessToken, error) {
-	body, _ := json.Marshal(map[string]string{"note": note, "ttl": ttl})
+func (c *Client) CreateAccessToken(note, ttl string, scopes []string) (*AccessToken, error) {
+	body, _ := json.Marshal(map[string]interface{}{"note": note, "ttl": ttl, "scopes": scopes})
 	var token AccessToken
 	if err := c.postJSON("/api/access/tokens", string(body), &token); err != nil {
 		return nil, err
@@ -1684,7 +1722,7 @@ func (c *Client) FunctionHistory(appID string) ([]FuncExecution, error) {
 }
 
 func (c *Client) WebSocketURL() string {
-	return c.WebSocketURLFor("/ws")
+	return c.WebSocketURLFor("/api/v1/events")
 }
 
 func (c *Client) WebSocketURLFor(path string) string {
@@ -1692,6 +1730,14 @@ func (c *Client) WebSocketURLFor(path string) string {
 	base = strings.Replace(base, "http://", "ws://", 1)
 	base = strings.Replace(base, "https://", "wss://", 1)
 	return base + path
+}
+
+func (c *Client) WebSocketHeaders() http.Header {
+	headers := http.Header{}
+	if c.Token != "" {
+		headers.Set("Authorization", "Bearer "+c.Token)
+	}
+	return headers
 }
 
 // HTTP helpers

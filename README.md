@@ -185,7 +185,7 @@ norn/
 | GET | `/api/apps/:id/secrets` | List secret names |
 | PUT | `/api/apps/:id/secrets` | Update secrets |
 | GET | `/api/apps/:id/snapshots` | List DB snapshots |
-| WS | `/ws` | Real-time events |
+| WS | `/api/v1/events` | Authenticated real-time events with cursor replay (`/ws` compatibility alias) |
 
 ## v2 (Nomad/Consul/Tailscale)
 
@@ -219,16 +219,18 @@ Apps with `endpoints` in their infraspec get static ports. Gitea uses a dynamic 
 ### v2 CLI
 
 ```bash
-cd v2 && make build    # builds bin/norn-api + bin/norn
+cd v2 && make build    # builds bin/norn-api + bin/norn + bin/norn-host-agent
 bin/norn status        # list all apps
 bin/norn preflight <app> HEAD # validate, build, and test without deploying
 bin/norn deploy <app> HEAD   # deploy latest commit
 bin/norn platform preflight HEAD # build and health-check a candidate Norn release
 bin/norn platform upgrade HEAD   # promote Norn itself with rollback-capable postflight
+bin/norn platform queue-upgrade HEAD # durable upgrade through the independent host agent
 bin/norn platform releases       # list local Norn release dirs
 bin/norn host status             # check persistent host runtime readiness
 bin/norn host recover            # recover Docker, Consul, Nomad, and Norn
 bin/norn host assure             # repair required apps/routes and probe real endpoints
+bin/norn host queue-assure       # queue assurance and wait for its durable receipt
 bin/norn operations --active     # inspect active operation drain state
 bin/norn webhooks                # inspect webhook delivery inbox
 bin/norn scale <app> <n>     # scale up/down
@@ -243,6 +245,7 @@ When Norn is running as the local LaunchAgent `com.norn.api`, upgrade only the A
 cd /Users/0xadb/projects/norn
 norn platform preflight HEAD
 norn platform upgrade HEAD
+norn platform queue-upgrade HEAD
 norn version
 norn ops platform
 ```
@@ -257,6 +260,7 @@ and Consul state outside `/tmp`:
 ```bash
 norn host install --repo /path/to/norn
 norn host assure
+norn host queue-assure
 norn host status
 norn host doctor
 ```

@@ -1,4 +1,6 @@
 export interface HubEventBase<TType extends string, TPayload = Record<string, unknown>> {
+  id?: number
+  timestamp?: string
   type: TType
   appId?: string
   payload: TPayload

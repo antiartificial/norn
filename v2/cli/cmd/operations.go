@@ -23,10 +23,19 @@ func init() {
 }
 
 var operationsCmd = &cobra.Command{
-	Use:     "operations",
+	Use:     "operations [operation-id]",
 	Aliases: []string{"opslog", "oplog"},
 	Short:   "List durable Norn operation records",
+	Args:    cobra.MaximumNArgs(1),
 	RunE: func(cmd *cobra.Command, args []string) error {
+		if len(args) == 1 {
+			op, err := client.GetOperation(args[0])
+			if err != nil {
+				return err
+			}
+			printOperations([]api.Operation{*op})
+			return nil
+		}
 		ops, err := client.ListOperations(operationsActive, operationsLimit)
 		if err != nil {
 			return err
@@ -44,6 +53,7 @@ func printOperations(ops []api.Operation) {
 	}
 	w := tabwriter.NewWriter(os.Stdout, 0, 0, 2, ' ', 0)
 	fmt.Fprintln(w, style.TableHeader.Render("TIME")+"\t"+
+		style.TableHeader.Render("ID")+"\t"+
 		style.TableHeader.Render("STATUS")+"\t"+
 		style.TableHeader.Render("KIND")+"\t"+
 		style.TableHeader.Render("APP")+"\t"+
@@ -56,8 +66,9 @@ func printOperations(ops []api.Operation) {
 		if op.MaxAttempts > 0 {
 			attempts = fmt.Sprintf("%d/%d", op.Attempts, op.MaxAttempts)
 		}
-		fmt.Fprintf(w, "%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n",
+		fmt.Fprintf(w, "%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n",
 			localTime(op.StartedAt),
+			shortValue(op.ID, 12),
 			op.Status,
 			op.Kind,
 			emptyDash(op.App),

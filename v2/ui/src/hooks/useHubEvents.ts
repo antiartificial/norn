@@ -11,6 +11,7 @@ let ws: WebSocket | null = null
 let reconnectTimer: ReturnType<typeof setTimeout> | undefined
 let active = false
 let connected = false
+let lastEventId = 0
 
 function emit(event: HubEvent) {
   for (const subscriber of subscribers) subscriber(event)
@@ -23,11 +24,15 @@ function setConnected(next: boolean) {
 
 function connect() {
   if (!active || ws) return
-  ws = new WebSocket(wsUrl())
+  const url = new URL(wsUrl())
+  if (lastEventId > 0) url.searchParams.set('after', String(lastEventId))
+  ws = new WebSocket(url.toString())
   ws.onopen = () => setConnected(true)
   ws.onmessage = (message) => {
     try {
-      emit(JSON.parse(message.data) as HubEvent)
+      const event = JSON.parse(message.data) as HubEvent
+      if (typeof event.id === 'number' && event.id > lastEventId) lastEventId = event.id
+      emit(event)
     } catch {
       // ignore malformed messages
     }

@@ -8,17 +8,23 @@ Norn treats upgrades to Norn itself as a separate platform lane. App deploys mut
 norn platform preflight HEAD
 norn platform upgrade HEAD
 norn platform upgrade HEAD --proxy
+norn platform queue-preflight HEAD
+norn platform queue-upgrade HEAD
+norn platform queue-rollback <sha-prefix>
 ```
 
-The command shells out to `v2/scripts/platform-upgrade` on the host that owns the Norn checkout. The script:
+The direct commands shell out to `v2/scripts/platform-upgrade` on the host that
+owns the Norn checkout. The `queue-*` commands create durable control API
+operations claimed by the independent `norn-host-agent`; the agent invokes the
+same fixed script subcommands and survives the API restart. The script:
 
 1. Resolves the requested git ref.
 2. Creates an isolated git worktree for that exact commit.
-3. Builds UI, API, and CLI into `$HOME/norn/releases/<sha>`.
+3. Builds UI, API, CLI, host agent, and managed scripts into `$HOME/norn/releases/<sha>`.
 4. Starts the candidate API on `127.0.0.1:18800`.
 5. Sets `NORN_SKIP_DEPLOYMENT_RECOVERY=true`, `NORN_SKIP_OPERATION_RECOVERY=true`, and `NORN_SKIP_OPERATION_WORKER=true` for the candidate so it does not mark running work failed or claim queued work.
 6. Checks `/api/health` and `/api/version`.
-7. On normal upgrade, flips `$HOME/norn/current`, installs compatibility binaries to `$HOME/go/bin`, restarts `com.norn.api`, and runs postflight health.
+7. On normal upgrade, flips `$HOME/norn/current`, installs compatibility binaries and the managed host-agent lane, restarts `com.norn.api`, and runs postflight health.
 8. If postflight fails and a previous current release exists, flips back, reinstalls the previous binaries, and restarts again.
 
 This is low-invasive: active dashboard sessions and websocket streams reconnect, but hosted apps continue running.
@@ -56,7 +62,9 @@ If the active API is too old or auth is unavailable, the drain check logs a warn
 
 ## Durable Operations Queue
 
-Norn now stores a durable operations queue in control-plane Postgres. App deploys, app preflights, and app rollbacks create operation rows with compact status, risk, app, ref, saga id, timing, payload, attempts, lease owner, lease expiry, next attempt, and last error.
+Norn stores app, platform, and host work in a durable operations queue in
+control-plane Postgres. Rows carry compact status, risk, ref, timing, payload,
+attempts, lease owner, lease expiry, next attempt, and last error.
 
 The queue lives in the same control-plane Postgres table family, not Nomad, Redis, Valkey, or an app container.
 
@@ -67,7 +75,10 @@ Reasons:
 - The API can claim rows with `FOR UPDATE SKIP LOCKED`, making workers safe across restart or future multiple API instances.
 - Saga events remain the immutable user-facing log; queue rows only track claim state, retries, and resumability.
 
-The first worker runs inside `norn-api` and executes one job at a time. API handlers enqueue work and return a saga id immediately. A restarted API reclaims queued jobs and failed/expired preflight attempts. Read-only preflight jobs can retry safely. App deploy jobs are queued and protected by drain gates, but a process interruption during mutable deploy execution is marked failed instead of blindly replaying snapshot, migration, or Nomad submit stages.
+The app worker runs inside `norn-api`. A separate `norn-host-agent` claims only
+allow-listed platform and host kinds, renews its lease, and records bounded
+receipts plus durable control events. A restarted API leaves those active
+maintenance leases untouched.
 
 Current queued job types:
 
@@ -76,15 +87,15 @@ Current queued job types:
 | `app.preflight` | Run validation, source prep, build, and tests with safe retries |
 | `app.deploy` | Queue app deploys and run them under worker/drain visibility |
 | `app.rollback` | Queue app rollback through the same worker/drain lane |
-
-Deploy and rollback execution writes durable stage rows to `deployment_steps`. On restart, interrupted deploys are requeued only if no mutable stage has started. Mutable stages include snapshot, migration, Nomad submit, health, forge, and cleanup.
-
-Good next queued job types:
-
-| Kind | Purpose |
-|------|---------|
 | `platform.preflight` | Build and candidate-health-check a platform release from the API/UI |
 | `platform.upgrade` | Promote a preflighted release and run rollback-capable postflight |
+| `platform.smoke` | Run authenticated platform smoke outside the API process |
+| `host.assure` | Repair allow-listed host services/routes and probe endpoints |
+
+Deploy and rollback execution writes durable stage rows to `deployment_steps`.
+On restart, interrupted deploys are requeued only if no mutable stage has
+started. Mutable stages include snapshot, migration, Nomad submit, health,
+forge, and cleanup.
 
 ## Old/New API Side By Side
 
