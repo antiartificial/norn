@@ -3,7 +3,7 @@ set -euo pipefail
 
 usage() {
   cat <<'USAGE'
-Usage: host-runtime <install|render|doctor|recover|status|migrate-state> [options]
+Usage: host-runtime <install|render|doctor|recover|assure|status|migrate-state> [options]
 
 Manage a persistent macOS Norn runtime without embedding machine-specific paths
 in the repository.
@@ -18,6 +18,11 @@ Options:
   --address ADDRESS     Advertise/bind address (default: auto-detected IPv4)
   --api-label LABEL     Norn API launchd label (default: com.norn.api)
   --catch-up APP:PROC   Trigger a bounded cron catch-up after recovery (repeatable)
+  --required APP:PROC   Assure a required app process is passing (repeatable)
+  --probe NAME=URL      Probe a user-facing HTTP endpoint (repeatable)
+  --serve PORT=TARGET   Reconcile a Tailscale Serve route; TARGET may contain {address}
+  --forge APP           Reconcile an app's public Cloudflare routes (repeatable)
+  --assure-interval N   Periodic assurance interval in seconds (default: 300)
   --from-nomad PATH     Stopped Nomad state source for migrate-state
   --from-consul PATH    Stopped Consul state source for migrate-state
   --dry-run             Print planned writes/actions
@@ -59,7 +64,21 @@ api_label="${NORN_HOST_API_LABEL:-com.norn.api}"
 from_nomad=""
 from_consul=""
 dry_run=false
-catch_up_specs=()
+catch_up_specs=""
+required_specs=""
+probe_specs=""
+serve_specs=""
+forge_specs=""
+assure_interval="${NORN_HOST_ASSURE_INTERVAL:-300}"
+
+append_spec() {
+  local current="$1" value="$2"
+  if [ -n "$current" ]; then
+    printf '%s\n%s\n' "$current" "$value"
+  else
+    printf '%s\n' "$value"
+  fi
+}
 
 while [ "$#" -gt 0 ]; do
   case "$1" in
@@ -71,7 +90,15 @@ while [ "$#" -gt 0 ]; do
     --consul-source) consul_source="$2"; shift 2 ;;
     --address) address="$2"; shift 2 ;;
     --api-label) api_label="$2"; shift 2 ;;
-    --catch-up) catch_up_specs+=("$2"); shift 2 ;;
+    --catch-up)
+      catch_up_specs="$(append_spec "$catch_up_specs" "$2")"
+      shift 2
+      ;;
+    --required) required_specs="$(append_spec "$required_specs" "$2")"; shift 2 ;;
+    --probe) probe_specs="$(append_spec "$probe_specs" "$2")"; shift 2 ;;
+    --serve) serve_specs="$(append_spec "$serve_specs" "$2")"; shift 2 ;;
+    --forge) forge_specs="$(append_spec "$forge_specs" "$2")"; shift 2 ;;
+    --assure-interval) assure_interval="$2"; shift 2 ;;
     --from-nomad) from_nomad="$2"; shift 2 ;;
     --from-consul) from_consul="$2"; shift 2 ;;
     --dry-run) dry_run=true; shift ;;
@@ -87,6 +114,12 @@ launch_agents="$HOME/Library/LaunchAgents"
 runtime_copy="$config_dir/bin/host-runtime"
 norn_copy="$config_dir/bin/norn"
 catch_up_file="$config_dir/catch-up-jobs"
+required_file="$config_dir/assure-required"
+probe_file="$config_dir/assure-probes"
+serve_file="$config_dir/assure-serve"
+forge_file="$config_dir/assure-forge"
+assure_state="$state_dir/assurance-failed"
+assure_lock="$state_dir/assurance.lock"
 nomad_config="$config_dir/nomad.hcl"
 consul_config="$config_dir/consul.hcl"
 nomad_source_copy="$config_dir/sources/nomad.hcl"
@@ -96,6 +129,7 @@ consul_state="$state_dir/consul"
 nomad_label="com.norn.nomad"
 consul_label="com.norn.consul"
 supervisor_label="com.norn.host-supervisor"
+assurance_label="com.norn.host-assurance"
 
 if [ -z "$repo" ]; then
   script_dir="$(cd "$(dirname "$0")" && pwd)"
@@ -194,6 +228,21 @@ text = pathlib.Path(source).read_text()
 text, count = re.subn(r'(?m)^data_dir\s*=\s*"[^"]*"', f'data_dir = "{state}"', text, count=1)
 if count == 0:
     text = f'data_dir = "{state}"\n' + text
+text, count = re.subn(
+    r'(?m)^(\s*preferred_address_family\s*=\s*)"[^"]*"',
+    r'\1"ipv4"',
+    text,
+    count=1,
+)
+if count == 0:
+    text, count = re.subn(
+        r'(?m)^(\s*client\s*\{\s*)$',
+        lambda match: f'{match.group(1)}\n  preferred_address_family = "ipv4"',
+        text,
+        count=1,
+    )
+if count == 0:
+    raise SystemExit("Nomad source config has no client block")
 for key in ("http", "rpc", "serf"):
     text = re.sub(
         rf'(?m)^(\s*{key}\s*=\s*)"[^"]*"',
@@ -278,11 +327,79 @@ $repo_args
 EOF
 }
 
+assurance_plist() {
+  local repo_args=""
+  if [ -n "$repo" ]; then
+    repo_args="    <string>--repo</string><string>$repo</string>"
+  fi
+  cat <<EOF
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+  <key>Label</key><string>$assurance_label</string>
+  <key>ProgramArguments</key>
+  <array>
+    <string>$runtime_copy</string>
+    <string>assure</string>
+$repo_args
+    <string>--config-dir</string><string>$config_dir</string>
+    <string>--state-dir</string><string>$state_dir</string>
+    <string>--log-dir</string><string>$log_dir</string>
+    <string>--api-label</string><string>$api_label</string>
+  </array>
+  <key>StartInterval</key><integer>$assure_interval</integer>
+  <key>ProcessType</key><string>Background</string>
+  <key>EnvironmentVariables</key>
+  <dict><key>PATH</key><string>/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin</string></dict>
+  <key>StandardOutPath</key><string>$log_dir/$assurance_label.log</string>
+  <key>StandardErrorPath</key><string>$log_dir/$assurance_label.log</string>
+</dict>
+</plist>
+EOF
+}
+
+validate_install_specs() {
+  local spec name value extra
+  case "$assure_interval" in
+    ''|*[!0-9]*) die "--assure-interval must be an integer" ;;
+  esac
+  [ "$assure_interval" -ge 60 ] || die "--assure-interval must be at least 60 seconds"
+  while IFS= read -r spec; do
+    [ -n "$spec" ] || continue
+    case "$spec" in *:*) ;; *) die "invalid --required value (expected APP:PROCESS): $spec" ;; esac
+  done <<EOF
+$required_specs
+EOF
+  while IFS= read -r spec; do
+    [ -n "$spec" ] || continue
+    case "$spec" in *=http://*|*=https://*) ;; *) die "invalid --probe value (expected NAME=URL): $spec" ;; esac
+  done <<EOF
+$probe_specs
+EOF
+  while IFS= read -r spec; do
+    [ -n "$spec" ] || continue
+    name="${spec%%=*}"
+    value="${spec#*=}"
+    case "$name" in ''|*[!0-9]*) die "invalid --serve port: $name" ;; esac
+    case "$value" in http://*|https://*) ;; *) die "invalid --serve target (expected URL): $value" ;; esac
+  done <<EOF
+$serve_specs
+EOF
+  while IFS= read -r spec; do
+    [ -n "$spec" ] || continue
+    case "$spec" in *[!a-zA-Z0-9._-]*) die "invalid --forge app: $spec" ;; esac
+  done <<EOF
+$forge_specs
+EOF
+}
+
 install_files() {
   [ "$(uname -s)" = "Darwin" ] || die "launchd host install currently supports macOS only"
   [ -f "$nomad_source" ] || die "Nomad source config not found: $nomad_source"
   [ -f "$consul_source" ] || die "Consul source config not found: $consul_source"
   local nomad_bin consul_bin script_self norn_cli spec
+  validate_install_specs
   nomad_bin="$(command_path nomad)" || die "nomad binary not found"
   consul_bin="$(command_path consul)" || die "consul binary not found"
   script_self="$(cd "$(dirname "$0")" && pwd)/$(basename "$0")"
@@ -290,14 +407,17 @@ install_files() {
   if [ -z "$norn_cli" ]; then
     norn_cli="$(command_path norn 2>/dev/null || true)"
   fi
-  for spec in "${catch_up_specs[@]}"; do
+  while IFS= read -r spec; do
+    [ -n "$spec" ] || continue
     case "$spec" in
       *:*) ;;
       *) die "invalid --catch-up value (expected APP:PROCESS): $spec" ;;
     esac
-  done
-  if [ "${#catch_up_specs[@]}" -gt 0 ] && { [ -z "$norn_cli" ] || [ ! -x "$norn_cli" ]; }; then
-    die "the norn CLI is required when --catch-up is configured"
+  done <<EOF
+$catch_up_specs
+EOF
+  if [ -n "$catch_up_specs$required_specs$forge_specs" ] && { [ -z "$norn_cli" ] || [ ! -x "$norn_cli" ]; }; then
+    die "the norn CLI is required when catch-up or assurance actions are configured"
   fi
   if $dry_run; then
     note "would install managed runtime under $config_dir and $state_dir"
@@ -316,9 +436,14 @@ install_files() {
   plist "$consul_label" "$consul_bin" "-config-file" "$consul_config" | write_file "$launch_agents/$consul_label.plist" 644
   plist "$nomad_label" "$nomad_bin" "-config" "$nomad_config" | write_file "$launch_agents/$nomad_label.plist" 644
   supervisor_plist | write_file "$launch_agents/$supervisor_label.plist" 644
-  if [ "${#catch_up_specs[@]}" -gt 0 ]; then
-    printf '%s\n' "${catch_up_specs[@]}" | write_file "$catch_up_file" 600
+  assurance_plist | write_file "$launch_agents/$assurance_label.plist" 644
+  if [ -n "$catch_up_specs" ]; then
+    printf '%s\n' "$catch_up_specs" | write_file "$catch_up_file" 600
   fi
+  if [ -n "$required_specs" ]; then printf '%s\n' "$required_specs" | write_file "$required_file" 600; fi
+  if [ -n "$probe_specs" ]; then printf '%s\n' "$probe_specs" | write_file "$probe_file" 600; fi
+  if [ -n "$serve_specs" ]; then printf '%s\n' "$serve_specs" | write_file "$serve_file" 600; fi
+  if [ -n "$forge_specs" ]; then printf '%s\n' "$forge_specs" | write_file "$forge_file" 600; fi
   note "installed launchd files; live services were not interrupted"
   note "next: stop live agents, run migrate-state, then run recover"
 }
@@ -377,6 +502,289 @@ bootstrap_label() {
   launchctl kickstart "$domain/$label"
 }
 
+load_periodic_label() {
+  local label="$1" path="$2" domain="gui/$(id -u)" attempt
+  launchctl bootout "$domain/$label" >/dev/null 2>&1 || true
+  for attempt in $(seq 1 20); do
+    launchctl print "$domain/$label" >/dev/null 2>&1 || break
+    sleep 1
+  done
+  for attempt in $(seq 1 10); do
+    if launchctl bootstrap "$domain" "$path"; then
+      launchctl enable "$domain/$label" >/dev/null 2>&1 || true
+      return 0
+    fi
+    [ "$attempt" -lt 10 ] || die "could not bootstrap $label after $attempt attempts"
+    sleep "$attempt"
+  done
+}
+
+assure_errors=""
+
+record_assurance_failure() {
+  if [ -n "$assure_errors" ]; then
+    assure_errors="$assure_errors
+$1"
+  else
+    assure_errors="$1"
+  fi
+  note "fail: $1"
+}
+
+service_passing_ipv4() {
+  local service="$1"
+  curl -fsS --max-time 3 "http://127.0.0.1:8500/v1/health/service/$service?passing=true" 2>/dev/null |
+    python3 -c '
+import ipaddress, json, sys
+try:
+    instances = json.load(sys.stdin)
+except Exception:
+    raise SystemExit(1)
+for item in instances:
+    service = item.get("Service") or {}
+    node = item.get("Node") or {}
+    address = service.get("Address") or node.get("Address") or ""
+    checks = item.get("Checks") or []
+    try:
+        ipv4 = ipaddress.ip_address(address).version == 4
+    except ValueError:
+        ipv4 = False
+    if ipv4 and checks and all(check.get("Status") == "passing" for check in checks):
+        raise SystemExit(0)
+raise SystemExit(1)
+'
+}
+
+job_exists() {
+  local app="$1" code
+  code="$(curl -sS --max-time 3 -o /dev/null -w '%{http_code}' "http://127.0.0.1:4646/v1/job/$app" 2>/dev/null || true)"
+  [ "$code" = "200" ]
+}
+
+wait_required_service() {
+  local service="$1" attempt=0
+  while [ "$attempt" -lt 24 ]; do
+    if service_passing_ipv4 "$service"; then
+      return 0
+    fi
+    attempt=$((attempt + 1))
+    sleep 5
+  done
+  return 1
+}
+
+run_managed_norn() {
+  [ -x "$norn_copy" ] || { record_assurance_failure "managed norn CLI is missing"; return 1; }
+  NORN_PLATFORM_REPO="$repo" "$norn_copy" "$@"
+}
+
+assure_required_service() {
+  local app="$1" process="$2" service="$app-$process" attempt=0 action=""
+  while [ "$attempt" -lt 3 ]; do
+    if service_passing_ipv4 "$service"; then
+      note "ok: required service $service is passing on IPv4"
+      return 0
+    fi
+    attempt=$((attempt + 1))
+    [ "$attempt" -lt 3 ] && sleep 2
+  done
+
+  if job_exists "$app"; then
+    action="restart"
+    note "repair: restarting unhealthy required app $app"
+    if ! run_managed_norn restart "$app"; then
+      record_assurance_failure "could not restart required app $app"
+      return 1
+    fi
+  else
+    action="deploy"
+    note "repair: deploying absent required app $app"
+    if ! run_managed_norn deploy "$app" HEAD; then
+      record_assurance_failure "could not deploy absent required app $app"
+      return 1
+    fi
+  fi
+
+  if wait_required_service "$service"; then
+    note "ok: required service $service recovered after $action"
+    return 0
+  fi
+  record_assurance_failure "required service $service is not passing on IPv4 after $action"
+  return 1
+}
+
+assure_nomad_ipv4() {
+  if curl -fsS --max-time 3 http://127.0.0.1:4646/v1/nodes 2>/dev/null |
+    python3 -c '
+import ipaddress, json, sys
+try:
+    nodes = json.load(sys.stdin)
+except Exception:
+    raise SystemExit(1)
+for node in nodes:
+    if node.get("Status") != "ready":
+        continue
+    attributes = node.get("Attributes") or {}
+    address = attributes.get("unique.network.ip-address") or node.get("Address") or ""
+    try:
+        if ipaddress.ip_address(address).version == 4:
+            raise SystemExit(0)
+    except ValueError:
+        pass
+raise SystemExit(1)
+'; then
+    note "ok: Nomad has a ready IPv4 node"
+    return 0
+  fi
+  record_assurance_failure "Nomad has no ready IPv4 node"
+  return 1
+}
+
+reconcile_serve_routes() {
+  [ -s "$serve_file" ] || return 0
+  local tailscale_bin spec port target detected
+  tailscale_bin="$(command_path tailscale 2>/dev/null || true)"
+  if [ -z "$tailscale_bin" ]; then
+    record_assurance_failure "tailscale CLI is missing but Serve routes are configured"
+    return 1
+  fi
+  detected="$(detect_address)"
+  while IFS= read -r spec; do
+    [ -n "$spec" ] || continue
+    port="${spec%%=*}"
+    target="${spec#*=}"
+    target="${target//\{address\}/$detected}"
+    if "$tailscale_bin" serve --bg --https="$port" "$target" >/dev/null; then
+      note "ok: Tailscale Serve :$port -> $target"
+    else
+      record_assurance_failure "could not reconcile Tailscale Serve :$port -> $target"
+    fi
+  done < "$serve_file"
+}
+
+reconcile_forge_routes() {
+  [ -s "$forge_file" ] || return 0
+  local app
+  while IFS= read -r app; do
+    [ -n "$app" ] || continue
+    if run_managed_norn forge "$app"; then
+      note "ok: public routes reconciled for $app"
+    else
+      record_assurance_failure "could not reconcile public routes for $app"
+    fi
+  done < "$forge_file"
+}
+
+run_endpoint_probes() {
+  [ -s "$probe_file" ] || return 0
+  local spec name url attempt
+  while IFS= read -r spec; do
+    [ -n "$spec" ] || continue
+    name="${spec%%=*}"
+    url="${spec#*=}"
+    attempt=0
+    while [ "$attempt" -lt 3 ]; do
+      if curl -fLsS --max-time 10 "$url" >/dev/null 2>&1; then
+        note "ok: probe $name ($url)"
+        break
+      fi
+      attempt=$((attempt + 1))
+      [ "$attempt" -lt 3 ] && sleep $((attempt * 2))
+    done
+    if [ "$attempt" -ge 3 ]; then
+      record_assurance_failure "probe $name failed: $url"
+    fi
+  done < "$probe_file"
+}
+
+emit_assurance_event() {
+  local severity="$1" event_type="$2" title="$3" body="$4" payload
+  payload="$(mktemp "${TMPDIR:-/tmp}/norn-assure-event.XXXXXX")"
+  python3 - "$payload" "$severity" "$event_type" "$title" "$body" <<'PY'
+import json, pathlib, sys
+path, severity, event_type, title, body = sys.argv[1:]
+pathlib.Path(path).write_text(json.dumps({
+    "app": "norn-host",
+    "type": event_type,
+    "severity": severity,
+    "title": title,
+    "body": body,
+    "dedupeKey": "norn-host:" + event_type,
+    "metadata": {"correlationKey": "norn-host:assurance", "stage": "assure"},
+}))
+PY
+  if ! curl -fsS --max-time 5 -H 'Content-Type: application/json' --data-binary "@$payload" \
+    http://127.0.0.1:8800/api/events >/dev/null 2>&1; then
+    note "warning: could not emit Beacon event $event_type"
+  fi
+  rm -f "$payload"
+}
+
+assure_host() {
+  assure_errors=""
+  mkdir -p "$state_dir"
+  if ! mkdir "$assure_lock" 2>/dev/null; then
+    local lock_pid=""
+    [ -f "$assure_lock/pid" ] && lock_pid="$(sed -n '1p' "$assure_lock/pid" 2>/dev/null || true)"
+    if [ -n "$lock_pid" ] && kill -0 "$lock_pid" 2>/dev/null; then
+      note "assurance already running as pid $lock_pid; skipping overlapping pass"
+      return 0
+    fi
+    rm -f "$assure_lock/pid"
+    rmdir "$assure_lock" 2>/dev/null || true
+    mkdir "$assure_lock" 2>/dev/null || {
+      note "assurance lock is unavailable; skipping overlapping pass"
+      return 0
+    }
+  fi
+  printf '%s\n' "$$" > "$assure_lock/pid"
+  trap 'rm -f "$assure_lock/pid"; rmdir "$assure_lock" 2>/dev/null || true' EXIT
+
+  local item spec app process extra core_ready=true
+  for item in consul nomad norn; do
+    if curl -fsS --max-time 3 "$(runtime_url "$item")" >/dev/null 2>&1; then
+      note "ok: runtime $item"
+    else
+      record_assurance_failure "runtime $item is unavailable"
+      core_ready=false
+    fi
+  done
+
+  if $core_ready; then
+    assure_nomad_ipv4 || true
+    if [ -s "$required_file" ]; then
+      while IFS=: read -r app process extra; do
+        [ -n "$app" ] && [ -n "$process" ] && [ -z "$extra" ] || {
+          record_assurance_failure "invalid required service entry: $app:$process${extra:+:$extra}"
+          continue
+        }
+        assure_required_service "$app" "$process" || true
+      done < "$required_file"
+    fi
+    reconcile_forge_routes || true
+  fi
+  reconcile_serve_routes || true
+  run_endpoint_probes || true
+
+  if [ -n "$assure_errors" ]; then
+    printf '%s\n' "$assure_errors" > "$assure_state"
+    emit_assurance_event critical host.assurance.failed "Norn host assurance failed" "$assure_errors"
+    rm -f "$assure_lock/pid"
+    rmdir "$assure_lock" 2>/dev/null || true
+    trap - EXIT
+    return 1
+  fi
+
+  if [ -f "$assure_state" ]; then
+    emit_assurance_event info host.assurance.recovered "Norn host assurance recovered" "All required services, routes, and endpoint probes are passing."
+    rm -f "$assure_state"
+  fi
+  note "host assurance complete"
+  rm -f "$assure_lock/pid"
+  rmdir "$assure_lock" 2>/dev/null || true
+  trap - EXIT
+}
+
 recover_host() {
   [ -f "$launch_agents/$consul_label.plist" ] || die "managed launchd files missing: run install"
   render_configs
@@ -400,6 +808,10 @@ recover_host() {
   launchctl kickstart -k "gui/$(id -u)/$api_label"
   wait_http "$(runtime_url norn)" norn
   run_catchups
+  if ! assure_host; then
+    note "warning: host assurance failed; periodic assurance will retry"
+  fi
+  load_periodic_label "$assurance_label" "$launch_agents/$assurance_label.plist"
   if [ -x "$config_dir/post-recover" ]; then
     "$config_dir/post-recover"
   fi
@@ -437,10 +849,10 @@ doctor() {
       failures=$((failures + 1))
     fi
   done
-  for path in "$nomad_config" "$consul_config" "$launch_agents/$nomad_label.plist" "$launch_agents/$consul_label.plist" "$launch_agents/$supervisor_label.plist"; do
+  for path in "$nomad_config" "$consul_config" "$launch_agents/$nomad_label.plist" "$launch_agents/$consul_label.plist" "$launch_agents/$supervisor_label.plist" "$launch_agents/$assurance_label.plist"; do
     if [ -f "$path" ]; then echo "ok   file=$path"; else echo "fail file=$path"; failures=$((failures + 1)); fi
   done
-  for path in "$launch_agents/$nomad_label.plist" "$launch_agents/$consul_label.plist" "$launch_agents/$supervisor_label.plist"; do
+  for path in "$launch_agents/$nomad_label.plist" "$launch_agents/$consul_label.plist" "$launch_agents/$supervisor_label.plist" "$launch_agents/$assurance_label.plist"; do
     if [ -f "$path" ] && plutil -lint "$path" >/dev/null 2>&1; then
       echo "ok   plist=$path"
     elif [ -f "$path" ]; then
@@ -477,6 +889,13 @@ status() {
     echo "armed $supervisor_label (runs at next login)"
   else
     echo "down $supervisor_label"
+  fi
+  if launchctl print "gui/$(id -u)/$assurance_label" >/dev/null 2>&1; then
+    echo "armed $assurance_label interval=${assure_interval}s"
+  elif [ -f "$launch_agents/$assurance_label.plist" ]; then
+    echo "written $assurance_label (loads during recovery)"
+  else
+    echo "down $assurance_label"
   fi
   for item in consul nomad norn; do
     if curl -fsS --max-time 2 "$(runtime_url "$item")" >/dev/null 2>&1; then echo "up   $item"; else echo "down $item"; fi
@@ -520,6 +939,7 @@ case "$mode" in
   render) render_configs ;;
   doctor) doctor ;;
   recover) recover_host ;;
+  assure) assure_host ;;
   status) status ;;
   migrate-state) migrate_state ;;
   supervise) supervise ;;

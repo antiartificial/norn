@@ -8,8 +8,10 @@ reboot, and Docker Desktop restarts without rebuilding every app.
 - Persistent Nomad and Consul data outside `/tmp`.
 - User launchd jobs for Nomad and Consul.
 - A one-shot launchd supervisor that starts Docker, waits for Consul and Nomad,
-  restarts the Norn API after its dependencies are ready, and runs an optional
-  post-recovery hook.
+  restarts the Norn API after its dependencies are ready, runs bounded catch-ups,
+  and performs an assurance pass before an optional post-recovery hook.
+- A periodic assurance LaunchAgent that repairs explicitly required apps and
+  routes, then probes the endpoints users actually reach.
 - Host diagnostics and concise status output.
 - Optional bounded cron catch-ups loaded through the encrypted API runtime
   environment.
@@ -39,6 +41,26 @@ The managed CLI loads the existing encrypted API runtime environment before it
 triggers the process. Catch-up failures are logged but do not mark the core host
 recovery as failed.
 
+Configure the assurance stage with an explicit allowlist. Required jobs may be
+deployed when absent or restarted when their Consul service is not passing on
+IPv4. Public routes are reconciled through Cloudflare, private routes through
+Tailscale Serve, and HTTP probes are retried after those repairs:
+
+```bash
+norn host install --repo /path/to/norn \
+  --required api:web \
+  --forge api \
+  --serve '8443=http://{address}:8443' \
+  --probe api-public=https://api.example.com/health \
+  --probe api-tailnet=https://host.example.ts.net:8443/health
+```
+
+`{address}` is replaced with the host's current IPv4 address on every pass, so
+Tailscale Serve does not retain a stale DHCP address. Only apps named with
+`--required` can be automatically deployed or restarted. Only apps named with
+`--forge` have public routes reconciled. Cloudflare reconciliation ignores
+`.norn`, `.ts.net`, local, internal, and literal-IP endpoints.
+
 ## One-time state migration
 
 Wait for active deploy operations and important batch allocations to drain.
@@ -58,12 +80,21 @@ It also rejects broad or empty destination paths.
 
 ```bash
 norn host recover
+norn host assure
 norn host status
 norn host doctor
 norn smoke platform
 ```
 
-At login, `com.norn.host-supervisor` performs the same ordered recovery. It
+At login, `com.norn.host-supervisor` performs the same ordered recovery. The
+assurance stage then checks required allocations and routes before probing the
+real HTTP entrypoints. `com.norn.host-assurance` repeats that idempotent pass
+every five minutes by default; use `--assure-interval` at install time to set a
+different interval of at least 60 seconds. Persistent failures emit a deduped
+critical Beacon event, and the first subsequent passing run emits a correlated
+recovery event.
+
+The recovery flow
 re-renders bind and advertise addresses from the current default network route,
 so a DHCP address change does not leave the scheduler bound to a stale address.
 The supervisor retries launchd transitions to tolerate agents that are still
@@ -93,3 +124,6 @@ normal encrypted runtime environment rather than in the hook or launchd plist.
 - Persisted Nomad state restores jobs and their periodic schedules, but a cron
   scheduler does not replay every interval missed during a long outage. Use an
   application-specific post-recovery hook for stale-ingestion catch-up.
+- Assurance probes are unauthenticated HTTP GETs. Prefer a dependency-aware
+  health endpoint that verifies critical upstreams without exposing data or
+  placing credentials in launchd configuration.
