@@ -418,11 +418,12 @@ func bearerAuth(token string, h *handler.Handler) func(http.Handler) http.Handle
 					return
 				}
 			}
-			ip := clientIPFromRequest(r)
-			if loopback := net.ParseIP(ip); loopback != nil && loopback.IsLoopback() {
+			directIP := directClientIP(r)
+			if directIP != nil && directIP.IsLoopback() && !hasForwardedClient(r) {
 				next.ServeHTTP(w, r)
 				return
 			}
+			ip := clientIPFromRequest(r)
 			if h != nil && h.HasActiveGrant(ip) {
 				next.ServeHTTP(w, r)
 				return
@@ -486,18 +487,34 @@ func writeControlCapabilities(w http.ResponseWriter) {
 }
 
 func clientIPFromRequest(r *http.Request) string {
-	if cfIP := strings.TrimSpace(r.Header.Get("CF-Connecting-IP")); cfIP != "" {
-		return cfIP
+	directIP := directClientIP(r)
+	if directIP != nil && directIP.IsLoopback() {
+		if cfIP := net.ParseIP(strings.TrimSpace(r.Header.Get("CF-Connecting-IP"))); cfIP != nil {
+			return cfIP.String()
+		}
+		if forwarded := r.Header.Get("X-Forwarded-For"); forwarded != "" {
+			parts := strings.Split(forwarded, ",")
+			if forwardedIP := net.ParseIP(strings.TrimSpace(parts[0])); forwardedIP != nil {
+				return forwardedIP.String()
+			}
+		}
 	}
-	if forwarded := r.Header.Get("X-Forwarded-For"); forwarded != "" {
-		parts := strings.Split(forwarded, ",")
-		return strings.TrimSpace(parts[0])
+	if directIP != nil {
+		return directIP.String()
 	}
+	return r.RemoteAddr
+}
+
+func directClientIP(r *http.Request) net.IP {
 	host, _, err := net.SplitHostPort(r.RemoteAddr)
 	if err != nil {
-		return r.RemoteAddr
+		host = r.RemoteAddr
 	}
-	return host
+	return net.ParseIP(strings.TrimSpace(host))
+}
+
+func hasForwardedClient(r *http.Request) bool {
+	return strings.TrimSpace(r.Header.Get("CF-Connecting-IP")) != "" || strings.TrimSpace(r.Header.Get("X-Forwarded-For")) != ""
 }
 
 func fileServer(r chi.Router, dir string) {
