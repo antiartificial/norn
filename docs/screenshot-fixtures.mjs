@@ -1,166 +1,158 @@
 const now = Date.now()
 
 const minutesAgo = (n) => new Date(now - n * 60_000).toISOString()
-const minutesFromNow = (n) => new Date(now + n * 60_000).toISOString()
+
+const allocation = (id, taskGroup, overrides = {}) => ({
+  id,
+  taskGroup,
+  status: 'running',
+  lifecycle: 'active',
+  healthy: true,
+  nodeName: 'mini',
+  nodeAddress: '192.0.2.40',
+  nodeProvider: 'local',
+  startedAt: minutesAgo(84),
+  ...overrides,
+})
 
 export const deploySteps = [
-  { step: 'clone', status: 'done', durationMs: 4200, output: 'checked out antiartificial/signal-sideband at 8f42ac1' },
-  { step: 'build', status: 'done', durationMs: 36100, output: 'docker build completed: signal-sideband:8f42ac1' },
-  { step: 'test', status: 'done', durationMs: 9100, output: 'go test ./... ok' },
-  { step: 'snapshot', status: 'done', durationMs: 6200, output: 'captured postgres safety snapshot signal_sideband_20260614T1821Z' },
-  { step: 'migrate', status: 'done', durationMs: 1800, output: 'no pending migrations' },
-  { step: 'deploy', status: 'running', startedAt: now - 24_000, output: 'submitting Nomad job signal-sideband; waiting for allocations to drain' },
+  { step: 'clone', status: 'done', message: 'Checked out signal-sideband at 8f42ac1.' },
+  { step: 'build', status: 'done', message: 'Built image signal-sideband:8f42ac1.' },
+  { step: 'test', status: 'done', message: 'go test ./... passed.' },
+  { step: 'snapshot', status: 'done', message: 'Captured the pre-deploy database snapshot.' },
+  { step: 'migrate', status: 'done', message: 'No pending migrations.' },
+  { step: 'submit', status: 'done', message: 'Submitted the Nomad job update.' },
+  { step: 'healthy', status: 'running', message: 'Waiting for the replacement allocation to become healthy.' },
 ]
 
 export const apps = [
   {
     spec: {
-      app: 'signal-sideband',
-      role: 'webserver',
+      name: 'signal-sideband',
       deploy: true,
-      port: 8080,
-      healthcheck: '/healthz',
-      replicas: 2,
       repo: {
-        url: 'git@github.com:antiartificial/signal-sideband.git',
+        url: 'git@github.com:example/signal-sideband.git',
         branch: 'main',
         autoDeploy: true,
       },
-      hosts: {
-        external: 'sideband.slopistry.com',
-        internal: 'signal-sideband.service.consul',
+      build: { dockerfile: 'Dockerfile', test: 'go test ./...' },
+      processes: {
+        web: {
+          port: 8080,
+          command: './sideband serve',
+          health: { path: '/healthz', interval: '15s', timeout: '3s' },
+          scaling: { min: 2, max: 4 },
+          resources: { cpu: 500, memory: 512 },
+        },
+        'media-worker': {
+          command: './sideband media-worker',
+          scaling: { min: 1, max: 2 },
+          resources: { cpu: 300, memory: 384 },
+        },
       },
-      build: {
-        dockerfile: 'Dockerfile',
-        test: 'go test ./...',
-      },
-      services: {
+      infrastructure: {
         postgres: { database: 'signal_sideband' },
-        kv: { namespace: 'signal-sideband' },
-        events: { topics: ['signal.received', 'signal.replayed'] },
-        storage: { bucket: 'signal-sideband-media', provider: 'garage' },
+        redis: { namespace: 'signal-sideband' },
+        kafka: { topics: ['signal.received', 'signal.replayed'] },
+        objectStorage: { provider: 'garage', buckets: [{ name: 'signal-sideband-media', access: 'private' }] },
       },
+      services: ['postgres', 'redis', 'redpanda', 'garage'],
       secrets: ['SIGNAL_NUMBER', 'DATABASE_URL', 'GARAGE_ACCESS_KEY'],
-      alerts: { window: '5m', threshold: 3 },
+      endpoints: [{ url: 'https://sideband.example.com' }],
     },
+    nomadStatus: 'running',
     healthy: false,
-    ready: '1/2',
-    commitSha: '1c1a9c1d4b6a7c1eaf01b1ba734ea087948b13ee',
-    remoteHeadSha: '8f42ac18d8ff7bb26b33a23fd63113360527bca9',
-    deployedAt: minutesAgo(83),
-    pods: [
-      { name: 'signal-sideband.web[0]', status: 'running', ready: true, restarts: 0, startedAt: minutesAgo(84) },
-      { name: 'signal-sideband.web[1]', status: 'restarting', ready: false, restarts: 7, startedAt: minutesAgo(6) },
+    allocations: [
+      allocation('7f612c93', 'web'),
+      allocation('f184e212', 'web', { healthy: false, status: 'pending', startedAt: minutesAgo(6) }),
+      allocation('e9ad3021', 'media-worker'),
     ],
-    forgeState: {
-      app: 'signal-sideband',
-      status: 'forged',
-      steps: [],
-      resources: {
-        deploymentName: 'signal-sideband',
-        serviceName: 'signal-sideband',
-        externalHost: 'sideband.slopistry.com',
-        internalHost: 'signal-sideband.service.consul',
-        cloudflaredRule: true,
-        dnsRoute: true,
+    allocationSummary: {
+      running: 2,
+      active: 3,
+      retained: 0,
+      total: 3,
+      byProcess: {
+        web: { running: 1, active: 2, retained: 0, total: 2 },
+        'media-worker': { running: 1, active: 1, retained: 0, total: 1 },
       },
     },
   },
   {
     spec: {
-      app: 'contextdb',
-      role: 'webserver',
-      core: true,
+      name: 'contextdb',
       deploy: true,
-      port: 8787,
-      healthcheck: '/health',
-      replicas: 1,
-      repo: { url: 'git@github.com:antiartificial/contextdb.git', branch: 'main', autoDeploy: true },
-      hosts: {
-        external: 'contextdb.slopistry.com',
-        internal: 'contextdb.service.consul',
+      repo: { url: 'git@github.com:example/contextdb.git', branch: 'main', autoDeploy: true },
+      processes: {
+        web: {
+          port: 8787,
+          command: './contextdb serve',
+          health: { path: '/health' },
+          resources: { cpu: 400, memory: 768 },
+        },
+        reviewer: { command: './contextdb review', resources: { cpu: 300, memory: 512 } },
       },
-      services: {
+      infrastructure: {
         postgres: { database: 'contextdb' },
-        events: { topics: ['claims.reviewed', 'claims.promoted'] },
+        kafka: { topics: ['claims.reviewed', 'claims.promoted'] },
       },
-      secrets: ['DATABASE_URL', 'OPENAI_API_KEY'],
+      services: ['postgres', 'redpanda'],
+      secrets: ['DATABASE_URL', 'MODEL_API_KEY'],
+      endpoints: [{ url: 'https://context.example.com' }],
     },
+    nomadStatus: 'running',
     healthy: true,
-    ready: '2/2',
-    commitSha: 'b7fb419b3150de885a62f51464d8152f8af01c2d',
-    deployedAt: minutesAgo(36),
-    pods: [
-      { name: 'contextdb.web[0]', status: 'running', ready: true, restarts: 0, startedAt: minutesAgo(36) },
-      { name: 'contextdb.review-worker[0]', status: 'running', ready: true, restarts: 0, startedAt: minutesAgo(36) },
-    ],
-    forgeState: { app: 'contextdb', status: 'forged', steps: [], resources: {} },
+    allocations: [allocation('ea34bc19', 'web', { startedAt: minutesAgo(36) }), allocation('54c29e08', 'reviewer', { startedAt: minutesAgo(36) })],
+    allocationSummary: { running: 2, active: 2, retained: 0, total: 2 },
   },
   {
     spec: {
-      app: 'field-harbor-digest',
-      role: 'cron',
+      name: 'field-harbor-digest',
       deploy: true,
-      schedule: '0 7 * * *',
-      command: './field-harbor digest',
-      repo: { url: 'git@github.com:antiartificial/field-harbor.git', branch: 'main', autoDeploy: true },
-      services: {
-        postgres: { database: 'field_harbor' },
-        storage: { bucket: 'field-harbor-archive', provider: 'garage' },
+      repo: { url: 'git@github.com:example/field-harbor.git', branch: 'main', autoDeploy: true },
+      processes: {
+        digest: {
+          command: './field-harbor digest',
+          schedule: '0 7 * * *',
+          resources: { cpu: 250, memory: 384 },
+        },
       },
+      infrastructure: {
+        postgres: { database: 'field_harbor' },
+        objectStorage: { provider: 'garage', buckets: [{ name: 'field-harbor-archive', access: 'private' }] },
+      },
+      services: ['postgres', 'garage'],
       secrets: ['DATABASE_URL', 'GARAGE_SECRET_KEY'],
     },
+    nomadStatus: 'running',
     healthy: true,
-    ready: 'scheduled',
-    commitSha: 'de71b901a99c1deca91f41fe89c4710b0d33d778',
-    deployedAt: minutesAgo(140),
-    pods: [],
-    cronState: {
-      app: 'field-harbor-digest',
-      schedule: '0 7 * * *',
-      paused: false,
-      nextRunAt: minutesFromNow(42),
-    },
-    forgeState: { app: 'field-harbor-digest', status: 'forged', steps: [], resources: {} },
+    allocations: [],
+    allocationSummary: { running: 0, active: 0, retained: 0, total: 0 },
   },
   {
     spec: {
-      app: 'archive-thumb',
-      role: 'function',
+      name: 'archive-thumb',
       deploy: true,
-      command: './thumb render',
-      repo: { url: 'git@github.com:antiartificial/archive-tools.git', branch: 'main' },
-      function: { timeout: 600, memory: '1024' },
-      services: {
-        storage: { bucket: 'archive-renders', provider: 'garage' },
+      repo: { url: 'git@github.com:example/archive-tools.git', branch: 'main' },
+      processes: {
+        render: {
+          command: './thumb render',
+          function: { timeout: '10m', memory: 1024 },
+          resources: { cpu: 500, memory: 1024 },
+        },
       },
+      infrastructure: {
+        objectStorage: { provider: 'garage', buckets: [{ name: 'archive-renders', access: 'private' }] },
+      },
+      services: ['garage'],
       secrets: ['GARAGE_ACCESS_KEY'],
     },
+    nomadStatus: 'running',
     healthy: true,
-    ready: 'on demand',
-    commitSha: 'c0ffee190b68beec5f2ab1c0b78a5f6e641e827a',
-    deployedAt: minutesAgo(55),
-    pods: [],
-    forgeState: { app: 'archive-thumb', status: 'forged', steps: [], resources: {} },
+    allocations: [],
+    allocationSummary: { running: 0, active: 0, retained: 0, total: 0 },
   },
 ]
-
-export const healthChecks = {
-  'signal-sideband': Array.from({ length: 24 }, (_, i) => ({
-    id: `sig-${i}`,
-    app: 'signal-sideband',
-    healthy: i < 15 ? true : i % 3 !== 0,
-    responseMs: i < 15 ? 80 + i * 3 : 420 + i * 9,
-    checkedAt: minutesAgo(24 - i),
-  })),
-  contextdb: Array.from({ length: 24 }, (_, i) => ({
-    id: `ctx-${i}`,
-    app: 'contextdb',
-    healthy: true,
-    responseMs: 42 + (i % 5) * 4,
-    checkedAt: minutesAgo(24 - i),
-  })),
-}
 
 export const deployments = [
   {
@@ -168,8 +160,10 @@ export const deployments = [
     app: 'signal-sideband',
     commitSha: '8f42ac18d8ff7bb26b33a23fd63113360527bca9',
     imageTag: 'signal-sideband:8f42ac1',
+    sagaId: 'saga-812f4c19',
     status: 'deploying',
-    steps: deploySteps,
+    sourceKind: 'operator',
+    sourceRef: 'HEAD',
     startedAt: minutesAgo(4),
   },
   {
@@ -177,14 +171,10 @@ export const deployments = [
     app: 'signal-sideband',
     commitSha: '1c1a9c1d4b6a7c1eaf01b1ba734ea087948b13ee',
     imageTag: 'signal-sideband:1c1a9c1',
+    sagaId: 'saga-810c739a',
     status: 'failed',
-    steps: [
-      { step: 'clone', status: 'done', durationMs: 3900 },
-      { step: 'build', status: 'done', durationMs: 34400 },
-      { step: 'test', status: 'done', durationMs: 8800 },
-      { step: 'deploy', status: 'failed', durationMs: 154000, output: 'allocation signal-sideband.web[1] restarted 7 times in 5m' },
-    ],
-    error: 'health gate failed: one allocation kept restarting',
+    sourceKind: 'webhook',
+    sourceRef: 'main',
     startedAt: minutesAgo(83),
     finishedAt: minutesAgo(79),
   },
@@ -193,67 +183,208 @@ export const deployments = [
     app: 'contextdb',
     commitSha: 'b7fb419b3150de885a62f51464d8152f8af01c2d',
     imageTag: 'contextdb:b7fb419',
+    sagaId: 'saga-809b7e12',
     status: 'deployed',
-    steps: [
-      { step: 'clone', status: 'done', durationMs: 2500 },
-      { step: 'build', status: 'done', durationMs: 18200 },
-      { step: 'test', status: 'done', durationMs: 6700 },
-      { step: 'snapshot', status: 'done', durationMs: 5100 },
-      { step: 'migrate', status: 'done', durationMs: 1200 },
-      { step: 'deploy', status: 'done', durationMs: 21800 },
-    ],
+    sourceKind: 'webhook',
+    sourceRef: 'main',
     startedAt: minutesAgo(36),
     finishedAt: minutesAgo(35),
   },
+  {
+    id: 'dep-field-harbor-de71b90',
+    app: 'field-harbor-digest',
+    commitSha: 'de71b901a99c1deca91f41fe89c4710b0d33d778',
+    imageTag: 'field-harbor-digest:de71b90',
+    sagaId: 'saga-8041de71',
+    status: 'deployed',
+    startedAt: minutesAgo(140),
+    finishedAt: minutesAgo(139),
+  },
 ]
 
-export const cronExecutions = [
+export const events = {
+  total: 4,
+  events: [
+    {
+      id: 'evt-401',
+      source: 'nomad',
+      app: 'signal-sideband',
+      environment: 'production',
+      type: 'allocation.unhealthy',
+      severity: 'critical',
+      state: 'open',
+      title: 'Web allocation is repeatedly restarting',
+      body: 'One of two web allocations failed its health gate.',
+      dedupeKey: 'signal-sideband:web:health',
+      occurredAt: minutesAgo(6),
+    },
+    {
+      id: 'evt-400',
+      source: 'norn',
+      app: 'signal-sideband',
+      environment: 'production',
+      type: 'deploy.failed',
+      severity: 'warning',
+      state: 'open',
+      title: 'Previous deployment failed its health gate',
+      occurredAt: minutesAgo(79),
+    },
+    {
+      id: 'evt-398',
+      source: 'norn',
+      app: 'contextdb',
+      type: 'deploy.completed',
+      severity: 'info',
+      state: 'resolved',
+      title: 'contextdb deployed successfully',
+      occurredAt: minutesAgo(35),
+    },
+    {
+      id: 'evt-392',
+      source: 'host-runtime',
+      app: 'platform',
+      type: 'host.recovered',
+      severity: 'info',
+      state: 'resolved',
+      title: 'Host runtime recovery completed',
+      occurredAt: minutesAgo(220),
+    },
+  ],
+}
+
+export const activeIncidents = {
+  incidents: [
+    {
+      correlationKey: 'signal-sideband:web:health',
+      app: 'signal-sideband',
+      latestSeverity: 'critical',
+      latestType: 'allocation.unhealthy',
+      latestTitle: 'Web allocation is repeatedly restarting',
+      eventCount: 3,
+      firstSeen: minutesAgo(18),
+      lastSeen: minutesAgo(6),
+      openCount: 2,
+      latestEventId: 'evt-401',
+    },
+  ],
+}
+
+export const operations = {
+  count: 1,
+  operations: [
+    {
+      id: 'op_812',
+      sagaId: 'saga-812f4c19',
+      kind: 'app.deploy',
+      app: 'signal-sideband',
+      status: 'running',
+      attempts: 1,
+      maxAttempts: 3,
+      risk: 'mutable',
+      message: 'Waiting for Nomad health gate',
+      startedAt: minutesAgo(4),
+      updatedAt: minutesAgo(1),
+    },
+  ],
+}
+
+export const serviceManifest = {
+  version: 1,
+  generatedAt: minutesAgo(1),
+  networkMode: 'consul-connect',
+  services: [
+    {
+      name: 'signal-sideband-web',
+      app: 'signal-sideband',
+      process: 'web',
+      type: 'http',
+      status: 'degraded',
+      healthPath: '/healthz',
+      reachability: { endpointScope: 'public', instanceScope: 'cluster', exposure: 'external', routable: true },
+      endpoints: [{ url: 'https://sideband.example.com' }],
+      instances: [{ node: 'mini', address: '192.0.2.40', port: 8080, status: 'running' }],
+    },
+    {
+      name: 'signal-sideband-media-worker',
+      app: 'signal-sideband',
+      process: 'media-worker',
+      type: 'worker',
+      status: 'running',
+      reachability: { endpointScope: 'none', instanceScope: 'cluster', exposure: 'internal', routable: false },
+    },
+    {
+      name: 'contextdb-web',
+      app: 'contextdb',
+      process: 'web',
+      type: 'http',
+      status: 'running',
+      reachability: { endpointScope: 'public', instanceScope: 'cluster', exposure: 'external', routable: true },
+      endpoints: [{ url: 'https://context.example.com' }],
+    },
+  ],
+}
+
+export const accessPatterns = {
+  windowHours: 168,
+  idleAfterHours: 72,
+  patterns: [
+    {
+      app: 'field-harbor-digest',
+      process: 'digest',
+      type: 'cron',
+      status: 'quiet',
+      windowHours: 168,
+      totalRequests: 7,
+      successes: 7,
+      clientErrors: 0,
+      serverErrors: 0,
+      lastSeen: minutesAgo(72 * 60),
+      quietForHours: 72,
+      activeHours: 1,
+      hourlyUtc: { '7': 7 },
+      weekdayUtc: { '1': 1, '2': 1, '3': 1, '4': 1, '5': 1, '6': 1, '0': 1 },
+      idleCandidate: true,
+      idleReason: 'No interactive traffic in the last 72 hours.',
+      recommendedAction: 'Keep the scheduled process; no always-on allocation is needed.',
+      confidence: 'high',
+    },
+  ],
+}
+
+export const ingress = { hostnames: ['sideband.example.com', 'context.example.com'] }
+
+export const cronHistory = [
   {
-    id: 441,
-    app: 'field-harbor-digest',
-    imageTag: 'field-harbor-digest:de71b90',
-    status: 'succeeded',
-    exitCode: 0,
-    output: 'indexed 312 bookmarks\nuploaded 18 media objects\nsent digest to archive channel',
-    durationMs: 32200,
-    startedAt: minutesAgo(64),
-    finishedAt: minutesAgo(63),
-  },
-  {
-    id: 440,
-    app: 'field-harbor-digest',
-    imageTag: 'field-harbor-digest:de71b90',
-    status: 'succeeded',
-    exitCode: 0,
-    output: 'no new media; manifest already current',
-    durationMs: 7100,
-    startedAt: minutesAgo(1500),
-    finishedAt: minutesAgo(1499),
+    process: 'digest',
+    schedule: '0 7 * * *',
+    paused: false,
+    runs: [
+      { jobId: 'periodic-field-harbor-digest/441', status: 'dead', startedAt: minutesAgo(64) },
+      { jobId: 'periodic-field-harbor-digest/440', status: 'dead', startedAt: minutesAgo(1500) },
+    ],
   },
 ]
 
 export const functionExecutions = [
   {
-    id: 88,
+    id: 'invoke-88c012ab',
     app: 'archive-thumb',
-    imageTag: 'archive-thumb:c0ffee1',
-    status: 'succeeded',
+    process: 'render',
+    status: 'complete',
     exitCode: 0,
-    output: 'rendered poster thumb for r2://archive-renders/2026/06/sideband.png',
-    durationMs: 2100,
     startedAt: minutesAgo(22),
     finishedAt: minutesAgo(22),
+    durationMs: 2100,
   },
   {
-    id: 87,
+    id: 'invoke-87da0921',
     app: 'archive-thumb',
-    imageTag: 'archive-thumb:c0ffee1',
-    status: 'succeeded',
+    process: 'render',
+    status: 'complete',
     exitCode: 0,
-    output: 'rendered 4 gallery thumbnails',
-    durationMs: 4800,
     startedAt: minutesAgo(48),
     finishedAt: minutesAgo(48),
+    durationMs: 4800,
   },
 ]
 
@@ -271,18 +402,18 @@ export const stats = {
 }
 
 export const logs = [
-  '2026-06-14T18:17:02Z signal-sideband web[1] starting signal-cli bridge',
-  '2026-06-14T18:17:04Z connected to postgres signal_sideband',
-  '2026-06-14T18:17:12Z WARN websocket upstream closed unexpectedly',
-  '2026-06-14T18:17:13Z allocation restart count=5 window=5m',
-  '2026-06-14T18:17:15Z healthz failed: signal registration cache locked',
-  '2026-06-14T18:18:01Z Norn queued app.deploy ref=8f42ac1 drain=wait',
+  '2026-08-02T21:17:02Z signal-sideband web[1] starting application server',
+  '2026-08-02T21:17:04Z connected to postgres signal_sideband',
+  '2026-08-02T21:17:12Z WARN websocket upstream closed unexpectedly',
+  '2026-08-02T21:17:13Z allocation restart count=5 window=5m',
+  '2026-08-02T21:17:15Z healthz failed: registration cache locked',
+  '2026-08-02T21:18:01Z Norn queued app.deploy ref=8f42ac1 drain=wait',
 ].join('\n')
 
 export function cliOutput(name) {
   switch (name) {
     case 'status':
-      return `NORN apps\n\n● signal-sideband   unhealthy  1/2  1c1a9c1  update available  sideband.slopistry.com\n● contextdb         healthy    2/2  b7fb419  core              contextdb.slopistry.com\n● field-harbor-digest healthy  cron de71b90  next 7:00 AM\n● archive-thumb     healthy    func c0ffee1  on demand\n\n4 apps discovered · 9 services · 11 containers`
+      return `NORN apps\n\n● signal-sideband     unhealthy  2/3  1c1a9c1  update available  sideband.example.com\n● contextdb           healthy    2/2  b7fb419  core              context.example.com\n● field-harbor-digest healthy    cron de71b90  next 7:00 AM\n● archive-thumb       healthy    func c0ffee1  on demand\n\n4 apps discovered · 9 services · 11 containers`
     case 'operations':
       return `operations\n\nID        KIND          APP              STATUS    REF       AGE\nop_812    app.deploy    signal-sideband  running   8f42ac1   4m\nop_811    app.preflight signal-sideband  done      8f42ac1   7m\nop_810    app.deploy    signal-sideband  failed    1c1a9c1   83m\n\nactive operations: 1`
     case 'platform':
@@ -290,7 +421,7 @@ export function cliOutput(name) {
     case 'proxy-plan':
       return `proxy cutover plan\n\ncurrent API    127.0.0.1:8800\ncandidate API  127.0.0.1:18802\nmode           switch upstream after candidate postflight\nrollback       switch upstream back to previous port\n\nNo Nomad, Consul, Postgres, or app allocation restart required.`
     case 'endpoints':
-      return `signal-sideband endpoints\n\nEXTERNAL  sideband.slopistry.com        enabled  cloudflared\nINTERNAL  signal-sideband.service.consul ready    consul\n\ncloudflared rule: present\nDNS route:        present`
+      return `signal-sideband endpoints\n\nEXTERNAL  sideband.example.com               enabled  cloudflared\nINTERNAL  signal-sideband.service.consul     ready    consul\n\ncloudflared rule: present\nDNS route:        present`
     default:
       return ''
   }

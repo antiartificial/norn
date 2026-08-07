@@ -38,6 +38,17 @@ func (h *Handler) Forge(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	publicEndpoints := make([]model.Endpoint, 0, len(spec.Endpoints))
+	for _, endpoint := range spec.Endpoints {
+		if cloudflared.IsPublicEndpoint(endpoint.URL) {
+			publicEndpoints = append(publicEndpoints, endpoint)
+		}
+	}
+	if len(publicEndpoints) == 0 {
+		writeJSON(w, map[string]string{"status": "skipped", "reason": "no public endpoints"})
+		return
+	}
+
 	service, err := h.cloudflaredService(spec)
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, err.Error())
@@ -50,8 +61,8 @@ func (h *Handler) Forge(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	changed := false
-	for _, ep := range spec.Endpoints {
+	changed := cloudflared.PrunePrivateIngress(cfg)
+	for _, ep := range publicEndpoints {
 		if cloudflared.AddIngress(cfg, ep.URL, service) {
 			changed = true
 		}
@@ -201,6 +212,10 @@ func (h *Handler) ToggleEndpoint(w http.ResponseWriter, r *http.Request) {
 
 	var changed bool
 	if req.Enabled {
+		if !cloudflared.IsPublicEndpoint(matchedURL) {
+			writeError(w, http.StatusBadRequest, fmt.Sprintf("hostname %s is private and cannot be enabled in cloudflared", hostname))
+			return
+		}
 		service, err := h.cloudflaredService(spec)
 		if err != nil {
 			writeError(w, http.StatusInternalServerError, err.Error())

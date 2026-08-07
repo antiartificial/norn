@@ -13,8 +13,9 @@ server {
 }
 
 client {
-  enabled           = true
-  cpu_total_compute = 4000
+  enabled                  = true
+  cpu_total_compute        = 4000
+  preferred_address_family = "ipv4"
 
   host_volume "gitea-data" {
     path      = "/Users/0xadb/volumes/gitea-data"
