@@ -643,7 +643,11 @@ raise SystemExit(1)
 reconcile_serve_routes() {
   [ -s "$serve_file" ] || return 0
   local tailscale_bin spec port target detected
-  tailscale_bin="$(command_path tailscale 2>/dev/null || true)"
+  if [ -x /Applications/Tailscale.app/Contents/MacOS/Tailscale ]; then
+    tailscale_bin=/Applications/Tailscale.app/Contents/MacOS/Tailscale
+  else
+    tailscale_bin="$(command_path tailscale 2>/dev/null || true)"
+  fi
   if [ -z "$tailscale_bin" ]; then
     record_assurance_failure "tailscale CLI is missing but Serve routes are configured"
     return 1
