@@ -216,6 +216,9 @@ Public control-plane routes are intentionally narrow:
 `/api/apps/*/exec` are not bearer-auth exemptions. Scoped access tokens require
 `events:read` and `apps:exec` respectively; Cloudflare Access can protect the
 same paths at the edge.
+Forwarded client-IP headers are honored only when the direct socket peer is
+loopback, preventing a direct tailnet or LAN client from spoofing the local
+proxy trust boundary.
 
 ### Combining with Bearer Token
 

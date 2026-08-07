@@ -4,7 +4,7 @@ title: Norn v2 Release Recap
 
 # Norn v2 Release Recap
 
-This recap summarizes the current Norn v2 release line: the Nomad/Consul control plane, the operator-facing dashboard and CLI, the ContextDB worker deployment path, Beacon operational events, and the upgrade posture for the local LaunchAgent install. The `v2.16.1-control` release line adds a scoped, versioned control protocol, durable event replay, and an independent host agent for restart-safe platform and assurance operations.
+This recap summarizes the current Norn v2 release line: the Nomad/Consul control plane, the operator-facing dashboard and CLI, the ContextDB worker deployment path, Beacon operational events, and the upgrade posture for the local LaunchAgent install. The `v2.16.2-control` release line adds a scoped, versioned control protocol, durable event replay, and an independent host agent for restart-safe platform and assurance operations.
 
 ## What Shipped
 

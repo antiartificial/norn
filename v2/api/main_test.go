@@ -71,6 +71,53 @@ func TestBearerAuthAllowsServiceManifestDiscovery(t *testing.T) {
 	}
 }
 
+func TestBearerAuthOnlyTrustsDirectLoopback(t *testing.T) {
+	next := http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusNoContent)
+	})
+	authenticated := bearerAuth("control-plane-token", nil)(next)
+
+	for _, tt := range []struct {
+		name       string
+		remoteAddr string
+		cfIP       string
+		want       int
+	}{
+		{name: "direct loopback", remoteAddr: "127.0.0.1:1234", want: http.StatusNoContent},
+		{name: "local proxy requires auth", remoteAddr: "127.0.0.1:1234", cfIP: "203.0.113.20", want: http.StatusUnauthorized},
+		{name: "remote cannot spoof loopback", remoteAddr: "100.64.0.20:1234", cfIP: "127.0.0.1", want: http.StatusUnauthorized},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			req := httptest.NewRequest(http.MethodGet, "/api/apps", nil)
+			req.RemoteAddr = tt.remoteAddr
+			if tt.cfIP != "" {
+				req.Header.Set("CF-Connecting-IP", tt.cfIP)
+			}
+			rec := httptest.NewRecorder()
+			authenticated.ServeHTTP(rec, req)
+			if rec.Code != tt.want {
+				t.Fatalf("status = %d, want %d", rec.Code, tt.want)
+			}
+		})
+	}
+}
+
+func TestClientIPOnlyTrustsForwardingFromLoopback(t *testing.T) {
+	proxied := httptest.NewRequest(http.MethodGet, "/", nil)
+	proxied.RemoteAddr = "127.0.0.1:1234"
+	proxied.Header.Set("CF-Connecting-IP", "203.0.113.20")
+	if got := clientIPFromRequest(proxied); got != "203.0.113.20" {
+		t.Fatalf("proxied client IP = %q", got)
+	}
+
+	remote := httptest.NewRequest(http.MethodGet, "/", nil)
+	remote.RemoteAddr = "100.64.0.20:1234"
+	remote.Header.Set("CF-Connecting-IP", "127.0.0.1")
+	if got := clientIPFromRequest(remote); got != "100.64.0.20" {
+		t.Fatalf("remote client IP = %q", got)
+	}
+}
+
 func TestBearerAuthProtectsWebSocketsAndEnforcesScopes(t *testing.T) {
 	if got := controlScopeForRequest(httptest.NewRequest(http.MethodGet, "/ws", nil)); got != handler.ScopeEventsRead {
 		t.Fatalf("/ws scope = %q", got)
