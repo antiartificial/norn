@@ -6,7 +6,7 @@
 |------|---------|---------|
 | Go | 1.25+ | API and CLI |
 | pnpm | 10+ | UI dependencies |
-| Node.js | 22+ | UI build |
+| Node.js | 24 LTS | UI and docs builds |
 | PostgreSQL | 16+ | Application database |
 | Docker | 24+ | Container builds |
 | Nomad | 1.9+ | Job scheduling |
