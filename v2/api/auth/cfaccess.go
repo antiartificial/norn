@@ -1,6 +1,7 @@
 package auth
 
 import (
+	"context"
 	"crypto/rsa"
 	"encoding/base64"
 	"encoding/json"
@@ -16,6 +17,20 @@ import (
 type CFAccessClaims struct {
 	Email string `json:"email"`
 	jwt.RegisteredClaims
+}
+
+type cfAccessClaimsContextKey struct{}
+
+func WithCFAccessClaims(r *http.Request, claims *CFAccessClaims) *http.Request {
+	if claims == nil {
+		return r
+	}
+	return r.WithContext(context.WithValue(r.Context(), cfAccessClaimsContextKey{}, *claims))
+}
+
+func CFAccessClaimsFromRequest(r *http.Request) (CFAccessClaims, bool) {
+	claims, ok := r.Context().Value(cfAccessClaimsContextKey{}).(CFAccessClaims)
+	return claims, ok
 }
 
 type jwksKey struct {
@@ -163,10 +178,11 @@ func (v *CFAccessValidator) Middleware(next http.Handler) http.Handler {
 			next.ServeHTTP(w, r)
 			return
 		}
-		if _, err := v.Validate(token); err != nil {
+		claims, err := v.Validate(token)
+		if err != nil {
 			http.Error(w, "invalid cf access token", http.StatusForbidden)
 			return
 		}
-		next.ServeHTTP(w, r)
+		next.ServeHTTP(w, WithCFAccessClaims(r, claims))
 	})
 }

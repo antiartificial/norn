@@ -5,7 +5,19 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 )
+
+func TestLegacyTokenSigningDeadline(t *testing.T) {
+	t.Setenv("NORN_LEGACY_TOKEN_SIGNING_UNTIL", "2026-08-10T12:00:00Z")
+	if got := Load().LegacyTokenSigningUntil; !got.Equal(time.Date(2026, 8, 10, 12, 0, 0, 0, time.UTC)) {
+		t.Fatalf("LegacyTokenSigningUntil = %s", got)
+	}
+	t.Setenv("NORN_LEGACY_TOKEN_SIGNING_UNTIL", "not-a-time")
+	if got := Load().LegacyTokenSigningUntil; !got.IsZero() {
+		t.Fatalf("invalid deadline should fail closed, got %s", got)
+	}
+}
 
 func TestBeaconConfig(t *testing.T) {
 	t.Setenv("NORN_BEACON_ENVIRONMENT", "mini")

@@ -3,7 +3,10 @@ package config
 import (
 	"os"
 	"strings"
+	"time"
 )
+
+const defaultLegacyTokenSigningUntil = "2026-08-15T00:00:00Z"
 
 type Config struct {
 	Port        string
@@ -14,8 +17,12 @@ type Config struct {
 	GitToken    string
 	GitSSHKey   string
 	APIToken    string
-	RegistryURL string // GHCR registry (e.g. ghcr.io/username)
-	NetworkMode string // local, tailnet, public
+	// RequireExplicitAuth disables compatibility access based only on a direct
+	// loopback peer or a temporary IP grant.
+	RequireExplicitAuth     bool
+	LegacyTokenSigningUntil time.Time
+	RegistryURL             string // GHCR registry (e.g. ghcr.io/username)
+	NetworkMode             string // local, tailnet, public
 
 	NomadAddr  string // Nomad API address
 	ConsulAddr string // Consul API address
@@ -53,16 +60,18 @@ type Config struct {
 
 func Load() *Config {
 	return &Config{
-		Port:        envOr("NORN_PORT", "8800"),
-		BindAddr:    envOr("NORN_BIND_ADDR", "127.0.0.1"),
-		DatabaseURL: envOr("NORN_DATABASE_URL", "postgres://norn:norn@localhost:5432/norn_v2?sslmode=disable"),
-		UIDir:       uiDir(),
-		AppsDir:     envOr("NORN_APPS_DIR", os.Getenv("HOME")+"/projects"),
-		GitToken:    os.Getenv("NORN_GIT_TOKEN"),
-		GitSSHKey:   os.Getenv("NORN_GIT_SSH_KEY"),
-		APIToken:    os.Getenv("NORN_API_TOKEN"),
-		RegistryURL: os.Getenv("NORN_REGISTRY_URL"),
-		NetworkMode: networkMode(envOr("NORN_NETWORK_MODE", "local")),
+		Port:                    envOr("NORN_PORT", "8800"),
+		BindAddr:                envOr("NORN_BIND_ADDR", "127.0.0.1"),
+		DatabaseURL:             envOr("NORN_DATABASE_URL", "postgres://norn:norn@localhost:5432/norn_v2?sslmode=disable"),
+		UIDir:                   uiDir(),
+		AppsDir:                 envOr("NORN_APPS_DIR", os.Getenv("HOME")+"/projects"),
+		GitToken:                os.Getenv("NORN_GIT_TOKEN"),
+		GitSSHKey:               os.Getenv("NORN_GIT_SSH_KEY"),
+		APIToken:                os.Getenv("NORN_API_TOKEN"),
+		RequireExplicitAuth:     os.Getenv("NORN_REQUIRE_EXPLICIT_AUTH") == "true",
+		LegacyTokenSigningUntil: envTimeOr("NORN_LEGACY_TOKEN_SIGNING_UNTIL", defaultLegacyTokenSigningUntil),
+		RegistryURL:             os.Getenv("NORN_REGISTRY_URL"),
+		NetworkMode:             networkMode(envOr("NORN_NETWORK_MODE", "local")),
 
 		NomadAddr:  envOr("NORN_NOMAD_ADDR", "http://localhost:4646"),
 		ConsulAddr: envOr("NORN_CONSUL_ADDR", "http://localhost:8500"),
@@ -153,6 +162,15 @@ func firstEnv(keys ...string) string {
 		}
 	}
 	return ""
+}
+
+func envTimeOr(key, fallback string) time.Time {
+	raw := envOr(key, fallback)
+	parsed, err := time.Parse(time.RFC3339, raw)
+	if err != nil {
+		return time.Time{}
+	}
+	return parsed.UTC()
 }
 
 func networkMode(mode string) string {

@@ -233,6 +233,103 @@ func Migrate(db *DB) error {
 		CREATE INDEX IF NOT EXISTS idx_access_grants_ip ON access_grants(ip, expires_at);
 		CREATE INDEX IF NOT EXISTS idx_access_grants_expires ON access_grants(expires_at);
 
+		CREATE TABLE IF NOT EXISTS access_devices (
+			id          TEXT PRIMARY KEY,
+			name        TEXT NOT NULL,
+			platform    TEXT NOT NULL DEFAULT '',
+			model       TEXT NOT NULL DEFAULT '',
+			app_version TEXT NOT NULL DEFAULT '',
+			public_key  TEXT NOT NULL DEFAULT '',
+			created_at  TIMESTAMPTZ NOT NULL DEFAULT now(),
+			last_seen_at TIMESTAMPTZ,
+			revoked_at  TIMESTAMPTZ
+		);
+		ALTER TABLE access_devices ADD COLUMN IF NOT EXISTS public_key TEXT NOT NULL DEFAULT '';
+		CREATE INDEX IF NOT EXISTS idx_access_devices_active ON access_devices(revoked_at, created_at DESC);
+
+		CREATE TABLE IF NOT EXISTS access_tokens (
+			jti          TEXT PRIMARY KEY,
+			device_id    TEXT REFERENCES access_devices(id) ON DELETE CASCADE,
+			subject      TEXT NOT NULL DEFAULT '',
+			scopes       JSONB NOT NULL DEFAULT '[]',
+			issued_at    TIMESTAMPTZ NOT NULL,
+			expires_at   TIMESTAMPTZ NOT NULL,
+			revoked_at   TIMESTAMPTZ,
+			rotated_from TEXT NOT NULL DEFAULT ''
+		);
+		CREATE INDEX IF NOT EXISTS idx_access_tokens_device ON access_tokens(device_id, issued_at DESC);
+		CREATE INDEX IF NOT EXISTS idx_access_tokens_active ON access_tokens(revoked_at, expires_at);
+
+		CREATE TABLE IF NOT EXISTS access_enrollments (
+			id               TEXT PRIMARY KEY,
+			code_hash        TEXT NOT NULL UNIQUE,
+			verifier_hash    TEXT NOT NULL,
+			device_name      TEXT NOT NULL,
+			platform         TEXT NOT NULL DEFAULT '',
+			model            TEXT NOT NULL DEFAULT '',
+			app_version      TEXT NOT NULL DEFAULT '',
+			public_key       TEXT NOT NULL DEFAULT '',
+			requested_scopes JSONB NOT NULL DEFAULT '[]',
+			approved_scopes  JSONB NOT NULL DEFAULT '[]',
+			source_hash      TEXT NOT NULL DEFAULT '',
+			verifier_attempts INT NOT NULL DEFAULT 0,
+			status           TEXT NOT NULL DEFAULT 'pending',
+			device_id        TEXT NOT NULL DEFAULT '',
+			created_at       TIMESTAMPTZ NOT NULL DEFAULT now(),
+			expires_at       TIMESTAMPTZ NOT NULL,
+			approved_at      TIMESTAMPTZ,
+			exchanged_at     TIMESTAMPTZ
+		);
+		ALTER TABLE access_enrollments ADD COLUMN IF NOT EXISTS public_key TEXT NOT NULL DEFAULT '';
+		ALTER TABLE access_enrollments ADD COLUMN IF NOT EXISTS source_hash TEXT NOT NULL DEFAULT '';
+		ALTER TABLE access_enrollments ADD COLUMN IF NOT EXISTS verifier_attempts INT NOT NULL DEFAULT 0;
+		CREATE INDEX IF NOT EXISTS idx_access_enrollments_status ON access_enrollments(status, expires_at);
+		CREATE INDEX IF NOT EXISTS idx_access_enrollments_source ON access_enrollments(source_hash, created_at DESC);
+
+		CREATE TABLE IF NOT EXISTS step_up_challenges (
+			id          TEXT PRIMARY KEY,
+			device_id   TEXT NOT NULL REFERENCES access_devices(id) ON DELETE CASCADE,
+			token_jti   TEXT NOT NULL,
+			purpose     TEXT NOT NULL,
+			resource    TEXT NOT NULL,
+			nonce_hash  TEXT NOT NULL,
+			status      TEXT NOT NULL DEFAULT 'pending',
+			created_at  TIMESTAMPTZ NOT NULL DEFAULT now(),
+			expires_at  TIMESTAMPTZ NOT NULL,
+			verified_at TIMESTAMPTZ,
+			consumed_at TIMESTAMPTZ
+		);
+		CREATE INDEX IF NOT EXISTS idx_step_up_challenges_device ON step_up_challenges(device_id, created_at DESC);
+
+		CREATE TABLE IF NOT EXISTS exec_sessions (
+			id            TEXT PRIMARY KEY,
+			device_id     TEXT NOT NULL REFERENCES access_devices(id),
+			token_jti     TEXT NOT NULL,
+			challenge_id  TEXT NOT NULL REFERENCES step_up_challenges(id),
+			app_id        TEXT NOT NULL,
+			allocation_id TEXT NOT NULL,
+			task          TEXT NOT NULL,
+			command       JSONB NOT NULL DEFAULT '[]',
+			command_digest TEXT NOT NULL DEFAULT '',
+			terminal      BOOLEAN NOT NULL DEFAULT true,
+			columns       INT NOT NULL DEFAULT 80,
+			rows          INT NOT NULL DEFAULT 24,
+			status        TEXT NOT NULL DEFAULT 'pending',
+			created_at    TIMESTAMPTZ NOT NULL DEFAULT now(),
+			expires_at    TIMESTAMPTZ NOT NULL,
+			connected_at  TIMESTAMPTZ,
+			finished_at   TIMESTAMPTZ,
+			exit_code     INT,
+			error_code    TEXT NOT NULL DEFAULT '',
+			remote_addr   TEXT NOT NULL DEFAULT '',
+			user_agent    TEXT NOT NULL DEFAULT ''
+		);
+		ALTER TABLE exec_sessions ADD COLUMN IF NOT EXISTS command_digest TEXT NOT NULL DEFAULT '';
+		CREATE INDEX IF NOT EXISTS idx_exec_sessions_device ON exec_sessions(device_id, created_at DESC);
+		CREATE INDEX IF NOT EXISTS idx_exec_sessions_status ON exec_sessions(status, expires_at);
+		UPDATE exec_sessions SET status='failed',finished_at=now(),error_code='server_restarted'
+		WHERE status='running';
+
 		CREATE TABLE IF NOT EXISTS access_observation_buckets (
 			app            TEXT NOT NULL,
 			process        TEXT NOT NULL DEFAULT '',

@@ -41,6 +41,7 @@ export default withMermaid(
             text: 'Architecture',
             items: [
               { text: 'Overview', link: '/v2/architecture/overview' },
+              { text: 'Native Control Protocol', link: '/v2/architecture/control-protocol' },
               { text: 'Deploy Pipeline', link: '/v2/architecture/deploy-pipeline' },
               { text: 'Platform Upgrades', link: '/v2/architecture/platform-upgrades' },
               { text: 'Nomad Translator', link: '/v2/architecture/nomad-translator' },

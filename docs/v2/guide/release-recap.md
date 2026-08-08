@@ -4,7 +4,7 @@ title: Norn v2 Release Recap
 
 # Norn v2 Release Recap
 
-This recap summarizes the current Norn v2 release line: the Nomad/Consul control plane, the operator-facing dashboard and CLI, the ContextDB worker deployment path, Beacon operational events, and the upgrade posture for the local LaunchAgent install. The `v2.16.2-control` release line adds a scoped, versioned control protocol, durable event replay, and an independent host agent for restart-safe platform and assurance operations.
+This recap summarizes the current Norn v2 release line: the Nomad/Consul control plane, the operator-facing dashboard and CLI, the ContextDB worker deployment path, Beacon operational events, and the upgrade posture for the local LaunchAgent install. The `v2.17.0-control` release line adds a generated-client contract, device enrollment and token lifecycle, explicit event continuity, typed operation receipts and cancellation, versioned resource endpoints, and a proof-of-possession native exec protocol. It retains the independent host agent and restart-safe maintenance foundation introduced by the v2.16 control releases.
 
 ## What Shipped
 
@@ -64,6 +64,11 @@ This recap summarizes the current Norn v2 release line: the Nomad/Consul control
 | Event correlation | `correlationKey` in beacon event metadata | Groups related events into incident arcs so consumers can track flare-up to resolution |
 | Correlated events query | `GET /api/events/correlated`, `norn events correlated` | Retrieves chronological event timeline for a correlation key |
 | Scoped access tokens | `POST /api/access/tokens`, `norn access token`, dashboard form | Time-limited bearer credentials with explicit read, event, exec, platform, and host scopes; never placed in URLs |
+| Native API contract | `GET /api/v1/openapi.yaml`, `GET /api/v1/capabilities` | OpenAPI 3.1 types and negotiated feature flags for generated Swift and automation clients |
+| Device enrollment | `/api/v1/enrollments`, `/api/v1/devices`, `/api/v1/auth/rotate`, `/api/v1/auth/revoke` | Pairing-code onboarding, atomic rotation, revocation, and device inventory without pasting the control-plane token |
+| Event continuity | `/api/v1/events/info`, filtered `/api/v1/events` | Retention bounds, cursor gap detection, subscriptions, and opt-in heartbeats for deterministic reconnects |
+| Typed operation lifecycle | v1 operation get/cancel endpoints | Queued cancellation and versioned platform, host, or app receipts with stable problem codes |
+| Native exec sessions | `norn.exec/v1`, step-up challenges, exec audit records | P-256 proof of possession, one-time app-bound authorization, typed frames, expiry, cancellation, and durable audit metadata |
 | Incident timeline links | `norn events show`, dashboard event detail | Shows correlation key and incident timeline command/link for events in an incident arc |
 | Allocation lifecycle | `lifecycle` field on allocations, `allocationSummary` on app status | Separates active from retained allocations so CLI and dashboard show live capacity |
 | Auto-ack on resolution | Beacon emit path auto-acknowledges correlated events | Keeps `norn events` focused on active incidents by clearing resolved warning/critical events |
@@ -186,6 +191,14 @@ The current release line has been exercised with:
 ## Compatibility
 
 Norn v2 is the active development path and is intentionally separate from the v1 Kubernetes documentation. The v2 upgrade path replaces only the Norn API binary, CLI binary, and built UI assets when Norn is installed as `com.norn.api`. It does not require stopping Nomad, Consul, Postgres, or hosted allocations.
+
+The v2.17 control protocol supports strict explicit authentication without
+breaking a Cloudflare Access-protected browser UI, enforces trusted transport
+for pairing, propagates exec revocation through durable PostgreSQL state across
+API replicas, and retires the legacy raw-key JWT signature after the configured
+deadline. InfraSpec commands and service-registry callbacks remain intentional
+trusted-code boundaries and continue to be reported by security scanners for
+operator review.
 
 ## Read Next
 

@@ -154,8 +154,8 @@ func aggregateTuningUsage(usage []nomad.ResourceUsage) map[string]tuningUsage {
 	usageByGroup := map[string]tuningUsage{}
 	for _, u := range usage {
 		current := usageByGroup[u.TaskGroup]
-		usedMB := int(u.MemoryUsageBytes / (1024 * 1024))
-		peakMB := int(u.MemoryMaxBytes / (1024 * 1024))
+		usedMB := bytesToMegabytes(u.MemoryUsageBytes)
+		peakMB := bytesToMegabytes(u.MemoryMaxBytes)
 		if usedMB > current.UsedMemoryMB {
 			current.UsedMemoryMB = usedMB
 		}
@@ -246,7 +246,7 @@ func recommendMemory(rec *tuningRecommendation, tuning *model.TuningPolicy, high
 	if rec.Current.Memory == 0 || highMem == 0 {
 		return
 	}
-	target := rec.Current.Memory
+	var target int
 	switch {
 	case memUtil > 0.80:
 		target = roundUpMB(maxInt(int(math.Ceil(float64(highMem)*1.5)), int(math.Ceil(float64(rec.Current.Memory)*1.5))))
@@ -272,7 +272,7 @@ func recommendCPU(rec *tuningRecommendation, tuning *model.TuningPolicy, cpuPerc
 	if rec.Current.CPU == 0 {
 		return
 	}
-	target := rec.Current.CPU
+	var target int
 	switch {
 	case cpuPercent > 80:
 		target = roundUpCPU(maxInt(int(math.Ceil(float64(rec.Current.CPU)*1.5)), rec.Current.CPU+25))
