@@ -101,7 +101,7 @@ func summarizeAllocations(allocations []model.Allocation) model.AllocationSummar
 func (h *Handler) ListApps(w http.ResponseWriter, r *http.Request) {
 	specs, err := model.DiscoverApps(h.cfg.AppsDir)
 	if err != nil {
-		writeError(w, http.StatusInternalServerError, err.Error())
+		WriteControlProblem(w, r, http.StatusInternalServerError, "app_discovery_failed", "failed to discover apps")
 		return
 	}
 
@@ -142,7 +142,7 @@ func (h *Handler) GetApp(w http.ResponseWriter, r *http.Request) {
 	id := chi.URLParam(r, "id")
 	specs, err := model.DiscoverApps(h.cfg.AppsDir)
 	if err != nil {
-		writeError(w, http.StatusInternalServerError, err.Error())
+		WriteControlProblem(w, r, http.StatusInternalServerError, "app_discovery_failed", "failed to discover apps")
 		return
 	}
 
@@ -154,7 +154,7 @@ func (h *Handler) GetApp(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 	if spec == nil {
-		writeError(w, http.StatusNotFound, fmt.Sprintf("app %s not found", id))
+		WriteControlProblem(w, r, http.StatusNotFound, "app_not_found", fmt.Sprintf("app %s not found", id))
 		return
 	}
 

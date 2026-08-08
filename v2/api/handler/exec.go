@@ -27,31 +27,30 @@ func (h *Handler) ExecAlloc(w http.ResponseWriter, r *http.Request) {
 	}
 	cmd := []string(nil)
 	if rawArgv := r.URL.Query().Get("argv"); rawArgv != "" {
+		if len(rawArgv) > maxControlJSONBody {
+			writeError(w, http.StatusRequestHeaderFieldsTooLarge, "argv is too large")
+			return
+		}
 		if err := json.Unmarshal([]byte(rawArgv), &cmd); err != nil {
 			writeError(w, http.StatusBadRequest, "invalid argv")
 			return
 		}
 	}
 
-	var taskName string
-
-	if allocID == "" {
-		aID, tName, err := h.nomad.FindRunningAlloc(id, processName)
-		if err != nil {
-			writeError(w, http.StatusNotFound, err.Error())
+	if len(command) > 8192 || len(cmd) > 128 {
+		writeError(w, http.StatusBadRequest, "command is too large")
+		return
+	}
+	for _, arg := range cmd {
+		if len(arg) > 8192 {
+			writeError(w, http.StatusBadRequest, "command is too large")
 			return
 		}
-		allocID = aID
-		taskName = tName
-	} else if processName != "" {
-		taskName = processName
-	} else {
-		_, tName, err := h.nomad.FindRunningAlloc(id, "")
-		if err != nil {
-			writeError(w, http.StatusNotFound, err.Error())
-			return
-		}
-		taskName = tName
+	}
+	allocID, taskName, err := h.nomad.ResolveExecTarget(id, allocID, processName)
+	if err != nil {
+		writeError(w, http.StatusNotFound, err.Error())
+		return
 	}
 
 	allowedOrigins := map[string]bool{
@@ -78,6 +77,7 @@ func (h *Handler) ExecAlloc(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	defer ws.Close()
+	ws.SetReadLimit(64 << 10)
 
 	if len(cmd) == 0 {
 		cmd = strings.Fields(command)

@@ -64,7 +64,9 @@ All configuration is via environment variables:
 | `NORN_APPS_DIR` | `~/projects` | Directory to scan for `infraspec.yaml` files |
 | `NORN_GIT_TOKEN` | — | GitHub token for cloning private repos |
 | `NORN_GIT_SSH_KEY` | — | SSH key path for git operations |
-| `NORN_API_TOKEN` | — | Bearer token for API authentication |
+| `NORN_API_TOKEN` | — | Bearer/root signing secret; minimum 32 bytes and required for non-loopback binds |
+| `NORN_REQUIRE_EXPLICIT_AUTH` | `false` | Require bearer or validated Cloudflare Access credentials on non-public routes, including loopback; disables temporary IP-grant compatibility |
+| `NORN_LEGACY_TOKEN_SIGNING_UNTIL` | `2026-08-15T00:00:00Z` | Retirement deadline for the pre-v2.17 raw-key JWT signature; invalid values fail closed |
 | `NORN_REGISTRY_URL` | — | Container registry URL (e.g. `ghcr.io/username`) |
 | `NORN_NETWORK_MODE` | `local` | Reachability mode used by health, manifest, and validation (`local`, `tailnet`, or `public`) |
 | `NORN_NOMAD_ADDR` | `http://localhost:4646` | Nomad API address |

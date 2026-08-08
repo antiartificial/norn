@@ -24,7 +24,7 @@ func (h *Handler) ListAccessGrants(w http.ResponseWriter, r *http.Request) {
 
 func (h *Handler) CreateAccessGrant(w http.ResponseWriter, r *http.Request) {
 	var req struct {
-		IP  string `json:"ip"`
+		IP   string `json:"ip"`
 		Note string `json:"note"`
 		TTL  string `json:"ttl"`
 	}

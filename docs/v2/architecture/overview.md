@@ -188,6 +188,7 @@ v2/ui/
 |------|-------------|
 | `/api/v1/events` | Authenticated, durable event stream with cursor replay |
 | `/ws` | Compatibility alias for the event stream |
+| `/api/v1/exec-sessions/{id}/stream` | Typed, expiring, audited native terminal protocol |
 
 ## Authentication
 
@@ -199,6 +200,7 @@ Norn supports three auth modes (can be combined):
 
 Auth-exempt routes are limited to health/version/metrics, service discovery,
 signed webhook ingress, and configured wake-gateway paths. `/api/v1/events`,
-the compatibility `/ws`, and `/api/apps/*/exec` are protected whenever bearer
+the compatibility `/ws`, and both exec protocols are protected whenever bearer
 authentication is enabled. Scoped access tokens use `events:read` for the event
-stream and `apps:exec` for terminal sessions.
+stream and `apps:exec` for terminal sessions. Native clients enroll as devices;
+formal exec sessions additionally require a short-lived P-256 step-up proof.

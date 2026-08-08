@@ -1,7 +1,6 @@
 package handler
 
 import (
-	"encoding/json"
 	"fmt"
 	"io"
 	"net/http"
@@ -25,15 +24,15 @@ type platformRequest struct {
 
 func (h *Handler) QueuePlatformPreflight(w http.ResponseWriter, r *http.Request) {
 	var req platformRequest
-	if err := decodeOptionalJSON(r, &req); err != nil {
-		writeError(w, http.StatusBadRequest, err.Error())
+	if err := decodeOptionalJSON(w, r, &req); err != nil {
+		WriteControlProblem(w, r, http.StatusBadRequest, "invalid_request", err.Error())
 		return
 	}
 	if req.Ref == "" {
 		req.Ref = "HEAD"
 	}
 	if !maintenanceRefPattern.MatchString(req.Ref) {
-		writeError(w, http.StatusBadRequest, "invalid platform ref")
+		WriteControlProblem(w, r, http.StatusBadRequest, "invalid_platform_ref", "invalid platform ref")
 		return
 	}
 	h.queueMaintenanceOperation(w, r, "platform.preflight", req.Ref, "read-only candidate build", map[string]interface{}{"ref": req.Ref})
@@ -41,29 +40,29 @@ func (h *Handler) QueuePlatformPreflight(w http.ResponseWriter, r *http.Request)
 
 func (h *Handler) QueuePlatformUpgrade(w http.ResponseWriter, r *http.Request) {
 	var req platformRequest
-	if err := decodeOptionalJSON(r, &req); err != nil {
-		writeError(w, http.StatusBadRequest, err.Error())
+	if err := decodeOptionalJSON(w, r, &req); err != nil {
+		WriteControlProblem(w, r, http.StatusBadRequest, "invalid_request", err.Error())
 		return
 	}
 	if req.Ref == "" {
 		req.Ref = "HEAD"
 	}
 	if !maintenanceRefPattern.MatchString(req.Ref) {
-		writeError(w, http.StatusBadRequest, "invalid platform ref")
+		WriteControlProblem(w, r, http.StatusBadRequest, "invalid_platform_ref", "invalid platform ref")
 		return
 	}
 	if req.Mode == "" {
 		req.Mode = "restart"
 	}
 	if req.Mode != "restart" && req.Mode != "proxy" {
-		writeError(w, http.StatusBadRequest, "mode must be restart or proxy")
+		WriteControlProblem(w, r, http.StatusBadRequest, "invalid_upgrade_mode", "mode must be restart or proxy")
 		return
 	}
 	if req.DrainMode == "" {
 		req.DrainMode = "fail"
 	}
 	if req.DrainMode != "fail" && req.DrainMode != "wait" && req.DrainMode != "force" {
-		writeError(w, http.StatusBadRequest, "drainMode must be fail, wait, or force")
+		WriteControlProblem(w, r, http.StatusBadRequest, "invalid_drain_mode", "drainMode must be fail, wait, or force")
 		return
 	}
 	h.queueMaintenanceOperation(w, r, "platform.upgrade", req.Ref, "control-plane replacement", map[string]interface{}{
@@ -79,12 +78,12 @@ func (h *Handler) QueuePlatformRollback(w http.ResponseWriter, r *http.Request) 
 	var req struct {
 		SHA string `json:"sha"`
 	}
-	if err := decodeOptionalJSON(r, &req); err != nil {
-		writeError(w, http.StatusBadRequest, err.Error())
+	if err := decodeOptionalJSON(w, r, &req); err != nil {
+		WriteControlProblem(w, r, http.StatusBadRequest, "invalid_request", err.Error())
 		return
 	}
 	if !maintenanceRefPattern.MatchString(req.SHA) {
-		writeError(w, http.StatusBadRequest, "invalid release sha")
+		WriteControlProblem(w, r, http.StatusBadRequest, "invalid_release_sha", "invalid release sha")
 		return
 	}
 	h.queueMaintenanceOperation(w, r, "platform.rollback", req.SHA, "control-plane rollback", map[string]interface{}{"sha": req.SHA})
@@ -95,9 +94,16 @@ func (h *Handler) QueueHostAssurance(w http.ResponseWriter, r *http.Request) {
 }
 
 func (h *Handler) queueMaintenanceOperation(w http.ResponseWriter, r *http.Request, kind, ref, risk string, payload map[string]interface{}) {
+	requiredScope := ScopePlatformOperate
+	if kind == "host.assure" {
+		requiredScope = ScopeHostOperate
+	}
+	if _, ok := requireControlScope(w, r, requiredScope); !ok {
+		return
+	}
 	idempotencyKey := strings.TrimSpace(r.Header.Get("Idempotency-Key"))
 	if len(idempotencyKey) > 200 {
-		writeError(w, http.StatusBadRequest, "Idempotency-Key must not exceed 200 characters")
+		WriteControlProblem(w, r, http.StatusBadRequest, "invalid_idempotency_key", "Idempotency-Key must not exceed 200 characters")
 		return
 	}
 	if idempotencyKey != "" {
@@ -105,7 +111,7 @@ func (h *Handler) queueMaintenanceOperation(w http.ResponseWriter, r *http.Reque
 			writeJSON(w, existing)
 			return
 		} else if err != pgx.ErrNoRows {
-			writeError(w, http.StatusInternalServerError, err.Error())
+			WriteControlProblem(w, r, http.StatusInternalServerError, "operation_lookup_failed", "failed to resolve idempotent operation")
 			return
 		}
 	}
@@ -125,19 +131,18 @@ func (h *Handler) queueMaintenanceOperation(w http.ResponseWriter, r *http.Reque
 				return
 			}
 		}
-		writeError(w, http.StatusInternalServerError, err.Error())
+		WriteControlProblem(w, r, http.StatusInternalServerError, "operation_create_failed", "failed to create operation")
 		return
 	}
 	w.Header().Set("Location", "/api/v1/operations/"+op.ID)
-	w.WriteHeader(http.StatusAccepted)
-	_ = json.NewEncoder(w).Encode(op)
+	writeJSONStatus(w, http.StatusAccepted, op)
 }
 
-func decodeOptionalJSON(r *http.Request, target interface{}) error {
+func decodeOptionalJSON(w http.ResponseWriter, r *http.Request, target interface{}) error {
 	if r.Body == nil || r.ContentLength == 0 {
 		return nil
 	}
-	if err := json.NewDecoder(r.Body).Decode(target); err != nil && err != io.EOF {
+	if err := decodeControlJSON(w, r, target); err != nil && err != io.EOF {
 		return fmt.Errorf("invalid request body")
 	}
 	return nil

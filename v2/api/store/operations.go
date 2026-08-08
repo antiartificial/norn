@@ -241,6 +241,21 @@ func (db *DB) GetOperationByIdempotencyKey(ctx context.Context, key string) (*mo
 	return db.GetOperation(ctx, id)
 }
 
+func (db *DB) CancelQueuedOperation(ctx context.Context, id, requestedBy string) (*model.Operation, bool, error) {
+	result, err := db.Pool.Exec(ctx, `
+		UPDATE operations
+		SET status = 'canceled', message = 'operation canceled before execution',
+		    metadata = metadata || jsonb_build_object('canceledBy', $1),
+		    locked_by = '', locked_until = NULL, updated_at = now(), finished_at = now()
+		WHERE id = $2 AND status = 'queued'
+	`, requestedBy, id)
+	if err != nil {
+		return nil, false, err
+	}
+	op, getErr := db.GetOperation(ctx, id)
+	return op, result.RowsAffected() == 1, getErr
+}
+
 func (db *DB) RenewOperationLease(ctx context.Context, id, workerID string, until time.Time) error {
 	_, err := db.Pool.Exec(ctx, `
 		UPDATE operations SET locked_until = $1, updated_at = now()

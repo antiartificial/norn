@@ -4,11 +4,15 @@ import (
 	"context"
 	"crypto/subtle"
 	"encoding/json"
+	"errors"
+	"fmt"
+	"io/fs"
 	"log"
 	"net"
 	"net/http"
 	"os"
 	"os/signal"
+	"path"
 	"strings"
 	"syscall"
 	"time"
@@ -23,6 +27,7 @@ import (
 	"norn/v2/api/cloudflared"
 	"norn/v2/api/config"
 	"norn/v2/api/consul"
+	"norn/v2/api/contract"
 	"norn/v2/api/handler"
 	"norn/v2/api/hub"
 	"norn/v2/api/nomad"
@@ -39,6 +44,9 @@ import (
 
 func main() {
 	cfg := config.Load()
+	if err := validateControlSecurity(cfg); err != nil {
+		log.Fatalf("security configuration: %v", err)
+	}
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	shutdownOTEL, err := observe.Setup(ctx, observe.ConfigFromEnv("norn-api"))
 	cancel()
@@ -210,12 +218,13 @@ func main() {
 
 	// Router
 	r := chi.NewRouter()
+	r.Use(middleware.RequestID)
 	r.Use(middleware.Logger)
 	r.Use(middleware.Recoverer)
 	r.Use(cors.Handler(cors.Options{
 		AllowedOrigins:   allowedOrigins,
 		AllowedMethods:   []string{"GET", "POST", "PUT", "DELETE", "OPTIONS"},
-		AllowedHeaders:   []string{"Content-Type", "Authorization", "Cf-Access-Jwt-Assertion"},
+		AllowedHeaders:   []string{"Content-Type", "Authorization", "Cf-Access-Jwt-Assertion", "Idempotency-Key", "X-Norn-Step-Up"},
 		AllowCredentials: true,
 	}))
 
@@ -229,7 +238,7 @@ func main() {
 
 	// Bearer token auth
 	if cfg.APIToken != "" {
-		r.Use(bearerAuth(cfg.APIToken, h))
+		r.Use(bearerAuth(cfg.APIToken, h, cfg.RequireExplicitAuth))
 		log.Println("API token auth enabled")
 	}
 	r.Use(h.AccessMiddleware)
@@ -322,8 +331,30 @@ func main() {
 		r.Get("/v1/capabilities", func(w http.ResponseWriter, r *http.Request) {
 			writeControlCapabilities(w)
 		})
+		r.Get("/v1/openapi.yaml", contract.ServeOpenAPI)
+		r.Post("/v1/enrollments", h.StartDeviceEnrollment)
+		r.Get("/v1/enrollments", h.ListDeviceEnrollments)
+		r.Post("/v1/enrollments/approve", h.ApproveDeviceEnrollment)
+		r.Post("/v1/enrollments/{id}/exchange", h.ExchangeDeviceEnrollment)
+		r.Get("/v1/devices", h.ListDevices)
+		r.Delete("/v1/devices/{id}", h.RevokeDevice)
+		r.Post("/v1/auth/rotate", h.RotateCurrentToken)
+		r.Post("/v1/auth/revoke", h.RevokeCurrentToken)
+		r.Post("/v1/auth/step-up/challenges", h.CreateStepUpChallenge)
+		r.Post("/v1/auth/step-up/challenges/{id}/verify", h.VerifyStepUpChallenge)
+		r.Get("/v1/apps", h.ListApps)
+		r.With(handler.ValidateAppID).Get("/v1/apps/{id}", h.GetApp)
+		r.With(handler.ValidateAppID).Post("/v1/apps/{id}/exec-sessions", h.CreateExecSession)
+		r.Get("/v1/exec-sessions", h.ListExecSessions)
+		r.Get("/v1/exec-sessions/{id}", h.GetExecSession)
+		r.Delete("/v1/exec-sessions/{id}", h.CancelExecSession)
+		r.Get("/v1/exec-sessions/{id}/stream", h.ExecSessionStream)
+		r.Get("/v1/releases", h.PlatformReleases)
+		r.Get("/v1/host/status", h.HostStatus)
+		r.Get("/v1/events/info", ws.HandleInfo)
 		r.Get("/v1/events", ws.HandleConnect)
 		r.Get("/v1/operations/{id}", h.GetOperation)
+		r.Post("/v1/operations/{id}/cancel", h.CancelOperation)
 		r.Post("/v1/platform/preflights", h.QueuePlatformPreflight)
 		r.Post("/v1/platform/upgrades", h.QueuePlatformUpgrade)
 		r.Post("/v1/platform/rollbacks", h.QueuePlatformRollback)
@@ -373,8 +404,11 @@ func main() {
 	}
 
 	srv := &http.Server{
-		Addr:    cfg.BindAddr + ":" + cfg.Port,
-		Handler: otelhttp.NewHandler(r, "norn.api"),
+		Addr:              cfg.BindAddr + ":" + cfg.Port,
+		Handler:           otelhttp.NewHandler(r, "norn.api"),
+		ReadHeaderTimeout: 10 * time.Second,
+		IdleTimeout:       2 * time.Minute,
+		MaxHeaderBytes:    1 << 20,
 	}
 
 	go func() {
@@ -395,46 +429,96 @@ func main() {
 	srv.Shutdown(shutdownCtx)
 }
 
-func bearerAuth(token string, h *handler.Handler) func(http.Handler) http.Handler {
+func validateControlSecurity(cfg *config.Config) error {
+	if cfg == nil {
+		return fmt.Errorf("configuration is required")
+	}
+	if cfg.APIToken != "" && len(cfg.APIToken) < 32 {
+		return fmt.Errorf("NORN_API_TOKEN must contain at least 32 bytes")
+	}
+	cfDomainConfigured := strings.TrimSpace(cfg.CFAccessTeamDomain) != ""
+	cfAudienceConfigured := strings.TrimSpace(cfg.CFAccessAUD) != ""
+	if cfDomainConfigured != cfAudienceConfigured {
+		return fmt.Errorf("NORN_CF_ACCESS_TEAM_DOMAIN and NORN_CF_ACCESS_AUD must be configured together")
+	}
+	if cfg.RequireExplicitAuth && cfg.APIToken == "" && !cfDomainConfigured {
+		return fmt.Errorf("NORN_REQUIRE_EXPLICIT_AUTH requires NORN_API_TOKEN or Cloudflare Access")
+	}
+	if cfg.APIToken == "" {
+		bind := strings.TrimSpace(cfg.BindAddr)
+		ip := net.ParseIP(bind)
+		if bind != "localhost" && (ip == nil || !ip.IsLoopback()) {
+			return fmt.Errorf("NORN_API_TOKEN is required when binding beyond loopback")
+		}
+	}
+	return nil
+}
+
+func bearerAuth(token string, h *handler.Handler, requireExplicit bool) func(http.Handler) http.Handler {
 	return func(next http.Handler) http.Handler {
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-			if publicControlPath(r.URL.Path) {
+			if publicControlPath(r.URL.Path) || publicEnrollmentRequest(r) {
 				next.ServeHTTP(w, r)
 				return
 			}
 			requiredScope := controlScopeForRequest(r)
-			auth := r.Header.Get("Authorization")
-			if strings.HasPrefix(auth, "Bearer ") && subtle.ConstantTimeCompare([]byte(auth[7:]), []byte(token)) == 1 {
-				next.ServeHTTP(w, r)
+			if claims, ok := auth.CFAccessClaimsFromRequest(r); ok {
+				subject := strings.TrimSpace(claims.Email)
+				if subject == "" {
+					subject = strings.TrimSpace(claims.Subject)
+				}
+				next.ServeHTTP(w, handler.WithAccessPrincipal(r, &handler.AccessPrincipal{
+					Subject: subject, Scopes: []string{handler.ScopeAdmin},
+				}))
 				return
 			}
-			if strings.HasPrefix(auth, "Bearer ") && h != nil {
-				if principal, ok := h.VerifyAccessToken(auth[7:]); ok {
+			authorization := r.Header.Get("Authorization")
+			if strings.HasPrefix(authorization, "Bearer ") && subtle.ConstantTimeCompare([]byte(authorization[7:]), []byte(token)) == 1 {
+				next.ServeHTTP(w, handler.WithAccessPrincipal(r, &handler.AccessPrincipal{
+					Subject: "control-plane", Scopes: []string{handler.ScopeAdmin}, Legacy: true,
+				}))
+				return
+			}
+			if strings.HasPrefix(authorization, "Bearer ") && h != nil {
+				if principal, ok := h.VerifyAccessToken(authorization[7:]); ok {
 					if !principal.Allows(requiredScope) {
-						http.Error(w, "forbidden: token lacks "+requiredScope, http.StatusForbidden)
+						handler.WriteControlProblem(w, r, http.StatusForbidden, "insufficient_scope", "token lacks required scope "+requiredScope)
 						return
 					}
+					next.ServeHTTP(w, handler.WithAccessPrincipal(r, principal))
+					return
+				}
+			}
+			if !requireExplicit {
+				directIP := directClientIP(r)
+				if directIP != nil && directIP.IsLoopback() && !hasForwardedClient(r) {
+					next.ServeHTTP(w, r)
+					return
+				}
+				ip := clientIPFromRequest(r)
+				if h != nil && h.HasActiveGrant(ip) {
 					next.ServeHTTP(w, r)
 					return
 				}
 			}
-			directIP := directClientIP(r)
-			if directIP != nil && directIP.IsLoopback() && !hasForwardedClient(r) {
-				next.ServeHTTP(w, r)
-				return
-			}
-			ip := clientIPFromRequest(r)
-			if h != nil && h.HasActiveGrant(ip) {
-				next.ServeHTTP(w, r)
-				return
-			}
-			http.Error(w, "unauthorized", http.StatusUnauthorized)
+			handler.WriteControlProblem(w, r, http.StatusUnauthorized, "unauthorized", "a valid bearer token is required")
 		})
 	}
 }
 
+func publicEnrollmentRequest(r *http.Request) bool {
+	if r.Method != http.MethodPost {
+		return false
+	}
+	if r.URL.Path == "/api/v1/enrollments" {
+		return true
+	}
+	parts := strings.Split(strings.Trim(r.URL.Path, "/"), "/")
+	return len(parts) == 5 && parts[0] == "api" && parts[1] == "v1" && parts[2] == "enrollments" && parts[4] == "exchange"
+}
+
 func publicControlPath(path string) bool {
-	if path == "/metrics" || path == "/api/metrics" || path == "/api/health" || path == "/api/version" || path == "/api/services/manifest" {
+	if path == "/metrics" || path == "/api/metrics" || path == "/api/health" || path == "/api/version" || path == "/api/services/manifest" || path == "/api/v1/openapi.yaml" || path == "/api/v1/capabilities" {
 		return true
 	}
 	return path == "/api/webhooks/github" || path == "/api/webhooks/gitea" ||
@@ -447,13 +531,23 @@ func controlScopeForRequest(r *http.Request) string {
 	switch {
 	case path == "/ws" || path == "/api/v1/events":
 		return handler.ScopeEventsRead
+	case path == "/api/v1/events/info":
+		return handler.ScopeEventsRead
+	case strings.HasSuffix(path, "/cancel") && strings.HasPrefix(path, "/api/v1/operations/"):
+		return ""
+	case path == "/api/v1/auth/rotate" || path == "/api/v1/auth/revoke":
+		return ""
+	case strings.HasPrefix(path, "/api/v1/auth/step-up/") || strings.HasPrefix(path, "/api/v1/exec-sessions") || strings.HasSuffix(path, "/exec-sessions"):
+		return handler.ScopeAppsExec
+	case path == "/api/v1/enrollments" || path == "/api/v1/enrollments/approve" || strings.HasPrefix(path, "/api/v1/devices"):
+		return handler.ScopeAdmin
 	case strings.HasSuffix(path, "/exec"):
 		return handler.ScopeAppsExec
 	case path == "/api/access/tokens":
 		return handler.ScopeAdmin
 	case strings.HasPrefix(path, "/api/v1/platform/"):
 		return handler.ScopePlatformOperate
-	case strings.HasPrefix(path, "/api/v1/host/"):
+	case strings.HasPrefix(path, "/api/v1/host/") && r.Method != http.MethodGet && r.Method != http.MethodHead:
 		return handler.ScopeHostOperate
 	case strings.HasPrefix(path, "/api/platform/") && r.Method != http.MethodGet && r.Method != http.MethodHead:
 		return handler.ScopePlatformOperate
@@ -472,16 +566,32 @@ func writeControlCapabilities(w http.ResponseWriter) {
 		"features": []string{
 			"durable-operations", "event-cursor-replay", "platform-preflight", "platform-upgrade",
 			"platform-rollback", "platform-smoke", "host-assurance", "scoped-access-tokens",
+			"openapi-3.1", "standard-problems", "event-stream-info", "event-gap-detection",
+			"event-heartbeat", "event-subscriptions", "operation-cancellation", "typed-operation-receipts",
+			"versioned-resources", "device-enrollment", "token-rotation", "token-revocation", "device-listing",
+			"device-key-step-up", "exec-sessions", "exec-audit", "exec-session-expiry", "exec-protocol-v1",
 		},
 		"auth": map[string]interface{}{
 			"scopes":                handler.AccessTokenScopeNames(),
 			"websocketBearerHeader": true,
 			"websocketQueryToken":   false,
+			"deviceEnrollment":      true,
+			"stepUp": map[string]interface{}{
+				"purposes": []string{"exec"}, "algorithm": "ES256", "publicKeyFormat": "P-256-X9.63",
+				"challengeTTLSeconds": 120, "header": "X-Norn-Step-Up",
+			},
+			"tokens": map[string]interface{}{
+				"deviceTTLSeconds": 2592000, "rotation": "atomic", "revocation": "registry",
+			},
 		},
 		"endpoints": map[string]string{
 			"events": "/api/v1/events", "operations": "/api/v1/operations/{id}",
 			"platformPreflights": "/api/v1/platform/preflights", "platformUpgrades": "/api/v1/platform/upgrades",
 			"platformRollbacks": "/api/v1/platform/rollbacks", "platformSmoke": "/api/v1/platform/smoke", "hostAssurances": "/api/v1/host/assurances",
+			"openapi": "/api/v1/openapi.yaml", "eventInfo": "/api/v1/events/info", "apps": "/api/v1/apps",
+			"releases": "/api/v1/releases", "hostStatus": "/api/v1/host/status", "enrollments": "/api/v1/enrollments",
+			"devices": "/api/v1/devices", "tokenRotate": "/api/v1/auth/rotate", "tokenRevoke": "/api/v1/auth/revoke",
+			"stepUpChallenges": "/api/v1/auth/step-up/challenges", "execSessions": "/api/v1/exec-sessions",
 		},
 	})
 }
@@ -518,12 +628,22 @@ func hasForwardedClient(r *http.Request) bool {
 }
 
 func fileServer(r chi.Router, dir string) {
-	fs := http.FileServer(http.Dir(dir))
+	root, err := os.OpenRoot(dir)
+	if err != nil {
+		log.Printf("UI file server unavailable: %v", err)
+		return
+	}
+	rootFS := root.FS()
+	fileHandler := http.FileServerFS(rootFS)
 	r.Get("/*", func(w http.ResponseWriter, r *http.Request) {
-		if _, err := os.Stat(dir + r.URL.Path); os.IsNotExist(err) {
-			http.ServeFile(w, r, dir+"/index.html")
+		name := strings.TrimPrefix(path.Clean("/"+r.URL.Path), "/")
+		if name == "" {
+			name = "."
+		}
+		if _, err := fs.Stat(rootFS, name); errors.Is(err, fs.ErrNotExist) {
+			http.ServeFileFS(w, r, rootFS, "index.html")
 			return
 		}
-		fs.ServeHTTP(w, r)
+		fileHandler.ServeHTTP(w, r)
 	})
 }
