@@ -79,7 +79,7 @@ norn host install --repo /path/to/norn \
 
 | Policy | Behavior |
 |--------|----------|
-| `--required APP:PROCESS` | Require a passing Consul instance on IPv4. Deploy `HEAD` when the app's Nomad job is absent; restart the app when the job exists but remains unhealthy after retries. |
+| `--required APP:PROCESS` | Require a passing Consul instance on IPv4. Deploy `HEAD` when the app's Nomad job is absent; replace its active allocations when the job exists but remains unhealthy after retries. |
 | `--forge APP` | Reconcile the app's public endpoints through cloudflared. Private and literal-IP endpoints are rejected, and stale private ingress rules are pruned. |
 | `--serve PORT=TARGET` | Reapply an idempotent Tailscale Serve listener. `{address}` expands to the current detected IPv4 address. |
 | `--probe NAME=URL` | Retry an unauthenticated HTTP GET against the actual public or tailnet entrypoint. Redirects are followed and HTTP error responses fail. |
@@ -112,6 +112,9 @@ the recovery supervisor and by `com.norn.host-assurance`.
 - Required services are retried before any repair to avoid reacting to a short
   Consul transition.
 - Only entries in `--required` authorize deploy or restart actions.
+- Restart repair stops active allocations whose desired state remains `run` so
+  Nomad must recreate task, network, and port-binding state. Assurance then
+  waits for the required Consul service to pass on IPv4.
 - Route reconciliation runs before endpoint probes.
 - HTTP probes retry with bounded backoff.
 - A failing pass exits non-zero and emits `host.assurance.failed` through

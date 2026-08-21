@@ -39,7 +39,7 @@ norn --api=https://norn.example.com status
 | [`norn notifications`](/v2/cli/commands#notifications) | Manage Beacon notification channels |
 | [`norn canary`](/v2/cli/commands#canary) | Inspect and promote canary deployments |
 | [`norn deploy-groups`](/v2/cli/commands#deploy-groups) | Run ordered multi-app deploy groups |
-| [`norn restart`](/v2/cli/commands#restart) | Rolling restart |
+| [`norn restart`](/v2/cli/commands#restart) | Replace active app allocations through Nomad |
 | [`norn rollback`](/v2/cli/commands#rollback) | Rollback to previous deployment |
 | [`norn scale`](/v2/cli/commands#scale) | Scale a task group |
 | [`norn logs`](/v2/cli/commands#logs) | Stream live logs |

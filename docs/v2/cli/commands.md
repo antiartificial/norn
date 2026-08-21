@@ -361,13 +361,17 @@ The webhook inbox shows delivery status, matched app, branch, and ignored or fai
 
 ## restart
 
-Perform a rolling restart of all allocations for an app.
+Replace every active allocation for an app.
 
 ```bash
 norn restart <app>
 ```
 
-Triggers a rolling restart via Nomad. Renders a spinner until all allocations are healthy.
+Norn stops allocations whose desired status is still `run`, causing Nomad to
+reschedule them from the unchanged job definition. This creates fresh task,
+network, and port-binding state instead of merely evaluating an unchanged job.
+The command returns after Nomad accepts the replacement requests; use the app
+health or service manifest to follow the new allocations to readiness.
 
 ## rollback
 

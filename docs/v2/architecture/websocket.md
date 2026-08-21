@@ -55,7 +55,7 @@ Every message is a JSON object with this structure:
 | `deploy.progress` | `sagaId`, `message` | Allocation health polling updates |
 | `deploy.completed` | `sagaId`, `imageTag` | Deploy pipeline finished successfully |
 | `deploy.failed` | `sagaId`, `error` | Deploy pipeline failed |
-| `app.restarted` | `sagaId` | Rolling restart completed |
+| `app.restarted` | `sagaId` | Allocation replacement accepted |
 | `app.scaled` | `sagaId`, `group`, `count` | Task group scaled |
 | `function.completed` | `executionId`, `status` | Function invocation finished |
 | `maintenance.started` | `operationId`, `kind`, `status` | Host agent claimed a platform or host operation |

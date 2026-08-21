@@ -157,7 +157,7 @@ v2/ui/
 | GET | `/` | Get app details |
 | POST | `/deploy` | Start a deployment |
 | GET | `/logs` | Stream logs (SSE) |
-| POST | `/restart` | Rolling restart |
+| POST | `/restart` | Replace active allocations through Nomad |
 | POST | `/scale` | Scale a task group |
 | POST | `/rollback` | Rollback to previous deployment |
 | GET | `/secrets` | List secret keys |

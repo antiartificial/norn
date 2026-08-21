@@ -2,6 +2,7 @@ package nomad
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"time"
 
@@ -23,14 +24,45 @@ func (c *Client) StopJob(jobID string, purge bool) error {
 	return err
 }
 
-// RestartJob forces a restart by creating a new evaluation.
+// RestartJob replaces every active allocation for a job. Stopping an
+// allocation whose desired status is run asks Nomad to create a fresh
+// allocation, which also recreates the task's network and port bindings.
 func (c *Client) RestartJob(jobID string) error {
-	job, _, err := c.api.Jobs().Info(jobID, nil)
+	allocs, _, err := c.api.Jobs().Allocations(jobID, false, nil)
 	if err != nil {
-		return fmt.Errorf("get job info: %w", err)
+		return fmt.Errorf("list allocations for %s: %w", jobID, err)
 	}
-	_, _, err = c.api.Jobs().Register(job, nil)
-	return err
+
+	var active []*nomadapi.AllocationListStub
+	for _, alloc := range allocs {
+		if isRestartableAllocation(alloc) {
+			active = append(active, alloc)
+		}
+	}
+	if len(active) == 0 {
+		return fmt.Errorf("no active allocations found for job %s", jobID)
+	}
+
+	var stopErrors []error
+	for _, alloc := range active {
+		var query *nomadapi.QueryOptions
+		if alloc.Namespace != "" {
+			query = &nomadapi.QueryOptions{Namespace: alloc.Namespace}
+		}
+		if _, err := c.api.Allocations().Stop(&nomadapi.Allocation{ID: alloc.ID}, query); err != nil {
+			stopErrors = append(stopErrors, fmt.Errorf("stop allocation %s: %w", alloc.ID, err))
+		}
+	}
+	return errors.Join(stopErrors...)
+}
+
+func isRestartableAllocation(alloc *nomadapi.AllocationListStub) bool {
+	if alloc == nil || alloc.ID == "" || alloc.DesiredStatus != nomadapi.AllocDesiredStatusRun {
+		return false
+	}
+	return alloc.ClientStatus == nomadapi.AllocClientStatusPending ||
+		alloc.ClientStatus == nomadapi.AllocClientStatusRunning ||
+		alloc.ClientStatus == nomadapi.AllocClientStatusUnknown
 }
 
 // JobStatus returns the status of a Nomad job.

@@ -151,8 +151,10 @@ allowed missing or unhealthy apps, reconciles public and tailnet routes, and
 probes the real user-facing endpoints. Persistent failures and recovery are
 reported through correlated Beacon events. Run `norn host assure` for an
 operator-triggered pass. Only apps in the installed `--required` policy may be
-deployed or restarted automatically. User LaunchAgents begin after login; use a
-system service or Linux host when the
+deployed or restarted automatically. Restart repair replaces active Nomad
+allocations rather than re-registering an unchanged job, ensuring task network
+and port bindings are recreated before assurance checks service health. User
+LaunchAgents begin after login; use a system service or Linux host when the
 runtime must recover before a user session exists.
 
 ## Runtime Watchers
