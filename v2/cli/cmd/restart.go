@@ -14,7 +14,7 @@ func init() {
 
 var restartCmd = &cobra.Command{
 	Use:   "restart <app>",
-	Short: "Restart an app",
+	Short: "Replace an app's active allocations",
 	Args:  cobra.ExactArgs(1),
 	RunE: func(cmd *cobra.Command, args []string) error {
 		appID := args[0]

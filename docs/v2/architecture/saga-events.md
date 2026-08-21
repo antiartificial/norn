@@ -28,7 +28,7 @@ Norn v2 uses an append-only event log (the "saga") instead of mutable step logs 
 | Category | Operations |
 |----------|------------|
 | `deploy` | Full deploy pipeline |
-| `restart` | Rolling restarts |
+| `restart` | Nomad allocation replacement |
 | `scale` | Task group scaling |
 | `system` | Health checks, startup, internal operations |
 
@@ -43,7 +43,7 @@ Norn v2 uses an append-only event log (the "saga") instead of mutable step logs 
 | `deploy.complete` | Deploy operation succeeded |
 | `deploy.failed` | Deploy operation failed |
 | `nomad.submitted` | Job submitted to Nomad |
-| `restart.complete` | Rolling restart finished |
+| `restart.complete` | Allocation replacement accepted |
 | `scale.complete` | Scaling operation finished |
 
 ## Storage
