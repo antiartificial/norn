@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"strings"
 	"time"
 
 	nomadapi "github.com/hashicorp/nomad/api"
@@ -422,6 +423,77 @@ type CronRun struct {
 	StartedAt  string `json:"startedAt"`
 	FinishedAt string `json:"finishedAt,omitempty"`
 	ExitCode   int    `json:"exitCode,omitempty"`
+}
+
+// CronRunHealth summarizes allocation and restart evidence for one periodic
+// child job. Periodic parent state alone cannot distinguish a healthy running
+// child from one repeatedly restarting or surviving an OOM replacement.
+type CronRunHealth struct {
+	JobID              string    `json:"jobId"`
+	RunningAllocations int       `json:"runningAllocations,omitempty"`
+	FailedAllocations  int       `json:"failedAllocations,omitempty"`
+	LostAllocations    int       `json:"lostAllocations,omitempty"`
+	Restarts           uint64    `json:"restarts,omitempty"`
+	LastRestart        time.Time `json:"lastRestart,omitempty"`
+	OOMKilled          bool      `json:"oomKilled"`
+	LastEvent          string    `json:"lastEvent,omitempty"`
+}
+
+// CronRunHealth returns retained allocation evidence for a periodic child.
+// Callers intentionally use this for only the active or latest child so a
+// high-frequency cron with substantial retained history does not create an
+// N+1 scan over every historical dispatch.
+func (c *Client) CronRunHealth(jobID string) (*CronRunHealth, error) {
+	allocs, _, err := c.api.Jobs().Allocations(jobID, true, nil)
+	if err != nil {
+		return nil, fmt.Errorf("cron run allocations: %w", err)
+	}
+	health := &CronRunHealth{JobID: jobID}
+	var latestEventAt int64
+	for _, alloc := range allocs {
+		switch alloc.ClientStatus {
+		case nomadapi.AllocClientStatusRunning:
+			health.RunningAllocations++
+		case nomadapi.AllocClientStatusFailed:
+			health.FailedAllocations++
+		case nomadapi.AllocClientStatusLost:
+			health.LostAllocations++
+		}
+		for _, state := range alloc.TaskStates {
+			health.Restarts += state.Restarts
+			if state.LastRestart.After(health.LastRestart) {
+				health.LastRestart = state.LastRestart
+			}
+			for _, event := range state.Events {
+				if taskEventOOMKilled(event) {
+					health.OOMKilled = true
+				}
+				if event != nil && event.Time >= latestEventAt {
+					latestEventAt = event.Time
+					health.LastEvent = event.DisplayMessage
+					if health.LastEvent == "" {
+						health.LastEvent = event.Message
+					}
+					if health.LastEvent == "" {
+						health.LastEvent = event.Type
+					}
+				}
+			}
+		}
+	}
+	return health, nil
+}
+
+func taskEventOOMKilled(event *nomadapi.TaskEvent) bool {
+	if event == nil {
+		return false
+	}
+	for _, value := range []string{event.Type, event.Message, event.DisplayMessage} {
+		if strings.Contains(strings.ToLower(value), "oom killed") {
+			return true
+		}
+	}
+	return strings.EqualFold(event.Details["oom_killed"], "true")
 }
 
 // WaitBatchComplete polls a batch job until it reaches a terminal state.

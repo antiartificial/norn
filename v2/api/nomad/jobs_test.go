@@ -7,9 +7,59 @@ import (
 	"reflect"
 	"strings"
 	"testing"
+	"time"
 
 	nomadapi "github.com/hashicorp/nomad/api"
 )
+
+func TestCronRunHealthDetectsOOMRestartsAndFailedAllocation(t *testing.T) {
+	t.Parallel()
+
+	restartedAt := time.Date(2026, 8, 22, 10, 6, 23, 0, time.FixedZone("CDT", -5*60*60))
+	client := newTestNomadClient(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodGet || !strings.HasSuffix(r.URL.Path, "/allocations") {
+			http.Error(w, "unexpected request", http.StatusNotFound)
+			return
+		}
+		if got := r.URL.Query().Get("all"); got != "true" {
+			t.Fatalf("all query = %q, want true", got)
+		}
+		_ = json.NewEncoder(w).Encode([]*nomadapi.AllocationListStub{
+			{
+				ID:           "running",
+				ClientStatus: nomadapi.AllocClientStatusRunning,
+				TaskStates: map[string]*nomadapi.TaskState{
+					"sync": {
+						State:       "running",
+						Restarts:    2,
+						LastRestart: restartedAt,
+						Events: []*nomadapi.TaskEvent{{
+							Type:           nomadapi.TaskTerminated,
+							Time:           restartedAt.UnixNano(),
+							DisplayMessage: `Exit Code: 0, Exit Message: "OOM Killed"`,
+							Details:        map[string]string{"oom_killed": "true"},
+						}},
+					},
+				},
+			},
+			{ID: "failed", ClientStatus: nomadapi.AllocClientStatusFailed},
+		})
+	}))
+
+	health, err := client.CronRunHealth("field-harbor-sync/periodic-1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if health.RunningAllocations != 1 || health.FailedAllocations != 1 {
+		t.Fatalf("allocation counts = running %d failed %d", health.RunningAllocations, health.FailedAllocations)
+	}
+	if health.Restarts != 2 || !health.OOMKilled {
+		t.Fatalf("restart health = restarts %d oom %t", health.Restarts, health.OOMKilled)
+	}
+	if !health.LastRestart.Equal(restartedAt) {
+		t.Fatalf("last restart = %s, want %s", health.LastRestart, restartedAt)
+	}
+}
 
 func TestRestartJobStopsOnlyActiveDesiredAllocations(t *testing.T) {
 	t.Parallel()

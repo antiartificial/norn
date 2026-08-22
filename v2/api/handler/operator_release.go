@@ -78,6 +78,8 @@ type operatorCronEntry struct {
 	ResumeURL        string          `json:"resumeUrl"`
 }
 
+const operatorCronHungAfter = 30 * time.Minute
+
 type operatorWakeTargets struct {
 	GeneratedAt string               `json:"generatedAt"`
 	Targets     []operatorWakeTarget `json:"targets"`
@@ -546,6 +548,15 @@ func (h *Handler) buildOperatorCronOverview(r *http.Request) (operatorCronOvervi
 						entry.LastRunAt = last.UTC().Format(time.RFC3339)
 						entry.LastRunAtLocal = formatOperatorLocalTime(last, loc)
 					}
+					for _, run := range operatorCronRiskRuns(runs) {
+						health, healthErr := h.nomad.CronRunHealth(run.JobID)
+						if healthErr != nil {
+							mergeOperatorCronRisk(&entry, "run_health_unavailable", []string{fmt.Sprintf("%s: %v", run.JobID, healthErr)})
+							continue
+						}
+						risk, evidence := assessOperatorCronRun(time.Now(), run, health)
+						mergeOperatorCronRisk(&entry, risk, evidence)
+					}
 				}
 			}
 			if next := nextCronRun(entry.Schedule, loc); !next.IsZero() {
@@ -562,6 +573,104 @@ func (h *Handler) buildOperatorCronOverview(r *http.Request) (operatorCronOvervi
 		out.Entries = []operatorCronEntry{}
 	}
 	return out, nil
+}
+
+func operatorCronRiskRuns(runs []nomad.CronRun) []nomad.CronRun {
+	active := make([]nomad.CronRun, 0)
+	var latest nomad.CronRun
+	var latestAt time.Time
+	for _, run := range runs {
+		startedAt, _ := time.Parse(time.RFC3339, run.StartedAt)
+		if startedAt.After(latestAt) {
+			latest = run
+			latestAt = startedAt
+		}
+		if run.Status == "running" {
+			active = append(active, run)
+		}
+	}
+	if len(active) > 0 {
+		if len(active) > 10 {
+			active = active[:10]
+		}
+		return active
+	}
+	if latest.JobID != "" {
+		return []nomad.CronRun{latest}
+	}
+	return nil
+}
+
+func assessOperatorCronRun(now time.Time, run nomad.CronRun, health *nomad.CronRunHealth) (string, []string) {
+	if health == nil {
+		return "run_health_unavailable", []string{"run allocation health is unavailable"}
+	}
+	evidence := make([]string, 0, 5)
+	if health.OOMKilled {
+		evidence = append(evidence, "OOM kill detected")
+	}
+	if health.FailedAllocations > 0 {
+		evidence = append(evidence, fmt.Sprintf("failed allocations=%d", health.FailedAllocations))
+	}
+	if health.LostAllocations > 0 {
+		evidence = append(evidence, fmt.Sprintf("lost allocations=%d", health.LostAllocations))
+	}
+	if health.Restarts > 0 {
+		evidence = append(evidence, fmt.Sprintf("task restarts=%d", health.Restarts))
+	}
+	if health.LastEvent != "" {
+		evidence = append(evidence, "latest task event: "+health.LastEvent)
+	}
+
+	startedAt, _ := time.Parse(time.RFC3339, run.StartedAt)
+	hung := run.Status == "running" && !startedAt.IsZero() && now.Sub(startedAt) > operatorCronHungAfter
+	if hung {
+		evidence = append(evidence, fmt.Sprintf("running for %s; threshold=%s", now.Sub(startedAt).Round(time.Minute), operatorCronHungAfter))
+	}
+
+	switch {
+	case health.OOMKilled:
+		return "oom_killed", evidence
+	case health.FailedAllocations > 0 || run.Status == "failed":
+		return "failed", evidence
+	case health.LostAllocations > 0 || run.Status == "lost":
+		return "lost", evidence
+	case hung:
+		return "hung", evidence
+	case health.Restarts > 0:
+		return "restart_pressure", evidence
+	default:
+		return "ok", nil
+	}
+}
+
+func mergeOperatorCronRisk(entry *operatorCronEntry, risk string, evidence []string) {
+	if entry == nil || risk == "" || risk == "ok" {
+		return
+	}
+	if operatorCronRiskRank(risk) > operatorCronRiskRank(entry.Risk) {
+		entry.Risk = risk
+	}
+	entry.Evidence = append(entry.Evidence, evidence...)
+}
+
+func operatorCronRiskRank(risk string) int {
+	switch risk {
+	case "oom_killed":
+		return 60
+	case "failed", "lost":
+		return 50
+	case "hung":
+		return 40
+	case "restart_pressure":
+		return 30
+	case "run_health_unavailable":
+		return 20
+	case "paused":
+		return 10
+	default:
+		return 0
+	}
 }
 
 func (h *Handler) buildOperatorWakeTargets() (operatorWakeTargets, error) {
@@ -817,9 +926,9 @@ func formatOperatorLocalTime(t time.Time, loc *time.Location) string {
 
 func severityForRisk(risk string) string {
 	switch risk {
-	case "blocked", "parent_unavailable", "missing", "retention_over_limit":
+	case "blocked", "parent_unavailable", "missing", "retention_over_limit", "oom_killed", "failed", "lost", "hung":
 		return "critical"
-	case "paused", "pending", "unknown", "caution":
+	case "paused", "pending", "unknown", "caution", "restart_pressure", "run_health_unavailable":
 		return "warning"
 	default:
 		return "info"
