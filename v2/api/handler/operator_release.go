@@ -611,6 +611,12 @@ func (h *Handler) buildOperatorDeployConfidence(r *http.Request) (operatorDeploy
 		if err != nil {
 			return out, err
 		}
+		if recent == nil {
+			// Keep the wire contract stable for generated and strongly typed
+			// clients. An app with no deployment history has an empty list, not
+			// an absent list.
+			recent = []model.Deployment{}
+		}
 		app := operatorDeployConfidenceApp{
 			App:          spec.App,
 			Recent:       recent,

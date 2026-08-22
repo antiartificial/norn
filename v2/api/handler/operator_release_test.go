@@ -1,8 +1,12 @@
 package handler
 
 import (
+	"encoding/json"
+	"strings"
 	"testing"
 	"time"
+
+	"norn/v2/api/model"
 )
 
 func TestIncidentSnoozeUntilParsesDurationAndUntil(t *testing.T) {
@@ -57,5 +61,22 @@ func TestFormatOperatorLocalTime(t *testing.T) {
 	want := "Wed Jun 17, 2026 8:10 PM CDT"
 	if got != want {
 		t.Fatalf("formatOperatorLocalTime() = %q, want %q", got, want)
+	}
+}
+
+func TestOperatorDeployConfidenceEncodesEmptyRecentAsArray(t *testing.T) {
+	recent := []model.Deployment{}
+	payload, err := json.Marshal(operatorDeployConfidenceApp{
+		App:          "sync-in",
+		Confidence:   "unknown",
+		Recent:       recent,
+		PreflightURL: "/api/apps/sync-in/preflight",
+		DeployURL:    "/api/apps/sync-in/deploy",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(payload), `"recent":[]`) {
+		t.Fatalf("operator deploy confidence payload = %s, want empty recent array", payload)
 	}
 }
