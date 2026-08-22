@@ -4,7 +4,7 @@ title: Norn v2 Release Recap
 
 # Norn v2 Release Recap
 
-This recap summarizes the current Norn v2 release line: the Nomad/Consul control plane, the operator-facing dashboard and CLI, the ContextDB worker deployment path, Beacon operational events, and the upgrade posture for the local LaunchAgent install. The `v2.17.0-control` release line adds a generated-client contract, device enrollment and token lifecycle, explicit event continuity, typed operation receipts and cancellation, versioned resource endpoints, and a proof-of-possession native exec protocol. It retains the independent host agent and restart-safe maintenance foundation introduced by the v2.16 control releases.
+This recap summarizes the current Norn v2 release line: the Nomad/Consul control plane, the operator-facing dashboard and CLI, the ContextDB worker deployment path, Beacon operational events, and the upgrade posture for the local LaunchAgent install. The `v2.17.1-control` release line includes the generated-client contract, device enrollment and token lifecycle, explicit event continuity, typed operation receipts and cancellation, versioned resource endpoints, and proof-of-possession native exec protocol introduced in v2.17.0. The maintenance release also makes app restarts replace active Nomad allocations so host assurance can recover broken task networking and port bindings after a machine restart.
 
 ## What Shipped
 
