@@ -7,6 +7,7 @@ import (
 	"time"
 
 	"norn/v2/api/model"
+	"norn/v2/api/nomad"
 )
 
 func TestIncidentSnoozeUntilParsesDurationAndUntil(t *testing.T) {
@@ -35,19 +36,76 @@ func TestIncidentSnoozeUntilParsesDurationAndUntil(t *testing.T) {
 
 func TestOperatorRiskSeverityMapping(t *testing.T) {
 	cases := map[string]string{
-		"blocked":              "critical",
-		"parent_unavailable":   "critical",
-		"missing":              "critical",
-		"retention_over_limit": "critical",
-		"paused":               "warning",
-		"unknown":              "warning",
-		"ok":                   "info",
-		"":                     "info",
+		"blocked":                "critical",
+		"parent_unavailable":     "critical",
+		"missing":                "critical",
+		"retention_over_limit":   "critical",
+		"oom_killed":             "critical",
+		"failed":                 "critical",
+		"lost":                   "critical",
+		"hung":                   "critical",
+		"paused":                 "warning",
+		"restart_pressure":       "warning",
+		"run_health_unavailable": "warning",
+		"unknown":                "warning",
+		"ok":                     "info",
+		"":                       "info",
 	}
 	for risk, want := range cases {
 		if got := severityForRisk(risk); got != want {
 			t.Fatalf("severityForRisk(%q) = %q, want %q", risk, got, want)
 		}
+	}
+}
+
+func TestAssessOperatorCronRunSurfacesOOMBeforeHungRuntime(t *testing.T) {
+	now := time.Date(2026, 8, 22, 10, 20, 0, 0, time.FixedZone("CDT", -5*60*60))
+	run := nomad.CronRun{
+		JobID:     "field-harbor-sync/periodic-1",
+		Status:    "running",
+		StartedAt: now.Add(-2 * time.Hour).Format(time.RFC3339),
+	}
+	health := &nomad.CronRunHealth{
+		JobID:              run.JobID,
+		RunningAllocations: 1,
+		FailedAllocations:  1,
+		Restarts:           2,
+		OOMKilled:          true,
+		LastEvent:          `Exit Message: "OOM Killed"`,
+	}
+
+	risk, evidence := assessOperatorCronRun(now, run, health)
+	if risk != "oom_killed" {
+		t.Fatalf("risk = %q, want oom_killed", risk)
+	}
+	joined := strings.Join(evidence, "; ")
+	for _, want := range []string{"OOM kill detected", "failed allocations=1", "task restarts=2", "threshold=30m0s"} {
+		if !strings.Contains(joined, want) {
+			t.Fatalf("evidence = %q, want %q", joined, want)
+		}
+	}
+}
+
+func TestAssessOperatorCronRunFlagsRestartPressureAndHungRuns(t *testing.T) {
+	now := time.Date(2026, 8, 22, 10, 20, 0, 0, time.UTC)
+	restarting := nomad.CronRun{JobID: "restart", Status: "running", StartedAt: now.Add(-5 * time.Minute).Format(time.RFC3339)}
+	if risk, _ := assessOperatorCronRun(now, restarting, &nomad.CronRunHealth{Restarts: 1}); risk != "restart_pressure" {
+		t.Fatalf("restart risk = %q, want restart_pressure", risk)
+	}
+	hung := nomad.CronRun{JobID: "hung", Status: "running", StartedAt: now.Add(-31 * time.Minute).Format(time.RFC3339)}
+	if risk, _ := assessOperatorCronRun(now, hung, &nomad.CronRunHealth{}); risk != "hung" {
+		t.Fatalf("hung risk = %q, want hung", risk)
+	}
+}
+
+func TestOperatorCronRiskRunsPrefersActiveChildren(t *testing.T) {
+	runs := []nomad.CronRun{
+		{JobID: "new-complete", Status: "dead", StartedAt: "2026-08-22T10:00:00Z"},
+		{JobID: "active", Status: "running", StartedAt: "2026-08-22T09:00:00Z"},
+	}
+	selected := operatorCronRiskRuns(runs)
+	if len(selected) != 1 || selected[0].JobID != "active" {
+		t.Fatalf("selected = %#v, want active child", selected)
 	}
 }
 
