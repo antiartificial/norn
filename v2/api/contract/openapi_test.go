@@ -21,8 +21,12 @@ func TestControlOpenAPIParsesAndLocalRefsResolve(t *testing.T) {
 		t.Fatalf("expected versioned paths, got %T (%d)", document["paths"], len(paths))
 	}
 	for _, required := range []string{
+		"/api/v1/apps", "/api/v1/apps/{id}/deployment",
 		"/api/v1/enrollments", "/api/v1/events/info", "/api/v1/operations/{id}/cancel",
-		"/api/v1/apps/{id}/exec-sessions", "/api/v1/exec-sessions/{id}/stream",
+		"/api/v1/apps/{id}/exec-sessions", "/api/v1/exec-sessions/{id}/stream", "/api/v1/host/metrics",
+		"/api/v1/production/readiness",
+		"/api/v1/audit/mutations", "/api/v1/production/drills", "/api/v1/production/drills/{id}/complete",
+		"/api/v1/validate/infraspec", "/api/v1/fleet/validate", "/api/v1/fleet/node-pools", "/api/v1/fleet/plans", "/api/v1/fleet/node-pools/{pool}/plan",
 	} {
 		if _, ok := paths[required]; !ok {
 			t.Errorf("missing path %s", required)

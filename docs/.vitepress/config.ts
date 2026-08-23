@@ -60,6 +60,7 @@ export default withMermaid(
             text: 'Infrastructure',
             items: [
               { text: 'Nomad & Consul', link: '/v2/infrastructure/nomad-consul' },
+              { text: 'Fleet GitOps', link: '/v2/infrastructure/fleet' },
               { text: 'Secrets', link: '/v2/infrastructure/secrets' },
               { text: 'Volumes', link: '/v2/infrastructure/volumes' },
               { text: 'Object Storage', link: '/v2/infrastructure/object-storage' },
@@ -79,6 +80,8 @@ export default withMermaid(
               { text: 'Snapshots', link: '/v2/operations/snapshots' },
               { text: 'Upgrading', link: '/v2/operations/upgrading' },
               { text: 'Host Recovery', link: '/v2/operations/host-recovery' },
+              { text: 'Linux HA Lab', link: '/v2/operations/ha-lab' },
+              { text: 'Production Readiness', link: '/v2/operations/production-readiness' },
               { text: 'Troubleshooting', link: '/v2/operations/troubleshooting' },
             ],
           },

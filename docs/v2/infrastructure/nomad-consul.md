@@ -121,5 +121,27 @@ ui_config {
 |----------|---------|-------------|
 | `NORN_NOMAD_ADDR` | `http://localhost:4646` | Nomad API address |
 | `NORN_CONSUL_ADDR` | `http://localhost:8500` | Consul API address |
+| `NORN_INGRESS_URL` | — | Stable regional Traefik origin used by cloudflared, such as `http://127.0.0.1:18080` |
+| `NORN_EXTERNAL_INGRESS` | `false` | Skip local cloudflared mutation when an external DNS/global-edge controller owns public routing |
 
 The API connects to both on startup and logs warnings if either is unavailable. Operations that depend on Nomad/Consul will fail gracefully if the services are down.
+
+## Regional Traefik ingress
+
+Norn's ingress is regional: one Traefik instance watches that region's Consul
+catalog. Endpoint-backed processes use dynamic host ports and may have multiple
+allocations. Nomad registers each allocation, Consul removes unhealthy
+instances from the passing set, and Traefik balances requests across the
+remaining instances. Cloudflared has one stable origin per region rather than a
+route to a particular allocation.
+
+The disabled-by-default template is in `v2/infra/traefik`. It enables the
+Consul Catalog provider with `exposedByDefault=false`; application exposure is
+therefore controlled by the InfraSpec endpoint tags Norn generates. Production
+operators must pin the Traefik image by digest and supply the regional Consul
+TLS/ACL address before enabling the template.
+
+Global DNS or edge load balancing consumes Norn's regional readiness and
+`activeWeight`: a region remains weight zero until its application health gate
+passes. A failed region is not promoted merely because its ingress accepts TCP
+connections.

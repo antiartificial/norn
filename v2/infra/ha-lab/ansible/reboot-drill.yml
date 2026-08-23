@@ -1,0 +1,101 @@
+---
+- name: Prove one-member-at-a-time machine restart recovery
+  hosts: norn_ha
+  become: true
+  gather_facts: false
+  any_errors_fatal: true
+  serial: 1
+  environment: "{{ control_environment }}"
+  tasks:
+    - name: Guard against rebooting outside the disposable lab
+      ansible.builtin.stat:
+        path: /etc/norn-ha-lab
+      register: lab_guard
+
+    - name: Require the disposable-lab marker
+      ansible.builtin.assert:
+        that: lab_guard.stat.exists
+        fail_msg: "Refusing restart fault injection outside a managed Norn HA lab."
+
+    - name: Reboot one member and wait for SSH
+      ansible.builtin.reboot:
+        reboot_timeout: 600
+        connect_timeout: 10
+        post_reboot_delay: 5
+
+    - name: Require every managed service after restart
+      ansible.builtin.command: "systemctl is-active {{ item }}"
+      loop:
+        - docker
+        - consul
+        - nomad
+        - patroni
+        - haproxy
+        - prometheus-node-exporter
+        - norn
+      register: restarted_services
+      changed_when: false
+      retries: 30
+      delay: 2
+      until: restarted_services.rc == 0
+
+    - name: Wait for full Consul membership after this restart
+      ansible.builtin.shell: "set -o pipefail && consul members -status=alive | tail -n +2 | wc -l"
+      args:
+        executable: /bin/bash
+      register: consul_members
+      changed_when: false
+      retries: 60
+      delay: 2
+      until: consul_members.stdout | int == groups['norn_ha'] | length
+
+    - name: Wait for full Nomad raft membership after this restart
+      ansible.builtin.shell: "set -o pipefail && nomad operator raft list-peers -no-color | tail -n +2 | awk 'NF > 0' | wc -l"
+      args:
+        executable: /bin/bash
+      register: nomad_members
+      changed_when: false
+      retries: 60
+      delay: 2
+      until: nomad_members.stdout | int == groups['norn_ha'] | length
+
+    - name: Wait for full Patroni streaming topology after this restart
+      ansible.builtin.command: patronictl -c /etc/patroni/config.yml list --format json
+      register: patroni_members
+      changed_when: false
+      retries: 60
+      delay: 2
+      until: >-
+        (patroni_members.stdout | from_json | selectattr('State', 'in', ['running', 'streaming']) | list | length)
+        == (groups['norn_ha'] | length)
+
+    - name: Wait for both toy allocations after this restart
+      ansible.builtin.uri:
+        url: http://127.0.0.1:8500/v1/health/service/norn-ha-toy?passing=true
+        return_content: true
+      register: toy_services
+      retries: 60
+      delay: 2
+      until: toy_services.json | length == 2
+
+    - name: Wait for exactly one active Norn API after this restart
+      ansible.builtin.uri:
+        url: http://127.0.0.1:8500/v1/health/service/norn-api?passing=true
+        return_content: true
+      register: norn_services
+      retries: 60
+      delay: 2
+      until: norn_services.json | length == 1
+
+    - name: Emit value-safe restart evidence
+      ansible.builtin.debug:
+        msg:
+          schema: norn.ha-drill/v1
+          kind: member-restart
+          member: "{{ inventory_hostname }}"
+          services_active: 7
+          consul_members: "{{ groups['norn_ha'] | length }}"
+          nomad_peers: "{{ groups['norn_ha'] | length }}"
+          postgres_members: "{{ groups['norn_ha'] | length }}"
+          toy_instances: 2
+          norn_active_instances: 1

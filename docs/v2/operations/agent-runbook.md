@@ -21,6 +21,7 @@ Useful surfaces:
 | Platform release history | `GET /api/platform/releases`, `norn platform releases` |
 | Versioned client contract | `GET /api/v1/capabilities`, `WS /api/v1/events`, `GET /api/v1/operations/{id}` |
 | Host boot/recovery state | `norn host status`, `norn host doctor`, `norn host assure`, `norn host queue-assure` |
+| Production admission | `GET /api/v1/production/readiness`, `norn production check`, `norn production audit`, `norn production drills`, `norn host security plan` |
 | Operational events | `GET /api/events`, `GET /api/events/{id}`, `norn events`, `norn alerts` |
 | Control-plane health | `/api/health`, `/api/version`, `/metrics`, `norn smoke platform`, `norn platform smoke` |
 | Observability bundle/services | `GET /api/observability/bundle`, `POST /api/observability/services/install`, `norn observability install` |
@@ -156,6 +157,31 @@ allocations rather than re-registering an unchanged job, ensuring task network
 and port bindings are recreated before assurance checks service health. User
 LaunchAgents begin after login; use a system service or Linux host when the
 runtime must recover before a user session exists.
+
+## Production Admission
+
+Run `norn production check` before enabling `NORN_PROFILE=production`. The
+profile adds strict-secret, source, digest-pinned artifact, and live substrate
+admission to deploys and preflights. Use `norn host security init` only to create
+an inactive macOS PKI stage; it never authorizes a live cutover. Host-local
+fragment activation remains refused until it has the same fleet token bootstrap
+and rollback guarantees exercised by the Linux HA acceptance lane. See
+[Production readiness](./production-readiness.md).
+
+Production mutations reserve durable, integrity-signed audit receipts before
+side effects and recheck live Nomad/Consul quorum plus external PostgreSQL
+PITR/replica posture. Use `norn production audit` for receipts. Production
+readiness also requires recent database restore, registry-digest rollback, and
+node failover drills; bracket each exercise with `norn production drill start`
+and `norn production drill complete`, then inspect with
+`norn production drills`.
+
+Use the [Linux HA acceptance lab](./ha-lab.md) for reproducible DigitalOcean
+quorum, PostgreSQL failover/off-host PITR, signed/vulnerability-admitted deploys,
+verified PostgreSQL/Consul/Nomad TLS, default-deny ACLs, workload identity,
+private observability, control failover, guarded production activation, and
+node-replacement exercises. It is isolated from the legacy k3s Terraform root;
+secrets stay out of cloud-init and state uses a versioned locked backend.
 
 ## Runtime Watchers
 

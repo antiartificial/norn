@@ -57,6 +57,42 @@ func (db *DB) InsertOperation(ctx context.Context, op *model.Operation) error {
 	return err
 }
 
+// InsertCompletedOperation persists a terminal, planning-only operation in a
+// single statement. Callers must not use InsertOperation followed by
+// FinishOperation for receipts that are already complete: a failure between
+// those statements leaves an ambiguous terminal record without finished_at.
+func (db *DB) InsertCompletedOperation(ctx context.Context, op *model.Operation) error {
+	if op.Metadata == nil {
+		op.Metadata = map[string]interface{}{}
+	}
+	if op.Payload == nil {
+		op.Payload = map[string]interface{}{}
+	}
+	if !op.Status.Terminal() {
+		return fmt.Errorf("completed operation must have a terminal status")
+	}
+	if op.StartedAt.IsZero() {
+		op.StartedAt = time.Now().UTC()
+	}
+	if op.FinishedAt == nil {
+		finished := op.StartedAt
+		op.FinishedAt = &finished
+	}
+	if op.MaxAttempts <= 0 {
+		op.MaxAttempts = 1
+	}
+	if op.NextAttemptAt.IsZero() {
+		op.NextAttemptAt = op.StartedAt
+	}
+	payload, _ := json.Marshal(op.Payload)
+	metadata, _ := json.Marshal(op.Metadata)
+	_, err := db.Pool.Exec(ctx, `
+		INSERT INTO operations (id, kind, app, saga_id, ref, status, risk, source, message, payload, metadata, attempts, max_attempts, next_attempt_at, started_at, updated_at, finished_at)
+		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, now(), $16)
+	`, op.ID, op.Kind, op.App, op.SagaID, op.Ref, op.Status, op.Risk, op.Source, op.Message, payload, metadata, op.Attempts, op.MaxAttempts, op.NextAttemptAt, op.StartedAt, op.FinishedAt)
+	return err
+}
+
 func (db *DB) FinishOperation(ctx context.Context, id string, status model.OperationStatus, message string, metadata map[string]interface{}) error {
 	if metadata == nil {
 		metadata = map[string]interface{}{}

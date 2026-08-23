@@ -1,0 +1,243 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+script_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+lab_root="$(cd "${script_dir}/.." && pwd)"
+export PATH="${lab_root}/.tools/bin:${PATH}"
+command_name="${1:-status}"
+lab_name="$(terraform -chdir="${lab_root}/terraform" output -raw name_prefix)"
+"${script_dir}/secrets" ensure "${lab_name}" >/dev/null
+secret_file="$(${script_dir}/secrets path "${lab_name}")"
+set -a
+# shellcheck disable=SC1090
+source "${secret_file}"
+set +a
+pki_dir="${NORN_HA_PKI_DIR}"
+
+issue_node() {
+  local node="$1" nodes private_ip temp_node old_node extension service common_name service_dns
+  nodes="$(terraform -chdir="${lab_root}/terraform" output -json lab_nodes)"
+  jq -e --arg node "${node}" 'has($node)' <<<"${nodes}" >/dev/null || {
+    echo "unknown lab member: ${node}" >&2
+    exit 2
+  }
+  private_ip="$(jq -r --arg node "${node}" '.[$node].private_ip' <<<"${nodes}")"
+  [[ "${private_ip}" =~ ^[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+$ ]] || {
+    echo "invalid private IP for ${node}" >&2
+    exit 1
+  }
+  for required in ca.pem ca-key.pem consul/ca.pem consul/ca-key.pem nomad/ca.pem nomad/ca-key.pem; do
+    [[ -f "${pki_dir}/${required}" ]] || { echo "missing PKI issuer: ${required}" >&2; exit 1; }
+  done
+
+  umask 077
+  temp_node="$(mktemp -d "${pki_dir}/.${node}.issue.XXXXXX")"
+  old_node="${pki_dir}/.${node}.previous"
+  trap 'rm -rf -- "${temp_node}"' RETURN
+
+  openssl genrsa -out "${temp_node}/postgres-key.pem" 3072 >/dev/null 2>&1
+  openssl req -new -sha256 -key "${temp_node}/postgres-key.pem" \
+    -subj "/CN=norn-postgres.service.consul" -out "${temp_node}/postgres.csr"
+  extension="${temp_node}/postgres.ext"
+  {
+    printf 'basicConstraints=critical,CA:FALSE\n'
+    printf 'keyUsage=critical,digitalSignature,keyEncipherment\n'
+    printf 'extendedKeyUsage=serverAuth\n'
+    printf 'subjectAltName=DNS:norn-postgres.service.consul,DNS:%s,IP:%s,IP:127.0.0.1,IP:172.17.0.1\n' "${node}" "${private_ip}"
+  } >"${extension}"
+  openssl x509 -req -sha256 -days 397 -in "${temp_node}/postgres.csr" \
+    -CA "${pki_dir}/ca.pem" -CAkey "${pki_dir}/ca-key.pem" -CAcreateserial \
+    -extfile "${extension}" -out "${temp_node}/postgres.pem" >/dev/null 2>&1
+  rm -f "${temp_node}/postgres.csr" "${extension}"
+
+  for service in consul nomad; do
+    common_name="server.dc1.consul"
+    service_dns="consul.service.consul"
+    if [[ "${service}" == nomad ]]; then
+      common_name="server.global.nomad"
+      service_dns="nomad.service.consul"
+    fi
+    openssl genrsa -out "${temp_node}/${service}-key.pem" 3072 >/dev/null 2>&1
+    openssl req -new -sha256 -key "${temp_node}/${service}-key.pem" \
+      -subj "/CN=${common_name}" -out "${temp_node}/${service}.csr"
+    extension="${temp_node}/${service}.ext"
+    {
+      printf 'basicConstraints=critical,CA:FALSE\n'
+      printf 'keyUsage=critical,digitalSignature,keyEncipherment\n'
+      printf 'extendedKeyUsage=serverAuth,clientAuth\n'
+      printf 'subjectAltName=DNS:%s,DNS:%s,DNS:%s,IP:%s,IP:127.0.0.1\n' \
+        "${common_name}" "${service_dns}" "${node}" "${private_ip}"
+    } >"${extension}"
+    openssl x509 -req -sha256 -days 397 -in "${temp_node}/${service}.csr" \
+      -CA "${pki_dir}/${service}/ca.pem" -CAkey "${pki_dir}/${service}/ca-key.pem" \
+      -CAcreateserial -extfile "${extension}" -out "${temp_node}/${service}.pem" >/dev/null 2>&1
+    rm -f "${temp_node}/${service}.csr" "${extension}"
+  done
+  chmod 0600 "${temp_node}"/*-key.pem
+  chmod 0644 "${temp_node}"/*.pem
+  openssl verify -CAfile "${pki_dir}/ca.pem" "${temp_node}/postgres.pem" >/dev/null
+  openssl verify -CAfile "${pki_dir}/consul/ca.pem" "${temp_node}/consul.pem" >/dev/null
+  openssl verify -CAfile "${pki_dir}/nomad/ca.pem" "${temp_node}/nomad.pem" >/dev/null
+
+  rm -rf -- "${old_node}"
+  if [[ -d "${pki_dir}/${node}" ]]; then
+    mv "${pki_dir}/${node}" "${old_node}"
+  fi
+  if mv "${temp_node}" "${pki_dir}/${node}"; then
+    rm -rf -- "${old_node}"
+  else
+    [[ ! -d "${old_node}" ]] || mv "${old_node}" "${pki_dir}/${node}"
+    exit 1
+  fi
+  trap - RETURN
+  echo "issued fresh PostgreSQL, Consul, and Nomad leaf certificates for ${node}"
+}
+
+case "${command_name}" in
+  init)
+    if [[ -e "${pki_dir}" ]]; then
+      echo "refusing to overwrite ${pki_dir}" >&2
+      exit 1
+    fi
+    install -d -m 0700 "${pki_dir}"
+    umask 077
+    openssl genrsa -out "${pki_dir}/ca-key.pem" 3072 >/dev/null 2>&1
+    openssl req -x509 -new -sha256 -days 1825 -key "${pki_dir}/ca-key.pem" \
+      -subj "/CN=${lab_name} PostgreSQL CA" -out "${pki_dir}/ca.pem"
+    chmod 0600 "${pki_dir}/ca-key.pem"
+    chmod 0644 "${pki_dir}/ca.pem"
+    terraform -chdir="${lab_root}/terraform" output -json lab_nodes |
+      jq -r 'to_entries[] | [.key,.value.private_ip] | @tsv' |
+      while IFS=$'\t' read -r node private_ip; do
+        node_dir="${pki_dir}/${node}"
+        install -d -m 0700 "${node_dir}"
+        openssl genrsa -out "${node_dir}/postgres-key.pem" 3072 >/dev/null 2>&1
+        openssl req -new -sha256 -key "${node_dir}/postgres-key.pem" \
+          -subj "/CN=norn-postgres.service.consul" -out "${node_dir}/postgres.csr"
+        extension="$(mktemp)"
+        trap 'rm -f "${extension}"' EXIT
+        {
+          printf 'basicConstraints=critical,CA:FALSE\n'
+          printf 'keyUsage=critical,digitalSignature,keyEncipherment\n'
+          printf 'extendedKeyUsage=serverAuth\n'
+          printf 'subjectAltName=DNS:norn-postgres.service.consul,DNS:%s,IP:%s,IP:127.0.0.1,IP:172.17.0.1\n' "${node}" "${private_ip}"
+        } >"${extension}"
+        openssl x509 -req -sha256 -days 397 -in "${node_dir}/postgres.csr" \
+          -CA "${pki_dir}/ca.pem" -CAkey "${pki_dir}/ca-key.pem" -CAcreateserial \
+          -extfile "${extension}" -out "${node_dir}/postgres.pem" >/dev/null 2>&1
+        rm -f "${extension}" "${node_dir}/postgres.csr"
+        trap - EXIT
+        chmod 0600 "${node_dir}/postgres-key.pem"
+        chmod 0644 "${node_dir}/postgres.pem"
+      done
+    echo "created controller-held PostgreSQL CA and per-node leaf certificates in ${pki_dir}"
+    ;;
+  control-init)
+    [[ -f "${pki_dir}/ca.pem" ]] || { echo "initialize PostgreSQL PKI first with: scripts/lab pki init" >&2; exit 1; }
+    [[ ! -e "${pki_dir}/consul" && ! -e "${pki_dir}/nomad" ]] || {
+      echo "refusing to overwrite existing Consul/Nomad PKI in ${pki_dir}" >&2
+      exit 1
+    }
+    umask 077
+    temp_root="$(mktemp -d "${pki_dir}/.control-pki.XXXXXX")"
+    trap 'rm -rf -- "${temp_root}"' EXIT
+    install -d -m 0700 "${temp_root}/consul" "${temp_root}/nomad" "${temp_root}/nodes"
+    for service in consul nomad; do
+      openssl genrsa -out "${temp_root}/${service}/ca-key.pem" 3072 >/dev/null 2>&1
+      openssl req -x509 -new -sha256 -days 1825 \
+        -key "${temp_root}/${service}/ca-key.pem" \
+        -subj "/CN=${lab_name} ${service} CA" \
+        -out "${temp_root}/${service}/ca.pem"
+      chmod 0600 "${temp_root}/${service}/ca-key.pem"
+      chmod 0644 "${temp_root}/${service}/ca.pem"
+    done
+    terraform -chdir="${lab_root}/terraform" output -json lab_nodes |
+      jq -r 'to_entries[] | [.key,.value.private_ip] | @tsv' |
+      while IFS=$'\t' read -r node private_ip; do
+        node_dir="${temp_root}/nodes/${node}"
+        install -d -m 0700 "${node_dir}"
+        for service in consul nomad; do
+          openssl genrsa -out "${node_dir}/${service}-key.pem" 3072 >/dev/null 2>&1
+          common_name="server.dc1.consul"
+          service_dns="consul.service.consul"
+          if [[ "${service}" == nomad ]]; then
+            common_name="server.global.nomad"
+            service_dns="nomad.service.consul"
+          fi
+          openssl req -new -sha256 -key "${node_dir}/${service}-key.pem" \
+            -subj "/CN=${common_name}" -out "${node_dir}/${service}.csr"
+          extension="${node_dir}/${service}.ext"
+          {
+            printf 'basicConstraints=critical,CA:FALSE\n'
+            printf 'keyUsage=critical,digitalSignature,keyEncipherment\n'
+            printf 'extendedKeyUsage=serverAuth,clientAuth\n'
+            printf 'subjectAltName=DNS:%s,DNS:%s,DNS:%s,IP:%s,IP:127.0.0.1\n' \
+              "${common_name}" "${service_dns}" "${node}" "${private_ip}"
+          } >"${extension}"
+          openssl x509 -req -sha256 -days 397 -in "${node_dir}/${service}.csr" \
+            -CA "${temp_root}/${service}/ca.pem" -CAkey "${temp_root}/${service}/ca-key.pem" \
+            -CAcreateserial -extfile "${extension}" -out "${node_dir}/${service}.pem" >/dev/null 2>&1
+          rm -f "${node_dir}/${service}.csr" "${extension}"
+          chmod 0600 "${node_dir}/${service}-key.pem"
+          chmod 0644 "${node_dir}/${service}.pem"
+        done
+      done
+    mv "${temp_root}/consul" "${pki_dir}/consul"
+    mv "${temp_root}/nomad" "${pki_dir}/nomad"
+    for node_dir in "${temp_root}"/nodes/*; do
+      node="$(basename "${node_dir}")"
+      install -m 0600 "${node_dir}/consul-key.pem" "${pki_dir}/${node}/consul-key.pem"
+      install -m 0644 "${node_dir}/consul.pem" "${pki_dir}/${node}/consul.pem"
+      install -m 0600 "${node_dir}/nomad-key.pem" "${pki_dir}/${node}/nomad-key.pem"
+      install -m 0644 "${node_dir}/nomad.pem" "${pki_dir}/${node}/nomad.pem"
+    done
+    rm -rf -- "${temp_root}"
+    trap - EXIT
+    echo "created controller-held Consul/Nomad CAs and unique per-node certificates in ${pki_dir}"
+    ;;
+  issue-node)
+    [[ -n "${2:-}" ]] || { echo "usage: pki issue-node MEMBER" >&2; exit 2; }
+    issue_node "$2"
+    ;;
+  status)
+    [[ -f "${pki_dir}/ca-key.pem" && -f "${pki_dir}/ca.pem" ]] || { echo "PKI is not initialized" >&2; exit 1; }
+    openssl x509 -in "${pki_dir}/ca.pem" -checkend 2592000 -noout >/dev/null || { echo "CA expires within 30 days" >&2; exit 1; }
+    for node_dir in "${pki_dir}"/norn-ha-*; do
+      [[ -f "${node_dir}/postgres-key.pem" && -f "${node_dir}/postgres.pem" ]] || { echo "incomplete node PKI: ${node_dir}" >&2; exit 1; }
+      openssl verify -CAfile "${pki_dir}/ca.pem" "${node_dir}/postgres.pem" >/dev/null
+      openssl x509 -in "${node_dir}/postgres.pem" -checkend 2592000 -noout >/dev/null || { echo "leaf expires within 30 days: ${node_dir}" >&2; exit 1; }
+    done
+    stat -f 'ca_private_mode=%Lp ca=%N' "${pki_dir}/ca-key.pem"
+    if [[ -d "${pki_dir}/consul" || -d "${pki_dir}/nomad" ]]; then
+      [[ -f "${pki_dir}/consul/ca-key.pem" && -f "${pki_dir}/consul/ca.pem" && -f "${pki_dir}/nomad/ca-key.pem" && -f "${pki_dir}/nomad/ca.pem" ]] || {
+        echo "incomplete Consul/Nomad CA material" >&2
+        exit 1
+      }
+      for service in consul nomad; do
+        openssl x509 -in "${pki_dir}/${service}/ca.pem" -checkend 2592000 -noout >/dev/null || {
+          echo "${service} CA expires within 30 days" >&2
+          exit 1
+        }
+      done
+      for node_dir in "${pki_dir}"/norn-ha-*; do
+        for service in consul nomad; do
+          [[ -f "${node_dir}/${service}-key.pem" && -f "${node_dir}/${service}.pem" ]] || {
+            echo "incomplete ${service} node PKI: ${node_dir}" >&2
+            exit 1
+          }
+          openssl verify -CAfile "${pki_dir}/${service}/ca.pem" "${node_dir}/${service}.pem" >/dev/null
+          openssl x509 -in "${node_dir}/${service}.pem" -checkend 2592000 -noout >/dev/null || {
+            echo "${service} leaf expires within 30 days: ${node_dir}" >&2
+            exit 1
+          }
+        done
+      done
+      stat -f 'consul_ca_private_mode=%Lp ca=%N' "${pki_dir}/consul/ca-key.pem"
+      stat -f 'nomad_ca_private_mode=%Lp ca=%N' "${pki_dir}/nomad/ca-key.pem"
+      echo "PostgreSQL, Consul, and Nomad PKI verified"
+    else
+      echo "PostgreSQL PKI verified; Consul/Nomad PKI is not initialized"
+    fi
+    ;;
+  *) echo "usage: pki init | pki control-init | pki issue-node MEMBER | pki status" >&2; exit 2 ;;
+esac

@@ -25,6 +25,9 @@ func init() {
 	hostCmd.AddCommand(hostRenderCmd)
 	hostCmd.AddCommand(hostMigrateStateCmd)
 	hostCmd.AddCommand(hostStatusCmd)
+	hostCmd.AddCommand(hostSecurityCmd)
+	hostSecurityCmd.AddCommand(hostSecurityPlanCmd)
+	hostSecurityCmd.AddCommand(hostSecurityInitCmd)
 }
 
 var hostCmd = &cobra.Command{
@@ -51,6 +54,14 @@ var hostRecoverCmd = hostScriptCommand("recover [host-runtime flags]", "Start de
 var hostRenderCmd = hostScriptCommand("render [host-runtime flags]", "Render persistent Nomad and Consul configs for the current host address", "render")
 var hostMigrateStateCmd = hostScriptCommand("migrate-state [host-runtime flags]", "Copy stopped Nomad and Consul state into persistent managed directories", "migrate-state")
 var hostStatusCmd = hostScriptCommand("status [host-runtime flags]", "Show concise launchd and runtime health", "status")
+
+var hostSecurityCmd = &cobra.Command{
+	Use:   "security",
+	Short: "Stage and inspect Nomad and Consul transport and ACL hardening",
+}
+
+var hostSecurityPlanCmd = hostScriptCommand("plan [host-runtime flags]", "Show the non-secret substrate hardening state and cutover sequence", "security-plan")
+var hostSecurityInitCmd = hostScriptCommand("init [host-runtime flags]", "Generate staged private PKI and transition fragments without activating them", "security-init")
 
 func runHostScript(args ...string) error {
 	repo := hostRepo

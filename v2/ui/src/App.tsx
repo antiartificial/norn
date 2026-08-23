@@ -7,8 +7,10 @@ import { AppDetailPage } from './pages/AppDetailPage.tsx'
 import { DeploysPage } from './pages/DeploysPage.tsx'
 import { IncidentsPage } from './pages/IncidentsPage.tsx'
 import { OperationsPage } from './pages/OperationsPage.tsx'
+import { FleetPage } from './pages/FleetPage.tsx'
 import { TopologyView } from './components/TopologyView.tsx'
 import { PlatformPanel } from './components/PlatformPanel.tsx'
+import { EmptyState } from './components/ui/index.ts'
 
 function NavigateToAppOverview() {
   const { id } = useParams()
@@ -26,6 +28,7 @@ export function App() {
             apps={runtime.apps}
             activity={runtime.activity}
             runAction={runtime.mutations.run}
+            fleetAvailable={runtime.fleetAvailable}
           >
             <Routes>
               <Route path="/" element={<Navigate to="/overview" replace />} />
@@ -37,6 +40,7 @@ export function App() {
               <Route path="/incidents" element={<IncidentsPage />} />
               <Route path="/operations" element={<OperationsPage />} />
               <Route path="/operations/:sagaId" element={<OperationsPage />} />
+              <Route path="/fleet" element={runtime.fleetAvailable ? <FleetPage /> : <EmptyState icon="!" title="Fleet unavailable" hint="This server does not advertise the complete fleet-v1 capability set." />} />
               <Route
                 path="/topology"
                 element={(

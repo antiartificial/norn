@@ -1,0 +1,16 @@
+{
+  "service": {
+    "id": "norn-api-{{ inventory_hostname }}",
+    "name": "norn-api",
+    "address": "{{ private_ip }}",
+    "port": 8800,
+    "tags": ["active-passive", "ha-lab"],
+    "check": {
+      "id": "norn-api-health-{{ inventory_hostname }}",
+      "name": "Norn API health on {{ inventory_hostname }}",
+      "http": "http://{{ private_ip }}:8800/api/health",
+      "interval": "5s",
+      "timeout": "2s"
+    }
+  }
+}

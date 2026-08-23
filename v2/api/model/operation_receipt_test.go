@@ -21,3 +21,14 @@ func TestAttachTypedOperationReceipt(t *testing.T) {
 		t.Fatalf("platform receipt = %#v", op.Receipt.Platform)
 	}
 }
+
+func TestAttachTypedFleetPlanReceipt(t *testing.T) {
+	finished := time.Now().UTC()
+	op := Operation{Kind: "fleet.capacity-plan", Status: OperationSucceeded, Message: "plan recorded", StartedAt: finished, FinishedAt: &finished,
+		Payload:  map[string]interface{}{"cluster": "production-nyc3", "pool": "app", "action": "replace", "sourceDigest": "sha256:source", "workflowUrl": "https://example.test/apply"},
+		Metadata: map[string]interface{}{"planId": "plan-1", "planDigest": "sha256:plan", "signature": "hmac-sha256:sig"}}
+	op.AttachReceipt()
+	if op.Receipt == nil || op.Receipt.Fleet == nil || op.Receipt.Fleet.Pool != "app" || op.Receipt.Fleet.Signature == "" {
+		t.Fatalf("fleet receipt = %#v", op.Receipt)
+	}
+}

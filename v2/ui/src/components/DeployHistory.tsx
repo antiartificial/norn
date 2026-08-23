@@ -53,7 +53,10 @@ function DeployRow({ deploy, indented = false }: { deploy: Deployment; indented?
       <span className={`history-status ${statusClass(deploy.status)}`}>
         {deploy.status.replace('_', ' ')}
       </span>
-      <span className="history-app">{deploy.app}</span>
+	  <span className="history-app">
+		{deploy.app}
+		{deploy.regions && deploy.regions.length > 0 && <span className="history-regions">{deploy.regions.map(region => <span key={region.region} className={`history-region history-region-${statusClass(region.status)}`} title={`${region.nomadRegion}: ${region.activeWeight}/${region.desiredWeight} traffic weight`}>{region.region} · {region.status}</span>)}</span>}
+	  </span>
       <span className="history-sha">{deploy.commitSha.slice(0, 7)}</span>
       <span className="history-saga">{deploy.sagaId.slice(0, 8)}</span>
       <span className="history-duration">{duration(deploy.startedAt, deploy.finishedAt)}</span>

@@ -10,6 +10,7 @@ import (
 	"log"
 	"net"
 	"net/http"
+	"net/url"
 	"os"
 	"os/signal"
 	"path"
@@ -182,20 +183,28 @@ func main() {
 
 	// Deploy pipeline
 	pipe := &pipeline.Pipeline{
-		DB:          db,
-		Nomad:       nomadClient,
-		Consul:      consulClient,
-		WS:          ws,
-		SagaStore:   sagaStore,
-		Secrets:     sec,
-		AppsDir:     cfg.AppsDir,
-		GitToken:    cfg.GitToken,
-		GitSSHKey:   cfg.GitSSHKey,
-		RegistryURL: cfg.RegistryURL,
-		NetworkMode: cfg.NetworkMode,
-		Beacon:      beaconSvc,
-		Storage:     s3Client,
-		Redpanda:    redpandaClient,
+		DB:                       db,
+		Nomad:                    nomadClient,
+		Consul:                   consulClient,
+		WS:                       ws,
+		SagaStore:                sagaStore,
+		Secrets:                  sec,
+		AppsDir:                  cfg.AppsDir,
+		GitToken:                 cfg.GitToken,
+		GitSSHKey:                cfg.GitSSHKey,
+		RegistryURL:              cfg.RegistryURL,
+		NetworkMode:              cfg.NetworkMode,
+		IngressURL:               cfg.IngressURL,
+		ExternalIngress:          cfg.ExternalIngress,
+		Production:               cfg.Production(),
+		StrictSecrets:            cfg.StrictSecrets,
+		ArtifactSigningPublicKey: cfg.ArtifactSigningPublicKey,
+		ArtifactDenySeverities:   cfg.ArtifactDenySeverities,
+		CosignPath:               cfg.CosignPath,
+		TrivyPath:                cfg.TrivyPath,
+		Beacon:                   beaconSvc,
+		Storage:                  s3Client,
+		Redpanda:                 redpandaClient,
 	}
 
 	workerCtx, workerCancel := context.WithCancel(context.Background())
@@ -236,11 +245,15 @@ func main() {
 	}
 	r.Use(h.WakeGatewayHostMiddleware)
 
-	// Bearer token auth
-	if cfg.APIToken != "" {
+	// Control authorization also enforces Cloudflare-only explicit-auth
+	// configurations. The CF validator authenticates assertions when present;
+	// this layer rejects their absence on protected routes.
+	if cfg.APIToken != "" || cfg.RequireExplicitAuth {
 		r.Use(bearerAuth(cfg.APIToken, h, cfg.RequireExplicitAuth))
-		log.Println("API token auth enabled")
+		log.Println("control authorization enabled")
 	}
+	r.Use(h.MutationAuditMiddleware)
+	r.Use(h.ProductionMutationAdmissionMiddleware)
 	r.Use(h.AccessMiddleware)
 	r.Get("/metrics", h.Metrics)
 
@@ -343,14 +356,28 @@ func main() {
 		r.Post("/v1/auth/step-up/challenges", h.CreateStepUpChallenge)
 		r.Post("/v1/auth/step-up/challenges/{id}/verify", h.VerifyStepUpChallenge)
 		r.Get("/v1/apps", h.ListApps)
+		r.Post("/v1/apps", h.CreateApp)
 		r.With(handler.ValidateAppID).Get("/v1/apps/{id}", h.GetApp)
+		r.With(handler.ValidateAppID).Put("/v1/apps/{id}/deployment", h.UpdateAppDeployment)
 		r.With(handler.ValidateAppID).Post("/v1/apps/{id}/exec-sessions", h.CreateExecSession)
+		r.Post("/v1/validate/infraspec", h.ValidateInfraSpecDocument)
+		r.Post("/v1/fleet/validate", h.ValidateFleetDocument)
+		r.Get("/v1/fleet/node-pools", h.FleetInventory)
+		r.Get("/v1/fleet/plans", h.ListFleetPlans)
+		r.Post("/v1/fleet/node-pools/{pool}/plan", h.PlanFleetCapacity)
 		r.Get("/v1/exec-sessions", h.ListExecSessions)
 		r.Get("/v1/exec-sessions/{id}", h.GetExecSession)
 		r.Delete("/v1/exec-sessions/{id}", h.CancelExecSession)
 		r.Get("/v1/exec-sessions/{id}/stream", h.ExecSessionStream)
 		r.Get("/v1/releases", h.PlatformReleases)
 		r.Get("/v1/host/status", h.HostStatus)
+		r.Get("/v1/host/metrics", h.HostMetrics)
+		r.Get("/v1/production/readiness", h.ProductionReadiness)
+		r.Get("/v1/production/drills", h.ListRecoveryDrills)
+		r.Post("/v1/production/drills", h.StartRecoveryDrill)
+		r.Post("/v1/production/drills/{id}/complete", h.CompleteRecoveryDrill)
+		r.Get("/v1/audit/mutations", h.MutationAuditEvents)
+		r.Post("/v1/audit/mutations/{id}/incident", h.AcknowledgeMutationAuditIncident)
 		r.Get("/v1/events/info", ws.HandleInfo)
 		r.Get("/v1/events", ws.HandleConnect)
 		r.Get("/v1/operations/{id}", h.GetOperation)
@@ -436,6 +463,13 @@ func validateControlSecurity(cfg *config.Config) error {
 	if cfg.APIToken != "" && len(cfg.APIToken) < 32 {
 		return fmt.Errorf("NORN_API_TOKEN must contain at least 32 bytes")
 	}
+	profile := strings.ToLower(strings.TrimSpace(cfg.Profile))
+	if profile == "" {
+		profile = "development"
+	}
+	if profile != "development" && profile != "production" {
+		return fmt.Errorf("NORN_PROFILE must be development or production")
+	}
 	cfDomainConfigured := strings.TrimSpace(cfg.CFAccessTeamDomain) != ""
 	cfAudienceConfigured := strings.TrimSpace(cfg.CFAccessAUD) != ""
 	if cfDomainConfigured != cfAudienceConfigured {
@@ -451,7 +485,66 @@ func validateControlSecurity(cfg *config.Config) error {
 			return fmt.Errorf("NORN_API_TOKEN is required when binding beyond loopback")
 		}
 	}
+	if profile == "production" {
+		if !cfg.RequireExplicitAuth {
+			return fmt.Errorf("NORN_PROFILE=production requires NORN_REQUIRE_EXPLICIT_AUTH=true")
+		}
+		if !cfg.StrictSecrets {
+			return fmt.Errorf("NORN_PROFILE=production requires strict secret validation")
+		}
+		if !secureEndpoint(cfg.NomadAddr) {
+			return fmt.Errorf("NORN_PROFILE=production requires an https NORN_NOMAD_ADDR")
+		}
+		if cfg.NomadTLSSkipVerify {
+			return fmt.Errorf("NORN_PROFILE=production forbids NOMAD_SKIP_VERIFY")
+		}
+		if !secureEndpoint(cfg.ConsulAddr) {
+			return fmt.Errorf("NORN_PROFILE=production requires an https NORN_CONSUL_ADDR")
+		}
+		if cfg.ConsulTLSSkipVerify {
+			return fmt.Errorf("NORN_PROFILE=production requires CONSUL_HTTP_SSL_VERIFY=true")
+		}
+		if !secureDatabaseDSN(cfg.DatabaseURL) {
+			return fmt.Errorf("NORN_PROFILE=production requires PostgreSQL sslmode=verify-full")
+		}
+		if strings.TrimSpace(cfg.RegistryURL) == "" {
+			return fmt.Errorf("NORN_PROFILE=production requires NORN_REGISTRY_URL")
+		}
+		if strings.TrimSpace(cfg.ArtifactSigningPublicKey) == "" {
+			return fmt.Errorf("NORN_PROFILE=production requires NORN_ARTIFACT_SIGNING_PUBLIC_KEY")
+		}
+		if len(cfg.ArtifactDenySeverities) == 0 {
+			return fmt.Errorf("NORN_PROFILE=production requires NORN_ARTIFACT_DENY_SEVERITIES")
+		}
+		if len(cfg.AuditSigningKey) < 32 {
+			return fmt.Errorf("NORN_PROFILE=production requires NORN_AUDIT_SIGNING_KEY with at least 32 bytes")
+		}
+		for _, key := range cfg.AuditPreviousSigningKeys {
+			if len(key) < 32 {
+				return fmt.Errorf("NORN_AUDIT_PREVIOUS_SIGNING_KEYS entries must contain at least 32 bytes")
+			}
+		}
+		if cfg.AuditRetentionDays < 90 {
+			return fmt.Errorf("NORN_PROFILE=production requires NORN_AUDIT_RETENTION_DAYS of at least 90")
+		}
+		if time.Now().UTC().Before(cfg.LegacyTokenSigningUntil) {
+			return fmt.Errorf("NORN_PROFILE=production requires legacy token signing to be retired")
+		}
+	}
 	return nil
+}
+
+func secureEndpoint(raw string) bool {
+	parsed, err := url.Parse(strings.TrimSpace(raw))
+	return err == nil && strings.EqualFold(parsed.Scheme, "https")
+}
+
+func secureDatabaseDSN(raw string) bool {
+	parsed, err := url.Parse(strings.TrimSpace(raw))
+	if err != nil {
+		return false
+	}
+	return strings.EqualFold(parsed.Query().Get("sslmode"), "verify-full")
 }
 
 func bearerAuth(token string, h *handler.Handler, requireExplicit bool) func(http.Handler) http.Handler {
@@ -473,7 +566,7 @@ func bearerAuth(token string, h *handler.Handler, requireExplicit bool) func(htt
 				return
 			}
 			authorization := r.Header.Get("Authorization")
-			if strings.HasPrefix(authorization, "Bearer ") && subtle.ConstantTimeCompare([]byte(authorization[7:]), []byte(token)) == 1 {
+			if token != "" && strings.HasPrefix(authorization, "Bearer ") && subtle.ConstantTimeCompare([]byte(authorization[7:]), []byte(token)) == 1 {
 				next.ServeHTTP(w, handler.WithAccessPrincipal(r, &handler.AccessPrincipal{
 					Subject: "control-plane", Scopes: []string{handler.ScopeAdmin}, Legacy: true,
 				}))
@@ -541,6 +634,8 @@ func controlScopeForRequest(r *http.Request) string {
 		return handler.ScopeAppsExec
 	case path == "/api/v1/enrollments" || path == "/api/v1/enrollments/approve" || strings.HasPrefix(path, "/api/v1/devices"):
 		return handler.ScopeAdmin
+	case path == "/api/v1/validate/infraspec" || path == "/api/v1/fleet/validate":
+		return handler.ScopeAPIRead
 	case strings.HasSuffix(path, "/exec"):
 		return handler.ScopeAppsExec
 	case path == "/api/access/tokens":
@@ -569,7 +664,7 @@ func writeControlCapabilities(w http.ResponseWriter) {
 			"openapi-3.1", "standard-problems", "event-stream-info", "event-gap-detection",
 			"event-heartbeat", "event-subscriptions", "operation-cancellation", "typed-operation-receipts",
 			"versioned-resources", "device-enrollment", "token-rotation", "token-revocation", "device-listing",
-			"device-key-step-up", "exec-sessions", "exec-audit", "exec-session-expiry", "exec-protocol-v1",
+			"device-key-step-up", "exec-sessions", "exec-audit", "exec-session-expiry", "exec-protocol-v1", "host-metrics", "app-creation", "regional-deployments", "consul-traefik-ingress", "production-readiness", "durable-mutation-audit", "production-mutation-admission", "recovery-drill-receipts", "document-validation", "fleet-v1", "fleet-inventory", "durable-fleet-capacity-plans",
 		},
 		"auth": map[string]interface{}{
 			"scopes":                handler.AccessTokenScopeNames(),
@@ -588,10 +683,11 @@ func writeControlCapabilities(w http.ResponseWriter) {
 			"events": "/api/v1/events", "operations": "/api/v1/operations/{id}",
 			"platformPreflights": "/api/v1/platform/preflights", "platformUpgrades": "/api/v1/platform/upgrades",
 			"platformRollbacks": "/api/v1/platform/rollbacks", "platformSmoke": "/api/v1/platform/smoke", "hostAssurances": "/api/v1/host/assurances",
-			"openapi": "/api/v1/openapi.yaml", "eventInfo": "/api/v1/events/info", "apps": "/api/v1/apps",
-			"releases": "/api/v1/releases", "hostStatus": "/api/v1/host/status", "enrollments": "/api/v1/enrollments",
+			"openapi": "/api/v1/openapi.yaml", "eventInfo": "/api/v1/events/info", "apps": "/api/v1/apps", "appCreation": "/api/v1/apps", "appDeployment": "/api/v1/apps/{id}/deployment",
+			"releases": "/api/v1/releases", "hostStatus": "/api/v1/host/status", "hostMetrics": "/api/v1/host/metrics", "productionReadiness": "/api/v1/production/readiness", "recoveryDrills": "/api/v1/production/drills", "mutationAudit": "/api/v1/audit/mutations", "enrollments": "/api/v1/enrollments",
 			"devices": "/api/v1/devices", "tokenRotate": "/api/v1/auth/rotate", "tokenRevoke": "/api/v1/auth/revoke",
 			"stepUpChallenges": "/api/v1/auth/step-up/challenges", "execSessions": "/api/v1/exec-sessions",
+			"infraSpecValidation": "/api/v1/validate/infraspec", "fleetValidation": "/api/v1/fleet/validate", "fleetNodePools": "/api/v1/fleet/node-pools", "fleetPlans": "/api/v1/fleet/plans",
 		},
 	})
 }

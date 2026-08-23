@@ -1,0 +1,14 @@
+[Unit]
+Description=Norn HA Prometheus
+After=docker.service network-online.target
+Requires=docker.service
+
+[Service]
+Restart=always
+RestartSec=5
+ExecStartPre=-/usr/bin/docker rm -f norn-prometheus
+ExecStart=/usr/bin/docker run --rm --name norn-prometheus --network host --user 0 --volume /etc/norn-observability/prometheus.yml:/etc/prometheus/prometheus.yml:ro --volume /etc/norn-observability/pki:/etc/norn-observability/pki:ro --volume norn-prometheus-data:/prometheus {{ prometheus_image }} --config.file=/etc/prometheus/prometheus.yml --storage.tsdb.path=/prometheus --storage.tsdb.retention.time=30d --storage.tsdb.retention.size=8GB --web.listen-address={{ private_ip }}:9090
+ExecStop=/usr/bin/docker stop -t 20 norn-prometheus
+
+[Install]
+WantedBy=multi-user.target

@@ -123,6 +123,8 @@ norn host assure
 norn host queue-assure
 norn host status
 norn host doctor
+norn host security plan
+norn host security init --address 10.0.0.10 --cert-days 365
 ```
 
 `host install` writes managed Nomad and Consul configs, persistent state
@@ -151,6 +153,10 @@ norn host install --repo /path/to/norn \
 | `--serve PORT=TARGET` | Reconcile a Tailscale Serve listener; `{address}` expands to the current host IPv4 address |
 | `--probe NAME=URL` | Retry an unauthenticated HTTP GET against the route users actually reach |
 | `--assure-interval SECONDS` | Set the periodic assurance interval; minimum 60, default 300 |
+| `--security-dir PATH` | Set the staged/active host security root |
+| `--cert-days DAYS` | Set staged leaf-certificate validity; minimum 30 |
+| `--nomad-security-fragment PATH` | Reserved; authenticated probes are supported, but activation waits for atomic fleet token/TLS cutover and rollback |
+| `--consul-security-fragment PATH` | Reserved; authenticated probes are supported, but activation waits for atomic fleet token/TLS cutover and rollback |
 
 Flags that define policy are repeatable. Only explicitly required apps may be
 deployed or restarted. `norn host assure` runs the same idempotent pass used by
@@ -168,6 +174,34 @@ runtime health.
 
 See [Host Recovery](/v2/operations/host-recovery) for the full migration and
 failure-recovery procedure.
+
+`host security init` creates an inactive, timestamped private PKI stage and
+transition fragments. It never restarts agents or bootstraps ACL tokens.
+`host security plan` shows value-safe activation state and the required cutover
+sequence. Managed activation is unavailable in this release. See [Production
+Readiness](/v2/operations/production-readiness).
+
+## production
+
+Evaluate the authenticated production-admission contract:
+
+```bash
+norn production check
+norn production check --json
+norn production audit
+norn production audit --limit 200
+norn production drills
+norn production drill start database.restore --target restore-sandbox
+norn production drill complete <id> --status passed --evidence snapshot=object-version-id --evidence rto=4m12s
+```
+
+The command exits non-zero while a required gate fails. JSON output uses
+`norn.production-readiness/v1` and is suitable for CI, change approvals, and
+native clients. Enabling `NORN_PROFILE=production` additionally makes API
+startup, live substrate mutation admission, immutable registry resolution,
+external PostgreSQL/PITR/replica checks, integrity-signed mutation audit, and
+90-day recovery-drill freshness fail closed. Drill evidence is bounded receipt
+metadata; keep full logs in durable object storage.
 
 ## operations
 
@@ -747,6 +781,26 @@ norn validate --strict-secrets
 ```
 
 Reports errors and warnings for each infraspec field. Validation warns when secret-like values such as DSNs, passwords, tokens, API keys, or client secrets appear in plain `env` blocks. Move those values to `secrets.enc.yaml` and list the key under `secrets`. Add `--strict-secrets`, or set `NORN_STRICT_SECRETS=true` for deploy/preflight validation, to make plaintext secret-like env values fail the gate. Validation also uses `NORN_NETWORK_MODE` to warn when endpoint hosts look mismatched for the active mode, such as localhost endpoints in `tailnet` or `public` mode.
+
+Validate an uploaded file strictly, including unknown YAML fields, and optionally cross-check its logical pool references:
+
+```bash
+norn validate --file ./infraspec.yaml --fleet ../norn-fleet/environments/production/nyc3/cluster.yaml
+```
+
+## fleet
+
+Inspect desired GitOps capacity and create planning-only receipts. Provider credentials stay in the protected infrastructure runner.
+
+```bash
+norn fleet pools
+norn fleet validate <cluster.yaml>
+norn fleet plan <pool> [--desired N] [--size SLUG] [--strategy blueGreen|rolling] [--reason TEXT]
+norn fleet replace <pool> --size SLUG [--reason TEXT]
+norn fleet reconcile <pool> [--reason TEXT]
+```
+
+Capacity plans are stored as completed `fleet.capacity-plan` operations and do not call a cloud provider. `replace` requires `--size` and forces blue/green planning. The infrastructure repository must enforce its own reviewed-SHA and apply authorization gate. The current private repository uses protected-branch-only environments, strict pull-request checks, reviewed-plan SHA binding, and manual dispatch because its GitHub plan does not provide environment required reviewers.
 
 ## endpoints
 

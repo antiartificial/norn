@@ -37,23 +37,24 @@ func (p *Pipeline) canary(ctx context.Context, st *state, sg *saga.Saga) error {
 	case <-time.After(evaluateAfter):
 	}
 
-	// Check allocation health after the evaluation period
-	allocs, err := p.Nomad.PollAllocations(spec.App)
-	if err != nil {
-		_ = p.Nomad.FailDeployment(spec.App)
-		return fmt.Errorf("canary poll allocations: %w", err)
-	}
-
-	for _, alloc := range allocs {
-		if alloc.Healthy == nil || !*alloc.Healthy {
-			_ = p.Nomad.FailDeployment(spec.App)
-			return fmt.Errorf("canary allocation %s unhealthy (status: %s)", alloc.ID, alloc.ClientStatus)
+	for _, region := range spec.ResolvedRegions() {
+		if regionalServiceProcessCount(spec, region.Name) == 0 {
+			continue
 		}
-	}
-
-	// All canary allocations healthy — promote
-	if err := p.Nomad.PromoteDeployment(spec.App); err != nil {
-		return fmt.Errorf("canary promote: %w", err)
+		allocs, err := p.Nomad.PollAllocationsRegion(spec.App, region.NomadRegion)
+		if err != nil {
+			_ = p.Nomad.FailDeploymentRegion(spec.App, region.NomadRegion)
+			return fmt.Errorf("canary poll allocations in %s: %w", region.Name, err)
+		}
+		for _, alloc := range allocs {
+			if alloc.Healthy == nil || !*alloc.Healthy {
+				_ = p.Nomad.FailDeploymentRegion(spec.App, region.NomadRegion)
+				return fmt.Errorf("canary allocation %s unhealthy in %s (status: %s)", alloc.ID, region.Name, alloc.ClientStatus)
+			}
+		}
+		if err := p.Nomad.PromoteDeploymentRegion(spec.App, region.NomadRegion); err != nil {
+			return fmt.Errorf("canary promote in %s: %w", region.Name, err)
+		}
 	}
 
 	sg.Log(ctx, "canary.promoted", fmt.Sprintf("canary promoted for %s", spec.App), nil)

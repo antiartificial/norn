@@ -282,9 +282,61 @@ type ValidationResult struct {
 }
 
 type ValidationFinding struct {
-	Severity string `json:"severity"`
-	Field    string `json:"field"`
-	Message  string `json:"message"`
+	Severity    string `json:"severity"`
+	Code        string `json:"code,omitempty"`
+	Field       string `json:"field"`
+	Message     string `json:"message"`
+	Remediation string `json:"remediation,omitempty"`
+}
+
+type FleetValidationReport struct {
+	SchemaVersion string              `json:"schemaVersion"`
+	DocumentKind  string              `json:"documentKind"`
+	Name          string              `json:"name,omitempty"`
+	Valid         bool                `json:"valid"`
+	Findings      []ValidationFinding `json:"findings"`
+}
+
+type FleetNodePool struct {
+	Size        string            `json:"size"`
+	Min         int               `json:"min"`
+	Desired     int               `json:"desired"`
+	Max         int               `json:"max"`
+	Labels      map[string]string `json:"labels,omitempty"`
+	Replacement struct {
+		Strategy                string `json:"strategy,omitempty"`
+		RequireCapacityHeadroom bool   `json:"requireCapacityHeadroom,omitempty"`
+		DrainTimeout            string `json:"drainTimeout,omitempty"`
+		RequireReadiness        bool   `json:"requireReadiness,omitempty"`
+	} `json:"replacement,omitempty"`
+}
+
+type FleetInventory struct {
+	SchemaVersion string                   `json:"schemaVersion"`
+	Configured    bool                     `json:"configured"`
+	Source        string                   `json:"source,omitempty"`
+	Digest        string                   `json:"digest,omitempty"`
+	Document      *FleetDocument           `json:"document,omitempty"`
+	Validation    *FleetValidationReport   `json:"validation,omitempty"`
+	NodePools     map[string]FleetNodePool `json:"nodePools"`
+}
+
+// FleetDocument is the read-only, versioned source document returned with a
+// configured inventory. It deliberately contains no provider credentials.
+type FleetDocument struct {
+	APIVersion string `json:"apiVersion"`
+	Kind       string `json:"kind"`
+	Metadata   struct {
+		Repository  string `json:"repository,omitempty"`
+		Environment string `json:"environment,omitempty"`
+		WorkflowURL string `json:"workflowUrl,omitempty"`
+	} `json:"metadata,omitempty"`
+	Cluster struct {
+		Name     string `json:"name"`
+		Provider string `json:"provider"`
+		Region   string `json:"region"`
+	} `json:"cluster"`
+	NodePools map[string]FleetNodePool `json:"nodePools"`
 }
 
 type StatsResponse struct {
@@ -755,6 +807,70 @@ type ObservabilityInstallReceipt struct {
 	Files     []string `json:"files"`
 }
 
+type ProductionReadinessReport struct {
+	Schema      string                     `json:"schema"`
+	GeneratedAt string                     `json:"generatedAt"`
+	Status      string                     `json:"status"`
+	Summary     ProductionReadinessSummary `json:"summary"`
+	Checks      []ProductionReadinessCheck `json:"checks"`
+}
+
+type ProductionReadinessSummary struct {
+	Passed   int `json:"passed"`
+	Warnings int `json:"warnings"`
+	Failed   int `json:"failed"`
+	Total    int `json:"total"`
+}
+
+type ProductionReadinessCheck struct {
+	ID          string         `json:"id"`
+	Category    string         `json:"category"`
+	Status      string         `json:"status"`
+	Title       string         `json:"title"`
+	Detail      string         `json:"detail"`
+	Remediation string         `json:"remediation,omitempty"`
+	Evidence    map[string]any `json:"evidence,omitempty"`
+}
+
+type MutationAuditEvent struct {
+	ID               string                 `json:"id"`
+	RequestID        string                 `json:"requestId,omitempty"`
+	PrincipalSubject string                 `json:"principalSubject"`
+	DeviceID         string                 `json:"deviceId,omitempty"`
+	KeyID            string                 `json:"keyId,omitempty"`
+	Scopes           []string               `json:"scopes,omitempty"`
+	Method           string                 `json:"method"`
+	Path             string                 `json:"path"`
+	Status           int                    `json:"status"`
+	Outcome          string                 `json:"outcome"`
+	StartedAt        string                 `json:"startedAt"`
+	DurationMs       int64                  `json:"durationMs"`
+	Integrity        string                 `json:"integrity"`
+	Incident         *MutationAuditIncident `json:"incident,omitempty"`
+}
+
+type MutationAuditIncident struct {
+	ID             string `json:"id"`
+	AuditEventID   string `json:"auditEventId"`
+	ReasonCode     string `json:"reasonCode"`
+	Explanation    string `json:"explanation"`
+	AcknowledgedBy string `json:"acknowledgedBy"`
+	AcknowledgedAt string `json:"acknowledgedAt"`
+	KeyID          string `json:"keyId,omitempty"`
+	Integrity      string `json:"integrity"`
+}
+
+type RecoveryDrill struct {
+	ID          string            `json:"id"`
+	Kind        string            `json:"kind"`
+	Target      string            `json:"target,omitempty"`
+	Status      string            `json:"status"`
+	InitiatedBy string            `json:"initiatedBy"`
+	Evidence    map[string]string `json:"evidence,omitempty"`
+	StartedAt   string            `json:"startedAt"`
+	FinishedAt  string            `json:"finishedAt,omitempty"`
+}
+
 // API methods
 
 func (c *Client) Health() (*HealthStatus, error) {
@@ -763,6 +879,61 @@ func (c *Client) Health() (*HealthStatus, error) {
 		return nil, err
 	}
 	return &h, nil
+}
+
+func (c *Client) ProductionReadiness() (*ProductionReadinessReport, error) {
+	var report ProductionReadinessReport
+	if err := c.get("/api/v1/production/readiness", &report); err != nil {
+		return nil, err
+	}
+	return &report, nil
+}
+
+func (c *Client) MutationAudits(limit int) ([]MutationAuditEvent, error) {
+	var response struct {
+		Events []MutationAuditEvent `json:"events"`
+	}
+	if err := c.get(fmt.Sprintf("/api/v1/audit/mutations?limit=%d", limit), &response); err != nil {
+		return nil, err
+	}
+	return response.Events, nil
+}
+
+func (c *Client) AcknowledgeMutationAuditIncident(id, reasonCode, explanation string) (*MutationAuditIncident, error) {
+	body, _ := json.Marshal(map[string]string{"reasonCode": reasonCode, "explanation": explanation})
+	var incident MutationAuditIncident
+	if err := c.postJSON("/api/v1/audit/mutations/"+url.PathEscape(id)+"/incident", string(body), &incident); err != nil {
+		return nil, err
+	}
+	return &incident, nil
+}
+
+func (c *Client) RecoveryDrills(limit int) ([]RecoveryDrill, error) {
+	var response struct {
+		Drills []RecoveryDrill `json:"drills"`
+	}
+	if err := c.get(fmt.Sprintf("/api/v1/production/drills?limit=%d", limit), &response); err != nil {
+		return nil, err
+	}
+	return response.Drills, nil
+}
+
+func (c *Client) StartRecoveryDrill(kind, target string) (*RecoveryDrill, error) {
+	body, _ := json.Marshal(map[string]string{"kind": kind, "target": target})
+	var drill RecoveryDrill
+	if err := c.postJSON("/api/v1/production/drills", string(body), &drill); err != nil {
+		return nil, err
+	}
+	return &drill, nil
+}
+
+func (c *Client) CompleteRecoveryDrill(id, status string, evidence map[string]string) (*RecoveryDrill, error) {
+	body, _ := json.Marshal(map[string]interface{}{"status": status, "evidence": evidence})
+	var drill RecoveryDrill
+	if err := c.postJSON("/api/v1/production/drills/"+url.PathEscape(id)+"/complete", string(body), &drill); err != nil {
+		return nil, err
+	}
+	return &drill, nil
 }
 
 func (c *Client) ListApps() ([]AppStatus, error) {
@@ -1520,6 +1691,58 @@ func (c *Client) ValidateApp(appID string, strictSecrets bool) (*ValidationResul
 		return nil, err
 	}
 	return &result, nil
+}
+
+func (c *Client) ValidateInfraSpecDocument(document, fleetDocument string, strictSecrets bool) (*ValidationResult, error) {
+	body, err := json.Marshal(map[string]string{"document": document, "fleetDocument": fleetDocument})
+	if err != nil {
+		return nil, err
+	}
+	path := "/api/v1/validate/infraspec"
+	if strictSecrets {
+		path += "?strictSecrets=true"
+	}
+	var result ValidationResult
+	if err := c.postJSON(path, string(body), &result); err != nil {
+		return nil, err
+	}
+	return &result, nil
+}
+
+func (c *Client) ValidateFleetDocument(document string) (*FleetValidationReport, error) {
+	body, err := json.Marshal(map[string]string{"document": document})
+	if err != nil {
+		return nil, err
+	}
+	var result FleetValidationReport
+	if err := c.postJSON("/api/v1/fleet/validate", string(body), &result); err != nil {
+		return nil, err
+	}
+	return &result, nil
+}
+
+func (c *Client) FleetInventory() (*FleetInventory, error) {
+	var inventory FleetInventory
+	if err := c.get("/api/v1/fleet/node-pools", &inventory); err != nil {
+		return nil, err
+	}
+	return &inventory, nil
+}
+
+func (c *Client) PlanFleetCapacity(pool string, desired *int, size, strategy, reason string) (*Operation, error) {
+	request := map[string]interface{}{"size": size, "strategy": strategy, "reason": reason}
+	if desired != nil {
+		request["desired"] = *desired
+	}
+	body, err := json.Marshal(request)
+	if err != nil {
+		return nil, err
+	}
+	var operation Operation
+	if err := c.postJSON("/api/v1/fleet/node-pools/"+url.PathEscape(pool)+"/plan", string(body), &operation); err != nil {
+		return nil, err
+	}
+	return &operation, nil
 }
 
 func (c *Client) UpdateSecrets(appID string, secrets map[string]string) error {

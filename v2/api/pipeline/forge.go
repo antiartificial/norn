@@ -16,6 +16,10 @@ func (p *Pipeline) forge(ctx context.Context, st *state, sg *saga.Saga) error {
 		sg.Log(ctx, "forge.skip", "no endpoints configured, skipping forge", nil)
 		return nil
 	}
+	if p.ExternalIngress {
+		sg.Log(ctx, "forge.external", "endpoint routing is owned by the external edge controller", nil)
+		return nil
+	}
 
 	publicEndpoints := make([]model.Endpoint, 0, len(st.spec.Endpoints))
 	for _, endpoint := range st.spec.Endpoints {
@@ -75,6 +79,9 @@ func (p *Pipeline) forge(ctx context.Context, st *state, sg *saga.Saga) error {
 }
 
 func (p *Pipeline) cloudflaredService(spec *model.InfraSpec) (string, error) {
+	if p.IngressURL != "" {
+		return p.IngressURL, nil
+	}
 	processName, process, ok := cloudflaredProcess(spec)
 	if !ok {
 		return "", fmt.Errorf("no port found in spec for cloudflared routing")

@@ -13,7 +13,7 @@ type AppStatus struct {
 type Allocation struct {
 	ID           string `json:"id"`
 	TaskGroup    string `json:"taskGroup"`
-	Status       string `json:"status"` // running, pending, complete, failed
+	Status       string `json:"status"`    // running, pending, complete, failed
 	Lifecycle    string `json:"lifecycle"` // active or retained
 	Healthy      *bool  `json:"healthy,omitempty"`
 	NodeID       string `json:"nodeId,omitempty"`
@@ -27,12 +27,12 @@ type Allocation struct {
 // AllocationSummary separates live capacity from Nomad's retained allocation
 // history so clients do not mistake completed allocations for running instances.
 type AllocationSummary struct {
-	Running    int                               `json:"running"`
-	Active     int                               `json:"active"`
-	Retained   int                               `json:"retained"`
-	Total      int                               `json:"total"`
-	ByProcess  map[string]ProcessAllocationCount `json:"byProcess,omitempty"`
-	ByStatus   map[string]int                    `json:"byStatus,omitempty"`
+	Running   int                               `json:"running"`
+	Active    int                               `json:"active"`
+	Retained  int                               `json:"retained"`
+	Total     int                               `json:"total"`
+	ByProcess map[string]ProcessAllocationCount `json:"byProcess,omitempty"`
+	ByStatus  map[string]int                    `json:"byStatus,omitempty"`
 }
 
 type ProcessAllocationCount struct {
