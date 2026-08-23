@@ -76,6 +76,20 @@ func Migrate(db *DB) error {
 		);
 		CREATE INDEX IF NOT EXISTS idx_deployments_app ON deployments(app, started_at DESC);
 
+		CREATE TABLE IF NOT EXISTS deployment_regions (
+			deployment_id  TEXT NOT NULL REFERENCES deployments(id) ON DELETE CASCADE,
+			region         TEXT NOT NULL,
+			nomad_region   TEXT NOT NULL,
+			status         TEXT NOT NULL DEFAULT 'queued',
+			desired_weight INT NOT NULL DEFAULT 0,
+			active_weight  INT NOT NULL DEFAULT 0,
+			eval_id        TEXT NOT NULL DEFAULT '',
+			last_error     TEXT NOT NULL DEFAULT '',
+			updated_at     TIMESTAMPTZ NOT NULL DEFAULT now(),
+			PRIMARY KEY (deployment_id, region)
+		);
+		CREATE INDEX IF NOT EXISTS idx_deployment_regions_region ON deployment_regions(region, updated_at DESC);
+
 		ALTER TABLE deployments ADD COLUMN IF NOT EXISTS source_kind TEXT NOT NULL DEFAULT '';
 		ALTER TABLE deployments ADD COLUMN IF NOT EXISTS source_ref TEXT NOT NULL DEFAULT '';
 		ALTER TABLE deployments ADD COLUMN IF NOT EXISTS source_dirty BOOLEAN NOT NULL DEFAULT false;
@@ -330,6 +344,55 @@ func Migrate(db *DB) error {
 		UPDATE exec_sessions SET status='failed',finished_at=now(),error_code='server_restarted'
 		WHERE status='running';
 
+		CREATE TABLE IF NOT EXISTS mutation_audit_events (
+			id                TEXT PRIMARY KEY,
+			request_id        TEXT NOT NULL DEFAULT '',
+			principal_subject TEXT NOT NULL DEFAULT '',
+			token_id          TEXT NOT NULL DEFAULT '',
+			device_id         TEXT NOT NULL DEFAULT '',
+			scopes            JSONB NOT NULL DEFAULT '[]',
+			method            TEXT NOT NULL,
+			path              TEXT NOT NULL,
+			client_ip         TEXT NOT NULL DEFAULT '',
+			user_agent        TEXT NOT NULL DEFAULT '',
+			status            INT NOT NULL DEFAULT 0,
+			outcome           TEXT NOT NULL DEFAULT 'started',
+			started_at        TIMESTAMPTZ NOT NULL DEFAULT now(),
+			finished_at       TIMESTAMPTZ,
+			duration_ms       BIGINT NOT NULL DEFAULT 0,
+			record_digest     TEXT NOT NULL DEFAULT ''
+		);
+		ALTER TABLE mutation_audit_events ADD COLUMN IF NOT EXISTS key_id TEXT NOT NULL DEFAULT '';
+		CREATE INDEX IF NOT EXISTS idx_mutation_audit_started ON mutation_audit_events(started_at DESC);
+		CREATE INDEX IF NOT EXISTS idx_mutation_audit_principal ON mutation_audit_events(principal_subject, started_at DESC);
+		CREATE INDEX IF NOT EXISTS idx_mutation_audit_outcome ON mutation_audit_events(outcome, started_at DESC);
+		CREATE INDEX IF NOT EXISTS idx_mutation_audit_finished ON mutation_audit_events(finished_at) WHERE finished_at IS NOT NULL;
+
+		CREATE TABLE IF NOT EXISTS mutation_audit_incidents (
+			id                TEXT PRIMARY KEY,
+			audit_event_id    TEXT NOT NULL UNIQUE,
+			reason_code       TEXT NOT NULL,
+			explanation       TEXT NOT NULL,
+			acknowledged_by   TEXT NOT NULL,
+			acknowledged_at   TIMESTAMPTZ NOT NULL,
+			key_id            TEXT NOT NULL DEFAULT '',
+			record_digest     TEXT NOT NULL DEFAULT ''
+		);
+		CREATE INDEX IF NOT EXISTS idx_mutation_audit_incident_time ON mutation_audit_incidents(acknowledged_at DESC);
+
+		CREATE TABLE IF NOT EXISTS recovery_drills (
+			id            TEXT PRIMARY KEY,
+			kind          TEXT NOT NULL,
+			target        TEXT NOT NULL DEFAULT '',
+			status        TEXT NOT NULL DEFAULT 'running',
+			initiated_by  TEXT NOT NULL DEFAULT '',
+			evidence      JSONB NOT NULL DEFAULT '{}',
+			started_at    TIMESTAMPTZ NOT NULL DEFAULT now(),
+			finished_at   TIMESTAMPTZ
+		);
+		CREATE INDEX IF NOT EXISTS idx_recovery_drills_kind ON recovery_drills(kind, started_at DESC);
+		CREATE INDEX IF NOT EXISTS idx_recovery_drills_status ON recovery_drills(status, started_at DESC);
+
 		CREATE TABLE IF NOT EXISTS access_observation_buckets (
 			app            TEXT NOT NULL,
 			process        TEXT NOT NULL DEFAULT '',
@@ -358,6 +421,60 @@ func (db *DB) InsertDeployment(ctx context.Context, d *model.Deployment) error {
 		d.ID, d.App, d.CommitSHA, d.ImageTag, d.SagaID, d.Status, d.SourceKind, d.SourceRef, d.SourceDirty, changes, d.StartedAt,
 	)
 	return err
+}
+
+func (db *DB) InsertDeploymentRegions(ctx context.Context, deploymentID string, regions []model.ResolvedRegion) error {
+	for _, region := range regions {
+		_, err := db.Pool.Exec(ctx, `INSERT INTO deployment_regions
+			(deployment_id, region, nomad_region, status, desired_weight, active_weight)
+			VALUES ($1, $2, $3, $4, $5, 0)
+			ON CONFLICT (deployment_id, region) DO NOTHING`,
+			deploymentID, region.Name, region.NomadRegion, model.StatusQueued, region.TrafficWeight)
+		if err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func (db *DB) UpdateDeploymentRegion(ctx context.Context, deploymentID, region string, status model.DeployStatus, evalID, lastError string, activeWeight int) error {
+	_, err := db.Pool.Exec(ctx, `UPDATE deployment_regions SET status=$1,
+		eval_id=CASE WHEN $2 = '' THEN eval_id ELSE $2 END,
+		last_error=$3, active_weight=$4, updated_at=now() WHERE deployment_id=$5 AND region=$6`,
+		status, evalID, lastError, activeWeight, deploymentID, region)
+	return err
+}
+
+// FailIncompleteDeploymentRegions closes every region that did not reach a
+// terminal state. Keeping active_weight at zero prevents a traffic controller
+// from promoting a partially completed deployment.
+func (db *DB) FailIncompleteDeploymentRegions(ctx context.Context, deploymentID, lastError string) error {
+	_, err := db.Pool.Exec(ctx, `UPDATE deployment_regions
+		SET status='failed', active_weight=0,
+			last_error=CASE WHEN last_error = '' THEN $2 ELSE last_error END,
+			updated_at=now()
+		WHERE deployment_id=$1 AND status NOT IN ('deployed', 'failed')`, deploymentID, lastError)
+	return err
+}
+
+func (db *DB) DeploymentRegions(ctx context.Context, deploymentID string) ([]model.DeploymentRegion, error) {
+	rows, err := db.Pool.Query(ctx, `SELECT deployment_id, region, nomad_region, status,
+		desired_weight, active_weight, eval_id, last_error, updated_at
+		FROM deployment_regions WHERE deployment_id=$1 ORDER BY region`, deploymentID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var out []model.DeploymentRegion
+	for rows.Next() {
+		var region model.DeploymentRegion
+		if err := rows.Scan(&region.DeploymentID, &region.Region, &region.NomadRegion, &region.Status,
+			&region.DesiredWeight, &region.ActiveWeight, &region.EvalID, &region.LastError, &region.UpdatedAt); err != nil {
+			return nil, err
+		}
+		out = append(out, region)
+	}
+	return out, rows.Err()
 }
 
 func (db *DB) UpdateDeployment(ctx context.Context, id string, status model.DeployStatus) error {
@@ -418,6 +535,7 @@ func (db *DB) ListDeployments(ctx context.Context, app string, limit int) ([]mod
 			return nil, err
 		}
 		_ = json.Unmarshal(changes, &d.SourceChanges)
+		d.Regions, _ = db.DeploymentRegions(ctx, d.ID)
 		deployments = append(deployments, d)
 	}
 	return deployments, nil
@@ -436,6 +554,7 @@ func (db *DB) GetDeployment(ctx context.Context, id string) (*model.Deployment, 
 		return nil, err
 	}
 	_ = json.Unmarshal(changes, &d.SourceChanges)
+	d.Regions, _ = db.DeploymentRegions(ctx, d.ID)
 	return &d, nil
 }
 
@@ -453,13 +572,23 @@ func (db *DB) LastSuccessfulDeployment(ctx context.Context, app, excludeID strin
 		return nil, err
 	}
 	_ = json.Unmarshal(changes, &d.SourceChanges)
+	d.Regions, _ = db.DeploymentRegions(ctx, d.ID)
 	return &d, nil
 }
 
 func (db *DB) RecoverInFlightDeployments(ctx context.Context) error {
 	_, err := db.Pool.Exec(ctx,
-		`UPDATE deployments SET status = 'failed', finished_at = now()
-		 WHERE status NOT IN ('deployed', 'failed')`,
+		`WITH recovered AS (
+			SELECT id FROM deployments WHERE status NOT IN ('deployed', 'failed')
+		), failed_regions AS (
+			UPDATE deployment_regions
+			SET status='failed', active_weight=0,
+				last_error=CASE WHEN last_error = '' THEN 'norn restarted during deployment' ELSE last_error END,
+				updated_at=now()
+			WHERE deployment_id IN (SELECT id FROM recovered)
+		)
+		UPDATE deployments SET status = 'failed', finished_at = now()
+		WHERE id IN (SELECT id FROM recovered)`,
 	)
 	return err
 }

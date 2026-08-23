@@ -1,0 +1,121 @@
+---
+- name: Prove automatic PostgreSQL failover and rejoin
+  hosts: norn_ha[0]
+  become: true
+  gather_facts: false
+  any_errors_fatal: true
+  environment: "{{ control_environment }}"
+  tasks:
+    - name: Guard against running outside the disposable lab
+      ansible.builtin.stat:
+        path: /etc/norn-ha-lab
+      register: lab_guard
+
+    - name: Require the disposable-lab marker
+      ansible.builtin.assert:
+        that: lab_guard.stat.exists
+        fail_msg: "Refusing fault injection outside a managed Norn HA lab."
+
+    - name: Freeze one failover drill identifier
+      ansible.builtin.set_fact:
+        drill_marker: "failover-{{ now(utc=true, fmt='%Y%m%dT%H%M%SZ') }}"
+
+    - name: Read the current Patroni topology
+      ansible.builtin.command: patronictl -c /etc/patroni/config.yml list --format json
+      register: topology_before
+      changed_when: false
+
+    - name: Identify the leader and a surviving control node
+      ansible.builtin.set_fact:
+        old_leader: "{{ topology_before.stdout | from_json | selectattr('Role', 'equalto', 'Leader') | map(attribute='Member') | first }}"
+        survivor: "{{ groups['norn_ha'] | reject('equalto', topology_before.stdout | from_json | selectattr('Role', 'equalto', 'Leader') | map(attribute='Member') | first) | first }}"
+
+    - name: Create failover evidence table and pre-failure row
+      community.postgresql.postgresql_query:
+        login_host: 127.0.0.1
+        login_port: 6432
+        login_user: "{{ postgres_database_user }}"
+        login_password: "{{ norn_database_password }}"
+        login_db: "{{ postgres_database }}"
+        query:
+          - "CREATE TABLE IF NOT EXISTS ha_failover_evidence (marker text primary key, phase text not null, created_at timestamptz default now())"
+          - "INSERT INTO ha_failover_evidence(marker, phase) VALUES ('{{ drill_marker }}-before', 'before')"
+      no_log: true
+
+    - name: Stop Patroni on the elected leader
+      ansible.builtin.systemd_service:
+        name: patroni
+        state: stopped
+      delegate_to: "{{ old_leader }}"
+
+    - name: Exercise the promoted primary with unconditional cleanup
+      block:
+        - name: Wait for a different writable primary
+          ansible.builtin.command: patronictl -c /etc/patroni/config.yml list --format json
+          delegate_to: "{{ survivor }}"
+          register: topology_during
+          changed_when: false
+          retries: 30
+          delay: 2
+          until: >-
+            (topology_during.stdout | from_json | selectattr('Role', 'equalto', 'Leader') |
+            map(attribute='Member') | first | default('')) != old_leader
+
+        - name: Write through the promoted primary after HAProxy updates
+          community.postgresql.postgresql_query:
+            login_host: 127.0.0.1
+            login_port: 6432
+            login_user: "{{ postgres_database_user }}"
+            login_password: "{{ norn_database_password }}"
+            login_db: "{{ postgres_database }}"
+            query: "INSERT INTO ha_failover_evidence(marker, phase) VALUES ('{{ drill_marker }}-after', 'after')"
+          delegate_to: "{{ survivor }}"
+          register: promoted_write
+          retries: 30
+          delay: 2
+          until: promoted_write is succeeded
+          no_log: true
+      always:
+        - name: Always rejoin the former leader
+          ansible.builtin.systemd_service:
+            name: patroni
+            state: started
+          delegate_to: "{{ old_leader }}"
+
+    - name: Wait for all Patroni members to stream again
+      ansible.builtin.command: patronictl -c /etc/patroni/config.yml list --format json
+      delegate_to: "{{ survivor }}"
+      register: topology_after
+      changed_when: false
+      retries: 60
+      delay: 2
+      until: >-
+        (topology_after.stdout | from_json | selectattr('State', 'in', ['running', 'streaming']) | list | length)
+        == (groups['norn_ha'] | length)
+
+    - name: Verify writes from both sides of the failover
+      community.postgresql.postgresql_query:
+        login_host: 127.0.0.1
+        login_port: 6432
+        login_user: "{{ postgres_database_user }}"
+        login_password: "{{ norn_database_password }}"
+        login_db: "{{ postgres_database }}"
+        query: "SELECT count(*) AS rows FROM ha_failover_evidence WHERE marker LIKE '{{ drill_marker }}-%'"
+      delegate_to: "{{ survivor }}"
+      register: failover_rows
+      no_log: true
+
+    - name: Require both durable evidence rows
+      ansible.builtin.assert:
+        that: failover_rows.query_result[0].rows | int == 2
+        fail_msg: "Failover completed, but the pre/post-failure writes were not both durable."
+
+    - name: Emit value-safe failover evidence
+      ansible.builtin.debug:
+        msg:
+          schema: norn.ha-drill/v1
+          kind: postgres-failover
+          old_leader: "{{ old_leader }}"
+          new_leader: "{{ topology_after.stdout | from_json | selectattr('Role', 'equalto', 'Leader') | map(attribute='Member') | first }}"
+          members_running: "{{ groups['norn_ha'] | length }}"
+          evidence_rows: 2

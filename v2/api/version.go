@@ -1,3 +1,3 @@
 package main
 
-var Version = "v2.17.1-control"
+var Version = "v2.18.0-control"

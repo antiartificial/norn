@@ -62,8 +62,11 @@ function installFetch(overrides: Record<string, Response | (() => Response)> = {
     if (url.includes('/api/apps')) return json([app, unhealthyApp])
     if (url.includes('/api/services/manifest')) return json({ version: 1, generatedAt: new Date().toISOString(), networkMode: 'dev', services: [] })
     if (url.includes('/api/access/patterns')) return json({ windowHours: 24, idleAfterHours: 72, patterns: [] })
+    if (url.includes('/api/v1/capabilities')) return json({ protocolVersion: 1, serverVersion: 'test', features: ['fleet-v1', 'fleet-inventory', 'durable-fleet-capacity-plans'] })
     if (url.includes('/api/cloudflared/ingress')) return json({ hostnames: [] })
     if (url.includes('/api/version')) return json({ version: 'test' })
+    if (url.includes('/api/v1/fleet/node-pools')) return json({ schemaVersion: 'norn.fleet-inventory/v1', configured: false, nodePools: {} })
+    if (url.includes('/api/v1/fleet/plans')) return json({ count: 0, plans: [] })
     if (url.includes('/api/health')) return json({ status: 'ok', services: { postgres: 'up', nomad: 'up', consul: 'up' } })
     if (url.includes('/api/events/active')) return json({ incidents: [] })
     if (url.endsWith('/api/events')) return json({ events: [] })
@@ -157,6 +160,41 @@ describe('App shell routing', () => {
     expect(switchToDark.querySelector('.fa-sun')).toBeInTheDocument()
   })
 
+  it('renders desired fleet pools and creates a planning-only receipt', async () => {
+    const { calls } = installFetch({
+      '/api/v1/fleet/node-pools': json({
+        schemaVersion: 'norn.fleet-inventory/v1', configured: true, digest: 'sha256:1234567890abcdef',
+        document: { apiVersion: 'norn.dev/fleet/v1', kind: 'Cluster', cluster: { name: 'production-nyc3', provider: 'digitalocean', region: 'nyc3' }, metadata: { environment: 'production' } },
+        validation: { schemaVersion: 'norn.validation-report/v1', documentKind: 'fleet', valid: true, findings: [] },
+        nodePools: { app: { size: 's-4vcpu-8gb', min: 2, desired: 2, max: 8, labels: { workload: 'app' }, replacement: { strategy: 'blueGreen', drainTimeout: '15m' } } },
+      }),
+      '/api/v1/fleet/plans': json({ count: 0, plans: [] }),
+      '/api/v1/fleet/node-pools/app/plan': json({ id: 'plan-1', kind: 'fleet.capacity-plan', status: 'succeeded', message: 'capacity plan recorded', payload: { pool: 'app' }, metadata: {} }, 201),
+    })
+    renderApp('/fleet')
+    await screen.findByRole('heading', { name: 'production-nyc3' })
+    expect(screen.getByRole('heading', { name: 'app' })).toBeInTheDocument()
+    fireEvent.click(screen.getByRole('button', { name: 'Plan capacity' }))
+    fireEvent.change(screen.getByLabelText('Desired'), { target: { value: '3' } })
+    fireEvent.click(screen.getByRole('button', { name: 'Record plan' }))
+    await waitFor(() => expect(calls.some((call) => call === 'POST /api/v1/fleet/node-pools/app/plan')).toBe(true))
+  })
+
+  it('explains why fleet planning is unavailable for an invalid document', async () => {
+    installFetch({
+      '/api/v1/fleet/node-pools': json({
+        schemaVersion: 'norn.fleet-inventory/v1', configured: true,
+        document: { apiVersion: 'norn.dev/fleet/v1', kind: 'Cluster', cluster: { name: 'production-nyc3', provider: 'digitalocean', region: 'nyc3' } },
+        validation: { schemaVersion: 'norn.validation-report/v1', documentKind: 'fleet', valid: false, findings: [{ severity: 'error', code: 'fleet.node-pools.required', field: 'nodePools', message: 'at least one node pool is required' }] },
+        nodePools: { app: { size: 's-4vcpu-8gb', min: 2, desired: 2, max: 8 } },
+      }),
+    })
+    renderApp('/fleet')
+
+    expect(await screen.findByText('Planning is unavailable until the fleet document is valid.')).toHaveAttribute('role', 'status')
+    expect(screen.queryByRole('button', { name: 'Plan capacity' })).not.toBeInTheDocument()
+  })
+
   it('opens, filters, executes, and escapes the command palette', async () => {
     const { calls } = installFetch()
     renderApp('/overview')
@@ -176,6 +214,29 @@ describe('App shell routing', () => {
     await waitFor(() => expect(screen.queryByRole('dialog', { name: 'Command palette' })).not.toBeInTheDocument())
   })
 
+  it('opens the first-class fleet view from the command palette', async () => {
+    installFetch()
+    renderApp('/overview')
+    await screen.findByRole('heading', { name: 'Overview' })
+    await screen.findByRole('link', { name: 'Fleet' })
+
+    fireEvent.keyDown(window, { key: 'k', metaKey: true })
+    const input = screen.getByPlaceholderText('Search apps, views, actions')
+    fireEvent.change(input, { target: { value: 'Fleet' } })
+    fireEvent.click(screen.getByRole('option', { name: /Fleet/i }))
+
+    await screen.findByRole('heading', { name: 'Fleet' })
+    expect(await screen.findByText('Connect norn-fleet')).toBeInTheDocument()
+  })
+
+  it('hides fleet navigation when the server does not advertise fleet capabilities', async () => {
+    installFetch({ '/api/v1/capabilities': json({ protocolVersion: 1, serverVersion: 'legacy', features: [] }) })
+    renderApp('/fleet')
+
+    expect(await screen.findByRole('heading', { name: 'Fleet unavailable' })).toBeInTheDocument()
+    expect(screen.queryByRole('link', { name: 'Fleet' })).not.toBeInTheDocument()
+  })
+
   it('syncs app filters to URL params', async () => {
     installFetch()
     renderApp('/apps')
@@ -187,6 +248,18 @@ describe('App shell routing', () => {
     expect(window.location.search).toContain('q=worker')
     await waitFor(() => expect(screen.getByRole('button', { name: 'worker' })).toBeInTheDocument())
     expect(screen.queryByRole('button', { name: 'api' })).not.toBeInTheDocument()
+  })
+
+  it('requires confirmation before enabling deployments for a draft', async () => {
+    const { calls } = installFetch()
+    renderApp('/apps')
+
+    const enableButtons = await screen.findAllByRole('button', { name: 'Enable deploys' })
+    fireEvent.click(enableButtons[0])
+    expect(screen.getByRole('dialog', { name: 'Enable deployments?' })).toBeInTheDocument()
+
+    fireEvent.click(screen.getByRole('button', { name: 'Enable deployments' }))
+    await waitFor(() => expect(calls.some((call) => call === 'PUT /api/v1/apps/api/deployment')).toBe(true))
   })
 
   it('routes app detail tabs from the URL', async () => {

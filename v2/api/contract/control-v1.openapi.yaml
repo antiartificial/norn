@@ -1,7 +1,7 @@
 openapi: 3.1.0
 info:
   title: Norn Control Protocol
-  version: 1.2.0
+  version: 1.5.0
   description: Versioned contract for native and automated Norn control clients.
 servers:
   - url: /
@@ -39,6 +39,135 @@ paths:
               schema:
                 type: array
                 items: { $ref: '#/components/schemas/AppStatus' }
+    post:
+      operationId: createApp
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/CreateAppRequest' }
+      responses:
+        '201':
+          description: Disabled InfraSpec draft created
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/AppMutationReceipt' }
+        '400': { $ref: '#/components/responses/Problem' }
+        '409': { $ref: '#/components/responses/Problem' }
+  /api/v1/validate/infraspec:
+    post:
+      operationId: validateInfraSpecDocument
+      description: Strictly validates one uploaded InfraSpec and optionally cross-checks logical node-pool references against a fleet document. It never persists or deploys the document.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/DocumentValidationRequest' }
+      responses:
+        '200':
+          description: Validation report; invalid documents are represented by valid=false, not an HTTP failure.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/InfraSpecValidationReport' }
+        '400': { $ref: '#/components/responses/Problem' }
+  /api/v1/fleet/validate:
+    post:
+      operationId: validateFleetDocument
+      description: Strictly validates the norn.dev/fleet/v1 Cluster schema and production infrastructure sanity constraints. No cloud API is called.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/DocumentValidationRequest' }
+      responses:
+        '200':
+          description: Fleet validation report
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/FleetValidationReport' }
+        '400': { $ref: '#/components/responses/Problem' }
+  /api/v1/fleet/node-pools:
+    get:
+      operationId: getFleetNodePools
+      description: Returns desired node pools from the read-only NORN_FLEET_CONFIG checkout and its validation status. Source is a logical file identifier, never a host path. Requires api:read.
+      responses:
+        '200':
+          description: Desired fleet inventory, or configured=false when no checkout is configured.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/FleetInventory' }
+        '500': { $ref: '#/components/responses/Problem' }
+        '401': { $ref: '#/components/responses/Problem' }
+        '403': { $ref: '#/components/responses/Problem' }
+  /api/v1/fleet/plans:
+    get:
+      operationId: listFleetCapacityPlans
+      description: Lists fleet capacity plans. Requires api:read.
+      responses:
+        '200':
+          description: Durable, planning-only fleet operations
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [plans, count]
+                properties:
+                  plans: { type: array, items: { $ref: '#/components/schemas/Operation' } }
+                  count: { type: integer }
+        '503': { $ref: '#/components/responses/Problem' }
+        '401': { $ref: '#/components/responses/Problem' }
+        '403': { $ref: '#/components/responses/Problem' }
+  /api/v1/fleet/node-pools/{pool}/plan:
+    post:
+      operationId: createFleetCapacityPlan
+      description: Records a durable planning receipt. It does not call a provider or apply Terraform; configured production deployments add an HMAC signature. Requires api:write.
+      parameters:
+        - { name: pool, in: path, required: true, schema: { type: string, pattern: '^[a-z0-9][a-z0-9-]*$' } }
+        - $ref: '#/components/parameters/IdempotencyKey'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/FleetCapacityPlanRequest' }
+      responses:
+        '200':
+          description: Existing plan returned for an idempotent replay
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Operation' }
+        '201':
+          description: Durable capacity plan recorded; no provider mutation occurred.
+          headers:
+            Location: { schema: { type: string } }
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Operation' }
+        '400': { $ref: '#/components/responses/Problem' }
+        '404': { $ref: '#/components/responses/Problem' }
+        '409': { $ref: '#/components/responses/Problem' }
+        '503': { $ref: '#/components/responses/Problem' }
+        '401': { $ref: '#/components/responses/Problem' }
+        '403': { $ref: '#/components/responses/Problem' }
+  /api/v1/apps/{id}/deployment:
+    parameters:
+      - { name: id, in: path, required: true, schema: { type: string, pattern: '^[a-z0-9][a-z0-9-]*$' } }
+    put:
+      operationId: setAppDeployment
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [enabled]
+              properties: { enabled: { type: boolean } }
+      responses:
+        '200':
+          description: Deployment gate updated
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/AppMutationReceipt' }
+        '404': { $ref: '#/components/responses/Problem' }
   /api/v1/enrollments:
     post:
       operationId: startDeviceEnrollment
@@ -304,6 +433,122 @@ paths:
           content:
             application/json:
               schema: { $ref: '#/components/schemas/HostStatus' }
+  /api/v1/host/metrics:
+    get:
+      operationId: getHostMetrics
+      description: >-
+        Authenticated machine-wide host CPU and memory telemetry. Requires api:read.
+        On macOS, memory available is free plus reclaimable inactive and speculative pages.
+      responses:
+        '200':
+          description: Cached host metrics sample
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/HostMetrics' }
+        '401': { $ref: '#/components/responses/Problem' }
+        '403': { $ref: '#/components/responses/Problem' }
+        '503': { $ref: '#/components/responses/Problem' }
+  /api/v1/production/readiness:
+    get:
+      operationId: getProductionReadiness
+      description: >-
+        Authenticated, value-safe production admission report covering control authentication,
+        Nomad and Consul security and quorum, database transport, secrets, provenance,
+        recovery, and observability. Requires api:read.
+      responses:
+        '200':
+          description: Deterministic production-readiness report
+          headers:
+            Cache-Control: { schema: { type: string } }
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ProductionReadinessReport' }
+        '401': { $ref: '#/components/responses/Problem' }
+        '403': { $ref: '#/components/responses/Problem' }
+  /api/v1/audit/mutations:
+    get:
+      operationId: listMutationAudits
+      description: Lists integrity-checked, principal-aware mutation receipts. Requires admin scope.
+      parameters:
+        - { name: limit, in: query, schema: { type: integer, minimum: 1, maximum: 500, default: 100 } }
+      responses:
+        '200':
+          description: Durable mutation audit receipts
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/MutationAuditList' }
+        '401': { $ref: '#/components/responses/Problem' }
+        '403': { $ref: '#/components/responses/Problem' }
+        '503': { $ref: '#/components/responses/Problem' }
+  /api/v1/audit/mutations/{id}/incident:
+    post:
+      operationId: acknowledgeMutationAuditIncident
+      description: >-
+        Persists a signed incident acknowledgement for one invalid completed mutation receipt.
+        The original receipt remains immutable and visible. Requires admin scope.
+      parameters:
+        - { name: id, in: path, required: true, schema: { type: string, format: uuid } }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/MutationAuditIncidentRequest' }
+      responses:
+        '201':
+          description: Signed incident acknowledgement
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/MutationAuditIncident' }
+        '400': { $ref: '#/components/responses/Problem' }
+        '404': { $ref: '#/components/responses/Problem' }
+        '409': { $ref: '#/components/responses/Problem' }
+  /api/v1/production/drills:
+    get:
+      operationId: listRecoveryDrills
+      description: Lists durable recovery-drill receipts. Requires admin scope.
+      parameters:
+        - { name: limit, in: query, schema: { type: integer, minimum: 1, maximum: 500, default: 100 } }
+      responses:
+        '200':
+          description: Recovery drills and required production kinds
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/RecoveryDrillList' }
+    post:
+      operationId: startRecoveryDrill
+      description: Starts a durable recovery-drill receipt. Requires admin scope.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/RecoveryDrillStartRequest' }
+      responses:
+        '201':
+          description: Recovery drill started
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/RecoveryDrill' }
+        '400': { $ref: '#/components/responses/Problem' }
+        '503': { $ref: '#/components/responses/Problem' }
+  /api/v1/production/drills/{id}/complete:
+    post:
+      operationId: completeRecoveryDrill
+      description: Completes a running recovery drill with bounded evidence. Requires admin scope.
+      parameters:
+        - $ref: '#/components/parameters/RecoveryDrillID'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/RecoveryDrillCompleteRequest' }
+      responses:
+        '200':
+          description: Completed recovery drill
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/RecoveryDrill' }
+        '400': { $ref: '#/components/responses/Problem' }
+        '409': { $ref: '#/components/responses/Problem' }
   /api/v1/events/info:
     get:
       operationId: getEventStreamInfo
@@ -411,6 +656,7 @@ components:
     DeviceID: { name: id, in: path, required: true, schema: { type: string, format: uuid } }
     ChallengeID: { name: id, in: path, required: true, schema: { type: string, format: uuid } }
     ExecSessionID: { name: id, in: path, required: true, schema: { type: string, format: uuid } }
+    RecoveryDrillID: { name: id, in: path, required: true, schema: { type: string, format: uuid } }
     StepUpToken: { name: X-Norn-Step-Up, in: header, required: true, schema: { type: string } }
     IdempotencyKey: { name: Idempotency-Key, in: header, schema: { type: string, maxLength: 200 } }
   responses:
@@ -521,6 +767,34 @@ components:
         - invalid_exec_encoding
         - exec_session_limit_reached
         - exec_session_rate_limited
+        - mutation_audit_unavailable
+        - mutation_audit_unsigned
+        - mutation_audit_read_failed
+        - production_substrate_unready
+        - recovery_drills_unavailable
+        - recovery_drills_read_failed
+        - recovery_drill_create_failed
+        - recovery_drill_not_running
+        - recovery_drill_complete_failed
+        - invalid_recovery_drill_kind
+        - invalid_recovery_drill_target
+        - invalid_recovery_drill_status
+        - invalid_recovery_drill_evidence
+        - invalid_limit
+        - invalid_validation_request
+        - validation_document_required
+        - validation_document_too_large
+        - invalid_fleet_plan_request
+        - fleet_not_configured
+        - fleet_config_invalid
+        - fleet_config_read_failed
+        - fleet_node_pool_not_found
+        - fleet_plan_unsafe
+        - fleet_plan_store_unavailable
+        - fleet_plan_store_failed
+        - fleet_plan_finish_failed
+        - fleet_plan_read_failed
+        - idempotency_key_reused
     Capabilities:
       type: object
       required: [protocolVersion, serverVersion, features, auth, endpoints]
@@ -551,6 +825,145 @@ components:
                 rotation: { const: atomic }
                 revocation: { const: registry }
         endpoints: { type: object, additionalProperties: { type: string } }
+    HostMetrics:
+      type: object
+      required: [schemaVersion, observedAt, stale, samplePeriodSeconds, cpu, memory]
+      properties:
+        schemaVersion: { const: norn.host-metrics/v1 }
+        observedAt: { type: string, format: date-time }
+        stale: { type: boolean, description: True when refresh failed and the last successful sample is returned. }
+        samplePeriodSeconds: { type: integer, minimum: 1 }
+        cpu:
+          type: object
+          required: [utilizationPercent, logicalCores]
+          properties:
+            utilizationPercent: { type: number, minimum: 0, maximum: 100, description: Machine-wide non-idle CPU percentage reported by macOS at collection. }
+            logicalCores: { type: integer, minimum: 1 }
+        memory:
+          type: object
+          required: [totalBytes, usedBytes, availableBytes]
+          properties:
+            totalBytes: { type: integer, format: uint64 }
+            usedBytes: { type: integer, format: uint64 }
+            availableBytes: { type: integer, format: uint64 }
+    ProductionReadinessReport:
+      type: object
+      required: [schema, generatedAt, status, summary, checks]
+      properties:
+        schema: { const: norn.production-readiness/v1 }
+        generatedAt: { type: string, format: date-time }
+        status: { type: string, enum: [ready, blocked] }
+        summary:
+          $ref: '#/components/schemas/ProductionReadinessSummary'
+        checks:
+          type: array
+          items: { $ref: '#/components/schemas/ProductionReadinessCheck' }
+    ProductionReadinessSummary:
+      type: object
+      required: [passed, warnings, failed, total]
+      properties:
+        passed: { type: integer, minimum: 0 }
+        warnings: { type: integer, minimum: 0 }
+        failed: { type: integer, minimum: 0 }
+        total: { type: integer, minimum: 0 }
+    ProductionReadinessCheck:
+      type: object
+      required: [id, category, status, title, detail]
+      properties:
+        id: { type: string }
+        category: { type: string }
+        status: { type: string, enum: [pass, warn, fail] }
+        title: { type: string }
+        detail: { type: string }
+        remediation: { type: string }
+        evidence: { type: object, additionalProperties: true }
+    MutationAuditList:
+      type: object
+      required: [schema, events, count]
+      properties:
+        schema: { const: norn.mutation-audit/v1 }
+        count: { type: integer, minimum: 0 }
+        events: { type: array, items: { $ref: '#/components/schemas/MutationAuditEvent' } }
+    MutationAuditEvent:
+      type: object
+      required: [id, principalSubject, method, path, status, outcome, startedAt, durationMs, integrity]
+      properties:
+        id: { type: string, format: uuid }
+        requestId: { type: string }
+        principalSubject: { type: string }
+        tokenId: { type: string }
+        deviceId: { type: string, format: uuid }
+        keyId: { type: string, pattern: '^[a-f0-9]{16}$' }
+        scopes: { type: array, items: { type: string } }
+        method: { type: string }
+        path: { type: string }
+        clientIp: { type: string }
+        userAgent: { type: string }
+        status: { type: integer }
+        outcome: { type: string, enum: [started, succeeded, rejected, failed, crashed] }
+        startedAt: { type: string, format: date-time }
+        finishedAt: { type: string, format: date-time }
+        durationMs: { type: integer, format: int64, minimum: 0 }
+        integrity: { type: string, enum: [pending, unsigned, verified, invalid, acknowledged-invalid] }
+        incident: { $ref: '#/components/schemas/MutationAuditIncident' }
+    MutationAuditIncidentRequest:
+      type: object
+      required: [reasonCode, explanation]
+      additionalProperties: false
+      properties:
+        reasonCode:
+          type: string
+          enum: [legacy_timestamp_precision, legacy_signing_compatibility, signing_key_loss, storage_corruption, other]
+        explanation: { type: string, minLength: 12, maxLength: 1024 }
+    MutationAuditIncident:
+      type: object
+      required: [id, auditEventId, reasonCode, explanation, acknowledgedBy, acknowledgedAt, integrity]
+      properties:
+        id: { type: string, format: uuid }
+        auditEventId: { type: string, format: uuid }
+        reasonCode:
+          type: string
+          enum: [legacy_timestamp_precision, legacy_signing_compatibility, signing_key_loss, storage_corruption, other]
+        explanation: { type: string }
+        acknowledgedBy: { type: string }
+        acknowledgedAt: { type: string, format: date-time }
+        keyId: { type: string, pattern: '^[a-f0-9]{16}$' }
+        integrity: { type: string, enum: [unsigned, verified, invalid] }
+    RecoveryDrillList:
+      type: object
+      required: [schema, requiredKinds, drills, count]
+      properties:
+        schema: { const: norn.recovery-drills/v1 }
+        requiredKinds: { type: array, items: { $ref: '#/components/schemas/RecoveryDrillKind' } }
+        drills: { type: array, items: { $ref: '#/components/schemas/RecoveryDrill' } }
+        count: { type: integer, minimum: 0 }
+    RecoveryDrillKind:
+      type: string
+      enum: [artifact.rollback, database.restore, node.failover, region.failover, control.restore]
+    RecoveryDrill:
+      type: object
+      required: [id, kind, status, initiatedBy, startedAt]
+      properties:
+        id: { type: string, format: uuid }
+        kind: { $ref: '#/components/schemas/RecoveryDrillKind' }
+        target: { type: string, maxLength: 256 }
+        status: { type: string, enum: [running, passed, failed] }
+        initiatedBy: { type: string }
+        evidence: { type: object, additionalProperties: { type: string, maxLength: 1024 }, maxProperties: 20 }
+        startedAt: { type: string, format: date-time }
+        finishedAt: { type: string, format: date-time }
+    RecoveryDrillStartRequest:
+      type: object
+      required: [kind]
+      properties:
+        kind: { $ref: '#/components/schemas/RecoveryDrillKind' }
+        target: { type: string, maxLength: 256 }
+    RecoveryDrillCompleteRequest:
+      type: object
+      required: [status]
+      properties:
+        status: { type: string, enum: [passed, failed] }
+        evidence: { type: object, additionalProperties: { type: string, maxLength: 1024 }, maxProperties: 20 }
     EnrollmentStartRequest:
       type: object
       required: [deviceName]
@@ -750,6 +1163,17 @@ components:
           required: [name, processes]
           properties:
             name: { type: string }
+            deploy: { type: boolean, default: false }
+            primaryRegion: { type: string }
+            regions:
+              type: object
+              additionalProperties: { $ref: '#/components/schemas/RegionTarget' }
+            placement:
+              type: object
+              additionalProperties: false
+              required: [nodePool]
+              properties:
+                nodePool: { type: string, pattern: '^[a-z0-9][a-z0-9-]*$' }
             repo: { type: object, additionalProperties: true }
             processes: { type: object, additionalProperties: true }
             endpoints: { type: array, items: { type: object, additionalProperties: true } }
@@ -757,6 +1181,127 @@ components:
         healthy: { type: boolean }
         allocations: { type: array, items: { type: object, additionalProperties: true } }
         allocationSummary: { type: object, additionalProperties: true }
+    CreateAppRequest:
+      type: object
+      required: [name, kind]
+      properties:
+        name: { type: string, pattern: '^[a-z0-9][a-z0-9-]*$' }
+        kind: { type: string, enum: [endpoint, worker] }
+        port: { type: integer, minimum: 1, maximum: 65535, default: 8080 }
+    AppMutationReceipt:
+      type: object
+      required: [app, spec]
+      properties:
+        app: { type: string }
+        created: { type: boolean }
+        spec: { type: object, additionalProperties: true }
+    DocumentValidationRequest:
+      type: object
+      additionalProperties: false
+      required: [document]
+      properties:
+        document: { type: string, maxLength: 65536 }
+        fleetDocument: { type: string, maxLength: 65536, description: Optional norn.dev/fleet/v1 context for InfraSpec node-pool cross-validation. }
+    ValidationFinding:
+      type: object
+      required: [severity, code, field, message]
+      properties:
+        severity: { type: string, enum: [error, warning, info] }
+        code: { type: string }
+        field: { type: string }
+        message: { type: string }
+        remediation: { type: string }
+    InfraSpecValidationReport:
+      type: object
+      required: [schemaVersion, documentKind, valid, findings]
+      properties:
+        schemaVersion: { const: norn.validation-report/v1 }
+        documentKind: { const: infraspec }
+        app: { type: string }
+        valid: { type: boolean }
+        findings: { type: array, items: { $ref: '#/components/schemas/ValidationFinding' } }
+    FleetValidationReport:
+      type: object
+      required: [schemaVersion, documentKind, valid, findings]
+      properties:
+        schemaVersion: { const: norn.validation-report/v1 }
+        documentKind: { const: fleet }
+        name: { type: string }
+        valid: { type: boolean }
+        findings: { type: array, items: { $ref: '#/components/schemas/ValidationFinding' } }
+    FleetMetadata:
+      type: object
+      additionalProperties: false
+      properties:
+        repository: { type: string }
+        environment: { type: string }
+        workflowUrl: { type: string, format: uri }
+    FleetCluster:
+      type: object
+      additionalProperties: false
+      required: [name, provider, region]
+      properties:
+        name: { type: string, pattern: '^[a-z0-9][a-z0-9-]*$' }
+        provider: { type: string }
+        region: { type: string }
+    FleetReplacementPolicy:
+      type: object
+      additionalProperties: false
+      properties:
+        strategy: { type: string, enum: [blueGreen, rolling], default: blueGreen }
+        requireCapacityHeadroom: { type: boolean }
+        drainTimeout: { type: string }
+        requireReadiness: { type: boolean }
+    FleetNodePool:
+      type: object
+      additionalProperties: false
+      required: [size, min, desired, max]
+      properties:
+        size: { type: string }
+        min: { type: integer, minimum: 0 }
+        desired: { type: integer, minimum: 0 }
+        max: { type: integer, minimum: 1 }
+        labels: { type: object, additionalProperties: { type: string } }
+        replacement: { $ref: '#/components/schemas/FleetReplacementPolicy' }
+    FleetDocument:
+      type: object
+      additionalProperties: false
+      required: [apiVersion, kind, cluster, nodePools]
+      properties:
+        apiVersion: { const: norn.dev/fleet/v1 }
+        kind: { const: Cluster }
+        metadata: { $ref: '#/components/schemas/FleetMetadata' }
+        cluster: { $ref: '#/components/schemas/FleetCluster' }
+        nodePools:
+          type: object
+          additionalProperties: { $ref: '#/components/schemas/FleetNodePool' }
+    FleetInventory:
+      type: object
+      required: [schemaVersion, configured, nodePools]
+      properties:
+        schemaVersion: { const: norn.fleet-inventory/v1 }
+        configured: { type: boolean }
+        source: { type: string }
+        digest: { type: string }
+        document: { $ref: '#/components/schemas/FleetDocument' }
+        validation: { $ref: '#/components/schemas/FleetValidationReport' }
+        nodePools:
+          type: object
+          additionalProperties: { $ref: '#/components/schemas/FleetNodePool' }
+    FleetCapacityPlanRequest:
+      type: object
+      additionalProperties: false
+      properties:
+        desired: { type: integer, minimum: 0 }
+        size: { type: string }
+        strategy: { type: string, enum: [blueGreen, rolling] }
+        reason: { type: string, maxLength: 1000 }
+    RegionTarget:
+      type: object
+      properties:
+        nomadRegion: { type: string }
+        datacenters: { type: array, items: { type: string } }
+        trafficWeight: { type: integer, minimum: 0, maximum: 100, default: 100 }
     Release:
       type: object
       required: [sha, version, createdAt, path, current]
@@ -861,6 +1406,7 @@ components:
         platform: { $ref: '#/components/schemas/PlatformOperationReceipt' }
         host: { $ref: '#/components/schemas/HostAssuranceReceipt' }
         app: { $ref: '#/components/schemas/AppOperationReceipt' }
+        fleet: { $ref: '#/components/schemas/FleetOperationReceipt' }
     PlatformOperationReceipt:
       type: object
       properties:
@@ -887,6 +1433,18 @@ components:
         commitSha: { type: string }
         imageTag: { type: string }
         step: { type: string }
+    FleetOperationReceipt:
+      type: object
+      required: [planId, cluster, pool, action, sourceDigest, planDigest]
+      properties:
+        planId: { type: string, format: uuid }
+        cluster: { type: string }
+        pool: { type: string }
+        action: { type: string, enum: [scale, replace, reconcile] }
+        sourceDigest: { type: string }
+        planDigest: { type: string }
+        signature: { type: string }
+        workflowUrl: { type: string, format: uri }
     PlatformRefRequest:
       type: object
       properties: { ref: { type: string, default: HEAD } }

@@ -1,0 +1,9 @@
+{
+  "service": {
+    "id": "norn-prometheus-web-{{ inventory_hostname }}",
+    "name": "norn-prometheus-web",
+    "address": "{{ private_ip }}",
+    "port": 9090,
+    "checks": [{"http": "http://{{ private_ip }}:9090/-/healthy", "interval": "10s", "timeout": "2s"}]
+  }
+}

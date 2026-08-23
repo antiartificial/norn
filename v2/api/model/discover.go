@@ -10,6 +10,16 @@ import (
 // DiscoverApps scans the given directory for subdirectories containing
 // infraspec.yaml with deploy: true.
 func DiscoverApps(appsDir string) ([]*InfraSpec, error) {
+	return discoverApps(appsDir, true)
+}
+
+// DiscoverAllApps includes disabled drafts for operator inventory. Runtime
+// recovery and mutation paths must continue to use DiscoverApps.
+func DiscoverAllApps(appsDir string) ([]*InfraSpec, error) {
+	return discoverApps(appsDir, false)
+}
+
+func discoverApps(appsDir string, deployOnly bool) ([]*InfraSpec, error) {
 	entries, err := os.ReadDir(appsDir)
 	if err != nil {
 		return nil, err
@@ -25,7 +35,7 @@ func DiscoverApps(appsDir string) ([]*InfraSpec, error) {
 		if err != nil {
 			continue
 		}
-		if !spec.Deploy {
+		if deployOnly && !spec.Deploy {
 			continue
 		}
 		specs = append(specs, spec)

@@ -9,11 +9,11 @@ import { CommandPalette } from './CommandPalette.tsx'
 
 const navGroups = [
   { label: 'Operate', items: [['/overview', 'Overview', 'fa-gauge-high'], ['/apps', 'Apps', 'fa-grid'], ['/deploys', 'Deploys', 'fa-rocket-launch'], ['/incidents', 'Incidents', 'fa-circle-exclamation'], ['/operations', 'Operations', 'fa-clipboard-check']] },
-  { label: 'Understand', items: [['/topology', 'Topology', 'fa-map']] },
+  { label: 'Understand', items: [['/topology', 'Topology', 'fa-map'], ['/fleet', 'Fleet', 'fa-server']] },
   { label: 'Configure', items: [['/platform', 'Platform', 'fa-sliders']] },
 ] as const
 
-export function Shell({ children, connected, version, apps, activity, runAction }: { children: ReactNode; connected: boolean; version: string; apps: AppStatus[]; activity: ActivityEntry[]; runAction: (appId: string, action: AppAction) => void }) {
+export function Shell({ children, connected, version, apps, activity, runAction, fleetAvailable }: { children: ReactNode; connected: boolean; version: string; apps: AppStatus[]; activity: ActivityEntry[]; runAction: (appId: string, action: AppAction) => void; fleetAvailable: boolean }) {
   const [collapsed, setCollapsed] = useState(() => localStorage.getItem('norn.sidebar.collapsed') === 'true')
   const [paletteOpen, setPaletteOpen] = useState(false)
   const [theme, setTheme] = useState<Theme>(() => document.documentElement.dataset.theme === 'light' ? 'light' : 'dark')
@@ -25,6 +25,7 @@ export function Shell({ children, connected, version, apps, activity, runAction 
     if (location.pathname.startsWith('/incidents')) return 'Incidents'
     if (location.pathname.startsWith('/operations')) return 'Operations'
     if (location.pathname.startsWith('/topology')) return 'Topology'
+    if (location.pathname.startsWith('/fleet')) return 'Fleet'
     if (location.pathname.startsWith('/platform')) return 'Platform'
     return 'Overview'
   }, [location.pathname])
@@ -67,6 +68,7 @@ export function Shell({ children, connected, version, apps, activity, runAction 
             <div className="sidebar-section" key={group.label}>
               <div className="sidebar-section-label">{group.label}</div>
               {group.items.map(([to, label, icon]) => (
+                to === '/fleet' && !fleetAvailable ? null :
                 <NavLink key={to} to={to} className={({ isActive }) => `sidebar-link ${isActive ? 'active' : ''}`} title={label}>
                   <i className={`fawsb ${icon}`} aria-hidden />
                   <span>{label}</span>
@@ -99,7 +101,7 @@ export function Shell({ children, connected, version, apps, activity, runAction 
         </header>
         <main id="main-content" className="shell-main" tabIndex={-1}>{children}</main>
       </div>
-      <CommandPalette open={paletteOpen} onClose={() => setPaletteOpen(false)} apps={apps} activity={activity} runAction={runAction} />
+      <CommandPalette open={paletteOpen} onClose={() => setPaletteOpen(false)} apps={apps} activity={activity} runAction={runAction} fleetAvailable={fleetAvailable} />
     </div>
   )
 }

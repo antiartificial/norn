@@ -50,6 +50,7 @@ type OperationReceipt struct {
 	Platform      *PlatformOperationReceipt `json:"platform,omitempty"`
 	Host          *HostAssuranceReceipt     `json:"host,omitempty"`
 	App           *AppOperationReceipt      `json:"app,omitempty"`
+	Fleet         *FleetOperationReceipt    `json:"fleet,omitempty"`
 }
 
 type PlatformOperationReceipt struct {
@@ -75,6 +76,17 @@ type AppOperationReceipt struct {
 	CommitSHA    string `json:"commitSha,omitempty"`
 	ImageTag     string `json:"imageTag,omitempty"`
 	Step         string `json:"step,omitempty"`
+}
+
+type FleetOperationReceipt struct {
+	PlanID       string `json:"planId"`
+	Cluster      string `json:"cluster"`
+	Pool         string `json:"pool"`
+	Action       string `json:"action"`
+	SourceDigest string `json:"sourceDigest"`
+	PlanDigest   string `json:"planDigest"`
+	Signature    string `json:"signature,omitempty"`
+	WorkflowURL  string `json:"workflowUrl,omitempty"`
 }
 
 func (o *Operation) AttachReceipt() {
@@ -103,6 +115,13 @@ func (o *Operation) AttachReceipt() {
 			App: o.App, Ref: o.Ref, DeploymentID: stringValue(o.Metadata, "deploymentId"),
 			CommitSHA: stringValue(o.Metadata, "commitSha"), ImageTag: stringValue(o.Metadata, "imageTag"),
 			Step: stringValue(o.Metadata, "step"),
+		}
+	case o.Kind == "fleet.capacity-plan":
+		receipt.Fleet = &FleetOperationReceipt{
+			PlanID: stringValue(o.Metadata, "planId"), Cluster: stringValue(o.Payload, "cluster"),
+			Pool: stringValue(o.Payload, "pool"), Action: stringValue(o.Payload, "action"),
+			SourceDigest: stringValue(o.Payload, "sourceDigest"), PlanDigest: stringValue(o.Metadata, "planDigest"),
+			Signature: stringValue(o.Metadata, "signature"), WorkflowURL: stringValue(o.Payload, "workflowUrl"),
 		}
 	}
 	o.Receipt = receipt

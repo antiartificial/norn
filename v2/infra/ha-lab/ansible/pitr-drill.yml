@@ -1,0 +1,219 @@
+---
+- name: Prove PostgreSQL point-in-time recovery in an isolated data directory
+  hosts: norn_ha[0]
+  become: true
+  gather_facts: false
+  any_errors_fatal: true
+  vars:
+    base_dir: /var/lib/postgresql/pitr-drill-base
+    restore_dir: /var/lib/postgresql/pitr-drill-restore
+    restore_port: 5544
+  tasks:
+    - name: Guard against running outside the disposable lab
+      ansible.builtin.stat:
+        path: /etc/norn-ha-lab
+      register: lab_guard
+
+    - name: Require the disposable-lab marker
+      ansible.builtin.assert:
+        that: lab_guard.stat.exists
+        fail_msg: "Refusing recovery work outside a managed Norn HA lab."
+
+    - name: Freeze one PITR drill identifier
+      ansible.builtin.set_fact:
+        drill_id: "pitr-{{ now(utc=true, fmt='%Y%m%dT%H%M%SZ') }}"
+
+    - name: Identify the current PostgreSQL leader
+      ansible.builtin.command: patronictl -c /etc/patroni/config.yml list --format json
+      register: topology
+      changed_when: false
+
+    - name: Select the primary host
+      ansible.builtin.set_fact:
+        primary_host: "{{ topology.stdout | from_json | selectattr('Role', 'equalto', 'Leader') | map(attribute='Member') | first }}"
+
+    - name: Reset isolated drill directories
+      ansible.builtin.file:
+        path: "{{ item }}"
+        state: absent
+      loop: ["{{ base_dir }}", "{{ restore_dir }}"]
+      delegate_to: "{{ primary_host }}"
+
+    - name: Create the base-backup directory
+      ansible.builtin.file:
+        path: "{{ base_dir }}"
+        state: directory
+        owner: postgres
+        group: postgres
+        mode: "0700"
+      delegate_to: "{{ primary_host }}"
+
+    - name: Create PITR evidence table and baseline row
+      community.postgresql.postgresql_query:
+        login_host: 127.0.0.1
+        login_port: 6432
+        login_user: "{{ postgres_database_user }}"
+        login_password: "{{ norn_database_password }}"
+        login_db: "{{ postgres_database }}"
+        query:
+          - "CREATE TABLE IF NOT EXISTS pitr_evidence (drill_id text, phase text, created_at timestamptz default now())"
+          - "DELETE FROM pitr_evidence WHERE drill_id = '{{ drill_id }}'"
+          - "INSERT INTO pitr_evidence(drill_id, phase) VALUES ('{{ drill_id }}', 'baseline')"
+      delegate_to: "{{ primary_host }}"
+      no_log: true
+
+    - name: Take a physical base backup before the recovery target
+      ansible.builtin.command:
+        argv:
+          - pg_basebackup
+          - --host=127.0.0.1
+          - --port=5432
+          - --username=postgres
+          - "--pgdata={{ base_dir }}"
+          - --wal-method=stream
+          - --checkpoint=fast
+      become_user: postgres
+      environment:
+        PGPASSWORD: "{{ postgres_superuser_password }}"
+      delegate_to: "{{ primary_host }}"
+      no_log: true
+
+    - name: Write and commit the row that must survive recovery
+      community.postgresql.postgresql_query:
+        login_host: 127.0.0.1
+        login_port: 6432
+        login_user: "{{ postgres_database_user }}"
+        login_password: "{{ norn_database_password }}"
+        login_db: "{{ postgres_database }}"
+        query: "INSERT INTO pitr_evidence(drill_id, phase) VALUES ('{{ drill_id }}', 'survives')"
+      delegate_to: "{{ primary_host }}"
+      no_log: true
+
+    - name: Capture a recovery timestamp after the durable commit
+      community.postgresql.postgresql_query:
+        login_host: 127.0.0.1
+        login_port: 6432
+        login_user: "{{ postgres_database_user }}"
+        login_password: "{{ norn_database_password }}"
+        login_db: "{{ postgres_database }}"
+        query: "SELECT clock_timestamp()::text AS recovery_target"
+      delegate_to: "{{ primary_host }}"
+      register: target_write
+      no_log: true
+
+    - name: Preserve the exact committed recovery target
+      ansible.builtin.set_fact:
+        recovery_target: "{{ target_write.query_result[0].recovery_target }}"
+      no_log: true
+
+    - name: Ensure the later row has a distinct commit time
+      ansible.builtin.pause:
+        seconds: 2
+
+    - name: Write and commit the row that must not survive recovery
+      community.postgresql.postgresql_query:
+        login_host: 127.0.0.1
+        login_port: 6432
+        login_user: "{{ postgres_database_user }}"
+        login_password: "{{ norn_database_password }}"
+        login_db: "{{ postgres_database }}"
+        query: "INSERT INTO pitr_evidence(drill_id, phase) VALUES ('{{ drill_id }}', 'after-target')"
+      delegate_to: "{{ primary_host }}"
+      no_log: true
+
+    - name: Rotate WAL with operator privileges
+      ansible.builtin.command:
+        argv: [psql, --host=127.0.0.1, --port=5432, --username=postgres, --dbname=postgres, --tuples-only, --no-align, "--command=SELECT pg_switch_wal()"]
+      become_user: postgres
+      environment:
+        PGPASSWORD: "{{ postgres_superuser_password }}"
+      delegate_to: "{{ primary_host }}"
+      no_log: true
+
+    - name: Wait for WAL archiving to catch up
+      ansible.builtin.command:
+        argv: [psql, --host=127.0.0.1, --port=5432, --username=postgres, --dbname=postgres, --tuples-only, --no-align, --command=SELECT count(*) FROM pg_stat_archiver WHERE failed_count = 0 AND last_archived_time > now() - interval '2 minutes']
+      become_user: postgres
+      environment:
+        PGPASSWORD: "{{ postgres_superuser_password }}"
+      delegate_to: "{{ primary_host }}"
+      register: archive_ready
+      changed_when: false
+      retries: 30
+      delay: 2
+      until: archive_ready.stdout | trim | int == 1
+      no_log: true
+
+    - name: Clone the base backup to the isolated restore directory
+      ansible.builtin.command: "cp -a {{ base_dir }} {{ restore_dir }}"
+      delegate_to: "{{ primary_host }}"
+
+    - name: Configure recovery target and archive restore command
+      ansible.builtin.copy:
+        dest: "{{ restore_dir }}/postgresql.auto.conf"
+        owner: postgres
+        group: postgres
+        mode: "0600"
+        content: |
+          restore_command = 'cp /var/lib/postgresql/wal-archive/%f %p'
+          recovery_target_time = '{{ recovery_target }}'
+          recovery_target_action = 'promote'
+          port = {{ restore_port }}
+          listen_addresses = '127.0.0.1'
+          unix_socket_directories = '/tmp'
+      delegate_to: "{{ primary_host }}"
+      no_log: true
+
+    - name: Enable archive recovery
+      ansible.builtin.file:
+        path: "{{ restore_dir }}/recovery.signal"
+        state: touch
+        owner: postgres
+        group: postgres
+        mode: "0600"
+      delegate_to: "{{ primary_host }}"
+
+    - name: Exercise isolated recovery with unconditional cleanup
+      block:
+        - name: Start the isolated recovery instance
+          ansible.builtin.command: "/usr/lib/postgresql/{{ postgresql_major_version }}/bin/pg_ctl -D {{ restore_dir }} -l {{ restore_dir }}/recovery.log -w start"
+          become_user: postgres
+          delegate_to: "{{ primary_host }}"
+
+        - name: Query restored evidence at the selected timestamp
+          ansible.builtin.command:
+            argv:
+              - psql
+              - --host=/tmp
+              - "--port={{ restore_port }}"
+              - "--dbname={{ postgres_database }}"
+              - --tuples-only
+              - --no-align
+              - "--command=SELECT count(*) FILTER (WHERE phase = 'survives'), count(*) FILTER (WHERE phase = 'after-target') FROM pitr_evidence WHERE drill_id = '{{ drill_id }}'"
+          become_user: postgres
+          delegate_to: "{{ primary_host }}"
+          register: recovered_rows
+          changed_when: false
+      always:
+        - name: Always stop the isolated recovery instance
+          ansible.builtin.command: "/usr/lib/postgresql/{{ postgresql_major_version }}/bin/pg_ctl -D {{ restore_dir }} -m fast -w stop"
+          become_user: postgres
+          delegate_to: "{{ primary_host }}"
+          failed_when: false
+          changed_when: false
+
+    - name: Require before-target presence and after-target absence
+      ansible.builtin.assert:
+        that:
+          - recovered_rows.stdout | trim == '1|0'
+        fail_msg: "The recovered database did not match the requested timestamp boundary."
+
+    - name: Emit value-safe PITR evidence
+      ansible.builtin.debug:
+        msg:
+          schema: norn.ha-drill/v1
+          kind: postgres-pitr
+          primary: "{{ primary_host }}"
+          target_boundary_verified: true
+          before_target_rows: 1
+          after_target_rows: 0

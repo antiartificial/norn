@@ -1,0 +1,112 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+script_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+lab_root="$(cd "${script_dir}/.." && pwd)"
+tools_dir="${lab_root}/.tools"
+bin_dir="${tools_dir}/bin"
+terraform_version="1.15.8"
+ansible_core_version="2.19.4"
+cosign_version="3.1.2"
+trivy_version="0.73.0"
+age_version="1.3.1"
+sops_version="3.13.3"
+
+mkdir -p "${bin_dir}"
+
+if [[ ! -x "${bin_dir}/terraform" ]] || [[ "$(${bin_dir}/terraform version -json 2>/dev/null | jq -r .terraform_version)" != "${terraform_version}" ]]; then
+  case "$(uname -s)-$(uname -m)" in
+    Darwin-arm64) platform=darwin_arm64 ;;
+    Darwin-x86_64) platform=darwin_amd64 ;;
+    Linux-x86_64) platform=linux_amd64 ;;
+    Linux-aarch64) platform=linux_arm64 ;;
+    *) echo "unsupported platform: $(uname -s)-$(uname -m)" >&2; exit 1 ;;
+  esac
+  archive="terraform_${terraform_version}_${platform}.zip"
+  temp_dir="$(mktemp -d)"
+  trap 'rm -rf "${temp_dir}"' EXIT
+  curl --fail --silent --show-error --location "https://releases.hashicorp.com/terraform/${terraform_version}/${archive}" -o "${temp_dir}/${archive}"
+  curl --fail --silent --show-error --location "https://releases.hashicorp.com/terraform/${terraform_version}/terraform_${terraform_version}_SHA256SUMS" -o "${temp_dir}/SHA256SUMS"
+  expected="$(awk -v archive="${archive}" '$2 == archive {print $1}' "${temp_dir}/SHA256SUMS")"
+  actual="$(shasum -a 256 "${temp_dir}/${archive}" | awk '{print $1}')"
+  [[ -n "${expected}" && "${actual}" == "${expected}" ]] || { echo "Terraform checksum verification failed" >&2; exit 1; }
+  unzip -qo "${temp_dir}/${archive}" -d "${temp_dir}"
+  install -m 0755 "${temp_dir}/terraform" "${bin_dir}/terraform"
+  rm -rf "${temp_dir}"
+  trap - EXIT
+fi
+
+if [[ ! -x "${bin_dir}/age-keygen" ]] || [[ "$(${bin_dir}/age-keygen --version 2>/dev/null | awk '{print $2}')" != "v${age_version}" ]]; then
+  case "$(uname -s)-$(uname -m)" in
+    Darwin-arm64) age_asset="age-v${age_version}-darwin-arm64.tar.gz"; age_sha=01120ea2cbf0463d4c6bd767f99f3271bbed1cdc8a9aa718a76ba1fe4f01998b ;;
+    *) echo "unsupported local age platform: $(uname -s)-$(uname -m)" >&2; exit 1 ;;
+  esac
+  temp_dir="$(mktemp -d)"
+  trap 'rm -rf "${temp_dir}"' EXIT
+  curl --fail --silent --show-error --location "https://github.com/FiloSottile/age/releases/download/v${age_version}/${age_asset}" -o "${temp_dir}/${age_asset}"
+  actual="$(shasum -a 256 "${temp_dir}/${age_asset}" | awk '{print $1}')"
+  [[ "${actual}" == "${age_sha}" ]] || { echo "age checksum verification failed" >&2; exit 1; }
+  tar -xzf "${temp_dir}/${age_asset}" -C "${temp_dir}" age/age age/age-keygen
+  install -m 0755 "${temp_dir}/age/age" "${bin_dir}/age"
+  install -m 0755 "${temp_dir}/age/age-keygen" "${bin_dir}/age-keygen"
+  rm -rf "${temp_dir}"
+  trap - EXIT
+fi
+
+if [[ ! -x "${bin_dir}/sops" ]] || [[ "$(${bin_dir}/sops --version 2>/dev/null | awk 'NR==1 {print $2}')" != "${sops_version}" ]]; then
+  sops_asset="sops-v${sops_version}.darwin.arm64"
+  sops_sha=b97c0d434aab577dc40310e8d22ff9e45eef4c80638ab978daae9b4681c59286
+  temp_dir="$(mktemp -d)"
+  trap 'rm -rf "${temp_dir}"' EXIT
+  curl --fail --silent --show-error --location "https://github.com/getsops/sops/releases/download/v${sops_version}/${sops_asset}" -o "${temp_dir}/${sops_asset}"
+  actual="$(shasum -a 256 "${temp_dir}/${sops_asset}" | awk '{print $1}')"
+  [[ "${actual}" == "${sops_sha}" ]] || { echo "sops checksum verification failed" >&2; exit 1; }
+  install -m 0755 "${temp_dir}/${sops_asset}" "${bin_dir}/sops"
+  rm -rf "${temp_dir}"
+  trap - EXIT
+fi
+
+if [[ ! -x "${bin_dir}/trivy" ]] || [[ "$(${bin_dir}/trivy --version 2>/dev/null | awk '/^Version:/ {print $2}')" != "${trivy_version}" ]]; then
+  case "$(uname -s)-$(uname -m)" in
+    Darwin-arm64) trivy_asset="trivy_${trivy_version}_macOS-ARM64.tar.gz"; trivy_sha=80cc25faaf6378e37701202d0b4f9f43d9e413d198d594ba60fdf559fe44a683 ;;
+    *) echo "unsupported local trivy platform: $(uname -s)-$(uname -m)" >&2; exit 1 ;;
+  esac
+  temp_dir="$(mktemp -d)"
+  trap 'rm -rf "${temp_dir}"' EXIT
+  curl --fail --silent --show-error --location "https://github.com/aquasecurity/trivy/releases/download/v${trivy_version}/${trivy_asset}" -o "${temp_dir}/${trivy_asset}"
+  actual="$(shasum -a 256 "${temp_dir}/${trivy_asset}" | awk '{print $1}')"
+  [[ "${actual}" == "${trivy_sha}" ]] || { echo "trivy checksum verification failed" >&2; exit 1; }
+  tar -xzf "${temp_dir}/${trivy_asset}" -C "${temp_dir}" trivy
+  install -m 0755 "${temp_dir}/trivy" "${bin_dir}/trivy"
+  rm -rf "${temp_dir}"
+  trap - EXIT
+fi
+
+if [[ ! -x "${tools_dir}/ansible/bin/ansible-playbook" ]] || ! "${tools_dir}/ansible/bin/python" -c "import ansible, boto3, certifi; assert ansible.__version__ == '${ansible_core_version}'" 2>/dev/null; then
+  rm -rf "${tools_dir}/ansible"
+  python3 -m venv "${tools_dir}/ansible"
+  "${tools_dir}/ansible/bin/python" -m pip install --disable-pip-version-check --quiet --upgrade pip
+  "${tools_dir}/ansible/bin/python" -m pip install --disable-pip-version-check --quiet "ansible-core==${ansible_core_version}" "boto3>=1.40,<2" certifi
+fi
+
+for command_name in ansible ansible-galaxy ansible-inventory ansible-playbook; do
+  ln -sfn "${tools_dir}/ansible/bin/${command_name}" "${bin_dir}/${command_name}"
+done
+
+if [[ ! -x "${bin_dir}/cosign" ]] || [[ "$(${bin_dir}/cosign version --json 2>/dev/null | jq -r .gitVersion)" != "v${cosign_version}" ]]; then
+  case "$(uname -s)-$(uname -m)" in
+    Darwin-arm64) cosign_asset=cosign-darwin-arm64; cosign_sha=dec1c3f802320b19c2fbcf2dc7bcfb3f258e1c181a046c23a1a074bdf932f10a ;;
+    Linux-x86_64) cosign_asset=cosign-linux-amd64; cosign_sha=f7622ed3cf22e55e1ae6377c080979ff77a22da9981c11df222a2e444991e7cf ;;
+    *) echo "unsupported cosign platform: $(uname -s)-$(uname -m)" >&2; exit 1 ;;
+  esac
+  temp_dir="$(mktemp -d)"
+  trap 'rm -rf "${temp_dir}"' EXIT
+  curl --fail --silent --show-error --location "https://github.com/sigstore/cosign/releases/download/v${cosign_version}/${cosign_asset}" -o "${temp_dir}/${cosign_asset}"
+  actual="$(shasum -a 256 "${temp_dir}/${cosign_asset}" | awk '{print $1}')"
+  [[ "${actual}" == "${cosign_sha}" ]] || { echo "cosign checksum verification failed" >&2; exit 1; }
+  install -m 0755 "${temp_dir}/${cosign_asset}" "${bin_dir}/cosign"
+  rm -rf "${temp_dir}"
+  trap - EXIT
+fi
+
+echo "Terraform ${terraform_version}, ansible-core ${ansible_core_version}, cosign ${cosign_version}, trivy ${trivy_version}, age ${age_version}, and sops ${sops_version} ready in ${bin_dir}"

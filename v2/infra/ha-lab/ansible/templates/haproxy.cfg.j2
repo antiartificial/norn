@@ -1,0 +1,35 @@
+global
+  log /dev/log local0
+  user haproxy
+  group haproxy
+  daemon
+
+defaults
+  log global
+  mode tcp
+  timeout connect 5s
+  timeout client 30s
+  timeout server 30s
+  retries 3
+
+frontend postgres_primary
+  bind 0.0.0.0:6432
+  default_backend patroni_primary
+
+backend patroni_primary
+  option httpchk GET /primary
+  http-check expect status 200
+{% for host in groups['norn_ha'] %}
+  server {{ host }} {{ hostvars[host]['private_ip'] }}:5432 check port 8008 inter 2s fall 3 rise 2
+{% endfor %}
+
+frontend postgres_replicas
+  bind 0.0.0.0:6433
+  default_backend patroni_replicas
+
+backend patroni_replicas
+  option httpchk GET /replica?lag=16MB
+  http-check expect status 200
+{% for host in groups['norn_ha'] %}
+  server {{ host }} {{ hostvars[host]['private_ip'] }}:5432 check port 8008 inter 2s fall 3 rise 2
+{% endfor %}

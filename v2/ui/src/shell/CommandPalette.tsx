@@ -7,7 +7,7 @@ import { useToast } from '../components/ui/index.ts'
 import type { AppAction, ActivityEntry } from '../runtime/AppRuntime.tsx'
 import type { ActiveIncidentsResponse, AppStatus } from '../types/index.ts'
 
-export function CommandPalette({ open, onClose, apps, activity, runAction }: { open: boolean; onClose: () => void; apps: AppStatus[]; activity: ActivityEntry[]; runAction: (appId: string, action: AppAction) => void }) {
+export function CommandPalette({ open, onClose, apps, activity, runAction, fleetAvailable }: { open: boolean; onClose: () => void; apps: AppStatus[]; activity: ActivityEntry[]; runAction: (appId: string, action: AppAction) => void; fleetAvailable: boolean }) {
   const [query, setQuery] = useState('')
   const [index, setIndex] = useState(0)
   const navigate = useNavigate()
@@ -37,6 +37,7 @@ export function CommandPalette({ open, onClose, apps, activity, runAction }: { o
       { id: 'view-incidents', label: 'Incidents', detail: 'Jump to /incidents', run: () => navigate('/incidents') },
       { id: 'view-operations', label: 'Operations', detail: 'Jump to /operations', run: () => navigate('/operations') },
       { id: 'view-topology', label: 'Topology', detail: 'Jump to /topology', run: () => navigate('/topology') },
+      ...(fleetAvailable ? [{ id: 'view-fleet', label: 'Fleet', detail: 'Inspect desired node pools and capacity plans', run: () => navigate('/fleet') }] : []),
       { id: 'ack-incidents', label: 'Ack all incidents', detail: 'Acknowledge currently active incidents', run: ackAllIncidents },
     ]
     const appItems = apps.flatMap((app) => {
@@ -48,7 +49,7 @@ export function CommandPalette({ open, onClose, apps, activity, runAction }: { o
       ]
     })
     return [...viewItems, ...appItems]
-  }, [apps, navigate, runAction])
+  }, [apps, fleetAvailable, navigate, runAction])
   const filtered = useMemo(() => {
     const q = query.toLowerCase().replace(/\s+/g, '')
     if (!q) return commands

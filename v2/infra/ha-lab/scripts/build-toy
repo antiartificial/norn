@@ -1,0 +1,58 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+version="${1:-}"
+[[ "${version}" =~ ^[a-zA-Z0-9._-]{1,40}$ ]] || { echo "usage: build-toy VERSION" >&2; exit 2; }
+script_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+lab_root="$(cd "${script_dir}/.." && pwd)"
+registry="registry.digitalocean.com/antiartificial/norn-ha-toy"
+tag="${version}-$(git -C "${lab_root}" rev-parse --short=12 HEAD)"
+metadata="$(mktemp)"
+remote_dir=""
+cleanup() {
+  rm -f "${metadata}"
+  doctl registry logout >/dev/null 2>&1 || true
+  if [[ "${remote_dir}" == /tmp/norn-ha-toy-build.* ]]; then
+    first_ip="$(terraform -chdir="${lab_root}/terraform" output -json lab_nodes 2>/dev/null | jq -r 'to_entries | sort_by(.key) | first.value.public_ip')"
+    ssh "root@${first_ip}" "rm -rf -- '${remote_dir}'" >/dev/null 2>&1 || true
+  fi
+}
+trap cleanup EXIT
+
+if docker info >/dev/null 2>&1; then
+  doctl registry login --expiry-seconds 900 >/dev/null
+  docker buildx build \
+    --platform linux/amd64 \
+    --provenance=mode=max \
+    --sbom=true \
+    --build-arg "APP_VERSION=${version}" \
+    --tag "${registry}:${tag}" \
+    --metadata-file "${metadata}" \
+    --push \
+    "${lab_root}/toy-app"
+else
+  export PATH="${lab_root}/.tools/bin:${PATH}"
+  first_ip="$(terraform -chdir="${lab_root}/terraform" output -json lab_nodes | jq -r 'to_entries | sort_by(.key) | first.value.public_ip')"
+  remote_dir="$(ssh "root@${first_ip}" 'mktemp -d /tmp/norn-ha-toy-build.XXXXXX')"
+  [[ "${remote_dir}" == /tmp/norn-ha-toy-build.* ]] || { echo "unsafe remote build directory" >&2; exit 1; }
+  tar -C "${lab_root}/toy-app" -cf - . | ssh "root@${first_ip}" "tar -xf - -C '${remote_dir}'"
+  doctl registry docker-config --read-write --expiry-seconds 900 | ssh "root@${first_ip}" "
+    set -euo pipefail
+    config_dir=\$(mktemp -d /tmp/norn-ha-registry.XXXXXX)
+    trap 'rm -rf -- \"\${config_dir}\"' EXIT
+    cat >\"\${config_dir}/config.json\"
+    DOCKER_CONFIG=\"\${config_dir}\" docker buildx build \\
+      --platform linux/amd64 \\
+      --provenance=mode=max \\
+      --sbom=true \\
+      --build-arg 'APP_VERSION=${version}' \\
+      --tag '${registry}:${tag}' \\
+      --metadata-file '${remote_dir}/metadata.json' \\
+      --push '${remote_dir}'
+  "
+  ssh "root@${first_ip}" "cat '${remote_dir}/metadata.json'" >"${metadata}"
+fi
+
+digest="$(jq -r '."containerimage.digest"' "${metadata}")"
+[[ "${digest}" =~ ^sha256:[a-f0-9]{64}$ ]] || { echo "registry did not return an immutable digest" >&2; exit 1; }
+printf '%s@%s\n' "${registry}" "${digest}"

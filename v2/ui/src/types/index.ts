@@ -7,6 +7,7 @@ export interface RepoSpec {
 
 export interface Process {
   port?: number
+	hostPort?: number
   command?: string
   schedule?: string
   function?: {
@@ -32,6 +33,8 @@ export interface Process {
     cpu?: number
     memory?: number
   }
+	regions?: string[]
+	singleton?: boolean
 }
 
 export interface Endpoint {
@@ -43,6 +46,9 @@ export interface InfraSpec {
   name: string
   deploy?: boolean
   processes: Record<string, Process>
+	primaryRegion?: string
+	regions?: Record<string, { nomadRegion?: string; datacenters?: string[]; trafficWeight?: number }>
+	placement?: { nodePool: string }
   services?: string[]
   secrets?: string[]
   migrations?: string
@@ -130,6 +136,7 @@ export interface Deployment {
   status: string
   startedAt: string
   finishedAt?: string
+	regions?: Array<{ region: string; nomadRegion: string; status: string; desiredWeight: number; activeWeight: number; evalId?: string; lastError?: string; updatedAt: string }>
 }
 
 export type EventSeverity = 'info' | 'warning' | 'critical'
@@ -183,6 +190,8 @@ export interface Operation {
   startedAt?: string
   updatedAt?: string
   finishedAt?: string
+	payload?: Record<string, unknown>
+	metadata?: Record<string, unknown>
 }
 
 export interface EventsResponse {
@@ -204,8 +213,56 @@ export interface OperationsResponse {
   operations: Operation[]
 }
 
+export interface ValidationFinding {
+  severity: 'error' | 'warning' | 'info'
+  code: string
+  field: string
+  message: string
+  remediation?: string
+}
+
+export interface FleetNodePool {
+  size: string
+  min: number
+  desired: number
+  max: number
+  labels?: Record<string, string>
+  replacement?: {
+    strategy?: 'blueGreen' | 'rolling'
+    requireCapacityHeadroom?: boolean
+    drainTimeout?: string
+    requireReadiness?: boolean
+  }
+}
+
+export interface FleetInventory {
+  schemaVersion: 'norn.fleet-inventory/v1'
+  configured: boolean
+  source?: string
+  digest?: string
+  document?: {
+    apiVersion: 'norn.dev/fleet/v1'
+    kind: 'Cluster'
+    metadata?: { repository?: string; environment?: string; workflowUrl?: string }
+    cluster: { name: string; provider: string; region: string }
+  }
+  validation?: { schemaVersion: string; documentKind: 'fleet'; name?: string; valid: boolean; findings: ValidationFinding[] }
+  nodePools: Record<string, FleetNodePool>
+}
+
+export interface FleetPlansResponse {
+  count: number
+  plans: Operation[]
+}
+
 export interface VersionResponse {
   version: string
+}
+
+export interface CapabilitiesResponse {
+  protocolVersion: number
+  serverVersion: string
+  features: string[]
 }
 
 export interface WSEvent {

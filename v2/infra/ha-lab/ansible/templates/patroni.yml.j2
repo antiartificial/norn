@@ -1,0 +1,91 @@
+scope: {{ postgres_cluster_name }}
+namespace: /norn/patroni/
+name: {{ inventory_hostname }}
+
+restapi:
+  listen: {{ private_ip }}:8008
+  connect_address: {{ private_ip }}:8008
+
+consul:
+{% if security_phase in ['consul-clients', 'consul-tls-outgoing', 'consul-enforced', 'nomad-transition', 'enforced'] %}
+  url: https://127.0.0.1:8501
+  token: {{ consul_patroni_token }}
+  verify: true
+  cacert: /etc/patroni/consul-pki/ca.pem
+  cert: /etc/patroni/consul-pki/consul.pem
+  key: /etc/patroni/consul-pki/consul-key.pem
+{% else %}
+  host: 127.0.0.1:8500
+{% endif %}
+  register_service: true
+
+bootstrap:
+  dcs:
+    ttl: 30
+    loop_wait: 10
+    retry_timeout: 10
+    maximum_lag_on_failover: 1048576
+    postgresql:
+      use_pg_rewind: true
+      use_slots: true
+      parameters:
+        wal_level: replica
+        hot_standby: "on"
+        max_wal_senders: 10
+        max_replication_slots: 10
+        wal_keep_size: 256MB
+        archive_mode: "on"
+{% if postgres_archive_mode == 's3' %}
+        archive_command: "pgbackrest --stanza={{ postgres_cluster_name }} archive-push %p"
+{% else %}
+        archive_command: "test ! -f /var/lib/postgresql/wal-archive/%f && cp %p /var/lib/postgresql/wal-archive/%f"
+{% endif %}
+        archive_timeout: 60s
+  initdb:
+    - encoding: UTF8
+    - data-checksums
+  pg_hba:
+    - local all all peer
+    - host replication postgres 127.0.0.1/32 scram-sha-256
+    - hostssl replication replicator {{ vpc_cidr | default('10.140.0.0/20') }} scram-sha-256
+    - hostssl all all {{ vpc_cidr | default('10.140.0.0/20') }} scram-sha-256
+    - host all all 127.0.0.1/32 scram-sha-256
+
+postgresql:
+  listen: 0.0.0.0:5432
+  connect_address: {{ private_ip }}:5432
+  data_dir: /var/lib/postgresql/{{ postgresql_major_version }}/patroni
+  bin_dir: /usr/lib/postgresql/{{ postgresql_major_version }}/bin
+  authentication:
+    superuser:
+      username: postgres
+      password: {{ postgres_superuser_password }}
+    replication:
+      username: replicator
+      password: {{ postgres_replication_password }}
+    rewind:
+      username: rewind_user
+      password: {{ postgres_rewind_password }}
+  parameters:
+    unix_socket_directories: /var/run/postgresql
+    password_encryption: scram-sha-256
+    ssl: "on"
+    ssl_ca_file: /etc/postgresql/norn-pki/ca.pem
+    ssl_cert_file: /etc/postgresql/norn-pki/postgres.pem
+    ssl_key_file: /etc/postgresql/norn-pki/postgres-key.pem
+  pg_hba:
+    - local all all peer
+    - host replication postgres 127.0.0.1/32 scram-sha-256
+    - hostssl replication replicator {{ vpc_cidr | default('10.140.0.0/20') }} scram-sha-256
+    - hostssl all all {{ vpc_cidr | default('10.140.0.0/20') }} scram-sha-256
+    - host all all 127.0.0.1/32 scram-sha-256
+  pgpass: /var/lib/postgresql/.pgpass
+
+watchdog:
+  mode: off
+
+tags:
+  nofailover: false
+  noloadbalance: false
+  clonefrom: false
+  nosync: false

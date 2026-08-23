@@ -1,0 +1,14 @@
+[Unit]
+Description=Norn HA Grafana
+After=docker.service norn-prometheus.service network-online.target
+Requires=docker.service
+
+[Service]
+Restart=always
+RestartSec=5
+ExecStartPre=-/usr/bin/docker rm -f norn-grafana
+ExecStart=/usr/bin/docker run --rm --name norn-grafana --network host --env-file /etc/norn-observability/grafana.env --volume /etc/norn-observability/grafana/provisioning:/etc/grafana/provisioning:ro --volume /etc/norn-observability/grafana/dashboards:/var/lib/grafana/dashboards:ro --volume norn-grafana-data:/var/lib/grafana {{ grafana_image }}
+ExecStop=/usr/bin/docker stop -t 20 norn-grafana
+
+[Install]
+WantedBy=multi-user.target

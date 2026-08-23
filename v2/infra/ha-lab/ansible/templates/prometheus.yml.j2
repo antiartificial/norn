@@ -1,0 +1,97 @@
+global:
+  scrape_interval: 15s
+  evaluation_interval: 15s
+
+scrape_configs:
+  - job_name: prometheus
+    static_configs:
+      - targets: ["{{ private_ip }}:9090"]
+
+  - job_name: node
+    static_configs:
+      - targets: {{ groups['norn_ha'] | map('extract', hostvars, 'private_ip') | map('regex_replace', '$', ':9100') | list | to_json }}
+
+  - job_name: cadvisor
+    static_configs:
+      - targets: {{ groups['norn_ha'] | map('extract', hostvars, 'private_ip') | map('regex_replace', '$', ':8080') | list | to_json }}
+
+  - job_name: nomad
+    metrics_path: /v1/metrics
+    params:
+      format: [prometheus]
+{% if security_phase in ['nomad-transition', 'enforced'] %}
+    scheme: https
+    authorization:
+      credentials: "{{ nomad_observability_token }}"
+    tls_config:
+      ca_file: /etc/norn-observability/pki/nomad-ca.pem
+      cert_file: /etc/norn-observability/pki/nomad.pem
+      key_file: /etc/norn-observability/pki/nomad-key.pem
+      server_name: server.global.nomad
+{% endif %}
+    static_configs:
+      - targets: {{ groups['norn_ha'] | map('extract', hostvars, 'private_ip') | map('regex_replace', '$', ':4646') | list | to_json }}
+
+  - job_name: consul
+    metrics_path: /v1/agent/metrics
+    params:
+      format: [prometheus]
+{% if security_phase in ['consul-clients', 'consul-tls-outgoing', 'consul-enforced', 'nomad-transition', 'enforced'] %}
+    scheme: https
+    authorization:
+      credentials: "{{ consul_observability_token }}"
+    tls_config:
+      ca_file: /etc/norn-observability/pki/consul-ca.pem
+      cert_file: /etc/norn-observability/pki/consul.pem
+      key_file: /etc/norn-observability/pki/consul-key.pem
+      server_name: server.dc1.consul
+{% endif %}
+    static_configs:
+{% if security_phase in ['consul-clients', 'consul-tls-outgoing', 'consul-enforced', 'nomad-transition', 'enforced'] %}
+      - targets: {{ groups['norn_ha'] | map('extract', hostvars, 'private_ip') | map('regex_replace', '$', ':8501') | list | to_json }}
+{% else %}
+      - targets: {{ groups['norn_ha'] | map('extract', hostvars, 'private_ip') | map('regex_replace', '$', ':8500') | list | to_json }}
+{% endif %}
+
+  - job_name: norn
+    consul_sd_configs:
+{% if security_phase in ['consul-clients', 'consul-tls-outgoing', 'consul-enforced', 'nomad-transition', 'enforced'] %}
+      - server: 127.0.0.1:8501
+        scheme: https
+        token: "{{ consul_observability_token }}"
+        services: [norn-api]
+        tls_config:
+          ca_file: /etc/norn-observability/pki/consul-ca.pem
+          cert_file: /etc/norn-observability/pki/consul.pem
+          key_file: /etc/norn-observability/pki/consul-key.pem
+          server_name: server.dc1.consul
+{% else %}
+      - server: 127.0.0.1:8500
+        services: [norn-api]
+{% endif %}
+    relabel_configs:
+      - source_labels: [__meta_consul_health]
+        regex: passing
+        action: keep
+
+  - job_name: norn-ha-toy
+    metrics_path: /metrics
+    consul_sd_configs:
+{% if security_phase in ['consul-clients', 'consul-tls-outgoing', 'consul-enforced', 'nomad-transition', 'enforced'] %}
+      - server: 127.0.0.1:8501
+        scheme: https
+        token: "{{ consul_observability_token }}"
+        services: [norn-ha-toy-web-metrics]
+        tls_config:
+          ca_file: /etc/norn-observability/pki/consul-ca.pem
+          cert_file: /etc/norn-observability/pki/consul.pem
+          key_file: /etc/norn-observability/pki/consul-key.pem
+          server_name: server.dc1.consul
+{% else %}
+      - server: 127.0.0.1:8500
+        services: [norn-ha-toy-web-metrics]
+{% endif %}
+    relabel_configs:
+      - source_labels: [__meta_consul_health]
+        regex: passing
+        action: keep

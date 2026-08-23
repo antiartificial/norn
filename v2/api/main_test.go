@@ -227,6 +227,14 @@ func TestControlSecurityConfiguration(t *testing.T) {
 		{name: "partial Cloudflare Access", config: &config.Config{BindAddr: "127.0.0.1", CFAccessTeamDomain: "team.example.test"}, wantErr: true},
 		{name: "strict auth without provider", config: &config.Config{BindAddr: "127.0.0.1", RequireExplicitAuth: true}, wantErr: true},
 		{name: "strict auth with Cloudflare Access", config: &config.Config{BindAddr: "127.0.0.1", RequireExplicitAuth: true, CFAccessTeamDomain: "team.example.test", CFAccessAUD: "audience"}},
+		{name: "unknown profile", config: &config.Config{Profile: "mystery", BindAddr: "127.0.0.1"}, wantErr: true},
+		{name: "production requires explicit auth", config: &config.Config{Profile: "production", BindAddr: "127.0.0.1", APIToken: strings.Repeat("x", 32), StrictSecrets: true, NomadAddr: "https://nomad:4646", ConsulAddr: "https://consul:8501", DatabaseURL: "postgres://db/norn?sslmode=verify-full", RegistryURL: "registry.example.test/norn"}, wantErr: true},
+		{name: "production rejects Nomad skip verify", config: &config.Config{Profile: "production", BindAddr: "127.0.0.1", APIToken: strings.Repeat("x", 32), RequireExplicitAuth: true, StrictSecrets: true, NomadAddr: "https://nomad:4646", NomadTLSSkipVerify: true, ConsulAddr: "https://consul:8501", DatabaseURL: "postgres://db/norn?sslmode=verify-full", RegistryURL: "registry.example.test/norn", LegacyTokenSigningUntil: time.Now().Add(-time.Hour)}, wantErr: true},
+		{name: "production rejects Consul skip verify", config: &config.Config{Profile: "production", BindAddr: "127.0.0.1", APIToken: strings.Repeat("x", 32), RequireExplicitAuth: true, StrictSecrets: true, NomadAddr: "https://nomad:4646", ConsulAddr: "https://consul:8501", ConsulTLSSkipVerify: true, DatabaseURL: "postgres://db/norn?sslmode=verify-full", RegistryURL: "registry.example.test/norn", LegacyTokenSigningUntil: time.Now().Add(-time.Hour)}, wantErr: true},
+		{name: "production rejects unverified database TLS", config: &config.Config{Profile: "production", BindAddr: "127.0.0.1", APIToken: strings.Repeat("x", 32), RequireExplicitAuth: true, StrictSecrets: true, NomadAddr: "https://nomad:4646", ConsulAddr: "https://consul:8501", DatabaseURL: "postgres://db/norn?sslmode=require", RegistryURL: "registry.example.test/norn", LegacyTokenSigningUntil: time.Now().Add(-time.Hour)}, wantErr: true},
+		{name: "production rejects weak previous audit key", config: &config.Config{Profile: "production", BindAddr: "127.0.0.1", APIToken: strings.Repeat("x", 32), AuditSigningKey: strings.Repeat("a", 32), AuditPreviousSigningKeys: []string{"short"}, RequireExplicitAuth: true, StrictSecrets: true, NomadAddr: "https://nomad:4646", ConsulAddr: "https://consul:8501", DatabaseURL: "postgres://db/norn?sslmode=verify-full", RegistryURL: "registry.example.test/norn", LegacyTokenSigningUntil: time.Now().Add(-time.Hour)}, wantErr: true},
+		{name: "production rejects short audit retention", config: &config.Config{Profile: "production", BindAddr: "127.0.0.1", APIToken: strings.Repeat("x", 32), AuditSigningKey: strings.Repeat("a", 32), AuditRetentionDays: 30, RequireExplicitAuth: true, StrictSecrets: true, NomadAddr: "https://nomad:4646", ConsulAddr: "https://consul:8501", DatabaseURL: "postgres://db/norn?sslmode=verify-full", RegistryURL: "registry.example.test/norn", LegacyTokenSigningUntil: time.Now().Add(-time.Hour)}, wantErr: true},
+		{name: "production hardened", config: &config.Config{Profile: "production", BindAddr: "127.0.0.1", APIToken: strings.Repeat("x", 32), AuditSigningKey: strings.Repeat("a", 32), AuditRetentionDays: 365, RequireExplicitAuth: true, StrictSecrets: true, NomadAddr: "https://nomad:4646", ConsulAddr: "https://consul:8501", DatabaseURL: "postgres://db/norn?sslmode=verify-full", RegistryURL: "registry.example.test/norn", ArtifactSigningPublicKey: "/etc/norn/cosign.pub", ArtifactDenySeverities: []string{"HIGH", "CRITICAL"}, LegacyTokenSigningUntil: time.Now().Add(-time.Hour)}},
 	} {
 		t.Run(tt.name, func(t *testing.T) {
 			if err := validateControlSecurity(tt.config); (err != nil) != tt.wantErr {
@@ -240,6 +248,14 @@ func TestExplicitAuthConfiguration(t *testing.T) {
 	t.Setenv("NORN_REQUIRE_EXPLICIT_AUTH", "true")
 	if !config.Load().RequireExplicitAuth {
 		t.Fatal("NORN_REQUIRE_EXPLICIT_AUTH=true was not honored")
+	}
+}
+
+func TestProductionProfileForcesStrictSecrets(t *testing.T) {
+	t.Setenv("NORN_PROFILE", "production")
+	cfg := config.Load()
+	if !cfg.Production() || !cfg.StrictSecrets {
+		t.Fatalf("production config = %+v, want production with strict secrets", cfg)
 	}
 }
 
@@ -261,6 +277,86 @@ func TestBearerAuthProtectsWebSocketsAndEnforcesScopes(t *testing.T) {
 	}
 	if got := controlScopeForRequest(httptest.NewRequest(http.MethodPost, "/api/v1/auth/step-up/challenges", nil)); got != handler.ScopeAppsExec {
 		t.Fatalf("step-up scope = %q", got)
+	}
+	if got := controlScopeForRequest(httptest.NewRequest(http.MethodGet, "/api/v1/host/metrics", nil)); got != handler.ScopeAPIRead {
+		t.Fatalf("host metrics scope = %q", got)
+	}
+	if got := controlScopeForRequest(httptest.NewRequest(http.MethodGet, "/api/v1/production/readiness", nil)); got != handler.ScopeAPIRead {
+		t.Fatalf("production readiness scope = %q", got)
+	}
+}
+
+func TestExplicitAuthWithCloudflareOnlyRejectsMissingCredentials(t *testing.T) {
+	next := http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) { w.WriteHeader(http.StatusNoContent) })
+	authenticated := bearerAuth("", nil, true)(next)
+
+	for _, authorization := range []string{"", "Bearer "} {
+		req := httptest.NewRequest(http.MethodGet, "/api/v1/production/readiness", nil)
+		req.Header.Set("Authorization", authorization)
+		rec := httptest.NewRecorder()
+		authenticated.ServeHTTP(rec, req)
+		if rec.Code != http.StatusUnauthorized {
+			t.Fatalf("authorization %q status = %d, want 401", authorization, rec.Code)
+		}
+	}
+
+	req := httptest.NewRequest(http.MethodGet, "/api/v1/production/readiness", nil)
+	req = auth.WithCFAccessClaims(req, &auth.CFAccessClaims{Email: "operator@example.test"})
+	rec := httptest.NewRecorder()
+	authenticated.ServeHTTP(rec, req)
+	if rec.Code != http.StatusNoContent {
+		t.Fatalf("Cloudflare principal status = %d, want 204", rec.Code)
+	}
+}
+
+func TestControlCapabilitiesAdvertisesHostMetrics(t *testing.T) {
+	rec := httptest.NewRecorder()
+	writeControlCapabilities(rec)
+	var capability struct {
+		Features  []string          `json:"features"`
+		Endpoints map[string]string `json:"endpoints"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &capability); err != nil {
+		t.Fatal(err)
+	}
+	if capability.Endpoints["hostMetrics"] != "/api/v1/host/metrics" {
+		t.Fatalf("hostMetrics endpoint = %q", capability.Endpoints["hostMetrics"])
+	}
+	if capability.Endpoints["productionReadiness"] != "/api/v1/production/readiness" {
+		t.Fatalf("productionReadiness endpoint = %q", capability.Endpoints["productionReadiness"])
+	}
+	if capability.Endpoints["fleetNodePools"] != "/api/v1/fleet/node-pools" || capability.Endpoints["fleetValidation"] != "/api/v1/fleet/validate" {
+		t.Fatalf("fleet endpoints = %v", capability.Endpoints)
+	}
+	if capability.Endpoints["mutationAudit"] != "/api/v1/audit/mutations" || capability.Endpoints["recoveryDrills"] != "/api/v1/production/drills" {
+		t.Fatalf("production evidence endpoints = %v", capability.Endpoints)
+	}
+	found := false
+	productionFound := false
+	auditFound := false
+	drillsFound := false
+	for _, feature := range capability.Features {
+		if feature == "host-metrics" {
+			found = true
+		}
+		if feature == "production-readiness" {
+			productionFound = true
+		}
+		if feature == "durable-mutation-audit" {
+			auditFound = true
+		}
+		if feature == "recovery-drill-receipts" {
+			drillsFound = true
+		}
+	}
+	if !found {
+		t.Fatalf("host-metrics feature missing: %v", capability.Features)
+	}
+	if !productionFound {
+		t.Fatalf("production-readiness feature missing: %v", capability.Features)
+	}
+	if !auditFound || !drillsFound {
+		t.Fatalf("production evidence features missing: %v", capability.Features)
 	}
 }
 

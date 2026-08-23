@@ -98,6 +98,20 @@ boundary. Admin approval and device
 inventory require an explicit authenticated admin principal; loopback and
 temporary IP-grant compatibility do not satisfy that boundary.
 
+## Fleet documents and plans
+
+Clients gate fleet UI on `fleet-v1`, `fleet-inventory`, and
+`durable-fleet-capacity-plans`. The versioned routes validate uploaded
+documents, expose a read-only desired-pool inventory, and record planning-only
+operations. Invalid documents return a typed report with stable finding codes;
+invalid request envelopes and unsafe plan requests return stable Problem codes.
+
+`fleet.capacity-plan` receipts bind the reviewed fleet source digest to the
+cluster, pool, proposed action, plan digest, optional workflow URL, and audit
+signature. They are proof of operator intent, not proof that Terraform ran.
+Provider apply evidence is produced by the `norn-fleet` infrastructure runner and
+node enrollment/readiness evidence is produced by Norn assurance.
+
 ## Event continuity
 
 `GET /api/v1/events/info` reports the oldest and latest retained cursors,
@@ -129,7 +143,21 @@ Native navigation should use the versioned read surfaces:
 - `GET /api/v1/apps` and `GET /api/v1/apps/{id}`
 - `GET /api/v1/releases`
 - `GET /api/v1/host/status`
+- `GET /api/v1/production/readiness`
+- `GET /api/v1/audit/mutations`
+- `GET /api/v1/production/drills`
 - `GET /api/v1/operations/{id}`
+
+The production readiness resource uses the stable
+`norn.production-readiness/v1` schema. A native client may render its checks and
+remediation, but server startup and deploy admission remain authoritative; a
+client must not infer readiness from a version number or hide failed gates.
+Startup enforces static security prerequisites and deploy admission enforces
+source and artifact provenance. Runtime-changing requests also enforce live
+quorum, PostgreSQL recovery, and durable-audit checks. Recovery and identity
+routes remain available. Audit events use `norn.mutation-audit/v1`; recovery
+drill lists use `norn.recovery-drills/v1`. Native clients must preserve unknown
+future integrity states and drill kinds.
 
 ## Exec sessions
 

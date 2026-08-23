@@ -19,6 +19,25 @@ func TestLegacyTokenSigningDeadline(t *testing.T) {
 	}
 }
 
+func TestHashiCorpTLSVerificationEnvironment(t *testing.T) {
+	t.Setenv("NOMAD_SKIP_VERIFY", "true")
+	t.Setenv("CONSUL_HTTP_SSL_VERIFY", "false")
+	cfg := Load()
+	if !cfg.NomadTLSSkipVerify || !cfg.ConsulTLSSkipVerify {
+		t.Fatalf("TLS verification flags = nomad:%v consul:%v, want both insecure", cfg.NomadTLSSkipVerify, cfg.ConsulTLSSkipVerify)
+	}
+}
+
+func TestAuditVerificationKeyRotationConfig(t *testing.T) {
+	t.Setenv("NORN_AUDIT_SIGNING_KEY", strings.Repeat("n", 32))
+	t.Setenv("NORN_AUDIT_PREVIOUS_SIGNING_KEYS", strings.Repeat("a", 32)+", "+strings.Repeat("b", 32))
+	t.Setenv("NORN_AUDIT_RETENTION_DAYS", "")
+	cfg := Load()
+	if len(cfg.AuditPreviousSigningKeys) != 2 || cfg.AuditPreviousSigningKeys[1] != strings.Repeat("b", 32) || cfg.AuditRetentionDays != 365 {
+		t.Fatalf("previous audit keys were not parsed: %d", len(cfg.AuditPreviousSigningKeys))
+	}
+}
+
 func TestBeaconConfig(t *testing.T) {
 	t.Setenv("NORN_BEACON_ENVIRONMENT", "mini")
 	t.Setenv("NORN_BEACON_SINK_URL", "https://vigil.example.test/events")

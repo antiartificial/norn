@@ -1,0 +1,9 @@
+{
+  "service": {
+    "id": "norn-grafana-web-{{ inventory_hostname }}",
+    "name": "norn-grafana-web",
+    "address": "{{ private_ip }}",
+    "port": 3000,
+    "checks": [{"http": "http://{{ private_ip }}:3000/api/health", "interval": "10s", "timeout": "2s"}]
+  }
+}

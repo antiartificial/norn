@@ -1,0 +1,30 @@
+[Unit]
+Description=Norn active-passive Linux control API
+After=network-online.target consul.service nomad.service haproxy.service
+Wants=network-online.target consul.service nomad.service haproxy.service
+StartLimitIntervalSec=0
+
+[Service]
+Type=simple
+User=nornops
+Group=nornops
+SupplementaryGroups=docker
+WorkingDirectory=/var/lib/norn
+EnvironmentFile=/etc/norn/norn.env
+ExecStart=/usr/bin/consul lock -n=1 -monitor-retry=10 -name={{ inventory_hostname }} norn/control-api /usr/local/bin/norn-server
+Restart=always
+RestartSec=5
+TimeoutStopSec=30
+NoNewPrivileges=true
+PrivateDevices=true
+ProtectControlGroups=true
+ProtectKernelLogs=true
+ProtectKernelModules=true
+ProtectKernelTunables=true
+ProtectSystem=full
+ProtectHome=true
+RestrictSUIDSGID=true
+ReadWritePaths=/var/lib/norn /tmp
+
+[Install]
+WantedBy=multi-user.target

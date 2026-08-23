@@ -29,38 +29,47 @@ import (
 var validAppIDRe = regexp.MustCompile(`^[a-z0-9][a-z0-9-]*$`)
 
 const maxControlJSONBody = 64 << 10
+const maxDocumentValidationJSONBody = 320 << 10
+const maxValidationDocumentBytes = 64 << 10
 
 type Handler struct {
-	db        *store.DB
-	nomad     *nomad.Client
-	consul    *consul.Client
-	ws        *hub.Hub
-	cfg       *config.Config
-	pipeline  *pipeline.Pipeline
-	beacon    *beacon.Service
-	secrets   *secrets.Manager
-	sagaStore saga.Store
-	s3        *storage.Client
-	redpanda  *redpanda.Client
-	access    *AccessLog
-	wakeLocks sync.Map
-	execConns sync.Map
+	db                     *store.DB
+	nomad                  *nomad.Client
+	consul                 *consul.Client
+	ws                     *hub.Hub
+	cfg                    *config.Config
+	pipeline               *pipeline.Pipeline
+	beacon                 *beacon.Service
+	secrets                *secrets.Manager
+	sagaStore              saga.Store
+	s3                     *storage.Client
+	redpanda               *redpanda.Client
+	access                 *AccessLog
+	hostMetrics            *hostMetricsCache
+	productionGateMu       sync.Mutex
+	productionGateAt       time.Time
+	productionGateBlockers []string
+	auditPruneMu           sync.Mutex
+	auditPruneAt           time.Time
+	wakeLocks              sync.Map
+	execConns              sync.Map
 }
 
 func New(db *store.DB, n *nomad.Client, c *consul.Client, ws *hub.Hub, cfg *config.Config, p *pipeline.Pipeline, beaconSvc *beacon.Service, sec *secrets.Manager, ss saga.Store, s3 *storage.Client, rp *redpanda.Client) *Handler {
 	return &Handler{
-		db:        db,
-		nomad:     n,
-		consul:    c,
-		ws:        ws,
-		cfg:       cfg,
-		pipeline:  p,
-		beacon:    beaconSvc,
-		secrets:   sec,
-		sagaStore: ss,
-		s3:        s3,
-		redpanda:  rp,
-		access:    NewAccessLog(defaultAccessLogLimit),
+		db:          db,
+		nomad:       n,
+		consul:      c,
+		ws:          ws,
+		cfg:         cfg,
+		pipeline:    p,
+		beacon:      beaconSvc,
+		secrets:     sec,
+		sagaStore:   ss,
+		s3:          s3,
+		redpanda:    rp,
+		access:      NewAccessLog(defaultAccessLogLimit),
+		hostMetrics: newHostMetricsCache(defaultHostMetricsSampler, time.Now, defaultHostMetricsSamplePeriod),
 	}
 }
 
@@ -97,10 +106,14 @@ func preventSensitiveResponseCaching(w http.ResponseWriter) {
 }
 
 func decodeControlJSON(w http.ResponseWriter, r *http.Request, target interface{}) error {
+	return decodeControlJSONLimit(w, r, target, maxControlJSONBody)
+}
+
+func decodeControlJSONLimit(w http.ResponseWriter, r *http.Request, target interface{}, limit int64) error {
 	if r.Body == nil {
 		return io.EOF
 	}
-	r.Body = http.MaxBytesReader(w, r.Body, maxControlJSONBody)
+	r.Body = http.MaxBytesReader(w, r.Body, limit)
 	controller := http.NewResponseController(w)
 	if controller.SetReadDeadline(time.Now().Add(15*time.Second)) == nil {
 		defer controller.SetReadDeadline(time.Time{})
