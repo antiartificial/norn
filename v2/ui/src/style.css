@@ -388,6 +388,30 @@ body {
   justify-content: space-between;
 }
 .activity-panel { grid-column: 1 / -1; }
+.fleet-page { display: grid; gap: 14px; }
+.fleet-hero { align-items: center; display: grid; gap: 14px; grid-template-columns: minmax(0, 1fr) auto auto; }
+.fleet-hero h2, .section-heading h2, .fleet-pool-card h3 { margin: 2px 0 0; }
+.fleet-hero p, .panel-intro { color: var(--text-2); margin: 4px 0 0; }
+.fleet-hero > code { color: var(--text-3); font-size: 11px; }
+.eyebrow { color: var(--text-3); font-size: 10px; font-weight: 750; letter-spacing: .09em; text-transform: uppercase; }
+.section-heading { align-items: end; display: flex; justify-content: space-between; margin-bottom: 10px; }
+.section-heading > span { color: var(--text-3); font-size: 12px; }
+.fleet-pool-grid { display: grid; gap: 12px; grid-template-columns: repeat(auto-fit, minmax(270px, 1fr)); }
+.fleet-pool-card { background: linear-gradient(145deg, var(--surface-1), var(--surface-2)); border: 1px solid var(--border); border-radius: var(--radius); display: grid; gap: 12px; padding: 14px; }
+.fleet-pool-header { align-items: start; display: flex; justify-content: space-between; }
+.fleet-pool-metrics { display: grid; gap: 8px; grid-template-columns: repeat(2, minmax(0, 1fr)); margin: 0; }
+.fleet-pool-metrics div { border-left: 2px solid var(--border-strong); display: grid; gap: 2px; padding-left: 8px; }
+.fleet-pool-metrics dt { color: var(--text-3); font-size: 10px; text-transform: uppercase; }
+.fleet-pool-metrics dd { font: 600 12px var(--mono); margin: 0; overflow: hidden; text-overflow: ellipsis; }
+.fleet-plan-toggle { justify-self: start; }
+.fleet-plan-unavailable { color: var(--text-2); font-size: 12px; margin: 0; }
+.fleet-plan-form { border-top: 1px solid var(--border); display: grid; gap: 8px; grid-template-columns: 90px minmax(120px, 1fr); padding-top: 12px; }
+.fleet-plan-form label { color: var(--text-3); display: grid; font-size: 11px; gap: 4px; }
+.fleet-plan-form input { background: var(--surface-1); border: 1px solid var(--border); border-radius: var(--radius-sm); color: var(--text-1); font: 12px var(--mono); min-width: 0; padding: 7px 8px; }
+.fleet-plan-form input:focus { border-color: var(--accent); outline: 2px solid color-mix(in srgb, var(--accent) 22%, transparent); }
+.fleet-plan-form .fleet-reason { grid-column: 1 / -1; }
+.fleet-plan-form button { justify-self: start; }
+@media (max-width: 700px) { .fleet-hero { align-items: start; grid-template-columns: 1fr; } }
 .activity-row {
   align-items: center;
   border-bottom: 1px solid var(--border);
@@ -417,6 +441,22 @@ body {
   gap: 8px;
   margin-bottom: 12px;
 }
+.apps-toolbar { align-items: flex-start; display: flex; gap: 12px; justify-content: space-between; }
+.create-app-form { display: grid; gap: 9px; }
+.create-app-form label, .create-app-form legend { color: var(--text-1); font-size: 13px; font-weight: 650; }
+.create-app-form input[type="text"], .create-app-form input[type="number"], .create-app-form input:not([type]) { background: var(--surface-2); border: 1px solid var(--border); border-radius: var(--radius-sm); color: var(--text-1); min-height: 36px; padding: 7px 9px; }
+.create-app-form fieldset { border: 0; display: flex; gap: 18px; margin: 6px 0; padding: 0; }
+.create-app-form fieldset legend { margin-bottom: 8px; }
+.create-app-form fieldset label { align-items: center; display: inline-flex; gap: 6px; font-weight: 500; }
+.create-app-intro, .field-hint { color: var(--text-2); font-size: 13px; margin: 0; }
+.create-app-safety { background: color-mix(in srgb, var(--accent) 8%, var(--surface-2)); border: 1px solid var(--border); border-radius: var(--radius-sm); display: grid; font-size: 13px; gap: 3px; margin-top: 6px; padding: 10px; }
+.create-app-safety span { color: var(--text-2); }
+.form-error { color: var(--danger); font-size: 13px; margin: 0; }
+.draft-badge { background: color-mix(in srgb, var(--warning) 13%, var(--surface-2)); border: 1px solid color-mix(in srgb, var(--warning) 35%, var(--border)); border-radius: 999px; color: var(--warning); font-size: 11px; font-weight: 700; padding: 3px 7px; }
+.history-regions { display: flex; flex-wrap: wrap; gap: 4px; margin-top: 3px; }
+.history-region { border: 1px solid var(--border); border-radius: 999px; color: var(--text-2); font-size: 10px; padding: 1px 5px; }
+.history-region-deployed { border-color: color-mix(in srgb, var(--success) 40%, var(--border)); color: var(--success); }
+.history-region-failed { border-color: color-mix(in srgb, var(--danger) 40%, var(--border)); color: var(--danger); }
 .filter-input {
   background: var(--surface-1);
   border: 1px solid var(--border);

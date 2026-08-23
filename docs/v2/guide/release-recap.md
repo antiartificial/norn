@@ -4,7 +4,25 @@ title: Norn v2 Release Recap
 
 # Norn v2 Release Recap
 
-This recap summarizes the current Norn v2 release line: the Nomad/Consul control plane, the operator-facing dashboard and CLI, the ContextDB worker deployment path, Beacon operational events, and the upgrade posture for the local LaunchAgent install. The `v2.16.2-control` release line adds a scoped, versioned control protocol, durable event replay, and an independent host agent for restart-safe platform and assurance operations.
+This recap summarizes the current Norn v2 release line: the Nomad/Consul control plane, the operator-facing dashboard and CLI, fleet planning, production admission, Beacon operational events, and the upgrade posture for local and Linux hosts. The `v2.18.0-control` release adds a versioned fleet contract, safe capacity-plan receipts, regional placement and ingress, production mutation admission and audit, reproducible Linux HA acceptance infrastructure, host metrics, minimum-capacity assurance, and conservative app creation. It retains the backward-compatible v1 control protocol introduced in v2.17.
+
+## v2.18.0-control highlights
+
+| Area | Surface | Why it matters |
+|:-----|:--------|:---------------|
+| Fleet GitOps | `/api/v1/fleet/*`, `norn fleet ...`, Fleet dashboard | Validates the private `norn-fleet` desired-state schema, inventories pools, and creates signed, durable planning receipts without giving Norn provider credentials |
+| Safe app creation | `POST /api/apps`, dashboard create flow, `deploy: false` default | Creates endpoint or worker drafts with conservative health, scaling, and resource defaults; deployment requires a separate explicit enablement |
+| Regional placement | InfraSpec `regions`, `primaryRegion`, process constraints, node pools | Deploys normal services to all regions by default while keeping cron and singleton work in the declared primary region |
+| Regional ingress | Consul-backed Traefik template and readiness weights | Allows multiple endpoint allocations behind a stable regional origin and promotes traffic only after application readiness succeeds |
+| Regional rollback | Per-region deployment state and rollback targets | Tracks readiness, traffic weight, and rollback independently for each region |
+| Production admission | `NORN_PROFILE=production`, `norn production check` | Fails closed on explicit auth, TLS/ACL/quorum, external PostgreSQL recovery posture, immutable artifacts, strict secrets, and recent drills |
+| Supply-chain admission | Digest-pinned images, Cosign source binding, Trivy policy | Keeps publisher credentials outside Norn and verifies the exact registry artifact on deploy and rollback |
+| Mutation audit | `/api/v1/audit/mutations`, signed PostgreSQL receipts | Reserves a durable, integrity-protected receipt before production side effects and retains crash-visible incomplete records |
+| Recovery evidence | `/api/v1/production/drills`, `norn production drill ...` | Records bounded database restore, artifact rollback, and node failover proof used by the production-readiness gate |
+| Linux HA acceptance | OpenTofu, Ansible, fault-injection scripts, toy app | Reproduces three-member Nomad/Consul/PostgreSQL tests for quorum, failover, PITR, immutable rollback, node replacement, and regional ingress |
+| Host assurance | Minimum-allocation signals and TLS/ACL-aware probes | Makes post-restart capacity drift visible while keeping repair limited to explicitly required services |
+| Host metrics | `/api/v1/host/metrics` | Provides capability-gated CPU and memory observations for native and web operator clients |
+| Bootstrap hygiene | Secret-free cloud-init and repository push protection | Removes embedded bootstrap credentials and blocks future supported-provider secrets at push time |
 
 ## What Shipped
 
@@ -13,7 +31,7 @@ This recap summarizes the current Norn v2 release line: the Nomad/Consul control
 | Runtime platform | Nomad, Consul, local Docker builds, cloudflared | Replaces the v1 Kubernetes path with a smaller local control plane suited to self-hosted apps |
 | Host recovery and assurance | `norn host install/status/doctor/recover/assure`, persistent state, launchd supervisor and assurance agent | Restores the local control plane, repairs explicitly required apps and routes, probes real entrypoints, and supports bounded ingestion catch-up |
 | App model | Multi-process `infraspec.yaml` | Lets one app define web, worker, cron, and function processes without splitting deployment ownership |
-| Deploy pipeline | Clone, build, test, snapshot, migrate, submit, healthy, forge, cleanup | Makes deploys repeatable and auditable from the CLI, API, and dashboard |
+| Deploy pipeline | Clone, source admission, build, artifact admission, test, snapshot, migrate, regional submit, healthy, forge, cleanup | Makes deploys repeatable, policy-gated, and auditable from the CLI, API, and dashboard |
 | Preflight pipeline | `norn preflight`, `norn check`, `/api/apps/{id}/preflight` | Rehearses validation, source prep, Docker build, and tests before runtime mutation |
 | Service discovery | `/api/services/manifest` and `norn services` | Gives operators and agents a compact view of hosted services, process reachability, endpoint scope, and health |
 | Operations dashboard | Platform and ContextDB ops panels | Surfaces service exposure, deploy provenance, snapshot retention, access events, OTEL/Grafana status, and ContextDB worker posture |
@@ -64,6 +82,11 @@ This recap summarizes the current Norn v2 release line: the Nomad/Consul control
 | Event correlation | `correlationKey` in beacon event metadata | Groups related events into incident arcs so consumers can track flare-up to resolution |
 | Correlated events query | `GET /api/events/correlated`, `norn events correlated` | Retrieves chronological event timeline for a correlation key |
 | Scoped access tokens | `POST /api/access/tokens`, `norn access token`, dashboard form | Time-limited bearer credentials with explicit read, event, exec, platform, and host scopes; never placed in URLs |
+| Native API contract | `GET /api/v1/openapi.yaml`, `GET /api/v1/capabilities` | OpenAPI 3.1 types and negotiated feature flags for generated Swift and automation clients |
+| Device enrollment | `/api/v1/enrollments`, `/api/v1/devices`, `/api/v1/auth/rotate`, `/api/v1/auth/revoke` | Pairing-code onboarding, atomic rotation, revocation, and device inventory without pasting the control-plane token |
+| Event continuity | `/api/v1/events/info`, filtered `/api/v1/events` | Retention bounds, cursor gap detection, subscriptions, and opt-in heartbeats for deterministic reconnects |
+| Typed operation lifecycle | v1 operation get/cancel endpoints | Queued cancellation and versioned platform, host, or app receipts with stable problem codes |
+| Native exec sessions | `norn.exec/v1`, step-up challenges, exec audit records | P-256 proof of possession, one-time app-bound authorization, typed frames, expiry, cancellation, and durable audit metadata |
 | Incident timeline links | `norn events show`, dashboard event detail | Shows correlation key and incident timeline command/link for events in an incident arc |
 | Allocation lifecycle | `lifecycle` field on allocations, `allocationSummary` on app status | Separates active from retained allocations so CLI and dashboard show live capacity |
 | Auto-ack on resolution | Beacon emit path auto-acknowledges correlated events | Keeps `norn events` focused on active incidents by clearing resolved warning/critical events |
@@ -186,6 +209,14 @@ The current release line has been exercised with:
 ## Compatibility
 
 Norn v2 is the active development path and is intentionally separate from the v1 Kubernetes documentation. The v2 upgrade path replaces only the Norn API binary, CLI binary, and built UI assets when Norn is installed as `com.norn.api`. It does not require stopping Nomad, Consul, Postgres, or hosted allocations.
+
+The v2.17 control protocol supports strict explicit authentication without
+breaking a Cloudflare Access-protected browser UI, enforces trusted transport
+for pairing, propagates exec revocation through durable PostgreSQL state across
+API replicas, and retires the legacy raw-key JWT signature after the configured
+deadline. InfraSpec commands and service-registry callbacks remain intentional
+trusted-code boundaries and continue to be reported by security scanners for
+operator review.
 
 ## Read Next
 

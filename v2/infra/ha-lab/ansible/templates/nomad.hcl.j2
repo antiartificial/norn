@@ -1,0 +1,94 @@
+name       = "{{ inventory_hostname }}"
+datacenter = "dc1"
+region     = "global"
+data_dir   = "/opt/nomad"
+bind_addr  = "{{ private_ip }}"
+
+addresses {
+  http = "0.0.0.0"
+}
+
+advertise {
+  http = "{{ private_ip }}:4646"
+  rpc  = "{{ private_ip }}:4647"
+  serf = "{{ private_ip }}:4648"
+}
+
+server {
+  enabled          = true
+  bootstrap_expect = {{ groups['norn_ha'] | length }}
+  encrypt          = "{{ nomad_gossip_key }}"
+  server_join {
+    retry_join     = {{ groups['norn_ha'] | map('extract', hostvars, 'private_ip') | list | to_json }}
+    retry_max      = 12
+    retry_interval = "5s"
+  }
+}
+
+client {
+  enabled           = true
+  network_interface = "eth1"
+  servers           = {{ groups['norn_ha'] | map('extract', hostvars, 'private_ip') | map('regex_replace', '$', ':4647') | list | to_json }}
+}
+
+plugin "docker" {
+  config {
+    allow_privileged = false
+    auth {
+      config = "/etc/norn/registry-config.json"
+    }
+    volumes {
+      enabled = true
+    }
+  }
+}
+
+acl {
+  enabled = {{ 'true' if security_phase in ['nomad-transition', 'enforced'] else 'false' }}
+}
+
+{% if security_phase in ['consul-clients', 'consul-tls-outgoing', 'consul-enforced', 'nomad-transition', 'enforced'] %}
+consul {
+  address    = "127.0.0.1:8501"
+  ssl        = true
+  verify_ssl = true
+  ca_file    = "/etc/nomad.d/pki/consul-ca.pem"
+  cert_file  = "/etc/nomad.d/pki/consul.pem"
+  key_file   = "/etc/nomad.d/pki/consul-key.pem"
+  token      = "{{ consul_nomad_token }}"
+
+  service_identity {
+    aud = ["consul.io"]
+    ttl = "1h"
+  }
+
+  task_identity {
+    aud = ["consul.io"]
+    ttl = "1h"
+  }
+}
+{% endif %}
+
+{% if security_phase in ['nomad-transition', 'enforced'] %}
+tls {
+  http = true
+  rpc  = true
+  rpc_upgrade_mode = {{ 'true' if security_phase == 'nomad-transition' else 'false' }}
+  ca_file   = "/etc/nomad.d/pki/nomad-ca.pem"
+  cert_file = "/etc/nomad.d/pki/nomad.pem"
+  key_file  = "/etc/nomad.d/pki/nomad-key.pem"
+  verify_server_hostname = true
+  # Consul's JWT auth method cannot present a client certificate when it
+  # refreshes Nomad's JWKS. HTTPS remains authenticated by Nomad ACLs.
+  verify_https_client = false
+  tls_min_version = "tls12"
+}
+{% endif %}
+
+telemetry {
+  collection_interval        = "10s"
+  disable_hostname           = true
+  prometheus_metrics         = true
+  publish_allocation_metrics = true
+  publish_node_metrics       = true
+}

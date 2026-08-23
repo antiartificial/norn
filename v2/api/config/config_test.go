@@ -5,7 +5,38 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 )
+
+func TestLegacyTokenSigningDeadline(t *testing.T) {
+	t.Setenv("NORN_LEGACY_TOKEN_SIGNING_UNTIL", "2026-08-10T12:00:00Z")
+	if got := Load().LegacyTokenSigningUntil; !got.Equal(time.Date(2026, 8, 10, 12, 0, 0, 0, time.UTC)) {
+		t.Fatalf("LegacyTokenSigningUntil = %s", got)
+	}
+	t.Setenv("NORN_LEGACY_TOKEN_SIGNING_UNTIL", "not-a-time")
+	if got := Load().LegacyTokenSigningUntil; !got.IsZero() {
+		t.Fatalf("invalid deadline should fail closed, got %s", got)
+	}
+}
+
+func TestHashiCorpTLSVerificationEnvironment(t *testing.T) {
+	t.Setenv("NOMAD_SKIP_VERIFY", "true")
+	t.Setenv("CONSUL_HTTP_SSL_VERIFY", "false")
+	cfg := Load()
+	if !cfg.NomadTLSSkipVerify || !cfg.ConsulTLSSkipVerify {
+		t.Fatalf("TLS verification flags = nomad:%v consul:%v, want both insecure", cfg.NomadTLSSkipVerify, cfg.ConsulTLSSkipVerify)
+	}
+}
+
+func TestAuditVerificationKeyRotationConfig(t *testing.T) {
+	t.Setenv("NORN_AUDIT_SIGNING_KEY", strings.Repeat("n", 32))
+	t.Setenv("NORN_AUDIT_PREVIOUS_SIGNING_KEYS", strings.Repeat("a", 32)+", "+strings.Repeat("b", 32))
+	t.Setenv("NORN_AUDIT_RETENTION_DAYS", "")
+	cfg := Load()
+	if len(cfg.AuditPreviousSigningKeys) != 2 || cfg.AuditPreviousSigningKeys[1] != strings.Repeat("b", 32) || cfg.AuditRetentionDays != 365 {
+		t.Fatalf("previous audit keys were not parsed: %d", len(cfg.AuditPreviousSigningKeys))
+	}
+}
 
 func TestBeaconConfig(t *testing.T) {
 	t.Setenv("NORN_BEACON_ENVIRONMENT", "mini")

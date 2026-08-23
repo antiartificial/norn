@@ -13,7 +13,7 @@ func TestAccessMiddlewareRecordsProxySafeMetadata(t *testing.T) {
 		w.WriteHeader(http.StatusAccepted)
 	})
 	req := httptest.NewRequest(http.MethodGet, "/api/health?secret=hidden", nil)
-	req.RemoteAddr = "10.0.0.2:12345"
+	req.RemoteAddr = "127.0.0.1:12345"
 	req.Header.Set("CF-Connecting-IP", "203.0.113.10")
 	req.Header.Set("Cf-Access-Authenticated-User-Email", "operator@example.test")
 	req.Header.Set("Authorization", "Bearer should-not-appear")
@@ -37,6 +37,21 @@ func TestAccessMiddlewareRecordsProxySafeMetadata(t *testing.T) {
 	}
 	if event.CFEmail != "operator@example.test" {
 		t.Fatalf("cf email = %q", event.CFEmail)
+	}
+}
+
+func TestAccessMiddlewareDoesNotTrustForwardingHeadersFromRemotePeer(t *testing.T) {
+	h := &Handler{access: NewAccessLog(10)}
+	req := httptest.NewRequest(http.MethodGet, "/api/health", nil)
+	req.RemoteAddr = "10.0.0.2:12345"
+	req.Header.Set("CF-Connecting-IP", "203.0.113.10")
+	rec := httptest.NewRecorder()
+
+	h.AccessMiddleware(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {})).ServeHTTP(rec, req)
+
+	events := h.access.Recent(1)
+	if len(events) != 1 || events[0].ClientIP != "10.0.0.2" {
+		t.Fatalf("client ip = %q, want direct peer", events[0].ClientIP)
 	}
 }
 

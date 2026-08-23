@@ -317,9 +317,26 @@ func (h *Handler) ContextDBRollbackFeedback(w http.ResponseWriter, r *http.Reque
 		"reason": req.Reason,
 		"owner":  req.Owner,
 	})
+	baseURL, err := url.Parse(webURL)
+	if err != nil || (baseURL.Scheme != "http" && baseURL.Scheme != "https") || baseURL.Host == "" || baseURL.User != nil || baseURL.Fragment != "" {
+		writeError(w, http.StatusBadGateway, "contextdb web service returned an invalid URL")
+		return
+	}
 	target := fmt.Sprintf("%s/v1/namespaces/%s/feedback/events/%s/rollback",
 		strings.TrimRight(webURL, "/"), url.PathEscape(namespace), url.PathEscape(eventID))
-	resp, err := http.Post(target, "application/json", strings.NewReader(string(payload)))
+	rollbackRequest, err := http.NewRequestWithContext(r.Context(), http.MethodPost, target, strings.NewReader(string(payload)))
+	if err != nil {
+		writeError(w, http.StatusBadGateway, err.Error())
+		return
+	}
+	rollbackRequest.Header.Set("Content-Type", "application/json")
+	contextDBClient := &http.Client{
+		Timeout: 10 * time.Second,
+		CheckRedirect: func(_ *http.Request, _ []*http.Request) error {
+			return http.ErrUseLastResponse
+		},
+	}
+	resp, err := contextDBClient.Do(rollbackRequest)
 	if err != nil {
 		writeError(w, http.StatusBadGateway, err.Error())
 		return

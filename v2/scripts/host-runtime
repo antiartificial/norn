@@ -3,7 +3,7 @@ set -euo pipefail
 
 usage() {
   cat <<'USAGE'
-Usage: host-runtime <install|render|doctor|recover|assure|status|migrate-state> [options]
+Usage: host-runtime <install|render|doctor|recover|assure|status|migrate-state|security-plan|security-init> [options]
 
 Manage a persistent macOS Norn runtime without embedding machine-specific paths
 in the repository.
@@ -23,6 +23,12 @@ Options:
   --serve PORT=TARGET   Reconcile a Tailscale Serve route; TARGET may contain {address}
   --forge APP           Reconcile an app's public Cloudflare routes (repeatable)
   --assure-interval N   Periodic assurance interval in seconds (default: 300)
+  --security-dir PATH   Staged/active security artifacts (default: CONFIG_DIR/security)
+  --cert-days N         Leaf certificate validity for security-init (default: 365)
+  --nomad-security-fragment PATH
+                        Reserved; activation is refused until recovery is TLS/ACL-aware
+  --consul-security-fragment PATH
+                        Reserved; activation is refused until recovery is TLS/ACL-aware
   --from-nomad PATH     Stopped Nomad state source for migrate-state
   --from-consul PATH    Stopped Consul state source for migrate-state
   --dry-run             Print planned writes/actions
@@ -59,6 +65,10 @@ state_dir="${NORN_HOST_STATE_DIR:-$HOME/.local/share/norn/host}"
 log_dir="${NORN_HOST_LOG_DIR:-$HOME/.local/log}"
 nomad_source="${NORN_HOST_NOMAD_SOURCE:-}"
 consul_source="${NORN_HOST_CONSUL_SOURCE:-}"
+security_dir="${NORN_HOST_SECURITY_DIR:-}"
+nomad_security_fragment="${NORN_HOST_NOMAD_SECURITY_FRAGMENT:-}"
+consul_security_fragment="${NORN_HOST_CONSUL_SECURITY_FRAGMENT:-}"
+cert_days="${NORN_HOST_CERT_DAYS:-365}"
 address="${NORN_HOST_ADDRESS:-auto}"
 api_label="${NORN_HOST_API_LABEL:-com.norn.api}"
 from_nomad=""
@@ -88,6 +98,10 @@ while [ "$#" -gt 0 ]; do
     --log-dir) log_dir="$2"; shift 2 ;;
     --nomad-source) nomad_source="$2"; shift 2 ;;
     --consul-source) consul_source="$2"; shift 2 ;;
+    --security-dir) security_dir="$2"; shift 2 ;;
+    --cert-days) cert_days="$2"; shift 2 ;;
+    --nomad-security-fragment) nomad_security_fragment="$2"; shift 2 ;;
+    --consul-security-fragment) consul_security_fragment="$2"; shift 2 ;;
     --address) address="$2"; shift 2 ;;
     --api-label) api_label="$2"; shift 2 ;;
     --catch-up)
@@ -121,9 +135,16 @@ probe_file="$config_dir/assure-probes"
 serve_file="$config_dir/assure-serve"
 forge_file="$config_dir/assure-forge"
 assure_state="$state_dir/assurance-failed"
+capacity_state="$state_dir/assurance-below-minimum"
 assure_lock="$state_dir/assurance.lock"
 nomad_config="$config_dir/nomad.hcl"
 consul_config="$config_dir/consul.hcl"
+if [ -z "$security_dir" ]; then security_dir="$config_dir/security"; fi
+security_dir="$(expand_home "$security_dir")"
+active_security_dir="$security_dir/active"
+active_nomad_security="$active_security_dir/nomad.hcl"
+active_consul_security="$active_security_dir/consul.hcl"
+active_security_env="${NORN_HOST_SECURITY_ENV:-$active_security_dir/client.env}"
 nomad_source_copy="$config_dir/sources/nomad.hcl"
 consul_source_copy="$config_dir/sources/consul.hcl"
 nomad_state="$state_dir/nomad"
@@ -152,6 +173,8 @@ if [ -z "$consul_source" ] && [ -n "$repo" ]; then
 fi
 nomad_source="$(expand_home "$nomad_source")"
 consul_source="$(expand_home "$consul_source")"
+if [ -n "$nomad_security_fragment" ]; then nomad_security_fragment="$(expand_home "$nomad_security_fragment")"; fi
+if [ -n "$consul_security_fragment" ]; then consul_security_fragment="$(expand_home "$consul_security_fragment")"; fi
 
 command_path() {
   local name="$1"
@@ -217,6 +240,10 @@ write_file() {
 render_configs() {
   [ -f "$nomad_source_copy" ] || die "missing managed Nomad source: run install"
   [ -f "$consul_source_copy" ] || die "missing managed Consul source: run install"
+  if [ -e "$active_nomad_security" ] || [ -e "$active_consul_security" ]; then
+    [ -f "$active_nomad_security" ] && [ -f "$active_consul_security" ] || die "refusing incomplete active security fragment pair"
+    die "security fragment activation is unavailable until host recovery and assurance use authenticated TLS probes"
+  fi
   local detected
   detected="$(detect_address)"
   if $dry_run; then
@@ -401,6 +428,14 @@ validate_install_specs() {
     ''|*[!0-9]*) die "--assure-interval must be an integer" ;;
   esac
   [ "$assure_interval" -ge 60 ] || die "--assure-interval must be at least 60 seconds"
+  case "$cert_days" in ''|*[!0-9]*) die "--cert-days must be an integer" ;; esac
+  [ "$cert_days" -ge 30 ] || die "--cert-days must be at least 30"
+  if [ -n "$nomad_security_fragment$consul_security_fragment" ]; then
+    [ -n "$nomad_security_fragment" ] && [ -n "$consul_security_fragment" ] || die "Nomad and Consul security fragments must be activated together"
+    [ -f "$nomad_security_fragment" ] || die "Nomad security fragment not found: $nomad_security_fragment"
+    [ -f "$consul_security_fragment" ] || die "Consul security fragment not found: $consul_security_fragment"
+    die "security fragment activation is unavailable until host recovery and assurance use authenticated TLS probes"
+  fi
   while IFS= read -r spec; do
     [ -n "$spec" ] || continue
     case "$spec" in *:*) ;; *) die "invalid --required value (expected APP:PROCESS): $spec" ;; esac
@@ -499,23 +534,81 @@ EOF
   note "next: stop live agents, run migrate-state, then run recover"
 }
 
+load_runtime_security_env() {
+  [ -f "$active_security_env" ] || return 0
+  local mode_bits
+  mode_bits="$(stat -f '%Lp' "$active_security_env" 2>/dev/null || true)"
+  [ -n "$mode_bits" ] || die "could not inspect active security environment: $active_security_env"
+  [ $((8#$mode_bits & 077)) -eq 0 ] || die "active security environment must not be group/world accessible: $active_security_env"
+  set -a
+  # shellcheck disable=SC1090
+  . "$active_security_env"
+  set +a
+}
+
+runtime_base() {
+  case "$1" in
+    consul) printf '%s\n' "${CONSUL_HTTP_ADDR:-http://127.0.0.1:8500}" ;;
+    nomad) printf '%s\n' "${NOMAD_ADDR:-http://127.0.0.1:4646}" ;;
+    norn) printf '%s\n' "${NORN_URL:-http://127.0.0.1:8800}" ;;
+    *) return 1 ;;
+  esac
+}
+
+runtime_curl() {
+  local service="$1" path="$2" base server_name port token_file token=""
+  shift 2
+  local -a args
+  args=(curl)
+  base="$(runtime_base "$service")"
+  case "$service" in
+    consul)
+      [ -n "${CONSUL_CACERT:-}" ] && args+=(--cacert "$CONSUL_CACERT")
+      [ -n "${CONSUL_CLIENT_CERT:-}" ] && args+=(--cert "$CONSUL_CLIENT_CERT")
+      [ -n "${CONSUL_CLIENT_KEY:-}" ] && args+=(--key "$CONSUL_CLIENT_KEY")
+      token="${CONSUL_HTTP_TOKEN:-}"
+      token_file="${CONSUL_HTTP_TOKEN_FILE:-}"
+      [ -z "$token" ] && [ -n "$token_file" ] && [ -r "$token_file" ] && token="$(<"$token_file")"
+      [ -n "$token" ] && args+=(-H "X-Consul-Token: $token")
+      server_name="${CONSUL_TLS_SERVER_NAME:-}"
+      ;;
+    nomad)
+      [ -n "${NOMAD_CACERT:-}" ] && args+=(--cacert "$NOMAD_CACERT")
+      [ -n "${NOMAD_CLIENT_CERT:-}" ] && args+=(--cert "$NOMAD_CLIENT_CERT")
+      [ -n "${NOMAD_CLIENT_KEY:-}" ] && args+=(--key "$NOMAD_CLIENT_KEY")
+      [ -n "${NOMAD_TOKEN:-}" ] && args+=(-H "X-Nomad-Token: $NOMAD_TOKEN")
+      server_name="${NOMAD_TLS_SERVER_NAME:-}"
+      ;;
+    norn) server_name="" ;;
+  esac
+  if [[ "$base" == https://127.0.0.1:* ]] && [ -n "$server_name" ]; then
+    port="${base##*:}"
+    args+=(--resolve "$server_name:$port:127.0.0.1")
+    base="https://$server_name:$port"
+  fi
+  args+=("$@" "${base%/}${path}")
+  "${args[@]}"
+}
+
+load_runtime_security_env
+
 wait_http() {
-  local url="$1" name="$2" attempts="${3:-60}" i=0
+  local service="$1" path="$2" name="$3" attempts="${4:-60}" i=0
   while [ "$i" -lt "$attempts" ]; do
-    if curl -fsS --max-time 2 "$url" >/dev/null 2>&1; then
+    if runtime_curl "$service" "$path" -fsS --max-time 2 >/dev/null 2>&1; then
       note "$name ready"
       return 0
     fi
     i=$((i + 1))
     sleep 1
   done
-  die "$name did not become ready: $url"
+  die "$name did not become ready"
 }
 
 wait_leader() {
-  local url="$1" name="$2" attempts="${3:-60}" i=0 response
+  local service="$1" path="$2" name="$3" attempts="${4:-60}" i=0 response
   while [ "$i" -lt "$attempts" ]; do
-    response="$(curl -fsS --max-time 2 "$url" 2>/dev/null || true)"
+    response="$(runtime_curl "$service" "$path" -fsS --max-time 2 2>/dev/null || true)"
     if [ -n "$response" ] && [ "$response" != '""' ]; then
       note "$name leader ready"
       return 0
@@ -523,16 +616,7 @@ wait_leader() {
     i=$((i + 1))
     sleep 1
   done
-  die "$name did not elect a leader: $url"
-}
-
-runtime_url() {
-  case "$1" in
-    consul) printf '%s\n' 'http://127.0.0.1:8500/v1/status/leader' ;;
-    nomad) printf '%s\n' 'http://127.0.0.1:4646/v1/status/leader' ;;
-    norn) printf '%s\n' 'http://127.0.0.1:8800/api/health' ;;
-    *) return 1 ;;
-  esac
+  die "$name did not elect a leader"
 }
 
 bootstrap_label() {
@@ -584,7 +668,7 @@ $1"
 
 service_passing_ipv4() {
   local service="$1"
-  curl -fsS --max-time 3 "http://127.0.0.1:8500/v1/health/service/$service?passing=true" 2>/dev/null |
+  runtime_curl consul "/v1/health/service/$service?passing=true" -fsS --max-time 3 2>/dev/null |
     python3 -c '
 import ipaddress, json, sys
 try:
@@ -608,7 +692,7 @@ raise SystemExit(1)
 
 job_exists() {
   local app="$1" code
-  code="$(curl -sS --max-time 3 -o /dev/null -w '%{http_code}' "http://127.0.0.1:4646/v1/job/$app" 2>/dev/null || true)"
+  code="$(runtime_curl nomad "/v1/job/$app" -sS --max-time 3 -o /dev/null -w '%{http_code}' 2>/dev/null || true)"
   [ "$code" = "200" ]
 }
 
@@ -665,7 +749,7 @@ assure_required_service() {
 }
 
 assure_nomad_ipv4() {
-  if curl -fsS --max-time 3 http://127.0.0.1:4646/v1/nodes 2>/dev/null |
+  if runtime_curl nomad /v1/nodes -fsS --max-time 3 2>/dev/null |
     python3 -c '
 import ipaddress, json, sys
 try:
@@ -753,19 +837,19 @@ run_endpoint_probes() {
 }
 
 emit_assurance_event() {
-  local severity="$1" event_type="$2" title="$3" body="$4" payload
+  local severity="$1" event_type="$2" title="$3" body="$4" correlation="${5:-norn-host:assurance}" dedupe="${6:-norn-host:$2}" payload
   payload="$(mktemp "${TMPDIR:-/tmp}/norn-assure-event.XXXXXX")"
-  python3 - "$payload" "$severity" "$event_type" "$title" "$body" <<'PY'
+  python3 - "$payload" "$severity" "$event_type" "$title" "$body" "$correlation" "$dedupe" <<'PY'
 import json, pathlib, sys
-path, severity, event_type, title, body = sys.argv[1:]
+path, severity, event_type, title, body, correlation, dedupe = sys.argv[1:]
 pathlib.Path(path).write_text(json.dumps({
     "app": "norn-host",
     "type": event_type,
     "severity": severity,
     "title": title,
     "body": body,
-    "dedupeKey": "norn-host:" + event_type,
-    "metadata": {"correlationKey": "norn-host:assurance", "stage": "assure"},
+    "dedupeKey": dedupe,
+    "metadata": {"correlationKey": correlation, "stage": "assure"},
 }))
 PY
   if ! curl -fsS --max-time 5 -H 'Content-Type: application/json' --data-binary "@$payload" \
@@ -773,6 +857,101 @@ PY
     note "warning: could not emit Beacon event $event_type"
   fi
   rm -f "$payload"
+}
+
+audit_minimum_capacity() {
+  local current count body capacity_hash
+  current="$(mktemp "${TMPDIR:-/tmp}/norn-capacity.XXXXXX")"
+  if ! python3 - "$current" <<'PY'
+import json, pathlib, sys, urllib.request
+
+destination = pathlib.Path(sys.argv[1])
+try:
+    with urllib.request.urlopen("http://127.0.0.1:8800/api/apps", timeout=10) as response:
+        apps = json.load(response)
+except Exception as exc:
+    raise SystemExit(f"could not load app capacity: {exc}")
+
+missing = []
+for app in apps:
+    spec = app.get("spec") or {}
+    if spec.get("deploy") is False:
+        continue
+    name = str(spec.get("name") or "")
+    allocations = app.get("allocations") or []
+    for process, process_spec in (spec.get("processes") or {}).items():
+        process_spec = process_spec or {}
+        if process_spec.get("schedule"):
+            continue
+        minimum = int((process_spec.get("scaling") or {}).get("min") or 0)
+        if minimum < 1:
+            continue
+        available = sum(
+            1 for allocation in allocations
+            if allocation.get("taskGroup") == process
+            and allocation.get("status") == "running"
+            and allocation.get("lifecycle") == "active"
+            and allocation.get("healthy") is not False
+        )
+        if available < minimum:
+            missing.append((name, str(process), minimum, available))
+
+destination.write_text("".join(
+    f"{app}\t{process}\t{minimum}\t{available}\n"
+    for app, process, minimum, available in sorted(missing)
+))
+PY
+  then
+    note "warning: could not audit declared minimum process capacity"
+    rm -f "$current"
+    return 0
+  fi
+
+  if [ -f "$capacity_state" ] && cmp -s "$current" "$capacity_state"; then
+    rm -f "$current"
+    return 0
+  fi
+
+  count="$(wc -l < "$current" | tr -d ' ')"
+  if [ "$count" -gt 0 ]; then
+    capacity_hash="$(python3 - "$current" <<'PY'
+import hashlib, pathlib, sys
+print(hashlib.sha256(pathlib.Path(sys.argv[1]).read_bytes()).hexdigest()[:16])
+PY
+)"
+    body="$(python3 - "$current" <<'PY'
+import pathlib, sys
+
+lines = []
+for line in pathlib.Path(sys.argv[1]).read_text().splitlines():
+    app, process, minimum, available = line.split("\t")
+    lines.append(f"- {app}:{process} has {available} available; minimum is {minimum}")
+print("Declared minimum capacity is not satisfied:\n" + "\n".join(lines))
+PY
+)"
+    emit_assurance_event warning service.capacity.below_minimum \
+      "$count process(es) are below declared minimum capacity" "$body" \
+      "norn-host:minimum-capacity" \
+      "norn-host:service.capacity.below_minimum:$capacity_hash"
+    cp "$current" "$capacity_state"
+    note "warning: $count process(es) are below declared minimum capacity"
+  elif [ -s "$capacity_state" ]; then
+    capacity_hash="$(python3 - "$capacity_state" <<'PY'
+import hashlib, pathlib, sys
+print(hashlib.sha256(pathlib.Path(sys.argv[1]).read_bytes()).hexdigest()[:16])
+PY
+)"
+    emit_assurance_event info service.capacity.recovered \
+      "Declared minimum capacity recovered" \
+      "Every deployable, non-scheduled process with a declared minimum is available at or above that minimum." \
+      "norn-host:minimum-capacity" \
+      "norn-host:service.capacity.recovered:$capacity_hash"
+    rm -f "$capacity_state"
+    note "ok: declared minimum process capacity recovered"
+  else
+    rm -f "$capacity_state"
+  fi
+  rm -f "$current"
 }
 
 assure_host() {
@@ -797,7 +976,8 @@ assure_host() {
 
   local item spec app process extra core_ready=true
   for item in consul nomad norn; do
-    if curl -fsS --max-time 3 "$(runtime_url "$item")" >/dev/null 2>&1; then
+    case "$item" in consul) path=/v1/status/leader ;; nomad) path=/v1/status/leader ;; norn) path=/api/health ;; esac
+    if runtime_curl "$item" "$path" -fsS --max-time 3 >/dev/null 2>&1; then
       note "ok: runtime $item"
     else
       record_assurance_failure "runtime $item is unavailable"
@@ -816,6 +996,7 @@ assure_host() {
         assure_required_service "$app" "$process" || true
       done < "$required_file"
     fi
+    audit_minimum_capacity
     reconcile_forge_routes || true
   fi
   reconcile_serve_routes || true
@@ -857,11 +1038,11 @@ recover_host() {
   done
   [ "$i" -lt 90 ] || die "Docker did not become ready"
   bootstrap_label "$consul_label" "$launch_agents/$consul_label.plist"
-  wait_leader "$(runtime_url consul)" consul
+  wait_leader consul /v1/status/leader consul
   bootstrap_label "$nomad_label" "$launch_agents/$nomad_label.plist"
-  wait_leader "$(runtime_url nomad)" nomad
+  wait_leader nomad /v1/status/leader nomad
   launchctl kickstart -k "gui/$(id -u)/$api_label"
-  wait_http "$(runtime_url norn)" norn
+  wait_http norn /api/health norn
   bootstrap_label "$agent_label" "$launch_agents/$agent_label.plist"
   run_catchups
   if ! assure_host; then
@@ -894,6 +1075,190 @@ run_catchups() {
   done < "$catch_up_file"
 }
 
+security_plan() {
+  local staged_count=0 active=false nomad_acl=false nomad_tls=false consul_acl=false consul_tls=false
+  if [ -d "$security_dir" ]; then
+    staged_count="$(find "$security_dir" -maxdepth 1 -type d -name 'staged-*' | wc -l | tr -d ' ')"
+  fi
+  if [ -f "$active_nomad_security" ] && [ -f "$active_consul_security" ]; then active=true; fi
+  if [ -f "$nomad_config" ]; then
+    grep -Eq '^[[:space:]]*acl[[:space:]]*\{' "$nomad_config" && nomad_acl=true || true
+    grep -Eq '^[[:space:]]*tls[[:space:]]*\{' "$nomad_config" && nomad_tls=true || true
+  fi
+  if [ -f "$consul_config" ]; then
+    grep -Eq '^[[:space:]]*acl[[:space:]]*(=|\{)' "$consul_config" && consul_acl=true || true
+    grep -Eq '^[[:space:]]*tls[[:space:]]*(=|\{)' "$consul_config" && consul_tls=true || true
+  fi
+
+  echo "norn host security plan"
+  echo "security_dir=$security_dir"
+  echo "staged_bundles=$staged_count"
+  echo "active_fragments=$active"
+  echo "nomad_acl_config=$nomad_acl"
+  echo "nomad_tls_config=$nomad_tls"
+  echo "consul_acl_config=$consul_acl"
+  echo "consul_tls_config=$consul_tls"
+  cat <<'PLAN'
+
+cutover phases
+1. Generate a staged PKI bundle with `norn host security init`; move both CA private keys to protected offline custody after issuing the required certificates.
+2. Provision three Nomad and three Consul servers plus at least two Nomad clients before treating quorum checks as production-ready.
+3. Add verified TLS client paths and future scoped ACL tokens to the SOPS-encrypted Norn API environment. Do not write tokens into the staged fragments.
+4. Implement and test TLS/client-certificate/ACL-token-aware recovery, assurance, diagnostics, and rollback probes. Managed activation is refused until this prerequisite is complete.
+5. In a drained maintenance window, validate both rendered configs and restart Consul and Nomad in the documented rolling order. Bootstrap ACLs, create least-privilege agent/Norn tokens, then restart the Norn API with its encrypted environment.
+6. Change Consul from the transition `default_policy = "allow"` fragment to the generated default-deny fragment after every agent and service-registration path has a scoped token.
+7. Run `norn production check`, deploy a disposable workload, restart it, exercise service discovery, and complete a rollback before admitting production traffic.
+
+Activation is intentionally separate from initialization: generating certificates never changes a running agent or managed configuration. This release stages artifacts only and refuses managed activation.
+PLAN
+}
+
+security_init() {
+  case "$cert_days" in ''|*[!0-9]*) die "--cert-days must be an integer" ;; esac
+  [ "$cert_days" -ge 30 ] || die "--cert-days must be at least 30"
+  local detected timestamp stage temp_root bundle_root nomad_bin consul_bin node_name
+  detected="$(detect_address)"
+  timestamp="$(date -u +%Y%m%dT%H%M%SZ)"
+  stage="$security_dir/staged-$timestamp"
+  if $dry_run; then
+    note "would generate a non-active Nomad/Consul PKI bundle under $stage for address=$detected"
+    note "would not modify managed configs, restart agents, or bootstrap ACL tokens"
+    return 0
+  fi
+  [ ! -e "$stage" ] || die "security stage already exists: $stage"
+  nomad_bin="$(command_path nomad)" || die "nomad binary not found"
+  consul_bin="$(command_path consul)" || die "consul binary not found"
+  node_name="$(hostname -s)"
+  mkdir -p "$security_dir"
+  chmod 700 "$security_dir"
+  temp_root="$(mktemp -d "$security_dir/.staging.XXXXXX")"
+  case "$temp_root" in
+    "$security_dir"/.staging.*) ;;
+    *) die "refusing unexpected security temp path: $temp_root" ;;
+  esac
+  chmod 700 "$temp_root"
+  trap 'find "$temp_root" -depth -delete >/dev/null 2>&1 || true' EXIT
+  bundle_root="$temp_root/bundle"
+  mkdir -m 700 "$temp_root/nomad" "$temp_root/consul" "$bundle_root" "$bundle_root/nomad" "$bundle_root/consul"
+
+  (
+    cd "$temp_root/nomad"
+    "$nomad_bin" tls ca create -days=1825
+    "$nomad_bin" tls cert create -server -region=global -additional-ipaddress="$detected" -days="$cert_days"
+    "$nomad_bin" tls cert create -cli -additional-ipaddress="$detected" -days="$cert_days"
+  )
+  (
+    cd "$temp_root/consul"
+    "$consul_bin" tls ca create -days="$((cert_days * 5))"
+    "$consul_bin" tls cert create -server -dc=dc1 -node="$node_name" -additional-ipaddress="$detected" -days="$cert_days"
+    "$consul_bin" tls cert create -client -additional-ipaddress="$detected" -days="$cert_days"
+  )
+
+  cp "$temp_root"/nomad/*.pem "$bundle_root/nomad/"
+  cp "$temp_root"/consul/*.pem "$bundle_root/consul/"
+  chmod 600 "$bundle_root"/nomad/*.pem "$bundle_root"/consul/*.pem
+  chmod 644 "$bundle_root/nomad/nomad-agent-ca.pem" "$bundle_root/nomad/global-server-nomad.pem" "$bundle_root/nomad/global-cli-nomad.pem"
+  chmod 644 "$bundle_root/consul/consul-agent-ca.pem" "$bundle_root/consul/dc1-server-consul-0.pem" "$bundle_root/consul/dc1-client-consul-0.pem"
+
+  python3 - "$stage" "$bundle_root" <<'PY'
+import json, pathlib, shlex, sys
+
+final_stage = pathlib.Path(sys.argv[1])
+stage = pathlib.Path(sys.argv[2])
+nomad = final_stage / "nomad"
+consul = final_stage / "consul"
+
+nomad_fragment = f'''acl {{
+  enabled = true
+}}
+
+tls {{
+  http = true
+  rpc = true
+  ca_file = {json.dumps(str(nomad / "nomad-agent-ca.pem"))}
+  cert_file = {json.dumps(str(nomad / "global-server-nomad.pem"))}
+  key_file = {json.dumps(str(nomad / "global-server-nomad-key.pem"))}
+  verify_server_hostname = true
+  verify_https_client = true
+  tls_min_version = "tls12"
+}}
+'''
+(stage / "nomad.hcl").write_text(nomad_fragment)
+
+def consul_fragment(default_policy: str) -> str:
+    return f'''ports {{
+  http = -1
+  https = 8501
+  grpc = -1
+  grpc_tls = 8503
+}}
+
+acl {{
+  enabled = true
+  default_policy = {json.dumps(default_policy)}
+  down_policy = "extend-cache"
+  enable_token_persistence = true
+}}
+
+tls {{
+  defaults {{
+    ca_file = {json.dumps(str(consul / "consul-agent-ca.pem"))}
+    cert_file = {json.dumps(str(consul / "dc1-server-consul-0.pem"))}
+    key_file = {json.dumps(str(consul / "dc1-server-consul-0-key.pem"))}
+    verify_incoming = true
+    verify_outgoing = true
+    verify_server_hostname = true
+    tls_min_version = "TLSv1_2"
+  }}
+  https {{
+    verify_incoming = true
+  }}
+  internal_rpc {{
+    verify_incoming = true
+    verify_outgoing = true
+    verify_server_hostname = true
+  }}
+}}
+'''
+
+(stage / "consul-transition.hcl").write_text(consul_fragment("allow"))
+(stage / "consul-default-deny.hcl").write_text(consul_fragment("deny"))
+
+env = {
+    "NORN_NOMAD_ADDR": "https://127.0.0.1:4646",
+    "NOMAD_ADDR": "https://127.0.0.1:4646",
+    "NOMAD_CACERT": str(nomad / "nomad-agent-ca.pem"),
+    "NOMAD_CLIENT_CERT": str(nomad / "global-cli-nomad.pem"),
+    "NOMAD_CLIENT_KEY": str(nomad / "global-cli-nomad-key.pem"),
+    "NOMAD_TLS_SERVER_NAME": "server.global.nomad",
+    "NORN_CONSUL_ADDR": "https://127.0.0.1:8501",
+    "CONSUL_HTTP_ADDR": "https://127.0.0.1:8501",
+    "CONSUL_CACERT": str(consul / "consul-agent-ca.pem"),
+    "CONSUL_CLIENT_CERT": str(consul / "dc1-client-consul-0.pem"),
+    "CONSUL_CLIENT_KEY": str(consul / "dc1-client-consul-0-key.pem"),
+    "CONSUL_TLS_SERVER_NAME": "server.dc1.consul",
+}
+(stage / "client.env.example").write_text("".join(f"{key}={shlex.quote(value)}\n" for key, value in env.items()))
+(stage / "manifest.json").write_text(json.dumps({
+    "schema": "norn.host-security-stage/v1",
+    "activated": False,
+    "containsACLTokens": False,
+    "nomadFragment": str(final_stage / "nomad.hcl"),
+    "consulTransitionFragment": str(final_stage / "consul-transition.hcl"),
+    "consulDefaultDenyFragment": str(final_stage / "consul-default-deny.hcl"),
+    "clientEnvironmentTemplate": str(final_stage / "client.env.example"),
+}, indent=2) + "\n")
+PY
+  chmod 600 "$bundle_root/nomad.hcl" "$bundle_root/consul-transition.hcl" "$bundle_root/consul-default-deny.hcl" "$bundle_root/client.env.example" "$bundle_root/manifest.json"
+  mv "$bundle_root" "$stage"
+  find "$temp_root" -depth -delete
+  trap - EXIT
+  note "generated inactive security stage: $stage"
+  note "CA private keys remain in the stage; move them to protected offline custody after issuing all required node certificates"
+  note "no managed config, running agent, ACL token, or encrypted environment was changed"
+  note "review with: $0 security-plan --security-dir $security_dir"
+}
+
 doctor() {
   local failures=0 item path
   [ "$(uname -s)" = "Darwin" ] && echo "ok   platform=macOS" || { echo "fail platform=$(uname -s)"; failures=$((failures + 1)); }
@@ -921,7 +1286,8 @@ doctor() {
     *) echo "ok   persistent_state=$state_dir" ;;
   esac
   for item in consul nomad norn; do
-    if curl -fsS --max-time 2 "$(runtime_url "$item")" >/dev/null 2>&1; then echo "ok   runtime=$item"; else echo "warn runtime=$item unavailable"; fi
+    case "$item" in consul) path=/v1/status/leader ;; nomad) path=/v1/status/leader ;; norn) path=/api/health ;; esac
+    if runtime_curl "$item" "$path" -fsS --max-time 2 >/dev/null 2>&1; then echo "ok   runtime=$item"; else echo "warn runtime=$item unavailable"; fi
   done
   [ "$failures" -eq 0 ] || return 1
 }
@@ -954,7 +1320,8 @@ status() {
     echo "down $assurance_label"
   fi
   for item in consul nomad norn; do
-    if curl -fsS --max-time 2 "$(runtime_url "$item")" >/dev/null 2>&1; then echo "up   $item"; else echo "down $item"; fi
+    case "$item" in consul) path=/v1/status/leader ;; nomad) path=/v1/status/leader ;; norn) path=/api/health ;; esac
+    if runtime_curl "$item" "$path" -fsS --max-time 2 >/dev/null 2>&1; then echo "up   $item"; else echo "down $item"; fi
   done
 }
 
@@ -976,10 +1343,10 @@ copy_state() {
 }
 
 migrate_state() {
-  if curl -fsS --max-time 1 http://127.0.0.1:4646/v1/status/leader >/dev/null 2>&1; then
+  if runtime_curl nomad /v1/status/leader -fsS --max-time 1 >/dev/null 2>&1; then
     die "Nomad is still running; stop it before migrate-state"
   fi
-  if curl -fsS --max-time 1 http://127.0.0.1:8500/v1/status/leader >/dev/null 2>&1; then
+  if runtime_curl consul /v1/status/leader -fsS --max-time 1 >/dev/null 2>&1; then
     die "Consul is still running; stop it before migrate-state"
   fi
   copy_state "$from_nomad" "$nomad_state" nomad
@@ -998,6 +1365,8 @@ case "$mode" in
   assure) assure_host ;;
   status) status ;;
   migrate-state) migrate_state ;;
+  security-plan) security_plan ;;
+  security-init) security_init ;;
   supervise) supervise ;;
   *) usage >&2; exit 2 ;;
 esac

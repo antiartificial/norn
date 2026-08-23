@@ -11,7 +11,8 @@ reboot, and Docker Desktop restarts without rebuilding every app.
   restarts the Norn API after its dependencies are ready, runs bounded catch-ups,
   and performs an assurance pass before an optional post-recovery hook.
 - A periodic assurance LaunchAgent that repairs explicitly required apps and
-  routes, then probes the endpoints users actually reach.
+  routes, reports declared minimum-capacity drift, then probes the endpoints
+  users actually reach.
 - An independent `com.norn.host-agent` process that claims durable, allow-listed
   platform and host maintenance operations from PostgreSQL.
 - Host diagnostics and concise status output.
@@ -79,7 +80,7 @@ norn host install --repo /path/to/norn \
 
 | Policy | Behavior |
 |--------|----------|
-| `--required APP:PROCESS` | Require a passing Consul instance on IPv4. Deploy `HEAD` when the app's Nomad job is absent; restart the app when the job exists but remains unhealthy after retries. |
+| `--required APP:PROCESS` | Require a passing Consul instance on IPv4. Deploy `HEAD` when the app's Nomad job is absent; replace its active allocations when the job exists but remains unhealthy after retries. |
 | `--forge APP` | Reconcile the app's public endpoints through cloudflared. Private and literal-IP endpoints are rejected, and stale private ingress rules are pruned. |
 | `--serve PORT=TARGET` | Reapply an idempotent Tailscale Serve listener. `{address}` expands to the current detected IPv4 address. |
 | `--probe NAME=URL` | Retry an unauthenticated HTTP GET against the actual public or tailnet entrypoint. Redirects are followed and HTTP error responses fail. |
@@ -112,12 +113,50 @@ the recovery supervisor and by `com.norn.host-assurance`.
 - Required services are retried before any repair to avoid reacting to a short
   Consul transition.
 - Only entries in `--required` authorize deploy or restart actions.
+- Every deployable, non-scheduled process whose `scaling.min` is at least one
+  is audited after required-service repair using its active, healthy allocation
+  count. A changed below-minimum set emits a
+  state-deduplicated `service.capacity.below_minimum` warning through Beacon, making
+  the drift visible in Norn web and native clients without authorizing repair.
+  When the set becomes empty, assurance emits the correlated
+  `service.capacity.recovered` event.
+- Restart repair stops active allocations whose desired state remains `run` so
+  Nomad must recreate task, network, and port-binding state. Assurance then
+  waits for the required Consul service to pass on IPv4.
 - Route reconciliation runs before endpoint probes.
 - HTTP probes retry with bounded backoff.
 - A failing pass exits non-zero and emits `host.assurance.failed` through
   Beacon, deduplicated for one hour.
 - The first passing run after a failure emits `host.assurance.recovered` with
   the same correlation key so the incident can be resolved automatically.
+
+## Production security staging
+
+`norn host security plan` reports whether staged or active Nomad/Consul
+security fragments exist and prints the paired cutover sequence. It never reads
+or prints token values.
+
+`norn host security init` atomically publishes an inactive timestamped bundle containing
+private CAs, server/client certificates, a Nomad ACL/TLS fragment, Consul
+transition and default-deny fragments, and a client environment template. It
+does not modify managed config or restart agents. The generated fragments were
+designed for a coordinated existing-cluster transition; activation must wait
+for a drained maintenance window, SOPS environment updates, rollback copies,
+and an ACL bootstrap plan.
+
+Managed activation is refused in this release. Recovery, assurance, status,
+required-service repair, job discovery, and stopped-agent checks now load a
+mode-`0600` `security/active/client.env` and honor the standard Consul/Nomad CA,
+client certificate, TLS server-name, and token variables. `host render` still
+refuses an active fragment pair until fleet activation, scoped token bootstrap,
+and rollback are one validated transaction. See
+[Production readiness](./production-readiness.md).
+
+This restriction is specific to the host-local macOS runtime. The separate
+[Linux HA acceptance lab](./ha-lab.md) now performs and fault-tests a staged
+three-member Consul/Nomad TLS and default-deny ACL cutover; its fleet PKI,
+scoped tokens, workload identity, and rollback gates must not be copied into a
+single-host bundle as though the trust and failure domains were equivalent.
 
 ## One-time state migration
 

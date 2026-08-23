@@ -98,7 +98,16 @@ proxy_reload="${NORN_PROXY_RELOAD:-false}"
 upgrade_mode="${NORN_PLATFORM_UPGRADE_MODE:-restart}"
 api_env_file="${NORN_API_ENV_FILE:-$HOME/.config/norn/api.env.enc.json}"
 sops_bin="${NORN_SOPS_BIN:-sops}"
-node_bin="${NORN_NODE_BIN:-node}"
+node_bin="${NORN_NODE_BIN:-}"
+if [[ -z "$node_bin" ]]; then
+  for candidate in /opt/homebrew/opt/node@24/bin/node /usr/local/opt/node@24/bin/node; do
+    if [[ -x "$candidate" ]]; then
+      node_bin="$candidate"
+      break
+    fi
+  done
+fi
+node_bin="${node_bin:-node}"
 
 if [[ "$upgrade_mode" == "proxy" && -z "${NORN_CANDIDATE_PORT:-}" ]]; then
   candidate_port="$proxy_candidate_port"

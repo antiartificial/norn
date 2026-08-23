@@ -17,8 +17,9 @@ validated Access cookie/header path. Norn does not accept bearer tokens in URL
 query parameters.
 
 Origin checking allows native clients with no `Origin` header, localhost, and
-origins in `NORN_ALLOWED_ORIGINS`. The exec WebSocket uses the same origin
-policy and requires the separate `apps:exec` scope.
+origins in `NORN_ALLOWED_ORIGINS`. The formal `norn.exec/v1` WebSocket uses the
+same origin policy, requires `apps:exec`, and is created through a device-key
+step-up flow. See [Native control protocol](./control-protocol.md).
 
 ## Event Envelope
 
@@ -54,7 +55,7 @@ Every message is a JSON object with this structure:
 | `deploy.progress` | `sagaId`, `message` | Allocation health polling updates |
 | `deploy.completed` | `sagaId`, `imageTag` | Deploy pipeline finished successfully |
 | `deploy.failed` | `sagaId`, `error` | Deploy pipeline failed |
-| `app.restarted` | `sagaId` | Rolling restart completed |
+| `app.restarted` | `sagaId` | Allocation replacement accepted |
 | `app.scaled` | `sagaId`, `group`, `count` | Task group scaled |
 | `function.completed` | `executionId`, `status` | Function invocation finished |
 | `maintenance.started` | `operationId`, `kind`, `status` | Host agent claimed a platform or host operation |
@@ -73,6 +74,13 @@ wss://norn.example.com/api/v1/events?after=4812
 Replay is capped at 500 events per connection. If a client receives 500 replay
 events, it should reconnect with the last ID until caught up. REST operation
 state remains authoritative; the event stream tells clients what changed.
+
+Before reconnecting, read `GET /api/v1/events/info` for retention bounds and
+supported stream features. `types` and `apps` provide comma-separated,
+exact-match subscriptions. `heartbeat` opts into a 10–120 second liveness
+frame. A stale cursor is rejected before upgrade with `event_cursor_gap`; an
+ahead cursor uses `event_cursor_ahead`. Both include current bounds so the
+client can reconcile REST state deliberately.
 
 ### Step Status Values
 

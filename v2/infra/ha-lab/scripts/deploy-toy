@@ -1,0 +1,55 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+image="${1:-}"
+version="${2:-}"
+[[ "${image}" =~ ^registry\.digitalocean\.com/antiartificial/norn-ha-toy@sha256:[a-f0-9]{64}$ ]] || { echo "first argument must be the immutable toy-app digest reference" >&2; exit 2; }
+[[ "${version}" =~ ^[a-zA-Z0-9._-]{1,40}$ ]] || { echo "second argument must be a bounded version label" >&2; exit 2; }
+
+script_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+lab_root="$(cd "${script_dir}/.." && pwd)"
+export PATH="${lab_root}/.tools/bin:${PATH}"
+lab_name="$(terraform -chdir="${lab_root}/terraform" output -raw name_prefix)"
+secret_file="$(${script_dir}/secrets path "${lab_name}")"
+set -a
+# shellcheck disable=SC1090
+source "${secret_file}"
+set +a
+
+first_ip="$(terraform -chdir="${lab_root}/terraform" output -json lab_nodes | jq -r 'to_entries | sort_by(.key) | first.value.public_ip')"
+public_ips="$(terraform -chdir="${lab_root}/terraform" output -json lab_nodes | jq -r 'to_entries | sort_by(.key)[] | .value.public_ip')"
+registry_config="$(mktemp)"
+cleanup() {
+  rm -f "${registry_config}"
+}
+trap cleanup EXIT
+umask 077
+doctl registry docker-config --expiry-seconds 259200 >"${registry_config}"
+for ip in ${public_ips}; do
+  scp -q "${registry_config}" "root@${ip}:/etc/norn/registry-config.json"
+  scp -q "${registry_config}" "root@${ip}:/etc/norn/docker/config.json"
+  ssh "root@${ip}" 'chown root:nornops /etc/norn/registry-config.json /etc/norn/docker/config.json; chmod 0640 /etc/norn/registry-config.json /etc/norn/docker/config.json'
+done
+
+database_password="${NORN_HA_NORN_DB_PASSWORD}"
+jq -cn --arg database_password "${database_password}" '{Path:"nomad/jobs/norn-ha-toy",Items:{database_password:$database_password}}' | \
+  ssh "root@${first_ip}" 'set -a; source /etc/norn/norn.env; set +a; export NOMAD_ADDR="${NORN_NOMAD_ADDR}"; nomad var put -force -in=json - >/dev/null'
+
+scp -q "${lab_root}/nomad/toy-app.nomad.hcl" "root@${first_ip}:/tmp/norn-ha-toy.nomad.hcl"
+ssh "root@${first_ip}" "set -a; source /etc/norn/norn.env; set +a; export NOMAD_ADDR=\"\${NORN_NOMAD_ADDR}\"; nomad job run -detach -var 'image=${image}' -var 'version=${version}' /tmp/norn-ha-toy.nomad.hcl >/dev/null"
+
+for _ in {1..60}; do
+  if ssh "root@${first_ip}" "
+    set -a; source /etc/norn/norn.env; set +a; export NOMAD_ADDR=\"\${NORN_NOMAD_ADDR}\";
+    nomad job status -json norn-ha-toy | jq -e '.[0].Summary.Summary.web.Running >= 2' >/dev/null &&
+    nomad deployment list -json | jq -e '[.[] | select(.JobID == \"norn-ha-toy\")] | sort_by(.CreateIndex) | last | .Status == \"successful\"' >/dev/null
+  "; then
+    ssh "root@${first_ip}" "consul catalog services | rg '^norn-ha-toy' >/dev/null 2>&1 || consul catalog services | grep -q '^norn-ha-toy'"
+    echo "norn-ha-toy ${version} running from ${image}"
+    exit 0
+  fi
+  sleep 2
+done
+
+echo "toy app did not reach two running allocations" >&2
+exit 1

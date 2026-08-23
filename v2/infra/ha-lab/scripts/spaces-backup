@@ -1,0 +1,23 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+script_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+lab_root="$(cd "${script_dir}/.." && pwd)"
+export PATH="${lab_root}/.tools/bin:${PATH}"
+
+[[ -x "${lab_root}/.tools/ansible/bin/python" ]] || {
+  echo "missing lab Python runtime; run scripts/lab bootstrap-tools" >&2
+  exit 1
+}
+
+lab_name="$(awk -F= '/^[[:space:]]*name_prefix[[:space:]]*=/ {value=$2; gsub(/[[:space:]\"]/, "", value); print value; exit}' "${lab_root}/terraform/terraform.tfvars")"
+region="$(awk -F= '/^[[:space:]]*region[[:space:]]*=/ {value=$2; gsub(/[[:space:]\"]/, "", value); print value; exit}' "${lab_root}/terraform/terraform.tfvars")"
+region="${region:-tor1}"
+[[ "${lab_name}" =~ ^[a-z][a-z0-9-]{2,23}$ ]] || { echo "terraform.tfvars has no valid name_prefix" >&2; exit 1; }
+secret_file="$(${script_dir}/secrets path "${lab_name}")"
+[[ -f "${secret_file}" ]] || { echo "missing ${secret_file}" >&2; exit 1; }
+
+command_name="${1:-status}"
+shift || true
+exec "${lab_root}/.tools/ansible/bin/python" "${script_dir}/spaces-backup.py" \
+  "${command_name}" --lab-name "${lab_name}" --secret-file "${secret_file}" --region "${region}" "$@"

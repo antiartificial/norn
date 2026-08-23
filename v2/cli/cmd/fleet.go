@@ -1,0 +1,123 @@
+package cmd
+
+import (
+	"fmt"
+	"io"
+	"os"
+	"sort"
+	"text/tabwriter"
+
+	"github.com/spf13/cobra"
+
+	"norn/v2/cli/api"
+	"norn/v2/cli/style"
+)
+
+var (
+	fleetDesired  int
+	fleetSize     string
+	fleetStrategy string
+	fleetReason   string
+)
+
+func init() {
+	rootCmd.AddCommand(fleetCmd)
+	fleetCmd.AddCommand(fleetPoolsCmd, fleetValidateCmd, fleetPlanCmd, fleetReplaceCmd, fleetReconcileCmd)
+	for _, command := range []*cobra.Command{fleetPlanCmd, fleetReplaceCmd, fleetReconcileCmd} {
+		command.Flags().IntVar(&fleetDesired, "desired", 0, "Proposed desired node count")
+		command.Flags().StringVar(&fleetSize, "size", "", "Proposed immutable provider VM size")
+		command.Flags().StringVar(&fleetStrategy, "strategy", "", "Replacement strategy: blueGreen or rolling")
+		command.Flags().StringVar(&fleetReason, "reason", "", "Operator reason recorded with the durable plan")
+	}
+	if err := fleetReplaceCmd.MarkFlagRequired("size"); err != nil {
+		panic(err)
+	}
+}
+
+var fleetCmd = &cobra.Command{Use: "fleet", Short: "Inspect and plan GitOps-managed fleet capacity"}
+
+var fleetPoolsCmd = &cobra.Command{
+	Use: "pools", Short: "List desired node pools from the checked-out norn-fleet document", Args: cobra.NoArgs,
+	RunE: func(cmd *cobra.Command, args []string) error {
+		inventory, err := client.FleetInventory()
+		if err != nil {
+			return fmt.Errorf("fleet inventory: %w", err)
+		}
+		if !inventory.Configured {
+			return fmt.Errorf("fleet is not configured; set NORN_FLEET_CONFIG on the Norn server")
+		}
+		if inventory.Validation != nil && !inventory.Validation.Valid {
+			printFleetValidation(cmd.OutOrStdout(), inventory.Validation)
+			return fmt.Errorf("configured fleet document is invalid")
+		}
+		names := make([]string, 0, len(inventory.NodePools))
+		for name := range inventory.NodePools {
+			names = append(names, name)
+		}
+		sort.Strings(names)
+		w := tabwriter.NewWriter(cmd.OutOrStdout(), 0, 0, 2, ' ', 0)
+		fmt.Fprintln(w, "POOL\tSIZE\tMIN\tDESIRED\tMAX\tSTRATEGY\tDRAIN")
+		for _, name := range names {
+			pool := inventory.NodePools[name]
+			fmt.Fprintf(w, "%s\t%s\t%d\t%d\t%d\t%s\t%s\n", name, pool.Size, pool.Min, pool.Desired, pool.Max, pool.Replacement.Strategy, pool.Replacement.DrainTimeout)
+		}
+		return w.Flush()
+	},
+}
+
+var fleetValidateCmd = &cobra.Command{
+	Use: "validate <cluster.yaml>", Short: "Run strict schema and infrastructure sanity validation", Args: cobra.ExactArgs(1),
+	RunE: func(cmd *cobra.Command, args []string) error {
+		document, err := os.ReadFile(args[0])
+		if err != nil {
+			return fmt.Errorf("read fleet document: %w", err)
+		}
+		report, err := client.ValidateFleetDocument(string(document))
+		if err != nil {
+			return fmt.Errorf("fleet validation: %w", err)
+		}
+		printFleetValidation(cmd.OutOrStdout(), report)
+		if !report.Valid {
+			return fmt.Errorf("fleet document is invalid")
+		}
+		return nil
+	},
+}
+
+var fleetPlanCmd = fleetPlanCommand("plan", "Create a durable capacity plan without changing cloud resources", "")
+var fleetReplaceCmd = fleetPlanCommand("replace", "Plan immutable blue/green replacement", "blueGreen")
+var fleetReconcileCmd = fleetPlanCommand("reconcile", "Record a desired-state drift reconciliation plan", "")
+
+func fleetPlanCommand(use, short, forcedStrategy string) *cobra.Command {
+	return &cobra.Command{Use: use + " <pool>", Short: short, Args: cobra.ExactArgs(1), RunE: func(cmd *cobra.Command, args []string) error {
+		var desired *int
+		if cmd.Flags().Changed("desired") {
+			value := fleetDesired
+			desired = &value
+		}
+		strategy := fleetStrategy
+		if forcedStrategy != "" {
+			strategy = forcedStrategy
+		}
+		op, err := client.PlanFleetCapacity(args[0], desired, fleetSize, strategy, fleetReason)
+		if err != nil {
+			return fmt.Errorf("fleet plan: %w", err)
+		}
+		fmt.Fprintf(cmd.OutOrStdout(), "%s capacity plan %s (%s)\n", style.Healthy.Render("recorded"), op.ID, op.Message)
+		if workflow, ok := op.Payload["workflowUrl"].(string); ok && workflow != "" {
+			fmt.Fprintf(cmd.OutOrStdout(), "review/apply: %s\n", workflow)
+		}
+		return nil
+	}}
+}
+
+func printFleetValidation(out io.Writer, report *api.FleetValidationReport) {
+	status := style.Healthy.Render("✓ valid")
+	if !report.Valid {
+		status = style.Unhealthy.Render("✗ invalid")
+	}
+	fmt.Fprintf(out, "%s  %s\n", style.Bold.Render(report.Name), status)
+	for _, finding := range report.Findings {
+		fmt.Fprintf(out, "  %s  %s  %s\n", finding.Severity, finding.Code, finding.Message)
+	}
+}

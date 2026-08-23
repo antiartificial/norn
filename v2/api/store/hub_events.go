@@ -3,6 +3,7 @@ package store
 import (
 	"context"
 	"encoding/json"
+	"time"
 
 	"norn/v2/api/hub"
 )
@@ -17,6 +18,19 @@ func (db *DB) AppendHubEvent(ctx context.Context, event *hub.Event) error {
 		VALUES ($1, $2, $3, $4)
 		RETURNING id
 	`, event.Timestamp, event.Type, event.AppID, payload).Scan(&event.ID)
+}
+
+func (db *DB) HubEventBounds(ctx context.Context) (hub.EventBounds, error) {
+	var bounds hub.EventBounds
+	var oldest, latest *time.Time
+	err := db.Pool.QueryRow(ctx, `
+		SELECT COALESCE(MIN(id), 0), COALESCE(MAX(id), 0), COUNT(*)::bigint,
+		       MIN(timestamp), MAX(timestamp)
+		FROM control_events
+	`).Scan(&bounds.OldestCursor, &bounds.LatestCursor, &bounds.RetainedEvents, &oldest, &latest)
+	bounds.OldestTimestamp = oldest
+	bounds.LatestTimestamp = latest
+	return bounds, err
 }
 
 func (db *DB) ListHubEventsAfter(ctx context.Context, after int64, limit int) ([]hub.Event, error) {

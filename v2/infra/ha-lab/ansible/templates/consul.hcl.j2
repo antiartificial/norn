@@ -1,0 +1,72 @@
+datacenter = "dc1"
+node_name  = "{{ inventory_hostname }}"
+data_dir   = "/opt/consul"
+bind_addr  = "{{ private_ip }}"
+client_addr = "0.0.0.0"
+server = true
+bootstrap_expect = {{ groups['norn_ha'] | length }}
+retry_join = {{ groups['norn_ha'] | map('extract', hostvars, 'private_ip') | list | to_json }}
+encrypt = "{{ consul_gossip_key }}"
+disable_update_check = true
+
+{% if security_phase != 'disabled' %}
+addresses {
+  http  = "127.0.0.1"
+  https = "0.0.0.0"
+}
+
+ports {
+  http     = 8500
+  https    = 8501
+  grpc     = -1
+  grpc_tls = 8503
+}
+
+tls {
+  defaults {
+    ca_file   = "/etc/consul.d/pki/ca.pem"
+    cert_file = "/etc/consul.d/pki/consul.pem"
+    key_file  = "/etc/consul.d/pki/consul-key.pem"
+    tls_min_version = "TLSv1_2"
+    verify_incoming = {{ 'true' if security_phase in ['consul-enforced', 'nomad-transition', 'enforced'] else 'false' }}
+    verify_outgoing = {{ 'true' if security_phase in ['consul-tls-outgoing', 'consul-enforced', 'nomad-transition', 'enforced'] else 'false' }}
+    verify_server_hostname = {{ 'true' if security_phase in ['consul-tls-outgoing', 'consul-enforced', 'nomad-transition', 'enforced'] else 'false' }}
+  }
+  https {
+    verify_incoming = {{ 'true' if security_phase in ['consul-enforced', 'nomad-transition', 'enforced'] else 'false' }}
+  }
+  internal_rpc {
+    verify_incoming = {{ 'true' if security_phase in ['consul-enforced', 'nomad-transition', 'enforced'] else 'false' }}
+    verify_outgoing = {{ 'true' if security_phase in ['consul-tls-outgoing', 'consul-enforced', 'nomad-transition', 'enforced'] else 'false' }}
+    verify_server_hostname = {{ 'true' if security_phase in ['consul-tls-outgoing', 'consul-enforced', 'nomad-transition', 'enforced'] else 'false' }}
+  }
+}
+
+acl {
+  enabled = true
+  default_policy = "{{ 'deny' if security_phase in ['consul-enforced', 'nomad-transition', 'enforced'] else 'allow' }}"
+  enable_token_persistence = true
+  tokens {
+{% if security_phase == 'consul-transition' %}
+    initial_management = "{{ consul_management_token }}"
+{% endif %}
+{% if security_phase in ['consul-clients', 'consul-tls-outgoing', 'consul-enforced', 'nomad-transition', 'enforced'] %}
+    agent = "{{ consul_agent_token }}"
+    default = "{{ consul_agent_token }}"
+{% endif %}
+  }
+}
+{% endif %}
+
+ui_config {
+  enabled = true
+}
+
+connect {
+  enabled = true
+}
+
+telemetry {
+  prometheus_retention_time = "60s"
+  disable_hostname = true
+}

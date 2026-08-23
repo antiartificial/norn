@@ -1,0 +1,53 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+member="${1:-}"
+confirmation="${2:-}"
+script_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+lab_root="$(cd "${script_dir}/.." && pwd)"
+terraform_dir="${lab_root}/terraform"
+export PATH="${lab_root}/.tools/bin:${PATH}"
+
+[[ "${confirmation}" == "--confirm-disposable-lab" ]] || {
+  echo "usage: replace-member MEMBER --confirm-disposable-lab" >&2
+  exit 2
+}
+name_prefix="$(terraform -chdir="${terraform_dir}" output -raw name_prefix)"
+[[ "${member}" =~ ^${name_prefix}-[0-9]{2}$ ]] || { echo "member is outside this lab prefix" >&2; exit 2; }
+nodes="$(terraform -chdir="${terraform_dir}" output -json lab_nodes)"
+jq -e --arg member "${member}" 'has($member)' <<<"${nodes}" >/dev/null || { echo "unknown lab member" >&2; exit 2; }
+first_ip="$(jq -r 'to_entries | sort_by(.key) | first.value.public_ip' <<<"${nodes}")"
+old_public_ip="$(jq -r --arg member "${member}" '.[$member].public_ip' <<<"${nodes}")"
+
+leaders="$({
+  printf '%s\n' "${NORN_HA_CONSUL_MANAGEMENT_TOKEN}"
+  printf '%s\n' "${NORN_HA_NOMAD_MANAGEMENT_TOKEN}"
+} | ssh "root@${first_ip}" 'IFS= read -r consul_token; IFS= read -r nomad_token
+export CONSUL_HTTP_ADDR=https://127.0.0.1:8501 CONSUL_CACERT=/etc/consul.d/pki/ca.pem CONSUL_CLIENT_CERT=/etc/consul.d/pki/consul.pem CONSUL_CLIENT_KEY=/etc/consul.d/pki/consul-key.pem CONSUL_TLS_SERVER_NAME=server.dc1.consul CONSUL_HTTP_TOKEN="${consul_token}"
+export NOMAD_ADDR=https://127.0.0.1:4646 NOMAD_CACERT=/etc/nomad.d/pki/nomad-ca.pem NOMAD_CLIENT_CERT=/etc/nomad.d/pki/nomad.pem NOMAD_CLIENT_KEY=/etc/nomad.d/pki/nomad-key.pem NOMAD_TLS_SERVER_NAME=server.global.nomad NOMAD_TOKEN="${nomad_token}"
+jq -cn --arg consul "$(consul operator raft list-peers | awk '\''$4 == "leader" {print $1}'\'')" --arg nomad "$(nomad operator raft list-peers -no-color | awk '\''$4 == "leader" {print $1}'\'')" --arg postgres "$(patronictl -c /etc/patroni/config.yml list --format json | jq -r ".[]|select(.Role==\"Leader\").Member")" --arg norn "$(curl -fsS http://127.0.0.1:8500/v1/health/service/norn-api?passing=true | jq -r ".[0].Node.Node")" "{consul:\$consul,nomad:\$nomad,postgres:\$postgres,norn:\$norn}"')"
+jq -e --arg member "${member}" 'all(.[]; . != $member and . != ($member + ".global"))' <<<"${leaders}" >/dev/null || {
+  echo "refusing to replace a current Consul, Nomad, PostgreSQL, or Norn leader" >&2
+  echo "leaders: ${leaders}" >&2
+  exit 1
+}
+
+if [[ -z "${DIGITALOCEAN_TOKEN:-}" ]]; then
+  export DIGITALOCEAN_TOKEN="$(doctl auth token)"
+fi
+resource="digitalocean_droplet.node[\"${member}\"]"
+plan_file=".replace-${member}.tfplan"
+terraform -chdir="${terraform_dir}" plan -replace="${resource}" -out="${plan_file}"
+plan_json="$(terraform -chdir="${terraform_dir}" show -json "${plan_file}")"
+unexpected="$(jq --arg target "${resource}" '[.resource_changes[] | select(.change.actions != ["no-op"]) | select(.address != $target and .address != "digitalocean_firewall.lab" and .address != "digitalocean_project.lab")] | length' <<<"${plan_json}")"
+[[ "${unexpected}" -eq 0 ]] || { echo "replacement plan contains an unexpected resource change" >&2; exit 1; }
+jq -e --arg target "${resource}" 'any(.resource_changes[]; .address == $target and .change.actions == ["delete","create"])' <<<"${plan_json}" >/dev/null || {
+  echo "replacement plan did not contain the exact member replacement" >&2
+  exit 1
+}
+
+terraform -chdir="${terraform_dir}" apply "${plan_file}"
+ssh-keygen -R "${old_public_ip}" >/dev/null 2>&1 || true
+"${script_dir}/pki" issue-node "${member}"
+"${script_dir}/converge"
+echo "replacement passed for ${member}; convergence reconciled quorum, database, workload, and stale Nomad identity state"

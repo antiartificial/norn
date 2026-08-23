@@ -65,7 +65,7 @@ func (h *Handler) Preflight(w http.ResponseWriter, r *http.Request) {
 		req.Ref = "HEAD"
 	}
 
-	specs, err := model.DiscoverApps(h.cfg.AppsDir)
+	specs, err := model.DiscoverAllApps(h.cfg.AppsDir)
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, err.Error())
 		return

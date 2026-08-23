@@ -2,6 +2,8 @@ package nomad
 
 import (
 	"fmt"
+	"net/url"
+	"strings"
 	"time"
 
 	nomadapi "github.com/hashicorp/nomad/api"
@@ -13,13 +15,24 @@ import (
 // Each process in the infraspec becomes a TaskGroup within the job.
 // Scheduled processes (cron) are translated into separate periodic batch jobs.
 func Translate(spec *model.InfraSpec, imageTag string, env map[string]string) *nomadapi.Job {
+	return TranslateForRegion(spec, imageTag, env, spec.ResolvedRegions()[0])
+}
+
+// TranslateForRegion creates the regional service job and filters processes by
+// their effective placement. Nomad regions provide an independent namespace,
+// so the same stable app job ID is intentionally reused in every region.
+func TranslateForRegion(spec *model.InfraSpec, imageTag string, env map[string]string, region model.ResolvedRegion) *nomadapi.Job {
 	jobID := spec.App
 	jobType := "service"
 
-	job := nomadapi.NewServiceJob(jobID, jobID, "global", 50)
-	job.Datacenters = []string{"dc1"}
+	job := nomadapi.NewServiceJob(jobID, jobID, region.NomadRegion, 50)
+	if pool := spec.EffectiveNodePool(); pool != "" {
+		job.NodePool = strPtr(pool)
+	}
+	job.Datacenters = append([]string(nil), region.Datacenters...)
 	job.Meta = map[string]string{
-		"deploy_ts": fmt.Sprintf("%d", time.Now().UnixMilli()),
+		"deploy_ts":   fmt.Sprintf("%d", time.Now().UnixMilli()),
+		"norn_region": region.Name,
 	}
 
 	// Merge spec.Env with provided env (secrets, etc.)
@@ -32,6 +45,9 @@ func Translate(spec *model.InfraSpec, imageTag string, env map[string]string) *n
 	}
 
 	for procName, proc := range spec.Processes {
+		if !spec.ProcessRunsInRegion(proc, region.Name) {
+			continue
+		}
 		if proc.Schedule != "" {
 			// Scheduled processes become separate batch jobs — skip here
 			continue
@@ -40,8 +56,14 @@ func Translate(spec *model.InfraSpec, imageTag string, env map[string]string) *n
 		tg := nomadapi.NewTaskGroup(procName, 1)
 
 		// Scaling
-		if proc.Scaling != nil && proc.Scaling.Min > 0 {
+		if proc.Scaling != nil && (proc.Scaling.Min > 0 || proc.Scaling.PerRegion > 0) {
 			count := proc.Scaling.Min
+			if count == 0 {
+				count = 1
+			}
+			if proc.Scaling.PerRegion > 0 {
+				count = proc.Scaling.PerRegion
+			}
 			tg.Count = &count
 		}
 
@@ -85,10 +107,10 @@ func Translate(spec *model.InfraSpec, imageTag string, env map[string]string) *n
 			task.Config["args"] = []string{"-c", proc.Command}
 		}
 
-		configureProcessNetworking(spec, procName, proc, task, tg)
+		configureProcessNetworking(spec, procName, proc, region, task, tg)
 
 		// Environment
-		task.Env = mergedEnv
+		task.Env = mergeProcessEnv(mergedEnv, proc.Env)
 
 		// Resources
 		cpu := 100
@@ -148,7 +170,7 @@ func Translate(spec *model.InfraSpec, imageTag string, env map[string]string) *n
 	return job
 }
 
-func configureProcessNetworking(spec *model.InfraSpec, procName string, proc model.Process, task *nomadapi.Task, tg *nomadapi.TaskGroup) {
+func configureProcessNetworking(spec *model.InfraSpec, procName string, proc model.Process, region model.ResolvedRegion, task *nomadapi.Task, tg *nomadapi.TaskGroup) {
 	ports := []string{}
 	net := &nomadapi.NetworkResource{}
 	services := []*nomadapi.Service{}
@@ -156,8 +178,11 @@ func configureProcessNetworking(spec *model.InfraSpec, procName string, proc mod
 	if proc.Port > 0 {
 		portLabel := fmt.Sprintf("%s-http", procName)
 		ports = append(ports, portLabel)
-		if len(spec.Endpoints) > 0 {
-			net.ReservedPorts = append(net.ReservedPorts, nomadapi.Port{Label: portLabel, Value: proc.Port})
+		// Endpoint traffic is normally discovered through Consul/Traefik, so
+		// host ports remain dynamic. Platform ingress can explicitly reserve a
+		// stable hostPort with one allocation per region.
+		if proc.HostPort > 0 {
+			net.ReservedPorts = append(net.ReservedPorts, nomadapi.Port{Label: portLabel, Value: proc.HostPort, To: proc.Port})
 		} else {
 			net.DynamicPorts = append(net.DynamicPorts, nomadapi.Port{Label: portLabel, To: proc.Port})
 		}
@@ -166,6 +191,7 @@ func configureProcessNetworking(spec *model.InfraSpec, procName string, proc mod
 			PortLabel: portLabel,
 			Provider:  "consul",
 		}
+		svc.Tags = regionalIngressTags(spec, procName, proc, region)
 		if proc.Health != nil {
 			interval, _ := time.ParseDuration(proc.Health.Interval)
 			timeout, _ := time.ParseDuration(proc.Health.Timeout)
@@ -230,11 +256,46 @@ func configureProcessNetworking(spec *model.InfraSpec, procName string, proc mod
 	}
 }
 
+func regionalIngressTags(spec *model.InfraSpec, procName string, proc model.Process, region model.ResolvedRegion) []string {
+	if proc.Port <= 0 || len(spec.Endpoints) == 0 {
+		return nil
+	}
+	router := strings.ReplaceAll(fmt.Sprintf("%s-%s-%s", spec.App, procName, region.Name), "_", "-")
+	tags := []string{
+		"traefik.enable=true",
+		fmt.Sprintf("traefik.http.routers.%s.entrypoints=web", router),
+		fmt.Sprintf("norn.region=%s", region.Name),
+		fmt.Sprintf("norn.traffic-weight=%d", region.TrafficWeight),
+	}
+	var hosts []string
+	for _, endpoint := range spec.Endpoints {
+		if endpoint.Region != "" && endpoint.Region != region.Name {
+			continue
+		}
+		parsed, err := url.Parse(endpoint.URL)
+		if err == nil && parsed.Hostname() != "" {
+			hosts = append(hosts, fmt.Sprintf("Host(`%s`)", parsed.Hostname()))
+		}
+	}
+	if len(hosts) > 0 {
+		tags = append(tags, fmt.Sprintf("traefik.http.routers.%s.rule=%s", router, strings.Join(hosts, " || ")))
+	}
+	return tags
+}
+
 // TranslatePeriodic creates a separate Nomad periodic batch job for a scheduled process.
 func TranslatePeriodic(spec *model.InfraSpec, procName string, proc model.Process, imageTag string, env map[string]string) *nomadapi.Job {
+	return TranslatePeriodicForRegion(spec, procName, proc, imageTag, env, spec.ResolvedRegions()[0])
+}
+
+func TranslatePeriodicForRegion(spec *model.InfraSpec, procName string, proc model.Process, imageTag string, env map[string]string, region model.ResolvedRegion) *nomadapi.Job {
 	jobID := fmt.Sprintf("%s-%s", spec.App, procName)
-	job := nomadapi.NewBatchJob(jobID, jobID, "global", 50)
-	job.Datacenters = []string{"dc1"}
+	job := nomadapi.NewBatchJob(jobID, jobID, region.NomadRegion, 50)
+	if pool := spec.EffectiveNodePool(); pool != "" {
+		job.NodePool = strPtr(pool)
+	}
+	job.Datacenters = append([]string(nil), region.Datacenters...)
+	job.Meta = map[string]string{"norn_region": region.Name}
 	job.Periodic = &nomadapi.PeriodicConfig{
 		Enabled:  boolPtr(true),
 		SpecType: strPtr("cron"),
@@ -261,7 +322,7 @@ func TranslatePeriodic(spec *model.InfraSpec, procName string, proc model.Proces
 		task.Config["command"] = "/bin/sh"
 		task.Config["args"] = []string{"-c", proc.Command}
 	}
-	task.Env = mergedEnv
+	task.Env = mergeProcessEnv(mergedEnv, proc.Env)
 
 	cpu := 100
 	mem := 128
@@ -336,7 +397,7 @@ func TranslateBatch(spec *model.InfraSpec, procName string, proc model.Process, 
 		task.Config["command"] = "/bin/sh"
 		task.Config["args"] = []string{"-c", proc.Command}
 	}
-	task.Env = mergedEnv
+	task.Env = mergeProcessEnv(mergedEnv, proc.Env)
 
 	cpu := 100
 	mem := 128
@@ -381,3 +442,14 @@ func TranslateBatch(spec *model.InfraSpec, procName string, proc model.Process, 
 
 func boolPtr(b bool) *bool    { return &b }
 func strPtr(s string) *string { return &s }
+
+func mergeProcessEnv(base, process map[string]string) map[string]string {
+	out := make(map[string]string, len(base)+len(process))
+	for key, value := range base {
+		out[key] = value
+	}
+	for key, value := range process {
+		out[key] = value
+	}
+	return out
+}

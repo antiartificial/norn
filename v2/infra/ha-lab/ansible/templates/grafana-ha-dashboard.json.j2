@@ -1,0 +1,43 @@
+{
+  "annotations": {"list": []},
+  "editable": false,
+  "panels": [
+    {
+      "type": "stat",
+      "title": "Toy requests",
+      "id": 1,
+      "gridPos": {"h": 8, "w": 8, "x": 0, "y": 0},
+      "targets": [{"expr": "sum(norn_ha_toy_requests_total)", "refId": "A"}]
+    },
+    {
+      "type": "timeseries",
+      "title": "Toy request rate",
+      "id": 2,
+      "gridPos": {"h": 8, "w": 16, "x": 8, "y": 0},
+      "targets": [{"expr": "sum(rate(norn_ha_toy_requests_total[5m]))", "legendFormat": "requests/s", "refId": "A"}]
+    },
+    {
+      "type": "timeseries",
+      "title": "Container CPU",
+      "id": 3,
+      "gridPos": {"h": 9, "w": 12, "x": 0, "y": 8},
+      "targets": [{"expr": "sum by (name) (rate(container_cpu_usage_seconds_total{name!=\"\"}[5m]))", "refId": "A"}]
+    },
+    {
+      "type": "timeseries",
+      "title": "Container memory",
+      "id": 4,
+      "gridPos": {"h": 9, "w": 12, "x": 12, "y": 8},
+      "targets": [{"expr": "sum by (name) (container_memory_working_set_bytes{name!=\"\"})", "refId": "A"}]
+    }
+  ],
+  "refresh": "15s",
+  "schemaVersion": 42,
+  "tags": ["norn", "ha-lab"],
+  "templating": {"list": []},
+  "time": {"from": "now-6h", "to": "now"},
+  "timezone": "browser",
+  "title": "Norn HA Lab",
+  "uid": "norn-ha-lab",
+  "version": 1
+}

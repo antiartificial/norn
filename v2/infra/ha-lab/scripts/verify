@@ -1,0 +1,38 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+script_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+lab_root="$(cd "${script_dir}/.." && pwd)"
+export PATH="${lab_root}/.tools/bin:${PATH}"
+export SSL_CERT_FILE="$("${lab_root}/.tools/ansible/bin/python" -m certifi)"
+repo_root="$(cd "${lab_root}/../../.." && pwd)"
+lab_name="$(terraform -chdir="${lab_root}/terraform" output -raw name_prefix)"
+secret_file="$(${script_dir}/secrets path "${lab_name}")"
+evidence_dir="${lab_root}/.evidence"
+evidence_file="${evidence_dir}/verify-$(date -u +%Y%m%dT%H%M%SZ).log"
+
+[[ -f "${secret_file}" ]] || { echo "missing ${secret_file}" >&2; exit 1; }
+set -a
+# shellcheck disable=SC1090
+source "${secret_file}"
+set +a
+mkdir -p "${evidence_dir}"
+
+first_ip="$(terraform -chdir="${lab_root}/terraform" output -json lab_nodes | jq -r 'to_entries | sort_by(.key) | first.value.public_ip')"
+ssh -o ExitOnForwardFailure=yes -o ServerAliveInterval=15 -N -L 55432:127.0.0.1:6432 "root@${first_ip}" &
+tunnel_pid=$!
+trap 'kill "${tunnel_pid}" 2>/dev/null || true' EXIT
+sleep 2
+
+{
+  echo "Norn HA verification started $(date -u +%FT%TZ)"
+  ANSIBLE_CONFIG="${lab_root}/ansible/ansible.cfg" ansible-playbook "${lab_root}/ansible/site.yml" --tags verify
+  (
+    cd "${repo_root}/v2/api"
+    NORN_TEST_DATABASE_URL="postgres://norn_test:${NORN_HA_NORN_DB_PASSWORD}@127.0.0.1:55432/norn_test?sslmode=require" \
+      go test ./store -run 'TestProductionEvidenceLifecycle|TestExecAuthorizationLifecycle' -count=1 -v
+  )
+  echo "Norn HA verification completed $(date -u +%FT%TZ)"
+} 2>&1 | tee "${evidence_file}"
+
+echo "evidence: ${evidence_file}"

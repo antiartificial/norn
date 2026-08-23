@@ -5,6 +5,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strings"
 )
 
 func (h *Handler) Health(w http.ResponseWriter, r *http.Request) {
@@ -52,8 +53,7 @@ func (h *Handler) Health(w http.ResponseWriter, r *http.Request) {
 	if _, err := exec.LookPath("sops"); err != nil {
 		services["sops"] = "down"
 	} else {
-		home, _ := os.UserHomeDir()
-		keyFile := filepath.Join(home, ".config", "sops", "age", "keys.txt")
+		keyFile := sopsAgeKeyFile()
 		if _, err := os.Stat(keyFile); err != nil {
 			services["sops"] = "down"
 		} else {
@@ -79,4 +79,12 @@ func (h *Handler) Health(w http.ResponseWriter, r *http.Request) {
 			"consulAddr": h.cfg.ConsulAddr,
 		},
 	})
+}
+
+func sopsAgeKeyFile() string {
+	if configured := strings.TrimSpace(os.Getenv("SOPS_AGE_KEY_FILE")); configured != "" {
+		return configured
+	}
+	home, _ := os.UserHomeDir()
+	return filepath.Join(home, ".config", "sops", "age", "keys.txt")
 }

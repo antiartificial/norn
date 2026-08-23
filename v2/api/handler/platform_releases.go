@@ -37,7 +37,7 @@ func (h *Handler) PlatformReleases(w http.ResponseWriter, r *http.Request) {
 			writeJSON(w, out)
 			return
 		}
-		writeError(w, http.StatusInternalServerError, err.Error())
+		WriteControlProblem(w, r, http.StatusInternalServerError, "release_list_failed", "failed to list platform releases")
 		return
 	}
 	for _, entry := range entries {

@@ -7,7 +7,7 @@ import { useHubEvents } from '../hooks/useHubEvents.ts'
 import { DeployPanel } from '../components/DeployPanel.tsx'
 import { ScaleModal } from '../components/ScaleModal.tsx'
 import { useToast } from '../components/ui/index.ts'
-import type { AccessPattern, AccessPatternResponse, AppStatus, ServiceManifest, VersionResponse } from '../types/index.ts'
+import type { AccessPattern, AccessPatternResponse, AppStatus, CapabilitiesResponse, ServiceManifest, VersionResponse } from '../types/index.ts'
 import type { HubEvent } from '../types/ws.ts'
 
 export type AppAction = 'preflight' | 'deploy' | 'restart'
@@ -28,6 +28,8 @@ export interface RuntimeContext {
   setDeployState: ReturnType<typeof useDeployProgress>['setDeployState']
   mutations: ReturnType<typeof useAppMutations>
   toggleEndpoint: (appId: string, hostname: string, enabled: boolean) => void
+	toggleDeployment: (appId: string, enabled: boolean) => Promise<void>
+  fleetAvailable: boolean
 }
 
 const DeployProgressContext = createContext<ReturnType<typeof useDeployProgress> | null>(null)
@@ -66,6 +68,14 @@ function useAccessPatternsQuery() {
   return useQuery({
     queryKey: ['access', 'patterns'],
     queryFn: () => apiFetch<AccessPatternResponse>('/api/access/patterns'),
+    staleTime: 60_000,
+  })
+}
+
+function useCapabilitiesQuery() {
+  return useQuery({
+    queryKey: ['capabilities'],
+    queryFn: () => apiFetch<CapabilitiesResponse>('/api/v1/capabilities'),
     staleTime: 60_000,
   })
 }
@@ -128,6 +138,7 @@ function RuntimeInner({ children }: { children: (runtime: RuntimeContext & { con
   const apps = appsQuery.data ?? []
   const serviceManifest = useServiceManifestQuery().data
   const accessPatterns = useAccessPatternsQuery().data?.patterns ?? []
+  const capabilities = useCapabilitiesQuery()
   const version = useQuery({ queryKey: ['version'], queryFn: () => apiFetch<VersionResponse>('/api/version'), staleTime: 60_000 })
   const ingress = useQuery({ queryKey: ['cloudflared', 'ingress'], queryFn: () => apiFetch<{ hostnames?: string[] }>('/api/cloudflared/ingress'), staleTime: 30_000 })
   const [scaleState, setScaleState] = useState<{ appId: string; groups: { name: string; current: number }[] } | null>(null)
@@ -161,6 +172,7 @@ function RuntimeInner({ children }: { children: (runtime: RuntimeContext & { con
 
   const mutations = useAppMutations(setScaleState)
   const activeIngress = useMemo(() => new Set(ingress.data?.hostnames ?? []), [ingress.data?.hostnames])
+  const fleetAvailable = ['fleet-v1', 'fleet-inventory', 'durable-fleet-capacity-plans'].every((feature) => capabilities.data?.features.includes(feature))
 
   const toggleEndpoint = useCallback(async (appId: string, hostname: string, enabled: boolean) => {
     await apiFetch(`/api/apps/${appId}/endpoints/toggle`, {
@@ -170,6 +182,11 @@ function RuntimeInner({ children }: { children: (runtime: RuntimeContext & { con
     })
     queryClient.invalidateQueries({ queryKey: ['cloudflared', 'ingress'] })
   }, [queryClient])
+	const toggleDeployment = useCallback(async (appId: string, enabled: boolean) => {
+		await apiFetch(`/api/v1/apps/${appId}/deployment`, { method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ enabled }) })
+		await queryClient.invalidateQueries({ queryKey: ['apps'] })
+		toast({ kind: enabled ? 'success' : 'info', title: enabled ? 'Deployment enabled' : 'Deployment disabled', description: appId })
+	}, [queryClient, toast])
 
   const runtime: RuntimeContext = {
     apps,
@@ -184,6 +201,8 @@ function RuntimeInner({ children }: { children: (runtime: RuntimeContext & { con
     setDeployState,
     mutations,
     toggleEndpoint,
+		toggleDeployment,
+    fleetAvailable,
   }
 
   return (

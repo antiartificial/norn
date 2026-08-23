@@ -2,6 +2,7 @@ package cmd
 
 import (
 	"fmt"
+	"os"
 
 	"github.com/spf13/cobra"
 
@@ -11,10 +12,14 @@ import (
 
 func init() {
 	validateCmd.Flags().BoolVar(&validateStrictSecrets, "strict-secrets", false, "Treat plaintext secret-like env values as validation errors")
+	validateCmd.Flags().StringVarP(&validateFile, "file", "f", "", "Validate an InfraSpec document instead of a discovered app")
+	validateCmd.Flags().StringVar(&validateFleetContext, "fleet", "", "Cross-check placement.nodePool against a fleet Cluster document")
 	rootCmd.AddCommand(validateCmd)
 }
 
 var validateStrictSecrets bool
+var validateFile string
+var validateFleetContext string
 
 var validateCmd = &cobra.Command{
 	Use:   "validate [app]",
@@ -22,6 +27,34 @@ var validateCmd = &cobra.Command{
 	Args:  cobra.MaximumNArgs(1),
 	RunE: func(cmd *cobra.Command, args []string) error {
 		invalid := false
+		if validateFile != "" {
+			if len(args) != 0 {
+				return fmt.Errorf("app argument cannot be combined with --file")
+			}
+			document, err := os.ReadFile(validateFile)
+			if err != nil {
+				return fmt.Errorf("read infraspec: %w", err)
+			}
+			var fleetDocument []byte
+			if validateFleetContext != "" {
+				fleetDocument, err = os.ReadFile(validateFleetContext)
+				if err != nil {
+					return fmt.Errorf("read fleet context: %w", err)
+				}
+			}
+			result, err := client.ValidateInfraSpecDocument(string(document), string(fleetDocument), validateStrictSecrets)
+			if err != nil {
+				return fmt.Errorf("validation failed: %w", err)
+			}
+			printValidation(result)
+			if !result.Valid {
+				return fmt.Errorf("infraspec document is invalid")
+			}
+			return nil
+		}
+		if validateFleetContext != "" {
+			return fmt.Errorf("--fleet requires --file")
+		}
 		if len(args) == 1 {
 			result, err := client.ValidateApp(args[0], validateStrictSecrets)
 			if err != nil {

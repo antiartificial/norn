@@ -1,6 +1,8 @@
 # Nomad Translator
 
-The translator converts an InfraSpec into Nomad job specifications. There are three translation functions for three job types.
+The translator converts an InfraSpec into Nomad job specifications. Regional
+deploys use `TranslateForRegion`: the same app job ID is submitted into each
+Nomad region with only the processes eligible for that region.
 
 ## Translate — Service Jobs
 
@@ -42,11 +44,13 @@ task "web" {
 
 | Scenario | Port Type | Nomad Config |
 |----------|-----------|--------------|
-| Process has `port` + app has `endpoints` | Static | `ReservedPorts: [{Label, Value}]` |
-| Process has `port`, no `endpoints` | Dynamic | `DynamicPorts: [{Label, To}]` |
+| Process has `port` | Dynamic | `DynamicPorts: [{Label, To}]`; supports multiple allocations per node |
+| Process has `port` + `hostPort` | Static | Reserved only for single-allocation infrastructure such as regional Traefik |
 | Process has no `port` | None | No network resource |
 
-Static ports are used when endpoints are defined because cloudflared needs a predictable address for routing.
+Endpoint traffic reaches a stable Traefik origin. Traefik discovers every
+healthy allocation through Consul, so application host ports do not need to be
+predictable.
 
 ### Consul Service Registration
 
@@ -69,14 +73,19 @@ service {
 
 Health checks are added when the process defines a `health` block.
 
+Processes with endpoints also receive opt-in Traefik Consul Catalog tags. The
+tags define the hostname rule, regional identity, and desired traffic weight;
+services without `traefik.enable=true` remain private.
+
 ### Environment Variables
 
 Environment variables are merged from two sources:
 
 1. `spec.Env` — static variables from the infraspec
 2. `env` parameter — secrets and runtime variables injected by the pipeline
+3. `process.env` — process-specific overrides
 
-The `env` parameter takes precedence on conflicts.
+Process env takes final precedence for that task.
 
 ### Resources
 

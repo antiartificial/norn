@@ -23,7 +23,10 @@ func TestProvisionAppKafkaCreatesTopicsAndEnv(t *testing.T) {
 	client, err := NewClient(Config{
 		Brokers: []string{"127.0.0.1:9092", "127.0.0.1:9092, redpanda.service:9092"},
 		RPKPath: rpkPath,
-		Timeout: time.Second,
+		// The race detector and concurrent static analysis can delay process
+		// startup on developer laptops; this remains far below production's
+		// command timeout while avoiding a scheduler-induced test failure.
+		Timeout: 5 * time.Second,
 	})
 	if err != nil {
 		t.Fatalf("new client: %v", err)

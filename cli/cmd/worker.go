@@ -26,7 +26,7 @@ var workerListCmd = &cobra.Command{
 		}
 
 		if len(workers) == 0 {
-			fmt.Println("\n  No workers connected.\n")
+			fmt.Print("\n  No workers connected.\n\n")
 			return nil
 		}
 

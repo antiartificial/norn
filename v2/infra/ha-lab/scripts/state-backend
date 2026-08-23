@@ -1,0 +1,91 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+script_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+lab_root="$(cd "${script_dir}/.." && pwd)"
+terraform_dir="${lab_root}/terraform"
+export PATH="${lab_root}/.tools/bin:${PATH}"
+
+command_name="${1:-status}"
+lab_name="$(awk -F= '/^[[:space:]]*name_prefix[[:space:]]*=/ {value=$2; gsub(/[[:space:]\"]/, "", value); print value; exit}' "${terraform_dir}/terraform.tfvars")"
+[[ "${lab_name}" =~ ^[a-z][a-z0-9-]{2,23}$ ]] || { echo "terraform.tfvars has no valid name_prefix" >&2; exit 1; }
+secret_file="$(${script_dir}/secrets path "${lab_name}")"
+[[ -f "${secret_file}" ]] || { echo "missing ${secret_file}" >&2; exit 1; }
+set -a
+# shellcheck disable=SC1090
+source "${secret_file}"
+set +a
+for required in NORN_HA_BACKUP_BUCKET NORN_HA_BACKUP_REGION NORN_HA_BACKUP_ENDPOINT NORN_HA_BACKUP_ACCESS_KEY NORN_HA_BACKUP_SECRET_KEY; do
+  [[ -n "${!required:-}" ]] || { echo "${required} is not configured" >&2; exit 1; }
+done
+
+export AWS_ACCESS_KEY_ID="${NORN_HA_BACKUP_ACCESS_KEY}"
+export AWS_SECRET_ACCESS_KEY="${NORN_HA_BACKUP_SECRET_KEY}"
+export AWS_EC2_METADATA_DISABLED=true
+backend_file="$(mktemp)"
+trap 'rm -f "${backend_file}"' EXIT
+chmod 0600 "${backend_file}"
+{
+  printf 'bucket = "%s"\n' "${NORN_HA_BACKUP_BUCKET}"
+  printf 'key = "terraform/state/%s.tfstate"\n' "${lab_name}"
+  printf 'region = "%s"\n' "${NORN_HA_BACKUP_REGION}"
+  printf 'endpoints = { s3 = "https://%s" }\n' "${NORN_HA_BACKUP_ENDPOINT}"
+  printf 'skip_credentials_validation = true\n'
+  printf 'skip_requesting_account_id = true\n'
+  printf 'skip_metadata_api_check = true\n'
+  printf 'skip_region_validation = true\n'
+  printf 'skip_s3_checksum = true\n'
+  printf 'use_lockfile = true\n'
+} >"${backend_file}"
+
+case "${command_name}" in
+  init)
+    backup_dir="${lab_root}/.state-backups"
+    install -d -m 0700 "${backup_dir}"
+    if [[ -f "${terraform_dir}/terraform.tfstate" ]]; then
+      install -m 0600 "${terraform_dir}/terraform.tfstate" "${backup_dir}/terraform.tfstate.$(date -u +%Y%m%dT%H%M%SZ)"
+    fi
+    terraform -chdir="${terraform_dir}" init -migrate-state -force-copy -backend-config="${backend_file}"
+    ;;
+  recover-missing)
+    local_state="${terraform_dir}/terraform.tfstate"
+    state_is_expected() {
+      [[ -s "$1" ]] && jq -e '.version == 4 and (.resources | length > 0) and (.resources | all(.type | startswith("digitalocean_")))' "$1" >/dev/null 2>&1
+    }
+    if ! state_is_expected "${local_state}"; then
+      for candidate in "${terraform_dir}/terraform.tfstate.backup" $(find "${lab_root}/.state-backups" -type f -name 'terraform.tfstate.*' -print 2>/dev/null | sort -r); do
+        if state_is_expected "${candidate}"; then
+          local_state="${candidate}"
+          break
+        fi
+      done
+    fi
+    state_is_expected "${local_state}" || { echo "refusing: no expected DigitalOcean recovery state found" >&2; exit 1; }
+    backup_dir="${lab_root}/.state-backups"
+    install -d -m 0700 "${backup_dir}"
+    install -m 0600 "${local_state}" "${backup_dir}/terraform.tfstate.$(date -u +%Y%m%dT%H%M%SZ)"
+    terraform -chdir="${terraform_dir}" init -reconfigure -backend-config="${backend_file}" >/dev/null
+    if remote_state="$(terraform -chdir="${terraform_dir}" state pull 2>/dev/null)" && \
+       [[ "$(jq '.resources | length' <<<"${remote_state}")" -gt 0 ]]; then
+      state_identity() {
+        jq -cS '[.resources[] as $resource | $resource.instances[]? | {type:$resource.type,name:$resource.name,index_key:(.index_key // null),id:.attributes.id}] | sort_by(.type,.name,(.index_key|tostring),.id)'
+      }
+      if [[ "$(state_identity <<<"${remote_state}")" == "$(state_identity <"${local_state}")" ]]; then
+        echo "backend already contains the expected recovered resources"
+        exit 0
+      fi
+      echo "refusing to overwrite a non-empty backend with different resources" >&2
+      exit 1
+    fi
+    terraform -chdir="${terraform_dir}" state push "${local_state}"
+    ;;
+  status)
+    terraform -chdir="${terraform_dir}" init -reconfigure -backend-config="${backend_file}" >/dev/null
+    state="$(terraform -chdir="${terraform_dir}" state pull)"
+    jq -e '{version,terraform_version,serial,lineage,resources:(.resources|length)}' <<<"${state}"
+    ;;
+  *)
+    echo "usage: state-backend init | state-backend recover-missing | state-backend status" >&2
+    exit 2
+    ;;
+esac

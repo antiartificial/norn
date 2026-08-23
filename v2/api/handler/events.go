@@ -113,7 +113,7 @@ func (h *Handler) SnoozeEvent(w http.ResponseWriter, r *http.Request) {
 	if body.By == "" {
 		body.By = "operator"
 	}
-	until := time.Time{}
+	var until time.Time
 	if body.Until != "" {
 		parsed, err := time.Parse(time.RFC3339, body.Until)
 		if err != nil {

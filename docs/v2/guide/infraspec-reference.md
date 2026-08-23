@@ -7,7 +7,9 @@ Complete field reference for `infraspec.yaml`.
 | Field | Type | Required | Description |
 |-------|------|----------|-------------|
 | `name` | string | yes | App identifier (used as Nomad job ID, Consul service prefix) |
-| `deploy` | bool | no | Set `false` to disable deploys for this app |
+| `deploy` | bool | no | Deployment gate. Defaults to `false`; it must be explicitly enabled before deploy/recovery workflows include the app |
+| `regions` | map[string][RegionTarget](#regions) | no | Regional Nomad targets. Omit for the backward-compatible local `global`/`dc1` target |
+| `primaryRegion` | string | conditionally | Required when a multi-region spec has scheduled or singleton processes; otherwise defaults to the first region name in lexical order |
 | `repo` | [RepoSpec](#repo) | no | Git repository configuration |
 | `build` | [BuildSpec](#build) | no | Docker build configuration |
 | `processes` | map[string][Process](#process) | yes | Named process definitions |
@@ -20,6 +22,7 @@ Complete field reference for `infraspec.yaml`.
 | `volumes` | [VolumeSpec](#volumes)[] | no | Host volume mounts |
 | `snapshots` | [SnapshotPolicy](#snapshotpolicy) | no | Snapshot retention defaults |
 | `deployPolicy` | [DeployPolicy](#deploypolicy) | no | Deploy safety policy such as auto-rollback |
+| `placement` | [Placement](#placement) | no | Logical norn-fleet node pool for all processes unless overridden |
 
 ## Process
 
@@ -28,6 +31,7 @@ Each key in the `processes` map is the process name. The process type is inferre
 | Field | Type | Default | Description |
 |-------|------|---------|-------------|
 | `port` | int | — | Listen port (makes this a service process) |
+| `hostPort` | int | — | Optional fixed host port for platform ingress; incompatible with multiple allocations in a region |
 | `command` | string | — | Override the Docker CMD |
 | `schedule` | string | — | Cron expression (makes this a periodic batch job) |
 | `function` | [FunctionSpec](#functionspec) | — | Function configuration (makes this a batch job) |
@@ -38,6 +42,60 @@ Each key in the `processes` map is the process name. The process type is inferre
 | `resources` | [Resources](#resources) | `cpu: 100, memory: 128` | CPU (MHz) and memory (MB) limits |
 | `tuning` | [TuningPolicy](#tuningpolicy) | — | Advisory resource tuning policy and signal declarations |
 | `canary` | [CanaryConfig](#canaryconfig) | — | Canary allocation count and evaluation window |
+| `regions` | string[] | all regions | Explicit process placement. Omit for all regions, except scheduled/singleton processes default to primary |
+| `singleton` | bool | `false` | Pin unscheduled singleton work to the primary region unless `regions` is explicit |
+
+## Placement
+
+Application specs reference a logical pool and never a provider VM size, region slug, or cloud resource ID:
+
+```yaml
+placement:
+  nodePool: app
+
+processes:
+  web:
+    port: 8080
+```
+
+`nodePool` must be DNS-compatible. Standalone InfraSpec validation checks its syntax; passing a `fleetDocument` to `POST /api/v1/validate/infraspec`, or using `norn validate --file ... --fleet ...`, also requires the pool to exist in the pinned `norn.dev/fleet/v1` document. Nomad receives the value through its job-level node-pool field, so all processes in an application share the same pool. Split materially different workloads into separate InfraSpecs.
+
+## Regions
+
+```yaml
+primaryRegion: ord
+regions:
+  ord:
+    nomadRegion: us-central
+    datacenters: [ord1]
+    trafficWeight: 70
+  iad:
+    nomadRegion: us-east
+    datacenters: [iad1]
+    trafficWeight: 30
+
+processes:
+  web:                    # runs in ord and iad
+    port: 8080
+    scaling: { min: 3 }
+  local-consumer:
+    regions: [ord]        # explicit constraint
+  leader:
+    singleton: true       # defaults to ord
+  digest:
+    schedule: "0 8 * * *" # defaults to ord
+```
+
+| Field | Type | Default | Description |
+|-------|------|---------|-------------|
+| `nomadRegion` | string | region map key | Nomad federation region |
+| `datacenters` | string[] | `[dc1]` | Eligible Nomad datacenters in that region |
+| `trafficWeight` | int | `100` | Desired global traffic weight, activated only after regional readiness passes; set explicitly to `0` for a ready standby region |
+
+Normal processes deploy to every declared region. `process.regions` is a
+constraint, not an opt-in list required on every process. Scheduled and
+singleton processes are the exception: they run only in `primaryRegion` unless
+they explicitly declare another placement.
 
 ## Health
 
@@ -61,7 +119,7 @@ Each key in the `processes` map is the process name. The process type is inferre
 |-------|------|---------|-------------|
 | `min` | int | `1` | Minimum instance count |
 | `max` | int | — | Maximum instance count (for autoscaling) |
-| `per_region` | int | — | Instances per region |
+| `per_region` | int | — | Instance count in each eligible region; overrides `min` for regional translation |
 | `auto` | [AutoScale](#autoscale) | — | Autoscaling configuration |
 
 ### AutoScale
@@ -193,6 +251,7 @@ When a process declares canary settings, Norn submits the Nomad deployment with 
 |-------|------|---------|-------------|
 | `dockerfile` | string | `Dockerfile` | Path to Dockerfile |
 | `test` | string | — | Test command (runs before deploy, fails pipeline on error) |
+| `image` | string | — | Externally published OCI image. Production requires an immutable `image@sha256:...` whose signature is bound to the resolved Git commit. |
 
 ## Infrastructure
 
@@ -259,6 +318,7 @@ Because `autoRollback` defaults to enabled, omit `deployPolicy` for normal apps.
 | `repo.branch` | main |
 | `snapshots.keep` | 3 |
 | `deployPolicy.autoRollback` | true |
+| `deploy` | false |
 
 ## Full Example
 
@@ -266,6 +326,7 @@ A real-world infraspec for an app with a web process, background worker, cron jo
 
 ```yaml
 name: signal-sideband
+deploy: true
 
 repo:
   url: git@github.com:antiartificial/signal-sideband.git

@@ -133,10 +133,21 @@ func (h *Handler) serveWakeGatewayTarget(w http.ResponseWriter, r *http.Request,
 		Scheme: "http",
 		Host:   net.JoinHostPort(instance.Address, strconv.Itoa(instance.Port)),
 	}
-	proxy := httputil.NewSingleHostReverseProxy(upstream)
-	proxy.Director = func(out *http.Request) {
+	proxy := &httputil.ReverseProxy{}
+	proxy.Rewrite = func(proxyRequest *httputil.ProxyRequest) {
 		query := r.URL.Query()
 		query.Del("wakeTimeout")
+		out := proxyRequest.Out
+		if direct := directRequestIP(r); direct == nil || !direct.IsLoopback() {
+			// Cloudflare identity headers are authoritative only when the request
+			// arrived through Norn's local tunnel/proxy boundary.
+			for name := range out.Header {
+				canonical := strings.ToLower(name)
+				if strings.HasPrefix(canonical, "cf-access-") || canonical == "cf-connecting-ip" || canonical == "cf-visitor" {
+					out.Header.Del(name)
+				}
+			}
+		}
 		out.URL.Scheme = upstream.Scheme
 		out.URL.Host = upstream.Host
 		out.URL.Path = upstreamPath
@@ -467,11 +478,14 @@ func requestHostKey(r *http.Request) string {
 }
 
 func forwardedProto(r *http.Request) string {
-	if proto := strings.TrimSpace(r.Header.Get("X-Forwarded-Proto")); proto != "" {
-		return proto
-	}
-	if visitor := strings.TrimSpace(r.Header.Get("CF-Visitor")); strings.Contains(visitor, "https") {
-		return "https"
+	direct := directRequestIP(r)
+	if direct != nil && direct.IsLoopback() {
+		if proto := strings.ToLower(strings.TrimSpace(r.Header.Get("X-Forwarded-Proto"))); proto == "http" || proto == "https" {
+			return proto
+		}
+		if visitor := strings.TrimSpace(r.Header.Get("CF-Visitor")); strings.Contains(visitor, `"scheme":"https"`) {
+			return "https"
+		}
 	}
 	if r.TLS != nil {
 		return "https"

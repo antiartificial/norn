@@ -1,0 +1,223 @@
+---
+- name: Prove point-in-time recovery exclusively from the versioned off-host repository
+  hosts: norn_ha[0]
+  become: true
+  gather_facts: false
+  any_errors_fatal: true
+  vars:
+    restore_dir: /var/lib/postgresql/offsite-pitr-restore
+    restore_port: 5545
+  tasks:
+    - name: Guard against running outside the disposable lab
+      ansible.builtin.stat:
+        path: /etc/norn-ha-lab
+      register: lab_guard
+
+    - name: Require the disposable-lab marker and off-host repository
+      ansible.builtin.assert:
+        that:
+          - lab_guard.stat.exists
+          - postgres_archive_mode == 's3'
+          - backup_bucket | length > 0
+        fail_msg: "Refusing off-host recovery without the managed lab marker and configured repository."
+
+    - name: Freeze one off-host recovery drill identifier
+      ansible.builtin.set_fact:
+        drill_id: "offsite-pitr-{{ now(utc=true, fmt='%Y%m%dT%H%M%SZ') }}"
+
+    - name: Identify the current PostgreSQL topology
+      ansible.builtin.command: patronictl -c /etc/patroni/config.yml list --format json
+      register: topology
+      changed_when: false
+
+    - name: Select separate backup-source and restore hosts
+      ansible.builtin.set_fact:
+        primary_host: "{{ topology.stdout | from_json | selectattr('Role', 'equalto', 'Leader') | map(attribute='Member') | first }}"
+        restore_host: "{{ groups['norn_ha'] | reject('equalto', topology.stdout | from_json | selectattr('Role', 'equalto', 'Leader') | map(attribute='Member') | first) | first }}"
+
+    - name: Create the recovery evidence table and baseline row
+      community.postgresql.postgresql_query:
+        login_host: 127.0.0.1
+        login_port: 6432
+        login_user: "{{ postgres_database_user }}"
+        login_password: "{{ norn_database_password }}"
+        login_db: "{{ postgres_database }}"
+        query:
+          - "CREATE TABLE IF NOT EXISTS pitr_evidence (drill_id text, phase text, created_at timestamptz default now())"
+          - "DELETE FROM pitr_evidence WHERE drill_id = '{{ drill_id }}'"
+          - "INSERT INTO pitr_evidence(drill_id, phase) VALUES ('{{ drill_id }}', 'baseline')"
+      delegate_to: "{{ primary_host }}"
+      no_log: true
+
+    - name: Take a full backup directly into the off-host repository
+      ansible.builtin.command: "pgbackrest --stanza={{ postgres_cluster_name }} --type=full backup"
+      become_user: postgres
+      delegate_to: "{{ primary_host }}"
+      register: offsite_backup
+      changed_when: true
+      no_log: true
+
+    - name: Capture the immutable backup label
+      ansible.builtin.command: "pgbackrest --stanza={{ postgres_cluster_name }} info --output=json"
+      become_user: postgres
+      delegate_to: "{{ primary_host }}"
+      register: repository_info
+      changed_when: false
+      no_log: true
+
+    - name: Preserve the latest off-host backup label
+      ansible.builtin.set_fact:
+        backup_label: "{{ (repository_info.stdout | from_json)[0].backup[-1].label }}"
+
+    - name: Write and commit the row that must survive recovery
+      community.postgresql.postgresql_query:
+        login_host: 127.0.0.1
+        login_port: 6432
+        login_user: "{{ postgres_database_user }}"
+        login_password: "{{ norn_database_password }}"
+        login_db: "{{ postgres_database }}"
+        query: "INSERT INTO pitr_evidence(drill_id, phase) VALUES ('{{ drill_id }}', 'survives')"
+      delegate_to: "{{ primary_host }}"
+      no_log: true
+
+    - name: Capture the committed recovery target
+      community.postgresql.postgresql_query:
+        login_host: 127.0.0.1
+        login_port: 6432
+        login_user: "{{ postgres_database_user }}"
+        login_password: "{{ norn_database_password }}"
+        login_db: "{{ postgres_database }}"
+        query: "SELECT clock_timestamp()::text AS recovery_target"
+      delegate_to: "{{ primary_host }}"
+      register: target_write
+      no_log: true
+
+    - name: Preserve the exact recovery target
+      ansible.builtin.set_fact:
+        recovery_target: "{{ target_write.query_result[0].recovery_target }}"
+      no_log: true
+
+    - name: Ensure the later row has a distinct commit time
+      ansible.builtin.pause:
+        seconds: 2
+
+    - name: Write and commit the row that must not survive recovery
+      community.postgresql.postgresql_query:
+        login_host: 127.0.0.1
+        login_port: 6432
+        login_user: "{{ postgres_database_user }}"
+        login_password: "{{ norn_database_password }}"
+        login_db: "{{ postgres_database }}"
+        query: "INSERT INTO pitr_evidence(drill_id, phase) VALUES ('{{ drill_id }}', 'after-target')"
+      delegate_to: "{{ primary_host }}"
+      no_log: true
+
+    - name: Rotate WAL into the off-host archive
+      ansible.builtin.command:
+        argv: [psql, --host=127.0.0.1, --port=5432, --username=postgres, --dbname=postgres, --tuples-only, --no-align, "--command=SELECT pg_switch_wal()"]
+      become_user: postgres
+      environment:
+        PGPASSWORD: "{{ postgres_superuser_password }}"
+      delegate_to: "{{ primary_host }}"
+      no_log: true
+
+    - name: Wait for off-host WAL archiving to catch up
+      ansible.builtin.command: "pgbackrest --stanza={{ postgres_cluster_name }} check"
+      become_user: postgres
+      delegate_to: "{{ primary_host }}"
+      register: archive_ready
+      changed_when: false
+      retries: 30
+      delay: 2
+      until: archive_ready.rc == 0
+      no_log: true
+
+    - name: Remove any prior isolated restore directory
+      ansible.builtin.file:
+        path: "{{ restore_dir }}"
+        state: absent
+      delegate_to: "{{ restore_host }}"
+
+    - name: Create an empty isolated restore directory
+      ansible.builtin.file:
+        path: "{{ restore_dir }}"
+        state: directory
+        owner: postgres
+        group: postgres
+        mode: "0700"
+      delegate_to: "{{ restore_host }}"
+
+    - name: Restore the selected timestamp from off-host objects on a different member
+      ansible.builtin.command:
+        argv:
+          - pgbackrest
+          - "--stanza={{ postgres_cluster_name }}"
+          - "--pg1-path={{ restore_dir }}"
+          - "--set={{ backup_label }}"
+          - --type=time
+          - "--target={{ recovery_target }}"
+          - --target-action=promote
+          - restore
+      become_user: postgres
+      delegate_to: "{{ restore_host }}"
+      register: offsite_restore
+      changed_when: true
+      no_log: true
+
+    - name: Exercise isolated recovery with unconditional cleanup
+      block:
+        - name: Start the isolated restored instance
+          ansible.builtin.command:
+            argv:
+              - "/usr/lib/postgresql/{{ postgresql_major_version }}/bin/pg_ctl"
+              - -D
+              - "{{ restore_dir }}"
+              - -l
+              - "{{ restore_dir }}/recovery.log"
+              - -o
+              - "-p {{ restore_port }} -c listen_addresses=127.0.0.1 -c unix_socket_directories=/tmp -c archive_command=/bin/true"
+              - -w
+              - start
+          become_user: postgres
+          delegate_to: "{{ restore_host }}"
+
+        - name: Query the off-host restored evidence boundary
+          ansible.builtin.command:
+            argv:
+              - psql
+              - --host=/tmp
+              - "--port={{ restore_port }}"
+              - "--dbname={{ postgres_database }}"
+              - --tuples-only
+              - --no-align
+              - "--command=SELECT count(*) FILTER (WHERE phase = 'survives'), count(*) FILTER (WHERE phase = 'after-target') FROM pitr_evidence WHERE drill_id = '{{ drill_id }}'"
+          become_user: postgres
+          delegate_to: "{{ restore_host }}"
+          register: recovered_rows
+          changed_when: false
+      always:
+        - name: Always stop the isolated restored instance
+          ansible.builtin.command: "/usr/lib/postgresql/{{ postgresql_major_version }}/bin/pg_ctl -D {{ restore_dir }} -m fast -w stop"
+          become_user: postgres
+          delegate_to: "{{ restore_host }}"
+          failed_when: false
+          changed_when: false
+
+    - name: Require the exact off-host recovery boundary
+      ansible.builtin.assert:
+        that: recovered_rows.stdout | trim == '1|0'
+        fail_msg: "The off-host restored database did not match the requested recovery boundary."
+
+    - name: Emit value-safe off-host PITR evidence
+      ansible.builtin.debug:
+        msg:
+          schema: norn.ha-drill/v1
+          kind: postgres-offsite-pitr
+          backup_source: "{{ primary_host }}"
+          restore_host: "{{ restore_host }}"
+          repository_bucket: "{{ backup_bucket }}"
+          repository_versioned: true
+          backup_label: "{{ backup_label }}"
+          target_boundary_verified: true
+          before_target_rows: 1
+          after_target_rows: 0

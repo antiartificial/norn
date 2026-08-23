@@ -1,0 +1,73 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+script_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+lab_root="$(cd "${script_dir}/.." && pwd)"
+export PATH="${lab_root}/.tools/bin:${PATH}"
+command_name="${1:-status}"
+lab_name="$(terraform -chdir="${lab_root}/terraform" output -raw name_prefix)"
+"${script_dir}/secrets" ensure "${lab_name}" >/dev/null
+secret_file="$(${script_dir}/secrets path "${lab_name}")"
+set -a
+# shellcheck disable=SC1090
+source "${secret_file}"
+set +a
+
+repo="antiartificial/norn-ha-toy"
+catalog_dir="${lab_root}/.tools/catalog/norn-ha-toy"
+
+case "${command_name}" in
+  sync)
+    if [[ ! -f "${NORN_HA_GIT_DEPLOY_KEY_PATH}" ]]; then
+      ssh-keygen -q -t ed25519 -N '' -C "${lab_name} read-only deploy" -f "${NORN_HA_GIT_DEPLOY_KEY_PATH}"
+      chmod 0600 "${NORN_HA_GIT_DEPLOY_KEY_PATH}"
+      chmod 0644 "${NORN_HA_GIT_DEPLOY_KEY_PATH}.pub"
+    fi
+    if ! gh repo view "${repo}" >/dev/null 2>&1; then
+      gh repo create "${repo}" --private --description "Disposable Norn HA production-admission pilot" --disable-issues --disable-wiki
+    fi
+    if ! gh repo deploy-key list -R "${repo}" | grep -Fq "${lab_name} read-only deploy"; then
+      gh repo deploy-key add "${NORN_HA_GIT_DEPLOY_KEY_PATH}.pub" -R "${repo}" --title "${lab_name} read-only deploy"
+    fi
+    install -d -m 0700 "${catalog_dir}"
+    rsync -a --delete --exclude .git "${lab_root}/toy-app/" "${catalog_dir}/"
+    if [[ ! -d "${catalog_dir}/.git" ]]; then
+      git -C "${catalog_dir}" init -b main >/dev/null
+      git -C "${catalog_dir}" remote add origin "https://github.com/${repo}.git"
+    fi
+    git -C "${catalog_dir}" add --all
+    if ! git -C "${catalog_dir}" diff --cached --quiet; then
+      git -C "${catalog_dir}" -c user.name='Norn HA Lab' -c user.email='norn-ha-lab@users.noreply.github.com' commit -m 'Update HA toy service' >/dev/null
+      git -C "${catalog_dir}" push -u origin main >/dev/null
+    fi
+    if [[ ! -f "${NORN_HA_AGE_KEY_PATH}" ]]; then
+      age-keygen -o "${NORN_HA_AGE_KEY_PATH}" >/dev/null
+      chmod 0600 "${NORN_HA_AGE_KEY_PATH}"
+    fi
+    recipient="$(age-keygen -y "${NORN_HA_AGE_KEY_PATH}")"
+    if grep -q '^NORN_HA_AGE_RECIPIENT=' "${secret_file}"; then
+      sed -i '' "s|^NORN_HA_AGE_RECIPIENT=.*$|NORN_HA_AGE_RECIPIENT=${recipient}|" "${secret_file}"
+    else
+      printf 'NORN_HA_AGE_RECIPIENT=%s\n' "${recipient}" >>"${secret_file}"
+    fi
+    export NORN_HA_AGE_RECIPIENT="${recipient}"
+    # Nomad's Docker bridge reaches the node-local HAProxy/PostgreSQL endpoint
+    # through the Linux bridge gateway, not the container loopback address.
+    database_url="postgres://norn_test:${NORN_HA_NORN_DB_PASSWORD}@172.17.0.1:6432/norn_test?sslmode=require"
+    printf 'DATABASE_URL: %s\n' "${database_url}" | sops --config /dev/null --encrypt --input-type yaml --output-type yaml --age "${recipient}" /dev/stdin >"${NORN_HA_TOY_SECRETS_PATH}"
+    chmod 0600 "${NORN_HA_TOY_SECRETS_PATH}"
+    git -C "${catalog_dir}" rev-parse HEAD
+    ;;
+  status)
+    gh repo view "${repo}" --json nameWithOwner,visibility,url
+    [[ -f "${NORN_HA_GIT_DEPLOY_KEY_PATH}" && -f "${NORN_HA_AGE_KEY_PATH}" && -f "${NORN_HA_TOY_SECRETS_PATH}" && -n "${NORN_HA_AGE_RECIPIENT:-}" ]] || {
+      echo "catalog credentials or encrypted secret bundle are incomplete" >&2
+      exit 1
+    }
+    git -C "${catalog_dir}" rev-parse HEAD
+    ;;
+  *)
+    echo "usage: catalog sync | catalog status" >&2
+    exit 2
+    ;;
+esac
