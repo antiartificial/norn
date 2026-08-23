@@ -35,6 +35,13 @@ func discoverApps(appsDir string, deployOnly bool) ([]*InfraSpec, error) {
 		if err != nil {
 			continue
 		}
+		// Disabled drafts are visible to operators, but an unrelated repository
+		// may also contain an InfraSpec-shaped file without an application name.
+		// Such a document cannot be addressed by any app route and must not become
+		// a nameless inventory entry.
+		if strings.TrimSpace(spec.App) == "" {
+			continue
+		}
 		if deployOnly && !spec.Deploy {
 			continue
 		}

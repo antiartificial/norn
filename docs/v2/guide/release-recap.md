@@ -4,7 +4,7 @@ title: Norn v2 Release Recap
 
 # Norn v2 Release Recap
 
-This recap summarizes the current Norn v2 release line: the Nomad/Consul control plane, the operator-facing dashboard and CLI, fleet planning, production admission, Beacon operational events, and the upgrade posture for local and Linux hosts. The `v2.18.0-control` release adds a versioned fleet contract, safe capacity-plan receipts, regional placement and ingress, production mutation admission and audit, reproducible Linux HA acceptance infrastructure, host metrics, minimum-capacity assurance, and conservative app creation. It retains the backward-compatible v1 control protocol introduced in v2.17.
+This recap summarizes the current Norn v2 release line: the Nomad/Consul control plane, the operator-facing dashboard and CLI, fleet planning, production admission, Beacon operational events, and the upgrade posture for local and Linux hosts. The `v2.18.0-control` release adds a versioned fleet contract, safe capacity-plan receipts, regional placement and ingress, production mutation admission and audit, reproducible Linux HA acceptance infrastructure, host metrics, minimum-capacity assurance, and conservative app creation. The `v2.18.1-control` maintenance release keeps disabled named drafts visible while excluding unrelated nameless InfraSpec-shaped documents from app inventory. The line retains the backward-compatible v1 control protocol introduced in v2.17.
 
 ## v2.18.0-control highlights
 
