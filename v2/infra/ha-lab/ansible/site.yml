@@ -1,0 +1,1195 @@
+---
+- name: Validate controller inputs and bootstrap hosts
+  hosts: all
+  become: true
+  gather_facts: true
+  any_errors_fatal: true
+  environment: "{{ control_environment }}"
+  tags: [common]
+  pre_tasks:
+    - name: Require exactly three or more odd-numbered lab members
+      ansible.builtin.assert:
+        that:
+          - groups['norn_ha'] | length >= 3
+          - groups['norn_ha'] | length % 2 == 1
+        fail_msg: "The HA lab requires an odd quorum of at least three nodes."
+      run_once: true
+
+    - name: Require controller-supplied secrets
+      ansible.builtin.assert:
+        that:
+          - consul_gossip_key | length >= 20
+          - nomad_gossip_key | length >= 20
+          - postgres_superuser_password | length >= 32
+          - postgres_replication_password | length >= 32
+          - postgres_rewind_password | length >= 32
+          - norn_database_password | length >= 32
+          - grafana_admin_password | length >= 32
+          - cosign_public_key_path | length > 0
+          - git_deploy_key_path | length > 0
+          - age_key_path | length > 0
+          - age_recipient | length > 0
+          - toy_secrets_path | length > 0
+          - pki_dir | length > 0
+          - registry_config_path | length > 0
+          - backup_bucket | length == 0 or backup_access_key | length >= 16
+          - backup_bucket | length == 0 or backup_secret_key | length >= 32
+          - backup_bucket | length == 0 or backup_endpoint | length > 0
+          - backup_bucket | length == 0 or backup_region | length > 0
+        fail_msg: "Run scripts/secrets init, then scripts/converge; secrets must never be placed in Terraform or cloud-init."
+      no_log: true
+
+  tasks:
+    - name: Wait for cloud-init to finish
+      ansible.builtin.command: cloud-init status --wait
+      changed_when: false
+      timeout: 600
+
+    - name: Install common platform packages
+      ansible.builtin.apt:
+        name:
+          - acl
+          - ca-certificates
+          - curl
+          - docker.io
+          - docker-buildx
+          - gpg
+          - git
+          - haproxy
+          - jq
+          - prometheus-node-exporter
+          - python3-apt
+          - python3-psycopg2
+          - unzip
+        state: present
+        update_cache: true
+        cache_valid_time: 3600
+
+    - name: Create Norn operator account
+      ansible.builtin.user:
+        name: nornops
+        groups: [adm, docker]
+        append: true
+        shell: /bin/bash
+        create_home: true
+
+    - name: Create private Norn runtime configuration directory
+      ansible.builtin.file:
+        path: /etc/norn
+        state: directory
+        owner: root
+        group: nornops
+        mode: "0750"
+
+    - name: Create private registry client configuration directory
+      ansible.builtin.file:
+        path: /etc/norn/docker
+        state: directory
+        owner: root
+        group: nornops
+        mode: "0750"
+
+    - name: Install the short-lived lab registry credential for Nomad and admission tools
+      ansible.builtin.copy:
+        src: "{{ registry_config_path }}"
+        dest: "{{ item }}"
+        owner: root
+        group: nornops
+        mode: "0640"
+      loop:
+        - /etc/norn/registry-config.json
+        - /etc/norn/docker/config.json
+      no_log: true
+
+    - name: Create operator SSH directory
+      ansible.builtin.file:
+        path: /home/nornops/.ssh
+        state: directory
+        owner: nornops
+        group: nornops
+        mode: "0700"
+
+    - name: Copy root authorized keys to operator account
+      ansible.builtin.copy:
+        src: /root/.ssh/authorized_keys
+        dest: /home/nornops/.ssh/authorized_keys
+        remote_src: true
+        owner: nornops
+        group: nornops
+        mode: "0600"
+
+    - name: Remove broad operator sudo policy
+      ansible.builtin.file:
+        path: /etc/sudoers.d/nornops
+        state: absent
+
+    - name: Enable required base services
+      ansible.builtin.systemd_service:
+        name: "{{ item }}"
+        enabled: true
+        state: started
+      loop:
+        - docker
+        - prometheus-node-exporter
+
+    - name: Create systemd-resolved drop-in directory
+      ansible.builtin.file:
+        path: /etc/systemd/resolved.conf.d
+        state: directory
+        owner: root
+        group: root
+        mode: "0755"
+
+    - name: Route only the Consul service domain through the local agent
+      ansible.builtin.copy:
+        dest: /etc/systemd/resolved.conf.d/consul.conf
+        owner: root
+        group: root
+        mode: "0644"
+        content: |
+          [Resolve]
+          DNS=
+          DNS=127.0.0.1:8600
+          Domains=~consul
+      notify: Restart systemd-resolved
+
+  handlers:
+    - name: Restart systemd-resolved
+      ansible.builtin.systemd_service:
+        name: systemd-resolved
+        enabled: true
+        state: restarted
+
+- name: Converge the Consul quorum
+  hosts: norn_ha
+  become: true
+  any_errors_fatal: true
+  serial: 1
+  environment: "{{ control_environment }}"
+  tags: [consul]
+  tasks:
+    - name: Install HashiCorp repository signing key
+      ansible.builtin.get_url:
+        url: https://apt.releases.hashicorp.com/gpg
+        dest: /usr/share/keyrings/hashicorp-archive-keyring.asc
+        mode: "0644"
+
+    - name: Install HashiCorp apt repository
+      ansible.builtin.apt_repository:
+        repo: "deb [arch=amd64 signed-by=/usr/share/keyrings/hashicorp-archive-keyring.asc] https://apt.releases.hashicorp.com {{ ansible_distribution_release }} main"
+        filename: hashicorp
+        state: present
+        update_cache: true
+
+    - name: Install pinned Consul package
+      ansible.builtin.apt:
+        name: "consul={{ consul_package_version }}"
+        state: present
+        allow_downgrade: true
+
+    - name: Create private Consul PKI directory
+      ansible.builtin.file:
+        path: /etc/consul.d/pki
+        state: directory
+        owner: consul
+        group: consul
+        mode: "0700"
+      when: security_phase != 'disabled'
+
+    - name: Install unique Consul trust and identity material
+      ansible.builtin.copy:
+        src: "{{ item.src }}"
+        dest: "{{ item.dest }}"
+        owner: consul
+        group: consul
+        mode: "{{ item.mode }}"
+      loop:
+        - {src: "{{ pki_dir }}/consul/ca.pem", dest: /etc/consul.d/pki/ca.pem, mode: "0644"}
+        - {src: "{{ pki_dir }}/{{ inventory_hostname }}/consul.pem", dest: /etc/consul.d/pki/consul.pem, mode: "0644"}
+        - {src: "{{ pki_dir }}/{{ inventory_hostname }}/consul-key.pem", dest: /etc/consul.d/pki/consul-key.pem, mode: "0600"}
+      when: security_phase != 'disabled'
+      notify: Restart Consul
+
+    - name: Render Consul server configuration
+      ansible.builtin.template:
+        src: templates/consul.hcl.j2
+        dest: /etc/consul.d/consul.hcl
+        owner: consul
+        group: consul
+        mode: "0600"
+        validate: consul validate %s
+      notify: Restart Consul
+      no_log: true
+
+    - name: Remove superseded Consul managed fragment
+      ansible.builtin.file:
+        path: /etc/consul.d/norn-ha.hcl
+        state: absent
+      notify: Restart Consul
+
+    - name: Flush Consul restart before continuing quorum rollout
+      ansible.builtin.meta: flush_handlers
+
+    - name: Wait for local Consul API
+      ansible.builtin.uri:
+        url: http://127.0.0.1:8500/v1/status/leader
+        return_content: true
+      register: consul_leader
+      retries: 30
+      delay: 2
+      until: consul_leader.status == 200
+
+    - name: Require Consul service discovery through the host resolver
+      ansible.builtin.command: getent ahostsv4 consul.service.consul
+      changed_when: false
+      register: consul_host_resolution
+      retries: 15
+      delay: 2
+      until: consul_host_resolution.rc == 0
+      when: security_phase != 'disabled'
+
+    - name: Activate the node-scoped Consul agent and default tokens
+      ansible.builtin.command: "consul acl set-agent-token {{ item }} {{ consul_agent_token }}"
+      changed_when: false
+      register: consul_agent_token_activation
+      retries: 15
+      delay: 2
+      until: consul_agent_token_activation.rc == 0
+      when: security_phase in ['consul-clients', 'consul-tls-outgoing', 'consul-enforced', 'nomad-transition', 'enforced']
+      loop: [agent, default]
+      no_log: true
+
+  handlers:
+    - name: Restart Consul
+      ansible.builtin.systemd_service:
+        name: consul
+        enabled: true
+        state: restarted
+
+- name: Converge the Nomad server and client quorum
+  hosts: norn_ha
+  become: true
+  any_errors_fatal: true
+  serial: 1
+  environment: "{{ control_environment }}"
+  tags: [nomad]
+  tasks:
+    - name: Install pinned Nomad package
+      ansible.builtin.apt:
+        name: "nomad={{ nomad_package_version }}"
+        state: present
+        allow_downgrade: true
+
+    - name: Create private Nomad PKI directory
+      ansible.builtin.file:
+        path: /etc/nomad.d/pki
+        state: directory
+        owner: root
+        group: root
+        mode: "0700"
+      when: security_phase in ['consul-clients', 'consul-tls-outgoing', 'consul-enforced', 'nomad-transition', 'enforced']
+
+    - name: Install Nomad Consul and transport identities
+      ansible.builtin.copy:
+        src: "{{ item.src }}"
+        dest: "{{ item.dest }}"
+        owner: root
+        group: root
+        mode: "{{ item.mode }}"
+      loop:
+        - {src: "{{ pki_dir }}/consul/ca.pem", dest: /etc/nomad.d/pki/consul-ca.pem, mode: "0644"}
+        - {src: "{{ pki_dir }}/{{ inventory_hostname }}/consul.pem", dest: /etc/nomad.d/pki/consul.pem, mode: "0644"}
+        - {src: "{{ pki_dir }}/{{ inventory_hostname }}/consul-key.pem", dest: /etc/nomad.d/pki/consul-key.pem, mode: "0600"}
+        - {src: "{{ pki_dir }}/nomad/ca.pem", dest: /etc/nomad.d/pki/nomad-ca.pem, mode: "0644"}
+        - {src: "{{ pki_dir }}/{{ inventory_hostname }}/nomad.pem", dest: /etc/nomad.d/pki/nomad.pem, mode: "0644"}
+        - {src: "{{ pki_dir }}/{{ inventory_hostname }}/nomad-key.pem", dest: /etc/nomad.d/pki/nomad-key.pem, mode: "0600"}
+      when: security_phase in ['consul-clients', 'consul-tls-outgoing', 'consul-enforced', 'nomad-transition', 'enforced']
+      notify: Restart Nomad
+
+    - name: Render Nomad server/client configuration
+      ansible.builtin.template:
+        src: templates/nomad.hcl.j2
+        dest: /etc/nomad.d/nomad.hcl
+        owner: root
+        group: root
+        mode: "0600"
+        validate: nomad config validate %s
+      notify: Restart Nomad
+      no_log: true
+
+    - name: Remove superseded Nomad managed fragment
+      ansible.builtin.file:
+        path: /etc/nomad.d/norn-ha.hcl
+        state: absent
+      notify: Restart Nomad
+
+    - name: Flush Nomad restart before continuing quorum rollout
+      ansible.builtin.meta: flush_handlers
+
+    - name: Wait for local Nomad API listener
+      ansible.builtin.wait_for:
+        host: 127.0.0.1
+        port: 4646
+        timeout: 60
+
+  handlers:
+    - name: Restart Nomad
+      ansible.builtin.systemd_service:
+        name: nomad
+        enabled: true
+        state: restarted
+
+- name: Converge PostgreSQL and Patroni one member at a time
+  hosts: norn_ha
+  become: true
+  any_errors_fatal: true
+  serial: 1
+  environment: "{{ control_environment }}"
+  tags: [postgres]
+  tasks:
+    - name: Create Patroni Consul client PKI directory
+      ansible.builtin.file:
+        path: /etc/patroni/consul-pki
+        state: directory
+        owner: postgres
+        group: postgres
+        mode: "0700"
+      when: security_phase in ['consul-clients', 'consul-tls-outgoing', 'consul-enforced', 'nomad-transition', 'enforced']
+
+    - name: Install Patroni Consul client identity
+      ansible.builtin.copy:
+        src: "{{ item.src }}"
+        dest: "{{ item.dest }}"
+        owner: postgres
+        group: postgres
+        mode: "{{ item.mode }}"
+      loop:
+        - {src: "{{ pki_dir }}/consul/ca.pem", dest: /etc/patroni/consul-pki/ca.pem, mode: "0644"}
+        - {src: "{{ pki_dir }}/{{ inventory_hostname }}/consul.pem", dest: /etc/patroni/consul-pki/consul.pem, mode: "0644"}
+        - {src: "{{ pki_dir }}/{{ inventory_hostname }}/consul-key.pem", dest: /etc/patroni/consul-pki/consul-key.pem, mode: "0600"}
+      when: security_phase in ['consul-clients', 'consul-tls-outgoing', 'consul-enforced', 'nomad-transition', 'enforced']
+      notify: Restart Patroni
+
+    - name: Install pinned PostgreSQL, Patroni, and pgBackRest packages
+      ansible.builtin.apt:
+        name:
+          - "postgresql={{ postgresql_package_version }}"
+          - "patroni={{ patroni_package_version }}"
+          - pgbackrest
+          - python3-consul2
+        state: present
+        allow_downgrade: true
+
+    - name: Stop the distribution PostgreSQL service
+      ansible.builtin.systemd_service:
+        name: postgresql
+        enabled: false
+        state: stopped
+
+    - name: Inspect the distribution-created PostgreSQL cluster
+      ansible.builtin.stat:
+        path: "/var/lib/postgresql/{{ postgresql_major_version }}/main/PG_VERSION"
+      register: distro_pg_cluster
+
+    - name: Remove only the untouched distribution cluster
+      ansible.builtin.command: "pg_dropcluster --stop {{ postgresql_major_version }} main"
+      when: distro_pg_cluster.stat.exists
+
+    - name: Create Patroni and archive directories
+      ansible.builtin.file:
+        path: "{{ item }}"
+        state: directory
+        owner: postgres
+        group: postgres
+        mode: "0700"
+      loop:
+        - "/var/lib/postgresql/{{ postgresql_major_version }}/patroni"
+        - /var/lib/postgresql/wal-archive
+        - /var/lib/pgbackrest
+        - /var/log/pgbackrest
+        - /var/lib/postgresql/.ansible/tmp
+
+    - name: Create the PostgreSQL TLS directory
+      ansible.builtin.file:
+        path: /etc/postgresql/norn-pki
+        state: directory
+        owner: postgres
+        group: postgres
+        mode: "0700"
+
+    - name: Install the PostgreSQL trust anchor and member certificate
+      ansible.builtin.copy:
+        src: "{{ item.src }}"
+        dest: "{{ item.dest }}"
+        owner: postgres
+        group: postgres
+        mode: "{{ item.mode }}"
+      loop:
+        - {src: "{{ pki_dir }}/ca.pem", dest: /etc/postgresql/norn-pki/ca.pem, mode: "0644"}
+        - {src: "{{ pki_dir }}/{{ inventory_hostname }}/postgres.pem", dest: /etc/postgresql/norn-pki/postgres.pem, mode: "0644"}
+        - {src: "{{ pki_dir }}/{{ inventory_hostname }}/postgres-key.pem", dest: /etc/postgresql/norn-pki/postgres-key.pem, mode: "0600"}
+      notify: Restart Patroni
+      no_log: true
+
+    - name: Render versioned off-host pgBackRest repository configuration
+      ansible.builtin.template:
+        src: templates/pgbackrest.conf.j2
+        dest: /etc/pgbackrest.conf
+        owner: postgres
+        group: postgres
+        mode: "0600"
+      when: postgres_archive_mode == 's3'
+      notify: Restart Patroni
+      no_log: true
+
+    - name: Remove off-host pgBackRest configuration when not configured
+      ansible.builtin.file:
+        path: /etc/pgbackrest.conf
+        state: absent
+      when: postgres_archive_mode != 's3'
+      notify: Restart Patroni
+
+    - name: Render Patroni configuration
+      ansible.builtin.template:
+        src: templates/patroni.yml.j2
+        dest: /etc/patroni/config.yml
+        owner: postgres
+        group: postgres
+        mode: "0600"
+      notify: Restart Patroni
+      no_log: true
+
+    - name: Create Patroni systemd override directory
+      ansible.builtin.file:
+        path: /etc/systemd/system/patroni.service.d
+        state: directory
+        owner: root
+        group: root
+        mode: "0755"
+
+    - name: Install Patroni systemd override
+      ansible.builtin.copy:
+        dest: /etc/systemd/system/patroni.service.d/norn-ha.conf
+        owner: root
+        group: root
+        mode: "0644"
+        content: |
+          [Service]
+          ExecStart=
+          ExecStart=/usr/bin/patroni /etc/patroni/config.yml
+          Restart=on-failure
+          RestartSec=5
+      notify:
+        - Reload systemd
+        - Restart Patroni
+
+    - name: Flush Patroni restart before adding the next member
+      ansible.builtin.meta: flush_handlers
+
+    - name: Wait for Patroni health API
+      ansible.builtin.uri:
+        url: "http://{{ private_ip }}:8008/health"
+      register: patroni_health
+      retries: 60
+      delay: 3
+      until: patroni_health.status == 200
+
+  handlers:
+    - name: Reload systemd
+      ansible.builtin.systemd_service:
+        daemon_reload: true
+
+    - name: Restart Patroni
+      ansible.builtin.systemd_service:
+        name: patroni
+        enabled: true
+        state: restarted
+
+- name: Install the stable PostgreSQL endpoint and test database
+  hosts: norn_ha
+  become: true
+  any_errors_fatal: true
+  environment: "{{ control_environment }}"
+  tags: [postgres, haproxy]
+  tasks:
+    - name: Resolve the verified local HAProxy database name
+      ansible.builtin.lineinfile:
+        path: /etc/hosts
+        regexp: '^[^#]*\s+norn-postgres\.service\.consul(?:\s|$)'
+        line: '127.0.0.1 norn-postgres.service.consul'
+        owner: root
+        group: root
+        mode: "0644"
+
+    - name: Render HAProxy primary/replica routing
+      ansible.builtin.template:
+        src: templates/haproxy.cfg.j2
+        dest: /etc/haproxy/haproxy.cfg
+        owner: root
+        group: root
+        mode: "0644"
+        validate: haproxy -c -f %s
+      notify: Restart HAProxy
+
+    - name: Flush HAProxy restart
+      ansible.builtin.meta: flush_handlers
+
+    - name: Wait for writable PostgreSQL endpoint
+      ansible.builtin.wait_for:
+        host: 127.0.0.1
+        port: 6432
+        timeout: 90
+
+    - name: Create the Norn integration role
+      community.postgresql.postgresql_user:
+        name: "{{ postgres_database_user }}"
+        password: "{{ norn_database_password }}"
+        login_host: 127.0.0.1
+        login_port: 6432
+        login_user: postgres
+        login_password: "{{ postgres_superuser_password }}"
+        state: present
+      register: norn_integration_role
+      retries: 30
+      delay: 2
+      until: norn_integration_role is succeeded
+      run_once: true
+      no_log: true
+
+    - name: Create the Norn integration database
+      community.postgresql.postgresql_db:
+        name: "{{ postgres_database }}"
+        owner: "{{ postgres_database_user }}"
+        login_host: 127.0.0.1
+        login_port: 6432
+        login_user: postgres
+        login_password: "{{ postgres_superuser_password }}"
+        state: present
+      register: norn_integration_database
+      retries: 30
+      delay: 2
+      until: norn_integration_database is succeeded
+      run_once: true
+      no_log: true
+
+    - name: Allow the Norn readiness probe to inspect replication health
+      community.postgresql.postgresql_membership:
+        groups: pg_monitor
+        target_roles: "{{ postgres_database_user }}"
+        login_host: 127.0.0.1
+        login_port: 6432
+        login_user: postgres
+        login_password: "{{ postgres_superuser_password }}"
+        state: present
+      register: norn_monitor_membership
+      retries: 30
+      delay: 2
+      until: norn_monitor_membership is succeeded
+      run_once: true
+      no_log: true
+
+    - name: Identify the current PostgreSQL primary for repository initialization
+      ansible.builtin.command: patronictl -c /etc/patroni/config.yml list --format json
+      register: pgbackrest_topology
+      changed_when: false
+      run_once: true
+      when: postgres_archive_mode == 's3'
+
+    - name: Read the authoritative Patroni dynamic configuration
+      ansible.builtin.command: patronictl -c /etc/patroni/config.yml show-config
+      register: patroni_dynamic_config
+      changed_when: false
+      run_once: true
+
+    - name: Reconcile the authoritative WAL archive command
+      ansible.builtin.command:
+        argv:
+          - patronictl
+          - -c
+          - /etc/patroni/config.yml
+          - edit-config
+          - --set
+          - "postgresql.parameters.archive_command={{ 'pgbackrest --stanza=' ~ postgres_cluster_name ~ ' archive-push %p' if postgres_archive_mode == 's3' else 'test ! -f /var/lib/postgresql/wal-archive/%f && cp %p /var/lib/postgresql/wal-archive/%f' }}"
+          - --force
+      register: patroni_archive_reconcile
+      changed_when: true
+      run_once: true
+      when: >-
+        (patroni_dynamic_config.stdout | from_yaml).postgresql.parameters.archive_command | default('')
+        != ('pgbackrest --stanza=' ~ postgres_cluster_name ~ ' archive-push %p'
+            if postgres_archive_mode == 's3'
+            else 'test ! -f /var/lib/postgresql/wal-archive/%f && cp %p /var/lib/postgresql/wal-archive/%f')
+
+    - name: Select the current PostgreSQL primary for repository initialization
+      ansible.builtin.set_fact:
+        pgbackrest_primary: "{{ pgbackrest_topology.stdout | from_json | selectattr('Role', 'equalto', 'Leader') | map(attribute='Member') | first }}"
+      run_once: true
+      when: postgres_archive_mode == 's3'
+
+    - name: Initialize or validate the shared pgBackRest stanza
+      ansible.builtin.command: "pgbackrest --stanza={{ postgres_cluster_name }} stanza-create"
+      become_user: postgres
+      delegate_to: "{{ pgbackrest_primary }}"
+      register: pgbackrest_stanza
+      changed_when: "'already exists' not in pgbackrest_stanza.stdout"
+      run_once: true
+      when: postgres_archive_mode == 's3'
+      no_log: true
+
+    - name: Require the off-host repository to be healthy
+      ansible.builtin.command: "pgbackrest --stanza={{ postgres_cluster_name }} check"
+      become_user: postgres
+      delegate_to: "{{ pgbackrest_primary }}"
+      changed_when: false
+      run_once: true
+      when: postgres_archive_mode == 's3'
+      no_log: true
+
+  handlers:
+    - name: Restart HAProxy
+      ansible.builtin.systemd_service:
+        name: haproxy
+        enabled: true
+        state: restarted
+
+- name: Install cryptographic signature and vulnerability admission tools
+  hosts: norn_ha
+  become: true
+  any_errors_fatal: true
+  environment: "{{ control_environment }}"
+  serial: 1
+  tags: [supply-chain]
+  tasks:
+    - name: Install checksum-pinned cosign binary
+      ansible.builtin.get_url:
+        url: "https://github.com/sigstore/cosign/releases/download/v{{ cosign_version }}/cosign-linux-amd64"
+        dest: /usr/local/bin/cosign
+        checksum: "sha256:{{ cosign_linux_amd64_sha256 }}"
+        owner: root
+        group: root
+        mode: "0755"
+
+    - name: Download checksum-pinned Trivy package
+      ansible.builtin.get_url:
+        url: "https://github.com/aquasecurity/trivy/releases/download/v{{ trivy_version }}/trivy_{{ trivy_version }}_Linux-64bit.deb"
+        dest: "/var/cache/trivy_{{ trivy_version }}_Linux-64bit.deb"
+        checksum: "sha256:{{ trivy_linux_amd64_deb_sha256 }}"
+        owner: root
+        group: root
+        mode: "0644"
+
+    - name: Install pinned Trivy package
+      ansible.builtin.apt:
+        deb: "/var/cache/trivy_{{ trivy_version }}_Linux-64bit.deb"
+        state: present
+
+    - name: Install the publisher verification key
+      ansible.builtin.copy:
+        src: "{{ cosign_public_key_path }}"
+        dest: /etc/norn/cosign.pub
+        owner: root
+        group: nornops
+        mode: "0644"
+
+    - name: Require expected admission tool versions
+      ansible.builtin.shell: |
+        set -euo pipefail
+        cosign version --json | jq -e --arg version "v{{ cosign_version }}" '.gitVersion == $version' >/dev/null
+        trivy --version | grep -F "Version: {{ trivy_version }}" >/dev/null
+      args:
+        executable: /bin/bash
+      changed_when: false
+
+- name: Install the replicated application catalog and encrypted secret material
+  hosts: norn_ha
+  become: true
+  any_errors_fatal: true
+  environment: "{{ control_environment }}"
+  serial: 1
+  tags: [catalog]
+  tasks:
+    - name: Install checksum-pinned SOPS binary
+      ansible.builtin.get_url:
+        url: "https://github.com/getsops/sops/releases/download/v{{ sops_version }}/sops-v{{ sops_version }}.linux.amd64"
+        dest: /usr/local/bin/sops
+        checksum: "sha256:{{ sops_linux_amd64_sha256 }}"
+        owner: root
+        group: root
+        mode: "0755"
+
+    - name: Create private catalog credential and application directories
+      ansible.builtin.file:
+        path: "{{ item.path }}"
+        state: directory
+        owner: "{{ item.owner }}"
+        group: nornops
+        mode: "{{ item.mode }}"
+      loop:
+        - {path: /etc/norn/git, owner: root, mode: "0750"}
+        - {path: /etc/norn/age, owner: root, mode: "0750"}
+        - {path: /var/lib/norn/apps/norn-ha-toy, owner: nornops, mode: "0750"}
+
+    - name: Install read-only source deploy identity
+      ansible.builtin.copy:
+        src: "{{ git_deploy_key_path }}"
+        dest: /etc/norn/git/norn-ha-toy
+        owner: root
+        group: nornops
+        mode: "0640"
+      no_log: true
+
+    - name: Install age decryption identity
+      ansible.builtin.copy:
+        src: "{{ age_key_path }}"
+        dest: /etc/norn/age/keys.txt
+        owner: root
+        group: nornops
+        mode: "0640"
+      no_log: true
+
+    - name: Replicate the application declaration
+      ansible.builtin.copy:
+        src: "{{ playbook_dir }}/../toy-app/infraspec.yaml"
+        dest: /var/lib/norn/apps/norn-ha-toy/infraspec.yaml
+        owner: nornops
+        group: nornops
+        mode: "0640"
+
+    - name: Replicate the SOPS-encrypted application secrets
+      ansible.builtin.copy:
+        src: "{{ toy_secrets_path }}"
+        dest: /var/lib/norn/apps/norn-ha-toy/secrets.enc.yaml
+        owner: nornops
+        group: nornops
+        mode: "0600"
+      no_log: true
+
+    - name: Install the SOPS creation policy for controlled secret updates
+      ansible.builtin.copy:
+        dest: /var/lib/norn/apps/norn-ha-toy/.sops.yaml
+        owner: nornops
+        group: nornops
+        mode: "0640"
+        content: |
+          creation_rules:
+            - age: {{ age_recipient }}
+
+    - name: Verify the encrypted catalog secret is decryptable by the runtime identity
+      ansible.builtin.command: sops --decrypt /var/lib/norn/apps/norn-ha-toy/secrets.enc.yaml
+      become_user: nornops
+      environment:
+        SOPS_AGE_KEY_FILE: /etc/norn/age/keys.txt
+      register: decrypted_catalog_secret
+      changed_when: false
+      failed_when: decrypted_catalog_secret.rc != 0
+      no_log: true
+
+- name: Converge active-passive Norn API members
+  hosts: norn_ha
+  become: true
+  any_errors_fatal: true
+  environment: "{{ control_environment }}"
+  serial: 1
+  tags: [norn]
+  tasks:
+    - name: Install the Norn Linux server binary
+      ansible.builtin.copy:
+        src: "{{ playbook_dir }}/../.tools/norn-server-linux-amd64"
+        dest: /usr/local/bin/norn-server
+        owner: root
+        group: root
+        mode: "0755"
+      notify: Restart Norn
+
+    - name: Create Norn runtime directories
+      ansible.builtin.file:
+        path: "{{ item }}"
+        state: directory
+        owner: nornops
+        group: nornops
+        mode: "0750"
+      loop:
+        - /var/lib/norn
+        - /var/lib/norn/apps
+
+    - name: Create the Norn PostgreSQL trust directory
+      ansible.builtin.file:
+        path: /etc/norn/pki
+        state: directory
+        owner: root
+        group: nornops
+        mode: "0750"
+
+    - name: Install the public PostgreSQL trust anchor for Norn
+      ansible.builtin.copy:
+        src: "{{ pki_dir }}/ca.pem"
+        dest: /etc/norn/pki/postgres-ca.pem
+        owner: root
+        group: nornops
+        mode: "0644"
+      notify: Restart Norn
+
+    - name: Install Norn Consul and Nomad client identities
+      ansible.builtin.copy:
+        src: "{{ item.src }}"
+        dest: "{{ item.dest }}"
+        owner: root
+        group: nornops
+        mode: "{{ item.mode }}"
+      loop:
+        - {src: "{{ pki_dir }}/consul/ca.pem", dest: /etc/norn/pki/consul-ca.pem, mode: "0644"}
+        - {src: "{{ pki_dir }}/{{ inventory_hostname }}/consul.pem", dest: /etc/norn/pki/consul.pem, mode: "0644"}
+        - {src: "{{ pki_dir }}/{{ inventory_hostname }}/consul-key.pem", dest: /etc/norn/pki/consul-key.pem, mode: "0640"}
+        - {src: "{{ pki_dir }}/nomad/ca.pem", dest: /etc/norn/pki/nomad-ca.pem, mode: "0644"}
+        - {src: "{{ pki_dir }}/{{ inventory_hostname }}/nomad.pem", dest: /etc/norn/pki/nomad.pem, mode: "0644"}
+        - {src: "{{ pki_dir }}/{{ inventory_hostname }}/nomad-key.pem", dest: /etc/norn/pki/nomad-key.pem, mode: "0640"}
+      when: security_phase in ['consul-clients', 'consul-tls-outgoing', 'consul-enforced', 'nomad-transition', 'enforced']
+      notify: Restart Norn
+      no_log: true
+
+    - name: Render private Norn environment
+      ansible.builtin.template:
+        src: templates/norn.env.j2
+        dest: /etc/norn/norn.env
+        owner: root
+        group: nornops
+        mode: "0640"
+      notify: Restart Norn
+      no_log: true
+
+    - name: Install active-passive Norn systemd unit
+      ansible.builtin.template:
+        src: templates/norn.service.j2
+        dest: /etc/systemd/system/norn.service
+        owner: root
+        group: root
+        mode: "0644"
+      notify:
+        - Reload systemd for Norn
+        - Restart Norn
+
+    - name: Register the local Norn health check with Consul
+      ansible.builtin.template:
+        src: templates/norn-api.json.j2
+        dest: /etc/consul.d/norn-api.json
+        owner: consul
+        group: consul
+        mode: "0644"
+      notify: Reload Consul services
+
+    - name: Flush Norn service handlers
+      ansible.builtin.meta: flush_handlers
+
+    - name: Ensure the active-passive Norn contender is enabled
+      ansible.builtin.systemd_service:
+        name: norn
+        enabled: true
+        state: started
+
+  handlers:
+    - name: Reload systemd for Norn
+      ansible.builtin.systemd_service:
+        daemon_reload: true
+
+    - name: Restart Norn
+      ansible.builtin.systemd_service:
+        name: norn
+        enabled: true
+        state: restarted
+
+    - name: Reload Consul services
+      ansible.builtin.command: consul reload
+      changed_when: true
+
+- name: Assert exactly one healthy Norn API leader
+  hosts: norn_ha[0]
+  become: true
+  gather_facts: false
+  any_errors_fatal: true
+  environment: "{{ control_environment }}"
+  tags: [norn, verify]
+  tasks:
+    - name: Wait for one passing Norn service
+      ansible.builtin.uri:
+        url: http://127.0.0.1:8500/v1/health/service/norn-api?passing=true
+        return_content: true
+      register: norn_services
+      retries: 60
+      delay: 2
+      until: norn_services.json | length == 1
+
+    - name: Require the active Norn health endpoint
+      ansible.builtin.uri:
+        url: "http://{{ norn_services.json[0].Service.Address }}:{{ norn_services.json[0].Service.Port }}/api/health"
+        status_code: 200
+      register: norn_health
+
+    - name: Emit value-safe Norn leader evidence
+      ansible.builtin.debug:
+        msg:
+          schema: norn.ha-drill/v1
+          kind: norn-active-passive
+          passing_instances: 1
+          active_member: "{{ norn_services.json[0].Node.Node }}"
+
+- name: Converge private HA-lab observability on every member
+  hosts: norn_ha
+  become: true
+  any_errors_fatal: true
+  serial: 1
+  environment: "{{ control_environment }}"
+  tags: [observability]
+  tasks:
+    - name: Create private observability configuration directories
+      ansible.builtin.file:
+        path: "{{ item }}"
+        state: directory
+        owner: root
+        group: root
+        mode: "0755"
+      loop:
+        - /etc/norn-observability
+        - /etc/norn-observability/pki
+        - /etc/norn-observability/grafana/provisioning/datasources
+        - /etc/norn-observability/grafana/provisioning/dashboards
+        - /etc/norn-observability/grafana/dashboards
+
+    - name: Render Prometheus scrape configuration
+      ansible.builtin.template:
+        src: templates/prometheus.yml.j2
+        dest: /etc/norn-observability/prometheus.yml
+        owner: root
+        group: root
+        mode: "0600"
+      notify: Restart Prometheus container
+      no_log: true
+
+    - name: Install observability Consul and Nomad client identities
+      ansible.builtin.copy:
+        src: "{{ item.src }}"
+        dest: "{{ item.dest }}"
+        owner: root
+        group: root
+        mode: "{{ item.mode }}"
+      loop:
+        - {src: "{{ pki_dir }}/consul/ca.pem", dest: /etc/norn-observability/pki/consul-ca.pem, mode: "0644"}
+        - {src: "{{ pki_dir }}/{{ inventory_hostname }}/consul.pem", dest: /etc/norn-observability/pki/consul.pem, mode: "0644"}
+        - {src: "{{ pki_dir }}/{{ inventory_hostname }}/consul-key.pem", dest: /etc/norn-observability/pki/consul-key.pem, mode: "0600"}
+        - {src: "{{ pki_dir }}/nomad/ca.pem", dest: /etc/norn-observability/pki/nomad-ca.pem, mode: "0644"}
+        - {src: "{{ pki_dir }}/{{ inventory_hostname }}/nomad.pem", dest: /etc/norn-observability/pki/nomad.pem, mode: "0644"}
+        - {src: "{{ pki_dir }}/{{ inventory_hostname }}/nomad-key.pem", dest: /etc/norn-observability/pki/nomad-key.pem, mode: "0600"}
+      when: security_phase in ['consul-clients', 'consul-tls-outgoing', 'consul-enforced', 'nomad-transition', 'enforced']
+      notify: Restart Prometheus container
+      no_log: true
+
+    - name: Render Grafana datasource and dashboard provisioning
+      ansible.builtin.template:
+        src: "{{ item.src }}"
+        dest: "{{ item.dest }}"
+        owner: root
+        group: root
+        mode: "0644"
+      loop:
+        - {src: templates/grafana-datasource.yml.j2, dest: /etc/norn-observability/grafana/provisioning/datasources/prometheus.yml}
+        - {src: templates/grafana-dashboard-provider.yml.j2, dest: /etc/norn-observability/grafana/provisioning/dashboards/norn.yml}
+        - {src: templates/grafana-ha-dashboard.json.j2, dest: /etc/norn-observability/grafana/dashboards/norn-ha.json}
+      notify: Restart Grafana container
+
+    - name: Render private Grafana runtime credentials
+      ansible.builtin.copy:
+        dest: /etc/norn-observability/grafana.env
+        owner: root
+        group: root
+        mode: "0600"
+        content: |
+          GF_SECURITY_ADMIN_USER=nornadmin
+          GF_SECURITY_ADMIN_PASSWORD={{ grafana_admin_password }}
+          GF_USERS_ALLOW_SIGN_UP=false
+          GF_AUTH_ANONYMOUS_ENABLED=false
+          GF_SERVER_HTTP_ADDR={{ private_ip }}
+      notify: Restart Grafana container
+      no_log: true
+
+    - name: Pull digest-pinned observability images
+      ansible.builtin.command: "docker pull {{ item }}"
+      loop:
+        - "{{ prometheus_image }}"
+        - "{{ grafana_image }}"
+        - "{{ cadvisor_image }}"
+      register: observability_pulls
+      changed_when: "'Downloaded newer image' in observability_pulls.stdout"
+
+    - name: Install observability container systemd units
+      ansible.builtin.template:
+        src: "{{ item.src }}"
+        dest: "/etc/systemd/system/{{ item.unit }}"
+        owner: root
+        group: root
+        mode: "0644"
+      loop:
+        - {src: templates/norn-prometheus.service.j2, unit: norn-prometheus.service}
+        - {src: templates/norn-grafana.service.j2, unit: norn-grafana.service}
+        - {src: templates/norn-cadvisor.service.j2, unit: norn-cadvisor.service}
+      notify:
+        - Reload systemd for observability
+        - Restart Prometheus container
+        - Restart Grafana container
+        - Restart cAdvisor container
+
+    - name: Keep externally managed observability out of the application deploy catalog
+      ansible.builtin.file:
+        path: "/var/lib/norn/apps/{{ item }}"
+        state: absent
+      loop: [norn-prometheus, norn-grafana, norn-cadvisor]
+
+    - name: Register observability health checks with Consul
+      ansible.builtin.template:
+        src: "{{ item.src }}"
+        dest: "/etc/consul.d/{{ item.dest }}"
+        owner: consul
+        group: consul
+        mode: "0644"
+      loop:
+        - {src: templates/norn-prometheus.json.j2, dest: norn-prometheus.json}
+        - {src: templates/norn-grafana.json.j2, dest: norn-grafana.json}
+        - {src: templates/norn-cadvisor.json.j2, dest: norn-cadvisor.json}
+      notify: Reload Consul observability services
+
+    - name: Flush observability handlers
+      ansible.builtin.meta: flush_handlers
+
+    - name: Ensure observability services are enabled and started
+      ansible.builtin.systemd_service:
+        name: "{{ item }}"
+        enabled: true
+        state: started
+      loop: [norn-prometheus, norn-grafana, norn-cadvisor]
+
+    - name: Wait for local observability health endpoints
+      ansible.builtin.uri:
+        url: "{{ item }}"
+        status_code: 200
+      register: observability_health
+      retries: 30
+      delay: 2
+      until: observability_health.status == 200
+      loop:
+        - "http://{{ private_ip }}:9090/-/healthy"
+        - "http://{{ private_ip }}:3000/api/health"
+        - "http://{{ private_ip }}:8080/healthz"
+
+  handlers:
+    - name: Reload systemd for observability
+      ansible.builtin.systemd_service:
+        daemon_reload: true
+    - name: Restart Prometheus container
+      ansible.builtin.systemd_service:
+        name: norn-prometheus
+        enabled: true
+        state: restarted
+    - name: Restart Grafana container
+      ansible.builtin.systemd_service:
+        name: norn-grafana
+        enabled: true
+        state: restarted
+    - name: Restart cAdvisor container
+      ansible.builtin.systemd_service:
+        name: norn-cadvisor
+        enabled: true
+        state: restarted
+    - name: Reload Consul observability services
+      ansible.builtin.command: consul reload
+      changed_when: true
+
+- name: Reconcile identities left by disposable member replacement
+  hosts: norn_ha[0]
+  become: true
+  gather_facts: false
+  any_errors_fatal: true
+  environment: "{{ control_environment }}"
+  tags: [reconcile, verify]
+  tasks:
+    - name: Guard replacement reconciliation to the disposable lab
+      ansible.builtin.stat:
+        path: /etc/norn-ha-lab
+      register: lab_guard
+
+    - name: Require the disposable-lab marker
+      ansible.builtin.assert:
+        that: lab_guard.stat.exists
+        fail_msg: "Refusing identity reconciliation outside a managed Norn HA lab."
+
+    - name: Deregister only down Nomad clients superseded by an inventory member
+      ansible.builtin.shell: |
+        set -euo pipefail
+        inventory_names='{{ groups['norn_ha'] | to_json }}'
+        nomad_curl=(curl -fsS)
+        if [[ "${NOMAD_ADDR:-}" == https://* ]]; then
+          nomad_curl+=(--cacert "${NOMAD_CACERT}" --cert "${NOMAD_CLIENT_CERT}" --key "${NOMAD_CLIENT_KEY}" -H "X-Nomad-Token: ${NOMAD_TOKEN}")
+        fi
+        stale_ids="$("${nomad_curl[@]}" "${NOMAD_ADDR}/v1/nodes" | jq -r --argjson names "${inventory_names}" '.[] | select(.Status != "ready" and (.Name as $name | $names | index($name))) | .ID')"
+        if [[ -n "${stale_ids}" ]]; then
+          while IFS= read -r node_id; do
+            "${nomad_curl[@]}" -X POST "${NOMAD_ADDR}/v1/node/${node_id}/purge" >/dev/null
+          done <<<"${stale_ids}"
+          printf '%s\n' "${stale_ids}"
+        fi
+      args:
+        executable: /bin/bash
+      register: nomad_stale_clients
+      changed_when: nomad_stale_clients.stdout | trim | length > 0
+
+    - name: Require one ready Nomad client identity per inventory member
+      ansible.builtin.shell: |
+        set -euo pipefail
+        inventory_names='{{ groups['norn_ha'] | to_json }}'
+        nomad_curl=(curl -fsS)
+        if [[ "${NOMAD_ADDR:-}" == https://* ]]; then
+          nomad_curl+=(--cacert "${NOMAD_CACERT}" --cert "${NOMAD_CLIENT_CERT}" --key "${NOMAD_CLIENT_KEY}" -H "X-Nomad-Token: ${NOMAD_TOKEN}")
+        fi
+        "${nomad_curl[@]}" "${NOMAD_ADDR}/v1/nodes" | jq --argjson names "${inventory_names}" '[.[] | select(.Status == "ready" and (.Name as $name | $names | index($name)))] | length'
+      args:
+        executable: /bin/bash
+      register: ready_nomad_clients
+      changed_when: false
+      retries: 30
+      delay: 2
+      until: ready_nomad_clients.stdout | int == groups['norn_ha'] | length
+
+- name: Assert quorum and data-plane readiness
+  hosts: norn_ha[0]
+  become: true
+  gather_facts: false
+  any_errors_fatal: true
+  environment: "{{ control_environment }}"
+  tags: [verify]
+  tasks:
+    - name: Wait for three healthy Consul members
+      ansible.builtin.shell: "set -o pipefail && consul members -status=alive | tail -n +2 | wc -l"
+      args:
+        executable: /bin/bash
+      register: consul_members
+      changed_when: false
+      retries: 30
+      delay: 2
+      until: consul_members.stdout | int == groups['norn_ha'] | length
+
+    - name: Wait for three Nomad raft peers
+      ansible.builtin.shell: "set -o pipefail && nomad operator raft list-peers -no-color | tail -n +2 | awk 'NF > 0' | wc -l"
+      args:
+        executable: /bin/bash
+      register: nomad_peers
+      changed_when: false
+      retries: 30
+      delay: 2
+      until: nomad_peers.stdout | int == groups['norn_ha'] | length
+
+    - name: Wait for all Patroni members
+      ansible.builtin.shell: "set -o pipefail && patronictl -c /etc/patroni/config.yml list --format json | jq 'length'"
+      args:
+        executable: /bin/bash
+      register: patroni_members
+      changed_when: false
+      retries: 30
+      delay: 2
+      until: patroni_members.stdout | int == groups['norn_ha'] | length

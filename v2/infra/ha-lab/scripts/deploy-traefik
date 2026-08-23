@@ -1,0 +1,32 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+script_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+lab_root="$(cd "${script_dir}/.." && pwd)"
+export PATH="${lab_root}/.tools/bin:${PATH}"
+lab_name="$(terraform -chdir="${lab_root}/terraform" output -raw name_prefix)"
+secret_file="$(${script_dir}/secrets path "${lab_name}")"
+set -a
+# shellcheck disable=SC1090
+source "${secret_file}"
+set +a
+
+first_ip="$(terraform -chdir="${lab_root}/terraform" output -json lab_nodes | jq -r 'to_entries | sort_by(.key) | first.value.public_ip')"
+first_private_ip="$(terraform -chdir="${lab_root}/terraform" output -json lab_nodes | jq -r 'to_entries | sort_by(.key) | first.value.private_ip')"
+jq -cn --arg consul_token "${NORN_HA_CONSUL_OBSERVABILITY_TOKEN}" \
+  '{Path:"nomad/jobs/norn-traefik",Items:{consul_token:$consul_token}}' | \
+  ssh "root@${first_ip}" 'set -a; source /etc/norn/norn.env; set +a; export NOMAD_ADDR="${NORN_NOMAD_ADDR}"; nomad var put -force -in=json - >/dev/null'
+
+scp -q "${lab_root}/nomad/traefik.nomad.hcl" "root@${first_ip}:/tmp/norn-traefik.nomad.hcl"
+ssh "root@${first_ip}" 'set -a; source /etc/norn/norn.env; set +a; export NOMAD_ADDR="${NORN_NOMAD_ADDR}"; nomad job run -detach /tmp/norn-traefik.nomad.hcl >/dev/null'
+
+for _ in {1..90}; do
+  if ssh "root@${first_ip}" 'set -a; source /etc/norn/norn.env; set +a; export NOMAD_ADDR="${NORN_NOMAD_ADDR}"; nomad job status -json norn-traefik | jq -e ".[0].Summary.Summary.ingress.Running >= 3" >/dev/null; test "$(curl -fsS -o /dev/null -w "%{http_code}" http://'"${first_private_ip}"':18080/ping)" = 200'; then
+    echo "norn-traefik running on every regional member"
+    exit 0
+  fi
+  sleep 2
+done
+
+echo "Traefik did not reach three healthy regional allocations" >&2
+exit 1

@@ -15,6 +15,9 @@ graph TB
     API --> S3[S3 Storage]
     API --> Docker[Docker / Registry]
     API --> CF[cloudflared]
+    API -. read-only desired state .-> FleetRepo[private norn-fleet checkout]
+    FleetRepo --> Runner[Protected OpenTofu runner]
+    Runner --> Cloud[Cloud VMs / LB / Firewall]
 
     API -- WebSocket --> Browser
     API -- WebSocket --> CLI
@@ -37,6 +40,7 @@ v2/api/
 ├── config/            # Environment-based configuration
 ├── store/             # PostgreSQL database layer
 ├── handler/           # HTTP request handlers
+├── fleet/             # Versioned fleet schema, sanity checks, and cross-validation
 ├── pipeline/          # Deploy pipeline orchestrator
 ├── nomad/             # Nomad client and job translator
 ├── consul/            # Consul client for service discovery
@@ -108,6 +112,14 @@ v2/ui/
 | Method | Path | Description |
 |--------|------|-------------|
 | GET | `/api/health` | Service health check |
+| GET | `/api/v1/production/readiness` | Value-safe production admission and substrate report |
+| POST | `/api/v1/fleet/validate` | Strict norn-fleet schema and infrastructure sanity validation |
+| POST | `/api/v1/validate/infraspec` | Strict uploaded InfraSpec validation with optional fleet context |
+| GET | `/api/v1/fleet/node-pools` | Read-only desired pool inventory |
+| GET, POST | `/api/v1/fleet/plans`, `/api/v1/fleet/node-pools/{pool}/plan` | List or record durable planning-only capacity receipts |
+| GET | `/api/v1/audit/mutations` | Durable, integrity-checked mutation receipts |
+| GET, POST | `/api/v1/production/drills` | List or start recovery-drill receipts |
+| POST | `/api/v1/production/drills/{id}/complete` | Complete a recovery drill with bounded evidence |
 | GET | `/metrics` | Prometheus-compatible Norn control-plane metrics |
 | GET | `/api/metrics` | Same metrics endpoint under the API prefix |
 | GET | `/api/observability/prometheus.yml` | Generated Prometheus scrape config |
@@ -157,7 +169,7 @@ v2/ui/
 | GET | `/` | Get app details |
 | POST | `/deploy` | Start a deployment |
 | GET | `/logs` | Stream logs (SSE) |
-| POST | `/restart` | Rolling restart |
+| POST | `/restart` | Replace active allocations through Nomad |
 | POST | `/scale` | Scale a task group |
 | POST | `/rollback` | Rollback to previous deployment |
 | GET | `/secrets` | List secret keys |
@@ -188,6 +200,7 @@ v2/ui/
 |------|-------------|
 | `/api/v1/events` | Authenticated, durable event stream with cursor replay |
 | `/ws` | Compatibility alias for the event stream |
+| `/api/v1/exec-sessions/{id}/stream` | Typed, expiring, audited native terminal protocol |
 
 ## Authentication
 
@@ -199,6 +212,7 @@ Norn supports three auth modes (can be combined):
 
 Auth-exempt routes are limited to health/version/metrics, service discovery,
 signed webhook ingress, and configured wake-gateway paths. `/api/v1/events`,
-the compatibility `/ws`, and `/api/apps/*/exec` are protected whenever bearer
+the compatibility `/ws`, and both exec protocols are protected whenever bearer
 authentication is enabled. Scoped access tokens use `events:read` for the event
-stream and `apps:exec` for terminal sessions.
+stream and `apps:exec` for terminal sessions. Native clients enroll as devices;
+formal exec sessions additionally require a short-lived P-256 step-up proof.

@@ -16,16 +16,29 @@ const (
 )
 
 type Deployment struct {
-	ID            string       `json:"id"`
-	App           string       `json:"app"`
-	CommitSHA     string       `json:"commitSha"`
-	ImageTag      string       `json:"imageTag"`
-	SagaID        string       `json:"sagaId"`
+	ID            string             `json:"id"`
+	App           string             `json:"app"`
+	CommitSHA     string             `json:"commitSha"`
+	ImageTag      string             `json:"imageTag"`
+	SagaID        string             `json:"sagaId"`
+	Status        DeployStatus       `json:"status"`
+	SourceKind    string             `json:"sourceKind,omitempty"`
+	SourceRef     string             `json:"sourceRef,omitempty"`
+	SourceDirty   bool               `json:"sourceDirty,omitempty"`
+	SourceChanges []string           `json:"sourceChanges,omitempty"`
+	StartedAt     time.Time          `json:"startedAt"`
+	FinishedAt    *time.Time         `json:"finishedAt,omitempty"`
+	Regions       []DeploymentRegion `json:"regions,omitempty"`
+}
+
+type DeploymentRegion struct {
+	DeploymentID  string       `json:"deploymentId,omitempty"`
+	Region        string       `json:"region"`
+	NomadRegion   string       `json:"nomadRegion"`
 	Status        DeployStatus `json:"status"`
-	SourceKind    string       `json:"sourceKind,omitempty"`
-	SourceRef     string       `json:"sourceRef,omitempty"`
-	SourceDirty   bool         `json:"sourceDirty,omitempty"`
-	SourceChanges []string     `json:"sourceChanges,omitempty"`
-	StartedAt     time.Time    `json:"startedAt"`
-	FinishedAt    *time.Time   `json:"finishedAt,omitempty"`
+	DesiredWeight int          `json:"desiredWeight"`
+	ActiveWeight  int          `json:"activeWeight"`
+	EvalID        string       `json:"evalId,omitempty"`
+	LastError     string       `json:"lastError,omitempty"`
+	UpdatedAt     time.Time    `json:"updatedAt"`
 }

@@ -28,7 +28,7 @@ describe('DeployPanel', () => {
     )
     expect(screen.getByText('build')).toBeInTheDocument()
     expect(screen.getByText('test')).toBeInTheDocument()
-    expect(screen.getByText('completed')).toBeInTheDocument()
+    expect(screen.getByText('done')).toBeInTheDocument()
     expect(screen.getByText('running')).toBeInTheDocument()
   })
 

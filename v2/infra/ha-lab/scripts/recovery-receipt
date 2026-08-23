@@ -1,0 +1,78 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+script_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+lab_root="$(cd "${script_dir}/.." && pwd)"
+export PATH="${lab_root}/.tools/bin:${PATH}"
+action="${1:-}"
+shift || true
+
+lab_name="$(terraform -chdir="${lab_root}/terraform" output -raw name_prefix)"
+secret_file="$(${script_dir}/secrets path "${lab_name}")"
+[[ -f "${secret_file}" ]] || { echo "missing ${secret_file}" >&2; exit 1; }
+set -a
+# shellcheck disable=SC1090
+source "${secret_file}"
+set +a
+first_ip="$(terraform -chdir="${lab_root}/terraform" output -json lab_nodes | jq -r 'to_entries | sort_by(.key) | first.value.public_ip')"
+
+call_active_api() {
+  local method="$1"
+  local path="$2"
+  local payload="$3"
+  {
+    printf '%s\n' "${NORN_HA_NORN_API_TOKEN}"
+    printf '%s\n' "${payload}"
+  } | ssh "root@${first_ip}" "
+    set -eu
+    IFS= read -r token
+    IFS= read -r payload
+    request_dir=\$(mktemp -d /tmp/norn-receipt.XXXXXX)
+    chmod 0700 \"\${request_dir}\"
+    trap 'rm -rf -- \"\${request_dir}\"' EXIT
+    umask 077
+    printf 'Authorization: Bearer %s\\n' \"\${token}\" >\"\${request_dir}/headers\"
+    printf '%s' \"\${payload}\" >\"\${request_dir}/body\"
+    unset token payload
+    active=\$(curl -fsS http://127.0.0.1:8500/v1/health/service/norn-api?passing=true | jq -r 'if length == 1 then .[0].Service.Address else empty end')
+    test -n \"\${active}\"
+    curl -fsS -X '${method}' -H @\"\${request_dir}/headers\" -H 'Content-Type: application/json' --data-binary @\"\${request_dir}/body\" \"http://\${active}:8800${path}\"
+  "
+}
+
+case "${action}" in
+  start)
+    kind="${1:-}"
+    target="${2:-}"
+    [[ "${kind}" =~ ^(artifact\.rollback|database\.restore|node\.failover|region\.failover|control\.restore)$ ]] || {
+      echo "unsupported recovery drill kind" >&2
+      exit 2
+    }
+    [[ ${#target} -le 256 ]] || { echo "target is too long" >&2; exit 2; }
+    payload="$(jq -cn --arg kind "${kind}" --arg target "${target}" '{kind:$kind,target:$target}')"
+    call_active_api POST /api/v1/production/drills "${payload}" | jq -r '.id'
+    ;;
+  complete)
+    drill_id="${1:-}"
+    status="${2:-}"
+    shift 2 || true
+    [[ "${drill_id}" =~ ^[a-f0-9-]{36}$ ]] || { echo "invalid drill id" >&2; exit 2; }
+    [[ "${status}" == passed || "${status}" == failed ]] || { echo "status must be passed or failed" >&2; exit 2; }
+    evidence='{}'
+    for pair in "$@"; do
+      key="${pair%%=*}"
+      value="${pair#*=}"
+      [[ "${pair}" == *=* && "${key}" =~ ^[A-Za-z0-9_.-]{1,64}$ && ${#value} -le 1024 ]] || {
+        echo "evidence must be bounded key=value metadata" >&2
+        exit 2
+      }
+      evidence="$(jq -cn --argjson current "${evidence}" --arg key "${key}" --arg value "${value}" '$current + {($key):$value}')"
+    done
+    payload="$(jq -cn --arg status "${status}" --argjson evidence "${evidence}" '{status:$status,evidence:$evidence}')"
+    call_active_api POST "/api/v1/production/drills/${drill_id}/complete" "${payload}" | jq -r '[.status,.kind,.id] | @tsv'
+    ;;
+  *)
+    echo "usage: recovery-receipt start KIND TARGET | recovery-receipt complete ID passed|failed [key=value ...]" >&2
+    exit 2
+    ;;
+esac

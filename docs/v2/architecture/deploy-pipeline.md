@@ -1,58 +1,84 @@
 # Deploy Pipeline
 
-The deploy pipeline is Norn's core orchestration flow. It takes an app from source code to running Nomad allocations in 9 sequential steps. For a deploy rehearsal that stops before runtime mutation, use `norn preflight`.
+The deploy pipeline is Norn's core orchestration flow. It takes an app from source code to running Nomad allocations in 11 sequential steps. Canary policy can insert an additional evaluation step. For a deploy rehearsal that stops before runtime mutation, use `norn preflight`.
 
 ## Pipeline Steps
 
 ```mermaid
 graph LR
-    A[Clone] --> B[Build] --> C[Test] --> D[Snapshot] --> E[Migrate] --> F[Submit] --> G[Healthy] --> H[Forge] --> I[Cleanup]
+    A[Clone] --> B[Source admission] --> C[Build] --> D[Artifact admission] --> E[Test] --> F[Snapshot] --> G[Migrate] --> H[Submit] --> I[Healthy] --> J[Forge] --> K[Cleanup]
 ```
 
 ### 1. Clone
 
 Checks out the git repository at the specified ref (commit SHA, branch, or tag). Uses `NORN_GIT_TOKEN` or `NORN_GIT_SSH_KEY` for private repos.
 
-### 2. Build
+### 2. Source admission
 
-Builds a Docker image using the Dockerfile specified in the infraspec (defaults to `Dockerfile`). Tags the image with the commit SHA and pushes to the configured registry (`NORN_REGISTRY_URL`).
+In production, rejects local or dirty source, missing build/registry policy,
+strict-secret violations, services without health checks, and endpoint-backed
+multiple allocations when no regional Traefik origin is configured.
 
-### 3. Test
+### 3. Build
+
+In development, builds a Docker image using the configured Dockerfile and can
+push it to `NORN_REGISTRY_URL`. In production, `build.image` must instead name
+an externally published `image@sha256:...`. This keeps signing credentials out
+of Norn and separates publisher authority from deploy authority. The external
+builder is responsible for tests, maximum-provenance/SBOM attestations,
+vulnerability approval, and signing the digest with the
+`norn.git.sha=<full commit>` annotation.
+
+### 4. Artifact admission
+
+Requires `image@sha256:...` in production, resolves that exact digest from the
+configured registry, verifies its Cosign signature and source-commit annotation,
+then runs Trivy against `NORN_ARTIFACT_DENY_SEVERITIES` (HIGH and CRITICAL by
+default). Rollback repeats registry, signature, and vulnerability admission
+before Nomad submission.
+
+### 5. Test
 
 Runs the test command from `build.test` if defined. A non-zero exit code fails the pipeline. Skipped if no test command is configured.
 
-### 4. Snapshot
+### 6. Snapshot
 
 Creates a PostgreSQL database snapshot (`pg_dump`) if the app declares `infrastructure.postgres`. The snapshot is stored and can be restored later via `norn snapshots <app> restore <ts>`.
 
-### 5. Migrate
+### 7. Migrate
 
 Runs database migrations from the `migrations` directory if specified. Migrations are applied to the database declared in `infrastructure.postgres.database`.
 
-### 6. Submit
+### 8. Submit
 
 The core translation step:
 
 1. Resolves secrets from SOPS-encrypted `secrets.enc.yaml`
 2. Provisions declared `infrastructure.objectStorage` buckets and app-scoped S3 env
-3. Calls `nomad.Translate()` to convert the infraspec into a Nomad service job
-4. For each process with a `schedule`, calls `nomad.TranslatePeriodic()` to create separate periodic batch jobs
-5. Submits all jobs to Nomad via the API
+3. Resolves every declared region (or the compatible local region)
+4. Calls `nomad.TranslateForRegion()` and filters processes by placement
+5. Submits scheduled jobs only in their eligible region (primary by default)
+6. Records each regional evaluation and readiness state in `deployment_regions`
 
-### 7. Healthy
+### 9. Healthy
 
-Polls Nomad for allocation health. Waits for all task groups to have at least one healthy allocation. Broadcasts `deploy.progress` WebSocket events during polling.
+Polls Nomad independently in every target region. A region begins with active
+traffic weight zero; after every eligible allocation is healthy, Norn promotes
+that region to its declared `trafficWeight`. Failure leaves its weight at zero
+and records the regional error for rollback and operator inspection.
 
 The Nomad update strategy (set by the translator) handles rolling updates:
 - `MaxParallel: 1` — one allocation at a time
 - `MinHealthyTime: 30s` — must be healthy for 30 seconds
 - `AutoRevert: true` — auto-rollback on health failure
 
-### 8. Forge
+### 10. Forge
 
-Updates cloudflared tunnel ingress rules if the app defines `endpoints`. Maps each endpoint URL to the app's Consul service address.
+Updates cloudflared tunnel ingress rules if the app defines `endpoints`. When
+`NORN_INGRESS_URL` is configured, every public hostname maps to the stable
+regional Traefik origin. Traefik then balances over passing Consul instances.
 
-### 9. Cleanup
+### 11. Cleanup
 
 Removes temporary build artifacts (cloned repo, build context).
 

@@ -110,7 +110,7 @@ func (p *Pipeline) resolveLocalSHA(ctx context.Context, srcDir string, st *state
 func (p *Pipeline) gitEnv(url string) (env []string, cleanup func()) {
 	if isSSHURL(url) && p.GitSSHKey != "" {
 		return []string{
-			fmt.Sprintf("GIT_SSH_COMMAND=ssh -i %s -o StrictHostKeyChecking=accept-new", p.GitSSHKey),
+			fmt.Sprintf("GIT_SSH_COMMAND=ssh -i %s -o IdentitiesOnly=yes -o StrictHostKeyChecking=accept-new -o UserKnownHostsFile=%s", p.GitSSHKey, filepath.Join(p.AppsDir, "..", "known_hosts")),
 		}, nil
 	}
 	if !isSSHURL(url) && p.GitToken != "" {

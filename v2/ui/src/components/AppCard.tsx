@@ -235,10 +235,11 @@ interface Props {
   onCron?: (appId: string) => void
   onFunction?: (appId: string) => void
   onToggleEndpoint?: (appId: string, hostname: string, enabled: boolean) => void
+	onToggleDeployment?: (appId: string, enabled: boolean) => Promise<void>
   onOpen?: (appId: string) => void
 }
 
-export function AppCard({ app, busy, activeIngress, services, idleCandidates = [], onPreflight, onDeploy, onRestart, onScale, onViewLogs, onExec, onSnapshots, onCron, onFunction, onToggleEndpoint, onOpen }: Props) {
+export function AppCard({ app, busy, activeIngress, services, idleCandidates = [], onPreflight, onDeploy, onRestart, onScale, onViewLogs, onExec, onSnapshots, onCron, onFunction, onToggleEndpoint, onToggleDeployment, onOpen }: Props) {
   const { spec, healthy, nomadStatus } = app
   const allocations = app.allocations ?? []
 
@@ -282,6 +283,7 @@ export function AppCard({ app, busy, activeIngress, services, idleCandidates = [
             <h3>{spec.name}</h3>
           )}
           <span className="nomad-status">{nomadStatus}</span>
+		  {!spec.deploy && <span className="draft-badge">Draft · deployment off</span>}
           {idleCandidates.length > 0 && (
             <Tooltip text={idleCandidateTooltip(idleCandidates)}>
               <span className="idle-candidate-badge" aria-label="Idle candidate">
@@ -391,9 +393,9 @@ export function AppCard({ app, busy, activeIngress, services, idleCandidates = [
           </button>
         </Tooltip>
         <Tooltip text="Deploy latest from repo">
-          <button onClick={() => onDeploy(spec.name)} disabled={busy} className="btn btn-primary">
+		  {spec.deploy ? <button onClick={() => onDeploy(spec.name)} disabled={busy} className="btn btn-primary">
             <i className="fawsb fa-rocket-launch" /> Deploy
-          </button>
+		  </button> : <button onClick={() => onToggleDeployment?.(spec.name, true)} disabled={busy || !onToggleDeployment} className="btn btn-primary"><i className="fawsb fa-shield-check" /> Enable deploys</button>}
         </Tooltip>
         <Tooltip text="Rolling restart of all allocations">
           <button onClick={() => onRestart(spec.name)} disabled={busy} className="btn">

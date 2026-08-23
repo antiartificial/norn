@@ -46,6 +46,7 @@ Use these environment variables when the repo or host layout differs:
 |----------|---------|-------------|
 | `NORN_PLATFORM_REPO` | script repo | Norn checkout to build |
 | `NORN_RELEASES_DIR` | `$HOME/norn/releases` | Versioned release directory |
+| `NORN_NODE_BIN` | detected `node@24`, then `node` | Node.js 24 executable used for release UI builds |
 | `NORN_CURRENT_LINK` | `$HOME/norn/current` | Current-release symlink |
 | `NORN_BIN_DIR` | `$HOME/go/bin` | Compatibility install directory |
 | `NORN_CANDIDATE_PORT` | `18800` | Alternate-port candidate API |

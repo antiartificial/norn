@@ -75,8 +75,10 @@ func (p *Pipeline) runPreflight(ctx context.Context, spec *model.InfraSpec, ref 
 	steps := []step{
 		{name: "validate", fn: p.preflightValidate},
 		{name: "clone", fn: p.clone},
+		{name: "admission", fn: p.admission},
 		{name: "inspect", fn: p.preflightInspect},
 		{name: "build", fn: p.build},
+		{name: "artifact-admission", fn: p.artifactAdmission},
 		{name: "test", fn: p.test},
 	}
 
@@ -128,7 +130,7 @@ func (p *Pipeline) runPreflight(ctx context.Context, spec *model.InfraSpec, ref 
 func (p *Pipeline) preflightValidate(ctx context.Context, st *state, sg *saga.Saga) error {
 	result := model.ValidateSpecWithOptions(st.spec, model.ValidationOptions{
 		NetworkMode:   p.NetworkMode,
-		StrictSecrets: truthyEnv("NORN_STRICT_SECRETS"),
+		StrictSecrets: p.StrictSecrets || truthyEnv("NORN_STRICT_SECRETS"),
 	})
 	for _, finding := range result.Findings {
 		p.preflightProgress(ctx, st.spec.App, sg, fmt.Sprintf("%s %s: %s", finding.Severity, finding.Field, finding.Message), map[string]string{

@@ -2,23 +2,49 @@ package config
 
 import (
 	"os"
+	"strconv"
 	"strings"
+	"time"
 )
 
+const defaultLegacyTokenSigningUntil = "2026-08-15T00:00:00Z"
+
 type Config struct {
+	Profile     string
 	Port        string
 	BindAddr    string
 	DatabaseURL string
 	UIDir       string
 	AppsDir     string
+	FleetConfig string // checked-out norn-fleet Cluster document; read-only to Norn
 	GitToken    string
 	GitSSHKey   string
 	APIToken    string
-	RegistryURL string // GHCR registry (e.g. ghcr.io/username)
-	NetworkMode string // local, tailnet, public
+	// RequireExplicitAuth disables compatibility access based only on a direct
+	// loopback peer or a temporary IP grant.
+	RequireExplicitAuth      bool
+	StrictSecrets            bool
+	AuditSigningKey          string
+	AuditPreviousSigningKeys []string
+	AuditRetentionDays       int
+	LegacyTokenSigningUntil  time.Time
+	RegistryURL              string // GHCR registry (e.g. ghcr.io/username)
+	ArtifactSigningPublicKey string
+	ArtifactDenySeverities   []string
+	CosignPath               string
+	TrivyPath                string
+	NetworkMode              string // local, tailnet, public
 
 	NomadAddr  string // Nomad API address
 	ConsulAddr string // Consul API address
+	IngressURL string // Regional Traefik origin used by Cloudflared
+	// ExternalIngress disables local cloudflared mutation when DNS/global edge
+	// routing is owned outside this Norn process.
+	ExternalIngress bool
+	// These mirror the HashiCorp client environment switches so production
+	// startup can reject encrypted-but-unverified control-plane transport.
+	NomadTLSSkipVerify  bool
+	ConsulTLSSkipVerify bool
 
 	S3Endpoint  string
 	S3AccessKey string
@@ -53,19 +79,35 @@ type Config struct {
 
 func Load() *Config {
 	return &Config{
-		Port:        envOr("NORN_PORT", "8800"),
-		BindAddr:    envOr("NORN_BIND_ADDR", "127.0.0.1"),
-		DatabaseURL: envOr("NORN_DATABASE_URL", "postgres://norn:norn@localhost:5432/norn_v2?sslmode=disable"),
-		UIDir:       uiDir(),
-		AppsDir:     envOr("NORN_APPS_DIR", os.Getenv("HOME")+"/projects"),
-		GitToken:    os.Getenv("NORN_GIT_TOKEN"),
-		GitSSHKey:   os.Getenv("NORN_GIT_SSH_KEY"),
-		APIToken:    os.Getenv("NORN_API_TOKEN"),
-		RegistryURL: os.Getenv("NORN_REGISTRY_URL"),
-		NetworkMode: networkMode(envOr("NORN_NETWORK_MODE", "local")),
+		Profile:                  strings.ToLower(envOr("NORN_PROFILE", "development")),
+		Port:                     envOr("NORN_PORT", "8800"),
+		BindAddr:                 envOr("NORN_BIND_ADDR", "127.0.0.1"),
+		DatabaseURL:              envOr("NORN_DATABASE_URL", "postgres://norn:norn@localhost:5432/norn_v2?sslmode=disable"),
+		UIDir:                    uiDir(),
+		AppsDir:                  envOr("NORN_APPS_DIR", os.Getenv("HOME")+"/projects"),
+		FleetConfig:              os.Getenv("NORN_FLEET_CONFIG"),
+		GitToken:                 os.Getenv("NORN_GIT_TOKEN"),
+		GitSSHKey:                os.Getenv("NORN_GIT_SSH_KEY"),
+		APIToken:                 os.Getenv("NORN_API_TOKEN"),
+		RequireExplicitAuth:      os.Getenv("NORN_REQUIRE_EXPLICIT_AUTH") == "true",
+		StrictSecrets:            os.Getenv("NORN_STRICT_SECRETS") == "true" || strings.EqualFold(os.Getenv("NORN_PROFILE"), "production"),
+		AuditSigningKey:          os.Getenv("NORN_AUDIT_SIGNING_KEY"),
+		AuditPreviousSigningKeys: splitNonEmpty(os.Getenv("NORN_AUDIT_PREVIOUS_SIGNING_KEYS")),
+		AuditRetentionDays:       envIntOr("NORN_AUDIT_RETENTION_DAYS", 365),
+		LegacyTokenSigningUntil:  envTimeOr("NORN_LEGACY_TOKEN_SIGNING_UNTIL", defaultLegacyTokenSigningUntil),
+		RegistryURL:              os.Getenv("NORN_REGISTRY_URL"),
+		ArtifactSigningPublicKey: os.Getenv("NORN_ARTIFACT_SIGNING_PUBLIC_KEY"),
+		ArtifactDenySeverities:   splitCSV(envOr("NORN_ARTIFACT_DENY_SEVERITIES", "HIGH,CRITICAL")),
+		CosignPath:               envOr("NORN_COSIGN_PATH", "cosign"),
+		TrivyPath:                envOr("NORN_TRIVY_PATH", "trivy"),
+		NetworkMode:              networkMode(envOr("NORN_NETWORK_MODE", "local")),
 
-		NomadAddr:  envOr("NORN_NOMAD_ADDR", "http://localhost:4646"),
-		ConsulAddr: envOr("NORN_CONSUL_ADDR", "http://localhost:8500"),
+		NomadAddr:           envOr("NORN_NOMAD_ADDR", "http://localhost:4646"),
+		ConsulAddr:          envOr("NORN_CONSUL_ADDR", "http://localhost:8500"),
+		IngressURL:          strings.TrimRight(os.Getenv("NORN_INGRESS_URL"), "/"),
+		ExternalIngress:     envBoolOr("NORN_EXTERNAL_INGRESS", false),
+		NomadTLSSkipVerify:  envBoolOr("NOMAD_SKIP_VERIFY", false),
+		ConsulTLSSkipVerify: !envBoolOr("CONSUL_HTTP_SSL_VERIFY", true),
 
 		S3Endpoint:          os.Getenv("NORN_S3_ENDPOINT"),
 		S3AccessKey:         os.Getenv("NORN_S3_ACCESS_KEY"),
@@ -96,6 +138,10 @@ func Load() *Config {
 		CloudflareLogpushToken: os.Getenv("NORN_CLOUDFLARE_LOGPUSH_TOKEN"),
 		CloudflareAPIBaseURL:   envOr("NORN_CLOUDFLARE_API_BASE_URL", "https://api.cloudflare.com/client/v4"),
 	}
+}
+
+func (c *Config) Production() bool {
+	return c != nil && strings.EqualFold(strings.TrimSpace(c.Profile), "production")
 }
 
 func uiDir() string {
@@ -153,6 +199,49 @@ func firstEnv(keys ...string) string {
 		}
 	}
 	return ""
+}
+
+func envTimeOr(key, fallback string) time.Time {
+	raw := envOr(key, fallback)
+	parsed, err := time.Parse(time.RFC3339, raw)
+	if err != nil {
+		return time.Time{}
+	}
+	return parsed.UTC()
+}
+
+func envBoolOr(key string, fallback bool) bool {
+	raw := strings.TrimSpace(os.Getenv(key))
+	if raw == "" {
+		return fallback
+	}
+	parsed, err := strconv.ParseBool(raw)
+	if err != nil {
+		return fallback
+	}
+	return parsed
+}
+
+func envIntOr(key string, fallback int) int {
+	raw := strings.TrimSpace(os.Getenv(key))
+	if raw == "" {
+		return fallback
+	}
+	parsed, err := strconv.Atoi(raw)
+	if err != nil {
+		return fallback
+	}
+	return parsed
+}
+
+func splitNonEmpty(raw string) []string {
+	values := []string{}
+	for _, value := range strings.Split(raw, ",") {
+		if value = strings.TrimSpace(value); value != "" {
+			values = append(values, value)
+		}
+	}
+	return values
 }
 
 func networkMode(mode string) string {

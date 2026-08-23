@@ -1,0 +1,38 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+script_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+terraform_dir="${script_dir}/../terraform"
+export PATH="${script_dir}/../.tools/bin:${PATH}"
+
+if [[ "${1:-}" != "--list" && "${1:-}" != "--host" ]]; then
+  echo "usage: inventory --list | --host NAME" >&2
+  exit 2
+fi
+
+if [[ "${1:-}" == "--host" ]]; then
+  printf '{}\n'
+  exit 0
+fi
+
+nodes_json="$(terraform -chdir="${terraform_dir}" output -json lab_nodes)"
+vpc_cidr="$(terraform -chdir="${terraform_dir}" output -raw vpc_cidr)"
+
+jq --arg vpc_cidr "${vpc_cidr}" '{
+  _meta: {
+    hostvars: (with_entries(.value = {
+      ansible_host: .value.public_ip,
+      ansible_user: "root",
+      ansible_python_interpreter: "/usr/bin/python3",
+      private_ip: .value.private_ip,
+      droplet_id: .value.id,
+      vpc_cidr: $vpc_cidr
+    }))
+  },
+  norn_ha: {hosts: (keys)},
+  consul_servers: {hosts: (keys)},
+  nomad_servers: {hosts: (keys)},
+  nomad_clients: {hosts: (keys)},
+  postgres_cluster: {hosts: (keys)},
+  norn_control: {hosts: [keys[0]]}
+}' <<<"${nodes_json}"

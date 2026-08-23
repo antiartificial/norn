@@ -2,7 +2,9 @@ package nomad
 
 import (
 	"context"
+	"errors"
 	"fmt"
+	"strings"
 	"time"
 
 	nomadapi "github.com/hashicorp/nomad/api"
@@ -10,7 +12,19 @@ import (
 
 // SubmitJob registers a job with Nomad.
 func (c *Client) SubmitJob(job *nomadapi.Job) (string, error) {
-	resp, _, err := c.api.Jobs().Register(job, nil)
+	region := ""
+	if job.Region != nil {
+		region = *job.Region
+	}
+	return c.SubmitJobRegion(job, region)
+}
+
+func (c *Client) SubmitJobRegion(job *nomadapi.Job, region string) (string, error) {
+	var opts *nomadapi.WriteOptions
+	if region != "" {
+		opts = &nomadapi.WriteOptions{Region: region}
+	}
+	resp, _, err := c.api.Jobs().Register(job, opts)
 	if err != nil {
 		return "", fmt.Errorf("submit job: %w", err)
 	}
@@ -23,14 +37,45 @@ func (c *Client) StopJob(jobID string, purge bool) error {
 	return err
 }
 
-// RestartJob forces a restart by creating a new evaluation.
+// RestartJob replaces every active allocation for a job. Stopping an
+// allocation whose desired status is run asks Nomad to create a fresh
+// allocation, which also recreates the task's network and port bindings.
 func (c *Client) RestartJob(jobID string) error {
-	job, _, err := c.api.Jobs().Info(jobID, nil)
+	allocs, _, err := c.api.Jobs().Allocations(jobID, false, nil)
 	if err != nil {
-		return fmt.Errorf("get job info: %w", err)
+		return fmt.Errorf("list allocations for %s: %w", jobID, err)
 	}
-	_, _, err = c.api.Jobs().Register(job, nil)
-	return err
+
+	var active []*nomadapi.AllocationListStub
+	for _, alloc := range allocs {
+		if isRestartableAllocation(alloc) {
+			active = append(active, alloc)
+		}
+	}
+	if len(active) == 0 {
+		return fmt.Errorf("no active allocations found for job %s", jobID)
+	}
+
+	var stopErrors []error
+	for _, alloc := range active {
+		var query *nomadapi.QueryOptions
+		if alloc.Namespace != "" {
+			query = &nomadapi.QueryOptions{Namespace: alloc.Namespace}
+		}
+		if _, err := c.api.Allocations().Stop(&nomadapi.Allocation{ID: alloc.ID}, query); err != nil {
+			stopErrors = append(stopErrors, fmt.Errorf("stop allocation %s: %w", alloc.ID, err))
+		}
+	}
+	return errors.Join(stopErrors...)
+}
+
+func isRestartableAllocation(alloc *nomadapi.AllocationListStub) bool {
+	if alloc == nil || alloc.ID == "" || alloc.DesiredStatus != nomadapi.AllocDesiredStatusRun {
+		return false
+	}
+	return alloc.ClientStatus == nomadapi.AllocClientStatusPending ||
+		alloc.ClientStatus == nomadapi.AllocClientStatusRunning ||
+		alloc.ClientStatus == nomadapi.AllocClientStatusUnknown
 }
 
 // JobStatus returns the status of a Nomad job.
@@ -47,7 +92,15 @@ func (c *Client) JobStatus(jobID string) (string, error) {
 
 // JobAllocations returns allocations for a job.
 func (c *Client) JobAllocations(jobID string) ([]*nomadapi.AllocationListStub, error) {
-	allocs, _, err := c.api.Jobs().Allocations(jobID, false, nil)
+	return c.JobAllocationsRegion(jobID, "")
+}
+
+func (c *Client) JobAllocationsRegion(jobID, region string) ([]*nomadapi.AllocationListStub, error) {
+	var opts *nomadapi.QueryOptions
+	if region != "" {
+		opts = &nomadapi.QueryOptions{Region: region}
+	}
+	allocs, _, err := c.api.Jobs().Allocations(jobID, false, opts)
 	if err != nil {
 		return nil, err
 	}
@@ -57,6 +110,10 @@ func (c *Client) JobAllocations(jobID string) ([]*nomadapi.AllocationListStub, e
 // WaitHealthy waits until all allocations for a job report healthy.
 // Returns an error if the timeout is exceeded.
 func (c *Client) WaitHealthy(ctx context.Context, jobID string, timeout time.Duration) error {
+	return c.WaitHealthyRegion(ctx, jobID, "", timeout)
+}
+
+func (c *Client) WaitHealthyRegion(ctx context.Context, jobID, region string, timeout time.Duration) error {
 	deadline := time.After(timeout)
 	ticker := time.NewTicker(2 * time.Second)
 	defer ticker.Stop()
@@ -68,7 +125,7 @@ func (c *Client) WaitHealthy(ctx context.Context, jobID string, timeout time.Dur
 		case <-deadline:
 			return fmt.Errorf("timeout waiting for %s to become healthy", jobID)
 		case <-ticker.C:
-			allocs, err := c.JobAllocations(jobID)
+			allocs, err := c.JobAllocationsRegion(jobID, region)
 			if err != nil {
 				continue
 			}
@@ -112,7 +169,11 @@ type AllocStatus struct {
 
 // PollAllocations returns non-terminal allocations for a job (single poll).
 func (c *Client) PollAllocations(jobID string) ([]AllocStatus, error) {
-	allocs, err := c.JobAllocations(jobID)
+	return c.PollAllocationsRegion(jobID, "")
+}
+
+func (c *Client) PollAllocationsRegion(jobID, region string) ([]AllocStatus, error) {
+	allocs, err := c.JobAllocationsRegion(jobID, region)
 	if err != nil {
 		return nil, err
 	}
@@ -392,6 +453,77 @@ type CronRun struct {
 	ExitCode   int    `json:"exitCode,omitempty"`
 }
 
+// CronRunHealth summarizes allocation and restart evidence for one periodic
+// child job. Periodic parent state alone cannot distinguish a healthy running
+// child from one repeatedly restarting or surviving an OOM replacement.
+type CronRunHealth struct {
+	JobID              string    `json:"jobId"`
+	RunningAllocations int       `json:"runningAllocations,omitempty"`
+	FailedAllocations  int       `json:"failedAllocations,omitempty"`
+	LostAllocations    int       `json:"lostAllocations,omitempty"`
+	Restarts           uint64    `json:"restarts,omitempty"`
+	LastRestart        time.Time `json:"lastRestart,omitempty"`
+	OOMKilled          bool      `json:"oomKilled"`
+	LastEvent          string    `json:"lastEvent,omitempty"`
+}
+
+// CronRunHealth returns retained allocation evidence for a periodic child.
+// Callers intentionally use this for only the active or latest child so a
+// high-frequency cron with substantial retained history does not create an
+// N+1 scan over every historical dispatch.
+func (c *Client) CronRunHealth(jobID string) (*CronRunHealth, error) {
+	allocs, _, err := c.api.Jobs().Allocations(jobID, true, nil)
+	if err != nil {
+		return nil, fmt.Errorf("cron run allocations: %w", err)
+	}
+	health := &CronRunHealth{JobID: jobID}
+	var latestEventAt int64
+	for _, alloc := range allocs {
+		switch alloc.ClientStatus {
+		case nomadapi.AllocClientStatusRunning:
+			health.RunningAllocations++
+		case nomadapi.AllocClientStatusFailed:
+			health.FailedAllocations++
+		case nomadapi.AllocClientStatusLost:
+			health.LostAllocations++
+		}
+		for _, state := range alloc.TaskStates {
+			health.Restarts += state.Restarts
+			if state.LastRestart.After(health.LastRestart) {
+				health.LastRestart = state.LastRestart
+			}
+			for _, event := range state.Events {
+				if taskEventOOMKilled(event) {
+					health.OOMKilled = true
+				}
+				if event != nil && event.Time >= latestEventAt {
+					latestEventAt = event.Time
+					health.LastEvent = event.DisplayMessage
+					if health.LastEvent == "" {
+						health.LastEvent = event.Message
+					}
+					if health.LastEvent == "" {
+						health.LastEvent = event.Type
+					}
+				}
+			}
+		}
+	}
+	return health, nil
+}
+
+func taskEventOOMKilled(event *nomadapi.TaskEvent) bool {
+	if event == nil {
+		return false
+	}
+	for _, value := range []string{event.Type, event.Message, event.DisplayMessage} {
+		if strings.Contains(strings.ToLower(value), "oom killed") {
+			return true
+		}
+	}
+	return strings.EqualFold(event.Details["oom_killed"], "true")
+}
+
 // WaitBatchComplete polls a batch job until it reaches a terminal state.
 func (c *Client) WaitBatchComplete(ctx context.Context, jobID string, timeout time.Duration) (string, int, error) {
 	deadline := time.After(timeout)
@@ -614,7 +746,15 @@ type DeploymentInfo struct {
 
 // LatestDeployment returns the most recent deployment for a job.
 func (c *Client) LatestDeployment(jobID string) (*DeploymentInfo, error) {
-	deploys, _, err := c.api.Jobs().Deployments(jobID, false, nil)
+	return c.LatestDeploymentRegion(jobID, "")
+}
+
+func (c *Client) LatestDeploymentRegion(jobID, region string) (*DeploymentInfo, error) {
+	var opts *nomadapi.QueryOptions
+	if region != "" {
+		opts = &nomadapi.QueryOptions{Region: region}
+	}
+	deploys, _, err := c.api.Jobs().Deployments(jobID, false, opts)
 	if err != nil {
 		return nil, fmt.Errorf("list deployments: %w", err)
 	}
@@ -645,14 +785,22 @@ func (c *Client) LatestDeployment(jobID string) (*DeploymentInfo, error) {
 
 // PromoteDeployment promotes all canary allocations in the latest deployment.
 func (c *Client) PromoteDeployment(jobID string) error {
-	info, err := c.LatestDeployment(jobID)
+	return c.PromoteDeploymentRegion(jobID, "")
+}
+
+func (c *Client) PromoteDeploymentRegion(jobID, region string) error {
+	info, err := c.LatestDeploymentRegion(jobID, region)
 	if err != nil {
 		return err
 	}
 	if info == nil {
 		return fmt.Errorf("no deployment found for %s", jobID)
 	}
-	_, _, err = c.api.Deployments().PromoteAll(info.ID, nil)
+	var opts *nomadapi.WriteOptions
+	if region != "" {
+		opts = &nomadapi.WriteOptions{Region: region}
+	}
+	_, _, err = c.api.Deployments().PromoteAll(info.ID, opts)
 	if err != nil {
 		return fmt.Errorf("promote deployment: %w", err)
 	}
@@ -661,14 +809,22 @@ func (c *Client) PromoteDeployment(jobID string) error {
 
 // FailDeployment marks the latest deployment as failed, triggering auto-revert if configured.
 func (c *Client) FailDeployment(jobID string) error {
-	info, err := c.LatestDeployment(jobID)
+	return c.FailDeploymentRegion(jobID, "")
+}
+
+func (c *Client) FailDeploymentRegion(jobID, region string) error {
+	info, err := c.LatestDeploymentRegion(jobID, region)
 	if err != nil {
 		return err
 	}
 	if info == nil {
 		return fmt.Errorf("no deployment found for %s", jobID)
 	}
-	_, _, err = c.api.Deployments().Fail(info.ID, nil)
+	var opts *nomadapi.WriteOptions
+	if region != "" {
+		opts = &nomadapi.WriteOptions{Region: region}
+	}
+	_, _, err = c.api.Deployments().Fail(info.ID, opts)
 	if err != nil {
 		return fmt.Errorf("fail deployment: %w", err)
 	}
