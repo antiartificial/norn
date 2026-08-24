@@ -92,3 +92,19 @@ type CapacityPlan struct {
 	Digest        string    `json:"digest"`
 	Signature     string    `json:"signature,omitempty"`
 }
+
+const ReconciliationSchemaVersion = "norn.fleet-reconciliation/v1"
+
+// ReconciliationRequest is a durable, secret-free checkpoint emitted by the
+// protected infrastructure runner. Checkpoints are append-only so a restarted
+// runner can discover the last proven phase without trusting its local disk.
+type ReconciliationRequest struct {
+	SchemaVersion  string `json:"schemaVersion"`
+	Phase          string `json:"phase"`
+	Status         string `json:"status"`
+	CommitSHA      string `json:"commitSha"`
+	PlanSHA256     string `json:"planSha256"`
+	StateSerial    int64  `json:"stateSerial,omitempty"`
+	EvidenceDigest string `json:"evidenceDigest"`
+	Message        string `json:"message,omitempty"`
+}

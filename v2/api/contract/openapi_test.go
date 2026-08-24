@@ -27,6 +27,7 @@ func TestControlOpenAPIParsesAndLocalRefsResolve(t *testing.T) {
 		"/api/v1/production/readiness",
 		"/api/v1/audit/mutations", "/api/v1/production/drills", "/api/v1/production/drills/{id}/complete",
 		"/api/v1/validate/infraspec", "/api/v1/fleet/validate", "/api/v1/fleet/node-pools", "/api/v1/fleet/plans", "/api/v1/fleet/node-pools/{pool}/plan",
+		"/api/v1/fleet/plans/{planID}/reconciliations",
 	} {
 		if _, ok := paths[required]; !ok {
 			t.Errorf("missing path %s", required)

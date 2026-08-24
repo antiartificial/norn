@@ -13,6 +13,48 @@ Norn fleet management deliberately has two owners:
 
 There is no `norn-fleet` daemon in v1. The infrastructure repository is desired state; the existing Norn application is the operator experience.
 
+## Five-minute start
+
+Clone the private infrastructure repository and run its secret-safe assistant:
+
+```sh
+git clone git@github.com:YOUR-ORG/norn-fleet.git
+cd norn-fleet
+./scripts/setup
+./scripts/setup doctor
+```
+
+The assistant verifies OpenTofu, GitHub branch protection, protected
+environments, configured secret *names*, the fleet document, and the local
+contract. It can upload values to GitHub over stdin, but never prints them or
+places them in process arguments. The required inputs are:
+
+- a private GitHub repository and an administrator authenticated with `repo`
+  and `workflow` scopes;
+- a DigitalOcean token scoped to the VPC, Droplet, load-balancer, firewall,
+  tag, and referenced SSH-key operations used by the module;
+- versioned S3-compatible state storage and a key with bucket
+  list/read/write/delete access;
+- SSH fingerprints, administrator CIDRs, and reviewed cloud-init;
+- a trusted HTTPS Norn endpoint and runner token with `api:read` and
+  `api:write`; and
+- checked-in idempotent configuration, enrollment, and readiness hook commands.
+
+Norn can do the schema validation, durable planning, fleet inventory,
+enrollment/readiness observation, checkpointing, and operator presentation.
+The one-time provider/state/bootstrap credential setup remains in the protected
+runner because moving it into Norn would make the control plane a cloud root.
+The repository's `docs/getting-started.md` is the copy/paste guide for both
+interactive and environment-driven setup.
+
+Point the Norn server at a read-only checkout and verify the handoff:
+
+```sh
+NORN_FLEET_CONFIG=/srv/norn-fleet/environments/production/nyc3/cluster.yaml
+norn fleet validate environments/production/nyc3/cluster.yaml
+norn fleet pools
+```
+
 ```mermaid
 flowchart LR
   Operator --> Norn[Norn Fleet API / CLI / UI]
@@ -81,6 +123,7 @@ The API equivalents are:
 | `POST` | `/api/v1/fleet/validate` | Strict fleet schema and sanity report |
 | `POST` | `/api/v1/validate/infraspec` | Strict uploaded InfraSpec; optional `fleetDocument` cross-check |
 | `GET` | `/api/v1/fleet/node-pools` | Desired pool inventory and config digest |
+| `GET`, `POST` | `/api/v1/fleet/plans/{planID}/reconciliations` | List or append plan/commit/state/evidence-bound recovery checkpoints |
 
 An invalid document returns HTTP 200 with `valid: false`; malformed request envelopes use `application/problem+json`. This makes validation deterministic for UI and CI clients without treating user-authored validation findings as transport failures.
 
@@ -92,6 +135,31 @@ norn fleet plan app --desired 4 --reason "launch headroom"
 norn fleet replace app --size s-8vcpu-16gb --reason "memory pressure"
 norn fleet reconcile app
 ```
+
+The repository assistant prepares a scale-up edit and validates it before a
+pull request:
+
+```sh
+./scripts/setup scale app --desired 4
+norn fleet plan app --desired 4 --reason "launch headroom"
+```
+
+For a downsize, the extra flag makes destructive intent impossible to create by
+accident:
+
+```sh
+./scripts/setup scale app --desired 2 --prepare-downsize
+norn fleet plan app --desired 2 --reason "traffic returned to baseline"
+```
+
+The current hands-off workflow still refuses the resulting deletion. An
+operator must prove allocation, volume, singleton, connection, readiness, and
+ingress headroom; make the exact nodes ineligible; drain them; apply the
+reviewed SHA-bound plan under the state lock; and append
+`old_nodes_drained`/`complete` receipts. This is intentionally less convenient
+than an unsafe `tofu apply`: one-click scale-down requires a future staged
+executor that knows the exact old generation and can retain it until drain
+proof exists.
 
 `POST /api/v1/fleet/node-pools/{pool}/plan` records a terminal `fleet.capacity-plan` operation. Its typed receipt binds the plan ID, cluster, pool, action, source-document digest, plan digest, and workflow URL; production receipts also include an HMAC signature. Production requires `NORN_AUDIT_SIGNING_KEY`; development plans remain durable but carry an explicit unsigned warning.
 
@@ -107,7 +175,11 @@ GitHub's current private-repository plan does not provide environment required r
 
 ## Replacement lifecycle
 
-For immutable blue/green changes, the runner creates new VMs before destroying old ones. Norn must observe enrollment and Consul/Nomad readiness before traffic weights increase or old clients drain. If assurance fails, retain the old pool and fail the apply/reconciliation workflow; do not reinterpret partial enrollment as success.
+For non-destructive plans, the runner records a recovery binding before provider mutation. A failed, cancelled, timed-out, or manually selected apply run is replanned under the remote state lock; recovery proceeds only when every remaining action is a non-destructive subset of the originally reviewed plan. Configuration, enrollment, and assurance hooks are idempotent, and Norn's append-only reconciliation checkpoints let a replacement runner resume after the last proven phase.
+
+The initial hands-off lane deliberately refuses plans containing deletes or same-address replacements. `create_before_destroy` alone cannot prove that a new node enrolled and became ready before OpenTofu removes its predecessor. Destructive blue/green work therefore remains supervised until a staged executor can retain both generations, prove readiness, drain the old generation, and only then consume the reviewed deletion approval. This fail-closed boundary is part of the API/workflow contract, not an operator convention.
+
+Reconciliation phases are `infrastructure_applied`, `inventory_generated`, `nodes_configured`, `nodes_enrolled`, `readiness_verified`, optional `old_nodes_drained`, and `complete`. The API rejects out-of-order success, binding changes, missing drain proof for replacement/downsize plans, invalid state serials, and idempotency-key reuse with different evidence.
 
 Rolling replacement remains an explicit alternative for operators who accept reduced headroom. It is never selected automatically for a size change.
 
