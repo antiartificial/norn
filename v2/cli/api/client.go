@@ -1745,6 +1745,21 @@ func (c *Client) PlanFleetCapacity(pool string, desired *int, size, strategy, re
 	return &operation, nil
 }
 
+type FleetReconciliationList struct {
+	SchemaVersion   string      `json:"schemaVersion"`
+	PlanID          string      `json:"planId"`
+	Reconciliations []Operation `json:"reconciliations"`
+	Count           int         `json:"count"`
+}
+
+func (c *Client) FleetReconciliations(planID string) (*FleetReconciliationList, error) {
+	var result FleetReconciliationList
+	if err := c.get("/api/v1/fleet/plans/"+url.PathEscape(planID)+"/reconciliations", &result); err != nil {
+		return nil, err
+	}
+	return &result, nil
+}
+
 func (c *Client) UpdateSecrets(appID string, secrets map[string]string) error {
 	body, err := json.Marshal(secrets)
 	if err != nil {

@@ -798,9 +798,25 @@ norn fleet validate <cluster.yaml>
 norn fleet plan <pool> [--desired N] [--size SLUG] [--strategy blueGreen|rolling] [--reason TEXT]
 norn fleet replace <pool> --size SLUG [--reason TEXT]
 norn fleet reconcile <pool> [--reason TEXT]
+norn fleet checkpoints <plan-id>
 ```
 
+Initial cloud-runner setup lives in the private `norn-fleet` checkout:
+
+```bash
+./scripts/setup                 # interactive setup/readiness assistant
+./scripts/setup doctor          # secret-safe prerequisite check
+./scripts/setup scale app --desired 4
+```
+
+Norn owns validation, durable plans, inventory, enrollment/readiness, and
+receipts. The protected runner keeps provider and remote-state credentials; the
+setup assistant sends those values directly to GitHub environment secrets and
+does not copy them into Norn.
+
 Capacity plans are stored as completed `fleet.capacity-plan` operations and do not call a cloud provider. `replace` requires `--size` and forces blue/green planning. The infrastructure repository must enforce its own reviewed-SHA and apply authorization gate. The current private repository uses protected-branch-only environments, strict pull-request checks, reviewed-plan SHA binding, and manual dispatch because its GitHub plan does not provide environment required reviewers.
+
+`checkpoints` shows the append-only runner phases for an applied plan, including provider state serials and evidence digests. It is the operator-facing view of interrupted apply recovery and refuses to combine checkpoints from different commit/plan bindings.
 
 ## endpoints
 

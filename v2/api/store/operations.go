@@ -15,6 +15,7 @@ import (
 type OperationFilter struct {
 	App       string
 	Kind      string
+	Ref       string
 	Status    string
 	ExcludeID string
 	Active    bool
@@ -209,6 +210,9 @@ func (db *DB) ListOperations(ctx context.Context, filter OperationFilter) ([]mod
 	}
 	if filter.Kind != "" {
 		add("kind = $%d", filter.Kind)
+	}
+	if filter.Ref != "" {
+		add("ref = $%d", filter.Ref)
 	}
 	if filter.Status != "" {
 		add("status = $%d", filter.Status)

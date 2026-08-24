@@ -79,14 +79,19 @@ type AppOperationReceipt struct {
 }
 
 type FleetOperationReceipt struct {
-	PlanID       string `json:"planId"`
-	Cluster      string `json:"cluster"`
-	Pool         string `json:"pool"`
-	Action       string `json:"action"`
-	SourceDigest string `json:"sourceDigest"`
-	PlanDigest   string `json:"planDigest"`
-	Signature    string `json:"signature,omitempty"`
-	WorkflowURL  string `json:"workflowUrl,omitempty"`
+	PlanID         string `json:"planId"`
+	Cluster        string `json:"cluster,omitempty"`
+	Pool           string `json:"pool,omitempty"`
+	Action         string `json:"action,omitempty"`
+	SourceDigest   string `json:"sourceDigest,omitempty"`
+	PlanDigest     string `json:"planDigest,omitempty"`
+	Signature      string `json:"signature,omitempty"`
+	WorkflowURL    string `json:"workflowUrl,omitempty"`
+	Phase          string `json:"phase,omitempty"`
+	CommitSHA      string `json:"commitSha,omitempty"`
+	PlanSHA256     string `json:"planSha256,omitempty"`
+	StateSerial    int64  `json:"stateSerial,omitempty"`
+	EvidenceDigest string `json:"evidenceDigest,omitempty"`
 }
 
 func (o *Operation) AttachReceipt() {
@@ -123,6 +128,12 @@ func (o *Operation) AttachReceipt() {
 			SourceDigest: stringValue(o.Payload, "sourceDigest"), PlanDigest: stringValue(o.Metadata, "planDigest"),
 			Signature: stringValue(o.Metadata, "signature"), WorkflowURL: stringValue(o.Payload, "workflowUrl"),
 		}
+	case o.Kind == "fleet.reconciliation":
+		receipt.Fleet = &FleetOperationReceipt{
+			PlanID: o.Ref, Phase: stringValue(o.Payload, "phase"), CommitSHA: stringValue(o.Payload, "commitSha"),
+			PlanSHA256: stringValue(o.Payload, "planSha256"), StateSerial: int64Value(o.Payload, "stateSerial"),
+			EvidenceDigest: stringValue(o.Payload, "evidenceDigest"),
+		}
 	}
 	o.Receipt = receipt
 }
@@ -150,5 +161,18 @@ func intPointer(values map[string]interface{}, key string) *int {
 		return &converted
 	default:
 		return nil
+	}
+}
+
+func int64Value(values map[string]interface{}, key string) int64 {
+	switch value := values[key].(type) {
+	case int64:
+		return value
+	case int:
+		return int64(value)
+	case float64:
+		return int64(value)
+	default:
+		return 0
 	}
 }

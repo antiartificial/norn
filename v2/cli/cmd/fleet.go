@@ -22,7 +22,7 @@ var (
 
 func init() {
 	rootCmd.AddCommand(fleetCmd)
-	fleetCmd.AddCommand(fleetPoolsCmd, fleetValidateCmd, fleetPlanCmd, fleetReplaceCmd, fleetReconcileCmd)
+	fleetCmd.AddCommand(fleetPoolsCmd, fleetValidateCmd, fleetPlanCmd, fleetReplaceCmd, fleetReconcileCmd, fleetCheckpointsCmd)
 	for _, command := range []*cobra.Command{fleetPlanCmd, fleetReplaceCmd, fleetReconcileCmd} {
 		command.Flags().IntVar(&fleetDesired, "desired", 0, "Proposed desired node count")
 		command.Flags().StringVar(&fleetSize, "size", "", "Proposed immutable provider VM size")
@@ -87,6 +87,29 @@ var fleetValidateCmd = &cobra.Command{
 var fleetPlanCmd = fleetPlanCommand("plan", "Create a durable capacity plan without changing cloud resources", "")
 var fleetReplaceCmd = fleetPlanCommand("replace", "Plan immutable blue/green replacement", "blueGreen")
 var fleetReconcileCmd = fleetPlanCommand("reconcile", "Record a desired-state drift reconciliation plan", "")
+
+var fleetCheckpointsCmd = &cobra.Command{
+	Use: "checkpoints <plan-id>", Short: "Show durable hands-off recovery checkpoints", Args: cobra.ExactArgs(1),
+	RunE: func(cmd *cobra.Command, args []string) error {
+		result, err := client.FleetReconciliations(args[0])
+		if err != nil {
+			return fmt.Errorf("fleet checkpoints: %w", err)
+		}
+		w := tabwriter.NewWriter(cmd.OutOrStdout(), 0, 0, 2, ' ', 0)
+		fmt.Fprintln(w, "PHASE\tSTATUS\tSTATE\tEVIDENCE")
+		for index := len(result.Reconciliations) - 1; index >= 0; index-- {
+			op := result.Reconciliations[index]
+			phase, _ := op.Payload["phase"].(string)
+			evidence, _ := op.Payload["evidenceDigest"].(string)
+			state := ""
+			if value, ok := op.Payload["stateSerial"].(float64); ok && value > 0 {
+				state = fmt.Sprintf("%.0f", value)
+			}
+			fmt.Fprintf(w, "%s\t%s\t%s\t%s\n", phase, op.Status, state, evidence)
+		}
+		return w.Flush()
+	},
+}
 
 func fleetPlanCommand(use, short, forcedStrategy string) *cobra.Command {
 	return &cobra.Command{Use: use + " <pool>", Short: short, Args: cobra.ExactArgs(1), RunE: func(cmd *cobra.Command, args []string) error {

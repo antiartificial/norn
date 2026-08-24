@@ -117,6 +117,53 @@ paths:
         '503': { $ref: '#/components/responses/Problem' }
         '401': { $ref: '#/components/responses/Problem' }
         '403': { $ref: '#/components/responses/Problem' }
+  /api/v1/fleet/plans/{planID}/reconciliations:
+    parameters:
+      - { name: planID, in: path, required: true, schema: { type: string, format: uuid } }
+    get:
+      operationId: listFleetReconciliations
+      description: Lists append-only infrastructure reconciliation checkpoints for a durable capacity plan. Requires api:read.
+      responses:
+        '200':
+          description: Durable reconciliation checkpoint operations
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [schemaVersion, planId, reconciliations, count]
+                properties:
+                  schemaVersion: { const: norn.fleet-reconciliation/v1 }
+                  planId: { type: string, format: uuid }
+                  reconciliations: { type: array, items: { $ref: '#/components/schemas/Operation' } }
+                  count: { type: integer }
+        '400': { $ref: '#/components/responses/Problem' }
+        '404': { $ref: '#/components/responses/Problem' }
+        '503': { $ref: '#/components/responses/Problem' }
+    post:
+      operationId: recordFleetReconciliation
+      description: Appends a plan-, commit-, state-, and evidence-bound recovery checkpoint. Successful phases are accepted only in lifecycle order. Requires api:write.
+      parameters:
+        - $ref: '#/components/parameters/IdempotencyKey'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/FleetReconciliationRequest' }
+      responses:
+        '200':
+          description: Existing checkpoint returned for an idempotent replay
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Operation' }
+        '201':
+          description: Reconciliation checkpoint recorded
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Operation' }
+        '400': { $ref: '#/components/responses/Problem' }
+        '404': { $ref: '#/components/responses/Problem' }
+        '409': { $ref: '#/components/responses/Problem' }
+        '503': { $ref: '#/components/responses/Problem' }
   /api/v1/fleet/node-pools/{pool}/plan:
     post:
       operationId: createFleetCapacityPlan
@@ -794,6 +841,13 @@ components:
         - fleet_plan_store_failed
         - fleet_plan_finish_failed
         - fleet_plan_read_failed
+        - invalid_fleet_plan_id
+        - fleet_plan_not_found
+        - invalid_fleet_reconciliation
+        - fleet_reconciliation_out_of_order
+        - fleet_reconciliation_store_unavailable
+        - fleet_reconciliation_store_failed
+        - fleet_reconciliation_read_failed
         - idempotency_key_reused
     Capabilities:
       type: object
@@ -1296,6 +1350,21 @@ components:
         size: { type: string }
         strategy: { type: string, enum: [blueGreen, rolling] }
         reason: { type: string, maxLength: 1000 }
+    FleetReconciliationRequest:
+      type: object
+      additionalProperties: false
+      required: [schemaVersion, phase, status, commitSha, planSha256, evidenceDigest]
+      properties:
+        schemaVersion: { const: norn.fleet-reconciliation/v1 }
+        phase:
+          type: string
+          enum: [infrastructure_applied, inventory_generated, nodes_configured, nodes_enrolled, readiness_verified, old_nodes_drained, complete]
+        status: { type: string, enum: [succeeded, failed] }
+        commitSha: { type: string, pattern: '^[0-9a-f]{40}$' }
+        planSha256: { type: string, pattern: '^[0-9a-f]{64}$' }
+        stateSerial: { type: integer, format: int64, minimum: 0 }
+        evidenceDigest: { type: string, pattern: '^sha256:[0-9a-f]{64}$' }
+        message: { type: string, maxLength: 1000 }
     RegionTarget:
       type: object
       properties:
@@ -1435,7 +1504,7 @@ components:
         step: { type: string }
     FleetOperationReceipt:
       type: object
-      required: [planId, cluster, pool, action, sourceDigest, planDigest]
+      required: [planId]
       properties:
         planId: { type: string, format: uuid }
         cluster: { type: string }
@@ -1445,6 +1514,11 @@ components:
         planDigest: { type: string }
         signature: { type: string }
         workflowUrl: { type: string, format: uri }
+        phase: { type: string }
+        commitSha: { type: string }
+        planSha256: { type: string }
+        stateSerial: { type: integer, format: int64 }
+        evidenceDigest: { type: string }
     PlatformRefRequest:
       type: object
       properties: { ref: { type: string, default: HEAD } }

@@ -364,6 +364,8 @@ func main() {
 		r.Post("/v1/fleet/validate", h.ValidateFleetDocument)
 		r.Get("/v1/fleet/node-pools", h.FleetInventory)
 		r.Get("/v1/fleet/plans", h.ListFleetPlans)
+		r.Get("/v1/fleet/plans/{planID}/reconciliations", h.ListFleetReconciliations)
+		r.Post("/v1/fleet/plans/{planID}/reconciliations", h.RecordFleetReconciliation)
 		r.Post("/v1/fleet/node-pools/{pool}/plan", h.PlanFleetCapacity)
 		r.Get("/v1/exec-sessions", h.ListExecSessions)
 		r.Get("/v1/exec-sessions/{id}", h.GetExecSession)
@@ -664,7 +666,7 @@ func writeControlCapabilities(w http.ResponseWriter) {
 			"openapi-3.1", "standard-problems", "event-stream-info", "event-gap-detection",
 			"event-heartbeat", "event-subscriptions", "operation-cancellation", "typed-operation-receipts",
 			"versioned-resources", "device-enrollment", "token-rotation", "token-revocation", "device-listing",
-			"device-key-step-up", "exec-sessions", "exec-audit", "exec-session-expiry", "exec-protocol-v1", "host-metrics", "app-creation", "regional-deployments", "consul-traefik-ingress", "production-readiness", "durable-mutation-audit", "production-mutation-admission", "recovery-drill-receipts", "document-validation", "fleet-v1", "fleet-inventory", "durable-fleet-capacity-plans",
+			"device-key-step-up", "exec-sessions", "exec-audit", "exec-session-expiry", "exec-protocol-v1", "host-metrics", "app-creation", "regional-deployments", "consul-traefik-ingress", "production-readiness", "durable-mutation-audit", "production-mutation-admission", "recovery-drill-receipts", "document-validation", "fleet-v1", "fleet-inventory", "durable-fleet-capacity-plans", "fleet-reconciliation-v1",
 		},
 		"auth": map[string]interface{}{
 			"scopes":                handler.AccessTokenScopeNames(),
@@ -687,7 +689,7 @@ func writeControlCapabilities(w http.ResponseWriter) {
 			"releases": "/api/v1/releases", "hostStatus": "/api/v1/host/status", "hostMetrics": "/api/v1/host/metrics", "productionReadiness": "/api/v1/production/readiness", "recoveryDrills": "/api/v1/production/drills", "mutationAudit": "/api/v1/audit/mutations", "enrollments": "/api/v1/enrollments",
 			"devices": "/api/v1/devices", "tokenRotate": "/api/v1/auth/rotate", "tokenRevoke": "/api/v1/auth/revoke",
 			"stepUpChallenges": "/api/v1/auth/step-up/challenges", "execSessions": "/api/v1/exec-sessions",
-			"infraSpecValidation": "/api/v1/validate/infraspec", "fleetValidation": "/api/v1/fleet/validate", "fleetNodePools": "/api/v1/fleet/node-pools", "fleetPlans": "/api/v1/fleet/plans",
+			"infraSpecValidation": "/api/v1/validate/infraspec", "fleetValidation": "/api/v1/fleet/validate", "fleetNodePools": "/api/v1/fleet/node-pools", "fleetPlans": "/api/v1/fleet/plans", "fleetReconciliations": "/api/v1/fleet/plans/{planID}/reconciliations",
 		},
 	})
 }

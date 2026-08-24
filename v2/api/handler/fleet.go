@@ -9,6 +9,7 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
+	"regexp"
 	"sort"
 	"strings"
 	"time"
@@ -22,6 +23,22 @@ import (
 	"norn/v2/api/model"
 	"norn/v2/api/store"
 )
+
+var (
+	fleetCommitSHARe      = regexp.MustCompile(`^[0-9a-f]{40}$`)
+	fleetPlanSHARe        = regexp.MustCompile(`^[0-9a-f]{64}$`)
+	fleetEvidenceDigestRe = regexp.MustCompile(`^sha256:[0-9a-f]{64}$`)
+)
+
+var fleetReconciliationPhases = []string{
+	"infrastructure_applied",
+	"inventory_generated",
+	"nodes_configured",
+	"nodes_enrolled",
+	"readiness_verified",
+	"old_nodes_drained",
+	"complete",
+}
 
 type documentValidationRequest struct {
 	Document      string `json:"document"`
@@ -267,6 +284,253 @@ func (h *Handler) ListFleetPlans(w http.ResponseWriter, r *http.Request) {
 		ops[index].AttachReceipt()
 	}
 	writeJSON(w, map[string]interface{}{"plans": ops, "count": len(ops)})
+}
+
+func (h *Handler) ListFleetReconciliations(w http.ResponseWriter, r *http.Request) {
+	if _, ok := requireControlScope(w, r, ScopeAPIRead); !ok {
+		return
+	}
+	if h.db == nil {
+		WriteControlProblem(w, r, http.StatusServiceUnavailable, "fleet_reconciliation_store_unavailable", "durable operation storage is unavailable")
+		return
+	}
+	planID := chi.URLParam(r, "planID")
+	if _, err := uuid.Parse(planID); err != nil {
+		WriteControlProblem(w, r, http.StatusBadRequest, "invalid_fleet_plan_id", "plan ID must be a UUID")
+		return
+	}
+	plan, err := h.db.GetOperation(r.Context(), planID)
+	if err == pgx.ErrNoRows || (err == nil && plan.Kind != "fleet.capacity-plan") {
+		WriteControlProblem(w, r, http.StatusNotFound, "fleet_plan_not_found", "fleet capacity plan not found")
+		return
+	}
+	if err != nil {
+		WriteControlProblem(w, r, http.StatusInternalServerError, "fleet_plan_read_failed", "failed to read fleet capacity plan")
+		return
+	}
+	ops, err := h.db.ListOperations(r.Context(), store.OperationFilter{Kind: "fleet.reconciliation", Ref: planID, Limit: 100})
+	if err != nil {
+		WriteControlProblem(w, r, http.StatusInternalServerError, "fleet_reconciliation_read_failed", "failed to read reconciliation checkpoints")
+		return
+	}
+	for index := range ops {
+		ops[index].AttachReceipt()
+	}
+	preventSensitiveResponseCaching(w)
+	writeJSON(w, map[string]interface{}{"schemaVersion": fleet.ReconciliationSchemaVersion, "planId": planID, "reconciliations": ops, "count": len(ops)})
+}
+
+func (h *Handler) RecordFleetReconciliation(w http.ResponseWriter, r *http.Request) {
+	principal, ok := requireControlScope(w, r, ScopeAPIWrite)
+	if !ok {
+		return
+	}
+	if h.db == nil {
+		WriteControlProblem(w, r, http.StatusServiceUnavailable, "fleet_reconciliation_store_unavailable", "durable operation storage is unavailable")
+		return
+	}
+	planID := chi.URLParam(r, "planID")
+	if _, err := uuid.Parse(planID); err != nil {
+		WriteControlProblem(w, r, http.StatusBadRequest, "invalid_fleet_plan_id", "plan ID must be a UUID")
+		return
+	}
+	plan, err := h.db.GetOperation(r.Context(), planID)
+	if err == pgx.ErrNoRows || (err == nil && plan.Kind != "fleet.capacity-plan") {
+		WriteControlProblem(w, r, http.StatusNotFound, "fleet_plan_not_found", "fleet capacity plan not found")
+		return
+	}
+	if err != nil {
+		WriteControlProblem(w, r, http.StatusInternalServerError, "fleet_plan_read_failed", "failed to read fleet capacity plan")
+		return
+	}
+	var request fleet.ReconciliationRequest
+	if err := decodeControlJSON(w, r, &request); err != nil {
+		WriteControlProblem(w, r, http.StatusBadRequest, "invalid_fleet_reconciliation", err.Error())
+		return
+	}
+	request.Message = strings.TrimSpace(request.Message)
+	if err := validateFleetReconciliationRequest(request); err != nil {
+		WriteControlProblem(w, r, http.StatusBadRequest, "invalid_fleet_reconciliation", err.Error())
+		return
+	}
+	existing, err := h.db.ListOperations(r.Context(), store.OperationFilter{Kind: "fleet.reconciliation", Ref: planID, Limit: 100})
+	if err != nil {
+		WriteControlProblem(w, r, http.StatusInternalServerError, "fleet_reconciliation_read_failed", "failed to read reconciliation checkpoints")
+		return
+	}
+	if err := validateFleetReconciliationTransition(plan, existing, request); err != nil {
+		WriteControlProblem(w, r, http.StatusConflict, "fleet_reconciliation_out_of_order", err.Error())
+		return
+	}
+	idempotencyKey, requestDigest := fleetReconciliationIdempotency(principal, planID, strings.TrimSpace(r.Header.Get("Idempotency-Key")), request)
+	if replay, lookupErr := h.db.GetOperationByIdempotencyKey(r.Context(), idempotencyKey); lookupErr == nil {
+		if !matchesFleetReconciliationRequest(replay, requestDigest) {
+			WriteControlProblem(w, r, http.StatusConflict, "idempotency_key_reused", "Idempotency-Key was already used for different reconciliation evidence")
+			return
+		}
+		replay.AttachReceipt()
+		writeJSON(w, replay)
+		return
+	} else if lookupErr != pgx.ErrNoRows {
+		WriteControlProblem(w, r, http.StatusInternalServerError, "operation_lookup_failed", "failed to resolve idempotent reconciliation checkpoint")
+		return
+	}
+
+	now := time.Now().UTC()
+	finished := now
+	payloadBytes, _ := json.Marshal(request)
+	var payload map[string]interface{}
+	_ = json.Unmarshal(payloadBytes, &payload)
+	status := model.OperationSucceeded
+	if request.Status == "failed" {
+		status = model.OperationFailed
+	}
+	op := &model.Operation{
+		ID: uuid.NewString(), Kind: "fleet.reconciliation", Ref: planID, Status: status,
+		Risk: "append-only infrastructure reconciliation evidence", Source: "fleet-runner",
+		Message: request.Message, Payload: payload,
+		Metadata:  map[string]interface{}{"idempotencyKey": idempotencyKey, "requestDigest": requestDigest},
+		StartedAt: now, UpdatedAt: now, FinishedAt: &finished, MaxAttempts: 1,
+	}
+	if op.Message == "" {
+		op.Message = request.Phase + " " + request.Status
+	}
+	if err := h.db.InsertCompletedOperation(r.Context(), op); err != nil {
+		if pgErr, duplicate := err.(*pgconn.PgError); duplicate && pgErr.Code == "23505" {
+			if replay, lookupErr := h.db.GetOperationByIdempotencyKey(r.Context(), idempotencyKey); lookupErr == nil && matchesFleetReconciliationRequest(replay, requestDigest) {
+				replay.AttachReceipt()
+				writeJSON(w, replay)
+				return
+			}
+		}
+		WriteControlProblem(w, r, http.StatusInternalServerError, "fleet_reconciliation_store_failed", "failed to store reconciliation checkpoint")
+		return
+	}
+	op.AttachReceipt()
+	w.Header().Set("Location", "/api/v1/operations/"+op.ID)
+	writeJSONStatus(w, http.StatusCreated, op)
+}
+
+func validateFleetReconciliationRequest(request fleet.ReconciliationRequest) error {
+	if request.SchemaVersion != fleet.ReconciliationSchemaVersion {
+		return fmt.Errorf("schemaVersion must be %q", fleet.ReconciliationSchemaVersion)
+	}
+	known := false
+	for _, phase := range fleetReconciliationPhases {
+		known = known || request.Phase == phase
+	}
+	if !known {
+		return fmt.Errorf("phase is not supported")
+	}
+	if request.Status != "succeeded" && request.Status != "failed" {
+		return fmt.Errorf("status must be succeeded or failed")
+	}
+	if !fleetCommitSHARe.MatchString(request.CommitSHA) {
+		return fmt.Errorf("commitSha must be a lowercase 40-character Git SHA")
+	}
+	if !fleetPlanSHARe.MatchString(request.PlanSHA256) {
+		return fmt.Errorf("planSha256 must be a lowercase SHA-256 digest")
+	}
+	if !fleetEvidenceDigestRe.MatchString(request.EvidenceDigest) {
+		return fmt.Errorf("evidenceDigest must use sha256:<64 lowercase hex characters>")
+	}
+	if request.StateSerial < 0 {
+		return fmt.Errorf("stateSerial cannot be negative")
+	}
+	if request.Status == "succeeded" && request.Phase == "infrastructure_applied" && request.StateSerial == 0 {
+		return fmt.Errorf("successful infrastructure_applied evidence requires a positive stateSerial")
+	}
+	if len(request.Message) > 1000 {
+		return fmt.Errorf("message must not exceed 1000 characters")
+	}
+	return nil
+}
+
+func validateFleetReconciliationTransition(plan *model.Operation, existing []model.Operation, request fleet.ReconciliationRequest) error {
+	succeeded := map[string]bool{}
+	for _, op := range existing {
+		commit, _ := op.Payload["commitSha"].(string)
+		planSHA, _ := op.Payload["planSha256"].(string)
+		if commit != request.CommitSHA || planSHA != request.PlanSHA256 {
+			return fmt.Errorf("checkpoint binding differs from the existing reconciliation")
+		}
+		if op.Status != model.OperationSucceeded {
+			continue
+		}
+		phase, _ := op.Payload["phase"].(string)
+		succeeded[phase] = true
+	}
+	if request.Status == "failed" || succeeded[request.Phase] {
+		return nil
+	}
+	predecessor := map[string]string{
+		"inventory_generated": "infrastructure_applied",
+		"nodes_configured":    "inventory_generated",
+		"nodes_enrolled":      "nodes_configured",
+		"readiness_verified":  "nodes_enrolled",
+		"old_nodes_drained":   "readiness_verified",
+	}
+	if request.Phase == "complete" {
+		predecessor[request.Phase] = "readiness_verified"
+		if fleetPlanRequiresDrain(plan) {
+			predecessor[request.Phase] = "old_nodes_drained"
+		}
+	}
+	if required := predecessor[request.Phase]; required != "" && !succeeded[required] {
+		return fmt.Errorf("phase %s requires successful %s evidence", request.Phase, required)
+	}
+	return nil
+}
+
+func fleetPlanRequiresDrain(plan *model.Operation) bool {
+	if plan == nil {
+		return false
+	}
+	action, _ := plan.Payload["action"].(string)
+	if action == "replace" {
+		return true
+	}
+	current, _ := plan.Payload["current"].(map[string]interface{})
+	proposed, _ := plan.Payload["proposed"].(map[string]interface{})
+	currentDesired := numberAsFloat64(current["desired"])
+	proposedDesired := numberAsFloat64(proposed["desired"])
+	return action == "scale" && proposedDesired < currentDesired
+}
+
+func numberAsFloat64(value interface{}) float64 {
+	switch typed := value.(type) {
+	case int:
+		return float64(typed)
+	case int64:
+		return float64(typed)
+	case float64:
+		return typed
+	default:
+		return 0
+	}
+}
+
+func fleetReconciliationIdempotency(principal AccessPrincipal, planID, key string, request fleet.ReconciliationRequest) (string, string) {
+	requestBytes, _ := json.Marshal(request)
+	requestSum := sha256.Sum256(requestBytes)
+	requestDigest := "sha256:" + hex.EncodeToString(requestSum[:])
+	if key == "" {
+		key = request.Phase + ":" + requestDigest
+	}
+	identity := principal.TokenID
+	if identity == "" {
+		identity = principal.Subject
+	}
+	keySum := sha256.Sum256([]byte("fleet.reconciliation\x00" + identity + "\x00" + planID + "\x00" + key))
+	return "fleet.reconciliation:" + hex.EncodeToString(keySum[:]), requestDigest
+}
+
+func matchesFleetReconciliationRequest(op *model.Operation, requestDigest string) bool {
+	if op == nil || op.Kind != "fleet.reconciliation" {
+		return false
+	}
+	stored, _ := op.Metadata["requestDigest"].(string)
+	return stored == requestDigest
 }
 
 func buildCapacityPlan(inventory *fleet.Inventory, poolName string, current fleet.NodePool, request fleet.PlanRequest, signingKey string) (*fleet.CapacityPlan, error) {
