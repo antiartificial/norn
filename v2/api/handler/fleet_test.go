@@ -112,6 +112,32 @@ func TestBuildCapacityPlanRequiresBlueGreenForSizeChangeAndSigns(t *testing.T) {
 	}
 }
 
+func TestFleetGitHubRequiresAnAuthenticCapacityPlan(t *testing.T) {
+	pool := fleet.NodePool{Size: "small", Min: 2, Desired: 2, Max: 8}
+	inventory := &fleet.Inventory{Digest: "sha256:source", Document: &fleet.Document{Cluster: fleet.Cluster{Name: "production-nyc3"}}}
+	plan, err := buildCapacityPlan(inventory, "app", pool, fleet.PlanRequest{Desired: intPointer(3)}, "audit-key")
+	if err != nil {
+		t.Fatal(err)
+	}
+	h := New(nil, nil, nil, nil, &config.Config{Profile: "production", AuditSigningKey: "audit-key"}, nil, nil, nil, nil, nil, nil)
+	if !h.verifyCapacityPlan(plan) {
+		t.Fatal("authentic signed plan was rejected")
+	}
+	plan.Proposed.Desired = 4
+	if h.verifyCapacityPlan(plan) {
+		t.Fatal("tampered plan was accepted")
+	}
+	plan, err = buildCapacityPlan(inventory, "app", pool, fleet.PlanRequest{}, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if h.verifyCapacityPlan(plan) {
+		t.Fatal("unsigned plan was accepted in production")
+	}
+}
+
+func intPointer(value int) *int { return &value }
+
 func TestBuildCapacityPlanRejectsBlankSize(t *testing.T) {
 	pool := fleet.NodePool{Size: "small", Min: 2, Desired: 2, Max: 8}
 	inventory := &fleet.Inventory{Digest: "sha256:source", Document: &fleet.Document{Cluster: fleet.Cluster{Name: "production-nyc3"}}}

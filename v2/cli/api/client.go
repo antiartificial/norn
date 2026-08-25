@@ -321,6 +321,19 @@ type FleetInventory struct {
 	NodePools     map[string]FleetNodePool `json:"nodePools"`
 }
 
+type FleetGitHubStatus struct {
+	SchemaVersion string `json:"schemaVersion"`
+	Configured    bool   `json:"configured"`
+	Connected     bool   `json:"connected"`
+	Repository    string `json:"repository,omitempty"`
+	Installation  int64  `json:"installationId,omitempty"`
+	DefaultBranch string `json:"defaultBranch,omitempty"`
+	ConfigPath    string `json:"configPath,omitempty"`
+	PlanWorkflow  string `json:"planWorkflow,omitempty"`
+	ApplyWorkflow string `json:"applyWorkflow,omitempty"`
+	Message       string `json:"message,omitempty"`
+}
+
 // FleetDocument is the read-only, versioned source document returned with a
 // configured inventory. It deliberately contains no provider credentials.
 type FleetDocument struct {
@@ -1727,6 +1740,34 @@ func (c *Client) FleetInventory() (*FleetInventory, error) {
 		return nil, err
 	}
 	return &inventory, nil
+}
+
+func (c *Client) FleetGitHubStatus() (*FleetGitHubStatus, error) {
+	var status FleetGitHubStatus
+	if err := c.get("/api/v1/fleet/github", &status); err != nil {
+		return nil, err
+	}
+	return &status, nil
+}
+
+func (c *Client) CreateFleetPullRequest(planID string) (*Operation, error) {
+	var operation Operation
+	if err := c.postJSON("/api/v1/fleet/plans/"+url.PathEscape(planID)+"/github/pull-request", `{}`, &operation); err != nil {
+		return nil, err
+	}
+	return &operation, nil
+}
+
+func (c *Client) DispatchFleetApply(planID string, allowDestructive bool) (*Operation, error) {
+	body, err := json.Marshal(map[string]bool{"allowDestructive": allowDestructive})
+	if err != nil {
+		return nil, err
+	}
+	var operation Operation
+	if err := c.postJSON("/api/v1/fleet/plans/"+url.PathEscape(planID)+"/github/dispatch", string(body), &operation); err != nil {
+		return nil, err
+	}
+	return &operation, nil
 }
 
 func (c *Client) PlanFleetCapacity(pool string, desired *int, size, strategy, reason string) (*Operation, error) {

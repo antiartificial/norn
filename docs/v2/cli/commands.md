@@ -799,6 +799,9 @@ norn fleet plan <pool> [--desired N] [--size SLUG] [--strategy blueGreen|rolling
 norn fleet replace <pool> --size SLUG [--reason TEXT]
 norn fleet reconcile <pool> [--reason TEXT]
 norn fleet checkpoints <plan-id>
+norn fleet github status
+norn fleet github pr <plan-id>
+norn fleet github apply <plan-id> [--allow-destructive]
 ```
 
 Initial cloud-runner setup lives in the private `norn-fleet` checkout:
@@ -813,6 +816,12 @@ Norn owns validation, durable plans, inventory, enrollment/readiness, and
 receipts. The protected runner keeps provider and remote-state credentials; the
 setup assistant sends those values directly to GitHub environment secrets and
 does not copy them into Norn.
+
+The GitHub commands use the Norn server's repository-restricted GitHub App.
+`pr` creates or recovers a deterministic branch and review. After that review
+merges and its protected main-branch plan succeeds, `apply` discovers the
+matching run/artifact and creates or recovers the plan-named protected apply.
+Norn never receives provider or remote-state credentials.
 
 Capacity plans are stored as completed `fleet.capacity-plan` operations and do not call a cloud provider. `replace` requires `--size` and forces blue/green planning. The infrastructure repository must enforce its own reviewed-SHA and apply authorization gate. The current private repository uses protected-branch-only environments, strict pull-request checks, reviewed-plan SHA binding, and manual dispatch because its GitHub plan does not provide environment required reviewers.
 

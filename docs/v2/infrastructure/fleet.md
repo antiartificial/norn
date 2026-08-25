@@ -55,6 +55,44 @@ norn fleet validate environments/production/nyc3/cluster.yaml
 norn fleet pools
 ```
 
+### Repository-scoped GitHub App
+
+Norn can open the reviewed infrastructure pull request and dispatch the
+protected apply without holding a personal token. Create a GitHub App with
+repository permissions **Actions: write**, **Contents: write**, **Pull
+requests: write**, and the automatic **Metadata: read** permission. Install it
+only on the private `norn-fleet` repository, generate a private key, keep that
+file mode `0600`, and configure:
+
+```sh
+NORN_FLEET_GITHUB_APP_ID=123456
+NORN_FLEET_GITHUB_INSTALLATION_ID=789012
+NORN_FLEET_GITHUB_PRIVATE_KEY_FILE=/etc/norn/fleet-github-app.pem
+NORN_FLEET_GITHUB_REPOSITORY=YOUR-ORG/norn-fleet
+NORN_FLEET_GITHUB_CONFIG_PATH=environments/production/nyc3/cluster.yaml
+NORN_FLEET_GITHUB_DEFAULT_BRANCH=main
+NORN_FLEET_GITHUB_PLAN_WORKFLOW=plan.yml
+NORN_FLEET_GITHUB_APPLY_WORKFLOW=apply.yml
+```
+
+The private key never leaves the Norn server. Norn signs a short-lived App JWT,
+requests a one-hour installation token narrowed to that repository and the
+permissions needed for the current action, and holds neither token durably.
+DigitalOcean, state, SSH, cloud-init, and Norn runner credentials remain only
+in protected GitHub environments.
+
+The `norn-fleet` assistant can validate the IDs, repository, cluster path, and
+private-key permissions and write a `0600` environment fragment:
+
+```sh
+./scripts/setup github-app \
+  --app-id 123456 \
+  --installation-id 789012 \
+  --private-key-file /etc/norn/fleet-github-app.pem \
+  --output ./private/norn-fleet-github.env
+norn fleet github status
+```
+
 ```mermaid
 flowchart LR
   Operator --> Norn[Norn Fleet API / CLI / UI]
@@ -124,6 +162,9 @@ The API equivalents are:
 | `POST` | `/api/v1/validate/infraspec` | Strict uploaded InfraSpec; optional `fleetDocument` cross-check |
 | `GET` | `/api/v1/fleet/node-pools` | Desired pool inventory and config digest |
 | `GET`, `POST` | `/api/v1/fleet/plans/{planID}/reconciliations` | List or append plan/commit/state/evidence-bound recovery checkpoints |
+| `GET` | `/api/v1/fleet/github` | Value-safe GitHub App installation status |
+| `POST` | `/api/v1/fleet/plans/{planID}/github/pull-request` | Create or recover the deterministic reviewed PR |
+| `POST` | `/api/v1/fleet/plans/{planID}/github/dispatch` | Discover the merged SHA-bound plan artifact and create or recover protected apply |
 
 An invalid document returns HTTP 200 with `valid: false`; malformed request envelopes use `application/problem+json`. This makes validation deterministic for UI and CI clients without treating user-authored validation findings as transport failures.
 
@@ -134,32 +175,41 @@ norn fleet pools
 norn fleet plan app --desired 4 --reason "launch headroom"
 norn fleet replace app --size s-8vcpu-16gb --reason "memory pressure"
 norn fleet reconcile app
+norn fleet github status
+norn fleet github pr PLAN_UUID
+norn fleet github apply PLAN_UUID
 ```
 
-The repository assistant prepares a scale-up edit and validates it before a
-pull request:
+With the GitHub App configured, create the durable plan before any repository
+edit. Norn then creates the source-digest-bound branch and pull request:
 
 ```sh
-./scripts/setup scale app --desired 4
 norn fleet plan app --desired 4 --reason "launch headroom"
+norn fleet github pr PLAN_UUID
+# review and merge; wait for the main-branch plan workflow
+norn fleet github apply PLAN_UUID
 ```
 
-For a downsize, the extra flag makes destructive intent impossible to create by
-accident:
+For a downsize, both the capacity plan and apply dispatch require explicit
+destructive intent:
 
 ```sh
-./scripts/setup scale app --desired 2 --prepare-downsize
 norn fleet plan app --desired 2 --reason "traffic returned to baseline"
+norn fleet github pr PLAN_UUID
+# review and merge; wait for the main-branch plan workflow
+norn fleet github apply PLAN_UUID --allow-destructive
 ```
 
-The current hands-off workflow still refuses the resulting deletion. An
-operator must prove allocation, volume, singleton, connection, readiness, and
-ingress headroom; make the exact nodes ineligible; drain them; apply the
-reviewed SHA-bound plan under the state lock; and append
-`old_nodes_drained`/`complete` receipts. This is intentionally less convenient
-than an unsafe `tofu apply`: one-click scale-down requires a future staged
-executor that knows the exact old generation and can retain it until drain
-proof exists.
+The staged contraction lane binds exact droplet addresses to current node IDs,
+proves the remaining capacity, reruns configuration/enrollment/readiness hooks,
+drains the selected nodes, and only then consumes the reviewed deletion.
+Reissuing either GitHub command recovers the deterministic pull request or
+existing workflow run instead of creating a duplicate.
+
+`./scripts/setup scale` remains available as a repository-only manual fallback.
+For that path, create the Norn capacity plan from unchanged `main` first and
+preserve the plan UUID in the review; do not edit the checkout Norn reads before
+planning.
 
 `POST /api/v1/fleet/node-pools/{pool}/plan` records a terminal `fleet.capacity-plan` operation. Its typed receipt binds the plan ID, cluster, pool, action, source-document digest, plan digest, and workflow URL; production receipts also include an HMAC signature. Production requires `NORN_AUDIT_SIGNING_KEY`; development plans remain durable but carry an explicit unsigned warning.
 
@@ -172,6 +222,13 @@ Planning safety in v1:
 - the infrastructure runner must check out an immutable reviewed SHA and record the Norn plan ID.
 
 GitHub's current private-repository plan does not provide environment required reviewers. The private `norn-fleet` repository therefore restricts both secret-bearing environments to protected branches, requires pull requests and the strict `contract` check on `main`, binds apply to the reviewed current-main plan artifact, and requires a separate manual dispatch. With one operator, repository write access remains production access; require an independent approval before granting another person write access. This repository policy is not an active Norn control-plane guarantee.
+
+The GitHub App improves authentication and recovery, not authorization policy:
+the PR must still merge through protected `main`, the plan workflow must succeed
+for that merge commit, and the apply environment remains the provider-credential
+boundary. Norn derives the plan run ID and SHA from the protected artifact. The
+apply workflow's plan-specific run name makes a dropped dispatch response
+recoverable after a Norn restart.
 
 ## Replacement lifecycle
 

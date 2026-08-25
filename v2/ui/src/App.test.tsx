@@ -62,10 +62,11 @@ function installFetch(overrides: Record<string, Response | (() => Response)> = {
     if (url.includes('/api/apps')) return json([app, unhealthyApp])
     if (url.includes('/api/services/manifest')) return json({ version: 1, generatedAt: new Date().toISOString(), networkMode: 'dev', services: [] })
     if (url.includes('/api/access/patterns')) return json({ windowHours: 24, idleAfterHours: 72, patterns: [] })
-    if (url.includes('/api/v1/capabilities')) return json({ protocolVersion: 1, serverVersion: 'test', features: ['fleet-v1', 'fleet-inventory', 'durable-fleet-capacity-plans'] })
+    if (url.includes('/api/v1/capabilities')) return json({ protocolVersion: 1, serverVersion: 'test', features: ['fleet-v1', 'fleet-inventory', 'durable-fleet-capacity-plans', 'fleet-reconciliation-v1'] })
     if (url.includes('/api/cloudflared/ingress')) return json({ hostnames: [] })
     if (url.includes('/api/version')) return json({ version: 'test' })
     if (url.includes('/api/v1/fleet/node-pools')) return json({ schemaVersion: 'norn.fleet-inventory/v1', configured: false, nodePools: {} })
+    if (url.includes('/reconciliations')) return json({ schemaVersion: 'norn.fleet-reconciliations/v1', planId: 'plan-1', count: 0, reconciliations: [] })
     if (url.includes('/api/v1/fleet/plans')) return json({ count: 0, plans: [] })
     if (url.includes('/api/health')) return json({ status: 'ok', services: { postgres: 'up', nomad: 'up', consul: 'up' } })
     if (url.includes('/api/events/active')) return json({ incidents: [] })
@@ -160,24 +161,92 @@ describe('App shell routing', () => {
     expect(switchToDark.querySelector('.fa-sun')).toBeInTheDocument()
   })
 
-  it('renders desired fleet pools and creates a planning-only receipt', async () => {
+  it('renders desired fleet pools and creates a durable expansion receipt', async () => {
     const { calls } = installFetch({
+      '/api/v1/fleet/node-pools/app/plan': () => json({ id: 'plan-1', kind: 'fleet.capacity-plan', status: 'succeeded', message: 'capacity plan recorded', payload: { pool: 'app', action: 'scale', current: { desired: 2 }, proposed: { desired: 3 } }, metadata: {} }, 201),
       '/api/v1/fleet/node-pools': json({
         schemaVersion: 'norn.fleet-inventory/v1', configured: true, digest: 'sha256:1234567890abcdef',
         document: { apiVersion: 'norn.dev/fleet/v1', kind: 'Cluster', cluster: { name: 'production-nyc3', provider: 'digitalocean', region: 'nyc3' }, metadata: { environment: 'production' } },
         validation: { schemaVersion: 'norn.validation-report/v1', documentKind: 'fleet', valid: true, findings: [] },
         nodePools: { app: { size: 's-4vcpu-8gb', min: 2, desired: 2, max: 8, labels: { workload: 'app' }, replacement: { strategy: 'blueGreen', drainTimeout: '15m' } } },
       }),
-      '/api/v1/fleet/plans': json({ count: 0, plans: [] }),
-      '/api/v1/fleet/node-pools/app/plan': json({ id: 'plan-1', kind: 'fleet.capacity-plan', status: 'succeeded', message: 'capacity plan recorded', payload: { pool: 'app' }, metadata: {} }, 201),
+      '/api/v1/fleet/plans': () => json({ count: 0, plans: [] }),
     })
     renderApp('/fleet')
     await screen.findByRole('heading', { name: 'production-nyc3' })
     expect(screen.getByRole('heading', { name: 'app' })).toBeInTheDocument()
-    fireEvent.click(screen.getByRole('button', { name: 'Plan capacity' }))
+    fireEvent.click(screen.getByRole('button', { name: 'Change capacity' }))
     fireEvent.change(screen.getByLabelText('Desired'), { target: { value: '3' } })
-    fireEvent.click(screen.getByRole('button', { name: 'Record plan' }))
+    fireEvent.change(screen.getByLabelText('Reason'), { target: { value: 'add headroom' } })
+    fireEvent.click(screen.getByRole('button', { name: 'Record expansion' }))
     await waitFor(() => expect(calls.some((call) => call === 'POST /api/v1/fleet/node-pools/app/plan')).toBe(true))
+    expect(await screen.findByText('plan-1', { selector: '.fleet-receipt code' })).toBeInTheDocument()
+  })
+
+  it('reconstructs an interrupted fleet change and its proven checkpoints', async () => {
+    installFetch({
+      '/api/v1/fleet/node-pools': json({
+        schemaVersion: 'norn.fleet-inventory/v1', configured: true,
+        document: { apiVersion: 'norn.dev/fleet/v1', kind: 'Cluster', metadata: { environment: 'production', workflowUrl: 'https://github.com/acme/norn-fleet/actions/workflows/apply.yml' }, cluster: { name: 'production-nyc3', provider: 'digitalocean', region: 'nyc3' } },
+        validation: { schemaVersion: 'norn.validation-report/v1', documentKind: 'fleet', valid: true, findings: [] },
+        nodePools: { app: { size: 's-4vcpu-8gb', min: 2, desired: 3, max: 8 } },
+      }),
+      '/api/v1/fleet/plans/plan-1/reconciliations': json({ schemaVersion: 'norn.fleet-reconciliations/v1', planId: 'plan-1', count: 2, reconciliations: [
+        { id: 'checkpoint-1', status: 'succeeded', payload: { phase: 'infrastructure_applied' } },
+        { id: 'checkpoint-2', status: 'succeeded', payload: { phase: 'readiness_verified' } },
+      ] }),
+      '/api/v1/fleet/plans': json({ count: 1, plans: [{ id: 'plan-1', status: 'succeeded', payload: { pool: 'app', action: 'scale', current: { desired: 2 }, proposed: { desired: 3 } } }] }),
+    })
+    renderApp('/fleet')
+
+    expect(await screen.findByText(/Closing this page does not lose/)).toBeInTheDocument()
+    fireEvent.click(await screen.findByRole('button', { name: /app.*2 → 3 nodes/i }))
+    expect(await screen.findByText('Readiness Verified')).toBeInTheDocument()
+    expect(screen.getAllByText('Proven')).toHaveLength(2)
+    expect(screen.getByRole('link', { name: /Continue in protected runner/i })).toHaveAttribute('href', expect.stringContaining('github.com/acme/norn-fleet'))
+  })
+
+  it('creates and safely recovers GitHub fleet review and apply actions', async () => {
+    const { calls } = installFetch({
+      '/api/v1/fleet/plans/plan-1/github/pull-request': () => json({ id: 'review-1', kind: 'fleet.github.pull-request', status: 'succeeded', payload: { url: 'https://github.com/acme/norn-fleet/pull/7' } }, 201),
+      '/api/v1/fleet/plans/plan-1/github/dispatch': () => json({ id: 'apply-1', kind: 'fleet.github.apply-dispatch', status: 'succeeded', payload: { url: 'https://github.com/acme/norn-fleet/actions/runs/9' } }, 201),
+      '/api/v1/fleet/github': json({ schemaVersion: 'norn.fleet-github-status/v1', configured: true, connected: true, repository: 'acme/norn-fleet' }),
+      '/api/v1/fleet/node-pools': json({
+        schemaVersion: 'norn.fleet-inventory/v1', configured: true,
+        document: { apiVersion: 'norn.dev/fleet/v1', kind: 'Cluster', metadata: { repository: 'acme/norn-fleet' }, cluster: { name: 'production-nyc3', provider: 'digitalocean', region: 'nyc3' } },
+        validation: { schemaVersion: 'norn.validation-report/v1', documentKind: 'fleet', valid: true, findings: [] },
+        nodePools: { app: { size: 's-4vcpu-8gb', min: 2, desired: 3, max: 8 } },
+      }),
+      '/api/v1/fleet/plans': json({ count: 1, plans: [{ id: 'plan-1', status: 'succeeded', payload: { pool: 'app', action: 'scale', current: { desired: 2 }, proposed: { desired: 3 } } }] }),
+    })
+    renderApp('/fleet')
+
+    expect(await screen.findByText('GitHub connected')).toBeInTheDocument()
+    fireEvent.click(await screen.findByRole('button', { name: /app.*2 → 3 nodes/i }))
+    fireEvent.click(screen.getByRole('button', { name: 'Open review' }))
+    await waitFor(() => expect(calls).toContain('POST /api/v1/fleet/plans/plan-1/github/pull-request'))
+    expect(await screen.findByRole('link', { name: /View pull request/i })).toHaveAttribute('href', 'https://github.com/acme/norn-fleet/pull/7')
+    fireEvent.click(screen.getByRole('button', { name: 'Apply after review' }))
+    await waitFor(() => expect(calls).toContain('POST /api/v1/fleet/plans/plan-1/github/dispatch'))
+    expect(await screen.findByRole('link', { name: /View apply run/i })).toHaveAttribute('href', 'https://github.com/acme/norn-fleet/actions/runs/9')
+  })
+
+  it('stages contraction behind readiness and drain proof', async () => {
+    installFetch({
+      '/api/v1/fleet/node-pools': json({
+        schemaVersion: 'norn.fleet-inventory/v1', configured: true,
+        document: { apiVersion: 'norn.dev/fleet/v1', kind: 'Cluster', cluster: { name: 'production-nyc3', provider: 'digitalocean', region: 'nyc3' } },
+        validation: { schemaVersion: 'norn.validation-report/v1', documentKind: 'fleet', valid: true, findings: [] },
+        nodePools: { app: { size: 's-4vcpu-8gb', min: 2, desired: 3, max: 8 } },
+      }),
+      '/api/v1/fleet/plans': () => json({ count: 0, plans: [] }),
+    })
+    renderApp('/fleet')
+
+    fireEvent.click(await screen.findByRole('button', { name: 'Change capacity' }))
+    fireEvent.change(screen.getByLabelText('Desired'), { target: { value: '2' } })
+    expect(screen.getByRole('button', { name: 'Prepare contraction' })).toBeInTheDocument()
+    expect(screen.getByText(/Old nodes are not removed until Norn has proof/)).toBeInTheDocument()
   })
 
   it('explains why fleet planning is unavailable for an invalid document', async () => {
@@ -192,7 +261,7 @@ describe('App shell routing', () => {
     renderApp('/fleet')
 
     expect(await screen.findByText('Planning is unavailable until the fleet document is valid.')).toHaveAttribute('role', 'status')
-    expect(screen.queryByRole('button', { name: 'Plan capacity' })).not.toBeInTheDocument()
+    expect(screen.queryByRole('button', { name: 'Change capacity' })).not.toBeInTheDocument()
   })
 
   it('opens, filters, executes, and escapes the command palette', async () => {

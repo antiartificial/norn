@@ -14,15 +14,18 @@ import (
 )
 
 var (
-	fleetDesired  int
-	fleetSize     string
-	fleetStrategy string
-	fleetReason   string
+	fleetDesired          int
+	fleetSize             string
+	fleetStrategy         string
+	fleetReason           string
+	fleetAllowDestructive bool
 )
 
 func init() {
 	rootCmd.AddCommand(fleetCmd)
-	fleetCmd.AddCommand(fleetPoolsCmd, fleetValidateCmd, fleetPlanCmd, fleetReplaceCmd, fleetReconcileCmd, fleetCheckpointsCmd)
+	fleetCmd.AddCommand(fleetPoolsCmd, fleetValidateCmd, fleetPlanCmd, fleetReplaceCmd, fleetReconcileCmd, fleetCheckpointsCmd, fleetGitHubCmd)
+	fleetGitHubCmd.AddCommand(fleetGitHubStatusCmd, fleetGitHubPullRequestCmd, fleetGitHubApplyCmd)
+	fleetGitHubApplyCmd.Flags().BoolVar(&fleetAllowDestructive, "allow-destructive", false, "Acknowledge a reviewed replacement or contraction")
 	for _, command := range []*cobra.Command{fleetPlanCmd, fleetReplaceCmd, fleetReconcileCmd} {
 		command.Flags().IntVar(&fleetDesired, "desired", 0, "Proposed desired node count")
 		command.Flags().StringVar(&fleetSize, "size", "", "Proposed immutable provider VM size")
@@ -35,6 +38,59 @@ func init() {
 }
 
 var fleetCmd = &cobra.Command{Use: "fleet", Short: "Inspect and plan GitOps-managed fleet capacity"}
+var fleetGitHubCmd = &cobra.Command{Use: "github", Short: "Use the repository-scoped GitHub App fleet bridge"}
+
+var fleetGitHubStatusCmd = &cobra.Command{
+	Use: "status", Short: "Verify the fleet GitHub App installation", Args: cobra.NoArgs,
+	RunE: func(cmd *cobra.Command, args []string) error {
+		status, err := client.FleetGitHubStatus()
+		if err != nil {
+			return fmt.Errorf("fleet GitHub status: %w", err)
+		}
+		state := style.Unhealthy.Render("not connected")
+		if status.Connected {
+			state = style.Healthy.Render("connected")
+		}
+		fmt.Fprintf(cmd.OutOrStdout(), "%s  %s\n", state, status.Repository)
+		if status.Message != "" {
+			fmt.Fprintln(cmd.OutOrStdout(), status.Message)
+		}
+		if !status.Connected {
+			return fmt.Errorf("fleet GitHub App is not ready")
+		}
+		return nil
+	},
+}
+
+var fleetGitHubPullRequestCmd = &cobra.Command{
+	Use: "pr <plan-id>", Short: "Open or recover the reviewed fleet pull request", Args: cobra.ExactArgs(1),
+	RunE: func(cmd *cobra.Command, args []string) error {
+		op, err := client.CreateFleetPullRequest(args[0])
+		if err != nil {
+			return fmt.Errorf("fleet GitHub pull request: %w", err)
+		}
+		fmt.Fprintf(cmd.OutOrStdout(), "%s pull request receipt %s\n", style.Healthy.Render("recorded"), op.ID)
+		if value, ok := op.Payload["url"].(string); ok && value != "" {
+			fmt.Fprintln(cmd.OutOrStdout(), value)
+		}
+		return nil
+	},
+}
+
+var fleetGitHubApplyCmd = &cobra.Command{
+	Use: "apply <plan-id>", Short: "Dispatch or recover the protected apply after review", Args: cobra.ExactArgs(1),
+	RunE: func(cmd *cobra.Command, args []string) error {
+		op, err := client.DispatchFleetApply(args[0], fleetAllowDestructive)
+		if err != nil {
+			return fmt.Errorf("fleet GitHub apply: %w", err)
+		}
+		fmt.Fprintf(cmd.OutOrStdout(), "%s apply dispatch receipt %s\n", style.Healthy.Render("recorded"), op.ID)
+		if value, ok := op.Payload["url"].(string); ok && value != "" {
+			fmt.Fprintln(cmd.OutOrStdout(), value)
+		}
+		return nil
+	},
+}
 
 var fleetPoolsCmd = &cobra.Command{
 	Use: "pools", Short: "List desired node pools from the checked-out norn-fleet document", Args: cobra.NoArgs,

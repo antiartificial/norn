@@ -236,10 +236,12 @@ the shared CA keys are not copied to the member.
 
 ## Credential incident from the original smoke bootstrap
 
-The original `v2/dev/cloud-init.yaml` contained live-looking Tailscale and
-registry credentials and was committed in repository history. The working file
-is now secret-free, but repository deletion cannot revoke a credential. Rotate
-and revoke both credentials, inspect their access logs, remove any cached copy
-from the existing droplet, and consider history rewrite only after coordinating
-with every clone/fork. The HA workflow intentionally has no input capable of
-placing those secret classes in cloud-init or Terraform state.
+The original `v2/dev/cloud-init.yaml` contained a Tailscale auth key and GitHub
+registry token. Both credentials were revoked, the working file was replaced
+with a secret-free bootstrap, and every writable branch/tag was rewritten with
+the values redacted. Existing clones and forks made before the rewrite still
+need to be discarded or cleaned before they push. GitHub-hosted cached commit
+views and read-only pull-request refs require GitHub Support for physical
+removal; the credentials remain unusable while that cache cleanup is handled.
+The HA workflow intentionally has no input capable of placing those secret
+classes in cloud-init or Terraform state.
