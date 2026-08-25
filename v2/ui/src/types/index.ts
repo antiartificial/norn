@@ -74,6 +74,12 @@ export interface InfraSpec {
       }>
     }
   }
+  snapshots?: {
+    keep?: number
+    preRestore?: boolean
+    retentionEnabled?: boolean
+    exportBucket?: string
+  }
   endpoints?: Endpoint[]
 }
 
@@ -192,6 +198,15 @@ export interface Operation {
   finishedAt?: string
 	payload?: Record<string, unknown>
 	metadata?: Record<string, unknown>
+}
+
+export interface AppSnapshot {
+  filename: string
+  database: string
+  commitSha?: string
+  timestamp: string
+  createdAt?: string
+  size: number
 }
 
 export interface EventsResponse {

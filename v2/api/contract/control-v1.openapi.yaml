@@ -1,7 +1,7 @@
 openapi: 3.1.0
 info:
   title: Norn Control Protocol
-  version: 1.5.0
+  version: 1.6.0
   description: Versioned contract for native and automated Norn control clients.
 servers:
   - url: /
@@ -268,6 +268,116 @@ paths:
             application/json:
               schema: { $ref: '#/components/schemas/AppMutationReceipt' }
         '404': { $ref: '#/components/responses/Problem' }
+  /api/v1/apps/{id}/snapshots:
+    parameters:
+      - $ref: '#/components/parameters/AppID'
+    get:
+      operationId: listAppSnapshots
+      responses:
+        '200':
+          description: Local PostgreSQL snapshots, newest first
+          content:
+            application/json:
+              schema: { type: array, items: { $ref: '#/components/schemas/AppSnapshot' } }
+        '404': { $ref: '#/components/responses/Problem' }
+    post:
+      operationId: queueAppSnapshot
+      description: Queues a resumable manual database snapshot. Requires api:write.
+      parameters:
+        - { name: Idempotency-Key, in: header, required: true, schema: { type: string, minLength: 1, maxLength: 200 } }
+      responses:
+        '200': { $ref: '#/components/responses/AcceptedOperation' }
+        '202': { $ref: '#/components/responses/AcceptedOperation' }
+        '400': { $ref: '#/components/responses/Problem' }
+        '409': { $ref: '#/components/responses/Problem' }
+  /api/v1/apps/{id}/snapshots/retention:
+    post:
+      operationId: queueAppSnapshotRetention
+      description: Queues deterministic pruning of all but the newest keep snapshots. The client should preview the affected snapshot list before confirmation.
+      parameters:
+        - $ref: '#/components/parameters/AppID'
+        - { name: Idempotency-Key, in: header, required: true, schema: { type: string, minLength: 1, maxLength: 200 } }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [keep, confirm]
+              properties:
+                keep: { type: integer, minimum: 1, maximum: 1000 }
+                confirm: { const: true }
+      responses:
+        '200': { $ref: '#/components/responses/AcceptedOperation' }
+        '202': { $ref: '#/components/responses/AcceptedOperation' }
+        '400': { $ref: '#/components/responses/Problem' }
+        '409': { $ref: '#/components/responses/Problem' }
+  /api/v1/apps/{id}/snapshots/{ts}/restore:
+    post:
+      operationId: queueAppSnapshotRestore
+      description: Queues a database restore. Norn always creates a pre-restore safety snapshot before changing the database.
+      parameters:
+        - $ref: '#/components/parameters/AppID'
+        - { name: ts, in: path, required: true, schema: { type: string, pattern: '^[0-9]{8}T[0-9]{6}$' } }
+        - { name: Idempotency-Key, in: header, required: true, schema: { type: string, minLength: 1, maxLength: 200 } }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [confirm]
+              properties: { confirm: { const: true } }
+      responses:
+        '200': { $ref: '#/components/responses/AcceptedOperation' }
+        '202': { $ref: '#/components/responses/AcceptedOperation' }
+        '400': { $ref: '#/components/responses/Problem' }
+        '409': { $ref: '#/components/responses/Problem' }
+  /api/v1/apps/{id}/migrations:
+    post:
+      operationId: queueAppMigration
+      description: Queues the InfraSpec migrations command independently of deployment. Norn prepares the requested source and creates a pre-migration snapshot before mutation.
+      parameters:
+        - $ref: '#/components/parameters/AppID'
+        - { name: Idempotency-Key, in: header, required: true, schema: { type: string, minLength: 1, maxLength: 200 } }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [confirm]
+              properties:
+                ref: { type: string, default: HEAD }
+                confirm: { const: true }
+      responses:
+        '200': { $ref: '#/components/responses/AcceptedOperation' }
+        '202': { $ref: '#/components/responses/AcceptedOperation' }
+        '400': { $ref: '#/components/responses/Problem' }
+        '409': { $ref: '#/components/responses/Problem' }
+  /api/v1/apps/{id}/rollbacks:
+    post:
+      operationId: queueAppRollback
+      description: Queues rollback to the previous successful deployment, optionally scoped to declared regions.
+      parameters:
+        - $ref: '#/components/parameters/AppID'
+        - { name: Idempotency-Key, in: header, required: true, schema: { type: string, minLength: 1, maxLength: 200 } }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [confirm]
+              properties:
+                regions: { type: array, items: { type: string } }
+                confirm: { const: true }
+      responses:
+        '200': { $ref: '#/components/responses/AcceptedOperation' }
+        '202': { $ref: '#/components/responses/AcceptedOperation' }
+        '400': { $ref: '#/components/responses/Problem' }
+        '404': { $ref: '#/components/responses/Problem' }
+        '409': { $ref: '#/components/responses/Problem' }
   /api/v1/enrollments:
     post:
       operationId: startDeviceEnrollment
@@ -808,6 +918,21 @@ components:
         - operation_create_failed
         - operation_cancel_failed
         - operation_not_cancelable
+        - invalid_idempotency_key
+        - idempotency_key_reused
+        - app_operation_active
+        - postgres_not_configured
+        - migration_not_configured
+        - confirmation_required
+        - invalid_snapshot_retention
+        - invalid_snapshot_restore
+        - invalid_snapshot_timestamp
+        - invalid_migration_request
+        - invalid_migration_ref
+        - invalid_rollback_request
+        - invalid_rollback_region
+        - rollback_current_deployment_missing
+        - rollback_target_missing
         - operation_already_finished
         - invalid_platform_ref
         - invalid_upgrade_mode
@@ -1585,6 +1710,21 @@ components:
         commitSha: { type: string }
         imageTag: { type: string }
         step: { type: string }
+        snapshot: { type: string }
+        preRestoreSnapshot: { type: string }
+        database: { type: string }
+        keep: { type: integer }
+        pruned: { type: array, items: { type: string } }
+    AppSnapshot:
+      type: object
+      required: [filename, database, timestamp, size]
+      properties:
+        filename: { type: string }
+        database: { type: string }
+        commitSha: { type: string }
+        timestamp: { type: string, pattern: '^[0-9]{8}T[0-9]{6}$' }
+        createdAt: { type: string, format: date-time }
+        size: { type: integer, format: int64, minimum: 0 }
     FleetOperationReceipt:
       type: object
       required: [planId]

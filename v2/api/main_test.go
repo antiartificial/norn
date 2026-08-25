@@ -334,10 +334,14 @@ func TestControlCapabilitiesAdvertisesHostMetrics(t *testing.T) {
 	if capability.Endpoints["mutationAudit"] != "/api/v1/audit/mutations" || capability.Endpoints["recoveryDrills"] != "/api/v1/production/drills" {
 		t.Fatalf("production evidence endpoints = %v", capability.Endpoints)
 	}
+	if capability.Endpoints["appSnapshots"] == "" || capability.Endpoints["appMigrations"] == "" || capability.Endpoints["appRollbacks"] == "" {
+		t.Fatalf("durable app recovery endpoints = %v", capability.Endpoints)
+	}
 	found := false
 	productionFound := false
 	auditFound := false
 	drillsFound := false
+	appRecoveryFound := false
 	for _, feature := range capability.Features {
 		if feature == "host-metrics" {
 			found = true
@@ -351,6 +355,9 @@ func TestControlCapabilitiesAdvertisesHostMetrics(t *testing.T) {
 		if feature == "recovery-drill-receipts" {
 			drillsFound = true
 		}
+		if feature == "durable-app-recovery-v1" {
+			appRecoveryFound = true
+		}
 	}
 	if !found {
 		t.Fatalf("host-metrics feature missing: %v", capability.Features)
@@ -360,6 +367,9 @@ func TestControlCapabilitiesAdvertisesHostMetrics(t *testing.T) {
 	}
 	if !auditFound || !drillsFound {
 		t.Fatalf("production evidence features missing: %v", capability.Features)
+	}
+	if !appRecoveryFound {
+		t.Fatalf("durable app recovery feature missing: %v", capability.Features)
 	}
 }
 

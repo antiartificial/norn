@@ -12,6 +12,32 @@ import (
 	"norn/v2/api/model"
 )
 
+// AcquireAppOperationLock serializes mutable app operations across API
+// replicas. PostgreSQL advisory locks are session-scoped, so the returned
+// release function must always be called to return the pinned connection.
+func (db *DB) AcquireAppOperationLock(ctx context.Context, app string) (func(), bool, error) {
+	if db == nil || db.Pool == nil || strings.TrimSpace(app) == "" {
+		return func() {}, false, fmt.Errorf("app operation lock is unavailable")
+	}
+	conn, err := db.Pool.Acquire(ctx)
+	if err != nil {
+		return func() {}, false, err
+	}
+	var locked bool
+	if err := conn.QueryRow(ctx, `SELECT pg_try_advisory_lock(hashtextextended($1, 0))`, "norn:app:"+app).Scan(&locked); err != nil {
+		conn.Release()
+		return func() {}, false, err
+	}
+	if !locked {
+		conn.Release()
+		return func() {}, false, nil
+	}
+	return func() {
+		_, _ = conn.Exec(context.Background(), `SELECT pg_advisory_unlock(hashtextextended($1, 0))`, "norn:app:"+app)
+		conn.Release()
+	}, true, nil
+}
+
 type OperationFilter struct {
 	App       string
 	Kind      string
@@ -56,6 +82,64 @@ func (db *DB) InsertOperation(ctx context.Context, op *model.Operation) error {
 		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, now())
 	`, op.ID, op.Kind, op.App, op.SagaID, op.Ref, op.Status, op.Risk, op.Source, op.Message, payload, metadata, op.Attempts, op.MaxAttempts, op.NextAttemptAt, op.StartedAt)
 	return err
+}
+
+// InsertRollbackOperation commits the rollback deployment, its regional
+// checkpoints, and the durable operation receipt as one unit. This prevents an
+// API interruption or idempotency race from leaving an orphaned deployment.
+func (db *DB) InsertRollbackOperation(ctx context.Context, deployment *model.Deployment, regions []model.ResolvedRegion, op *model.Operation) error {
+	if db == nil || db.Pool == nil || deployment == nil || op == nil {
+		return fmt.Errorf("rollback operation store is unavailable")
+	}
+	if op.Metadata == nil {
+		op.Metadata = map[string]interface{}{}
+	}
+	if op.Payload == nil {
+		op.Payload = map[string]interface{}{}
+	}
+	if op.Status == "" {
+		op.Status = model.OperationQueued
+	}
+	if op.StartedAt.IsZero() {
+		op.StartedAt = time.Now().UTC()
+	}
+	if op.MaxAttempts <= 0 {
+		op.MaxAttempts = 1
+	}
+	if op.NextAttemptAt.IsZero() {
+		op.NextAttemptAt = op.StartedAt
+	}
+	tx, err := db.Pool.Begin(ctx)
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback(ctx)
+
+	changes, _ := json.Marshal(deployment.SourceChanges)
+	if _, err = tx.Exec(ctx, `INSERT INTO deployments
+		(id, app, commit_sha, image_tag, saga_id, status, source_kind, source_ref, source_dirty, source_changes, started_at)
+		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)`,
+		deployment.ID, deployment.App, deployment.CommitSHA, deployment.ImageTag, deployment.SagaID, deployment.Status,
+		deployment.SourceKind, deployment.SourceRef, deployment.SourceDirty, changes, deployment.StartedAt); err != nil {
+		return err
+	}
+	for _, region := range regions {
+		if _, err = tx.Exec(ctx, `INSERT INTO deployment_regions
+			(deployment_id, region, nomad_region, status, desired_weight, active_weight)
+			VALUES ($1, $2, $3, $4, $5, 0)`, deployment.ID, region.Name, region.NomadRegion, model.StatusQueued, region.TrafficWeight); err != nil {
+			return err
+		}
+	}
+	payload, _ := json.Marshal(op.Payload)
+	metadata, _ := json.Marshal(op.Metadata)
+	if _, err = tx.Exec(ctx, `INSERT INTO operations
+		(id, kind, app, saga_id, ref, status, risk, source, message, payload, metadata, attempts, max_attempts, next_attempt_at, started_at, updated_at)
+		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, now())`,
+		op.ID, op.Kind, op.App, op.SagaID, op.Ref, op.Status, op.Risk, op.Source, op.Message, payload, metadata,
+		op.Attempts, op.MaxAttempts, op.NextAttemptAt, op.StartedAt); err != nil {
+		return err
+	}
+	return tx.Commit(ctx)
 }
 
 // InsertCompletedOperation persists a terminal, planning-only operation in a
@@ -137,6 +221,24 @@ func (db *DB) RetryOperation(ctx context.Context, id, message, lastError string,
 		    updated_at = now()
 		WHERE id = $5
 	`, message, lastError, nextAttemptAt, data, id)
+	return err
+}
+
+// DeferClaimedOperation returns an operation to the queue without consuming an
+// execution attempt. It is used when another replica holds the per-app lock;
+// no application work has started in that case.
+func (db *DB) DeferClaimedOperation(ctx context.Context, id, message string, nextAttemptAt time.Time, metadata map[string]interface{}) error {
+	if metadata == nil {
+		metadata = map[string]interface{}{}
+	}
+	data, _ := json.Marshal(metadata)
+	_, err := db.Pool.Exec(ctx, `
+		UPDATE operations
+		SET status = 'queued', message = $1, next_attempt_at = $2,
+		    metadata = metadata || $3::jsonb, attempts = GREATEST(attempts - 1, 0),
+		    locked_by = '', locked_until = NULL, updated_at = now()
+		WHERE id = $4 AND status = 'running'
+	`, message, nextAttemptAt, data, id)
 	return err
 }
 
@@ -332,6 +434,7 @@ func (db *DB) RecoverInFlightOperations(ctx context.Context) error {
 		    updated_at = now()
 		WHERE status = 'running'
 		  AND kind LIKE 'app.%'
+		  AND (locked_until IS NULL OR locked_until < now())
 		  AND attempts < max_attempts
 		  AND (
 		    kind != 'app.deploy'
@@ -357,6 +460,7 @@ func (db *DB) RecoverInFlightOperations(ctx context.Context) error {
 		    finished_at = now()
 		WHERE status = 'running'
 		  AND kind LIKE 'app.%'
+		  AND (locked_until IS NULL OR locked_until < now())
 	`)
 	return err
 }

@@ -63,6 +63,25 @@ func (h *Handler) ListSnapshots(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, listSnapshotsForSpec(spec))
 }
 
+// ListAppSnapshotsV1 exposes the same inventory through the versioned control
+// contract, including its standard problem response shape.
+func (h *Handler) ListAppSnapshotsV1(w http.ResponseWriter, r *http.Request) {
+	if _, ok := requireControlScope(w, r, ScopeAPIRead); !ok {
+		return
+	}
+	id := chi.URLParam(r, "id")
+	spec := h.findSpec(id)
+	if spec == nil {
+		WriteControlProblem(w, r, http.StatusNotFound, "app_not_found", "app was not found or deployment is disabled")
+		return
+	}
+	if spec.Infrastructure == nil || spec.Infrastructure.Postgres == nil {
+		writeJSON(w, []snapshotEntry{})
+		return
+	}
+	writeJSON(w, listSnapshotsForSpec(spec))
+}
+
 func listSnapshotsForSpec(spec *model.InfraSpec) []snapshotEntry {
 	if spec == nil || spec.Infrastructure == nil || spec.Infrastructure.Postgres == nil {
 		return []snapshotEntry{}

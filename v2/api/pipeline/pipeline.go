@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"log"
 	"strconv"
+	"strings"
 	"time"
 
 	"github.com/google/uuid"
@@ -144,10 +145,16 @@ func (p *Pipeline) ExecuteOperation(ctx context.Context, op *model.Operation) er
 	category := "deploy"
 	if op.Kind == "app.preflight" {
 		category = "preflight"
+	} else if op.Kind == "app.migrate" {
+		category = "migration"
+	} else if strings.HasPrefix(op.Kind, "app.snapshot") {
+		category = "snapshot"
 	}
 	sg := saga.NewWithID(p.SagaStore, op.SagaID, spec.App, "pipeline", category)
 
 	switch op.Kind {
+	case "app.snapshot", "app.snapshot-prune", "app.snapshot-restore", "app.migrate":
+		return p.executeDataOperation(ctx, op, spec, sg)
 	case "app.deploy":
 		deploymentID := stringFromMap(op.Payload, "deploymentId")
 		if deploymentID == "" {

@@ -62,7 +62,7 @@ function installFetch(overrides: Record<string, Response | (() => Response)> = {
     if (url.includes('/api/apps')) return json([app, unhealthyApp])
     if (url.includes('/api/services/manifest')) return json({ version: 1, generatedAt: new Date().toISOString(), networkMode: 'dev', services: [] })
     if (url.includes('/api/access/patterns')) return json({ windowHours: 24, idleAfterHours: 72, patterns: [] })
-    if (url.includes('/api/v1/capabilities')) return json({ protocolVersion: 1, serverVersion: 'test', features: ['fleet-v1', 'fleet-inventory', 'durable-fleet-capacity-plans', 'fleet-reconciliation-v1'] })
+    if (url.includes('/api/v1/capabilities')) return json({ protocolVersion: 1, serverVersion: 'test', features: ['fleet-v1', 'fleet-inventory', 'durable-fleet-capacity-plans', 'fleet-reconciliation-v1', 'durable-app-recovery-v1'] })
     if (url.includes('/api/cloudflared/ingress')) return json({ hostnames: [] })
     if (url.includes('/api/version')) return json({ version: 'test' })
     if (url.includes('/api/v1/fleet/node-pools')) return json({ schemaVersion: 'norn.fleet-inventory/v1', configured: false, nodePools: {} })

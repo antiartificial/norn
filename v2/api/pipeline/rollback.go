@@ -15,10 +15,18 @@ import (
 )
 
 func (p *Pipeline) Rollback(spec *model.InfraSpec, current model.Deployment, prev *model.Deployment) string {
-	return p.RollbackRegions(spec, current, prev, nil)
+	sagaID, _, _ := p.RollbackRegionsOperation(spec, current, prev, nil)
+	return sagaID
 }
 
 func (p *Pipeline) RollbackRegions(spec *model.InfraSpec, current model.Deployment, prev *model.Deployment, requestedRegions []string) string {
+	sagaID, _, _ := p.RollbackRegionsOperation(spec, current, prev, requestedRegions)
+	return sagaID
+}
+
+// RollbackRegionsOperation exposes the durable operation identifier to typed
+// control clients while preserving the legacy saga-returning API.
+func (p *Pipeline) RollbackRegionsOperation(spec *model.InfraSpec, current model.Deployment, prev *model.Deployment, requestedRegions []string, extraMetadata ...map[string]interface{}) (string, string, error) {
 	ctx := context.Background()
 	sg := saga.New(p.SagaStore, spec.App, "pipeline", "rollback")
 	started := time.Now()
@@ -35,13 +43,7 @@ func (p *Pipeline) RollbackRegions(spec *model.InfraSpec, current model.Deployme
 		SourceChanges: prev.SourceChanges,
 		StartedAt:     started,
 	}
-	if err := p.DB.InsertDeployment(ctx, deploy); err != nil {
-		_ = sg.Log(ctx, "rollback.error", fmt.Sprintf("insert rollback deployment failed: %v", err), nil)
-	}
 	regions := selectedResolvedRegions(spec, requestedRegions)
-	if err := p.DB.InsertDeploymentRegions(ctx, deploy.ID, regions); err != nil {
-		_ = sg.Log(ctx, "rollback.error", fmt.Sprintf("insert rollback regions failed: %v", err), nil)
-	}
 
 	operationID := uuid.NewString()
 	payload := map[string]interface{}{
@@ -52,7 +54,16 @@ func (p *Pipeline) RollbackRegions(spec *model.InfraSpec, current model.Deployme
 		"currentDeploymentId": current.ID,
 		"regions":             requestedRegions,
 	}
-	if err := p.DB.InsertOperation(ctx, &model.Operation{
+	metadata := map[string]interface{}{}
+	for key, value := range payload {
+		metadata[key] = value
+	}
+	if len(extraMetadata) > 0 {
+		for key, value := range extraMetadata[0] {
+			metadata[key] = value
+		}
+	}
+	operation := &model.Operation{
 		ID:          operationID,
 		Kind:        "app.rollback",
 		App:         spec.App,
@@ -65,9 +76,11 @@ func (p *Pipeline) RollbackRegions(spec *model.InfraSpec, current model.Deployme
 		StartedAt:   started,
 		MaxAttempts: 1,
 		Payload:     payload,
-		Metadata:    payload,
-	}); err != nil {
-		_ = sg.Log(ctx, "rollback.error", fmt.Sprintf("insert rollback operation failed: %v", err), nil)
+		Metadata:    metadata,
+	}
+	if err := p.DB.InsertRollbackOperation(ctx, deploy, regions, operation); err != nil {
+		_ = sg.Log(ctx, "rollback.error", fmt.Sprintf("persist rollback operation failed: %v", err), nil)
+		return sg.ID, operationID, err
 	}
 
 	_ = sg.Log(ctx, "rollback.queued", fmt.Sprintf("queued rollback for %s to %s", spec.App, prev.ImageTag), map[string]string{
@@ -75,7 +88,7 @@ func (p *Pipeline) RollbackRegions(spec *model.InfraSpec, current model.Deployme
 		"sourceDeploymentId":  prev.ID,
 		"currentDeploymentId": current.ID,
 	})
-	return sg.ID
+	return sg.ID, operationID, nil
 }
 
 func (p *Pipeline) runRollback(ctx context.Context, spec *model.InfraSpec, deploy *model.Deployment, sg *saga.Saga, imageTag string, operationID string, attempt int, requestedRegions []string) {

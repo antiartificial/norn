@@ -1,5 +1,6 @@
 import { useMemo, useState, type FormEvent } from 'react'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
+import { NavLink } from 'react-router-dom'
 import { apiFetch } from '../lib/api.ts'
 import type { FleetGitHubStatus, FleetInventory, FleetNodePool, FleetPlansResponse, FleetReconciliationResponse, Operation } from '../types/index.ts'
 import { EmptyState, StatusChip, useToast } from '../components/ui/index.ts'
@@ -175,7 +176,7 @@ function PlanJourney({ plan, fallbackWorkflowURL, githubConnected }: { plan: Ope
         <div className="fleet-journey-detail">
           {checkpoints.isLoading ? <div className="panel-skeleton" aria-label="Loading recovery checkpoints"><span /><span /></div> : <ol className="fleet-checkpoints">{reconciliationPhases.map((phase) => <li className={completed.has(phase) ? 'complete' : ''} key={phase}><span aria-hidden="true">{completed.has(phase) ? '✓' : '○'}</span><span>{humanize(phase)}</span><small>{completed.has(phase) ? 'Proven' : 'Pending'}</small></li>)}</ol>}
           {checkpoints.error && <p className="fleet-change-warning" role="alert">Recovery checkpoints could not be refreshed. The durable plan remains safe in Norn.</p>}
-          <div className="fleet-handoff"><code>{planID}</code>{githubConnected ? <><button className="filter-btn" type="button" disabled={pullRequest.isPending} onClick={() => pullRequest.mutate()}>{pullRequest.isPending ? 'Opening…' : 'Open review'}</button><button className="filter-btn active" type="button" disabled={dispatch.isPending} onClick={() => dispatch.mutate()}>{dispatch.isPending ? 'Dispatching…' : destructive ? 'Apply reviewed change' : 'Apply after review'}</button></> : workflowURL && <a className="filter-btn" href={workflowURL} target="_blank" rel="noreferrer">Continue in protected runner ↗</a>}</div>
+          <div className="fleet-handoff"><code>{planID}</code>{planID && <NavLink className="filter-btn" to={`/operations/${planID}`}>View receipt</NavLink>}{githubConnected ? <><button className="filter-btn" type="button" disabled={pullRequest.isPending} onClick={() => pullRequest.mutate()}>{pullRequest.isPending ? 'Opening…' : 'Open review'}</button><button className="filter-btn active" type="button" disabled={dispatch.isPending} onClick={() => dispatch.mutate()}>{dispatch.isPending ? 'Dispatching…' : destructive ? 'Apply reviewed change' : 'Apply after review'}</button></> : workflowURL && <a className="filter-btn" href={workflowURL} target="_blank" rel="noreferrer">Continue in protected runner ↗</a>}</div>
           {(pullRequestURL || applyURL) && <div className="fleet-github-links">{pullRequestURL && <a href={pullRequestURL} target="_blank" rel="noreferrer">View pull request ↗</a>}{applyURL && <a href={applyURL} target="_blank" rel="noreferrer">View apply run ↗</a>}</div>}
           <p className="fleet-change-note">This plan ID is the resume key. Review and merge the pull request, wait for the protected plan to pass, then apply. Repeating either action safely recovers the existing GitHub work.</p>
         </div>
