@@ -72,6 +72,7 @@ function installFetch(overrides: Record<string, Response | (() => Response)> = {
     if (url.includes('/api/platform/releases')) return json({ current: 'abc123', releases: [] })
     if (url.includes('/api/deploy-groups')) return json({ groups: [] })
     if (url.includes('/api/notifications/channels')) return json({ channels: [] })
+    if (url.includes('/api/access/events')) return json([{ timestamp: new Date().toISOString(), method: 'GET', path: '/api/apps', status: 200, durationMs: 12, clientIp: '127.0.0.1' }])
     if (url.includes('/api/access/grants')) return json({ grants: [] })
     if (url.includes('/api/deployments')) return json([])
     if (url.includes('/api/saga')) return json([])
@@ -478,6 +479,23 @@ describe('App shell routing', () => {
     renderApp('/platform/access')
     expect(await screen.findByText('10.0.0.1')).toBeInTheDocument()
     expect(screen.getAllByText('127.0.0.1').length).toBeGreaterThan(0)
+  })
+
+  it('renders platform traffic buffer and filters', async () => {
+    installFetch({
+      '/api/access/events': () => json([
+        { timestamp: new Date().toISOString(), method: 'GET', path: '/api/apps', status: 200, durationMs: 12, clientIp: '127.0.0.1' },
+        { timestamp: new Date().toISOString(), method: 'POST', path: '/api/deployments', status: 503, durationMs: 620, cfAccessEmail: 'me@example.test' },
+      ]),
+    })
+    renderApp('/platform/traffic')
+
+    expect(await screen.findByRole('tab', { name: 'Traffic' })).toHaveAttribute('aria-selected', 'true')
+    expect(screen.getByText('Control-plane access log only, last 500 requests. This is not full app traffic.')).toBeInTheDocument()
+    expect(await screen.findByText('/api/apps')).toBeInTheDocument()
+    fireEvent.click(screen.getByLabelText('errors only'))
+    expect(screen.queryByText('/api/apps')).not.toBeInTheDocument()
+    expect(screen.getByText('/api/deployments')).toBeInTheDocument()
   })
 
   it('renders empty notifications tab state', async () => {

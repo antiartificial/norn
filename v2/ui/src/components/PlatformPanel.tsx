@@ -6,10 +6,11 @@ import { NotificationsSection } from './NotificationsSection.tsx'
 import { DeployGroupsSection } from './DeployGroupsSection.tsx'
 import { NetworkSection } from './NetworkSection.tsx'
 import { OpsPanel } from './OpsPanel.tsx'
-import type { AccessGrant } from '../types/index.ts'
+import { PlatformTrafficView } from './PlatformTrafficView.tsx'
+import type { AccessEvent, AccessGrant } from '../types/index.ts'
 import { Button, ConfirmDialog, DataTable, EmptyState, ErrorState, Skeleton, StatusChip, Tabs, TabsList, Tab, useToast, type DataTableColumn } from './ui/index.ts'
 
-type PlatformTab = 'releases' | 'network' | 'access' | 'notifications' | 'observability' | 'contextdb'
+type PlatformTab = 'releases' | 'network' | 'access' | 'traffic' | 'notifications' | 'observability' | 'contextdb'
 
 interface PlatformSummary {
   generatedAt: string
@@ -60,20 +61,11 @@ interface PlatformReleaseList {
   releases: PlatformRelease[]
 }
 
-interface AccessEvent {
-  timestamp: string
-  method: string
-  path: string
-  status: number
-  clientIp?: string
-  cfAccessEmail?: string
-  durationMs: number
-}
-
 const tabs: Array<{ value: PlatformTab; label: string }> = [
   { value: 'releases', label: 'Releases' },
   { value: 'network', label: 'Network' },
   { value: 'access', label: 'Access' },
+  { value: 'traffic', label: 'Traffic' },
   { value: 'notifications', label: 'Notifications' },
   { value: 'observability', label: 'Observability' },
   { value: 'contextdb', label: 'ContextDB' },
@@ -114,6 +106,7 @@ export function PlatformPanel() {
         {activeTab === 'releases' && <ReleasesTab />}
         {activeTab === 'network' && <NetworkTab summary={summary.data} loading={summary.isLoading} error={errorMessage(summary.error)} onRetry={() => summary.refetch()} />}
         {activeTab === 'access' && <AccessTab summary={summary.data} loading={summary.isLoading} error={errorMessage(summary.error)} onRetry={() => summary.refetch()} />}
+        {activeTab === 'traffic' && <PlatformTrafficView />}
         {activeTab === 'notifications' && <NotificationsSection />}
         {activeTab === 'observability' && <ObservabilityTab summary={summary.data} loading={summary.isLoading} error={errorMessage(summary.error)} onRetry={() => summary.refetch()} />}
         {activeTab === 'contextdb' && <OpsPanel />}

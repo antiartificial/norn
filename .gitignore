@@ -48,3 +48,4 @@ Thumbs.db
 v2/api/snapshots/
 v2/snapshots/
 v2/dev/logs/
+/snapshots/

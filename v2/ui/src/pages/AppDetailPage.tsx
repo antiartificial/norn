@@ -1,9 +1,10 @@
 import { Navigate, useNavigate, useParams } from 'react-router-dom'
 import { useQuery } from '@tanstack/react-query'
 import { apiFetch } from '../lib/api.ts'
-import { repoWebURL, statusTone } from '../lib/format.ts'
+import { statusTone } from '../lib/format.ts'
 import { useRuntimeContext } from '../runtime/AppRuntime.tsx'
 import type { AccessPattern, AppStatus, Deployment, ServiceManifest } from '../types/index.ts'
+import { AppHeader } from '../components/AppHeader.tsx'
 import { CronPanel } from '../components/CronPanel.tsx'
 import { ExecTerminal } from '../components/ExecTerminal.tsx'
 import { FunctionPanel } from '../components/FunctionPanel.tsx'
@@ -11,7 +12,7 @@ import { LogViewer } from '../components/LogViewer.tsx'
 import { SnapshotsPanel } from '../components/SnapshotsPanel.tsx'
 import { DeploymentTimelineList } from '../components/panels/DeploymentTimelineList.tsx'
 import { Metric, Panel } from '../components/panels/Panel.tsx'
-import { Button, CopyButton, EmptyState, ErrorState, Skeleton, StatusChip, Tab, TabPanel, Tabs, TabsList } from '../components/ui/index.ts'
+import { EmptyState, ErrorState, Skeleton, StatusChip, Tab, TabPanel, Tabs, TabsList } from '../components/ui/index.ts'
 
 export function AppDetailPage() {
   const ctx = useRuntimeContext()
@@ -25,30 +26,10 @@ export function AppDetailPage() {
   const appId = app.spec.name
   const firstProcess = Object.values(app.spec.processes ?? {})[0]
   const functionProcesses = Object.entries(app.spec.processes ?? {}).filter(([, process]) => process.function).map(([name]) => name)
-  const endpoints = app.spec.endpoints ?? []
-  const repo = repoWebURL(app.spec.repo?.url, app.spec.repo?.repoWeb)
 
   return (
     <div className="app-detail">
-      <div className="app-detail-header">
-        <div>
-          <div className="app-detail-title">
-            <h2>{appId}</h2>
-            <StatusChip tone={app.healthy ? 'success' : 'danger'} label={app.healthy ? 'healthy' : 'unhealthy'} />
-            <StatusChip tone={statusTone(app.nomadStatus)} label={app.nomadStatus} />
-          </div>
-          <div className="endpoint-line">
-            {endpoints.map((endpoint) => <span key={endpoint.url}><a href={endpoint.url} target="_blank" rel="noreferrer">{endpoint.url}</a><CopyButton value={endpoint.url} label="Copy endpoint" /></span>)}
-            {repo && <a href={repo} target="_blank" rel="noreferrer"><i className="fawsb fa-code" aria-hidden /> repo</a>}
-          </div>
-        </div>
-        <div className="app-detail-actions">
-          <Button variant="secondary" icon="fa-clipboard-check" onClick={() => ctx.mutations.run(appId, 'preflight')}>Preflight</Button>
-          <Button variant="primary" icon="fa-rocket-launch" onClick={() => ctx.mutations.run(appId, 'deploy')}>Deploy</Button>
-          <Button variant="secondary" icon="fa-arrows-rotate" onClick={() => ctx.mutations.run(appId, 'restart')}>Restart</Button>
-          <Button variant="secondary" icon="fa-arrow-up-arrow-down" onClick={() => ctx.mutations.scale(app)}>Scale</Button>
-        </div>
-      </div>
+      <AppHeader app={app} onAction={ctx.mutations.run} onScale={ctx.mutations.scale} deployRunning={ctx.deployState?.appId === appId} />
       {ctx.deployState?.appId === appId && <div className="deploy-inline-note" aria-live="polite">Live {ctx.deployState.operation} is running for this app.</div>}
       <Tabs value={tab} onValueChange={(next) => navigate(`/apps/${appId}/${next}`)}>
         <TabsList aria-label="App detail tabs">

@@ -128,6 +128,8 @@ export interface Deployment {
   imageTag: string
   sagaId: string
   status: string
+  sourceKind?: string
+  sourceRef?: string
   startedAt: string
   finishedAt?: string
 }
@@ -254,6 +256,19 @@ export interface AccessGrant {
   createdBy: string
   createdAt: string
   expiresAt: string
+}
+
+export interface AccessEvent {
+  timestamp: string
+  method: string
+  path: string
+  status: number
+  durationMs: number
+  clientIp?: string
+  forwarded?: string
+  cfConnectingIp?: string
+  cfAccessEmail?: string
+  userAgent?: string
 }
 
 export interface ServiceManifestEntry {

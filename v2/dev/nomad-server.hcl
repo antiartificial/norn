@@ -13,8 +13,9 @@ server {
 }
 
 client {
-  enabled           = true
-  cpu_total_compute = 4000
+  enabled                  = true
+  cpu_total_compute        = 4000
+  preferred_address_family = "ipv4"
 
   host_volume "gitea-data" {
     path      = "/Users/0xadb/volumes/gitea-data"
@@ -50,6 +51,24 @@ client {
     path      = "/Users/0xadb/volumes/redpanda-data"
     read_only = false
   }
+
+  host_volume "docker-socket" {
+    path      = "/var/run/docker.sock"
+    read_only = true
+  }
+
+  host_volume "norn-prometheus-data" {
+    path      = "/Users/0xadb/volumes/norn-prometheus"
+    read_only = false
+  }
 }
 
 plugin "docker" {}
+
+telemetry {
+  collection_interval        = "15s"
+  disable_hostname           = false
+  prometheus_metrics         = true
+  publish_allocation_metrics = true
+  publish_node_metrics       = true
+}

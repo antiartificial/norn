@@ -2,8 +2,9 @@ import { useMemo, useState, type ReactNode } from 'react'
 import { Link } from 'react-router-dom'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { apiFetch } from '../../lib/api.ts'
+import { correlateDeploysToIncident } from '../../lib/incidentContext.ts'
 import { relativeTime, statusTone } from '../../lib/format.ts'
-import type { BeaconEvent, CorrelatedEventsResponse, CorrelatedIncident, EventsResponse } from '../../types/index.ts'
+import type { BeaconEvent, CorrelatedEventsResponse, CorrelatedIncident, Deployment, EventsResponse } from '../../types/index.ts'
 import { Button, Drawer, EmptyState, ErrorState, Skeleton, StatusChip, useToast } from '../ui/index.ts'
 
 type EventAction = 'ack' | 'snooze' | 'open'
@@ -85,6 +86,12 @@ export function IncidentDrawer({ selection, onClose }: IncidentDrawerProps) {
     enabled: Boolean(selection && app),
     staleTime: 15_000,
   })
+  const deployments = useQuery({
+    queryKey: ['deployments', { limit: 50 }],
+    queryFn: () => apiFetch<Deployment[]>('/api/deployments?limit=50'),
+    enabled: Boolean(selection && app),
+    staleTime: 15_000,
+  })
   const timelineEvents = useMemo(() => [...(timeline.data?.events ?? [])].sort((a, b) => new Date(b.occurredAt).getTime() - new Date(a.occurredAt).getTime()), [timeline.data?.events])
   const timelineIds = useMemo(() => {
     const ids = new Set(timelineEvents.map(event => event.id))
@@ -99,6 +106,8 @@ export function IncidentDrawer({ selection, onClose }: IncidentDrawerProps) {
 
   const id = latestEventId(selection)
   const title = incidentTitle(selection)
+  const incidentStart = timelineEvents.length > 0 ? timelineEvents[timelineEvents.length - 1].occurredAt : selection.kind === 'correlated' ? selection.incident.firstSeen : selection.event.occurredAt
+  const deployContext = correlateDeploysToIncident(deployments.data ?? [], app, incidentStart)
 
   return (
     <Drawer
@@ -136,6 +145,21 @@ export function IncidentDrawer({ selection, onClose }: IncidentDrawerProps) {
           <Button size="sm" variant="ghost" icon="fa-arrow-rotate-left" loading={action.isPending && action.variables?.id === id && action.variables?.name === 'open'} onClick={() => action.mutate({ id, name: 'open' })}>Re-open</Button>
         </div>
 
+        {(deployContext.before || deployContext.during) && (
+          <div className="incident-change-line">
+            {deployContext.before && (
+              <span>
+                Deployed <Link to={`/apps/${app}/deploys`} onClick={onClose}><code>{deployContext.before.commitSha.slice(0, 7)}</code></Link> {relativeDelta(deployContext.before.finishedAt, incidentStart)} before this incident started
+              </span>
+            )}
+            {deployContext.during && (
+              <span>
+                then deployed <Link to={`/apps/${app}/deploys`} onClick={onClose}><code>{deployContext.during.commitSha.slice(0, 7)}</code></Link> during the incident
+              </span>
+            )}
+          </div>
+        )}
+
         {key ? (
           <IncidentDrawerSection title="Incident timeline">
             {timeline.isLoading ? <DrawerSkeleton /> : timeline.error instanceof Error ? (
@@ -164,6 +188,15 @@ export function IncidentDrawer({ selection, onClose }: IncidentDrawerProps) {
       </div>
     </Drawer>
   )
+}
+
+function relativeDelta(fromIso: string | undefined, toIso: string): string {
+  if (!fromIso) return 'unknown time'
+  const minutes = Math.max(0, Math.round((new Date(toIso).getTime() - new Date(fromIso).getTime()) / 60_000))
+  if (minutes < 60) return `${minutes}m`
+  const hours = Math.round(minutes / 60)
+  if (hours < 48) return `${hours}h`
+  return `${Math.round(hours / 24)}d`
 }
 
 function IncidentDrawerSection({ title, children }: { title: string; children: ReactNode }) {

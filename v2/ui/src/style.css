@@ -449,6 +449,69 @@ body {
   justify-content: space-between;
   padding: 14px;
 }
+.overview-insight-strip,
+.app-command-header {
+  background: var(--surface-1);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+}
+.overview-insight-strip {
+  align-items: center;
+  display: flex;
+  gap: 12px;
+  justify-content: space-between;
+  margin-bottom: 12px;
+  padding: 10px 12px;
+}
+.overview-insight-strip > div {
+  display: grid;
+  gap: 3px;
+  min-width: 0;
+}
+.overview-insight-strip strong {
+  font-size: 13px;
+}
+.overview-insight-strip small {
+  color: var(--text-3);
+  font-size: 12px;
+}
+.app-command-header {
+  align-items: flex-start;
+  display: flex;
+  gap: 16px;
+  justify-content: space-between;
+  padding: 14px;
+}
+.app-command-main {
+  display: grid;
+  gap: 8px;
+  min-width: 0;
+}
+.app-command-side {
+  align-items: flex-end;
+  display: grid;
+  gap: 6px;
+  justify-items: end;
+  min-width: min(100%, 320px);
+}
+.app-command-side small,
+.app-command-deploy-link {
+  color: var(--text-3);
+  font-size: 12px;
+}
+.app-command-version,
+.app-command-meta {
+  align-items: center;
+  color: var(--text-2);
+  display: flex;
+  flex-wrap: wrap;
+  font-size: 12px;
+  gap: 6px 10px;
+}
+.app-command-version code,
+.app-command-meta span {
+  font-family: var(--mono);
+}
 .app-detail-title {
   align-items: center;
   display: flex;
@@ -538,6 +601,11 @@ body {
 @media (max-width: 920px) {
   .overview-grid,
   .detail-grid { grid-template-columns: 1fr; }
+  .app-command-header,
+  .traffic-chart-row { flex-direction: column; }
+  .app-command-side { align-items: stretch; justify-items: stretch; }
+  .traffic-summary { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  .traffic-metric-wide { grid-column: 1 / -1; }
 }
 
 @media (max-width: 680px) {
@@ -552,6 +620,8 @@ body {
   }
   .shell-main { padding: 12px; }
   .app-detail-header { flex-direction: column; }
+  .overview-insight-strip { align-items: stretch; flex-direction: column; }
+  .traffic-summary { grid-template-columns: 1fr; }
 }
 
 .ws-status {
@@ -2455,6 +2525,72 @@ body {
   padding: 8px 10px;
 }
 
+.traffic-view {
+  display: grid;
+  gap: 12px;
+}
+.traffic-summary {
+  display: grid;
+  gap: 8px;
+  grid-template-columns: repeat(4, minmax(92px, 1fr)) minmax(180px, 1.6fr);
+}
+.traffic-metric {
+  background: var(--surface-2);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  display: grid;
+  gap: 4px;
+  padding: 9px 10px;
+}
+.traffic-metric span {
+  color: var(--text-3);
+  font-size: 11px;
+  text-transform: uppercase;
+}
+.traffic-metric strong {
+  color: var(--text-1);
+  font: 700 14px var(--mono);
+}
+.traffic-metric-warning strong { color: var(--warn); }
+.traffic-metric-danger strong { color: var(--danger); }
+.traffic-chart-row {
+  align-items: center;
+  display: flex;
+  gap: 14px;
+  margin-top: 12px;
+}
+.traffic-chart-row .sparkline {
+  flex: 1;
+  min-width: 180px;
+}
+.traffic-chart-row p {
+  color: var(--text-3);
+  flex: 0 1 260px;
+  font-size: 12px;
+  margin: 0;
+}
+.traffic-filter-row {
+  align-items: center;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px 12px;
+  margin-bottom: 12px;
+}
+.traffic-toggle {
+  align-items: center;
+  color: var(--text-2);
+  display: inline-flex;
+  font-size: 12px;
+  gap: 6px;
+}
+.traffic-path {
+  display: block;
+  max-width: 420px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
 .deploy-group-grid {
   display: flex;
   flex-wrap: wrap;
@@ -2581,6 +2717,18 @@ body {
   border: 1px solid var(--border);
   border-radius: var(--radius-sm);
   padding: 8px;
+}
+.incident-change-line {
+  align-items: center;
+  color: var(--text-2);
+  display: flex;
+  flex-wrap: wrap;
+  font-size: 12px;
+  gap: 6px 10px;
+}
+.incident-change-line code {
+  color: var(--text-1);
+  font-family: var(--mono);
 }
 
 .incident-drawer-section {

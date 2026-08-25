@@ -1,20 +1,22 @@
-import { useState } from 'react'
+import { useMemo, useState } from 'react'
 import { NavLink } from 'react-router-dom'
 import { useQuery } from '@tanstack/react-query'
 import { apiFetch } from '../lib/api.ts'
 import { collapseActivity } from '../lib/activity.ts'
+import { bucketByTime, markerPositions } from '../lib/timeseries.ts'
 import { useRuntimeContext } from '../runtime/AppRuntime.tsx'
-import type { ActiveIncidentsResponse, AppStatus, Deployment, OperationsResponse, VersionResponse } from '../types/index.ts'
+import type { ActiveIncidentsResponse, AppStatus, Deployment, EventsResponse, OperationsResponse, VersionResponse } from '../types/index.ts'
 import { DeployList } from '../components/panels/DeployList.tsx'
 import { ActiveIncidentList } from '../components/panels/IncidentList.tsx'
 import { Metric, Panel } from '../components/panels/Panel.tsx'
 import { OperationList } from '../components/panels/OperationList.tsx'
 import { StatusBar } from '../components/StatusBar.tsx'
-import { EmptyState, StatusChip, StatusDot } from '../components/ui/index.ts'
+import { EmptyState, Sparkline, StatusChip, StatusDot, type SparklineTone } from '../components/ui/index.ts'
 import { IncidentDrawer, type IncidentSelection } from '../components/incidents/IncidentDrawer.tsx'
 
 const healthRowLimit = 5
 const incidentLimit = 5
+const dayMs = 24 * 60 * 60 * 1000
 
 function relativeTime(iso: string): string {
   const seconds = Math.max(0, Math.floor((Date.now() - new Date(iso).getTime()) / 1000))
@@ -30,18 +32,42 @@ export function OverviewPage() {
   const ctx = useRuntimeContext()
   const [selection, setSelection] = useState<IncidentSelection | null>(null)
   const incidents = useQuery({ queryKey: ['events', 'active'], queryFn: () => apiFetch<ActiveIncidentsResponse>('/api/events/active'), staleTime: 15_000 })
+  const fleetEvents = useQuery({ queryKey: ['events', { limit: 500 }], queryFn: () => apiFetch<EventsResponse>('/api/events?limit=500'), staleTime: 15_000 })
   const operations = useQuery({ queryKey: ['operations', 'active'], queryFn: () => apiFetch<OperationsResponse>('/api/operations/active'), staleTime: 15_000 })
-  const deploys = useQuery({ queryKey: ['deployments', { limit: 5 }], queryFn: () => apiFetch<Deployment[]>('/api/deployments?limit=5'), staleTime: 15_000 })
+  const deploys = useQuery({ queryKey: ['deployments', { limit: 50 }], queryFn: () => apiFetch<Deployment[]>('/api/deployments?limit=50'), staleTime: 15_000 })
   const version = useQuery({ queryKey: ['version'], queryFn: () => apiFetch<VersionResponse>('/api/version'), staleTime: 60_000 })
   const healthy = ctx.apps.filter((app) => app.healthy).length
   const unhealthy = ctx.apps.filter((app) => !app.healthy)
   const idle = ctx.accessPatterns.filter((pattern) => pattern.idleCandidate)
   const idleApps = idle.map(pattern => pattern.app)
   const activityRows = collapseActivity(ctx.activity)
+  const now = Date.now()
+  const eventWindow = useMemo(() => {
+    const events = (fleetEvents.data?.events ?? []).filter(event => new Date(event.occurredAt).getTime() >= now - dayMs && new Date(event.occurredAt).getTime() <= now)
+    const deployTimes = (deploys.data ?? []).map(deployment => deployment.finishedAt).filter((value): value is string => Boolean(value))
+    const markers = markerPositions(deployTimes, { windowMs: dayMs, now })
+    const critical = events.some(event => event.severity === 'critical')
+    const warning = events.some(event => event.severity === 'warning')
+    const tone: SparklineTone = critical ? 'danger' : warning ? 'warn' : 'neutral'
+    return {
+      series: bucketByTime(events, { getTime: event => event.occurredAt, windowMs: dayMs, bucketCount: 48, now }),
+      markers,
+      count: events.length,
+      deployCount: markers.length,
+      tone,
+    }
+  }, [deploys.data, fleetEvents.data?.events, now])
 
   return (
     <div className="overview-grid">
       <Panel title="Fleet health" loading={ctx.loading} error={ctx.error} onRetry={ctx.refetch}>
+        <div className="overview-insight-strip">
+          <div>
+            <strong>Events · 24h</strong>
+            <small>{eventWindow.count} events · {eventWindow.deployCount} deploys · last 24h</small>
+          </div>
+          <Sparkline series={eventWindow.series} markers={eventWindow.markers} tone={eventWindow.tone} width={210} height={42} aria-label="Fleet events over the last 24 hours" />
+        </div>
         <div className="metric-row">
           <Metric label="healthy" value={healthy} tone="success" />
           <Metric label="unhealthy" value={unhealthy.length} tone={unhealthy.length ? 'danger' : 'neutral'} />
