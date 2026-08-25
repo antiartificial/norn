@@ -19,6 +19,7 @@ import (
 )
 
 var snapshotTimestampPattern = regexp.MustCompile(`^[0-9]{8}T[0-9]{6}$`)
+var snapshotFilenamePattern = regexp.MustCompile(`^[A-Za-z0-9_.-]{1,240}\.dump$`)
 
 type appSnapshotRetentionRequest struct {
 	Keep    int  `json:"keep"`
@@ -70,12 +71,12 @@ func (h *Handler) QueueAppSnapshotRestore(w http.ResponseWriter, r *http.Request
 		WriteControlProblem(w, r, http.StatusBadRequest, "confirmation_required", "snapshot restore requires confirm=true")
 		return
 	}
-	timestamp := chi.URLParam(r, "ts")
-	if !snapshotTimestampPattern.MatchString(timestamp) {
-		WriteControlProblem(w, r, http.StatusBadRequest, "invalid_snapshot_timestamp", "snapshot timestamp is invalid")
+	identifier := chi.URLParam(r, "snapshot")
+	if !snapshotTimestampPattern.MatchString(identifier) && !snapshotFilenamePattern.MatchString(identifier) {
+		WriteControlProblem(w, r, http.StatusBadRequest, "invalid_snapshot_identifier", "snapshot identifier must be an inventory filename or legacy UTC timestamp")
 		return
 	}
-	h.queueAppDataOperation(w, r, "app.snapshot-restore", "destructive database restore with safety snapshot", map[string]interface{}{"timestamp": timestamp}, 1)
+	h.queueAppDataOperation(w, r, "app.snapshot-restore", "destructive database restore with safety snapshot", map[string]interface{}{"snapshot": identifier}, 1)
 }
 
 func (h *Handler) QueueAppMigration(w http.ResponseWriter, r *http.Request) {
@@ -153,7 +154,7 @@ func (h *Handler) QueueAppRollback(w http.ResponseWriter, r *http.Request) {
 		WriteControlProblem(w, r, http.StatusNotFound, "rollback_target_missing", "no previous successful deployment is available")
 		return
 	}
-	_, operationID, queueErr := h.pipeline.RollbackRegionsOperation(spec, deployments[0], previous, request.Regions, map[string]interface{}{
+	_, operationID, queueErr := h.pipeline.RollbackRegionsOperationContext(r.Context(), spec, deployments[0], previous, request.Regions, map[string]interface{}{
 		"idempotencyKey": idempotency, "requestDigest": digest, "principal": principal.Subject,
 	})
 	if queueErr != nil {

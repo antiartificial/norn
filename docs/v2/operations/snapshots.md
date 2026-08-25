@@ -68,11 +68,15 @@ curl -X POST -H "Authorization: Bearer $NORN_API_TOKEN" \
   -H "Content-Type: application/json" \
   -H "Idempotency-Key: restore-$(uuidgen)" \
   -d '{"confirm":true}' \
-  http://localhost:8800/api/v1/apps/myapp/snapshots/20260825T143000/restore
+  http://localhost:8800/api/v1/apps/myapp/snapshots/myapp_manual_20260825T143000.dump/restore
 ```
 
+Use the exact `filename` returned by the versioned inventory. A legacy compact
+UTC timestamp is still accepted when it identifies exactly one snapshot; Norn
+rejects ambiguous timestamps instead of restoring an arbitrary file.
+
 ::: warning
-The versioned restore route always creates a fresh safety snapshot immediately before the destructive restore. The older CLI flags remain for compatibility with the legacy route.
+The versioned restore route always creates a fresh safety snapshot immediately before the destructive restore. Restore runs in a single PostgreSQL transaction with fail-fast semantics, so an error rolls back instead of leaving a knowingly partial schema. The older CLI flags remain for compatibility with the legacy route.
 :::
 
 The accepted response is an `app.snapshot-restore` operation. Its terminal typed receipt includes the restored snapshot, safety snapshot, and database. It is safe to close either UI after queuing; the operation is reconstructed from PostgreSQL.
@@ -105,6 +109,15 @@ acknowledges the durable operation.
 
 Snapshots are stored first as local files under the Norn API working directory's `snapshots/` folder. Apps can also declare `snapshots.exportBucket` to archive local dumps to S3-compatible object storage such as Garage.
 
+Local files are node-local, not an HA snapshot catalog. A multi-replica
+production deployment must use managed database PITR or off-host object storage
+and route restore work to a replica that has imported the selected dump.
+
+Database names are restricted to a portable 1-63 character identifier subset,
+snapshot inventory ignores symbolic links and non-regular files, and completed
+dumps are published with owner-only permissions without overwriting an existing
+filename.
+
 ```yaml
 snapshots:
   keep: 5
@@ -128,5 +141,9 @@ Import downloads a remote object key back into the local snapshots directory:
 ```bash
 norn snapshots import myapp snapshots/myapp/myapp_db_abcdef_20260614T181100.dump
 ```
+
+The key must be inside that app's `snapshots/<app>/` prefix and contain a valid
+inventory filename. Downloads are private and atomic, and never overwrite an
+existing local dump.
 
 Remote export/import requires the platform S3 configuration used by managed object storage, including `NORN_S3_ENDPOINT`, `NORN_S3_ACCESS_KEY`, `NORN_S3_SECRET_KEY`, and provider-specific path-style settings when using Garage. Export and import actions emit Beacon events (`snapshot.exported`, `snapshot.imported`) so off-host backup movement is auditable.

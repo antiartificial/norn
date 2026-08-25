@@ -38,7 +38,7 @@ API endpoints:
 | `POST` | `/api/v1/host/assurances` | Queue host assurance |
 | `GET`, `POST` | `/api/v1/apps/{id}/snapshots` | List snapshots or queue a manual snapshot |
 | `POST` | `/api/v1/apps/{id}/snapshots/retention` | Queue reviewed newest-N pruning |
-| `POST` | `/api/v1/apps/{id}/snapshots/{ts}/restore` | Queue restore with mandatory safety snapshot |
+| `POST` | `/api/v1/apps/{id}/snapshots/{snapshot}/restore` | Queue an exact inventory-filename restore with mandatory safety snapshot; unique legacy timestamps remain compatible |
 | `POST` | `/api/v1/apps/{id}/migrations` | Queue the declared schema migration independently of deploy |
 | `POST` | `/api/v1/apps/{id}/rollbacks` | Queue rollback to the previous successful deployment |
 | `WS` | `/api/v1/events?after=<cursor>` | Authenticated durable control events with cursor replay |
@@ -80,6 +80,11 @@ The current release records these operation kinds:
 | `host.assure` | v1 control API / `host queue-assure` | bounded host repair and endpoint probes |
 
 App preflights, deploys, rollbacks, snapshots, pruning, restores, and standalone migrations are queued in the operations table and claimed by the API worker with `FOR UPDATE SKIP LOCKED`. A PostgreSQL advisory lock serializes all work for one app across API replicas. Queue rows include payload, attempt count, max attempts, lease owner, lease expiry, next attempt, and last error.
+
+Configure at least four PostgreSQL pool connections per Norn API replica. The
+API validates this at startup because one worker may simultaneously hold its
+app advisory lock, execute pipeline SQL, renew its lease, and serve
+control/recovery traffic.
 
 Platform and host operations are claimed by `norn-host-agent`, an independent
 process installed as `com.norn.host-agent`. The API process never executes

@@ -7,6 +7,7 @@ import (
 	"time"
 )
 
+// #nosec G101 -- this is a compatibility expiry timestamp, not a credential.
 const defaultLegacyTokenSigningUntil = "2026-08-15T00:00:00Z"
 
 type Config struct {
@@ -187,11 +188,16 @@ func defaultUIDir() string {
 }
 
 func validUIDir(dir string) bool {
-	info, err := os.Stat(dir)
+	root, err := os.OpenRoot(dir)
+	if err != nil {
+		return false
+	}
+	defer root.Close()
+	info, err := root.Stat(".")
 	if err != nil || !info.IsDir() {
 		return false
 	}
-	index, err := os.Stat(dir + "/index.html")
+	index, err := root.Stat("index.html")
 	return err == nil && !index.IsDir()
 }
 

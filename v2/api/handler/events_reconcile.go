@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"net/http"
 	"strings"
+	"time"
 
 	"norn/v2/api/model"
 )
@@ -96,9 +97,27 @@ func (h *Handler) reconcileEvent(ctx context.Context, event model.BeaconEvent) e
 		return h.reconcileCron(ctx, event, decision)
 	case "nomad.task.restarted":
 		return h.reconcileTaskRestart(ctx, event, decision)
+	case "service.capacity.below_minimum":
+		return h.reconcileCapacityWarning(ctx, event, decision)
 	default:
 		return decision
 	}
+}
+
+func (h *Handler) reconcileCapacityWarning(ctx context.Context, event model.BeaconEvent, decision eventReconcileDecision) eventReconcileDecision {
+	later, err := h.db.LaterBeaconEventExists(ctx, event.App, "host.assurance.recovered", event.OccurredAt)
+	if err != nil {
+		decision.Reason = "failed to check later host assurance"
+		return decision
+	}
+	if !later {
+		decision.Reason = "no later successful host assurance proves capacity recovery"
+		return decision
+	}
+	decision.Action = "acknowledge"
+	decision.Reason = "later host assurance proved minimum capacity recovery"
+	decision.Evidence = append(decision.Evidence, "later host.assurance.recovered exists")
+	return decision
 }
 
 func (h *Handler) reconcileDeployFailed(ctx context.Context, event model.BeaconEvent, decision eventReconcileDecision) eventReconcileDecision {
@@ -209,8 +228,14 @@ func (h *Handler) reconcileTaskRestart(ctx context.Context, event model.BeaconEv
 	} else {
 		decision.Evidence = append(decision.Evidence, evidence...)
 	}
+	if !taskRestartStable(event.OccurredAt, time.Now()) {
+		decision.Reason = "task restart has not remained healthy for the stability window"
+		decision.Evidence = append(decision.Evidence, "stabilityWindow=15m")
+		return decision
+	}
 	if allocID != "" && h.currentAllocationExists(event.App, allocID) {
-		decision.Reason = "referenced allocation is still active"
+		decision.Action = "acknowledge"
+		decision.Reason = "app remained healthy after an in-place task restart"
 		decision.Evidence = append(decision.Evidence, fmt.Sprintf("alloc=%s", allocID))
 		return decision
 	}
@@ -220,6 +245,11 @@ func (h *Handler) reconcileTaskRestart(ctx context.Context, event model.BeaconEv
 		decision.Evidence = append(decision.Evidence, fmt.Sprintf("alloc absent=%s", allocID))
 	}
 	return decision
+}
+
+func taskRestartStable(occurredAt, now time.Time) bool {
+	const stabilityWindow = 15 * time.Minute
+	return !occurredAt.IsZero() && !now.Before(occurredAt) && now.Sub(occurredAt) >= stabilityWindow
 }
 
 func (h *Handler) appRunningHealthy(app string) (bool, []string) {

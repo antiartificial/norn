@@ -22,7 +22,7 @@ func TestControlOpenAPIParsesAndLocalRefsResolve(t *testing.T) {
 	}
 	for _, required := range []string{
 		"/api/v1/apps", "/api/v1/apps/{id}/deployment",
-		"/api/v1/apps/{id}/snapshots", "/api/v1/apps/{id}/snapshots/retention", "/api/v1/apps/{id}/snapshots/{ts}/restore",
+		"/api/v1/apps/{id}/snapshots", "/api/v1/apps/{id}/snapshots/retention", "/api/v1/apps/{id}/snapshots/{snapshot}/restore",
 		"/api/v1/apps/{id}/migrations", "/api/v1/apps/{id}/rollbacks",
 		"/api/v1/enrollments", "/api/v1/events/info", "/api/v1/operations/{id}/cancel",
 		"/api/v1/apps/{id}/exec-sessions", "/api/v1/exec-sessions/{id}/stream", "/api/v1/host/metrics",

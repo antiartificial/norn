@@ -55,3 +55,4 @@ v2/infra/ha-lab/terraform/*.tfplan
 v2/api/snapshots/
 v2/snapshots/
 v2/dev/logs/
+/snapshots/

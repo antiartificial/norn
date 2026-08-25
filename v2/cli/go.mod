@@ -2,7 +2,7 @@ module norn/v2/cli
 
 go 1.26.0
 
-toolchain go1.26.5
+toolchain go1.26.6
 
 require (
 	github.com/charmbracelet/lipgloss v1.1.0

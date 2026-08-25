@@ -114,17 +114,60 @@ func (p *Pipeline) gitEnv(url string) (env []string, cleanup func()) {
 		}, nil
 	}
 	if !isSSHURL(url) && p.GitToken != "" {
+		if strings.ContainsAny(p.GitToken, "\r\n") {
+			return nil, nil
+		}
 		script, err := os.CreateTemp("", "norn-askpass-*")
 		if err != nil {
 			return nil, nil
 		}
-		fmt.Fprintf(script, "#!/bin/sh\necho '%s'\n", p.GitToken)
-		script.Close()
-		os.Chmod(script.Name(), 0700)
+		cleanupPath := script.Name()
+		tokenFile, err := os.CreateTemp("", "norn-git-token-*")
+		if err != nil {
+			_ = script.Close()
+			_ = os.Remove(cleanupPath)
+			return nil, nil
+		}
+		tokenPath := tokenFile.Name()
+		cleanup := func() {
+			_ = os.Remove(cleanupPath)
+			_ = os.Remove(tokenPath)
+		}
+		if _, err := tokenFile.WriteString(p.GitToken); err != nil {
+			_ = tokenFile.Close()
+			_ = script.Close()
+			cleanup()
+			return nil, nil
+		}
+		if err := tokenFile.Close(); err != nil {
+			_ = script.Close()
+			cleanup()
+			return nil, nil
+		}
+		if err := os.Chmod(tokenPath, 0o600); err != nil {
+			_ = script.Close()
+			cleanup()
+			return nil, nil
+		}
+		if _, err := script.WriteString("#!/bin/sh\nIFS= read -r token < \"$NORN_GIT_ASKPASS_TOKEN_FILE\"\nprintf '%s\\n' \"$token\"\n"); err != nil {
+			_ = script.Close()
+			cleanup()
+			return nil, nil
+		}
+		if err := script.Close(); err != nil {
+			cleanup()
+			return nil, nil
+		}
+		if err := os.Chmod(cleanupPath, 0o700); err != nil {
+			cleanup()
+			return nil, nil
+		}
 		return []string{
-			"GIT_ASKPASS=" + script.Name(),
+			"GIT_ASKPASS=" + cleanupPath,
+			"GIT_ASKPASS_REQUIRE=force",
 			"GIT_TERMINAL_PROMPT=0",
-		}, func() { os.Remove(script.Name()) }
+			"NORN_GIT_ASKPASS_TOKEN_FILE=" + tokenPath,
+		}, cleanup
 	}
 	return nil, nil
 }

@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"log"
 	"os"
+	"runtime/debug"
 	"time"
 
 	"norn/v2/api/model"
@@ -74,6 +75,12 @@ func (w *OperationWorker) runOnce(ctx context.Context) error {
 }
 
 func (w *OperationWorker) handle(ctx context.Context, op *model.Operation) {
+	defer func() {
+		if recovered := recover(); recovered != nil {
+			log.Printf("operation worker: panic in %s: %v\n%s", op.ID, recovered, debug.Stack())
+			w.recordFailure(ctx, op, fmt.Errorf("operation executor panic; inspect server logs"))
+		}
+	}()
 	log.Printf("operation worker: claimed %s %s app=%s attempt=%d/%d", op.ID, op.Kind, op.App, op.Attempts, op.MaxAttempts)
 	release, locked, lockErr := w.db.AcquireAppOperationLock(ctx, op.App)
 	if lockErr != nil || !locked {
@@ -95,7 +102,10 @@ func (w *OperationWorker) handle(ctx context.Context, op *model.Operation) {
 	if err == nil {
 		return
 	}
+	w.recordFailure(ctx, op, err)
+}
 
+func (w *OperationWorker) recordFailure(ctx context.Context, op *model.Operation, err error) {
 	message := fmt.Sprintf("%s failed: %v", op.Kind, err)
 	if op.Attempts < op.MaxAttempts {
 		delay := retryDelay(op.Attempts)

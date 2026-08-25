@@ -2,6 +2,7 @@ import { useMemo, useState, type FormEvent } from 'react'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { NavLink } from 'react-router-dom'
 import { apiFetch } from '../lib/api.ts'
+import { clearDurableIntent, durableIntent, type DurableIntent } from '../lib/durableIntent.ts'
 import type { FleetGitHubStatus, FleetInventory, FleetNodePool, FleetPlansResponse, FleetReconciliationResponse, Operation } from '../types/index.ts'
 import { EmptyState, StatusChip, useToast } from '../components/ui/index.ts'
 
@@ -89,19 +90,13 @@ function CapacityPlanForm({ name, pool }: { name: string; pool: FleetNodePool })
   const isContraction = desired < pool.desired
   const actionLabel = isContraction ? 'Prepare contraction' : size !== pool.size ? 'Prepare replacement' : desired > pool.desired ? 'Record expansion' : 'Record reconciliation'
   const mutation = useMutation({
-    mutationFn: () => {
-      const serialized = JSON.stringify(body)
-      const storageKey = `norn:fleet-plan:${name}`
-      let retry: { request: string; key: string } | undefined
-      try { retry = JSON.parse(localStorage.getItem(storageKey) ?? '') as typeof retry } catch { retry = undefined }
-      if (!retry || retry.request !== serialized) {
-        retry = { request: serialized, key: crypto.randomUUID() }
-        localStorage.setItem(storageKey, JSON.stringify(retry))
-      }
-      return apiFetch<Operation>(`/api/v1/fleet/node-pools/${encodeURIComponent(name)}/plan`, { method: 'POST', headers: { 'Content-Type': 'application/json', 'Idempotency-Key': retry.key }, body: serialized })
-    },
-    onSuccess: (operation) => {
-      localStorage.removeItem(`norn:fleet-plan:${name}`)
+    mutationFn: ({ request, intent }: { request: typeof body; intent: DurableIntent }) => apiFetch<Operation>(`/api/v1/fleet/node-pools/${encodeURIComponent(name)}/plan`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', 'Idempotency-Key': intent.key },
+      body: JSON.stringify(request),
+    }),
+    onSuccess: (operation, variables) => {
+      clearDurableIntent(variables.intent)
       queryClient.invalidateQueries({ queryKey: ['fleet', 'plans'] })
       setReceipt(operation)
       toast({ kind: 'success', title: 'Durable capacity plan recorded', description: operation.id })
@@ -110,7 +105,9 @@ function CapacityPlanForm({ name, pool }: { name: string; pool: FleetNodePool })
   })
   const submit = (event: FormEvent) => {
     event.preventDefault()
-    if (!mutation.isPending && reason.trim().length >= 4 && size.trim()) mutation.mutate()
+    if (!mutation.isPending && reason.trim().length >= 4 && size.trim()) {
+      mutation.mutate({ request: body, intent: durableIntent(`fleet-plan:${name}`, body) })
+    }
   }
   return (
     <form className="fleet-plan-form" onSubmit={submit} aria-busy={mutation.isPending}>

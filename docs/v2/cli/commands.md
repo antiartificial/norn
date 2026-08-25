@@ -575,6 +575,10 @@ curl http://127.0.0.1:8800/metrics
 curl http://127.0.0.1:8800/api/observability/prometheus.yml
 ```
 
+With explicit authentication enabled, pass a scoped bearer token using an
+`Authorization` header. For Prometheus, prefer a permission-restricted
+`bearer_token_file` rather than embedding the token in YAML or shell history.
+
 The generated Prometheus config includes Norn itself and any app process that declares `metrics.enabled: true`.
 
 ## stats

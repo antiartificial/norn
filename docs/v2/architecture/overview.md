@@ -176,7 +176,7 @@ v2/ui/
 | PUT | `/secrets` | Update secrets |
 | DELETE | `/secrets/{key}` | Delete a secret |
 | GET | `/snapshots` | List database snapshots |
-| POST | `/snapshots/{ts}/restore` | Restore a snapshot |
+| POST | `/snapshots/{snapshot}/restore` | Restore an exact inventory filename (preferred) or unique legacy timestamp |
 | GET | `/cron/history` | Cron execution history |
 | POST | `/cron/trigger` | Trigger a cron job manually |
 | POST | `/cron/pause` | Pause a cron job |
@@ -210,8 +210,11 @@ Norn supports three auth modes (can be combined):
 2. **Bearer Token** — validates `Authorization: Bearer <token>` header. Set `NORN_API_TOKEN`.
 3. **Open** — if neither is configured, all endpoints are open (suitable for local dev).
 
-Auth-exempt routes are limited to health/version/metrics, service discovery,
-signed webhook ingress, and configured wake-gateway paths. `/api/v1/events`,
+Auth-exempt routes are limited to health/version, protocol discovery,
+signed webhook ingress, and configured wake-gateway paths. Development mode
+also permits unauthenticated local metrics and service discovery for backwards
+compatibility; explicit-auth mode protects `/metrics`, `/api/metrics`, and
+`/api/services/manifest`. `/api/v1/events`,
 the compatibility `/ws`, and both exec protocols are protected whenever bearer
 authentication is enabled. Scoped access tokens use `events:read` for the event
 stream and `apps:exec` for terminal sessions. Native clients enroll as devices;

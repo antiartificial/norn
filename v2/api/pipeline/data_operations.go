@@ -2,10 +2,13 @@ package pipeline
 
 import (
 	"context"
+	"errors"
 	"fmt"
+	"io/fs"
 	"os"
 	"os/exec"
 	"path/filepath"
+	"regexp"
 	"sort"
 	"strings"
 	"time"
@@ -20,6 +23,8 @@ type dataSnapshot struct {
 	Timestamp string
 	Size      int64
 }
+
+var snapshotCommitLabelPattern = regexp.MustCompile(`^[0-9a-f]{7,40}$`)
 
 func (p *Pipeline) executeDataOperation(ctx context.Context, op *model.Operation, spec *model.InfraSpec, sg *saga.Saga) error {
 	database, err := postgresDatabase(spec)
@@ -58,8 +63,11 @@ func (p *Pipeline) executeDataOperation(ctx context.Context, op *model.Operation
 		return finish(fmt.Sprintf("snapshot retention kept %d for %s", keep, spec.App), map[string]interface{}{"keep": keep, "pruned": pruned})
 
 	case "app.snapshot-restore":
-		timestamp := stringFromMap(op.Payload, "timestamp")
-		target, err := findDataSnapshot(database, timestamp)
+		identifier := stringFromMap(op.Payload, "snapshot")
+		if identifier == "" {
+			identifier = stringFromMap(op.Payload, "timestamp") // pre-v2.20 compatibility
+		}
+		target, err := findDataSnapshot(database, identifier)
 		if err != nil {
 			return err
 		}
@@ -67,7 +75,7 @@ func (p *Pipeline) executeDataOperation(ctx context.Context, op *model.Operation
 		if err != nil {
 			return fmt.Errorf("pre-restore snapshot: %w", err)
 		}
-		cmd := exec.CommandContext(ctx, "pg_restore", "--clean", "--if-exists", "-d", database, filepath.Join("snapshots", target.Filename))
+		cmd := exec.CommandContext(ctx, "pg_restore", "--single-transaction", "--clean", "--if-exists", "-d", database, filepath.Join("snapshots", target.Filename))
 		if output, restoreErr := cmd.CombinedOutput(); restoreErr != nil {
 			return fmt.Errorf("pg_restore: %s", strings.TrimSpace(string(output)))
 		}
@@ -113,7 +121,11 @@ func postgresDatabase(spec *model.InfraSpec) (string, error) {
 	if spec == nil || spec.Infrastructure == nil || spec.Infrastructure.Postgres == nil || strings.TrimSpace(spec.Infrastructure.Postgres.Database) == "" {
 		return "", fmt.Errorf("app has no postgres database")
 	}
-	return spec.Infrastructure.Postgres.Database, nil
+	database := spec.Infrastructure.Postgres.Database
+	if !model.IsSafePostgresDatabaseName(database) {
+		return "", fmt.Errorf("app postgres database name is unsafe for snapshot storage")
+	}
+	return database, nil
 }
 
 func createDataSnapshot(ctx context.Context, database, label string) (*dataSnapshot, error) {
@@ -121,30 +133,84 @@ func createDataSnapshot(ctx context.Context, database, label string) (*dataSnaps
 }
 
 func createDataSnapshotAt(ctx context.Context, database, label string, createdAt time.Time, reuse bool) (*dataSnapshot, error) {
+	if !model.IsSafePostgresDatabaseName(database) {
+		return nil, fmt.Errorf("unsafe postgres database name")
+	}
 	if err := os.MkdirAll("snapshots", 0o750); err != nil {
 		return nil, fmt.Errorf("create snapshots directory: %w", err)
 	}
 	timestamp := createdAt.UTC().Format("20060102T150405")
 	filename := fmt.Sprintf("%s_%s_%s.dump", database, label, timestamp)
 	path := filepath.Join("snapshots", filename)
-	if reuse {
-		if info, err := os.Stat(path); err == nil && info.Size() > 0 {
+	if info, err := os.Lstat(path); err == nil {
+		if !info.Mode().IsRegular() {
+			return nil, fmt.Errorf("snapshot target %s is not a regular file", filename)
+		}
+		if reuse && info.Size() > 0 {
 			return &dataSnapshot{Filename: filename, Timestamp: timestamp, Size: info.Size()}, nil
 		}
+		if reuse {
+			if err := os.Remove(path); err != nil {
+				return nil, fmt.Errorf("remove incomplete snapshot %s: %w", filename, err)
+			}
+		}
+	} else if !errors.Is(err, fs.ErrNotExist) {
+		return nil, fmt.Errorf("inspect snapshot target: %w", err)
 	}
-	cmd := exec.CommandContext(ctx, "pg_dump", "-Fc", "-d", database, "-f", path)
+
+	temporary, err := os.CreateTemp("snapshots", ".norn-snapshot-*.tmp")
+	if err != nil {
+		return nil, fmt.Errorf("reserve snapshot file: %w", err)
+	}
+	temporaryPath := temporary.Name()
+	if err := temporary.Close(); err != nil {
+		_ = os.Remove(temporaryPath)
+		return nil, fmt.Errorf("close snapshot reservation: %w", err)
+	}
+	defer os.Remove(temporaryPath)
+
+	cmd := exec.CommandContext(ctx, "pg_dump", "-Fc", "-d", database, "-f", temporaryPath)
 	if output, err := cmd.CombinedOutput(); err != nil {
-		_ = os.Remove(path)
 		return nil, fmt.Errorf("pg_dump: %s", strings.TrimSpace(string(output)))
 	}
-	info, err := os.Stat(path)
+	info, err := os.Lstat(temporaryPath)
 	if err != nil {
 		return nil, fmt.Errorf("stat snapshot: %w", err)
 	}
-	return &dataSnapshot{Filename: filename, Timestamp: timestamp, Size: info.Size()}, nil
+	if !info.Mode().IsRegular() || info.Size() <= 0 {
+		return nil, fmt.Errorf("pg_dump did not create a non-empty regular snapshot")
+	}
+	if err := os.Chmod(temporaryPath, 0o600); err != nil {
+		return nil, fmt.Errorf("secure snapshot permissions: %w", err)
+	}
+
+	// Hard-linking publishes the completed dump without overwriting an existing
+	// snapshot. If two safe snapshots land in the same second, advance the
+	// display timestamp until an unused filename is found.
+	for offset := 0; offset < 1000; offset++ {
+		candidateTime := createdAt.UTC().Add(time.Duration(offset) * time.Second)
+		candidateTimestamp := candidateTime.Format("20060102T150405")
+		candidateFilename := fmt.Sprintf("%s_%s_%s.dump", database, label, candidateTimestamp)
+		candidatePath := filepath.Join("snapshots", candidateFilename)
+		if linkErr := os.Link(temporaryPath, candidatePath); linkErr == nil {
+			return &dataSnapshot{Filename: candidateFilename, Timestamp: candidateTimestamp, Size: info.Size()}, nil
+		} else if !errors.Is(linkErr, fs.ErrExist) {
+			return nil, fmt.Errorf("publish snapshot: %w", linkErr)
+		}
+		if reuse && offset == 0 {
+			existing, statErr := os.Lstat(candidatePath)
+			if statErr == nil && existing.Mode().IsRegular() && existing.Size() > 0 {
+				return &dataSnapshot{Filename: candidateFilename, Timestamp: candidateTimestamp, Size: existing.Size()}, nil
+			}
+		}
+	}
+	return nil, fmt.Errorf("could not allocate a unique snapshot filename")
 }
 
 func listDataSnapshots(database string) ([]dataSnapshot, error) {
+	if !model.IsSafePostgresDatabaseName(database) {
+		return nil, fmt.Errorf("unsafe postgres database name")
+	}
 	entries, err := os.ReadDir("snapshots")
 	if os.IsNotExist(err) {
 		return []dataSnapshot{}, nil
@@ -154,7 +220,7 @@ func listDataSnapshots(database string) ([]dataSnapshot, error) {
 	}
 	result := make([]dataSnapshot, 0)
 	for _, entry := range entries {
-		if entry.IsDir() || !strings.HasPrefix(entry.Name(), database+"_") || !strings.HasSuffix(entry.Name(), ".dump") {
+		if entry.IsDir() || entry.Type()&os.ModeSymlink != 0 || !strings.HasPrefix(entry.Name(), database+"_") || !strings.HasSuffix(entry.Name(), ".dump") {
 			continue
 		}
 		parts := strings.Split(strings.TrimSuffix(entry.Name(), ".dump"), "_")
@@ -169,23 +235,43 @@ func listDataSnapshots(database string) ([]dataSnapshot, error) {
 		if infoErr != nil {
 			continue
 		}
+		if !info.Mode().IsRegular() {
+			continue
+		}
 		result = append(result, dataSnapshot{Filename: entry.Name(), Timestamp: timestamp, Size: info.Size()})
 	}
-	sort.Slice(result, func(i, j int) bool { return result[i].Timestamp > result[j].Timestamp })
+	sort.Slice(result, func(i, j int) bool {
+		if result[i].Timestamp == result[j].Timestamp {
+			return result[i].Filename < result[j].Filename
+		}
+		return result[i].Timestamp > result[j].Timestamp
+	})
 	return result, nil
 }
 
-func findDataSnapshot(database, timestamp string) (*dataSnapshot, error) {
+func findDataSnapshot(database, identifier string) (*dataSnapshot, error) {
 	snapshots, err := listDataSnapshots(database)
 	if err != nil {
 		return nil, err
 	}
 	for i := range snapshots {
-		if snapshots[i].Timestamp == timestamp {
+		if snapshots[i].Filename == identifier {
 			return &snapshots[i], nil
 		}
 	}
-	return nil, fmt.Errorf("snapshot %s was not found", timestamp)
+	var target *dataSnapshot
+	for i := range snapshots {
+		if snapshots[i].Timestamp == identifier {
+			if target != nil {
+				return nil, fmt.Errorf("snapshot timestamp %s is ambiguous; retry with its inventory filename", identifier)
+			}
+			target = &snapshots[i]
+		}
+	}
+	if target != nil {
+		return target, nil
+	}
+	return nil, fmt.Errorf("snapshot %s was not found", identifier)
 }
 
 func pruneDataSnapshots(database string, keep int) ([]string, error) {

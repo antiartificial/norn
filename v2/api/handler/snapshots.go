@@ -7,6 +7,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"regexp"
 	"sort"
 	"strings"
 	"time"
@@ -46,6 +47,8 @@ type snapshotRetentionReceipt struct {
 	WouldPrune []snapshotEntry `json:"wouldPrune,omitempty"`
 	AppliedAt  string          `json:"appliedAt"`
 }
+
+var snapshotLabelSanitizer = regexp.MustCompile(`[^A-Za-z0-9.-]+`)
 
 func (h *Handler) ListSnapshots(w http.ResponseWriter, r *http.Request) {
 	id := chi.URLParam(r, "id")
@@ -87,6 +90,9 @@ func listSnapshotsForSpec(spec *model.InfraSpec) []snapshotEntry {
 		return []snapshotEntry{}
 	}
 	dbName := spec.Infrastructure.Postgres.Database
+	if !model.IsSafePostgresDatabaseName(dbName) {
+		return []snapshotEntry{}
+	}
 	entries, err := os.ReadDir("snapshots")
 	if err != nil {
 		return []snapshotEntry{}
@@ -94,7 +100,7 @@ func listSnapshotsForSpec(spec *model.InfraSpec) []snapshotEntry {
 
 	var snapshots []snapshotEntry
 	for _, entry := range entries {
-		if entry.IsDir() {
+		if entry.IsDir() || entry.Type()&os.ModeSymlink != 0 {
 			continue
 		}
 		name := entry.Name()
@@ -103,6 +109,9 @@ func listSnapshotsForSpec(spec *model.InfraSpec) []snapshotEntry {
 		}
 		info, err := entry.Info()
 		if err != nil {
+			continue
+		}
+		if !info.Mode().IsRegular() {
 			continue
 		}
 
@@ -115,6 +124,9 @@ func listSnapshotsForSpec(spec *model.InfraSpec) []snapshotEntry {
 	}
 
 	sort.Slice(snapshots, func(i, j int) bool {
+		if snapshots[i].Timestamp == snapshots[j].Timestamp {
+			return snapshots[i].Filename < snapshots[j].Filename
+		}
 		return snapshots[i].Timestamp > snapshots[j].Timestamp
 	})
 
@@ -136,6 +148,14 @@ func (h *Handler) RestoreSnapshot(w http.ResponseWriter, r *http.Request) {
 	}
 
 	dbName := spec.Infrastructure.Postgres.Database
+	if !model.IsSafePostgresDatabaseName(dbName) {
+		writeError(w, http.StatusConflict, "app postgres database name is unsafe for snapshot storage")
+		return
+	}
+	if !snapshotTimestampPattern.MatchString(ts) {
+		writeError(w, http.StatusBadRequest, "snapshot timestamp is invalid")
+		return
+	}
 	if r.URL.Query().Get("confirm") != "true" {
 		writeError(w, http.StatusBadRequest, "restore requires confirm=true")
 		return
@@ -148,26 +168,30 @@ func (h *Handler) RestoreSnapshot(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	var match *snapshotEntry
+	var matches []snapshotEntry
 	for _, entry := range entries {
 		name := entry.Name()
-		if strings.HasPrefix(name, dbName+"_") && strings.Contains(name, ts) && strings.HasSuffix(name, ".dump") {
+		if entry.Type()&os.ModeSymlink == 0 && strings.HasPrefix(name, dbName+"_") && strings.HasSuffix(name, ".dump") {
 			info, err := entry.Info()
-			if err != nil {
+			if err != nil || !info.Mode().IsRegular() {
 				continue
 			}
 			parsed := parseSnapshotEntry(dbName, name, info.Size())
-			if parsed != nil {
-				match = parsed
+			if parsed != nil && parsed.Timestamp == ts {
+				matches = append(matches, *parsed)
 			}
-			break
 		}
 	}
 
-	if match == nil {
+	if len(matches) == 0 {
 		writeError(w, http.StatusNotFound, fmt.Sprintf("no snapshot found for timestamp %s", ts))
 		return
 	}
+	if len(matches) > 1 {
+		writeError(w, http.StatusConflict, fmt.Sprintf("snapshot timestamp %s is ambiguous", ts))
+		return
+	}
+	match := &matches[0]
 
 	snapshotPath := filepath.Join("snapshots", match.Filename)
 	var preRestore *snapshotEntry
@@ -181,14 +205,13 @@ func (h *Handler) RestoreSnapshot(w http.ResponseWriter, r *http.Request) {
 		preRestore = created
 	}
 
-	cmd := exec.CommandContext(r.Context(), "pg_restore", "--clean", "-d", dbName, snapshotPath)
+	// #nosec G702 G204 -- no shell is used; the database name is strictly validated
+	// and snapshotPath comes from the regular-file inventory.
+	cmd := exec.CommandContext(r.Context(), "pg_restore", "--single-transaction", "--clean", "--if-exists", "-d", dbName, snapshotPath)
 	out, err := cmd.CombinedOutput()
 	if err != nil {
-		// pg_restore returns warnings on --clean even on success
-		if cmd.ProcessState != nil && cmd.ProcessState.ExitCode() > 1 {
-			writeError(w, http.StatusInternalServerError, fmt.Sprintf("pg_restore: %s", string(out)))
-			return
-		}
+		writeError(w, http.StatusInternalServerError, fmt.Sprintf("pg_restore: %s", string(out)))
+		return
 	}
 
 	if h.ws != nil {
@@ -285,6 +308,9 @@ func createSnapshotForSpec(ctx context.Context, spec *model.InfraSpec, commitSHA
 		return nil, fmt.Errorf("app has no postgres database")
 	}
 	dbName := spec.Infrastructure.Postgres.Database
+	if !model.IsSafePostgresDatabaseName(dbName) {
+		return nil, fmt.Errorf("app postgres database name is unsafe for snapshot storage")
+	}
 	sha := commitSHA
 	if sha == "" {
 		sha = "manual"
@@ -292,22 +318,52 @@ func createSnapshotForSpec(ctx context.Context, spec *model.InfraSpec, commitSHA
 	if len(sha) > 12 {
 		sha = sha[:12]
 	}
-	timestamp := time.Now().UTC().Format("20060102T150405")
-	filename := fmt.Sprintf("%s_%s_%s.dump", dbName, sha, timestamp)
-	path := filepath.Join("snapshots", filename)
-	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+	sha = snapshotLabelSanitizer.ReplaceAllString(sha, "-")
+	if sha == "" || sha == "." || sha == ".." {
+		sha = "manual"
+	}
+	if err := os.MkdirAll("snapshots", 0o750); err != nil {
 		return nil, fmt.Errorf("create snapshots dir: %w", err)
 	}
-	cmd := exec.CommandContext(ctx, "pg_dump", "-Fc", "-d", dbName, "-f", path)
+	createdAt := time.Now().UTC()
+	temporary, err := os.CreateTemp("snapshots", ".norn-snapshot-*.tmp")
+	if err != nil {
+		return nil, fmt.Errorf("reserve snapshot file: %w", err)
+	}
+	temporaryPath := temporary.Name()
+	if err := temporary.Close(); err != nil {
+		_ = os.Remove(temporaryPath)
+		return nil, fmt.Errorf("close snapshot reservation: %w", err)
+	}
+	defer os.Remove(temporaryPath)
+	// #nosec G702 G204 -- no shell is used; dbName and the generated path are
+	// restricted to the validated snapshot namespace.
+	cmd := exec.CommandContext(ctx, "pg_dump", "-Fc", "-d", dbName, "-f", temporaryPath)
 	out, err := cmd.CombinedOutput()
 	if err != nil {
 		return nil, fmt.Errorf("pg_dump: %s", string(out))
 	}
-	info, err := os.Stat(path)
+	info, err := os.Lstat(temporaryPath)
 	if err != nil {
 		return nil, err
 	}
-	return parseSnapshotEntry(dbName, filename, info.Size()), nil
+	if !info.Mode().IsRegular() || info.Size() <= 0 {
+		return nil, fmt.Errorf("pg_dump did not create a non-empty regular snapshot")
+	}
+	if err := os.Chmod(temporaryPath, 0o600); err != nil {
+		return nil, fmt.Errorf("secure snapshot permissions: %w", err)
+	}
+	for offset := 0; offset < 1000; offset++ {
+		timestamp := createdAt.Add(time.Duration(offset) * time.Second).Format("20060102T150405")
+		filename := fmt.Sprintf("%s_%s_%s.dump", dbName, sha, timestamp)
+		path := filepath.Join("snapshots", filename)
+		if err := os.Link(temporaryPath, path); err == nil {
+			return parseSnapshotEntry(dbName, filename, info.Size()), nil
+		} else if !os.IsExist(err) {
+			return nil, fmt.Errorf("publish snapshot: %w", err)
+		}
+	}
+	return nil, fmt.Errorf("could not allocate a unique snapshot filename")
 }
 
 func (h *Handler) emitSnapshotEvent(r *http.Request, app, eventType string, severity model.BeaconSeverity, title, body string, metadata map[string]interface{}) {
@@ -340,6 +396,9 @@ func parseSnapshotEntry(dbName, filename string, size int64) *snapshotEntry {
 	}
 	prefix := stem[:timestampSep]
 	timestamp := stem[timestampSep+1:]
+	if !snapshotTimestampPattern.MatchString(timestamp) {
+		return nil
+	}
 	shaSep := strings.LastIndex(prefix, "_")
 	if shaSep < 0 || shaSep == len(prefix)-1 {
 		return nil
@@ -435,6 +494,10 @@ func (h *Handler) ListRemoteSnapshots(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusNotFound, fmt.Sprintf("app %s not found", id))
 		return
 	}
+	if spec.Infrastructure == nil || spec.Infrastructure.Postgres == nil {
+		writeError(w, http.StatusBadRequest, "app has no postgres database")
+		return
+	}
 	if h.s3 == nil {
 		writeError(w, http.StatusBadRequest, "object storage not configured")
 		return
@@ -470,6 +533,10 @@ func (h *Handler) ImportSnapshot(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusNotFound, fmt.Sprintf("app %s not found", id))
 		return
 	}
+	if spec.Infrastructure == nil || spec.Infrastructure.Postgres == nil {
+		writeError(w, http.StatusBadRequest, "app has no postgres database")
+		return
+	}
 	if h.s3 == nil {
 		writeError(w, http.StatusBadRequest, "object storage not configured")
 		return
@@ -494,9 +561,20 @@ func (h *Handler) ImportSnapshot(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, "key is required")
 		return
 	}
+	dbName := spec.Infrastructure.Postgres.Database
+	if !model.IsSafePostgresDatabaseName(dbName) {
+		writeError(w, http.StatusConflict, "app postgres database name is unsafe for snapshot storage")
+		return
+	}
+	expectedPrefix := "snapshots/" + id + "/"
+	filename := filepath.Base(req.Key)
+	if !strings.HasPrefix(req.Key, expectedPrefix) || strings.Contains(strings.TrimPrefix(req.Key, expectedPrefix), "/") || parseSnapshotEntry(dbName, filename, 1) == nil {
+		writeError(w, http.StatusBadRequest, "key must name a valid snapshot in this app's export prefix")
+		return
+	}
 
-	localPath := filepath.Join("snapshots", filepath.Base(req.Key))
-	if err := os.MkdirAll("snapshots", 0o755); err != nil {
+	localPath := filepath.Join("snapshots", filename)
+	if err := os.MkdirAll("snapshots", 0o750); err != nil {
 		writeError(w, http.StatusInternalServerError, fmt.Sprintf("create snapshots dir: %v", err))
 		return
 	}
@@ -504,20 +582,26 @@ func (h *Handler) ImportSnapshot(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusInternalServerError, fmt.Sprintf("download snapshot: %v", err))
 		return
 	}
+	info, err := os.Lstat(localPath)
+	if err != nil || !info.Mode().IsRegular() || info.Size() <= 0 {
+		_ = os.Remove(localPath)
+		writeError(w, http.StatusBadGateway, "downloaded snapshot is not a non-empty regular file")
+		return
+	}
 
 	h.emitSnapshotEvent(r, id, "snapshot.imported", model.BeaconInfo, "snapshot imported",
-		fmt.Sprintf("%s imported snapshot %s from %s", id, filepath.Base(req.Key), exportBucket),
+		fmt.Sprintf("%s imported snapshot %s from %s", id, filename, exportBucket),
 		map[string]interface{}{
 			"bucket":    exportBucket,
 			"key":       req.Key,
-			"localPath": "snapshots/" + filepath.Base(req.Key),
+			"localPath": "snapshots/" + filename,
 		})
 
 	writeJSON(w, map[string]interface{}{
 		"status":    "imported",
 		"app":       id,
 		"key":       req.Key,
-		"localPath": "snapshots/" + filepath.Base(req.Key),
+		"localPath": "snapshots/" + filename,
 	})
 }
 

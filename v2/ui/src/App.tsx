@@ -1,20 +1,26 @@
+import { lazy, Suspense } from 'react'
 import { BrowserRouter, Navigate, Route, Routes, useParams } from 'react-router-dom'
 import { AppRuntimeProvider } from './runtime/AppRuntime.tsx'
 import { Shell } from './shell/Shell.tsx'
-import { OverviewPage } from './pages/OverviewPage.tsx'
-import { AppsPage } from './pages/AppsPage.tsx'
-import { AppDetailPage } from './pages/AppDetailPage.tsx'
-import { DeploysPage } from './pages/DeploysPage.tsx'
-import { IncidentsPage } from './pages/IncidentsPage.tsx'
-import { OperationsPage } from './pages/OperationsPage.tsx'
-import { FleetPage } from './pages/FleetPage.tsx'
-import { TopologyView } from './components/TopologyView.tsx'
-import { PlatformPanel } from './components/PlatformPanel.tsx'
 import { EmptyState } from './components/ui/index.ts'
+
+const OverviewPage = lazy(() => import('./pages/OverviewPage.tsx').then((module) => ({ default: module.OverviewPage })))
+const AppsPage = lazy(() => import('./pages/AppsPage.tsx').then((module) => ({ default: module.AppsPage })))
+const AppDetailPage = lazy(() => import('./pages/AppDetailPage.tsx').then((module) => ({ default: module.AppDetailPage })))
+const DeploysPage = lazy(() => import('./pages/DeploysPage.tsx').then((module) => ({ default: module.DeploysPage })))
+const IncidentsPage = lazy(() => import('./pages/IncidentsPage.tsx').then((module) => ({ default: module.IncidentsPage })))
+const OperationsPage = lazy(() => import('./pages/OperationsPage.tsx').then((module) => ({ default: module.OperationsPage })))
+const FleetPage = lazy(() => import('./pages/FleetPage.tsx').then((module) => ({ default: module.FleetPage })))
+const TopologyView = lazy(() => import('./components/TopologyView.tsx').then((module) => ({ default: module.TopologyView })))
+const PlatformPanel = lazy(() => import('./components/PlatformPanel.tsx').then((module) => ({ default: module.PlatformPanel })))
 
 function NavigateToAppOverview() {
   const { id } = useParams()
   return <Navigate to={`/apps/${id}/overview`} replace />
+}
+
+function RouteLoading() {
+  return <div className="route-loading" role="status" aria-live="polite">Loading view…</div>
 }
 
 export function App() {
@@ -30,7 +36,8 @@ export function App() {
             runAction={runtime.mutations.run}
             fleetAvailable={runtime.fleetAvailable}
           >
-            <Routes>
+            <Suspense fallback={<RouteLoading />}>
+              <Routes>
               <Route path="/" element={<Navigate to="/overview" replace />} />
               <Route path="/overview" element={<OverviewPage />} />
               <Route path="/apps" element={<AppsPage />} />
@@ -54,7 +61,8 @@ export function App() {
               />
               <Route path="/platform" element={<Navigate to="/platform/releases" replace />} />
               <Route path="/platform/*" element={<PlatformPanel />} />
-            </Routes>
+              </Routes>
+            </Suspense>
           </Shell>
         )}
       </AppRuntimeProvider>

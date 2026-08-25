@@ -139,7 +139,7 @@ describe('App shell routing', () => {
     await screen.findByRole('heading', { name: 'Apps' })
     expect(screen.getByRole('link', { name: /apps/i })).toHaveClass('active')
     fireEvent.click(screen.getByRole('button', { name: 'Collapse sidebar' }))
-    expect(localStorage.getItem('norn.sidebar.collapsed')).toBe('true')
+    expect(localStorage.getItem('norn.sidebar.collapsed:v1')).toBe('true')
     expect(document.querySelector('.norn-shell')).toHaveClass('sidebar-collapsed')
   })
 
@@ -155,7 +155,7 @@ describe('App shell routing', () => {
 
     fireEvent.click(switchToLight)
     expect(document.documentElement.dataset.theme).toBe('light')
-    expect(localStorage.getItem('norn-theme')).toBe('light')
+    expect(localStorage.getItem('norn-theme:v1')).toBe('light')
 
     const switchToDark = screen.getByRole('button', { name: 'Switch to dark theme' })
     expect(switchToDark.querySelector('.fa-sun')).toBeInTheDocument()

@@ -87,6 +87,6 @@ func (h *Handler) ExecAlloc(w http.ResponseWriter, r *http.Request) {
 	}
 
 	if err := h.nomad.ExecWebSocket(allocID, taskName, cmd, ws); err != nil {
-		log.Printf("exec error for %s/%s: %v", id, allocID, err)
+		log.Printf("exec error for %q/%q: %q", id, allocID, err.Error())
 	}
 }

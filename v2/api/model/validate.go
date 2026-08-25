@@ -29,6 +29,15 @@ var appNameRe = regexp.MustCompile(`^[a-z0-9][a-z0-9-]*$`)
 var bucketNameRe = regexp.MustCompile(`^[a-z0-9][a-z0-9.-]{1,61}[a-z0-9]$`)
 var envNameRe = regexp.MustCompile(`^[A-Za-z][A-Za-z0-9_]*$`)
 var kafkaTopicNameRe = regexp.MustCompile(`^[A-Za-z0-9._-]+$`)
+var postgresDatabaseNameRe = regexp.MustCompile(`^[A-Za-z0-9_.-]{1,63}$`)
+
+// IsSafePostgresDatabaseName restricts database names used by Norn's local
+// snapshot tooling to a portable PostgreSQL identifier subset. In addition to
+// producing predictable dump filenames, this prevents an InfraSpec database
+// value from escaping the configured snapshot directory.
+func IsSafePostgresDatabaseName(name string) bool {
+	return name != "." && name != ".." && postgresDatabaseNameRe.MatchString(name)
+}
 
 type ValidationOptions struct {
 	NetworkMode   string
@@ -196,8 +205,11 @@ func ValidateSpecWithOptions(spec *InfraSpec, opts ValidationOptions) *Validatio
 
 	// Postgres infra requires database name
 	if spec.Infrastructure != nil && spec.Infrastructure.Postgres != nil {
-		if spec.Infrastructure.Postgres.Database == "" {
+		database := spec.Infrastructure.Postgres.Database
+		if database == "" {
 			r.add("error", "infrastructure.postgres.database", "postgres database name is required")
+		} else if !IsSafePostgresDatabaseName(database) {
+			r.add("error", "infrastructure.postgres.database", "postgres database name must be 1-63 ASCII letters, numbers, dots, underscores, or hyphens and cannot be . or ..")
 		}
 	}
 

@@ -105,9 +105,13 @@ func (h *Handler) ListDeployments(w http.ResponseWriter, r *http.Request) {
 }
 
 func decodeJSON(r *http.Request, v interface{}) error {
-	body, err := io.ReadAll(r.Body)
+	const maxLegacyJSONBody = 1 << 20
+	body, err := io.ReadAll(io.LimitReader(r.Body, maxLegacyJSONBody+1))
 	if err != nil {
 		return err
+	}
+	if len(body) > maxLegacyJSONBody {
+		return fmt.Errorf("JSON request exceeds %d bytes", maxLegacyJSONBody)
 	}
 	if len(body) == 0 {
 		return nil

@@ -21,6 +21,7 @@
 .snapshot-list .panel-list-header,
 .snapshot-list .panel-list-row { grid-template-columns: minmax(180px, 1.2fr) minmax(120px, .8fr) 90px 110px minmax(100px, auto); }
 .snapshot-prune-candidate { background: color-mix(in srgb, var(--warning) 8%, transparent); }
+.route-loading { padding: 2rem; color: var(--text-secondary); }
 .durable-receipt-banner { display: flex; align-items: center; flex-wrap: wrap; gap: 10px; padding: 10px 12px; border: 1px solid color-mix(in srgb, var(--info) 35%, var(--border)); border-radius: 10px; background: color-mix(in srgb, var(--info) 8%, transparent); }
 .durable-receipt-banner a { margin-left: auto; }
 @media (max-width: 850px) {

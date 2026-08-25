@@ -111,11 +111,19 @@ func (s *Service) Emit(ctx context.Context, event model.BeaconEvent) (*model.Bea
 	}
 
 	if s.cfg.SinkURL != "" {
-		go s.forward(context.Background(), event)
+		go func() {
+			ctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 15*time.Second)
+			defer cancel()
+			s.forward(ctx, event)
+		}()
 	}
 
 	if s.notifier != nil {
-		go s.notifier.Dispatch(context.Background(), event)
+		go func() {
+			ctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 30*time.Second)
+			defer cancel()
+			s.notifier.Dispatch(ctx, event)
+		}()
 	}
 
 	return &event, nil

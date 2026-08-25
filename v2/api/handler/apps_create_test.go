@@ -55,3 +55,32 @@ func TestCreateAppWritesDisabledDraftAndDeploymentGate(t *testing.T) {
 		t.Fatalf("expected explicit deploy key: %s", data)
 	}
 }
+
+func TestAppDeploymentUpdateRejectsSymlinkedAppDirectory(t *testing.T) {
+	appsDir := t.TempDir()
+	outside := t.TempDir()
+	original := []byte("app: orders-api\ndeploy: false\nprocesses: {}\n")
+	if err := os.WriteFile(filepath.Join(outside, "infraspec.yaml"), original, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(outside, filepath.Join(appsDir, "orders-api")); err != nil {
+		t.Fatal(err)
+	}
+
+	h := &Handler{cfg: &config.Config{AppsDir: appsDir}}
+	router := chi.NewRouter()
+	router.With(ValidateAppID).Put("/api/v1/apps/{id}/deployment", h.UpdateAppDeployment)
+	req := httptest.NewRequest(http.MethodPut, "/api/v1/apps/orders-api/deployment", strings.NewReader(`{"enabled":true}`))
+	rec := httptest.NewRecorder()
+	router.ServeHTTP(rec, req)
+	if rec.Code != http.StatusNotFound {
+		t.Fatalf("status=%d body=%s", rec.Code, rec.Body.String())
+	}
+	got, err := os.ReadFile(filepath.Join(outside, "infraspec.yaml"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(got) != string(original) {
+		t.Fatalf("symlink target was modified: %s", got)
+	}
+}

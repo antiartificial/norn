@@ -39,3 +39,16 @@ func TestSnapshotTimestampContract(t *testing.T) {
 		}
 	}
 }
+
+func TestSnapshotFilenameContract(t *testing.T) {
+	for _, value := range []string{"orders_manual_20260825T140000.dump", "orders_pre-migrate_20260825T140000.dump"} {
+		if !snapshotFilenamePattern.MatchString(value) {
+			t.Fatalf("expected %q to be accepted", value)
+		}
+	}
+	for _, value := range []string{"../snapshot.dump", "snapshot", "folder/snapshot.dump", ""} {
+		if snapshotFilenamePattern.MatchString(value) {
+			t.Fatalf("expected %q to be rejected", value)
+		}
+	}
+}

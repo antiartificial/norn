@@ -363,7 +363,7 @@ func main() {
 		r.With(handler.ValidateAppID).Get("/v1/apps/{id}/snapshots", h.ListAppSnapshotsV1)
 		r.With(handler.ValidateAppID).Post("/v1/apps/{id}/snapshots", h.QueueAppSnapshot)
 		r.With(handler.ValidateAppID).Post("/v1/apps/{id}/snapshots/retention", h.QueueAppSnapshotRetention)
-		r.With(handler.ValidateAppID).Post("/v1/apps/{id}/snapshots/{ts}/restore", h.QueueAppSnapshotRestore)
+		r.With(handler.ValidateAppID).Post("/v1/apps/{id}/snapshots/{snapshot}/restore", h.QueueAppSnapshotRestore)
 		r.With(handler.ValidateAppID).Post("/v1/apps/{id}/migrations", h.QueueAppMigration)
 		r.With(handler.ValidateAppID).Post("/v1/apps/{id}/rollbacks", h.QueueAppRollback)
 		r.Post("/v1/validate/infraspec", h.ValidateInfraSpecDocument)
@@ -481,6 +481,9 @@ func validateControlSecurity(cfg *config.Config) error {
 	if profile != "development" && profile != "production" {
 		return fmt.Errorf("NORN_PROFILE must be development or production")
 	}
+	if err := validateAllowedOrigins(cfg.AllowedOrigins, profile == "production"); err != nil {
+		return err
+	}
 	cfDomainConfigured := strings.TrimSpace(cfg.CFAccessTeamDomain) != ""
 	cfAudienceConfigured := strings.TrimSpace(cfg.CFAccessAUD) != ""
 	if cfDomainConfigured != cfAudienceConfigured {
@@ -545,9 +548,33 @@ func validateControlSecurity(cfg *config.Config) error {
 	return nil
 }
 
+func validateAllowedOrigins(raw string, production bool) error {
+	for _, value := range strings.Split(raw, ",") {
+		origin := strings.TrimSpace(value)
+		if origin == "" {
+			continue
+		}
+		if strings.Contains(origin, "*") {
+			return fmt.Errorf("NORN_ALLOWED_ORIGINS cannot contain wildcards")
+		}
+		parsed, err := url.Parse(origin)
+		if err != nil || parsed.Host == "" || parsed.User != nil || (parsed.Scheme != "http" && parsed.Scheme != "https") || (parsed.Path != "" && parsed.Path != "/") || parsed.RawQuery != "" || parsed.Fragment != "" {
+			return fmt.Errorf("NORN_ALLOWED_ORIGINS entry %q must be an HTTP(S) origin without credentials, paths, queries, or fragments", origin)
+		}
+		if production && parsed.Scheme != "https" {
+			host := strings.ToLower(parsed.Hostname())
+			ip := net.ParseIP(host)
+			if host != "localhost" && (ip == nil || !ip.IsLoopback()) {
+				return fmt.Errorf("NORN_PROFILE=production requires HTTPS allowed origins except for loopback development clients")
+			}
+		}
+	}
+	return nil
+}
+
 func secureEndpoint(raw string) bool {
 	parsed, err := url.Parse(strings.TrimSpace(raw))
-	return err == nil && strings.EqualFold(parsed.Scheme, "https")
+	return err == nil && strings.EqualFold(parsed.Scheme, "https") && parsed.Host != "" && parsed.User == nil
 }
 
 func secureDatabaseDSN(raw string) bool {
@@ -555,13 +582,14 @@ func secureDatabaseDSN(raw string) bool {
 	if err != nil {
 		return false
 	}
-	return strings.EqualFold(parsed.Query().Get("sslmode"), "verify-full")
+	scheme := strings.ToLower(parsed.Scheme)
+	return (scheme == "postgres" || scheme == "postgresql") && parsed.Host != "" && strings.EqualFold(parsed.Query().Get("sslmode"), "verify-full")
 }
 
 func bearerAuth(token string, h *handler.Handler, requireExplicit bool) func(http.Handler) http.Handler {
 	return func(next http.Handler) http.Handler {
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-			if publicControlPath(r.URL.Path) || publicEnrollmentRequest(r) {
+			if publicControlPathForMode(r.URL.Path, requireExplicit) || publicEnrollmentRequest(r) {
 				next.ServeHTTP(w, r)
 				return
 			}
@@ -622,7 +650,20 @@ func publicEnrollmentRequest(r *http.Request) bool {
 }
 
 func publicControlPath(path string) bool {
-	if path == "/metrics" || path == "/api/metrics" || path == "/api/health" || path == "/api/version" || path == "/api/services/manifest" || path == "/api/v1/openapi.yaml" || path == "/api/v1/capabilities" {
+	return publicControlPathForMode(path, false)
+}
+
+func publicControlPathForMode(path string, requireExplicit bool) bool {
+	if path == "/api/health" || path == "/api/version" || path == "/api/v1/openapi.yaml" || path == "/api/v1/capabilities" {
+		return true
+	}
+	if requireExplicit && path == "/metrics" {
+		return false
+	}
+	// Development keeps local discovery and scrape compatibility. In explicit
+	// auth mode these endpoints expose host, process, and service inventory, so
+	// Prometheus and operators must authenticate like every other control client.
+	if !requireExplicit && (path == "/metrics" || path == "/api/metrics" || path == "/api/services/manifest") {
 		return true
 	}
 	return path == "/api/webhooks/github" || path == "/api/webhooks/gitea" ||
@@ -690,12 +731,13 @@ func writeControlCapabilities(w http.ResponseWriter) {
 				"deviceTTLSeconds": 2592000, "rotation": "atomic", "revocation": "registry",
 			},
 		},
+		// #nosec G101 -- this map advertises endpoint paths; it contains no credentials.
 		"endpoints": map[string]string{
 			"events": "/api/v1/events", "operations": "/api/v1/operations/{id}",
 			"platformPreflights": "/api/v1/platform/preflights", "platformUpgrades": "/api/v1/platform/upgrades",
 			"platformRollbacks": "/api/v1/platform/rollbacks", "platformSmoke": "/api/v1/platform/smoke", "hostAssurances": "/api/v1/host/assurances",
 			"openapi": "/api/v1/openapi.yaml", "eventInfo": "/api/v1/events/info", "apps": "/api/v1/apps", "appCreation": "/api/v1/apps", "appDeployment": "/api/v1/apps/{id}/deployment",
-			"appSnapshots": "/api/v1/apps/{id}/snapshots", "appSnapshotRetention": "/api/v1/apps/{id}/snapshots/retention", "appSnapshotRestore": "/api/v1/apps/{id}/snapshots/{ts}/restore", "appMigrations": "/api/v1/apps/{id}/migrations", "appRollbacks": "/api/v1/apps/{id}/rollbacks",
+			"appSnapshots": "/api/v1/apps/{id}/snapshots", "appSnapshotRetention": "/api/v1/apps/{id}/snapshots/retention", "appSnapshotRestore": "/api/v1/apps/{id}/snapshots/{snapshot}/restore", "appMigrations": "/api/v1/apps/{id}/migrations", "appRollbacks": "/api/v1/apps/{id}/rollbacks",
 			"releases": "/api/v1/releases", "hostStatus": "/api/v1/host/status", "hostMetrics": "/api/v1/host/metrics", "productionReadiness": "/api/v1/production/readiness", "recoveryDrills": "/api/v1/production/drills", "mutationAudit": "/api/v1/audit/mutations", "enrollments": "/api/v1/enrollments",
 			"devices": "/api/v1/devices", "tokenRotate": "/api/v1/auth/rotate", "tokenRevoke": "/api/v1/auth/revoke",
 			"stepUpChallenges": "/api/v1/auth/step-up/challenges", "execSessions": "/api/v1/exec-sessions",

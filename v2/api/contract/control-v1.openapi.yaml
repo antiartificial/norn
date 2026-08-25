@@ -312,13 +312,13 @@ paths:
         '202': { $ref: '#/components/responses/AcceptedOperation' }
         '400': { $ref: '#/components/responses/Problem' }
         '409': { $ref: '#/components/responses/Problem' }
-  /api/v1/apps/{id}/snapshots/{ts}/restore:
+  /api/v1/apps/{id}/snapshots/{snapshot}/restore:
     post:
       operationId: queueAppSnapshotRestore
-      description: Queues a database restore. Norn always creates a pre-restore safety snapshot before changing the database.
+      description: Queues a database restore by exact inventory filename (preferred) or legacy UTC timestamp. Norn always creates a pre-restore safety snapshot before changing the database.
       parameters:
         - $ref: '#/components/parameters/AppID'
-        - { name: ts, in: path, required: true, schema: { type: string, pattern: '^[0-9]{8}T[0-9]{6}$' } }
+        - { name: snapshot, in: path, required: true, description: Exact filename returned by snapshot inventory, or a legacy timestamp when it identifies exactly one snapshot., schema: { type: string, pattern: '^([0-9]{8}T[0-9]{6}|[A-Za-z0-9_.-]{1,240}[.]dump)$' } }
         - { name: Idempotency-Key, in: header, required: true, schema: { type: string, minLength: 1, maxLength: 200 } }
       requestBody:
         required: true
@@ -927,6 +927,7 @@ components:
         - invalid_snapshot_retention
         - invalid_snapshot_restore
         - invalid_snapshot_timestamp
+        - invalid_snapshot_identifier
         - invalid_migration_request
         - invalid_migration_ref
         - invalid_rollback_request

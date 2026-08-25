@@ -177,6 +177,32 @@ func TestBearerAuthCanRequireExplicitCredentialsOnLoopback(t *testing.T) {
 	}
 }
 
+func TestExplicitAuthProtectsInventoryAndMetrics(t *testing.T) {
+	next := http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusNoContent)
+	})
+	authenticated := bearerAuth("control-plane-token", nil, true)(next)
+
+	for _, path := range []string{"/api/services/manifest", "/metrics", "/api/metrics"} {
+		req := httptest.NewRequest(http.MethodGet, path, nil)
+		req.RemoteAddr = "127.0.0.1:1234"
+		rec := httptest.NewRecorder()
+		authenticated.ServeHTTP(rec, req)
+		if rec.Code != http.StatusUnauthorized {
+			t.Fatalf("%s status = %d, want %d", path, rec.Code, http.StatusUnauthorized)
+		}
+
+		req = httptest.NewRequest(http.MethodGet, path, nil)
+		req.RemoteAddr = "127.0.0.1:1234"
+		req.Header.Set("Authorization", "Bearer control-plane-token")
+		rec = httptest.NewRecorder()
+		authenticated.ServeHTTP(rec, req)
+		if rec.Code != http.StatusNoContent {
+			t.Fatalf("authenticated %s status = %d, want %d", path, rec.Code, http.StatusNoContent)
+		}
+	}
+}
+
 func TestStrictAuthAcceptsValidatedCloudflarePrincipal(t *testing.T) {
 	next := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		principal, ok := handler.AccessPrincipalFromRequest(r)
@@ -241,6 +267,41 @@ func TestControlSecurityConfiguration(t *testing.T) {
 				t.Fatalf("error = %v, wantErr %v", err, tt.wantErr)
 			}
 		})
+	}
+}
+
+func TestValidateAllowedOrigins(t *testing.T) {
+	for _, origin := range []string{"*", "https://user:pass@example.test", "https://example.test/path", "javascript:alert(1)"} {
+		if err := validateAllowedOrigins(origin, false); err == nil {
+			t.Fatalf("expected %q to be rejected", origin)
+		}
+	}
+	if err := validateAllowedOrigins("https://control.example.test,http://localhost:5173", true); err != nil {
+		t.Fatalf("expected secure and loopback origins to validate: %v", err)
+	}
+	if err := validateAllowedOrigins("http://control.example.test", true); err == nil {
+		t.Fatal("expected insecure production origin to be rejected")
+	}
+}
+
+func TestSecureControlEndpointsRequireNetworkTargets(t *testing.T) {
+	for _, endpoint := range []string{"https://nomad.example.test:4646", "https://[2001:db8::1]:4646"} {
+		if !secureEndpoint(endpoint) {
+			t.Fatalf("expected %q to be accepted", endpoint)
+		}
+	}
+	for _, endpoint := range []string{"https:///missing-host", "https://user:pass@nomad.example.test", "http://nomad.example.test"} {
+		if secureEndpoint(endpoint) {
+			t.Fatalf("expected %q to be rejected", endpoint)
+		}
+	}
+	if !secureDatabaseDSN("postgres://db.example.test/norn?sslmode=verify-full") {
+		t.Fatal("expected verified PostgreSQL DSN to be accepted")
+	}
+	for _, dsn := range []string{"file:///tmp/norn?sslmode=verify-full", "postgres:///norn?sslmode=verify-full", "postgres://db.example.test/norn?sslmode=require"} {
+		if secureDatabaseDSN(dsn) {
+			t.Fatalf("expected %q to be rejected", dsn)
+		}
 	}
 }
 

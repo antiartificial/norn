@@ -19,7 +19,11 @@ func Connect(databaseURL string) (*DB, error) {
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 
-	pool, err := pgxpool.New(ctx, databaseURL)
+	poolConfig, err := operationPoolConfig(databaseURL)
+	if err != nil {
+		return nil, err
+	}
+	pool, err := pgxpool.NewWithConfig(ctx, poolConfig)
 	if err != nil {
 		return nil, err
 	}
@@ -27,6 +31,21 @@ func Connect(databaseURL string) (*DB, error) {
 		return nil, err
 	}
 	return &DB{Pool: pool}, nil
+}
+
+func operationPoolConfig(databaseURL string) (*pgxpool.Config, error) {
+	config, err := pgxpool.ParseConfig(databaseURL)
+	if err != nil {
+		return nil, err
+	}
+	// One worker can simultaneously hold its per-app advisory-lock connection,
+	// execute pipeline SQL, and renew the operation lease. Keep a fourth slot for
+	// API reads and shutdown/recovery bookkeeping rather than allowing a
+	// pool_max_conns setting to deadlock durable work.
+	if config.MaxConns < 4 {
+		return nil, fmt.Errorf("postgres pool_max_conns must be at least 4 for durable operation locking")
+	}
+	return config, nil
 }
 
 func (db *DB) Close() {

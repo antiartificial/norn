@@ -184,7 +184,7 @@ Current state:
 - Norn records recent API access events in memory after auth middleware runs.
 - `norn access [--limit N]` shows method, path, status, client IP, Cloudflare Access metadata, and duration without request bodies or authorization headers.
 - `norn ops platform` and the UI Platform tab summarize recent access, service exposure, OTEL/Grafana configuration, dirty deployments, secret hygiene, and snapshot retention.
-- `/metrics` and `/api/metrics` expose Prometheus-compatible Norn control-plane metrics.
+- `/metrics` and `/api/metrics` expose Prometheus-compatible Norn control-plane metrics; explicit-auth deployments must scrape them with a scoped bearer or validated Cloudflare Access principal.
 - App processes can declare `metrics.enabled: true`; Norn registers companion metrics services and includes live scrape targets in `/api/observability/prometheus.yml`.
 - `/api/observability/bundle`, `/api/observability/alerts.yml`, and `norn observability bundle --out <dir>` package Prometheus config, alert rules, Grafana provisioning, a starter dashboard, and starter Prometheus/Grafana/cAdvisor service specs.
 - `POST /api/observability/services/install` and `norn observability install` write generated `norn-prometheus`, `norn-grafana`, and `norn-cadvisor` app directories into `NORN_APPS_DIR`.

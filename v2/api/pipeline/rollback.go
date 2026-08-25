@@ -27,7 +27,14 @@ func (p *Pipeline) RollbackRegions(spec *model.InfraSpec, current model.Deployme
 // RollbackRegionsOperation exposes the durable operation identifier to typed
 // control clients while preserving the legacy saga-returning API.
 func (p *Pipeline) RollbackRegionsOperation(spec *model.InfraSpec, current model.Deployment, prev *model.Deployment, requestedRegions []string, extraMetadata ...map[string]interface{}) (string, string, error) {
-	ctx := context.Background()
+	return p.RollbackRegionsOperationContext(context.Background(), spec, current, prev, requestedRegions, extraMetadata...)
+}
+
+// RollbackRegionsOperationContext durably commits a rollback plan while the
+// initiating request is still live. If that request is canceled before the
+// transaction commits, the client can retry with the same idempotency key
+// instead of receiving a receipt for work it could not observe.
+func (p *Pipeline) RollbackRegionsOperationContext(ctx context.Context, spec *model.InfraSpec, current model.Deployment, prev *model.Deployment, requestedRegions []string, extraMetadata ...map[string]interface{}) (string, string, error) {
 	sg := saga.New(p.SagaStore, spec.App, "pipeline", "rollback")
 	started := time.Now()
 	deploy := &model.Deployment{
