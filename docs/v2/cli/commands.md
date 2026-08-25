@@ -263,6 +263,8 @@ norn events show <event-id>
 norn events ack <event-id> --note "investigating"
 norn events snooze <event-id> --for 2h
 norn events open <event-id>
+norn events reconcile --dry-run
+norn events reconcile --app contextdb --limit 50 --by operator
 ```
 
 | Flag | Default | Description |
@@ -273,6 +275,13 @@ norn events open <event-id>
 | `--limit` | `25` | Maximum events to show |
 
 Events include `open`, `snoozed`, or `acknowledged` state. Detail output prints related metadata such as saga, deployment, operation, process, service, or job ids when Norn recorded them.
+
+`events reconcile` reviews open warning and critical events against later
+durable events plus current Nomad or Consul evidence. Run it with `--dry-run`
+first. A non-dry-run pass acknowledges only deterministic recoveries and leaves
+inconclusive events marked `needs_review`; it never relies on message-string
+matching. See [Beacon Events](/v2/operations/beacon#evidence-based-reconciliation)
+for the supported event families and proof rules.
 
 ## observability
 
@@ -695,7 +704,7 @@ Manage PostgreSQL database snapshots.
 # List snapshots
 norn snapshots <app>
 
-# Restore a snapshot
+# Legacy synchronous restore by a unique compact UTC timestamp
 norn snapshots <app> restore <timestamp> --yes
 norn snapshots <app> restore <timestamp> --yes --pre-restore
 
@@ -715,7 +724,7 @@ norn snapshots import <app> snapshots/<app>/<filename>.dump
 | Subcommand | Description |
 |------------|-------------|
 | (none) | List available snapshots with timestamps, source commit, created time, size, and filename |
-| `restore` | Restore from a snapshot at the given timestamp; requires `--yes` and prints a restore receipt. `--pre-restore` creates a fresh snapshot before the restore |
+| `restore` | Restore through the legacy synchronous route using a compact UTC timestamp that matches exactly one inventory entry; requires `--yes` and prints a restore receipt. `--pre-restore` creates a fresh snapshot before the restore. Prefer the versioned `/api/v1` control route or web/native clients for a durable exact-filename restore |
 | `retention` | Preview newest-N retention without deleting snapshots; defaults to `snapshots.keep` from the app spec or 3; add `--execute --yes` to prune and print a receipt |
 | `export` | Upload the latest local snapshot to the app's configured `snapshots.exportBucket` |
 | `remote` | List remote snapshots in the configured export bucket |

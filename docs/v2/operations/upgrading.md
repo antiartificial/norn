@@ -7,16 +7,18 @@ The safe upgrade path restarts only the Norn API process. Do not use `make down`
 ## First-Class Platform Lane
 
 ```bash
-cd /Users/0xadb/projects/norn
+cd /path/to/norn
+git fetch origin
+release_sha=$(git rev-parse origin/main)
 
 # Build into a versioned release directory and boot a candidate API on :18800.
-norn platform preflight HEAD
+norn platform preflight "$release_sha"
 
 # Promote the release, restart only com.norn.api, and rollback if postflight fails.
-norn platform upgrade HEAD
+norn platform upgrade "$release_sha"
 
 # On proxy-fronted hosts, switch the managed upstream instead of restarting launchd.
-NORN_PROXY_RELOAD=true norn platform upgrade HEAD --proxy
+NORN_PROXY_RELOAD=true norn platform upgrade "$release_sha" --proxy
 norn platform releases
 norn platform rollback <sha-prefix>
 norn platform smoke
@@ -28,17 +30,27 @@ norn platform proxy-switch 18802
 norn smoke platform
 
 # Preferred remote/UI lane: durable and restart-safe.
-norn platform queue-preflight HEAD
-norn platform queue-upgrade HEAD
+norn platform queue-preflight "$release_sha"
+norn platform queue-upgrade "$release_sha"
 norn platform queue-rollback <sha-prefix>
 norn platform queue-smoke
 ```
+
+Use the exact pushed SHA intended for promotion. `HEAD` is convenient for a
+local development rehearsal but can move between review and upgrade.
 
 The platform lane builds from an isolated git worktree into `$HOME/norn/releases/<sha>`, writes a `$HOME/norn/current` symlink, installs compatibility binaries into `$HOME/go/bin`, and health-checks a candidate API with recovery and operation workers disabled so preflight does not mark running work failed or claim queued jobs.
 
 The queued lane is preferred when the operator is not already on the host. It
 returns a durable operation ID, is executed by `com.norn.host-agent`, and can be
 followed with `norn operations <operation-id>` even after the API restarts.
+
+Platform subcommands add existing `/opt/homebrew/bin` and `/usr/local/bin`
+directories to the managed child process before invoking the upgrade script.
+This keeps direct platform maintenance reliable through non-interactive SSH
+shells with a minimal `PATH`; queued work continues to execute in the managed
+host-agent environment. The enrichment neither mutates the parent shell nor
+replaces prerequisite checks, and missing tools still fail visibly.
 
 Use these environment variables when the repo or host layout differs:
 
@@ -57,7 +69,6 @@ Use these environment variables when the repo or host layout differs:
 | `NORN_PLATFORM_UPGRADE_MODE` | `restart` | `restart` or `proxy`; `--proxy` sets this for upgrades |
 | `NORN_API_ENV_FILE` | `$HOME/.config/norn/api.env.enc.json` | SOPS JSON env file for `platform smoke` and `platform env` |
 | `NORN_SOPS_BIN` | `sops` | SOPS executable used for encrypted env loading |
-| `NORN_NODE_BIN` | `node` | Node.js 24 executable used for UI release builds |
 | `NORN_PROXY_DIR` | `$HOME/norn/proxy` | Managed proxy state directory |
 | `NORN_PROXY_CANDIDATE_PORT` | `18802` | Private candidate API port used by proxy upgrade mode |
 | `NORN_PROXY_PID_FILE` | `$NORN_PROXY_DIR/api.pid` | Current proxy-managed API pid |
@@ -68,12 +79,16 @@ Use these environment variables when the repo or host layout differs:
 The old direct-binary path still works when the platform lane itself is broken:
 
 ```bash
-cd /Users/0xadb/projects/norn/v2
+export NORN_PLATFORM_REPO=/path/to/norn
+export NORN_BIN_DIR="${NORN_BIN_DIR:-$HOME/go/bin}"
+
+cd "$NORN_PLATFORM_REPO/v2"
 cd ui && pnpm build
 cd ..
 make build
-install -m 0755 bin/norn-api /Users/0xadb/go/bin/norn-api
-install -m 0755 bin/norn /Users/0xadb/go/bin/norn
+mkdir -p "$NORN_BIN_DIR"
+install -m 0755 bin/norn-api "$NORN_BIN_DIR/norn-api"
+install -m 0755 bin/norn "$NORN_BIN_DIR/norn"
 launchctl kickstart -k gui/$(id -u)/com.norn.api
 ```
 
@@ -125,10 +140,13 @@ norn platform rollback <sha-prefix>
 Manual rollback is still a symlink flip plus compatibility binary install:
 
 ```bash
-backup=$HOME/norn/releases/<previous-sha>
+releases_dir="${NORN_RELEASES_DIR:-$HOME/norn/releases}"
+bin_dir="${NORN_BIN_DIR:-$HOME/go/bin}"
+backup="$releases_dir/<previous-sha>"
 
-install -m 0755 "$backup/bin/norn-api" /Users/0xadb/go/bin/norn-api
-install -m 0755 "$backup/bin/norn" /Users/0xadb/go/bin/norn
+mkdir -p "$bin_dir"
+install -m 0755 "$backup/bin/norn-api" "$bin_dir/norn-api"
+install -m 0755 "$backup/bin/norn" "$bin_dir/norn"
 launchctl kickstart -k gui/$(id -u)/com.norn.api
 ```
 

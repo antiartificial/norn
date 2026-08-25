@@ -43,7 +43,12 @@ Runs the test command from `build.test` if defined. A non-zero exit code fails t
 
 ### 6. Snapshot
 
-Creates a PostgreSQL database snapshot (`pg_dump`) if the app declares `infrastructure.postgres`. The snapshot is stored and can be restored later via `norn snapshots <app> restore <ts>`.
+Creates a PostgreSQL database snapshot (`pg_dump`) if the app declares
+`infrastructure.postgres`. Prefer the versioned `/api/v1` control route or the
+web/native clients to queue a durable restore using the exact inventory
+filename. The current CLI uses the legacy synchronous route:
+`norn snapshots <app> restore <compact-utc-timestamp> --yes --pre-restore`, and
+accepts the timestamp only when it matches exactly one inventory entry.
 
 ### 7. Migrate
 

@@ -57,9 +57,14 @@ The Apps view marks the exact snapshots outside the selected keep window as `wil
 ### CLI
 
 ```bash
-norn snapshots myapp restore 2025-01-15T14:30:00 --yes
-norn snapshots myapp restore 2025-01-15T14:30:00 --yes --pre-restore
+norn snapshots myapp restore 20260825T143000 --yes
+norn snapshots myapp restore 20260825T143000 --yes --pre-restore
 ```
+
+The current CLI uses the legacy synchronous route and therefore accepts the
+compact UTC timestamp column only when it identifies exactly one snapshot. For
+new automation and UI behavior, prefer the durable versioned route below and
+pass the exact inventory filename.
 
 ### API
 
@@ -76,7 +81,7 @@ UTC timestamp is still accepted when it identifies exactly one snapshot; Norn
 rejects ambiguous timestamps instead of restoring an arbitrary file.
 
 ::: warning
-The versioned restore route always creates a fresh safety snapshot immediately before the destructive restore. Restore runs in a single PostgreSQL transaction with fail-fast semantics, so an error rolls back instead of leaving a knowingly partial schema. The older CLI flags remain for compatibility with the legacy route.
+The versioned `/api/v1` restore route always creates a fresh safety snapshot immediately before the destructive restore. Restore runs in a single PostgreSQL transaction with fail-fast semantics, so an error rolls back instead of leaving a knowingly partial schema. The older CLI flags remain for compatibility with the legacy route.
 :::
 
 The accepted response is an `app.snapshot-restore` operation. Its terminal typed receipt includes the restored snapshot, safety snapshot, and database. It is safe to close either UI after queuing; the operation is reconstructed from PostgreSQL.

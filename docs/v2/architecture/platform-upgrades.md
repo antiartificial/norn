@@ -5,13 +5,19 @@ Norn treats upgrades to Norn itself as a separate platform lane. App deploys mut
 ## Current Lane
 
 ```bash
-norn platform preflight HEAD
-norn platform upgrade HEAD
-norn platform upgrade HEAD --proxy
-norn platform queue-preflight HEAD
-norn platform queue-upgrade HEAD
+git fetch origin
+release_sha=$(git rev-parse origin/main)
+norn platform preflight "$release_sha"
+norn platform upgrade "$release_sha"
+norn platform upgrade "$release_sha" --proxy
+norn platform queue-preflight "$release_sha"
+norn platform queue-upgrade "$release_sha"
 norn platform queue-rollback <sha-prefix>
 ```
+
+Use the exact, pushed commit SHA intended for promotion. `HEAD` remains a useful
+local development shorthand, but its meaning can move between preflight,
+approval, and upgrade and therefore is not a reproducible release reference.
 
 The direct commands shell out to `v2/scripts/platform-upgrade` on the host that
 owns the Norn checkout. The `queue-*` commands create durable control API
@@ -26,6 +32,14 @@ same fixed script subcommands and survives the API restart. The script:
 6. Checks `/api/health` and `/api/version`.
 7. On normal upgrade, flips `$HOME/norn/current`, installs compatibility binaries and the managed host-agent lane, restarts `com.norn.api`, and runs postflight health.
 8. If postflight fails and a previous current release exists, flips back, reinstalls the previous binaries, and restarts again.
+
+Direct platform subcommands enrich their child-process `PATH` with existing
+`/opt/homebrew/bin` and `/usr/local/bin` directories before running the managed
+script. This makes preflight, upgrade, rollback, smoke, proxy, and environment
+commands reliable through thin non-interactive SSH shells without requiring an
+operator-specific `PATH` prefix. It does not change the parent shell or provide
+missing dependencies; `norn platform env -- <command>` receives the same
+bounded tool-path behavior.
 
 This is low-invasive: active dashboard sessions and websocket streams reconnect, but hosted apps continue running.
 

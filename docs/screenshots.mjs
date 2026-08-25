@@ -17,11 +17,17 @@ import { join } from 'path'
 import {
   accessPatterns,
   activeIncidents,
+  appSnapshots,
   apps,
+  capabilities,
   cronHistory,
   deploySteps,
   deployments,
   events,
+  fleetGitHubStatus,
+  fleetInventory,
+  fleetPlans,
+  fleetReconciliations,
   functionExecutions,
   ingress,
   logs,
@@ -68,7 +74,13 @@ async function installApiMocks(page) {
         services: { postgres: 'ok', nomad: 'ok', consul: 'ok', redpanda: 'ok', garage: 'ok' },
       }))
     }
-    if (path === '/api/version') return route.fulfill(json({ version: 'v2.4.0' }))
+    if (path === '/api/version') return route.fulfill(json({ version: 'v2.20.0-control-3-g067fc8d' }))
+    if (path === '/api/v1/capabilities') return route.fulfill(json(capabilities))
+    if (path === '/api/v1/fleet/node-pools') return route.fulfill(json(fleetInventory))
+    if (path === '/api/v1/fleet/plans') return route.fulfill(json(fleetPlans))
+    if (path === '/api/v1/fleet/github') return route.fulfill(json(fleetGitHubStatus))
+    if (path === '/api/v1/fleet/plans/op_fleet_9a21/reconciliations') return route.fulfill(json(fleetReconciliations))
+    if (path === '/api/v1/apps/signal-sideband/snapshots') return route.fulfill(json(appSnapshots))
     if (path === '/api/services/manifest') return route.fulfill(json(serviceManifest))
     if (path === '/api/access/patterns') return route.fulfill(json(accessPatterns))
     if (path === '/api/cloudflared/ingress') return route.fulfill(json(ingress))
@@ -168,12 +180,12 @@ async function emitDeployProgress(page) {
   }
 }
 
-async function capturePage(ctx, name, path, readySelector, prepare) {
+async function capturePage(ctx, name, path, readySelector, prepare, fullPage = false) {
   console.log(`  -> ${name}`)
   const page = await newPage(ctx)
   await openRoute(page, path, readySelector)
   if (prepare) await prepare(page)
-  await page.screenshot({ path: join(OUT, name), fullPage: false })
+  await page.screenshot({ path: join(OUT, name), fullPage })
   await page.close()
 }
 
@@ -205,6 +217,11 @@ async function main() {
   await capturePage(ctx, 'function-panel.png', '/apps/archive-thumb/functions', '.func-history', async (page) => {
     await page.locator('.func-textarea').fill('{"asset":"archive://renders/sideband.png","size":"poster"}')
   })
+  await capturePage(ctx, 'fleet.png', '/fleet', '#node-pools-title', async (page) => {
+    await page.locator('.fleet-journey-summary').first().click()
+    await page.waitForSelector('.fleet-checkpoints')
+  }, true)
+  await capturePage(ctx, 'data-recovery.png', '/apps/signal-sideband/snapshots', '.snapshot-list')
 
   await browser.close()
   console.log('\n  OK UI screenshots saved to docs/public/screenshots/')

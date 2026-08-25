@@ -69,15 +69,15 @@ The current release records these operation kinds:
 | `app.preflight` | `norn preflight` / API preflight | read-only |
 | `app.deploy` | `norn deploy`, webhook auto-deploy, API deploy | app rolling update |
 | `app.rollback` | `norn rollback` / API rollback | app rolling update |
-| `app.snapshot` | web, macOS, or v1 API | database snapshot |
-| `app.snapshot-prune` | web, macOS, or v1 API | destructive snapshot retention |
-| `app.snapshot-restore` | web, macOS, or v1 API | destructive restore with safety snapshot |
-| `app.migrate` | web, macOS, or v1 API | schema mutation with pre-migration snapshot |
-| `platform.preflight` | v1 control API / `platform queue-preflight` | read-only candidate build |
-| `platform.upgrade` | v1 control API / `platform queue-upgrade` | control-plane replacement |
-| `platform.rollback` | v1 control API / `platform queue-rollback` | control-plane replacement |
-| `platform.smoke` | v1 control API / `platform queue-smoke` | read-only platform assurance |
-| `host.assure` | v1 control API / `host queue-assure` | bounded host repair and endpoint probes |
+| `app.snapshot` | web, macOS, or versioned control API | database snapshot |
+| `app.snapshot-prune` | web, macOS, or versioned control API | destructive snapshot retention |
+| `app.snapshot-restore` | web, macOS, or versioned control API | destructive restore with safety snapshot |
+| `app.migrate` | web, macOS, or versioned control API | schema mutation with pre-migration snapshot |
+| `platform.preflight` | versioned control API / `platform queue-preflight` | read-only candidate build |
+| `platform.upgrade` | versioned control API / `platform queue-upgrade` | control-plane replacement |
+| `platform.rollback` | versioned control API / `platform queue-rollback` | control-plane replacement |
+| `platform.smoke` | versioned control API / `platform queue-smoke` | read-only platform assurance |
+| `host.assure` | versioned control API / `host queue-assure` | bounded host repair and endpoint probes |
 
 App preflights, deploys, rollbacks, snapshots, pruning, restores, and standalone migrations are queued in the operations table and claimed by the API worker with `FOR UPDATE SKIP LOCKED`. A PostgreSQL advisory lock serializes all work for one app across API replicas. Queue rows include payload, attempt count, max attempts, lease owner, lease expiry, next attempt, and last error.
 

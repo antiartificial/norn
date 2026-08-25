@@ -4,7 +4,7 @@
 
 | Tool | Version | Purpose |
 |------|---------|---------|
-| Go | 1.25+ | API and CLI |
+| Go | 1.26.6 | API, CLI, and host agent |
 | pnpm | 10+ | UI dependencies |
 | Node.js | 24 LTS | UI and docs builds |
 | PostgreSQL | 16+ | Application database |
@@ -20,36 +20,57 @@
 git clone git@github.com:antiartificial/norn.git
 cd norn/v2
 make build
+cd ui && pnpm install && cd ..
 ```
 
-This produces two binaries in `bin/`:
+This produces three binaries in `bin/`:
 
 - `bin/norn-api` — the API server
 - `bin/norn` — the CLI
+- `bin/norn-host-agent` — the independent durable platform/host maintenance worker
 
 Install the CLI to your PATH:
 
 ```bash
-make install   # copies bin/norn to ~/go/bin/
+mkdir -p "$HOME/go/bin"
+install -m 0755 bin/norn "$HOME/go/bin/norn"
+export PATH="$HOME/go/bin:$PATH"
 ```
+
+The v2 Makefile intentionally has no `install` target. You can also leave the
+binary in place and run it as `bin/norn`.
 
 ## Database Setup
 
-Create the database (Norn runs auto-migrations on startup):
+For local development, create the database as your current PostgreSQL user and
+connect over the local Unix socket. Norn runs its schema migrations on startup:
 
 ```bash
 createdb norn_v2
+export NORN_DATABASE_URL='postgresql:///norn_v2?sslmode=disable'
 ```
 
-The default connection string is `postgres://norn:norn@localhost:5432/norn_v2?sslmode=disable`. Override with `NORN_DATABASE_URL`.
+Run Norn from the same shell so it inherits `NORN_DATABASE_URL`. This avoids
+documenting a database owned by the current user while attempting to connect as
+an unrelated role. The code default,
+`postgres://norn:norn@localhost:5432/norn_v2?sslmode=disable`, is available for
+installations that deliberately create that login and database ownership.
 
 ## Development Mode
 
 ```bash
-make dev   # starts API (:8800) + UI (:5173)
+# Starts local Consul, Nomad, and the API in the background.
+make up
+
+# Start the UI separately.
+cd ui
+pnpm dev
 ```
 
-The API serves at `http://localhost:8800` and the UI at `http://localhost:5173`.
+The API serves at `http://localhost:8800` and the UI at
+`http://localhost:5173`. `make dev` is an API-only foreground target; it does
+not start the UI. Use `make down` to stop the background API, Nomad, and Consul
+started by `make up`.
 
 ## Configuration
 
@@ -108,7 +129,7 @@ All configuration is via environment variables:
 
 ```yaml
 name: hello-world
-deploy: true
+deploy: false
 repo:
   url: git@github.com:you/hello-world.git
   autoDeploy: true
@@ -126,12 +147,11 @@ processes:
       min: 1
 ```
 
-New services should begin with `deploy: false`. The web dashboard can create a
+New services begin with `deploy: false`. The web dashboard can create a
 named endpoint or worker draft with conservative health, scaling, and resource
 defaults. Native clients can adopt the same API contract independently. Review
-the generated InfraSpec, run preflight, then use the explicit **Enable
-deployments** action. The example above is already enabled only to keep this
-first-deploy walkthrough direct.
+the generated InfraSpec and run preflight before using the explicit **Enable
+deployments** action.
 
 2. Open the dashboard at `http://localhost:5173` — your app should appear automatically.
 
@@ -143,7 +163,21 @@ norn preflight hello-world HEAD
 
 Preflight validates the infraspec, prepares source, builds locally, and runs tests without touching Nomad or cloudflared.
 
-4. Deploy from the CLI:
+4. Enable deployment from the Apps dashboard, or use the versioned control API:
+
+```bash
+curl --fail-with-body -X PUT \
+  -H 'Content-Type: application/json' \
+  -d '{"enabled":true}' \
+  http://127.0.0.1:8800/api/v1/apps/hello-world/deployment
+```
+
+Add `Authorization: Bearer $NORN_API_TOKEN` when explicit authentication is
+enabled. The current CLI has no deployment-gate subcommand; `norn preflight`
+can inspect a disabled draft, while `norn deploy` sees it only after this gate
+is enabled.
+
+5. Deploy from the CLI:
 
 ```bash
 norn deploy hello-world HEAD

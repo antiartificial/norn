@@ -15,6 +15,7 @@ Useful surfaces:
 | Active queue/drain state | `GET /api/operations/active`, `norn operations --active` |
 | Stage checkpoints | `GET /api/deployments/{id}/steps` |
 | App specs and runtime status | `GET /api/apps`, `GET /api/apps/{id}`, local `infraspec.yaml` |
+| Durable app recovery | `GET/POST /api/v1/apps/{id}/snapshots`, versioned retention/restore/migration/rollback routes, `norn snapshots <app>` |
 | Validation and rehearsal | `GET /api/validate`, `POST /api/apps/{id}/preflight`, `norn preflight <app> [ref]` |
 | Deploy progress | `POST /api/apps/{id}/deploy`, `GET /api/saga/{sagaId}`, `norn saga <saga-id>` |
 | Webhook delivery triage | `GET /api/webhooks/deliveries`, `norn webhooks` |
@@ -32,7 +33,10 @@ If a protected endpoint returns `401`, do not assume the platform is unhealthy. 
 
 ## Durable Operations
 
-App deploys, app preflights, and app rollbacks are queued in control-plane Postgres and claimed by the API worker. Operation rows include status, kind, app, ref, saga id, payload, attempts, max attempts, lock owner, lock expiry, next attempt, and last error.
+App deploys, preflights, rollbacks, manual snapshots, pruning, restores, and
+standalone migrations are queued in control-plane Postgres and claimed by the
+API worker. Operation rows include status, kind, app, ref, saga id, payload,
+attempts, max attempts, lock owner, lock expiry, next attempt, and last error.
 
 Use active operations as the drain source before invasive work:
 
@@ -44,6 +48,13 @@ Semantics:
 
 - `app.preflight` is read-only and can retry safely.
 - `app.deploy` is queued and drain-visible.
+- Mutable work for one app is serialized across API replicas by a PostgreSQL
+  advisory lock.
+- Snapshot restore and standalone migration run once after mutation begins;
+  interruption fails visibly for review rather than replaying unknown database
+  side effects.
+- Versioned recovery mutations require request-bound idempotency keys so a
+  reconnect can recover the original operation instead of duplicating it.
 - Deploy and rollback stages are recorded in `deployment_steps`.
 - Use `norn deploy steps <deployment-id>` to inspect checkpoint evidence.
 - Interrupted deploys can be requeued automatically only before mutable stages begin.
@@ -83,11 +94,11 @@ Use `--preflight` when you want to test the matched app/ref without mutating run
 Norn control-plane upgrades should use the platform lane rather than rebuilding the whole local environment:
 
 ```bash
-norn platform preflight HEAD
-norn platform upgrade HEAD
-norn platform upgrade HEAD --proxy
-norn platform queue-preflight HEAD
-norn platform queue-upgrade HEAD
+norn platform preflight <pushed-commit-sha>
+norn platform upgrade <pushed-commit-sha>
+norn platform upgrade <pushed-commit-sha> --proxy
+norn platform queue-preflight <pushed-commit-sha>
+norn platform queue-upgrade <pushed-commit-sha>
 norn platform releases
 norn platform rollback <sha-prefix>
 norn platform smoke
@@ -97,6 +108,13 @@ norn platform proxy-status
 norn platform proxy-render
 norn platform proxy-switch <port|host:port>
 ```
+
+Resolve and push the exact commit before preflight. `HEAD` is acceptable for a
+local development rehearsal, but operational promotion should use the same
+immutable SHA for review, preflight, and upgrade. Platform subcommands add
+existing Homebrew binary directories to the managed child process, so they can
+find release tools through a thin SSH shell without a machine-specific `PATH`
+prefix.
 
 The default platform lane builds an isolated release, boots a candidate API on an alternate port, checks health/version, promotes the release symlink, restarts only the Norn API process, and runs postflight health.
 
@@ -199,7 +217,12 @@ Use `norn validate --strict-secrets` or `NORN_STRICT_SECRETS=true` when a repo o
 
 Use `norn network` when endpoint reachability is confusing. It summarizes service exposure, endpoint scope, instance scope, and mode-specific guidance.
 
-For destructive database restores, prefer `norn snapshots <app> restore <timestamp> --yes --pre-restore` so the receipt includes a fresh pre-restore snapshot.
+For destructive database restores, prefer the versioned `/api/v1` control route
+and the exact `filename` returned by its snapshot inventory; web and native
+clients use that durable path and it always creates a safety snapshot. The
+current CLI uses the legacy synchronous route:
+`norn snapshots <app> restore <compact-utc-timestamp> --yes --pre-restore`.
+Use it only when that timestamp identifies exactly one inventory entry.
 
 ## Safe Repo Guidance
 

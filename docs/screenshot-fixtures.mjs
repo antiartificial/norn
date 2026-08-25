@@ -36,6 +36,12 @@ export const apps = [
         autoDeploy: true,
       },
       build: { dockerfile: 'Dockerfile', test: 'go test ./...' },
+      primaryRegion: 'ord',
+      regions: {
+        ord: { nomadRegion: 'global', datacenters: ['ord'], trafficWeight: 100 },
+        nyc: { nomadRegion: 'global', datacenters: ['nyc'], trafficWeight: 0 },
+      },
+      placement: { nodePool: 'app' },
       processes: {
         web: {
           port: 8080,
@@ -58,6 +64,8 @@ export const apps = [
       },
       services: ['postgres', 'redis', 'redpanda', 'garage'],
       secrets: ['SIGNAL_NUMBER', 'DATABASE_URL', 'GARAGE_ACCESS_KEY'],
+      migrations: './sideband migrate',
+      snapshots: { keep: 3, preRestore: true, retentionEnabled: true, exportBucket: 'signal-sideband-backups' },
       endpoints: [{ url: 'https://sideband.example.com' }],
     },
     nomadStatus: 'running',
@@ -288,6 +296,143 @@ export const operations = {
   ],
 }
 
+export const capabilities = {
+  protocolVersion: 1,
+  serverVersion: 'v2.20.0-control-3-g067fc8d',
+  features: [
+    'fleet-v1',
+    'fleet-inventory',
+    'durable-fleet-capacity-plans',
+    'fleet-reconciliation-v1',
+    'fleet-github-app-v1',
+    'durable-app-recovery-v1',
+    'app-creation',
+    'host-metrics',
+  ],
+}
+
+export const appSnapshots = [
+  {
+    filename: 'signal_sideband_pre-migrate_20260825T190415.dump',
+    database: 'signal_sideband',
+    commitSha: 'pre-migrate',
+    timestamp: '20260825T190415',
+    createdAt: '2026-08-25T19:04:15Z',
+    size: 18_874_368,
+  },
+  {
+    filename: 'signal_sideband_1c1a9c1d4b6_20260825T163044.dump',
+    database: 'signal_sideband',
+    commitSha: '1c1a9c1d4b6',
+    timestamp: '20260825T163044',
+    createdAt: '2026-08-25T16:30:44Z',
+    size: 18_350_080,
+  },
+  {
+    filename: 'signal_sideband_manual_20260824T221206.dump',
+    database: 'signal_sideband',
+    commitSha: 'manual',
+    timestamp: '20260824T221206',
+    createdAt: '2026-08-24T22:12:06Z',
+    size: 17_825_792,
+  },
+  {
+    filename: 'signal_sideband_c6134a30b216_20260823T142105.dump',
+    database: 'signal_sideband',
+    commitSha: 'c6134a30b216',
+    timestamp: '20260823T142105',
+    createdAt: '2026-08-23T14:21:05Z',
+    size: 17_301_504,
+  },
+]
+
+export const fleetInventory = {
+  schemaVersion: 'norn.fleet-inventory/v1',
+  configured: true,
+  source: 'cluster.yaml',
+  digest: 'sha256:6df8c9be820734f424101e89b49f7cffabfe902c81a4c6f4bf2b2038f714ce81',
+  document: {
+    apiVersion: 'norn.dev/fleet/v1',
+    kind: 'Cluster',
+    metadata: {
+      environment: 'production',
+      repository: 'antiartificial/norn-fleet',
+      workflowUrl: 'https://github.com/antiartificial/norn-fleet/actions/workflows/apply.yml',
+    },
+    cluster: { name: 'production-nyc3', provider: 'digitalocean', region: 'nyc3' },
+  },
+  validation: {
+    schemaVersion: 'norn.validation-report/v1',
+    documentKind: 'fleet',
+    name: 'production-nyc3',
+    valid: true,
+    findings: [],
+  },
+  nodePools: {
+    app: {
+      size: 's-4vcpu-8gb', min: 2, desired: 3, max: 8,
+      labels: { workload: 'application services' },
+      replacement: { strategy: 'blueGreen', requireCapacityHeadroom: true, drainTimeout: '20m', requireReadiness: true },
+    },
+    edge: {
+      size: 's-2vcpu-4gb', min: 2, desired: 2, max: 4,
+      labels: { workload: 'regional ingress' },
+      replacement: { strategy: 'rolling', requireCapacityHeadroom: true, drainTimeout: '10m', requireReadiness: true },
+    },
+  },
+}
+
+export const fleetPlans = {
+  count: 1,
+  plans: [
+    {
+      id: 'op_fleet_9a21',
+      kind: 'fleet.capacity-plan',
+      status: 'succeeded',
+      createdAt: minutesAgo(38),
+      updatedAt: minutesAgo(12),
+      payload: {
+        pool: 'app',
+        action: 'scale',
+        current: { desired: 2, size: 's-4vcpu-8gb' },
+        proposed: { desired: 3, size: 's-4vcpu-8gb' },
+        workflowUrl: 'https://github.com/antiartificial/norn-fleet/actions/workflows/apply.yml',
+      },
+    },
+  ],
+}
+
+export const fleetReconciliations = {
+  schemaVersion: 'norn.fleet-reconciliations/v1',
+  planId: 'op_fleet_9a21',
+  count: 5,
+  reconciliations: [
+    ['infrastructure_applied', 30],
+    ['inventory_generated', 25],
+    ['nodes_configured', 20],
+    ['nodes_enrolled', 16],
+    ['readiness_verified', 12],
+  ].map(([phase, age], index) => ({
+    id: `op_fleet_9a21_checkpoint_${index + 1}`,
+    kind: 'fleet.reconciliation',
+    status: 'succeeded',
+    updatedAt: minutesAgo(age),
+    payload: { phase },
+  })),
+}
+
+export const fleetGitHubStatus = {
+  schemaVersion: 'norn.fleet-github-status/v1',
+  configured: true,
+  connected: true,
+  repository: 'antiartificial/norn-fleet',
+  installationId: 42117,
+  defaultBranch: 'main',
+  configPath: 'environments/production/nyc3/cluster.yaml',
+  planWorkflow: 'plan.yml',
+  applyWorkflow: 'apply.yml',
+}
+
 export const serviceManifest = {
   version: 1,
   generatedAt: minutesAgo(1),
@@ -415,13 +560,17 @@ export function cliOutput(name) {
     case 'status':
       return `NORN apps\n\n● signal-sideband     unhealthy  2/3  1c1a9c1  update available  sideband.example.com\n● contextdb           healthy    2/2  b7fb419  core              context.example.com\n● field-harbor-digest healthy    cron de71b90  next 7:00 AM\n● archive-thumb       healthy    func c0ffee1  on demand\n\n4 apps discovered · 9 services · 11 containers`
     case 'operations':
-      return `operations\n\nID        KIND          APP              STATUS    REF       AGE\nop_812    app.deploy    signal-sideband  running   8f42ac1   4m\nop_811    app.preflight signal-sideband  done      8f42ac1   7m\nop_810    app.deploy    signal-sideband  failed    1c1a9c1   83m\n\nactive operations: 1`
+      return `operations\n\nID        KIND          APP              STATUS     REF       AGE\nop_812    app.deploy    signal-sideband  running    8f42ac1   4m\nop_811    app.preflight signal-sideband  succeeded  8f42ac1   7m\nop_810    app.deploy    signal-sideband  failed     1c1a9c1   83m\n\nactive operations: 1`
     case 'platform':
-      return `norn platform operations\n\nhealth       ok\nrelease      8f42ac1 current\nservices     9 discovered, 11 containers\noperations   1 active, drain mode wait\nobservability bundle available, retention 30d / 8GB\nsecrets      0 plaintext migration items\nbeacon       1 warning, 0 critical in last 24h`
+      return `norn platform operations\n\nhealth       ok\nrelease      v2.20.0-control-3-g067fc8d current\nservices     9 discovered, 11 containers\noperations   1 active, drain mode wait\nobservability bundle available, retention 30d / 8GB\nsecrets      0 plaintext migration items\nbeacon       1 warning, 0 critical in last 24h`
     case 'proxy-plan':
       return `proxy cutover plan\n\ncurrent API    127.0.0.1:8800\ncandidate API  127.0.0.1:18802\nmode           switch upstream after candidate postflight\nrollback       switch upstream back to previous port\n\nNo Nomad, Consul, Postgres, or app allocation restart required.`
     case 'endpoints':
       return `signal-sideband endpoints\n\nEXTERNAL  sideband.example.com               enabled  cloudflared\nINTERNAL  signal-sideband.service.consul     ready    consul\n\ncloudflared rule: present\nDNS route:        present`
+    case 'fleet':
+      return `POOL  SIZE           MIN  DESIRED  MAX  STRATEGY   DRAIN\napp   s-4vcpu-8gb     2    3        8    blueGreen  20m\nedge  s-2vcpu-4gb     2    2        4    rolling    10m`
+    case 'snapshots':
+      return `snapshots for signal-sideband\n\n  TIMESTAMP        CREATED               COMMIT        DATABASE         SIZE     FILE\n  20260825T190415  2026-08-25T19:04:15Z  pre-migrate   signal_sideband  18.0 MB  signal_sideband_pre-migrate_20260825T190415.dump\n  20260825T163044  2026-08-25T16:30:44Z  1c1a9c1d4b6  signal_sideband  17.5 MB  signal_sideband_1c1a9c1d4b6_20260825T163044.dump\n  20260824T221206  2026-08-24T22:12:06Z  manual        signal_sideband  17.0 MB  signal_sideband_manual_20260824T221206.dump\n  20260823T142105  2026-08-23T14:21:05Z  c6134a30b216  signal_sideband  16.5 MB  signal_sideband_c6134a30b216_20260823T142105.dump`
     default:
       return ''
   }
