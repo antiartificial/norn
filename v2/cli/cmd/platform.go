@@ -5,6 +5,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strings"
 
 	"github.com/spf13/cobra"
 )
@@ -163,12 +164,47 @@ func runPlatformUpgradeScriptEnv(extraEnv []string, args ...string) error {
 	command.Stdout = os.Stdout
 	command.Stderr = os.Stderr
 	command.Stdin = os.Stdin
-	command.Env = os.Environ()
+	command.Env = replaceEnvironmentValue(os.Environ(), "PATH", platformExecutionPath(os.Getenv("PATH")))
 	if platformRepo != "" {
 		command.Env = append(command.Env, "NORN_PLATFORM_REPO="+platformRepo)
 	}
 	command.Env = append(command.Env, extraEnv...)
 	return command.Run()
+}
+
+func platformExecutionPath(current string) string {
+	candidates := []string{"/opt/homebrew/bin", "/usr/local/bin"}
+	if strings.TrimSpace(current) == "" {
+		current = "/usr/bin:/bin:/usr/sbin:/sbin"
+	}
+	candidates = append(candidates, filepath.SplitList(current)...)
+	seen := map[string]bool{}
+	result := make([]string, 0, len(candidates))
+	for _, candidate := range candidates {
+		candidate = strings.TrimSpace(candidate)
+		if candidate == "" || seen[candidate] {
+			continue
+		}
+		if candidate == "/opt/homebrew/bin" || candidate == "/usr/local/bin" {
+			if info, err := os.Stat(candidate); err != nil || !info.IsDir() {
+				continue
+			}
+		}
+		seen[candidate] = true
+		result = append(result, candidate)
+	}
+	return strings.Join(result, string(os.PathListSeparator))
+}
+
+func replaceEnvironmentValue(environment []string, key, value string) []string {
+	prefix := key + "="
+	result := make([]string, 0, len(environment)+1)
+	for _, entry := range environment {
+		if !strings.HasPrefix(entry, prefix) {
+			result = append(result, entry)
+		}
+	}
+	return append(result, prefix+value)
 }
 
 func resolvePlatformScript() (string, error) {
