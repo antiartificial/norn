@@ -328,6 +328,9 @@ func TestControlCapabilitiesAdvertisesHostMetrics(t *testing.T) {
 	if capability.Endpoints["fleetNodePools"] != "/api/v1/fleet/node-pools" || capability.Endpoints["fleetValidation"] != "/api/v1/fleet/validate" {
 		t.Fatalf("fleet endpoints = %v", capability.Endpoints)
 	}
+	if capability.Endpoints["fleetGitHub"] != "/api/v1/fleet/github" || capability.Endpoints["fleetGitHubDispatch"] == "" {
+		t.Fatalf("fleet GitHub endpoints = %v", capability.Endpoints)
+	}
 	if capability.Endpoints["mutationAudit"] != "/api/v1/audit/mutations" || capability.Endpoints["recoveryDrills"] != "/api/v1/production/drills" {
 		t.Fatalf("production evidence endpoints = %v", capability.Endpoints)
 	}

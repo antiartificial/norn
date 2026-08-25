@@ -61,6 +61,12 @@ All configuration is via environment variables:
 | `NORN_PORT` | `8800` | API listen port |
 | `NORN_BIND_ADDR` | `127.0.0.1` | API bind address |
 | `NORN_DATABASE_URL` | `postgres://norn:norn@localhost:5432/norn_v2?sslmode=disable` | PostgreSQL connection string |
+| `NORN_FLEET_CONFIG` | — | Read-only checked-out `norn-fleet` Cluster document |
+| `NORN_FLEET_GITHUB_APP_ID` | — | Repository-scoped GitHub App ID or client ID for fleet GitOps actions |
+| `NORN_FLEET_GITHUB_INSTALLATION_ID` | — | Installation ID restricted to the private fleet repository |
+| `NORN_FLEET_GITHUB_PRIVATE_KEY_FILE` | — | Mode-`0600` GitHub App private key path; key contents are never returned by Norn |
+| `NORN_FLEET_GITHUB_REPOSITORY` | — | Exact `owner/repository` allowlist for fleet mutations |
+| `NORN_FLEET_GITHUB_CONFIG_PATH` | — | Repository-relative Cluster YAML changed by plan pull requests |
 | `NORN_UI_DIR` | — | Path to built UI assets (for embedded serving) |
 | `NORN_APPS_DIR` | `~/projects` | Directory to scan for `infraspec.yaml` files |
 | `NORN_GIT_TOKEN` | — | GitHub token for cloning private repos |

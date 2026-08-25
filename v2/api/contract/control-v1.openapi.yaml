@@ -117,6 +117,59 @@ paths:
         '503': { $ref: '#/components/responses/Problem' }
         '401': { $ref: '#/components/responses/Problem' }
         '403': { $ref: '#/components/responses/Problem' }
+  /api/v1/fleet/github:
+    get:
+      operationId: getFleetGitHubStatus
+      description: Verifies the repository-restricted GitHub App installation without exposing its private key or short-lived installation token. Requires api:read.
+      responses:
+        '200':
+          description: Value-safe GitHub App connection status
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/FleetGitHubStatus' }
+        '401': { $ref: '#/components/responses/Problem' }
+        '403': { $ref: '#/components/responses/Problem' }
+  /api/v1/fleet/plans/{planID}/github/pull-request:
+    parameters:
+      - { name: planID, in: path, required: true, schema: { type: string, format: uuid } }
+    post:
+      operationId: createFleetGitHubPullRequest
+      description: Creates or recovers the deterministic GitHub branch and pull request for a source-digest-bound fleet plan. Requires api:write. No provider credential enters Norn.
+      responses:
+        '200':
+          description: Existing durable pull-request receipt
+          content: { application/json: { schema: { $ref: '#/components/schemas/Operation' } } }
+        '201':
+          description: Pull request created or recovered and durably recorded
+          content: { application/json: { schema: { $ref: '#/components/schemas/Operation' } } }
+        '400': { $ref: '#/components/responses/Problem' }
+        '404': { $ref: '#/components/responses/Problem' }
+        '409': { $ref: '#/components/responses/Problem' }
+        '502': { $ref: '#/components/responses/Problem' }
+        '503': { $ref: '#/components/responses/Problem' }
+  /api/v1/fleet/plans/{planID}/github/dispatch:
+    parameters:
+      - { name: planID, in: path, required: true, schema: { type: string, format: uuid } }
+    post:
+      operationId: dispatchFleetGitHubApply
+      description: Finds the merged plan PR and successful main-branch plan artifact, then creates or recovers the protected apply dispatch. Requires api:write.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/FleetGitHubDispatchRequest' }
+      responses:
+        '200':
+          description: Existing durable dispatch receipt
+          content: { application/json: { schema: { $ref: '#/components/schemas/Operation' } } }
+        '201':
+          description: Protected apply dispatched or recovered and durably recorded
+          content: { application/json: { schema: { $ref: '#/components/schemas/Operation' } } }
+        '400': { $ref: '#/components/responses/Problem' }
+        '404': { $ref: '#/components/responses/Problem' }
+        '409': { $ref: '#/components/responses/Problem' }
+        '502': { $ref: '#/components/responses/Problem' }
+        '503': { $ref: '#/components/responses/Problem' }
   /api/v1/fleet/plans/{planID}/reconciliations:
     parameters:
       - { name: planID, in: path, required: true, schema: { type: string, format: uuid } }
@@ -848,6 +901,15 @@ components:
         - fleet_reconciliation_store_unavailable
         - fleet_reconciliation_store_failed
         - fleet_reconciliation_read_failed
+        - fleet_github_not_configured
+        - fleet_github_plan_stale
+        - fleet_github_pull_request_failed
+        - fleet_github_plan_not_ready
+        - fleet_github_destructive_ack_required
+        - fleet_github_dispatch_failed
+        - fleet_github_receipt_failed
+        - fleet_plan_invalid
+        - invalid_fleet_github_dispatch
         - idempotency_key_reused
     Capabilities:
       type: object
@@ -1342,6 +1404,27 @@ components:
         nodePools:
           type: object
           additionalProperties: { $ref: '#/components/schemas/FleetNodePool' }
+    FleetGitHubStatus:
+      type: object
+      additionalProperties: false
+      required: [schemaVersion, configured, connected]
+      properties:
+        schemaVersion: { const: norn.fleet-github-status/v1 }
+        configured: { type: boolean }
+        connected: { type: boolean }
+        repository: { type: string }
+        installationId: { type: integer, format: int64 }
+        defaultBranch: { type: string }
+        configPath: { type: string }
+        planWorkflow: { type: string }
+        applyWorkflow: { type: string }
+        message: { type: string }
+    FleetGitHubDispatchRequest:
+      type: object
+      additionalProperties: false
+      required: [allowDestructive]
+      properties:
+        allowDestructive: { type: boolean }
     FleetCapacityPlanRequest:
       type: object
       additionalProperties: false

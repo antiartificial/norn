@@ -38,6 +38,22 @@ func TestAuditVerificationKeyRotationConfig(t *testing.T) {
 	}
 }
 
+func TestFleetGitHubAppConfig(t *testing.T) {
+	t.Setenv("NORN_FLEET_GITHUB_APP_ID", "Iv1.client")
+	t.Setenv("NORN_FLEET_GITHUB_INSTALLATION_ID", "12345")
+	t.Setenv("NORN_FLEET_GITHUB_PRIVATE_KEY_FILE", "/etc/norn/fleet.pem")
+	t.Setenv("NORN_FLEET_GITHUB_REPOSITORY", "acme/norn-fleet")
+	t.Setenv("NORN_FLEET_GITHUB_CONFIG_PATH", "environments/production/nyc3/cluster.yaml")
+	cfg := Load()
+	if cfg.FleetGitHubAppID != "Iv1.client" || cfg.FleetGitHubInstallationID != 12345 || cfg.FleetGitHubApplyWorkflow != "apply.yml" {
+		t.Fatalf("fleet GitHub config = %#v", cfg)
+	}
+	t.Setenv("NORN_FLEET_GITHUB_INSTALLATION_ID", "invalid")
+	if got := Load().FleetGitHubInstallationID; got != 0 {
+		t.Fatalf("invalid installation ID should fail closed, got %d", got)
+	}
+}
+
 func TestBeaconConfig(t *testing.T) {
 	t.Setenv("NORN_BEACON_ENVIRONMENT", "mini")
 	t.Setenv("NORN_BEACON_SINK_URL", "https://vigil.example.test/events")

@@ -255,6 +255,26 @@ export interface FleetPlansResponse {
   plans: Operation[]
 }
 
+export interface FleetGitHubStatus {
+  schemaVersion: 'norn.fleet-github-status/v1'
+  configured: boolean
+  connected: boolean
+  repository?: string
+  installationId?: number
+  defaultBranch?: string
+  configPath?: string
+  planWorkflow?: string
+  applyWorkflow?: string
+  message?: string
+}
+
+export interface FleetReconciliationResponse {
+  schemaVersion: 'norn.fleet-reconciliations/v1'
+  planId: string
+  count: number
+  reconciliations: Operation[]
+}
+
 export interface VersionResponse {
   version: string
 }

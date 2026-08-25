@@ -16,6 +16,7 @@ import (
 	"norn/v2/api/beacon"
 	"norn/v2/api/config"
 	"norn/v2/api/consul"
+	"norn/v2/api/githubapp"
 	"norn/v2/api/hub"
 	"norn/v2/api/nomad"
 	"norn/v2/api/pipeline"
@@ -46,6 +47,8 @@ type Handler struct {
 	redpanda               *redpanda.Client
 	access                 *AccessLog
 	hostMetrics            *hostMetricsCache
+	fleetGitHub            *githubapp.Client
+	fleetGitHubConfigError error
 	productionGateMu       sync.Mutex
 	productionGateAt       time.Time
 	productionGateBlockers []string
@@ -56,7 +59,7 @@ type Handler struct {
 }
 
 func New(db *store.DB, n *nomad.Client, c *consul.Client, ws *hub.Hub, cfg *config.Config, p *pipeline.Pipeline, beaconSvc *beacon.Service, sec *secrets.Manager, ss saga.Store, s3 *storage.Client, rp *redpanda.Client) *Handler {
-	return &Handler{
+	h := &Handler{
 		db:          db,
 		nomad:       n,
 		consul:      c,
@@ -70,6 +73,23 @@ func New(db *store.DB, n *nomad.Client, c *consul.Client, ws *hub.Hub, cfg *conf
 		redpanda:    rp,
 		access:      NewAccessLog(defaultAccessLogLimit),
 		hostMetrics: newHostMetricsCache(defaultHostMetricsSampler, time.Now, defaultHostMetricsSamplePeriod),
+	}
+	if cfg != nil && githubapp.Configured(fleetGitHubConfig(cfg)) {
+		h.fleetGitHub, h.fleetGitHubConfigError = githubapp.New(fleetGitHubConfig(cfg), nil)
+	}
+	return h
+}
+
+func fleetGitHubConfig(cfg *config.Config) githubapp.Config {
+	if cfg == nil {
+		return githubapp.Config{}
+	}
+	return githubapp.Config{
+		AppID: cfg.FleetGitHubAppID, InstallationID: cfg.FleetGitHubInstallationID,
+		PrivateKeyFile: cfg.FleetGitHubPrivateKeyFile, Repository: cfg.FleetGitHubRepository,
+		DefaultBranch: cfg.FleetGitHubDefaultBranch, ConfigPath: cfg.FleetGitHubConfigPath,
+		PlanWorkflow: cfg.FleetGitHubPlanWorkflow, ApplyWorkflow: cfg.FleetGitHubApplyWorkflow,
+		APIBaseURL: cfg.FleetGitHubAPIBaseURL, Production: cfg.Production(),
 	}
 }
 

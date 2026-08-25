@@ -4,7 +4,17 @@ title: Norn v2 Release Recap
 
 # Norn v2 Release Recap
 
-This recap summarizes the current Norn v2 release line: the Nomad/Consul control plane, the operator-facing dashboard and CLI, fleet planning, production admission, Beacon operational events, and the upgrade posture for local and Linux hosts. The `v2.18.0-control` release adds a versioned fleet contract, safe capacity-plan receipts, regional placement and ingress, production mutation admission and audit, reproducible Linux HA acceptance infrastructure, host metrics, minimum-capacity assurance, and conservative app creation. The `v2.18.1-control` maintenance release keeps disabled named drafts visible while excluding unrelated nameless InfraSpec-shaped documents from app inventory. The line retains the backward-compatible v1 control protocol introduced in v2.17.
+This recap summarizes the current Norn v2 release line: the Nomad/Consul control plane, the operator-facing dashboard and CLI, fleet planning, production admission, Beacon operational events, and the upgrade posture for local and Linux hosts. `v2.19.0-control` adds crash-safe fleet reconciliation and staged contraction. `v2.20.0-control` adds repository-scoped GitHub App authentication so Norn can open a source-bound fleet pull request and recover or dispatch its protected apply workflow without storing provider credentials or a personal GitHub token. The line retains the backward-compatible v1 control protocol introduced in v2.17.
+
+## v2.20.0-control highlights
+
+| Area | Surface | Why it matters |
+|:-----|:--------|:---------------|
+| GitHub App authentication | `NORN_FLEET_GITHUB_*`, short-lived installation tokens | Restricts Norn to one fleet repository and the minimum permissions required for each action; provider and state credentials stay in protected GitHub environments |
+| Review automation | `norn fleet github status/pr`, Fleet web and native controls | Creates or recovers a deterministic, source-digest-bound pull request from a durable Norn capacity plan |
+| Protected apply dispatch | `norn fleet github apply`, `/api/v1/fleet/plans/{planID}/github/dispatch` | Requires the merged PR and its successful main-branch plan artifact before dispatching the protected apply workflow |
+| Crash-safe receipts | Durable `fleet.github.*` operations and plan-specific workflow names | Retries after a timeout or restart recover existing GitHub work instead of creating duplicate branches, PRs, or applies |
+| Bootstrap incident closure | Revoked credentials, rewritten writable history, push protection | Removes the original cloud-init credentials from branches and tags and documents the remaining GitHub-owned cache cleanup boundary |
 
 ## v2.18.0-control highlights
 
