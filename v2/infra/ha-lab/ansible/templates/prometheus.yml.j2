@@ -95,3 +95,25 @@ scrape_configs:
       - source_labels: [__meta_consul_health]
         regex: passing
         action: keep
+
+  - job_name: norn-durability-pilot
+    metrics_path: /metrics
+    consul_sd_configs:
+{% if security_phase in ['consul-clients', 'consul-tls-outgoing', 'consul-enforced', 'nomad-transition', 'enforced'] %}
+      - server: 127.0.0.1:8501
+        scheme: https
+        token: "{{ consul_observability_token }}"
+        services: [norn-durability-pilot-web-metrics]
+        tls_config:
+          ca_file: /etc/norn-observability/pki/consul-ca.pem
+          cert_file: /etc/norn-observability/pki/consul.pem
+          key_file: /etc/norn-observability/pki/consul-key.pem
+          server_name: server.dc1.consul
+{% else %}
+      - server: 127.0.0.1:8500
+        services: [norn-durability-pilot-web-metrics]
+{% endif %}
+    relabel_configs:
+      - source_labels: [__meta_consul_health]
+        regex: passing
+        action: keep

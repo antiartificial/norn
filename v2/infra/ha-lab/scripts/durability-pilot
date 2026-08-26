@@ -1,0 +1,153 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+# A deliberately explicit operator lane for a billable, disposable workload
+# qualification. It never obtains a provider credential itself: Terraform is
+# still the only layer that creates or destroys DigitalOcean resources.
+
+script_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+lab_root="$(cd "${script_dir}/.." && pwd)"
+terraform_dir="${lab_root}/terraform"
+command_name="${1:-help}"
+shift || true
+
+usage() {
+  cat <<'EOF'
+usage:
+  durability-pilot check
+  durability-pilot dependencies deploy REDPANDA_IMAGE@sha256:... VALKEY_IMAGE@sha256:...
+  durability-pilot dependencies status
+  durability-pilot exercise BASE_URL [COUNT]
+  durability-pilot fault redpanda|worker
+  durability-pilot teardown --confirm-disposable-lab [--purge-pilot]
+
+The pilot requires an already-converged HA lab, a Norn-managed
+norn-durability-pilot catalog entry, and a private route to BASE_URL. It does
+not create DigitalOcean resources, GitHub repositories, registry credentials,
+or application secrets. Use scripts/lab destroy --confirm-disposable-lab for
+full infrastructure teardown after retaining bounded evidence.
+EOF
+}
+
+require_digest() {
+  local image="$1"
+  [[ "${image}" =~ ^[A-Za-z0-9./_-]+@sha256:[a-f0-9]{64}$ ]] || {
+    echo "image must be an immutable @sha256 reference: ${image}" >&2
+    exit 2
+  }
+}
+
+first_ip() {
+  terraform -chdir="${terraform_dir}" output -json lab_nodes | jq -r 'to_entries | sort_by(.key) | first.value.public_ip'
+}
+
+remote_nomad() {
+  local command="$1"
+  ssh -o BatchMode=yes "root@$(first_ip)" "
+    set -euo pipefail
+    set -a
+    source /etc/norn/norn.env
+    set +a
+    export NOMAD_ADDR=\"\${NORN_NOMAD_ADDR}\"
+    ${command}
+  "
+}
+
+wait_dependencies() {
+  for _ in {1..90}; do
+    if remote_nomad "nomad job status -json norn-durability-dependencies | jq -e '
+      .JobSummary.Summary.valkey.Running == 1 and
+      .JobSummary.Summary.redpanda.Running == 1
+    ' >/dev/null"; then
+      echo "durability dependencies are running"
+      return 0
+    fi
+    sleep 2
+  done
+  echo "durability dependencies did not become ready" >&2
+  exit 1
+}
+
+case "${command_name}" in
+  check)
+    go -C "${lab_root}/durability-pilot" test ./...
+    if command -v terraform >/dev/null 2>&1; then
+      terraform -chdir="${terraform_dir}" fmt -check -recursive
+    fi
+    echo "durability pilot source and infrastructure formatting checks passed"
+    ;;
+  dependencies)
+    subcommand="${1:-}"
+    shift || true
+    case "${subcommand}" in
+      deploy)
+        redpanda_image="${1:-}"
+        valkey_image="${2:-}"
+        require_digest "${redpanda_image}"
+        require_digest "${valkey_image}"
+        job_file="${lab_root}/nomad/durability-dependencies.nomad.hcl"
+        scp -q "${job_file}" "root@$(first_ip):/tmp/norn-durability-dependencies.nomad.hcl"
+        remote_nomad "nomad job run -detach -var 'redpanda_image=${redpanda_image}' -var 'valkey_image=${valkey_image}' /tmp/norn-durability-dependencies.nomad.hcl >/dev/null"
+        wait_dependencies
+        ;;
+      status)
+        remote_nomad "nomad job status norn-durability-dependencies"
+        ;;
+      *) usage; exit 2 ;;
+    esac
+    ;;
+  exercise)
+    base_url="${1:-}"
+    count="${2:-20}"
+    [[ "${base_url}" =~ ^https?://[^[:space:]]+$ ]] || { echo "BASE_URL must be http(s)" >&2; exit 2; }
+    [[ "${count}" =~ ^[1-9][0-9]{0,2}$ ]] || { echo "COUNT must be 1-999" >&2; exit 2; }
+    for index in $(seq 1 "${count}"); do
+      key="pilot-$(uuidgen | tr '[:upper:]' '[:lower:]')"
+      curl --fail --silent --show-error --max-time 10 --retry 2 \
+        -H "Content-Type: application/json" -H "Idempotency-Key: ${key}" \
+        --data "{\"work\":\"qualification-${index}\"}" "${base_url}/v1/jobs" >/dev/null
+      # Repeat exactly one write key. Success proves the API's durable
+      # idempotency boundary, rather than merely relying on the queue.
+      curl --fail --silent --show-error --max-time 10 --retry 2 \
+        -H "Content-Type: application/json" -H "Idempotency-Key: ${key}" \
+        --data "{\"work\":\"qualification-${index}\"}" "${base_url}/v1/jobs" >/dev/null
+      for _ in {1..60}; do
+        status="$(curl --fail --silent --show-error --max-time 5 "${base_url}/v1/jobs/${key}")"
+        if jq -e '.completed == true and .attempts == 1' >/dev/null <<<"${status}"; then
+          break
+        fi
+        sleep 1
+      done
+      jq -e '.completed == true and .attempts == 1' >/dev/null <<<"${status}" || { echo "job ${key} did not complete exactly once" >&2; exit 1; }
+    done
+    curl --fail --silent --show-error --max-time 10 "${base_url}/metrics" | grep -q '^norn_durability_worker_completed_total '
+    echo "${count} durable jobs completed exactly once; inspect Grafana for pilot counters and latency."
+    ;;
+  fault)
+    target="${1:-}"
+    case "${target}" in
+      redpanda)
+        remote_nomad "allocation=\$(nomad job status -json norn-durability-dependencies | jq -r '.Allocations[] | select(.TaskGroup == \"redpanda\" and .ClientStatus == \"running\") | .ID' | head -n1); test -n \"\${allocation}\"; nomad alloc restart -task redpanda \"\${allocation}\""
+        wait_dependencies
+        ;;
+      worker)
+        remote_nomad "allocation=\$(nomad job status -json norn-durability-pilot | jq -r '.Allocations[] | select(.TaskGroup == \"worker\" and .ClientStatus == \"running\") | .ID' | head -n1); test -n \"\${allocation}\"; nomad alloc restart -task worker \"\${allocation}\""
+        echo "worker allocation restarted; rerun exercise to prove consumer-group recovery"
+        ;;
+      *) usage; exit 2 ;;
+    esac
+    ;;
+  teardown)
+    [[ "${1:-}" == "--confirm-disposable-lab" ]] || { echo "refusing teardown without --confirm-disposable-lab" >&2; exit 2; }
+    shift
+    purge_pilot=false
+    if [[ "${1:-}" == "--purge-pilot" ]]; then purge_pilot=true; shift; fi
+    [[ $# -eq 0 ]] || { usage; exit 2; }
+    remote_nomad "nomad job stop -purge norn-durability-dependencies"
+    if [[ "${purge_pilot}" == true ]]; then
+      remote_nomad "nomad job stop -purge norn-durability-pilot"
+    fi
+    echo "pilot dependency job purged; persistent dependency data remains on disposable lab nodes for evidence until full lab destroy."
+    ;;
+  help|*) usage ;;
+esac

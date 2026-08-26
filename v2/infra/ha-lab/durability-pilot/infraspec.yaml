@@ -1,0 +1,57 @@
+name: norn-durability-pilot
+regions:
+  tor1:
+    nomadRegion: global
+    datacenters: [dc1]
+    trafficWeight: 100
+primaryRegion: tor1
+repo:
+  # The disposable lab catalog maintains this isolated branch in the existing
+  # private HA-lab repository. That reuses the lab's read-only deploy key and
+  # avoids teaching the control plane a second broad GitHub credential.
+  url: git@github.com:antiartificial/norn-ha-toy.git
+  branch: durability-pilot
+  repoWeb: https://github.com/antiartificial/norn-ha-toy/tree/durability-pilot
+build:
+  # The catalog workflow replaces this placeholder with the immutable image
+  # emitted by build-durability-pilot. Never deploy a mutable tag.
+  image: registry.digitalocean.com/antiartificial/norn-durability-pilot@sha256:0000000000000000000000000000000000000000000000000000000000000000
+  test: >-
+    docker run --rm -v "$PWD:/src:ro" -w /src
+    golang@sha256:484ef6066fa69acb059fdfeda7ba2b8f7391f2ef6abc6f9b8411e669ebd56466
+    go test ./...
+processes:
+  web:
+    port: 8080
+    command: /durability-pilot api
+    health:
+      path: /readyz
+      interval: 10s
+      timeout: 3s
+    metrics:
+      enabled: true
+      path: /metrics
+    scaling:
+      min: 2
+      max: 3
+    resources:
+      cpu: 300
+      memory: 256
+  worker:
+    command: /durability-pilot worker
+    singleton: true
+    resources:
+      cpu: 300
+      memory: 256
+secrets:
+  - DATABASE_URL
+  - VALKEY_ADDR
+  - KAFKA_BROKERS
+env:
+  PILOT_TOPIC: norn-durability-work
+endpoints:
+  # Replace with a disposable, Access-protected test hostname before enabling
+  # deploy. The .invalid value keeps the checked-in template non-routable.
+  - url: https://norn-durability-pilot.invalid
+    region: tor1
+deploy: false
