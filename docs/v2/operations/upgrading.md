@@ -64,7 +64,10 @@ Script discovery is portable and deterministic: an explicit `--script` or
 `--repo` wins, followed by the current checkout, an adjacent installed script,
 the persistent managed host copy, and finally `$HOME/projects/norn`. It does
 not depend on a hard-coded operator account. Routine remote upgrades therefore
-use the same managed script that the previous promotion synchronized.
+use the same managed script that the previous promotion synchronized. A
+managed script likewise resolves its source checkout from an explicit
+`NORN_PLATFORM_REPO`, its own repository, the current directory, or
+`$HOME/projects/norn`, in that order.
 
 Use these environment variables when the repo or host layout differs:
 

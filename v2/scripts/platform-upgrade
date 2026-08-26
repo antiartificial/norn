@@ -73,7 +73,16 @@ esac
 ref="${1:-HEAD}"
 script_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 default_repo="$(cd "$script_dir/../.." && pwd)"
-repo="${NORN_PLATFORM_REPO:-$default_repo}"
+repo="${NORN_PLATFORM_REPO:-}"
+if [[ -z "$repo" ]]; then
+  for candidate in "$default_repo" "$PWD" "$HOME/projects/norn"; do
+    if [[ -f "$candidate/v2/Makefile" ]]; then
+      repo="$candidate"
+      break
+    fi
+  done
+fi
+repo="${repo:-$default_repo}"
 v2="$repo/v2"
 releases="${NORN_RELEASES_DIR:-$HOME/norn/releases}"
 current_link="${NORN_CURRENT_LINK:-$HOME/norn/current}"
