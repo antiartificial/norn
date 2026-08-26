@@ -9,8 +9,10 @@ graph TB
     Webhook[GitHub Webhook] --> API
 
     API --> DB[(PostgreSQL)]
-    API --> Nomad[Nomad]
-    API --> Consul[Consul]
+    API --> Connector{Workload connector}
+    Connector --> Nomad[Nomad]
+    Connector --> Consul[Consul]
+    Connector --> Apple[Apple container / local macOS]
     API --> SOPS[SOPS / age]
     API --> S3[S3 Storage]
     API --> Docker[Docker / Registry]
@@ -42,6 +44,9 @@ v2/api/
 ├── handler/           # HTTP request handlers
 ├── fleet/             # Versioned fleet schema, sanity checks, and cross-validation
 ├── pipeline/          # Deploy pipeline orchestrator
+├── connector/         # Additive workload lifecycle boundary
+├── engine/            # Apple Container local reconciliation and supervision
+├── runtime/           # Docker and Apple image-build adapters
 ├── nomad/             # Nomad client and job translator
 ├── consul/            # Consul client for service discovery
 ├── hub/               # WebSocket event hub
@@ -112,6 +117,7 @@ v2/ui/
 | Method | Path | Description |
 |--------|------|-------------|
 | GET | `/api/health` | Service health check |
+| GET | `/api/v1/host/runtime` | Active workload connector, runtime, capabilities, and limitations |
 | GET | `/api/v1/production/readiness` | Value-safe production admission and substrate report |
 | POST | `/api/v1/fleet/validate` | Strict norn-fleet schema and infrastructure sanity validation |
 | POST | `/api/v1/validate/infraspec` | Strict uploaded InfraSpec validation with optional fleet context |

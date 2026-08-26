@@ -1,6 +1,7 @@
 package handler
 
 import (
+	"context"
 	"fmt"
 	"net"
 	"net/http"
@@ -8,7 +9,7 @@ import (
 	"strings"
 	"time"
 
-	"norn/v2/api/consul"
+	"norn/v2/api/connector"
 	"norn/v2/api/model"
 )
 
@@ -65,10 +66,10 @@ func (h *Handler) buildServiceManifest() (model.ServiceManifest, error) {
 				entry.HealthPath = "/health"
 			}
 
-			if h.consul != nil {
-				health, err := h.consul.ServiceHealthChecks(serviceName)
+			if h.workloads != nil {
+				health, err := h.workloads.ServiceHealth(context.Background(), serviceName)
 				if (err != nil || len(health) == 0) && spec.App != serviceName {
-					health, err = h.consul.ServiceHealthChecks(spec.App)
+					health, err = h.workloads.ServiceHealth(context.Background(), spec.App)
 				}
 				if err == nil {
 					entry.Status = aggregateManifestStatus(health)
@@ -107,8 +108,8 @@ func (h *Handler) serviceMetrics(app, processName string, process model.Process,
 		Path:        path,
 		ServiceName: serviceName,
 	}
-	if h.consul != nil {
-		if health, err := h.consul.ServiceHealthChecks(serviceName); err == nil {
+	if h.workloads != nil {
+		if health, err := h.workloads.ServiceHealth(context.Background(), serviceName); err == nil {
 			for _, instance := range health {
 				metrics.Instances = append(metrics.Instances, model.ServiceInstance{
 					Node:    instance.Node,
@@ -258,7 +259,7 @@ func serviceMetadata(app, process, serviceName string) map[string]string {
 	return metadata
 }
 
-func aggregateManifestStatus(health []consul.ServiceHealth) string {
+func aggregateManifestStatus(health []connector.ServiceHealth) string {
 	if len(health) == 0 {
 		return "unknown"
 	}

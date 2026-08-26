@@ -383,6 +383,9 @@ func TestControlCapabilitiesAdvertisesHostMetrics(t *testing.T) {
 	if capability.Endpoints["hostMetrics"] != "/api/v1/host/metrics" {
 		t.Fatalf("hostMetrics endpoint = %q", capability.Endpoints["hostMetrics"])
 	}
+	if capability.Endpoints["hostRuntime"] != "/api/v1/host/runtime" {
+		t.Fatalf("hostRuntime endpoint = %q", capability.Endpoints["hostRuntime"])
+	}
 	if capability.Endpoints["productionReadiness"] != "/api/v1/production/readiness" {
 		t.Fatalf("productionReadiness endpoint = %q", capability.Endpoints["productionReadiness"])
 	}

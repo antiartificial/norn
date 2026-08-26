@@ -167,20 +167,8 @@ func (h *Handler) ContextDBOps(w http.ResponseWriter, r *http.Request) {
 	}
 	out.Secrets = ptrSecretStatus(h.secretStatus(spec))
 
-	if h.nomad != nil {
-		status := model.AppStatus{Spec: spec}
-		if jobStatus, err := h.nomad.JobStatus(spec.App); err == nil {
-			status.NomadStatus = jobStatus
-		}
-		if allocs, err := h.nomad.JobAllocations(spec.App); err == nil {
-			status.Allocations = enrichAllocations(allocs, h.nomad)
-			for _, alloc := range allocs {
-				if alloc.ClientStatus == "running" && alloc.DeploymentStatus != nil && alloc.DeploymentStatus.Healthy != nil && *alloc.DeploymentStatus.Healthy {
-					status.Healthy = true
-					break
-				}
-			}
-		}
+	if h.workloads != nil {
+		status, _ := h.connectorStatus(r.Context(), spec)
 		out.App = &status
 	}
 

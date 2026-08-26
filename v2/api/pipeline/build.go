@@ -10,6 +10,7 @@ import (
 	"strings"
 
 	"norn/v2/api/model"
+	containerruntime "norn/v2/api/runtime"
 	"norn/v2/api/saga"
 )
 
@@ -50,6 +51,21 @@ func (p *Pipeline) build(ctx context.Context, st *state, sg *saga.Saga) error {
 	}
 
 	if p.RegistryURL != "" && !st.preflight {
+		if p.ContainerRuntime != nil && p.ContainerRuntime.Backend() == containerruntime.AppleContainer {
+			if p.Production {
+				return fmt.Errorf("apple-container builds are development-only until provenance, SBOM, signing, and multi-architecture registry receipts are verified")
+			}
+			image, err := p.ContainerRuntime.Build(ctx, containerruntime.BuildOpts{
+				ContextDir: st.workDir, Dockerfile: dockerfilePath, Tag: localTag,
+				BuildArgs: map[string]string{"VERSION": st.commitSHA, "BUILD_NUMBER": buildNumber},
+				Push:      true,
+			})
+			if err != nil {
+				return err
+			}
+			st.imageTag = image
+			return nil
+		}
 		registryTag := fmt.Sprintf("%s/%s", p.RegistryURL, localTag)
 		registryRepository := fmt.Sprintf("%s/%s", p.RegistryURL, st.spec.App)
 		args := []string{
@@ -93,6 +109,17 @@ func (p *Pipeline) build(ctx context.Context, st *state, sg *saga.Saga) error {
 			st.imageTag = registryTag
 		}
 	} else {
+		if p.ContainerRuntime != nil && p.ContainerRuntime.Backend() == containerruntime.AppleContainer {
+			image, err := p.ContainerRuntime.Build(ctx, containerruntime.BuildOpts{
+				ContextDir: st.workDir, Dockerfile: dockerfilePath, Tag: localTag,
+				BuildArgs: map[string]string{"VERSION": st.commitSHA, "BUILD_NUMBER": buildNumber},
+			})
+			if err != nil {
+				return err
+			}
+			st.imageTag = image
+			return nil
+		}
 		cmd := exec.CommandContext(ctx, "docker", "build",
 			"--build-arg", fmt.Sprintf("VERSION=%s", st.commitSHA),
 			"--build-arg", fmt.Sprintf("BUILD_NUMBER=%s", buildNumber),

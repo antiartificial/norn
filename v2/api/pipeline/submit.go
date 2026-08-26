@@ -5,12 +5,19 @@ import (
 	"fmt"
 	"os"
 
+	"norn/v2/api/connector"
 	"norn/v2/api/model"
-	"norn/v2/api/nomad"
 	"norn/v2/api/saga"
 )
 
 func (p *Pipeline) submit(ctx context.Context, st *state, sg *saga.Saga) error {
+	workloads := p.workloadConnector()
+	if workloads == nil {
+		return fmt.Errorf("workload connector is not configured")
+	}
+	if err := workloads.Validate(st.spec, p.Production); err != nil {
+		return fmt.Errorf("workload connector validation: %w", err)
+	}
 	// Resolve secrets for env injection
 	env := make(map[string]string)
 	if p.Secrets != nil {
@@ -73,7 +80,7 @@ func (p *Pipeline) submit(ctx context.Context, st *state, sg *saga.Saga) error {
 
 	// Check for port conflicts before submitting
 	for _, proc := range st.spec.Processes {
-		if proc.Port > 0 && len(st.spec.Endpoints) > 0 {
+		if proc.Port > 0 && len(st.spec.Endpoints) > 0 && p.Nomad != nil {
 			if used, err := p.Nomad.UsedPorts(); err == nil {
 				for _, pa := range used {
 					if pa.Port == proc.Port && pa.JobID != st.spec.App {
@@ -89,34 +96,19 @@ func (p *Pipeline) submit(ctx context.Context, st *state, sg *saga.Saga) error {
 	}
 
 	for _, region := range st.spec.ResolvedRegions() {
-		if regionalServiceProcessCount(st.spec, region.Name) > 0 {
-			job := nomad.TranslateForRegion(st.spec, st.imageTag, env, region)
-			evalID, err := p.Nomad.SubmitJobRegion(job, region.NomadRegion)
-			if err != nil {
-				_ = p.DB.UpdateDeploymentRegion(ctx, st.deploymentID, region.Name, model.StatusFailed, "", err.Error(), 0)
-				return fmt.Errorf("submit nomad job in region %s: %w", region.Name, err)
-			}
-			st.regionEvals[region.Name] = evalID
-			_ = p.DB.UpdateDeploymentRegion(ctx, st.deploymentID, region.Name, model.StatusSubmitting, evalID, "", 0)
-			sg.Log(ctx, "nomad.submitted", fmt.Sprintf("nomad job submitted in %s (eval: %s)", region.Name, evalID), map[string]string{
-				"step": "submit", "evalId": evalID, "region": region.Name,
-			})
+		evalID, err := workloads.Submit(ctx, connector.SubmitRequest{
+			Spec: st.spec, Image: st.imageTag, Environment: env,
+			Region: region, DeploymentID: st.deploymentID,
+		})
+		if err != nil {
+			_ = p.DB.UpdateDeploymentRegion(ctx, st.deploymentID, region.Name, model.StatusFailed, "", err.Error(), 0)
+			return fmt.Errorf("submit workload in region %s: %w", region.Name, err)
 		}
-
-		for procName, proc := range st.spec.Processes {
-			if proc.Schedule == "" || !st.spec.ProcessRunsInRegion(proc, region.Name) {
-				continue
-			}
-			periodicJob := nomad.TranslatePeriodicForRegion(st.spec, procName, proc, st.imageTag, env, region)
-			periodicEvalID, err := p.Nomad.SubmitJobRegion(periodicJob, region.NomadRegion)
-			if err != nil {
-				_ = p.DB.UpdateDeploymentRegion(ctx, st.deploymentID, region.Name, model.StatusFailed, "", err.Error(), 0)
-				return fmt.Errorf("submit periodic job %s in region %s: %w", procName, region.Name, err)
-			}
-			sg.Log(ctx, "nomad.submitted", fmt.Sprintf("periodic job %s submitted in %s (eval: %s)", procName, region.Name, periodicEvalID), map[string]string{
-				"step": "submit", "region": region.Name,
-			})
-		}
+		st.regionEvals[region.Name] = evalID
+		_ = p.DB.UpdateDeploymentRegion(ctx, st.deploymentID, region.Name, model.StatusSubmitting, evalID, "", 0)
+		sg.Log(ctx, "workload.submitted", fmt.Sprintf("workload submitted in %s (receipt: %s)", region.Name, evalID), map[string]string{
+			"step": "submit", "receipt": evalID, "region": region.Name, "connector": workloads.Name(),
+		})
 		if regionalServiceProcessCount(st.spec, region.Name) == 0 {
 			_ = p.DB.UpdateDeploymentRegion(ctx, st.deploymentID, region.Name, model.StatusHealthy, "", "", 0)
 		}

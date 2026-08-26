@@ -99,6 +99,17 @@ func TestNetworkMode(t *testing.T) {
 	}
 }
 
+func TestWorkloadConnectorIsExplicit(t *testing.T) {
+	for input, want := range map[string]string{
+		"": "nomad-consul", "nomad": "nomad-consul", "apple": "apple-container",
+		"container": "apple-container", "unexpected": "unexpected",
+	} {
+		if got := workloadConnector(input); got != want {
+			t.Fatalf("workloadConnector(%q) = %q, want %q", input, got, want)
+		}
+	}
+}
+
 func TestDefaultUIDirUsesCurrentReleaseUI(t *testing.T) {
 	home := t.TempDir()
 	uiDir := filepath.Join(home, "norn", "current", "ui")

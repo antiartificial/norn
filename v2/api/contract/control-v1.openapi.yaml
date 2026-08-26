@@ -658,6 +658,18 @@ paths:
         '401': { $ref: '#/components/responses/Problem' }
         '403': { $ref: '#/components/responses/Problem' }
         '503': { $ref: '#/components/responses/Problem' }
+  /api/v1/host/runtime:
+    get:
+      operationId: getHostRuntime
+      description: Authenticated workload connector and container runtime inventory. Requires api:read.
+      responses:
+        '200':
+          description: Active connector plus available connector and runtime capabilities
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/HostRuntime' }
+        '401': { $ref: '#/components/responses/Problem' }
+        '403': { $ref: '#/components/responses/Problem' }
   /api/v1/production/readiness:
     get:
       operationId: getProductionReadiness
@@ -1604,6 +1616,44 @@ components:
         services: { type: object, additionalProperties: { type: string } }
         latestAssurance: { $ref: '#/components/schemas/Operation' }
         observedAt: { type: string, format: date-time }
+    ContainerRuntime:
+      type: object
+      required: [backend, available, taskDriver, buildCmd]
+      properties:
+        backend: { type: string, enum: [docker, container] }
+        version: { type: string }
+        available: { type: boolean }
+        taskDriver: { type: string }
+        buildCmd: { type: string }
+        capabilities: { type: array, items: { type: string } }
+    RuntimeBackend:
+      type: object
+      required: [name, available, current]
+      properties:
+        name: { type: string }
+        available: { type: boolean }
+        current: { type: boolean }
+    WorkloadConnector:
+      type: object
+      required: [name, scheduler, discovery, runtime, available, productionReady, localOnly, capabilities]
+      properties:
+        name: { type: string, enum: [nomad-consul, apple-container] }
+        scheduler: { type: string }
+        discovery: { type: string }
+        runtime: { type: string }
+        available: { type: boolean }
+        productionReady: { type: boolean }
+        localOnly: { type: boolean }
+        capabilities: { type: array, items: { type: string } }
+        limitations: { type: array, items: { type: string } }
+    HostRuntime:
+      type: object
+      required: [active, backends, connector, connectors]
+      properties:
+        active: { $ref: '#/components/schemas/ContainerRuntime' }
+        backends: { type: array, items: { $ref: '#/components/schemas/RuntimeBackend' } }
+        connector: { $ref: '#/components/schemas/WorkloadConnector' }
+        connectors: { type: array, items: { $ref: '#/components/schemas/WorkloadConnector' } }
     EventBounds:
       type: object
       required: [oldestCursor, latestCursor, retainedEvents]

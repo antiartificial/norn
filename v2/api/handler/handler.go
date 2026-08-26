@@ -15,12 +15,15 @@ import (
 
 	"norn/v2/api/beacon"
 	"norn/v2/api/config"
+	"norn/v2/api/connector"
 	"norn/v2/api/consul"
+	"norn/v2/api/engine"
 	"norn/v2/api/githubapp"
 	"norn/v2/api/hub"
 	"norn/v2/api/nomad"
 	"norn/v2/api/pipeline"
 	"norn/v2/api/redpanda"
+	containerruntime "norn/v2/api/runtime"
 	"norn/v2/api/saga"
 	"norn/v2/api/secrets"
 	"norn/v2/api/storage"
@@ -37,6 +40,9 @@ type Handler struct {
 	db                     *store.DB
 	nomad                  *nomad.Client
 	consul                 *consul.Client
+	workloads              connector.Connector
+	localEngine            *engine.Engine
+	containerRuntime       *containerruntime.Runtime
 	ws                     *hub.Hub
 	cfg                    *config.Config
 	pipeline               *pipeline.Pipeline
@@ -73,11 +79,44 @@ func New(db *store.DB, n *nomad.Client, c *consul.Client, ws *hub.Hub, cfg *conf
 		redpanda:    rp,
 		access:      NewAccessLog(defaultAccessLogLimit),
 		hostMetrics: newHostMetricsCache(defaultHostMetricsSampler, time.Now, defaultHostMetricsSamplePeriod),
+		workloads:   connector.NewNomadConsul(n, c),
 	}
 	if cfg != nil && githubapp.Configured(fleetGitHubConfig(cfg)) {
 		h.fleetGitHub, h.fleetGitHubConfigError = githubapp.New(fleetGitHubConfig(cfg), nil)
 	}
 	return h
+}
+
+// ConfigureWorkloads installs the explicit workload connector selected at
+// startup. Keeping this separate from New preserves the embedded/test API and
+// makes accidental backend auto-detection impossible.
+func (h *Handler) ConfigureWorkloads(workloads connector.Connector, eng *engine.Engine, runtime *containerruntime.Runtime) {
+	if workloads != nil {
+		h.workloads = workloads
+	}
+	h.localEngine = eng
+	h.containerRuntime = runtime
+}
+
+func (h *Handler) usesNomadConnector() bool {
+	if h.workloads != nil {
+		return h.workloads.Name() == connector.NomadConsul
+	}
+	// Compatibility for focused handler tests and embedded callers. The server
+	// always injects an explicit connector before serving requests.
+	return h.nomad != nil
+}
+
+func (h *Handler) requireNomadConnector(w http.ResponseWriter) bool {
+	if !h.usesNomadConnector() {
+		writeError(w, http.StatusNotImplemented, "operation requires the nomad-consul workload connector")
+		return false
+	}
+	if h.nomad == nil {
+		writeError(w, http.StatusServiceUnavailable, "nomad not connected")
+		return false
+	}
+	return true
 }
 
 func fleetGitHubConfig(cfg *config.Config) githubapp.Config {

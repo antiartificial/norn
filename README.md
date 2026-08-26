@@ -62,6 +62,7 @@ state credentials remain in the protected infrastructure runner.
 | pnpm | 10+ | Front-end dependencies |
 | PostgreSQL | 16+ | Durable control-plane state |
 | Docker | 24+ | Local development builds |
+| Apple Container | optional | Native macOS 26 development connector |
 | Nomad | 1.9+ | Scheduling |
 | Consul | 1.20+ | Discovery and health |
 | SOPS + age | 3.9+ / 1.2+ | Secret encryption |

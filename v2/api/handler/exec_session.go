@@ -15,6 +15,7 @@ import (
 	"github.com/gorilla/websocket"
 	"github.com/jackc/pgx/v5"
 
+	"norn/v2/api/connector"
 	"norn/v2/api/hub"
 	"norn/v2/api/store"
 )
@@ -34,6 +35,10 @@ func (h *Handler) CreateExecSession(w http.ResponseWriter, r *http.Request) {
 	principal, ok := AccessPrincipalFromRequest(r)
 	if !ok || principal.TokenID == "" || principal.DeviceID == "" {
 		WriteControlProblem(w, r, http.StatusUnauthorized, "managed_device_required", "exec sessions require an enrolled device token")
+		return
+	}
+	if h.workloads != nil && h.workloads.Name() != connector.NomadConsul {
+		WriteControlProblem(w, r, http.StatusNotImplemented, "exec_protocol_not_supported", "the formal exec-session protocol is not yet supported by the active workload connector; use the scoped legacy exec endpoint for local development")
 		return
 	}
 	if h.nomad == nil {
@@ -165,6 +170,10 @@ func (h *Handler) CancelExecSession(w http.ResponseWriter, r *http.Request) {
 }
 
 func (h *Handler) ExecSessionStream(w http.ResponseWriter, r *http.Request) {
+	if h.workloads != nil && h.workloads.Name() != connector.NomadConsul {
+		WriteControlProblem(w, r, http.StatusNotImplemented, "exec_protocol_not_supported", "the formal exec-session protocol is not supported by the active workload connector")
+		return
+	}
 	if h.nomad == nil {
 		WriteControlProblem(w, r, http.StatusServiceUnavailable, "nomad_unavailable", "Nomad is not connected")
 		return

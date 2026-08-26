@@ -167,7 +167,7 @@ func (h *Handler) reconcileServiceHealth(ctx context.Context, event model.Beacon
 }
 
 func (h *Handler) reconcileCron(ctx context.Context, event model.BeaconEvent, decision eventReconcileDecision) eventReconcileDecision {
-	if h.nomad == nil {
+	if !h.usesNomadConnector() || h.nomad == nil {
 		decision.Reason = "nomad is not connected"
 		return decision
 	}
@@ -253,37 +253,40 @@ func taskRestartStable(occurredAt, now time.Time) bool {
 }
 
 func (h *Handler) appRunningHealthy(app string) (bool, []string) {
-	if h.nomad == nil || app == "" {
+	if h.workloads == nil || app == "" {
 		return false, nil
 	}
-	status, err := h.nomad.JobStatus(app)
+	status, err := h.workloads.Status(context.Background(), app)
 	if err != nil || status != "running" {
 		return false, []string{fmt.Sprintf("jobStatus=%s", emptyIf(status, "unknown"))}
 	}
-	allocs, err := h.nomad.JobAllocations(app)
-	if err != nil {
-		return false, []string{"allocations unavailable"}
+	spec := h.findSpec(app)
+	if spec == nil {
+		return false, []string{"infraspec unavailable"}
 	}
-	for _, alloc := range allocs {
-		if alloc.ClientStatus != "running" {
+	for _, region := range spec.ResolvedRegions() {
+		allocs, pollErr := h.workloads.Poll(context.Background(), app, region)
+		if pollErr != nil {
 			continue
 		}
-		if alloc.DeploymentStatus != nil && alloc.DeploymentStatus.Healthy != nil && *alloc.DeploymentStatus.Healthy {
-			return true, []string{"jobStatus=running", fmt.Sprintf("healthyAlloc=%s", shortID(alloc.ID))}
+		for _, alloc := range allocs {
+			if alloc.Status == "running" && alloc.Healthy != nil && *alloc.Healthy {
+				return true, []string{"jobStatus=running", fmt.Sprintf("healthyAlloc=%s", alloc.ID)}
+			}
 		}
 	}
 	return false, []string{"jobStatus=running", "healthyAlloc=none"}
 }
 
 func (h *Handler) servicePassing(app, process string) (bool, []string) {
-	if h.consul == nil || app == "" {
+	if h.workloads == nil || app == "" {
 		return false, nil
 	}
 	if process == "" {
 		return h.appRunningHealthy(app)
 	}
 	serviceName := fmt.Sprintf("%s-%s", app, process)
-	health, err := h.consul.ServiceHealthChecks(serviceName)
+	health, err := h.workloads.ServiceHealth(context.Background(), serviceName)
 	if err != nil || len(health) == 0 {
 		return false, []string{fmt.Sprintf("service=%s unavailable", serviceName)}
 	}
@@ -296,19 +299,22 @@ func (h *Handler) servicePassing(app, process string) (bool, []string) {
 }
 
 func (h *Handler) currentAllocationExists(app, allocID string) bool {
-	if h.nomad == nil || app == "" || allocID == "" {
+	if h.workloads == nil || app == "" || allocID == "" {
 		return false
 	}
-	allocs, err := h.nomad.JobAllocations(app)
-	if err != nil {
+	spec := h.findSpec(app)
+	if spec == nil {
 		return false
 	}
-	for _, alloc := range allocs {
-		if alloc.ClientStatus == "complete" || alloc.ClientStatus == "failed" || alloc.ClientStatus == "lost" {
+	for _, region := range spec.ResolvedRegions() {
+		allocs, err := h.workloads.Poll(context.Background(), app, region)
+		if err != nil {
 			continue
 		}
-		if strings.HasPrefix(alloc.ID, allocID) {
-			return true
+		for _, alloc := range allocs {
+			if strings.HasPrefix(alloc.ID, allocID) {
+				return true
+			}
 		}
 	}
 	return false

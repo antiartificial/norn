@@ -6,6 +6,8 @@ import (
 	"strings"
 	"testing"
 
+	"norn/v2/api/connector"
+	"norn/v2/api/engine"
 	"norn/v2/api/model"
 )
 
@@ -62,6 +64,17 @@ func TestDevelopmentAdmissionPreservesCompatibility(t *testing.T) {
 	p := &Pipeline{}
 	if err := p.admission(context.Background(), &state{}, nil); err != nil {
 		t.Fatalf("development admission failed: %v", err)
+	}
+}
+
+func TestConnectorAdmissionRunsBeforeMutableDeployStages(t *testing.T) {
+	p := &Pipeline{Workloads: connector.NewApple(&engine.Engine{})}
+	st := &state{spec: &model.InfraSpec{App: "sample", Processes: map[string]model.Process{
+		"web": {Port: 8080, Scaling: &model.Scaling{Min: 2}},
+	}}}
+	err := p.admission(context.Background(), st, nil)
+	if err == nil || !strings.Contains(err.Error(), "workload connector admission blocked") || !strings.Contains(err.Error(), "multiple local allocations") {
+		t.Fatalf("connector admission error = %v", err)
 	}
 }
 

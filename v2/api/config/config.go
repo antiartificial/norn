@@ -47,6 +47,10 @@ type Config struct {
 	CosignPath               string
 	TrivyPath                string
 	NetworkMode              string // local, tailnet, public
+	// WorkloadConnector selects the scheduler/runtime boundary. nomad-consul
+	// remains the production default; apple-container is an explicit local
+	// macOS connector and is never selected by auto-detection.
+	WorkloadConnector string
 
 	NomadAddr  string // Nomad API address
 	ConsulAddr string // Consul API address
@@ -123,6 +127,7 @@ func Load() *Config {
 		CosignPath:                envOr("NORN_COSIGN_PATH", "cosign"),
 		TrivyPath:                 envOr("NORN_TRIVY_PATH", "trivy"),
 		NetworkMode:               networkMode(envOr("NORN_NETWORK_MODE", "local")),
+		WorkloadConnector:         workloadConnector(envOr("NORN_WORKLOAD_CONNECTOR", "nomad-consul")),
 
 		NomadAddr:           envOr("NORN_NOMAD_ADDR", "http://localhost:4646"),
 		ConsulAddr:          envOr("NORN_CONSUL_ADDR", "http://localhost:8500"),
@@ -291,5 +296,16 @@ func networkMode(mode string) string {
 		return "public"
 	default:
 		return "local"
+	}
+}
+
+func workloadConnector(value string) string {
+	switch strings.ToLower(strings.TrimSpace(value)) {
+	case "apple", "container", "apple-container":
+		return "apple-container"
+	case "", "nomad", "nomad-consul":
+		return "nomad-consul"
+	default:
+		return strings.ToLower(strings.TrimSpace(value))
 	}
 }

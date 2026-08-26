@@ -520,7 +520,7 @@ func (h *Handler) buildOperatorCronOverview(r *http.Request) (operatorCronOvervi
 				}
 			}
 			loc := loadOperatorLocation(entry.Timezone)
-			if h.nomad != nil {
+			if h.usesNomadConnector() && h.nomad != nil {
 				info, err := h.nomad.PeriodicJobSchedule(entry.ParentJobID)
 				if err != nil {
 					entry.Risk = "parent_unavailable"

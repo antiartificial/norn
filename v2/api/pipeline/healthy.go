@@ -28,6 +28,10 @@ func (p *Pipeline) healthy(ctx context.Context, st *state, sg *saga.Saga) error 
 }
 
 func (p *Pipeline) waitHealthyRegion(ctx context.Context, st *state, sg *saga.Saga, region model.ResolvedRegion) error {
+	workloads := p.workloadConnector()
+	if workloads == nil {
+		return fmt.Errorf("workload connector is not configured")
+	}
 	deadline := time.After(5 * time.Minute)
 	ticker := time.NewTicker(2 * time.Second)
 	defer ticker.Stop()
@@ -41,7 +45,7 @@ func (p *Pipeline) waitHealthyRegion(ctx context.Context, st *state, sg *saga.Sa
 		case <-deadline:
 			return fmt.Errorf("timeout waiting for %s to become healthy in region %s", st.spec.App, region.Name)
 		case <-ticker.C:
-			allocs, err := p.Nomad.PollAllocationsRegion(st.spec.App, region.NomadRegion)
+			allocs, err := workloads.Poll(ctx, st.spec.App, region)
 			if err != nil {
 				continue
 			}
@@ -53,10 +57,10 @@ func (p *Pipeline) waitHealthyRegion(ctx context.Context, st *state, sg *saga.Sa
 			pending := 0
 
 			for _, a := range allocs {
-				key := fmt.Sprintf("%s:%v", a.ClientStatus, a.Healthy)
+				key := fmt.Sprintf("%s:%v", a.Status, a.Healthy)
 				if prev[a.ID] == key {
 					// No state change — skip
-					if a.ClientStatus == "running" && a.Healthy != nil && *a.Healthy {
+					if a.Status == "running" && a.Healthy != nil && *a.Healthy {
 						healthy++
 					} else {
 						pending++
@@ -67,7 +71,7 @@ func (p *Pipeline) waitHealthyRegion(ctx context.Context, st *state, sg *saga.Sa
 
 				var msg string
 				switch {
-				case a.ClientStatus != "running":
+				case a.Status != "running":
 					msg = fmt.Sprintf("allocation %s pending on %s", a.ID, a.NodeName)
 					pending++
 				case a.Healthy == nil || !*a.Healthy:
@@ -82,7 +86,7 @@ func (p *Pipeline) waitHealthyRegion(ctx context.Context, st *state, sg *saga.Sa
 					"step":        "healthy",
 					"allocId":     a.ID,
 					"node":        a.NodeName,
-					"allocStatus": a.ClientStatus,
+					"allocStatus": a.Status,
 					"region":      region.Name,
 				}
 				if a.Healthy != nil {
@@ -98,7 +102,7 @@ func (p *Pipeline) waitHealthyRegion(ctx context.Context, st *state, sg *saga.Sa
 						"message":     msg,
 						"allocId":     a.ID,
 						"node":        a.NodeName,
-						"allocStatus": a.ClientStatus,
+						"allocStatus": a.Status,
 						"region":      region.Name,
 					},
 				})

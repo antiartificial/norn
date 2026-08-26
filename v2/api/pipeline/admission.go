@@ -15,6 +15,15 @@ import (
 // production profile must verify the actual source provenance, not only the
 // requested ref or repository declaration.
 func (p *Pipeline) admission(_ context.Context, st *state, _ *saga.Saga) error {
+	// Connector admission belongs before builds, snapshots, migrations, or any
+	// scheduler mutation. In particular, the local Apple connector rejects
+	// unsupported regional, scheduled, canary, and endpoint-scaling shapes here
+	// instead of discovering the mismatch after a database migration.
+	if workloads := p.workloadConnector(); workloads != nil {
+		if err := workloads.Validate(st.spec, p.Production); err != nil {
+			return fmt.Errorf("workload connector admission blocked: %w", err)
+		}
+	}
 	if !p.Production {
 		return nil
 	}

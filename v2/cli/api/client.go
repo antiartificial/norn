@@ -235,6 +235,40 @@ type NetworkStatus struct {
 	ConsulAddr string `json:"consulAddr,omitempty"`
 }
 
+type RuntimeInfo struct {
+	Backend      string   `json:"backend"`
+	Version      string   `json:"version"`
+	Available    bool     `json:"available"`
+	TaskDriver   string   `json:"taskDriver"`
+	BuildCmd     string   `json:"buildCmd"`
+	Capabilities []string `json:"capabilities"`
+}
+
+type RuntimeBackend struct {
+	Name      string `json:"name"`
+	Available bool   `json:"available"`
+	Current   bool   `json:"current"`
+}
+
+type WorkloadConnector struct {
+	Name            string   `json:"name"`
+	Scheduler       string   `json:"scheduler"`
+	Discovery       string   `json:"discovery"`
+	Runtime         string   `json:"runtime"`
+	Available       bool     `json:"available"`
+	ProductionReady bool     `json:"productionReady"`
+	LocalOnly       bool     `json:"localOnly"`
+	Capabilities    []string `json:"capabilities"`
+	Limitations     []string `json:"limitations"`
+}
+
+type RuntimeResponse struct {
+	Active     RuntimeInfo         `json:"active"`
+	Backends   []RuntimeBackend    `json:"backends"`
+	Connector  WorkloadConnector   `json:"connector"`
+	Connectors []WorkloadConnector `json:"connectors"`
+}
+
 type Deployment struct {
 	ID            string   `json:"id"`
 	App           string   `json:"app"`
@@ -892,6 +926,14 @@ func (c *Client) Health() (*HealthStatus, error) {
 		return nil, err
 	}
 	return &h, nil
+}
+
+func (c *Client) RuntimeInfo() (*RuntimeResponse, error) {
+	var response RuntimeResponse
+	if err := c.get("/api/v1/host/runtime", &response); err != nil {
+		return nil, err
+	}
+	return &response, nil
 }
 
 func (c *Client) ProductionReadiness() (*ProductionReadinessReport, error) {

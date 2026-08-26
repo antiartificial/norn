@@ -105,6 +105,7 @@ All configuration is via environment variables:
 | `NORN_COSIGN_PATH` | `cosign` | Cosign executable used by artifact admission |
 | `NORN_TRIVY_PATH` | `trivy` | Trivy executable used by artifact admission |
 | `NORN_NETWORK_MODE` | `local` | Reachability mode used by health, manifest, and validation (`local`, `tailnet`, or `public`) |
+| `NORN_WORKLOAD_CONNECTOR` | `nomad-consul` | Explicit scheduler/runtime connector. `apple-container` is optional local macOS development mode; production requires the default |
 | `NORN_NOMAD_ADDR` | `http://localhost:4646` | Nomad API address |
 | `NORN_CONSUL_ADDR` | `http://localhost:8500` | Consul API address |
 | `NORN_INGRESS_URL` | — | Stable regional Traefik origin used for endpoint routing, such as `http://127.0.0.1:18080` |

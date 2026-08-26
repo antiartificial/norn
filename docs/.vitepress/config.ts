@@ -61,6 +61,7 @@ export default withMermaid(
             text: 'Infrastructure',
             items: [
               { text: 'Nomad & Consul', link: '/v2/infrastructure/nomad-consul' },
+              { text: 'Workload Connectors', link: '/v2/infrastructure/workload-connectors' },
               { text: 'Fleet GitOps', link: '/v2/infrastructure/fleet' },
               { text: 'Secrets', link: '/v2/infrastructure/secrets' },
               { text: 'Volumes', link: '/v2/infrastructure/volumes' },

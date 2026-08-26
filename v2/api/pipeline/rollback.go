@@ -8,9 +8,9 @@ import (
 
 	"github.com/google/uuid"
 
+	"norn/v2/api/connector"
 	"norn/v2/api/hub"
 	"norn/v2/api/model"
-	"norn/v2/api/nomad"
 	"norn/v2/api/saga"
 )
 
@@ -100,8 +100,9 @@ func (p *Pipeline) RollbackRegionsOperationContext(ctx context.Context, spec *mo
 
 func (p *Pipeline) runRollback(ctx context.Context, spec *model.InfraSpec, deploy *model.Deployment, sg *saga.Saga, imageTag string, operationID string, attempt int, requestedRegions []string) {
 	regions := selectedResolvedRegions(spec, requestedRegions)
+	workloads := p.workloadConnector()
 	var startErr error
-	failureBody := "Rollback could not start because Nomad is not connected."
+	failureBody := "Rollback could not start because the workload connector is not available."
 	if len(regions) == 0 {
 		startErr = fmt.Errorf("rollback has no valid region targets")
 		failureBody = "Rollback was blocked because no valid region target was selected."
@@ -114,8 +115,10 @@ func (p *Pipeline) runRollback(ctx context.Context, spec *model.InfraSpec, deplo
 			failureBody = "Rollback was blocked because the pinned registry artifact could not be verified."
 		}
 	}
-	if startErr == nil && p.Nomad == nil {
-		startErr = fmt.Errorf("nomad not connected")
+	if startErr == nil && workloads == nil {
+		startErr = fmt.Errorf("workload connector is not configured")
+	} else if startErr == nil {
+		startErr = workloads.Validate(spec, p.Production)
 	}
 	if startErr != nil {
 		_ = p.DB.UpdateDeployment(ctx, deploy.ID, model.StatusFailed)
@@ -158,8 +161,10 @@ func (p *Pipeline) runRollback(ctx context.Context, spec *model.InfraSpec, deplo
 				if regionalServiceProcessCount(spec, region.Name) == 0 {
 					continue
 				}
-				job := nomad.TranslateForRegion(spec, imageTag, env, region)
-				evalID, err := p.Nomad.SubmitJobRegion(job, region.NomadRegion)
+				evalID, err := workloads.Submit(ctx, connector.SubmitRequest{
+					Spec: spec, Image: imageTag, Environment: env,
+					Region: region, DeploymentID: deploy.ID,
+				})
 				if err != nil {
 					_ = p.DB.UpdateDeploymentRegion(ctx, deploy.ID, region.Name, model.StatusFailed, "", err.Error(), 0)
 					return fmt.Errorf("submit rollback in region %s: %w", region.Name, err)
@@ -173,7 +178,7 @@ func (p *Pipeline) runRollback(ctx context.Context, spec *model.InfraSpec, deplo
 				if regionalServiceProcessCount(spec, region.Name) == 0 {
 					continue
 				}
-				if err := p.Nomad.WaitHealthyRegion(ctx, spec.App, region.NomadRegion, 5*time.Minute); err != nil {
+				if err := workloads.WaitHealthy(ctx, spec.App, region, 5*time.Minute); err != nil {
 					_ = p.DB.UpdateDeploymentRegion(ctx, deploy.ID, region.Name, model.StatusFailed, "", err.Error(), 0)
 					return fmt.Errorf("rollback readiness in region %s: %w", region.Name, err)
 				}

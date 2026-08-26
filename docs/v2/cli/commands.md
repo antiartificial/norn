@@ -12,6 +12,21 @@ norn status
 
 Displays a table of all discovered apps with live health indicators, latest deployment image, and resolved commit.
 
+## runtime
+
+Show the explicitly selected workload connector, image runtime, availability,
+capabilities, and enforced limitations.
+
+```bash
+norn runtime
+```
+
+The command reads the versioned `/api/v1/host/runtime` control endpoint. It is
+the quickest way to confirm that a host is using the production
+`nomad-consul` connector or the development-only `apple-container` connector.
+Selection is server-side through `NORN_WORKLOAD_CONNECTOR`; this command does
+not mutate the active runtime.
+
 ## app
 
 Detailed view of a single app including processes, object storage buckets, recent deployments, and infrastructure.

@@ -11,11 +11,13 @@ import (
 	"github.com/google/uuid"
 
 	"norn/v2/api/beacon"
+	"norn/v2/api/connector"
 	"norn/v2/api/consul"
 	"norn/v2/api/hub"
 	"norn/v2/api/model"
 	"norn/v2/api/nomad"
 	"norn/v2/api/redpanda"
+	containerruntime "norn/v2/api/runtime"
 	"norn/v2/api/saga"
 	"norn/v2/api/secrets"
 	"norn/v2/api/storage"
@@ -26,6 +28,8 @@ type Pipeline struct {
 	DB                       *store.DB
 	Nomad                    *nomad.Client
 	Consul                   *consul.Client
+	Workloads                connector.Connector
+	ContainerRuntime         *containerruntime.Runtime
 	WS                       *hub.Hub
 	SagaStore                saga.Store
 	Secrets                  *secrets.Manager
@@ -48,6 +52,18 @@ type Pipeline struct {
 	ArtifactDenySeverities   []string
 	CosignPath               string
 	TrivyPath                string
+}
+
+func (p *Pipeline) workloadConnector() connector.Connector {
+	if p.Workloads != nil {
+		return p.Workloads
+	}
+	// Compatibility for tests and embedded callers that still construct the
+	// pipeline directly. The server always injects an explicit connector.
+	if p.Nomad != nil {
+		return connector.NewNomadConsul(p.Nomad, p.Consul)
+	}
+	return nil
 }
 
 type state struct {

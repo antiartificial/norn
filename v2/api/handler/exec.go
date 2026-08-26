@@ -14,8 +14,8 @@ import (
 
 func (h *Handler) ExecAlloc(w http.ResponseWriter, r *http.Request) {
 	id := chi.URLParam(r, "id")
-	if h.nomad == nil {
-		writeError(w, http.StatusServiceUnavailable, "nomad not connected")
+	if h.workloads == nil {
+		writeError(w, http.StatusServiceUnavailable, "workload connector not available")
 		return
 	}
 
@@ -47,7 +47,7 @@ func (h *Handler) ExecAlloc(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 	}
-	allocID, taskName, err := h.nomad.ResolveExecTarget(id, allocID, processName)
+	allocID, taskName, err := h.workloads.ResolveExecTarget(r.Context(), id, allocID, processName)
 	if err != nil {
 		writeError(w, http.StatusNotFound, err.Error())
 		return
@@ -86,7 +86,7 @@ func (h *Handler) ExecAlloc(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	if err := h.nomad.ExecWebSocket(allocID, taskName, cmd, ws); err != nil {
+	if err := h.workloads.ExecWebSocket(r.Context(), allocID, taskName, cmd, ws); err != nil {
 		log.Printf("exec error for %q/%q: %q", id, allocID, err.Error())
 	}
 }

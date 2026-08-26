@@ -31,18 +31,26 @@ func (h *Handler) HostStatus(w http.ResponseWriter, r *http.Request) {
 			out.LatestAssurance = &operations[0]
 		}
 	}
-	if h.nomad != nil {
+	if h.cfg.WorkloadConnector == "nomad-consul" && h.nomad != nil {
 		if err := h.nomad.Healthy(); err != nil {
 			out.Services["nomad"], out.Status = "down", "degraded"
 		} else {
 			out.Services["nomad"] = "up"
 		}
 	}
-	if h.consul != nil {
+	if h.cfg.WorkloadConnector == "nomad-consul" && h.consul != nil {
 		if err := h.consul.Healthy(); err != nil {
 			out.Services["consul"], out.Status = "down", "degraded"
 		} else {
 			out.Services["consul"] = "up"
+		}
+	}
+	if h.workloads != nil {
+		name := "workload-connector/" + h.workloads.Name()
+		if err := h.workloads.Healthy(r.Context()); err != nil {
+			out.Services[name], out.Status = "down", "degraded"
+		} else {
+			out.Services[name] = "up"
 		}
 	}
 	writeJSON(w, out)

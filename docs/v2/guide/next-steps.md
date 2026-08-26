@@ -4,7 +4,7 @@ This page tracks the current development direction for Norn v2. It is intentiona
 
 ## Current Baseline
 
-Norn v2 is the active development path. It uses Nomad for scheduling, Consul for service health, local Docker builds for images, SOPS/age for secrets, and cloudflared for external routing.
+Norn v2 is the active development path. Its production workload connector uses Nomad for scheduling, Consul for service health, local Docker builds for images, SOPS/age for secrets, and cloudflared for external routing. An explicit, development-only Apple Container connector adds native macOS lifecycle, readiness, logs, exec, resource sampling, and restart reconciliation without removing the Nomad/Consul path.
 
 The current working feature set includes:
 
