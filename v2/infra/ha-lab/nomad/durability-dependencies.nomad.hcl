@@ -54,7 +54,8 @@ job "norn-durability-dependencies" {
       driver = "docker"
 
       config {
-        image = var.valkey_image
+        image        = var.valkey_image
+        network_mode = "host"
         args = [
           "valkey-server",
           "--port", "16379",
@@ -82,7 +83,9 @@ job "norn-durability-dependencies" {
         static = 19092
       }
       port "admin" {
-        static = 19644
+        # Redpanda 26.x removed the rpk start --admin-addr flags. The
+        # single-broker test image exposes its admin API on the default 9644.
+        static = 9644
       }
     }
 
@@ -112,14 +115,13 @@ job "norn-durability-dependencies" {
       driver = "docker"
 
       config {
-        image   = var.redpanda_image
-        command = "redpanda"
+        image        = var.redpanda_image
+        command      = "redpanda"
+        network_mode = "host"
         args = [
           "start",
           "--kafka-addr", "PLAINTEXT://0.0.0.0:19092",
           "--advertise-kafka-addr", "PLAINTEXT://${NOMAD_IP_kafka}:19092",
-          "--admin-addr", "0.0.0.0:19644",
-          "--advertise-admin-addr", "${NOMAD_IP_admin}:19644",
           "--mode", "dev-container",
           "--smp", "1",
           "--default-log-level=info",

@@ -103,6 +103,12 @@ case "${command_name}" in
   durability-pilot)
     "${script_dir}/durability-pilot" "$@"
     ;;
+  deploy-durability-pilot)
+    "${script_dir}/deploy-durability-pilot" "$@"
+    ;;
+  release-durability-pilot)
+    "${script_dir}/release-durability-pilot" "$@"
+    ;;
   verify)
     "${script_dir}/verify" "$@"
     ;;
@@ -191,6 +197,8 @@ Norn DigitalOcean HA lab
   lab converge
   lab deploy-traefik
   lab durability-pilot check|dependencies|exercise|fault|teardown
+  lab deploy-durability-pilot [prepare|deploy|rollback|all] [REF]
+  lab release-durability-pilot VERSION https://HOST
   lab verify
   lab receipt start KIND TARGET
   lab receipt complete ID passed key=value

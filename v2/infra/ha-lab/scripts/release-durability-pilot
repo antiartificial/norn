@@ -1,0 +1,45 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+script_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+version="${1:-}"
+endpoint="${2:-}"
+[[ "${version}" =~ ^[A-Za-z0-9._-]{1,40}$ ]] || {
+  echo "usage: release-durability-pilot VERSION https://HOST" >&2
+  exit 2
+}
+[[ "${endpoint}" =~ ^https://[A-Za-z0-9.-]+(:[0-9]{1,5})?$ ]] && [[ "${endpoint}" != *.invalid ]] || {
+  echo "endpoint must be a concrete HTTPS origin without a path" >&2
+  exit 2
+}
+
+build_log="$(mktemp /tmp/norn-pilot-build.XXXXXX)"
+catalog_log="$(mktemp /tmp/norn-pilot-catalog.XXXXXX)"
+cleanup() {
+  rm -f -- "${build_log}" "${catalog_log}"
+}
+trap cleanup EXIT
+chmod 0600 "${build_log}" "${catalog_log}"
+
+"${script_dir}/build-durability-pilot" "${version}" | tee "${build_log}"
+image="$(tail -n 1 "${build_log}")"
+[[ "${image}" =~ ^registry\.digitalocean\.com/antiartificial/norn-durability-pilot@sha256:[a-f0-9]{64}$ ]] || {
+  echo "build did not return the expected immutable pilot image" >&2
+  exit 1
+}
+
+"${script_dir}/lab" catalog durability-sync "${image}" "${endpoint}" | tee "${catalog_log}"
+commit_sha="$(tail -n 1 "${catalog_log}")"
+[[ "${commit_sha}" =~ ^[a-f0-9]{40}$ ]] || {
+  echo "catalog synchronization did not return a full source commit" >&2
+  exit 1
+}
+
+# The source commit is known only after the generated declaration contains the
+# immutable digest. Sign in that order so production admission can prove the
+# exact source/image pair rather than a platform-repository commit.
+"${script_dir}/lab" supply-chain sign "${image}" "${commit_sha}"
+"${script_dir}/lab" deploy-durability-pilot all durability-pilot
+
+jq -n --arg image "${image}" --arg commitSha "${commit_sha}" --arg endpoint "${endpoint}" \
+  '{schema:"norn.ha-durability-release/v1",image:$image,commitSha:$commitSha,endpoint:$endpoint,status:"deployed"}'

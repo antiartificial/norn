@@ -73,20 +73,52 @@ cp terraform/terraform.tfvars.example terraform/terraform.tfvars
 # node_size = "s-4vcpu-8gb" (or a reviewed larger size).
 
 scripts/lab bootstrap-tools
+scripts/lab secrets init <lab-name>
+scripts/lab backup-repository init
 scripts/lab init
 scripts/lab check
-scripts/lab plan -var-file=terraform.tfvars
-# Review the plan before the following explicit apply.
-scripts/lab apply -var-file=terraform.tfvars
-scripts/lab secrets init <lab-name>
+scripts/lab plan -var-file=terraform.tfvars -out=.durability-pilot.tfplan
+# Inspect the saved plan and confirm that every resource has the disposable
+# prefix before applying that exact plan.
+scripts/lab apply .durability-pilot.tfplan
+scripts/lab pki init
+scripts/lab catalog sync
+scripts/lab supply-chain init
 scripts/lab converge
+scripts/lab security-cutover cutover --confirm-disposable-lab
 scripts/lab deploy-traefik
 scripts/lab verify
 scripts/lab durability-pilot check
 ```
 
-Build the pilot image with SBOM/provenance enabled. Save the printed immutable
-digest; do not substitute a tag. `catalog durability-sync` creates or recovers
+Deploy the test-only dependencies before the application because `/readyz`
+requires PostgreSQL, Valkey, and Redpanda. Pass only reviewed immutable
+digests; the single broker and cache intentionally do not prove dependency HA.
+
+```bash
+scripts/lab durability-pilot dependencies deploy \
+  docker.io/redpandadata/redpanda@sha256:<reviewed-digest> \
+  valkey/valkey@sha256:<reviewed-digest>
+```
+
+The guarded release helper builds with SBOM/provenance, updates the private
+catalog, signs the immutable image with the resulting **application source
+commit**, replicates the declaration disabled to every controller, preflights
+it, enables the identical declaration everywhere, and waits for the terminal
+production deployment receipt:
+
+```bash
+scripts/lab release-durability-pilot v1 https://pilot.<controlled-zone>
+```
+
+This ordering matters: signing with the Norn platform commit instead of the
+generated catalog commit fails production admission, as it should. The helper
+is restart-safe at its boundaries: catalog synchronization is fast-forward and
+idempotent, the deployment gate is checksummed across all contenders, and Norn
+persists each preflight/deploy operation. After interruption, inspect the
+terminal receipt before rerunning rather than assuming a dispatch completed.
+
+Under the hood, `catalog durability-sync` creates or recovers
 the dedicated `durability-pilot` branch in the existing private HA catalog,
 updates its infraspec to that exact digest, encrypts the PostgreSQL/Valkey/
 Redpanda connection settings to the existing age recipient, and enables
@@ -95,27 +127,6 @@ application receives a separate PostgreSQL role and database on the same
 disposable Patroni cluster; it does not share the Norn control database. It
 reuses the lab's read-only repository deploy key; no personal GitHub token is
 placed on a server.
-
-```bash
-image="$(scripts/build-durability-pilot v1)"
-scripts/lab catalog sync
-scripts/lab catalog durability-sync "${image}" https://<access-protected-pilot-host>
-scripts/lab converge --tags catalog,norn
-
-# Use the authenticated Norn control client for these durable mutations.
-norn validate --file /path/to/generated/norn-durability-pilot-infraspec.yaml
-norn preflight norn-durability-pilot durability-pilot
-
-# The replicated declaration deliberately remains deploy:false. Enable it only
-# after reviewing preflight, using the dashboard or the versioned control API.
-curl --fail-with-body -X PUT \
-  -H "Authorization: Bearer ${NORN_TOKEN}" \
-  -H 'Content-Type: application/json' \
-  -d '{"enabled":true}' \
-  https://<norn-control-host>/api/v1/apps/norn-durability-pilot/deployment
-
-norn deploy norn-durability-pilot durability-pilot
-```
 
 Retain the returned operation/saga ID and wait for its receipt and endpoint
 smoke before continuing. The pilot remains disabled by default until this
@@ -130,13 +141,14 @@ uses the vendor's Redpanda test-container pattern and a version-pinned Valkey
 image. Do not use `latest`.
 
 ```bash
-scripts/lab durability-pilot dependencies deploy \
-  docker.redpanda.com/redpandadata/redpanda@sha256:<64-hex-digest> \
-  valkey/valkey@sha256:<64-hex-digest>
-
 # After Norn has deployed the two web allocations and singleton worker through
 # the regional Traefik route:
 scripts/lab durability-pilot exercise https://<private-or-edge-pilot-host> 50
+
+# To exercise a regional load balancer without publishing DNS, preserve the
+# ingress Host header while routing curl to the LB address:
+NORN_PILOT_RESOLVE=pilot.example.com:80:<lb-address> \
+  scripts/lab durability-pilot exercise http://pilot.example.com 50
 ```
 
 Redpanda documents the single-broker container mode as a development/test
@@ -168,6 +180,36 @@ fixed concurrency, warm-up, fixed duration, and an explicit error budget; do
 not load test the public tunnel or unrelated Mini services. Grafana should
 correlate the client’s p50/p95/p99 and error rate with Norn, Nomad, cAdvisor,
 Valkey, Redpanda, and application counters.
+
+Prometheus scrapes each passing web allocation at `/pilot-metrics`. The Grafana
+dashboard includes request totals/rate and outbox publications. A passing graph
+is corroborating evidence; the PostgreSQL job row and exactly-once assertion are
+the durability proof.
+
+## Executed qualification — August 26, 2026
+
+The three-node Toronto lab passed the guarded production profile with 25 checks
+passing, zero failing, and the documented public-metadata warning. Evidence
+included:
+
+- public regional-LB traffic through Traefik to two web allocations;
+- transactional outbox and duplicate-safe worker exercises;
+- worker and Redpanda restarts, PostgreSQL primary failover, Consul/Nomad leader
+  failover, Norn active/passive failover, and serial member reboots;
+- exact-boundary local and off-host pgBackRest PITR;
+- a rollback from digest `b460e95…` to distinct digest `4200be7…`, followed by
+  an exactly-once smoke and restoration of desired state;
+- production deployment of source commit `aaea0ce…` at digest `42d691d…` after
+  Cosign binding and a HIGH/CRITICAL Trivy policy pass; and
+- final three-member Consul, Nomad, and Patroni verification plus durable audit
+  and exec-authorization lifecycle tests.
+
+The exercise found and fixed four fail-closed integration defects: rolling
+verification now waits for SSH recovery; buildx writes incidental state only to
+a disposable directory; the hardened service uses `/var/lib/norn` as its
+writable policy-tool home; and policy output truncation preserves valid UTF-8
+so a long Trivy table cannot prevent terminal receipt persistence. It also
+caught and remediated a real HIGH-severity dependency before production deploy.
 
 ## Explicit cleanup
 

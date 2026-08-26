@@ -97,7 +97,7 @@ scrape_configs:
         action: keep
 
   - job_name: norn-durability-pilot
-    metrics_path: /metrics
+    metrics_path: /pilot-metrics
     consul_sd_configs:
 {% if security_phase in ['consul-clients', 'consul-tls-outgoing', 'consul-enforced', 'nomad-transition', 'enforced'] %}
       - server: 127.0.0.1:8501

@@ -6,6 +6,9 @@
   any_errors_fatal: true
   serial: 1
   environment: "{{ control_environment }}"
+  vars:
+    drill_workload_service: "{{ 'norn-durability-pilot-web' if durability_pilot_enabled else 'norn-ha-toy-web' }}"
+    drill_workload_instances: 2
   tasks:
     - name: Guard against rebooting outside the disposable lab
       ansible.builtin.stat:
@@ -33,6 +36,10 @@
         - haproxy
         - prometheus-node-exporter
         - norn
+        - norn-consul-dns
+        - norn-prometheus
+        - norn-grafana
+        - norn-cadvisor
       register: restarted_services
       changed_when: false
       retries: 30
@@ -69,14 +76,14 @@
         (patroni_members.stdout | from_json | selectattr('State', 'in', ['running', 'streaming']) | list | length)
         == (groups['norn_ha'] | length)
 
-    - name: Wait for both toy allocations after this restart
+    - name: Wait for both workload allocations after this restart
       ansible.builtin.uri:
-        url: http://127.0.0.1:8500/v1/health/service/norn-ha-toy?passing=true
+        url: "http://127.0.0.1:8500/v1/health/service/{{ drill_workload_service }}?passing=true"
         return_content: true
       register: toy_services
       retries: 60
       delay: 2
-      until: toy_services.json | length == 2
+      until: toy_services.json | length == drill_workload_instances
 
     - name: Wait for exactly one active Norn API after this restart
       ansible.builtin.uri:
@@ -93,9 +100,10 @@
           schema: norn.ha-drill/v1
           kind: member-restart
           member: "{{ inventory_hostname }}"
-          services_active: 7
+          services_active: 11
           consul_members: "{{ groups['norn_ha'] | length }}"
           nomad_peers: "{{ groups['norn_ha'] | length }}"
           postgres_members: "{{ groups['norn_ha'] | length }}"
-          toy_instances: 2
+          workload_service: "{{ drill_workload_service }}"
+          workload_instances: "{{ drill_workload_instances }}"
           norn_active_instances: 1

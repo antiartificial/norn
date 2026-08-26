@@ -3,9 +3,11 @@ package pipeline
 import (
 	"context"
 	"fmt"
+	"os"
 	"os/exec"
 	"sort"
 	"strings"
+	"unicode/utf8"
 
 	"norn/v2/api/model"
 	"norn/v2/api/saga"
@@ -89,13 +91,20 @@ func (p *Pipeline) verifyRegistryArtifact(ctx context.Context, imageRef string) 
 	if p.VerifyArtifact != nil {
 		return p.VerifyArtifact(ctx, imageRef)
 	}
+	// buildx persists instance state below its config directory even for a
+	// read-only manifest inspection. Keep that incidental state in a private,
+	// disposable directory so admission continues to work when DOCKER_CONFIG
+	// contains read-only registry credentials under a hardened service unit.
+	buildxConfig, err := os.MkdirTemp("", "norn-buildx-")
+	if err != nil {
+		return fmt.Errorf("create temporary buildx config: %w", err)
+	}
+	defer os.RemoveAll(buildxConfig)
 	cmd := exec.CommandContext(ctx, "docker", "buildx", "imagetools", "inspect", imageRef)
+	cmd.Env = append(os.Environ(), "BUILDX_CONFIG="+buildxConfig)
 	output, err := cmd.CombinedOutput()
 	if err != nil {
-		message := strings.TrimSpace(string(output))
-		if len(message) > 4096 {
-			message = message[:4096]
-		}
+		message := boundedPolicyOutput(output, 4096)
 		if message == "" {
 			message = err.Error()
 		}
@@ -161,12 +170,21 @@ func runArtifactPolicyCommand(ctx context.Context, command string, args ...strin
 	if err == nil {
 		return nil
 	}
-	message := strings.TrimSpace(string(output))
-	if len(message) > 4096 {
-		message = message[:4096]
-	}
+	message := boundedPolicyOutput(output, 4096)
 	if message == "" {
 		message = err.Error()
 	}
 	return fmt.Errorf("%s", message)
+}
+
+func boundedPolicyOutput(output []byte, limit int) string {
+	message := strings.ToValidUTF8(strings.TrimSpace(string(output)), "\uFFFD")
+	if limit <= 0 || len(message) <= limit {
+		return message
+	}
+	message = message[:limit]
+	for !utf8.ValidString(message) {
+		message = message[:len(message)-1]
+	}
+	return message
 }

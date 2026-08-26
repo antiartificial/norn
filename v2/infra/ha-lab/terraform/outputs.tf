@@ -11,8 +11,13 @@ output "lab_nodes" {
 }
 
 output "estimated_monthly_droplet_cost_usd" {
-  description = "Informational estimate for the default three s-2vcpu-4gb nodes; verify current pricing before apply."
-  value       = var.node_count * 24
+  description = "Live provider price for the selected Droplet size multiplied by node count; excludes the load balancer and network usage."
+  value       = var.node_count * data.digitalocean_sizes.selected.sizes[0].price_monthly
+}
+
+output "estimated_hourly_droplet_cost_usd" {
+  description = "Live provider hourly price for the selected Droplet size multiplied by node count; excludes the load balancer and network usage."
+  value       = var.node_count * data.digitalocean_sizes.selected.sizes[0].price_hourly
 }
 
 output "expiry" {

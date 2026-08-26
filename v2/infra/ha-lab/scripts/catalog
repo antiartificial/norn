@@ -30,11 +30,19 @@ case "${command_name}" in
       gh repo deploy-key add "${NORN_HA_GIT_DEPLOY_KEY_PATH}.pub" -R "${repo}" --title "${lab_name} read-only deploy"
     fi
     install -d -m 0700 "${catalog_dir}"
-    rsync -a --delete --exclude .git "${lab_root}/toy-app/" "${catalog_dir}/"
     if [[ ! -d "${catalog_dir}/.git" ]]; then
       git -C "${catalog_dir}" init -b main >/dev/null
       git -C "${catalog_dir}" remote add origin "https://github.com/${repo}.git"
     fi
+    # A prior disposable-lab run may already have populated the private
+    # catalog. Always base the generated update on the current remote branch so
+    # retries remain fast-forward and never require a force push.
+    if git -C "${catalog_dir}" fetch origin main >/dev/null 2>&1; then
+      git -C "${catalog_dir}" checkout -B main FETCH_HEAD >/dev/null
+    else
+      git -C "${catalog_dir}" checkout -B main >/dev/null
+    fi
+    rsync -a --delete --exclude .git "${lab_root}/toy-app/" "${catalog_dir}/"
     git -C "${catalog_dir}" add --all
     if ! git -C "${catalog_dir}" diff --cached --quiet; then
       git -C "${catalog_dir}" -c user.name='Norn HA Lab' -c user.email='norn-ha-lab@users.noreply.github.com' commit -m 'Update HA toy service' >/dev/null

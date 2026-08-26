@@ -1,10 +1,14 @@
 package pipeline
 
 import (
+	"bytes"
 	"context"
 	"errors"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
+	"unicode/utf8"
 
 	"norn/v2/api/connector"
 	"norn/v2/api/engine"
@@ -39,6 +43,51 @@ func TestProductionArtifactAdmissionFailsWhenRegistryDigestDisappears(t *testing
 	st := &state{imageTag: "registry.example.test/norn/demo@sha256:" + strings.Repeat("a", 64)}
 	if err := p.artifactAdmission(context.Background(), st, nil); err == nil || !strings.Contains(err.Error(), "manifest unknown") {
 		t.Fatalf("registry verification error=%v", err)
+	}
+}
+
+func TestRegistryArtifactInspectionUsesDisposableWritableBuildxConfig(t *testing.T) {
+	binDir := t.TempDir()
+	recordPath := filepath.Join(t.TempDir(), "buildx-config")
+	dockerPath := filepath.Join(binDir, "docker")
+	script := `#!/bin/sh
+set -eu
+test "$1 $2 $3" = "buildx imagetools inspect"
+test -n "${BUILDX_CONFIG:-}"
+test -d "${BUILDX_CONFIG}"
+touch "${BUILDX_CONFIG}/probe"
+printf '%s' "${BUILDX_CONFIG}" >"${NORN_TEST_BUILDX_RECORD}"
+`
+	if err := os.WriteFile(dockerPath, []byte(script), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("PATH", binDir+string(os.PathListSeparator)+os.Getenv("PATH"))
+	t.Setenv("DOCKER_CONFIG", "/read-only/registry-config")
+	t.Setenv("NORN_TEST_BUILDX_RECORD", recordPath)
+	ref := "registry.example.test/norn/demo@sha256:" + strings.Repeat("a", 64)
+	if err := (&Pipeline{}).verifyRegistryArtifact(context.Background(), ref); err != nil {
+		t.Fatalf("registry inspection failed: %v", err)
+	}
+	used, err := os.ReadFile(recordPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := os.Stat(string(used)); !os.IsNotExist(err) {
+		t.Fatalf("temporary buildx config was not removed: %q err=%v", used, err)
+	}
+}
+
+func TestBoundedPolicyOutputPreservesUTF8AtByteLimit(t *testing.T) {
+	output := append(bytes.Repeat([]byte("界"), 2000), 0xff)
+	message := boundedPolicyOutput(output, 4096)
+	if len(message) > 4096 {
+		t.Fatalf("bounded message has %d bytes", len(message))
+	}
+	if !utf8.ValidString(message) {
+		t.Fatal("bounded message is not valid UTF-8")
+	}
+	if !strings.Contains(message, "界") {
+		t.Fatal("bounded message lost valid policy output")
 	}
 }
 

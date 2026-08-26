@@ -56,6 +56,7 @@
           - curl
           - docker.io
           - docker-buildx
+          - dnsmasq-base
           - gpg
           - git
           - haproxy
@@ -83,6 +84,21 @@
         owner: root
         group: nornops
         mode: "0750"
+
+    - name: Create disposable durability dependency data directories
+      ansible.builtin.file:
+        path: "{{ item.path }}"
+        state: directory
+        owner: "{{ item.owner }}"
+        group: "{{ item.group }}"
+        mode: "0750"
+      loop:
+        # The current Redpanda publisher image runs as numeric UID/GID 101.
+        # These directories exist on every Nomad client because the singleton
+        # dependency allocation may be rescheduled to any lab member.
+        - {path: /var/lib/norn-durability/redpanda, owner: "101", group: "101"}
+        - {path: /var/lib/norn-durability/valkey, owner: root, group: root}
+      when: durability_pilot_enabled
 
     - name: Create private registry client configuration directory
       ansible.builtin.file:
@@ -135,6 +151,66 @@
         - docker
         - prometheus-node-exporter
 
+    - name: Configure Docker containers to use the node-local Consul DNS bridge
+      ansible.builtin.copy:
+        dest: /etc/docker/daemon.json
+        owner: root
+        group: root
+        mode: "0644"
+        content: |
+          {
+            "dns": ["172.17.0.1"]
+          }
+      notify: Restart Docker
+
+    - name: Configure a bridge-only DNS forwarder for Consul service discovery
+      ansible.builtin.copy:
+        dest: /etc/norn/consul-dnsmasq.conf
+        owner: root
+        group: root
+        mode: "0644"
+        content: |
+          port=53
+          listen-address=172.17.0.1
+          bind-dynamic
+          domain-needed
+          bogus-priv
+          cache-size=1000
+          resolv-file=/run/systemd/resolve/resolv.conf
+          server=/consul/127.0.0.1#8600
+      notify: Restart Norn Consul DNS
+
+    - name: Install the node-local Consul DNS bridge service
+      ansible.builtin.copy:
+        dest: /etc/systemd/system/norn-consul-dns.service
+        owner: root
+        group: root
+        mode: "0644"
+        content: |
+          [Unit]
+          Description=Norn Consul DNS bridge for container workloads
+          After=docker.service
+          Requires=docker.service
+
+          [Service]
+          Type=simple
+          ExecStart=/usr/sbin/dnsmasq --keep-in-foreground --conf-file=/etc/norn/consul-dnsmasq.conf
+          Restart=on-failure
+          RestartSec=2s
+
+          [Install]
+          WantedBy=multi-user.target
+      notify:
+        - Reload systemd for Norn Consul DNS
+        - Restart Norn Consul DNS
+
+    - name: Enable the node-local Consul DNS bridge
+      ansible.builtin.systemd_service:
+        name: norn-consul-dns
+        daemon_reload: true
+        enabled: true
+        state: started
+
     - name: Create systemd-resolved drop-in directory
       ansible.builtin.file:
         path: /etc/systemd/resolved.conf.d
@@ -157,6 +233,22 @@
       notify: Restart systemd-resolved
 
   handlers:
+    - name: Reload systemd for Norn Consul DNS
+      ansible.builtin.systemd_service:
+        daemon_reload: true
+
+    - name: Restart Docker
+      ansible.builtin.systemd_service:
+        name: docker
+        enabled: true
+        state: restarted
+
+    - name: Restart Norn Consul DNS
+      ansible.builtin.systemd_service:
+        name: norn-consul-dns
+        enabled: true
+        state: restarted
+
     - name: Restart systemd-resolved
       ansible.builtin.systemd_service:
         name: systemd-resolved
@@ -732,7 +824,7 @@
       ansible.builtin.shell: |
         set -euo pipefail
         cosign version --json | jq -e --arg version "v{{ cosign_version }}" '.gitVersion == $version' >/dev/null
-        trivy --version | grep -F "Version: {{ trivy_version }}" >/dev/null
+        /usr/bin/trivy --version | grep -F "Version: {{ trivy_version }}" >/dev/null
       args:
         executable: /bin/bash
       changed_when: false
@@ -977,6 +1069,12 @@
   environment: "{{ control_environment }}"
   tags: [norn, verify]
   tasks:
+    - name: Wait for the assertion member to accept SSH after rolling restarts
+      ansible.builtin.wait_for_connection:
+        connect_timeout: 10
+        sleep: 2
+        timeout: 180
+
     - name: Wait for one passing Norn service
       ansible.builtin.uri:
         url: http://127.0.0.1:8500/v1/health/service/norn-api?passing=true

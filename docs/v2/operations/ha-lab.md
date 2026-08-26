@@ -43,10 +43,13 @@ flowchart LR
     A --> N
 ```
 
-The three-member co-located layout costs about US$72/month at the price checked
-on August 22, 2026, or roughly US$0.107/hour while all three default droplets
-run. Check DigitalOcean's current price before every apply. Production should
-separate database, Consul/Nomad server, and workload-client failure domains.
+The economical three-member `s-2vcpu-4gb` layout historically cost about
+US$72/month. The durability pilot requires `s-4vcpu-8gb` or larger; on August
+26, 2026 those three members cost US$144/month or US$0.21429/hour before the
+regional load balancer and network usage. Terraform now queries the selected
+size during planning, rejects a size unavailable in the requested region, and
+outputs its live aggregate Droplet price. Production should separate database,
+Consul/Nomad server, and workload-client failure domains.
 
 ## Reproducible provisioning contract
 
@@ -130,6 +133,7 @@ checks passed against the live hosts:
 | Control-plane leader failover | Passed Consul member 02 → 03 and Nomad member 03 → 02; both former leaders rejoined, two toy allocations remained running, and exactly one Norn API remained passing | Scheduler/discovery quorum and controller continuity under elected-leader loss |
 | Production profile | Passed guarded activation only after the sole blocker was `profile.production`; final report was 25 pass, zero fail, one warning | Live substrate admission is enabled and fail-closed for critical mutations |
 | Regional ingress and Cloudflare edge | Passed a proxied Cloudflare A record through the active DO regional load balancer to three Traefik system allocations and two database-backed toy allocations; both HTTP and HTTPS returned 200, trace IDs were present in Traefik JSON access logs, and Prometheus observed the request counter | Stable regional origin, Consul-catalog discovery, hostname routing, multi-allocation balancing, and edge-to-region request flow |
+| Transactional durability pilot | Passed two web allocations plus one worker with PostgreSQL outbox/idempotency, test-only Valkey/Redpanda, public LB smoke, recovery faults, distinct-digest rollback, and production signature/vulnerability admission | Application durability and regional workload recovery; not cache/broker HA |
 
 The audit drill exposed and fixed a PostgreSQL precision defect: receipts were
 originally signed with nanosecond timestamps, while `timestamptz` preserves
@@ -147,6 +151,14 @@ Patroni's DCS token must authorize the exact `norn/patroni/` prefix; and Norn's
 systemd contender must retry indefinitely without a hard dependency that stops
 it when Consul restarts. The automation now encodes those constraints and the
 fault-injection drills cover them.
+
+The August 26 durability extension additionally proved that interrupted
+production activation rolls back its profile, then succeeds after SSH recovery.
+Artifact admission now keeps registry credentials read-only, gives Cosign/Trivy
+a dedicated writable runtime cache, and stores bounded policy output as valid
+UTF-8. The release order is image build → generated catalog commit → signature
+bound to that commit → replicated disabled preflight → replicated enable →
+deploy; `scripts/lab release-durability-pilot` encodes that sequence.
 
 These results are mechanics evidence, not a production certification. The lab
 is one region and one VPC and co-locates roles. PostgreSQL, Nomad, and Consul

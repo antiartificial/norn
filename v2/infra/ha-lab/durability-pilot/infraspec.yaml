@@ -23,14 +23,15 @@ build:
 processes:
   web:
     port: 8080
-    command: /durability-pilot api
+    env:
+      PILOT_MODE: api
     health:
       path: /readyz
       interval: 10s
       timeout: 3s
     metrics:
       enabled: true
-      path: /metrics
+      path: /pilot-metrics
     scaling:
       min: 2
       max: 3
@@ -38,7 +39,8 @@ processes:
       cpu: 300
       memory: 256
   worker:
-    command: /durability-pilot worker
+    env:
+      PILOT_MODE: worker
     singleton: true
     resources:
       cpu: 300

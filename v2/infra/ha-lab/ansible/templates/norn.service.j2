@@ -11,6 +11,8 @@ Group=nornops
 SupplementaryGroups=docker
 WorkingDirectory=/var/lib/norn
 EnvironmentFile=/etc/norn/norn.env
+Environment=HOME=/var/lib/norn
+Environment=XDG_CACHE_HOME=/var/lib/norn/.cache
 ExecStart=/usr/bin/consul lock -n=1 -monitor-retry=10 -name={{ inventory_hostname }} norn/control-api /usr/local/bin/norn-server
 Restart=always
 RestartSec=5

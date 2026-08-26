@@ -5,6 +5,11 @@
   gather_facts: false
   any_errors_fatal: true
   environment: "{{ control_environment }}"
+  vars:
+    drill_workload_service: "{{ 'norn-durability-pilot-web' if durability_pilot_enabled else 'norn-ha-toy-web' }}"
+    drill_workload_job: "{{ 'norn-durability-pilot' if durability_pilot_enabled else 'norn-ha-toy' }}"
+    drill_workload_group: web
+    drill_workload_allocations: 2
   tasks:
     - name: Guard against fault injection outside the disposable lab
       ansible.builtin.stat:
@@ -60,10 +65,10 @@
           register: consul_catalog_during
           changed_when: false
 
-        - name: Require the toy and Norn services during Consul failover
+        - name: Require the active workload and Norn services during Consul failover
           ansible.builtin.assert:
             that:
-              - "'norn-ha-toy-web' in consul_catalog_during.stdout_lines"
+              - "drill_workload_service in consul_catalog_during.stdout_lines"
               - "'norn-api' in consul_catalog_during.stdout_lines"
 
         - name: Require exactly one passing Norn API during Consul failover
@@ -132,8 +137,11 @@
             - nomad_leader_during.stdout | trim | length > 0
             - nomad_leader_during.stdout | trim != old_nomad_leader
 
-        - name: Require the two toy allocations during Nomad failover
-          ansible.builtin.shell: "set -o pipefail && nomad job status -json norn-ha-toy | jq -r '.[0].Summary.Summary.web.Running'"
+        - name: Require the workload allocations during Nomad failover
+          ansible.builtin.shell: >-
+            set -o pipefail &&
+            nomad job status -json {{ drill_workload_job | quote }} |
+            jq -r --arg group {{ drill_workload_group | quote }} '.[0].Summary.Summary[$group].Running'
           args:
             executable: /bin/bash
           delegate_to: "{{ nomad_survivor }}"
@@ -141,7 +149,7 @@
           changed_when: false
           retries: 30
           delay: 2
-          until: toy_allocations_during.stdout | int == 2
+          until: toy_allocations_during.stdout | int == drill_workload_allocations
       always:
         - name: Always rejoin the former Nomad leader
           ansible.builtin.systemd_service:
@@ -172,4 +180,5 @@
           nomad_leader_after: "{{ nomad_leader_during.stdout | trim }}"
           consul_members: "{{ groups['norn_ha'] | length }}"
           nomad_peers: "{{ groups['norn_ha'] | length }}"
-          toy_allocations: 2
+          workload: "{{ drill_workload_job }}"
+          workload_allocations: "{{ drill_workload_allocations }}"

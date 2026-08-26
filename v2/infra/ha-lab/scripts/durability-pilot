@@ -26,6 +26,10 @@ norn-durability-pilot catalog entry, and a private route to BASE_URL. It does
 not create DigitalOcean resources, GitHub repositories, registry credentials,
 or application secrets. Use scripts/lab destroy --confirm-disposable-lab for
 full infrastructure teardown after retaining bounded evidence.
+
+Set NORN_PILOT_RESOLVE to HOST:PORT:ADDRESS when exercising an HTTP load
+balancer without publishing DNS. curl will route to ADDRESS while retaining
+HOST for ingress matching; the value must match BASE_URL's host and port.
 EOF
 }
 
@@ -56,16 +60,22 @@ remote_nomad() {
 wait_dependencies() {
   for _ in {1..90}; do
     if remote_nomad "nomad job status -json norn-durability-dependencies | jq -e '
-      .JobSummary.Summary.valkey.Running == 1 and
-      .JobSummary.Summary.redpanda.Running == 1
+      .[0].Summary.Summary.valkey.Running == 1 and
+      .[0].Summary.Summary.redpanda.Running == 1 and
+      .[0].LatestDeployment.Status == \"successful\"
     ' >/dev/null"; then
-      echo "durability dependencies are running"
+      echo "durability dependencies are running with passing deployment health"
       return 0
     fi
     sleep 2
   done
   echo "durability dependencies did not become ready" >&2
   exit 1
+}
+
+ensure_topic() {
+  remote_nomad "allocation=\$(nomad job status -json norn-durability-dependencies | jq -r '.[0].Allocations[] | select(.TaskGroup == \"redpanda\" and .ClientStatus == \"running\") | .ID' | head -n1); test -n \"\${allocation}\"; if ! nomad alloc exec -task redpanda \"\${allocation}\" rpk topic describe norn-durability-work --brokers 127.0.0.1:19092 >/dev/null 2>&1; then nomad alloc exec -task redpanda \"\${allocation}\" rpk topic create norn-durability-work --partitions 3 --replicas 1 --brokers 127.0.0.1:19092 >/dev/null; fi; nomad alloc exec -task redpanda \"\${allocation}\" rpk topic describe norn-durability-work --brokers 127.0.0.1:19092 >/dev/null"
+  echo "durability topic is present"
 }
 
 case "${command_name}" in
@@ -89,6 +99,7 @@ case "${command_name}" in
         scp -q "${job_file}" "root@$(first_ip):/tmp/norn-durability-dependencies.nomad.hcl"
         remote_nomad "nomad job run -detach -var 'redpanda_image=${redpanda_image}' -var 'valkey_image=${valkey_image}' /tmp/norn-durability-dependencies.nomad.hcl >/dev/null"
         wait_dependencies
+        ensure_topic
         ;;
       status)
         remote_nomad "nomad job status norn-durability-dependencies"
@@ -101,18 +112,42 @@ case "${command_name}" in
     count="${2:-20}"
     [[ "${base_url}" =~ ^https?://[^[:space:]]+$ ]] || { echo "BASE_URL must be http(s)" >&2; exit 2; }
     [[ "${count}" =~ ^[1-9][0-9]{0,2}$ ]] || { echo "COUNT must be 1-999" >&2; exit 2; }
+    curl_route=()
+    if [[ -n "${NORN_PILOT_RESOLVE:-}" ]]; then
+      [[ "${NORN_PILOT_RESOLVE}" =~ ^[A-Za-z0-9.-]+:[0-9]{1,5}:[0-9A-Fa-f:.]+$ ]] || {
+        echo "NORN_PILOT_RESOLVE must be HOST:PORT:ADDRESS" >&2
+        exit 2
+      }
+      curl_route=(--resolve "${NORN_PILOT_RESOLVE}")
+    fi
+    pilot_curl=(curl --fail --silent --show-error "${curl_route[@]}")
+    ready=false
+    for _ in $(seq 1 120); do
+      if "${pilot_curl[@]}" --max-time 5 "${base_url}/readyz" >/dev/null 2>&1; then
+        ready=true
+        break
+      fi
+      sleep 1
+    done
+    [[ "${ready}" == true ]] || {
+      echo "pilot did not regain dependency-aware readiness" >&2
+      exit 1
+    }
     for index in $(seq 1 "${count}"); do
       key="pilot-$(uuidgen | tr '[:upper:]' '[:lower:]')"
-      curl --fail --silent --show-error --max-time 10 --retry 2 \
+      "${pilot_curl[@]}" --max-time 10 --retry 10 --retry-all-errors --retry-delay 1 \
         -H "Content-Type: application/json" -H "Idempotency-Key: ${key}" \
         --data "{\"work\":\"qualification-${index}\"}" "${base_url}/v1/jobs" >/dev/null
       # Repeat exactly one write key. Success proves the API's durable
       # idempotency boundary, rather than merely relying on the queue.
-      curl --fail --silent --show-error --max-time 10 --retry 2 \
+      "${pilot_curl[@]}" --max-time 10 --retry 10 --retry-all-errors --retry-delay 1 \
         -H "Content-Type: application/json" -H "Idempotency-Key: ${key}" \
         --data "{\"work\":\"qualification-${index}\"}" "${base_url}/v1/jobs" >/dev/null
       for _ in {1..60}; do
-        status="$(curl --fail --silent --show-error --max-time 5 "${base_url}/v1/jobs/${key}")"
+        if ! status="$("${pilot_curl[@]}" --max-time 5 "${base_url}/v1/jobs/${key}" 2>/dev/null)"; then
+          sleep 1
+          continue
+        fi
         if jq -e '.completed == true and .attempts == 1' >/dev/null <<<"${status}"; then
           break
         fi
@@ -120,18 +155,20 @@ case "${command_name}" in
       done
       jq -e '.completed == true and .attempts == 1' >/dev/null <<<"${status}" || { echo "job ${key} did not complete exactly once" >&2; exit 1; }
     done
-    curl --fail --silent --show-error --max-time 10 "${base_url}/metrics" | grep -q '^norn_durability_worker_completed_total '
+    if [[ "${NORN_PILOT_REQUIRE_METRICS:-true}" == true ]]; then
+      "${pilot_curl[@]}" --max-time 10 "${base_url}/pilot-metrics" | grep -q '^norn_durability_worker_completed_total '
+    fi
     echo "${count} durable jobs completed exactly once; inspect Grafana for pilot counters and latency."
     ;;
   fault)
     target="${1:-}"
     case "${target}" in
       redpanda)
-        remote_nomad "allocation=\$(nomad job status -json norn-durability-dependencies | jq -r '.Allocations[] | select(.TaskGroup == \"redpanda\" and .ClientStatus == \"running\") | .ID' | head -n1); test -n \"\${allocation}\"; nomad alloc restart -task redpanda \"\${allocation}\""
+        remote_nomad "allocation=\$(nomad job status -json norn-durability-dependencies | jq -r '.[0].Allocations[] | select(.TaskGroup == \"redpanda\" and .ClientStatus == \"running\") | .ID' | head -n1); test -n \"\${allocation}\"; nomad alloc restart -task redpanda \"\${allocation}\""
         wait_dependencies
         ;;
       worker)
-        remote_nomad "allocation=\$(nomad job status -json norn-durability-pilot | jq -r '.Allocations[] | select(.TaskGroup == \"worker\" and .ClientStatus == \"running\") | .ID' | head -n1); test -n \"\${allocation}\"; nomad alloc restart -task worker \"\${allocation}\""
+        remote_nomad "allocation=\$(nomad job status -json norn-durability-pilot | jq -r '.[0].Allocations[] | select(.TaskGroup == \"worker\" and .ClientStatus == \"running\") | .ID' | head -n1); test -n \"\${allocation}\"; nomad alloc restart -task worker \"\${allocation}\""
         echo "worker allocation restarted; rerun exercise to prove consumer-group recovery"
         ;;
       *) usage; exit 2 ;;

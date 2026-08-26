@@ -75,7 +75,9 @@ func main() {
 	defer p.close()
 
 	mode := "api"
-	if len(os.Args) > 1 {
+	if configured := strings.TrimSpace(os.Getenv("PILOT_MODE")); configured != "" {
+		mode = configured
+	} else if len(os.Args) > 1 {
 		mode = os.Args[1]
 	}
 	switch mode {
@@ -187,7 +189,7 @@ func (p *pilot) serve() {
 	mux.HandleFunc("GET /readyz", p.ready)
 	mux.HandleFunc("POST /v1/jobs", p.submit)
 	mux.HandleFunc("GET /v1/jobs/{key}", p.status)
-	mux.HandleFunc("GET /metrics", p.prometheus)
+	mux.HandleFunc("GET /pilot-metrics", p.prometheus)
 	server := &http.Server{
 		Addr:              ":8080",
 		Handler:           mux,
