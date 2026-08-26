@@ -41,6 +41,14 @@ local development rehearsal but can move between review and upgrade.
 
 The platform lane builds from an isolated git worktree into `$HOME/norn/releases/<sha>`, writes a `$HOME/norn/current` symlink, installs compatibility binaries into `$HOME/go/bin`, and health-checks a candidate API with recovery and operation workers disabled so preflight does not mark running work failed or claim queued jobs.
 
+Promotion also synchronizes and byte-verifies the persistent host agent, its
+private CLI copy, `platform-upgrade`, and `host-runtime`. This keeps unattended
+recovery and prerequisite checks on the same revision as the API instead of
+leaving launchd to invoke an older managed copy after an otherwise successful
+upgrade. Rollback restores matching managed artifacts when the selected
+release contains them; older releases remain compatible and restore only the
+artifacts they contain.
+
 The queued lane is preferred when the operator is not already on the host. It
 returns a durable operation ID, is executed by `com.norn.host-agent`, and can be
 followed with `norn operations <operation-id>` even after the API restarts.
@@ -61,6 +69,7 @@ Use these environment variables when the repo or host layout differs:
 | `NORN_NODE_BIN` | detected `node@24`, then `node` | Node.js 24 executable used for release UI builds |
 | `NORN_CURRENT_LINK` | `$HOME/norn/current` | Current-release symlink |
 | `NORN_BIN_DIR` | `$HOME/go/bin` | Compatibility install directory |
+| `NORN_HOST_CLI_BIN` | `$HOME/.config/norn/host/bin/norn` | CLI copy used by persistent host recovery and assurance |
 | `NORN_CANDIDATE_PORT` | `18800` | Alternate-port candidate API |
 | `NORN_TOKEN` / `NORN_API_TOKEN` | — | Optional bearer token for active-operation drain checks |
 | `NORN_DRAIN_MODE` | `fail` | `fail`, `wait`, or `force` for active-operation drains |

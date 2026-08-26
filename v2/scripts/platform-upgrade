@@ -79,6 +79,7 @@ releases="${NORN_RELEASES_DIR:-$HOME/norn/releases}"
 current_link="${NORN_CURRENT_LINK:-$HOME/norn/current}"
 bin_dir="${NORN_BIN_DIR:-$HOME/go/bin}"
 host_agent_bin="${NORN_HOST_AGENT_BIN:-$HOME/.config/norn/host/bin/norn-host-agent}"
+host_cli_bin="${NORN_HOST_CLI_BIN:-$HOME/.config/norn/host/bin/norn}"
 platform_script_bin="${NORN_PLATFORM_SCRIPT_BIN:-$HOME/.config/norn/host/bin/platform-upgrade}"
 host_runtime_bin="${NORN_HOST_RUNTIME_BIN:-$HOME/.config/norn/host/bin/host-runtime}"
 launch_label="${NORN_LAUNCH_LABEL:-com.norn.api}"
@@ -244,6 +245,7 @@ require_cmd git
 require_cmd go
 require_cmd curl
 require_cmd install
+require_cmd cmp
 
 git -C "$repo" rev-parse --is-inside-work-tree >/dev/null 2>&1 || fail "$repo is not a git checkout"
 [[ -d "$v2/api" && -d "$v2/cli" ]] || fail "$repo does not look like a Norn v2 checkout"
@@ -498,6 +500,41 @@ restart_api() {
   launchctl kickstart -k "gui/$(id -u)/$launch_label"
 }
 
+sync_managed_host_artifacts() {
+  local target="$1"
+  local strict="${2:-false}"
+  mkdir -p "$(dirname "$host_agent_bin")" "$(dirname "$host_cli_bin")" \
+    "$(dirname "$platform_script_bin")" "$(dirname "$host_runtime_bin")"
+
+  if [[ -f "$target/bin/norn-host-agent" ]]; then
+    install -m 0755 "$target/bin/norn-host-agent" "$host_agent_bin"
+  elif [[ "$strict" == "true" ]]; then
+    fail "release is missing norn-host-agent"
+  fi
+  if [[ -f "$target/bin/norn" ]]; then
+    install -m 0755 "$target/bin/norn" "$host_cli_bin"
+  elif [[ "$strict" == "true" ]]; then
+    fail "release is missing the managed host CLI"
+  fi
+  if [[ -f "$target/bin/platform-upgrade" ]]; then
+    install -m 0755 "$target/bin/platform-upgrade" "$platform_script_bin"
+  elif [[ "$strict" == "true" ]]; then
+    fail "release is missing platform-upgrade"
+  fi
+  if [[ -f "$target/bin/host-runtime" ]]; then
+    install -m 0755 "$target/bin/host-runtime" "$host_runtime_bin"
+  elif [[ "$strict" == "true" ]]; then
+    fail "release is missing host-runtime"
+  fi
+
+  if [[ "$strict" == "true" ]]; then
+    cmp -s "$target/bin/norn-host-agent" "$host_agent_bin" || fail "managed host agent verification failed"
+    cmp -s "$target/bin/norn" "$host_cli_bin" || fail "managed host CLI verification failed"
+    cmp -s "$target/bin/platform-upgrade" "$platform_script_bin" || fail "managed platform script verification failed"
+    cmp -s "$target/bin/host-runtime" "$host_runtime_bin" || fail "managed host runtime verification failed"
+  fi
+}
+
 promote_release() {
   mkdir -p "$(dirname "$current_link")" "$bin_dir"
   previous=""
@@ -508,10 +545,7 @@ promote_release() {
   ln -sfn "$release" "$current_link"
   install -m 0755 "$release/bin/norn-api" "$bin_dir/norn-api"
   install -m 0755 "$release/bin/norn" "$bin_dir/norn"
-  mkdir -p "$(dirname "$host_agent_bin")"
-  install -m 0755 "$release/bin/norn-host-agent" "$host_agent_bin"
-  install -m 0755 "$release/bin/platform-upgrade" "$platform_script_bin"
-  install -m 0755 "$release/bin/host-runtime" "$host_runtime_bin"
+  sync_managed_host_artifacts "$release" true
 
   restart_api
   if postflight; then
@@ -524,15 +558,7 @@ promote_release() {
     ln -sfn "$previous" "$current_link"
     install -m 0755 "$previous/bin/norn-api" "$bin_dir/norn-api"
     install -m 0755 "$previous/bin/norn" "$bin_dir/norn"
-    if [[ -f "$previous/bin/norn-host-agent" ]]; then
-      install -m 0755 "$previous/bin/norn-host-agent" "$host_agent_bin"
-    fi
-    if [[ -f "$previous/bin/platform-upgrade" ]]; then
-      install -m 0755 "$previous/bin/platform-upgrade" "$platform_script_bin"
-    fi
-    if [[ -f "$previous/bin/host-runtime" ]]; then
-      install -m 0755 "$previous/bin/host-runtime" "$host_runtime_bin"
-    fi
+    sync_managed_host_artifacts "$previous"
     restart_api
     wait_health "$api_base" 30 || fail "rollback health check failed"
     fail "upgrade failed and rollback completed"
@@ -571,9 +597,7 @@ restore_release_artifacts() {
   ln -sfn "$target" "$current_link"
   [[ -f "$target/bin/norn-api" ]] && install -m 0755 "$target/bin/norn-api" "$bin_dir/norn-api"
   [[ -f "$target/bin/norn" ]] && install -m 0755 "$target/bin/norn" "$bin_dir/norn"
-  [[ -f "$target/bin/norn-host-agent" ]] && install -m 0755 "$target/bin/norn-host-agent" "$host_agent_bin"
-  [[ -f "$target/bin/platform-upgrade" ]] && install -m 0755 "$target/bin/platform-upgrade" "$platform_script_bin"
-  [[ -f "$target/bin/host-runtime" ]] && install -m 0755 "$target/bin/host-runtime" "$host_runtime_bin"
+  sync_managed_host_artifacts "$target"
 }
 
 promote_release_proxy() {
@@ -593,10 +617,7 @@ promote_release_proxy() {
   ln -sfn "$release" "$current_link"
   install -m 0755 "$release/bin/norn-api" "$bin_dir/norn-api"
   install -m 0755 "$release/bin/norn" "$bin_dir/norn"
-  mkdir -p "$(dirname "$host_agent_bin")"
-  install -m 0755 "$release/bin/norn-host-agent" "$host_agent_bin"
-  install -m 0755 "$release/bin/platform-upgrade" "$platform_script_bin"
-  install -m 0755 "$release/bin/host-runtime" "$host_runtime_bin"
+  sync_managed_host_artifacts "$release" true
 
   printf '127.0.0.1:%s\n' "$candidate_port" > "$proxy_upstream_file"
   write_proxy_config
