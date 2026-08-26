@@ -25,8 +25,19 @@ export NORN_WORKLOAD_CONNECTOR=nomad-consul
 
 # Explicit local macOS development mode
 export NORN_WORKLOAD_CONNECTOR=apple-container
-container system start
+norn host prerequisites --connector apple-container --check
+norn host setup --connector apple-container
 ```
+
+The setup command is optional convenience, not a connector selection shortcut:
+set `NORN_WORKLOAD_CONNECTOR=apple-container` explicitly for the development
+API process. It supports Apple-silicon macOS 26 or later, prompts before
+installation or runtime initialization, and has `--check`, `--dry-run`,
+`--yes`, and `--non-interactive` modes for repeatable automation. The package
+is version-pinned (override only with `NORN_APPLE_CONTAINER_VERSION`), fetched
+from the official Apple GitHub release over HTTPS, and must pass local
+Developer-ID, notarization, and Gatekeeper verification before macOS Installer
+runs. Norn never uses `curl | sh` for this path.
 
 Inspect the active choice and every known connector:
 
@@ -79,6 +90,11 @@ Public Cloudflare routes can target that loopback port in local mode. Starting
 a second endpoint allocation or any canary is rejected until a native
 local ingress owns atomic port switching and balancing. Worker processes
 without ports may scale to multiple local containers.
+
+Apple Container enforces a 200 MiB minimum explicit memory limit. Portable
+InfraSpecs may still request a smaller worker allocation; the local connector
+raises the native runtime limit to 200 MiB while leaving the declared request
+unchanged for Nomad placement and capacity planning.
 
 Endpoint updates are currently stop/start on the published port and can have a
 brief interruption. Use `nomad-consul` when rolling, canary, or blue/green

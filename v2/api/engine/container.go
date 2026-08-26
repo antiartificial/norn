@@ -15,6 +15,12 @@ import (
 
 const containerBin = "container"
 
+// Apple Container rejects explicit memory limits below 200 MiB. InfraSpecs
+// use portable scheduler-sized requests (often 64 or 128 MiB), so the local
+// development connector raises only the runtime limit to Apple's floor rather
+// than failing an otherwise portable application at submit time.
+const minimumContainerMemoryMB = 200
+
 var runContainerCommand = defaultContainerCommand
 
 func containerCmd(ctx context.Context, args ...string) ([]byte, error) {
@@ -167,7 +173,11 @@ func containerRun(ctx context.Context, opts RunOpts) error {
 		args = append(args, "--cpus", fmt.Sprintf("%d", opts.CPUs))
 	}
 	if opts.MemoryMB > 0 {
-		args = append(args, "--memory", fmt.Sprintf("%dMB", opts.MemoryMB))
+		memoryMB := opts.MemoryMB
+		if memoryMB < minimumContainerMemoryMB {
+			memoryMB = minimumContainerMemoryMB
+		}
+		args = append(args, "--memory", fmt.Sprintf("%dMB", memoryMB))
 	}
 	if opts.Port > 0 {
 		hostPort := opts.HostPort

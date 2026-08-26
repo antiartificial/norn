@@ -138,6 +138,8 @@ norn host assure
 norn host queue-assure
 norn host status
 norn host doctor
+norn host prerequisites --connector nomad-consul --check
+norn host setup --connector apple-container
 norn host security plan
 norn host security init --address 10.0.0.10 --cert-days 365
 ```
@@ -149,6 +151,24 @@ also configure a bounded post-recovery cron trigger:
 ```bash
 norn host install --repo /path/to/norn --catch-up app-name:daily-capture
 ```
+
+Run `norn host prerequisites` before `host install` on a new machine. It is a
+non-mutating base-system check and deliberately does not require generated
+plists or a running Norn API. `nomad-consul` is the default and only
+production-supported connector; it checks Docker, Nomad, Consul, SOPS, and
+host tooling. Its installation remains a deliberate infrastructure procedure
+because TLS, ACLs, Docker administration, and persistent state need an
+operator-approved configuration.
+
+For local Apple-silicon macOS development, `norn host setup --connector
+apple-container` offers the narrow automated path. It confirms macOS 26+ and
+arm64, asks before each change, downloads a version-pinned package only from
+the official `apple/container` GitHub release, verifies the local Apple
+Containerization Developer ID signature, notarization, and Gatekeeper result,
+then invokes macOS Installer and starts the runtime. It never pipes a network
+response into a shell. Use `--check` to inspect only, `--dry-run` to preview,
+and `--yes --non-interactive` for approved automation (macOS sudo credentials
+are still required for package installation).
 
 The install command also accepts an explicit assurance policy:
 

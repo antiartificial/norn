@@ -2,8 +2,10 @@ package engine
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"log"
+	"sync"
 	"time"
 
 	"github.com/google/uuid"
@@ -330,26 +332,45 @@ func (e *Engine) StopJob(ctx context.Context, appID string, purge bool) error {
 // environment and mounts, by stopping and starting the existing instance.
 func (e *Engine) RestartJob(ctx context.Context, appID string) error {
 	instances, _ := e.JobInstances(appID)
+	var wg sync.WaitGroup
+	errCh := make(chan error, len(instances))
 	for _, inst := range instances {
 		if !inst.IsRunning() || inst.Kind == "cron" || inst.Kind == "batch" {
 			continue
 		}
-		if err := containerStop(ctx, inst.ContainerName, 30*time.Second); err != nil {
-			return fmt.Errorf("stop %s: %w", inst.ContainerName, err)
-		}
-		if err := containerStart(ctx, inst.ContainerName); err != nil {
-			log.Printf("engine: restart %s: %v", inst.ContainerName, err)
-			return fmt.Errorf("start %s: %w", inst.ContainerName, err)
-		}
-		e.mu.Lock()
-		inst2 := e.instances[inst.ContainerName]
-		if inst2 != nil {
-			inst2.Status = "running"
-			inst2.StartedAt = time.Now()
-		}
-		e.mu.Unlock()
+		inst := inst
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			// A local restart is an explicit replacement action. Bound graceful
+			// shutdown below the control client's request deadline and restart
+			// independent native VMs concurrently so a slow worker cannot leave
+			// the remaining allocations untouched after the client disconnects.
+			if err := containerStop(ctx, inst.ContainerName, 10*time.Second); err != nil {
+				errCh <- fmt.Errorf("stop %s: %w", inst.ContainerName, err)
+				return
+			}
+			if err := containerStart(ctx, inst.ContainerName); err != nil {
+				log.Printf("engine: restart %s: %v", inst.ContainerName, err)
+				errCh <- fmt.Errorf("start %s: %w", inst.ContainerName, err)
+				return
+			}
+			e.mu.Lock()
+			inst2 := e.instances[inst.ContainerName]
+			if inst2 != nil {
+				inst2.Status = "running"
+				inst2.StartedAt = time.Now()
+			}
+			e.mu.Unlock()
+		}()
 	}
-	return nil
+	wg.Wait()
+	close(errCh)
+	var restartErrors []error
+	for err := range errCh {
+		restartErrors = append(restartErrors, err)
+	}
+	return errors.Join(restartErrors...)
 }
 
 // ScaleJob adjusts the replica count for a process.

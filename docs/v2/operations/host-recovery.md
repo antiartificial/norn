@@ -43,9 +43,26 @@ the idempotent repair pass without repeatedly restarting the core runtime.
 ## Install
 
 ```bash
+norn host prerequisites --connector nomad-consul --check
 norn host install --repo /path/to/norn
 norn host doctor
 ```
+
+`prerequisites` is the pre-install check: unlike `doctor`, it does not expect
+managed files, LaunchAgents, or a running API. The default check verifies the
+Nomad/Consul production substrate. Local development hosts can instead inspect
+or prepare the explicit Apple Container connector with:
+
+```bash
+norn host prerequisites --connector apple-container --check
+norn host setup --connector apple-container
+```
+
+The Apple setup path is interactive by default and is limited to supported
+Apple-silicon macOS. It verifies a signed, notarized official package before
+using macOS Installer; `--dry-run`, `--yes`, and `--non-interactive` make the
+same procedure previewable and automation-friendly. It does not change the
+production connector, host-recovery ordering, or security posture.
 
 `install` writes managed configuration and launchd files but deliberately does
 not stop live services. Re-running it refreshes the managed scripts, CLI,

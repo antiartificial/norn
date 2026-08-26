@@ -19,6 +19,8 @@ func init() {
 	hostCmd.PersistentFlags().StringVar(&hostRepo, "repo", os.Getenv("NORN_HOST_REPO"), "Norn repo path for host runtime management")
 	hostCmd.PersistentFlags().StringVar(&hostScript, "script", os.Getenv("NORN_HOST_SCRIPT"), "host-runtime script path")
 	hostCmd.AddCommand(hostInstallCmd)
+	hostCmd.AddCommand(hostPrerequisitesCmd)
+	hostCmd.AddCommand(hostSetupCmd)
 	hostCmd.AddCommand(hostDoctorCmd)
 	hostCmd.AddCommand(hostAssureCmd)
 	hostCmd.AddCommand(hostRecoverCmd)
@@ -48,6 +50,8 @@ func hostScriptCommand(use, short, mode string) *cobra.Command {
 }
 
 var hostInstallCmd = hostScriptCommand("install [host-runtime flags]", "Install persistent configs and launchd jobs without interrupting live services", "install")
+var hostPrerequisitesCmd = hostScriptCommand("prerequisites [host-runtime flags]", "Check base-system prerequisites before installing a Norn host runtime", "prerequisites")
+var hostSetupCmd = hostScriptCommand("setup [host-runtime flags]", "Interactively install optional connector prerequisites, then verify them", "setup")
 var hostDoctorCmd = hostScriptCommand("doctor [host-runtime flags]", "Check host dependencies, managed files, launchd state, and runtime health", "doctor")
 var hostAssureCmd = hostScriptCommand("assure [host-runtime flags]", "Repair required apps and routes, then probe user-facing endpoints", "assure")
 var hostRecoverCmd = hostScriptCommand("recover [host-runtime flags]", "Start dependencies in order and recover the Norn API", "recover")

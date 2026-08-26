@@ -68,6 +68,68 @@ func TestContainerRunKeepsEnvironmentOffCommandLine(t *testing.T) {
 	}
 }
 
+func TestContainerRunRaisesMemoryToAppleMinimum(t *testing.T) {
+	original := runContainerCommand
+	t.Cleanup(func() { runContainerCommand = original })
+	var captured []string
+	runContainerCommand = func(_ context.Context, args ...string) ([]byte, error) {
+		captured = append([]string(nil), args...)
+		return nil, nil
+	}
+
+	if err := containerRun(context.Background(), RunOpts{
+		Name: "norn-example-worker-0", Image: "example:dev", MemoryMB: 64,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	joined := strings.Join(captured, " ")
+	if !strings.Contains(joined, "--memory 200MB") {
+		t.Fatalf("Apple memory floor missing: %s", joined)
+	}
+}
+
+func TestRestartJobStopsIndependentContainersConcurrently(t *testing.T) {
+	original := runContainerCommand
+	t.Cleanup(func() { runContainerCommand = original })
+	stopEntered := make(chan string, 2)
+	releaseStops := make(chan struct{})
+	starts := make(chan string, 2)
+	runContainerCommand = func(_ context.Context, args ...string) ([]byte, error) {
+		switch args[0] {
+		case "stop":
+			stopEntered <- args[len(args)-1]
+			<-releaseStops
+		case "start":
+			starts <- args[len(args)-1]
+		}
+		return nil, nil
+	}
+
+	eng := &Engine{instances: map[string]*Instance{
+		"norn-sample-worker-0": {ContainerName: "norn-sample-worker-0", App: "sample", Kind: "service", Status: "running"},
+		"norn-sample-worker-1": {ContainerName: "norn-sample-worker-1", App: "sample", Kind: "service", Status: "running"},
+	}}
+	done := make(chan error, 1)
+	go func() { done <- eng.RestartJob(context.Background(), "sample") }()
+
+	seen := map[string]bool{}
+	for range 2 {
+		select {
+		case name := <-stopEntered:
+			seen[name] = true
+		case <-time.After(time.Second):
+			t.Fatal("restart serialized container stops")
+		}
+	}
+	close(releaseStops)
+	if err := <-done; err != nil {
+		t.Fatal(err)
+	}
+	if len(seen) != 2 || len(starts) != 2 {
+		t.Fatalf("restart stops=%v starts=%d", seen, len(starts))
+	}
+}
+
 func TestEnsureRuntimeStartsStoppedSystem(t *testing.T) {
 	original := runContainerCommand
 	t.Cleanup(func() { runContainerCommand = original })
