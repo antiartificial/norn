@@ -1,0 +1,327 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+script_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+lab_root="$(cd "${script_dir}/.." && pwd)"
+export PATH="${lab_root}/.tools/bin:${PATH}"
+action="${1:-status}"
+
+lab_name="$(terraform -chdir="${lab_root}/terraform" output -raw name_prefix)"
+"${script_dir}/secrets" ensure "${lab_name}" >/dev/null
+secret_file="$("${script_dir}/secrets" path "${lab_name}")"
+set -a
+# shellcheck disable=SC1090
+source "${secret_file}"
+set +a
+first_ip="$(terraform -chdir="${lab_root}/terraform" output -json lab_nodes | jq -r 'to_entries | sort_by(.key) | first.value.public_ip')"
+
+set_phase() {
+  local phase="$1" temp_file
+  case "${phase}" in
+    disabled|consul-transition|consul-clients|consul-tls-outgoing|consul-enforced|nomad-transition|enforced) ;;
+    *) echo "invalid security phase: ${phase}" >&2; exit 2 ;;
+  esac
+  temp_file="$(mktemp "$(dirname "${secret_file}")/.security-phase.XXXXXX")"
+  trap 'rm -f -- "${temp_file}"' RETURN
+  awk -v phase="${phase}" '
+    BEGIN { replaced = 0 }
+    /^NORN_HA_SECURITY_PHASE=/ { print "NORN_HA_SECURITY_PHASE=" phase; replaced = 1; next }
+    { print }
+    END { if (!replaced) print "NORN_HA_SECURITY_PHASE=" phase }
+  ' "${secret_file}" >"${temp_file}"
+  chmod 0600 "${temp_file}"
+  mv "${temp_file}" "${secret_file}"
+  trap - RETURN
+  export NORN_HA_SECURITY_PHASE="${phase}"
+  echo "security_phase=${phase}"
+}
+
+set_profile() {
+  local profile="$1" temp_file
+  case "${profile}" in
+    development|production) ;;
+    *) echo "invalid Norn profile: ${profile}" >&2; exit 2 ;;
+  esac
+  temp_file="$(mktemp "$(dirname "${secret_file}")/.norn-profile.XXXXXX")"
+  trap 'rm -f -- "${temp_file}"' RETURN
+  awk -v profile="${profile}" '
+    BEGIN { replaced = 0 }
+    /^NORN_HA_NORN_PROFILE=/ { print "NORN_HA_NORN_PROFILE=" profile; replaced = 1; next }
+    { print }
+    END { if (!replaced) print "NORN_HA_NORN_PROFILE=" profile }
+  ' "${secret_file}" >"${temp_file}"
+  chmod 0600 "${temp_file}"
+  mv "${temp_file}" "${secret_file}"
+  trap - RETURN
+  export NORN_HA_NORN_PROFILE="${profile}"
+  echo "norn_profile=${profile}"
+}
+
+readiness_report() {
+  printf '%s\n' "${NORN_HA_NORN_API_TOKEN}" | ssh -o BatchMode=yes "root@${first_ip}" 'IFS= read -r token
+active="$(curl -fsS --max-time 5 "http://127.0.0.1:8500/v1/health/service/norn-api?passing=true" | jq -er '\''if length == 1 then .[0].Service.Address else error("exactly one active Norn API required") end'\'')"
+curl -fsS --max-time 30 -H "Authorization: Bearer ${token}" "http://${active}:8800/api/v1/production/readiness"'
+}
+
+activate_production() {
+  [[ "${NORN_HA_SECURITY_PHASE}" == enforced ]] || {
+    echo "production activation requires security_phase=enforced" >&2
+    exit 1
+  }
+  before="$(readiness_report)"
+  jq -e '
+    .status == "blocked" and
+    .summary.failed == 1 and
+    ([.checks[] | select(.status == "fail") | .id] == ["profile.production"])
+  ' <<<"${before}" >/dev/null || {
+    jq '{status,summary,failed:[.checks[] | select(.status == "fail") | .id]}' <<<"${before}" >&2
+    echo "production activation refused: readiness has blockers beyond the profile" >&2
+    exit 1
+  }
+
+  set_profile production
+  if ! converge_tags norn; then
+    set_profile development
+    converge_tags norn || true
+    echo "production activation rolled back after convergence failed" >&2
+    exit 1
+  fi
+
+  after="$(readiness_report)"
+  if ! jq -e '.status == "ready" and .summary.failed == 0' <<<"${after}" >/dev/null; then
+    jq '{status,summary,failed:[.checks[] | select(.status == "fail") | .id]}' <<<"${after}" >&2
+    set_profile development
+    converge_tags norn || true
+    echo "production activation rolled back after the final readiness gate failed" >&2
+    exit 1
+  fi
+  jq '{status,summary,warnings:[.checks[] | select(.status == "warn") | .id]}' <<<"${after}"
+}
+
+converge_tags() {
+  "${script_dir}/converge" --tags "$1"
+}
+
+seed_consul() {
+  payload="$(jq -cn \
+    --arg management "${NORN_HA_CONSUL_MANAGEMENT_TOKEN}" \
+    --arg norn "${NORN_HA_CONSUL_NORN_TOKEN}" \
+    --arg patroni "${NORN_HA_CONSUL_PATRONI_TOKEN}" \
+    --arg nomad "${NORN_HA_CONSUL_NOMAD_TOKEN}" \
+    --arg observability "${NORN_HA_CONSUL_OBSERVABILITY_TOKEN}" \
+    --arg agent01 "${NORN_HA_CONSUL_AGENT_TOKEN_01}" \
+    --arg agent02 "${NORN_HA_CONSUL_AGENT_TOKEN_02}" \
+    --arg agent03 "${NORN_HA_CONSUL_AGENT_TOKEN_03}" \
+    '{management:$management,norn:$norn,patroni:$patroni,nomad:$nomad,observability:$observability,agents:{"norn-ha-eval-01":$agent01,"norn-ha-eval-02":$agent02,"norn-ha-eval-03":$agent03}}')"
+  {
+    printf '%s\n' "${payload}"
+    cat <<'REMOTE'
+set -euo pipefail
+payload="${NORN_CUTOVER_PAYLOAD}"
+unset NORN_CUTOVER_PAYLOAD
+work="$(mktemp -d /tmp/norn-consul-acl.XXXXXX)"
+chmod 0700 "${work}"
+trap 'rm -rf -- "${work}"' EXIT
+export CONSUL_HTTP_ADDR=https://127.0.0.1:8501
+export CONSUL_CACERT=/etc/consul.d/pki/ca.pem
+export CONSUL_CLIENT_CERT=/etc/consul.d/pki/consul.pem
+export CONSUL_CLIENT_KEY=/etc/consul.d/pki/consul-key.pem
+export CONSUL_TLS_SERVER_NAME=server.dc1.consul
+export CONSUL_HTTP_TOKEN="$(jq -r .management <<<"${payload}")"
+
+write_policy() {
+  local name="$1" file="$2"
+  if consul acl policy read -name "${name}" >/dev/null 2>&1; then
+    consul acl policy update -name "${name}" -rules "@${file}" >/dev/null
+  else
+    consul acl policy create -name "${name}" -rules "@${file}" >/dev/null
+  fi
+}
+create_token() {
+  local secret="$1" policy="$2" description="$3" node="${4:-}"
+  if consul acl token list -format=json | jq -e --arg secret "${secret}" 'any(.[]; .SecretID == $secret)' >/dev/null; then
+    return
+  fi
+  args=(-description "${description}" -policy-name "${policy}" -secret "${secret}")
+  [[ -z "${node}" ]] || args+=(-node-identity "${node}:dc1")
+  consul acl token create "${args[@]}" >/dev/null
+}
+
+cat >"${work}/anonymous.hcl" <<'EOF'
+agent_prefix "" { policy = "read" }
+node_prefix "" { policy = "read" }
+service_prefix "" { policy = "read" }
+EOF
+cat >"${work}/agent.hcl" <<'EOF'
+agent_prefix "" { policy = "write" }
+node_prefix "" { policy = "write" }
+service_prefix "" { policy = "write" }
+EOF
+cat >"${work}/norn.hcl" <<'EOF'
+agent_prefix "" { policy = "read" }
+node_prefix "" { policy = "read" }
+service_prefix "" { policy = "read" }
+session_prefix "" { policy = "write" }
+key_prefix "norn/" { policy = "write" }
+EOF
+cat >"${work}/patroni.hcl" <<'EOF'
+agent_prefix "" { policy = "read" }
+node_prefix "" { policy = "read" }
+service_prefix "" { policy = "read" }
+session_prefix "" { policy = "write" }
+key_prefix "norn/patroni/" { policy = "write" }
+EOF
+cat >"${work}/nomad.hcl" <<'EOF'
+agent_prefix "" { policy = "read" }
+node_prefix "" { policy = "write" }
+service_prefix "" { policy = "write" }
+acl = "write"
+mesh = "write"
+EOF
+cp "${work}/anonymous.hcl" "${work}/observability.hcl"
+write_policy norn-anonymous-read "${work}/anonymous.hcl"
+write_policy norn-agent "${work}/agent.hcl"
+write_policy norn-controller "${work}/norn.hcl"
+write_policy norn-patroni "${work}/patroni.hcl"
+write_policy norn-nomad "${work}/nomad.hcl"
+write_policy norn-observability "${work}/observability.hcl"
+consul acl token update -id anonymous -policy-name norn-anonymous-read >/dev/null
+create_token "$(jq -r .norn <<<"${payload}")" norn-controller "Norn controller"
+create_token "$(jq -r .patroni <<<"${payload}")" norn-patroni "Patroni DCS"
+create_token "$(jq -r .nomad <<<"${payload}")" norn-nomad "Nomad agents"
+create_token "$(jq -r .observability <<<"${payload}")" norn-observability "Prometheus discovery"
+for node in norn-ha-eval-01 norn-ha-eval-02 norn-ha-eval-03; do
+  create_token "$(jq -r --arg node "${node}" '.agents[$node]' <<<"${payload}")" norn-agent "${node} agent" "${node}"
+done
+consul acl token list -format=json | jq -e 'length >= 8' >/dev/null
+echo "consul_acl_seeded=true"
+REMOTE
+  } | ssh -o BatchMode=yes "root@${first_ip}" 'IFS= read -r NORN_CUTOVER_PAYLOAD; export NORN_CUTOVER_PAYLOAD; exec bash -s'
+}
+
+seed_nomad() {
+  payload="$(jq -cn \
+    --arg management "${NORN_HA_NOMAD_MANAGEMENT_TOKEN}" \
+    --arg norn_accessor "${NORN_HA_NOMAD_NORN_ACCESSOR}" \
+    --arg norn "${NORN_HA_NOMAD_NORN_TOKEN}" \
+    --arg observability_accessor "${NORN_HA_NOMAD_OBSERVABILITY_ACCESSOR}" \
+    --arg observability "${NORN_HA_NOMAD_OBSERVABILITY_TOKEN}" \
+    --arg consul_management "${NORN_HA_CONSUL_MANAGEMENT_TOKEN}" \
+    '{management:$management,norn_accessor:$norn_accessor,norn:$norn,observability_accessor:$observability_accessor,observability:$observability,consul_management:$consul_management}')"
+  {
+    printf '%s\n' "${payload}"
+    cat <<'REMOTE'
+set -euo pipefail
+payload="${NORN_CUTOVER_PAYLOAD}"
+unset NORN_CUTOVER_PAYLOAD
+work="$(mktemp -d /tmp/norn-nomad-acl.XXXXXX)"
+chmod 0700 "${work}"
+trap 'rm -rf -- "${work}"' EXIT
+export NOMAD_ADDR=https://127.0.0.1:4646
+export NOMAD_CACERT=/etc/nomad.d/pki/nomad-ca.pem
+export NOMAD_CLIENT_CERT=/etc/nomad.d/pki/nomad.pem
+export NOMAD_CLIENT_KEY=/etc/nomad.d/pki/nomad-key.pem
+export NOMAD_TLS_SERVER_NAME=server.global.nomad
+management="$(jq -r .management <<<"${payload}")"
+if ! NOMAD_TOKEN="${management}" nomad acl token self >/dev/null 2>&1; then
+  printf '%s\n' "${management}" | nomad acl bootstrap - >/dev/null
+fi
+export NOMAD_TOKEN="${management}"
+cat >"${work}/norn.hcl" <<'EOF'
+namespace "*" {
+  policy = "write"
+  variables {
+    path "nomad/jobs/*" {
+      capabilities = ["write", "read", "destroy", "list"]
+    }
+  }
+}
+agent { policy = "read" }
+node { policy = "write" }
+operator { policy = "read" }
+quota { policy = "read" }
+plugin { policy = "read" }
+host_volume "*" { policy = "write" }
+EOF
+cat >"${work}/observability.hcl" <<'EOF'
+namespace "*" { policy = "read" }
+agent { policy = "read" }
+node { policy = "read" }
+operator { policy = "read" }
+quota { policy = "read" }
+plugin { policy = "read" }
+EOF
+cp "${work}/observability.hcl" "${work}/anonymous.hcl"
+nomad acl policy apply norn-controller "${work}/norn.hcl" >/dev/null
+nomad acl policy apply norn-observability "${work}/observability.hcl" >/dev/null
+nomad acl policy apply anonymous "${work}/anonymous.hcl" >/dev/null
+create_nomad_token() {
+  local accessor="$1" secret="$2" name="$3" policy="$4"
+  if nomad acl token info "${accessor}" >/dev/null 2>&1; then return; fi
+  printf '%s\n' "${secret}" | nomad acl token create -accessor "${accessor}" -name "${name}" -policy "${policy}" - >/dev/null
+}
+create_nomad_token "$(jq -r .norn_accessor <<<"${payload}")" "$(jq -r .norn <<<"${payload}")" "Norn controller" norn-controller
+create_nomad_token "$(jq -r .observability_accessor <<<"${payload}")" "$(jq -r .observability <<<"${payload}")" "Prometheus" norn-observability
+export CONSUL_HTTP_ADDR=https://127.0.0.1:8501
+export CONSUL_CACERT=/etc/consul.d/pki/ca.pem
+export CONSUL_CLIENT_CERT=/etc/consul.d/pki/consul.pem
+export CONSUL_CLIENT_KEY=/etc/consul.d/pki/consul-key.pem
+export CONSUL_TLS_SERVER_NAME=server.dc1.consul
+export CONSUL_HTTP_TOKEN="$(jq -r .consul_management <<<"${payload}")"
+nomad setup consul -y \
+  -jwks-url=https://nomad.service.consul:4646/.well-known/jwks.json \
+  -jwks-ca-file=/etc/nomad.d/pki/nomad-ca.pem >/dev/null
+nomad acl token list -json | jq -e 'length >= 3' >/dev/null
+echo "nomad_acl_seeded=true"
+REMOTE
+  } | ssh -o BatchMode=yes "root@${first_ip}" 'IFS= read -r NORN_CUTOVER_PAYLOAD; export NORN_CUTOVER_PAYLOAD; exec bash -s'
+}
+
+case "${action}" in
+  status)
+    printf 'security_phase=%s\n' "${NORN_HA_SECURITY_PHASE}"
+    printf 'norn_profile=%s\n' "${NORN_HA_NORN_PROFILE}"
+    "${script_dir}/pki" status
+    ;;
+  set-phase)
+    set_phase "${2:-}"
+    ;;
+  seed-consul)
+    seed_consul
+    ;;
+  seed-nomad)
+    seed_nomad
+    ;;
+  activate-production)
+    activate_production
+    ;;
+  cutover)
+    [[ "${2:-}" == "--confirm-disposable-lab" ]] || {
+      echo "refusing cutover: pass --confirm-disposable-lab after confirming zero active operations" >&2
+      exit 2
+    }
+    if [[ ! -d "${NORN_HA_PKI_DIR}/consul" ]]; then
+      "${script_dir}/pki" control-init
+    fi
+    set_phase consul-transition
+    converge_tags consul
+    seed_consul
+    set_phase consul-clients
+    converge_tags consul,nomad,postgres,norn,observability
+    set_phase consul-tls-outgoing
+    converge_tags consul
+    set_phase consul-enforced
+    converge_tags consul
+    set_phase nomad-transition
+    converge_tags nomad
+    seed_nomad
+    converge_tags norn,observability
+    set_phase enforced
+    converge_tags nomad,norn,observability,verify
+    "${script_dir}/verify"
+    ;;
+  *)
+    echo "usage: security-cutover status | set-phase PHASE | seed-consul | seed-nomad | activate-production | cutover --confirm-disposable-lab" >&2
+    exit 2
+    ;;
+esac

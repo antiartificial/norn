@@ -10,6 +10,16 @@ import (
 // DiscoverApps scans the given directory for subdirectories containing
 // infraspec.yaml with deploy: true.
 func DiscoverApps(appsDir string) ([]*InfraSpec, error) {
+	return discoverApps(appsDir, true)
+}
+
+// DiscoverAllApps includes disabled drafts for operator inventory. Runtime
+// recovery and mutation paths must continue to use DiscoverApps.
+func DiscoverAllApps(appsDir string) ([]*InfraSpec, error) {
+	return discoverApps(appsDir, false)
+}
+
+func discoverApps(appsDir string, deployOnly bool) ([]*InfraSpec, error) {
 	entries, err := os.ReadDir(appsDir)
 	if err != nil {
 		return nil, err
@@ -25,7 +35,14 @@ func DiscoverApps(appsDir string) ([]*InfraSpec, error) {
 		if err != nil {
 			continue
 		}
-		if !spec.Deploy {
+		// Disabled drafts are visible to operators, but an unrelated repository
+		// may also contain an InfraSpec-shaped file without an application name.
+		// Such a document cannot be addressed by any app route and must not become
+		// a nameless inventory entry.
+		if strings.TrimSpace(spec.App) == "" {
+			continue
+		}
+		if deployOnly && !spec.Deploy {
 			continue
 		}
 		specs = append(specs, spec)

@@ -10,21 +10,34 @@ import (
 )
 
 type ValidationResult struct {
-	App      string              `json:"app"`
-	Valid    bool                `json:"valid"`
-	Findings []ValidationFinding `json:"findings"`
+	SchemaVersion string              `json:"schemaVersion,omitempty"`
+	DocumentKind  string              `json:"documentKind,omitempty"`
+	App           string              `json:"app"`
+	Valid         bool                `json:"valid"`
+	Findings      []ValidationFinding `json:"findings"`
 }
 
 type ValidationFinding struct {
-	Severity string `json:"severity"` // error, warning, info
-	Field    string `json:"field"`
-	Message  string `json:"message"`
+	Severity    string `json:"severity"` // error, warning, info
+	Code        string `json:"code,omitempty"`
+	Field       string `json:"field"`
+	Message     string `json:"message"`
+	Remediation string `json:"remediation,omitempty"`
 }
 
 var appNameRe = regexp.MustCompile(`^[a-z0-9][a-z0-9-]*$`)
 var bucketNameRe = regexp.MustCompile(`^[a-z0-9][a-z0-9.-]{1,61}[a-z0-9]$`)
 var envNameRe = regexp.MustCompile(`^[A-Za-z][A-Za-z0-9_]*$`)
 var kafkaTopicNameRe = regexp.MustCompile(`^[A-Za-z0-9._-]+$`)
+var postgresDatabaseNameRe = regexp.MustCompile(`^[A-Za-z0-9_.-]{1,63}$`)
+
+// IsSafePostgresDatabaseName restricts database names used by Norn's local
+// snapshot tooling to a portable PostgreSQL identifier subset. In addition to
+// producing predictable dump filenames, this prevents an InfraSpec database
+// value from escaping the configured snapshot directory.
+func IsSafePostgresDatabaseName(name string) bool {
+	return name != "." && name != ".." && postgresDatabaseNameRe.MatchString(name)
+}
 
 type ValidationOptions struct {
 	NetworkMode   string
@@ -54,13 +67,58 @@ func ValidateSpecWithOptions(spec *InfraSpec, opts ValidationOptions) *Validatio
 	if len(spec.Processes) == 0 {
 		r.add("error", "processes", "at least one process is required")
 	}
+	validateNodePoolReference(r, "placement.nodePool", spec.Placement)
+
+	if len(spec.Regions) > 0 {
+		if len(spec.Regions) > 1 && spec.PrimaryRegion == "" {
+			for _, process := range spec.Processes {
+				if process.Schedule != "" || process.Singleton {
+					r.add("error", "primaryRegion", "primaryRegion is required for multi-region scheduled or singleton processes")
+					break
+				}
+			}
+		}
+		if spec.PrimaryRegion != "" {
+			if _, ok := spec.Regions[spec.PrimaryRegion]; !ok {
+				r.add("error", "primaryRegion", "primaryRegion must name a declared region")
+			}
+		}
+		for name, target := range spec.Regions {
+			field := fmt.Sprintf("regions.%s", name)
+			if !appNameRe.MatchString(name) {
+				r.add("error", field, "region name must match ^[a-z0-9][a-z0-9-]*$")
+			}
+			if target.TrafficWeight != nil && (*target.TrafficWeight < 0 || *target.TrafficWeight > 100) {
+				r.add("error", field+".trafficWeight", "trafficWeight must be between 0 and 100")
+			}
+		}
+	}
 
 	for name, proc := range spec.Processes {
 		field := fmt.Sprintf("processes.%s", name)
+		seenRegions := map[string]bool{}
+		for _, region := range proc.Regions {
+			if _, ok := spec.Regions[region]; !ok {
+				r.add("error", field+".regions", fmt.Sprintf("region %q is not declared", region))
+			}
+			if seenRegions[region] {
+				r.add("error", field+".regions", fmt.Sprintf("region %q is duplicated", region))
+			}
+			seenRegions[region] = true
+		}
 
 		// Port without health check
 		if proc.Port > 0 && proc.Health == nil {
 			r.add("warning", field+".health", "port defined without health check")
+		}
+		if proc.HostPort < 0 || proc.HostPort > 65535 {
+			r.add("error", field+".hostPort", "hostPort must be between 1 and 65535")
+		}
+		if proc.HostPort > 0 && proc.Port == 0 {
+			r.add("error", field+".hostPort", "hostPort requires a container port")
+		}
+		if proc.HostPort > 0 && proc.Scaling != nil && (proc.Scaling.Min > 1 || proc.Scaling.PerRegion > 1) {
+			r.add("error", field+".hostPort", "fixed hostPort cannot be used with multiple allocations in one region")
 		}
 
 		// Resource bounds
@@ -125,6 +183,11 @@ func ValidateSpecWithOptions(spec *InfraSpec, opts ValidationOptions) *Validatio
 			continue
 		}
 		validateEndpointReachability(r, fmt.Sprintf("endpoints[%d].url", i), ep.URL, networkMode)
+		if ep.Region != "" && len(spec.Regions) > 0 {
+			if _, ok := spec.Regions[ep.Region]; !ok {
+				r.add("error", fmt.Sprintf("endpoints[%d].region", i), fmt.Sprintf("region %q is not declared", ep.Region))
+			}
+		}
 	}
 
 	// Volumes
@@ -142,8 +205,11 @@ func ValidateSpecWithOptions(spec *InfraSpec, opts ValidationOptions) *Validatio
 
 	// Postgres infra requires database name
 	if spec.Infrastructure != nil && spec.Infrastructure.Postgres != nil {
-		if spec.Infrastructure.Postgres.Database == "" {
+		database := spec.Infrastructure.Postgres.Database
+		if database == "" {
 			r.add("error", "infrastructure.postgres.database", "postgres database name is required")
+		} else if !IsSafePostgresDatabaseName(database) {
+			r.add("error", "infrastructure.postgres.database", "postgres database name must be 1-63 ASCII letters, numbers, dots, underscores, or hyphens and cannot be . or ..")
 		}
 	}
 
@@ -227,7 +293,7 @@ func validateEndpointReachability(r *ValidationResult, field, rawURL, networkMod
 	if err != nil {
 		return
 	}
-	scope := hostScope(parsed.Hostname())
+	scope := hostScope(endpointHost(rawURL, parsed))
 	switch {
 	case networkMode != "local" && scope == "local":
 		r.add("warning", field, fmt.Sprintf("local endpoint may not be reachable in %s network mode", networkMode))
@@ -238,22 +304,44 @@ func validateEndpointReachability(r *ValidationResult, field, rawURL, networkMod
 	}
 }
 
+func endpointHost(raw string, parsed *url.URL) string {
+	if parsed != nil && parsed.Hostname() != "" {
+		return parsed.Hostname()
+	}
+	raw = strings.TrimSpace(raw)
+	if raw == "" || strings.Contains(raw, "://") || strings.ContainsAny(raw, "/?#") {
+		return ""
+	}
+	if host, _, err := net.SplitHostPort(raw); err == nil {
+		return strings.Trim(strings.TrimSpace(host), "[]")
+	}
+	return strings.TrimSuffix(strings.Trim(strings.TrimSpace(raw), "[]"), ".")
+}
+
 func hostScope(host string) string {
 	host = strings.ToLower(strings.TrimSpace(host))
 	if host == "" || host == "localhost" {
 		return "local"
 	}
+	if strings.HasSuffix(host, ".ts.net") || strings.HasSuffix(host, ".norn") {
+		return "private"
+	}
 	if ip := net.ParseIP(host); ip != nil {
 		switch {
 		case ip.IsLoopback():
 			return "local"
-		case ip.IsPrivate():
+		case ip.IsPrivate() || isTailnetIP(ip):
 			return "private"
 		default:
 			return "public"
 		}
 	}
 	return "public"
+}
+
+func isTailnetIP(ip net.IP) bool {
+	ip4 := ip.To4()
+	return ip4 != nil && ip4[0] == 100 && ip4[1]&0xc0 == 64
 }
 
 func validateTuningPolicy(r *ValidationResult, field string, tuning *TuningPolicy) {
@@ -289,9 +377,9 @@ func validateTuningPolicy(r *ValidationResult, field string, tuning *TuningPolic
 	for i, signal := range tuning.Signals {
 		signalField := fmt.Sprintf("%s.signals[%d]", field, i)
 		switch signal.Source {
-		case "", "engine", "nomad", "prometheus", "app":
+		case "", "nomad", "prometheus", "app":
 		default:
-			r.add("error", signalField+".source", "signal source must be engine, prometheus, or app")
+			r.add("error", signalField+".source", "signal source must be nomad, prometheus, or app")
 		}
 		if signal.Metric == "" {
 			r.add("error", signalField+".metric", "signal metric is required")
@@ -367,7 +455,39 @@ func (r *ValidationResult) add(severity, field, message string) {
 	}
 	r.Findings = append(r.Findings, ValidationFinding{
 		Severity: severity,
+		Code:     validationCode(field, message),
 		Field:    field,
 		Message:  message,
 	})
+}
+
+func validateNodePoolReference(r *ValidationResult, field string, placement *PlacementSpec) {
+	if placement == nil {
+		return
+	}
+	pool := strings.TrimSpace(placement.NodePool)
+	if pool == "" {
+		r.add("error", field, "nodePool is required when placement is declared")
+		return
+	}
+	if !appNameRe.MatchString(pool) {
+		r.add("error", field, "nodePool must match ^[a-z0-9][a-z0-9-]*$")
+	}
+}
+
+func validationCode(field, message string) string {
+	normalized := strings.NewReplacer("[", ".", "]", "", "_", ".").Replace(strings.ToLower(field))
+	normalized = strings.Trim(strings.ReplaceAll(normalized, "..", "."), ".")
+	suffix := "invalid"
+	switch {
+	case strings.Contains(message, "required"):
+		suffix = "required"
+	case strings.Contains(message, "not declared"):
+		suffix = "undeclared"
+	case strings.Contains(message, "duplicated") || strings.Contains(message, "unique"):
+		suffix = "duplicate"
+	case strings.Contains(message, "secret"):
+		suffix = "plaintext-secret"
+	}
+	return "infraspec." + normalized + "." + suffix
 }

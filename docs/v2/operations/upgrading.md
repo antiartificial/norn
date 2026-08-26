@@ -7,16 +7,18 @@ The safe upgrade path restarts only the Norn API process. Do not use `make down`
 ## First-Class Platform Lane
 
 ```bash
-cd /Users/0xadb/projects/norn
+cd /path/to/norn
+git fetch origin
+release_sha=$(git rev-parse origin/main)
 
 # Build into a versioned release directory and boot a candidate API on :18800.
-norn platform preflight HEAD
+norn platform preflight "$release_sha"
 
 # Promote the release, restart only com.norn.api, and rollback if postflight fails.
-norn platform upgrade HEAD
+norn platform upgrade "$release_sha"
 
 # On proxy-fronted hosts, switch the managed upstream instead of restarting launchd.
-NORN_PROXY_RELOAD=true norn platform upgrade HEAD --proxy
+NORN_PROXY_RELOAD=true norn platform upgrade "$release_sha" --proxy
 norn platform releases
 norn platform rollback <sha-prefix>
 norn platform smoke
@@ -26,9 +28,29 @@ norn platform proxy-status
 norn platform proxy-render
 norn platform proxy-switch 18802
 norn smoke platform
+
+# Preferred remote/UI lane: durable and restart-safe.
+norn platform queue-preflight "$release_sha"
+norn platform queue-upgrade "$release_sha"
+norn platform queue-rollback <sha-prefix>
+norn platform queue-smoke
 ```
 
+Use the exact pushed SHA intended for promotion. `HEAD` is convenient for a
+local development rehearsal but can move between review and upgrade.
+
 The platform lane builds from an isolated git worktree into `$HOME/norn/releases/<sha>`, writes a `$HOME/norn/current` symlink, installs compatibility binaries into `$HOME/go/bin`, and health-checks a candidate API with recovery and operation workers disabled so preflight does not mark running work failed or claim queued jobs.
+
+The queued lane is preferred when the operator is not already on the host. It
+returns a durable operation ID, is executed by `com.norn.host-agent`, and can be
+followed with `norn operations <operation-id>` even after the API restarts.
+
+Platform subcommands add existing `/opt/homebrew/bin` and `/usr/local/bin`
+directories to the managed child process before invoking the upgrade script.
+This keeps direct platform maintenance reliable through non-interactive SSH
+shells with a minimal `PATH`; queued work continues to execute in the managed
+host-agent environment. The enrichment neither mutates the parent shell nor
+replaces prerequisite checks, and missing tools still fail visibly.
 
 Use these environment variables when the repo or host layout differs:
 
@@ -36,11 +58,13 @@ Use these environment variables when the repo or host layout differs:
 |----------|---------|-------------|
 | `NORN_PLATFORM_REPO` | script repo | Norn checkout to build |
 | `NORN_RELEASES_DIR` | `$HOME/norn/releases` | Versioned release directory |
+| `NORN_NODE_BIN` | detected `node@24`, then `node` | Node.js 24 executable used for release UI builds |
 | `NORN_CURRENT_LINK` | `$HOME/norn/current` | Current-release symlink |
 | `NORN_BIN_DIR` | `$HOME/go/bin` | Compatibility install directory |
 | `NORN_CANDIDATE_PORT` | `18800` | Alternate-port candidate API |
 | `NORN_TOKEN` / `NORN_API_TOKEN` | — | Optional bearer token for active-operation drain checks |
 | `NORN_DRAIN_MODE` | `fail` | `fail`, `wait`, or `force` for active-operation drains |
+| `NORN_DRAIN_EXCLUDE_OPERATION_ID` | — | Host-agent operation omitted from its own drain query |
 | `NORN_SKIP_CANDIDATE_API` | `false` | Skip side-by-side candidate boot |
 | `NORN_PLATFORM_UPGRADE_MODE` | `restart` | `restart` or `proxy`; `--proxy` sets this for upgrades |
 | `NORN_API_ENV_FILE` | `$HOME/.config/norn/api.env.enc.json` | SOPS JSON env file for `platform smoke` and `platform env` |
@@ -55,12 +79,16 @@ Use these environment variables when the repo or host layout differs:
 The old direct-binary path still works when the platform lane itself is broken:
 
 ```bash
-cd /Users/0xadb/projects/norn/v2
+export NORN_PLATFORM_REPO=/path/to/norn
+export NORN_BIN_DIR="${NORN_BIN_DIR:-$HOME/go/bin}"
+
+cd "$NORN_PLATFORM_REPO/v2"
 cd ui && pnpm build
 cd ..
 make build
-install -m 0755 bin/norn-api /Users/0xadb/go/bin/norn-api
-install -m 0755 bin/norn /Users/0xadb/go/bin/norn
+mkdir -p "$NORN_BIN_DIR"
+install -m 0755 bin/norn-api "$NORN_BIN_DIR/norn-api"
+install -m 0755 bin/norn "$NORN_BIN_DIR/norn"
 launchctl kickstart -k gui/$(id -u)/com.norn.api
 ```
 
@@ -112,10 +140,13 @@ norn platform rollback <sha-prefix>
 Manual rollback is still a symlink flip plus compatibility binary install:
 
 ```bash
-backup=$HOME/norn/releases/<previous-sha>
+releases_dir="${NORN_RELEASES_DIR:-$HOME/norn/releases}"
+bin_dir="${NORN_BIN_DIR:-$HOME/go/bin}"
+backup="$releases_dir/<previous-sha>"
 
-install -m 0755 "$backup/bin/norn-api" /Users/0xadb/go/bin/norn-api
-install -m 0755 "$backup/bin/norn" /Users/0xadb/go/bin/norn
+mkdir -p "$bin_dir"
+install -m 0755 "$backup/bin/norn-api" "$bin_dir/norn-api"
+install -m 0755 "$backup/bin/norn" "$bin_dir/norn"
 launchctl kickstart -k gui/$(id -u)/com.norn.api
 ```
 
@@ -124,7 +155,7 @@ Then rerun the smoke checks.
 ## Notes
 
 - The root `Makefile` still targets the older non-v2 tree. Use `v2/Makefile` for v2 releases.
-- `NORN_UI_DIR` should point at `/Users/0xadb/projects/norn/v2/ui/dist` when the API serves the built dashboard.
+- `NORN_UI_DIR` can point at an explicit dashboard build. If it is unset, the API serves `$HOME/norn/current/ui` when that release directory exists.
 - Keep Nomad, Consul, Postgres, and app allocations running during a Norn API upgrade unless you are intentionally rebuilding the whole dev environment.
 - A normal candidate API is a preflight check, not the active control plane. On proxy-fronted hosts, `norn platform upgrade --proxy` performs a managed upstream cutover; see [Platform Upgrades](/v2/architecture/platform-upgrades).
 - App deploys, preflights, and rollbacks are queued in control-plane Postgres. The drain gate checks those active rows before platform upgrades; read-only preflights can retry, while interrupted mutable deploy stages fail visibly rather than being replayed blindly.

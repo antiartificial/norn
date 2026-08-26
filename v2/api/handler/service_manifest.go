@@ -8,7 +8,7 @@ import (
 	"strings"
 	"time"
 
-	"norn/v2/api/engine"
+	"norn/v2/api/consul"
 	"norn/v2/api/model"
 )
 
@@ -65,10 +65,10 @@ func (h *Handler) buildServiceManifest() (model.ServiceManifest, error) {
 				entry.HealthPath = "/health"
 			}
 
-			if h.engine != nil {
-				health, err := h.engine.ServiceHealthChecks(serviceName)
+			if h.consul != nil {
+				health, err := h.consul.ServiceHealthChecks(serviceName)
 				if (err != nil || len(health) == 0) && spec.App != serviceName {
-					health, err = h.engine.ServiceHealthChecks(spec.App)
+					health, err = h.consul.ServiceHealthChecks(spec.App)
 				}
 				if err == nil {
 					entry.Status = aggregateManifestStatus(health)
@@ -107,8 +107,8 @@ func (h *Handler) serviceMetrics(app, processName string, process model.Process,
 		Path:        path,
 		ServiceName: serviceName,
 	}
-	if h.engine != nil {
-		if health, err := h.engine.ServiceHealthChecks(serviceName); err == nil {
+	if h.consul != nil {
+		if health, err := h.consul.ServiceHealthChecks(serviceName); err == nil {
 			for _, instance := range health {
 				metrics.Instances = append(metrics.Instances, model.ServiceInstance{
 					Node:    instance.Node,
@@ -151,11 +151,7 @@ func endpointScope(endpoints []model.Endpoint) string {
 	}
 	scope := "public"
 	for _, endpoint := range endpoints {
-		parsed, err := url.Parse(endpoint.URL)
-		if err != nil {
-			continue
-		}
-		host := strings.ToLower(parsed.Hostname())
+		host := endpointHostname(endpoint.URL)
 		switch classifyHostScope(host) {
 		case "local":
 			return "local"
@@ -164,6 +160,23 @@ func endpointScope(endpoints []model.Endpoint) string {
 		}
 	}
 	return scope
+}
+
+func endpointHostname(raw string) string {
+	raw = strings.TrimSpace(raw)
+	if raw == "" {
+		return ""
+	}
+	if parsed, err := url.Parse(raw); err == nil && parsed.Hostname() != "" {
+		return strings.ToLower(parsed.Hostname())
+	}
+	if strings.Contains(raw, "://") || strings.ContainsAny(raw, "/?#") {
+		return ""
+	}
+	if host, _, err := net.SplitHostPort(raw); err == nil {
+		return strings.ToLower(strings.Trim(strings.TrimSpace(host), "[]"))
+	}
+	return strings.ToLower(strings.TrimSuffix(strings.Trim(strings.TrimSpace(raw), "[]"), "."))
 }
 
 func instanceScope(instances []model.ServiceInstance) string {
@@ -187,17 +200,28 @@ func classifyHostScope(host string) string {
 	if host == "" || host == "localhost" {
 		return "local"
 	}
+	if strings.HasSuffix(host, ".ts.net") {
+		return "private"
+	}
+	if strings.HasSuffix(host, ".norn") {
+		return "private"
+	}
 	if ip := net.ParseIP(host); ip != nil {
 		switch {
 		case ip.IsLoopback():
 			return "local"
-		case ip.IsPrivate():
+		case ip.IsPrivate() || isTailnetIP(ip):
 			return "private"
 		default:
 			return "public"
 		}
 	}
 	return "public"
+}
+
+func isTailnetIP(ip net.IP) bool {
+	ip4 := ip.To4()
+	return ip4 != nil && ip4[0] == 100 && ip4[1]&0xc0 == 64
 }
 
 func manifestProcessType(name string, process model.Process) string {
@@ -234,7 +258,7 @@ func serviceMetadata(app, process, serviceName string) map[string]string {
 	return metadata
 }
 
-func aggregateManifestStatus(health []engine.ServiceHealth) string {
+func aggregateManifestStatus(health []consul.ServiceHealth) string {
 	if len(health) == 0 {
 		return "unknown"
 	}

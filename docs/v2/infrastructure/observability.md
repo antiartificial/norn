@@ -22,6 +22,13 @@ Norn exposes Prometheus text at both:
 /api/metrics
 ```
 
+In development mode these endpoints remain available for local scraping. When
+`NORN_REQUIRE_EXPLICIT_AUTH=true` (required by the production profile), metrics
+and `/api/services/manifest` require an authenticated bearer or Cloudflare
+Access principal because they reveal host, process, and service inventory. Give
+Prometheus a scoped token through a protected `bearer_token_file`; do not place
+the token directly in a checked-in scrape configuration.
+
 The endpoint includes low-cardinality control-plane metrics:
 
 | Metric | Meaning |

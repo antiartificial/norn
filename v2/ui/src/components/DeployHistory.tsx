@@ -1,4 +1,6 @@
+import { useMemo, useState } from 'react'
 import { useDeployments } from '../hooks/useDeployments.ts'
+import { groupConsecutiveDeployments } from '../lib/deploymentGroups.ts'
 import type { Deployment } from '../types/index.ts'
 
 interface Props {
@@ -45,13 +47,16 @@ function statusClass(status: string): string {
   }
 }
 
-function DeployRow({ deploy }: { deploy: Deployment }) {
+function DeployRow({ deploy, indented = false }: { deploy: Deployment; indented?: boolean }) {
   return (
-    <div className="history-row">
+    <div className={`history-row ${indented ? 'history-row-indented' : ''}`}>
       <span className={`history-status ${statusClass(deploy.status)}`}>
         {deploy.status.replace('_', ' ')}
       </span>
-      <span className="history-app">{deploy.app}</span>
+	  <span className="history-app">
+		{deploy.app}
+		{deploy.regions && deploy.regions.length > 0 && <span className="history-regions">{deploy.regions.map(region => <span key={region.region} className={`history-region history-region-${statusClass(region.status)}`} title={`${region.nomadRegion}: ${region.activeWeight}/${region.desiredWeight} traffic weight`}>{region.region} · {region.status}</span>)}</span>}
+	  </span>
       <span className="history-sha">{deploy.commitSha.slice(0, 7)}</span>
       <span className="history-saga">{deploy.sagaId.slice(0, 8)}</span>
       <span className="history-duration">{duration(deploy.startedAt, deploy.finishedAt)}</span>
@@ -62,9 +67,19 @@ function DeployRow({ deploy }: { deploy: Deployment }) {
 
 export function DeployHistory({ apps, onClose }: Props) {
   const { deployments, total, loading, filters, setApp, setStatus, nextPage, prevPage } = useDeployments()
+  const [expandedGroups, setExpandedGroups] = useState<Set<string>>(new Set())
+  const groups = useMemo(() => groupConsecutiveDeployments(deployments), [deployments])
 
   const page = Math.floor(filters.offset / filters.limit) + 1
   const totalPages = Math.max(1, Math.ceil(total / filters.limit))
+  const toggleGroup = (key: string) => {
+    setExpandedGroups(prev => {
+      const next = new Set(prev)
+      if (next.has(key)) next.delete(key)
+      else next.add(key)
+      return next
+    })
+  }
 
   return (
     <div className="history-panel">
@@ -108,7 +123,26 @@ export function DeployHistory({ apps, onClose }: Props) {
       {!loading && deployments.length > 0 && (
         <>
           <div className="history-list">
-            {deployments.map(d => <DeployRow key={d.id} deploy={d} />)}
+            {groups.map(group => {
+              const expanded = expandedGroups.has(group.key)
+              return (
+                <div className="history-group" key={group.key}>
+                  <DeployRow deploy={group.latest} />
+                  {group.earlier.length > 0 && (
+                    <button
+                      type="button"
+                      className="history-earlier-toggle"
+                      aria-expanded={expanded}
+                      onClick={() => toggleGroup(group.key)}
+                    >
+                      <i className={`fawsb ${expanded ? 'fa-chevron-down' : 'fa-chevron-right'}`} aria-hidden="true" />
+                      +{group.earlier.length} earlier
+                    </button>
+                  )}
+                  {expanded && group.earlier.map(deploy => <DeployRow key={deploy.id} deploy={deploy} indented />)}
+                </div>
+              )
+            })}
           </div>
 
           {totalPages > 1 && (

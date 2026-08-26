@@ -79,7 +79,7 @@ func (l *AccessLog) Recent(limit int) []AccessEvent {
 
 func (h *Handler) AccessMiddleware(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if r.URL.Path == "/ws" || r.URL.Path == "/metrics" || r.URL.Path == "/api/metrics" || strings.HasSuffix(r.URL.Path, "/exec") {
+		if r.URL.Path == "/ws" || r.URL.Path == "/api/v1/events" || r.URL.Path == "/metrics" || r.URL.Path == "/api/metrics" || strings.HasSuffix(r.URL.Path, "/exec") {
 			next.ServeHTTP(w, r)
 			return
 		}
@@ -130,17 +130,27 @@ func (r *statusRecorder) WriteHeader(code int) {
 }
 
 func clientIP(r *http.Request) string {
-	if cfIP := strings.TrimSpace(r.Header.Get("CF-Connecting-IP")); cfIP != "" {
-		return cfIP
+	direct := directRequestIP(r)
+	if direct != nil && direct.IsLoopback() {
+		if cfIP := net.ParseIP(strings.TrimSpace(r.Header.Get("CF-Connecting-IP"))); cfIP != nil {
+			return cfIP.String()
+		}
+		if forwarded := net.ParseIP(firstForwardedFor(r.Header.Get("X-Forwarded-For"))); forwarded != nil {
+			return forwarded.String()
+		}
 	}
-	if forwarded := firstForwardedFor(r.Header.Get("X-Forwarded-For")); forwarded != "" {
-		return forwarded
+	if direct != nil {
+		return direct.String()
 	}
+	return r.RemoteAddr
+}
+
+func directRequestIP(r *http.Request) net.IP {
 	host, _, err := net.SplitHostPort(r.RemoteAddr)
 	if err != nil {
-		return r.RemoteAddr
+		host = r.RemoteAddr
 	}
-	return host
+	return net.ParseIP(strings.TrimSpace(host))
 }
 
 func (h *Handler) HasActiveGrant(ip string) bool {

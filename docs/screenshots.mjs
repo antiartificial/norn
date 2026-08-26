@@ -1,24 +1,38 @@
 #!/usr/bin/env node
 /**
- * Capture Norn UI screenshots using Playwright.
+ * Capture the current Norn workspace UI with deterministic, non-production data.
  *
  * Start the UI first:
- *   cd ui && pnpm dev --host 127.0.0.1
+ *   cd v2/ui && pnpm dev --host 127.0.0.1
  *
  * Then run:
  *   node docs/screenshots.mjs
+ *
+ * Or point the capture at an already-running UI:
+ *   NORN_UI_URL=http://127.0.0.1:18880 node docs/screenshots.mjs
  */
 import { chromium } from 'playwright'
 import { mkdirSync } from 'fs'
 import { join } from 'path'
 import {
+  accessPatterns,
+  activeIncidents,
+  appSnapshots,
   apps,
-  cronExecutions,
+  capabilities,
+  cronHistory,
   deploySteps,
   deployments,
+  events,
+  fleetGitHubStatus,
+  fleetInventory,
+  fleetPlans,
+  fleetReconciliations,
   functionExecutions,
-  healthChecks,
+  ingress,
   logs,
+  operations,
+  serviceManifest,
   stats,
 } from './screenshot-fixtures.mjs'
 
@@ -28,12 +42,22 @@ mkdirSync(OUT, { recursive: true })
 const BASE = process.env.NORN_UI_URL || 'http://localhost:5173'
 const viewport = { width: 1360, height: 860 }
 
-function json(body) {
+function json(body, status = 200) {
   return {
-    status: 200,
+    status,
     contentType: 'application/json',
     body: JSON.stringify(body),
   }
+}
+
+function filteredDeployments(url) {
+  const app = url.searchParams.get('app')
+  const status = url.searchParams.get('status')
+  return deployments.filter((deployment) => {
+    if (app && deployment.app !== app) return false
+    if (status && deployment.status !== status) return false
+    return true
+  })
 }
 
 async function installApiMocks(page) {
@@ -47,27 +71,32 @@ async function installApiMocks(page) {
     if (path === '/api/health') {
       return route.fulfill(json({
         status: 'ok',
-        services: [
-          { name: 'postgres', status: 'ok' },
-          { name: 'nomad', status: 'ok' },
-          { name: 'consul', status: 'ok' },
-          { name: 'redpanda', status: 'ok' },
-          { name: 'sops', status: 'ok' },
-        ],
+        services: { postgres: 'ok', nomad: 'ok', consul: 'ok', redpanda: 'ok', garage: 'ok' },
       }))
     }
-    if (path === '/api/version') return route.fulfill(json({ version: 'v2.0.0-continuity' }))
-    if (path === '/api/deployments') return route.fulfill(json({ deployments, total: deployments.length }))
-    if (path.endsWith('/health-checks')) {
-      const app = path.split('/')[3]
-      return route.fulfill(json({ checks: healthChecks[app] ?? [] }))
-    }
-    if (path.endsWith('/cron/history')) return route.fulfill(json({ executions: cronExecutions }))
-    if (path.endsWith('/function/history')) return route.fulfill(json({ executions: functionExecutions }))
+    if (path === '/api/version') return route.fulfill(json({ version: 'v2.20.0-control-3-g067fc8d' }))
+    if (path === '/api/v1/capabilities') return route.fulfill(json(capabilities))
+    if (path === '/api/v1/fleet/node-pools') return route.fulfill(json(fleetInventory))
+    if (path === '/api/v1/fleet/plans') return route.fulfill(json(fleetPlans))
+    if (path === '/api/v1/fleet/github') return route.fulfill(json(fleetGitHubStatus))
+    if (path === '/api/v1/fleet/plans/op_fleet_9a21/reconciliations') return route.fulfill(json(fleetReconciliations))
+    if (path === '/api/v1/apps/signal-sideband/snapshots') return route.fulfill(json(appSnapshots))
+    if (path === '/api/services/manifest') return route.fulfill(json(serviceManifest))
+    if (path === '/api/access/patterns') return route.fulfill(json(accessPatterns))
+    if (path === '/api/cloudflared/ingress') return route.fulfill(json(ingress))
+    if (path === '/api/events/active') return route.fulfill(json(activeIncidents))
+    if (path === '/api/events') return route.fulfill(json(events))
+    if (path === '/api/operations/active') return route.fulfill(json(operations))
+    if (path === '/api/operations') return route.fulfill(json(operations))
+    if (path === '/api/deployments') return route.fulfill(json(filteredDeployments(url)))
+    if (path.endsWith('/cron/history')) return route.fulfill(json(cronHistory))
+    if (path.endsWith('/function/history')) return route.fulfill(json(functionExecutions))
     if (path.endsWith('/logs')) {
       return route.fulfill({ status: 200, contentType: 'text/plain', body: logs })
     }
-    if (method !== 'GET') return route.fulfill(json({ ok: true }))
+    if (path.endsWith('/canary')) return route.fulfill(json(null))
+    if (path.startsWith('/api/saga/')) return route.fulfill(json([]))
+    if (method !== 'GET') return route.fulfill(json({ ok: true, id: 'invoke-docs-001' }))
 
     return route.fulfill(json({}))
   })
@@ -75,8 +104,10 @@ async function installApiMocks(page) {
 
 async function newPage(ctx) {
   const page = await ctx.newPage()
+  page.on('pageerror', (error) => console.error(`  page error: ${error.message}`))
   await page.addInitScript(() => {
     localStorage.setItem('norn:tour-complete', '1')
+    localStorage.setItem('norn-theme', 'dark')
 
     const sockets = []
     class MockWebSocket {
@@ -112,18 +143,22 @@ async function newPage(ctx) {
 
     window.WebSocket = MockWebSocket
     window.__nornEmit = (event) => {
-      for (const socket of sockets) {
-        socket.onmessage?.({ data: JSON.stringify(event) })
-      }
+      for (const socket of sockets) socket.onmessage?.({ data: JSON.stringify(event) })
     }
   })
   await installApiMocks(page)
   return page
 }
 
-async function openApp(page) {
-  await page.goto(BASE, { waitUntil: 'networkidle' })
-  await page.waitForSelector('.app-card', { timeout: 10_000 })
+async function openRoute(page, path, readySelector) {
+  await page.goto(`${BASE}${path}`, { waitUntil: 'domcontentloaded' })
+  await page.waitForSelector('nav a:has-text("Overview")', { timeout: 10_000 })
+  try {
+    await page.waitForSelector(readySelector, { timeout: 10_000 })
+  } catch (error) {
+    console.error(`  route ${path} did not render ${readySelector}: ${(await page.locator('body').innerText()).slice(0, 800)}`)
+    throw error
+  }
   await page.waitForTimeout(500)
 }
 
@@ -133,79 +168,60 @@ async function emitDeployProgress(page) {
       window.__nornEmit({
         type: 'deploy.step',
         appId: 'signal-sideband',
-        payload,
+        payload: { step: payload.step, status: payload.status, sagaId: 'saga-812f4c19' },
+      })
+      window.__nornEmit({
+        type: 'deploy.progress',
+        appId: 'signal-sideband',
+        payload: { step: payload.step, message: payload.message, node: 'mini' },
       })
     }, step)
     await page.waitForTimeout(80)
   }
 }
 
+async function capturePage(ctx, name, path, readySelector, prepare, fullPage = false) {
+  console.log(`  -> ${name}`)
+  const page = await newPage(ctx)
+  await openRoute(page, path, readySelector)
+  if (prepare) await prepare(page)
+  await page.screenshot({ path: join(OUT, name), fullPage })
+  await page.close()
+}
+
 async function main() {
   const browser = await chromium.launch({ headless: true })
   const ctx = await browser.newContext({ viewport, deviceScaleFactor: 2 })
 
-  console.log('  -> dashboard.png')
-  const dashboard = await newPage(ctx)
-  await openApp(dashboard)
-  await dashboard.screenshot({ path: join(OUT, 'dashboard.png'), fullPage: false })
-  await dashboard.close()
+  await capturePage(ctx, 'dashboard.png', '/overview', '.overview-grid')
 
   console.log('  -> deploy-panel.png')
   const deployPage = await newPage(ctx)
-  await openApp(deployPage)
-  await deployPage.locator('.app-card', { hasText: 'signal-sideband' }).locator('button:has-text("Deploy Latest")').click()
+  await openRoute(deployPage, '/apps/signal-sideband/overview', 'h2:has-text("signal-sideband")')
+  await deployPage.getByRole('button', { name: 'Deploy', exact: true }).click()
   await emitDeployProgress(deployPage)
-  await deployPage.waitForTimeout(1200)
+  await deployPage.waitForSelector('.deploy-panel .step-active')
+  await deployPage.waitForTimeout(500)
   await deployPage.locator('.deploy-panel').screenshot({ path: join(OUT, 'deploy-panel.png') })
   await deployPage.close()
 
-  console.log('  -> operations-history.png')
-  const historyPage = await newPage(ctx)
-  await openApp(historyPage)
-  await historyPage.locator('header button:has-text("History")').click()
-  await historyPage.waitForSelector('.history-panel')
-  await historyPage.locator('.history-row', { hasText: 'signal-sideband' }).nth(1).click()
-  await historyPage.waitForTimeout(300)
-  await historyPage.screenshot({ path: join(OUT, 'operations-history.png'), fullPage: false })
-  await historyPage.close()
+  await capturePage(ctx, 'operations-history.png', '/deploys', 'h4:has-text("Deploy History")', async (page) => {
+    const earlier = page.locator('.history-earlier-toggle').first()
+    if (await earlier.count()) await earlier.click()
+    await page.waitForTimeout(250)
+  })
 
-  console.log('  -> health-panel.png')
-  const healthPage = await newPage(ctx)
-  await openApp(healthPage)
-  await healthPage.locator('.app-card', { hasText: 'signal-sideband' }).locator('.sparkline-strip').click()
-  await healthPage.waitForSelector('.health-panel')
-  await healthPage.screenshot({ path: join(OUT, 'health-panel.png'), fullPage: false })
-  await healthPage.close()
-
-  console.log('  -> log-viewer.png')
-  const logsPage = await newPage(ctx)
-  await openApp(logsPage)
-  await logsPage.locator('.app-card', { hasText: 'signal-sideband' }).locator('button:has-text("Logs")').click()
-  await logsPage.waitForSelector('.log-viewer')
-  await logsPage.waitForTimeout(500)
-  await logsPage.screenshot({ path: join(OUT, 'log-viewer.png'), fullPage: false })
-  await logsPage.close()
-
-  console.log('  -> cron-panel.png')
-  const cronPage = await newPage(ctx)
-  await openApp(cronPage)
-  await cronPage.locator('.app-card', { hasText: 'field-harbor-digest' }).locator('button:has-text("History")').click()
-  await cronPage.waitForSelector('.cron-panel')
-  await cronPage.locator('.cron-execution-row').first().click()
-  await cronPage.waitForTimeout(300)
-  await cronPage.screenshot({ path: join(OUT, 'cron-panel.png'), fullPage: false })
-  await cronPage.close()
-
-  console.log('  -> function-panel.png')
-  const funcPage = await newPage(ctx)
-  await openApp(funcPage)
-  await funcPage.locator('.app-card', { hasText: 'archive-thumb' }).locator('button:has-text("History")').click()
-  await funcPage.waitForSelector('.cron-panel')
-  await funcPage.locator('textarea').fill('{"asset":"r2://archive-renders/sideband.png","size":"poster"}')
-  await funcPage.locator('.cron-execution-row').first().click()
-  await funcPage.waitForTimeout(300)
-  await funcPage.screenshot({ path: join(OUT, 'function-panel.png'), fullPage: false })
-  await funcPage.close()
+  await capturePage(ctx, 'health-panel.png', '/apps/signal-sideband/overview', 'h2:has-text("signal-sideband")')
+  await capturePage(ctx, 'log-viewer.png', '/apps/signal-sideband/logs', 'h3:has-text("signal-sideband")')
+  await capturePage(ctx, 'cron-panel.png', '/apps/field-harbor-digest/cron', '.cron-entry')
+  await capturePage(ctx, 'function-panel.png', '/apps/archive-thumb/functions', '.func-history', async (page) => {
+    await page.locator('.func-textarea').fill('{"asset":"archive://renders/sideband.png","size":"poster"}')
+  })
+  await capturePage(ctx, 'fleet.png', '/fleet', '#node-pools-title', async (page) => {
+    await page.locator('.fleet-journey-summary').first().click()
+    await page.waitForSelector('.fleet-checkpoints')
+  }, true)
+  await capturePage(ctx, 'data-recovery.png', '/apps/signal-sideband/snapshots', '.snapshot-list')
 
   await browser.close()
   console.log('\n  OK UI screenshots saved to docs/public/screenshots/')

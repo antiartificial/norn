@@ -114,7 +114,7 @@ export function LogViewer({ appId, healthPath, onClose }: Props) {
               onClick={() => setHideHealth(h => !h)}
               title="Filter health check lines"
             >
-              <i className="fawsb fa-heart-pulse" />
+              <i className="fawsb fa-pulse" />
             </button>
           )}
           <button onClick={onClose} className="btn btn-close">

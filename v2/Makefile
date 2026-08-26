@@ -1,6 +1,6 @@
 SHELL := /bin/bash
 
-.PHONY: dev api cli build doctor clean ui \
+.PHONY: dev api cli host-agent build doctor clean ui \
 	consul-dev nomad-dev consul-server nomad-server \
 	up up-fed down logs
 
@@ -15,8 +15,11 @@ api:
 cli:
 	cd cli && go build -ldflags "-X norn/v2/cli/cmd.Version=$(VERSION)" -o ../bin/norn .
 
-build: api cli
-	@echo "built api + cli → bin/"
+host-agent:
+	cd api && go build -o ../bin/norn-host-agent ./cmd/norn-host-agent
+
+build: api cli host-agent
+	@echo "built api + cli + host agent → bin/"
 
 ui:
 	cd ui && pnpm build

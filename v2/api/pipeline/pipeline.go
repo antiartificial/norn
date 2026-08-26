@@ -5,16 +5,17 @@ import (
 	"fmt"
 	"log"
 	"strconv"
+	"strings"
 	"time"
 
 	"github.com/google/uuid"
 
 	"norn/v2/api/beacon"
-	"norn/v2/api/engine"
+	"norn/v2/api/consul"
 	"norn/v2/api/hub"
 	"norn/v2/api/model"
+	"norn/v2/api/nomad"
 	"norn/v2/api/redpanda"
-	"norn/v2/api/runtime"
 	"norn/v2/api/saga"
 	"norn/v2/api/secrets"
 	"norn/v2/api/storage"
@@ -22,20 +23,31 @@ import (
 )
 
 type Pipeline struct {
-	DB          *store.DB
-	Engine      *engine.Engine
-	WS          *hub.Hub
-	SagaStore   saga.Store
-	Secrets     *secrets.Manager
-	AppsDir     string
-	GitToken    string
-	GitSSHKey   string
-	RegistryURL string
-	NetworkMode string
-	Beacon      *beacon.Service
-	Storage     *storage.Client
-	Redpanda    *redpanda.Client
-	Runtime     *runtime.Runtime
+	DB                       *store.DB
+	Nomad                    *nomad.Client
+	Consul                   *consul.Client
+	WS                       *hub.Hub
+	SagaStore                saga.Store
+	Secrets                  *secrets.Manager
+	AppsDir                  string
+	GitToken                 string
+	GitSSHKey                string
+	RegistryURL              string
+	NetworkMode              string
+	IngressURL               string
+	ExternalIngress          bool
+	Production               bool
+	StrictSecrets            bool
+	Beacon                   *beacon.Service
+	Storage                  *storage.Client
+	Redpanda                 *redpanda.Client
+	VerifyArtifact           func(context.Context, string) error
+	VerifySignature          func(context.Context, string) error
+	ScanArtifact             func(context.Context, string) error
+	ArtifactSigningPublicKey string
+	ArtifactDenySeverities   []string
+	CosignPath               string
+	TrivyPath                string
 }
 
 type state struct {
@@ -49,6 +61,8 @@ type state struct {
 	sourceChanges []string
 	sourceRef     string
 	preflight     bool
+	deploymentID  string
+	regionEvals   map[string]string
 }
 
 type step struct {
@@ -73,6 +87,9 @@ func (p *Pipeline) Run(spec *model.InfraSpec, ref string) string {
 	}
 	if err := p.DB.InsertDeployment(ctx, deploy); err != nil {
 		log.Printf("pipeline: insert deployment: %v", err)
+	}
+	if err := p.DB.InsertDeploymentRegions(ctx, deploy.ID, spec.ResolvedRegions()); err != nil {
+		log.Printf("pipeline: insert deployment regions: %v", err)
 	}
 	operationID := uuid.New().String()
 	if err := p.DB.InsertOperation(ctx, &model.Operation{
@@ -104,7 +121,13 @@ func (p *Pipeline) Run(spec *model.InfraSpec, ref string) string {
 }
 
 func (p *Pipeline) ExecuteOperation(ctx context.Context, op *model.Operation) error {
-	specs, err := model.DiscoverApps(p.AppsDir)
+	var specs []*model.InfraSpec
+	var err error
+	if op.Kind == "app.preflight" {
+		specs, err = model.DiscoverAllApps(p.AppsDir)
+	} else {
+		specs, err = model.DiscoverApps(p.AppsDir)
+	}
 	if err != nil {
 		return fmt.Errorf("discover apps: %w", err)
 	}
@@ -122,10 +145,16 @@ func (p *Pipeline) ExecuteOperation(ctx context.Context, op *model.Operation) er
 	category := "deploy"
 	if op.Kind == "app.preflight" {
 		category = "preflight"
+	} else if op.Kind == "app.migrate" {
+		category = "migration"
+	} else if strings.HasPrefix(op.Kind, "app.snapshot") {
+		category = "snapshot"
 	}
 	sg := saga.NewWithID(p.SagaStore, op.SagaID, spec.App, "pipeline", category)
 
 	switch op.Kind {
+	case "app.snapshot", "app.snapshot-prune", "app.snapshot-restore", "app.migrate":
+		return p.executeDataOperation(ctx, op, spec, sg)
 	case "app.deploy":
 		deploymentID := stringFromMap(op.Payload, "deploymentId")
 		if deploymentID == "" {
@@ -169,7 +198,7 @@ func (p *Pipeline) ExecuteOperation(ctx context.Context, op *model.Operation) er
 			"deploymentId": deploymentID,
 			"attempt":      strconv.Itoa(op.Attempts),
 		})
-		p.runRollback(ctx, spec, deploy, sg, imageTag, op.ID, op.Attempts)
+		p.runRollback(ctx, spec, deploy, sg, imageTag, op.ID, op.Attempts, stringSliceFromMap(op.Payload, "regions"))
 		return nil
 	case "app.preflight":
 		sg.Log(ctx, "preflight.start", fmt.Sprintf("preflighting %s (ref: %s)", spec.App, op.Ref), map[string]string{
@@ -201,16 +230,40 @@ func stringFromMap(values map[string]interface{}, key string) string {
 	}
 }
 
+func stringSliceFromMap(values map[string]interface{}, key string) []string {
+	if values == nil {
+		return nil
+	}
+	switch raw := values[key].(type) {
+	case []string:
+		return raw
+	case []interface{}:
+		out := make([]string, 0, len(raw))
+		for _, value := range raw {
+			if text, ok := value.(string); ok {
+				out = append(out, text)
+			}
+		}
+		return out
+	default:
+		return nil
+	}
+}
+
 func (p *Pipeline) run(ctx context.Context, spec *model.InfraSpec, deploy *model.Deployment, sg *saga.Saga, operationID string, attempt int) {
 	st := &state{
-		spec:      spec,
-		commitSHA: deploy.CommitSHA,
-		sourceRef: deploy.CommitSHA,
+		spec:         spec,
+		commitSHA:    deploy.CommitSHA,
+		sourceRef:    deploy.CommitSHA,
+		deploymentID: deploy.ID,
+		regionEvals:  make(map[string]string),
 	}
 
 	steps := []step{
 		{name: "clone", fn: p.clone},
+		{name: "admission", fn: p.admission},
 		{name: "build", fn: p.build},
+		{name: "artifact-admission", fn: p.artifactAdmission},
 		{name: "test", fn: p.test},
 		{name: "snapshot", fn: p.snapshot},
 		{name: "migrate", fn: p.migrate},
@@ -263,7 +316,8 @@ func (p *Pipeline) run(ctx context.Context, spec *model.InfraSpec, deploy *model
 				"durationMs": fmt.Sprintf("%d", elapsed),
 			}})
 			deploy.Status = model.StatusFailed
-			p.DB.UpdateDeployment(ctx, deploy.ID, deploy.Status)
+			_ = p.DB.UpdateDeployment(ctx, deploy.ID, deploy.Status)
+			_ = p.DB.FailIncompleteDeploymentRegions(ctx, deploy.ID, fmt.Sprintf("deploy failed at %s: %v", s.name, err))
 			if operationID != "" {
 				_ = p.DB.FinishOperation(ctx, operationID, model.OperationFailed, fmt.Sprintf("deploy failed at %s: %v", s.name, err), map[string]interface{}{
 					"deploymentId": deploy.ID,
@@ -343,6 +397,9 @@ func (p *Pipeline) run(ctx context.Context, spec *model.InfraSpec, deploy *model
 	deploy.SourceChanges = st.sourceChanges
 	deploy.Status = model.StatusDeployed
 	p.DB.UpdateDeploymentResult(ctx, deploy)
+	for _, region := range spec.ResolvedRegions() {
+		_ = p.DB.UpdateDeploymentRegion(ctx, deploy.ID, region.Name, model.StatusDeployed, st.regionEvals[region.Name], "", region.TrafficWeight)
+	}
 	if operationID != "" {
 		_ = p.DB.FinishOperation(ctx, operationID, model.OperationSucceeded, fmt.Sprintf("deploy complete: %s", spec.App), map[string]interface{}{
 			"deploymentId": deploy.ID,

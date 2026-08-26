@@ -1,0 +1,20 @@
+[global]
+repo1-type=s3
+repo1-path=/{{ lab_cluster_name }}
+repo1-s3-bucket={{ backup_bucket }}
+repo1-s3-endpoint={{ backup_endpoint }}
+repo1-s3-region={{ backup_region }}
+repo1-s3-key={{ backup_access_key }}
+repo1-s3-key-secret={{ backup_secret_key }}
+repo1-s3-uri-style=host
+repo1-storage-verify-tls=y
+repo1-retention-full=2
+repo1-retention-diff=4
+process-max=2
+start-fast=y
+log-level-console=info
+log-path=/var/log/pgbackrest
+
+[{{ postgres_cluster_name }}]
+pg1-path=/var/lib/postgresql/{{ postgresql_major_version }}/patroni
+pg1-port=5432

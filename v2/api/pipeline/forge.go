@@ -16,6 +16,23 @@ func (p *Pipeline) forge(ctx context.Context, st *state, sg *saga.Saga) error {
 		sg.Log(ctx, "forge.skip", "no endpoints configured, skipping forge", nil)
 		return nil
 	}
+	if p.ExternalIngress {
+		sg.Log(ctx, "forge.external", "endpoint routing is owned by the external edge controller", nil)
+		return nil
+	}
+
+	publicEndpoints := make([]model.Endpoint, 0, len(st.spec.Endpoints))
+	for _, endpoint := range st.spec.Endpoints {
+		if cloudflared.IsPublicEndpoint(endpoint.URL) {
+			publicEndpoints = append(publicEndpoints, endpoint)
+		} else {
+			sg.Log(ctx, "forge.skip_private", fmt.Sprintf("leaving private endpoint %s to its native router", endpoint.URL), nil)
+		}
+	}
+	if len(publicEndpoints) == 0 {
+		sg.Log(ctx, "forge.skip", "no public endpoints configured, skipping cloudflared", nil)
+		return nil
+	}
 
 	service, err := p.cloudflaredService(st.spec)
 	if err != nil {
@@ -28,8 +45,11 @@ func (p *Pipeline) forge(ctx context.Context, st *state, sg *saga.Saga) error {
 		return fmt.Errorf("read cloudflared config: %w", err)
 	}
 
-	changed := false
-	for _, ep := range st.spec.Endpoints {
+	changed := cloudflared.PrunePrivateIngress(cfg)
+	if changed {
+		sg.Log(ctx, "forge.prune_private", "removing stale private endpoints from cloudflared", nil)
+	}
+	for _, ep := range publicEndpoints {
 		if cloudflared.AddIngress(cfg, ep.URL, service) {
 			changed = true
 			sg.Log(ctx, "forge.route", fmt.Sprintf("routing %s → %s", ep.URL, service), nil)
@@ -59,20 +79,43 @@ func (p *Pipeline) forge(ctx context.Context, st *state, sg *saga.Saga) error {
 }
 
 func (p *Pipeline) cloudflaredService(spec *model.InfraSpec) (string, error) {
+	if p.IngressURL != "" {
+		return p.IngressURL, nil
+	}
 	processName, process, ok := cloudflaredProcess(spec)
 	if !ok {
 		return "", fmt.Errorf("no port found in spec for cloudflared routing")
 	}
 
 	serviceName := fmt.Sprintf("%s-%s", spec.App, processName)
-	if p.Engine != nil {
-		addr, err := p.Engine.ServiceAddress(serviceName)
+	if p.Consul != nil {
+		instances, err := p.Consul.ServiceHealthChecks(serviceName)
 		if err == nil {
-			return "http://" + addr, nil
+			for _, instance := range instances {
+				if instance.Status == "passing" && instance.Address != "" && instance.Port > 0 {
+					return fmt.Sprintf("http://%s:%d", instance.Address, instance.Port), nil
+				}
+			}
+			for _, instance := range instances {
+				if instance.Address != "" && instance.Port > 0 {
+					return fmt.Sprintf("http://%s:%d", instance.Address, instance.Port), nil
+				}
+			}
 		}
 	}
 
-	return fmt.Sprintf("http://127.0.0.1:%d", process.Port), nil
+	allocs, err := p.Nomad.PollAllocations(spec.App)
+	if err != nil {
+		return "", fmt.Errorf("poll allocations: %w", err)
+	}
+	if len(allocs) == 0 {
+		return "", fmt.Errorf("no running allocations for %s", spec.App)
+	}
+	nodeInfo, err := p.Nomad.NodeInfo(allocs[0].NodeID)
+	if err != nil {
+		return "", fmt.Errorf("node info: %w", err)
+	}
+	return fmt.Sprintf("http://%s:%d", nodeInfo.Address, process.Port), nil
 }
 
 func cloudflaredProcess(spec *model.InfraSpec) (string, model.Process, bool) {

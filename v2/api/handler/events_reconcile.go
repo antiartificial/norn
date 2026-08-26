@@ -6,8 +6,8 @@ import (
 	"fmt"
 	"net/http"
 	"strings"
+	"time"
 
-	"norn/v2/api/engine"
 	"norn/v2/api/model"
 )
 
@@ -95,11 +95,29 @@ func (h *Handler) reconcileEvent(ctx context.Context, event model.BeaconEvent) e
 		return h.reconcileServiceHealth(ctx, event, decision)
 	case "cron.hung", "cron.failed", "cron.lost", "cron.missed_run":
 		return h.reconcileCron(ctx, event, decision)
-	case "instance.restarted":
+	case "nomad.task.restarted":
 		return h.reconcileTaskRestart(ctx, event, decision)
+	case "service.capacity.below_minimum":
+		return h.reconcileCapacityWarning(ctx, event, decision)
 	default:
 		return decision
 	}
+}
+
+func (h *Handler) reconcileCapacityWarning(ctx context.Context, event model.BeaconEvent, decision eventReconcileDecision) eventReconcileDecision {
+	later, err := h.db.LaterBeaconEventExists(ctx, event.App, "host.assurance.recovered", event.OccurredAt)
+	if err != nil {
+		decision.Reason = "failed to check later host assurance"
+		return decision
+	}
+	if !later {
+		decision.Reason = "no later successful host assurance proves capacity recovery"
+		return decision
+	}
+	decision.Action = "acknowledge"
+	decision.Reason = "later host assurance proved minimum capacity recovery"
+	decision.Evidence = append(decision.Evidence, "later host.assurance.recovered exists")
+	return decision
 }
 
 func (h *Handler) reconcileDeployFailed(ctx context.Context, event model.BeaconEvent, decision eventReconcileDecision) eventReconcileDecision {
@@ -149,8 +167,8 @@ func (h *Handler) reconcileServiceHealth(ctx context.Context, event model.Beacon
 }
 
 func (h *Handler) reconcileCron(ctx context.Context, event model.BeaconEvent, decision eventReconcileDecision) eventReconcileDecision {
-	if h.engine == nil {
-		decision.Reason = "engine is not available"
+	if h.nomad == nil {
+		decision.Reason = "nomad is not connected"
 		return decision
 	}
 	jobID := metadataString(event.Metadata, "jobId")
@@ -160,37 +178,40 @@ func (h *Handler) reconcileCron(ctx context.Context, event model.BeaconEvent, de
 		decision.Reason = "cron event lacks parent job evidence"
 		return decision
 	}
-	info, err := h.engine.CronScheduleInfo(parentJobID)
-	if err != nil || info == nil {
-		decision.Reason = "cron schedule info is not available"
+	info, err := h.nomad.PeriodicJobSchedule(parentJobID)
+	if err != nil {
+		decision.Reason = "periodic parent is not available"
 		decision.Evidence = append(decision.Evidence, fmt.Sprintf("parent=%s", parentJobID))
 		return decision
 	}
-	if info.Status != "running" || info.Paused {
-		decision.Reason = "cron job is not cleanly active"
+	if info.Status != "running" || info.Paused || info.ChildrenRunning > 0 || info.ChildrenPending > 0 {
+		decision.Reason = "periodic parent is not cleanly active"
 		decision.Evidence = append(decision.Evidence,
 			fmt.Sprintf("parent=%s", parentJobID),
 			fmt.Sprintf("status=%s", info.Status),
 			fmt.Sprintf("paused=%t", info.Paused),
+			fmt.Sprintf("childrenRunning=%d", info.ChildrenRunning),
+			fmt.Sprintf("childrenPending=%d", info.ChildrenPending),
 		)
 		return decision
 	}
-	// Check for any running cron instances
-	runs, err := h.engine.CronHistory(parentJobID)
-	if err == nil {
-		for _, run := range runs {
-			if run.Status == "running" {
-				decision.Reason = "cron job has running instances"
-				decision.Evidence = append(decision.Evidence,
-					fmt.Sprintf("parent=%s", parentJobID),
-					fmt.Sprintf("runningId=%s", run.ID),
-				)
+	if strings.Contains(jobID, "/periodic-") {
+		if child, err := h.nomad.JobInfo(jobID); err == nil {
+			childStatus := "unknown"
+			if child.Status != nil {
+				childStatus = *child.Status
+			}
+			decision.Evidence = append(decision.Evidence, fmt.Sprintf("child=%s", jobID), fmt.Sprintf("childStatus=%s", childStatus))
+			if childStatus != "dead" {
+				decision.Reason = "referenced child job is still non-terminal"
 				return decision
 			}
+		} else {
+			decision.Evidence = append(decision.Evidence, fmt.Sprintf("child absent=%s", jobID))
 		}
 	}
 	decision.Action = "acknowledge"
-	decision.Reason = "cron job is active with no running instances"
+	decision.Reason = "periodic parent is active with no running or pending children"
 	decision.Evidence = append(decision.Evidence,
 		fmt.Sprintf("parent=%s", parentJobID),
 		fmt.Sprintf("schedule=%s", info.Schedule),
@@ -207,51 +228,62 @@ func (h *Handler) reconcileTaskRestart(ctx context.Context, event model.BeaconEv
 	} else {
 		decision.Evidence = append(decision.Evidence, evidence...)
 	}
-	if allocID != "" && h.currentInstanceExists(event.App, allocID) {
-		decision.Reason = "referenced instance is still active"
-		decision.Evidence = append(decision.Evidence, fmt.Sprintf("instance=%s", allocID))
+	if !taskRestartStable(event.OccurredAt, time.Now()) {
+		decision.Reason = "task restart has not remained healthy for the stability window"
+		decision.Evidence = append(decision.Evidence, "stabilityWindow=15m")
+		return decision
+	}
+	if allocID != "" && h.currentAllocationExists(event.App, allocID) {
+		decision.Action = "acknowledge"
+		decision.Reason = "app remained healthy after an in-place task restart"
+		decision.Evidence = append(decision.Evidence, fmt.Sprintf("alloc=%s", allocID))
 		return decision
 	}
 	decision.Action = "acknowledge"
-	decision.Reason = "app is currently healthy and restarted instance is no longer active"
+	decision.Reason = "app is currently healthy and restarted allocation is no longer active"
 	if allocID != "" {
-		decision.Evidence = append(decision.Evidence, fmt.Sprintf("instance absent=%s", allocID))
+		decision.Evidence = append(decision.Evidence, fmt.Sprintf("alloc absent=%s", allocID))
 	}
 	return decision
 }
 
+func taskRestartStable(occurredAt, now time.Time) bool {
+	const stabilityWindow = 15 * time.Minute
+	return !occurredAt.IsZero() && !now.Before(occurredAt) && now.Sub(occurredAt) >= stabilityWindow
+}
+
 func (h *Handler) appRunningHealthy(app string) (bool, []string) {
-	if h.engine == nil || app == "" {
+	if h.nomad == nil || app == "" {
 		return false, nil
 	}
-	status, err := h.engine.JobStatus(app)
+	status, err := h.nomad.JobStatus(app)
 	if err != nil || status != "running" {
 		return false, []string{fmt.Sprintf("jobStatus=%s", emptyIf(status, "unknown"))}
 	}
-	instances, err := h.engine.JobInstances(app)
+	allocs, err := h.nomad.JobAllocations(app)
 	if err != nil {
-		return false, []string{"instances unavailable"}
+		return false, []string{"allocations unavailable"}
 	}
-	for _, inst := range instances {
-		if !inst.IsRunning() {
+	for _, alloc := range allocs {
+		if alloc.ClientStatus != "running" {
 			continue
 		}
-		if inst.Healthy != nil && *inst.Healthy {
-			return true, []string{"jobStatus=running", fmt.Sprintf("healthyInstance=%s", engine.ShortID(inst.ContainerName))}
+		if alloc.DeploymentStatus != nil && alloc.DeploymentStatus.Healthy != nil && *alloc.DeploymentStatus.Healthy {
+			return true, []string{"jobStatus=running", fmt.Sprintf("healthyAlloc=%s", shortID(alloc.ID))}
 		}
 	}
-	return false, []string{"jobStatus=running", "healthyInstance=none"}
+	return false, []string{"jobStatus=running", "healthyAlloc=none"}
 }
 
 func (h *Handler) servicePassing(app, process string) (bool, []string) {
-	if h.engine == nil || app == "" {
+	if h.consul == nil || app == "" {
 		return false, nil
 	}
 	if process == "" {
 		return h.appRunningHealthy(app)
 	}
 	serviceName := fmt.Sprintf("%s-%s", app, process)
-	health, err := h.engine.ServiceHealthChecks(serviceName)
+	health, err := h.consul.ServiceHealthChecks(serviceName)
 	if err != nil || len(health) == 0 {
 		return false, []string{fmt.Sprintf("service=%s unavailable", serviceName)}
 	}
@@ -263,19 +295,19 @@ func (h *Handler) servicePassing(app, process string) (bool, []string) {
 	return true, []string{fmt.Sprintf("service=%s passing", serviceName)}
 }
 
-func (h *Handler) currentInstanceExists(app, instanceID string) bool {
-	if h.engine == nil || app == "" || instanceID == "" {
+func (h *Handler) currentAllocationExists(app, allocID string) bool {
+	if h.nomad == nil || app == "" || allocID == "" {
 		return false
 	}
-	instances, err := h.engine.JobInstances(app)
+	allocs, err := h.nomad.JobAllocations(app)
 	if err != nil {
 		return false
 	}
-	for _, inst := range instances {
-		if inst.IsTerminal() {
+	for _, alloc := range allocs {
+		if alloc.ClientStatus == "complete" || alloc.ClientStatus == "failed" || alloc.ClientStatus == "lost" {
 			continue
 		}
-		if strings.HasPrefix(inst.ContainerName, instanceID) || strings.HasPrefix(engine.ShortID(inst.ContainerName), instanceID) {
+		if strings.HasPrefix(alloc.ID, allocID) {
 			return true
 		}
 	}

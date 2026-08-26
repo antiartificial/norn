@@ -1,0 +1,9 @@
+{
+  "service": {
+    "id": "norn-cadvisor-web-{{ inventory_hostname }}",
+    "name": "norn-cadvisor-web",
+    "address": "{{ private_ip }}",
+    "port": 8080,
+    "checks": [{"http": "http://{{ private_ip }}:8080/healthz", "interval": "10s", "timeout": "2s"}]
+  }
+}

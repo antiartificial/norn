@@ -1,0 +1,14 @@
+[Unit]
+Description=Norn HA cAdvisor
+After=docker.service network-online.target
+Requires=docker.service
+
+[Service]
+Restart=always
+RestartSec=5
+ExecStartPre=-/usr/bin/docker rm -f norn-cadvisor
+ExecStart=/usr/bin/docker run --rm --name norn-cadvisor --network host --privileged --device /dev/kmsg --volume /:/rootfs:ro --volume /var/run:/var/run:ro --volume /sys:/sys:ro --volume /var/lib/docker:/var/lib/docker:ro --volume /dev/disk:/dev/disk:ro {{ cadvisor_image }} --listen_ip={{ private_ip }} --port=8080
+ExecStop=/usr/bin/docker stop -t 20 norn-cadvisor
+
+[Install]
+WantedBy=multi-user.target

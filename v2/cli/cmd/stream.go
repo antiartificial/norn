@@ -36,7 +36,7 @@ func streamSagaEvents(sagaID string) error {
 
 func streamViaWebSocket(sagaID string) error {
 	wsURL := client.WebSocketURL()
-	conn, _, err := websocket.DefaultDialer.Dial(wsURL, nil)
+	conn, _, err := websocket.DefaultDialer.Dial(wsURL, client.WebSocketHeaders())
 	if err != nil {
 		return err
 	}

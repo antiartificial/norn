@@ -33,6 +33,8 @@ The current working feature set includes:
 - Resource right-sizing suggestions comparing declared limits against live Nomad allocation stats
 - Proxy cutover plan and optional managed proxy config/upstream commands for no-blip API upgrades
 - Proxy-backed platform upgrade mode for hosts that intentionally run Norn behind the managed Caddy upstream
+- Persistent macOS host runtime with launchd recovery, dynamic address
+  rendering, state migration, diagnostics, and bounded cron catch-up
 - Basic local snapshot listing and restore
 - Pre-restore safety snapshots for destructive restores
 - Value-safe secret migration planning
@@ -54,6 +56,34 @@ The current working feature set includes:
 For a compact summary of the current release line, see the [Norn v2 Release Recap](/v2/guide/release-recap).
 
 ## Immediate Norn Items
+
+### Host Runtime Continuity
+
+Current state:
+
+- `norn host install` creates persistent Nomad and Consul state directories and
+  managed user LaunchAgents without interrupting live agents.
+- `norn host migrate-state` performs a guarded one-time state copy after both
+  agents stop.
+- `norn host recover` starts Docker, Consul, Nomad, and Norn in dependency order
+  and retries launchd transitions.
+- The one-shot login supervisor re-renders the current IPv4 advertise address,
+  preserving recovery across DHCP changes.
+- Optional `app:process` catch-ups trigger bounded cron ingestion through the
+  encrypted API runtime environment.
+- `norn host assure` and the periodic `com.norn.host-assurance` LaunchAgent
+  verify explicitly required IPv4 services, deploy missing apps, restart
+  unhealthy apps, reconcile Cloudflare and Tailscale routes, and probe the
+  user-facing HTTP entrypoints.
+- Assurance uses an explicit repair allowlist, suppresses overlapping runs,
+  and reports persistent failure and recovery through correlated Beacon events.
+- `norn host status` and `norn host doctor` provide compact boot readiness and
+  configuration diagnostics.
+
+Planned work:
+
+- Decide whether hosts that need pre-login recovery should use root
+  LaunchDaemons or move the runtime to a Linux systemd service.
 
 ### Service Manifest
 
@@ -154,7 +184,7 @@ Current state:
 - Norn records recent API access events in memory after auth middleware runs.
 - `norn access [--limit N]` shows method, path, status, client IP, Cloudflare Access metadata, and duration without request bodies or authorization headers.
 - `norn ops platform` and the UI Platform tab summarize recent access, service exposure, OTEL/Grafana configuration, dirty deployments, secret hygiene, and snapshot retention.
-- `/metrics` and `/api/metrics` expose Prometheus-compatible Norn control-plane metrics.
+- `/metrics` and `/api/metrics` expose Prometheus-compatible Norn control-plane metrics; explicit-auth deployments must scrape them with a scoped bearer or validated Cloudflare Access principal.
 - App processes can declare `metrics.enabled: true`; Norn registers companion metrics services and includes live scrape targets in `/api/observability/prometheus.yml`.
 - `/api/observability/bundle`, `/api/observability/alerts.yml`, and `norn observability bundle --out <dir>` package Prometheus config, alert rules, Grafana provisioning, a starter dashboard, and starter Prometheus/Grafana/cAdvisor service specs.
 - `POST /api/observability/services/install` and `norn observability install` write generated `norn-prometheus`, `norn-grafana`, and `norn-cadvisor` app directories into `NORN_APPS_DIR`.
@@ -172,8 +202,8 @@ Current state:
 - Beacon events carry `correlationKey` in metadata to group related events into incident arcs (e.g. `service.health.critical` → `service.health.recovered` share the same key). Events also include `previousState` and `previousEventType` for transition context.
 - `GET /api/events/correlated?key=<key>` and `norn events correlated <key>` return chronological event timelines for a correlation key.
 - Vigil-gateway indexes `correlationKey`, exposes `GET /api/incidents` grouped by correlation key, and uses `correlationKey` as APNs `thread-id` for iOS notification threading.
-- `POST /api/access/tokens` creates JWT access tokens with TTL for URL sharing. Tokens are accepted as `Bearer` headers or `?token=` query parameters.
-- `norn access token --ttl 2h` generates shareable tokens from the CLI.
+- `POST /api/access/tokens` creates short-lived JWT access tokens with explicit scopes. Tokens are accepted only as `Authorization: Bearer` headers, never URL query parameters.
+- `norn access token --ttl 2h --scope api:read,events:read` generates a least-privilege client token from the CLI.
 - The dashboard Platform tab has a token creation form in the Access section.
 - `norn events show <id>` displays incident timeline links for events with correlation keys.
 - When an `info`-severity event resolves a correlation group, Norn auto-acknowledges open `warning`/`critical` events in that group so `norn events` shows only active incidents.
@@ -206,7 +236,7 @@ Planned work:
 
 - Add deeper stage-level resume data before enabling automatic retry after snapshot, migration, submit, or route mutation.
 - Add a host setup command that moves an existing LaunchAgent install to proxy-fronted private API ports.
-- Queue platform preflight and upgrade jobs themselves once the worker supports platform-scoped operations.
+- Add deeper mutable-stage receipts before allowing interrupted app deploys to resume automatically.
 
 ## ContextDB Items
 

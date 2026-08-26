@@ -5,6 +5,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strings"
 )
 
 func (h *Handler) Health(w http.ResponseWriter, r *http.Request) {
@@ -16,11 +17,19 @@ func (h *Handler) Health(w http.ResponseWriter, r *http.Request) {
 		services["postgres"] = "up"
 	}
 
-	if h.engine != nil {
-		if err := h.engine.Healthy(); err != nil {
-			services["engine"] = "down"
+	if h.nomad != nil {
+		if err := h.nomad.Healthy(); err != nil {
+			services["nomad"] = "down"
 		} else {
-			services["engine"] = "up"
+			services["nomad"] = "up"
+		}
+	}
+
+	if h.consul != nil {
+		if err := h.consul.Healthy(); err != nil {
+			services["consul"] = "down"
+		} else {
+			services["consul"] = "up"
 		}
 	}
 
@@ -44,8 +53,7 @@ func (h *Handler) Health(w http.ResponseWriter, r *http.Request) {
 	if _, err := exec.LookPath("sops"); err != nil {
 		services["sops"] = "down"
 	} else {
-		home, _ := os.UserHomeDir()
-		keyFile := filepath.Join(home, ".config", "sops", "age", "keys.txt")
+		keyFile := sopsAgeKeyFile()
 		if _, err := os.Stat(keyFile); err != nil {
 			services["sops"] = "down"
 		} else {
@@ -65,8 +73,18 @@ func (h *Handler) Health(w http.ResponseWriter, r *http.Request) {
 		"status":   status,
 		"services": services,
 		"network": map[string]string{
-			"mode":     h.cfg.NetworkMode,
-			"bindAddr": h.cfg.BindAddr,
+			"mode":       h.cfg.NetworkMode,
+			"bindAddr":   h.cfg.BindAddr,
+			"nomadAddr":  h.cfg.NomadAddr,
+			"consulAddr": h.cfg.ConsulAddr,
 		},
 	})
+}
+
+func sopsAgeKeyFile() string {
+	if configured := strings.TrimSpace(os.Getenv("SOPS_AGE_KEY_FILE")); configured != "" {
+		return configured
+	}
+	home, _ := os.UserHomeDir()
+	return filepath.Join(home, ".config", "sops", "age", "keys.txt")
 }

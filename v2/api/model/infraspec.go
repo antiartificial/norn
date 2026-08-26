@@ -2,6 +2,7 @@ package model
 
 import (
 	"os"
+	"sort"
 
 	"gopkg.in/yaml.v3"
 )
@@ -30,8 +31,21 @@ type InfraSpec struct {
 	Endpoints      []Endpoint         `yaml:"endpoints,omitempty" json:"endpoints,omitempty"`
 	Volumes        []VolumeSpec       `yaml:"volumes,omitempty" json:"volumes,omitempty"`
 	Snapshots      *SnapshotPolicy    `yaml:"snapshots,omitempty" json:"snapshots,omitempty"`
-	Deploy         bool               `yaml:"deploy,omitempty" json:"deploy,omitempty"`
-	DeployPolicy   *DeployPolicy      `yaml:"deployPolicy,omitempty" json:"deployPolicy,omitempty"`
+	// Deploy is intentionally explicit in serialized specs. Its zero value is
+	// false, so a newly-created service cannot enter recovery or deployment
+	// workflows until an operator enables it.
+	Deploy        bool                    `yaml:"deploy" json:"deploy"`
+	Regions       map[string]RegionTarget `yaml:"regions,omitempty" json:"regions,omitempty"`
+	PrimaryRegion string                  `yaml:"primaryRegion,omitempty" json:"primaryRegion,omitempty"`
+	DeployPolicy  *DeployPolicy           `yaml:"deployPolicy,omitempty" json:"deployPolicy,omitempty"`
+	Placement     *PlacementSpec          `yaml:"placement,omitempty" json:"placement,omitempty"`
+}
+
+// PlacementSpec keeps infrastructure ownership out of the application spec.
+// The value is a logical pool declared by the versioned norn-fleet document;
+// it is never a provider-specific VM size or cloud resource identifier.
+type PlacementSpec struct {
+	NodePool string `yaml:"nodePool" json:"nodePool"`
 }
 
 type Endpoint struct {
@@ -39,8 +53,25 @@ type Endpoint struct {
 	Region string `yaml:"region,omitempty" json:"region,omitempty"`
 }
 
+// RegionTarget maps an InfraSpec region name to a Nomad federation target.
+// Credentials and addresses remain control-plane configuration; specs only
+// contain portable placement data.
+type RegionTarget struct {
+	NomadRegion   string   `yaml:"nomadRegion,omitempty" json:"nomadRegion,omitempty"`
+	Datacenters   []string `yaml:"datacenters,omitempty" json:"datacenters,omitempty"`
+	TrafficWeight *int     `yaml:"trafficWeight,omitempty" json:"trafficWeight,omitempty"`
+}
+
+type ResolvedRegion struct {
+	Name          string
+	NomadRegion   string
+	Datacenters   []string
+	TrafficWeight int
+}
+
 type Process struct {
 	Port      int               `yaml:"port,omitempty" json:"port,omitempty"`
+	HostPort  int               `yaml:"hostPort,omitempty" json:"hostPort,omitempty"`
 	Command   string            `yaml:"command,omitempty" json:"command,omitempty"`
 	Schedule  string            `yaml:"schedule,omitempty" json:"schedule,omitempty"`
 	Timezone  string            `yaml:"timezone,omitempty" json:"timezone,omitempty"`
@@ -53,6 +84,17 @@ type Process struct {
 	Tuning    *TuningPolicy     `yaml:"tuning,omitempty" json:"tuning,omitempty"`
 	Canary    *CanaryConfig     `yaml:"canary,omitempty" json:"canary,omitempty"`
 	Env       map[string]string `yaml:"env,omitempty" json:"-"`
+	Regions   []string          `yaml:"regions,omitempty" json:"regions,omitempty"`
+	Singleton bool              `yaml:"singleton,omitempty" json:"singleton,omitempty"`
+}
+
+// EffectiveNodePool returns the application-level logical pool. An empty
+// value preserves Nomad's default pool for backwards compatibility.
+func (s *InfraSpec) EffectiveNodePool() string {
+	if s != nil && s.Placement != nil {
+		return s.Placement.NodePool
+	}
+	return ""
 }
 
 func ResolveProcessTimezone(spec *InfraSpec, proc Process) string {
@@ -124,7 +166,7 @@ type TuningLimits struct {
 
 type TuningSignal struct {
 	Name      string `yaml:"name,omitempty" json:"name,omitempty"`
-	Source    string `yaml:"source,omitempty" json:"source,omitempty"`       // engine, prometheus, app
+	Source    string `yaml:"source,omitempty" json:"source,omitempty"`       // nomad, prometheus, app
 	Metric    string `yaml:"metric,omitempty" json:"metric,omitempty"`       // memory_rss, memory_max, cpu_percent, custom
 	Window    string `yaml:"window,omitempty" json:"window,omitempty"`       // e.g. 30m, 24h
 	Aggregate string `yaml:"aggregate,omitempty" json:"aggregate,omitempty"` // current, max, p95
@@ -140,6 +182,7 @@ type RepoSpec struct {
 type BuildSpec struct {
 	Dockerfile string `yaml:"dockerfile,omitempty" json:"dockerfile,omitempty"`
 	Test       string `yaml:"test,omitempty" json:"test,omitempty"`
+	Image      string `yaml:"image,omitempty" json:"image,omitempty"`
 }
 
 type SnapshotPolicy struct {
@@ -200,6 +243,12 @@ func LoadInfraSpec(path string) (*InfraSpec, error) {
 	if err != nil {
 		return nil, err
 	}
+	return ParseInfraSpec(data)
+}
+
+// ParseInfraSpec decodes an InfraSpec from an already-confined source while
+// applying the same defaults as LoadInfraSpec.
+func ParseInfraSpec(data []byte) (*InfraSpec, error) {
 	var spec InfraSpec
 	if err := yaml.Unmarshal(data, &spec); err != nil {
 		return nil, err
@@ -274,4 +323,63 @@ func (s *InfraSpec) ProcessCount() int {
 		count += n
 	}
 	return count
+}
+
+// ResolvedRegions returns stable region targets. Existing single-region specs
+// retain their former global/dc1 behavior.
+func (s *InfraSpec) ResolvedRegions() []ResolvedRegion {
+	if s == nil || len(s.Regions) == 0 {
+		return []ResolvedRegion{{Name: "local", NomadRegion: "global", Datacenters: []string{"dc1"}, TrafficWeight: 100}}
+	}
+	names := make([]string, 0, len(s.Regions))
+	for name := range s.Regions {
+		names = append(names, name)
+	}
+	sort.Strings(names)
+	regions := make([]ResolvedRegion, 0, len(names))
+	for _, name := range names {
+		target := s.Regions[name]
+		nomadRegion := target.NomadRegion
+		if nomadRegion == "" {
+			nomadRegion = name
+		}
+		datacenters := append([]string(nil), target.Datacenters...)
+		if len(datacenters) == 0 {
+			datacenters = []string{"dc1"}
+		}
+		weight := 100
+		if target.TrafficWeight != nil {
+			weight = *target.TrafficWeight
+		}
+		regions = append(regions, ResolvedRegion{Name: name, NomadRegion: nomadRegion, Datacenters: datacenters, TrafficWeight: weight})
+	}
+	return regions
+}
+
+func (s *InfraSpec) EffectivePrimaryRegion() string {
+	if s == nil || len(s.Regions) == 0 {
+		return "local"
+	}
+	if s.PrimaryRegion != "" {
+		return s.PrimaryRegion
+	}
+	return s.ResolvedRegions()[0].Name
+}
+
+// ProcessRunsInRegion applies the placement rule: an explicit regions list
+// wins; scheduled/singleton work defaults to primary; all other work runs in
+// every declared region.
+func (s *InfraSpec) ProcessRunsInRegion(proc Process, region string) bool {
+	if len(proc.Regions) > 0 {
+		for _, candidate := range proc.Regions {
+			if candidate == region {
+				return true
+			}
+		}
+		return false
+	}
+	if proc.Schedule != "" || proc.Singleton {
+		return region == s.EffectivePrimaryRegion()
+	}
+	return true
 }

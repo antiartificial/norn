@@ -235,26 +235,6 @@ type NetworkStatus struct {
 	ConsulAddr string `json:"consulAddr,omitempty"`
 }
 
-type RuntimeInfo struct {
-	Backend      string   `json:"backend"`
-	Version      string   `json:"version"`
-	Available    bool     `json:"available"`
-	TaskDriver   string   `json:"taskDriver"`
-	BuildCmd     string   `json:"buildCmd"`
-	Capabilities []string `json:"capabilities"`
-}
-
-type RuntimeBackend struct {
-	Name      string `json:"name"`
-	Available bool   `json:"available"`
-	Current   bool   `json:"current"`
-}
-
-type RuntimeResponse struct {
-	Active   RuntimeInfo      `json:"active"`
-	Backends []RuntimeBackend `json:"backends"`
-}
-
 type Deployment struct {
 	ID            string   `json:"id"`
 	App           string   `json:"app"`
@@ -302,9 +282,74 @@ type ValidationResult struct {
 }
 
 type ValidationFinding struct {
-	Severity string `json:"severity"`
-	Field    string `json:"field"`
-	Message  string `json:"message"`
+	Severity    string `json:"severity"`
+	Code        string `json:"code,omitempty"`
+	Field       string `json:"field"`
+	Message     string `json:"message"`
+	Remediation string `json:"remediation,omitempty"`
+}
+
+type FleetValidationReport struct {
+	SchemaVersion string              `json:"schemaVersion"`
+	DocumentKind  string              `json:"documentKind"`
+	Name          string              `json:"name,omitempty"`
+	Valid         bool                `json:"valid"`
+	Findings      []ValidationFinding `json:"findings"`
+}
+
+type FleetNodePool struct {
+	Size        string            `json:"size"`
+	Min         int               `json:"min"`
+	Desired     int               `json:"desired"`
+	Max         int               `json:"max"`
+	Labels      map[string]string `json:"labels,omitempty"`
+	Replacement struct {
+		Strategy                string `json:"strategy,omitempty"`
+		RequireCapacityHeadroom bool   `json:"requireCapacityHeadroom,omitempty"`
+		DrainTimeout            string `json:"drainTimeout,omitempty"`
+		RequireReadiness        bool   `json:"requireReadiness,omitempty"`
+	} `json:"replacement,omitempty"`
+}
+
+type FleetInventory struct {
+	SchemaVersion string                   `json:"schemaVersion"`
+	Configured    bool                     `json:"configured"`
+	Source        string                   `json:"source,omitempty"`
+	Digest        string                   `json:"digest,omitempty"`
+	Document      *FleetDocument           `json:"document,omitempty"`
+	Validation    *FleetValidationReport   `json:"validation,omitempty"`
+	NodePools     map[string]FleetNodePool `json:"nodePools"`
+}
+
+type FleetGitHubStatus struct {
+	SchemaVersion string `json:"schemaVersion"`
+	Configured    bool   `json:"configured"`
+	Connected     bool   `json:"connected"`
+	Repository    string `json:"repository,omitempty"`
+	Installation  int64  `json:"installationId,omitempty"`
+	DefaultBranch string `json:"defaultBranch,omitempty"`
+	ConfigPath    string `json:"configPath,omitempty"`
+	PlanWorkflow  string `json:"planWorkflow,omitempty"`
+	ApplyWorkflow string `json:"applyWorkflow,omitempty"`
+	Message       string `json:"message,omitempty"`
+}
+
+// FleetDocument is the read-only, versioned source document returned with a
+// configured inventory. It deliberately contains no provider credentials.
+type FleetDocument struct {
+	APIVersion string `json:"apiVersion"`
+	Kind       string `json:"kind"`
+	Metadata   struct {
+		Repository  string `json:"repository,omitempty"`
+		Environment string `json:"environment,omitempty"`
+		WorkflowURL string `json:"workflowUrl,omitempty"`
+	} `json:"metadata,omitempty"`
+	Cluster struct {
+		Name     string `json:"name"`
+		Provider string `json:"provider"`
+		Region   string `json:"region"`
+	} `json:"cluster"`
+	NodePools map[string]FleetNodePool `json:"nodePools"`
 }
 
 type StatsResponse struct {
@@ -625,17 +670,16 @@ type ContextDBFeedbackRollback struct {
 }
 
 type PlatformOpsSummary struct {
-	GeneratedAt      string                   `json:"generatedAt"`
-	NetworkMode      string                   `json:"networkMode,omitempty"`
-	ContainerRuntime *RuntimeInfo             `json:"containerRuntime,omitempty"`
-	Services         PlatformServiceSummary   `json:"services"`
-	Deployments      PlatformDeploySummary    `json:"deployments"`
-	Operations       PlatformOperationSummary `json:"operations"`
-	Secrets          PlatformSecretSummary    `json:"secrets"`
-	Snapshots        []PlatformSnapshotStatus `json:"snapshots"`
-	Access           PlatformAccessSummary    `json:"access"`
-	Observability    PlatformObserveSummary   `json:"observability"`
-	Warnings         []string                 `json:"warnings,omitempty"`
+	GeneratedAt   string                   `json:"generatedAt"`
+	NetworkMode   string                   `json:"networkMode,omitempty"`
+	Services      PlatformServiceSummary   `json:"services"`
+	Deployments   PlatformDeploySummary    `json:"deployments"`
+	Operations    PlatformOperationSummary `json:"operations"`
+	Secrets       PlatformSecretSummary    `json:"secrets"`
+	Snapshots     []PlatformSnapshotStatus `json:"snapshots"`
+	Access        PlatformAccessSummary    `json:"access"`
+	Observability PlatformObserveSummary   `json:"observability"`
+	Warnings      []string                 `json:"warnings,omitempty"`
 }
 
 type Operation struct {
@@ -776,6 +820,70 @@ type ObservabilityInstallReceipt struct {
 	Files     []string `json:"files"`
 }
 
+type ProductionReadinessReport struct {
+	Schema      string                     `json:"schema"`
+	GeneratedAt string                     `json:"generatedAt"`
+	Status      string                     `json:"status"`
+	Summary     ProductionReadinessSummary `json:"summary"`
+	Checks      []ProductionReadinessCheck `json:"checks"`
+}
+
+type ProductionReadinessSummary struct {
+	Passed   int `json:"passed"`
+	Warnings int `json:"warnings"`
+	Failed   int `json:"failed"`
+	Total    int `json:"total"`
+}
+
+type ProductionReadinessCheck struct {
+	ID          string         `json:"id"`
+	Category    string         `json:"category"`
+	Status      string         `json:"status"`
+	Title       string         `json:"title"`
+	Detail      string         `json:"detail"`
+	Remediation string         `json:"remediation,omitempty"`
+	Evidence    map[string]any `json:"evidence,omitempty"`
+}
+
+type MutationAuditEvent struct {
+	ID               string                 `json:"id"`
+	RequestID        string                 `json:"requestId,omitempty"`
+	PrincipalSubject string                 `json:"principalSubject"`
+	DeviceID         string                 `json:"deviceId,omitempty"`
+	KeyID            string                 `json:"keyId,omitempty"`
+	Scopes           []string               `json:"scopes,omitempty"`
+	Method           string                 `json:"method"`
+	Path             string                 `json:"path"`
+	Status           int                    `json:"status"`
+	Outcome          string                 `json:"outcome"`
+	StartedAt        string                 `json:"startedAt"`
+	DurationMs       int64                  `json:"durationMs"`
+	Integrity        string                 `json:"integrity"`
+	Incident         *MutationAuditIncident `json:"incident,omitempty"`
+}
+
+type MutationAuditIncident struct {
+	ID             string `json:"id"`
+	AuditEventID   string `json:"auditEventId"`
+	ReasonCode     string `json:"reasonCode"`
+	Explanation    string `json:"explanation"`
+	AcknowledgedBy string `json:"acknowledgedBy"`
+	AcknowledgedAt string `json:"acknowledgedAt"`
+	KeyID          string `json:"keyId,omitempty"`
+	Integrity      string `json:"integrity"`
+}
+
+type RecoveryDrill struct {
+	ID          string            `json:"id"`
+	Kind        string            `json:"kind"`
+	Target      string            `json:"target,omitempty"`
+	Status      string            `json:"status"`
+	InitiatedBy string            `json:"initiatedBy"`
+	Evidence    map[string]string `json:"evidence,omitempty"`
+	StartedAt   string            `json:"startedAt"`
+	FinishedAt  string            `json:"finishedAt,omitempty"`
+}
+
 // API methods
 
 func (c *Client) Health() (*HealthStatus, error) {
@@ -786,12 +894,59 @@ func (c *Client) Health() (*HealthStatus, error) {
 	return &h, nil
 }
 
-func (c *Client) RuntimeInfo() (*RuntimeResponse, error) {
-	var r RuntimeResponse
-	if err := c.get("/api/runtime", &r); err != nil {
+func (c *Client) ProductionReadiness() (*ProductionReadinessReport, error) {
+	var report ProductionReadinessReport
+	if err := c.get("/api/v1/production/readiness", &report); err != nil {
 		return nil, err
 	}
-	return &r, nil
+	return &report, nil
+}
+
+func (c *Client) MutationAudits(limit int) ([]MutationAuditEvent, error) {
+	var response struct {
+		Events []MutationAuditEvent `json:"events"`
+	}
+	if err := c.get(fmt.Sprintf("/api/v1/audit/mutations?limit=%d", limit), &response); err != nil {
+		return nil, err
+	}
+	return response.Events, nil
+}
+
+func (c *Client) AcknowledgeMutationAuditIncident(id, reasonCode, explanation string) (*MutationAuditIncident, error) {
+	body, _ := json.Marshal(map[string]string{"reasonCode": reasonCode, "explanation": explanation})
+	var incident MutationAuditIncident
+	if err := c.postJSON("/api/v1/audit/mutations/"+url.PathEscape(id)+"/incident", string(body), &incident); err != nil {
+		return nil, err
+	}
+	return &incident, nil
+}
+
+func (c *Client) RecoveryDrills(limit int) ([]RecoveryDrill, error) {
+	var response struct {
+		Drills []RecoveryDrill `json:"drills"`
+	}
+	if err := c.get(fmt.Sprintf("/api/v1/production/drills?limit=%d", limit), &response); err != nil {
+		return nil, err
+	}
+	return response.Drills, nil
+}
+
+func (c *Client) StartRecoveryDrill(kind, target string) (*RecoveryDrill, error) {
+	body, _ := json.Marshal(map[string]string{"kind": kind, "target": target})
+	var drill RecoveryDrill
+	if err := c.postJSON("/api/v1/production/drills", string(body), &drill); err != nil {
+		return nil, err
+	}
+	return &drill, nil
+}
+
+func (c *Client) CompleteRecoveryDrill(id, status string, evidence map[string]string) (*RecoveryDrill, error) {
+	body, _ := json.Marshal(map[string]interface{}{"status": status, "evidence": evidence})
+	var drill RecoveryDrill
+	if err := c.postJSON("/api/v1/production/drills/"+url.PathEscape(id)+"/complete", string(body), &drill); err != nil {
+		return nil, err
+	}
+	return &drill, nil
 }
 
 func (c *Client) ListApps() ([]AppStatus, error) {
@@ -881,6 +1036,43 @@ func (c *Client) ListOperations(active bool, limit int) ([]Operation, error) {
 	return resp.Operations, nil
 }
 
+func (c *Client) GetOperation(id string) (*Operation, error) {
+	var op Operation
+	if err := c.get("/api/v1/operations/"+url.PathEscape(id), &op); err != nil {
+		return nil, err
+	}
+	return &op, nil
+}
+
+func (c *Client) QueuePlatformPreflight(ref string) (*Operation, error) {
+	return c.queueMaintenance("/api/v1/platform/preflights", map[string]interface{}{"ref": ref})
+}
+
+func (c *Client) QueuePlatformUpgrade(ref, mode, drainMode string) (*Operation, error) {
+	return c.queueMaintenance("/api/v1/platform/upgrades", map[string]interface{}{"ref": ref, "mode": mode, "drainMode": drainMode})
+}
+
+func (c *Client) QueuePlatformSmoke() (*Operation, error) {
+	return c.queueMaintenance("/api/v1/platform/smoke", map[string]interface{}{})
+}
+
+func (c *Client) QueuePlatformRollback(sha string) (*Operation, error) {
+	return c.queueMaintenance("/api/v1/platform/rollbacks", map[string]interface{}{"sha": sha})
+}
+
+func (c *Client) QueueHostAssurance() (*Operation, error) {
+	return c.queueMaintenance("/api/v1/host/assurances", map[string]interface{}{})
+}
+
+func (c *Client) queueMaintenance(path string, request map[string]interface{}) (*Operation, error) {
+	body, _ := json.Marshal(request)
+	var op Operation
+	if err := c.postJSON(path, string(body), &op); err != nil {
+		return nil, err
+	}
+	return &op, nil
+}
+
 func (c *Client) ListEvents(app, eventType, severity string, limit int) ([]BeaconEvent, int, error) {
 	values := url.Values{}
 	if app != "" {
@@ -938,6 +1130,148 @@ type ActiveIncident struct {
 	LatestEventID  string `json:"latestEventId"`
 }
 
+type OperatorInbox struct {
+	GeneratedAt string                     `json:"generatedAt"`
+	Summary     OperatorInboxSummary       `json:"summary"`
+	Items       []OperatorInboxItem        `json:"items"`
+	Actions     []OperatorActionDescriptor `json:"actions"`
+}
+
+type OperatorInboxSummary struct {
+	OpenIncidents      int `json:"openIncidents"`
+	ActiveOperations   int `json:"activeOperations"`
+	DeployRisks        int `json:"deployRisks"`
+	CronRisks          int `json:"cronRisks"`
+	SnapshotRisks      int `json:"snapshotRisks"`
+	SecretRisks        int `json:"secretRisks"`
+	WakeTargets        int `json:"wakeTargets"`
+	RecommendedActions int `json:"recommendedActions"`
+}
+
+type OperatorInboxItem struct {
+	ID             string                 `json:"id"`
+	Kind           string                 `json:"kind"`
+	App            string                 `json:"app,omitempty"`
+	Process        string                 `json:"process,omitempty"`
+	Severity       string                 `json:"severity"`
+	Status         string                 `json:"status,omitempty"`
+	Title          string                 `json:"title"`
+	Body           string                 `json:"body,omitempty"`
+	CorrelationKey string                 `json:"correlationKey,omitempty"`
+	DedupeKey      string                 `json:"dedupeKey,omitempty"`
+	OccurredAt     string                 `json:"occurredAt,omitempty"`
+	Action         string                 `json:"action,omitempty"`
+	ActionURL      string                 `json:"actionUrl,omitempty"`
+	Evidence       []string               `json:"evidence,omitempty"`
+	Metadata       map[string]interface{} `json:"metadata,omitempty"`
+}
+
+type OperatorCronOverview struct {
+	GeneratedAt string              `json:"generatedAt"`
+	Entries     []OperatorCronEntry `json:"entries"`
+}
+
+type OperatorCronEntry struct {
+	App             string   `json:"app"`
+	Process         string   `json:"process"`
+	Schedule        string   `json:"schedule"`
+	Timezone        string   `json:"timezone"`
+	Paused          bool     `json:"paused"`
+	Status          string   `json:"status,omitempty"`
+	ParentJobID     string   `json:"parentJobId"`
+	LastRunAtLocal  string   `json:"lastRunAtLocal,omitempty"`
+	NextRunAtLocal  string   `json:"nextRunAtLocal,omitempty"`
+	ChildrenPending int64    `json:"childrenPending,omitempty"`
+	ChildrenRunning int64    `json:"childrenRunning,omitempty"`
+	ChildrenDead    int64    `json:"childrenDead,omitempty"`
+	Risk            string   `json:"risk,omitempty"`
+	Evidence        []string `json:"evidence,omitempty"`
+}
+
+type OperatorWakeTargets struct {
+	GeneratedAt string               `json:"generatedAt"`
+	Targets     []OperatorWakeTarget `json:"targets"`
+}
+
+type OperatorWakeTarget struct {
+	App       string   `json:"app"`
+	Process   string   `json:"process"`
+	Endpoint  string   `json:"endpoint"`
+	Exposure  string   `json:"exposure"`
+	Status    string   `json:"status"`
+	Instances int      `json:"instances"`
+	Ready     bool     `json:"ready"`
+	WakeURL   string   `json:"wakeUrl"`
+	Evidence  []string `json:"evidence,omitempty"`
+}
+
+type OperatorDeployConfidence struct {
+	GeneratedAt string                        `json:"generatedAt"`
+	Apps        []OperatorDeployConfidenceApp `json:"apps"`
+}
+
+type OperatorDeployConfidenceApp struct {
+	App             string       `json:"app"`
+	Confidence      string       `json:"confidence"`
+	Recent          []Deployment `json:"recent"`
+	LastStatus      string       `json:"lastStatus,omitempty"`
+	AutoRollback    bool         `json:"autoRollback"`
+	CanaryProcesses []string     `json:"canaryProcesses,omitempty"`
+	Evidence        []string     `json:"evidence,omitempty"`
+	PreflightURL    string       `json:"preflightUrl"`
+	DeployURL       string       `json:"deployUrl"`
+}
+
+type OperatorSnapshotReadiness struct {
+	GeneratedAt string                         `json:"generatedAt"`
+	Apps        []OperatorSnapshotReadinessApp `json:"apps"`
+}
+
+type OperatorSnapshotReadinessApp struct {
+	App          string    `json:"app"`
+	Database     string    `json:"database,omitempty"`
+	Status       string    `json:"status"`
+	Keep         int       `json:"keep"`
+	Count        int       `json:"count"`
+	OverLimit    int       `json:"overLimit"`
+	Latest       *Snapshot `json:"latest,omitempty"`
+	RemoteExport bool      `json:"remoteExport"`
+	PreRestore   bool      `json:"preRestore"`
+	Evidence     []string  `json:"evidence,omitempty"`
+	ListURL      string    `json:"listUrl"`
+	ExportURL    string    `json:"exportUrl"`
+}
+
+type OperatorAuthHints struct {
+	GeneratedAt string             `json:"generatedAt"`
+	Principles  []string           `json:"principles"`
+	Patterns    []OperatorAuthHint `json:"patterns"`
+}
+
+type OperatorAuthHint struct {
+	Name       string   `json:"name"`
+	UseWhen    string   `json:"useWhen"`
+	Command    string   `json:"command"`
+	Evidence   []string `json:"evidence,omitempty"`
+	SecretSafe bool     `json:"secretSafe"`
+}
+
+type OperatorActionCatalog struct {
+	GeneratedAt string                     `json:"generatedAt"`
+	Actions     []OperatorActionDescriptor `json:"actions"`
+}
+
+type OperatorActionDescriptor struct {
+	ID          string   `json:"id"`
+	Label       string   `json:"label"`
+	Method      string   `json:"method"`
+	Path        string   `json:"path"`
+	BodySchema  string   `json:"bodySchema,omitempty"`
+	Risk        string   `json:"risk"`
+	MobileReady bool     `json:"mobileReady"`
+	Requires    []string `json:"requires,omitempty"`
+}
+
 type EventReconcileDecision struct {
 	EventID  string   `json:"eventId"`
 	App      string   `json:"app,omitempty"`
@@ -973,6 +1307,62 @@ func (c *Client) ListActiveIncidents(limit int) ([]ActiveIncident, error) {
 		return nil, err
 	}
 	return resp.Incidents, nil
+}
+
+func (c *Client) OperatorInbox() (*OperatorInbox, error) {
+	var resp OperatorInbox
+	if err := c.get("/api/operator/inbox", &resp); err != nil {
+		return nil, err
+	}
+	return &resp, nil
+}
+
+func (c *Client) OperatorCronOverview() (*OperatorCronOverview, error) {
+	var resp OperatorCronOverview
+	if err := c.get("/api/operator/cron", &resp); err != nil {
+		return nil, err
+	}
+	return &resp, nil
+}
+
+func (c *Client) OperatorWakeTargets() (*OperatorWakeTargets, error) {
+	var resp OperatorWakeTargets
+	if err := c.get("/api/operator/wake-targets", &resp); err != nil {
+		return nil, err
+	}
+	return &resp, nil
+}
+
+func (c *Client) OperatorDeployConfidence() (*OperatorDeployConfidence, error) {
+	var resp OperatorDeployConfidence
+	if err := c.get("/api/operator/deploy-confidence", &resp); err != nil {
+		return nil, err
+	}
+	return &resp, nil
+}
+
+func (c *Client) OperatorSnapshotReadiness() (*OperatorSnapshotReadiness, error) {
+	var resp OperatorSnapshotReadiness
+	if err := c.get("/api/operator/snapshot-readiness", &resp); err != nil {
+		return nil, err
+	}
+	return &resp, nil
+}
+
+func (c *Client) OperatorAuthHints() (*OperatorAuthHints, error) {
+	var resp OperatorAuthHints
+	if err := c.get("/api/operator/auth-hints", &resp); err != nil {
+		return nil, err
+	}
+	return &resp, nil
+}
+
+func (c *Client) OperatorActions() (*OperatorActionCatalog, error) {
+	var resp OperatorActionCatalog
+	if err := c.get("/api/operator/actions", &resp); err != nil {
+		return nil, err
+	}
+	return &resp, nil
 }
 
 func (c *Client) ReconcileEvents(app string, limit int, dryRun bool, by string) (*EventReconcileResponse, error) {
@@ -1180,7 +1570,7 @@ func (c *Client) Exec(appID, process string, argv []string) (*websocket.Conn, er
 	if encoded := params.Encode(); encoded != "" {
 		wsURL += "?" + encoded
 	}
-	conn, _, err := websocket.DefaultDialer.Dial(wsURL, nil)
+	conn, _, err := websocket.DefaultDialer.Dial(wsURL, c.WebSocketHeaders())
 	if err != nil {
 		return nil, fmt.Errorf("exec websocket: %w", err)
 	}
@@ -1316,6 +1706,101 @@ func (c *Client) ValidateApp(appID string, strictSecrets bool) (*ValidationResul
 	return &result, nil
 }
 
+func (c *Client) ValidateInfraSpecDocument(document, fleetDocument string, strictSecrets bool) (*ValidationResult, error) {
+	body, err := json.Marshal(map[string]string{"document": document, "fleetDocument": fleetDocument})
+	if err != nil {
+		return nil, err
+	}
+	path := "/api/v1/validate/infraspec"
+	if strictSecrets {
+		path += "?strictSecrets=true"
+	}
+	var result ValidationResult
+	if err := c.postJSON(path, string(body), &result); err != nil {
+		return nil, err
+	}
+	return &result, nil
+}
+
+func (c *Client) ValidateFleetDocument(document string) (*FleetValidationReport, error) {
+	body, err := json.Marshal(map[string]string{"document": document})
+	if err != nil {
+		return nil, err
+	}
+	var result FleetValidationReport
+	if err := c.postJSON("/api/v1/fleet/validate", string(body), &result); err != nil {
+		return nil, err
+	}
+	return &result, nil
+}
+
+func (c *Client) FleetInventory() (*FleetInventory, error) {
+	var inventory FleetInventory
+	if err := c.get("/api/v1/fleet/node-pools", &inventory); err != nil {
+		return nil, err
+	}
+	return &inventory, nil
+}
+
+func (c *Client) FleetGitHubStatus() (*FleetGitHubStatus, error) {
+	var status FleetGitHubStatus
+	if err := c.get("/api/v1/fleet/github", &status); err != nil {
+		return nil, err
+	}
+	return &status, nil
+}
+
+func (c *Client) CreateFleetPullRequest(planID string) (*Operation, error) {
+	var operation Operation
+	if err := c.postJSON("/api/v1/fleet/plans/"+url.PathEscape(planID)+"/github/pull-request", `{}`, &operation); err != nil {
+		return nil, err
+	}
+	return &operation, nil
+}
+
+func (c *Client) DispatchFleetApply(planID string, allowDestructive bool) (*Operation, error) {
+	body, err := json.Marshal(map[string]bool{"allowDestructive": allowDestructive})
+	if err != nil {
+		return nil, err
+	}
+	var operation Operation
+	if err := c.postJSON("/api/v1/fleet/plans/"+url.PathEscape(planID)+"/github/dispatch", string(body), &operation); err != nil {
+		return nil, err
+	}
+	return &operation, nil
+}
+
+func (c *Client) PlanFleetCapacity(pool string, desired *int, size, strategy, reason string) (*Operation, error) {
+	request := map[string]interface{}{"size": size, "strategy": strategy, "reason": reason}
+	if desired != nil {
+		request["desired"] = *desired
+	}
+	body, err := json.Marshal(request)
+	if err != nil {
+		return nil, err
+	}
+	var operation Operation
+	if err := c.postJSON("/api/v1/fleet/node-pools/"+url.PathEscape(pool)+"/plan", string(body), &operation); err != nil {
+		return nil, err
+	}
+	return &operation, nil
+}
+
+type FleetReconciliationList struct {
+	SchemaVersion   string      `json:"schemaVersion"`
+	PlanID          string      `json:"planId"`
+	Reconciliations []Operation `json:"reconciliations"`
+	Count           int         `json:"count"`
+}
+
+func (c *Client) FleetReconciliations(planID string) (*FleetReconciliationList, error) {
+	var result FleetReconciliationList
+	if err := c.get("/api/v1/fleet/plans/"+url.PathEscape(planID)+"/reconciliations", &result); err != nil {
+		return nil, err
+	}
+	return &result, nil
+}
+
 func (c *Client) UpdateSecrets(appID string, secrets map[string]string) error {
 	body, err := json.Marshal(secrets)
 	if err != nil {
@@ -1381,13 +1866,14 @@ func (c *Client) ApplySnapshotRetention(appID string, keep int, confirm bool) (*
 }
 
 type AccessToken struct {
-	Token     string `json:"token"`
-	ExpiresAt string `json:"expiresAt"`
-	Note      string `json:"note"`
+	Token     string   `json:"token"`
+	ExpiresAt string   `json:"expiresAt"`
+	Note      string   `json:"note"`
+	Scopes    []string `json:"scopes"`
 }
 
-func (c *Client) CreateAccessToken(note, ttl string) (*AccessToken, error) {
-	body, _ := json.Marshal(map[string]string{"note": note, "ttl": ttl})
+func (c *Client) CreateAccessToken(note, ttl string, scopes []string) (*AccessToken, error) {
+	body, _ := json.Marshal(map[string]interface{}{"note": note, "ttl": ttl, "scopes": scopes})
 	var token AccessToken
 	if err := c.postJSON("/api/access/tokens", string(body), &token); err != nil {
 		return nil, err
@@ -1515,7 +2001,7 @@ func (c *Client) FunctionHistory(appID string) ([]FuncExecution, error) {
 }
 
 func (c *Client) WebSocketURL() string {
-	return c.WebSocketURLFor("/ws")
+	return c.WebSocketURLFor("/api/v1/events")
 }
 
 func (c *Client) WebSocketURLFor(path string) string {
@@ -1523,6 +2009,14 @@ func (c *Client) WebSocketURLFor(path string) string {
 	base = strings.Replace(base, "http://", "ws://", 1)
 	base = strings.Replace(base, "https://", "wss://", 1)
 	return base + path
+}
+
+func (c *Client) WebSocketHeaders() http.Header {
+	headers := http.Header{}
+	if c.Token != "" {
+		headers.Set("Authorization", "Bearer "+c.Token)
+	}
+	return headers
 }
 
 // HTTP helpers

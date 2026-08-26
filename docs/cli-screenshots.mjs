@@ -12,7 +12,7 @@ import { cliOutput } from './screenshot-fixtures.mjs'
 const OUT = join(import.meta.dirname, 'public/screenshots')
 mkdirSync(OUT, { recursive: true })
 
-const NORN = process.env.NORN_BIN || '/Users/0xadb/projects/norn/v2/bin/norn'
+const NORN = process.env.NORN_BIN || '/Users/0xadb/go/bin/norn'
 const USE_FIXTURES = process.env.NORN_LIVE_CLI !== '1'
 
 // Simple ANSI to HTML converter
@@ -63,7 +63,7 @@ function ansiToHtml(text) {
   return html
 }
 
-function renderTerminal(title, content) {
+function renderTerminal(title, content, maxWidth = 720) {
   const htmlContent = ansiToHtml(content)
   return `<!DOCTYPE html>
 <html>
@@ -80,7 +80,7 @@ function renderTerminal(title, content) {
     border-radius: 10px;
     border: 1px solid #30363d;
     overflow: hidden;
-    max-width: 720px;
+    max-width: ${maxWidth}px;
   }
   .titlebar {
     background: #21262d;
@@ -136,12 +136,13 @@ async function captureTerminal(browser, name, title, command) {
     }
   }
 
-  const html = renderTerminal(title, output)
+  const maxWidth = name === 'cli-snapshots.png' ? 1180 : 720
+  const html = renderTerminal(title, output, maxWidth)
   const tmpPath = join(OUT, `_${name}.html`)
   writeFileSync(tmpPath, html)
 
   const page = await browser.newPage()
-  await page.setViewportSize({ width: 800, height: 600 })
+  await page.setViewportSize({ width: maxWidth + 80, height: 600 })
   await page.goto(`file://${tmpPath}`, { waitUntil: 'networkidle' })
 
   // Fit screenshot to content
@@ -166,6 +167,8 @@ async function main() {
   await captureTerminal(browser, 'cli-platform.png', 'norn ops platform', `${NORN} ops platform`)
   await captureTerminal(browser, 'cli-proxy-plan.png', 'norn platform proxy-plan', `${NORN} platform proxy-plan`)
   await captureTerminal(browser, 'cli-endpoints.png', 'norn endpoints signal-sideband', `${NORN} endpoints signal-sideband`)
+  await captureTerminal(browser, 'cli-fleet.png', 'norn fleet pools', `${NORN} fleet pools`)
+  await captureTerminal(browser, 'cli-snapshots.png', 'norn snapshots signal-sideband', `${NORN} snapshots signal-sideband`)
 
   await browser.close()
   console.log(`\n  OK CLI screenshots saved to docs/public/screenshots/`)

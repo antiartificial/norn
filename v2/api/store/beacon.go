@@ -27,6 +27,11 @@ type BeaconMetric struct {
 	LastOccurredUnix float64
 }
 
+type IncidentGroupKey struct {
+	CorrelationKey string `json:"correlationKey,omitempty"`
+	DedupeKey      string `json:"dedupeKey,omitempty"`
+}
+
 func (db *DB) InsertBeaconEvent(ctx context.Context, event *model.BeaconEvent) error {
 	metadata, err := json.Marshal(event.Metadata)
 	if err != nil {
@@ -216,6 +221,78 @@ func (db *DB) OpenBeaconEvent(ctx context.Context, id string) (*model.BeaconEven
 	return db.GetBeaconEvent(ctx, id)
 }
 
+func (db *DB) AcknowledgeIncidentGroup(ctx context.Context, key IncidentGroupKey, by, note string) (int, error) {
+	where, args, next := incidentGroupWhere(key)
+	if where == "" {
+		return 0, fmt.Errorf("incident group key is required")
+	}
+	args = append(args, by, note)
+	tag, err := db.Pool.Exec(ctx, fmt.Sprintf(`
+		UPDATE beacon_events
+		SET acknowledged_at = now(),
+		    acknowledged_by = $%d,
+		    acknowledgement_note = $%d,
+		    snoozed_until = NULL
+		WHERE %s
+		  AND severity IN ('warning', 'critical')
+	`, next, next+1, where), args...)
+	if err != nil {
+		return 0, err
+	}
+	return int(tag.RowsAffected()), nil
+}
+
+func (db *DB) SnoozeIncidentGroup(ctx context.Context, key IncidentGroupKey, by, note string, until time.Time) (int, error) {
+	where, args, next := incidentGroupWhere(key)
+	if where == "" {
+		return 0, fmt.Errorf("incident group key is required")
+	}
+	args = append(args, until, by, note)
+	tag, err := db.Pool.Exec(ctx, fmt.Sprintf(`
+		UPDATE beacon_events
+		SET snoozed_until = $%d,
+		    acknowledged_by = $%d,
+		    acknowledgement_note = $%d
+		WHERE %s
+		  AND severity IN ('warning', 'critical')
+	`, next, next+1, next+2, where), args...)
+	if err != nil {
+		return 0, err
+	}
+	return int(tag.RowsAffected()), nil
+}
+
+func (db *DB) OpenIncidentGroup(ctx context.Context, key IncidentGroupKey) (int, error) {
+	where, args, _ := incidentGroupWhere(key)
+	if where == "" {
+		return 0, fmt.Errorf("incident group key is required")
+	}
+	tag, err := db.Pool.Exec(ctx, fmt.Sprintf(`
+		UPDATE beacon_events
+		SET acknowledged_at = NULL,
+		    acknowledged_by = '',
+		    acknowledgement_note = '',
+		    snoozed_until = NULL
+		WHERE %s
+		  AND severity IN ('warning', 'critical')
+	`, where), args...)
+	if err != nil {
+		return 0, err
+	}
+	return int(tag.RowsAffected()), nil
+}
+
+func incidentGroupWhere(key IncidentGroupKey) (string, []interface{}, int) {
+	switch {
+	case key.CorrelationKey != "":
+		return "metadata->>'correlationKey' = $1", []interface{}{key.CorrelationKey}, 2
+	case key.DedupeKey != "":
+		return "dedupe_key = $1", []interface{}{key.DedupeKey}, 2
+	default:
+		return "", nil, 1
+	}
+}
+
 func (db *DB) ListCorrelatedEvents(ctx context.Context, correlationKey string, limit int) ([]model.BeaconEvent, error) {
 	if limit <= 0 || limit > 200 {
 		limit = 50
@@ -369,6 +446,35 @@ func (db *DB) AutoAckCorrelatedEvents(ctx context.Context, correlationKey, resol
 		return 0, err
 	}
 	return int(tag.RowsAffected()), nil
+}
+
+func (db *DB) RecentWatcherEvents(ctx context.Context, since time.Duration) ([]model.BeaconEvent, error) {
+	rows, err := db.Pool.Query(ctx, `
+		SELECT id, source, app, environment, type, severity, title, body,
+		       dedupe_key, occurred_at, acknowledged_at, acknowledged_by,
+		       acknowledgement_note, snoozed_until, metadata
+		FROM beacon_events
+		WHERE occurred_at > $1
+		  AND type LIKE ANY(ARRAY[
+		      'nomad.allocation.%', 'service.health.%',
+		      'cron.%', 'nomad.task.%'
+		  ])
+		ORDER BY occurred_at ASC
+	`, time.Now().UTC().Add(-since))
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	var events []model.BeaconEvent
+	for rows.Next() {
+		event, err := scanBeaconEvent(rows)
+		if err != nil {
+			return nil, err
+		}
+		events = append(events, event)
+	}
+	return events, rows.Err()
 }
 
 func (db *DB) PruneBeaconEvents(ctx context.Context, olderThan time.Time) error {

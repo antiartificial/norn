@@ -75,8 +75,10 @@ func (p *Pipeline) runPreflight(ctx context.Context, spec *model.InfraSpec, ref 
 	steps := []step{
 		{name: "validate", fn: p.preflightValidate},
 		{name: "clone", fn: p.clone},
+		{name: "admission", fn: p.admission},
 		{name: "inspect", fn: p.preflightInspect},
 		{name: "build", fn: p.build},
+		{name: "artifact-admission", fn: p.artifactAdmission},
 		{name: "test", fn: p.test},
 	}
 
@@ -128,7 +130,7 @@ func (p *Pipeline) runPreflight(ctx context.Context, spec *model.InfraSpec, ref 
 func (p *Pipeline) preflightValidate(ctx context.Context, st *state, sg *saga.Saga) error {
 	result := model.ValidateSpecWithOptions(st.spec, model.ValidationOptions{
 		NetworkMode:   p.NetworkMode,
-		StrictSecrets: truthyEnv("NORN_STRICT_SECRETS"),
+		StrictSecrets: p.StrictSecrets || truthyEnv("NORN_STRICT_SECRETS"),
 	})
 	for _, finding := range result.Findings {
 		p.preflightProgress(ctx, st.spec.App, sg, fmt.Sprintf("%s %s: %s", finding.Severity, finding.Field, finding.Message), map[string]string{
@@ -224,22 +226,23 @@ func (p *Pipeline) checkDeclaredSecrets(spec *model.InfraSpec) error {
 
 func parentPathReferences(root string) []string {
 	var refs []string
-	_ = filepath.WalkDir(root, func(path string, d fs.DirEntry, err error) error {
+	confined, err := os.OpenRoot(root)
+	if err != nil {
+		return refs
+	}
+	defer confined.Close()
+	_ = fs.WalkDir(confined.FS(), ".", func(path string, d fs.DirEntry, err error) error {
 		if err != nil || d.IsDir() || d.Name() != "go.mod" {
 			return nil
 		}
-		data, err := os.ReadFile(path)
+		data, err := fs.ReadFile(confined.FS(), path)
 		if err != nil {
 			return nil
-		}
-		rel, err := filepath.Rel(root, path)
-		if err != nil {
-			rel = path
 		}
 		for _, line := range strings.Split(string(data), "\n") {
 			line = strings.TrimSpace(line)
 			if strings.Contains(line, "=> ../") {
-				refs = append(refs, rel+": "+line)
+				refs = append(refs, filepath.ToSlash(path)+": "+line)
 			}
 		}
 		return nil

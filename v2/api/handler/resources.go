@@ -4,20 +4,20 @@ import (
 	"net/http"
 	"sort"
 
-	"norn/v2/api/engine"
 	"norn/v2/api/model"
+	"norn/v2/api/nomad"
 )
 
 type resourceSuggestion struct {
-	App            string `json:"app"`
-	Process        string `json:"process"`
-	DeclaredMemMB  int    `json:"declaredMemoryMB"`
-	DeclaredCPUMHz int    `json:"declaredCpuMHz"`
-	UsedMemMB      int    `json:"usedMemoryMB"`
-	PeakMemMB      int    `json:"peakMemoryMB"`
+	App            string  `json:"app"`
+	Process        string  `json:"process"`
+	DeclaredMemMB  int     `json:"declaredMemoryMB"`
+	DeclaredCPUMHz int     `json:"declaredCpuMHz"`
+	UsedMemMB      int     `json:"usedMemoryMB"`
+	PeakMemMB      int     `json:"peakMemoryMB"`
 	CPUPercent     float64 `json:"cpuPercent"`
-	Status         string `json:"status"`
-	Reason         string `json:"reason"`
+	Status         string  `json:"status"`
+	Reason         string  `json:"reason"`
 }
 
 func classifyMemory(declaredMB, usedMB, peakMB int) (string, string) {
@@ -39,8 +39,8 @@ func classifyMemory(declaredMB, usedMB, peakMB int) (string, string) {
 }
 
 func (h *Handler) ResourceSuggestions(w http.ResponseWriter, r *http.Request) {
-	if h.engine == nil {
-		writeError(w, http.StatusServiceUnavailable, "engine not available")
+	if h.nomad == nil {
+		writeError(w, http.StatusServiceUnavailable, "nomad not connected")
 		return
 	}
 
@@ -53,8 +53,8 @@ func (h *Handler) ResourceSuggestions(w http.ResponseWriter, r *http.Request) {
 
 	var suggestions []resourceSuggestion
 	for _, spec := range specs {
-		usageByGroup := map[string]*engine.ResourceUsage{}
-		usage, err := h.engine.JobResourceUsage(r.Context(), spec.App)
+		usageByGroup := map[string]*nomad.ResourceUsage{}
+		usage, err := h.nomad.JobResourceUsage(spec.App)
 		if err != nil || len(usage) == 0 {
 			continue
 		}
@@ -91,8 +91,8 @@ func (h *Handler) ResourceSuggestions(w http.ResponseWriter, r *http.Request) {
 				}
 			}
 
-			usedMB := int(u.MemoryUsageBytes / (1024 * 1024))
-			peakMB := int(u.MemoryMaxBytes / (1024 * 1024))
+			usedMB := bytesToMegabytes(u.MemoryUsageBytes)
+			peakMB := bytesToMegabytes(u.MemoryMaxBytes)
 			status, reason := classifyMemory(declaredMem, usedMB, peakMB)
 
 			suggestions = append(suggestions, resourceSuggestion{
@@ -112,4 +112,13 @@ func (h *Handler) ResourceSuggestions(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, map[string]interface{}{
 		"suggestions": suggestions,
 	})
+}
+
+func bytesToMegabytes(value uint64) int {
+	megabytes := value / (1024 * 1024)
+	maxInt := uint64(^uint(0) >> 1)
+	if megabytes > maxInt {
+		return int(maxInt)
+	}
+	return int(megabytes)
 }

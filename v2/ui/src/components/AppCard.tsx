@@ -1,6 +1,7 @@
-import { useState, useEffect } from 'react'
-import type { AppStatus, RepoSpec, CanaryStatus } from '../types/index.ts'
-import { apiUrl, fetchOpts } from '../lib/api.ts'
+import { useState } from 'react'
+import { useQuery, useQueryClient } from '@tanstack/react-query'
+import type { AccessPattern, AppStatus, RepoSpec, CanaryStatus, ServiceManifestEntry } from '../types/index.ts'
+import { apiFetch, apiUrl, fetchOpts } from '../lib/api.ts'
 import { Tooltip } from './Tooltip.tsx'
 
 function truncateURL(url: string): string {
@@ -26,6 +27,35 @@ function endpointHostname(value: string): string {
   }
 }
 
+function endpointAuthority(value: string): string {
+  try {
+    const parsed = new URL(value)
+    return parsed.port ? `${parsed.hostname}:${parsed.port}` : parsed.hostname
+  } catch {
+    return value.split('/')[0]
+  }
+}
+
+function endpointLabel(value: string): string {
+  return endpointAuthority(value) || endpointHostname(value)
+}
+
+function isCleanGatewayEndpoint(value: string): boolean {
+  try {
+    const parsed = new URL(value)
+    return parsed.protocol === 'https:' && parsed.hostname.endsWith('.ts.net') && parsed.port !== ''
+  } catch {
+    return false
+  }
+}
+
+function gatewayURL(value: string): string | null {
+  if (typeof window === 'undefined') return null
+  const authority = endpointAuthority(value)
+  if (!authority) return null
+  return `${window.location.origin}/api/wake-gateway/${encodeURIComponent(authority)}`
+}
+
 function CopyBadge({ url, icon, label, region, className }: {
   url: string, icon: string, label: string, region?: string, className: string
 }) {
@@ -37,10 +67,10 @@ function CopyBadge({ url, icon, label, region, className }: {
   }
   return (
     <Tooltip text={copied ? 'Copied!' : url}>
-      <span className={`endpoint-badge ${className}`} onClick={handleCopy}>
-        <i className={`fawsb ${icon}`} /> {label}
+      <button type="button" className={`endpoint-badge ${className}`} onClick={handleCopy} aria-label={`Copy ${label} endpoint`}>
+        <i className={`fawsb ${icon}`} aria-hidden="true" /> {label}
         {region && <span className="endpoint-region">{region}</span>}
-      </span>
+      </button>
     </Tooltip>
   )
 }
@@ -55,18 +85,14 @@ function nodeLabel(provider?: string, region?: string, name?: string): { icon: s
 }
 
 function CanaryIndicator({ appId }: { appId: string }) {
-  const [canary, setCanary] = useState<CanaryStatus | null>(null)
+  const queryClient = useQueryClient()
+  const { data: canary } = useQuery({
+    queryKey: ['canary', appId],
+    queryFn: () => apiFetch<CanaryStatus | null>(`/api/apps/${appId}/canary`),
+    staleTime: 60_000,
+  })
   const [promoting, setPromoting] = useState(false)
   const [promoteMsg, setPromoteMsg] = useState<{ type: 'success' | 'error'; text: string } | null>(null)
-
-  useEffect(() => {
-    let cancelled = false
-    fetch(apiUrl(`/api/apps/${appId}/canary`), fetchOpts)
-      .then(res => res.ok ? res.json() : null)
-      .then(data => { if (!cancelled && data) setCanary(data) })
-      .catch(() => {})
-    return () => { cancelled = true }
-  }, [appId])
 
   if (!canary || !canary.isCanary) return null
 
@@ -77,7 +103,7 @@ function CanaryIndicator({ appId }: { appId: string }) {
       const res = await fetch(apiUrl(`/api/apps/${appId}/promote`), { ...fetchOpts, method: 'POST' })
       if (res.ok) {
         setPromoteMsg({ type: 'success', text: 'Promoted' })
-        setCanary(prev => prev ? { ...prev, isCanary: false, status: 'promoted' } : prev)
+        queryClient.invalidateQueries({ queryKey: ['canary', appId] })
       } else {
         const data = await res.json().catch(() => ({ error: 'Unknown error' }))
         setPromoteMsg({ type: 'error', text: data.error || 'Promote failed' })
@@ -92,7 +118,7 @@ function CanaryIndicator({ appId }: { appId: string }) {
     <div className="app-card-canary">
       <Tooltip text={canary.statusDescription ?? canary.status}>
         <span className="canary-badge">
-          <i className="fawsb fa-bird" /> Canary: {canary.status}
+          <i className="fawsb fa-feather" /> Canary: {canary.status}
         </span>
       </Tooltip>
       {promoteMsg ? (
@@ -107,36 +133,56 @@ function CanaryIndicator({ appId }: { appId: string }) {
   )
 }
 
-function EndpointBadges({ spec, allocations, activeIngress, appId, onToggleEndpoint }: {
+function EndpointBadges({ spec, allocations, services, activeIngress, appId, onToggleEndpoint }: {
   spec: AppStatus['spec'],
   allocations: AppStatus['allocations'],
+  services?: ServiceManifestEntry[],
   activeIngress?: Set<string>,
   appId: string,
   onToggleEndpoint?: (appId: string, hostname: string, enabled: boolean) => void,
 }) {
-  const external = spec.endpoints ?? []
-  // Dedupe internal addresses from running allocations
+  const serviceEndpoints = (services ?? [])
+    .filter(service => service.type === 'service')
+    .flatMap(service => service.endpoints ?? [])
+  const external = serviceEndpoints.length > 0 ? serviceEndpoints : (spec.endpoints ?? [])
   const seen = new Set<string>()
   const internal: { host: string; url: string; provider?: string; region?: string; nodeName?: string }[] = []
-  for (const a of allocations) {
-    if (a.status !== 'running' || !a.nodeAddress) continue
-    const port = Object.values(spec.processes).find(p => p.port)?.port
-    const url = port ? `http://${a.nodeAddress}:${port}` : `http://${a.nodeAddress}`
-    const host = port ? `${a.nodeAddress}:${port}` : a.nodeAddress
-    if (seen.has(a.nodeAddress)) continue
-    seen.add(a.nodeAddress)
-    internal.push({ host, url, provider: a.nodeProvider, region: a.nodeRegion, nodeName: a.nodeName })
+  for (const service of services ?? []) {
+    if (service.type !== 'service') continue
+    for (const instance of service.instances ?? []) {
+      if (!instance.address || !instance.port || seen.has(`${instance.address}:${instance.port}`)) continue
+      const host = `${instance.address}:${instance.port}`
+      seen.add(host)
+      internal.push({ host, url: `http://${host}`, nodeName: instance.node })
+    }
+  }
+  if (internal.length === 0) {
+    for (const a of allocations) {
+      if (a.status !== 'running' || !a.nodeAddress) continue
+      const port = Object.values(spec.processes).find(p => p.port)?.port
+      const url = port ? `http://${a.nodeAddress}:${port}` : `http://${a.nodeAddress}`
+      const host = port ? `${a.nodeAddress}:${port}` : a.nodeAddress
+      if (seen.has(host)) continue
+      seen.add(host)
+      internal.push({ host, url, provider: a.nodeProvider, region: a.nodeRegion, nodeName: a.nodeName })
+    }
   }
   if (external.length === 0 && internal.length === 0) return null
   const hasIngress = activeIngress && activeIngress.size > 0
+  const hasCleanGateway = external.some(ep => isCleanGatewayEndpoint(ep.url))
   return (
     <div className="app-card-endpoints">
       {external.map(ep => {
         const hostname = endpointHostname(ep.url)
+        const label = endpointLabel(ep.url)
         const isActive = activeIngress?.has(hostname) ?? false
+        const gateway = hasCleanGateway ? null : gatewayURL(ep.url)
         return (
           <span key={ep.url} className="endpoint-group">
-            <CopyBadge url={ep.url} icon="fa-globe" label={hostname} region={ep.region} className="external" />
+            <CopyBadge url={ep.url} icon="fa-globe" label={label} region={ep.region} className="external" />
+            {gateway && (
+              <CopyBadge url={gateway} icon="fa-signal" label="gateway" className="gateway" />
+            )}
             {hasIngress && onToggleEndpoint && (
               <Tooltip text={isActive ? 'Disable endpoint' : 'Enable endpoint'}>
                 <i
@@ -163,10 +209,22 @@ function EndpointBadges({ spec, allocations, activeIngress, appId, onToggleEndpo
   )
 }
 
+function idleCandidateTooltip(patterns: AccessPattern[]): string {
+  return patterns
+    .map(pattern => {
+      const quiet = pattern.quietForHours !== undefined ? `, quiet ${Math.round(pattern.quietForHours)}h` : ''
+      const reason = pattern.idleReason ? `: ${pattern.idleReason}` : ''
+      return `${pattern.process}${quiet}${reason}`
+    })
+    .join('\n')
+}
+
 interface Props {
   app: AppStatus
   busy: boolean
   activeIngress?: Set<string>
+  services?: ServiceManifestEntry[]
+  idleCandidates?: AccessPattern[]
   onPreflight: (appId: string) => void
   onDeploy: (appId: string) => void
   onRestart: (appId: string) => void
@@ -177,9 +235,11 @@ interface Props {
   onCron?: (appId: string) => void
   onFunction?: (appId: string) => void
   onToggleEndpoint?: (appId: string, hostname: string, enabled: boolean) => void
+	onToggleDeployment?: (appId: string, enabled: boolean) => Promise<void>
+  onOpen?: (appId: string) => void
 }
 
-export function AppCard({ app, busy, activeIngress, onPreflight, onDeploy, onRestart, onScale, onViewLogs, onExec, onSnapshots, onCron, onFunction, onToggleEndpoint }: Props) {
+export function AppCard({ app, busy, activeIngress, services, idleCandidates = [], onPreflight, onDeploy, onRestart, onScale, onViewLogs, onExec, onSnapshots, onCron, onFunction, onToggleEndpoint, onToggleDeployment, onOpen }: Props) {
   const { spec, healthy, nomadStatus } = app
   const allocations = app.allocations ?? []
 
@@ -215,10 +275,22 @@ export function AppCard({ app, busy, activeIngress, onPreflight, onDeploy, onRes
       <div className="app-card-header">
         <div className="app-card-title">
           <Tooltip text={healthy ? 'All allocations healthy' : 'Unhealthy'}>
-            <span className={`health-dot ${healthy ? 'green' : 'red'}`} />
+            <span className={`health-dot ${healthy ? 'green' : 'red'}`} role="img" aria-label={healthy ? 'App healthy' : 'App unhealthy'} />
           </Tooltip>
-          <h3>{spec.name}</h3>
+          {onOpen ? (
+            <button type="button" className="app-card-open" onClick={() => onOpen(spec.name)}>{spec.name}</button>
+          ) : (
+            <h3>{spec.name}</h3>
+          )}
           <span className="nomad-status">{nomadStatus}</span>
+		  {!spec.deploy && <span className="draft-badge">Draft · deployment off</span>}
+          {idleCandidates.length > 0 && (
+            <Tooltip text={idleCandidateTooltip(idleCandidates)}>
+              <span className="idle-candidate-badge" aria-label="Idle candidate">
+                <i className="fawsb fa-moon" />
+              </span>
+            </Tooltip>
+          )}
         </div>
         <div className="app-card-ready-group">
           <Tooltip text={`${runningCount} running, ${activeCount} active, ${retainedCount} retained`}>
@@ -290,14 +362,14 @@ export function AppCard({ app, busy, activeIngress, onPreflight, onDeploy, onRes
             {rUrl ? (
               <a href={rUrl} target="_blank" rel="noopener noreferrer" className="repo-link">
                 <span className="repo-badge">
-                  <i className="fawsb fa-code-branch" /> {truncateURL(spec.repo.url)}
+                  <i className="fawsb fa-code" /> {truncateURL(spec.repo.url)}
                   <i className="fawsb fa-arrow-up-right-from-square repo-external-icon" />
                 </span>
               </a>
             ) : (
               <Tooltip text={spec.repo.url}>
                 <span className="repo-badge">
-                  <i className="fawsb fa-code-branch" /> {truncateURL(spec.repo.url)}
+                  <i className="fawsb fa-code" /> {truncateURL(spec.repo.url)}
                 </span>
               </Tooltip>
             )}
@@ -309,21 +381,21 @@ export function AppCard({ app, busy, activeIngress, onPreflight, onDeploy, onRes
       })()}
 
       {/* Endpoints */}
-      <EndpointBadges spec={spec} allocations={allocations} activeIngress={activeIngress} appId={spec.name} onToggleEndpoint={onToggleEndpoint} />
+      <EndpointBadges spec={spec} allocations={allocations} services={services} activeIngress={activeIngress} appId={spec.name} onToggleEndpoint={onToggleEndpoint} />
 
       {/* Canary status */}
       <CanaryIndicator appId={spec.name} />
 
-      <div className="app-card-actions">
+      <div className="app-card-actions" onClick={(event) => event.stopPropagation()}>
         <Tooltip text="Validate, build, and test without deploying">
           <button onClick={() => onPreflight(spec.name)} disabled={busy} className="btn">
             <i className="fawsb fa-clipboard-check" /> Check
           </button>
         </Tooltip>
         <Tooltip text="Deploy latest from repo">
-          <button onClick={() => onDeploy(spec.name)} disabled={busy} className="btn btn-primary">
+		  {spec.deploy ? <button onClick={() => onDeploy(spec.name)} disabled={busy} className="btn btn-primary">
             <i className="fawsb fa-rocket-launch" /> Deploy
-          </button>
+		  </button> : <button onClick={() => onToggleDeployment?.(spec.name, true)} disabled={busy || !onToggleDeployment} className="btn btn-primary"><i className="fawsb fa-shield-check" /> Enable deploys</button>}
         </Tooltip>
         <Tooltip text="Rolling restart of all allocations">
           <button onClick={() => onRestart(spec.name)} disabled={busy} className="btn">
@@ -332,7 +404,7 @@ export function AppCard({ app, busy, activeIngress, onPreflight, onDeploy, onRes
         </Tooltip>
         <Tooltip text="Scale a task group">
           <button onClick={() => onScale(spec.name)} disabled={busy} className="btn">
-            <i className="fawsb fa-up-right-and-down-left-from-center" /> Scale
+            <i className="fawsb fa-expand" /> Scale
           </button>
         </Tooltip>
         <Tooltip text="Stream live logs">
@@ -342,7 +414,7 @@ export function AppCard({ app, busy, activeIngress, onPreflight, onDeploy, onRes
         </Tooltip>
         <Tooltip text="Open shell in running container">
           <button onClick={() => onExec(spec.name)} disabled={runningCount === 0} className="btn">
-            <i className="fawsb fa-terminal" /> Shell
+            <i className="fawsb fa-rectangle-code" /> Shell
           </button>
         </Tooltip>
         {spec.infrastructure?.postgres && onSnapshots && (

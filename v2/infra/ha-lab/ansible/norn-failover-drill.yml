@@ -1,0 +1,138 @@
+---
+- name: Prove Norn API failover and durable signed auditing
+  hosts: norn_ha[0]
+  become: true
+  gather_facts: false
+  any_errors_fatal: true
+  environment: "{{ control_environment }}"
+  tasks:
+    - name: Guard against fault injection outside the disposable lab
+      ansible.builtin.stat:
+        path: /etc/norn-ha-lab
+      register: lab_guard
+
+    - name: Require the disposable-lab marker
+      ansible.builtin.assert:
+        that: lab_guard.stat.exists
+        fail_msg: "Refusing Norn fault injection outside a managed Norn HA lab."
+
+    - name: Read the active Norn service
+      ansible.builtin.uri:
+        url: http://127.0.0.1:8500/v1/health/service/norn-api?passing=true
+        return_content: true
+      register: norn_before
+
+    - name: Require exactly one active Norn service before the drill
+      ansible.builtin.assert:
+        that: norn_before.json | length == 1
+        fail_msg: "The Norn active-passive invariant was already violated."
+
+    - name: Freeze the active member and address
+      ansible.builtin.set_fact:
+        old_active_member: "{{ norn_before.json[0].Node.Node }}"
+        old_active_address: "{{ norn_before.json[0].Service.Address }}"
+
+    - name: Start a durable node-failover drill receipt
+      ansible.builtin.uri:
+        url: "http://{{ old_active_address }}:8800/api/v1/production/drills"
+        method: POST
+        headers:
+          Authorization: "Bearer {{ norn_api_token }}"
+        body_format: json
+        body:
+          kind: node.failover
+          target: norn-control-api
+        status_code: 201
+        return_content: true
+      register: drill_start
+      no_log: true
+
+    - name: Stop the active Norn contender
+      ansible.builtin.systemd_service:
+        name: norn
+        state: stopped
+      delegate_to: "{{ old_active_member }}"
+
+    - name: Exercise the promoted Norn API with unconditional cleanup
+      block:
+        - name: Wait for exactly one different active Norn service
+          ansible.builtin.uri:
+            url: http://127.0.0.1:8500/v1/health/service/norn-api?passing=true
+            return_content: true
+          register: norn_after
+          retries: 60
+          delay: 2
+          until: >-
+            (norn_after.json | length == 1) and
+            (((norn_after.json | first).Node.Node | default('')) != old_active_member)
+
+        - name: Freeze the promoted member and address
+          ansible.builtin.set_fact:
+            new_active_member: "{{ norn_after.json[0].Node.Node }}"
+            new_active_address: "{{ norn_after.json[0].Service.Address }}"
+
+        - name: Require the promoted Norn health endpoint
+          ansible.builtin.uri:
+            url: "http://{{ new_active_address }}:8800/api/health"
+            status_code: 200
+
+        - name: Complete the receipt through the promoted Norn API
+          ansible.builtin.uri:
+            url: "http://{{ new_active_address }}:8800/api/v1/production/drills/{{ drill_start.json.id }}/complete"
+            method: POST
+            headers:
+              Authorization: "Bearer {{ norn_api_token }}"
+            body_format: json
+            body:
+              status: passed
+              evidence:
+                active_before: "{{ old_active_member }}"
+                active_after: "{{ new_active_member }}"
+                control_api_available: "true"
+            status_code: 200
+            return_content: true
+          register: drill_complete
+          no_log: true
+
+        - name: Read signed mutation receipts from the promoted member
+          ansible.builtin.uri:
+            url: "http://{{ new_active_address }}:8800/api/v1/audit/mutations?limit=10"
+            headers:
+              Authorization: "Bearer {{ norn_api_token }}"
+            return_content: true
+          register: mutation_audit
+          no_log: true
+
+        - name: Require a passed drill and verified mutation receipts
+          ansible.builtin.assert:
+            that:
+              - drill_complete.json.status == 'passed'
+              - mutation_audit.json.events | selectattr('integrity', 'equalto', 'verified') | list | length >= 2
+            fail_msg: "Norn failed over, but the durable drill or signed audit evidence was incomplete."
+      always:
+        - name: Always rejoin the former active contender
+          ansible.builtin.systemd_service:
+            name: norn
+            enabled: true
+            state: started
+          delegate_to: "{{ old_active_member }}"
+
+    - name: Wait for the single-active invariant after rejoin
+      ansible.builtin.uri:
+        url: http://127.0.0.1:8500/v1/health/service/norn-api?passing=true
+        return_content: true
+      register: norn_rejoined
+      retries: 60
+      delay: 2
+      until: norn_rejoined.json | length == 1
+
+    - name: Emit value-safe Norn failover evidence
+      ansible.builtin.debug:
+        msg:
+          schema: norn.ha-drill/v1
+          kind: norn-control-failover
+          active_before: "{{ old_active_member }}"
+          active_after: "{{ new_active_member }}"
+          passing_instances: 1
+          drill_status: passed
+          verified_audit_receipts: true

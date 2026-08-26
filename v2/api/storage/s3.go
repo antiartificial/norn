@@ -7,6 +7,7 @@ import (
 	"log"
 	"net/url"
 	"os"
+	"path/filepath"
 	"regexp"
 	"sort"
 	"strings"
@@ -220,14 +221,30 @@ func (c *Client) GetObject(ctx context.Context, bucket, key, destPath string) er
 		return fmt.Errorf("get object %s/%s: %w", bucket, key, err)
 	}
 	defer obj.Close()
-	dest, err := os.Create(destPath)
+	dest, err := os.CreateTemp(filepath.Dir(destPath), ".norn-object-*.tmp")
 	if err != nil {
 		return fmt.Errorf("create %s: %w", destPath, err)
 	}
-	defer dest.Close()
+	tempPath := dest.Name()
+	defer os.Remove(tempPath)
+	if err := dest.Chmod(0o600); err != nil {
+		_ = dest.Close()
+		return fmt.Errorf("secure %s: %w", destPath, err)
+	}
 	if _, err := io.Copy(dest, obj); err != nil {
-		os.Remove(destPath)
+		_ = dest.Close()
 		return fmt.Errorf("download %s/%s: %w", bucket, key, err)
+	}
+	if err := dest.Sync(); err != nil {
+		_ = dest.Close()
+		return fmt.Errorf("sync %s: %w", destPath, err)
+	}
+	if err := dest.Close(); err != nil {
+		return fmt.Errorf("close %s: %w", destPath, err)
+	}
+	// Hard-linking publishes atomically without replacing an existing snapshot.
+	if err := os.Link(tempPath, destPath); err != nil {
+		return fmt.Errorf("publish %s: %w", destPath, err)
 	}
 	return nil
 }

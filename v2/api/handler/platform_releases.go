@@ -2,11 +2,8 @@ package handler
 
 import (
 	"encoding/json"
-	"fmt"
-	"log"
 	"net/http"
 	"os"
-	"os/exec"
 	"path/filepath"
 	"sort"
 	"strings"
@@ -40,7 +37,7 @@ func (h *Handler) PlatformReleases(w http.ResponseWriter, r *http.Request) {
 			writeJSON(w, out)
 			return
 		}
-		writeError(w, http.StatusInternalServerError, err.Error())
+		WriteControlProblem(w, r, http.StatusInternalServerError, "release_list_failed", "failed to list platform releases")
 		return
 	}
 	for _, entry := range entries {
@@ -94,44 +91,11 @@ func (h *Handler) PlatformRollbackRelease(w http.ResponseWriter, r *http.Request
 		writeError(w, http.StatusBadRequest, "release sha is required")
 		return
 	}
-	script, err := resolvePlatformScript()
-	if err != nil {
-		writeError(w, http.StatusInternalServerError, err.Error())
+	if !maintenanceRefPattern.MatchString(sha) {
+		writeError(w, http.StatusBadRequest, "invalid release sha")
 		return
 	}
-	go func() {
-		cmd := exec.Command(script, "rollback", sha)
-		cmd.Env = os.Environ()
-		out, err := cmd.CombinedOutput()
-		if err != nil {
-			log.Printf("platform rollback %s failed: %v\n%s", sha, err, string(out))
-			return
-		}
-		log.Printf("platform rollback %s complete:\n%s", sha, string(out))
-	}()
-	w.Header().Set("Content-Type", "application/json")
-	w.WriteHeader(http.StatusAccepted)
-	_ = json.NewEncoder(w).Encode(map[string]string{"status": "rollback started", "sha": sha})
-}
-
-func resolvePlatformScript() (string, error) {
-	candidates := []string{}
-	if script := os.Getenv("NORN_PLATFORM_SCRIPT"); script != "" {
-		candidates = append(candidates, script)
-	}
-	if repo := os.Getenv("NORN_PLATFORM_REPO"); repo != "" {
-		candidates = append(candidates, filepath.Join(repo, "v2", "scripts", "platform-upgrade"))
-	}
-	if cwd, err := os.Getwd(); err == nil {
-		candidates = append(candidates, filepath.Join(cwd, "v2", "scripts", "platform-upgrade"), filepath.Join(cwd, "scripts", "platform-upgrade"))
-	}
-	candidates = append(candidates, "/Users/0xadb/projects/norn/v2/scripts/platform-upgrade")
-	for _, candidate := range candidates {
-		if info, err := os.Stat(candidate); err == nil && !info.IsDir() {
-			return candidate, nil
-		}
-	}
-	return "", fmt.Errorf("platform-upgrade script not found")
+	h.queueMaintenanceOperation(w, r, "platform.rollback", sha, "control-plane rollback", map[string]interface{}{"sha": sha})
 }
 
 func firstEnv(key, fallback string) string {

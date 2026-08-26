@@ -4,11 +4,22 @@ Norn uses WebSocket for real-time event broadcasting. The dashboard and CLI conn
 
 ## Connection
 
-```
-ws://localhost:8800/ws
+```text
+ws://localhost:8800/api/v1/events
+wss://norn.example.com/api/v1/events
 ```
 
-No authentication is required for WebSocket connections (excluded from auth middleware). Origin checking allows localhost and any origins in `NORN_ALLOWED_ORIGINS`.
+`/api/v1/events` is the versioned endpoint. `/ws` remains as a compatibility
+alias. When `NORN_API_TOKEN` is configured, connections require either the
+control-plane token or an access token carrying `events:read` in the
+`Authorization: Bearer` header. Cloudflare Access sessions continue to use the
+validated Access cookie/header path. Norn does not accept bearer tokens in URL
+query parameters.
+
+Origin checking allows native clients with no `Origin` header, localhost, and
+origins in `NORN_ALLOWED_ORIGINS`. The formal `norn.exec/v1` WebSocket uses the
+same origin policy, requires `apps:exec`, and is created through a device-key
+step-up flow. See [Native control protocol](./control-protocol.md).
 
 ## Event Envelope
 
@@ -16,6 +27,8 @@ Every message is a JSON object with this structure:
 
 ```json
 {
+  "id": 4812,
+  "timestamp": "2026-08-07T21:30:00Z",
   "type": "deploy.step",
   "appId": "myapp",
   "payload": {
@@ -28,6 +41,8 @@ Every message is a JSON object with this structure:
 
 | Field | Type | Description |
 |-------|------|-------------|
+| `id` | integer | Durable monotonic cursor |
+| `timestamp` | RFC3339 string | Time the control event was recorded |
 | `type` | string | Event type identifier |
 | `appId` | string | App this event relates to |
 | `payload` | object | Type-specific data |
@@ -40,9 +55,32 @@ Every message is a JSON object with this structure:
 | `deploy.progress` | `sagaId`, `message` | Allocation health polling updates |
 | `deploy.completed` | `sagaId`, `imageTag` | Deploy pipeline finished successfully |
 | `deploy.failed` | `sagaId`, `error` | Deploy pipeline failed |
-| `app.restarted` | `sagaId` | Rolling restart completed |
+| `app.restarted` | `sagaId` | Allocation replacement accepted |
 | `app.scaled` | `sagaId`, `group`, `count` | Task group scaled |
 | `function.completed` | `executionId`, `status` | Function invocation finished |
+| `maintenance.started` | `operationId`, `kind`, `status` | Host agent claimed a platform or host operation |
+| `maintenance.completed` | `operationId`, `kind`, `status` | Maintenance operation succeeded |
+| `maintenance.failed` | `operationId`, `kind`, `status`, `message` | Maintenance operation failed |
+
+## Cursor Replay
+
+Events are stored in PostgreSQL before being broadcast. Reconnect with the last
+processed event ID to replay missed messages:
+
+```text
+wss://norn.example.com/api/v1/events?after=4812
+```
+
+Replay is capped at 500 events per connection. If a client receives 500 replay
+events, it should reconnect with the last ID until caught up. REST operation
+state remains authoritative; the event stream tells clients what changed.
+
+Before reconnecting, read `GET /api/v1/events/info` for retention bounds and
+supported stream features. `types` and `apps` provide comma-separated,
+exact-match subscriptions. `heartbeat` opts into a 10–120 second liveness
+frame. A stale cursor is rejected before upgrade with `event_cursor_gap`; an
+ahead cursor uses `event_cursor_ahead`. Both include current bounds so the
+client can reconcile REST state deliberately.
 
 ### Step Status Values
 
@@ -60,7 +98,10 @@ The WebSocket hub uses gorilla/websocket and manages connections with a central 
 
 ```mermaid
 graph LR
-    P[Pipeline / Handler] -->|Broadcast| Hub
+    P[Pipeline / Handler] -->|Persist + broadcast| Hub
+    A[Host maintenance agent] -->|Persist| DB[(control_events)]
+    DB -->|Poll external events| Hub
+    Hub --> DB
     Hub -->|broadcast chan| Loop[Run Loop]
     Loop -->|send chan| C1[Client 1]
     Loop -->|send chan| C2[Client 2]
@@ -68,7 +109,8 @@ graph LR
 ```
 
 - **Hub.Run()** — goroutine running the main select loop (register, unregister, broadcast)
-- **Hub.Broadcast(evt)** — marshals an `Event` to JSON and sends to the broadcast channel
+- **Hub.Broadcast(evt)** — persists the event, assigns its cursor, and sends it to connected clients
+- **External event polling** — relays events written by the independent host agent
 - **Per-client send buffer** — buffered channel (64 messages) prevents slow clients from blocking others
 - **Broadcast channel** — buffered at 256 messages
 - **Cleanup** — if a client's send buffer is full, the client is disconnected and cleaned up

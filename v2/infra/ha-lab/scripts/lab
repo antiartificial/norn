@@ -1,0 +1,204 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+script_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+lab_root="$(cd "${script_dir}/.." && pwd)"
+terraform_dir="${lab_root}/terraform"
+export PATH="${lab_root}/.tools/bin:${PATH}"
+if [[ -f "${terraform_dir}/terraform.tfvars" ]]; then
+  configured_lab_name="$(awk -F= '/^[[:space:]]*name_prefix[[:space:]]*=/ {value=$2; gsub(/[[:space:]\"]/, "", value); print value; exit}' "${terraform_dir}/terraform.tfvars")"
+  configured_secret_file="$(${script_dir}/secrets path "${configured_lab_name}" 2>/dev/null || true)"
+  if [[ -n "${configured_secret_file}" && -f "${configured_secret_file}" ]]; then
+    set -a
+    # shellcheck disable=SC1090
+    source "${configured_secret_file}"
+    set +a
+    if [[ -n "${NORN_HA_BACKUP_ACCESS_KEY:-}" && -n "${NORN_HA_BACKUP_SECRET_KEY:-}" ]]; then
+      export AWS_ACCESS_KEY_ID="${NORN_HA_BACKUP_ACCESS_KEY}"
+      export AWS_SECRET_ACCESS_KEY="${NORN_HA_BACKUP_SECRET_KEY}"
+      export AWS_EC2_METADATA_DISABLED=true
+    fi
+  fi
+fi
+if [[ -x "${lab_root}/.tools/ansible/bin/python" ]] && "${lab_root}/.tools/ansible/bin/python" -c 'import certifi' 2>/dev/null; then
+  export SSL_CERT_FILE="$("${lab_root}/.tools/ansible/bin/python" -m certifi)"
+fi
+command_name="${1:-help}"
+shift || true
+
+# Reuse the currently selected doctl context for the Terraform provider without
+# copying its token into tfvars, backend configuration, or controller secrets.
+if [[ -z "${DIGITALOCEAN_TOKEN:-}" ]] && command -v doctl >/dev/null 2>&1; then
+  export DIGITALOCEAN_TOKEN="$(doctl auth token)"
+fi
+
+run_evidenced_playbook() {
+  local drill_name="$1"
+  local playbook="$2"
+  local evidence_dir="${lab_root}/.evidence"
+  local evidence_file="${evidence_dir}/${drill_name}-$(date -u +%Y%m%dT%H%M%SZ).log"
+  mkdir -p "${evidence_dir}"
+  ANSIBLE_CONFIG="${lab_root}/ansible/ansible.cfg" ansible-playbook "${playbook}" 2>&1 | tee "${evidence_file}"
+  echo "evidence: ${evidence_file}"
+}
+
+case "${command_name}" in
+  bootstrap-tools)
+    "${script_dir}/bootstrap-tools"
+    ;;
+  init)
+    "${script_dir}/state-backend" init
+    ;;
+  check)
+    terraform -chdir="${terraform_dir}" fmt -check -recursive
+    terraform -chdir="${terraform_dir}" validate
+    ansible-galaxy collection install -r "${lab_root}/ansible/requirements.yml"
+    ANSIBLE_CONFIG="${lab_root}/ansible/ansible.cfg" ansible-playbook -i localhost, "${lab_root}/ansible/site.yml" --syntax-check
+    ANSIBLE_CONFIG="${lab_root}/ansible/ansible.cfg" ansible-playbook -i localhost, "${lab_root}/ansible/failover-drill.yml" --syntax-check
+    ANSIBLE_CONFIG="${lab_root}/ansible/ansible.cfg" ansible-playbook -i localhost, "${lab_root}/ansible/pitr-drill.yml" --syntax-check
+    ANSIBLE_CONFIG="${lab_root}/ansible/ansible.cfg" ansible-playbook -i localhost, "${lab_root}/ansible/offsite-pitr-drill.yml" --syntax-check
+    ANSIBLE_CONFIG="${lab_root}/ansible/ansible.cfg" ansible-playbook -i localhost, "${lab_root}/ansible/reboot-drill.yml" --syntax-check
+    ANSIBLE_CONFIG="${lab_root}/ansible/ansible.cfg" ansible-playbook -i localhost, "${lab_root}/ansible/norn-failover-drill.yml" --syntax-check
+    ANSIBLE_CONFIG="${lab_root}/ansible/ansible.cfg" ansible-playbook -i localhost, "${lab_root}/ansible/control-plane-failover-drill.yml" --syntax-check
+    ;;
+  plan)
+    terraform -chdir="${terraform_dir}" plan "$@"
+    ;;
+  apply)
+    terraform -chdir="${terraform_dir}" apply "$@"
+    ;;
+  secrets)
+    "${script_dir}/secrets" "$@"
+    ;;
+  backup-repository)
+    "${script_dir}/spaces-backup" "$@"
+    ;;
+  state-backend)
+    "${script_dir}/state-backend" "$@"
+    ;;
+  audit-export)
+    "${script_dir}/audit-export" "$@"
+    ;;
+  supply-chain)
+    "${script_dir}/supply-chain" "$@"
+    ;;
+  catalog)
+    "${script_dir}/catalog" "$@"
+    ;;
+  pki)
+    "${script_dir}/pki" "$@"
+    ;;
+  security-cutover)
+    "${script_dir}/security-cutover" "$@"
+    ;;
+  expiry)
+    "${script_dir}/expiry" "$@"
+    ;;
+  converge)
+    "${script_dir}/converge" "$@"
+    ;;
+  deploy-traefik)
+    "${script_dir}/deploy-traefik" "$@"
+    ;;
+  verify)
+    "${script_dir}/verify" "$@"
+    ;;
+  receipt)
+    "${script_dir}/recovery-receipt" "$@"
+    ;;
+  replace-member)
+    "${script_dir}/replace-member" "$@"
+    ;;
+  failover)
+    lab_name="$(terraform -chdir="${terraform_dir}" output -raw name_prefix)"
+    secret_file="$(${script_dir}/secrets path "${lab_name}")"
+    set -a; source "${secret_file}"; set +a
+    run_evidenced_playbook failover "${lab_root}/ansible/failover-drill.yml"
+    ;;
+  pitr)
+    lab_name="$(terraform -chdir="${terraform_dir}" output -raw name_prefix)"
+    secret_file="$(${script_dir}/secrets path "${lab_name}")"
+    set -a; source "${secret_file}"; set +a
+    run_evidenced_playbook pitr "${lab_root}/ansible/pitr-drill.yml"
+    ;;
+  offsite-pitr)
+    lab_name="$(terraform -chdir="${terraform_dir}" output -raw name_prefix)"
+    secret_file="$(${script_dir}/secrets path "${lab_name}")"
+    set -a; source "${secret_file}"; set +a
+    "${script_dir}/spaces-backup" prove-versioning
+    run_evidenced_playbook offsite-pitr "${lab_root}/ansible/offsite-pitr-drill.yml"
+    ;;
+  reboot)
+    lab_name="$(terraform -chdir="${terraform_dir}" output -raw name_prefix)"
+    secret_file="$(${script_dir}/secrets path "${lab_name}")"
+    set -a; source "${secret_file}"; set +a
+    run_evidenced_playbook reboot "${lab_root}/ansible/reboot-drill.yml"
+    ;;
+  norn-failover)
+    lab_name="$(terraform -chdir="${terraform_dir}" output -raw name_prefix)"
+    secret_file="$(${script_dir}/secrets path "${lab_name}")"
+    set -a; source "${secret_file}"; set +a
+    run_evidenced_playbook norn-failover "${lab_root}/ansible/norn-failover-drill.yml"
+    ;;
+  control-failover)
+    lab_name="$(terraform -chdir="${terraform_dir}" output -raw name_prefix)"
+    secret_file="$(${script_dir}/secrets path "${lab_name}")"
+    set -a; source "${secret_file}"; set +a
+    run_evidenced_playbook control-failover "${lab_root}/ansible/control-plane-failover-drill.yml"
+    ;;
+  status)
+    lab_name="$(terraform -chdir="${terraform_dir}" output -raw name_prefix)"
+    secret_file="$(${script_dir}/secrets path "${lab_name}")"
+    set -a; source "${secret_file}"; set +a
+    first_ip="$(terraform -chdir="${terraform_dir}" output -json lab_nodes | jq -r 'to_entries | sort_by(.key) | first.value.public_ip')"
+    printf '%s\n%s\n' "${NORN_HA_CONSUL_MANAGEMENT_TOKEN}" "${NORN_HA_NOMAD_MANAGEMENT_TOKEN}" | \
+      ssh -o BatchMode=yes "root@${first_ip}" 'IFS= read -r consul_token; IFS= read -r nomad_token
+export CONSUL_HTTP_ADDR=https://127.0.0.1:8501 CONSUL_CACERT=/etc/consul.d/pki/ca.pem CONSUL_CLIENT_CERT=/etc/consul.d/pki/consul.pem CONSUL_CLIENT_KEY=/etc/consul.d/pki/consul-key.pem CONSUL_TLS_SERVER_NAME=server.dc1.consul CONSUL_HTTP_TOKEN="${consul_token}"
+export NOMAD_ADDR=https://127.0.0.1:4646 NOMAD_CACERT=/etc/nomad.d/pki/nomad-ca.pem NOMAD_CLIENT_CERT=/etc/nomad.d/pki/nomad.pem NOMAD_CLIENT_KEY=/etc/nomad.d/pki/nomad-key.pem NOMAD_TLS_SERVER_NAME=server.global.nomad NOMAD_TOKEN="${nomad_token}"
+consul members
+nomad operator raft list-peers
+patronictl -c /etc/patroni/config.yml list'
+    ;;
+  destroy)
+    [[ "${1:-}" == "--confirm-disposable-lab" ]] || {
+      echo "refusing destroy: pass --confirm-disposable-lab after checking terraform plan -destroy" >&2
+      exit 2
+    }
+    terraform -chdir="${terraform_dir}" plan -destroy -out=.destroy.tfplan
+    terraform -chdir="${terraform_dir}" apply .destroy.tfplan
+    ;;
+  help|*)
+    cat <<'EOF'
+Norn DigitalOcean HA lab
+
+  lab bootstrap-tools
+  lab init
+  lab check
+  lab plan -var-file=terraform.tfvars
+  lab apply -var-file=terraform.tfvars
+  lab secrets init NAME
+  lab backup-repository init|status
+  lab state-backend init|status
+  lab audit-export
+  lab supply-chain init|status|sign IMAGE@sha256:...
+  lab catalog sync|status
+  lab pki init|control-init|issue-node MEMBER|status
+  lab security-cutover status|activate-production|cutover --confirm-disposable-lab
+  lab expiry status|check
+  lab converge
+  lab deploy-traefik
+  lab verify
+  lab receipt start KIND TARGET
+  lab receipt complete ID passed key=value
+  lab replace-member MEMBER --confirm-disposable-lab
+  lab failover
+  lab pitr
+  lab offsite-pitr
+  lab reboot
+  lab norn-failover
+  lab control-failover
+  lab status
+  lab destroy --confirm-disposable-lab
+EOF
+    ;;
+esac

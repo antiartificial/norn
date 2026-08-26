@@ -38,6 +38,17 @@ func (h *Handler) Forge(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	publicEndpoints := make([]model.Endpoint, 0, len(spec.Endpoints))
+	for _, endpoint := range spec.Endpoints {
+		if cloudflared.IsPublicEndpoint(endpoint.URL) {
+			publicEndpoints = append(publicEndpoints, endpoint)
+		}
+	}
+	if len(publicEndpoints) == 0 {
+		writeJSON(w, map[string]string{"status": "skipped", "reason": "no public endpoints"})
+		return
+	}
+
 	service, err := h.cloudflaredService(spec)
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, err.Error())
@@ -50,8 +61,8 @@ func (h *Handler) Forge(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	changed := false
-	for _, ep := range spec.Endpoints {
+	changed := cloudflared.PrunePrivateIngress(cfg)
+	for _, ep := range publicEndpoints {
 		if cloudflared.AddIngress(cfg, ep.URL, service) {
 			changed = true
 		}
@@ -201,6 +212,10 @@ func (h *Handler) ToggleEndpoint(w http.ResponseWriter, r *http.Request) {
 
 	var changed bool
 	if req.Enabled {
+		if !cloudflared.IsPublicEndpoint(matchedURL) {
+			writeError(w, http.StatusBadRequest, fmt.Sprintf("hostname %s is private and cannot be enabled in cloudflared", hostname))
+			return
+		}
 		service, err := h.cloudflaredService(spec)
 		if err != nil {
 			writeError(w, http.StatusInternalServerError, err.Error())
@@ -239,14 +254,34 @@ func (h *Handler) cloudflaredService(spec *model.InfraSpec) (string, error) {
 	}
 
 	serviceName := fmt.Sprintf("%s-%s", spec.App, processName)
-	if h.engine != nil {
-		addr, err := h.engine.ServiceAddress(serviceName)
+	if h.consul != nil {
+		instances, err := h.consul.ServiceHealthChecks(serviceName)
 		if err == nil {
-			return "http://" + addr, nil
+			for _, instance := range instances {
+				if instance.Status == "passing" && instance.Address != "" && instance.Port > 0 {
+					return fmt.Sprintf("http://%s:%d", instance.Address, instance.Port), nil
+				}
+			}
+			for _, instance := range instances {
+				if instance.Address != "" && instance.Port > 0 {
+					return fmt.Sprintf("http://%s:%d", instance.Address, instance.Port), nil
+				}
+			}
 		}
 	}
 
-	return fmt.Sprintf("http://127.0.0.1:%d", process.Port), nil
+	allocs, err := h.nomad.PollAllocations(spec.App)
+	if err != nil {
+		return "", fmt.Errorf("poll allocations: %w", err)
+	}
+	if len(allocs) == 0 {
+		return "", fmt.Errorf("no running allocations")
+	}
+	nodeInfo, err := h.nomad.NodeInfo(allocs[0].NodeID)
+	if err != nil {
+		return "", fmt.Errorf("node info: %w", err)
+	}
+	return fmt.Sprintf("http://%s:%d", nodeInfo.Address, process.Port), nil
 }
 
 func handlerCloudflaredProcess(spec *model.InfraSpec) (string, model.Process, bool) {

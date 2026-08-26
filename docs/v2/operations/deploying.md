@@ -174,6 +174,19 @@ Each app deploy still creates its own saga and operation row. `waitReady` gates 
 norn rollback <app>
 ```
 
+The rollback API also accepts an optional regional target list when one region
+must be reverted independently:
+
+```http
+POST /api/apps/orders/rollback
+Content-Type: application/json
+
+{"regions":["iad"]}
+```
+
+Norn creates a new deployment record with one `deployment_regions` row per
+selected region. Omitting `regions` retains the normal all-regions rollback.
+
 Finds the most recent successful deployment and re-deploys its image tag. This skips the clone/build/test steps and goes straight to submit with the previous image.
 
 ## Upgrading Norn Itself

@@ -13,6 +13,7 @@ export default withMermaid(
       nav: [
         { text: 'Guide', link: '/v2/guide/getting-started' },
         { text: 'Architecture', link: '/v2/architecture/overview' },
+        { text: 'Fleet', link: '/v2/infrastructure/fleet' },
         { text: 'CLI', link: '/v2/cli/' },
         { text: 'Operations', link: '/v2/operations/deploying' },
         {
@@ -41,6 +42,7 @@ export default withMermaid(
             text: 'Architecture',
             items: [
               { text: 'Overview', link: '/v2/architecture/overview' },
+              { text: 'Native Control Protocol', link: '/v2/architecture/control-protocol' },
               { text: 'Deploy Pipeline', link: '/v2/architecture/deploy-pipeline' },
               { text: 'Platform Upgrades', link: '/v2/architecture/platform-upgrades' },
               { text: 'Nomad Translator', link: '/v2/architecture/nomad-translator' },
@@ -59,6 +61,7 @@ export default withMermaid(
             text: 'Infrastructure',
             items: [
               { text: 'Nomad & Consul', link: '/v2/infrastructure/nomad-consul' },
+              { text: 'Fleet GitOps', link: '/v2/infrastructure/fleet' },
               { text: 'Secrets', link: '/v2/infrastructure/secrets' },
               { text: 'Volumes', link: '/v2/infrastructure/volumes' },
               { text: 'Object Storage', link: '/v2/infrastructure/object-storage' },
@@ -71,11 +74,15 @@ export default withMermaid(
             items: [
               { text: 'Deploying', link: '/v2/operations/deploying' },
               { text: 'Agent Runbook', link: '/v2/operations/agent-runbook' },
-              { text: 'Operations Ledger', link: '/v2/operations/operations' },
+              { text: 'Operator Confidence', link: '/v2/operations/operator-confidence' },
+              { text: 'Durable Operations', link: '/v2/operations/operations' },
               { text: 'Beacon Events', link: '/v2/operations/beacon' },
               { text: 'Cron Jobs', link: '/v2/operations/cron' },
-              { text: 'Snapshots', link: '/v2/operations/snapshots' },
+              { text: 'Snapshots & Recovery', link: '/v2/operations/snapshots' },
               { text: 'Upgrading', link: '/v2/operations/upgrading' },
+              { text: 'Host Recovery', link: '/v2/operations/host-recovery' },
+              { text: 'Linux HA Lab', link: '/v2/operations/ha-lab' },
+              { text: 'Production Readiness', link: '/v2/operations/production-readiness' },
               { text: 'Troubleshooting', link: '/v2/operations/troubleshooting' },
             ],
           },

@@ -1,0 +1,63 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+script_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+lab_root="$(cd "${script_dir}/.." && pwd)"
+export PATH="${lab_root}/.tools/bin:${PATH}"
+command_name="${1:-status}"
+shift || true
+lab_name="$(terraform -chdir="${lab_root}/terraform" output -raw name_prefix)"
+"${script_dir}/secrets" ensure "${lab_name}" >/dev/null
+secret_file="$(${script_dir}/secrets path "${lab_name}")"
+set -a
+# shellcheck disable=SC1090
+source "${secret_file}"
+set +a
+
+private_key="${NORN_HA_COSIGN_PUBLIC_KEY_PATH%.pub}.key"
+public_key="${NORN_HA_COSIGN_PUBLIC_KEY_PATH}"
+
+case "${command_name}" in
+  init)
+    if [[ ! -f "${private_key}" || ! -f "${public_key}" ]]; then
+      [[ ! -e "${private_key}" && ! -e "${public_key}" ]] || {
+        echo "refusing partial signing-key state" >&2
+        exit 1
+      }
+      install -d -m 0700 "$(dirname "${private_key}")"
+      COSIGN_PASSWORD="${NORN_HA_COSIGN_PASSWORD}" cosign generate-key-pair --output-key-prefix "${private_key%.key}" >/dev/null
+      chmod 0600 "${private_key}"
+      chmod 0644 "${public_key}"
+    fi
+    ;;
+  sign)
+    image="${1:-}"
+    commit_sha="${2:-}"
+    [[ "${image}" =~ ^registry\.digitalocean\.com/antiartificial/[a-z0-9._/-]+@sha256:[a-f0-9]{64}$ ]] || {
+      echo "sign requires a DigitalOcean registry digest reference" >&2
+      exit 2
+    }
+    [[ -z "${commit_sha}" || "${commit_sha}" =~ ^[a-f0-9]{40}$ ]] || { echo "optional commit must be a full git SHA" >&2; exit 2; }
+    [[ -f "${private_key}" && -f "${public_key}" ]] || { echo "run supply-chain init first" >&2; exit 1; }
+    doctl registry login --expiry-seconds 900 >/dev/null
+    trap 'doctl registry logout >/dev/null 2>&1 || true' EXIT
+    sign_args=(sign --yes --key "${private_key}")
+    verify_args=(verify --key "${public_key}")
+    if [[ -n "${commit_sha}" ]]; then
+      sign_args+=(--annotations "norn.git.sha=${commit_sha}")
+      verify_args+=(--annotations "norn.git.sha=${commit_sha}")
+    fi
+    COSIGN_PASSWORD="${NORN_HA_COSIGN_PASSWORD}" cosign "${sign_args[@]}" "${image}"
+    cosign "${verify_args[@]}" "${image}" >/dev/null
+    echo "signed and verified ${image}"
+    ;;
+  status)
+    [[ -f "${private_key}" && -f "${public_key}" ]] || { echo "signing key not initialized" >&2; exit 1; }
+    stat -f 'private_mode=%Lp public_key=%N' "${private_key}"
+    stat -f 'public_mode=%Lp public_key=%N' "${public_key}"
+    ;;
+  *)
+    echo "usage: supply-chain init | supply-chain status | supply-chain sign IMAGE@sha256:... [GIT_SHA]" >&2
+    exit 2
+    ;;
+esac

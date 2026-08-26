@@ -1,284 +1,60 @@
-import { useState, useEffect } from 'react'
-import { apiUrl, fetchOpts } from '../lib/api.ts'
-import type { RemoteSnapshot } from '../types/index.ts'
+import { useMemo, useState } from 'react'
+import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
+import { NavLink } from 'react-router-dom'
+import { apiFetch } from '../lib/api.ts'
+import { clearDurableIntent, durableIntent, type DurableIntent } from '../lib/durableIntent.ts'
+import type { AppSnapshot, Operation, RemoteSnapshot } from '../types/index.ts'
+import { Button, ConfirmDialog, EmptyState, ErrorState, Skeleton, StatusChip, useToast } from './ui/index.ts'
 
-interface Snapshot {
-  filename: string
-  database: string
-  timestamp: string
-  size: number
-}
-
-interface Props {
-  appId: string
-  onClose: () => void
-}
+interface Props { appId: string; defaultKeep?: number; onClose: () => void }
+type QueuedAction = { operation: Operation; label: string }
 
 function formatBytes(bytes: number): string {
   if (bytes < 1024) return `${bytes} B`
-  const k = bytes / 1024
-  if (k < 1024) return `${k.toFixed(1)} KB`
-  const m = k / 1024
-  if (m < 1024) return `${m.toFixed(1)} MB`
-  return `${(m / 1024).toFixed(1)} GB`
+  const units = ['KB', 'MB', 'GB', 'TB']; let value = bytes / 1024; let index = 0
+  while (value >= 1024 && index < units.length - 1) { value /= 1024; index++ }
+  return `${value.toFixed(1)} ${units[index]}`
 }
-
-function formatTimestamp(ts: string): string {
-  // ts is like "20250613T143022"
-  if (ts.length < 15) return ts
-  const date = ts.slice(0, 4) + '-' + ts.slice(4, 6) + '-' + ts.slice(6, 8)
-  const time = ts.slice(9, 11) + ':' + ts.slice(11, 13) + ':' + ts.slice(13, 15)
-  return `${date} ${time}`
+function snapshotDate(snapshot: AppSnapshot): string {
+  if (snapshot.createdAt) return new Date(snapshot.createdAt).toLocaleString()
+  const value = snapshot.timestamp
+  if (!/^\d{8}T\d{6}$/.test(value)) return value
+  return `${value.slice(0, 4)}-${value.slice(4, 6)}-${value.slice(6, 8)} ${value.slice(9, 11)}:${value.slice(11, 13)}:${value.slice(13, 15)} UTC`
 }
+function durableHeaders(key: string): HeadersInit { return { 'Content-Type': 'application/json', 'Idempotency-Key': key } }
 
-function formatDate(iso: string): string {
-  try {
-    return new Date(iso).toLocaleString()
-  } catch {
-    return iso
-  }
-}
-
-export function SnapshotsPanel({ appId, onClose }: Props) {
+export function SnapshotsPanel({ appId, defaultKeep = 3, onClose }: Props) {
+  const queryClient = useQueryClient(); const { toast } = useToast()
   const [tab, setTab] = useState<'local' | 'remote'>('local')
-
-  // Local state
-  const [snapshots, setSnapshots] = useState<Snapshot[]>([])
-  const [loading, setLoading] = useState(true)
-  const [restoring, setRestoring] = useState<string | null>(null)
-  const [exporting, setExporting] = useState(false)
-
-  // Remote state
-  const [remoteSnapshots, setRemoteSnapshots] = useState<RemoteSnapshot[]>([])
-  const [remoteLoading, setRemoteLoading] = useState(false)
-  const [remoteLoaded, setRemoteLoaded] = useState(false)
-  const [remoteUnavailable, setRemoteUnavailable] = useState(false)
-  const [importing, setImporting] = useState<string | null>(null)
-
-  const [message, setMessage] = useState<{ type: 'success' | 'error'; text: string } | null>(null)
-
-  const loadLocal = async () => {
-    setLoading(true)
-    try {
-      const res = await fetch(apiUrl(`/api/apps/${appId}/snapshots`), fetchOpts)
-      if (res.ok) setSnapshots(await res.json())
-    } catch { /* */ }
-    setLoading(false)
+  const [keep, setKeep] = useState(Math.max(1, defaultKeep))
+  const [restoreTarget, setRestoreTarget] = useState<AppSnapshot | null>(null)
+  const [confirmPrune, setConfirmPrune] = useState(false)
+  const [queued, setQueued] = useState<QueuedAction | null>(null)
+  const snapshots = useQuery({ queryKey: ['snapshots', appId], queryFn: () => apiFetch<AppSnapshot[]>(`/api/v1/apps/${encodeURIComponent(appId)}/snapshots`), staleTime: 10_000, refetchInterval: 30_000 })
+  const remote = useQuery({ queryKey: ['snapshots', appId, 'remote'], queryFn: () => apiFetch<{ snapshots: RemoteSnapshot[] }>(`/api/apps/${encodeURIComponent(appId)}/snapshots/remote`), enabled: tab === 'remote', retry: false })
+  const ordered = useMemo(() => [...(snapshots.data ?? [])].sort((a, b) => b.timestamp.localeCompare(a.timestamp)), [snapshots.data])
+  const pruneCandidates = ordered.slice(keep)
+  const recordQueued = async (operation: Operation, label: string) => {
+    setQueued({ operation, label }); await queryClient.invalidateQueries({ queryKey: ['operations'] })
+    toast({ kind: 'success', title: `${label} queued`, description: operation.id ?? 'Durable receipt created' })
   }
+  const createSnapshot = useMutation({ mutationFn: ({ intent }: { intent: DurableIntent }) => apiFetch<Operation>(`/api/v1/apps/${encodeURIComponent(appId)}/snapshots`, { method: 'POST', headers: durableHeaders(intent.key), body: '{}' }), retry: 2, onSuccess: (operation, variables) => { clearDurableIntent(variables.intent); void recordQueued(operation, 'Snapshot') } })
+  const prune = useMutation({ mutationFn: ({ intent, count }: { intent: DurableIntent; count: number }) => apiFetch<Operation>(`/api/v1/apps/${encodeURIComponent(appId)}/snapshots/retention`, { method: 'POST', headers: durableHeaders(intent.key), body: JSON.stringify({ keep: count, confirm: true }) }), retry: 2, onSuccess: (operation, variables) => { clearDurableIntent(variables.intent); setConfirmPrune(false); void recordQueued(operation, 'Snapshot pruning') } })
+  const restore = useMutation({ mutationFn: ({ intent, snapshot }: { intent: DurableIntent; snapshot: string }) => apiFetch<Operation>(`/api/v1/apps/${encodeURIComponent(appId)}/snapshots/${encodeURIComponent(snapshot)}/restore`, { method: 'POST', headers: durableHeaders(intent.key), body: JSON.stringify({ confirm: true }) }), retry: 2, onSuccess: (operation, variables) => { clearDurableIntent(variables.intent); setRestoreTarget(null); void recordQueued(operation, 'Restore') } })
+  const exportLatest = useMutation({ mutationFn: () => apiFetch(`/api/apps/${encodeURIComponent(appId)}/snapshots/export`, { method: 'POST' }), onSuccess: async () => { await queryClient.invalidateQueries({ queryKey: ['snapshots', appId, 'remote'] }); toast({ kind: 'success', title: 'Latest snapshot exported' }) } })
+  const importRemote = useMutation({ mutationFn: (key: string) => apiFetch(`/api/apps/${encodeURIComponent(appId)}/snapshots/import`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ key }) }), onSuccess: async () => { await snapshots.refetch(); toast({ kind: 'success', title: 'Remote snapshot imported' }) } })
+  const mutationError = createSnapshot.error ?? prune.error ?? restore.error ?? exportLatest.error ?? importRemote.error
 
-  const loadRemote = async () => {
-    if (remoteLoaded) return
-    setRemoteLoading(true)
-    setRemoteUnavailable(false)
-    try {
-      const res = await fetch(apiUrl(`/api/apps/${appId}/snapshots/remote`), fetchOpts)
-      if (res.ok) {
-        const data = await res.json()
-        setRemoteSnapshots(data.snapshots ?? [])
-      } else {
-        setRemoteUnavailable(true)
-      }
-    } catch {
-      setRemoteUnavailable(true)
-    }
-    setRemoteLoading(false)
-    setRemoteLoaded(true)
-  }
-
-  useEffect(() => { loadLocal() }, [appId])
-
-  const handleTabChange = (next: 'local' | 'remote') => {
-    setTab(next)
-    setMessage(null)
-    if (next === 'remote') loadRemote()
-  }
-
-  const handleRestore = async (ts: string) => {
-    if (!confirm(`Restore snapshot ${ts}? This will replace the current database.`)) return
-    setRestoring(ts)
-    setMessage(null)
-    try {
-      const res = await fetch(apiUrl(`/api/apps/${appId}/snapshots/${ts}/restore`), {
-        ...fetchOpts,
-        method: 'POST',
-      })
-      if (res.ok) {
-        setMessage({ type: 'success', text: `Snapshot ${ts} restored successfully` })
-      } else {
-        const data = await res.json().catch(() => ({ error: 'Unknown error' }))
-        setMessage({ type: 'error', text: data.error || 'Restore failed' })
-      }
-    } catch (e) {
-      setMessage({ type: 'error', text: `Restore failed: ${e}` })
-    }
-    setRestoring(null)
-  }
-
-  const handleExport = async () => {
-    setExporting(true)
-    setMessage(null)
-    try {
-      const res = await fetch(apiUrl(`/api/apps/${appId}/snapshots/export`), {
-        ...fetchOpts,
-        method: 'POST',
-      })
-      if (res.ok) {
-        setMessage({ type: 'success', text: 'Snapshot exported to S3 successfully' })
-        // Invalidate remote cache so re-visiting remote tab fetches fresh list
-        setRemoteLoaded(false)
-      } else {
-        const data = await res.json().catch(() => ({ error: 'Unknown error' }))
-        setMessage({ type: 'error', text: data.error || 'Export failed' })
-      }
-    } catch (e) {
-      setMessage({ type: 'error', text: `Export failed: ${e}` })
-    }
-    setExporting(false)
-  }
-
-  const handleImport = async (key: string) => {
-    if (!confirm(`Import remote snapshot "${key}"? This will replace the current database.`)) return
-    setImporting(key)
-    setMessage(null)
-    try {
-      const res = await fetch(apiUrl(`/api/apps/${appId}/snapshots/import`), {
-        ...fetchOpts,
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ key }),
-      })
-      if (res.ok) {
-        setMessage({ type: 'success', text: `Remote snapshot imported successfully` })
-      } else {
-        const data = await res.json().catch(() => ({ error: 'Unknown error' }))
-        setMessage({ type: 'error', text: data.error || 'Import failed' })
-      }
-    } catch (e) {
-      setMessage({ type: 'error', text: `Import failed: ${e}` })
-    }
-    setImporting(null)
-  }
-
-  return (
-    <div className="panel-overlay">
-      <div className="panel-card panel-wide">
-        <div className="panel-header">
-          <h4><i className="fawsb fa-database" /> Snapshots — {appId}</h4>
-          <button className="btn-close" onClick={onClose}><i className="fawsb fa-xmark" /></button>
-        </div>
-
-        <div className="panel-tabs">
-          <button
-            className={`panel-tab-btn${tab === 'local' ? ' active' : ''}`}
-            onClick={() => handleTabChange('local')}
-          >
-            Local
-          </button>
-          <button
-            className={`panel-tab-btn${tab === 'remote' ? ' active' : ''}`}
-            onClick={() => handleTabChange('remote')}
-          >
-            Remote
-          </button>
-          {tab === 'local' && (
-            <button
-              className="btn btn-small"
-              style={{ marginLeft: 'auto' }}
-              disabled={exporting || snapshots.length === 0}
-              onClick={handleExport}
-            >
-              {exporting ? <span className="btn-spinner" /> : <i className="fawsb fa-cloud-arrow-up" />}
-              Export to S3
-            </button>
-          )}
-        </div>
-
-        {message && (
-          <div className={`panel-message ${message.type}`}>{message.text}</div>
-        )}
-
-        {/* Local tab */}
-        {tab === 'local' && (
-          <>
-            {loading && <div className="panel-loading"><div className="loading-spinner" /></div>}
-
-            {!loading && snapshots.length === 0 && (
-              <div className="panel-empty">No snapshots found for this app</div>
-            )}
-
-            {!loading && snapshots.length > 0 && (
-              <div className="panel-list">
-                <div className="panel-list-header">
-                  <span className="snap-ts">Timestamp</span>
-                  <span className="snap-db">Database</span>
-                  <span className="snap-size">Size</span>
-                  <span className="snap-action"></span>
-                </div>
-                {snapshots.map(snap => (
-                  <div key={snap.filename} className="panel-list-row">
-                    <span className="snap-ts">{formatTimestamp(snap.timestamp)}</span>
-                    <span className="snap-db">{snap.database}</span>
-                    <span className="snap-size">{formatBytes(snap.size)}</span>
-                    <span className="snap-action">
-                      <button
-                        className="btn btn-danger btn-small"
-                        disabled={restoring !== null}
-                        onClick={() => handleRestore(snap.timestamp)}
-                      >
-                        {restoring === snap.timestamp ? <span className="btn-spinner" /> : <i className="fawsb fa-arrow-rotate-left" />}
-                        Restore
-                      </button>
-                    </span>
-                  </div>
-                ))}
-              </div>
-            )}
-          </>
-        )}
-
-        {/* Remote tab */}
-        {tab === 'remote' && (
-          <>
-            {remoteLoading && <div className="panel-loading"><div className="loading-spinner" /></div>}
-
-            {!remoteLoading && remoteUnavailable && (
-              <div className="panel-empty">Remote snapshots are not configured for this app</div>
-            )}
-
-            {!remoteLoading && !remoteUnavailable && remoteSnapshots.length === 0 && (
-              <div className="panel-empty">No remote snapshots found</div>
-            )}
-
-            {!remoteLoading && !remoteUnavailable && remoteSnapshots.length > 0 && (
-              <div className="panel-list">
-                <div className="panel-list-header">
-                  <span className="snap-remote-key">Key</span>
-                  <span className="snap-size">Size</span>
-                  <span className="snap-remote-date">Last Modified</span>
-                  <span className="snap-action"></span>
-                </div>
-                {remoteSnapshots.map(snap => (
-                  <div key={snap.key} className="panel-list-row">
-                    <span className="snap-remote-key">{snap.key}</span>
-                    <span className="snap-size">{formatBytes(snap.size)}</span>
-                    <span className="snap-remote-date">{formatDate(snap.lastModified)}</span>
-                    <span className="snap-action">
-                      <button
-                        className="btn btn-small"
-                        disabled={importing !== null}
-                        onClick={() => handleImport(snap.key)}
-                      >
-                        {importing === snap.key ? <span className="btn-spinner" /> : <i className="fawsb fa-cloud-arrow-down" />}
-                        Import
-                      </button>
-                    </span>
-                  </div>
-                ))}
-              </div>
-            )}
-          </>
-        )}
-      </div>
-    </div>
-  )
+  return <section className="panel snapshot-workspace" aria-labelledby="snapshot-title">
+    <div className="panel-header"><div><h3 id="snapshot-title"><i className="fawsb fa-database" aria-hidden /> Data recovery</h3><p>Every local change is queued, serialized per app, and survives client or API restarts.</p></div><Button variant="ghost" icon="fa-xmark" aria-label="Close data recovery" onClick={onClose} /></div>
+    <div className="panel-tabs" role="tablist" aria-label="Snapshot location"><button className={`panel-tab-btn${tab === 'local' ? ' active' : ''}`} role="tab" aria-selected={tab === 'local'} onClick={() => setTab('local')}>Local</button><button className={`panel-tab-btn${tab === 'remote' ? ' active' : ''}`} role="tab" aria-selected={tab === 'remote'} onClick={() => setTab('remote')}>Remote</button></div>
+    {queued && <div className="durable-receipt-banner" role="status"><StatusChip tone="info" label="queued" /><span>{queued.label} has a durable receipt. It is safe to leave this page.</span>{queued.operation.id && <NavLink to={`/operations/${queued.operation.id}`}>View operation</NavLink>}</div>}
+    {mutationError instanceof Error && <ErrorState message={mutationError.message} />}
+    {tab === 'local' ? <>
+      <div className="snapshot-toolbar"><Button variant="primary" icon="fa-camera" loading={createSnapshot.isPending} onClick={() => createSnapshot.mutate({ intent: durableIntent(`${appId}:snapshot`, {}) })}>Create snapshot</Button><label className="snapshot-keep-control">Keep newest <input type="number" min={1} max={1000} value={keep} onChange={(event) => setKeep(Math.max(1, Number(event.target.value) || 1))} /></label><Button variant="danger" icon="fa-trash" disabled={pruneCandidates.length === 0} onClick={() => setConfirmPrune(true)}>Review prune ({pruneCandidates.length})</Button><Button variant="secondary" icon="fa-cloud-arrow-up" loading={exportLatest.isPending} disabled={ordered.length === 0} onClick={() => exportLatest.mutate()}>Export latest</Button></div>
+      {snapshots.isLoading ? <div className="panel-skeleton"><Skeleton /><Skeleton /></div> : snapshots.error ? <ErrorState message={snapshots.error instanceof Error ? snapshots.error.message : 'Could not load snapshots'} onRetry={() => snapshots.refetch()} /> : ordered.length === 0 ? <EmptyState icon="◇" title="No snapshots" hint="Create a baseline before migrations or risky application changes." /> : <div className="panel-list snapshot-list"><div className="panel-list-header"><span>Created</span><span>Database</span><span>Size</span><span>Retention</span><span>Action</span></div>{ordered.map((snapshot, index) => { const willPrune = index >= keep; return <div key={snapshot.filename} className={`panel-list-row${willPrune ? ' snapshot-prune-candidate' : ''}`}><span>{snapshotDate(snapshot)}</span><span>{snapshot.database}</span><span>{formatBytes(snapshot.size)}</span><span><StatusChip tone={willPrune ? 'warning' : 'success'} label={willPrune ? 'will prune' : 'retained'} /></span><span><Button size="sm" variant="danger" icon="fa-arrow-rotate-left" onClick={() => setRestoreTarget(snapshot)}>Restore…</Button></span></div> })}</div>}
+    </> : remote.isLoading ? <div className="panel-skeleton"><Skeleton /><Skeleton /></div> : remote.error ? <EmptyState icon="◇" title="Remote snapshots unavailable" hint="Configure the InfraSpec export bucket to keep off-host recovery copies." /> : (remote.data?.snapshots.length ?? 0) === 0 ? <EmptyState icon="◇" title="No remote snapshots" hint="Export a local snapshot to create an off-host copy." /> : <div className="panel-list snapshot-list"><div className="panel-list-header"><span>Object</span><span>Modified</span><span>Size</span><span /><span>Action</span></div>{remote.data?.snapshots.map((snapshot) => <div key={snapshot.key} className="panel-list-row"><span>{snapshot.key}</span><span>{new Date(snapshot.lastModified).toLocaleString()}</span><span>{formatBytes(snapshot.size)}</span><span /><span><Button size="sm" loading={importRemote.isPending && importRemote.variables === snapshot.key} onClick={() => importRemote.mutate(snapshot.key)}>Import</Button></span></div>)}</div>}
+    <ConfirmDialog open={restoreTarget !== null} title="Restore database snapshot?" message={`Restore ${restoreTarget ? snapshotDate(restoreTarget) : ''}?`} consequence="Norn first creates a new safety snapshot, then restores the selected database. The operation is durable but application writes during restore may fail." confirmLabel="Queue restore" onClose={() => setRestoreTarget(null)} onConfirm={() => restoreTarget && restore.mutate({ intent: durableIntent(`${appId}:restore`, { snapshot: restoreTarget.filename }), snapshot: restoreTarget.filename })} />
+    <ConfirmDialog open={confirmPrune} title="Prune old snapshots?" message={`Keep the newest ${keep} and prune ${pruneCandidates.length} local snapshot${pruneCandidates.length === 1 ? '' : 's'}?`} consequence={pruneCandidates.map((item) => item.filename).join(', ')} confirmLabel="Queue prune" onClose={() => setConfirmPrune(false)} onConfirm={() => prune.mutate({ intent: durableIntent(`${appId}:prune`, { keep }), count: keep })} />
+  </section>
 }

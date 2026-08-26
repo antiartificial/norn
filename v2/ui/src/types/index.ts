@@ -7,6 +7,7 @@ export interface RepoSpec {
 
 export interface Process {
   port?: number
+	hostPort?: number
   command?: string
   schedule?: string
   function?: {
@@ -32,6 +33,8 @@ export interface Process {
     cpu?: number
     memory?: number
   }
+	regions?: string[]
+	singleton?: boolean
 }
 
 export interface Endpoint {
@@ -43,6 +46,9 @@ export interface InfraSpec {
   name: string
   deploy?: boolean
   processes: Record<string, Process>
+	primaryRegion?: string
+	regions?: Record<string, { nomadRegion?: string; datacenters?: string[]; trafficWeight?: number }>
+	placement?: { nodePool: string }
   services?: string[]
   secrets?: string[]
   migrations?: string
@@ -67,6 +73,12 @@ export interface InfraSpec {
         env?: string
       }>
     }
+  }
+  snapshots?: {
+    keep?: number
+    preRestore?: boolean
+    retentionEnabled?: boolean
+    exportBucket?: string
   }
   endpoints?: Endpoint[]
 }
@@ -130,6 +142,162 @@ export interface Deployment {
   status: string
   startedAt: string
   finishedAt?: string
+	regions?: Array<{ region: string; nomadRegion: string; status: string; desiredWeight: number; activeWeight: number; evalId?: string; lastError?: string; updatedAt: string }>
+}
+
+export type EventSeverity = 'info' | 'warning' | 'critical'
+
+export interface CorrelatedIncident {
+  correlationKey: string
+  app: string
+  latestSeverity: EventSeverity
+  latestType: string
+  latestTitle: string
+  eventCount: number
+  firstSeen: string
+  lastSeen: string
+  openCount: number
+  latestEventId: string
+}
+
+export interface BeaconEvent {
+  id: string
+  source?: string
+  app: string
+  environment?: string
+  type: string
+  severity: EventSeverity
+  state: string
+  title: string
+  body?: string
+  dedupeKey?: string
+  occurredAt: string
+  acknowledgedAt?: string
+  acknowledgedBy?: string
+  acknowledgementNote?: string
+  snoozedUntil?: string
+  metadata?: Record<string, unknown>
+}
+
+export interface Operation {
+  id?: string
+  sagaId?: string
+  kind?: string
+  app?: string
+  status?: string
+  attempt?: number
+  attempts?: number
+  maxAttempts?: number
+  risk?: string
+  message?: string
+  lastError?: string
+  nextAttemptAt?: string
+  createdAt?: string
+  startedAt?: string
+  updatedAt?: string
+  finishedAt?: string
+	payload?: Record<string, unknown>
+	metadata?: Record<string, unknown>
+}
+
+export interface AppSnapshot {
+  filename: string
+  database: string
+  commitSha?: string
+  timestamp: string
+  createdAt?: string
+  size: number
+}
+
+export interface EventsResponse {
+  events: BeaconEvent[]
+  total?: number
+}
+
+export interface ActiveIncidentsResponse {
+  incidents: CorrelatedIncident[]
+}
+
+export interface CorrelatedEventsResponse {
+  correlationKey: string
+  events: BeaconEvent[]
+}
+
+export interface OperationsResponse {
+  count: number
+  operations: Operation[]
+}
+
+export interface ValidationFinding {
+  severity: 'error' | 'warning' | 'info'
+  code: string
+  field: string
+  message: string
+  remediation?: string
+}
+
+export interface FleetNodePool {
+  size: string
+  min: number
+  desired: number
+  max: number
+  labels?: Record<string, string>
+  replacement?: {
+    strategy?: 'blueGreen' | 'rolling'
+    requireCapacityHeadroom?: boolean
+    drainTimeout?: string
+    requireReadiness?: boolean
+  }
+}
+
+export interface FleetInventory {
+  schemaVersion: 'norn.fleet-inventory/v1'
+  configured: boolean
+  source?: string
+  digest?: string
+  document?: {
+    apiVersion: 'norn.dev/fleet/v1'
+    kind: 'Cluster'
+    metadata?: { repository?: string; environment?: string; workflowUrl?: string }
+    cluster: { name: string; provider: string; region: string }
+  }
+  validation?: { schemaVersion: string; documentKind: 'fleet'; name?: string; valid: boolean; findings: ValidationFinding[] }
+  nodePools: Record<string, FleetNodePool>
+}
+
+export interface FleetPlansResponse {
+  count: number
+  plans: Operation[]
+}
+
+export interface FleetGitHubStatus {
+  schemaVersion: 'norn.fleet-github-status/v1'
+  configured: boolean
+  connected: boolean
+  repository?: string
+  installationId?: number
+  defaultBranch?: string
+  configPath?: string
+  planWorkflow?: string
+  applyWorkflow?: string
+  message?: string
+}
+
+export interface FleetReconciliationResponse {
+  schemaVersion: 'norn.fleet-reconciliations/v1'
+  planId: string
+  count: number
+  reconciliations: Operation[]
+}
+
+export interface VersionResponse {
+  version: string
+}
+
+export interface CapabilitiesResponse {
+  protocolVersion: number
+  serverVersion: string
+  features: string[]
 }
 
 export interface WSEvent {
@@ -203,6 +371,38 @@ export interface ServiceManifest {
   generatedAt: string
   networkMode: string
   services: ServiceManifestEntry[]
+}
+
+export interface AccessPattern {
+  app: string
+  process: string
+  type: string
+  status: string
+  endpoints?: string[]
+  sources?: string[]
+  windowHours: number
+  totalRequests: number
+  successes: number
+  clientErrors: number
+  serverErrors: number
+  firstSeen?: string
+  lastSeen?: string
+  quietForHours?: number
+  activeHours: number
+  activeWeekdays?: number[]
+  peakHourUtc?: number
+  hourlyUtc: Record<string, number>
+  weekdayUtc: Record<string, number>
+  idleCandidate: boolean
+  idleReason?: string
+  recommendedAction: string
+  confidence: string
+}
+
+export interface AccessPatternResponse {
+  windowHours: number
+  idleAfterHours: number
+  patterns: AccessPattern[]
 }
 
 export interface EvaluatorNamespaceReadiness {

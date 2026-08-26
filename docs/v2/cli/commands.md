@@ -77,6 +77,10 @@ norn platform proxy-plan
 norn platform proxy-status
 norn platform proxy-render
 norn platform proxy-switch <port|host:port>
+norn platform queue-preflight [ref]
+norn platform queue-upgrade [ref] --mode restart --drain fail
+norn platform queue-rollback <sha-prefix>
+norn platform queue-smoke
 ```
 
 `norn platform preflight` builds Norn from an isolated git worktree into `$HOME/norn/releases/<sha>`, starts the candidate API on `127.0.0.1:18800`, and verifies health/version without restarting the active API.
@@ -93,11 +97,111 @@ norn platform proxy-switch <port|host:port>
 
 `norn platform proxy-plan` prints a no-blip reverse-proxy cutover plan. `proxy-status`, `proxy-render`, and `proxy-switch` manage an optional local Caddy config and upstream state file. They do not change the live topology unless explicitly invoked.
 
+The `queue-*` commands use the authenticated v1 control protocol. They create
+durable operations, wait by default, and are executed by the independent host
+agent, so `queue-upgrade` can remain in progress across the API restart it
+causes. Pass `--wait=false` to return after enqueueing and inspect the receipt
+with `norn operations <operation-id>`.
+
 | Flag | Default | Description |
 |------|---------|-------------|
 | `--repo` | `NORN_PLATFORM_REPO` | Norn checkout containing `v2/scripts/platform-upgrade` |
 | `--script` | `NORN_PLATFORM_SCRIPT` | Explicit platform-upgrade script path |
 | `--proxy` | `false` | Use managed proxy cutover mode for `platform upgrade` |
+
+## host
+
+Install, recover, assure, and diagnose a persistent macOS Norn runtime.
+
+```bash
+norn host install --repo /path/to/norn
+norn host migrate-state \
+  --from-nomad /path/to/current/nomad-data \
+  --from-consul /path/to/current/consul-data
+norn host recover
+norn host assure
+norn host queue-assure
+norn host status
+norn host doctor
+norn host security plan
+norn host security init --address 10.0.0.10 --cert-days 365
+```
+
+`host install` writes managed Nomad and Consul configs, persistent state
+directories, and user LaunchAgents without interrupting live agents. It can
+also configure a bounded post-recovery cron trigger:
+
+```bash
+norn host install --repo /path/to/norn --catch-up app-name:daily-capture
+```
+
+The install command also accepts an explicit assurance policy:
+
+```bash
+norn host install --repo /path/to/norn \
+  --required api:web \
+  --forge api \
+  --serve '8443=http://{address}:8443' \
+  --probe api-public=https://api.example.com/health \
+  --assure-interval 300
+```
+
+| Flag | Meaning |
+|------|---------|
+| `--required APP:PROCESS` | Require a passing IPv4 Consul service; deploy an absent app or restart an unhealthy app |
+| `--forge APP` | Reconcile the app's public Cloudflare routes and prune stale private ingress rules |
+| `--serve PORT=TARGET` | Reconcile a Tailscale Serve listener; `{address}` expands to the current host IPv4 address |
+| `--probe NAME=URL` | Retry an unauthenticated HTTP GET against the route users actually reach |
+| `--assure-interval SECONDS` | Set the periodic assurance interval; minimum 60, default 300 |
+| `--security-dir PATH` | Set the staged/active host security root |
+| `--cert-days DAYS` | Set staged leaf-certificate validity; minimum 30 |
+| `--nomad-security-fragment PATH` | Reserved; authenticated probes are supported, but activation waits for atomic fleet token/TLS cutover and rollback |
+| `--consul-security-fragment PATH` | Reserved; authenticated probes are supported, but activation waits for atomic fleet token/TLS cutover and rollback |
+
+Flags that define policy are repeatable. Only explicitly required apps may be
+deployed or restarted. `norn host assure` runs the same idempotent pass used by
+the login supervisor and the periodic `com.norn.host-assurance` LaunchAgent.
+Persistent failures emit a deduplicated critical Beacon event; the first
+subsequent passing run emits a correlated recovery event.
+
+`host migrate-state` is the one-time cutover command. It refuses to copy state
+while the Nomad or Consul HTTP API remains reachable. `host recover` starts
+Docker, Consul, Nomad, and the Norn API in dependency order, runs configured
+catch-ups, and invokes assurance. `host assure` verifies and repairs the
+explicit policy without restarting the core host runtime. `status` is the
+compact operator view and `doctor` validates tools, plists, persistence, and
+runtime health.
+
+See [Host Recovery](/v2/operations/host-recovery) for the full migration and
+failure-recovery procedure.
+
+`host security init` creates an inactive, timestamped private PKI stage and
+transition fragments. It never restarts agents or bootstraps ACL tokens.
+`host security plan` shows value-safe activation state and the required cutover
+sequence. Managed activation is unavailable in this release. See [Production
+Readiness](/v2/operations/production-readiness).
+
+## production
+
+Evaluate the authenticated production-admission contract:
+
+```bash
+norn production check
+norn production check --json
+norn production audit
+norn production audit --limit 200
+norn production drills
+norn production drill start database.restore --target restore-sandbox
+norn production drill complete <id> --status passed --evidence snapshot=object-version-id --evidence rto=4m12s
+```
+
+The command exits non-zero while a required gate fails. JSON output uses
+`norn.production-readiness/v1` and is suitable for CI, change approvals, and
+native clients. Enabling `NORN_PROFILE=production` additionally makes API
+startup, live substrate mutation admission, immutable registry resolution,
+external PostgreSQL/PITR/replica checks, integrity-signed mutation audit, and
+90-day recovery-drill freshness fail closed. Drill evidence is bounded receipt
+metadata; keep full logs in durable object storage.
 
 ## operations
 
@@ -106,14 +210,46 @@ List durable operation records.
 ```bash
 norn operations
 norn operations --active
+norn operations <operation-id>
 ```
 
-Operations summarize long-running work such as app preflights, deploys, and rollbacks. Use `--active` before invasive platform work to see queued or running operations.
+Operations summarize long-running app, platform, and host work. Use `--active`
+before invasive platform work; pass an operation ID to retrieve its current
+lease state and final receipt.
 
 | Flag | Default | Description |
 |------|---------|-------------|
 | `--active` | `false` | Only show queued/running operations |
 | `--limit` | `25` | Maximum operations to show |
+
+## operator
+
+Show the operator-confidence release surfaces.
+
+```bash
+norn operator inbox
+norn operator cron
+norn operator wake-targets
+norn operator deploy-confidence
+norn operator snapshot-readiness
+norn operator auth-hints
+norn operator actions
+```
+
+`norn operator inbox` is the high-signal entry point. It combines active
+incidents, active or failed durable operations, deploy-confidence warnings,
+cron risks, snapshot readiness, secret status, and wake target counts into one
+recommended-action list.
+
+| Command | Purpose |
+| --- | --- |
+| `inbox` | Show recommended operator actions across the platform |
+| `cron` | Show schedules, local next/last run times, Nomad child counts, and cron risk |
+| `wake-targets` | Show endpoint readiness and wake-gateway URLs |
+| `deploy-confidence` | Show recent deploy health, auto-rollback, canary, and preflight guidance |
+| `snapshot-readiness` | Show local restore points, retention overages, and remote export readiness |
+| `auth-hints` | Show secret-safe operational authentication patterns |
+| `actions` | Show mobile-ready action descriptors and risk levels |
 
 ## events
 
@@ -127,6 +263,8 @@ norn events show <event-id>
 norn events ack <event-id> --note "investigating"
 norn events snooze <event-id> --for 2h
 norn events open <event-id>
+norn events reconcile --dry-run
+norn events reconcile --app contextdb --limit 50 --by operator
 ```
 
 | Flag | Default | Description |
@@ -137,6 +275,13 @@ norn events open <event-id>
 | `--limit` | `25` | Maximum events to show |
 
 Events include `open`, `snoozed`, or `acknowledged` state. Detail output prints related metadata such as saga, deployment, operation, process, service, or job ids when Norn recorded them.
+
+`events reconcile` reviews open warning and critical events against later
+durable events plus current Nomad or Consul evidence. Run it with `--dry-run`
+first. A non-dry-run pass acknowledges only deterministic recoveries and leaves
+inconclusive events marked `needs_review`; it never relies on message-string
+matching. See [Beacon Events](/v2/operations/beacon#evidence-based-reconciliation)
+for the supported event families and proof rules.
 
 ## observability
 
@@ -259,13 +404,17 @@ The webhook inbox shows delivery status, matched app, branch, and ignored or fai
 
 ## restart
 
-Perform a rolling restart of all allocations for an app.
+Replace every active allocation for an app.
 
 ```bash
 norn restart <app>
 ```
 
-Triggers a rolling restart via Nomad. Renders a spinner until all allocations are healthy.
+Norn stops allocations whose desired status is still `run`, causing Nomad to
+reschedule them from the unchanged job definition. This creates fresh task,
+network, and port-binding state instead of merely evaluating an unchanged job.
+The command returns after Nomad accepts the replacement requests; use the app
+health or service manifest to follow the new allocations to readiness.
 
 ## rollback
 
@@ -435,6 +584,10 @@ curl http://127.0.0.1:8800/metrics
 curl http://127.0.0.1:8800/api/observability/prometheus.yml
 ```
 
+With explicit authentication enabled, pass a scoped bearer token using an
+`Authorization` header. For Prometheus, prefer a permission-restricted
+`bearer_token_file` rather than embedding the token in YAML or shell history.
+
 The generated Prometheus config includes Norn itself and any app process that declares `metrics.enabled: true`.
 
 ## stats
@@ -551,7 +704,7 @@ Manage PostgreSQL database snapshots.
 # List snapshots
 norn snapshots <app>
 
-# Restore a snapshot
+# Legacy synchronous restore by a unique compact UTC timestamp
 norn snapshots <app> restore <timestamp> --yes
 norn snapshots <app> restore <timestamp> --yes --pre-restore
 
@@ -571,7 +724,7 @@ norn snapshots import <app> snapshots/<app>/<filename>.dump
 | Subcommand | Description |
 |------------|-------------|
 | (none) | List available snapshots with timestamps, source commit, created time, size, and filename |
-| `restore` | Restore from a snapshot at the given timestamp; requires `--yes` and prints a restore receipt. `--pre-restore` creates a fresh snapshot before the restore |
+| `restore` | Restore through the legacy synchronous route using a compact UTC timestamp that matches exactly one inventory entry; requires `--yes` and prints a restore receipt. `--pre-restore` creates a fresh snapshot before the restore. Prefer the versioned `/api/v1` control route or web/native clients for a durable exact-filename restore |
 | `retention` | Preview newest-N retention without deleting snapshots; defaults to `snapshots.keep` from the app spec or 3; add `--execute --yes` to prune and print a receipt |
 | `export` | Upload the latest local snapshot to the app's configured `snapshots.exportBucket` |
 | `remote` | List remote snapshots in the configured export bucket |
@@ -641,6 +794,51 @@ norn validate --strict-secrets
 ```
 
 Reports errors and warnings for each infraspec field. Validation warns when secret-like values such as DSNs, passwords, tokens, API keys, or client secrets appear in plain `env` blocks. Move those values to `secrets.enc.yaml` and list the key under `secrets`. Add `--strict-secrets`, or set `NORN_STRICT_SECRETS=true` for deploy/preflight validation, to make plaintext secret-like env values fail the gate. Validation also uses `NORN_NETWORK_MODE` to warn when endpoint hosts look mismatched for the active mode, such as localhost endpoints in `tailnet` or `public` mode.
+
+Validate an uploaded file strictly, including unknown YAML fields, and optionally cross-check its logical pool references:
+
+```bash
+norn validate --file ./infraspec.yaml --fleet ../norn-fleet/environments/production/nyc3/cluster.yaml
+```
+
+## fleet
+
+Inspect desired GitOps capacity and create planning-only receipts. Provider credentials stay in the protected infrastructure runner.
+
+```bash
+norn fleet pools
+norn fleet validate <cluster.yaml>
+norn fleet plan <pool> [--desired N] [--size SLUG] [--strategy blueGreen|rolling] [--reason TEXT]
+norn fleet replace <pool> --size SLUG [--reason TEXT]
+norn fleet reconcile <pool> [--reason TEXT]
+norn fleet checkpoints <plan-id>
+norn fleet github status
+norn fleet github pr <plan-id>
+norn fleet github apply <plan-id> [--allow-destructive]
+```
+
+Initial cloud-runner setup lives in the private `norn-fleet` checkout:
+
+```bash
+./scripts/setup                 # interactive setup/readiness assistant
+./scripts/setup doctor          # secret-safe prerequisite check
+./scripts/setup scale app --desired 4
+```
+
+Norn owns validation, durable plans, inventory, enrollment/readiness, and
+receipts. The protected runner keeps provider and remote-state credentials; the
+setup assistant sends those values directly to GitHub environment secrets and
+does not copy them into Norn.
+
+The GitHub commands use the Norn server's repository-restricted GitHub App.
+`pr` creates or recovers a deterministic branch and review. After that review
+merges and its protected main-branch plan succeeds, `apply` discovers the
+matching run/artifact and creates or recovers the plan-named protected apply.
+Norn never receives provider or remote-state credentials.
+
+Capacity plans are stored as completed `fleet.capacity-plan` operations and do not call a cloud provider. `replace` requires `--size` and forces blue/green planning. The infrastructure repository must enforce its own reviewed-SHA and apply authorization gate. The current private repository uses protected-branch-only environments, strict pull-request checks, reviewed-plan SHA binding, and manual dispatch because its GitHub plan does not provide environment required reviewers.
+
+`checkpoints` shows the append-only runner phases for an applied plan, including provider state serials and evidence digests. It is the operator-facing view of interrupted apply recovery and refuses to combine checkpoints from different commit/plan bindings.
 
 ## endpoints
 

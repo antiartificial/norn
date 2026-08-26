@@ -5,6 +5,8 @@ import (
 	"fmt"
 	"os"
 
+	"norn/v2/api/model"
+	"norn/v2/api/nomad"
 	"norn/v2/api/saga"
 )
 
@@ -72,12 +74,12 @@ func (p *Pipeline) submit(ctx context.Context, st *state, sg *saga.Saga) error {
 	// Check for port conflicts before submitting
 	for _, proc := range st.spec.Processes {
 		if proc.Port > 0 && len(st.spec.Endpoints) > 0 {
-			if used, err := p.Engine.UsedPorts(); err == nil {
+			if used, err := p.Nomad.UsedPorts(); err == nil {
 				for _, pa := range used {
-					if pa.Port == proc.Port && pa.App != st.spec.App {
-						suggested, _ := p.Engine.SuggestPort(proc.Port)
+					if pa.Port == proc.Port && pa.JobID != st.spec.App {
+						suggested, _ := p.Nomad.SuggestPort(proc.Port)
 						sg.Log(ctx, "port.conflict",
-							fmt.Sprintf("port %d is used by %s — suggest %d", proc.Port, pa.App, suggested),
+							fmt.Sprintf("port %d is used by %s — suggest %d", proc.Port, pa.JobID, suggested),
 							map[string]string{"step": "submit"})
 					}
 				}
@@ -86,25 +88,49 @@ func (p *Pipeline) submit(ctx context.Context, st *state, sg *saga.Saga) error {
 		}
 	}
 
-	if err := p.Engine.SubmitJob(ctx, st.spec, st.imageTag, env); err != nil {
-		return fmt.Errorf("submit job: %w", err)
-	}
-	sg.Log(ctx, "engine.submitted", fmt.Sprintf("job submitted for %s", st.spec.App), map[string]string{
-		"step": "submit",
-	})
+	for _, region := range st.spec.ResolvedRegions() {
+		if regionalServiceProcessCount(st.spec, region.Name) > 0 {
+			job := nomad.TranslateForRegion(st.spec, st.imageTag, env, region)
+			evalID, err := p.Nomad.SubmitJobRegion(job, region.NomadRegion)
+			if err != nil {
+				_ = p.DB.UpdateDeploymentRegion(ctx, st.deploymentID, region.Name, model.StatusFailed, "", err.Error(), 0)
+				return fmt.Errorf("submit nomad job in region %s: %w", region.Name, err)
+			}
+			st.regionEvals[region.Name] = evalID
+			_ = p.DB.UpdateDeploymentRegion(ctx, st.deploymentID, region.Name, model.StatusSubmitting, evalID, "", 0)
+			sg.Log(ctx, "nomad.submitted", fmt.Sprintf("nomad job submitted in %s (eval: %s)", region.Name, evalID), map[string]string{
+				"step": "submit", "evalId": evalID, "region": region.Name,
+			})
+		}
 
-	// Register cron jobs for scheduled processes
-	for procName, proc := range st.spec.Processes {
-		if proc.Schedule == "" {
-			continue
+		for procName, proc := range st.spec.Processes {
+			if proc.Schedule == "" || !st.spec.ProcessRunsInRegion(proc, region.Name) {
+				continue
+			}
+			periodicJob := nomad.TranslatePeriodicForRegion(st.spec, procName, proc, st.imageTag, env, region)
+			periodicEvalID, err := p.Nomad.SubmitJobRegion(periodicJob, region.NomadRegion)
+			if err != nil {
+				_ = p.DB.UpdateDeploymentRegion(ctx, st.deploymentID, region.Name, model.StatusFailed, "", err.Error(), 0)
+				return fmt.Errorf("submit periodic job %s in region %s: %w", procName, region.Name, err)
+			}
+			sg.Log(ctx, "nomad.submitted", fmt.Sprintf("periodic job %s submitted in %s (eval: %s)", procName, region.Name, periodicEvalID), map[string]string{
+				"step": "submit", "region": region.Name,
+			})
 		}
-		if err := p.Engine.RegisterCron(st.spec, procName, proc, st.imageTag, env); err != nil {
-			return fmt.Errorf("register cron %s: %w", procName, err)
+		if regionalServiceProcessCount(st.spec, region.Name) == 0 {
+			_ = p.DB.UpdateDeploymentRegion(ctx, st.deploymentID, region.Name, model.StatusHealthy, "", "", 0)
 		}
-		sg.Log(ctx, "engine.cron_registered", fmt.Sprintf("cron job %s registered", procName), map[string]string{
-			"step": "submit",
-		})
 	}
 
 	return nil
+}
+
+func regionalServiceProcessCount(spec *model.InfraSpec, region string) int {
+	count := 0
+	for _, proc := range spec.Processes {
+		if proc.Schedule == "" && spec.ProcessRunsInRegion(proc, region) {
+			count++
+		}
+	}
+	return count
 }

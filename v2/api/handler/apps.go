@@ -5,15 +5,39 @@ import (
 	"net/http"
 
 	"github.com/go-chi/chi/v5"
+	nomadapi "github.com/hashicorp/nomad/api"
 
-	"norn/v2/api/engine"
 	"norn/v2/api/model"
+	"norn/v2/api/nomad"
 )
 
-func instancesToAllocations(instances []engine.Instance) []model.Allocation {
+func enrichAllocations(allocs []*nomadapi.AllocationListStub, n *nomad.Client) []model.Allocation {
+	nodeCache := make(map[string]*nomad.NodeInfo)
 	var out []model.Allocation
-	for _, inst := range instances {
-		out = append(out, inst.ToAllocation())
+	for _, a := range allocs {
+		alloc := model.Allocation{
+			ID:        shortID(a.ID),
+			TaskGroup: a.TaskGroup,
+			Status:    a.ClientStatus,
+			Lifecycle: allocationLifecycle(a.ClientStatus),
+			NodeID:    shortID(a.NodeID),
+		}
+		if a.DeploymentStatus != nil {
+			alloc.Healthy = a.DeploymentStatus.Healthy
+		}
+		if ni, ok := nodeCache[a.NodeID]; ok {
+			alloc.NodeAddress = ni.Address
+			alloc.NodeName = ni.Name
+			alloc.NodeProvider = ni.Provider
+			alloc.NodeRegion = ni.Region
+		} else if ni, err := n.NodeInfo(a.NodeID); err == nil {
+			nodeCache[a.NodeID] = ni
+			alloc.NodeAddress = ni.Address
+			alloc.NodeName = ni.Name
+			alloc.NodeProvider = ni.Provider
+			alloc.NodeRegion = ni.Region
+		}
+		out = append(out, alloc)
 	}
 	return out
 }
@@ -75,9 +99,9 @@ func summarizeAllocations(allocations []model.Allocation) model.AllocationSummar
 }
 
 func (h *Handler) ListApps(w http.ResponseWriter, r *http.Request) {
-	specs, err := model.DiscoverApps(h.cfg.AppsDir)
+	specs, err := model.DiscoverAllApps(h.cfg.AppsDir)
 	if err != nil {
-		writeError(w, http.StatusInternalServerError, err.Error())
+		WriteControlProblem(w, r, http.StatusInternalServerError, "app_discovery_failed", "failed to discover apps")
 		return
 	}
 
@@ -88,19 +112,19 @@ func (h *Handler) ListApps(w http.ResponseWriter, r *http.Request) {
 			Healthy: false,
 		}
 
-		if h.engine != nil {
-			jobStatus, err := h.engine.JobStatus(spec.App)
+		if h.nomad != nil {
+			jobStatus, err := h.nomad.JobStatus(spec.App)
 			if err == nil {
 				status.NomadStatus = jobStatus
 			}
 
-			instances, err := h.engine.JobInstances(spec.App)
+			allocs, err := h.nomad.JobAllocations(spec.App)
 			if err == nil {
-				status.Allocations = instancesToAllocations(instances)
+				status.Allocations = enrichAllocations(allocs, h.nomad)
 				status.AllocationSummary = summarizeAllocations(status.Allocations)
 
-				for _, inst := range instances {
-					if inst.Healthy != nil && *inst.Healthy && inst.IsRunning() {
+				for _, a := range allocs {
+					if a.ClientStatus == "running" && a.DeploymentStatus != nil && a.DeploymentStatus.Healthy != nil && *a.DeploymentStatus.Healthy {
 						status.Healthy = true
 						break
 					}
@@ -116,9 +140,9 @@ func (h *Handler) ListApps(w http.ResponseWriter, r *http.Request) {
 
 func (h *Handler) GetApp(w http.ResponseWriter, r *http.Request) {
 	id := chi.URLParam(r, "id")
-	specs, err := model.DiscoverApps(h.cfg.AppsDir)
+	specs, err := model.DiscoverAllApps(h.cfg.AppsDir)
 	if err != nil {
-		writeError(w, http.StatusInternalServerError, err.Error())
+		WriteControlProblem(w, r, http.StatusInternalServerError, "app_discovery_failed", "failed to discover apps")
 		return
 	}
 
@@ -130,7 +154,7 @@ func (h *Handler) GetApp(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 	if spec == nil {
-		writeError(w, http.StatusNotFound, fmt.Sprintf("app %s not found", id))
+		WriteControlProblem(w, r, http.StatusNotFound, "app_not_found", fmt.Sprintf("app %s not found", id))
 		return
 	}
 
@@ -139,21 +163,31 @@ func (h *Handler) GetApp(w http.ResponseWriter, r *http.Request) {
 		Healthy: false,
 	}
 
-	if h.engine != nil {
-		jobStatus, err := h.engine.JobStatus(spec.App)
+	if h.nomad != nil {
+		jobStatus, err := h.nomad.JobStatus(spec.App)
 		if err == nil {
 			status.NomadStatus = jobStatus
 		}
 
-		instances, err := h.engine.JobInstances(spec.App)
+		allocs, err := h.nomad.JobAllocations(spec.App)
 		if err == nil {
-			status.Allocations = instancesToAllocations(instances)
+			status.Allocations = enrichAllocations(allocs, h.nomad)
 			status.AllocationSummary = summarizeAllocations(status.Allocations)
-			for _, inst := range instances {
-				if inst.Healthy != nil && *inst.Healthy && inst.IsRunning() {
+			for _, a := range allocs {
+				if a.ClientStatus == "running" && a.DeploymentStatus != nil && a.DeploymentStatus.Healthy != nil && *a.DeploymentStatus.Healthy {
 					status.Healthy = true
 					break
 				}
+			}
+		}
+	}
+
+	if h.consul != nil {
+		for procName := range spec.Processes {
+			svcName := fmt.Sprintf("%s-%s", spec.App, procName)
+			health, err := h.consul.ServiceHealthChecks(svcName)
+			if err == nil {
+				_ = health
 			}
 		}
 	}
@@ -163,11 +197,11 @@ func (h *Handler) GetApp(w http.ResponseWriter, r *http.Request) {
 
 func (h *Handler) RestartApp(w http.ResponseWriter, r *http.Request) {
 	id := chi.URLParam(r, "id")
-	if h.engine == nil {
-		writeError(w, http.StatusServiceUnavailable, "engine not available")
+	if h.nomad == nil {
+		writeError(w, http.StatusServiceUnavailable, "nomad not connected")
 		return
 	}
-	if err := h.engine.RestartJob(r.Context(), id); err != nil {
+	if err := h.nomad.RestartJob(id); err != nil {
 		writeError(w, http.StatusInternalServerError, err.Error())
 		return
 	}
@@ -176,8 +210,8 @@ func (h *Handler) RestartApp(w http.ResponseWriter, r *http.Request) {
 
 func (h *Handler) ScaleApp(w http.ResponseWriter, r *http.Request) {
 	id := chi.URLParam(r, "id")
-	if h.engine == nil {
-		writeError(w, http.StatusServiceUnavailable, "engine not available")
+	if h.nomad == nil {
+		writeError(w, http.StatusServiceUnavailable, "nomad not connected")
 		return
 	}
 
@@ -194,7 +228,7 @@ func (h *Handler) ScaleApp(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	if err := h.engine.ScaleJob(r.Context(), id, req.Group, req.Count); err != nil {
+	if err := h.nomad.ScaleJob(id, req.Group, req.Count); err != nil {
 		writeError(w, http.StatusInternalServerError, err.Error())
 		return
 	}

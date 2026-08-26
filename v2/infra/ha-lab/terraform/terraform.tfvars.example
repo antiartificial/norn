@@ -1,0 +1,15 @@
+name_prefix = "norn-ha-eval"
+owner       = "platform"
+expires_on  = "2026-08-25"
+region      = "tor1"
+vpc_cidr    = "10.140.0.0/20"
+node_count  = 3
+node_size   = "s-2vcpu-4gb"
+
+ssh_key_fingerprints = [
+  "replace-with-controller-key-fingerprint",
+]
+
+ssh_source_cidrs = [
+  "203.0.113.10/32",
+]

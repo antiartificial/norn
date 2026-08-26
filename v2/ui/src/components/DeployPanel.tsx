@@ -1,6 +1,6 @@
 import { useState, useEffect } from 'react'
 import { apiUrl, fetchOpts } from '../lib/api.ts'
-import type { StepEvent } from '../App.tsx'
+import type { StepEvent } from '../hooks/useDeployProgress.ts'
 import type { SagaEvent } from '../types/index.ts'
 
 interface DeployStep {
@@ -24,16 +24,16 @@ const DEPLOY_STEPS = ['clone', 'build', 'test', 'snapshot', 'migrate', 'submit',
 const PREFLIGHT_STEPS = ['validate', 'clone', 'inspect', 'build', 'test']
 
 const stepIcons: Record<string, string> = {
-  validate: 'fa-list-check',
-  clone: 'fa-clone',
+  validate: 'fa-clipboard-check',
+  clone: 'fa-copy',
   inspect: 'fa-magnifying-glass',
   build: 'fa-wrench',
   test: 'fa-bug',
   snapshot: 'fa-camera',
   migrate: 'fa-database',
   submit: 'fa-rocket-launch',
-  healthy: 'fa-heart-pulse',
-  cleanup: 'fa-broom',
+  healthy: 'fa-pulse',
+  cleanup: 'fa-sparkles',
 }
 
 function formatElapsed(ms: number): string {
@@ -136,7 +136,7 @@ export function DeployPanel({ appId, operation, steps, status, error, sagaId, on
           )}
         </div>
       </div>
-      <div className="deploy-steps">
+      <div className="deploy-steps" aria-live="polite">
         {knownSteps.map((stepName, i) => {
           const stepStatus = stepMap.get(stepName)?.status
           const isActive = !isDone && stepStatus === 'running'
@@ -144,6 +144,7 @@ export function DeployPanel({ appId, operation, steps, status, error, sagaId, on
           const isFailed = stepStatus === 'failed'
           const isPending = !stepStatus && i > currentIdx
           const isExpanded = expanded === stepName
+          const expandIcon = isExpanded ? 'fa-angle-up' : 'fa-angle-down'
           const events = isExpanded ? getEventsForStep(stepName) : []
           const hasEvents = (stepMap.get(stepName)?.events?.length ?? 0) > 0
 
@@ -153,7 +154,7 @@ export function DeployPanel({ appId, operation, steps, status, error, sagaId, on
             icon = 'fa-circle-check'
             className += ' step-done'
           } else if (isFailed) {
-            icon = 'fa-circle-xmark'
+            icon = 'fa-xmark'
             className += ' failed'
           } else if (isActive) {
             className += ' step-active'
@@ -166,15 +167,17 @@ export function DeployPanel({ appId, operation, steps, status, error, sagaId, on
 
           return (
             <div key={stepName}>
-              <div
+              <button
+                type="button"
                 className={className}
+                disabled={isPending}
                 onClick={() => !isPending && toggleExpand(stepName)}
-                style={{ cursor: isPending ? 'default' : 'pointer' }}
+                aria-expanded={!isPending ? isExpanded : undefined}
               >
                 {isActive ? (
-                  <span className="btn-spinner" />
+                  <span className="btn-spinner" aria-hidden="true" />
                 ) : (
-                  <i className={`fawsb ${icon}`} />
+                  <i className={`fawsb ${icon}`} aria-hidden="true" />
                 )}
                 <span className="step-name">{stepName}</span>
                 <span className="step-status">
@@ -182,10 +185,10 @@ export function DeployPanel({ appId, operation, steps, status, error, sagaId, on
                 </span>
                 {!isPending && (hasEvents || isComplete || isFailed || isActive) && (
                   <span className="step-expand">
-                    <i className={`fawsb fa-chevron-${isExpanded ? 'up' : 'down'}`} />
+                    <i className={`fawsb ${expandIcon}`} aria-hidden="true" />
                   </span>
                 )}
-              </div>
+              </button>
               {isExpanded && (
                 <div className="step-events">
                   {sagaLoading && isDone && (
@@ -216,7 +219,7 @@ export function DeployPanel({ appId, operation, steps, status, error, sagaId, on
       {status === 'failed' && (
         <div className="deploy-panel-footer">
           <button className="btn btn-primary" onClick={onRetry}>
-            <i className="fawsb fa-arrows-rotate" /> Retry
+            <i className="fawsb fa-arrow-rotate-right" /> Retry
           </button>
           <button className="btn" onClick={onClose}>Close</button>
         </div>

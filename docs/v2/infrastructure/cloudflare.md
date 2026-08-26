@@ -204,25 +204,41 @@ Norn can validate Cloudflare Access JWTs to authenticate API requests.
 
 ### How It Works
 
-When both variables are set, the API middleware validates the `Cf-Access-Jwt-Assertion` header on every request (except exempt routes).
+When both variables are set, the API middleware validates the
+`Cf-Access-Jwt-Assertion` header. A validated identity becomes an explicit
+admin principal for the operator UI and satisfies
+`NORN_REQUIRE_EXPLICIT_AUTH=true`; an unvalidated identity header never grants
+access.
 
-Exempt routes (no auth required):
-- `/ws` — WebSocket
+Public control-plane routes are intentionally narrow:
 - `/api/health` — health check
 - `/api/version` — version endpoint
 - `/api/webhooks/*` — webhook receivers
 - `/api/access/cloudflare/logpush` — Cloudflare Logpush receiver with its own shared-secret header
-- `/api/apps/*/exec` — exec into allocations
+
+`/api/v1/events` (and its `/ws` compatibility alias), compatibility exec, and
+`/api/v1/exec-sessions/*` are not bearer-auth exemptions. Scoped access tokens
+require `events:read` and `apps:exec` respectively; formal exec creation also
+consumes an app-bound device-key step-up capability. Cloudflare Access can
+protect the same paths at the edge.
+Forwarded client-IP headers are honored only when the direct socket peer is
+loopback, preventing a direct tailnet or LAN client from spoofing the local
+proxy trust boundary. The wake gateway also strips Cloudflare identity headers
+from requests that did not arrive through that boundary before proxying them to
+an application.
 
 ### Combining with Bearer Token
 
-Both CF Access and bearer token auth can be enabled simultaneously. The request must pass whichever auth checks are configured.
+Both CF Access and bearer token auth can be enabled simultaneously. A request
+may authenticate with a validated Cloudflare Access identity or a scoped bearer
+token. This keeps the browser UI credential-free while native clients and the
+CLI use device or control-plane tokens.
 
 ```bash
 # Both enabled
 export NORN_CF_ACCESS_TEAM_DOMAIN=myteam.cloudflareaccess.com
 export NORN_CF_ACCESS_AUD=abc123...
-export NORN_API_TOKEN=secret-token
+export NORN_API_TOKEN="$(openssl rand -base64 32)"
 ```
 
 ## Access Observations

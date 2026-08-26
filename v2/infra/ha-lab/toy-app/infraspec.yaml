@@ -1,0 +1,42 @@
+name: norn-ha-toy
+regions:
+  tor1:
+    nomadRegion: global
+    datacenters: [dc1]
+    trafficWeight: 100
+primaryRegion: tor1
+repo:
+  url: git@github.com:antiartificial/norn-ha-toy.git
+  branch: main
+  repoWeb: https://github.com/antiartificial/norn-ha-toy
+build:
+  image: registry.digitalocean.com/antiartificial/norn-ha-toy@sha256:81ae97709855876c7ed43f58c72287c649b79b63469044c460506afcd1ea7a04
+  test: >-
+    docker run --rm
+    -v "$PWD:/src:ro"
+    -w /src
+    golang@sha256:484ef6066fa69acb059fdfeda7ba2b8f7391f2ef6abc6f9b8411e669ebd56466
+    go test ./...
+processes:
+  web:
+    port: 8080
+    command: /toy-app
+    health:
+      path: /health
+      interval: 10s
+      timeout: 2s
+    metrics:
+      enabled: true
+      path: /metrics
+    scaling:
+      min: 2
+      max: 3
+    resources:
+      cpu: 200
+      memory: 128
+secrets:
+  - DATABASE_URL
+endpoints:
+  - url: https://norn-ha-ingress-test.slopistry.com
+    region: tor1
+deploy: true

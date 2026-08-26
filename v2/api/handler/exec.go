@@ -8,24 +8,18 @@ import (
 
 	"github.com/go-chi/chi/v5"
 	"github.com/gorilla/websocket"
-)
 
-var execUpgrader = websocket.Upgrader{
-	ReadBufferSize:  4096,
-	WriteBufferSize: 4096,
-	CheckOrigin: func(r *http.Request) bool {
-		return true // Rely on outer auth (CF Access cookies pass through)
-	},
-}
+	"norn/v2/api/hub"
+)
 
 func (h *Handler) ExecAlloc(w http.ResponseWriter, r *http.Request) {
 	id := chi.URLParam(r, "id")
-	if h.engine == nil {
-		writeError(w, http.StatusServiceUnavailable, "engine not available")
+	if h.nomad == nil {
+		writeError(w, http.StatusServiceUnavailable, "nomad not connected")
 		return
 	}
 
-	containerName := r.URL.Query().Get("allocId") // legacy param name
+	allocID := r.URL.Query().Get("allocId")
 	processName := r.URL.Query().Get("process")
 	command := r.URL.Query().Get("command")
 	if command == "" {
@@ -33,27 +27,57 @@ func (h *Handler) ExecAlloc(w http.ResponseWriter, r *http.Request) {
 	}
 	cmd := []string(nil)
 	if rawArgv := r.URL.Query().Get("argv"); rawArgv != "" {
+		if len(rawArgv) > maxControlJSONBody {
+			writeError(w, http.StatusRequestHeaderFieldsTooLarge, "argv is too large")
+			return
+		}
 		if err := json.Unmarshal([]byte(rawArgv), &cmd); err != nil {
 			writeError(w, http.StatusBadRequest, "invalid argv")
 			return
 		}
 	}
 
-	if containerName == "" {
-		var err error
-		containerName, err = h.engine.FindRunningInstance(id, processName)
-		if err != nil {
-			writeError(w, http.StatusNotFound, err.Error())
+	if len(command) > 8192 || len(cmd) > 128 {
+		writeError(w, http.StatusBadRequest, "command is too large")
+		return
+	}
+	for _, arg := range cmd {
+		if len(arg) > 8192 {
+			writeError(w, http.StatusBadRequest, "command is too large")
 			return
 		}
 	}
+	allocID, taskName, err := h.nomad.ResolveExecTarget(id, allocID, processName)
+	if err != nil {
+		writeError(w, http.StatusNotFound, err.Error())
+		return
+	}
 
+	allowedOrigins := map[string]bool{
+		"http://localhost:5173": true,
+		"http://localhost:3000": true,
+	}
+	if h.cfg != nil {
+		for _, origin := range strings.Split(h.cfg.AllowedOrigins, ",") {
+			if origin = strings.TrimSpace(origin); origin != "" {
+				allowedOrigins[origin] = true
+			}
+		}
+	}
+	execUpgrader := websocket.Upgrader{
+		ReadBufferSize:  4096,
+		WriteBufferSize: 4096,
+		CheckOrigin: func(req *http.Request) bool {
+			return hub.OriginAllowed(req, allowedOrigins)
+		},
+	}
 	ws, err := execUpgrader.Upgrade(w, r, nil)
 	if err != nil {
 		log.Printf("exec websocket upgrade: %v", err)
 		return
 	}
 	defer ws.Close()
+	ws.SetReadLimit(64 << 10)
 
 	if len(cmd) == 0 {
 		cmd = strings.Fields(command)
@@ -62,7 +86,7 @@ func (h *Handler) ExecAlloc(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	if err := h.engine.ExecWebSocket(containerName, cmd, ws); err != nil {
-		log.Printf("exec error for %s/%s: %v", id, containerName, err)
+	if err := h.nomad.ExecWebSocket(allocID, taskName, cmd, ws); err != nil {
+		log.Printf("exec error for %q/%q: %q", id, allocID, err.Error())
 	}
 }

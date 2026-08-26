@@ -3,6 +3,7 @@ package cloudflared
 import (
 	"context"
 	"fmt"
+	"net"
 	"net/url"
 	"os"
 	"os/exec"
@@ -25,6 +26,22 @@ func NormalizeHostname(raw string) string {
 		return raw
 	}
 	return u.Hostname()
+}
+
+// IsPublicEndpoint reports whether an endpoint is suitable for a Cloudflare
+// tunnel ingress rule. Private discovery names, tailnet names, localhost, and
+// literal IP addresses must be handled by their native routing layers instead.
+func IsPublicEndpoint(raw string) bool {
+	hostname := strings.TrimSuffix(strings.ToLower(strings.TrimSpace(NormalizeHostname(raw))), ".")
+	if hostname == "" || hostname == "localhost" || net.ParseIP(hostname) != nil || !strings.Contains(hostname, ".") {
+		return false
+	}
+	for _, suffix := range []string{".internal", ".local", ".localhost", ".norn", ".ts.net"} {
+		if strings.HasSuffix(hostname, suffix) {
+			return false
+		}
+	}
+	return true
 }
 
 type Config struct {
@@ -115,14 +132,54 @@ func RemoveIngress(cfg *Config, hostname string) bool {
 	return changed
 }
 
+// PrunePrivateIngress removes hostname rules that do not belong in a public
+// Cloudflare tunnel while preserving the catch-all rule.
+func PrunePrivateIngress(cfg *Config) bool {
+	filtered := make([]IngressRule, 0, len(cfg.Ingress))
+	changed := false
+	for _, rule := range cfg.Ingress {
+		if rule.Hostname != "" && !IsPublicEndpoint(rule.Hostname) {
+			changed = true
+			continue
+		}
+		filtered = append(filtered, rule)
+	}
+	if changed {
+		cfg.Ingress = filtered
+	}
+	return changed
+}
+
 // ApplyConfig writes the config to the local cloudflared config file.
 func ApplyConfig(_ context.Context, cfg *Config) error {
 	data, err := yaml.Marshal(cfg)
 	if err != nil {
 		return fmt.Errorf("marshal config: %w", err)
 	}
-	if err := os.WriteFile(getConfigPath(), data, 0644); err != nil {
+	path := getConfigPath()
+	temporary, err := os.CreateTemp(filepath.Dir(path), ".cloudflared-config-*")
+	if err != nil {
+		return fmt.Errorf("reserve cloudflared config: %w", err)
+	}
+	temporaryPath := temporary.Name()
+	defer os.Remove(temporaryPath)
+	if err := temporary.Chmod(0o600); err != nil {
+		_ = temporary.Close()
+		return fmt.Errorf("secure cloudflared config: %w", err)
+	}
+	if _, err := temporary.Write(data); err != nil {
+		_ = temporary.Close()
 		return fmt.Errorf("write cloudflared config: %w", err)
+	}
+	if err := temporary.Sync(); err != nil {
+		_ = temporary.Close()
+		return fmt.Errorf("sync cloudflared config: %w", err)
+	}
+	if err := temporary.Close(); err != nil {
+		return fmt.Errorf("close cloudflared config: %w", err)
+	}
+	if err := os.Rename(temporaryPath, path); err != nil {
+		return fmt.Errorf("publish cloudflared config: %w", err)
 	}
 	return nil
 }

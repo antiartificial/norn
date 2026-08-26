@@ -1,8 +1,10 @@
 package handler
 
 import (
+	"bytes"
 	"context"
 	"fmt"
+	"io"
 	"net"
 	"net/http"
 	"net/http/httputil"
@@ -27,26 +29,42 @@ type wakeGatewayTarget struct {
 	App      string
 	Process  string
 	Endpoint string
+	Key      string
 	Service  model.ServiceManifestEntry
 }
 
 func (h *Handler) WakeGateway(w http.ResponseWriter, r *http.Request) {
-	hostname := strings.ToLower(strings.TrimSpace(chi.URLParam(r, "host")))
-	if hostname == "" {
-		writeError(w, http.StatusBadRequest, "wake gateway hostname is required")
+	targetKey := normalizeWakeGatewayKey(chi.URLParam(r, "host"))
+	if targetKey == "" {
+		writeError(w, http.StatusBadRequest, "wake gateway target is required")
 		return
 	}
-	h.serveWakeGateway(w, r, hostname, true)
+	h.serveWakeGateway(w, r, targetKey, wakeGatewayUpstreamPath(r, targetKey), "")
+}
+
+func (h *Handler) WakeGatewayAppAlias(w http.ResponseWriter, r *http.Request) {
+	app := strings.ToLower(strings.TrimSpace(chi.URLParam(r, "app")))
+	if app == "" {
+		writeError(w, http.StatusBadRequest, "wake gateway app is required")
+		return
+	}
+	manifest, err := h.buildServiceManifest()
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	target, ok := wakeGatewayTargetForApp(manifest.Services, app)
+	if !ok {
+		writeError(w, http.StatusNotFound, "wake gateway app is not mapped to a service endpoint")
+		return
+	}
+	h.serveWakeGatewayTarget(w, r, target, wakeGatewayAliasUpstreamPath(r, app), "/api/a/"+app)
 }
 
 func (h *Handler) WakeGatewayHostMiddleware(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if strings.HasPrefix(r.URL.Path, "/api/wake-gateway/") {
-			next.ServeHTTP(w, r)
-			return
-		}
-		hostname := requestHostname(r)
-		if hostname == "" || endpointHostname("https://"+hostname) == "" {
+		targetKey := requestHostKey(r)
+		if targetKey == "" {
 			next.ServeHTTP(w, r)
 			return
 		}
@@ -55,26 +73,37 @@ func (h *Handler) WakeGatewayHostMiddleware(next http.Handler) http.Handler {
 			next.ServeHTTP(w, r)
 			return
 		}
-		if _, ok := wakeGatewayTargetForHost(manifest.Services, hostname); !ok {
-			next.ServeHTTP(w, r)
-			return
+		if _, ok := wakeGatewayTargetForHost(manifest.Services, targetKey); !ok {
+			hostname := normalizeWakeGatewayKey(requestHostname(r))
+			if hostname == "" || hostname == targetKey {
+				next.ServeHTTP(w, r)
+				return
+			}
+			if _, ok := wakeGatewayTargetForHost(manifest.Services, hostname); !ok {
+				next.ServeHTTP(w, r)
+				return
+			}
+			targetKey = hostname
 		}
-		h.serveWakeGateway(w, r, hostname, false)
+		h.serveWakeGateway(w, r, targetKey, r.URL.Path, "")
 	})
 }
 
-func (h *Handler) serveWakeGateway(w http.ResponseWriter, r *http.Request, hostname string, stripGatewayPrefix bool) {
+func (h *Handler) serveWakeGateway(w http.ResponseWriter, r *http.Request, targetKey string, upstreamPath string, aliasPrefix string) {
 	manifest, err := h.buildServiceManifest()
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, err.Error())
 		return
 	}
-	target, ok := wakeGatewayTargetForHost(manifest.Services, hostname)
+	target, ok := wakeGatewayTargetForHost(manifest.Services, targetKey)
 	if !ok {
-		writeError(w, http.StatusNotFound, "wake gateway hostname is not mapped to a service endpoint")
+		writeError(w, http.StatusNotFound, "wake gateway target is not mapped to a service endpoint")
 		return
 	}
+	h.serveWakeGatewayTarget(w, r, target, upstreamPath, aliasPrefix)
+}
 
+func (h *Handler) serveWakeGatewayTarget(w http.ResponseWriter, r *http.Request, target wakeGatewayTarget, upstreamPath string, aliasPrefix string) {
 	status := http.StatusOK
 	defer func() {
 		ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
@@ -104,14 +133,21 @@ func (h *Handler) serveWakeGateway(w http.ResponseWriter, r *http.Request, hostn
 		Scheme: "http",
 		Host:   net.JoinHostPort(instance.Address, strconv.Itoa(instance.Port)),
 	}
-	upstreamPath := r.URL.Path
-	if stripGatewayPrefix {
-		upstreamPath = wakeGatewayUpstreamPath(r, hostname)
-	}
-	proxy := httputil.NewSingleHostReverseProxy(upstream)
-	proxy.Director = func(out *http.Request) {
+	proxy := &httputil.ReverseProxy{}
+	proxy.Rewrite = func(proxyRequest *httputil.ProxyRequest) {
 		query := r.URL.Query()
 		query.Del("wakeTimeout")
+		out := proxyRequest.Out
+		if direct := directRequestIP(r); direct == nil || !direct.IsLoopback() {
+			// Cloudflare identity headers are authoritative only when the request
+			// arrived through Norn's local tunnel/proxy boundary.
+			for name := range out.Header {
+				canonical := strings.ToLower(name)
+				if strings.HasPrefix(canonical, "cf-access-") || canonical == "cf-connecting-ip" || canonical == "cf-visitor" {
+					out.Header.Del(name)
+				}
+			}
+		}
 		out.URL.Scheme = upstream.Scheme
 		out.URL.Host = upstream.Host
 		out.URL.Path = upstreamPath
@@ -144,6 +180,9 @@ func (h *Handler) serveWakeGateway(w http.ResponseWriter, r *http.Request, hostn
 		} else {
 			resp.Header.Set("X-Norn-Wake-Action", "ready")
 		}
+		if aliasPrefix != "" {
+			return rewriteWakeGatewayAliasResponse(resp, aliasPrefix)
+		}
 		return nil
 	}
 	proxy.ErrorHandler = func(rw http.ResponseWriter, req *http.Request, proxyErr error) {
@@ -161,17 +200,17 @@ func (h *Handler) ensureWakeGatewayReady(ctx context.Context, target wakeGateway
 	defer lock.Unlock()
 
 	if manifest, err := h.buildServiceManifest(); err == nil {
-		if refreshed, ok := wakeGatewayTargetForHost(manifest.Services, endpointHostname(target.Endpoint)); ok {
+		if refreshed, ok := wakeGatewayTargetForHost(manifest.Services, target.Key); ok {
 			target = refreshed
 		}
 	}
 	if instance, ok := firstReadyInstance(target.Service); ok {
 		return instance, false, nil
 	}
-	if h.engine == nil {
-		return model.ServiceInstance{}, false, fmt.Errorf("engine is not connected and %s/%s has no ready instance", target.App, target.Process)
+	if h.nomad == nil {
+		return model.ServiceInstance{}, false, fmt.Errorf("nomad is not connected and %s/%s has no ready instance", target.App, target.Process)
 	}
-	if err := h.engine.ScaleJob(ctx, target.App, target.Process, 1); err != nil {
+	if err := h.nomad.ScaleJob(target.App, target.Process, 1); err != nil {
 		return model.ServiceInstance{}, false, fmt.Errorf("scale %s/%s to 1: %w", target.App, target.Process, err)
 	}
 
@@ -186,7 +225,7 @@ func (h *Handler) ensureWakeGatewayReady(ctx context.Context, target wakeGateway
 			if err != nil {
 				continue
 			}
-			refreshed, ok := wakeGatewayTargetForHost(manifest.Services, endpointHostname(target.Endpoint))
+			refreshed, ok := wakeGatewayTargetForHost(manifest.Services, target.Key)
 			if !ok {
 				continue
 			}
@@ -203,24 +242,112 @@ func (h *Handler) wakeGatewayLock(key string) *sync.Mutex {
 }
 
 func wakeGatewayTargetForHost(services []model.ServiceManifestEntry, hostname string) (wakeGatewayTarget, bool) {
-	hostname = strings.ToLower(strings.TrimSpace(hostname))
+	hostname = normalizeWakeGatewayKey(hostname)
+	if hostname == "" {
+		return wakeGatewayTarget{}, false
+	}
 	for _, service := range services {
 		if service.Type != "service" {
 			continue
 		}
 		for _, endpoint := range service.Endpoints {
-			if endpointHostname(endpoint.URL) != hostname {
-				continue
+			for _, key := range wakeGatewayEndpointKeys(endpoint.URL) {
+				if key != hostname {
+					continue
+				}
+				return wakeGatewayTarget{
+					App:      service.App,
+					Process:  service.Process,
+					Endpoint: endpoint.URL,
+					Key:      key,
+					Service:  service,
+				}, true
 			}
-			return wakeGatewayTarget{
-				App:      service.App,
-				Process:  service.Process,
-				Endpoint: endpoint.URL,
-				Service:  service,
-			}, true
 		}
 	}
 	return wakeGatewayTarget{}, false
+}
+
+func wakeGatewayTargetForApp(services []model.ServiceManifestEntry, app string) (wakeGatewayTarget, bool) {
+	app = strings.ToLower(strings.TrimSpace(app))
+	if app == "" {
+		return wakeGatewayTarget{}, false
+	}
+	var fallback wakeGatewayTarget
+	hasFallback := false
+	for _, service := range services {
+		if service.Type != "service" || strings.ToLower(service.App) != app {
+			continue
+		}
+		for _, endpoint := range service.Endpoints {
+			keys := wakeGatewayEndpointKeys(endpoint.URL)
+			if len(keys) == 0 {
+				continue
+			}
+			target := wakeGatewayTarget{
+				App:      service.App,
+				Process:  service.Process,
+				Endpoint: endpoint.URL,
+				Key:      keys[0],
+				Service:  service,
+			}
+			if service.Process == "web" {
+				return target, true
+			}
+			if !hasFallback {
+				fallback = target
+				hasFallback = true
+			}
+		}
+	}
+	return fallback, hasFallback
+}
+
+func wakeGatewayEndpointKeys(raw string) []string {
+	raw = strings.TrimSpace(raw)
+	if raw == "" {
+		return nil
+	}
+	if parsed, err := url.Parse(raw); err == nil && parsed.Hostname() != "" {
+		host := normalizeWakeGatewayKey(parsed.Hostname())
+		if host == "" {
+			return nil
+		}
+		if port := strings.TrimSpace(parsed.Port()); port != "" {
+			return []string{normalizeWakeGatewayKey(net.JoinHostPort(host, port))}
+		}
+		return []string{host}
+	}
+
+	if strings.Contains(raw, "://") || strings.ContainsAny(raw, "/?#") {
+		return nil
+	}
+	key := normalizeWakeGatewayKey(raw)
+	if key == "" {
+		return nil
+	}
+	return []string{key}
+}
+
+func normalizeWakeGatewayKey(raw string) string {
+	raw = strings.TrimSpace(raw)
+	if raw == "" {
+		return ""
+	}
+	if unescaped, err := url.PathUnescape(raw); err == nil {
+		raw = unescaped
+	}
+	if parsed, err := url.Parse(raw); err == nil && parsed.Hostname() != "" {
+		raw = parsed.Host
+	}
+	if host, port, err := net.SplitHostPort(raw); err == nil {
+		host = strings.ToLower(strings.Trim(strings.TrimSpace(host), "[]"))
+		if host == "" || strings.TrimSpace(port) == "" {
+			return ""
+		}
+		return host + ":" + strings.TrimSpace(port)
+	}
+	return strings.ToLower(strings.TrimSuffix(strings.Trim(strings.TrimSpace(raw), "[]"), "."))
 }
 
 func firstReadyInstance(service model.ServiceManifestEntry) (model.ServiceInstance, bool) {
@@ -235,6 +362,50 @@ func firstReadyInstance(service model.ServiceManifestEntry) (model.ServiceInstan
 		}
 	}
 	return model.ServiceInstance{}, false
+}
+
+func rewriteWakeGatewayAliasResponse(resp *http.Response, aliasPrefix string) error {
+	contentType := strings.ToLower(resp.Header.Get("Content-Type"))
+	isHTML := strings.Contains(contentType, "text/html")
+	isJS := strings.Contains(contentType, "javascript") || strings.Contains(contentType, "ecmascript")
+	if !isHTML && !isJS {
+		return nil
+	}
+	if encoding := strings.TrimSpace(resp.Header.Get("Content-Encoding")); encoding != "" && !strings.EqualFold(encoding, "identity") {
+		return nil
+	}
+	aliasPrefix = "/" + strings.Trim(strings.TrimSpace(aliasPrefix), "/")
+	if aliasPrefix == "/" {
+		return nil
+	}
+	body, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return err
+	}
+	_ = resp.Body.Close()
+	rewritten := body
+	if isHTML {
+		for _, pair := range [][2][]byte{
+			{[]byte(`src="/`), []byte(`src="` + aliasPrefix + `/`)},
+			{[]byte(`href="/`), []byte(`href="` + aliasPrefix + `/`)},
+			{[]byte(`url(/`), []byte(`url(` + aliasPrefix + `/`)},
+		} {
+			rewritten = bytes.ReplaceAll(rewritten, pair[0], pair[1])
+		}
+	}
+	if isJS {
+		for _, pair := range [][2][]byte{
+			{[]byte(`"/api/`), []byte(`"` + aliasPrefix + `/api/`)},
+			{[]byte(`'/api/`), []byte(`'` + aliasPrefix + `/api/`)},
+			{[]byte("`/api/"), []byte("`" + aliasPrefix + "/api/")},
+		} {
+			rewritten = bytes.ReplaceAll(rewritten, pair[0], pair[1])
+		}
+	}
+	resp.Body = io.NopCloser(bytes.NewReader(rewritten))
+	resp.ContentLength = int64(len(rewritten))
+	resp.Header.Set("Content-Length", strconv.Itoa(len(rewritten)))
+	return nil
 }
 
 func (h *Handler) recordWakeGatewayObservation(ctx context.Context, target wakeGatewayTarget, status int) {
@@ -260,8 +431,20 @@ func wakeGatewayTimeout(r *http.Request) time.Duration {
 	return timeout
 }
 
-func wakeGatewayUpstreamPath(r *http.Request, hostname string) string {
-	prefix := "/api/wake-gateway/" + hostname
+func wakeGatewayUpstreamPath(r *http.Request, targetKey string) string {
+	prefix := "/api/wake-gateway/" + targetKey
+	path := strings.TrimPrefix(r.URL.Path, prefix)
+	if path == "" {
+		return "/"
+	}
+	if !strings.HasPrefix(path, "/") {
+		return "/" + path
+	}
+	return path
+}
+
+func wakeGatewayAliasUpstreamPath(r *http.Request, app string) string {
+	prefix := "/api/a/" + app
 	path := strings.TrimPrefix(r.URL.Path, prefix)
 	if path == "" {
 		return "/"
@@ -286,12 +469,23 @@ func requestHostname(r *http.Request) string {
 	return strings.ToLower(strings.TrimSuffix(host, "."))
 }
 
-func forwardedProto(r *http.Request) string {
-	if proto := strings.TrimSpace(r.Header.Get("X-Forwarded-Proto")); proto != "" {
-		return proto
+func requestHostKey(r *http.Request) string {
+	host := strings.TrimSpace(r.Host)
+	if host == "" {
+		host = strings.TrimSpace(r.Header.Get("X-Forwarded-Host"))
 	}
-	if visitor := strings.TrimSpace(r.Header.Get("CF-Visitor")); strings.Contains(visitor, "https") {
-		return "https"
+	return normalizeWakeGatewayKey(host)
+}
+
+func forwardedProto(r *http.Request) string {
+	direct := directRequestIP(r)
+	if direct != nil && direct.IsLoopback() {
+		if proto := strings.ToLower(strings.TrimSpace(r.Header.Get("X-Forwarded-Proto"))); proto == "http" || proto == "https" {
+			return proto
+		}
+		if visitor := strings.TrimSpace(r.Header.Get("CF-Visitor")); strings.Contains(visitor, `"scheme":"https"`) {
+			return "https"
+		}
 	}
 	if r.TLS != nil {
 		return "https"
