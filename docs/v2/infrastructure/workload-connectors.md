@@ -103,6 +103,9 @@ requires `NORN_WORKLOAD_CONNECTOR=nomad-consul`.
 ## Current verification boundary
 
 The connector, parsers, command construction, secret handling, validation, API
-schema, and Nomad compatibility path have unit coverage. A live Apple runtime
-smoke still requires installing Apple's `container` CLI on a macOS 26 host;
-Norn reports it unavailable when the CLI or its system service is absent.
+schema, and Nomad compatibility path have unit coverage. The Apple command
+contract was also smoke-tested on macOS 26.6 with signed `container` 1.3.0:
+system initialization, kernel installation, OCI image pull, run, JSON list and
+inspect, logs, non-streaming JSON stats, stop, and removal all completed
+successfully. CI remains runtime-independent, and Norn reports the connector
+unavailable when the CLI or its system service is absent.
