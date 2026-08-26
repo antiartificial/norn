@@ -60,6 +60,12 @@ shells with a minimal `PATH`; queued work continues to execute in the managed
 host-agent environment. The enrichment neither mutates the parent shell nor
 replaces prerequisite checks, and missing tools still fail visibly.
 
+Script discovery is portable and deterministic: an explicit `--script` or
+`--repo` wins, followed by the current checkout, an adjacent installed script,
+the persistent managed host copy, and finally `$HOME/projects/norn`. It does
+not depend on a hard-coded operator account. Routine remote upgrades therefore
+use the same managed script that the previous promotion synchronized.
+
 Use these environment variables when the repo or host layout differs:
 
 | Variable | Default | Description |

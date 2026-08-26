@@ -211,21 +211,41 @@ func resolvePlatformScript() (string, error) {
 	if platformScript != "" {
 		return platformScript, nil
 	}
-	candidates := []string{}
-	if platformRepo != "" {
-		candidates = append(candidates, filepath.Join(platformRepo, "v2", "scripts", "platform-upgrade"))
-	}
-	if cwd, err := os.Getwd(); err == nil {
-		candidates = append(candidates,
-			filepath.Join(cwd, "v2", "scripts", "platform-upgrade"),
-			filepath.Join(cwd, "scripts", "platform-upgrade"),
-		)
-	}
-	candidates = append(candidates, "/Users/0xadb/projects/norn/v2/scripts/platform-upgrade")
+	cwd, _ := os.Getwd()
+	executable, _ := os.Executable()
+	home, _ := os.UserHomeDir()
+	candidates := platformScriptCandidates(platformRepo, cwd, executable, home)
 	for _, candidate := range candidates {
 		if info, err := os.Stat(candidate); err == nil && !info.IsDir() {
 			return candidate, nil
 		}
 	}
 	return "", fmt.Errorf("platform-upgrade script not found; set --repo or NORN_PLATFORM_SCRIPT")
+}
+
+func platformScriptCandidates(repo, cwd, executable, home string) []string {
+	candidates := []string{}
+	if repo != "" {
+		candidates = append(candidates, filepath.Join(repo, "v2", "scripts", "platform-upgrade"))
+	}
+	if cwd != "" {
+		candidates = append(candidates,
+			filepath.Join(cwd, "v2", "scripts", "platform-upgrade"),
+			filepath.Join(cwd, "scripts", "platform-upgrade"),
+		)
+	}
+	if executable != "" {
+		executableDir := filepath.Dir(executable)
+		candidates = append(candidates,
+			filepath.Join(executableDir, "platform-upgrade"),
+			filepath.Join(executableDir, "..", "scripts", "platform-upgrade"),
+		)
+	}
+	if home != "" {
+		candidates = append(candidates,
+			filepath.Join(home, ".config", "norn", "host", "bin", "platform-upgrade"),
+			filepath.Join(home, "projects", "norn", "v2", "scripts", "platform-upgrade"),
+		)
+	}
+	return candidates
 }

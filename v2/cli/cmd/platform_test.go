@@ -29,3 +29,24 @@ func TestReplaceEnvironmentValueRemovesDuplicateKeys(t *testing.T) {
 		t.Fatalf("unexpected environment: %v", got)
 	}
 }
+
+func TestPlatformScriptCandidatesPreferExplicitAndManagedPortablePaths(t *testing.T) {
+	candidates := platformScriptCandidates("/repo", "/work", "/opt/norn/bin/norn", "/operator")
+	want := []string{
+		"/repo/v2/scripts/platform-upgrade",
+		"/work/v2/scripts/platform-upgrade",
+		"/work/scripts/platform-upgrade",
+		"/opt/norn/bin/platform-upgrade",
+		"/opt/norn/scripts/platform-upgrade",
+		"/operator/.config/norn/host/bin/platform-upgrade",
+		"/operator/projects/norn/v2/scripts/platform-upgrade",
+	}
+	if strings.Join(candidates, "|") != strings.Join(want, "|") {
+		t.Fatalf("unexpected platform script search order: %v", candidates)
+	}
+	for _, candidate := range candidates {
+		if strings.Contains(candidate, "/Users/0xadb/") {
+			t.Fatalf("machine-specific platform path leaked into discovery: %s", candidate)
+		}
+	}
+}
