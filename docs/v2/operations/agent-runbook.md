@@ -201,6 +201,12 @@ private observability, control failover, guarded production activation, and
 node-replacement exercises. It is isolated from the legacy k3s Terraform root;
 secrets stay out of cloud-init and state uses a versioned locked backend.
 
+The HA-lab convergence script disables Go VCS stamping explicitly. Preserve
+that build invariant: linked worktrees or incomplete surrounding Git metadata
+can otherwise stop Go before compilation. If convergence is interrupted, fix
+the prerequisite and rerun the full convergence command; its Ansible work is
+idempotent and safely rechecks already-completed tasks.
+
 ## Runtime Watchers
 
 The API starts a runtime watcher when Nomad or Consul and Beacon are available. It emits Beacon events when allocations transition to failed, lost, or unhealthy; when Consul service health changes to warning, critical, or recovered; and when periodic child jobs succeed, fail, are lost, or appear hung. Missed-run detection requires additional schedule-aware logic.

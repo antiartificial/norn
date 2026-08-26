@@ -67,6 +67,23 @@ ignored tool bootstrap installs checksum-verified Terraform and an isolated
 Ansible environment, so the workflow does not depend on Homebrew or the Mac's
 Xcode Command Line Tools.
 
+### Linked-worktree build portability
+
+`scripts/lab converge` deliberately builds the Linux Norn API with Go VCS
+stamping disabled (`-buildvcs=false`). Go may otherwise stop before compilation
+when the controller checkout is a linked worktree or its surrounding Git
+metadata cannot be resolved. Norn records reviewed source and artifact
+provenance through the catalog, image digest, signature, and supply-chain
+evidence, so the controller's implicit Go VCS stamp is not the authoritative
+release identity.
+
+Keep this flag on controller-side lab builds. If convergence is interrupted at
+the build or during Ansible, correct the underlying prerequisite and rerun
+`scripts/lab converge` from the start. Convergence is designed to be idempotent:
+completed tasks are rechecked and the run safely advances from the remaining
+work. Do not destroy and recreate the lab merely because this build step was
+interrupted.
+
 Terraform state uses the private versioned lab Space through the S3 backend and
 `use_lockfile`; credentials come from the selected controller secret file and
 are never written to backend HCL. A mode-`0600` local state backup is retained
