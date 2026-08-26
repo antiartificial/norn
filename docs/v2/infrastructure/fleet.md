@@ -230,6 +230,38 @@ boundary. Norn derives the plan run ID and SHA from the protected artifact. The
 apply workflow's plan-specific run name makes a dropped dispatch response
 recoverable after a Norn restart.
 
+## Fleet operator view
+
+The web and native Fleet views reconstruct provisioning from server evidence;
+they do not keep a client-only wizard state. Expanding a plan shows:
+
+- the capacity-plan receipt, repository review receipt, and protected apply
+  dispatch receipt;
+- every canonical reconciliation phase as proven, pending, failed, or blocked;
+- the next expected phase and only the safe action supported by the current
+  contract, such as creating or recovering the pull request, dispatching the
+  reviewed apply, or opening the protected runner;
+- current application health, active allocations, operations, regional deploy
+  state, and a desired-plus-observed topology from ingress through regions,
+  pools, workloads, allocations, and declared dependencies.
+
+The topology deliberately distinguishes its sources. Regions and pools come
+from the read-only fleet document. Workloads, allocations, and health come from
+Norn runtime observations. Provider VM identity and enrollment state are not
+invented when the API does not expose them. The graph has a text equivalent,
+keyboard-focusable nodes, and disables path and status animation for reduced
+motion.
+
+A successful `fleet.github.apply-dispatch` receipt proves that the protected
+workflow was handed off; it does **not** prove that Terraform is currently
+executing. The reconciliation API stores terminal `succeeded` or `failed`
+checkpoints only, so the first missing phase is shown as **pending / next
+expected**, never inferred as active. Truly durable live execution visibility
+would require a versioned runner-attempt contract with an attempt ID,
+`startedAt`, `heartbeatAt`, current phase, workflow URL, and explicit
+`running`, `abandoned`, `failed`, and `succeeded` states. Until that exists, use
+the protected runner link for between-checkpoint telemetry.
+
 ## Replacement lifecycle
 
 For non-destructive plans, the runner records a recovery binding before provider mutation. A failed, cancelled, timed-out, or manually selected apply run is replanned under the remote state lock; recovery proceeds only when every remaining action is a non-destructive subset of the originally reviewed plan. Configuration, enrollment, and assurance hooks are idempotent, and Norn's append-only reconciliation checkpoints let a replacement runner resume after the last proven phase.

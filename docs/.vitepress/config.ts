@@ -82,6 +82,7 @@ export default withMermaid(
               { text: 'Snapshots & Recovery', link: '/v2/operations/snapshots' },
               { text: 'Upgrading', link: '/v2/operations/upgrading' },
               { text: 'Host Recovery', link: '/v2/operations/host-recovery' },
+              { text: 'Workload Qualification', link: '/v2/operations/workload-qualification' },
               { text: 'Linux HA Lab', link: '/v2/operations/ha-lab' },
               { text: 'Production Readiness', link: '/v2/operations/production-readiness' },
               { text: 'Troubleshooting', link: '/v2/operations/troubleshooting' },

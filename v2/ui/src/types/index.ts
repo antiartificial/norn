@@ -142,7 +142,7 @@ export interface Deployment {
   status: string
   startedAt: string
   finishedAt?: string
-	regions?: Array<{ region: string; nomadRegion: string; status: string; desiredWeight: number; activeWeight: number; evalId?: string; lastError?: string; updatedAt: string }>
+  regions?: Array<{ region: string; nomadRegion: string; status: string; desiredWeight: number; activeWeight: number; evalId?: string; lastError?: string; updatedAt: string }>
 }
 
 export type EventSeverity = 'info' | 'warning' | 'critical'
@@ -184,6 +184,8 @@ export interface Operation {
   sagaId?: string
   kind?: string
   app?: string
+  ref?: string
+  source?: string
   status?: string
   attempt?: number
   attempts?: number
@@ -284,7 +286,7 @@ export interface FleetGitHubStatus {
 }
 
 export interface FleetReconciliationResponse {
-  schemaVersion: 'norn.fleet-reconciliations/v1'
+  schemaVersion: 'norn.fleet-reconciliation/v1'
   planId: string
   count: number
   reconciliations: Operation[]
