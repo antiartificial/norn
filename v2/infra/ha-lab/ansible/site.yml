@@ -30,6 +30,9 @@
           - age_key_path | length > 0
           - age_recipient | length > 0
           - toy_secrets_path | length > 0
+          - not durability_pilot_enabled or durability_database_password | length >= 32
+          - not durability_pilot_enabled or durability_pilot_secrets_path | length > 0
+          - not durability_pilot_enabled or durability_pilot_infraspec_path | length > 0
           - pki_dir | length > 0
           - registry_config_path | length > 0
           - backup_bucket | length == 0 or backup_access_key | length >= 16
@@ -588,6 +591,40 @@
       run_once: true
       no_log: true
 
+    - name: Create the isolated durability pilot role
+      community.postgresql.postgresql_user:
+        name: "{{ durability_database_user }}"
+        password: "{{ durability_database_password }}"
+        login_host: 127.0.0.1
+        login_port: 6432
+        login_user: postgres
+        login_password: "{{ postgres_superuser_password }}"
+        state: present
+      register: durability_pilot_role
+      retries: 30
+      delay: 2
+      until: durability_pilot_role is succeeded
+      run_once: true
+      when: durability_pilot_enabled
+      no_log: true
+
+    - name: Create the isolated durability pilot database
+      community.postgresql.postgresql_db:
+        name: "{{ durability_database }}"
+        owner: "{{ durability_database_user }}"
+        login_host: 127.0.0.1
+        login_port: 6432
+        login_user: postgres
+        login_password: "{{ postgres_superuser_password }}"
+        state: present
+      register: durability_pilot_database
+      retries: 30
+      delay: 2
+      until: durability_pilot_database is succeeded
+      run_once: true
+      when: durability_pilot_enabled
+      no_log: true
+
     - name: Identify the current PostgreSQL primary for repository initialization
       ansible.builtin.command: patronictl -c /etc/patroni/config.yml list --format json
       register: pgbackrest_topology
@@ -728,6 +765,7 @@
         - {path: /etc/norn/git, owner: root, mode: "0750"}
         - {path: /etc/norn/age, owner: root, mode: "0750"}
         - {path: /var/lib/norn/apps/norn-ha-toy, owner: nornops, mode: "0750"}
+        - {path: /var/lib/norn/apps/norn-durability-pilot, owner: nornops, mode: "0750"}
 
     - name: Install read-only source deploy identity
       ansible.builtin.copy:
@@ -764,6 +802,25 @@
         mode: "0600"
       no_log: true
 
+    - name: Replicate the durability pilot declaration
+      ansible.builtin.copy:
+        src: "{{ durability_pilot_infraspec_path }}"
+        dest: /var/lib/norn/apps/norn-durability-pilot/infraspec.yaml
+        owner: nornops
+        group: nornops
+        mode: "0640"
+      when: durability_pilot_enabled
+
+    - name: Replicate the SOPS-encrypted durability pilot secrets
+      ansible.builtin.copy:
+        src: "{{ durability_pilot_secrets_path }}"
+        dest: /var/lib/norn/apps/norn-durability-pilot/secrets.enc.yaml
+        owner: nornops
+        group: nornops
+        mode: "0600"
+      when: durability_pilot_enabled
+      no_log: true
+
     - name: Install the SOPS creation policy for controlled secret updates
       ansible.builtin.copy:
         dest: /var/lib/norn/apps/norn-ha-toy/.sops.yaml
@@ -782,6 +839,17 @@
       register: decrypted_catalog_secret
       changed_when: false
       failed_when: decrypted_catalog_secret.rc != 0
+      no_log: true
+
+    - name: Verify the durability pilot secret is decryptable by the runtime identity
+      ansible.builtin.command: sops --decrypt /var/lib/norn/apps/norn-durability-pilot/secrets.enc.yaml
+      become_user: nornops
+      environment:
+        SOPS_AGE_KEY_FILE: /etc/norn/age/keys.txt
+      register: decrypted_durability_catalog_secret
+      changed_when: false
+      failed_when: decrypted_durability_catalog_secret.rc != 0
+      when: durability_pilot_enabled
       no_log: true
 
 - name: Converge active-passive Norn API members

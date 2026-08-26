@@ -58,6 +58,59 @@ case "${command_name}" in
     chmod 0600 "${NORN_HA_TOY_SECRETS_PATH}"
     git -C "${catalog_dir}" rev-parse HEAD
     ;;
+  durability-sync)
+    image="${2:-}"
+    endpoint="${3:-}"
+    [[ "${image}" =~ ^registry\.digitalocean\.com/antiartificial/norn-durability-pilot@sha256:[a-f0-9]{64}$ ]] || {
+      echo "usage: catalog durability-sync registry.digitalocean.com/antiartificial/norn-durability-pilot@sha256:<64-hex> https://HOST" >&2
+      exit 2
+    }
+    [[ "${endpoint}" =~ ^https://[A-Za-z0-9.-]+(:[0-9]{1,5})?$ ]] && [[ "${endpoint}" != *.invalid ]] || {
+      echo "durability endpoint must be a concrete HTTPS origin without a path" >&2
+      exit 2
+    }
+    [[ -f "${NORN_HA_AGE_KEY_PATH}" ]] || {
+      echo "missing age identity; run catalog sync once before enabling the durability pilot" >&2
+      exit 1
+    }
+    durability_catalog_dir="${lab_root}/.tools/catalog/norn-durability-pilot"
+    install -d -m 0700 "${durability_catalog_dir}"
+    if [[ ! -d "${durability_catalog_dir}/.git" ]]; then
+      git -C "${durability_catalog_dir}" init -b durability-pilot >/dev/null
+      git -C "${durability_catalog_dir}" remote add origin "https://github.com/${repo}.git"
+      if git -C "${durability_catalog_dir}" fetch origin durability-pilot >/dev/null 2>&1; then
+        git -C "${durability_catalog_dir}" checkout -B durability-pilot FETCH_HEAD >/dev/null
+      fi
+    fi
+    git -C "${durability_catalog_dir}" checkout -B durability-pilot >/dev/null
+    rsync -a --delete --exclude .git "${lab_root}/durability-pilot/" "${durability_catalog_dir}/"
+    # The checked-in spec is deliberately inert. The controller-only generated
+    # copy receives the immutable image before it is committed to the private
+    # branch and replicated to all Norn contenders.
+    sed -i '' "s|registry.digitalocean.com/antiartificial/norn-durability-pilot@sha256:[a-f0-9]\{64\}|${image}|" "${durability_catalog_dir}/infraspec.yaml"
+    sed -i '' "s|https://norn-durability-pilot.invalid|${endpoint}|" "${durability_catalog_dir}/infraspec.yaml"
+    git -C "${durability_catalog_dir}" add --all
+    if ! git -C "${durability_catalog_dir}" diff --cached --quiet; then
+      git -C "${durability_catalog_dir}" -c user.name='Norn HA Lab' -c user.email='norn-ha-lab@users.noreply.github.com' commit -m 'Update durability pilot' >/dev/null
+      git -C "${durability_catalog_dir}" push -u origin durability-pilot >/dev/null
+    fi
+    recipient="$(age-keygen -y "${NORN_HA_AGE_KEY_PATH}")"
+    database_url="postgres://norn_durability:${NORN_HA_DURABILITY_DB_PASSWORD}@172.17.0.1:6432/norn_durability?sslmode=require"
+    {
+      printf 'DATABASE_URL: %s\n' "${database_url}"
+      printf 'VALKEY_ADDR: norn-durability-valkey.service.consul:16379\n'
+      printf 'KAFKA_BROKERS: norn-durability-redpanda.service.consul:19092\n'
+    } | sops --config /dev/null --encrypt --input-type yaml --output-type yaml --age "${recipient}" /dev/stdin >"${NORN_HA_DURABILITY_SECRETS_PATH}"
+    chmod 0600 "${NORN_HA_DURABILITY_SECRETS_PATH}"
+    cp "${durability_catalog_dir}/infraspec.yaml" "${NORN_HA_DURABILITY_INFRASPEC_PATH}"
+    chmod 0600 "${NORN_HA_DURABILITY_INFRASPEC_PATH}"
+    if grep -q '^NORN_HA_ENABLE_DURABILITY_PILOT=' "${secret_file}"; then
+      sed -i '' 's/^NORN_HA_ENABLE_DURABILITY_PILOT=.*/NORN_HA_ENABLE_DURABILITY_PILOT=true/' "${secret_file}"
+    else
+      printf 'NORN_HA_ENABLE_DURABILITY_PILOT=true\n' >>"${secret_file}"
+    fi
+    git -C "${durability_catalog_dir}" rev-parse HEAD
+    ;;
   status)
     gh repo view "${repo}" --json nameWithOwner,visibility,url
     [[ -f "${NORN_HA_GIT_DEPLOY_KEY_PATH}" && -f "${NORN_HA_AGE_KEY_PATH}" && -f "${NORN_HA_TOY_SECRETS_PATH}" && -n "${NORN_HA_AGE_RECIPIENT:-}" ]] || {
@@ -67,7 +120,7 @@ case "${command_name}" in
     git -C "${catalog_dir}" rev-parse HEAD
     ;;
   *)
-    echo "usage: catalog sync | catalog status" >&2
+    echo "usage: catalog sync | catalog durability-sync IMAGE@sha256:... https://HOST | catalog status" >&2
     exit 2
     ;;
 esac

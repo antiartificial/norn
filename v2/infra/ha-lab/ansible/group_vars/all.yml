@@ -12,6 +12,7 @@ postgres_superuser_password: "{{ lookup('ansible.builtin.env', 'NORN_HA_POSTGRES
 postgres_replication_password: "{{ lookup('ansible.builtin.env', 'NORN_HA_REPLICATION_PASSWORD') }}"
 postgres_rewind_password: "{{ lookup('ansible.builtin.env', 'NORN_HA_REWIND_PASSWORD') }}"
 norn_database_password: "{{ lookup('ansible.builtin.env', 'NORN_HA_NORN_DB_PASSWORD') }}"
+durability_database_password: "{{ lookup('ansible.builtin.env', 'NORN_HA_DURABILITY_DB_PASSWORD') }}"
 norn_api_token: "{{ lookup('ansible.builtin.env', 'NORN_HA_NORN_API_TOKEN') }}"
 norn_audit_signing_key: "{{ lookup('ansible.builtin.env', 'NORN_HA_AUDIT_SIGNING_KEY') }}"
 grafana_admin_password: "{{ lookup('ansible.builtin.env', 'NORN_HA_GRAFANA_ADMIN_PASSWORD') }}"
@@ -20,6 +21,9 @@ git_deploy_key_path: "{{ lookup('ansible.builtin.env', 'NORN_HA_GIT_DEPLOY_KEY_P
 age_key_path: "{{ lookup('ansible.builtin.env', 'NORN_HA_AGE_KEY_PATH') }}"
 age_recipient: "{{ lookup('ansible.builtin.env', 'NORN_HA_AGE_RECIPIENT') }}"
 toy_secrets_path: "{{ lookup('ansible.builtin.env', 'NORN_HA_TOY_SECRETS_PATH') }}"
+durability_pilot_enabled: "{{ lookup('ansible.builtin.env', 'NORN_HA_ENABLE_DURABILITY_PILOT') | default('false', true) | bool }}"
+durability_pilot_secrets_path: "{{ lookup('ansible.builtin.env', 'NORN_HA_DURABILITY_SECRETS_PATH') }}"
+durability_pilot_infraspec_path: "{{ lookup('ansible.builtin.env', 'NORN_HA_DURABILITY_INFRASPEC_PATH') }}"
 pki_dir: "{{ lookup('ansible.builtin.env', 'NORN_HA_PKI_DIR') }}"
 registry_config_path: "{{ lookup('ansible.builtin.env', 'NORN_HA_REGISTRY_CONFIG_PATH') }}"
 backup_bucket: "{{ lookup('ansible.builtin.env', 'NORN_HA_BACKUP_BUCKET') }}"
@@ -57,6 +61,8 @@ control_environment:
 postgres_cluster_name: norn-pg-ha
 postgres_database: norn_test
 postgres_database_user: norn_test
+durability_database: norn_durability
+durability_database_user: norn_durability
 postgres_archive_mode: "{{ 's3' if backup_bucket | length > 0 else 'local' }}"
 
 prometheus_image: "prom/prometheus@sha256:3c42b892cf723fa54d2f262c37a0e1f80aa8c8ddb1da7b9b0df9455a35a7f893"

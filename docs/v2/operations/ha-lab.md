@@ -234,6 +234,17 @@ droplet is recreated, the command atomically issues fresh PostgreSQL, Consul,
 and Nomad leaf certificates containing its new private IP before convergence;
 the shared CA keys are not copied to the member.
 
+## Application durability pilot
+
+For a bounded HTTP/API + worker qualification using a PostgreSQL transactional
+outbox, an idempotent Redpanda consumer, and a non-authoritative Valkey cache,
+use the [DigitalOcean durability pilot](./durability-pilot.md). It reuses this
+lab's VPC, state lock, expiry, guardrails, observability, and explicit
+destruction path. It requires three `s-4vcpu-8gb` or larger members and is
+separate from the historical `norn-ha-toy` acceptance result. Its single
+Redpanda/Valkey dependencies are intentionally test-only; their availability
+does not demonstrate broker/cache HA.
+
 ## Credential incident from the original smoke bootstrap
 
 The original `v2/dev/cloud-init.yaml` contained a Tailscale auth key and GitHub
