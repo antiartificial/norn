@@ -68,8 +68,18 @@ from `master` with that exact 40-character SHA. Approve only the matching
 `platform-release` environment run after authorization, UI, and all four
 OS/architecture bundle jobs succeed.
 
+Assign the release a version-first operator label in the established
+`v<major>.<minor>.<patch>-platform[-<distance>-g<shortsha>]` form, for example
+`v2.21.0-platform` or `v2.21.0-platform-3-g1a2b3c4`.
+Release history in the API, CLI, web UI, and native clients should lead with
+that value and show a short SHA only as supporting provenance. Do not rename
+the immutable GitHub tag, full-SHA release directory, manifest binding, or
+signed asset names to match the display label.
+
 Before host promotion, verify all of the following:
 
+- the human-facing version uses the intended version-first platform label and
+  is consistent across all platform bundles;
 - tag `platform-<full-sha>` targets the same commit and reports
   `immutable=true`;
 - every supported platform has one archive, manifest, signature, and SPDX SBOM;

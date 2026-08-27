@@ -33,6 +33,13 @@ Useful surfaces:
 
 If a protected endpoint returns `401`, do not assume the platform is unhealthy. Verify auth context separately and fall back to public health/version endpoints, local DB checks, process manager state, or an authenticated shell when available.
 
+In release history, treat `v<major>.<minor>.<patch>-platform` (optionally with
+the Git-describe `-<distance>-g<shortsha>` suffix) as the human-facing release
+label and the SHA as provenance. The immutable GitHub tag,
+release directory, fetch selector, and signed artifact identity remain
+`platform-<fullsha>` or the exact full SHA; never derive verification or
+rollback identity from the display label.
+
 ## Durable Operations
 
 App deploys, preflights, rollbacks, manual snapshots, pruning, restores, and

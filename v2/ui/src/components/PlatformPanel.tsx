@@ -50,6 +50,7 @@ interface PlatformSummary {
 interface PlatformRelease {
   sha: string
   version: string
+  displayVersion?: string
   createdAt: string
   path: string
   current: boolean
@@ -130,7 +131,7 @@ function ReleasesTab() {
   const rollback = useMutation({
     mutationFn: (sha: string) => apiFetch(`/api/platform/releases/${encodeURIComponent(sha)}/rollback`, { method: 'POST' }),
     onSuccess: () => {
-      toast({ kind: 'success', title: 'Platform rollback started', description: rollbackTarget?.version ?? rollbackTarget?.sha })
+      toast({ kind: 'success', title: 'Platform rollback started', description: rollbackTarget?.displayVersion ?? rollbackTarget?.version ?? rollbackTarget?.sha })
       queryClient.invalidateQueries({ queryKey: ['platform', 'releases'] })
       setRollbackTarget(null)
     },
@@ -139,7 +140,7 @@ function ReleasesTab() {
   const rows = releases.data?.releases ?? []
   const columns: DataTableColumn<PlatformRelease>[] = [
     { key: 'created', header: 'Created', cell: row => formatTime(row.createdAt) },
-    { key: 'version', header: 'Version', cell: row => row.version },
+    { key: 'version', header: 'Version', cell: row => row.displayVersion ?? row.version },
     { key: 'sha', header: 'SHA', cell: row => <code>{short(row.sha)}</code> },
     { key: 'status', header: 'Status', cell: row => row.current ? <StatusChip tone="success" label="current" /> : '-' },
     { key: 'path', header: 'Path', cell: row => <code>{row.path}</code> },
@@ -156,7 +157,7 @@ function ReleasesTab() {
       <ConfirmDialog
         open={!!rollbackTarget}
         title="Rollback platform release"
-        message={`Rollback to ${rollbackTarget?.version ?? short(rollbackTarget?.sha)}?`}
+        message={`Rollback to ${rollbackTarget?.displayVersion ?? rollbackTarget?.version ?? short(rollbackTarget?.sha)}?`}
         consequence="This is a platform-level change and may affect all Norn services."
         confirmLabel="Rollback"
         confirmIcon="fa-arrow-rotate-left"

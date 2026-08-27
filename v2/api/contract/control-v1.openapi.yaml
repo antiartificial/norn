@@ -1,7 +1,7 @@
 openapi: 3.1.0
 info:
   title: Norn Control Protocol
-  version: 1.7.0
+  version: 1.8.0
   description: Versioned contract for native and automated Norn control clients.
 servers:
   - url: /
@@ -1974,8 +1974,16 @@ components:
       type: object
       required: [sha, version, createdAt, path, current]
       properties:
-        sha: { type: string }
-        version: { type: string }
+        sha:
+          type: string
+          pattern: '^[0-9a-f]{40}$'
+          description: Exact immutable source commit and artifact lookup identity.
+        version:
+          type: string
+          description: Immutable version embedded in the retained release manifest.
+        displayVersion:
+          type: string
+          description: Optional version-first human label; clients should prefer it while using sha for mutations and artifact lookup.
         createdAt: { type: string, format: date-time }
         path: { type: string }
         current: { type: boolean }

@@ -28,6 +28,15 @@ checksum and release signature before rebuild or import. The general operator
 CLI exposes `norn platform rebuild <full-sha> --verify`; it deliberately does
 not package, sign, or publish release assets.
 
+Release history has a separate, human-facing identity. Use the optional
+`displayVersion` label, such as `v2.21.0-platform` or the Git-describe form
+`v2.21.0-platform-3-g1a2b3c4`, in the API, CLI, dashboard, and native clients.
+Retain the signed manifest's `version`, and present the
+abbreviated SHA as secondary provenance rather than the release name. This
+display convention does not replace the immutable identity: GitHub tags remain
+`platform-<fullsha>`, release-store directories remain full-SHA, and signed
+manifests and asset names continue to bind the complete commit.
+
 Rollback is local-first: promote an already-installed, verified release before
 considering a remote fetch. When no local target matches, `platform-upgrade`
 may call the configured `NORN_RELEASE_FETCH_HOOK` with the requested ref and

@@ -717,11 +717,13 @@ describe('App shell routing', () => {
     installFetch({
       '/api/platform/releases': () => json({ current: 'current', releases: [
         { sha: 'current', version: 'v2', createdAt: new Date().toISOString(), path: '/releases/v2', current: true },
-        { sha: 'previous', version: 'v1', createdAt: new Date().toISOString(), path: '/releases/v1', current: false },
+        { sha: 'previous', version: 'platform-previous', displayVersion: 'v2.20.0-platform-gprevious', createdAt: new Date().toISOString(), path: '/releases/v1', current: false },
       ] }),
     })
     renderApp('/platform/releases')
+    expect(await screen.findByText('v2.20.0-platform-gprevious')).toBeInTheDocument()
     fireEvent.click(await screen.findByRole('button', { name: 'Rollback' }))
     expect(screen.getByRole('dialog', { name: 'Rollback platform release' })).toBeInTheDocument()
+    expect(screen.getByText(/Rollback to v2\.20\.0-platform-gprevious/)).toBeInTheDocument()
   })
 })

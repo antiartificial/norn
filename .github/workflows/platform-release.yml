@@ -127,7 +127,22 @@ jobs:
           set -euo pipefail
           source_epoch="$(git show -s --format=%ct "$REQUESTED_SHA")"
           created_at="$(git show -s --format=%cI "$REQUESTED_SHA")"
-          version="$(git describe --tags --always "$REQUESTED_SHA")"
+          # Transport tags remain exact-SHA identities for immutable fetch and
+          # verification. They must never become the human release version.
+          described="$(git describe --tags --exclude='platform-*' "$REQUESTED_SHA")" || {
+            echo "A version tag such as v2.21.0-platform or v2.21.0-control must be reachable from the release commit." >&2
+            exit 1
+          }
+          if [[ "$described" =~ ^(v[0-9]+\.[0-9]+\.[0-9]+)-(control|platform)(-[0-9]+-g[0-9a-f]{7,40})?$ ]]
+          then
+            version="${BASH_REMATCH[1]}-platform${BASH_REMATCH[3]}"
+          elif [[ "$described" =~ ^(v[0-9]+\.[0-9]+\.[0-9]+)(-[0-9]+-g[0-9a-f]{7,40})?$ ]]
+          then
+            version="${BASH_REMATCH[1]}-platform${BASH_REMATCH[2]}"
+          else
+            echo "The nearest non-transport tag does not produce a supported version-first platform label: $described" >&2
+            exit 1
+          fi
           release="$RUNNER_TEMP/release"
           bundle="$RUNNER_TEMP/bundle"
           mkdir -p "$release/bin" "$release/ui"
