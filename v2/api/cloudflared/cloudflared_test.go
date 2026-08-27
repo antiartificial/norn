@@ -2,6 +2,7 @@ package cloudflared
 
 import (
 	"context"
+	"fmt"
 	"os"
 	"path/filepath"
 	"testing"
@@ -50,8 +51,14 @@ func TestPrunePrivateIngress(t *testing.T) {
 }
 
 func TestApplyConfigUsesPrivatePermissions(t *testing.T) {
+	validator := filepath.Join(t.TempDir(), "cloudflared")
+	if err := os.WriteFile(validator, []byte("#!/bin/sh\nexit 0\n"), 0o755); err != nil {
+		t.Fatal(err)
+	}
 	previous := configPath
-	t.Cleanup(func() { configPath = previous })
+	previousBinary := binaryPath
+	t.Cleanup(func() { configPath, binaryPath = previous, previousBinary })
+	SetBinaryPath(validator)
 	path := filepath.Join(t.TempDir(), "config.yml")
 	SetConfigPath(path)
 	if err := os.WriteFile(path, []byte("old"), 0o644); err != nil {
@@ -69,5 +76,43 @@ func TestApplyConfigUsesPrivatePermissions(t *testing.T) {
 	}
 	if got := info.Mode().Perm(); got != 0o600 {
 		t.Fatalf("config permissions = %#o, want 0600", got)
+	}
+}
+
+func TestApplyConfigValidationFailurePreservesPreviousFile(t *testing.T) {
+	dir := t.TempDir()
+	destination := filepath.Join(dir, "config.yml")
+	previous := []byte("tunnel: previous\n")
+	if err := os.WriteFile(destination, previous, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	validator := filepath.Join(dir, "cloudflared")
+	if err := os.WriteFile(validator, []byte("#!/bin/sh\nexit 1\n"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	previousConfig, previousBinary := configPath, binaryPath
+	SetConfigPath(destination)
+	SetBinaryPath(validator)
+	t.Cleanup(func() { configPath, binaryPath = previousConfig, previousBinary })
+
+	if err := ApplyConfig(context.Background(), &Config{Tunnel: "replacement"}); err == nil {
+		t.Fatal("ApplyConfig succeeded with a failing validator")
+	}
+	data, err := os.ReadFile(destination)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(data) != string(previous) {
+		t.Fatalf("previous config changed after validation failure: %q", data)
+	}
+}
+
+func TestLaunchTargetUsesCurrentUIDAndConfiguredLabel(t *testing.T) {
+	previous := launchLabel
+	SetLaunchLabel("com.example.cloudflared")
+	t.Cleanup(func() { launchLabel = previous })
+	want := fmt.Sprintf("gui/%d/com.example.cloudflared", os.Getuid())
+	if got := launchTarget(); got != want {
+		t.Fatalf("launchTarget() = %q, want %q", got, want)
 	}
 }

@@ -55,11 +55,27 @@ type IngressRule struct {
 	Service  string `yaml:"service"`
 }
 
-var configPath string
+var (
+	configPath  string
+	binaryPath  string
+	launchLabel = "com.norn.cloudflared"
+)
 
 // SetConfigPath sets the path to the local cloudflared config file.
 func SetConfigPath(path string) {
 	configPath = path
+}
+
+// SetBinaryPath sets the cloudflared executable used for config validation.
+func SetBinaryPath(path string) {
+	binaryPath = path
+}
+
+// SetLaunchLabel sets the launchd service label restarted after config changes.
+func SetLaunchLabel(label string) {
+	if strings.TrimSpace(label) != "" {
+		launchLabel = label
+	}
 }
 
 func getConfigPath() string {
@@ -68,6 +84,30 @@ func getConfigPath() string {
 	}
 	home, _ := os.UserHomeDir()
 	return filepath.Join(home, ".cloudflared", "config.yml")
+}
+
+func getBinaryPath() string {
+	if binaryPath != "" {
+		return binaryPath
+	}
+	for _, candidate := range []string{"/opt/homebrew/bin/cloudflared", "/usr/local/bin/cloudflared"} {
+		if info, err := os.Stat(candidate); err == nil && !info.IsDir() {
+			return candidate
+		}
+	}
+	return "cloudflared"
+}
+
+func launchTarget() string {
+	return fmt.Sprintf("gui/%d/%s", os.Getuid(), launchLabel)
+}
+
+func validateConfig(ctx context.Context, path string) error {
+	cmd := exec.CommandContext(ctx, getBinaryPath(), "--config", path, "tunnel", "ingress", "validate")
+	if out, err := cmd.CombinedOutput(); err != nil {
+		return fmt.Errorf("validate cloudflared config: %s: %w", strings.TrimSpace(string(out)), err)
+	}
+	return nil
 }
 
 // ReadConfig reads the cloudflared config from the local config file.
@@ -150,8 +190,9 @@ func PrunePrivateIngress(cfg *Config) bool {
 	return changed
 }
 
-// ApplyConfig writes the config to the local cloudflared config file.
-func ApplyConfig(_ context.Context, cfg *Config) error {
+// ApplyConfig validates a candidate config before atomically replacing the
+// live cloudflared config. A validation failure leaves the previous file intact.
+func ApplyConfig(ctx context.Context, cfg *Config) error {
 	data, err := yaml.Marshal(cfg)
 	if err != nil {
 		return fmt.Errorf("marshal config: %w", err)
@@ -178,8 +219,15 @@ func ApplyConfig(_ context.Context, cfg *Config) error {
 	if err := temporary.Close(); err != nil {
 		return fmt.Errorf("close cloudflared config: %w", err)
 	}
+	if err := validateConfig(ctx, temporaryPath); err != nil {
+		return err
+	}
 	if err := os.Rename(temporaryPath, path); err != nil {
 		return fmt.Errorf("publish cloudflared config: %w", err)
+	}
+	if directory, err := os.Open(filepath.Dir(path)); err == nil {
+		_ = directory.Sync()
+		_ = directory.Close()
 	}
 	return nil
 }
@@ -188,8 +236,11 @@ func ApplyConfig(_ context.Context, cfg *Config) error {
 // which kills the running process and immediately relaunches it with
 // the updated config. This avoids the KeepAlive/SuccessfulExit issue
 // where a clean SIGTERM exit (code 0) would not trigger auto-restart.
-func Restart(_ context.Context) error {
-	cmd := exec.Command("launchctl", "kickstart", "-k", "gui/501/homebrew.mxcl.cloudflared")
+func Restart(ctx context.Context) error {
+	if err := validateConfig(ctx, getConfigPath()); err != nil {
+		return err
+	}
+	cmd := exec.CommandContext(ctx, "launchctl", "kickstart", "-k", launchTarget())
 	if out, err := cmd.CombinedOutput(); err != nil {
 		return fmt.Errorf("launchctl kickstart cloudflared: %s: %w", string(out), err)
 	}

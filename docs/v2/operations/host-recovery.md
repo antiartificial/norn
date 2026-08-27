@@ -8,7 +8,8 @@ reboot, and Docker Desktop restarts without rebuilding every app.
 - Persistent Nomad and Consul data outside `/tmp`.
 - User launchd jobs for Nomad and Consul.
 - A one-shot launchd supervisor that starts Docker, waits for Consul and Nomad,
-  restarts the Norn API after its dependencies are ready, runs bounded catch-ups,
+  validates and recovers the Norn-owned cloudflared LaunchAgent, restarts the
+  Norn API after its dependencies are ready, runs bounded catch-ups,
   and performs an assurance pass before an optional post-recovery hook.
 - A periodic assurance LaunchAgent that repairs explicitly required apps and
   routes, reports declared minimum-capacity drift, then probes the endpoints
@@ -19,8 +20,9 @@ reboot, and Docker Desktop restarts without rebuilding every app.
 - Optional bounded cron catch-ups loaded through the encrypted API runtime
   environment.
 
-The existing Norn API and cloudflared launchd jobs remain independently
-managed. The host lane does not embed API tokens or app secrets in plists.
+The Norn API remains independently managed. The host lane owns cloudflared's
+service definition but keeps tunnel credentials in the normal config files; it
+does not embed API tokens or app secrets in plists.
 
 ## Recovery order
 
@@ -31,10 +33,11 @@ The login supervisor and `norn host recover` use the same ordered flow:
 3. Start Consul and wait for a leader.
 4. Start Nomad and wait for a leader.
 5. Restart the Norn API and wait for `/api/health`.
-6. Start the host maintenance agent.
-7. Trigger configured bounded cron catch-ups.
-8. Run host assurance.
-9. Run the optional installation-specific `post-recover` hook.
+6. Validate and recover `com.norn.cloudflared`.
+7. Start the host maintenance agent.
+8. Trigger configured bounded cron catch-ups.
+9. Run host assurance.
+10. Run the optional installation-specific `post-recover` hook.
 
 Core recovery completes even when assurance still has a failing endpoint. The
 failure is recorded through Beacon, and the periodic assurance agent retries
@@ -45,6 +48,7 @@ the idempotent repair pass without repeatedly restarting the core runtime.
 ```bash
 norn host prerequisites --connector nomad-consul --check
 norn host install --repo /path/to/norn
+norn host cloudflared-recover --cloudflared-probe https://service.example.com/health
 norn host doctor
 ```
 

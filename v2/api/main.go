@@ -68,6 +68,8 @@ func main() {
 	}()
 
 	cloudflared.SetConfigPath(cfg.CloudflaredConfig)
+	cloudflared.SetBinaryPath(cfg.CloudflaredBinary)
+	cloudflared.SetLaunchLabel(cfg.CloudflaredLaunchLabel)
 
 	// Database
 	db, err := store.Connect(cfg.DatabaseURL)

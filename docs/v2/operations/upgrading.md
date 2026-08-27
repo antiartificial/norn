@@ -40,6 +40,26 @@ norn platform queue-smoke
 Use the exact pushed SHA intended for promotion. `HEAD` is convenient for a
 local development rehearsal but can move between review and upgrade.
 
+## macOS and Homebrew Maintenance
+
+Homebrew owns executable installation; Norn owns the cloudflared service
+definition. Do not run `brew services start/restart cloudflared`, because it
+regenerates a bare-binary LaunchAgent without named-tunnel arguments.
+
+```bash
+brew update
+brew upgrade
+norn host install --repo /path/to/norn
+norn host cloudflared-recover --cloudflared-probe https://service.example.com/health
+norn host doctor
+norn host status
+```
+
+Use the same `doctor` and `status` checks after a macOS upgrade or reboot. The
+managed plist points through Homebrew's stable binary path, validates the
+ingress config before activation, and retires only a matching or broken legacy
+`homebrew.mxcl.cloudflared` job.
+
 ## Signed GitHub Release Checklist
 
 For an operational signed release, merge the reviewed change to protected
