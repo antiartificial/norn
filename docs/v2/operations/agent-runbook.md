@@ -124,24 +124,39 @@ prefix.
 The default platform lane builds an isolated release, boots a candidate API on an alternate port, checks health/version, promotes the release symlink, restarts only the Norn API process, and runs postflight health.
 
 For immutable-release recovery, use `norn platform rebuild <full-sha> --verify`.
-It requires the full source SHA and artifact checksum/signature verification.
-Prefer a verified local rollback target; if none exists, `platform-upgrade` may
-use the configured `NORN_RELEASE_FETCH_HOOK` to restore one into the local store
-before verification. Set `NORN_RELEASE_SIGNATURE_POLICY=require-signed` for
-production. A platform rollback does not undo database schema changes, so keep
-releases backward compatible with the active schema across the rollback window.
+It requires the full source SHA, the exact retained Go/Node/pnpm inputs, and
+artifact checksum/signature verification. Prefer a verified local rollback
+target. Under `require-signed`, rollback, preflight, and upgrade call the
+configured `NORN_RELEASE_FETCH_HOOK` when the exact immutable target is absent,
+then verify it before any candidate starts. Set
+`NORN_RELEASE_SIGNATURE_POLICY=require-signed` for production. A
+platform rollback does not undo database schema changes, so keep releases
+backward compatible with the active schema across the rollback window.
 
 When a local release is unavailable, configure the host-only GitHub Release
 fallback: `NORN_RELEASE_FETCH_HOOK=platform-release-fetch-github`,
 `NORN_RELEASE_VERIFY_HOOK=platform-release-verify-github`,
 `NORN_RELEASE_REPOSITORY=owner/norn`, and
 `NORN_RELEASE_PUBLIC_KEY=/secure/path/norn-release.pub`. Set
-`NORN_RELEASE_SIGNATURE_POLICY=require-signed` in production. The fetch adapter
-uses a read-only `NORN_RELEASE_GITHUB_TOKEN` (or `GH_TOKEN`) and accepts only
-the private release tag `platform-<fullsha>` with its matching archive,
-manifest, signature, and SBOM assets. Keep provider and release-signing
-credentials in the protected release workflow, never on a Norn host or in the
-operator CLI.
+`NORN_RELEASE_SIGNATURE_POLICY=require-signed` in production. Public
+repositories download anonymously. Private repositories should use only an
+owned, non-symlink, exact-mode-`0600` Contents-read token file. The adapter
+accepts only tag `platform-<fullsha>` with its matching archive, manifest,
+signature, and SBOM assets. Keep provider, immutability-check, and
+release-signing credentials in the protected workflow, never on a Norn host or
+in the operator CLI.
+
+When direct maintenance runs from a checkout, remember that checkout-local
+`v2/scripts/platform-upgrade` is considered before the synchronized managed
+copy. If the checkout is not proven to contain the same release tooling, pass
+`--script /path/to/managed/platform-upgrade` explicitly. Never make an
+immutable release writable merely because an older script tries to replace it.
+
+On macOS, importer `f830b3c` and later accommodates release parents carrying
+`com.apple.provenance`: it atomically publishes the owner-writable staging root
+and immediately seals the installed tree. Do not remove provenance metadata as
+a workaround. Verify the installed root is read-only and both manifest and
+external signature checks report success.
 
 The queued lane records `platform.preflight`, `platform.upgrade`, and
 `platform.smoke` in the durable operations table. `com.norn.host-agent` claims

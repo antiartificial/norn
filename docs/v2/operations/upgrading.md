@@ -40,6 +40,31 @@ norn platform queue-smoke
 Use the exact pushed SHA intended for promotion. `HEAD` is convenient for a
 local development rehearsal but can move between review and upgrade.
 
+## Signed GitHub Release Checklist
+
+For an operational signed release, merge the reviewed change to protected
+`master` before building. Dispatch `.github/workflows/platform-release.yml`
+from `master` with that exact 40-character SHA. Approve only the matching
+`platform-release` environment run after authorization, UI, and all four
+OS/architecture bundle jobs succeed.
+
+Before host promotion, verify all of the following:
+
+- tag `platform-<full-sha>` targets the same commit and reports
+  `immutable=true`;
+- every supported platform has one archive, manifest, signature, and SPDX SBOM;
+- the host uses the protected workflow's Ed25519 public key and owner-only
+  fetch/verify configuration;
+- public repositories download anonymously; private mirrors use only an owned,
+  non-symlink, exact-mode-`0600` Contents-read token file;
+- the active-operation drain is clear and host fetch/verify hooks are executable.
+
+With `require-signed`, rollback, preflight, and upgrade invoke the configured
+fetch hook when the exact release directory is absent. They require an exact
+full-SHA import, then run both the local manifest verifier and external Ed25519
+verifier before candidate startup or promotion. If the command begins a local
+build instead, stop: the selected script or configuration is stale.
+
 The platform lane builds from an isolated git worktree into `$HOME/norn/releases/<sha>`, writes a `$HOME/norn/current` symlink, installs compatibility binaries into `$HOME/go/bin`, and health-checks a candidate API with recovery and operation workers disabled so preflight does not mark running work failed or claim queued jobs.
 
 Upgrade, rollback, and manual proxy switching are host-serialized with an
@@ -75,6 +100,26 @@ use the same managed script that the previous promotion synchronized. A
 managed script likewise resolves its source checkout from an explicit
 `NORN_PLATFORM_REPO`, its own repository, the current directory, or
 `$HOME/projects/norn`, in that order.
+
+A clean checkout can still be stale or historically divergent. In that case,
+passing only `--repo` selects its checkout-local script. For bootstrap or repair,
+pass the synchronized managed `platform-upgrade` with `--script` explicitly and
+use `--repo` only for source-object resolution. If an old script attempts to
+remove an immutable SHA directory, stop; do not relax directory permissions.
+
+macOS release parents may carry `com.apple.provenance`. Importer `f830b3c` and
+later keeps the staging root owner-writable through the atomic no-replace rename
+and immediately seals the installed root, while descendants are sealed before
+publication. Do not remove provenance metadata to work around an older
+importer. A completed import must remain read-only and verify as `signed`.
+
+For a first development migration from a pre-manifest current release, use a
+temporary owner-only configuration with `allow-unsigned` and
+`NORN_ALLOW_LEGACY_RELEASES=true` for that promotion only. Keep the persistent
+configuration at `require-signed`, remove the temporary file on every exit, and
+never use this escape under `NORN_PROFILE=production`. After two signed releases
+exist locally, rehearse rollback, authenticated smoke, and re-promotion without
+the escape.
 
 Use these environment variables when the repo or host layout differs:
 

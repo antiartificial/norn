@@ -848,6 +848,21 @@ build_or_reuse_release() {
   fail "could not atomically install release $release"
 }
 
+fetch_signed_release_if_needed() {
+  [[ "$signature_policy" == "require-signed" ]] || return 0
+  if [[ -e "$release" || -L "$release" ]]; then
+    [[ -d "$release" && ! -L "$release" ]] || fail "release target exists but is not an immutable directory: $release"
+    return 0
+  fi
+  [[ -n "$release_fetch_hook" ]] || fail "signed release $sha is absent and NORN_RELEASE_FETCH_HOOK is not configured"
+  [[ -x "$release_fetch_hook" ]] || fail "release fetch hook is not executable: $release_fetch_hook"
+
+  log "signed release $sha is absent; invoking configured fetch hook"
+  "$release_fetch_hook" "$sha" "$releases"
+  [[ -d "$release" && ! -L "$release" ]] || fail "release fetch hook did not install exact release: $sha"
+  verify_release "$release" "$sha"
+}
+
 wait_health() {
   local base="$1"
   local tries="${2:-30}"
@@ -1169,6 +1184,7 @@ if [[ "$mode" == "rebuild" ]]; then
   exit 0
 fi
 
+fetch_signed_release_if_needed
 build_or_reuse_release
 candidate_preflight
 
