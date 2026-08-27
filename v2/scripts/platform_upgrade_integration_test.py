@@ -185,6 +185,45 @@ class PlatformUpgradeIntegrationTests(unittest.TestCase):
         )
         self.assertIn("production requires NORN_RELEASE_VERIFY_HOOK", production.stderr)
 
+    def test_required_signed_release_is_fetched_before_preflight(self) -> None:
+        fetch_marker = self.root / "fetch-called"
+        fetch_hook = self.root / "fetch-release"
+        fetch_hook.write_text(
+            "#!/bin/sh\n"
+            "set -eu\n"
+            'sha="$1"\n'
+            'releases="$2"\n'
+            'mkdir -p "$releases/$sha"\n'
+            'printf \'{}\\n\' > "$releases/$sha/release.json"\n'
+            'printf \'{}\\n\' > "$releases/$sha/release.signature.json"\n'
+            f': > "{fetch_marker}"\n',
+            encoding="utf-8",
+        )
+        fetch_hook.chmod(0o755)
+
+        manifest_helper = self.root / "verify-manifest"
+        manifest_helper.write_text("#!/usr/bin/env python3\nprint('signed')\n", encoding="utf-8")
+        manifest_helper.chmod(0o755)
+        verify_hook = self.root / "verify-release"
+        verify_hook.write_text("#!/bin/sh\nexit 0\n", encoding="utf-8")
+        verify_hook.chmod(0o755)
+
+        result = self.platform(
+            "preflight",
+            self.sha,
+            extra_environment={
+                "NORN_RELEASE_SIGNATURE_POLICY": "require-signed",
+                "NORN_RELEASE_FETCH_HOOK": str(fetch_hook),
+                "NORN_RELEASE_VERIFY_HOOK": str(verify_hook),
+                "NORN_RELEASE_MANIFEST_HELPER": str(manifest_helper),
+            },
+        )
+
+        self.assertTrue(fetch_marker.exists())
+        self.assertTrue((self.releases / self.sha).is_dir())
+        self.assertIn("invoking configured fetch hook", result.stdout)
+        self.assertIn("reusing immutable release", result.stdout)
+
     def test_concurrent_promotions_fail_closed_and_lock_recovers(self) -> None:
         self.platform("preflight", "HEAD")
         fake_bin = self.root / "fake-bin"
