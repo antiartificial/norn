@@ -738,6 +738,15 @@ PY
   log "verified release $(basename "$target") ($signature_status)"
 }
 
+verify_rebuild_stage() {
+  local target="$1"
+  local expected_sha="$2"
+  local signature_status
+  signature_status="$(python3 "$manifest_helper" verify --release "$target" --expected-sha "$expected_sha")" || fail "rebuilt release manifest verification failed: $target"
+  [[ "$signature_status" == "unsigned" ]] || fail "rebuilt release must have fresh unsigned signature state before comparison: $target"
+  log "verified rebuilt release $(basename "$target") (unsigned staging)"
+}
+
 prepare_worktree() {
   if [[ ! -e "$worktree/.git" ]]; then
     git -C "$repo" worktree add --detach "$worktree" "$sha" >/dev/null
@@ -1178,7 +1187,7 @@ if [[ "$mode" == "rebuild" ]]; then
   build_stage="$(mktemp -d "$releases/.rebuild-${short_sha}.XXXXXX")"
   build_release_into "$build_stage"
   chmod -R a-w "$build_stage"
-  verify_release "$build_stage" "$sha"
+  verify_rebuild_stage "$build_stage" "$sha"
   python3 "$manifest_helper" compare --retained "$release" --rebuilt "$build_stage" || fail "rebuild verification failed"
   log "rebuild verified manifest-content equivalence with retained release: $sha"
   exit 0

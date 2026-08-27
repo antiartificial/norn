@@ -65,6 +65,12 @@ full-SHA import, then run both the local manifest verifier and external Ed25519
 verifier before candidate startup or promotion. If the command begins a local
 build instead, stop: the selected script or configuration is stale.
 
+`rebuild --verify` is different from promotion: it first verifies the retained
+release under the configured signature policy, then creates a fresh unsigned
+staging build, validates that staging manifest locally, and compares its
+canonical release manifest with the retained artifact. The temporary rebuild is
+never promoted or treated as a signed release.
+
 The platform lane builds from an isolated git worktree into `$HOME/norn/releases/<sha>`, writes a `$HOME/norn/current` symlink, installs compatibility binaries into `$HOME/go/bin`, and health-checks a candidate API with recovery and operation workers disabled so preflight does not mark running work failed or claim queued jobs.
 
 Upgrade, rollback, and manual proxy switching are host-serialized with an
