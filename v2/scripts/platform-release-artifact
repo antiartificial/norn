@@ -940,8 +940,21 @@ def import_bundle(bundle: Path, releases_dir: Path, public_key: Path) -> Path:
                 path.chmod(info.st_mode & ~0o222)
             elif stat.S_ISREG(info.st_mode):
                 path.chmod(info.st_mode & ~0o222)
-        staging.chmod(staging.lstat().st_mode & ~0o222)
+        # Keep the staging root owner-writable until after the atomic rename.
+        # macOS denies renaming a read-only directory when the release parent
+        # carries com.apple.provenance, even though the owner can create files
+        # in that parent. Descendants are already sealed above, and the root is
+        # sealed immediately after its no-replace publication.
         _atomic_directory_no_replace(staging, destination)
+        try:
+            destination.chmod(destination.lstat().st_mode & ~0o222)
+        except BaseException:
+            # Never leave a writable release accepted after a failed seal. The
+            # strict verifier also rejects a writable root if the process dies
+            # in the narrow rename-to-chmod window.
+            destination.chmod(destination.lstat().st_mode | stat.S_IWUSR)
+            shutil.rmtree(destination, ignore_errors=True)
+            raise
     except BaseException:
         shutil.rmtree(staging, ignore_errors=True)
         raise

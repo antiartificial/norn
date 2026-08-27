@@ -207,6 +207,19 @@ class PlatformReleaseArtifactTests(unittest.TestCase):
         )
         self.assertIn("already exists", duplicate.stderr)
 
+    def test_import_seals_release_root_after_atomic_publication(self) -> None:
+        releases = self.root / "sealed-releases"
+        self._run(
+            ARTIFACT,
+            "import",
+            "--bundle-dir", str(self.bundle),
+            "--releases-dir", str(releases),
+            "--public-key", str(self.public_key),
+        )
+        installed = releases / SHA
+        self.assertEqual(installed.stat().st_mode & 0o222, 0)
+        self.assertEqual((installed / "bin" / "norn").stat().st_mode & 0o222, 0)
+
     def test_manifest_signature_and_archive_tampering_are_rejected(self) -> None:
         tampered = self.root / "tampered"
         shutil.copytree(self.bundle, tampered)
