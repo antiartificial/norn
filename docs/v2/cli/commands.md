@@ -161,6 +161,9 @@ norn host migrate-state \
   --from-nomad /path/to/current/nomad-data \
   --from-consul /path/to/current/consul-data
 norn host recover
+norn host cloudflared-recover \
+  --cloudflared-config ~/.cloudflared/config.yml \
+  --cloudflared-probe https://service.example.com/health
 norn host assure
 norn host queue-assure
 norn host status
@@ -215,6 +218,10 @@ norn host install --repo /path/to/norn \
 | `--serve PORT=TARGET` | Reconcile a Tailscale Serve listener; `{address}` expands to the current host IPv4 address |
 | `--probe NAME=URL` | Retry an unauthenticated HTTP GET against the route users actually reach |
 | `--assure-interval SECONDS` | Set the periodic assurance interval; minimum 60, default 300 |
+| `--cloudflared-config PATH` | Set the named-tunnel config managed by Norn |
+| `--cloudflared-label LABEL` | Set the Norn-owned LaunchAgent label; default `com.norn.cloudflared` |
+| `--cloudflared-probe URL` | Check a public health URL after tunnel recovery |
+| `--skip-cloudflared` | Leave cloudflared outside host management |
 | `--security-dir PATH` | Set the staged/active host security root |
 | `--cert-days DAYS` | Set staged leaf-certificate validity; minimum 30 |
 | `--nomad-security-fragment PATH` | Reserved; authenticated probes are supported, but activation waits for atomic fleet token/TLS cutover and rollback |
@@ -229,7 +236,9 @@ subsequent passing run emits a correlated recovery event.
 `host migrate-state` is the one-time cutover command. It refuses to copy state
 while the Nomad or Consul HTTP API remains reachable. `host recover` starts
 Docker, Consul, Nomad, and the Norn API in dependency order, runs configured
-catch-ups, and invokes assurance. `host assure` verifies and repairs the
+catch-ups, validates and recovers cloudflared, and invokes assurance. The
+targeted `host cloudflared-recover` command is safe after a Homebrew or macOS
+update; do not use `brew services restart cloudflared`. `host assure` verifies and repairs the
 explicit policy without restarting the core host runtime. `status` is the
 compact operator view and `doctor` validates tools, plists, persistence, and
 runtime health.

@@ -4,7 +4,10 @@ Norn v2 uses Cloudflare Tunnels (cloudflared) for external routing and optionall
 
 ## Tunnel Routing
 
-cloudflared runs locally as a Homebrew LaunchAgent, managed via a config file on disk. During the **forge** step of the deploy pipeline, Norn reads the config, updates ingress rules, writes it back, and restarts the tunnel process.
+Homebrew supplies the cloudflared binary, while Norn owns the persistent
+`com.norn.cloudflared` LaunchAgent and its config file. During the **forge**
+step, Norn validates a candidate config, atomically publishes it, and restarts
+that managed tunnel process.
 
 ### How It Works
 
@@ -13,7 +16,7 @@ Norn manages cloudflared's config file directly (default `~/.cloudflared/config.
 | Component | Details |
 |-----------|---------|
 | Config file | `~/.cloudflared/config.yml` (override with `NORN_CLOUDFLARED_CONFIG`) |
-| Process management | Homebrew LaunchAgent (`homebrew.mxcl.cloudflared`) |
+| Process management | Norn LaunchAgent (`com.norn.cloudflared`) |
 | Restart method | `launchctl kickstart -k` (kills + relaunches immediately) |
 | Tunnel type | Named tunnel with credentials file |
 
@@ -39,30 +42,27 @@ ingress:
   - service: http_status:404    # catch-all (required)
 ```
 
-3. Update the Homebrew plist to include `tunnel run` arguments:
-
-```xml
-<key>ProgramArguments</key>
-<array>
-  <string>/opt/homebrew/opt/cloudflared/bin/cloudflared</string>
-  <string>tunnel</string>
-  <string>run</string>
-</array>
-```
-
-::: warning Homebrew default plist
-The default Homebrew plist for cloudflared only includes the binary path with no arguments. Without `tunnel run`, cloudflared exits immediately and the LaunchAgent crash-loops. Always verify the plist includes the `tunnel` and `run` arguments.
-:::
-
-4. Start the service:
+3. Install and activate the Norn-owned service:
 
 ```bash
-# If a system-level daemon exists (token-based), unload it first:
-sudo launchctl unload /Library/LaunchDaemons/com.cloudflare.cloudflared.plist
-
-# Start the Homebrew service:
-brew services start cloudflared
+norn host install --repo /path/to/norn \
+  --cloudflared-config ~/.cloudflared/config.yml \
+  --cloudflared-probe https://myapp.example.com/health
+norn host cloudflared-recover \
+  --cloudflared-probe https://myapp.example.com/health
 ```
+
+::: warning Do not use `brew services` for cloudflared
+`brew services start/restart cloudflared` regenerates
+`homebrew.mxcl.cloudflared` with only the binary path. That daemon exits or
+crash-loops because it has no named-tunnel arguments. Homebrew upgrades may
+replace the binary; the Norn LaunchAgent follows the stable Homebrew symlink.
+After `brew upgrade cloudflared`, use `norn host cloudflared-recover`.
+:::
+
+After a macOS upgrade, Homebrew update, or reboot, run `norn host doctor` and
+verify `com.norn.cloudflared`. The login supervisor also validates and recovers
+the tunnel before restarting the Norn API.
 
 ### Infraspec Configuration
 
@@ -122,6 +122,8 @@ curl -X POST http://localhost:8800/api/apps/myapp/endpoints/toggle \
 | Environment Variable | Default | Description |
 |---------------------|---------|-------------|
 | `NORN_CLOUDFLARED_CONFIG` | `~/.cloudflared/config.yml` | Path to the cloudflared config file |
+| `NORN_CLOUDFLARED_BIN` | auto-detected | cloudflared binary used for validation |
+| `NORN_CLOUDFLARED_LAUNCH_LABEL` | `com.norn.cloudflared` | LaunchAgent restarted after config changes |
 
 ### Config File Format
 

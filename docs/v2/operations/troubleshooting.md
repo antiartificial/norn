@@ -40,6 +40,22 @@ The rollup reports OTEL enablement, log export state, log format, service name, 
 
 ## Common Issues
 
+### Cloudflare 530 / Tunnel 1033 After Upgrade or Reboot
+
+Validate the config and inspect the managed LaunchAgent:
+
+```bash
+cloudflared --config ~/.cloudflared/config.yml tunnel ingress validate
+launchctl print "gui/$(id -u)/com.norn.cloudflared"
+norn host cloudflared-recover --cloudflared-probe https://service.example.com/health
+```
+
+IPv6 literal origins must be bracketed (`http://[::1]:3000`, not
+`http://::1:3000`). Also check that only `com.norn.cloudflared` owns the named
+tunnel. A Homebrew-generated `homebrew.mxcl.cloudflared` plist containing only
+the binary path is invalid for this setup; rerun `norn host install` and the
+targeted recovery command rather than `brew services restart cloudflared`.
+
 ### Nomad Not Running
 
 **Symptom**: `WARNING: nomad unavailable` on API startup, deploys fail.

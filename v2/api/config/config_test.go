@@ -206,3 +206,17 @@ func TestRedpandaConfig(t *testing.T) {
 		t.Fatalf("RedpandaRPKPath = %q", cfg.RedpandaRPKPath)
 	}
 }
+
+func TestCloudflaredRuntimeConfig(t *testing.T) {
+	t.Setenv("NORN_CLOUDFLARED_BIN", "/custom/cloudflared")
+	t.Setenv("NORN_CLOUDFLARED_LAUNCH_LABEL", "com.example.cloudflared")
+
+	cfg := Load()
+
+	if cfg.CloudflaredBinary != "/custom/cloudflared" {
+		t.Fatalf("CloudflaredBinary = %q", cfg.CloudflaredBinary)
+	}
+	if cfg.CloudflaredLaunchLabel != "com.example.cloudflared" {
+		t.Fatalf("CloudflaredLaunchLabel = %q", cfg.CloudflaredLaunchLabel)
+	}
+}

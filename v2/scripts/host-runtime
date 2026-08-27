@@ -3,7 +3,7 @@ set -euo pipefail
 
 usage() {
   cat <<'USAGE'
-Usage: host-runtime <install|prerequisites|setup|render|doctor|recover|assure|status|migrate-state|security-plan|security-init> [options]
+Usage: host-runtime <install|prerequisites|setup|render|doctor|recover|cloudflared-recover|assure|status|migrate-state|security-plan|security-init> [options]
 
 Manage a persistent macOS Norn runtime without embedding machine-specific paths
 in the repository.
@@ -13,10 +13,19 @@ Options:
   --config-dir PATH     Managed config root (default: ~/.config/norn/host)
   --state-dir PATH      Persistent state root (default: ~/.local/share/norn/host)
   --log-dir PATH        Log directory (default: ~/.local/log)
+  --launch-agents-dir PATH
+                        LaunchAgent directory (default: ~/Library/LaunchAgents)
   --nomad-source PATH   Source Nomad HCL to preserve host volumes
   --consul-source PATH  Source Consul HCL
   --address ADDRESS     Advertise/bind address (default: auto-detected IPv4)
   --api-label LABEL     Norn API launchd label (default: com.norn.api)
+  --cloudflared-config PATH
+                        Named-tunnel config (default: ~/.cloudflared/config.yml)
+  --cloudflared-label LABEL
+                        Norn-owned launchd label (default: com.norn.cloudflared)
+  --cloudflared-probe URL
+                        Public URL checked after cloudflared recovery
+  --skip-cloudflared    Do not install or recover a cloudflared LaunchAgent
   --catch-up APP:PROC   Trigger a bounded cron catch-up after recovery (repeatable)
   --required APP:PROC   Assure a required app process is passing (repeatable)
   --probe NAME=URL      Probe a user-facing HTTP endpoint (repeatable)
@@ -75,6 +84,7 @@ repo="${NORN_HOST_REPO:-}"
 config_dir="${NORN_HOST_CONFIG_DIR:-$HOME/.config/norn/host}"
 state_dir="${NORN_HOST_STATE_DIR:-$HOME/.local/share/norn/host}"
 log_dir="${NORN_HOST_LOG_DIR:-$HOME/.local/log}"
+launch_agents="${NORN_HOST_LAUNCH_AGENTS_DIR:-$HOME/Library/LaunchAgents}"
 nomad_source="${NORN_HOST_NOMAD_SOURCE:-}"
 consul_source="${NORN_HOST_CONSUL_SOURCE:-}"
 security_dir="${NORN_HOST_SECURITY_DIR:-}"
@@ -83,6 +93,10 @@ consul_security_fragment="${NORN_HOST_CONSUL_SECURITY_FRAGMENT:-}"
 cert_days="${NORN_HOST_CERT_DAYS:-365}"
 address="${NORN_HOST_ADDRESS:-auto}"
 api_label="${NORN_HOST_API_LABEL:-com.norn.api}"
+cloudflared_config="${NORN_HOST_CLOUDFLARED_CONFIG:-${NORN_CLOUDFLARED_CONFIG:-$HOME/.cloudflared/config.yml}}"
+cloudflared_label="${NORN_HOST_CLOUDFLARED_LABEL:-${NORN_CLOUDFLARED_LAUNCH_LABEL:-com.norn.cloudflared}}"
+cloudflared_probe="${NORN_HOST_CLOUDFLARED_PROBE:-}"
+skip_cloudflared=false
 from_nomad=""
 from_consul=""
 dry_run=false
@@ -113,6 +127,7 @@ while [ "$#" -gt 0 ]; do
     --config-dir) config_dir="$2"; shift 2 ;;
     --state-dir) state_dir="$2"; shift 2 ;;
     --log-dir) log_dir="$2"; shift 2 ;;
+    --launch-agents-dir) launch_agents="$2"; shift 2 ;;
     --nomad-source) nomad_source="$2"; shift 2 ;;
     --consul-source) consul_source="$2"; shift 2 ;;
     --security-dir) security_dir="$2"; shift 2 ;;
@@ -121,6 +136,10 @@ while [ "$#" -gt 0 ]; do
     --consul-security-fragment) consul_security_fragment="$2"; shift 2 ;;
     --address) address="$2"; shift 2 ;;
     --api-label) api_label="$2"; shift 2 ;;
+    --cloudflared-config) cloudflared_config="$2"; shift 2 ;;
+    --cloudflared-label) cloudflared_label="$2"; shift 2 ;;
+    --cloudflared-probe) cloudflared_probe="$2"; shift 2 ;;
+    --skip-cloudflared) skip_cloudflared=true; shift ;;
     --catch-up)
       catch_up_specs="$(append_spec "$catch_up_specs" "$2")"
       shift 2
@@ -150,7 +169,8 @@ fi
 config_dir="$(expand_home "$config_dir")"
 state_dir="$(expand_home "$state_dir")"
 log_dir="$(expand_home "$log_dir")"
-launch_agents="$HOME/Library/LaunchAgents"
+launch_agents="$(expand_home "$launch_agents")"
+cloudflared_config="$(expand_home "$cloudflared_config")"
 runtime_copy="$config_dir/bin/host-runtime"
 norn_copy="$config_dir/bin/norn"
 agent_copy="$config_dir/bin/norn-host-agent"
@@ -180,6 +200,8 @@ consul_label="com.norn.consul"
 supervisor_label="com.norn.host-supervisor"
 assurance_label="com.norn.host-assurance"
 agent_label="com.norn.host-agent"
+legacy_cloudflared_label="homebrew.mxcl.cloudflared"
+cloudflared_plist_path="$launch_agents/$cloudflared_label.plist"
 
 if [ -z "$repo" ]; then
   script_dir="$(cd "$(dirname "$0")" && pwd)"
@@ -353,8 +375,19 @@ EOF
 
 supervisor_plist() {
   local repo_args=""
+  local cloudflared_args=""
   if [ -n "$repo" ]; then
     repo_args="    <string>--repo</string><string>$repo</string>"
+  fi
+  if $skip_cloudflared; then
+    cloudflared_args="    <string>--skip-cloudflared</string>"
+  else
+    cloudflared_args="    <string>--cloudflared-config</string><string>$cloudflared_config</string>
+    <string>--cloudflared-label</string><string>$cloudflared_label</string>"
+    if [ -n "$cloudflared_probe" ]; then
+      cloudflared_args="$cloudflared_args
+    <string>--cloudflared-probe</string><string>$cloudflared_probe</string>"
+    fi
   fi
   cat <<EOF
 <?xml version="1.0" encoding="UTF-8"?>
@@ -371,6 +404,7 @@ $repo_args
     <string>--state-dir</string><string>$state_dir</string>
     <string>--log-dir</string><string>$log_dir</string>
     <string>--api-label</string><string>$api_label</string>
+$cloudflared_args
   </array>
   <key>RunAtLoad</key><true/>
   <key>ProcessType</key><string>Background</string>
@@ -448,6 +482,45 @@ $repo_args
 EOF
 }
 
+cloudflared_tunnel_name() {
+  sed -n 's/^[[:space:]]*tunnel:[[:space:]]*//p' "$cloudflared_config" | head -1 | tr -d "\"'"
+}
+
+validate_cloudflared_config() {
+  local cloudflared_bin="$1"
+  "$cloudflared_bin" --config "$cloudflared_config" tunnel ingress validate >/dev/null
+}
+
+cloudflared_plist() {
+  local cloudflared_bin="$1" tunnel_name="$2"
+  cat <<EOF
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+  <key>Label</key><string>$cloudflared_label</string>
+  <key>ProgramArguments</key>
+  <array>
+    <string>$cloudflared_bin</string>
+    <string>tunnel</string>
+    <string>--config</string>
+    <string>$cloudflared_config</string>
+    <string>run</string>
+    <string>$tunnel_name</string>
+  </array>
+  <key>RunAtLoad</key><true/>
+  <key>KeepAlive</key><true/>
+  <key>ProcessType</key><string>Background</string>
+  <key>ThrottleInterval</key><integer>10</integer>
+  <key>EnvironmentVariables</key>
+  <dict><key>PATH</key><string>/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin</string></dict>
+  <key>StandardOutPath</key><string>$log_dir/$cloudflared_label.log</string>
+  <key>StandardErrorPath</key><string>$log_dir/$cloudflared_label.log</string>
+</dict>
+</plist>
+EOF
+}
+
 validate_install_specs() {
   local spec name value extra
   case "$assure_interval" in
@@ -495,7 +568,7 @@ install_files() {
   [ "$(uname -s)" = "Darwin" ] || die "launchd host install currently supports macOS only"
   [ -f "$nomad_source" ] || die "Nomad source config not found: $nomad_source"
   [ -f "$consul_source" ] || die "Consul source config not found: $consul_source"
-  local nomad_bin consul_bin script_self norn_cli host_agent platform_script spec
+  local nomad_bin consul_bin cloudflared_bin tunnel_name script_self norn_cli host_agent platform_script spec
   validate_install_specs
   nomad_bin="$(command_path nomad)" || die "nomad binary not found"
   consul_bin="$(command_path consul)" || die "consul binary not found"
@@ -549,6 +622,20 @@ EOF
   supervisor_plist | write_file "$launch_agents/$supervisor_label.plist" 644
   assurance_plist | write_file "$launch_agents/$assurance_label.plist" 644
   agent_plist | write_file "$launch_agents/$agent_label.plist" 644
+  if ! $skip_cloudflared; then
+    cloudflared_bin="$(command_path cloudflared 2>/dev/null || true)"
+    if [ -n "$cloudflared_bin" ] && [ -f "$cloudflared_config" ]; then
+      validate_cloudflared_config "$cloudflared_bin" || die "invalid cloudflared config: $cloudflared_config"
+      tunnel_name="$(cloudflared_tunnel_name)"
+      [ -n "$tunnel_name" ] || die "cloudflared config has no top-level tunnel name: $cloudflared_config"
+      cloudflared_plist "$cloudflared_bin" "$tunnel_name" | write_file "$cloudflared_plist_path" 644
+      note "installed Norn-owned cloudflared LaunchAgent; run cloudflared-recover to activate it"
+    elif [ -n "$cloudflared_bin" ] || [ -f "$cloudflared_config" ]; then
+      die "cloudflared management requires both binary and config (binary=${cloudflared_bin:-missing}, config=$cloudflared_config)"
+    else
+      note "cloudflared not configured; skipping managed LaunchAgent"
+    fi
+  fi
   if [ -n "$catch_up_specs" ]; then
     printf '%s\n' "$catch_up_specs" | write_file "$catch_up_file" 600
   fi
@@ -1047,6 +1134,46 @@ assure_host() {
   trap - EXIT
 }
 
+recover_cloudflared() {
+  $skip_cloudflared && { note "cloudflared recovery skipped"; return 0; }
+  [ -f "$cloudflared_plist_path" ] || { note "cloudflared LaunchAgent not installed; skipping"; return 0; }
+  [ -f "$cloudflared_config" ] || die "cloudflared config missing: $cloudflared_config"
+  local cloudflared_bin legacy_plist domain attempt
+  cloudflared_bin="$(command_path cloudflared)" || die "cloudflared binary not found"
+  validate_cloudflared_config "$cloudflared_bin" || die "invalid cloudflared config: $cloudflared_config"
+
+  domain="gui/$(id -u)"
+  legacy_plist="$launch_agents/$legacy_cloudflared_label.plist"
+  if [ "$cloudflared_label" != "$legacy_cloudflared_label" ] && launchctl print "$domain/$legacy_cloudflared_label" >/dev/null 2>&1; then
+    if [ ! -f "$legacy_plist" ] || grep -Fq "$cloudflared_config" "$legacy_plist" || ! grep -q '<string>tunnel</string>' "$legacy_plist"; then
+      launchctl bootout "$domain/$legacy_cloudflared_label" >/dev/null 2>&1 || true
+      note "retired legacy Homebrew cloudflared LaunchAgent"
+    else
+      note "warning: leaving unrelated legacy cloudflared LaunchAgent active"
+    fi
+  fi
+
+  bootstrap_label "$cloudflared_label" "$cloudflared_plist_path"
+  for attempt in $(seq 1 20); do
+    if launchctl print "$domain/$cloudflared_label" 2>/dev/null | grep -q 'state = running'; then
+      note "cloudflared running"
+      break
+    fi
+    [ "$attempt" -lt 20 ] || die "cloudflared did not remain running"
+    sleep 1
+  done
+  if [ -n "$cloudflared_probe" ]; then
+    for attempt in $(seq 1 30); do
+      if curl -fsS --max-time 5 "$cloudflared_probe" >/dev/null 2>&1; then
+        note "cloudflared public probe ready"
+        return 0
+      fi
+      [ "$attempt" -lt 30 ] || die "cloudflared public probe did not become ready: $cloudflared_probe"
+      sleep 1
+    done
+  fi
+}
+
 recover_host() {
   [ -f "$launch_agents/$consul_label.plist" ] || die "managed launchd files missing: run install"
   render_configs
@@ -1067,6 +1194,7 @@ recover_host() {
   wait_leader consul /v1/status/leader consul
   bootstrap_label "$nomad_label" "$launch_agents/$nomad_label.plist"
   wait_leader nomad /v1/status/leader nomad
+  recover_cloudflared
   launchctl kickstart -k "gui/$(id -u)/$api_label"
   wait_http norn /api/health norn
   bootstrap_label "$agent_label" "$launch_agents/$agent_label.plist"
@@ -1483,7 +1611,7 @@ prerequisites() {
 }
 
 doctor() {
-  local failures=0 item path
+  local failures=0 item path cloudflared_bin
   [ "$(uname -s)" = "Darwin" ] && echo "ok   platform=macOS" || { echo "fail platform=$(uname -s)"; failures=$((failures + 1)); }
   for item in docker nomad consul curl launchctl plutil python3 sops; do
     if path="$(command_path "$item" 2>/dev/null)"; then
@@ -1512,6 +1640,30 @@ doctor() {
     case "$item" in consul) path=/v1/status/leader ;; nomad) path=/v1/status/leader ;; norn) path=/api/health ;; esac
     if runtime_curl "$item" "$path" -fsS --max-time 2 >/dev/null 2>&1; then echo "ok   runtime=$item"; else echo "warn runtime=$item unavailable"; fi
   done
+  if ! $skip_cloudflared && { [ -f "$cloudflared_config" ] || [ -f "$cloudflared_plist_path" ]; }; then
+    if cloudflared_bin="$(command_path cloudflared 2>/dev/null)"; then
+      echo "ok   cloudflared=$cloudflared_bin"
+    else
+      echo "fail cloudflared missing"
+      failures=$((failures + 1))
+    fi
+    if [ -f "$cloudflared_config" ] && [ -n "${cloudflared_bin:-}" ] && validate_cloudflared_config "$cloudflared_bin" >/dev/null 2>&1; then
+      echo "ok   cloudflared_config=$cloudflared_config"
+    else
+      echo "fail cloudflared_config=$cloudflared_config"
+      failures=$((failures + 1))
+    fi
+    if [ -f "$cloudflared_plist_path" ] && plutil -lint "$cloudflared_plist_path" >/dev/null 2>&1 && grep -q '<string>tunnel</string>' "$cloudflared_plist_path" && grep -q '<string>run</string>' "$cloudflared_plist_path"; then
+      echo "ok   cloudflared_plist=$cloudflared_plist_path"
+    else
+      echo "fail cloudflared_plist=$cloudflared_plist_path"
+      failures=$((failures + 1))
+    fi
+    if launchctl print "gui/$(id -u)/$cloudflared_label" >/dev/null 2>&1; then echo "ok   runtime=$cloudflared_label"; else echo "warn runtime=$cloudflared_label unavailable"; fi
+    if [ -n "$cloudflared_probe" ]; then
+      if curl -fsS --max-time 5 "$cloudflared_probe" >/dev/null 2>&1; then echo "ok   cloudflared_probe=$cloudflared_probe"; else echo "warn cloudflared_probe=$cloudflared_probe unavailable"; fi
+    fi
+  fi
   [ "$failures" -eq 0 ] || return 1
 }
 
@@ -1546,6 +1698,12 @@ status() {
     case "$item" in consul) path=/v1/status/leader ;; nomad) path=/v1/status/leader ;; norn) path=/api/health ;; esac
     if runtime_curl "$item" "$path" -fsS --max-time 2 >/dev/null 2>&1; then echo "up   $item"; else echo "down $item"; fi
   done
+  if ! $skip_cloudflared && [ -f "$cloudflared_plist_path" ]; then
+    if launchctl print "gui/$(id -u)/$cloudflared_label" >/dev/null 2>&1; then echo "up   $cloudflared_label"; else echo "down $cloudflared_label"; fi
+    if [ -n "$cloudflared_probe" ]; then
+      if curl -fsS --max-time 5 "$cloudflared_probe" >/dev/null 2>&1; then echo "up   cloudflared-probe"; else echo "down cloudflared-probe"; fi
+    fi
+  fi
 }
 
 copy_state() {
@@ -1586,6 +1744,7 @@ case "$mode" in
   render) render_configs ;;
   doctor) doctor ;;
   recover) recover_host ;;
+  cloudflared-recover) recover_cloudflared ;;
   assure) assure_host ;;
   status) status ;;
   migrate-state) migrate_state ;;
