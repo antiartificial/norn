@@ -244,12 +244,12 @@ func (h *Handler) cloudflaredService(spec *model.InfraSpec) (string, error) {
 		if err == nil {
 			for _, instance := range instances {
 				if instance.Status == "passing" && instance.Address != "" && instance.Port > 0 {
-					return fmt.Sprintf("http://%s:%d", instance.Address, instance.Port), nil
+					return cloudflared.HTTPServiceURL(instance.Address, instance.Port), nil
 				}
 			}
 			for _, instance := range instances {
 				if instance.Address != "" && instance.Port > 0 {
-					return fmt.Sprintf("http://%s:%d", instance.Address, instance.Port), nil
+					return cloudflared.HTTPServiceURL(instance.Address, instance.Port), nil
 				}
 			}
 		}
@@ -266,7 +266,7 @@ func (h *Handler) cloudflaredService(spec *model.InfraSpec) (string, error) {
 	if err != nil {
 		return "", fmt.Errorf("node info: %w", err)
 	}
-	return fmt.Sprintf("http://%s:%d", nodeInfo.Address, process.Port), nil
+	return cloudflared.HTTPServiceURL(nodeInfo.Address, process.Port), nil
 }
 
 func handlerCloudflaredProcess(spec *model.InfraSpec) (string, model.Process, bool) {

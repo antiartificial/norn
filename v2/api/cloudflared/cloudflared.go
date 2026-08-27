@@ -3,10 +3,12 @@ package cloudflared
 import (
 	"context"
 	"fmt"
+	"net"
 	"net/url"
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strconv"
 	"strings"
 
 	"gopkg.in/yaml.v3"
@@ -36,6 +38,12 @@ type Config struct {
 type IngressRule struct {
 	Hostname string `yaml:"hostname,omitempty"`
 	Service  string `yaml:"service"`
+}
+
+// HTTPServiceURL formats an origin address for a cloudflared ingress rule.
+// net.JoinHostPort brackets IPv6 literals while preserving IPv4 and hostnames.
+func HTTPServiceURL(address string, port int) string {
+	return "http://" + net.JoinHostPort(address, strconv.Itoa(port))
 }
 
 var configPath string
