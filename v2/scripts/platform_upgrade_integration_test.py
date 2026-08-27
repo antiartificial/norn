@@ -152,6 +152,39 @@ class PlatformUpgradeIntegrationTests(unittest.TestCase):
         self.assertEqual(release.stat().st_ino, inode)
         self.assertEqual(list(self.releases.glob(".rebuild-*")), [])
 
+        manifest_wrapper = self.root / "signed-retained-manifest"
+        manifest_wrapper.write_text(
+            "#!/usr/bin/env python3\n"
+            "import subprocess, sys\n"
+            f"real = {str(self.repo / 'v2/scripts/platform-release-manifest')!r}\n"
+            "result = subprocess.run([sys.executable, real, *sys.argv[1:]], capture_output=True, text=True)\n"
+            "if result.returncode != 0:\n"
+            "    sys.stderr.write(result.stderr)\n"
+            "    raise SystemExit(result.returncode)\n"
+            "if sys.argv[1] == 'verify' and not any('.rebuild-' in arg for arg in sys.argv):\n"
+            "    print('signed')\n"
+            "else:\n"
+            "    sys.stdout.write(result.stdout)\n",
+            encoding="utf-8",
+        )
+        manifest_wrapper.chmod(0o755)
+        verify_hook = self.root / "verify-signed-release"
+        verify_hook.write_text("#!/bin/sh\nexit 0\n", encoding="utf-8")
+        verify_hook.chmod(0o755)
+
+        signed_policy_rebuild = self.platform(
+            "rebuild",
+            self.sha,
+            "--verify",
+            extra_environment={
+                "NORN_RELEASE_SIGNATURE_POLICY": "require-signed",
+                "NORN_RELEASE_VERIFY_HOOK": str(verify_hook),
+                "NORN_RELEASE_MANIFEST_HELPER": str(manifest_wrapper),
+            },
+        )
+        self.assertIn("verified rebuilt release", signed_policy_rebuild.stdout)
+        self.assertIn("rebuild verified manifest-content equivalence", signed_policy_rebuild.stdout)
+
     def test_existing_tampered_release_is_never_replaced(self) -> None:
         self.platform("preflight", "HEAD")
         release = self.releases / self.sha

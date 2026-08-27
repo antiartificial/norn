@@ -125,7 +125,9 @@ The default platform lane builds an isolated release, boots a candidate API on a
 
 For immutable-release recovery, use `norn platform rebuild <full-sha> --verify`.
 It requires the full source SHA, the exact retained Go/Node/pnpm inputs, and
-artifact checksum/signature verification. Prefer a verified local rollback
+artifact checksum/signature verification. The retained artifact must satisfy
+the configured signature policy; the fresh staging build is locally verified
+as unsigned and compared by canonical manifest, never promoted. Prefer a verified local rollback
 target. Under `require-signed`, rollback, preflight, and upgrade call the
 configured `NORN_RELEASE_FETCH_HOOK` when the exact immutable target is absent,
 then verify it before any candidate starts. Set
