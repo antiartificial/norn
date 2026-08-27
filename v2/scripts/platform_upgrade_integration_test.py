@@ -147,6 +147,7 @@ class PlatformUpgradeIntegrationTests(unittest.TestCase):
         self.assertIn("reusing immutable release", reused.stdout)
         self.assertEqual(release.stat().st_ino, inode)
 
+        self.git("tag", "platform-published-after-build")
         rebuilt = self.platform("rebuild", self.sha, "--verify")
         self.assertIn("rebuild verified manifest-content equivalence", rebuilt.stdout)
         self.assertEqual(release.stat().st_ino, inode)

@@ -69,7 +69,10 @@ build instead, stop: the selected script or configuration is stale.
 release under the configured signature policy, then creates a fresh unsigned
 staging build, validates that staging manifest locally, and compares its
 canonical release manifest with the retained artifact. The temporary rebuild is
-never promoted or treated as a signed release.
+never promoted or treated as a signed release. The rebuild also reuses the
+verified retained manifest's version string; it must not recompute embedded
+versions from the current tag graph because release publication can add tags
+after the original build.
 
 The platform lane builds from an isolated git worktree into `$HOME/norn/releases/<sha>`, writes a `$HOME/norn/current` symlink, installs compatibility binaries into `$HOME/go/bin`, and health-checks a candidate API with recovery and operation workers disabled so preflight does not mark running work failed or claim queued jobs.
 

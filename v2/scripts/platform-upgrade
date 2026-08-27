@@ -1183,6 +1183,16 @@ fi
 if [[ "$mode" == "rebuild" ]]; then
   [[ -d "$release" ]] || fail "cannot verify rebuild because retained release is missing: $release"
   verify_release "$release" "$sha"
+  version="$(python3 - "$release/release.json" <<'PY'
+import json
+import sys
+
+value = json.load(open(sys.argv[1], encoding="utf-8")).get("version")
+if not isinstance(value, str) or not value:
+    raise SystemExit("retained release manifest has no version")
+print(value)
+PY
+)" || fail "could not read retained release version: $release"
   mkdir -p "$releases"
   build_stage="$(mktemp -d "$releases/.rebuild-${short_sha}.XXXXXX")"
   build_release_into "$build_stage"
