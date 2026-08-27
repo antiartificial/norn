@@ -145,7 +145,7 @@ func (h *Handler) Metrics(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	if h.nomad != nil {
+	if h.usesNomadConnector() && h.nomad != nil {
 		writeMetricHeader(&b, "norn_task_restarts_total", "Current restart count for running tasks.", "gauge")
 		writeMetricHeader(&b, "norn_task_oom_kills_total", "Tasks that have been OOM killed in current allocations.", "gauge")
 		oomByProc := map[string]int{}

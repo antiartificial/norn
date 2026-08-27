@@ -45,7 +45,11 @@ func (n *Notifier) Dispatch(ctx context.Context, event model.BeaconEvent) {
 			continue
 		}
 		ch := ch
-		go n.send(context.Background(), ch, event)
+		go func() {
+			ctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 15*time.Second)
+			defer cancel()
+			_ = n.send(ctx, ch, event)
+		}()
 	}
 }
 

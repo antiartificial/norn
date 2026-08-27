@@ -10,6 +10,13 @@ locals {
   }
 }
 
+data "digitalocean_sizes" "selected" {
+  filter {
+    key    = "slug"
+    values = [var.node_size]
+  }
+}
+
 resource "digitalocean_vpc" "lab" {
   name     = "${var.name_prefix}-vpc"
   region   = var.region
@@ -38,6 +45,10 @@ resource "digitalocean_droplet" "node" {
     precondition {
       condition     = var.node_count >= 3
       error_message = "An HA evaluation cannot be created with fewer than three members."
+    }
+    precondition {
+      condition     = try(length(data.digitalocean_sizes.selected.sizes) == 1 && data.digitalocean_sizes.selected.sizes[0].available && contains(data.digitalocean_sizes.selected.sizes[0].regions, var.region), false)
+      error_message = "The selected Droplet size must exist, be available, and support the selected region."
     }
   }
 }

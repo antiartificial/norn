@@ -1,6 +1,6 @@
 export type Theme = 'dark' | 'light'
 
-const STORAGE_KEY = 'norn-theme'
+const STORAGE_KEY = 'norn-theme:v1'
 
 function systemTheme(): Theme {
   if (typeof window === 'undefined') return 'dark'
@@ -9,7 +9,8 @@ function systemTheme(): Theme {
 
 export function getInitialTheme(): Theme {
   if (typeof window === 'undefined') return 'dark'
-  const stored = window.localStorage.getItem(STORAGE_KEY)
+  let stored: string | null = null
+  try { stored = window.localStorage.getItem(STORAGE_KEY) ?? window.localStorage.getItem('norn-theme') } catch { /* use system preference */ }
   return stored === 'light' || stored === 'dark' ? stored : systemTheme()
 }
 
@@ -27,6 +28,6 @@ export function initializeTheme(): Theme {
 export function setStoredTheme(theme: Theme): void {
   applyTheme(theme)
   if (typeof window !== 'undefined') {
-    window.localStorage.setItem(STORAGE_KEY, theme)
+    try { window.localStorage.setItem(STORAGE_KEY, theme) } catch { /* preference persistence is best effort */ }
   }
 }

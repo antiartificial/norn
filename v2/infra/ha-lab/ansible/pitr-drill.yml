@@ -123,16 +123,17 @@
 
     - name: Rotate WAL with operator privileges
       ansible.builtin.command:
-        argv: [psql, --host=127.0.0.1, --port=5432, --username=postgres, --dbname=postgres, --tuples-only, --no-align, "--command=SELECT pg_switch_wal()"]
+        argv: [psql, --host=127.0.0.1, --port=5432, --username=postgres, --dbname=postgres, --tuples-only, --no-align, "--command=SELECT pg_walfile_name(pg_switch_wal())"]
       become_user: postgres
       environment:
         PGPASSWORD: "{{ postgres_superuser_password }}"
       delegate_to: "{{ primary_host }}"
+      register: switched_wal
       no_log: true
 
     - name: Wait for WAL archiving to catch up
       ansible.builtin.command:
-        argv: [psql, --host=127.0.0.1, --port=5432, --username=postgres, --dbname=postgres, --tuples-only, --no-align, --command=SELECT count(*) FROM pg_stat_archiver WHERE failed_count = 0 AND last_archived_time > now() - interval '2 minutes']
+        argv: [psql, --host=127.0.0.1, --port=5432, --username=postgres, --dbname=postgres, --tuples-only, --no-align, "--command=SELECT coalesce(last_archived_wal, '') FROM pg_stat_archiver WHERE failed_count = 0"]
       become_user: postgres
       environment:
         PGPASSWORD: "{{ postgres_superuser_password }}"
@@ -141,7 +142,7 @@
       changed_when: false
       retries: 30
       delay: 2
-      until: archive_ready.stdout | trim | int == 1
+      until: archive_ready.stdout | trim == switched_wal.stdout | trim
       no_log: true
 
     - name: Clone the base backup to the isolated restore directory
@@ -155,7 +156,7 @@
         group: postgres
         mode: "0600"
         content: |
-          restore_command = 'cp /var/lib/postgresql/wal-archive/%f %p'
+          restore_command = 'pgbackrest --stanza={{ postgres_cluster_name }} --pg1-path={{ restore_dir }} archive-get %f %p'
           recovery_target_time = '{{ recovery_target }}'
           recovery_target_action = 'promote'
           port = {{ restore_port }}

@@ -1,0 +1,203 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+script_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+lab_root="$(cd "${script_dir}/.." && pwd)"
+export PATH="${lab_root}/.tools/bin:${PATH}"
+command_name="${1:-all}"
+if [[ "${command_name}" == "prepare" || "${command_name}" == "deploy" || "${command_name}" == "rollback" || "${command_name}" == "all" ]]; then
+  shift || true
+else
+  command_name="all"
+fi
+ref="${1:-durability-pilot}"
+[[ "${ref}" =~ ^[A-Za-z0-9._/-]{1,120}$ ]] || { echo "invalid pilot ref" >&2; exit 2; }
+
+[[ -n "${NORN_HA_DURABILITY_INFRASPEC_PATH:-}" && -f "${NORN_HA_DURABILITY_INFRASPEC_PATH}" ]] || {
+  echo "durability pilot declaration is unavailable; run catalog durability-sync first" >&2
+  exit 1
+}
+
+first_ip="$(terraform -chdir="${lab_root}/terraform" output -json lab_nodes | jq -r 'to_entries | sort_by(.key) | first.value.public_ip')"
+
+run_remote_phase() {
+  local phase="$1"
+  ssh -o BatchMode=yes "root@${first_ip}" "NORN_PILOT_PHASE='${phase}' NORN_PILOT_REF='${ref}' bash -s" <<'REMOTE'
+set -euo pipefail
+set -a
+source /etc/norn/norn.env
+set +a
+
+consul_config="$(mktemp /tmp/norn-pilot-consul.XXXXXX)"
+api_config="$(mktemp /tmp/norn-pilot-api.XXXXXX)"
+validation_body="$(mktemp /tmp/norn-pilot-validation.XXXXXX)"
+chmod 0600 "${consul_config}" "${api_config}" "${validation_body}"
+cleanup() {
+  unset NORN_API_TOKEN CONSUL_HTTP_TOKEN
+  rm -f -- "${consul_config}" "${api_config}" "${validation_body}"
+}
+trap cleanup EXIT
+
+{
+  printf 'cacert = "%s"\n' "${CONSUL_CACERT}"
+  printf 'cert = "%s"\n' "${CONSUL_CLIENT_CERT}"
+  printf 'key = "%s"\n' "${CONSUL_CLIENT_KEY}"
+  printf 'header = "X-Consul-Token: %s"\n' "${CONSUL_HTTP_TOKEN}"
+} >"${consul_config}"
+printf 'header = "Authorization: Bearer %s"\n' "${NORN_API_TOKEN}" >"${api_config}"
+
+active="$(curl -fsS --max-time 10 --config "${consul_config}" "${NORN_CONSUL_ADDR}/v1/health/service/norn-api?passing=true" |
+  jq -er 'if length == 1 then .[0].Service.Address else error("exactly one passing Norn API is required") end')"
+base="http://${active}:8800"
+app="norn-durability-pilot"
+
+api() {
+  local method="$1" path="$2" body="${3:-}"
+  if [[ -n "${body}" ]]; then
+    curl -fsS --max-time 30 --config "${api_config}" -H 'Content-Type: application/json' -X "${method}" --data-binary "@${body}" "${base}${path}"
+  else
+    curl -fsS --max-time 30 --config "${api_config}" -X "${method}" "${base}${path}"
+  fi
+}
+
+wait_operation() {
+  local saga="$1" kind="$2" response operation status
+  # Nomad's health progress deadline is ten minutes. Keep the observer alive
+  # long enough to capture the terminal operation receipt plus bounded slack.
+  for _ in $(seq 1 600); do
+    response="$(api GET "/api/operations?app=${app}&kind=${kind}&limit=20")"
+    operation="$(jq -c --arg saga "${saga}" '[.operations[] | select(.sagaId == $saga)] | first // {}' <<<"${response}")"
+    status="$(jq -r '.status // "waiting"' <<<"${operation}")"
+    case "${status}" in
+      succeeded)
+        jq -c '{operationId:.id,sagaId:.sagaId,kind,status,message,receipt}' <<<"${operation}"
+        return 0
+        ;;
+      failed|canceled)
+        jq -c '{operationId:.id,sagaId:.sagaId,kind,status,message,lastError}' <<<"${operation}" >&2
+        return 1
+        ;;
+    esac
+    sleep 2
+  done
+  echo "operation ${saga} did not reach a terminal state" >&2
+  return 1
+}
+
+wait_versioned_operation() {
+  local operation_id="$1" response status
+  for _ in $(seq 1 600); do
+    response="$(api GET "/api/v1/operations/${operation_id}")"
+    status="$(jq -r '.status' <<<"${response}")"
+    case "${status}" in
+      succeeded)
+        jq -c '{operationId:.id,kind,status,message,receipt}' <<<"${response}"
+        return 0
+        ;;
+      failed|canceled)
+        jq -c '{operationId:.id,kind,status,message,lastError,receipt}' <<<"${response}" >&2
+        return 1
+        ;;
+    esac
+    sleep 2
+  done
+  echo "operation ${operation_id} did not reach a terminal state" >&2
+  return 1
+}
+
+request_body="$(mktemp /tmp/norn-pilot-request.XXXXXX)"
+chmod 0600 "${request_body}"
+trap 'rm -f -- "${request_body}"; cleanup' EXIT
+
+case "${NORN_PILOT_PHASE}" in
+  prepare)
+    jq -n --rawfile document "/var/lib/norn/apps/${app}/infraspec.yaml" '{document:$document}' >"${validation_body}"
+    validation="$(api POST '/api/v1/validate/infraspec?strictSecrets=true' "${validation_body}")"
+    jq -c '{schemaVersion,documentKind,valid,findings}' <<<"${validation}"
+    jq -e '.valid == true' <<<"${validation}" >/dev/null
+
+    jq -n --arg ref "${NORN_PILOT_REF}" '{ref:$ref}' >"${request_body}"
+    preflight="$(api POST "/api/apps/${app}/preflight" "${request_body}")"
+    preflight_saga="$(jq -er '.sagaId' <<<"${preflight}")"
+    wait_operation "${preflight_saga}" app.preflight
+
+    jq -n '{enabled:true}' >"${request_body}"
+    api PUT "/api/v1/apps/${app}/deployment" "${request_body}" | jq -c '{app,deploy:.spec.deploy}'
+    ;;
+  deploy)
+    jq -n --arg ref "${NORN_PILOT_REF}" '{ref:$ref}' >"${request_body}"
+    deploy="$(api POST "/api/apps/${app}/deploy" "${request_body}")"
+    deploy_saga="$(jq -er '.sagaId' <<<"${deploy}")"
+    wait_operation "${deploy_saga}" app.deploy
+    ;;
+  rollback)
+    jq -n '{confirm:true}' >"${request_body}"
+    idempotency_key="pilot-rollback-$(cat /proc/sys/kernel/random/uuid)"
+    rollback="$(curl -fsS --max-time 30 --config "${api_config}" -H 'Content-Type: application/json' -H "Idempotency-Key: ${idempotency_key}" -X POST --data-binary "@${request_body}" "${base}/api/v1/apps/${app}/rollbacks")"
+    rollback_operation="$(jq -er '.id' <<<"${rollback}")"
+    wait_versioned_operation "${rollback_operation}"
+    ;;
+  *)
+    echo "invalid remote phase" >&2
+    exit 2
+    ;;
+esac
+REMOTE
+}
+
+verify_replicated_gate() {
+  local expected_gate="$1"
+  local declaration="${NORN_HA_DURABILITY_INFRASPEC_PATH}"
+  local expected remote_sha ip
+  expected="$(shasum -a 256 "${declaration}" | awk '{print $1}')"
+  while IFS= read -r ip; do
+    remote_sha="$(ssh -o BatchMode=yes "root@${ip}" "grep -qx 'deploy: ${expected_gate}' /var/lib/norn/apps/norn-durability-pilot/infraspec.yaml && sha256sum /var/lib/norn/apps/norn-durability-pilot/infraspec.yaml | cut -d ' ' -f 1")"
+    [[ "${remote_sha}" == "${expected}" ]] || {
+      echo "durability pilot declaration mismatch on ${ip}" >&2
+      return 1
+    }
+  done < <(terraform -chdir="${lab_root}/terraform" output -json lab_nodes | jq -r 'to_entries | sort_by(.key)[] | .value.public_ip')
+  echo "durability pilot deployment gate is ${expected_gate} and identical on every Norn contender"
+}
+
+replicate_gate() {
+  local desired="$1"
+  local declaration="${NORN_HA_DURABILITY_INFRASPEC_PATH}"
+  local count temporary
+  count="$(grep -Ec '^deploy: (true|false)$' "${declaration}")"
+  [[ "${count}" == "1" ]] || {
+    echo "expected exactly one top-level deploy gate in ${declaration}" >&2
+    return 1
+  }
+  temporary="$(mktemp "${declaration}.XXXXXX")"
+  trap 'rm -f -- "${temporary}"' RETURN
+  awk -v desired="${desired}" '{ if ($0 == "deploy: false" || $0 == "deploy: true") print "deploy: " desired; else print }' "${declaration}" >"${temporary}"
+  chmod 0600 "${temporary}"
+  mv -f -- "${temporary}" "${declaration}"
+  trap - RETURN
+
+  "${script_dir}/converge" --tags catalog
+  verify_replicated_gate "${desired}"
+}
+
+case "${command_name}" in
+  prepare)
+    replicate_gate false
+    run_remote_phase prepare
+    replicate_gate true
+    ;;
+  deploy)
+    verify_replicated_gate true
+    run_remote_phase deploy
+    ;;
+  rollback)
+    verify_replicated_gate true
+    run_remote_phase rollback
+    ;;
+  all)
+    replicate_gate false
+    run_remote_phase prepare
+    replicate_gate true
+    run_remote_phase deploy
+    ;;
+esac

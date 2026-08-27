@@ -1,6 +1,9 @@
 package handler
 
-import "testing"
+import (
+	"testing"
+	"time"
+)
 
 func TestCronParentJobID(t *testing.T) {
 	tests := []struct {
@@ -53,5 +56,18 @@ func TestMetadataString(t *testing.T) {
 	}
 	if got := metadataString(metadata, "missing"); got != "" {
 		t.Fatalf("metadataString(missing) = %q", got)
+	}
+}
+
+func TestTaskRestartStabilityWindow(t *testing.T) {
+	now := time.Now()
+	if taskRestartStable(now.Add(-14*time.Minute), now) {
+		t.Fatal("recent restart must remain open during the stability window")
+	}
+	if !taskRestartStable(now.Add(-16*time.Minute), now) {
+		t.Fatal("healthy restart older than the stability window should reconcile")
+	}
+	if taskRestartStable(time.Time{}, now) || taskRestartStable(now.Add(time.Minute), now) {
+		t.Fatal("missing or future restart timestamps must not reconcile")
 	}
 }

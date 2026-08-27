@@ -12,7 +12,6 @@ import type { HubEvent } from '../types/ws.ts'
 
 export type AppAction = 'preflight' | 'deploy' | 'restart'
 
-export interface DeploymentStep { step?: string; kind?: string; status?: string; attempt?: number; durationMs?: number; message?: string }
 export interface ActivityEntry { id: number; event: HubEvent; capturedAt: string }
 
 export interface RuntimeContext {
@@ -30,6 +29,7 @@ export interface RuntimeContext {
   toggleEndpoint: (appId: string, hostname: string, enabled: boolean) => void
 	toggleDeployment: (appId: string, enabled: boolean) => Promise<void>
   fleetAvailable: boolean
+  appRecoveryAvailable: boolean
 }
 
 const DeployProgressContext = createContext<ReturnType<typeof useDeployProgress> | null>(null)
@@ -59,7 +59,7 @@ function useAppsQuery() {
 function useServiceManifestQuery() {
   return useQuery({
     queryKey: ['services', 'manifest'],
-    queryFn: () => apiFetch<ServiceManifest>('/api/services/manifest'),
+    queryFn: () => apiFetch<ServiceManifest>('/api/v1/services/manifest'),
     staleTime: 20_000,
   })
 }
@@ -173,6 +173,7 @@ function RuntimeInner({ children }: { children: (runtime: RuntimeContext & { con
   const mutations = useAppMutations(setScaleState)
   const activeIngress = useMemo(() => new Set(ingress.data?.hostnames ?? []), [ingress.data?.hostnames])
   const fleetAvailable = ['fleet-v1', 'fleet-inventory', 'durable-fleet-capacity-plans'].every((feature) => capabilities.data?.features.includes(feature))
+  const appRecoveryAvailable = capabilities.data?.features.includes('durable-app-recovery-v1') === true
 
   const toggleEndpoint = useCallback(async (appId: string, hostname: string, enabled: boolean) => {
     await apiFetch(`/api/apps/${appId}/endpoints/toggle`, {
@@ -203,6 +204,7 @@ function RuntimeInner({ children }: { children: (runtime: RuntimeContext & { con
     toggleEndpoint,
 		toggleDeployment,
     fleetAvailable,
+    appRecoveryAvailable,
   }
 
   return (

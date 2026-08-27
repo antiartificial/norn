@@ -13,6 +13,7 @@ export default withMermaid(
       nav: [
         { text: 'Guide', link: '/v2/guide/getting-started' },
         { text: 'Architecture', link: '/v2/architecture/overview' },
+        { text: 'Fleet', link: '/v2/infrastructure/fleet' },
         { text: 'CLI', link: '/v2/cli/' },
         { text: 'Operations', link: '/v2/operations/deploying' },
         {
@@ -60,6 +61,7 @@ export default withMermaid(
             text: 'Infrastructure',
             items: [
               { text: 'Nomad & Consul', link: '/v2/infrastructure/nomad-consul' },
+              { text: 'Workload Connectors', link: '/v2/infrastructure/workload-connectors' },
               { text: 'Fleet GitOps', link: '/v2/infrastructure/fleet' },
               { text: 'Secrets', link: '/v2/infrastructure/secrets' },
               { text: 'Volumes', link: '/v2/infrastructure/volumes' },
@@ -74,13 +76,15 @@ export default withMermaid(
               { text: 'Deploying', link: '/v2/operations/deploying' },
               { text: 'Agent Runbook', link: '/v2/operations/agent-runbook' },
               { text: 'Operator Confidence', link: '/v2/operations/operator-confidence' },
-              { text: 'Operations Ledger', link: '/v2/operations/operations' },
+              { text: 'Durable Operations', link: '/v2/operations/operations' },
               { text: 'Beacon Events', link: '/v2/operations/beacon' },
               { text: 'Cron Jobs', link: '/v2/operations/cron' },
-              { text: 'Snapshots', link: '/v2/operations/snapshots' },
+              { text: 'Snapshots & Recovery', link: '/v2/operations/snapshots' },
               { text: 'Upgrading', link: '/v2/operations/upgrading' },
               { text: 'Host Recovery', link: '/v2/operations/host-recovery' },
+              { text: 'Workload Qualification', link: '/v2/operations/workload-qualification' },
               { text: 'Linux HA Lab', link: '/v2/operations/ha-lab' },
+              { text: 'Durability Pilot', link: '/v2/operations/durability-pilot' },
               { text: 'Production Readiness', link: '/v2/operations/production-readiness' },
               { text: 'Troubleshooting', link: '/v2/operations/troubleshooting' },
             ],

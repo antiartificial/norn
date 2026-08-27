@@ -48,7 +48,7 @@ func (h *Handler) CronHistory(w http.ResponseWriter, r *http.Request) {
 		}
 
 		// Get recent runs from Nomad
-		if h.nomad != nil {
+		if h.usesNomadConnector() && h.nomad != nil {
 			jobID := fmt.Sprintf("%s-%s", id, procName)
 			runs, err := h.nomad.PeriodicChildren(jobID)
 			if err == nil {
@@ -76,8 +76,7 @@ func (h *Handler) CronTrigger(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	if h.nomad == nil {
-		writeError(w, http.StatusServiceUnavailable, "nomad not connected")
+	if !h.requireNomadConnector(w) {
 		return
 	}
 
@@ -118,8 +117,7 @@ func (h *Handler) CronPause(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	if h.nomad == nil {
-		writeError(w, http.StatusServiceUnavailable, "nomad not connected")
+	if !h.requireNomadConnector(w) {
 		return
 	}
 
@@ -172,8 +170,7 @@ func (h *Handler) CronResume(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	if h.nomad == nil {
-		writeError(w, http.StatusServiceUnavailable, "nomad not connected")
+	if !h.requireNomadConnector(w) {
 		return
 	}
 
@@ -255,8 +252,7 @@ func (h *Handler) CronUpdateSchedule(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	if h.nomad == nil {
-		writeError(w, http.StatusServiceUnavailable, "nomad not connected")
+	if !h.requireNomadConnector(w) {
 		return
 	}
 

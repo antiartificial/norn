@@ -3,7 +3,7 @@ set -euo pipefail
 
 usage() {
   cat <<'USAGE'
-Usage: host-runtime <install|render|doctor|recover|assure|status|migrate-state|security-plan|security-init> [options]
+Usage: host-runtime <install|prerequisites|setup|render|doctor|recover|assure|status|migrate-state|security-plan|security-init> [options]
 
 Manage a persistent macOS Norn runtime without embedding machine-specific paths
 in the repository.
@@ -32,6 +32,18 @@ Options:
   --from-nomad PATH     Stopped Nomad state source for migrate-state
   --from-consul PATH    Stopped Consul state source for migrate-state
   --dry-run             Print planned writes/actions
+  --connector NAME      Prerequisites to check: nomad-consul (default) or apple-container
+  --setup               With prerequisites, interactively install supported missing prerequisites
+  --check               Check only; never install or start a runtime
+  --yes                 Accept setup prompts (still never bypasses macOS sudo authentication)
+  --non-interactive     Refuse an action that would require an interactive prompt
+
+`prerequisites` is safe before a host runtime is installed. `setup` is a
+shortcut for `prerequisites --setup`: it can install the optional Apple
+Container development connector on a supported Apple-silicon macOS host. It
+downloads a version-pinned signed package from Apple's GitHub release, checks
+the Developer ID and notarization locally, then uses macOS Installer. It never
+executes downloaded code as a shell script.
 
 install writes managed files but does not interrupt live agents. Run
 migrate-state only while Nomad and Consul are stopped, then run recover.
@@ -74,6 +86,11 @@ api_label="${NORN_HOST_API_LABEL:-com.norn.api}"
 from_nomad=""
 from_consul=""
 dry_run=false
+connector="${NORN_WORKLOAD_CONNECTOR:-nomad-consul}"
+setup_requested=false
+check_only=false
+yes=false
+non_interactive=false
 catch_up_specs=""
 required_specs=""
 probe_specs=""
@@ -116,10 +133,19 @@ while [ "$#" -gt 0 ]; do
     --from-nomad) from_nomad="$2"; shift 2 ;;
     --from-consul) from_consul="$2"; shift 2 ;;
     --dry-run) dry_run=true; shift ;;
+    --connector) connector="$2"; shift 2 ;;
+    --setup) setup_requested=true; shift ;;
+    --check) check_only=true; shift ;;
+    --yes) yes=true; shift ;;
+    --non-interactive) non_interactive=true; shift ;;
     -h|--help) usage; exit 0 ;;
     *) die "unknown option: $1" ;;
   esac
 done
+
+if [ "$mode" = "setup" ]; then
+  setup_requested=true
+fi
 
 config_dir="$(expand_home "$config_dir")"
 state_dir="$(expand_home "$state_dir")"
@@ -1259,6 +1285,203 @@ PY
   note "review with: $0 security-plan --security-dir $security_dir"
 }
 
+is_tty() {
+  [ -t 0 ] && [ -t 1 ]
+}
+
+confirm_setup() {
+  local question="$1" answer=""
+  if $yes; then
+    return 0
+  fi
+  if $non_interactive || ! is_tty; then
+    note "skipping: $question (pass --yes to approve non-interactively)"
+    return 1
+  fi
+  printf '%s [y/N] ' "$question"
+  IFS= read -r answer || true
+  case "$answer" in y|Y|yes|YES) return 0 ;; *) return 1 ;; esac
+}
+
+run_setup_step() {
+  local label="$1"
+  shift
+  if ! is_tty; then
+    "$@"
+    return
+  fi
+  local output pid spinner=0 status=0 frames='|/-\\'
+  output="$(mktemp "${TMPDIR:-/tmp}/norn-setup.XXXXXX")"
+  "$@" >"$output" 2>&1 &
+  pid=$!
+  while kill -0 "$pid" 2>/dev/null; do
+    printf '\r[%s] %s' "${frames:$spinner:1}" "$label"
+    spinner=$(((spinner + 1) % 4))
+    sleep 0.12
+  done
+  if wait "$pid"; then
+    printf '\r[ok] %s\n' "$label"
+    rm -f "$output"
+    return 0
+  else
+    status=$?
+    printf '\r[fail] %s\n' "$label" >&2
+    sed -n '1,160p' "$output" >&2
+    rm -f "$output"
+    return "$status"
+  fi
+}
+
+macos_major_version() {
+  local version
+  version="$(/usr/bin/sw_vers -productVersion 2>/dev/null || true)"
+  printf '%s\n' "${version%%.*}"
+}
+
+apple_container_platform_ready() {
+  local major architecture
+  if [ "$(uname -s)" != "Darwin" ]; then
+    echo "fail apple-container requires macOS"
+    return 1
+  fi
+  architecture="$(uname -m)"
+  if [ "$architecture" != "arm64" ]; then
+    echo "fail apple-container requires Apple silicon (detected $architecture)"
+    return 1
+  fi
+  major="$(macos_major_version)"
+  if ! [[ "$major" =~ ^[0-9]+$ ]] || [ "$major" -lt 26 ]; then
+    echo "fail apple-container requires macOS 26 or later (detected ${major:-unknown})"
+    return 1
+  fi
+  echo "ok   apple-container platform=macOS-$major arm64"
+}
+
+apple_container_runtime_ready() {
+  local container_bin status
+  container_bin="$(command_path container 2>/dev/null || true)"
+  if [ -z "$container_bin" ]; then
+    echo "fail container CLI missing"
+    return 1
+  fi
+  echo "ok   container=$container_bin ($($container_bin --version 2>/dev/null || echo version-unavailable))"
+  status="$("$container_bin" system status --format json 2>/dev/null || true)"
+  if printf '%s' "$status" | grep -Eq '"running"[[:space:]]*:[[:space:]]*true|"state"[[:space:]]*:[[:space:]]*"running"|"status"[[:space:]]*:[[:space:]]*"running"'; then
+    echo "ok   container system running"
+    return 0
+  fi
+  echo "fail container system is not running (run: container system start)"
+  return 1
+}
+
+verify_apple_container_package() {
+  local package="$1" signature assessment
+  signature="$(/usr/sbin/pkgutil --check-signature "$package" 2>&1 || true)"
+  if ! printf '%s\n' "$signature" | grep -Eq 'Apple Inc.*Containerization'; then
+    printf '%s\n' "$signature" >&2
+    die "Apple Container package signer is not the expected Apple Containerization Developer ID"
+  fi
+  if ! printf '%s\n' "$signature" | grep -qi 'notarized'; then
+    printf '%s\n' "$signature" >&2
+    die "Apple Container package is not notarized"
+  fi
+  assessment="$(/usr/sbin/spctl -a -vv -t install "$package" 2>&1 || true)"
+  if ! printf '%s\n' "$assessment" | grep -qi 'accepted'; then
+    printf '%s\n' "$assessment" >&2
+    die "macOS Gatekeeper did not accept the Apple Container package"
+  fi
+  note "verified Apple Developer ID signature, notarization, and Gatekeeper assessment"
+}
+
+install_apple_container() {
+  local version package_url package temp_dir curl_bin
+  version="${NORN_APPLE_CONTAINER_VERSION:-1.3.0}"
+  [[ "$version" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]] || die "NORN_APPLE_CONTAINER_VERSION must be a numeric release version"
+  apple_container_platform_ready || return 1
+  if command_path container >/dev/null 2>&1; then
+    note "Apple Container CLI is already installed; not replacing it"
+    return 0
+  fi
+  if $dry_run; then
+    note "would download Apple Container $version from the official apple/container GitHub release"
+    note "would verify its Apple Containerization Developer ID signature and notarization before invoking macOS Installer"
+    return 0
+  fi
+  confirm_setup "Download and install signed Apple Container $version from Apple's GitHub release?" || return 1
+  curl_bin="$(command_path curl)"
+  temp_dir="$(mktemp -d "${TMPDIR:-/tmp}/norn-apple-container.XXXXXX")"
+  package="$temp_dir/container-${version}-installer-signed.pkg"
+  package_url="https://github.com/apple/container/releases/download/${version}/container-${version}-installer-signed.pkg"
+  run_setup_step "Downloading Apple Container $version" "$curl_bin" --fail --location --proto '=https' --tlsv1.2 --retry 3 --output "$package" "$package_url"
+  verify_apple_container_package "$package"
+  if $non_interactive; then
+    sudo -n true 2>/dev/null || die "sudo credentials are required; run interactively once or establish an approved sudo session"
+  else
+    sudo -v
+  fi
+  run_setup_step "Installing Apple Container $version" sudo /usr/sbin/installer -pkg "$package" -target /
+  rm -rf "$temp_dir"
+}
+
+start_apple_container() {
+  local container_bin
+  container_bin="$(command_path container 2>/dev/null || true)"
+  [ -n "$container_bin" ] || die "Apple Container CLI is still unavailable after installation"
+  if apple_container_runtime_ready >/dev/null 2>&1; then
+    note "Apple Container system is already running"
+    return 0
+  fi
+  if $dry_run; then
+    note "would initialize and start the Apple Container system"
+    return 0
+  fi
+  confirm_setup "Initialize and start the Apple Container system?" || return 1
+  # The operator has already approved kernel installation through Norn's
+  # prompt (or --yes). Avoid a second hidden prompt so unattended setup cannot
+  # block indefinitely on a non-TTY stdin.
+  run_setup_step "Starting Apple Container system" "$container_bin" system start --enable-kernel-install
+}
+
+prerequisites() {
+  local failures=0 item path apple_platform_ok=true
+  case "$connector" in
+    nomad-consul|apple-container) ;;
+    *) die "unsupported connector $connector (expected nomad-consul or apple-container)" ;;
+  esac
+  echo "Norn prerequisite check (connector=$connector)"
+  if [ "$connector" = "apple-container" ]; then
+    if ! apple_container_platform_ready; then
+      failures=$((failures + 1))
+      apple_platform_ok=false
+    fi
+    if $apple_platform_ok && $setup_requested && ! $check_only; then
+      if ! command_path container >/dev/null 2>&1; then
+        install_apple_container || failures=$((failures + 1))
+      fi
+      if command_path container >/dev/null 2>&1; then
+        start_apple_container || failures=$((failures + 1))
+      fi
+    fi
+    if ! apple_container_runtime_ready; then failures=$((failures + 1)); fi
+  else
+    echo "ok   connector=nomad-consul (production default)"
+    for item in docker nomad consul curl launchctl plutil python3 sops; do
+      if path="$(command_path "$item" 2>/dev/null)"; then
+        echo "ok   $item=$path"
+      else
+        echo "fail $item missing"
+        failures=$((failures + 1))
+      fi
+    done
+    echo "info Nomad/Consul setup is intentionally not automated: configure TLS, ACLs, persistent state, and Docker according to the host-recovery runbook."
+  fi
+  if [ "$failures" -gt 0 ]; then
+    echo "result: not ready"
+    return 1
+  fi
+  echo "result: ready"
+}
+
 doctor() {
   local failures=0 item path
   [ "$(uname -s)" = "Darwin" ] && echo "ok   platform=macOS" || { echo "fail platform=$(uname -s)"; failures=$((failures + 1)); }
@@ -1359,6 +1582,7 @@ supervise() {
 
 case "$mode" in
   install) install_files ;;
+  prerequisites|setup) prerequisites ;;
   render) render_configs ;;
   doctor) doctor ;;
   recover) recover_host ;;

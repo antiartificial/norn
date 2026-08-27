@@ -8,7 +8,7 @@ interface Props {
   onClose: () => void
 }
 
-const statuses = ['', 'queued', 'building', 'testing', 'deploying', 'deployed', 'failed']
+const statuses = ['', 'queued', 'building', 'testing', 'migrating', 'submitting', 'healthy', 'deployed', 'failed']
 
 function statusLabel(s: string): string {
   if (!s) return 'All statuses'

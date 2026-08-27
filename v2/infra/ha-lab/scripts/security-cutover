@@ -59,8 +59,13 @@ set_profile() {
 
 readiness_report() {
   printf '%s\n' "${NORN_HA_NORN_API_TOKEN}" | ssh -o BatchMode=yes "root@${first_ip}" 'IFS= read -r token
+request_config="$(mktemp /tmp/norn-readiness.XXXXXX)"
+chmod 0600 "${request_config}"
+trap '\''rm -f -- "${request_config}"'\'' EXIT
+printf '\''header = "Authorization: Bearer %s"\n'\'' "${token}" >"${request_config}"
+unset token
 active="$(curl -fsS --max-time 5 "http://127.0.0.1:8500/v1/health/service/norn-api?passing=true" | jq -er '\''if length == 1 then .[0].Service.Address else error("exactly one active Norn API required") end'\'')"
-curl -fsS --max-time 30 -H "Authorization: Bearer ${token}" "http://${active}:8800/api/v1/production/readiness"'
+curl -fsS --max-time 30 --config "${request_config}" "http://${active}:8800/api/v1/production/readiness"'
 }
 
 activate_production() {

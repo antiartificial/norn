@@ -6,8 +6,8 @@ import (
 	"sort"
 	"time"
 
+	"norn/v2/api/connector"
 	"norn/v2/api/model"
-	"norn/v2/api/nomad"
 )
 
 type tuningRecommendation struct {
@@ -62,8 +62,8 @@ type tuningUsage struct {
 }
 
 func (h *Handler) TuningRecommendations(w http.ResponseWriter, r *http.Request) {
-	if h.nomad == nil {
-		writeError(w, http.StatusServiceUnavailable, "nomad not connected")
+	if h.workloads == nil {
+		writeError(w, http.StatusServiceUnavailable, "workload connector not available")
 		return
 	}
 
@@ -84,7 +84,7 @@ func (h *Handler) TuningRecommendations(w http.ResponseWriter, r *http.Request) 
 		}
 	}
 	for _, spec := range specs {
-		usage, err := h.nomad.JobResourceUsage(spec.App)
+		usage, err := h.workloads.JobResourceUsage(r.Context(), spec.App)
 		if err != nil || len(usage) == 0 {
 			continue
 		}
@@ -150,7 +150,7 @@ func enrichTuningWithAccess(rec *tuningRecommendation, pattern accessPatternSumm
 	}
 }
 
-func aggregateTuningUsage(usage []nomad.ResourceUsage) map[string]tuningUsage {
+func aggregateTuningUsage(usage []connector.ResourceUsage) map[string]tuningUsage {
 	usageByGroup := map[string]tuningUsage{}
 	for _, u := range usage {
 		current := usageByGroup[u.TaskGroup]

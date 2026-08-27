@@ -5,16 +5,19 @@ import (
 	"fmt"
 	"log"
 	"strconv"
+	"strings"
 	"time"
 
 	"github.com/google/uuid"
 
 	"norn/v2/api/beacon"
+	"norn/v2/api/connector"
 	"norn/v2/api/consul"
 	"norn/v2/api/hub"
 	"norn/v2/api/model"
 	"norn/v2/api/nomad"
 	"norn/v2/api/redpanda"
+	containerruntime "norn/v2/api/runtime"
 	"norn/v2/api/saga"
 	"norn/v2/api/secrets"
 	"norn/v2/api/storage"
@@ -25,6 +28,8 @@ type Pipeline struct {
 	DB                       *store.DB
 	Nomad                    *nomad.Client
 	Consul                   *consul.Client
+	Workloads                connector.Connector
+	ContainerRuntime         *containerruntime.Runtime
 	WS                       *hub.Hub
 	SagaStore                saga.Store
 	Secrets                  *secrets.Manager
@@ -47,6 +52,18 @@ type Pipeline struct {
 	ArtifactDenySeverities   []string
 	CosignPath               string
 	TrivyPath                string
+}
+
+func (p *Pipeline) workloadConnector() connector.Connector {
+	if p.Workloads != nil {
+		return p.Workloads
+	}
+	// Compatibility for tests and embedded callers that still construct the
+	// pipeline directly. The server always injects an explicit connector.
+	if p.Nomad != nil {
+		return connector.NewNomadConsul(p.Nomad, p.Consul)
+	}
+	return nil
 }
 
 type state struct {
@@ -144,10 +161,16 @@ func (p *Pipeline) ExecuteOperation(ctx context.Context, op *model.Operation) er
 	category := "deploy"
 	if op.Kind == "app.preflight" {
 		category = "preflight"
+	} else if op.Kind == "app.migrate" {
+		category = "migration"
+	} else if strings.HasPrefix(op.Kind, "app.snapshot") {
+		category = "snapshot"
 	}
 	sg := saga.NewWithID(p.SagaStore, op.SagaID, spec.App, "pipeline", category)
 
 	switch op.Kind {
+	case "app.snapshot", "app.snapshot-prune", "app.snapshot-restore", "app.migrate":
+		return p.executeDataOperation(ctx, op, spec, sg)
 	case "app.deploy":
 		deploymentID := stringFromMap(op.Payload, "deploymentId")
 		if deploymentID == "" {

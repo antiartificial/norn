@@ -12,6 +12,9 @@ import (
 // CanaryStatus returns the latest Nomad deployment status for an app,
 // including whether canary allocations are in progress.
 func (h *Handler) CanaryStatus(w http.ResponseWriter, r *http.Request) {
+	if !h.requireNomadConnector(w) {
+		return
+	}
 	id := chi.URLParam(r, "id")
 	region := r.URL.Query().Get("region")
 
@@ -30,6 +33,9 @@ func (h *Handler) CanaryStatus(w http.ResponseWriter, r *http.Request) {
 
 // PromoteCanary promotes all canary allocations in the latest deployment for an app.
 func (h *Handler) PromoteCanary(w http.ResponseWriter, r *http.Request) {
+	if !h.requireNomadConnector(w) {
+		return
+	}
 	id := chi.URLParam(r, "id")
 	region := r.URL.Query().Get("region")
 

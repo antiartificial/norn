@@ -22,12 +22,18 @@ func TestControlOpenAPIParsesAndLocalRefsResolve(t *testing.T) {
 	}
 	for _, required := range []string{
 		"/api/v1/apps", "/api/v1/apps/{id}/deployment",
+		"/api/v1/apps/{id}/snapshots", "/api/v1/apps/{id}/snapshots/retention", "/api/v1/apps/{id}/snapshots/{snapshot}/restore",
+		"/api/v1/apps/{id}/migrations", "/api/v1/apps/{id}/rollbacks",
 		"/api/v1/enrollments", "/api/v1/events/info", "/api/v1/operations/{id}/cancel",
-		"/api/v1/apps/{id}/exec-sessions", "/api/v1/exec-sessions/{id}/stream", "/api/v1/host/metrics",
+		"/api/v1/apps/{id}/exec-sessions", "/api/v1/exec-sessions/{id}/stream", "/api/v1/host/metrics", "/api/v1/host/runtime",
 		"/api/v1/production/readiness",
 		"/api/v1/audit/mutations", "/api/v1/production/drills", "/api/v1/production/drills/{id}/complete",
 		"/api/v1/validate/infraspec", "/api/v1/fleet/validate", "/api/v1/fleet/node-pools", "/api/v1/fleet/plans", "/api/v1/fleet/node-pools/{pool}/plan",
 		"/api/v1/fleet/plans/{planID}/reconciliations", "/api/v1/fleet/github",
+		"/api/v1/fleet/plans/{planID}/attempts", "/api/v1/fleet/plans/{planID}/attempts/{attemptID}",
+		"/api/v1/fleet/plans/{planID}/attempts/{attemptID}/heartbeat", "/api/v1/fleet/plans/{planID}/attempts/{attemptID}/advance",
+		"/api/v1/fleet/plans/{planID}/attempts/{attemptID}/retry", "/api/v1/fleet/plans/{planID}/attempts/{attemptID}/cancel",
+		"/api/v1/deployments", "/api/v1/deployments/{id}", "/api/v1/deployments/{id}/steps", "/api/v1/services/manifest",
 		"/api/v1/fleet/plans/{planID}/github/pull-request", "/api/v1/fleet/plans/{planID}/github/dispatch",
 	} {
 		if _, ok := paths[required]; !ok {

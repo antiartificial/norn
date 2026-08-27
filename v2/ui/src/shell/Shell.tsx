@@ -13,8 +13,12 @@ const navGroups = [
   { label: 'Configure', items: [['/platform', 'Platform', 'fa-sliders']] },
 ] as const
 
+function storedSidebarCollapsed(): boolean {
+  try { return (localStorage.getItem('norn.sidebar.collapsed:v1') ?? localStorage.getItem('norn.sidebar.collapsed')) === 'true' } catch { return false }
+}
+
 export function Shell({ children, connected, version, apps, activity, runAction, fleetAvailable }: { children: ReactNode; connected: boolean; version: string; apps: AppStatus[]; activity: ActivityEntry[]; runAction: (appId: string, action: AppAction) => void; fleetAvailable: boolean }) {
-  const [collapsed, setCollapsed] = useState(() => localStorage.getItem('norn.sidebar.collapsed') === 'true')
+  const [collapsed, setCollapsed] = useState(storedSidebarCollapsed)
   const [paletteOpen, setPaletteOpen] = useState(false)
   const [theme, setTheme] = useState<Theme>(() => document.documentElement.dataset.theme === 'light' ? 'light' : 'dark')
   const location = useLocation()
@@ -43,7 +47,7 @@ export function Shell({ children, connected, version, apps, activity, runAction,
 
   const updateCollapsed = (next: boolean) => {
     setCollapsed(next)
-    localStorage.setItem('norn.sidebar.collapsed', String(next))
+    try { localStorage.setItem('norn.sidebar.collapsed:v1', String(next)) } catch { /* preference persistence is best effort */ }
   }
 
   const switchTheme = () => {

@@ -27,14 +27,18 @@ import (
 	"norn/v2/api/beacon"
 	"norn/v2/api/cloudflared"
 	"norn/v2/api/config"
+	"norn/v2/api/connector"
 	"norn/v2/api/consul"
 	"norn/v2/api/contract"
+	"norn/v2/api/engine"
 	"norn/v2/api/handler"
 	"norn/v2/api/hub"
+	"norn/v2/api/model"
 	"norn/v2/api/nomad"
 	"norn/v2/api/observe"
 	"norn/v2/api/pipeline"
 	"norn/v2/api/redpanda"
+	containerruntime "norn/v2/api/runtime"
 	"norn/v2/api/saga"
 	"norn/v2/api/secrets"
 	"norn/v2/api/storage"
@@ -181,11 +185,43 @@ func main() {
 	// Secrets manager
 	sec := secrets.NewManager(cfg.AppsDir)
 
+	// Workload connector. Selection is explicit: production and existing hosts
+	// stay on Nomad/Consul unless an operator opts a development Mac into the
+	// Apple Container connector.
+	var localEngine *engine.Engine
+	var workloads connector.Connector
+	var runtimeBackend containerruntime.Backend
+	if cfg.WorkloadConnector == connector.AppleContainer {
+		runtimeBackend = containerruntime.AppleContainer
+		runtimeCtx, runtimeCancel := context.WithTimeout(context.Background(), 60*time.Second)
+		err = engine.EnsureRuntime(runtimeCtx)
+		runtimeCancel()
+		if err != nil {
+			log.Fatalf("apple-container runtime: %v", err)
+		}
+		localEngine, err = engine.New(db, beaconSvc, cfg.AppsDir)
+		if err != nil {
+			log.Fatalf("apple-container connector: %v", err)
+		}
+		localEngine.SetEnvironmentProvider(sec.EnvMap)
+		workloads = connector.NewApple(localEngine)
+	} else {
+		runtimeBackend = containerruntime.Docker
+		workloads = connector.NewNomadConsul(nomadClient, consulClient)
+	}
+	containerRuntime := containerruntime.New(runtimeBackend, cfg.RegistryURL)
+	if err := workloads.Validate(&model.InfraSpec{}, cfg.Production()); err != nil && cfg.WorkloadConnector == connector.AppleContainer {
+		log.Fatalf("workload connector: %v", err)
+	}
+	log.Printf("workload connector: %s (container runtime: %s)", workloads.Name(), containerRuntime.Backend())
+
 	// Deploy pipeline
 	pipe := &pipeline.Pipeline{
 		DB:                       db,
 		Nomad:                    nomadClient,
 		Consul:                   consulClient,
+		Workloads:                workloads,
+		ContainerRuntime:         containerRuntime,
 		WS:                       ws,
 		SagaStore:                sagaStore,
 		Secrets:                  sec,
@@ -209,13 +245,24 @@ func main() {
 
 	workerCtx, workerCancel := context.WithCancel(context.Background())
 	defer workerCancel()
+	if localEngine != nil {
+		localEngine.Start(workerCtx)
+		defer localEngine.Stop()
+	}
 	if os.Getenv("NORN_SKIP_OPERATION_WORKER") == "true" {
 		log.Println("operation worker skipped")
 	} else {
 		opWorker := worker.NewOperationWorker(db, pipe)
 		go opWorker.Run(workerCtx)
 	}
-	if os.Getenv("NORN_SKIP_NOMAD_WATCHER") == "true" {
+	if cfg.WorkloadConnector == connector.AppleContainer {
+		if os.Getenv("NORN_SKIP_ENGINE_WATCHER") == "true" {
+			log.Println("apple-container watcher skipped")
+		} else {
+			engineWatcher := watch.NewEngineWatcher(localEngine, beaconSvc, cfg.AppsDir)
+			go engineWatcher.Run(workerCtx)
+		}
+	} else if os.Getenv("NORN_SKIP_NOMAD_WATCHER") == "true" {
 		log.Println("nomad allocation watcher skipped")
 	} else {
 		nomadWatcher := watch.NewNomadAllocationWatcher(nomadClient, consulClient, beaconSvc, cfg.AppsDir)
@@ -224,6 +271,7 @@ func main() {
 
 	// Handler
 	h := handler.New(db, nomadClient, consulClient, ws, cfg, pipe, beaconSvc, sec, sagaStore, s3Client, redpandaClient)
+	h.ConfigureWorkloads(workloads, localEngine, containerRuntime)
 
 	// Router
 	r := chi.NewRouter()
@@ -260,6 +308,7 @@ func main() {
 	r.Route("/api", func(r chi.Router) {
 		r.Get("/health", h.Health)
 		r.Get("/metrics", h.Metrics)
+		r.Get("/runtime", h.RuntimeInfo)
 		r.Get("/version", func(w http.ResponseWriter, r *http.Request) {
 			w.Header().Set("Content-Type", "application/json")
 			json.NewEncoder(w).Encode(map[string]string{"version": Version})
@@ -342,7 +391,7 @@ func main() {
 		r.Get("/ops/contextdb/evaluator-readiness", h.EvaluatorReadiness)
 
 		r.Get("/v1/capabilities", func(w http.ResponseWriter, r *http.Request) {
-			writeControlCapabilities(w)
+			writeControlCapabilities(w, r)
 		})
 		r.Get("/v1/openapi.yaml", contract.ServeOpenAPI)
 		r.Post("/v1/enrollments", h.StartDeviceEnrollment)
@@ -360,6 +409,16 @@ func main() {
 		r.With(handler.ValidateAppID).Get("/v1/apps/{id}", h.GetApp)
 		r.With(handler.ValidateAppID).Put("/v1/apps/{id}/deployment", h.UpdateAppDeployment)
 		r.With(handler.ValidateAppID).Post("/v1/apps/{id}/exec-sessions", h.CreateExecSession)
+		r.With(handler.ValidateAppID).Get("/v1/apps/{id}/snapshots", h.ListAppSnapshotsV1)
+		r.With(handler.ValidateAppID).Post("/v1/apps/{id}/snapshots", h.QueueAppSnapshot)
+		r.With(handler.ValidateAppID).Post("/v1/apps/{id}/snapshots/retention", h.QueueAppSnapshotRetention)
+		r.With(handler.ValidateAppID).Post("/v1/apps/{id}/snapshots/{snapshot}/restore", h.QueueAppSnapshotRestore)
+		r.With(handler.ValidateAppID).Post("/v1/apps/{id}/migrations", h.QueueAppMigration)
+		r.With(handler.ValidateAppID).Post("/v1/apps/{id}/rollbacks", h.QueueAppRollback)
+		r.Get("/v1/deployments", h.ListDeploymentsV1)
+		r.Get("/v1/deployments/{id}", h.GetDeploymentV1)
+		r.Get("/v1/deployments/{id}/steps", h.ListDeploymentStepsV1)
+		r.Get("/v1/services/manifest", h.ServiceManifestV1)
 		r.Post("/v1/validate/infraspec", h.ValidateInfraSpecDocument)
 		r.Post("/v1/fleet/validate", h.ValidateFleetDocument)
 		r.Get("/v1/fleet/node-pools", h.FleetInventory)
@@ -367,6 +426,13 @@ func main() {
 		r.Get("/v1/fleet/github", h.FleetGitHubStatus)
 		r.Get("/v1/fleet/plans/{planID}/reconciliations", h.ListFleetReconciliations)
 		r.Post("/v1/fleet/plans/{planID}/reconciliations", h.RecordFleetReconciliation)
+		r.Get("/v1/fleet/plans/{planID}/attempts", h.ListFleetRunnerAttempts)
+		r.Post("/v1/fleet/plans/{planID}/attempts", h.StartFleetRunnerAttempt)
+		r.Get("/v1/fleet/plans/{planID}/attempts/{attemptID}", h.GetFleetRunnerAttempt)
+		r.Post("/v1/fleet/plans/{planID}/attempts/{attemptID}/heartbeat", h.HeartbeatFleetRunnerAttempt)
+		r.Post("/v1/fleet/plans/{planID}/attempts/{attemptID}/advance", h.AdvanceFleetRunnerAttempt)
+		r.Post("/v1/fleet/plans/{planID}/attempts/{attemptID}/retry", h.RetryFleetRunnerAttempt)
+		r.Post("/v1/fleet/plans/{planID}/attempts/{attemptID}/cancel", h.CancelFleetRunnerAttempt)
 		r.Post("/v1/fleet/plans/{planID}/github/pull-request", h.CreateFleetGitHubPullRequest)
 		r.Post("/v1/fleet/plans/{planID}/github/dispatch", h.DispatchFleetGitHubApply)
 		r.Post("/v1/fleet/node-pools/{pool}/plan", h.PlanFleetCapacity)
@@ -377,6 +443,7 @@ func main() {
 		r.Get("/v1/releases", h.PlatformReleases)
 		r.Get("/v1/host/status", h.HostStatus)
 		r.Get("/v1/host/metrics", h.HostMetrics)
+		r.Get("/v1/host/runtime", h.RuntimeInfo)
 		r.Get("/v1/production/readiness", h.ProductionReadiness)
 		r.Get("/v1/production/drills", h.ListRecoveryDrills)
 		r.Post("/v1/production/drills", h.StartRecoveryDrill)
@@ -475,6 +542,16 @@ func validateControlSecurity(cfg *config.Config) error {
 	if profile != "development" && profile != "production" {
 		return fmt.Errorf("NORN_PROFILE must be development or production")
 	}
+	workloadConnector := cfg.WorkloadConnector
+	if workloadConnector == "" {
+		workloadConnector = connector.NomadConsul
+	}
+	if workloadConnector != connector.NomadConsul && workloadConnector != connector.AppleContainer {
+		return fmt.Errorf("NORN_WORKLOAD_CONNECTOR must be nomad-consul or apple-container")
+	}
+	if err := validateAllowedOrigins(cfg.AllowedOrigins, profile == "production"); err != nil {
+		return err
+	}
 	cfDomainConfigured := strings.TrimSpace(cfg.CFAccessTeamDomain) != ""
 	cfAudienceConfigured := strings.TrimSpace(cfg.CFAccessAUD) != ""
 	if cfDomainConfigured != cfAudienceConfigured {
@@ -491,6 +568,9 @@ func validateControlSecurity(cfg *config.Config) error {
 		}
 	}
 	if profile == "production" {
+		if workloadConnector != connector.NomadConsul {
+			return fmt.Errorf("NORN_PROFILE=production requires NORN_WORKLOAD_CONNECTOR=nomad-consul")
+		}
 		if !cfg.RequireExplicitAuth {
 			return fmt.Errorf("NORN_PROFILE=production requires NORN_REQUIRE_EXPLICIT_AUTH=true")
 		}
@@ -539,9 +619,33 @@ func validateControlSecurity(cfg *config.Config) error {
 	return nil
 }
 
+func validateAllowedOrigins(raw string, production bool) error {
+	for _, value := range strings.Split(raw, ",") {
+		origin := strings.TrimSpace(value)
+		if origin == "" {
+			continue
+		}
+		if strings.Contains(origin, "*") {
+			return fmt.Errorf("NORN_ALLOWED_ORIGINS cannot contain wildcards")
+		}
+		parsed, err := url.Parse(origin)
+		if err != nil || parsed.Host == "" || parsed.User != nil || (parsed.Scheme != "http" && parsed.Scheme != "https") || (parsed.Path != "" && parsed.Path != "/") || parsed.RawQuery != "" || parsed.Fragment != "" {
+			return fmt.Errorf("NORN_ALLOWED_ORIGINS entry %q must be an HTTP(S) origin without credentials, paths, queries, or fragments", origin)
+		}
+		if production && parsed.Scheme != "https" {
+			host := strings.ToLower(parsed.Hostname())
+			ip := net.ParseIP(host)
+			if host != "localhost" && (ip == nil || !ip.IsLoopback()) {
+				return fmt.Errorf("NORN_PROFILE=production requires HTTPS allowed origins except for loopback development clients")
+			}
+		}
+	}
+	return nil
+}
+
 func secureEndpoint(raw string) bool {
 	parsed, err := url.Parse(strings.TrimSpace(raw))
-	return err == nil && strings.EqualFold(parsed.Scheme, "https")
+	return err == nil && strings.EqualFold(parsed.Scheme, "https") && parsed.Host != "" && parsed.User == nil
 }
 
 func secureDatabaseDSN(raw string) bool {
@@ -549,13 +653,44 @@ func secureDatabaseDSN(raw string) bool {
 	if err != nil {
 		return false
 	}
-	return strings.EqualFold(parsed.Query().Get("sslmode"), "verify-full")
+	scheme := strings.ToLower(parsed.Scheme)
+	return (scheme == "postgres" || scheme == "postgresql") && parsed.Host != "" && strings.EqualFold(parsed.Query().Get("sslmode"), "verify-full")
 }
 
 func bearerAuth(token string, h *handler.Handler, requireExplicit bool) func(http.Handler) http.Handler {
 	return func(next http.Handler) http.Handler {
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-			if publicControlPath(r.URL.Path) || publicEnrollmentRequest(r) {
+			// Capabilities stay publicly discoverable, but a client that supplies a
+			// credential receives its own granted scopes. Invalid supplied
+			// credentials fail closed rather than silently degrading to anonymous.
+			if r.URL.Path == "/api/v1/capabilities" {
+				if claims, ok := auth.CFAccessClaimsFromRequest(r); ok {
+					subject := strings.TrimSpace(claims.Email)
+					if subject == "" {
+						subject = strings.TrimSpace(claims.Subject)
+					}
+					next.ServeHTTP(w, handler.WithAccessPrincipal(r, &handler.AccessPrincipal{Subject: subject, Scopes: []string{handler.ScopeAdmin}}))
+					return
+				}
+				authorization := r.Header.Get("Authorization")
+				if authorization == "" {
+					next.ServeHTTP(w, r)
+					return
+				}
+				if token != "" && strings.HasPrefix(authorization, "Bearer ") && subtle.ConstantTimeCompare([]byte(authorization[7:]), []byte(token)) == 1 {
+					next.ServeHTTP(w, handler.WithAccessPrincipal(r, &handler.AccessPrincipal{Subject: "control-plane", Scopes: []string{handler.ScopeAdmin}, Legacy: true}))
+					return
+				}
+				if strings.HasPrefix(authorization, "Bearer ") && h != nil {
+					if principal, ok := h.VerifyAccessToken(authorization[7:]); ok {
+						next.ServeHTTP(w, handler.WithAccessPrincipal(r, principal))
+						return
+					}
+				}
+				handler.WriteControlProblem(w, r, http.StatusUnauthorized, "unauthorized", "a valid bearer token is required")
+				return
+			}
+			if publicControlPathForMode(r.URL.Path, requireExplicit) || publicEnrollmentRequest(r) {
 				next.ServeHTTP(w, r)
 				return
 			}
@@ -616,7 +751,20 @@ func publicEnrollmentRequest(r *http.Request) bool {
 }
 
 func publicControlPath(path string) bool {
-	if path == "/metrics" || path == "/api/metrics" || path == "/api/health" || path == "/api/version" || path == "/api/services/manifest" || path == "/api/v1/openapi.yaml" || path == "/api/v1/capabilities" {
+	return publicControlPathForMode(path, false)
+}
+
+func publicControlPathForMode(path string, requireExplicit bool) bool {
+	if path == "/api/health" || path == "/api/version" || path == "/api/v1/openapi.yaml" || path == "/api/v1/capabilities" {
+		return true
+	}
+	if requireExplicit && path == "/metrics" {
+		return false
+	}
+	// Development keeps local discovery and scrape compatibility. In explicit
+	// auth mode these endpoints expose host, process, and service inventory, so
+	// Prometheus and operators must authenticate like every other control client.
+	if !requireExplicit && (path == "/metrics" || path == "/api/metrics" || path == "/api/services/manifest") {
 		return true
 	}
 	return path == "/api/webhooks/github" || path == "/api/webhooks/gitea" ||
@@ -641,6 +789,11 @@ func controlScopeForRequest(r *http.Request) string {
 		return handler.ScopeAdmin
 	case path == "/api/v1/validate/infraspec" || path == "/api/v1/fleet/validate":
 		return handler.ScopeAPIRead
+	case r.Method != http.MethodGet && r.Method != http.MethodHead && strings.HasPrefix(path, "/api/v1/fleet/") && (strings.Contains(path, "/attempts") || strings.HasSuffix(path, "/reconciliations")):
+		// Fleet handlers accept the dedicated fleet:operate scope and retain
+		// api:write as a compatibility superset. Authentication still happens
+		// here; the handler performs the final any-of authorization decision.
+		return ""
 	case strings.HasSuffix(path, "/exec"):
 		return handler.ScopeAppsExec
 	case path == "/api/access/tokens":
@@ -658,8 +811,22 @@ func controlScopeForRequest(r *http.Request) string {
 	}
 }
 
-func writeControlCapabilities(w http.ResponseWriter) {
+func writeControlCapabilities(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Content-Type", "application/json")
+	principalInfo := map[string]interface{}{"authenticated": false, "scopes": []string{}}
+	if principal, ok := handler.AccessPrincipalFromRequest(r); ok {
+		w.Header().Set("Cache-Control", "private, no-store")
+		principalInfo = map[string]interface{}{
+			"authenticated": true, "subject": principal.Subject,
+			"scopes": append([]string(nil), principal.Scopes...), "legacy": principal.Legacy,
+		}
+		if principal.DeviceID != "" {
+			principalInfo["deviceId"] = principal.DeviceID
+		}
+		if !principal.ExpiresAt.IsZero() {
+			principalInfo["expiresAt"] = principal.ExpiresAt.UTC()
+		}
+	}
 	_ = json.NewEncoder(w).Encode(map[string]interface{}{
 		"protocolVersion": 1,
 		"serverVersion":   Version,
@@ -669,13 +836,14 @@ func writeControlCapabilities(w http.ResponseWriter) {
 			"openapi-3.1", "standard-problems", "event-stream-info", "event-gap-detection",
 			"event-heartbeat", "event-subscriptions", "operation-cancellation", "typed-operation-receipts",
 			"versioned-resources", "device-enrollment", "token-rotation", "token-revocation", "device-listing",
-			"device-key-step-up", "exec-sessions", "exec-audit", "exec-session-expiry", "exec-protocol-v1", "host-metrics", "app-creation", "regional-deployments", "consul-traefik-ingress", "production-readiness", "durable-mutation-audit", "production-mutation-admission", "recovery-drill-receipts", "document-validation", "fleet-v1", "fleet-inventory", "durable-fleet-capacity-plans", "fleet-reconciliation-v1", "fleet-github-app-v1",
+			"device-key-step-up", "exec-sessions", "exec-audit", "exec-session-expiry", "exec-protocol-v1", "host-metrics", "host-runtime", "workload-connectors-v1", "apple-container-local", "app-creation", "durable-app-recovery-v1", "durable-snapshots", "standalone-migrations", "regional-deployments", "versioned-deployment-history-v1", "service-instance-placement-v2", "principal-scope-discovery-v1", "consul-traefik-ingress", "production-readiness", "durable-mutation-audit", "production-mutation-admission", "recovery-drill-receipts", "document-validation", "fleet-v1", "fleet-inventory", "durable-fleet-capacity-plans", "fleet-reconciliation-v1", "fleet-runner-attempts-v1", "fleet-github-app-v1",
 		},
 		"auth": map[string]interface{}{
 			"scopes":                handler.AccessTokenScopeNames(),
 			"websocketBearerHeader": true,
 			"websocketQueryToken":   false,
 			"deviceEnrollment":      true,
+			"principal":             principalInfo,
 			"stepUp": map[string]interface{}{
 				"purposes": []string{"exec"}, "algorithm": "ES256", "publicKeyFormat": "P-256-X9.63",
 				"challengeTTLSeconds": 120, "header": "X-Norn-Step-Up",
@@ -684,15 +852,17 @@ func writeControlCapabilities(w http.ResponseWriter) {
 				"deviceTTLSeconds": 2592000, "rotation": "atomic", "revocation": "registry",
 			},
 		},
+		// #nosec G101 -- this map advertises endpoint paths; it contains no credentials.
 		"endpoints": map[string]string{
 			"events": "/api/v1/events", "operations": "/api/v1/operations/{id}",
 			"platformPreflights": "/api/v1/platform/preflights", "platformUpgrades": "/api/v1/platform/upgrades",
 			"platformRollbacks": "/api/v1/platform/rollbacks", "platformSmoke": "/api/v1/platform/smoke", "hostAssurances": "/api/v1/host/assurances",
-			"openapi": "/api/v1/openapi.yaml", "eventInfo": "/api/v1/events/info", "apps": "/api/v1/apps", "appCreation": "/api/v1/apps", "appDeployment": "/api/v1/apps/{id}/deployment",
-			"releases": "/api/v1/releases", "hostStatus": "/api/v1/host/status", "hostMetrics": "/api/v1/host/metrics", "productionReadiness": "/api/v1/production/readiness", "recoveryDrills": "/api/v1/production/drills", "mutationAudit": "/api/v1/audit/mutations", "enrollments": "/api/v1/enrollments",
+			"openapi": "/api/v1/openapi.yaml", "eventInfo": "/api/v1/events/info", "apps": "/api/v1/apps", "appCreation": "/api/v1/apps", "appDeployment": "/api/v1/apps/{id}/deployment", "deployments": "/api/v1/deployments", "deployment": "/api/v1/deployments/{id}", "deploymentSteps": "/api/v1/deployments/{id}/steps", "serviceManifest": "/api/v1/services/manifest",
+			"appSnapshots": "/api/v1/apps/{id}/snapshots", "appSnapshotRetention": "/api/v1/apps/{id}/snapshots/retention", "appSnapshotRestore": "/api/v1/apps/{id}/snapshots/{snapshot}/restore", "appMigrations": "/api/v1/apps/{id}/migrations", "appRollbacks": "/api/v1/apps/{id}/rollbacks",
+			"releases": "/api/v1/releases", "hostStatus": "/api/v1/host/status", "hostMetrics": "/api/v1/host/metrics", "hostRuntime": "/api/v1/host/runtime", "productionReadiness": "/api/v1/production/readiness", "recoveryDrills": "/api/v1/production/drills", "mutationAudit": "/api/v1/audit/mutations", "enrollments": "/api/v1/enrollments",
 			"devices": "/api/v1/devices", "tokenRotate": "/api/v1/auth/rotate", "tokenRevoke": "/api/v1/auth/revoke",
 			"stepUpChallenges": "/api/v1/auth/step-up/challenges", "execSessions": "/api/v1/exec-sessions",
-			"infraSpecValidation": "/api/v1/validate/infraspec", "fleetValidation": "/api/v1/fleet/validate", "fleetNodePools": "/api/v1/fleet/node-pools", "fleetPlans": "/api/v1/fleet/plans", "fleetReconciliations": "/api/v1/fleet/plans/{planID}/reconciliations", "fleetGitHub": "/api/v1/fleet/github", "fleetGitHubPullRequest": "/api/v1/fleet/plans/{planID}/github/pull-request", "fleetGitHubDispatch": "/api/v1/fleet/plans/{planID}/github/dispatch",
+			"infraSpecValidation": "/api/v1/validate/infraspec", "fleetValidation": "/api/v1/fleet/validate", "fleetNodePools": "/api/v1/fleet/node-pools", "fleetPlans": "/api/v1/fleet/plans", "fleetReconciliations": "/api/v1/fleet/plans/{planID}/reconciliations", "fleetRunnerAttempts": "/api/v1/fleet/plans/{planID}/attempts", "fleetGitHub": "/api/v1/fleet/github", "fleetGitHubPullRequest": "/api/v1/fleet/plans/{planID}/github/pull-request", "fleetGitHubDispatch": "/api/v1/fleet/plans/{planID}/github/dispatch",
 		},
 	})
 }

@@ -3,8 +3,10 @@ package handler
 import (
 	"encoding/json"
 	"fmt"
+	"net"
 	"net/http"
 	"net/url"
+	"regexp"
 	"sort"
 	"strings"
 	"time"
@@ -33,6 +35,8 @@ type contextDBOpsSummary struct {
 	SagaEvents     any                          `json:"sagaEvents,omitempty"`
 	Warnings       []string                     `json:"warnings,omitempty"`
 }
+
+var contextDBIdentifierPattern = regexp.MustCompile(`^[A-Za-z0-9_.-]{1,128}$`)
 
 type contextDBProviderGate struct {
 	Ready               bool   `json:"ready"`
@@ -163,20 +167,8 @@ func (h *Handler) ContextDBOps(w http.ResponseWriter, r *http.Request) {
 	}
 	out.Secrets = ptrSecretStatus(h.secretStatus(spec))
 
-	if h.nomad != nil {
-		status := model.AppStatus{Spec: spec}
-		if jobStatus, err := h.nomad.JobStatus(spec.App); err == nil {
-			status.NomadStatus = jobStatus
-		}
-		if allocs, err := h.nomad.JobAllocations(spec.App); err == nil {
-			status.Allocations = enrichAllocations(allocs, h.nomad)
-			for _, alloc := range allocs {
-				if alloc.ClientStatus == "running" && alloc.DeploymentStatus != nil && alloc.DeploymentStatus.Healthy != nil && *alloc.DeploymentStatus.Healthy {
-					status.Healthy = true
-					break
-				}
-			}
-		}
+	if h.workloads != nil {
+		status, _ := h.connectorStatus(r.Context(), spec)
 		out.App = &status
 	}
 
@@ -284,15 +276,18 @@ func (h *Handler) ContextDBRollbackFeedback(w http.ResponseWriter, r *http.Reque
 	namespace := queryDefault(r, "namespace", "hermes-agent")
 	mode := queryDefault(r, "mode", "agent_memory")
 	eventID := chi.URLParam(r, "eventID")
-	if eventID == "" {
-		writeError(w, http.StatusBadRequest, "event id is required")
+	if !contextDBIdentifierPattern.MatchString(namespace) || !contextDBIdentifierPattern.MatchString(eventID) {
+		writeError(w, http.StatusBadRequest, "namespace and event id must use only letters, numbers, dots, underscores, or hyphens")
 		return
 	}
 	var req struct {
 		Reason string `json:"reason"`
 		Owner  string `json:"owner"`
 	}
-	_ = decodeJSON(r, &req)
+	if err := decodeJSON(r, &req); err != nil {
+		writeError(w, http.StatusBadRequest, err.Error())
+		return
+	}
 	if strings.TrimSpace(req.Owner) == "" {
 		req.Owner = "norn"
 	}
@@ -304,7 +299,7 @@ func (h *Handler) ContextDBRollbackFeedback(w http.ResponseWriter, r *http.Reque
 	webURL := ""
 	for _, svc := range manifest.Services {
 		if svc.App == "contextdb" && svc.Process == "web" {
-			webURL = firstReachableServiceURL(svc)
+			webURL = firstPrivateServiceInstanceURL(svc)
 			break
 		}
 	}
@@ -312,11 +307,15 @@ func (h *Handler) ContextDBRollbackFeedback(w http.ResponseWriter, r *http.Reque
 		writeError(w, http.StatusBadGateway, "contextdb web service unavailable")
 		return
 	}
-	payload, _ := json.Marshal(map[string]string{
+	payload, err := json.Marshal(map[string]string{
 		"mode":   mode,
 		"reason": req.Reason,
 		"owner":  req.Owner,
 	})
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "failed to encode contextdb request")
+		return
+	}
 	baseURL, err := url.Parse(webURL)
 	if err != nil || (baseURL.Scheme != "http" && baseURL.Scheme != "https") || baseURL.Host == "" || baseURL.User != nil || baseURL.Fragment != "" {
 		writeError(w, http.StatusBadGateway, "contextdb web service returned an invalid URL")
@@ -324,6 +323,8 @@ func (h *Handler) ContextDBRollbackFeedback(w http.ResponseWriter, r *http.Reque
 	}
 	target := fmt.Sprintf("%s/v1/namespaces/%s/feedback/events/%s/rollback",
 		strings.TrimRight(webURL, "/"), url.PathEscape(namespace), url.PathEscape(eventID))
+	// #nosec G704 -- target is built only from literal private/loopback/CGNAT
+	// Consul addresses and strictly validated path identifiers.
 	rollbackRequest, err := http.NewRequestWithContext(r.Context(), http.MethodPost, target, strings.NewReader(string(payload)))
 	if err != nil {
 		writeError(w, http.StatusBadGateway, err.Error())
@@ -336,6 +337,8 @@ func (h *Handler) ContextDBRollbackFeedback(w http.ResponseWriter, r *http.Reque
 			return http.ErrUseLastResponse
 		},
 	}
+	// #nosec G704 -- redirects are disabled and the request host passed the
+	// literal private-address allowlist above.
 	resp, err := contextDBClient.Do(rollbackRequest)
 	if err != nil {
 		writeError(w, http.StatusBadGateway, err.Error())
@@ -352,6 +355,25 @@ func (h *Handler) ContextDBRollbackFeedback(w http.ResponseWriter, r *http.Reque
 		return
 	}
 	writeJSON(w, receipt)
+}
+
+func firstPrivateServiceInstanceURL(svc model.ServiceManifestEntry) string {
+	for _, instance := range svc.Instances {
+		ip := net.ParseIP(strings.TrimSpace(instance.Address))
+		if ip == nil || instance.Port < 1 || instance.Port > 65535 {
+			continue
+		}
+		if !ip.IsLoopback() && !ip.IsPrivate() && !isCGNAT(ip) {
+			continue
+		}
+		return "http://" + net.JoinHostPort(ip.String(), fmt.Sprintf("%d", instance.Port))
+	}
+	return ""
+}
+
+func isCGNAT(ip net.IP) bool {
+	v4 := ip.To4()
+	return v4 != nil && v4[0] == 100 && v4[1]&0xc0 == 0x40
 }
 
 func providerGateFromPolicy(policy contextDBPolicyReport) contextDBProviderGate {

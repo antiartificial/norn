@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"log"
 	"os"
+	"runtime/debug"
 	"time"
 
 	"norn/v2/api/model"
@@ -30,9 +31,12 @@ func NewOperationWorker(db *store.DB, p *pipeline.Pipeline) *OperationWorker {
 		db:       db,
 		pipeline: p,
 		id:       fmt.Sprintf("%s:%d", host, os.Getpid()),
-		kinds:    []string{"app.preflight", "app.deploy", "app.rollback"},
-		lease:    45 * time.Minute,
-		poll:     2 * time.Second,
+		kinds: []string{
+			"app.preflight", "app.deploy", "app.rollback", "app.snapshot",
+			"app.snapshot-prune", "app.snapshot-restore", "app.migrate",
+		},
+		lease: 90 * time.Second,
+		poll:  2 * time.Second,
 	}
 }
 
@@ -55,6 +59,9 @@ func (w *OperationWorker) Run(ctx context.Context) {
 }
 
 func (w *OperationWorker) runOnce(ctx context.Context) error {
+	if err := w.db.RecoverInFlightOperations(ctx); err != nil {
+		return fmt.Errorf("recover expired app operations: %w", err)
+	}
 	for {
 		op, err := w.db.ClaimNextOperation(ctx, w.id, w.lease, w.kinds)
 		if err != nil {
@@ -68,12 +75,37 @@ func (w *OperationWorker) runOnce(ctx context.Context) error {
 }
 
 func (w *OperationWorker) handle(ctx context.Context, op *model.Operation) {
+	defer func() {
+		if recovered := recover(); recovered != nil {
+			log.Printf("operation worker: panic in %s: %v\n%s", op.ID, recovered, debug.Stack())
+			w.recordFailure(ctx, op, fmt.Errorf("operation executor panic; inspect server logs"))
+		}
+	}()
 	log.Printf("operation worker: claimed %s %s app=%s attempt=%d/%d", op.ID, op.Kind, op.App, op.Attempts, op.MaxAttempts)
-	err := w.pipeline.ExecuteOperation(ctx, op)
+	release, locked, lockErr := w.db.AcquireAppOperationLock(ctx, op.App)
+	if lockErr != nil || !locked {
+		message := "another mutable operation is active for this app"
+		if lockErr != nil {
+			message = "could not acquire the durable app operation lock: " + lockErr.Error()
+		}
+		delay := 5 * time.Second
+		if err := w.db.DeferClaimedOperation(ctx, op.ID, message, time.Now().Add(delay), map[string]interface{}{"lockRetry": true}); err != nil {
+			log.Printf("operation worker: defer locked operation %s: %v", op.ID, err)
+		}
+		return
+	}
+	defer release()
+	executionCtx, stopRenewal := context.WithCancel(ctx)
+	defer stopRenewal()
+	go w.renewLease(executionCtx, op.ID)
+	err := w.pipeline.ExecuteOperation(executionCtx, op)
 	if err == nil {
 		return
 	}
+	w.recordFailure(ctx, op, err)
+}
 
+func (w *OperationWorker) recordFailure(ctx context.Context, op *model.Operation, err error) {
 	message := fmt.Sprintf("%s failed: %v", op.Kind, err)
 	if op.Attempts < op.MaxAttempts {
 		delay := retryDelay(op.Attempts)
@@ -86,6 +118,21 @@ func (w *OperationWorker) handle(ctx context.Context, op *model.Operation) {
 	}
 	if finishErr := w.db.FinishOperation(ctx, op.ID, model.OperationFailed, message, map[string]interface{}{}); finishErr != nil {
 		log.Printf("operation worker: finish failed %s: %v", op.ID, finishErr)
+	}
+}
+
+func (w *OperationWorker) renewLease(ctx context.Context, operationID string) {
+	ticker := time.NewTicker(w.lease / 3)
+	defer ticker.Stop()
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-ticker.C:
+			if err := w.db.RenewOperationLease(ctx, operationID, w.id, time.Now().Add(w.lease)); err != nil {
+				log.Printf("operation worker: renew lease %s: %v", operationID, err)
+			}
+		}
 	}
 }
 

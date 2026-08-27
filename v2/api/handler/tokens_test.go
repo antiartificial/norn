@@ -37,6 +37,20 @@ func TestAccessTokenScopes(t *testing.T) {
 	}
 }
 
+func TestFleetOperateIsARegisteredLeastPrivilegeScope(t *testing.T) {
+	scopes, err := normalizeAccessTokenScopes([]string{ScopeAPIRead, ScopeFleetOperate})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(scopes) != 2 || scopes[1] != ScopeFleetOperate {
+		t.Fatalf("scopes = %v", scopes)
+	}
+	principal := AccessPrincipal{Scopes: []string{ScopeFleetOperate}}
+	if !principal.Allows(ScopeFleetOperate) || principal.Allows(ScopeAPIWrite) {
+		t.Fatal("fleet scope must not imply general API writes")
+	}
+}
+
 func TestLegacyAccessTokenRetainsCompatibility(t *testing.T) {
 	h := &Handler{cfg: &config.Config{APIToken: "test-secret"}}
 	now := time.Now().UTC()

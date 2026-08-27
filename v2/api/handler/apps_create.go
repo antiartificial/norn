@@ -8,6 +8,7 @@ import (
 	"strings"
 
 	"github.com/go-chi/chi/v5"
+	"github.com/google/uuid"
 	"gopkg.in/yaml.v3"
 
 	"norn/v2/api/model"
@@ -68,8 +69,13 @@ func (h *Handler) CreateApp(w http.ResponseWriter, r *http.Request) {
 		WriteControlProblem(w, r, http.StatusInternalServerError, "app_create_failed", "failed to serialize InfraSpec")
 		return
 	}
-	appDir := filepath.Join(h.cfg.AppsDir, req.Name)
-	if err := os.Mkdir(appDir, 0750); err != nil {
+	appsRoot, err := os.OpenRoot(h.cfg.AppsDir)
+	if err != nil {
+		WriteControlProblem(w, r, http.StatusInternalServerError, "app_create_failed", "apps directory is unavailable")
+		return
+	}
+	defer appsRoot.Close()
+	if err := appsRoot.Mkdir(req.Name, 0750); err != nil {
 		if os.IsExist(err) {
 			WriteControlProblem(w, r, http.StatusConflict, "app_exists", fmt.Sprintf("app %s already exists", req.Name))
 		} else {
@@ -77,17 +83,20 @@ func (h *Handler) CreateApp(w http.ResponseWriter, r *http.Request) {
 		}
 		return
 	}
-	path := filepath.Join(appDir, "infraspec.yaml")
-	file, err := os.OpenFile(path, os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0640)
+	path := filepath.Join(req.Name, "infraspec.yaml")
+	file, err := appsRoot.OpenFile(path, os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0640)
 	if err == nil {
 		_, err = file.Write(data)
+		if syncErr := file.Sync(); err == nil {
+			err = syncErr
+		}
 		if closeErr := file.Close(); err == nil {
 			err = closeErr
 		}
 	}
 	if err != nil {
-		_ = os.Remove(path)
-		_ = os.Remove(appDir)
+		_ = appsRoot.Remove(path)
+		_ = appsRoot.Remove(req.Name)
 		WriteControlProblem(w, r, http.StatusInternalServerError, "app_create_failed", "failed to write InfraSpec")
 		return
 	}
@@ -113,16 +122,23 @@ func (h *Handler) UpdateAppDeployment(w http.ResponseWriter, r *http.Request) {
 		WriteControlProblem(w, r, http.StatusBadRequest, "invalid_request", err.Error())
 		return
 	}
-	path := filepath.Join(h.cfg.AppsDir, id, "infraspec.yaml")
-	if info, statErr := os.Lstat(filepath.Dir(path)); statErr != nil || info.Mode()&os.ModeSymlink != 0 {
+	appsRoot, err := os.OpenRoot(h.cfg.AppsDir)
+	if err != nil {
+		WriteControlProblem(w, r, http.StatusInternalServerError, "app_update_failed", "apps directory is unavailable")
+		return
+	}
+	defer appsRoot.Close()
+	appDir := id
+	path := filepath.Join(appDir, "infraspec.yaml")
+	if info, statErr := appsRoot.Lstat(appDir); statErr != nil || info.Mode()&os.ModeSymlink != 0 || !info.IsDir() {
 		WriteControlProblem(w, r, http.StatusNotFound, "app_not_found", fmt.Sprintf("app %s not found", id))
 		return
 	}
-	if info, statErr := os.Lstat(path); statErr != nil || info.Mode()&os.ModeSymlink != 0 {
+	if info, statErr := appsRoot.Lstat(path); statErr != nil || info.Mode()&os.ModeSymlink != 0 || !info.Mode().IsRegular() {
 		WriteControlProblem(w, r, http.StatusNotFound, "app_not_found", fmt.Sprintf("app %s not found", id))
 		return
 	}
-	data, err := os.ReadFile(path)
+	data, err := appsRoot.ReadFile(path)
 	if err != nil {
 		WriteControlProblem(w, r, http.StatusNotFound, "app_not_found", fmt.Sprintf("app %s not found", id))
 		return
@@ -133,7 +149,7 @@ func (h *Handler) UpdateAppDeployment(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if req.Enabled {
-		spec, loadErr := model.LoadInfraSpec(path)
+		spec, loadErr := model.ParseInfraSpec(data)
 		if loadErr != nil || !model.ValidateSpecWithOptions(spec, model.ValidationOptions{NetworkMode: h.cfg.NetworkMode, StrictSecrets: h.cfg.StrictSecrets}).Valid {
 			WriteControlProblem(w, r, http.StatusConflict, "invalid_infraspec", "InfraSpec must pass validation before deployment can be enabled")
 			return
@@ -141,11 +157,11 @@ func (h *Handler) UpdateAppDeployment(w http.ResponseWriter, r *http.Request) {
 	}
 	setYAMLBoolean(doc.Content[0], "deploy", req.Enabled)
 	updated, err := yaml.Marshal(&doc)
-	if err != nil || writeFileAtomic(path, updated, 0640) != nil {
+	if err != nil || writeFileAtomicRoot(appsRoot, path, updated, 0640) != nil {
 		WriteControlProblem(w, r, http.StatusInternalServerError, "app_update_failed", "failed to update InfraSpec")
 		return
 	}
-	spec, err := model.LoadInfraSpec(path)
+	spec, err := model.ParseInfraSpec(updated)
 	if err != nil {
 		WriteControlProblem(w, r, http.StatusInternalServerError, "app_update_failed", "updated InfraSpec could not be read")
 		return
@@ -166,15 +182,16 @@ func setYAMLBoolean(root *yaml.Node, key string, value bool) {
 	root.Content = append(root.Content, &yaml.Node{Kind: yaml.ScalarNode, Tag: "!!str", Value: key}, &yaml.Node{Kind: yaml.ScalarNode, Tag: "!!bool", Value: fmt.Sprintf("%t", value)})
 }
 
-func writeFileAtomic(path string, data []byte, mode os.FileMode) error {
-	temp, err := os.CreateTemp(filepath.Dir(path), ".infraspec-*.tmp")
+func writeFileAtomicRoot(root *os.Root, path string, data []byte, mode os.FileMode) error {
+	tempName := filepath.Join(filepath.Dir(path), ".infraspec-"+uuid.NewString()+".tmp")
+	temp, err := root.OpenFile(tempName, os.O_WRONLY|os.O_CREATE|os.O_EXCL, mode)
 	if err != nil {
 		return err
 	}
-	tempName := temp.Name()
-	defer os.Remove(tempName)
-	if err = temp.Chmod(mode); err == nil {
-		_, err = temp.Write(data)
+	defer root.Remove(tempName)
+	_, err = temp.Write(data)
+	if syncErr := temp.Sync(); err == nil {
+		err = syncErr
 	}
 	if closeErr := temp.Close(); err == nil {
 		err = closeErr
@@ -182,5 +199,5 @@ func writeFileAtomic(path string, data []byte, mode os.FileMode) error {
 	if err != nil {
 		return err
 	}
-	return os.Rename(tempName, path)
+	return root.Rename(tempName, path)
 }

@@ -226,22 +226,23 @@ func (p *Pipeline) checkDeclaredSecrets(spec *model.InfraSpec) error {
 
 func parentPathReferences(root string) []string {
 	var refs []string
-	_ = filepath.WalkDir(root, func(path string, d fs.DirEntry, err error) error {
+	confined, err := os.OpenRoot(root)
+	if err != nil {
+		return refs
+	}
+	defer confined.Close()
+	_ = fs.WalkDir(confined.FS(), ".", func(path string, d fs.DirEntry, err error) error {
 		if err != nil || d.IsDir() || d.Name() != "go.mod" {
 			return nil
 		}
-		data, err := os.ReadFile(path)
+		data, err := fs.ReadFile(confined.FS(), path)
 		if err != nil {
 			return nil
-		}
-		rel, err := filepath.Rel(root, path)
-		if err != nil {
-			rel = path
 		}
 		for _, line := range strings.Split(string(data), "\n") {
 			line = strings.TrimSpace(line)
 			if strings.Contains(line, "=> ../") {
-				refs = append(refs, rel+": "+line)
+				refs = append(refs, filepath.ToSlash(path)+": "+line)
 			}
 		}
 		return nil

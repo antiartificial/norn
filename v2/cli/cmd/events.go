@@ -184,7 +184,7 @@ var eventsCorrelatedCmd = &cobra.Command{
 			style.TableHeader.Render("TITLE"))
 		for _, event := range events {
 			fmt.Fprintf(w, "%s\t%s\t%s\t%s\t%s\t%s\t%s\n",
-				shortID(event.ID),
+				event.ID,
 				localTime(event.OccurredAt),
 				renderSeverity(event.Severity),
 				renderEventState(event.State),
@@ -228,7 +228,7 @@ func printBeaconEvents(events []api.BeaconEvent, total int) {
 		style.TableHeader.Render("TITLE"))
 	for _, event := range events {
 		fmt.Fprintf(w, "%s\t%s\t%s\t%s\t%s\t%s\t%s\n",
-			shortID(event.ID),
+			event.ID,
 			localTime(event.OccurredAt),
 			renderSeverity(event.Severity),
 			renderEventState(event.State),
@@ -260,7 +260,7 @@ func printEventReconcileResponse(resp *api.EventReconcileResponse) {
 		style.TableHeader.Render("REASON"))
 	for _, decision := range resp.Decisions {
 		fmt.Fprintf(w, "%s\t%s\t%s\t%s\t%s\n",
-			shortID(decision.EventID),
+			decision.EventID,
 			emptyDash(decision.App),
 			decision.Type,
 			decision.Action,
@@ -272,7 +272,7 @@ func printEventReconcileResponse(resp *api.EventReconcileResponse) {
 		if len(decision.Evidence) == 0 {
 			continue
 		}
-		fmt.Printf("%s %s\n", style.Key.Render(shortID(decision.EventID)+" evidence"), strings.Join(decision.Evidence, "; "))
+		fmt.Printf("%s %s\n", style.Key.Render(decision.EventID+" evidence"), strings.Join(decision.Evidence, "; "))
 	}
 }
 

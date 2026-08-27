@@ -7,7 +7,7 @@ The Norn CLI is a Charm-powered terminal client built with Bubble Tea, Lip Gloss
 ```bash
 cd norn/v2
 make build     # builds bin/norn
-make install   # copies to ~/go/bin/norn
+install -m 0755 bin/norn "$HOME/go/bin/norn"
 ```
 
 ## Configuration
@@ -29,6 +29,7 @@ norn --api=https://norn.example.com status
 | Command | Description |
 |---------|-------------|
 | [`norn status`](/v2/cli/commands#status) | List all apps with health and status |
+| [`norn runtime`](/v2/cli/commands#runtime) | Inspect the workload connector and container runtime |
 | [`norn app`](/v2/cli/commands#app) | Detailed view of a single app |
 | [`norn deploy`](/v2/cli/commands#deploy) | Deploy with live pipeline progress |
 | [`norn preflight`](/v2/cli/commands#preflight) | Rehearse build/test without runtime mutation |

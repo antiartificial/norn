@@ -243,6 +243,12 @@ func LoadInfraSpec(path string) (*InfraSpec, error) {
 	if err != nil {
 		return nil, err
 	}
+	return ParseInfraSpec(data)
+}
+
+// ParseInfraSpec decodes an InfraSpec from an already-confined source while
+// applying the same defaults as LoadInfraSpec.
+func ParseInfraSpec(data []byte) (*InfraSpec, error) {
 	var spec InfraSpec
 	if err := yaml.Unmarshal(data, &spec); err != nil {
 		return nil, err

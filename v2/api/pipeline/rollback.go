@@ -8,18 +8,33 @@ import (
 
 	"github.com/google/uuid"
 
+	"norn/v2/api/connector"
 	"norn/v2/api/hub"
 	"norn/v2/api/model"
-	"norn/v2/api/nomad"
 	"norn/v2/api/saga"
 )
 
 func (p *Pipeline) Rollback(spec *model.InfraSpec, current model.Deployment, prev *model.Deployment) string {
-	return p.RollbackRegions(spec, current, prev, nil)
+	sagaID, _, _ := p.RollbackRegionsOperation(spec, current, prev, nil)
+	return sagaID
 }
 
 func (p *Pipeline) RollbackRegions(spec *model.InfraSpec, current model.Deployment, prev *model.Deployment, requestedRegions []string) string {
-	ctx := context.Background()
+	sagaID, _, _ := p.RollbackRegionsOperation(spec, current, prev, requestedRegions)
+	return sagaID
+}
+
+// RollbackRegionsOperation exposes the durable operation identifier to typed
+// control clients while preserving the legacy saga-returning API.
+func (p *Pipeline) RollbackRegionsOperation(spec *model.InfraSpec, current model.Deployment, prev *model.Deployment, requestedRegions []string, extraMetadata ...map[string]interface{}) (string, string, error) {
+	return p.RollbackRegionsOperationContext(context.Background(), spec, current, prev, requestedRegions, extraMetadata...)
+}
+
+// RollbackRegionsOperationContext durably commits a rollback plan while the
+// initiating request is still live. If that request is canceled before the
+// transaction commits, the client can retry with the same idempotency key
+// instead of receiving a receipt for work it could not observe.
+func (p *Pipeline) RollbackRegionsOperationContext(ctx context.Context, spec *model.InfraSpec, current model.Deployment, prev *model.Deployment, requestedRegions []string, extraMetadata ...map[string]interface{}) (string, string, error) {
 	sg := saga.New(p.SagaStore, spec.App, "pipeline", "rollback")
 	started := time.Now()
 	deploy := &model.Deployment{
@@ -35,13 +50,7 @@ func (p *Pipeline) RollbackRegions(spec *model.InfraSpec, current model.Deployme
 		SourceChanges: prev.SourceChanges,
 		StartedAt:     started,
 	}
-	if err := p.DB.InsertDeployment(ctx, deploy); err != nil {
-		_ = sg.Log(ctx, "rollback.error", fmt.Sprintf("insert rollback deployment failed: %v", err), nil)
-	}
 	regions := selectedResolvedRegions(spec, requestedRegions)
-	if err := p.DB.InsertDeploymentRegions(ctx, deploy.ID, regions); err != nil {
-		_ = sg.Log(ctx, "rollback.error", fmt.Sprintf("insert rollback regions failed: %v", err), nil)
-	}
 
 	operationID := uuid.NewString()
 	payload := map[string]interface{}{
@@ -52,7 +61,16 @@ func (p *Pipeline) RollbackRegions(spec *model.InfraSpec, current model.Deployme
 		"currentDeploymentId": current.ID,
 		"regions":             requestedRegions,
 	}
-	if err := p.DB.InsertOperation(ctx, &model.Operation{
+	metadata := map[string]interface{}{}
+	for key, value := range payload {
+		metadata[key] = value
+	}
+	if len(extraMetadata) > 0 {
+		for key, value := range extraMetadata[0] {
+			metadata[key] = value
+		}
+	}
+	operation := &model.Operation{
 		ID:          operationID,
 		Kind:        "app.rollback",
 		App:         spec.App,
@@ -65,9 +83,11 @@ func (p *Pipeline) RollbackRegions(spec *model.InfraSpec, current model.Deployme
 		StartedAt:   started,
 		MaxAttempts: 1,
 		Payload:     payload,
-		Metadata:    payload,
-	}); err != nil {
-		_ = sg.Log(ctx, "rollback.error", fmt.Sprintf("insert rollback operation failed: %v", err), nil)
+		Metadata:    metadata,
+	}
+	if err := p.DB.InsertRollbackOperation(ctx, deploy, regions, operation); err != nil {
+		_ = sg.Log(ctx, "rollback.error", fmt.Sprintf("persist rollback operation failed: %v", err), nil)
+		return sg.ID, operationID, err
 	}
 
 	_ = sg.Log(ctx, "rollback.queued", fmt.Sprintf("queued rollback for %s to %s", spec.App, prev.ImageTag), map[string]string{
@@ -75,13 +95,14 @@ func (p *Pipeline) RollbackRegions(spec *model.InfraSpec, current model.Deployme
 		"sourceDeploymentId":  prev.ID,
 		"currentDeploymentId": current.ID,
 	})
-	return sg.ID
+	return sg.ID, operationID, nil
 }
 
 func (p *Pipeline) runRollback(ctx context.Context, spec *model.InfraSpec, deploy *model.Deployment, sg *saga.Saga, imageTag string, operationID string, attempt int, requestedRegions []string) {
 	regions := selectedResolvedRegions(spec, requestedRegions)
+	workloads := p.workloadConnector()
 	var startErr error
-	failureBody := "Rollback could not start because Nomad is not connected."
+	failureBody := "Rollback could not start because the workload connector is not available."
 	if len(regions) == 0 {
 		startErr = fmt.Errorf("rollback has no valid region targets")
 		failureBody = "Rollback was blocked because no valid region target was selected."
@@ -94,8 +115,10 @@ func (p *Pipeline) runRollback(ctx context.Context, spec *model.InfraSpec, deplo
 			failureBody = "Rollback was blocked because the pinned registry artifact could not be verified."
 		}
 	}
-	if startErr == nil && p.Nomad == nil {
-		startErr = fmt.Errorf("nomad not connected")
+	if startErr == nil && workloads == nil {
+		startErr = fmt.Errorf("workload connector is not configured")
+	} else if startErr == nil {
+		startErr = workloads.Validate(spec, p.Production)
 	}
 	if startErr != nil {
 		_ = p.DB.UpdateDeployment(ctx, deploy.ID, model.StatusFailed)
@@ -138,8 +161,10 @@ func (p *Pipeline) runRollback(ctx context.Context, spec *model.InfraSpec, deplo
 				if regionalServiceProcessCount(spec, region.Name) == 0 {
 					continue
 				}
-				job := nomad.TranslateForRegion(spec, imageTag, env, region)
-				evalID, err := p.Nomad.SubmitJobRegion(job, region.NomadRegion)
+				evalID, err := workloads.Submit(ctx, connector.SubmitRequest{
+					Spec: spec, Image: imageTag, Environment: env,
+					Region: region, DeploymentID: deploy.ID,
+				})
 				if err != nil {
 					_ = p.DB.UpdateDeploymentRegion(ctx, deploy.ID, region.Name, model.StatusFailed, "", err.Error(), 0)
 					return fmt.Errorf("submit rollback in region %s: %w", region.Name, err)
@@ -153,7 +178,7 @@ func (p *Pipeline) runRollback(ctx context.Context, spec *model.InfraSpec, deplo
 				if regionalServiceProcessCount(spec, region.Name) == 0 {
 					continue
 				}
-				if err := p.Nomad.WaitHealthyRegion(ctx, spec.App, region.NomadRegion, 5*time.Minute); err != nil {
+				if err := workloads.WaitHealthy(ctx, spec.App, region, 5*time.Minute); err != nil {
 					_ = p.DB.UpdateDeploymentRegion(ctx, deploy.ID, region.Name, model.StatusFailed, "", err.Error(), 0)
 					return fmt.Errorf("rollback readiness in region %s: %w", region.Name, err)
 				}

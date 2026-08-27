@@ -100,6 +100,7 @@ const ReconciliationSchemaVersion = "norn.fleet-reconciliation/v1"
 // runner can discover the last proven phase without trusting its local disk.
 type ReconciliationRequest struct {
 	SchemaVersion  string `json:"schemaVersion"`
+	AttemptID      string `json:"attemptId,omitempty"`
 	Phase          string `json:"phase"`
 	Status         string `json:"status"`
 	CommitSHA      string `json:"commitSha"`
@@ -107,4 +108,41 @@ type ReconciliationRequest struct {
 	StateSerial    int64  `json:"stateSerial,omitempty"`
 	EvidenceDigest string `json:"evidenceDigest"`
 	Message        string `json:"message,omitempty"`
+}
+
+type RunnerAttemptStartRequest struct {
+	SchemaVersion           string `json:"schemaVersion"`
+	RunnerAttemptID         string `json:"runnerAttemptId"`
+	CommitSHA               string `json:"commitSha"`
+	PlanSHA256              string `json:"planSha256"`
+	WorkflowURL             string `json:"workflowUrl,omitempty"`
+	HeartbeatTimeoutSeconds int    `json:"heartbeatTimeoutSeconds,omitempty"`
+}
+
+type RunnerHeartbeatRequest struct {
+	SchemaVersion string `json:"schemaVersion"`
+	Phase         string `json:"phase"`
+	Sequence      int64  `json:"sequence"`
+	Revision      int64  `json:"revision"`
+	Message       string `json:"message,omitempty"`
+}
+
+type RunnerAdvanceRequest struct {
+	SchemaVersion string `json:"schemaVersion"`
+	ExpectedPhase string `json:"expectedPhase"`
+	Revision      int64  `json:"revision"`
+}
+
+type RunnerRetryRequest struct {
+	SchemaVersion   string `json:"schemaVersion"`
+	Revision        int64  `json:"revision"`
+	RunnerAttemptID string `json:"runnerAttemptId"`
+	WorkflowURL     string `json:"workflowUrl,omitempty"`
+	Reason          string `json:"reason"`
+}
+
+type RunnerCancelRequest struct {
+	SchemaVersion string `json:"schemaVersion"`
+	Revision      int64  `json:"revision"`
+	Reason        string `json:"reason"`
 }

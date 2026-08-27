@@ -16,6 +16,9 @@ import (
 
 func (h *Handler) InvokeFunction(w http.ResponseWriter, r *http.Request) {
 	id := chi.URLParam(r, "id")
+	if !h.requireNomadConnector(w) {
+		return
+	}
 
 	var req struct {
 		Process string `json:"process"`
@@ -25,11 +28,6 @@ func (h *Handler) InvokeFunction(w http.ResponseWriter, r *http.Request) {
 	}
 	if err := decodeJSON(r, &req); err != nil {
 		writeError(w, http.StatusBadRequest, err.Error())
-		return
-	}
-
-	if h.nomad == nil {
-		writeError(w, http.StatusServiceUnavailable, "nomad not connected")
 		return
 	}
 

@@ -5,6 +5,7 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net/http"
 	"os"
@@ -321,7 +322,7 @@ func (h *Handler) ListFleetReconciliations(w http.ResponseWriter, r *http.Reques
 }
 
 func (h *Handler) RecordFleetReconciliation(w http.ResponseWriter, r *http.Request) {
-	principal, ok := requireControlScope(w, r, ScopeAPIWrite)
+	principal, ok := requireFleetOperateScope(w, r)
 	if !ok {
 		return
 	}
@@ -353,16 +354,12 @@ func (h *Handler) RecordFleetReconciliation(w http.ResponseWriter, r *http.Reque
 		WriteControlProblem(w, r, http.StatusBadRequest, "invalid_fleet_reconciliation", err.Error())
 		return
 	}
-	existing, err := h.db.ListOperations(r.Context(), store.OperationFilter{Kind: "fleet.reconciliation", Ref: planID, Limit: 100})
-	if err != nil {
-		WriteControlProblem(w, r, http.StatusInternalServerError, "fleet_reconciliation_read_failed", "failed to read reconciliation checkpoints")
+	idempotencyHeader := strings.TrimSpace(r.Header.Get("Idempotency-Key"))
+	if len(idempotencyHeader) > 200 {
+		WriteControlProblem(w, r, http.StatusBadRequest, "invalid_idempotency_key", "Idempotency-Key must not exceed 200 characters")
 		return
 	}
-	if err := validateFleetReconciliationTransition(plan, existing, request); err != nil {
-		WriteControlProblem(w, r, http.StatusConflict, "fleet_reconciliation_out_of_order", err.Error())
-		return
-	}
-	idempotencyKey, requestDigest := fleetReconciliationIdempotency(principal, planID, strings.TrimSpace(r.Header.Get("Idempotency-Key")), request)
+	idempotencyKey, requestDigest := fleetReconciliationIdempotency(principal, planID, idempotencyHeader, request)
 	if replay, lookupErr := h.db.GetOperationByIdempotencyKey(r.Context(), idempotencyKey); lookupErr == nil {
 		if !matchesFleetReconciliationRequest(replay, requestDigest) {
 			WriteControlProblem(w, r, http.StatusConflict, "idempotency_key_reused", "Idempotency-Key was already used for different reconciliation evidence")
@@ -373,6 +370,30 @@ func (h *Handler) RecordFleetReconciliation(w http.ResponseWriter, r *http.Reque
 		return
 	} else if lookupErr != pgx.ErrNoRows {
 		WriteControlProblem(w, r, http.StatusInternalServerError, "operation_lookup_failed", "failed to resolve idempotent reconciliation checkpoint")
+		return
+	}
+	if request.AttemptID != "" {
+		attempt, lookupErr := h.db.GetFleetRunnerAttempt(r.Context(), request.AttemptID)
+		if lookupErr == pgx.ErrNoRows {
+			WriteControlProblem(w, r, http.StatusNotFound, "fleet_runner_attempt_not_found", "fleet runner attempt not found")
+			return
+		}
+		if lookupErr != nil {
+			WriteControlProblem(w, r, http.StatusInternalServerError, "fleet_runner_attempt_read_failed", "failed to read fleet runner attempt")
+			return
+		}
+		if attempt.PlanID != planID || attempt.CurrentPhase != request.Phase || attempt.CommitSHA != request.CommitSHA || attempt.PlanSHA256 != request.PlanSHA256 || (attempt.Status != model.FleetRunnerAttemptQueued && attempt.Status != model.FleetRunnerAttemptRunning) {
+			WriteControlProblem(w, r, http.StatusConflict, "fleet_runner_attempt_binding_conflict", "checkpoint does not match a live attempt's plan, phase, or reviewed input")
+			return
+		}
+	}
+	existing, err := h.db.ListOperations(r.Context(), store.OperationFilter{Kind: "fleet.reconciliation", Ref: planID, Limit: 100})
+	if err != nil {
+		WriteControlProblem(w, r, http.StatusInternalServerError, "fleet_reconciliation_read_failed", "failed to read reconciliation checkpoints")
+		return
+	}
+	if err := validateFleetReconciliationTransition(plan, existing, request); err != nil {
+		WriteControlProblem(w, r, http.StatusConflict, "fleet_reconciliation_out_of_order", err.Error())
 		return
 	}
 
@@ -395,7 +416,11 @@ func (h *Handler) RecordFleetReconciliation(w http.ResponseWriter, r *http.Reque
 	if op.Message == "" {
 		op.Message = request.Phase + " " + request.Status
 	}
-	if err := h.db.InsertCompletedOperation(r.Context(), op); err != nil {
+	if err := h.db.InsertFleetReconciliation(r.Context(), op, request.AttemptID); err != nil {
+		if errors.Is(err, store.ErrFleetRunnerAttemptConflict) {
+			WriteControlProblem(w, r, http.StatusConflict, "fleet_runner_attempt_binding_conflict", "runner attempt changed before checkpoint evidence could be committed")
+			return
+		}
 		if pgErr, duplicate := err.(*pgconn.PgError); duplicate && pgErr.Code == "23505" {
 			if replay, lookupErr := h.db.GetOperationByIdempotencyKey(r.Context(), idempotencyKey); lookupErr == nil && matchesFleetReconciliationRequest(replay, requestDigest) {
 				replay.AttachReceipt()
@@ -433,6 +458,11 @@ func validateFleetReconciliationRequest(request fleet.ReconciliationRequest) err
 	}
 	if !fleetEvidenceDigestRe.MatchString(request.EvidenceDigest) {
 		return fmt.Errorf("evidenceDigest must use sha256:<64 lowercase hex characters>")
+	}
+	if request.AttemptID != "" {
+		if _, err := uuid.Parse(request.AttemptID); err != nil {
+			return fmt.Errorf("attemptId must be a UUID")
+		}
 	}
 	if request.StateSerial < 0 {
 		return fmt.Errorf("stateSerial cannot be negative")

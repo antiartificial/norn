@@ -230,11 +230,12 @@ func configureProcessNetworking(spec *model.InfraSpec, procName string, proc mod
 			metricsLabel = fmt.Sprintf("%s-http", procName)
 		}
 		if metricsPort > 0 {
+			metricsTags := append([]string{"metrics", "prometheus"}, servicePlacementTags(spec, region)...)
 			services = append(services, &nomadapi.Service{
 				Name:      fmt.Sprintf("%s-%s-metrics", spec.App, procName),
 				PortLabel: metricsLabel,
 				Provider:  "consul",
-				Tags:      []string{"metrics", "prometheus"},
+				Tags:      metricsTags,
 				Checks: []nomadapi.ServiceCheck{
 					{
 						Type:     "http",
@@ -257,16 +258,16 @@ func configureProcessNetworking(spec *model.InfraSpec, procName string, proc mod
 }
 
 func regionalIngressTags(spec *model.InfraSpec, procName string, proc model.Process, region model.ResolvedRegion) []string {
+	tags := servicePlacementTags(spec, region)
 	if proc.Port <= 0 || len(spec.Endpoints) == 0 {
-		return nil
+		return tags
 	}
 	router := strings.ReplaceAll(fmt.Sprintf("%s-%s-%s", spec.App, procName, region.Name), "_", "-")
-	tags := []string{
+	tags = append(tags,
 		"traefik.enable=true",
 		fmt.Sprintf("traefik.http.routers.%s.entrypoints=web", router),
-		fmt.Sprintf("norn.region=%s", region.Name),
 		fmt.Sprintf("norn.traffic-weight=%d", region.TrafficWeight),
-	}
+	)
 	var hosts []string
 	for _, endpoint := range spec.Endpoints {
 		if endpoint.Region != "" && endpoint.Region != region.Name {
@@ -279,6 +280,17 @@ func regionalIngressTags(spec *model.InfraSpec, procName string, proc model.Proc
 	}
 	if len(hosts) > 0 {
 		tags = append(tags, fmt.Sprintf("traefik.http.routers.%s.rule=%s", router, strings.Join(hosts, " || ")))
+	}
+	return tags
+}
+
+func servicePlacementTags(spec *model.InfraSpec, region model.ResolvedRegion) []string {
+	tags := []string{
+		fmt.Sprintf("norn.region=%s", region.Name),
+		"norn.allocation=${NOMAD_ALLOC_ID}",
+	}
+	if pool := spec.EffectiveNodePool(); pool != "" {
+		tags = append(tags, fmt.Sprintf("norn.node-pool=%s", pool))
 	}
 	return tags
 }

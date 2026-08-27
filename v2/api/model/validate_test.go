@@ -42,6 +42,34 @@ func TestValidateSpecStrictSecretsTurnsPlainEnvWarningsIntoErrors(t *testing.T) 
 	assertErrorFinding(t, result, "env.DATABASE_URL")
 }
 
+func TestValidateSpecRejectsUnsafePostgresDatabaseNames(t *testing.T) {
+	for _, database := range []string{"../outside", `folder\\outside`, ".", "..", "name with spaces"} {
+		spec := &InfraSpec{
+			App:       "database-app",
+			Processes: map[string]Process{"web": {}},
+			Infrastructure: &Infrastructure{
+				Postgres: &PostgresInfra{Database: database},
+			},
+		}
+		result := ValidateSpec(spec)
+		if result.Valid {
+			t.Fatalf("expected database %q to be rejected", database)
+		}
+		assertErrorFinding(t, result, "infrastructure.postgres.database")
+	}
+
+	spec := &InfraSpec{
+		App:       "database-app",
+		Processes: map[string]Process{"web": {}},
+		Infrastructure: &Infrastructure{
+			Postgres: &PostgresInfra{Database: "orders-api_v2.1"},
+		},
+	}
+	if result := ValidateSpec(spec); !result.Valid {
+		t.Fatalf("expected safe database name to validate: %+v", result.Findings)
+	}
+}
+
 func TestValidateSpecWarnsWhenDeclaredSecretAlsoAppearsInEnv(t *testing.T) {
 	spec := &InfraSpec{
 		App:       "secret-app",

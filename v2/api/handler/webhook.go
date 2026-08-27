@@ -130,7 +130,7 @@ func (h *Handler) Webhook(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	log.Printf("webhook: auto-deploying %s (branch %s, provider %s)", spec.App, branch, provider)
+	log.Printf("webhook: auto-deploying %q (branch %q, provider %q)", spec.App, branch, provider)
 
 	sagaID := h.pipeline.Run(spec, payload.Ref)
 	delivery.App = spec.App
@@ -205,7 +205,7 @@ func (h *Handler) ReplayWebhookDelivery(w http.ResponseWriter, r *http.Request) 
 	delivery.Metadata["replayMode"] = req.Mode
 	delivery.Metadata["replayedAt"] = time.Now().UTC().Format(time.RFC3339)
 	if err := h.db.UpdateWebhookDelivery(r.Context(), delivery); err != nil {
-		log.Printf("webhook: replay update delivery %s: %v", delivery.ID, err)
+		log.Printf("webhook: replay update delivery %q: %q", delivery.ID, err.Error())
 	}
 
 	writeJSON(w, map[string]string{

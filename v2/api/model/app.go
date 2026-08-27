@@ -4,6 +4,7 @@ package model
 type AppStatus struct {
 	Spec              *InfraSpec        `json:"spec"`
 	NomadStatus       string            `json:"nomadStatus"` // running, pending, dead
+	WorkloadConnector string            `json:"workloadConnector,omitempty"`
 	Healthy           bool              `json:"healthy"`
 	Allocations       []Allocation      `json:"allocations"`
 	AllocationSummary AllocationSummary `json:"allocationSummary"`

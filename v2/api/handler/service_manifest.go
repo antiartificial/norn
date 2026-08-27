@@ -1,6 +1,7 @@
 package handler
 
 import (
+	"context"
 	"fmt"
 	"net"
 	"net/http"
@@ -8,7 +9,7 @@ import (
 	"strings"
 	"time"
 
-	"norn/v2/api/consul"
+	"norn/v2/api/connector"
 	"norn/v2/api/model"
 )
 
@@ -21,6 +22,19 @@ func (h *Handler) ServiceManifest(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, manifest)
 }
 
+func (h *Handler) ServiceManifestV1(w http.ResponseWriter, r *http.Request) {
+	if _, ok := requireControlScope(w, r, ScopeAPIRead); !ok {
+		return
+	}
+	manifest, err := h.buildServiceManifest()
+	if err != nil {
+		WriteControlProblem(w, r, http.StatusInternalServerError, "service_manifest_read_failed", "failed to build service manifest")
+		return
+	}
+	preventSensitiveResponseCaching(w)
+	writeJSON(w, manifest)
+}
+
 func (h *Handler) buildServiceManifest() (model.ServiceManifest, error) {
 	specs, err := model.DiscoverApps(h.cfg.AppsDir)
 	if err != nil {
@@ -28,11 +42,11 @@ func (h *Handler) buildServiceManifest() (model.ServiceManifest, error) {
 	}
 
 	manifest := model.ServiceManifest{
-		Version:     1,
+		Version:     2,
 		GeneratedAt: time.Now().UTC(),
 		NetworkMode: h.cfg.NetworkMode,
 		Contract: model.ServiceManifestContract{
-			Schema:             "norn.service-manifest.v1",
+			Schema:             "norn.service-manifest.v2",
 			ProcessTypes:       []string{"service", "worker", "cron", "function"},
 			ReachabilityScopes: []string{"none", "local", "private", "public"},
 		},
@@ -65,19 +79,23 @@ func (h *Handler) buildServiceManifest() (model.ServiceManifest, error) {
 				entry.HealthPath = "/health"
 			}
 
-			if h.consul != nil {
-				health, err := h.consul.ServiceHealthChecks(serviceName)
+			if h.workloads != nil {
+				health, err := h.workloads.ServiceHealth(context.Background(), serviceName)
 				if (err != nil || len(health) == 0) && spec.App != serviceName {
-					health, err = h.consul.ServiceHealthChecks(spec.App)
+					health, err = h.workloads.ServiceHealth(context.Background(), spec.App)
 				}
 				if err == nil {
 					entry.Status = aggregateManifestStatus(health)
 					for _, instance := range health {
 						entry.Instances = append(entry.Instances, model.ServiceInstance{
-							Node:    instance.Node,
-							Address: instance.Address,
-							Port:    instance.Port,
-							Status:  instance.Status,
+							ID:           instance.ID,
+							AllocationID: instance.AllocationID,
+							Node:         instance.Node,
+							Address:      instance.Address,
+							Port:         instance.Port,
+							Status:       instance.Status,
+							Region:       instance.Region, NodePool: instance.NodePool,
+							PlacementSource: placementSource(instance), PlacementVerified: instance.PlacementVerified,
 						})
 					}
 					entry.Metadata["instanceScope"] = instanceScope(entry.Instances)
@@ -107,14 +125,18 @@ func (h *Handler) serviceMetrics(app, processName string, process model.Process,
 		Path:        path,
 		ServiceName: serviceName,
 	}
-	if h.consul != nil {
-		if health, err := h.consul.ServiceHealthChecks(serviceName); err == nil {
+	if h.workloads != nil {
+		if health, err := h.workloads.ServiceHealth(context.Background(), serviceName); err == nil {
 			for _, instance := range health {
 				metrics.Instances = append(metrics.Instances, model.ServiceInstance{
-					Node:    instance.Node,
-					Address: instance.Address,
-					Port:    instance.Port,
-					Status:  instance.Status,
+					ID:           instance.ID,
+					AllocationID: instance.AllocationID,
+					Node:         instance.Node,
+					Address:      instance.Address,
+					Port:         instance.Port,
+					Status:       instance.Status,
+					Region:       instance.Region, NodePool: instance.NodePool,
+					PlacementSource: placementSource(instance), PlacementVerified: instance.PlacementVerified,
 				})
 			}
 		}
@@ -124,6 +146,16 @@ func (h *Handler) serviceMetrics(app, processName string, process model.Process,
 	}
 	metrics.Reachability = serviceReachability("none", instanceScope(metrics.Instances))
 	return metrics
+}
+
+func placementSource(instance connector.ServiceHealth) string {
+	if instance.PlacementVerified {
+		if instance.Region == "local" {
+			return "local-runtime"
+		}
+		return "consul-tags"
+	}
+	return "unverified"
 }
 
 func serviceReachability(endpointScope, instanceScope string) model.ServiceReachability {
@@ -258,7 +290,7 @@ func serviceMetadata(app, process, serviceName string) map[string]string {
 	return metadata
 }
 
-func aggregateManifestStatus(health []consul.ServiceHealth) string {
+func aggregateManifestStatus(health []connector.ServiceHealth) string {
 	if len(health) == 0 {
 		return "unknown"
 	}

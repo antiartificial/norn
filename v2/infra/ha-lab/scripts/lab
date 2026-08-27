@@ -100,6 +100,15 @@ case "${command_name}" in
   deploy-traefik)
     "${script_dir}/deploy-traefik" "$@"
     ;;
+  durability-pilot)
+    "${script_dir}/durability-pilot" "$@"
+    ;;
+  deploy-durability-pilot)
+    "${script_dir}/deploy-durability-pilot" "$@"
+    ;;
+  release-durability-pilot)
+    "${script_dir}/release-durability-pilot" "$@"
+    ;;
   verify)
     "${script_dir}/verify" "$@"
     ;;
@@ -181,12 +190,15 @@ Norn DigitalOcean HA lab
   lab state-backend init|status
   lab audit-export
   lab supply-chain init|status|sign IMAGE@sha256:...
-  lab catalog sync|status
+  lab catalog sync|durability-sync IMAGE@sha256:... https://HOST|status
   lab pki init|control-init|issue-node MEMBER|status
   lab security-cutover status|activate-production|cutover --confirm-disposable-lab
   lab expiry status|check
   lab converge
   lab deploy-traefik
+  lab durability-pilot check|dependencies|exercise|fault|teardown
+  lab deploy-durability-pilot [prepare|deploy|rollback|all] [REF]
+  lab release-durability-pilot VERSION https://HOST
   lab verify
   lab receipt start KIND TARGET
   lab receipt complete ID passed key=value

@@ -1,15 +1,46 @@
 package handler
 
 import (
+	"context"
 	"fmt"
 	"net/http"
 
 	"github.com/go-chi/chi/v5"
 	nomadapi "github.com/hashicorp/nomad/api"
 
+	"norn/v2/api/connector"
 	"norn/v2/api/model"
 	"norn/v2/api/nomad"
 )
+
+func (h *Handler) connectorStatus(ctx context.Context, spec *model.InfraSpec) (model.AppStatus, error) {
+	status := model.AppStatus{Spec: spec}
+	if h.workloads == nil {
+		return status, nil
+	}
+	// The selected connector is configuration, not a per-application health
+	// probe. Avoid invoking an external runtime command once for every app in a
+	// list response merely to recover its stable name.
+	status.WorkloadConnector = h.workloads.Name()
+	if value, err := h.workloads.Status(ctx, spec.App); err == nil {
+		status.NomadStatus = value // compatibility field retained for existing clients
+	}
+	for _, region := range spec.ResolvedRegions() {
+		values, err := h.workloads.Poll(ctx, spec.App, region)
+		if err != nil {
+			continue
+		}
+		for _, value := range values {
+			allocation := connector.ToModelAllocation(value)
+			status.Allocations = append(status.Allocations, allocation)
+			if allocation.Status == "running" && allocation.Healthy != nil && *allocation.Healthy {
+				status.Healthy = true
+			}
+		}
+	}
+	status.AllocationSummary = summarizeAllocations(status.Allocations)
+	return status, nil
+}
 
 func enrichAllocations(allocs []*nomadapi.AllocationListStub, n *nomad.Client) []model.Allocation {
 	nodeCache := make(map[string]*nomad.NodeInfo)
@@ -107,30 +138,7 @@ func (h *Handler) ListApps(w http.ResponseWriter, r *http.Request) {
 
 	var apps []model.AppStatus
 	for _, spec := range specs {
-		status := model.AppStatus{
-			Spec:    spec,
-			Healthy: false,
-		}
-
-		if h.nomad != nil {
-			jobStatus, err := h.nomad.JobStatus(spec.App)
-			if err == nil {
-				status.NomadStatus = jobStatus
-			}
-
-			allocs, err := h.nomad.JobAllocations(spec.App)
-			if err == nil {
-				status.Allocations = enrichAllocations(allocs, h.nomad)
-				status.AllocationSummary = summarizeAllocations(status.Allocations)
-
-				for _, a := range allocs {
-					if a.ClientStatus == "running" && a.DeploymentStatus != nil && a.DeploymentStatus.Healthy != nil && *a.DeploymentStatus.Healthy {
-						status.Healthy = true
-						break
-					}
-				}
-			}
-		}
+		status, _ := h.connectorStatus(r.Context(), spec)
 
 		apps = append(apps, status)
 	}
@@ -158,50 +166,18 @@ func (h *Handler) GetApp(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	status := model.AppStatus{
-		Spec:    spec,
-		Healthy: false,
-	}
-
-	if h.nomad != nil {
-		jobStatus, err := h.nomad.JobStatus(spec.App)
-		if err == nil {
-			status.NomadStatus = jobStatus
-		}
-
-		allocs, err := h.nomad.JobAllocations(spec.App)
-		if err == nil {
-			status.Allocations = enrichAllocations(allocs, h.nomad)
-			status.AllocationSummary = summarizeAllocations(status.Allocations)
-			for _, a := range allocs {
-				if a.ClientStatus == "running" && a.DeploymentStatus != nil && a.DeploymentStatus.Healthy != nil && *a.DeploymentStatus.Healthy {
-					status.Healthy = true
-					break
-				}
-			}
-		}
-	}
-
-	if h.consul != nil {
-		for procName := range spec.Processes {
-			svcName := fmt.Sprintf("%s-%s", spec.App, procName)
-			health, err := h.consul.ServiceHealthChecks(svcName)
-			if err == nil {
-				_ = health
-			}
-		}
-	}
+	status, _ := h.connectorStatus(r.Context(), spec)
 
 	writeJSON(w, status)
 }
 
 func (h *Handler) RestartApp(w http.ResponseWriter, r *http.Request) {
 	id := chi.URLParam(r, "id")
-	if h.nomad == nil {
-		writeError(w, http.StatusServiceUnavailable, "nomad not connected")
+	if h.workloads == nil {
+		writeError(w, http.StatusServiceUnavailable, "workload connector not available")
 		return
 	}
-	if err := h.nomad.RestartJob(id); err != nil {
+	if err := h.workloads.Restart(r.Context(), id); err != nil {
 		writeError(w, http.StatusInternalServerError, err.Error())
 		return
 	}
@@ -210,8 +186,8 @@ func (h *Handler) RestartApp(w http.ResponseWriter, r *http.Request) {
 
 func (h *Handler) ScaleApp(w http.ResponseWriter, r *http.Request) {
 	id := chi.URLParam(r, "id")
-	if h.nomad == nil {
-		writeError(w, http.StatusServiceUnavailable, "nomad not connected")
+	if h.workloads == nil {
+		writeError(w, http.StatusServiceUnavailable, "workload connector not available")
 		return
 	}
 
@@ -228,7 +204,7 @@ func (h *Handler) ScaleApp(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	if err := h.nomad.ScaleJob(id, req.Group, req.Count); err != nil {
+	if err := h.workloads.Scale(r.Context(), id, req.Group, req.Count); err != nil {
 		writeError(w, http.StatusInternalServerError, err.Error())
 		return
 	}

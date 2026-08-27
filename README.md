@@ -1,329 +1,301 @@
 # Norn
 
-A personal control plane for self-hosted infrastructure. Named after the three Norse fates who determine the destiny of all beings — **Urd** (past), **Verdandi** (present), and **Skuld** (future).
+Norn is a local-first control plane for running applications on Nomad and
+Consul. It gives operators one API, CLI, web dashboard, and native-client
+contract for application delivery, regional ingress, durable maintenance,
+host recovery, and fleet planning.
 
-Norn discovers your apps, shows their health, and lets you deploy, restart, and roll back from a dashboard or the terminal. [Read the docs](https://antiartificial.github.io/norn/)!
+Norn v2 is the active implementation. The Kubernetes/minikube-based v1 tree is
+frozen and retained only for historical compatibility; its documentation lives
+under [`docs/v1`](docs/v1/guide/getting-started.md).
 
-## Quick start
+[Read the Norn v2 documentation](https://antiartificial.github.io/norn/)
 
-```bash
-make setup   # check prereqs, create database, install deps
-make dev     # start API (:8800) + UI (:5173)
-```
+## What Norn manages
 
-Open [localhost:5173](http://localhost:5173). A welcome tour will walk you through the basics.
-
-### CLI
-
-```bash
-make cli              # build the CLI to bin/norn
-bin/norn status       # list all apps
-bin/norn deploy <app> <sha>   # deploy with live progress
-bin/norn logs <app>   # stream pod logs (fullscreen)
-bin/norn health       # check all backing services
-```
-
-The CLI uses [Charm](https://charm.sh) libraries for a rich terminal experience — spinners, progress tracking, styled tables, and live-updating deploy pipelines.
-
-## How it works
-
-Norn scans `~/projects/` for directories containing an `infraspec.yaml`. Each file declares an app and its infrastructure dependencies:
-
-```yaml
-app: mail-agent
-role: webserver           # webserver | worker | cron
-port: 80
-healthcheck: /health
-hosts:
-  external: mail.slopistry.com
-  internal: mail-agent-service
-build:
-  dockerfile: Dockerfile
-  test: npm test
-services:
-  postgres:
-    database: mailagent_db
-  kv:
-    namespace: mail-agent
-  events:
-    topics: [mail.inbound, mail.processed]
-secrets:
-  - DATABASE_URL
-  - SMTP_API_KEY
-migrations:
-  command: npm run db:migrate
-  database: mailagent_db
-artifacts:
-  retain: 5
-```
-
-The dashboard shows each app's health, pods, commit SHA, hostnames, and connected services. Actions are one click away.
-
-## Deploy pipeline
-
-When you deploy a commit, Norn runs a five-step pipeline:
-
-| Step | What happens | On failure |
-|------|-------------|------------|
-| **Build** | `docker build -t app:sha .` | Pipeline stops |
-| **Test** | Runs your test command in the built image | Pipeline stops |
-| **Snapshot** | `pg_dump` of the app's database | Pipeline stops |
-| **Migrate** | Runs schema migrations | Pipeline stops, snapshot available for restore |
-| **Deploy** | Updates the K8s deployment image | Rollback available |
-
-Every step is persisted in PostgreSQL. If Norn crashes mid-deploy, it marks in-flight deploys as failed on restart — no inconsistent state.
-
-Progress streams to the UI in real-time over WebSocket. The CLI shows the same pipeline with spinners and step-by-step progress.
-
-## Secrets
-
-Secrets are encrypted at rest with [SOPS](https://github.com/getsops/sops) + [age](https://github.com/FiloSottile/age). Each app can have a `secrets.enc.yaml`:
-
-```bash
-# Create/edit secrets for an app
-echo 'DATABASE_URL: postgres://...' > ~/projects/mail-agent/secrets.enc.yaml.tmp
-sops --encrypt --input-type yaml --output-type yaml \
-  ~/projects/mail-agent/secrets.enc.yaml.tmp > ~/projects/mail-agent/secrets.enc.yaml
-
-# Or update via API
-curl -X PUT http://localhost:8800/api/apps/mail-agent/secrets \
-  -H 'Content-Type: application/json' \
-  -d '{"DATABASE_URL": "postgres://..."}'
-```
-
-The UI shows secret *names* only. Values never leave the server. On deploy, Norn syncs decrypted values to a K8s Secret.
-
-## Shared infrastructure
-
-One instance of each service, namespaced per app:
-
-| Service | Purpose | Multi-tenancy |
-|---------|---------|---------------|
-| **PostgreSQL** | Application databases | Per-app database (`mailagent_db`, etc.) |
-| **Valkey** | Key-value store (Redis-compatible) | ACL users with key prefix restrictions |
-| **Redpanda** | Event streaming (Kafka-compatible) | Topic prefixes + ACLs |
-
-```bash
-make infra       # start Valkey + Redpanda
-make infra-stop  # stop them
-```
-
-PostgreSQL runs via Postgres.app on the host.
-
-## Commands
-
-```
-make setup       One-time setup: check tools, create DB, install deps
-make dev         Start API + UI for local development
-make cli         Build the CLI to bin/norn
-make test        Run all tests (Go + TypeScript)
-make doctor      Check health of all services
-make infra       Start Valkey + Redpanda (docker compose)
-make build       Production build (API server + CLI + UI static)
-make docker      Build Docker image
-make clean       Remove build artifacts
-```
-
-Kubernetes is optional for local development — the API starts in local-only mode when no cluster is available. K8s-dependent actions (deploy, restart, rollback, logs) return a clear 503 error.
-
-## CLI reference
-
-```
-norn status            List all apps with health, commit, hosts, services
-norn status <app>      Detailed view: pods, deployments, services, secrets
-norn deploy <app> <sha> Deploy a commit with live pipeline progress
-norn restart <app>     Rolling restart with spinner
-norn rollback <app>    Rollback to previous deployment
-norn logs <app>        Stream pod logs (fullscreen, scrollable)
-norn secrets <app>     List secret names (values stay encrypted)
-norn health            Check all backing services (PG, K8s, Valkey, Redpanda, SOPS)
-norn version           Version and API endpoint info
-```
-
-Set `NORN_URL` or use `--api` to point at a different API server.
+- Multi-process apps described by `infraspec.yaml`: HTTP services, workers,
+  cron jobs, and functions.
+- Nomad allocations and Consul service registration across one or more regions.
+- Consul-backed Traefik ingress, health-gated traffic weights, canaries, and
+  independently tracked regional rollback.
+- Durable deploy, rollback, snapshot, retention, restore, schema-migration,
+  platform-upgrade, and host-assurance operations stored in PostgreSQL.
+- SOPS-encrypted app secrets, dependency provisioning, Cloudflare endpoints,
+  service discovery, and Prometheus/Grafana integration.
+- Beacon events, incidents, notifications, recovery evidence, and signed
+  production mutation receipts.
+- Private GitOps fleet planning without putting cloud-provider credentials in
+  the Norn control plane.
 
 ## Architecture
 
-```
-norn/
-├── api/                 Go backend (chi router, K8s client, pipeline)
-│   ├── handler/         REST + WebSocket handlers
-│   ├── hub/             WebSocket broadcast hub
-│   ├── k8s/             Kubernetes API client
-│   ├── model/           infraspec parser, data models
-│   ├── pipeline/        Build → test → snapshot → migrate → deploy
-│   ├── secrets/         SOPS encrypt/decrypt + K8s sync
-│   └── store/           PostgreSQL persistence
-├── cli/                 Charm-powered terminal client
-│   ├── api/             HTTP + WebSocket API client
-│   ├── cmd/             Cobra commands (status, deploy, logs, etc.)
-│   └── style/           Lip Gloss color palette and component styles
-├── ui/                  React + Vite + pnpm frontend
-│   └── src/
-│       ├── components/  AppCard, LogViewer, DeployPanel, Welcome, StatusBar
-│       ├── hooks/       useApps, useWebSocket
-│       └── types/       TypeScript interfaces
-├── infra/               Docker Compose for Valkey + Redpanda
-├── infraspec.yaml       Norn manages itself
-├── .sops.yaml           SOPS encryption rules
-├── Dockerfile           Multi-stage production image
-└── Makefile             Everything you need
+```text
+Web UI / macOS / mobile / CLI
+              |
+        Norn API + workers
+              |
+     PostgreSQL durable state
+              |
+      Nomad + Consul + Traefik
+              |
+       Application allocations
+
+Private norn-fleet repository
+              |
+ GitHub review + OpenTofu runner
+              |
+      Cloud nodes enroll in Norn
 ```
 
-## API
+`norn-fleet` owns desired cloud infrastructure such as providers, regions, VM
+sizes, networking, and node-pool capacity. Norn validates that configuration,
+creates durable capacity plans, links reviewed GitHub workflows, observes node
+enrollment and readiness, and drains replaced nodes. Provider and Terraform
+state credentials remain in the protected infrastructure runner.
 
-| Method | Endpoint | Description |
-|--------|----------|-------------|
-| GET | `/api/health` | Service health check |
-| GET | `/api/apps` | List all discovered apps |
-| GET | `/api/apps/:id` | App detail + recent deployments |
-| GET | `/api/apps/:id/logs` | Stream pod logs |
-| POST | `/api/apps/:id/deploy` | Trigger deploy pipeline |
-| POST | `/api/apps/:id/restart` | Rolling restart |
-| POST | `/api/apps/:id/rollback` | Rollback to previous image |
-| GET | `/api/apps/:id/artifacts` | List retained image tags |
-| GET | `/api/apps/:id/secrets` | List secret names |
-| PUT | `/api/apps/:id/secrets` | Update secrets |
-| GET | `/api/apps/:id/snapshots` | List DB snapshots |
-| WS | `/api/v1/events` | Authenticated real-time events with cursor replay (`/ws` compatibility alias) |
+## Prerequisites
 
-## v2 (Nomad/Consul/Tailscale)
+| Tool | Supported baseline | Purpose |
+|---|---:|---|
+| Go | 1.26.6 | API, CLI, and host agent |
+| Node.js | 24 LTS | Dashboard and documentation |
+| pnpm | 10+ | Front-end dependencies |
+| PostgreSQL | 16+ | Durable control-plane state |
+| Docker | 24+ | Local development builds |
+| Apple Container | optional | Native macOS 26 development connector |
+| Nomad | 1.9+ | Scheduling |
+| Consul | 1.20+ | Discovery and health |
+| SOPS + age | 3.9+ / 1.2+ | Secret encryption |
 
-v2 replaces Kubernetes with Nomad + Consul for orchestration and Tailscale for networking. See `v2/` for the full source.
+Production deployments also require the TLS, ACL, external-database,
+immutable-artifact, audit, and recovery-drill evidence described in
+[Production Readiness](docs/v2/operations/production-readiness.md).
 
-### Quick start (dev mode)
+## Build and run locally
 
 ```bash
-cd v2
-make up       # starts consul, nomad, api in background
-make logs     # tail all logs
-make down     # stop everything
+git clone git@github.com:antiartificial/norn.git
+cd norn/v2
+
+make doctor
+make build      # norn-api, norn, and norn-host-agent
+pnpm --dir ui install
+make ui         # production dashboard assets
 ```
 
-### Access points (dev mode)
+For interactive UI development, run `pnpm dev` from `v2/ui`; the API listens on
+`127.0.0.1:8800` by default and Vite listens on `127.0.0.1:5173`.
 
-| Service | URL |
-|---------|-----|
-| Norn API | http://localhost:8800 |
-| Norn UI | http://localhost:5173 (vite dev) |
-| Nomad UI | http://localhost:4646/ui |
-| Consul UI | http://localhost:8500/ui |
-| signal-sideband | http://localhost:3001 |
-| mail-agent | http://localhost:80 |
-| mail-indexer | http://localhost:8090 |
-| signal-cli | http://localhost:8080 |
-| gitea | http://localhost:{dynamic} |
-
-Apps with `endpoints` in their infraspec get static ports. Gitea uses a dynamic port — check the Nomad UI for the current assignment.
-
-### v2 CLI
+Create the control-plane database before starting the API. Norn applies its own
+schema migrations on startup:
 
 ```bash
-cd v2 && make build    # builds bin/norn-api + bin/norn + bin/norn-host-agent
-bin/norn status        # list all apps
-bin/norn preflight <app> HEAD # validate, build, and test without deploying
-bin/norn deploy <app> HEAD   # deploy latest commit
-bin/norn platform preflight HEAD # build and health-check a candidate Norn release
-bin/norn platform upgrade HEAD   # promote Norn itself with rollback-capable postflight
-bin/norn platform queue-upgrade HEAD # durable upgrade through the independent host agent
-bin/norn platform releases       # list local Norn release dirs
-bin/norn host status             # check persistent host runtime readiness
-bin/norn host recover            # recover Docker, Consul, Nomad, and Norn
-bin/norn host assure             # repair required apps/routes and probe real endpoints
-bin/norn host queue-assure       # queue assurance and wait for its durable receipt
-bin/norn operations --active     # inspect active operation drain state
-bin/norn webhooks                # inspect webhook delivery inbox
-bin/norn scale <app> <n>     # scale up/down
-bin/norn logs <app>          # stream allocation logs
+createdb norn_v2
+export NORN_DATABASE_URL='postgresql:///norn_v2?sslmode=disable'
+make up         # local Consul, Nomad, and API
 ```
 
-### v2 safe upgrade
+The local-socket URL connects as the current operating-system user, which owns
+the database created above; the PostgreSQL server still controls its local
+authentication policy. The code's `norn:norn` TCP default is only suitable when
+that PostgreSQL login and ownership have been created explicitly. Start the
+dashboard separately with `pnpm --dir ui dev`; the v2 `make dev` target runs
+only the API in the foreground.
 
-When Norn is running as the local LaunchAgent `com.norn.api`, upgrade only the API/CLI binaries and built UI. Do not use `make down` unless you intend to stop Nomad and Consul too.
+See [Getting Started](docs/v2/guide/getting-started.md) for complete setup and
+configuration guidance.
 
-```bash
-cd /Users/0xadb/projects/norn
-norn platform preflight HEAD
-norn platform upgrade HEAD
-norn platform queue-upgrade HEAD
-norn version
-norn ops platform
-```
+## Define an app
 
-See [docs/v2/operations/upgrading.md](docs/v2/operations/upgrading.md) for the full runbook.
-
-### v2 host recovery
-
-On a persistent macOS host, install the launchd recovery lane and keep Nomad
-and Consul state outside `/tmp`:
-
-```bash
-norn host install --repo /path/to/norn
-norn host assure
-norn host queue-assure
-norn host status
-norn host doctor
-```
-
-The host lane can also install an explicit assurance policy for required app
-processes, Cloudflare routes, Tailscale Serve listeners, and user-facing HTTP
-probes. Assurance runs after login recovery and every five minutes by default,
-with failures and recovery reported through Beacon.
-
-For an existing installation, stop Nomad and Consul before the guarded one-time
-state migration, then run `norn host recover`. See
-[docs/v2/operations/host-recovery.md](docs/v2/operations/host-recovery.md) for
-the policy flags, repair behavior, probes, migration, and pre-login limitations.
-
-### v2 infraspec format
+Norn discovers `infraspec.yaml` files beneath `NORN_APPS_DIR`. New applications
+default to `deploy: false`; review and validate the generated spec before
+explicitly enabling deployments.
 
 ```yaml
-name: my-app
-deploy: true
+name: hello-world
+deploy: false
+
 repo:
-  url: http://host.docker.internal:3000/norn/my-app.git
-  branch: master
-  autoDeploy: true
+  url: git@github.com:you/hello-world.git
+  branch: main
+  autoDeploy: false
+
 build:
   dockerfile: Dockerfile
+  test: go test ./...
+
+primaryRegion: primary
+regions:
+  primary:
+    nomadRegion: global
+    datacenters: [dc1]
+    trafficWeight: 100
+
 processes:
   web:
+    command: ./hello-world
     port: 8080
     health:
       path: /health
     scaling:
-      min: 1
+      min: 2
     resources:
       cpu: 200
       memory: 256
-env:
-  KEY: "value"
-secrets:
-  - SECRET_NAME
-endpoints:
-  - url: https://my-app.example.com
-volumes:
-  - name: my-data
-    mount: /data
+    metrics:
+      enabled: true
+      path: /metrics
+
 infrastructure:
   postgres:
-    database: myapp_db
+    database: hello_world
+
+secrets:
+  - DATABASE_URL
+
+endpoints:
+  - url: https://hello.example.com
 ```
 
-See [docs/v2/guide/dev-environment.md](docs/v2/guide/dev-environment.md) for the full dev environment guide.
+Normal service processes target all declared regions by default. Cron and other
+singleton processes remain in `primaryRegion` unless their process placement is
+explicitly narrowed. Endpoint-backed services can run multiple allocations
+behind the regional Traefik origin; traffic is promoted only after application
+readiness succeeds.
 
----
+Validate and rehearse the disabled draft:
 
-## v1 (Kubernetes/minikube) — frozen
+```bash
+norn validate --file /path/to/infraspec.yaml
+norn preflight hello-world <commit-sha>
+```
 
-> v1 is tagged as `v1.0` and is no longer actively developed. The docs below describe the v1 architecture.
+Then enable the reviewed spec from the Apps dashboard or the versioned control
+API. The current CLI has no deployment-gate subcommand:
 
-## Configuration
+```bash
+curl --fail-with-body -X PUT \
+  -H 'Content-Type: application/json' \
+  -d '{"enabled":true}' \
+  http://127.0.0.1:8800/api/v1/apps/hello-world/deployment
 
-| Environment variable | Default | Description |
-|---------------------|---------|-------------|
-| `NORN_PORT` | `8800` | API server port |
-| `NORN_DATABASE_URL` | `postgres://norn:norn@localhost:5432/norn_db?sslmode=disable` | PostgreSQL connection |
-| `NORN_APPS_DIR` | `~/projects` | Directory to scan for infraspec.yaml |
-| `NORN_UI_DIR` | *(empty)* | Path to built UI static files (production only) |
-| `NORN_URL` | `http://localhost:8800` | CLI: API server URL |
+norn deploy hello-world <commit-sha>
+```
+
+Add `Authorization: Bearer $NORN_API_TOKEN` to the API request when explicit
+authentication is enabled. Disabled drafts remain visible and preflightable,
+but runtime deploy and recovery paths ignore them until this gate is enabled.
+
+Use an immutable, pushed commit SHA for operational changes. `HEAD` remains a
+convenient development alias, but it is not a reproducible release reference.
+
+## Daily operator workflow
+
+```bash
+norn status
+norn app hello-world
+norn services manifest
+norn operations --active
+norn events active
+norn events reconcile --dry-run
+norn deploy steps <deployment-id>
+norn logs hello-world
+```
+
+App changes run through the durable operations queue. Accepted or queued means
+the worker still has work to perform; follow the operation or saga to a terminal
+state and then probe the user-facing readiness path.
+
+### Durable application recovery
+
+```bash
+norn snapshots hello-world
+norn snapshots hello-world restore <unique-compact-utc-timestamp> --yes --pre-restore
+norn rollback hello-world
+```
+
+The versioned `/api/v1` control API and web/native clients can also queue manual
+snapshots, reviewed pruning, preferred exact-inventory-filename restores with
+mandatory safety snapshots,
+standalone migrations, and rollback. Idempotency keys and PostgreSQL receipts
+let clients reconnect after an ambiguous response without duplicating the
+mutation. The current CLI restore command uses the legacy synchronous route and
+accepts a compact UTC timestamp only when it matches one inventory entry. Local
+snapshot files are node-local; HA production systems should use managed database
+PITR or off-host object storage.
+
+### Platform and host recovery
+
+Resolve an exact pushed commit before upgrading Norn itself:
+
+```bash
+release_sha=$(git rev-parse origin/master)
+norn platform queue-preflight "$release_sha"
+norn platform queue-upgrade "$release_sha"
+norn platform releases
+norn platform rebuild "$release_sha" --verify
+norn smoke platform
+```
+
+The independent host agent executes queued platform maintenance and survives
+the API restart. Platform commands add common Homebrew tool directories when
+invoked through a thin SSH shell, so the release build can still find Node,
+pnpm, Go, SOPS, and related tools without a manually amended remote `PATH`.
+
+On a persistent macOS host, install and inspect the recovery lane:
+
+```bash
+norn host install --repo /path/to/norn
+norn host recover
+norn host assure
+norn host status
+norn host doctor
+```
+
+Recovery starts Docker, Consul, Nomad, and Norn in dependency order. Assurance
+then checks explicitly required applications, minimum allocation counts,
+routes, and real HTTP entrypoints; it repairs only resources allowed by the
+installed policy and emits Beacon failure/recovery evidence.
+
+## Fleet planning
+
+Point Norn at a read-only checkout of the private fleet repository:
+
+```bash
+export NORN_FLEET_CONFIG=/srv/norn-fleet/environments/production/nyc3/cluster.yaml
+
+norn fleet validate "$NORN_FLEET_CONFIG"
+norn fleet pools
+norn fleet plan app --desired 4 --reason 'launch headroom'
+norn fleet github pr <plan-id>
+# Review and merge the protected pull request and plan workflow.
+norn fleet github apply <plan-id>
+```
+
+Capacity plans are durable, signed in production, and bound to the fleet source
+digest. Retrying GitHub actions recovers the deterministic pull request or
+existing workflow run rather than creating duplicate infrastructure changes.
+See [Fleet GitOps](docs/v2/infrastructure/fleet.md) for setup, contraction, and
+reconciliation semantics.
+
+## Documentation map
+
+- [Why Norn](docs/v2/guide/why-norn.md)
+- [InfraSpec reference](docs/v2/guide/infraspec-reference.md)
+- [Architecture overview](docs/v2/architecture/overview.md)
+- [Native control protocol](docs/v2/architecture/control-protocol.md)
+- [Deploy pipeline](docs/v2/architecture/deploy-pipeline.md)
+- [Durable operations](docs/v2/operations/operations.md)
+- [Snapshots and schema changes](docs/v2/operations/snapshots.md)
+- [Host recovery and assurance](docs/v2/operations/host-recovery.md)
+- [Linux HA acceptance lab](docs/v2/operations/ha-lab.md)
+- [CLI reference](docs/v2/cli/commands.md)
+- [Current release recap](docs/v2/guide/release-recap.md)
+
+## v1 archive
+
+The root-level `api/`, `cli/`, `ui/`, `worker/`, and Kubernetes-oriented
+Makefile belong to frozen v1. They remain in the repository to preserve its
+tagged history, but new development, deployment, and documentation should use
+`v2/` and `docs/v2/`. Do not use the v1 Kubernetes instructions to operate a v2
+Nomad/Consul host.

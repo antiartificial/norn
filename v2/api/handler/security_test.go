@@ -37,6 +37,14 @@ func TestControlJSONIsBoundedAndStrict(t *testing.T) {
 	}
 }
 
+func TestLegacyJSONDecoderBoundsRequestBody(t *testing.T) {
+	req := httptest.NewRequest(http.MethodPost, "/api/apps/demo/deploy", strings.NewReader(`{"ref":"`+strings.Repeat("x", 1<<20)+`"}`))
+	var target map[string]interface{}
+	if err := decodeJSON(req, &target); err == nil {
+		t.Fatal("expected oversized legacy JSON body to be rejected")
+	}
+}
+
 func TestSensitiveResponsesDisableCaching(t *testing.T) {
 	rec := httptest.NewRecorder()
 	preventSensitiveResponseCaching(rec)

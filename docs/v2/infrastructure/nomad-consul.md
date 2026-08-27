@@ -1,6 +1,6 @@
 # Nomad & Consul
 
-Norn v2 uses HashiCorp Nomad for job scheduling and Consul for service discovery. This replaces the Kubernetes/minikube stack from v1.
+Norn v2 uses HashiCorp Nomad for job scheduling and Consul for service discovery. This is the default and only production-supported [workload connector](./workload-connectors.md), and it replaces the Kubernetes/minikube stack from v1.
 
 ## Nomad
 
@@ -121,6 +121,7 @@ ui_config {
 |----------|---------|-------------|
 | `NORN_NOMAD_ADDR` | `http://localhost:4646` | Nomad API address |
 | `NORN_CONSUL_ADDR` | `http://localhost:8500` | Consul API address |
+| `NORN_WORKLOAD_CONNECTOR` | `nomad-consul` | Explicit workload connector; production requires `nomad-consul` |
 | `NORN_INGRESS_URL` | — | Stable regional Traefik origin used by cloudflared, such as `http://127.0.0.1:18080` |
 | `NORN_EXTERNAL_INGRESS` | `false` | Skip local cloudflared mutation when an external DNS/global-edge controller owns public routing |
 

@@ -5,14 +5,16 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strings"
 
 	"github.com/spf13/cobra"
 )
 
 var (
-	platformRepo   string
-	platformScript string
-	platformProxy  bool
+	platformRepo          string
+	platformScript        string
+	platformProxy         bool
+	platformRebuildVerify bool
 )
 
 func init() {
@@ -21,6 +23,7 @@ func init() {
 	platformCmd.PersistentFlags().StringVar(&platformScript, "script", os.Getenv("NORN_PLATFORM_SCRIPT"), "platform-upgrade script path")
 	platformCmd.AddCommand(platformPreflightCmd)
 	platformCmd.AddCommand(platformUpgradeCmd)
+	platformCmd.AddCommand(platformRebuildCmd)
 	platformCmd.AddCommand(platformReleasesCmd)
 	platformCmd.AddCommand(platformRollbackCmd)
 	platformCmd.AddCommand(platformSmokeCmd)
@@ -30,6 +33,7 @@ func init() {
 	platformCmd.AddCommand(platformProxyRenderCmd)
 	platformCmd.AddCommand(platformProxySwitchCmd)
 	platformUpgradeCmd.Flags().BoolVar(&platformProxy, "proxy", false, "Use managed proxy cutover mode instead of LaunchAgent restart")
+	platformRebuildCmd.Flags().BoolVar(&platformRebuildVerify, "verify", false, "Require immutable release artifact verification before rebuilding")
 }
 
 var platformCmd = &cobra.Command{
@@ -63,6 +67,19 @@ var platformUpgradeCmd = &cobra.Command{
 			return runPlatformUpgradeScriptEnv([]string{"NORN_PLATFORM_UPGRADE_MODE=proxy"}, "upgrade", ref)
 		}
 		return runPlatformUpgradeScript("upgrade", ref)
+	},
+}
+
+var platformRebuildCmd = &cobra.Command{
+	Use:   "rebuild <full-sha> --verify",
+	Short: "Rebuild a verified immutable platform release from its full commit SHA",
+	Args:  cobra.ExactArgs(1),
+	RunE: func(cmd *cobra.Command, args []string) error {
+		arguments, err := platformRebuildArguments(args[0], platformRebuildVerify)
+		if err != nil {
+			return err
+		}
+		return runPlatformUpgradeScriptArgs(arguments...)
 	},
 }
 
@@ -150,6 +167,29 @@ func runPlatformUpgradeScript(mode, ref string) error {
 	return runPlatformUpgradeScriptArgs(args...)
 }
 
+func platformRebuildArguments(sha string, verify bool) ([]string, error) {
+	sha = strings.ToLower(strings.TrimSpace(sha))
+	if !isFullCommitSHA(sha) {
+		return nil, fmt.Errorf("rebuild requires a full 40-character commit SHA")
+	}
+	if !verify {
+		return nil, fmt.Errorf("rebuild requires --verify to validate the immutable release artifact")
+	}
+	return []string{"rebuild", sha, "--verify"}, nil
+}
+
+func isFullCommitSHA(value string) bool {
+	if len(value) != 40 {
+		return false
+	}
+	for _, character := range value {
+		if (character < '0' || character > '9') && (character < 'a' || character > 'f') {
+			return false
+		}
+	}
+	return true
+}
+
 func runPlatformUpgradeScriptArgs(args ...string) error {
 	return runPlatformUpgradeScriptEnv(nil, args...)
 }
@@ -163,7 +203,7 @@ func runPlatformUpgradeScriptEnv(extraEnv []string, args ...string) error {
 	command.Stdout = os.Stdout
 	command.Stderr = os.Stderr
 	command.Stdin = os.Stdin
-	command.Env = os.Environ()
+	command.Env = replaceEnvironmentValue(os.Environ(), "PATH", platformExecutionPath(os.Getenv("PATH")))
 	if platformRepo != "" {
 		command.Env = append(command.Env, "NORN_PLATFORM_REPO="+platformRepo)
 	}
@@ -171,25 +211,80 @@ func runPlatformUpgradeScriptEnv(extraEnv []string, args ...string) error {
 	return command.Run()
 }
 
+func platformExecutionPath(current string) string {
+	candidates := []string{"/opt/homebrew/bin", "/usr/local/bin"}
+	if strings.TrimSpace(current) == "" {
+		current = "/usr/bin:/bin:/usr/sbin:/sbin"
+	}
+	candidates = append(candidates, filepath.SplitList(current)...)
+	seen := map[string]bool{}
+	result := make([]string, 0, len(candidates))
+	for _, candidate := range candidates {
+		candidate = strings.TrimSpace(candidate)
+		if candidate == "" || seen[candidate] {
+			continue
+		}
+		if candidate == "/opt/homebrew/bin" || candidate == "/usr/local/bin" {
+			if info, err := os.Stat(candidate); err != nil || !info.IsDir() {
+				continue
+			}
+		}
+		seen[candidate] = true
+		result = append(result, candidate)
+	}
+	return strings.Join(result, string(os.PathListSeparator))
+}
+
+func replaceEnvironmentValue(environment []string, key, value string) []string {
+	prefix := key + "="
+	result := make([]string, 0, len(environment)+1)
+	for _, entry := range environment {
+		if !strings.HasPrefix(entry, prefix) {
+			result = append(result, entry)
+		}
+	}
+	return append(result, prefix+value)
+}
+
 func resolvePlatformScript() (string, error) {
 	if platformScript != "" {
 		return platformScript, nil
 	}
-	candidates := []string{}
-	if platformRepo != "" {
-		candidates = append(candidates, filepath.Join(platformRepo, "v2", "scripts", "platform-upgrade"))
-	}
-	if cwd, err := os.Getwd(); err == nil {
-		candidates = append(candidates,
-			filepath.Join(cwd, "v2", "scripts", "platform-upgrade"),
-			filepath.Join(cwd, "scripts", "platform-upgrade"),
-		)
-	}
-	candidates = append(candidates, "/Users/0xadb/projects/norn/v2/scripts/platform-upgrade")
+	cwd, _ := os.Getwd()
+	executable, _ := os.Executable()
+	home, _ := os.UserHomeDir()
+	candidates := platformScriptCandidates(platformRepo, cwd, executable, home)
 	for _, candidate := range candidates {
 		if info, err := os.Stat(candidate); err == nil && !info.IsDir() {
 			return candidate, nil
 		}
 	}
 	return "", fmt.Errorf("platform-upgrade script not found; set --repo or NORN_PLATFORM_SCRIPT")
+}
+
+func platformScriptCandidates(repo, cwd, executable, home string) []string {
+	candidates := []string{}
+	if repo != "" {
+		candidates = append(candidates, filepath.Join(repo, "v2", "scripts", "platform-upgrade"))
+	}
+	if cwd != "" {
+		candidates = append(candidates,
+			filepath.Join(cwd, "v2", "scripts", "platform-upgrade"),
+			filepath.Join(cwd, "scripts", "platform-upgrade"),
+		)
+	}
+	if executable != "" {
+		executableDir := filepath.Dir(executable)
+		candidates = append(candidates,
+			filepath.Join(executableDir, "platform-upgrade"),
+			filepath.Join(executableDir, "..", "scripts", "platform-upgrade"),
+		)
+	}
+	if home != "" {
+		candidates = append(candidates,
+			filepath.Join(home, ".config", "norn", "host", "bin", "platform-upgrade"),
+			filepath.Join(home, "projects", "norn", "v2", "scripts", "platform-upgrade"),
+		)
+	}
+	return candidates
 }

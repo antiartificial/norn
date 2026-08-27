@@ -70,12 +70,17 @@ type HostAssuranceReceipt struct {
 }
 
 type AppOperationReceipt struct {
-	App          string `json:"app"`
-	Ref          string `json:"ref,omitempty"`
-	DeploymentID string `json:"deploymentId,omitempty"`
-	CommitSHA    string `json:"commitSha,omitempty"`
-	ImageTag     string `json:"imageTag,omitempty"`
-	Step         string `json:"step,omitempty"`
+	App                string   `json:"app"`
+	Ref                string   `json:"ref,omitempty"`
+	DeploymentID       string   `json:"deploymentId,omitempty"`
+	CommitSHA          string   `json:"commitSha,omitempty"`
+	ImageTag           string   `json:"imageTag,omitempty"`
+	Step               string   `json:"step,omitempty"`
+	Snapshot           string   `json:"snapshot,omitempty"`
+	PreRestoreSnapshot string   `json:"preRestoreSnapshot,omitempty"`
+	Database           string   `json:"database,omitempty"`
+	Keep               *int     `json:"keep,omitempty"`
+	Pruned             []string `json:"pruned,omitempty"`
 }
 
 type FleetOperationReceipt struct {
@@ -119,7 +124,9 @@ func (o *Operation) AttachReceipt() {
 		receipt.App = &AppOperationReceipt{
 			App: o.App, Ref: o.Ref, DeploymentID: stringValue(o.Metadata, "deploymentId"),
 			CommitSHA: stringValue(o.Metadata, "commitSha"), ImageTag: stringValue(o.Metadata, "imageTag"),
-			Step: stringValue(o.Metadata, "step"),
+			Step: stringValue(o.Metadata, "step"), Snapshot: stringValue(o.Metadata, "snapshot"),
+			PreRestoreSnapshot: stringValue(o.Metadata, "preRestoreSnapshot"), Database: stringValue(o.Metadata, "database"),
+			Keep: intPointer(o.Metadata, "keep"), Pruned: stringSliceValue(o.Metadata, "pruned"),
 		}
 	case o.Kind == "fleet.capacity-plan":
 		receipt.Fleet = &FleetOperationReceipt{
@@ -136,6 +143,23 @@ func (o *Operation) AttachReceipt() {
 		}
 	}
 	o.Receipt = receipt
+}
+
+func stringSliceValue(values map[string]interface{}, key string) []string {
+	switch raw := values[key].(type) {
+	case []string:
+		return raw
+	case []interface{}:
+		out := make([]string, 0, len(raw))
+		for _, value := range raw {
+			if text, ok := value.(string); ok {
+				out = append(out, text)
+			}
+		}
+		return out
+	default:
+		return nil
+	}
 }
 
 func (s OperationStatus) Terminal() bool {

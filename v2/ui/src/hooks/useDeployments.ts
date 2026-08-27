@@ -1,5 +1,5 @@
 import { useState, useEffect, useCallback } from 'react'
-import type { Deployment } from '../types/index.ts'
+import type { Deployment, DeploymentListResponse } from '../types/index.ts'
 import { apiUrl, fetchOpts } from '../lib/api.ts'
 
 export interface DeploymentFilters {
@@ -27,10 +27,10 @@ export function useDeployments() {
       if (f.status) params.set('status', f.status)
       params.set('limit', String(f.limit))
       params.set('offset', String(f.offset))
-      const res = await fetch(apiUrl(`/api/deployments?${params}`), fetchOpts)
+      const res = await fetch(apiUrl(`/api/v1/deployments?${params}`), fetchOpts)
       if (!res.ok) throw new Error(`${res.status}`)
-      const data = await res.json()
-      setDeployments(data ?? [])
+      const data = await res.json() as DeploymentListResponse
+      setDeployments(data.deployments ?? [])
     } catch {
       setDeployments([])
     } finally {

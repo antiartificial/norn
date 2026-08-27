@@ -1,10 +1,10 @@
 package handler
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"net/http"
-	"sort"
 
 	"github.com/go-chi/chi/v5"
 
@@ -49,7 +49,7 @@ func (h *Handler) Forge(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	service, err := h.cloudflaredService(spec)
+	service, err := h.cloudflaredService(ctx, spec)
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, err.Error())
 		return
@@ -216,7 +216,7 @@ func (h *Handler) ToggleEndpoint(w http.ResponseWriter, r *http.Request) {
 			writeError(w, http.StatusBadRequest, fmt.Sprintf("hostname %s is private and cannot be enabled in cloudflared", hostname))
 			return
 		}
-		service, err := h.cloudflaredService(spec)
+		service, err := h.cloudflaredService(ctx, spec)
 		if err != nil {
 			writeError(w, http.StatusInternalServerError, err.Error())
 			return
@@ -247,57 +247,9 @@ func (h *Handler) ToggleEndpoint(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, map[string]string{"status": action, "hostname": hostname})
 }
 
-func (h *Handler) cloudflaredService(spec *model.InfraSpec) (string, error) {
-	processName, process, ok := handlerCloudflaredProcess(spec)
-	if !ok {
-		return "", fmt.Errorf("no port found in spec")
+func (h *Handler) cloudflaredService(ctx context.Context, spec *model.InfraSpec) (string, error) {
+	if h.workloads == nil {
+		return "", fmt.Errorf("workload connector is unavailable")
 	}
-
-	serviceName := fmt.Sprintf("%s-%s", spec.App, processName)
-	if h.consul != nil {
-		instances, err := h.consul.ServiceHealthChecks(serviceName)
-		if err == nil {
-			for _, instance := range instances {
-				if instance.Status == "passing" && instance.Address != "" && instance.Port > 0 {
-					return fmt.Sprintf("http://%s:%d", instance.Address, instance.Port), nil
-				}
-			}
-			for _, instance := range instances {
-				if instance.Address != "" && instance.Port > 0 {
-					return fmt.Sprintf("http://%s:%d", instance.Address, instance.Port), nil
-				}
-			}
-		}
-	}
-
-	allocs, err := h.nomad.PollAllocations(spec.App)
-	if err != nil {
-		return "", fmt.Errorf("poll allocations: %w", err)
-	}
-	if len(allocs) == 0 {
-		return "", fmt.Errorf("no running allocations")
-	}
-	nodeInfo, err := h.nomad.NodeInfo(allocs[0].NodeID)
-	if err != nil {
-		return "", fmt.Errorf("node info: %w", err)
-	}
-	return fmt.Sprintf("http://%s:%d", nodeInfo.Address, process.Port), nil
-}
-
-func handlerCloudflaredProcess(spec *model.InfraSpec) (string, model.Process, bool) {
-	if process, ok := spec.Processes["web"]; ok && process.Port > 0 {
-		return "web", process, true
-	}
-	names := make([]string, 0, len(spec.Processes))
-	for name := range spec.Processes {
-		names = append(names, name)
-	}
-	sort.Strings(names)
-	for _, name := range names {
-		process := spec.Processes[name]
-		if process.Port > 0 {
-			return name, process, true
-		}
-	}
-	return "", model.Process{}, false
+	return h.workloads.EndpointOrigin(ctx, spec)
 }

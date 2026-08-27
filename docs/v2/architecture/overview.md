@@ -9,8 +9,10 @@ graph TB
     Webhook[GitHub Webhook] --> API
 
     API --> DB[(PostgreSQL)]
-    API --> Nomad[Nomad]
-    API --> Consul[Consul]
+    API --> Connector{Workload connector}
+    Connector --> Nomad[Nomad]
+    Connector --> Consul[Consul]
+    Connector --> Apple[Apple container / local macOS]
     API --> SOPS[SOPS / age]
     API --> S3[S3 Storage]
     API --> Docker[Docker / Registry]
@@ -42,6 +44,9 @@ v2/api/
 ├── handler/           # HTTP request handlers
 ├── fleet/             # Versioned fleet schema, sanity checks, and cross-validation
 ├── pipeline/          # Deploy pipeline orchestrator
+├── connector/         # Additive workload lifecycle boundary
+├── engine/            # Apple Container local reconciliation and supervision
+├── runtime/           # Docker and Apple image-build adapters
 ├── nomad/             # Nomad client and job translator
 ├── consul/            # Consul client for service discovery
 ├── hub/               # WebSocket event hub
@@ -112,6 +117,7 @@ v2/ui/
 | Method | Path | Description |
 |--------|------|-------------|
 | GET | `/api/health` | Service health check |
+| GET | `/api/v1/host/runtime` | Active workload connector, runtime, capabilities, and limitations |
 | GET | `/api/v1/production/readiness` | Value-safe production admission and substrate report |
 | POST | `/api/v1/fleet/validate` | Strict norn-fleet schema and infrastructure sanity validation |
 | POST | `/api/v1/validate/infraspec` | Strict uploaded InfraSpec validation with optional fleet context |
@@ -176,7 +182,7 @@ v2/ui/
 | PUT | `/secrets` | Update secrets |
 | DELETE | `/secrets/{key}` | Delete a secret |
 | GET | `/snapshots` | List database snapshots |
-| POST | `/snapshots/{ts}/restore` | Restore a snapshot |
+| POST | `/snapshots/{snapshot}/restore` | Restore an exact inventory filename (preferred) or unique legacy timestamp |
 | GET | `/cron/history` | Cron execution history |
 | POST | `/cron/trigger` | Trigger a cron job manually |
 | POST | `/cron/pause` | Pause a cron job |
@@ -210,8 +216,11 @@ Norn supports three auth modes (can be combined):
 2. **Bearer Token** — validates `Authorization: Bearer <token>` header. Set `NORN_API_TOKEN`.
 3. **Open** — if neither is configured, all endpoints are open (suitable for local dev).
 
-Auth-exempt routes are limited to health/version/metrics, service discovery,
-signed webhook ingress, and configured wake-gateway paths. `/api/v1/events`,
+Auth-exempt routes are limited to health/version, protocol discovery,
+signed webhook ingress, and configured wake-gateway paths. Development mode
+also permits unauthenticated local metrics and service discovery for backwards
+compatibility; explicit-auth mode protects `/metrics`, `/api/metrics`, and
+`/api/services/manifest`. `/api/v1/events`,
 the compatibility `/ws`, and both exec protocols are protected whenever bearer
 authentication is enabled. Scoped access tokens use `events:read` for the event
 stream and `apps:exec` for terminal sessions. Native clients enroll as devices;

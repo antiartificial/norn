@@ -1,6 +1,11 @@
 package cloudflared
 
-import "testing"
+import (
+	"context"
+	"os"
+	"path/filepath"
+	"testing"
+)
 
 func TestIsPublicEndpoint(t *testing.T) {
 	tests := []struct {
@@ -41,5 +46,28 @@ func TestPrunePrivateIngress(t *testing.T) {
 	}
 	if PrunePrivateIngress(cfg) {
 		t.Fatal("second PrunePrivateIngress unexpectedly reported a change")
+	}
+}
+
+func TestApplyConfigUsesPrivatePermissions(t *testing.T) {
+	previous := configPath
+	t.Cleanup(func() { configPath = previous })
+	path := filepath.Join(t.TempDir(), "config.yml")
+	SetConfigPath(path)
+	if err := os.WriteFile(path, []byte("old"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Chmod(path, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := ApplyConfig(context.Background(), &Config{Tunnel: "test"}); err != nil {
+		t.Fatal(err)
+	}
+	info, err := os.Stat(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := info.Mode().Perm(); got != 0o600 {
+		t.Fatalf("config permissions = %#o, want 0600", got)
 	}
 }

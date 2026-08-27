@@ -4,7 +4,7 @@ layout: home
 hero:
   name: Norn
   text: Control plane for self-hosted apps
-  tagline: Detect a failing service, rehearse a fix, deploy it, and upgrade the platform without taking your apps down.
+  tagline: Rehearse and recover app changes, plan fleet capacity, and upgrade the platform without taking workloads down.
   actions:
     - theme: brand
       text: Get Started
@@ -15,6 +15,9 @@ hero:
     - theme: alt
       text: Operations
       link: /v2/operations/operations
+    - theme: alt
+      text: Fleet GitOps
+      link: /v2/infrastructure/fleet
     - theme: alt
       text: Upgrades
       link: /v2/operations/upgrading
@@ -30,8 +33,10 @@ features:
     details: Uses active operations as the platform drain gate before upgrades, rollbacks, or proxy cutovers.
   - title: Coordinate
     details: Provisions dependencies such as Postgres, Garage buckets, Valkey, Redpanda topics, cron jobs, functions, and Cloudflare endpoints from the app spec.
+  - title: Plan the fleet
+    details: Validates a private norn-fleet repository, creates signed capacity plans, opens deterministic review pull requests, and follows enrollment, readiness, and drain evidence without holding provider credentials.
   - title: Recover
-    details: Restores Docker, Consul, Nomad, and Norn after a macOS restart, then assures required apps, routes, and real user-facing endpoints on a periodic loop.
+    details: Queues exact-file snapshot restores, pruning, schema changes, and rollback with durable receipts, and restores the host runtime plus required apps, routes, and user-facing probes after restart.
 ---
 
 ## The Operator Story
@@ -41,6 +46,17 @@ features:
 ![Norn Overview workspace showing fleet health, active incidents, running operations, recent deploys, and platform status](/screenshots/dashboard.png)
 
 First, the Overview workspace puts fleet health, correlated incidents, active operations, recent deploys, and platform status in one place. From the Apps workspace, each service opens into its own overview, logs, deploys, snapshots, cron, functions, and shell tabs. It is not just "is a container running?" It answers what the service is, what it depends on, and what needs operator attention.
+
+The Fleet workspace keeps infrastructure changes in that same operator story
+without moving cloud authority into Norn. It validates the private
+`norn-fleet` desired state, records a source-bound capacity plan, opens or
+recovers the deterministic GitHub review, and follows apply, enrollment,
+readiness, and drain checkpoints. Provider and Terraform state credentials stay
+inside the protected infrastructure runner.
+
+![Norn Fleet workspace showing node-pool capacity, durable plans, GitHub review, and reconciliation state](/screenshots/fleet.png)
+
+![Norn fleet CLI showing desired node-pool capacity and replacement strategy](/screenshots/cli-fleet.png)
 
 ## Deploy Without Guessing
 
@@ -64,14 +80,28 @@ The live deploy panel and CLI both stream the pipeline. Norn records detailed st
 
 If an API restart interrupts read-only work, Norn can retry it. If a mutable stage has already started, such as snapshot, migration, Nomad submit, health, forge, or cleanup, Norn fails visibly for operator review instead of blindly replaying side effects.
 
+The same durable lane covers recovery outside a deploy. From an app's snapshot
+surface, an operator can create a snapshot, preview and confirm pruning, restore
+an exact inventory filename with a mandatory safety snapshot, run the declared
+schema migration independently, or roll back to the previous successful
+deployment. Request-bound idempotency keys reconnect browser and native clients
+to the original PostgreSQL receipt after a refresh, relaunch, or ambiguous
+response instead of duplicating the mutation.
+
+![Norn app data recovery workspace showing snapshot inventory, retention preview, schema changes, and rollback controls](/screenshots/data-recovery.png)
+
+![Norn snapshots CLI showing inventory filenames and unique compact UTC timestamps for restore selection](/screenshots/cli-snapshots.png)
+
 ## Upgrade The Platform Around Apps
 
 Norn upgrades itself separately from the apps it runs. The platform lane builds a candidate release, checks it on an alternate port, promotes the release, and restarts only the Norn API process. Nomad, Consul, Postgres, Garage, Redpanda, and hosted app allocations keep running.
 
 ```bash
 norn operations --active
-norn platform preflight HEAD
-norn platform upgrade HEAD
+release_sha=$(git rev-parse origin/master)
+norn platform preflight "$release_sha"
+norn platform upgrade "$release_sha"
+norn platform rebuild "$release_sha" --verify
 norn smoke platform
 ```
 
@@ -181,6 +211,10 @@ When the fix is not obvious, the operator surfaces stay close:
 - The app overview combines process, allocation, infrastructure, service, secret, and idle-analysis context.
 - Logs stream from the affected app's Logs tab.
 - Deployment history keeps the failing stage and output.
+- Snapshot and schema controls expose reviewed pruning, exact-file restore,
+  standalone migration, rollback, and their durable receipts.
+- Fleet planning links desired capacity, protected GitHub review, apply,
+  enrollment, readiness, and drain evidence.
 - Beacon events and alerts make deploy failures, service degradation, cron failures, and recoveries durable.
 - Webhook deliveries are replayable as deploys or read-only preflights.
 - Observability bundle generation gives Prometheus and Grafana a bounded local setup.

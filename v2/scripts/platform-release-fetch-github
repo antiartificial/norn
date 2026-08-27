@@ -1,0 +1,6 @@
+#!/bin/sh
+# Adapter for: NORN_RELEASE_FETCH_HOOK <sha-or-prefix> <releases-dir>
+# All GitHub credentials and host configuration stay in the environment.
+set -eu
+script_dir=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)
+exec "$script_dir/platform-release-artifact" hook-fetch "$@"

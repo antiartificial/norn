@@ -4,7 +4,7 @@ import { useQuery } from '@tanstack/react-query'
 import { apiFetch } from '../lib/api.ts'
 import { collapseActivity } from '../lib/activity.ts'
 import { useRuntimeContext } from '../runtime/AppRuntime.tsx'
-import type { ActiveIncidentsResponse, AppStatus, Deployment, OperationsResponse, VersionResponse } from '../types/index.ts'
+import type { ActiveIncidentsResponse, AppStatus, DeploymentListResponse, OperationsResponse, VersionResponse } from '../types/index.ts'
 import { DeployList } from '../components/panels/DeployList.tsx'
 import { ActiveIncidentList } from '../components/panels/IncidentList.tsx'
 import { Metric, Panel } from '../components/panels/Panel.tsx'
@@ -31,7 +31,7 @@ export function OverviewPage() {
   const [selection, setSelection] = useState<IncidentSelection | null>(null)
   const incidents = useQuery({ queryKey: ['events', 'active'], queryFn: () => apiFetch<ActiveIncidentsResponse>('/api/events/active'), staleTime: 15_000 })
   const operations = useQuery({ queryKey: ['operations', 'active'], queryFn: () => apiFetch<OperationsResponse>('/api/operations/active'), staleTime: 15_000 })
-  const deploys = useQuery({ queryKey: ['deployments', { limit: 5 }], queryFn: () => apiFetch<Deployment[]>('/api/deployments?limit=5'), staleTime: 15_000 })
+  const deploys = useQuery({ queryKey: ['deployments-v1', { limit: 5 }], queryFn: () => apiFetch<DeploymentListResponse>('/api/v1/deployments?limit=5'), staleTime: 15_000 })
   const version = useQuery({ queryKey: ['version'], queryFn: () => apiFetch<VersionResponse>('/api/version'), staleTime: 60_000 })
   const healthy = ctx.apps.filter((app) => app.healthy).length
   const unhealthy = ctx.apps.filter((app) => !app.healthy)
@@ -60,7 +60,7 @@ export function OverviewPage() {
         <OperationList items={operations.data?.operations ?? []} />
       </Panel>
       <Panel title="Recent deploys" loading={deploys.isLoading} error={deploys.error instanceof Error ? deploys.error.message : null} onRetry={() => deploys.refetch()}>
-        <DeployList items={(deploys.data ?? []).slice(0, 5)} />
+        <DeployList items={(deploys.data?.deployments ?? []).slice(0, 5)} />
       </Panel>
       <Panel title="Platform" loading={version.isLoading} error={version.error instanceof Error ? version.error.message : null} onRetry={() => version.refetch()}>
         <div className="platform-summary">

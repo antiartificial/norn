@@ -12,6 +12,21 @@ norn status
 
 Displays a table of all discovered apps with live health indicators, latest deployment image, and resolved commit.
 
+## runtime
+
+Show the explicitly selected workload connector, image runtime, availability,
+capabilities, and enforced limitations.
+
+```bash
+norn runtime
+```
+
+The command reads the versioned `/api/v1/host/runtime` control endpoint. It is
+the quickest way to confirm that a host is using the production
+`nomad-consul` connector or the development-only `apple-container` connector.
+Selection is server-side through `NORN_WORKLOAD_CONNECTOR`; this command does
+not mutate the active runtime.
+
 ## app
 
 Detailed view of a single app including processes, object storage buckets, recent deployments, and infrastructure.
@@ -69,6 +84,7 @@ Manage the Norn control plane itself with a release-oriented upgrade lane.
 norn platform preflight [ref]
 norn platform upgrade [ref]
 norn platform upgrade [ref] --proxy
+norn platform rebuild <full-sha> --verify
 norn platform releases
 norn platform rollback <sha-prefix>
 norn platform smoke
@@ -89,7 +105,33 @@ norn platform queue-smoke
 
 `norn platform upgrade --proxy` uses the managed proxy lane. It boots the candidate API on the private candidate port, switches the managed Caddy upstream, keeps the new API alive behind the proxy, and stops the previous proxy-managed API pid after postflight succeeds. Use it only after the host is intentionally proxy-fronted and `NORN_PROXY_RELOAD=true` is configured.
 
-`norn platform releases` lists local release directories. `norn platform rollback <sha-prefix>` promotes a previous local release and runs the same postflight health check.
+`norn platform rebuild <full-sha> --verify` delegates to the managed immutable-release lane. It rejects abbreviated or non-hex refs and refuses to run without `--verify`; the selected artifact must be bound to that full commit SHA and pass its checksum and signature verification before it is rebuilt. This is an operator recovery command, not a command to publish GitHub release assets.
+
+`norn platform releases` lists local release directories. `norn platform rollback <sha-prefix>` promotes a previous local release and runs the same postflight health check. Roll back locally first; if it is absent, the managed script may invoke a configured `NORN_RELEASE_FETCH_HOOK` to restore the artifact into the release store before verification. The hook is a recovery integration, not a general CLI publish command. A binary rollback does not roll back database schema: every release must remain compatible with the active database schema until a separate, tested data migration/recovery plan is complete.
+
+For GitHub Release recovery, configure the host script rather than adding
+publication credentials to the CLI:
+
+```bash
+NORN_RELEASE_FETCH_HOOK=platform-release-fetch-github
+NORN_RELEASE_VERIFY_HOOK=platform-release-verify-github
+NORN_RELEASE_REPOSITORY=antiartificial/norn
+NORN_RELEASE_PUBLIC_KEY=/secure/path/norn-release.pub
+NORN_RELEASE_SIGNATURE_POLICY=require-signed
+# Public antiartificial/norn: no token. Private mirror: use an owned,
+# non-symlink, exact mode 0600
+# NORN_RELEASE_GITHUB_TOKEN_FILE (env token and GH_TOKEN remain supported).
+```
+
+The adapters receive `<sha-or-prefix> <releases-dir>` for fetch and
+`<release-dir> <release.json>` for verification. They resolve the
+GitHub Release tagged `platform-<fullsha>` and accept only the matching
+`norn-platform-<fullsha>-<os>-<arch>.{tar.gz,manifest.json,manifest.sig,sbom.spdx.json}`
+asset set. Configure the repository, public verification key, and a read-only
+GitHub release token file through the host's protected runtime environment when
+the repository is private. Never
+place provider credentials or release-signing keys on a Norn host, and do not
+use the general operator CLI to package, sign, or publish assets.
 
 `norn platform smoke` runs `norn smoke platform` with the API runtime environment loaded from the encrypted SOPS JSON env file.
 
@@ -123,6 +165,8 @@ norn host assure
 norn host queue-assure
 norn host status
 norn host doctor
+norn host prerequisites --connector nomad-consul --check
+norn host setup --connector apple-container
 norn host security plan
 norn host security init --address 10.0.0.10 --cert-days 365
 ```
@@ -134,6 +178,24 @@ also configure a bounded post-recovery cron trigger:
 ```bash
 norn host install --repo /path/to/norn --catch-up app-name:daily-capture
 ```
+
+Run `norn host prerequisites` before `host install` on a new machine. It is a
+non-mutating base-system check and deliberately does not require generated
+plists or a running Norn API. `nomad-consul` is the default and only
+production-supported connector; it checks Docker, Nomad, Consul, SOPS, and
+host tooling. Its installation remains a deliberate infrastructure procedure
+because TLS, ACLs, Docker administration, and persistent state need an
+operator-approved configuration.
+
+For local Apple-silicon macOS development, `norn host setup --connector
+apple-container` offers the narrow automated path. It confirms macOS 26+ and
+arm64, asks before each change, downloads a version-pinned package only from
+the official `apple/container` GitHub release, verifies the local Apple
+Containerization Developer ID signature, notarization, and Gatekeeper result,
+then invokes macOS Installer and starts the runtime. It never pipes a network
+response into a shell. Use `--check` to inspect only, `--dry-run` to preview,
+and `--yes --non-interactive` for approved automation (macOS sudo credentials
+are still required for package installation).
 
 The install command also accepts an explicit assurance policy:
 
@@ -263,6 +325,8 @@ norn events show <event-id>
 norn events ack <event-id> --note "investigating"
 norn events snooze <event-id> --for 2h
 norn events open <event-id>
+norn events reconcile --dry-run
+norn events reconcile --app contextdb --limit 50 --by operator
 ```
 
 | Flag | Default | Description |
@@ -273,6 +337,13 @@ norn events open <event-id>
 | `--limit` | `25` | Maximum events to show |
 
 Events include `open`, `snoozed`, or `acknowledged` state. Detail output prints related metadata such as saga, deployment, operation, process, service, or job ids when Norn recorded them.
+
+`events reconcile` reviews open warning and critical events against later
+durable events plus current Nomad or Consul evidence. Run it with `--dry-run`
+first. A non-dry-run pass acknowledges only deterministic recoveries and leaves
+inconclusive events marked `needs_review`; it never relies on message-string
+matching. See [Beacon Events](/v2/operations/beacon#evidence-based-reconciliation)
+for the supported event families and proof rules.
 
 ## observability
 
@@ -575,6 +646,10 @@ curl http://127.0.0.1:8800/metrics
 curl http://127.0.0.1:8800/api/observability/prometheus.yml
 ```
 
+With explicit authentication enabled, pass a scoped bearer token using an
+`Authorization` header. For Prometheus, prefer a permission-restricted
+`bearer_token_file` rather than embedding the token in YAML or shell history.
+
 The generated Prometheus config includes Norn itself and any app process that declares `metrics.enabled: true`.
 
 ## stats
@@ -691,7 +766,7 @@ Manage PostgreSQL database snapshots.
 # List snapshots
 norn snapshots <app>
 
-# Restore a snapshot
+# Legacy synchronous restore by a unique compact UTC timestamp
 norn snapshots <app> restore <timestamp> --yes
 norn snapshots <app> restore <timestamp> --yes --pre-restore
 
@@ -711,7 +786,7 @@ norn snapshots import <app> snapshots/<app>/<filename>.dump
 | Subcommand | Description |
 |------------|-------------|
 | (none) | List available snapshots with timestamps, source commit, created time, size, and filename |
-| `restore` | Restore from a snapshot at the given timestamp; requires `--yes` and prints a restore receipt. `--pre-restore` creates a fresh snapshot before the restore |
+| `restore` | Restore through the legacy synchronous route using a compact UTC timestamp that matches exactly one inventory entry; requires `--yes` and prints a restore receipt. `--pre-restore` creates a fresh snapshot before the restore. Prefer the versioned `/api/v1` control route or web/native clients for a durable exact-filename restore |
 | `retention` | Preview newest-N retention without deleting snapshots; defaults to `snapshots.keep` from the app spec or 3; add `--execute --yes` to prune and print a receipt |
 | `export` | Upload the latest local snapshot to the app's configured `snapshots.exportBucket` |
 | `remote` | List remote snapshots in the configured export bucket |
@@ -799,6 +874,12 @@ norn fleet plan <pool> [--desired N] [--size SLUG] [--strategy blueGreen|rolling
 norn fleet replace <pool> --size SLUG [--reason TEXT]
 norn fleet reconcile <pool> [--reason TEXT]
 norn fleet checkpoints <plan-id>
+norn fleet attempts <plan-id>
+norn fleet attempt start <plan-id> --runner-id RUN_ID --commit COMMIT_SHA --plan-sha256 PLAN_SHA [--workflow-url HTTPS_URL] [--heartbeat-timeout 120]
+norn fleet attempt heartbeat <plan-id> <attempt-id> --phase PHASE --sequence N --revision N [--message TEXT]
+norn fleet attempt advance <plan-id> <attempt-id> --phase PHASE --revision N
+norn fleet attempt retry <plan-id> <attempt-id> --runner-id NEW_RUN_ID --reason TEXT --revision N [--workflow-url HTTPS_URL]
+norn fleet attempt cancel <plan-id> <attempt-id> --reason TEXT --revision N
 norn fleet github status
 norn fleet github pr <plan-id>
 norn fleet github apply <plan-id> [--allow-destructive]
@@ -826,6 +907,16 @@ Norn never receives provider or remote-state credentials.
 Capacity plans are stored as completed `fleet.capacity-plan` operations and do not call a cloud provider. `replace` requires `--size` and forces blue/green planning. The infrastructure repository must enforce its own reviewed-SHA and apply authorization gate. The current private repository uses protected-branch-only environments, strict pull-request checks, reviewed-plan SHA binding, and manual dispatch because its GitHub plan does not provide environment required reviewers.
 
 `checkpoints` shows the append-only runner phases for an applied plan, including provider state serials and evidence digests. It is the operator-facing view of interrupted apply recovery and refuses to combine checkpoints from different commit/plan bindings.
+
+`attempts` shows numbered protected-runner executions, their durable phase,
+last heartbeat, revision, and external runner identity. `attempt start` binds an
+external run to the reviewed commit and plan digest. `heartbeat` is monotonic;
+`advance` fails unless the same attempt has successful evidence for its current
+phase. `retry` is valid only for failed or heartbeat-abandoned work and creates
+a new attempt without rewriting history. `cancel` cancels Norn's liveness
+record only; automation must stop the corresponding external workflow as part
+of the same operator action. These mutations require `fleet:operate`;
+`api:write` is accepted temporarily for existing runner tokens.
 
 ## endpoints
 

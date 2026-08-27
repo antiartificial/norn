@@ -13,6 +13,10 @@ import (
 // and either promotes or fails the Nomad deployment.
 func (p *Pipeline) canary(ctx context.Context, st *state, sg *saga.Saga) error {
 	spec := st.spec
+	workloads := p.workloadConnector()
+	if workloads == nil {
+		return fmt.Errorf("workload connector is not configured")
+	}
 
 	// Find the evaluate-after duration from the first process with canary config
 	evaluateAfter := 2 * time.Minute
@@ -41,18 +45,18 @@ func (p *Pipeline) canary(ctx context.Context, st *state, sg *saga.Saga) error {
 		if regionalServiceProcessCount(spec, region.Name) == 0 {
 			continue
 		}
-		allocs, err := p.Nomad.PollAllocationsRegion(spec.App, region.NomadRegion)
+		allocs, err := workloads.Poll(ctx, spec.App, region)
 		if err != nil {
-			_ = p.Nomad.FailDeploymentRegion(spec.App, region.NomadRegion)
+			_ = workloads.Fail(ctx, spec.App, region)
 			return fmt.Errorf("canary poll allocations in %s: %w", region.Name, err)
 		}
 		for _, alloc := range allocs {
 			if alloc.Healthy == nil || !*alloc.Healthy {
-				_ = p.Nomad.FailDeploymentRegion(spec.App, region.NomadRegion)
-				return fmt.Errorf("canary allocation %s unhealthy in %s (status: %s)", alloc.ID, region.Name, alloc.ClientStatus)
+				_ = workloads.Fail(ctx, spec.App, region)
+				return fmt.Errorf("canary allocation %s unhealthy in %s (status: %s)", alloc.ID, region.Name, alloc.Status)
 			}
 		}
-		if err := p.Nomad.PromoteDeploymentRegion(spec.App, region.NomadRegion); err != nil {
+		if err := workloads.Promote(ctx, spec.App, region); err != nil {
 			return fmt.Errorf("canary promote in %s: %w", region.Name, err)
 		}
 	}

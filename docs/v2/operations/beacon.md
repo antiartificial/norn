@@ -18,6 +18,7 @@ POST /api/events
 POST /api/events/{id}/ack
 POST /api/events/{id}/snooze
 POST /api/events/{id}/open
+POST /api/events/reconcile
 POST /api/incidents/action
 GET  /api/events/sinks
 POST /api/events/test
@@ -92,6 +93,39 @@ secret values.
 deploy failures, service health, cron failures, and recovery events. It is a
 shared contract for the CLI, dashboard, and downstream sinks; it is not a
 separate paging engine.
+
+## Evidence-Based Reconciliation
+
+Beacon can mechanically review stale open warning and critical events against
+newer durable events and the current Nomad or Consul state. Preview every pass
+before allowing acknowledgements:
+
+```bash
+norn events reconcile --dry-run
+norn events reconcile --dry-run --app field-harbor --limit 50
+norn events reconcile --by operator
+```
+
+The response reports every full event ID, its proposed action, reason, and
+supporting evidence. `--dry-run` never changes event state. Without it, only
+decisions marked `acknowledge` are acknowledged; unmatched or inconclusive
+events remain open as `needs_review`.
+
+Current deterministic rules are deliberately narrow:
+
+| Open event | Evidence required before acknowledgement |
+| --- | --- |
+| `deploy.failed` | A later `deploy.succeeded` event for the app and a currently running Nomad job with a healthy allocation |
+| `service.health.warning` or `service.health.critical` | A later `service.health.recovered` event, or every current Consul check for the affected service is passing |
+| `cron.failed`, `cron.lost`, `cron.hung`, or `cron.missed_run` | The Nomad periodic parent is running and unpaused with no running or pending children; a referenced child must be terminal or absent |
+| `nomad.task.restarted` | The app is currently healthy and the restart event occurred at least 15 minutes ago, whether the original allocation remains active or has been replaced. The reconciler does not prove continuous health throughout that interval |
+| `service.capacity.below_minimum` | A later `host.assurance.recovered` event proves the minimum-capacity assurance passed |
+
+The reconciliation endpoint accepts `app`, `limit`, `dryRun`, and `by` in its
+JSON body. It does not infer recovery from an old acknowledgement, a matching
+message string, or the mere passage of time. Missing substrate connections,
+ambiguous child-job state, and health without the required evidence remain for
+operator review.
 
 Incident groups can also be acted on directly. Use `correlationKey` for modern
 Beacon event families and `dedupeKey` for older or external events that do not

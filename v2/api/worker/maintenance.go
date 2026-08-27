@@ -20,6 +20,7 @@ import (
 const maintenanceOutputLimit = 64 * 1024
 
 var maintenanceRefPattern = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9._/@:+-]{0,199}$`)
+var releaseSHAPrefixPattern = regexp.MustCompile(`^[0-9a-f]{7,40}$`)
 
 type MaintenanceExecutor interface {
 	Execute(context.Context, *model.Operation) (map[string]interface{}, error)
@@ -101,7 +102,7 @@ func (e *CommandMaintenanceExecutor) command(op *model.Operation) (string, []str
 		return platformScript, []string{"smoke"}, env, nil
 	case "platform.rollback":
 		sha := payloadString(op.Payload, "sha", "")
-		if !maintenanceRefPattern.MatchString(sha) {
+		if !releaseSHAPrefixPattern.MatchString(sha) {
 			return "", nil, nil, fmt.Errorf("invalid platform release sha")
 		}
 		return platformScript, []string{"rollback", sha}, env, nil

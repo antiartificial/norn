@@ -177,6 +177,32 @@ func TestBearerAuthCanRequireExplicitCredentialsOnLoopback(t *testing.T) {
 	}
 }
 
+func TestExplicitAuthProtectsInventoryAndMetrics(t *testing.T) {
+	next := http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusNoContent)
+	})
+	authenticated := bearerAuth("control-plane-token", nil, true)(next)
+
+	for _, path := range []string{"/api/services/manifest", "/metrics", "/api/metrics"} {
+		req := httptest.NewRequest(http.MethodGet, path, nil)
+		req.RemoteAddr = "127.0.0.1:1234"
+		rec := httptest.NewRecorder()
+		authenticated.ServeHTTP(rec, req)
+		if rec.Code != http.StatusUnauthorized {
+			t.Fatalf("%s status = %d, want %d", path, rec.Code, http.StatusUnauthorized)
+		}
+
+		req = httptest.NewRequest(http.MethodGet, path, nil)
+		req.RemoteAddr = "127.0.0.1:1234"
+		req.Header.Set("Authorization", "Bearer control-plane-token")
+		rec = httptest.NewRecorder()
+		authenticated.ServeHTTP(rec, req)
+		if rec.Code != http.StatusNoContent {
+			t.Fatalf("authenticated %s status = %d, want %d", path, rec.Code, http.StatusNoContent)
+		}
+	}
+}
+
 func TestStrictAuthAcceptsValidatedCloudflarePrincipal(t *testing.T) {
 	next := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		principal, ok := handler.AccessPrincipalFromRequest(r)
@@ -241,6 +267,41 @@ func TestControlSecurityConfiguration(t *testing.T) {
 				t.Fatalf("error = %v, wantErr %v", err, tt.wantErr)
 			}
 		})
+	}
+}
+
+func TestValidateAllowedOrigins(t *testing.T) {
+	for _, origin := range []string{"*", "https://user:pass@example.test", "https://example.test/path", "javascript:alert(1)"} {
+		if err := validateAllowedOrigins(origin, false); err == nil {
+			t.Fatalf("expected %q to be rejected", origin)
+		}
+	}
+	if err := validateAllowedOrigins("https://control.example.test,http://localhost:5173", true); err != nil {
+		t.Fatalf("expected secure and loopback origins to validate: %v", err)
+	}
+	if err := validateAllowedOrigins("http://control.example.test", true); err == nil {
+		t.Fatal("expected insecure production origin to be rejected")
+	}
+}
+
+func TestSecureControlEndpointsRequireNetworkTargets(t *testing.T) {
+	for _, endpoint := range []string{"https://nomad.example.test:4646", "https://[2001:db8::1]:4646"} {
+		if !secureEndpoint(endpoint) {
+			t.Fatalf("expected %q to be accepted", endpoint)
+		}
+	}
+	for _, endpoint := range []string{"https:///missing-host", "https://user:pass@nomad.example.test", "http://nomad.example.test"} {
+		if secureEndpoint(endpoint) {
+			t.Fatalf("expected %q to be rejected", endpoint)
+		}
+	}
+	if !secureDatabaseDSN("postgres://db.example.test/norn?sslmode=verify-full") {
+		t.Fatal("expected verified PostgreSQL DSN to be accepted")
+	}
+	for _, dsn := range []string{"file:///tmp/norn?sslmode=verify-full", "postgres:///norn?sslmode=verify-full", "postgres://db.example.test/norn?sslmode=require"} {
+		if secureDatabaseDSN(dsn) {
+			t.Fatalf("expected %q to be rejected", dsn)
+		}
 	}
 }
 
@@ -309,18 +370,56 @@ func TestExplicitAuthWithCloudflareOnlyRejectsMissingCredentials(t *testing.T) {
 	}
 }
 
+func TestCapabilitiesRejectsInvalidSuppliedCredential(t *testing.T) {
+	next := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		principal, ok := handler.AccessPrincipalFromRequest(r)
+		if !ok || !principal.Allows(handler.ScopeAdmin) {
+			t.Fatal("valid control credential did not attach its principal")
+		}
+		w.WriteHeader(http.StatusNoContent)
+	})
+	authenticated := bearerAuth("control-plane-token", nil, true)(next)
+
+	invalid := httptest.NewRequest(http.MethodGet, "/api/v1/capabilities", nil)
+	invalid.Header.Set("Authorization", "Bearer wrong-token")
+	invalidResponse := httptest.NewRecorder()
+	authenticated.ServeHTTP(invalidResponse, invalid)
+	if invalidResponse.Code != http.StatusUnauthorized {
+		t.Fatalf("invalid capabilities credential status = %d, want 401", invalidResponse.Code)
+	}
+
+	valid := httptest.NewRequest(http.MethodGet, "/api/v1/capabilities", nil)
+	valid.Header.Set("Authorization", "Bearer control-plane-token")
+	validResponse := httptest.NewRecorder()
+	authenticated.ServeHTTP(validResponse, valid)
+	if validResponse.Code != http.StatusNoContent {
+		t.Fatalf("valid capabilities credential status = %d, want 204", validResponse.Code)
+	}
+}
+
 func TestControlCapabilitiesAdvertisesHostMetrics(t *testing.T) {
 	rec := httptest.NewRecorder()
-	writeControlCapabilities(rec)
+	req := httptest.NewRequest(http.MethodGet, "/api/v1/capabilities", nil)
+	req = handler.WithAccessPrincipal(req, &handler.AccessPrincipal{Subject: "fleet-runner", Scopes: []string{handler.ScopeAPIRead, handler.ScopeFleetOperate}})
+	writeControlCapabilities(rec, req)
 	var capability struct {
 		Features  []string          `json:"features"`
 		Endpoints map[string]string `json:"endpoints"`
+		Auth      struct {
+			Principal struct {
+				Authenticated bool     `json:"authenticated"`
+				Scopes        []string `json:"scopes"`
+			} `json:"principal"`
+		} `json:"auth"`
 	}
 	if err := json.Unmarshal(rec.Body.Bytes(), &capability); err != nil {
 		t.Fatal(err)
 	}
 	if capability.Endpoints["hostMetrics"] != "/api/v1/host/metrics" {
 		t.Fatalf("hostMetrics endpoint = %q", capability.Endpoints["hostMetrics"])
+	}
+	if capability.Endpoints["hostRuntime"] != "/api/v1/host/runtime" {
+		t.Fatalf("hostRuntime endpoint = %q", capability.Endpoints["hostRuntime"])
 	}
 	if capability.Endpoints["productionReadiness"] != "/api/v1/production/readiness" {
 		t.Fatalf("productionReadiness endpoint = %q", capability.Endpoints["productionReadiness"])
@@ -331,13 +430,26 @@ func TestControlCapabilitiesAdvertisesHostMetrics(t *testing.T) {
 	if capability.Endpoints["fleetGitHub"] != "/api/v1/fleet/github" || capability.Endpoints["fleetGitHubDispatch"] == "" {
 		t.Fatalf("fleet GitHub endpoints = %v", capability.Endpoints)
 	}
+	if capability.Endpoints["fleetRunnerAttempts"] == "" || capability.Endpoints["deployments"] == "" || capability.Endpoints["deploymentSteps"] == "" || capability.Endpoints["serviceManifest"] == "" {
+		t.Fatalf("new versioned endpoints missing = %v", capability.Endpoints)
+	}
+	if !capability.Auth.Principal.Authenticated || len(capability.Auth.Principal.Scopes) != 2 || capability.Auth.Principal.Scopes[1] != handler.ScopeFleetOperate {
+		t.Fatalf("principal scopes = %+v", capability.Auth.Principal)
+	}
 	if capability.Endpoints["mutationAudit"] != "/api/v1/audit/mutations" || capability.Endpoints["recoveryDrills"] != "/api/v1/production/drills" {
 		t.Fatalf("production evidence endpoints = %v", capability.Endpoints)
+	}
+	if capability.Endpoints["appSnapshots"] == "" || capability.Endpoints["appMigrations"] == "" || capability.Endpoints["appRollbacks"] == "" {
+		t.Fatalf("durable app recovery endpoints = %v", capability.Endpoints)
 	}
 	found := false
 	productionFound := false
 	auditFound := false
 	drillsFound := false
+	appRecoveryFound := false
+	runnerFound := false
+	deploymentsFound := false
+	placementFound := false
 	for _, feature := range capability.Features {
 		if feature == "host-metrics" {
 			found = true
@@ -351,6 +463,18 @@ func TestControlCapabilitiesAdvertisesHostMetrics(t *testing.T) {
 		if feature == "recovery-drill-receipts" {
 			drillsFound = true
 		}
+		if feature == "durable-app-recovery-v1" {
+			appRecoveryFound = true
+		}
+		if feature == "fleet-runner-attempts-v1" {
+			runnerFound = true
+		}
+		if feature == "versioned-deployment-history-v1" {
+			deploymentsFound = true
+		}
+		if feature == "service-instance-placement-v2" {
+			placementFound = true
+		}
 	}
 	if !found {
 		t.Fatalf("host-metrics feature missing: %v", capability.Features)
@@ -360,6 +484,12 @@ func TestControlCapabilitiesAdvertisesHostMetrics(t *testing.T) {
 	}
 	if !auditFound || !drillsFound {
 		t.Fatalf("production evidence features missing: %v", capability.Features)
+	}
+	if !appRecoveryFound {
+		t.Fatalf("durable app recovery feature missing: %v", capability.Features)
+	}
+	if !runnerFound || !deploymentsFound || !placementFound {
+		t.Fatalf("durable fleet/deployment/placement features missing: %v", capability.Features)
 	}
 }
 

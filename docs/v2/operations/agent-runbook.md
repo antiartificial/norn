@@ -10,11 +10,14 @@ Useful surfaces:
 
 | Need | Surface |
 |------|---------|
-| Hosted services and reachability | `GET /api/services/manifest`, `norn services manifest` |
+| Hosted services, reachability, placement | `GET /api/v1/services/manifest`, `norn services manifest` |
 | Platform rollup | `GET /api/ops/platform`, `norn ops platform` |
 | Active queue/drain state | `GET /api/operations/active`, `norn operations --active` |
-| Stage checkpoints | `GET /api/deployments/{id}/steps` |
+| Deployment history | `GET /api/v1/deployments` |
+| Stage checkpoints | `GET /api/v1/deployments/{id}/steps` |
+| Fleet runner liveness | `GET /api/v1/fleet/plans/{planID}/attempts`, `norn fleet attempts <plan-id>` |
 | App specs and runtime status | `GET /api/apps`, `GET /api/apps/{id}`, local `infraspec.yaml` |
+| Durable app recovery | `GET/POST /api/v1/apps/{id}/snapshots`, versioned retention/restore/migration/rollback routes, `norn snapshots <app>` |
 | Validation and rehearsal | `GET /api/validate`, `POST /api/apps/{id}/preflight`, `norn preflight <app> [ref]` |
 | Deploy progress | `POST /api/apps/{id}/deploy`, `GET /api/saga/{sagaId}`, `norn saga <saga-id>` |
 | Webhook delivery triage | `GET /api/webhooks/deliveries`, `norn webhooks` |
@@ -32,7 +35,10 @@ If a protected endpoint returns `401`, do not assume the platform is unhealthy. 
 
 ## Durable Operations
 
-App deploys, app preflights, and app rollbacks are queued in control-plane Postgres and claimed by the API worker. Operation rows include status, kind, app, ref, saga id, payload, attempts, max attempts, lock owner, lock expiry, next attempt, and last error.
+App deploys, preflights, rollbacks, manual snapshots, pruning, restores, and
+standalone migrations are queued in control-plane Postgres and claimed by the
+API worker. Operation rows include status, kind, app, ref, saga id, payload,
+attempts, max attempts, lock owner, lock expiry, next attempt, and last error.
 
 Use active operations as the drain source before invasive work:
 
@@ -44,8 +50,17 @@ Semantics:
 
 - `app.preflight` is read-only and can retry safely.
 - `app.deploy` is queued and drain-visible.
+- Mutable work for one app is serialized across API replicas by a PostgreSQL
+  advisory lock.
+- Snapshot restore and standalone migration run once after mutation begins;
+  interruption fails visibly for review rather than replaying unknown database
+  side effects.
+- Versioned recovery mutations require request-bound idempotency keys so a
+  reconnect can recover the original operation instead of duplicating it.
 - Deploy and rollback stages are recorded in `deployment_steps`.
-- Use `norn deploy steps <deployment-id>` to inspect checkpoint evidence.
+- Use `norn deploy steps <deployment-id>` to inspect versioned checkpoint evidence.
+- Use `norn fleet attempts <plan-id>` before calling a Fleet phase active.
+  Dispatch alone is handoff evidence; only an unexpired attempt proves liveness.
 - Interrupted deploys can be requeued automatically only before mutable stages begin.
 - Interrupted mutable deploy stages should be treated as failed unless there is explicit stage-level resume evidence.
 - Saga events remain the detailed timeline. Operation rows are the compact queue and drain index.
@@ -83,11 +98,12 @@ Use `--preflight` when you want to test the matched app/ref without mutating run
 Norn control-plane upgrades should use the platform lane rather than rebuilding the whole local environment:
 
 ```bash
-norn platform preflight HEAD
-norn platform upgrade HEAD
-norn platform upgrade HEAD --proxy
-norn platform queue-preflight HEAD
-norn platform queue-upgrade HEAD
+norn platform preflight <pushed-commit-sha>
+norn platform upgrade <pushed-commit-sha>
+norn platform upgrade <pushed-commit-sha> --proxy
+norn platform rebuild <full-sha> --verify
+norn platform queue-preflight <pushed-commit-sha>
+norn platform queue-upgrade <pushed-commit-sha>
 norn platform releases
 norn platform rollback <sha-prefix>
 norn platform smoke
@@ -98,7 +114,34 @@ norn platform proxy-render
 norn platform proxy-switch <port|host:port>
 ```
 
+Resolve and push the exact commit before preflight. `HEAD` is acceptable for a
+local development rehearsal, but operational promotion should use the same
+immutable SHA for review, preflight, and upgrade. Platform subcommands add
+existing Homebrew binary directories to the managed child process, so they can
+find release tools through a thin SSH shell without a machine-specific `PATH`
+prefix.
+
 The default platform lane builds an isolated release, boots a candidate API on an alternate port, checks health/version, promotes the release symlink, restarts only the Norn API process, and runs postflight health.
+
+For immutable-release recovery, use `norn platform rebuild <full-sha> --verify`.
+It requires the full source SHA and artifact checksum/signature verification.
+Prefer a verified local rollback target; if none exists, `platform-upgrade` may
+use the configured `NORN_RELEASE_FETCH_HOOK` to restore one into the local store
+before verification. Set `NORN_RELEASE_SIGNATURE_POLICY=require-signed` for
+production. A platform rollback does not undo database schema changes, so keep
+releases backward compatible with the active schema across the rollback window.
+
+When a local release is unavailable, configure the host-only GitHub Release
+fallback: `NORN_RELEASE_FETCH_HOOK=platform-release-fetch-github`,
+`NORN_RELEASE_VERIFY_HOOK=platform-release-verify-github`,
+`NORN_RELEASE_REPOSITORY=owner/norn`, and
+`NORN_RELEASE_PUBLIC_KEY=/secure/path/norn-release.pub`. Set
+`NORN_RELEASE_SIGNATURE_POLICY=require-signed` in production. The fetch adapter
+uses a read-only `NORN_RELEASE_GITHUB_TOKEN` (or `GH_TOKEN`) and accepts only
+the private release tag `platform-<fullsha>` with its matching archive,
+manifest, signature, and SBOM assets. Keep provider and release-signing
+credentials in the protected release workflow, never on a Norn host or in the
+operator CLI.
 
 The queued lane records `platform.preflight`, `platform.upgrade`, and
 `platform.smoke` in the durable operations table. `com.norn.host-agent` claims
@@ -183,6 +226,12 @@ private observability, control failover, guarded production activation, and
 node-replacement exercises. It is isolated from the legacy k3s Terraform root;
 secrets stay out of cloud-init and state uses a versioned locked backend.
 
+The HA-lab convergence script disables Go VCS stamping explicitly. Preserve
+that build invariant: linked worktrees or incomplete surrounding Git metadata
+can otherwise stop Go before compilation. If convergence is interrupted, fix
+the prerequisite and rerun the full convergence command; its Ansible work is
+idempotent and safely rechecks already-completed tasks.
+
 ## Runtime Watchers
 
 The API starts a runtime watcher when Nomad or Consul and Beacon are available. It emits Beacon events when allocations transition to failed, lost, or unhealthy; when Consul service health changes to warning, critical, or recovered; and when periodic child jobs succeed, fail, are lost, or appear hung. Missed-run detection requires additional schedule-aware logic.
@@ -199,7 +248,12 @@ Use `norn validate --strict-secrets` or `NORN_STRICT_SECRETS=true` when a repo o
 
 Use `norn network` when endpoint reachability is confusing. It summarizes service exposure, endpoint scope, instance scope, and mode-specific guidance.
 
-For destructive database restores, prefer `norn snapshots <app> restore <timestamp> --yes --pre-restore` so the receipt includes a fresh pre-restore snapshot.
+For destructive database restores, prefer the versioned `/api/v1` control route
+and the exact `filename` returned by its snapshot inventory; web and native
+clients use that durable path and it always creates a safety snapshot. The
+current CLI uses the legacy synchronous route:
+`norn snapshots <app> restore <compact-utc-timestamp> --yes --pre-restore`.
+Use it only when that timestamp identifies exactly one inventory entry.
 
 ## Safe Repo Guidance
 

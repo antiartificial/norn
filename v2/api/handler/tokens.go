@@ -40,16 +40,18 @@ const (
 	ScopeAppsExec        = "apps:exec"
 	ScopePlatformOperate = "platform:operate"
 	ScopeHostOperate     = "host:operate"
+	ScopeFleetOperate    = "fleet:operate"
 	ScopeAdmin           = "admin"
 )
 
 var accessTokenScopes = map[string]struct{}{
 	ScopeAPIRead: {}, ScopeAPIWrite: {}, ScopeEventsRead: {}, ScopeAppsExec: {},
 	ScopePlatformOperate: {}, ScopeHostOperate: {}, ScopeAdmin: {},
+	ScopeFleetOperate: {},
 }
 
 func AccessTokenScopeNames() []string {
-	return []string{ScopeAPIRead, ScopeAPIWrite, ScopeEventsRead, ScopeAppsExec, ScopePlatformOperate, ScopeHostOperate, ScopeAdmin}
+	return []string{ScopeAPIRead, ScopeAPIWrite, ScopeEventsRead, ScopeAppsExec, ScopePlatformOperate, ScopeHostOperate, ScopeFleetOperate, ScopeAdmin}
 }
 
 type AccessPrincipal struct {

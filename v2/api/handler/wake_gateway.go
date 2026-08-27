@@ -207,10 +207,10 @@ func (h *Handler) ensureWakeGatewayReady(ctx context.Context, target wakeGateway
 	if instance, ok := firstReadyInstance(target.Service); ok {
 		return instance, false, nil
 	}
-	if h.nomad == nil {
-		return model.ServiceInstance{}, false, fmt.Errorf("nomad is not connected and %s/%s has no ready instance", target.App, target.Process)
+	if h.workloads == nil {
+		return model.ServiceInstance{}, false, fmt.Errorf("workload connector is unavailable and %s/%s has no ready instance", target.App, target.Process)
 	}
-	if err := h.nomad.ScaleJob(target.App, target.Process, 1); err != nil {
+	if err := h.workloads.Scale(ctx, target.App, target.Process, 1); err != nil {
 		return model.ServiceInstance{}, false, fmt.Errorf("scale %s/%s to 1: %w", target.App, target.Process, err)
 	}
 

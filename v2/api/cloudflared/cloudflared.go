@@ -156,8 +156,30 @@ func ApplyConfig(_ context.Context, cfg *Config) error {
 	if err != nil {
 		return fmt.Errorf("marshal config: %w", err)
 	}
-	if err := os.WriteFile(getConfigPath(), data, 0644); err != nil {
+	path := getConfigPath()
+	temporary, err := os.CreateTemp(filepath.Dir(path), ".cloudflared-config-*")
+	if err != nil {
+		return fmt.Errorf("reserve cloudflared config: %w", err)
+	}
+	temporaryPath := temporary.Name()
+	defer os.Remove(temporaryPath)
+	if err := temporary.Chmod(0o600); err != nil {
+		_ = temporary.Close()
+		return fmt.Errorf("secure cloudflared config: %w", err)
+	}
+	if _, err := temporary.Write(data); err != nil {
+		_ = temporary.Close()
 		return fmt.Errorf("write cloudflared config: %w", err)
+	}
+	if err := temporary.Sync(); err != nil {
+		_ = temporary.Close()
+		return fmt.Errorf("sync cloudflared config: %w", err)
+	}
+	if err := temporary.Close(); err != nil {
+		return fmt.Errorf("close cloudflared config: %w", err)
+	}
+	if err := os.Rename(temporaryPath, path); err != nil {
+		return fmt.Errorf("publish cloudflared config: %w", err)
 	}
 	return nil
 }

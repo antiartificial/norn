@@ -17,7 +17,7 @@ func (h *Handler) Health(w http.ResponseWriter, r *http.Request) {
 		services["postgres"] = "up"
 	}
 
-	if h.nomad != nil {
+	if h.cfg.WorkloadConnector == "nomad-consul" && h.nomad != nil {
 		if err := h.nomad.Healthy(); err != nil {
 			services["nomad"] = "down"
 		} else {
@@ -25,11 +25,19 @@ func (h *Handler) Health(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	if h.consul != nil {
+	if h.cfg.WorkloadConnector == "nomad-consul" && h.consul != nil {
 		if err := h.consul.Healthy(); err != nil {
 			services["consul"] = "down"
 		} else {
 			services["consul"] = "up"
+		}
+	}
+	if h.workloads != nil {
+		name := "workload-connector/" + h.workloads.Name()
+		if err := h.workloads.Healthy(r.Context()); err != nil {
+			services[name] = "down"
+		} else {
+			services[name] = "up"
 		}
 	}
 
@@ -73,10 +81,11 @@ func (h *Handler) Health(w http.ResponseWriter, r *http.Request) {
 		"status":   status,
 		"services": services,
 		"network": map[string]string{
-			"mode":       h.cfg.NetworkMode,
-			"bindAddr":   h.cfg.BindAddr,
-			"nomadAddr":  h.cfg.NomadAddr,
-			"consulAddr": h.cfg.ConsulAddr,
+			"mode":              h.cfg.NetworkMode,
+			"bindAddr":          h.cfg.BindAddr,
+			"nomadAddr":         h.cfg.NomadAddr,
+			"consulAddr":        h.cfg.ConsulAddr,
+			"workloadConnector": h.cfg.WorkloadConnector,
 		},
 	})
 }

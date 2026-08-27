@@ -6,6 +6,28 @@ title: Norn v2 Release Recap
 
 This recap summarizes the current Norn v2 release line: the Nomad/Consul control plane, the operator-facing dashboard and CLI, fleet planning, production admission, Beacon operational events, and the upgrade posture for local and Linux hosts. `v2.19.0-control` adds crash-safe fleet reconciliation and staged contraction. `v2.20.0-control` adds repository-scoped GitHub App authentication so Norn can open a source-bound fleet pull request and recover or dispatch its protected apply workflow without storing provider credentials or a personal GitHub token. The line retains the backward-compatible v1 control protocol introduced in v2.17.
 
+## Unreleased since v2.20.0-control
+
+On 2026-08-25, the deployed development control build was observed three
+commits beyond the `v2.20.0-control` tag, through `067fc8d`. This section records
+that dated observation and the untagged changes; it does not assert the host's
+current version. The commits do **not** constitute a new release version or tag.
+
+| Area | Surface | Why it matters |
+|:-----|:--------|:---------------|
+| Durable app recovery | Versioned app snapshot, retention, exact-file restore, standalone migration, and rollback routes; Apps dashboard controls | Operators can queue reviewed database and rollback work, close the client, and later recover the same PostgreSQL-backed receipt |
+| Crash-safe intent handling | Request-bound idempotency keys, typed receipts, per-app PostgreSQL advisory locks | Retries after refresh, relaunch, timeout, or API failover recover the original operation and cannot overlap another mutable operation for the same app |
+| Snapshot safety | Exact inventory filenames, mandatory safety snapshots on the versioned restore path, transactional restore, private atomic files, path and database-name confinement | Avoids ambiguous restores, partial database state, symlink traversal, overwrite races, and cross-app import paths |
+| Recovery serialization | App-operation leases, safe lock contention, one-attempt restore/migration semantics, minimum PostgreSQL pool validation | Mutations remain visible after interruption without assuming an unknown database side effect is replay-safe |
+| Control-surface hardening | Explicit-auth protection for metrics and service inventory, configured CORS origins, safer Git credential askpass, constrained app creation and callback/tunnel destinations | Reduces inventory exposure, browser-origin confusion, credential leakage, command injection, and server-side request forgery risk |
+| Evidence-based incident cleanup | `norn events reconcile --dry-run`, restart age gate, assurance-proven capacity recovery, full event IDs | Stale warnings are acknowledged only when later events or current substrate health provide deterministic proof; restart reconciliation requires current health and an event at least 15 minutes old, not proof of continuous health |
+| Remote upgrade reliability | Platform CLI child-tool path enrichment for direct platform commands over SSH | Thin non-interactive shells can find Homebrew-installed build and security tools without an operator-specific `PATH` prefix |
+
+The detailed durable-operation and database boundaries are documented in
+[Operations Ledger](/v2/operations/operations) and
+[Snapshots](/v2/operations/snapshots). Release automation should assign a
+version only when this line is intentionally tagged.
+
 ## v2.20.0-control highlights
 
 | Area | Surface | Why it matters |
@@ -21,7 +43,7 @@ This recap summarizes the current Norn v2 release line: the Nomad/Consul control
 | Area | Surface | Why it matters |
 |:-----|:--------|:---------------|
 | Fleet GitOps | `/api/v1/fleet/*`, `norn fleet ...`, Fleet dashboard | Validates the private `norn-fleet` desired-state schema, inventories pools, and creates signed, durable planning receipts without giving Norn provider credentials |
-| Safe app creation | `POST /api/apps`, dashboard create flow, `deploy: false` default | Creates endpoint or worker drafts with conservative health, scaling, and resource defaults; deployment requires a separate explicit enablement |
+| Safe app creation | `POST /api/v1/apps`, dashboard create flow, `deploy: false` default | Creates endpoint or worker drafts with conservative health, scaling, and resource defaults; deployment requires a separate explicit enablement through `PUT /api/v1/apps/{id}/deployment` or the dashboard |
 | Regional placement | InfraSpec `regions`, `primaryRegion`, process constraints, node pools | Deploys normal services to all regions by default while keeping cron and singleton work in the declared primary region |
 | Regional ingress | Consul-backed Traefik template and readiness weights | Allows multiple endpoint allocations behind a stable regional origin and promotes traffic only after application readiness succeeds |
 | Regional rollback | Per-region deployment state and rollback targets | Tracks readiness, traffic weight, and rollback independently for each region |
