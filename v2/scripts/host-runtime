@@ -227,13 +227,28 @@ if [ -n "$consul_security_fragment" ]; then consul_security_fragment="$(expand_h
 command_path() {
   local name="$1"
   local candidate
-  for candidate in "/opt/homebrew/bin/$name" "/usr/local/bin/$name" "/usr/bin/$name"; do
+  candidate="$(command -v "$name" 2>/dev/null || true)"
+  if [ -n "$candidate" ] && [ -x "$candidate" ]; then
+    printf '%s\n' "$candidate"
+    return 0
+  fi
+  for candidate in "$config_dir/bin/$name" "$HOME/go/bin/$name" "/opt/homebrew/bin/$name" "/usr/local/bin/$name" "/usr/bin/$name"; do
     if [ -x "$candidate" ]; then
       printf '%s\n' "$candidate"
       return 0
     fi
   done
-  command -v "$name" 2>/dev/null || return 1
+  return 1
+}
+
+install_executable() {
+  local source="$1" destination="$2"
+  if [ -e "$destination" ] && [ "$source" -ef "$destination" ]; then
+    chmod 755 "$destination"
+    return 0
+  fi
+  cp "$source" "$destination"
+  chmod 755 "$destination"
 }
 
 detect_address() {
@@ -604,16 +619,12 @@ EOF
     return
   fi
   mkdir -p "$config_dir/bin" "$config_dir/sources" "$state_dir" "$log_dir" "$launch_agents"
-  cp "$script_self" "$runtime_copy"
-  chmod 755 "$runtime_copy"
+  install_executable "$script_self" "$runtime_copy"
   if [ -n "$norn_cli" ] && [ -x "$norn_cli" ]; then
-    cp "$norn_cli" "$norn_copy"
-    chmod 755 "$norn_copy"
+    install_executable "$norn_cli" "$norn_copy"
   fi
-  cp "$host_agent" "$agent_copy"
-  chmod 755 "$agent_copy"
-  cp "$platform_script" "$platform_copy"
-  chmod 755 "$platform_copy"
+  install_executable "$host_agent" "$agent_copy"
+  install_executable "$platform_script" "$platform_copy"
   cp "$nomad_source" "$nomad_source_copy"
   cp "$consul_source" "$consul_source_copy"
   render_configs
