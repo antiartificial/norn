@@ -673,6 +673,10 @@ norn access patterns --window 14d --idle-after 7d
 norn access observe myapp --process web --endpoint https://app.example.com --source gateway --status 200
 norn access cloudflare status
 norn access cloudflare sync --window 14d
+norn access enrollments --status pending
+norn access approve ABCD-EFGH --scope api:read,events:read
+norn access devices
+norn access revoke-device <device-id> --confirm
 ```
 
 The table includes request time, status, method, path, client IP, Cloudflare Access user metadata when present, and duration. Norn does not expose request bodies, authorization headers, or secret values in this view.
@@ -686,6 +690,34 @@ The table includes request time, status, method, path, client IP, Cloudflare Acc
 `norn access cloudflare sync` imports hourly request observations from Cloudflare's GraphQL Analytics API for each mapped public hostname. The sync requires `NORN_CLOUDFLARE_API_TOKEN` and `NORN_CLOUDFLARE_ZONE_ID`. The token should have read access to zone analytics for the target zone. Imported observations are stored as hourly aggregates with source `cloudflare-graphql`.
 
 The sync chunks long windows into day-sized Cloudflare queries and clamps the effective lookback to the configured GraphQL retention ceiling. GraphQL aggregate buckets are replaced on conflict, which makes repeated syncs safe after timeouts or partial imports.
+
+Native device enrollment is managed under the same command group. The Mac app
+creates a ten-minute pairing request and shows a code. An authenticated
+administrator reviews the requested permissions and approves all of them or an
+explicit subset:
+
+```bash
+norn access enrollments --status pending
+norn access approve ABCD-EFGH --scope api:read,events:read
+```
+
+`access enrollments` defaults to pending requests; pass an empty `--status` to
+list all recent states. Approval requires `admin`, trusted HTTPS (or direct
+loopback), and scopes that were requested by the device. Enrollment never
+grants `admin`. The device exchanges the approval automatically and receives a
+revocable 30-day credential.
+
+Inventory and revocation are also administrator actions:
+
+```bash
+norn access devices
+norn access revoke-device 7b46f2c4-8e17-4a50-a914-2d519d34b3ae --confirm
+```
+
+Revoking a device also revokes all managed tokens and cancels affected exec
+sessions. `--confirm` is required because the action cannot be undone; the
+device must enroll again. Device listings contain token metadata but never
+bearer values.
 
 The Logpush receiver is `POST /api/access/cloudflare/logpush`. It requires `NORN_CLOUDFLARE_LOGPUSH_TOKEN` and accepts the token in `X-Norn-Logpush-Token`, `X-Logpush-Secret`, or a bearer header. Configure Cloudflare HTTP Logpush to send HTTP request logs to this endpoint over HTTPS with a secret header. Imported observations are stored with source `cloudflare-logpush`.
 

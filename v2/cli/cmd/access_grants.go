@@ -12,12 +12,15 @@ import (
 )
 
 var (
-	grantIP     string
-	grantTTL    string
-	grantNote   string
-	tokenTTL    string
-	tokenNote   string
-	tokenScopes []string
+	grantIP             string
+	grantTTL            string
+	grantNote           string
+	tokenTTL            string
+	tokenNote           string
+	tokenScopes         []string
+	enrollmentStatus    string
+	enrollmentScopes    []string
+	revokeDeviceConfirm bool
 )
 
 func init() {
@@ -31,11 +34,100 @@ func init() {
 	accessTokenCmd.Flags().StringVar(&tokenNote, "note", "", "Description for the token")
 	accessTokenCmd.Flags().StringSliceVar(&tokenScopes, "scope", nil, "Token scope (repeat or comma-separate): api:read, api:write, events:read, apps:exec, platform:operate, host:operate, fleet:operate, admin")
 	_ = accessTokenCmd.MarkFlagRequired("ttl")
+	accessEnrollmentsCmd.Flags().StringVar(&enrollmentStatus, "status", "pending", "Enrollment status filter (pending, approved, exchanged, expired, or locked; empty lists all)")
+	accessApproveCmd.Flags().StringSliceVar(&enrollmentScopes, "scope", nil, "Approved scope subset (repeat or comma-separate); defaults to all requested scopes")
+	accessRevokeDeviceCmd.Flags().BoolVar(&revokeDeviceConfirm, "confirm", false, "Confirm revocation of the device and all of its tokens")
 
 	accessCmd.AddCommand(accessGrantCmd)
 	accessCmd.AddCommand(accessGrantsCmd)
 	accessCmd.AddCommand(accessRevokeCmd)
 	accessCmd.AddCommand(accessTokenCmd)
+	accessCmd.AddCommand(accessEnrollmentsCmd)
+	accessCmd.AddCommand(accessApproveCmd)
+	accessCmd.AddCommand(accessDevicesCmd)
+	accessCmd.AddCommand(accessRevokeDeviceCmd)
+}
+
+var accessEnrollmentsCmd = &cobra.Command{
+	Use:   "enrollments",
+	Short: "List native device enrollment requests",
+	RunE: func(cmd *cobra.Command, args []string) error {
+		enrollments, err := client.ListDeviceEnrollments(enrollmentStatus)
+		if err != nil {
+			return fmt.Errorf("failed to list device enrollments: %w", err)
+		}
+		if len(enrollments) == 0 {
+			fmt.Println(style.DimText.Render("no device enrollment requests"))
+			return nil
+		}
+		fmt.Println(style.Title.Render("device enrollments"))
+		fmt.Println()
+		w := tabwriter.NewWriter(os.Stdout, 0, 0, 2, ' ', 0)
+		fmt.Fprintln(w, "  "+style.TableHeader.Render("DEVICE")+"\t"+style.TableHeader.Render("STATUS")+"\t"+style.TableHeader.Render("SCOPES")+"\t"+style.TableHeader.Render("EXPIRES")+"\t"+style.TableHeader.Render("ID"))
+		for _, enrollment := range enrollments {
+			fmt.Fprintf(w, "  %s\t%s\t%s\t%s\t%s\n", enrollment.DeviceName, enrollment.Status, strings.Join(enrollment.RequestedScopes, ","), localTime(enrollment.ExpiresAt), enrollment.ID)
+		}
+		return w.Flush()
+	},
+}
+
+var accessApproveCmd = &cobra.Command{
+	Use:     "approve <pairing-code>",
+	Short:   "Approve a native device enrollment",
+	Example: "  norn access approve ABCD-EFGH --scope api:read,events:read",
+	Args:    cobra.ExactArgs(1),
+	RunE: func(cmd *cobra.Command, args []string) error {
+		enrollment, err := client.ApproveDeviceEnrollment(args[0], enrollmentScopes)
+		if err != nil {
+			return fmt.Errorf("failed to approve device enrollment: %w", err)
+		}
+		msg := fmt.Sprintf("%s %s\n%s %s\n%s %s", style.Key.Render("device"), enrollment.DeviceName, style.Key.Render("id"), enrollment.DeviceID, style.Key.Render("scopes"), strings.Join(enrollment.ApprovedScopes, ", "))
+		fmt.Println(style.SuccessBox.Render("device enrollment approved\n\n" + msg))
+		return nil
+	},
+}
+
+var accessDevicesCmd = &cobra.Command{
+	Use:   "devices",
+	Short: "List enrolled native devices",
+	RunE: func(cmd *cobra.Command, args []string) error {
+		devices, err := client.ListAccessDevices()
+		if err != nil {
+			return fmt.Errorf("failed to list enrolled devices: %w", err)
+		}
+		if len(devices) == 0 {
+			fmt.Println(style.DimText.Render("no enrolled devices"))
+			return nil
+		}
+		fmt.Println(style.Title.Render("enrolled devices"))
+		fmt.Println()
+		w := tabwriter.NewWriter(os.Stdout, 0, 0, 2, ' ', 0)
+		fmt.Fprintln(w, "  "+style.TableHeader.Render("NAME")+"\t"+style.TableHeader.Render("PLATFORM")+"\t"+style.TableHeader.Render("LAST SEEN")+"\t"+style.TableHeader.Render("TOKENS")+"\t"+style.TableHeader.Render("ID"))
+		for _, device := range devices {
+			fmt.Fprintf(w, "  %s\t%s\t%s\t%d\t%s\n", device.Name, emptyDash(device.Platform), localTime(emptyDash(device.LastSeenAt)), len(device.Tokens), device.ID)
+		}
+		return w.Flush()
+	},
+}
+
+var accessRevokeDeviceCmd = &cobra.Command{
+	Use:   "revoke-device <device-id>",
+	Short: "Revoke an enrolled device and every token it owns",
+	Args:  cobra.ExactArgs(1),
+	RunE: func(cmd *cobra.Command, args []string) error {
+		if !revokeDeviceConfirm {
+			return fmt.Errorf("refusing to revoke device without --confirm")
+		}
+		id := strings.TrimSpace(args[0])
+		if id == "" {
+			return fmt.Errorf("device id is required")
+		}
+		if err := client.RevokeAccessDevice(id); err != nil {
+			return fmt.Errorf("failed to revoke device: %w", err)
+		}
+		fmt.Println(style.SuccessBox.Render(fmt.Sprintf("device and managed tokens revoked\n\n%s %s", style.Key.Render("id"), id)))
+		return nil
+	},
 }
 
 var accessGrantCmd = &cobra.Command{

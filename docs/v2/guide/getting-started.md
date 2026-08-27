@@ -72,6 +72,40 @@ The API serves at `http://localhost:8800` and the UI at
 not start the UI. Use `make down` to stop the background API, Nomad, and Consul
 started by `make up`.
 
+## Pair a native app
+
+The macOS app should use device enrollment instead of receiving the root
+`NORN_API_TOKEN`. In the app, choose **Add Server**, enter the HTTPS control
+plane URL, review the requested scopes, and start pairing. Then approve its
+ten-minute code from an existing administrator session:
+
+```bash
+export NORN_URL=https://norn.example.com
+export NORN_TOKEN='<administrator credential>'
+norn access enrollments --status pending
+norn access approve ABCD-EFGH --scope api:read,events:read
+```
+
+The app completes the exchange automatically. Its device identity is protected
+by Secure Enclave when available (with a device-only Keychain fallback), the
+bearer is stored in Keychain, and the 30-day credential renews while the app is
+active within seven days of expiry. Pairing cannot grant `admin`; add operation
+scopes only when that Mac needs them:
+
+| Scope | Native capability |
+|---|---|
+| `api:read,events:read` | Observe control state and live events |
+| `api:write` | Create apps and manage app recovery |
+| `platform:operate` | Queue upgrades, rollback, and smoke checks |
+| `host:operate` | Queue host recovery and assurance |
+| `fleet:operate` | Plan and hand off fleet changes |
+| `apps:exec` | Request audited, step-up-protected exec sessions |
+
+Use `norn access devices` to audit enrolled clients and
+`norn access revoke-device <device-id> --confirm` to revoke a lost or retired
+device. Manual scoped-token entry remains a compatibility/recovery option in
+the app, but it does not have native renewal or device-level revocation.
+
 ## Configuration
 
 All configuration is via environment variables:
