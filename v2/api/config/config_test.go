@@ -29,6 +29,24 @@ func TestBeaconConfig(t *testing.T) {
 	}
 }
 
+func TestCloudflaredRuntimeConfig(t *testing.T) {
+	t.Setenv("NORN_CLOUDFLARED_CONFIG", "/tmp/cloudflared.yml")
+	t.Setenv("NORN_CLOUDFLARED_BIN", "/opt/cloudflared")
+	t.Setenv("NORN_CLOUDFLARED_LAUNCH_LABEL", "com.example.cloudflared")
+
+	cfg := Load()
+
+	if cfg.CloudflaredConfig != "/tmp/cloudflared.yml" {
+		t.Fatalf("CloudflaredConfig = %q", cfg.CloudflaredConfig)
+	}
+	if cfg.CloudflaredBinary != "/opt/cloudflared" {
+		t.Fatalf("CloudflaredBinary = %q", cfg.CloudflaredBinary)
+	}
+	if cfg.CloudflaredLaunchLabel != "com.example.cloudflared" {
+		t.Fatalf("CloudflaredLaunchLabel = %q", cfg.CloudflaredLaunchLabel)
+	}
+}
+
 func TestNetworkMode(t *testing.T) {
 	tests := []struct {
 		name string

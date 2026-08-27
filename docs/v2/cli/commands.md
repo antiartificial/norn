@@ -99,6 +99,37 @@ norn platform proxy-switch <port|host:port>
 | `--script` | `NORN_PLATFORM_SCRIPT` | Explicit platform-upgrade script path |
 | `--proxy` | `false` | Use managed proxy cutover mode for `platform upgrade` |
 
+## host
+
+Install, inspect, and recover persistent macOS host services.
+
+```bash
+norn host install --repo /path/to/norn
+norn host recover
+norn host cloudflared-recover \
+  --cloudflared-config ~/.cloudflared/config.yml \
+  --cloudflared-probe https://service.example.com/health
+norn host doctor
+norn host status
+```
+
+`host install` writes Norn-owned LaunchAgents for Nomad, Consul, the recovery
+supervisor, and cloudflared when a named-tunnel config is present. It does not
+interrupt live services. `host cloudflared-recover` is the safe targeted action
+after `brew upgrade cloudflared`: it validates ingress, retires a matching or
+broken legacy Homebrew user service, loads `com.norn.cloudflared`, and checks an
+optional public probe.
+
+| Flag | Default | Description |
+|------|---------|-------------|
+| `--cloudflared-config` | `~/.cloudflared/config.yml` | Named-tunnel config managed by Norn |
+| `--cloudflared-label` | `com.norn.cloudflared` | Norn-owned LaunchAgent label |
+| `--cloudflared-probe` | — | Public health URL checked after recovery |
+| `--skip-cloudflared` | `false` | Leave cloudflared outside host management |
+
+Do not use `brew services start/restart cloudflared` after installing the
+Norn-owned service; Homebrew regenerates a bare-binary plist.
+
 ## operations
 
 List durable operation records.

@@ -129,3 +129,21 @@ Then rerun the smoke checks.
 - A normal candidate API is a preflight check, not the active control plane. On proxy-fronted hosts, `norn platform upgrade --proxy` performs a managed upstream cutover; see [Platform Upgrades](/v2/architecture/platform-upgrades).
 - App deploys, preflights, and rollbacks are queued in control-plane Postgres. The drain gate checks those active rows before platform upgrades; read-only preflights can retry, while interrupted mutable deploy stages fail visibly rather than being replayed blindly.
 - `norn platform proxy-plan` prints the no-blip proxy design. `proxy-status`, `proxy-render`, and `proxy-switch` manage an optional local proxy config and upstream state. `platform upgrade --proxy` uses that state only when the host is already proxy-fronted and `NORN_PROXY_RELOAD=true`.
+
+## Homebrew and macOS Maintenance
+
+Norn platform upgrades do not upgrade cloudflared. For host package maintenance:
+
+```bash
+brew update
+brew upgrade cloudflared
+cloudflared --config ~/.cloudflared/config.yml tunnel ingress validate
+norn host cloudflared-recover --cloudflared-probe https://service.example.com/health
+norn host doctor --cloudflared-probe https://service.example.com/health
+norn platform smoke
+```
+
+Do not run `brew services restart cloudflared` on a Norn-managed host. The
+Homebrew formula's service definition contains only the executable, so that
+command overwrites the tunnel arguments. A reboot preserves Norn's managed
+plist, but user LaunchAgents start only after login.

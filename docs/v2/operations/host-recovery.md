@@ -8,18 +8,23 @@ reboot, and Docker Desktop restarts without rebuilding every app.
 - Persistent Nomad and Consul data outside `/tmp`.
 - User launchd jobs for Nomad and Consul.
 - A one-shot launchd supervisor that starts Docker, waits for Consul and Nomad,
-  restarts the Norn API after its dependencies are ready, and runs an optional
-  post-recovery hook.
+  validates and recovers the Norn-owned cloudflared LaunchAgent, restarts the
+  Norn API after its dependencies are ready, and runs an optional post-recovery
+  hook.
 - Host diagnostics and concise status output.
 
-The existing Norn API and cloudflared launchd jobs remain independently
-managed. The host lane does not embed API tokens or app secrets in plists.
+The Norn API remains independently managed. The host lane owns cloudflared's
+service definition but keeps tunnel credentials in the normal cloudflared
+config/credentials files; it does not embed API tokens or app secrets in plists.
 
 ## Install
 
 ```bash
-norn host install --repo /path/to/norn
-norn host doctor
+norn host install --repo /path/to/norn \
+  --cloudflared-config ~/.cloudflared/config.yml \
+  --cloudflared-probe https://service.example.com/health
+norn host cloudflared-recover --cloudflared-probe https://service.example.com/health
+norn host doctor --cloudflared-probe https://service.example.com/health
 ```
 
 `install` writes managed configuration and launchd files but deliberately does
@@ -63,6 +68,17 @@ norn smoke platform
 At login, `com.norn.host-supervisor` performs the same ordered recovery. It
 re-renders bind and advertise addresses from the current default network route,
 so a DHCP address change does not leave the scheduler bound to a stale address.
+It also validates cloudflared ingress before loading the managed LaunchAgent.
+If a public probe is configured, recovery waits for that route before reporting
+success.
+
+For a cloudflared-only recovery after a Homebrew upgrade:
+
+```bash
+norn host cloudflared-recover \
+  --cloudflared-config ~/.cloudflared/config.yml \
+  --cloudflared-probe https://service.example.com/health
+```
 
 ## Optional post-recovery hook
 
@@ -84,3 +100,6 @@ normal encrypted runtime environment rather than in the hook or launchd plist.
 - Persisted Nomad state restores jobs and their periodic schedules, but a cron
   scheduler does not replay every interval missed during a long outage. Use an
   application-specific post-recovery hook for stale-ingestion catch-up.
+- Do not use `brew services start/restart cloudflared` for a Norn-managed
+  tunnel. Those commands overwrite the Norn service arguments with Homebrew's
+  bare-binary service definition.

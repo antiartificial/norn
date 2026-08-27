@@ -45,6 +45,8 @@ type Config struct {
 
 	WebhookSecret          string // NORN_WEBHOOK_SECRET
 	CloudflaredConfig      string // NORN_CLOUDFLARED_CONFIG
+	CloudflaredBinary      string // NORN_CLOUDFLARED_BIN
+	CloudflaredLaunchLabel string // NORN_CLOUDFLARED_LAUNCH_LABEL
 	CloudflareAPIToken     string // NORN_CLOUDFLARE_API_TOKEN
 	CloudflareZoneID       string // NORN_CLOUDFLARE_ZONE_ID
 	CloudflareLogpushToken string // NORN_CLOUDFLARE_LOGPUSH_TOKEN
@@ -91,6 +93,8 @@ func Load() *Config {
 
 		WebhookSecret:          os.Getenv("NORN_WEBHOOK_SECRET"),
 		CloudflaredConfig:      envOr("NORN_CLOUDFLARED_CONFIG", os.Getenv("HOME")+"/.cloudflared/config.yml"),
+		CloudflaredBinary:      os.Getenv("NORN_CLOUDFLARED_BIN"),
+		CloudflaredLaunchLabel: envOr("NORN_CLOUDFLARED_LAUNCH_LABEL", "com.norn.cloudflared"),
 		CloudflareAPIToken:     firstEnv("NORN_CLOUDFLARE_API_TOKEN", "CLOUDFLARE_API_TOKEN"),
 		CloudflareZoneID:       firstEnv("NORN_CLOUDFLARE_ZONE_ID", "CLOUDFLARE_ZONE_ID"),
 		CloudflareLogpushToken: os.Getenv("NORN_CLOUDFLARE_LOGPUSH_TOKEN"),

@@ -4,7 +4,7 @@ Norn v2 uses Cloudflare Tunnels (cloudflared) for external routing and optionall
 
 ## Tunnel Routing
 
-cloudflared runs locally as a Homebrew LaunchAgent, managed via a config file on disk. During the **forge** step of the deploy pipeline, Norn reads the config, updates ingress rules, writes it back, and restarts the tunnel process.
+cloudflared is installed by Homebrew, but its macOS service is owned by Norn. During the **forge** step of the deploy pipeline, Norn validates a candidate config, atomically updates ingress rules, and restarts the Norn-owned tunnel process.
 
 ### How It Works
 
@@ -13,7 +13,7 @@ Norn manages cloudflared's config file directly (default `~/.cloudflared/config.
 | Component | Details |
 |-----------|---------|
 | Config file | `~/.cloudflared/config.yml` (override with `NORN_CLOUDFLARED_CONFIG`) |
-| Process management | Homebrew LaunchAgent (`homebrew.mxcl.cloudflared`) |
+| Process management | Norn LaunchAgent (`com.norn.cloudflared`) |
 | Restart method | `launchctl kickstart -k` (kills + relaunches immediately) |
 | Tunnel type | Named tunnel with credentials file |
 
@@ -39,30 +39,53 @@ ingress:
   - service: http_status:404    # catch-all (required)
 ```
 
-3. Update the Homebrew plist to include `tunnel run` arguments:
+3. Install and activate the Norn-owned LaunchAgent:
 
-```xml
-<key>ProgramArguments</key>
-<array>
-  <string>/opt/homebrew/opt/cloudflared/bin/cloudflared</string>
-  <string>tunnel</string>
-  <string>run</string>
-</array>
+```bash
+norn host install --repo /path/to/norn \
+  --cloudflared-config ~/.cloudflared/config.yml \
+  --cloudflared-probe https://myapp.example.com/health
+
+norn host cloudflared-recover \
+  --cloudflared-config ~/.cloudflared/config.yml \
+  --cloudflared-probe https://myapp.example.com/health
 ```
 
 ::: warning Homebrew default plist
-The default Homebrew plist for cloudflared only includes the binary path with no arguments. Without `tunnel run`, cloudflared exits immediately and the LaunchAgent crash-loops. Always verify the plist includes the `tunnel` and `run` arguments.
+The Homebrew formula currently defines its service as the bare `cloudflared` binary. Running `brew services start cloudflared` or `brew services restart cloudflared` regenerates `homebrew.mxcl.cloudflared.plist` without `tunnel run` arguments. Do not use those commands for a Norn-managed tunnel. Use `norn host cloudflared-recover` or Norn's normal forge restart path.
 :::
 
-4. Start the service:
+`cloudflared-recover` validates the ingress configuration, retires a legacy Homebrew user LaunchAgent when it is broken or points at the same config, loads `com.norn.cloudflared`, waits for it to remain running, and optionally checks a public probe.
+
+Before removing a system LaunchDaemon, inspect it. A token-based `/Library/LaunchDaemons/com.cloudflare.cloudflared.plist` may serve a different tunnel and can coexist with Norn's named tunnel:
 
 ```bash
-# If a system-level daemon exists (token-based), unload it first:
-sudo launchctl unload /Library/LaunchDaemons/com.cloudflare.cloudflared.plist
-
-# Start the Homebrew service:
-brew services start cloudflared
+sudo launchctl print system/com.cloudflare.cloudflared
+launchctl print "gui/$(id -u)/com.norn.cloudflared"
 ```
+
+### Homebrew and macOS Updates
+
+`brew update` only refreshes package metadata and does not require a tunnel restart. After `brew upgrade cloudflared`, validate the config and ask Norn to reload the service so the new binary is used:
+
+```bash
+cloudflared --config ~/.cloudflared/config.yml tunnel ingress validate
+norn host cloudflared-recover \
+  --cloudflared-config ~/.cloudflared/config.yml \
+  --cloudflared-probe https://myapp.example.com/health
+norn host doctor --cloudflared-probe https://myapp.example.com/health
+```
+
+Do not substitute `brew services restart cloudflared`; it recreates Homebrew's incomplete service definition.
+
+After a reboot or macOS update, the Norn LaunchAgent starts after user login. Verify both the local process and a real public route:
+
+```bash
+norn host status --cloudflared-probe https://myapp.example.com/health
+cloudflared tunnel info multi-domain-tunnel
+```
+
+User LaunchAgents do not run before login. Hosts that must expose tunnels before any user session should use a deliberately managed system LaunchDaemon instead.
 
 ### Infraspec Configuration
 
@@ -122,6 +145,8 @@ curl -X POST http://localhost:8800/api/apps/myapp/endpoints/toggle \
 | Environment Variable | Default | Description |
 |---------------------|---------|-------------|
 | `NORN_CLOUDFLARED_CONFIG` | `~/.cloudflared/config.yml` | Path to the cloudflared config file |
+| `NORN_CLOUDFLARED_BIN` | auto-detected | cloudflared executable used for config validation |
+| `NORN_CLOUDFLARED_LAUNCH_LABEL` | `com.norn.cloudflared` | launchd label restarted after forge changes |
 
 ### Config File Format
 

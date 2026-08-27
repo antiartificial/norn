@@ -32,6 +32,7 @@ norn --api=https://norn.example.com status
 | [`norn app`](/v2/cli/commands#app) | Detailed view of a single app |
 | [`norn deploy`](/v2/cli/commands#deploy) | Deploy with live pipeline progress |
 | [`norn preflight`](/v2/cli/commands#preflight) | Rehearse build/test without runtime mutation |
+| [`norn host`](/v2/cli/commands#host) | Install and recover persistent macOS host services |
 | [`norn operations`](/v2/cli/commands#operations) | Inspect durable operation rows and drain state |
 | [`norn resources`](/v2/cli/commands#resources) | Resource usage and right-sizing suggestions |
 | [`norn notifications`](/v2/cli/commands#notifications) | Manage Beacon notification channels |
