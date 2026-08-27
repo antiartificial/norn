@@ -48,10 +48,10 @@ sequenceDiagram
     participant App as Native app
     participant API as Norn API
     participant Admin as Existing admin surface
-    App->>API: POST /v1/enrollments (device metadata, publicKey, scopes)
+    App->>API: POST /api/v1/enrollments (device metadata, publicKey, scopes)
     API-->>App: userCode, verifier, expiresAt
-    Admin->>API: POST /v1/enrollments/approve (userCode, scopes)
-    App->>API: POST /v1/enrollments/{id}/exchange (verifier)
+    Admin->>API: POST /api/v1/enrollments/approve (userCode, scopes)
+    App->>API: POST /api/v1/enrollments/{id}/exchange (verifier)
     API-->>App: device token (shown once)
 ```
 
@@ -69,6 +69,33 @@ Lifecycle endpoints are:
 | `POST /api/v1/auth/revoke` | current managed token | Revokes the current token |
 | `GET /api/v1/devices` | `admin` | Lists devices and token metadata, never bearer secrets |
 | `DELETE /api/v1/devices/{id}` | `admin` | Revokes the device and every token issued to it |
+
+The Norn macOS app implements this as the default **Add Server** flow. It keeps
+the verifier only in the active pairing view, polls the exchange endpoint while
+the code is valid, and persists only non-secret device/token metadata alongside
+the server profile. The bearer credential remains device-only in Keychain. It
+rotates automatically while the app is active when seven days or less remain,
+and can be rotated manually from Settings.
+
+An authenticated administrator can approve and audit enrollment from the CLI:
+
+```bash
+norn access enrollments --status pending
+norn access approve ABCD-EFGH --scope api:read,events:read
+norn access devices
+norn access revoke-device <device-id> --confirm
+```
+
+Approval scopes must be a subset of the request and can never include `admin`.
+Device revocation ends every managed token owned by that device. Removing a
+profile on the Mac removes its local key and credential but cannot prove intent
+to revoke server-side access, so use the administrator revoke command when
+access must end immediately.
+
+Rotation retires the current token before the client stores the replacement.
+The macOS client writes the returned token to Keychain before updating profile
+metadata. If the process or Keychain fails during that narrow handoff, the old
+token is already invalid and the safe recovery is to enroll the Mac again.
 
 Existing scoped JWTs remain valid until their original expiry. They do not gain
 device proof-of-possession or falsely appear revocable when no registry record

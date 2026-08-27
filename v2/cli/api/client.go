@@ -2016,6 +2016,86 @@ type AccessToken struct {
 	Scopes    []string `json:"scopes"`
 }
 
+type DeviceEnrollment struct {
+	ID              string   `json:"id"`
+	DeviceName      string   `json:"deviceName"`
+	Platform        string   `json:"platform"`
+	Model           string   `json:"model"`
+	AppVersion      string   `json:"appVersion"`
+	RequestedScopes []string `json:"requestedScopes"`
+	ApprovedScopes  []string `json:"approvedScopes"`
+	Status          string   `json:"status"`
+	DeviceID        string   `json:"deviceId"`
+	CreatedAt       string   `json:"createdAt"`
+	ExpiresAt       string   `json:"expiresAt"`
+	ApprovedAt      string   `json:"approvedAt"`
+	ExchangedAt     string   `json:"exchangedAt"`
+}
+
+type DeviceAccessToken struct {
+	ID        string   `json:"id"`
+	Scopes    []string `json:"scopes"`
+	IssuedAt  string   `json:"issuedAt"`
+	ExpiresAt string   `json:"expiresAt"`
+	RevokedAt string   `json:"revokedAt"`
+}
+
+type AccessDevice struct {
+	ID         string              `json:"id"`
+	Name       string              `json:"name"`
+	Platform   string              `json:"platform"`
+	Model      string              `json:"model"`
+	AppVersion string              `json:"appVersion"`
+	CreatedAt  string              `json:"createdAt"`
+	LastSeenAt string              `json:"lastSeenAt"`
+	RevokedAt  string              `json:"revokedAt"`
+	Tokens     []DeviceAccessToken `json:"tokens"`
+}
+
+func (c *Client) ListDeviceEnrollments(status string) ([]DeviceEnrollment, error) {
+	values := url.Values{}
+	if strings.TrimSpace(status) != "" {
+		values.Set("status", strings.TrimSpace(status))
+	}
+	path := "/api/v1/enrollments"
+	if encoded := values.Encode(); encoded != "" {
+		path += "?" + encoded
+	}
+	var response struct {
+		Enrollments []DeviceEnrollment `json:"enrollments"`
+	}
+	if err := c.get(path, &response); err != nil {
+		return nil, err
+	}
+	return response.Enrollments, nil
+}
+
+func (c *Client) ApproveDeviceEnrollment(userCode string, scopes []string) (*DeviceEnrollment, error) {
+	body, _ := json.Marshal(map[string]interface{}{
+		"userCode": strings.TrimSpace(userCode),
+		"scopes":   scopes,
+	})
+	var enrollment DeviceEnrollment
+	if err := c.postJSON("/api/v1/enrollments/approve", string(body), &enrollment); err != nil {
+		return nil, err
+	}
+	return &enrollment, nil
+}
+
+func (c *Client) ListAccessDevices() ([]AccessDevice, error) {
+	var response struct {
+		Devices []AccessDevice `json:"devices"`
+	}
+	if err := c.get("/api/v1/devices", &response); err != nil {
+		return nil, err
+	}
+	return response.Devices, nil
+}
+
+func (c *Client) RevokeAccessDevice(id string) error {
+	return c.del("/api/v1/devices/" + url.PathEscape(strings.TrimSpace(id)))
+}
+
 func (c *Client) CreateAccessToken(note, ttl string, scopes []string) (*AccessToken, error) {
 	body, _ := json.Marshal(map[string]interface{}{"note": note, "ttl": ttl, "scopes": scopes})
 	var token AccessToken

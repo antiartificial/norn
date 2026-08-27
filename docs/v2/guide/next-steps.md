@@ -205,6 +205,8 @@ Current state:
 - `POST /api/access/tokens` creates short-lived JWT access tokens with explicit scopes. Tokens are accepted only as `Authorization: Bearer` headers, never URL query parameters.
 - `norn access token --ttl 2h --scope api:read,events:read` generates a least-privilege client token from the CLI.
 - The dashboard Platform tab has a token creation form in the Access section.
+- Native clients use ten-minute pairing enrollment instead of pasting the root token. `norn access enrollments`, `norn access approve`, `norn access devices`, and confirmation-gated `norn access revoke-device` provide the administrator workflow.
+- Managed native credentials are device-scoped, expire after 30 days, rotate atomically, and can be revoked per token or per device. While active, the macOS app renews within seven days of expiry and retains manual token entry only for compatibility and recovery.
 - `norn events show <id>` displays incident timeline links for events with correlation keys.
 - When an `info`-severity event resolves a correlation group, Norn auto-acknowledges open `warning`/`critical` events in that group so `norn events` shows only active incidents.
 - `norn notifications bootstrap` auto-discovers vigil-gateway and creates a default webhook notification channel for `warning` and `critical` events.
