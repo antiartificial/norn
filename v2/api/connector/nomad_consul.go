@@ -4,7 +4,9 @@ import (
 	"context"
 	"fmt"
 	"io"
+	"net"
 	"sort"
+	"strconv"
 	"time"
 
 	"github.com/gorilla/websocket"
@@ -175,12 +177,12 @@ func (c *NomadConsulConnector) EndpointOrigin(ctx context.Context, spec *model.I
 	if values, err := c.ServiceHealth(ctx, service); err == nil {
 		for _, value := range values {
 			if value.Status == "passing" && value.Address != "" && value.Port > 0 {
-				return fmt.Sprintf("http://%s:%d", value.Address, value.Port), nil
+				return httpOrigin(value.Address, value.Port), nil
 			}
 		}
 		for _, value := range values {
 			if value.Address != "" && value.Port > 0 {
-				return fmt.Sprintf("http://%s:%d", value.Address, value.Port), nil
+				return httpOrigin(value.Address, value.Port), nil
 			}
 		}
 	}
@@ -194,7 +196,11 @@ func (c *NomadConsulConnector) EndpointOrigin(ctx context.Context, spec *model.I
 	if allocations[0].NodeAddress == "" {
 		return "", fmt.Errorf("allocation node address is unavailable")
 	}
-	return fmt.Sprintf("http://%s:%d", allocations[0].NodeAddress, process.Port), nil
+	return httpOrigin(allocations[0].NodeAddress, process.Port), nil
+}
+
+func httpOrigin(address string, port int) string {
+	return "http://" + net.JoinHostPort(address, strconv.Itoa(port))
 }
 
 func (c *NomadConsulConnector) JobResourceUsage(ctx context.Context, app string) ([]ResourceUsage, error) {
