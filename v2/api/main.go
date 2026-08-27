@@ -391,7 +391,7 @@ func main() {
 		r.Get("/ops/contextdb/evaluator-readiness", h.EvaluatorReadiness)
 
 		r.Get("/v1/capabilities", func(w http.ResponseWriter, r *http.Request) {
-			writeControlCapabilities(w)
+			writeControlCapabilities(w, r)
 		})
 		r.Get("/v1/openapi.yaml", contract.ServeOpenAPI)
 		r.Post("/v1/enrollments", h.StartDeviceEnrollment)
@@ -415,6 +415,10 @@ func main() {
 		r.With(handler.ValidateAppID).Post("/v1/apps/{id}/snapshots/{snapshot}/restore", h.QueueAppSnapshotRestore)
 		r.With(handler.ValidateAppID).Post("/v1/apps/{id}/migrations", h.QueueAppMigration)
 		r.With(handler.ValidateAppID).Post("/v1/apps/{id}/rollbacks", h.QueueAppRollback)
+		r.Get("/v1/deployments", h.ListDeploymentsV1)
+		r.Get("/v1/deployments/{id}", h.GetDeploymentV1)
+		r.Get("/v1/deployments/{id}/steps", h.ListDeploymentStepsV1)
+		r.Get("/v1/services/manifest", h.ServiceManifestV1)
 		r.Post("/v1/validate/infraspec", h.ValidateInfraSpecDocument)
 		r.Post("/v1/fleet/validate", h.ValidateFleetDocument)
 		r.Get("/v1/fleet/node-pools", h.FleetInventory)
@@ -422,6 +426,13 @@ func main() {
 		r.Get("/v1/fleet/github", h.FleetGitHubStatus)
 		r.Get("/v1/fleet/plans/{planID}/reconciliations", h.ListFleetReconciliations)
 		r.Post("/v1/fleet/plans/{planID}/reconciliations", h.RecordFleetReconciliation)
+		r.Get("/v1/fleet/plans/{planID}/attempts", h.ListFleetRunnerAttempts)
+		r.Post("/v1/fleet/plans/{planID}/attempts", h.StartFleetRunnerAttempt)
+		r.Get("/v1/fleet/plans/{planID}/attempts/{attemptID}", h.GetFleetRunnerAttempt)
+		r.Post("/v1/fleet/plans/{planID}/attempts/{attemptID}/heartbeat", h.HeartbeatFleetRunnerAttempt)
+		r.Post("/v1/fleet/plans/{planID}/attempts/{attemptID}/advance", h.AdvanceFleetRunnerAttempt)
+		r.Post("/v1/fleet/plans/{planID}/attempts/{attemptID}/retry", h.RetryFleetRunnerAttempt)
+		r.Post("/v1/fleet/plans/{planID}/attempts/{attemptID}/cancel", h.CancelFleetRunnerAttempt)
 		r.Post("/v1/fleet/plans/{planID}/github/pull-request", h.CreateFleetGitHubPullRequest)
 		r.Post("/v1/fleet/plans/{planID}/github/dispatch", h.DispatchFleetGitHubApply)
 		r.Post("/v1/fleet/node-pools/{pool}/plan", h.PlanFleetCapacity)
@@ -649,6 +660,36 @@ func secureDatabaseDSN(raw string) bool {
 func bearerAuth(token string, h *handler.Handler, requireExplicit bool) func(http.Handler) http.Handler {
 	return func(next http.Handler) http.Handler {
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			// Capabilities stay publicly discoverable, but a client that supplies a
+			// credential receives its own granted scopes. Invalid supplied
+			// credentials fail closed rather than silently degrading to anonymous.
+			if r.URL.Path == "/api/v1/capabilities" {
+				if claims, ok := auth.CFAccessClaimsFromRequest(r); ok {
+					subject := strings.TrimSpace(claims.Email)
+					if subject == "" {
+						subject = strings.TrimSpace(claims.Subject)
+					}
+					next.ServeHTTP(w, handler.WithAccessPrincipal(r, &handler.AccessPrincipal{Subject: subject, Scopes: []string{handler.ScopeAdmin}}))
+					return
+				}
+				authorization := r.Header.Get("Authorization")
+				if authorization == "" {
+					next.ServeHTTP(w, r)
+					return
+				}
+				if token != "" && strings.HasPrefix(authorization, "Bearer ") && subtle.ConstantTimeCompare([]byte(authorization[7:]), []byte(token)) == 1 {
+					next.ServeHTTP(w, handler.WithAccessPrincipal(r, &handler.AccessPrincipal{Subject: "control-plane", Scopes: []string{handler.ScopeAdmin}, Legacy: true}))
+					return
+				}
+				if strings.HasPrefix(authorization, "Bearer ") && h != nil {
+					if principal, ok := h.VerifyAccessToken(authorization[7:]); ok {
+						next.ServeHTTP(w, handler.WithAccessPrincipal(r, principal))
+						return
+					}
+				}
+				handler.WriteControlProblem(w, r, http.StatusUnauthorized, "unauthorized", "a valid bearer token is required")
+				return
+			}
 			if publicControlPathForMode(r.URL.Path, requireExplicit) || publicEnrollmentRequest(r) {
 				next.ServeHTTP(w, r)
 				return
@@ -748,6 +789,11 @@ func controlScopeForRequest(r *http.Request) string {
 		return handler.ScopeAdmin
 	case path == "/api/v1/validate/infraspec" || path == "/api/v1/fleet/validate":
 		return handler.ScopeAPIRead
+	case r.Method != http.MethodGet && r.Method != http.MethodHead && strings.HasPrefix(path, "/api/v1/fleet/") && (strings.Contains(path, "/attempts") || strings.HasSuffix(path, "/reconciliations")):
+		// Fleet handlers accept the dedicated fleet:operate scope and retain
+		// api:write as a compatibility superset. Authentication still happens
+		// here; the handler performs the final any-of authorization decision.
+		return ""
 	case strings.HasSuffix(path, "/exec"):
 		return handler.ScopeAppsExec
 	case path == "/api/access/tokens":
@@ -765,8 +811,22 @@ func controlScopeForRequest(r *http.Request) string {
 	}
 }
 
-func writeControlCapabilities(w http.ResponseWriter) {
+func writeControlCapabilities(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Content-Type", "application/json")
+	principalInfo := map[string]interface{}{"authenticated": false, "scopes": []string{}}
+	if principal, ok := handler.AccessPrincipalFromRequest(r); ok {
+		w.Header().Set("Cache-Control", "private, no-store")
+		principalInfo = map[string]interface{}{
+			"authenticated": true, "subject": principal.Subject,
+			"scopes": append([]string(nil), principal.Scopes...), "legacy": principal.Legacy,
+		}
+		if principal.DeviceID != "" {
+			principalInfo["deviceId"] = principal.DeviceID
+		}
+		if !principal.ExpiresAt.IsZero() {
+			principalInfo["expiresAt"] = principal.ExpiresAt.UTC()
+		}
+	}
 	_ = json.NewEncoder(w).Encode(map[string]interface{}{
 		"protocolVersion": 1,
 		"serverVersion":   Version,
@@ -776,13 +836,14 @@ func writeControlCapabilities(w http.ResponseWriter) {
 			"openapi-3.1", "standard-problems", "event-stream-info", "event-gap-detection",
 			"event-heartbeat", "event-subscriptions", "operation-cancellation", "typed-operation-receipts",
 			"versioned-resources", "device-enrollment", "token-rotation", "token-revocation", "device-listing",
-			"device-key-step-up", "exec-sessions", "exec-audit", "exec-session-expiry", "exec-protocol-v1", "host-metrics", "host-runtime", "workload-connectors-v1", "apple-container-local", "app-creation", "durable-app-recovery-v1", "durable-snapshots", "standalone-migrations", "regional-deployments", "consul-traefik-ingress", "production-readiness", "durable-mutation-audit", "production-mutation-admission", "recovery-drill-receipts", "document-validation", "fleet-v1", "fleet-inventory", "durable-fleet-capacity-plans", "fleet-reconciliation-v1", "fleet-github-app-v1",
+			"device-key-step-up", "exec-sessions", "exec-audit", "exec-session-expiry", "exec-protocol-v1", "host-metrics", "host-runtime", "workload-connectors-v1", "apple-container-local", "app-creation", "durable-app-recovery-v1", "durable-snapshots", "standalone-migrations", "regional-deployments", "versioned-deployment-history-v1", "service-instance-placement-v2", "principal-scope-discovery-v1", "consul-traefik-ingress", "production-readiness", "durable-mutation-audit", "production-mutation-admission", "recovery-drill-receipts", "document-validation", "fleet-v1", "fleet-inventory", "durable-fleet-capacity-plans", "fleet-reconciliation-v1", "fleet-runner-attempts-v1", "fleet-github-app-v1",
 		},
 		"auth": map[string]interface{}{
 			"scopes":                handler.AccessTokenScopeNames(),
 			"websocketBearerHeader": true,
 			"websocketQueryToken":   false,
 			"deviceEnrollment":      true,
+			"principal":             principalInfo,
 			"stepUp": map[string]interface{}{
 				"purposes": []string{"exec"}, "algorithm": "ES256", "publicKeyFormat": "P-256-X9.63",
 				"challengeTTLSeconds": 120, "header": "X-Norn-Step-Up",
@@ -796,12 +857,12 @@ func writeControlCapabilities(w http.ResponseWriter) {
 			"events": "/api/v1/events", "operations": "/api/v1/operations/{id}",
 			"platformPreflights": "/api/v1/platform/preflights", "platformUpgrades": "/api/v1/platform/upgrades",
 			"platformRollbacks": "/api/v1/platform/rollbacks", "platformSmoke": "/api/v1/platform/smoke", "hostAssurances": "/api/v1/host/assurances",
-			"openapi": "/api/v1/openapi.yaml", "eventInfo": "/api/v1/events/info", "apps": "/api/v1/apps", "appCreation": "/api/v1/apps", "appDeployment": "/api/v1/apps/{id}/deployment",
+			"openapi": "/api/v1/openapi.yaml", "eventInfo": "/api/v1/events/info", "apps": "/api/v1/apps", "appCreation": "/api/v1/apps", "appDeployment": "/api/v1/apps/{id}/deployment", "deployments": "/api/v1/deployments", "deployment": "/api/v1/deployments/{id}", "deploymentSteps": "/api/v1/deployments/{id}/steps", "serviceManifest": "/api/v1/services/manifest",
 			"appSnapshots": "/api/v1/apps/{id}/snapshots", "appSnapshotRetention": "/api/v1/apps/{id}/snapshots/retention", "appSnapshotRestore": "/api/v1/apps/{id}/snapshots/{snapshot}/restore", "appMigrations": "/api/v1/apps/{id}/migrations", "appRollbacks": "/api/v1/apps/{id}/rollbacks",
 			"releases": "/api/v1/releases", "hostStatus": "/api/v1/host/status", "hostMetrics": "/api/v1/host/metrics", "hostRuntime": "/api/v1/host/runtime", "productionReadiness": "/api/v1/production/readiness", "recoveryDrills": "/api/v1/production/drills", "mutationAudit": "/api/v1/audit/mutations", "enrollments": "/api/v1/enrollments",
 			"devices": "/api/v1/devices", "tokenRotate": "/api/v1/auth/rotate", "tokenRevoke": "/api/v1/auth/revoke",
 			"stepUpChallenges": "/api/v1/auth/step-up/challenges", "execSessions": "/api/v1/exec-sessions",
-			"infraSpecValidation": "/api/v1/validate/infraspec", "fleetValidation": "/api/v1/fleet/validate", "fleetNodePools": "/api/v1/fleet/node-pools", "fleetPlans": "/api/v1/fleet/plans", "fleetReconciliations": "/api/v1/fleet/plans/{planID}/reconciliations", "fleetGitHub": "/api/v1/fleet/github", "fleetGitHubPullRequest": "/api/v1/fleet/plans/{planID}/github/pull-request", "fleetGitHubDispatch": "/api/v1/fleet/plans/{planID}/github/dispatch",
+			"infraSpecValidation": "/api/v1/validate/infraspec", "fleetValidation": "/api/v1/fleet/validate", "fleetNodePools": "/api/v1/fleet/node-pools", "fleetPlans": "/api/v1/fleet/plans", "fleetReconciliations": "/api/v1/fleet/plans/{planID}/reconciliations", "fleetRunnerAttempts": "/api/v1/fleet/plans/{planID}/attempts", "fleetGitHub": "/api/v1/fleet/github", "fleetGitHubPullRequest": "/api/v1/fleet/plans/{planID}/github/pull-request", "fleetGitHubDispatch": "/api/v1/fleet/plans/{planID}/github/dispatch",
 		},
 	})
 }

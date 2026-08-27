@@ -157,19 +157,28 @@ export function buildFleetPlanTopology(plan: Operation, inventory: FleetInventor
       }
 
       const allocations = (app.allocations ?? []).filter((allocation) => allocation.taskGroup === processName && allocation.lifecycle !== 'retained')
-      const byRegion = new Map<string, typeof allocations>()
-      for (const allocation of allocations) {
-        const region = allocation.nodeRegion || 'region unknown'
-        byRegion.set(region, [...(byRegion.get(region) ?? []), allocation])
-      }
+      const exactInstances = (service?.instances ?? []).filter((instance) => instance.placementVerified && instance.allocationId && instance.region && instance.nodePool)
+      const exactAllocationIDs = new Set(exactInstances.map((instance) => instance.allocationId))
       let allocationOffset = 0
-      for (const [region, regionAllocations] of byRegion) {
-        const allocationID = `allocation-${app.spec.name}-${processName}-${region}`
-        const healthy = regionAllocations.filter((allocation) => allocation.healthy !== false && allocation.status === 'running').length
-        addNode(nodes, allocationID, 'allocation', `${healthy}/${regionAllocations.length} allocations`, healthy === regionAllocations.length ? 'healthy' : 'failed', region, regionAllocations.map((allocation) => allocation.nodeName || allocation.id).slice(0, 2), 1045, y + allocationOffset)
-        edges.push(graphEdge(`runtime-${processID}-${allocationID}`, processID, allocationID, 'var(--info)', healthy > 0, 'runs'))
-        summary.push(`${app.spec.name} ${processName} has ${healthy} of ${regionAllocations.length} observed allocations healthy in ${region}.`)
+      for (const instance of exactInstances) {
+        const allocation = allocations.find((candidate) => candidate.id === instance.allocationId)
+        const allocationID = `allocation-${instance.allocationId}`
+        const healthy = instance.status === 'passing' && allocation?.healthy !== false && (!allocation || allocation.status === 'running')
+        addNode(nodes, allocationID, 'allocation', instance.allocationId!.slice(0, 8), healthy ? 'healthy' : 'failed', `${instance.region} · ${instance.nodePool}`, [instance.node || allocation?.nodeName || 'node unknown', 'placement verified'], 1045, y + allocationOffset)
+        edges.push(graphEdge(`runtime-${processID}-${allocationID}`, processID, allocationID, 'var(--info)', healthy, 'runs'))
+        if (instance.nodePool === poolName) edges.push(graphEdge(`pool-${poolName}-${allocationID}`, `pool-${poolName}`, allocationID, 'var(--accent)', healthy, 'exact placement'))
+        if (regions.includes(instance.region!)) edges.push(graphEdge(`region-${instance.region}-${allocationID}`, `region-${instance.region}`, allocationID, 'var(--ok)', healthy, 'observed in'))
+        summary.push(`${app.spec.name} ${processName} allocation ${instance.allocationId} is verified in ${instance.region} on pool ${instance.nodePool}.`)
         allocationOffset += 74
+      }
+
+      const unverifiedAllocations = allocations.filter((allocation) => !exactAllocationIDs.has(allocation.id))
+      if (unverifiedAllocations.length > 0) {
+        const allocationID = `allocation-${app.spec.name}-${processName}-unverified`
+        const healthy = unverifiedAllocations.filter((allocation) => allocation.healthy !== false && allocation.status === 'running').length
+        addNode(nodes, allocationID, 'allocation', `${healthy}/${unverifiedAllocations.length} allocations`, healthy === unverifiedAllocations.length ? 'healthy' : 'unknown', 'placement unverified', unverifiedAllocations.map((allocation) => allocation.nodeName || allocation.id).slice(0, 2), 1045, y + allocationOffset)
+        edges.push(graphEdge(`runtime-${processID}-${allocationID}`, processID, allocationID, 'var(--info)', healthy > 0, 'runs'))
+        summary.push(`${app.spec.name} ${processName} has ${unverifiedAllocations.length} allocation records without exact region and node-pool provenance.`)
       }
 
       const dependencies = appDependencies(app)

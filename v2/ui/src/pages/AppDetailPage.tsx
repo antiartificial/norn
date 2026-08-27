@@ -5,7 +5,7 @@ import { apiFetch } from '../lib/api.ts'
 import { clearDurableIntent, durableIntent, type DurableIntent } from '../lib/durableIntent.ts'
 import { repoWebURL, statusTone } from '../lib/format.ts'
 import { useRuntimeContext } from '../runtime/AppRuntime.tsx'
-import type { AccessPattern, AppStatus, Deployment, Operation, ServiceManifest } from '../types/index.ts'
+import type { AccessPattern, AppStatus, DeploymentListResponse, Operation, ServiceManifest } from '../types/index.ts'
 import { CronPanel } from '../components/CronPanel.tsx'
 import { ExecTerminal } from '../components/ExecTerminal.tsx'
 import { FunctionPanel } from '../components/FunctionPanel.tsx'
@@ -116,8 +116,8 @@ function AppOverviewTab({ app, services, idleCandidates }: { app: AppStatus; ser
 }
 
 function AppDeploysTab({ appId }: { appId: string }) {
-  const deployments = useQuery({ queryKey: ['deployments', { app: appId }], queryFn: () => apiFetch<Deployment[]>(`/api/deployments?app=${encodeURIComponent(appId)}&limit=50`), staleTime: 15_000 })
+  const deployments = useQuery({ queryKey: ['deployments-v1', { app: appId }], queryFn: () => apiFetch<DeploymentListResponse>(`/api/v1/deployments?app=${encodeURIComponent(appId)}&limit=50`), staleTime: 15_000 })
   if (deployments.isLoading) return <div className="panel-skeleton"><Skeleton /><Skeleton /></div>
   if (deployments.error) return <ErrorState message={deployments.error instanceof Error ? deployments.error.message : 'Failed to load deployments'} onRetry={() => deployments.refetch()} />
-  return <DeploymentTimelineList deployments={deployments.data ?? []} />
+  return <DeploymentTimelineList deployments={deployments.data?.deployments ?? []} />
 }

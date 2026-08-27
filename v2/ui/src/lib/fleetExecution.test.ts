@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest'
 import { buildFleetExecutionSteps, currentFleetStep, operationForPlan } from './fleetExecution.ts'
-import type { Operation } from '../types/index.ts'
+import type { FleetRunnerAttempt, Operation } from '../types/index.ts'
 
 const plan: Operation = { id: 'plan-1', kind: 'fleet.capacity-plan', status: 'succeeded', message: 'plan recorded' }
 
@@ -39,6 +39,40 @@ describe('fleet execution evidence', () => {
     const match = operation('match', 'fleet.github.pull-request', 'succeeded', { planId: 'plan-1' })
     expect(operationForPlan([operation('other', 'fleet.github.pull-request', 'succeeded', { planId: 'plan-2' }), match], 'plan-1')).toBe(match)
   })
+
+  it('marks only a durably heartbeating runner phase active', () => {
+    const steps = buildFleetExecutionSteps({
+      plan,
+      reconciliations: [],
+      runnerAttempt: attempt('running', 'nodes_configured'),
+    })
+
+    expect(steps.find((step) => step.id === 'nodes_configured')?.state).toBe('active')
+    expect(steps.filter((step) => step.state === 'active')).toHaveLength(1)
+  })
+
+  it('surfaces abandoned runner state and blocks later phases', () => {
+    const steps = buildFleetExecutionSteps({
+      plan,
+      reconciliations: [checkpoint('infra', 'infrastructure_applied', 'succeeded')],
+      runnerAttempt: attempt('abandoned', 'inventory_generated'),
+    })
+
+    expect(currentFleetStep(steps)?.id).toBe('inventory_generated')
+    expect(steps.find((step) => step.id === 'inventory_generated')?.message).toContain('stopped heartbeating')
+    expect(steps.find((step) => step.id === 'nodes_configured')?.state).toBe('blocked')
+  })
+
+  it('keeps a proven phase active until the runner advances it', () => {
+    const steps = buildFleetExecutionSteps({
+      plan,
+      reconciliations: [checkpoint('configured', 'nodes_configured', 'succeeded')],
+      runnerAttempt: attempt('running', 'nodes_configured'),
+    })
+
+    expect(steps.find((step) => step.id === 'nodes_configured')?.state).toBe('active')
+    expect(steps.find((step) => step.id === 'nodes_configured')?.message).toContain('ready for an evidence-gated advance')
+  })
 })
 
 function operation(id: string, kind: string, status: string, payload: Record<string, unknown> = {}): Operation {
@@ -47,4 +81,13 @@ function operation(id: string, kind: string, status: string, payload: Record<str
 
 function checkpoint(id: string, phase: string, status: string): Operation {
   return { id, kind: 'fleet.reconciliation', status, updatedAt: `2026-08-26T00:00:0${id.length}Z`, payload: { phase } }
+}
+
+function attempt(status: FleetRunnerAttempt['status'], currentPhase: string): FleetRunnerAttempt {
+  return {
+    schemaVersion: 'norn.fleet-runner-attempt/v1', id: 'attempt-1', planId: 'plan-1', attempt: 1,
+    status, currentPhase, commitSha: 'a'.repeat(40), planSha256: 'b'.repeat(64), heartbeatSequence: 2,
+    heartbeatTimeoutSeconds: 120, revision: 3, startedAt: '2026-08-26T00:00:00Z',
+    heartbeatAt: '2026-08-26T00:01:00Z', heartbeatExpiresAt: '2026-08-26T00:03:00Z', updatedAt: '2026-08-26T00:01:00Z',
+  }
 }

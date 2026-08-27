@@ -145,6 +145,35 @@ export interface Deployment {
   regions?: Array<{ region: string; nomadRegion: string; status: string; desiredWeight: number; activeWeight: number; evalId?: string; lastError?: string; updatedAt: string }>
 }
 
+export interface DeploymentListResponse {
+  schemaVersion: 'norn.deployments/v1'
+  deployments: Deployment[]
+  count: number
+  offset?: number
+}
+
+export interface DeploymentStepRecord {
+  deploymentId: string
+  app: string
+  sagaId: string
+  step: string
+  status: 'running' | 'complete' | 'failed'
+  kind?: 'readonly' | 'mutable'
+  attempt?: number
+  startedAt: string
+  finishedAt?: string
+  durationMs?: number
+  message?: string
+  metadata?: Record<string, unknown>
+}
+
+export interface DeploymentStepListResponse {
+  schemaVersion: 'norn.deployment-steps/v1'
+  deploymentId: string
+  steps: DeploymentStepRecord[]
+  count: number
+}
+
 export type EventSeverity = 'info' | 'warning' | 'critical'
 
 export interface CorrelatedIncident {
@@ -292,6 +321,39 @@ export interface FleetReconciliationResponse {
   reconciliations: Operation[]
 }
 
+export type FleetRunnerAttemptStatus = 'queued' | 'running' | 'succeeded' | 'failed' | 'canceled' | 'abandoned'
+
+export interface FleetRunnerAttempt {
+  schemaVersion: 'norn.fleet-runner-attempt/v1'
+  id: string
+  planId: string
+  attempt: number
+  runnerAttemptId?: string
+  status: FleetRunnerAttemptStatus
+  currentPhase: string
+  commitSha: string
+  planSha256: string
+  workflowUrl?: string
+  retryOf?: string
+  heartbeatSequence: number
+  heartbeatTimeoutSeconds: number
+  revision: number
+  startedAt: string
+  heartbeatAt: string
+  heartbeatExpiresAt: string
+  updatedAt: string
+  finishedAt?: string
+  lastError?: string
+}
+
+export interface FleetRunnerAttemptResponse {
+  schemaVersion: 'norn.fleet-runner-attempt/v1'
+  planId: string
+  attempts: FleetRunnerAttempt[]
+  count: number
+  serverTime: string
+}
+
 export interface VersionResponse {
   version: string
 }
@@ -300,6 +362,18 @@ export interface CapabilitiesResponse {
   protocolVersion: number
   serverVersion: string
   features: string[]
+  auth?: {
+    scopes: string[]
+    principal?: {
+      authenticated: boolean
+      subject?: string
+      deviceId?: string
+      scopes: string[]
+      expiresAt?: string
+      legacy?: boolean
+    }
+  }
+  endpoints?: Record<string, string>
 }
 
 export interface WSEvent {
@@ -364,7 +438,18 @@ export interface ServiceManifestEntry {
     routable: boolean
   }
   endpoints?: Array<{ url: string; region?: string }>
-  instances?: Array<{ node: string; address: string; port: number; status: string }>
+  instances?: Array<{
+    id?: string
+    allocationId?: string
+    node: string
+    address: string
+    port: number
+    status: string
+    region?: string
+    nodePool?: string
+    placementSource?: 'consul-tags' | 'local-runtime' | 'unverified'
+    placementVerified: boolean
+  }>
   metadata?: Record<string, string>
 }
 

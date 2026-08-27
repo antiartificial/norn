@@ -1,4 +1,4 @@
-import type { Operation } from '../types/index.ts'
+import type { FleetRunnerAttempt, Operation } from '../types/index.ts'
 
 export const reconciliationPhases = [
   'infrastructure_applied',
@@ -19,6 +19,7 @@ export interface FleetExecutionStep {
   state: FleetStepState
   message: string
   operation?: Operation
+  runnerAttempt?: FleetRunnerAttempt
 }
 
 interface FleetExecutionEvidence {
@@ -26,13 +27,14 @@ interface FleetExecutionEvidence {
   reconciliations: Operation[]
   pullRequest?: Operation
   dispatch?: Operation
+  runnerAttempt?: FleetRunnerAttempt
 }
 
 export function operationForPlan(operations: Operation[] | undefined, planID: string): Operation | undefined {
   return (operations ?? []).find((operation) => operation.ref === planID || String(operation.payload?.planId ?? '') === planID)
 }
 
-export function buildFleetExecutionSteps({ plan, reconciliations, pullRequest, dispatch }: FleetExecutionEvidence): FleetExecutionStep[] {
+export function buildFleetExecutionSteps({ plan, reconciliations, pullRequest, dispatch, runnerAttempt }: FleetExecutionEvidence): FleetExecutionStep[] {
   const steps: FleetExecutionStep[] = [
     {
       id: 'plan_recorded',
@@ -58,11 +60,15 @@ export function buildFleetExecutionSteps({ plan, reconciliations, pullRequest, d
   ]
 
   const latest = latestCheckpointByPhase(reconciliations)
-  const failedIndex = reconciliationPhases.findIndex((phase) => latest.get(phase)?.status === 'failed')
+  const runnerFailed = runnerAttempt?.status === 'failed' || runnerAttempt?.status === 'abandoned' || runnerAttempt?.status === 'canceled'
+  const runnerActive = runnerAttempt?.status === 'queued' || runnerAttempt?.status === 'running'
+  const failedIndex = reconciliationPhases.findIndex((phase) => latest.get(phase)?.status === 'failed' || (runnerFailed && runnerAttempt?.currentPhase === phase))
   for (const [index, phase] of reconciliationPhases.entries()) {
     const operation = latest.get(phase)
     let state: FleetStepState
-    if (operation?.status === 'succeeded') state = 'completed'
+    if (runnerActive && runnerAttempt?.currentPhase === phase) state = 'active'
+    else if (runnerFailed && runnerAttempt?.currentPhase === phase) state = 'failed'
+    else if (operation?.status === 'succeeded') state = 'completed'
     else if (operation?.status === 'failed') state = 'failed'
     else if (failedIndex >= 0 && index > failedIndex) state = 'blocked'
     else state = 'pending'
@@ -71,14 +77,23 @@ export function buildFleetExecutionSteps({ plan, reconciliations, pullRequest, d
       id: phase,
       label: humanize(phase),
       state,
-      message: operation?.message || (state === 'pending' && dispatch?.status === 'succeeded'
+      message: runnerAttempt?.currentPhase === phase ? runnerAttemptMessage(runnerAttempt, operation) : operation?.message || (state === 'pending' && dispatch?.status === 'succeeded'
         ? 'The protected apply was dispatched, but Norn has not received proof for this phase.'
         : stepMessage(state)),
       operation,
+      runnerAttempt: runnerAttempt?.currentPhase === phase ? runnerAttempt : undefined,
     })
   }
 
   return steps
+}
+
+function runnerAttemptMessage(attempt: FleetRunnerAttempt, checkpoint?: Operation): string {
+  if (attempt.status === 'abandoned') return `Attempt ${attempt.attempt} stopped heartbeating and was durably marked abandoned.`
+  if (attempt.status === 'failed') return attempt.lastError || `Attempt ${attempt.attempt} failed in this phase.`
+  if (attempt.status === 'canceled') return attempt.lastError || `Attempt ${attempt.attempt} was canceled.`
+  if (checkpoint?.status === 'succeeded') return `Attempt ${attempt.attempt} recorded proof and is ready for an evidence-gated advance.`
+  return `Attempt ${attempt.attempt} is live; heartbeat ${new Date(attempt.heartbeatAt).toLocaleString()}.`
 }
 
 export function currentFleetStep(steps: FleetExecutionStep[]): FleetExecutionStep | undefined {

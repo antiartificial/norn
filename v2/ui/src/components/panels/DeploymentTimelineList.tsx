@@ -2,8 +2,7 @@ import { useState } from 'react'
 import { useQuery } from '@tanstack/react-query'
 import { apiFetch } from '../../lib/api.ts'
 import { deploymentStatus, relativeTime, statusTone } from '../../lib/format.ts'
-import type { Deployment } from '../../types/index.ts'
-import type { DeploymentStep } from '../../runtime/AppRuntime.tsx'
+import type { Deployment, DeploymentStepListResponse } from '../../types/index.ts'
 import { EmptyState, Skeleton, StatusChip } from '../ui/index.ts'
 
 export function DeploymentTimelineList({ deployments }: { deployments: Deployment[] }) {
@@ -13,7 +12,7 @@ export function DeploymentTimelineList({ deployments }: { deployments: Deploymen
 }
 
 function DeploymentRow({ deploy, expanded, onToggle }: { deploy: Deployment; expanded: boolean; onToggle: () => void }) {
-  const steps = useQuery({ queryKey: ['deployments', deploy.id, 'steps'], queryFn: () => apiFetch<DeploymentStep[]>(`/api/deployments/${deploy.id}/steps`), enabled: expanded, staleTime: 60_000 })
+  const steps = useQuery({ queryKey: ['deployments-v1', deploy.id, 'steps'], queryFn: () => apiFetch<DeploymentStepListResponse>(`/api/v1/deployments/${deploy.id}/steps`), enabled: expanded, staleTime: 60_000 })
   return (
     <div className="deployment-row">
       <button type="button" className="deployment-summary" onClick={onToggle}>
@@ -22,7 +21,7 @@ function DeploymentRow({ deploy, expanded, onToggle }: { deploy: Deployment; exp
         <code>{deploy.commitSha?.slice(0, 7)}</code>
         <small>{relativeTime(deploy.startedAt)}</small>
       </button>
-      {expanded && <div className="deployment-steps">{steps.isLoading ? <Skeleton /> : (steps.data ?? []).map((step, i) => <div key={`${step.step}-${i}`}><StatusChip tone={statusTone(step.status)} label={step.status ?? 'step'} /><span>{step.step ?? step.kind}</span><small>{step.message}</small></div>)}</div>}
+      {expanded && <div className="deployment-steps">{steps.isLoading ? <Skeleton /> : (steps.data?.steps ?? []).map((step, i) => <div key={`${step.step}-${i}`}><StatusChip tone={statusTone(step.status)} label={step.status ?? 'step'} /><span>{step.step ?? step.kind}</span><small>{step.message}</small></div>)}</div>}
     </div>
   )
 }

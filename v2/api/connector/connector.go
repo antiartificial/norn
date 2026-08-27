@@ -48,11 +48,16 @@ type Allocation struct {
 }
 
 type ServiceHealth struct {
-	ServiceName string
-	Node        string
-	Address     string
-	Port        int
-	Status      string
+	ServiceName       string
+	ID                string
+	AllocationID      string
+	Node              string
+	Address           string
+	Port              int
+	Status            string
+	Region            string
+	NodePool          string
+	PlacementVerified bool
 }
 
 type ResourceUsage struct {

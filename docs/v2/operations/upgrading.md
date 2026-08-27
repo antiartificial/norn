@@ -9,7 +9,7 @@ The safe upgrade path restarts only the Norn API process. Do not use `make down`
 ```bash
 cd /path/to/norn
 git fetch origin
-release_sha=$(git rev-parse origin/main)
+release_sha=$(git rev-parse origin/master)
 
 # Build into a versioned release directory and boot a candidate API on :18800.
 norn platform preflight "$release_sha"
@@ -20,6 +20,7 @@ norn platform upgrade "$release_sha"
 # On proxy-fronted hosts, switch the managed upstream instead of restarting launchd.
 NORN_PROXY_RELOAD=true norn platform upgrade "$release_sha" --proxy
 norn platform releases
+norn platform rebuild "$release_sha" --verify
 norn platform rollback <sha-prefix>
 norn platform smoke
 norn platform env -- norn smoke platform
@@ -41,13 +42,19 @@ local development rehearsal but can move between review and upgrade.
 
 The platform lane builds from an isolated git worktree into `$HOME/norn/releases/<sha>`, writes a `$HOME/norn/current` symlink, installs compatibility binaries into `$HOME/go/bin`, and health-checks a candidate API with recovery and operation workers disabled so preflight does not mark running work failed or claim queued jobs.
 
+Upgrade, rollback, and manual proxy switching are host-serialized with an
+advisory lock in the release root. A concurrent direct promotion fails closed;
+a crashed process automatically releases the kernel lock, so rerunning the
+intended operation is the recovery action.
+
 Promotion also synchronizes and byte-verifies the persistent host agent, its
-private CLI copy, `platform-upgrade`, and `host-runtime`. This keeps unattended
+private CLI copy, `platform-upgrade`, `platform-release-manifest`, the signed
+GitHub fetch/verify helpers, and `host-runtime`. This keeps unattended
 recovery and prerequisite checks on the same revision as the API instead of
 leaving launchd to invoke an older managed copy after an otherwise successful
-upgrade. Rollback restores matching managed artifacts when the selected
-release contains them; older releases remain compatible and restore only the
-artifacts they contain.
+upgrade. Pre-manifest releases are unverifiable and are refused. A first,
+development-only migration can opt into one legacy rollback target with
+`NORN_ALLOW_LEGACY_RELEASES=true`; production always refuses that escape hatch.
 
 The queued lane is preferred when the operator is not already on the host. It
 returns a durable operation ID, is executed by `com.norn.host-agent`, and can be
@@ -75,7 +82,9 @@ Use these environment variables when the repo or host layout differs:
 |----------|---------|-------------|
 | `NORN_PLATFORM_REPO` | script repo | Norn checkout to build |
 | `NORN_RELEASES_DIR` | `$HOME/norn/releases` | Versioned release directory |
-| `NORN_NODE_BIN` | detected `node@24`, then `node` | Node.js 24 executable used for release UI builds |
+| `NORN_NODE_BIN` | detected `node@24`, then `node` | Node.js executable; its version must exactly match the repository pin |
+| `NORN_EXPECTED_NODE_VERSION` | repository pin, then `v24.19.0` | Exact Node release-build version |
+| `NORN_EXPECTED_PNPM_VERSION` | repository pin, then `10.32.1` | Exact pnpm release-build version |
 | `NORN_CURRENT_LINK` | `$HOME/norn/current` | Current-release symlink |
 | `NORN_BIN_DIR` | `$HOME/go/bin` | Compatibility install directory |
 | `NORN_HOST_CLI_BIN` | `$HOME/.config/norn/host/bin/norn` | CLI copy used by persistent host recovery and assurance |
@@ -91,6 +100,22 @@ Use these environment variables when the repo or host layout differs:
 | `NORN_PROXY_CANDIDATE_PORT` | `18802` | Private candidate API port used by proxy upgrade mode |
 | `NORN_PROXY_PID_FILE` | `$NORN_PROXY_DIR/api.pid` | Current proxy-managed API pid |
 | `NORN_PROXY_RELOAD` | `false` | Reload Caddy after `proxy-switch` |
+| `NORN_RELEASE_SIGNATURE_POLICY` | `allow-unsigned` | `require-signed` is forced by `NORN_PROFILE=production` |
+| `NORN_RELEASE_FETCH_HOOK` | — | Optional missing-release fetch adapter |
+| `NORN_RELEASE_VERIFY_HOOK` | — | External signature verifier; mandatory in production |
+| `NORN_RELEASE_CONFIG_FILE` | `$HOME/.config/norn/release.env` | Optional mode-`0600` allowlisted host configuration loaded by direct and queued maintenance |
+| `NORN_RELEASE_REPOSITORY` | — | GitHub `owner/repository` used by the fetch adapter |
+| `NORN_RELEASE_PUBLIC_KEY` | — | Host path to the pinned Ed25519 public PEM |
+| `NORN_RELEASE_GITHUB_TOKEN_FILE` | — | Preferred owned, non-symlink, exact mode-`0600` narrow Contents-read token file for private downloads |
+| `NORN_RELEASE_GITHUB_TOKEN` | — | In-process narrow Contents-read token fallback for private downloads; public repositories need neither token form |
+| `NORN_ALLOW_LEGACY_RELEASES` | `false` | Explicit one-time development migration escape; ignored in production |
+
+For signed off-host artifacts, configure the protected workflow and host hooks
+described in [Platform Upgrades](/v2/architecture/platform-upgrades). The
+workflow accepts only an exact commit already merged to protected `master`,
+keeps the signing key in the protected publish job, produces Linux and macOS
+bundles for amd64 and arm64, and resumes an interrupted draft without replacing
+an existing asset.
 
 ## Manual Fallback
 
@@ -155,7 +180,8 @@ norn platform releases
 norn platform rollback <sha-prefix>
 ```
 
-Manual rollback is still a symlink flip plus compatibility binary install:
+The following direct copies are break-glass recovery only. They bypass the
+normal manifest/signature gate and do not update every managed helper:
 
 ```bash
 releases_dir="${NORN_RELEASES_DIR:-$HOME/norn/releases}"

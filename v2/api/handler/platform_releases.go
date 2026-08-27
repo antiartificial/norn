@@ -91,7 +91,7 @@ func (h *Handler) PlatformRollbackRelease(w http.ResponseWriter, r *http.Request
 		writeError(w, http.StatusBadRequest, "release sha is required")
 		return
 	}
-	if !maintenanceRefPattern.MatchString(sha) {
+	if !releaseSHAPrefixPattern.MatchString(sha) {
 		writeError(w, http.StatusBadRequest, "invalid release sha")
 		return
 	}

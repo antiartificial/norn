@@ -39,7 +39,7 @@ export function NetworkSection({ services }: NetworkSectionProps) {
   useEffect(() => {
     if (!expanded || manifest !== null) return
     setLoading(true)
-    apiFetch<ServiceManifest>('/api/services/manifest')
+    apiFetch<ServiceManifest>('/api/v1/services/manifest')
       .then((data) => {
         setManifest(data)
         setError(null)

@@ -50,3 +50,29 @@ func TestPlatformScriptCandidatesPreferExplicitAndManagedPortablePaths(t *testin
 		}
 	}
 }
+
+func TestPlatformRebuildArgumentsRequireFullSHAAndVerification(t *testing.T) {
+	sha := "0123456789abcdef0123456789abcdef01234567"
+	arguments, err := platformRebuildArguments(sha, true)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got, want := strings.Join(arguments, " "), "rebuild "+sha+" --verify"; got != want {
+		t.Fatalf("arguments = %q, want %q", got, want)
+	}
+	for _, test := range []struct {
+		name   string
+		sha    string
+		verify bool
+	}{
+		{name: "short SHA", sha: sha[:12], verify: true},
+		{name: "non-hex SHA", sha: strings.Repeat("g", 40), verify: true},
+		{name: "verification omitted", sha: sha, verify: false},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			if _, err := platformRebuildArguments(test.sha, test.verify); err == nil {
+				t.Fatal("expected rebuild argument validation to fail")
+			}
+		})
+	}
+}

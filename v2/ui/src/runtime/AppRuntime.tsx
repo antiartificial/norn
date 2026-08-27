@@ -12,7 +12,6 @@ import type { HubEvent } from '../types/ws.ts'
 
 export type AppAction = 'preflight' | 'deploy' | 'restart'
 
-export interface DeploymentStep { step?: string; kind?: string; status?: string; attempt?: number; durationMs?: number; message?: string }
 export interface ActivityEntry { id: number; event: HubEvent; capturedAt: string }
 
 export interface RuntimeContext {
@@ -60,7 +59,7 @@ function useAppsQuery() {
 function useServiceManifestQuery() {
   return useQuery({
     queryKey: ['services', 'manifest'],
-    queryFn: () => apiFetch<ServiceManifest>('/api/services/manifest'),
+    queryFn: () => apiFetch<ServiceManifest>('/api/v1/services/manifest'),
     staleTime: 20_000,
   })
 }

@@ -1,7 +1,7 @@
 openapi: 3.1.0
 info:
   title: Norn Control Protocol
-  version: 1.6.0
+  version: 1.7.0
   description: Versioned contract for native and automated Norn control clients.
 servers:
   - url: /
@@ -194,7 +194,7 @@ paths:
         '503': { $ref: '#/components/responses/Problem' }
     post:
       operationId: recordFleetReconciliation
-      description: Appends a plan-, commit-, state-, and evidence-bound recovery checkpoint. Successful phases are accepted only in lifecycle order. Requires api:write.
+      description: Appends a plan-, commit-, state-, evidence-, and optional runner-attempt-bound recovery checkpoint. Successful phases are accepted only in lifecycle order. Requires fleet:operate; api:write remains a compatibility superset.
       parameters:
         - $ref: '#/components/parameters/IdempotencyKey'
       requestBody:
@@ -217,6 +217,93 @@ paths:
         '404': { $ref: '#/components/responses/Problem' }
         '409': { $ref: '#/components/responses/Problem' }
         '503': { $ref: '#/components/responses/Problem' }
+  /api/v1/fleet/plans/{planID}/attempts:
+    parameters:
+      - { name: planID, in: path, required: true, schema: { type: string, format: uuid } }
+    get:
+      operationId: listFleetRunnerAttempts
+      description: Lists durable runner attempts and marks active attempts abandoned when their heartbeat deadline has elapsed. Requires api:read.
+      responses:
+        '200':
+          description: Runner attempts ordered newest first
+          content: { application/json: { schema: { $ref: '#/components/schemas/FleetRunnerAttemptList' } } }
+        '404': { $ref: '#/components/responses/Problem' }
+        '503': { $ref: '#/components/responses/Problem' }
+    post:
+      operationId: startFleetRunnerAttempt
+      description: Starts or recovers an external protected-runner attempt bound to one plan, reviewed commit, and Terraform plan digest. Requires fleet:operate; api:write remains a compatibility superset.
+      requestBody:
+        required: true
+        content: { application/json: { schema: { $ref: '#/components/schemas/FleetRunnerAttemptStartRequest' } } }
+      responses:
+        '200': { description: Existing runner identity recovered, content: { application/json: { schema: { $ref: '#/components/schemas/FleetRunnerAttempt' } } } }
+        '201': { description: Durable runner attempt started, content: { application/json: { schema: { $ref: '#/components/schemas/FleetRunnerAttempt' } } } }
+        '400': { $ref: '#/components/responses/Problem' }
+        '404': { $ref: '#/components/responses/Problem' }
+        '409': { $ref: '#/components/responses/Problem' }
+        '503': { $ref: '#/components/responses/Problem' }
+  /api/v1/fleet/plans/{planID}/attempts/{attemptID}:
+    parameters:
+      - { name: planID, in: path, required: true, schema: { type: string, format: uuid } }
+      - { name: attemptID, in: path, required: true, schema: { type: string, format: uuid } }
+    get:
+      operationId: getFleetRunnerAttempt
+      responses:
+        '200': { description: Durable runner attempt, content: { application/json: { schema: { $ref: '#/components/schemas/FleetRunnerAttempt' } } } }
+        '404': { $ref: '#/components/responses/Problem' }
+  /api/v1/fleet/plans/{planID}/attempts/{attemptID}/heartbeat:
+    parameters:
+      - { name: planID, in: path, required: true, schema: { type: string, format: uuid } }
+      - { name: attemptID, in: path, required: true, schema: { type: string, format: uuid } }
+    post:
+      operationId: heartbeatFleetRunnerAttempt
+      description: Renews liveness for the exact current phase using a monotonic sequence and optimistic revision. Requires fleet:operate.
+      requestBody: { required: true, content: { application/json: { schema: { $ref: '#/components/schemas/FleetRunnerHeartbeatRequest' } } } }
+      responses:
+        '200': { description: Heartbeat recorded, content: { application/json: { schema: { $ref: '#/components/schemas/FleetRunnerAttempt' } } } }
+        '400': { $ref: '#/components/responses/Problem' }
+        '404': { $ref: '#/components/responses/Problem' }
+        '409': { $ref: '#/components/responses/Problem' }
+  /api/v1/fleet/plans/{planID}/attempts/{attemptID}/advance:
+    parameters:
+      - { name: planID, in: path, required: true, schema: { type: string, format: uuid } }
+      - { name: attemptID, in: path, required: true, schema: { type: string, format: uuid } }
+    post:
+      operationId: advanceFleetRunnerAttempt
+      description: Advances only after this attempt has append-only successful evidence for its current phase. Completing the complete phase terminates the attempt successfully. Requires fleet:operate.
+      requestBody: { required: true, content: { application/json: { schema: { $ref: '#/components/schemas/FleetRunnerAdvanceRequest' } } } }
+      responses:
+        '200': { description: Attempt advanced, content: { application/json: { schema: { $ref: '#/components/schemas/FleetRunnerAttempt' } } } }
+        '400': { $ref: '#/components/responses/Problem' }
+        '404': { $ref: '#/components/responses/Problem' }
+        '409': { $ref: '#/components/responses/Problem' }
+  /api/v1/fleet/plans/{planID}/attempts/{attemptID}/retry:
+    parameters:
+      - { name: planID, in: path, required: true, schema: { type: string, format: uuid } }
+      - { name: attemptID, in: path, required: true, schema: { type: string, format: uuid } }
+    post:
+      operationId: retryFleetRunnerAttempt
+      description: Creates a new numbered attempt at the failed, canceled, or abandoned phase while preserving reviewed bindings and retry provenance. Requires fleet:operate.
+      requestBody: { required: true, content: { application/json: { schema: { $ref: '#/components/schemas/FleetRunnerRetryRequest' } } } }
+      responses:
+        '200': { description: Existing retry identity recovered, content: { application/json: { schema: { $ref: '#/components/schemas/FleetRunnerAttempt' } } } }
+        '201': { description: Retry attempt created, content: { application/json: { schema: { $ref: '#/components/schemas/FleetRunnerAttempt' } } } }
+        '400': { $ref: '#/components/responses/Problem' }
+        '404': { $ref: '#/components/responses/Problem' }
+        '409': { $ref: '#/components/responses/Problem' }
+  /api/v1/fleet/plans/{planID}/attempts/{attemptID}/cancel:
+    parameters:
+      - { name: planID, in: path, required: true, schema: { type: string, format: uuid } }
+      - { name: attemptID, in: path, required: true, schema: { type: string, format: uuid } }
+    post:
+      operationId: cancelFleetRunnerAttempt
+      description: Durably cancels an active runner attempt using its current revision. External workflow cancellation remains the runner's responsibility. Requires fleet:operate.
+      requestBody: { required: true, content: { application/json: { schema: { $ref: '#/components/schemas/FleetRunnerCancelRequest' } } } }
+      responses:
+        '200': { description: Attempt canceled, content: { application/json: { schema: { $ref: '#/components/schemas/FleetRunnerAttempt' } } } }
+        '400': { $ref: '#/components/responses/Problem' }
+        '404': { $ref: '#/components/responses/Problem' }
+        '409': { $ref: '#/components/responses/Problem' }
   /api/v1/fleet/node-pools/{pool}/plan:
     post:
       operationId: createFleetCapacityPlan
@@ -268,6 +355,60 @@ paths:
             application/json:
               schema: { $ref: '#/components/schemas/AppMutationReceipt' }
         '404': { $ref: '#/components/responses/Problem' }
+  /api/v1/deployments:
+    get:
+      operationId: listDeploymentsV1
+      description: Lists durable deployment history, including independently tracked regional status and traffic weights. Requires api:read.
+      parameters:
+        - { name: app, in: query, schema: { type: string, pattern: '^[a-z0-9][a-z0-9-]*$' } }
+        - { name: status, in: query, schema: { type: string, enum: [queued, building, testing, migrating, submitting, healthy, deployed, failed] } }
+        - { name: limit, in: query, schema: { type: integer, minimum: 1, maximum: 100, default: 50 } }
+        - { name: offset, in: query, schema: { type: integer, minimum: 0, maximum: 10000, default: 0 } }
+      responses:
+        '200':
+          description: Versioned deployment history
+          content: { application/json: { schema: { $ref: '#/components/schemas/DeploymentList' } } }
+        '400': { $ref: '#/components/responses/Problem' }
+        '503': { $ref: '#/components/responses/Problem' }
+  /api/v1/deployments/{id}:
+    parameters:
+      - { name: id, in: path, required: true, schema: { type: string, format: uuid } }
+    get:
+      operationId: getDeploymentV1
+      responses:
+        '200':
+          description: Versioned deployment record
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [schemaVersion, deployment]
+                properties:
+                  schemaVersion: { const: norn.deployment/v1 }
+                  deployment: { $ref: '#/components/schemas/Deployment' }
+        '400': { $ref: '#/components/responses/Problem' }
+        '404': { $ref: '#/components/responses/Problem' }
+  /api/v1/deployments/{id}/steps:
+    parameters:
+      - { name: id, in: path, required: true, schema: { type: string, format: uuid } }
+    get:
+      operationId: listDeploymentStepsV1
+      description: Lists typed read-only and mutable deployment stages with attempts and terminal evidence. Requires api:read.
+      responses:
+        '200':
+          description: Versioned deployment steps
+          content: { application/json: { schema: { $ref: '#/components/schemas/DeploymentStepList' } } }
+        '400': { $ref: '#/components/responses/Problem' }
+        '404': { $ref: '#/components/responses/Problem' }
+  /api/v1/services/manifest:
+    get:
+      operationId: getServiceManifestV1
+      description: Returns service instances with allocation, region, node-pool, and placement-proof metadata. Requires api:read.
+      responses:
+        '200':
+          description: Versioned service topology manifest
+          content: { application/json: { schema: { $ref: '#/components/schemas/ServiceManifest' } } }
+        '500': { $ref: '#/components/responses/Problem' }
   /api/v1/apps/{id}/snapshots:
     parameters:
       - $ref: '#/components/parameters/AppID'
@@ -918,6 +1059,12 @@ components:
         - invalid_app_id
         - app_not_found
         - app_discovery_failed
+        - invalid_deployment_id
+        - deployment_not_found
+        - deployment_store_unavailable
+        - deployment_history_read_failed
+        - deployment_steps_read_failed
+        - service_manifest_read_failed
         - release_list_failed
         - invalid_event_cursor
         - invalid_event_filter
@@ -1039,6 +1186,27 @@ components:
         - fleet_reconciliation_store_unavailable
         - fleet_reconciliation_store_failed
         - fleet_reconciliation_read_failed
+        - invalid_fleet_runner_attempt
+        - invalid_fleet_runner_attempt_id
+        - fleet_runner_attempt_not_found
+        - fleet_runner_attempt_exists
+        - fleet_runner_retry_required
+        - fleet_runner_plan_already_complete
+        - fleet_runner_attempt_store_unavailable
+        - fleet_runner_attempt_store_failed
+        - fleet_runner_attempt_read_failed
+        - fleet_runner_attempt_update_failed
+        - fleet_runner_attempt_binding_conflict
+        - fleet_runner_attempt_revision_conflict
+        - invalid_fleet_runner_heartbeat
+        - fleet_runner_heartbeat_out_of_order
+        - invalid_fleet_runner_advance
+        - fleet_runner_phase_conflict
+        - fleet_runner_advance_unproven
+        - invalid_fleet_runner_retry
+        - fleet_runner_retry_not_allowed
+        - invalid_fleet_runner_cancel
+        - fleet_runner_cancel_not_allowed
         - fleet_github_not_configured
         - fleet_github_plan_stale
         - fleet_github_pull_request_failed
@@ -1061,6 +1229,16 @@ components:
           required: [scopes, websocketBearerHeader, websocketQueryToken]
           properties:
             scopes: { type: array, items: { type: string } }
+            principal:
+              type: object
+              required: [authenticated, scopes]
+              properties:
+                authenticated: { type: boolean }
+                subject: { type: string }
+                deviceId: { type: string }
+                scopes: { type: array, items: { type: string } }
+                expiresAt: { type: string, format: date-time }
+                legacy: { type: boolean }
             websocketBearerHeader: { type: boolean }
             websocketQueryToken: { type: boolean }
             deviceEnrollment: { type: boolean }
@@ -1577,6 +1755,7 @@ components:
       required: [schemaVersion, phase, status, commitSha, planSha256, evidenceDigest]
       properties:
         schemaVersion: { const: norn.fleet-reconciliation/v1 }
+        attemptId: { type: string, format: uuid, description: Binds this checkpoint to one live durable runner attempt. Omit only for compatibility runners. }
         phase:
           type: string
           enum: [infrastructure_applied, inventory_generated, nodes_configured, nodes_enrolled, readiness_verified, old_nodes_drained, complete]
@@ -1586,6 +1765,205 @@ components:
         stateSerial: { type: integer, format: int64, minimum: 0 }
         evidenceDigest: { type: string, pattern: '^sha256:[0-9a-f]{64}$' }
         message: { type: string, maxLength: 1000 }
+    FleetRunnerAttempt:
+      type: object
+      additionalProperties: false
+      required: [schemaVersion, id, planId, attempt, status, currentPhase, commitSha, planSha256, heartbeatSequence, heartbeatTimeoutSeconds, revision, startedAt, heartbeatAt, heartbeatExpiresAt, updatedAt]
+      properties:
+        schemaVersion: { const: norn.fleet-runner-attempt/v1 }
+        id: { type: string, format: uuid }
+        planId: { type: string, format: uuid }
+        attempt: { type: integer, minimum: 1 }
+        runnerAttemptId: { type: string, maxLength: 200 }
+        status: { type: string, enum: [queued, running, succeeded, failed, canceled, abandoned] }
+        currentPhase:
+          type: string
+          enum: [infrastructure_applied, inventory_generated, nodes_configured, nodes_enrolled, readiness_verified, old_nodes_drained, complete]
+        commitSha: { type: string, pattern: '^[0-9a-f]{40}$' }
+        planSha256: { type: string, pattern: '^[0-9a-f]{64}$' }
+        workflowUrl: { type: string, format: uri }
+        principalSubject: { type: string }
+        retryOf: { type: string, format: uuid }
+        heartbeatSequence: { type: integer, format: int64, minimum: 0 }
+        heartbeatTimeoutSeconds: { type: integer, minimum: 30, maximum: 900 }
+        revision: { type: integer, format: int64, minimum: 1 }
+        startedAt: { type: string, format: date-time }
+        heartbeatAt: { type: string, format: date-time }
+        heartbeatExpiresAt: { type: string, format: date-time }
+        updatedAt: { type: string, format: date-time }
+        finishedAt: { type: string, format: date-time }
+        lastError: { type: string }
+        metadata: { type: object, additionalProperties: true }
+    FleetRunnerAttemptList:
+      type: object
+      required: [schemaVersion, planId, attempts, count, serverTime]
+      properties:
+        schemaVersion: { const: norn.fleet-runner-attempt/v1 }
+        planId: { type: string, format: uuid }
+        attempts: { type: array, items: { $ref: '#/components/schemas/FleetRunnerAttempt' } }
+        count: { type: integer, minimum: 0 }
+        serverTime: { type: string, format: date-time }
+    FleetRunnerAttemptStartRequest:
+      type: object
+      additionalProperties: false
+      required: [schemaVersion, runnerAttemptId, commitSha, planSha256]
+      properties:
+        schemaVersion: { const: norn.fleet-runner-attempt/v1 }
+        runnerAttemptId: { type: string, minLength: 1, maxLength: 200 }
+        commitSha: { type: string, pattern: '^[0-9a-f]{40}$' }
+        planSha256: { type: string, pattern: '^[0-9a-f]{64}$' }
+        workflowUrl: { type: string, format: uri }
+        heartbeatTimeoutSeconds: { type: integer, minimum: 30, maximum: 900, default: 120 }
+    FleetRunnerHeartbeatRequest:
+      type: object
+      additionalProperties: false
+      required: [schemaVersion, phase, sequence, revision]
+      properties:
+        schemaVersion: { const: norn.fleet-runner-attempt/v1 }
+        phase: { type: string, enum: [infrastructure_applied, inventory_generated, nodes_configured, nodes_enrolled, readiness_verified, old_nodes_drained, complete] }
+        sequence: { type: integer, format: int64, minimum: 1 }
+        revision: { type: integer, format: int64, minimum: 1 }
+        message: { type: string, maxLength: 500 }
+    FleetRunnerAdvanceRequest:
+      type: object
+      additionalProperties: false
+      required: [schemaVersion, expectedPhase, revision]
+      properties:
+        schemaVersion: { const: norn.fleet-runner-attempt/v1 }
+        expectedPhase: { type: string, enum: [infrastructure_applied, inventory_generated, nodes_configured, nodes_enrolled, readiness_verified, old_nodes_drained, complete] }
+        revision: { type: integer, format: int64, minimum: 1 }
+    FleetRunnerRetryRequest:
+      type: object
+      additionalProperties: false
+      required: [schemaVersion, revision, runnerAttemptId, reason]
+      properties:
+        schemaVersion: { const: norn.fleet-runner-attempt/v1 }
+        revision: { type: integer, format: int64, minimum: 1 }
+        runnerAttemptId: { type: string, minLength: 1, maxLength: 200 }
+        workflowUrl: { type: string, format: uri }
+        reason: { type: string, minLength: 1, maxLength: 1000 }
+    FleetRunnerCancelRequest:
+      type: object
+      additionalProperties: false
+      required: [schemaVersion, revision, reason]
+      properties:
+        schemaVersion: { const: norn.fleet-runner-attempt/v1 }
+        revision: { type: integer, format: int64, minimum: 1 }
+        reason: { type: string, minLength: 1, maxLength: 1000 }
+    DeploymentRegion:
+      type: object
+      required: [region, nomadRegion, status, desiredWeight, activeWeight, updatedAt]
+      properties:
+        deploymentId: { type: string, format: uuid }
+        region: { type: string }
+        nomadRegion: { type: string }
+        status: { type: string, enum: [queued, building, testing, migrating, submitting, healthy, deployed, failed] }
+        desiredWeight: { type: integer, minimum: 0, maximum: 100 }
+        activeWeight: { type: integer, minimum: 0, maximum: 100 }
+        evalId: { type: string }
+        lastError: { type: string }
+        updatedAt: { type: string, format: date-time }
+    Deployment:
+      type: object
+      required: [id, app, commitSha, imageTag, sagaId, status, startedAt]
+      properties:
+        id: { type: string, format: uuid }
+        app: { type: string }
+        commitSha: { type: string }
+        imageTag: { type: string }
+        sagaId: { type: string, format: uuid }
+        status: { type: string, enum: [queued, building, testing, migrating, submitting, healthy, deployed, failed] }
+        sourceKind: { type: string }
+        sourceRef: { type: string }
+        sourceDirty: { type: boolean }
+        sourceChanges: { type: array, items: { type: string } }
+        startedAt: { type: string, format: date-time }
+        finishedAt: { type: string, format: date-time }
+        regions: { type: array, items: { $ref: '#/components/schemas/DeploymentRegion' } }
+    DeploymentList:
+      type: object
+      required: [schemaVersion, deployments, count]
+      properties:
+        schemaVersion: { const: norn.deployments/v1 }
+        deployments: { type: array, items: { $ref: '#/components/schemas/Deployment' } }
+        count: { type: integer, minimum: 0 }
+        offset: { type: integer, minimum: 0 }
+    DeploymentStep:
+      type: object
+      required: [deploymentId, app, sagaId, step, status, startedAt]
+      properties:
+        deploymentId: { type: string, format: uuid }
+        app: { type: string }
+        sagaId: { type: string, format: uuid }
+        step: { type: string }
+        status: { type: string, enum: [running, complete, failed] }
+        kind: { type: string, enum: [readonly, mutable] }
+        attempt: { type: integer, minimum: 0 }
+        startedAt: { type: string, format: date-time }
+        finishedAt: { type: string, format: date-time }
+        durationMs: { type: integer, format: int64, minimum: 0 }
+        message: { type: string }
+        metadata: { type: object, additionalProperties: true }
+    DeploymentStepList:
+      type: object
+      required: [schemaVersion, deploymentId, steps, count]
+      properties:
+        schemaVersion: { const: norn.deployment-steps/v1 }
+        deploymentId: { type: string, format: uuid }
+        steps: { type: array, items: { $ref: '#/components/schemas/DeploymentStep' } }
+        count: { type: integer, minimum: 0 }
+    ServiceInstance:
+      type: object
+      required: [placementVerified]
+      properties:
+        id: { type: string }
+        allocationId: { type: string }
+        node: { type: string }
+        address: { type: string }
+        port: { type: integer, minimum: 1, maximum: 65535 }
+        status: { type: string, enum: [passing, warning, critical] }
+        region: { type: string }
+        nodePool: { type: string }
+        placementSource: { type: string, enum: [consul-tags, local-runtime, unverified] }
+        placementVerified: { type: boolean }
+    ServiceReachability:
+      type: object
+      required: [endpointScope, instanceScope, exposure, routable]
+      properties:
+        endpointScope: { type: string }
+        instanceScope: { type: string }
+        exposure: { type: string }
+        routable: { type: boolean }
+    ServiceManifestEntry:
+      type: object
+      required: [name, app, process, type, status, reachability]
+      properties:
+        name: { type: string }
+        app: { type: string }
+        process: { type: string }
+        type: { type: string, enum: [service, worker, cron, function] }
+        status: { type: string }
+        healthPath: { type: string }
+        reachability: { $ref: '#/components/schemas/ServiceReachability' }
+        endpoints: { type: array, items: { type: object, additionalProperties: true } }
+        instances: { type: array, items: { $ref: '#/components/schemas/ServiceInstance' } }
+        metrics: { type: object, additionalProperties: true }
+        metadata: { type: object, additionalProperties: { type: string } }
+    ServiceManifest:
+      type: object
+      required: [version, generatedAt, contract, services]
+      properties:
+        version: { const: 2 }
+        generatedAt: { type: string, format: date-time }
+        networkMode: { type: string }
+        contract:
+          type: object
+          required: [schema, processTypes, reachabilityScopes]
+          properties:
+            schema: { const: norn.service-manifest.v2 }
+            processTypes: { type: array, items: { type: string } }
+            reachabilityScopes: { type: array, items: { type: string } }
+        services: { type: array, items: { $ref: '#/components/schemas/ServiceManifestEntry' } }
     RegionTarget:
       type: object
       properties:

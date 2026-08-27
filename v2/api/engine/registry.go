@@ -29,11 +29,13 @@ func (e *Engine) ServiceHealthChecks(serviceName string) ([]ServiceHealth, error
 			status = "critical"
 		}
 		out = append(out, ServiceHealth{
-			ServiceName: serviceName,
-			Node:        "local",
-			Address:     inst.IP,
-			Port:        inst.Port,
-			Status:      status,
+			ServiceName:  serviceName,
+			ID:           inst.ContainerName,
+			AllocationID: inst.ContainerName,
+			Node:         "local",
+			Address:      inst.IP,
+			Port:         inst.Port,
+			Status:       status,
 		})
 	}
 	return out, nil
@@ -49,10 +51,13 @@ func (e *Engine) ServiceInstances(serviceName string) ([]model.ServiceInstance, 
 	out := make([]model.ServiceInstance, 0, len(checks))
 	for _, check := range checks {
 		out = append(out, model.ServiceInstance{
-			Node:    check.Node,
-			Address: check.Address,
-			Port:    check.Port,
-			Status:  check.Status,
+			ID:           check.ID,
+			AllocationID: check.AllocationID,
+			Node:         check.Node,
+			Address:      check.Address,
+			Port:         check.Port,
+			Status:       check.Status,
+			Region:       "local", PlacementSource: "local-runtime", PlacementVerified: check.AllocationID != "",
 		})
 	}
 	return out, nil

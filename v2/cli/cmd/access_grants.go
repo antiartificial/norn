@@ -29,7 +29,7 @@ func init() {
 
 	accessTokenCmd.Flags().StringVar(&tokenTTL, "ttl", "", "Token lifetime, e.g. 2h (required)")
 	accessTokenCmd.Flags().StringVar(&tokenNote, "note", "", "Description for the token")
-	accessTokenCmd.Flags().StringSliceVar(&tokenScopes, "scope", nil, "Token scope (repeat or comma-separate): api:read, api:write, events:read, apps:exec, platform:operate, host:operate")
+	accessTokenCmd.Flags().StringSliceVar(&tokenScopes, "scope", nil, "Token scope (repeat or comma-separate): api:read, api:write, events:read, apps:exec, platform:operate, host:operate, fleet:operate, admin")
 	_ = accessTokenCmd.MarkFlagRequired("ttl")
 
 	accessCmd.AddCommand(accessGrantCmd)

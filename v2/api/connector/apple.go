@@ -134,7 +134,7 @@ func (c *AppleConnector) ServiceHealth(ctx context.Context, service string) ([]S
 	}
 	out := make([]ServiceHealth, 0, len(values))
 	for _, value := range values {
-		out = append(out, ServiceHealth{ServiceName: value.ServiceName, Node: value.Node, Address: value.Address, Port: value.Port, Status: value.Status})
+		out = append(out, ServiceHealth{ServiceName: value.ServiceName, ID: value.ID, AllocationID: value.AllocationID, Node: value.Node, Address: value.Address, Port: value.Port, Status: value.Status, Region: "local", NodePool: "local", PlacementVerified: value.AllocationID != ""})
 	}
 	return out, nil
 }

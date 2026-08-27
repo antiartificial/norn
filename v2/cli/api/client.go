@@ -88,11 +88,16 @@ type ServiceReachability struct {
 }
 
 type ServiceInstance struct {
-	ID      string `json:"id,omitempty"`
-	Node    string `json:"node,omitempty"`
-	Address string `json:"address,omitempty"`
-	Port    int    `json:"port,omitempty"`
-	Status  string `json:"status,omitempty"`
+	ID                string `json:"id,omitempty"`
+	AllocationID      string `json:"allocationId,omitempty"`
+	Node              string `json:"node,omitempty"`
+	Address           string `json:"address,omitempty"`
+	Port              int    `json:"port,omitempty"`
+	Status            string `json:"status,omitempty"`
+	Region            string `json:"region,omitempty"`
+	NodePool          string `json:"nodePool,omitempty"`
+	PlacementSource   string `json:"placementSource,omitempty"`
+	PlacementVerified bool   `json:"placementVerified"`
 }
 
 type InfraSpec struct {
@@ -1001,7 +1006,7 @@ func (c *Client) ListApps() ([]AppStatus, error) {
 
 func (c *Client) ServiceManifest() (*ServiceManifest, error) {
 	var manifest ServiceManifest
-	if err := c.get("/api/services/manifest", &manifest); err != nil {
+	if err := c.get("/api/v1/services/manifest", &manifest); err != nil {
 		return nil, err
 	}
 	return &manifest, nil
@@ -1482,7 +1487,7 @@ func (c *Client) DeploymentSteps(deploymentID string) ([]DeploymentStep, error) 
 	var resp struct {
 		Steps []DeploymentStep `json:"steps"`
 	}
-	if err := c.get("/api/deployments/"+url.PathEscape(deploymentID)+"/steps", &resp); err != nil {
+	if err := c.get("/api/v1/deployments/"+url.PathEscape(deploymentID)+"/steps", &resp); err != nil {
 		return nil, err
 	}
 	return resp.Steps, nil
@@ -1640,15 +1645,17 @@ func (c *Client) ListRecentSaga(app string, limit int) ([]SagaEvent, error) {
 }
 
 func (c *Client) ListDeployments(app string) ([]Deployment, error) {
-	path := "/api/deployments"
+	path := "/api/v1/deployments"
 	if app != "" {
 		path += "?app=" + app
 	}
-	var deps []Deployment
-	if err := c.get(path, &deps); err != nil {
+	var response struct {
+		Deployments []Deployment `json:"deployments"`
+	}
+	if err := c.get(path, &response); err != nil {
 		return nil, err
 	}
-	return deps, nil
+	return response.Deployments, nil
 }
 
 func (c *Client) ListSecrets(appID string) ([]string, error) {
@@ -1835,12 +1842,107 @@ type FleetReconciliationList struct {
 	Count           int         `json:"count"`
 }
 
+type FleetRunnerAttempt struct {
+	SchemaVersion           string                 `json:"schemaVersion"`
+	ID                      string                 `json:"id"`
+	PlanID                  string                 `json:"planId"`
+	Attempt                 int                    `json:"attempt"`
+	RunnerAttemptID         string                 `json:"runnerAttemptId,omitempty"`
+	Status                  string                 `json:"status"`
+	CurrentPhase            string                 `json:"currentPhase"`
+	CommitSHA               string                 `json:"commitSha"`
+	PlanSHA256              string                 `json:"planSha256"`
+	WorkflowURL             string                 `json:"workflowUrl,omitempty"`
+	RetryOf                 string                 `json:"retryOf,omitempty"`
+	HeartbeatSequence       int64                  `json:"heartbeatSequence"`
+	HeartbeatTimeoutSeconds int                    `json:"heartbeatTimeoutSeconds"`
+	Revision                int64                  `json:"revision"`
+	StartedAt               string                 `json:"startedAt"`
+	HeartbeatAt             string                 `json:"heartbeatAt"`
+	HeartbeatExpiresAt      string                 `json:"heartbeatExpiresAt"`
+	UpdatedAt               string                 `json:"updatedAt"`
+	FinishedAt              string                 `json:"finishedAt,omitempty"`
+	LastError               string                 `json:"lastError,omitempty"`
+	Metadata                map[string]interface{} `json:"metadata,omitempty"`
+}
+
+type FleetRunnerAttemptList struct {
+	SchemaVersion string               `json:"schemaVersion"`
+	PlanID        string               `json:"planId"`
+	Attempts      []FleetRunnerAttempt `json:"attempts"`
+	Count         int                  `json:"count"`
+	ServerTime    string               `json:"serverTime"`
+}
+
 func (c *Client) FleetReconciliations(planID string) (*FleetReconciliationList, error) {
 	var result FleetReconciliationList
 	if err := c.get("/api/v1/fleet/plans/"+url.PathEscape(planID)+"/reconciliations", &result); err != nil {
 		return nil, err
 	}
 	return &result, nil
+}
+
+func (c *Client) FleetRunnerAttempts(planID string) (*FleetRunnerAttemptList, error) {
+	var result FleetRunnerAttemptList
+	if err := c.get("/api/v1/fleet/plans/"+url.PathEscape(planID)+"/attempts", &result); err != nil {
+		return nil, err
+	}
+	return &result, nil
+}
+
+func (c *Client) StartFleetRunnerAttempt(planID, runnerAttemptID, commitSHA, planSHA256, workflowURL string, heartbeatTimeoutSeconds int) (*FleetRunnerAttempt, error) {
+	body, err := json.Marshal(map[string]interface{}{
+		"schemaVersion": "norn.fleet-runner-attempt/v1", "runnerAttemptId": runnerAttemptID,
+		"commitSha": commitSHA, "planSha256": planSHA256, "workflowUrl": workflowURL,
+		"heartbeatTimeoutSeconds": heartbeatTimeoutSeconds,
+	})
+	if err != nil {
+		return nil, err
+	}
+	var attempt FleetRunnerAttempt
+	if err := c.postJSON("/api/v1/fleet/plans/"+url.PathEscape(planID)+"/attempts", string(body), &attempt); err != nil {
+		return nil, err
+	}
+	return &attempt, nil
+}
+
+func (c *Client) HeartbeatFleetRunnerAttempt(planID, attemptID, phase, message string, sequence, revision int64) (*FleetRunnerAttempt, error) {
+	return c.mutateFleetRunnerAttempt(planID, attemptID, "heartbeat", map[string]interface{}{
+		"schemaVersion": "norn.fleet-runner-attempt/v1", "phase": phase, "message": message,
+		"sequence": sequence, "revision": revision,
+	})
+}
+
+func (c *Client) AdvanceFleetRunnerAttempt(planID, attemptID, expectedPhase string, revision int64) (*FleetRunnerAttempt, error) {
+	return c.mutateFleetRunnerAttempt(planID, attemptID, "advance", map[string]interface{}{
+		"schemaVersion": "norn.fleet-runner-attempt/v1", "expectedPhase": expectedPhase, "revision": revision,
+	})
+}
+
+func (c *Client) RetryFleetRunnerAttempt(planID, attemptID, runnerAttemptID, reason, workflowURL string, revision int64) (*FleetRunnerAttempt, error) {
+	return c.mutateFleetRunnerAttempt(planID, attemptID, "retry", map[string]interface{}{
+		"schemaVersion": "norn.fleet-runner-attempt/v1", "runnerAttemptId": runnerAttemptID,
+		"reason": reason, "workflowUrl": workflowURL, "revision": revision,
+	})
+}
+
+func (c *Client) CancelFleetRunnerAttempt(planID, attemptID, reason string, revision int64) (*FleetRunnerAttempt, error) {
+	return c.mutateFleetRunnerAttempt(planID, attemptID, "cancel", map[string]interface{}{
+		"schemaVersion": "norn.fleet-runner-attempt/v1", "reason": reason, "revision": revision,
+	})
+}
+
+func (c *Client) mutateFleetRunnerAttempt(planID, attemptID, action string, request map[string]interface{}) (*FleetRunnerAttempt, error) {
+	body, err := json.Marshal(request)
+	if err != nil {
+		return nil, err
+	}
+	var attempt FleetRunnerAttempt
+	path := "/api/v1/fleet/plans/" + url.PathEscape(planID) + "/attempts/" + url.PathEscape(attemptID) + "/" + action
+	if err := c.postJSON(path, string(body), &attempt); err != nil {
+		return nil, err
+	}
+	return &attempt, nil
 }
 
 func (c *Client) UpdateSecrets(appID string, secrets map[string]string) error {

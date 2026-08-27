@@ -104,7 +104,19 @@ func TestTranslateForRegionFiltersPlacementAndAddsIngressTags(t *testing.T) {
 		t.Fatal("endpoint allocations need dynamic host ports")
 	}
 	tags := strings.Join(job.TaskGroups[0].Services[0].Tags, "\n")
-	if !strings.Contains(tags, "traefik.enable=true") || !strings.Contains(tags, "Host(`orders.example.com`)") || !strings.Contains(tags, "norn.traffic-weight=30") {
+	if !strings.Contains(tags, "traefik.enable=true") || !strings.Contains(tags, "Host(`orders.example.com`)") || !strings.Contains(tags, "norn.traffic-weight=30") || !strings.Contains(tags, "norn.region=iad") || !strings.Contains(tags, "norn.allocation=${NOMAD_ALLOC_ID}") {
 		t.Fatalf("tags=%s", tags)
+	}
+}
+
+func TestServicePlacementTagsExistWithoutPublicEndpoint(t *testing.T) {
+	spec := &model.InfraSpec{App: "worker", Placement: &model.PlacementSpec{NodePool: "app"}, Processes: map[string]model.Process{"health": {Port: 8080}}}
+	job := TranslateForRegion(spec, "worker:test", nil, spec.ResolvedRegions()[0])
+	tags := strings.Join(job.TaskGroups[0].Services[0].Tags, "\n")
+	if !strings.Contains(tags, "norn.region=local") || !strings.Contains(tags, "norn.node-pool=app") || !strings.Contains(tags, "norn.allocation=${NOMAD_ALLOC_ID}") {
+		t.Fatalf("placement tags=%s", tags)
+	}
+	if strings.Contains(tags, "traefik.enable") {
+		t.Fatalf("non-endpoint service unexpectedly enabled ingress: %s", tags)
 	}
 }

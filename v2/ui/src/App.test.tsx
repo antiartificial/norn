@@ -60,13 +60,14 @@ function installFetch(overrides: Record<string, Response | (() => Response)> = {
     if (url.includes('/api/apps/api/logs')) return new Response('')
     if (url.includes('/api/apps/api/canary') || url.includes('/api/apps/worker/canary')) return json(null)
     if (url.includes('/api/apps')) return json([app, unhealthyApp])
-    if (url.includes('/api/services/manifest')) return json({ version: 1, generatedAt: new Date().toISOString(), networkMode: 'dev', services: [] })
+    if (url.includes('/services/manifest')) return json({ version: 2, generatedAt: new Date().toISOString(), networkMode: 'dev', services: [] })
     if (url.includes('/api/access/patterns')) return json({ windowHours: 24, idleAfterHours: 72, patterns: [] })
-    if (url.includes('/api/v1/capabilities')) return json({ protocolVersion: 1, serverVersion: 'test', features: ['fleet-v1', 'fleet-inventory', 'durable-fleet-capacity-plans', 'fleet-reconciliation-v1', 'fleet-github-app-v1', 'durable-app-recovery-v1'] })
+    if (url.includes('/api/v1/capabilities')) return json({ protocolVersion: 1, serverVersion: 'test', features: ['fleet-v1', 'fleet-inventory', 'durable-fleet-capacity-plans', 'fleet-reconciliation-v1', 'fleet-runner-attempts-v1', 'fleet-github-app-v1', 'durable-app-recovery-v1'], auth: { scopes: [], principal: { authenticated: true, subject: 'operator', scopes: ['api:read', 'fleet:operate'] } } })
     if (url.includes('/api/cloudflared/ingress')) return json({ hostnames: [] })
     if (url.includes('/api/version')) return json({ version: 'test' })
     if (url.includes('/api/v1/fleet/node-pools')) return json({ schemaVersion: 'norn.fleet-inventory/v1', configured: false, nodePools: {} })
     if (url.includes('/reconciliations')) return json({ schemaVersion: 'norn.fleet-reconciliations/v1', planId: 'plan-1', count: 0, reconciliations: [] })
+    if (url.includes('/attempts')) return json({ schemaVersion: 'norn.fleet-runner-attempt/v1', planId: 'plan-1', count: 0, attempts: [], serverTime: new Date().toISOString() })
     if (url.includes('/api/v1/fleet/plans')) return json({ count: 0, plans: [] })
     if (url.includes('/api/health')) return json({ status: 'ok', services: { postgres: 'up', nomad: 'up', consul: 'up' } })
     if (url.includes('/api/events/active')) return json({ incidents: [] })
@@ -77,7 +78,7 @@ function installFetch(overrides: Record<string, Response | (() => Response)> = {
     if (url.includes('/api/deploy-groups')) return json({ groups: [] })
     if (url.includes('/api/notifications/channels')) return json({ channels: [] })
     if (url.includes('/api/access/grants')) return json({ grants: [] })
-    if (url.includes('/api/deployments')) return json([])
+    if (url.includes('/api/v1/deployments')) return json({ schemaVersion: 'norn.deployments/v1', deployments: [], count: 0 })
     if (url.includes('/api/saga')) return json([])
     return json({})
   })
@@ -574,8 +575,8 @@ describe('App shell routing', () => {
 
   it('renders topology with token-themed classes', async () => {
     installFetch({
-      '/api/services/manifest': () => json({
-        version: 1,
+      '/api/v1/services/manifest': () => json({
+        version: 2,
         generatedAt: new Date().toISOString(),
         networkMode: 'dev',
         services: [{
@@ -586,7 +587,7 @@ describe('App shell routing', () => {
           status: 'passing',
           reachability: { endpointScope: 'public', instanceScope: 'lan', exposure: 'public', routable: true },
           endpoints: [{ url: 'https://api.example.test' }],
-          instances: [{ node: 'node-1', address: '127.0.0.1', port: 8800, status: 'passing' }],
+          instances: [{ node: 'node-1', address: '127.0.0.1', port: 8800, status: 'passing', placementVerified: false }],
         }],
       }),
       '/api/cloudflared/ingress': () => json({ hostnames: ['api.example.test'] }),

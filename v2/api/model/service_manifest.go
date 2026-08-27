@@ -46,9 +46,14 @@ type ServiceMetrics struct {
 }
 
 type ServiceInstance struct {
-	ID      string `json:"id,omitempty"`
-	Node    string `json:"node,omitempty"`
-	Address string `json:"address,omitempty"`
-	Port    int    `json:"port,omitempty"`
-	Status  string `json:"status,omitempty"`
+	ID                string `json:"id,omitempty"`
+	AllocationID      string `json:"allocationId,omitempty"`
+	Node              string `json:"node,omitempty"`
+	Address           string `json:"address,omitempty"`
+	Port              int    `json:"port,omitempty"`
+	Status            string `json:"status,omitempty"`
+	Region            string `json:"region,omitempty"`
+	NodePool          string `json:"nodePool,omitempty"`
+	PlacementSource   string `json:"placementSource,omitempty"`
+	PlacementVerified bool   `json:"placementVerified"`
 }

@@ -84,6 +84,7 @@ Manage the Norn control plane itself with a release-oriented upgrade lane.
 norn platform preflight [ref]
 norn platform upgrade [ref]
 norn platform upgrade [ref] --proxy
+norn platform rebuild <full-sha> --verify
 norn platform releases
 norn platform rollback <sha-prefix>
 norn platform smoke
@@ -104,7 +105,33 @@ norn platform queue-smoke
 
 `norn platform upgrade --proxy` uses the managed proxy lane. It boots the candidate API on the private candidate port, switches the managed Caddy upstream, keeps the new API alive behind the proxy, and stops the previous proxy-managed API pid after postflight succeeds. Use it only after the host is intentionally proxy-fronted and `NORN_PROXY_RELOAD=true` is configured.
 
-`norn platform releases` lists local release directories. `norn platform rollback <sha-prefix>` promotes a previous local release and runs the same postflight health check.
+`norn platform rebuild <full-sha> --verify` delegates to the managed immutable-release lane. It rejects abbreviated or non-hex refs and refuses to run without `--verify`; the selected artifact must be bound to that full commit SHA and pass its checksum and signature verification before it is rebuilt. This is an operator recovery command, not a command to publish GitHub release assets.
+
+`norn platform releases` lists local release directories. `norn platform rollback <sha-prefix>` promotes a previous local release and runs the same postflight health check. Roll back locally first; if it is absent, the managed script may invoke a configured `NORN_RELEASE_FETCH_HOOK` to restore the artifact into the release store before verification. The hook is a recovery integration, not a general CLI publish command. A binary rollback does not roll back database schema: every release must remain compatible with the active database schema until a separate, tested data migration/recovery plan is complete.
+
+For GitHub Release recovery, configure the host script rather than adding
+publication credentials to the CLI:
+
+```bash
+NORN_RELEASE_FETCH_HOOK=platform-release-fetch-github
+NORN_RELEASE_VERIFY_HOOK=platform-release-verify-github
+NORN_RELEASE_REPOSITORY=antiartificial/norn
+NORN_RELEASE_PUBLIC_KEY=/secure/path/norn-release.pub
+NORN_RELEASE_SIGNATURE_POLICY=require-signed
+# Public antiartificial/norn: no token. Private mirror: use an owned,
+# non-symlink, exact mode 0600
+# NORN_RELEASE_GITHUB_TOKEN_FILE (env token and GH_TOKEN remain supported).
+```
+
+The adapters receive `<sha-or-prefix> <releases-dir>` for fetch and
+`<release-dir> <release.json>` for verification. They resolve the
+GitHub Release tagged `platform-<fullsha>` and accept only the matching
+`norn-platform-<fullsha>-<os>-<arch>.{tar.gz,manifest.json,manifest.sig,sbom.spdx.json}`
+asset set. Configure the repository, public verification key, and a read-only
+GitHub release token file through the host's protected runtime environment when
+the repository is private. Never
+place provider credentials or release-signing keys on a Norn host, and do not
+use the general operator CLI to package, sign, or publish assets.
 
 `norn platform smoke` runs `norn smoke platform` with the API runtime environment loaded from the encrypted SOPS JSON env file.
 
@@ -847,6 +874,12 @@ norn fleet plan <pool> [--desired N] [--size SLUG] [--strategy blueGreen|rolling
 norn fleet replace <pool> --size SLUG [--reason TEXT]
 norn fleet reconcile <pool> [--reason TEXT]
 norn fleet checkpoints <plan-id>
+norn fleet attempts <plan-id>
+norn fleet attempt start <plan-id> --runner-id RUN_ID --commit COMMIT_SHA --plan-sha256 PLAN_SHA [--workflow-url HTTPS_URL] [--heartbeat-timeout 120]
+norn fleet attempt heartbeat <plan-id> <attempt-id> --phase PHASE --sequence N --revision N [--message TEXT]
+norn fleet attempt advance <plan-id> <attempt-id> --phase PHASE --revision N
+norn fleet attempt retry <plan-id> <attempt-id> --runner-id NEW_RUN_ID --reason TEXT --revision N [--workflow-url HTTPS_URL]
+norn fleet attempt cancel <plan-id> <attempt-id> --reason TEXT --revision N
 norn fleet github status
 norn fleet github pr <plan-id>
 norn fleet github apply <plan-id> [--allow-destructive]
@@ -874,6 +907,16 @@ Norn never receives provider or remote-state credentials.
 Capacity plans are stored as completed `fleet.capacity-plan` operations and do not call a cloud provider. `replace` requires `--size` and forces blue/green planning. The infrastructure repository must enforce its own reviewed-SHA and apply authorization gate. The current private repository uses protected-branch-only environments, strict pull-request checks, reviewed-plan SHA binding, and manual dispatch because its GitHub plan does not provide environment required reviewers.
 
 `checkpoints` shows the append-only runner phases for an applied plan, including provider state serials and evidence digests. It is the operator-facing view of interrupted apply recovery and refuses to combine checkpoints from different commit/plan bindings.
+
+`attempts` shows numbered protected-runner executions, their durable phase,
+last heartbeat, revision, and external runner identity. `attempt start` binds an
+external run to the reviewed commit and plan digest. `heartbeat` is monotonic;
+`advance` fails unless the same attempt has successful evidence for its current
+phase. `retry` is valid only for failed or heartbeat-abandoned work and creates
+a new attempt without rewriting history. `cancel` cancels Norn's liveness
+record only; automation must stop the corresponding external workflow as part
+of the same operator action. These mutations require `fleet:operate`;
+`api:write` is accepted temporarily for existing runner tokens.
 
 ## endpoints
 

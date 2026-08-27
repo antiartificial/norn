@@ -37,7 +37,7 @@ places them in process arguments. The required inputs are:
   list/read/write/delete access;
 - SSH fingerprints, administrator CIDRs, and reviewed cloud-init;
 - a trusted HTTPS Norn endpoint and runner token with `api:read` and
-  `api:write`; and
+  `fleet:operate` (`api:write` remains a temporary compatibility superset); and
 - checked-in idempotent configuration, enrollment, and readiness hook commands.
 
 Norn can do the schema validation, durable planning, fleet inventory,
@@ -162,6 +162,12 @@ The API equivalents are:
 | `POST` | `/api/v1/validate/infraspec` | Strict uploaded InfraSpec; optional `fleetDocument` cross-check |
 | `GET` | `/api/v1/fleet/node-pools` | Desired pool inventory and config digest |
 | `GET`, `POST` | `/api/v1/fleet/plans/{planID}/reconciliations` | List or append plan/commit/state/evidence-bound recovery checkpoints |
+| `GET`, `POST` | `/api/v1/fleet/plans/{planID}/attempts` | List or start numbered, reviewed-input-bound protected-runner attempts |
+| `GET` | `/api/v1/fleet/plans/{planID}/attempts/{attemptID}` | Read one attempt and derive heartbeat expiry without touching unrelated plans |
+| `POST` | `/api/v1/fleet/plans/{planID}/attempts/{attemptID}/heartbeat` | Record monotonic liveness for the exact current phase |
+| `POST` | `/api/v1/fleet/plans/{planID}/attempts/{attemptID}/advance` | Advance only after successful proof bound to that attempt and phase |
+| `POST` | `/api/v1/fleet/plans/{planID}/attempts/{attemptID}/retry` | Create the next numbered attempt from failed, canceled, or abandoned work |
+| `POST` | `/api/v1/fleet/plans/{planID}/attempts/{attemptID}/cancel` | Cancel Norn's live-attempt record at an exact revision; the runner must stop its external process |
 | `GET` | `/api/v1/fleet/github` | Value-safe GitHub App installation status |
 | `POST` | `/api/v1/fleet/plans/{planID}/github/pull-request` | Create or recover the deterministic reviewed PR |
 | `POST` | `/api/v1/fleet/plans/{planID}/github/dispatch` | Discover the merged SHA-bound plan artifact and create or recover protected apply |
@@ -179,6 +185,30 @@ norn fleet github status
 norn fleet github pr PLAN_UUID
 norn fleet github apply PLAN_UUID
 ```
+
+Protected runner automation uses the dedicated attempt protocol:
+
+```sh
+norn fleet attempt start PLAN_UUID --runner-id "$GITHUB_RUN_ID-$GITHUB_RUN_ATTEMPT" --commit "$GITHUB_SHA" --plan-sha256 "$PLAN_SHA256"
+norn fleet attempt heartbeat PLAN_UUID ATTEMPT_UUID --phase infrastructure_applied --sequence 1 --revision 1
+# record the successful, attempt-bound reconciliation checkpoint
+norn fleet attempt advance PLAN_UUID ATTEMPT_UUID --phase infrastructure_applied --revision 2
+norn fleet attempts PLAN_UUID
+```
+
+The runner must refresh the revision after every transition. An idempotent
+replay may return the already-recorded result, but changing any reviewed binding
+under the same external runner ID returns a conflict. Norn permits only one
+queued/running attempt per plan. Once a plan has attempt history, subsequent
+executions must use `retry`, preserving provenance rather than starting an
+unrelated attempt.
+
+The protected `norn-fleet` apply and recovery workflows start or resume this
+attempt before provider mutation. They heartbeat while OpenTofu and lifecycle
+hooks run, fail closed if Norn cannot accept liveness evidence, and resume at
+the first phase without a successful checkpoint. Runner-local state is mode
+`0600`, contains no bearer token, and is disposable because Norn is the durable
+authority.
 
 With the GitHub App configured, create the durable plan before any repository
 edit. Norn then creates the source-digest-bound branch and pull request:
@@ -238,6 +268,8 @@ they do not keep a client-only wizard state. Expanding a plan shows:
 - the capacity-plan receipt, repository review receipt, and protected apply
   dispatch receipt;
 - every canonical reconciliation phase as proven, pending, failed, or blocked;
+- the latest numbered runner attempt, exact current phase, heartbeat deadline,
+  optimistic revision, retry ancestry, and terminal state;
 - the next expected phase and only the safe action supported by the current
   contract, such as creating or recovering the pull request, dispatching the
   reviewed apply, or opening the protected runner;
@@ -247,24 +279,38 @@ they do not keep a client-only wizard state. Expanding a plan shows:
 
 The topology deliberately distinguishes its sources. Regions and pools come
 from the read-only fleet document. Workloads, allocations, and health come from
-Norn runtime observations. Provider VM identity and enrollment state are not
-invented when the API does not expose them. The graph has a text equivalent,
-keyboard-focusable nodes, and disables path and status animation for reduced
-motion.
+Norn runtime observations. Service-manifest placement tags bind an allocation
+ID to its region and node pool; exact graph edges appear only when all three
+values are observed and marked verified. Provider VM identity and enrollment
+state are not invented when the API does not expose them. The graph has a text
+equivalent, keyboard-focusable nodes, and disables path and status animation
+for reduced motion.
 
 A successful `fleet.github.apply-dispatch` receipt proves that the protected
 workflow was handed off; it does **not** prove that Terraform is currently
-executing. The reconciliation API stores terminal `succeeded` or `failed`
-checkpoints only, so the first missing phase is shown as **pending / next
-expected**, never inferred as active. Truly durable live execution visibility
-would require a versioned runner-attempt contract with an attempt ID,
-`startedAt`, `heartbeatAt`, current phase, workflow URL, and explicit
-`running`, `abandoned`, `failed`, and `succeeded` states. Until that exists, use
-the protected runner link for between-checkpoint telemetry.
+executing. The runner must register a durable attempt before mutation and send
+monotonic heartbeats while it owns the current phase. Norn marks a phase active
+only while that attempt is `queued` or `running`; a missed deadline durably
+transitions it to `abandoned`. A phase advances only after a successful
+reconciliation checkpoint bound to the same attempt, reviewed commit, and plan
+digest. Failed or abandoned work creates a new numbered attempt through the
+retry transition and never rewrites prior evidence.
+
+Authenticated `/api/v1/capabilities` includes the connected principal's
+effective scopes. Web and native clients hide or disable Fleet mutations
+without `fleet:operate`, `api:write`, or `admin`, but the server remains the
+final authorization boundary.
 
 ## Replacement lifecycle
 
-For non-destructive plans, the runner records a recovery binding before provider mutation. A failed, cancelled, timed-out, or manually selected apply run is replanned under the remote state lock; recovery proceeds only when every remaining action is a non-destructive subset of the originally reviewed plan. Configuration, enrollment, and assurance hooks are idempotent, and Norn's append-only reconciliation checkpoints let a replacement runner resume after the last proven phase.
+For non-destructive plans, the runner registers its reviewed commit and plan
+digest before provider mutation. Each heartbeat carries the current phase,
+monotonic sequence, and optimistic revision. A failed, canceled, timed-out, or
+manually selected apply run is replanned under the remote state lock; recovery
+proceeds only when every remaining action is a non-destructive subset of the
+originally reviewed plan. Configuration, enrollment, and assurance hooks are
+idempotent, and the replacement runner uses retry ancestry plus append-only
+checkpoints to resume at the last proven phase.
 
 The initial hands-off lane deliberately refuses plans containing deletes or same-address replacements. `create_before_destroy` alone cannot prove that a new node enrolled and became ready before OpenTofu removes its predecessor. Destructive blue/green work therefore remains supervised until a staged executor can retain both generations, prove readiness, drain the old generation, and only then consume the reviewed deletion approval. This fail-closed boundary is part of the API/workflow contract, not an operator convention.
 

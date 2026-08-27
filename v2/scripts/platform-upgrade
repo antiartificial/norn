@@ -6,6 +6,7 @@ usage() {
 Usage:
   platform-upgrade preflight [ref]
   platform-upgrade upgrade [ref]
+  platform-upgrade rebuild <ref> --verify
   platform-upgrade releases
   platform-upgrade rollback <sha-prefix>
   platform-upgrade smoke
@@ -41,7 +42,16 @@ Environment:
   NORN_PROXY_CADDYFILE     Managed Caddyfile path.
   NORN_PROXY_RELOAD        Set true to reload caddy after proxy-switch.
   NORN_API_ENV_FILE        SOPS JSON env file for smoke/env-exec.
-  NORN_NODE_BIN            Node.js 24 executable used for UI release builds.
+  NORN_NODE_BIN            Exact pinned Node.js executable for UI release builds.
+  NORN_EXPECTED_NODE_VERSION Exact Node version. Repo config wins; default v24.19.0.
+  NORN_EXPECTED_PNPM_VERSION Exact pnpm version. Repo config wins; default 10.32.1.
+  NORN_RELEASE_FETCH_HOOK  Executable called with <ref> <releases-dir> when absent.
+  NORN_RELEASE_VERIFY_HOOK Executable called with <release-dir> <release.json>.
+  NORN_RELEASE_CONFIG_FILE Private strict key=value host config. Defaults to
+                           $HOME/.config/norn/release.env when it exists.
+  NORN_RELEASE_SIGNATURE_POLICY allow-unsigned or require-signed.
+  NORN_ALLOW_LEGACY_RELEASES Explicit one-time unsigned legacy rollback escape hatch.
+  NORN_RELEASE_LOGS_DIR    Mutable release logs outside immutable artifacts.
 USAGE
 }
 
@@ -66,9 +76,41 @@ fi
 shift || true
 
 case "$mode" in
-  preflight|upgrade|releases|rollback|smoke|env-exec|proxy-plan|proxy-status|proxy-render|proxy-switch) ;;
+  preflight|upgrade|rebuild|releases|rollback|smoke|env-exec|proxy-plan|proxy-status|proxy-render|proxy-switch) ;;
   *) usage >&2; exit 2 ;;
 esac
+
+release_config_file="${NORN_RELEASE_CONFIG_FILE:-$HOME/.config/norn/release.env}"
+if [[ -n "${NORN_RELEASE_CONFIG_FILE:-}" && ! -f "$release_config_file" ]]; then
+  fail "release config file not found: $release_config_file"
+fi
+if [[ -f "$release_config_file" ]]; then
+  require_cmd python3
+  python3 - "$release_config_file" <<'PY'
+import os
+import stat
+import sys
+
+path = os.path.abspath(os.path.expanduser(sys.argv[1]))
+info = os.lstat(path)
+if not stat.S_ISREG(info.st_mode):
+    raise SystemExit("release config must be a regular file")
+if info.st_uid != os.getuid() or info.st_mode & 0o077:
+    raise SystemExit("release config must be owned by the current user with mode 0600")
+PY
+  while IFS= read -r release_config_line || [[ -n "$release_config_line" ]]; do
+    [[ -z "$release_config_line" || "$release_config_line" == \#* ]] && continue
+    [[ "$release_config_line" =~ ^([A-Z0-9_]+)=([A-Za-z0-9_./:@+-]+)$ ]] || fail "invalid release config line"
+    release_config_key="${BASH_REMATCH[1]}"
+    release_config_value="${BASH_REMATCH[2]}"
+    case "$release_config_key" in
+      NORN_RELEASE_FETCH_HOOK|NORN_RELEASE_VERIFY_HOOK|NORN_RELEASE_SIGNATURE_POLICY|NORN_RELEASE_REPOSITORY|NORN_RELEASE_PUBLIC_KEY|NORN_RELEASE_GITHUB_TOKEN_FILE|NORN_RELEASE_CACHE_DIR|NORN_RELEASE_TAG_PREFIX|NORN_RELEASE_OS|NORN_RELEASE_ARCH|NORN_RELEASE_GITHUB_API_URL)
+        export "$release_config_key=$release_config_value"
+        ;;
+      *) fail "unsupported release config key: $release_config_key" ;;
+    esac
+  done < "$release_config_file"
+fi
 
 ref="${1:-HEAD}"
 script_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -85,6 +127,7 @@ fi
 repo="${repo:-$default_repo}"
 v2="$repo/v2"
 releases="${NORN_RELEASES_DIR:-$HOME/norn/releases}"
+release_logs_root="${NORN_RELEASE_LOGS_DIR:-$HOME/norn/release-logs}"
 current_link="${NORN_CURRENT_LINK:-$HOME/norn/current}"
 bin_dir="${NORN_BIN_DIR:-$HOME/go/bin}"
 host_agent_bin="${NORN_HOST_AGENT_BIN:-$HOME/.config/norn/host/bin/norn-host-agent}"
@@ -109,6 +152,103 @@ upgrade_mode="${NORN_PLATFORM_UPGRADE_MODE:-restart}"
 api_env_file="${NORN_API_ENV_FILE:-$HOME/.config/norn/api.env.enc.json}"
 sops_bin="${NORN_SOPS_BIN:-sops}"
 node_bin="${NORN_NODE_BIN:-}"
+expected_node_override="${NORN_EXPECTED_NODE_VERSION:-}"
+expected_pnpm_override="${NORN_EXPECTED_PNPM_VERSION:-}"
+release_fetch_hook="${NORN_RELEASE_FETCH_HOOK:-}"
+release_verify_hook="${NORN_RELEASE_VERIFY_HOOK:-}"
+signature_policy="${NORN_RELEASE_SIGNATURE_POLICY:-allow-unsigned}"
+allow_legacy_releases="${NORN_ALLOW_LEGACY_RELEASES:-false}"
+profile="${NORN_PROFILE:-development}"
+manifest_helper="${NORN_RELEASE_MANIFEST_HELPER:-$script_dir/platform-release-manifest}"
+promotion_guard_pid=""
+promotion_control_fifo=""
+promotion_lock_error=""
+promotion_work_root=""
+
+release_promotion_lock() {
+  if [[ -n "$promotion_guard_pid" ]]; then
+    exec 9>&- || true
+    wait "$promotion_guard_pid" >/dev/null 2>&1 || true
+    promotion_guard_pid=""
+  fi
+  [[ -z "$promotion_control_fifo" ]] || rm -f "$promotion_control_fifo"
+  [[ -z "$promotion_lock_error" ]] || rm -f "$promotion_lock_error"
+  if [[ -n "$promotion_work_root" && -d "$promotion_work_root" ]]; then
+    rm -rf "$promotion_work_root"
+  fi
+  promotion_work_root=""
+}
+
+acquire_promotion_lock() {
+  [[ -z "$promotion_guard_pid" ]] || fail "platform promotion lock is already held by this process"
+  command -v python3 >/dev/null 2>&1 || fail "python3 not found"
+  mkdir -p "$releases"
+  promotion_work_root="$(mktemp -d "${TMPDIR:-/tmp}/norn-promotion-lock.XXXXXX")"
+  local status_fifo="$promotion_work_root/status"
+  promotion_control_fifo="$promotion_work_root/control"
+  promotion_lock_error="$promotion_work_root/error"
+  mkfifo "$status_fifo" "$promotion_control_fifo"
+
+  # Open both FIFOs in the parent before starting the guard. The child closes
+  # the inherited descriptors, holds an advisory lock, and exits automatically
+  # when this process closes fd 9 or dies.
+  exec 8<>"$status_fifo"
+  exec 9<>"$promotion_control_fifo"
+  python3 - "$releases/.promotion.lock" "$promotion_control_fifo" \
+    8>&- 9>&- >"$status_fifo" 2>"$promotion_lock_error" <<'PY' &
+import fcntl
+import os
+import stat
+import sys
+
+lock_path, control_path = sys.argv[1:]
+descriptor = None
+try:
+    flags = os.O_RDWR | os.O_CREAT
+    if hasattr(os, "O_NOFOLLOW"):
+        flags |= os.O_NOFOLLOW
+    descriptor = os.open(lock_path, flags, 0o600)
+    info = os.fstat(descriptor)
+    if not stat.S_ISREG(info.st_mode):
+        raise RuntimeError("promotion lock is not a regular file")
+    if info.st_uid != os.getuid() or info.st_mode & 0o077:
+        raise RuntimeError("promotion lock must be private and owned by the current user")
+    try:
+        fcntl.flock(descriptor, fcntl.LOCK_EX | fcntl.LOCK_NB)
+    except BlockingIOError as error:
+        raise RuntimeError("another platform promotion is already active") from error
+    os.ftruncate(descriptor, 0)
+    os.write(descriptor, f"pid={os.getppid()}\n".encode())
+    os.fsync(descriptor)
+    print("acquired", flush=True)
+    with open(control_path, "rb", buffering=0) as control:
+        while control.read(4096):
+            pass
+except Exception as error:
+    print(f"error:{error}", flush=True)
+finally:
+    if descriptor is not None:
+        os.close(descriptor)
+PY
+  promotion_guard_pid="$!"
+
+  local status=""
+  IFS= read -r status <&8 || true
+  exec 8>&-
+  rm -f "$status_fifo"
+  if [[ "$status" != "acquired" ]]; then
+    exec 9>&-
+    wait "$promotion_guard_pid" >/dev/null 2>&1 || true
+    promotion_guard_pid=""
+    if [[ -s "$promotion_lock_error" ]]; then
+      sed -n '1,20p' "$promotion_lock_error" >&2
+    fi
+    fail "${status#error:}"
+  fi
+  log "platform promotion lock acquired"
+}
+
+trap release_promotion_lock EXIT
 if [[ -z "$node_bin" ]]; then
   for candidate in /opt/homebrew/opt/node@24/bin/node /usr/local/opt/node@24/bin/node; do
     if [[ -x "$candidate" ]]; then
@@ -157,6 +297,20 @@ current_proxy_upstream() {
     return
   fi
   printf '127.0.0.1:%s\n' "$proxy_active_port"
+}
+
+current_release_target() {
+  [[ -L "$current_link" ]] || return 0
+  local target
+  target="$(readlink "$current_link")"
+  if [[ "$target" != /* ]]; then
+    target="$(dirname "$current_link")/$target"
+  fi
+  python3 - "$target" <<'PY'
+import os
+import sys
+print(os.path.abspath(sys.argv[1]))
+PY
 }
 
 render_proxy_config() {
@@ -238,6 +392,7 @@ if [[ "$mode" == "proxy-switch" ]]; then
   if [[ "$target" =~ ^[0-9]+$ ]]; then
     target="127.0.0.1:$target"
   fi
+  acquire_promotion_lock
   mkdir -p "$proxy_dir"
   printf '%s\n' "$target" > "$proxy_upstream_file"
   write_proxy_config
@@ -250,14 +405,33 @@ if [[ "$mode" == "proxy-switch" ]]; then
   exit 0
 fi
 
-require_cmd git
-require_cmd go
+case "$signature_policy" in
+  allow-unsigned|require-signed) ;;
+  *) fail "invalid NORN_RELEASE_SIGNATURE_POLICY: $signature_policy" ;;
+esac
+case "$allow_legacy_releases" in
+  true|false) ;;
+  *) fail "NORN_ALLOW_LEGACY_RELEASES must be true or false" ;;
+esac
+if [[ "$profile" == "production" && "$mode" =~ ^(preflight|upgrade|rebuild|rollback)$ ]]; then
+  signature_policy="require-signed"
+  allow_legacy_releases=false
+  [[ -n "$release_verify_hook" ]] || fail "NORN_PROFILE=production requires NORN_RELEASE_VERIFY_HOOK"
+  [[ -x "$release_verify_hook" ]] || fail "production release verify hook is not executable: $release_verify_hook"
+fi
+
 require_cmd curl
 require_cmd install
 require_cmd cmp
+require_cmd python3
+[[ -f "$manifest_helper" ]] || fail "release manifest helper not found: $manifest_helper"
 
-git -C "$repo" rev-parse --is-inside-work-tree >/dev/null 2>&1 || fail "$repo is not a git checkout"
-[[ -d "$v2/api" && -d "$v2/cli" ]] || fail "$repo does not look like a Norn v2 checkout"
+if [[ "$mode" != "rollback" && "$mode" != "releases" ]]; then
+  require_cmd git
+  require_cmd go
+  git -C "$repo" rev-parse --is-inside-work-tree >/dev/null 2>&1 || fail "$repo is not a git checkout"
+  [[ -d "$v2/api" && -d "$v2/cli" ]] || fail "$repo does not look like a Norn v2 checkout"
+fi
 
 api_get() {
   local path="$1"
@@ -319,11 +493,12 @@ list_releases() {
   printf 'SHA\tVERSION\tCREATED\tCURRENT\tPATH\n'
   local current=""
   if [[ -L "$current_link" ]]; then
-    current="$(readlink "$current_link")"
+    current="$(current_release_target)"
   fi
   local dir
   for dir in "$releases"/*; do
     [[ -d "$dir" ]] || continue
+    [[ "$(basename "$dir")" == .* ]] && continue
     local sha version created marker
     sha="$(basename "$dir")"
     version="$sha"
@@ -343,7 +518,8 @@ list_releases() {
 resolve_release() {
   local wanted="$1"
   [[ -n "$wanted" ]] || fail "rollback requires a release sha or prefix"
-  if [[ -d "$releases/$wanted" ]]; then
+  [[ "$wanted" =~ ^[0-9a-f]{7,40}$ ]] || fail "release reference must be a 7-40 character lowercase hexadecimal SHA or prefix"
+  if [[ ${#wanted} -eq 40 && -d "$releases/$wanted" && ! -L "$releases/$wanted" ]]; then
     printf '%s\n' "$releases/$wanted"
     return
   fi
@@ -351,6 +527,9 @@ resolve_release() {
   local dir
   for dir in "$releases"/"$wanted"*; do
     [[ -d "$dir" ]] || continue
+    [[ -L "$dir" ]] && continue
+    [[ "$(basename "$dir")" == .* ]] && continue
+    [[ "$(basename "$dir")" =~ ^[0-9a-f]{40}$ ]] || continue
     matches+=("$dir")
   done
   if [[ "${#matches[@]}" -eq 1 ]]; then
@@ -360,6 +539,30 @@ resolve_release() {
   if [[ "${#matches[@]}" -gt 1 ]]; then
     fail "release prefix $wanted is ambiguous"
   fi
+  if [[ -n "$release_fetch_hook" ]]; then
+    [[ -x "$release_fetch_hook" ]] || fail "release fetch hook is not executable: $release_fetch_hook"
+    log "local release $wanted not found; invoking configured fetch hook" >&2
+    "$release_fetch_hook" "$wanted" "$releases" >&2
+    if [[ ${#wanted} -eq 40 && -d "$releases/$wanted" && ! -L "$releases/$wanted" ]]; then
+      printf '%s\n' "$releases/$wanted"
+      return
+    fi
+    matches=()
+    for dir in "$releases"/"$wanted"*; do
+      [[ -d "$dir" ]] || continue
+      [[ -L "$dir" ]] && continue
+      [[ "$(basename "$dir")" == .* ]] && continue
+      [[ "$(basename "$dir")" =~ ^[0-9a-f]{40}$ ]] || continue
+      matches+=("$dir")
+    done
+    if [[ "${#matches[@]}" -eq 1 ]]; then
+      printf '%s\n' "${matches[0]}"
+      return
+    fi
+    if [[ "${#matches[@]}" -gt 1 ]]; then
+      fail "release prefix $wanted is ambiguous after fetch"
+    fi
+  fi
   fail "release not found: $wanted"
 }
 
@@ -368,19 +571,41 @@ if [[ "$mode" == "releases" ]]; then
   exit 0
 fi
 
-if [[ "$ref" != "HEAD" ]]; then
-  git -C "$repo" fetch --tags --prune origin >/dev/null 2>&1 || log "warning: git fetch failed; using local refs"
+if [[ "$mode" == "rebuild" ]]; then
+  [[ "$#" -eq 2 && "${2:-}" == "--verify" ]] || fail "rebuild requires <full-sha> --verify"
+  [[ "$ref" =~ ^[0-9a-f]{40}$ ]] || fail "rebuild requires an exact 40-character lowercase commit SHA"
 fi
-sha="$(git -C "$repo" rev-parse --verify "$ref^{commit}")"
-short_sha="${sha:0:12}"
-version="$(git -C "$repo" describe --tags --always "$sha" 2>/dev/null || printf '%s' "$short_sha")"
-release="$releases/$sha"
+
+if [[ "$mode" != "rollback" ]]; then
+  if [[ "$ref" != "HEAD" ]]; then
+    git -C "$repo" fetch --tags --prune origin >/dev/null 2>&1 || log "warning: git fetch failed; using local refs"
+  fi
+  sha="$(git -C "$repo" rev-parse --verify "$ref^{commit}")"
+  if [[ "$mode" == "rebuild" && "$sha" != "$ref" ]]; then
+    fail "resolved rebuild SHA does not match requested SHA"
+  fi
+  short_sha="${sha:0:12}"
+  version="$(git -C "$repo" describe --tags --always "$sha" 2>/dev/null || printf '%s' "$short_sha")"
+  release="$releases/$sha"
+  source_date_epoch="$(git -C "$repo" show -s --format=%ct "$sha")"
+  created_at="$(git -C "$repo" show -s --format=%cI "$sha")"
+else
+  sha=""
+  short_sha=""
+  version=""
+  release=""
+  source_date_epoch=""
+  created_at=""
+fi
 work_root="$(mktemp -d "${TMPDIR:-/tmp}/norn-platform.XXXXXX")"
 worktree="$work_root/src"
 candidate_pid=""
 keep_candidate=false
+build_stage=""
+release_log_dir=""
 
 cleanup() {
+  release_promotion_lock
   if [[ "$keep_candidate" == "true" ]]; then
     candidate_pid=""
   fi
@@ -400,49 +625,227 @@ cleanup() {
   if [[ -e "$worktree/.git" ]]; then
     git -C "$repo" worktree remove --force "$worktree" >/dev/null 2>&1 || true
   fi
+  if [[ -n "$build_stage" && -d "$build_stage" ]]; then
+    chmod -R u+w "$build_stage" >/dev/null 2>&1 || true
+    rm -rf "$build_stage"
+  fi
   rm -rf "$work_root"
 }
 trap cleanup EXIT
 
-build_release() {
-  log "building $sha"
-  rm -rf "$release"
-  mkdir -p "$release/bin" "$release/ui" "$release/logs"
+ensure_release_log_dir() {
+  if [[ -z "$release_log_dir" ]]; then
+    mkdir -p "$release_logs_root"
+    release_log_dir="$(mktemp -d "$release_logs_root/${short_sha:-release}.XXXXXX")"
+  fi
+}
 
-  git -C "$repo" worktree add --detach "$worktree" "$sha" >/dev/null
+configured_tool_versions() {
+  python3 - "$worktree" "$expected_node_override" "$expected_pnpm_override" <<'PY'
+import json
+import re
+import sys
+from pathlib import Path
+
+root = Path(sys.argv[1])
+node = sys.argv[2].strip()
+pnpm = sys.argv[3].strip()
+
+if not node:
+    for candidate in (root / ".node-version", root / "v2/ui/.node-version"):
+        if candidate.is_file():
+            value = candidate.read_text(encoding="utf-8").strip()
+            if re.fullmatch(r"v?\d+\.\d+\.\d+", value):
+                node = value
+                break
+if not node:
+    tool_versions = root / ".tool-versions"
+    if tool_versions.is_file():
+        for line in tool_versions.read_text(encoding="utf-8").splitlines():
+            parts = line.split()
+            if len(parts) >= 2 and parts[0] in ("node", "nodejs") and re.fullmatch(r"v?\d+\.\d+\.\d+", parts[1]):
+                node = parts[1]
+                break
+
+package_json = root / "v2/ui/package.json"
+if package_json.is_file():
+    package = json.loads(package_json.read_text(encoding="utf-8"))
+    if not node:
+        volta = package.get("volta", {})
+        value = volta.get("node", "") if isinstance(volta, dict) else ""
+        if re.fullmatch(r"v?\d+\.\d+\.\d+", value):
+            node = value
+    if not node:
+        engines = package.get("engines", {})
+        value = engines.get("node", "") if isinstance(engines, dict) else ""
+        if re.fullmatch(r"v?\d+\.\d+\.\d+", value):
+            node = value
+    if not pnpm:
+        value = package.get("packageManager", "")
+        match = re.fullmatch(r"pnpm@(\d+\.\d+\.\d+)(?:\+.*)?", value)
+        if match:
+            pnpm = match.group(1)
+
+node = node or "v24.19.0"
+pnpm = pnpm or "10.32.1"
+if not node.startswith("v"):
+    node = "v" + node
+if not re.fullmatch(r"v\d+\.\d+\.\d+", node):
+    raise SystemExit(f"invalid exact Node.js version: {node}")
+if not re.fullmatch(r"\d+\.\d+\.\d+", pnpm):
+    raise SystemExit(f"invalid exact pnpm version: {pnpm}")
+print(node + "\t" + pnpm)
+PY
+}
+
+verify_release() {
+  local target="$1"
+  local expected_sha="${2:-}"
+  python3 - "$releases" "$target" <<'PY' || fail "release must be a direct child of NORN_RELEASES_DIR: $target"
+import os
+import sys
+from pathlib import Path
+root = Path(os.path.abspath(sys.argv[1])).resolve()
+target = Path(os.path.abspath(sys.argv[2]))
+if target.parent.resolve() != root:
+    raise SystemExit(1)
+PY
+  if [[ ! -f "$target/release.json" || ! -f "$target/release.signature.json" ]]; then
+    if [[ "$allow_legacy_releases" == "true" && "$signature_policy" == "allow-unsigned" ]]; then
+      [[ -f "$target/bin/norn-api" && -f "$target/bin/norn" ]] || fail "legacy release is missing required binaries: $target"
+      log "warning: explicitly accepting unverifiable legacy release $(basename "$target"); migrate by promoting a manifested release"
+      return
+    fi
+    fail "release lacks a verifiable manifest; set NORN_ALLOW_LEGACY_RELEASES=true only for one-time migration: $target"
+  fi
+  local args=(verify --release "$target")
+  if [[ -n "$expected_sha" ]]; then
+    args+=(--expected-sha "$expected_sha")
+  fi
+  local signature_status
+  signature_status="$(python3 "$manifest_helper" "${args[@]}")" || fail "release manifest verification failed: $target"
+  case "$signature_status" in
+    unsigned)
+      [[ "$signature_policy" == "allow-unsigned" ]] || fail "release is unsigned but signed releases are required: $target"
+      ;;
+    signed)
+      [[ -n "$release_verify_hook" ]] || fail "signed release requires NORN_RELEASE_VERIFY_HOOK: $target"
+      [[ -x "$release_verify_hook" ]] || fail "release verify hook is not executable: $release_verify_hook"
+      "$release_verify_hook" "$target" "$target/release.json" || fail "external release verification failed: $target"
+      ;;
+    *) fail "invalid verified signature status for $target" ;;
+  esac
+  log "verified release $(basename "$target") ($signature_status)"
+}
+
+prepare_worktree() {
+  if [[ ! -e "$worktree/.git" ]]; then
+    git -C "$repo" worktree add --detach "$worktree" "$sha" >/dev/null
+  fi
+}
+
+build_release_into() {
+  local target="$1"
+  log "building $sha in atomic staging"
+  mkdir -p "$target/bin" "$target/ui"
+  prepare_worktree
+
+  local expected_versions expected_node expected_pnpm
+  expected_versions="$(configured_tool_versions)"
+  expected_node="${expected_versions%%$'\t'*}"
+  expected_pnpm="${expected_versions#*$'\t'}"
+
+  local node_version="none" pnpm_version="none" pnpm_bin=""
 
   if [[ -d "$worktree/v2/ui" ]]; then
     require_cmd pnpm
     require_cmd "$node_bin"
-    node_major="$("$node_bin" -p 'process.versions.node.split(".")[0]')"
-    [[ "$node_major" == "24" ]] || fail "Node.js 24 is required for UI release builds (got $("$node_bin" --version))"
+    node_version="$("$node_bin" --version)"
+    [[ "$node_version" == "$expected_node" ]] || fail "Node.js $expected_node is required for release builds (got $node_version)"
     pnpm_bin="$(command -v pnpm)"
-    (cd "$worktree/v2/ui" && "$node_bin" "$pnpm_bin" install --frozen-lockfile && "$node_bin" "$pnpm_bin" build)
-    cp -R "$worktree/v2/ui/dist/." "$release/ui/"
+    pnpm_version="$("$node_bin" "$pnpm_bin" --version)"
+    [[ "$pnpm_version" == "$expected_pnpm" ]] || fail "pnpm $expected_pnpm is required for release builds (got $pnpm_version)"
+    (cd "$worktree/v2/ui" && SOURCE_DATE_EPOCH="$source_date_epoch" "$node_bin" "$pnpm_bin" install --frozen-lockfile && SOURCE_DATE_EPOCH="$source_date_epoch" "$node_bin" "$pnpm_bin" build)
+    cp -R "$worktree/v2/ui/dist/." "$target/ui/"
   fi
 
-  (cd "$worktree/v2/api" && go build -ldflags "-X main.Version=$version" -o "$release/bin/norn-api" .)
-  (cd "$worktree/v2/api" && go build -o "$release/bin/norn-host-agent" ./cmd/norn-host-agent)
-  (cd "$worktree/v2/cli" && go build -ldflags "-X norn/v2/cli/cmd.Version=$version" -o "$release/bin/norn" .)
-  install -m 0755 "$worktree/v2/scripts/platform-upgrade" "$release/bin/platform-upgrade"
-  install -m 0755 "$worktree/v2/scripts/host-runtime" "$release/bin/host-runtime"
+  local go_version go_os go_arch cgo_enabled
+  go_version="$(go env GOVERSION)"
+  go_os="$(go env GOOS)"
+  go_arch="$(go env GOARCH)"
+  cgo_enabled="${NORN_RELEASE_CGO_ENABLED:-0}"
+  local go_flags=(-trimpath -buildvcs=false -mod=readonly)
+  local api_ldflags="-buildid= -X main.Version=$version"
+  local cli_ldflags="-buildid= -X norn/v2/cli/cmd.Version=$version"
+  local agent_ldflags="-buildid="
+  (cd "$worktree/v2/api" && env CGO_ENABLED="$cgo_enabled" SOURCE_DATE_EPOCH="$source_date_epoch" GOFLAGS= GOWORK=off GOENV=off GOEXPERIMENT= GOAMD64=v1 GOARM64=v8.0 go build "${go_flags[@]}" -ldflags "$api_ldflags" -o "$target/bin/norn-api" .)
+  (cd "$worktree/v2/api" && env CGO_ENABLED="$cgo_enabled" SOURCE_DATE_EPOCH="$source_date_epoch" GOFLAGS= GOWORK=off GOENV=off GOEXPERIMENT= GOAMD64=v1 GOARM64=v8.0 go build "${go_flags[@]}" -ldflags "$agent_ldflags" -o "$target/bin/norn-host-agent" ./cmd/norn-host-agent)
+  (cd "$worktree/v2/cli" && env CGO_ENABLED="$cgo_enabled" SOURCE_DATE_EPOCH="$source_date_epoch" GOFLAGS= GOWORK=off GOENV=off GOEXPERIMENT= GOAMD64=v1 GOARM64=v8.0 go build "${go_flags[@]}" -ldflags "$cli_ldflags" -o "$target/bin/norn" .)
+  install -m 0755 "$worktree/v2/scripts/platform-upgrade" "$target/bin/platform-upgrade"
+  install -m 0755 "$worktree/v2/scripts/platform-release-manifest" "$target/bin/platform-release-manifest"
+  install -m 0755 "$worktree/v2/scripts/platform-release-artifact" "$target/bin/platform-release-artifact"
+  install -m 0755 "$worktree/v2/scripts/platform-release-fetch-github" "$target/bin/platform-release-fetch-github"
+  install -m 0755 "$worktree/v2/scripts/platform-release-verify-github" "$target/bin/platform-release-verify-github"
+  install -m 0755 "$worktree/v2/scripts/host-runtime" "$target/bin/host-runtime"
 
-  cat > "$release/release.env" <<EOF
+  cat > "$target/release.env" <<EOF
 NORN_RELEASE_SHA=$sha
 NORN_RELEASE_VERSION=$version
-NORN_RELEASE_CREATED_AT=$(date -u +%Y-%m-%dT%H:%M:%SZ)
-NORN_UI_DIR=$release/ui
+NORN_RELEASE_CREATED_AT=$created_at
+NORN_UI_DIR=ui
 EOF
-  cat > "$release/release.json" <<EOF
-{
-  "sha": "$sha",
-  "version": "$version",
-  "createdAt": "$(date -u +%Y-%m-%dT%H:%M:%SZ)",
-  "path": "$release",
-  "uiDir": "$release/ui"
+  python3 "$worktree/v2/scripts/platform-release-manifest" create \
+    --release "$target" \
+    --source "$worktree" \
+    --sha "$sha" \
+    --version "$version" \
+    --created-at "$created_at" \
+    --os "$go_os" \
+    --arch "$go_arch" \
+    --go-version "$go_version" \
+    --node-version "$node_version" \
+    --node-required "$expected_node" \
+    --pnpm-version "$pnpm_version" \
+    --pnpm-required "$expected_pnpm" \
+    --go-flag=-trimpath \
+    --go-flag=-buildvcs=false \
+    --go-flag=-mod=readonly \
+    --go-ldflag=-buildid= \
+    "--go-ldflag=-X main.Version=${version}" \
+    "--go-ldflag=-X norn/v2/cli/cmd.Version=${version}" \
+    --go-environment=GOFLAGS= \
+    --go-environment=GOWORK=off \
+    --go-environment=GOENV=off \
+    --go-environment=GOEXPERIMENT= \
+    --go-environment=GOAMD64=v1 \
+    --go-environment=GOARM64=v8.0 \
+    --cgo-enabled "$cgo_enabled" \
+    --source-date-epoch "$source_date_epoch"
 }
-EOF
-  log "release ready: $release"
+
+build_or_reuse_release() {
+  mkdir -p "$releases"
+  if [[ -d "$release" ]]; then
+    verify_release "$release" "$sha"
+    log "reusing immutable release: $release"
+    return
+  fi
+  build_stage="$(mktemp -d "$releases/.staging-${short_sha}.XXXXXX")"
+  build_release_into "$build_stage"
+  chmod -R a-w "$build_stage"
+  verify_release "$build_stage" "$sha"
+  if python3 "$manifest_helper" install --staging "$build_stage" --destination "$release"; then
+    build_stage=""
+    log "immutable release ready: $release"
+    return
+  fi
+  if [[ -d "$release" ]]; then
+    verify_release "$release" "$sha"
+    python3 "$manifest_helper" compare --retained "$release" --rebuilt "$build_stage" || fail "concurrent release differs from this build"
+    log "concurrent identical release retained: $release"
+    return
+  fi
+  fail "could not atomically install release $release"
 }
 
 wait_health() {
@@ -459,11 +862,13 @@ wait_health() {
 }
 
 candidate_preflight() {
+  verify_release "$release" "$sha"
   if [[ "$skip_candidate" == "true" ]]; then
     log "candidate API boot skipped"
     return
   fi
 
+  ensure_release_log_dir
   log "starting candidate API on 127.0.0.1:$candidate_port"
   pushd "$repo" >/dev/null
   if [[ "$upgrade_mode" == "proxy" ]]; then
@@ -474,7 +879,7 @@ candidate_preflight() {
       NORN_SKIP_DEPLOYMENT_RECOVERY=true \
       NORN_SKIP_OPERATION_RECOVERY=true \
       NORN_SKIP_OPERATION_WORKER=true \
-      "$release/bin/norn-api" >"$release/logs/proxy-candidate-api.log" 2>&1 &
+      "$release/bin/norn-api" >"$release_log_dir/proxy-candidate-api.log" 2>&1 &
   else
     env \
     NORN_PORT="$candidate_port" \
@@ -483,30 +888,72 @@ candidate_preflight() {
     NORN_SKIP_DEPLOYMENT_RECOVERY=true \
     NORN_SKIP_OPERATION_RECOVERY=true \
     NORN_SKIP_OPERATION_WORKER=true \
-    "$release/bin/norn-api" >"$release/logs/candidate-api.log" 2>&1 &
+    "$release/bin/norn-api" >"$release_log_dir/candidate-api.log" 2>&1 &
   fi
   candidate_pid="$!"
   popd >/dev/null
 
   if ! wait_health "http://127.0.0.1:$candidate_port" 30; then
-    tail -80 "$release/logs/candidate-api.log" >&2 || true
-    tail -80 "$release/logs/proxy-candidate-api.log" >&2 || true
+    tail -80 "$release_log_dir/candidate-api.log" >&2 || true
+    tail -80 "$release_log_dir/proxy-candidate-api.log" >&2 || true
     fail "candidate API did not become healthy"
   fi
-  curl -fsS "http://127.0.0.1:$candidate_port/api/version" | tee "$release/logs/candidate-version.json"
+  curl -fsS "http://127.0.0.1:$candidate_port/api/version" | tee "$release_log_dir/candidate-version.json"
   printf '\n'
   log "candidate healthy"
 }
 
 postflight() {
+  ensure_release_log_dir
   log "waiting for running API"
   wait_health "$api_base" 30 || return 1
-  curl -fsS "$api_base/api/version" | tee "$release/logs/postflight-version.json"
+  curl -fsS "$api_base/api/version" | tee "$release_log_dir/postflight-version.json"
   printf '\n'
 }
 
 restart_api() {
   launchctl kickstart -k "gui/$(id -u)/$launch_label"
+}
+
+atomic_install_file() {
+  local source="$1"
+  local destination="$2"
+  local destination_dir temporary
+  destination_dir="$(dirname "$destination")"
+  mkdir -p "$destination_dir"
+  temporary="$(mktemp "$destination_dir/.norn-install.XXXXXX")"
+  if ! install -m 0755 "$source" "$temporary"; then
+    rm -f "$temporary"
+    return 1
+  fi
+  if ! mv -f "$temporary" "$destination"; then
+    rm -f "$temporary"
+    return 1
+  fi
+}
+
+atomic_symlink() {
+  local target="$1"
+  local destination="$2"
+  python3 - "$target" "$destination" <<'PY'
+import os
+import secrets
+import sys
+from pathlib import Path
+
+target, destination = sys.argv[1:]
+parent = Path(destination).parent
+parent.mkdir(parents=True, exist_ok=True)
+temporary = parent / (".norn-link." + secrets.token_hex(8))
+try:
+    os.symlink(target, temporary)
+    os.replace(temporary, destination)
+finally:
+    try:
+        temporary.unlink()
+    except FileNotFoundError:
+        pass
+PY
 }
 
 sync_managed_host_artifacts() {
@@ -516,22 +963,35 @@ sync_managed_host_artifacts() {
     "$(dirname "$platform_script_bin")" "$(dirname "$host_runtime_bin")"
 
   if [[ -f "$target/bin/norn-host-agent" ]]; then
-    install -m 0755 "$target/bin/norn-host-agent" "$host_agent_bin"
+    atomic_install_file "$target/bin/norn-host-agent" "$host_agent_bin" || return 1
   elif [[ "$strict" == "true" ]]; then
     fail "release is missing norn-host-agent"
   fi
   if [[ -f "$target/bin/norn" ]]; then
-    install -m 0755 "$target/bin/norn" "$host_cli_bin"
+    atomic_install_file "$target/bin/norn" "$host_cli_bin" || return 1
   elif [[ "$strict" == "true" ]]; then
     fail "release is missing the managed host CLI"
   fi
   if [[ -f "$target/bin/platform-upgrade" ]]; then
-    install -m 0755 "$target/bin/platform-upgrade" "$platform_script_bin"
+    atomic_install_file "$target/bin/platform-upgrade" "$platform_script_bin" || return 1
   elif [[ "$strict" == "true" ]]; then
     fail "release is missing platform-upgrade"
   fi
+  if [[ -f "$target/bin/platform-release-manifest" ]]; then
+    atomic_install_file "$target/bin/platform-release-manifest" "$(dirname "$platform_script_bin")/platform-release-manifest" || return 1
+  elif [[ "$strict" == "true" ]]; then
+    fail "release is missing platform-release-manifest"
+  fi
+  local release_helper
+  for release_helper in platform-release-artifact platform-release-fetch-github platform-release-verify-github; do
+    if [[ -f "$target/bin/$release_helper" ]]; then
+      atomic_install_file "$target/bin/$release_helper" "$(dirname "$platform_script_bin")/$release_helper" || return 1
+    elif [[ "$strict" == "true" ]]; then
+      fail "release is missing $release_helper"
+    fi
+  done
   if [[ -f "$target/bin/host-runtime" ]]; then
-    install -m 0755 "$target/bin/host-runtime" "$host_runtime_bin"
+    atomic_install_file "$target/bin/host-runtime" "$host_runtime_bin" || return 1
   elif [[ "$strict" == "true" ]]; then
     fail "release is missing host-runtime"
   fi
@@ -540,23 +1000,48 @@ sync_managed_host_artifacts() {
     cmp -s "$target/bin/norn-host-agent" "$host_agent_bin" || fail "managed host agent verification failed"
     cmp -s "$target/bin/norn" "$host_cli_bin" || fail "managed host CLI verification failed"
     cmp -s "$target/bin/platform-upgrade" "$platform_script_bin" || fail "managed platform script verification failed"
+    cmp -s "$target/bin/platform-release-manifest" "$(dirname "$platform_script_bin")/platform-release-manifest" || fail "managed platform manifest helper verification failed"
+    for release_helper in platform-release-artifact platform-release-fetch-github platform-release-verify-github; do
+      cmp -s "$target/bin/$release_helper" "$(dirname "$platform_script_bin")/$release_helper" || fail "managed $release_helper verification failed"
+    done
     cmp -s "$target/bin/host-runtime" "$host_runtime_bin" || fail "managed host runtime verification failed"
   fi
 }
 
+activate_release_artifacts() {
+  local target="$1"
+  local strict="${2:-true}"
+  atomic_install_file "$target/bin/norn-api" "$bin_dir/norn-api" || return 1
+  atomic_install_file "$target/bin/norn" "$bin_dir/norn" || return 1
+  sync_managed_host_artifacts "$target" "$strict" || return 1
+  atomic_symlink "$target" "$current_link" || return 1
+}
+
 promote_release() {
+  verify_release "$release" "${sha:-}"
   mkdir -p "$(dirname "$current_link")" "$bin_dir"
   previous=""
   if [[ -L "$current_link" ]]; then
-    previous="$(readlink "$current_link")"
+    previous="$(current_release_target)"
+  fi
+  if [[ -n "$previous" && -d "$previous" && "$previous" != "$release" ]]; then
+    verify_release "$previous"
   fi
   log "promoting $release"
-  ln -sfn "$release" "$current_link"
-  install -m 0755 "$release/bin/norn-api" "$bin_dir/norn-api"
-  install -m 0755 "$release/bin/norn" "$bin_dir/norn"
-  sync_managed_host_artifacts "$release" true
+  if ! activate_release_artifacts "$release" true; then
+    if [[ -n "$previous" && -d "$previous" ]]; then
+      activate_release_artifacts "$previous" false || fail "release activation failed and previous artifacts could not be restored"
+    fi
+    fail "release activation failed before restart"
+  fi
 
-  restart_api
+  if ! restart_api; then
+    if [[ -n "$previous" && -d "$previous" ]]; then
+      activate_release_artifacts "$previous" false || fail "API restart failed and previous artifacts could not be restored"
+      restart_api || fail "API restart failed after restoring previous release"
+    fi
+    fail "API restart failed; previous release artifacts restored"
+  fi
   if postflight; then
     log "upgrade complete: $version"
     return 0
@@ -564,10 +1049,7 @@ promote_release() {
 
   log "postflight failed; rolling back"
   if [[ -n "$previous" && -d "$previous" ]]; then
-    ln -sfn "$previous" "$current_link"
-    install -m 0755 "$previous/bin/norn-api" "$bin_dir/norn-api"
-    install -m 0755 "$previous/bin/norn" "$bin_dir/norn"
-    sync_managed_host_artifacts "$previous"
+    activate_release_artifacts "$previous" false || fail "rollback artifact restoration failed"
     restart_api
     wait_health "$api_base" 30 || fail "rollback health check failed"
     fail "upgrade failed and rollback completed"
@@ -603,18 +1085,20 @@ restore_release_artifacts() {
     log "warning: no previous release artifacts were available to restore"
     return 0
   fi
-  ln -sfn "$target" "$current_link"
-  [[ -f "$target/bin/norn-api" ]] && install -m 0755 "$target/bin/norn-api" "$bin_dir/norn-api"
-  [[ -f "$target/bin/norn" ]] && install -m 0755 "$target/bin/norn" "$bin_dir/norn"
-  sync_managed_host_artifacts "$target"
+  verify_release "$target"
+  activate_release_artifacts "$target" false || fail "failed to restore previous release artifacts"
 }
 
 promote_release_proxy() {
   [[ -n "$candidate_pid" ]] || fail "proxy upgrade requires a running candidate API"
+  verify_release "$release" "${sha:-}"
   mkdir -p "$(dirname "$current_link")" "$bin_dir" "$proxy_dir"
   local previous_release=""
   if [[ -L "$current_link" ]]; then
-    previous_release="$(readlink "$current_link")"
+    previous_release="$(current_release_target)"
+  fi
+  if [[ -n "$previous_release" && -d "$previous_release" && "$previous_release" != "$release" ]]; then
+    verify_release "$previous_release"
   fi
   previous_upstream="$(current_proxy_upstream)"
   previous_pid="-"
@@ -623,10 +1107,10 @@ promote_release_proxy() {
   fi
 
   log "promoting $release with proxy cutover"
-  ln -sfn "$release" "$current_link"
-  install -m 0755 "$release/bin/norn-api" "$bin_dir/norn-api"
-  install -m 0755 "$release/bin/norn" "$bin_dir/norn"
-  sync_managed_host_artifacts "$release" true
+  if ! activate_release_artifacts "$release" true; then
+    restore_release_artifacts "$previous_release"
+    fail "release activation failed before proxy cutover"
+  fi
 
   printf '127.0.0.1:%s\n' "$candidate_port" > "$proxy_upstream_file"
   write_proxy_config
@@ -658,20 +1142,38 @@ promote_release_proxy() {
 
 if [[ "$mode" == "rollback" ]]; then
   release="$(resolve_release "${1:-}")"
+  sha="$(basename "$release")"
+  short_sha="${sha:0:12}"
   version="$(basename "$release")"
   if [[ -f "$release/release.env" ]]; then
     version="$(grep '^NORN_RELEASE_VERSION=' "$release/release.env" | head -1 | cut -d= -f2- || true)"
     version="${version:-$(basename "$release")}"
   fi
+  verify_release "$release"
+  acquire_promotion_lock
   drain_check
   promote_release
   exit 0
 fi
 
-build_release
+if [[ "$mode" == "rebuild" ]]; then
+  [[ -d "$release" ]] || fail "cannot verify rebuild because retained release is missing: $release"
+  verify_release "$release" "$sha"
+  mkdir -p "$releases"
+  build_stage="$(mktemp -d "$releases/.rebuild-${short_sha}.XXXXXX")"
+  build_release_into "$build_stage"
+  chmod -R a-w "$build_stage"
+  verify_release "$build_stage" "$sha"
+  python3 "$manifest_helper" compare --retained "$release" --rebuilt "$build_stage" || fail "rebuild verification failed"
+  log "rebuild verified manifest-content equivalence with retained release: $sha"
+  exit 0
+fi
+
+build_or_reuse_release
 candidate_preflight
 
 if [[ "$mode" == "upgrade" ]]; then
+  acquire_promotion_lock
   drain_check
   if [[ "$upgrade_mode" == "proxy" ]]; then
     promote_release_proxy

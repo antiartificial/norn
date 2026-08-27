@@ -229,10 +229,11 @@ PITR or off-host object storage.
 Resolve an exact pushed commit before upgrading Norn itself:
 
 ```bash
-release_sha=$(git rev-parse origin/main)
+release_sha=$(git rev-parse origin/master)
 norn platform queue-preflight "$release_sha"
 norn platform queue-upgrade "$release_sha"
 norn platform releases
+norn platform rebuild "$release_sha" --verify
 norn smoke platform
 ```
 

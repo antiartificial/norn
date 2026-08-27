@@ -9,12 +9,12 @@ describe('fleet provisioning topology', () => {
     const graph = buildFleetPlanTopology(plan, inventory, [app], manifest, buildFleetExecutionSteps({ plan, reconciliations: [] }))
 
     expect(graph.nodes.map((node) => node.id)).toEqual(expect.arrayContaining([
-      'ingress-nyc3', 'region-nyc3', 'pool-app', 'workload-orders-web', 'allocation-orders-web-nyc3',
+      'ingress-nyc3', 'region-nyc3', 'pool-app', 'workload-orders-web', 'allocation-alloc-1',
       'dependency-orders-postgres', 'dependency-orders-redis', 'dependency-orders-kafka',
     ]))
     expect(graph.edges.some((edge) => edge.source === 'ingress-nyc3' && edge.target === 'region-nyc3')).toBe(true)
-    expect(graph.edges.some((edge) => edge.source === 'workload-orders-web' && edge.target === 'allocation-orders-web-nyc3' && edge.animated)).toBe(true)
-    expect(graph.summary.some((line) => line.includes('1 of 1 observed allocations healthy'))).toBe(true)
+    expect(graph.edges.some((edge) => edge.source === 'workload-orders-web' && edge.target === 'allocation-alloc-1' && edge.animated)).toBe(true)
+    expect(graph.summary.some((line) => line.includes('allocation alloc-1 is verified in nyc3 on pool app'))).toBe(true)
   })
 })
 
@@ -40,8 +40,27 @@ const app: AppStatus = {
 }
 
 const manifest: ServiceManifest = {
-  version: 1,
+  version: 2,
   generatedAt: '2026-08-26T00:00:00Z',
   networkMode: 'test',
-  services: [{ name: 'orders-web', app: 'orders', process: 'web', type: 'service', status: 'passing', reachability: { endpointScope: 'public', instanceScope: 'private', exposure: 'public', routable: true } }],
+  services: [{
+    name: 'orders-web',
+    app: 'orders',
+    process: 'web',
+    type: 'service',
+    status: 'passing',
+    reachability: { endpointScope: 'public', instanceScope: 'private', exposure: 'public', routable: true },
+    instances: [{
+      id: 'orders-web-nyc3',
+      status: 'passing',
+      node: 'node-1',
+      address: '10.0.0.12',
+      port: 8080,
+      allocationId: 'alloc-1',
+      region: 'nyc3',
+      nodePool: 'app',
+      placementSource: 'consul-tags',
+      placementVerified: true,
+    }],
+  }],
 }

@@ -233,3 +233,20 @@ func requireControlScope(w http.ResponseWriter, r *http.Request, scope string) (
 	}
 	return principal, true
 }
+
+// requireFleetOperateScope accepts the dedicated least-privilege runner scope.
+// api:write remains a temporary compatibility superset for already-issued
+// automation tokens; newly enrolled infrastructure runners should request only
+// fleet:operate plus api:read when inventory reads are required.
+func requireFleetOperateScope(w http.ResponseWriter, r *http.Request) (AccessPrincipal, bool) {
+	principal, ok := AccessPrincipalFromRequest(r)
+	if !ok {
+		WriteControlProblem(w, r, http.StatusUnauthorized, "authenticated_principal_required", "an explicitly authenticated fleet runner principal is required")
+		return AccessPrincipal{}, false
+	}
+	if !principal.Allows(ScopeFleetOperate) && !principal.Allows(ScopeAPIWrite) {
+		WriteControlProblem(w, r, http.StatusForbidden, "insufficient_scope", "token lacks required scope "+ScopeFleetOperate)
+		return AccessPrincipal{}, false
+	}
+	return principal, true
+}

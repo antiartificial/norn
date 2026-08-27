@@ -10,10 +10,12 @@ Useful surfaces:
 
 | Need | Surface |
 |------|---------|
-| Hosted services and reachability | `GET /api/services/manifest`, `norn services manifest` |
+| Hosted services, reachability, placement | `GET /api/v1/services/manifest`, `norn services manifest` |
 | Platform rollup | `GET /api/ops/platform`, `norn ops platform` |
 | Active queue/drain state | `GET /api/operations/active`, `norn operations --active` |
-| Stage checkpoints | `GET /api/deployments/{id}/steps` |
+| Deployment history | `GET /api/v1/deployments` |
+| Stage checkpoints | `GET /api/v1/deployments/{id}/steps` |
+| Fleet runner liveness | `GET /api/v1/fleet/plans/{planID}/attempts`, `norn fleet attempts <plan-id>` |
 | App specs and runtime status | `GET /api/apps`, `GET /api/apps/{id}`, local `infraspec.yaml` |
 | Durable app recovery | `GET/POST /api/v1/apps/{id}/snapshots`, versioned retention/restore/migration/rollback routes, `norn snapshots <app>` |
 | Validation and rehearsal | `GET /api/validate`, `POST /api/apps/{id}/preflight`, `norn preflight <app> [ref]` |
@@ -56,7 +58,9 @@ Semantics:
 - Versioned recovery mutations require request-bound idempotency keys so a
   reconnect can recover the original operation instead of duplicating it.
 - Deploy and rollback stages are recorded in `deployment_steps`.
-- Use `norn deploy steps <deployment-id>` to inspect checkpoint evidence.
+- Use `norn deploy steps <deployment-id>` to inspect versioned checkpoint evidence.
+- Use `norn fleet attempts <plan-id>` before calling a Fleet phase active.
+  Dispatch alone is handoff evidence; only an unexpired attempt proves liveness.
 - Interrupted deploys can be requeued automatically only before mutable stages begin.
 - Interrupted mutable deploy stages should be treated as failed unless there is explicit stage-level resume evidence.
 - Saga events remain the detailed timeline. Operation rows are the compact queue and drain index.
@@ -97,6 +101,7 @@ Norn control-plane upgrades should use the platform lane rather than rebuilding 
 norn platform preflight <pushed-commit-sha>
 norn platform upgrade <pushed-commit-sha>
 norn platform upgrade <pushed-commit-sha> --proxy
+norn platform rebuild <full-sha> --verify
 norn platform queue-preflight <pushed-commit-sha>
 norn platform queue-upgrade <pushed-commit-sha>
 norn platform releases
@@ -117,6 +122,26 @@ find release tools through a thin SSH shell without a machine-specific `PATH`
 prefix.
 
 The default platform lane builds an isolated release, boots a candidate API on an alternate port, checks health/version, promotes the release symlink, restarts only the Norn API process, and runs postflight health.
+
+For immutable-release recovery, use `norn platform rebuild <full-sha> --verify`.
+It requires the full source SHA and artifact checksum/signature verification.
+Prefer a verified local rollback target; if none exists, `platform-upgrade` may
+use the configured `NORN_RELEASE_FETCH_HOOK` to restore one into the local store
+before verification. Set `NORN_RELEASE_SIGNATURE_POLICY=require-signed` for
+production. A platform rollback does not undo database schema changes, so keep
+releases backward compatible with the active schema across the rollback window.
+
+When a local release is unavailable, configure the host-only GitHub Release
+fallback: `NORN_RELEASE_FETCH_HOOK=platform-release-fetch-github`,
+`NORN_RELEASE_VERIFY_HOOK=platform-release-verify-github`,
+`NORN_RELEASE_REPOSITORY=owner/norn`, and
+`NORN_RELEASE_PUBLIC_KEY=/secure/path/norn-release.pub`. Set
+`NORN_RELEASE_SIGNATURE_POLICY=require-signed` in production. The fetch adapter
+uses a read-only `NORN_RELEASE_GITHUB_TOKEN` (or `GH_TOKEN`) and accepts only
+the private release tag `platform-<fullsha>` with its matching archive,
+manifest, signature, and SBOM assets. Keep provider and release-signing
+credentials in the protected release workflow, never on a Norn host or in the
+operator CLI.
 
 The queued lane records `platform.preflight`, `platform.upgrade`, and
 `platform.smoke` in the durable operations table. `com.norn.host-agent` claims

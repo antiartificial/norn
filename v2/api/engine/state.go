@@ -136,11 +136,13 @@ type NodeInfo struct {
 }
 
 type ServiceHealth struct {
-	ServiceName string `json:"serviceName"`
-	Node        string `json:"node"`
-	Address     string `json:"address"`
-	Port        int    `json:"port"`
-	Status      string `json:"status"` // passing, warning, critical
+	ServiceName  string `json:"serviceName"`
+	ID           string `json:"id,omitempty"`
+	AllocationID string `json:"allocationId,omitempty"`
+	Node         string `json:"node"`
+	Address      string `json:"address"`
+	Port         int    `json:"port"`
+	Status       string `json:"status"` // passing, warning, critical
 }
 
 type CronEntry struct {

@@ -6,7 +6,7 @@ import { clearDurableIntent, durableIntent, type DurableIntent } from '../lib/du
 import { buildFleetExecutionSteps, currentFleetStep, humanize, operationForPlan, planIsComplete, type FleetExecutionStep, type FleetStepState } from '../lib/fleetExecution.ts'
 import { relativeTime, statusTone } from '../lib/format.ts'
 import { useRuntimeContext } from '../runtime/AppRuntime.tsx'
-import type { CapabilitiesResponse, Deployment, FleetGitHubStatus, FleetInventory, FleetNodePool, FleetPlansResponse, FleetReconciliationResponse, Operation, OperationsResponse } from '../types/index.ts'
+import type { CapabilitiesResponse, Deployment, DeploymentListResponse, FleetGitHubStatus, FleetInventory, FleetNodePool, FleetPlansResponse, FleetReconciliationResponse, FleetRunnerAttempt, FleetRunnerAttemptResponse, Operation, OperationsResponse } from '../types/index.ts'
 import { FleetPlanTopology } from '../components/FleetPlanTopology.tsx'
 import { EmptyState, StatusChip, useToast } from '../components/ui/index.ts'
 
@@ -17,7 +17,7 @@ export function FleetPage() {
   const github = useQuery({ queryKey: ['fleet', 'github'], queryFn: () => apiFetch<FleetGitHubStatus>('/api/v1/fleet/github'), staleTime: 15_000, refetchInterval: 30_000, enabled: inventory.data?.configured === true })
   const capabilities = useQuery({ queryKey: ['capabilities'], queryFn: () => apiFetch<CapabilitiesResponse>('/api/v1/capabilities'), staleTime: 60_000 })
   const activeOperations = useQuery({ queryKey: ['operations', 'active'], queryFn: () => apiFetch<OperationsResponse>('/api/operations/active'), staleTime: 8_000, refetchInterval: 10_000 })
-  const deployments = useQuery({ queryKey: ['deployments', { limit: 20 }], queryFn: () => apiFetch<Deployment[]>('/api/deployments?limit=20'), staleTime: 8_000, refetchInterval: 10_000 })
+  const deployments = useQuery({ queryKey: ['deployments-v1', { limit: 20 }], queryFn: () => apiFetch<DeploymentListResponse>('/api/v1/deployments?limit=20'), staleTime: 8_000, refetchInterval: 10_000 })
   const pools = useMemo(() => Object.entries(inventory.data?.nodePools ?? {}).sort(([a], [b]) => a.localeCompare(b)), [inventory.data?.nodePools])
 
   if (inventory.isLoading) return <div className="panel panel-skeleton" aria-label="Loading fleet"><span /><span /><span /></div>
@@ -54,7 +54,7 @@ export function FleetPage() {
         </section>
       )}
 
-      <PlatformNow apps={runtime.apps} activeOperations={activeOperations.data?.operations ?? []} deployments={deployments.data ?? []} observedAt={Math.max(activeOperations.dataUpdatedAt, deployments.dataUpdatedAt)} loading={activeOperations.isLoading || deployments.isLoading || runtime.loading} stale={activeOperations.isError || deployments.isError || runtime.error !== null} />
+      <PlatformNow apps={runtime.apps} activeOperations={activeOperations.data?.operations ?? []} deployments={deployments.data?.deployments ?? []} observedAt={Math.max(activeOperations.dataUpdatedAt, deployments.dataUpdatedAt)} loading={activeOperations.isLoading || deployments.isLoading || runtime.loading} stale={activeOperations.isError || deployments.isError || runtime.error !== null} />
 
       <section aria-labelledby="node-pools-title">
         <div className="section-heading"><div><span className="eyebrow">Capacity</span><h2 id="node-pools-title">Node pools</h2></div><span>{pools.length} desired pools</span></div>
@@ -72,6 +72,7 @@ export function FleetPage() {
           fallbackWorkflowURL={inventory.data.document?.metadata?.workflowUrl}
           githubConnected={github.data?.connected === true}
           capabilities={new Set(capabilities.data?.features ?? [])}
+          principalScopes={new Set(capabilities.data?.auth?.principal?.scopes ?? [])}
           inventory={inventory.data}
           apps={runtime.apps}
           manifest={runtime.serviceManifest}
@@ -164,13 +165,13 @@ function PlatformNow({ apps, activeOperations, deployments, observedAt, loading,
   )
 }
 
-function PlanRows({ plans, loading, fallbackWorkflowURL, githubConnected, capabilities, inventory, apps, manifest }: { plans: Operation[]; loading: boolean; fallbackWorkflowURL?: string; githubConnected: boolean; capabilities: Set<string>; inventory: FleetInventory; apps: ReturnType<typeof useRuntimeContext>['apps']; manifest?: ReturnType<typeof useRuntimeContext>['serviceManifest'] }) {
+function PlanRows({ plans, loading, fallbackWorkflowURL, githubConnected, capabilities, principalScopes, inventory, apps, manifest }: { plans: Operation[]; loading: boolean; fallbackWorkflowURL?: string; githubConnected: boolean; capabilities: Set<string>; principalScopes: Set<string>; inventory: FleetInventory; apps: ReturnType<typeof useRuntimeContext>['apps']; manifest?: ReturnType<typeof useRuntimeContext>['serviceManifest'] }) {
   if (loading) return <div className="panel-skeleton"><span /><span /></div>
   if (plans.length === 0) return <EmptyState icon="·" title="No capacity changes" hint="Choose a node pool to create a durable planning receipt." />
-  return <div className="fleet-plan-list">{plans.map((plan, index) => <PlanJourney key={plan.id ?? `${plan.createdAt}-${index}`} plan={plan} fallbackWorkflowURL={fallbackWorkflowURL} githubConnected={githubConnected} capabilities={capabilities} inventory={inventory} apps={apps} manifest={manifest} />)}</div>
+  return <div className="fleet-plan-list">{plans.map((plan, index) => <PlanJourney key={plan.id ?? `${plan.createdAt}-${index}`} plan={plan} fallbackWorkflowURL={fallbackWorkflowURL} githubConnected={githubConnected} capabilities={capabilities} principalScopes={principalScopes} inventory={inventory} apps={apps} manifest={manifest} />)}</div>
 }
 
-function PlanJourney({ plan, fallbackWorkflowURL, githubConnected, capabilities, inventory, apps, manifest }: { plan: Operation; fallbackWorkflowURL?: string; githubConnected: boolean; capabilities: Set<string>; inventory: FleetInventory; apps: ReturnType<typeof useRuntimeContext>['apps']; manifest?: ReturnType<typeof useRuntimeContext>['serviceManifest'] }) {
+function PlanJourney({ plan, fallbackWorkflowURL, githubConnected, capabilities, principalScopes, inventory, apps, manifest }: { plan: Operation; fallbackWorkflowURL?: string; githubConnected: boolean; capabilities: Set<string>; principalScopes: Set<string>; inventory: FleetInventory; apps: ReturnType<typeof useRuntimeContext>['apps']; manifest?: ReturnType<typeof useRuntimeContext>['serviceManifest'] }) {
   const [expanded, setExpanded] = useState(false)
   const [pullRequestURL, setPullRequestURL] = useState<string>()
   const [applyURL, setApplyURL] = useState<string>()
@@ -178,8 +179,11 @@ function PlanJourney({ plan, fallbackWorkflowURL, githubConnected, capabilities,
   const { toast } = useToast()
   const planID = plan.id ?? ''
   const reconciliationAvailable = capabilities.has('fleet-reconciliation-v1')
+  const attemptsAvailable = capabilities.has('fleet-runner-attempts-v1')
+  const canOperateFleet = principalScopes.has('fleet:operate') || principalScopes.has('api:write') || principalScopes.has('admin')
   const githubAvailable = capabilities.has('fleet-github-app-v1') && githubConnected
   const checkpoints = useQuery({ queryKey: ['fleet', 'plans', planID, 'reconciliations'], queryFn: () => apiFetch<FleetReconciliationResponse>(`/api/v1/fleet/plans/${encodeURIComponent(planID)}/reconciliations`), enabled: expanded && planID.length > 0 && reconciliationAvailable, refetchInterval: expanded ? 10_000 : false })
+  const attempts = useQuery({ queryKey: ['fleet', 'plans', planID, 'attempts'], queryFn: () => apiFetch<FleetRunnerAttemptResponse>(`/api/v1/fleet/plans/${encodeURIComponent(planID)}/attempts`), enabled: expanded && planID.length > 0 && attemptsAvailable, refetchInterval: expanded ? 5_000 : false })
   const pullReceipts = useQuery({ queryKey: ['operations', 'fleet.github.pull-request'], queryFn: () => apiFetch<OperationsResponse>('/api/operations?kind=fleet.github.pull-request&limit=100'), enabled: expanded && githubAvailable, staleTime: 8_000, refetchInterval: expanded ? 10_000 : false })
   const dispatchReceipts = useQuery({ queryKey: ['operations', 'fleet.github.apply-dispatch'], queryFn: () => apiFetch<OperationsResponse>('/api/operations?kind=fleet.github.apply-dispatch&limit=100'), enabled: expanded && githubAvailable, staleTime: 8_000, refetchInterval: expanded ? 10_000 : false })
   const current = objectValue(plan.payload?.current)
@@ -209,12 +213,13 @@ function PlanJourney({ plan, fallbackWorkflowURL, githubConnected, capabilities,
   })
   const pullReceipt = operationForPlan(pullReceipts.data?.operations, planID) ?? pullRequest.data
   const dispatchReceipt = operationForPlan(dispatchReceipts.data?.operations, planID) ?? dispatch.data
-  const executionSteps = buildFleetExecutionSteps({ plan, reconciliations: checkpoints.data?.reconciliations ?? [], pullRequest: pullReceipt, dispatch: dispatchReceipt })
+  const runnerAttempt = attempts.data?.attempts[0]
+  const executionSteps = buildFleetExecutionSteps({ plan, reconciliations: checkpoints.data?.reconciliations ?? [], pullRequest: pullReceipt, dispatch: dispatchReceipt, runnerAttempt })
   const visibleSteps = reconciliationAvailable ? executionSteps : executionSteps.slice(0, 3)
   const complete = planIsComplete(executionSteps)
   const currentStep = complete ? undefined : currentFleetStep(visibleSteps)
   const failed = executionSteps.some((step) => step.state === 'failed')
-  const started = Boolean(pullReceipt || dispatchReceipt || (checkpoints.data?.reconciliations.length ?? 0) > 0)
+  const started = Boolean(pullReceipt || dispatchReceipt || runnerAttempt || (checkpoints.data?.reconciliations.length ?? 0) > 0)
   return (
     <article className="fleet-journey">
       <button type="button" className="fleet-journey-summary" aria-expanded={expanded} onClick={() => setExpanded(!expanded)}>
@@ -224,9 +229,10 @@ function PlanJourney({ plan, fallbackWorkflowURL, githubConnected, capabilities,
       </button>
       {expanded && (
         <div className="fleet-journey-detail">
-          {checkpoints.isLoading || pullReceipts.isLoading || dispatchReceipts.isLoading ? <div className="panel-skeleton" aria-label="Loading execution evidence"><span /><span /></div> : <FleetStepList steps={visibleSteps} />}
+          {checkpoints.isLoading || attempts.isLoading || pullReceipts.isLoading || dispatchReceipts.isLoading ? <div className="panel-skeleton" aria-label="Loading execution evidence"><span /><span /></div> : <FleetStepList steps={visibleSteps} />}
           {!reconciliationAvailable && <p className="fleet-change-warning" role="status">This server does not advertise fleet-reconciliation-v1, so infrastructure checkpoint progress is hidden.</p>}
-          {(checkpoints.isRefetchError || pullReceipts.isRefetchError || dispatchReceipts.isRefetchError) && <p className="fleet-change-warning" role="alert">Execution evidence could not be refreshed. The list is last-known state; the durable plan remains safe in Norn.</p>}
+          {reconciliationAvailable && !attemptsAvailable && <p className="fleet-change-warning" role="status">This server has checkpoint evidence but no durable runner heartbeat contract; live phase state cannot be proven.</p>}
+          {(checkpoints.isRefetchError || attempts.isRefetchError || pullReceipts.isRefetchError || dispatchReceipts.isRefetchError) && <p className="fleet-change-warning" role="alert">Execution evidence could not be refreshed. The list is last-known state; the durable plan remains safe in Norn.</p>}
           {currentStep && <div className={`fleet-current-step state-${currentStep.state}`}>
             <div><span className="eyebrow">{currentStep.state === 'failed' ? 'Needs attention' : currentStep.state === 'active' ? 'Current step' : 'Next expected step'}</span><strong>{currentStep.label}</strong><p>{currentStep.message}</p></div>
             <CurrentStepActions
@@ -240,10 +246,14 @@ function PlanJourney({ plan, fallbackWorkflowURL, githubConnected, capabilities,
               destructive={destructive}
               pullRequest={pullRequest}
               dispatch={dispatch}
+              planID={planID}
+              runnerAttempt={runnerAttempt}
+              currentStep={currentStep}
+              canOperateFleet={canOperateFleet}
             />
           </div>}
           <div className="fleet-handoff"><code>{planID}</code>{planID && <NavLink className="filter-btn" to="/operations">View operations</NavLink>}</div>
-          <p className="fleet-change-note">This plan ID is the resume key. A dispatch receipt proves handoff only. Until the runner records a checkpoint, Norn labels the next phase pending because the current contract has no workflow heartbeat or attempt state.</p>
+          <p className="fleet-change-note">This plan ID is the resume key. Dispatch proves handoff; runner attempts prove liveness, heartbeats bound the active phase, and append-only checkpoints remain the authority for advancing.</p>
           {reconciliationAvailable && <FleetPlanTopology plan={plan} inventory={inventory} apps={apps} manifest={manifest} steps={executionSteps} />}
         </div>
       )}
@@ -261,7 +271,7 @@ function FleetStepList({ steps }: { steps: FleetExecutionStep[] }) {
   ))}</ol>
 }
 
-function CurrentStepActions({ complete, githubAvailable, pullReceipt, dispatchReceipt, workflowURL, pullRequestURL, applyURL, destructive, pullRequest, dispatch }: {
+function CurrentStepActions({ complete, githubAvailable, pullReceipt, dispatchReceipt, workflowURL, pullRequestURL, applyURL, destructive, pullRequest, dispatch, planID, runnerAttempt, currentStep, canOperateFleet }: {
   complete: boolean
   githubAvailable: boolean
   pullReceipt?: Operation
@@ -272,12 +282,37 @@ function CurrentStepActions({ complete, githubAvailable, pullReceipt, dispatchRe
   destructive: boolean
   pullRequest: { isPending: boolean; mutate: () => void }
   dispatch: { isPending: boolean; mutate: () => void }
+  planID: string
+  runnerAttempt?: FleetRunnerAttempt
+  currentStep?: FleetExecutionStep
+  canOperateFleet: boolean
 }) {
+  const queryClient = useQueryClient()
+  const { toast } = useToast()
+  const advance = useMutation({
+    mutationFn: () => apiFetch<FleetRunnerAttempt>(`/api/v1/fleet/plans/${encodeURIComponent(planID)}/attempts/${encodeURIComponent(runnerAttempt?.id ?? '')}/advance`, {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ schemaVersion: 'norn.fleet-runner-attempt/v1', expectedPhase: runnerAttempt?.currentPhase, revision: runnerAttempt?.revision }),
+    }),
+    onSuccess: (attempt) => {
+      queryClient.invalidateQueries({ queryKey: ['fleet', 'plans', planID, 'attempts'] })
+      queryClient.invalidateQueries({ queryKey: ['fleet', 'plans', planID, 'reconciliations'] })
+      toast({ kind: 'success', title: attempt.status === 'succeeded' ? 'Fleet run completed' : 'Fleet phase advanced', description: attempt.currentPhase })
+    },
+    onError: (error) => toast({ kind: 'error', title: 'Could not advance phase', description: error instanceof Error ? error.message : planID }),
+  })
   const recordedPullURL = safeWorkflowURL(String(pullReceipt?.payload?.url ?? pullRequestURL ?? ''))
   const recordedApplyURL = safeWorkflowURL(String(dispatchReceipt?.payload?.url ?? applyURL ?? ''))
+  const runnerURL = safeWorkflowURL(runnerAttempt?.workflowUrl ?? '')
+  const runnerActive = runnerAttempt?.status === 'queued' || runnerAttempt?.status === 'running'
+  const runnerNeedsRetry = runnerAttempt?.status === 'failed' || runnerAttempt?.status === 'abandoned'
+  const phaseProven = currentStep?.operation?.status === 'succeeded'
   if (complete) return <span className="fleet-action-complete">No action required</span>
   if (githubAvailable && !pullReceipt) return <button className="filter-btn active" type="button" disabled={pullRequest.isPending} onClick={() => pullRequest.mutate()}>{pullRequest.isPending ? 'Opening…' : 'Open or recover review'}</button>
   if (githubAvailable && pullReceipt && !dispatchReceipt) return <div className="fleet-step-actions">{recordedPullURL && <a href={recordedPullURL} target="_blank" rel="noreferrer">View pull request ↗</a>}<button className="filter-btn active" type="button" disabled={dispatch.isPending} onClick={() => dispatch.mutate()}>{dispatch.isPending ? 'Dispatching…' : destructive ? 'Dispatch reviewed change' : 'Dispatch protected apply'}</button></div>
+  if (runnerActive && phaseProven && canOperateFleet) return <div className="fleet-step-actions">{runnerURL && <a href={runnerURL} target="_blank" rel="noreferrer">View runner ↗</a>}<button className="filter-btn active" type="button" disabled={advance.isPending} onClick={() => advance.mutate()}>{advance.isPending ? 'Advancing…' : runnerAttempt?.currentPhase === 'complete' ? 'Complete proven run' : 'Advance proven phase'}</button></div>
+  if (runnerNeedsRetry && runnerURL) return <a href={runnerURL} target="_blank" rel="noreferrer">Retry in protected runner ↗</a>
+  if (runnerActive && runnerURL) return <a href={runnerURL} target="_blank" rel="noreferrer">View active runner ↗</a>
   if (recordedApplyURL || recordedPullURL || workflowURL) return <div className="fleet-step-actions">{recordedApplyURL && <a href={recordedApplyURL} target="_blank" rel="noreferrer">View apply run ↗</a>}{recordedPullURL && <a href={recordedPullURL} target="_blank" rel="noreferrer">View pull request ↗</a>}{!recordedApplyURL && workflowURL && <a href={workflowURL} target="_blank" rel="noreferrer">Continue in protected runner ↗</a>}</div>
   return <span className="fleet-action-unavailable">No safe Norn action is available for this step.</span>
 }

@@ -98,9 +98,10 @@ Norn upgrades itself separately from the apps it runs. The platform lane builds 
 
 ```bash
 norn operations --active
-release_sha=$(git rev-parse origin/main)
+release_sha=$(git rev-parse origin/master)
 norn platform preflight "$release_sha"
 norn platform upgrade "$release_sha"
+norn platform rebuild "$release_sha" --verify
 norn smoke platform
 ```
 

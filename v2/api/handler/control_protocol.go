@@ -15,6 +15,7 @@ import (
 )
 
 var maintenanceRefPattern = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9._/@:+-]{0,199}$`)
+var releaseSHAPrefixPattern = regexp.MustCompile(`^[0-9a-f]{7,40}$`)
 
 type platformRequest struct {
 	Ref       string `json:"ref"`
@@ -82,7 +83,7 @@ func (h *Handler) QueuePlatformRollback(w http.ResponseWriter, r *http.Request) 
 		WriteControlProblem(w, r, http.StatusBadRequest, "invalid_request", err.Error())
 		return
 	}
-	if !maintenanceRefPattern.MatchString(req.SHA) {
+	if !releaseSHAPrefixPattern.MatchString(req.SHA) {
 		WriteControlProblem(w, r, http.StatusBadRequest, "invalid_release_sha", "invalid release sha")
 		return
 	}

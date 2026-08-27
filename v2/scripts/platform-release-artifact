@@ -1,0 +1,1119 @@
+#!/usr/bin/env python3
+"""Build and transport immutable, signed Norn platform release bundles.
+
+The public integration surface is intentionally small:
+
+  package  Create a deterministic archive, SPDX file inventory, and manifest.
+  sign     Sign the manifest with an OpenSSL Ed25519 private key from the env.
+  verify   Verify a downloaded bundle or an installed release.
+  fetch    Download one exact GitHub Release bundle into an atomic cache.
+  import   Safely extract a verified bundle into NORN_RELEASES_DIR/<full-sha>.
+
+`platform-release-fetch-github` and `platform-release-verify-github` adapt these
+commands to platform-upgrade's fetch/verify hook argv. GitHub tokens and private
+key material are accepted only through environment variables, never argv.
+"""
+
+from __future__ import annotations
+
+import argparse
+import ctypes
+import datetime as dt
+import errno
+import gzip
+import hashlib
+import json
+import os
+import platform
+import re
+import shutil
+import stat
+import subprocess
+import sys
+import tarfile
+import tempfile
+import urllib.error
+import urllib.parse
+import urllib.request
+from pathlib import Path, PurePosixPath
+from typing import BinaryIO, Iterable
+
+
+SCHEMA = "norn.platform.release-artifact/v1"
+SIGNATURE_SCHEMA = "norn.platform-signature-state/v1"
+FULL_SHA_RE = re.compile(r"^[0-9a-f]{40}$")
+SHA_PREFIX_RE = re.compile(r"^[0-9a-f]{7,40}$")
+REPOSITORY_RE = re.compile(r"^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$")
+PLATFORM_VALUES = {"linux", "darwin"}
+ARCH_VALUES = {"amd64", "arm64"}
+MAX_MANIFEST_BYTES = 2 * 1024 * 1024
+MAX_SIGNATURE_BYTES = 8 * 1024
+MAX_ASSET_BYTES = 4 * 1024 * 1024 * 1024
+MAX_FILES = 200_000
+MAX_EXPANDED_BYTES = 8 * 1024 * 1024 * 1024
+TRANSPORT_METADATA_DIRECTORY = "signatures"
+
+
+class ArtifactError(RuntimeError):
+    pass
+
+
+class GitHubHTTPError(ArtifactError):
+    def __init__(self, status: int):
+        super().__init__(f"GitHub API request failed with HTTP {status}")
+        self.status = status
+
+
+def _sha256_file(path: Path) -> str:
+    digest = hashlib.sha256()
+    with path.open("rb") as handle:
+        for chunk in iter(lambda: handle.read(1024 * 1024), b""):
+            digest.update(chunk)
+    return digest.hexdigest()
+
+
+def _canonical_json(value: object) -> bytes:
+    return (json.dumps(value, sort_keys=True, separators=(",", ":"), ensure_ascii=False) + "\n").encode()
+
+
+def _read_limited(path: Path, limit: int) -> bytes:
+    info = path.lstat()
+    if not stat.S_ISREG(info.st_mode):
+        raise ArtifactError(f"expected a regular file: {path}")
+    if info.st_size > limit:
+        raise ArtifactError(f"file exceeds the {limit}-byte limit: {path.name}")
+    return path.read_bytes()
+
+
+def _write_new(path: Path, data: bytes, mode: int = 0o644) -> None:
+    flags = os.O_WRONLY | os.O_CREAT | os.O_EXCL
+    if hasattr(os, "O_NOFOLLOW"):
+        flags |= os.O_NOFOLLOW
+    fd = os.open(path, flags, mode)
+    try:
+        with os.fdopen(fd, "wb", closefd=False) as handle:
+            handle.write(data)
+            handle.flush()
+            os.fsync(handle.fileno())
+    except BaseException:
+        try:
+            path.unlink()
+        except FileNotFoundError:
+            pass
+        raise
+    finally:
+        os.close(fd)
+
+
+def _atomic_directory_no_replace(staging: Path, destination: Path) -> None:
+    """Atomically rename staging without ever replacing destination.
+
+    Linux and macOS both expose a kernel-level no-replace rename. A conservative
+    O_EXCL lock fallback covers filesystems/libcs that do not expose the call.
+    """
+    if destination.exists() or destination.is_symlink():
+        raise ArtifactError(f"destination already exists: {destination}")
+    libc = ctypes.CDLL(None, use_errno=True)
+    source_b = os.fsencode(staging)
+    destination_b = os.fsencode(destination)
+    if sys.platform.startswith("linux") and hasattr(libc, "renameat2"):
+        result = libc.renameat2(-100, source_b, -100, destination_b, 1)
+        if result == 0:
+            return
+        error = ctypes.get_errno()
+        if error == errno.EEXIST:
+            raise ArtifactError(f"destination already exists: {destination}")
+        if error not in (errno.ENOSYS, errno.EINVAL, errno.ENOTSUP):
+            raise OSError(error, os.strerror(error), str(destination))
+    if sys.platform == "darwin" and hasattr(libc, "renamex_np"):
+        result = libc.renamex_np(source_b, destination_b, 0x00000004)
+        if result == 0:
+            return
+        error = ctypes.get_errno()
+        if error == errno.EEXIST:
+            raise ArtifactError(f"destination already exists: {destination}")
+        if error not in (errno.ENOSYS, errno.EINVAL, errno.ENOTSUP):
+            raise OSError(error, os.strerror(error), str(destination))
+
+    lock = destination.parent / f".{destination.name}.install.lock"
+    lock_fd = os.open(lock, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+    try:
+        if destination.exists() or destination.is_symlink():
+            raise ArtifactError(f"destination already exists: {destination}")
+        os.rename(staging, destination)
+    finally:
+        os.close(lock_fd)
+        lock.unlink(missing_ok=True)
+
+
+def _normalize_os(value: str | None) -> str:
+    candidate = (value or platform.system()).lower()
+    aliases = {"macos": "darwin", "mac": "darwin"}
+    candidate = aliases.get(candidate, candidate)
+    if candidate not in PLATFORM_VALUES:
+        raise ArtifactError(f"unsupported operating system: {candidate}")
+    return candidate
+
+
+def _normalize_arch(value: str | None) -> str:
+    candidate = (value or platform.machine()).lower()
+    aliases = {"x86_64": "amd64", "x64": "amd64", "aarch64": "arm64"}
+    candidate = aliases.get(candidate, candidate)
+    if candidate not in ARCH_VALUES:
+        raise ArtifactError(f"unsupported architecture: {candidate}")
+    return candidate
+
+
+def _full_sha(value: str) -> str:
+    value = value.lower()
+    if not FULL_SHA_RE.fullmatch(value):
+        raise ArtifactError("commit must be an exact 40-character lowercase SHA-1")
+    return value
+
+
+def _repository(value: str) -> str:
+    if not REPOSITORY_RE.fullmatch(value) or ".." in value:
+        raise ArtifactError("repository must use the owner/repository form")
+    return value
+
+
+def _safe_relative(value: str) -> PurePosixPath:
+    if not value or "\\" in value or "\x00" in value:
+        raise ArtifactError(f"unsafe archive path: {value!r}")
+    path = PurePosixPath(value)
+    if path.is_absolute() or any(part in ("", ".", "..") for part in path.parts):
+        raise ArtifactError(f"unsafe archive path: {value!r}")
+    return path
+
+
+def _asset_base(commit: str, operating_system: str, architecture: str) -> str:
+    return f"norn-platform-{commit}-{operating_system}-{architecture}"
+
+
+def _source_epoch(value: int | None) -> int:
+    if value is not None:
+        epoch = value
+    elif os.environ.get("SOURCE_DATE_EPOCH"):
+        try:
+            epoch = int(os.environ["SOURCE_DATE_EPOCH"])
+        except ValueError as exc:
+            raise ArtifactError("SOURCE_DATE_EPOCH must be an integer") from exc
+    else:
+        epoch = int(dt.datetime.now(dt.timezone.utc).timestamp())
+    if epoch < 0:
+        raise ArtifactError("source date epoch cannot be negative")
+    return epoch
+
+
+def _collect_release(root: Path) -> tuple[list[str], list[dict[str, object]]]:
+    root_stat = root.lstat()
+    if not stat.S_ISDIR(root_stat.st_mode) or root.is_symlink():
+        raise ArtifactError("release directory must be a real directory, not a symlink")
+    directories: list[str] = []
+    files: list[dict[str, object]] = []
+    total = 0
+    for current, names, filenames in os.walk(root, topdown=True, followlinks=False):
+        names.sort()
+        filenames.sort()
+        current_path = Path(current)
+        kept: list[str] = []
+        for name in names:
+            path = current_path / name
+            rel = path.relative_to(root).as_posix()
+            if rel.split("/", 1)[0] == TRANSPORT_METADATA_DIRECTORY:
+                raise ArtifactError(f"release contains reserved artifact metadata: {rel}")
+            info = path.lstat()
+            if not stat.S_ISDIR(info.st_mode) or path.is_symlink():
+                raise ArtifactError(f"release contains a symlink or non-directory: {rel}")
+            _safe_relative(rel)
+            directories.append(rel)
+            kept.append(name)
+        names[:] = kept
+        for name in filenames:
+            path = current_path / name
+            rel = path.relative_to(root).as_posix()
+            # A local build has an unsigned state file. The imported artifact
+            # receives a new signed state file after cryptographic validation.
+            if rel == "release.signature.json":
+                continue
+            if rel.split("/", 1)[0] == TRANSPORT_METADATA_DIRECTORY:
+                raise ArtifactError(f"release contains reserved artifact metadata: {rel}")
+            info = path.lstat()
+            if not stat.S_ISREG(info.st_mode) or path.is_symlink():
+                raise ArtifactError(f"release contains a symlink or non-regular file: {rel}")
+            _safe_relative(rel)
+            total += info.st_size
+            if len(files) >= MAX_FILES or total > MAX_EXPANDED_BYTES:
+                raise ArtifactError("release exceeds the file-count or expanded-size limit")
+            files.append({
+                "path": rel,
+                "sha256": _sha256_file(path),
+                "size": info.st_size,
+                # Imported releases are immutable on disk. Record final modes,
+                # not the writable source-build modes.
+                "mode": "0555" if info.st_mode & 0o111 else "0444",
+            })
+    return sorted(directories), files
+
+
+def _write_archive(root: Path, directories: list[str], files: list[dict[str, object]], output: Path, epoch: int) -> None:
+    with output.open("xb") as raw:
+        with gzip.GzipFile(filename="", mode="wb", fileobj=raw, mtime=epoch) as compressed:
+            with tarfile.open(fileobj=compressed, mode="w", format=tarfile.PAX_FORMAT) as archive:
+                for name in directories:
+                    info = tarfile.TarInfo(name=name)
+                    info.type = tarfile.DIRTYPE
+                    info.mode = 0o755
+                    info.uid = info.gid = 0
+                    info.uname = info.gname = ""
+                    info.mtime = epoch
+                    archive.addfile(info)
+                for record in files:
+                    name = str(record["path"])
+                    info = tarfile.TarInfo(name=name)
+                    info.size = int(record["size"])
+                    info.mode = int(str(record["mode"]), 8)
+                    info.uid = info.gid = 0
+                    info.uname = info.gname = ""
+                    info.mtime = epoch
+                    with (root / Path(*PurePosixPath(name).parts)).open("rb") as handle:
+                        archive.addfile(info, handle)
+        raw.flush()
+        os.fsync(raw.fileno())
+
+
+def _spdx_document(commit: str, operating_system: str, architecture: str, files: list[dict[str, object]], epoch: int) -> dict[str, object]:
+    created = dt.datetime.fromtimestamp(epoch, dt.timezone.utc).replace(microsecond=0).isoformat().replace("+00:00", "Z")
+    package_id = "SPDXRef-Package-Norn"
+    spdx_files = []
+    relationships = [{"spdxElementId": "SPDXRef-DOCUMENT", "relationshipType": "DESCRIBES", "relatedSpdxElement": package_id}]
+    for index, record in enumerate(files, 1):
+        file_id = f"SPDXRef-File-{index}"
+        spdx_files.append({
+            "SPDXID": file_id,
+            "fileName": f"./{record['path']}",
+            "checksums": [{"algorithm": "SHA256", "checksumValue": record["sha256"]}],
+            "licenseConcluded": "NOASSERTION",
+            "copyrightText": "NOASSERTION",
+        })
+        relationships.append({"spdxElementId": package_id, "relationshipType": "CONTAINS", "relatedSpdxElement": file_id})
+    return {
+        "spdxVersion": "SPDX-2.3",
+        "dataLicense": "CC0-1.0",
+        "SPDXID": "SPDXRef-DOCUMENT",
+        "name": f"norn-platform-{commit}-{operating_system}-{architecture}",
+        "documentNamespace": f"https://norn.dev/spdx/{commit}/{operating_system}/{architecture}",
+        "creationInfo": {"created": created, "creators": ["Tool: platform-release-artifact"]},
+        "packages": [{
+            "name": "norn-platform",
+            "SPDXID": package_id,
+            "versionInfo": commit,
+            "downloadLocation": "NOASSERTION",
+            "filesAnalyzed": True,
+            "licenseConcluded": "NOASSERTION",
+            "licenseDeclared": "NOASSERTION",
+            "copyrightText": "NOASSERTION",
+            "externalRefs": [{"referenceCategory": "OTHER", "referenceType": "norn-platform", "referenceLocator": f"{operating_system}/{architecture}"}],
+        }],
+        "files": spdx_files,
+        "relationships": relationships,
+    }
+
+
+def package_release(args: argparse.Namespace) -> Path:
+    commit = _full_sha(args.commit)
+    operating_system = _normalize_os(args.os)
+    architecture = _normalize_arch(args.arch)
+    root_input = Path(args.release_dir).expanduser().absolute()
+    if root_input.is_symlink():
+        raise ArtifactError("release directory must not be a symlink")
+    root = root_input.resolve(strict=True)
+    destination = Path(args.output_dir).expanduser().absolute()
+    destination.parent.mkdir(parents=True, exist_ok=True)
+    if destination.exists() or destination.is_symlink():
+        raise ArtifactError(f"output directory already exists: {destination}")
+    try:
+        destination.relative_to(root)
+        raise ArtifactError("output directory cannot be inside the release directory")
+    except ValueError:
+        pass
+    epoch = _source_epoch(args.source_date_epoch)
+    directories, files = _collect_release(root)
+    base = _asset_base(commit, operating_system, architecture)
+    staging = Path(tempfile.mkdtemp(prefix=f".{destination.name}.tmp-", dir=destination.parent))
+    try:
+        archive_path = staging / f"{base}.tar.gz"
+        sbom_path = staging / f"{base}.sbom.spdx.json"
+        manifest_path = staging / f"{base}.manifest.json"
+        _write_archive(root, directories, files, archive_path, epoch)
+        _write_new(sbom_path, _canonical_json(_spdx_document(commit, operating_system, architecture, files, epoch)))
+        repository = args.repository or os.environ.get("GITHUB_REPOSITORY", "")
+        if repository:
+            _repository(repository)
+        manifest = {
+            "schemaVersion": SCHEMA,
+            "commit": commit,
+            "releaseTag": f"{args.tag_prefix}{commit}",
+            "platform": {"os": operating_system, "arch": architecture},
+            "archive": {"name": archive_path.name, "sha256": _sha256_file(archive_path), "size": archive_path.stat().st_size},
+            "sbom": {"name": sbom_path.name, "sha256": _sha256_file(sbom_path), "size": sbom_path.stat().st_size, "format": "spdx-json-2.3"},
+            "directories": directories,
+            "files": files,
+            "provenance": {
+                "repository": repository,
+                "sourceDateEpoch": epoch,
+                "workflowRef": os.environ.get("GITHUB_WORKFLOW_REF", ""),
+                "workflowRunId": os.environ.get("GITHUB_RUN_ID", ""),
+                "workflowRunAttempt": os.environ.get("GITHUB_RUN_ATTEMPT", ""),
+            },
+        }
+        _write_new(manifest_path, _canonical_json(manifest))
+        _atomic_directory_no_replace(staging, destination)
+    except BaseException:
+        shutil.rmtree(staging, ignore_errors=True)
+        raise
+    return destination
+
+
+def _single_manifest(bundle: Path) -> Path:
+    manifests = sorted(bundle.glob("norn-platform-*.manifest.json"))
+    if len(manifests) != 1:
+        raise ArtifactError("bundle must contain exactly one platform manifest")
+    return manifests[0]
+
+
+def _openssl(args: list[str]) -> None:
+    environment = os.environ.copy()
+    for secret_name in (
+        "NORN_RELEASE_SIGNING_KEY",
+        "NORN_RELEASE_GITHUB_TOKEN",
+        "NORN_RELEASE_GITHUB_TOKEN_FILE",
+        "GH_TOKEN",
+    ):
+        environment.pop(secret_name, None)
+    configured = os.environ.get("NORN_OPENSSL")
+    candidates = [configured] if configured else [
+        "/opt/homebrew/opt/openssl@3/bin/openssl",
+        "/usr/local/opt/openssl@3/bin/openssl",
+        "openssl",
+    ]
+    executable = next((value for value in candidates if value and (shutil.which(value) or Path(value).is_file())), None)
+    if not executable:
+        raise ArtifactError("OpenSSL 3 is required for Ed25519 signatures")
+    result = subprocess.run([executable, *args], env=environment, stdout=subprocess.PIPE, stderr=subprocess.PIPE, check=False)
+    if result.returncode != 0:
+        detail = result.stderr.decode(errors="replace").strip()[-1000:]
+        raise ArtifactError(f"OpenSSL operation failed{': ' + detail if detail else ''}")
+
+
+def sign_bundle(bundle: Path) -> Path:
+    bundle = bundle.resolve(strict=True)
+    manifest = _single_manifest(bundle)
+    signature = manifest.with_name(manifest.name.removesuffix(".json") + ".sig")
+    if signature.exists() or signature.is_symlink():
+        raise ArtifactError(f"signature already exists: {signature}")
+    key_content = os.environ.get("NORN_RELEASE_SIGNING_KEY")
+    key_path_value = os.environ.get("NORN_RELEASE_SIGNING_KEY_FILE")
+    if bool(key_content) == bool(key_path_value):
+        raise ArtifactError("set exactly one of NORN_RELEASE_SIGNING_KEY or NORN_RELEASE_SIGNING_KEY_FILE")
+    temporary_key: Path | None = None
+    temporary_signature: Path | None = None
+    try:
+        if key_content:
+            fd, name = tempfile.mkstemp(prefix="norn-release-key-", dir=os.environ.get("RUNNER_TEMP"))
+            os.fchmod(fd, 0o600)
+            with os.fdopen(fd, "wb") as handle:
+                handle.write(key_content.encode())
+            temporary_key = Path(name)
+            key_path = temporary_key
+        else:
+            key_path = Path(str(key_path_value)).expanduser().resolve(strict=True)
+            if not stat.S_ISREG(key_path.lstat().st_mode):
+                raise ArtifactError("signing key must be a regular file")
+        fd, name = tempfile.mkstemp(prefix=f".{signature.name}.tmp-", dir=bundle)
+        os.close(fd)
+        temporary_signature = Path(name)
+        _openssl(["pkeyutl", "-sign", "-rawin", "-inkey", str(key_path), "-in", str(manifest), "-out", str(temporary_signature)])
+        data = _read_limited(temporary_signature, MAX_SIGNATURE_BYTES)
+        if not data:
+            raise ArtifactError("OpenSSL produced an empty signature")
+        _write_new(signature, data)
+    finally:
+        if temporary_signature:
+            temporary_signature.unlink(missing_ok=True)
+        if temporary_key:
+            temporary_key.unlink(missing_ok=True)
+    return signature
+
+
+def _verify_signature(manifest: Path, signature: Path, public_key: Path) -> None:
+    _read_limited(manifest, MAX_MANIFEST_BYTES)
+    _read_limited(signature, MAX_SIGNATURE_BYTES)
+    if not stat.S_ISREG(public_key.lstat().st_mode):
+        raise ArtifactError("public key must be a regular file")
+    _openssl(["pkeyutl", "-verify", "-pubin", "-rawin", "-inkey", str(public_key), "-in", str(manifest), "-sigfile", str(signature)])
+
+
+def _load_manifest(path: Path) -> dict[str, object]:
+    try:
+        value = json.loads(_read_limited(path, MAX_MANIFEST_BYTES))
+    except (json.JSONDecodeError, UnicodeDecodeError) as exc:
+        raise ArtifactError("manifest is not valid JSON") from exc
+    if not isinstance(value, dict) or value.get("schemaVersion") != SCHEMA:
+        raise ArtifactError("unsupported release artifact manifest")
+    commit = _full_sha(str(value.get("commit", "")))
+    platform_value = value.get("platform")
+    if not isinstance(platform_value, dict):
+        raise ArtifactError("manifest platform is missing")
+    operating_system = _normalize_os(str(platform_value.get("os", "")))
+    architecture = _normalize_arch(str(platform_value.get("arch", "")))
+    expected_base = _asset_base(commit, operating_system, architecture)
+    release_tag = str(value.get("releaseTag", ""))
+    if not release_tag.endswith(commit) or not re.fullmatch(r"[A-Za-z0-9._-]+", release_tag):
+        raise ArtifactError("manifest release tag does not bind the full commit")
+    for key, suffix in (("archive", ".tar.gz"), ("sbom", ".sbom.spdx.json")):
+        asset = value.get(key)
+        if not isinstance(asset, dict) or asset.get("name") != expected_base + suffix:
+            raise ArtifactError(f"manifest {key} name is not canonical")
+        if not re.fullmatch(r"[0-9a-f]{64}", str(asset.get("sha256", ""))):
+            raise ArtifactError(f"manifest {key} checksum is invalid")
+        if not isinstance(asset.get("size"), int) or not 0 <= int(asset["size"]) <= MAX_ASSET_BYTES:
+            raise ArtifactError(f"manifest {key} size is invalid")
+    directories = value.get("directories")
+    files = value.get("files")
+    if not isinstance(directories, list) or not isinstance(files, list) or len(files) > MAX_FILES:
+        raise ArtifactError("manifest file inventory is invalid")
+    seen: set[str] = set()
+    total = 0
+    for name in directories:
+        safe = str(_safe_relative(str(name)))
+        if safe in seen:
+            raise ArtifactError(f"duplicate manifest path: {safe}")
+        seen.add(safe)
+    for record in files:
+        if not isinstance(record, dict):
+            raise ArtifactError("manifest contains an invalid file record")
+        name = str(_safe_relative(str(record.get("path", ""))))
+        if name in seen:
+            raise ArtifactError(f"duplicate manifest path: {name}")
+        seen.add(name)
+        if not re.fullmatch(r"[0-9a-f]{64}", str(record.get("sha256", ""))):
+            raise ArtifactError(f"invalid checksum for {name}")
+        if not isinstance(record.get("size"), int) or int(record["size"]) < 0:
+            raise ArtifactError(f"invalid size for {name}")
+        if record.get("mode") not in ("0444", "0555"):
+            raise ArtifactError(f"invalid mode for {name}")
+        total += int(record["size"])
+    if total > MAX_EXPANDED_BYTES:
+        raise ArtifactError("manifest expanded size exceeds the safety limit")
+    directory_set = set(str(name) for name in directories)
+    for name in directory_set | {str(record["path"]) for record in files}:
+        path = PurePosixPath(name)
+        for parent in path.parents:
+            if str(parent) != "." and str(parent) not in directory_set:
+                raise ArtifactError(f"manifest omits parent directory {parent} for {name}")
+    return value
+
+
+def _asset_path(bundle: Path, asset: object) -> Path:
+    assert isinstance(asset, dict)
+    path = bundle / str(asset["name"])
+    if path.parent != bundle:
+        raise ArtifactError("asset name escapes the bundle directory")
+    try:
+        info = path.lstat()
+    except FileNotFoundError:
+        info = None
+    if info is None or not stat.S_ISREG(info.st_mode):
+        raise ArtifactError(f"asset is missing or not a regular file: {path.name}")
+    data_size = info.st_size
+    if data_size != int(asset["size"]) or _sha256_file(path) != asset["sha256"]:
+        raise ArtifactError(f"asset checksum or size mismatch: {path.name}")
+    return path
+
+
+def _verify_archive(archive_path: Path, manifest: dict[str, object], extract_to: Path | None = None) -> None:
+    expected_files = {str(record["path"]): record for record in manifest["files"]}  # type: ignore[index]
+    expected_directories = set(str(name) for name in manifest["directories"])  # type: ignore[arg-type]
+    seen_files: set[str] = set()
+    seen_directories: set[str] = set()
+    if extract_to:
+        extract_to.mkdir(mode=0o700)
+    try:
+        archive = tarfile.open(archive_path, mode="r:gz")
+    except (tarfile.TarError, OSError) as exc:
+        raise ArtifactError("release archive is invalid") from exc
+    with archive:
+        members = archive.getmembers()
+        if len(members) > MAX_FILES * 2:
+            raise ArtifactError("archive contains too many entries")
+        for member in members:
+            name = str(_safe_relative(member.name))
+            if member.issym() or member.islnk() or member.isdev() or member.isfifo():
+                raise ArtifactError(f"archive links and special files are forbidden: {name}")
+            if member.isdir():
+                if name not in expected_directories or name in seen_directories:
+                    raise ArtifactError(f"unexpected or duplicate archive directory: {name}")
+                seen_directories.add(name)
+                if extract_to:
+                    (extract_to / Path(*PurePosixPath(name).parts)).mkdir(parents=True, exist_ok=False, mode=0o755)
+                continue
+            if not member.isfile() or name not in expected_files or name in seen_files:
+                raise ArtifactError(f"unexpected, duplicate, or non-regular archive entry: {name}")
+            record = expected_files[name]
+            if member.size != int(record["size"]):
+                raise ArtifactError(f"archive size mismatch: {name}")
+            source = archive.extractfile(member)
+            if source is None:
+                raise ArtifactError(f"cannot read archive entry: {name}")
+            digest = hashlib.sha256()
+            destination_handle: BinaryIO | None = None
+            try:
+                if extract_to:
+                    destination = extract_to / Path(*PurePosixPath(name).parts)
+                    destination.parent.mkdir(parents=True, exist_ok=True, mode=0o755)
+                    flags = os.O_WRONLY | os.O_CREAT | os.O_EXCL
+                    if hasattr(os, "O_NOFOLLOW"):
+                        flags |= os.O_NOFOLLOW
+                    fd = os.open(destination, flags, int(str(record["mode"]), 8))
+                    destination_handle = os.fdopen(fd, "wb")
+                copied = 0
+                for chunk in iter(lambda: source.read(1024 * 1024), b""):
+                    copied += len(chunk)
+                    if copied > int(record["size"]):
+                        raise ArtifactError(f"archive entry exceeds declared size: {name}")
+                    digest.update(chunk)
+                    if destination_handle:
+                        destination_handle.write(chunk)
+                if destination_handle:
+                    destination_handle.flush()
+                    os.fsync(destination_handle.fileno())
+            finally:
+                if destination_handle:
+                    destination_handle.close()
+                source.close()
+            if digest.hexdigest() != record["sha256"]:
+                raise ArtifactError(f"archive entry checksum mismatch: {name}")
+            seen_files.add(name)
+    if seen_files != set(expected_files) or seen_directories != expected_directories:
+        raise ArtifactError("archive inventory does not match the signed manifest")
+
+
+def verify_bundle(bundle: Path, public_key: Path) -> dict[str, object]:
+    bundle = bundle.absolute()
+    if bundle.is_symlink():
+        raise ArtifactError("bundle directory must not be a symlink")
+    bundle = bundle.resolve(strict=True)
+    manifest_path = _single_manifest(bundle)
+    signature_path = manifest_path.with_name(manifest_path.name.removesuffix(".json") + ".sig")
+    _verify_signature(manifest_path, signature_path, public_key)
+    manifest = _load_manifest(manifest_path)
+    base = _asset_base(str(manifest["commit"]), str(manifest["platform"]["os"]), str(manifest["platform"]["arch"]))  # type: ignore[index]
+    if manifest_path.name != base + ".manifest.json" or signature_path.name != base + ".manifest.sig":
+        raise ArtifactError("manifest or signature filename is not canonical")
+    archive_path = _asset_path(bundle, manifest["archive"])
+    sbom_path = _asset_path(bundle, manifest["sbom"])
+    try:
+        sbom = json.loads(_read_limited(sbom_path, MAX_MANIFEST_BYTES * 16))
+    except (json.JSONDecodeError, UnicodeDecodeError) as exc:
+        raise ArtifactError("SBOM is not valid JSON") from exc
+    if not isinstance(sbom, dict) or sbom.get("spdxVersion") != "SPDX-2.3":
+        raise ArtifactError("SBOM is not SPDX JSON 2.3")
+    _verify_archive(archive_path, manifest)
+    return manifest
+
+
+def _verify_installed(release: Path, public_key: Path) -> dict[str, object]:
+    if release.is_symlink():
+        raise ArtifactError("installed release directory must not be a symlink")
+    root_info = release.lstat()
+    if not stat.S_ISDIR(root_info.st_mode) or root_info.st_mode & 0o222:
+        raise ArtifactError("installed release root must be an immutable directory")
+    metadata = release / TRANSPORT_METADATA_DIRECTORY
+    manifest_path = _single_manifest(metadata)
+    signature_path = manifest_path.with_name(manifest_path.name.removesuffix(".json") + ".sig")
+    _verify_signature(manifest_path, signature_path, public_key)
+    manifest = _load_manifest(manifest_path)
+    if release.name != manifest["commit"]:
+        raise ArtifactError("installed release directory does not match the signed commit")
+    sbom_path = metadata / str(manifest["sbom"]["name"])  # type: ignore[index]
+    if sbom_path.stat().st_size != int(manifest["sbom"]["size"]) or _sha256_file(sbom_path) != manifest["sbom"]["sha256"]:  # type: ignore[index]
+        raise ArtifactError("installed SBOM does not match the signed manifest")
+    for record in manifest["files"]:  # type: ignore[assignment]
+        name = str(record["path"])
+        path = release / Path(*PurePosixPath(name).parts)
+        info = path.lstat()
+        if not stat.S_ISREG(info.st_mode) or path.is_symlink():
+            raise ArtifactError(f"installed release file is not regular: {name}")
+        if info.st_size != int(record["size"]) or _sha256_file(path) != record["sha256"]:
+            raise ArtifactError(f"installed release file does not match: {name}")
+        if (info.st_mode & 0o777) != int(str(record["mode"]), 8):
+            raise ArtifactError(f"installed release mode does not match: {name}")
+    expected_paths = {str(record["path"]) for record in manifest["files"]}  # type: ignore[index]
+    expected_paths.add("release.signature.json")
+    expected_paths.update(
+        f"{TRANSPORT_METADATA_DIRECTORY}/{name}"
+        for name in (manifest_path.name, signature_path.name, sbom_path.name)
+    )
+    actual_paths: set[str] = set()
+    actual_directories: set[str] = set()
+    seen_inodes: dict[tuple[int, int], str] = {}
+    for path in sorted(release.rglob("*")):
+        relative = path.relative_to(release).as_posix()
+        info = path.lstat()
+        if stat.S_ISLNK(info.st_mode) or (not stat.S_ISREG(info.st_mode) and not stat.S_ISDIR(info.st_mode)):
+            raise ArtifactError(f"installed release contains a link or special file: {relative}")
+        if info.st_mode & 0o222:
+            raise ArtifactError(f"installed release contains a writable entry: {relative}")
+        if stat.S_ISDIR(info.st_mode):
+            actual_directories.add(relative)
+        if stat.S_ISREG(info.st_mode):
+            inode = (info.st_dev, info.st_ino)
+            if inode in seen_inodes:
+                raise ArtifactError(f"installed release contains hard links: {seen_inodes[inode]} and {relative}")
+            seen_inodes[inode] = relative
+            actual_paths.add(relative)
+    if actual_paths != expected_paths:
+        raise ArtifactError("installed release contains files outside the signed inventory")
+    expected_directories = set(str(name) for name in manifest["directories"])  # type: ignore[index]
+    expected_directories.add(TRANSPORT_METADATA_DIRECTORY)
+    if actual_directories != expected_directories:
+        raise ArtifactError("installed release contains directories outside the signed inventory")
+    signature_state_path = release / "release.signature.json"
+    try:
+        signature_state = json.loads(_read_limited(signature_state_path, MAX_MANIFEST_BYTES))
+    except (json.JSONDecodeError, UnicodeDecodeError) as exc:
+        raise ArtifactError("installed signature state is invalid") from exc
+    expected_artifacts = {
+        f"{TRANSPORT_METADATA_DIRECTORY}/{path.name}": _sha256_file(path)
+        for path in (manifest_path, signature_path, sbom_path)
+    }
+    if signature_state != {
+        "schema": SIGNATURE_SCHEMA,
+        "status": "signed",
+        "manifestSha256": _sha256_file(release / "release.json"),
+        "artifacts": expected_artifacts,
+    }:
+        raise ArtifactError("installed signature state does not match the verified transport metadata")
+    return manifest
+
+
+class _SafeRedirectHandler(urllib.request.HTTPRedirectHandler):
+    def redirect_request(self, request, fp, code, msg, headers, newurl):  # type: ignore[no-untyped-def]
+        old = urllib.parse.urlsplit(request.full_url)
+        new = urllib.parse.urlsplit(newurl)
+        if new.scheme != "https" and not _allow_local_http(new):
+            raise ArtifactError("refusing a non-HTTPS GitHub asset redirect")
+        redirected = super().redirect_request(request, fp, code, msg, headers, newurl)
+        if redirected is not None and (old.scheme, old.netloc) != (new.scheme, new.netloc):
+            for headers_dict in (redirected.headers, redirected.unredirected_hdrs):
+                for key in list(headers_dict):
+                    if key.lower() == "authorization":
+                        del headers_dict[key]
+        return redirected
+
+
+def _allow_local_http(parsed: urllib.parse.SplitResult) -> bool:
+    return os.environ.get("NORN_RELEASE_ALLOW_INSECURE_LOCALHOST") == "1" and parsed.scheme == "http" and parsed.hostname in {"127.0.0.1", "localhost", "::1"}
+
+
+class GitHubReleaseClient:
+    def __init__(self, repository: str):
+        self.repository = _repository(repository)
+        self.token = _github_token()
+        self.api_base = os.environ.get("NORN_RELEASE_GITHUB_API_URL", "https://api.github.com").rstrip("/")
+        parsed = urllib.parse.urlsplit(self.api_base)
+        if parsed.scheme != "https" and not _allow_local_http(parsed):
+            raise ArtifactError("GitHub API URL must use HTTPS")
+        self.api_origin = (parsed.scheme, parsed.netloc)
+        self.opener = urllib.request.build_opener(_SafeRedirectHandler())
+
+    def _open(self, url: str, accept: str, authenticated: bool = True):
+        parsed = urllib.parse.urlsplit(url)
+        if (parsed.scheme, parsed.netloc) != self.api_origin:
+            raise ArtifactError("authenticated GitHub requests must remain on the configured API origin")
+        headers = {
+            "Accept": accept,
+            "X-GitHub-Api-Version": "2022-11-28",
+            "User-Agent": "norn-platform-release-artifact/1",
+        }
+        if authenticated and self.token:
+            headers["Authorization"] = f"Bearer {self.token}"
+        request = urllib.request.Request(url, headers=headers)
+        try:
+            return self.opener.open(request, timeout=30)
+        except urllib.error.HTTPError as exc:
+            raise GitHubHTTPError(exc.code) from exc
+        except urllib.error.URLError as exc:
+            raise ArtifactError(f"GitHub API request failed: {exc.reason}") from exc
+
+    def _request(self, url: str, accept: str, limit: int | None = None, authenticated: bool = True) -> bytes:
+        with self._open(url, accept, authenticated=authenticated) as response:
+            try:
+                if limit is None:
+                    return response.read()
+                data = response.read(limit + 1)
+                if len(data) > limit:
+                    raise ArtifactError("GitHub response exceeds the safety limit")
+                return data
+            except OSError as exc:
+                raise ArtifactError(f"GitHub response read failed: {exc}") from exc
+
+    def _json(self, path: str, authenticated: bool = True) -> object:
+        try:
+            return json.loads(self._request(
+                f"{self.api_base}{path}",
+                "application/vnd.github+json",
+                MAX_MANIFEST_BYTES,
+                authenticated=authenticated,
+            ))
+        except json.JSONDecodeError as exc:
+            raise ArtifactError("GitHub returned invalid JSON") from exc
+
+    def require_accessible(self) -> None:
+        repository_path = f"/repos/{self.repository}"
+        try:
+            # Public repositories should not receive an ambient credential at
+            # all. Retry with auth only when anonymous discovery cannot see the
+            # repository (private repository or anonymous rate limit).
+            value = self._json(repository_path, authenticated=False)
+        except GitHubHTTPError as exc:
+            if not self.token:
+                if exc.status in (401, 403, 404):
+                    raise ArtifactError("release repository is unavailable anonymously; private downloads require a read-only GitHub token") from exc
+                raise
+            if exc.status not in (401, 403, 404):
+                raise
+            value = self._json(repository_path, authenticated=True)
+        if not isinstance(value, dict):
+            raise ArtifactError("release repository metadata is invalid")
+        private = value.get("private")
+        if not isinstance(private, bool):
+            raise ArtifactError("release repository visibility is invalid")
+        if private and not self.token:
+            raise ArtifactError("a read-only GitHub token is required for private release downloads")
+        if not private:
+            # Do not attach even an explicitly configured token to subsequent
+            # public release and asset requests.
+            self.token = None
+
+    def resolve_commit(self, prefix: str, tag_prefix: str) -> str:
+        prefix = prefix.lower()
+        if not SHA_PREFIX_RE.fullmatch(prefix):
+            raise ArtifactError("release selector must be a 7-40 character lowercase commit prefix")
+        if len(prefix) == 40:
+            return prefix
+        value = self._json(f"/repos/{self.repository}/releases?per_page=100")
+        if not isinstance(value, list):
+            raise ArtifactError("GitHub release listing is invalid")
+        matches = []
+        for release in value:
+            tag = release.get("tag_name", "") if isinstance(release, dict) else ""
+            candidate = tag.removeprefix(tag_prefix)
+            if tag.startswith(tag_prefix) and FULL_SHA_RE.fullmatch(candidate) and candidate.startswith(prefix):
+                matches.append(candidate)
+        matches = sorted(set(matches))
+        if len(matches) != 1:
+            raise ArtifactError(f"release prefix resolves to {len(matches)} GitHub releases")
+        return matches[0]
+
+    def release(self, tag: str) -> dict[str, object]:
+        value = self._json(f"/repos/{self.repository}/releases/tags/{urllib.parse.quote(tag, safe='')}")
+        if not isinstance(value, dict) or value.get("tag_name") != tag or value.get("draft") is True:
+            raise ArtifactError("GitHub release is missing, draft, or does not match the requested tag")
+        return value
+
+    def download_asset(self, asset: dict[str, object], destination: Path, limit: int) -> None:
+        url = str(asset.get("url", ""))
+        expected_size = asset.get("size")
+        if not isinstance(expected_size, int) or expected_size < 0 or expected_size > limit:
+            raise ArtifactError(f"GitHub asset has an invalid size: {asset.get('name', '')}")
+        flags = os.O_WRONLY | os.O_CREAT | os.O_EXCL
+        if hasattr(os, "O_NOFOLLOW"):
+            flags |= os.O_NOFOLLOW
+        fd = os.open(destination, flags, 0o600)
+        try:
+            with self._open(url, "application/octet-stream") as response, os.fdopen(fd, "wb", closefd=False) as output:
+                copied = 0
+                for chunk in iter(lambda: response.read(1024 * 1024), b""):
+                    copied += len(chunk)
+                    if copied > expected_size or copied > limit:
+                        raise ArtifactError(f"GitHub asset exceeds its declared size: {asset.get('name', '')}")
+                    output.write(chunk)
+                output.flush()
+                os.fsync(output.fileno())
+            if copied != expected_size:
+                raise ArtifactError(f"GitHub asset size changed while downloading: {asset.get('name', '')}")
+        except BaseException:
+            destination.unlink(missing_ok=True)
+            raise
+        finally:
+            os.close(fd)
+
+
+def fetch_bundle(repository: str, selector: str, cache_dir: Path, public_key: Path, operating_system: str, architecture: str, tag: str | None = None) -> Path:
+    client = GitHubReleaseClient(repository)
+    client.require_accessible()
+    tag_prefix = os.environ.get("NORN_RELEASE_TAG_PREFIX", "platform-")
+    commit = client.resolve_commit(selector, tag_prefix)
+    expected_tag = tag or f"{tag_prefix}{commit}"
+    if expected_tag != f"{tag_prefix}{commit}":
+        raise ArtifactError("release tag must be the configured prefix plus the exact full commit")
+    release = client.release(expected_tag)
+    base = _asset_base(commit, operating_system, architecture)
+    names = [base + suffix for suffix in (".manifest.json", ".manifest.sig", ".tar.gz", ".sbom.spdx.json")]
+    assets_value = release.get("assets")
+    if not isinstance(assets_value, list):
+        raise ArtifactError("GitHub release asset list is invalid")
+    assets: dict[str, dict[str, object]] = {}
+    for value in assets_value:
+        if isinstance(value, dict) and value.get("name") in names:
+            name = str(value["name"])
+            if name in assets:
+                raise ArtifactError(f"GitHub release contains duplicate assets: {name}")
+            assets[name] = value
+    missing = set(names) - set(assets)
+    if missing:
+        raise ArtifactError(f"GitHub release is missing assets: {', '.join(sorted(missing))}")
+    cache_dir.mkdir(parents=True, exist_ok=True)
+    destination = cache_dir / commit / f"{operating_system}-{architecture}"
+    destination.parent.mkdir(parents=True, exist_ok=True)
+    if destination.exists() or destination.is_symlink():
+        raise ArtifactError(f"bundle cache destination already exists: {destination}")
+    staging = Path(tempfile.mkdtemp(prefix=f".{destination.name}.tmp-", dir=destination.parent))
+    try:
+        client.download_asset(assets[base + ".manifest.json"], staging / (base + ".manifest.json"), MAX_MANIFEST_BYTES)
+        client.download_asset(assets[base + ".manifest.sig"], staging / (base + ".manifest.sig"), MAX_SIGNATURE_BYTES)
+        _verify_signature(staging / (base + ".manifest.json"), staging / (base + ".manifest.sig"), public_key)
+        manifest = _load_manifest(staging / (base + ".manifest.json"))
+        if manifest["commit"] != commit or manifest["platform"] != {"os": operating_system, "arch": architecture} or manifest["releaseTag"] != expected_tag:
+            raise ArtifactError("signed manifest does not match the requested release")
+        client.download_asset(assets[base + ".tar.gz"], staging / (base + ".tar.gz"), int(manifest["archive"]["size"]))  # type: ignore[index]
+        client.download_asset(assets[base + ".sbom.spdx.json"], staging / (base + ".sbom.spdx.json"), int(manifest["sbom"]["size"]))  # type: ignore[index]
+        verify_bundle(staging, public_key)
+        _atomic_directory_no_replace(staging, destination)
+    except BaseException:
+        shutil.rmtree(staging, ignore_errors=True)
+        raise
+    return destination
+
+
+def import_bundle(bundle: Path, releases_dir: Path, public_key: Path) -> Path:
+    manifest = verify_bundle(bundle, public_key)
+    commit = str(manifest["commit"])
+    releases_dir.mkdir(parents=True, exist_ok=True)
+    destination = releases_dir / commit
+    if destination.exists() or destination.is_symlink():
+        raise ArtifactError(f"release already exists: {destination}")
+    staging = Path(tempfile.mkdtemp(prefix=f".{commit}.tmp-", dir=releases_dir))
+    shutil.rmtree(staging)
+    try:
+        archive_path = bundle / str(manifest["archive"]["name"])  # type: ignore[index]
+        _verify_archive(archive_path, manifest, extract_to=staging)
+        release_json = staging / "release.json"
+        try:
+            release_metadata = json.loads(_read_limited(release_json, MAX_MANIFEST_BYTES))
+        except (json.JSONDecodeError, UnicodeDecodeError, FileNotFoundError) as exc:
+            raise ArtifactError("release archive must contain valid release.json") from exc
+        if not isinstance(release_metadata, dict) or release_metadata.get("sha") != commit:
+            raise ArtifactError("release.json does not match the signed commit")
+        metadata_dir = staging / TRANSPORT_METADATA_DIRECTORY
+        metadata_dir.mkdir(mode=0o700)
+        manifest_path = _single_manifest(bundle)
+        signature_path = manifest_path.with_name(manifest_path.name.removesuffix(".json") + ".sig")
+        sbom_path = bundle / str(manifest["sbom"]["name"])  # type: ignore[index]
+        for source in (manifest_path, signature_path, sbom_path):
+            _write_new(metadata_dir / source.name, source.read_bytes(), 0o600 if source == signature_path else 0o644)
+        signature_metadata = {
+            "schema": SIGNATURE_SCHEMA,
+            "status": "signed",
+            "manifestSha256": _sha256_file(staging / "release.json"),
+            "artifacts": {
+                f"{TRANSPORT_METADATA_DIRECTORY}/{path.name}": _sha256_file(path)
+                for path in (manifest_path, signature_path, sbom_path)
+            },
+        }
+        _write_new(staging / "release.signature.json", _canonical_json(signature_metadata))
+        for path in sorted(staging.rglob("*"), key=lambda item: len(item.parts), reverse=True):
+            info = path.lstat()
+            if stat.S_ISDIR(info.st_mode):
+                path.chmod(info.st_mode & ~0o222)
+            elif stat.S_ISREG(info.st_mode):
+                path.chmod(info.st_mode & ~0o222)
+        staging.chmod(staging.lstat().st_mode & ~0o222)
+        _atomic_directory_no_replace(staging, destination)
+    except BaseException:
+        shutil.rmtree(staging, ignore_errors=True)
+        raise
+    return destination
+
+
+def _path_arg(value: str) -> Path:
+    return Path(value).expanduser().absolute()
+
+
+def _required_env(name: str) -> str:
+    value = os.environ.get(name)
+    if not value:
+        raise ArtifactError(f"{name} is required")
+    return value
+
+
+def _github_token() -> str | None:
+    explicit_token = os.environ.get("NORN_RELEASE_GITHUB_TOKEN")
+    token_file = os.environ.get("NORN_RELEASE_GITHUB_TOKEN_FILE")
+    if explicit_token and token_file:
+        raise ArtifactError("configure a GitHub token or token file, not both")
+    if token_file:
+        path = _path_arg(token_file)
+        initial_info = path.lstat()
+        if stat.S_ISLNK(initial_info.st_mode) or not stat.S_ISREG(initial_info.st_mode):
+            raise ArtifactError("GitHub token file must be a non-symlink regular file with exact mode 0600")
+        flags = os.O_RDONLY | os.O_NONBLOCK
+        if hasattr(os, "O_NOFOLLOW"):
+            flags |= os.O_NOFOLLOW
+        fd = os.open(path, flags)
+        try:
+            info = os.fstat(fd)
+            if not stat.S_ISREG(info.st_mode) or stat.S_IMODE(info.st_mode) != 0o600:
+                raise ArtifactError("GitHub token file must be a non-symlink regular file with exact mode 0600")
+            if hasattr(os, "geteuid") and info.st_uid != os.geteuid():
+                raise ArtifactError("GitHub token file must be owned by the current user")
+            if info.st_nlink != 1:
+                raise ArtifactError("GitHub token file must not have hard links")
+            if info.st_size > 16384:
+                raise ArtifactError("GitHub token file is unexpectedly large")
+            with os.fdopen(fd, "rb", closefd=False) as handle:
+                token_bytes = handle.read(16385)
+            if len(token_bytes) > 16384:
+                raise ArtifactError("GitHub token file is unexpectedly large")
+            token = token_bytes.decode("ascii").rstrip("\r\n")
+        except UnicodeDecodeError as exc:
+            raise ArtifactError("GitHub token file must contain an ASCII token") from exc
+        finally:
+            os.close(fd)
+    else:
+        token = explicit_token or os.environ.get("GH_TOKEN")
+    if token is not None:
+        if not token or any(character.isspace() for character in token):
+            raise ArtifactError("GitHub token is empty or contains whitespace")
+    return token
+
+
+def hook_fetch(selector: str, releases_dir: Path) -> None:
+    repository = _required_env("NORN_RELEASE_REPOSITORY")
+    public_key = _path_arg(_required_env("NORN_RELEASE_PUBLIC_KEY")).resolve(strict=True)
+    operating_system = _normalize_os(os.environ.get("NORN_RELEASE_OS"))
+    architecture = _normalize_arch(os.environ.get("NORN_RELEASE_ARCH"))
+    cache_dir = _path_arg(os.environ.get("NORN_RELEASE_CACHE_DIR", str(releases_dir.parent / ".norn-release-cache")))
+    client = GitHubReleaseClient(repository)
+    client.require_accessible()
+    commit = client.resolve_commit(selector, os.environ.get("NORN_RELEASE_TAG_PREFIX", "platform-"))
+    destination = releases_dir / commit
+    if destination.exists():
+        _verify_installed(destination, public_key)
+        return
+    bundle = cache_dir / commit / f"{operating_system}-{architecture}"
+    if bundle.exists():
+        verify_bundle(bundle, public_key)
+    else:
+        bundle = fetch_bundle(repository, commit, cache_dir, public_key, operating_system, architecture)
+    import_bundle(bundle, releases_dir, public_key)
+
+
+def build_parser() -> argparse.ArgumentParser:
+    parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
+    commands = parser.add_subparsers(dest="command", required=True)
+
+    package = commands.add_parser("package", help="create an unsigned deterministic release bundle")
+    package.add_argument("--release-dir", required=True)
+    package.add_argument("--output-dir", required=True, help="new directory to create atomically; it must not exist")
+    package.add_argument("--commit", required=True, help="exact lowercase 40-character Git commit")
+    package.add_argument("--os", required=True, choices=sorted(PLATFORM_VALUES))
+    package.add_argument("--arch", required=True, choices=sorted(ARCH_VALUES))
+    package.add_argument("--repository", help="source owner/repository; defaults to GITHUB_REPOSITORY")
+    package.add_argument("--tag-prefix", default="platform-")
+    package.add_argument("--source-date-epoch", type=int)
+
+    sign = commands.add_parser("sign", help="add an Ed25519 manifest signature without overwriting")
+    sign.add_argument("--bundle-dir", required=True)
+
+    verify = commands.add_parser("verify", help="verify a bundle or an installed release")
+    verify_group = verify.add_mutually_exclusive_group(required=True)
+    verify_group.add_argument("--bundle-dir")
+    verify_group.add_argument("--release-dir")
+    verify.add_argument("--public-key", required=True, help="OpenSSL Ed25519 public PEM path")
+    verify.add_argument("--quiet", action="store_true")
+
+    fetch = commands.add_parser("fetch", help="download an exact bundle from a GitHub Release")
+    fetch.add_argument("--repository", required=True)
+    fetch.add_argument("--commit", required=True, help="exact full SHA or unique 7+ character release prefix")
+    fetch.add_argument("--tag", help="must equal the configured tag prefix plus the resolved full SHA")
+    fetch.add_argument("--cache-dir", required=True)
+    fetch.add_argument("--public-key", required=True)
+    fetch.add_argument("--os", choices=sorted(PLATFORM_VALUES))
+    fetch.add_argument("--arch", choices=sorted(ARCH_VALUES))
+    fetch.add_argument("--quiet", action="store_true")
+
+    import_command = commands.add_parser("import", help="verify and atomically install a bundle without overwriting")
+    import_command.add_argument("--bundle-dir", required=True)
+    import_command.add_argument("--releases-dir", required=True)
+    import_command.add_argument("--public-key", required=True)
+    import_command.add_argument("--quiet", action="store_true")
+
+    hook = commands.add_parser("hook-fetch", help=argparse.SUPPRESS)
+    hook.add_argument("selector")
+    hook.add_argument("releases_dir")
+    return parser
+
+
+def main(argv: list[str] | None = None) -> int:
+    args = build_parser().parse_args(argv)
+    try:
+        if args.command == "package":
+            result = package_release(args)
+        elif args.command == "sign":
+            result = sign_bundle(_path_arg(args.bundle_dir))
+        elif args.command == "verify":
+            public_key = _path_arg(args.public_key).resolve(strict=True)
+            if args.bundle_dir:
+                manifest = verify_bundle(_path_arg(args.bundle_dir), public_key)
+            else:
+                manifest = _verify_installed(_path_arg(args.release_dir), public_key)
+            result = f"verified {manifest['commit']}"
+            if args.quiet:
+                return 0
+        elif args.command == "fetch":
+            result = fetch_bundle(
+                args.repository,
+                args.commit,
+                _path_arg(args.cache_dir),
+                _path_arg(args.public_key).resolve(strict=True),
+                _normalize_os(args.os),
+                _normalize_arch(args.arch),
+                args.tag,
+            )
+            if args.quiet:
+                return 0
+        elif args.command == "import":
+            result = import_bundle(
+                _path_arg(args.bundle_dir),
+                _path_arg(args.releases_dir),
+                _path_arg(args.public_key).resolve(strict=True),
+            )
+            if args.quiet:
+                return 0
+        elif args.command == "hook-fetch":
+            hook_fetch(args.selector, _path_arg(args.releases_dir))
+            return 0
+        else:
+            raise ArtifactError("unknown command")
+        print(result)
+        return 0
+    except (ArtifactError, FileNotFoundError, PermissionError, OSError) as exc:
+        print(f"platform-release-artifact: {exc}", file=sys.stderr)
+        return 1
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

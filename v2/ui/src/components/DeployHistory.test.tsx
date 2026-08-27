@@ -22,11 +22,12 @@ function json(data: unknown) {
 
 describe('DeployHistory', () => {
   beforeEach(() => {
-    vi.stubGlobal('fetch', vi.fn(async () => json([
+    const deployments = [
       deploy('api-1', 'api', '2026-01-01T00:00:00.000Z'),
       deploy('api-2', 'api', '2026-01-01T00:01:00.000Z'),
       deploy('worker-1', 'worker', '2026-01-01T00:02:00.000Z'),
-    ])))
+    ]
+    vi.stubGlobal('fetch', vi.fn(async () => json({ schemaVersion: 'norn.deployments/v1', deployments, count: deployments.length, offset: 0 })))
   })
 
   it('expands earlier deployments for a consecutive same-app run', async () => {

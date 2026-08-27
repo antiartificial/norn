@@ -44,6 +44,8 @@ func TestMaintenanceExecutorRejectsTamperedPayload(t *testing.T) {
 		{Kind: "platform.upgrade", Payload: map[string]interface{}{"ref": "--exec=/tmp/x", "mode": "restart", "drainMode": "fail"}},
 		{Kind: "platform.upgrade", Payload: map[string]interface{}{"ref": "HEAD", "mode": "shell", "drainMode": "fail"}},
 		{Kind: "platform.rollback", Payload: map[string]interface{}{"sha": "--force"}},
+		{Kind: "platform.rollback", Payload: map[string]interface{}{"sha": "a/../../outside"}},
+		{Kind: "platform.rollback", Payload: map[string]interface{}{"sha": "abcdef"}},
 		{Kind: "host.shell", Payload: map[string]interface{}{}},
 	} {
 		if _, _, _, err := executor.command(op); err == nil {

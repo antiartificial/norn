@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"strings"
 	"time"
 
 	"github.com/jackc/pgx/v5/pgxpool"
@@ -209,6 +210,45 @@ func Migrate(db *DB) error {
 		CREATE UNIQUE INDEX IF NOT EXISTS idx_operations_idempotency
 			ON operations ((metadata->>'idempotencyKey'))
 			WHERE metadata ? 'idempotencyKey' AND metadata->>'idempotencyKey' <> '';
+
+		CREATE TABLE IF NOT EXISTS fleet_runner_attempts (
+			id                        TEXT PRIMARY KEY,
+			plan_id                   TEXT NOT NULL REFERENCES operations(id) ON DELETE CASCADE,
+			attempt                   INT NOT NULL,
+			runner_attempt_id         TEXT NOT NULL DEFAULT '',
+			status                    TEXT NOT NULL DEFAULT 'queued',
+			current_phase             TEXT NOT NULL,
+			commit_sha                TEXT NOT NULL,
+			plan_sha256               TEXT NOT NULL,
+			workflow_url              TEXT NOT NULL DEFAULT '',
+			principal_subject         TEXT NOT NULL DEFAULT '',
+			retry_of                  TEXT NOT NULL DEFAULT '',
+			heartbeat_sequence        BIGINT NOT NULL DEFAULT 0,
+			heartbeat_timeout_seconds INT NOT NULL DEFAULT 120,
+			revision                  BIGINT NOT NULL DEFAULT 1,
+			started_at                TIMESTAMPTZ NOT NULL DEFAULT now(),
+			heartbeat_at              TIMESTAMPTZ NOT NULL DEFAULT now(),
+			updated_at                TIMESTAMPTZ NOT NULL DEFAULT now(),
+			finished_at               TIMESTAMPTZ,
+			last_error                TEXT NOT NULL DEFAULT '',
+			metadata                  JSONB NOT NULL DEFAULT '{}',
+			CHECK (attempt > 0),
+			CHECK (status IN ('queued', 'running', 'succeeded', 'failed', 'canceled', 'abandoned')),
+			CHECK (heartbeat_sequence >= 0),
+			CHECK (heartbeat_timeout_seconds BETWEEN 30 AND 900),
+			CHECK (revision > 0),
+			UNIQUE (plan_id, attempt)
+		);
+		CREATE UNIQUE INDEX IF NOT EXISTS idx_fleet_runner_external_attempt
+			ON fleet_runner_attempts(plan_id, runner_attempt_id)
+			WHERE runner_attempt_id <> '';
+		CREATE UNIQUE INDEX IF NOT EXISTS idx_fleet_runner_one_live_attempt
+			ON fleet_runner_attempts(plan_id)
+			WHERE status IN ('queued', 'running');
+		CREATE INDEX IF NOT EXISTS idx_fleet_runner_plan
+			ON fleet_runner_attempts(plan_id, attempt DESC);
+		CREATE INDEX IF NOT EXISTS idx_fleet_runner_liveness
+			ON fleet_runner_attempts(status, heartbeat_at);
 
 		ALTER TABLE operations ADD COLUMN IF NOT EXISTS payload JSONB NOT NULL DEFAULT '{}';
 		ALTER TABLE operations ADD COLUMN IF NOT EXISTS attempts INT NOT NULL DEFAULT 0;
@@ -526,19 +566,30 @@ func (db *DB) UpdateDeploymentResult(ctx context.Context, d *model.Deployment) e
 }
 
 func (db *DB) ListDeployments(ctx context.Context, app string, limit int) ([]model.Deployment, error) {
+	return db.ListDeploymentsPage(ctx, app, "", limit, 0)
+}
+
+func (db *DB) ListDeploymentsPage(ctx context.Context, app, status string, limit, offset int) ([]model.Deployment, error) {
 	if limit <= 0 {
 		limit = 20
 	}
 	query := `SELECT id, app, commit_sha, image_tag, saga_id, status, source_kind, source_ref, source_dirty, source_changes, started_at, finished_at
 		 FROM deployments`
 	args := []interface{}{}
+	conditions := []string{}
 	if app != "" {
-		query += " WHERE app = $1 ORDER BY started_at DESC LIMIT $2"
-		args = append(args, app, limit)
-	} else {
-		query += " ORDER BY started_at DESC LIMIT $1"
-		args = append(args, limit)
+		args = append(args, app)
+		conditions = append(conditions, fmt.Sprintf("app = $%d", len(args)))
 	}
+	if status != "" {
+		args = append(args, status)
+		conditions = append(conditions, fmt.Sprintf("status = $%d", len(args)))
+	}
+	if len(conditions) > 0 {
+		query += " WHERE " + strings.Join(conditions, " AND ")
+	}
+	args = append(args, limit, offset)
+	query += fmt.Sprintf(" ORDER BY started_at DESC LIMIT $%d OFFSET $%d", len(args)-1, len(args))
 
 	rows, err := db.Pool.Query(ctx, query, args...)
 	if err != nil {

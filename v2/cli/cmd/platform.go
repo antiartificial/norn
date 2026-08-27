@@ -11,9 +11,10 @@ import (
 )
 
 var (
-	platformRepo   string
-	platformScript string
-	platformProxy  bool
+	platformRepo          string
+	platformScript        string
+	platformProxy         bool
+	platformRebuildVerify bool
 )
 
 func init() {
@@ -22,6 +23,7 @@ func init() {
 	platformCmd.PersistentFlags().StringVar(&platformScript, "script", os.Getenv("NORN_PLATFORM_SCRIPT"), "platform-upgrade script path")
 	platformCmd.AddCommand(platformPreflightCmd)
 	platformCmd.AddCommand(platformUpgradeCmd)
+	platformCmd.AddCommand(platformRebuildCmd)
 	platformCmd.AddCommand(platformReleasesCmd)
 	platformCmd.AddCommand(platformRollbackCmd)
 	platformCmd.AddCommand(platformSmokeCmd)
@@ -31,6 +33,7 @@ func init() {
 	platformCmd.AddCommand(platformProxyRenderCmd)
 	platformCmd.AddCommand(platformProxySwitchCmd)
 	platformUpgradeCmd.Flags().BoolVar(&platformProxy, "proxy", false, "Use managed proxy cutover mode instead of LaunchAgent restart")
+	platformRebuildCmd.Flags().BoolVar(&platformRebuildVerify, "verify", false, "Require immutable release artifact verification before rebuilding")
 }
 
 var platformCmd = &cobra.Command{
@@ -64,6 +67,19 @@ var platformUpgradeCmd = &cobra.Command{
 			return runPlatformUpgradeScriptEnv([]string{"NORN_PLATFORM_UPGRADE_MODE=proxy"}, "upgrade", ref)
 		}
 		return runPlatformUpgradeScript("upgrade", ref)
+	},
+}
+
+var platformRebuildCmd = &cobra.Command{
+	Use:   "rebuild <full-sha> --verify",
+	Short: "Rebuild a verified immutable platform release from its full commit SHA",
+	Args:  cobra.ExactArgs(1),
+	RunE: func(cmd *cobra.Command, args []string) error {
+		arguments, err := platformRebuildArguments(args[0], platformRebuildVerify)
+		if err != nil {
+			return err
+		}
+		return runPlatformUpgradeScriptArgs(arguments...)
 	},
 }
 
@@ -149,6 +165,29 @@ func runPlatformUpgradeScript(mode, ref string) error {
 		args = append(args, ref)
 	}
 	return runPlatformUpgradeScriptArgs(args...)
+}
+
+func platformRebuildArguments(sha string, verify bool) ([]string, error) {
+	sha = strings.ToLower(strings.TrimSpace(sha))
+	if !isFullCommitSHA(sha) {
+		return nil, fmt.Errorf("rebuild requires a full 40-character commit SHA")
+	}
+	if !verify {
+		return nil, fmt.Errorf("rebuild requires --verify to validate the immutable release artifact")
+	}
+	return []string{"rebuild", sha, "--verify"}, nil
+}
+
+func isFullCommitSHA(value string) bool {
+	if len(value) != 40 {
+		return false
+	}
+	for _, character := range value {
+		if (character < '0' || character > '9') && (character < 'a' || character > 'f') {
+			return false
+		}
+	}
+	return true
 }
 
 func runPlatformUpgradeScriptArgs(args ...string) error {

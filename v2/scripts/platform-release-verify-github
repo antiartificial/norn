@@ -1,0 +1,10 @@
+#!/bin/sh
+# Adapter for: NORN_RELEASE_VERIFY_HOOK <release-dir> <release.json>
+set -eu
+[ "$#" -eq 2 ] || { echo "usage: platform-release-verify-github RELEASE_DIR RELEASE_JSON" >&2; exit 2; }
+release_dir=$1
+release_json=$2
+[ "$release_json" = "$release_dir/release.json" ] || { echo "release metadata path does not match release directory" >&2; exit 1; }
+[ -n "${NORN_RELEASE_PUBLIC_KEY:-}" ] || { echo "NORN_RELEASE_PUBLIC_KEY is required" >&2; exit 1; }
+script_dir=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)
+exec "$script_dir/platform-release-artifact" verify --release-dir "$release_dir" --public-key "$NORN_RELEASE_PUBLIC_KEY" --quiet

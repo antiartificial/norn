@@ -161,7 +161,7 @@ func (c *NomadConsulConnector) ServiceHealth(ctx context.Context, service string
 	}
 	out := make([]ServiceHealth, 0, len(values))
 	for _, value := range values {
-		out = append(out, ServiceHealth{ServiceName: value.ServiceName, Node: value.Node, Address: value.Address, Port: value.Port, Status: value.Status})
+		out = append(out, ServiceHealth{ServiceName: value.ServiceName, ID: value.ID, AllocationID: value.AllocationID, Node: value.Node, Address: value.Address, Port: value.Port, Status: value.Status, Region: value.Region, NodePool: value.NodePool, PlacementVerified: value.PlacementVerified})
 	}
 	return out, nil
 }
