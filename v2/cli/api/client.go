@@ -784,11 +784,12 @@ type PlatformReleaseList struct {
 }
 
 type PlatformRelease struct {
-	SHA       string `json:"sha"`
-	Version   string `json:"version"`
-	CreatedAt string `json:"createdAt"`
-	Path      string `json:"path"`
-	Current   bool   `json:"current"`
+	SHA            string `json:"sha"`
+	Version        string `json:"version"`
+	DisplayVersion string `json:"displayVersion,omitempty"`
+	CreatedAt      string `json:"createdAt"`
+	Path           string `json:"path"`
+	Current        bool   `json:"current"`
 }
 
 type PlatformServiceSummary struct {

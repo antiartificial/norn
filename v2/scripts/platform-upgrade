@@ -488,9 +488,48 @@ drain_check() {
   log "operation drain clear"
 }
 
+canonical_platform_version() {
+  local candidate="$1"
+  if [[ "$candidate" =~ ^(v[0-9]+\.[0-9]+\.[0-9]+)-(control|platform)(-[0-9]+-g[0-9a-f]{7,40})?$ ]]; then
+    printf '%s-platform%s\n' "${BASH_REMATCH[1]}" "${BASH_REMATCH[3]}"
+    return
+  fi
+  if [[ "$candidate" =~ ^(v[0-9]+\.[0-9]+\.[0-9]+)(-[0-9]+-g[0-9a-f]{7,40})?$ ]]; then
+    printf '%s-platform%s\n' "${BASH_REMATCH[1]}" "${BASH_REMATCH[2]}"
+    return
+  fi
+  printf '%s\n' "$candidate"
+}
+
+release_version_for_ref() {
+  local release_ref="$1"
+  local described display
+  described="$(git -C "$repo" describe --tags --exclude='platform-*' "$release_ref" 2>/dev/null)" ||
+    fail "release commit has no reachable version tag (expected v<major>.<minor>.<patch>-platform or -control)"
+  display="$(canonical_platform_version "$described")"
+  [[ "$display" =~ ^v[0-9]+\.[0-9]+\.[0-9]+-platform(-[0-9]+-g[0-9a-f]{7,40})?$ ]] ||
+    fail "release tag does not produce a supported version-first platform label: $described"
+  printf '%s\n' "$display"
+}
+
+release_display_version() {
+  local sha="$1"
+  local retained="$2"
+  local described="" display
+  if git -C "$repo" cat-file -e "$sha^{commit}" >/dev/null 2>&1; then
+    described="$(git -C "$repo" describe --tags --exclude='platform-*' "$sha" 2>/dev/null || true)"
+  fi
+  display="$(canonical_platform_version "${described:-$retained}")"
+  if [[ "$display" == v* ]]; then
+    printf '%s\n' "$display"
+  else
+    printf 'Platform %s\n' "${sha:0:7}"
+  fi
+}
+
 list_releases() {
   [[ -d "$releases" ]] || return 0
-  printf 'SHA\tVERSION\tCREATED\tCURRENT\tPATH\n'
+  printf 'VERSION\tSHA\tCREATED\tCURRENT\tPATH\n'
   local current=""
   if [[ -L "$current_link" ]]; then
     current="$(current_release_target)"
@@ -498,21 +537,22 @@ list_releases() {
   local dir
   for dir in "$releases"/*; do
     [[ -d "$dir" ]] || continue
-    [[ "$(basename "$dir")" == .* ]] && continue
-    local sha version created marker
+    local sha version display created marker
     sha="$(basename "$dir")"
+    [[ "$sha" =~ ^[0-9a-f]{40}$ ]] || continue
     version="$sha"
     created="-"
     if [[ -f "$dir/release.env" ]]; then
       version="$(grep '^NORN_RELEASE_VERSION=' "$dir/release.env" | head -1 | cut -d= -f2- || true)"
       created="$(grep '^NORN_RELEASE_CREATED_AT=' "$dir/release.env" | head -1 | cut -d= -f2- || true)"
     fi
+    display="$(release_display_version "$sha" "${version:-$sha}")"
     marker=""
     if [[ "$current" == "$dir" ]]; then
       marker="yes"
     fi
-    printf '%s\t%s\t%s\t%s\t%s\n' "${sha:0:12}" "${version:-$sha}" "${created:--}" "$marker" "$dir"
-  done | sort -r
+    printf '%s\t%s\t%s\t%s\t%s\t%s\n' "${created:--}" "$display" "${sha:0:12}" "${created:--}" "$marker" "$dir"
+  done | sort -r | cut -f2-
 }
 
 resolve_release() {
@@ -585,7 +625,7 @@ if [[ "$mode" != "rollback" ]]; then
     fail "resolved rebuild SHA does not match requested SHA"
   fi
   short_sha="${sha:0:12}"
-  version="$(git -C "$repo" describe --tags --always "$sha" 2>/dev/null || printf '%s' "$short_sha")"
+  version="$(release_version_for_ref "$sha")"
   release="$releases/$sha"
   source_date_epoch="$(git -C "$repo" show -s --format=%ct "$sha")"
   created_at="$(git -C "$repo" show -s --format=%cI "$sha")"

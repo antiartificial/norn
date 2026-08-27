@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
 
+import json
 import os
 import shutil
 import stat
@@ -29,6 +30,7 @@ class PlatformUpgradeIntegrationTests(unittest.TestCase):
             "commit", "-m", "fixture",
         )
         self.sha = self.git("rev-parse", "HEAD").stdout.strip()
+        self.git("tag", "v2.21.0-control")
 
     def tearDown(self) -> None:
         self.temporary.cleanup()
@@ -139,6 +141,8 @@ class PlatformUpgradeIntegrationTests(unittest.TestCase):
         self.platform("preflight", "HEAD")
         release = self.releases / self.sha
         self.assertTrue((release / "release.json").is_file())
+        manifest = json.loads((release / "release.json").read_text(encoding="utf-8"))
+        self.assertEqual(manifest["version"], "v2.21.0-platform")
         self.assertFalse((release.stat().st_mode & stat.S_IWUSR) != 0)
         self.assertFalse((release / "logs").exists())
         inode = release.stat().st_ino
@@ -148,6 +152,9 @@ class PlatformUpgradeIntegrationTests(unittest.TestCase):
         self.assertEqual(release.stat().st_ino, inode)
 
         self.git("tag", "platform-published-after-build")
+        listed = self.platform("releases")
+        self.assertIn("VERSION\tSHA\tCREATED\tCURRENT\tPATH", listed.stdout)
+        self.assertIn(f"v2.21.0-platform\t{self.sha[:12]}", listed.stdout)
         rebuilt = self.platform("rebuild", self.sha, "--verify")
         self.assertIn("rebuild verified manifest-content equivalence", rebuilt.stdout)
         self.assertEqual(release.stat().st_ino, inode)
@@ -185,6 +192,34 @@ class PlatformUpgradeIntegrationTests(unittest.TestCase):
         )
         self.assertIn("verified rebuilt release", signed_policy_rebuild.stdout)
         self.assertIn("rebuild verified manifest-content equivalence", signed_policy_rebuild.stdout)
+
+    def test_transport_tag_never_replaces_version_first_base(self) -> None:
+        self.git("tag", f"platform-{self.sha}")
+        self.write("release-marker.txt", "next platform build\n")
+        self.git("add", "release-marker.txt")
+        self.git(
+            "-c", "user.name=Norn Test", "-c", "user.email=norn@example.invalid",
+            "commit", "-m", "next platform build",
+        )
+        next_sha = self.git("rev-parse", "HEAD").stdout.strip()
+
+        self.platform("preflight", next_sha)
+
+        manifest = json.loads(
+            (self.releases / next_sha / "release.json").read_text(encoding="utf-8")
+        )
+        self.assertEqual(
+            manifest["version"],
+            f"v2.21.0-platform-1-g{next_sha[:7]}",
+        )
+
+    def test_release_build_requires_a_semantic_version_base(self) -> None:
+        self.git("tag", "-d", "v2.21.0-control")
+
+        result = self.platform("preflight", "HEAD", expect_success=False)
+
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("release commit has no reachable version tag", result.stderr)
 
     def test_existing_tampered_release_is_never_replaced(self) -> None:
         self.platform("preflight", "HEAD")
