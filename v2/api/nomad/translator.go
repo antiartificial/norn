@@ -326,6 +326,7 @@ func TranslatePeriodicForRegion(spec *model.InfraSpec, procName string, proc mod
 	}
 
 	tg := nomadapi.NewTaskGroup(procName, 1)
+	configureNoRetryPolicy(tg)
 	task := nomadapi.NewTask(procName, "docker")
 	task.Config = map[string]interface{}{
 		"image": imageTag,
@@ -388,18 +389,7 @@ func TranslateBatch(spec *model.InfraSpec, procName string, proc model.Process, 
 	}
 
 	tg := nomadapi.NewTaskGroup(procName, 1)
-
-	// No retries for batch jobs
-	attempts := 0
-	interval := 1 * time.Minute
-	delay := 5 * time.Second
-	mode := "fail"
-	tg.RestartPolicy = &nomadapi.RestartPolicy{
-		Attempts: &attempts,
-		Interval: &interval,
-		Delay:    &delay,
-		Mode:     &mode,
-	}
+	configureNoRetryPolicy(tg)
 
 	task := nomadapi.NewTask(procName, "docker")
 	task.Config = map[string]interface{}{
@@ -450,6 +440,23 @@ func TranslateBatch(spec *model.InfraSpec, procName string, proc model.Process, 
 	job.TaskGroups = []*nomadapi.TaskGroup{tg}
 
 	return job
+}
+
+// configureNoRetryPolicy makes batch work fail once. Both policies must be
+// explicit: a zero restart count does not by itself prevent Nomad from
+// rescheduling a failed allocation.
+func configureNoRetryPolicy(tg *nomadapi.TaskGroup) {
+	attempts := 0
+	mode := "fail"
+	unlimited := false
+	tg.RestartPolicy = &nomadapi.RestartPolicy{
+		Attempts: &attempts,
+		Mode:     &mode,
+	}
+	tg.ReschedulePolicy = &nomadapi.ReschedulePolicy{
+		Attempts:  &attempts,
+		Unlimited: &unlimited,
+	}
 }
 
 func boolPtr(b bool) *bool    { return &b }

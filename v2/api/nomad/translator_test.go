@@ -4,6 +4,8 @@ import (
 	"strings"
 	"testing"
 
+	nomadapi "github.com/hashicorp/nomad/api"
+
 	"norn/v2/api/model"
 )
 
@@ -60,6 +62,34 @@ func TestTranslatePeriodicProcessTimezoneOverridesAppTimezone(t *testing.T) {
 	}
 	if got := *job.Periodic.TimeZone; got != "UTC" {
 		t.Fatalf("timezone = %q, want UTC", got)
+	}
+}
+
+func TestTranslatePeriodicDisablesRestartsAndReschedules(t *testing.T) {
+	spec := &model.InfraSpec{App: "field-harbor"}
+	proc := model.Process{Schedule: "10 8 * * *", Command: "./scripts/sync-and-ingest.sh"}
+
+	assertBatchJobDoesNotRetry(t, TranslatePeriodic(spec, "field-harbor-sync-am", proc, "field-harbor:test", nil))
+}
+
+func TestTranslateBatchDisablesRestartsAndReschedules(t *testing.T) {
+	spec := &model.InfraSpec{App: "field-harbor"}
+	proc := model.Process{Command: "./functions/daily-capture.sh"}
+
+	assertBatchJobDoesNotRetry(t, TranslateBatch(spec, "daily-capture", proc, "field-harbor:test", nil, "field-harbor-daily-capture-123"))
+}
+
+func assertBatchJobDoesNotRetry(t *testing.T, job *nomadapi.Job) {
+	t.Helper()
+	if len(job.TaskGroups) != 1 {
+		t.Fatalf("task groups = %d, want 1", len(job.TaskGroups))
+	}
+	group := job.TaskGroups[0]
+	if group.RestartPolicy == nil || group.RestartPolicy.Attempts == nil || *group.RestartPolicy.Attempts != 0 || group.RestartPolicy.Mode == nil || *group.RestartPolicy.Mode != "fail" {
+		t.Fatalf("restart policy = %+v, want attempts 0 and mode fail", group.RestartPolicy)
+	}
+	if group.ReschedulePolicy == nil || group.ReschedulePolicy.Attempts == nil || *group.ReschedulePolicy.Attempts != 0 || group.ReschedulePolicy.Unlimited == nil || *group.ReschedulePolicy.Unlimited {
+		t.Fatalf("reschedule policy = %+v, want attempts 0 and unlimited false", group.ReschedulePolicy)
 	}
 }
 
