@@ -40,6 +40,7 @@ func testClient(t *testing.T, handler http.Handler) *Client {
 	client, err := New(Config{
 		AppID: "1234", InstallationID: 5678, PrivateKeyFile: keyPath,
 		Repository: "acme/norn-fleet", DefaultBranch: "main",
+		Environment:  "production",
 		ConfigPath:   "environments/production/nyc3/cluster.yaml",
 		PlanWorkflow: "plan.yml", ApplyWorkflow: "apply.yml", APIBaseURL: server.URL,
 	}, server.Client())
@@ -48,6 +49,32 @@ func testClient(t *testing.T, handler http.Handler) *Client {
 	}
 	client.now = func() time.Time { return time.Unix(1_800_000_000, 0).UTC() }
 	return client
+}
+
+func TestPrivateKeyRejectsSymlinkAndNonOwnerOnlyPermissions(t *testing.T) {
+	key, err := rsa.GenerateKey(rand.Reader, 2048)
+	if err != nil {
+		t.Fatal(err)
+	}
+	dir := t.TempDir()
+	path := filepath.Join(dir, "key.pem")
+	encoded := pem.EncodeToMemory(&pem.Block{Type: "RSA PRIVATE KEY", Bytes: x509.MarshalPKCS1PrivateKey(key)})
+	if err := os.WriteFile(path, encoded, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	link := filepath.Join(dir, "key-link.pem")
+	if err := os.Symlink(path, link); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := (&Client{cfg: Config{PrivateKeyFile: link}}).privateKey(); err == nil {
+		t.Fatal("symlinked Fleet GitHub App key accepted")
+	}
+	if err := os.Chmod(path, 0o640); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := (&Client{cfg: Config{PrivateKeyFile: path}}).privateKey(); err == nil {
+		t.Fatal("group-readable Fleet GitHub App key accepted")
+	}
 }
 
 func tokenResponse(w http.ResponseWriter, r *http.Request, permissions map[string]string) bool {
@@ -100,7 +127,7 @@ func TestStatusUsesRepositoryScopedShortLivedAuthentication(t *testing.T) {
 		http.NotFound(w, r)
 	}))
 	status := client.Status(context.Background())
-	if !status.Configured || !status.Connected || status.Repository != "acme/norn-fleet" {
+	if !status.Configured || !status.Connected || status.Repository != "acme/norn-fleet" || status.Environment != "production" {
 		t.Fatalf("status = %#v", status)
 	}
 	if second := client.Status(context.Background()); !second.Connected || tokenRequests != 1 {
@@ -202,7 +229,7 @@ func TestDispatchDiscoversMergedReviewAndBoundPlanArtifact(t *testing.T) {
 		case strings.Contains(r.URL.Path, "/actions/workflows/plan.yml/runs"):
 			fmt.Fprint(w, `{"workflow_runs":[{"id":91,"head_sha":"merged-sha","status":"completed","conclusion":"success"}]}`)
 		case r.URL.Path == "/repos/acme/norn-fleet/actions/runs/91/artifacts":
-			fmt.Fprint(w, `{"artifacts":[{"id":92,"name":"fleet-plan-91","expired":false}]}`)
+			fmt.Fprint(w, `{"artifacts":[{"id":92,"name":"fleet-plan-production-nyc3-91","expired":false}]}`)
 		case r.URL.Path == "/repos/acme/norn-fleet/actions/artifacts/92/zip":
 			_, _ = w.Write(archive.Bytes())
 		case r.Method == http.MethodPost && strings.Contains(r.URL.Path, "/actions/workflows/apply.yml/dispatches"):
@@ -217,19 +244,30 @@ func TestDispatchDiscoversMergedReviewAndBoundPlanArtifact(t *testing.T) {
 		t.Fatal(err)
 	}
 	inputs := dispatched["inputs"].(map[string]any)
-	if result.RunID != 93 || inputs["plan_run_id"] != "91" || inputs["plan_sha256"] != planSHA || inputs["norn_plan_id"] != planID || inputs["allow_destructive"] != "true" {
+	if result.RunID != 93 || inputs["fleet_environment"] != "production/nyc3" || inputs["plan_run_id"] != "91" || inputs["plan_sha256"] != planSHA || inputs["norn_plan_id"] != planID || inputs["allow_destructive"] != "true" {
 		t.Fatalf("result=%#v dispatch=%#v", result, dispatched)
 	}
 }
 
 func TestConfigRejectsTraversalAndNonGitHubProductionAPI(t *testing.T) {
-	_, err := New(Config{AppID: "1", InstallationID: 2, PrivateKeyFile: "key", Repository: "acme/fleet", ConfigPath: "../secret.yaml"}, nil)
+	_, err := New(Config{AppID: "1", InstallationID: 2, PrivateKeyFile: "key", Repository: "acme/fleet", Environment: "staging", ConfigPath: "../secret.yaml"}, nil)
 	if err == nil {
 		t.Fatal("path traversal was accepted")
 	}
-	_, err = New(Config{AppID: "1", InstallationID: 2, PrivateKeyFile: "key", Repository: "acme/fleet", ConfigPath: "fleet.yaml", APIBaseURL: "https://example.test", Production: true}, nil)
+	_, err = New(Config{AppID: "1", InstallationID: 2, PrivateKeyFile: "key", Repository: "acme/fleet", Environment: "production", ConfigPath: "fleet.yaml", APIBaseURL: "https://example.test", Production: true}, nil)
 	if err == nil {
 		t.Fatal("non-GitHub production API was accepted")
+	}
+}
+
+func TestConfigRequiresExplicitFleetEnvironment(t *testing.T) {
+	_, err := New(Config{AppID: "1", InstallationID: 2, PrivateKeyFile: "key", Repository: "acme/fleet", ConfigPath: "fleet.yaml"}, nil)
+	if err == nil {
+		t.Fatal("fleet GitHub configuration without an explicit environment was accepted")
+	}
+	_, err = New(Config{AppID: "1", InstallationID: 2, PrivateKeyFile: "key", Repository: "acme/fleet", Environment: "development", ConfigPath: "fleet.yaml"}, nil)
+	if err == nil {
+		t.Fatal("unsupported fleet GitHub environment was accepted")
 	}
 }
 

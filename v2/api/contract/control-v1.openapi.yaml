@@ -370,6 +370,113 @@ paths:
           content: { application/json: { schema: { $ref: '#/components/schemas/DeploymentList' } } }
         '400': { $ref: '#/components/responses/Problem' }
         '503': { $ref: '#/components/responses/Problem' }
+  /api/v1/apps/{id}/releases/deployments:
+    parameters:
+      - $ref: '#/components/parameters/AppID'
+    post:
+      operationId: queueReleaseDeployment
+      description: Staging-only immutable release deployment. Requires release:stage and an Idempotency-Key.
+      parameters:
+        - $ref: '#/components/parameters/IdempotencyKey'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/ReleaseRequest' }
+      responses:
+        '202': { $ref: '#/components/responses/AcceptedOperation' }
+        '400': { $ref: '#/components/responses/Problem' }
+        '403': { $ref: '#/components/responses/Problem' }
+        '409': { $ref: '#/components/responses/Problem' }
+  /api/v1/apps/{id}/releases/preflight:
+    parameters:
+      - $ref: '#/components/parameters/AppID'
+    post:
+      operationId: queueReleasePreflight
+      description: Staging-only immutable release preflight. Requires release:stage and an Idempotency-Key.
+      parameters:
+        - $ref: '#/components/parameters/IdempotencyKey'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/ReleaseRequest' }
+      responses:
+        '202': { $ref: '#/components/responses/AcceptedOperation' }
+        '400': { $ref: '#/components/responses/Problem' }
+        '403': { $ref: '#/components/responses/Problem' }
+        '409': { $ref: '#/components/responses/Problem' }
+  /api/v1/apps/{id}/qualifications:
+    parameters:
+      - $ref: '#/components/parameters/AppID'
+    get:
+      operationId: listReleaseQualifications
+      responses:
+        '200': { description: Signed staging qualifications, content: { application/json: { schema: { type: object } } } }
+    post:
+      operationId: createReleaseQualification
+      parameters:
+        - $ref: '#/components/parameters/IdempotencyKey'
+      requestBody:
+        required: true
+        content: { application/json: { schema: { type: object, required: [deploymentId], properties: { deploymentId: { type: string, format: uuid } } } } }
+      responses:
+        '201': { description: Signed staging qualification, content: { application/json: { schema: { $ref: '#/components/schemas/ReleaseQualification' } } } }
+        '400': { $ref: '#/components/responses/Problem' }
+        '403': { $ref: '#/components/responses/Problem' }
+  /api/v1/apps/{id}/promotions:
+    parameters:
+      - $ref: '#/components/parameters/AppID'
+    post:
+      operationId: queueReleasePromotion
+      parameters:
+        - $ref: '#/components/parameters/IdempotencyKey'
+      requestBody:
+        required: true
+        content: { application/json: { schema: { $ref: '#/components/schemas/ReleasePromotionRequest' } } }
+      responses:
+        '202': { $ref: '#/components/responses/AcceptedOperation' }
+        '400': { $ref: '#/components/responses/Problem' }
+        '403': { $ref: '#/components/responses/Problem' }
+        '409': { $ref: '#/components/responses/Problem' }
+  /api/v1/apps/{id}/releases/rollbacks:
+    parameters:
+      - $ref: '#/components/parameters/AppID'
+    post:
+      operationId: queueReleaseRollback
+      parameters:
+        - $ref: '#/components/parameters/IdempotencyKey'
+      requestBody:
+        required: true
+        content: { application/json: { schema: { $ref: '#/components/schemas/ReleaseRollbackRequest' } } }
+      responses:
+        '202': { $ref: '#/components/responses/AcceptedOperation' }
+        '400': { $ref: '#/components/responses/Problem' }
+        '403': { $ref: '#/components/responses/Problem' }
+  /api/v1/auth/github-actions/exchange:
+    post:
+      operationId: exchangeGitHubActionsOIDC
+      description: Exchanges a verified GitHub Actions OIDC bearer assertion for a short-lived Norn release token.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              additionalProperties: false
+              required: [scope, environment]
+              properties:
+                scope: { type: string }
+                app: { type: string, description: 'Required for release scopes; omitted for fleet:operate.' }
+                environment: { type: string }
+                intent: { type: string }
+              allOf:
+                - if: { properties: { scope: { enum: ['release:stage', 'release:qualify', 'release:promote', 'release:rollback'] } }, required: [scope] }
+                  then: { required: [app] }
+      responses:
+        '201': { description: Exchange token created }
+        '401': { $ref: '#/components/responses/Problem' }
+        '403': { $ref: '#/components/responses/Problem' }
   /api/v1/deployments/{id}:
     parameters:
       - { name: id, in: path, required: true, schema: { type: string, format: uuid } }
@@ -1730,6 +1837,7 @@ components:
         connected: { type: boolean }
         repository: { type: string }
         installationId: { type: integer, format: int64 }
+        environment: { type: string, enum: [staging, production], description: Fixed non-secret Fleet GitHub dispatch lane. }
         defaultBranch: { type: string }
         configPath: { type: string }
         planWorkflow: { type: string }
@@ -2189,3 +2297,71 @@ components:
         ref: { type: string }
         mode: { type: string, enum: [restart, proxy], default: restart }
         drainMode: { type: string, enum: [fail, wait, force], default: fail }
+    ReleaseRequest:
+      type: object
+      additionalProperties: false
+      required: [sourceSha, artifact, candidate]
+      properties:
+        sourceSha: { type: string, pattern: '^[0-9a-f]{40}$' }
+        artifact: { type: string, pattern: '^.+@sha256:[0-9a-f]{64}$' }
+        candidate: { $ref: '#/components/schemas/ReleaseCandidate' }
+    ReleaseCandidate:
+      type: object
+      additionalProperties: false
+      required: [provider, repository, repositoryId, ownerId, repositoryVisibility, runId, runAttempt, workflowRef, workflowSha, signerWorkflowRef, signerWorkflowSha, ref, attestation]
+      properties:
+        provider: { const: github-actions }
+        repository: { type: string }
+        repositoryId: { type: string, pattern: '^[1-9][0-9]*$' }
+        ownerId: { type: string, pattern: '^[1-9][0-9]*$' }
+        repositoryVisibility: { type: string, enum: [public, private, internal], readOnly: true, description: Server-derived from the verified GitHub OIDC identity. }
+        runId: { type: string }
+        runAttempt: { type: string }
+        workflowRef: { type: string }
+        workflowSha: { type: string, pattern: '^[0-9a-f]{40}$' }
+        signerWorkflowRef: { type: string, readOnly: true, description: Server-derived from the verified GitHub OIDC identity. }
+        signerWorkflowSha: { type: string, pattern: '^[0-9a-f]{40}$', readOnly: true, description: Server-derived from the verified GitHub OIDC identity. }
+        ref: { type: string }
+        attestation: { $ref: '#/components/schemas/ReleaseAttestationIdentity' }
+    ReleaseAttestationIdentity:
+      type: object
+      additionalProperties: false
+      required: [mode, issuer, subjectDigest, materialSha]
+      properties:
+        mode: { type: string, enum: [github-public, github-private], readOnly: true, description: Server-derived from the verified GitHub OIDC identity. }
+        verifier: { type: string, readOnly: true, description: Server-derived display label with no credential or identity data. }
+        issuer: { const: 'https://token.actions.githubusercontent.com' }
+        subjectDigest: { type: string, pattern: '^sha256:[0-9a-f]{64}$' }
+        materialSha: { type: string, pattern: '^[0-9a-f]{40}$' }
+    ReleaseQualification:
+      type: object
+      required: [schemaVersion, id, app, environment, deploymentId, sourceSha, artifact, issuedAt, expiresAt, keyId, signature, candidate, dsse]
+      properties:
+        schemaVersion: { const: norn.release-qualification/v2 }
+        id: { type: string, format: uuid }
+        app: { type: string }
+        environment: { const: staging }
+        deploymentId: { type: string, format: uuid }
+        sourceSha: { type: string, pattern: '^[0-9a-f]{40}$' }
+        artifact: { type: string, pattern: '^.+@sha256:[0-9a-f]{64}$' }
+        issuedAt: { type: string, format: date-time }
+        expiresAt: { type: string, format: date-time }
+        keyId: { type: string }
+        signature: { type: string }
+        candidate: { $ref: '#/components/schemas/ReleaseCandidate' }
+        dsse: { type: object }
+    ReleasePromotionRequest:
+      type: object
+      required: [sourceSha, artifact, qualification]
+      properties:
+        sourceSha: { type: string, pattern: '^[0-9a-f]{40}$' }
+        artifact: { type: string, pattern: '^.+@sha256:[0-9a-f]{64}$' }
+        qualification: { $ref: '#/components/schemas/ReleaseQualification' }
+    ReleaseRollbackRequest:
+      type: object
+      required: [deploymentId, sourceSha, artifact, confirm]
+      properties:
+        deploymentId: { type: string, format: uuid }
+        sourceSha: { type: string, pattern: '^[0-9a-f]{40}$' }
+        artifact: { type: string, pattern: '^.+@sha256:[0-9a-f]{64}$' }
+        confirm: { const: true }

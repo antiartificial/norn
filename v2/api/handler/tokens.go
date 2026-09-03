@@ -18,19 +18,22 @@ import (
 )
 
 type tokenClaims struct {
-	Sub         string   `json:"sub"`
-	Iss         string   `json:"iss,omitempty"`
-	Aud         string   `json:"aud,omitempty"`
-	Use         string   `json:"use,omitempty"`
-	Managed     bool     `json:"managed,omitempty"`
-	Exp         int64    `json:"exp"`
-	Iat         int64    `json:"iat"`
-	Jti         string   `json:"jti"`
-	Did         string   `json:"did,omitempty"`
-	Purpose     string   `json:"purpose,omitempty"`
-	Resource    string   `json:"resource,omitempty"`
-	ChallengeID string   `json:"challengeId,omitempty"`
-	Scopes      []string `json:"scp,omitempty"`
+	Sub         string      `json:"sub"`
+	Iss         string      `json:"iss,omitempty"`
+	Aud         string      `json:"aud,omitempty"`
+	Use         string      `json:"use,omitempty"`
+	Managed     bool        `json:"managed,omitempty"`
+	Exp         int64       `json:"exp"`
+	Iat         int64       `json:"iat"`
+	Jti         string      `json:"jti"`
+	Did         string      `json:"did,omitempty"`
+	Purpose     string      `json:"purpose,omitempty"`
+	Resource    string      `json:"resource,omitempty"`
+	ChallengeID string      `json:"challengeId,omitempty"`
+	Scopes      []string    `json:"scp,omitempty"`
+	App         string      `json:"app,omitempty"`
+	Environment string      `json:"environment,omitempty"`
+	CI          *CIIdentity `json:"ci,omitempty"`
 }
 
 const (
@@ -40,6 +43,10 @@ const (
 	ScopeAppsExec        = "apps:exec"
 	ScopePlatformOperate = "platform:operate"
 	ScopeHostOperate     = "host:operate"
+	ScopeReleaseStage    = "release:stage"
+	ScopeReleaseQualify  = "release:qualify"
+	ScopeReleasePromote  = "release:promote"
+	ScopeReleaseRollback = "release:rollback"
 	ScopeFleetOperate    = "fleet:operate"
 	ScopeAdmin           = "admin"
 )
@@ -48,19 +55,46 @@ var accessTokenScopes = map[string]struct{}{
 	ScopeAPIRead: {}, ScopeAPIWrite: {}, ScopeEventsRead: {}, ScopeAppsExec: {},
 	ScopePlatformOperate: {}, ScopeHostOperate: {}, ScopeAdmin: {},
 	ScopeFleetOperate: {},
+	ScopeReleaseStage: {}, ScopeReleaseQualify: {}, ScopeReleasePromote: {}, ScopeReleaseRollback: {},
 }
 
 func AccessTokenScopeNames() []string {
-	return []string{ScopeAPIRead, ScopeAPIWrite, ScopeEventsRead, ScopeAppsExec, ScopePlatformOperate, ScopeHostOperate, ScopeFleetOperate, ScopeAdmin}
+	return []string{ScopeAPIRead, ScopeAPIWrite, ScopeEventsRead, ScopeAppsExec, ScopePlatformOperate, ScopeHostOperate, ScopeReleaseStage, ScopeReleaseQualify, ScopeReleasePromote, ScopeReleaseRollback, ScopeFleetOperate, ScopeAdmin}
+}
+
+// CIIdentity is copied from a verified GitHub OIDC assertion into Norn's own
+// short-lived token; release JSON is compared with these immutable claims.
+type CIIdentity struct {
+	Provider             string `json:"provider"`
+	Repository           string `json:"repository"`
+	RepositoryID         string `json:"repositoryId"`
+	RepositoryOwnerID    string `json:"repositoryOwnerId"`
+	RepositoryVisibility string `json:"repositoryVisibility"`
+	RunID                string `json:"runId"`
+	RunAttempt           string `json:"runAttempt"`
+	WorkflowRef          string `json:"workflowRef"`
+	WorkflowSHA          string `json:"workflowSha"`
+	JobWorkflowRef       string `json:"jobWorkflowRef"`
+	JobWorkflowSHA       string `json:"jobWorkflowSha"`
+	Ref                  string `json:"ref"`
+	RefType              string `json:"refType"`
+	EventName            string `json:"eventName"`
+	Environment          string `json:"environment"`
+	SHA                  string `json:"sha"`
+	RefProtected         bool   `json:"refProtected"`
+	Intent               string `json:"intent"`
 }
 
 type AccessPrincipal struct {
-	Subject   string    `json:"subject,omitempty"`
-	TokenID   string    `json:"tokenId,omitempty"`
-	DeviceID  string    `json:"deviceId,omitempty"`
-	Scopes    []string  `json:"scopes"`
-	ExpiresAt time.Time `json:"expiresAt,omitempty"`
-	Legacy    bool      `json:"legacy,omitempty"`
+	Subject     string      `json:"subject,omitempty"`
+	TokenID     string      `json:"tokenId,omitempty"`
+	DeviceID    string      `json:"deviceId,omitempty"`
+	Scopes      []string    `json:"scopes"`
+	ExpiresAt   time.Time   `json:"expiresAt,omitempty"`
+	Legacy      bool        `json:"legacy,omitempty"`
+	App         string      `json:"app,omitempty"`
+	Environment string      `json:"environment,omitempty"`
+	CI          *CIIdentity `json:"ci,omitempty"`
 }
 
 type accessPrincipalContextKey struct{}
@@ -284,5 +318,6 @@ func (h *Handler) VerifyAccessToken(token string) (*AccessPrincipal, bool) {
 	return &AccessPrincipal{
 		Subject: claims.Sub, TokenID: claims.Jti, DeviceID: claims.Did, Scopes: claims.Scopes,
 		ExpiresAt: time.Unix(claims.Exp, 0).UTC(), Legacy: !modern && len(claims.Scopes) == 0,
+		App: claims.App, Environment: claims.Environment, CI: claims.CI,
 	}, true
 }

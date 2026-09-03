@@ -12,8 +12,8 @@ import (
 )
 
 var (
-	notifyToken   string
-	notifyUserKey string
+	notifyToken    string
+	notifyUserKey  string
 	notifySeverity []string
 )
 

@@ -113,6 +113,7 @@ All configuration is via environment variables:
 | Variable | Default | Description |
 |----------|---------|-------------|
 | `NORN_PROFILE` | `development` | Runtime admission profile. `production` fails startup unless explicit auth, verified TLS substrate/database endpoints, registry, audit signing, strict secrets, and legacy-signing retirement are configured; it also enables live substrate and immutable artifact admission. |
+| `NORN_ENVIRONMENT` | `development` | Release lane: `development`, `staging`, or `production`. `NORN_PROFILE=production` requires this variable to be explicitly set to `staging` or `production`; an omitted or `development` value fails closed during migration. `NORN_ENVIRONMENT=production` also requires `NORN_PROFILE=production`. |
 | `NORN_PORT` | `8800` | API listen port |
 | `NORN_BIND_ADDR` | `127.0.0.1` | API bind address |
 | `NORN_DATABASE_URL` | `postgres://norn:norn@localhost:5432/norn_v2?sslmode=disable` | PostgreSQL connection string |
@@ -121,6 +122,7 @@ All configuration is via environment variables:
 | `NORN_FLEET_GITHUB_INSTALLATION_ID` | — | Installation ID restricted to the private fleet repository |
 | `NORN_FLEET_GITHUB_PRIVATE_KEY_FILE` | — | Mode-`0600` GitHub App private key path; key contents are never returned by Norn |
 | `NORN_FLEET_GITHUB_REPOSITORY` | — | Exact `owner/repository` allowlist for fleet mutations |
+| `NORN_FLEET_GITHUB_ENVIRONMENT` | — | Required when the Fleet GitHub bridge is configured. Exact lane: `staging` or `production`; it must equal `NORN_ENVIRONMENT`, and Norn never chooses a default. |
 | `NORN_FLEET_GITHUB_CONFIG_PATH` | — | Repository-relative Cluster YAML changed by plan pull requests |
 | `NORN_UI_DIR` | — | Path to built UI assets (for embedded serving) |
 | `NORN_APPS_DIR` | `~/projects` | Directory to scan for `infraspec.yaml` files |
@@ -136,8 +138,8 @@ All configuration is via environment variables:
 | `NORN_REGISTRY_URL` | — | Container registry URL (e.g. `ghcr.io/username`) |
 | `NORN_ARTIFACT_SIGNING_PUBLIC_KEY` | — | Cosign public key used for production deploy and rollback admission |
 | `NORN_ARTIFACT_DENY_SEVERITIES` | `HIGH,CRITICAL` | Comma-separated Trivy severities that reject a production artifact |
-| `NORN_COSIGN_PATH` | `cosign` | Cosign executable used by artifact admission |
-| `NORN_TRIVY_PATH` | `trivy` | Trivy executable used by artifact admission |
+| `NORN_COSIGN_PATH` | `cosign` | Cosign executable used by artifact admission. Production requires an absolute path; development may use PATH lookup. |
+| `NORN_TRIVY_PATH` | `trivy` | Trivy executable used by artifact admission. Production requires an absolute path; development may use PATH lookup. |
 | `NORN_NETWORK_MODE` | `local` | Reachability mode used by health, manifest, and validation (`local`, `tailnet`, or `public`) |
 | `NORN_WORKLOAD_CONNECTOR` | `nomad-consul` | Explicit scheduler/runtime connector. `apple-container` is optional local macOS development mode; production requires the default |
 | `NORN_NOMAD_ADDR` | `http://localhost:4646` | Nomad API address |

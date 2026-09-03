@@ -19,6 +19,27 @@ func TestLegacyTokenSigningDeadline(t *testing.T) {
 	}
 }
 
+func TestEnvironmentTracksWhetherTheReleaseLaneWasExplicitlyConfigured(t *testing.T) {
+	previous, wasSet := os.LookupEnv("NORN_ENVIRONMENT")
+	if err := os.Unsetenv("NORN_ENVIRONMENT"); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() {
+		if wasSet {
+			_ = os.Setenv("NORN_ENVIRONMENT", previous)
+		} else {
+			_ = os.Unsetenv("NORN_ENVIRONMENT")
+		}
+	})
+	if cfg := Load(); cfg.EnvironmentExplicit || cfg.Environment != "development" {
+		t.Fatalf("omitted environment = %#v", cfg)
+	}
+	t.Setenv("NORN_ENVIRONMENT", "staging")
+	if cfg := Load(); !cfg.EnvironmentExplicit || cfg.Environment != "staging" {
+		t.Fatalf("explicit staging environment = %#v", cfg)
+	}
+}
+
 func TestHashiCorpTLSVerificationEnvironment(t *testing.T) {
 	t.Setenv("NOMAD_SKIP_VERIFY", "true")
 	t.Setenv("CONSUL_HTTP_SSL_VERIFY", "false")
@@ -43,14 +64,28 @@ func TestFleetGitHubAppConfig(t *testing.T) {
 	t.Setenv("NORN_FLEET_GITHUB_INSTALLATION_ID", "12345")
 	t.Setenv("NORN_FLEET_GITHUB_PRIVATE_KEY_FILE", "/etc/norn/fleet.pem")
 	t.Setenv("NORN_FLEET_GITHUB_REPOSITORY", "acme/norn-fleet")
+	t.Setenv("NORN_FLEET_GITHUB_ENVIRONMENT", "staging")
 	t.Setenv("NORN_FLEET_GITHUB_CONFIG_PATH", "environments/production/nyc3/cluster.yaml")
 	cfg := Load()
-	if cfg.FleetGitHubAppID != "Iv1.client" || cfg.FleetGitHubInstallationID != 12345 || cfg.FleetGitHubApplyWorkflow != "apply.yml" {
+	if cfg.FleetGitHubAppID != "Iv1.client" || cfg.FleetGitHubInstallationID != 12345 || cfg.FleetGitHubEnvironment != "staging" || cfg.FleetGitHubApplyWorkflow != "apply.yml" {
 		t.Fatalf("fleet GitHub config = %#v", cfg)
 	}
 	t.Setenv("NORN_FLEET_GITHUB_INSTALLATION_ID", "invalid")
 	if got := Load().FleetGitHubInstallationID; got != 0 {
 		t.Fatalf("invalid installation ID should fail closed, got %d", got)
+	}
+}
+
+func TestGitHubActionsReleaseBindingsConfig(t *testing.T) {
+	t.Setenv("NORN_GITHUB_ACTIONS_RELEASE_BINDINGS", "orders-api=acme/orders-api@123@456, billing-api=acme/billing-api@789@456")
+	t.Setenv("NORN_GITHUB_ACTIONS_ALLOWED_REPOSITORIES", "acme/orders-api@123@456")
+	t.Setenv("NORN_GITHUB_ACTIONS_ALLOWED_APPS", "orders-api")
+	cfg := Load()
+	if got, want := strings.Join(cfg.GitHubActionsReleaseBindings, ","), "orders-api=acme/orders-api@123@456,billing-api=acme/billing-api@789@456"; got != want {
+		t.Fatalf("release bindings = %q, want %q", got, want)
+	}
+	if len(cfg.GitHubActionsAllowedRepositories) != 1 || len(cfg.GitHubActionsAllowedApps) != 1 {
+		t.Fatalf("legacy settings must remain separately parsed for compatibility: %#v", cfg)
 	}
 }
 

@@ -11,13 +11,18 @@ import (
 const defaultLegacyTokenSigningUntil = "2026-08-15T00:00:00Z"
 
 type Config struct {
-	Profile     string
-	Port        string
-	BindAddr    string
-	DatabaseURL string
-	UIDir       string
-	AppsDir     string
-	FleetConfig string // checked-out norn-fleet Cluster document; read-only to Norn
+	Profile string
+	// Environment is the release lane, deliberately separate from Profile.
+	Environment string
+	// EnvironmentExplicit distinguishes an omitted variable (which defaults to
+	// development) from an intentional release-lane configuration.
+	EnvironmentExplicit bool
+	Port                string
+	BindAddr            string
+	DatabaseURL         string
+	UIDir               string
+	AppsDir             string
+	FleetConfig         string // checked-out norn-fleet Cluster document; read-only to Norn
 	// FleetGitHubApp configures an installation-scoped GitHub App used only to
 	// open reviewed fleet pull requests and dispatch the protected apply
 	// workflow. Provider and Terraform state credentials remain in GitHub.
@@ -25,28 +30,71 @@ type Config struct {
 	FleetGitHubInstallationID int64
 	FleetGitHubPrivateKeyFile string
 	FleetGitHubRepository     string
-	FleetGitHubDefaultBranch  string
-	FleetGitHubConfigPath     string
-	FleetGitHubPlanWorkflow   string
-	FleetGitHubApplyWorkflow  string
-	FleetGitHubAPIBaseURL     string
-	GitToken                  string
-	GitSSHKey                 string
-	APIToken                  string
+	// FleetGitHubEnvironment is the only GitHub Environment this control plane
+	// may dispatch. It is never inferred from a workflow default.
+	FleetGitHubEnvironment   string
+	FleetGitHubDefaultBranch string
+	FleetGitHubConfigPath    string
+	FleetGitHubPlanWorkflow  string
+	FleetGitHubApplyWorkflow string
+	FleetGitHubAPIBaseURL    string
+	GitToken                 string
+	GitSSHKey                string
+	APIToken                 string
 	// RequireExplicitAuth disables compatibility access based only on a direct
 	// loopback peer or a temporary IP grant.
-	RequireExplicitAuth      bool
-	StrictSecrets            bool
-	AuditSigningKey          string
-	AuditPreviousSigningKeys []string
-	AuditRetentionDays       int
-	LegacyTokenSigningUntil  time.Time
-	RegistryURL              string // GHCR registry (e.g. ghcr.io/username)
-	ArtifactSigningPublicKey string
-	ArtifactDenySeverities   []string
-	CosignPath               string
-	TrivyPath                string
-	NetworkMode              string // local, tailnet, public
+	RequireExplicitAuth             bool
+	StrictSecrets                   bool
+	AuditSigningKey                 string
+	AuditPreviousSigningKeys        []string
+	AuditRetentionDays              int
+	QualificationSigningKey         string
+	TrustedQualificationSigningKeys []string
+	GitHubActionsOIDCAudience       string
+	GitHubActionsOIDCJWKSURL        string
+	// GitHubActionsAllowedRepositories is retained only to parse legacy
+	// configuration. It is not authorization for any release lane; use
+	// GitHubActionsReleaseBindings instead.
+	GitHubActionsAllowedRepositories []string
+	// GitHubActionsReleaseBindings maps exactly one Norn app to one immutable
+	// GitHub repository identity: app=owner/repo@repositoryID@ownerID.
+	// Separate app/repository lists are not authorization for release lanes.
+	GitHubActionsReleaseBindings     []string
+	GitHubActionsAllowedWorkflowRefs []string
+	GitHubActionsAllowedRefs         []string
+	GitHubActionsAllowedEvents       []string
+	// GitHubActionsAllowedApps is retained only to parse legacy configuration.
+	// It is not authorization for any release lane; use
+	// GitHubActionsReleaseBindings instead.
+	GitHubActionsAllowedApps               []string
+	GitHubActionsAllowedEnvironments       []string
+	GitHubActionsDefaultBranch             string
+	GitHubActionsTokenTTL                  time.Duration
+	AllowDevelopmentGitHubActionsOIDC      bool
+	GitHubActionsFleetAllowedRepository    string
+	GitHubActionsFleetAllowedWorkflowRefs  []string
+	GitHubActionsFleetAllowedEnvironments  []string
+	GitHubActionsFleetAllowedIntents       []string
+	ReleaseAdmissionMode                   string
+	ReleaseAttestationIssuer               string
+	ReleaseAttestationTrustMode            string
+	ReleaseAttestationRepositories         []string
+	ReleaseAttestationWorkflowRefs         []string
+	ReleaseRequireSBOM                     bool
+	ReleaseAttestationGitHubAppID          string
+	ReleaseAttestationGitHubInstallationID int64
+	ReleaseAttestationGitHubPrivateKeyFile string
+	ReleaseAttestationRegistryAuthFile     string
+	ReleaseRegistryNodePullReady           bool
+	ReleaseAttestationGitHubAPIBaseURL     string
+	ReleaseAttestationGHPath               string
+	LegacyTokenSigningUntil                time.Time
+	RegistryURL                            string // GHCR registry (e.g. ghcr.io/username)
+	ArtifactSigningPublicKey               string
+	ArtifactDenySeverities                 []string
+	CosignPath                             string
+	TrivyPath                              string
+	NetworkMode                            string // local, tailnet, public
 	// WorkloadConnector selects the scheduler/runtime boundary. nomad-consul
 	// remains the production default; apple-container is an explicit local
 	// macOS connector and is never selected by auto-detection.
@@ -97,39 +145,78 @@ type Config struct {
 }
 
 func Load() *Config {
+	environmentRaw, environmentExplicit := os.LookupEnv("NORN_ENVIRONMENT")
+	environment := strings.ToLower(strings.TrimSpace(environmentRaw))
+	if !environmentExplicit {
+		environment = "development"
+	}
 	return &Config{
-		Profile:                   strings.ToLower(envOr("NORN_PROFILE", "development")),
-		Port:                      envOr("NORN_PORT", "8800"),
-		BindAddr:                  envOr("NORN_BIND_ADDR", "127.0.0.1"),
-		DatabaseURL:               envOr("NORN_DATABASE_URL", "postgres://norn:norn@localhost:5432/norn_v2?sslmode=disable"),
-		UIDir:                     uiDir(),
-		AppsDir:                   envOr("NORN_APPS_DIR", os.Getenv("HOME")+"/projects"),
-		FleetConfig:               os.Getenv("NORN_FLEET_CONFIG"),
-		FleetGitHubAppID:          strings.TrimSpace(os.Getenv("NORN_FLEET_GITHUB_APP_ID")),
-		FleetGitHubInstallationID: envInt64Or("NORN_FLEET_GITHUB_INSTALLATION_ID", 0),
-		FleetGitHubPrivateKeyFile: strings.TrimSpace(os.Getenv("NORN_FLEET_GITHUB_PRIVATE_KEY_FILE")),
-		FleetGitHubRepository:     strings.TrimSpace(os.Getenv("NORN_FLEET_GITHUB_REPOSITORY")),
-		FleetGitHubDefaultBranch:  envOr("NORN_FLEET_GITHUB_DEFAULT_BRANCH", "main"),
-		FleetGitHubConfigPath:     strings.TrimSpace(os.Getenv("NORN_FLEET_GITHUB_CONFIG_PATH")),
-		FleetGitHubPlanWorkflow:   envOr("NORN_FLEET_GITHUB_PLAN_WORKFLOW", "plan.yml"),
-		FleetGitHubApplyWorkflow:  envOr("NORN_FLEET_GITHUB_APPLY_WORKFLOW", "apply.yml"),
-		FleetGitHubAPIBaseURL:     envOr("NORN_FLEET_GITHUB_API_BASE_URL", "https://api.github.com"),
-		GitToken:                  os.Getenv("NORN_GIT_TOKEN"),
-		GitSSHKey:                 os.Getenv("NORN_GIT_SSH_KEY"),
-		APIToken:                  os.Getenv("NORN_API_TOKEN"),
-		RequireExplicitAuth:       os.Getenv("NORN_REQUIRE_EXPLICIT_AUTH") == "true",
-		StrictSecrets:             os.Getenv("NORN_STRICT_SECRETS") == "true" || strings.EqualFold(os.Getenv("NORN_PROFILE"), "production"),
-		AuditSigningKey:           os.Getenv("NORN_AUDIT_SIGNING_KEY"),
-		AuditPreviousSigningKeys:  splitNonEmpty(os.Getenv("NORN_AUDIT_PREVIOUS_SIGNING_KEYS")),
-		AuditRetentionDays:        envIntOr("NORN_AUDIT_RETENTION_DAYS", 365),
-		LegacyTokenSigningUntil:   envTimeOr("NORN_LEGACY_TOKEN_SIGNING_UNTIL", defaultLegacyTokenSigningUntil),
-		RegistryURL:               os.Getenv("NORN_REGISTRY_URL"),
-		ArtifactSigningPublicKey:  os.Getenv("NORN_ARTIFACT_SIGNING_PUBLIC_KEY"),
-		ArtifactDenySeverities:    splitCSV(envOr("NORN_ARTIFACT_DENY_SEVERITIES", "HIGH,CRITICAL")),
-		CosignPath:                envOr("NORN_COSIGN_PATH", "cosign"),
-		TrivyPath:                 envOr("NORN_TRIVY_PATH", "trivy"),
-		NetworkMode:               networkMode(envOr("NORN_NETWORK_MODE", "local")),
-		WorkloadConnector:         workloadConnector(envOr("NORN_WORKLOAD_CONNECTOR", "nomad-consul")),
+		Profile:                                strings.ToLower(envOr("NORN_PROFILE", "development")),
+		Environment:                            environment,
+		EnvironmentExplicit:                    environmentExplicit,
+		Port:                                   envOr("NORN_PORT", "8800"),
+		BindAddr:                               envOr("NORN_BIND_ADDR", "127.0.0.1"),
+		DatabaseURL:                            envOr("NORN_DATABASE_URL", "postgres://norn:norn@localhost:5432/norn_v2?sslmode=disable"),
+		UIDir:                                  uiDir(),
+		AppsDir:                                envOr("NORN_APPS_DIR", os.Getenv("HOME")+"/projects"),
+		FleetConfig:                            os.Getenv("NORN_FLEET_CONFIG"),
+		FleetGitHubAppID:                       strings.TrimSpace(os.Getenv("NORN_FLEET_GITHUB_APP_ID")),
+		FleetGitHubInstallationID:              envInt64Or("NORN_FLEET_GITHUB_INSTALLATION_ID", 0),
+		FleetGitHubPrivateKeyFile:              strings.TrimSpace(os.Getenv("NORN_FLEET_GITHUB_PRIVATE_KEY_FILE")),
+		FleetGitHubRepository:                  strings.TrimSpace(os.Getenv("NORN_FLEET_GITHUB_REPOSITORY")),
+		FleetGitHubEnvironment:                 strings.ToLower(strings.TrimSpace(os.Getenv("NORN_FLEET_GITHUB_ENVIRONMENT"))),
+		FleetGitHubDefaultBranch:               envOr("NORN_FLEET_GITHUB_DEFAULT_BRANCH", "main"),
+		FleetGitHubConfigPath:                  strings.TrimSpace(os.Getenv("NORN_FLEET_GITHUB_CONFIG_PATH")),
+		FleetGitHubPlanWorkflow:                envOr("NORN_FLEET_GITHUB_PLAN_WORKFLOW", "plan.yml"),
+		FleetGitHubApplyWorkflow:               envOr("NORN_FLEET_GITHUB_APPLY_WORKFLOW", "apply.yml"),
+		FleetGitHubAPIBaseURL:                  envOr("NORN_FLEET_GITHUB_API_BASE_URL", "https://api.github.com"),
+		GitToken:                               os.Getenv("NORN_GIT_TOKEN"),
+		GitSSHKey:                              os.Getenv("NORN_GIT_SSH_KEY"),
+		APIToken:                               os.Getenv("NORN_API_TOKEN"),
+		RequireExplicitAuth:                    os.Getenv("NORN_REQUIRE_EXPLICIT_AUTH") == "true",
+		StrictSecrets:                          os.Getenv("NORN_STRICT_SECRETS") == "true" || strings.EqualFold(os.Getenv("NORN_PROFILE"), "production"),
+		AuditSigningKey:                        os.Getenv("NORN_AUDIT_SIGNING_KEY"),
+		AuditPreviousSigningKeys:               splitNonEmpty(os.Getenv("NORN_AUDIT_PREVIOUS_SIGNING_KEYS")),
+		AuditRetentionDays:                     envIntOr("NORN_AUDIT_RETENTION_DAYS", 365),
+		QualificationSigningKey:                os.Getenv("NORN_QUALIFICATION_SIGNING_KEY"),
+		TrustedQualificationSigningKeys:        splitNonEmpty(os.Getenv("NORN_TRUSTED_QUALIFICATION_SIGNING_KEYS")),
+		GitHubActionsOIDCAudience:              strings.TrimSpace(os.Getenv("NORN_GITHUB_ACTIONS_OIDC_AUDIENCE")),
+		GitHubActionsOIDCJWKSURL:               envOr("NORN_GITHUB_ACTIONS_OIDC_JWKS_URL", "https://token.actions.githubusercontent.com/.well-known/jwks"),
+		GitHubActionsAllowedRepositories:       splitNonEmpty(os.Getenv("NORN_GITHUB_ACTIONS_ALLOWED_REPOSITORIES")),
+		GitHubActionsReleaseBindings:           splitNonEmpty(os.Getenv("NORN_GITHUB_ACTIONS_RELEASE_BINDINGS")),
+		GitHubActionsAllowedWorkflowRefs:       splitNonEmpty(os.Getenv("NORN_GITHUB_ACTIONS_ALLOWED_WORKFLOW_REFS")),
+		GitHubActionsAllowedRefs:               splitNonEmpty(os.Getenv("NORN_GITHUB_ACTIONS_ALLOWED_REFS")),
+		GitHubActionsAllowedEvents:             splitNonEmpty(os.Getenv("NORN_GITHUB_ACTIONS_ALLOWED_EVENTS")),
+		GitHubActionsAllowedApps:               splitNonEmpty(os.Getenv("NORN_GITHUB_ACTIONS_ALLOWED_APPS")),
+		GitHubActionsAllowedEnvironments:       splitNonEmpty(os.Getenv("NORN_GITHUB_ACTIONS_ALLOWED_ENVIRONMENTS")),
+		GitHubActionsDefaultBranch:             strings.TrimSpace(os.Getenv("NORN_GITHUB_ACTIONS_DEFAULT_BRANCH")),
+		GitHubActionsTokenTTL:                  envDurationOr("NORN_GITHUB_ACTIONS_TOKEN_TTL", 15*time.Minute),
+		AllowDevelopmentGitHubActionsOIDC:      envBoolOr("NORN_ALLOW_DEVELOPMENT_GITHUB_ACTIONS_OIDC", false),
+		GitHubActionsFleetAllowedRepository:    strings.TrimSpace(os.Getenv("NORN_GITHUB_ACTIONS_FLEET_ALLOWED_REPOSITORY")),
+		GitHubActionsFleetAllowedWorkflowRefs:  splitNonEmpty(os.Getenv("NORN_GITHUB_ACTIONS_FLEET_ALLOWED_WORKFLOW_REFS")),
+		GitHubActionsFleetAllowedEnvironments:  splitNonEmpty(os.Getenv("NORN_GITHUB_ACTIONS_FLEET_ALLOWED_ENVIRONMENTS")),
+		GitHubActionsFleetAllowedIntents:       splitNonEmpty(os.Getenv("NORN_GITHUB_ACTIONS_FLEET_ALLOWED_INTENTS")),
+		ReleaseAdmissionMode:                   strings.ToLower(envOr("NORN_RELEASE_ADMISSION_MODE", "keyed")),
+		ReleaseAttestationIssuer:               strings.TrimSpace(os.Getenv("NORN_RELEASE_ATTESTATION_ISSUER")),
+		ReleaseAttestationTrustMode:            strings.ToLower(envOr("NORN_RELEASE_ATTESTATION_TRUST_MODE", "github-public")),
+		ReleaseAttestationRepositories:         splitNonEmpty(os.Getenv("NORN_RELEASE_ATTESTATION_ALLOWED_REPOSITORIES")),
+		ReleaseAttestationWorkflowRefs:         splitNonEmpty(os.Getenv("NORN_RELEASE_ATTESTATION_ALLOWED_WORKFLOW_REFS")),
+		ReleaseRequireSBOM:                     envBoolOr("NORN_RELEASE_REQUIRE_SBOM", false),
+		ReleaseAttestationGitHubAppID:          strings.TrimSpace(os.Getenv("NORN_RELEASE_ATTESTATION_GITHUB_APP_ID")),
+		ReleaseAttestationGitHubInstallationID: envInt64Or("NORN_RELEASE_ATTESTATION_GITHUB_INSTALLATION_ID", 0),
+		ReleaseAttestationGitHubPrivateKeyFile: strings.TrimSpace(os.Getenv("NORN_RELEASE_ATTESTATION_GITHUB_PRIVATE_KEY_FILE")),
+		ReleaseAttestationRegistryAuthFile:     strings.TrimSpace(os.Getenv("NORN_RELEASE_ATTESTATION_REGISTRY_AUTH_FILE")),
+		ReleaseRegistryNodePullReady:           envBoolOr("NORN_RELEASE_REGISTRY_NODE_PULL_READY", false),
+		ReleaseAttestationGitHubAPIBaseURL:     envOr("NORN_RELEASE_ATTESTATION_GITHUB_API_BASE_URL", "https://api.github.com"),
+		ReleaseAttestationGHPath:               strings.TrimSpace(os.Getenv("NORN_RELEASE_ATTESTATION_GH_PATH")),
+		LegacyTokenSigningUntil:                envTimeOr("NORN_LEGACY_TOKEN_SIGNING_UNTIL", defaultLegacyTokenSigningUntil),
+		RegistryURL:                            os.Getenv("NORN_REGISTRY_URL"),
+		ArtifactSigningPublicKey:               os.Getenv("NORN_ARTIFACT_SIGNING_PUBLIC_KEY"),
+		ArtifactDenySeverities:                 splitCSV(envOr("NORN_ARTIFACT_DENY_SEVERITIES", "HIGH,CRITICAL")),
+		CosignPath:                             envOr("NORN_COSIGN_PATH", "cosign"),
+		TrivyPath:                              envOr("NORN_TRIVY_PATH", "trivy"),
+		NetworkMode:                            networkMode(envOr("NORN_NETWORK_MODE", "local")),
+		WorkloadConnector:                      workloadConnector(envOr("NORN_WORKLOAD_CONNECTOR", "nomad-consul")),
 
 		NomadAddr:           envOr("NORN_NOMAD_ADDR", "http://localhost:4646"),
 		ConsulAddr:          envOr("NORN_CONSUL_ADDR", "http://localhost:8500"),
@@ -173,6 +260,13 @@ func Load() *Config {
 
 func (c *Config) Production() bool {
 	return c != nil && strings.EqualFold(strings.TrimSpace(c.Profile), "production")
+}
+
+func (c *Config) EnvironmentID() string {
+	if c == nil || strings.TrimSpace(c.Environment) == "" {
+		return "development"
+	}
+	return strings.ToLower(strings.TrimSpace(c.Environment))
 }
 
 func uiDir() string {
@@ -277,6 +371,18 @@ func envIntOr(key string, fallback int) int {
 	}
 	parsed, err := strconv.Atoi(raw)
 	if err != nil {
+		return fallback
+	}
+	return parsed
+}
+
+func envDurationOr(key string, fallback time.Duration) time.Duration {
+	raw := strings.TrimSpace(os.Getenv(key))
+	if raw == "" {
+		return fallback
+	}
+	parsed, err := time.ParseDuration(raw)
+	if err != nil || parsed <= 0 {
 		return fallback
 	}
 	return parsed

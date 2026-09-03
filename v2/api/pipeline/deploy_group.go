@@ -16,6 +16,9 @@ type GroupDeployResult struct {
 // RunGroup queues a deploy for each app in the deploy group and returns the results.
 // If an app spec is not found, the error is recorded but processing continues.
 func (p *Pipeline) RunGroup(group *model.DeployGroup, ref string, appsDir string) ([]GroupDeployResult, error) {
+	if !p.LegacyDeploymentAllowed() {
+		return nil, fmt.Errorf("production deployments require a signed staging promotion")
+	}
 	specs, err := model.DiscoverApps(appsDir)
 	if err != nil {
 		return nil, fmt.Errorf("discover apps: %w", err)

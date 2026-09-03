@@ -10,6 +10,7 @@ const AppDetailPage = lazy(() => import('./pages/AppDetailPage.tsx').then((modul
 const DeploysPage = lazy(() => import('./pages/DeploysPage.tsx').then((module) => ({ default: module.DeploysPage })))
 const IncidentsPage = lazy(() => import('./pages/IncidentsPage.tsx').then((module) => ({ default: module.IncidentsPage })))
 const OperationsPage = lazy(() => import('./pages/OperationsPage.tsx').then((module) => ({ default: module.OperationsPage })))
+const ReleasesPage = lazy(() => import('./pages/ReleasesPage.tsx').then((module) => ({ default: module.ReleasesPage })))
 const FleetPage = lazy(() => import('./pages/FleetPage.tsx').then((module) => ({ default: module.FleetPage })))
 const TopologyView = lazy(() => import('./components/TopologyView.tsx').then((module) => ({ default: module.TopologyView })))
 const PlatformPanel = lazy(() => import('./components/PlatformPanel.tsx').then((module) => ({ default: module.PlatformPanel })))
@@ -47,6 +48,7 @@ export function App() {
               <Route path="/incidents" element={<IncidentsPage />} />
               <Route path="/operations" element={<OperationsPage />} />
               <Route path="/operations/:sagaId" element={<OperationsPage />} />
+              <Route path="/releases" element={<ReleasesPage />} />
               <Route path="/fleet" element={runtime.fleetAvailable ? <FleetPage /> : <EmptyState icon="!" title="Fleet unavailable" hint="This server does not advertise the complete fleet-v1 capability set." />} />
               <Route
                 path="/topology"

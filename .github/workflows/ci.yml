@@ -1,0 +1,103 @@
+name: Repository CI
+
+on:
+  pull_request:
+  push:
+    branches: [master]
+
+# Pull requests only need to read the repository. Keep token permissions narrow
+# even when this workflow is evaluated for a trusted branch push.
+permissions:
+  contents: read
+
+concurrency:
+  group: repository-ci-${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  api:
+    name: API Go tests
+    # The control plane includes Apple Container coverage that is meaningful
+    # only on macOS; keep this gate on GitHub's current GA macOS image.
+    runs-on: macos-26
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version: 1.26.6
+          cache-dependency-path: v2/api/go.sum
+      - name: Run API tests
+        working-directory: v2/api
+        run: go test ./...
+
+  cli:
+    name: CLI Go tests
+    # Host-runtime security initialization is exercised on its target OS.
+    runs-on: macos-26
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version: 1.26.6
+          cache-dependency-path: v2/cli/go.sum
+      - name: Run CLI tests
+        working-directory: v2/cli
+        run: go test ./...
+
+  openapi:
+    name: OpenAPI contract
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version: 1.26.6
+          cache-dependency-path: v2/api/go.sum
+      # This test parses the OpenAPI YAML and resolves every local reference.
+      - name: Parse and validate the OpenAPI contract
+        working-directory: v2/api
+        run: go test ./contract
+
+  web:
+    name: Web UI tests and build
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: pnpm/action-setup@ff378ebe6b225b0680b81c1ad4498ae0d1d3a5e3 # v6.0.10
+        with:
+          version: 10.32.1
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: 24.19.0
+          cache: pnpm
+          cache-dependency-path: v2/ui/pnpm-lock.yaml
+      - name: Install Web UI dependencies
+        working-directory: v2/ui
+        run: pnpm install --frozen-lockfile
+      - name: Run Web UI tests
+        working-directory: v2/ui
+        run: pnpm test
+      - name: Build Web UI
+        working-directory: v2/ui
+        run: pnpm build
+
+  actionlint:
+    name: Workflow lint
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version: 1.26.6
+      - name: Lint GitHub Actions workflows
+        run: GOWORK=off go run github.com/rhysd/actionlint/cmd/actionlint@v1.7.12 .github/workflows/*.yml

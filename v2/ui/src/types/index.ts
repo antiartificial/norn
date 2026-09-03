@@ -362,6 +362,10 @@ export interface CapabilitiesResponse {
   protocolVersion: number
   serverVersion: string
   features: string[]
+  environment?: {
+    id: 'development' | 'staging' | 'production' | string
+    profile: 'development' | 'production' | string
+  }
   auth?: {
     scopes: string[]
     principal?: {
@@ -374,6 +378,67 @@ export interface CapabilitiesResponse {
     }
   }
   endpoints?: Record<string, string>
+}
+
+/** Immutable staging evidence that may be promoted by a production control plane. */
+export interface ReleaseQualification {
+  schemaVersion: 'norn.release-qualification/v2'
+  id: string
+  deploymentId: string
+  app: string
+  sourceSha: string
+  artifact: string
+  environment: string
+  issuedAt: string
+  expiresAt: string
+  keyId: string
+  signature: string
+  candidate: ReleaseCandidate
+  dsse: DSSEEnvelope
+}
+
+export interface ReleaseCandidate {
+  provider: 'github-actions' | string
+  repository: string
+  repositoryId: string
+  ownerId: string
+  repositoryVisibility?: 'public' | 'private' | 'internal' | string
+  runId: string
+  runAttempt?: string
+  workflowRef: string
+  workflowSha: string
+  signerWorkflowRef: string
+  signerWorkflowSha: string
+  ref: string
+  attestation: {
+    mode?: 'github-public' | 'github-private' | string
+    issuer: string
+    subjectDigest: string
+    materialSha: string
+    /** Display-only verifier label; never contains a credential or installation ID. */
+    verifier?: string
+    /** Backwards-compatible display-only verifier label. */
+    verifierIdentity?: string
+    provenanceUri?: string
+    sbomUri?: string
+  }
+}
+
+export interface DSSEEnvelope {
+  payloadType: string
+  payload: string
+  signatures: Array<{ keyid: string; sig: string }>
+}
+
+export interface ReleaseQualificationResponse {
+  schemaVersion: 'norn.release-qualifications/v2'
+  qualifications: ReleaseQualification[]
+  count: number
+}
+
+export interface ReleaseActionRequest {
+  sourceSha: string
+  artifact?: string
 }
 
 export interface WSEvent {

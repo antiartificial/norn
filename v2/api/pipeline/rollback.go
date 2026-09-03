@@ -2,8 +2,10 @@ package pipeline
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"os"
+	"strings"
 	"time"
 
 	"github.com/google/uuid"
@@ -35,20 +37,14 @@ func (p *Pipeline) RollbackRegionsOperation(spec *model.InfraSpec, current model
 // transaction commits, the client can retry with the same idempotency key
 // instead of receiving a receipt for work it could not observe.
 func (p *Pipeline) RollbackRegionsOperationContext(ctx context.Context, spec *model.InfraSpec, current model.Deployment, prev *model.Deployment, requestedRegions []string, extraMetadata ...map[string]interface{}) (string, string, error) {
+	if prev == nil {
+		return "", "", fmt.Errorf("rollback target deployment is required")
+	}
 	sg := saga.New(p.SagaStore, spec.App, "pipeline", "rollback")
 	started := time.Now()
-	deploy := &model.Deployment{
-		ID:            uuid.New().String(),
-		App:           spec.App,
-		CommitSHA:     prev.CommitSHA,
-		ImageTag:      prev.ImageTag,
-		SagaID:        sg.ID,
-		Status:        model.StatusQueued,
-		SourceKind:    "rollback",
-		SourceRef:     prev.ID,
-		SourceDirty:   prev.SourceDirty,
-		SourceChanges: prev.SourceChanges,
-		StartedAt:     started,
+	deploy, err := newRollbackDeployment(spec.App, sg.ID, current, *prev, started)
+	if err != nil {
+		return "", "", err
 	}
 	regions := selectedResolvedRegions(spec, requestedRegions)
 
@@ -98,6 +94,42 @@ func (p *Pipeline) RollbackRegionsOperationContext(ctx context.Context, spec *mo
 	return sg.ID, operationID, nil
 }
 
+func newRollbackDeployment(app, sagaID string, current, previous model.Deployment, started time.Time) (*model.Deployment, error) {
+	environment, err := rollbackEnvironment(current, previous)
+	if err != nil {
+		return nil, err
+	}
+	return &model.Deployment{
+		ID:            uuid.New().String(),
+		App:           app,
+		CommitSHA:     previous.CommitSHA,
+		ImageTag:      previous.ImageTag,
+		Environment:   environment,
+		SagaID:        sagaID,
+		Status:        model.StatusQueued,
+		SourceKind:    "rollback",
+		SourceRef:     previous.ID,
+		SourceDirty:   previous.SourceDirty,
+		SourceChanges: previous.SourceChanges,
+		StartedAt:     started,
+	}, nil
+}
+
+// rollbackEnvironment preserves the lane of the running deployment. Historical
+// rows created before environments were recorded may inherit a non-empty target
+// lane, but two explicit, different lanes must never be joined by a rollback.
+func rollbackEnvironment(current, previous model.Deployment) (string, error) {
+	currentEnvironment := strings.TrimSpace(current.Environment)
+	previousEnvironment := strings.TrimSpace(previous.Environment)
+	if currentEnvironment != "" && previousEnvironment != "" && currentEnvironment != previousEnvironment {
+		return "", fmt.Errorf("rollback deployment environments do not match")
+	}
+	if currentEnvironment != "" {
+		return currentEnvironment, nil
+	}
+	return previousEnvironment, nil
+}
+
 func (p *Pipeline) runRollback(ctx context.Context, spec *model.InfraSpec, deploy *model.Deployment, sg *saga.Saga, imageTag string, operationID string, attempt int, requestedRegions []string) {
 	regions := selectedResolvedRegions(spec, requestedRegions)
 	workloads := p.workloadConnector()
@@ -106,19 +138,16 @@ func (p *Pipeline) runRollback(ctx context.Context, spec *model.InfraSpec, deplo
 	if len(regions) == 0 {
 		startErr = fmt.Errorf("rollback has no valid region targets")
 		failureBody = "Rollback was blocked because no valid region target was selected."
-	} else if p.Production && !model.IsContentAddressedImage(imageTag) {
-		startErr = fmt.Errorf("production rollback image must be pinned by sha256 OCI digest")
-		failureBody = "Rollback was blocked because the historical image is not content-addressed."
-	} else if p.Production {
-		if err := p.verifyRegistryArtifact(ctx, imageTag); err != nil {
-			startErr = fmt.Errorf("production rollback registry verification failed: %w", err)
-			failureBody = "Rollback was blocked because the pinned registry artifact could not be verified."
+	} else if p.productionReleaseLane() {
+		if err := p.reAdmitProductionRollback(ctx, spec, deploy, imageTag); err != nil {
+			startErr = fmt.Errorf("production rollback admission failed: %w", err)
+			failureBody = "Rollback was blocked because the prior release no longer satisfies immutable production admission."
 		}
 	}
 	if startErr == nil && workloads == nil {
 		startErr = fmt.Errorf("workload connector is not configured")
 	} else if startErr == nil {
-		startErr = workloads.Validate(spec, p.Production)
+		startErr = workloads.Validate(spec, p.productionReleaseLane())
 	}
 	if startErr != nil {
 		_ = p.DB.UpdateDeployment(ctx, deploy.ID, model.StatusFailed)
@@ -144,7 +173,6 @@ func (p *Pipeline) runRollback(ctx context.Context, spec *model.InfraSpec, deplo
 		})
 		return
 	}
-
 	steps := []step{
 		{name: "resolve-secrets", fn: func(ctx context.Context, st *state, sg *saga.Saga) error {
 			env := make(map[string]string)
@@ -286,6 +314,73 @@ func (p *Pipeline) runRollback(ctx context.Context, spec *model.InfraSpec, deplo
 			"correlationKey": fmt.Sprintf("%s:rollback", spec.App),
 		},
 	})
+}
+
+// reAdmitProductionRollback replays immutable admission immediately before a
+// production rollback can submit work. Queue-time checks alone are not enough:
+// registry state, attestations, and vulnerability policy can change while an
+// operation waits for a worker lease.
+func (p *Pipeline) reAdmitProductionRollback(ctx context.Context, spec *model.InfraSpec, rollback *model.Deployment, imageTag string) error {
+	if p == nil || p.DB == nil || spec == nil || rollback == nil {
+		return fmt.Errorf("production rollback evidence store is unavailable")
+	}
+	if rollback.Environment != "production" || strings.TrimSpace(rollback.SourceRef) == "" {
+		return fmt.Errorf("production rollback lacks an exact production source deployment")
+	}
+	target, err := p.DB.GetDeployment(ctx, rollback.SourceRef)
+	if err != nil {
+		return fmt.Errorf("load rollback source deployment: %w", err)
+	}
+	if target.Environment != "production" || target.Status != model.StatusDeployed || target.ImageTag != imageTag || !model.IsContentAddressedImage(target.ImageTag) {
+		return fmt.Errorf("rollback source deployment is not the exact admitted production artifact")
+	}
+	promotion, err := p.DB.GetPromotionOperationByDeploymentID(ctx, target.ID)
+	if err != nil {
+		return fmt.Errorf("load rollback promotion evidence: %w", err)
+	}
+	candidate, err := promotionCandidate(p.TrustedQualificationSigningKeys, *promotion)
+	if err != nil {
+		return err
+	}
+	if err := model.ValidateReleaseSpecBinding(spec, candidate, target.ImageTag, p.RegistryURL); err != nil {
+		return fmt.Errorf("re-admit rollback source binding: %w", err)
+	}
+	if err := p.VerifyReleaseArtifact(ctx, target.CommitSHA, target.ImageTag, candidate); err != nil {
+		return fmt.Errorf("re-admit rollback source artifact: %w", err)
+	}
+	return nil
+}
+
+func promotionCandidate(trustedSigningKeys []string, operation model.Operation) (model.ReleaseCandidate, error) {
+	if operation.Kind != "app.deploy" || operation.Status != model.OperationSucceeded {
+		return model.ReleaseCandidate{}, fmt.Errorf("rollback source has no successful promotion evidence")
+	}
+	raw, ok := operation.Metadata["promotionQualification"]
+	if !ok {
+		return model.ReleaseCandidate{}, fmt.Errorf("rollback source has no signed promotion qualification")
+	}
+	encoded, err := json.Marshal(raw)
+	if err != nil {
+		return model.ReleaseCandidate{}, fmt.Errorf("encode rollback promotion qualification: %w", err)
+	}
+	var qualification model.ReleaseQualification
+	if err := json.Unmarshal(encoded, &qualification); err != nil {
+		return model.ReleaseCandidate{}, fmt.Errorf("rollback source promotion qualification is invalid")
+	}
+	if err := model.VerifyReleaseQualificationSignature(trustedSigningKeys, qualification); err != nil {
+		return model.ReleaseCandidate{}, fmt.Errorf("rollback source promotion qualification is not currently trusted: %w", err)
+	}
+	if qualification.App != operation.App || qualification.SourceSHA != stringFromMap(operation.Payload, "sourceSha") || qualification.Artifact != stringFromMap(operation.Payload, "artifact") || qualification.Candidate.Attestation.MaterialSHA != qualification.SourceSHA || qualification.Candidate.Attestation.SubjectDigest != artifactDigest(qualification.Artifact) {
+		return model.ReleaseCandidate{}, fmt.Errorf("rollback source promotion qualification is not bound to its promoted deployment")
+	}
+	return qualification.Candidate, nil
+}
+
+func artifactDigest(artifact string) string {
+	if before, digest, found := strings.Cut(artifact, "@"); found && before != "" && strings.HasPrefix(digest, "sha256:") {
+		return digest
+	}
+	return ""
 }
 
 func selectedResolvedRegions(spec *model.InfraSpec, requested []string) []model.ResolvedRegion {

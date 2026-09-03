@@ -69,11 +69,20 @@ NORN_FLEET_GITHUB_APP_ID=123456
 NORN_FLEET_GITHUB_INSTALLATION_ID=789012
 NORN_FLEET_GITHUB_PRIVATE_KEY_FILE=/etc/norn/fleet-github-app.pem
 NORN_FLEET_GITHUB_REPOSITORY=YOUR-ORG/norn-fleet
+NORN_FLEET_GITHUB_ENVIRONMENT=production
 NORN_FLEET_GITHUB_CONFIG_PATH=environments/production/nyc3/cluster.yaml
 NORN_FLEET_GITHUB_DEFAULT_BRANCH=main
 NORN_FLEET_GITHUB_PLAN_WORKFLOW=plan.yml
 NORN_FLEET_GITHUB_APPLY_WORKFLOW=apply.yml
 ```
+
+`NORN_FLEET_GITHUB_ENVIRONMENT` is mandatory whenever this bridge is
+configured. It is either `staging` or `production`, must match
+`NORN_ENVIRONMENT` for this control plane, and is used as the immutable
+dispatch lane (`staging/nyc3` or `production/nyc3`). Norn does not infer a
+default. Run separate control planes and GitHub App configurations for the two
+lanes; a production control plane cannot dispatch a staging Fleet workflow, or
+vice versa.
 
 The private key never leaves the Norn server. Norn signs a short-lived App JWT,
 requests a one-hour installation token narrowed to that repository and the

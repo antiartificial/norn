@@ -85,6 +85,7 @@ func Migrate(db *DB) error {
 			app         TEXT NOT NULL,
 			commit_sha  TEXT NOT NULL,
 			image_tag   TEXT NOT NULL,
+			environment TEXT NOT NULL DEFAULT '',
 			saga_id     TEXT NOT NULL,
 			status      TEXT NOT NULL DEFAULT 'running',
 			source_kind TEXT NOT NULL DEFAULT '',
@@ -111,6 +112,7 @@ func Migrate(db *DB) error {
 		CREATE INDEX IF NOT EXISTS idx_deployment_regions_region ON deployment_regions(region, updated_at DESC);
 
 		ALTER TABLE deployments ADD COLUMN IF NOT EXISTS source_kind TEXT NOT NULL DEFAULT '';
+		ALTER TABLE deployments ADD COLUMN IF NOT EXISTS environment TEXT NOT NULL DEFAULT '';
 		ALTER TABLE deployments ADD COLUMN IF NOT EXISTS source_ref TEXT NOT NULL DEFAULT '';
 		ALTER TABLE deployments ADD COLUMN IF NOT EXISTS source_dirty BOOLEAN NOT NULL DEFAULT false;
 		ALTER TABLE deployments ADD COLUMN IF NOT EXISTS source_changes JSONB NOT NULL DEFAULT '[]';
@@ -258,6 +260,18 @@ func Migrate(db *DB) error {
 		ALTER TABLE operations ADD COLUMN IF NOT EXISTS next_attempt_at TIMESTAMPTZ NOT NULL DEFAULT now();
 		ALTER TABLE operations ADD COLUMN IF NOT EXISTS last_error TEXT NOT NULL DEFAULT '';
 		CREATE INDEX IF NOT EXISTS idx_operations_queue ON operations(status, next_attempt_at, kind);
+		CREATE UNIQUE INDEX IF NOT EXISTS idx_operations_promotion_qualification
+			ON operations ((metadata->'promotionQualification'->>'id'))
+			WHERE kind = 'app.deploy' AND metadata->'promotionQualification'->>'id' <> '';
+
+		CREATE TABLE IF NOT EXISTS github_actions_assertion_uses (
+			issuer TEXT NOT NULL,
+			jti TEXT NOT NULL,
+			expires_at TIMESTAMPTZ NOT NULL,
+			used_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+			PRIMARY KEY (issuer, jti)
+		);
+		CREATE INDEX IF NOT EXISTS idx_github_actions_assertion_uses_expiry ON github_actions_assertion_uses(expires_at);
 
 		CREATE TABLE IF NOT EXISTS webhook_deliveries (
 			id          TEXT PRIMARY KEY,
@@ -573,7 +587,7 @@ func (db *DB) ListDeploymentsPage(ctx context.Context, app, status string, limit
 	if limit <= 0 {
 		limit = 20
 	}
-	query := `SELECT id, app, commit_sha, image_tag, saga_id, status, source_kind, source_ref, source_dirty, source_changes, started_at, finished_at
+	query := `SELECT id, app, commit_sha, image_tag, environment, saga_id, status, source_kind, source_ref, source_dirty, source_changes, started_at, finished_at
 		 FROM deployments`
 	args := []interface{}{}
 	conditions := []string{}
@@ -601,7 +615,7 @@ func (db *DB) ListDeploymentsPage(ctx context.Context, app, status string, limit
 	for rows.Next() {
 		var d model.Deployment
 		var changes []byte
-		if err := rows.Scan(&d.ID, &d.App, &d.CommitSHA, &d.ImageTag, &d.SagaID, &d.Status, &d.SourceKind, &d.SourceRef, &d.SourceDirty, &changes, &d.StartedAt, &d.FinishedAt); err != nil {
+		if err := rows.Scan(&d.ID, &d.App, &d.CommitSHA, &d.ImageTag, &d.Environment, &d.SagaID, &d.Status, &d.SourceKind, &d.SourceRef, &d.SourceDirty, &changes, &d.StartedAt, &d.FinishedAt); err != nil {
 			return nil, err
 		}
 		_ = json.Unmarshal(changes, &d.SourceChanges)
@@ -615,11 +629,11 @@ func (db *DB) GetDeployment(ctx context.Context, id string) (*model.Deployment, 
 	var d model.Deployment
 	var changes []byte
 	err := db.Pool.QueryRow(ctx,
-		`SELECT id, app, commit_sha, image_tag, saga_id, status, source_kind, source_ref, source_dirty, source_changes, started_at, finished_at
+		`SELECT id, app, commit_sha, image_tag, environment, saga_id, status, source_kind, source_ref, source_dirty, source_changes, started_at, finished_at
 		 FROM deployments
 		 WHERE id = $1`,
 		id,
-	).Scan(&d.ID, &d.App, &d.CommitSHA, &d.ImageTag, &d.SagaID, &d.Status, &d.SourceKind, &d.SourceRef, &d.SourceDirty, &changes, &d.StartedAt, &d.FinishedAt)
+	).Scan(&d.ID, &d.App, &d.CommitSHA, &d.ImageTag, &d.Environment, &d.SagaID, &d.Status, &d.SourceKind, &d.SourceRef, &d.SourceDirty, &changes, &d.StartedAt, &d.FinishedAt)
 	if err != nil {
 		return nil, err
 	}
@@ -632,12 +646,12 @@ func (db *DB) LastSuccessfulDeployment(ctx context.Context, app, excludeID strin
 	var d model.Deployment
 	var changes []byte
 	err := db.Pool.QueryRow(ctx,
-		`SELECT id, app, commit_sha, image_tag, saga_id, status, source_kind, source_ref, source_dirty, source_changes, started_at, finished_at
+		`SELECT id, app, commit_sha, image_tag, environment, saga_id, status, source_kind, source_ref, source_dirty, source_changes, started_at, finished_at
 		 FROM deployments
 		 WHERE app = $1 AND status = 'deployed' AND id != $2
 		 ORDER BY started_at DESC LIMIT 1`,
 		app, excludeID,
-	).Scan(&d.ID, &d.App, &d.CommitSHA, &d.ImageTag, &d.SagaID, &d.Status, &d.SourceKind, &d.SourceRef, &d.SourceDirty, &changes, &d.StartedAt, &d.FinishedAt)
+	).Scan(&d.ID, &d.App, &d.CommitSHA, &d.ImageTag, &d.Environment, &d.SagaID, &d.Status, &d.SourceKind, &d.SourceRef, &d.SourceDirty, &changes, &d.StartedAt, &d.FinishedAt)
 	if err != nil {
 		return nil, err
 	}

@@ -5,8 +5,10 @@ import (
 	"fmt"
 	"os"
 	"os/exec"
+	"path/filepath"
 	"sort"
 	"strings"
+	"syscall"
 	"unicode/utf8"
 
 	"norn/v2/api/model"
@@ -36,9 +38,9 @@ func (p *Pipeline) admission(_ context.Context, st *state, _ *saga.Saga) error {
 	if st.sourceDirty {
 		blockers = append(blockers, "source checkout is dirty")
 	}
-	if st.spec.Build == nil {
+	if st.spec.Build == nil && !st.artifactBound {
 		blockers = append(blockers, "build configuration is required to avoid mutable latest images")
-	} else if !model.IsContentAddressedImage(st.spec.Build.Image) {
+	} else if st.spec.Build != nil && !st.artifactBound && !model.IsContentAddressedImage(st.spec.Build.Image) {
 		blockers = append(blockers, "build.image: production requires an externally published image pinned by sha256 OCI digest")
 	}
 	if strings.TrimSpace(p.RegistryURL) == "" {
@@ -65,12 +67,24 @@ func (p *Pipeline) admission(_ context.Context, st *state, _ *saga.Saga) error {
 	return fmt.Errorf("production admission blocked: %s", strings.Join(blockers, "; "))
 }
 
-// artifactAdmission runs after the build. Production preflights intentionally
-// do not push an image, while a mutating deploy must submit the exact manifest
-// digest reported by the registry-backed build.
+// artifactAdmission runs after the build. A legacy production preflight does
+// not push an image, so it has no registry artifact to admit. An artifact-bound
+// release preflight is different: it rehearses deployment of an already-pushed
+// digest and must run the same read-only registry, evidence, and vulnerability
+// checks as a deploy.
 func (p *Pipeline) artifactAdmission(ctx context.Context, st *state, _ *saga.Saga) error {
-	if !p.Production || st.preflight {
+	if !p.Production || (st.preflight && !st.artifactBound) {
 		return nil
+	}
+	return p.verifyReleaseArtifactAdmission(ctx, st)
+}
+
+// verifyReleaseArtifactAdmission performs every immutable artifact check even
+// when called outside the normal deploy path. Rollback workers use this at the
+// final scheduler-mutation boundary to close the queue-time TOCTOU window.
+func (p *Pipeline) verifyReleaseArtifactAdmission(ctx context.Context, st *state) error {
+	if st == nil {
+		return fmt.Errorf("release artifact admission requires state")
 	}
 	if !model.IsContentAddressedImage(st.imageTag) {
 		return fmt.Errorf("production artifact admission blocked: image must be pinned by sha256 OCI digest")
@@ -100,8 +114,13 @@ func (p *Pipeline) verifyRegistryArtifact(ctx context.Context, imageRef string) 
 		return fmt.Errorf("create temporary buildx config: %w", err)
 	}
 	defer os.RemoveAll(buildxConfig)
+	env, cleanup, err := p.registryCommandEnv(buildxConfig)
+	if err != nil {
+		return err
+	}
+	defer cleanup()
 	cmd := exec.CommandContext(ctx, "docker", "buildx", "imagetools", "inspect", imageRef)
-	cmd.Env = append(os.Environ(), "BUILDX_CONFIG="+buildxConfig)
+	cmd.Env = env
 	output, err := cmd.CombinedOutput()
 	if err != nil {
 		message := boundedPolicyOutput(output, 4096)
@@ -114,6 +133,9 @@ func (p *Pipeline) verifyRegistryArtifact(ctx context.Context, imageRef string) 
 }
 
 func (p *Pipeline) verifyArtifactSignature(ctx context.Context, st *state) error {
+	if p.ReleaseAdmissionMode == "keyless" {
+		return p.verifyKeylessAttestations(ctx, st)
+	}
 	if p.VerifySignature != nil {
 		return p.VerifySignature(ctx, st.imageTag)
 	}
@@ -123,7 +145,13 @@ func (p *Pipeline) verifyArtifactSignature(ctx context.Context, st *state) error
 	}
 	command := strings.TrimSpace(p.CosignPath)
 	if command == "" {
+		if p.productionReleaseLane() {
+			return fmt.Errorf("production release verification requires an absolute NORN_COSIGN_PATH")
+		}
 		command = "cosign"
+	}
+	if p.productionReleaseLane() && !filepath.IsAbs(command) {
+		return fmt.Errorf("production release verification requires an absolute NORN_COSIGN_PATH")
 	}
 	args := []string{"verify", "--key", key}
 	if commit := strings.TrimSpace(st.commitSHA); commit != "" {
@@ -143,9 +171,69 @@ func (p *Pipeline) scanArtifactVulnerabilities(ctx context.Context, imageRef str
 	}
 	command := strings.TrimSpace(p.TrivyPath)
 	if command == "" {
+		if p.productionReleaseLane() {
+			return fmt.Errorf("production release scanning requires an absolute NORN_TRIVY_PATH")
+		}
 		command = "trivy"
 	}
-	return runArtifactPolicyCommand(ctx, command, "image", "--quiet", "--scanners", "vuln", "--exit-code", "1", "--severity", strings.Join(severities, ","), "--ignore-unfixed", imageRef)
+	if p.productionReleaseLane() && !filepath.IsAbs(command) {
+		return fmt.Errorf("production release scanning requires an absolute NORN_TRIVY_PATH")
+	}
+	if p.ReleaseAttestationTrustMode != "github-private" {
+		return runArtifactPolicyCommand(ctx, command, "image", "--quiet", "--scanners", "vuln", "--exit-code", "1", "--severity", strings.Join(severities, ","), "--ignore-unfixed", imageRef)
+	}
+	env, cleanup, err := p.registryCommandEnv("")
+	if err != nil {
+		return err
+	}
+	defer cleanup()
+	cmd := exec.CommandContext(ctx, command, "image", "--quiet", "--scanners", "vuln", "--exit-code", "1", "--severity", strings.Join(severities, ","), "--ignore-unfixed", imageRef)
+	cmd.Env = env
+	output, err := cmd.CombinedOutput()
+	if err != nil {
+		return fmt.Errorf("%s", boundedPolicyOutput(output, 4096))
+	}
+	return nil
+}
+
+// registryCommandEnv gives registry consumers an isolated Docker config. It
+// intentionally never inherits GH_TOKEN, the GitHub App key, or an ambient
+// HOME credential store.
+func (p *Pipeline) registryCommandEnv(buildxConfig string) ([]string, func(), error) {
+	if p.ReleaseAttestationTrustMode != "github-private" {
+		return append(os.Environ(), "BUILDX_CONFIG="+buildxConfig), func() {}, nil
+	}
+	if err := secureOwnerOnlyRegularFile(p.ReleaseRegistryAuthFile); err != nil {
+		return nil, nil, fmt.Errorf("private registry auth file is unavailable")
+	}
+	raw, err := os.ReadFile(p.ReleaseRegistryAuthFile)
+	if err != nil || len(raw) == 0 || len(raw) > 1<<20 {
+		return nil, nil, fmt.Errorf("private registry auth file is unavailable")
+	}
+	home, err := os.MkdirTemp("", "norn-release-registry-")
+	if err != nil {
+		return nil, nil, err
+	}
+	if err := os.Mkdir(filepath.Join(home, ".docker"), 0o700); err != nil {
+		_ = os.RemoveAll(home)
+		return nil, nil, err
+	}
+	if err := os.WriteFile(filepath.Join(home, ".docker", "config.json"), raw, 0o600); err != nil {
+		_ = os.RemoveAll(home)
+		return nil, nil, err
+	}
+	return []string{"PATH=" + os.Getenv("PATH"), "HOME=" + home, "DOCKER_CONFIG=" + filepath.Join(home, ".docker"), "BUILDX_CONFIG=" + buildxConfig, "NO_COLOR=1"}, func() { _ = os.RemoveAll(home) }, nil
+}
+
+func secureOwnerOnlyRegularFile(path string) error {
+	info, err := os.Lstat(path)
+	if err != nil || !info.Mode().IsRegular() || info.Mode().Perm()&0o077 != 0 {
+		return fmt.Errorf("not an owner-only regular file")
+	}
+	if stat, ok := info.Sys().(*syscall.Stat_t); !ok || int(stat.Uid) != os.Getuid() {
+		return fmt.Errorf("not owned by current user")
+	}
+	return nil
 }
 
 func normalizedArtifactSeverities(values []string) []string {
