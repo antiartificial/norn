@@ -72,10 +72,10 @@ jobs:
     runs-on: ubuntu-24.04
     permissions: {}
     outputs:
-      attestation_mode: ${{ steps.attestation-mode.outputs.mode }}
+      repository_visibility: ${{ steps.validate-inputs.outputs.repository_visibility }}
     steps:
       - name: Validate reusable-workflow inputs
-        id: attestation-mode
+        id: validate-inputs
         env:
           APP_ID: ${{ inputs.app_id }}
           IMAGE_REPOSITORY: ${{ inputs.image_repository }}
@@ -99,30 +99,13 @@ jobs:
             echo "image_repository must be a lowercase GHCR repository without a tag" >&2
             exit 1
           }
-          # Repository visibility is supplied by GitHub and carried as a
-          # signed OIDC claim. The caller cannot select the verifier mode.
-          # Norn authorizes the derived mode against its own configuration.
-          derive_attestation_mode() {
-            case "$1" in
-              public) printf '%s\n' github-public ;;
-              private|internal) printf '%s\n' github-private ;;
-              *) return 1 ;;
-            esac
-          }
-          # Keep the public/private mapping explicit and regression-tested in
-          # the workflow before any checkout or credential-bearing job starts.
-          [[ "$(derive_attestation_mode public)" == github-public ]]
-          [[ "$(derive_attestation_mode private)" == github-private ]]
-          [[ "$(derive_attestation_mode internal)" == github-private ]]
-          if derive_attestation_mode unknown >/dev/null; then
-            echo "unsupported repository visibility was accepted" >&2
-            exit 1
-          fi
-          attestation_mode="$(derive_attestation_mode "$CALLER_REPOSITORY_VISIBILITY")" || {
-            echo "unsupported or missing GitHub repository visibility: $CALLER_REPOSITORY_VISIBILITY" >&2
-            exit 1
-          }
-          printf 'mode=%s\n' "$attestation_mode" >> "$GITHUB_OUTPUT"
+          case "$CALLER_REPOSITORY_VISIBILITY" in
+            public|private|internal) ;;
+            *) echo "unsupported or missing GitHub repository visibility: $CALLER_REPOSITORY_VISIBILITY" >&2; exit 1 ;;
+          esac
+          # Visibility is signed GitHub evidence, not a trust-backend selector.
+          # The staging control plane returns its configured mode after OIDC.
+          printf 'repository_visibility=%s\n' "$CALLER_REPOSITORY_VISIBILITY" >> "$GITHUB_OUTPUT"
           case "$LANE" in
             staging)
               [[ "$CALLER_EVENT_NAME" == "push" ]] || { echo "staging requires a push event" >&2; exit 1; }
@@ -300,6 +283,23 @@ jobs:
           [[ "$source_sha" =~ ^[0-9a-f]{40}$ ]] || { echo "resolved source is not a full lowercase commit SHA" >&2; exit 1; }
           printf 'source_sha=%s\n' "$source_sha" >> "$GITHUB_OUTPUT"
 
+      - name: Resolve the server-owned attestation policy
+        id: trust
+        env:
+          NORN_API_URL: ${{ vars.NORN_API_URL }}
+          NORN_GITHUB_ACTIONS_OIDC_AUDIENCE: ${{ vars.NORN_GITHUB_ACTIONS_OIDC_AUDIENCE }}
+          REPOSITORY_VISIBILITY: ${{ needs.validate.outputs.repository_visibility }}
+        run: |
+          set -euo pipefail
+          api="${NORN_API_URL%/}"
+          oidc_token="$(curl --fail-with-body --silent --show-error -H "Authorization: Bearer $ACTIONS_ID_TOKEN_REQUEST_TOKEN" "$ACTIONS_ID_TOKEN_REQUEST_URL&audience=$NORN_GITHUB_ACTIONS_OIDC_AUDIENCE" | jq -er '.value')"
+          mode="$(curl --fail-with-body --silent --show-error --retry 3 --retry-connrefused -X POST "$api/api/v1/auth/github-actions/exchange" -H "Authorization: Bearer $oidc_token" -H 'Content-Type: application/json' -H 'Cache-Control: no-store' --data '{"scope":"release:attest","app":"'"$APP_ID"'","environment":"staging","intent":"attest"}' | jq -er '.attestationMode')"
+          case "$REPOSITORY_VISIBILITY:$mode" in
+            public:github-public|private:github-private|internal:github-private|private:norn-signed-private|internal:norn-signed-private) ;;
+            *) echo "control-plane trust mode '$mode' is incompatible with repository visibility '$REPOSITORY_VISIBILITY'" >&2; exit 1 ;;
+          esac
+          printf 'mode=%s\n' "$mode" >> "$GITHUB_OUTPUT"
+
       - uses: docker/setup-buildx-action@8d2750c68a42422c14e847fe6c8ac0403b4cbd6f # v3.12.0
 
       - name: Authenticate to GitHub Container Registry
@@ -334,7 +334,7 @@ jobs:
           cosign-release: v2.6.5
 
       - name: Sign the exact published digest
-        if: needs.validate.outputs.attestation_mode == 'github-public'
+        if: steps.trust.outputs.mode == 'github-public'
         env:
           SOURCE_SHA: ${{ steps.inputs.outputs.source_sha }}
           ARTIFACT: ${{ steps.artifact.outputs.artifact }}
@@ -355,6 +355,7 @@ jobs:
       # evidence according to the initiating repository's visibility.
       - name: Attest GitHub build provenance for the exact OCI digest
         id: provenance
+        if: steps.trust.outputs.mode != 'norn-signed-private'
         uses: actions/attest@508db95dd578ae2727ebd6217d5ba78e4fbda05d # v4.2.1
         with:
           subject-name: ${{ inputs.image_repository }}
@@ -365,12 +366,54 @@ jobs:
       # mode while retaining the exact same immutable OCI subject.
       - name: Attest GitHub SBOM for the exact OCI digest
         id: sbom
+        if: steps.trust.outputs.mode != 'norn-signed-private'
         uses: actions/attest@508db95dd578ae2727ebd6217d5ba78e4fbda05d # v4.2.1
         with:
           subject-name: ${{ inputs.image_repository }}
           subject-digest: ${{ steps.build.outputs.digest }}
           sbom-path: norn-release/sbom.spdx.json
           push-to-registry: true
+
+      - name: Ask Norn to sign private provenance and SPDX evidence
+        if: steps.trust.outputs.mode == 'norn-signed-private'
+        env:
+          SOURCE_SHA: ${{ steps.inputs.outputs.source_sha }}
+          ARTIFACT: ${{ steps.artifact.outputs.artifact }}
+          NORN_API_URL: ${{ vars.NORN_API_URL }}
+          NORN_GITHUB_ACTIONS_OIDC_AUDIENCE: ${{ vars.NORN_GITHUB_ACTIONS_OIDC_AUDIENCE }}
+        run: |
+          set -euo pipefail
+          umask 077
+          mkdir -p .norn-release
+          api="${NORN_API_URL%/}"
+          oidc_token="$(curl --fail-with-body --silent --show-error -H "Authorization: Bearer $ACTIONS_ID_TOKEN_REQUEST_TOKEN" "$ACTIONS_ID_TOKEN_REQUEST_URL&audience=$NORN_GITHUB_ACTIONS_OIDC_AUDIENCE" | jq -er '.value')"
+          NORN_API_TOKEN="$(curl --fail-with-body --silent --show-error --retry 3 --retry-connrefused -X POST "$api/api/v1/auth/github-actions/exchange" -H "Authorization: Bearer $oidc_token" -H 'Content-Type: application/json' -H 'Cache-Control: no-store' --data '{"scope":"release:attest","app":"'"$APP_ID"'","environment":"staging","intent":"attest"}' | jq -er '.token')"
+          echo "::add-mask::$NORN_API_TOKEN"
+          jq -nc --arg sourceSha "$SOURCE_SHA" --arg artifact "$ARTIFACT" --slurpfile sbom norn-release/sbom.spdx.json '{sourceSha: $sourceSha, artifact: $artifact, sbom: $sbom[0]}' > .norn-release/private-attestation-request.json
+          curl --fail-with-body --silent --show-error --retry 3 --retry-connrefused --max-time 90 \
+            -X POST "$api/api/v1/apps/$APP_ID/private-attestations" \
+            -H "Authorization: Bearer $NORN_API_TOKEN" \
+            -H 'Content-Type: application/json' \
+            -H "Idempotency-Key: norn-private-attestation-$APP_ID-$SOURCE_SHA-$GITHUB_RUN_ID-$GITHUB_RUN_ATTEMPT" \
+            --data-binary @.norn-release/private-attestation-request.json > .norn-release/private-attestation.json
+          jq -e '.schemaVersion == "norn.private-release-attestation/v1" and .candidate.attestation.mode == "norn-signed-private" and .candidate.attestation.bundle.schemaVersion == "norn.private-release-attestation/v1"' .norn-release/private-attestation.json >/dev/null
+          jq '.candidate' .norn-release/private-attestation.json > .norn-release/candidate.json
+
+      - name: Bind GitHub-backed release evidence
+        if: steps.trust.outputs.mode != 'norn-signed-private'
+        env:
+          SOURCE_SHA: ${{ steps.inputs.outputs.source_sha }}
+          ARTIFACT: ${{ steps.artifact.outputs.artifact }}
+        run: |
+          set -euo pipefail
+          umask 077
+          mkdir -p .norn-release
+          jq -nc \
+            --arg sourceSha "$SOURCE_SHA" --arg artifact "$ARTIFACT" \
+            --arg repository "$GITHUB_REPOSITORY" --arg repositoryId "$GITHUB_REPOSITORY_ID" --arg ownerId "$GITHUB_REPOSITORY_OWNER_ID" \
+            --arg runId "$GITHUB_RUN_ID" --arg runAttempt "$GITHUB_RUN_ATTEMPT" \
+            --arg workflowRef "$GITHUB_WORKFLOW_REF" --arg workflowSha "$GITHUB_WORKFLOW_SHA" --arg ref "$GITHUB_REF" \
+            '{provider: "github-actions", repository: $repository, repositoryId: $repositoryId, ownerId: $ownerId, runId: $runId, runAttempt: $runAttempt, workflowRef: $workflowRef, workflowSha: $workflowSha, ref: $ref, attestation: {issuer: "https://token.actions.githubusercontent.com", subjectDigest: ($artifact | split("@")[1]), materialSha: $sourceSha}}' > .norn-release/candidate.json
 
       - name: Queue and wait for staging preflight
         env:
@@ -380,6 +423,7 @@ jobs:
           NORN_GITHUB_ACTIONS_OIDC_AUDIENCE: ${{ vars.NORN_GITHUB_ACTIONS_OIDC_AUDIENCE }}
         run: |
           set -euo pipefail
+          umask 077
           mkdir -p .norn-release
           api="${NORN_API_URL%/}"
           exchange_token() {
@@ -390,18 +434,13 @@ jobs:
           NORN_API_TOKEN="$(exchange_token)"
           echo "::add-mask::$NORN_API_TOKEN"
           token_issued=$SECONDS
-          request="$(jq -nc \
-            --arg sourceSha "$SOURCE_SHA" --arg artifact "$ARTIFACT" \
-            --arg repository "$GITHUB_REPOSITORY" --arg repositoryId "$GITHUB_REPOSITORY_ID" --arg ownerId "$GITHUB_REPOSITORY_OWNER_ID" \
-            --arg runId "$GITHUB_RUN_ID" --arg runAttempt "$GITHUB_RUN_ATTEMPT" \
-            --arg workflowRef "$GITHUB_WORKFLOW_REF" --arg workflowSha "$GITHUB_WORKFLOW_SHA" --arg ref "$GITHUB_REF" \
-            '{sourceSha: $sourceSha, artifact: $artifact, candidate: {provider: "github-actions", repository: $repository, repositoryId: $repositoryId, ownerId: $ownerId, runId: $runId, runAttempt: $runAttempt, workflowRef: $workflowRef, workflowSha: $workflowSha, ref: $ref, attestation: {issuer: "https://token.actions.githubusercontent.com", subjectDigest: ($artifact | split("@") | .[1]), materialSHA: $sourceSha}}}')"
+          jq -nc --arg sourceSha "$SOURCE_SHA" --arg artifact "$ARTIFACT" --slurpfile candidate .norn-release/candidate.json '{sourceSha: $sourceSha, artifact: $artifact, candidate: $candidate[0]}' > .norn-release/preflight-request.json
           curl --fail-with-body --silent --show-error --retry 3 --retry-connrefused \
             -X POST "$api/api/v1/apps/$APP_ID/releases/preflight" \
             -H "Authorization: Bearer $NORN_API_TOKEN" \
             -H 'Content-Type: application/json' \
-            -H "Idempotency-Key: norn-staging-preflight-$APP_ID-$SOURCE_SHA" \
-            --data "$request" > .norn-release/preflight.json
+            -H "Idempotency-Key: norn-staging-preflight-$APP_ID-$SOURCE_SHA-$GITHUB_RUN_ID-$GITHUB_RUN_ATTEMPT" \
+            --data-binary @.norn-release/preflight-request.json > .norn-release/preflight.json
           operation_id="$(jq -er '.id' .norn-release/preflight.json)"
           deadline=$((SECONDS + 3600))
           while :; do
@@ -436,6 +475,7 @@ jobs:
           NORN_GITHUB_ACTIONS_OIDC_AUDIENCE: ${{ vars.NORN_GITHUB_ACTIONS_OIDC_AUDIENCE }}
         run: |
           set -euo pipefail
+          umask 077
           api="${NORN_API_URL%/}"
           exchange_token() {
             oidc_token="$(curl --fail-with-body --silent --show-error -H "Authorization: Bearer $ACTIONS_ID_TOKEN_REQUEST_TOKEN" "$ACTIONS_ID_TOKEN_REQUEST_URL&audience=$NORN_GITHUB_ACTIONS_OIDC_AUDIENCE" | jq -er '.value')"
@@ -445,18 +485,13 @@ jobs:
           NORN_API_TOKEN="$(exchange_token)"
           echo "::add-mask::$NORN_API_TOKEN"
           token_issued=$SECONDS
-          request="$(jq -nc \
-            --arg sourceSha "$SOURCE_SHA" --arg artifact "$ARTIFACT" \
-            --arg repository "$GITHUB_REPOSITORY" --arg repositoryId "$GITHUB_REPOSITORY_ID" --arg ownerId "$GITHUB_REPOSITORY_OWNER_ID" \
-            --arg runId "$GITHUB_RUN_ID" --arg runAttempt "$GITHUB_RUN_ATTEMPT" \
-            --arg workflowRef "$GITHUB_WORKFLOW_REF" --arg workflowSha "$GITHUB_WORKFLOW_SHA" --arg ref "$GITHUB_REF" \
-            '{sourceSha: $sourceSha, artifact: $artifact, candidate: {provider: "github-actions", repository: $repository, repositoryId: $repositoryId, ownerId: $ownerId, runId: $runId, runAttempt: $runAttempt, workflowRef: $workflowRef, workflowSha: $workflowSha, ref: $ref, attestation: {issuer: "https://token.actions.githubusercontent.com", subjectDigest: ($artifact | split("@") | .[1]), materialSHA: $sourceSha}}}')"
+          jq -nc --arg sourceSha "$SOURCE_SHA" --arg artifact "$ARTIFACT" --slurpfile candidate .norn-release/candidate.json '{sourceSha: $sourceSha, artifact: $artifact, candidate: $candidate[0]}' > .norn-release/deployment-request.json
           curl --fail-with-body --silent --show-error --retry 3 --retry-connrefused \
             -X POST "$api/api/v1/apps/$APP_ID/releases/deployments" \
             -H "Authorization: Bearer $NORN_API_TOKEN" \
             -H 'Content-Type: application/json' \
-            -H "Idempotency-Key: norn-staging-deploy-$APP_ID-$SOURCE_SHA" \
-            --data "$request" > .norn-release/deployment.json
+            -H "Idempotency-Key: norn-staging-deploy-$APP_ID-$SOURCE_SHA-$GITHUB_RUN_ID-$GITHUB_RUN_ATTEMPT" \
+            --data-binary @.norn-release/deployment-request.json > .norn-release/deployment.json
           deployment_id="$(jq -er '.payload.deploymentId // .metadata.deploymentId' .norn-release/deployment.json)"
           operation_id="$(jq -er '.id' .norn-release/deployment.json)"
           deadline=$((SECONDS + 3600))
@@ -490,10 +525,11 @@ jobs:
           ARTIFACT: ${{ steps.artifact.outputs.artifact }}
           DEPLOYMENT_ID: ${{ steps.deploy.outputs.deployment_id }}
           NORN_API_URL: ${{ vars.NORN_API_URL }}
-          ATTESTATION_MODE: ${{ needs.validate.outputs.attestation_mode }}
+          ATTESTATION_MODE: ${{ steps.trust.outputs.mode }}
           NORN_GITHUB_ACTIONS_OIDC_AUDIENCE: ${{ vars.NORN_GITHUB_ACTIONS_OIDC_AUDIENCE }}
         run: |
           set -euo pipefail
+          umask 077
           api="${NORN_API_URL%/}"
           oidc_token="$(curl --fail-with-body --silent --show-error -H "Authorization: Bearer $ACTIONS_ID_TOKEN_REQUEST_TOKEN" "$ACTIONS_ID_TOKEN_REQUEST_URL&audience=$NORN_GITHUB_ACTIONS_OIDC_AUDIENCE" | jq -er '.value')"
           NORN_API_TOKEN="$(curl --fail-with-body --silent --show-error --retry 3 --retry-connrefused -X POST "$api/api/v1/auth/github-actions/exchange" -H "Authorization: Bearer $oidc_token" -H 'Content-Type: application/json' -H 'Cache-Control: no-store' --data '{"scope":"release:qualify","app":"'"$APP_ID"'","environment":"staging","intent":"qualify"}' | jq -er '.token')"
@@ -539,7 +575,7 @@ jobs:
         env:
           SOURCE_SHA: ${{ steps.inputs.outputs.source_sha }}
           ARTIFACT: ${{ steps.artifact.outputs.artifact }}
-          ATTESTATION_MODE: ${{ needs.validate.outputs.attestation_mode }}
+          ATTESTATION_MODE: ${{ steps.trust.outputs.mode }}
         run: |
           {
             echo '### Norn staging release'
@@ -547,8 +583,8 @@ jobs:
             echo "- App: \`$APP_ID\`"
             echo "- Source: \`$SOURCE_SHA\`"
             echo "- Artifact: \`$ARTIFACT\`"
-            echo "- GitHub attestation mode: \`$ATTESTATION_MODE\`"
-            echo '- GitHub retains provenance and SBOM records for this digest; Norn resolves them server-side by repository identity and digest.'
+            echo "- Attestation mode: \`$ATTESTATION_MODE\`"
+            echo '- The staging qualification carries the exact provenance and SBOM trust result used for production promotion.'
             echo '- A protected tag pointing at this commit can promote the exported signed qualification until it expires.'
           } >> "$GITHUB_STEP_SUMMARY"
 
@@ -591,7 +627,7 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
           SOURCE_SHA: ${{ steps.inputs.outputs.source_sha }}
-          ATTESTATION_MODE: ${{ needs.validate.outputs.attestation_mode }}
+          REPOSITORY_VISIBILITY: ${{ needs.validate.outputs.repository_visibility }}
         run: |
           set -euo pipefail
           mkdir -p .norn-release
@@ -610,7 +646,7 @@ jobs:
             exit 1
           }
           unzip -p .norn-release/qualification.zip qualification.json > .norn-release/qualification.json
-          jq -e --arg app "$APP_ID" --arg sourceSha "$SOURCE_SHA" --arg attestationMode "$ATTESTATION_MODE" '
+          jq -e --arg app "$APP_ID" --arg sourceSha "$SOURCE_SHA" --arg repositoryVisibility "$REPOSITORY_VISIBILITY" '
             .schemaVersion == "norn.release-qualification/v2" and
             .app == $app and .environment == "staging" and
             .sourceSha == $sourceSha and
@@ -620,7 +656,9 @@ jobs:
             (.keyId | type == "string" and length > 0) and
             (.signature | type == "string" and length > 0) and
             (.candidate.provider == "github-actions") and
-            (.candidate.attestation.mode == $attestationMode) and
+            ((($repositoryVisibility == "public") and (.candidate.attestation.mode == "github-public")) or
+             (($repositoryVisibility == "private" or $repositoryVisibility == "internal") and
+              (.candidate.attestation.mode == "github-private" or .candidate.attestation.mode == "norn-signed-private"))) and
             (.candidate.attestation.subjectDigest == (.artifact | split("@") | .[1])) and
             (.candidate.attestation.materialSha == .sourceSha) and
             (.dsse.payloadType == "application/vnd.norn.release-qualification.v2+json") and
@@ -639,6 +677,7 @@ jobs:
           NORN_GITHUB_ACTIONS_OIDC_AUDIENCE: ${{ vars.NORN_GITHUB_ACTIONS_OIDC_AUDIENCE }}
         run: |
           set -euo pipefail
+          umask 077
           api="${NORN_API_URL%/}"
           exchange_token() {
             oidc_token="$(curl --fail-with-body --silent --show-error -H "Authorization: Bearer $ACTIONS_ID_TOKEN_REQUEST_TOKEN" "$ACTIONS_ID_TOKEN_REQUEST_URL&audience=$NORN_GITHUB_ACTIONS_OIDC_AUDIENCE" | jq -er '.value')"
@@ -647,14 +686,14 @@ jobs:
           NORN_API_TOKEN="$(exchange_token)"
           echo "::add-mask::$NORN_API_TOKEN"
           token_issued=$SECONDS
-          request="$(jq -nc --arg sourceSha "$SOURCE_SHA" --arg artifact "$ARTIFACT" --slurpfile qualification .norn-release/qualification.json \
-            '{sourceSha: $sourceSha, artifact: $artifact, qualification: $qualification[0]}')"
+          jq -nc --arg sourceSha "$SOURCE_SHA" --arg artifact "$ARTIFACT" --slurpfile qualification .norn-release/qualification.json \
+            '{sourceSha: $sourceSha, artifact: $artifact, qualification: $qualification[0]}' > .norn-release/promotion-request.json
           curl --fail-with-body --silent --show-error --retry 3 --retry-connrefused \
             -X POST "$api/api/v1/apps/$APP_ID/promotions" \
             -H "Authorization: Bearer $NORN_API_TOKEN" \
             -H 'Content-Type: application/json' \
             -H "Idempotency-Key: norn-production-promotion-$APP_ID-$SOURCE_SHA-$RECEIPT_ID" \
-            --data "$request" > .norn-release/promotion.json
+            --data-binary @.norn-release/promotion-request.json > .norn-release/promotion.json
           operation_id="$(jq -er '.id' .norn-release/promotion.json)"
           deadline=$((SECONDS + 3600))
           while :; do
@@ -723,7 +762,7 @@ jobs:
         env:
           NORN_API_URL: ${{ vars.NORN_API_URL }}
           NORN_GITHUB_ACTIONS_OIDC_AUDIENCE: ${{ vars.NORN_GITHUB_ACTIONS_OIDC_AUDIENCE }}
-          ATTESTATION_MODE: ${{ needs.validate.outputs.attestation_mode }}
+          REPOSITORY_VISIBILITY: ${{ needs.validate.outputs.repository_visibility }}
         run: |
           set -euo pipefail
           mkdir -p norn-release
@@ -738,7 +777,7 @@ jobs:
             -H 'Content-Type: application/json' \
             -H "Idempotency-Key: norn-staging-requalification-$APP_ID-$SOURCE_SHA-$GITHUB_RUN_ID-$GITHUB_RUN_ATTEMPT" \
             --data "$request" > norn-release/qualification.json
-          jq -e --arg app "$APP_ID" --arg sourceSha "$SOURCE_SHA" --arg deploymentId "$DEPLOYMENT_ID" --arg attestationMode "$ATTESTATION_MODE" '
+          jq -e --arg app "$APP_ID" --arg sourceSha "$SOURCE_SHA" --arg deploymentId "$DEPLOYMENT_ID" --arg repositoryVisibility "$REPOSITORY_VISIBILITY" '
             .schemaVersion == "norn.release-qualification/v2" and
             .app == $app and .environment == "staging" and
             .sourceSha == $sourceSha and .deploymentId == $deploymentId and
@@ -746,7 +785,9 @@ jobs:
             (.keyId | type == "string" and length > 0) and
             (.signature | type == "string" and length > 0) and
             (.candidate.provider == "github-actions") and
-            (.candidate.attestation.mode == $attestationMode) and
+            ((($repositoryVisibility == "public") and (.candidate.attestation.mode == "github-public")) or
+             (($repositoryVisibility == "private" or $repositoryVisibility == "internal") and
+              (.candidate.attestation.mode == "github-private" or .candidate.attestation.mode == "norn-signed-private"))) and
             (.candidate.attestation.subjectDigest == (.artifact | split("@") | .[1])) and
             (.candidate.attestation.materialSha == .sourceSha) and
             (.dsse.payloadType == "application/vnd.norn.release-qualification.v2+json") and

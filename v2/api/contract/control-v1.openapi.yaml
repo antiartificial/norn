@@ -406,11 +406,28 @@ paths:
         '400': { $ref: '#/components/responses/Problem' }
         '403': { $ref: '#/components/responses/Problem' }
         '409': { $ref: '#/components/responses/Problem' }
+  /api/v1/apps/{id}/private-attestations:
+    parameters:
+      - $ref: '#/components/parameters/AppID'
+    post:
+      operationId: createPrivateReleaseAttestation
+      description: Issues server-canonical DSSE provenance and SPDX evidence for an OIDC-authenticated ordinary private repository. Available only in staging with norn-signed-private trust.
+      parameters:
+        - $ref: '#/components/parameters/IdempotencyKey'
+      requestBody:
+        required: true
+        content: { application/json: { schema: { $ref: '#/components/schemas/PrivateReleaseAttestationRequest' } } }
+      responses:
+        '201': { description: Portable signed private evidence, content: { application/json: { schema: { $ref: '#/components/schemas/PrivateReleaseAttestationResponse' } } } }
+        '400': { $ref: '#/components/responses/Problem' }
+        '403': { $ref: '#/components/responses/Problem' }
+        '409': { $ref: '#/components/responses/Problem' }
   /api/v1/apps/{id}/qualifications:
     parameters:
       - $ref: '#/components/parameters/AppID'
     get:
       operationId: listReleaseQualifications
+      description: Returns at most the three most recent unexpired full signed qualifications. Large embedded private evidence is intentionally bounded.
       responses:
         '200': { description: Signed staging qualifications, content: { application/json: { schema: { type: object } } } }
     post:
@@ -466,15 +483,30 @@ paths:
               additionalProperties: false
               required: [scope, environment]
               properties:
-                scope: { type: string }
+                scope: { type: string, enum: ['release:attest', 'release:stage', 'release:qualify', 'release:promote', 'release:rollback', 'fleet:operate'] }
                 app: { type: string, description: 'Required for release scopes; omitted for fleet:operate.' }
                 environment: { type: string }
                 intent: { type: string }
               allOf:
-                - if: { properties: { scope: { enum: ['release:stage', 'release:qualify', 'release:promote', 'release:rollback'] } }, required: [scope] }
+                - if: { properties: { scope: { enum: ['release:attest', 'release:stage', 'release:qualify', 'release:promote', 'release:rollback'] } }, required: [scope] }
                   then: { required: [app] }
       responses:
-        '201': { description: Exchange token created }
+        '201':
+          description: Exchange token created. Release exchanges include the server-selected attestationMode.
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [token, tokenId, scopes, environment, expiresAt, subject]
+                properties:
+                  token: { type: string }
+                  tokenId: { type: string }
+                  scopes: { type: array, items: { type: string } }
+                  app: { type: string }
+                  environment: { type: string }
+                  expiresAt: { type: string, format: date-time }
+                  subject: { type: string }
+                  attestationMode: { type: string, enum: [github-public, github-private, norn-signed-private] }
         '401': { $ref: '#/components/responses/Problem' }
         '403': { $ref: '#/components/responses/Problem' }
   /api/v1/deployments/{id}:
@@ -1051,6 +1083,7 @@ paths:
   /api/v1/operations/{id}:
     get:
       operationId: getOperation
+      description: API readers receive the complete operation. A release- or Fleet-scoped CI token may read only its exact app/environment/CI-bound operation and receives a bounded status projection without candidate or qualification evidence.
       parameters:
         - $ref: '#/components/parameters/OperationID'
       responses:
@@ -2328,11 +2361,54 @@ components:
       additionalProperties: false
       required: [mode, issuer, subjectDigest, materialSha]
       properties:
-        mode: { type: string, enum: [github-public, github-private], readOnly: true, description: Server-derived from the verified GitHub OIDC identity. }
+        mode: { type: string, enum: [github-public, github-private, norn-signed-private], readOnly: true, description: Server-derived from verified GitHub OIDC identity plus the control-plane trust policy. }
         verifier: { type: string, readOnly: true, description: Server-derived display label with no credential or identity data. }
         issuer: { const: 'https://token.actions.githubusercontent.com' }
         subjectDigest: { type: string, pattern: '^sha256:[0-9a-f]{64}$' }
         materialSha: { type: string, pattern: '^[0-9a-f]{40}$' }
+        bundle: { $ref: '#/components/schemas/ReleaseAttestationBundle' }
+    DSSEEnvelope:
+      type: object
+      additionalProperties: false
+      required: [payloadType, payload, signatures]
+      properties:
+        payloadType: { type: string }
+        payload: { type: string }
+        signatures:
+          type: array
+          minItems: 1
+          maxItems: 1
+          items:
+            type: object
+            additionalProperties: false
+            required: [keyid, sig]
+            properties:
+              keyid: { type: string }
+              sig: { type: string }
+    ReleaseAttestationBundle:
+      type: object
+      additionalProperties: false
+      required: [schemaVersion, keyId, provenance, sbom]
+      properties:
+        schemaVersion: { const: norn.private-release-attestation/v1 }
+        keyId: { type: string }
+        provenance: { $ref: '#/components/schemas/DSSEEnvelope' }
+        sbom: { $ref: '#/components/schemas/DSSEEnvelope' }
+    PrivateReleaseAttestationRequest:
+      type: object
+      additionalProperties: false
+      required: [sourceSha, artifact, sbom]
+      properties:
+        sourceSha: { type: string, pattern: '^[0-9a-f]{40}$' }
+        artifact: { type: string, pattern: '^.+@sha256:[0-9a-f]{64}$' }
+        sbom: { type: object, description: SPDX JSON document; request is capped at 3 MiB and decoded evidence at 2 MiB. }
+    PrivateReleaseAttestationResponse:
+      type: object
+      additionalProperties: false
+      required: [schemaVersion, candidate]
+      properties:
+        schemaVersion: { const: norn.private-release-attestation/v1 }
+        candidate: { $ref: '#/components/schemas/ReleaseCandidate' }
     ReleaseQualification:
       type: object
       required: [schemaVersion, id, app, environment, deploymentId, sourceSha, artifact, issuedAt, expiresAt, keyId, signature, candidate, dsse]

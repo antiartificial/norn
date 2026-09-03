@@ -2,6 +2,7 @@ package handler
 
 import (
 	"bytes"
+	"context"
 	"crypto/ed25519"
 	"crypto/sha256"
 	"crypto/subtle"
@@ -22,11 +23,13 @@ import (
 	"github.com/jackc/pgx/v5/pgconn"
 
 	"norn/v2/api/model"
+	"norn/v2/api/privateattestation"
 	"norn/v2/api/store"
 )
 
 const releaseQualificationSchema = "norn.release-qualification/v2"
 const releaseQualificationPayloadType = "application/vnd.norn.release-qualification.v2+json"
+const maxQualificationListReceipts = 3
 
 var fullSourceSHAPattern = regexp.MustCompile(`^[0-9a-f]{40}$`)
 
@@ -53,6 +56,100 @@ type releaseRollbackRequest struct {
 	Confirm      bool   `json:"confirm"`
 }
 
+type privateAttestationRequest struct {
+	SourceSHA string          `json:"sourceSha"`
+	Artifact  string          `json:"artifact"`
+	SBOM      json.RawMessage `json:"sbom"`
+}
+
+// CreatePrivateReleaseAttestation turns a GitHub OIDC-bound build assertion
+// into server-canonical DSSE provenance and SPDX evidence. The Actions job
+// never receives the Norn or KMS signing key.
+func (h *Handler) CreatePrivateReleaseAttestation(w http.ResponseWriter, r *http.Request) {
+	preventSensitiveResponseCaching(w)
+	appID := chi.URLParam(r, "id")
+	principal, ok := requireReleaseControlScope(w, r, ScopeReleaseAttest, appID)
+	if !ok {
+		return
+	}
+	if h.cfg == nil || h.cfg.EnvironmentID() != "staging" || h.cfg.ReleaseAttestationTrustMode != "norn-signed-private" || h.privateReleaseSigner == nil {
+		WriteControlProblem(w, r, http.StatusConflict, "private_attestation_unavailable", "Norn-signed private release attestations are not configured on this staging control plane")
+		return
+	}
+	if principal.CI == nil || (principal.CI.RepositoryVisibility != "private" && principal.CI.RepositoryVisibility != "internal") {
+		WriteControlProblem(w, r, http.StatusForbidden, "private_attestation_identity_invalid", "a verified private GitHub Actions identity is required")
+		return
+	}
+	protectedBranchRef := "refs/heads/" + strings.TrimSpace(h.cfg.GitHubActionsDefaultBranch)
+	if principal.Environment != "staging" || principal.CI.Environment != "staging" || principal.CI.Intent != "attest" || !principal.CI.RefProtected || principal.CI.Ref != protectedBranchRef || principal.CI.EventName != "push" {
+		WriteControlProblem(w, r, http.StatusForbidden, "private_attestation_lane_invalid", "private evidence may only be minted by the protected staging default-branch build identity")
+		return
+	}
+	var request privateAttestationRequest
+	if err := decodeControlJSONLimit(w, r, &request, maxPrivateAttestationJSONBody); err != nil {
+		WriteControlProblem(w, r, http.StatusBadRequest, "invalid_private_attestation_request", err.Error())
+		return
+	}
+	if request.SourceSHA != principal.CI.SHA || !validReleaseProvenance(request.SourceSHA, request.Artifact) || !model.IsContentAddressedImage(request.Artifact) {
+		WriteControlProblem(w, r, http.StatusBadRequest, "invalid_private_attestation_request", "source and immutable artifact must match the verified GitHub identity")
+		return
+	}
+	spec := h.findSpec(appID)
+	if spec == nil || h.pipeline == nil {
+		WriteControlProblem(w, r, http.StatusNotFound, "app_not_found", "app was not found or has no release pipeline")
+		return
+	}
+	candidate := releaseCandidateFromCI(*principal.CI, request.SourceSHA, request.Artifact, h.cfg.ReleaseAttestationTrustMode)
+	if err := validateReleaseSpecBinding(spec, candidate, request.Artifact, h.pipeline.RegistryURL); err != nil {
+		WriteControlProblem(w, r, http.StatusForbidden, "release_binding_mismatch", err.Error())
+		return
+	}
+	if h.db == nil {
+		WriteControlProblem(w, r, http.StatusServiceUnavailable, "private_attestation_store_unavailable", "durable private release evidence storage is unavailable")
+		return
+	}
+	key, digest, ok := appOperationIdempotency(w, r, principal, appID, "release.attestation", request)
+	if !ok {
+		return
+	}
+	if existing, handled := h.resolveAppOperationIdempotency(w, r, key, digest, "release.attestation", appID); handled {
+		if existing != nil {
+			writeJSON(w, existing.Payload)
+		}
+		return
+	}
+	bundle, err := privateattestation.Issue(r.Context(), h.privateReleaseSigner, appID, request.SourceSHA, request.Artifact, request.SBOM, candidate)
+	if err != nil {
+		WriteControlProblem(w, r, http.StatusBadRequest, "private_attestation_failed", err.Error())
+		return
+	}
+	candidate.Attestation.Bundle = bundle
+	now := time.Now().UTC()
+	payload := map[string]interface{}{"schemaVersion": model.NornPrivateAttestationSchema, "candidate": candidate}
+	op := &model.Operation{ID: uuid.NewString(), Kind: "release.attestation", App: appID, Ref: request.SourceSHA, Status: model.OperationSucceeded, Risk: "private release evidence", Source: "release-control-api", Message: "private release evidence signed", Payload: payload, Metadata: map[string]interface{}{"idempotencyKey": key, "requestDigest": digest, "principal": principal.Subject, "principalTokenId": principal.TokenID, "environment": h.cfg.EnvironmentID(), "requestCI": principal.CI}, StartedAt: now, FinishedAt: &now, MaxAttempts: 1}
+	if err := h.db.InsertCompletedOperation(r.Context(), op); err != nil {
+		if existing, lookupErr := h.db.GetOperationByIdempotencyKey(r.Context(), key); lookupErr == nil {
+			storedDigest, _ := existing.Metadata["requestDigest"].(string)
+			if existing.Kind == "release.attestation" && existing.App == appID && storedDigest == digest {
+				writeJSON(w, existing.Payload)
+				return
+			}
+		}
+		WriteControlProblem(w, r, http.StatusInternalServerError, "private_attestation_store_failed", "failed to durably store private release evidence")
+		return
+	}
+	writeJSONStatus(w, http.StatusCreated, payload)
+}
+
+func releaseCandidateFromCI(ci CIIdentity, sourceSHA, artifact, trustMode string) model.ReleaseCandidate {
+	return model.ReleaseCandidate{
+		Provider: ci.Provider, Repository: ci.Repository, RepositoryID: ci.RepositoryID, OwnerID: ci.RepositoryOwnerID,
+		RepositoryVisibility: ci.RepositoryVisibility, RunID: ci.RunID, RunAttempt: ci.RunAttempt, WorkflowRef: ci.WorkflowRef,
+		WorkflowSHA: ci.WorkflowSHA, SignerWorkflowRef: ci.JobWorkflowRef, SignerWorkflowSHA: ci.JobWorkflowSHA, Ref: ci.Ref,
+		Attestation: model.ReleaseAttestationIdentity{Mode: releaseAttestationMode(ci.RepositoryVisibility, trustMode), Verifier: releaseAttestationVerifier(ci.RepositoryVisibility, trustMode), Issuer: githubActionsOIDCIssuer, SubjectDigest: artifactDigest(artifact), MaterialSHA: sourceSHA},
+	}
+}
+
 func (h *Handler) QueueReleasePreflight(w http.ResponseWriter, r *http.Request) {
 	h.queueRelease(w, r, true, nil)
 }
@@ -64,6 +161,7 @@ func (h *Handler) QueueReleaseDeployment(w http.ResponseWriter, r *http.Request)
 // QueueReleaseRollback restores an earlier, already admitted immutable
 // deployment. It never rebuilds or accepts a mutable target selector.
 func (h *Handler) QueueReleaseRollback(w http.ResponseWriter, r *http.Request) {
+	preventSensitiveResponseCaching(w)
 	appID := chi.URLParam(r, "id")
 	principal, ok := requireReleaseControlScope(w, r, ScopeReleaseRollback, appID)
 	if !ok {
@@ -74,7 +172,7 @@ func (h *Handler) QueueReleaseRollback(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	var request releaseRollbackRequest
-	if err := decodeControlJSON(w, r, &request); err != nil {
+	if err := decodeControlJSONLimit(w, r, &request, maxReleaseEvidenceJSONBody); err != nil {
 		WriteControlProblem(w, r, http.StatusBadRequest, "invalid_release_rollback", err.Error())
 		return
 	}
@@ -130,7 +228,7 @@ func (h *Handler) QueueReleaseRollback(w http.ResponseWriter, r *http.Request) {
 		WriteControlProblem(w, r, http.StatusConflict, "rollback_target_unadmitted", "rollback target no longer matches the app source and artifact binding: "+err.Error())
 		return
 	}
-	if err := h.pipeline.VerifyReleaseArtifact(r.Context(), target.CommitSHA, target.ImageTag, qualification.Candidate); err != nil {
+	if err := h.verifyRollbackReleaseArtifact(r.Context(), spec, target, qualification.Candidate); err != nil {
 		WriteControlProblem(w, r, http.StatusForbidden, "rollback_target_unadmitted", "rollback target no longer satisfies production artifact admission: "+err.Error())
 		return
 	}
@@ -139,7 +237,7 @@ func (h *Handler) QueueReleaseRollback(w http.ResponseWriter, r *http.Request) {
 		WriteControlProblem(w, r, http.StatusConflict, "rollback_current_deployment_missing", "rollback target must differ from the current deployment")
 		return
 	}
-	_, operationID, err := h.pipeline.RollbackRegionsOperationContext(r.Context(), spec, *current, target, nil, map[string]interface{}{"idempotencyKey": key, "requestDigest": digest, "principal": principal.Subject, "requestCI": principal.CI, "environment": h.cfg.EnvironmentID(), "releaseRollback": true, "sourceSha": target.CommitSHA, "artifact": target.ImageTag, "targetDeploymentId": target.ID})
+	_, operationID, err := h.pipeline.RollbackRegionsOperationContext(r.Context(), spec, *current, target, nil, map[string]interface{}{"idempotencyKey": key, "requestDigest": digest, "principal": principal.Subject, "principalTokenId": principal.TokenID, "requestCI": principal.CI, "environment": h.cfg.EnvironmentID(), "releaseRollback": true, "sourceSha": target.CommitSHA, "artifact": target.ImageTag, "targetDeploymentId": target.ID})
 	if err != nil {
 		WriteControlProblem(w, r, http.StatusInternalServerError, "rollback_queue_failed", "failed to queue exact release rollback")
 		return
@@ -153,7 +251,15 @@ func (h *Handler) QueueReleaseRollback(w http.ResponseWriter, r *http.Request) {
 	writeJSONStatus(w, http.StatusAccepted, op)
 }
 
+func (h *Handler) verifyRollbackReleaseArtifact(ctx context.Context, spec *model.InfraSpec, target *model.Deployment, candidate model.ReleaseCandidate) error {
+	if h == nil || h.pipeline == nil || target == nil {
+		return fmt.Errorf("rollback release verification is unavailable")
+	}
+	return h.pipeline.VerifyReleaseArtifact(ctx, spec, target.CommitSHA, target.ImageTag, candidate)
+}
+
 func (h *Handler) queueRelease(w http.ResponseWriter, r *http.Request, preflight bool, promotion *model.ReleaseQualification) {
+	preventSensitiveResponseCaching(w)
 	requiredScope := ScopeReleaseStage
 	if promotion != nil {
 		requiredScope = ScopeReleasePromote
@@ -171,7 +277,7 @@ func (h *Handler) queueRelease(w http.ResponseWriter, r *http.Request, preflight
 		return
 	}
 	var request releaseRequest
-	if err := decodeControlJSON(w, r, &request); err != nil {
+	if err := decodeControlJSONLimit(w, r, &request, maxReleaseEvidenceJSONBody); err != nil {
 		WriteControlProblem(w, r, http.StatusBadRequest, "invalid_release_request", err.Error())
 		return
 	}
@@ -181,18 +287,18 @@ func (h *Handler) queueRelease(w http.ResponseWriter, r *http.Request, preflight
 	// The signer identity is derived solely from the verified workload token;
 	// callers cannot claim a different reusable workflow in release JSON.
 	if promotion == nil && principal.CI != nil {
-		request.Candidate.SignerWorkflowRef = principal.CI.JobWorkflowRef
-		request.Candidate.SignerWorkflowSHA = principal.CI.JobWorkflowSHA
-		request.Candidate.RepositoryVisibility = principal.CI.RepositoryVisibility
-		request.Candidate.Attestation.Mode = releaseAttestationMode(principal.CI.RepositoryVisibility)
-		request.Candidate.Attestation.Verifier = releaseAttestationVerifier(principal.CI.RepositoryVisibility)
+		suppliedEvidence := request.Candidate.Attestation
+		request.Candidate = releaseCandidateFromCI(*principal.CI, request.SourceSHA, request.Artifact, h.cfg.ReleaseAttestationTrustMode)
+		request.Candidate.Attestation.Bundle = suppliedEvidence.Bundle
+		request.Candidate.Attestation.ProvenanceURI = suppliedEvidence.ProvenanceURI
+		request.Candidate.Attestation.SBOMURI = suppliedEvidence.SBOMURI
 	}
 	privilegedCompatibility := principal.Legacy || principal.Allows(ScopeAdmin)
 	principalMatches := releaseCandidateMatchesPrincipal(request.Candidate, principal)
 	if promotion != nil {
 		principalMatches = releasePromotionMatchesPrincipal(request.Candidate, principal)
 	}
-	if !validReleaseProvenance(request.SourceSHA, request.Artifact) || (!privilegedCompatibility && (!validReleaseCandidate(request.Candidate, request.SourceSHA, request.Artifact) || !principalMatches)) || (privilegedCompatibility && !releaseCandidateEmpty(request.Candidate) && !validReleaseCandidate(request.Candidate, request.SourceSHA, request.Artifact)) {
+	if !validReleaseProvenance(request.SourceSHA, request.Artifact) || (!privilegedCompatibility && (!validReleaseCandidateForTrust(request.Candidate, request.SourceSHA, request.Artifact, h.cfg.ReleaseAttestationTrustMode) || !principalMatches)) || (privilegedCompatibility && !releaseCandidateEmpty(request.Candidate) && !validReleaseCandidateForTrust(request.Candidate, request.SourceSHA, request.Artifact, h.cfg.ReleaseAttestationTrustMode)) {
 		WriteControlProblem(w, r, http.StatusBadRequest, "invalid_release_provenance", "source, OCI digest, candidate attestation, and verified CI identity must agree")
 		return
 	}
@@ -233,7 +339,7 @@ func (h *Handler) queueRelease(w http.ResponseWriter, r *http.Request, preflight
 	if !preflight && !h.requireNoActiveAppOperation(w, r, appID) {
 		return
 	}
-	metadata := map[string]interface{}{"idempotencyKey": key, "requestDigest": digest, "principal": principal.Subject, "candidate": request.Candidate, "requestCI": principal.CI}
+	metadata := map[string]interface{}{"idempotencyKey": key, "requestDigest": digest, "principal": principal.Subject, "principalTokenId": principal.TokenID, "candidate": request.Candidate, "requestCI": principal.CI}
 	if promotion != nil {
 		metadata["promotionQualification"] = qualificationToMap(*promotion)
 	}
@@ -295,6 +401,7 @@ func (h *Handler) productionRequiresSignedPromotion() bool {
 }
 
 func (h *Handler) ListReleaseQualifications(w http.ResponseWriter, r *http.Request) {
+	preventSensitiveResponseCaching(w)
 	if _, ok := requireControlScope(w, r, ScopeAPIRead); !ok {
 		return
 	}
@@ -303,21 +410,58 @@ func (h *Handler) ListReleaseQualifications(w http.ResponseWriter, r *http.Reque
 		return
 	}
 	appID := chi.URLParam(r, "id")
-	ops, err := h.db.ListOperations(r.Context(), store.OperationFilter{App: appID, Kind: "release.qualification", Limit: 100})
+	if h.cfg != nil && h.cfg.EnvironmentID() == "production" {
+		receipts, err := h.db.ListPromotionQualifications(r.Context(), appID, maxQualificationListReceipts)
+		if err != nil {
+			WriteControlProblem(w, r, http.StatusInternalServerError, "qualification_list_failed", "failed to list promoted release qualifications")
+			return
+		}
+		qualifications := trustedProductionQualifications(receipts, appID, h.cfg.ReleaseAttestationTrustMode, h.cfg.TrustedQualificationSigningKeys)
+		writeJSON(w, map[string]interface{}{"schemaVersion": "norn.release-qualifications/v2", "qualifications": qualifications, "count": len(qualifications)})
+		return
+	}
+	ops, err := h.db.ListOperations(r.Context(), releaseQualificationListFilter(appID))
 	if err != nil {
 		WriteControlProblem(w, r, http.StatusInternalServerError, "qualification_list_failed", "failed to list release qualifications")
 		return
 	}
-	qualifications := make([]model.ReleaseQualification, 0, len(ops))
-	for _, op := range ops {
-		if receipt, ok := qualificationFromOperation(op); ok {
-			qualifications = append(qualifications, receipt)
-		}
-	}
+	qualifications := recentUnexpiredQualifications(ops, time.Now().UTC())
 	writeJSON(w, map[string]interface{}{"schemaVersion": "norn.release-qualifications/v2", "qualifications": qualifications, "count": len(qualifications)})
 }
 
+func trustedProductionQualifications(receipts []model.ReleaseQualification, appID, trustMode string, trustedKeys []string) []model.ReleaseQualification {
+	qualifications := make([]model.ReleaseQualification, 0, maxQualificationListReceipts)
+	for _, receipt := range receipts {
+		if len(qualifications) == maxQualificationListReceipts {
+			break
+		}
+		if receipt.App != appID || verifyReleaseQualification(trustedKeys, receipt) != nil || !validReleaseCandidateForTrust(receipt.Candidate, receipt.SourceSHA, receipt.Artifact, trustMode) {
+			continue
+		}
+		qualifications = append(qualifications, receipt)
+	}
+	return qualifications
+}
+
+func releaseQualificationListFilter(appID string) store.OperationFilter {
+	return store.OperationFilter{App: appID, Kind: "release.qualification", UnexpiredQualification: true, Limit: maxQualificationListReceipts}
+}
+
+func recentUnexpiredQualifications(operations []model.Operation, now time.Time) []model.ReleaseQualification {
+	qualifications := make([]model.ReleaseQualification, 0, maxQualificationListReceipts)
+	for _, operation := range operations {
+		if len(qualifications) == maxQualificationListReceipts {
+			break
+		}
+		if receipt, ok := qualificationFromOperation(operation); ok && receipt.ExpiresAt.After(now) {
+			qualifications = append(qualifications, receipt)
+		}
+	}
+	return qualifications
+}
+
 func (h *Handler) CreateReleaseQualification(w http.ResponseWriter, r *http.Request) {
+	preventSensitiveResponseCaching(w)
 	principal, ok := requireReleaseControlScope(w, r, ScopeReleaseQualify, chi.URLParam(r, "id"))
 	if !ok {
 		return
@@ -331,7 +475,7 @@ func (h *Handler) CreateReleaseQualification(w http.ResponseWriter, r *http.Requ
 		return
 	}
 	var request qualificationRequest
-	if err := decodeControlJSON(w, r, &request); err != nil {
+	if err := decodeControlJSONLimit(w, r, &request, maxReleaseEvidenceJSONBody); err != nil {
 		WriteControlProblem(w, r, http.StatusBadRequest, "invalid_qualification_request", err.Error())
 		return
 	}
@@ -384,7 +528,7 @@ func (h *Handler) CreateReleaseQualification(w http.ResponseWriter, r *http.Requ
 		WriteControlProblem(w, r, http.StatusServiceUnavailable, "qualification_signing_unavailable", err.Error())
 		return
 	}
-	op := &model.Operation{ID: receipt.ID, Kind: "release.qualification", App: appID, Ref: receipt.SourceSHA, Status: model.OperationSucceeded, Risk: "staging release evidence", Source: "release-control-api", Message: "staging deployment qualified", Payload: qualificationToMap(receipt), Metadata: map[string]interface{}{"idempotencyKey": key, "requestDigest": digest, "principal": principal.Subject, "deploymentId": deployment.ID, "environment": h.cfg.EnvironmentID(), "requestCI": principal.CI}, StartedAt: now, FinishedAt: &now, MaxAttempts: 1}
+	op := &model.Operation{ID: receipt.ID, Kind: "release.qualification", App: appID, Ref: receipt.SourceSHA, Status: model.OperationSucceeded, Risk: "staging release evidence", Source: "release-control-api", Message: "staging deployment qualified", Payload: qualificationToMap(receipt), Metadata: map[string]interface{}{"idempotencyKey": key, "requestDigest": digest, "principal": principal.Subject, "principalTokenId": principal.TokenID, "deploymentId": deployment.ID, "environment": h.cfg.EnvironmentID(), "requestCI": principal.CI}, StartedAt: now, FinishedAt: &now, MaxAttempts: 1}
 	if err := h.db.InsertCompletedOperation(r.Context(), op); err != nil {
 		if existing, lookupErr := h.db.GetOperationByIdempotencyKey(r.Context(), key); lookupErr == nil {
 			if !qualificationReplayMatches(existing, appID, digest) {
@@ -439,7 +583,7 @@ func (h *Handler) QueueReleasePromotion(w http.ResponseWriter, r *http.Request) 
 		return
 	}
 	var request promotionRequest
-	if err := decodeControlJSON(w, r, &request); err != nil {
+	if err := decodeControlJSONLimit(w, r, &request, maxReleaseEvidenceJSONBody); err != nil {
 		WriteControlProblem(w, r, http.StatusBadRequest, "invalid_promotion_request", err.Error())
 		return
 	}
@@ -491,10 +635,17 @@ func validReleaseProvenance(sourceSHA, artifact string) bool {
 }
 
 func validReleaseCandidate(candidate model.ReleaseCandidate, sourceSHA, artifact string) bool {
-	if candidate.Provider != "github-actions" || candidate.Repository == "" || candidate.RepositoryID == "" || candidate.OwnerID == "" || (candidate.RepositoryVisibility != "public" && candidate.RepositoryVisibility != "private" && candidate.RepositoryVisibility != "internal") || candidate.RunID == "" || candidate.WorkflowRef == "" || !fullSourceSHAPattern.MatchString(candidate.WorkflowSHA) || candidate.SignerWorkflowRef == "" || !fullSourceSHAPattern.MatchString(candidate.SignerWorkflowSHA) || !strings.HasSuffix(candidate.SignerWorkflowRef, "@"+candidate.SignerWorkflowSHA) || candidate.Ref == "" || candidate.Attestation.Issuer == "" || candidate.Attestation.Mode != releaseAttestationMode(candidate.RepositoryVisibility) || candidate.Attestation.Verifier != releaseAttestationVerifier(candidate.RepositoryVisibility) || candidate.Attestation.MaterialSHA != sourceSHA {
+	mode, verifier := candidate.Attestation.Mode, candidate.Attestation.Verifier
+	private := candidate.RepositoryVisibility == "private" || candidate.RepositoryVisibility == "internal"
+	validMode := (candidate.RepositoryVisibility == "public" && mode == "github-public" && verifier == "Sigstore public-good") || (private && mode == "github-private" && verifier == "GitHub private Sigstore") || (private && mode == "norn-signed-private" && verifier == "Norn private DSSE")
+	if candidate.Provider != "github-actions" || candidate.Repository == "" || candidate.RepositoryID == "" || candidate.OwnerID == "" || (candidate.RepositoryVisibility != "public" && !private) || candidate.RunID == "" || candidate.WorkflowRef == "" || !fullSourceSHAPattern.MatchString(candidate.WorkflowSHA) || candidate.SignerWorkflowRef == "" || !fullSourceSHAPattern.MatchString(candidate.SignerWorkflowSHA) || !strings.HasSuffix(candidate.SignerWorkflowRef, "@"+candidate.SignerWorkflowSHA) || candidate.Ref == "" || candidate.Attestation.Issuer == "" || !validMode || candidate.Attestation.MaterialSHA != sourceSHA {
 		return false
 	}
 	return artifact == "" || candidate.Attestation.SubjectDigest == artifactDigest(artifact)
+}
+
+func validReleaseCandidateForTrust(candidate model.ReleaseCandidate, sourceSHA, artifact, trustMode string) bool {
+	return validReleaseCandidate(candidate, sourceSHA, artifact) && candidate.Attestation.Mode == releaseAttestationMode(candidate.RepositoryVisibility, trustMode) && candidate.Attestation.Verifier == releaseAttestationVerifier(candidate.RepositoryVisibility, trustMode)
 }
 
 func artifactDigest(artifact string) string {
@@ -521,15 +672,21 @@ func releaseSourceMatchesPrincipal(sourceSHA string, principal AccessPrincipal) 
 	return principal.Legacy || principal.Allows(ScopeAdmin) || (principal.CI != nil && principal.CI.SHA == sourceSHA)
 }
 
-func releaseAttestationMode(visibility string) string {
+func releaseAttestationMode(visibility string, trustMode ...string) string {
 	if visibility == "private" || visibility == "internal" {
+		if len(trustMode) > 0 && trustMode[0] == "norn-signed-private" {
+			return "norn-signed-private"
+		}
 		return "github-private"
 	}
 	return "github-public"
 }
 
-func releaseAttestationVerifier(visibility string) string {
+func releaseAttestationVerifier(visibility string, trustMode ...string) string {
 	if visibility == "private" || visibility == "internal" {
+		if len(trustMode) > 0 && trustMode[0] == "norn-signed-private" {
+			return "Norn private DSSE"
+		}
 		return "GitHub private Sigstore"
 	}
 	return "Sigstore public-good"
@@ -544,7 +701,7 @@ func releasePromotionMatchesPrincipal(candidate model.ReleaseCandidate, principa
 		return true
 	}
 	ci := principal.CI
-	return ci != nil && ci.SHA == candidate.Attestation.MaterialSHA && candidate.Provider == ci.Provider && candidate.Repository == ci.Repository && candidate.RepositoryID == ci.RepositoryID && candidate.OwnerID == ci.RepositoryOwnerID && candidate.RepositoryVisibility == ci.RepositoryVisibility && candidate.SignerWorkflowRef == ci.JobWorkflowRef && candidate.SignerWorkflowSHA == ci.JobWorkflowSHA && candidate.Attestation.Mode == releaseAttestationMode(ci.RepositoryVisibility)
+	return ci != nil && ci.SHA == candidate.Attestation.MaterialSHA && candidate.Provider == ci.Provider && candidate.Repository == ci.Repository && candidate.RepositoryID == ci.RepositoryID && candidate.OwnerID == ci.RepositoryOwnerID && candidate.RepositoryVisibility == ci.RepositoryVisibility && candidate.SignerWorkflowRef == ci.JobWorkflowRef && candidate.SignerWorkflowSHA == ci.JobWorkflowSHA
 }
 
 // Requalification runs from the current protected staging branch but may
@@ -556,7 +713,7 @@ func releaseRequalificationMatchesPrincipal(candidate model.ReleaseCandidate, pr
 		return true
 	}
 	ci := principal.CI
-	return ci != nil && candidate.Provider == ci.Provider && candidate.Repository == ci.Repository && candidate.RepositoryID == ci.RepositoryID && candidate.OwnerID == ci.RepositoryOwnerID && candidate.RepositoryVisibility == ci.RepositoryVisibility && candidate.SignerWorkflowRef == ci.JobWorkflowRef && candidate.SignerWorkflowSHA == ci.JobWorkflowSHA && candidate.Attestation.Mode == releaseAttestationMode(ci.RepositoryVisibility)
+	return ci != nil && candidate.Provider == ci.Provider && candidate.Repository == ci.Repository && candidate.RepositoryID == ci.RepositoryID && candidate.OwnerID == ci.RepositoryOwnerID && candidate.RepositoryVisibility == ci.RepositoryVisibility && candidate.SignerWorkflowRef == ci.JobWorkflowRef && candidate.SignerWorkflowSHA == ci.JobWorkflowSHA
 }
 
 func (h *Handler) releaseCandidateForDeployment(r *http.Request, deploymentID string) (model.ReleaseCandidate, error) {
@@ -573,7 +730,7 @@ func (h *Handler) releaseCandidateForDeployment(r *http.Request, deploymentID st
 		return model.ReleaseCandidate{}, fmt.Errorf("successful deployment candidate cannot be decoded")
 	}
 	var candidate model.ReleaseCandidate
-	if json.Unmarshal(encoded, &candidate) != nil || !validReleaseCandidate(candidate, stringFromOperation(op.Payload, "sourceSha"), stringFromOperation(op.Payload, "artifact")) {
+	if json.Unmarshal(encoded, &candidate) != nil || !validReleaseCandidateForTrust(candidate, stringFromOperation(op.Payload, "sourceSha"), stringFromOperation(op.Payload, "artifact"), h.cfg.ReleaseAttestationTrustMode) {
 		return model.ReleaseCandidate{}, fmt.Errorf("successful deployment candidate is incomplete")
 	}
 	return candidate, nil

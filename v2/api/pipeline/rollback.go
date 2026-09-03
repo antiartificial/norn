@@ -345,7 +345,7 @@ func (p *Pipeline) reAdmitProductionRollback(ctx context.Context, spec *model.In
 	if err := model.ValidateReleaseSpecBinding(spec, candidate, target.ImageTag, p.RegistryURL); err != nil {
 		return fmt.Errorf("re-admit rollback source binding: %w", err)
 	}
-	if err := p.VerifyReleaseArtifact(ctx, target.CommitSHA, target.ImageTag, candidate); err != nil {
+	if err := p.VerifyReleaseArtifact(ctx, spec, target.CommitSHA, target.ImageTag, candidate); err != nil {
 		return fmt.Errorf("re-admit rollback source artifact: %w", err)
 	}
 	return nil

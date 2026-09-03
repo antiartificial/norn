@@ -70,6 +70,7 @@ type Pipeline struct {
 	// injected without coupling pipeline to its credential implementation.
 	VerifyKeylessAttestations        func(context.Context, string, string, string, model.ReleaseCandidate) error
 	VerifyPrivateKeylessAttestations func(context.Context, string, string, string, model.ReleaseCandidate) error
+	VerifyNornPrivateAttestations    func(context.Context, string, string, string, model.ReleaseCandidate) error
 	RunArtifactCommand               func(context.Context, string, ...string) ([]byte, error)
 }
 

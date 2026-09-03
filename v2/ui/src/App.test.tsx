@@ -200,6 +200,27 @@ describe('App shell routing', () => {
     expect(calls).not.toContain('POST /api/v1/apps/api/promotions')
   })
 
+  it('identifies portable Norn-signed evidence for an ordinary private repository', async () => {
+    const qualification = releaseQualification() as any
+    qualification.candidate.attestation = {
+      ...qualification.candidate.attestation,
+      mode: 'norn-signed-private',
+      verifier: 'Norn private DSSE',
+      bundle: { schemaVersion: 'norn.private-release-attestation/v1', keyId: 'sha256:private-key', provenance: { payloadType: 'application/vnd.in-toto+json', payload: 'provenance', signatures: [{ keyid: 'sha256:private-key', sig: 'sig' }] }, sbom: { payloadType: 'application/vnd.in-toto+json', payload: 'sbom', signatures: [{ keyid: 'sha256:private-key', sig: 'sig' }] } },
+    }
+    installFetch({
+      '/api/v1/capabilities': json({ protocolVersion: 1, serverVersion: 'test', features: ['release-provenance-v1', 'release-qualifications-v2', 'release-promotions-v1', 'norn-signed-private-v1'], environment: { id: 'production', profile: 'production' } }),
+      '/api/v1/apps/api/qualifications': json({ schemaVersion: 'norn.release-qualifications/v2', qualifications: [qualification], count: 1 }),
+    })
+    renderApp('/releases')
+
+    expect(await screen.findByText('norn-signed-private')).toBeInTheDocument()
+    expect(screen.getByText('Norn private DSSE')).toBeInTheDocument()
+    expect(screen.getByText('sha256:private-key')).toBeInTheDocument()
+    expect(screen.getByText(/ordinary private repository evidence/i)).toBeInTheDocument()
+    expect(screen.queryByRole('button', { name: /queue production promotion/i })).not.toBeInTheDocument()
+  })
+
   it('keeps production evidence review-only when the selected application changes', async () => {
     installFetch({
       '/api/v1/capabilities': json({ protocolVersion: 1, serverVersion: 'test', features: ['release-provenance-v1', 'release-qualifications-v2', 'release-promotions-v1'], environment: { id: 'production', profile: 'production' } }),

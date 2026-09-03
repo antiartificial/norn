@@ -208,12 +208,16 @@ func (h *Handler) ExchangeGitHubActionsOIDC(w http.ResponseWriter, r *http.Reque
 		return
 	}
 	preventSensitiveResponseCaching(w)
-	writeJSONStatus(w, http.StatusCreated, map[string]interface{}{"token": token, "tokenId": claimsOut.Jti, "scopes": claimsOut.Scopes, "app": request.App, "environment": request.Environment, "expiresAt": now.Add(ttl).Format(time.RFC3339), "subject": claimsOut.Sub})
+	response := map[string]interface{}{"token": token, "tokenId": claimsOut.Jti, "scopes": claimsOut.Scopes, "app": request.App, "environment": request.Environment, "expiresAt": now.Add(ttl).Format(time.RFC3339), "subject": claimsOut.Sub}
+	if request.Scope != ScopeFleetOperate {
+		response["attestationMode"] = releaseAttestationMode(ci.RepositoryVisibility, h.cfg.ReleaseAttestationTrustMode)
+	}
+	writeJSONStatus(w, http.StatusCreated, response)
 }
 
 func githubActionsExchangeScopeAllowed(scope string) bool {
 	switch scope {
-	case ScopeReleaseStage, ScopeReleaseQualify, ScopeReleasePromote, ScopeReleaseRollback, ScopeFleetOperate:
+	case ScopeReleaseAttest, ScopeReleaseStage, ScopeReleaseQualify, ScopeReleasePromote, ScopeReleaseRollback, ScopeFleetOperate:
 		return true
 	}
 	return false
@@ -261,10 +265,22 @@ func (h *Handler) validateGitHubActionsAssertion(r *http.Request, raw string) (*
 		}
 		return nil, err
 	}
-	if claims.Issuer != githubActionsOIDCIssuer || claims.Subject == "" || claims.ID == "" || claims.IssuedAt == nil || claims.NotBefore == nil || claims.ExpiresAt == nil || claims.IssuedAt.Time.After(time.Now().Add(30*time.Second)) || claims.ExpiresAt.Time.Sub(claims.IssuedAt.Time) > 10*time.Minute || time.Since(claims.IssuedAt.Time) > 10*time.Minute || claims.Repository == "" || claims.RepositoryID == "" || claims.RepositoryOwnerID == "" || claims.RunID == "" || claims.RunAttempt == "" || claims.WorkflowRef == "" || !fullSourceSHAPattern.MatchString(claims.WorkflowSHA) || !fullSourceSHAPattern.MatchString(claims.SHA) || claims.RefProtected != "true" || claims.Ref == "" || claims.RefType == "" || claims.EventName == "" || claims.Environment == "" {
+	if claims.Issuer != githubActionsOIDCIssuer || claims.Subject == "" || claims.ID == "" || claims.IssuedAt == nil || claims.NotBefore == nil || claims.ExpiresAt == nil || claims.IssuedAt.Time.After(time.Now().Add(30*time.Second)) || claims.ExpiresAt.Time.Sub(claims.IssuedAt.Time) > 10*time.Minute || time.Since(claims.IssuedAt.Time) > 10*time.Minute || claims.Repository == "" || !validGitHubNumericID(claims.RepositoryID) || !validGitHubNumericID(claims.RepositoryOwnerID) || !validGitHubNumericID(claims.RunID) || !validGitHubNumericID(claims.RunAttempt) || claims.WorkflowRef == "" || !fullSourceSHAPattern.MatchString(claims.WorkflowSHA) || !fullSourceSHAPattern.MatchString(claims.SHA) || claims.RefProtected != "true" || claims.Ref == "" || claims.RefType == "" || claims.EventName == "" || claims.Environment == "" {
 		return nil, fmt.Errorf("GitHub OIDC token omits required identity claims")
 	}
 	return claims, nil
+}
+
+func validGitHubNumericID(value string) bool {
+	if value == "" {
+		return false
+	}
+	for _, digit := range value {
+		if digit < '0' || digit > '9' {
+			return false
+		}
+	}
+	return value != "0"
 }
 
 func fetchGitHubJWKs(r *http.Request, rawURL string) (map[string]interface{}, time.Duration, error) {
@@ -362,7 +378,7 @@ func (h *Handler) authorizeGitHubActionsClaims(c *githubActionsClaims, request g
 		return CIIdentity{}, fmt.Errorf("GitHub Actions ref, event, or environment is not allowlisted")
 	}
 	if request.Scope == ScopeFleetOperate {
-		if !matchesRepository(c, []string{h.cfg.GitHubActionsFleetAllowedRepository}) || !matchesAny(c.Environment, h.cfg.GitHubActionsFleetAllowedEnvironments) || !matchesAny(request.Intent, h.cfg.GitHubActionsFleetAllowedIntents) || !matchesAny(c.WorkflowRef, h.cfg.GitHubActionsFleetAllowedWorkflowRefs) || !fullSourceSHAPattern.MatchString(c.WorkflowSHA) {
+		if !matchesRepository(c, []string{h.cfg.GitHubActionsFleetAllowedRepository}) || !matchesAny(c.Environment, h.cfg.GitHubActionsFleetAllowedEnvironments) || !matchesAny(request.Intent, h.cfg.GitHubActionsFleetAllowedIntents) || !matchesPinnedDirectWorkflow(c.WorkflowRef, c.WorkflowSHA, h.cfg.GitHubActionsFleetAllowedWorkflowRefs) {
 			return CIIdentity{}, fmt.Errorf("GitHub Actions fleet identity is not allowlisted")
 		}
 	} else {
@@ -370,7 +386,12 @@ func (h *Handler) authorizeGitHubActionsClaims(c *githubActionsClaims, request g
 			return CIIdentity{}, fmt.Errorf("GitHub Actions release scope is not allowed for this lane")
 		}
 		private := c.RepositoryVisibility == "private" || c.RepositoryVisibility == "internal"
-		if (c.RepositoryVisibility != "public" && !private) || (private && h.cfg.ReleaseAttestationTrustMode != "github-private") || (c.RepositoryVisibility == "public" && h.cfg.ReleaseAttestationTrustMode == "github-private") || !matchesReleaseBinding(request.App, c, h.cfg.GitHubActionsReleaseBindings) || !matchesAny(c.Environment, h.cfg.GitHubActionsAllowedEnvironments) || !matchesAny(c.JobWorkflowRef, h.cfg.GitHubActionsAllowedWorkflowRefs) || !fullSourceSHAPattern.MatchString(c.JobWorkflowSHA) {
+		trustMode := h.cfg.ReleaseAttestationTrustMode
+		if trustMode == "" {
+			trustMode = "github-public"
+		}
+		privateMode := trustMode == "github-private" || trustMode == "norn-signed-private"
+		if (c.RepositoryVisibility != "public" && !private) || (private && !privateMode) || (c.RepositoryVisibility == "public" && trustMode != "github-public") || !matchesReleaseBinding(request.App, c, h.cfg.GitHubActionsReleaseBindings) || !matchesAny(c.Environment, h.cfg.GitHubActionsAllowedEnvironments) || !matchesAny(c.JobWorkflowRef, h.cfg.GitHubActionsAllowedWorkflowRefs) || !fullSourceSHAPattern.MatchString(c.JobWorkflowSHA) {
 			return CIIdentity{}, fmt.Errorf("GitHub Actions release identity is not allowlisted")
 		}
 		if !workflowRefBindsSHA(c.JobWorkflowRef, c.JobWorkflowSHA) {
@@ -389,6 +410,8 @@ func releaseExchangeLaneAllowed(scope, intent string, c *githubActionsClaims, de
 	}
 	protectedBranchRef := "refs/heads/" + strings.TrimSpace(defaultBranch)
 	switch scope {
+	case ScopeReleaseAttest:
+		return intent == "attest" && c.Environment == "staging" && c.Ref == protectedBranchRef && c.EventName == "push"
 	case ScopeReleaseStage:
 		return intent == "stage" && c.Environment == "staging" && c.Ref == protectedBranchRef && c.EventName == "push"
 	case ScopeReleaseQualify:
@@ -438,3 +461,28 @@ func matchesAny(value string, allowed []string) bool {
 	return false
 }
 func workflowRefBindsSHA(ref, sha string) bool { return strings.HasSuffix(ref, "@"+sha) }
+
+// matchesPinnedDirectWorkflow handles GitHub's distinct direct-workflow
+// claims: workflow_ref normally ends in the branch/tag that initiated the run,
+// while workflow_sha carries the immutable commit containing that workflow.
+// Operators still configure path@<full SHA>; authorization matches the path
+// and SHA independently instead of expecting a synthetic claim GitHub never
+// emits.
+func matchesPinnedDirectWorkflow(claimRef, claimSHA string, allowed []string) bool {
+	if !fullSourceSHAPattern.MatchString(claimSHA) {
+		return false
+	}
+	claimSeparator := strings.LastIndexByte(claimRef, '@')
+	if claimSeparator <= 0 || claimSeparator == len(claimRef)-1 {
+		return false
+	}
+	claimPath := claimRef[:claimSeparator]
+	for _, configured := range allowed {
+		configured = strings.TrimSpace(configured)
+		separator := strings.LastIndexByte(configured, '@')
+		if separator > 0 && configured[:separator] == claimPath && configured[separator+1:] == claimSHA {
+			return true
+		}
+	}
+	return false
+}

@@ -34,6 +34,7 @@ func TestControlOpenAPIParsesAndLocalRefsResolve(t *testing.T) {
 		"/api/v1/fleet/plans/{planID}/attempts/{attemptID}/heartbeat", "/api/v1/fleet/plans/{planID}/attempts/{attemptID}/advance",
 		"/api/v1/fleet/plans/{planID}/attempts/{attemptID}/retry", "/api/v1/fleet/plans/{planID}/attempts/{attemptID}/cancel",
 		"/api/v1/deployments", "/api/v1/deployments/{id}", "/api/v1/deployments/{id}/steps", "/api/v1/services/manifest",
+		"/api/v1/apps/{id}/private-attestations",
 		"/api/v1/fleet/plans/{planID}/github/pull-request", "/api/v1/fleet/plans/{planID}/github/dispatch",
 	} {
 		if _, ok := paths[required]; !ok {

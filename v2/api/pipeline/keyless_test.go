@@ -32,12 +32,46 @@ func TestKeylessAdmissionRunsSignatureAndParsesBoundAttestations(t *testing.T) {
 			return spdx, nil
 		},
 	}
-	st := &state{imageTag: "registry.example.test/acme/widgets@" + digest, commitSHA: sha, candidate: model.ReleaseCandidate{Repository: "acme/widgets", Ref: "refs/heads/main", WorkflowRef: "acme/widgets/.github/workflows/release.yml@refs/heads/main", SignerWorkflowRef: "acme/widgets/.github/workflows/release.yml@" + sha, SignerWorkflowSHA: sha, Attestation: model.ReleaseAttestationIdentity{Issuer: "https://token.actions.githubusercontent.com", ProvenanceURI: "https://example.test/provenance", SBOMURI: "https://example.test/sbom", SubjectDigest: digest, MaterialSHA: sha}}}
+	st := &state{imageTag: "registry.example.test/acme/widgets@" + digest, commitSHA: sha, candidate: model.ReleaseCandidate{Repository: "acme/widgets", Ref: "refs/heads/main", WorkflowRef: "acme/widgets/.github/workflows/release.yml@refs/heads/main", SignerWorkflowRef: "acme/widgets/.github/workflows/release.yml@" + sha, SignerWorkflowSHA: sha, Attestation: model.ReleaseAttestationIdentity{Mode: "github-public", Issuer: "https://token.actions.githubusercontent.com", ProvenanceURI: "https://example.test/provenance", SBOMURI: "https://example.test/sbom", SubjectDigest: digest, MaterialSHA: sha}}}
 	if err := p.verifyKeylessAttestations(context.Background(), st); err != nil {
 		t.Fatal(err)
 	}
 	if len(calls) != 3 || calls[0][1] != "verify" || !containsArg(calls[0], "norn.git.sha="+sha) || calls[1][1] != "verify-attestation" || calls[2][3] != "https://spdx.dev/Document/v2.3" {
 		t.Fatalf("unexpected cosign calls: %#v", calls)
+	}
+}
+
+func TestAttestedAdmissionInvokesNornPrivateVerifier(t *testing.T) {
+	digest := "sha256:" + strings.Repeat("a", 64)
+	artifact := "registry.example.test/norn/private-app@" + digest
+	sourceSHA := strings.Repeat("b", 40)
+	signerSHA := strings.Repeat("c", 40)
+	signerRef := "personal-owner/norn/.github/workflows/norn-app-release.yml@" + signerSHA
+	called := 0
+	p := &Pipeline{
+		ReleaseAdmissionMode:           "attested",
+		ReleaseAttestationTrustMode:    "norn-signed-private",
+		ReleaseAttestationIssuer:       "https://token.actions.githubusercontent.com",
+		ReleaseAttestationRepositories: []string{"personal-owner/private-app"},
+		ReleaseAttestationWorkflowRefs: []string{signerRef},
+		ReleaseRequireSBOM:             true,
+		VerifyNornPrivateAttestations: func(_ context.Context, gotArtifact, gotSHA, gotApp string, got model.ReleaseCandidate) error {
+			called++
+			if gotArtifact != artifact || gotSHA != sourceSHA || gotApp != "private-app" || got.Attestation.Mode != "norn-signed-private" {
+				t.Fatalf("Norn verifier binding artifact=%q sha=%q app=%q candidate=%+v", gotArtifact, gotSHA, gotApp, got)
+			}
+			return nil
+		},
+	}
+	state := &state{spec: &model.InfraSpec{App: "private-app"}, imageTag: artifact, commitSHA: sourceSHA, candidate: model.ReleaseCandidate{
+		Repository: "personal-owner/private-app", RepositoryVisibility: "private", SignerWorkflowRef: signerRef, SignerWorkflowSHA: signerSHA,
+		Attestation: model.ReleaseAttestationIdentity{Mode: "norn-signed-private", Issuer: p.ReleaseAttestationIssuer, SubjectDigest: digest, MaterialSHA: sourceSHA},
+	}}
+	if err := p.verifyArtifactSignature(context.Background(), state); err != nil {
+		t.Fatal(err)
+	}
+	if called != 1 {
+		t.Fatalf("Norn private verifier calls=%d want=1", called)
 	}
 }
 

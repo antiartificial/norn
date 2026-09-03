@@ -211,14 +211,10 @@ func (h *Handler) existingFleetGitHubOperation(r *http.Request, planID, kind str
 func (h *Handler) recordFleetGitHubOperation(r *http.Request, principal AccessPrincipal, planID, kind, message string, payload map[string]interface{}) (*model.Operation, error) {
 	now := time.Now().UTC()
 	finished := now
-	identity := principal.TokenID
-	if identity == "" {
-		identity = principal.Subject
-	}
 	op := &model.Operation{
 		ID: uuid.NewString(), Kind: kind, Ref: planID, Status: model.OperationSucceeded,
 		Risk: "GitOps mutation only; provider credentials remain in protected GitHub environments", Source: "control-api",
-		Message: message, Payload: payload, Metadata: map[string]interface{}{"principal": strings.TrimSpace(identity)},
+		Message: message, Payload: payload, Metadata: map[string]interface{}{"principal": strings.TrimSpace(principal.Subject), "principalTokenId": strings.TrimSpace(principal.TokenID), "environment": principal.Environment, "requestCI": principal.CI},
 		StartedAt: now, UpdatedAt: now, FinishedAt: &finished, MaxAttempts: 1,
 	}
 	if err := h.db.InsertCompletedOperation(r.Context(), op); err != nil {
