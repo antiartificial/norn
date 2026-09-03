@@ -40,7 +40,48 @@ func TestControlOpenAPIParsesAndLocalRefsResolve(t *testing.T) {
 			t.Errorf("missing path %s", required)
 		}
 	}
+	components := document["components"].(map[string]interface{})
+	schemas := components["schemas"].(map[string]interface{})
+	for schemaName, fields := range map[string][]string{
+		"ReleaseRequest":       {"sourceSha", "artifact", "candidate"},
+		"ReleaseCandidate":     {"repositoryVisibility", "signerWorkflowRef", "signerWorkflowSha", "attestation"},
+		"ReleaseQualification": {"issuedAt", "expiresAt", "keyId", "signature", "candidate", "dsse"},
+	} {
+		schema := schemas[schemaName].(map[string]interface{})
+		required, _ := schema["required"].([]interface{})
+		for _, field := range fields {
+			if !containsRequiredField(required, field) {
+				t.Errorf("%s must require %s", schemaName, field)
+			}
+		}
+	}
+	releaseCandidate := schemas["ReleaseCandidate"].(map[string]interface{})["properties"].(map[string]interface{})
+	for _, field := range []string{"repositoryVisibility", "signerWorkflowRef", "signerWorkflowSha"} {
+		if releaseCandidate[field].(map[string]interface{})["readOnly"] != true {
+			t.Errorf("ReleaseCandidate.%s must be server-derived/readOnly", field)
+		}
+	}
+	attestation := schemas["ReleaseAttestationIdentity"].(map[string]interface{})["properties"].(map[string]interface{})
+	for _, field := range []string{"mode", "verifier"} {
+		if attestation[field].(map[string]interface{})["readOnly"] != true {
+			t.Errorf("ReleaseAttestationIdentity.%s must be server-derived/readOnly", field)
+		}
+	}
+	exchange := paths["/api/v1/auth/github-actions/exchange"].(map[string]interface{})["post"].(map[string]interface{})
+	exchangeSchema := exchange["requestBody"].(map[string]interface{})["content"].(map[string]interface{})["application/json"].(map[string]interface{})["schema"].(map[string]interface{})
+	if containsRequiredField(exchangeSchema["required"].([]interface{}), "app") {
+		t.Error("fleet OIDC exchange must permit an omitted app")
+	}
 	walkRefs(t, document, document)
+}
+
+func containsRequiredField(fields []interface{}, want string) bool {
+	for _, field := range fields {
+		if field == want {
+			return true
+		}
+	}
+	return false
 }
 
 func walkRefs(t *testing.T, root map[string]interface{}, value interface{}) {

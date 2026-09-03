@@ -83,7 +83,8 @@ jobs:
           REQUESTED_SHA: ${{ inputs.commit_sha }}
         run: |
           set -euo pipefail
-          export SOURCE_DATE_EPOCH="$(git show -s --format=%ct "$REQUESTED_SHA")"
+          source_date_epoch="$(git show -s --format=%ct "$REQUESTED_SHA")"
+          export SOURCE_DATE_EPOCH="$source_date_epoch"
           cd v2/ui
           pnpm install --frozen-lockfile
           pnpm build

@@ -15,6 +15,11 @@ import (
 )
 
 func (p *Pipeline) build(ctx context.Context, st *state, sg *saga.Saga) error {
+	// Release lanes adopt a CI-published immutable digest. Rebuilding here
+	// would sever the attestation subject from the deployed artifact.
+	if st.artifactBound {
+		return nil
+	}
 	if st.spec.Build == nil {
 		st.imageTag = fmt.Sprintf("%s:latest", st.spec.App)
 		return nil

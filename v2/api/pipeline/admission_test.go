@@ -46,6 +46,17 @@ func TestProductionArtifactAdmissionFailsWhenRegistryDigestDisappears(t *testing
 	}
 }
 
+func TestProductionReleaseRejectsRelativeVerifierPaths(t *testing.T) {
+	p := &Pipeline{ReleaseEnvironment: "production", CosignPath: "cosign", TrivyPath: "trivy", ArtifactSigningPublicKey: "key", ArtifactDenySeverities: []string{"HIGH"}}
+	st := &state{imageTag: "registry.example.test/norn/demo@sha256:" + strings.Repeat("a", 64)}
+	if err := p.verifyArtifactSignature(context.Background(), st); err == nil || !strings.Contains(err.Error(), "absolute NORN_COSIGN_PATH") {
+		t.Fatalf("relative cosign path error=%v", err)
+	}
+	if err := p.scanArtifactVulnerabilities(context.Background(), st.imageTag); err == nil || !strings.Contains(err.Error(), "absolute NORN_TRIVY_PATH") {
+		t.Fatalf("relative trivy path error=%v", err)
+	}
+}
+
 func TestRegistryArtifactInspectionUsesDisposableWritableBuildxConfig(t *testing.T) {
 	binDir := t.TempDir()
 	recordPath := filepath.Join(t.TempDir(), "buildx-config")
@@ -161,6 +172,93 @@ func TestProductionArtifactAdmissionRequiresDigest(t *testing.T) {
 	st.imageTag = "demo:local"
 	if err := p.artifactAdmission(context.Background(), st, nil); err != nil {
 		t.Fatalf("read-only production preflight should not require a pushed digest: %v", err)
+	}
+}
+
+func TestArtifactBoundProductionPreflightRunsArtifactAdmission(t *testing.T) {
+	ref := "registry.example.test/norn/demo@sha256:" + strings.Repeat("a", 64)
+	sourceSHA := strings.Repeat("b", 40)
+	signerSHA := strings.Repeat("c", 40)
+	verified, attested, scanned := 0, 0, 0
+	p := &Pipeline{
+		Production:                     true,
+		ReleaseAdmissionMode:           "keyless",
+		ReleaseAttestationTrustMode:    "github-public",
+		ReleaseAttestationIssuer:       "https://token.actions.githubusercontent.com",
+		ReleaseAttestationRepositories: []string{"acme/demo"},
+		ReleaseAttestationWorkflowRefs: []string{"acme/norn/.github/workflows/release.yml@" + signerSHA},
+		ReleaseRequireSBOM:             true,
+		VerifyArtifact: func(_ context.Context, got string) error {
+			if got != ref {
+				t.Fatalf("registry verification image = %q, want %q", got, ref)
+			}
+			verified++
+			return nil
+		},
+		VerifyKeylessAttestations: func(_ context.Context, got, gotSHA, signer string, candidate model.ReleaseCandidate) error {
+			if got != ref {
+				t.Fatalf("keyless verification image = %q, want %q", got, ref)
+			}
+			if gotSHA != sourceSHA || signer != "acme/norn/.github/workflows/release.yml@"+signerSHA || candidate.Attestation.SubjectDigest != strings.TrimPrefix(ref, "registry.example.test/norn/demo@") {
+				t.Fatalf("keyless candidate binding = sha:%q signer:%q candidate:%+v", gotSHA, signer, candidate)
+			}
+			attested++
+			return nil
+		},
+		ScanArtifact: func(_ context.Context, got string) error {
+			if got != ref {
+				t.Fatalf("vulnerability scan image = %q, want %q", got, ref)
+			}
+			scanned++
+			return nil
+		},
+	}
+	candidate := model.ReleaseCandidate{
+		Repository:           "acme/demo",
+		RepositoryVisibility: "public",
+		SignerWorkflowRef:    "acme/norn/.github/workflows/release.yml@" + signerSHA,
+		SignerWorkflowSHA:    signerSHA,
+		Attestation: model.ReleaseAttestationIdentity{
+			Issuer: "https://token.actions.githubusercontent.com", SubjectDigest: strings.TrimPrefix(ref, "registry.example.test/norn/demo@"), MaterialSHA: sourceSHA,
+		},
+	}
+	if err := p.artifactAdmission(context.Background(), &state{preflight: true, artifactBound: true, commitSHA: sourceSHA, imageTag: ref, candidate: candidate}, nil); err != nil {
+		t.Fatalf("artifact-bound production preflight admission failed: %v", err)
+	}
+	if verified != 1 || attested != 1 || scanned != 1 {
+		t.Fatalf("artifact-bound preflight calls registry/keyless/scan = %d/%d/%d, want 1/1/1", verified, attested, scanned)
+	}
+}
+
+func TestArtifactBoundProductionPreflightRejectsTamperedEvidenceBeforeDeployment(t *testing.T) {
+	ref := "registry.example.test/norn/demo@sha256:" + strings.Repeat("a", 64)
+	sourceSHA := strings.Repeat("b", 40)
+	signerSHA := strings.Repeat("c", 40)
+	scanned := false
+	p := &Pipeline{
+		Production:                     true,
+		ReleaseAdmissionMode:           "keyless",
+		ReleaseAttestationTrustMode:    "github-public",
+		ReleaseAttestationIssuer:       "https://token.actions.githubusercontent.com",
+		ReleaseAttestationRepositories: []string{"acme/demo"},
+		ReleaseAttestationWorkflowRefs: []string{"acme/norn/.github/workflows/release.yml@" + signerSHA},
+		ReleaseRequireSBOM:             true,
+		VerifyArtifact:                 func(context.Context, string) error { return nil },
+		VerifyKeylessAttestations: func(context.Context, string, string, string, model.ReleaseCandidate) error {
+			return errors.New("provenance subject does not match digest")
+		},
+		ScanArtifact: func(context.Context, string) error { scanned = true; return nil },
+	}
+	candidate := model.ReleaseCandidate{
+		Repository: "acme/demo", RepositoryVisibility: "public", SignerWorkflowRef: "acme/norn/.github/workflows/release.yml@" + signerSHA, SignerWorkflowSHA: signerSHA,
+		Attestation: model.ReleaseAttestationIdentity{Issuer: "https://token.actions.githubusercontent.com", SubjectDigest: strings.TrimPrefix(ref, "registry.example.test/norn/demo@"), MaterialSHA: sourceSHA},
+	}
+	err := p.artifactAdmission(context.Background(), &state{preflight: true, artifactBound: true, commitSHA: sourceSHA, imageTag: ref, candidate: candidate}, nil)
+	if err == nil || !strings.Contains(err.Error(), "provenance subject does not match digest") {
+		t.Fatalf("tampered artifact-bound preflight error = %v", err)
+	}
+	if scanned {
+		t.Fatal("tampered artifact-bound preflight reached vulnerability scan/deployment path")
 	}
 }
 

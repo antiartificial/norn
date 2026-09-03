@@ -55,6 +55,7 @@ type Handler struct {
 	hostMetrics            *hostMetricsCache
 	fleetGitHub            *githubapp.Client
 	fleetGitHubConfigError error
+	githubJWKS             *githubJWKCache
 	productionGateMu       sync.Mutex
 	productionGateAt       time.Time
 	productionGateBlockers []string
@@ -79,6 +80,7 @@ func New(db *store.DB, n *nomad.Client, c *consul.Client, ws *hub.Hub, cfg *conf
 		redpanda:    rp,
 		access:      NewAccessLog(defaultAccessLogLimit),
 		hostMetrics: newHostMetricsCache(defaultHostMetricsSampler, time.Now, defaultHostMetricsSamplePeriod),
+		githubJWKS:  newGitHubJWKCache(),
 		workloads:   connector.NewNomadConsul(n, c),
 	}
 	if cfg != nil && githubapp.Configured(fleetGitHubConfig(cfg)) {
@@ -126,6 +128,7 @@ func fleetGitHubConfig(cfg *config.Config) githubapp.Config {
 	return githubapp.Config{
 		AppID: cfg.FleetGitHubAppID, InstallationID: cfg.FleetGitHubInstallationID,
 		PrivateKeyFile: cfg.FleetGitHubPrivateKeyFile, Repository: cfg.FleetGitHubRepository,
+		Environment:   cfg.FleetGitHubEnvironment,
 		DefaultBranch: cfg.FleetGitHubDefaultBranch, ConfigPath: cfg.FleetGitHubConfigPath,
 		PlanWorkflow: cfg.FleetGitHubPlanWorkflow, ApplyWorkflow: cfg.FleetGitHubApplyWorkflow,
 		APIBaseURL: cfg.FleetGitHubAPIBaseURL, Production: cfg.Production(),

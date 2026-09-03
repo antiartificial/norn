@@ -254,19 +254,47 @@ func TestControlSecurityConfiguration(t *testing.T) {
 		{name: "strict auth without provider", config: &config.Config{BindAddr: "127.0.0.1", RequireExplicitAuth: true}, wantErr: true},
 		{name: "strict auth with Cloudflare Access", config: &config.Config{BindAddr: "127.0.0.1", RequireExplicitAuth: true, CFAccessTeamDomain: "team.example.test", CFAccessAUD: "audience"}},
 		{name: "unknown profile", config: &config.Config{Profile: "mystery", BindAddr: "127.0.0.1"}, wantErr: true},
+		{name: "production lane requires production profile", config: &config.Config{Environment: "production", BindAddr: "127.0.0.1"}, wantErr: true},
+		{name: "fleet GitHub bridge requires explicit environment", config: &config.Config{BindAddr: "127.0.0.1", FleetGitHubRepository: "acme/fleet"}, wantErr: true},
+		{name: "fleet GitHub bridge cannot cross control plane lane", config: &config.Config{Environment: "staging", BindAddr: "127.0.0.1", FleetGitHubRepository: "acme/fleet", FleetGitHubEnvironment: "production"}, wantErr: true},
 		{name: "production requires explicit auth", config: &config.Config{Profile: "production", BindAddr: "127.0.0.1", APIToken: strings.Repeat("x", 32), StrictSecrets: true, NomadAddr: "https://nomad:4646", ConsulAddr: "https://consul:8501", DatabaseURL: "postgres://db/norn?sslmode=verify-full", RegistryURL: "registry.example.test/norn"}, wantErr: true},
 		{name: "production rejects Nomad skip verify", config: &config.Config{Profile: "production", BindAddr: "127.0.0.1", APIToken: strings.Repeat("x", 32), RequireExplicitAuth: true, StrictSecrets: true, NomadAddr: "https://nomad:4646", NomadTLSSkipVerify: true, ConsulAddr: "https://consul:8501", DatabaseURL: "postgres://db/norn?sslmode=verify-full", RegistryURL: "registry.example.test/norn", LegacyTokenSigningUntil: time.Now().Add(-time.Hour)}, wantErr: true},
 		{name: "production rejects Consul skip verify", config: &config.Config{Profile: "production", BindAddr: "127.0.0.1", APIToken: strings.Repeat("x", 32), RequireExplicitAuth: true, StrictSecrets: true, NomadAddr: "https://nomad:4646", ConsulAddr: "https://consul:8501", ConsulTLSSkipVerify: true, DatabaseURL: "postgres://db/norn?sslmode=verify-full", RegistryURL: "registry.example.test/norn", LegacyTokenSigningUntil: time.Now().Add(-time.Hour)}, wantErr: true},
 		{name: "production rejects unverified database TLS", config: &config.Config{Profile: "production", BindAddr: "127.0.0.1", APIToken: strings.Repeat("x", 32), RequireExplicitAuth: true, StrictSecrets: true, NomadAddr: "https://nomad:4646", ConsulAddr: "https://consul:8501", DatabaseURL: "postgres://db/norn?sslmode=require", RegistryURL: "registry.example.test/norn", LegacyTokenSigningUntil: time.Now().Add(-time.Hour)}, wantErr: true},
 		{name: "production rejects weak previous audit key", config: &config.Config{Profile: "production", BindAddr: "127.0.0.1", APIToken: strings.Repeat("x", 32), AuditSigningKey: strings.Repeat("a", 32), AuditPreviousSigningKeys: []string{"short"}, RequireExplicitAuth: true, StrictSecrets: true, NomadAddr: "https://nomad:4646", ConsulAddr: "https://consul:8501", DatabaseURL: "postgres://db/norn?sslmode=verify-full", RegistryURL: "registry.example.test/norn", LegacyTokenSigningUntil: time.Now().Add(-time.Hour)}, wantErr: true},
 		{name: "production rejects short audit retention", config: &config.Config{Profile: "production", BindAddr: "127.0.0.1", APIToken: strings.Repeat("x", 32), AuditSigningKey: strings.Repeat("a", 32), AuditRetentionDays: 30, RequireExplicitAuth: true, StrictSecrets: true, NomadAddr: "https://nomad:4646", ConsulAddr: "https://consul:8501", DatabaseURL: "postgres://db/norn?sslmode=verify-full", RegistryURL: "registry.example.test/norn", LegacyTokenSigningUntil: time.Now().Add(-time.Hour)}, wantErr: true},
-		{name: "production hardened", config: &config.Config{Profile: "production", BindAddr: "127.0.0.1", APIToken: strings.Repeat("x", 32), AuditSigningKey: strings.Repeat("a", 32), AuditRetentionDays: 365, RequireExplicitAuth: true, StrictSecrets: true, NomadAddr: "https://nomad:4646", ConsulAddr: "https://consul:8501", DatabaseURL: "postgres://db/norn?sslmode=verify-full", RegistryURL: "registry.example.test/norn", ArtifactSigningPublicKey: "/etc/norn/cosign.pub", ArtifactDenySeverities: []string{"HIGH", "CRITICAL"}, LegacyTokenSigningUntil: time.Now().Add(-time.Hour)}},
+		{name: "production hardened", config: &config.Config{Profile: "production", Environment: "staging", EnvironmentExplicit: true, BindAddr: "127.0.0.1", APIToken: strings.Repeat("x", 32), AuditSigningKey: strings.Repeat("a", 32), AuditRetentionDays: 365, RequireExplicitAuth: true, StrictSecrets: true, NomadAddr: "https://nomad:4646", ConsulAddr: "https://consul:8501", DatabaseURL: "postgres://db/norn?sslmode=verify-full", RegistryURL: "registry.example.test/norn", ArtifactSigningPublicKey: "/etc/norn/cosign.pub", ArtifactDenySeverities: []string{"HIGH", "CRITICAL"}, CosignPath: "/usr/bin/cosign", TrivyPath: "/usr/bin/trivy", LegacyTokenSigningUntil: time.Now().Add(-time.Hour), QualificationSigningKey: base64.RawStdEncoding.EncodeToString([]byte(strings.Repeat("q", 32))), GitHubActionsOIDCAudience: "norn", GitHubActionsReleaseBindings: []string{"demo=acme/demo@1@2"}, GitHubActionsAllowedWorkflowRefs: []string{"acme/release/.github/workflows/release.yml@" + strings.Repeat("a", 40)}, GitHubActionsAllowedRefs: []string{"refs/heads/main"}, GitHubActionsAllowedEvents: []string{"push"}, GitHubActionsAllowedEnvironments: []string{"staging"}, GitHubActionsDefaultBranch: "main"}},
 	} {
 		t.Run(tt.name, func(t *testing.T) {
 			if err := validateControlSecurity(tt.config); (err != nil) != tt.wantErr {
 				t.Fatalf("error = %v, wantErr %v", err, tt.wantErr)
 			}
 		})
+	}
+}
+
+func TestProductionProfileRequiresExplicitSafeReleaseLane(t *testing.T) {
+	for _, tt := range []struct {
+		name        string
+		environment string
+		explicit    bool
+		wantErr     bool
+	}{
+		{name: "omitted", wantErr: true},
+		{name: "development", environment: "development", explicit: true, wantErr: true},
+		{name: "staging", environment: "staging", explicit: true},
+		{name: "production", environment: "production", explicit: true},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			cfg := &config.Config{Profile: "production", Environment: tt.environment, EnvironmentExplicit: tt.explicit}
+			_, _, err := validateProfileEnvironment(cfg)
+			if (err != nil) != tt.wantErr {
+				t.Fatalf("validateProfileEnvironment() error = %v, wantErr %v", err, tt.wantErr)
+			}
+		})
+	}
+	if _, _, err := validateProfileEnvironment(&config.Config{Profile: "development", Environment: "production", EnvironmentExplicit: true}); err == nil {
+		t.Fatal("production environment was allowed under the development profile")
 	}
 }
 
@@ -493,6 +521,47 @@ func TestControlCapabilitiesAdvertisesHostMetrics(t *testing.T) {
 	}
 }
 
+func TestReleaseCapabilitiesRequireConfiguredReleasePolicy(t *testing.T) {
+	request := httptest.NewRequest(http.MethodGet, "/api/v1/capabilities", nil)
+	withoutPolicy := httptest.NewRecorder()
+	writeControlCapabilitiesForConfig(&config.Config{Environment: "production"}, withoutPolicy, request)
+	var unavailable struct {
+		Features  []string          `json:"features"`
+		Endpoints map[string]string `json:"endpoints"`
+	}
+	if err := json.Unmarshal(withoutPolicy.Body.Bytes(), &unavailable); err != nil {
+		t.Fatal(err)
+	}
+	if containsCapability(unavailable.Features, "release-promotions-v1") || unavailable.Endpoints["releasePromotions"] != "" {
+		t.Fatalf("unconfigured release policy was advertised: %#v", unavailable)
+	}
+
+	withPolicy := httptest.NewRecorder()
+	writeControlCapabilitiesForConfig(&config.Config{
+		Environment: "production", ReleaseAdmissionMode: "keyless", QualificationSigningKey: "not-used-in-production", TrustedQualificationSigningKeys: []string{"trusted"},
+		GitHubActionsOIDCAudience: "norn-production", GitHubActionsReleaseBindings: []string{"demo=acme/demo@101@202"}, GitHubActionsAllowedWorkflowRefs: []string{"acme/demo/.github/workflows/release.yml@sha"}, GitHubActionsAllowedRefs: []string{"refs/tags/v*"}, GitHubActionsAllowedEvents: []string{"push"}, GitHubActionsAllowedEnvironments: []string{"production"}, GitHubActionsDefaultBranch: "main",
+	}, withPolicy, request)
+	var available struct {
+		Features  []string          `json:"features"`
+		Endpoints map[string]string `json:"endpoints"`
+	}
+	if err := json.Unmarshal(withPolicy.Body.Bytes(), &available); err != nil {
+		t.Fatal(err)
+	}
+	if !containsCapability(available.Features, "release-promotions-v1") || available.Endpoints["releasePromotions"] != "/api/v1/apps/{id}/promotions" {
+		t.Fatalf("configured release policy was not advertised: %#v", available)
+	}
+}
+
+func containsCapability(values []string, expected string) bool {
+	for _, value := range values {
+		if value == expected {
+			return true
+		}
+	}
+	return false
+}
+
 func TestOnlyEnrollmentStartAndExchangeArePublic(t *testing.T) {
 	tests := []struct {
 		method string
@@ -510,6 +579,32 @@ func TestOnlyEnrollmentStartAndExchangeArePublic(t *testing.T) {
 		if got := publicEnrollmentRequest(req); got != tt.want {
 			t.Errorf("%s %s public = %v, want %v", tt.method, tt.path, got, tt.want)
 		}
+	}
+}
+
+func TestGitHubActionsExchangePublicExceptionIsExact(t *testing.T) {
+	for _, tt := range []struct {
+		method, path string
+		want         bool
+	}{
+		{http.MethodPost, "/api/v1/auth/github-actions/exchange", true},
+		{http.MethodGet, "/api/v1/auth/github-actions/exchange", false},
+		{http.MethodPost, "/api/v1/auth/github-actions/exchange/other", false},
+	} {
+		if got := publicGitHubActionsExchangeRequest(httptest.NewRequest(tt.method, tt.path, nil)); got != tt.want {
+			t.Errorf("%s %s = %v, want %v", tt.method, tt.path, got, tt.want)
+		}
+	}
+}
+
+func TestReleaseMutationsDeferScopeToBoundHandler(t *testing.T) {
+	release := httptest.NewRequest(http.MethodPost, "/api/v1/apps/demo/releases/deployments", nil)
+	if got := controlScopeForRequest(release); got != "" {
+		t.Fatalf("release route global scope = %q, want handler-owned scope", got)
+	}
+	generic := httptest.NewRequest(http.MethodPost, "/api/v1/apps/demo/scale", nil)
+	if got := controlScopeForRequest(generic); got != handler.ScopeAPIWrite {
+		t.Fatalf("generic mutation scope = %q, want api:write", got)
 	}
 }
 

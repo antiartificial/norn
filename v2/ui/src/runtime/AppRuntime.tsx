@@ -30,6 +30,8 @@ export interface RuntimeContext {
 	toggleDeployment: (appId: string, enabled: boolean) => Promise<void>
   fleetAvailable: boolean
   appRecoveryAvailable: boolean
+  environment: { id: string; profile: string }
+  releasePipelineAvailable: boolean
 }
 
 const DeployProgressContext = createContext<ReturnType<typeof useDeployProgress> | null>(null)
@@ -174,6 +176,8 @@ function RuntimeInner({ children }: { children: (runtime: RuntimeContext & { con
   const activeIngress = useMemo(() => new Set(ingress.data?.hostnames ?? []), [ingress.data?.hostnames])
   const fleetAvailable = ['fleet-v1', 'fleet-inventory', 'durable-fleet-capacity-plans'].every((feature) => capabilities.data?.features.includes(feature))
   const appRecoveryAvailable = capabilities.data?.features.includes('durable-app-recovery-v1') === true
+  const environment = capabilities.data?.environment ?? { id: 'development', profile: 'development' }
+  const releasePipelineAvailable = ['release-provenance-v1', 'release-qualifications-v2', 'release-promotions-v1'].every((feature) => capabilities.data?.features.includes(feature))
 
   const toggleEndpoint = useCallback(async (appId: string, hostname: string, enabled: boolean) => {
     await apiFetch(`/api/apps/${appId}/endpoints/toggle`, {
@@ -205,6 +209,8 @@ function RuntimeInner({ children }: { children: (runtime: RuntimeContext & { con
 		toggleDeployment,
     fleetAvailable,
     appRecoveryAvailable,
+    environment,
+    releasePipelineAvailable,
   }
 
   return (

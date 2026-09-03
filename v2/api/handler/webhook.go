@@ -19,6 +19,10 @@ import (
 )
 
 func (h *Handler) Webhook(w http.ResponseWriter, r *http.Request) {
+	if h.productionRequiresSignedPromotion() {
+		writeError(w, http.StatusConflict, "production deployments require a signed staging promotion")
+		return
+	}
 	provider := chi.URLParam(r, "provider")
 	if provider != "github" && provider != "gitea" {
 		writeError(w, http.StatusBadRequest, "unsupported provider")
@@ -158,6 +162,10 @@ func (h *Handler) ReplayWebhookDelivery(w http.ResponseWriter, r *http.Request) 
 	}
 	if req.Mode != "deploy" && req.Mode != "preflight" {
 		writeError(w, http.StatusBadRequest, "mode must be deploy or preflight")
+		return
+	}
+	if req.Mode == "deploy" && h.productionRequiresSignedPromotion() {
+		writeError(w, http.StatusConflict, "production deployments require a signed staging promotion")
 		return
 	}
 

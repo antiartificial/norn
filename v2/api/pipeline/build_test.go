@@ -1,10 +1,13 @@
 package pipeline
 
 import (
+	"context"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
+
+	"norn/v2/api/model"
 )
 
 func TestImageReferenceFromMetadata(t *testing.T) {
@@ -29,5 +32,16 @@ func TestImageReferenceFromMetadataRejectsMissingDigest(t *testing.T) {
 	}
 	if _, err := imageReferenceFromMetadata("registry.example.test/norn/demo", path); err == nil {
 		t.Fatal("expected missing digest to fail")
+	}
+}
+
+func TestBuildPreservesBoundReleaseArtifact(t *testing.T) {
+	digest := "registry.example.test/app@sha256:" + strings.Repeat("a", 64)
+	st := &state{artifactBound: true, imageTag: digest, spec: &model.InfraSpec{App: "app"}}
+	if err := (&Pipeline{}).build(context.Background(), st, nil); err != nil {
+		t.Fatal(err)
+	}
+	if st.imageTag != digest {
+		t.Fatalf("bound artifact changed to %q", st.imageTag)
 	}
 }

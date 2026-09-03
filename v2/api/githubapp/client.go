@@ -22,6 +22,7 @@ import (
 	"sort"
 	"strings"
 	"sync"
+	"syscall"
 	"time"
 
 	"github.com/golang-jwt/jwt/v5"
@@ -46,12 +47,15 @@ type Config struct {
 	InstallationID int64
 	PrivateKeyFile string
 	Repository     string
-	DefaultBranch  string
-	ConfigPath     string
-	PlanWorkflow   string
-	ApplyWorkflow  string
-	APIBaseURL     string
-	Production     bool
+	// Environment is the fixed control-plane lane that maps to the exact Fleet
+	// root and protected GitHub Environment passed to the apply workflow.
+	Environment   string
+	DefaultBranch string
+	ConfigPath    string
+	PlanWorkflow  string
+	ApplyWorkflow string
+	APIBaseURL    string
+	Production    bool
 }
 
 type Client struct {
@@ -77,6 +81,7 @@ type Status struct {
 	ConfigPath    string `json:"configPath,omitempty"`
 	PlanWorkflow  string `json:"planWorkflow,omitempty"`
 	ApplyWorkflow string `json:"applyWorkflow,omitempty"`
+	Environment   string `json:"environment,omitempty"`
 	Message       string `json:"message,omitempty"`
 }
 
@@ -113,6 +118,7 @@ func New(cfg Config, httpClient *http.Client) (*Client, error) {
 	cfg.AppID = strings.TrimSpace(cfg.AppID)
 	cfg.PrivateKeyFile = strings.TrimSpace(cfg.PrivateKeyFile)
 	cfg.Repository = strings.TrimSpace(cfg.Repository)
+	cfg.Environment = strings.ToLower(strings.TrimSpace(cfg.Environment))
 	cfg.DefaultBranch = strings.TrimSpace(cfg.DefaultBranch)
 	cfg.ConfigPath = path.Clean(rawConfigPath)
 	cfg.PlanWorkflow = strings.TrimSpace(cfg.PlanWorkflow)
@@ -140,12 +146,15 @@ func New(cfg Config, httpClient *http.Client) (*Client, error) {
 }
 
 func Configured(cfg Config) bool {
-	return strings.TrimSpace(cfg.AppID) != "" || cfg.InstallationID != 0 || strings.TrimSpace(cfg.PrivateKeyFile) != "" || strings.TrimSpace(cfg.Repository) != ""
+	return strings.TrimSpace(cfg.AppID) != "" || cfg.InstallationID != 0 || strings.TrimSpace(cfg.PrivateKeyFile) != "" || strings.TrimSpace(cfg.Repository) != "" || strings.TrimSpace(cfg.Environment) != ""
 }
 
 func validateConfig(cfg Config) error {
-	if cfg.AppID == "" || cfg.InstallationID <= 0 || cfg.PrivateKeyFile == "" || cfg.Repository == "" || cfg.ConfigPath == "" {
-		return fmt.Errorf("GitHub App ID, installation ID, private key file, repository, and fleet config path are required")
+	if cfg.AppID == "" || cfg.InstallationID <= 0 || cfg.PrivateKeyFile == "" || cfg.Repository == "" || cfg.ConfigPath == "" || cfg.Environment == "" {
+		return fmt.Errorf("GitHub App ID, installation ID, private key file, repository, fleet config path, and environment are required")
+	}
+	if cfg.Environment != "staging" && cfg.Environment != "production" {
+		return fmt.Errorf("fleet GitHub environment must be staging or production")
 	}
 	if !repositoryRe.MatchString(cfg.Repository) {
 		return fmt.Errorf("GitHub repository must be owner/name")
@@ -158,6 +167,9 @@ func validateConfig(cfg Config) error {
 	}
 	if cfg.ConfigPath == "." || strings.HasPrefix(cfg.ConfigPath, "../") || !strings.HasSuffix(cfg.ConfigPath, ".yaml") {
 		return fmt.Errorf("fleet GitHub config path must be a repository-relative YAML path")
+	}
+	if cfg.ConfigPath != fmt.Sprintf("environments/%s/nyc3/cluster.yaml", cfg.Environment) {
+		return fmt.Errorf("fleet GitHub config path must match the configured %s environment root", cfg.Environment)
 	}
 	base, err := url.Parse(cfg.APIBaseURL)
 	if err != nil || base == nil {
@@ -174,7 +186,7 @@ func validateConfig(cfg Config) error {
 }
 
 func (c *Client) Status(ctx context.Context) Status {
-	status := Status{SchemaVersion: "norn.fleet-github-status/v1", Configured: true, Repository: c.cfg.Repository, Installation: c.cfg.InstallationID, DefaultBranch: c.cfg.DefaultBranch, ConfigPath: c.cfg.ConfigPath, PlanWorkflow: c.cfg.PlanWorkflow, ApplyWorkflow: c.cfg.ApplyWorkflow}
+	status := Status{SchemaVersion: "norn.fleet-github-status/v1", Configured: true, Repository: c.cfg.Repository, Installation: c.cfg.InstallationID, Environment: c.cfg.Environment, DefaultBranch: c.cfg.DefaultBranch, ConfigPath: c.cfg.ConfigPath, PlanWorkflow: c.cfg.PlanWorkflow, ApplyWorkflow: c.cfg.ApplyWorkflow}
 	token, err := c.installationToken(ctx, map[string]string{"metadata": "read"})
 	if err != nil {
 		status.Message = "GitHub App authentication failed"
@@ -291,6 +303,7 @@ func (c *Client) DispatchApprovedPlan(ctx context.Context, planID string, allowD
 	err = c.request(ctx, token, http.MethodPost, c.repoPath("/actions/workflows/"+url.PathEscape(c.cfg.ApplyWorkflow)+"/dispatches"), map[string]any{
 		"ref": c.cfg.DefaultBranch,
 		"inputs": map[string]string{
+			"fleet_environment": c.fleetRoot(),
 			"plan_run_id":       fmt.Sprintf("%d", approved.PlanRunID),
 			"plan_sha256":       approved.PlanSHA,
 			"norn_plan_id":      planID,
@@ -351,7 +364,7 @@ func (c *Client) planArtifactSHA(ctx context.Context, token string, runID int64)
 		return "", err
 	}
 	for _, artifact := range artifacts.Artifacts {
-		if artifact.Name != fmt.Sprintf("fleet-plan-%d", runID) || artifact.Expired {
+		if artifact.Name != fmt.Sprintf("fleet-plan-%s-nyc3-%d", c.cfg.Environment, runID) || artifact.Expired {
 			continue
 		}
 		archive, err := c.requestBytes(ctx, token, c.repoPath(fmt.Sprintf("/actions/artifacts/%d/zip", artifact.ID)), 16<<20)
@@ -393,7 +406,7 @@ func (c *Client) findApplyRun(ctx context.Context, token, planID string) (*Dispa
 	if err := c.request(ctx, token, http.MethodGet, c.repoPath("/actions/workflows/"+url.PathEscape(c.cfg.ApplyWorkflow)+"/runs"+query), nil, &runs); err != nil {
 		return nil, err
 	}
-	want := "Apply Norn plan " + planID
+	want := "Apply " + c.fleetRoot() + " Norn plan " + planID
 	for _, run := range runs.WorkflowRuns {
 		if run.DisplayTitle == want {
 			return &Dispatch{RunID: run.ID, URL: run.HTMLURL}, nil
@@ -401,6 +414,8 @@ func (c *Client) findApplyRun(ctx context.Context, token, planID string) (*Dispa
 	}
 	return nil, nil
 }
+
+func (c *Client) fleetRoot() string { return c.cfg.Environment + "/nyc3" }
 
 func (c *Client) findPullRequest(ctx context.Context, token, branch string) (*PullRequest, error) {
 	owner := strings.SplitN(c.cfg.Repository, "/", 2)[0]
@@ -524,12 +539,15 @@ func permissionCacheKey(permissions map[string]string) string {
 }
 
 func (c *Client) privateKey() (*rsa.PrivateKey, error) {
-	info, err := os.Stat(c.cfg.PrivateKeyFile)
+	info, err := os.Lstat(c.cfg.PrivateKeyFile)
 	if err != nil || !info.Mode().IsRegular() {
 		return nil, fmt.Errorf("GitHub App private key is unavailable")
 	}
 	if info.Mode().Perm()&0o077 != 0 {
 		return nil, fmt.Errorf("GitHub App private key must not be group/world accessible")
+	}
+	if stat, ok := info.Sys().(*syscall.Stat_t); !ok || int(stat.Uid) != os.Getuid() {
+		return nil, fmt.Errorf("GitHub App private key must be owned by the Norn process user")
 	}
 	pem, err := os.ReadFile(c.cfg.PrivateKeyFile)
 	if err != nil || len(pem) > 64<<10 {

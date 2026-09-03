@@ -366,6 +366,7 @@ type FleetGitHubStatus struct {
 	Connected     bool   `json:"connected"`
 	Repository    string `json:"repository,omitempty"`
 	Installation  int64  `json:"installationId,omitempty"`
+	Environment   string `json:"environment,omitempty"`
 	DefaultBranch string `json:"defaultBranch,omitempty"`
 	ConfigPath    string `json:"configPath,omitempty"`
 	PlanWorkflow  string `json:"planWorkflow,omitempty"`

@@ -1,0 +1,879 @@
+# The control plane, not this workflow, authorizes app_id. Configure its exact
+# app-to-repository policy with NORN_GITHUB_ACTIONS_RELEASE_BINDINGS.
+name: Norn app release
+
+on:
+  workflow_call:
+    inputs:
+      app_id:
+        description: Norn app ID to release (for example, "orders-api").
+        required: true
+        type: string
+      image_repository:
+        description: Lowercase GHCR repository without a tag (for example, "ghcr.io/acme/orders-api").
+        required: true
+        type: string
+      dockerfile:
+        description: Path to the Dockerfile relative to the caller repository.
+        required: false
+        default: Dockerfile
+        type: string
+      build_context:
+        description: Docker build context relative to the caller repository.
+        required: false
+        default: .
+        type: string
+      lane:
+        description: Release lane selected by the caller.
+        required: true
+        type: string
+      required_checks:
+        description: Newline-delimited exact GitHub check-run names that must succeed for the staging SHA.
+        required: false
+        default: ''
+        type: string
+      source_sha:
+        description: Existing full source SHA; required only for the requalify lane.
+        required: false
+        default: ''
+        type: string
+      deployment_id:
+        description: Existing successful staging deployment UUID; required only for the requalify lane.
+        required: false
+        default: ''
+        type: string
+      rollback_source_sha:
+        description: Full SHA of the already-admitted production deployment to restore; required only for rollback.
+        required: false
+        default: ''
+        type: string
+      rollback_deployment_id:
+        description: UUID of the already-admitted production deployment to restore; required only for rollback.
+        required: false
+        default: ''
+        type: string
+      rollback_artifact:
+        description: Full digest-pinned artifact from the already-admitted production deployment; required only for rollback.
+        required: false
+        default: ''
+        type: string
+      rollback_confirmation:
+        description: Must be the literal ROLLBACK for the rollback lane.
+        required: false
+        default: ''
+        type: string
+
+defaults:
+  run:
+    shell: bash
+
+jobs:
+  validate:
+    runs-on: ubuntu-24.04
+    permissions: {}
+    outputs:
+      attestation_mode: ${{ steps.attestation-mode.outputs.mode }}
+    steps:
+      - name: Validate reusable-workflow inputs
+        id: attestation-mode
+        env:
+          APP_ID: ${{ inputs.app_id }}
+          IMAGE_REPOSITORY: ${{ inputs.image_repository }}
+          LANE: ${{ inputs.lane }}
+          CALLER_EVENT_NAME: ${{ github.event_name }}
+          CALLER_REF: ${{ github.ref }}
+          CALLER_REF_PROTECTED: ${{ github.ref_protected }}
+          CALLER_DEFAULT_BRANCH: ${{ github.event.repository.default_branch }}
+          CALLER_REPOSITORY_VISIBILITY: ${{ github.event.repository.visibility }}
+          SOURCE_SHA: ${{ inputs.source_sha }}
+          DEPLOYMENT_ID: ${{ inputs.deployment_id }}
+          REQUIRED_CHECKS: ${{ inputs.required_checks }}
+          ROLLBACK_SOURCE_SHA: ${{ inputs.rollback_source_sha }}
+          ROLLBACK_DEPLOYMENT_ID: ${{ inputs.rollback_deployment_id }}
+          ROLLBACK_ARTIFACT: ${{ inputs.rollback_artifact }}
+          ROLLBACK_CONFIRMATION: ${{ inputs.rollback_confirmation }}
+        run: |
+          set -euo pipefail
+          [[ "$APP_ID" =~ ^[a-z0-9][a-z0-9-]*$ ]] || { echo "app_id is invalid" >&2; exit 1; }
+          [[ "$IMAGE_REPOSITORY" =~ ^ghcr\.io/[a-z0-9][a-z0-9._-]*(/[a-z0-9][a-z0-9._-]*)+$ ]] || {
+            echo "image_repository must be a lowercase GHCR repository without a tag" >&2
+            exit 1
+          }
+          # Repository visibility is supplied by GitHub and carried as a
+          # signed OIDC claim. The caller cannot select the verifier mode.
+          # Norn authorizes the derived mode against its own configuration.
+          derive_attestation_mode() {
+            case "$1" in
+              public) printf '%s\n' github-public ;;
+              private|internal) printf '%s\n' github-private ;;
+              *) return 1 ;;
+            esac
+          }
+          # Keep the public/private mapping explicit and regression-tested in
+          # the workflow before any checkout or credential-bearing job starts.
+          [[ "$(derive_attestation_mode public)" == github-public ]]
+          [[ "$(derive_attestation_mode private)" == github-private ]]
+          [[ "$(derive_attestation_mode internal)" == github-private ]]
+          if derive_attestation_mode unknown >/dev/null; then
+            echo "unsupported repository visibility was accepted" >&2
+            exit 1
+          fi
+          attestation_mode="$(derive_attestation_mode "$CALLER_REPOSITORY_VISIBILITY")" || {
+            echo "unsupported or missing GitHub repository visibility: $CALLER_REPOSITORY_VISIBILITY" >&2
+            exit 1
+          }
+          printf 'mode=%s\n' "$attestation_mode" >> "$GITHUB_OUTPUT"
+          case "$LANE" in
+            staging)
+              [[ "$CALLER_EVENT_NAME" == "push" ]] || { echo "staging requires a push event" >&2; exit 1; }
+              [[ "$CALLER_REF_PROTECTED" == "true" ]] || { echo "staging requires a protected ref" >&2; exit 1; }
+              [[ -n "$CALLER_DEFAULT_BRANCH" && "$CALLER_REF" == "refs/heads/$CALLER_DEFAULT_BRANCH" ]] || {
+                echo "staging requires a push to the protected default branch" >&2
+                exit 1
+              }
+              [[ -n "$(tr -d '[:space:]' <<<"$REQUIRED_CHECKS")" ]] || {
+                echo "staging requires an explicit required_checks list" >&2
+                exit 1
+              }
+              ;;
+            production)
+              [[ "$CALLER_EVENT_NAME" == "push" ]] || { echo "production requires a tag push event" >&2; exit 1; }
+              [[ "$CALLER_REF_PROTECTED" == "true" ]] || { echo "production requires a protected tag" >&2; exit 1; }
+              [[ "$CALLER_REF" == refs/tags/v* ]] || { echo "production requires a v* release tag" >&2; exit 1; }
+              ;;
+            requalify)
+              [[ "$CALLER_EVENT_NAME" == "workflow_dispatch" ]] || { echo "requalification requires workflow_dispatch" >&2; exit 1; }
+              [[ "$CALLER_REF_PROTECTED" == "true" ]] || { echo "requalification requires a protected ref" >&2; exit 1; }
+              [[ -n "$CALLER_DEFAULT_BRANCH" && "$CALLER_REF" == "refs/heads/$CALLER_DEFAULT_BRANCH" ]] || {
+                echo "requalification requires dispatch from the protected default branch" >&2
+                exit 1
+              }
+              [[ "$SOURCE_SHA" =~ ^[0-9a-f]{40}$ ]] || { echo "requalification source_sha must be a full lowercase commit SHA" >&2; exit 1; }
+              [[ "$DEPLOYMENT_ID" =~ ^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$ ]] || {
+                echo "requalification deployment_id must be a UUID" >&2
+                exit 1
+              }
+              ;;
+            rollback)
+              [[ "$CALLER_EVENT_NAME" == "workflow_dispatch" ]] || { echo "rollback requires workflow_dispatch" >&2; exit 1; }
+              [[ "$CALLER_REF_PROTECTED" == "true" ]] || { echo "rollback requires a protected ref" >&2; exit 1; }
+              [[ -n "$CALLER_DEFAULT_BRANCH" && "$CALLER_REF" == "refs/heads/$CALLER_DEFAULT_BRANCH" ]] || {
+                echo "rollback requires dispatch from the protected default branch" >&2
+                exit 1
+              }
+              [[ "$ROLLBACK_SOURCE_SHA" =~ ^[0-9a-f]{40}$ ]] || { echo "rollback_source_sha must be a full lowercase commit SHA" >&2; exit 1; }
+              [[ "$ROLLBACK_DEPLOYMENT_ID" =~ ^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$ ]] || {
+                echo "rollback_deployment_id must be a UUID" >&2
+                exit 1
+              }
+              [[ "$ROLLBACK_ARTIFACT" =~ ^.+@sha256:[0-9a-f]{64}$ ]] || {
+                echo "rollback_artifact must be a digest-pinned OCI reference" >&2
+                exit 1
+              }
+              [[ "$ROLLBACK_CONFIRMATION" == ROLLBACK ]] || { echo "rollback_confirmation must be ROLLBACK" >&2; exit 1; }
+              ;;
+            *) echo "lane must be staging, production, requalify, or rollback" >&2; exit 1 ;;
+          esac
+
+  required-checks:
+    if: inputs.lane == 'staging'
+    needs: validate
+    runs-on: ubuntu-24.04
+    permissions:
+      checks: read
+    outputs:
+      source_sha: ${{ steps.gate.outputs.source_sha }}
+    steps:
+      - name: Require exact successful checks for the staging commit
+        id: gate
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REQUIRED_CHECKS: ${{ inputs.required_checks }}
+        run: |
+          set -euo pipefail
+          source_sha="$GITHUB_SHA"
+          [[ "$source_sha" =~ ^[0-9a-f]{40}$ ]] || { echo "GitHub did not provide a full lowercase commit SHA" >&2; exit 1; }
+          mapfile -t required_checks < <(sed '/^[[:space:]]*$/d' <<<"$REQUIRED_CHECKS")
+          (( ${#required_checks[@]} > 0 )) || { echo "required_checks is empty" >&2; exit 1; }
+          declare -A seen_checks=()
+          for check in "${required_checks[@]}"; do
+            IFS=$'\t' read -r check_name check_app_id extra <<<"$check"
+            [[ -n "$check_name" && -n "$check_app_id" && -z "${extra:-}" && "$check" == *$'\t'* && "$check_app_id" =~ ^[0-9]+$ ]] || {
+              echo "each required_checks line must be Exact Check Name<TAB>GitHub App numeric ID" >&2
+              exit 1
+            }
+            [[ "$check_name" == "${check_name#"${check_name%%[![:space:]]*}"}" ]] || {
+              echo "required check names may not start with whitespace" >&2
+              exit 1
+            }
+            seen_key="$(printf '%s\037%s' "$check_name" "$check_app_id")"
+            [[ -z "${seen_checks["$seen_key"]+x}" ]] || { echo "duplicate required check identity: $check_name@$check_app_id" >&2; exit 1; }
+            seen_checks["$seen_key"]=1
+          done
+          # gh api --paginate --slurp returns one array containing page objects.
+          # Keep this selector shared with the fixture regression check below.
+          check_filter="[.[].check_runs[] | select(.name == \$name and (.app.id|tostring) == \$appId)]"
+          selector_fixture='[{"check_runs":[{"name":"required","app":{"id":12345},"status":"completed","conclusion":"success"}]},{"check_runs":[{"name":"required","app":{"id":67890},"status":"completed","conclusion":"success"}]}]'
+          selector_matches="$(jq --arg name required --arg appId 12345 "$check_filter" <<<"$selector_fixture")"
+          [[ "$(jq 'length' <<<"$selector_matches")" == 1 ]] || {
+            echo "paginated GitHub check-run selector regression" >&2
+            exit 1
+          }
+          deadline=$((SECONDS + 2700))
+          while :; do
+            checks="$(gh api --paginate --slurp "repos/$GITHUB_REPOSITORY/commits/$source_sha/check-runs?per_page=100")"
+            jq -e 'type == "array" and all(.[]; type == "object" and (.check_runs | type == "array"))' \
+              >/dev/null <<<"$checks" || {
+              echo "GitHub returned an unexpected paginated check-runs response" >&2
+              exit 1
+            }
+            waiting=false
+            for check in "${required_checks[@]}"; do
+              IFS=$'\t' read -r check_name check_app_id <<<"$check"
+              matches="$(jq --arg name "$check_name" --arg appId "$check_app_id" "$check_filter" <<<"$checks")"
+              count="$(jq 'length' <<<"$matches")"
+              if [[ "$count" == 0 ]]; then
+                waiting=true
+                continue
+              fi
+              [[ "$count" == 1 ]] || {
+                echo "required check '$check_name@$check_app_id' is ambiguous or missing for $source_sha (matches: $count)" >&2
+                exit 1
+              }
+              status="$(jq -er '.[0].status' <<<"$matches")"
+              conclusion="$(jq -r '.[0].conclusion // ""' <<<"$matches")"
+              if [[ "$status" != completed ]]; then
+                waiting=true
+                continue
+              fi
+              [[ "$conclusion" == success ]] || {
+                echo "required check '$check_name@$check_app_id' completed with '$conclusion' for $source_sha" >&2
+                exit 1
+              }
+            done
+            if [[ "$waiting" == false ]]; then
+              printf 'source_sha=%s\n' "$source_sha" >> "$GITHUB_OUTPUT"
+              exit 0
+            fi
+            (( SECONDS < deadline )) || { echo "timed out waiting for required checks on $source_sha" >&2; exit 1; }
+            sleep 15
+          done
+
+  staging:
+    if: inputs.lane == 'staging'
+    needs: [validate, required-checks]
+    runs-on: ubuntu-24.04
+    environment: staging
+    permissions:
+      artifact-metadata: write
+      attestations: write
+      contents: read
+      id-token: write
+      packages: write
+    concurrency:
+      group: norn-release-${{ inputs.app_id }}-staging
+      cancel-in-progress: false
+    env:
+      APP_ID: ${{ inputs.app_id }}
+      IMAGE_REPOSITORY: ${{ inputs.image_repository }}
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          fetch-depth: 0
+
+      - name: Validate staging release inputs
+        id: inputs
+        env:
+          NORN_API_URL: ${{ vars.NORN_API_URL }}
+        run: |
+          set -euo pipefail
+          case "$NORN_API_URL" in
+            https://*) ;;
+            *) echo "NORN_API_URL must be an https URL" >&2; exit 1 ;;
+          esac
+          [[ "$APP_ID" =~ ^[a-z0-9][a-z0-9-]*$ ]] || { echo "app_id is invalid" >&2; exit 1; }
+          [[ "$IMAGE_REPOSITORY" =~ ^ghcr\.io/[a-z0-9][a-z0-9._-]*(/[a-z0-9][a-z0-9._-]*)+$ ]] || {
+            echo "image_repository must be a lowercase GHCR repository without a tag" >&2
+            exit 1
+          }
+          source_sha='${{ needs.required-checks.outputs.source_sha }}'
+          [[ "$source_sha" =~ ^[0-9a-f]{40}$ ]] || { echo "resolved source is not a full lowercase commit SHA" >&2; exit 1; }
+          printf 'source_sha=%s\n' "$source_sha" >> "$GITHUB_OUTPUT"
+
+      - uses: docker/setup-buildx-action@8d2750c68a42422c14e847fe6c8ac0403b4cbd6f # v3.12.0
+
+      - name: Authenticate to GitHub Container Registry
+        uses: docker/login-action@c94ce9fb468520275223c153574b00df6fe4bcc9 # v3.7.0
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ github.token }}
+
+      - name: Build and publish the immutable image
+        id: build
+        uses: docker/build-push-action@10e90e3645eae34f1e60eeb005ba3a3d33f178e8 # v6.19.2
+        with:
+          context: ${{ inputs.build_context }}
+          file: ${{ inputs.dockerfile }}
+          push: true
+          provenance: mode=max
+          sbom: true
+          tags: ${{ inputs.image_repository }}:sha-${{ steps.inputs.outputs.source_sha }}
+
+      - name: Bind the published digest
+        id: artifact
+        run: |
+          set -euo pipefail
+          digest='${{ steps.build.outputs.digest }}'
+          [[ "$digest" =~ ^sha256:[0-9a-f]{64}$ ]] || { echo "build did not produce an OCI sha256 digest" >&2; exit 1; }
+          printf 'artifact=%s@%s\n' "$IMAGE_REPOSITORY" "$digest" >> "$GITHUB_OUTPUT"
+
+      - name: Install Cosign
+        uses: sigstore/cosign-installer@d58896d6a1865668819e1d91763c7751a165e159 # v3.9.2
+        with:
+          cosign-release: v2.6.5
+
+      - name: Sign the exact published digest
+        if: needs.validate.outputs.attestation_mode == 'github-public'
+        env:
+          SOURCE_SHA: ${{ steps.inputs.outputs.source_sha }}
+          ARTIFACT: ${{ steps.artifact.outputs.artifact }}
+        run: |
+          set -euo pipefail
+          cosign sign --yes -a "norn.git.sha=$SOURCE_SHA" "$ARTIFACT"
+
+      - name: Generate an SPDX SBOM for the exact OCI digest
+        uses: anchore/sbom-action@8e94d75ddd33f69f691467e42275782e4bfefe84 # v0.20.9
+        with:
+          image: ${{ steps.artifact.outputs.artifact }}
+          format: spdx-json
+          output-file: norn-release/sbom.spdx.json
+          upload-artifact: false
+
+      # actions/attest selects SLSA provenance when no SBOM/custom predicate
+      # input is supplied. It writes public-good or GitHub private Sigstore
+      # evidence according to the initiating repository's visibility.
+      - name: Attest GitHub build provenance for the exact OCI digest
+        id: provenance
+        uses: actions/attest@508db95dd578ae2727ebd6217d5ba78e4fbda05d # v4.2.1
+        with:
+          subject-name: ${{ inputs.image_repository }}
+          subject-digest: ${{ steps.build.outputs.digest }}
+          push-to-registry: true
+
+      # Supplying the generated SPDX JSON switches actions/attest into SBOM
+      # mode while retaining the exact same immutable OCI subject.
+      - name: Attest GitHub SBOM for the exact OCI digest
+        id: sbom
+        uses: actions/attest@508db95dd578ae2727ebd6217d5ba78e4fbda05d # v4.2.1
+        with:
+          subject-name: ${{ inputs.image_repository }}
+          subject-digest: ${{ steps.build.outputs.digest }}
+          sbom-path: norn-release/sbom.spdx.json
+          push-to-registry: true
+
+      - name: Queue and wait for staging preflight
+        env:
+          SOURCE_SHA: ${{ steps.inputs.outputs.source_sha }}
+          ARTIFACT: ${{ steps.artifact.outputs.artifact }}
+          NORN_API_URL: ${{ vars.NORN_API_URL }}
+          NORN_GITHUB_ACTIONS_OIDC_AUDIENCE: ${{ vars.NORN_GITHUB_ACTIONS_OIDC_AUDIENCE }}
+        run: |
+          set -euo pipefail
+          mkdir -p .norn-release
+          api="${NORN_API_URL%/}"
+          exchange_token() {
+            oidc_token="$(curl --fail-with-body --silent --show-error -H "Authorization: Bearer $ACTIONS_ID_TOKEN_REQUEST_TOKEN" "$ACTIONS_ID_TOKEN_REQUEST_URL&audience=$NORN_GITHUB_ACTIONS_OIDC_AUDIENCE" | jq -er '.value')"
+            response="$(curl --fail-with-body --silent --show-error --retry 3 --retry-connrefused -X POST "$api/api/v1/auth/github-actions/exchange" -H "Authorization: Bearer $oidc_token" -H 'Content-Type: application/json' -H 'Cache-Control: no-store' --data '{"scope":"release:stage","app":"'"$APP_ID"'","environment":"staging","intent":"stage"}')"
+            jq -er '.token' <<<"$response"
+          }
+          NORN_API_TOKEN="$(exchange_token)"
+          echo "::add-mask::$NORN_API_TOKEN"
+          token_issued=$SECONDS
+          request="$(jq -nc \
+            --arg sourceSha "$SOURCE_SHA" --arg artifact "$ARTIFACT" \
+            --arg repository "$GITHUB_REPOSITORY" --arg repositoryId "$GITHUB_REPOSITORY_ID" --arg ownerId "$GITHUB_REPOSITORY_OWNER_ID" \
+            --arg runId "$GITHUB_RUN_ID" --arg runAttempt "$GITHUB_RUN_ATTEMPT" \
+            --arg workflowRef "$GITHUB_WORKFLOW_REF" --arg workflowSha "$GITHUB_WORKFLOW_SHA" --arg ref "$GITHUB_REF" \
+            '{sourceSha: $sourceSha, artifact: $artifact, candidate: {provider: "github-actions", repository: $repository, repositoryId: $repositoryId, ownerId: $ownerId, runId: $runId, runAttempt: $runAttempt, workflowRef: $workflowRef, workflowSha: $workflowSha, ref: $ref, attestation: {issuer: "https://token.actions.githubusercontent.com", subjectDigest: ($artifact | split("@") | .[1]), materialSHA: $sourceSha}}}')"
+          curl --fail-with-body --silent --show-error --retry 3 --retry-connrefused \
+            -X POST "$api/api/v1/apps/$APP_ID/releases/preflight" \
+            -H "Authorization: Bearer $NORN_API_TOKEN" \
+            -H 'Content-Type: application/json' \
+            -H "Idempotency-Key: norn-staging-preflight-$APP_ID-$SOURCE_SHA" \
+            --data "$request" > .norn-release/preflight.json
+          operation_id="$(jq -er '.id' .norn-release/preflight.json)"
+          deadline=$((SECONDS + 3600))
+          while :; do
+            if (( SECONDS - token_issued >= 600 )); then
+              NORN_API_TOKEN="$(exchange_token)"
+              echo "::add-mask::$NORN_API_TOKEN"
+              token_issued=$SECONDS
+            fi
+            operation="$(curl --fail-with-body --silent --show-error \
+              -H "Authorization: Bearer $NORN_API_TOKEN" \
+              "$api/api/v1/operations/$operation_id")"
+            status="$(jq -er '.status' <<<"$operation")"
+            case "$status" in
+              succeeded) break ;;
+              failed|canceled)
+                jq -r '.lastError // .message // "operation did not succeed"' <<<"$operation" >&2
+                exit 1
+                ;;
+              queued|running) ;;
+              *) echo "unexpected preflight status: $status" >&2; exit 1 ;;
+            esac
+            (( SECONDS < deadline )) || { echo "timed out waiting for staging preflight" >&2; exit 1; }
+            sleep 10
+          done
+
+      - name: Queue and wait for staging deployment
+        id: deploy
+        env:
+          SOURCE_SHA: ${{ steps.inputs.outputs.source_sha }}
+          ARTIFACT: ${{ steps.artifact.outputs.artifact }}
+          NORN_API_URL: ${{ vars.NORN_API_URL }}
+          NORN_GITHUB_ACTIONS_OIDC_AUDIENCE: ${{ vars.NORN_GITHUB_ACTIONS_OIDC_AUDIENCE }}
+        run: |
+          set -euo pipefail
+          api="${NORN_API_URL%/}"
+          exchange_token() {
+            oidc_token="$(curl --fail-with-body --silent --show-error -H "Authorization: Bearer $ACTIONS_ID_TOKEN_REQUEST_TOKEN" "$ACTIONS_ID_TOKEN_REQUEST_URL&audience=$NORN_GITHUB_ACTIONS_OIDC_AUDIENCE" | jq -er '.value')"
+            response="$(curl --fail-with-body --silent --show-error --retry 3 --retry-connrefused -X POST "$api/api/v1/auth/github-actions/exchange" -H "Authorization: Bearer $oidc_token" -H 'Content-Type: application/json' -H 'Cache-Control: no-store' --data '{"scope":"release:stage","app":"'"$APP_ID"'","environment":"staging","intent":"stage"}')"
+            jq -er '.token' <<<"$response"
+          }
+          NORN_API_TOKEN="$(exchange_token)"
+          echo "::add-mask::$NORN_API_TOKEN"
+          token_issued=$SECONDS
+          request="$(jq -nc \
+            --arg sourceSha "$SOURCE_SHA" --arg artifact "$ARTIFACT" \
+            --arg repository "$GITHUB_REPOSITORY" --arg repositoryId "$GITHUB_REPOSITORY_ID" --arg ownerId "$GITHUB_REPOSITORY_OWNER_ID" \
+            --arg runId "$GITHUB_RUN_ID" --arg runAttempt "$GITHUB_RUN_ATTEMPT" \
+            --arg workflowRef "$GITHUB_WORKFLOW_REF" --arg workflowSha "$GITHUB_WORKFLOW_SHA" --arg ref "$GITHUB_REF" \
+            '{sourceSha: $sourceSha, artifact: $artifact, candidate: {provider: "github-actions", repository: $repository, repositoryId: $repositoryId, ownerId: $ownerId, runId: $runId, runAttempt: $runAttempt, workflowRef: $workflowRef, workflowSha: $workflowSha, ref: $ref, attestation: {issuer: "https://token.actions.githubusercontent.com", subjectDigest: ($artifact | split("@") | .[1]), materialSHA: $sourceSha}}}')"
+          curl --fail-with-body --silent --show-error --retry 3 --retry-connrefused \
+            -X POST "$api/api/v1/apps/$APP_ID/releases/deployments" \
+            -H "Authorization: Bearer $NORN_API_TOKEN" \
+            -H 'Content-Type: application/json' \
+            -H "Idempotency-Key: norn-staging-deploy-$APP_ID-$SOURCE_SHA" \
+            --data "$request" > .norn-release/deployment.json
+          deployment_id="$(jq -er '.payload.deploymentId // .metadata.deploymentId' .norn-release/deployment.json)"
+          operation_id="$(jq -er '.id' .norn-release/deployment.json)"
+          deadline=$((SECONDS + 3600))
+          while :; do
+            if (( SECONDS - token_issued >= 600 )); then
+              NORN_API_TOKEN="$(exchange_token)"
+              echo "::add-mask::$NORN_API_TOKEN"
+              token_issued=$SECONDS
+            fi
+            operation="$(curl --fail-with-body --silent --show-error \
+              -H "Authorization: Bearer $NORN_API_TOKEN" \
+              "$api/api/v1/operations/$operation_id")"
+            status="$(jq -er '.status' <<<"$operation")"
+            case "$status" in
+              succeeded) break ;;
+              failed|canceled)
+                jq -r '.lastError // .message // "operation did not succeed"' <<<"$operation" >&2
+                exit 1
+                ;;
+              queued|running) ;;
+              *) echo "unexpected deployment status: $status" >&2; exit 1 ;;
+            esac
+            (( SECONDS < deadline )) || { echo "timed out waiting for staging deployment" >&2; exit 1; }
+            sleep 10
+          done
+          printf 'deployment_id=%s\n' "$deployment_id" >> "$GITHUB_OUTPUT"
+
+      - name: Create the portable staging qualification
+        env:
+          SOURCE_SHA: ${{ steps.inputs.outputs.source_sha }}
+          ARTIFACT: ${{ steps.artifact.outputs.artifact }}
+          DEPLOYMENT_ID: ${{ steps.deploy.outputs.deployment_id }}
+          NORN_API_URL: ${{ vars.NORN_API_URL }}
+          ATTESTATION_MODE: ${{ needs.validate.outputs.attestation_mode }}
+          NORN_GITHUB_ACTIONS_OIDC_AUDIENCE: ${{ vars.NORN_GITHUB_ACTIONS_OIDC_AUDIENCE }}
+        run: |
+          set -euo pipefail
+          api="${NORN_API_URL%/}"
+          oidc_token="$(curl --fail-with-body --silent --show-error -H "Authorization: Bearer $ACTIONS_ID_TOKEN_REQUEST_TOKEN" "$ACTIONS_ID_TOKEN_REQUEST_URL&audience=$NORN_GITHUB_ACTIONS_OIDC_AUDIENCE" | jq -er '.value')"
+          NORN_API_TOKEN="$(curl --fail-with-body --silent --show-error --retry 3 --retry-connrefused -X POST "$api/api/v1/auth/github-actions/exchange" -H "Authorization: Bearer $oidc_token" -H 'Content-Type: application/json' -H 'Cache-Control: no-store' --data '{"scope":"release:qualify","app":"'"$APP_ID"'","environment":"staging","intent":"qualify"}' | jq -er '.token')"
+          echo "::add-mask::$NORN_API_TOKEN"
+          request="$(jq -nc --arg deploymentId "$DEPLOYMENT_ID" '{deploymentId: $deploymentId}')"
+          curl --fail-with-body --silent --show-error --retry 3 --retry-connrefused \
+            -X POST "$api/api/v1/apps/$APP_ID/qualifications" \
+            -H "Authorization: Bearer $NORN_API_TOKEN" \
+            -H 'Content-Type: application/json' \
+            -H "Idempotency-Key: norn-staging-qualification-$APP_ID-$DEPLOYMENT_ID" \
+            --data "$request" > .norn-release/qualification.json
+          jq -e --arg app "$APP_ID" --arg sourceSha "$SOURCE_SHA" --arg artifact "$ARTIFACT" --arg attestationMode "$ATTESTATION_MODE" '
+            .schemaVersion == "norn.release-qualification/v2" and
+            .app == $app and .environment == "staging" and
+            .sourceSha == $sourceSha and .artifact == $artifact and
+            (.deploymentId | type == "string" and length > 0) and
+            (.keyId | type == "string" and length > 0) and
+            (.signature | type == "string" and length > 0) and
+            (.candidate.provider == "github-actions") and
+            (.candidate.attestation.mode == $attestationMode) and
+            (.candidate.attestation.subjectDigest == ($artifact | split("@") | .[1])) and
+            (.candidate.attestation.materialSha == $sourceSha) and
+            (.dsse.payloadType == "application/vnd.norn.release-qualification.v2+json") and
+            (.dsse.payload | type == "string" and length > 0) and
+            (.dsse.signatures | type == "array" and length == 1 and (.[0].keyid | startswith("ed25519:")) and (.[0].sig | type == "string" and length > 0))
+          ' .norn-release/qualification.json >/dev/null
+
+      - name: Prepare the portable staging qualification
+        run: |
+          set -euo pipefail
+          mkdir -p norn-release
+          cp .norn-release/qualification.json norn-release/qualification.json
+
+      - name: Export the signed staging qualification
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: norn-qualification-${{ inputs.app_id }}-${{ steps.inputs.outputs.source_sha }}
+          path: norn-release/qualification.json
+          if-no-files-found: error
+          retention-days: 7
+
+      - name: Write staging release summary
+        env:
+          SOURCE_SHA: ${{ steps.inputs.outputs.source_sha }}
+          ARTIFACT: ${{ steps.artifact.outputs.artifact }}
+          ATTESTATION_MODE: ${{ needs.validate.outputs.attestation_mode }}
+        run: |
+          {
+            echo '### Norn staging release'
+            echo
+            echo "- App: \`$APP_ID\`"
+            echo "- Source: \`$SOURCE_SHA\`"
+            echo "- Artifact: \`$ARTIFACT\`"
+            echo "- GitHub attestation mode: \`$ATTESTATION_MODE\`"
+            echo '- GitHub retains provenance and SBOM records for this digest; Norn resolves them server-side by repository identity and digest.'
+            echo '- A protected tag pointing at this commit can promote the exported signed qualification until it expires.'
+          } >> "$GITHUB_STEP_SUMMARY"
+
+  production:
+    if: inputs.lane == 'production'
+    needs: validate
+    runs-on: ubuntu-24.04
+    environment: production
+    permissions:
+      actions: read
+      contents: read
+      id-token: write
+    concurrency:
+      group: norn-release-${{ inputs.app_id }}-production
+      cancel-in-progress: false
+    env:
+      APP_ID: ${{ inputs.app_id }}
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          fetch-depth: 0
+
+      - name: Validate production release inputs
+        id: inputs
+        env:
+          NORN_API_URL: ${{ vars.NORN_API_URL }}
+        run: |
+          set -euo pipefail
+          case "$NORN_API_URL" in
+            https://*) ;;
+            *) echo "NORN_API_URL must be an https URL" >&2; exit 1 ;;
+          esac
+          [[ "$APP_ID" =~ ^[a-z0-9][a-z0-9-]*$ ]] || { echo "app_id is invalid" >&2; exit 1; }
+          source_sha="$(git rev-parse "${GITHUB_SHA}^{commit}")"
+          [[ "$source_sha" =~ ^[0-9a-f]{40}$ ]] || { echo "tag does not resolve to a full lowercase commit SHA" >&2; exit 1; }
+          printf 'source_sha=%s\n' "$source_sha" >> "$GITHUB_OUTPUT"
+
+      - name: Retrieve the matching staging qualification
+        id: qualification
+        env:
+          GH_TOKEN: ${{ github.token }}
+          SOURCE_SHA: ${{ steps.inputs.outputs.source_sha }}
+          ATTESTATION_MODE: ${{ needs.validate.outputs.attestation_mode }}
+        run: |
+          set -euo pipefail
+          mkdir -p .norn-release
+          artifact_name="norn-qualification-$APP_ID-$SOURCE_SHA"
+          artifact_id="$(gh api --paginate "repos/$GITHUB_REPOSITORY/actions/artifacts?name=$artifact_name&per_page=100" \
+            --jq '.artifacts[] | select(.expired == false) | [.created_at, .id] | @tsv' \
+            | sort -r | head -n 1 | cut -f2)"
+          [[ "$artifact_id" =~ ^[0-9]+$ ]] || {
+            echo "no unexpired staging qualification artifact exists for $SOURCE_SHA" >&2
+            exit 1
+          }
+          gh api "repos/$GITHUB_REPOSITORY/actions/artifacts/$artifact_id/zip" > .norn-release/qualification.zip
+          mapfile -t entries < <(unzip -Z1 .norn-release/qualification.zip)
+          [[ "${#entries[@]}" -eq 1 && "${entries[0]}" == "qualification.json" ]] || {
+            echo "qualification artifact has an unexpected layout" >&2
+            exit 1
+          }
+          unzip -p .norn-release/qualification.zip qualification.json > .norn-release/qualification.json
+          jq -e --arg app "$APP_ID" --arg sourceSha "$SOURCE_SHA" --arg attestationMode "$ATTESTATION_MODE" '
+            .schemaVersion == "norn.release-qualification/v2" and
+            .app == $app and .environment == "staging" and
+            .sourceSha == $sourceSha and
+            (.artifact | test("^.+@sha256:[0-9a-f]{64}$")) and
+            (.id | type == "string" and length > 0) and
+            (.deploymentId | type == "string" and length > 0) and
+            (.keyId | type == "string" and length > 0) and
+            (.signature | type == "string" and length > 0) and
+            (.candidate.provider == "github-actions") and
+            (.candidate.attestation.mode == $attestationMode) and
+            (.candidate.attestation.subjectDigest == (.artifact | split("@") | .[1])) and
+            (.candidate.attestation.materialSha == .sourceSha) and
+            (.dsse.payloadType == "application/vnd.norn.release-qualification.v2+json") and
+            (.dsse.payload | type == "string" and length > 0) and
+            (.dsse.signatures | type == "array" and length == 1 and (.[0].keyid | startswith("ed25519:")) and (.[0].sig | type == "string" and length > 0))
+          ' .norn-release/qualification.json >/dev/null
+          printf 'receipt_id=%s\n' "$(jq -er '.id' .norn-release/qualification.json)" >> "$GITHUB_OUTPUT"
+          printf 'artifact=%s\n' "$(jq -er '.artifact' .norn-release/qualification.json)" >> "$GITHUB_OUTPUT"
+
+      - name: Queue the immutable production promotion
+        env:
+          SOURCE_SHA: ${{ steps.inputs.outputs.source_sha }}
+          ARTIFACT: ${{ steps.qualification.outputs.artifact }}
+          RECEIPT_ID: ${{ steps.qualification.outputs.receipt_id }}
+          NORN_API_URL: ${{ vars.NORN_API_URL }}
+          NORN_GITHUB_ACTIONS_OIDC_AUDIENCE: ${{ vars.NORN_GITHUB_ACTIONS_OIDC_AUDIENCE }}
+        run: |
+          set -euo pipefail
+          api="${NORN_API_URL%/}"
+          exchange_token() {
+            oidc_token="$(curl --fail-with-body --silent --show-error -H "Authorization: Bearer $ACTIONS_ID_TOKEN_REQUEST_TOKEN" "$ACTIONS_ID_TOKEN_REQUEST_URL&audience=$NORN_GITHUB_ACTIONS_OIDC_AUDIENCE" | jq -er '.value')"
+            curl --fail-with-body --silent --show-error --retry 3 --retry-connrefused -X POST "$api/api/v1/auth/github-actions/exchange" -H "Authorization: Bearer $oidc_token" -H 'Content-Type: application/json' -H 'Cache-Control: no-store' --data '{"scope":"release:promote","app":"'"$APP_ID"'","environment":"production","intent":"promote"}' | jq -er '.token'
+          }
+          NORN_API_TOKEN="$(exchange_token)"
+          echo "::add-mask::$NORN_API_TOKEN"
+          token_issued=$SECONDS
+          request="$(jq -nc --arg sourceSha "$SOURCE_SHA" --arg artifact "$ARTIFACT" --slurpfile qualification .norn-release/qualification.json \
+            '{sourceSha: $sourceSha, artifact: $artifact, qualification: $qualification[0]}')"
+          curl --fail-with-body --silent --show-error --retry 3 --retry-connrefused \
+            -X POST "$api/api/v1/apps/$APP_ID/promotions" \
+            -H "Authorization: Bearer $NORN_API_TOKEN" \
+            -H 'Content-Type: application/json' \
+            -H "Idempotency-Key: norn-production-promotion-$APP_ID-$SOURCE_SHA-$RECEIPT_ID" \
+            --data "$request" > .norn-release/promotion.json
+          operation_id="$(jq -er '.id' .norn-release/promotion.json)"
+          deadline=$((SECONDS + 3600))
+          while :; do
+            if (( SECONDS - token_issued >= 600 )); then
+              NORN_API_TOKEN="$(exchange_token)"
+              echo "::add-mask::$NORN_API_TOKEN"
+              token_issued=$SECONDS
+            fi
+            operation="$(curl --fail-with-body --silent --show-error \
+              -H "Authorization: Bearer $NORN_API_TOKEN" \
+              "$api/api/v1/operations/$operation_id")"
+            status="$(jq -er '.status' <<<"$operation")"
+            case "$status" in
+              succeeded) break ;;
+              failed|canceled)
+                jq -r '.lastError // .message // "operation did not succeed"' <<<"$operation" >&2
+                exit 1
+                ;;
+              queued|running) ;;
+              *) echo "unexpected promotion status: $status" >&2; exit 1 ;;
+            esac
+            (( SECONDS < deadline )) || { echo "timed out waiting for production promotion" >&2; exit 1; }
+            sleep 10
+          done
+
+      - name: Write production release summary
+        env:
+          SOURCE_SHA: ${{ steps.inputs.outputs.source_sha }}
+          ARTIFACT: ${{ steps.qualification.outputs.artifact }}
+        run: |
+          {
+            echo '### Norn production promotion'
+            echo
+            echo "- App: \`$APP_ID\`"
+            echo "- Source: \`$SOURCE_SHA\`"
+            echo "- Artifact: \`$ARTIFACT\`"
+            echo '- Promotion consumed the verbatim signed staging qualification; no image was rebuilt.'
+          } >> "$GITHUB_STEP_SUMMARY"
+
+  requalify:
+    if: inputs.lane == 'requalify'
+    needs: validate
+    runs-on: ubuntu-24.04
+    environment: staging
+    permissions:
+      id-token: write
+    concurrency:
+      group: norn-release-${{ inputs.app_id }}-staging
+      cancel-in-progress: false
+    env:
+      APP_ID: ${{ inputs.app_id }}
+      SOURCE_SHA: ${{ inputs.source_sha }}
+      DEPLOYMENT_ID: ${{ inputs.deployment_id }}
+    steps:
+      - name: Validate staging recovery credentials
+        env:
+          NORN_API_URL: ${{ vars.NORN_API_URL }}
+        run: |
+          set -euo pipefail
+          case "$NORN_API_URL" in
+            https://*) ;;
+            *) echo "NORN_API_URL must be an https URL" >&2; exit 1 ;;
+          esac
+
+      - name: Issue fresh evidence for the existing staging deployment
+        env:
+          NORN_API_URL: ${{ vars.NORN_API_URL }}
+          NORN_GITHUB_ACTIONS_OIDC_AUDIENCE: ${{ vars.NORN_GITHUB_ACTIONS_OIDC_AUDIENCE }}
+          ATTESTATION_MODE: ${{ needs.validate.outputs.attestation_mode }}
+        run: |
+          set -euo pipefail
+          mkdir -p norn-release
+          api="${NORN_API_URL%/}"
+          oidc_token="$(curl --fail-with-body --silent --show-error -H "Authorization: Bearer $ACTIONS_ID_TOKEN_REQUEST_TOKEN" "$ACTIONS_ID_TOKEN_REQUEST_URL&audience=$NORN_GITHUB_ACTIONS_OIDC_AUDIENCE" | jq -er '.value')"
+          NORN_API_TOKEN="$(curl --fail-with-body --silent --show-error --retry 3 --retry-connrefused -X POST "$api/api/v1/auth/github-actions/exchange" -H "Authorization: Bearer $oidc_token" -H 'Content-Type: application/json' -H 'Cache-Control: no-store' --data '{"scope":"release:qualify","app":"'"$APP_ID"'","environment":"staging","intent":"requalify"}' | jq -er '.token')"
+          echo "::add-mask::$NORN_API_TOKEN"
+          request="$(jq -nc --arg deploymentId "$DEPLOYMENT_ID" '{deploymentId: $deploymentId}')"
+          curl --fail-with-body --silent --show-error --retry 3 --retry-connrefused \
+            -X POST "$api/api/v1/apps/$APP_ID/qualifications" \
+            -H "Authorization: Bearer $NORN_API_TOKEN" \
+            -H 'Content-Type: application/json' \
+            -H "Idempotency-Key: norn-staging-requalification-$APP_ID-$SOURCE_SHA-$GITHUB_RUN_ID-$GITHUB_RUN_ATTEMPT" \
+            --data "$request" > norn-release/qualification.json
+          jq -e --arg app "$APP_ID" --arg sourceSha "$SOURCE_SHA" --arg deploymentId "$DEPLOYMENT_ID" --arg attestationMode "$ATTESTATION_MODE" '
+            .schemaVersion == "norn.release-qualification/v2" and
+            .app == $app and .environment == "staging" and
+            .sourceSha == $sourceSha and .deploymentId == $deploymentId and
+            (.artifact | test("^.+@sha256:[0-9a-f]{64}$")) and
+            (.keyId | type == "string" and length > 0) and
+            (.signature | type == "string" and length > 0) and
+            (.candidate.provider == "github-actions") and
+            (.candidate.attestation.mode == $attestationMode) and
+            (.candidate.attestation.subjectDigest == (.artifact | split("@") | .[1])) and
+            (.candidate.attestation.materialSha == .sourceSha) and
+            (.dsse.payloadType == "application/vnd.norn.release-qualification.v2+json") and
+            (.dsse.payload | type == "string" and length > 0) and
+            (.dsse.signatures | type == "array" and length == 1 and (.[0].keyid | startswith("ed25519:")) and (.[0].sig | type == "string" and length > 0))
+          ' norn-release/qualification.json >/dev/null
+
+      - name: Export the fresh staging qualification
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: norn-qualification-${{ inputs.app_id }}-${{ inputs.source_sha }}
+          path: norn-release/qualification.json
+          if-no-files-found: error
+          retention-days: 7
+
+      - name: Write requalification summary
+        run: |
+          {
+            echo '### Norn staging requalification'
+            echo
+            echo "- App: \`$APP_ID\`"
+            echo "- Source: \`$SOURCE_SHA\`"
+            echo "- Existing staging deployment: \`$DEPLOYMENT_ID\`"
+            echo '- No checkout, build, image signing, preflight, or deployment ran.'
+          } >> "$GITHUB_STEP_SUMMARY"
+
+  rollback:
+    if: inputs.lane == 'rollback'
+    needs: validate
+    runs-on: ubuntu-24.04
+    environment: production
+    permissions:
+      deployments: write
+      id-token: write
+    concurrency:
+      group: norn-release-${{ inputs.app_id }}-production
+      cancel-in-progress: false
+    env:
+      APP_ID: ${{ inputs.app_id }}
+      SOURCE_SHA: ${{ inputs.rollback_source_sha }}
+      DEPLOYMENT_ID: ${{ inputs.rollback_deployment_id }}
+      ARTIFACT: ${{ inputs.rollback_artifact }}
+    steps:
+      - name: Validate rollback environment configuration
+        env:
+          NORN_API_URL: ${{ vars.NORN_API_URL }}
+          NORN_GITHUB_ACTIONS_OIDC_AUDIENCE: ${{ vars.NORN_GITHUB_ACTIONS_OIDC_AUDIENCE }}
+        run: |
+          set -euo pipefail
+          [[ "$NORN_API_URL" == https://* ]] || { echo "NORN_API_URL must be an https URL" >&2; exit 1; }
+          [[ -n "$NORN_GITHUB_ACTIONS_OIDC_AUDIENCE" ]] || { echo "NORN_GITHUB_ACTIONS_OIDC_AUDIENCE environment variable is required" >&2; exit 1; }
+
+      - name: Record GitHub production rollback deployment
+        id: github-deployment
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          id="$(gh api -X POST "repos/$GITHUB_REPOSITORY/deployments" \
+            -f ref="$SOURCE_SHA" -f environment=production -f task=norn-production-rollback \
+            -F auto_merge=false -F transient_environment=false -F production_environment=true --jq '.id')"
+          [[ "$id" =~ ^[0-9]+$ ]] || { echo "GitHub did not return a deployment ID" >&2; exit 1; }
+          gh api -X POST "repos/$GITHUB_REPOSITORY/deployments/$id/statuses" \
+            -f state=in_progress -f environment=production \
+            -f description="Norn rollback queued for $ARTIFACT" >/dev/null
+          printf 'id=%s\n' "$id" >> "$GITHUB_OUTPUT"
+
+      - name: Queue and wait for the exact Norn rollback
+        id: queue
+        env:
+          NORN_API_URL: ${{ vars.NORN_API_URL }}
+          NORN_GITHUB_ACTIONS_OIDC_AUDIENCE: ${{ vars.NORN_GITHUB_ACTIONS_OIDC_AUDIENCE }}
+          GITHUB_DEPLOYMENT_ID: ${{ steps.github-deployment.outputs.id }}
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          github_status() {
+            gh api -X POST "repos/$GITHUB_REPOSITORY/deployments/$GITHUB_DEPLOYMENT_ID/statuses" \
+              -f state="$1" -f environment=production -f description="$2" >/dev/null || true
+          }
+          trap 'github_status failure "Norn rollback failed"' ERR
+          api="${NORN_API_URL%/}"
+          exchange_token() {
+            oidc_token="$(curl --fail-with-body --silent --show-error -H "Authorization: Bearer $ACTIONS_ID_TOKEN_REQUEST_TOKEN" "$ACTIONS_ID_TOKEN_REQUEST_URL&audience=$NORN_GITHUB_ACTIONS_OIDC_AUDIENCE" | jq -er '.value')"
+            curl --fail-with-body --silent --show-error --retry 3 --retry-connrefused -X POST "$api/api/v1/auth/github-actions/exchange" -H "Authorization: Bearer $oidc_token" -H 'Content-Type: application/json' -H 'Cache-Control: no-store' --data '{"scope":"release:rollback","app":"'"$APP_ID"'","environment":"production","intent":"rollback"}' | jq -er '.token'
+          }
+          NORN_API_TOKEN="$(exchange_token)"
+          echo "::add-mask::$NORN_API_TOKEN"
+          token_issued=$SECONDS
+          request="$(jq -nc --arg deploymentId "$DEPLOYMENT_ID" --arg sourceSha "$SOURCE_SHA" --arg artifact "$ARTIFACT" \
+            '{deploymentId: $deploymentId, sourceSha: $sourceSha, artifact: $artifact, confirm: true}')"
+          curl --fail-with-body --silent --show-error --retry 3 --retry-connrefused \
+            -X POST "$api/api/v1/apps/$APP_ID/releases/rollbacks" \
+            -H "Authorization: Bearer $NORN_API_TOKEN" \
+            -H 'Content-Type: application/json' \
+            -H "Idempotency-Key: norn-production-rollback-$APP_ID-$DEPLOYMENT_ID-$GITHUB_RUN_ID-$GITHUB_RUN_ATTEMPT" \
+            --data "$request" > rollback.json
+          operation_id="$(jq -er '.id' rollback.json)"
+          deadline=$((SECONDS + 3600))
+          while :; do
+            if (( SECONDS - token_issued >= 600 )); then
+              NORN_API_TOKEN="$(exchange_token)"
+              echo "::add-mask::$NORN_API_TOKEN"
+              token_issued=$SECONDS
+            fi
+            operation="$(curl --fail-with-body --silent --show-error -H "Authorization: Bearer $NORN_API_TOKEN" "$api/api/v1/operations/$operation_id")"
+            status="$(jq -er '.status' <<<"$operation")"
+            case "$status" in
+              succeeded) break ;;
+              failed|canceled) jq -r '.lastError // .message // "rollback did not succeed"' <<<"$operation" >&2; exit 1 ;;
+              queued|running) ;;
+              *) echo "unexpected rollback status: $status" >&2; exit 1 ;;
+            esac
+            (( SECONDS < deadline )) || { echo "timed out waiting for rollback" >&2; exit 1; }
+            sleep 10
+          done
+          github_status success "Norn restored the admitted $ARTIFACT"
+          printf 'operation_id=%s\n' "$operation_id" >> "$GITHUB_OUTPUT"
+
+      - name: Write production rollback summary
+        run: |
+          {
+            echo '### Norn production rollback'
+            echo
+            echo "- App: \`$APP_ID\`"
+            echo "- Restored source: \`$SOURCE_SHA\`"
+            echo "- Restored artifact: \`$ARTIFACT\`"
+            echo "- Norn operation: \`${{ steps.queue.outputs.operation_id }}\`"
+            echo '- No checkout, build, tag, signing, or substitution ran.'
+          } >> "$GITHUB_STEP_SUMMARY"

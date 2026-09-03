@@ -126,9 +126,9 @@ func (db *DB) InsertRollbackOperation(ctx context.Context, deployment *model.Dep
 		return fmt.Errorf("encode rollback source changes: %w", err)
 	}
 	if _, err = tx.Exec(ctx, `INSERT INTO deployments
-		(id, app, commit_sha, image_tag, saga_id, status, source_kind, source_ref, source_dirty, source_changes, started_at)
-		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)`,
-		deployment.ID, deployment.App, deployment.CommitSHA, deployment.ImageTag, deployment.SagaID, deployment.Status,
+		(id, app, commit_sha, image_tag, environment, saga_id, status, source_kind, source_ref, source_dirty, source_changes, started_at)
+		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12)`,
+		deployment.ID, deployment.App, deployment.CommitSHA, deployment.ImageTag, deployment.Environment, deployment.SagaID, deployment.Status,
 		deployment.SourceKind, deployment.SourceRef, deployment.SourceDirty, changes, deployment.StartedAt); err != nil {
 		return err
 	}
