@@ -40,6 +40,7 @@ import (
 	"norn/v2/api/nomad"
 	"norn/v2/api/observe"
 	"norn/v2/api/pipeline"
+	"norn/v2/api/privateattestation"
 	"norn/v2/api/redpanda"
 	containerruntime "norn/v2/api/runtime"
 	"norn/v2/api/saga"
@@ -56,8 +57,10 @@ func main() {
 		log.Fatalf("security configuration: %v", err)
 	}
 	var privateAttestationVerifier *githubattestation.Verifier
+	var nornPrivateSigner privateattestation.Signer
+	var nornPrivateVerifier *privateattestation.Verifier
+	var err error
 	if cfg.ReleaseAttestationTrustMode == "github-private" {
-		var err error
 		privateAttestationVerifier, err = githubattestation.New(githubattestation.Config{
 			AppID: cfg.ReleaseAttestationGitHubAppID, InstallationID: cfg.ReleaseAttestationGitHubInstallationID,
 			PrivateKeyFile: cfg.ReleaseAttestationGitHubPrivateKeyFile, RegistryAuthFile: cfg.ReleaseAttestationRegistryAuthFile,
@@ -65,6 +68,28 @@ func main() {
 		}, nil)
 		if err != nil {
 			log.Fatalf("private GitHub attestation verifier: %v", err)
+		}
+	}
+	if cfg.ReleaseAttestationTrustMode == "norn-signed-private" && (cfg.EnvironmentID() == "staging" || cfg.EnvironmentID() == "production") {
+		nornPrivateVerifier, err = privateattestation.NewVerifier(cfg.ReleasePrivateTrustedSigningKeys)
+		if err != nil {
+			log.Fatalf("Norn private attestation verifier: %v", err)
+		}
+		if cfg.EnvironmentID() == "staging" {
+			switch cfg.ReleasePrivateSigningBackend {
+			case "local":
+				nornPrivateSigner, err = privateattestation.NewLocalSigner(cfg.ReleasePrivateSigningKeyFile)
+			case "kms-helper":
+				nornPrivateSigner, err = privateattestation.NewHelperSigner(cfg.ReleasePrivateKMSHelper, cfg.ReleasePrivateKMSKeyID)
+			default:
+				err = fmt.Errorf("unsupported signing backend %q", cfg.ReleasePrivateSigningBackend)
+			}
+			if err != nil {
+				log.Fatalf("Norn private attestation signer: %v", err)
+			}
+			if !nornPrivateVerifier.Trusts(nornPrivateSigner.KeyID()) {
+				log.Fatalf("Norn private attestation signer key is not in NORN_RELEASE_PRIVATE_TRUSTED_SIGNING_KEYS")
+			}
 		}
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
@@ -272,6 +297,9 @@ func main() {
 	if privateAttestationVerifier != nil {
 		pipe.VerifyPrivateKeylessAttestations = privateAttestationVerifier.Verify
 	}
+	if nornPrivateVerifier != nil {
+		pipe.VerifyNornPrivateAttestations = nornPrivateVerifier.Verify
+	}
 
 	workerCtx, workerCancel := context.WithCancel(context.Background())
 	defer workerCancel()
@@ -302,6 +330,7 @@ func main() {
 	// Handler
 	h := handler.New(db, nomadClient, consulClient, ws, cfg, pipe, beaconSvc, sec, sagaStore, s3Client, redpandaClient)
 	h.ConfigureWorkloads(workloads, localEngine, containerRuntime)
+	h.ConfigurePrivateReleaseSigner(nornPrivateSigner)
 
 	// Router
 	r := chi.NewRouter()
@@ -440,6 +469,7 @@ func main() {
 		r.With(handler.ValidateAppID).Get("/v1/apps/{id}", h.GetApp)
 		r.With(handler.ValidateAppID).Put("/v1/apps/{id}/deployment", h.UpdateAppDeployment)
 		r.With(handler.ValidateAppID).Post("/v1/apps/{id}/releases/preflight", h.QueueReleasePreflight)
+		r.With(handler.ValidateAppID).Post("/v1/apps/{id}/private-attestations", h.CreatePrivateReleaseAttestation)
 		r.With(handler.ValidateAppID).Post("/v1/apps/{id}/releases/deployments", h.QueueReleaseDeployment)
 		r.With(handler.ValidateAppID).Post("/v1/apps/{id}/releases/rollbacks", h.QueueReleaseRollback)
 		r.With(handler.ValidateAppID).Get("/v1/apps/{id}/qualifications", h.ListReleaseQualifications)
@@ -591,17 +621,20 @@ func validateControlSecurity(cfg *config.Config) error {
 	if cfg.ReleaseAttestationTrustMode == "" {
 		cfg.ReleaseAttestationTrustMode = "github-public"
 	}
-	if cfg.ReleaseAdmissionMode != "keyed" && cfg.ReleaseAdmissionMode != "keyless" {
-		return fmt.Errorf("NORN_RELEASE_ADMISSION_MODE must be keyed or keyless")
+	if cfg.ReleaseAdmissionMode != "keyed" && cfg.ReleaseAdmissionMode != "keyless" && cfg.ReleaseAdmissionMode != "attested" {
+		return fmt.Errorf("NORN_RELEASE_ADMISSION_MODE must be keyed, keyless, or attested")
 	}
-	if cfg.ReleaseAttestationTrustMode != "github-public" && cfg.ReleaseAttestationTrustMode != "github-private" {
-		return fmt.Errorf("NORN_RELEASE_ATTESTATION_TRUST_MODE must be github-public or github-private")
+	if cfg.ReleaseAttestationTrustMode != "github-public" && cfg.ReleaseAttestationTrustMode != "github-private" && cfg.ReleaseAttestationTrustMode != "norn-signed-private" {
+		return fmt.Errorf("NORN_RELEASE_ATTESTATION_TRUST_MODE must be github-public, github-private, or norn-signed-private")
 	}
 	if cfg.ReleaseAttestationTrustMode == "github-private" && cfg.ReleaseAdmissionMode != "keyless" {
 		return fmt.Errorf("github-private attestation trust requires NORN_RELEASE_ADMISSION_MODE=keyless")
 	}
-	if cfg.ReleaseAdmissionMode == "keyless" && (strings.TrimSpace(cfg.ReleaseAttestationIssuer) != "https://token.actions.githubusercontent.com" || len(cfg.ReleaseAttestationRepositories) == 0 || len(cfg.ReleaseAttestationWorkflowRefs) == 0 || !cfg.ReleaseRequireSBOM) {
-		return fmt.Errorf("keyless release admission requires a GitHub issuer, attestation repository and signer workflow policies, and SBOM verification")
+	if cfg.ReleaseAttestationTrustMode == "norn-signed-private" && cfg.ReleaseAdmissionMode != "attested" {
+		return fmt.Errorf("norn-signed-private attestation trust requires NORN_RELEASE_ADMISSION_MODE=attested")
+	}
+	if (cfg.ReleaseAdmissionMode == "keyless" || cfg.ReleaseAdmissionMode == "attested") && (strings.TrimSpace(cfg.ReleaseAttestationIssuer) != "https://token.actions.githubusercontent.com" || len(cfg.ReleaseAttestationRepositories) == 0 || len(cfg.ReleaseAttestationWorkflowRefs) == 0 || !cfg.ReleaseRequireSBOM) {
+		return fmt.Errorf("attestation-based release admission requires a GitHub issuer, repository and signer workflow policies, and SBOM verification")
 	}
 	if cfg.ReleaseAttestationTrustMode == "github-private" {
 		if !cfg.ReleaseRegistryNodePullReady {
@@ -609,6 +642,40 @@ func validateControlSecurity(cfg *config.Config) error {
 		}
 		if _, err := githubattestation.New(githubattestation.Config{AppID: cfg.ReleaseAttestationGitHubAppID, InstallationID: cfg.ReleaseAttestationGitHubInstallationID, PrivateKeyFile: cfg.ReleaseAttestationGitHubPrivateKeyFile, RegistryAuthFile: cfg.ReleaseAttestationRegistryAuthFile, APIBaseURL: cfg.ReleaseAttestationGitHubAPIBaseURL, GHPath: cfg.ReleaseAttestationGHPath}, nil); err != nil {
 			return fmt.Errorf("NORN_RELEASE_ATTESTATION_TRUST_MODE=github-private requires a complete isolated private verifier: %w", err)
+		}
+	}
+	if cfg.ReleaseAttestationTrustMode == "norn-signed-private" && (environment == "staging" || environment == "production") {
+		if !cfg.ReleaseRegistryNodePullReady {
+			return fmt.Errorf("norn-signed-private attestation trust requires NORN_RELEASE_REGISTRY_NODE_PULL_READY=true after scheduler/node pull credentials are provisioned")
+		}
+		if err := privateattestation.ValidateOwnerOnlyFile(cfg.ReleaseAttestationRegistryAuthFile); err != nil {
+			return fmt.Errorf("norn-signed-private attestation trust requires an owner-only registry auth file: %w", err)
+		}
+		if _, err := privateattestation.NewVerifier(cfg.ReleasePrivateTrustedSigningKeys); err != nil {
+			return fmt.Errorf("norn-signed-private trusted key configuration: %w", err)
+		}
+		if environment == "production" {
+			if cfg.ReleasePrivateSigningBackend != "" || cfg.ReleasePrivateSigningKeyFile != "" || cfg.ReleasePrivateKMSHelper != "" || cfg.ReleasePrivateKMSKeyID != "" {
+				return fmt.Errorf("production norn-signed-private verifier must not be configured with signing authority")
+			}
+		} else {
+			var signer privateattestation.Signer
+			var signerErr error
+			switch cfg.ReleasePrivateSigningBackend {
+			case "local":
+				signer, signerErr = privateattestation.NewLocalSigner(cfg.ReleasePrivateSigningKeyFile)
+			case "kms-helper":
+				signer, signerErr = privateattestation.NewHelperSigner(cfg.ReleasePrivateKMSHelper, cfg.ReleasePrivateKMSKeyID)
+			default:
+				return fmt.Errorf("staging norn-signed-private trust requires NORN_RELEASE_PRIVATE_SIGNING_BACKEND=local or kms-helper")
+			}
+			if signerErr != nil {
+				return fmt.Errorf("norn-signed-private signer: %w", signerErr)
+			}
+			verifier, _ := privateattestation.NewVerifier(cfg.ReleasePrivateTrustedSigningKeys)
+			if !verifier.Trusts(signer.KeyID()) {
+				return fmt.Errorf("norn-signed-private signer key must be present in NORN_RELEASE_PRIVATE_TRUSTED_SIGNING_KEYS")
+			}
 		}
 	}
 	if (environment == "staging" || environment == "production") && (strings.TrimSpace(cfg.GitHubActionsOIDCAudience) == "" || len(cfg.GitHubActionsReleaseBindings) == 0 || len(cfg.GitHubActionsAllowedWorkflowRefs) == 0 || len(cfg.GitHubActionsAllowedRefs) == 0 || len(cfg.GitHubActionsAllowedEvents) == 0 || len(cfg.GitHubActionsAllowedEnvironments) == 0 || cfg.GitHubActionsDefaultBranch == "") {
@@ -619,12 +686,32 @@ func validateControlSecurity(cfg *config.Config) error {
 			return fmt.Errorf("NORN_GITHUB_ACTIONS_RELEASE_BINDINGS entries must be app=owner/repo@repositoryID@ownerID")
 		}
 	}
+	if environment == "staging" || environment == "production" {
+		for _, workflowRef := range cfg.GitHubActionsAllowedWorkflowRefs {
+			if !immutableGitHubWorkflowRef(workflowRef) {
+				return fmt.Errorf("NORN_GITHUB_ACTIONS_ALLOWED_WORKFLOW_REFS entries must be exact workflow paths pinned to a full lowercase commit SHA")
+			}
+		}
+		for _, workflowRef := range cfg.ReleaseAttestationWorkflowRefs {
+			if !immutableGitHubWorkflowRef(workflowRef) {
+				return fmt.Errorf("NORN_RELEASE_ATTESTATION_WORKFLOW_REFS entries must be exact workflow paths pinned to a full lowercase commit SHA")
+			}
+		}
+		for _, workflowRef := range cfg.GitHubActionsFleetAllowedWorkflowRefs {
+			if !immutableGitHubWorkflowRef(workflowRef) {
+				return fmt.Errorf("NORN_GITHUB_ACTIONS_FLEET_ALLOWED_WORKFLOW_REFS entries must be exact workflow paths pinned to a full lowercase commit SHA")
+			}
+		}
+	}
 	if environment == "staging" {
 		if err := handler.ValidateQualificationSigningConfiguration(cfg.QualificationSigningKey, nil, true); err != nil {
 			return fmt.Errorf("staging requires a valid qualification signing key: %w", err)
 		}
 	}
 	if environment == "production" {
+		if strings.TrimSpace(cfg.QualificationSigningKey) != "" {
+			return fmt.Errorf("production must not be configured with the staging qualification signing key")
+		}
 		if len(cfg.TrustedQualificationSigningKeys) == 0 {
 			return fmt.Errorf("production requires a trusted staging qualification signing key")
 		}
@@ -755,6 +842,27 @@ func validGitHubActionsReleaseBinding(value string) bool {
 	for _, id := range parts[1:] {
 		parsed, err := strconv.ParseInt(id, 10, 64)
 		if err != nil || parsed <= 0 {
+			return false
+		}
+	}
+	return true
+}
+
+// immutableGitHubWorkflowRef accepts only a concrete workflow path whose ref is
+// a full commit SHA. Runtime claim authorization separately binds this suffix
+// to GitHub's workflow_sha/job_workflow_sha claim.
+func immutableGitHubWorkflowRef(value string) bool {
+	value = strings.TrimSpace(value)
+	separator := strings.LastIndexByte(value, '@')
+	if separator <= 0 || separator == len(value)-1 {
+		return false
+	}
+	workflowPath, sha := value[:separator], value[separator+1:]
+	if strings.ContainsAny(workflowPath, "*?[") || !strings.Contains(workflowPath, "/.github/workflows/") || (!strings.HasSuffix(workflowPath, ".yml") && !strings.HasSuffix(workflowPath, ".yaml")) || len(sha) != 40 {
+		return false
+	}
+	for _, character := range sha {
+		if (character < '0' || character > '9') && (character < 'a' || character > 'f') {
 			return false
 		}
 	}
@@ -928,11 +1036,15 @@ func controlScopeForRequest(r *http.Request) string {
 		return handler.ScopeEventsRead
 	case path == "/api/v1/events/info":
 		return handler.ScopeEventsRead
-	case strings.HasSuffix(path, "/cancel") && strings.HasPrefix(path, "/api/v1/operations/"):
+	case r.Method == http.MethodPost && strings.HasSuffix(path, "/cancel") && strings.HasPrefix(path, "/api/v1/operations/"):
+		return ""
+	case (r.Method == http.MethodGet || r.Method == http.MethodHead) && exactOperationPath(path):
+		// Workflow tokens may poll only their own app/lane operation. The handler
+		// loads the operation and applies that binding; this is not generic read.
 		return ""
 	case path == "/api/v1/auth/rotate" || path == "/api/v1/auth/revoke":
 		return ""
-	case r.Method == http.MethodPost && (strings.HasSuffix(path, "/releases/preflight") || strings.HasSuffix(path, "/releases/deployments") || strings.HasSuffix(path, "/releases/rollbacks") || strings.HasSuffix(path, "/qualifications") || strings.HasSuffix(path, "/promotions")):
+	case r.Method == http.MethodPost && (strings.HasSuffix(path, "/releases/preflight") || strings.HasSuffix(path, "/releases/deployments") || strings.HasSuffix(path, "/releases/rollbacks") || strings.HasSuffix(path, "/private-attestations") || strings.HasSuffix(path, "/qualifications") || strings.HasSuffix(path, "/promotions")):
 		// The global middleware authenticates the Norn token but the release
 		// handlers own their exact scope plus app/environment/CI binding.
 		return ""
@@ -962,6 +1074,11 @@ func controlScopeForRequest(r *http.Request) string {
 	default:
 		return handler.ScopeAPIWrite
 	}
+}
+
+func exactOperationPath(path string) bool {
+	id := strings.TrimPrefix(path, "/api/v1/operations/")
+	return id != path && id != "" && !strings.Contains(id, "/")
 }
 
 func writeControlCapabilities(w http.ResponseWriter, r *http.Request) {
@@ -999,6 +1116,9 @@ func writeControlCapabilitiesForConfig(cfg *config.Config, w http.ResponseWriter
 	}
 	if releaseConfigured {
 		features = append(features, "release-provenance-v1", "release-qualifications-v2", "release-promotions-v1", "github-actions-oidc-exchange-v1", "release-app-repository-bindings-v1")
+		if cfg.ReleaseAttestationTrustMode == "norn-signed-private" {
+			features = append(features, "norn-signed-private-v1")
+		}
 	}
 	endpoints := map[string]string{
 		"events": "/api/v1/events", "operations": "/api/v1/operations/{id}",
@@ -1014,6 +1134,9 @@ func writeControlCapabilitiesForConfig(cfg *config.Config, w http.ResponseWriter
 	if releaseConfigured {
 		endpoints["githubActionsExchange"] = "/api/v1/auth/github-actions/exchange"
 		endpoints["releasePreflight"] = "/api/v1/apps/{id}/releases/preflight"
+		if cfg.ReleaseAttestationTrustMode == "norn-signed-private" {
+			endpoints["privateReleaseAttestations"] = "/api/v1/apps/{id}/private-attestations"
+		}
 		endpoints["releaseDeployments"] = "/api/v1/apps/{id}/releases/deployments"
 		endpoints["releaseQualifications"] = "/api/v1/apps/{id}/qualifications"
 		endpoints["releasePromotions"] = "/api/v1/apps/{id}/promotions"
@@ -1051,7 +1174,7 @@ func releasePipelineConfigured(cfg *config.Config) bool {
 	if cfg == nil || (cfg.EnvironmentID() != "staging" && cfg.EnvironmentID() != "production") || len(cfg.GitHubActionsReleaseBindings) == 0 || len(cfg.GitHubActionsAllowedWorkflowRefs) == 0 || len(cfg.GitHubActionsAllowedRefs) == 0 || len(cfg.GitHubActionsAllowedEvents) == 0 || len(cfg.GitHubActionsAllowedEnvironments) == 0 || strings.TrimSpace(cfg.GitHubActionsOIDCAudience) == "" || strings.TrimSpace(cfg.GitHubActionsDefaultBranch) == "" {
 		return false
 	}
-	if cfg.ReleaseAdmissionMode != "keyed" && cfg.ReleaseAdmissionMode != "keyless" {
+	if cfg.ReleaseAdmissionMode != "keyed" && cfg.ReleaseAdmissionMode != "keyless" && cfg.ReleaseAdmissionMode != "attested" {
 		return false
 	}
 	if cfg.EnvironmentID() == "staging" {

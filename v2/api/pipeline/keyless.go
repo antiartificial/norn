@@ -24,20 +24,34 @@ func (p *Pipeline) verifyKeylessAttestations(ctx context.Context, st *state) err
 	}
 	digest, ok := keylessImageDigest(st.imageTag)
 	c := st.candidate
-	if !ok || c.Attestation.SubjectDigest != digest || c.Attestation.MaterialSHA != st.commitSHA || c.Repository == "" || c.SignerWorkflowRef == "" || !strings.HasSuffix(c.SignerWorkflowRef, "@"+c.SignerWorkflowSHA) || c.Attestation.Issuer != p.ReleaseAttestationIssuer || !containsExact(p.ReleaseAttestationRepositories, c.Repository) || !containsExact(p.ReleaseAttestationWorkflowRefs, c.SignerWorkflowRef) || !p.ReleaseRequireSBOM {
+	trustMode := p.ReleaseAttestationTrustMode
+	if trustMode == "" {
+		trustMode = "github-public"
+	}
+	if !ok || c.Attestation.Mode != trustMode || c.Attestation.SubjectDigest != digest || c.Attestation.MaterialSHA != st.commitSHA || c.Repository == "" || c.SignerWorkflowRef == "" || !strings.HasSuffix(c.SignerWorkflowRef, "@"+c.SignerWorkflowSHA) || c.Attestation.Issuer != p.ReleaseAttestationIssuer || !containsExact(p.ReleaseAttestationRepositories, c.Repository) || !containsExact(p.ReleaseAttestationWorkflowRefs, c.SignerWorkflowRef) || !p.ReleaseRequireSBOM {
 		return fmt.Errorf("keyless admission requires candidate, policy, digest, and source bindings")
 	}
 	private := c.RepositoryVisibility == "private" || c.RepositoryVisibility == "internal"
 	if private {
-		if p.ReleaseAttestationTrustMode != "github-private" || p.VerifyPrivateKeylessAttestations == nil {
-			return fmt.Errorf("private GitHub release attestations are not configured")
+		switch trustMode {
+		case "github-private":
+			if c.Attestation.Mode != "github-private" || p.VerifyPrivateKeylessAttestations == nil {
+				return fmt.Errorf("private GitHub release attestations are not configured")
+			}
+			return p.VerifyPrivateKeylessAttestations(ctx, st.imageTag, st.commitSHA, c.SignerWorkflowRef, c)
+		case "norn-signed-private":
+			if c.Attestation.Mode != "norn-signed-private" || p.VerifyNornPrivateAttestations == nil || st.spec == nil {
+				return fmt.Errorf("Norn-signed private release attestations are not configured")
+			}
+			return p.VerifyNornPrivateAttestations(ctx, st.imageTag, st.commitSHA, st.spec.App, c)
+		default:
+			return fmt.Errorf("private release attestations are not permitted by the configured trust mode")
 		}
-		return p.VerifyPrivateKeylessAttestations(ctx, st.imageTag, st.commitSHA, c.SignerWorkflowRef, c)
 	}
 	if c.RepositoryVisibility != "" && c.RepositoryVisibility != "public" {
 		return fmt.Errorf("release candidate has unsupported repository visibility")
 	}
-	if p.ReleaseAttestationTrustMode == "github-private" {
+	if trustMode != "github-public" || c.Attestation.Mode != "github-public" {
 		return fmt.Errorf("public GitHub release attestations are not permitted by private trust mode")
 	}
 	if p.VerifyKeylessAttestations != nil {

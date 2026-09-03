@@ -133,7 +133,7 @@ func (p *Pipeline) verifyRegistryArtifact(ctx context.Context, imageRef string) 
 }
 
 func (p *Pipeline) verifyArtifactSignature(ctx context.Context, st *state) error {
-	if p.ReleaseAdmissionMode == "keyless" {
+	if p.ReleaseAdmissionMode == "keyless" || p.ReleaseAdmissionMode == "attested" {
 		return p.verifyKeylessAttestations(ctx, st)
 	}
 	if p.VerifySignature != nil {
@@ -179,7 +179,7 @@ func (p *Pipeline) scanArtifactVulnerabilities(ctx context.Context, imageRef str
 	if p.productionReleaseLane() && !filepath.IsAbs(command) {
 		return fmt.Errorf("production release scanning requires an absolute NORN_TRIVY_PATH")
 	}
-	if p.ReleaseAttestationTrustMode != "github-private" {
+	if p.ReleaseAttestationTrustMode != "github-private" && p.ReleaseAttestationTrustMode != "norn-signed-private" {
 		return runArtifactPolicyCommand(ctx, command, "image", "--quiet", "--scanners", "vuln", "--exit-code", "1", "--severity", strings.Join(severities, ","), "--ignore-unfixed", imageRef)
 	}
 	env, cleanup, err := p.registryCommandEnv("")
@@ -200,7 +200,7 @@ func (p *Pipeline) scanArtifactVulnerabilities(ctx context.Context, imageRef str
 // intentionally never inherits GH_TOKEN, the GitHub App key, or an ambient
 // HOME credential store.
 func (p *Pipeline) registryCommandEnv(buildxConfig string) ([]string, func(), error) {
-	if p.ReleaseAttestationTrustMode != "github-private" {
+	if p.ReleaseAttestationTrustMode != "github-private" && p.ReleaseAttestationTrustMode != "norn-signed-private" {
 		return append(os.Environ(), "BUILDX_CONFIG="+buildxConfig), func() {}, nil
 	}
 	if err := secureOwnerOnlyRegularFile(p.ReleaseRegistryAuthFile); err != nil {

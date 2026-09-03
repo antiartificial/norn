@@ -22,6 +22,7 @@ import (
 	"norn/v2/api/hub"
 	"norn/v2/api/nomad"
 	"norn/v2/api/pipeline"
+	"norn/v2/api/privateattestation"
 	"norn/v2/api/redpanda"
 	containerruntime "norn/v2/api/runtime"
 	"norn/v2/api/saga"
@@ -35,6 +36,12 @@ var validAppIDRe = regexp.MustCompile(`^[a-z0-9][a-z0-9-]*$`)
 const maxControlJSONBody = 64 << 10
 const maxDocumentValidationJSONBody = 320 << 10
 const maxValidationDocumentBytes = 64 << 10
+const maxPrivateAttestationJSONBody = 3 << 20
+
+// A 2 MiB SPDX document is base64-wrapped once in its DSSE envelope and again
+// in the signed qualification payload. Keep bounded headroom for that portable
+// receipt without relying on process argument limits in CI.
+const maxReleaseEvidenceJSONBody = 12 << 20
 
 type Handler struct {
 	db                     *store.DB
@@ -56,6 +63,7 @@ type Handler struct {
 	fleetGitHub            *githubapp.Client
 	fleetGitHubConfigError error
 	githubJWKS             *githubJWKCache
+	privateReleaseSigner   privateattestation.Signer
 	productionGateMu       sync.Mutex
 	productionGateAt       time.Time
 	productionGateBlockers []string
@@ -63,6 +71,13 @@ type Handler struct {
 	auditPruneAt           time.Time
 	wakeLocks              sync.Map
 	execConns              sync.Map
+}
+
+// ConfigurePrivateReleaseSigner installs the staging-only signer after startup
+// configuration has selected norn-signed-private. Production receives only the
+// corresponding public-key verifier through Pipeline.
+func (h *Handler) ConfigurePrivateReleaseSigner(signer privateattestation.Signer) {
+	h.privateReleaseSigner = signer
 }
 
 func New(db *store.DB, n *nomad.Client, c *consul.Client, ws *hub.Hub, cfg *config.Config, p *pipeline.Pipeline, beaconSvc *beacon.Service, sec *secrets.Manager, ss saga.Store, s3 *storage.Client, rp *redpanda.Client) *Handler {

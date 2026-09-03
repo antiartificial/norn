@@ -1,6 +1,8 @@
 package main
 
 import (
+	"bytes"
+	"crypto/ed25519"
 	"crypto/hmac"
 	"crypto/sha256"
 	"encoding/base64"
@@ -247,6 +249,7 @@ func TestControlSecurityConfiguration(t *testing.T) {
 		wantErr bool
 	}{
 		{name: "local development", config: &config.Config{BindAddr: "127.0.0.1"}},
+		{name: "local development does not require managed workflow pinning", config: &config.Config{BindAddr: "127.0.0.1", GitHubActionsAllowedWorkflowRefs: []string{"owner/repo/.github/workflows/release.yml@refs/heads/main"}}},
 		{name: "remote without auth", config: &config.Config{BindAddr: "0.0.0.0"}, wantErr: true},
 		{name: "weak token", config: &config.Config{BindAddr: "127.0.0.1", APIToken: "short"}, wantErr: true},
 		{name: "remote strong token", config: &config.Config{BindAddr: "0.0.0.0", APIToken: strings.Repeat("x", 32)}},
@@ -271,6 +274,90 @@ func TestControlSecurityConfiguration(t *testing.T) {
 			}
 		})
 	}
+}
+
+func TestNornSignedPrivateSignerAuthorityIsStagingOnly(t *testing.T) {
+	public, private, err := ed25519.GenerateKey(nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	dir := t.TempDir()
+	keyFile, registryFile := filepath.Join(dir, "release.key"), filepath.Join(dir, "registry.json")
+	if err := os.WriteFile(keyFile, []byte(base64.RawStdEncoding.EncodeToString(private)), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(registryFile, []byte(`{"auths":{"ghcr.io":{}}}`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	base := func(environment string) *config.Config {
+		return &config.Config{
+			Environment: environment, EnvironmentExplicit: true, BindAddr: "127.0.0.1", APIToken: strings.Repeat("x", 32),
+			ReleaseAdmissionMode: "attested", ReleaseAttestationTrustMode: "norn-signed-private", ReleaseAttestationIssuer: "https://token.actions.githubusercontent.com",
+			ReleaseAttestationRepositories: []string{"personal-owner/private-app"}, ReleaseAttestationWorkflowRefs: []string{"personal-owner/norn/.github/workflows/norn-app-release.yml@" + strings.Repeat("a", 40)}, ReleaseRequireSBOM: true,
+			ReleaseRegistryNodePullReady: true, ReleaseAttestationRegistryAuthFile: registryFile, ReleasePrivateTrustedSigningKeys: []string{base64.RawStdEncoding.EncodeToString(public)},
+			GitHubActionsOIDCAudience: "norn-" + environment, GitHubActionsReleaseBindings: []string{"private-app=personal-owner/private-app@101@202"}, GitHubActionsAllowedWorkflowRefs: []string{"personal-owner/norn/.github/workflows/norn-app-release.yml@" + strings.Repeat("a", 40)}, GitHubActionsAllowedRefs: []string{"refs/heads/main"}, GitHubActionsAllowedEvents: []string{"push"}, GitHubActionsAllowedEnvironments: []string{environment}, GitHubActionsDefaultBranch: "main",
+		}
+	}
+	staging := base("staging")
+	staging.ReleasePrivateSigningBackend, staging.ReleasePrivateSigningKeyFile = "local", keyFile
+	staging.QualificationSigningKey = base64.RawStdEncoding.EncodeToString(bytes.Repeat([]byte{'q'}, ed25519.SeedSize))
+	if err := validateControlSecurity(staging); err != nil {
+		t.Fatalf("valid staging private signer rejected: %v", err)
+	}
+	stagingWithPublicRotationKeys := *staging
+	stagingWithPublicRotationKeys.TrustedQualificationSigningKeys = []string{releaseTestPublicKeyForMain('q')}
+	if err := validateControlSecurity(&stagingWithPublicRotationKeys); err != nil {
+		t.Fatalf("staging public qualification rotation keys rejected: %v", err)
+	}
+	stagingWithMutableWorkflow := *staging
+	stagingWithMutableWorkflow.GitHubActionsAllowedWorkflowRefs = []string{"personal-owner/norn/.github/workflows/norn-app-release.yml@refs/heads/main"}
+	if err := validateControlSecurity(&stagingWithMutableWorkflow); err == nil || !strings.Contains(err.Error(), "full lowercase commit SHA") {
+		t.Fatalf("mutable release workflow startup error = %v", err)
+	}
+
+	production := base("production")
+	production.Profile = "production"
+	production.ReleasePrivateSigningBackend, production.ReleasePrivateSigningKeyFile = "local", keyFile
+	if err := validateControlSecurity(production); err == nil || !strings.Contains(err.Error(), "must not be configured with signing authority") {
+		t.Fatalf("production signing authority error = %v", err)
+	}
+	production.ReleasePrivateSigningBackend, production.ReleasePrivateSigningKeyFile = "", ""
+	production.QualificationSigningKey = base64.RawStdEncoding.EncodeToString(bytes.Repeat([]byte{'q'}, ed25519.SeedSize))
+	production.TrustedQualificationSigningKeys = []string{releaseTestPublicKeyForMain('q')}
+	if err := validateControlSecurity(production); err == nil || !strings.Contains(err.Error(), "production must not be configured with the staging qualification signing key") {
+		t.Fatalf("production qualification signing authority error = %v", err)
+	}
+
+	staging.ReleasePrivateTrustedSigningKeys = []string{base64.RawStdEncoding.EncodeToString(bytes.Repeat([]byte{'z'}, ed25519.PublicKeySize))}
+	if err := validateControlSecurity(staging); err == nil || !strings.Contains(err.Error(), "signer key must be present") {
+		t.Fatalf("untrusted staging signer error = %v", err)
+	}
+}
+
+func TestImmutableGitHubWorkflowRef(t *testing.T) {
+	for _, value := range []string{
+		"acme/norn/.github/workflows/release.yml@" + strings.Repeat("a", 40),
+		"acme/norn/.github/workflows/release.yaml@0123456789abcdef0123456789abcdef01234567",
+	} {
+		if !immutableGitHubWorkflowRef(value) {
+			t.Fatalf("immutable workflow ref rejected: %q", value)
+		}
+	}
+	for _, value := range []string{
+		"acme/norn/.github/workflows/release.yml@refs/heads/main",
+		"acme/norn/.github/workflows/*.yml@" + strings.Repeat("a", 40),
+		"acme/norn/.github/workflows/release.yml@" + strings.Repeat("A", 40),
+		"acme/norn/release.yml@" + strings.Repeat("a", 40),
+		"acme/norn/.github/workflows/release.yml@short",
+	} {
+		if immutableGitHubWorkflowRef(value) {
+			t.Fatalf("mutable or malformed workflow ref accepted: %q", value)
+		}
+	}
+}
+
+func releaseTestPublicKeyForMain(value byte) string {
+	return base64.RawStdEncoding.EncodeToString(ed25519.NewKeyFromSeed(bytes.Repeat([]byte{value}, ed25519.SeedSize)).Public().(ed25519.PublicKey))
 }
 
 func TestProductionProfileRequiresExplicitSafeReleaseLane(t *testing.T) {
@@ -605,6 +692,21 @@ func TestReleaseMutationsDeferScopeToBoundHandler(t *testing.T) {
 	generic := httptest.NewRequest(http.MethodPost, "/api/v1/apps/demo/scale", nil)
 	if got := controlScopeForRequest(generic); got != handler.ScopeAPIWrite {
 		t.Fatalf("generic mutation scope = %q, want api:write", got)
+	}
+}
+
+func TestExactOperationReadDefersScopeToBoundHandler(t *testing.T) {
+	for _, method := range []string{http.MethodGet, http.MethodHead} {
+		request := httptest.NewRequest(method, "/api/v1/operations/operation-id", nil)
+		if got := controlScopeForRequest(request); got != "" {
+			t.Fatalf("%s exact operation global scope=%q, want handler-owned scope", method, got)
+		}
+	}
+	for _, path := range []string{"/api/v1/operations", "/api/v1/operations/operation-id/extra", "/api/v1/operations/operation-id/cancel"} {
+		request := httptest.NewRequest(http.MethodGet, path, nil)
+		if got := controlScopeForRequest(request); got != handler.ScopeAPIRead {
+			t.Fatalf("non-exact operation path %q scope=%q, want api:read", path, got)
+		}
 	}
 }
 

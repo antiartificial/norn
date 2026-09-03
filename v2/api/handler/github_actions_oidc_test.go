@@ -7,13 +7,36 @@ import (
 	"norn/v2/api/config"
 )
 
+func TestGitHubOIDCNumericIdentityClaims(t *testing.T) {
+	for _, value := range []string{"1", "101", "999999999999999999999999"} {
+		if !validGitHubNumericID(value) {
+			t.Fatalf("numeric GitHub identity %q rejected", value)
+		}
+	}
+	for _, value := range []string{"", "0", "-1", "repo-101", "1.5"} {
+		if validGitHubNumericID(value) {
+			t.Fatalf("non-numeric GitHub identity %q accepted", value)
+		}
+	}
+}
+
 func TestGitHubActionsFleetPolicyBindsNumericRepositoryIdentityAndIntent(t *testing.T) {
 	h := &Handler{cfg: &config.Config{GitHubActionsAllowedRefs: []string{"refs/heads/main"}, GitHubActionsAllowedEvents: []string{"push"}, GitHubActionsFleetAllowedRepository: "acme/norn-fleet@101@202", GitHubActionsFleetAllowedEnvironments: []string{"production"}, GitHubActionsFleetAllowedIntents: []string{"apply", "recover"}, GitHubActionsFleetAllowedWorkflowRefs: []string{"acme/norn-fleet/.github/workflows/apply.yml@" + strings.Repeat("a", 40)}}}
-	claims := &githubActionsClaims{Repository: "acme/norn-fleet", RepositoryID: "101", RepositoryOwnerID: "202", Environment: "production", Ref: "refs/heads/main", EventName: "push", WorkflowRef: "acme/norn-fleet/.github/workflows/apply.yml@" + strings.Repeat("a", 40), WorkflowSHA: strings.Repeat("a", 40), SHA: strings.Repeat("b", 40), RefProtected: "true"}
+	claims := &githubActionsClaims{Repository: "acme/norn-fleet", RepositoryID: "101", RepositoryOwnerID: "202", Environment: "production", Ref: "refs/heads/main", EventName: "push", WorkflowRef: "acme/norn-fleet/.github/workflows/apply.yml@refs/heads/main", WorkflowSHA: strings.Repeat("a", 40), SHA: strings.Repeat("b", 40), RefProtected: "true"}
 	ci, err := h.authorizeGitHubActionsClaims(claims, githubActionsExchangeRequest{Scope: ScopeFleetOperate, Environment: "production", Intent: "apply"})
 	if err != nil || ci.Intent != "apply" {
 		t.Fatalf("valid fleet exchange=%v ci=%+v", err, ci)
 	}
+	claims.WorkflowSHA = strings.Repeat("b", 40)
+	if _, err := h.authorizeGitHubActionsClaims(claims, githubActionsExchangeRequest{Scope: ScopeFleetOperate, Environment: "production", Intent: "apply"}); err == nil {
+		t.Fatal("Fleet workflow SHA outside the pinned configuration was accepted")
+	}
+	claims.WorkflowSHA = strings.Repeat("a", 40)
+	claims.WorkflowRef = "acme/norn-fleet/.github/workflows/other.yml@refs/heads/main"
+	if _, err := h.authorizeGitHubActionsClaims(claims, githubActionsExchangeRequest{Scope: ScopeFleetOperate, Environment: "production", Intent: "apply"}); err == nil {
+		t.Fatal("Fleet workflow path outside the pinned configuration was accepted")
+	}
+	claims.WorkflowRef = "acme/norn-fleet/.github/workflows/apply.yml@refs/heads/main"
 	claims.RepositoryID = "other"
 	if _, err := h.authorizeGitHubActionsClaims(claims, githubActionsExchangeRequest{Scope: ScopeFleetOperate, Environment: "production", Intent: "apply"}); err == nil {
 		t.Fatal("repository rename/reuse identity accepted")
@@ -35,6 +58,24 @@ func TestGitHubActionsReleasePolicyRequiresPublicRepository(t *testing.T) {
 	claims.RepositoryVisibility = "public"
 	if _, err := h.authorizeGitHubActionsClaims(claims, request); err != nil {
 		t.Fatalf("public release repository rejected: %v", err)
+	}
+}
+
+func TestGitHubActionsPrivateAttestationScopeIsNornPolicyBoundAndStagingOnly(t *testing.T) {
+	workflowSHA := strings.Repeat("a", 40)
+	h := &Handler{cfg: &config.Config{ReleaseAttestationTrustMode: "norn-signed-private", GitHubActionsDefaultBranch: "main", GitHubActionsAllowedRefs: []string{"refs/heads/main", "refs/tags/v*"}, GitHubActionsAllowedEvents: []string{"push"}, GitHubActionsReleaseBindings: []string{"widgets=personal-owner/widgets@101@202"}, GitHubActionsAllowedEnvironments: []string{"staging", "production"}, GitHubActionsAllowedWorkflowRefs: []string{"personal-owner/norn/.github/workflows/norn-app-release.yml@" + workflowSHA}}}
+	claims := &githubActionsClaims{Repository: "personal-owner/widgets", RepositoryID: "101", RepositoryOwnerID: "202", RepositoryVisibility: "private", Environment: "staging", Ref: "refs/heads/main", RefType: "branch", EventName: "push", RefProtected: "true", JobWorkflowRef: "personal-owner/norn/.github/workflows/norn-app-release.yml@" + workflowSHA, JobWorkflowSHA: workflowSHA}
+	request := githubActionsExchangeRequest{Scope: ScopeReleaseAttest, App: "widgets", Environment: "staging", Intent: "attest"}
+	if _, err := h.authorizeGitHubActionsClaims(claims, request); err != nil {
+		t.Fatalf("ordinary private repository attestation identity rejected: %v", err)
+	}
+	if got := releaseAttestationMode(claims.RepositoryVisibility, h.cfg.ReleaseAttestationTrustMode); got != "norn-signed-private" {
+		t.Fatalf("server-selected trust mode = %q", got)
+	}
+	claims.Environment, claims.Ref, claims.RefType = "production", "refs/tags/v1.0.0", "tag"
+	request.Environment = "production"
+	if _, err := h.authorizeGitHubActionsClaims(claims, request); err == nil {
+		t.Fatal("production tag received private attestation signing authority")
 	}
 }
 

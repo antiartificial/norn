@@ -219,7 +219,7 @@ func TestArtifactBoundProductionPreflightRunsArtifactAdmission(t *testing.T) {
 		SignerWorkflowRef:    "acme/norn/.github/workflows/release.yml@" + signerSHA,
 		SignerWorkflowSHA:    signerSHA,
 		Attestation: model.ReleaseAttestationIdentity{
-			Issuer: "https://token.actions.githubusercontent.com", SubjectDigest: strings.TrimPrefix(ref, "registry.example.test/norn/demo@"), MaterialSHA: sourceSHA,
+			Mode: "github-public", Issuer: "https://token.actions.githubusercontent.com", SubjectDigest: strings.TrimPrefix(ref, "registry.example.test/norn/demo@"), MaterialSHA: sourceSHA,
 		},
 	}
 	if err := p.artifactAdmission(context.Background(), &state{preflight: true, artifactBound: true, commitSHA: sourceSHA, imageTag: ref, candidate: candidate}, nil); err != nil {
@@ -251,7 +251,7 @@ func TestArtifactBoundProductionPreflightRejectsTamperedEvidenceBeforeDeployment
 	}
 	candidate := model.ReleaseCandidate{
 		Repository: "acme/demo", RepositoryVisibility: "public", SignerWorkflowRef: "acme/norn/.github/workflows/release.yml@" + signerSHA, SignerWorkflowSHA: signerSHA,
-		Attestation: model.ReleaseAttestationIdentity{Issuer: "https://token.actions.githubusercontent.com", SubjectDigest: strings.TrimPrefix(ref, "registry.example.test/norn/demo@"), MaterialSHA: sourceSHA},
+		Attestation: model.ReleaseAttestationIdentity{Mode: "github-public", Issuer: "https://token.actions.githubusercontent.com", SubjectDigest: strings.TrimPrefix(ref, "registry.example.test/norn/demo@"), MaterialSHA: sourceSHA},
 	}
 	err := p.artifactAdmission(context.Background(), &state{preflight: true, artifactBound: true, commitSHA: sourceSHA, imageTag: ref, candidate: candidate}, nil)
 	if err == nil || !strings.Contains(err.Error(), "provenance subject does not match digest") {

@@ -66,12 +66,15 @@ type Config struct {
 	// GitHubActionsAllowedApps is retained only to parse legacy configuration.
 	// It is not authorization for any release lane; use
 	// GitHubActionsReleaseBindings instead.
-	GitHubActionsAllowedApps               []string
-	GitHubActionsAllowedEnvironments       []string
-	GitHubActionsDefaultBranch             string
-	GitHubActionsTokenTTL                  time.Duration
-	AllowDevelopmentGitHubActionsOIDC      bool
-	GitHubActionsFleetAllowedRepository    string
+	GitHubActionsAllowedApps            []string
+	GitHubActionsAllowedEnvironments    []string
+	GitHubActionsDefaultBranch          string
+	GitHubActionsTokenTTL               time.Duration
+	AllowDevelopmentGitHubActionsOIDC   bool
+	GitHubActionsFleetAllowedRepository string
+	// Direct workflow_ref claims carry their branch ref, so entries use
+	// owner/repo/.github/workflows/file.yml@<full workflow_sha>. Authorization
+	// matches the claimed path and immutable workflow_sha independently.
 	GitHubActionsFleetAllowedWorkflowRefs  []string
 	GitHubActionsFleetAllowedEnvironments  []string
 	GitHubActionsFleetAllowedIntents       []string
@@ -88,13 +91,21 @@ type Config struct {
 	ReleaseRegistryNodePullReady           bool
 	ReleaseAttestationGitHubAPIBaseURL     string
 	ReleaseAttestationGHPath               string
-	LegacyTokenSigningUntil                time.Time
-	RegistryURL                            string // GHCR registry (e.g. ghcr.io/username)
-	ArtifactSigningPublicKey               string
-	ArtifactDenySeverities                 []string
-	CosignPath                             string
-	TrivyPath                              string
-	NetworkMode                            string // local, tailnet, public
+	// Private release signing is used by the norn-signed-private trust adapter.
+	// The local pilot reads an owner-only Ed25519 key file. The kms-helper
+	// backend delegates signing to an absolute operator-owned executable.
+	ReleasePrivateSigningBackend     string
+	ReleasePrivateSigningKeyFile     string
+	ReleasePrivateKMSHelper          string
+	ReleasePrivateKMSKeyID           string
+	ReleasePrivateTrustedSigningKeys []string
+	LegacyTokenSigningUntil          time.Time
+	RegistryURL                      string // GHCR registry (e.g. ghcr.io/username)
+	ArtifactSigningPublicKey         string
+	ArtifactDenySeverities           []string
+	CosignPath                       string
+	TrivyPath                        string
+	NetworkMode                      string // local, tailnet, public
 	// WorkloadConnector selects the scheduler/runtime boundary. nomad-consul
 	// remains the production default; apple-container is an explicit local
 	// macOS connector and is never selected by auto-detection.
@@ -209,6 +220,11 @@ func Load() *Config {
 		ReleaseRegistryNodePullReady:           envBoolOr("NORN_RELEASE_REGISTRY_NODE_PULL_READY", false),
 		ReleaseAttestationGitHubAPIBaseURL:     envOr("NORN_RELEASE_ATTESTATION_GITHUB_API_BASE_URL", "https://api.github.com"),
 		ReleaseAttestationGHPath:               strings.TrimSpace(os.Getenv("NORN_RELEASE_ATTESTATION_GH_PATH")),
+		ReleasePrivateSigningBackend:           strings.ToLower(strings.TrimSpace(os.Getenv("NORN_RELEASE_PRIVATE_SIGNING_BACKEND"))),
+		ReleasePrivateSigningKeyFile:           strings.TrimSpace(os.Getenv("NORN_RELEASE_PRIVATE_SIGNING_KEY_FILE")),
+		ReleasePrivateKMSHelper:                strings.TrimSpace(os.Getenv("NORN_RELEASE_PRIVATE_KMS_HELPER")),
+		ReleasePrivateKMSKeyID:                 strings.TrimSpace(os.Getenv("NORN_RELEASE_PRIVATE_KMS_KEY_ID")),
+		ReleasePrivateTrustedSigningKeys:       splitNonEmpty(os.Getenv("NORN_RELEASE_PRIVATE_TRUSTED_SIGNING_KEYS")),
 		LegacyTokenSigningUntil:                envTimeOr("NORN_LEGACY_TOKEN_SIGNING_UNTIL", defaultLegacyTokenSigningUntil),
 		RegistryURL:                            os.Getenv("NORN_REGISTRY_URL"),
 		ArtifactSigningPublicKey:               os.Getenv("NORN_ARTIFACT_SIGNING_PUBLIC_KEY"),

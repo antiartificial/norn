@@ -7,7 +7,7 @@ from an application repository. It deliberately separates environments:
 merge to the default branch
   -> wait for caller-supplied successful checks on that exact SHA
   -> build and publish one GHCR digest
-  -> keyless signing plus provenance/SBOM attestations
+  -> server-selected public, Norn-private, or Enterprise-private attestations
   -> workload identity exchange, staging preflight, and deploy
   -> signed staging qualification artifact
 
@@ -33,23 +33,29 @@ caller's `lane` input or documentation alone. Production also accepts an
 artifact only when its ZIP contains exactly the expected `qualification.json`
 entry.
 
-The workflow derives its attestation mode from GitHub's trusted repository
-visibility context and its signed OIDC claim: public repositories use
-`github-public`; private and internal repositories use `github-private`; any
-other value fails before checkout. Callers cannot choose the mode. The public
-mode adds a keyless Cosign signature. The private mode deliberately omits that
-public-Sigstore signature and relies on GitHub's private provenance and SBOM
-attestations. Norn must have its separate read-only Release Attestation GitHub
-App verifier configured before a private or internal release can succeed.
+The workflow treats GitHub's signed repository visibility as evidence, not as
+the backend selector. A staging-only `release:attest` exchange returns the
+control plane's configured mode. Public repositories use `github-public`.
+Private and internal repositories normally use `norn-signed-private`; an
+Enterprise Cloud installation may instead use the optional `github-private`
+adapter. Callers cannot choose or downgrade the mode. Unknown or incompatible
+combinations fail before build.
+
+For `norn-signed-private`, the job generates SPDX JSON and asks staging to sign
+server-canonical provenance plus the SPDX statement. The signer key stays in
+Norn or behind its KMS helper. The returned candidate carries both DSSE
+envelopes and is reused verbatim for preflight, deploy, qualification,
+production promotion, and rollback. For `github-private`, Norn instead needs a
+separate read-only Release Attestation GitHub App verifier.
 
 The workflow never submits a URL for Norn to fetch. GitHub provenance/SBOM URLs
 are non-authoritative display metadata only. The private verifier fetches from
 GitHub by the candidate's exact bound repository, numeric repository and owner
 IDs, and OCI subject digest using its own short-lived installation token.
-Missing entitlement, App installation, attestation, release binding, or verifier
-configuration fails closed. Do not add an App private key, installation token,
-or a copied bundle to an application repository, GitHub Environment, or Norn CI
-request.
+Missing evidence, release binding, signing/trust configuration, or optional
+Enterprise adapter entitlement fails closed. Do not add an App private key,
+installation token, Norn signing key, or KMS credential to an application
+repository or GitHub Environment.
 
 For staging, `required_checks` is a caller-supplied, newline-delimited list of
 exact check-run identities in the strict format `Exact Check Name<TAB>GitHub App
@@ -67,6 +73,15 @@ Place the following in the application repository as
 reviewed, immutable full Norn commit SHA (not a branch name), along with the
 app and image names. Use the repository's actual protected default branch in
 the `branches` filter.
+
+If the repository containing `norn-app-release.yml` is public, private caller
+repositories can invoke the pinned reusable workflow without an extra sharing
+setting. If that Norn repository is private under a personal account, open its
+**Settings → Actions → General → Access** and select **Accessible from
+repositories owned by the USERNAME user**. For an organization-owned private
+Norn repository, enable the equivalent access for repositories in that
+organization. This is a deployment prerequisite: without it, GitHub rejects
+the caller before Norn can perform OIDC or release admission.
 
 ```yaml
 name: Release through Norn
@@ -120,11 +135,11 @@ jobs:
       id-token: write
       attestations: write
       artifact-metadata: write
-    uses: antiartificial/norn/.github/workflows/norn-app-release.yml@<full-norn-commit-sha>
+    uses: <github-owner>/norn/.github/workflows/norn-app-release.yml@<full-norn-commit-sha>
     with:
       lane: staging
       app_id: orders-api
-      image_repository: ghcr.io/acme/orders-api
+      image_repository: ghcr.io/<github-owner>/orders-api
       required_checks: |
         api	12345
         web	12345
@@ -136,21 +151,21 @@ jobs:
       actions: read
       contents: read
       id-token: write
-    uses: antiartificial/norn/.github/workflows/norn-app-release.yml@<full-norn-commit-sha>
+    uses: <github-owner>/norn/.github/workflows/norn-app-release.yml@<full-norn-commit-sha>
     with:
       lane: production
       app_id: orders-api
-      image_repository: ghcr.io/acme/orders-api
+      image_repository: ghcr.io/<github-owner>/orders-api
 
   requalify:
     if: github.event_name == 'workflow_dispatch' && inputs.lane == 'requalify'
     permissions:
       id-token: write
-    uses: antiartificial/norn/.github/workflows/norn-app-release.yml@<full-norn-commit-sha>
+    uses: <github-owner>/norn/.github/workflows/norn-app-release.yml@<full-norn-commit-sha>
     with:
       lane: requalify
       app_id: orders-api
-      image_repository: ghcr.io/acme/orders-api
+      image_repository: ghcr.io/<github-owner>/orders-api
       source_sha: ${{ inputs.source_sha }}
       deployment_id: ${{ inputs.deployment_id }}
 
@@ -159,11 +174,11 @@ jobs:
     permissions:
       deployments: write
       id-token: write
-    uses: antiartificial/norn/.github/workflows/norn-app-release.yml@<full-norn-commit-sha>
+    uses: <github-owner>/norn/.github/workflows/norn-app-release.yml@<full-norn-commit-sha>
     with:
       lane: rollback
       app_id: orders-api
-      image_repository: ghcr.io/acme/orders-api
+      image_repository: ghcr.io/<github-owner>/orders-api
       rollback_source_sha: ${{ inputs.rollback_source_sha }}
       rollback_deployment_id: ${{ inputs.rollback_deployment_id }}
       rollback_artifact: ${{ inputs.rollback_artifact }}
@@ -193,8 +208,11 @@ environment-scoped variables:
 Do not use `secrets: inherit` in a caller. The reusable workflow receives no
 caller secrets: after its job declares `staging` or `production`, GitHub makes
 that Environment's `NORN_API_URL` and `NORN_GITHUB_ACTIONS_OIDC_AUDIENCE`
-variables available through `vars`. The matching Environment also supplies its
-reviewer gate. No GitHub App credential is supplied to the workflow.
+variables available through `vars`. Where the GitHub plan supports environment
+reviewers, treat them as defense in depth. A personal private repository may
+not have that reviewer feature; Norn's production OIDC/ref policy and signed
+promotion gate remain authoritative. No GitHub App credential is supplied to
+the workflow.
 
 On each staging and production Norn control plane, set
 `NORN_GITHUB_ACTIONS_DEFAULT_BRANCH` to the caller repository's protected
@@ -210,7 +228,7 @@ comma-separated set of exact, immutable tuples in this format:
 
 ```sh
 # app_id=owner/repository@GitHub-repository-ID@GitHub-owner-ID
-NORN_GITHUB_ACTIONS_RELEASE_BINDINGS=orders-api=acme/orders-api@123456789@987654321
+NORN_GITHUB_ACTIONS_RELEASE_BINDINGS=orders-api=<github-owner>/orders-api@123456789@987654321
 ```
 
 For multiple applications, add one tuple per app, separated by commas. The
@@ -231,78 +249,89 @@ policy, or protected default branch configuration is missing. The authenticated
 capabilities response advertises `release-app-repository-bindings-v1` without
 disclosing configured bindings or any credentials.
 
-Protect the `production` environment with required reviewers and restrict tag
-creation and release workflow changes to trusted maintainers. Keep the staging
+Protect the `production` environment with required reviewers when available,
+and always restrict tag creation and release workflow changes to trusted
+maintainers. Keep the staging
 environment separate, even when it has production-like admission enabled.
 Do not add Norn qualification or artifact-signing private keys to GitHub:
-qualification keys remain on the control planes and images are signed keylessly
-using GitHub OIDC. Norn verifies issuer/JWKS, expiry, repository/owner IDs,
+qualification and private-evidence keys remain on the control planes or behind
+their KMS helper. Norn verifies issuer/JWKS, expiry, repository/owner IDs,
 environment, ref, and the full-SHA-pinned reusable workflow identity, then
 exchanges the GitHub token at the last responsible moment for a narrowly scoped
 short-lived Norn token.
 
-The staging job publishes to GHCR with the job's short-lived `GITHUB_TOKEN`.
-It keylessly signs the exact `@sha256:` digest with the
-`norn.git.sha=<full SHA>` Cosign annotation only for a public repository. It
-always generates an SPDX SBOM and GitHub provenance/SBOM attestations for the
-same digest using the pinned `actions/attest@v4` action: its provenance mode is
-selected by omitting an SBOM/custom predicate, and its SBOM mode is selected by
-the generated SPDX JSON. The job needs both `attestations: write` and
-`artifact-metadata: write`: the latter creates GitHub's Linked Artifacts record
-for the digest and does not replace the former attestation permission. The
-package must permit the repository workflow to write it. Private and internal
-attestations require GitHub Enterprise Cloud. The signed qualification remains a
-seven-day artifact; it contains no private key, and production verifies its v2
-envelope, source, digest, and attestation mode before use.
+The staging job publishes to GHCR with the job's short-lived `GITHUB_TOKEN` and
+always generates an SPDX SBOM for the exact digest. In `github-public` and the
+optional `github-private` mode it uses the pinned `actions/attest@v4`; public
+also adds the Cosign `norn.git.sha=<full SHA>` signature. In
+`norn-signed-private`, it skips GitHub artifact attestation and sends the SPDX
+document to the staging signer through a short-lived `release:attest` token.
+The signed qualification remains a seven-day artifact; it contains public
+evidence and signatures, never private key material.
 
-## GitHub Enterprise Cloud private-organization pilot
+## Ordinary private repositories (`norn-signed-private`)
 
-Use the following isolated thirty-day pilot before enabling this path for other
-repositories:
+The GitHub owner may be a personal account or an organization; it is not part
+of Norn's environment identity. Use neutral deployment names such as
+`norn-staging` and `norn-production`, then bind each app to the actual owner and
+numeric GitHub identities:
 
-| Item | Pilot value |
-| --- | --- |
-| Enterprise | `norn-pilot` |
-| Organization | `norn-pilot-labs` |
-| Private application repository and app ID | `norn-private-pilot` |
-| GHCR package | `ghcr.io/norn-pilot-labs/norn-private-pilot` |
-| Private Fleet repository | `norn-fleet-pilot` |
-| Staging control plane / fleet | `norn-pilot-staging-control` / `norn-pilot-staging` |
-| Production control plane / fleet | `norn-pilot-production-control` / `norn-pilot-production` |
-| GitHub Environments | `staging`, `production` |
-| Release verifier App | `Norn Pilot Release Verifier` |
+```sh
+NORN_RELEASE_ADMISSION_MODE=attested
+NORN_RELEASE_ATTESTATION_TRUST_MODE=norn-signed-private
+NORN_RELEASE_ATTESTATION_ISSUER=https://token.actions.githubusercontent.com
+NORN_RELEASE_ATTESTATION_ALLOWED_REPOSITORIES=<github-owner>/orders-api
+NORN_RELEASE_ATTESTATION_ALLOWED_WORKFLOW_REFS=<github-owner>/norn/.github/workflows/norn-app-release.yml@<full-norn-sha>
+NORN_RELEASE_REQUIRE_SBOM=true
+NORN_RELEASE_REGISTRY_NODE_PULL_READY=true
+NORN_RELEASE_ATTESTATION_REGISTRY_AUTH_FILE=/absolute/owner-only/docker-config.json
+NORN_RELEASE_PRIVATE_TRUSTED_SIGNING_KEYS=<base64-public-key>
+```
 
-1. Confirm the `norn-pilot` Enterprise Cloud trial or subscription permits
-   private/internal artifact attestations, then create protected default-branch
-   and `v*` tag rules for `norn-private-pilot`.
-2. Create `Norn Pilot Release Verifier` as a distinct GitHub App. Install it
-   only on `norn-private-pilot`, grant only `Attestations: read`, and configure
-   its private key solely on `norn-pilot-staging-control` and
-   `norn-pilot-production-control`. It is not the Fleet App and is never
-   installed on `norn-fleet-pilot`.
-3. Configure each control plane with
-   `NORN_GITHUB_ACTIONS_RELEASE_BINDINGS=norn-private-pilot=norn-pilot-labs/norn-private-pilot@<repository-id>@<owner-id>`,
-   the immutable reusable Norn workflow SHA, the expected environment/ref lane,
-   and `github-private` attestation mode. Test that an unknown digest, another
-   app, or a repository outside that exact binding is denied.
-4. Let the application workflow use its short-lived `GITHUB_TOKEN` only for
-   GHCR publish and GitHub attestations. Give each control plane a separate
-   read-only GHCR package pull credential or workload identity for
-   `ghcr.io/norn-pilot-labs/norn-private-pilot`; it must not be the verifier
-   App's token. Likewise, use a distinct read-only source credential for source
-   resolution if the control plane needs one. Neither server-side credential is
-   exposed to Actions.
-5. Keep `norn-pilot-staging` and `norn-pilot-production` separate, run one
-   merge-to-staging and one same-digest protected-tag promotion, then rehearse
-   requalification and rollback. Confirm the verifier's audit record names the
-   exact repository and digest and never logs an installation token.
+On staging only, configure one signer:
 
-The pilot expires after 30 days. Before expiry, explicitly convert it to a
-funded Enterprise Cloud configuration or tear it down: uninstall the verifier
-App, revoke its private keys and package/source pull credentials, remove the
-release bindings and environments, and keep Norn's private-attestation
-mode fail-closed. Do not silently fall back to public Sigstore, copied bundles,
-or static CI credentials.
+```sh
+# Usable pilot backend. The PKCS#8 Ed25519 file must be owned by the service
+# user, mode 0600, and must never be copied to Actions or production.
+NORN_RELEASE_PRIVATE_SIGNING_BACKEND=local
+NORN_RELEASE_PRIVATE_SIGNING_KEY_FILE=/absolute/owner-only/norn-private-ed25519.pem
+
+# Or delegate to an operator-supplied KMS/HSM bridge.
+NORN_RELEASE_PRIVATE_SIGNING_BACKEND=kms-helper
+NORN_RELEASE_PRIVATE_KMS_HELPER=/absolute/operator-owned/norn-kms-sign
+NORN_RELEASE_PRIVATE_KMS_KEY_ID=sha256:<configured-public-key-id>
+```
+
+The KMS helper receives raw DSSE PAE bytes on standard input and must return one
+bounded JSON object with `keyId` and an unpadded-base64 `sig`. It is an
+implemented provider-neutral process boundary; deploying the provider-specific
+helper and its workload identity remains operator work. The helper receives an
+empty process environment, runs from `/`, and has a 30-second signing deadline;
+use its service sandbox, metadata identity, or an explicitly provisioned
+owner-only credential source instead of ambient Norn environment variables.
+Production must not be configured with the
+signing backend, private key, helper, or KMS key ID. It receives only
+`NORN_RELEASE_PRIVATE_TRUSTED_SIGNING_KEYS` and independently verifies the
+portable evidence plus staging qualification.
+
+This path is required only for managed staging/production workloads. A Mac Mini
+or other local development host should remain `NORN_ENVIRONMENT=development`;
+it needs neither Fleet nor release-signing configuration. DigitalOcean support
+does not alter signing: the protected Fleet runner owns DigitalOcean and state
+credentials, while the workload release uses the same qualification/promotion
+contract on any provider.
+
+## Optional GitHub Enterprise Cloud adapter (`github-private`)
+
+Organizations with GitHub Enterprise Cloud may choose GitHub's private
+attestation service instead. Configure `github-private` plus a separate
+repository-scoped Release Attestation GitHub App with only `Attestations: read`.
+Its installation/private key stays on the control planes and is never reused as
+the Fleet App, GHCR pull credential, or CI credential. Private/internal GitHub
+artifact attestations, a missing entitlement, App installation, bundle, or
+verifier configuration all fail closed. This adapter changes only evidence
+verification; staging qualification, production promotion, and rollback remain
+identical.
 
 Control planes cache GitHub's OIDC JWKS only for a bounded lifetime and make
 one coalesced refresh when GitHub rotates to an unknown key ID; repeated random
@@ -324,7 +353,9 @@ new receipt. Do not rebuild a new image for the production tag.
 
 For a production incident, dispatch `rollback` from the protected default
 branch and enter the full source SHA, deployment UUID, exact `@sha256:`
-artifact, and literal `ROLLBACK`. Production environment approval still applies.
+artifact, and literal `ROLLBACK`. Production environment required-reviewer
+approval applies when the GitHub plan and repository visibility support it;
+Norn's promotion/rollback gate remains authoritative in every case.
 Norn verifies the recorded admitted deployment, queues its durable exact
 rollback, and the workflow waits while recording in-progress and terminal
 GitHub deployment status. It never checks out, builds, signs, tags, or
@@ -341,9 +372,13 @@ recovery plan for an outage that removes those dependencies.
 
 ## Control-plane prerequisites
 
-The staging Norn instance must advertise `environment.id=staging`, have
-`NORN_QUALIFICATION_SIGNING_KEY` configured, and already know an InfraSpec for
-the same `app_id` and source repository. The production instance must advertise
+The managed staging Norn instance must advertise `environment.id=staging`, run
+with `NORN_PROFILE=production`, have `NORN_QUALIFICATION_SIGNING_KEY`
+configured, and already know an InfraSpec for the same `app_id` and source
+repository. Treat the production profile as a deployment prerequisite for a
+staging signer because its qualification is production authority. The local
+Mac development instance remains `NORN_ENVIRONMENT=development` and needs none
+of these keys. The production instance must advertise
 `environment.id=production`, run with `NORN_PROFILE=production`, and trust the
 staging signing key through `NORN_TRUSTED_QUALIFICATION_SIGNING_KEYS`.
 
@@ -362,9 +397,14 @@ GitHub HTTPS/SSH source URL and requires it to equal the signed candidate
 repository; the reusable workflow's `image_repository` and `app_id` inputs do
 not authorize either relationship.
 
+Before the first private-repository release, confirm that the pinned Norn
+reusable-workflow repository is either public or explicitly shared with the
+calling personal account or organization through **Actions → General →
+Access**.
+
 Configure each control plane's GitHub Actions workload-identity policy with the
 authoritative exact app-to-repository binding above, the immutable reusable-workflow identity
-`antiartificial/norn/.github/workflows/norn-app-release.yml@<full-norn-sha>`,
+`<github-owner>/norn/.github/workflows/norn-app-release.yml@<full-norn-sha>`,
 environment, and permitted ref patterns. Staging
 accepts only the protected default branch; production accepts only protected
 `v*` tags; recovery accepts only protected-default-branch dispatch. The API is

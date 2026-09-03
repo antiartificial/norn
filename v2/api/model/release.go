@@ -42,6 +42,21 @@ type ReleaseAttestationIdentity struct {
 	Issuer        string `json:"issuer"`
 	SubjectDigest string `json:"subjectDigest"`
 	MaterialSHA   string `json:"materialSha"`
+	// Bundle carries portable Norn-signed provenance and SPDX statements for
+	// ordinary private repositories. GitHub-backed trust adapters leave it nil.
+	Bundle *ReleaseAttestationBundle `json:"bundle,omitempty"`
+}
+
+const NornPrivateAttestationSchema = "norn.private-release-attestation/v1"
+
+// ReleaseAttestationBundle is embedded in the staging qualification so the
+// production control plane can verify private evidence without GitHub API or
+// transparency-log access.
+type ReleaseAttestationBundle struct {
+	SchemaVersion string       `json:"schemaVersion"`
+	KeyID         string       `json:"keyId"`
+	Provenance    DSSEEnvelope `json:"provenance"`
+	SBOM          DSSEEnvelope `json:"sbom"`
 }
 
 type DSSESignature struct {

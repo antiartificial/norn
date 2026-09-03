@@ -90,6 +90,22 @@ permissions needed for the current action, and holds neither token durably.
 DigitalOcean, state, SSH, cloud-init, and Norn runner credentials remain only
 in protected GitHub environments.
 
+When the protected runner exchanges GitHub OIDC for `fleet:operate`, pin its
+direct workflow independently from the release reusable workflow:
+
+```sh
+NORN_GITHUB_ACTIONS_FLEET_ALLOWED_REPOSITORY=YOUR-ORG/norn-fleet@<repository-id>@<owner-id>
+NORN_GITHUB_ACTIONS_FLEET_ALLOWED_WORKFLOW_REFS=YOUR-ORG/norn-fleet/.github/workflows/apply.yml@<full-workflow-sha>
+NORN_GITHUB_ACTIONS_FLEET_ALLOWED_ENVIRONMENTS=production
+NORN_GITHUB_ACTIONS_FLEET_ALLOWED_INTENTS=apply,recover
+```
+
+GitHub's direct-workflow `workflow_ref` claim normally ends in the initiating
+branch (for example `@refs/heads/main`), while `workflow_sha` carries the
+immutable commit containing the workflow. Norn matches the configured path to
+the claim's path and the configured full SHA to `workflow_sha`; it does not
+mistake the mutable branch suffix for an immutable workflow identity.
+
 The `norn-fleet` assistant can validate the IDs, repository, cluster path, and
 private-key permissions and write a `0600` environment fragment:
 

@@ -411,7 +411,7 @@ export interface ReleaseCandidate {
   signerWorkflowSha: string
   ref: string
   attestation: {
-    mode?: 'github-public' | 'github-private' | string
+    mode?: 'github-public' | 'github-private' | 'norn-signed-private' | string
     issuer: string
     subjectDigest: string
     materialSha: string
@@ -421,6 +421,12 @@ export interface ReleaseCandidate {
     verifierIdentity?: string
     provenanceUri?: string
     sbomUri?: string
+    bundle?: {
+      schemaVersion: 'norn.private-release-attestation/v1'
+      keyId: string
+      provenance: DSSEEnvelope
+      sbom: DSSEEnvelope
+    }
   }
 }
 

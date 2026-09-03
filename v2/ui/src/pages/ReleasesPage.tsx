@@ -26,6 +26,10 @@ function verifierIdentity(qualification: ReleaseQualification): string {
   return qualification.candidate.attestation.verifier ?? qualification.candidate.attestation.verifierIdentity ?? 'not reported'
 }
 
+function privateEvidenceSigner(qualification: ReleaseQualification): string | undefined {
+  return qualification.candidate.attestation.mode === 'norn-signed-private' ? qualification.candidate.attestation.bundle?.keyId : undefined
+}
+
 function signedQualification(value: unknown): value is ReleaseQualification {
   if (!value || typeof value !== 'object') return false
   const receipt = value as Record<string, unknown>
@@ -162,7 +166,8 @@ export function ReleasesPage() {
           <article className="qualification-row" key={qualification.id}>
             <div className="qualification-main">
               <div className="qualification-title"><StatusChip tone={qualificationTone(qualification)} label={isExpired(qualification) ? 'expired' : 'signed staging evidence'} /><strong>{short(qualification.deploymentId)}</strong><CopyButton value={qualification.deploymentId} label="Copy deployment ID" /></div>
-	              <dl className="qualification-evidence"><div><dt>Source SHA</dt><dd><code title={qualification.sourceSha}>{short(qualification.sourceSha)}</code><CopyButton value={qualification.sourceSha} label="Copy source SHA" /></dd></div><div><dt>Artifact digest</dt><dd><code title={qualification.artifact}>{short(qualification.artifact, 28)}</code><CopyButton value={qualification.artifact} label="Copy artifact digest" /></dd></div><div><dt>Attestation mode</dt><dd><code>{attestationMode(qualification)}</code></dd></div><div><dt>Verifier</dt><dd><code>{verifierIdentity(qualification)}</code></dd></div><div><dt>Signer</dt><dd><code>{qualification.dsse.signatures[0]?.keyid}</code></dd></div>{qualification.expiresAt && <div><dt>Evidence expires</dt><dd><time dateTime={qualification.expiresAt}>{new Date(qualification.expiresAt).toLocaleString()}</time></dd></div>}</dl>
+	              <dl className="qualification-evidence"><div><dt>Source SHA</dt><dd><code title={qualification.sourceSha}>{short(qualification.sourceSha)}</code><CopyButton value={qualification.sourceSha} label="Copy source SHA" /></dd></div><div><dt>Artifact digest</dt><dd><code title={qualification.artifact}>{short(qualification.artifact, 28)}</code><CopyButton value={qualification.artifact} label="Copy artifact digest" /></dd></div><div><dt>Attestation mode</dt><dd><code>{attestationMode(qualification)}</code></dd></div><div><dt>Verifier</dt><dd><code>{verifierIdentity(qualification)}</code></dd></div>{privateEvidenceSigner(qualification) && <div><dt>Private evidence signer</dt><dd><code>{privateEvidenceSigner(qualification)}</code></dd></div>}<div><dt>Qualification signer</dt><dd><code>{qualification.dsse.signatures[0]?.keyid}</code></dd></div>{qualification.expiresAt && <div><dt>Evidence expires</dt><dd><time dateTime={qualification.expiresAt}>{new Date(qualification.expiresAt).toLocaleString()}</time></dd></div>}</dl>
+              {qualification.candidate.attestation.mode === 'norn-signed-private' && <p className="release-field-hint">Ordinary private repository evidence: Norn verified the GitHub workflow identity and signed portable DSSE provenance plus SPDX evidence with its configured local or KMS-backed key.</p>}
               <CopyButton value={JSON.stringify(qualification)} label="Copy complete signed qualification JSON" />
             </div>
             <div className="qualification-actions">{isStaging && <Button size="sm" variant="secondary" disabled={qualificationRequest.isPending} onClick={() => qualify(qualification.deploymentId)}>Re-qualify</Button>}</div>

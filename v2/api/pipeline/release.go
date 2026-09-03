@@ -11,8 +11,11 @@ import (
 	"norn/v2/api/saga"
 )
 
-func (p *Pipeline) VerifyReleaseArtifact(ctx context.Context, sourceSHA, artifact string, candidate model.ReleaseCandidate) error {
-	return p.verifyReleaseArtifactAdmission(ctx, &state{commitSHA: sourceSHA, imageTag: artifact, artifactBound: true, candidate: candidate})
+func (p *Pipeline) VerifyReleaseArtifact(ctx context.Context, spec *model.InfraSpec, sourceSHA, artifact string, candidate model.ReleaseCandidate) error {
+	if spec == nil {
+		return fmt.Errorf("standalone release verification requires the server-owned app spec")
+	}
+	return p.verifyReleaseArtifactAdmission(ctx, &state{spec: spec, commitSHA: sourceSHA, imageTag: artifact, artifactBound: true, candidate: candidate})
 }
 
 // releaseBindingAdmission repeats the server-owned source and OCI namespace

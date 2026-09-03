@@ -43,6 +43,7 @@ const (
 	ScopeAppsExec        = "apps:exec"
 	ScopePlatformOperate = "platform:operate"
 	ScopeHostOperate     = "host:operate"
+	ScopeReleaseAttest   = "release:attest"
 	ScopeReleaseStage    = "release:stage"
 	ScopeReleaseQualify  = "release:qualify"
 	ScopeReleasePromote  = "release:promote"
@@ -54,12 +55,12 @@ const (
 var accessTokenScopes = map[string]struct{}{
 	ScopeAPIRead: {}, ScopeAPIWrite: {}, ScopeEventsRead: {}, ScopeAppsExec: {},
 	ScopePlatformOperate: {}, ScopeHostOperate: {}, ScopeAdmin: {},
-	ScopeFleetOperate: {},
-	ScopeReleaseStage: {}, ScopeReleaseQualify: {}, ScopeReleasePromote: {}, ScopeReleaseRollback: {},
+	ScopeFleetOperate:  {},
+	ScopeReleaseAttest: {}, ScopeReleaseStage: {}, ScopeReleaseQualify: {}, ScopeReleasePromote: {}, ScopeReleaseRollback: {},
 }
 
 func AccessTokenScopeNames() []string {
-	return []string{ScopeAPIRead, ScopeAPIWrite, ScopeEventsRead, ScopeAppsExec, ScopePlatformOperate, ScopeHostOperate, ScopeReleaseStage, ScopeReleaseQualify, ScopeReleasePromote, ScopeReleaseRollback, ScopeFleetOperate, ScopeAdmin}
+	return []string{ScopeAPIRead, ScopeAPIWrite, ScopeEventsRead, ScopeAppsExec, ScopePlatformOperate, ScopeHostOperate, ScopeReleaseAttest, ScopeReleaseStage, ScopeReleaseQualify, ScopeReleasePromote, ScopeReleaseRollback, ScopeFleetOperate, ScopeAdmin}
 }
 
 // CIIdentity is copied from a verified GitHub OIDC assertion into Norn's own

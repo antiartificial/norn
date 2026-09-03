@@ -4,11 +4,15 @@ import (
 	"context"
 	"crypto/ed25519"
 	"encoding/base64"
+	"encoding/json"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
 
 	"norn/v2/api/model"
+	"norn/v2/api/privateattestation"
 )
 
 func TestRollbackEnvironmentPreservesLiveLane(t *testing.T) {
@@ -146,10 +150,53 @@ func TestVerifyReleaseArtifactRechecksAllControlsOutsideNormalProductionDeploy(t
 		},
 	}
 	artifact := "registry.example.test/demo@sha256:" + strings.Repeat("a", 64)
-	if err := pipeline.VerifyReleaseArtifact(context.Background(), strings.Repeat("b", 40), artifact, model.ReleaseCandidate{}); err != nil {
+	if err := pipeline.VerifyReleaseArtifact(context.Background(), &model.InfraSpec{App: "demo"}, strings.Repeat("b", 40), artifact, model.ReleaseCandidate{}); err != nil {
 		t.Fatalf("final rollback admission failed: %v", err)
 	}
 	if got, want := strings.Join(checks, ","), "registry,signature,vulnerability"; got != want {
 		t.Fatalf("release re-admission controls = %q, want %q", got, want)
+	}
+}
+
+func TestNornPrivateRollbackAdmissionBindsServerOwnedApp(t *testing.T) {
+	public, private, err := ed25519.GenerateKey(nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	keyPath := filepath.Join(t.TempDir(), "private.key")
+	if err := os.WriteFile(keyPath, []byte(base64.RawStdEncoding.EncodeToString(private)), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	signer, err := privateattestation.NewLocalSigner(keyPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	verifier, err := privateattestation.NewVerifier([]string{base64.RawStdEncoding.EncodeToString(public)})
+	if err != nil {
+		t.Fatal(err)
+	}
+	sourceSHA := strings.Repeat("b", 40)
+	digest := "sha256:" + strings.Repeat("a", 64)
+	artifact := "registry.example.test/norn/demo@" + digest
+	signerSHA := strings.Repeat("c", 40)
+	signerRef := "personal-owner/norn/.github/workflows/norn-app-release.yml@" + signerSHA
+	candidate := model.ReleaseCandidate{
+		Provider: "github-actions", Repository: "personal-owner/private-app", RepositoryID: "101", OwnerID: "202", RepositoryVisibility: "private", RunID: "303", RunAttempt: "1", WorkflowRef: "personal-owner/private-app/.github/workflows/release.yml@refs/heads/main", WorkflowSHA: sourceSHA, SignerWorkflowRef: signerRef, SignerWorkflowSHA: signerSHA, Ref: "refs/heads/main",
+		Attestation: model.ReleaseAttestationIdentity{Mode: "norn-signed-private", Verifier: "Norn private DSSE", Issuer: "https://token.actions.githubusercontent.com", SubjectDigest: digest, MaterialSHA: sourceSHA},
+	}
+	sbom := json.RawMessage(`{"spdxVersion":"SPDX-2.3","SPDXID":"SPDXRef-DOCUMENT","documentNamespace":"https://example.invalid/spdx/private-app"}`)
+	candidate.Attestation.Bundle, err = privateattestation.Issue(context.Background(), signer, "demo", sourceSHA, artifact, sbom, candidate)
+	if err != nil {
+		t.Fatal(err)
+	}
+	pipeline := &Pipeline{
+		ReleaseAdmissionMode: "attested", ReleaseAttestationTrustMode: "norn-signed-private", ReleaseAttestationIssuer: candidate.Attestation.Issuer, ReleaseAttestationRepositories: []string{candidate.Repository}, ReleaseAttestationWorkflowRefs: []string{signerRef}, ReleaseRequireSBOM: true,
+		VerifyArtifact: func(context.Context, string) error { return nil }, ScanArtifact: func(context.Context, string) error { return nil }, VerifyNornPrivateAttestations: verifier.Verify,
+	}
+	if err := pipeline.VerifyReleaseArtifact(context.Background(), &model.InfraSpec{App: "demo"}, sourceSHA, artifact, candidate); err != nil {
+		t.Fatalf("valid Norn-private rollback evidence rejected: %v", err)
+	}
+	if err := pipeline.VerifyReleaseArtifact(context.Background(), &model.InfraSpec{App: "another-app"}, sourceSHA, artifact, candidate); err == nil {
+		t.Fatal("Norn-private rollback evidence was accepted for a different server-owned app")
 	}
 }

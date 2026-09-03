@@ -39,13 +39,14 @@ func (db *DB) AcquireAppOperationLock(ctx context.Context, app string) (func(), 
 }
 
 type OperationFilter struct {
-	App       string
-	Kind      string
-	Ref       string
-	Status    string
-	ExcludeID string
-	Active    bool
-	Limit     int
+	App                    string
+	Kind                   string
+	Ref                    string
+	Status                 string
+	ExcludeID              string
+	Active                 bool
+	UnexpiredQualification bool
+	Limit                  int
 }
 
 type OperationMetric struct {
@@ -329,6 +330,9 @@ func (db *DB) ListOperations(ctx context.Context, filter OperationFilter) ([]mod
 	if filter.Active {
 		clauses = append(clauses, "status IN ('queued', 'running')")
 	}
+	if filter.UnexpiredQualification {
+		clauses = append(clauses, "kind = 'release.qualification' AND payload ? 'expiresAt' AND (payload->>'expiresAt')::timestamptz > now()")
+	}
 
 	query := `SELECT id, kind, app, saga_id, ref, status, risk, source, message, payload, metadata, attempts, max_attempts, locked_by, locked_until, next_attempt_at, last_error, started_at, updated_at, finished_at FROM operations`
 	if len(clauses) > 0 {
@@ -356,6 +360,114 @@ func (db *DB) ListOperations(ctx context.Context, filter OperationFilter) ([]mod
 		out = append(out, op)
 	}
 	return out, rows.Err()
+}
+
+// ListOperationSummaries deliberately avoids selecting or decoding payload and
+// metadata. Release operations can embed multi-megabyte signed evidence, while
+// the overview and Fleet UIs poll these lists frequently. Only the two small,
+// non-secret Fleet GitHub fields required to reconnect a plan to its review URL
+// are projected from JSON.
+func (db *DB) ListOperationSummaries(ctx context.Context, filter OperationFilter) ([]model.Operation, error) {
+	if filter.Limit <= 0 {
+		filter.Limit = 50
+	}
+	clauses := []string{}
+	args := []interface{}{}
+	add := func(clause string, value interface{}) {
+		args = append(args, value)
+		clauses = append(clauses, fmt.Sprintf(clause, len(args)))
+	}
+	if filter.App != "" {
+		add("app = $%d", filter.App)
+	}
+	if filter.Kind != "" {
+		add("kind = $%d", filter.Kind)
+	}
+	if filter.Ref != "" {
+		add("ref = $%d", filter.Ref)
+	}
+	if filter.Status != "" {
+		add("status = $%d", filter.Status)
+	}
+	if filter.ExcludeID != "" {
+		add("id != $%d", filter.ExcludeID)
+	}
+	if filter.Active {
+		clauses = append(clauses, "status IN ('queued', 'running')")
+	}
+	if filter.UnexpiredQualification {
+		clauses = append(clauses, "kind = 'release.qualification' AND payload ? 'expiresAt' AND (payload->>'expiresAt')::timestamptz > now()")
+	}
+
+	query := `SELECT id, kind, app, saga_id, ref, status, risk, source, message,
+		attempts, max_attempts, locked_by, locked_until, next_attempt_at, last_error,
+		started_at, updated_at, finished_at,
+		CASE WHEN kind LIKE 'fleet.github.%' THEN COALESCE(payload->>'planId', '') ELSE '' END,
+		CASE WHEN kind LIKE 'fleet.github.%' THEN COALESCE(payload->>'url', '') ELSE '' END
+		FROM operations`
+	if len(clauses) > 0 {
+		query += " WHERE " + strings.Join(clauses, " AND ")
+	}
+	args = append(args, filter.Limit)
+	query += fmt.Sprintf(" ORDER BY started_at DESC LIMIT $%d", len(args))
+
+	rows, err := db.Pool.Query(ctx, query, args...)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var out []model.Operation
+	for rows.Next() {
+		var op model.Operation
+		var planID, workflowURL string
+		if err := rows.Scan(&op.ID, &op.Kind, &op.App, &op.SagaID, &op.Ref, &op.Status, &op.Risk, &op.Source, &op.Message, &op.Attempts, &op.MaxAttempts, &op.LockedBy, &op.LockedUntil, &op.NextAttemptAt, &op.LastError, &op.StartedAt, &op.UpdatedAt, &op.FinishedAt, &planID, &workflowURL); err != nil {
+			return nil, err
+		}
+		if strings.HasPrefix(op.Kind, "fleet.github.") {
+			op.Payload = map[string]interface{}{"planId": planID, "url": workflowURL}
+		}
+		out = append(out, op)
+	}
+	return out, rows.Err()
+}
+
+// ListPromotionQualifications projects only the signed staging receipt from
+// successful production promotion operations. Staging and production use
+// independent databases, so production cannot list staging's
+// release.qualification rows directly.
+func (db *DB) ListPromotionQualifications(ctx context.Context, app string, limit int) ([]model.ReleaseQualification, error) {
+	if db == nil || db.Pool == nil || strings.TrimSpace(app) == "" {
+		return nil, fmt.Errorf("operation store is unavailable")
+	}
+	if limit <= 0 {
+		limit = 3
+	}
+	rows, err := db.Pool.Query(ctx, `
+		SELECT metadata->'promotionQualification'
+		FROM operations
+		WHERE app=$1 AND kind='app.deploy' AND status='succeeded'
+		  AND metadata->>'environment'='production'
+		  AND metadata ? 'promotionQualification'
+		  AND metadata->'promotionQualification' ? 'expiresAt'
+		  AND (metadata->'promotionQualification'->>'expiresAt')::timestamptz > now()
+		ORDER BY started_at DESC LIMIT $2`, app, limit)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var receipts []model.ReleaseQualification
+	for rows.Next() {
+		var raw []byte
+		if err := rows.Scan(&raw); err != nil {
+			return nil, err
+		}
+		var receipt model.ReleaseQualification
+		if json.Unmarshal(raw, &receipt) != nil {
+			continue
+		}
+		receipts = append(receipts, receipt)
+	}
+	return receipts, rows.Err()
 }
 
 func (db *DB) GetOperation(ctx context.Context, id string) (*model.Operation, error) {
