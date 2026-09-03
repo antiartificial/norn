@@ -42,6 +42,11 @@ job "myapp-cleanup" {
 }
 ```
 
+Each scheduled child run has no automatic retry: Norn submits it with zero task
+restart attempts and a reschedule policy of zero attempts with `unlimited` set
+to `false`. A failed run remains failed until its next scheduled dispatch or an
+operator-triggered run.
+
 ## CLI Management
 
 ```bash

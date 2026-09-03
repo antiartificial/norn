@@ -139,6 +139,8 @@ All service TaskGroups use this update strategy:
 - `process.timezone`, `process.env.TZ`, or app `env.TZ` sets the Nomad periodic `time_zone`
 - Same environment, resource, and volume handling as service jobs
 - No health checks or Consul registration
+- No retries: task restarts are disabled (`attempts: 0`, `mode: fail`) and
+  failed allocations cannot be rescheduled (`attempts: 0`, `unlimited: false`)
 
 ```yaml
 # infraspec
@@ -168,6 +170,7 @@ job "myapp-cleanup" {
 `TranslateBatch(spec, procName, proc, imageTag, env, jobID)` creates a one-shot Nomad **batch** job for function invocations.
 
 - Job ID: caller-supplied (includes execution ID for uniqueness)
-- No retries: restart policy is `attempts: 0, mode: fail`
+- No retries: task restarts are disabled (`attempts: 0`, `mode: fail`) and
+  failed allocations cannot be rescheduled (`attempts: 0`, `unlimited: false`)
 - `function.memory` overrides `resources.memory` if set
 - Same environment and volume handling as other job types
