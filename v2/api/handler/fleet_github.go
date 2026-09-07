@@ -94,11 +94,6 @@ func (h *Handler) DispatchFleetGitHubApply(w http.ResponseWriter, r *http.Reques
 		WriteControlProblem(w, r, http.StatusConflict, "fleet_plan_invalid", "stored fleet capacity plan is invalid")
 		return
 	}
-	if existing := h.existingFleetGitHubOperation(r, plan.ID, "fleet.github.apply-dispatch"); existing != nil {
-		existing.AttachReceipt()
-		writeJSON(w, existing)
-		return
-	}
 	destructive := typed.Action == "replace" || (typed.Action == "scale" && typed.Proposed.Desired < typed.Current.Desired)
 	if destructive && !request.AllowDestructive {
 		WriteControlProblem(w, r, http.StatusConflict, "fleet_github_destructive_ack_required", "replacement and contraction plans require explicit allowDestructive acknowledgement")
@@ -106,6 +101,23 @@ func (h *Handler) DispatchFleetGitHubApply(w http.ResponseWriter, r *http.Reques
 	}
 	fleetEnvironment, ok := h.requireMatchingFleetEnvironment(w, r)
 	if !ok {
+		return
+	}
+	// A completed operation is replay-safe only within the same current lane.
+	// In particular, disposable/fleet/nyc3 is shared by pilot runs and cannot
+	// be used to replay a receipt that was authorized by an older authority.
+	if existing := h.existingFleetGitHubOperation(r, plan.ID, "fleet.github.apply-dispatch"); existing != nil {
+		binding, bindingErr := h.db.GetFleetGitHubDispatch(r.Context(), plan.ID)
+		if bindingErr != nil {
+			WriteControlProblem(w, r, http.StatusInternalServerError, "fleet_github_receipt_failed", "could not read the protected dispatch binding for the completed operation")
+			return
+		}
+		if !fleetGitHubDispatchMatchesCurrentLane(*binding, fleetEnvironment, configuredPilotRunID(h.cfg), request.AllowDestructive) {
+			WriteControlProblem(w, r, http.StatusConflict, "fleet_github_dispatch_binding_mismatch", "the completed dispatch receipt belongs to a different current Fleet lane")
+			return
+		}
+		existing.AttachReceipt()
+		writeJSON(w, existing)
 		return
 	}
 	// Serialize durable binding creation and external dispatch per plan. This
@@ -147,7 +159,7 @@ func (h *Handler) DispatchFleetGitHubApply(w http.ResponseWriter, r *http.Reques
 		}
 		binding, bindingErr = h.db.CreateFleetGitHubDispatch(r.Context(), store.FleetGitHubDispatch{
 			PlanID: plan.ID, PlanRunID: approved.PlanRunID, PlanSHA256: approved.PlanSHA, ApprovedHeadSHA: approved.ApprovedHeadSHA,
-			FleetEnvironment: fleetEnvironment, AllowDestructive: request.AllowDestructive, DispatchNonceSHA256: nonceHash, DispatchState: "prepared",
+			PilotRunID: approved.PilotRunID, FleetEnvironment: fleetEnvironment, AllowDestructive: request.AllowDestructive, DispatchNonceSHA256: nonceHash, DispatchState: "prepared",
 		})
 		if bindingErr != nil {
 			WriteControlProblem(w, r, http.StatusInternalServerError, "fleet_github_receipt_failed", "could not persist the protected dispatch binding")
@@ -157,16 +169,16 @@ func (h *Handler) DispatchFleetGitHubApply(w http.ResponseWriter, r *http.Reques
 		WriteControlProblem(w, r, http.StatusInternalServerError, "fleet_github_receipt_failed", "could not read the protected dispatch binding")
 		return
 	}
-	if binding.FleetEnvironment != fleetEnvironment || binding.AllowDestructive != request.AllowDestructive {
+	if !fleetGitHubDispatchMatchesCurrentLane(*binding, fleetEnvironment, configuredPilotRunID(h.cfg), request.AllowDestructive) {
 		WriteControlProblem(w, r, http.StatusConflict, "fleet_github_dispatch_binding_mismatch", "this plan already has a different protected dispatch binding")
 		return
 	}
 	if binding.RunID > 0 {
-		result := &githubapp.Dispatch{RunID: binding.RunID, URL: binding.WorkflowURL, PlanRunID: binding.PlanRunID, PlanSHA: binding.PlanSHA256, ApprovedHeadSHA: binding.ApprovedHeadSHA, Existing: true}
+		result := &githubapp.Dispatch{RunID: binding.RunID, URL: binding.WorkflowURL, PlanRunID: binding.PlanRunID, PlanSHA: binding.PlanSHA256, ApprovedHeadSHA: binding.ApprovedHeadSHA, PilotRunID: binding.PilotRunID, Existing: true}
 		h.recordCompletedFleetGitHubDispatch(w, r, principal, plan.ID, fleetEnvironment, request.AllowDestructive, result)
 		return
 	}
-	approved := &githubapp.Dispatch{PlanRunID: binding.PlanRunID, PlanSHA: binding.PlanSHA256, ApprovedHeadSHA: binding.ApprovedHeadSHA}
+	approved := &githubapp.Dispatch{PlanRunID: binding.PlanRunID, PlanSHA: binding.PlanSHA256, ApprovedHeadSHA: binding.ApprovedHeadSHA, PilotRunID: binding.PilotRunID}
 	if binding.DispatchState == "submitting" {
 		// The process may have died after the single permitted POST. Recover by
 		// matching only the durable nonce hash against exact GitHub run identity;
@@ -213,7 +225,7 @@ func (h *Handler) DispatchFleetGitHubApply(w http.ResponseWriter, r *http.Reques
 func (h *Handler) recordCompletedFleetGitHubDispatch(w http.ResponseWriter, r *http.Request, principal AccessPrincipal, planID, fleetEnvironment string, allowDestructive bool, result *githubapp.Dispatch) {
 	op, err := h.recordFleetGitHubOperation(r, principal, planID, "fleet.github.apply-dispatch", "protected fleet apply dispatched", map[string]interface{}{
 		"planId": planID, "runId": result.RunID, "url": result.URL, "planRunId": result.PlanRunID,
-		"planSha256": result.PlanSHA, "approvedHeadSha": result.ApprovedHeadSHA, "fleetEnvironment": fleetEnvironment, "allowDestructive": allowDestructive, "existing": result.Existing,
+		"planSha256": result.PlanSHA, "approvedHeadSha": result.ApprovedHeadSHA, "pilotRunId": result.PilotRunID, "fleetEnvironment": fleetEnvironment, "allowDestructive": allowDestructive, "existing": result.Existing,
 	})
 	if err != nil {
 		WriteControlProblem(w, r, http.StatusInternalServerError, "fleet_github_receipt_failed", "workflow dispatch exists but its durable Norn receipt could not be stored; retry safely")
@@ -264,6 +276,17 @@ func fleetEnvironmentMatchesControlPlane(controlEnvironment, fleetEnvironment st
 		return true
 	}
 	return strings.HasPrefix(fleetEnvironment, controlEnvironment+"/")
+}
+
+func configuredPilotRunID(cfg *config.Config) string {
+	if cfg == nil {
+		return ""
+	}
+	return cfg.FleetGitHubPilotRunID
+}
+
+func fleetGitHubDispatchMatchesCurrentLane(binding store.FleetGitHubDispatch, fleetEnvironment, pilotRunID string, allowDestructive bool) bool {
+	return binding.FleetEnvironment == fleetEnvironment && binding.PilotRunID == pilotRunID && binding.AllowDestructive == allowDestructive
 }
 
 func configuredFleetEnvironment(document *fleet.Document, cfg *config.Config) (string, error) {

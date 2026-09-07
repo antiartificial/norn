@@ -117,8 +117,11 @@ type RunnerAttemptStartRequest struct {
 	PlanSHA256      string `json:"planSha256"`
 	// DispatchNonce is write-only proof from the protected workflow input. It
 	// is hashed for comparison and is never returned or copied into attempts.
-	DispatchNonce           string `json:"dispatchNonce"`
-	SourceDispatchRunID     int64  `json:"sourceDispatchRunId"`
+	DispatchNonce       string `json:"dispatchNonce"`
+	SourceDispatchRunID int64  `json:"sourceDispatchRunId"`
+	// PilotRunID is mandatory at the protocol boundary: disposable lanes bind
+	// it to the dispatch and current authority, while ordinary lanes send "".
+	PilotRunID              string `json:"pilotRunId"`
 	Resume                  bool   `json:"resume,omitempty"`
 	WorkflowURL             string `json:"workflowUrl,omitempty"`
 	HeartbeatTimeoutSeconds int    `json:"heartbeatTimeoutSeconds,omitempty"`

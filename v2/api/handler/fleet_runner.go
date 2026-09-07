@@ -129,7 +129,7 @@ func (h *Handler) StartFleetRunnerAttempt(w http.ResponseWriter, r *http.Request
 			return
 		}
 		previous := &existing[0]
-		if previous.SourceDispatchRunID != request.SourceDispatchRunID || previous.CommitSHA != request.CommitSHA || previous.PlanSHA256 != request.PlanSHA256 {
+		if previous.SourceDispatchRunID != request.SourceDispatchRunID || previous.PilotRunID != request.PilotRunID || previous.CommitSHA != request.CommitSHA || previous.PlanSHA256 != request.PlanSHA256 {
 			WriteControlProblem(w, r, http.StatusConflict, "fleet_runner_attempt_binding_conflict", "recovery does not match the durable source runner attempt")
 			return
 		}
@@ -145,7 +145,7 @@ func (h *Handler) StartFleetRunnerAttempt(w http.ResponseWriter, r *http.Request
 			ID: uuid.NewString(), PlanID: previous.PlanID, RunnerAttemptID: request.RunnerAttemptID,
 			Status: model.FleetRunnerAttemptRunning, CurrentPhase: previous.CurrentPhase,
 			CommitSHA: previous.CommitSHA, PlanSHA256: previous.PlanSHA256, WorkflowURL: request.WorkflowURL,
-			SourceDispatchRunID: previous.SourceDispatchRunID, Recovery: true,
+			SourceDispatchRunID: previous.SourceDispatchRunID, PilotRunID: previous.PilotRunID, Recovery: true,
 			PrincipalSubject: principalIdentity(principal), RetryOf: previous.ID,
 			HeartbeatTimeoutSeconds: previous.HeartbeatTimeoutSeconds, Revision: 1,
 			StartedAt: now, HeartbeatAt: now, UpdatedAt: now,
@@ -193,7 +193,7 @@ func (h *Handler) StartFleetRunnerAttempt(w http.ResponseWriter, r *http.Request
 		ID: uuid.NewString(), PlanID: plan.ID, RunnerAttemptID: strings.TrimSpace(request.RunnerAttemptID),
 		Status: model.FleetRunnerAttemptRunning, CurrentPhase: currentPhase,
 		CommitSHA: request.CommitSHA, PlanSHA256: request.PlanSHA256, WorkflowURL: strings.TrimSpace(request.WorkflowURL),
-		SourceDispatchRunID: request.SourceDispatchRunID, Recovery: request.Resume,
+		SourceDispatchRunID: request.SourceDispatchRunID, PilotRunID: request.PilotRunID, Recovery: request.Resume,
 		PrincipalSubject: principalIdentity(principal), HeartbeatTimeoutSeconds: normalizedFleetHeartbeatTimeout(request.HeartbeatTimeoutSeconds),
 		Revision: 1, StartedAt: now, PhaseStartedAt: now, HeartbeatAt: now, UpdatedAt: now,
 		Metadata: fleetRunnerTimingMetadata(classification),
@@ -444,6 +444,9 @@ func validateFleetRunnerStart(request fleet.RunnerAttemptStartRequest) error {
 	if !fleetDispatchNonceRe.MatchString(request.DispatchNonce) || request.SourceDispatchRunID <= 0 {
 		return fmt.Errorf("dispatchNonce and a positive sourceDispatchRunId are required")
 	}
+	if strings.TrimSpace(request.PilotRunID) != request.PilotRunID {
+		return fmt.Errorf("pilotRunId must be exact without surrounding whitespace")
+	}
 	if request.HeartbeatTimeoutSeconds != 0 && (request.HeartbeatTimeoutSeconds < minFleetHeartbeatTimeout || request.HeartbeatTimeoutSeconds > maxFleetHeartbeatTimeout) {
 		return fmt.Errorf("heartbeatTimeoutSeconds must be between %d and %d", minFleetHeartbeatTimeout, maxFleetHeartbeatTimeout)
 	}
@@ -502,6 +505,7 @@ func fleetRunnerAttemptMatchesStartRequest(attempt *model.FleetRunnerAttempt, re
 		attempt.CommitSHA == request.CommitSHA &&
 		attempt.PlanSHA256 == request.PlanSHA256 &&
 		attempt.SourceDispatchRunID == request.SourceDispatchRunID &&
+		attempt.PilotRunID == request.PilotRunID &&
 		attempt.Recovery == request.Resume &&
 		attempt.WorkflowURL == strings.TrimSpace(request.WorkflowURL) &&
 		attempt.HeartbeatTimeoutSeconds == normalizedFleetHeartbeatTimeout(request.HeartbeatTimeoutSeconds) &&
@@ -542,6 +546,18 @@ func validateFleetRunnerDispatchBinding(cfg *config.Config, principal AccessPrin
 	}
 	if request.PlanSHA256 != binding.PlanSHA256 || request.CommitSHA != binding.ApprovedHeadSHA || (!request.Resume && ci.SHA != binding.ApprovedHeadSHA) {
 		return fmt.Errorf("runner commit or plan does not match the protected dispatch")
+	}
+	// Environment "staging" is intentionally not sufficient authority for a
+	// disposable lane.  The exact run travels from the workflow request through
+	// the durable dispatch and must still be the authority's current run.  A
+	// non-disposable lane has no pilot capability at all, so every copy is empty.
+	if binding.FleetEnvironment == "disposable/fleet/nyc3" {
+		current := configuredPilotRunID(cfg)
+		if current == "" || request.PilotRunID == "" || request.PilotRunID != binding.PilotRunID || binding.PilotRunID != current {
+			return fmt.Errorf("disposable runner pilotRunId does not match dispatch and current authority")
+		}
+	} else if request.PilotRunID != "" || binding.PilotRunID != "" || configuredPilotRunID(cfg) != "" {
+		return fmt.Errorf("ordinary Fleet runner lanes require an empty pilotRunId")
 	}
 	if ci.Repository != fleetRepositoryFromBinding(cfg.GitHubActionsFleetAllowedRepository) || ci.Environment != fleetControlEnvironment(binding.FleetEnvironment) || !ci.RefProtected || ci.RunID == "" || ci.RunAttempt == "" {
 		return fmt.Errorf("runner GitHub identity does not match the protected Fleet environment")
@@ -590,6 +606,12 @@ func fleetRepositoryFromBinding(value string) string {
 }
 
 func fleetControlEnvironment(value string) string {
+	// Disposable runs intentionally use the staging GitHub Environment for
+	// secret access. The exact pilotRunId binding is what separates those runs;
+	// deriving "disposable" here would reject the checked-in protected lane.
+	if value == "disposable/fleet/nyc3" {
+		return "staging"
+	}
 	environment, _, _ := strings.Cut(strings.TrimSpace(value), "/")
 	return environment
 }

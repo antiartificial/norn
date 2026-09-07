@@ -94,6 +94,7 @@ type Status struct {
 	PlanWorkflow  string `json:"planWorkflow,omitempty"`
 	ApplyWorkflow string `json:"applyWorkflow,omitempty"`
 	Environment   string `json:"environment,omitempty"`
+	PilotRunID    string `json:"pilotRunId,omitempty"`
 	Message       string `json:"message,omitempty"`
 }
 
@@ -111,6 +112,7 @@ type Dispatch struct {
 	PlanRunID       int64  `json:"planRunId"`
 	PlanSHA         string `json:"planSha256"`
 	ApprovedHeadSHA string `json:"approvedHeadSha"`
+	PilotRunID      string `json:"pilotRunId,omitempty"`
 	Existing        bool   `json:"existing"`
 }
 
@@ -204,7 +206,7 @@ func validateConfig(cfg Config) error {
 }
 
 func (c *Client) Status(ctx context.Context) Status {
-	status := Status{SchemaVersion: "norn.fleet-github-status/v1", Configured: true, Repository: c.cfg.Repository, Installation: c.cfg.InstallationID, Environment: c.cfg.Environment, DefaultBranch: c.cfg.DefaultBranch, ConfigPath: c.cfg.ConfigPath, PlanWorkflow: c.cfg.PlanWorkflow, ApplyWorkflow: c.cfg.ApplyWorkflow}
+	status := Status{SchemaVersion: "norn.fleet-github-status/v1", Configured: true, Repository: c.cfg.Repository, Installation: c.cfg.InstallationID, Environment: c.cfg.Environment, PilotRunID: c.cfg.PilotRunID, DefaultBranch: c.cfg.DefaultBranch, ConfigPath: c.cfg.ConfigPath, PlanWorkflow: c.cfg.PlanWorkflow, ApplyWorkflow: c.cfg.ApplyWorkflow}
 	token, err := c.installationToken(ctx, map[string]string{"metadata": "read"})
 	if err != nil {
 		status.Message = "GitHub App authentication failed"
@@ -343,7 +345,7 @@ func (c *Client) DispatchBoundPlan(ctx context.Context, planID, fleetEnvironment
 	if fleetEnvironment != c.fleetRoot() {
 		return nil, fmt.Errorf("requested fleet environment is not the configured fleet root")
 	}
-	if approved == nil || approved.PlanRunID <= 0 || !sha256Re.MatchString(approved.PlanSHA) || !commitSHARe.MatchString(approved.ApprovedHeadSHA) || !dispatchNonceRe.MatchString(nonce) {
+	if approved == nil || approved.PlanRunID <= 0 || !sha256Re.MatchString(approved.PlanSHA) || !commitSHARe.MatchString(approved.ApprovedHeadSHA) || !dispatchNonceRe.MatchString(nonce) || approved.PilotRunID != c.cfg.PilotRunID {
 		return nil, fmt.Errorf("dispatch binding is invalid")
 	}
 	token, err := c.installationToken(ctx, map[string]string{"actions": "write", "contents": "read", "pull_requests": "read"})
@@ -365,7 +367,7 @@ func (c *Client) DispatchBoundPlan(ctx context.Context, planID, fleetEnvironment
 		if verifyErr := c.verifyApplyRun(existing, planID, fleetEnvironment, approved, nonce, appActor); verifyErr != nil {
 			return nil, verifyErr
 		}
-		return &Dispatch{RunID: existing.ID, URL: existing.HTMLURL, PlanRunID: approved.PlanRunID, PlanSHA: approved.PlanSHA, ApprovedHeadSHA: approved.ApprovedHeadSHA, Existing: true}, nil
+		return &Dispatch{RunID: existing.ID, URL: existing.HTMLURL, PlanRunID: approved.PlanRunID, PlanSHA: approved.PlanSHA, ApprovedHeadSHA: approved.ApprovedHeadSHA, PilotRunID: approved.PilotRunID, Existing: true}, nil
 	}
 	if existing, findErr := c.findApplyRun(ctx, token, planID, fleetEnvironment, approved, nonce, appActor); findErr != nil {
 		return nil, fmt.Errorf("%w: %v", ErrDispatchPreSubmit, findErr)
@@ -409,7 +411,7 @@ func (c *Client) DispatchBoundPlan(ctx context.Context, planID, fleetEnvironment
 	if err := c.verifyApplyRun(run, planID, fleetEnvironment, approved, nonce, appActor); err != nil {
 		return c.recoverSubmittedDispatch(ctx, token, planID, fleetEnvironment, approved, nonce, appActor)
 	}
-	return &Dispatch{RunID: response.WorkflowRunID, URL: response.HTMLURL, PlanRunID: approved.PlanRunID, PlanSHA: approved.PlanSHA, ApprovedHeadSHA: approved.ApprovedHeadSHA}, nil
+	return &Dispatch{RunID: response.WorkflowRunID, URL: response.HTMLURL, PlanRunID: approved.PlanRunID, PlanSHA: approved.PlanSHA, ApprovedHeadSHA: approved.ApprovedHeadSHA, PilotRunID: approved.PilotRunID}, nil
 }
 
 // RecoverBoundPlan performs lookup-only recovery of a dispatch whose POST may
@@ -418,7 +420,7 @@ func (c *Client) DispatchBoundPlan(ctx context.Context, planID, fleetEnvironment
 // parsing their exact run title and comparing hashes in constant time.  This
 // method never creates a GitHub workflow dispatch.
 func (c *Client) RecoverBoundPlan(ctx context.Context, planID, fleetEnvironment string, approved *Dispatch, nonceHash string) (*Dispatch, error) {
-	if fleetEnvironment != c.fleetRoot() || approved == nil || approved.PlanRunID <= 0 || !sha256Re.MatchString(approved.PlanSHA) || !commitSHARe.MatchString(approved.ApprovedHeadSHA) || !sha256Re.MatchString(nonceHash) {
+	if fleetEnvironment != c.fleetRoot() || approved == nil || approved.PlanRunID <= 0 || !sha256Re.MatchString(approved.PlanSHA) || !commitSHARe.MatchString(approved.ApprovedHeadSHA) || !sha256Re.MatchString(nonceHash) || approved.PilotRunID != c.cfg.PilotRunID {
 		return nil, ErrDispatchAmbiguous
 	}
 	token, err := c.installationToken(ctx, map[string]string{"actions": "write", "contents": "read", "pull_requests": "read"})
@@ -493,7 +495,7 @@ func (c *Client) resolveApprovedPlan(ctx context.Context, token, planID, fleetEn
 		}
 		planSHA, artifactErr := c.planArtifactSHA(ctx, token, run.ID, fleetEnvironment)
 		if artifactErr == nil {
-			return &Dispatch{PlanRunID: run.ID, PlanSHA: planSHA, ApprovedHeadSHA: pulls.MergeCommitSHA}, nil
+			return &Dispatch{PlanRunID: run.ID, PlanSHA: planSHA, ApprovedHeadSHA: pulls.MergeCommitSHA, PilotRunID: c.cfg.PilotRunID}, nil
 		}
 	}
 	return nil, ErrNotReady
@@ -597,7 +599,7 @@ func (c *Client) findApplyRun(ctx context.Context, token, planID, fleetEnvironme
 			return nil, err
 		}
 		if err := c.verifyApplyRun(candidate, planID, fleetEnvironment, approved, nonce, appActor); err == nil {
-			return &Dispatch{RunID: candidate.ID, URL: candidate.HTMLURL, PlanRunID: approved.PlanRunID, PlanSHA: approved.PlanSHA, ApprovedHeadSHA: approved.ApprovedHeadSHA}, nil
+			return &Dispatch{RunID: candidate.ID, URL: candidate.HTMLURL, PlanRunID: approved.PlanRunID, PlanSHA: approved.PlanSHA, ApprovedHeadSHA: approved.ApprovedHeadSHA, PilotRunID: approved.PilotRunID}, nil
 		}
 	}
 	return nil, nil
@@ -625,7 +627,7 @@ func (c *Client) findApplyRunByNonceHash(ctx context.Context, token, planID, fle
 		if match != nil {
 			return nil, ErrDispatchAmbiguous
 		}
-		match = &Dispatch{RunID: candidate.ID, URL: candidate.HTMLURL, PlanRunID: approved.PlanRunID, PlanSHA: approved.PlanSHA, ApprovedHeadSHA: approved.ApprovedHeadSHA}
+		match = &Dispatch{RunID: candidate.ID, URL: candidate.HTMLURL, PlanRunID: approved.PlanRunID, PlanSHA: approved.PlanSHA, ApprovedHeadSHA: approved.ApprovedHeadSHA, PilotRunID: approved.PilotRunID}
 	}
 	return match, nil
 }

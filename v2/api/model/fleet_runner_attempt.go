@@ -33,6 +33,7 @@ type FleetRunnerAttempt struct {
 	RootAttemptID           string                   `json:"rootAttemptId"`
 	RunnerAttemptID         string                   `json:"runnerAttemptId,omitempty"`
 	SourceDispatchRunID     int64                    `json:"sourceDispatchRunId"`
+	PilotRunID              string                   `json:"pilotRunId"`
 	Recovery                bool                     `json:"recovery,omitempty"`
 	Status                  FleetRunnerAttemptStatus `json:"status"`
 	CurrentPhase            string                   `json:"currentPhase"`

@@ -56,6 +56,9 @@ var fleetGitHubStatusCmd = &cobra.Command{
 		if status.Message != "" {
 			fmt.Fprintln(cmd.OutOrStdout(), status.Message)
 		}
+		if status.PilotRunID != "" {
+			fmt.Fprintf(cmd.OutOrStdout(), "disposable pilot run: %s\n", status.PilotRunID)
+		}
 		if !status.Connected {
 			return fmt.Errorf("fleet GitHub App is not ready")
 		}

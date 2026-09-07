@@ -219,6 +219,7 @@ func Migrate(db *DB) error {
 			attempt                   INT NOT NULL,
 			root_attempt_id           TEXT NOT NULL DEFAULT '',
 			source_dispatch_run_id    BIGINT NOT NULL DEFAULT 0,
+			pilot_run_id              TEXT NOT NULL DEFAULT '',
 			recovery                  BOOLEAN NOT NULL DEFAULT false,
 			runner_attempt_id         TEXT NOT NULL DEFAULT '',
 			status                    TEXT NOT NULL DEFAULT 'queued',
@@ -257,6 +258,7 @@ func Migrate(db *DB) error {
 			ON fleet_runner_attempts(status, heartbeat_at);
 		ALTER TABLE fleet_runner_attempts ADD COLUMN IF NOT EXISTS root_attempt_id TEXT NOT NULL DEFAULT '';
 		ALTER TABLE fleet_runner_attempts ADD COLUMN IF NOT EXISTS source_dispatch_run_id BIGINT NOT NULL DEFAULT 0;
+		ALTER TABLE fleet_runner_attempts ADD COLUMN IF NOT EXISTS pilot_run_id TEXT NOT NULL DEFAULT '';
 		ALTER TABLE fleet_runner_attempts ADD COLUMN IF NOT EXISTS recovery BOOLEAN NOT NULL DEFAULT false;
 		ALTER TABLE fleet_runner_attempts ADD COLUMN IF NOT EXISTS phase_started_at TIMESTAMPTZ;
 		-- Legacy records predate phase timing. Their original attempt start is the
@@ -274,6 +276,7 @@ func Migrate(db *DB) error {
 			plan_run_id BIGINT NOT NULL,
 			plan_sha256 TEXT NOT NULL,
 			approved_head_sha TEXT NOT NULL,
+			pilot_run_id TEXT NOT NULL DEFAULT '',
 			fleet_environment TEXT NOT NULL,
 			allow_destructive BOOLEAN NOT NULL,
 			dispatch_nonce_sha256 TEXT NOT NULL,
@@ -286,6 +289,7 @@ func Migrate(db *DB) error {
 		);
 		ALTER TABLE fleet_github_dispatches ADD COLUMN IF NOT EXISTS dispatch_state TEXT NOT NULL DEFAULT 'prepared';
 		ALTER TABLE fleet_github_dispatches ADD COLUMN IF NOT EXISTS submission_started_at TIMESTAMPTZ;
+		ALTER TABLE fleet_github_dispatches ADD COLUMN IF NOT EXISTS pilot_run_id TEXT NOT NULL DEFAULT '';
 		ALTER TABLE fleet_github_dispatches DROP COLUMN IF EXISTS dispatch_nonce;
 		CREATE UNIQUE INDEX IF NOT EXISTS idx_fleet_github_dispatch_nonce ON fleet_github_dispatches(dispatch_nonce_sha256);
 

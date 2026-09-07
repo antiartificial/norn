@@ -82,7 +82,7 @@ func TestControlOpenAPIParsesAndLocalRefsResolve(t *testing.T) {
 	if runnerAttempt["properties"].(map[string]interface{})["rootAttemptId"].(map[string]interface{})["readOnly"] != true {
 		t.Error("FleetRunnerAttempt.rootAttemptId must be server-derived/readOnly")
 	}
-	for _, field := range []string{"sourceDispatchRunId", "recovery"} {
+	for _, field := range []string{"sourceDispatchRunId", "pilotRunId", "recovery"} {
 		if runnerAttempt["properties"].(map[string]interface{})[field].(map[string]interface{})["readOnly"] != true {
 			t.Errorf("FleetRunnerAttempt.%s must be server-derived/readOnly", field)
 		}
@@ -94,7 +94,7 @@ func TestControlOpenAPIParsesAndLocalRefsResolve(t *testing.T) {
 		t.Error("FleetRunnerAttempt must expose additive advisory timing")
 	}
 	runnerStart := schemas["FleetRunnerAttemptStartRequest"].(map[string]interface{})
-	for _, field := range []string{"dispatchNonce", "sourceDispatchRunId"} {
+	for _, field := range []string{"dispatchNonce", "sourceDispatchRunId", "pilotRunId"} {
 		if !containsRequiredField(runnerStart["required"].([]interface{}), field) {
 			t.Errorf("FleetRunnerAttemptStartRequest must require %s", field)
 		}
