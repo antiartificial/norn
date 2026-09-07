@@ -30,6 +30,9 @@ type BeaconMetric struct {
 type IncidentGroupKey struct {
 	CorrelationKey string `json:"correlationKey,omitempty"`
 	DedupeKey      string `json:"dedupeKey,omitempty"`
+	Source         string `json:"source,omitempty"`
+	App            string `json:"app,omitempty"`
+	Environment    string `json:"environment,omitempty"`
 }
 
 func (db *DB) InsertBeaconEvent(ctx context.Context, event *model.BeaconEvent) error {
@@ -283,17 +286,36 @@ func (db *DB) OpenIncidentGroup(ctx context.Context, key IncidentGroupKey) (int,
 }
 
 func incidentGroupWhere(key IncidentGroupKey) (string, []interface{}, int) {
+	var where string
+	var args []interface{}
 	switch {
 	case key.CorrelationKey != "":
-		return "metadata->>'correlationKey' = $1", []interface{}{key.CorrelationKey}, 2
+		where, args = "metadata->>'correlationKey' = $1", []interface{}{key.CorrelationKey}
 	case key.DedupeKey != "":
-		return "dedupe_key = $1", []interface{}{key.DedupeKey}, 2
+		where, args = "dedupe_key = $1", []interface{}{key.DedupeKey}
 	default:
 		return "", nil, 1
 	}
+	for _, scope := range []struct {
+		column string
+		value  string
+	}{{"source", key.Source}, {"app", key.App}, {"environment", key.Environment}} {
+		if scope.value == "" {
+			continue
+		}
+		args = append(args, scope.value)
+		where += fmt.Sprintf(" AND %s = $%d", scope.column, len(args))
+	}
+	return where, args, len(args) + 1
 }
 
 func (db *DB) ListCorrelatedEvents(ctx context.Context, correlationKey string, limit int) ([]model.BeaconEvent, error) {
+	return db.ListCorrelatedEventsScoped(ctx, correlationKey, limit, "", "", "")
+}
+
+// ListCorrelatedEventsScoped narrows a timeline to an incident's physical
+// source/app/environment scope. Empty fields retain the original key-only API.
+func (db *DB) ListCorrelatedEventsScoped(ctx context.Context, correlationKey string, limit int, source, app, environment string) ([]model.BeaconEvent, error) {
 	if limit <= 0 || limit > 200 {
 		limit = 50
 	}
@@ -304,9 +326,12 @@ func (db *DB) ListCorrelatedEvents(ctx context.Context, correlationKey string, l
 		       acknowledgement_note, snoozed_until, metadata
 		FROM beacon_events
 		WHERE metadata->>'correlationKey' = $1
+		  AND ($3 = '' OR source = $3)
+		  AND ($4 = '' OR app = $4)
+		  AND ($5 = '' OR environment = $5)
 		ORDER BY occurred_at ASC
 		LIMIT $2
-	`, correlationKey, limit)
+	`, correlationKey, limit, source, app, environment)
 	if err != nil {
 		return nil, err
 	}
@@ -339,6 +364,59 @@ func (db *DB) LaterBeaconEventExists(ctx context.Context, app, eventType string,
 	return exists, err
 }
 
+// LaterBeaconEventForCorrelation returns the newest event of a correlated
+// event family after the supplied timestamp. Callers use the complete event to
+// verify that a recovery has the same scope as the incident it would close.
+func (db *DB) LaterBeaconEventForCorrelation(ctx context.Context, source, app, environment, eventType, correlationKey string, after time.Time) (*model.BeaconEvent, error) {
+	row := db.Pool.QueryRow(ctx, `
+		SELECT id, source, app, environment, type, severity, title, body,
+		       dedupe_key, occurred_at, acknowledged_at, acknowledged_by,
+		       acknowledgement_note, snoozed_until, metadata
+		FROM beacon_events
+		WHERE source = $1
+		  AND app = $2
+		  AND environment = $3
+		  AND type = $4
+		  AND severity = 'info'
+		  AND metadata->>'correlationKey' = $5
+		  AND occurred_at > $6
+		ORDER BY occurred_at DESC, id DESC
+		LIMIT 1
+	`, source, app, environment, eventType, correlationKey, after)
+	event, err := scanBeaconEvent(row)
+	if err != nil {
+		return nil, err
+	}
+	return &event, nil
+}
+
+// LaterLegacyCapacityRecoveryForWarning returns the newest exact-ID legacy
+// adoption recovery. Generic global legacy recoveries are intentionally not
+// evidence because they cannot identify one physical host's warning safely.
+func (db *DB) LaterLegacyCapacityRecoveryForWarning(ctx context.Context, source, app, environment, warningID string, after time.Time) (*model.BeaconEvent, error) {
+	row := db.Pool.QueryRow(ctx, `
+		SELECT id, source, app, environment, type, severity, title, body,
+		       dedupe_key, occurred_at, acknowledged_at, acknowledged_by,
+		       acknowledgement_note, snoozed_until, metadata
+		FROM beacon_events
+		WHERE source = $1
+		  AND app = $2
+		  AND environment = $3
+		  AND type = 'service.capacity.recovered'
+		  AND severity = 'info'
+		  AND metadata->>'correlationKey' = 'norn-host:minimum-capacity'
+		  AND metadata->>'legacyCapacityWarningID' = $4
+		  AND occurred_at > $5
+		ORDER BY occurred_at DESC, id DESC
+		LIMIT 1
+	`, source, app, environment, warningID, after)
+	event, err := scanBeaconEvent(row)
+	if err != nil {
+		return nil, err
+	}
+	return &event, nil
+}
+
 func (db *DB) RecentDedupeExists(ctx context.Context, dedupeKey string, within time.Duration) (bool, error) {
 	var exists bool
 	err := db.Pool.QueryRow(ctx, `
@@ -352,7 +430,9 @@ func (db *DB) RecentDedupeExists(ctx context.Context, dedupeKey string, within t
 
 type ActiveIncident struct {
 	CorrelationKey string    `json:"correlationKey"`
+	Source         string    `json:"source"`
 	App            string    `json:"app"`
+	Environment    string    `json:"environment,omitempty"`
 	LatestSeverity string    `json:"latestSeverity"`
 	LatestType     string    `json:"latestType"`
 	LatestTitle    string    `json:"latestTitle"`
@@ -368,10 +448,12 @@ func (db *DB) ListActiveIncidents(ctx context.Context, limit int) ([]ActiveIncid
 		limit = 25
 	}
 	rows, err := db.Pool.Query(ctx, `
-		WITH ranked AS (
+		WITH scoped AS (
 			SELECT
 				metadata->>'correlationKey' AS correlation_key,
+				source,
 				app,
+				environment,
 				severity,
 				type,
 				title,
@@ -379,9 +461,21 @@ func (db *DB) ListActiveIncidents(ctx context.Context, limit int) ([]ActiveIncid
 				occurred_at,
 				acknowledged_at,
 				snoozed_until,
+				COUNT(*) OVER (
+					PARTITION BY source, app, environment, metadata->>'correlationKey'
+				) AS event_count,
+				MIN(occurred_at) OVER (
+					PARTITION BY source, app, environment, metadata->>'correlationKey'
+				) AS first_seen,
+				MAX(occurred_at) OVER (
+					PARTITION BY source, app, environment, metadata->>'correlationKey'
+				) AS last_seen,
+				SUM(CASE WHEN severity IN ('warning', 'critical') AND acknowledged_at IS NULL AND (snoozed_until IS NULL OR snoozed_until < now()) THEN 1 ELSE 0 END) OVER (
+					PARTITION BY source, app, environment, metadata->>'correlationKey'
+				) AS open_count,
 				ROW_NUMBER() OVER (
-					PARTITION BY metadata->>'correlationKey'
-					ORDER BY occurred_at DESC
+					PARTITION BY source, app, environment, metadata->>'correlationKey'
+					ORDER BY CASE WHEN severity IN ('warning', 'critical') AND acknowledged_at IS NULL AND (snoozed_until IS NULL OR snoozed_until < now()) THEN occurred_at END DESC NULLS LAST, id DESC
 				) AS rn
 			FROM beacon_events
 			WHERE metadata->>'correlationKey' IS NOT NULL
@@ -390,22 +484,25 @@ func (db *DB) ListActiveIncidents(ctx context.Context, limit int) ([]ActiveIncid
 		groups AS (
 			SELECT
 				correlation_key,
+				rn,
+				source,
 				app,
+				environment,
 				severity AS latest_severity,
 				type AS latest_type,
 				title AS latest_title,
 				id AS latest_event_id,
-				COUNT(*) OVER (PARTITION BY correlation_key) AS event_count,
-				MIN(occurred_at) OVER (PARTITION BY correlation_key) AS first_seen,
-				MAX(occurred_at) OVER (PARTITION BY correlation_key) AS last_seen,
-				SUM(CASE WHEN acknowledged_at IS NULL AND (snoozed_until IS NULL OR snoozed_until < now()) THEN 1 ELSE 0 END) OVER (PARTITION BY correlation_key) AS open_count
-			FROM ranked
-			WHERE rn = 1
+				event_count,
+				first_seen,
+				last_seen,
+				open_count
+			FROM scoped
 		)
-		SELECT correlation_key, app, latest_severity, latest_type, latest_title,
+		SELECT correlation_key, source, app, environment, latest_severity, latest_type, latest_title,
 		       event_count, first_seen, last_seen, open_count, latest_event_id
 		FROM groups
-		WHERE open_count > 0
+		WHERE rn = 1
+		  AND open_count > 0
 		  AND latest_severity IN ('warning', 'critical')
 		ORDER BY last_seen DESC
 		LIMIT $1
@@ -419,7 +516,7 @@ func (db *DB) ListActiveIncidents(ctx context.Context, limit int) ([]ActiveIncid
 	for rows.Next() {
 		var inc ActiveIncident
 		if err := rows.Scan(
-			&inc.CorrelationKey, &inc.App, &inc.LatestSeverity, &inc.LatestType,
+			&inc.CorrelationKey, &inc.Source, &inc.App, &inc.Environment, &inc.LatestSeverity, &inc.LatestType,
 			&inc.LatestTitle, &inc.EventCount, &inc.FirstSeen, &inc.LastSeen,
 			&inc.OpenCount, &inc.LatestEventID,
 		); err != nil {
@@ -430,18 +527,66 @@ func (db *DB) ListActiveIncidents(ctx context.Context, limit int) ([]ActiveIncid
 	return incidents, rows.Err()
 }
 
-func (db *DB) AutoAckCorrelatedEvents(ctx context.Context, correlationKey, resolvingEventID string) (int, error) {
+func (db *DB) AutoAckCorrelatedEvents(ctx context.Context, source, app, environment, correlationKey, resolvingEventID string, resolvingOccurredAt time.Time) (int, error) {
+	return db.autoAckCorrelatedEvents(ctx, source, app, environment, correlationKey, resolvingEventID, resolvingOccurredAt, "")
+}
+
+// AutoAckCorrelatedEventsOfType narrows a correlated recovery to one warning
+// type. Capacity recoveries use this so another event family cannot close a
+// host-capacity incident that happens to share an old correlation key.
+func (db *DB) AutoAckCorrelatedEventsOfType(ctx context.Context, source, app, environment, correlationKey, resolvingEventID string, resolvingOccurredAt time.Time, eventType string) (int, error) {
+	return db.autoAckCorrelatedEvents(ctx, source, app, environment, correlationKey, resolvingEventID, resolvingOccurredAt, eventType)
+}
+
+// AutoAckCapacityWarningByID is deliberately narrower than correlated
+// acknowledgement. It supports the one-time migration of one identified
+// legacy Mini warning without permitting a new host to close every global
+// norn-host:minimum-capacity warning in a shared event store.
+func (db *DB) AutoAckCapacityWarningByID(ctx context.Context, warningID, source, app, environment, correlationKey, resolvingEventID string, resolvingOccurredAt time.Time) (int, error) {
 	tag, err := db.Pool.Exec(ctx, `
 		UPDATE beacon_events
 		SET acknowledged_at = now(),
 		    acknowledged_by = 'system',
-		    acknowledgement_note = 'resolved by ' || $2,
+		    acknowledgement_note = 'resolved by ' || $6,
 		    snoozed_until = NULL
-		WHERE metadata->>'correlationKey' = $1
+		WHERE id = $1
+		  AND source = $2
+		  AND app = $3
+		  AND environment = $4
+		  AND metadata->>'correlationKey' = $5
+		  AND type = 'service.capacity.below_minimum'
 		  AND severity IN ('warning', 'critical')
 		  AND acknowledged_at IS NULL
-		  AND id != $2
-	`, correlationKey, resolvingEventID)
+		  AND occurred_at <= $7
+	`, warningID, source, app, environment, correlationKey, resolvingEventID, resolvingOccurredAt)
+	if err != nil {
+		return 0, err
+	}
+	return int(tag.RowsAffected()), nil
+}
+
+func (db *DB) autoAckCorrelatedEvents(ctx context.Context, source, app, environment, correlationKey, resolvingEventID string, resolvingOccurredAt time.Time, eventType string) (int, error) {
+	whereType := ""
+	args := []interface{}{source, app, environment, correlationKey, resolvingEventID, resolvingOccurredAt}
+	if eventType != "" {
+		whereType = " AND type = $7"
+		args = append(args, eventType)
+	}
+	tag, err := db.Pool.Exec(ctx, `
+		UPDATE beacon_events
+		SET acknowledged_at = now(),
+		    acknowledged_by = 'system',
+		    acknowledgement_note = 'resolved by ' || $5,
+		    snoozed_until = NULL
+		WHERE source = $1
+		  AND app = $2
+		  AND environment = $3
+		  AND metadata->>'correlationKey' = $4
+		  AND severity IN ('warning', 'critical')
+		  AND acknowledged_at IS NULL
+		  AND id != $5
+		  AND occurred_at <= $6
+`+whereType, args...)
 	if err != nil {
 		return 0, err
 	}

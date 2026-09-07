@@ -46,6 +46,12 @@ type InfraSpec struct {
 // it is never a provider-specific VM size or cloud resource identifier.
 type PlacementSpec struct {
 	NodePool string `yaml:"nodePool" json:"nodePool"`
+	// DistinctHosts emits Nomad's hard group-level distinct_hosts constraint.
+	// It is intentionally opt-in: the constraint makes a rollout canary an
+	// additional concurrent allocation, so a group with N replicas and C
+	// canaries needs at least N+C eligible clients while the canary is live:
+	// two replicas plus one canary requires three eligible clients.
+	DistinctHosts bool `yaml:"distinctHosts,omitempty" json:"distinctHosts,omitempty"`
 }
 
 type Endpoint struct {
@@ -95,6 +101,13 @@ func (s *InfraSpec) EffectiveNodePool() string {
 		return s.Placement.NodePool
 	}
 	return ""
+}
+
+// RequiresDistinctHosts reports whether service task groups must be placed on
+// different Nomad clients. Scheduled and one-shot batch work do not share a
+// service task group and therefore do not inherit this service HA guarantee.
+func (s *InfraSpec) RequiresDistinctHosts() bool {
+	return s != nil && s.Placement != nil && s.Placement.DistinctHosts
 }
 
 func ResolveProcessTimezone(spec *InfraSpec, proc Process) string {

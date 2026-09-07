@@ -6,6 +6,7 @@ import (
 	"os"
 	"sort"
 	"text/tabwriter"
+	"time"
 
 	"github.com/spf13/cobra"
 
@@ -19,22 +20,11 @@ var (
 	fleetStrategy         string
 	fleetReason           string
 	fleetAllowDestructive bool
-	fleetRunnerID         string
-	fleetCommitSHA        string
-	fleetPlanSHA256       string
-	fleetWorkflowURL      string
-	fleetPhase            string
-	fleetMessage          string
-	fleetAttemptReason    string
-	fleetHeartbeatTimeout int
-	fleetSequence         int64
-	fleetRevision         int64
 )
 
 func init() {
 	rootCmd.AddCommand(fleetCmd)
-	fleetCmd.AddCommand(fleetPoolsCmd, fleetValidateCmd, fleetPlanCmd, fleetReplaceCmd, fleetReconcileCmd, fleetCheckpointsCmd, fleetAttemptsCmd, fleetAttemptCmd, fleetGitHubCmd)
-	fleetAttemptCmd.AddCommand(fleetAttemptStartCmd, fleetAttemptHeartbeatCmd, fleetAttemptAdvanceCmd, fleetAttemptRetryCmd, fleetAttemptCancelCmd)
+	fleetCmd.AddCommand(fleetPoolsCmd, fleetValidateCmd, fleetPlanCmd, fleetReplaceCmd, fleetReconcileCmd, fleetCheckpointsCmd, fleetAttemptsCmd, fleetGitHubCmd)
 	fleetGitHubCmd.AddCommand(fleetGitHubStatusCmd, fleetGitHubPullRequestCmd, fleetGitHubApplyCmd)
 	fleetGitHubApplyCmd.Flags().BoolVar(&fleetAllowDestructive, "allow-destructive", false, "Acknowledge a reviewed replacement or contraction")
 	for _, command := range []*cobra.Command{fleetPlanCmd, fleetReplaceCmd, fleetReconcileCmd} {
@@ -46,41 +36,10 @@ func init() {
 	if err := fleetReplaceCmd.MarkFlagRequired("size"); err != nil {
 		panic(err)
 	}
-	fleetAttemptStartCmd.Flags().StringVar(&fleetRunnerID, "runner-id", "", "Unique protected runner attempt ID")
-	fleetAttemptStartCmd.Flags().StringVar(&fleetCommitSHA, "commit", "", "Reviewed norn-fleet commit SHA")
-	fleetAttemptStartCmd.Flags().StringVar(&fleetPlanSHA256, "plan-sha256", "", "Reviewed Terraform plan SHA-256")
-	fleetAttemptStartCmd.Flags().StringVar(&fleetWorkflowURL, "workflow-url", "", "Credential-free HTTPS runner URL")
-	fleetAttemptStartCmd.Flags().IntVar(&fleetHeartbeatTimeout, "heartbeat-timeout", 120, "Seconds before a silent runner is abandoned")
-	for _, name := range []string{"runner-id", "commit", "plan-sha256"} {
-		_ = fleetAttemptStartCmd.MarkFlagRequired(name)
-	}
-	fleetAttemptHeartbeatCmd.Flags().StringVar(&fleetPhase, "phase", "", "Current durable phase")
-	fleetAttemptHeartbeatCmd.Flags().StringVar(&fleetMessage, "message", "", "Bounded runner progress message")
-	fleetAttemptHeartbeatCmd.Flags().Int64Var(&fleetSequence, "sequence", 0, "Monotonic heartbeat sequence")
-	fleetAttemptHeartbeatCmd.Flags().Int64Var(&fleetRevision, "revision", 0, "Expected durable attempt revision")
-	for _, name := range []string{"phase", "sequence", "revision"} {
-		_ = fleetAttemptHeartbeatCmd.MarkFlagRequired(name)
-	}
-	fleetAttemptAdvanceCmd.Flags().StringVar(&fleetPhase, "phase", "", "Current phase with recorded successful proof")
-	fleetAttemptAdvanceCmd.Flags().Int64Var(&fleetRevision, "revision", 0, "Expected durable attempt revision")
-	_ = fleetAttemptAdvanceCmd.MarkFlagRequired("phase")
-	_ = fleetAttemptAdvanceCmd.MarkFlagRequired("revision")
-	fleetAttemptRetryCmd.Flags().StringVar(&fleetRunnerID, "runner-id", "", "Unique replacement runner attempt ID")
-	fleetAttemptRetryCmd.Flags().StringVar(&fleetAttemptReason, "reason", "", "Operator reason for retry")
-	fleetAttemptRetryCmd.Flags().StringVar(&fleetWorkflowURL, "workflow-url", "", "Credential-free HTTPS replacement runner URL")
-	fleetAttemptRetryCmd.Flags().Int64Var(&fleetRevision, "revision", 0, "Expected failed or abandoned attempt revision")
-	for _, name := range []string{"runner-id", "reason", "revision"} {
-		_ = fleetAttemptRetryCmd.MarkFlagRequired(name)
-	}
-	fleetAttemptCancelCmd.Flags().StringVar(&fleetAttemptReason, "reason", "", "Operator reason for cancellation")
-	fleetAttemptCancelCmd.Flags().Int64Var(&fleetRevision, "revision", 0, "Expected running attempt revision")
-	_ = fleetAttemptCancelCmd.MarkFlagRequired("reason")
-	_ = fleetAttemptCancelCmd.MarkFlagRequired("revision")
 }
 
 var fleetCmd = &cobra.Command{Use: "fleet", Short: "Inspect and plan GitOps-managed fleet capacity"}
 var fleetGitHubCmd = &cobra.Command{Use: "github", Short: "Use the repository-scoped GitHub App fleet bridge"}
-var fleetAttemptCmd = &cobra.Command{Use: "attempt", Short: "Drive a durable protected-runner attempt"}
 
 var fleetGitHubStatusCmd = &cobra.Command{
 	Use: "status", Short: "Verify the fleet GitHub App installation", Args: cobra.NoArgs,
@@ -210,81 +169,38 @@ var fleetCheckpointsCmd = &cobra.Command{
 }
 
 var fleetAttemptsCmd = &cobra.Command{
-	Use: "attempts <plan-id>", Short: "Show durable runner liveness and phase state", Args: cobra.ExactArgs(1),
+	Use: "attempts <plan-id>", Short: "Show durable runner liveness and phase state (runner mutations are GitHub-workflow-only)", Args: cobra.ExactArgs(1),
 	RunE: func(cmd *cobra.Command, args []string) error {
 		result, err := client.FleetRunnerAttempts(args[0])
 		if err != nil {
 			return fmt.Errorf("fleet runner attempts: %w", err)
 		}
 		w := tabwriter.NewWriter(cmd.OutOrStdout(), 0, 0, 2, ' ', 0)
-		fmt.Fprintln(w, "ATTEMPT\tSTATUS\tPHASE\tHEARTBEAT\tREVISION\tRUNNER")
+		fmt.Fprintln(w, "ATTEMPT\tSTATUS\tPHASE\tELAPSED\tETA\tCONFIDENCE\tHEARTBEAT\tREVISION\tRUNNER")
 		for _, attempt := range result.Attempts {
-			fmt.Fprintf(w, "%d\t%s\t%s\t%s\t%d\t%s\n", attempt.Attempt, attempt.Status, attempt.CurrentPhase, attempt.HeartbeatAt, attempt.Revision, attempt.RunnerAttemptID)
+			elapsed, eta, confidence := fleetAttemptTimingDisplay(attempt.Timing)
+			fmt.Fprintf(w, "%d\t%s\t%s\t%s\t%s\t%s\t%s\t%d\t%s\n", attempt.Attempt, attempt.Status, attempt.CurrentPhase, elapsed, eta, confidence, attempt.HeartbeatAt, attempt.Revision, attempt.RunnerAttemptID)
 		}
 		return w.Flush()
 	},
 }
 
-var fleetAttemptStartCmd = &cobra.Command{
-	Use: "start <plan-id>", Short: "Register a protected runner and begin durable heartbeats", Args: cobra.ExactArgs(1),
-	RunE: func(cmd *cobra.Command, args []string) error {
-		attempt, err := client.StartFleetRunnerAttempt(args[0], fleetRunnerID, fleetCommitSHA, fleetPlanSHA256, fleetWorkflowURL, fleetHeartbeatTimeout)
-		if err != nil {
-			return fmt.Errorf("start fleet runner attempt: %w", err)
-		}
-		return printFleetAttempt(cmd.OutOrStdout(), attempt)
-	},
-}
-
-var fleetAttemptHeartbeatCmd = &cobra.Command{
-	Use: "heartbeat <plan-id> <attempt-id>", Short: "Record monotonic liveness for the current phase", Args: cobra.ExactArgs(2),
-	RunE: func(cmd *cobra.Command, args []string) error {
-		attempt, err := client.HeartbeatFleetRunnerAttempt(args[0], args[1], fleetPhase, fleetMessage, fleetSequence, fleetRevision)
-		if err != nil {
-			return fmt.Errorf("heartbeat fleet runner attempt: %w", err)
-		}
-		return printFleetAttempt(cmd.OutOrStdout(), attempt)
-	},
-}
-
-var fleetAttemptAdvanceCmd = &cobra.Command{
-	Use: "advance <plan-id> <attempt-id>", Short: "Advance only after successful phase evidence exists", Args: cobra.ExactArgs(2),
-	RunE: func(cmd *cobra.Command, args []string) error {
-		attempt, err := client.AdvanceFleetRunnerAttempt(args[0], args[1], fleetPhase, fleetRevision)
-		if err != nil {
-			return fmt.Errorf("advance fleet runner attempt: %w", err)
-		}
-		return printFleetAttempt(cmd.OutOrStdout(), attempt)
-	},
-}
-
-var fleetAttemptRetryCmd = &cobra.Command{
-	Use: "retry <plan-id> <attempt-id>", Short: "Create the next numbered attempt from a failed or abandoned run", Args: cobra.ExactArgs(2),
-	RunE: func(cmd *cobra.Command, args []string) error {
-		attempt, err := client.RetryFleetRunnerAttempt(args[0], args[1], fleetRunnerID, fleetAttemptReason, fleetWorkflowURL, fleetRevision)
-		if err != nil {
-			return fmt.Errorf("retry fleet runner attempt: %w", err)
-		}
-		return printFleetAttempt(cmd.OutOrStdout(), attempt)
-	},
-}
-
-var fleetAttemptCancelCmd = &cobra.Command{
-	Use: "cancel <plan-id> <attempt-id>", Short: "Cancel the current revision of a live runner attempt", Args: cobra.ExactArgs(2),
-	RunE: func(cmd *cobra.Command, args []string) error {
-		attempt, err := client.CancelFleetRunnerAttempt(args[0], args[1], fleetAttemptReason, fleetRevision)
-		if err != nil {
-			return fmt.Errorf("cancel fleet runner attempt: %w", err)
-		}
-		return printFleetAttempt(cmd.OutOrStdout(), attempt)
-	},
-}
-
-func printFleetAttempt(out io.Writer, attempt *api.FleetRunnerAttempt) error {
-	w := tabwriter.NewWriter(out, 0, 0, 2, ' ', 0)
-	fmt.Fprintln(w, "ATTEMPT\tSTATUS\tPHASE\tHEARTBEAT\tREVISION\tID")
-	fmt.Fprintf(w, "%d\t%s\t%s\t%s\t%d\t%s\n", attempt.Attempt, attempt.Status, attempt.CurrentPhase, attempt.HeartbeatAt, attempt.Revision, attempt.ID)
-	return w.Flush()
+func fleetAttemptTimingDisplay(timing *api.FleetRunnerTiming) (elapsed, eta, confidence string) {
+	if timing == nil {
+		return "—", "—", "—"
+	}
+	elapsed = (time.Duration(timing.ElapsedMs) * time.Millisecond).Round(time.Second).String()
+	confidence = timing.Confidence
+	if timing.Availability != "available" || timing.EstimatedRemaining == nil {
+		return elapsed, "—", confidence
+	}
+	low := (time.Duration(timing.EstimatedRemaining.LowMs) * time.Millisecond).Round(time.Second).String()
+	high := (time.Duration(timing.EstimatedRemaining.HighMs) * time.Millisecond).Round(time.Second).String()
+	eta = low
+	if low != high {
+		eta += "–" + high
+	}
+	return elapsed, eta, confidence
 }
 
 func fleetPlanCommand(use, short, forcedStrategy string) *cobra.Command {

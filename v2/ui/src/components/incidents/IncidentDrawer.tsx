@@ -51,6 +51,13 @@ function correlationKey(selection: IncidentSelection): string | null {
   return selection.kind === 'correlated' ? selection.incident.correlationKey : metadataCorrelationKey(selection.event)
 }
 
+function incidentScope(selection: IncidentSelection): { source: string; app: string; environment: string } {
+  if (selection.kind === 'correlated') {
+    return { source: selection.incident.source, app: selection.incident.app, environment: selection.incident.environment ?? '' }
+  }
+  return { source: selection.event.source ?? '', app: selection.event.app, environment: selection.event.environment ?? '' }
+}
+
 export function useIncidentActions(duration: string) {
   const queryClient = useQueryClient()
   const { toast } = useToast()
@@ -73,9 +80,10 @@ export function IncidentDrawer({ selection, onClose }: IncidentDrawerProps) {
   const action = useIncidentActions(duration)
   const key = selection ? correlationKey(selection) : null
   const app = selection ? incidentApp(selection) : ''
+  const scope = selection ? incidentScope(selection) : { source: '', app: '', environment: '' }
   const timeline = useQuery({
-    queryKey: ['events', 'correlated', key],
-    queryFn: () => apiFetch<CorrelatedEventsResponse>(`/api/events/correlated?key=${encodeURIComponent(key ?? '')}&limit=50`),
+    queryKey: ['events', 'correlated', key, scope],
+    queryFn: () => apiFetch<CorrelatedEventsResponse>(`/api/events/correlated?key=${encodeURIComponent(key ?? '')}&source=${encodeURIComponent(scope.source)}&app=${encodeURIComponent(scope.app)}&environment=${encodeURIComponent(scope.environment)}&limit=50`),
     enabled: Boolean(selection && key),
     staleTime: 15_000,
   })

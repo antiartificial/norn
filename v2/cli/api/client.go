@@ -1151,10 +1151,23 @@ func (c *Client) ListEvents(app, eventType, severity string, limit int) ([]Beaco
 }
 
 func (c *Client) ListCorrelatedEvents(correlationKey string, limit int) ([]BeaconEvent, error) {
+	return c.ListCorrelatedEventsScoped(correlationKey, limit, "", "", "")
+}
+
+func (c *Client) ListCorrelatedEventsScoped(correlationKey string, limit int, source, app, environment string) ([]BeaconEvent, error) {
 	values := url.Values{}
 	values.Set("key", correlationKey)
 	if limit > 0 {
 		values.Set("limit", fmt.Sprintf("%d", limit))
+	}
+	if source != "" {
+		values.Set("source", source)
+	}
+	if app != "" {
+		values.Set("app", app)
+	}
+	if environment != "" {
+		values.Set("environment", environment)
 	}
 	path := "/api/events/correlated?" + values.Encode()
 	var resp struct {
@@ -1168,7 +1181,9 @@ func (c *Client) ListCorrelatedEvents(correlationKey string, limit int) ([]Beaco
 
 type ActiveIncident struct {
 	CorrelationKey string `json:"correlationKey"`
+	Source         string `json:"source"`
 	App            string `json:"app"`
+	Environment    string `json:"environment,omitempty"`
 	LatestSeverity string `json:"latestSeverity"`
 	LatestType     string `json:"latestType"`
 	LatestTitle    string `json:"latestTitle"`
@@ -1860,12 +1875,54 @@ type FleetRunnerAttempt struct {
 	HeartbeatTimeoutSeconds int                    `json:"heartbeatTimeoutSeconds"`
 	Revision                int64                  `json:"revision"`
 	StartedAt               string                 `json:"startedAt"`
+	PhaseStartedAt          string                 `json:"phaseStartedAt"`
 	HeartbeatAt             string                 `json:"heartbeatAt"`
 	HeartbeatExpiresAt      string                 `json:"heartbeatExpiresAt"`
 	UpdatedAt               string                 `json:"updatedAt"`
 	FinishedAt              string                 `json:"finishedAt,omitempty"`
 	LastError               string                 `json:"lastError,omitempty"`
 	Metadata                map[string]interface{} `json:"metadata,omitempty"`
+	Timing                  *FleetRunnerTiming     `json:"timing,omitempty"`
+}
+
+type FleetTimingRange struct {
+	LowMs  int64 `json:"lowMs"`
+	HighMs int64 `json:"highMs"`
+}
+
+type FleetTimingCompletionRange struct {
+	EarliestAt string `json:"earliestAt"`
+	LatestAt   string `json:"latestAt"`
+}
+
+type FleetTimingProvenance struct {
+	Method                string            `json:"method"`
+	ConfiguredRange       *FleetTimingRange `json:"configuredRange,omitempty"`
+	SampleCount           int               `json:"sampleCount"`
+	SuccessfulSampleCount int               `json:"successfulSampleCount"`
+	Exclusions            []string          `json:"exclusions"`
+}
+
+type FleetTimingPhase struct {
+	Name               string            `json:"name"`
+	State              string            `json:"state"`
+	ElapsedMs          int64             `json:"elapsedMs"`
+	EstimatedRemaining *FleetTimingRange `json:"estimatedRemaining,omitempty"`
+}
+
+type FleetRunnerTiming struct {
+	SchemaVersion       string                      `json:"schemaVersion"`
+	Scope               string                      `json:"scope"`
+	AsOf                string                      `json:"asOf"`
+	Availability        string                      `json:"availability"`
+	OperationClass      string                      `json:"operationClass"`
+	ElapsedMs           int64                       `json:"elapsedMs"`
+	EstimatedRemaining  *FleetTimingRange           `json:"estimatedRemaining,omitempty"`
+	EstimatedTotal      *FleetTimingRange           `json:"estimatedTotal,omitempty"`
+	EstimatedCompletion *FleetTimingCompletionRange `json:"estimatedCompletion,omitempty"`
+	Confidence          string                      `json:"confidence"`
+	Provenance          FleetTimingProvenance       `json:"provenance"`
+	Phases              []FleetTimingPhase          `json:"phases"`
 }
 
 type FleetRunnerAttemptList struct {
@@ -1890,61 +1947,6 @@ func (c *Client) FleetRunnerAttempts(planID string) (*FleetRunnerAttemptList, er
 		return nil, err
 	}
 	return &result, nil
-}
-
-func (c *Client) StartFleetRunnerAttempt(planID, runnerAttemptID, commitSHA, planSHA256, workflowURL string, heartbeatTimeoutSeconds int) (*FleetRunnerAttempt, error) {
-	body, err := json.Marshal(map[string]interface{}{
-		"schemaVersion": "norn.fleet-runner-attempt/v1", "runnerAttemptId": runnerAttemptID,
-		"commitSha": commitSHA, "planSha256": planSHA256, "workflowUrl": workflowURL,
-		"heartbeatTimeoutSeconds": heartbeatTimeoutSeconds,
-	})
-	if err != nil {
-		return nil, err
-	}
-	var attempt FleetRunnerAttempt
-	if err := c.postJSON("/api/v1/fleet/plans/"+url.PathEscape(planID)+"/attempts", string(body), &attempt); err != nil {
-		return nil, err
-	}
-	return &attempt, nil
-}
-
-func (c *Client) HeartbeatFleetRunnerAttempt(planID, attemptID, phase, message string, sequence, revision int64) (*FleetRunnerAttempt, error) {
-	return c.mutateFleetRunnerAttempt(planID, attemptID, "heartbeat", map[string]interface{}{
-		"schemaVersion": "norn.fleet-runner-attempt/v1", "phase": phase, "message": message,
-		"sequence": sequence, "revision": revision,
-	})
-}
-
-func (c *Client) AdvanceFleetRunnerAttempt(planID, attemptID, expectedPhase string, revision int64) (*FleetRunnerAttempt, error) {
-	return c.mutateFleetRunnerAttempt(planID, attemptID, "advance", map[string]interface{}{
-		"schemaVersion": "norn.fleet-runner-attempt/v1", "expectedPhase": expectedPhase, "revision": revision,
-	})
-}
-
-func (c *Client) RetryFleetRunnerAttempt(planID, attemptID, runnerAttemptID, reason, workflowURL string, revision int64) (*FleetRunnerAttempt, error) {
-	return c.mutateFleetRunnerAttempt(planID, attemptID, "retry", map[string]interface{}{
-		"schemaVersion": "norn.fleet-runner-attempt/v1", "runnerAttemptId": runnerAttemptID,
-		"reason": reason, "workflowUrl": workflowURL, "revision": revision,
-	})
-}
-
-func (c *Client) CancelFleetRunnerAttempt(planID, attemptID, reason string, revision int64) (*FleetRunnerAttempt, error) {
-	return c.mutateFleetRunnerAttempt(planID, attemptID, "cancel", map[string]interface{}{
-		"schemaVersion": "norn.fleet-runner-attempt/v1", "reason": reason, "revision": revision,
-	})
-}
-
-func (c *Client) mutateFleetRunnerAttempt(planID, attemptID, action string, request map[string]interface{}) (*FleetRunnerAttempt, error) {
-	body, err := json.Marshal(request)
-	if err != nil {
-		return nil, err
-	}
-	var attempt FleetRunnerAttempt
-	path := "/api/v1/fleet/plans/" + url.PathEscape(planID) + "/attempts/" + url.PathEscape(attemptID) + "/" + action
-	if err := c.postJSON(path, string(body), &attempt); err != nil {
-		return nil, err
-	}
-	return &attempt, nil
 }
 
 func (c *Client) UpdateSecrets(appID string, secrets map[string]string) error {

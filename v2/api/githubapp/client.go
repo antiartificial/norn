@@ -8,6 +8,7 @@ import (
 	"context"
 	"crypto/rsa"
 	"crypto/sha256"
+	"crypto/subtle"
 	"encoding/base64"
 	"encoding/hex"
 	"encoding/json"
@@ -18,6 +19,7 @@ import (
 	"net/url"
 	"os"
 	"path"
+	"reflect"
 	"regexp"
 	"sort"
 	"strings"
@@ -34,13 +36,21 @@ import (
 const apiVersion = "2026-03-10"
 
 var (
-	repositoryRe = regexp.MustCompile(`^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$`)
-	workflowRe   = regexp.MustCompile(`^[A-Za-z0-9_.-]+\.ya?ml$`)
-	branchRe     = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9._/-]{0,199}$`)
-	sha256Re     = regexp.MustCompile(`^[0-9a-f]{64}$`)
-	ErrNotReady  = errors.New("reviewed fleet plan is not ready")
-	ErrStalePlan = errors.New("fleet plan no longer matches GitHub main")
+	repositoryRe         = regexp.MustCompile(`^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$`)
+	workflowRe           = regexp.MustCompile(`^[A-Za-z0-9_.-]+\.ya?ml$`)
+	branchRe             = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9._/-]{0,199}$`)
+	commitSHARe          = regexp.MustCompile(`^[0-9a-f]{40}$`)
+	sha256Re             = regexp.MustCompile(`^[0-9a-f]{64}$`)
+	dispatchNonceRe      = regexp.MustCompile(`^[0-9a-f]{64}$`)
+	pilotRunIDRe         = regexp.MustCompile(`^[a-z0-9]{8,24}$`)
+	planIDRe             = regexp.MustCompile(`^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[1-5][0-9a-fA-F]{3}-[89aAbB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}$`)
+	ErrNotReady          = errors.New("reviewed fleet plan is not ready")
+	ErrStalePlan         = errors.New("fleet plan no longer matches GitHub main")
+	ErrDispatchPreSubmit = errors.New("protected dispatch failed before submission")
+	ErrDispatchAmbiguous = errors.New("protected dispatch outcome is ambiguous")
 )
+
+const applyRunDisplayTitleFormat = "Apply %s Norn plan %s nonce %s"
 
 type Config struct {
 	AppID          string
@@ -50,6 +60,7 @@ type Config struct {
 	// Environment is the fixed control-plane lane that maps to the exact Fleet
 	// root and protected GitHub Environment passed to the apply workflow.
 	Environment   string
+	PilotRunID    string
 	DefaultBranch string
 	ConfigPath    string
 	PlanWorkflow  string
@@ -62,6 +73,7 @@ type Client struct {
 	cfg        Config
 	httpClient *http.Client
 	now        func() time.Time
+	pause      func(time.Duration)
 	tokenMu    sync.Mutex
 	tokens     map[string]cachedToken
 }
@@ -94,11 +106,12 @@ type PullRequest struct {
 }
 
 type Dispatch struct {
-	RunID     int64  `json:"runId"`
-	URL       string `json:"url"`
-	PlanRunID int64  `json:"planRunId"`
-	PlanSHA   string `json:"planSha256"`
-	Existing  bool   `json:"existing"`
+	RunID           int64  `json:"runId"`
+	URL             string `json:"url"`
+	PlanRunID       int64  `json:"planRunId"`
+	PlanSHA         string `json:"planSha256"`
+	ApprovedHeadSHA string `json:"approvedHeadSha"`
+	Existing        bool   `json:"existing"`
 }
 
 type apiError struct {
@@ -119,6 +132,7 @@ func New(cfg Config, httpClient *http.Client) (*Client, error) {
 	cfg.PrivateKeyFile = strings.TrimSpace(cfg.PrivateKeyFile)
 	cfg.Repository = strings.TrimSpace(cfg.Repository)
 	cfg.Environment = strings.ToLower(strings.TrimSpace(cfg.Environment))
+	cfg.PilotRunID = strings.ToLower(strings.TrimSpace(cfg.PilotRunID))
 	cfg.DefaultBranch = strings.TrimSpace(cfg.DefaultBranch)
 	cfg.ConfigPath = path.Clean(rawConfigPath)
 	cfg.PlanWorkflow = strings.TrimSpace(cfg.PlanWorkflow)
@@ -142,7 +156,7 @@ func New(cfg Config, httpClient *http.Client) (*Client, error) {
 	if httpClient == nil {
 		httpClient = &http.Client{Timeout: 20 * time.Second}
 	}
-	return &Client{cfg: cfg, httpClient: httpClient, now: time.Now, tokens: map[string]cachedToken{}}, nil
+	return &Client{cfg: cfg, httpClient: httpClient, now: time.Now, pause: time.Sleep, tokens: map[string]cachedToken{}}, nil
 }
 
 func Configured(cfg Config) bool {
@@ -168,7 +182,11 @@ func validateConfig(cfg Config) error {
 	if cfg.ConfigPath == "." || strings.HasPrefix(cfg.ConfigPath, "../") || !strings.HasSuffix(cfg.ConfigPath, ".yaml") {
 		return fmt.Errorf("fleet GitHub config path must be a repository-relative YAML path")
 	}
-	if cfg.ConfigPath != fmt.Sprintf("environments/%s/nyc3/cluster.yaml", cfg.Environment) {
+	if cfg.PilotRunID != "" {
+		if cfg.Environment != "staging" || !pilotRunIDRe.MatchString(cfg.PilotRunID) || cfg.ConfigPath != "environments/disposable/fleet/nyc3/cluster.yaml" {
+			return fmt.Errorf("disposable Fleet dispatch requires staging, canonical fleet root, and an exact pilot run ID")
+		}
+	} else if cfg.ConfigPath != fmt.Sprintf("environments/%s/nyc3/cluster.yaml", cfg.Environment) {
 		return fmt.Errorf("fleet GitHub config path must match the configured %s environment root", cfg.Environment)
 	}
 	base, err := url.Parse(cfg.APIBaseURL)
@@ -227,13 +245,24 @@ func (c *Client) CreatePullRequest(ctx context.Context, planID, planDigest, pool
 	if _, ok := document.NodePools[poolName]; !ok {
 		return nil, fmt.Errorf("capacity plan node pool is not present on GitHub main")
 	}
-	document.NodePools[poolName] = proposed
-	updated, err := yaml.Marshal(document)
-	if err != nil {
-		return nil, fmt.Errorf("encode fleet document: %w", err)
-	}
-	if _, check := fleet.ParseAndValidate(updated); check == nil || !check.Valid {
-		return nil, fmt.Errorf("proposed fleet document failed validation")
+	noDesiredChange := reflect.DeepEqual(document.NodePools[poolName], proposed)
+	var updated []byte
+	var receiptPath string
+	var receipt []byte
+	if noDesiredChange {
+		receiptPath, receipt, err = planReviewReceipt(planID, planDigest, sourceDigest, poolName, action, proposed)
+		if err != nil {
+			return nil, err
+		}
+	} else {
+		document.NodePools[poolName] = proposed
+		updated, err = yaml.Marshal(document)
+		if err != nil {
+			return nil, fmt.Errorf("encode fleet document: %w", err)
+		}
+		if _, check := fleet.ParseAndValidate(updated); check == nil || !check.Valid {
+			return nil, fmt.Errorf("proposed fleet document failed validation")
+		}
 	}
 	branch := "norn/plan-" + planID
 	baseSHA, err := c.getRef(ctx, token, c.cfg.DefaultBranch)
@@ -246,12 +275,27 @@ func (c *Client) CreatePullRequest(ctx context.Context, planID, planDigest, pool
 	}
 	if created {
 		message := fmt.Sprintf("fleet: apply Norn plan %s", planID)
-		if err := c.putContent(ctx, token, branch, fileSHA, message, updated); err != nil {
+		if noDesiredChange {
+			message = fmt.Sprintf("fleet: record Norn plan %s review receipt", planID)
+			if err := c.putContentAt(ctx, token, receiptPath, branch, "", message, receipt); err != nil {
+				return nil, err
+			}
+		} else if err := c.putContent(ctx, token, branch, fileSHA, message, updated); err != nil {
 			return nil, err
 		}
 	} else {
-		existing, _, getErr := c.getContent(ctx, token, branch)
-		if getErr != nil || !bytes.Equal(existing, updated) {
+		var existing []byte
+		var getErr error
+		if noDesiredChange {
+			existing, _, getErr = c.getContentAt(ctx, token, receiptPath, branch)
+		} else {
+			existing, _, getErr = c.getContent(ctx, token, branch)
+		}
+		expected := updated
+		if noDesiredChange {
+			expected = receipt
+		}
+		if getErr != nil || !bytes.Equal(existing, expected) {
 			return nil, fmt.Errorf("plan branch already exists with different content")
 		}
 	}
@@ -263,6 +307,9 @@ func (c *Client) CreatePullRequest(ctx context.Context, planID, planDigest, pool
 	}
 	title := fmt.Sprintf("Fleet: %s %s", action, poolName)
 	body := fmt.Sprintf("Norn capacity plan `%s`\n\nDigest: `%s`\n\nThis pull request changes desired infrastructure only. Provider and state credentials remain in the protected runner.", planID, planDigest)
+	if noDesiredChange {
+		body = fmt.Sprintf("Norn capacity plan `%s`\n\nDigest: `%s`\n\nDesired topology is already exactly the proposed configuration. This pull request adds the immutable Norn review receipt only; it does not manufacture a topology change. Provider and state credentials remain in the protected runner.", planID, planDigest)
+	}
 	var response struct {
 		Number  int    `json:"number"`
 		HTMLURL string `json:"html_url"`
@@ -275,48 +322,144 @@ func (c *Client) CreatePullRequest(ctx context.Context, planID, planDigest, pool
 	return &PullRequest{Number: response.Number, URL: response.HTMLURL, Branch: branch, State: response.State}, nil
 }
 
-func (c *Client) DispatchApprovedPlan(ctx context.Context, planID string, allowDestructive bool) (*Dispatch, error) {
+// ResolveApprovedPlan pins the successful protected plan workflow and its
+// review artifact before a dispatch is persisted. Callers must not rediscover
+// a moving main branch after this binding is created.
+func (c *Client) ResolveApprovedPlan(ctx context.Context, planID, fleetEnvironment string) (*Dispatch, error) {
+	if fleetEnvironment != c.fleetRoot() {
+		return nil, fmt.Errorf("requested fleet environment is not the configured fleet root")
+	}
 	token, err := c.installationToken(ctx, map[string]string{"actions": "write", "contents": "read", "pull_requests": "read"})
 	if err != nil {
 		return nil, err
 	}
-	existing, existingErr := c.findApplyRun(ctx, token, planID)
-	if existingErr != nil {
-		return nil, existingErr
+	return c.resolveApprovedPlan(ctx, token, planID, fleetEnvironment)
+}
+
+// DispatchBoundPlan dispatches or recovers exactly one server-persisted
+// approval binding. The nonce is generated by Norn for this one request and
+// never returned or persisted in raw form.
+func (c *Client) DispatchBoundPlan(ctx context.Context, planID, fleetEnvironment string, allowDestructive bool, approved *Dispatch, nonce string) (*Dispatch, error) {
+	if fleetEnvironment != c.fleetRoot() {
+		return nil, fmt.Errorf("requested fleet environment is not the configured fleet root")
 	}
-	approved, approvedErr := c.resolveApprovedPlan(ctx, token, planID)
-	if existing != nil {
-		if approvedErr == nil {
-			existing.PlanRunID = approved.PlanRunID
-			existing.PlanSHA = approved.PlanSHA
+	if approved == nil || approved.PlanRunID <= 0 || !sha256Re.MatchString(approved.PlanSHA) || !commitSHARe.MatchString(approved.ApprovedHeadSHA) || !dispatchNonceRe.MatchString(nonce) {
+		return nil, fmt.Errorf("dispatch binding is invalid")
+	}
+	token, err := c.installationToken(ctx, map[string]string{"actions": "write", "contents": "read", "pull_requests": "read"})
+	if err != nil {
+		return nil, fmt.Errorf("%w: %v", ErrDispatchPreSubmit, err)
+	}
+	appActor, err := c.appActorLogin(ctx)
+	if err != nil {
+		return nil, fmt.Errorf("%w: %v", ErrDispatchPreSubmit, err)
+	}
+	if approved.RunID > 0 {
+		existing, getErr := c.getApplyRun(ctx, token, approved.RunID)
+		if getErr != nil {
+			return nil, getErr
 		}
+		if approved.URL != "" && existing.HTMLURL != approved.URL {
+			return nil, fmt.Errorf("persisted GitHub apply run URL does not match its protected binding")
+		}
+		if verifyErr := c.verifyApplyRun(existing, planID, fleetEnvironment, approved, nonce, appActor); verifyErr != nil {
+			return nil, verifyErr
+		}
+		return &Dispatch{RunID: existing.ID, URL: existing.HTMLURL, PlanRunID: approved.PlanRunID, PlanSHA: approved.PlanSHA, ApprovedHeadSHA: approved.ApprovedHeadSHA, Existing: true}, nil
+	}
+	if existing, findErr := c.findApplyRun(ctx, token, planID, fleetEnvironment, approved, nonce, appActor); findErr != nil {
+		return nil, fmt.Errorf("%w: %v", ErrDispatchPreSubmit, findErr)
+	} else if existing != nil {
 		existing.Existing = true
 		return existing, nil
-	}
-	if approvedErr != nil {
-		return nil, approvedErr
 	}
 	var response struct {
 		WorkflowRunID int64  `json:"workflow_run_id"`
 		HTMLURL       string `json:"html_url"`
 	}
+	inputs := map[string]string{
+		"fleet_environment": fleetEnvironment,
+		"plan_run_id":       fmt.Sprintf("%d", approved.PlanRunID),
+		"plan_sha256":       approved.PlanSHA,
+		"norn_plan_id":      planID,
+		"allow_destructive": fmt.Sprintf("%t", allowDestructive),
+		"dispatch_nonce":    nonce,
+	}
+	if c.cfg.PilotRunID != "" {
+		inputs["pilot_run_id"] = c.cfg.PilotRunID
+	}
 	err = c.request(ctx, token, http.MethodPost, c.repoPath("/actions/workflows/"+url.PathEscape(c.cfg.ApplyWorkflow)+"/dispatches"), map[string]any{
-		"ref": c.cfg.DefaultBranch,
-		"inputs": map[string]string{
-			"fleet_environment": c.fleetRoot(),
-			"plan_run_id":       fmt.Sprintf("%d", approved.PlanRunID),
-			"plan_sha256":       approved.PlanSHA,
-			"norn_plan_id":      planID,
-			"allow_destructive": fmt.Sprintf("%t", allowDestructive),
-		},
+		"ref":                c.cfg.DefaultBranch,
+		"return_run_details": true,
+		"inputs":             inputs,
 	}, &response)
 	if err != nil {
-		return nil, err
+		if apiErr := new(apiError); errors.As(err, &apiErr) && apiErr.Status >= 400 && apiErr.Status < 500 {
+			return nil, fmt.Errorf("%w: %v", ErrDispatchPreSubmit, err)
+		}
+		return c.recoverSubmittedDispatch(ctx, token, planID, fleetEnvironment, approved, nonce, appActor)
 	}
-	return &Dispatch{RunID: response.WorkflowRunID, URL: response.HTMLURL, PlanRunID: approved.PlanRunID, PlanSHA: approved.PlanSHA}, nil
+	if response.WorkflowRunID <= 0 || !canonicalWorkflowURL(c.cfg.Repository, response.WorkflowRunID, response.HTMLURL) {
+		return c.recoverSubmittedDispatch(ctx, token, planID, fleetEnvironment, approved, nonce, appActor)
+	}
+	run, err := c.getApplyRun(ctx, token, response.WorkflowRunID)
+	if err != nil {
+		return c.recoverSubmittedDispatch(ctx, token, planID, fleetEnvironment, approved, nonce, appActor)
+	}
+	if err := c.verifyApplyRun(run, planID, fleetEnvironment, approved, nonce, appActor); err != nil {
+		return c.recoverSubmittedDispatch(ctx, token, planID, fleetEnvironment, approved, nonce, appActor)
+	}
+	return &Dispatch{RunID: response.WorkflowRunID, URL: response.HTMLURL, PlanRunID: approved.PlanRunID, PlanSHA: approved.PlanSHA, ApprovedHeadSHA: approved.ApprovedHeadSHA}, nil
 }
 
-func (c *Client) resolveApprovedPlan(ctx context.Context, token, planID string) (*Dispatch, error) {
+// RecoverBoundPlan performs lookup-only recovery of a dispatch whose POST may
+// have succeeded before Norn lost its response or crashed.  The durable
+// binding intentionally retains only nonceHash, so candidates are selected by
+// parsing their exact run title and comparing hashes in constant time.  This
+// method never creates a GitHub workflow dispatch.
+func (c *Client) RecoverBoundPlan(ctx context.Context, planID, fleetEnvironment string, approved *Dispatch, nonceHash string) (*Dispatch, error) {
+	if fleetEnvironment != c.fleetRoot() || approved == nil || approved.PlanRunID <= 0 || !sha256Re.MatchString(approved.PlanSHA) || !commitSHARe.MatchString(approved.ApprovedHeadSHA) || !sha256Re.MatchString(nonceHash) {
+		return nil, ErrDispatchAmbiguous
+	}
+	token, err := c.installationToken(ctx, map[string]string{"actions": "write", "contents": "read", "pull_requests": "read"})
+	if err != nil {
+		return nil, ErrDispatchAmbiguous
+	}
+	appActor, err := c.appActorLogin(ctx)
+	if err != nil {
+		return nil, ErrDispatchAmbiguous
+	}
+	for attempt := 0; attempt < 3; attempt++ {
+		if attempt > 0 && c.pause != nil {
+			c.pause(time.Duration(attempt) * 25 * time.Millisecond)
+		}
+		found, findErr := c.findApplyRunByNonceHash(ctx, token, planID, fleetEnvironment, approved, nonceHash, appActor)
+		if findErr != nil {
+			return nil, ErrDispatchAmbiguous
+		}
+		if found != nil {
+			found.Existing = true
+			return found, nil
+		}
+	}
+	return nil, ErrDispatchAmbiguous
+}
+
+func (c *Client) recoverSubmittedDispatch(ctx context.Context, token, planID, fleetEnvironment string, approved *Dispatch, nonce, appActor string) (*Dispatch, error) {
+	for attempt := 0; attempt < 3; attempt++ {
+		if attempt > 0 && c.pause != nil {
+			c.pause(time.Duration(attempt) * 25 * time.Millisecond)
+		}
+		found, err := c.findApplyRun(ctx, token, planID, fleetEnvironment, approved, nonce, appActor)
+		if err == nil && found != nil {
+			found.Existing = true
+			return found, nil
+		}
+	}
+	return nil, ErrDispatchAmbiguous
+}
+
+func (c *Client) resolveApprovedPlan(ctx context.Context, token, planID, fleetEnvironment string) (*Dispatch, error) {
 	pr, err := c.findPullRequest(ctx, token, "norn/plan-"+planID)
 	if err != nil || pr == nil || !pr.Merged {
 		return nil, ErrNotReady
@@ -336,7 +479,11 @@ func (c *Client) resolveApprovedPlan(ctx context.Context, token, planID string) 
 			Conclusion string `json:"conclusion"`
 		} `json:"workflow_runs"`
 	}
-	query := "?event=push&branch=" + url.QueryEscape(c.cfg.DefaultBranch) + "&status=success&per_page=100"
+	event := "push"
+	if c.cfg.PilotRunID != "" {
+		event = "workflow_dispatch"
+	}
+	query := "?event=" + event + "&branch=" + url.QueryEscape(c.cfg.DefaultBranch) + "&status=success&per_page=100"
 	if err := c.request(ctx, token, http.MethodGet, c.repoPath("/actions/workflows/"+url.PathEscape(c.cfg.PlanWorkflow)+"/runs"+query), nil, &runs); err != nil {
 		return nil, err
 	}
@@ -344,15 +491,15 @@ func (c *Client) resolveApprovedPlan(ctx context.Context, token, planID string) 
 		if run.HeadSHA != pulls.MergeCommitSHA || run.Status != "completed" || run.Conclusion != "success" {
 			continue
 		}
-		planSHA, artifactErr := c.planArtifactSHA(ctx, token, run.ID)
+		planSHA, artifactErr := c.planArtifactSHA(ctx, token, run.ID, fleetEnvironment)
 		if artifactErr == nil {
-			return &Dispatch{PlanRunID: run.ID, PlanSHA: planSHA}, nil
+			return &Dispatch{PlanRunID: run.ID, PlanSHA: planSHA, ApprovedHeadSHA: pulls.MergeCommitSHA}, nil
 		}
 	}
 	return nil, ErrNotReady
 }
 
-func (c *Client) planArtifactSHA(ctx context.Context, token string, runID int64) (string, error) {
+func (c *Client) planArtifactSHA(ctx context.Context, token string, runID int64, fleetEnvironment string) (string, error) {
 	var artifacts struct {
 		Artifacts []struct {
 			ID      int64  `json:"id"`
@@ -363,10 +510,17 @@ func (c *Client) planArtifactSHA(ctx context.Context, token string, runID int64)
 	if err := c.request(ctx, token, http.MethodGet, c.repoPath(fmt.Sprintf("/actions/runs/%d/artifacts", runID)), nil, &artifacts); err != nil {
 		return "", err
 	}
-	for _, artifact := range artifacts.Artifacts {
-		if artifact.Name != fmt.Sprintf("fleet-plan-%s-nyc3-%d", c.cfg.Environment, runID) || artifact.Expired {
-			continue
+	matching := []int{}
+	for index, artifact := range artifacts.Artifacts {
+		if artifact.Name == fmt.Sprintf("fleet-plan-%s-%d", strings.ReplaceAll(fleetEnvironment, "/", "-"), runID) {
+			matching = append(matching, index)
 		}
+	}
+	if len(matching) != 1 || artifacts.Artifacts[matching[0]].Expired {
+		return "", ErrNotReady
+	}
+	for _, index := range matching {
+		artifact := artifacts.Artifacts[index]
 		archive, err := c.requestBytes(ctx, token, c.repoPath(fmt.Sprintf("/actions/artifacts/%d/zip", artifact.ID)), 16<<20)
 		if err != nil {
 			return "", err
@@ -375,10 +529,43 @@ func (c *Client) planArtifactSHA(ctx context.Context, token string, runID int64)
 		if err != nil {
 			return "", err
 		}
+		var candidate, pilotRun *zip.File
 		for _, file := range reader.File {
-			if path.Base(file.Name) != "fleet-plan.sha256" || file.UncompressedSize64 > 256 {
+			if !safeArtifactEntry(file.Name) {
+				return "", ErrNotReady
+			}
+			if file.Name == "pilot-run-id.txt" {
+				if pilotRun != nil || file.FileInfo().IsDir() || file.UncompressedSize64 > 128 {
+					return "", ErrNotReady
+				}
+				pilotRun = file
 				continue
 			}
+			if file.Name != "fleet-plan.sha256" {
+				continue
+			}
+			if candidate != nil || file.FileInfo().IsDir() || file.UncompressedSize64 > 256 {
+				return "", ErrNotReady
+			}
+			candidate = file
+		}
+		if c.cfg.PilotRunID != "" && pilotRun == nil {
+			return "", ErrNotReady
+		}
+		if pilotRun != nil {
+			opened, openErr := pilotRun.Open()
+			if openErr != nil {
+				return "", openErr
+			}
+			value, readErr := io.ReadAll(io.LimitReader(opened, 129))
+			_ = opened.Close()
+			pilot := strings.TrimSpace(string(value))
+			if readErr != nil || (c.cfg.PilotRunID != "" && pilot != c.cfg.PilotRunID) || (c.cfg.PilotRunID == "" && pilot != "") {
+				return "", ErrNotReady
+			}
+		}
+		if candidate != nil {
+			file := candidate
 			opened, openErr := file.Open()
 			if openErr != nil {
 				return "", openErr
@@ -394,28 +581,186 @@ func (c *Client) planArtifactSHA(ctx context.Context, token string, runID int64)
 	return "", ErrNotReady
 }
 
-func (c *Client) findApplyRun(ctx context.Context, token, planID string) (*Dispatch, error) {
+func (c *Client) findApplyRun(ctx context.Context, token, planID, fleetEnvironment string, approved *Dispatch, nonce, appActor string) (*Dispatch, error) {
 	var runs struct {
 		WorkflowRuns []struct {
-			ID           int64  `json:"id"`
-			HTMLURL      string `json:"html_url"`
-			DisplayTitle string `json:"display_title"`
+			ID int64 `json:"id"`
 		} `json:"workflow_runs"`
 	}
 	query := "?event=workflow_dispatch&branch=" + url.QueryEscape(c.cfg.DefaultBranch) + "&per_page=100"
 	if err := c.request(ctx, token, http.MethodGet, c.repoPath("/actions/workflows/"+url.PathEscape(c.cfg.ApplyWorkflow)+"/runs"+query), nil, &runs); err != nil {
 		return nil, err
 	}
-	want := "Apply " + c.fleetRoot() + " Norn plan " + planID
 	for _, run := range runs.WorkflowRuns {
-		if run.DisplayTitle == want {
-			return &Dispatch{RunID: run.ID, URL: run.HTMLURL}, nil
+		candidate, err := c.getApplyRun(ctx, token, run.ID)
+		if err != nil {
+			return nil, err
+		}
+		if err := c.verifyApplyRun(candidate, planID, fleetEnvironment, approved, nonce, appActor); err == nil {
+			return &Dispatch{RunID: candidate.ID, URL: candidate.HTMLURL, PlanRunID: approved.PlanRunID, PlanSHA: approved.PlanSHA, ApprovedHeadSHA: approved.ApprovedHeadSHA}, nil
 		}
 	}
 	return nil, nil
 }
 
-func (c *Client) fleetRoot() string { return c.cfg.Environment + "/nyc3" }
+func (c *Client) findApplyRunByNonceHash(ctx context.Context, token, planID, fleetEnvironment string, approved *Dispatch, nonceHash, appActor string) (*Dispatch, error) {
+	var runs struct {
+		WorkflowRuns []struct {
+			ID int64 `json:"id"`
+		} `json:"workflow_runs"`
+	}
+	query := "?event=workflow_dispatch&branch=" + url.QueryEscape(c.cfg.DefaultBranch) + "&per_page=100"
+	if err := c.request(ctx, token, http.MethodGet, c.repoPath("/actions/workflows/"+url.PathEscape(c.cfg.ApplyWorkflow)+"/runs"+query), nil, &runs); err != nil {
+		return nil, err
+	}
+	var match *Dispatch
+	for _, run := range runs.WorkflowRuns {
+		candidate, err := c.getApplyRun(ctx, token, run.ID)
+		if err != nil {
+			return nil, err
+		}
+		if err := c.verifyApplyRunByNonceHash(candidate, planID, fleetEnvironment, approved, nonceHash, appActor); err != nil {
+			continue
+		}
+		if match != nil {
+			return nil, ErrDispatchAmbiguous
+		}
+		match = &Dispatch{RunID: candidate.ID, URL: candidate.HTMLURL, PlanRunID: approved.PlanRunID, PlanSHA: approved.PlanSHA, ApprovedHeadSHA: approved.ApprovedHeadSHA}
+	}
+	return match, nil
+}
+
+type applyRun struct {
+	ID           int64  `json:"id"`
+	HTMLURL      string `json:"html_url"`
+	Event        string `json:"event"`
+	HeadSHA      string `json:"head_sha"`
+	HeadBranch   string `json:"head_branch"`
+	Path         string `json:"path"`
+	Name         string `json:"name"`
+	DisplayTitle string `json:"display_title"`
+	Actor        struct {
+		Login string `json:"login"`
+		Type  string `json:"type"`
+	} `json:"actor"`
+}
+
+func (c *Client) getApplyRun(ctx context.Context, token string, runID int64) (*applyRun, error) {
+	if runID <= 0 {
+		return nil, fmt.Errorf("GitHub workflow run ID is invalid")
+	}
+	var run applyRun
+	if err := c.request(ctx, token, http.MethodGet, c.repoPath(fmt.Sprintf("/actions/runs/%d", runID)), nil, &run); err != nil {
+		return nil, err
+	}
+	return &run, nil
+}
+
+func (c *Client) verifyApplyRun(run *applyRun, planID, fleetEnvironment string, approved *Dispatch, nonce, appActor string) error {
+	if err := c.verifyApplyRunIdentity(run, approved, appActor); err != nil {
+		return err
+	}
+	if run.DisplayTitle != fmt.Sprintf(applyRunDisplayTitleFormat, fleetEnvironment, planID, nonce) {
+		return fmt.Errorf("GitHub apply run does not carry the dispatch nonce")
+	}
+	return nil
+}
+
+func (c *Client) verifyApplyRunByNonceHash(run *applyRun, planID, fleetEnvironment string, approved *Dispatch, nonceHash, appActor string) error {
+	if err := c.verifyApplyRunIdentity(run, approved, appActor); err != nil {
+		return err
+	}
+	environment, candidatePlanID, candidateNonce, ok := parseApplyRunDisplayTitle(run.DisplayTitle)
+	if !ok || environment != fleetEnvironment || candidatePlanID != planID {
+		return fmt.Errorf("GitHub apply run does not carry the protected dispatch identity")
+	}
+	candidateHash := sha256.Sum256([]byte(candidateNonce))
+	if subtle.ConstantTimeCompare([]byte(hex.EncodeToString(candidateHash[:])), []byte(nonceHash)) != 1 {
+		return fmt.Errorf("GitHub apply run does not carry the protected dispatch nonce")
+	}
+	return nil
+}
+
+func (c *Client) verifyApplyRunIdentity(run *applyRun, approved *Dispatch, appActor string) error {
+	if run == nil || approved == nil || !canonicalWorkflowURL(c.cfg.Repository, run.ID, run.HTMLURL) || run.Event != "workflow_dispatch" || run.HeadBranch != c.cfg.DefaultBranch || run.HeadSHA != approved.ApprovedHeadSHA || !workflowPathMatches(run.Path, c.cfg.ApplyWorkflow, c.cfg.DefaultBranch) || run.Name != "apply" || run.Actor.Type != "Bot" || run.Actor.Login != appActor {
+		return fmt.Errorf("GitHub apply run does not match the protected dispatch identity")
+	}
+	return nil
+}
+
+func parseApplyRunDisplayTitle(value string) (environment, planID, nonce string, ok bool) {
+	const planMarker = " Norn plan "
+	const nonceMarker = " nonce "
+	value = strings.TrimSpace(value)
+	if !strings.HasPrefix(value, "Apply ") {
+		return "", "", "", false
+	}
+	environment, rest, found := strings.Cut(strings.TrimPrefix(value, "Apply "), planMarker)
+	if !found || environment == "" {
+		return "", "", "", false
+	}
+	planID, nonce, found = strings.Cut(rest, nonceMarker)
+	if !found || planID == "" || !dispatchNonceRe.MatchString(nonce) {
+		return "", "", "", false
+	}
+	return environment, planID, nonce, true
+}
+
+func workflowPathMatches(value, workflow, defaultBranch string) bool {
+	want := ".github/workflows/" + workflow
+	if value == want {
+		return true
+	}
+	base, ref, found := strings.Cut(value, "@")
+	return found && base == want && (ref == defaultBranch || ref == "refs/heads/"+defaultBranch)
+}
+
+func (c *Client) appActorLogin(ctx context.Context) (string, error) {
+	now := c.now().UTC()
+	key, err := c.privateKey()
+	if err != nil {
+		return "", err
+	}
+	claims := jwt.MapClaims{"iat": now.Add(-60 * time.Second).Unix(), "exp": now.Add(9 * time.Minute).Unix(), "iss": c.cfg.AppID}
+	appJWT, err := jwt.NewWithClaims(jwt.SigningMethodRS256, claims).SignedString(key)
+	if err != nil {
+		return "", fmt.Errorf("sign GitHub App JWT: %w", err)
+	}
+	var app struct {
+		Slug string `json:"slug"`
+	}
+	if err := c.requestWithAuth(ctx, appJWT, http.MethodGet, "/app", nil, &app); err != nil || !regexp.MustCompile(`^[A-Za-z0-9-]+$`).MatchString(app.Slug) {
+		return "", fmt.Errorf("GitHub App identity is unavailable")
+	}
+	return app.Slug + "[bot]", nil
+}
+
+func canonicalWorkflowURL(repository string, runID int64, value string) bool {
+	parsed, err := url.Parse(strings.TrimSpace(value))
+	if err != nil || parsed.Scheme != "https" || parsed.Host != "github.com" || parsed.User != nil || parsed.RawQuery != "" || parsed.Fragment != "" {
+		return false
+	}
+	return parsed.Path == "/"+repository+fmt.Sprintf("/actions/runs/%d", runID)
+}
+
+func safeArtifactEntry(name string) bool {
+	if name == "" || strings.HasPrefix(name, "/") || strings.HasPrefix(name, ".") || strings.Contains(name, "\\\\") || path.Clean(name) != name {
+		return false
+	}
+	for _, part := range strings.Split(name, "/") {
+		if part == "" || part == "." || part == ".." || strings.HasPrefix(part, ".") {
+			return false
+		}
+	}
+	return true
+}
+
+func (c *Client) fleetRoot() string {
+	if c.cfg.PilotRunID != "" {
+		return "disposable/fleet/nyc3"
+	}
+	return c.cfg.Environment + "/nyc3"
+}
 
 func (c *Client) findPullRequest(ctx context.Context, token, branch string) (*PullRequest, error) {
 	owner := strings.SplitN(c.cfg.Repository, "/", 2)[0]
@@ -456,13 +801,17 @@ func (c *Client) createRef(ctx context.Context, token, branch, sha string) (bool
 }
 
 func (c *Client) getContent(ctx context.Context, token, ref string) ([]byte, string, error) {
+	return c.getContentAt(ctx, token, c.cfg.ConfigPath, ref)
+}
+
+func (c *Client) getContentAt(ctx context.Context, token, repoPath, ref string) ([]byte, string, error) {
 	var response struct {
 		Content  string `json:"content"`
 		Encoding string `json:"encoding"`
 		SHA      string `json:"sha"`
 		Size     int64  `json:"size"`
 	}
-	endpoint := c.repoPath("/contents/"+escapePath(c.cfg.ConfigPath)) + "?ref=" + url.QueryEscape(ref)
+	endpoint := c.repoPath("/contents/"+escapePath(repoPath)) + "?ref=" + url.QueryEscape(ref)
 	if err := c.request(ctx, token, http.MethodGet, endpoint, nil, &response); err != nil {
 		return nil, "", err
 	}
@@ -474,7 +823,47 @@ func (c *Client) getContent(ctx context.Context, token, ref string) ([]byte, str
 }
 
 func (c *Client) putContent(ctx context.Context, token, branch, sha, message string, content []byte) error {
-	return c.request(ctx, token, http.MethodPut, c.repoPath("/contents/"+escapePath(c.cfg.ConfigPath)), map[string]string{"message": message, "content": base64.StdEncoding.EncodeToString(content), "branch": branch, "sha": sha}, nil)
+	return c.putContentAt(ctx, token, c.cfg.ConfigPath, branch, sha, message, content)
+}
+
+func (c *Client) putContentAt(ctx context.Context, token, repoPath, branch, sha, message string, content []byte) error {
+	payload := map[string]string{"message": message, "content": base64.StdEncoding.EncodeToString(content), "branch": branch}
+	if sha != "" {
+		payload["sha"] = sha
+	}
+	return c.request(ctx, token, http.MethodPut, c.repoPath("/contents/"+escapePath(repoPath)), payload, nil)
+}
+
+// planReviewReceipt creates the only alternate review diff a capacity plan may
+// write: a deterministic, plan-ID-addressed receipt. It exists solely when the
+// validated desired node pool already equals the proposal, so a first cold
+// create still has an honest, reviewable PR without formatting churn.
+func planReviewReceipt(planID, planDigest, sourceDigest, poolName, action string, proposed fleet.NodePool) (string, []byte, error) {
+	if !planIDRe.MatchString(planID) || !strings.HasPrefix(planDigest, "sha256:") || !strings.HasPrefix(sourceDigest, "sha256:") || !sha256Re.MatchString(strings.TrimPrefix(planDigest, "sha256:")) || !sha256Re.MatchString(strings.TrimPrefix(sourceDigest, "sha256:")) || poolName == "" || action == "" {
+		return "", nil, fmt.Errorf("plan review receipt inputs are invalid")
+	}
+	receipt := struct {
+		SchemaVersion string         `json:"schemaVersion"`
+		PlanID        string         `json:"planID"`
+		PlanDigest    string         `json:"planDigest"`
+		SourceDigest  string         `json:"sourceDigest"`
+		NodePool      string         `json:"nodePool"`
+		Action        string         `json:"action"`
+		Proposed      fleet.NodePool `json:"proposed"`
+	}{
+		SchemaVersion: "norn.fleet-plan-review-receipt/v1",
+		PlanID:        strings.ToLower(planID),
+		PlanDigest:    planDigest,
+		SourceDigest:  sourceDigest,
+		NodePool:      poolName,
+		Action:        action,
+		Proposed:      proposed,
+	}
+	encoded, err := json.MarshalIndent(receipt, "", "  ")
+	if err != nil {
+		return "", nil, fmt.Errorf("encode plan review receipt: %w", err)
+	}
+	return ".norn/fleet-plan-receipts/" + strings.ToLower(planID) + ".json", append(encoded, '\n'), nil
 }
 
 func escapePath(value string) string {

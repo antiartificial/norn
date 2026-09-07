@@ -57,7 +57,7 @@ func (h *Handler) CorrelatedEvents(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	limit, _ := strconv.Atoi(r.URL.Query().Get("limit"))
-	events, err := h.db.ListCorrelatedEvents(r.Context(), key, limit)
+	events, err := h.db.ListCorrelatedEventsScoped(r.Context(), key, limit, r.URL.Query().Get("source"), r.URL.Query().Get("app"), r.URL.Query().Get("environment"))
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, err.Error())
 		return

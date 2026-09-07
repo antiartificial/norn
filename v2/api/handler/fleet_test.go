@@ -238,12 +238,18 @@ nodePools:
 func TestFleetReconciliationRequestAndTransitionAreBoundAndOrdered(t *testing.T) {
 	request := fleet.ReconciliationRequest{
 		SchemaVersion: fleet.ReconciliationSchemaVersion,
-		Phase:         "infrastructure_applied", Status: "succeeded",
+		AttemptID:     uuid.NewString(),
+		Phase:         "prechange_verified", Status: "succeeded",
 		CommitSHA: strings.Repeat("a", 40), PlanSHA256: strings.Repeat("b", 64),
 		StateSerial: 7, EvidenceDigest: "sha256:" + strings.Repeat("c", 64),
 	}
 	if err := validateFleetReconciliationRequest(request); err != nil {
 		t.Fatal(err)
+	}
+	withoutAttempt := request
+	withoutAttempt.AttemptID = ""
+	if err := validateFleetReconciliationRequest(withoutAttempt); err == nil {
+		t.Fatal("unbound reconciliation evidence was accepted")
 	}
 	plan := &model.Operation{Kind: "fleet.capacity-plan", Payload: map[string]interface{}{
 		"action": "replace", "current": map[string]interface{}{"desired": 2}, "proposed": map[string]interface{}{"desired": 2},
@@ -255,7 +261,7 @@ func TestFleetReconciliationRequestAndTransitionAreBoundAndOrdered(t *testing.T)
 		"phase": request.Phase, "commitSha": request.CommitSHA, "planSha256": request.PlanSHA256,
 	}}}
 	next := request
-	next.Phase = "inventory_generated"
+	next.Phase = "provider_applying"
 	next.StateSerial = 0
 	if err := validateFleetReconciliationTransition(plan, existing, next); err != nil {
 		t.Fatal(err)
@@ -280,8 +286,8 @@ func TestFleetReconciliationCompleteRequiresDrainForReplacement(t *testing.T) {
 		}}
 	}
 	existing := []model.Operation{
-		checkpoint("infrastructure_applied"), checkpoint("inventory_generated"), checkpoint("nodes_configured"),
-		checkpoint("nodes_enrolled"), checkpoint("readiness_verified"),
+		checkpoint("prechange_verified"), checkpoint("provider_applying"), checkpoint("infrastructure_applied"),
+		checkpoint("inventory_generated"), checkpoint("nodes_configured"), checkpoint("nodes_enrolled"), checkpoint("readiness_verified"),
 	}
 	request := fleet.ReconciliationRequest{Phase: "complete", Status: "succeeded", CommitSHA: commit, PlanSHA256: planSHA}
 	replacePlan := &model.Operation{Payload: map[string]interface{}{"action": "replace"}}
@@ -295,8 +301,29 @@ func TestFleetReconciliationCompleteRequiresDrainForReplacement(t *testing.T) {
 	scaleUpPlan := &model.Operation{Payload: map[string]interface{}{
 		"action": "scale", "current": map[string]interface{}{"desired": 2}, "proposed": map[string]interface{}{"desired": 3},
 	}}
-	if err := validateFleetReconciliationTransition(scaleUpPlan, existing[:5], request); err != nil {
+	if err := validateFleetReconciliationTransition(scaleUpPlan, existing[2:7], request); err != nil {
 		t.Fatalf("scale-up completion unexpectedly required drain: %v", err)
+	}
+}
+
+func TestFleetRunnerReconciliationReadRequiresBoundAttemptAndFiltersRecords(t *testing.T) {
+	owner := AccessPrincipal{Scopes: []string{ScopeFleetOperate}}
+	if !fleetRunnerReconciliationReadNeedsAttemptID(owner) {
+		t.Fatal("fleet:operate read was allowed without an attemptId")
+	}
+	if fleetRunnerReconciliationReadNeedsAttemptID(AccessPrincipal{Scopes: []string{ScopeAPIRead}}) {
+		t.Fatal("api:read unexpectedly required an attemptId")
+	}
+	attemptID := uuid.NewString()
+	otherID := uuid.NewString()
+	operations := []model.Operation{
+		{ID: "bound", Payload: map[string]interface{}{"attemptId": attemptID}},
+		{ID: "other", Payload: map[string]interface{}{"attemptId": otherID}},
+		{ID: "legacy", Payload: map[string]interface{}{"phase": "inventory_generated"}},
+	}
+	filtered := filterFleetReconciliationsForAttempt(operations, attemptID)
+	if len(filtered) != 1 || filtered[0].ID != "bound" {
+		t.Fatalf("runner reconciliation read leaked records: %#v", filtered)
 	}
 }
 

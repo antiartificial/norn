@@ -11,6 +11,7 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"reflect"
 	"strings"
 	"testing"
 	"time"
@@ -375,8 +376,21 @@ func TestCreatePrivateReleaseAttestationSuccessReplayAndConflict(t *testing.T) {
 	}
 
 	replayed := invokePrivateRoute(h, app, principal, body, "stable-build")
-	if replayed.Code != http.StatusOK || replayed.Body.String() != created.Body.String() {
-		t.Fatalf("replay status=%d body=%s", replayed.Code, replayed.Body.String())
+	if replayed.Code != http.StatusOK {
+		t.Fatalf("replay status=%d", replayed.Code)
+	}
+	// PostgreSQL JSONB reconstructs candidate objects as maps; JSON member
+	// order is not evidence identity. Compare every value, including the exact
+	// signed payload and signature strings, rather than serialization order.
+	var createdJSON, replayedJSON any
+	if err := json.Unmarshal(created.Body.Bytes(), &createdJSON); err != nil {
+		t.Fatal(err)
+	}
+	if err := json.Unmarshal(replayed.Body.Bytes(), &replayedJSON); err != nil {
+		t.Fatal(err)
+	}
+	if !reflect.DeepEqual(createdJSON, replayedJSON) {
+		t.Fatal("replayed evidence differs from the original signed response")
 	}
 	if replayed.Header().Get("Cache-Control") != "no-store" {
 		t.Fatalf("replayed evidence response cache policy=%q", replayed.Header().Get("Cache-Control"))

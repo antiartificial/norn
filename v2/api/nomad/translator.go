@@ -54,6 +54,12 @@ func TranslateForRegion(spec *model.InfraSpec, imageTag string, env map[string]s
 		}
 
 		tg := nomadapi.NewTaskGroup(procName, 1)
+		if spec.RequiresDistinctHosts() {
+			// Nomad requires distinct_hosts at job or group scope, never task
+			// scope. Keeping it on each service group avoids coupling unrelated
+			// processes while making every replica of this HA process distinct.
+			tg.Constraints = append(tg.Constraints, nomadapi.NewConstraint("", nomadapi.ConstraintDistinctHosts, ""))
+		}
 
 		// Scaling
 		if proc.Scaling != nil && (proc.Scaling.Min > 0 || proc.Scaling.PerRegion > 0) {

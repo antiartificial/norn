@@ -4,22 +4,25 @@ import { NavLink } from 'react-router-dom'
 import { apiFetch } from '../lib/api.ts'
 import { clearDurableIntent, durableIntent, type DurableIntent } from '../lib/durableIntent.ts'
 import { buildFleetExecutionSteps, currentFleetStep, humanize, operationForPlan, planIsComplete, type FleetExecutionStep, type FleetStepState } from '../lib/fleetExecution.ts'
+import { fleetTimingView } from '../lib/fleetTiming.ts'
 import { relativeTime, statusTone } from '../lib/format.ts'
 import { useRuntimeContext } from '../runtime/AppRuntime.tsx'
-import type { CapabilitiesResponse, Deployment, DeploymentListResponse, FleetGitHubStatus, FleetInventory, FleetNodePool, FleetPlansResponse, FleetReconciliationResponse, FleetRunnerAttempt, FleetRunnerAttemptResponse, Operation, OperationsResponse } from '../types/index.ts'
+import type { Deployment, DeploymentListResponse, FleetGitHubStatus, FleetInventory, FleetNodePool, FleetPlansResponse, FleetReconciliationResponse, FleetRunnerAttempt, FleetRunnerAttemptResponse, Operation, OperationsResponse } from '../types/index.ts'
 import { FleetPlanTopology } from '../components/FleetPlanTopology.tsx'
-import { EmptyState, StatusChip, useToast } from '../components/ui/index.ts'
+import { EmptyState, StatusChip, useToast, type StatusTone } from '../components/ui/index.ts'
+import { AuthorityEnrollment } from '../components/AuthorityEnrollment.tsx'
 
 export function FleetPage() {
   const runtime = useRuntimeContext()
-  const inventory = useQuery({ queryKey: ['fleet', 'inventory'], queryFn: () => apiFetch<FleetInventory>('/api/v1/fleet/node-pools'), staleTime: 15_000, refetchInterval: 30_000 })
+  const requiresAuthorityPairing = runtime.authority === 'fleet-only' && !runtime.authenticated
+  const inventory = useQuery({ queryKey: ['fleet', 'inventory'], queryFn: () => apiFetch<FleetInventory>('/api/v1/fleet/node-pools'), staleTime: 15_000, refetchInterval: 30_000, enabled: !requiresAuthorityPairing })
   const plans = useQuery({ queryKey: ['fleet', 'plans'], queryFn: () => apiFetch<FleetPlansResponse>('/api/v1/fleet/plans'), staleTime: 15_000, refetchInterval: 15_000, enabled: inventory.data?.configured === true })
   const github = useQuery({ queryKey: ['fleet', 'github'], queryFn: () => apiFetch<FleetGitHubStatus>('/api/v1/fleet/github'), staleTime: 15_000, refetchInterval: 30_000, enabled: inventory.data?.configured === true })
-  const capabilities = useQuery({ queryKey: ['capabilities'], queryFn: () => apiFetch<CapabilitiesResponse>('/api/v1/capabilities'), staleTime: 60_000 })
-  const activeOperations = useQuery({ queryKey: ['operations', 'active'], queryFn: () => apiFetch<OperationsResponse>('/api/operations/active'), staleTime: 8_000, refetchInterval: 10_000 })
-  const deployments = useQuery({ queryKey: ['deployments-v1', { limit: 20 }], queryFn: () => apiFetch<DeploymentListResponse>('/api/v1/deployments?limit=20'), staleTime: 8_000, refetchInterval: 10_000 })
+  const activeOperations = useQuery({ queryKey: ['operations', 'active'], queryFn: () => apiFetch<OperationsResponse>('/api/operations/active'), staleTime: 8_000, refetchInterval: 10_000, enabled: runtime.operationsAvailable && !requiresAuthorityPairing })
+  const deployments = useQuery({ queryKey: ['deployments-v1', { limit: 20 }], queryFn: () => apiFetch<DeploymentListResponse>('/api/v1/deployments?limit=20'), staleTime: 8_000, refetchInterval: 10_000, enabled: runtime.runtimeAvailable })
   const pools = useMemo(() => Object.entries(inventory.data?.nodePools ?? {}).sort(([a], [b]) => a.localeCompare(b)), [inventory.data?.nodePools])
 
+  if (requiresAuthorityPairing) return <div className="fleet-page"><AuthorityEnrollment onAuthenticated={runtime.refreshAuthoritySession} onSignedOut={runtime.clearAuthoritySession} /></div>
   if (inventory.isLoading) return <div className="panel panel-skeleton" aria-label="Loading fleet"><span /><span /><span /></div>
   if (inventory.error) return <EmptyState icon="!" title="Fleet unavailable" hint={inventory.error instanceof Error ? inventory.error.message : 'Could not load fleet inventory.'} />
   if (!inventory.data?.configured) return <EmptyState icon="◇" title="Connect norn-fleet" hint="Set NORN_FLEET_CONFIG to a read-only checkout of a norn.dev/fleet/v1 Cluster document. Provider credentials remain in the protected Terraform runner." />
@@ -54,12 +57,14 @@ export function FleetPage() {
         </section>
       )}
 
-      <PlatformNow apps={runtime.apps} activeOperations={activeOperations.data?.operations ?? []} deployments={deployments.data?.deployments ?? []} observedAt={Math.max(activeOperations.dataUpdatedAt, deployments.dataUpdatedAt)} loading={activeOperations.isLoading || deployments.isLoading || runtime.loading} stale={activeOperations.isError || deployments.isError || runtime.error !== null} />
+      {runtime.authority === 'fleet-only' && <FleetAuthorityChecklist inventory={inventory.data} github={github.data} canWrite={runtime.canFleetWrite} />}
+
+      {runtime.runtimeAvailable ? <PlatformNow apps={runtime.apps} activeOperations={activeOperations.data?.operations ?? []} deployments={deployments.data?.deployments ?? []} observedAt={Math.max(activeOperations.dataUpdatedAt, deployments.dataUpdatedAt)} loading={activeOperations.isLoading || deployments.isLoading || runtime.loading} stale={activeOperations.isError || deployments.isError || runtime.error !== null} /> : <AuthorityOperations operations={activeOperations.data?.operations ?? []} loading={activeOperations.isLoading} />}
 
       <section aria-labelledby="node-pools-title">
         <div className="section-heading"><div><span className="eyebrow">Capacity</span><h2 id="node-pools-title">Node pools</h2></div><span>{pools.length} desired pools</span></div>
         <div className="fleet-pool-grid">
-          {pools.map(([name, pool]) => <FleetPoolCard key={name} name={name} pool={pool} valid={report?.valid !== false} />)}
+          {pools.map(([name, pool]) => <FleetPoolCard key={name} name={name} pool={pool} valid={report?.valid !== false} canWrite={runtime.canFleetWrite} />)}
         </div>
       </section>
 
@@ -71,8 +76,7 @@ export function FleetPage() {
           loading={plans.isLoading}
           fallbackWorkflowURL={inventory.data.document?.metadata?.workflowUrl}
           githubConnected={github.data?.connected === true}
-          capabilities={new Set(capabilities.data?.features ?? [])}
-          principalScopes={new Set(capabilities.data?.auth?.principal?.scopes ?? [])}
+          capabilities={new Set(runtime.capabilities?.features ?? [])}
           inventory={inventory.data}
           apps={runtime.apps}
           manifest={runtime.serviceManifest}
@@ -82,14 +86,14 @@ export function FleetPage() {
   )
 }
 
-function FleetPoolCard({ name, pool, valid }: { name: string; pool: FleetNodePool; valid: boolean }) {
+function FleetPoolCard({ name, pool, valid, canWrite }: { name: string; pool: FleetNodePool; valid: boolean; canWrite: boolean }) {
   const [expanded, setExpanded] = useState(false)
   return (
     <article className="fleet-pool-card">
       <div className="fleet-pool-header"><div><span className="eyebrow">{pool.labels?.workload ?? 'node pool'}</span><h3>{name}</h3></div><StatusChip tone={pool.min >= 2 ? 'success' : 'warning'} label={`${pool.desired} desired`} /></div>
       <dl className="fleet-pool-metrics"><div><dt>Size</dt><dd>{pool.size}</dd></div><div><dt>Range</dt><dd>{pool.min}–{pool.max}</dd></div><div><dt>Replacement</dt><dd>{pool.replacement?.strategy ?? 'blueGreen'}</dd></div><div><dt>Drain</dt><dd>{pool.replacement?.drainTimeout ?? 'not set'}</dd></div></dl>
-      {valid ? <button className="filter-btn fleet-plan-toggle" type="button" aria-expanded={expanded} onClick={() => setExpanded(!expanded)}>{expanded ? 'Close change' : 'Change capacity'}</button> : <p className="fleet-plan-unavailable" role="status">Planning is unavailable until the fleet document is valid.</p>}
-      {expanded && <CapacityPlanForm name={name} pool={pool} />}
+      {valid && canWrite ? <button className="filter-btn fleet-plan-toggle" type="button" aria-expanded={expanded} onClick={() => setExpanded(!expanded)}>{expanded ? 'Close change' : 'Change capacity'}</button> : <p className="fleet-plan-unavailable" role="status">{valid ? 'Your current identity is read-only; capacity changes require an operator grant.' : 'Planning is unavailable until the fleet document is valid.'}</p>}
+      {expanded && canWrite && <CapacityPlanForm name={name} pool={pool} />}
     </article>
   )
 }
@@ -165,13 +169,13 @@ function PlatformNow({ apps, activeOperations, deployments, observedAt, loading,
   )
 }
 
-function PlanRows({ plans, loading, fallbackWorkflowURL, githubConnected, capabilities, principalScopes, inventory, apps, manifest }: { plans: Operation[]; loading: boolean; fallbackWorkflowURL?: string; githubConnected: boolean; capabilities: Set<string>; principalScopes: Set<string>; inventory: FleetInventory; apps: ReturnType<typeof useRuntimeContext>['apps']; manifest?: ReturnType<typeof useRuntimeContext>['serviceManifest'] }) {
+function PlanRows({ plans, loading, fallbackWorkflowURL, githubConnected, capabilities, inventory, apps, manifest }: { plans: Operation[]; loading: boolean; fallbackWorkflowURL?: string; githubConnected: boolean; capabilities: Set<string>; inventory: FleetInventory; apps: ReturnType<typeof useRuntimeContext>['apps']; manifest?: ReturnType<typeof useRuntimeContext>['serviceManifest'] }) {
   if (loading) return <div className="panel-skeleton"><span /><span /></div>
   if (plans.length === 0) return <EmptyState icon="·" title="No capacity changes" hint="Choose a node pool to create a durable planning receipt." />
-  return <div className="fleet-plan-list">{plans.map((plan, index) => <PlanJourney key={plan.id ?? `${plan.createdAt}-${index}`} plan={plan} fallbackWorkflowURL={fallbackWorkflowURL} githubConnected={githubConnected} capabilities={capabilities} principalScopes={principalScopes} inventory={inventory} apps={apps} manifest={manifest} />)}</div>
+  return <div className="fleet-plan-list">{plans.map((plan, index) => <PlanJourney key={plan.id ?? `${plan.createdAt}-${index}`} plan={plan} fallbackWorkflowURL={fallbackWorkflowURL} githubConnected={githubConnected} capabilities={capabilities} inventory={inventory} apps={apps} manifest={manifest} />)}</div>
 }
 
-function PlanJourney({ plan, fallbackWorkflowURL, githubConnected, capabilities, principalScopes, inventory, apps, manifest }: { plan: Operation; fallbackWorkflowURL?: string; githubConnected: boolean; capabilities: Set<string>; principalScopes: Set<string>; inventory: FleetInventory; apps: ReturnType<typeof useRuntimeContext>['apps']; manifest?: ReturnType<typeof useRuntimeContext>['serviceManifest'] }) {
+function PlanJourney({ plan, fallbackWorkflowURL, githubConnected, capabilities, inventory, apps, manifest }: { plan: Operation; fallbackWorkflowURL?: string; githubConnected: boolean; capabilities: Set<string>; inventory: FleetInventory; apps: ReturnType<typeof useRuntimeContext>['apps']; manifest?: ReturnType<typeof useRuntimeContext>['serviceManifest'] }) {
   const [expanded, setExpanded] = useState(false)
   const [pullRequestURL, setPullRequestURL] = useState<string>()
   const [applyURL, setApplyURL] = useState<string>()
@@ -180,8 +184,8 @@ function PlanJourney({ plan, fallbackWorkflowURL, githubConnected, capabilities,
   const planID = plan.id ?? ''
   const reconciliationAvailable = capabilities.has('fleet-reconciliation-v1')
   const attemptsAvailable = capabilities.has('fleet-runner-attempts-v1')
-  const canOperateFleet = principalScopes.has('fleet:operate') || principalScopes.has('api:write') || principalScopes.has('admin')
   const githubAvailable = capabilities.has('fleet-github-app-v1') && githubConnected
+  const { canFleetWrite } = useRuntimeContext()
   const checkpoints = useQuery({ queryKey: ['fleet', 'plans', planID, 'reconciliations'], queryFn: () => apiFetch<FleetReconciliationResponse>(`/api/v1/fleet/plans/${encodeURIComponent(planID)}/reconciliations`), enabled: expanded && planID.length > 0 && reconciliationAvailable, refetchInterval: expanded ? 10_000 : false })
   const attempts = useQuery({ queryKey: ['fleet', 'plans', planID, 'attempts'], queryFn: () => apiFetch<FleetRunnerAttemptResponse>(`/api/v1/fleet/plans/${encodeURIComponent(planID)}/attempts`), enabled: expanded && planID.length > 0 && attemptsAvailable, refetchInterval: expanded ? 5_000 : false })
   const pullReceipts = useQuery({ queryKey: ['operations', 'fleet.github.pull-request'], queryFn: () => apiFetch<OperationsResponse>('/api/operations?kind=fleet.github.pull-request&limit=100'), enabled: expanded && githubAvailable, staleTime: 8_000, refetchInterval: expanded ? 10_000 : false })
@@ -229,6 +233,7 @@ function PlanJourney({ plan, fallbackWorkflowURL, githubConnected, capabilities,
       </button>
       {expanded && (
         <div className="fleet-journey-detail">
+          <FleetTimingSummary attempt={runnerAttempt} steps={visibleSteps} />
           {checkpoints.isLoading || attempts.isLoading || pullReceipts.isLoading || dispatchReceipts.isLoading ? <div className="panel-skeleton" aria-label="Loading execution evidence"><span /><span /></div> : <FleetStepList steps={visibleSteps} />}
           {!reconciliationAvailable && <p className="fleet-change-warning" role="status">This server does not advertise fleet-reconciliation-v1, so infrastructure checkpoint progress is hidden.</p>}
           {reconciliationAvailable && !attemptsAvailable && <p className="fleet-change-warning" role="status">This server has checkpoint evidence but no durable runner heartbeat contract; live phase state cannot be proven.</p>}
@@ -246,10 +251,8 @@ function PlanJourney({ plan, fallbackWorkflowURL, githubConnected, capabilities,
               destructive={destructive}
               pullRequest={pullRequest}
               dispatch={dispatch}
-              planID={planID}
               runnerAttempt={runnerAttempt}
-              currentStep={currentStep}
-              canOperateFleet={canOperateFleet}
+              canWrite={canFleetWrite}
             />
           </div>}
           <div className="fleet-handoff"><code>{planID}</code>{planID && <NavLink className="filter-btn" to="/operations">View operations</NavLink>}</div>
@@ -258,6 +261,29 @@ function PlanJourney({ plan, fallbackWorkflowURL, githubConnected, capabilities,
         </div>
       )}
     </article>
+  )
+}
+
+function FleetTimingSummary({ attempt, steps }: { attempt?: FleetRunnerAttempt; steps: FleetExecutionStep[] }) {
+  const timing = fleetTimingView(attempt)
+  const provisioning = steps.filter((step) => !['plan_recorded', 'review_opened', 'apply_dispatched'].includes(step.id))
+  const proven = provisioning.filter((step) => step.state === 'completed').length
+  const confidence = attempt?.timing?.confidence === 'low' ? 'Provisional, low confidence' : undefined
+  const sampleCount = attempt?.timing?.provenance.successfulSampleCount ?? 0
+  const exclusions = attempt?.timing?.provenance.exclusions ?? []
+  return (
+    <section className={`fleet-timing ${timing.available ? 'available' : 'unavailable'}`} aria-label="Provisioning timing estimate">
+      <div className="fleet-timing-heading">
+        <div><span className="eyebrow">Runner time</span><strong>{timing.headline}</strong></div>
+        {confidence && <span>{confidence}</span>}
+      </div>
+      <p>{timing.detail}</p>
+      {attempt && <div className="fleet-timing-progress">
+        <progress aria-label={`${proven} of ${provisioning.length} provisioning checkpoints proven`} max={provisioning.length || 1} value={proven} />
+        <small>{proven} of {provisioning.length} checkpoints proven · {humanize(attempt.currentPhase)} · attempt {attempt.attempt}</small>
+      </div>}
+      {timing.available && <small className="fleet-timing-provenance">Configured range · {sampleCount} comparable successful samples{exclusions.length > 0 ? ` · excludes ${exclusions.map(humanizeLower).join(', ')}` : ''}</small>}
+    </section>
   )
 }
 
@@ -271,7 +297,7 @@ function FleetStepList({ steps }: { steps: FleetExecutionStep[] }) {
   ))}</ol>
 }
 
-function CurrentStepActions({ complete, githubAvailable, pullReceipt, dispatchReceipt, workflowURL, pullRequestURL, applyURL, destructive, pullRequest, dispatch, planID, runnerAttempt, currentStep, canOperateFleet }: {
+function CurrentStepActions({ complete, githubAvailable, pullReceipt, dispatchReceipt, workflowURL, pullRequestURL, applyURL, destructive, pullRequest, dispatch, runnerAttempt, canWrite }: {
   complete: boolean
   githubAvailable: boolean
   pullReceipt?: Operation
@@ -282,39 +308,34 @@ function CurrentStepActions({ complete, githubAvailable, pullReceipt, dispatchRe
   destructive: boolean
   pullRequest: { isPending: boolean; mutate: () => void }
   dispatch: { isPending: boolean; mutate: () => void }
-  planID: string
   runnerAttempt?: FleetRunnerAttempt
-  currentStep?: FleetExecutionStep
-  canOperateFleet: boolean
+  canWrite: boolean
 }) {
-  const queryClient = useQueryClient()
-  const { toast } = useToast()
-  const advance = useMutation({
-    mutationFn: () => apiFetch<FleetRunnerAttempt>(`/api/v1/fleet/plans/${encodeURIComponent(planID)}/attempts/${encodeURIComponent(runnerAttempt?.id ?? '')}/advance`, {
-      method: 'POST', headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ schemaVersion: 'norn.fleet-runner-attempt/v1', expectedPhase: runnerAttempt?.currentPhase, revision: runnerAttempt?.revision }),
-    }),
-    onSuccess: (attempt) => {
-      queryClient.invalidateQueries({ queryKey: ['fleet', 'plans', planID, 'attempts'] })
-      queryClient.invalidateQueries({ queryKey: ['fleet', 'plans', planID, 'reconciliations'] })
-      toast({ kind: 'success', title: attempt.status === 'succeeded' ? 'Fleet run completed' : 'Fleet phase advanced', description: attempt.currentPhase })
-    },
-    onError: (error) => toast({ kind: 'error', title: 'Could not advance phase', description: error instanceof Error ? error.message : planID }),
-  })
   const recordedPullURL = safeWorkflowURL(String(pullReceipt?.payload?.url ?? pullRequestURL ?? ''))
   const recordedApplyURL = safeWorkflowURL(String(dispatchReceipt?.payload?.url ?? applyURL ?? ''))
   const runnerURL = safeWorkflowURL(runnerAttempt?.workflowUrl ?? '')
   const runnerActive = runnerAttempt?.status === 'queued' || runnerAttempt?.status === 'running'
   const runnerNeedsRetry = runnerAttempt?.status === 'failed' || runnerAttempt?.status === 'abandoned'
-  const phaseProven = currentStep?.operation?.status === 'succeeded'
   if (complete) return <span className="fleet-action-complete">No action required</span>
-  if (githubAvailable && !pullReceipt) return <button className="filter-btn active" type="button" disabled={pullRequest.isPending} onClick={() => pullRequest.mutate()}>{pullRequest.isPending ? 'Opening…' : 'Open or recover review'}</button>
-  if (githubAvailable && pullReceipt && !dispatchReceipt) return <div className="fleet-step-actions">{recordedPullURL && <a href={recordedPullURL} target="_blank" rel="noreferrer">View pull request ↗</a>}<button className="filter-btn active" type="button" disabled={dispatch.isPending} onClick={() => dispatch.mutate()}>{dispatch.isPending ? 'Dispatching…' : destructive ? 'Dispatch reviewed change' : 'Dispatch protected apply'}</button></div>
-  if (runnerActive && phaseProven && canOperateFleet) return <div className="fleet-step-actions">{runnerURL && <a href={runnerURL} target="_blank" rel="noreferrer">View runner ↗</a>}<button className="filter-btn active" type="button" disabled={advance.isPending} onClick={() => advance.mutate()}>{advance.isPending ? 'Advancing…' : runnerAttempt?.currentPhase === 'complete' ? 'Complete proven run' : 'Advance proven phase'}</button></div>
+  if (githubAvailable && !pullReceipt) return canWrite ? <button className="filter-btn active" type="button" disabled={pullRequest.isPending} onClick={() => pullRequest.mutate()}>{pullRequest.isPending ? 'Opening…' : 'Open or recover review'}</button> : <span className="fleet-action-unavailable">Read-only identity; an operator must open review.</span>
+  if (githubAvailable && pullReceipt && !dispatchReceipt) return <div className="fleet-step-actions">{recordedPullURL && <a href={recordedPullURL} target="_blank" rel="noreferrer">View pull request ↗</a>}{canWrite ? <button className="filter-btn active" type="button" disabled={dispatch.isPending} onClick={() => dispatch.mutate()}>{dispatch.isPending ? 'Dispatching…' : destructive ? 'Dispatch reviewed change' : 'Dispatch protected apply'}</button> : <span className="fleet-action-unavailable">Read-only identity; an operator must dispatch.</span>}</div>
   if (runnerNeedsRetry && runnerURL) return <a href={runnerURL} target="_blank" rel="noreferrer">Retry in protected runner ↗</a>
   if (runnerActive && runnerURL) return <a href={runnerURL} target="_blank" rel="noreferrer">View active runner ↗</a>
   if (recordedApplyURL || recordedPullURL || workflowURL) return <div className="fleet-step-actions">{recordedApplyURL && <a href={recordedApplyURL} target="_blank" rel="noreferrer">View apply run ↗</a>}{recordedPullURL && <a href={recordedPullURL} target="_blank" rel="noreferrer">View pull request ↗</a>}{!recordedApplyURL && workflowURL && <a href={workflowURL} target="_blank" rel="noreferrer">Continue in protected runner ↗</a>}</div>
   return <span className="fleet-action-unavailable">No safe Norn action is available for this step.</span>
+}
+
+function FleetAuthorityChecklist({ inventory, github, canWrite }: { inventory: FleetInventory; github?: FleetGitHubStatus; canWrite: boolean }) {
+  const checks: Array<{ label: string; detail: string; tone: StatusTone }> = [
+    { label: 'Desired Fleet document', detail: inventory.validation?.valid ? 'Validated by this authority.' : 'Validation evidence is missing or reports findings.', tone: inventory.validation?.valid ? 'success' : 'warning' as const },
+    { label: 'GitHub review bridge', detail: github?.connected ? 'Connection reported by the configured GitHub App.' : github?.message ?? 'No connected bridge has been reported.', tone: github?.connected ? 'success' : 'warning' as const },
+    { label: 'Operator permission', detail: canWrite ? 'This identity can record Fleet planning requests.' : 'This identity is read-only; no planning actions are exposed.', tone: canWrite ? 'success' : 'neutral' as const },
+  ]
+  return <section className="panel" aria-labelledby="fleet-authority-checklist"><div className="section-heading"><div><span className="eyebrow">Evidence checklist</span><h2 id="fleet-authority-checklist">Fleet management scope</h2></div><StatusChip tone="neutral" label="not a readiness verdict" /></div><p className="panel-intro">These are reported control-plane facts. They do not prove provider capacity, workload health, or rollout readiness.</p><div className="compact-list">{checks.map((check) => <div className="compact-row" key={check.label}><StatusChip tone={check.tone} label={check.label} /><span>{check.detail}</span></div>)}</div></section>
+}
+
+function AuthorityOperations({ operations, loading }: { operations: Operation[]; loading: boolean }) {
+  return <section className="panel" aria-labelledby="authority-operations-title"><div className="section-heading"><div><span className="eyebrow">Durable management records</span><h2 id="authority-operations-title">Fleet operations</h2></div></div>{loading ? <div className="panel-skeleton"><span /><span /></div> : operations.length === 0 ? <EmptyState icon="·" title="No active Fleet operations" hint="No runtime or deployment status was requested from this authority." /> : <div className="compact-list">{operations.map((operation) => <div className="compact-row" key={operation.id}><StatusChip tone={statusTone(operation.status)} label={operation.status ?? 'unknown'} /><span>{operation.kind ?? 'operation'}</span><code>{operation.id}</code></div>)}</div>}</section>
 }
 
 function objectValue(value: unknown): Record<string, unknown> { return value && typeof value === 'object' && !Array.isArray(value) ? value as Record<string, unknown> : {} }
@@ -323,3 +344,4 @@ function safeWorkflowURL(value: string): string | undefined { try { const url = 
 function shortDigest(value?: string) { return value ? `${value.slice(0, 18)}…` : 'unversioned' }
 function stepIcon(state: FleetStepState): string { return state === 'completed' ? '✓' : state === 'failed' ? '!' : state === 'blocked' ? '×' : state === 'active' ? '↻' : '○' }
 function stepStateLabel(state: FleetStepState): string { return state === 'completed' ? 'Proven' : humanize(state) }
+function humanizeLower(value: string): string { return value.replaceAll('_', ' ').toLowerCase() }

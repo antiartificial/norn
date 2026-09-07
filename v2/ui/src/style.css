@@ -488,6 +488,17 @@ body {
 .fleet-journey-summary > span:nth-child(2) { display: grid; gap: 2px; min-width: 0; }
 .fleet-journey-summary small { color: var(--text-3); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .fleet-journey-detail { border-top: 1px solid var(--border); display: grid; gap: 11px; padding: 12px; }
+.fleet-timing { background: var(--surface-2); border: 1px solid var(--border); border-radius: var(--radius-sm); display: grid; gap: 7px; padding: 11px 12px; }
+.fleet-timing.available { background: color-mix(in srgb, var(--info) 6%, var(--surface-2)); border-color: color-mix(in srgb, var(--info) 30%, var(--border)); }
+.fleet-timing-heading { align-items: end; display: flex; gap: 16px; justify-content: space-between; }
+.fleet-timing-heading > div { display: grid; gap: 2px; }
+.fleet-timing-heading > span, .fleet-timing p, .fleet-timing small { color: var(--text-3); font-size: .6875rem; }
+.fleet-timing-heading > span { text-transform: uppercase; }
+.fleet-timing p { margin: 0; }
+.fleet-timing strong, .fleet-timing-progress small { font-variant-numeric: tabular-nums; }
+.fleet-timing-progress { display: grid; gap: 5px; }
+.fleet-timing-progress progress { accent-color: var(--info); block-size: .3125rem; inline-size: 100%; }
+.fleet-timing-provenance { line-height: 1.4; }
 .fleet-checkpoints { display: grid; gap: 0; list-style: none; margin: 0; padding: 0; }
 .fleet-checkpoints li { align-items: start; border-left: 2px solid var(--border); color: var(--text-3); display: grid; gap: 9px; grid-template-columns: 22px minmax(0, 1fr) auto; margin-left: 9px; min-height: 54px; padding: 3px 0 12px 14px; position: relative; }
 .fleet-checkpoints li > span:first-child { align-items: center; background: var(--surface-1); border: 2px solid var(--border-strong); border-radius: 50%; display: flex; font-size: 11px; height: 22px; justify-content: center; left: -12px; position: absolute; width: 22px; }
@@ -3380,3 +3391,5 @@ body,
 }
 .fleet-hero-status { display: flex; flex-wrap: wrap; gap: .45rem; align-items: center; }
 .fleet-github-links { display: flex; flex-wrap: wrap; gap: .75rem; font-size: .86rem; }
+ .connection-context { color: var(--text-secondary, #a9b4c5); font-size: .78rem; white-space: nowrap; }
+ .management-only-state { max-inline-size: 48rem; }

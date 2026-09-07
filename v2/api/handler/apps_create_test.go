@@ -84,3 +84,36 @@ func TestAppDeploymentUpdateRejectsSymlinkedAppDirectory(t *testing.T) {
 		t.Fatalf("symlink target was modified: %s", got)
 	}
 }
+
+func TestAppCatalogReadOnlyRejectsCreateAndDeploymentWithoutChangingFiles(t *testing.T) {
+	appsDir := t.TempDir()
+	appDir := filepath.Join(appsDir, "orders-api")
+	if err := os.Mkdir(appDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	original := []byte("name: orders-api\ndeploy: false\nprocesses: {}\n")
+	if err := os.WriteFile(filepath.Join(appDir, "infraspec.yaml"), original, 0o640); err != nil {
+		t.Fatal(err)
+	}
+	h := &Handler{cfg: &config.Config{AppsDir: appsDir, AppCatalogReadOnly: true}}
+	router := chi.NewRouter()
+	router.Post("/api/v1/apps", h.CreateApp)
+	router.With(ValidateAppID).Put("/api/v1/apps/{id}/deployment", h.UpdateAppDeployment)
+	for _, request := range []*http.Request{
+		httptest.NewRequest(http.MethodPost, "/api/v1/apps", strings.NewReader(`{"name":"new-app"}`)),
+		httptest.NewRequest(http.MethodPut, "/api/v1/apps/orders-api/deployment", strings.NewReader(`{"enabled":true}`)),
+	} {
+		rec := httptest.NewRecorder()
+		router.ServeHTTP(rec, request)
+		if rec.Code != http.StatusConflict || !strings.Contains(rec.Body.String(), "app_catalog_read_only") {
+			t.Fatalf("status=%d body=%s", rec.Code, rec.Body.String())
+		}
+	}
+	if _, err := os.Stat(filepath.Join(appsDir, "new-app")); !os.IsNotExist(err) {
+		t.Fatalf("catalog create changed filesystem: %v", err)
+	}
+	got, err := os.ReadFile(filepath.Join(appDir, "infraspec.yaml"))
+	if err != nil || string(got) != string(original) {
+		t.Fatalf("catalog deployment mutation changed file: %q err=%v", got, err)
+	}
+}

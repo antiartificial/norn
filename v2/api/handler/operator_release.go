@@ -408,7 +408,9 @@ func (h *Handler) IncidentAction(w http.ResponseWriter, r *http.Request) {
 		Action         string `json:"action"`
 		CorrelationKey string `json:"correlationKey,omitempty"`
 		DedupeKey      string `json:"dedupeKey,omitempty"`
+		Source         string `json:"source,omitempty"`
 		App            string `json:"app,omitempty"`
+		Environment    string `json:"environment,omitempty"`
 		By             string `json:"by,omitempty"`
 		Note           string `json:"note,omitempty"`
 		Duration       string `json:"duration,omitempty"`
@@ -421,7 +423,7 @@ func (h *Handler) IncidentAction(w http.ResponseWriter, r *http.Request) {
 	if req.By == "" {
 		req.By = "operator"
 	}
-	key := store.IncidentGroupKey{CorrelationKey: req.CorrelationKey, DedupeKey: req.DedupeKey}
+	key := store.IncidentGroupKey{CorrelationKey: req.CorrelationKey, DedupeKey: req.DedupeKey, Source: req.Source, App: req.App, Environment: req.Environment}
 	var affected int
 	var err error
 	switch req.Action {
@@ -476,13 +478,15 @@ func (h *Handler) emitIncidentResolution(r *http.Request, app string, key store.
 		metadata["resolvedDedupeKey"] = key.DedupeKey
 	}
 	return h.beacon.Emit(r.Context(), model.BeaconEvent{
-		App:       app,
-		Type:      "incident.resolved",
-		Severity:  model.BeaconInfo,
-		Title:     app + " incident resolved",
-		Body:      metadata["resolution"].(string),
-		DedupeKey: dedupeKey,
-		Metadata:  metadata,
+		Source:      key.Source,
+		App:         app,
+		Environment: key.Environment,
+		Type:        "incident.resolved",
+		Severity:    model.BeaconInfo,
+		Title:       app + " incident resolved",
+		Body:        metadata["resolution"].(string),
+		DedupeKey:   dedupeKey,
+		Metadata:    metadata,
 	})
 }
 
@@ -846,9 +850,9 @@ func (h *Handler) operatorSecretStatuses() []SecretStatus {
 
 func operatorActions() []operatorActionDescriptor {
 	return []operatorActionDescriptor{
-		{ID: "incident.acknowledge", Label: "Acknowledge Incident", Method: http.MethodPost, Path: "/api/incidents/action", BodySchema: `{"action":"acknowledge","correlationKey":"...","by":"operator","note":"..."}`, Risk: "low", MobileReady: true},
-		{ID: "incident.resolve", Label: "Resolve Incident", Method: http.MethodPost, Path: "/api/incidents/action", BodySchema: `{"action":"resolve","correlationKey":"...","app":"...","by":"operator","note":"..."}`, Risk: "low", MobileReady: true},
-		{ID: "incident.snooze", Label: "Snooze Incident", Method: http.MethodPost, Path: "/api/incidents/action", BodySchema: `{"action":"snooze","correlationKey":"...","duration":"1h"}`, Risk: "low", MobileReady: true},
+		{ID: "incident.acknowledge", Label: "Acknowledge Incident", Method: http.MethodPost, Path: "/api/incidents/action", BodySchema: `{"action":"acknowledge","correlationKey":"...","source":"...","app":"...","environment":"...","by":"operator","note":"..."}`, Risk: "low", MobileReady: true},
+		{ID: "incident.resolve", Label: "Resolve Incident", Method: http.MethodPost, Path: "/api/incidents/action", BodySchema: `{"action":"resolve","correlationKey":"...","source":"...","app":"...","environment":"...","by":"operator","note":"..."}`, Risk: "low", MobileReady: true},
+		{ID: "incident.snooze", Label: "Snooze Incident", Method: http.MethodPost, Path: "/api/incidents/action", BodySchema: `{"action":"snooze","correlationKey":"...","source":"...","app":"...","environment":"...","duration":"1h"}`, Risk: "low", MobileReady: true},
 		{ID: "cron.trigger", Label: "Trigger Cron", Method: http.MethodPost, Path: "/api/apps/{id}/cron/trigger", BodySchema: `{"process":"..."}`, Risk: "medium", MobileReady: true},
 		{ID: "cron.pause", Label: "Pause Cron", Method: http.MethodPost, Path: "/api/apps/{id}/cron/pause", BodySchema: `{"process":"..."}`, Risk: "medium", MobileReady: true},
 		{ID: "deploy.preflight", Label: "Run Preflight", Method: http.MethodPost, Path: "/api/apps/{id}/preflight", BodySchema: `{"ref":"HEAD"}`, Risk: "low", MobileReady: true},

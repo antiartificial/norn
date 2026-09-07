@@ -276,6 +276,133 @@ func TestControlSecurityConfiguration(t *testing.T) {
 	}
 }
 
+func fleetAuthorityOnlyTestConfig(t *testing.T) *config.Config {
+	t.Helper()
+	configPath := filepath.Join(t.TempDir(), "cluster.yaml")
+	const fleetDocument = `apiVersion: norn.dev/fleet/v1
+kind: Cluster
+metadata:
+  repository: acme/norn-fleet
+  environment: staging
+  workflowURL: https://github.com/acme/norn-fleet/actions/workflows/apply.yml
+cluster:
+  name: staging-nyc3
+  provider: digitalocean
+  region: nyc3
+nodePools:
+  control:
+    size: s-4vcpu-8gb
+    min: 3
+    desired: 3
+    max: 5
+    labels: { workload: control-plane }
+    replacement:
+      strategy: blueGreen
+      requireCapacityHeadroom: true
+      requireReadiness: true
+      drainTimeout: 15m
+`
+	if err := os.WriteFile(configPath, []byte(fleetDocument), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	return &config.Config{
+		Profile: "development", Environment: "staging", EnvironmentExplicit: true, FleetAuthorityOnly: true, AppCatalogReadOnly: true,
+		BindAddr: "127.0.0.1", APIToken: strings.Repeat("x", 32), RequireExplicitAuth: true,
+		DatabaseURL:     "postgres://fleet-db/norn?sslmode=verify-full&pool_max_conns=4",
+		AuditSigningKey: strings.Repeat("a", 32), AuditRetentionDays: 90,
+		AllowedOrigins:   "https://norn-staging.betabung.com",
+		FleetConfig:      configPath,
+		FleetGitHubAppID: "123", FleetGitHubInstallationID: 456, FleetGitHubPrivateKeyFile: "/etc/norn/fleet.pem",
+		FleetGitHubRepository: "acme/norn-fleet", FleetGitHubEnvironment: "staging", FleetGitHubConfigPath: "environments/staging/nyc3/cluster.yaml", FleetGitHubDefaultBranch: "main", FleetGitHubApplyWorkflow: "apply.yml", FleetGitHubAPIBaseURL: "https://api.github.com",
+		GitHubActionsOIDCAudience: "norn-fleet-staging", GitHubActionsOIDCJWKSURL: "https://token.actions.githubusercontent.com/.well-known/jwks",
+		GitHubActionsFleetAllowedRepository:   "acme/norn-fleet@101@202",
+		GitHubActionsAllowedRefs:              []string{"refs/heads/main"},
+		GitHubActionsAllowedEvents:            []string{"push", "workflow_dispatch"},
+		GitHubActionsFleetAllowedWorkflowRefs: []string{"acme/norn-fleet/.github/workflows/apply.yml@" + strings.Repeat("a", 40), "acme/norn-fleet/.github/workflows/recover.yml@" + strings.Repeat("b", 40)},
+		GitHubActionsFleetAllowedEnvironments: []string{"staging"}, GitHubActionsFleetAllowedIntents: []string{"apply", "recover"},
+	}
+}
+
+func TestFleetAuthorityOnlySecurityConfigurationAndRouterAllowlist(t *testing.T) {
+	valid := fleetAuthorityOnlyTestConfig(t)
+	if err := validateControlSecurity(valid); err != nil {
+		t.Fatalf("valid Fleet authority-only config rejected: %v", err)
+	}
+	for _, tt := range []struct {
+		name   string
+		mutate func(*config.Config)
+	}{
+		{"requires staging development lane", func(c *config.Config) { c.Profile = "production" }},
+		{"requires immutable app catalog declaration", func(c *config.Config) { c.AppCatalogReadOnly = false }},
+		{"requires verified database", func(c *config.Config) { c.DatabaseURL = "postgres://fleet-db/norn?sslmode=require" }},
+		{"requires runner recovery intent", func(c *config.Config) { c.GitHubActionsFleetAllowedIntents = []string{"apply"} }},
+		{"requires only staging Fleet environment", func(c *config.Config) { c.GitHubActionsFleetAllowedEnvironments = []string{"staging", "production"} }},
+		{"requires only protected main ref", func(c *config.Config) { c.GitHubActionsAllowedRefs = []string{"refs/heads/main", "refs/heads/release"} }},
+		{"requires exact Fleet repository tuple", func(c *config.Config) { c.GitHubActionsFleetAllowedRepository = "acme/other-fleet@101@202" }},
+		{"requires fixed GitHub App API", func(c *config.Config) { c.FleetGitHubAPIBaseURL = "https://github.example.test" }},
+		{"requires fixed GitHub Actions JWKS", func(c *config.Config) { c.GitHubActionsOIDCJWKSURL = "https://github.example.test/jwks" }},
+		{"requires Fleet workflow paths", func(c *config.Config) {
+			c.GitHubActionsFleetAllowedWorkflowRefs = []string{"acme/other-fleet/.github/workflows/apply.yml@" + strings.Repeat("a", 40)}
+		}},
+		{"rejects release authority", func(c *config.Config) { c.GitHubActionsReleaseBindings = []string{"app=acme/app@1@2"} }},
+		{"rejects private release trust", func(c *config.Config) { c.ReleaseAttestationTrustMode = "norn-signed-private" }},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			candidate := *valid
+			tt.mutate(&candidate)
+			if err := validateControlSecurity(&candidate); err == nil {
+				t.Fatal("unsafe Fleet authority-only config was accepted")
+			}
+		})
+	}
+
+	router := fleetAuthorityOnlyRouter(valid, nil)
+	for _, path := range []string{"/api/v1/apps", "/api/v1/releases", "/api/v1/platform/upgrades", "/api/services/manifest", "/api/v1/openapi.yaml", "/ws", "/"} {
+		req := httptest.NewRequest(http.MethodGet, path, nil)
+		req.Header.Set("Authorization", "Bearer "+valid.APIToken)
+		rec := httptest.NewRecorder()
+		router.ServeHTTP(rec, req)
+		if rec.Code != http.StatusNotFound {
+			t.Fatalf("%s status=%d, want 404", path, rec.Code)
+		}
+	}
+	for _, path := range []string{"/api/health", "/api/version", "/api/v1/capabilities"} {
+		req := httptest.NewRequest(http.MethodGet, path, nil)
+		rec := httptest.NewRecorder()
+		router.ServeHTTP(rec, req)
+		if rec.Code != http.StatusOK {
+			t.Fatalf("%s status=%d, want 200: %s", path, rec.Code, rec.Body.String())
+		}
+	}
+	capabilitiesRequest := httptest.NewRequest(http.MethodGet, "/api/v1/capabilities", nil)
+	capabilitiesResponse := httptest.NewRecorder()
+	router.ServeHTTP(capabilitiesResponse, capabilitiesRequest)
+	var capabilities struct {
+		Features  []string          `json:"features"`
+		Endpoints map[string]string `json:"endpoints"`
+	}
+	if err := json.Unmarshal(capabilitiesResponse.Body.Bytes(), &capabilities); err != nil {
+		t.Fatal(err)
+	}
+	if containsCapability(capabilities.Features, "openapi-3.1") || capabilities.Endpoints["openapi"] != "" {
+		t.Fatalf("Fleet authority advertised unavailable OpenAPI: %#v", capabilities)
+	}
+	req := httptest.NewRequest(http.MethodGet, "/api/v1/fleet/plans", nil)
+	req.Header.Set("Authorization", "Bearer "+valid.APIToken)
+	rec := httptest.NewRecorder()
+	router.ServeHTTP(rec, req)
+	if rec.Code == http.StatusNotFound {
+		t.Fatalf("Fleet route is not registered")
+	}
+	req = httptest.NewRequest(http.MethodGet, "/api/v1/audit/mutations", nil)
+	req.Header.Set("Authorization", "Bearer "+valid.APIToken)
+	rec = httptest.NewRecorder()
+	router.ServeHTTP(rec, req)
+	if rec.Code == http.StatusNotFound {
+		t.Fatal("mutation audit read route is not registered")
+	}
+}
+
 func TestNornSignedPrivateSignerAuthorityIsStagingOnly(t *testing.T) {
 	public, private, err := ed25519.GenerateKey(nil)
 	if err != nil {
@@ -637,6 +764,25 @@ func TestReleaseCapabilitiesRequireConfiguredReleasePolicy(t *testing.T) {
 	}
 	if !containsCapability(available.Features, "release-promotions-v1") || available.Endpoints["releasePromotions"] != "/api/v1/apps/{id}/promotions" {
 		t.Fatalf("configured release policy was not advertised: %#v", available)
+	}
+}
+
+func TestCatalogReadOnlyCapabilitiesHideCatalogMutations(t *testing.T) {
+	request := httptest.NewRequest(http.MethodGet, "/api/v1/capabilities", nil)
+	rec := httptest.NewRecorder()
+	writeControlCapabilitiesForConfig(&config.Config{AppCatalogReadOnly: true}, rec, request)
+	var capability struct {
+		Features  []string          `json:"features"`
+		Endpoints map[string]string `json:"endpoints"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &capability); err != nil {
+		t.Fatal(err)
+	}
+	if containsCapability(capability.Features, "app-creation") || capability.Endpoints["appCreation"] != "" || capability.Endpoints["appDeployment"] != "" {
+		t.Fatalf("catalog mutations advertised in readonly mode: %#v", capability)
+	}
+	if !containsCapability(capability.Features, "app-catalog-read-only-v1") {
+		t.Fatalf("catalog readonly capability missing: %#v", capability.Features)
 	}
 }
 

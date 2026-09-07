@@ -10,6 +10,7 @@ import (
 	"fmt"
 	"log"
 	"net/http"
+	"strings"
 	"time"
 
 	"github.com/google/uuid"
@@ -98,7 +99,22 @@ func (s *Service) Emit(ctx context.Context, event model.BeaconEvent) (*model.Bea
 
 	if event.Severity == model.BeaconInfo {
 		if ck, ok := event.Metadata["correlationKey"].(string); ok && ck != "" {
-			if n, err := s.db.AutoAckCorrelatedEvents(ctx, ck, event.ID); err != nil {
+			var n int
+			var err error
+			if isCapacityCorrelationKey(ck) {
+				if event.App == "norn-host" && event.Type == "service.capacity.recovered" {
+					if ck == "norn-host:minimum-capacity" {
+						if legacyID, _ := event.Metadata["legacyCapacityWarningID"].(string); legacyID != "" && event.Source == "norn" {
+							n, err = s.db.AutoAckCapacityWarningByID(ctx, legacyID, event.Source, event.App, event.Environment, ck, event.ID, event.OccurredAt)
+						}
+					} else {
+						n, err = s.db.AutoAckCorrelatedEventsOfType(ctx, event.Source, event.App, event.Environment, ck, event.ID, event.OccurredAt, "service.capacity.below_minimum")
+					}
+				}
+			} else {
+				n, err = s.db.AutoAckCorrelatedEvents(ctx, event.Source, event.App, event.Environment, ck, event.ID, event.OccurredAt)
+			}
+			if err != nil {
 				log.Printf("beacon: auto-ack correlated events for %s: %v", ck, err)
 			} else if n > 0 {
 				log.Printf("beacon: auto-acked %d events for %s", n, ck)
@@ -127,6 +143,18 @@ func (s *Service) Emit(ctx context.Context, event model.BeaconEvent) (*model.Bea
 	}
 
 	return &event, nil
+}
+
+func isCapacityCorrelationKey(key string) bool {
+	if key == "norn-host:minimum-capacity" {
+		return true
+	}
+	const prefix, suffix = "norn-host:", ":minimum-capacity"
+	if !strings.HasPrefix(key, prefix) || !strings.HasSuffix(key, suffix) {
+		return false
+	}
+	scope := strings.TrimSuffix(strings.TrimPrefix(key, prefix), suffix)
+	return scope != "" && !strings.Contains(scope, ":")
 }
 
 func (s *Service) forward(ctx context.Context, event model.BeaconEvent) {

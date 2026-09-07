@@ -245,6 +245,9 @@ func plainEnvLooksSecretLike(key, value string) bool {
 }
 
 func (h *Handler) UpdateSecrets(w http.ResponseWriter, r *http.Request) {
+	if h.rejectAppCatalogMutation(w, r) {
+		return
+	}
 	id := chi.URLParam(r, "id")
 	var updates map[string]string
 	if err := decodeJSON(r, &updates); err != nil {
@@ -259,6 +262,9 @@ func (h *Handler) UpdateSecrets(w http.ResponseWriter, r *http.Request) {
 }
 
 func (h *Handler) DeleteSecret(w http.ResponseWriter, r *http.Request) {
+	if h.rejectAppCatalogMutation(w, r) {
+		return
+	}
 	id := chi.URLParam(r, "id")
 	key := chi.URLParam(r, "key")
 	if err := h.secrets.Delete(id, key); err != nil {

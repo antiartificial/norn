@@ -18,6 +18,9 @@ Options:
   --nomad-source PATH   Source Nomad HCL to preserve host volumes
   --consul-source PATH  Source Consul HCL
   --address ADDRESS     Advertise/bind address (default: auto-detected IPv4)
+  --host-id ID          Stable identity for host-scoped assurance events (default: NORN_HOST_ID, persisted hostname)
+  --beacon-environment ENV
+                        Explicit Beacon environment required for legacy capacity adoption
   --api-label LABEL     Norn API launchd label (default: com.norn.api)
   --cloudflared-config PATH
                         Named-tunnel config (default: ~/.cloudflared/config.yml)
@@ -92,6 +95,8 @@ nomad_security_fragment="${NORN_HOST_NOMAD_SECURITY_FRAGMENT:-}"
 consul_security_fragment="${NORN_HOST_CONSUL_SECURITY_FRAGMENT:-}"
 cert_days="${NORN_HOST_CERT_DAYS:-365}"
 address="${NORN_HOST_ADDRESS:-auto}"
+host_id="${NORN_HOST_ID:-}"
+beacon_environment="${NORN_BEACON_ENVIRONMENT:-}"
 api_label="${NORN_HOST_API_LABEL:-com.norn.api}"
 cloudflared_config="${NORN_HOST_CLOUDFLARED_CONFIG:-${NORN_CLOUDFLARED_CONFIG:-$HOME/.cloudflared/config.yml}}"
 cloudflared_label="${NORN_HOST_CLOUDFLARED_LABEL:-${NORN_CLOUDFLARED_LAUNCH_LABEL:-com.norn.cloudflared}}"
@@ -111,6 +116,7 @@ probe_specs=""
 serve_specs=""
 forge_specs=""
 assure_interval="${NORN_HOST_ASSURE_INTERVAL:-300}"
+host_scope=""
 
 append_spec() {
   local current="$1" value="$2"
@@ -135,6 +141,8 @@ while [ "$#" -gt 0 ]; do
     --nomad-security-fragment) nomad_security_fragment="$2"; shift 2 ;;
     --consul-security-fragment) consul_security_fragment="$2"; shift 2 ;;
     --address) address="$2"; shift 2 ;;
+    --host-id) host_id="$2"; shift 2 ;;
+    --beacon-environment) beacon_environment="$2"; shift 2 ;;
     --api-label) api_label="$2"; shift 2 ;;
     --cloudflared-config) cloudflared_config="$2"; shift 2 ;;
     --cloudflared-label) cloudflared_label="$2"; shift 2 ;;
@@ -182,6 +190,11 @@ serve_file="$config_dir/assure-serve"
 forge_file="$config_dir/assure-forge"
 assure_state="$state_dir/assurance-failed"
 capacity_state="$state_dir/assurance-below-minimum"
+capacity_scope_state="$state_dir/assurance-below-minimum-scope"
+capacity_episode="$state_dir/assurance-capacity-episode"
+host_identity_file="$state_dir/assurance-host-identity"
+beacon_environment_file="$state_dir/assurance-beacon-environment"
+legacy_capacity_adoption="$state_dir/assurance-capacity-legacy-adoption"
 assure_lock="$state_dir/assurance.lock"
 nomad_config="$config_dir/nomad.hcl"
 consul_config="$config_dir/consul.hcl"
@@ -798,7 +811,7 @@ import ipaddress, json, sys
 try:
     instances = json.load(sys.stdin)
 except Exception:
-    raise SystemExit(1)
+    raise SystemExit(2)
 for item in instances:
     service = item.get("Service") or {}
     node = item.get("Node") or {}
@@ -961,37 +974,285 @@ run_endpoint_probes() {
 }
 
 emit_assurance_event() {
-  local severity="$1" event_type="$2" title="$3" body="$4" correlation="${5:-norn-host:assurance}" dedupe="${6:-norn-host:$2}" payload
+  local severity="$1" event_type="$2" title="$3" body="$4" correlation="${5:-norn-host:$host_scope:assurance}" dedupe="${6:-norn-host:$host_scope:$2}" payload norn_base
   payload="$(mktemp "${TMPDIR:-/tmp}/norn-assure-event.XXXXXX")"
-  python3 - "$payload" "$severity" "$event_type" "$title" "$body" "$correlation" "$dedupe" <<'PY'
+  norn_base="$(runtime_base norn)"
+  python3 - "$payload" "$severity" "$event_type" "$title" "$body" "$correlation" "$dedupe" "$host_scope" "$beacon_environment" <<'PY'
 import json, pathlib, sys
-path, severity, event_type, title, body, correlation, dedupe = sys.argv[1:]
+path, severity, event_type, title, body, correlation, dedupe, host_scope, environment = sys.argv[1:]
 pathlib.Path(path).write_text(json.dumps({
+    "source": f"norn-host:{host_scope}",
     "app": "norn-host",
+    "environment": environment,
     "type": event_type,
     "severity": severity,
     "title": title,
     "body": body,
     "dedupeKey": dedupe,
-    "metadata": {"correlationKey": correlation, "stage": "assure"},
+    "metadata": {"correlationKey": correlation, "hostScope": host_scope, "stage": "assure"},
 }))
 PY
   if ! curl -fsS --max-time 5 -H 'Content-Type: application/json' --data-binary "@$payload" \
-    http://127.0.0.1:8800/api/events >/dev/null 2>&1; then
+    "${norn_base%/}/api/events" >/dev/null 2>&1; then
     note "warning: could not emit Beacon event $event_type"
+    rm -f "$payload"
+    return 1
+  fi
+  rm -f "$payload"
+  return 0
+}
+
+# NORN_HOST_ID is the operator-owned identity for a physical host. When it is
+# absent, pin the current short hostname on first assurance so a hostname
+# rename does not split an incident episode. The file lives with the existing
+# assurance episode state and is deliberately retained across recoveries.
+initialize_host_scope() {
+  local candidate persisted="" tmp had_identity=false
+  [ -s "$host_identity_file" ] && had_identity=true
+  if $had_identity; then
+    persisted="$(sed -n '1p' "$host_identity_file")"
+  fi
+  if [ -n "$host_id" ]; then
+    if $had_identity && [ "$host_id" != "$persisted" ]; then
+      return 1
+    fi
+    candidate="$host_id"
+  else
+    candidate="$persisted"
+  fi
+  if [ -z "$candidate" ]; then
+    candidate="$(hostname -s)" || return 1
+  fi
+  [[ "$candidate" =~ ^[A-Za-z0-9][A-Za-z0-9._-]{0,62}$ ]] || return 1
+  if ! $had_identity; then
+    tmp="$(mktemp "$state_dir/.assurance-host-identity.XXXXXX")" || return 1
+    if ! printf '%s\n' "$candidate" > "$tmp" || ! chmod 600 "$tmp" || ! mv "$tmp" "$host_identity_file"; then
+      rm -f "$tmp"
+      return 1
+    fi
+  fi
+  host_scope="$candidate"
+}
+
+# A first-upgrade adoption must name its Beacon environment explicitly. Persist
+# it beside host identity so periodic launchd assurance has the same fence as
+# an interactive pass, without relying on inherited shell/API credentials.
+initialize_beacon_environment() {
+  local persisted="" tmp
+  if [ -s "$beacon_environment_file" ]; then
+    persisted="$(sed -n '1p' "$beacon_environment_file")"
+  fi
+  if [ -n "$beacon_environment" ]; then
+    [[ "$beacon_environment" =~ ^[A-Za-z0-9][A-Za-z0-9._-]{0,62}$ ]] || return 1
+    if [ -n "$persisted" ] && [ "$beacon_environment" != "$persisted" ]; then
+      return 1
+    fi
+    if [ -z "$persisted" ]; then
+      tmp="$(mktemp "$state_dir/.assurance-beacon-environment.XXXXXX")" || return 1
+      if ! printf '%s\n' "$beacon_environment" > "$tmp" || ! chmod 600 "$tmp" || ! mv "$tmp" "$beacon_environment_file"; then
+        rm -f "$tmp"
+        return 1
+      fi
+    fi
+  elif [ -n "$persisted" ]; then
+    beacon_environment="$persisted"
+  fi
+}
+
+capacity_episode_token() {
+  local token tmp
+  if [ -s "$capacity_episode" ]; then
+    cat "$capacity_episode"
+    return 0
+  fi
+  token="$(python3 - <<'PY'
+import uuid
+print(uuid.uuid4().hex)
+PY
+)" || return 1
+  tmp="$(mktemp "$state_dir/.assurance-capacity-episode.XXXXXX")" || return 1
+  if ! printf '%s\n' "$token" > "$tmp" || ! chmod 600 "$tmp" || ! mv "$tmp" "$capacity_episode"; then
+    rm -f "$tmp"
+    return 1
+  fi
+  printf '%s\n' "$token"
+}
+
+record_legacy_capacity_adoption() {
+  local status="$1" warning_id="${2:-}" episode="${3:-}" tmp
+  tmp="$(mktemp "$state_dir/.assurance-capacity-legacy-adoption.XXXXXX")" || return 1
+  if ! printf '%s\n%s\n%s\n' "$status" "$warning_id" "$episode" > "$tmp" || ! chmod 600 "$tmp" || ! mv "$tmp" "$legacy_capacity_adoption"; then
+    rm -f "$tmp"
+    return 1
+  fi
+}
+
+record_capacity_scope() {
+  local tmp
+  tmp="$(mktemp "$state_dir/.assurance-below-minimum-scope.XXXXXX")" || return 1
+  if ! printf '%s\n' "$host_scope" > "$tmp" || ! chmod 600 "$tmp" || ! mv "$tmp" "$capacity_scope_state"; then
+    rm -f "$tmp"
+    return 1
+  fi
+}
+
+# The scope sidecar is written only for new scoped episodes. If an identity
+# file exists but the migration marker does not, an unscoped capacity snapshot
+# is safely recognized as an interrupted first-upgrade migration. A scoped
+# sidecar prevents a later scoped episode from being mistaken for legacy data.
+ensure_legacy_capacity_adoption_marker() {
+  [ -e "$legacy_capacity_adoption" ] && return 0
+  if [ -s "$capacity_state" ] && [ ! -s "$capacity_scope_state" ]; then
+    record_legacy_capacity_adoption pending
+  else
+    record_legacy_capacity_adoption not-needed
+  fi
+}
+
+# A legacy Mini capacity warning has source=norn and no hostScope, so it cannot
+# safely be bulk-closed after an upgrade. Adopt exactly one unacknowledged
+# warning only when its aggregate body exactly matches this host's retained
+# pre-upgrade snapshot. Any zero/multiple match is deliberately review-only.
+legacy_capacity_warning_id() {
+  [ -n "$beacon_environment" ] || return 1
+  python3 - "$capacity_state" "$beacon_environment" <<'PY'
+import json, os, pathlib, sys, urllib.request
+
+snapshot = pathlib.Path(sys.argv[1]).read_text().splitlines()
+environment = sys.argv[2]
+body = "Declared minimum capacity is not satisfied:\n" + "\n".join(
+    f"- {app}:{process} has {available} available; minimum is {minimum}"
+    for app, process, minimum, available in (line.split("\t") for line in snapshot)
+)
+base_url = os.environ.get("NORN_URL", "http://127.0.0.1:8800").rstrip("/")
+try:
+    with urllib.request.urlopen(base_url + "/api/events/correlated?key=norn-host%3Aminimum-capacity", timeout=5) as response:
+        events = json.load(response).get("events", [])
+except Exception:
+    raise SystemExit(1)
+candidates = [event for event in events if
+    event.get("source") == "norn" and
+    event.get("app") == "norn-host" and
+    event.get("environment") == environment and
+    event.get("type") == "service.capacity.below_minimum" and
+    event.get("severity") in {"warning", "critical"} and
+    not event.get("acknowledgedAt") and
+    not (event.get("metadata") or {}).get("hostScope") and
+    (event.get("metadata") or {}).get("correlationKey") == "norn-host:minimum-capacity" and
+    event.get("body") == body
+]
+if len(candidates) != 1 or not candidates[0].get("id"):
+    raise SystemExit(3)
+print(candidates[0]["id"])
+PY
+}
+
+emit_legacy_capacity_adoption() {
+  local warning_id="$1" episode="$2" payload norn_base
+  payload="$(mktemp "${TMPDIR:-/tmp}/norn-assure-legacy-capacity.XXXXXX")"
+  norn_base="$(runtime_base norn)"
+  python3 - "$payload" "$warning_id" "$episode" "$host_scope" "$beacon_environment" <<'PY'
+import json, pathlib, sys
+path, warning_id, episode, host_scope, environment = sys.argv[1:]
+pathlib.Path(path).write_text(json.dumps({
+    "source": "norn",
+    "app": "norn-host",
+    "environment": environment,
+    "type": "service.capacity.recovered",
+    "severity": "info",
+    "title": "Declared minimum capacity recovered",
+    "body": "A single matching legacy Mini capacity warning was adopted after host identity migration.",
+    "dedupeKey": f"norn-host:{host_scope}:legacy-capacity-adoption:{episode}",
+    "metadata": {
+        "correlationKey": "norn-host:minimum-capacity",
+        "hostScope": host_scope,
+        "legacyCapacityWarningID": warning_id,
+        "stage": "assure",
+    },
+}))
+PY
+  if ! curl -fsS --max-time 5 -H 'Content-Type: application/json' --data-binary "@$payload" \
+    "${norn_base%/}/api/events" >/dev/null 2>&1; then
+    rm -f "$payload"
+    return 1
   fi
   rm -f "$payload"
 }
 
+adopt_legacy_capacity_warning_once() {
+  local allow_pending="${1:-false}" episode warning_id status lookup_status
+  [ -f "$legacy_capacity_adoption" ] || return 0
+  status="$(sed -n '1p' "$legacy_capacity_adoption" 2>/dev/null || true)"
+  case "$status" in
+    pending)
+      $allow_pending || return 0
+      if [ -z "$beacon_environment" ]; then
+        record_legacy_capacity_adoption "config-required" || return 1
+        note "warning: legacy capacity adoption requires NORN_BEACON_ENVIRONMENT or --beacon-environment"
+        return 2
+      fi
+      episode="$(capacity_episode_token)" || return 1
+      if warning_id="$(legacy_capacity_warning_id)"; then
+        :
+      else
+        lookup_status=$?
+        if [ "$lookup_status" -eq 3 ]; then
+          record_legacy_capacity_adoption "review-required" || return 1
+          note "warning: legacy capacity warning was not uniquely attributable; leaving it for review"
+          return 0
+        fi
+        note "warning: could not query legacy capacity warnings; keeping adoption pending"
+        return 3
+      fi
+      # Persist this exact target and its dedupe episode before posting. A retry
+      # may only reuse these values; it must never search for a new candidate.
+      record_legacy_capacity_adoption "attempted" "$warning_id" "$episode" || return 1
+      ;;
+    config-required)
+      $allow_pending || return 0
+      if [ -z "$beacon_environment" ]; then
+        note "warning: legacy capacity adoption requires NORN_BEACON_ENVIRONMENT or --beacon-environment"
+        return 2
+      fi
+      episode="$(capacity_episode_token)" || return 1
+      if warning_id="$(legacy_capacity_warning_id)"; then
+        :
+      else
+        lookup_status=$?
+        if [ "$lookup_status" -eq 3 ]; then
+          record_legacy_capacity_adoption "review-required" || return 1
+          note "warning: legacy capacity warning was not uniquely attributable; leaving it for review"
+          return 0
+        fi
+        note "warning: could not query legacy capacity warnings; keeping adoption pending"
+        return 3
+      fi
+      record_legacy_capacity_adoption "attempted" "$warning_id" "$episode" || return 1
+      ;;
+    attempted)
+      warning_id="$(sed -n '2p' "$legacy_capacity_adoption" 2>/dev/null || true)"
+      episode="$(sed -n '3p' "$legacy_capacity_adoption" 2>/dev/null || true)"
+      [ -n "$warning_id" ] && [ -n "$episode" ] || return 1
+      ;;
+    *) return 0 ;;
+  esac
+  if ! emit_legacy_capacity_adoption "$warning_id" "$episode"; then
+    note "warning: could not emit one-time legacy capacity adoption"
+    return 1
+  fi
+  record_legacy_capacity_adoption "adopted" "$warning_id" "$episode" || return 1
+}
+
 audit_minimum_capacity() {
-  local current count body capacity_hash
+  local current count body episode capacity_hash correlation_key adoption_status
   current="$(mktemp "${TMPDIR:-/tmp}/norn-capacity.XXXXXX")"
   if ! python3 - "$current" <<'PY'
-import json, pathlib, sys, urllib.request
+import json, os, pathlib, sys, urllib.request
 
 destination = pathlib.Path(sys.argv[1])
 try:
-    with urllib.request.urlopen("http://127.0.0.1:8800/api/apps", timeout=10) as response:
+    base_url = os.environ.get("NORN_URL", "http://127.0.0.1:8800").rstrip("/")
+    with urllib.request.urlopen(base_url + "/api/apps", timeout=10) as response:
         apps = json.load(response)
 except Exception as exc:
     raise SystemExit(f"could not load app capacity: {exc}")
@@ -1031,13 +1292,19 @@ PY
     return 0
   fi
 
-  if [ -f "$capacity_state" ] && cmp -s "$current" "$capacity_state"; then
+  if [ -f "$capacity_state" ] && [ -s "$capacity_episode" ] && cmp -s "$current" "$capacity_state"; then
     rm -f "$current"
     return 0
   fi
 
   count="$(wc -l < "$current" | tr -d ' ')"
+  correlation_key="norn-host:$host_scope:minimum-capacity"
   if [ "$count" -gt 0 ]; then
+    if ! episode="$(capacity_episode_token)"; then
+      record_assurance_failure "could not persist a minimum-capacity event episode"
+      rm -f "$current"
+      return 0
+    fi
     capacity_hash="$(python3 - "$current" <<'PY'
 import hashlib, pathlib, sys
 print(hashlib.sha256(pathlib.Path(sys.argv[1]).read_bytes()).hexdigest()[:16])
@@ -1055,25 +1322,57 @@ PY
 )"
     emit_assurance_event warning service.capacity.below_minimum \
       "$count process(es) are below declared minimum capacity" "$body" \
-      "norn-host:minimum-capacity" \
-      "norn-host:service.capacity.below_minimum:$capacity_hash"
+      "$correlation_key" \
+      "norn-host:$host_scope:service.capacity.below_minimum:$episode:$capacity_hash" || {
+        record_assurance_failure "could not emit declared minimum capacity warning"
+        rm -f "$current"
+        return 0
+      }
     cp "$current" "$capacity_state"
+    if ! record_capacity_scope; then
+      record_assurance_failure "could not persist the minimum-capacity host scope"
+      rm -f "$current"
+      return 0
+    fi
     note "warning: $count process(es) are below declared minimum capacity"
   elif [ -s "$capacity_state" ]; then
-    capacity_hash="$(python3 - "$capacity_state" <<'PY'
-import hashlib, pathlib, sys
-print(hashlib.sha256(pathlib.Path(sys.argv[1]).read_bytes()).hexdigest()[:16])
-PY
-)"
+    if ! episode="$(capacity_episode_token)"; then
+      record_assurance_failure "could not read the minimum-capacity event episode"
+      rm -f "$current"
+      return 0
+    fi
     emit_assurance_event info service.capacity.recovered \
       "Declared minimum capacity recovered" \
       "Every deployable, non-scheduled process with a declared minimum is available at or above that minimum." \
-      "norn-host:minimum-capacity" \
-      "norn-host:service.capacity.recovered:$capacity_hash"
+      "$correlation_key" \
+      "norn-host:$host_scope:service.capacity.recovered:$episode" || {
+        record_assurance_failure "could not emit declared minimum capacity recovery"
+        rm -f "$current"
+      return 0
+    }
+    if adopt_legacy_capacity_warning_once true; then
+      :
+    else
+      adoption_status=$?
+      if [ "$adoption_status" -eq 2 ]; then
+        rm -f "$current"
+        return 0
+      fi
+      if [ "$adoption_status" -eq 3 ]; then
+        record_assurance_failure "could not query legacy capacity warning adoption"
+        rm -f "$current"
+        return 0
+      fi
+      record_assurance_failure "could not complete one-time legacy capacity adoption"
+    fi
     rm -f "$capacity_state"
+    rm -f "$capacity_scope_state"
+    rm -f "$capacity_episode"
     note "ok: declared minimum process capacity recovered"
   else
     rm -f "$capacity_state"
+    rm -f "$capacity_scope_state"
+    rm -f "$capacity_episode"
   fi
   rm -f "$current"
 }
@@ -1097,6 +1396,18 @@ assure_host() {
   fi
   printf '%s\n' "$$" > "$assure_lock/pid"
   trap 'rm -f "$assure_lock/pid"; rmdir "$assure_lock" 2>/dev/null || true' EXIT
+  if ! initialize_host_scope; then
+    note "warning: could not establish a stable host identity for assurance events"
+    return 1
+  fi
+  if ! initialize_beacon_environment; then
+    note "warning: could not establish a stable Beacon environment for assurance events"
+    return 1
+  fi
+  if ! ensure_legacy_capacity_adoption_marker; then
+    note "warning: could not record legacy capacity adoption state"
+    return 1
+  fi
 
   local item spec app process extra core_ready=true
   for item in consul nomad norn; do
@@ -1120,6 +1431,7 @@ assure_host() {
         assure_required_service "$app" "$process" || true
       done < "$required_file"
     fi
+    adopt_legacy_capacity_warning_once || record_assurance_failure "could not retry one-time legacy capacity adoption"
     audit_minimum_capacity
     reconcile_forge_routes || true
   fi

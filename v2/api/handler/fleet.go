@@ -32,6 +32,8 @@ var (
 )
 
 var fleetReconciliationPhases = []string{
+	"prechange_verified",
+	"provider_applying",
 	"infrastructure_applied",
 	"inventory_generated",
 	"nodes_configured",
@@ -288,7 +290,9 @@ func (h *Handler) ListFleetPlans(w http.ResponseWriter, r *http.Request) {
 }
 
 func (h *Handler) ListFleetReconciliations(w http.ResponseWriter, r *http.Request) {
-	if _, ok := requireControlScope(w, r, ScopeAPIRead); !ok {
+	principal, authenticated := AccessPrincipalFromRequest(r)
+	if !authenticated {
+		WriteControlProblem(w, r, http.StatusUnauthorized, "authenticated_principal_required", "an explicitly authenticated control principal is required")
 		return
 	}
 	if h.db == nil {
@@ -309,16 +313,59 @@ func (h *Handler) ListFleetReconciliations(w http.ResponseWriter, r *http.Reques
 		WriteControlProblem(w, r, http.StatusInternalServerError, "fleet_plan_read_failed", "failed to read fleet capacity plan")
 		return
 	}
+	attemptID := strings.TrimSpace(r.URL.Query().Get("attemptId"))
+	runnerBoundRead := fleetRunnerReconciliationReadNeedsAttemptID(principal)
+	if runnerBoundRead {
+		if attemptID == "" {
+			WriteControlProblem(w, r, http.StatusForbidden, "fleet_runner_attempt_binding_conflict", "a Fleet runner must name its durable attempt to read reconciliation evidence")
+			return
+		}
+		if _, parseErr := uuid.Parse(attemptID); parseErr != nil {
+			WriteControlProblem(w, r, http.StatusBadRequest, "invalid_fleet_runner_attempt_id", "attemptId must be a UUID")
+			return
+		}
+		attempt, attemptErr := h.db.GetFleetRunnerAttempt(r.Context(), attemptID)
+		if attemptErr == pgx.ErrNoRows || (attemptErr == nil && attempt.PlanID != planID) {
+			WriteControlProblem(w, r, http.StatusNotFound, "fleet_runner_attempt_not_found", "fleet runner attempt not found for this plan")
+			return
+		}
+		if attemptErr != nil {
+			WriteControlProblem(w, r, http.StatusInternalServerError, "fleet_runner_attempt_read_failed", "failed to read fleet runner attempt")
+			return
+		}
+		if !fleetRunnerPrincipalOwnsAttempt(principal, attempt) {
+			WriteControlProblem(w, r, http.StatusForbidden, "fleet_runner_attempt_binding_conflict", "only the bound GitHub Actions runner may read this attempt's reconciliation evidence")
+			return
+		}
+	}
 	ops, err := h.db.ListOperations(r.Context(), store.OperationFilter{Kind: "fleet.reconciliation", Ref: planID, Limit: 100})
 	if err != nil {
 		WriteControlProblem(w, r, http.StatusInternalServerError, "fleet_reconciliation_read_failed", "failed to read reconciliation checkpoints")
 		return
+	}
+	if runnerBoundRead {
+		ops = filterFleetReconciliationsForAttempt(ops, attemptID)
 	}
 	for index := range ops {
 		ops[index].AttachReceipt()
 	}
 	preventSensitiveResponseCaching(w)
 	writeJSON(w, map[string]interface{}{"schemaVersion": fleet.ReconciliationSchemaVersion, "planId": planID, "reconciliations": ops, "count": len(ops)})
+}
+
+func filterFleetReconciliationsForAttempt(ops []model.Operation, attemptID string) []model.Operation {
+	filtered := make([]model.Operation, 0, len(ops))
+	for index := range ops {
+		boundID, _ := ops[index].Payload["attemptId"].(string)
+		if boundID == attemptID {
+			filtered = append(filtered, ops[index])
+		}
+	}
+	return filtered
+}
+
+func fleetRunnerReconciliationReadNeedsAttemptID(principal AccessPrincipal) bool {
+	return !principal.Allows(ScopeAPIRead)
 }
 
 func (h *Handler) RecordFleetReconciliation(w http.ResponseWriter, r *http.Request) {
@@ -360,6 +407,27 @@ func (h *Handler) RecordFleetReconciliation(w http.ResponseWriter, r *http.Reque
 		return
 	}
 	idempotencyKey, requestDigest := fleetReconciliationIdempotency(principal, planID, idempotencyHeader, request)
+	var boundAttempt *model.FleetRunnerAttempt
+	if request.AttemptID != "" {
+		attempt, lookupErr := h.db.GetFleetRunnerAttempt(r.Context(), request.AttemptID)
+		if lookupErr == pgx.ErrNoRows {
+			WriteControlProblem(w, r, http.StatusNotFound, "fleet_runner_attempt_not_found", "fleet runner attempt not found")
+			return
+		}
+		if lookupErr != nil {
+			WriteControlProblem(w, r, http.StatusInternalServerError, "fleet_runner_attempt_read_failed", "failed to read fleet runner attempt")
+			return
+		}
+		if attempt.PlanID != planID || attempt.CommitSHA != request.CommitSHA || attempt.PlanSHA256 != request.PlanSHA256 {
+			WriteControlProblem(w, r, http.StatusConflict, "fleet_runner_attempt_binding_conflict", "checkpoint does not match the attempt's reviewed input")
+			return
+		}
+		if !fleetRunnerPrincipalOwnsAttempt(principal, attempt) {
+			WriteControlProblem(w, r, http.StatusForbidden, "fleet_runner_attempt_binding_conflict", "only the bound GitHub Actions runner may record this attempt's reconciliation evidence")
+			return
+		}
+		boundAttempt = attempt
+	}
 	if replay, lookupErr := h.db.GetOperationByIdempotencyKey(r.Context(), idempotencyKey); lookupErr == nil {
 		if !matchesFleetReconciliationRequest(replay, requestDigest) {
 			WriteControlProblem(w, r, http.StatusConflict, "idempotency_key_reused", "Idempotency-Key was already used for different reconciliation evidence")
@@ -372,20 +440,9 @@ func (h *Handler) RecordFleetReconciliation(w http.ResponseWriter, r *http.Reque
 		WriteControlProblem(w, r, http.StatusInternalServerError, "operation_lookup_failed", "failed to resolve idempotent reconciliation checkpoint")
 		return
 	}
-	if request.AttemptID != "" {
-		attempt, lookupErr := h.db.GetFleetRunnerAttempt(r.Context(), request.AttemptID)
-		if lookupErr == pgx.ErrNoRows {
-			WriteControlProblem(w, r, http.StatusNotFound, "fleet_runner_attempt_not_found", "fleet runner attempt not found")
-			return
-		}
-		if lookupErr != nil {
-			WriteControlProblem(w, r, http.StatusInternalServerError, "fleet_runner_attempt_read_failed", "failed to read fleet runner attempt")
-			return
-		}
-		if attempt.PlanID != planID || attempt.CurrentPhase != request.Phase || attempt.CommitSHA != request.CommitSHA || attempt.PlanSHA256 != request.PlanSHA256 || (attempt.Status != model.FleetRunnerAttemptQueued && attempt.Status != model.FleetRunnerAttemptRunning) {
-			WriteControlProblem(w, r, http.StatusConflict, "fleet_runner_attempt_binding_conflict", "checkpoint does not match a live attempt's plan, phase, or reviewed input")
-			return
-		}
+	if boundAttempt != nil && (boundAttempt.CurrentPhase != request.Phase || (boundAttempt.Status != model.FleetRunnerAttemptQueued && boundAttempt.Status != model.FleetRunnerAttemptRunning)) {
+		WriteControlProblem(w, r, http.StatusConflict, "fleet_runner_attempt_binding_conflict", "checkpoint does not match a live attempt's plan or phase")
+		return
 	}
 	existing, err := h.db.ListOperations(r.Context(), store.OperationFilter{Kind: "fleet.reconciliation", Ref: planID, Limit: 100})
 	if err != nil {
@@ -459,10 +516,11 @@ func validateFleetReconciliationRequest(request fleet.ReconciliationRequest) err
 	if !fleetEvidenceDigestRe.MatchString(request.EvidenceDigest) {
 		return fmt.Errorf("evidenceDigest must use sha256:<64 lowercase hex characters>")
 	}
-	if request.AttemptID != "" {
-		if _, err := uuid.Parse(request.AttemptID); err != nil {
-			return fmt.Errorf("attemptId must be a UUID")
-		}
+	if strings.TrimSpace(request.AttemptID) == "" {
+		return fmt.Errorf("attemptId is required for protected reconciliation evidence")
+	}
+	if _, err := uuid.Parse(request.AttemptID); err != nil {
+		return fmt.Errorf("attemptId must be a UUID")
 	}
 	if request.StateSerial < 0 {
 		return fmt.Errorf("stateSerial cannot be negative")
@@ -477,6 +535,17 @@ func validateFleetReconciliationRequest(request fleet.ReconciliationRequest) err
 }
 
 func validateFleetReconciliationTransition(plan *model.Operation, existing []model.Operation, request fleet.ReconciliationRequest) error {
+	phases := fleetRunnerPhases(fleetPlanRequiresDrain(plan))
+	phaseIndex := -1
+	for index, phase := range phases {
+		if request.Phase == phase {
+			phaseIndex = index
+			break
+		}
+	}
+	if phaseIndex < 0 {
+		return fmt.Errorf("phase is not valid for this fleet plan")
+	}
 	succeeded := map[string]bool{}
 	for _, op := range existing {
 		commit, _ := op.Payload["commitSha"].(string)
@@ -493,20 +562,8 @@ func validateFleetReconciliationTransition(plan *model.Operation, existing []mod
 	if request.Status == "failed" || succeeded[request.Phase] {
 		return nil
 	}
-	predecessor := map[string]string{
-		"inventory_generated": "infrastructure_applied",
-		"nodes_configured":    "inventory_generated",
-		"nodes_enrolled":      "nodes_configured",
-		"readiness_verified":  "nodes_enrolled",
-		"old_nodes_drained":   "readiness_verified",
-	}
-	if request.Phase == "complete" {
-		predecessor[request.Phase] = "readiness_verified"
-		if fleetPlanRequiresDrain(plan) {
-			predecessor[request.Phase] = "old_nodes_drained"
-		}
-	}
-	if required := predecessor[request.Phase]; required != "" && !succeeded[required] {
+	if phaseIndex > 0 && !succeeded[phases[phaseIndex-1]] {
+		required := phases[phaseIndex-1]
 		return fmt.Errorf("phase %s requires successful %s evidence", request.Phase, required)
 	}
 	return nil

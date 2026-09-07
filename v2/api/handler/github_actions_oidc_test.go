@@ -47,6 +47,41 @@ func TestGitHubActionsFleetPolicyBindsNumericRepositoryIdentityAndIntent(t *test
 	}
 }
 
+func TestGitHubActionsFleetAuthorityOnlyAllowsProtectedStagingApplyAndRecovery(t *testing.T) {
+	applySHA := strings.Repeat("a", 40)
+	recoverSHA := strings.Repeat("b", 40)
+	h := &Handler{cfg: &config.Config{
+		FleetAuthorityOnly:                    true,
+		GitHubActionsAllowedRefs:              []string{"refs/heads/main"},
+		GitHubActionsAllowedEvents:            []string{"push", "workflow_dispatch"},
+		GitHubActionsFleetAllowedRepository:   "acme/norn-fleet@101@202",
+		GitHubActionsFleetAllowedEnvironments: []string{"staging"},
+		GitHubActionsFleetAllowedIntents:      []string{"apply", "recover"},
+		GitHubActionsFleetAllowedWorkflowRefs: []string{
+			"acme/norn-fleet/.github/workflows/apply.yml@" + applySHA,
+			"acme/norn-fleet/.github/workflows/recover.yml@" + recoverSHA,
+		},
+	}}
+	claims := &githubActionsClaims{
+		Repository: "acme/norn-fleet", RepositoryID: "101", RepositoryOwnerID: "202", Environment: "staging",
+		Ref: "refs/heads/main", EventName: "push", RefProtected: "true",
+		WorkflowRef: "acme/norn-fleet/.github/workflows/apply.yml@refs/heads/main", WorkflowSHA: applySHA,
+	}
+	if _, err := h.authorizeGitHubActionsClaims(claims, githubActionsExchangeRequest{Scope: ScopeFleetOperate, Environment: "staging", Intent: "apply"}); err != nil {
+		t.Fatalf("protected staging apply rejected: %v", err)
+	}
+	claims.EventName = "workflow_dispatch"
+	claims.WorkflowRef = "acme/norn-fleet/.github/workflows/recover.yml@refs/heads/main"
+	claims.WorkflowSHA = recoverSHA
+	if _, err := h.authorizeGitHubActionsClaims(claims, githubActionsExchangeRequest{Scope: ScopeFleetOperate, Environment: "staging", Intent: "recover"}); err != nil {
+		t.Fatalf("protected staging recovery rejected: %v", err)
+	}
+	claims.Environment = "production"
+	if _, err := h.authorizeGitHubActionsClaims(claims, githubActionsExchangeRequest{Scope: ScopeFleetOperate, Environment: "production", Intent: "recover"}); err == nil {
+		t.Fatal("production Fleet exchange accepted by staging-only authority")
+	}
+}
+
 func TestGitHubActionsReleasePolicyRequiresPublicRepository(t *testing.T) {
 	workflowSHA := strings.Repeat("a", 40)
 	h := &Handler{cfg: &config.Config{GitHubActionsDefaultBranch: "main", GitHubActionsAllowedRefs: []string{"refs/heads/main"}, GitHubActionsAllowedEvents: []string{"push"}, GitHubActionsReleaseBindings: []string{"widgets=acme/widgets@101@202"}, GitHubActionsAllowedEnvironments: []string{"staging"}, GitHubActionsAllowedWorkflowRefs: []string{"acme/release/.github/workflows/release.yml@" + workflowSHA}}}

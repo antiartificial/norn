@@ -40,6 +40,9 @@ func (h *Handler) ObservabilityBundle(w http.ResponseWriter, r *http.Request) {
 }
 
 func (h *Handler) ObservabilityServicesInstall(w http.ResponseWriter, r *http.Request) {
+	if h.rejectAppCatalogMutation(w, r) {
+		return
+	}
 	overwrite := r.URL.Query().Get("overwrite") == "true"
 	receipt, err := h.installObservabilityServices(overwrite)
 	if err != nil {

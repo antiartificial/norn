@@ -13,7 +13,7 @@ import {
 } from '@xyflow/react'
 import type { FleetInventory, Operation, AppStatus, ServiceManifest } from '../types/index.ts'
 import type { FleetExecutionStep } from '../lib/fleetExecution.ts'
-import { currentFleetStep, reconciliationPhases, type ReconciliationPhase } from '../lib/fleetExecution.ts'
+import { currentFleetStep, destructiveReconciliationPhases, type ReconciliationPhase } from '../lib/fleetExecution.ts'
 
 type FleetTopologyKind = 'client' | 'ingress' | 'region' | 'pool' | 'workload' | 'allocation' | 'dependency'
 type FleetTopologyState = 'healthy' | 'active' | 'planned' | 'failed' | 'unknown'
@@ -117,7 +117,7 @@ export function buildFleetPlanTopology(plan: Operation, inventory: FleetInventor
   const proposed = recordValue(plan.payload?.proposed)
   const desired = numberValue(proposed.desired) ?? pool?.desired
   const current = currentFleetStep(steps)
-  const planActive = current?.state === 'active' && reconciliationPhases.includes(current.id as ReconciliationPhase)
+  const planActive = current?.state === 'active' && destructiveReconciliationPhases.includes(current.id as ReconciliationPhase)
   const placedApps = apps.filter((app) => app.spec.placement?.nodePool === poolName)
   const regions = collectRegions(inventory, placedApps)
 

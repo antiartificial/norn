@@ -14,6 +14,7 @@ const ReleasesPage = lazy(() => import('./pages/ReleasesPage.tsx').then((module)
 const FleetPage = lazy(() => import('./pages/FleetPage.tsx').then((module) => ({ default: module.FleetPage })))
 const TopologyView = lazy(() => import('./components/TopologyView.tsx').then((module) => ({ default: module.TopologyView })))
 const PlatformPanel = lazy(() => import('./components/PlatformPanel.tsx').then((module) => ({ default: module.PlatformPanel })))
+const ManagementOnlyPage = lazy(() => import('./pages/ManagementOnlyPage.tsx').then((module) => ({ default: module.ManagementOnlyPage })))
 
 function NavigateToAppOverview() {
   const { id } = useParams()
@@ -36,33 +37,37 @@ export function App() {
             activity={runtime.activity}
             runAction={runtime.mutations.run}
             fleetAvailable={runtime.fleetAvailable}
+            authority={runtime.authority}
+            environment={runtime.environment}
+            hasRevocableAuthoritySession={runtime.hasRevocableAuthoritySession}
+            revokeAuthoritySession={runtime.revokeAuthoritySession}
           >
             <Suspense fallback={<RouteLoading />}>
               <Routes>
               <Route path="/" element={<Navigate to="/overview" replace />} />
-              <Route path="/overview" element={<OverviewPage />} />
-              <Route path="/apps" element={<AppsPage />} />
-              <Route path="/apps/:id" element={<NavigateToAppOverview />} />
-              <Route path="/apps/:id/:tab" element={<AppDetailPage />} />
-              <Route path="/deploys" element={<DeploysPage />} />
-              <Route path="/incidents" element={<IncidentsPage />} />
+              <Route path="/overview" element={runtime.runtimeAvailable ? <OverviewPage /> : <ManagementOnlyPage area="Runtime overview" />} />
+              <Route path="/apps" element={runtime.runtimeAvailable ? <AppsPage /> : <ManagementOnlyPage area="Applications" />} />
+              <Route path="/apps/:id" element={runtime.runtimeAvailable ? <NavigateToAppOverview /> : <ManagementOnlyPage area="Applications" />} />
+              <Route path="/apps/:id/:tab" element={runtime.runtimeAvailable ? <AppDetailPage /> : <ManagementOnlyPage area="Applications" />} />
+              <Route path="/deploys" element={runtime.runtimeAvailable ? <DeploysPage /> : <ManagementOnlyPage area="Deployments" />} />
+              <Route path="/incidents" element={runtime.runtimeAvailable ? <IncidentsPage /> : <ManagementOnlyPage area="Incidents" />} />
               <Route path="/operations" element={<OperationsPage />} />
               <Route path="/operations/:sagaId" element={<OperationsPage />} />
-              <Route path="/releases" element={<ReleasesPage />} />
+              <Route path="/releases" element={runtime.runtimeAvailable ? <ReleasesPage /> : <ManagementOnlyPage area="Releases" />} />
               <Route path="/fleet" element={runtime.fleetAvailable ? <FleetPage /> : <EmptyState icon="!" title="Fleet unavailable" hint="This server does not advertise the complete fleet-v1 capability set." />} />
               <Route
                 path="/topology"
                 element={(
-                  <TopologyView
+                  runtime.runtimeAvailable ? <TopologyView
                     apps={runtime.apps}
                     serviceManifest={runtime.serviceManifest ?? null}
                     accessPatterns={runtime.accessPatterns}
                     activeIngress={runtime.activeIngress}
-                  />
+                  /> : <ManagementOnlyPage area="Topology" />
                 )}
               />
               <Route path="/platform" element={<Navigate to="/platform/releases" replace />} />
-              <Route path="/platform/*" element={<PlatformPanel />} />
+              <Route path="/platform/*" element={runtime.runtimeAvailable ? <PlatformPanel /> : <ManagementOnlyPage area="Platform administration" />} />
               </Routes>
             </Suspense>
           </Shell>

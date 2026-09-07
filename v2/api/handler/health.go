@@ -90,6 +90,24 @@ func (h *Handler) Health(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
+// FleetAuthorityHealth deliberately proves only the management plane's
+// database dependency. A Fleet-only control plane must not discover, probe,
+// or report an absent workload substrate as degraded.
+func (h *Handler) FleetAuthorityHealth(w http.ResponseWriter, r *http.Request) {
+	services := map[string]string{"postgres": "down"}
+	if h != nil && h.db != nil && h.db.Healthy(r.Context()) == nil {
+		services["postgres"] = "up"
+	}
+	status := "ok"
+	if services["postgres"] != "up" {
+		status = "degraded"
+	}
+	writeJSON(w, map[string]interface{}{
+		"status": status, "services": services,
+		"authority": "fleet-only",
+	})
+}
+
 func sopsAgeKeyFile() string {
 	if configured := strings.TrimSpace(os.Getenv("SOPS_AGE_KEY_FILE")); configured != "" {
 		return configured

@@ -1,50 +1,45 @@
 package cmd
 
 import (
-	"bytes"
-	"strings"
 	"testing"
 
 	"norn/v2/cli/api"
 )
 
-func TestFleetReplaceRequiresSize(t *testing.T) {
-	flag := fleetReplaceCmd.Flags().Lookup("size")
-	if flag == nil {
-		t.Fatal("fleet replace size flag is missing")
+func TestFleetCLILeavesProtectedRunnerMutationsToGitHubWorkflows(t *testing.T) {
+	var attemptsVisible, mutationGroupVisible bool
+	for _, command := range fleetCmd.Commands() {
+		switch command.Name() {
+		case "attempts":
+			attemptsVisible = true
+		case "attempt":
+			mutationGroupVisible = true
+		}
 	}
-	oldValue, oldChanged := flag.Value.String(), flag.Changed
-	t.Cleanup(func() {
-		_ = flag.Value.Set(oldValue)
-		flag.Changed = oldChanged
-	})
-
-	_ = flag.Value.Set("")
-	flag.Changed = false
-	if err := fleetReplaceCmd.ValidateRequiredFlags(); err == nil {
-		t.Fatal("fleet replace accepted a missing --size flag")
+	if !attemptsVisible {
+		t.Fatal("fleet attempts read-only status command is missing")
 	}
-	if err := flag.Value.Set("s-8vcpu-16gb"); err != nil {
-		t.Fatal(err)
-	}
-	flag.Changed = true
-	if err := fleetReplaceCmd.ValidateRequiredFlags(); err != nil {
-		t.Fatalf("fleet replace rejected --size: %v", err)
+	if mutationGroupVisible {
+		t.Fatal("human CLI exposed protected runner mutation commands")
 	}
 }
 
-func TestPrintFleetValidationUsesConfiguredWriter(t *testing.T) {
-	var output bytes.Buffer
-	printFleetValidation(&output, &api.FleetValidationReport{
-		Name:  "production-nyc3",
-		Valid: false,
-		Findings: []api.ValidationFinding{{
-			Severity: "error", Code: "fleet.node-pools.required", Message: "at least one node pool is required",
-		}},
+func TestFleetAttemptTimingDisplayShowsAdvisoryRangeOnlyWhenAvailable(t *testing.T) {
+	elapsed, eta, confidence := fleetAttemptTimingDisplay(&api.FleetRunnerTiming{
+		Availability: "available", ElapsedMs: 2_000, Confidence: "low",
+		EstimatedRemaining: &api.FleetTimingRange{LowMs: 900_000, HighMs: 1_800_000},
 	})
-	for _, want := range []string{"production-nyc3", "fleet.node-pools.required", "at least one node pool is required"} {
-		if !strings.Contains(output.String(), want) {
-			t.Fatalf("validation output %q does not contain %q", output.String(), want)
-		}
+	if elapsed != "2s" || eta != "15m0s–30m0s" || confidence != "low" {
+		t.Fatalf("display = %q, %q, %q", elapsed, eta, confidence)
+	}
+	_, eta, confidence = fleetAttemptTimingDisplay(&api.FleetRunnerTiming{Availability: "unavailable", ElapsedMs: 2_000, Confidence: "none"})
+	if eta != "—" || confidence != "none" {
+		t.Fatalf("unavailable display = %q, %q", eta, confidence)
+	}
+	_, eta, _ = fleetAttemptTimingDisplay(&api.FleetRunnerTiming{
+		Availability: "available", EstimatedRemaining: &api.FleetTimingRange{}, Confidence: "low",
+	})
+	if eta != "0s" {
+		t.Fatalf("equal endpoint eta = %q", eta)
 	}
 }

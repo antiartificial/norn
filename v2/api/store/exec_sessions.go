@@ -128,10 +128,13 @@ func (db *DB) CreateExecSession(ctx context.Context, session *ExecSession) error
 	if _, err := tx.Exec(ctx, `SELECT pg_advisory_xact_lock(hashtext($1))`, "norn.exec-session."+session.DeviceID); err != nil {
 		return err
 	}
-	_, _ = tx.Exec(ctx, `
+	_, err = tx.Exec(ctx, `
 		UPDATE exec_sessions SET status='expired',finished_at=now(),error_code='exec_session_expired'
-		WHERE device_id=$1 AND status='pending' AND expires_at<=now()
+		WHERE device_id=$1 AND status IN ('pending','running') AND expires_at<=now()
 	`, session.DeviceID)
+	if err != nil {
+		return err
+	}
 	var active, recent int
 	if err := tx.QueryRow(ctx, `
 		SELECT count(*) FILTER (WHERE status IN ('pending','running')),
@@ -195,9 +198,11 @@ func (db *DB) GetExecSession(ctx context.Context, id string) (*ExecSession, erro
 }
 
 func (db *DB) ExpireExecSessions(ctx context.Context) error {
+	// A replica start is not evidence that another replica's stream died.
+	// Reap abandoned streams only at their existing hard authorization deadline.
 	_, err := db.Pool.Exec(ctx, `
 		UPDATE exec_sessions SET status='expired',finished_at=now(),error_code='exec_session_expired'
-		WHERE status='pending' AND expires_at<=now()
+		WHERE status IN ('pending','running') AND expires_at<=now()
 	`)
 	return err
 }

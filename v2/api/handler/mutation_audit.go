@@ -44,7 +44,7 @@ func (h *Handler) MutationAuditMiddleware(next http.Handler) http.Handler {
 			return
 		}
 
-		production := h.cfg != nil && h.cfg.Production()
+		production := h.cfg != nil && (h.cfg.Production() || h.cfg.IsFleetAuthorityOnly())
 		if h.db == nil || h.db.Pool == nil {
 			if production {
 				WriteControlProblem(w, r, http.StatusServiceUnavailable, "mutation_audit_unavailable", "durable mutation audit is unavailable")

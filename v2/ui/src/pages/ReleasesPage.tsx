@@ -60,8 +60,8 @@ export function ReleasesPage() {
   const isStaging = environment.id === 'staging'
 
   useEffect(() => {
-    if (!appId && apps[0]) setAppId(apps[0].spec.name)
-  }, [appId, apps])
+    if (apps[0]) setAppId((current) => current || apps[0].spec.name)
+  }, [apps])
 
   const selectApp = (value: string) => {
     setAppId(value)

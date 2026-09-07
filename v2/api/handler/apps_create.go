@@ -33,6 +33,9 @@ type AppMutationReceipt struct {
 // CreateApp creates a non-deployable draft. Enabling deployment is a separate
 // explicit mutation, preventing a partial template from entering recovery.
 func (h *Handler) CreateApp(w http.ResponseWriter, r *http.Request) {
+	if h.rejectAppCatalogMutation(w, r) {
+		return
+	}
 	var req CreateAppRequest
 	if err := decodeJSON(r, &req); err != nil {
 		WriteControlProblem(w, r, http.StatusBadRequest, "invalid_request", err.Error())
@@ -116,6 +119,9 @@ func safeAppTemplate(req CreateAppRequest) *model.InfraSpec {
 }
 
 func (h *Handler) UpdateAppDeployment(w http.ResponseWriter, r *http.Request) {
+	if h.rejectAppCatalogMutation(w, r) {
+		return
+	}
 	id := chi.URLParam(r, "id")
 	var req AppDeploymentRequest
 	if err := decodeJSON(r, &req); err != nil {

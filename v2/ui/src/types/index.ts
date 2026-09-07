@@ -178,7 +178,9 @@ export type EventSeverity = 'info' | 'warning' | 'critical'
 
 export interface CorrelatedIncident {
   correlationKey: string
+  source: string
   app: string
+  environment?: string
   latestSeverity: EventSeverity
   latestType: string
   latestTitle: string
@@ -323,12 +325,50 @@ export interface FleetReconciliationResponse {
 
 export type FleetRunnerAttemptStatus = 'queued' | 'running' | 'succeeded' | 'failed' | 'canceled' | 'abandoned'
 
+export interface FleetTimingRange {
+  lowMs: number
+  highMs: number
+}
+
+export interface FleetTimingProvenance {
+  method: 'configured_range' | 'unavailable'
+  configuredRange?: FleetTimingRange
+  sampleCount: number
+  successfulSampleCount: number
+  exclusions: string[]
+}
+
+export interface FleetPhaseTiming {
+  name: string
+  state: 'active' | 'complete' | 'terminal'
+  elapsedMs: number
+  estimatedRemaining?: FleetTimingRange
+}
+
+export interface FleetRunnerTiming {
+  schemaVersion: 'norn.fleet-timing/v1'
+  scope: 'runner_attempt'
+  asOf: string
+  availability: 'available' | 'unavailable'
+  operationClass: 'cold_start' | 'unknown'
+  elapsedMs: number
+  estimatedRemaining?: FleetTimingRange
+  estimatedTotal?: FleetTimingRange
+  estimatedCompletion?: { earliestAt: string; latestAt: string }
+  confidence: 'low' | 'none'
+  provenance: FleetTimingProvenance
+  phases: FleetPhaseTiming[]
+}
+
 export interface FleetRunnerAttempt {
   schemaVersion: 'norn.fleet-runner-attempt/v1'
   id: string
   planId: string
   attempt: number
+  rootAttemptId: string
   runnerAttemptId?: string
+  sourceDispatchRunId: number
+  recovery?: boolean
   status: FleetRunnerAttemptStatus
   currentPhase: string
   commitSha: string
@@ -339,11 +379,13 @@ export interface FleetRunnerAttempt {
   heartbeatTimeoutSeconds: number
   revision: number
   startedAt: string
+  phaseStartedAt?: string
   heartbeatAt: string
   heartbeatExpiresAt: string
   updatedAt: string
   finishedAt?: string
   lastError?: string
+  timing?: FleetRunnerTiming
 }
 
 export interface FleetRunnerAttemptResponse {
@@ -362,6 +404,7 @@ export interface CapabilitiesResponse {
   protocolVersion: number
   serverVersion: string
   features: string[]
+  authority?: 'fleet-only' | string
   environment?: {
     id: 'development' | 'staging' | 'production' | string
     profile: 'development' | 'production' | string

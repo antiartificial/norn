@@ -22,10 +22,11 @@ export function ActiveIncidentList({ items, limit, onSelect }: { items: Correlat
   return (
     <div className="compact-list">
       {visible.map((incident) => (
-        <button className="compact-row compact-row-button" type="button" key={incident.correlationKey} onClick={() => onSelect?.(incident)}>
+        <button className="compact-row compact-row-button" type="button" key={incident.latestEventId} onClick={() => onSelect?.(incident)}>
           <StatusChip tone={statusTone(incident.latestSeverity)} label={incident.latestSeverity} />
           <span className="compact-row-title">{incident.latestTitle}</span>
           <small>{incident.app}</small>
+          <small>{incident.source}{incident.environment ? ` · ${incident.environment}` : ''}</small>
           {incident.eventCount > 1 && <StatusChip tone="info" label={`${incident.eventCount} events`} />}
           <small>{relativeTime(incident.lastSeen)}</small>
           <i className="fawsb fa-angle-right compact-row-chevron" aria-hidden="true" />

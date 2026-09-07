@@ -140,6 +140,23 @@ func TestObservabilityServicesInstallWritesManagedAppDirs(t *testing.T) {
 	}
 }
 
+func TestObservabilityServicesInstallRespectsReadOnlyAppCatalog(t *testing.T) {
+	appsDir := t.TempDir()
+	h := &Handler{cfg: &config.Config{AppsDir: appsDir, AppCatalogReadOnly: true, NetworkMode: "local", BindAddr: "127.0.0.1", Port: "8800"}}
+	req := httptest.NewRequest(http.MethodPost, "/api/observability/services/install", nil)
+	rec := httptest.NewRecorder()
+
+	h.ObservabilityServicesInstall(rec, req)
+
+	if rec.Code != http.StatusConflict || !strings.Contains(rec.Body.String(), "app_catalog_read_only") {
+		t.Fatalf("status=%d body=%s", rec.Code, rec.Body.String())
+	}
+	entries, err := os.ReadDir(appsDir)
+	if err != nil || len(entries) != 0 {
+		t.Fatalf("readonly catalog was changed: entries=%v err=%v", entries, err)
+	}
+}
+
 func TestObservabilityServicesInstallRejectsExistingWithoutOverwrite(t *testing.T) {
 	appsDir := t.TempDir()
 	if err := os.Mkdir(filepath.Join(appsDir, "norn-prometheus"), 0o755); err != nil {

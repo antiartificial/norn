@@ -119,7 +119,30 @@ Current deterministic rules are deliberately narrow:
 | `service.health.warning` or `service.health.critical` | A later `service.health.recovered` event, or every current Consul check for the affected service is passing |
 | `cron.failed`, `cron.lost`, `cron.hung`, or `cron.missed_run` | The Nomad periodic parent is running and unpaused with no running or pending children; a referenced child must be terminal or absent |
 | `nomad.task.restarted` | The app is currently healthy and the restart event occurred at least 15 minutes ago, whether the original allocation remains active or has been replaced. The reconciler does not prove continuous health throughout that interval |
-| `service.capacity.below_minimum` | A later `host.assurance.recovered` event proves the minimum-capacity assurance passed |
+| `service.capacity.below_minimum` | A later host-scoped `service.capacity.recovered` event from the same source and environment with the same `norn-host:<host-id>:minimum-capacity` correlation key. The aggregate warning is never partially reconciled for one affected app. |
+
+The host capacity watcher scopes its Beacon source, correlation key, and
+dedupe key with a stable host identity. Set `NORN_HOST_ID` (or pass
+`norn host ... --host-id`) when a physical host needs an operator-owned ID;
+otherwise the runtime persists its first short hostname in its assurance state.
+The watcher keeps that correlation key stable for one unresolved episode. Its
+warning dedupe key combines an episode token and the current missing-capacity
+snapshot hash, so a changed set emits a new warning; its recovery dedupe key
+remains episode-only. It commits or removes its local capacity state only after
+Beacon accepts the corresponding event. An info
+recovery automatically acknowledges only warning/critical events from the same
+source, app, environment, correlation key, and no later than the recovery
+event; other hosts, environments, apps, correlations, and later observations
+remain open.
+
+The legacy `norn-host:minimum-capacity` key remains recognizable for existing
+Mini events. On the first identity-scoped recovery, the runtime may adopt one
+unacknowledged legacy warning only when its retained local snapshot matches
+exactly and `NORN_BEACON_ENVIRONMENT` (or `--beacon-environment`) names the
+same Beacon environment. The chosen environment is persisted for periodic
+assurance. Missing environment configuration is retryable and leaves the local
+snapshot intact; zero or multiple in-environment candidates stay open for
+review.
 
 The reconciliation endpoint accepts `app`, `limit`, `dryRun`, and `by` in its
 JSON body. It does not infer recovery from an old acknowledgement, a matching
@@ -129,7 +152,9 @@ operator review.
 
 Incident groups can also be acted on directly. Use `correlationKey` for modern
 Beacon event families and `dedupeKey` for older or external events that do not
-carry a correlation key.
+carry a correlation key. Key-only actions remain compatible with older
+clients; include `source`, `app`, and `environment` when acting on a group
+returned by the scoped active-incidents view.
 
 ```http
 POST /api/incidents/action
@@ -139,7 +164,9 @@ POST /api/incidents/action
 {
   "action": "resolve",
   "correlationKey": "field-harbor:field-harbor-sync-pm:cron",
+  "source": "norn-host:mini-1",
   "app": "field-harbor",
+  "environment": "mini",
   "by": "operator",
   "note": "periodic parent is healthy"
 }
@@ -274,8 +301,10 @@ without querying prior events.
 
 ### Querying correlated events
 
-`GET /api/events/correlated?key=<correlationKey>` returns all events sharing
-the given correlation key, ordered chronologically (oldest first):
+`GET /api/events/correlated?key=<correlationKey>` retains key-only,
+backward-compatible lookup. For a split incident group, add `source`, `app`,
+and `environment` to retrieve only that physical timeline; results are ordered
+chronologically (oldest first):
 
 ```bash
 norn events correlated contextdb:web:health
@@ -284,21 +313,24 @@ norn events correlated field-harbor:deploy --limit 10
 
 ### Auto-acknowledgement on resolution
 
-When an `info`-severity event with a `correlationKey` is emitted (e.g.
-`service.health.recovered`, `deploy.succeeded`), Norn automatically
-acknowledges all open `warning` and `critical` events that share the same
-correlation key. The acknowledgement note records which event resolved the
-incident, e.g. `resolved by evt_abc123`.
+For ordinary event families, an `info`-severity event with a `correlationKey`
+(e.g. `service.health.recovered`, `deploy.succeeded`) automatically
+acknowledges matching open `warning` and `critical` events in the same source,
+app, environment, and correlation scope. Capacity is deliberately narrower:
+only `service.capacity.recovered` can close capacity warnings; current
+host-scoped keys close capacity warnings in that scope, while a legacy global
+key must name one exact `legacyCapacityWarningID`. The acknowledgement note
+records which event resolved the warning, e.g. `resolved by evt_abc123`.
 
 This keeps `norn events` focused on what still needs attention rather than
 showing resolved noise alongside active incidents.
 
 ### Resolution semantics
 
-An incident is **resolved** when the most recent event in a correlation group
-has `severity: info` (e.g. `service.health.recovered`, `deploy.succeeded`).
-An incident with only `warning`/`critical` events and no recovery is still
-**open**.
+An incident is **resolved** when its scoped timeline has no unacknowledged,
+unsnoozed warning or critical events. A later informational recovery does not
+resolve an older unmatched warning; active-incidents instead represents that
+timeline with its newest remaining open warning or critical event.
 
 ### Vigil-gateway integration
 
@@ -338,17 +370,20 @@ observed conditions.
 
 ## Active Incidents
 
-`GET /api/events/active` returns unresolved incident groups — correlation
-keys where the latest event is `warning` or `critical` and at least one
-event in the group is still open (not acknowledged or snoozed).
+`GET /api/events/active` returns unresolved incident groups, scoped by
+source, app, environment, and correlation key. A group remains active when it
+has an open (unacknowledged, unsnoozed) warning or critical event; its displayed
+representative is the newest such open event, not a later informational
+recovery or adoption row.
 
 ```bash
 norn events active
 norn events active --limit 10
 ```
 
-Each incident shows the correlation key, app, latest severity, event count,
-and first/last seen timestamps. Use `norn events correlated <key>` to drill
+Each incident shows the correlation key, source, app, environment, latest open
+severity, full-timeline event count, and first/last seen timestamps. Use
+`norn events correlated <key>` for key-only compatibility or the scoped API to drill
 into a specific incident's full timeline.
 
 ## Sink Configuration

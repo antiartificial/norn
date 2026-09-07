@@ -105,6 +105,35 @@ func TestTranslatePinsServiceAndPeriodicJobsToLogicalNodePool(t *testing.T) {
 	}
 }
 
+func TestTranslateUsesGroupScopedDistinctHostConstraintForHAService(t *testing.T) {
+	spec := &model.InfraSpec{
+		App:       "orders",
+		Placement: &model.PlacementSpec{NodePool: "app", DistinctHosts: true},
+		Processes: map[string]model.Process{"web": {Port: 8080, Scaling: &model.Scaling{Min: 2}, Canary: &model.CanaryConfig{Count: 1}}},
+	}
+	service := Translate(spec, "orders:test", nil)
+	if len(service.TaskGroups) != 1 || len(service.TaskGroups[0].Constraints) != 1 {
+		t.Fatalf("HA constraints = %+v", service.TaskGroups)
+	}
+	constraint := service.TaskGroups[0].Constraints[0]
+	if constraint.LTarget != "" || constraint.Operand != nomadapi.ConstraintDistinctHosts || constraint.RTarget != "" {
+		t.Fatalf("constraint = %+v, want group-level distinct_hosts with no attribute/value", constraint)
+	}
+	if service.TaskGroups[0].Update == nil || service.TaskGroups[0].Update.Canary == nil || *service.TaskGroups[0].Update.Canary != 1 {
+		t.Fatalf("canary = %+v", service.TaskGroups[0].Update)
+	}
+	// A distinct_hosts group treats its canary as another live allocation. This
+	// translation intentionally does not relax hard anti-affinity: rehearsal
+	// therefore needs 2 replicas + 1 canary = 3 eligible clients.
+	if *service.TaskGroups[0].Count+*service.TaskGroups[0].Update.Canary != 3 {
+		t.Fatalf("concurrent HA allocation requirement = %d, want 3", *service.TaskGroups[0].Count+*service.TaskGroups[0].Update.Canary)
+	}
+	periodic := TranslatePeriodic(spec, "digest", model.Process{Schedule: "0 8 * * *"}, "orders:test", nil)
+	if len(periodic.TaskGroups[0].Constraints) != 0 {
+		t.Fatalf("periodic job inherited service HA constraint: %+v", periodic.TaskGroups[0].Constraints)
+	}
+}
+
 func TestTranslateForRegionFiltersPlacementAndAddsIngressTags(t *testing.T) {
 	spec := &model.InfraSpec{
 		App: "orders",

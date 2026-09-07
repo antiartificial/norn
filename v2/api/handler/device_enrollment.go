@@ -1,6 +1,7 @@
 package handler
 
 import (
+	"context"
 	"crypto/hmac"
 	"crypto/rand"
 	"crypto/sha256"
@@ -8,6 +9,7 @@ import (
 	"encoding/base64"
 	"encoding/hex"
 	"encoding/json"
+	"fmt"
 	"net"
 	"net/http"
 	"strings"
@@ -22,6 +24,7 @@ import (
 
 const enrollmentTTL = 10 * time.Minute
 const deviceTokenTTL = 30 * 24 * time.Hour
+const browserDeviceTokenTTL = 30 * time.Minute
 
 type enrollmentStartRequest struct {
 	DeviceName      string   `json:"deviceName"`
@@ -46,7 +49,7 @@ func (h *Handler) StartDeviceEnrollment(w http.ResponseWriter, r *http.Request) 
 		WriteControlProblem(w, r, http.StatusBadRequest, "invalid_device_name", "deviceName is required and must not exceed 120 characters")
 		return
 	}
-	scopes, err := normalizeAccessTokenScopes(req.RequestedScopes)
+	scopes, err := h.deviceEnrollmentScopes(req.RequestedScopes)
 	if err != nil {
 		WriteControlProblem(w, r, http.StatusBadRequest, "invalid_scope", err.Error())
 		return
@@ -143,7 +146,7 @@ func (h *Handler) ApproveDeviceEnrollment(w http.ResponseWriter, r *http.Request
 	if len(scopes) == 0 {
 		scopes = enrollment.RequestedScopes
 	}
-	scopes, err = normalizeAccessTokenScopes(scopes)
+	scopes, err = h.deviceEnrollmentScopes(scopes)
 	if err != nil {
 		WriteControlProblem(w, r, http.StatusBadRequest, "invalid_scope", err.Error())
 		return
@@ -203,7 +206,12 @@ func (h *Handler) ExchangeDeviceEnrollment(w http.ResponseWriter, r *http.Reques
 		WriteControlProblem(w, r, http.StatusConflict, "enrollment_not_approved", "enrollment is not approved or has expired")
 		return
 	}
-	token, record, err := h.issueDeviceToken(enrollment.DeviceID, enrollment.DeviceName, enrollment.ApprovedScopes, "")
+	scopes, err := h.deviceEnrollmentScopes(enrollment.ApprovedScopes)
+	if err != nil {
+		WriteControlProblem(w, r, http.StatusForbidden, "invalid_scope", "approved device scopes are unavailable on this authority")
+		return
+	}
+	token, record, err := h.issueDeviceTokenWithTTL(enrollment.DeviceID, enrollment.DeviceName, scopes, "", deviceTokenLifetimeForPlatform(enrollment.Platform))
 	if err != nil {
 		WriteControlProblem(w, r, http.StatusInternalServerError, "token_issue_failed", "failed to issue device token")
 		return
@@ -251,7 +259,12 @@ func (h *Handler) RotateCurrentToken(w http.ResponseWriter, r *http.Request) {
 		WriteControlProblem(w, r, http.StatusUnauthorized, "managed_token_required", "rotation requires a managed device token")
 		return
 	}
-	token, record, err := h.issueDeviceToken(principal.DeviceID, principal.Subject, principal.Scopes, principal.TokenID)
+	lifetime, err := h.rotatedDeviceTokenLifetime(r.Context(), principal.DeviceID)
+	if err != nil {
+		WriteControlProblem(w, r, http.StatusServiceUnavailable, "device_lookup_failed", "device token lifetime could not be determined")
+		return
+	}
+	token, record, err := h.issueDeviceTokenWithTTL(principal.DeviceID, principal.Subject, principal.Scopes, principal.TokenID, lifetime)
 	if err != nil {
 		WriteControlProblem(w, r, http.StatusInternalServerError, "token_issue_failed", "failed to rotate token")
 		return
@@ -290,13 +303,64 @@ func (h *Handler) RevokeCurrentToken(w http.ResponseWriter, r *http.Request) {
 }
 
 func (h *Handler) issueDeviceToken(deviceID, subject string, scopes []string, rotatedFrom string) (string, *store.AccessToken, error) {
+	return h.issueDeviceTokenWithTTL(deviceID, subject, scopes, rotatedFrom, deviceTokenTTL)
+}
+
+func (h *Handler) issueDeviceTokenWithTTL(deviceID, subject string, scopes []string, rotatedFrom string, lifetime time.Duration) (string, *store.AccessToken, error) {
+	if h.cfg != nil && h.cfg.IsFleetAuthorityOnly() {
+		var err error
+		scopes, err = h.deviceEnrollmentScopes(scopes)
+		if err != nil {
+			return "", nil, err
+		}
+	}
+	if lifetime <= 0 {
+		lifetime = deviceTokenTTL
+	}
 	now := time.Now().UTC()
-	expires := now.Add(deviceTokenTTL)
+	expires := now.Add(lifetime)
 	jti := "norn_" + uuid.NewString()
 	claims := tokenClaims{Sub: subject, Iat: now.Unix(), Exp: expires.Unix(), Jti: jti, Did: deviceID, Scopes: scopes}
 	claims.Iss, claims.Aud, claims.Use, claims.Managed = "norn", "norn-control", "access", true
 	token, err := signToken(h.cfg.APIToken, claims)
 	return token, &store.AccessToken{JTI: jti, DeviceID: deviceID, Subject: subject, Scopes: scopes, IssuedAt: now, ExpiresAt: expires, RotatedFrom: rotatedFrom}, err
+}
+
+func deviceTokenLifetimeForPlatform(platform string) time.Duration {
+	if strings.EqualFold(strings.TrimSpace(platform), "web") {
+		return browserDeviceTokenTTL
+	}
+	return deviceTokenTTL
+}
+
+// Rotation trusts the persisted device platform, not a client-provided claim.
+func (h *Handler) rotatedDeviceTokenLifetime(ctx context.Context, deviceID string) (time.Duration, error) {
+	device, err := h.db.ActiveAccessDevice(ctx, deviceID)
+	if err != nil {
+		return 0, err
+	}
+	return deviceTokenLifetimeForPlatform(device.Platform), nil
+}
+
+// Human devices on a Fleet authority can observe or request reviewed changes.
+// Runner checkpoint authority is never issued through human enrollment.
+func (h *Handler) deviceEnrollmentScopes(requested []string) ([]string, error) {
+	if h.cfg == nil || !h.cfg.IsFleetAuthorityOnly() {
+		return normalizeAccessTokenScopes(requested)
+	}
+	if len(requested) == 0 {
+		return []string{ScopeAPIRead}, nil
+	}
+	scopes, err := normalizeAccessTokenScopes(requested)
+	if err != nil {
+		return nil, err
+	}
+	for _, scope := range scopes {
+		if scope != ScopeAPIRead && scope != ScopeAPIWrite {
+			return nil, fmt.Errorf("Fleet authority device enrollment permits only api:read and api:write")
+		}
+	}
+	return scopes, nil
 }
 
 func randomEnrollmentCode() (string, error) {

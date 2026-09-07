@@ -24,11 +24,16 @@ func (s FleetRunnerAttemptStatus) Terminal() bool {
 // the proof that a phase completed; this record only says which phase a live
 // runner is attempting and when it last proved liveness.
 type FleetRunnerAttempt struct {
-	SchemaVersion           string                   `json:"schemaVersion"`
-	ID                      string                   `json:"id"`
-	PlanID                  string                   `json:"planId"`
-	Attempt                 int                      `json:"attempt"`
+	SchemaVersion string `json:"schemaVersion"`
+	ID            string `json:"id"`
+	PlanID        string `json:"planId"`
+	Attempt       int    `json:"attempt"`
+	// RootAttemptID is assigned exclusively by durable storage. It ties every
+	// retry to the first attempt for a plan and must never be caller-controlled.
+	RootAttemptID           string                   `json:"rootAttemptId"`
 	RunnerAttemptID         string                   `json:"runnerAttemptId,omitempty"`
+	SourceDispatchRunID     int64                    `json:"sourceDispatchRunId"`
+	Recovery                bool                     `json:"recovery,omitempty"`
 	Status                  FleetRunnerAttemptStatus `json:"status"`
 	CurrentPhase            string                   `json:"currentPhase"`
 	CommitSHA               string                   `json:"commitSha"`
@@ -40,12 +45,14 @@ type FleetRunnerAttempt struct {
 	HeartbeatTimeoutSeconds int                      `json:"heartbeatTimeoutSeconds"`
 	Revision                int64                    `json:"revision"`
 	StartedAt               time.Time                `json:"startedAt"`
+	PhaseStartedAt          time.Time                `json:"phaseStartedAt"`
 	HeartbeatAt             time.Time                `json:"heartbeatAt"`
 	HeartbeatExpiresAt      time.Time                `json:"heartbeatExpiresAt"`
 	UpdatedAt               time.Time                `json:"updatedAt"`
 	FinishedAt              *time.Time               `json:"finishedAt,omitempty"`
 	LastError               string                   `json:"lastError,omitempty"`
 	Metadata                map[string]interface{}   `json:"metadata,omitempty"`
+	Timing                  *FleetRunnerTiming       `json:"timing,omitempty"`
 }
 
 func (a *FleetRunnerAttempt) SetDerivedFields() {

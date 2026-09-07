@@ -111,12 +111,23 @@ type ReconciliationRequest struct {
 }
 
 type RunnerAttemptStartRequest struct {
-	SchemaVersion           string `json:"schemaVersion"`
-	RunnerAttemptID         string `json:"runnerAttemptId"`
-	CommitSHA               string `json:"commitSha"`
-	PlanSHA256              string `json:"planSha256"`
+	SchemaVersion   string `json:"schemaVersion"`
+	RunnerAttemptID string `json:"runnerAttemptId"`
+	CommitSHA       string `json:"commitSha"`
+	PlanSHA256      string `json:"planSha256"`
+	// DispatchNonce is write-only proof from the protected workflow input. It
+	// is hashed for comparison and is never returned or copied into attempts.
+	DispatchNonce           string `json:"dispatchNonce"`
+	SourceDispatchRunID     int64  `json:"sourceDispatchRunId"`
+	Resume                  bool   `json:"resume,omitempty"`
 	WorkflowURL             string `json:"workflowUrl,omitempty"`
 	HeartbeatTimeoutSeconds int    `json:"heartbeatTimeoutSeconds,omitempty"`
+	// Timing classification is derived by the protected runner from its reviewed
+	// provider-plan summary. cold_start requires exactly five creates; unknown is
+	// the conservative abstention class. It is advisory and never authorizes
+	// provider work.
+	OperationClass   string `json:"operationClass,omitempty"`
+	CreatedNodeCount int    `json:"createdNodeCount,omitempty"`
 }
 
 type RunnerHeartbeatRequest struct {
@@ -131,14 +142,6 @@ type RunnerAdvanceRequest struct {
 	SchemaVersion string `json:"schemaVersion"`
 	ExpectedPhase string `json:"expectedPhase"`
 	Revision      int64  `json:"revision"`
-}
-
-type RunnerRetryRequest struct {
-	SchemaVersion   string `json:"schemaVersion"`
-	Revision        int64  `json:"revision"`
-	RunnerAttemptID string `json:"runnerAttemptId"`
-	WorkflowURL     string `json:"workflowUrl,omitempty"`
-	Reason          string `json:"reason"`
 }
 
 type RunnerCancelRequest struct {

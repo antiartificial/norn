@@ -88,6 +88,11 @@ Do not treat an HTTP handler's immediate `queued` response as completion. The wo
 
 ## Webhook Replay
 
+For Fleet provisioning, recovery and retirement, follow the
+[Fleet operations runbook](./fleet.md). The [staging pilot](./fleet-pilot.md)
+keeps local development independent and defines the external Fleet authority,
+private management and persistent staging boundaries.
+
 Webhook deliveries are persisted before validation decisions. The inbox records provider, event, delivery id, repository, ref, branch, matched app, saga id, status, reason, parsed payload, and metadata.
 
 For triage:

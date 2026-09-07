@@ -95,6 +95,19 @@ func TestExecAuthorizationLifecycle(t *testing.T) {
 	if len(connected.Command) != 0 || connected.CommandDigest != "command-digest" {
 		t.Fatalf("connected command=%v digest=%q", connected.Command, connected.CommandDigest)
 	}
+	// Starting/migrating a second replica must not reap the first one's stream.
+	peer, err := Connect(databaseURL)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(peer.Close)
+	if err := Migrate(peer); err != nil {
+		t.Fatal(err)
+	}
+	preserved, err := db.GetExecSession(ctx, sessionID)
+	if err != nil || preserved.Status != "running" {
+		t.Fatalf("peer migration changed live session: session=%+v err=%v", preserved, err)
+	}
 
 	canceled, err := db.RevokeAccessToken(ctx, tokenID)
 	if err != nil {

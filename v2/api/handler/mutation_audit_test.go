@@ -106,6 +106,17 @@ func TestProductionMutationAuditFailsClosedWithoutDatabase(t *testing.T) {
 	}
 }
 
+func TestFleetAuthorityOnlyMutationAuditFailsClosedWithoutDatabase(t *testing.T) {
+	h := New(nil, nil, nil, nil, &config.Config{Profile: "development", FleetAuthorityOnly: true, AuditSigningKey: strings.Repeat("k", 32)}, nil, nil, nil, nil, nil, nil)
+	next := http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) { w.WriteHeader(http.StatusNoContent) })
+	req := httptest.NewRequest(http.MethodPost, "/api/v1/fleet/node-pools/app/plan", nil)
+	rec := httptest.NewRecorder()
+	h.MutationAuditMiddleware(next).ServeHTTP(rec, req)
+	if rec.Code != http.StatusServiceUnavailable || !strings.Contains(rec.Body.String(), "mutation_audit_unavailable") {
+		t.Fatalf("status=%d body=%s", rec.Code, rec.Body.String())
+	}
+}
+
 func TestDevelopmentMutationAuditAllowsDatabaseFreeMode(t *testing.T) {
 	h := New(nil, nil, nil, nil, &config.Config{Profile: "development"}, nil, nil, nil, nil, nil, nil)
 	next := http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) { w.WriteHeader(http.StatusNoContent) })

@@ -124,7 +124,7 @@ version only when this line is intentionally tagged.
 | Auto-ack on resolution | Beacon emit path auto-acknowledges correlated events | Keeps `norn events` focused on active incidents by clearing resolved warning/critical events |
 | Notification bootstrap | `norn notifications bootstrap`, `POST /api/notifications/channels/bootstrap` | Auto-discovers vigil-gateway and creates a default webhook notification channel |
 | Event dedup suppression | Beacon emit-level dedupeKey check with 1h window | Prevents event storms from repeated watcher detection after API restarts |
-| Active incidents view | `GET /api/events/active`, `norn events active` | Shows unresolved incident groups collapsed by correlation key |
+| Active incidents view | `GET /api/events/active`, `norn events active` | Shows unresolved incident groups scoped by source, app, environment, and correlation key |
 | Operator confidence release | `/api/operator/*`, `norn operator *`, `/api/incidents/action` | Unifies incident lifecycle, cron overview, wake targets, deploy confidence, snapshot readiness, secret-safe auth hints, and mobile-ready actions |
 | Secrets migration fix | `norn secrets migrate --apply` field matching fix | Fixes `env.KEY` field matching so plaintext env secrets are correctly identified for migration |
 | Secrets hygiene push | Infraspec declarations for ft-trove, its-alive-api, mail-indexer, mail-mcp | Resolves undeclared encrypted secrets warnings from platform ops |
