@@ -132,6 +132,33 @@ norn fleet github apply PLAN_UUID
 norn fleet checkpoints PLAN_UUID
 ```
 
+## Disposable pilot bridge
+
+The disposable bridge is opt-in and intentionally narrower than the staging
+lane. Configure the external staging authority with exactly these values (plus
+the ordinary GitHub App fields):
+
+```text
+NORN_FLEET_GITHUB_ENVIRONMENT=staging
+NORN_FLEET_GITHUB_CONFIG_PATH=environments/disposable/fleet/nyc3/cluster.yaml
+NORN_FLEET_GITHUB_PILOT_RUN_ID=<8-to-24 lowercase alphanumeric characters>
+```
+
+Norn rejects every other disposable path, any non-staging control plane, and
+an absent or malformed run ID. Its GitHub status response and CLI surface the
+configured run ID so an operator can verify the lane before opening a PR.
+The protected apply dispatch carries that same ID, and Norn persists it beside
+the plan run, artifact digest, main commit, and nonce hash. A later change to
+the configured pilot run cannot recover or re-dispatch the older binding.
+
+After merging the deterministic Norn PR, dispatch the `plan.yml` workflow from
+protected `main` with `fleet_environment=disposable/fleet/nyc3` and the exact
+same `pilot_run_id`; unlike staging and production, a disposable plan is not
+created by the ordinary push matrix. Wait for its successful artifact before
+running `norn fleet github apply PLAN_UUID`. The workflow verifies the pilot ID
+in that artifact again and maps disposable work to the existing `staging`
+GitHub Environment. Do not substitute a new pilot ID or use the staging root.
+
 Inspect the numbered runner attempt in the Fleet UI or through
 `GET /api/v1/fleet/plans/{planID}/attempts`. Human CLI commands do not mutate
 runner attempts. The fixed staging pilot has no `app` pool; use `plan app` only

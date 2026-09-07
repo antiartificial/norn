@@ -385,6 +385,50 @@ func TestDispatchDiscoversMergedReviewAndBoundPlanArtifact(t *testing.T) {
 	}
 }
 
+func TestDisposableDispatchCarriesAndPinsPilotRunID(t *testing.T) {
+	planID := "25252525-2525-4252-8252-252525252525"
+	planSHA := strings.Repeat("a", 64)
+	headSHA := strings.Repeat("b", 40)
+	nonce := strings.Repeat("c", 64)
+	pilotRunID := "pilot20260907"
+	var dispatched map[string]any
+	client := testClient(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/app" {
+			fmt.Fprint(w, `{"slug":"norn"}`)
+			return
+		}
+		if tokenResponse(w, r, map[string]string{"actions": "write", "contents": "read", "pull_requests": "read"}) {
+			return
+		}
+		switch {
+		case strings.Contains(r.URL.Path, "/actions/workflows/apply.yml/runs"):
+			fmt.Fprint(w, `{"workflow_runs":[]}`)
+		case r.Method == http.MethodPost && strings.Contains(r.URL.Path, "/actions/workflows/apply.yml/dispatches"):
+			_ = json.NewDecoder(r.Body).Decode(&dispatched)
+			fmt.Fprint(w, `{"workflow_run_id":93,"html_url":"https://github.com/acme/norn-fleet/actions/runs/93"}`)
+		case r.URL.Path == "/repos/acme/norn-fleet/actions/runs/93":
+			fmt.Fprintf(w, `{"id":93,"html_url":"https://github.com/acme/norn-fleet/actions/runs/93","event":"workflow_dispatch","head_sha":%q,"head_branch":"main","path":".github/workflows/apply.yml@main","name":"apply","display_title":%q,"actor":{"login":"norn[bot]","type":"Bot"}}`, headSHA, "Apply disposable/fleet/nyc3 Norn plan "+planID+" nonce "+nonce)
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	client.cfg.PilotRunID = pilotRunID
+	approved := &Dispatch{PlanRunID: 91, PlanSHA: planSHA, ApprovedHeadSHA: headSHA, PilotRunID: pilotRunID}
+	result, err := client.DispatchBoundPlan(context.Background(), planID, "disposable/fleet/nyc3", false, approved, nonce)
+	if err != nil {
+		t.Fatal(err)
+	}
+	inputs := dispatched["inputs"].(map[string]any)
+	if result.PilotRunID != pilotRunID || inputs["pilot_run_id"] != pilotRunID || inputs["fleet_environment"] != "disposable/fleet/nyc3" {
+		t.Fatalf("result=%#v dispatch=%#v", result, dispatched)
+	}
+
+	approved.PilotRunID = "pilot20260908"
+	if _, err := client.DispatchBoundPlan(context.Background(), planID, "disposable/fleet/nyc3", false, approved, nonce); err == nil {
+		t.Fatal("dispatch accepted a pilot run different from the durable approved binding")
+	}
+}
+
 func TestFindApplyRunRequiresFullBoundWorkflowIdentity(t *testing.T) {
 	planID := "33333333-3333-4333-8333-333333333333"
 	nonce := strings.Repeat("d", 64)

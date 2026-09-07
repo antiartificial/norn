@@ -1870,6 +1870,7 @@ components:
         repository: { type: string }
         installationId: { type: integer, format: int64 }
         environment: { type: string, enum: [staging, production], description: Fixed non-secret Fleet GitHub dispatch lane. }
+        pilotRunId: { type: string, pattern: '^[a-z0-9]{8,24}$', description: Exact disposable Fleet pilot run when configured. }
         defaultBranch: { type: string }
         configPath: { type: string }
         planWorkflow: { type: string }
