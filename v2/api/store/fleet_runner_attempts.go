@@ -17,6 +17,9 @@ func (db *DB) CreateFleetRunnerAttempt(ctx context.Context, attempt *model.Fleet
 	if attempt == nil {
 		return fmt.Errorf("attempt is required")
 	}
+	if attempt.PhaseStartedAt.IsZero() {
+		attempt.PhaseStartedAt = attempt.StartedAt
+	}
 	tx, err := db.Pool.BeginTx(ctx, pgx.TxOptions{})
 	if err != nil {
 		return err
@@ -28,17 +31,22 @@ func (db *DB) CreateFleetRunnerAttempt(ctx context.Context, attempt *model.Fleet
 	if err := tx.QueryRow(ctx, `SELECT COALESCE(MAX(attempt), 0) + 1 FROM fleet_runner_attempts WHERE plan_id = $1`, attempt.PlanID).Scan(&attempt.Attempt); err != nil {
 		return err
 	}
+	if attempt.Attempt == 1 {
+		attempt.RootAttemptID = attempt.ID
+	} else if err := tx.QueryRow(ctx, `SELECT root_attempt_id FROM fleet_runner_attempts WHERE plan_id=$1 ORDER BY attempt ASC LIMIT 1`, attempt.PlanID).Scan(&attempt.RootAttemptID); err != nil {
+		return err
+	}
 	metadata, _ := json.Marshal(attempt.Metadata)
 	_, err = tx.Exec(ctx, `
 		INSERT INTO fleet_runner_attempts (
-			id, plan_id, attempt, runner_attempt_id, status, current_phase,
+			id, plan_id, attempt, root_attempt_id, source_dispatch_run_id, recovery, runner_attempt_id, status, current_phase,
 			commit_sha, plan_sha256, workflow_url, principal_subject, retry_of,
-			heartbeat_sequence, heartbeat_timeout_seconds, revision, started_at,
+			heartbeat_sequence, heartbeat_timeout_seconds, revision, started_at, phase_started_at,
 			heartbeat_at, updated_at, finished_at, last_error, metadata
-		) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20)
-	`, attempt.ID, attempt.PlanID, attempt.Attempt, attempt.RunnerAttemptID, attempt.Status, attempt.CurrentPhase,
+		) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21,$22,$23,$24)
+	`, attempt.ID, attempt.PlanID, attempt.Attempt, attempt.RootAttemptID, attempt.SourceDispatchRunID, attempt.Recovery, attempt.RunnerAttemptID, attempt.Status, attempt.CurrentPhase,
 		attempt.CommitSHA, attempt.PlanSHA256, attempt.WorkflowURL, attempt.PrincipalSubject, attempt.RetryOf,
-		attempt.HeartbeatSequence, attempt.HeartbeatTimeoutSeconds, attempt.Revision, attempt.StartedAt,
+		attempt.HeartbeatSequence, attempt.HeartbeatTimeoutSeconds, attempt.Revision, attempt.StartedAt, attempt.PhaseStartedAt,
 		attempt.HeartbeatAt, attempt.UpdatedAt, attempt.FinishedAt, attempt.LastError, metadata)
 	if err != nil {
 		return err
@@ -58,9 +66,9 @@ func (db *DB) ListFleetRunnerAttempts(ctx context.Context, planID string, limit 
 		return nil, err
 	}
 	rows, err := db.Pool.Query(ctx, `
-		SELECT id, plan_id, attempt, runner_attempt_id, status, current_phase,
+		SELECT id, plan_id, attempt, root_attempt_id, source_dispatch_run_id, recovery, runner_attempt_id, status, current_phase,
 		       commit_sha, plan_sha256, workflow_url, principal_subject, retry_of,
-		       heartbeat_sequence, heartbeat_timeout_seconds, revision, started_at,
+		       heartbeat_sequence, heartbeat_timeout_seconds, revision, started_at, phase_started_at,
 		       heartbeat_at, updated_at, finished_at, last_error, metadata
 		FROM fleet_runner_attempts WHERE plan_id = $1
 		ORDER BY attempt DESC LIMIT $2
@@ -85,9 +93,9 @@ func (db *DB) GetFleetRunnerAttempt(ctx context.Context, id string) (*model.Flee
 		return nil, err
 	}
 	return scanFleetRunnerAttempt(db.Pool.QueryRow(ctx, `
-		SELECT id, plan_id, attempt, runner_attempt_id, status, current_phase,
+		SELECT id, plan_id, attempt, root_attempt_id, source_dispatch_run_id, recovery, runner_attempt_id, status, current_phase,
 		       commit_sha, plan_sha256, workflow_url, principal_subject, retry_of,
-		       heartbeat_sequence, heartbeat_timeout_seconds, revision, started_at,
+		       heartbeat_sequence, heartbeat_timeout_seconds, revision, started_at, phase_started_at,
 		       heartbeat_at, updated_at, finished_at, last_error, metadata
 		FROM fleet_runner_attempts WHERE id = $1
 	`, id))
@@ -112,9 +120,9 @@ func (db *DB) HeartbeatFleetRunnerAttempt(ctx context.Context, id, phase string,
 		    metadata = metadata || jsonb_build_object('heartbeatMessage', $2::text)
 		WHERE id = $3 AND current_phase = $4 AND revision = $5
 		  AND status IN ('queued', 'running') AND heartbeat_sequence < $1
-		RETURNING id, plan_id, attempt, runner_attempt_id, status, current_phase,
+		RETURNING id, plan_id, attempt, root_attempt_id, source_dispatch_run_id, recovery, runner_attempt_id, status, current_phase,
 		          commit_sha, plan_sha256, workflow_url, principal_subject, retry_of,
-		          heartbeat_sequence, heartbeat_timeout_seconds, revision, started_at,
+		          heartbeat_sequence, heartbeat_timeout_seconds, revision, started_at, phase_started_at,
 		          heartbeat_at, updated_at, finished_at, last_error, metadata
 	`, sequence, message, id, phase, expectedRevision)
 	attempt, err := scanFleetRunnerAttempt(row)
@@ -134,6 +142,7 @@ func (db *DB) AdvanceFleetRunnerAttempt(ctx context.Context, id, fromPhase, toPh
 	row := db.Pool.QueryRow(ctx, `
 		UPDATE fleet_runner_attempts a
 		SET current_phase = $1, status = $2, updated_at = now(), heartbeat_at = now(),
+		    phase_started_at = CASE WHEN $2 = 'succeeded' THEN a.phase_started_at ELSE now() END,
 		    revision = revision + 1, finished_at = $3
 		WHERE a.id = $4 AND a.current_phase = $5 AND a.revision = $6
 		  AND a.status IN ('queued', 'running')
@@ -143,9 +152,9 @@ func (db *DB) AdvanceFleetRunnerAttempt(ctx context.Context, id, fromPhase, toPh
 		      AND o.status = 'succeeded' AND o.payload->>'phase' = $5
 		      AND o.payload->>'attemptId' = a.id
 		  )
-		RETURNING id, plan_id, attempt, runner_attempt_id, status, current_phase,
+		RETURNING id, plan_id, attempt, root_attempt_id, source_dispatch_run_id, recovery, runner_attempt_id, status, current_phase,
 		          commit_sha, plan_sha256, workflow_url, principal_subject, retry_of,
-		          heartbeat_sequence, heartbeat_timeout_seconds, revision, started_at,
+		          heartbeat_sequence, heartbeat_timeout_seconds, revision, started_at, phase_started_at,
 		          heartbeat_at, updated_at, finished_at, last_error, metadata
 	`, toPhase, status, finished, id, fromPhase, expectedRevision)
 	attempt, err := scanFleetRunnerAttempt(row)
@@ -188,10 +197,11 @@ func (db *DB) InsertFleetReconciliation(ctx context.Context, op *model.Operation
 	}
 	defer func() { _ = tx.Rollback(ctx) }()
 	var planID, phase, status, commitSHA, planSHA string
+	var phaseStartedAt time.Time
 	if err := tx.QueryRow(ctx, `
-		SELECT plan_id, current_phase, status, commit_sha, plan_sha256
+		SELECT plan_id, current_phase, status, commit_sha, plan_sha256, phase_started_at
 		FROM fleet_runner_attempts WHERE id=$1 FOR UPDATE
-	`, attemptID).Scan(&planID, &phase, &status, &commitSHA, &planSHA); err != nil {
+	`, attemptID).Scan(&planID, &phase, &status, &commitSHA, &planSHA, &phaseStartedAt); err != nil {
 		return err
 	}
 	payloadPhase, _ := op.Payload["phase"].(string)
@@ -200,6 +210,9 @@ func (db *DB) InsertFleetReconciliation(ctx context.Context, op *model.Operation
 	if planID != op.Ref || phase != payloadPhase || (status != "queued" && status != "running") || commitSHA != payloadCommit || planSHA != payloadPlan {
 		return ErrFleetRunnerAttemptConflict
 	}
+	// The server, not the runner, owns phase start. Persist it on the immutable
+	// checkpoint so later timing displays have truthful phase bounds.
+	op.StartedAt = phaseStartedAt
 	if _, err := tx.Exec(ctx, `
 		INSERT INTO operations (id, kind, app, saga_id, ref, status, risk, source, message, payload, metadata, attempts, max_attempts, next_attempt_at, started_at, updated_at, finished_at)
 		VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,now(),$16)
@@ -224,9 +237,9 @@ func (db *DB) CancelFleetRunnerAttempt(ctx context.Context, id string, expectedR
 		UPDATE fleet_runner_attempts
 		SET status='canceled', last_error=$1, finished_at=now(), updated_at=now(), revision=revision+1
 		WHERE id=$2 AND revision=$3 AND status IN ('queued','running')
-		RETURNING id, plan_id, attempt, runner_attempt_id, status, current_phase,
+		RETURNING id, plan_id, attempt, root_attempt_id, source_dispatch_run_id, recovery, runner_attempt_id, status, current_phase,
 		          commit_sha, plan_sha256, workflow_url, principal_subject, retry_of,
-		          heartbeat_sequence, heartbeat_timeout_seconds, revision, started_at,
+		          heartbeat_sequence, heartbeat_timeout_seconds, revision, started_at, phase_started_at,
 		          heartbeat_at, updated_at, finished_at, last_error, metadata
 	`, reason, id, expectedRevision)
 	attempt, err := scanFleetRunnerAttempt(row)
@@ -239,6 +252,9 @@ func (db *DB) CancelFleetRunnerAttempt(ctx context.Context, id string, expectedR
 func (db *DB) RetryFleetRunnerAttempt(ctx context.Context, previous *model.FleetRunnerAttempt, replacement *model.FleetRunnerAttempt) error {
 	if previous == nil || replacement == nil {
 		return fmt.Errorf("previous and replacement attempts are required")
+	}
+	if replacement.PhaseStartedAt.IsZero() {
+		replacement.PhaseStartedAt = replacement.StartedAt
 	}
 	tx, err := db.Pool.BeginTx(ctx, pgx.TxOptions{})
 	if err != nil {
@@ -262,19 +278,22 @@ func (db *DB) RetryFleetRunnerAttempt(ctx context.Context, previous *model.Fleet
 	if err := tx.QueryRow(ctx, `SELECT COALESCE(MAX(attempt), 0) + 1 FROM fleet_runner_attempts WHERE plan_id=$1`, previous.PlanID).Scan(&replacement.Attempt); err != nil {
 		return err
 	}
+	if err := tx.QueryRow(ctx, `SELECT root_attempt_id FROM fleet_runner_attempts WHERE id=$1`, previous.ID).Scan(&replacement.RootAttemptID); err != nil {
+		return err
+	}
 	metadata, _ := json.Marshal(replacement.Metadata)
 	_, err = tx.Exec(ctx, `
 		INSERT INTO fleet_runner_attempts (
-			id, plan_id, attempt, runner_attempt_id, status, current_phase,
+			id, plan_id, attempt, root_attempt_id, source_dispatch_run_id, recovery, runner_attempt_id, status, current_phase,
 			commit_sha, plan_sha256, workflow_url, principal_subject, retry_of,
-			heartbeat_sequence, heartbeat_timeout_seconds, revision, started_at,
+			heartbeat_sequence, heartbeat_timeout_seconds, revision, started_at, phase_started_at,
 			heartbeat_at, updated_at, finished_at, last_error, metadata
-		) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20)
-	`, replacement.ID, replacement.PlanID, replacement.Attempt, replacement.RunnerAttemptID,
+		) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21,$22,$23,$24)
+	`, replacement.ID, replacement.PlanID, replacement.Attempt, replacement.RootAttemptID, replacement.SourceDispatchRunID, replacement.Recovery, replacement.RunnerAttemptID,
 		replacement.Status, replacement.CurrentPhase, replacement.CommitSHA, replacement.PlanSHA256,
 		replacement.WorkflowURL, replacement.PrincipalSubject, replacement.RetryOf,
 		replacement.HeartbeatSequence, replacement.HeartbeatTimeoutSeconds, replacement.Revision,
-		replacement.StartedAt, replacement.HeartbeatAt, replacement.UpdatedAt, replacement.FinishedAt,
+		replacement.StartedAt, replacement.PhaseStartedAt, replacement.HeartbeatAt, replacement.UpdatedAt, replacement.FinishedAt,
 		replacement.LastError, metadata)
 	if err != nil {
 		return err
@@ -283,6 +302,80 @@ func (db *DB) RetryFleetRunnerAttempt(ctx context.Context, previous *model.Fleet
 		return err
 	}
 	replacement.SetDerivedFields()
+	return nil
+}
+
+// RecoverFleetRunnerAttempt creates a new, auditable recovery retry. It never
+// mutates the identity or lineage of the source attempt. If the source is
+// still live, it is first terminally canceled in the same transaction, under
+// its observed revision, before the recovery attempt is inserted.
+func (db *DB) RecoverFleetRunnerAttempt(ctx context.Context, previous *model.FleetRunnerAttempt, recovery *model.FleetRunnerAttempt) error {
+	if previous == nil || recovery == nil || recovery.PlanID != previous.PlanID || recovery.RetryOf != previous.ID || !recovery.Recovery {
+		return fmt.Errorf("source and recovery attempts with an explicit retry lineage are required")
+	}
+	if recovery.PhaseStartedAt.IsZero() {
+		recovery.PhaseStartedAt = recovery.StartedAt
+	}
+	tx, err := db.Pool.BeginTx(ctx, pgx.TxOptions{})
+	if err != nil {
+		return err
+	}
+	defer func() { _ = tx.Rollback(ctx) }()
+	if _, err := tx.Exec(ctx, `SELECT pg_advisory_xact_lock(hashtext('norn.fleet-runner:' || $1))`, previous.PlanID); err != nil {
+		return err
+	}
+	var status model.FleetRunnerAttemptStatus
+	var revision int64
+	var sourceRunID int64
+	var commitSHA, planSHA, rootAttemptID, currentPhase string
+	if err := tx.QueryRow(ctx, `SELECT status, revision, source_dispatch_run_id, commit_sha, plan_sha256, root_attempt_id, current_phase FROM fleet_runner_attempts WHERE id=$1 FOR UPDATE`, previous.ID).Scan(&status, &revision, &sourceRunID, &commitSHA, &planSHA, &rootAttemptID, &currentPhase); err != nil {
+		return err
+	}
+	if revision != previous.Revision || sourceRunID != previous.SourceDispatchRunID || sourceRunID != recovery.SourceDispatchRunID || commitSHA != recovery.CommitSHA || planSHA != recovery.PlanSHA256 || currentPhase != recovery.CurrentPhase {
+		return ErrFleetRunnerAttemptConflict
+	}
+	switch status {
+	case model.FleetRunnerAttemptQueued, model.FleetRunnerAttemptRunning:
+		result, updateErr := tx.Exec(ctx, `UPDATE fleet_runner_attempts
+			SET status='canceled', last_error='superseded by verified recovery workflow', finished_at=now(), updated_at=now(), revision=revision+1
+			WHERE id=$1 AND revision=$2 AND status IN ('queued','running')`, previous.ID, previous.Revision)
+		if updateErr != nil {
+			return updateErr
+		}
+		if result.RowsAffected() != 1 {
+			return ErrFleetRunnerAttemptConflict
+		}
+	case model.FleetRunnerAttemptFailed, model.FleetRunnerAttemptAbandoned, model.FleetRunnerAttemptCanceled:
+		// A terminal source preserves its immutable final state and becomes the
+		// explicit parent of the recovery attempt.
+	default:
+		return ErrFleetRunnerAttemptConflict
+	}
+	if err := tx.QueryRow(ctx, `SELECT COALESCE(MAX(attempt), 0) + 1 FROM fleet_runner_attempts WHERE plan_id=$1`, previous.PlanID).Scan(&recovery.Attempt); err != nil {
+		return err
+	}
+	recovery.RootAttemptID = rootAttemptID
+	metadata, _ := json.Marshal(recovery.Metadata)
+	_, err = tx.Exec(ctx, `
+		INSERT INTO fleet_runner_attempts (
+			id, plan_id, attempt, root_attempt_id, source_dispatch_run_id, recovery, runner_attempt_id, status, current_phase,
+			commit_sha, plan_sha256, workflow_url, principal_subject, retry_of,
+			heartbeat_sequence, heartbeat_timeout_seconds, revision, started_at, phase_started_at,
+			heartbeat_at, updated_at, finished_at, last_error, metadata
+		) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21,$22,$23,$24)
+	`, recovery.ID, recovery.PlanID, recovery.Attempt, recovery.RootAttemptID, recovery.SourceDispatchRunID, recovery.Recovery, recovery.RunnerAttemptID,
+		recovery.Status, recovery.CurrentPhase, recovery.CommitSHA, recovery.PlanSHA256,
+		recovery.WorkflowURL, recovery.PrincipalSubject, recovery.RetryOf,
+		recovery.HeartbeatSequence, recovery.HeartbeatTimeoutSeconds, recovery.Revision,
+		recovery.StartedAt, recovery.PhaseStartedAt, recovery.HeartbeatAt, recovery.UpdatedAt, recovery.FinishedAt,
+		recovery.LastError, metadata)
+	if err != nil {
+		return err
+	}
+	if err := tx.Commit(ctx); err != nil {
+		return err
+	}
+	recovery.SetDerivedFields()
 	return nil
 }
 
@@ -309,11 +402,11 @@ type fleetRunnerScanner interface {
 func scanFleetRunnerAttempt(row fleetRunnerScanner) (*model.FleetRunnerAttempt, error) {
 	var attempt model.FleetRunnerAttempt
 	var metadata []byte
-	err := row.Scan(&attempt.ID, &attempt.PlanID, &attempt.Attempt, &attempt.RunnerAttemptID,
+	err := row.Scan(&attempt.ID, &attempt.PlanID, &attempt.Attempt, &attempt.RootAttemptID, &attempt.SourceDispatchRunID, &attempt.Recovery, &attempt.RunnerAttemptID,
 		&attempt.Status, &attempt.CurrentPhase, &attempt.CommitSHA, &attempt.PlanSHA256,
 		&attempt.WorkflowURL, &attempt.PrincipalSubject, &attempt.RetryOf,
 		&attempt.HeartbeatSequence, &attempt.HeartbeatTimeoutSeconds, &attempt.Revision,
-		&attempt.StartedAt, &attempt.HeartbeatAt, &attempt.UpdatedAt, &attempt.FinishedAt,
+		&attempt.StartedAt, &attempt.PhaseStartedAt, &attempt.HeartbeatAt, &attempt.UpdatedAt, &attempt.FinishedAt,
 		&attempt.LastError, &metadata)
 	if err != nil {
 		return nil, err

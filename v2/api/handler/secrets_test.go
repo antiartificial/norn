@@ -9,6 +9,8 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/go-chi/chi/v5"
+
 	"norn/v2/api/config"
 )
 
@@ -71,6 +73,23 @@ func TestSecretsMigrationPlanMissingAppReturns404(t *testing.T) {
 
 	if rec.Code != http.StatusNotFound {
 		t.Fatalf("status = %d, want 404; body=%s", rec.Code, rec.Body.String())
+	}
+}
+
+func TestAppCatalogReadOnlyRejectsSecretMutations(t *testing.T) {
+	h := &Handler{cfg: &config.Config{AppCatalogReadOnly: true}}
+	router := chi.NewRouter()
+	router.Put("/api/apps/{id}/secrets", h.UpdateSecrets)
+	router.Delete("/api/apps/{id}/secrets/{key}", h.DeleteSecret)
+	for _, request := range []*http.Request{
+		httptest.NewRequest(http.MethodPut, "/api/apps/orders-api/secrets", strings.NewReader(`{"API_KEY":"value"}`)),
+		httptest.NewRequest(http.MethodDelete, "/api/apps/orders-api/secrets/API_KEY", nil),
+	} {
+		rec := httptest.NewRecorder()
+		router.ServeHTTP(rec, request)
+		if rec.Code != http.StatusConflict || !strings.Contains(rec.Body.String(), "app_catalog_read_only") {
+			t.Fatalf("status=%d body=%s", rec.Code, rec.Body.String())
+		}
 	}
 }
 

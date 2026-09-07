@@ -6,11 +6,22 @@ export const reconciliationPhases = [
   'nodes_configured',
   'nodes_enrolled',
   'readiness_verified',
+  'complete',
+] as const
+
+export const destructiveReconciliationPhases = [
+  'prechange_verified',
+  'provider_applying',
+  'infrastructure_applied',
+  'inventory_generated',
+  'nodes_configured',
+  'nodes_enrolled',
+  'readiness_verified',
   'old_nodes_drained',
   'complete',
 ] as const
 
-export type ReconciliationPhase = typeof reconciliationPhases[number]
+export type ReconciliationPhase = typeof destructiveReconciliationPhases[number]
 export type FleetStepState = 'completed' | 'pending' | 'active' | 'failed' | 'blocked'
 
 export interface FleetExecutionStep {
@@ -59,11 +70,12 @@ export function buildFleetExecutionSteps({ plan, reconciliations, pullRequest, d
     },
   ]
 
-  const latest = latestCheckpointByPhase(reconciliations)
+  const phases = fleetPlanRequiresDestructivePhases(plan) ? destructiveReconciliationPhases : reconciliationPhases
+  const latest = latestCheckpointByPhase(reconciliations, phases)
   const runnerFailed = runnerAttempt?.status === 'failed' || runnerAttempt?.status === 'abandoned' || runnerAttempt?.status === 'canceled'
   const runnerActive = runnerAttempt?.status === 'queued' || runnerAttempt?.status === 'running'
-  const failedIndex = reconciliationPhases.findIndex((phase) => latest.get(phase)?.status === 'failed' || (runnerFailed && runnerAttempt?.currentPhase === phase))
-  for (const [index, phase] of reconciliationPhases.entries()) {
+  const failedIndex = phases.findIndex((phase) => latest.get(phase)?.status === 'failed' || (runnerFailed && runnerAttempt?.currentPhase === phase))
+  for (const [index, phase] of phases.entries()) {
     const operation = latest.get(phase)
     let state: FleetStepState
     if (runnerActive && runnerAttempt?.currentPhase === phase) state = 'active'
@@ -104,14 +116,22 @@ export function planIsComplete(steps: FleetExecutionStep[]): boolean {
   return steps.some((step) => step.id === 'complete' && step.state === 'completed')
 }
 
-function latestCheckpointByPhase(operations: Operation[]): Map<ReconciliationPhase, Operation> {
+function latestCheckpointByPhase(operations: Operation[], phases: readonly ReconciliationPhase[]): Map<ReconciliationPhase, Operation> {
   const sorted = [...operations].sort((a, b) => timestamp(b) - timestamp(a))
   const result = new Map<ReconciliationPhase, Operation>()
   for (const operation of sorted) {
     const phase = String(operation.payload?.phase ?? '') as ReconciliationPhase
-    if (reconciliationPhases.includes(phase) && !result.has(phase)) result.set(phase, operation)
+    if (phases.includes(phase) && !result.has(phase)) result.set(phase, operation)
   }
   return result
+}
+
+function fleetPlanRequiresDestructivePhases(plan: Operation): boolean {
+  if (plan.payload?.action === 'replace') return true
+  if (plan.payload?.action !== 'scale') return false
+  const current = Number((plan.payload.current as Record<string, unknown> | undefined)?.desired)
+  const proposed = Number((plan.payload.proposed as Record<string, unknown> | undefined)?.desired)
+  return Number.isFinite(current) && Number.isFinite(proposed) && proposed < current
 }
 
 function timestamp(operation: Operation): number {

@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { buildFleetExecutionSteps, currentFleetStep, operationForPlan } from './fleetExecution.ts'
+import { buildFleetExecutionSteps, currentFleetStep, destructiveReconciliationPhases, operationForPlan, reconciliationPhases } from './fleetExecution.ts'
 import type { FleetRunnerAttempt, Operation } from '../types/index.ts'
 
 const plan: Operation = { id: 'plan-1', kind: 'fleet.capacity-plan', status: 'succeeded', message: 'plan recorded' }
@@ -16,6 +16,31 @@ describe('fleet execution evidence', () => {
     expect(steps.find((step) => step.id === 'infrastructure_applied')?.state).toBe('pending')
     expect(steps.some((step) => step.state === 'active')).toBe(false)
     expect(currentFleetStep(steps)?.id).toBe('infrastructure_applied')
+  })
+
+  it('starts destructive plans with prechange proof before provider application', () => {
+    const destructivePlan = operation('replace-plan', 'fleet.capacity-plan', 'succeeded', {
+      action: 'replace', current: { desired: 2 }, proposed: { desired: 2 },
+    })
+    const steps = buildFleetExecutionSteps({
+      plan: destructivePlan,
+      reconciliations: [],
+      pullRequest: operation('review', 'fleet.github.pull-request', 'succeeded'),
+      dispatch: operation('dispatch', 'fleet.github.apply-dispatch', 'succeeded'),
+    })
+
+    expect(currentFleetStep(steps)?.id).toBe('prechange_verified')
+    expect(destructiveReconciliationPhases).toEqual([
+      'prechange_verified', 'provider_applying', 'infrastructure_applied', 'inventory_generated',
+      'nodes_configured', 'nodes_enrolled', 'readiness_verified', 'old_nodes_drained', 'complete',
+    ])
+  })
+
+  it('keeps drain out of non-destructive phase progression', () => {
+    expect(reconciliationPhases).toEqual([
+      'infrastructure_applied', 'inventory_generated', 'nodes_configured', 'nodes_enrolled', 'readiness_verified', 'complete',
+    ])
+    expect(reconciliationPhases).not.toContain('old_nodes_drained')
   })
 
   it('shows the latest failure and blocks downstream phases', () => {
@@ -85,7 +110,7 @@ function checkpoint(id: string, phase: string, status: string): Operation {
 
 function attempt(status: FleetRunnerAttempt['status'], currentPhase: string): FleetRunnerAttempt {
   return {
-    schemaVersion: 'norn.fleet-runner-attempt/v1', id: 'attempt-1', planId: 'plan-1', attempt: 1,
+    schemaVersion: 'norn.fleet-runner-attempt/v1', id: 'attempt-1', planId: 'plan-1', attempt: 1, rootAttemptId: 'attempt-1', sourceDispatchRunId: 91,
     status, currentPhase, commitSha: 'a'.repeat(40), planSha256: 'b'.repeat(64), heartbeatSequence: 2,
     heartbeatTimeoutSeconds: 120, revision: 3, startedAt: '2026-08-26T00:00:00Z',
     heartbeatAt: '2026-08-26T00:01:00Z', heartbeatExpiresAt: '2026-08-26T00:03:00Z', updatedAt: '2026-08-26T00:01:00Z',

@@ -32,7 +32,7 @@ func TestControlOpenAPIParsesAndLocalRefsResolve(t *testing.T) {
 		"/api/v1/fleet/plans/{planID}/reconciliations", "/api/v1/fleet/github",
 		"/api/v1/fleet/plans/{planID}/attempts", "/api/v1/fleet/plans/{planID}/attempts/{attemptID}",
 		"/api/v1/fleet/plans/{planID}/attempts/{attemptID}/heartbeat", "/api/v1/fleet/plans/{planID}/attempts/{attemptID}/advance",
-		"/api/v1/fleet/plans/{planID}/attempts/{attemptID}/retry", "/api/v1/fleet/plans/{planID}/attempts/{attemptID}/cancel",
+		"/api/v1/fleet/plans/{planID}/attempts/{attemptID}/cancel",
 		"/api/v1/deployments", "/api/v1/deployments/{id}", "/api/v1/deployments/{id}/steps", "/api/v1/services/manifest",
 		"/api/v1/apps/{id}/private-attestations",
 		"/api/v1/fleet/plans/{planID}/github/pull-request", "/api/v1/fleet/plans/{planID}/github/dispatch",
@@ -43,6 +43,13 @@ func TestControlOpenAPIParsesAndLocalRefsResolve(t *testing.T) {
 	}
 	components := document["components"].(map[string]interface{})
 	schemas := components["schemas"].(map[string]interface{})
+	appStatus := schemas["AppStatus"].(map[string]interface{})["properties"].(map[string]interface{})
+	infraSpec := appStatus["spec"].(map[string]interface{})["properties"].(map[string]interface{})
+	placement := infraSpec["placement"].(map[string]interface{})["properties"].(map[string]interface{})
+	distinctHosts := placement["distinctHosts"].(map[string]interface{})["description"].(string)
+	if !strings.Contains(distinctHosts, "two replicas plus one live canary requires three eligible clients") {
+		t.Error("InfraSpec distinctHosts must document rollout headroom for two replicas and one canary")
+	}
 	for schemaName, fields := range map[string][]string{
 		"ReleaseRequest":       {"sourceSha", "artifact", "candidate"},
 		"ReleaseCandidate":     {"repositoryVisibility", "signerWorkflowRef", "signerWorkflowSha", "attestation"},
@@ -67,6 +74,50 @@ func TestControlOpenAPIParsesAndLocalRefsResolve(t *testing.T) {
 		if attestation[field].(map[string]interface{})["readOnly"] != true {
 			t.Errorf("ReleaseAttestationIdentity.%s must be server-derived/readOnly", field)
 		}
+	}
+	runnerAttempt := schemas["FleetRunnerAttempt"].(map[string]interface{})
+	if !containsRequiredField(runnerAttempt["required"].([]interface{}), "rootAttemptId") {
+		t.Error("FleetRunnerAttempt must require server-owned rootAttemptId")
+	}
+	if runnerAttempt["properties"].(map[string]interface{})["rootAttemptId"].(map[string]interface{})["readOnly"] != true {
+		t.Error("FleetRunnerAttempt.rootAttemptId must be server-derived/readOnly")
+	}
+	for _, field := range []string{"sourceDispatchRunId", "recovery"} {
+		if runnerAttempt["properties"].(map[string]interface{})[field].(map[string]interface{})["readOnly"] != true {
+			t.Errorf("FleetRunnerAttempt.%s must be server-derived/readOnly", field)
+		}
+	}
+	if runnerAttempt["properties"].(map[string]interface{})["phaseStartedAt"].(map[string]interface{})["readOnly"] != true {
+		t.Error("FleetRunnerAttempt.phaseStartedAt must be server-owned/readOnly")
+	}
+	if _, ok := runnerAttempt["properties"].(map[string]interface{})["timing"]; !ok {
+		t.Error("FleetRunnerAttempt must expose additive advisory timing")
+	}
+	runnerStart := schemas["FleetRunnerAttemptStartRequest"].(map[string]interface{})
+	for _, field := range []string{"dispatchNonce", "sourceDispatchRunId"} {
+		if !containsRequiredField(runnerStart["required"].([]interface{}), field) {
+			t.Errorf("FleetRunnerAttemptStartRequest must require %s", field)
+		}
+	}
+	if runnerStart["properties"].(map[string]interface{})["dispatchNonce"].(map[string]interface{})["writeOnly"] != true {
+		t.Error("FleetRunnerAttemptStartRequest.dispatchNonce must be write-only")
+	}
+	for _, field := range []string{"operationClass", "createdNodeCount"} {
+		if _, ok := runnerStart["properties"].(map[string]interface{})[field]; !ok {
+			t.Errorf("FleetRunnerAttemptStartRequest must expose optional %s", field)
+		}
+	}
+	operationClass := runnerStart["properties"].(map[string]interface{})["operationClass"].(map[string]interface{})
+	if !containsRequiredField(operationClass["enum"].([]interface{}), "cold_start") || !containsRequiredField(operationClass["enum"].([]interface{}), "unknown") {
+		t.Error("FleetRunnerAttemptStartRequest.operationClass must permit cold_start and conservative unknown")
+	}
+	timing := schemas["FleetRunnerTiming"].(map[string]interface{})
+	if !containsRequiredField(timing["required"].([]interface{}), "provenance") {
+		t.Error("FleetRunnerTiming must require provenance")
+	}
+	reconciliation := schemas["FleetReconciliationRequest"].(map[string]interface{})
+	if !containsRequiredField(reconciliation["required"].([]interface{}), "attemptId") {
+		t.Error("FleetReconciliationRequest must require an attemptId in the protected runner rollout")
 	}
 	exchange := paths["/api/v1/auth/github-actions/exchange"].(map[string]interface{})["post"].(map[string]interface{})
 	exchangeSchema := exchange["requestBody"].(map[string]interface{})["content"].(map[string]interface{})["application/json"].(map[string]interface{})["schema"].(map[string]interface{})

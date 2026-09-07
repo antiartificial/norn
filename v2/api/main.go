@@ -33,6 +33,7 @@ import (
 	"norn/v2/api/consul"
 	"norn/v2/api/contract"
 	"norn/v2/api/engine"
+	"norn/v2/api/fleet"
 	"norn/v2/api/githubattestation"
 	"norn/v2/api/handler"
 	"norn/v2/api/hub"
@@ -120,6 +121,10 @@ func main() {
 
 	if err := store.Migrate(db); err != nil {
 		log.Fatalf("migration: %v", err)
+	}
+	if cfg.IsFleetAuthorityOnly() {
+		serveFleetAuthorityOnly(cfg, db)
+		return
 	}
 
 	if os.Getenv("NORN_SKIP_DEPLOYMENT_RECOVERY") == "true" {
@@ -498,7 +503,6 @@ func main() {
 		r.Get("/v1/fleet/plans/{planID}/attempts/{attemptID}", h.GetFleetRunnerAttempt)
 		r.Post("/v1/fleet/plans/{planID}/attempts/{attemptID}/heartbeat", h.HeartbeatFleetRunnerAttempt)
 		r.Post("/v1/fleet/plans/{planID}/attempts/{attemptID}/advance", h.AdvanceFleetRunnerAttempt)
-		r.Post("/v1/fleet/plans/{planID}/attempts/{attemptID}/retry", h.RetryFleetRunnerAttempt)
 		r.Post("/v1/fleet/plans/{planID}/attempts/{attemptID}/cancel", h.CancelFleetRunnerAttempt)
 		r.Post("/v1/fleet/plans/{planID}/github/pull-request", h.CreateFleetGitHubPullRequest)
 		r.Post("/v1/fleet/plans/{planID}/github/dispatch", h.DispatchFleetGitHubApply)
@@ -605,6 +609,9 @@ func validateControlSecurity(cfg *config.Config) error {
 	profile, environment, err := validateProfileEnvironment(cfg)
 	if err != nil {
 		return err
+	}
+	if cfg.IsFleetAuthorityOnly() {
+		return validateFleetAuthorityOnly(cfg, profile, environment)
 	}
 	fleetGitHubConfigured := strings.TrimSpace(cfg.FleetGitHubAppID) != "" || cfg.FleetGitHubInstallationID != 0 || strings.TrimSpace(cfg.FleetGitHubPrivateKeyFile) != "" || strings.TrimSpace(cfg.FleetGitHubRepository) != "" || strings.TrimSpace(cfg.FleetGitHubConfigPath) != "" || strings.TrimSpace(cfg.FleetGitHubEnvironment) != ""
 	if fleetGitHubConfigured {
@@ -830,6 +837,91 @@ func validateProfileEnvironment(cfg *config.Config) (string, string, error) {
 	return profile, environment, nil
 }
 
+// validateFleetAuthorityOnly keeps a staging Fleet control plane strongly
+// authenticated and durably auditable without requiring an application release
+// lane or a Nomad/Consul substrate it intentionally does not operate.
+func validateFleetAuthorityOnly(cfg *config.Config, profile, environment string) error {
+	if profile != "development" || !cfg.EnvironmentExplicit || environment != "staging" {
+		return fmt.Errorf("NORN_FLEET_AUTHORITY_ONLY=true requires NORN_PROFILE=development and explicit NORN_ENVIRONMENT=staging")
+	}
+	if !cfg.RequireExplicitAuth || len(cfg.APIToken) < 32 {
+		return fmt.Errorf("Fleet authority-only mode requires NORN_REQUIRE_EXPLICIT_AUTH=true and a 32-byte NORN_API_TOKEN")
+	}
+	if !cfg.IsAppCatalogReadOnly() {
+		return fmt.Errorf("Fleet authority-only mode requires NORN_APP_CATALOG_READ_ONLY=true")
+	}
+	if !secureDatabaseDSN(cfg.DatabaseURL) {
+		return fmt.Errorf("Fleet authority-only mode requires PostgreSQL sslmode=verify-full")
+	}
+	if len(cfg.AuditSigningKey) < 32 || cfg.AuditRetentionDays < 90 {
+		return fmt.Errorf("Fleet authority-only mode requires a 32-byte NORN_AUDIT_SIGNING_KEY and NORN_AUDIT_RETENTION_DAYS of at least 90")
+	}
+	if strings.TrimSpace(cfg.AllowedOrigins) == "" || validateAllowedOrigins(cfg.AllowedOrigins, true) != nil {
+		return fmt.Errorf("Fleet authority-only mode requires explicit HTTPS NORN_ALLOWED_ORIGINS")
+	}
+	if strings.TrimSpace(cfg.FleetConfig) == "" || strings.TrimSpace(cfg.FleetGitHubAppID) == "" || cfg.FleetGitHubInstallationID <= 0 || strings.TrimSpace(cfg.FleetGitHubPrivateKeyFile) == "" || strings.TrimSpace(cfg.FleetGitHubRepository) == "" || strings.TrimSpace(cfg.FleetGitHubConfigPath) == "" || cfg.FleetGitHubEnvironment != "staging" || strings.TrimRight(strings.TrimSpace(cfg.FleetGitHubAPIBaseURL), "/") != "https://api.github.com" {
+		return fmt.Errorf("Fleet authority-only mode requires a complete staging Fleet GitHub App and NORN_FLEET_CONFIG")
+	}
+	if strings.TrimSpace(cfg.GitHubActionsOIDCAudience) == "" || strings.TrimSpace(cfg.GitHubActionsOIDCJWKSURL) != "https://token.actions.githubusercontent.com/.well-known/jwks" || strings.TrimSpace(cfg.GitHubActionsFleetAllowedRepository) == "" || len(cfg.GitHubActionsFleetAllowedWorkflowRefs) == 0 || !exactStringSet(cfg.GitHubActionsAllowedRefs, "refs/heads/main") || !exactStringSet(cfg.GitHubActionsAllowedEvents, "push", "workflow_dispatch") || !exactStringSet(cfg.GitHubActionsFleetAllowedEnvironments, "staging") || !exactStringSet(cfg.GitHubActionsFleetAllowedIntents, "apply", "recover") {
+		return fmt.Errorf("Fleet authority-only mode requires exact GitHub Actions Fleet OIDC repository/workflow, protected main ref, push/workflow_dispatch events, staging environment, and apply/recover intents")
+	}
+	fleetDocument, err := os.ReadFile(cfg.FleetConfig)
+	if err != nil {
+		return fmt.Errorf("Fleet authority-only mode cannot read NORN_FLEET_CONFIG: %w", err)
+	}
+	fleetConfig, fleetReport := fleet.ParseAndValidate(fleetDocument)
+	if !fleetReport.Valid || fleetConfig == nil || strings.TrimSpace(fleetConfig.Metadata.Repository) != cfg.FleetGitHubRepository || fleetConfig.Metadata.Environment != "staging" || !fleetRepositoryTupleMatches(cfg.GitHubActionsFleetAllowedRepository, cfg.FleetGitHubRepository) {
+		return fmt.Errorf("Fleet authority-only mode requires NORN_FLEET_CONFIG metadata and the Fleet OIDC repository tuple to match NORN_FLEET_GITHUB_REPOSITORY")
+	}
+	workflowURL, err := url.Parse(strings.TrimSpace(fleetConfig.Metadata.WorkflowURL))
+	if err != nil || workflowURL.Scheme != "https" || workflowURL.Host != "github.com" || workflowURL.Path != "/"+cfg.FleetGitHubRepository+"/actions/workflows/"+cfg.FleetGitHubApplyWorkflow || strings.TrimSpace(cfg.FleetGitHubDefaultBranch) != "main" {
+		return fmt.Errorf("Fleet authority-only mode requires NORN_FLEET_CONFIG workflowURL and Fleet GitHub apply workflow to target protected main in NORN_FLEET_GITHUB_REPOSITORY")
+	}
+	for _, workflowRef := range cfg.GitHubActionsFleetAllowedWorkflowRefs {
+		if !immutableGitHubWorkflowRef(workflowRef) || !strings.HasPrefix(workflowRef, cfg.FleetGitHubRepository+"/.github/workflows/") {
+			return fmt.Errorf("NORN_GITHUB_ACTIONS_FLEET_ALLOWED_WORKFLOW_REFS entries must be exact pinned workflows in NORN_FLEET_GITHUB_REPOSITORY")
+		}
+	}
+	if (cfg.ReleaseAdmissionMode != "" && cfg.ReleaseAdmissionMode != "keyed") || (cfg.ReleaseAttestationTrustMode != "" && cfg.ReleaseAttestationTrustMode != "github-public") || len(cfg.GitHubActionsReleaseBindings) != 0 || len(cfg.GitHubActionsAllowedWorkflowRefs) != 0 || len(cfg.GitHubActionsAllowedEnvironments) != 0 || strings.TrimSpace(cfg.QualificationSigningKey) != "" || len(cfg.TrustedQualificationSigningKeys) != 0 || strings.TrimSpace(cfg.ReleasePrivateSigningBackend) != "" || strings.TrimSpace(cfg.ReleasePrivateSigningKeyFile) != "" || strings.TrimSpace(cfg.ReleasePrivateKMSHelper) != "" || strings.TrimSpace(cfg.ReleasePrivateKMSKeyID) != "" {
+		return fmt.Errorf("Fleet authority-only mode must not configure application release or private signing authority")
+	}
+	return nil
+}
+
+func exactStringSet(values []string, expected ...string) bool {
+	if len(values) != len(expected) {
+		return false
+	}
+	seen := make(map[string]bool, len(values))
+	for _, value := range values {
+		value = strings.TrimSpace(value)
+		if value == "" || seen[value] {
+			return false
+		}
+		seen[value] = true
+	}
+	for _, value := range expected {
+		if !seen[value] {
+			return false
+		}
+	}
+	return true
+}
+
+func fleetRepositoryTupleMatches(value, repository string) bool {
+	parts := strings.Split(strings.TrimSpace(value), "@")
+	if len(parts) != 3 || parts[0] != repository {
+		return false
+	}
+	for _, id := range parts[1:] {
+		parsed, err := strconv.ParseInt(id, 10, 64)
+		if err != nil || parsed <= 0 {
+			return false
+		}
+	}
+	return true
+}
+
 func validGitHubActionsReleaseBinding(value string) bool {
 	app, tuple, ok := strings.Cut(strings.TrimSpace(value), "=")
 	if !ok || app == "" || tuple == "" || strings.ContainsAny(app, "@/") {
@@ -1042,6 +1134,10 @@ func controlScopeForRequest(r *http.Request) string {
 		// Workflow tokens may poll only their own app/lane operation. The handler
 		// loads the operation and applies that binding; this is not generic read.
 		return ""
+	case (r.Method == http.MethodGet || r.Method == http.MethodHead) && strings.HasPrefix(path, "/api/v1/fleet/plans/") && (strings.Contains(path, "/attempts/") || strings.HasSuffix(path, "/reconciliations")):
+		// A fleet:operate OIDC token is allowed only through the handler's exact
+		// runner-attempt ownership checks; generic API reads still use api:read.
+		return ""
 	case path == "/api/v1/auth/rotate" || path == "/api/v1/auth/revoke":
 		return ""
 	case r.Method == http.MethodPost && (strings.HasSuffix(path, "/releases/preflight") || strings.HasSuffix(path, "/releases/deployments") || strings.HasSuffix(path, "/releases/rollbacks") || strings.HasSuffix(path, "/private-attestations") || strings.HasSuffix(path, "/qualifications") || strings.HasSuffix(path, "/promotions")):
@@ -1055,9 +1151,9 @@ func controlScopeForRequest(r *http.Request) string {
 	case path == "/api/v1/validate/infraspec" || path == "/api/v1/fleet/validate":
 		return handler.ScopeAPIRead
 	case r.Method != http.MethodGet && r.Method != http.MethodHead && strings.HasPrefix(path, "/api/v1/fleet/") && (strings.Contains(path, "/attempts") || strings.HasSuffix(path, "/reconciliations")):
-		// Fleet handlers accept the dedicated fleet:operate scope and retain
-		// api:write as a compatibility superset. Authentication still happens
-		// here; the handler performs the final any-of authorization decision.
+		// Fleet handlers require the dedicated fleet:operate scope and exact
+		// bound GitHub Actions identity. Authentication still happens here; the
+		// handler performs the final ownership authorization decision.
 		return ""
 	case strings.HasSuffix(path, "/exec"):
 		return handler.ScopeAppsExec
@@ -1105,6 +1201,26 @@ func writeControlCapabilitiesForConfig(cfg *config.Config, w http.ResponseWriter
 			principalInfo["expiresAt"] = principal.ExpiresAt.UTC()
 		}
 	}
+	if cfg != nil && cfg.IsFleetAuthorityOnly() {
+		_ = json.NewEncoder(w).Encode(map[string]interface{}{
+			"protocolVersion": 1, "serverVersion": Version,
+			"environment": map[string]string{"id": cfg.EnvironmentID(), "profile": profile},
+			"authority":   "fleet-only",
+			"features":    []string{"fleet-authority-only-v1", "device-enrollment", "token-rotation", "token-revocation", "device-listing", "principal-scope-discovery-v1", "scoped-access-tokens", "durable-operations", "durable-mutation-audit", "fleet-v1", "fleet-inventory", "durable-fleet-capacity-plans", "fleet-reconciliation-v1", "fleet-runner-attempts-v1", "fleet-github-app-v1", "github-actions-oidc-exchange-v1"},
+			"auth": map[string]interface{}{
+				"scopes": handler.AccessTokenScopeNames(), "principal": principalInfo,
+				"githubActionsExchange": "/api/v1/auth/github-actions/exchange",
+				"enrollmentScopes":      []string{handler.ScopeAPIRead, handler.ScopeAPIWrite},
+				"websocketBearerHeader": false, "websocketQueryToken": false, "deviceEnrollment": true,
+			},
+			"endpoints": map[string]string{
+				"operationList": "/api/operations", "activeOperations": "/api/operations/active",
+				"enrollments": "/api/v1/enrollments", "devices": "/api/v1/devices", "tokenRotate": "/api/v1/auth/rotate", "tokenRevoke": "/api/v1/auth/revoke",
+				"operations": "/api/v1/operations/{id}", "mutationAudit": "/api/v1/audit/mutations", "fleetValidation": "/api/v1/fleet/validate", "fleetNodePools": "/api/v1/fleet/node-pools", "fleetPlans": "/api/v1/fleet/plans", "fleetReconciliations": "/api/v1/fleet/plans/{planID}/reconciliations", "fleetRunnerAttempts": "/api/v1/fleet/plans/{planID}/attempts", "fleetGitHub": "/api/v1/fleet/github", "fleetGitHubPullRequest": "/api/v1/fleet/plans/{planID}/github/pull-request", "fleetGitHubDispatch": "/api/v1/fleet/plans/{planID}/github/dispatch",
+			},
+		})
+		return
+	}
 	releaseConfigured := releasePipelineConfigured(cfg)
 	features := []string{
 		"durable-operations", "event-cursor-replay", "platform-preflight", "platform-upgrade",
@@ -1142,6 +1258,12 @@ func writeControlCapabilitiesForConfig(cfg *config.Config, w http.ResponseWriter
 		endpoints["releasePromotions"] = "/api/v1/apps/{id}/promotions"
 		endpoints["releaseRollbacks"] = "/api/v1/apps/{id}/releases/rollbacks"
 	}
+	if cfg.IsAppCatalogReadOnly() {
+		features = withoutCapability(features, "app-creation")
+		features = append(features, "app-catalog-read-only-v1")
+		delete(endpoints, "appCreation")
+		delete(endpoints, "appDeployment")
+	}
 	_ = json.NewEncoder(w).Encode(map[string]interface{}{
 		"protocolVersion": 1,
 		"serverVersion":   Version,
@@ -1166,6 +1288,16 @@ func writeControlCapabilitiesForConfig(cfg *config.Config, w http.ResponseWriter
 	})
 }
 
+func withoutCapability(features []string, capability string) []string {
+	filtered := features[:0]
+	for _, feature := range features {
+		if feature != capability {
+			filtered = append(filtered, feature)
+		}
+	}
+	return filtered
+}
+
 // releasePipelineConfigured makes the advertised release surface truthful. It
 // is intentionally conservative: a server must have an explicit release lane,
 // app-to-repository binding, and the lane's signing/trust material before the
@@ -1181,6 +1313,93 @@ func releasePipelineConfigured(cfg *config.Config) bool {
 		return strings.TrimSpace(cfg.QualificationSigningKey) != ""
 	}
 	return len(cfg.TrustedQualificationSigningKeys) > 0
+}
+
+// fleetAuthorityOnlyRouter is intentionally separate from the general router.
+// Keeping the allowlist here makes an accidental workload, host-maintenance,
+// or release route visible in review instead of relying on a denylist.
+func fleetAuthorityOnlyRouter(cfg *config.Config, db *store.DB) http.Handler {
+	h := handler.New(db, nil, nil, nil, cfg, nil, nil, nil, nil, nil, nil)
+	allowedOrigins := []string{}
+	for _, origin := range strings.Split(cfg.AllowedOrigins, ",") {
+		if origin = strings.TrimSpace(origin); origin != "" {
+			allowedOrigins = append(allowedOrigins, origin)
+		}
+	}
+	r := chi.NewRouter()
+	r.Use(middleware.RequestID)
+	r.Use(middleware.Logger)
+	r.Use(middleware.Recoverer)
+	r.Use(cors.Handler(cors.Options{
+		AllowedOrigins: allowedOrigins, AllowedMethods: []string{"GET", "POST", "DELETE", "OPTIONS"},
+		AllowedHeaders: []string{"Content-Type", "Authorization", "Idempotency-Key"}, AllowCredentials: true,
+	}))
+	r.Use(bearerAuth(cfg.APIToken, h, true))
+	r.Use(h.MutationAuditMiddleware)
+
+	r.Get("/api/health", h.FleetAuthorityHealth)
+	r.Get("/api/version", func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(map[string]string{"version": Version})
+	})
+	r.Get("/api/operations", h.ListOperations)
+	r.Get("/api/operations/active", h.ActiveOperations)
+	r.Get("/api/operations/{id}", h.GetOperation)
+	r.Route("/api/v1", func(r chi.Router) {
+		r.Get("/capabilities", func(w http.ResponseWriter, r *http.Request) { writeControlCapabilitiesForConfig(cfg, w, r) })
+		r.Post("/enrollments", h.StartDeviceEnrollment)
+		r.Get("/enrollments", h.ListDeviceEnrollments)
+		r.Post("/enrollments/approve", h.ApproveDeviceEnrollment)
+		r.Post("/enrollments/{id}/exchange", h.ExchangeDeviceEnrollment)
+		r.Get("/devices", h.ListDevices)
+		r.Delete("/devices/{id}", h.RevokeDevice)
+		r.Post("/auth/github-actions/exchange", h.ExchangeGitHubActionsOIDC)
+		r.Post("/auth/rotate", h.RotateCurrentToken)
+		r.Post("/auth/revoke", h.RevokeCurrentToken)
+		r.Get("/audit/mutations", h.MutationAuditEvents)
+		r.Get("/operations/{id}", h.GetOperation)
+		r.Post("/operations/{id}/cancel", h.CancelOperation)
+		r.Post("/fleet/validate", h.ValidateFleetDocument)
+		r.Get("/fleet/node-pools", h.FleetInventory)
+		r.Get("/fleet/plans", h.ListFleetPlans)
+		r.Get("/fleet/github", h.FleetGitHubStatus)
+		r.Get("/fleet/plans/{planID}/reconciliations", h.ListFleetReconciliations)
+		r.Post("/fleet/plans/{planID}/reconciliations", h.RecordFleetReconciliation)
+		r.Get("/fleet/plans/{planID}/attempts", h.ListFleetRunnerAttempts)
+		r.Post("/fleet/plans/{planID}/attempts", h.StartFleetRunnerAttempt)
+		r.Get("/fleet/plans/{planID}/attempts/{attemptID}", h.GetFleetRunnerAttempt)
+		r.Post("/fleet/plans/{planID}/attempts/{attemptID}/heartbeat", h.HeartbeatFleetRunnerAttempt)
+		r.Post("/fleet/plans/{planID}/attempts/{attemptID}/advance", h.AdvanceFleetRunnerAttempt)
+		r.Post("/fleet/plans/{planID}/attempts/{attemptID}/cancel", h.CancelFleetRunnerAttempt)
+		r.Post("/fleet/plans/{planID}/github/pull-request", h.CreateFleetGitHubPullRequest)
+		r.Post("/fleet/plans/{planID}/github/dispatch", h.DispatchFleetGitHubApply)
+		r.Post("/fleet/node-pools/{pool}/plan", h.PlanFleetCapacity)
+	})
+	// The static management shell contains no credentials. API access remains
+	// independently authenticated; enabling the UI never enables runtime workers.
+	if cfg.UIDir != "" {
+		fileServer(r, cfg.UIDir)
+	}
+	return r
+}
+
+func serveFleetAuthorityOnly(cfg *config.Config, db *store.DB) {
+	srv := &http.Server{
+		Addr: cfg.BindAddr + ":" + cfg.Port, Handler: otelhttp.NewHandler(fleetAuthorityOnlyRouter(cfg, db), "norn.fleet-authority"),
+		ReadHeaderTimeout: 10 * time.Second, IdleTimeout: 2 * time.Minute, MaxHeaderBytes: 1 << 20,
+	}
+	go func() {
+		log.Printf("norn Fleet authority %s listening on %s:%s", Version, cfg.BindAddr, cfg.Port)
+		if err := srv.ListenAndServe(); err != nil && err != http.ErrServerClosed {
+			log.Fatalf("server: %v", err)
+		}
+	}()
+	quit := make(chan os.Signal, 1)
+	signal.Notify(quit, syscall.SIGINT, syscall.SIGTERM)
+	<-quit
+	shutdownCtx, shutdownCancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer shutdownCancel()
+	_ = srv.Shutdown(shutdownCtx)
 }
 
 func clientIPFromRequest(r *http.Request) string {
@@ -1223,6 +1442,10 @@ func fileServer(r chi.Router, dir string) {
 	rootFS := root.FS()
 	fileHandler := http.FileServerFS(rootFS)
 	r.Get("/*", func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/api" || strings.HasPrefix(r.URL.Path, "/api/") || r.URL.Path == "/ws" {
+			http.NotFound(w, r)
+			return
+		}
 		name := strings.TrimPrefix(path.Clean("/"+r.URL.Path), "/")
 		if name == "" {
 			name = "."

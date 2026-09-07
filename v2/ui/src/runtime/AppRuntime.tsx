@@ -1,6 +1,6 @@
 import { createContext, useCallback, useContext, useMemo, useRef, useState, type ReactNode } from 'react'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
-import { apiFetch } from '../lib/api.ts'
+import { apiFetch, clearMemoryAccessToken, hasMemoryAccessToken } from '../lib/api.ts'
 import { appGroups } from '../lib/format.ts'
 import { useDeployProgress } from '../hooks/useDeployProgress.ts'
 import { useHubEvents } from '../hooks/useHubEvents.ts'
@@ -32,6 +32,17 @@ export interface RuntimeContext {
   appRecoveryAvailable: boolean
   environment: { id: string; profile: string }
   releasePipelineAvailable: boolean
+  authority: 'fleet-only' | 'full'
+  runtimeAvailable: boolean
+  operationsAvailable: boolean
+  catalogWritable: boolean
+  canFleetWrite: boolean
+  authenticated: boolean
+  hasRevocableAuthoritySession: boolean
+  refreshAuthoritySession: () => void
+  clearAuthoritySession: () => void
+  revokeAuthoritySession: () => Promise<void>
+  capabilities?: CapabilitiesResponse
 }
 
 const DeployProgressContext = createContext<ReturnType<typeof useDeployProgress> | null>(null)
@@ -49,34 +60,37 @@ export function useRuntimeContext() {
   return value
 }
 
-function useAppsQuery() {
+function useAppsQuery(enabled: boolean) {
   return useQuery({
     queryKey: ['apps'],
     queryFn: () => apiFetch<AppStatus[]>('/api/apps'),
     staleTime: 10_000,
     refetchInterval: 15_000,
+    enabled,
   })
 }
 
-function useServiceManifestQuery() {
+function useServiceManifestQuery(enabled: boolean) {
   return useQuery({
     queryKey: ['services', 'manifest'],
     queryFn: () => apiFetch<ServiceManifest>('/api/v1/services/manifest'),
     staleTime: 20_000,
+    enabled,
   })
 }
 
-function useAccessPatternsQuery() {
+function useAccessPatternsQuery(enabled: boolean) {
   return useQuery({
     queryKey: ['access', 'patterns'],
     queryFn: () => apiFetch<AccessPatternResponse>('/api/access/patterns'),
     staleTime: 60_000,
+    enabled,
   })
 }
 
-function useCapabilitiesQuery() {
+function useCapabilitiesQuery(sessionEpoch: number) {
   return useQuery({
-    queryKey: ['capabilities'],
+    queryKey: ['capabilities', sessionEpoch],
     queryFn: () => apiFetch<CapabilitiesResponse>('/api/v1/capabilities'),
     staleTime: 60_000,
   })
@@ -136,19 +150,28 @@ export function useAppMutations(onScale: (state: { appId: string; groups: { name
 }
 
 function RuntimeInner({ children }: { children: (runtime: RuntimeContext & { connected: boolean; version: string }) => ReactNode }) {
-  const appsQuery = useAppsQuery()
+  const queryClient = useQueryClient()
+  const [sessionEpoch, setSessionEpoch] = useState(0)
+  const capabilities = useCapabilitiesQuery(sessionEpoch)
+  const authority = capabilities.data?.authority === 'fleet-only' ? 'fleet-only' : 'full'
+  const runtimeAvailable = capabilities.isSuccess && authority === 'full'
+  const operationsAvailable = capabilities.isSuccess && Boolean(
+    capabilities.data?.endpoints?.operations
+    || capabilities.data?.endpoints?.operationList
+    || capabilities.data?.endpoints?.activeOperations
+    || authority === 'fleet-only',
+  )
+  const appsQuery = useAppsQuery(runtimeAvailable)
   const apps = appsQuery.data ?? []
-  const serviceManifest = useServiceManifestQuery().data
-  const accessPatterns = useAccessPatternsQuery().data?.patterns ?? []
-  const capabilities = useCapabilitiesQuery()
+  const serviceManifest = useServiceManifestQuery(runtimeAvailable).data
+  const accessPatterns = useAccessPatternsQuery(runtimeAvailable).data?.patterns ?? []
   const version = useQuery({ queryKey: ['version'], queryFn: () => apiFetch<VersionResponse>('/api/version'), staleTime: 60_000 })
-  const ingress = useQuery({ queryKey: ['cloudflared', 'ingress'], queryFn: () => apiFetch<{ hostnames?: string[] }>('/api/cloudflared/ingress'), staleTime: 30_000 })
+  const ingress = useQuery({ queryKey: ['cloudflared', 'ingress'], queryFn: () => apiFetch<{ hostnames?: string[] }>('/api/cloudflared/ingress'), staleTime: 30_000, enabled: runtimeAvailable })
   const [scaleState, setScaleState] = useState<{ appId: string; groups: { name: string; current: number }[] } | null>(null)
   const [activity, setActivity] = useState<ActivityEntry[]>([])
   const activityId = useRef(0)
   const lastToastedRun = useRef<string | null>(null)
   const { toast } = useToast()
-  const queryClient = useQueryClient()
   const { deployState, setDeployState, applyDeployEvent } = useDeployProgressContext()
 
   const handleWsEvent = useCallback((event: HubEvent) => {
@@ -170,7 +193,7 @@ function RuntimeInner({ children }: { children: (runtime: RuntimeContext & { con
       if (payload.severity === 'critical') toast({ kind: 'error', title: payload.title ?? 'Critical incident', description: payload.body ?? payload.message })
     }
   }, [applyDeployEvent, toast])
-  const { connected } = useHubEvents(handleWsEvent)
+  const { connected } = useHubEvents(handleWsEvent, runtimeAvailable)
 
   const mutations = useAppMutations(setScaleState)
   const activeIngress = useMemo(() => new Set(ingress.data?.hostnames ?? []), [ingress.data?.hostnames])
@@ -178,6 +201,34 @@ function RuntimeInner({ children }: { children: (runtime: RuntimeContext & { con
   const appRecoveryAvailable = capabilities.data?.features.includes('durable-app-recovery-v1') === true
   const environment = capabilities.data?.environment ?? { id: 'development', profile: 'development' }
   const releasePipelineAvailable = ['release-provenance-v1', 'release-qualifications-v2', 'release-promotions-v1'].every((feature) => capabilities.data?.features.includes(feature))
+  const grantedScopes = capabilities.data?.auth?.principal?.scopes ?? []
+  const catalogWritable = !capabilities.data?.features.includes('app-catalog-read-only-v1')
+  // Fleet authority is intentionally scoped: only a write grant may expose
+  // planning or runner-dispatch controls there. The full control plane keeps
+  // its established operator behaviour while it migrates to scoped principals.
+  const canFleetWrite = authority === 'full'
+    || grantedScopes.includes('api:write')
+    || grantedScopes.includes('admin')
+  const authenticated = capabilities.data?.auth?.principal?.authenticated === true || hasMemoryAccessToken()
+  const hasRevocableAuthoritySession = hasMemoryAccessToken()
+  const refreshAuthoritySession = useCallback(() => {
+    setSessionEpoch((epoch) => epoch + 1)
+    queryClient.invalidateQueries()
+  }, [queryClient])
+  const clearAuthoritySession = useCallback(() => {
+    clearMemoryAccessToken()
+    queryClient.clear()
+    setSessionEpoch((epoch) => epoch + 1)
+  }, [queryClient])
+  const revokeAuthoritySession = useCallback(async () => {
+    try {
+      await apiFetch('/api/v1/auth/revoke', { method: 'POST' })
+    } finally {
+      clearMemoryAccessToken()
+      queryClient.clear()
+      setSessionEpoch((epoch) => epoch + 1)
+    }
+  }, [queryClient])
 
   const toggleEndpoint = useCallback(async (appId: string, hostname: string, enabled: boolean) => {
     await apiFetch(`/api/apps/${appId}/endpoints/toggle`, {
@@ -211,6 +262,17 @@ function RuntimeInner({ children }: { children: (runtime: RuntimeContext & { con
     appRecoveryAvailable,
     environment,
     releasePipelineAvailable,
+    authority,
+    runtimeAvailable,
+    operationsAvailable,
+    catalogWritable,
+    canFleetWrite,
+    authenticated,
+    hasRevocableAuthoritySession,
+    refreshAuthoritySession,
+    clearAuthoritySession,
+    revokeAuthoritySession,
+    capabilities: capabilities.data,
   }
 
   return (

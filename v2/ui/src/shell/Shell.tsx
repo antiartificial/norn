@@ -17,7 +17,7 @@ function storedSidebarCollapsed(): boolean {
   try { return (localStorage.getItem('norn.sidebar.collapsed:v1') ?? localStorage.getItem('norn.sidebar.collapsed')) === 'true' } catch { return false }
 }
 
-export function Shell({ children, connected, version, apps, activity, runAction, fleetAvailable }: { children: ReactNode; connected: boolean; version: string; apps: AppStatus[]; activity: ActivityEntry[]; runAction: (appId: string, action: AppAction) => void; fleetAvailable: boolean }) {
+export function Shell({ children, connected, version, apps, activity, runAction, fleetAvailable, authority, environment, hasRevocableAuthoritySession, revokeAuthoritySession }: { children: ReactNode; connected: boolean; version: string; apps: AppStatus[]; activity: ActivityEntry[]; runAction: (appId: string, action: AppAction) => void; fleetAvailable: boolean; authority: 'fleet-only' | 'full'; environment: { id: string; profile: string }; hasRevocableAuthoritySession: boolean; revokeAuthoritySession: () => Promise<void> }) {
   const [collapsed, setCollapsed] = useState(storedSidebarCollapsed)
   const [paletteOpen, setPaletteOpen] = useState(false)
   const [theme, setTheme] = useState<Theme>(() => document.documentElement.dataset.theme === 'light' ? 'light' : 'dark')
@@ -73,7 +73,7 @@ export function Shell({ children, connected, version, apps, activity, runAction,
             <div className="sidebar-section" key={group.label}>
               <div className="sidebar-section-label">{group.label}</div>
               {group.items.map(([to, label, icon]) => (
-                to === '/fleet' && !fleetAvailable ? null :
+                (to === '/fleet' && !fleetAvailable) || (authority === 'fleet-only' && !['/overview', '/fleet', '/operations'].includes(to)) ? null :
                 <NavLink key={to} to={to} className={({ isActive }) => `sidebar-link ${isActive ? 'active' : ''}`} title={label}>
                   <i className={`fawsb ${icon}`} aria-hidden />
                   <span>{label}</span>
@@ -84,7 +84,7 @@ export function Shell({ children, connected, version, apps, activity, runAction,
         </nav>
         <div className="sidebar-footer">
           <span className="sidebar-version">norn {version}</span>
-          <span className={`ws-status ${connected ? 'connected' : 'disconnected'}`}><span className={`ws-dot ${connected ? 'green' : 'red'}`} />{connected ? 'Live' : 'Reconnecting...'}</span>
+          <span className={`ws-status ${connected ? 'connected' : 'disconnected'}`}><span className={`ws-dot ${connected ? 'green' : 'red'}`} />{authority === 'fleet-only' ? 'Events unavailable' : connected ? 'Live' : 'Reconnecting...'}</span>
         </div>
       </aside>
       <div className="shell-body">
@@ -93,7 +93,9 @@ export function Shell({ children, connected, version, apps, activity, runAction,
             <h1>{pageTitle}</h1>
           </div>
           <div className="page-header-actions">
-            <button className="command-button" type="button" onClick={() => setPaletteOpen(true)}><i className="fawsb fa-magnifying-glass" aria-hidden /> Search <kbd>⌘K</kbd></button>
+            <span className="connection-context" role="status">{authority === 'fleet-only' ? 'Fleet authority' : 'Control plane'} · {environment.id} / {environment.profile}</span>
+            {authority === 'fleet-only' && hasRevocableAuthoritySession && <Button variant="ghost" size="sm" onClick={() => void revokeAuthoritySession()}>Sign out</Button>}
+            {authority === 'full' && <button className="command-button" type="button" onClick={() => setPaletteOpen(true)}><i className="fawsb fa-magnifying-glass" aria-hidden /> Search <kbd>⌘K</kbd></button>}
             <Button
               variant="ghost"
               size="sm"
@@ -106,7 +108,7 @@ export function Shell({ children, connected, version, apps, activity, runAction,
         </header>
         <main id="main-content" className="shell-main" tabIndex={-1}>{children}</main>
       </div>
-      <CommandPalette open={paletteOpen} onClose={() => setPaletteOpen(false)} apps={apps} activity={activity} runAction={runAction} fleetAvailable={fleetAvailable} />
+      {authority === 'full' && <CommandPalette open={paletteOpen} onClose={() => setPaletteOpen(false)} apps={apps} activity={activity} runAction={runAction} fleetAvailable={fleetAvailable} />}
     </div>
   )
 }

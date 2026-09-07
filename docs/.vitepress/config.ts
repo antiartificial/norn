@@ -84,6 +84,8 @@ export default withMermaid(
               { text: 'Host Recovery', link: '/v2/operations/host-recovery' },
               { text: 'Workload Qualification', link: '/v2/operations/workload-qualification' },
               { text: 'Linux HA Lab', link: '/v2/operations/ha-lab' },
+              { text: 'Fleet operations', link: '/v2/operations/fleet' },
+              { text: 'Fleet staging pilot', link: '/v2/operations/fleet-pilot' },
               { text: 'Durability Pilot', link: '/v2/operations/durability-pilot' },
               { text: 'Production Readiness', link: '/v2/operations/production-readiness' },
               { text: 'Troubleshooting', link: '/v2/operations/troubleshooting' },

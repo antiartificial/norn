@@ -46,10 +46,14 @@ func TestFleetRunnerAttemptLifecycle(t *testing.T) {
 	attempt := &model.FleetRunnerAttempt{
 		ID: uuid.NewString(), PlanID: planID, RunnerAttemptID: "integration-1", Status: model.FleetRunnerAttemptRunning,
 		CurrentPhase: "infrastructure_applied", CommitSHA: "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", PlanSHA256: "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
-		HeartbeatTimeoutSeconds: 120, Revision: 1, StartedAt: now, HeartbeatAt: now, UpdatedAt: now,
+		SourceDispatchRunID:     93,
+		HeartbeatTimeoutSeconds: 120, Revision: 1, StartedAt: now, PhaseStartedAt: now.Add(-5 * time.Minute), HeartbeatAt: now, UpdatedAt: now,
 	}
 	if err := db.CreateFleetRunnerAttempt(ctx, attempt); err != nil {
 		t.Fatal(err)
+	}
+	if attempt.RootAttemptID != attempt.ID {
+		t.Fatalf("initial root attempt = %q, want %q", attempt.RootAttemptID, attempt.ID)
 	}
 	concurrent := *attempt
 	concurrent.ID, concurrent.RunnerAttemptID, concurrent.Attempt = uuid.NewString(), "integration-2", 0
@@ -74,8 +78,11 @@ func TestFleetRunnerAttemptLifecycle(t *testing.T) {
 	if err := db.InsertFleetReconciliation(ctx, success, attempt.ID); err != nil {
 		t.Fatal(err)
 	}
+	if !success.StartedAt.Equal(attempt.PhaseStartedAt) {
+		t.Fatalf("checkpoint start = %s, want server-owned phase start %s", success.StartedAt, attempt.PhaseStartedAt)
+	}
 	live, err = db.AdvanceFleetRunnerAttempt(ctx, attempt.ID, "infrastructure_applied", "inventory_generated", live.Revision, false)
-	if err != nil || live.CurrentPhase != "inventory_generated" {
+	if err != nil || live.CurrentPhase != "inventory_generated" || !live.PhaseStartedAt.After(attempt.PhaseStartedAt) {
 		t.Fatalf("advance attempt=%+v err=%v", live, err)
 	}
 
@@ -94,12 +101,44 @@ func TestFleetRunnerAttemptLifecycle(t *testing.T) {
 	replacement := &model.FleetRunnerAttempt{
 		ID: uuid.NewString(), PlanID: planID, RunnerAttemptID: "integration-retry", Status: model.FleetRunnerAttemptRunning,
 		CurrentPhase: failed.CurrentPhase, CommitSHA: failed.CommitSHA, PlanSHA256: failed.PlanSHA256, RetryOf: failed.ID,
+		SourceDispatchRunID:     failed.SourceDispatchRunID,
 		HeartbeatTimeoutSeconds: 120, Revision: 1, StartedAt: now, HeartbeatAt: now, UpdatedAt: now,
 	}
 	if err := db.RetryFleetRunnerAttempt(ctx, failed, replacement); err != nil {
 		t.Fatal(err)
 	}
-	if replacement.Attempt != 2 || replacement.RetryOf != failed.ID {
+	if replacement.Attempt != 2 || replacement.RetryOf != failed.ID || replacement.RootAttemptID != attempt.ID {
 		t.Fatalf("replacement = %+v", replacement)
+	}
+	canceled, err := db.CancelFleetRunnerAttempt(ctx, replacement.ID, replacement.Revision, "operator stopped prior runner")
+	if err != nil || canceled.Status != model.FleetRunnerAttemptCanceled {
+		t.Fatalf("cancel before recovery = %+v, %v", canceled, err)
+	}
+	firstRecovery := &model.FleetRunnerAttempt{
+		ID: uuid.NewString(), PlanID: planID, RunnerAttemptID: "github-actions:acme/norn-fleet:104:1",
+		Status: model.FleetRunnerAttemptRunning, CurrentPhase: canceled.CurrentPhase,
+		CommitSHA: canceled.CommitSHA, PlanSHA256: canceled.PlanSHA256, SourceDispatchRunID: canceled.SourceDispatchRunID,
+		Recovery: true, RetryOf: canceled.ID, HeartbeatTimeoutSeconds: canceled.HeartbeatTimeoutSeconds,
+		Revision: 1, StartedAt: now, HeartbeatAt: now, UpdatedAt: now,
+	}
+	if err := db.RecoverFleetRunnerAttempt(ctx, canceled, firstRecovery); err != nil {
+		t.Fatal(err)
+	}
+	if firstRecovery.Attempt != 3 || firstRecovery.RetryOf != canceled.ID || firstRecovery.RootAttemptID != attempt.ID || !firstRecovery.Recovery {
+		t.Fatalf("first recovery = %+v", firstRecovery)
+	}
+	secondRecovery := &model.FleetRunnerAttempt{
+		ID: uuid.NewString(), PlanID: planID, RunnerAttemptID: "github-actions:acme/norn-fleet:105:1",
+		Status: model.FleetRunnerAttemptRunning, CurrentPhase: firstRecovery.CurrentPhase,
+		CommitSHA: firstRecovery.CommitSHA, PlanSHA256: firstRecovery.PlanSHA256, SourceDispatchRunID: firstRecovery.SourceDispatchRunID,
+		Recovery: true, RetryOf: firstRecovery.ID, HeartbeatTimeoutSeconds: firstRecovery.HeartbeatTimeoutSeconds,
+		Revision: 1, StartedAt: now, HeartbeatAt: now, UpdatedAt: now,
+	}
+	if err := db.RecoverFleetRunnerAttempt(ctx, firstRecovery, secondRecovery); err != nil {
+		t.Fatal(err)
+	}
+	firstStored, err := db.GetFleetRunnerAttempt(ctx, firstRecovery.ID)
+	if err != nil || firstStored.Status != model.FleetRunnerAttemptCanceled || secondRecovery.Attempt != 4 || secondRecovery.RetryOf != firstRecovery.ID || secondRecovery.RootAttemptID != attempt.ID {
+		t.Fatalf("repeated recovery first=%+v second=%+v err=%v", firstStored, secondRecovery, err)
 	}
 }

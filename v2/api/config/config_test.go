@@ -40,6 +40,13 @@ func TestEnvironmentTracksWhetherTheReleaseLaneWasExplicitlyConfigured(t *testin
 	}
 }
 
+func TestAppCatalogReadOnlyConfig(t *testing.T) {
+	t.Setenv("NORN_APP_CATALOG_READ_ONLY", "true")
+	if !Load().IsAppCatalogReadOnly() {
+		t.Fatal("NORN_APP_CATALOG_READ_ONLY=true was not loaded")
+	}
+}
+
 func TestHashiCorpTLSVerificationEnvironment(t *testing.T) {
 	t.Setenv("NOMAD_SKIP_VERIFY", "true")
 	t.Setenv("CONSUL_HTTP_SSL_VERIFY", "false")
@@ -66,8 +73,9 @@ func TestFleetGitHubAppConfig(t *testing.T) {
 	t.Setenv("NORN_FLEET_GITHUB_REPOSITORY", "acme/norn-fleet")
 	t.Setenv("NORN_FLEET_GITHUB_ENVIRONMENT", "staging")
 	t.Setenv("NORN_FLEET_GITHUB_CONFIG_PATH", "environments/production/nyc3/cluster.yaml")
+	t.Setenv("NORN_FLEET_GITHUB_PILOT_RUN_ID", "pilot20260907")
 	cfg := Load()
-	if cfg.FleetGitHubAppID != "Iv1.client" || cfg.FleetGitHubInstallationID != 12345 || cfg.FleetGitHubEnvironment != "staging" || cfg.FleetGitHubApplyWorkflow != "apply.yml" {
+	if cfg.FleetGitHubAppID != "Iv1.client" || cfg.FleetGitHubInstallationID != 12345 || cfg.FleetGitHubEnvironment != "staging" || cfg.FleetGitHubPilotRunID != "pilot20260907" || cfg.FleetGitHubApplyWorkflow != "apply.yml" {
 		t.Fatalf("fleet GitHub config = %#v", cfg)
 	}
 	t.Setenv("NORN_FLEET_GITHUB_INSTALLATION_ID", "invalid")

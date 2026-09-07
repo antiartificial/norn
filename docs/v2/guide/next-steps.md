@@ -199,8 +199,8 @@ Current state:
 - The dashboard Platform tab shows active grants with revoke actions and a form to create new grants.
 - `/api/access/grants` provides CRUD for access grants.
 
-- Beacon events carry `correlationKey` in metadata to group related events into incident arcs (e.g. `service.health.critical` → `service.health.recovered` share the same key). Events also include `previousState` and `previousEventType` for transition context.
-- `GET /api/events/correlated?key=<key>` and `norn events correlated <key>` return chronological event timelines for a correlation key.
+- Beacon events carry `correlationKey` in metadata to group related events into incident arcs (e.g. `service.health.critical` → `service.health.recovered` share the same key). Active incident groups are scoped by source, app, environment, and correlation key. Events also include `previousState` and `previousEventType` for transition context.
+- `GET /api/events/correlated?key=<key>` and `norn events correlated <key>` retain key-only compatibility; the API accepts optional `source`, `app`, and `environment` filters for a single scoped timeline.
 - Vigil-gateway indexes `correlationKey`, exposes `GET /api/incidents` grouped by correlation key, and uses `correlationKey` as APNs `thread-id` for iOS notification threading.
 - `POST /api/access/tokens` creates short-lived JWT access tokens with explicit scopes. Tokens are accepted only as `Authorization: Bearer` headers, never URL query parameters.
 - `norn access token --ttl 2h --scope api:read,events:read` generates a least-privilege client token from the CLI.
@@ -211,7 +211,7 @@ Current state:
 - When an `info`-severity event resolves a correlation group, Norn auto-acknowledges open `warning`/`critical` events in that group so `norn events` shows only active incidents.
 - `norn notifications bootstrap` auto-discovers vigil-gateway and creates a default webhook notification channel for `warning` and `critical` events.
 - Beacon suppresses duplicate events at emit time: events with a `dedupeKey` matching one emitted within the last hour are dropped, preventing event storms after API restarts.
-- `GET /api/events/active` and `norn events active` show unresolved incident groups — correlation keys where open warning/critical events remain.
+- `GET /api/events/active` and `norn events active` show unresolved incident groups — scoped source/app/environment/correlation timelines where open warning/critical events remain, represented by the newest open warning or critical event.
 
 Planned work:
 

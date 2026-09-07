@@ -41,6 +41,7 @@ paths:
                 items: { $ref: '#/components/schemas/AppStatus' }
     post:
       operationId: createApp
+      description: Creates a disabled InfraSpec draft. Returns app_catalog_read_only when the reviewed app catalog is configured immutable.
       requestBody:
         required: true
         content:
@@ -175,7 +176,9 @@ paths:
       - { name: planID, in: path, required: true, schema: { type: string, format: uuid } }
     get:
       operationId: listFleetReconciliations
-      description: Lists append-only infrastructure reconciliation checkpoints for a durable capacity plan. Requires api:read.
+      description: Lists append-only infrastructure reconciliation checkpoints for a durable capacity plan. api:read sees the plan history; fleet:operate requires attemptId and receives only that exact bound attempt's records.
+      parameters:
+        - { name: attemptId, in: query, required: false, description: Required for fleet:operate runner reads; ignored for api:read all-plan reads., schema: { type: string, format: uuid } }
       responses:
         '200':
           description: Durable reconciliation checkpoint operations
@@ -194,7 +197,7 @@ paths:
         '503': { $ref: '#/components/responses/Problem' }
     post:
       operationId: recordFleetReconciliation
-      description: Appends a plan-, commit-, state-, evidence-, and optional runner-attempt-bound recovery checkpoint. Successful phases are accepted only in lifecycle order. Requires fleet:operate; api:write remains a compatibility superset.
+      description: Appends a plan-, commit-, state-, evidence-, and required runner-attempt-bound recovery checkpoint. Successful phases are accepted only in lifecycle order. Requires the exact bound GitHub Actions fleet:operate identity.
       parameters:
         - $ref: '#/components/parameters/IdempotencyKey'
       requestBody:
@@ -231,7 +234,7 @@ paths:
         '503': { $ref: '#/components/responses/Problem' }
     post:
       operationId: startFleetRunnerAttempt
-      description: Starts or recovers an external protected-runner attempt bound to one plan, reviewed commit, and Terraform plan digest. Requires fleet:operate; api:write remains a compatibility superset.
+      description: Starts or recovers an external protected-runner attempt bound to one plan, reviewed commit, and Terraform plan digest. A protected runner may also bind a sanitized reviewed-plan timing classification; timing is advisory only. Requires the exact bound GitHub Actions fleet:operate identity.
       requestBody:
         required: true
         content: { application/json: { schema: { $ref: '#/components/schemas/FleetRunnerAttemptStartRequest' } } }
@@ -248,8 +251,10 @@ paths:
       - { name: attemptID, in: path, required: true, schema: { type: string, format: uuid } }
     get:
       operationId: getFleetRunnerAttempt
+      description: api:read may read any attempt; fleet:operate may read only the exact attempt bound to its current GitHub Actions identity.
       responses:
         '200': { description: Durable runner attempt, content: { application/json: { schema: { $ref: '#/components/schemas/FleetRunnerAttempt' } } } }
+        '403': { $ref: '#/components/responses/Problem' }
         '404': { $ref: '#/components/responses/Problem' }
   /api/v1/fleet/plans/{planID}/attempts/{attemptID}/heartbeat:
     parameters:
@@ -257,7 +262,7 @@ paths:
       - { name: attemptID, in: path, required: true, schema: { type: string, format: uuid } }
     post:
       operationId: heartbeatFleetRunnerAttempt
-      description: Renews liveness for the exact current phase using a monotonic sequence and optimistic revision. Requires fleet:operate.
+      description: Renews liveness for the exact current phase using a monotonic sequence and optimistic revision. Requires the exact bound GitHub Actions fleet:operate identity.
       requestBody: { required: true, content: { application/json: { schema: { $ref: '#/components/schemas/FleetRunnerHeartbeatRequest' } } } }
       responses:
         '200': { description: Heartbeat recorded, content: { application/json: { schema: { $ref: '#/components/schemas/FleetRunnerAttempt' } } } }
@@ -270,24 +275,10 @@ paths:
       - { name: attemptID, in: path, required: true, schema: { type: string, format: uuid } }
     post:
       operationId: advanceFleetRunnerAttempt
-      description: Advances only after this attempt has append-only successful evidence for its current phase. Completing the complete phase terminates the attempt successfully. Requires fleet:operate.
+      description: Advances only after this attempt has append-only successful evidence for its current phase. Completing the complete phase terminates the attempt successfully. Requires the exact bound GitHub Actions fleet:operate identity.
       requestBody: { required: true, content: { application/json: { schema: { $ref: '#/components/schemas/FleetRunnerAdvanceRequest' } } } }
       responses:
         '200': { description: Attempt advanced, content: { application/json: { schema: { $ref: '#/components/schemas/FleetRunnerAttempt' } } } }
-        '400': { $ref: '#/components/responses/Problem' }
-        '404': { $ref: '#/components/responses/Problem' }
-        '409': { $ref: '#/components/responses/Problem' }
-  /api/v1/fleet/plans/{planID}/attempts/{attemptID}/retry:
-    parameters:
-      - { name: planID, in: path, required: true, schema: { type: string, format: uuid } }
-      - { name: attemptID, in: path, required: true, schema: { type: string, format: uuid } }
-    post:
-      operationId: retryFleetRunnerAttempt
-      description: Creates a new numbered attempt at the failed, canceled, or abandoned phase while preserving reviewed bindings and retry provenance. Requires fleet:operate.
-      requestBody: { required: true, content: { application/json: { schema: { $ref: '#/components/schemas/FleetRunnerRetryRequest' } } } }
-      responses:
-        '200': { description: Existing retry identity recovered, content: { application/json: { schema: { $ref: '#/components/schemas/FleetRunnerAttempt' } } } }
-        '201': { description: Retry attempt created, content: { application/json: { schema: { $ref: '#/components/schemas/FleetRunnerAttempt' } } } }
         '400': { $ref: '#/components/responses/Problem' }
         '404': { $ref: '#/components/responses/Problem' }
         '409': { $ref: '#/components/responses/Problem' }
@@ -297,7 +288,7 @@ paths:
       - { name: attemptID, in: path, required: true, schema: { type: string, format: uuid } }
     post:
       operationId: cancelFleetRunnerAttempt
-      description: Durably cancels an active runner attempt using its current revision. External workflow cancellation remains the runner's responsibility. Requires fleet:operate.
+      description: Durably cancels an active runner attempt using its current revision. External workflow cancellation remains the runner's responsibility. Requires the exact bound GitHub Actions fleet:operate identity.
       requestBody: { required: true, content: { application/json: { schema: { $ref: '#/components/schemas/FleetRunnerCancelRequest' } } } }
       responses:
         '200': { description: Attempt canceled, content: { application/json: { schema: { $ref: '#/components/schemas/FleetRunnerAttempt' } } } }
@@ -340,6 +331,7 @@ paths:
       - { name: id, in: path, required: true, schema: { type: string, pattern: '^[a-z0-9][a-z0-9-]*$' } }
     put:
       operationId: setAppDeployment
+      description: Updates the deployment gate. Returns app_catalog_read_only when the reviewed app catalog is configured immutable.
       requestBody:
         required: true
         content:
@@ -355,6 +347,7 @@ paths:
             application/json:
               schema: { $ref: '#/components/schemas/AppMutationReceipt' }
         '404': { $ref: '#/components/responses/Problem' }
+        '409': { $ref: '#/components/responses/Problem' }
   /api/v1/deployments:
     get:
       operationId: listDeploymentsV1
@@ -1338,13 +1331,16 @@ components:
         - fleet_runner_attempt_update_failed
         - fleet_runner_attempt_binding_conflict
         - fleet_runner_attempt_revision_conflict
+        - fleet_runner_dispatch_required
+        - fleet_runner_dispatch_read_failed
+        - fleet_runner_dispatch_binding_mismatch
+        - fleet_runner_dispatch_pending
+        - fleet_runner_resume_conflict
         - invalid_fleet_runner_heartbeat
         - fleet_runner_heartbeat_out_of_order
         - invalid_fleet_runner_advance
         - fleet_runner_phase_conflict
         - fleet_runner_advance_unproven
-        - invalid_fleet_runner_retry
-        - fleet_runner_retry_not_allowed
         - invalid_fleet_runner_cancel
         - fleet_runner_cancel_not_allowed
         - fleet_github_not_configured
@@ -1353,6 +1349,8 @@ components:
         - fleet_github_plan_not_ready
         - fleet_github_destructive_ack_required
         - fleet_github_dispatch_failed
+        - fleet_github_dispatch_in_progress
+        - fleet_github_dispatch_ambiguous
         - fleet_github_receipt_failed
         - fleet_plan_invalid
         - invalid_fleet_github_dispatch
@@ -1746,6 +1744,7 @@ components:
               required: [nodePool]
               properties:
                 nodePool: { type: string, pattern: '^[a-z0-9][a-z0-9-]*$' }
+                distinctHosts: { type: boolean, description: 'Hard group-level Nomad anti-affinity. A rollout needs replicas plus live canaries in eligible clients; two replicas plus one live canary requires three eligible clients.' }
             repo: { type: object, additionalProperties: true }
             processes: { type: object, additionalProperties: true }
             endpoints: { type: array, items: { type: object, additionalProperties: true } }
@@ -1893,13 +1892,13 @@ components:
     FleetReconciliationRequest:
       type: object
       additionalProperties: false
-      required: [schemaVersion, phase, status, commitSha, planSha256, evidenceDigest]
+      required: [schemaVersion, attemptId, phase, status, commitSha, planSha256, evidenceDigest]
       properties:
         schemaVersion: { const: norn.fleet-reconciliation/v1 }
-        attemptId: { type: string, format: uuid, description: Binds this checkpoint to one live durable runner attempt. Omit only for compatibility runners. }
+        attemptId: { type: string, format: uuid, description: Required binding to one live durable runner attempt. }
         phase:
           type: string
-          enum: [infrastructure_applied, inventory_generated, nodes_configured, nodes_enrolled, readiness_verified, old_nodes_drained, complete]
+          enum: [prechange_verified, provider_applying, infrastructure_applied, inventory_generated, nodes_configured, nodes_enrolled, readiness_verified, old_nodes_drained, complete]
         status: { type: string, enum: [succeeded, failed] }
         commitSha: { type: string, pattern: '^[0-9a-f]{40}$' }
         planSha256: { type: string, pattern: '^[0-9a-f]{64}$' }
@@ -1909,17 +1908,22 @@ components:
     FleetRunnerAttempt:
       type: object
       additionalProperties: false
-      required: [schemaVersion, id, planId, attempt, status, currentPhase, commitSha, planSha256, heartbeatSequence, heartbeatTimeoutSeconds, revision, startedAt, heartbeatAt, heartbeatExpiresAt, updatedAt]
+      required: [schemaVersion, id, planId, attempt, rootAttemptId, sourceDispatchRunId, status, currentPhase, commitSha, planSha256, heartbeatSequence, heartbeatTimeoutSeconds, revision, startedAt, heartbeatAt, heartbeatExpiresAt, updatedAt]
       properties:
         schemaVersion: { const: norn.fleet-runner-attempt/v1 }
         id: { type: string, format: uuid }
         planId: { type: string, format: uuid }
         attempt: { type: integer, minimum: 1 }
+        rootAttemptId: { type: string, format: uuid, readOnly: true }
         runnerAttemptId: { type: string, maxLength: 200 }
+        # Pre-dispatch historical attempts are backfilled with 0 because no
+        # source run existed when they were created. New starts require >0.
+        sourceDispatchRunId: { type: integer, format: int64, minimum: 0, readOnly: true }
+        recovery: { type: boolean, readOnly: true }
         status: { type: string, enum: [queued, running, succeeded, failed, canceled, abandoned] }
         currentPhase:
           type: string
-          enum: [infrastructure_applied, inventory_generated, nodes_configured, nodes_enrolled, readiness_verified, old_nodes_drained, complete]
+          enum: [prechange_verified, provider_applying, infrastructure_applied, inventory_generated, nodes_configured, nodes_enrolled, readiness_verified, old_nodes_drained, complete]
         commitSha: { type: string, pattern: '^[0-9a-f]{40}$' }
         planSha256: { type: string, pattern: '^[0-9a-f]{64}$' }
         workflowUrl: { type: string, format: uri }
@@ -1929,12 +1933,14 @@ components:
         heartbeatTimeoutSeconds: { type: integer, minimum: 30, maximum: 900 }
         revision: { type: integer, format: int64, minimum: 1 }
         startedAt: { type: string, format: date-time }
+        phaseStartedAt: { type: string, format: date-time, readOnly: true, description: Server-owned start time for currentPhase; advances only after evidence-gated phase transition. }
         heartbeatAt: { type: string, format: date-time }
         heartbeatExpiresAt: { type: string, format: date-time }
         updatedAt: { type: string, format: date-time }
         finishedAt: { type: string, format: date-time }
         lastError: { type: string }
         metadata: { type: object, additionalProperties: true }
+        timing: { $ref: '#/components/schemas/FleetRunnerTiming' }
     FleetRunnerAttemptList:
       type: object
       required: [schemaVersion, planId, attempts, count, serverTime]
@@ -1947,21 +1953,76 @@ components:
     FleetRunnerAttemptStartRequest:
       type: object
       additionalProperties: false
-      required: [schemaVersion, runnerAttemptId, commitSha, planSha256]
+      required: [schemaVersion, runnerAttemptId, commitSha, planSha256, dispatchNonce, sourceDispatchRunId]
       properties:
         schemaVersion: { const: norn.fleet-runner-attempt/v1 }
         runnerAttemptId: { type: string, minLength: 1, maxLength: 200 }
         commitSha: { type: string, pattern: '^[0-9a-f]{40}$' }
         planSha256: { type: string, pattern: '^[0-9a-f]{64}$' }
+        dispatchNonce: { type: string, pattern: '^[0-9a-f]{64}$', writeOnly: true }
+        sourceDispatchRunId: { type: integer, format: int64, minimum: 1 }
+        resume: { type: boolean, default: false }
         workflowUrl: { type: string, format: uri }
         heartbeatTimeoutSeconds: { type: integer, minimum: 30, maximum: 900, default: 120 }
+        operationClass: { type: string, enum: [cold_start, unknown], description: Optional protected-runner classification derived from the reviewed provider-plan summary. cold_start requires exactly five creates; unknown is a conservative abstention. }
+        createdNodeCount: { type: integer, minimum: 0, maximum: 1000, description: Optional reviewed provider-plan count. cold_start accepts exactly 5; unknown accepts 0 through 1000. }
+    FleetTimingRange:
+      type: object
+      additionalProperties: false
+      required: [lowMs, highMs]
+      properties:
+        lowMs: { type: integer, format: int64, minimum: 0 }
+        highMs: { type: integer, format: int64, minimum: 0 }
+    FleetTimingCompletionRange:
+      type: object
+      additionalProperties: false
+      required: [earliestAt, latestAt]
+      properties:
+        earliestAt: { type: string, format: date-time }
+        latestAt: { type: string, format: date-time }
+    FleetTimingProvenance:
+      type: object
+      additionalProperties: false
+      required: [method, sampleCount, successfulSampleCount, exclusions]
+      properties:
+        method: { type: string, enum: [configured_range, unavailable] }
+        configuredRange: { $ref: '#/components/schemas/FleetTimingRange' }
+        sampleCount: { type: integer, minimum: 0 }
+        successfulSampleCount: { type: integer, minimum: 0 }
+        exclusions: { type: array, items: { type: string, enum: [review_approval, github_queue, dns_propagation, application_migrations] } }
+    FleetTimingPhase:
+      type: object
+      additionalProperties: false
+      required: [name, state, elapsedMs]
+      properties:
+        name: { type: string, enum: [prechange_verified, provider_applying, infrastructure_applied, inventory_generated, nodes_configured, nodes_enrolled, readiness_verified, old_nodes_drained, complete] }
+        state: { type: string, enum: [active, complete, terminal] }
+        elapsedMs: { type: integer, format: int64, minimum: 0 }
+        estimatedRemaining: { $ref: '#/components/schemas/FleetTimingRange' }
+    FleetRunnerTiming:
+      type: object
+      additionalProperties: false
+      required: [schemaVersion, scope, asOf, availability, operationClass, elapsedMs, confidence, provenance, phases]
+      properties:
+        schemaVersion: { const: norn.fleet-timing/v1 }
+        scope: { const: runner_attempt }
+        asOf: { type: string, format: date-time }
+        availability: { type: string, enum: [available, unavailable] }
+        operationClass: { type: string, enum: [cold_start, unknown] }
+        elapsedMs: { type: integer, format: int64, minimum: 0 }
+        estimatedRemaining: { $ref: '#/components/schemas/FleetTimingRange' }
+        estimatedTotal: { $ref: '#/components/schemas/FleetTimingRange' }
+        estimatedCompletion: { $ref: '#/components/schemas/FleetTimingCompletionRange' }
+        confidence: { type: string, enum: [low, none] }
+        provenance: { $ref: '#/components/schemas/FleetTimingProvenance', description: Advisory provenance. Heartbeats prove liveness only; evidence-gated checkpoints prove phase completion. }
+        phases: { type: array, minItems: 1, items: { $ref: '#/components/schemas/FleetTimingPhase' } }
     FleetRunnerHeartbeatRequest:
       type: object
       additionalProperties: false
       required: [schemaVersion, phase, sequence, revision]
       properties:
         schemaVersion: { const: norn.fleet-runner-attempt/v1 }
-        phase: { type: string, enum: [infrastructure_applied, inventory_generated, nodes_configured, nodes_enrolled, readiness_verified, old_nodes_drained, complete] }
+        phase: { type: string, enum: [prechange_verified, provider_applying, infrastructure_applied, inventory_generated, nodes_configured, nodes_enrolled, readiness_verified, old_nodes_drained, complete] }
         sequence: { type: integer, format: int64, minimum: 1 }
         revision: { type: integer, format: int64, minimum: 1 }
         message: { type: string, maxLength: 500 }
@@ -1971,18 +2032,8 @@ components:
       required: [schemaVersion, expectedPhase, revision]
       properties:
         schemaVersion: { const: norn.fleet-runner-attempt/v1 }
-        expectedPhase: { type: string, enum: [infrastructure_applied, inventory_generated, nodes_configured, nodes_enrolled, readiness_verified, old_nodes_drained, complete] }
+        expectedPhase: { type: string, enum: [prechange_verified, provider_applying, infrastructure_applied, inventory_generated, nodes_configured, nodes_enrolled, readiness_verified, old_nodes_drained, complete] }
         revision: { type: integer, format: int64, minimum: 1 }
-    FleetRunnerRetryRequest:
-      type: object
-      additionalProperties: false
-      required: [schemaVersion, revision, runnerAttemptId, reason]
-      properties:
-        schemaVersion: { const: norn.fleet-runner-attempt/v1 }
-        revision: { type: integer, format: int64, minimum: 1 }
-        runnerAttemptId: { type: string, minLength: 1, maxLength: 200 }
-        workflowUrl: { type: string, format: uri }
-        reason: { type: string, minLength: 1, maxLength: 1000 }
     FleetRunnerCancelRequest:
       type: object
       additionalProperties: false

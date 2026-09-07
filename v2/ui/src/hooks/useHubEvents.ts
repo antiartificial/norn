@@ -97,11 +97,15 @@ export function invalidateForHubEvent(event: HubEvent, invalidate: (queryKey: re
   }
 }
 
-export function useHubEvents(onEvent?: HubSubscriber) {
+export function useHubEvents(onEvent?: HubSubscriber, enabled = true) {
   const queryClient = useQueryClient()
   const [isConnected, setIsConnected] = useState(connected)
 
   useEffect(() => {
+		if (!enabled) {
+			setIsConnected(false)
+			return
+		}
     const subscriber: HubSubscriber = (event) => {
       invalidateForHubEvent(event, (queryKey) => queryClient.invalidateQueries({ queryKey }))
       onEvent?.(event)
@@ -115,7 +119,7 @@ export function useHubEvents(onEvent?: HubSubscriber) {
       connectionSubscribers.delete(setIsConnected)
       releaseSocket()
     }
-  }, [onEvent, queryClient])
+  }, [enabled, onEvent, queryClient])
 
   return { connected: isConnected }
 }

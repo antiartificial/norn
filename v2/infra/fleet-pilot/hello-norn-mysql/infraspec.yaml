@@ -1,0 +1,36 @@
+name: hello-norn-mysql
+deploy: false
+placement:
+  nodePool: ingress
+  distinctHosts: true
+regions:
+  nyc3:
+    nomadRegion: global
+    datacenters: [nyc3]
+primaryRegion: nyc3
+processes:
+  web:
+    port: 8080
+    command: /hello-norn-mysql
+    health:
+      path: /health/ready
+      interval: 5s
+      timeout: 3s
+    metrics:
+      enabled: true
+      path: /metrics
+    scaling:
+      min: 2
+      max: 2
+    resources:
+      cpu: 200
+      memory: 128
+    drain:
+      signal: SIGTERM
+      timeout: 20s
+secrets:
+  - MYSQL_DSN
+  - MYSQL_CA_PEM
+# Bind the private app repository, signed OCI digest and HTTPS endpoint in the
+# reviewed catalog before enabling deployment. Run migrate separately with
+# the migration identity; the web identity should have SELECT/INSERT only.

@@ -217,10 +217,16 @@ func parseTopCPUUtilization(value string) (float64, error) {
 }
 
 func runHostMetricsCommand(ctx context.Context, name string, args ...string) (string, error) {
-	commandCtx, cancel := context.WithTimeout(ctx, time.Second)
+	// A normal top sample can take about a second on a busy developer Mac.
+	// Retain a hard bound without racing its ordinary collection time; an
+	// earlier caller deadline still wins.
+	commandCtx, cancel := context.WithTimeout(ctx, 3*time.Second)
 	defer cancel()
 	out, err := exec.CommandContext(commandCtx, name, args...).Output()
 	if err != nil {
+		if commandCtx.Err() != nil {
+			return "", commandCtx.Err()
+		}
 		return "", err
 	}
 	return string(out), nil

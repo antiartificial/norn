@@ -85,6 +85,31 @@ The managed CLI loads the existing encrypted API runtime environment before it
 triggers the process. Catch-up failures are logged but do not mark the core host
 recovery as failed.
 
+For shared Beacon stores, give every physical runtime an explicit, durable host
+identity so its assurance and capacity incidents cannot be merged with another
+host:
+
+```bash
+NORN_HOST_ID=mini-1 norn host assure --repo /path/to/norn
+```
+
+`--host-id mini-1` is equivalent. Without either setting, the runtime persists
+its initial short hostname in its assurance state.
+
+When upgrading a Mini that may have an open legacy capacity warning, run its
+first assurance pass with the exact Beacon environment as well:
+
+```bash
+NORN_HOST_ID=mini-1 NORN_BEACON_ENVIRONMENT=mini norn host assure --repo /path/to/norn
+```
+
+Both values are retained in assurance state for later periodic passes. The
+legacy adoption is limited to one exact snapshot match in that environment;
+missing environment configuration remains pending until configured.
+Before the first recovery, verify the Beacon event environment configured on
+that Mini (the example uses `mini`); a different value leaves legacy rows for
+review rather than crossing the environment fence.
+
 Configure the assurance stage with an explicit allowlist. Required jobs may be
 deployed when absent or restarted when their Consul service is not passing on
 IPv4. Public routes are reconciled through Cloudflare, private routes through

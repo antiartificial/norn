@@ -217,6 +217,9 @@ func Migrate(db *DB) error {
 			id                        TEXT PRIMARY KEY,
 			plan_id                   TEXT NOT NULL REFERENCES operations(id) ON DELETE CASCADE,
 			attempt                   INT NOT NULL,
+			root_attempt_id           TEXT NOT NULL DEFAULT '',
+			source_dispatch_run_id    BIGINT NOT NULL DEFAULT 0,
+			recovery                  BOOLEAN NOT NULL DEFAULT false,
 			runner_attempt_id         TEXT NOT NULL DEFAULT '',
 			status                    TEXT NOT NULL DEFAULT 'queued',
 			current_phase             TEXT NOT NULL,
@@ -229,6 +232,7 @@ func Migrate(db *DB) error {
 			heartbeat_timeout_seconds INT NOT NULL DEFAULT 120,
 			revision                  BIGINT NOT NULL DEFAULT 1,
 			started_at                TIMESTAMPTZ NOT NULL DEFAULT now(),
+			phase_started_at          TIMESTAMPTZ NOT NULL DEFAULT now(),
 			heartbeat_at              TIMESTAMPTZ NOT NULL DEFAULT now(),
 			updated_at                TIMESTAMPTZ NOT NULL DEFAULT now(),
 			finished_at               TIMESTAMPTZ,
@@ -251,6 +255,39 @@ func Migrate(db *DB) error {
 			ON fleet_runner_attempts(plan_id, attempt DESC);
 		CREATE INDEX IF NOT EXISTS idx_fleet_runner_liveness
 			ON fleet_runner_attempts(status, heartbeat_at);
+		ALTER TABLE fleet_runner_attempts ADD COLUMN IF NOT EXISTS root_attempt_id TEXT NOT NULL DEFAULT '';
+		ALTER TABLE fleet_runner_attempts ADD COLUMN IF NOT EXISTS source_dispatch_run_id BIGINT NOT NULL DEFAULT 0;
+		ALTER TABLE fleet_runner_attempts ADD COLUMN IF NOT EXISTS recovery BOOLEAN NOT NULL DEFAULT false;
+		ALTER TABLE fleet_runner_attempts ADD COLUMN IF NOT EXISTS phase_started_at TIMESTAMPTZ;
+		-- Legacy records predate phase timing. Their original attempt start is the
+		-- only honest lower bound; new attempts set this server-owned field exactly.
+		UPDATE fleet_runner_attempts SET phase_started_at = started_at WHERE phase_started_at IS NULL;
+		ALTER TABLE fleet_runner_attempts ALTER COLUMN phase_started_at SET NOT NULL;
+		-- Existing durable histories predate root_attempt_id. Backfill every
+		-- member of each plan lineage from its immutable first attempt.
+		UPDATE fleet_runner_attempts target SET root_attempt_id = first_attempt.id
+		FROM (SELECT DISTINCT ON (plan_id) plan_id, id FROM fleet_runner_attempts ORDER BY plan_id, attempt ASC) first_attempt
+		WHERE target.plan_id = first_attempt.plan_id AND target.root_attempt_id = '';
+
+		CREATE TABLE IF NOT EXISTS fleet_github_dispatches (
+			plan_id TEXT PRIMARY KEY REFERENCES operations(id) ON DELETE CASCADE,
+			plan_run_id BIGINT NOT NULL,
+			plan_sha256 TEXT NOT NULL,
+			approved_head_sha TEXT NOT NULL,
+			fleet_environment TEXT NOT NULL,
+			allow_destructive BOOLEAN NOT NULL,
+			dispatch_nonce_sha256 TEXT NOT NULL,
+			dispatch_state TEXT NOT NULL DEFAULT 'prepared',
+			submission_started_at TIMESTAMPTZ,
+			run_id BIGINT NOT NULL DEFAULT 0,
+			workflow_url TEXT NOT NULL DEFAULT '',
+			created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+			updated_at TIMESTAMPTZ NOT NULL DEFAULT now()
+		);
+		ALTER TABLE fleet_github_dispatches ADD COLUMN IF NOT EXISTS dispatch_state TEXT NOT NULL DEFAULT 'prepared';
+		ALTER TABLE fleet_github_dispatches ADD COLUMN IF NOT EXISTS submission_started_at TIMESTAMPTZ;
+		ALTER TABLE fleet_github_dispatches DROP COLUMN IF EXISTS dispatch_nonce;
+		CREATE UNIQUE INDEX IF NOT EXISTS idx_fleet_github_dispatch_nonce ON fleet_github_dispatches(dispatch_nonce_sha256);
 
 		ALTER TABLE operations ADD COLUMN IF NOT EXISTS payload JSONB NOT NULL DEFAULT '{}';
 		ALTER TABLE operations ADD COLUMN IF NOT EXISTS attempts INT NOT NULL DEFAULT 0;
@@ -414,8 +451,6 @@ func Migrate(db *DB) error {
 		ALTER TABLE exec_sessions ADD COLUMN IF NOT EXISTS command_digest TEXT NOT NULL DEFAULT '';
 		CREATE INDEX IF NOT EXISTS idx_exec_sessions_device ON exec_sessions(device_id, created_at DESC);
 		CREATE INDEX IF NOT EXISTS idx_exec_sessions_status ON exec_sessions(status, expires_at);
-		UPDATE exec_sessions SET status='failed',finished_at=now(),error_code='server_restarted'
-		WHERE status='running';
 
 		CREATE TABLE IF NOT EXISTS mutation_audit_events (
 			id                TEXT PRIMARY KEY,

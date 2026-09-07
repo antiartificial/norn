@@ -115,3 +115,21 @@ func TestSampleDarwinHostMetrics(t *testing.T) {
 		t.Fatalf("sample = %+v", got)
 	}
 }
+
+func TestHostMetricsCommandPreservesCallerCancellation(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	_, err := runHostMetricsCommand(ctx, "/usr/bin/true")
+	if !errors.Is(err, context.Canceled) {
+		t.Fatalf("error = %v, want caller cancellation", err)
+	}
+}
+
+func TestHostMetricsCommandAllowsOrdinaryOneSecondCollection(t *testing.T) {
+	if runtime.GOOS != "darwin" {
+		t.Skip("macOS command timing regression")
+	}
+	if _, err := runHostMetricsCommand(context.Background(), "/bin/sleep", "1.1"); err != nil {
+		t.Fatalf("ordinary one-second collection killed prematurely: %v", err)
+	}
+}

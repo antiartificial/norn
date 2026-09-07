@@ -143,10 +143,10 @@ func fleetGitHubConfig(cfg *config.Config) githubapp.Config {
 	return githubapp.Config{
 		AppID: cfg.FleetGitHubAppID, InstallationID: cfg.FleetGitHubInstallationID,
 		PrivateKeyFile: cfg.FleetGitHubPrivateKeyFile, Repository: cfg.FleetGitHubRepository,
-		Environment:   cfg.FleetGitHubEnvironment,
+		Environment: cfg.FleetGitHubEnvironment, PilotRunID: cfg.FleetGitHubPilotRunID,
 		DefaultBranch: cfg.FleetGitHubDefaultBranch, ConfigPath: cfg.FleetGitHubConfigPath,
 		PlanWorkflow: cfg.FleetGitHubPlanWorkflow, ApplyWorkflow: cfg.FleetGitHubApplyWorkflow,
-		APIBaseURL: cfg.FleetGitHubAPIBaseURL, Production: cfg.Production(),
+		APIBaseURL: cfg.FleetGitHubAPIBaseURL, Production: cfg.Production() || cfg.IsFleetAuthorityOnly(),
 	}
 }
 
@@ -252,17 +252,16 @@ func requireControlScope(w http.ResponseWriter, r *http.Request, scope string) (
 	return principal, true
 }
 
-// requireFleetOperateScope accepts the dedicated least-privilege runner scope.
-// api:write remains a temporary compatibility superset for already-issued
-// automation tokens; newly enrolled infrastructure runners should request only
-// fleet:operate plus api:read when inventory reads are required.
+// requireFleetOperateScope accepts only the dedicated least-privilege runner
+// scope. Each mutating Fleet handler then requires the exact bound GitHub
+// Actions identity; api:write is never a runner-mutation compatibility path.
 func requireFleetOperateScope(w http.ResponseWriter, r *http.Request) (AccessPrincipal, bool) {
 	principal, ok := AccessPrincipalFromRequest(r)
 	if !ok {
 		WriteControlProblem(w, r, http.StatusUnauthorized, "authenticated_principal_required", "an explicitly authenticated fleet runner principal is required")
 		return AccessPrincipal{}, false
 	}
-	if !principal.Allows(ScopeFleetOperate) && !principal.Allows(ScopeAPIWrite) {
+	if !principalHasExactScope(principal, ScopeFleetOperate) {
 		WriteControlProblem(w, r, http.StatusForbidden, "insufficient_scope", "token lacks required scope "+ScopeFleetOperate)
 		return AccessPrincipal{}, false
 	}

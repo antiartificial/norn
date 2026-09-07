@@ -12,6 +12,10 @@ const defaultLegacyTokenSigningUntil = "2026-08-15T00:00:00Z"
 
 type Config struct {
 	Profile string
+	// FleetAuthorityOnly runs a management control plane that exposes only
+	// Fleet, auth, health, and durable-operation surfaces. It deliberately has
+	// no workload connector, release pipeline, scheduler watchers, or workers.
+	FleetAuthorityOnly bool
 	// Environment is the release lane, deliberately separate from Profile.
 	Environment string
 	// EnvironmentExplicit distinguishes an omitted variable (which defaults to
@@ -22,7 +26,11 @@ type Config struct {
 	DatabaseURL         string
 	UIDir               string
 	AppsDir             string
-	FleetConfig         string // checked-out norn-fleet Cluster document; read-only to Norn
+	// AppCatalogReadOnly prevents API mutations of the checked-out app catalog.
+	// It is explicit because a root-owned catalog must not rely on permission
+	// errors to define the control-plane contract.
+	AppCatalogReadOnly bool
+	FleetConfig        string // checked-out norn-fleet Cluster document; read-only to Norn
 	// FleetGitHubApp configures an installation-scoped GitHub App used only to
 	// open reviewed fleet pull requests and dispatch the protected apply
 	// workflow. Provider and Terraform state credentials remain in GitHub.
@@ -35,6 +43,7 @@ type Config struct {
 	FleetGitHubEnvironment   string
 	FleetGitHubDefaultBranch string
 	FleetGitHubConfigPath    string
+	FleetGitHubPilotRunID    string
 	FleetGitHubPlanWorkflow  string
 	FleetGitHubApplyWorkflow string
 	FleetGitHubAPIBaseURL    string
@@ -163,6 +172,7 @@ func Load() *Config {
 	}
 	return &Config{
 		Profile:                                strings.ToLower(envOr("NORN_PROFILE", "development")),
+		FleetAuthorityOnly:                     envBoolOr("NORN_FLEET_AUTHORITY_ONLY", false),
 		Environment:                            environment,
 		EnvironmentExplicit:                    environmentExplicit,
 		Port:                                   envOr("NORN_PORT", "8800"),
@@ -170,6 +180,7 @@ func Load() *Config {
 		DatabaseURL:                            envOr("NORN_DATABASE_URL", "postgres://norn:norn@localhost:5432/norn_v2?sslmode=disable"),
 		UIDir:                                  uiDir(),
 		AppsDir:                                envOr("NORN_APPS_DIR", os.Getenv("HOME")+"/projects"),
+		AppCatalogReadOnly:                     envBoolOr("NORN_APP_CATALOG_READ_ONLY", false),
 		FleetConfig:                            os.Getenv("NORN_FLEET_CONFIG"),
 		FleetGitHubAppID:                       strings.TrimSpace(os.Getenv("NORN_FLEET_GITHUB_APP_ID")),
 		FleetGitHubInstallationID:              envInt64Or("NORN_FLEET_GITHUB_INSTALLATION_ID", 0),
@@ -178,6 +189,7 @@ func Load() *Config {
 		FleetGitHubEnvironment:                 strings.ToLower(strings.TrimSpace(os.Getenv("NORN_FLEET_GITHUB_ENVIRONMENT"))),
 		FleetGitHubDefaultBranch:               envOr("NORN_FLEET_GITHUB_DEFAULT_BRANCH", "main"),
 		FleetGitHubConfigPath:                  strings.TrimSpace(os.Getenv("NORN_FLEET_GITHUB_CONFIG_PATH")),
+		FleetGitHubPilotRunID:                  strings.ToLower(strings.TrimSpace(os.Getenv("NORN_FLEET_GITHUB_PILOT_RUN_ID"))),
 		FleetGitHubPlanWorkflow:                envOr("NORN_FLEET_GITHUB_PLAN_WORKFLOW", "plan.yml"),
 		FleetGitHubApplyWorkflow:               envOr("NORN_FLEET_GITHUB_APPLY_WORKFLOW", "apply.yml"),
 		FleetGitHubAPIBaseURL:                  envOr("NORN_FLEET_GITHUB_API_BASE_URL", "https://api.github.com"),
@@ -276,6 +288,14 @@ func Load() *Config {
 
 func (c *Config) Production() bool {
 	return c != nil && strings.EqualFold(strings.TrimSpace(c.Profile), "production")
+}
+
+func (c *Config) IsFleetAuthorityOnly() bool {
+	return c != nil && c.FleetAuthorityOnly
+}
+
+func (c *Config) IsAppCatalogReadOnly() bool {
+	return c != nil && c.AppCatalogReadOnly
 }
 
 func (c *Config) EnvironmentID() string {

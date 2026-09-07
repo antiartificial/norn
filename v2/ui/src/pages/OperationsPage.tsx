@@ -6,6 +6,8 @@ import { relativeTime, statusTone } from '../lib/format.ts'
 import type { Operation, OperationsResponse } from '../types/index.ts'
 import { Panel } from '../components/panels/Panel.tsx'
 import { EmptyState, StatusChip } from '../components/ui/index.ts'
+import { useRuntimeContext } from '../runtime/AppRuntime.tsx'
+import { AuthorityEnrollment } from '../components/AuthorityEnrollment.tsx'
 
 interface SagaEventish {
   id?: string
@@ -25,8 +27,15 @@ interface SagaEventish {
 export function OperationsPage() {
   const { sagaId } = useParams()
   const [status, setStatus] = useState('all')
+  const runtime = useRuntimeContext()
+  if (runtime.authority === 'fleet-only' && !runtime.authenticated) {
+    return <AuthorityEnrollment onAuthenticated={runtime.refreshAuthoritySession} onSignedOut={runtime.clearAuthoritySession} />
+  }
+  if (sagaId && runtime.authority === 'fleet-only') {
+    return <AuthorityOperationReceipt operationID={sagaId} />
+  }
   if (sagaId) return <SagaTimeline sagaId={sagaId} />
-  const query = useQuery({ queryKey: ['operations'], queryFn: () => apiFetch<OperationsResponse>('/api/operations'), staleTime: 15_000 })
+  const query = useQuery({ queryKey: ['operations'], queryFn: () => apiFetch<OperationsResponse>('/api/operations'), staleTime: 15_000, enabled: runtime.capabilities !== undefined && (runtime.authority === 'full' || runtime.authenticated) })
   const operations = query.data?.operations ?? []
   const statuses = useMemo(() => ['all', ...new Set(operations.map(op => op.status).filter(Boolean) as string[])], [operations])
   const filtered = useMemo(() => status === 'all' ? operations : operations.filter(op => op.status === status), [operations, status])
@@ -40,6 +49,14 @@ export function OperationsPage() {
       <OperationRows items={filtered} />
     </Panel>
   )
+}
+
+function AuthorityOperationReceipt({ operationID }: { operationID: string }) {
+  const query = useQuery({ queryKey: ['operation-receipt', operationID], queryFn: () => apiFetch<Operation>(`/api/v1/operations/${encodeURIComponent(operationID)}`), staleTime: 15_000 })
+  const operation = query.data
+  return <Panel title={`Operation receipt ${operationID}`} loading={query.isLoading} error={query.error instanceof Error ? query.error.message : null} onRetry={() => query.refetch()}>
+    {!operation ? null : <div className="compact-list"><div className="compact-row"><StatusChip tone={statusTone(operation.status)} label={operation.status ?? 'unknown'} /><span>{operation.kind ?? 'operation'}</span><code>{operation.id}</code></div></div>}
+  </Panel>
 }
 
 function SagaTimeline({ sagaId }: { sagaId: string }) {

@@ -8,7 +8,19 @@ import (
 	"strings"
 	"time"
 
+	"github.com/jackc/pgx/v5"
+
 	"norn/v2/api/model"
+)
+
+const (
+	hostCapacityEventApp             = "norn-host"
+	hostCapacityLegacyCorrelationKey = "norn-host:minimum-capacity"
+	// hostCapacityCorrelationKey remains an alias for legacy-event tests and
+	// callers while newly emitted events use a host-scoped key.
+	hostCapacityCorrelationKey    = hostCapacityLegacyCorrelationKey
+	hostCapacityCorrelationPrefix = "norn-host:"
+	hostCapacityCorrelationSuffix = ":minimum-capacity"
 )
 
 type eventReconcileRequest struct {
@@ -105,19 +117,109 @@ func (h *Handler) reconcileEvent(ctx context.Context, event model.BeaconEvent) e
 }
 
 func (h *Handler) reconcileCapacityWarning(ctx context.Context, event model.BeaconEvent, decision eventReconcileDecision) eventReconcileDecision {
-	later, err := h.db.LaterBeaconEventExists(ctx, event.App, "host.assurance.recovered", event.OccurredAt)
-	if err != nil {
-		decision.Reason = "failed to check later host assurance"
+	if reason := capacityWarningScopeError(event); reason != "" {
+		decision.Reason = reason
 		return decision
 	}
-	if !later {
-		decision.Reason = "no later successful host assurance proves capacity recovery"
+	correlationKey, _ := capacityCorrelationKey(event)
+	var recovery *model.BeaconEvent
+	var err error
+	if correlationKey == hostCapacityLegacyCorrelationKey {
+		recovery, err = h.db.LaterLegacyCapacityRecoveryForWarning(ctx, event.Source, hostCapacityEventApp, event.Environment, event.ID, event.OccurredAt)
+	} else {
+		recovery, err = h.db.LaterBeaconEventForCorrelation(ctx, event.Source, hostCapacityEventApp, event.Environment, "service.capacity.recovered", correlationKey, event.OccurredAt)
+	}
+	if err == pgx.ErrNoRows {
+		decision.Reason = "no later service.capacity.recovered event proves aggregate capacity recovery"
+		return decision
+	}
+	if err != nil {
+		decision.Reason = "failed to check later capacity recovery"
+		return decision
+	}
+	if !capacityWarningSupersededBy(event, recovery) {
+		decision.Reason = "later capacity recovery does not match this host-scoped aggregate"
 		return decision
 	}
 	decision.Action = "acknowledge"
-	decision.Reason = "later host assurance proved minimum capacity recovery"
-	decision.Evidence = append(decision.Evidence, "later host.assurance.recovered exists")
+	decision.Reason = "later service.capacity.recovered proved aggregate minimum capacity recovery"
+	decision.Evidence = append(decision.Evidence, fmt.Sprintf("later service.capacity.recovered=%s", recovery.ID))
 	return decision
+}
+
+// Capacity warnings are a host-scoped aggregate of every deployable process
+// below its declared minimum. They may only be closed by the matching aggregate
+// recovery; reconciling a single affected app would silently hide remaining
+// drift in the same warning.
+func capacityWarningScopeError(event model.BeaconEvent) string {
+	if event.App != hostCapacityEventApp {
+		return "capacity warning is not the host-scoped aggregate"
+	}
+	correlationKey, ok := capacityCorrelationKey(event)
+	if !ok {
+		return "capacity warning lacks a host-scoped minimum-capacity correlation key"
+	}
+	if correlationKey != hostCapacityLegacyCorrelationKey && metadataString(event.Metadata, "hostScope") != "" && metadataString(event.Metadata, "hostScope") != capacityCorrelationScope(correlationKey) {
+		return "capacity warning host scope does not match its correlation key"
+	}
+	return ""
+}
+
+// capacityCorrelationKey recognizes the legacy Mini key and the current
+// norn-host:<stable-host-id>:minimum-capacity format. Legacy events remain
+// reconcilable, while current events cannot cross physical-host boundaries.
+func capacityCorrelationKey(event model.BeaconEvent) (string, bool) {
+	key := metadataString(event.Metadata, "correlationKey")
+	if key == hostCapacityLegacyCorrelationKey {
+		return key, true
+	}
+	if capacityCorrelationScope(key) != "" {
+		return key, true
+	}
+	return "", false
+}
+
+func capacityCorrelationScope(key string) string {
+	if !strings.HasPrefix(key, hostCapacityCorrelationPrefix) || !strings.HasSuffix(key, hostCapacityCorrelationSuffix) {
+		return ""
+	}
+	scope := strings.TrimSuffix(strings.TrimPrefix(key, hostCapacityCorrelationPrefix), hostCapacityCorrelationSuffix)
+	if scope == "" || strings.Contains(scope, ":") {
+		return ""
+	}
+	return scope
+}
+
+func capacityWarningSupersededBy(warning model.BeaconEvent, recovery *model.BeaconEvent) bool {
+	if recovery == nil {
+		return false
+	}
+	return warning.Type == "service.capacity.below_minimum" &&
+		capacityWarningScopeError(warning) == "" &&
+		recovery.Type == "service.capacity.recovered" &&
+		recovery.Severity == model.BeaconInfo &&
+		recovery.Source == warning.Source &&
+		recovery.App == hostCapacityEventApp &&
+		recovery.Environment == warning.Environment &&
+		matchingCapacityCorrelation(warning, *recovery) &&
+		recovery.OccurredAt.After(warning.OccurredAt)
+}
+
+func matchingCapacityCorrelation(warning, recovery model.BeaconEvent) bool {
+	warningKey, warningOK := capacityCorrelationKey(warning)
+	recoveryKey, recoveryOK := capacityCorrelationKey(recovery)
+	if !warningOK || !recoveryOK || warningKey != recoveryKey {
+		return false
+	}
+	// New migration recovery events carry an exact legacy warning id. Do not
+	// let that one-time adoption (or an old generic recovery) become evidence
+	// for every warning sharing a global legacy key.
+	if warningKey == hostCapacityLegacyCorrelationKey {
+		if adoptedID := metadataString(recovery.Metadata, "legacyCapacityWarningID"); warning.ID == "" || adoptedID == "" || adoptedID != warning.ID {
+			return false
+		}
+	}
+	return true
 }
 
 func (h *Handler) reconcileDeployFailed(ctx context.Context, event model.BeaconEvent, decision eventReconcileDecision) eventReconcileDecision {

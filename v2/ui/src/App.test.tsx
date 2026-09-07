@@ -3,6 +3,7 @@ import { fireEvent, render, screen, waitFor } from '@testing-library/react'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { App } from './App.tsx'
 import { ToastProvider } from './components/ui/Toast.tsx'
+import { clearMemoryAccessToken, setMemoryAccessToken } from './lib/api.ts'
 
 const app = {
   spec: {
@@ -143,6 +144,7 @@ describe('App shell routing', () => {
   })
 
   afterEach(() => {
+    clearMemoryAccessToken()
     vi.restoreAllMocks()
   })
 
@@ -319,6 +321,39 @@ describe('App shell routing', () => {
     expect(screen.getByRole('link', { name: /Continue in protected runner/i })).toHaveAttribute('href', expect.stringContaining('github.com/acme/norn-fleet'))
   })
 
+  it('shows an advisory cold-start range only after the protected runner classifies the plan', async () => {
+    installFetch({
+      '/api/v1/fleet/node-pools': json({
+        schemaVersion: 'norn.fleet-inventory/v1', configured: true,
+        document: { apiVersion: 'norn.dev/fleet/v1', kind: 'Cluster', metadata: { environment: 'staging' }, cluster: { name: 'tk-staging', provider: 'digitalocean', region: 'nyc3' } },
+        validation: { schemaVersion: 'norn.validation-report/v1', documentKind: 'fleet', valid: true, findings: [] },
+        nodePools: { control: { size: 's-2vcpu-4gb', min: 3, desired: 3, max: 3 } },
+      }),
+      '/api/v1/fleet/plans/plan-cold/reconciliations': json({ schemaVersion: 'norn.fleet-reconciliations/v1', planId: 'plan-cold', count: 1, reconciliations: [
+        { id: 'checkpoint-infra', status: 'succeeded', payload: { phase: 'infrastructure_applied' } },
+      ] }),
+      '/api/v1/fleet/plans/plan-cold/attempts': json({ schemaVersion: 'norn.fleet-runner-attempt/v1', planId: 'plan-cold', count: 1, serverTime: '2026-09-06T18:14:00Z', attempts: [{
+        schemaVersion: 'norn.fleet-runner-attempt/v1', id: 'attempt-cold', planId: 'plan-cold', attempt: 1, rootAttemptId: 'attempt-cold', sourceDispatchRunId: 91,
+        status: 'running', currentPhase: 'nodes_configured', commitSha: 'a'.repeat(40), planSha256: 'b'.repeat(64), heartbeatSequence: 2,
+        heartbeatTimeoutSeconds: 120, revision: 3, startedAt: '2026-09-06T18:00:00Z', heartbeatAt: '2026-09-06T18:14:00Z', heartbeatExpiresAt: '2026-09-06T18:16:00Z', updatedAt: '2026-09-06T18:14:00Z',
+        timing: {
+          schemaVersion: 'norn.fleet-timing/v1', scope: 'runner_attempt', asOf: '2026-09-06T18:14:00Z', availability: 'available', operationClass: 'cold_start', elapsedMs: 840_000,
+          estimatedTotal: { lowMs: 900_000, highMs: 1_800_000 }, estimatedRemaining: { lowMs: 60_000, highMs: 960_000 }, confidence: 'low',
+          provenance: { method: 'configured_range', configuredRange: { lowMs: 900_000, highMs: 1_800_000 }, sampleCount: 0, successfulSampleCount: 0, exclusions: ['review_approval', 'github_queue', 'dns_propagation', 'application_migrations'] },
+          phases: [{ name: 'nodes_configured', state: 'active', elapsedMs: 60_000, estimatedRemaining: { lowMs: 60_000, highMs: 960_000 } }],
+        },
+      }] }),
+      '/api/v1/fleet/plans': json({ count: 1, plans: [{ id: 'plan-cold', status: 'succeeded', payload: { pool: 'control', action: 'reconcile', current: { desired: 3 }, proposed: { desired: 3 } } }] }),
+    })
+    renderApp('/fleet')
+
+    fireEvent.click(await screen.findByRole('button', { name: /control.*3 → 3 nodes/i }))
+    expect(await screen.findByText('Cold start: roughly 15m–30m')).toBeInTheDocument()
+    expect(screen.getByText(/14m elapsed · about 1m–16m remaining/)).toBeInTheDocument()
+    expect(screen.getByRole('progressbar', { name: '1 of 6 provisioning checkpoints proven' })).toHaveAttribute('value', '1')
+    expect(screen.getByText(/excludes review approval, github queue, dns propagation, application migrations/i)).toBeInTheDocument()
+  })
+
   it('creates and safely recovers GitHub fleet review and apply actions', async () => {
     const { calls } = installFetch({
       '/api/v1/fleet/plans/plan-1/github/pull-request': () => json({ id: 'review-1', kind: 'fleet.github.pull-request', status: 'succeeded', payload: { url: 'https://github.com/acme/norn-fleet/pull/7' } }, 201),
@@ -360,6 +395,106 @@ describe('App shell routing', () => {
     fireEvent.change(screen.getByLabelText('Desired'), { target: { value: '2' } })
     expect(screen.getByRole('button', { name: 'Prepare contraction' })).toBeInTheDocument()
     expect(screen.getByText(/Old nodes are not removed until Norn has proof/)).toBeInTheDocument()
+  })
+
+  it('keeps Fleet authority management-only, permission-aware, and free of runtime requests', async () => {
+    const { calls } = installFetch({
+      '/api/v1/capabilities': json({
+        protocolVersion: 1,
+        serverVersion: 'authority-test',
+        authority: 'fleet-only',
+        features: ['fleet-authority-only-v1', 'fleet-v1', 'fleet-inventory', 'durable-fleet-capacity-plans', 'fleet-reconciliation-v1', 'fleet-runner-attempts-v1', 'fleet-github-app-v1'],
+        environment: { id: 'staging', profile: 'development' },
+        auth: { scopes: ['api:read'], principal: { authenticated: true, subject: 'viewer-device', scopes: ['api:read'] } },
+        endpoints: { operationList: '/api/operations', activeOperations: '/api/operations/active' },
+      }),
+      '/api/v1/fleet/node-pools': json({
+        schemaVersion: 'norn.fleet-inventory/v1', configured: true, digest: 'sha256:abcdef1234567890',
+        document: { apiVersion: 'norn.dev/fleet/v1', kind: 'Cluster', metadata: { environment: 'staging' }, cluster: { name: 'staging-nyc3', provider: 'digitalocean', region: 'nyc3' } },
+        validation: { schemaVersion: 'norn.validation-report/v1', documentKind: 'fleet', valid: true, findings: [] },
+        nodePools: { app: { size: 's-4vcpu-8gb', min: 2, desired: 2, max: 4 } },
+      }),
+      '/api/v1/fleet/github': json({ schemaVersion: 'norn.fleet-github-status/v1', configured: true, connected: false, message: 'Awaiting GitHub App connection.' }),
+      '/api/v1/fleet/plans': json({ count: 1, plans: [{ id: 'plan-authority', status: 'queued', payload: { pool: 'app', action: 'scale', current: { desired: 2 }, proposed: { desired: 3 } } }] }),
+    })
+    renderApp('/fleet')
+
+    expect(await screen.findByRole('heading', { name: 'Fleet management scope' })).toBeInTheDocument()
+    expect(screen.getByText('Fleet authority · staging / development')).toBeInTheDocument()
+    expect(screen.getByText('not a readiness verdict')).toBeInTheDocument()
+    expect(screen.getByText(/do not prove provider capacity, workload health, or rollout readiness/i)).toBeInTheDocument()
+    expect(screen.getByText(/current identity is read-only/i)).toBeInTheDocument()
+    expect(screen.queryByRole('button', { name: 'Change capacity' })).not.toBeInTheDocument()
+    expect(await screen.findByRole('button', { name: /app.*2 → 3 nodes/i })).toBeInTheDocument()
+    expect(screen.queryByRole('link', { name: 'Apps' })).not.toBeInTheDocument()
+    expect(screen.queryByRole('button', { name: /search/i })).not.toBeInTheDocument()
+
+    await waitFor(() => expect(calls.some((call) => call.includes('/api/v1/fleet/plans'))).toBe(true))
+    for (const unsupported of ['/api/apps', '/api/v1/deployments', '/api/events', '/api/access/patterns', '/api/v1/services/manifest', '/api/cloudflared', '/api/platform/releases']) {
+      expect(calls.some((call) => call.includes(unsupported))).toBe(false)
+    }
+  })
+
+  it('renders an authority-safe explanation instead of requesting applications', async () => {
+    const { calls } = installFetch({
+      '/api/v1/capabilities': json({
+        protocolVersion: 1,
+        serverVersion: 'authority-test',
+        authority: 'fleet-only',
+        features: ['fleet-authority-only-v1', 'fleet-v1', 'fleet-inventory', 'durable-fleet-capacity-plans'],
+        environment: { id: 'staging', profile: 'development' },
+        auth: { scopes: ['api:read'], principal: { authenticated: true, subject: 'viewer-device', scopes: ['api:read'] } },
+        endpoints: { operationList: '/api/operations', activeOperations: '/api/operations/active' },
+      }),
+    })
+    renderApp('/apps')
+
+    expect(await screen.findByRole('heading', { name: 'Applications is not served here' })).toBeInTheDocument()
+    expect(screen.getByText(/does not expose application, release, event, or scheduler APIs/i)).toBeInTheDocument()
+    await waitFor(() => expect(calls.some((call) => call.includes('/api/v1/capabilities'))).toBe(true))
+    expect(calls.some((call) => call.includes('/api/apps'))).toBe(false)
+  })
+
+  it('requires manual browser pairing before authority Fleet requests', async () => {
+    const { calls } = installFetch({
+      '/api/v1/capabilities': json({
+        protocolVersion: 1,
+        serverVersion: 'authority-test',
+        authority: 'fleet-only',
+        features: ['fleet-authority-only-v1', 'fleet-v1', 'fleet-inventory', 'durable-fleet-capacity-plans'],
+        environment: { id: 'staging', profile: 'development' },
+        auth: { scopes: ['api:read', 'api:write'], principal: { authenticated: false, scopes: [] } },
+        endpoints: { operationList: '/api/operations', activeOperations: '/api/operations/active', enrollments: '/api/v1/enrollments' },
+      }),
+    })
+    renderApp('/fleet')
+
+    expect(await screen.findByRole('heading', { name: 'Pair this browser' })).toBeInTheDocument()
+    expect(screen.getByText(/held only in memory and will be lost on reload/i)).toBeInTheDocument()
+    expect(screen.getByRole('checkbox', { name: /Request operator permission/i })).not.toBeChecked()
+    await waitFor(() => expect(calls.some((call) => call.includes('/api/v1/capabilities'))).toBe(true))
+    expect(calls.some((call) => call.includes('/api/v1/fleet/node-pools'))).toBe(false)
+    expect(calls.some((call) => call.includes('/api/operations/active'))).toBe(false)
+  })
+
+  it('revokes a paired authority session from the authenticated shell', async () => {
+    setMemoryAccessToken('paired-browser-token')
+    const { calls, fetchMock } = installFetch({
+      '/api/v1/capabilities': json({
+        protocolVersion: 1, serverVersion: 'authority-test', authority: 'fleet-only',
+        features: ['fleet-authority-only-v1', 'fleet-v1', 'fleet-inventory', 'durable-fleet-capacity-plans'],
+        environment: { id: 'staging', profile: 'development' },
+        auth: { scopes: ['api:read'], principal: { authenticated: true, subject: 'paired-browser', scopes: ['api:read'] } },
+        endpoints: { operationList: '/api/operations', activeOperations: '/api/operations/active' },
+      }),
+    })
+    renderApp('/fleet')
+
+    fireEvent.click(await screen.findByRole('button', { name: 'Sign out' }))
+    await waitFor(() => expect(calls).toContain('POST /api/v1/auth/revoke'))
+    const revoke = fetchMock.mock.calls.find(([url, init]) => String(url).includes('/api/v1/auth/revoke') && init?.method === 'POST')
+    expect(new Headers(revoke?.[1]?.headers).get('Authorization')).toBe('Bearer paired-browser-token')
+    await waitFor(() => expect(screen.queryByRole('button', { name: 'Sign out' })).not.toBeInTheDocument())
   })
 
   it('explains why fleet planning is unavailable for an invalid document', async () => {
