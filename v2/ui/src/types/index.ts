@@ -368,6 +368,7 @@ export interface FleetRunnerAttempt {
   rootAttemptId: string
   runnerAttemptId?: string
   sourceDispatchRunId: number
+  pilotRunId: string
   recovery?: boolean
   status: FleetRunnerAttemptStatus
   currentPhase: string

@@ -1909,7 +1909,7 @@ components:
     FleetRunnerAttempt:
       type: object
       additionalProperties: false
-      required: [schemaVersion, id, planId, attempt, rootAttemptId, sourceDispatchRunId, status, currentPhase, commitSha, planSha256, heartbeatSequence, heartbeatTimeoutSeconds, revision, startedAt, heartbeatAt, heartbeatExpiresAt, updatedAt]
+      required: [schemaVersion, id, planId, attempt, rootAttemptId, sourceDispatchRunId, pilotRunId, status, currentPhase, commitSha, planSha256, heartbeatSequence, heartbeatTimeoutSeconds, revision, startedAt, heartbeatAt, heartbeatExpiresAt, updatedAt]
       properties:
         schemaVersion: { const: norn.fleet-runner-attempt/v1 }
         id: { type: string, format: uuid }
@@ -1920,6 +1920,9 @@ components:
         # Pre-dispatch historical attempts are backfilled with 0 because no
         # source run existed when they were created. New starts require >0.
         sourceDispatchRunId: { type: integer, format: int64, minimum: 0, readOnly: true }
+        # Empty for ordinary lanes. Disposable attempts carry the exact current
+        # authority run and never become valid merely because staging matches.
+        pilotRunId: { type: string, pattern: '^(|[a-z0-9]{8,24})$', readOnly: true }
         recovery: { type: boolean, readOnly: true }
         status: { type: string, enum: [queued, running, succeeded, failed, canceled, abandoned] }
         currentPhase:
@@ -1954,7 +1957,7 @@ components:
     FleetRunnerAttemptStartRequest:
       type: object
       additionalProperties: false
-      required: [schemaVersion, runnerAttemptId, commitSha, planSha256, dispatchNonce, sourceDispatchRunId]
+      required: [schemaVersion, runnerAttemptId, commitSha, planSha256, dispatchNonce, sourceDispatchRunId, pilotRunId]
       properties:
         schemaVersion: { const: norn.fleet-runner-attempt/v1 }
         runnerAttemptId: { type: string, minLength: 1, maxLength: 200 }
@@ -1962,6 +1965,7 @@ components:
         planSha256: { type: string, pattern: '^[0-9a-f]{64}$' }
         dispatchNonce: { type: string, pattern: '^[0-9a-f]{64}$', writeOnly: true }
         sourceDispatchRunId: { type: integer, format: int64, minimum: 1 }
+        pilotRunId: { type: string, pattern: '^(|[a-z0-9]{8,24})$', description: Exact disposable pilot run, or the required empty string for an ordinary lane. }
         resume: { type: boolean, default: false }
         workflowUrl: { type: string, format: uri }
         heartbeatTimeoutSeconds: { type: integer, minimum: 30, maximum: 900, default: 120 }

@@ -110,7 +110,7 @@ function checkpoint(id: string, phase: string, status: string): Operation {
 
 function attempt(status: FleetRunnerAttempt['status'], currentPhase: string): FleetRunnerAttempt {
   return {
-    schemaVersion: 'norn.fleet-runner-attempt/v1', id: 'attempt-1', planId: 'plan-1', attempt: 1, rootAttemptId: 'attempt-1', sourceDispatchRunId: 91,
+    schemaVersion: 'norn.fleet-runner-attempt/v1', id: 'attempt-1', planId: 'plan-1', attempt: 1, rootAttemptId: 'attempt-1', sourceDispatchRunId: 91, pilotRunId: '',
     status, currentPhase, commitSha: 'a'.repeat(40), planSha256: 'b'.repeat(64), heartbeatSequence: 2,
     heartbeatTimeoutSeconds: 120, revision: 3, startedAt: '2026-08-26T00:00:00Z',
     heartbeatAt: '2026-08-26T00:01:00Z', heartbeatExpiresAt: '2026-08-26T00:03:00Z', updatedAt: '2026-08-26T00:01:00Z',

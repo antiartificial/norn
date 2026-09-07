@@ -54,7 +54,7 @@ function timing(remaining: { lowMs: number; highMs: number } = { lowMs: 600_000,
 
 function attempt(status: FleetRunnerAttempt['status'], value?: FleetRunnerTiming): FleetRunnerAttempt {
   return {
-    schemaVersion: 'norn.fleet-runner-attempt/v1', id: 'attempt-1', planId: 'plan-1', attempt: 1, rootAttemptId: 'attempt-1', sourceDispatchRunId: 91,
+    schemaVersion: 'norn.fleet-runner-attempt/v1', id: 'attempt-1', planId: 'plan-1', attempt: 1, rootAttemptId: 'attempt-1', sourceDispatchRunId: 91, pilotRunId: '',
     status, currentPhase: 'nodes_configured', commitSha: 'a'.repeat(40), planSha256: 'b'.repeat(64), heartbeatSequence: 2,
     heartbeatTimeoutSeconds: 120, revision: 3, startedAt: '2026-09-06T18:00:00Z', heartbeatAt: '2026-09-06T18:14:00Z', heartbeatExpiresAt: '2026-09-06T18:16:00Z', updatedAt: '2026-09-06T18:14:00Z', timing: value,
   }

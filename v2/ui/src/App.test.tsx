@@ -333,7 +333,7 @@ describe('App shell routing', () => {
         { id: 'checkpoint-infra', status: 'succeeded', payload: { phase: 'infrastructure_applied' } },
       ] }),
       '/api/v1/fleet/plans/plan-cold/attempts': json({ schemaVersion: 'norn.fleet-runner-attempt/v1', planId: 'plan-cold', count: 1, serverTime: '2026-09-06T18:14:00Z', attempts: [{
-        schemaVersion: 'norn.fleet-runner-attempt/v1', id: 'attempt-cold', planId: 'plan-cold', attempt: 1, rootAttemptId: 'attempt-cold', sourceDispatchRunId: 91,
+        schemaVersion: 'norn.fleet-runner-attempt/v1', id: 'attempt-cold', planId: 'plan-cold', attempt: 1, rootAttemptId: 'attempt-cold', sourceDispatchRunId: 91, pilotRunId: '',
         status: 'running', currentPhase: 'nodes_configured', commitSha: 'a'.repeat(40), planSha256: 'b'.repeat(64), heartbeatSequence: 2,
         heartbeatTimeoutSeconds: 120, revision: 3, startedAt: '2026-09-06T18:00:00Z', heartbeatAt: '2026-09-06T18:14:00Z', heartbeatExpiresAt: '2026-09-06T18:16:00Z', updatedAt: '2026-09-06T18:14:00Z',
         timing: {

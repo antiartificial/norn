@@ -100,6 +100,7 @@ func TestFleetRunnerAttemptReplayRequiresAllImmutableBindings(t *testing.T) {
 		"commit":            func(candidate *model.FleetRunnerAttempt) { candidate.CommitSHA = strings.Repeat("c", 40) },
 		"plan":              func(candidate *model.FleetRunnerAttempt) { candidate.PlanSHA256 = strings.Repeat("d", 64) },
 		"source dispatch":   func(candidate *model.FleetRunnerAttempt) { candidate.SourceDispatchRunID++ },
+		"pilot run":         func(candidate *model.FleetRunnerAttempt) { candidate.PilotRunID = "pilot20260907" },
 		"recovery":          func(candidate *model.FleetRunnerAttempt) { candidate.Recovery = true },
 		"workflow URL": func(candidate *model.FleetRunnerAttempt) {
 			candidate.WorkflowURL = "https://github.com/example/fleet/actions/runs/124"
@@ -199,6 +200,56 @@ func TestFleetRunnerStartRequiresExactDispatchAndOIDCProvenance(t *testing.T) {
 	binding.RunID = 93
 	if err := validateFleetRunnerDispatchBinding(cfg, AccessPrincipal{Scopes: []string{ScopeFleetOperate}, CI: &recoveryCI}, "plan-1", recovery, binding); err != nil {
 		t.Fatalf("bound recovery rejected: %v", err)
+	}
+}
+
+func TestDisposableFleetRunnerStartRequiresExactCurrentPilotRun(t *testing.T) {
+	nonce := strings.Repeat("c", 64)
+	commit := strings.Repeat("a", 40)
+	planSHA := strings.Repeat("b", 64)
+	pilotA, pilotB := "pilot20260907", "pilot20260908"
+	cfg := &config.Config{GitHubActionsFleetAllowedRepository: "acme/norn-fleet@101@202", FleetGitHubPilotRunID: pilotA}
+	ci := &CIIdentity{Provider: "github-actions", Repository: "acme/norn-fleet", RunID: "93", RunAttempt: "1", Environment: "staging", SHA: commit, RefProtected: true, Intent: "apply"}
+	principal := AccessPrincipal{Scopes: []string{ScopeFleetOperate}, CI: ci}
+	request := fleet.RunnerAttemptStartRequest{RunnerAttemptID: canonicalFleetRunnerAttemptID(ci), CommitSHA: commit, PlanSHA256: planSHA, DispatchNonce: nonce, SourceDispatchRunID: 93, PilotRunID: pilotA, WorkflowURL: canonicalFleetWorkflowURL(ci)}
+	binding := store.FleetGitHubDispatch{PlanID: "plan-1", PlanRunID: 91, PlanSHA256: planSHA, ApprovedHeadSHA: commit, PilotRunID: pilotA, FleetEnvironment: "disposable/fleet/nyc3", DispatchNonceSHA256: fleetDispatchNonceHash(nonce), RunID: 93}
+	if err := validateFleetRunnerDispatchBinding(cfg, principal, "plan-1", request, binding); err != nil {
+		t.Fatalf("exact disposable pilot binding rejected: %v", err)
+	}
+	for name, mutate := range map[string]func(*fleet.RunnerAttemptStartRequest, *store.FleetGitHubDispatch, *config.Config){
+		"request names new authority": func(r *fleet.RunnerAttemptStartRequest, _ *store.FleetGitHubDispatch, _ *config.Config) {
+			r.PilotRunID = pilotB
+		},
+		"dispatch names new authority": func(_ *fleet.RunnerAttemptStartRequest, b *store.FleetGitHubDispatch, _ *config.Config) {
+			b.PilotRunID = pilotB
+		},
+		"authority moved to B": func(_ *fleet.RunnerAttemptStartRequest, _ *store.FleetGitHubDispatch, c *config.Config) {
+			c.FleetGitHubPilotRunID = pilotB
+		},
+	} {
+		t.Run(name, func(t *testing.T) {
+			r, b, c := request, binding, *cfg
+			mutate(&r, &b, &c)
+			if err := validateFleetRunnerDispatchBinding(&c, principal, "plan-1", r, b); err == nil {
+				t.Fatal("stale or mismatched disposable pilot run was accepted")
+			}
+		})
+	}
+	ordinaryBinding := binding
+	ordinaryBinding.FleetEnvironment, ordinaryBinding.PilotRunID = "production/nyc3", ""
+	ordinaryRequest := request
+	ordinaryRequest.PilotRunID = ""
+	ordinaryCfg := *cfg
+	ordinaryCfg.FleetGitHubPilotRunID = ""
+	ordinaryCI := *ci
+	ordinaryCI.Environment = "production"
+	ordinaryRequest.RunnerAttemptID, ordinaryRequest.WorkflowURL = canonicalFleetRunnerAttemptID(&ordinaryCI), canonicalFleetWorkflowURL(&ordinaryCI)
+	if err := validateFleetRunnerDispatchBinding(&ordinaryCfg, AccessPrincipal{Scopes: []string{ScopeFleetOperate}, CI: &ordinaryCI}, "plan-1", ordinaryRequest, ordinaryBinding); err != nil {
+		t.Fatalf("ordinary all-empty pilot binding rejected: %v", err)
+	}
+	ordinaryRequest.PilotRunID = pilotA
+	if err := validateFleetRunnerDispatchBinding(&ordinaryCfg, AccessPrincipal{Scopes: []string{ScopeFleetOperate}, CI: &ordinaryCI}, "plan-1", ordinaryRequest, ordinaryBinding); err == nil {
+		t.Fatal("ordinary lane accepted a pilot run")
 	}
 }
 

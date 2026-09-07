@@ -219,6 +219,7 @@ func Migrate(db *DB) error {
 			attempt                   INT NOT NULL,
 			root_attempt_id           TEXT NOT NULL DEFAULT '',
 			source_dispatch_run_id    BIGINT NOT NULL DEFAULT 0,
+			pilot_run_id              TEXT NOT NULL DEFAULT '',
 			recovery                  BOOLEAN NOT NULL DEFAULT false,
 			runner_attempt_id         TEXT NOT NULL DEFAULT '',
 			status                    TEXT NOT NULL DEFAULT 'queued',
@@ -257,6 +258,7 @@ func Migrate(db *DB) error {
 			ON fleet_runner_attempts(status, heartbeat_at);
 		ALTER TABLE fleet_runner_attempts ADD COLUMN IF NOT EXISTS root_attempt_id TEXT NOT NULL DEFAULT '';
 		ALTER TABLE fleet_runner_attempts ADD COLUMN IF NOT EXISTS source_dispatch_run_id BIGINT NOT NULL DEFAULT 0;
+		ALTER TABLE fleet_runner_attempts ADD COLUMN IF NOT EXISTS pilot_run_id TEXT NOT NULL DEFAULT '';
 		ALTER TABLE fleet_runner_attempts ADD COLUMN IF NOT EXISTS recovery BOOLEAN NOT NULL DEFAULT false;
 		ALTER TABLE fleet_runner_attempts ADD COLUMN IF NOT EXISTS phase_started_at TIMESTAMPTZ;
 		-- Legacy records predate phase timing. Their original attempt start is the

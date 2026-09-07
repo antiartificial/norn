@@ -5,6 +5,7 @@ import (
 
 	"norn/v2/api/config"
 	"norn/v2/api/fleet"
+	"norn/v2/api/store"
 )
 
 func TestFleetAuthorityOnlyPinsGitHubAppAPI(t *testing.T) {
@@ -33,5 +34,15 @@ func TestRunBoundDisposableFleetEnvironmentIsNotStagingAlias(t *testing.T) {
 	cfg.FleetGitHubConfigPath = "environments/staging/nyc3/cluster.yaml"
 	if _, err := configuredFleetEnvironment(document, cfg); err == nil {
 		t.Fatal("disposable root accepted an ordinary staging config path")
+	}
+}
+
+func TestCompletedDispatchReceiptCannotCrossDisposablePilotAuthority(t *testing.T) {
+	binding := store.FleetGitHubDispatch{FleetEnvironment: "disposable/fleet/nyc3", PilotRunID: "pilot20260907", AllowDestructive: false}
+	if !fleetGitHubDispatchMatchesCurrentLane(binding, "disposable/fleet/nyc3", "pilot20260907", false) {
+		t.Fatal("current disposable receipt was not replay-compatible")
+	}
+	if fleetGitHubDispatchMatchesCurrentLane(binding, "disposable/fleet/nyc3", "pilot20260908", false) {
+		t.Fatal("completed receipt from old pilot authority was replay-compatible")
 	}
 }
