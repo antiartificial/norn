@@ -7,7 +7,7 @@
   "jobModifyIndex": 44,
   "jobVersion": 0,
   "currentSpec": {"TaskGroups":[{"Name":"web","Count":2}],"ID":"hello-norn-mysql","Namespace":"norn-pilot","Status":"running","StatusDescription":"ok","Stable":true,"ModifyIndex":44,"CreateIndex":41,"Version":0,"JobModifyIndex":44,"SubmitTime":1720000000000},
-  "submission": {"Variables":"{}","Source":"job \"hello-norn-mysql\" {}","Format":"hcl2","Job":{"Version":0,"ModifyIndex":44,"CreateIndex":41,"Namespace":"norn-pilot","ID":"hello-norn-mysql"}},
+  "submission": {"Variables":"{}","Source":"job \"hello-norn-mysql\" {}","VariableFlags":{},"Format":"hcl2","JobModifyIndex":44,"Version":0,"Namespace":"norn-pilot","JobID":"hello-norn-mysql"},
   "currentSpecSha256": "ad5959a38d7e374073465c55583336e0c96b5855ca057a8a3770d660c8278353",
-  "submissionSha256": "30bad8e5f91f579767d22294532101691c37c855412ee91ab621eb2a095c819b"
+  "submissionSha256": "0905cb824c2f564753477757f63590f5600b6525e7552a7437f1f6f0118d5154"
 }

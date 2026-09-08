@@ -553,8 +553,9 @@ paths:
             Cache-Control: { $ref: '#/components/headers/NoStoreCacheControl' }
             Pragma: { $ref: '#/components/headers/NoCachePragma' }
           content: { application/json: { schema: { $ref: '#/components/schemas/ExternalFleetAdmissionContext' } } }
+        '400': { $ref: '#/components/responses/Problem' }
         '403': { $ref: '#/components/responses/Problem' }
-        '404': { $ref: '#/components/responses/Problem' }
+        '409': { $ref: '#/components/responses/Problem' }
         '503': { $ref: '#/components/responses/Problem' }
   /api/v1/apps/{id}/private-attestations:
     parameters:
@@ -2591,11 +2592,12 @@ components:
     ExternalFleetAdmissionReplayResponse:
       type: object
       additionalProperties: false
-      required: [schemaVersion, admissionId, state, operationId]
+      required: [schemaVersion, admissionId, state, nonceGeneration, operationId]
       properties:
         schemaVersion: { const: norn.external-fleet-admission/v4 }
         admissionId: { type: string, format: uuid, readOnly: true }
         state: { type: string, enum: [committed, cleanup_pending, complete], readOnly: true }
+        nonceGeneration: { type: integer, format: int64, minimum: 1, readOnly: true }
         operationId: { type: string, format: uuid, readOnly: true }
         cleanupState: { type: string, enum: [pending, complete], readOnly: true }
     ExternalFleetAdmissionResumeRequest:
@@ -2687,7 +2689,7 @@ components:
         submission:
           type: object
           additionalProperties: true
-          description: Exact versioned Nomad JobSubmission JSON. Norn requires Job identity/index/version plus Source and Variables, then hashes the complete sorted compact UTF-8 JSON under norn.nomad-v4-canonical-json/v1.
+          description: Exact versioned Nomad JobSubmission JSON. Norn requires root JobID, Namespace, Version, JobModifyIndex (or JobIndex), Source, Variables, VariableFlags, and Format, then hashes the complete sorted compact UTF-8 JSON under norn.nomad-v4-canonical-json/v1.
         submissionSha256: { type: string, pattern: '^[0-9a-f]{64}$' }
         evaluationChainIds:
           type: array

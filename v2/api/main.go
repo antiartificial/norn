@@ -490,7 +490,9 @@ func main() {
 		r.With(handler.ValidateAppID).Post("/v1/apps/{id}/external-deployments/cleanup", h.CompleteExternalFleetDeploymentCleanup)
 		r.With(handler.ValidateAppID).Post("/v1/apps/{id}/external-deployments/reconcile", h.ReconcileExternalFleetDeploymentAdmission)
 		r.With(handler.ValidateAppID).Get("/v1/apps/{id}/external-deployments/context/{admissionId}", h.GetExternalFleetDeploymentAdmissionContext)
-		r.With(handler.ValidateAppID).Post("/v1/apps/{id}/external-deployments", h.AdmitExternalFleetDeployment)
+		// Deprecated compatibility alias: it delegates to the same v4-only
+		// handler and is intentionally absent from the public OpenAPI contract.
+		r.With(handler.ValidateAppID).Post("/v1/apps/{id}/external-deployments", h.AdmitExternalFleetDeploymentV4)
 		r.With(handler.ValidateAppID).Post("/v1/apps/{id}/releases/rollbacks", h.QueueReleaseRollback)
 		r.With(handler.ValidateAppID).Get("/v1/apps/{id}/qualifications", h.ListReleaseQualifications)
 		r.With(handler.ValidateAppID).Post("/v1/apps/{id}/qualifications", h.CreateReleaseQualification)

@@ -261,6 +261,28 @@ func (db *DB) GetExternalDeploymentAdmission(ctx context.Context, admissionID, a
 	return admission, err
 }
 
+// FindExternalDeploymentAdmissionByIdempotency returns only an admission whose
+// full authenticated stable identity matches. It lets terminal begin/resume
+// replays survive a later configuration rotation without creating a new row or
+// trusting current configuration as authority for an already committed result.
+func (db *DB) FindExternalDeploymentAdmissionByIdempotency(ctx context.Context, idempotencyKey, requestDigest, app, environment, ciRepository string) (*ExternalDeploymentAdmissionLifecycle, error) {
+	if db == nil || db.Pool == nil || idempotencyKey == "" || requestDigest == "" || app == "" || environment == "" || ciRepository == "" {
+		return nil, ErrExternalDeploymentAdmissionUnavailable
+	}
+	admission, err := scanExternalDeploymentAdmission(db.Pool.QueryRow(ctx, `SELECT id, idempotency_key, request_digest, app, environment, ci_repository, state, COALESCE(nonce_id,''), nonce_generation, registration_ref, COALESCE(operation_id,''), failure_code
+		FROM external_deployment_admissions WHERE idempotency_key=$1`, idempotencyKey))
+	if errors.Is(err, pgx.ErrNoRows) {
+		return nil, ErrExternalDeploymentAdmissionUnavailable
+	}
+	if err != nil {
+		return nil, err
+	}
+	if admission.RequestDigest != requestDigest || admission.App != app || admission.Environment != environment || admission.CIRepository != ciRepository {
+		return nil, ErrExternalDeploymentIdempotencyConflict
+	}
+	return admission, nil
+}
+
 // GetExternalDeploymentNonceRegistration returns durable registration state
 // so remote register/claim/cleanup calls can be retried from an exact local
 // generation and reference. It is deliberately scoped by admission ID.

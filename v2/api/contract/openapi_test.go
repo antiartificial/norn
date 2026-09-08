@@ -106,7 +106,7 @@ func TestControlOpenAPIParsesAndLocalRefsResolve(t *testing.T) {
 		t.Error("ExternalFleetAdmissionNonceResponse.nonce must be explicitly sensitive")
 	}
 	replayResponse := schemas["ExternalFleetAdmissionReplayResponse"].(map[string]interface{})
-	for _, field := range []string{"admissionId", "state", "operationId"} {
+	for _, field := range []string{"admissionId", "state", "nonceGeneration", "operationId"} {
 		if !containsRequiredField(replayResponse["required"].([]interface{}), field) {
 			t.Errorf("ExternalFleetAdmissionReplayResponse must require %s", field)
 		}
@@ -243,6 +243,10 @@ func assertV4ExternalAdmissionPaths(t *testing.T, paths map[string]interface{}) 
 	created := admitResponses["201"].(map[string]interface{})
 	if _, ok := created["headers"].(map[string]interface{})["Location"]; !ok {
 		t.Error("v4 admission creation must document its operation Location header")
+	}
+	contextResponses := paths["/api/v1/apps/{id}/external-deployments/context/{admissionId}"].(map[string]interface{})["get"].(map[string]interface{})["responses"].(map[string]interface{})
+	if contextResponses["400"] == nil || contextResponses["409"] == nil || contextResponses["404"] != nil {
+		t.Error("external admission context must document runtime 400/409 responses, not 404")
 	}
 	for _, path := range []string{
 		"/api/v1/apps/{id}/external-deployments/begin",

@@ -58,6 +58,64 @@ func (fn externalFleetRoundTripperFunc) RoundTrip(request *http.Request) (*http.
 	return fn(request)
 }
 
+// externalLostRegistrationVerifier records a service-side registration then
+// simulates the response being lost. Begin must recover only through status,
+// persist the exact returned revision, and disclose the nonce afterward.
+type externalLostRegistrationVerifier struct {
+	registration  ExternalFleetEvidenceRegistration
+	registerCalls int
+	statusCalls   int
+	claim         ExternalFleetEvidenceClaim
+	commit        ExternalFleetEvidenceClaim
+	snapshot      *ExternalFleetEvidenceSnapshot
+	verification  *ExternalFleetDeploymentVerification
+	claimSawReady bool
+	db            *store.DB
+	nonceID       string
+}
+
+func (f *externalLostRegistrationVerifier) VerifyExternalFleetDeployment(context.Context, ExternalFleetDeploymentVerificationRequest) (*ExternalFleetDeploymentVerification, error) {
+	if f.verification == nil {
+		return nil, errors.New("not used by registration recovery test")
+	}
+	copy := *f.verification
+	return &copy, nil
+}
+
+func (f *externalLostRegistrationVerifier) RegisterExternalFleetNonce(_ context.Context, registration ExternalFleetEvidenceRegistration) (*ExternalFleetEvidenceAdmissionStatus, error) {
+	f.registerCalls++
+	f.registration = registration
+	return nil, errors.New("simulated lost registration response")
+}
+
+func (f *externalLostRegistrationVerifier) ClaimExternalFleetNonce(ctx context.Context, claim ExternalFleetEvidenceClaim) (*ExternalFleetEvidenceAdmissionStatus, error) {
+	f.claim = claim
+	if f.db != nil && f.nonceID != "" {
+		registration, err := f.db.GetExternalDeploymentNonceRegistration(ctx, claim.AdmissionID, f.nonceID)
+		f.claimSawReady = err == nil && registration.State == "ready"
+	}
+	return nil, errors.New("simulated lost claim response")
+}
+
+func (f *externalLostRegistrationVerifier) CommitExternalFleetNonce(_ context.Context, claim ExternalFleetEvidenceClaim) (*ExternalFleetEvidenceAdmissionStatus, error) {
+	f.commit = claim
+	return nil, errors.New("simulated lost commit response")
+}
+
+func (f *externalLostRegistrationVerifier) GetExternalFleetAdmissionStatus(context.Context, string, int64) (*ExternalFleetEvidenceAdmissionStatus, error) {
+	f.statusCalls++
+	if f.commit.AdmissionID != "" {
+		claim := f.commit
+		return &ExternalFleetEvidenceAdmissionStatus{SchemaVersion: "norn.external-fleet-admission-status/v4", AdmissionID: claim.AdmissionID, LogicalDigest: claim.LogicalDigest, AdmissionContextDigest: claim.AdmissionContextDigest, NonceSHA256: claim.NonceSHA256, Generation: claim.Generation, State: "committed", Revision: claim.ExpectedRevision + 1, ReceiptDigest: claim.ReceiptDigest, ProofDigest: claim.ProofDigest, OperationID: claim.OperationID, OperationDigest: claim.OperationDigest, CleanupIntentDigest: claim.CleanupIntentDigest, Snapshot: f.snapshot}, nil
+	}
+	if f.claim.AdmissionID != "" {
+		claim := f.claim
+		return &ExternalFleetEvidenceAdmissionStatus{SchemaVersion: "norn.external-fleet-admission-status/v4", AdmissionID: claim.AdmissionID, LogicalDigest: claim.LogicalDigest, AdmissionContextDigest: claim.AdmissionContextDigest, NonceSHA256: claim.NonceSHA256, Generation: claim.Generation, State: "claimed", Revision: claim.ExpectedRevision + 1, ReceiptDigest: claim.ReceiptDigest, ProofDigest: claim.ProofDigest, Snapshot: f.snapshot}, nil
+	}
+	r := f.registration
+	return &ExternalFleetEvidenceAdmissionStatus{SchemaVersion: "norn.external-fleet-admission-status/v4", AdmissionID: r.AdmissionID, LogicalDigest: r.LogicalDigest, AdmissionContextDigest: r.AdmissionContextDigest, NonceSHA256: r.NonceSHA256, Generation: r.Generation, State: "registered", Revision: r.ExpectedRevision + 1}, nil
+}
+
 func externalReceiptForTest() ExternalFleetDeploymentReceipt {
 	now := time.Now().UTC().Truncate(time.Second).Add(-4 * time.Second)
 	candidate := testReleaseCandidate()
@@ -87,8 +145,8 @@ func completeExternalNomadProofForTest(t *testing.T, proof *ExternalFleetNomadJo
 	t.Helper()
 	proof.CurrentSpec = json.RawMessage(fmt.Sprintf(`{"ID":%q,"Namespace":%q,"CreateIndex":%d,"ModifyIndex":%d,"Version":%d,"Status":"running","StatusDescription":"ok","Stable":true,"JobModifyIndex":%d,"SubmitTime":123,"TaskGroups":[{"Name":"web"}]}`,
 		proof.JobID, namespace, proof.JobCreateIndex, proof.JobModifyIndex, proof.JobVersion, proof.JobModifyIndex))
-	proof.Submission = json.RawMessage(fmt.Sprintf(`{"Format":"hcl2","Job":{"ID":%q,"Namespace":%q,"CreateIndex":%d,"ModifyIndex":%d,"Version":%d},"Source":%q,"Variables":"{}"}`,
-		proof.JobID, namespace, proof.JobCreateIndex, proof.JobModifyIndex, proof.JobVersion, proof.JobID))
+	proof.Submission = json.RawMessage(fmt.Sprintf(`{"JobID":%q,"Namespace":%q,"Version":%d,"JobModifyIndex":%d,"Source":%q,"Variables":"{}","VariableFlags":{},"Format":"hcl2"}`,
+		proof.JobID, namespace, proof.JobVersion, proof.JobModifyIndex, proof.JobID))
 	current, err := externalNomadCurrentSpecCanonicalJSON(proof.CurrentSpec, proof.JobID, namespace, proof.JobCreateIndex, proof.JobModifyIndex, proof.JobVersion)
 	if err != nil {
 		t.Fatal(err)
@@ -842,7 +900,7 @@ func TestExternalAdmissionNonceFormatRejectsForgedValues(t *testing.T) {
 	}
 }
 
-func TestExternalAdmissionDoesNotIssueNonceWithoutLiveVerifier(t *testing.T) {
+func TestExternalAdmissionRejectsLegacyNonceIssuance(t *testing.T) {
 	h := &Handler{db: &store.DB{}, cfg: &config.Config{Environment: "staging", ExternalFleetAdmissionApp: "hello-norn-mysql", ExternalFleetAdmissionNamespace: "norn-pilot", ExternalFleetAdmissionMigrationJobID: "hello-norn-mysql-migrate", ExternalFleetAdmissionMigrationHCLSHA256: strings.Repeat("c", 64), ExternalFleetAdmissionRuntimeJobID: "hello-norn-mysql", ExternalFleetAdmissionRuntimeHCLSHA256: strings.Repeat("e", 64), ExternalFleetAdmissionBootstrapSignerRef: "acme/hello-norn-mysql/.github/workflows/hello-norn-mysql-bootstrap-image.yml@" + strings.Repeat("f", 40)}}
 	principal := AccessPrincipal{Scopes: []string{ScopeFleetExternalAdmission}, App: "hello-norn-mysql", Environment: "staging", CI: &CIIdentity{Repository: "acme/norn-fleet", RunID: "123", RunAttempt: "1", Environment: "staging", RefProtected: true, Intent: "apply"}}
 	request := httptest.NewRequest(http.MethodPost, "/api/v1/apps/hello-norn-mysql/external-deployments", strings.NewReader(`{"action":"issue-nonce"}`))
@@ -851,8 +909,8 @@ func TestExternalAdmissionDoesNotIssueNonceWithoutLiveVerifier(t *testing.T) {
 	request = request.WithContext(context.WithValue(request.Context(), chi.RouteCtxKey, route))
 	recorder := httptest.NewRecorder()
 	h.AdmitExternalFleetDeployment(recorder, WithAccessPrincipal(request, &principal))
-	if recorder.Code != http.StatusServiceUnavailable || !strings.Contains(recorder.Body.String(), "external_deployment_verifier_unavailable") {
-		t.Fatalf("nil verifier nonce issuance status=%d body=%s", recorder.Code, recorder.Body.String())
+	if recorder.Code != http.StatusBadRequest || !strings.Contains(recorder.Body.String(), "invalid_external_deployment_request") {
+		t.Fatalf("legacy nonce issuance status=%d body=%s", recorder.Code, recorder.Body.String())
 	}
 }
 
@@ -894,6 +952,176 @@ func TestExternalAdmissionV4HandlersEnforceTheirBoundaryBeforePersistence(t *tes
 	if cleanup.Code != http.StatusBadRequest || !strings.Contains(cleanup.Body.String(), "invalid_idempotency_key") {
 		t.Fatalf("cleanup accepted a missing Idempotency-Key: %d %s", cleanup.Code, cleanup.Body.String())
 	}
+}
+
+func TestExternalTerminalReplaysSurviveConfigurationRemoval(t *testing.T) {
+	databaseURL := os.Getenv("NORN_TEST_DATABASE_URL")
+	if databaseURL == "" {
+		t.Skip("NORN_TEST_DATABASE_URL is not set")
+	}
+	db, err := store.Connect(databaseURL)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(db.Close)
+	if err := store.Migrate(db); err != nil {
+		t.Fatal(err)
+	}
+	appID, repository, environment := "hello-norn-mysql", "acme/norn-fleet", "staging"
+	principal := &AccessPrincipal{Subject: "github-actions:acme/norn-fleet:123", Scopes: []string{ScopeFleetExternalAdmission}, App: appID, Environment: environment, CI: &CIIdentity{Repository: repository, RunID: "123", RunAttempt: "1", Environment: environment, RefProtected: true, Intent: "apply"}}
+	identity := ExternalFleetLogicalIdentity{SchemaVersion: externalFleetLogicalIdentitySchemaV4, SourceSHA: strings.Repeat("a", 40), Artifact: "ghcr.io/acme/hello-norn-mysql@sha256:" + strings.Repeat("b", 64), Candidate: testReleaseCandidate(), Fleet: ExternalFleetLogicalExecutionIdentity{Namespace: "norn-pilot", PlanID: "plan-1", PlanSHA256: strings.Repeat("d", 64), RootAttemptID: "attempt-root", FleetCommit: strings.Repeat("f", 40)}}
+	identity.Candidate.Repository, identity.Candidate.Attestation.MaterialSHA = "acme/hello-norn-mysql", identity.SourceSHA
+	admissionID, operationID := uuid.NewString(), uuid.NewString()
+	keyHeader := "terminal-replay-" + uuid.NewString()
+	makeRequest := func(body string) *http.Request {
+		req := httptest.NewRequest(http.MethodPost, "/api/v1/apps/"+appID+"/external-deployments", strings.NewReader(body))
+		req.Header.Set("Idempotency-Key", keyHeader)
+		route := chi.NewRouteContext()
+		route.URLParams.Add("id", appID)
+		return WithAccessPrincipal(req.WithContext(context.WithValue(req.Context(), chi.RouteCtxKey, route)), principal)
+	}
+	probe := httptest.NewRecorder()
+	_, digest, ok := externalFleetAdmissionIdentityIdempotency(probe, makeRequest(""), *principal, appID, identity)
+	if !ok {
+		t.Fatal("could not build stable terminal replay identity")
+	}
+	keySum := sha256.Sum256([]byte("external-fleet-admission\x00" + repository + "\x00" + environment + "\x00" + appID + "\x00" + keyHeader))
+	key := "app.deploy:" + hex.EncodeToString(keySum[:])
+	if _, err := db.BeginExternalDeploymentAdmission(context.Background(), admissionID, key, digest, appID, environment, repository); err != nil {
+		t.Fatal(err)
+	}
+	now := time.Now().UTC()
+	op := &model.Operation{ID: operationID, Kind: "app.deploy", App: appID, SagaID: "external-fleet:test", Ref: identity.SourceSHA, Status: model.OperationSucceeded, Risk: "test", Source: "test", Message: "terminal", Payload: map[string]interface{}{"app": appID}, Metadata: map[string]interface{}{}, StartedAt: now, FinishedAt: &now, MaxAttempts: 1}
+	if err := db.InsertCompletedOperation(context.Background(), op); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := db.Pool.Exec(context.Background(), `UPDATE external_deployment_admissions SET state='complete', operation_id=$2, nonce_generation=7 WHERE id=$1`, admissionID, operationID); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() {
+		_, _ = db.Pool.Exec(context.Background(), `DELETE FROM external_deployment_admissions WHERE id=$1`, admissionID)
+		_, _ = db.Pool.Exec(context.Background(), `DELETE FROM operations WHERE id=$1`, operationID)
+	})
+	// Configuration and verifier are deliberately gone. Existing terminal work
+	// remains a server-owned result, so it must replay without either.
+	h := &Handler{db: db, cfg: &config.Config{Environment: environment}}
+	beginBody, _ := json.Marshal(externalFleetAdmissionBeginRequest{LogicalIdentity: identity})
+	begin := httptest.NewRecorder()
+	h.BeginExternalFleetDeploymentAdmission(begin, makeRequest(string(beginBody)))
+	if begin.Code != http.StatusOK || !strings.Contains(begin.Body.String(), operationID) || !strings.Contains(begin.Body.String(), `"nonceGeneration":7`) {
+		t.Fatalf("terminal begin replay after config removal = %d %s", begin.Code, begin.Body.String())
+	}
+	resumeBody, _ := json.Marshal(externalFleetAdmissionResumeRequest{AdmissionID: admissionID, LogicalIdentity: identity})
+	resume := httptest.NewRecorder()
+	h.ResumeExternalFleetDeploymentAdmission(resume, makeRequest(string(resumeBody)))
+	if resume.Code != http.StatusOK || !strings.Contains(resume.Body.String(), operationID) || !strings.Contains(resume.Body.String(), `"nonceGeneration":7`) {
+		t.Fatalf("terminal resume replay after config removal = %d %s", resume.Code, resume.Body.String())
+	}
+	admit := httptest.NewRecorder()
+	h.AdmitExternalFleetDeploymentV4(admit, makeRequest(`{"admissionId":"`+admissionID+`"}`))
+	if admit.Code != http.StatusOK || !strings.Contains(admit.Body.String(), operationID) {
+		t.Fatalf("receipt-free terminal admit replay without verifier = %d %s", admit.Code, admit.Body.String())
+	}
+}
+
+func TestExternalBeginRecoversLostRegistrationResponseBeforeNonceDisclosure(t *testing.T) {
+	databaseURL := os.Getenv("NORN_TEST_DATABASE_URL")
+	if databaseURL == "" {
+		t.Skip("NORN_TEST_DATABASE_URL is not set")
+	}
+	db, err := store.Connect(databaseURL)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(db.Close)
+	if err := store.Migrate(db); err != nil {
+		t.Fatal(err)
+	}
+	appsDir := t.TempDir()
+	appDir := filepath.Join(appsDir, "hello-norn-mysql")
+	if err := os.Mkdir(appDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	specBytes, err := os.ReadFile(filepath.Join("..", "..", "infra", "fleet-pilot", "hello-norn-mysql", "infraspec.yaml"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	artifact := "ghcr.io/owner/repo@sha256:" + strings.Repeat("b", 64)
+	spec := strings.ReplaceAll(string(specBytes), "https://example.invalid/norn/hello-norn-mysql.git", "https://github.com/owner/repo.git")
+	spec = strings.ReplaceAll(spec, "registry.invalid/norn/hello-norn-mysql@sha256:"+strings.Repeat("0", 64), artifact)
+	if err := os.WriteFile(filepath.Join(appDir, "infraspec.yaml"), []byte(spec), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	bootstrapSHA := strings.Repeat("f", 40)
+	configured := ExternalFleetAdmissionConfig{App: "hello-norn-mysql", Namespace: "norn-pilot", MigrationJobID: "hello-norn-mysql-migrate", MigrationHCLSHA256: strings.Repeat("c", 64), RuntimeJobID: "hello-norn-mysql", RuntimeHCLSHA256: strings.Repeat("e", 64), BootstrapSignerRef: "owner/repo/.github/workflows/hello-norn-mysql-bootstrap-image.yml@" + bootstrapSHA}
+	identity := ExternalFleetLogicalIdentity{SchemaVersion: externalFleetLogicalIdentitySchemaV4, SourceSHA: strings.Repeat("a", 40), Artifact: artifact, Candidate: testReleaseCandidate(), Fleet: ExternalFleetLogicalExecutionIdentity{Namespace: configured.Namespace, PlanID: "plan-1", PlanSHA256: strings.Repeat("d", 64), RootAttemptID: "attempt-root", FleetCommit: strings.Repeat("f", 40)}}
+	identity.Candidate.Repository = "owner/repo"
+	identity.Candidate.SignerWorkflowRef, identity.Candidate.SignerWorkflowSHA = configured.BootstrapSignerRef, bootstrapSHA
+	identity.Candidate.Attestation.MaterialSHA, identity.Candidate.Attestation.SubjectDigest = identity.SourceSHA, "sha256:"+strings.Repeat("b", 64)
+	principal := &AccessPrincipal{Subject: "github-actions:owner/repo:123", Scopes: []string{ScopeFleetExternalAdmission}, App: configured.App, Environment: "staging", CI: &CIIdentity{Repository: "owner/repo", RunID: "123", RunAttempt: "1", Environment: "staging", RefProtected: true, Intent: "apply"}}
+	fake := &externalLostRegistrationVerifier{}
+	h := &Handler{db: db, cfg: &config.Config{Environment: "staging", AppsDir: appsDir, ExternalFleetAdmissionApp: configured.App, ExternalFleetAdmissionNamespace: configured.Namespace, ExternalFleetAdmissionMigrationJobID: configured.MigrationJobID, ExternalFleetAdmissionMigrationHCLSHA256: configured.MigrationHCLSHA256, ExternalFleetAdmissionRuntimeJobID: configured.RuntimeJobID, ExternalFleetAdmissionRuntimeHCLSHA256: configured.RuntimeHCLSHA256, ExternalFleetAdmissionBootstrapSignerRef: configured.BootstrapSignerRef}, externalFleetDeploymentVerifier: fake}
+	body, _ := json.Marshal(externalFleetAdmissionBeginRequest{LogicalIdentity: identity})
+	request := httptest.NewRequest(http.MethodPost, "/api/v1/apps/hello-norn-mysql/external-deployments/begin", bytes.NewReader(body))
+	request.Header.Set("Idempotency-Key", "lost-registration-"+uuid.NewString())
+	route := chi.NewRouteContext()
+	route.URLParams.Add("id", configured.App)
+	request = WithAccessPrincipal(request.WithContext(context.WithValue(request.Context(), chi.RouteCtxKey, route)), principal)
+	response := httptest.NewRecorder()
+	h.BeginExternalFleetDeploymentAdmission(response, request)
+	if response.Code != http.StatusCreated || fake.registerCalls != 1 || fake.statusCalls != 1 || !strings.Contains(response.Body.String(), `"nonce":"`) {
+		t.Fatalf("lost registration recovery = status %d register=%d status=%d body=%s", response.Code, fake.registerCalls, fake.statusCalls, response.Body.String())
+	}
+	var decoded externalFleetAdmissionResponse
+	if err := json.Unmarshal(response.Body.Bytes(), &decoded); err != nil {
+		t.Fatal(err)
+	}
+	registration, err := db.GetExternalDeploymentNonceRegistration(context.Background(), decoded.AdmissionID, decoded.Nonce[:36])
+	if err != nil || registration.State != "ready" || registration.ServiceRevision != 1 || registration.NonceSHA256 != fake.registration.NonceSHA256 {
+		t.Fatalf("lost registration was not durably reconciled before disclosure: %+v %v", registration, err)
+	}
+	// Claim and commit also lose their responses. The fake service exposes the
+	// immutable status only after accepting the request; the handler must first
+	// persist that snapshot, then claim locally, and finally reconcile the
+	// exact remote commit into cleanup_pending.
+	fake.db, fake.nonceID = db, registration.NonceID
+	receipt := externalReceiptForTest()
+	receipt.SchemaVersion, receipt.AdmissionID, receipt.Nonce, receipt.App = externalFleetReceiptSchemaV4, decoded.AdmissionID, decoded.Nonce, configured.App
+	receipt.SourceSHA, receipt.Artifact, receipt.Candidate = identity.SourceSHA, identity.Artifact, identity.Candidate
+	receipt.Fleet.FleetCommit = identity.Fleet.FleetCommit
+	for index, proof := range []*ExternalFleetNomadJobProof{&receipt.Fleet.Migration, &receipt.Fleet.Runtime} {
+		proof.EvalCreateIndex, proof.EvalJobModifyIndex, proof.JobCreateIndex, proof.JobVersion = uint64(index+1), proof.JobModifyIndex, uint64(index+3), 0
+		completeExternalNomadProofForTest(t, proof, receipt.Fleet.Namespace)
+		proof.EvaluationChainIDs = []string{proof.EvalID}
+	}
+	verification := verifiedExternalReceipt(receipt)
+	verification.FleetCommit = receipt.Fleet.FleetCommit
+	verification.Regions = []ExternalFleetRegionProof{{Region: "nyc3", NomadRegion: "global", EvalID: receipt.Fleet.Runtime.EvalID, DesiredWeight: 100, ActiveWeight: 100}}
+	fake.verification = &verification
+	fake.snapshot = &ExternalFleetEvidenceSnapshot{ID: "snapshot-" + uuid.NewString(), Ref: "evidence://snapshot/" + decoded.AdmissionID, LiveCheckedAt: time.Now().UTC(), NonceWrittenAt: time.Now().UTC(), NonceReadAt: time.Now().UTC(), Verification: verification, RetryLineage: []string{"attempt-root", "attempt-1"}, CheckpointRefs: []ExternalFleetCheckpointRef{{Phase: "external_admission", CheckpointID: "checkpoint-" + uuid.NewString(), AttemptID: "attempt-1", EvidenceRef: "evidence://checkpoint/" + decoded.AdmissionID, EvidenceSHA256: strings.Repeat("9", 64)}}, Allocations: []externalFleetAllocationEvidence{{AllocationID: "alloc-a", JobID: receipt.Fleet.Runtime.JobID, EvalID: receipt.Fleet.Runtime.EvalID, Namespace: receipt.Fleet.Namespace, NodeID: "ingress-a", Region: "nyc3", NomadStatus: "running", ConsulStatus: "passing"}, {AllocationID: "alloc-b", JobID: receipt.Fleet.Runtime.JobID, EvalID: receipt.Fleet.Runtime.EvalID, Namespace: receipt.Fleet.Namespace, NodeID: "ingress-b", Region: "nyc3", NomadStatus: "running", ConsulStatus: "passing"}}}
+	var digestErr error
+	fake.snapshot.SHA256, digestErr = externalFleetSnapshotDigest(fake.snapshot)
+	if digestErr != nil {
+		t.Fatal(digestErr)
+	}
+	receiptBody, _ := json.Marshal(externalDeploymentRequest{Receipt: &receipt})
+	admitRequest := httptest.NewRequest(http.MethodPost, "/api/v1/apps/hello-norn-mysql/external-deployments/admit", bytes.NewReader(receiptBody))
+	admitRequest.Header.Set("Idempotency-Key", request.Header.Get("Idempotency-Key"))
+	admitRoute := chi.NewRouteContext()
+	admitRoute.URLParams.Add("id", configured.App)
+	admitRequest = WithAccessPrincipal(admitRequest.WithContext(context.WithValue(admitRequest.Context(), chi.RouteCtxKey, admitRoute)), principal)
+	admit := httptest.NewRecorder()
+	h.AdmitExternalFleetDeploymentV4(admit, admitRequest)
+	if admit.Code != http.StatusCreated || !fake.claimSawReady || fake.claim.AdmissionID != decoded.AdmissionID || fake.commit.AdmissionID != decoded.AdmissionID {
+		t.Fatalf("lost claim/commit reconciliation = status %d claimReady=%v claim=%+v commit=%+v body=%s", admit.Code, fake.claimSawReady, fake.claim, fake.commit, admit.Body.String())
+	}
+	var state string
+	if err := db.Pool.QueryRow(context.Background(), `SELECT state FROM external_deployment_admissions WHERE id=$1`, decoded.AdmissionID).Scan(&state); err != nil || state != "cleanup_pending" {
+		t.Fatalf("remote commit recovery did not persist cleanup_pending: state=%q err=%v", state, err)
+	}
+	t.Cleanup(func() {
+		_, _ = db.Pool.Exec(context.Background(), `DELETE FROM external_deployment_admissions WHERE id=$1`, decoded.AdmissionID)
+	})
 }
 
 func TestExternalAdmissionProofNeverRetainsOrReturnsRawNonce(t *testing.T) {
@@ -1003,6 +1231,14 @@ func TestExternalNomadV4CanonicalFixtureAndAdversarialBindings(t *testing.T) {
 	}
 	if got := externalSHA256(submission); got != fixture.SubmissionSHA256 {
 		t.Fatalf("submission canonical digest = %s", got)
+	}
+	legacySubmissionIndex := bytes.Replace(append([]byte(nil), fixture.Submission...), []byte(`"JobModifyIndex"`), []byte(`"JobIndex"`), 1)
+	if _, err := externalNomadSubmissionCanonicalJSON(legacySubmissionIndex, fixture.JobID, fixture.Namespace, fixture.JobVersion, fixture.JobModifyIndex); err != nil {
+		t.Fatalf("legacy root JobIndex submission was rejected: %v", err)
+	}
+	nestedSubmission := json.RawMessage(`{"Job":{"ID":"hello-norn-mysql"},"Source":"x","Variables":"{}","VariableFlags":{},"Format":"hcl2"}`)
+	if _, err := externalNomadSubmissionCanonicalJSON(nestedSubmission, fixture.JobID, fixture.Namespace, fixture.JobVersion, fixture.JobModifyIndex); err == nil {
+		t.Fatal("non-Nomad nested submission shape was accepted")
 	}
 	var indented bytes.Buffer
 	if err := json.Indent(&indented, fixture.CurrentSpec, "", "  "); err != nil {

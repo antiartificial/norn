@@ -111,6 +111,13 @@ func TestExternalDeploymentAdmissionV4Lifecycle(t *testing.T) {
 	if err != nil || replay.ID != admissionID || replay.State != ExternalDeploymentAdmissionInitiated {
 		t.Fatalf("exact begin replay = %+v, %v", replay, err)
 	}
+	lookup, err := db.FindExternalDeploymentAdmissionByIdempotency(ctx, key, logicalDigest, "hello-norn-mysql", "staging", "acme/norn-fleet")
+	if err != nil || lookup.ID != admissionID {
+		t.Fatalf("scoped idempotency lookup = %+v, %v", lookup, err)
+	}
+	if _, err := db.FindExternalDeploymentAdmissionByIdempotency(ctx, key, "sha256:wrong", "hello-norn-mysql", "staging", "acme/norn-fleet"); !errors.Is(err, ErrExternalDeploymentIdempotencyConflict) {
+		t.Fatalf("different idempotency lookup error = %v, want conflict", err)
+	}
 	if _, err := db.BeginExternalDeploymentAdmission(ctx, uuid.NewString(), key, "sha256:different", "hello-norn-mysql", "staging", "acme/norn-fleet"); !errors.Is(err, ErrExternalDeploymentIdempotencyConflict) {
 		t.Fatalf("different logical replay error = %v, want idempotency conflict", err)
 	}

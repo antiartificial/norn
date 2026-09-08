@@ -257,11 +257,6 @@ func (h *Handler) BeginExternalFleetDeploymentAdmission(w http.ResponseWriter, r
 	if !ok {
 		return
 	}
-	configured, err := h.externalFleetAdmissionConfig(appID)
-	if err != nil {
-		WriteControlProblem(w, r, http.StatusConflict, "external_deployment_unavailable", err.Error())
-		return
-	}
 	if h.db == nil {
 		WriteControlProblem(w, r, http.StatusServiceUnavailable, "external_deployment_registration_unavailable", "Norn-owned evidence nonce registration is not configured")
 		return
@@ -271,12 +266,24 @@ func (h *Handler) BeginExternalFleetDeploymentAdmission(w http.ResponseWriter, r
 		WriteControlProblem(w, r, http.StatusBadRequest, "invalid_external_deployment_request", err.Error())
 		return
 	}
-	if err := h.validateExternalFleetLogicalIdentity(appID, configured, request.LogicalIdentity); err != nil {
-		WriteControlProblem(w, r, http.StatusBadRequest, "invalid_external_deployment_identity", err.Error())
-		return
-	}
 	key, digest, ok := externalFleetAdmissionIdentityIdempotency(w, r, principal, appID, request.LogicalIdentity)
 	if !ok {
+		return
+	}
+	if existing, lookupErr := h.db.FindExternalDeploymentAdmissionByIdempotency(r.Context(), key, digest, appID, principal.Environment, principal.CI.Repository); lookupErr == nil && externalDeploymentAdmissionTerminal(existing.State) {
+		h.writeExternalFleetTerminalAdmissionReplay(w, existing)
+		return
+	} else if errors.Is(lookupErr, store.ErrExternalDeploymentIdempotencyConflict) {
+		WriteControlProblem(w, r, http.StatusConflict, "idempotency_key_reused", "Idempotency-Key was already used for a different external admission")
+		return
+	}
+	configured, err := h.externalFleetAdmissionConfig(appID)
+	if err != nil {
+		WriteControlProblem(w, r, http.StatusConflict, "external_deployment_unavailable", err.Error())
+		return
+	}
+	if err := h.validateExternalFleetLogicalIdentity(appID, configured, request.LogicalIdentity); err != nil {
+		WriteControlProblem(w, r, http.StatusBadRequest, "invalid_external_deployment_identity", err.Error())
 		return
 	}
 	admission, err := h.db.BeginExternalDeploymentAdmission(r.Context(), uuid.NewString(), key, digest, appID, principal.Environment, principal.CI.Repository)
@@ -288,15 +295,8 @@ func (h *Handler) BeginExternalFleetDeploymentAdmission(w http.ResponseWriter, r
 		WriteControlProblem(w, r, http.StatusServiceUnavailable, "external_deployment_store_unavailable", "durable external admission could not be started")
 		return
 	}
-	if admission.State == store.ExternalDeploymentAdmissionCommitted || admission.State == store.ExternalDeploymentAdmissionCleanupPending || admission.State == store.ExternalDeploymentAdmissionComplete {
-		// Terminal idempotent replays are entirely local. A failed remote commit
-		// is represented durably by cleanup_pending and may be reconciled by an
-		// authenticated later request; never manufacture a weaker commit binding.
-		cleanupState := "pending"
-		if admission.State == store.ExternalDeploymentAdmissionComplete {
-			cleanupState = "complete"
-		}
-		writeJSON(w, externalFleetAdmissionResponse{SchemaVersion: "norn.external-fleet-admission/v4", AdmissionID: admission.ID, State: string(admission.State), NonceGeneration: admission.NonceGeneration, OperationID: admission.OperationID, CleanupState: cleanupState})
+	if externalDeploymentAdmissionTerminal(admission.State) {
+		h.writeExternalFleetTerminalAdmissionReplay(w, admission)
 		return
 	}
 	registrar, ok := h.externalFleetDeploymentVerifier.(ExternalFleetEvidenceRegistrationClient)
@@ -384,9 +384,20 @@ func (h *Handler) BeginExternalFleetDeploymentAdmission(w http.ResponseWriter, r
 	writeJSONStatus(w, http.StatusCreated, externalFleetAdmissionResponse{SchemaVersion: "norn.external-fleet-admission/v4", AdmissionID: admission.ID, Nonce: nonce.String(), ExpiresAt: expiresAt, State: string(store.ExternalDeploymentAdmissionNonceReady), NonceGeneration: generation})
 }
 
-// AdmitExternalFleetDeploymentV4 accepts only the v4 receipt envelope. The
-// legacy endpoint below shares this implementation for an unreleased bridge,
-// but no request can issue an unregistered nonce or submit a v3 receipt.
+func externalDeploymentAdmissionTerminal(state store.ExternalDeploymentAdmissionState) bool {
+	return state == store.ExternalDeploymentAdmissionCommitted || state == store.ExternalDeploymentAdmissionCleanupPending || state == store.ExternalDeploymentAdmissionComplete
+}
+
+func (h *Handler) writeExternalFleetTerminalAdmissionReplay(w http.ResponseWriter, admission *store.ExternalDeploymentAdmissionLifecycle) {
+	cleanupState := "pending"
+	if admission.State == store.ExternalDeploymentAdmissionComplete {
+		cleanupState = "complete"
+	}
+	writeJSON(w, externalFleetAdmissionResponse{SchemaVersion: "norn.external-fleet-admission/v4", AdmissionID: admission.ID, State: string(admission.State), NonceGeneration: admission.NonceGeneration, OperationID: admission.OperationID, CleanupState: cleanupState})
+}
+
+// AdmitExternalFleetDeploymentV4 accepts only the v4 receipt envelope. No
+// request can issue an unregistered nonce or submit a v3 receipt.
 func (h *Handler) AdmitExternalFleetDeploymentV4(w http.ResponseWriter, r *http.Request) {
 	h.AdmitExternalFleetDeployment(w, r)
 }
@@ -401,11 +412,6 @@ func (h *Handler) ResumeExternalFleetDeploymentAdmission(w http.ResponseWriter, 
 	if !ok {
 		return
 	}
-	configured, err := h.externalFleetAdmissionConfig(appID)
-	if err != nil {
-		WriteControlProblem(w, r, http.StatusConflict, "external_deployment_unavailable", err.Error())
-		return
-	}
 	if h.db == nil {
 		WriteControlProblem(w, r, http.StatusServiceUnavailable, "external_deployment_store_unavailable", "durable external admission storage is unavailable")
 		return
@@ -415,7 +421,7 @@ func (h *Handler) ResumeExternalFleetDeploymentAdmission(w http.ResponseWriter, 
 		WriteControlProblem(w, r, http.StatusBadRequest, "invalid_external_deployment_resume", err.Error())
 		return
 	}
-	if uuid.Validate(request.AdmissionID) != nil || h.validateExternalFleetLogicalIdentity(appID, configured, request.LogicalIdentity) != nil {
+	if uuid.Validate(request.AdmissionID) != nil {
 		WriteControlProblem(w, r, http.StatusBadRequest, "invalid_external_deployment_resume", "resume requires a valid admissionId and unchanged logical identity")
 		return
 	}
@@ -426,6 +432,15 @@ func (h *Handler) ResumeExternalFleetDeploymentAdmission(w http.ResponseWriter, 
 	admission, err := h.db.GetExternalDeploymentAdmission(r.Context(), request.AdmissionID, appID, principal.Environment, principal.CI.Repository)
 	if err != nil || admission.RequestDigest != digest {
 		WriteControlProblem(w, r, http.StatusConflict, "external_deployment_admission_conflict", "resume identity does not match the server-owned admission")
+		return
+	}
+	if externalDeploymentAdmissionTerminal(admission.State) {
+		h.writeExternalFleetTerminalAdmissionReplay(w, admission)
+		return
+	}
+	configured, err := h.externalFleetAdmissionConfig(appID)
+	if err != nil || h.validateExternalFleetLogicalIdentity(appID, configured, request.LogicalIdentity) != nil {
+		WriteControlProblem(w, r, http.StatusConflict, "external_deployment_unavailable", "resume requires currently valid external admission configuration")
 		return
 	}
 	// Reuse the single begin implementation rather than creating a second
@@ -547,8 +562,8 @@ func (h *Handler) CompleteExternalFleetDeploymentCleanup(w http.ResponseWriter, 
 		return
 	}
 	var state, operationID, receiptDigest, proofDigest, expectedIntent, expectedAbsence, snapshotID, snapshotRef, snapshotSHA string
-	var claimRevision, commitRevision, cleanupRevision int64
-	err := h.db.Pool.QueryRow(r.Context(), `SELECT a.state, COALESCE(a.operation_id,''), COALESCE(o.metadata->>'externalFleetProofSHA256',''), COALESCE(a.service_proof_sha256,''), COALESCE(a.cleanup_intent_sha256,''), COALESCE(a.absence_proof_sha256,''), COALESCE(a.service_snapshot_id,''), COALESCE(a.service_snapshot_ref,''), COALESCE(a.service_snapshot_sha256,''), COALESCE(a.service_claim_revision,0), COALESCE(a.service_commit_revision,0), COALESCE(a.service_cleanup_revision,0) FROM external_deployment_admissions a LEFT JOIN operations o ON o.id=a.operation_id WHERE a.id=$1 AND a.app=$2 AND a.environment=$3 AND a.ci_repository=$4`, request.AdmissionID, appID, principal.Environment, principal.CI.Repository).Scan(&state, &operationID, &receiptDigest, &proofDigest, &expectedIntent, &expectedAbsence, &snapshotID, &snapshotRef, &snapshotSHA, &claimRevision, &commitRevision, &cleanupRevision)
+	var nonceGeneration, claimRevision, commitRevision, cleanupRevision int64
+	err := h.db.Pool.QueryRow(r.Context(), `SELECT a.state, COALESCE(a.operation_id,''), a.nonce_generation, COALESCE(o.metadata->>'externalFleetProofSHA256',''), COALESCE(a.service_proof_sha256,''), COALESCE(a.cleanup_intent_sha256,''), COALESCE(a.absence_proof_sha256,''), COALESCE(a.service_snapshot_id,''), COALESCE(a.service_snapshot_ref,''), COALESCE(a.service_snapshot_sha256,''), COALESCE(a.service_claim_revision,0), COALESCE(a.service_commit_revision,0), COALESCE(a.service_cleanup_revision,0) FROM external_deployment_admissions a LEFT JOIN operations o ON o.id=a.operation_id WHERE a.id=$1 AND a.app=$2 AND a.environment=$3 AND a.ci_repository=$4`, request.AdmissionID, appID, principal.Environment, principal.CI.Repository).Scan(&state, &operationID, &nonceGeneration, &receiptDigest, &proofDigest, &expectedIntent, &expectedAbsence, &snapshotID, &snapshotRef, &snapshotSHA, &claimRevision, &commitRevision, &cleanupRevision)
 	if err != nil || operationID != request.OperationID || receiptDigest != request.ReceiptDigest {
 		WriteControlProblem(w, r, http.StatusConflict, "external_deployment_cleanup_conflict", "cleanup binding does not match the committed server admission")
 		return
@@ -563,7 +578,7 @@ func (h *Handler) CompleteExternalFleetDeploymentCleanup(w http.ResponseWriter, 
 			WriteControlProblem(w, r, http.StatusConflict, "external_deployment_cleanup_conflict", "completed admission lacks its exact cleanup checkpoint")
 			return
 		}
-		writeJSON(w, externalFleetAdmissionResponse{SchemaVersion: "norn.external-fleet-admission/v4", AdmissionID: request.AdmissionID, State: state, OperationID: operationID})
+		writeJSON(w, externalFleetAdmissionResponse{SchemaVersion: "norn.external-fleet-admission/v4", AdmissionID: request.AdmissionID, State: state, NonceGeneration: nonceGeneration, OperationID: operationID})
 		return
 	}
 	if state != string(store.ExternalDeploymentAdmissionCleanupPending) {
@@ -614,7 +629,7 @@ func (h *Handler) CompleteExternalFleetDeploymentCleanup(w http.ResponseWriter, 
 		WriteControlProblem(w, r, http.StatusServiceUnavailable, "external_deployment_cleanup_unavailable", "durable cleanup completion could not be recorded")
 		return
 	}
-	writeJSON(w, externalFleetAdmissionResponse{SchemaVersion: "norn.external-fleet-admission/v4", AdmissionID: request.AdmissionID, State: string(store.ExternalDeploymentAdmissionComplete), OperationID: operationID})
+	writeJSON(w, externalFleetAdmissionResponse{SchemaVersion: "norn.external-fleet-admission/v4", AdmissionID: request.AdmissionID, State: string(store.ExternalDeploymentAdmissionComplete), NonceGeneration: nonceGeneration, OperationID: operationID})
 }
 
 // ReconcileExternalFleetDeploymentAdmission completes an explicitly durable
@@ -652,7 +667,7 @@ func (h *Handler) ReconcileExternalFleetDeploymentAdmission(w http.ResponseWrite
 			WriteControlProblem(w, r, http.StatusServiceUnavailable, "external_deployment_reconcile_unavailable", "committed remote admission could not advance to cleanup")
 			return
 		}
-		writeJSON(w, externalFleetAdmissionResponse{SchemaVersion: "norn.external-fleet-admission/v4", AdmissionID: admission.ID, State: string(store.ExternalDeploymentAdmissionCleanupPending), OperationID: admission.OperationID, CleanupState: "pending"})
+		writeJSON(w, externalFleetAdmissionResponse{SchemaVersion: "norn.external-fleet-admission/v4", AdmissionID: admission.ID, State: string(store.ExternalDeploymentAdmissionCleanupPending), NonceGeneration: admission.NonceGeneration, OperationID: admission.OperationID, CleanupState: "pending"})
 		return
 	}
 	registration, err := h.db.GetExternalDeploymentNonceRegistration(r.Context(), admission.ID, admission.NonceID)
@@ -669,7 +684,7 @@ func (h *Handler) ReconcileExternalFleetDeploymentAdmission(w http.ResponseWrite
 	if statusErr == nil && externalCommitStatusMatches(status, claim, snapshot) {
 		if err := h.db.RecordExternalDeploymentCommitBinding(r.Context(), store.ExternalDeploymentServiceSnapshot{AdmissionID: admission.ID, CommitRevision: status.Revision, CleanupIntentSHA256: cleanupIntent}); err == nil {
 			_ = h.db.MarkExternalDeploymentAdmissionCleanupPending(r.Context(), admission.ID)
-			writeJSON(w, externalFleetAdmissionResponse{SchemaVersion: "norn.external-fleet-admission/v4", AdmissionID: admission.ID, State: string(store.ExternalDeploymentAdmissionCleanupPending), OperationID: admission.OperationID, CleanupState: "pending"})
+			writeJSON(w, externalFleetAdmissionResponse{SchemaVersion: "norn.external-fleet-admission/v4", AdmissionID: admission.ID, State: string(store.ExternalDeploymentAdmissionCleanupPending), NonceGeneration: admission.NonceGeneration, OperationID: admission.OperationID, CleanupState: "pending"})
 			return
 		}
 	}
@@ -678,12 +693,12 @@ func (h *Handler) ReconcileExternalFleetDeploymentAdmission(w http.ResponseWrite
 		WriteControlProblem(w, r, http.StatusServiceUnavailable, "external_deployment_reconcile_unavailable", "remote commit remains pending")
 		return
 	}
-	writeJSON(w, externalFleetAdmissionResponse{SchemaVersion: "norn.external-fleet-admission/v4", AdmissionID: admission.ID, State: string(store.ExternalDeploymentAdmissionCleanupPending), OperationID: admission.OperationID, CleanupState: "pending"})
+	writeJSON(w, externalFleetAdmissionResponse{SchemaVersion: "norn.external-fleet-admission/v4", AdmissionID: admission.ID, State: string(store.ExternalDeploymentAdmissionCleanupPending), NonceGeneration: admission.NonceGeneration, OperationID: admission.OperationID, CleanupState: "pending"})
 }
 
-// AdmitExternalFleetDeployment either issues a one-time Norn nonce or admits
-// one independently verified staging receipt. It is a separate route/scope so
-// normal DiscoverApps and release deployment behavior stay unchanged.
+// AdmitExternalFleetDeployment is retained as a deprecated internal alias for
+// tests and old in-process callers. Routes use AdmitExternalFleetDeploymentV4.
+// It accepts only a v4 receipt or a receipt-free terminal replay.
 func (h *Handler) AdmitExternalFleetDeployment(w http.ResponseWriter, r *http.Request) {
 	preventSensitiveResponseCaching(w)
 	appID := chi.URLParam(r, "id")
@@ -693,12 +708,6 @@ func (h *Handler) AdmitExternalFleetDeployment(w http.ResponseWriter, r *http.Re
 	}
 	if h.db == nil {
 		WriteControlProblem(w, r, http.StatusServiceUnavailable, "external_deployment_store_unavailable", "durable external deployment admission storage is unavailable")
-		return
-	}
-	// A nonce is authority to submit a receipt, so admission is unavailable
-	// until the independently configured verifier is live.
-	if h.externalFleetDeploymentVerifier == nil {
-		WriteControlProblem(w, r, http.StatusServiceUnavailable, "external_deployment_verifier_unavailable", "independent Fleet runtime verification is not configured; nonce issuance is disabled")
 		return
 	}
 	var request externalDeploymentRequest
@@ -1241,25 +1250,37 @@ func externalNomadCurrentSpecCanonicalJSON(raw []byte, jobID, namespace string, 
 	return externalNomadCanonicalJSON(projected)
 }
 
-// externalNomadSubmissionCanonicalJSON preserves the complete versioned
-// JobSubmission response. The surrounding proof binds its job, namespace,
-// version and modify index; the response itself must contain the exact Nomad
-// Job object plus source and variables, so a digest cannot be a regex-only
-// stand-in for live submission evidence.
+// externalNomadSubmissionCanonicalJSON preserves the complete versioned Nomad
+// /v1/job/:id/submission response. Nomad's actual response has JobID,
+// Namespace, Version, and JobModifyIndex (or legacy JobIndex) at its root;
+// Source, Variables, VariableFlags, and Format remain part of the digest.
+// It deliberately does not expect a made-up nested Job object.
 func externalNomadSubmissionCanonicalJSON(raw []byte, jobID, namespace string, version, modifyIndex uint64) ([]byte, error) {
 	value, err := externalNomadEvidenceObject(raw)
 	if err != nil {
 		return nil, err
 	}
-	job, ok := value["Job"].(map[string]any)
-	if !ok || !externalNomadObjectIdentity(job, jobID, namespace, 0, modifyIndex, version) {
+	if externalNomadString(value, "JobID") != jobID || externalNomadString(value, "Namespace") != namespace || externalNomadUint(value, "Version") != version {
 		return nil, errors.New("Nomad submission job identity/index/version mismatch")
+	}
+	jobIndex := externalNomadUint(value, "JobModifyIndex")
+	if jobIndex == 0 {
+		jobIndex = externalNomadUint(value, "JobIndex")
+	}
+	if jobIndex != modifyIndex {
+		return nil, errors.New("Nomad submission job modify index mismatch")
 	}
 	if _, ok := value["Source"].(string); !ok {
 		return nil, errors.New("Nomad submission source missing")
 	}
 	if _, ok := value["Variables"].(string); !ok {
 		return nil, errors.New("Nomad submission variables missing")
+	}
+	if _, ok := value["VariableFlags"].(map[string]any); !ok {
+		return nil, errors.New("Nomad submission variable flags missing")
+	}
+	if _, ok := value["Format"].(string); !ok {
+		return nil, errors.New("Nomad submission format missing")
 	}
 	return externalNomadCanonicalJSON(value)
 }

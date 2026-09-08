@@ -296,10 +296,17 @@ valid), rejects duplicate keys and non-uint64 numeric forms, then emits sorted
 compact UTF-8 JSON without HTML escaping. Current-spec removes only root
 `Status`, `StatusDescription`, `Stable`, `ModifyIndex`, `CreateIndex`,
 `Version`, `JobModifyIndex`, and `SubmitTime`; submission retains every field,
-including `Source`, `Variables`, and `Job`. The cross-language fixture
+including root `JobID`, `Namespace`, `Version`, `JobModifyIndex` (or legacy
+`JobIndex`), `Source`, `Variables`, `VariableFlags`, and `Format`. The
+cross-language fixture
 [`nomad-v4-canonical.json`](../../api/handler/testdata/nomad-v4-canonical.json)
 defines the exact `norn.nomad-v4-canonical-json/v1` bytes and SHA-256 values for
 Fleet and Norn implementations.
+
+The unadvertised `POST /api/v1/apps/{id}/external-deployments` compatibility
+alias is deprecated. It delegates to the same v4-only admission handler and
+rejects legacy action/nonce issuance and v3 receipt forms; new Fleet callers
+must use `/begin`, `/resume`, `/admit`, `/reconcile`, and `/cleanup`.
 
 ### Current Fleet companion compatibility gate
 
