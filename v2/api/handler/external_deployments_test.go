@@ -222,10 +222,12 @@ func TestExternalFleetChronologyIsHistoricalWhileLiveReadinessIsFresh(t *testing
 	}
 }
 
-func TestExternalFleetLiveVerifierUsesOnlyRedactedNonceAndCanonicalEvidence(t *testing.T) {
+func TestExternalFleetLiveVerifierRecoversClaimWithDistinctProvenanceLinkedPrincipal(t *testing.T) {
 	receipt := externalReceiptForTest()
 	receipt.AdmissionID = "00000000-0000-4000-8000-000000000010"
-	request := ExternalFleetDeploymentVerificationRequest{Receipt: receipt, CI: CIIdentity{Provider: "github-actions", Repository: "acme/norn-fleet", RunID: "123", RunAttempt: "1"}, Config: externalConfigForTest()}
+	// The stored receipt/snapshot remain bound to original apply run 123/1.
+	// Recovery is intentionally a distinct protected workflow run.
+	request := ExternalFleetDeploymentVerificationRequest{Receipt: receipt, CI: CIIdentity{Provider: "github-actions", Repository: "acme/norn-fleet", RunID: "456", RunAttempt: "2", Intent: "recover"}, Config: externalConfigForTest(), RecoveredClaim: true}
 	nonce, err := externalAdmissionNonceFromReceipt(receipt.Nonce)
 	if err != nil {
 		t.Fatal(err)
@@ -299,8 +301,8 @@ func TestExternalFleetLiveVerifierUsesOnlyRedactedNonceAndCanonicalEvidence(t *t
 	}
 	request.AdmissionGeneration = 1
 	verifier := &ExternalFleetDeploymentLiveVerifier{evidenceURL: evidenceURL, publicURL: evidenceURL, evidenceTokenFile: evidenceToken, registrationTokenFile: registrationToken, githubTokenFile: githubToken, httpClient: server.Client(), githubRun: externalFleetGitHubRunVerifierFunc(func(_ context.Context, gotToken string, gotCI CIIdentity) error {
-		if gotToken != "test-token" || gotCI.RunAttempt != request.CI.RunAttempt {
-			t.Fatal("GitHub run verifier did not receive the authenticated attempt")
+		if gotToken != "test-token" || gotCI.RunID != "456" || gotCI.RunAttempt != "2" || gotCI.Intent != "recover" {
+			t.Fatal("GitHub run verifier did not receive the current replacement recovery identity")
 		}
 		return nil
 	}), attest: externalFleetAttestationVerifierFunc(func(_ context.Context, gotToken string, gotRequest ExternalFleetDeploymentVerificationRequest) error {
@@ -315,6 +317,9 @@ func TestExternalFleetLiveVerifierUsesOnlyRedactedNonceAndCanonicalEvidence(t *t
 	}
 	if verified.PlanID != receipt.Fleet.PlanID || !reflect.DeepEqual(verified.Migration, receipt.Fleet.Migration) {
 		t.Fatalf("verification = %#v", verified)
+	}
+	if verified.ApplyRunID != "123" || verified.ApplyRunAttempt != "1" {
+		t.Fatalf("immutable original receipt identity drifted during recovery: %#v", verified)
 	}
 }
 
@@ -808,6 +813,30 @@ func TestExternalReceiptBindsApplyRunAndAttemptToAuthenticatedCI(t *testing.T) {
 	}
 }
 
+func TestExternalFleetRecoveryPrincipalRequiresDistinctProtectedReplacement(t *testing.T) {
+	receipt := externalReceiptForTest()
+	valid := CIIdentity{Provider: "github-actions", Repository: "acme/norn-fleet", RunID: "456", RunAttempt: "2", Intent: "recover"}
+	if !externalFleetRecoveryPrincipalMatchesReceipt(valid, receipt) {
+		t.Fatal("distinct protected recover principal was rejected")
+	}
+	for name, mutate := range map[string]func(*CIIdentity){
+		"original run": func(ci *CIIdentity) {
+			ci.RunID, ci.RunAttempt = receipt.Fleet.ApplyRunID, receipt.Fleet.ApplyRunAttempt
+		},
+		"apply intent": func(ci *CIIdentity) { ci.Intent = "apply" },
+		"provider":     func(ci *CIIdentity) { ci.Provider = "other" },
+		"repository":   func(ci *CIIdentity) { ci.Repository = "" },
+	} {
+		t.Run(name, func(t *testing.T) {
+			candidate := valid
+			mutate(&candidate)
+			if externalFleetRecoveryPrincipalMatchesReceipt(candidate, receipt) {
+				t.Fatalf("invalid recovery principal accepted: %#v", candidate)
+			}
+		})
+	}
+}
+
 func TestExternalVerificationMustMatchEveryReceiptBinding(t *testing.T) {
 	receipt := externalReceiptForTest()
 	verified := verifiedExternalReceipt(receipt)
@@ -1251,7 +1280,7 @@ func TestExternalBeginRecoversLostRegistrationResponseBeforeNonceDisclosure(t *t
 	identity.Candidate.Repository = "owner/repo"
 	identity.Candidate.SignerWorkflowRef, identity.Candidate.SignerWorkflowSHA = configured.BootstrapSignerRef, bootstrapSHA
 	identity.Candidate.Attestation.MaterialSHA, identity.Candidate.Attestation.SubjectDigest = identity.SourceSHA, "sha256:"+strings.Repeat("b", 64)
-	principal := &AccessPrincipal{Subject: "github-actions:owner/repo:123", Scopes: []string{ScopeFleetExternalAdmission}, App: configured.App, Environment: "staging", CI: &CIIdentity{Repository: "owner/repo", RunID: "123", RunAttempt: "1", Environment: "staging", RefProtected: true, Intent: "apply"}}
+	principal := &AccessPrincipal{Subject: "github-actions:owner/repo:123", Scopes: []string{ScopeFleetExternalAdmission}, App: configured.App, Environment: "staging", CI: &CIIdentity{Provider: "github-actions", Repository: "owner/repo", RunID: "123", RunAttempt: "1", Environment: "staging", RefProtected: true, Intent: "apply"}}
 	fake := &externalLostRegistrationVerifier{}
 	h := &Handler{db: db, cfg: &config.Config{Environment: "staging", AppsDir: appsDir, ExternalFleetAdmissionApp: configured.App, ExternalFleetAdmissionNamespace: configured.Namespace, ExternalFleetAdmissionMigrationJobID: configured.MigrationJobID, ExternalFleetAdmissionMigrationHCLSHA256: configured.MigrationHCLSHA256, ExternalFleetAdmissionRuntimeJobID: configured.RuntimeJobID, ExternalFleetAdmissionRuntimeHCLSHA256: configured.RuntimeHCLSHA256, ExternalFleetAdmissionBootstrapSignerRef: configured.BootstrapSignerRef}, externalFleetDeploymentVerifier: fake}
 	body, _ := json.Marshal(externalFleetAdmissionBeginRequest{LogicalIdentity: identity})
@@ -1337,7 +1366,11 @@ func TestExternalBeginRecoversLostRegistrationResponseBeforeNonceDisclosure(t *t
 	reconcileRequest.Header.Set("Idempotency-Key", request.Header.Get("Idempotency-Key"))
 	reconcileRoute := chi.NewRouteContext()
 	reconcileRoute.URLParams.Add("id", configured.App)
-	reconcileRequest = WithAccessPrincipal(reconcileRequest.WithContext(context.WithValue(reconcileRequest.Context(), chi.RouteCtxKey, reconcileRoute)), principal)
+	recoveryPrincipal := *principal
+	recoveryCI := *principal.CI
+	recoveryCI.RunID, recoveryCI.RunAttempt, recoveryCI.Intent = "456", "2", "recover"
+	recoveryPrincipal.CI = &recoveryCI
+	reconcileRequest = WithAccessPrincipal(reconcileRequest.WithContext(context.WithValue(reconcileRequest.Context(), chi.RouteCtxKey, reconcileRoute)), &recoveryPrincipal)
 	reconcile := httptest.NewRecorder()
 	h.ReconcileExternalFleetDeploymentAdmission(reconcile, reconcileRequest)
 	if reconcile.Code != http.StatusCreated || fake.claim.AdmissionID != decoded.AdmissionID || fake.commit.AdmissionID != decoded.AdmissionID {

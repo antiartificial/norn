@@ -623,7 +623,7 @@ func (v *ExternalFleetDeploymentLiveVerifier) VerifyExternalFleetDeployment(ctx 
 	if v == nil || v.evidenceURL == nil || v.publicURL == nil || v.attest == nil || v.githubRun == nil || (v.githubApp == nil && v.githubTokenFile == "") {
 		return nil, externalVerifierErr("unconfigured")
 	}
-	if request.CI.Provider != "github-actions" || request.CI.Repository == "" || request.CI.RunID != request.Receipt.Fleet.ApplyRunID || request.CI.RunAttempt != request.Receipt.Fleet.ApplyRunAttempt {
+	if !externalFleetVerificationPrincipalMatchesReceipt(request) {
 		return nil, externalVerifierErr("ci-binding")
 	}
 	var githubToken string
@@ -872,7 +872,7 @@ func validateExternalFleetEvidence(observed externalFleetEvidence, request Exter
 // fresh clock rather than decaying as calendar time passes.
 func validateExternalFleetEvidenceAt(observed externalFleetEvidence, request ExternalFleetDeploymentVerificationRequest, nonceDigest string, now time.Time) error {
 	r := request.Receipt
-	if observed.SchemaVersion != "norn.external-fleet-evidence/v1" || observed.Repository != request.CI.Repository || observed.NonceSHA256 != nonceDigest || observed.NonceWrittenAt.IsZero() || observed.NonceReadAt.IsZero() || observed.NonceWrittenAt.After(now) || observed.NonceReadAt.After(now) || !observed.NonceReadAt.After(observed.NonceWrittenAt) || observed.NonceReadAt.Sub(observed.NonceWrittenAt) > externalFleetAdmissionNonceTTL || now.Sub(observed.NonceReadAt) > externalFleetAdmissionNonceTTL || observed.PlanAttemptID != r.Fleet.RunnerAttemptID || observed.CheckpointAttemptID != r.Fleet.RunnerAttemptID || !validExternalFleetAttempt(observed.Attempt, r, request.CI) || !validExternalFleetCheckpoints(observed.Checkpoints, r) {
+	if observed.SchemaVersion != "norn.external-fleet-evidence/v1" || observed.Repository != request.CI.Repository || observed.NonceSHA256 != nonceDigest || observed.NonceWrittenAt.IsZero() || observed.NonceReadAt.IsZero() || observed.NonceWrittenAt.After(now) || observed.NonceReadAt.After(now) || !observed.NonceReadAt.After(observed.NonceWrittenAt) || observed.NonceReadAt.Sub(observed.NonceWrittenAt) > externalFleetAdmissionNonceTTL || now.Sub(observed.NonceReadAt) > externalFleetAdmissionNonceTTL || observed.PlanAttemptID != r.Fleet.RunnerAttemptID || observed.CheckpointAttemptID != r.Fleet.RunnerAttemptID || !validExternalFleetAttempt(observed.Attempt, r, request.CI.Repository) || !validExternalFleetCheckpoints(observed.Checkpoints, r) {
 		return externalVerifierErr("evidence-binding")
 	}
 	if observed.FixtureHCLSHA256["migration"] != request.Config.MigrationHCLSHA256 || observed.FixtureHCLSHA256["runtime"] != request.Config.RuntimeHCLSHA256 {
@@ -889,8 +889,8 @@ func validateExternalFleetEvidenceAt(observed externalFleetEvidence, request Ext
 	return nil
 }
 
-func validExternalFleetAttempt(attempt externalFleetAttemptEvidence, receipt ExternalFleetDeploymentReceipt, ci CIIdentity) bool {
-	if attempt.PlanID != receipt.Fleet.PlanID || attempt.AttemptID != receipt.Fleet.RunnerAttemptID || attempt.RootAttemptID != receipt.Fleet.RootAttemptID || attempt.Revision < 1 || attempt.TerminalStatus != "running" || attempt.CurrentPhase != "complete" || attempt.SourceDispatchRunID != receipt.Fleet.ApplyRunID || attempt.WorkflowURL != "https://github.com/"+ci.Repository+"/actions/runs/"+ci.RunID || len(attempt.RetryLineage) == 0 || attempt.RetryLineage[0] != attempt.RootAttemptID || attempt.RetryLineage[len(attempt.RetryLineage)-1] != attempt.AttemptID {
+func validExternalFleetAttempt(attempt externalFleetAttemptEvidence, receipt ExternalFleetDeploymentReceipt, repository string) bool {
+	if repository == "" || attempt.PlanID != receipt.Fleet.PlanID || attempt.AttemptID != receipt.Fleet.RunnerAttemptID || attempt.RootAttemptID != receipt.Fleet.RootAttemptID || attempt.Revision < 1 || attempt.TerminalStatus != "running" || attempt.CurrentPhase != "complete" || attempt.SourceDispatchRunID != receipt.Fleet.ApplyRunID || attempt.WorkflowURL != "https://github.com/"+repository+"/actions/runs/"+receipt.Fleet.ApplyRunID || len(attempt.RetryLineage) == 0 || attempt.RetryLineage[0] != attempt.RootAttemptID || attempt.RetryLineage[len(attempt.RetryLineage)-1] != attempt.AttemptID {
 		return false
 	}
 	seen := map[string]bool{}
@@ -901,6 +901,22 @@ func validExternalFleetAttempt(attempt externalFleetAttemptEvidence, receipt Ext
 		seen[id] = true
 	}
 	return true
+}
+
+// externalFleetVerificationPrincipalMatchesReceipt distinguishes the immutable
+// source workflow from the current caller. Ordinary admission binds both to
+// one exact run. Receipt-free recovery instead has a server-reloaded claim and
+// snapshot, so it authorizes a distinct protected recover run while preserving
+// the original receipt identity for evidence validation below.
+func externalFleetVerificationPrincipalMatchesReceipt(request ExternalFleetDeploymentVerificationRequest) bool {
+	ci := request.CI
+	if ci.Provider != "github-actions" || ci.Repository == "" {
+		return false
+	}
+	if !request.RecoveredClaim {
+		return externalReceiptMatchesCI(request.Receipt, ci)
+	}
+	return externalFleetRecoveryPrincipalMatchesReceipt(ci, request.Receipt)
 }
 
 func validExternalFleetCheckpoints(items []externalFleetCheckpointEvidence, receipt ExternalFleetDeploymentReceipt) bool {

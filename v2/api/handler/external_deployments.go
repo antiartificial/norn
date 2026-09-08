@@ -89,8 +89,12 @@ type externalFleetAdmissionReconcileRequest struct {
 }
 
 type externalFleetRecoveredNonce struct {
-	ID     string
-	SHA256 string
+	ID            string
+	SHA256        string
+	Snapshot      *ExternalFleetEvidenceSnapshot
+	ClaimRevision int64
+	ReceiptDigest string
+	ProofDigest   string
 }
 
 type externalFleetRecoveredNonceContextKey struct{}
@@ -242,6 +246,12 @@ type ExternalFleetDeploymentVerificationRequest struct {
 	// loading the original digest from Norn's nonce row. Normal Actions calls
 	// leave it empty and derive the digest from the one-use raw receipt nonce.
 	NonceSHA256 string
+	// RecoveredClaim is set only by the receipt-free server recovery path after
+	// it has reloaded the exact durable admission, nonce digest, and immutable
+	// owner snapshot. It authorizes a distinct protected recover workflow as
+	// the current principal; the receipt remains bound to its original apply
+	// run and attempt.
+	RecoveredClaim bool
 }
 
 type ExternalFleetAdmissionConfig struct {
@@ -836,7 +846,7 @@ func (h *Handler) recoverClaimedExternalFleetAdmission(w http.ResponseWriter, r 
 		WriteControlProblem(w, r, http.StatusServiceUnavailable, "external_deployment_reconcile_unavailable", "claimed admission recovery could not be encoded")
 		return
 	}
-	ctx := context.WithValue(r.Context(), externalFleetRecoveredNonceContextKey{}, externalFleetRecoveredNonce{ID: admission.NonceID, SHA256: nonceSHA256})
+	ctx := context.WithValue(r.Context(), externalFleetRecoveredNonceContextKey{}, externalFleetRecoveredNonce{ID: admission.NonceID, SHA256: nonceSHA256, Snapshot: status.Snapshot, ClaimRevision: status.Revision, ReceiptDigest: receiptDigest, ProofDigest: proofDigest})
 	replay := r.Clone(ctx)
 	replay.Body = io.NopCloser(bytes.NewReader(body))
 	replay.ContentLength = int64(len(body))
@@ -937,6 +947,10 @@ func (h *Handler) AdmitExternalFleetDeployment(w http.ResponseWriter, r *http.Re
 		WriteControlProblem(w, r, http.StatusForbidden, "external_deployment_identity_denied", "receipt apply run and attempt must match the authenticated Fleet identity")
 		return
 	}
+	if recoveredClaim && !externalFleetRecoveryPrincipalMatchesReceipt(*principal.CI, receipt) {
+		WriteControlProblem(w, r, http.StatusForbidden, "external_deployment_identity_denied", "receipt-free recovery requires a distinct protected Fleet recover identity")
+		return
+	}
 	key, digest, ok := externalFleetAdmissionIdempotency(w, r, principal, appID, receipt)
 	if !ok {
 		return
@@ -954,6 +968,7 @@ func (h *Handler) AdmitExternalFleetDeployment(w http.ResponseWriter, r *http.Re
 	var serviceClaimRevision int64
 	var serviceProofDigest string
 	var serviceReceiptDigest string
+	recovered, recoveredClaim := r.Context().Value(externalFleetRecoveredNonceContextKey{}).(externalFleetRecoveredNonce)
 	if isV4 {
 		var beginErr error
 		admission, beginErr = h.db.BeginExternalDeploymentAdmission(r.Context(), receipt.AdmissionID, key, digest, appID, principal.Environment, principal.CI.Repository)
@@ -978,67 +993,80 @@ func (h *Handler) AdmitExternalFleetDeployment(w http.ResponseWriter, r *http.Re
 			WriteControlProblem(w, r, http.StatusConflict, "external_deployment_admission_conflict", "terminal admission operation is unavailable")
 			return
 		}
-		registrar, registrationOK := h.externalFleetDeploymentVerifier.(ExternalFleetEvidenceRegistrationClient)
-		if !registrationOK || (admission.State != store.ExternalDeploymentAdmissionNonceReady && admission.State != store.ExternalDeploymentAdmissionEvidenceClaimed) || admission.NonceID != nonce.ID || admission.NonceGeneration < 1 {
-			WriteControlProblem(w, r, http.StatusConflict, "external_deployment_admission_unavailable", "receipt nonce is not a ready server-registered admission nonce")
-			return
-		}
-		registrationState, registrationErr := h.db.GetExternalDeploymentNonceRegistration(r.Context(), admission.ID, nonce.ID)
-		if registrationErr != nil || registrationState.NonceSHA256 != nonce.sha256() || registrationState.ExpiresAt.Before(time.Now().UTC()) || registrationState.ServiceRevision < 1 {
-			WriteControlProblem(w, r, http.StatusConflict, "external_deployment_admission_unavailable", "server-registered nonce is expired or its durable registration drifted")
-			return
-		}
-		// Claim remotely first. A network timeout can be reconciled through the
-		// service's idempotent hash/generation claim rather than leaving a local
-		// claim stranded without the independently observed snapshot.
-		receiptBytes, _ := externalReceiptCanonicalJSON(receipt)
-		receiptDigest := sha256.Sum256(receiptBytes)
-		proofDigest, proofErr := externalAdmissionProofDigest(receipt)
-		if proofErr != nil {
-			WriteControlProblem(w, r, http.StatusInternalServerError, "external_deployment_store_failed", "failed to canonicalize external deployment proof")
-			return
-		}
-		claimRequest := ExternalFleetEvidenceClaim{SchemaVersion: "norn.external-fleet-admission-callback/v4", AdmissionID: admission.ID, LogicalDigest: digest, AdmissionContextDigest: strings.TrimPrefix(digest, "sha256:"), ReceiptDigest: hex.EncodeToString(receiptDigest[:]), ProofDigest: proofDigest, NonceSHA256: nonce.sha256(), Generation: admission.NonceGeneration, ExpectedRevision: registrationState.ServiceRevision}
-		// Persist the nonce-redacted canonical envelope before the remote CAS.
-		// A process crash or lost response can then recover the exact claim with
-		// the owner credential and nonce hash, without asking Actions for raw
-		// one-use material a second time.
-		if err := h.db.RecordExternalDeploymentClaimedEvidence(r.Context(), admission.ID, receiptBytes, claimRequest.ReceiptDigest, claimRequest.ProofDigest); err != nil {
-			WriteControlProblem(w, r, http.StatusConflict, "external_deployment_snapshot_conflict", "claimed receipt conflicts with durable admission state")
-			return
-		}
-		claimStatus, claimErr := registrar.ClaimExternalFleetNonce(r.Context(), claimRequest)
-		if claimErr != nil {
-			claimStatus, claimErr = registrar.GetExternalFleetAdmissionStatus(r.Context(), admission.ID, admission.NonceGeneration)
-		}
-		if claimErr != nil || !externalClaimStatusMatches(claimStatus, claimRequest) {
-			WriteControlProblem(w, r, http.StatusServiceUnavailable, "external_deployment_registration_unavailable", "evidence nonce claim failed")
-			return
-		}
-		// Store the complete immutable service response before making the local
-		// nonce claim visible. This leaves a timeout/crash recoverable solely by
-		// GET status, never by a second mutable evidence collection.
-		status := claimStatus
-		serviceSnapshot, serviceClaimRevision, serviceProofDigest, serviceReceiptDigest = status.Snapshot, status.Revision, proofDigest, claimRequest.ReceiptDigest
-		if err := h.db.RecordExternalDeploymentServiceSnapshot(r.Context(), store.ExternalDeploymentServiceSnapshot{AdmissionID: admission.ID, SnapshotID: status.Snapshot.ID, SnapshotRef: status.Snapshot.Ref, SnapshotSHA256: status.Snapshot.SHA256, RetryLineage: status.Snapshot.RetryLineage, ReceiptDigest: claimRequest.ReceiptDigest, ProofDigest: claimRequest.ProofDigest, ClaimRevision: status.Revision}); err != nil {
-			WriteControlProblem(w, r, http.StatusConflict, "external_deployment_snapshot_conflict", "immutable service snapshot conflicts with durable admission state")
-			return
-		}
-		serviceCheckpointRefs = externalServiceCheckpointRefs(status.Snapshot.CheckpointRefs)
-		if len(serviceCheckpointRefs) != 1 || serviceCheckpointRefs[0].Phase != "external_admission" || serviceCheckpointRefs[0].AttemptID != status.Snapshot.RetryLineage[len(status.Snapshot.RetryLineage)-1] {
-			WriteControlProblem(w, r, http.StatusConflict, "external_deployment_snapshot_conflict", "service snapshot has no durable checkpoint references")
-			return
-		}
-		if err := h.db.ClaimExternalDeploymentAdmissionEvidence(r.Context(), admission.ID, nonce.ID); err != nil {
-			WriteControlProblem(w, r, http.StatusConflict, "external_deployment_nonce_consumed", "server-registered nonce is already claimed or unavailable")
-			return
+		if recoveredClaim {
+			if admission.State != store.ExternalDeploymentAdmissionEvidenceClaimed || admission.NonceID != nonce.ID || recovered.Snapshot == nil || recovered.ClaimRevision < 1 || !sha256HexPattern.MatchString(recovered.ReceiptDigest) || !sha256HexPattern.MatchString(recovered.ProofDigest) {
+				WriteControlProblem(w, r, http.StatusConflict, "external_deployment_admission_unavailable", "recovered admission is not the exact claimed durable snapshot")
+				return
+			}
+			serviceSnapshot, serviceClaimRevision, serviceProofDigest, serviceReceiptDigest = recovered.Snapshot, recovered.ClaimRevision, recovered.ProofDigest, recovered.ReceiptDigest
+			serviceCheckpointRefs = externalServiceCheckpointRefs(serviceSnapshot.CheckpointRefs)
+			if len(serviceCheckpointRefs) != 1 || serviceCheckpointRefs[0].Phase != "external_admission" || len(serviceSnapshot.RetryLineage) == 0 || serviceCheckpointRefs[0].AttemptID != serviceSnapshot.RetryLineage[len(serviceSnapshot.RetryLineage)-1] {
+				WriteControlProblem(w, r, http.StatusConflict, "external_deployment_snapshot_conflict", "service snapshot has no durable checkpoint references")
+				return
+			}
+		} else {
+			registrar, registrationOK := h.externalFleetDeploymentVerifier.(ExternalFleetEvidenceRegistrationClient)
+			if !registrationOK || (admission.State != store.ExternalDeploymentAdmissionNonceReady && admission.State != store.ExternalDeploymentAdmissionEvidenceClaimed) || admission.NonceID != nonce.ID || admission.NonceGeneration < 1 {
+				WriteControlProblem(w, r, http.StatusConflict, "external_deployment_admission_unavailable", "receipt nonce is not a ready server-registered admission nonce")
+				return
+			}
+			registrationState, registrationErr := h.db.GetExternalDeploymentNonceRegistration(r.Context(), admission.ID, nonce.ID)
+			if registrationErr != nil || registrationState.NonceSHA256 != nonce.sha256() || registrationState.ExpiresAt.Before(time.Now().UTC()) || registrationState.ServiceRevision < 1 {
+				WriteControlProblem(w, r, http.StatusConflict, "external_deployment_admission_unavailable", "server-registered nonce is expired or its durable registration drifted")
+				return
+			}
+			// Claim remotely first. A network timeout can be reconciled through the
+			// service's idempotent hash/generation claim rather than leaving a local
+			// claim stranded without the independently observed snapshot.
+			receiptBytes, _ := externalReceiptCanonicalJSON(receipt)
+			receiptDigest := sha256.Sum256(receiptBytes)
+			proofDigest, proofErr := externalAdmissionProofDigest(receipt)
+			if proofErr != nil {
+				WriteControlProblem(w, r, http.StatusInternalServerError, "external_deployment_store_failed", "failed to canonicalize external deployment proof")
+				return
+			}
+			claimRequest := ExternalFleetEvidenceClaim{SchemaVersion: "norn.external-fleet-admission-callback/v4", AdmissionID: admission.ID, LogicalDigest: digest, AdmissionContextDigest: strings.TrimPrefix(digest, "sha256:"), ReceiptDigest: hex.EncodeToString(receiptDigest[:]), ProofDigest: proofDigest, NonceSHA256: nonce.sha256(), Generation: admission.NonceGeneration, ExpectedRevision: registrationState.ServiceRevision}
+			// Persist the nonce-redacted canonical envelope before the remote CAS.
+			// A process crash or lost response can then recover the exact claim with
+			// the owner credential and nonce hash, without asking Actions for raw
+			// one-use material a second time.
+			if err := h.db.RecordExternalDeploymentClaimedEvidence(r.Context(), admission.ID, receiptBytes, claimRequest.ReceiptDigest, claimRequest.ProofDigest); err != nil {
+				WriteControlProblem(w, r, http.StatusConflict, "external_deployment_snapshot_conflict", "claimed receipt conflicts with durable admission state")
+				return
+			}
+			claimStatus, claimErr := registrar.ClaimExternalFleetNonce(r.Context(), claimRequest)
+			if claimErr != nil {
+				claimStatus, claimErr = registrar.GetExternalFleetAdmissionStatus(r.Context(), admission.ID, admission.NonceGeneration)
+			}
+			if claimErr != nil || !externalClaimStatusMatches(claimStatus, claimRequest) {
+				WriteControlProblem(w, r, http.StatusServiceUnavailable, "external_deployment_registration_unavailable", "evidence nonce claim failed")
+				return
+			}
+			// Store the complete immutable service response before making the local
+			// nonce claim visible. This leaves a timeout/crash recoverable solely by
+			// GET status, never by a second mutable evidence collection.
+			status := claimStatus
+			serviceSnapshot, serviceClaimRevision, serviceProofDigest, serviceReceiptDigest = status.Snapshot, status.Revision, proofDigest, claimRequest.ReceiptDigest
+			if err := h.db.RecordExternalDeploymentServiceSnapshot(r.Context(), store.ExternalDeploymentServiceSnapshot{AdmissionID: admission.ID, SnapshotID: status.Snapshot.ID, SnapshotRef: status.Snapshot.Ref, SnapshotSHA256: status.Snapshot.SHA256, RetryLineage: status.Snapshot.RetryLineage, ReceiptDigest: claimRequest.ReceiptDigest, ProofDigest: claimRequest.ProofDigest, ClaimRevision: status.Revision}); err != nil {
+				WriteControlProblem(w, r, http.StatusConflict, "external_deployment_snapshot_conflict", "immutable service snapshot conflicts with durable admission state")
+				return
+			}
+			serviceCheckpointRefs = externalServiceCheckpointRefs(status.Snapshot.CheckpointRefs)
+			if len(serviceCheckpointRefs) != 1 || serviceCheckpointRefs[0].Phase != "external_admission" || serviceCheckpointRefs[0].AttemptID != status.Snapshot.RetryLineage[len(status.Snapshot.RetryLineage)-1] {
+				WriteControlProblem(w, r, http.StatusConflict, "external_deployment_snapshot_conflict", "service snapshot has no durable checkpoint references")
+				return
+			}
+			if err := h.db.ClaimExternalDeploymentAdmissionEvidence(r.Context(), admission.ID, nonce.ID); err != nil {
+				WriteControlProblem(w, r, http.StatusConflict, "external_deployment_nonce_consumed", "server-registered nonce is already claimed or unavailable")
+				return
+			}
 		}
 	}
 	requestNonceSHA256 := ""
-	if recovered, recoveredOK := r.Context().Value(externalFleetRecoveredNonceContextKey{}).(externalFleetRecoveredNonce); recoveredOK {
+	if recoveredClaim {
 		requestNonceSHA256 = recovered.SHA256
 	}
-	verification, err := h.externalFleetDeploymentVerifier.VerifyExternalFleetDeployment(r.Context(), ExternalFleetDeploymentVerificationRequest{Receipt: receipt, CI: *principal.CI, Config: configured, AdmissionGeneration: admission.NonceGeneration, ServiceSnapshot: serviceSnapshot, NonceSHA256: requestNonceSHA256})
+	verification, err := h.externalFleetDeploymentVerifier.VerifyExternalFleetDeployment(r.Context(), ExternalFleetDeploymentVerificationRequest{Receipt: receipt, CI: *principal.CI, Config: configured, AdmissionGeneration: admission.NonceGeneration, ServiceSnapshot: serviceSnapshot, NonceSHA256: requestNonceSHA256, RecoveredClaim: recoveredClaim})
 	if err != nil || verification == nil {
 		message := "independent Fleet runtime verification failed"
 		if err != nil {
@@ -1084,7 +1112,14 @@ func (h *Handler) AdmitExternalFleetDeployment(w http.ResponseWriter, r *http.Re
 		WriteControlProblem(w, r, http.StatusForbidden, "external_deployment_verification_failed", err.Error())
 		return
 	}
-	storedNonce := externalNonceStoreRecord(nonce, appID, h.cfg.EnvironmentID(), *principal.CI)
+	storedCI := *principal.CI
+	if recoveredClaim {
+		// The nonce row is immutable provenance for the original workflow. The
+		// replacement principal is recorded in operation metadata, not allowed
+		// to rewrite the nonce's original run/attempt binding.
+		storedCI.RunID, storedCI.RunAttempt = receipt.Fleet.ApplyRunID, receipt.Fleet.ApplyRunAttempt
+	}
+	storedNonce := externalNonceStoreRecord(nonce, appID, h.cfg.EnvironmentID(), storedCI)
 	if admission != nil {
 		storedNonce.AdmissionID, storedNonce.RegistrationGeneration = admission.ID, admission.NonceGeneration
 	}
@@ -1154,6 +1189,15 @@ func (h *Handler) AdmitExternalFleetDeployment(w http.ResponseWriter, r *http.Re
 
 func externalReceiptMatchesCI(receipt ExternalFleetDeploymentReceipt, ci CIIdentity) bool {
 	return receipt.Fleet.ApplyRunID == ci.RunID && receipt.Fleet.ApplyRunAttempt == ci.RunAttempt
+}
+
+// externalFleetRecoveryPrincipalMatchesReceipt allows only the current
+// protected replacement workflow to recover an immutable prior admission.
+// The caller has already scoped it to the original app/environment/repository
+// and original idempotency key; the live verifier separately proves this
+// current GitHub identity while independently validating the original snapshot.
+func externalFleetRecoveryPrincipalMatchesReceipt(ci CIIdentity, receipt ExternalFleetDeploymentReceipt) bool {
+	return ci.Provider == "github-actions" && ci.Repository != "" && ci.Intent == "recover" && ci.RunID != "" && ci.RunAttempt != "" && !externalReceiptMatchesCI(receipt, ci)
 }
 
 // externalFleetAdmissionIdempotency deliberately excludes token JTI, raw nonce,
