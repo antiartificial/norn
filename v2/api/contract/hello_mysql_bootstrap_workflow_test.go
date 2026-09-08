@@ -1,7 +1,10 @@
 package contract
 
 import (
+	"encoding/json"
 	"os"
+	"os/exec"
+	"regexp"
 	"strings"
 	"testing"
 )
@@ -104,5 +107,83 @@ func TestHelloNornMySQLBootstrapFailsClosedForNonPublicRepositories(t *testing.T
 		if !strings.Contains(workflow, required) {
 			t.Errorf("private/internal fail-closed contract is missing %q", required)
 		}
+	}
+}
+
+func TestHelloNornMySQLBootstrapHandoffJQFilterGeneratesIndependentVerificationContract(t *testing.T) {
+	raw, err := os.ReadFile("../../../.github/workflows/hello-norn-mysql-bootstrap-image.yml")
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// Execute the filter embedded in the workflow, rather than a duplicate copy,
+	// so a syntactically invalid handoff filter fails this contract test before it
+	// can reach the artifact-producing workflow.
+	match := regexp.MustCompile(`(?s)--arg verifiedWorkflowSha "\$REVIEWED_WORKFLOW_SHA"\s*\\\s*'([^']+)'\s*\\\s*> bootstrap-evidence/handoff\.json`).FindStringSubmatch(string(raw))
+	if len(match) != 2 {
+		t.Fatal("could not find the handoff jq filter in the bootstrap workflow")
+	}
+	filter := match[1]
+
+	const (
+		sourceSHA           = "0123456789abcdef0123456789abcdef01234567"
+		artifact            = "ghcr.io/antiartificial/hello-norn-mysql@sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+		repository          = "antiartificial/norn"
+		signerWorkflow      = "antiartificial/norn/.github/workflows/hello-norn-mysql-bootstrap-image.yml"
+		reviewedWorkflowSHA = "89abcdef0123456789abcdef0123456789abcdef"
+	)
+	output, err := exec.Command(
+		"jq", "-n",
+		"--arg", "sourceSha", sourceSHA,
+		"--arg", "artifact", artifact,
+		"--arg", "repository", repository,
+		"--arg", "signerWorkflow", signerWorkflow,
+		"--arg", "verifiedWorkflowSha", reviewedWorkflowSHA,
+		filter,
+	).Output()
+	if err != nil {
+		t.Fatalf("handoff jq filter must compile and run: %v", err)
+	}
+
+	var handoff struct {
+		SchemaVersion       string `json:"schemaVersion"`
+		SourceSHA           string `json:"sourceSha"`
+		Artifact            string `json:"artifact"`
+		Repository          string `json:"repository"`
+		SignerWorkflow      string `json:"signerWorkflow"`
+		ReportedWorkflowSHA string `json:"reportedWorkflowSha"`
+		Verification        struct {
+			RequiredInputs []string `json:"requiredInputs"`
+			Provenance     string   `json:"provenance"`
+			SBOM           string   `json:"sbom"`
+		} `json:"verification"`
+	}
+	if err := json.Unmarshal(output, &handoff); err != nil {
+		t.Fatalf("handoff jq filter emitted invalid JSON: %v", err)
+	}
+	if handoff.SchemaVersion != "norn.hello-norn-mysql.bootstrap-handoff/v1" ||
+		handoff.SourceSHA != sourceSHA || handoff.Artifact != artifact ||
+		handoff.Repository != repository || handoff.SignerWorkflow != signerWorkflow ||
+		handoff.ReportedWorkflowSHA != reviewedWorkflowSHA {
+		t.Fatalf("handoff metadata does not preserve representative inputs: %+v", handoff)
+	}
+	if strings.Join(handoff.Verification.RequiredInputs, ",") != "REVIEWED_SOURCE_SHA,REVIEWED_WORKFLOW_SHA" {
+		t.Fatalf("handoff verification required inputs = %#v", handoff.Verification.RequiredInputs)
+	}
+
+	wantCommand := func(predicateType string) string {
+		return "gh attestation verify oci://" + artifact +
+			" --repo " + repository +
+			" --signer-workflow " + signerWorkflow +
+			" --signer-digest ${REVIEWED_WORKFLOW_SHA:?set from independently reviewed policy}" +
+			" --source-digest ${REVIEWED_SOURCE_SHA:?set from independently reviewed policy}" +
+			" --source-ref refs/heads/master --predicate-type " + predicateType +
+			" --deny-self-hosted-runners"
+	}
+	if handoff.Verification.Provenance != wantCommand("https://slsa.dev/provenance/v1") {
+		t.Errorf("provenance verification command = %q", handoff.Verification.Provenance)
+	}
+	if handoff.Verification.SBOM != wantCommand("https://spdx.dev/Document/v2.3") {
+		t.Errorf("SBOM verification command = %q", handoff.Verification.SBOM)
 	}
 }
