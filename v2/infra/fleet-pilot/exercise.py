@@ -44,6 +44,19 @@ def valid_write_token(token):
     return isinstance(token, str) and 32 <= len(token) <= 256 and all(0x21 <= ord(char) <= 0x7e for char in token)
 
 
+def parse_ingress_node_ids(value):
+    try:
+        node_values = json.loads(value)
+        if not isinstance(node_values, list):
+            raise ValueError("ingress node IDs must be a JSON array")
+        node_ids = frozenset(node_values)
+    except (TypeError, ValueError, json.JSONDecodeError) as err:
+        raise ValueError("ingress node IDs must be a JSON array of exactly two full lowercase Nomad node IDs") from err
+    if len(node_ids) != 2 or any(not isinstance(node_id, str) or not NODE_ID.fullmatch(node_id) for node_id in node_ids):
+        raise ValueError("ingress node IDs must be a JSON array of exactly two full lowercase Nomad node IDs")
+    return node_ids
+
+
 def token_file_binding(status):
     """Return every stable field that binds a secret read to one unchanged inode."""
     return (
@@ -361,10 +374,8 @@ def main():
     if not PILOT_NAMESPACE.fullmatch(args.namespace):
         parser.error("namespace must be the exact run-scoped norn-pilot-* namespace")
     try:
-        ingress_node_ids = frozenset(json.loads(args.ingress_node_ids_json))
-    except (TypeError, ValueError, json.JSONDecodeError):
-        parser.error("ingress node IDs must be a JSON array of exactly two full lowercase Nomad node IDs")
-    if len(ingress_node_ids) != 2 or any(not isinstance(node_id, str) or not NODE_ID.fullmatch(node_id) for node_id in ingress_node_ids):
+        ingress_node_ids = parse_ingress_node_ids(args.ingress_node_ids_json)
+    except ValueError:
         parser.error("ingress node IDs must be a JSON array of exactly two full lowercase Nomad node IDs")
     if urllib.parse.urlsplit("//" + args.expected_hostname).hostname != args.expected_hostname.lower():
         parser.error("expected hostname must be a hostname without a scheme or port")

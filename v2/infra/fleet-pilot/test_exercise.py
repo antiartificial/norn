@@ -194,6 +194,17 @@ class ProbeTests(unittest.TestCase):
             ([], False),
         )
 
+    def test_ingress_node_ids_require_exact_two_uuid_json_array(self):
+        good = json.dumps(sorted(self.ingress_nodes))
+        self.assertEqual(exercise.parse_ingress_node_ids(good), self.ingress_nodes)
+        for value in (
+            json.dumps({node: True for node in self.ingress_nodes}),
+            json.dumps([next(iter(self.ingress_nodes))]),
+            json.dumps(["not-a-node", "also-not-a-node"]),
+        ):
+            with self.subTest(value=value), self.assertRaises(ValueError):
+                exercise.parse_ingress_node_ids(value)
+
     @patch("exercise.shutil.which", return_value="/usr/bin/nomad")
     @patch("exercise.subprocess.run")
     def test_nomad_inventory_rejects_job_outside_ingress_pool_without_node_read(self, run, _which):
