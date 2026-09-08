@@ -98,7 +98,7 @@ func TestFleetOperationReadRequiresExactFleetPrincipal(t *testing.T) {
 func TestExternalAdmissionOperationReadRequiresExactExternalPrincipal(t *testing.T) {
 	principal := operationReadPrincipal("hello-norn-mysql", "staging", ScopeFleetExternalAdmission)
 	operation := operationForPrincipal("app.deploy", "hello-norn-mysql", "staging", principal)
-	operation.Metadata["externalFleetReceipt"] = map[string]interface{}{"schemaVersion": externalFleetReceiptSchema}
+	operation.Metadata["externalFleetProof"] = map[string]interface{}{"schemaVersion": externalFleetReceiptSchema}
 	if recorder, ok := operationReadAuthorized(principal, operation); !ok {
 		t.Fatalf("own external admission operation denied: status=%d body=%s", recorder.Code, recorder.Body.String())
 	}

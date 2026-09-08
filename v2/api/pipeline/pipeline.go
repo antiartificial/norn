@@ -61,7 +61,11 @@ type Pipeline struct {
 	ReleaseRegistryNodePullReady   bool
 	ReleaseAttestationRepositories []string
 	ReleaseAttestationWorkflowRefs []string
-	ReleaseRequireSBOM             bool
+	// ExternalFleetBootstrapSignerRef is a separately server-pinned signer for
+	// the one-time digest-only first-image bootstrap. It is intentionally not
+	// folded into the normal release signer allowlist.
+	ExternalFleetBootstrapSignerRef string
+	ReleaseRequireSBOM              bool
 	// TrustedQualificationSigningKeys are the current staging public keys used
 	// to re-authenticate a durable promotion receipt immediately before a
 	// production rollback mutates a workload.

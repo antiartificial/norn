@@ -41,6 +41,34 @@ func TestKeylessAdmissionRunsSignatureAndParsesBoundAttestations(t *testing.T) {
 	}
 }
 
+func TestKeylessBootstrapSignerIsSeparateAndExact(t *testing.T) {
+	digest := "sha256:" + strings.Repeat("a", 64)
+	sha := strings.Repeat("b", 40)
+	bootstrap := "acme/hello-norn-mysql/.github/workflows/hello-norn-mysql-bootstrap-image.yml@" + sha
+	candidate := model.ReleaseCandidate{
+		Repository: "acme/hello-norn-mysql", Ref: "refs/heads/main", SignerWorkflowRef: bootstrap, SignerWorkflowSHA: sha,
+		Attestation: model.ReleaseAttestationIdentity{Mode: "github-public", Issuer: "https://token.actions.githubusercontent.com", SubjectDigest: digest, MaterialSHA: sha},
+	}
+	p := &Pipeline{
+		ReleaseAttestationIssuer: "https://token.actions.githubusercontent.com", ReleaseAttestationRepositories: []string{candidate.Repository}, ReleaseRequireSBOM: true,
+		ExternalFleetBootstrapSignerRef: bootstrap,
+		VerifyKeylessAttestations: func(_ context.Context, _, _, signer string, _ model.ReleaseCandidate) error {
+			if signer != bootstrap {
+				t.Fatalf("bootstrap signer = %q", signer)
+			}
+			return nil
+		},
+	}
+	state := &state{imageTag: "ghcr.io/acme/hello-norn-mysql@" + digest, commitSHA: sha, candidate: candidate}
+	if err := p.verifyKeylessAttestations(context.Background(), state); err != nil {
+		t.Fatalf("exact separately pinned bootstrap signer rejected: %v", err)
+	}
+	state.candidate.SignerWorkflowRef = "acme/hello-norn-mysql/.github/workflows/release.yml@" + sha
+	if err := p.verifyKeylessAttestations(context.Background(), state); err == nil {
+		t.Fatal("unlisted non-bootstrap signer was accepted")
+	}
+}
+
 func TestAttestedAdmissionInvokesNornPrivateVerifier(t *testing.T) {
 	digest := "sha256:" + strings.Repeat("a", 64)
 	artifact := "registry.example.test/norn/private-app@" + digest

@@ -6,6 +6,7 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net/http"
 	"net/url"
@@ -23,7 +24,7 @@ import (
 // externalFleetReceiptSchema is a deliberately narrow bridge for the pilot
 // hello-norn-mysql job. It does not make deploy:false apps deployable through
 // the normal pipeline and it is unavailable without an injected live verifier.
-const externalFleetReceiptSchema = "norn.external-fleet-deployment-receipt/v1"
+const externalFleetReceiptSchema = "norn.external-fleet-deployment-receipt/v2"
 const externalFleetAdmissionNonceTTL = 10 * time.Minute
 
 var sha256HexPattern = regexp.MustCompile(`^[0-9a-f]{64}$`)
@@ -45,7 +46,6 @@ type ExternalFleetDeploymentReceipt struct {
 	SourceSHA      string                        `json:"sourceSha"`
 	Artifact       string                        `json:"artifact"`
 	Candidate      model.ReleaseCandidate        `json:"candidate"`
-	HCLSHA256      string                        `json:"hclSha256"`
 	AttestationURI string                        `json:"attestationUri"`
 	SBOMURI        string                        `json:"sbomUri"`
 	Fleet          ExternalFleetExecutionProof   `json:"fleet"`
@@ -53,15 +53,25 @@ type ExternalFleetDeploymentReceipt struct {
 }
 
 type ExternalFleetExecutionProof struct {
-	Namespace         string `json:"namespace"`
-	JobID             string `json:"jobId"`
-	NomadSubmissionID string `json:"nomadSubmissionId"`
-	ApplyRunID        string `json:"applyRunId"`
-	ApplyRunAttempt   string `json:"applyRunAttempt"`
-	PlanSHA256        string `json:"planSha256"`
-	RunnerAttemptID   string `json:"runnerAttemptId"`
-	CheckpointID      string `json:"checkpointId"`
-	NonceEvidenceRef  string `json:"nonceEvidenceRef"`
+	Namespace        string                     `json:"namespace"`
+	Migration        ExternalFleetNomadJobProof `json:"migration"`
+	Runtime          ExternalFleetNomadJobProof `json:"runtime"`
+	ApplyRunID       string                     `json:"applyRunId"`
+	ApplyRunAttempt  string                     `json:"applyRunAttempt"`
+	PlanSHA256       string                     `json:"planSha256"`
+	RunnerAttemptID  string                     `json:"runnerAttemptId"`
+	NonceEvidenceRef string                     `json:"nonceEvidenceRef"`
+}
+
+// ExternalFleetNomadJobProof reflects Nomad's v2 JobRegisterResponse: a
+// submitted job is bound by job ID, evaluation ID, and returned modify index.
+// It deliberately does not invent a "submission ID" that Nomad does not emit.
+type ExternalFleetNomadJobProof struct {
+	JobID          string `json:"jobId"`
+	HCLSHA256      string `json:"hclSha256"`
+	EvalID         string `json:"evalId"`
+	JobModifyIndex uint64 `json:"jobModifyIndex"`
+	CheckpointID   string `json:"checkpointId"`
 }
 
 type ExternalFleetChronologyStep struct {
@@ -87,10 +97,13 @@ type ExternalFleetDeploymentVerificationRequest struct {
 }
 
 type ExternalFleetAdmissionConfig struct {
-	App       string
-	Namespace string
-	JobID     string
-	HCLSHA256 string
+	App                string
+	Namespace          string
+	MigrationJobID     string
+	MigrationHCLSHA256 string
+	RuntimeJobID       string
+	RuntimeHCLSHA256   string
+	BootstrapSignerRef string
 }
 
 // ExternalFleetDeploymentVerification carries only independently observed
@@ -101,20 +114,27 @@ type ExternalFleetDeploymentVerification struct {
 	Artifact           string
 	AttestationURI     string
 	SBOMURI            string
-	HCLSHA256          string
 	Namespace          string
-	JobID              string
-	NomadSubmissionID  string
+	Migration          ExternalFleetNomadJobProof
+	Runtime            ExternalFleetNomadJobProof
 	ApplyRunID         string
 	ApplyRunAttempt    string
 	PlanSHA256         string
 	RunnerAttemptID    string
-	CheckpointID       string
 	NonceEvidenceRef   string
+	Regions            []ExternalFleetRegionProof
 	IngressNodeIDs     []string
 	PublicHTTPSVersion string
 	PublicHTTPSReady   string
 	Chronology         []ExternalFleetChronologyStep
+}
+
+type ExternalFleetRegionProof struct {
+	Region        string
+	NomadRegion   string
+	EvalID        string
+	DesiredWeight int
+	ActiveWeight  int
 }
 
 func (h *Handler) ConfigureExternalFleetDeploymentVerifier(verifier ExternalFleetDeploymentVerifier) {
@@ -167,7 +187,7 @@ func (h *Handler) AdmitExternalFleetDeployment(w http.ResponseWriter, r *http.Re
 		WriteControlProblem(w, r, http.StatusConflict, "external_deployment_app_invalid", "external admission requires the configured deploy:false app with a server-owned repository")
 		return
 	}
-	if err := validateReleaseSpecBinding(spec, receipt.Candidate, receipt.Artifact, h.pipelineRegistryURL()); err != nil || receipt.Candidate.Attestation.MaterialSHA != receipt.SourceSHA || receipt.Candidate.Attestation.ProvenanceURI != receipt.AttestationURI || receipt.Candidate.Attestation.SBOMURI != receipt.SBOMURI || !validReleaseCandidateForTrust(receipt.Candidate, receipt.SourceSHA, receipt.Artifact, h.releaseTrustMode()) {
+	if err := validateReleaseSpecBinding(spec, receipt.Candidate, receipt.Artifact, h.pipelineRegistryURL()); err != nil || receipt.Candidate.Attestation.MaterialSHA != receipt.SourceSHA || receipt.Candidate.Attestation.ProvenanceURI != receipt.AttestationURI || receipt.Candidate.Attestation.SBOMURI != receipt.SBOMURI || !validExternalBootstrapCandidate(receipt.Candidate, receipt.SourceSHA, receipt.Artifact, h.releaseTrustMode(), configured) {
 		WriteControlProblem(w, r, http.StatusForbidden, "external_deployment_binding_mismatch", "external receipt source, artifact, and candidate do not match the server-owned app binding")
 		return
 	}
@@ -200,36 +220,38 @@ func (h *Handler) AdmitExternalFleetDeployment(w http.ResponseWriter, r *http.Re
 		WriteControlProblem(w, r, http.StatusForbidden, "external_deployment_verification_failed", err.Error())
 		return
 	}
-	consumed, err := h.db.ConsumeExternalDeploymentNonce(r.Context(), externalNonceStoreRecord(nonce, appID, h.cfg.EnvironmentID(), *principal.CI))
-	if err != nil {
-		WriteControlProblem(w, r, http.StatusServiceUnavailable, "external_deployment_nonce_unavailable", "durable Norn nonce consumption is unavailable")
-		return
-	}
-	if !consumed {
-		WriteControlProblem(w, r, http.StatusConflict, "external_deployment_nonce_consumed", "Norn nonce is expired, belongs to another protected Fleet run, or was already consumed")
-		return
-	}
 	now := time.Now().UTC()
 	deploymentID := uuid.NewString()
 	deployment := &model.Deployment{ID: deploymentID, App: appID, CommitSHA: receipt.SourceSHA, ImageTag: receipt.Artifact, Environment: "staging", SagaID: "external-fleet:" + nonce.ID, Status: model.StatusDeployed, SourceKind: "external-fleet", SourceRef: receipt.SourceSHA, StartedAt: now, FinishedAt: &now}
+	redactedReceipt := redactExternalFleetReceipt(receipt)
 	canonicalReceipt, canonicalErr := externalReceiptCanonicalJSON(receipt)
 	if canonicalErr != nil {
 		WriteControlProblem(w, r, http.StatusInternalServerError, "external_deployment_store_failed", "failed to canonicalize verified external deployment evidence")
 		return
 	}
 	receiptHash := sha256.Sum256(canonicalReceipt)
-	metadata := map[string]interface{}{"idempotencyKey": key, "requestDigest": digest, "principal": principal.Subject, "principalTokenId": principal.TokenID, "requestCI": principal.CI, "environment": "staging", "candidate": receipt.Candidate, "externalFleetReceipt": receipt, "externalFleetReceiptSHA256": hex.EncodeToString(receiptHash[:]), "externalFleetVerification": verification, "nonceID": nonce.ID}
+	metadata := map[string]interface{}{"idempotencyKey": key, "requestDigest": digest, "principal": principal.Subject, "principalTokenId": principal.TokenID, "requestCI": principal.CI, "environment": "staging", "candidate": receipt.Candidate, "externalFleetProof": redactedReceipt, "externalFleetProofSHA256": hex.EncodeToString(receiptHash[:]), "externalFleetVerification": verification, "nonceID": nonce.ID, "nonceSHA256": nonce.sha256()}
 	op := &model.Operation{ID: uuid.NewString(), Kind: "app.deploy", App: appID, SagaID: deployment.SagaID, Ref: receipt.SourceSHA, Status: model.OperationSucceeded, Risk: "externally executed staging workload", Source: "external-fleet-admission", Message: "independently verified external Fleet deployment admitted", Payload: map[string]interface{}{"deploymentId": deploymentID, "app": appID, "sourceSha": receipt.SourceSHA, "artifact": receipt.Artifact, "candidate": receipt.Candidate}, Metadata: metadata, StartedAt: now, FinishedAt: &now, MaxAttempts: 1}
-	if err := h.db.InsertDeploymentOperation(r.Context(), deployment, spec.ResolvedRegions(), op); err != nil {
-		if existing, lookupErr := h.db.GetOperationByIdempotencyKey(r.Context(), key); lookupErr == nil && existing.Kind == "app.deploy" && existing.App == appID {
-			storedDigest, _ := existing.Metadata["requestDigest"].(string)
-			if storedDigest == digest {
-				existing.AttachReceipt()
-				writeJSON(w, existing)
-				return
-			}
+	regions, err := externalDeploymentRegions(spec.ResolvedRegions(), verification.Regions)
+	if err != nil {
+		WriteControlProblem(w, r, http.StatusForbidden, "external_deployment_verification_failed", err.Error())
+		return
+	}
+	result, err := h.db.AdmitExternalDeployment(r.Context(), store.ExternalDeploymentAdmission{Nonce: externalNonceStoreRecord(nonce, appID, h.cfg.EnvironmentID(), *principal.CI), Deployment: deployment, Regions: regions, Operation: op, IdempotencyKey: key, RequestDigest: digest})
+	if err != nil {
+		switch {
+		case errors.Is(err, store.ErrExternalDeploymentNonceConsumed):
+			WriteControlProblem(w, r, http.StatusConflict, "external_deployment_nonce_consumed", "Norn nonce is expired, belongs to another protected Fleet run, or was already consumed")
+		case errors.Is(err, store.ErrExternalDeploymentIdempotencyConflict):
+			WriteControlProblem(w, r, http.StatusConflict, "idempotency_key_reused", "Idempotency-Key was already used for a different app operation")
+		default:
+			WriteControlProblem(w, r, http.StatusServiceUnavailable, "external_deployment_store_unavailable", "durable external deployment admission could not be committed")
 		}
-		WriteControlProblem(w, r, http.StatusInternalServerError, "external_deployment_store_failed", "Norn consumed the nonce but could not persist the deployment receipt; issue a new nonce and inspect the durable operation store")
+		return
+	}
+	if result.Replayed {
+		result.Operation.AttachReceipt()
+		writeJSON(w, result.Operation)
 		return
 	}
 	op.AttachReceipt()
@@ -257,10 +279,15 @@ func (h *Handler) issueExternalFleetAdmissionNonce(w http.ResponseWriter, r *htt
 }
 
 func (h *Handler) externalFleetAdmissionConfig(appID string) (ExternalFleetAdmissionConfig, error) {
-	if h == nil || h.cfg == nil || h.cfg.EnvironmentID() != "staging" || h.cfg.ExternalFleetAdmissionApp == "" || h.cfg.ExternalFleetAdmissionApp != appID || !externalNamePattern.MatchString(h.cfg.ExternalFleetAdmissionNamespace) || !externalNamePattern.MatchString(h.cfg.ExternalFleetAdmissionJobID) || !sha256HexPattern.MatchString(h.cfg.ExternalFleetAdmissionHCLSHA256) {
-		return ExternalFleetAdmissionConfig{}, fmt.Errorf("external Fleet admission is disabled or its exact staging app/namespace/job/HCL binding is incomplete")
+	if h == nil || h.cfg == nil || (h.cfg.EnvironmentID() != "staging" && h.cfg.EnvironmentID() != "production") || h.cfg.ExternalFleetAdmissionApp == "" || h.cfg.ExternalFleetAdmissionApp != appID || !externalNamePattern.MatchString(h.cfg.ExternalFleetAdmissionNamespace) || !externalNamePattern.MatchString(h.cfg.ExternalFleetAdmissionMigrationJobID) || !externalNamePattern.MatchString(h.cfg.ExternalFleetAdmissionRuntimeJobID) || !sha256HexPattern.MatchString(h.cfg.ExternalFleetAdmissionMigrationHCLSHA256) || !sha256HexPattern.MatchString(h.cfg.ExternalFleetAdmissionRuntimeHCLSHA256) || !validExternalBootstrapSignerRef(h.cfg.ExternalFleetAdmissionBootstrapSignerRef) {
+		return ExternalFleetAdmissionConfig{}, fmt.Errorf("external Fleet admission is disabled or its exact staging app/migration/runtime/bootstrap-signer binding is incomplete")
 	}
-	return ExternalFleetAdmissionConfig{App: appID, Namespace: h.cfg.ExternalFleetAdmissionNamespace, JobID: h.cfg.ExternalFleetAdmissionJobID, HCLSHA256: h.cfg.ExternalFleetAdmissionHCLSHA256}, nil
+	return ExternalFleetAdmissionConfig{App: appID, Namespace: h.cfg.ExternalFleetAdmissionNamespace, MigrationJobID: h.cfg.ExternalFleetAdmissionMigrationJobID, MigrationHCLSHA256: h.cfg.ExternalFleetAdmissionMigrationHCLSHA256, RuntimeJobID: h.cfg.ExternalFleetAdmissionRuntimeJobID, RuntimeHCLSHA256: h.cfg.ExternalFleetAdmissionRuntimeHCLSHA256, BootstrapSignerRef: h.cfg.ExternalFleetAdmissionBootstrapSignerRef}, nil
+}
+
+func validExternalBootstrapSignerRef(value string) bool {
+	path, sha, found := strings.Cut(strings.TrimSpace(value), "@")
+	return found && strings.HasSuffix(path, ".github/workflows/hello-norn-mysql-bootstrap-image.yml") && fullSourceSHAPattern.MatchString(sha)
 }
 
 func (h *Handler) findExternalAdmissionSpec(appID string) *model.InfraSpec {
@@ -323,11 +350,11 @@ func externalNonceStoreRecord(nonce externalAdmissionNonce, app, environment str
 }
 
 func validateExternalFleetReceipt(receipt ExternalFleetDeploymentReceipt, configured ExternalFleetAdmissionConfig, app string) error {
-	if receipt.SchemaVersion != externalFleetReceiptSchema || receipt.App != app || !fullSourceSHAPattern.MatchString(receipt.SourceSHA) || !model.IsContentAddressedImage(receipt.Artifact) || !sha256HexPattern.MatchString(receipt.HCLSHA256) || receipt.HCLSHA256 != configured.HCLSHA256 || !validExternalURI(receipt.AttestationURI) || !validExternalURI(receipt.SBOMURI) {
-		return fmt.Errorf("receipt schema, app, immutable source/artifact/HCL digest, or evidence references are invalid")
+	if receipt.SchemaVersion != externalFleetReceiptSchema || receipt.App != app || !fullSourceSHAPattern.MatchString(receipt.SourceSHA) || !model.IsContentAddressedImage(receipt.Artifact) || !validExternalURI(receipt.AttestationURI) || !validExternalURI(receipt.SBOMURI) {
+		return fmt.Errorf("receipt schema, app, immutable source/artifact, or evidence references are invalid")
 	}
-	if receipt.Fleet.Namespace != configured.Namespace || receipt.Fleet.JobID != configured.JobID || !externalNamePattern.MatchString(receipt.Fleet.NomadSubmissionID) || !validGitHubNumericID(receipt.Fleet.ApplyRunID) || !validGitHubNumericID(receipt.Fleet.ApplyRunAttempt) || !sha256HexPattern.MatchString(receipt.Fleet.PlanSHA256) || !externalNamePattern.MatchString(receipt.Fleet.RunnerAttemptID) || !externalNamePattern.MatchString(receipt.Fleet.CheckpointID) || !externalNamePattern.MatchString(receipt.Fleet.NonceEvidenceRef) {
-		return fmt.Errorf("receipt Fleet namespace/job/run/plan/attempt/checkpoint/nonce evidence binding is invalid")
+	if receipt.Fleet.Namespace != configured.Namespace || !validExternalNomadJobProof(receipt.Fleet.Migration, configured.MigrationJobID, configured.MigrationHCLSHA256) || !validExternalNomadJobProof(receipt.Fleet.Runtime, configured.RuntimeJobID, configured.RuntimeHCLSHA256) || !validGitHubNumericID(receipt.Fleet.ApplyRunID) || !validGitHubNumericID(receipt.Fleet.ApplyRunAttempt) || !sha256HexPattern.MatchString(receipt.Fleet.PlanSHA256) || !externalNamePattern.MatchString(receipt.Fleet.RunnerAttemptID) || !externalNamePattern.MatchString(receipt.Fleet.NonceEvidenceRef) {
+		return fmt.Errorf("receipt Fleet namespace/migration/runtime/run/plan/attempt/nonce evidence binding is invalid")
 	}
 	if !validExternalChronology(receipt.Chronology) {
 		return fmt.Errorf("receipt must carry ordered prepare, migration, runtime, and exercise evidence")
@@ -336,13 +363,51 @@ func validateExternalFleetReceipt(receipt ExternalFleetDeploymentReceipt, config
 }
 
 func verificationMatchesExternalReceipt(verified ExternalFleetDeploymentVerification, receipt ExternalFleetDeploymentReceipt, configured ExternalFleetAdmissionConfig) error {
-	if verified.SourceSHA != receipt.SourceSHA || verified.Artifact != receipt.Artifact || verified.AttestationURI != receipt.AttestationURI || verified.SBOMURI != receipt.SBOMURI || verified.HCLSHA256 != receipt.HCLSHA256 || verified.Namespace != configured.Namespace || verified.JobID != configured.JobID || verified.NomadSubmissionID != receipt.Fleet.NomadSubmissionID || verified.ApplyRunID != receipt.Fleet.ApplyRunID || verified.ApplyRunAttempt != receipt.Fleet.ApplyRunAttempt || verified.PlanSHA256 != receipt.Fleet.PlanSHA256 || verified.RunnerAttemptID != receipt.Fleet.RunnerAttemptID || verified.CheckpointID != receipt.Fleet.CheckpointID || verified.NonceEvidenceRef != receipt.Fleet.NonceEvidenceRef {
+	if verified.SourceSHA != receipt.SourceSHA || verified.Artifact != receipt.Artifact || verified.AttestationURI != receipt.AttestationURI || verified.SBOMURI != receipt.SBOMURI || verified.Namespace != configured.Namespace || verified.Migration != receipt.Fleet.Migration || verified.Runtime != receipt.Fleet.Runtime || verified.ApplyRunID != receipt.Fleet.ApplyRunID || verified.ApplyRunAttempt != receipt.Fleet.ApplyRunAttempt || verified.PlanSHA256 != receipt.Fleet.PlanSHA256 || verified.RunnerAttemptID != receipt.Fleet.RunnerAttemptID || verified.NonceEvidenceRef != receipt.Fleet.NonceEvidenceRef {
 		return fmt.Errorf("independent verifier observations do not exactly match the receipt")
 	}
 	if !validDistinctIngressNodes(verified.IngressNodeIDs) || !validHTTPSEvidence(verified.PublicHTTPSVersion, verified.PublicHTTPSReady) || !sameExternalChronology(verified.Chronology, receipt.Chronology) {
 		return fmt.Errorf("independent verifier did not prove two distinct ingress nodes, public HTTPS version/ready, and full chronology")
 	}
 	return nil
+}
+
+func validExternalNomadJobProof(proof ExternalFleetNomadJobProof, jobID, hclSHA256 string) bool {
+	return proof.JobID == jobID && proof.HCLSHA256 == hclSHA256 && uuid.Validate(proof.EvalID) == nil && proof.JobModifyIndex > 0 && externalNamePattern.MatchString(proof.CheckpointID)
+}
+
+func validExternalBootstrapCandidate(candidate model.ReleaseCandidate, sourceSHA, artifact, trustMode string, configured ExternalFleetAdmissionConfig) bool {
+	return validReleaseCandidateForTrust(candidate, sourceSHA, artifact, trustMode) && candidate.SignerWorkflowRef == configured.BootstrapSignerRef && candidate.SignerWorkflowSHA == configured.BootstrapSignerRef[strings.LastIndex(configured.BootstrapSignerRef, "@")+1:]
+}
+
+func redactExternalFleetReceipt(receipt ExternalFleetDeploymentReceipt) ExternalFleetDeploymentReceipt {
+	receipt.Nonce = ""
+	return receipt
+}
+
+func externalDeploymentRegions(expected []model.ResolvedRegion, observed []ExternalFleetRegionProof) ([]model.DeploymentRegion, error) {
+	if len(expected) == 0 || len(observed) != len(expected) {
+		return nil, fmt.Errorf("independent verifier did not return one region proof for every configured region")
+	}
+	byRegion := make(map[string]ExternalFleetRegionProof, len(observed))
+	for _, region := range observed {
+		if region.Region == "" || region.NomadRegion == "" || uuid.Validate(region.EvalID) != nil || region.DesiredWeight < 0 || region.ActiveWeight != region.DesiredWeight {
+			return nil, fmt.Errorf("independent verifier returned an invalid region weight or evaluation binding")
+		}
+		if _, duplicate := byRegion[region.Region]; duplicate {
+			return nil, fmt.Errorf("independent verifier returned duplicate region evidence")
+		}
+		byRegion[region.Region] = region
+	}
+	result := make([]model.DeploymentRegion, 0, len(expected))
+	for _, configured := range expected {
+		region, found := byRegion[configured.Name]
+		if !found || region.NomadRegion != configured.NomadRegion || region.DesiredWeight != configured.TrafficWeight {
+			return nil, fmt.Errorf("independent verifier region evidence does not match configured placement")
+		}
+		result = append(result, model.DeploymentRegion{Region: region.Region, NomadRegion: region.NomadRegion, Status: model.StatusDeployed, DesiredWeight: region.DesiredWeight, ActiveWeight: region.ActiveWeight, EvalID: region.EvalID})
+	}
+	return result, nil
 }
 
 func validExternalChronology(steps []ExternalFleetChronologyStep) bool {
@@ -398,15 +463,21 @@ func validExternalURI(value string) bool {
 }
 
 func safeExternalVerificationError(err error) string {
-	value := strings.TrimSpace(err.Error())
-	if len(value) > 240 {
-		return value[:240]
+	// Verifiers can hold provider, Nomad, and registry responses. Only an error
+	// explicitly marked safe is allowed across the control-plane boundary.
+	type safe interface{ SafeExternalVerificationError() string }
+	if typed, ok := err.(safe); ok {
+		value := strings.TrimSpace(typed.SafeExternalVerificationError())
+		if value != "" && len(value) <= 240 && !strings.ContainsAny(value, "\r\n") {
+			return value
+		}
 	}
-	return value
+	return "independent evidence was rejected"
 }
 
-// externalReceiptCanonicalJSON makes evidence digests stable for verifier
-// adapters and tests; callers are never asked to supply a trusted digest.
+// externalReceiptCanonicalJSON makes redacted evidence digests stable for
+// verifier adapters and tests. It clears the one-use raw nonce itself so a
+// future caller cannot accidentally make it part of durable evidence.
 func externalReceiptCanonicalJSON(receipt ExternalFleetDeploymentReceipt) ([]byte, error) {
-	return json.Marshal(receipt)
+	return json.Marshal(redactExternalFleetReceipt(receipt))
 }

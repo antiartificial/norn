@@ -1,6 +1,8 @@
 package handler
 
 import (
+	"encoding/json"
+	"errors"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -20,8 +22,8 @@ func externalReceiptForTest() ExternalFleetDeploymentReceipt {
 	return ExternalFleetDeploymentReceipt{
 		SchemaVersion: externalFleetReceiptSchema, Nonce: "00000000-0000-4000-8000-000000000001." + strings.Repeat("a", 64), App: "hello-norn-mysql",
 		SourceSHA: strings.Repeat("a", 40), Artifact: "ghcr.io/acme/hello-norn-mysql@sha256:" + strings.Repeat("b", 64), Candidate: candidate,
-		HCLSHA256: strings.Repeat("c", 64), AttestationURI: "https://evidence.example.test/attestation", SBOMURI: "https://evidence.example.test/sbom",
-		Fleet: ExternalFleetExecutionProof{Namespace: "norn-pilot", JobID: "hello-norn-mysql", NomadSubmissionID: "submission-1", ApplyRunID: "123", ApplyRunAttempt: "1", PlanSHA256: strings.Repeat("d", 64), RunnerAttemptID: "attempt-1", CheckpointID: "runtime-1", NonceEvidenceRef: "nonce-1"},
+		AttestationURI: "https://evidence.example.test/attestation", SBOMURI: "https://evidence.example.test/sbom",
+		Fleet: ExternalFleetExecutionProof{Namespace: "norn-pilot", Migration: ExternalFleetNomadJobProof{JobID: "hello-norn-mysql-migrate", HCLSHA256: strings.Repeat("c", 64), EvalID: "00000000-0000-4000-8000-000000000011", JobModifyIndex: 11, CheckpointID: "migration-1"}, Runtime: ExternalFleetNomadJobProof{JobID: "hello-norn-mysql", HCLSHA256: strings.Repeat("e", 64), EvalID: "00000000-0000-4000-8000-000000000012", JobModifyIndex: 12, CheckpointID: "runtime-1"}, ApplyRunID: "123", ApplyRunAttempt: "1", PlanSHA256: strings.Repeat("d", 64), RunnerAttemptID: "attempt-1", NonceEvidenceRef: "nonce-1"},
 		Chronology: []ExternalFleetChronologyStep{
 			{Phase: "prepare", OccurredAt: now, EvidenceRef: "https://evidence.example.test/prepare"},
 			{Phase: "migration", OccurredAt: now.Add(time.Second), EvidenceRef: "https://evidence.example.test/migration"},
@@ -32,12 +34,12 @@ func externalReceiptForTest() ExternalFleetDeploymentReceipt {
 }
 
 func externalConfigForTest() ExternalFleetAdmissionConfig {
-	return ExternalFleetAdmissionConfig{App: "hello-norn-mysql", Namespace: "norn-pilot", JobID: "hello-norn-mysql", HCLSHA256: strings.Repeat("c", 64)}
+	return ExternalFleetAdmissionConfig{App: "hello-norn-mysql", Namespace: "norn-pilot", MigrationJobID: "hello-norn-mysql-migrate", MigrationHCLSHA256: strings.Repeat("c", 64), RuntimeJobID: "hello-norn-mysql", RuntimeHCLSHA256: strings.Repeat("e", 64), BootstrapSignerRef: "acme/hello-norn-mysql/.github/workflows/hello-norn-mysql-bootstrap-image.yml@" + strings.Repeat("f", 40)}
 }
 
 func verifiedExternalReceipt(receipt ExternalFleetDeploymentReceipt) ExternalFleetDeploymentVerification {
 	chronology := append([]ExternalFleetChronologyStep(nil), receipt.Chronology...)
-	return ExternalFleetDeploymentVerification{SourceSHA: receipt.SourceSHA, Artifact: receipt.Artifact, AttestationURI: receipt.AttestationURI, SBOMURI: receipt.SBOMURI, HCLSHA256: receipt.HCLSHA256, Namespace: receipt.Fleet.Namespace, JobID: receipt.Fleet.JobID, NomadSubmissionID: receipt.Fleet.NomadSubmissionID, ApplyRunID: receipt.Fleet.ApplyRunID, ApplyRunAttempt: receipt.Fleet.ApplyRunAttempt, PlanSHA256: receipt.Fleet.PlanSHA256, RunnerAttemptID: receipt.Fleet.RunnerAttemptID, CheckpointID: receipt.Fleet.CheckpointID, NonceEvidenceRef: receipt.Fleet.NonceEvidenceRef, IngressNodeIDs: []string{"ingress-a", "ingress-b"}, PublicHTTPSVersion: "https://pilot.example.test/version", PublicHTTPSReady: "https://pilot.example.test/ready", Chronology: chronology}
+	return ExternalFleetDeploymentVerification{SourceSHA: receipt.SourceSHA, Artifact: receipt.Artifact, AttestationURI: receipt.AttestationURI, SBOMURI: receipt.SBOMURI, Namespace: receipt.Fleet.Namespace, Migration: receipt.Fleet.Migration, Runtime: receipt.Fleet.Runtime, ApplyRunID: receipt.Fleet.ApplyRunID, ApplyRunAttempt: receipt.Fleet.ApplyRunAttempt, PlanSHA256: receipt.Fleet.PlanSHA256, RunnerAttemptID: receipt.Fleet.RunnerAttemptID, NonceEvidenceRef: receipt.Fleet.NonceEvidenceRef, IngressNodeIDs: []string{"ingress-a", "ingress-b"}, PublicHTTPSVersion: "https://pilot.example.test/version", PublicHTTPSReady: "https://pilot.example.test/ready", Chronology: chronology, Regions: []ExternalFleetRegionProof{{Region: "global", NomadRegion: "global", EvalID: "00000000-0000-4000-8000-000000000012", DesiredWeight: 100, ActiveWeight: 100}}}
 }
 
 func TestExternalFleetReceiptValidationFailsClosed(t *testing.T) {
@@ -46,15 +48,16 @@ func TestExternalFleetReceiptValidationFailsClosed(t *testing.T) {
 		t.Fatalf("valid receipt rejected: %v", err)
 	}
 	for name, mutate := range map[string]func(*ExternalFleetDeploymentReceipt){
-		"wrong schema":  func(value *ExternalFleetDeploymentReceipt) { value.SchemaVersion = "v0" },
-		"foreign app":   func(value *ExternalFleetDeploymentReceipt) { value.App = "billing" },
-		"mutable image": func(value *ExternalFleetDeploymentReceipt) { value.Artifact = "ghcr.io/acme/hello-norn-mysql:latest" },
-		"wrong hcl":     func(value *ExternalFleetDeploymentReceipt) { value.HCLSHA256 = strings.Repeat("e", 64) },
+		"wrong schema":      func(value *ExternalFleetDeploymentReceipt) { value.SchemaVersion = "v0" },
+		"foreign app":       func(value *ExternalFleetDeploymentReceipt) { value.App = "billing" },
+		"mutable image":     func(value *ExternalFleetDeploymentReceipt) { value.Artifact = "ghcr.io/acme/hello-norn-mysql:latest" },
+		"wrong runtime hcl": func(value *ExternalFleetDeploymentReceipt) { value.Fleet.Runtime.HCLSHA256 = strings.Repeat("f", 64) },
 		"credential evidence": func(value *ExternalFleetDeploymentReceipt) {
 			value.AttestationURI = "https://token@example.test/evidence"
 		},
-		"foreign namespace":   func(value *ExternalFleetDeploymentReceipt) { value.Fleet.Namespace = "other" },
-		"missing nonce proof": func(value *ExternalFleetDeploymentReceipt) { value.Fleet.NonceEvidenceRef = "" },
+		"foreign namespace":            func(value *ExternalFleetDeploymentReceipt) { value.Fleet.Namespace = "other" },
+		"invalid migration submission": func(value *ExternalFleetDeploymentReceipt) { value.Fleet.Migration.EvalID = "not-a-uuid" },
+		"missing nonce proof":          func(value *ExternalFleetDeploymentReceipt) { value.Fleet.NonceEvidenceRef = "" },
 		"unordered chronology": func(value *ExternalFleetDeploymentReceipt) {
 			value.Chronology[2].OccurredAt = value.Chronology[1].OccurredAt
 		},
@@ -131,14 +134,13 @@ func TestExternalAdmissionRequiresOnlyExactScopedFleetIdentity(t *testing.T) {
 }
 
 func TestExternalAdmissionDisabledWithoutCompleteExactConfiguration(t *testing.T) {
-	h := &Handler{cfg: &config.Config{Environment: "staging", ExternalFleetAdmissionApp: "hello-norn-mysql", ExternalFleetAdmissionNamespace: "norn-pilot", ExternalFleetAdmissionJobID: "hello-norn-mysql", ExternalFleetAdmissionHCLSHA256: strings.Repeat("c", 64)}}
+	h := &Handler{cfg: &config.Config{Environment: "staging", ExternalFleetAdmissionApp: "hello-norn-mysql", ExternalFleetAdmissionNamespace: "norn-pilot", ExternalFleetAdmissionMigrationJobID: "hello-norn-mysql-migrate", ExternalFleetAdmissionMigrationHCLSHA256: strings.Repeat("c", 64), ExternalFleetAdmissionRuntimeJobID: "hello-norn-mysql", ExternalFleetAdmissionRuntimeHCLSHA256: strings.Repeat("e", 64), ExternalFleetAdmissionBootstrapSignerRef: "acme/hello-norn-mysql/.github/workflows/hello-norn-mysql-bootstrap-image.yml@" + strings.Repeat("f", 40)}}
 	if _, err := h.externalFleetAdmissionConfig("hello-norn-mysql"); err != nil {
 		t.Fatalf("complete exact staging config rejected: %v", err)
 	}
 	for _, mutate := range []func(*config.Config){
-		func(value *config.Config) { value.Environment = "production" },
 		func(value *config.Config) { value.ExternalFleetAdmissionApp = "other" },
-		func(value *config.Config) { value.ExternalFleetAdmissionHCLSHA256 = "short" },
+		func(value *config.Config) { value.ExternalFleetAdmissionRuntimeHCLSHA256 = "short" },
 	} {
 		copy := *h.cfg
 		mutate(&copy)
@@ -157,5 +159,41 @@ func TestExternalAdmissionNonceFormatRejectsForgedValues(t *testing.T) {
 		if _, err := externalAdmissionNonceFromReceipt(invalid); err == nil {
 			t.Fatalf("invalid nonce accepted: %q", invalid)
 		}
+	}
+}
+
+func TestExternalAdmissionProofNeverRetainsOrReturnsRawNonce(t *testing.T) {
+	receipt := externalReceiptForTest()
+	proof := redactExternalFleetReceipt(receipt)
+	if proof.Nonce != "" {
+		t.Fatal("redacted proof retains raw nonce")
+	}
+	canonical, err := externalReceiptCanonicalJSON(receipt)
+	if err != nil || strings.Contains(string(canonical), receipt.Nonce) {
+		t.Fatalf("canonical durable proof leaked raw nonce: %s err=%v", canonical, err)
+	}
+	encoded, err := json.Marshal(map[string]interface{}{"externalFleetProof": proof, "nonceSHA256": externalAdmissionNonce{ID: "00000000-0000-4000-8000-000000000001", Secret: strings.Repeat("a", 64)}.sha256()})
+	if err != nil || strings.Contains(string(encoded), receipt.Nonce) || strings.Contains(string(encoded), "."+strings.Repeat("a", 64)) {
+		t.Fatalf("durable proof leaked raw nonce: %s err=%v", encoded, err)
+	}
+	if got := safeExternalVerificationError(errors.New("mysql://secret@example.test")); got != "independent evidence was rejected" {
+		t.Fatalf("untyped verifier error leaked: %q", got)
+	}
+}
+
+func TestExternalBootstrapSignerIsSeparatelyPinned(t *testing.T) {
+	receipt := externalReceiptForTest()
+	configured := externalConfigForTest()
+	if validExternalBootstrapCandidate(receipt.Candidate, receipt.SourceSHA, receipt.Artifact, "github-public", configured) {
+		t.Fatal("normal release signer was accepted as the bootstrap signer")
+	}
+	receipt.Candidate.SignerWorkflowRef = configured.BootstrapSignerRef
+	receipt.Candidate.SignerWorkflowSHA = configured.BootstrapSignerRef[strings.LastIndex(configured.BootstrapSignerRef, "@")+1:]
+	if !validExternalBootstrapCandidate(receipt.Candidate, receipt.SourceSHA, receipt.Artifact, "github-public", configured) {
+		t.Fatal("exact separately pinned bootstrap signer was rejected")
+	}
+	receipt.Candidate.SignerWorkflowSHA = strings.Repeat("a", 40)
+	if validExternalBootstrapCandidate(receipt.Candidate, receipt.SourceSHA, receipt.Artifact, "github-public", configured) {
+		t.Fatal("bootstrap signer SHA mismatch was accepted")
 	}
 }

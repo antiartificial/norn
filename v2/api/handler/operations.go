@@ -151,7 +151,7 @@ func authorizeOperationRead(w http.ResponseWriter, r *http.Request, op *model.Op
 		// The external-admission token may poll only its own independently
 		// admitted direct-workload receipt. It is not a general staging deploy
 		// token and cannot read ordinary app.deploy operations.
-		if _, external := op.Metadata["externalFleetReceipt"]; external && op.Kind == "app.deploy" && principal.Allows(ScopeFleetExternalAdmission) {
+		if _, external := op.Metadata["externalFleetProof"]; external && op.Kind == "app.deploy" && principal.Allows(ScopeFleetExternalAdmission) {
 			return true
 		}
 		requiredScope := operationReleaseReadScope(op, environment)

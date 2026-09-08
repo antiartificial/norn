@@ -120,8 +120,11 @@ when all of these server-owned bindings are exact:
 ```text
 NORN_EXTERNAL_FLEET_ADMISSION_APP=hello-norn-mysql
 NORN_EXTERNAL_FLEET_ADMISSION_NAMESPACE=<exact Nomad namespace>
-NORN_EXTERNAL_FLEET_ADMISSION_JOB_ID=<exact Nomad job ID>
-NORN_EXTERNAL_FLEET_ADMISSION_HCL_SHA256=<released direct-HCL SHA-256>
+NORN_EXTERNAL_FLEET_ADMISSION_MIGRATION_JOB_ID=<exact migration Nomad job ID>
+NORN_EXTERNAL_FLEET_ADMISSION_MIGRATION_HCL_SHA256=<released migration-HCL SHA-256>
+NORN_EXTERNAL_FLEET_ADMISSION_RUNTIME_JOB_ID=<exact runtime Nomad job ID>
+NORN_EXTERNAL_FLEET_ADMISSION_RUNTIME_HCL_SHA256=<released runtime-HCL SHA-256>
+NORN_EXTERNAL_FLEET_ADMISSION_BOOTSTRAP_SIGNER_REF=<exact bootstrap workflow path@40-char SHA>
 ```
 
 The runner exchanges GitHub OIDC only for `fleet:external-admission`, naming
@@ -134,12 +137,14 @@ substitute.
 The first POST with `{"action":"issue-nonce"}` produces a short-lived,
 one-use Norn nonce bound to that exact CI run. The runner writes it through the
 job's restricted runtime path and submits a canonical receipt only after its
-Fleet attempt checkpoints. The API persists only the nonce hash and consumes
-it once, after independent verification succeeds.
+Fleet attempt checkpoints. The API persists a redacted normalized proof plus a
+nonce hash only; it atomically consumes that hash and writes the terminal
+deployment, verified region weights/evaluations, and operation together.
 
 Receipt text is evidence *pointers*, never authority. The server-owned verifier
 must independently read the released HCL digest, source/repository, OCI digest,
-attestation and SBOM references, Nomad namespace/job/submission proof, Fleet
+attestation and SBOM references, Nomad v2 migration/runtime job proof
+(`JobID`, `EvalID`, and `JobModifyIndex`), Fleet
 plan/run/attempt/checkpoint binding, nonce write/read proof, two distinct
 reviewed ingress nodes, public HTTPS `/version` and readiness probes, and the
 ordered `prepare → migration → runtime → exercise` chronology. The foundation
@@ -147,11 +152,13 @@ intentionally has no generic live verifier yet; without a configured verifier,
 it returns `external_deployment_verifier_unavailable` and records nothing.
 
 Only a fully verified receipt creates an immutable successful staging
-`app.deploy` operation and normal deployment history. Existing qualification
-then works unchanged. This bridge neither changes `DiscoverApps` nor enables
-normal deployment of any `deploy: false` app. Retire it after the native
-translator path is released and proven; remove its environment bindings and
-verify the route disappears from capability discovery.
+`app.deploy` operation and normal deployment history. The bootstrap artifact
+signer remains distinct from the normal release signer: only its exact
+server-pinned identity may be adopted by a separately protected requalification
+workflow, and the signed qualification preserves the bootstrap identity. This
+bridge neither changes `DiscoverApps` nor enables normal deployment of any
+`deploy: false` app. No capability is advertised until a real verifier is
+installed. Retire it after the native translator path is released and proven.
 
 ## Durable receipt chain
 

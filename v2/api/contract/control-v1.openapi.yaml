@@ -404,7 +404,7 @@ paths:
       - $ref: '#/components/parameters/AppID'
     post:
       operationId: admitExternalFleetDeployment
-      description: Staging-only admission for the one configured deploy:false external Fleet job. Requires fleet:external-admission from the exact protected norn-fleet apply/recover OIDC identity. action issue-nonce returns a one-use Norn nonce; receipt admission fails closed unless a server-owned verifier independently confirms live Fleet, Nomad, ingress, attestation/SBOM, and chronology evidence.
+      description: Staging-only admission for the one configured deploy:false external Fleet migration/runtime pair. Requires fleet:external-admission from the exact protected norn-fleet apply/recover OIDC identity. action issue-nonce returns a one-use Norn nonce; receipt admission fails closed unless a server-owned verifier independently confirms live Fleet, Nomad v2 evaluations, ingress, attestation/SBOM, chronology, and per-region traffic evidence.
       parameters:
         - $ref: '#/components/parameters/IdempotencyKey'
       requestBody:
@@ -2417,15 +2417,14 @@ components:
     ExternalFleetDeploymentReceipt:
       type: object
       additionalProperties: false
-      required: [schemaVersion, nonce, app, sourceSha, artifact, candidate, hclSha256, attestationUri, sbomUri, fleet, chronology]
+      required: [schemaVersion, nonce, app, sourceSha, artifact, candidate, attestationUri, sbomUri, fleet, chronology]
       properties:
-        schemaVersion: { const: norn.external-fleet-deployment-receipt/v1 }
+        schemaVersion: { const: norn.external-fleet-deployment-receipt/v2 }
         nonce: { type: string, writeOnly: true }
         app: { type: string }
         sourceSha: { type: string, pattern: '^[0-9a-f]{40}$' }
         artifact: { type: string, pattern: '^.+@sha256:[0-9a-f]{64}$' }
         candidate: { $ref: '#/components/schemas/ReleaseCandidate' }
-        hclSha256: { type: string, pattern: '^[0-9a-f]{64}$' }
         attestationUri: { type: string, format: uri }
         sbomUri: { type: string, format: uri }
         fleet: { $ref: '#/components/schemas/ExternalFleetExecutionProof' }
@@ -2437,17 +2436,26 @@ components:
     ExternalFleetExecutionProof:
       type: object
       additionalProperties: false
-      required: [namespace, jobId, nomadSubmissionId, applyRunId, applyRunAttempt, planSha256, runnerAttemptId, checkpointId, nonceEvidenceRef]
+      required: [namespace, migration, runtime, applyRunId, applyRunAttempt, planSha256, runnerAttemptId, nonceEvidenceRef]
       properties:
         namespace: { type: string }
-        jobId: { type: string }
-        nomadSubmissionId: { type: string }
+        migration: { $ref: '#/components/schemas/ExternalFleetNomadJobProof' }
+        runtime: { $ref: '#/components/schemas/ExternalFleetNomadJobProof' }
         applyRunId: { type: string }
         applyRunAttempt: { type: string }
         planSha256: { type: string, pattern: '^[0-9a-f]{64}$' }
         runnerAttemptId: { type: string }
-        checkpointId: { type: string }
         nonceEvidenceRef: { type: string }
+    ExternalFleetNomadJobProof:
+      type: object
+      additionalProperties: false
+      required: [jobId, hclSha256, evalId, jobModifyIndex, checkpointId]
+      properties:
+        jobId: { type: string }
+        hclSha256: { type: string, pattern: '^[0-9a-f]{64}$' }
+        evalId: { type: string, format: uuid, description: Nomad v2 JobRegisterResponse EvalID. }
+        jobModifyIndex: { type: integer, format: int64, minimum: 1, description: Nomad v2 JobRegisterResponse JobModifyIndex. }
+        checkpointId: { type: string }
     ExternalFleetChronologyStep:
       type: object
       additionalProperties: false

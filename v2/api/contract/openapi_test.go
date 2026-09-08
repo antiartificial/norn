@@ -75,6 +75,29 @@ func TestControlOpenAPIParsesAndLocalRefsResolve(t *testing.T) {
 			t.Errorf("ReleaseAttestationIdentity.%s must be server-derived/readOnly", field)
 		}
 	}
+	externalReceipt := schemas["ExternalFleetDeploymentReceipt"].(map[string]interface{})
+	if !containsRequiredField(externalReceipt["required"].([]interface{}), "app") {
+		t.Error("ExternalFleetDeploymentReceipt must require app")
+	}
+	externalReceiptProperties := externalReceipt["properties"].(map[string]interface{})
+	if externalReceiptProperties["nonce"].(map[string]interface{})["writeOnly"] != true {
+		t.Error("ExternalFleetDeploymentReceipt.nonce must be write-only")
+	}
+	if externalReceiptProperties["schemaVersion"].(map[string]interface{})["const"] != "norn.external-fleet-deployment-receipt/v2" {
+		t.Error("ExternalFleetDeploymentReceipt must use the v2 migration/runtime proof contract")
+	}
+	externalProof := schemas["ExternalFleetExecutionProof"].(map[string]interface{})
+	for _, field := range []string{"migration", "runtime"} {
+		if !containsRequiredField(externalProof["required"].([]interface{}), field) {
+			t.Errorf("ExternalFleetExecutionProof must require %s proof", field)
+		}
+	}
+	nomadProof := schemas["ExternalFleetNomadJobProof"].(map[string]interface{})
+	for _, field := range []string{"jobId", "hclSha256", "evalId", "jobModifyIndex", "checkpointId"} {
+		if !containsRequiredField(nomadProof["required"].([]interface{}), field) {
+			t.Errorf("ExternalFleetNomadJobProof must require %s", field)
+		}
+	}
 	runnerAttempt := schemas["FleetRunnerAttempt"].(map[string]interface{})
 	if !containsRequiredField(runnerAttempt["required"].([]interface{}), "rootAttemptId") {
 		t.Error("FleetRunnerAttempt must require server-owned rootAttemptId")

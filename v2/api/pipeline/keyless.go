@@ -28,7 +28,8 @@ func (p *Pipeline) verifyKeylessAttestations(ctx context.Context, st *state) err
 	if trustMode == "" {
 		trustMode = "github-public"
 	}
-	if !ok || c.Attestation.Mode != trustMode || c.Attestation.SubjectDigest != digest || c.Attestation.MaterialSHA != st.commitSHA || c.Repository == "" || c.SignerWorkflowRef == "" || !strings.HasSuffix(c.SignerWorkflowRef, "@"+c.SignerWorkflowSHA) || c.Attestation.Issuer != p.ReleaseAttestationIssuer || !containsExact(p.ReleaseAttestationRepositories, c.Repository) || !containsExact(p.ReleaseAttestationWorkflowRefs, c.SignerWorkflowRef) || !p.ReleaseRequireSBOM {
+	bootstrapSigner := strings.TrimSpace(p.ExternalFleetBootstrapSignerRef) != "" && c.SignerWorkflowRef == p.ExternalFleetBootstrapSignerRef
+	if !ok || c.Attestation.Mode != trustMode || c.Attestation.SubjectDigest != digest || c.Attestation.MaterialSHA != st.commitSHA || c.Repository == "" || c.SignerWorkflowRef == "" || !strings.HasSuffix(c.SignerWorkflowRef, "@"+c.SignerWorkflowSHA) || c.Attestation.Issuer != p.ReleaseAttestationIssuer || !containsExact(p.ReleaseAttestationRepositories, c.Repository) || (!containsExact(p.ReleaseAttestationWorkflowRefs, c.SignerWorkflowRef) && !bootstrapSigner) || !p.ReleaseRequireSBOM {
 		return fmt.Errorf("keyless admission requires candidate, policy, digest, and source bindings")
 	}
 	private := c.RepositoryVisibility == "private" || c.RepositoryVisibility == "internal"
