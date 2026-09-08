@@ -80,11 +80,14 @@ func appendMySQLCAs(roots *x509.CertPool, path, inline string) error {
 
 func (s *service) routes() http.Handler {
 	mux := http.NewServeMux()
-	mux.HandleFunc("GET /health/live", func(w http.ResponseWriter, r *http.Request) { w.WriteHeader(http.StatusOK) })
-	mux.HandleFunc("GET /health/ready", func(w http.ResponseWriter, r *http.Request) {
+	// healthz deliberately has no dependency on MySQL. It lets Nomad restart a
+	// wedged process without turning a transient managed-database issue into a
+	// restart storm.
+	mux.HandleFunc("GET /healthz", func(w http.ResponseWriter, r *http.Request) { w.WriteHeader(http.StatusOK) })
+	mux.HandleFunc("GET /readyz", func(w http.ResponseWriter, r *http.Request) {
 		ctx, cancel := context.WithTimeout(r.Context(), 2*time.Second)
 		defer cancel()
-		if os.Getenv("PILOT_FAIL_READINESS") == "true" || s.db.PingContext(ctx) != nil {
+		if os.Getenv("PILOT_FAIL_READINESS") == "true" || s.db == nil || s.db.PingContext(ctx) != nil {
 			http.Error(w, "not ready", 503)
 			return
 		}

@@ -28,7 +28,7 @@ func testPEM(t *testing.T) string {
 func TestReadinessFailureDoesNotStopLiveness(t *testing.T) {
 	t.Setenv("PILOT_FAIL_READINESS", "true")
 	s := &service{}
-	for path, want := range map[string]int{"/health/live": 200, "/health/ready": 503, "/version": 200, "/metrics": 200} {
+	for path, want := range map[string]int{"/healthz": 200, "/readyz": 503, "/version": 200, "/metrics": 200} {
 		w := httptest.NewRecorder()
 		s.routes().ServeHTTP(w, httptest.NewRequest("GET", path, nil))
 		if w.Code != want {
