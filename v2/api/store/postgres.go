@@ -314,6 +314,23 @@ func Migrate(db *DB) error {
 		);
 		CREATE INDEX IF NOT EXISTS idx_github_actions_assertion_uses_expiry ON github_actions_assertion_uses(expires_at);
 
+		-- The raw Norn-issued external-admission nonce is never retained. The
+		-- hash is bound to the exact protected Fleet CI run and can be consumed
+		-- once only after independent runtime verification succeeds.
+		CREATE TABLE IF NOT EXISTS external_deployment_nonces (
+			id TEXT PRIMARY KEY,
+			nonce_sha256 TEXT NOT NULL UNIQUE,
+			app TEXT NOT NULL,
+			environment TEXT NOT NULL,
+			ci_repository TEXT NOT NULL,
+			ci_run_id TEXT NOT NULL,
+			ci_run_attempt TEXT NOT NULL,
+			expires_at TIMESTAMPTZ NOT NULL,
+			issued_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+			consumed_at TIMESTAMPTZ
+		);
+		CREATE INDEX IF NOT EXISTS idx_external_deployment_nonces_expiry ON external_deployment_nonces(expires_at);
+
 		CREATE TABLE IF NOT EXISTS webhook_deliveries (
 			id          TEXT PRIMARY KEY,
 			provider    TEXT NOT NULL,

@@ -217,7 +217,7 @@ func (h *Handler) ExchangeGitHubActionsOIDC(w http.ResponseWriter, r *http.Reque
 
 func githubActionsExchangeScopeAllowed(scope string) bool {
 	switch scope {
-	case ScopeReleaseAttest, ScopeReleaseStage, ScopeReleaseQualify, ScopeReleasePromote, ScopeReleaseRollback, ScopeFleetOperate:
+	case ScopeReleaseAttest, ScopeReleaseStage, ScopeReleaseQualify, ScopeReleasePromote, ScopeReleaseRollback, ScopeFleetOperate, ScopeFleetExternalAdmission:
 		return true
 	}
 	return false
@@ -377,7 +377,7 @@ func (h *Handler) authorizeGitHubActionsClaims(c *githubActionsClaims, request g
 	if c.Environment != request.Environment || !matchesAny(c.Ref, h.cfg.GitHubActionsAllowedRefs) || !matchesAny(c.EventName, h.cfg.GitHubActionsAllowedEvents) {
 		return CIIdentity{}, fmt.Errorf("GitHub Actions ref, event, or environment is not allowlisted")
 	}
-	if request.Scope == ScopeFleetOperate {
+	if request.Scope == ScopeFleetOperate || request.Scope == ScopeFleetExternalAdmission {
 		if !matchesRepository(c, []string{h.cfg.GitHubActionsFleetAllowedRepository}) || !matchesAny(c.Environment, h.cfg.GitHubActionsFleetAllowedEnvironments) || !matchesAny(request.Intent, h.cfg.GitHubActionsFleetAllowedIntents) || !matchesPinnedDirectWorkflow(c.WorkflowRef, c.WorkflowSHA, h.cfg.GitHubActionsFleetAllowedWorkflowRefs) {
 			return CIIdentity{}, fmt.Errorf("GitHub Actions fleet identity is not allowlisted")
 		}

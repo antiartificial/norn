@@ -767,6 +767,53 @@ func TestReleaseCapabilitiesRequireConfiguredReleasePolicy(t *testing.T) {
 	}
 }
 
+func TestExternalFleetAdmissionIsNotAdvertisedWithoutALiveVerifier(t *testing.T) {
+	request := httptest.NewRequest(http.MethodGet, "/api/v1/capabilities", nil)
+	recorder := httptest.NewRecorder()
+	writeControlCapabilitiesForConfig(&config.Config{
+		Environment: "staging", ExternalFleetAdmissionApp: "hello-norn-mysql", ExternalFleetAdmissionNamespace: "norn-pilot",
+		ExternalFleetAdmissionMigrationJobID: "hello-norn-mysql-migrate", ExternalFleetAdmissionMigrationHCLSHA256: strings.Repeat("a", 64),
+		ExternalFleetAdmissionRuntimeJobID: "hello-norn-mysql", ExternalFleetAdmissionRuntimeHCLSHA256: strings.Repeat("b", 64),
+		ExternalFleetAdmissionBootstrapSignerRef: "acme/hello-norn-mysql/.github/workflows/hello-norn-mysql-bootstrap-image.yml@" + strings.Repeat("c", 40),
+	}, recorder, request)
+	var capability struct {
+		Features  []string          `json:"features"`
+		Endpoints map[string]string `json:"endpoints"`
+	}
+	if err := json.Unmarshal(recorder.Body.Bytes(), &capability); err != nil {
+		t.Fatal(err)
+	}
+	if containsCapability(capability.Features, "external-fleet-deployment-admission-v1") || capability.Endpoints["externalFleetDeployments"] != "" {
+		t.Fatalf("configuration without a live verifier was advertised as a capability: %#v", capability)
+	}
+}
+
+func TestExternalBootstrapSignerCannotWidenPipelineTrustWithoutExactBridge(t *testing.T) {
+	config := &config.Config{
+		Environment: "staging", ExternalFleetAdmissionApp: "hello-norn-mysql", ExternalFleetAdmissionNamespace: "norn-pilot",
+		ExternalFleetAdmissionMigrationJobID: "hello-norn-mysql-migrate", ExternalFleetAdmissionMigrationHCLSHA256: strings.Repeat("a", 64),
+		ExternalFleetAdmissionRuntimeJobID: "hello-norn-mysql", ExternalFleetAdmissionRuntimeHCLSHA256: strings.Repeat("b", 64),
+		ExternalFleetAdmissionBootstrapSignerRef: "acme/hello-norn-mysql/.github/workflows/hello-norn-mysql-bootstrap-image.yml@" + strings.Repeat("c", 40),
+	}
+	if got := externalFleetBootstrapSignerForPipeline(config); got != config.ExternalFleetAdmissionBootstrapSignerRef {
+		t.Fatalf("complete exact bridge bootstrap signer = %q", got)
+	}
+	config.ExternalFleetAdmissionBootstrapSignerRef = "acme/hello-norn-mysql/.github/workflows/release.yml@" + strings.Repeat("c", 40)
+	if got := externalFleetBootstrapSignerForPipeline(config); got != "" {
+		t.Fatalf("non-bootstrap workflow widened pipeline trust: %q", got)
+	}
+	config.ExternalFleetAdmissionBootstrapSignerRef = "acme/hello-norn-mysql/.github/workflows/hello-norn-mysql-bootstrap-image.yml@" + strings.Repeat("c", 40)
+	config.ReleaseAttestationWorkflowRefs = []string{config.ExternalFleetAdmissionBootstrapSignerRef}
+	if got := externalFleetBootstrapSignerForPipeline(config); got != "" {
+		t.Fatalf("normal signer allowlist overlap widened bootstrap trust: %q", got)
+	}
+	config.ReleaseAttestationWorkflowRefs = nil
+	config.ExternalFleetAdmissionRuntimeHCLSHA256 = ""
+	if got := externalFleetBootstrapSignerForPipeline(config); got != "" {
+		t.Fatalf("incomplete bridge widened pipeline trust: %q", got)
+	}
+}
+
 func TestCatalogReadOnlyCapabilitiesHideCatalogMutations(t *testing.T) {
 	request := httptest.NewRequest(http.MethodGet, "/api/v1/capabilities", nil)
 	rec := httptest.NewRecorder()

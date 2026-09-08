@@ -293,6 +293,7 @@ func main() {
 		ReleaseRegistryNodePullReady:    cfg.ReleaseRegistryNodePullReady,
 		ReleaseAttestationRepositories:  cfg.ReleaseAttestationRepositories,
 		ReleaseAttestationWorkflowRefs:  cfg.ReleaseAttestationWorkflowRefs,
+		ExternalFleetBootstrapSignerRef: externalFleetBootstrapSignerForPipeline(cfg),
 		ReleaseRequireSBOM:              cfg.ReleaseRequireSBOM,
 		TrustedQualificationSigningKeys: cfg.TrustedQualificationSigningKeys,
 		Beacon:                          beaconSvc,
@@ -476,6 +477,7 @@ func main() {
 		r.With(handler.ValidateAppID).Post("/v1/apps/{id}/releases/preflight", h.QueueReleasePreflight)
 		r.With(handler.ValidateAppID).Post("/v1/apps/{id}/private-attestations", h.CreatePrivateReleaseAttestation)
 		r.With(handler.ValidateAppID).Post("/v1/apps/{id}/releases/deployments", h.QueueReleaseDeployment)
+		r.With(handler.ValidateAppID).Post("/v1/apps/{id}/external-deployments", h.AdmitExternalFleetDeployment)
 		r.With(handler.ValidateAppID).Post("/v1/apps/{id}/releases/rollbacks", h.QueueReleaseRollback)
 		r.With(handler.ValidateAppID).Get("/v1/apps/{id}/qualifications", h.ListReleaseQualifications)
 		r.With(handler.ValidateAppID).Post("/v1/apps/{id}/qualifications", h.CreateReleaseQualification)
@@ -1140,7 +1142,7 @@ func controlScopeForRequest(r *http.Request) string {
 		return ""
 	case path == "/api/v1/auth/rotate" || path == "/api/v1/auth/revoke":
 		return ""
-	case r.Method == http.MethodPost && (strings.HasSuffix(path, "/releases/preflight") || strings.HasSuffix(path, "/releases/deployments") || strings.HasSuffix(path, "/releases/rollbacks") || strings.HasSuffix(path, "/private-attestations") || strings.HasSuffix(path, "/qualifications") || strings.HasSuffix(path, "/promotions")):
+	case r.Method == http.MethodPost && (strings.HasSuffix(path, "/releases/preflight") || strings.HasSuffix(path, "/releases/deployments") || strings.HasSuffix(path, "/releases/rollbacks") || strings.HasSuffix(path, "/private-attestations") || strings.HasSuffix(path, "/qualifications") || strings.HasSuffix(path, "/promotions") || strings.HasSuffix(path, "/external-deployments")):
 		// The global middleware authenticates the Norn token but the release
 		// handlers own their exact scope plus app/environment/CI binding.
 		return ""
@@ -1258,6 +1260,9 @@ func writeControlCapabilitiesForConfig(cfg *config.Config, w http.ResponseWriter
 		endpoints["releasePromotions"] = "/api/v1/apps/{id}/promotions"
 		endpoints["releaseRollbacks"] = "/api/v1/apps/{id}/releases/rollbacks"
 	}
+	// The external-Fleet route remains intentionally undiscoverable until a
+	// concrete live Nomad/Consul/ingress verifier is installed. Configuration
+	// alone is not a capability: the nil verifier rejects every receipt.
 	if cfg.IsAppCatalogReadOnly() {
 		features = withoutCapability(features, "app-creation")
 		features = append(features, "app-catalog-read-only-v1")
@@ -1313,6 +1318,43 @@ func releasePipelineConfigured(cfg *config.Config) bool {
 		return strings.TrimSpace(cfg.QualificationSigningKey) != ""
 	}
 	return len(cfg.TrustedQualificationSigningKeys) > 0
+}
+
+// externalFleetBootstrapSignerForPipeline is deliberately stricter than a
+// lone workflow-ref environment value. The release verifier can recognize the
+// first-image signer only when the entire disabled-by-default external bridge
+// is server-pinned; an incomplete bridge cannot widen normal release trust.
+func externalFleetBootstrapSignerForPipeline(cfg *config.Config) string {
+	if cfg == nil || (cfg.EnvironmentID() != "staging" && cfg.EnvironmentID() != "production") || strings.TrimSpace(cfg.ExternalFleetAdmissionApp) == "" || strings.TrimSpace(cfg.ExternalFleetAdmissionNamespace) == "" || strings.TrimSpace(cfg.ExternalFleetAdmissionMigrationJobID) == "" || strings.TrimSpace(cfg.ExternalFleetAdmissionRuntimeJobID) == "" || cfg.ExternalFleetAdmissionMigrationJobID == cfg.ExternalFleetAdmissionRuntimeJobID || !lowerSHA256(cfg.ExternalFleetAdmissionMigrationHCLSHA256) || !lowerSHA256(cfg.ExternalFleetAdmissionRuntimeHCLSHA256) || cfg.ExternalFleetAdmissionMigrationHCLSHA256 == cfg.ExternalFleetAdmissionRuntimeHCLSHA256 || !externalFleetBootstrapSignerRef(cfg.ExternalFleetAdmissionBootstrapSignerRef) || externalFleetSignerInNormalAllowlist(cfg.ExternalFleetAdmissionBootstrapSignerRef, cfg.ReleaseAttestationWorkflowRefs) {
+		return ""
+	}
+	return cfg.ExternalFleetAdmissionBootstrapSignerRef
+}
+
+func externalFleetSignerInNormalAllowlist(value string, allowed []string) bool {
+	for _, candidate := range allowed {
+		if value == candidate {
+			return true
+		}
+	}
+	return false
+}
+
+func externalFleetBootstrapSignerRef(value string) bool {
+	path, _, found := strings.Cut(strings.TrimSpace(value), "@")
+	return found && strings.HasSuffix(path, ".github/workflows/hello-norn-mysql-bootstrap-image.yml") && immutableGitHubWorkflowRef(value)
+}
+
+func lowerSHA256(value string) bool {
+	if len(value) != 64 {
+		return false
+	}
+	for _, character := range value {
+		if (character < '0' || character > '9') && (character < 'a' || character > 'f') {
+			return false
+		}
+	}
+	return true
 }
 
 // fleetAuthorityOnlyRouter is intentionally separate from the general router.

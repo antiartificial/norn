@@ -297,8 +297,12 @@ func (h *Handler) queueRelease(w http.ResponseWriter, r *http.Request, preflight
 	principalMatches := releaseCandidateMatchesPrincipal(request.Candidate, principal)
 	if promotion != nil {
 		principalMatches = releasePromotionMatchesPrincipal(request.Candidate, principal)
+		if h.externalBootstrapCandidateForApp(chi.URLParam(r, "id"), request.Candidate) && releaseRepositoryMatchesPrincipal(request.Candidate, principal) {
+			principalMatches = true
+		}
 	}
-	if !validReleaseProvenance(request.SourceSHA, request.Artifact) || (!privilegedCompatibility && (!validReleaseCandidateForTrust(request.Candidate, request.SourceSHA, request.Artifact, h.cfg.ReleaseAttestationTrustMode) || !principalMatches)) || (privilegedCompatibility && !releaseCandidateEmpty(request.Candidate) && !validReleaseCandidateForTrust(request.Candidate, request.SourceSHA, request.Artifact, h.cfg.ReleaseAttestationTrustMode)) {
+	trustedCandidate := validReleaseCandidateForTrust(request.Candidate, request.SourceSHA, request.Artifact, h.cfg.ReleaseAttestationTrustMode) || (promotion != nil && h.externalBootstrapCandidateForApp(chi.URLParam(r, "id"), request.Candidate))
+	if !validReleaseProvenance(request.SourceSHA, request.Artifact) || (!privilegedCompatibility && (!trustedCandidate || !principalMatches)) || (privilegedCompatibility && !releaseCandidateEmpty(request.Candidate) && !trustedCandidate) {
 		WriteControlProblem(w, r, http.StatusBadRequest, "invalid_release_provenance", "source, OCI digest, candidate attestation, and verified CI identity must agree")
 		return
 	}
@@ -518,7 +522,7 @@ func (h *Handler) CreateReleaseQualification(w http.ResponseWriter, r *http.Requ
 	// A fresh CI qualification is only for the exact immutable deployment the
 	// current protected staging run created. Historical evidence is deliberately
 	// limited to the separately allowlisted requalify workflow intent.
-	if permitted, reason := qualificationIntentPermitsCandidate(principal, candidate); !permitted {
+	if permitted, reason := h.qualificationIntentPermitsCandidate(appID, principal, candidate); !permitted {
 		WriteControlProblem(w, r, http.StatusForbidden, reason, "workload token may not issue this staging qualification")
 		return
 	}
@@ -554,6 +558,22 @@ func qualificationReplayMatches(existing *model.Operation, appID, requestDigest 
 	return existing.Kind == "release.qualification" && existing.App == appID && storedDigest == requestDigest
 }
 
+func (h *Handler) qualificationIntentPermitsCandidate(appID string, principal AccessPrincipal, candidate model.ReleaseCandidate) (bool, string) {
+	if principal.CI == nil {
+		return true, ""
+	}
+	// This is a narrow adoption lane for the separately pinned first-image
+	// bootstrap signer. It preserves that historical signer in the signed
+	// qualification; the current requalifier only proves same repository IDs.
+	if principal.CI.Intent == "requalify" && h.externalBootstrapCandidateForApp(appID, candidate) && releaseRepositoryMatchesPrincipal(candidate, principal) {
+		return true, ""
+	}
+	return qualificationIntentPermitsCandidate(principal, candidate)
+}
+
+// qualificationIntentPermitsCandidate is the normal managed-release policy.
+// Keep it separate from the explicit external bootstrap adoption exception so
+// ordinary qualification callers cannot accidentally inherit that exception.
 func qualificationIntentPermitsCandidate(principal AccessPrincipal, candidate model.ReleaseCandidate) (bool, string) {
 	if principal.CI == nil {
 		return true, ""
@@ -572,6 +592,11 @@ func qualificationIntentPermitsCandidate(principal AccessPrincipal, candidate mo
 	default:
 		return false, "qualification_intent_invalid"
 	}
+}
+
+func releaseRepositoryMatchesPrincipal(candidate model.ReleaseCandidate, principal AccessPrincipal) bool {
+	ci := principal.CI
+	return ci != nil && candidate.Provider == ci.Provider && candidate.Repository == ci.Repository && candidate.RepositoryID == ci.RepositoryID && candidate.OwnerID == ci.RepositoryOwnerID && candidate.RepositoryVisibility == ci.RepositoryVisibility
 }
 
 func (h *Handler) QueueReleasePromotion(w http.ResponseWriter, r *http.Request) {
@@ -730,10 +755,18 @@ func (h *Handler) releaseCandidateForDeployment(r *http.Request, deploymentID st
 		return model.ReleaseCandidate{}, fmt.Errorf("successful deployment candidate cannot be decoded")
 	}
 	var candidate model.ReleaseCandidate
-	if json.Unmarshal(encoded, &candidate) != nil || !validReleaseCandidateForTrust(candidate, stringFromOperation(op.Payload, "sourceSha"), stringFromOperation(op.Payload, "artifact"), h.cfg.ReleaseAttestationTrustMode) {
+	if json.Unmarshal(encoded, &candidate) != nil || !(validReleaseCandidateForTrust(candidate, stringFromOperation(op.Payload, "sourceSha"), stringFromOperation(op.Payload, "artifact"), h.cfg.ReleaseAttestationTrustMode) || h.externalBootstrapCandidateForApp(op.App, candidate)) {
 		return model.ReleaseCandidate{}, fmt.Errorf("successful deployment candidate is incomplete")
 	}
 	return candidate, nil
+}
+
+func (h *Handler) externalBootstrapCandidateForApp(appID string, candidate model.ReleaseCandidate) bool {
+	configured, err := h.externalFleetAdmissionConfig(appID)
+	if err != nil {
+		return false
+	}
+	return validExternalBootstrapCandidate(candidate, candidate.Attestation.MaterialSHA, "", h.releaseTrustMode(), configured)
 }
 
 func stringFromOperation(values map[string]interface{}, key string) string {

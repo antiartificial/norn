@@ -82,6 +82,28 @@ func TestGitHubActionsFleetAuthorityOnlyAllowsProtectedStagingApplyAndRecovery(t
 	}
 }
 
+func TestGitHubActionsExternalAdmissionUsesExactFleetApplyRecoveryIdentity(t *testing.T) {
+	workflowSHA := strings.Repeat("a", 40)
+	h := &Handler{cfg: &config.Config{
+		GitHubActionsAllowedRefs: []string{"refs/heads/main"}, GitHubActionsAllowedEvents: []string{"push", "workflow_dispatch"},
+		GitHubActionsFleetAllowedRepository: "acme/norn-fleet@101@202", GitHubActionsFleetAllowedEnvironments: []string{"staging"}, GitHubActionsFleetAllowedIntents: []string{"apply", "recover"},
+		GitHubActionsFleetAllowedWorkflowRefs: []string{"acme/norn-fleet/.github/workflows/apply.yml@" + workflowSHA},
+	}}
+	claims := &githubActionsClaims{Repository: "acme/norn-fleet", RepositoryID: "101", RepositoryOwnerID: "202", Environment: "staging", Ref: "refs/heads/main", EventName: "push", RefProtected: "true", WorkflowRef: "acme/norn-fleet/.github/workflows/apply.yml@refs/heads/main", WorkflowSHA: workflowSHA}
+	request := githubActionsExchangeRequest{Scope: ScopeFleetExternalAdmission, App: "hello-norn-mysql", Environment: "staging", Intent: "apply"}
+	if _, err := h.authorizeGitHubActionsClaims(claims, request); err != nil {
+		t.Fatalf("exact external Fleet apply identity rejected: %v", err)
+	}
+	request.Intent = "plan"
+	if _, err := h.authorizeGitHubActionsClaims(claims, request); err == nil {
+		t.Fatal("plan identity received external admission scope")
+	}
+	request.Intent, claims.RepositoryID = "recover", "999"
+	if _, err := h.authorizeGitHubActionsClaims(claims, request); err == nil {
+		t.Fatal("different numeric Fleet repository identity received external admission scope")
+	}
+}
+
 func TestGitHubActionsReleasePolicyRequiresPublicRepository(t *testing.T) {
 	workflowSHA := strings.Repeat("a", 40)
 	h := &Handler{cfg: &config.Config{GitHubActionsDefaultBranch: "main", GitHubActionsAllowedRefs: []string{"refs/heads/main"}, GitHubActionsAllowedEvents: []string{"push"}, GitHubActionsReleaseBindings: []string{"widgets=acme/widgets@101@202"}, GitHubActionsAllowedEnvironments: []string{"staging"}, GitHubActionsAllowedWorkflowRefs: []string{"acme/release/.github/workflows/release.yml@" + workflowSHA}}}
