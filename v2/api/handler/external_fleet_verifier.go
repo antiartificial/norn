@@ -63,7 +63,10 @@ type ExternalFleetGitHubRunVerifier interface {
 
 type externalFleetCommandAttestationVerifier struct{ path string }
 
-type externalFleetLimitedWriter struct{ remaining int }
+type externalFleetLimitedWriter struct {
+	remaining int
+	bytes     bytes.Buffer
+}
 
 func (w *externalFleetLimitedWriter) Write(value []byte) (int, error) {
 	if len(value) > w.remaining {
@@ -71,10 +74,75 @@ func (w *externalFleetLimitedWriter) Write(value []byte) (int, error) {
 		return 0, errors.New("attestation output exceeds limit")
 	}
 	w.remaining -= len(value)
+	_, _ = w.bytes.Write(value)
 	return len(value), nil
 }
 
+type externalFleetAttestationOutput struct {
+	VerificationResult struct {
+		Statement struct {
+			PredicateType string `json:"predicateType"`
+		} `json:"statement"`
+		Signature struct {
+			Certificate struct {
+				RunInvocationURI string `json:"runInvocationURI"`
+			} `json:"certificate"`
+		} `json:"signature"`
+		VerifiedTimestamps []json.RawMessage `json:"verifiedTimestamps"`
+	} `json:"verificationResult"`
+}
+
+func externalFleetVerifiedAttestationOutput(raw []byte, predicate, repository, candidateRunID, candidateAttempt string) bool {
+	var values []externalFleetAttestationOutput
+	if json.Unmarshal(raw, &values) != nil || len(values) != 1 {
+		return false
+	}
+	value := values[0].VerificationResult
+	return value.Statement.PredicateType == predicate && len(value.VerifiedTimestamps) > 0 && value.Signature.Certificate.RunInvocationURI == "https://github.com/"+repository+"/actions/runs/"+candidateRunID+"/attempts/"+candidateAttempt
+}
+
 type externalFleetGitHubRunVerifier struct{ client *http.Client }
+
+func (v externalFleetGitHubRunVerifier) VerifyInstallationToken(ctx context.Context, token, repository string) error {
+	request, err := http.NewRequestWithContext(ctx, http.MethodGet, "https://api.github.com/installation/repositories", nil)
+	if err != nil {
+		return externalVerifierErr("github-installation-request")
+	}
+	request.Header.Set("Authorization", "Bearer "+token)
+	request.Header.Set("Accept", "application/vnd.github+json")
+	response, err := v.client.Do(request)
+	if err != nil {
+		return externalVerifierErr("github-installation-unavailable")
+	}
+	defer response.Body.Close()
+	var listed struct {
+		TotalCount   int `json:"total_count"`
+		Repositories []struct {
+			FullName string `json:"full_name"`
+		} `json:"repositories"`
+	}
+	if response.StatusCode != http.StatusOK || decodeGitHubRunJSON(response.Body, &listed) != nil || listed.TotalCount != 1 || len(listed.Repositories) != 1 || listed.Repositories[0].FullName != repository {
+		return externalVerifierErr("github-installation-selection")
+	}
+	request, err = http.NewRequestWithContext(ctx, http.MethodGet, "https://api.github.com/repos/"+repository, nil)
+	if err != nil {
+		return externalVerifierErr("github-installation-request")
+	}
+	request.Header.Set("Authorization", "Bearer "+token)
+	request.Header.Set("Accept", "application/vnd.github+json")
+	response, err = v.client.Do(request)
+	if err != nil {
+		return externalVerifierErr("github-installation-unavailable")
+	}
+	defer response.Body.Close()
+	var repo struct {
+		Permissions map[string]bool `json:"permissions"`
+	}
+	if response.StatusCode != http.StatusOK || decodeGitHubRunJSON(response.Body, &repo) != nil || !repo.Permissions["pull"] || repo.Permissions["push"] || repo.Permissions["admin"] {
+		return externalVerifierErr("github-installation-permissions")
+	}
+	return nil
+}
 
 func (v externalFleetGitHubRunVerifier) Verify(ctx context.Context, token string, ci CIIdentity) error {
 	if strings.TrimSpace(token) == "" || !validGitHubNumericID(ci.RunID) || !validGitHubNumericID(ci.RunAttempt) || !validExternalRepository(ci.Repository) {
@@ -132,13 +200,16 @@ func (v externalFleetCommandAttestationVerifier) Verify(ctx context.Context, tok
 		return externalVerifierErr("github-private-attestation-adapter-required")
 	}
 	for _, predicate := range []string{"https://slsa.dev/provenance/v1", "https://spdx.dev/Document/v2.3"} {
-		args := []string{"attestation", "verify", "oci://" + request.Receipt.Artifact, "--repo", candidate.Repository, "--hostname", "github.com", "--signer-workflow", "github.com/" + signerPath, "--signer-digest", signerSHA, "--cert-identity", "https://github.com/" + candidate.SignerWorkflowRef, "--source-digest", request.Receipt.SourceSHA, "--source-ref", candidate.Ref, "--predicate-type", predicate, "--cert-oidc-issuer", "https://token.actions.githubusercontent.com"}
+		args := []string{"attestation", "verify", "oci://" + request.Receipt.Artifact, "--repo", candidate.Repository, "--hostname", "github.com", "--signer-workflow", "github.com/" + signerPath, "--signer-digest", signerSHA, "--cert-identity", "https://github.com/" + candidate.SignerWorkflowRef, "--source-digest", request.Receipt.SourceSHA, "--source-ref", candidate.Ref, "--predicate-type", predicate, "--cert-oidc-issuer", "https://token.actions.githubusercontent.com", "--format", "json"}
 		command := exec.CommandContext(ctx, v.path, args...)
 		command.Env = []string{"PATH=" + os.Getenv("PATH"), "GH_TOKEN=" + token, "GH_PROMPT_DISABLED=1", "NO_COLOR=1"}
-		bounded := &externalFleetLimitedWriter{remaining: externalFleetEvidenceMaxBody}
-		command.Stdout, command.Stderr = bounded, bounded
+		stdout, stderr := &externalFleetLimitedWriter{remaining: externalFleetEvidenceMaxBody}, &externalFleetLimitedWriter{remaining: externalFleetEvidenceMaxBody}
+		command.Stdout, command.Stderr = stdout, stderr
 		if err := command.Run(); err != nil {
 			return externalVerifierErr("github-attestation")
+		}
+		if !externalFleetVerifiedAttestationOutput(stdout.bytes.Bytes(), predicate, candidate.Repository, candidate.RunID, candidate.RunAttempt) {
+			return externalVerifierErr("github-attestation-binding")
 		}
 	}
 	return nil
@@ -432,6 +503,13 @@ func (v *ExternalFleetDeploymentLiveVerifier) VerifyExternalFleetDeployment(ctx 
 	}
 	if err := v.attest.Verify(ctx, githubToken, request); err != nil {
 		return nil, err
+	}
+	if concrete, ok := v.githubRun.(interface {
+		VerifyInstallationToken(context.Context, string, string) error
+	}); ok {
+		if err := concrete.VerifyInstallationToken(ctx, githubToken, request.CI.Repository); err != nil {
+			return nil, err
+		}
 	}
 	if err := v.githubRun.Verify(ctx, githubToken, request.CI); err != nil {
 		return nil, err
