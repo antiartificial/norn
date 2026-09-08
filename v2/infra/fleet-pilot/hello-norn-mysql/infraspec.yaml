@@ -53,4 +53,4 @@ endpoints:
   - url: https://hello-norn-mysql.invalid
     region: nyc3
 # Run migrate separately with the migration identity; the web identity should
-# have SELECT/INSERT only.
+# have SELECT/INSERT/UPDATE only.

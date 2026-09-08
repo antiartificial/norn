@@ -185,6 +185,23 @@ jobs:
       rollback_confirmation: ${{ inputs.rollback_confirmation }}
 ```
 
+For the direct Fleet MySQL pilot, call the same staging reusable workflow with
+the explicit `pilot-go` build contract. `APP_VERSION` is injected by the
+workflow from the exact admitted source SHA; never pass it from caller input.
+Both base images must be lowercase digest-pinned OCI references, and the
+pilot's Dockerfile consumes them as `GO_IMAGE` and `RUNTIME_IMAGE`:
+
+```yaml
+      app_id: hello-norn-mysql
+      dockerfile: v2/infra/fleet-pilot/hello-norn-mysql/Dockerfile
+      build_context: v2/infra/fleet-pilot/hello-norn-mysql
+      build_contract: pilot-go
+      go_image: registry.example/go@sha256:<64-lowercase-hex>
+      runtime_image: registry.example/static@sha256:<64-lowercase-hex>
+      required_checks: |
+        Fleet pilot workload	<GITHUB_ACTIONS_APP_NUMERIC_ID>
+```
+
 If the repository's default branch might change, replace `main` with the
 protected branch explicitly; a release lane should never infer a deploy branch
 from an untrusted pull-request event. The workflow resolves annotated tags to

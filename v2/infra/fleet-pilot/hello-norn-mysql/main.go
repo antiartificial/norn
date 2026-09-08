@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"crypto/subtle"
 	"crypto/tls"
 	"crypto/x509"
 	"database/sql"
@@ -10,9 +11,12 @@ import (
 	"log"
 	"net"
 	"net/http"
+	"net/netip"
 	"os"
 	"os/signal"
 	"regexp"
+	"strconv"
+	"strings"
 	"sync/atomic"
 	"syscall"
 	"time"
@@ -24,9 +28,10 @@ var version = "development"
 var validID = regexp.MustCompile(`^[A-Za-z0-9_-]{1,96}$`)
 
 type service struct {
-	db       *sql.DB
-	requests atomic.Uint64
-	failures atomic.Uint64
+	db         *sql.DB
+	writeToken []byte
+	requests   atomic.Uint64
+	failures   atomic.Uint64
 }
 
 func openDatabase() (*sql.DB, error) {
@@ -44,6 +49,12 @@ func openDatabase() (*sql.DB, error) {
 	if err := mysql.RegisterTLSConfig("pilot-verified", tlsConfig); err != nil {
 		return nil, err
 	}
+	dial, err := mysqlPinnedDialer(cfg.Addr, os.Getenv("MYSQL_PINNED_IP"), (&net.Dialer{}).DialContext)
+	if err != nil {
+		return nil, err
+	}
+	mysql.RegisterDialContext("pilot-pinned", dial)
+	cfg.Net = "pilot-pinned"
 	cfg.TLSConfig = "pilot-verified"
 	cfg.AllowAllFiles = false
 	cfg.MultiStatements = false
@@ -60,6 +71,89 @@ func openDatabase() (*sql.DB, error) {
 	return db, nil
 }
 
+type contextDialer func(context.Context, string, string) (net.Conn, error)
+
+func mysqlPinnedDialer(expectedAddress, pinnedIP string, dial contextDialer) (mysql.DialContextFunc, error) {
+	_, port, err := mysqlDNSAddress(expectedAddress)
+	if err != nil {
+		return nil, err
+	}
+	if dial == nil {
+		return nil, fmt.Errorf("MySQL pinned dialer is unavailable")
+	}
+	pinned, err := netip.ParseAddr(pinnedIP)
+	if err != nil || !pinned.Is4() || !pinned.IsPrivate() || pinned.String() != pinnedIP {
+		return nil, fmt.Errorf("MYSQL_PINNED_IP requires a canonical RFC1918 IPv4 literal")
+	}
+	endpoint := netip.AddrPortFrom(pinned, uint16(port)).String()
+	return func(ctx context.Context, address string) (net.Conn, error) {
+		if address != expectedAddress {
+			return nil, fmt.Errorf("MySQL address changed after review")
+		}
+		conn, err := dial(ctx, "tcp4", endpoint)
+		if err != nil {
+			return nil, err
+		}
+		peer, ok := conn.RemoteAddr().(*net.TCPAddr)
+		if !ok {
+			conn.Close()
+			return nil, fmt.Errorf("MySQL peer differs from reviewed private endpoint")
+		}
+		peerIP, validPeer := netip.AddrFromSlice(peer.IP)
+		if !validPeer || peerIP.Unmap() != pinned || peer.Port != int(port) {
+			conn.Close()
+			return nil, fmt.Errorf("MySQL peer differs from reviewed private endpoint")
+		}
+		return conn, nil
+	}, nil
+}
+
+func mysqlDNSAddress(address string) (string, uint16, error) {
+	host, portText, err := net.SplitHostPort(address)
+	if err != nil || !validMySQLDNSHost(host) {
+		return "", 0, fmt.Errorf("MYSQL_DSN requires a DNS hostname and port")
+	}
+	port, err := strconv.ParseUint(portText, 10, 16)
+	if err != nil || port == 0 {
+		return "", 0, fmt.Errorf("MYSQL_DSN requires a valid TCP port")
+	}
+	return host, uint16(port), nil
+}
+
+func validMySQLDNSHost(host string) bool {
+	if host == "" || len(host) > 253 || net.ParseIP(host) != nil {
+		return false
+	}
+	labels := strings.Split(host, ".")
+	if len(labels) > 1 {
+		numeric := true
+		for _, label := range labels {
+			if label == "" {
+				return false
+			}
+			for _, char := range label {
+				if char < '0' || char > '9' {
+					numeric = false
+				}
+			}
+		}
+		if numeric {
+			return false
+		}
+	}
+	for _, label := range labels {
+		if len(label) == 0 || len(label) > 63 || label[0] == '-' || label[len(label)-1] == '-' {
+			return false
+		}
+		for _, char := range label {
+			if (char < 'a' || char > 'z') && (char < 'A' || char > 'Z') && (char < '0' || char > '9') && char != '-' {
+				return false
+			}
+		}
+	}
+	return true
+}
+
 func mysqlTLSConfig(address, path string) (*tls.Config, error) {
 	if path == "" {
 		return nil, fmt.Errorf("MYSQL_CA_FILE is required")
@@ -72,9 +166,9 @@ func mysqlTLSConfig(address, path string) (*tls.Config, error) {
 	if !roots.AppendCertsFromPEM(pem) {
 		return nil, fmt.Errorf("invalid MySQL provider CA")
 	}
-	host, _, err := net.SplitHostPort(address)
-	if err != nil || host == "" {
-		return nil, fmt.Errorf("MYSQL_DSN requires a valid TCP host")
+	host, _, err := mysqlDNSAddress(address)
+	if err != nil {
+		return nil, err
 	}
 	return &tls.Config{MinVersion: tls.VersionTLS12, RootCAs: roots, ServerName: host}, nil
 }
@@ -116,6 +210,12 @@ func (s *service) routes() http.Handler {
 
 func (s *service) record(w http.ResponseWriter, r *http.Request) {
 	s.requests.Add(1)
+	if r.Method == http.MethodPut && !s.authorizedWrite(r) {
+		w.Header().Set("Cache-Control", "no-store")
+		w.Header().Set("WWW-Authenticate", "Bearer")
+		http.Error(w, "write authorization required", http.StatusUnauthorized)
+		return
+	}
 	id := r.PathValue("id")
 	if !validID.MatchString(id) {
 		http.Error(w, "invalid id", 400)
@@ -147,6 +247,27 @@ func (s *service) record(w http.ResponseWriter, r *http.Request) {
 	json.NewEncoder(w).Encode(map[string]string{"id": stored, "version": version, "allocation": os.Getenv("NOMAD_ALLOC_ID")})
 }
 
+func (s *service) authorizedWrite(r *http.Request) bool {
+	const bearer = "Bearer "
+	provided := r.Header.Get("Authorization")
+	if !strings.HasPrefix(provided, bearer) || len(s.writeToken) == 0 {
+		return false
+	}
+	return subtle.ConstantTimeCompare([]byte(strings.TrimPrefix(provided, bearer)), s.writeToken) == 1
+}
+
+func pilotWriteToken(value string) ([]byte, error) {
+	if len(value) < 32 || len(value) > 256 {
+		return nil, fmt.Errorf("PILOT_WRITE_TOKEN must be 32 to 256 bytes")
+	}
+	for _, char := range []byte(value) {
+		if char < 0x21 || char > 0x7e {
+			return nil, fmt.Errorf("PILOT_WRITE_TOKEN must be printable without whitespace")
+		}
+	}
+	return []byte(value), nil
+}
+
 func main() {
 	db, err := openDatabase()
 	if err != nil {
@@ -161,7 +282,11 @@ func main() {
 		}
 		return
 	}
-	s := &service{db: db}
+	writeToken, err := pilotWriteToken(os.Getenv("PILOT_WRITE_TOKEN"))
+	if err != nil {
+		log.Fatal(err)
+	}
+	s := &service{db: db, writeToken: writeToken}
 	server := &http.Server{Addr: ":8080", Handler: s.routes(), ReadHeaderTimeout: 5 * time.Second, ReadTimeout: 10 * time.Second, WriteTimeout: 10 * time.Second, IdleTimeout: 30 * time.Second}
 	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGTERM, syscall.SIGINT)
 	defer stop()

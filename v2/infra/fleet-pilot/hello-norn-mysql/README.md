@@ -16,11 +16,14 @@ client; use a rolling release on the fixed two-client topology.
 
 `MYSQL_DSN` uses Go MySQL driver syntax, such as
 `pilot:password@tcp(database.example:25060)/pilot`. It is rendered from an
-ACL-restricted Nomad runtime variable into the allocation only. The process
-requires `MYSQL_CA_FILE`; it trusts only that mounted provider CA, verifies the
-database hostname and TLS 1.2+, and uses bounded connection timeouts with an
-eight-connection pool. Never use `skip-verify`, the system trust pool, or a
-public database allowlist.
+ACL-restricted Nomad runtime variable into the allocation only. The same
+variable must carry an independently reviewed, canonical RFC1918 IPv4 literal
+as `MYSQL_PINNED_IP`. The custom driver dialer connects only to that exact
+IP and DSN port and rechecks the resulting peer, while TLS continues to verify
+the provider DNS hostname from the DSN. The process requires `MYSQL_CA_FILE`;
+it trusts only that mounted provider CA, verifies TLS 1.2+, and uses bounded
+connection timeouts with an eight-connection pool. Never use `skip-verify`,
+the system trust pool, runtime DNS resolution, or a public database allowlist.
 
 Run `/hello-norn-mysql migrate` once using the migration database identity.
 This creates only `pilot_records`. The runtime identity needs SELECT, INSERT
@@ -31,20 +34,23 @@ For a direct-Nomad rehearsal after `norn-fleet` bootstrap, a protected
 bootstrap/migration procedure must create two job-owned variable paths:
 
 - `nomad/jobs/hello-norn-mysql`: runtime `MYSQL_DSN` with only `SELECT`,
-  `INSERT`, and `UPDATE` on `pilot_records`, plus `MYSQL_CA_PEM`;
+  `INSERT`, and `UPDATE` on `pilot_records`, plus `MYSQL_CA_PEM` and the
+  independently reviewed `MYSQL_PINNED_IP`. It must also contain
+  `PILOT_WRITE_TOKEN`: a 32–256 byte printable bearer secret used only to
+  admit synthetic `PUT /records/*` requests;
 - `nomad/jobs/hello-norn-mysql-migrate`: one-time `MYSQL_DSN` whose identity
-  can create `pilot_records`, plus the runtime table privileges and its own
-  `MYSQL_CA_PEM`.
+  can create `pilot_records` but has no runtime table privileges, plus its own
+  `MYSQL_CA_PEM` and the same independently reviewed `MYSQL_PINNED_IP`.
 
-Nomad's job-owned variable ACL paths keep each job limited to its own DSN and
-CA. The direct job renders the DSN through a quoted dotenv template and mounts
+Nomad's job-owned variable ACL paths keep each job limited to its own DSN, CA
+and write bearer. The direct job renders the DSN through a quoted dotenv template and mounts
 the multiline CA as
 `secrets/mysql-ca.pem` with mode `0400`; neither value is a task environment
 field or catalog secret. Submit only a reviewed digest, source SHA and exact
 pilot hostname:
 
 ```sh
-nomad job run \
+nomad job run -namespace=norn-pilot-EXACT_RUN_ID \
   -var 'image=REGISTRY/hello-norn-mysql@sha256:…' \
   -var 'source_version=EXACT_SOURCE_SHA' \
   -var 'hostname=pilot.example.com' \
@@ -58,11 +64,22 @@ on `:443` to Traefik's `websecure :443` entrypoint. The explicit router enables
 only this exact host's `/records/*` and `/version` routes; readiness stays
 private. Consul requires `/readyz`, while Nomad restarts a failed `/healthz`
 liveness check without restarting merely for a database readiness failure.
+The runtime workload rejects a missing or wrong `Authorization: Bearer` value
+before any database access, using a constant-time comparison. `GET /version`
+and `GET /records/*` remain public for provenance/readback. Keep
+`PILOT_WRITE_TOKEN` out of the migration variable, CLI arguments, logs,
+evidence and catalog secrets; the protected bootstrap must generate and write
+this exact runtime-variable key. The workload does not redirect requests, and
+its rejection responses are `no-store`.
+Every job, allocation inspection and recovery command uses the exact
+`norn-pilot-<PILOT_RUN_ID>` namespace, where `PILOT_RUN_ID` is the reviewed
+Fleet run ID (8–24 lowercase alphanumeric characters). Do not use `default`,
+a Nomad namespace prefix, or a different run's namespace.
 
 Run the migration once before the web job, with the same reviewed image:
 
 ```sh
-nomad job run -var 'image=REGISTRY/hello-norn-mysql@sha256:…' \
+nomad job run -namespace=norn-pilot-EXACT_RUN_ID -var 'image=REGISTRY/hello-norn-mysql@sha256:…' \
   nomad/hello-norn-mysql-migrate.nomad.hcl
 ```
 
@@ -95,6 +112,9 @@ From outside the fleet, run the bounded probe and retain its JSON stdout:
 
 ```sh
 python3 ../exercise.py --url https://YOUR-STAGING-HOST --rps 5 --seconds 60 \
+  --namespace norn-pilot-EXACT_RUN_ID \
+  --ingress-node-ids-json '["FULL-INGRESS-NODE-ID-1","FULL-INGRESS-NODE-ID-2"]' \
+  --write-token-file /ABSOLUTE/OWNER-ONLY/TOKEN-FILE \
   --expected-image registry.example.com/hello-norn-mysql@sha256:… \
   --expected-source-version EXACT_SOURCE_SHA \
   --expected-hostname YOUR-STAGING-HOST
@@ -116,6 +136,9 @@ allocation explicitly and run:
 
 ```sh
 python3 ../exercise.py --url https://YOUR-STAGING-HOST \
+  --namespace norn-pilot-EXACT_RUN_ID \
+  --ingress-node-ids-json '["FULL-INGRESS-NODE-ID-1","FULL-INGRESS-NODE-ID-2"]' \
+  --write-token-file /ABSOLUTE/OWNER-ONLY/TOKEN-FILE \
   --fault-allocation ALLOCATION_ID \
   --expected-image registry.example.com/hello-norn-mysql@sha256:… \
   --expected-source-version EXACT_SOURCE_SHA \
@@ -123,11 +146,24 @@ python3 ../exercise.py --url https://YOUR-STAGING-HOST \
 ```
 
 The harness first verifies through Nomad that the ID belongs to this job, then
-uses `nomad alloc stop` on that allocation only and waits for the two-replica
+uses `nomad alloc stop -namespace=norn-pilot-EXACT_RUN_ID -detach` on that
+allocation only and waits for the two-replica
 service to recover through the public origin. It never calls a managed MySQL
 failover, changes database configuration, or runs provider commands. Use one
 fault at a time and capture gateway, Nomad, Consul, host and database metrics
 alongside the JSON evidence.
+
+Before the exercise, record the two exact lowercase UUID Nomad node IDs for
+the reviewed `ingress` clients. The required JSON argument is non-secret and
+is retained in the evidence. The harness accepts only those two distinct
+allocation node IDs and verifies the current job's `NodePool` is `ingress`; it
+does not query global Nomad node state.
+
+The exercise reads the write bearer exactly once from an absolute regular file
+owned by its invoking user with exact mode `0600`; symlinks, other owners,
+other modes and oversized files are refused. It sends that value only on `PUT`
+to the already-validated HTTPS origin, never follows redirects, and never
+includes it in its JSON evidence.
 
 Removing app allocations does not delete the database or cloud resources.
 Retire only the explicitly owned rehearsal resources through reviewed Fleet
