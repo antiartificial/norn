@@ -250,7 +250,7 @@ func TestExternalFleetEvidenceRegistrationProtocolNeverReceivesRawNonce(t *testi
 		if strings.Contains(string(body), "00000000-0000-4000-8000-000000000001."+strings.Repeat("a", 64)) {
 			t.Error("registration request leaked a raw nonce")
 		}
-		w.WriteHeader(http.StatusNoContent)
+		_ = json.NewEncoder(w).Encode(ExternalFleetEvidenceAdmissionStatus{SchemaVersion: "norn.external-fleet-admission-status/v4", AdmissionID: "00000000-0000-4000-8000-000000000010", Generation: 1, State: "registered", Revision: 1})
 	}))
 	defer server.Close()
 	evidenceURL, err := url.Parse(server.URL)
@@ -258,18 +258,11 @@ func TestExternalFleetEvidenceRegistrationProtocolNeverReceivesRawNonce(t *testi
 		t.Fatal(err)
 	}
 	verifier := &ExternalFleetDeploymentLiveVerifier{evidenceURL: evidenceURL, registrationTokenFile: registrationToken, httpClient: server.Client()}
-	registration := ExternalFleetEvidenceRegistration{AdmissionID: "00000000-0000-4000-8000-000000000010", LogicalDigest: "sha256:" + strings.Repeat("b", 64), NonceSHA256: strings.Repeat("c", 64), Generation: 1, ExpiresAt: time.Now().Add(time.Minute)}
-	if err := verifier.RegisterExternalFleetNonce(context.Background(), registration); err != nil {
+	registration := ExternalFleetEvidenceRegistration{SchemaVersion: "norn.external-fleet-admission-callback/v4", AdmissionID: "00000000-0000-4000-8000-000000000010", LogicalDigest: "sha256:" + strings.Repeat("b", 64), AdmissionContextDigest: strings.Repeat("b", 64), NonceSHA256: strings.Repeat("c", 64), Generation: 1, ExpectedRevision: 1, IssuedAt: time.Now(), ExpiresAt: time.Now().Add(time.Minute)}
+	if _, err := verifier.RegisterExternalFleetNonce(context.Background(), registration); err != nil {
 		t.Fatal(err)
 	}
-	claim := ExternalFleetEvidenceClaim{AdmissionID: registration.AdmissionID, NonceSHA256: registration.NonceSHA256, Generation: registration.Generation}
-	if err := verifier.ClaimExternalFleetNonce(context.Background(), claim); err != nil {
-		t.Fatal(err)
-	}
-	if err := verifier.CommitExternalFleetNonce(context.Background(), claim); err != nil {
-		t.Fatal(err)
-	}
-	if len(seen) != 3 || !strings.Contains(seen[0], `"logicalDigest":"sha256:`) || strings.Contains(strings.Join(seen, ""), "registration-token") {
+	if len(seen) != 1 || !strings.Contains(seen[0], `"logicalDigest":"sha256:`) || strings.Contains(strings.Join(seen, ""), "registration-token") {
 		t.Fatalf("registration protocol request set = %#v", seen)
 	}
 }

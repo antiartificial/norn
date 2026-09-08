@@ -280,6 +280,7 @@ type ExternalFleetDeploymentLiveVerifier struct {
 // only a nonce hash: the raw one-use nonce is disclosed to Actions only after
 // Fleet durably accepts this registration.
 type ExternalFleetEvidenceRegistration struct {
+	SchemaVersion          string                       `json:"schemaVersion"`
 	AdmissionID            string                       `json:"admissionId"`
 	LogicalDigest          string                       `json:"logicalDigest"`
 	LogicalIdentity        ExternalFleetLogicalIdentity `json:"logicalIdentity"`
@@ -296,6 +297,7 @@ type ExternalFleetEvidenceRegistration struct {
 }
 
 type ExternalFleetEvidenceClaim struct {
+	SchemaVersion          string `json:"schemaVersion"`
 	AdmissionID            string `json:"admissionId"`
 	LogicalDigest          string `json:"logicalDigest,omitempty"`
 	AdmissionContextDigest string `json:"admissionContextDigest,omitempty"`
@@ -333,24 +335,29 @@ type ExternalFleetCheckpointRef struct {
 }
 
 type ExternalFleetEvidenceAdmissionStatus struct {
-	SchemaVersion       string                         `json:"schemaVersion"`
-	AdmissionID         string                         `json:"admissionId"`
-	LogicalDigest       string                         `json:"logicalDigest"`
-	NonceSHA256         string                         `json:"nonceSha256"`
-	Generation          int64                          `json:"generation"`
-	State               string                         `json:"state"`
-	Revision            int64                          `json:"revision"`
-	Snapshot            *ExternalFleetEvidenceSnapshot `json:"snapshot,omitempty"`
-	CleanupIntentDigest string                         `json:"cleanupIntentDigest,omitempty"`
-	AbsenceProofDigest  string                         `json:"absenceProofDigest,omitempty"`
+	SchemaVersion          string                         `json:"schemaVersion"`
+	AdmissionID            string                         `json:"admissionId"`
+	LogicalDigest          string                         `json:"logicalDigest"`
+	NonceSHA256            string                         `json:"nonceSha256"`
+	Generation             int64                          `json:"generation"`
+	State                  string                         `json:"state"`
+	Revision               int64                          `json:"revision"`
+	Snapshot               *ExternalFleetEvidenceSnapshot `json:"snapshot,omitempty"`
+	CleanupIntentDigest    string                         `json:"cleanupIntentDigest,omitempty"`
+	AbsenceProofDigest     string                         `json:"absenceProofDigest,omitempty"`
+	AdmissionContextDigest string                         `json:"admissionContextDigest"`
+	ReceiptDigest          string                         `json:"receiptDigest,omitempty"`
+	ProofDigest            string                         `json:"proofDigest,omitempty"`
+	OperationID            string                         `json:"operationId,omitempty"`
+	OperationDigest        string                         `json:"operationDigest,omitempty"`
 }
 
 // ExternalFleetEvidenceRegistrationClient deliberately separates stateful
 // nonce registration from read-only evidence retrieval.
 type ExternalFleetEvidenceRegistrationClient interface {
-	RegisterExternalFleetNonce(context.Context, ExternalFleetEvidenceRegistration) error
-	ClaimExternalFleetNonce(context.Context, ExternalFleetEvidenceClaim) error
-	CommitExternalFleetNonce(context.Context, ExternalFleetEvidenceClaim) error
+	RegisterExternalFleetNonce(context.Context, ExternalFleetEvidenceRegistration) (*ExternalFleetEvidenceAdmissionStatus, error)
+	ClaimExternalFleetNonce(context.Context, ExternalFleetEvidenceClaim) (*ExternalFleetEvidenceAdmissionStatus, error)
+	CommitExternalFleetNonce(context.Context, ExternalFleetEvidenceClaim) (*ExternalFleetEvidenceAdmissionStatus, error)
 	GetExternalFleetAdmissionStatus(context.Context, string, int64) (*ExternalFleetEvidenceAdmissionStatus, error)
 }
 
@@ -704,25 +711,36 @@ func (v *ExternalFleetDeploymentLiveVerifier) postEvidence(ctx context.Context, 
 	return *decoded.(*externalFleetEvidence), nil
 }
 
-func (v *ExternalFleetDeploymentLiveVerifier) RegisterExternalFleetNonce(ctx context.Context, registration ExternalFleetEvidenceRegistration) error {
-	if registration.AdmissionID == "" || registration.LogicalDigest == "" || !sha256HexPattern.MatchString(registration.NonceSHA256) || registration.Generation < 1 || registration.ExpiresAt.IsZero() {
-		return externalVerifierErr("registration-binding")
+func (v *ExternalFleetDeploymentLiveVerifier) RegisterExternalFleetNonce(ctx context.Context, registration ExternalFleetEvidenceRegistration) (*ExternalFleetEvidenceAdmissionStatus, error) {
+	if registration.SchemaVersion != "norn.external-fleet-admission-callback/v4" || registration.AdmissionID == "" || registration.LogicalDigest == "" || !sha256HexPattern.MatchString(registration.NonceSHA256) || registration.Generation < 1 || registration.ExpectedRevision < 1 || registration.ExpiresAt.IsZero() || registration.IssuedAt.IsZero() || registration.AdmissionContextDigest == "" {
+		return nil, externalVerifierErr("registration-binding")
 	}
-	return v.registrationRequest(ctx, http.MethodPut, "/v1/external-fleet/admissions/"+url.PathEscape(registration.AdmissionID)+"/nonce-registration", registration)
+	return v.registrationStatusRequest(ctx, http.MethodPut, "/v1/external-fleet/admissions/"+url.PathEscape(registration.AdmissionID)+"/registration", registration, registration.AdmissionID, registration.Generation, "registered")
 }
 
-func (v *ExternalFleetDeploymentLiveVerifier) ClaimExternalFleetNonce(ctx context.Context, claim ExternalFleetEvidenceClaim) error {
-	if claim.AdmissionID == "" || !sha256HexPattern.MatchString(claim.NonceSHA256) || claim.Generation < 1 {
-		return externalVerifierErr("claim-binding")
+func (v *ExternalFleetDeploymentLiveVerifier) ClaimExternalFleetNonce(ctx context.Context, claim ExternalFleetEvidenceClaim) (*ExternalFleetEvidenceAdmissionStatus, error) {
+	if claim.SchemaVersion != "norn.external-fleet-admission-callback/v4" || claim.AdmissionID == "" || !sha256HexPattern.MatchString(claim.NonceSHA256) || claim.Generation < 1 || claim.ExpectedRevision < 1 || !sha256HexPattern.MatchString(claim.ReceiptDigest) || !sha256HexPattern.MatchString(claim.ProofDigest) || claim.AdmissionContextDigest == "" {
+		return nil, externalVerifierErr("claim-binding")
 	}
-	return v.registrationRequest(ctx, http.MethodPost, "/v1/external-fleet/admissions/"+url.PathEscape(claim.AdmissionID)+"/nonce-claim", claim)
+	return v.registrationStatusRequest(ctx, http.MethodPost, "/v1/external-fleet/admissions/"+url.PathEscape(claim.AdmissionID)+"/claim", claim, claim.AdmissionID, claim.Generation, "claimed")
 }
 
-func (v *ExternalFleetDeploymentLiveVerifier) CommitExternalFleetNonce(ctx context.Context, claim ExternalFleetEvidenceClaim) error {
-	if claim.AdmissionID == "" || !sha256HexPattern.MatchString(claim.NonceSHA256) || claim.Generation < 1 {
-		return externalVerifierErr("commit-binding")
+func (v *ExternalFleetDeploymentLiveVerifier) CommitExternalFleetNonce(ctx context.Context, claim ExternalFleetEvidenceClaim) (*ExternalFleetEvidenceAdmissionStatus, error) {
+	if claim.SchemaVersion != "norn.external-fleet-admission-callback/v4" || claim.AdmissionID == "" || !sha256HexPattern.MatchString(claim.NonceSHA256) || claim.Generation < 1 || claim.ExpectedRevision < 1 || claim.OperationID == "" || !sha256HexPattern.MatchString(claim.ReceiptDigest) || !sha256HexPattern.MatchString(claim.ProofDigest) || !sha256HexPattern.MatchString(claim.CleanupIntentDigest) {
+		return nil, externalVerifierErr("commit-binding")
 	}
-	return v.registrationRequest(ctx, http.MethodPost, "/v1/external-fleet/admissions/"+url.PathEscape(claim.AdmissionID)+"/nonce-commit", claim)
+	return v.registrationStatusRequest(ctx, http.MethodPost, "/v1/external-fleet/admissions/"+url.PathEscape(claim.AdmissionID)+"/commit", claim, claim.AdmissionID, claim.Generation, "committed")
+}
+
+func (v *ExternalFleetDeploymentLiveVerifier) registrationStatusRequest(ctx context.Context, method, path string, payload any, admissionID string, generation int64, expectedState string) (*ExternalFleetEvidenceAdmissionStatus, error) {
+	status := ExternalFleetEvidenceAdmissionStatus{}
+	if err := v.registrationJSONRequest(ctx, method, path, payload, &status); err != nil {
+		return nil, err
+	}
+	if status.SchemaVersion != "norn.external-fleet-admission-status/v4" || status.AdmissionID != admissionID || status.Generation != generation || status.State != expectedState || status.Revision < 1 {
+		return nil, externalVerifierErr("callback-response")
+	}
+	return &status, nil
 }
 
 // GetExternalFleetAdmissionStatus is the recovery read: it uses the separate

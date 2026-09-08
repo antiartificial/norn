@@ -281,7 +281,7 @@ func (h *Handler) BeginExternalFleetDeploymentAdmission(w http.ResponseWriter, r
 				WriteControlProblem(w, r, http.StatusServiceUnavailable, "external_deployment_registration_unavailable", "committed admission registration state is unavailable")
 				return
 			}
-			if err := registrar.CommitExternalFleetNonce(r.Context(), ExternalFleetEvidenceClaim{AdmissionID: admission.ID, NonceSHA256: registration.NonceSHA256, Generation: registration.Generation}); err != nil {
+			if _, err := registrar.CommitExternalFleetNonce(r.Context(), ExternalFleetEvidenceClaim{SchemaVersion: "norn.external-fleet-admission-callback/v4", AdmissionID: admission.ID, NonceSHA256: registration.NonceSHA256, Generation: registration.Generation, ExpectedRevision: registration.Revision, OperationID: admission.OperationID, ReceiptDigest: strings.Repeat("0", 64), ProofDigest: strings.Repeat("0", 64), CleanupIntentDigest: strings.Repeat("0", 64)}); err != nil {
 				WriteControlProblem(w, r, http.StatusServiceUnavailable, "external_deployment_cleanup_pending", "committed admission remote cleanup is pending; retry begin with the same identity")
 				return
 			}
@@ -323,8 +323,8 @@ func (h *Handler) BeginExternalFleetDeploymentAdmission(w http.ResponseWriter, r
 		return
 	}
 	issuedAt := time.Now().UTC()
-	registration := ExternalFleetEvidenceRegistration{AdmissionID: admission.ID, LogicalDigest: digest, LogicalIdentity: request.LogicalIdentity, AdmissionContextDigest: strings.TrimPrefix(digest, "sha256:"), CurrentAttemptID: principal.CI.RunID + ":" + principal.CI.RunAttempt, CIRepository: principal.CI.Repository, CIRunID: principal.CI.RunID, CIRunAttempt: principal.CI.RunAttempt, NonceSHA256: nonce.sha256(), Generation: generation, ExpectedRevision: 1, IssuedAt: issuedAt, ExpiresAt: expiresAt}
-	if err := registrar.RegisterExternalFleetNonce(r.Context(), registration); err != nil {
+	registration := ExternalFleetEvidenceRegistration{SchemaVersion: "norn.external-fleet-admission-callback/v4", AdmissionID: admission.ID, LogicalDigest: digest, LogicalIdentity: request.LogicalIdentity, AdmissionContextDigest: strings.TrimPrefix(digest, "sha256:"), CurrentAttemptID: principal.CI.RunID + ":" + principal.CI.RunAttempt, CIRepository: principal.CI.Repository, CIRunID: principal.CI.RunID, CIRunAttempt: principal.CI.RunAttempt, NonceSHA256: nonce.sha256(), Generation: generation, ExpectedRevision: 1, IssuedAt: issuedAt, ExpiresAt: expiresAt}
+	if _, err := registrar.RegisterExternalFleetNonce(r.Context(), registration); err != nil {
 		WriteControlProblem(w, r, http.StatusServiceUnavailable, "external_deployment_registration_unavailable", "evidence nonce registration failed before disclosure")
 		return
 	}
@@ -657,7 +657,9 @@ func (h *Handler) AdmitExternalFleetDeployment(w http.ResponseWriter, r *http.Re
 		// Claim remotely first. A network timeout can be reconciled through the
 		// service's idempotent hash/generation claim rather than leaving a local
 		// claim stranded without the independently observed snapshot.
-		if err := registrar.ClaimExternalFleetNonce(r.Context(), ExternalFleetEvidenceClaim{AdmissionID: admission.ID, LogicalDigest: digest, AdmissionContextDigest: strings.TrimPrefix(digest, "sha256:"), NonceSHA256: nonce.sha256(), Generation: admission.NonceGeneration, ExpectedRevision: registrationState.Revision}); err != nil {
+		receiptBytes, _ := externalReceiptCanonicalJSON(receipt)
+		receiptDigest := sha256.Sum256(receiptBytes)
+		if _, err := registrar.ClaimExternalFleetNonce(r.Context(), ExternalFleetEvidenceClaim{SchemaVersion: "norn.external-fleet-admission-callback/v4", AdmissionID: admission.ID, LogicalDigest: digest, AdmissionContextDigest: strings.TrimPrefix(digest, "sha256:"), ReceiptDigest: hex.EncodeToString(receiptDigest[:]), ProofDigest: hex.EncodeToString(receiptDigest[:]), NonceSHA256: nonce.sha256(), Generation: admission.NonceGeneration, ExpectedRevision: registrationState.Revision}); err != nil {
 			WriteControlProblem(w, r, http.StatusServiceUnavailable, "external_deployment_registration_unavailable", "evidence nonce claim failed")
 			return
 		}
@@ -747,8 +749,8 @@ func (h *Handler) AdmitExternalFleetDeployment(w http.ResponseWriter, r *http.Re
 	}
 	if admission != nil {
 		registrar := h.externalFleetDeploymentVerifier.(ExternalFleetEvidenceRegistrationClient)
-		claim := ExternalFleetEvidenceClaim{AdmissionID: admission.ID, LogicalDigest: digest, AdmissionContextDigest: strings.TrimPrefix(digest, "sha256:"), ReceiptDigest: hex.EncodeToString(receiptHash[:]), ProofDigest: hex.EncodeToString(receiptHash[:]), NonceSHA256: nonce.sha256(), Generation: admission.NonceGeneration, OperationID: result.Operation.ID}
-		if err := registrar.CommitExternalFleetNonce(r.Context(), claim); err != nil {
+		claim := ExternalFleetEvidenceClaim{SchemaVersion: "norn.external-fleet-admission-callback/v4", AdmissionID: admission.ID, LogicalDigest: digest, AdmissionContextDigest: strings.TrimPrefix(digest, "sha256:"), ReceiptDigest: hex.EncodeToString(receiptHash[:]), ProofDigest: hex.EncodeToString(receiptHash[:]), NonceSHA256: nonce.sha256(), Generation: admission.NonceGeneration, ExpectedRevision: 1, OperationID: result.Operation.ID, CleanupIntentDigest: strings.Repeat("0", 64)}
+		if _, err := registrar.CommitExternalFleetNonce(r.Context(), claim); err != nil {
 			_ = h.db.MarkExternalDeploymentAdmissionCleanupPending(r.Context(), admission.ID)
 			WriteControlProblem(w, r, http.StatusServiceUnavailable, "external_deployment_cleanup_pending", "deployment committed but evidence nonce cleanup is pending; retry the exact request")
 			return
