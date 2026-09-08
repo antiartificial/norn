@@ -484,6 +484,9 @@ func main() {
 		r.With(handler.ValidateAppID).Post("/v1/apps/{id}/releases/preflight", h.QueueReleasePreflight)
 		r.With(handler.ValidateAppID).Post("/v1/apps/{id}/private-attestations", h.CreatePrivateReleaseAttestation)
 		r.With(handler.ValidateAppID).Post("/v1/apps/{id}/releases/deployments", h.QueueReleaseDeployment)
+		r.With(handler.ValidateAppID).Post("/v1/apps/{id}/external-deployments/begin", h.BeginExternalFleetDeploymentAdmission)
+		r.With(handler.ValidateAppID).Post("/v1/apps/{id}/external-deployments/admit", h.AdmitExternalFleetDeploymentV4)
+		r.With(handler.ValidateAppID).Get("/v1/apps/{id}/external-deployments/context/{admissionId}", h.GetExternalFleetDeploymentAdmissionContext)
 		r.With(handler.ValidateAppID).Post("/v1/apps/{id}/external-deployments", h.AdmitExternalFleetDeployment)
 		r.With(handler.ValidateAppID).Post("/v1/apps/{id}/releases/rollbacks", h.QueueReleaseRollback)
 		r.With(handler.ValidateAppID).Get("/v1/apps/{id}/qualifications", h.ListReleaseQualifications)
@@ -1149,7 +1152,7 @@ func controlScopeForRequest(r *http.Request) string {
 		return ""
 	case path == "/api/v1/auth/rotate" || path == "/api/v1/auth/revoke":
 		return ""
-	case r.Method == http.MethodPost && (strings.HasSuffix(path, "/releases/preflight") || strings.HasSuffix(path, "/releases/deployments") || strings.HasSuffix(path, "/releases/rollbacks") || strings.HasSuffix(path, "/private-attestations") || strings.HasSuffix(path, "/qualifications") || strings.HasSuffix(path, "/promotions") || strings.HasSuffix(path, "/external-deployments")):
+	case r.Method == http.MethodPost && (strings.HasSuffix(path, "/releases/preflight") || strings.HasSuffix(path, "/releases/deployments") || strings.HasSuffix(path, "/releases/rollbacks") || strings.HasSuffix(path, "/private-attestations") || strings.HasSuffix(path, "/qualifications") || strings.HasSuffix(path, "/promotions") || strings.HasSuffix(path, "/external-deployments") || strings.HasSuffix(path, "/external-deployments/begin") || strings.HasSuffix(path, "/external-deployments/admit")):
 		// The global middleware authenticates the Norn token but the release
 		// handlers own their exact scope plus app/environment/CI binding.
 		return ""
@@ -1268,8 +1271,10 @@ func writeControlCapabilitiesForConfig(cfg *config.Config, w http.ResponseWriter
 		endpoints["releaseRollbacks"] = "/api/v1/apps/{id}/releases/rollbacks"
 	}
 	if externalFleetVerifierConfigured(cfg) {
-		features = append(features, "external-fleet-deployment-admission-v1")
-		endpoints["externalFleetDeployments"] = "/api/v1/apps/{id}/external-deployments"
+		features = append(features, "external-fleet-deployment-admission-v4")
+		endpoints["externalFleetAdmissionBegin"] = "/api/v1/apps/{id}/external-deployments/begin"
+		endpoints["externalFleetAdmissionAdmit"] = "/api/v1/apps/{id}/external-deployments/admit"
+		endpoints["externalFleetAdmissionContext"] = "/api/v1/apps/{id}/external-deployments/context/{admissionId}"
 	}
 	if cfg.IsAppCatalogReadOnly() {
 		features = withoutCapability(features, "app-creation")
@@ -1344,11 +1349,11 @@ func externalFleetBridgeConfigured(cfg *config.Config) bool {
 }
 
 func externalFleetVerifierRequested(cfg *config.Config) bool {
-	return cfg != nil && (strings.TrimSpace(cfg.ExternalFleetVerifierURL) != "" || strings.TrimSpace(cfg.ExternalFleetVerifierTokenFile) != "" || strings.TrimSpace(cfg.ExternalFleetGitHubVerifierAppID) != "" || cfg.ExternalFleetGitHubVerifierInstallationID != 0 || strings.TrimSpace(cfg.ExternalFleetGitHubVerifierPrivateKeyFile) != "" || len(cfg.ExternalFleetGitHubVerifierRepositoryIDs) != 0 || strings.TrimSpace(cfg.ExternalFleetGitHubCLIPath) != "" || strings.TrimSpace(cfg.ExternalFleetPublicBaseURL) != "" || len(cfg.ExternalFleetEvidenceAllowedCIDRs) != 0)
+	return cfg != nil && (strings.TrimSpace(cfg.ExternalFleetVerifierURL) != "" || strings.TrimSpace(cfg.ExternalFleetVerifierTokenFile) != "" || strings.TrimSpace(cfg.ExternalFleetEvidenceRegistrationTokenFile) != "" || strings.TrimSpace(cfg.ExternalFleetGitHubVerifierAppID) != "" || cfg.ExternalFleetGitHubVerifierInstallationID != 0 || strings.TrimSpace(cfg.ExternalFleetGitHubVerifierPrivateKeyFile) != "" || len(cfg.ExternalFleetGitHubVerifierRepositoryIDs) != 0 || strings.TrimSpace(cfg.ExternalFleetGitHubCLIPath) != "" || strings.TrimSpace(cfg.ExternalFleetPublicBaseURL) != "" || len(cfg.ExternalFleetEvidenceAllowedCIDRs) != 0)
 }
 
 func externalFleetVerifierConfigured(cfg *config.Config) bool {
-	return cfg != nil && cfg.EnvironmentID() == "staging" && externalFleetBridgeConfigured(cfg) && externalFleetVerifierRequested(cfg) && strings.TrimSpace(cfg.ExternalFleetVerifierURL) != "" && strings.TrimSpace(cfg.ExternalFleetVerifierTokenFile) != "" && strings.TrimSpace(cfg.ExternalFleetGitHubVerifierAppID) != "" && cfg.ExternalFleetGitHubVerifierInstallationID > 0 && strings.TrimSpace(cfg.ExternalFleetGitHubVerifierPrivateKeyFile) != "" && len(cfg.ExternalFleetGitHubVerifierRepositoryIDs) > 0 && strings.TrimSpace(cfg.ExternalFleetGitHubCLIPath) != "" && strings.TrimSpace(cfg.ExternalFleetPublicBaseURL) != "" && len(cfg.ExternalFleetEvidenceAllowedCIDRs) > 0
+	return cfg != nil && cfg.EnvironmentID() == "staging" && externalFleetBridgeConfigured(cfg) && externalFleetVerifierRequested(cfg) && strings.TrimSpace(cfg.ExternalFleetVerifierURL) != "" && strings.TrimSpace(cfg.ExternalFleetVerifierTokenFile) != "" && strings.TrimSpace(cfg.ExternalFleetEvidenceRegistrationTokenFile) != "" && strings.TrimSpace(cfg.ExternalFleetGitHubVerifierAppID) != "" && cfg.ExternalFleetGitHubVerifierInstallationID > 0 && strings.TrimSpace(cfg.ExternalFleetGitHubVerifierPrivateKeyFile) != "" && len(cfg.ExternalFleetGitHubVerifierRepositoryIDs) > 0 && strings.TrimSpace(cfg.ExternalFleetGitHubCLIPath) != "" && strings.TrimSpace(cfg.ExternalFleetPublicBaseURL) != "" && len(cfg.ExternalFleetEvidenceAllowedCIDRs) > 0
 }
 
 func externalFleetSignerInNormalAllowlist(value string, allowed []string) bool {

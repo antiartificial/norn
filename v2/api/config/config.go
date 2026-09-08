@@ -104,15 +104,16 @@ type Config struct {
 	// ExternalFleetVerifier* is the read-only, separately credentialed pilot
 	// evidence adapter. It is intentionally all-or-nothing: partial values do
 	// not enable the direct-workload admission route.
-	ExternalFleetVerifierURL                  string
-	ExternalFleetVerifierTokenFile            string
-	ExternalFleetGitHubVerifierAppID          string
-	ExternalFleetGitHubVerifierInstallationID int64
-	ExternalFleetGitHubVerifierPrivateKeyFile string
-	ExternalFleetGitHubVerifierRepositoryIDs  []string
-	ExternalFleetGitHubCLIPath                string
-	ExternalFleetPublicBaseURL                string
-	ExternalFleetEvidenceAllowedCIDRs         []string
+	ExternalFleetVerifierURL                   string
+	ExternalFleetVerifierTokenFile             string
+	ExternalFleetEvidenceRegistrationTokenFile string
+	ExternalFleetGitHubVerifierAppID           string
+	ExternalFleetGitHubVerifierInstallationID  int64
+	ExternalFleetGitHubVerifierPrivateKeyFile  string
+	ExternalFleetGitHubVerifierRepositoryIDs   []string
+	ExternalFleetGitHubCLIPath                 string
+	ExternalFleetPublicBaseURL                 string
+	ExternalFleetEvidenceAllowedCIDRs          []string
 
 	ReleaseAdmissionMode                   string
 	ReleaseAttestationIssuer               string
@@ -247,22 +248,23 @@ func Load() *Config {
 		GitHubActionsFleetAllowedEnvironments: splitNonEmpty(os.Getenv("NORN_GITHUB_ACTIONS_FLEET_ALLOWED_ENVIRONMENTS")),
 		GitHubActionsFleetAllowedIntents:      splitNonEmpty(os.Getenv("NORN_GITHUB_ACTIONS_FLEET_ALLOWED_INTENTS")),
 
-		ExternalFleetAdmissionApp:                 strings.TrimSpace(os.Getenv("NORN_EXTERNAL_FLEET_ADMISSION_APP")),
-		ExternalFleetAdmissionNamespace:           strings.TrimSpace(os.Getenv("NORN_EXTERNAL_FLEET_ADMISSION_NAMESPACE")),
-		ExternalFleetAdmissionRuntimeJobID:        strings.TrimSpace(os.Getenv("NORN_EXTERNAL_FLEET_ADMISSION_RUNTIME_JOB_ID")),
-		ExternalFleetAdmissionRuntimeHCLSHA256:    strings.ToLower(strings.TrimSpace(os.Getenv("NORN_EXTERNAL_FLEET_ADMISSION_RUNTIME_HCL_SHA256"))),
-		ExternalFleetAdmissionMigrationJobID:      strings.TrimSpace(os.Getenv("NORN_EXTERNAL_FLEET_ADMISSION_MIGRATION_JOB_ID")),
-		ExternalFleetAdmissionMigrationHCLSHA256:  strings.ToLower(strings.TrimSpace(os.Getenv("NORN_EXTERNAL_FLEET_ADMISSION_MIGRATION_HCL_SHA256"))),
-		ExternalFleetAdmissionBootstrapSignerRef:  strings.TrimSpace(os.Getenv("NORN_EXTERNAL_FLEET_ADMISSION_BOOTSTRAP_SIGNER_REF")),
-		ExternalFleetVerifierURL:                  strings.TrimSpace(os.Getenv("NORN_EXTERNAL_FLEET_VERIFIER_URL")),
-		ExternalFleetVerifierTokenFile:            strings.TrimSpace(os.Getenv("NORN_EXTERNAL_FLEET_VERIFIER_TOKEN_FILE")),
-		ExternalFleetGitHubVerifierAppID:          strings.TrimSpace(os.Getenv("NORN_EXTERNAL_FLEET_GITHUB_VERIFIER_APP_ID")),
-		ExternalFleetGitHubVerifierInstallationID: envInt64Or("NORN_EXTERNAL_FLEET_GITHUB_VERIFIER_INSTALLATION_ID", 0),
-		ExternalFleetGitHubVerifierPrivateKeyFile: strings.TrimSpace(os.Getenv("NORN_EXTERNAL_FLEET_GITHUB_VERIFIER_PRIVATE_KEY_FILE")),
-		ExternalFleetGitHubVerifierRepositoryIDs:  splitNonEmpty(os.Getenv("NORN_EXTERNAL_FLEET_GITHUB_VERIFIER_REPOSITORY_IDS")),
-		ExternalFleetGitHubCLIPath:                strings.TrimSpace(os.Getenv("NORN_EXTERNAL_FLEET_GITHUB_CLI_PATH")),
-		ExternalFleetPublicBaseURL:                strings.TrimSpace(os.Getenv("NORN_EXTERNAL_FLEET_PUBLIC_BASE_URL")),
-		ExternalFleetEvidenceAllowedCIDRs:         splitNonEmpty(os.Getenv("NORN_EXTERNAL_FLEET_EVIDENCE_ALLOWED_CIDRS")),
+		ExternalFleetAdmissionApp:                  strings.TrimSpace(os.Getenv("NORN_EXTERNAL_FLEET_ADMISSION_APP")),
+		ExternalFleetAdmissionNamespace:            strings.TrimSpace(os.Getenv("NORN_EXTERNAL_FLEET_ADMISSION_NAMESPACE")),
+		ExternalFleetAdmissionRuntimeJobID:         strings.TrimSpace(os.Getenv("NORN_EXTERNAL_FLEET_ADMISSION_RUNTIME_JOB_ID")),
+		ExternalFleetAdmissionRuntimeHCLSHA256:     strings.ToLower(strings.TrimSpace(os.Getenv("NORN_EXTERNAL_FLEET_ADMISSION_RUNTIME_HCL_SHA256"))),
+		ExternalFleetAdmissionMigrationJobID:       strings.TrimSpace(os.Getenv("NORN_EXTERNAL_FLEET_ADMISSION_MIGRATION_JOB_ID")),
+		ExternalFleetAdmissionMigrationHCLSHA256:   strings.ToLower(strings.TrimSpace(os.Getenv("NORN_EXTERNAL_FLEET_ADMISSION_MIGRATION_HCL_SHA256"))),
+		ExternalFleetAdmissionBootstrapSignerRef:   strings.TrimSpace(os.Getenv("NORN_EXTERNAL_FLEET_ADMISSION_BOOTSTRAP_SIGNER_REF")),
+		ExternalFleetVerifierURL:                   strings.TrimSpace(os.Getenv("NORN_EXTERNAL_FLEET_VERIFIER_URL")),
+		ExternalFleetVerifierTokenFile:             strings.TrimSpace(os.Getenv("NORN_EXTERNAL_FLEET_VERIFIER_TOKEN_FILE")),
+		ExternalFleetEvidenceRegistrationTokenFile: strings.TrimSpace(os.Getenv("NORN_EXTERNAL_FLEET_EVIDENCE_REGISTRATION_TOKEN_FILE")),
+		ExternalFleetGitHubVerifierAppID:           strings.TrimSpace(os.Getenv("NORN_EXTERNAL_FLEET_GITHUB_VERIFIER_APP_ID")),
+		ExternalFleetGitHubVerifierInstallationID:  envInt64Or("NORN_EXTERNAL_FLEET_GITHUB_VERIFIER_INSTALLATION_ID", 0),
+		ExternalFleetGitHubVerifierPrivateKeyFile:  strings.TrimSpace(os.Getenv("NORN_EXTERNAL_FLEET_GITHUB_VERIFIER_PRIVATE_KEY_FILE")),
+		ExternalFleetGitHubVerifierRepositoryIDs:   splitNonEmpty(os.Getenv("NORN_EXTERNAL_FLEET_GITHUB_VERIFIER_REPOSITORY_IDS")),
+		ExternalFleetGitHubCLIPath:                 strings.TrimSpace(os.Getenv("NORN_EXTERNAL_FLEET_GITHUB_CLI_PATH")),
+		ExternalFleetPublicBaseURL:                 strings.TrimSpace(os.Getenv("NORN_EXTERNAL_FLEET_PUBLIC_BASE_URL")),
+		ExternalFleetEvidenceAllowedCIDRs:          splitNonEmpty(os.Getenv("NORN_EXTERNAL_FLEET_EVIDENCE_ALLOWED_CIDRS")),
 
 		ReleaseAdmissionMode:                   strings.ToLower(envOr("NORN_RELEASE_ADMISSION_MODE", "keyed")),
 		ReleaseAttestationIssuer:               strings.TrimSpace(os.Getenv("NORN_RELEASE_ATTESTATION_ISSUER")),

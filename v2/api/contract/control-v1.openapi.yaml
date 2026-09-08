@@ -2500,12 +2500,14 @@ components:
     ExternalFleetAdmissionBeginResponse:
       type: object
       additionalProperties: false
-      required: [admissionId, state, nonce, expiresAt]
+      required: [schemaVersion, admissionId, state, nonce, expiresAt]
       properties:
+        schemaVersion: { const: norn.external-fleet-admission/v4 }
         admissionId: { type: string, format: uuid, readOnly: true }
-        state: { type: string, enum: [issued, admitted, expired, rejected], readOnly: true }
+        state: { type: string, enum: [initiated, nonce_registering, nonce_ready, evidence_claimed, committed, cleanup_pending, complete, expired], readOnly: true }
         nonce: { type: string, writeOnly: true }
         expiresAt: { type: string, format: date-time, readOnly: true }
+        operationId: { type: string, format: uuid, readOnly: true }
     ExternalFleetDeploymentAdmissionRequest:
       type: object
       additionalProperties: false
@@ -2574,7 +2576,7 @@ components:
       required: [admissionId, state, operationId, cleanupState, retryLineage, checkpoints]
       properties:
         admissionId: { type: string, format: uuid, readOnly: true }
-        state: { type: string, enum: [issued, admitted, expired, rejected], readOnly: true }
+        state: { type: string, enum: [initiated, nonce_registering, nonce_ready, evidence_claimed, committed, cleanup_pending, complete, expired], readOnly: true }
         operationId: { type: string, format: uuid, readOnly: true }
         cleanupState: { type: string, readOnly: true }
         retryLineage:

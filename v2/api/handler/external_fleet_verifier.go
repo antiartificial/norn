@@ -250,27 +250,54 @@ func (v externalFleetCommandAttestationVerifier) verify(ctx context.Context, tok
 // ExternalFleetDeploymentVerifierConfig is intentionally not the app config:
 // it keeps all adapter inputs explicit and makes construction easy to test.
 type ExternalFleetDeploymentVerifierConfig struct {
-	EvidenceURL          string
-	EvidenceTokenFile    string
-	GitHubAppID          string
-	GitHubInstallationID int64
-	GitHubPrivateKeyFile string
-	GitHubRepositoryIDs  []string
-	GitHubCLIPath        string
-	PublicBaseURL        string
-	EvidenceAllowedCIDRs []string
+	EvidenceURL           string
+	EvidenceTokenFile     string
+	RegistrationTokenFile string
+	GitHubAppID           string
+	GitHubInstallationID  int64
+	GitHubPrivateKeyFile  string
+	GitHubRepositoryIDs   []string
+	GitHubCLIPath         string
+	PublicBaseURL         string
+	EvidenceAllowedCIDRs  []string
 }
 
 type ExternalFleetDeploymentLiveVerifier struct {
-	evidenceURL       *url.URL
-	publicURL         *url.URL
-	evidenceTokenFile string
-	githubApp         *externalFleetGitHubApp
+	evidenceURL           *url.URL
+	publicURL             *url.URL
+	evidenceTokenFile     string
+	registrationTokenFile string
+	githubApp             *externalFleetGitHubApp
 	// githubTokenFile is test-only injection; constructors never populate it.
 	githubTokenFile string
 	httpClient      *http.Client
 	attest          ExternalFleetAttestationVerifier
 	githubRun       ExternalFleetGitHubRunVerifier
+}
+
+// ExternalFleetEvidenceRegistration is the Norn-to-Fleet protocol. It carries
+// only a nonce hash: the raw one-use nonce is disclosed to Actions only after
+// Fleet durably accepts this registration.
+type ExternalFleetEvidenceRegistration struct {
+	AdmissionID   string    `json:"admissionId"`
+	LogicalDigest string    `json:"logicalDigest"`
+	NonceSHA256   string    `json:"nonceSha256"`
+	Generation    int64     `json:"generation"`
+	ExpiresAt     time.Time `json:"expiresAt"`
+}
+
+type ExternalFleetEvidenceClaim struct {
+	AdmissionID string `json:"admissionId"`
+	NonceSHA256 string `json:"nonceSha256"`
+	Generation  int64  `json:"generation"`
+}
+
+// ExternalFleetEvidenceRegistrationClient deliberately separates stateful
+// nonce registration from read-only evidence retrieval.
+type ExternalFleetEvidenceRegistrationClient interface {
+	RegisterExternalFleetNonce(context.Context, ExternalFleetEvidenceRegistration) error
+	ClaimExternalFleetNonce(context.Context, ExternalFleetEvidenceClaim) error
+	CommitExternalFleetNonce(context.Context, ExternalFleetEvidenceClaim) error
 }
 
 // NewExternalFleetDeploymentLiveVerifier refuses partial configuration. The
@@ -290,6 +317,9 @@ func NewExternalFleetDeploymentLiveVerifier(cfg ExternalFleetDeploymentVerifierC
 	}
 	if err := externalVerifierSecretFile(cfg.EvidenceTokenFile); err != nil {
 		return nil, fmt.Errorf("external Fleet evidence token: %w", err)
+	}
+	if err := externalVerifierSecretFile(cfg.RegistrationTokenFile); err != nil || sameExternalVerifierSecret(cfg.EvidenceTokenFile, cfg.RegistrationTokenFile) || sameExternalVerifierSecret(cfg.RegistrationTokenFile, cfg.GitHubPrivateKeyFile) {
+		return nil, fmt.Errorf("external Fleet evidence registration credential is unavailable or not distinct")
 	}
 	githubApp, err := newExternalFleetGitHubApp(externalFleetGitHubAppConfig{AppID: cfg.GitHubAppID, InstallationID: cfg.GitHubInstallationID, PrivateKeyFile: cfg.GitHubPrivateKeyFile, RepositoryIDs: cfg.GitHubRepositoryIDs}, nil)
 	if err != nil {
@@ -315,14 +345,14 @@ func NewExternalFleetDeploymentLiveVerifier(cfg ExternalFleetDeploymentVerifierC
 		}
 	}
 	githubApp.client = client
-	return &ExternalFleetDeploymentLiveVerifier{evidenceURL: evidenceURL, publicURL: publicURL, evidenceTokenFile: cfg.EvidenceTokenFile, githubApp: githubApp, httpClient: client, attest: attest, githubRun: externalFleetGitHubRunVerifier{client: client}}, nil
+	return &ExternalFleetDeploymentLiveVerifier{evidenceURL: evidenceURL, publicURL: publicURL, evidenceTokenFile: cfg.EvidenceTokenFile, registrationTokenFile: cfg.RegistrationTokenFile, githubApp: githubApp, httpClient: client, attest: attest, githubRun: externalFleetGitHubRunVerifier{client: client}}, nil
 }
 
 func ExternalFleetDeploymentVerifierFromConfig(cfg *config.Config) (*ExternalFleetDeploymentLiveVerifier, error) {
 	if cfg == nil {
 		return nil, fmt.Errorf("external Fleet verifier is not configured")
 	}
-	return NewExternalFleetDeploymentLiveVerifier(ExternalFleetDeploymentVerifierConfig{EvidenceURL: cfg.ExternalFleetVerifierURL, EvidenceTokenFile: cfg.ExternalFleetVerifierTokenFile, GitHubAppID: cfg.ExternalFleetGitHubVerifierAppID, GitHubInstallationID: cfg.ExternalFleetGitHubVerifierInstallationID, GitHubPrivateKeyFile: cfg.ExternalFleetGitHubVerifierPrivateKeyFile, GitHubRepositoryIDs: cfg.ExternalFleetGitHubVerifierRepositoryIDs, GitHubCLIPath: cfg.ExternalFleetGitHubCLIPath, PublicBaseURL: cfg.ExternalFleetPublicBaseURL, EvidenceAllowedCIDRs: cfg.ExternalFleetEvidenceAllowedCIDRs}, nil, nil)
+	return NewExternalFleetDeploymentLiveVerifier(ExternalFleetDeploymentVerifierConfig{EvidenceURL: cfg.ExternalFleetVerifierURL, EvidenceTokenFile: cfg.ExternalFleetVerifierTokenFile, RegistrationTokenFile: cfg.ExternalFleetEvidenceRegistrationTokenFile, GitHubAppID: cfg.ExternalFleetGitHubVerifierAppID, GitHubInstallationID: cfg.ExternalFleetGitHubVerifierInstallationID, GitHubPrivateKeyFile: cfg.ExternalFleetGitHubVerifierPrivateKeyFile, GitHubRepositoryIDs: cfg.ExternalFleetGitHubVerifierRepositoryIDs, GitHubCLIPath: cfg.ExternalFleetGitHubCLIPath, PublicBaseURL: cfg.ExternalFleetPublicBaseURL, EvidenceAllowedCIDRs: cfg.ExternalFleetEvidenceAllowedCIDRs}, nil, nil)
 }
 
 func externalVerifierURL(raw string) (*url.URL, error) {
@@ -623,6 +653,62 @@ func (v *ExternalFleetDeploymentLiveVerifier) postEvidence(ctx context.Context, 
 		return externalFleetEvidence{}, externalVerifierErr("evidence-invalid")
 	}
 	return *decoded.(*externalFleetEvidence), nil
+}
+
+func (v *ExternalFleetDeploymentLiveVerifier) RegisterExternalFleetNonce(ctx context.Context, registration ExternalFleetEvidenceRegistration) error {
+	if registration.AdmissionID == "" || registration.LogicalDigest == "" || !sha256HexPattern.MatchString(registration.NonceSHA256) || registration.Generation < 1 || registration.ExpiresAt.IsZero() {
+		return externalVerifierErr("registration-binding")
+	}
+	return v.registrationRequest(ctx, http.MethodPut, "/v1/external-fleet/admissions/"+url.PathEscape(registration.AdmissionID)+"/nonce-registration", registration)
+}
+
+func (v *ExternalFleetDeploymentLiveVerifier) ClaimExternalFleetNonce(ctx context.Context, claim ExternalFleetEvidenceClaim) error {
+	if claim.AdmissionID == "" || !sha256HexPattern.MatchString(claim.NonceSHA256) || claim.Generation < 1 {
+		return externalVerifierErr("claim-binding")
+	}
+	return v.registrationRequest(ctx, http.MethodPost, "/v1/external-fleet/admissions/"+url.PathEscape(claim.AdmissionID)+"/nonce-claim", claim)
+}
+
+func (v *ExternalFleetDeploymentLiveVerifier) CommitExternalFleetNonce(ctx context.Context, claim ExternalFleetEvidenceClaim) error {
+	if claim.AdmissionID == "" || !sha256HexPattern.MatchString(claim.NonceSHA256) || claim.Generation < 1 {
+		return externalVerifierErr("commit-binding")
+	}
+	return v.registrationRequest(ctx, http.MethodPost, "/v1/external-fleet/admissions/"+url.PathEscape(claim.AdmissionID)+"/nonce-commit", claim)
+}
+
+func (v *ExternalFleetDeploymentLiveVerifier) registrationRequest(ctx context.Context, method, path string, payload any) error {
+	if v == nil || v.evidenceURL == nil || v.httpClient == nil || strings.TrimSpace(v.registrationTokenFile) == "" {
+		return externalVerifierErr("registration-unconfigured")
+	}
+	token, err := readExternalVerifierSecret(v.registrationTokenFile)
+	if err != nil {
+		return externalVerifierErr("registration-credential")
+	}
+	body, err := json.Marshal(payload)
+	if err != nil || len(body) > 16<<10 {
+		return externalVerifierErr("registration-request")
+	}
+	u := *v.evidenceURL
+	u.Path = strings.TrimRight(u.Path, "/") + path
+	u.RawQuery = ""
+	request, err := http.NewRequestWithContext(ctx, method, u.String(), bytes.NewReader(body))
+	if err != nil {
+		return externalVerifierErr("registration-request")
+	}
+	request.Header.Set("Authorization", "Bearer "+token)
+	request.Header.Set("Content-Type", "application/json")
+	response, err := v.httpClient.Do(request)
+	if err != nil {
+		return externalVerifierErr("registration-unavailable")
+	}
+	defer response.Body.Close()
+	if response.StatusCode != http.StatusOK && response.StatusCode != http.StatusCreated && response.StatusCode != http.StatusNoContent {
+		return externalVerifierErr("registration-rejected")
+	}
+	if size, err := io.Copy(io.Discard, io.LimitReader(response.Body, 4097)); err != nil || size > 4096 {
+		return externalVerifierErr("registration-response")
+	}
+	return nil
 }
 
 func (v *ExternalFleetDeploymentLiveVerifier) publicEndpoint(path string) string {

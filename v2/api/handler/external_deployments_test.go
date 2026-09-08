@@ -19,6 +19,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"reflect"
 	"strconv"
 	"strings"
 	"testing"
@@ -210,8 +211,50 @@ func TestExternalFleetLiveVerifierUsesOnlyRedactedNonceAndCanonicalEvidence(t *t
 	if err != nil {
 		t.Fatalf("live verifier rejected complete fake evidence: %v", err)
 	}
-	if verified.PlanID != receipt.Fleet.PlanID || verified.Migration != receipt.Fleet.Migration {
+	if verified.PlanID != receipt.Fleet.PlanID || !reflect.DeepEqual(verified.Migration, receipt.Fleet.Migration) {
 		t.Fatalf("verification = %#v", verified)
+	}
+}
+
+func TestExternalFleetEvidenceRegistrationProtocolNeverReceivesRawNonce(t *testing.T) {
+	registrationToken := t.TempDir() + "/registration.token"
+	if err := os.WriteFile(registrationToken, []byte("registration-token\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	var seen []string
+	server := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Header.Get("Authorization") != "Bearer registration-token" || r.Header.Get("Content-Type") != "application/json" {
+			t.Error("registration request did not use its distinct Norn-only credential")
+		}
+		body, err := io.ReadAll(r.Body)
+		if err != nil {
+			t.Fatal(err)
+		}
+		seen = append(seen, string(body))
+		if strings.Contains(string(body), "00000000-0000-4000-8000-000000000001."+strings.Repeat("a", 64)) {
+			t.Error("registration request leaked a raw nonce")
+		}
+		w.WriteHeader(http.StatusNoContent)
+	}))
+	defer server.Close()
+	evidenceURL, err := url.Parse(server.URL)
+	if err != nil {
+		t.Fatal(err)
+	}
+	verifier := &ExternalFleetDeploymentLiveVerifier{evidenceURL: evidenceURL, registrationTokenFile: registrationToken, httpClient: server.Client()}
+	registration := ExternalFleetEvidenceRegistration{AdmissionID: "00000000-0000-4000-8000-000000000010", LogicalDigest: "sha256:" + strings.Repeat("b", 64), NonceSHA256: strings.Repeat("c", 64), Generation: 1, ExpiresAt: time.Now().Add(time.Minute)}
+	if err := verifier.RegisterExternalFleetNonce(context.Background(), registration); err != nil {
+		t.Fatal(err)
+	}
+	claim := ExternalFleetEvidenceClaim{AdmissionID: registration.AdmissionID, NonceSHA256: registration.NonceSHA256, Generation: registration.Generation}
+	if err := verifier.ClaimExternalFleetNonce(context.Background(), claim); err != nil {
+		t.Fatal(err)
+	}
+	if err := verifier.CommitExternalFleetNonce(context.Background(), claim); err != nil {
+		t.Fatal(err)
+	}
+	if len(seen) != 3 || !strings.Contains(seen[0], `"logicalDigest":"sha256:`) || strings.Contains(strings.Join(seen, ""), "registration-token") {
+		t.Fatalf("registration protocol request set = %#v", seen)
 	}
 }
 
@@ -834,6 +877,26 @@ func TestExternalBootstrapSignerIsSeparatelyPinned(t *testing.T) {
 	receipt.Candidate.SignerWorkflowSHA = strings.Repeat("a", 40)
 	if validExternalBootstrapCandidate(receipt.Candidate, receipt.SourceSHA, receipt.Artifact, "github-public", configured) {
 		t.Fatal("bootstrap signer SHA mismatch was accepted")
+	}
+}
+
+func TestExternalFleetReceiptV4RequiresExactLiveNomadProof(t *testing.T) {
+	receipt := externalReceiptForTest()
+	receipt.SchemaVersion = externalFleetReceiptSchemaV4
+	receipt.AdmissionID = "00000000-0000-4000-8000-000000000099"
+	receipt.Fleet.FleetCommit = strings.Repeat("f", 40)
+	for index, proof := range []*ExternalFleetNomadJobProof{&receipt.Fleet.Migration, &receipt.Fleet.Runtime} {
+		proof.EvalCreateIndex, proof.EvalJobModifyIndex, proof.JobCreateIndex, proof.JobVersion = uint64(index+1), uint64(index+2), uint64(index+3), 1
+		proof.CurrentSpecSHA256, proof.SubmissionSHA256 = strings.Repeat("a", 64), strings.Repeat("b", 64)
+		proof.EvaluationChainIDs = []string{proof.EvalID}
+	}
+	configured := externalConfigForTest()
+	if !validExternalFleetReceiptV4(receipt, configured, receipt.App) {
+		t.Fatal("complete v4 receipt rejected")
+	}
+	receipt.Fleet.Runtime.EvaluationChainIDs = []string{receipt.Fleet.Runtime.EvalID, receipt.Fleet.Runtime.EvalID}
+	if validExternalFleetReceiptV4(receipt, configured, receipt.App) {
+		t.Fatal("duplicate evaluation chain was accepted")
 	}
 }
 

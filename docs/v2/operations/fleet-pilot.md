@@ -167,12 +167,15 @@ environment, protected ref, and `apply` or `recover` intent. A regular Fleet
 token, static control token, legacy token, or administrator scope is not a
 substitute.
 
-The first POST with `{"action":"issue-nonce"}` produces a short-lived,
-one-use Norn nonce bound to that exact CI run. The runner writes it through the
-job's restricted runtime path and submits a canonical receipt only after its
-Fleet attempt checkpoints. The API persists a redacted normalized proof plus a
-nonce hash only; it atomically consumes that hash and writes the terminal
-deployment, verified region weights/evaluations, and operation together.
+Admission v4 starts with `POST .../external-deployments/begin`, carrying a
+stable logical identity and `Idempotency-Key`. Norn persists that identity,
+registers only a nonce hash with its owner-only evidence-service credential,
+and returns the raw short-lived nonce only after registration is durable. The
+runner never receives that credential. It then submits the v4 receipt to
+`.../external-deployments/admit`; Norn claims the pre-registered hash before
+live verification and atomically commits the terminal deployment, verified
+region truth, operation, and server checkpoint references. Exact completed
+replays resolve the stored operation without a new nonce or live verifier.
 
 ### Evidence-service v1 response contract
 
@@ -207,7 +210,7 @@ bound to its reported allocation and region. Nonce timestamps must be ordered
 and fresh within the admission nonce lifetime. SHA-256 evidence digests are
 identifiers only: raw nonce material and credentials are prohibited.
 
-The external receipt is v3 and carries canonical SHA-256 digests of the full
+The external receipt is v4 and carries canonical SHA-256 digests of the full
 parsed Sigstore provenance and SPDX bundle JSON; the checked-in
 `v2/scripts/canonical-sigstore-bundle-digest` profile sorts compact JSON while
 retaining every value and rejects non-uint64/ambiguous numeric, duplicate-key, and
@@ -225,8 +228,9 @@ it returns `external_deployment_verifier_unavailable` and records nothing.
 ### Current Fleet companion compatibility gate
 
 Fleet commit `7ae090e` is a reviewed companion candidate: it implements the
-`fleet:external-admission` exchange, Norn nonce request, v3 canonical-digest
-receipt, read-only evidence service, and receipt submission. It correctly has
+`fleet:external-admission` exchange, canonical-digest receipt, read-only
+evidence service, and receipt submission. It still needs the v4 begin/admit
+registration/claim/commit protocol before this Norn capability can be used. It correctly has
 only migration and runtime Nomad jobs; `prepare` remains receipt/variable
 setup. It is not deployed. The verifier checks public `/version` JSON for the
 source version; private `/readyz` plus Nomad/Consul evidence is required
