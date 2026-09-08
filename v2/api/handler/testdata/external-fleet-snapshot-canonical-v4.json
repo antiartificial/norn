@@ -1,0 +1,37 @@
+{
+  "profile": "norn.external-fleet-snapshot/v4",
+  "description": "Exact cross-language typed snapshot projection. Serialize fields in the declared order as compact UTF-8 JSON without HTML escaping; omit raw currentSpec/submission bytes and use their canonical SHA-256 fields. All timestamps are UTC, truncated to milliseconds, with exactly three digits.",
+  "snapshot": {
+    "id": "snapshot-fixture-v4",
+    "ref": "evidence://fleet/snapshot-fixture-v4",
+    "sha256": "",
+    "liveCheckedAt": "2026-03-10T12:00:00.120Z",
+    "nonceWrittenAt": "2026-03-10T12:00:00.100Z",
+    "nonceReadAt": "2026-03-10T12:00:00.120000000Z",
+    "verification": {
+      "sourceSha": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+      "artifact": "ghcr.io/acme/hello-norn-mysql@sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+      "attestationBundleSha256": "1111111111111111111111111111111111111111111111111111111111111111",
+      "sbomBundleSha256": "2222222222222222222222222222222222222222222222222222222222222222",
+      "namespace": "norn-pilot",
+      "migration": {"jobId":"hello-norn-mysql-migrate","hclSha256":"cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc","evalId":"00000000-0000-4000-8000-000000000011","evalCreateIndex":1,"evalJobModifyIndex":2,"jobCreateIndex":3,"jobModifyIndex":2,"jobVersion":0,"currentSpec":{"ModifyIndex":1},"currentSpecSha256":"3333333333333333333333333333333333333333333333333333333333333333","submission":{"Source":"raw bytes excluded"},"submissionSha256":"4444444444444444444444444444444444444444444444444444444444444444","evaluationChainIds":["00000000-0000-4000-8000-000000000011"],"checkpointId":"migration-checkpoint"},
+      "runtime": {"jobId":"hello-norn-mysql","hclSha256":"eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee","evalId":"00000000-0000-4000-8000-000000000012","evalCreateIndex":4,"evalJobModifyIndex":5,"jobCreateIndex":6,"jobModifyIndex":5,"jobVersion":0,"currentSpec":{"ModifyIndex":2},"currentSpecSha256":"5555555555555555555555555555555555555555555555555555555555555555","submission":{"Source":"raw bytes excluded"},"submissionSha256":"6666666666666666666666666666666666666666666666666666666666666666","evaluationChainIds":["00000000-0000-4000-8000-000000000012"],"checkpointId":"runtime-checkpoint"},
+      "planId": "plan-1",
+      "applyRunId": "123",
+      "applyRunAttempt": "1",
+      "planSha256": "7777777777777777777777777777777777777777777777777777777777777777",
+      "runnerAttemptId": "00000000-0000-4000-8000-000000000022",
+      "fleetCommit": "ffffffffffffffffffffffffffffffffffffffff",
+      "nonceEvidenceRef": "nonce-evidence",
+      "regions": [{"region":"nyc3","nomadRegion":"global","evalId":"00000000-0000-4000-8000-000000000012","desiredWeight":100,"activeWeight":100}],
+      "ingressNodeIds": ["ingress-a","ingress-b"],
+      "publicHttpsVersion": "https://pilot.example.test/version",
+      "privateReadiness": {"endpoint":"https://private.example.test/readyz","allocationIds":["alloc-a","alloc-b"],"checkedAt":"2026-03-10T12:00:00.12Z"},
+      "chronology": [{"phase":"prepare","occurredAt":"2026-03-10T12:00:00.120Z","evidenceRef":"evidence://prepare"}]
+    },
+    "retryLineage": ["00000000-0000-4000-8000-000000000021","00000000-0000-4000-8000-000000000022"],
+    "checkpointRefs": [{"phase":"external_admission","checkpointId":"admission-checkpoint","attemptId":"00000000-0000-4000-8000-000000000022","evidenceRef":"evidence://checkpoint","evidenceSha256":"8888888888888888888888888888888888888888888888888888888888888888"}],
+    "allocations": [{"allocationId":"alloc-a","jobId":"hello-norn-mysql","evalId":"00000000-0000-4000-8000-000000000012","namespace":"norn-pilot","nodeId":"ingress-a","region":"nyc3","nomadStatus":"running","consulStatus":"passing"},{"allocationId":"alloc-b","jobId":"hello-norn-mysql","evalId":"00000000-0000-4000-8000-000000000012","namespace":"norn-pilot","nodeId":"ingress-b","region":"nyc3","nomadStatus":"running","consulStatus":"passing"}]
+  },
+  "sha256": "54d880f0640a11dfaffeb4cb67539101dddff47450994cb33975f4ed7dfe2f0b"
+}

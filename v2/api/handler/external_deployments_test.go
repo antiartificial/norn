@@ -929,6 +929,43 @@ func TestExternalFleetSnapshotTimestampCanonicalFixture(t *testing.T) {
 	}
 }
 
+func TestExternalFleetSnapshotTypedCanonicalFixture(t *testing.T) {
+	raw, err := os.ReadFile("testdata/external-fleet-snapshot-canonical-v4.json")
+	if err != nil {
+		t.Fatal(err)
+	}
+	var fixture struct {
+		Snapshot ExternalFleetEvidenceSnapshot `json:"snapshot"`
+		SHA256   string                        `json:"sha256"`
+	}
+	if err := json.Unmarshal(raw, &fixture); err != nil {
+		t.Fatal(err)
+	}
+	digest, digestErr := externalFleetSnapshotDigest(&fixture.Snapshot)
+	if digestErr != nil {
+		t.Fatal(digestErr)
+	}
+	if fixture.SHA256 == "" {
+		t.Fatalf("fill the typed cross-language fixture sha256 with %s", digest)
+	}
+	if digest != fixture.SHA256 {
+		t.Fatalf("typed snapshot digest = %s", digest)
+	}
+	if fixture.Snapshot.Verification.FleetCommit != strings.Repeat("f", 40) {
+		t.Fatal("fixture does not bind fleetCommit")
+	}
+	baseline := digest
+	fixture.Snapshot.Verification.Runtime.CurrentSpec = json.RawMessage(`{"ModifyIndex":999999}`)
+	fixture.Snapshot.Verification.Runtime.Submission = json.RawMessage(`{"Source":"different raw transport"}`)
+	if got, err := externalFleetSnapshotDigest(&fixture.Snapshot); err != nil || got != baseline {
+		t.Fatalf("raw Nomad transport was not excluded from typed digest: %s, %v", got, err)
+	}
+	fixture.Snapshot.Verification.FleetCommit = strings.Repeat("e", 40)
+	if got, err := externalFleetSnapshotDigest(&fixture.Snapshot); err != nil || got == baseline {
+		t.Fatalf("fleetCommit drift did not alter typed digest: %s, %v", got, err)
+	}
+}
+
 func TestExternalAdmissionRequiresOnlyExactScopedFleetIdentity(t *testing.T) {
 	principal := AccessPrincipal{Subject: "github-actions:acme/norn-fleet:123", Scopes: []string{ScopeFleetExternalAdmission}, App: "hello-norn-mysql", Environment: "staging", CI: &CIIdentity{Repository: "acme/norn-fleet", RunID: "123", RunAttempt: "1", Environment: "staging", RefProtected: true, Intent: "apply"}}
 	request := httptest.NewRequest(http.MethodPost, "/api/v1/apps/hello-norn-mysql/external-deployments", nil)
@@ -1225,16 +1262,50 @@ func TestExternalBeginRecoversLostRegistrationResponseBeforeNonceDisclosure(t *t
 	if digestErr != nil {
 		t.Fatal(digestErr)
 	}
-	receiptBody, _ := json.Marshal(externalDeploymentRequest{Receipt: &receipt})
-	admitRequest := httptest.NewRequest(http.MethodPost, "/api/v1/apps/hello-norn-mysql/external-deployments/admit", bytes.NewReader(receiptBody))
-	admitRequest.Header.Set("Idempotency-Key", request.Header.Get("Idempotency-Key"))
-	admitRoute := chi.NewRouteContext()
-	admitRoute.URLParams.Add("id", configured.App)
-	admitRequest = WithAccessPrincipal(admitRequest.WithContext(context.WithValue(admitRequest.Context(), chi.RouteCtxKey, admitRoute)), principal)
-	admit := httptest.NewRecorder()
-	h.AdmitExternalFleetDeploymentV4(admit, admitRequest)
-	if admit.Code != http.StatusCreated || !fake.claimSawReady || fake.claim.AdmissionID != decoded.AdmissionID || fake.commit.AdmissionID != decoded.AdmissionID {
-		t.Fatalf("lost claim/commit reconciliation = status %d claimReady=%v claim=%+v commit=%+v body=%s", admit.Code, fake.claimSawReady, fake.claim, fake.commit, admit.Body.String())
+	// Simulate a process death after remote claim/status persistence and local
+	// evidence_claimed, but before verifier/terminal transaction. Reconcile is
+	// receipt-free: it must rebuild only from the redacted durable envelope and
+	// owner status, never disclose or require the original nonce secret.
+	canonicalReceipt, canonicalErr := externalReceiptCanonicalJSON(receipt)
+	if canonicalErr != nil {
+		t.Fatal(canonicalErr)
+	}
+	proofDigest, proofErr := externalAdmissionProofDigest(receipt)
+	if proofErr != nil {
+		t.Fatal(proofErr)
+	}
+	receiptDigest := externalSHA256(canonicalReceipt)
+	if err := db.RecordExternalDeploymentClaimedEvidence(context.Background(), decoded.AdmissionID, canonicalReceipt, receiptDigest, proofDigest); err != nil {
+		t.Fatal(err)
+	}
+	claim := ExternalFleetEvidenceClaim{SchemaVersion: "norn.external-fleet-admission-callback/v4", AdmissionID: decoded.AdmissionID, LogicalDigest: fake.registration.LogicalDigest, AdmissionContextDigest: fake.registration.AdmissionContextDigest, ReceiptDigest: receiptDigest, ProofDigest: proofDigest, NonceSHA256: fake.registration.NonceSHA256, Generation: 1, ExpectedRevision: 1}
+	fake.claim = claim
+	if err := db.RecordExternalDeploymentServiceSnapshot(context.Background(), store.ExternalDeploymentServiceSnapshot{AdmissionID: decoded.AdmissionID, SnapshotID: fake.snapshot.ID, SnapshotRef: fake.snapshot.Ref, SnapshotSHA256: fake.snapshot.SHA256, RetryLineage: fake.snapshot.RetryLineage, ReceiptDigest: receiptDigest, ProofDigest: proofDigest, ClaimRevision: 2}); err != nil {
+		t.Fatal(err)
+	}
+	if err := db.ClaimExternalDeploymentAdmissionEvidence(context.Background(), decoded.AdmissionID, registration.NonceID); err != nil {
+		t.Fatal(err)
+	}
+	reconcileBody, _ := json.Marshal(externalFleetAdmissionReconcileRequest{AdmissionID: decoded.AdmissionID})
+	wrongReconcileRequest := httptest.NewRequest(http.MethodPost, "/api/v1/apps/hello-norn-mysql/external-deployments/reconcile", bytes.NewReader(reconcileBody))
+	wrongReconcileRequest.Header.Set("Idempotency-Key", "wrong-claimed-recovery-key")
+	wrongReconcileRoute := chi.NewRouteContext()
+	wrongReconcileRoute.URLParams.Add("id", configured.App)
+	wrongReconcileRequest = WithAccessPrincipal(wrongReconcileRequest.WithContext(context.WithValue(wrongReconcileRequest.Context(), chi.RouteCtxKey, wrongReconcileRoute)), principal)
+	wrongReconcile := httptest.NewRecorder()
+	h.ReconcileExternalFleetDeploymentAdmission(wrongReconcile, wrongReconcileRequest)
+	if wrongReconcile.Code != http.StatusConflict || fake.commit.AdmissionID != "" {
+		t.Fatalf("wrong-key claimed recovery = status %d commit=%+v body=%s", wrongReconcile.Code, fake.commit, wrongReconcile.Body.String())
+	}
+	reconcileRequest := httptest.NewRequest(http.MethodPost, "/api/v1/apps/hello-norn-mysql/external-deployments/reconcile", bytes.NewReader(reconcileBody))
+	reconcileRequest.Header.Set("Idempotency-Key", request.Header.Get("Idempotency-Key"))
+	reconcileRoute := chi.NewRouteContext()
+	reconcileRoute.URLParams.Add("id", configured.App)
+	reconcileRequest = WithAccessPrincipal(reconcileRequest.WithContext(context.WithValue(reconcileRequest.Context(), chi.RouteCtxKey, reconcileRoute)), principal)
+	reconcile := httptest.NewRecorder()
+	h.ReconcileExternalFleetDeploymentAdmission(reconcile, reconcileRequest)
+	if reconcile.Code != http.StatusCreated || fake.claim.AdmissionID != decoded.AdmissionID || fake.commit.AdmissionID != decoded.AdmissionID {
+		t.Fatalf("claimed crash reconciliation = status %d claim=%+v commit=%+v body=%s", reconcile.Code, fake.claim, fake.commit, reconcile.Body.String())
 	}
 	var state string
 	if err := db.Pool.QueryRow(context.Background(), `SELECT state FROM external_deployment_admissions WHERE id=$1`, decoded.AdmissionID).Scan(&state); err != nil || state != "cleanup_pending" {
@@ -1317,6 +1388,24 @@ func TestExternalFleetReceiptV4RequiresExactLiveNomadProof(t *testing.T) {
 	receipt.Fleet.Runtime.EvaluationChainIDs = []string{receipt.Fleet.Runtime.EvalID, receipt.Fleet.Runtime.EvalID}
 	if validExternalFleetReceiptV4(receipt, configured, receipt.App) {
 		t.Fatal("duplicate evaluation chain was accepted")
+	}
+}
+
+func TestExternalFleetAllocationAcceptsOrderedEvaluationChain(t *testing.T) {
+	receipt := externalReceiptForTest()
+	followupEval := "00000000-0000-4000-8000-000000000099"
+	receipt.Fleet.Runtime.EvaluationChainIDs = []string{receipt.Fleet.Runtime.EvalID, followupEval}
+	verified := verifiedExternalReceipt(receipt)
+	items := []externalFleetAllocationEvidence{
+		{AllocationID: "alloc-a", JobID: receipt.Fleet.Runtime.JobID, EvalID: followupEval, Namespace: receipt.Fleet.Namespace, NodeID: "ingress-a", Region: "global", NomadStatus: "running", ConsulStatus: "passing"},
+		{AllocationID: "alloc-b", JobID: receipt.Fleet.Runtime.JobID, EvalID: receipt.Fleet.Runtime.EvalID, Namespace: receipt.Fleet.Namespace, NodeID: "ingress-b", Region: "global", NomadStatus: "running", ConsulStatus: "passing"},
+	}
+	if !validExternalFleetAllocations(items, receipt, verified, externalFleetPublicVersion{Allocation: "alloc-a", Region: "global"}) {
+		t.Fatal("allocation from a verified follow-up evaluation was rejected")
+	}
+	items[0].EvalID = "00000000-0000-4000-8000-000000000098"
+	if validExternalFleetAllocations(items, receipt, verified, externalFleetPublicVersion{Allocation: "alloc-a", Region: "global"}) {
+		t.Fatal("allocation outside the verified evaluation chain was accepted")
 	}
 }
 

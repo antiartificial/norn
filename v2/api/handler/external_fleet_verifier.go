@@ -659,11 +659,16 @@ func (v *ExternalFleetDeploymentLiveVerifier) VerifyExternalFleetDeployment(ctx 
 	if err := v.githubRun.Verify(ctx, githubToken, request.CI); err != nil {
 		return nil, err
 	}
-	nonce, err := externalAdmissionNonceFromReceipt(request.Receipt.Nonce)
-	if err != nil {
+	nonceDigest := request.NonceSHA256
+	if nonceDigest == "" {
+		nonce, nonceErr := externalAdmissionNonceFromReceipt(request.Receipt.Nonce)
+		if nonceErr != nil {
+			return nil, externalVerifierErr("nonce")
+		}
+		nonceDigest = nonce.sha256()
+	} else if !sha256HexPattern.MatchString(nonceDigest) {
 		return nil, externalVerifierErr("nonce")
 	}
-	nonceDigest := nonce.sha256()
 	// The immutable claim-time snapshot is the only live-evidence source. Do
 	// not fall back to the mutable receipt-shaped POST evidence endpoint.
 	snapshot := request.ServiceSnapshot
@@ -932,8 +937,15 @@ func validExternalFleetAllocations(items []externalFleetAllocationEvidence, rece
 	for _, node := range verified.IngressNodeIDs {
 		ingress[node] = true
 	}
+	validEvaluations := make(map[string]struct{}, len(receipt.Fleet.Runtime.EvaluationChainIDs)+1)
+	// Legacy fixtures predate v4's ordered chain. The v4 receipt validator
+	// separately requires the initial EvalID as chain element zero.
+	validEvaluations[receipt.Fleet.Runtime.EvalID] = struct{}{}
+	for _, evalID := range receipt.Fleet.Runtime.EvaluationChainIDs {
+		validEvaluations[evalID] = struct{}{}
+	}
 	for _, item := range items {
-		if !externalNamePattern.MatchString(item.AllocationID) || !expectedAllocations[item.AllocationID] || item.JobID != receipt.Fleet.Runtime.JobID || item.EvalID != receipt.Fleet.Runtime.EvalID || item.Namespace != receipt.Fleet.Namespace || !ingress[item.NodeID] || item.Region == "" || item.NomadStatus != "running" || item.ConsulStatus != "passing" {
+		if _, inChain := validEvaluations[item.EvalID]; !inChain || !externalNamePattern.MatchString(item.AllocationID) || !expectedAllocations[item.AllocationID] || item.JobID != receipt.Fleet.Runtime.JobID || item.Namespace != receipt.Fleet.Namespace || !ingress[item.NodeID] || item.Region == "" || item.NomadStatus != "running" || item.ConsulStatus != "passing" {
 			return false
 		}
 		seenNode[item.NodeID] = true

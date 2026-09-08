@@ -13,6 +13,8 @@ import (
 	"path/filepath"
 	"testing"
 
+	"github.com/google/uuid"
+
 	"norn/v2/api/store"
 )
 
@@ -71,6 +73,10 @@ func TestFleetAuthorityDeviceLifecycleIntegration(t *testing.T) {
 		t.Fatal(err)
 	}
 	cfg := fleetAuthorityOnlyTestConfig(t)
+	// Enrollment source rate limiting is intentionally durable. Give this
+	// disposable-DB integration run a unique authority secret so repeated and
+	// parallel PG16 gates cannot inherit an earlier run's source bucket.
+	cfg.APIToken += "-" + uuid.NewString()
 	server := httptest.NewTLSServer(fleetAuthorityOnlyRouter(cfg, db))
 	t.Cleanup(server.Close)
 	call := func(method, path, token string, body any, want int) map[string]any {

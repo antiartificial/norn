@@ -517,9 +517,10 @@ paths:
   /api/v1/apps/{id}/external-deployments/reconcile:
     parameters:
       - $ref: '#/components/parameters/AppID'
+      - $ref: '#/components/parameters/RequiredIdempotencyKey'
     post:
       operationId: reconcileExternalFleetDeploymentAdmission
-      description: Reconciles only a durably pending v4 evidence-service commit. Norn reconstructs every CAS binding from its persisted admission and operation; callers never provide a nonce, snapshot, receipt, proof, or cleanup digest.
+      description: Reconciles an exact v4 claimed or pending evidence-service admission using the original scoped Idempotency-Key. For a pre-terminal claim, Norn reloads its nonce-redacted canonical receipt and owner-only immutable status/snapshot, then runs the normal verifier and terminal transaction; callers never provide or resend a raw nonce, snapshot, receipt, proof, or cleanup digest.
       requestBody:
         required: true
         content:
@@ -532,6 +533,12 @@ paths:
             Cache-Control: { $ref: '#/components/headers/NoStoreCacheControl' }
             Pragma: { $ref: '#/components/headers/NoCachePragma' }
           content: { application/json: { schema: { $ref: '#/components/schemas/ExternalFleetAdmissionReplayResponse' } } }
+        '201':
+          description: Recovered claimed admission committed and now awaits cleanup
+          headers:
+            Cache-Control: { $ref: '#/components/headers/NoStoreCacheControl' }
+            Pragma: { $ref: '#/components/headers/NoCachePragma' }
+          content: { application/json: { schema: { $ref: '#/components/schemas/Operation' } } }
         '400': { $ref: '#/components/responses/Problem' }
         '403': { $ref: '#/components/responses/Problem' }
         '409': { $ref: '#/components/responses/Problem' }

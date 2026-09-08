@@ -88,6 +88,13 @@ type externalFleetAdmissionReconcileRequest struct {
 	AdmissionID string `json:"admissionId"`
 }
 
+type externalFleetRecoveredNonce struct {
+	ID     string
+	SHA256 string
+}
+
+type externalFleetRecoveredNonceContextKey struct{}
+
 // ExternalFleetLogicalIdentity is the retry-stable part of an admission. It
 // deliberately excludes run/attempt/JTI, nonce, and Nomad observations.
 type ExternalFleetLogicalIdentity struct {
@@ -231,6 +238,10 @@ type ExternalFleetDeploymentVerificationRequest struct {
 	// the admission saga. Supplying it prevents a second status read from
 	// substituting evidence between claim and verification.
 	ServiceSnapshot *ExternalFleetEvidenceSnapshot
+	// NonceSHA256 is populated only by protected receipt-free recovery after
+	// loading the original digest from Norn's nonce row. Normal Actions calls
+	// leave it empty and derive the digest from the one-use raw receipt nonce.
+	NonceSHA256 string
 }
 
 type ExternalFleetAdmissionConfig struct {
@@ -702,7 +713,20 @@ func (h *Handler) ReconcileExternalFleetDeploymentAdmission(w http.ResponseWrite
 		return
 	}
 	admission, err := h.db.GetExternalDeploymentAdmission(r.Context(), request.AdmissionID, appID, principal.Environment, principal.CI.Repository)
-	if err != nil || (admission.State != store.ExternalDeploymentAdmissionCommitted && admission.State != store.ExternalDeploymentAdmissionCleanupPending) || admission.OperationID == "" {
+	if err != nil {
+		WriteControlProblem(w, r, http.StatusConflict, "external_deployment_reconcile_conflict", "admission is not a durable pending remote commit")
+		return
+	}
+	scopedKey, scopedKeyOK := externalFleetAdmissionScopedIdempotency(r, principal, appID)
+	if !scopedKeyOK || admission.IdempotencyKey != scopedKey {
+		WriteControlProblem(w, r, http.StatusConflict, "external_deployment_reconcile_conflict", "reconcile does not match the original scoped Idempotency-Key")
+		return
+	}
+	if admission.State == store.ExternalDeploymentAdmissionNonceReady || admission.State == store.ExternalDeploymentAdmissionEvidenceClaimed {
+		h.recoverClaimedExternalFleetAdmission(w, r, admission)
+		return
+	}
+	if (admission.State != store.ExternalDeploymentAdmissionCommitted && admission.State != store.ExternalDeploymentAdmissionCleanupPending) || admission.OperationID == "" {
 		WriteControlProblem(w, r, http.StatusConflict, "external_deployment_reconcile_conflict", "admission is not a durable pending remote commit")
 		return
 	}
@@ -745,6 +769,78 @@ func (h *Handler) ReconcileExternalFleetDeploymentAdmission(w http.ResponseWrite
 		return
 	}
 	writeJSON(w, externalFleetAdmissionResponse{SchemaVersion: "norn.external-fleet-admission/v4", AdmissionID: admission.ID, State: string(store.ExternalDeploymentAdmissionCleanupPending), NonceGeneration: admission.NonceGeneration, OperationID: admission.OperationID, CleanupState: "pending"})
+}
+
+// recoverClaimedExternalFleetAdmission resumes a pre-terminal claim after any
+// crash boundary. The database supplies the exact redacted receipt and nonce
+// hash; the owner-only callback replays/gets the immutable claim snapshot.
+// This path never reconstructs, logs, or asks Actions to resubmit raw nonce
+// material, and it deliberately delegates to the normal verifier/terminal
+// transaction rather than creating a weaker recovery-only admission path.
+func (h *Handler) recoverClaimedExternalFleetAdmission(w http.ResponseWriter, r *http.Request, admission *store.ExternalDeploymentAdmissionLifecycle) {
+	var claimedReceipt []byte
+	var receiptDigest, proofDigest, nonceSHA256 string
+	err := h.db.Pool.QueryRow(r.Context(), `SELECT claimed_receipt, service_receipt_sha256, service_proof_sha256, nonce.nonce_sha256
+		FROM external_deployment_admissions admission JOIN external_deployment_nonces nonce ON nonce.id=admission.nonce_id
+		WHERE admission.id=$1 AND admission.nonce_generation=nonce.registration_generation`, admission.ID).Scan(&claimedReceipt, &receiptDigest, &proofDigest, &nonceSHA256)
+	if err != nil || len(claimedReceipt) == 0 || !sha256HexPattern.MatchString(receiptDigest) || !sha256HexPattern.MatchString(proofDigest) || !sha256HexPattern.MatchString(nonceSHA256) {
+		WriteControlProblem(w, r, http.StatusConflict, "external_deployment_reconcile_conflict", "claimed admission has no exact durable recovery envelope")
+		return
+	}
+	var receipt ExternalFleetDeploymentReceipt
+	if err := json.Unmarshal(claimedReceipt, &receipt); err != nil || receipt.Nonce != "" || receipt.AdmissionID != admission.ID {
+		WriteControlProblem(w, r, http.StatusConflict, "external_deployment_reconcile_conflict", "claimed admission recovery envelope is invalid")
+		return
+	}
+	canonical, canonicalErr := externalReceiptCanonicalJSON(receipt)
+	proof, proofErr := externalAdmissionProofDigest(receipt)
+	if canonicalErr != nil || proofErr != nil || externalSHA256(canonical) != receiptDigest || proof != proofDigest {
+		WriteControlProblem(w, r, http.StatusConflict, "external_deployment_reconcile_conflict", "claimed admission recovery digests drifted")
+		return
+	}
+	registrar, registered := h.externalFleetDeploymentVerifier.(ExternalFleetEvidenceRegistrationClient)
+	registration, registrationErr := h.db.GetExternalDeploymentNonceRegistration(r.Context(), admission.ID, admission.NonceID)
+	if !registered || registrationErr != nil || registration.Generation != admission.NonceGeneration || registration.NonceSHA256 != nonceSHA256 || registration.ServiceRevision < 1 {
+		WriteControlProblem(w, r, http.StatusServiceUnavailable, "external_deployment_reconcile_unavailable", "claimed admission registration cannot be reconstructed")
+		return
+	}
+	claim := ExternalFleetEvidenceClaim{SchemaVersion: "norn.external-fleet-admission-callback/v4", AdmissionID: admission.ID, LogicalDigest: admission.RequestDigest, AdmissionContextDigest: strings.TrimPrefix(admission.RequestDigest, "sha256:"), ReceiptDigest: receiptDigest, ProofDigest: proofDigest, NonceSHA256: nonceSHA256, Generation: admission.NonceGeneration, ExpectedRevision: registration.ServiceRevision}
+	status, statusErr := registrar.GetExternalFleetAdmissionStatus(r.Context(), admission.ID, admission.NonceGeneration)
+	if statusErr == nil && status.State == "registered" {
+		status, statusErr = registrar.ClaimExternalFleetNonce(r.Context(), claim)
+		if statusErr != nil {
+			status, statusErr = registrar.GetExternalFleetAdmissionStatus(r.Context(), admission.ID, admission.NonceGeneration)
+		}
+	}
+	if statusErr != nil || !externalClaimStatusMatches(status, claim) {
+		WriteControlProblem(w, r, http.StatusServiceUnavailable, "external_deployment_reconcile_unavailable", "claimed admission snapshot cannot be reconciled")
+		return
+	}
+	if err := h.db.RecordExternalDeploymentServiceSnapshot(r.Context(), store.ExternalDeploymentServiceSnapshot{AdmissionID: admission.ID, SnapshotID: status.Snapshot.ID, SnapshotRef: status.Snapshot.Ref, SnapshotSHA256: status.Snapshot.SHA256, RetryLineage: status.Snapshot.RetryLineage, ReceiptDigest: receiptDigest, ProofDigest: proofDigest, ClaimRevision: status.Revision}); err != nil || h.db.ClaimExternalDeploymentAdmissionEvidence(r.Context(), admission.ID, admission.NonceID) != nil {
+		WriteControlProblem(w, r, http.StatusServiceUnavailable, "external_deployment_reconcile_unavailable", "claimed admission state could not be durably reconciled")
+		return
+	}
+	// The persisted envelope intentionally excluded raw Nomad transport bytes.
+	// Rehydrate them only from the exact immutable owner snapshot so the normal
+	// v4 validator can recompute its two canonical evidence digests.
+	receipt.Fleet.Migration.CurrentSpec = status.Snapshot.Verification.Migration.CurrentSpec
+	receipt.Fleet.Migration.Submission = status.Snapshot.Verification.Migration.Submission
+	receipt.Fleet.Runtime.CurrentSpec = status.Snapshot.Verification.Runtime.CurrentSpec
+	receipt.Fleet.Runtime.Submission = status.Snapshot.Verification.Runtime.Submission
+	// The normal parser still requires a syntactically valid nonce envelope.
+	// Its digest is overridden from the protected store context before any
+	// binding check, so these zeros can never authorize or replace the nonce.
+	receipt.Nonce = admission.NonceID + "." + strings.Repeat("0", 64)
+	body, marshalErr := json.Marshal(externalDeploymentRequest{Receipt: &receipt})
+	if marshalErr != nil {
+		WriteControlProblem(w, r, http.StatusServiceUnavailable, "external_deployment_reconcile_unavailable", "claimed admission recovery could not be encoded")
+		return
+	}
+	ctx := context.WithValue(r.Context(), externalFleetRecoveredNonceContextKey{}, externalFleetRecoveredNonce{ID: admission.NonceID, SHA256: nonceSHA256})
+	replay := r.Clone(ctx)
+	replay.Body = io.NopCloser(bytes.NewReader(body))
+	replay.ContentLength = int64(len(body))
+	h.AdmitExternalFleetDeployment(w, replay)
 }
 
 // AdmitExternalFleetDeployment is retained as a deprecated internal alias for
@@ -824,6 +920,10 @@ func (h *Handler) AdmitExternalFleetDeployment(w http.ResponseWriter, r *http.Re
 		return
 	}
 	nonce, err := externalAdmissionNonceFromReceipt(receipt.Nonce)
+	if recovered, recoveredOK := r.Context().Value(externalFleetRecoveredNonceContextKey{}).(externalFleetRecoveredNonce); recoveredOK && receipt.Nonce != "" && uuid.Validate(recovered.ID) == nil && sha256HexPattern.MatchString(recovered.SHA256) {
+		nonce = externalAdmissionNonce{ID: recovered.ID, Digest: recovered.SHA256}
+		err = nil
+	}
 	if err != nil {
 		WriteControlProblem(w, r, http.StatusBadRequest, "external_deployment_nonce_invalid", err.Error())
 		return
@@ -832,7 +932,8 @@ func (h *Handler) AdmitExternalFleetDeployment(w http.ResponseWriter, r *http.Re
 		WriteControlProblem(w, r, http.StatusBadRequest, "external_deployment_nonce_leak", "receipt fields must not contain the raw Norn nonce or its secret")
 		return
 	}
-	if !externalReceiptMatchesCI(receipt, *principal.CI) {
+	_, recoveredClaim := r.Context().Value(externalFleetRecoveredNonceContextKey{}).(externalFleetRecoveredNonce)
+	if !externalReceiptMatchesCI(receipt, *principal.CI) && !recoveredClaim {
 		WriteControlProblem(w, r, http.StatusForbidden, "external_deployment_identity_denied", "receipt apply run and attempt must match the authenticated Fleet identity")
 		return
 	}
@@ -898,6 +999,14 @@ func (h *Handler) AdmitExternalFleetDeployment(w http.ResponseWriter, r *http.Re
 			return
 		}
 		claimRequest := ExternalFleetEvidenceClaim{SchemaVersion: "norn.external-fleet-admission-callback/v4", AdmissionID: admission.ID, LogicalDigest: digest, AdmissionContextDigest: strings.TrimPrefix(digest, "sha256:"), ReceiptDigest: hex.EncodeToString(receiptDigest[:]), ProofDigest: proofDigest, NonceSHA256: nonce.sha256(), Generation: admission.NonceGeneration, ExpectedRevision: registrationState.ServiceRevision}
+		// Persist the nonce-redacted canonical envelope before the remote CAS.
+		// A process crash or lost response can then recover the exact claim with
+		// the owner credential and nonce hash, without asking Actions for raw
+		// one-use material a second time.
+		if err := h.db.RecordExternalDeploymentClaimedEvidence(r.Context(), admission.ID, receiptBytes, claimRequest.ReceiptDigest, claimRequest.ProofDigest); err != nil {
+			WriteControlProblem(w, r, http.StatusConflict, "external_deployment_snapshot_conflict", "claimed receipt conflicts with durable admission state")
+			return
+		}
 		claimStatus, claimErr := registrar.ClaimExternalFleetNonce(r.Context(), claimRequest)
 		if claimErr != nil {
 			claimStatus, claimErr = registrar.GetExternalFleetAdmissionStatus(r.Context(), admission.ID, admission.NonceGeneration)
@@ -925,7 +1034,11 @@ func (h *Handler) AdmitExternalFleetDeployment(w http.ResponseWriter, r *http.Re
 			return
 		}
 	}
-	verification, err := h.externalFleetDeploymentVerifier.VerifyExternalFleetDeployment(r.Context(), ExternalFleetDeploymentVerificationRequest{Receipt: receipt, CI: *principal.CI, Config: configured, AdmissionGeneration: admission.NonceGeneration, ServiceSnapshot: serviceSnapshot})
+	requestNonceSHA256 := ""
+	if recovered, recoveredOK := r.Context().Value(externalFleetRecoveredNonceContextKey{}).(externalFleetRecoveredNonce); recoveredOK {
+		requestNonceSHA256 = recovered.SHA256
+	}
+	verification, err := h.externalFleetDeploymentVerifier.VerifyExternalFleetDeployment(r.Context(), ExternalFleetDeploymentVerificationRequest{Receipt: receipt, CI: *principal.CI, Config: configured, AdmissionGeneration: admission.NonceGeneration, ServiceSnapshot: serviceSnapshot, NonceSHA256: requestNonceSHA256})
 	if err != nil || verification == nil {
 		message := "independent Fleet runtime verification failed"
 		if err != nil {
@@ -1192,10 +1305,19 @@ func requireExternalFleetAdmissionScope(w http.ResponseWriter, r *http.Request, 
 	return principal, true
 }
 
-type externalAdmissionNonce struct{ ID, Secret string }
+type externalAdmissionNonce struct {
+	ID     string
+	Secret string
+	// Digest is used only by receipt-free owner recovery. It is the durable
+	// SHA-256 of the original raw nonce and never permits reconstructing it.
+	Digest string
+}
 
 func (n externalAdmissionNonce) String() string { return n.ID + "." + n.Secret }
 func (n externalAdmissionNonce) sha256() string {
+	if n.Digest != "" {
+		return n.Digest
+	}
 	sum := sha256.Sum256([]byte(n.String()))
 	return hex.EncodeToString(sum[:])
 }
@@ -1504,7 +1626,7 @@ func externalValueContainsNonceAt(value reflect.Value, raw, secret string, depth
 	}
 	switch value.Kind() {
 	case reflect.String:
-		return strings.Contains(value.String(), raw) || strings.Contains(value.String(), secret)
+		return (raw != "" && strings.Contains(value.String(), raw)) || (secret != "" && strings.Contains(value.String(), secret))
 	case reflect.Struct:
 		for index := 0; index < value.NumField(); index++ {
 			if value.Type().Field(index).PkgPath == "" && externalValueContainsNonceAt(value.Field(index), raw, secret, depth+1) {
@@ -1653,11 +1775,44 @@ func safeExternalVerificationError(err error, nonce externalAdmissionNonce) stri
 	return "independent evidence was rejected"
 }
 
+type externalFleetExecutionProofCanonical struct {
+	Namespace        string                                    `json:"namespace"`
+	Migration        externalFleetSnapshotNomadProofProjection `json:"migration"`
+	Runtime          externalFleetSnapshotNomadProofProjection `json:"runtime"`
+	PlanID           string                                    `json:"planId"`
+	ApplyRunID       string                                    `json:"applyRunId"`
+	ApplyRunAttempt  string                                    `json:"applyRunAttempt"`
+	PlanSHA256       string                                    `json:"planSha256"`
+	RunnerAttemptID  string                                    `json:"runnerAttemptId"`
+	RootAttemptID    string                                    `json:"rootAttemptId"`
+	FleetCommit      string                                    `json:"fleetCommit,omitempty"`
+	NonceEvidenceRef string                                    `json:"nonceEvidenceRef"`
+}
+
+func externalCanonicalFleetExecutionProof(proof ExternalFleetExecutionProof) externalFleetExecutionProofCanonical {
+	return externalFleetExecutionProofCanonical{Namespace: proof.Namespace, Migration: externalFleetSnapshotNomadProof(proof.Migration), Runtime: externalFleetSnapshotNomadProof(proof.Runtime), PlanID: proof.PlanID, ApplyRunID: proof.ApplyRunID, ApplyRunAttempt: proof.ApplyRunAttempt, PlanSHA256: proof.PlanSHA256, RunnerAttemptID: proof.RunnerAttemptID, RootAttemptID: proof.RootAttemptID, FleetCommit: proof.FleetCommit, NonceEvidenceRef: proof.NonceEvidenceRef}
+}
+
 // externalReceiptCanonicalJSON makes redacted evidence digests stable for
-// verifier adapters and tests. It clears the one-use raw nonce itself so a
-// future caller cannot accidentally make it part of durable evidence.
+// verifier adapters and tests. It clears the one-use raw nonce and excludes
+// raw Nomad JSON transport bytes: their typed canonical SHA-256 bindings are
+// retained, so PostgreSQL JSONB key ordering cannot alter a durable digest.
 func externalReceiptCanonicalJSON(receipt ExternalFleetDeploymentReceipt) ([]byte, error) {
-	return json.Marshal(redactExternalFleetReceipt(receipt))
+	receipt = redactExternalFleetReceipt(receipt)
+	projection := struct {
+		SchemaVersion           string                               `json:"schemaVersion"`
+		AdmissionID             string                               `json:"admissionId,omitempty"`
+		Nonce                   string                               `json:"nonce"`
+		App                     string                               `json:"app"`
+		SourceSHA               string                               `json:"sourceSha"`
+		Artifact                string                               `json:"artifact"`
+		Candidate               model.ReleaseCandidate               `json:"candidate"`
+		AttestationBundleSHA256 string                               `json:"attestationBundleSha256"`
+		SBOMBundleSHA256        string                               `json:"sbomBundleSha256"`
+		Fleet                   externalFleetExecutionProofCanonical `json:"fleet"`
+		Chronology              []ExternalFleetChronologyStep        `json:"chronology"`
+	}{receipt.SchemaVersion, receipt.AdmissionID, receipt.Nonce, receipt.App, receipt.SourceSHA, receipt.Artifact, receipt.Candidate, receipt.AttestationBundleSHA256, receipt.SBOMBundleSHA256, externalCanonicalFleetExecutionProof(receipt.Fleet), receipt.Chronology}
+	return json.Marshal(projection)
 }
 
 // externalAdmissionProofDigest deliberately has a different domain from the
@@ -1665,14 +1820,14 @@ func externalReceiptCanonicalJSON(receipt ExternalFleetDeploymentReceipt) ([]byt
 // treating a transport envelope (or its one-use nonce) as evidence content.
 func externalAdmissionProofDigest(receipt ExternalFleetDeploymentReceipt) (string, error) {
 	proof := struct {
-		Schema      string                      `json:"schemaVersion"`
-		Source      string                      `json:"sourceSha"`
-		Artifact    string                      `json:"artifact"`
-		Candidate   model.ReleaseCandidate      `json:"candidate"`
-		Attestation string                      `json:"attestationBundleSha256"`
-		SBOM        string                      `json:"sbomBundleSha256"`
-		Fleet       ExternalFleetExecutionProof `json:"fleet"`
-	}{externalFleetReceiptSchemaV4, receipt.SourceSHA, receipt.Artifact, receipt.Candidate, receipt.AttestationBundleSHA256, receipt.SBOMBundleSHA256, receipt.Fleet}
+		Schema      string                               `json:"schemaVersion"`
+		Source      string                               `json:"sourceSha"`
+		Artifact    string                               `json:"artifact"`
+		Candidate   model.ReleaseCandidate               `json:"candidate"`
+		Attestation string                               `json:"attestationBundleSha256"`
+		SBOM        string                               `json:"sbomBundleSha256"`
+		Fleet       externalFleetExecutionProofCanonical `json:"fleet"`
+	}{externalFleetReceiptSchemaV4, receipt.SourceSHA, receipt.Artifact, receipt.Candidate, receipt.AttestationBundleSHA256, receipt.SBOMBundleSHA256, externalCanonicalFleetExecutionProof(receipt.Fleet)}
 	b, err := json.Marshal(proof)
 	if err != nil {
 		return "", err

@@ -149,6 +149,19 @@ func TestExternalDeploymentAdmissionV4Lifecycle(t *testing.T) {
 	if err := db.MarkExternalDeploymentNonceReady(ctx, admissionID, nonce.ID, 1, nonce.RegistrationRef, 1); err != nil {
 		t.Fatalf("exact ready replay = %v", err)
 	}
+	claimedReceipt := []byte(`{"schemaVersion":"norn.external-fleet-deployment-receipt/v4","nonce":"","fleet":{"currentSpecSha256":"bound"}}`)
+	if err := db.RecordExternalDeploymentClaimedEvidence(ctx, admissionID, claimedReceipt, fmt.Sprintf("%064x", 11), fmt.Sprintf("%064x", 12)); err != nil {
+		t.Fatalf("record pre-claim redacted evidence: %v", err)
+	}
+	if err := db.RecordExternalDeploymentClaimedEvidence(ctx, admissionID, claimedReceipt, fmt.Sprintf("%064x", 11), fmt.Sprintf("%064x", 12)); err != nil {
+		t.Fatalf("exact pre-claim evidence replay: %v", err)
+	}
+	if err := db.RecordExternalDeploymentClaimedEvidence(ctx, admissionID, []byte(`{"nonce":"raw-nonce-forbidden"}`), fmt.Sprintf("%064x", 11), fmt.Sprintf("%064x", 12)); !errors.Is(err, ErrExternalDeploymentAdmissionUnavailable) {
+		t.Fatalf("unredacted pre-claim evidence = %v", err)
+	}
+	if err := db.RecordExternalDeploymentClaimedEvidence(ctx, admissionID, []byte(`{"nonce":"different"}`), fmt.Sprintf("%064x", 11), fmt.Sprintf("%064x", 12)); !errors.Is(err, ErrExternalDeploymentAdmissionUnavailable) {
+		t.Fatalf("conflicting pre-claim evidence = %v", err)
+	}
 	if err := db.ClaimExternalDeploymentAdmissionEvidence(ctx, admissionID, nonce.ID); err != nil {
 		t.Fatal(err)
 	}

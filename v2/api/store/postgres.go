@@ -436,6 +436,10 @@ func migrateOnce(ctx context.Context, db *DB) error {
 		ALTER TABLE external_deployment_admissions ADD COLUMN IF NOT EXISTS service_retry_lineage JSONB NOT NULL DEFAULT '[]';
 		ALTER TABLE external_deployment_admissions ADD COLUMN IF NOT EXISTS service_receipt_sha256 TEXT NOT NULL DEFAULT '';
 		ALTER TABLE external_deployment_admissions ADD COLUMN IF NOT EXISTS service_proof_sha256 TEXT NOT NULL DEFAULT '';
+		-- A redacted, canonical claim envelope is stored before the remote claim.
+		-- It has no raw nonce and lets the protected owner reconcile a crash
+		-- without asking Actions to resubmit a one-use secret.
+		ALTER TABLE external_deployment_admissions ADD COLUMN IF NOT EXISTS claimed_receipt JSONB NOT NULL DEFAULT '{}';
 		ALTER TABLE external_deployment_admissions ADD COLUMN IF NOT EXISTS service_claim_revision BIGINT NOT NULL DEFAULT 0;
 		ALTER TABLE external_deployment_admissions ADD COLUMN IF NOT EXISTS service_commit_revision BIGINT NOT NULL DEFAULT 0;
 		ALTER TABLE external_deployment_admissions ADD COLUMN IF NOT EXISTS service_cleanup_revision BIGINT NOT NULL DEFAULT 0;

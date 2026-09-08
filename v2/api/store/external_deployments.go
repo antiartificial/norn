@@ -134,6 +134,33 @@ type ExternalDeploymentServiceSnapshot struct {
 	AbsenceProofSHA256  string
 }
 
+// RecordExternalDeploymentClaimedEvidence durably records the redacted,
+// canonical receipt and its two claim digests before the owner calls Fleet's
+// remote claim CAS. This is the crash-recovery source of truth; callers must
+// never put a raw nonce in claimedReceipt.
+func (db *DB) RecordExternalDeploymentClaimedEvidence(ctx context.Context, admissionID string, claimedReceipt []byte, receiptDigest, proofDigest string) error {
+	if db == nil || db.Pool == nil || admissionID == "" || len(claimedReceipt) == 0 || len(receiptDigest) != 64 || len(proofDigest) != 64 || !json.Valid(claimedReceipt) {
+		return ErrExternalDeploymentAdmissionUnavailable
+	}
+	var envelope struct {
+		Nonce string `json:"nonce"`
+	}
+	if err := json.Unmarshal(claimedReceipt, &envelope); err != nil || envelope.Nonce != "" {
+		return ErrExternalDeploymentAdmissionUnavailable
+	}
+	tag, err := db.Pool.Exec(ctx, `UPDATE external_deployment_admissions
+		SET claimed_receipt=$2::jsonb, service_receipt_sha256=$3, service_proof_sha256=$4, updated_at=now()
+		WHERE id=$1 AND state IN ('nonce_ready','evidence_claimed')
+			AND (claimed_receipt='{}'::jsonb OR (claimed_receipt=$2::jsonb AND service_receipt_sha256=$3 AND service_proof_sha256=$4))`, admissionID, string(claimedReceipt), receiptDigest, proofDigest)
+	if err != nil {
+		return err
+	}
+	if tag.RowsAffected() != 1 {
+		return ErrExternalDeploymentAdmissionUnavailable
+	}
+	return nil
+}
+
 func (db *DB) RecordExternalDeploymentServiceSnapshot(ctx context.Context, snapshot ExternalDeploymentServiceSnapshot) error {
 	if db == nil || db.Pool == nil || snapshot.AdmissionID == "" || snapshot.SnapshotID == "" || snapshot.SnapshotRef == "" || len(snapshot.SnapshotSHA256) != 64 || len(snapshot.ReceiptDigest) != 64 || len(snapshot.ProofDigest) != 64 || snapshot.ClaimRevision < 1 || !validExternalDeploymentRetryLineage(snapshot.RetryLineage) {
 		return ErrExternalDeploymentAdmissionUnavailable
@@ -633,6 +660,25 @@ type ExternalDeploymentAdmissionResult struct {
 // same idempotency key and request digest return the original operation;
 // another request never gets to consume the nonce after that operation exists.
 func (db *DB) AdmitExternalDeployment(ctx context.Context, admission ExternalDeploymentAdmission) (*ExternalDeploymentAdmissionResult, error) {
+	// Migrate obtains a deterministic DML gate, but a transaction that started
+	// just before that gate can still be PostgreSQL's deadlock victim. Retrying
+	// the whole idempotent terminal transaction is safe: no mutation commits on
+	// SQLSTATE 40P01/55P03, and replay checks bind the same request digest.
+	for attempt := 0; attempt < 3; attempt++ {
+		result, err := db.admitExternalDeploymentOnce(ctx, admission)
+		if err == nil || !migrationLockContention(err) || attempt == 2 {
+			return result, err
+		}
+		select {
+		case <-ctx.Done():
+			return nil, ctx.Err()
+		case <-time.After(time.Duration(attempt+1) * 50 * time.Millisecond):
+		}
+	}
+	return nil, ErrExternalDeploymentAdmissionUnavailable
+}
+
+func (db *DB) admitExternalDeploymentOnce(ctx context.Context, admission ExternalDeploymentAdmission) (*ExternalDeploymentAdmissionResult, error) {
 	if db == nil || db.Pool == nil || admission.Deployment == nil || admission.Operation == nil || admission.IdempotencyKey == "" || admission.RequestDigest == "" || admission.Nonce.ID == "" || admission.Nonce.NonceSHA256 == "" || admission.Nonce.App == "" || admission.Nonce.Environment == "" || admission.Nonce.CIRepository == "" || admission.Nonce.CIRunID == "" || admission.Nonce.CIRunAttempt == "" || !admission.Operation.Status.Terminal() || admission.Deployment.FinishedAt == nil || admission.Operation.FinishedAt == nil || len(admission.Regions) == 0 || (admission.AdmissionID != "" && (admission.NonceGeneration <= 0 || admission.ServiceSnapshot.SnapshotID == "" || len(admission.ServiceSnapshot.SnapshotSHA256) != 64 || len(admission.ServiceSnapshot.ReceiptDigest) != 64 || len(admission.ServiceSnapshot.ProofDigest) != 64 || len(admission.ServiceSnapshot.CleanupIntentSHA256) != 64)) || (admission.AdmissionID == "" && admission.NonceGeneration != 0) {
 		return nil, fmt.Errorf("external deployment admission store is unavailable")
 	}
