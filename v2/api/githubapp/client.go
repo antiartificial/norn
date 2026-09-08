@@ -52,6 +52,22 @@ var (
 
 const applyRunDisplayTitleFormat = "Apply %s Norn plan %s nonce %s"
 
+// RunBoundFleetRoot returns the protected workflow lane for an explicitly
+// allowlisted disposable Fleet document. These routes are intentionally
+// distinct from staging: a receipt or workflow run for one root must never
+// authorize another root. Callers must also require the exact pilot run ID;
+// this helper intentionally does not infer a lane from a path.
+func RunBoundFleetRoot(configPath string) (string, bool) {
+	switch configPath {
+	case "environments/disposable/fleet/nyc3/cluster.yaml":
+		return "disposable/fleet/nyc3", true
+	case "environments/disposable/external-mac/nyc3/cluster.yaml":
+		return "disposable/external-mac/nyc3", true
+	default:
+		return "", false
+	}
+}
+
 type Config struct {
 	AppID          string
 	InstallationID int64
@@ -185,8 +201,8 @@ func validateConfig(cfg Config) error {
 		return fmt.Errorf("fleet GitHub config path must be a repository-relative YAML path")
 	}
 	if cfg.PilotRunID != "" {
-		if cfg.Environment != "staging" || !pilotRunIDRe.MatchString(cfg.PilotRunID) || cfg.ConfigPath != "environments/disposable/fleet/nyc3/cluster.yaml" {
-			return fmt.Errorf("disposable Fleet dispatch requires staging, canonical fleet root, and an exact pilot run ID")
+		if _, allowed := RunBoundFleetRoot(cfg.ConfigPath); cfg.Environment != "staging" || !pilotRunIDRe.MatchString(cfg.PilotRunID) || !allowed {
+			return fmt.Errorf("run-bound Fleet dispatch requires staging, an allowlisted disposable root, and an exact pilot run ID")
 		}
 	} else if cfg.ConfigPath != fmt.Sprintf("environments/%s/nyc3/cluster.yaml", cfg.Environment) {
 		return fmt.Errorf("fleet GitHub config path must match the configured %s environment root", cfg.Environment)
@@ -759,7 +775,8 @@ func safeArtifactEntry(name string) bool {
 
 func (c *Client) fleetRoot() string {
 	if c.cfg.PilotRunID != "" {
-		return "disposable/fleet/nyc3"
+		root, _ := RunBoundFleetRoot(c.cfg.ConfigPath) // New validates this configuration.
+		return root
 	}
 	return c.cfg.Environment + "/nyc3"
 }

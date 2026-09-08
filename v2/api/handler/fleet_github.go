@@ -269,8 +269,10 @@ func (h *Handler) requireMatchingFleetEnvironment(w http.ResponseWriter, r *http
 }
 
 func fleetEnvironmentMatchesControlPlane(controlEnvironment, fleetEnvironment string, cfg *config.Config) bool {
-	if fleetEnvironment == "disposable/fleet/nyc3" {
-		return cfg != nil && controlEnvironment == "staging" && cfg.FleetGitHubPilotRunID != "" && cfg.FleetGitHubConfigPath == "environments/disposable/fleet/nyc3/cluster.yaml"
+	if cfg != nil {
+		if runBoundRoot, allowlisted := githubapp.RunBoundFleetRoot(cfg.FleetGitHubConfigPath); allowlisted {
+			return controlEnvironment == "staging" && cfg.FleetGitHubPilotRunID != "" && fleetEnvironment == runBoundRoot
+		}
 	}
 	if controlEnvironment == "development" {
 		return true
@@ -294,10 +296,11 @@ func configuredFleetEnvironment(document *fleet.Document, cfg *config.Config) (s
 		return "", fmt.Errorf("fleet metadata environment and cluster region are not supported")
 	}
 	if cfg != nil && cfg.FleetGitHubPilotRunID != "" {
-		if cfg.EnvironmentID() != "staging" || cfg.FleetGitHubConfigPath != "environments/disposable/fleet/nyc3/cluster.yaml" || document.Metadata.Environment != "staging" {
+		runBoundRoot, allowlisted := githubapp.RunBoundFleetRoot(cfg.FleetGitHubConfigPath)
+		if cfg.EnvironmentID() != "staging" || !allowlisted || document.Metadata.Environment != "staging" {
 			return "", fmt.Errorf("disposable Fleet root does not match the run-bound staging GitHub configuration")
 		}
-		return "disposable/fleet/nyc3", nil
+		return runBoundRoot, nil
 	}
 	return document.Metadata.Environment + "/" + document.Cluster.Region, nil
 }
