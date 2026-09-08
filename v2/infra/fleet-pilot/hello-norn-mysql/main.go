@@ -35,7 +35,11 @@ type service struct {
 }
 
 func openDatabase() (*sql.DB, error) {
-	cfg, err := mysql.ParseDSN(os.Getenv("MYSQL_DSN"))
+	dsn, err := requiredSecretFile("MYSQL_DSN_FILE")
+	if err != nil {
+		return nil, err
+	}
+	cfg, err := mysql.ParseDSN(dsn)
 	if err != nil {
 		return nil, fmt.Errorf("invalid MYSQL_DSN")
 	}
@@ -49,7 +53,11 @@ func openDatabase() (*sql.DB, error) {
 	if err := mysql.RegisterTLSConfig("pilot-verified", tlsConfig); err != nil {
 		return nil, err
 	}
-	dial, err := mysqlPinnedDialer(cfg.Addr, os.Getenv("MYSQL_PINNED_IP"), (&net.Dialer{}).DialContext)
+	pinnedIP, err := requiredSecretFile("MYSQL_PINNED_IP_FILE")
+	if err != nil {
+		return nil, err
+	}
+	dial, err := mysqlPinnedDialer(cfg.Addr, pinnedIP, (&net.Dialer{}).DialContext)
 	if err != nil {
 		return nil, err
 	}
@@ -69,6 +77,25 @@ func openDatabase() (*sql.DB, error) {
 	db.SetMaxIdleConns(4)
 	db.SetConnMaxLifetime(5 * time.Minute)
 	return db, nil
+}
+
+// requiredSecretFile is intentionally the sole runtime secret transport. The
+// Nomad job gives the process only owner-readable allocation files, never the
+// DSN, pin, or bearer value in task.Env or command arguments.
+func requiredSecretFile(envKey string) (string, error) {
+	path := os.Getenv(envKey)
+	if path == "" {
+		return "", fmt.Errorf("%s is required", envKey)
+	}
+	data, err := os.ReadFile(path)
+	if err != nil || len(data) == 0 || len(data) > 1<<20 {
+		return "", fmt.Errorf("read %s", envKey)
+	}
+	value := strings.TrimSuffix(strings.TrimSuffix(string(data), "\n"), "\r")
+	if value == "" || strings.IndexByte(value, 0) >= 0 {
+		return "", fmt.Errorf("read %s", envKey)
+	}
+	return value, nil
 }
 
 type contextDialer func(context.Context, string, string) (net.Conn, error)
@@ -282,7 +309,11 @@ func main() {
 		}
 		return
 	}
-	writeToken, err := pilotWriteToken(os.Getenv("PILOT_WRITE_TOKEN"))
+	writeTokenValue, err := requiredSecretFile("PILOT_WRITE_TOKEN_FILE")
+	if err != nil {
+		log.Fatal(err)
+	}
+	writeToken, err := pilotWriteToken(writeTokenValue)
 	if err != nil {
 		log.Fatal(err)
 	}

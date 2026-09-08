@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"net"
 	"net/url"
+	"path"
 	"regexp"
 	"strings"
 	"time"
@@ -30,6 +31,8 @@ var bucketNameRe = regexp.MustCompile(`^[a-z0-9][a-z0-9.-]{1,61}[a-z0-9]$`)
 var envNameRe = regexp.MustCompile(`^[A-Za-z][A-Za-z0-9_]*$`)
 var kafkaTopicNameRe = regexp.MustCompile(`^[A-Za-z0-9._-]+$`)
 var postgresDatabaseNameRe = regexp.MustCompile(`^[A-Za-z0-9_.-]{1,63}$`)
+var nomadVariableKeyRe = regexp.MustCompile(`^[A-Z][A-Z0-9_]{0,127}$`)
+var nomadSecretFileNameRe = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$`)
 
 // IsSafePostgresDatabaseName restricts database names used by Norn's local
 // snapshot tooling to a portable PostgreSQL identifier subset. In addition to
@@ -96,6 +99,7 @@ func ValidateSpecWithOptions(spec *InfraSpec, opts ValidationOptions) *Validatio
 
 	for name, proc := range spec.Processes {
 		field := fmt.Sprintf("processes.%s", name)
+		validateNomadVariableFiles(r, spec, field, proc)
 		seenRegions := map[string]bool{}
 		for _, region := range proc.Regions {
 			if _, ok := spec.Regions[region]; !ok {
@@ -420,6 +424,56 @@ func validateEnvSecrets(r *ValidationResult, field string, env map[string]string
 		}
 		r.add(severity, field+"."+key, "secret-like value should move to secrets.enc.yaml and be listed in secrets")
 	}
+}
+
+func validateNomadVariableFiles(r *ValidationResult, spec *InfraSpec, field string, proc Process) {
+	transport := proc.NomadVariables
+	if transport == nil {
+		return
+	}
+	if len(transport.Files) == 0 {
+		r.add("error", field+".nomadVariables.files", "at least one file mapping is required")
+	}
+	if len(transport.Files) > 16 {
+		r.add("error", field+".nomadVariables.files", "at most 16 file mappings are allowed")
+	}
+	if transport.UID <= 0 || transport.GID <= 0 {
+		r.add("error", field+".nomadVariables", "uid and gid must be explicit positive task identity values")
+	}
+	if transport.UID > 2147483647 || transport.GID > 2147483647 {
+		r.add("error", field+".nomadVariables", "uid and gid must be valid Unix identity values")
+	}
+	keys := map[string]bool{}
+	destinations := map[string]bool{}
+	for i, file := range transport.Files {
+		fileField := fmt.Sprintf("%s.nomadVariables.files[%d]", field, i)
+		if !nomadVariableKeyRe.MatchString(file.Key) {
+			r.add("error", fileField+".key", "key must be an uppercase Nomad variable key")
+		}
+		if keys[file.Key] {
+			r.add("error", fileField+".key", "key must be unique")
+		}
+		keys[file.Key] = true
+		if !validNomadSecretDestination(file.Destination) {
+			r.add("error", fileField+".destination", "destination must be one safe allocation-relative filename")
+		}
+		if destinations[file.Destination] {
+			r.add("error", fileField+".destination", "destination must be unique")
+		}
+		destinations[file.Destination] = true
+		if spec.Env != nil {
+			if _, present := spec.Env[file.Key]; present {
+				r.add("error", "env."+file.Key, "a Nomad variable value must not also be supplied through task environment")
+			}
+		}
+		if _, present := proc.Env[file.Key]; present {
+			r.add("error", field+".env."+file.Key, "a Nomad variable value must not also be supplied through task environment")
+		}
+	}
+}
+
+func validNomadSecretDestination(destination string) bool {
+	return path.Clean(destination) == destination && !strings.ContainsAny(destination, `/\\`) && nomadSecretFileNameRe.MatchString(destination) && destination != "." && destination != ".."
 }
 
 func looksSecretLike(key, value string) bool {

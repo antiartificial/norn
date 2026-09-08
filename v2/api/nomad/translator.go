@@ -115,8 +115,10 @@ func TranslateForRegion(spec *model.InfraSpec, imageTag string, env map[string]s
 
 		configureProcessNetworking(spec, procName, proc, region, task, tg)
 
-		// Environment
-		task.Env = mergeProcessEnv(mergedEnv, proc.Env)
+		// Job-owned Nomad variable values are deliberately withheld from task.Env
+		// and instead rendered by Nomad into owner-only allocation files.
+		task.Env = processEnvironment(spec, proc, mergedEnv, proc.Env)
+		configureNomadVariableFiles(proc.NomadVariables, spec.App, task)
 
 		// Resources
 		cpu := 100
@@ -341,7 +343,8 @@ func TranslatePeriodicForRegion(spec *model.InfraSpec, procName string, proc mod
 		task.Config["command"] = "/bin/sh"
 		task.Config["args"] = []string{"-c", proc.Command}
 	}
-	task.Env = mergeProcessEnv(mergedEnv, proc.Env)
+	task.Env = processEnvironment(spec, proc, mergedEnv, proc.Env)
+	configureNomadVariableFiles(proc.NomadVariables, fmt.Sprintf("%s-%s", spec.App, procName), task)
 
 	cpu := 100
 	mem := 128
@@ -405,7 +408,8 @@ func TranslateBatch(spec *model.InfraSpec, procName string, proc model.Process, 
 		task.Config["command"] = "/bin/sh"
 		task.Config["args"] = []string{"-c", proc.Command}
 	}
-	task.Env = mergeProcessEnv(mergedEnv, proc.Env)
+	task.Env = processEnvironment(spec, proc, mergedEnv, proc.Env)
+	configureNomadVariableFiles(proc.NomadVariables, jobID, task)
 
 	cpu := 100
 	mem := 128
@@ -477,4 +481,44 @@ func mergeProcessEnv(base, process map[string]string) map[string]string {
 		out[key] = value
 	}
 	return out
+}
+
+func processEnvironment(spec *model.InfraSpec, proc model.Process, runtime, process map[string]string) map[string]string {
+	// A configured Nomad-variable transport is an explicit opt-out from the
+	// legacy pipeline secret environment. This prevents an unrelated resolved
+	// secret from silently reintroducing the very task.Env channel the transport
+	// is intended to eliminate.
+	if proc.NomadVariables != nil {
+		return mergeProcessEnv(spec.Env, process)
+	}
+	return mergeProcessEnv(runtime, process)
+}
+
+func configureNomadVariableFiles(transport *model.NomadVariableFiles, jobID string, task *nomadapi.Task) {
+	if transport == nil || task == nil {
+		return
+	}
+	variablePath := "nomad/jobs/" + jobID
+	for _, file := range transport.Files {
+		destination := "secrets/" + file.Destination
+		mode := "0400"
+		changeMode := "restart"
+		envvars := false
+		errorOnMissingKey := true
+		uid, gid := transport.UID, transport.GID
+		// All executable template text is constructed here from validated schema
+		// fields. In particular, no arbitrary template, env template, or command
+		// interpolation can be introduced through an InfraSpec.
+		data := fmt.Sprintf("{{ with nomadVar %q }}{{ .%s.Value }}{{ end }}\n", variablePath, file.Key)
+		task.Templates = append(task.Templates, &nomadapi.Template{
+			DestPath:      &destination,
+			EmbeddedTmpl:  &data,
+			ChangeMode:    &changeMode,
+			Perms:         &mode,
+			Uid:           &uid,
+			Gid:           &gid,
+			Envvars:       &envvars,
+			ErrMissingKey: &errorOnMissingKey,
+		})
+	}
 }

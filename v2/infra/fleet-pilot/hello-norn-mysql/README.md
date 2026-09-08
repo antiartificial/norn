@@ -3,12 +3,12 @@
 Small synthetic workload for the cloud staging pilot. The Mini remains an
 independent development host. This app stores synthetic request IDs only.
 
-The checked-in InfraSpec is deliberately `deploy: false`. Norn's current
-translator injects encrypted catalog secrets into `task.Env`; that is not an
-acceptable MySQL-password transport. Use the direct Nomad jobs below until the
-translator supports ACL-restricted Nomad-variable templates and secret files.
-The catalog remains an immutable artifact/placement reference only—do not
-enable it or add `MYSQL_DSN` to `secrets.enc.yaml` for this pilot.
+The checked-in InfraSpec has an ACL-restricted, job-owned Nomad-variable file
+transport. Norn generates owner-only allocation files and withholds resolved
+pipeline values from `task.Env`; do not add `MYSQL_DSN` to `secrets.enc.yaml`.
+The catalog deliberately remains `deploy: false` until it can also preserve
+the reviewed direct job's namespace, provenance metadata, router, liveness,
+and rollout contract.
 
 Assign two replicas to distinct clients in the `ingress` Nomad pool. A
 one-allocation canary alongside those two replicas requires a third eligible
@@ -43,10 +43,10 @@ bootstrap/migration procedure must create two job-owned variable paths:
   `MYSQL_CA_PEM` and the same independently reviewed `MYSQL_PINNED_IP`.
 
 Nomad's job-owned variable ACL paths keep each job limited to its own DSN, CA
-and write bearer. The direct job renders the DSN through a quoted dotenv template and mounts
-the multiline CA as
-`secrets/mysql-ca.pem` with mode `0400`; neither value is a task environment
-field or catalog secret. Submit only a reviewed digest, source SHA and exact
+and write bearer. The direct job and InfraSpec translator render every value as
+an owner-only allocation file (including the multiline CA) with mode `0400`;
+no value is a task environment field, command argument, or catalog secret.
+Submit only a reviewed digest, source SHA and exact
 pilot hostname:
 
 ```sh

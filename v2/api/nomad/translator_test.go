@@ -1,6 +1,7 @@
 package nomad
 
 import (
+	"fmt"
 	"strings"
 	"testing"
 
@@ -23,6 +24,61 @@ func TestTranslatePreservesContentAddressedImage(t *testing.T) {
 	}
 	if got := job.TaskGroups[0].Tasks[0].Config["image"]; got != image {
 		t.Fatalf("translated image = %v, want %s", got, image)
+	}
+}
+
+func TestTranslateRendersJobOwnedVariableFilesWithoutSecretTaskEnv(t *testing.T) {
+	const dsn = "pilot:never-in-task-env@tcp(database.example:25060)/pilot"
+	const token = "0123456789abcdef0123456789abcdef"
+	image := "registry.example.test/norn/hello@sha256:" + strings.Repeat("a", 64)
+	spec := &model.InfraSpec{
+		App: "hello-norn-mysql",
+		Env: map[string]string{
+			"MYSQL_DSN_FILE":         "${NOMAD_SECRETS_DIR}/mysql-dsn",
+			"MYSQL_CA_FILE":          "${NOMAD_SECRETS_DIR}/mysql-ca.pem",
+			"MYSQL_PINNED_IP_FILE":   "${NOMAD_SECRETS_DIR}/mysql-pinned-ip",
+			"PILOT_WRITE_TOKEN_FILE": "${NOMAD_SECRETS_DIR}/pilot-write-token",
+		},
+		Processes: map[string]model.Process{
+			"web": {
+				Port: 8080,
+				NomadVariables: &model.NomadVariableFiles{UID: 65532, GID: 65532, Files: []model.NomadVariableFile{
+					{Key: "MYSQL_DSN", Destination: "mysql-dsn"},
+					{Key: "MYSQL_CA_PEM", Destination: "mysql-ca.pem"},
+					{Key: "MYSQL_PINNED_IP", Destination: "mysql-pinned-ip"},
+					{Key: "PILOT_WRITE_TOKEN", Destination: "pilot-write-token"},
+				}},
+			},
+		},
+	}
+	job := Translate(spec, image, map[string]string{
+		"MYSQL_DSN": dsn, "MYSQL_CA_PEM": "private-ca", "MYSQL_PINNED_IP": "10.20.30.40", "PILOT_WRITE_TOKEN": token,
+	})
+	task := job.TaskGroups[0].Tasks[0]
+	if task.Config["image"] != image {
+		t.Fatalf("image=%v", task.Config["image"])
+	}
+	for _, key := range []string{"MYSQL_DSN", "MYSQL_CA_PEM", "MYSQL_PINNED_IP", "PILOT_WRITE_TOKEN"} {
+		if _, found := task.Env[key]; found {
+			t.Fatalf("secret key %s was injected into task.Env: %#v", key, task.Env)
+		}
+	}
+	if task.Env["MYSQL_DSN_FILE"] != "${NOMAD_SECRETS_DIR}/mysql-dsn" || task.Env["PILOT_WRITE_TOKEN_FILE"] != "${NOMAD_SECRETS_DIR}/pilot-write-token" {
+		t.Fatalf("file-path env=%#v", task.Env)
+	}
+	if rendered := strings.Join([]string{fmt.Sprint(task.Config), fmt.Sprint(task.Env), fmt.Sprint(task.Templates)}, " "); strings.Contains(rendered, dsn) || strings.Contains(rendered, token) || strings.Contains(rendered, "private-ca") {
+		t.Fatalf("resolved secret value leaked into translated job: %s", rendered)
+	}
+	if len(task.Templates) != 4 {
+		t.Fatalf("templates=%d", len(task.Templates))
+	}
+	for _, template := range task.Templates {
+		if template.DestPath == nil || !strings.HasPrefix(*template.DestPath, "secrets/") || template.Perms == nil || *template.Perms != "0400" || template.Uid == nil || *template.Uid != 65532 || template.Gid == nil || *template.Gid != 65532 || template.ChangeMode == nil || *template.ChangeMode != "restart" || template.Envvars == nil || *template.Envvars || template.ErrMissingKey == nil || !*template.ErrMissingKey {
+			t.Fatalf("unsafe template=%+v", template)
+		}
+		if template.EmbeddedTmpl == nil || !strings.Contains(*template.EmbeddedTmpl, `nomadVar "nomad/jobs/hello-norn-mysql"`) {
+			t.Fatalf("template did not use derived job-owned path: %+v", template)
+		}
 	}
 }
 

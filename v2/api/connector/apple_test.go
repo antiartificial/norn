@@ -31,6 +31,16 @@ func TestAppleConnectorRejectsUnbalancedLocalEndpoints(t *testing.T) {
 	}
 }
 
+func TestAppleConnectorRejectsNomadVariableFiles(t *testing.T) {
+	connector := NewApple(&engine.Engine{})
+	spec := &model.InfraSpec{App: "sample", Processes: map[string]model.Process{
+		"web": {NomadVariables: &model.NomadVariableFiles{UID: 65532, GID: 65532, Files: []model.NomadVariableFile{{Key: "MYSQL_DSN", Destination: "mysql-dsn"}}}},
+	}}
+	if err := connector.Validate(spec, false); err == nil || !strings.Contains(err.Error(), "Nomad variable file transport") {
+		t.Fatalf("Nomad variable transport validation error = %v", err)
+	}
+}
+
 func TestAppleConnectorResolvesEndpointToLoopbackHostPort(t *testing.T) {
 	connector := NewApple(&engine.Engine{})
 	spec := &model.InfraSpec{App: "sample", Processes: map[string]model.Process{

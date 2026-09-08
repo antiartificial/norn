@@ -41,6 +41,20 @@ type InfraSpec struct {
 	Placement     *PlacementSpec          `yaml:"placement,omitempty" json:"placement,omitempty"`
 }
 
+// NomadVariableFiles is deliberately narrow: the translator derives the
+// job-owned nomad/jobs/<job-id> path, and every selected value is rendered to
+// a private allocation file rather than task.Env.
+type NomadVariableFiles struct {
+	Files []NomadVariableFile `yaml:"files" json:"files"`
+	UID   int                 `yaml:"uid" json:"uid"`
+	GID   int                 `yaml:"gid" json:"gid"`
+}
+
+type NomadVariableFile struct {
+	Key         string `yaml:"key" json:"key"`
+	Destination string `yaml:"destination" json:"destination"`
+}
+
 // PlacementSpec keeps infrastructure ownership out of the application spec.
 // The value is a logical pool declared by the versioned norn-fleet document;
 // it is never a provider-specific VM size or cloud resource identifier.
@@ -90,8 +104,11 @@ type Process struct {
 	Tuning    *TuningPolicy     `yaml:"tuning,omitempty" json:"tuning,omitempty"`
 	Canary    *CanaryConfig     `yaml:"canary,omitempty" json:"canary,omitempty"`
 	Env       map[string]string `yaml:"env,omitempty" json:"-"`
-	Regions   []string          `yaml:"regions,omitempty" json:"regions,omitempty"`
-	Singleton bool              `yaml:"singleton,omitempty" json:"singleton,omitempty"`
+	// NomadVariables is a process-scoped, ACL-restricted file transport. It
+	// cannot select a path, inject environment values, or provide template text.
+	NomadVariables *NomadVariableFiles `yaml:"nomadVariables,omitempty" json:"nomadVariables,omitempty"`
+	Regions        []string            `yaml:"regions,omitempty" json:"regions,omitempty"`
+	Singleton      bool                `yaml:"singleton,omitempty" json:"singleton,omitempty"`
 }
 
 // EffectiveNodePool returns the application-level logical pool. An empty

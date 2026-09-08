@@ -130,7 +130,9 @@ class ProbeTests(unittest.TestCase):
         root = Path(__file__).parent / "hello-norn-mysql" / "nomad"
         runtime = (root / "hello-norn-mysql.nomad.hcl").read_text(encoding="utf-8")
         migration = (root / "hello-norn-mysql-migrate.nomad.hcl").read_text(encoding="utf-8")
-        self.assertIn("PILOT_WRITE_TOKEN={{ .PILOT_WRITE_TOKEN.Value | toJSON }}", runtime)
+        self.assertIn('destination          = "secrets/pilot-write-token"', runtime)
+        self.assertIn("{{ .PILOT_WRITE_TOKEN.Value }}", runtime)
+        self.assertNotIn("PILOT_WRITE_TOKEN={{", runtime)
         self.assertNotIn("PILOT_WRITE_TOKEN", migration)
         self.assertIn('shutdown_delay = "10s"', runtime)
 

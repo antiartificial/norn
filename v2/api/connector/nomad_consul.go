@@ -33,7 +33,7 @@ func (c *NomadConsulConnector) Info(ctx context.Context) Info {
 		available = c.Nomad.Healthy() == nil && c.Consul.Healthy() == nil
 	}
 	return Info{Name: NomadConsul, Scheduler: "nomad", Discovery: "consul", Runtime: "oci/docker-driver", Available: available, ProductionReady: true,
-		Capabilities: []string{"regions", "multi-allocation", "canary", "cron", "batch", "logs", "exec", "health", "service-discovery"}}
+		Capabilities: []string{"regions", "multi-allocation", "canary", "cron", "batch", "logs", "exec", "health", "service-discovery", "acl-variable-files"}}
 }
 
 func (c *NomadConsulConnector) Validate(spec *model.InfraSpec, production bool) error {

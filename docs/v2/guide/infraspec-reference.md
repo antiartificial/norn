@@ -44,6 +44,35 @@ Each key in the `processes` map is the process name. The process type is inferre
 | `canary` | [CanaryConfig](#canaryconfig) | — | Canary allocation count and evaluation window |
 | `regions` | string[] | all regions | Explicit process placement. Omit for all regions, except scheduled/singleton processes default to primary |
 | `singleton` | bool | `false` | Pin unscheduled singleton work to the primary region unless `regions` is explicit |
+| `nomadVariables` | [Nomad variable files](#nomad-variable-files) | — | ACL-restricted job-owned Nomad variable values rendered only to private files |
+
+### Nomad variable files
+
+`nomadVariables` is an opt-in process-scoped transport for values that must
+never enter `task.Env` or command arguments. Norn derives the source strictly
+as `nomad/jobs/<generated-job-id>`; InfraSpec cannot select another variable
+path or submit template text. The generated Nomad templates are always
+allocation-relative `secrets/<destination>`, owner-only mode `0400`, restart
+on change, and fail on a missing key. Pipeline-resolved environment values are
+withheld from that process.
+
+```yaml
+processes:
+  web:
+    env:
+      MYSQL_DSN_FILE: "${NOMAD_SECRETS_DIR}/mysql-dsn"
+    nomadVariables:
+      uid: 65532
+      gid: 65532
+      files:
+        - key: MYSQL_DSN
+          destination: mysql-dsn
+```
+
+`destination` is exactly one safe filename (no slash, traversal, or absolute
+path); keys are uppercase variable names; `uid` and `gid` are required positive
+Unix identities. Use file-path environment variables only, and make the image
+read its secrets from those files.
 
 ## Placement
 
