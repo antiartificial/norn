@@ -129,7 +129,15 @@ func TestExternalFleetLiveVerifierUsesOnlyRedactedNonceAndCanonicalEvidence(t *t
 			verification := verifiedExternalReceipt(receipt)
 			verification.PublicHTTPSVersion = server.URL + "/version"
 			verification.PrivateReadiness = ExternalFleetPrivateReadiness{Endpoint: "https://private.example.test/readyz", AllocationIDs: []string{"alloc-a", "alloc-b"}, CheckedAt: time.Now().UTC()}
-			_ = json.NewEncoder(w).Encode(externalFleetEvidence{Repository: request.CI.Repository, Verification: verification, FixtureHCLSHA256: map[string]string{"migration": request.Config.MigrationHCLSHA256, "runtime": request.Config.RuntimeHCLSHA256}, Canonical: map[string]string{"prepare.tlsRouting": "sha256:prepare", "migration.migration": "sha256:migration", "runtime.update": "sha256:runtime", "readiness.consulNomad": "sha256:ready"}, PlanAttemptID: receipt.Fleet.RunnerAttemptID, CheckpointAttemptID: receipt.Fleet.RunnerAttemptID, NonceSHA256: nonce.sha256(), NonceWrittenAt: time.Now().Add(-time.Second), NonceReadAt: time.Now()})
+			_ = json.NewEncoder(w).Encode(externalFleetEvidence{
+				SchemaVersion: "norn.external-fleet-evidence/v1", Repository: request.CI.Repository, Verification: verification,
+				FixtureHCLSHA256: map[string]string{"migration": request.Config.MigrationHCLSHA256, "runtime": request.Config.RuntimeHCLSHA256},
+				Canonical:        map[string]string{"prepare.tlsRouting": "sha256:prepare", "migration.migration": "sha256:migration", "runtime.update": "sha256:runtime", "readiness.consulNomad": "sha256:ready"},
+				PlanAttemptID:    receipt.Fleet.RunnerAttemptID, CheckpointAttemptID: receipt.Fleet.RunnerAttemptID, NonceSHA256: nonce.sha256(), NonceWrittenAt: time.Now().Add(-time.Second), NonceReadAt: time.Now(),
+				Attempt:     externalFleetAttemptEvidence{PlanID: receipt.Fleet.PlanID, AttemptID: receipt.Fleet.RunnerAttemptID, RootAttemptID: "attempt-root", Revision: 1, TerminalStatus: "succeeded", CurrentPhase: "exercise", SourceDispatchRunID: receipt.Fleet.ApplyRunID, WorkflowURL: "https://github.com/" + request.CI.Repository + "/actions/runs/" + request.CI.RunID, RetryLineage: []string{"attempt-root", receipt.Fleet.RunnerAttemptID}},
+				Checkpoints: []externalFleetCheckpointEvidence{{ID: "prepare-1", Phase: "prepare", Status: "succeeded", EvidenceSHA256: strings.Repeat("1", 64), AttemptID: receipt.Fleet.RunnerAttemptID}, {ID: receipt.Fleet.Migration.CheckpointID, Phase: "migration", Status: "succeeded", EvidenceSHA256: strings.Repeat("2", 64), AttemptID: receipt.Fleet.RunnerAttemptID}, {ID: receipt.Fleet.Runtime.CheckpointID, Phase: "runtime", Status: "succeeded", EvidenceSHA256: strings.Repeat("3", 64), AttemptID: receipt.Fleet.RunnerAttemptID}, {ID: "exercise-1", Phase: "exercise", Status: "succeeded", EvidenceSHA256: strings.Repeat("4", 64), AttemptID: receipt.Fleet.RunnerAttemptID}},
+				Allocations: []externalFleetAllocationEvidence{{AllocationID: "alloc-a", JobID: receipt.Fleet.Runtime.JobID, EvalID: receipt.Fleet.Runtime.EvalID, Namespace: receipt.Fleet.Namespace, NodeID: "ingress-a", Region: "global", NomadStatus: "running", ConsulStatus: "passing"}, {AllocationID: "alloc-b", JobID: receipt.Fleet.Runtime.JobID, EvalID: receipt.Fleet.Runtime.EvalID, Namespace: receipt.Fleet.Namespace, NodeID: "ingress-b", Region: "global", NomadStatus: "running", ConsulStatus: "passing"}},
+			})
 		case "/version":
 			_ = json.NewEncoder(w).Encode(map[string]string{"version": receipt.SourceSHA, "allocation": "alloc-a", "region": "global"})
 		default:
@@ -171,6 +179,23 @@ func TestExternalFleetLiveVerifierUsesOnlyRedactedNonceAndCanonicalEvidence(t *t
 	}
 	if verified.PlanID != receipt.Fleet.PlanID || verified.Migration != receipt.Fleet.Migration {
 		t.Fatalf("verification = %#v", verified)
+	}
+}
+
+// This checked-in fixture is the cross-repository contract consumed by the
+// Fleet bridge. Keep it free of credentials and raw nonce material.
+func TestExternalFleetEvidenceV1FixtureContract(t *testing.T) {
+	contents, err := os.ReadFile("testdata/external-fleet-evidence-v1.json")
+	if err != nil {
+		t.Fatal(err)
+	}
+	decoded, err := decodeExternalFleetJSON(strings.NewReader(string(contents)), externalFleetEvidenceMaxBody, new(externalFleetEvidence))
+	if err != nil {
+		t.Fatal(err)
+	}
+	evidence := decoded.(*externalFleetEvidence)
+	if evidence.SchemaVersion != "norn.external-fleet-evidence/v1" || len(evidence.Checkpoints) != 4 || len(evidence.Allocations) != 2 || evidence.Attempt.TerminalStatus != "succeeded" || evidence.Attempt.CurrentPhase != "exercise" {
+		t.Fatalf("fixture does not preserve required bridge contract: %#v", evidence)
 	}
 }
 

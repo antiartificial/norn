@@ -112,41 +112,41 @@ type ExternalFleetAdmissionConfig struct {
 // facts. It intentionally has no `healthy`/`approved` flag: every field must
 // match the canonical request and verifier adapters must fail on missing proof.
 type ExternalFleetDeploymentVerification struct {
-	SourceSHA          string
-	Artifact           string
-	AttestationURI     string
-	SBOMURI            string
-	Namespace          string
-	Migration          ExternalFleetNomadJobProof
-	Runtime            ExternalFleetNomadJobProof
-	PlanID             string
-	ApplyRunID         string
-	ApplyRunAttempt    string
-	PlanSHA256         string
-	RunnerAttemptID    string
-	NonceEvidenceRef   string
-	Regions            []ExternalFleetRegionProof
-	IngressNodeIDs     []string
-	PublicHTTPSVersion string
-	PrivateReadiness   ExternalFleetPrivateReadiness
-	Chronology         []ExternalFleetChronologyStep
+	SourceSHA          string                        `json:"sourceSha"`
+	Artifact           string                        `json:"artifact"`
+	AttestationURI     string                        `json:"attestationUri"`
+	SBOMURI            string                        `json:"sbomUri"`
+	Namespace          string                        `json:"namespace"`
+	Migration          ExternalFleetNomadJobProof    `json:"migration"`
+	Runtime            ExternalFleetNomadJobProof    `json:"runtime"`
+	PlanID             string                        `json:"planId"`
+	ApplyRunID         string                        `json:"applyRunId"`
+	ApplyRunAttempt    string                        `json:"applyRunAttempt"`
+	PlanSHA256         string                        `json:"planSha256"`
+	RunnerAttemptID    string                        `json:"runnerAttemptId"`
+	NonceEvidenceRef   string                        `json:"nonceEvidenceRef"`
+	Regions            []ExternalFleetRegionProof    `json:"regions"`
+	IngressNodeIDs     []string                      `json:"ingressNodeIds"`
+	PublicHTTPSVersion string                        `json:"publicHttpsVersion"`
+	PrivateReadiness   ExternalFleetPrivateReadiness `json:"privateReadiness"`
+	Chronology         []ExternalFleetChronologyStep `json:"chronology"`
 }
 
 // ExternalFleetPrivateReadiness preserves the independently observed private
 // /readyz proof without misrepresenting the pilot's deliberately private
 // readiness endpoint as public ingress evidence.
 type ExternalFleetPrivateReadiness struct {
-	Endpoint      string
-	AllocationIDs []string
-	CheckedAt     time.Time
+	Endpoint      string    `json:"endpoint"`
+	AllocationIDs []string  `json:"allocationIds"`
+	CheckedAt     time.Time `json:"checkedAt"`
 }
 
 type ExternalFleetRegionProof struct {
-	Region        string
-	NomadRegion   string
-	EvalID        string
-	DesiredWeight int
-	ActiveWeight  int
+	Region        string `json:"region"`
+	NomadRegion   string `json:"nomadRegion"`
+	EvalID        string `json:"evalId"`
+	DesiredWeight int    `json:"desiredWeight"`
+	ActiveWeight  int    `json:"activeWeight"`
 }
 
 func (h *Handler) ConfigureExternalFleetDeploymentVerifier(verifier ExternalFleetDeploymentVerifier) {

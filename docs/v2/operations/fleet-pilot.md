@@ -170,6 +170,30 @@ Fleet attempt checkpoints. The API persists a redacted normalized proof plus a
 nonce hash only; it atomically consumes that hash and writes the terminal
 deployment, verified region weights/evaluations, and operation together.
 
+### Evidence-service v1 response contract
+
+The configured evidence origin returns one JSON object with
+`schemaVersion: "norn.external-fleet-evidence/v1"`. Required fields are
+`repository`, `verification`, `fixtureHclSha256`, `canonical`,
+`planAttemptId`, `checkpointAttemptId`, `nonceSha256`, `nonceWrittenAt`,
+`nonceReadAt`, `attempt`, and `checkpoints`. `attempt` has exact JSON names
+`planId`, `attemptId`, `rootAttemptId`, `revision`, `terminalStatus`,
+`currentPhase`, `sourceDispatchRunId`, `workflowUrl`, and `retryLineage`.
+It records terminal durable Fleet state (`succeeded`/`exercise`), not the
+necessarily active GitHub apply/recover run. Each of exactly four checkpoints
+uses `id`, `phase`, `status`, `evidenceSha256`, and `attemptId`; phases are
+`prepare`, `migration`, `runtime`, and `exercise`, all succeeded and attempt
+bound. Prepare is checkpoint evidence, not a Nomad job.
+
+`verification` uses lower-camel names including `sourceSha`,
+`publicHttpsVersion`, `privateReadiness`, `ingressNodeIds`, and `chronology`.
+Private readiness names only the configured private `/readyz` origin and fresh
+allocation IDs; the bridge binds those IDs to runtime job/evaluation/namespace
+and Consul/Nomad health. The public `/version` is independently fetched and
+bound to its reported allocation and region. Nonce timestamps must be ordered
+and fresh within the admission nonce lifetime. SHA-256 evidence digests are
+identifiers only: raw nonce material and credentials are prohibited.
+
 Receipt text is evidence *pointers*, never authority. The server-owned verifier
 must independently read the released HCL digest, source/repository, OCI digest,
 attestation and SBOM references, Nomad v2 migration/runtime job proof

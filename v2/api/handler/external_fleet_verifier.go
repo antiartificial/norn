@@ -351,6 +351,7 @@ type externalFleetEvidenceRequest struct {
 // read-only evidence service. The booleans are intentionally absent: all
 // claimed facts are cross-checked as identities and canonical field values.
 type externalFleetEvidence struct {
+	SchemaVersion       string                              `json:"schemaVersion"`
 	Repository          string                              `json:"repository"`
 	Verification        ExternalFleetDeploymentVerification `json:"verification"`
 	FixtureHCLSHA256    map[string]string                   `json:"fixtureHclSha256"`
@@ -360,6 +361,38 @@ type externalFleetEvidence struct {
 	NonceSHA256         string                              `json:"nonceSha256"`
 	NonceWrittenAt      time.Time                           `json:"nonceWrittenAt"`
 	NonceReadAt         time.Time                           `json:"nonceReadAt"`
+	Attempt             externalFleetAttemptEvidence        `json:"attempt"`
+	Checkpoints         []externalFleetCheckpointEvidence   `json:"checkpoints"`
+	Allocations         []externalFleetAllocationEvidence   `json:"allocations"`
+}
+
+type externalFleetAttemptEvidence struct {
+	PlanID              string   `json:"planId"`
+	AttemptID           string   `json:"attemptId"`
+	RootAttemptID       string   `json:"rootAttemptId"`
+	Revision            int64    `json:"revision"`
+	TerminalStatus      string   `json:"terminalStatus"`
+	CurrentPhase        string   `json:"currentPhase"`
+	SourceDispatchRunID string   `json:"sourceDispatchRunId"`
+	WorkflowURL         string   `json:"workflowUrl"`
+	RetryLineage        []string `json:"retryLineage"`
+}
+type externalFleetCheckpointEvidence struct {
+	ID             string `json:"id"`
+	Phase          string `json:"phase"`
+	Status         string `json:"status"`
+	EvidenceSHA256 string `json:"evidenceSha256"`
+	AttemptID      string `json:"attemptId"`
+}
+type externalFleetAllocationEvidence struct {
+	AllocationID string `json:"allocationId"`
+	JobID        string `json:"jobId"`
+	EvalID       string `json:"evalId"`
+	Namespace    string `json:"namespace"`
+	NodeID       string `json:"nodeId"`
+	Region       string `json:"region"`
+	NomadStatus  string `json:"nomadStatus"`
+	ConsulStatus string `json:"consulStatus"`
 }
 
 func (v *ExternalFleetDeploymentLiveVerifier) VerifyExternalFleetDeployment(ctx context.Context, request ExternalFleetDeploymentVerificationRequest) (*ExternalFleetDeploymentVerification, error) {
@@ -399,7 +432,8 @@ func (v *ExternalFleetDeploymentLiveVerifier) VerifyExternalFleetDeployment(ctx 
 	if err != nil {
 		return nil, err
 	}
-	if err := v.probePublicVersion(ctx, request.Receipt.SourceSHA); err != nil {
+	public, err := v.probePublicVersion(ctx, request.Receipt.SourceSHA)
+	if err != nil {
 		return nil, err
 	}
 	if evidence.Verification.PublicHTTPSVersion != v.publicEndpoint("version") {
@@ -407,6 +441,9 @@ func (v *ExternalFleetDeploymentLiveVerifier) VerifyExternalFleetDeployment(ctx 
 	}
 	if err := validateExternalFleetEvidence(evidence, request, nonceDigest); err != nil {
 		return nil, err
+	}
+	if !validExternalFleetAllocations(evidence.Allocations, request.Receipt, evidence.Verification, public) {
+		return nil, externalVerifierErr("allocation-binding")
 	}
 	return &evidence.Verification, nil
 }
@@ -443,18 +480,23 @@ func (v *ExternalFleetDeploymentLiveVerifier) publicEndpoint(path string) string
 	return u.String()
 }
 
-func (v *ExternalFleetDeploymentLiveVerifier) probePublicVersion(ctx context.Context, sourceSHA string) error {
+type externalFleetPublicVersion struct {
+	Allocation string
+	Region     string
+}
+
+func (v *ExternalFleetDeploymentLiveVerifier) probePublicVersion(ctx context.Context, sourceSHA string) (externalFleetPublicVersion, error) {
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, v.publicEndpoint("version"), nil)
 	if err != nil {
-		return externalVerifierErr("public-request")
+		return externalFleetPublicVersion{}, externalVerifierErr("public-request")
 	}
 	response, err := v.httpClient.Do(req)
 	if err != nil {
-		return externalVerifierErr("public-unavailable")
+		return externalFleetPublicVersion{}, externalVerifierErr("public-unavailable")
 	}
 	defer response.Body.Close()
 	if response.StatusCode != http.StatusOK {
-		return externalVerifierErr("public-proof")
+		return externalFleetPublicVersion{}, externalVerifierErr("public-proof")
 	}
 	var body struct {
 		Version    string `json:"version"`
@@ -462,9 +504,9 @@ func (v *ExternalFleetDeploymentLiveVerifier) probePublicVersion(ctx context.Con
 		Region     string `json:"region"`
 	}
 	if _, err := decodeExternalFleetJSON(response.Body, 4096, &body); err != nil || body.Version != sourceSHA || body.Allocation == "" || body.Region == "" {
-		return externalVerifierErr("public-version")
+		return externalFleetPublicVersion{}, externalVerifierErr("public-version")
 	}
-	return nil
+	return externalFleetPublicVersion{Allocation: body.Allocation, Region: body.Region}, nil
 }
 
 func decodeExternalFleetJSON(body io.Reader, limit int64, target any) (any, error) {
@@ -496,7 +538,7 @@ func decodeGitHubRunJSON(body io.Reader, target any) error {
 
 func validateExternalFleetEvidence(observed externalFleetEvidence, request ExternalFleetDeploymentVerificationRequest, nonceDigest string) error {
 	r := request.Receipt
-	if observed.Repository != request.CI.Repository || observed.NonceSHA256 != nonceDigest || observed.NonceWrittenAt.IsZero() || observed.NonceReadAt.IsZero() || !observed.NonceReadAt.After(observed.NonceWrittenAt) || observed.PlanAttemptID != r.Fleet.RunnerAttemptID || observed.CheckpointAttemptID != r.Fleet.RunnerAttemptID {
+	if observed.SchemaVersion != "norn.external-fleet-evidence/v1" || observed.Repository != request.CI.Repository || observed.NonceSHA256 != nonceDigest || observed.NonceWrittenAt.IsZero() || observed.NonceReadAt.IsZero() || !observed.NonceReadAt.After(observed.NonceWrittenAt) || time.Since(observed.NonceReadAt) > externalFleetAdmissionNonceTTL || observed.PlanAttemptID != r.Fleet.RunnerAttemptID || observed.CheckpointAttemptID != r.Fleet.RunnerAttemptID || !validExternalFleetAttempt(observed.Attempt, r, request.CI) || !validExternalFleetCheckpoints(observed.Checkpoints, r) {
 		return externalVerifierErr("evidence-binding")
 	}
 	if observed.FixtureHCLSHA256["migration"] != request.Config.MigrationHCLSHA256 || observed.FixtureHCLSHA256["runtime"] != request.Config.RuntimeHCLSHA256 {
@@ -511,6 +553,56 @@ func validateExternalFleetEvidence(observed externalFleetEvidence, request Exter
 		return externalVerifierErr("receipt-mismatch")
 	}
 	return nil
+}
+
+func validExternalFleetAttempt(attempt externalFleetAttemptEvidence, receipt ExternalFleetDeploymentReceipt, ci CIIdentity) bool {
+	if attempt.PlanID != receipt.Fleet.PlanID || attempt.AttemptID != receipt.Fleet.RunnerAttemptID || attempt.RootAttemptID == "" || attempt.Revision < 1 || attempt.TerminalStatus != "succeeded" || attempt.CurrentPhase != "exercise" || attempt.SourceDispatchRunID != receipt.Fleet.ApplyRunID || attempt.WorkflowURL != "https://github.com/"+ci.Repository+"/actions/runs/"+ci.RunID || len(attempt.RetryLineage) == 0 || attempt.RetryLineage[0] != attempt.RootAttemptID || attempt.RetryLineage[len(attempt.RetryLineage)-1] != attempt.AttemptID {
+		return false
+	}
+	seen := map[string]bool{}
+	for _, id := range attempt.RetryLineage {
+		if !externalNamePattern.MatchString(id) || seen[id] {
+			return false
+		}
+		seen[id] = true
+	}
+	return true
+}
+
+func validExternalFleetCheckpoints(items []externalFleetCheckpointEvidence, receipt ExternalFleetDeploymentReceipt) bool {
+	if len(items) != 4 {
+		return false
+	}
+	expected := map[string]string{"prepare": "", "migration": receipt.Fleet.Migration.CheckpointID, "runtime": receipt.Fleet.Runtime.CheckpointID, "exercise": ""}
+	seen := map[string]bool{}
+	for _, item := range items {
+		want, ok := expected[item.Phase]
+		if !ok || seen[item.Phase] || item.AttemptID != receipt.Fleet.RunnerAttemptID || item.Status != "succeeded" || !sha256HexPattern.MatchString(item.EvidenceSHA256) || (want != "" && item.ID != want) || (want == "" && !externalNamePattern.MatchString(item.ID)) {
+			return false
+		}
+		seen[item.Phase] = true
+	}
+	return len(seen) == len(expected)
+}
+
+func validExternalFleetAllocations(items []externalFleetAllocationEvidence, receipt ExternalFleetDeploymentReceipt, verified ExternalFleetDeploymentVerification, public externalFleetPublicVersion) bool {
+	if len(items) < 2 {
+		return false
+	}
+	ingress, seenNode, publicFound := map[string]bool{}, map[string]bool{}, false
+	for _, node := range verified.IngressNodeIDs {
+		ingress[node] = true
+	}
+	for _, item := range items {
+		if !externalNamePattern.MatchString(item.AllocationID) || item.JobID != receipt.Fleet.Runtime.JobID || item.EvalID != receipt.Fleet.Runtime.EvalID || item.Namespace != receipt.Fleet.Namespace || !ingress[item.NodeID] || item.Region == "" || item.NomadStatus != "running" || item.ConsulStatus != "passing" {
+			return false
+		}
+		seenNode[item.NodeID] = true
+		if item.AllocationID == public.Allocation && item.Region == public.Region {
+			publicFound = true
+		}
+	}
+	return publicFound && len(seenNode) >= 2
 }
 
 func validExternalRepository(value string) bool {
