@@ -159,6 +159,9 @@ jobs:
           }
           printf 'artifact=ghcr.io/antiartificial/hello-norn-mysql@%s\n' "$DIGEST" >> "$GITHUB_OUTPUT"
 
+      - name: Prepare bootstrap evidence directory
+        run: mkdir -p bootstrap-evidence
+
       - name: Generate SPDX SBOM for the immutable artifact
         uses: anchore/sbom-action@8e94d75ddd33f69f691467e42275782e4bfefe84 # v0.20.9
         with:
