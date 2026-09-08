@@ -514,6 +514,11 @@ func (v *ExternalFleetDeploymentLiveVerifier) VerifyExternalFleetDeployment(ctx 
 	if err != nil {
 		return nil, externalVerifierErr("github-token-unavailable")
 	}
+	if v.githubApp != nil {
+		if err := v.githubApp.attestations(ctx, githubToken, request.Receipt); err != nil {
+			return nil, externalVerifierErr("github-attestation-api-binding")
+		}
+	}
 	if err := v.attest.Verify(ctx, githubToken, request); err != nil {
 		return nil, err
 	}

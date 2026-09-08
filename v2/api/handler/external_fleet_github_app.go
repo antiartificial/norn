@@ -6,6 +6,7 @@ package handler
 import (
 	"bytes"
 	"context"
+	"encoding/base64"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -26,6 +27,68 @@ type externalFleetGitHubAppConfig struct {
 	PrivateKeyFile string
 	RepositoryIDs  []string
 	APIBaseURL     string
+}
+
+func (c *externalFleetGitHubApp) attestations(ctx context.Context, token string, receipt ExternalFleetDeploymentReceipt) error {
+	repo := receipt.Candidate.Repository
+	digest := strings.TrimPrefix(receipt.Candidate.Attestation.SubjectDigest, "sha256:")
+	if !validExternalRepository(repo) || len(digest) != 64 {
+		return errors.New("attestation subject binding invalid")
+	}
+	var response struct {
+		Attestations []struct {
+			ID     int64 `json:"id"`
+			Bundle struct {
+				DSSEEnvelope struct {
+					Payload string `json:"payload"`
+				} `json:"dsseEnvelope"`
+			} `json:"bundle"`
+		} `json:"attestations"`
+	}
+	if err := c.request(ctx, token, http.MethodGet, "/repos/"+repo+"/attestations/sha256:"+digest+"?per_page=30", nil, &response); err != nil {
+		return err
+	}
+	want := map[string]string{receipt.AttestationURI: "https://slsa.dev/provenance/v1", receipt.SBOMURI: "https://spdx.dev/Document/v2.3"}
+	found := map[string]bool{}
+	for _, item := range response.Attestations {
+		uri := "https://github.com/" + repo + "/attestations/" + strconv.FormatInt(item.ID, 10)
+		expected, ok := want[uri]
+		if !ok {
+			continue
+		}
+		payload, err := base64.StdEncoding.DecodeString(item.Bundle.DSSEEnvelope.Payload)
+		if err != nil {
+			return errors.New("attestation bundle payload invalid")
+		}
+		var statement struct {
+			PredicateType string `json:"predicateType"`
+			Subject       []struct {
+				Digest map[string]string `json:"digest"`
+			} `json:"subject"`
+		}
+		if json.Unmarshal(payload, &statement) != nil || statement.PredicateType == "" || !externalFleetStatementSubject(statement.Subject, digest) {
+			return errors.New("attestation bundle statement invalid")
+		}
+		if statement.PredicateType != expected || found[statement.PredicateType] {
+			return errors.New("attestation bundle predicate invalid")
+		}
+		found[statement.PredicateType] = true
+	}
+	if !found["https://slsa.dev/provenance/v1"] || !found["https://spdx.dev/Document/v2.3"] {
+		return errors.New("attestation receipt URL binding missing")
+	}
+	return nil
+}
+
+func externalFleetStatementSubject(subject []struct {
+	Digest map[string]string `json:"digest"`
+}, digest string) bool {
+	for _, s := range subject {
+		if s.Digest["sha256"] == digest {
+			return true
+		}
+	}
+	return false
 }
 
 type externalFleetGitHubApp struct {
