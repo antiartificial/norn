@@ -104,11 +104,8 @@ func migrateOnce(ctx context.Context, db *DB) error {
 		return fmt.Errorf("begin postgres migration: %w", err)
 	}
 	defer func() { _ = tx.Rollback(context.Background()) }()
-	if _, err := tx.Exec(ctx, `SET LOCAL lock_timeout = '30s'`); err != nil {
-		return fmt.Errorf("configure postgres migration lock timeout: %w", err)
-	}
-	if _, err := tx.Exec(ctx, `SET LOCAL deadlock_timeout = '1s'`); err != nil {
-		return fmt.Errorf("configure postgres migration deadlock timeout: %w", err)
+	if err := configureMigrationSession(ctx, tx); err != nil {
+		return err
 	}
 	if _, err := tx.Exec(ctx, `SELECT pg_advisory_xact_lock($1)`, migrationAdvisoryLockKey); err != nil {
 		return fmt.Errorf("lock postgres migration: %w", err)
@@ -701,6 +698,21 @@ func migrateOnce(ctx context.Context, db *DB) error {
 		return fmt.Errorf("commit postgres migration: %w", err)
 	}
 	return nil
+}
+
+// configureMigrationSession only changes settings ordinary application roles
+// may set themselves. deadlock_timeout is a superuser-only setting in
+// PostgreSQL, so migrations rely on PostgreSQL's configured deadlock detector
+// and retain the retry path below for any reported deadlock.
+func configureMigrationSession(ctx context.Context, tx migrationSession) error {
+	if _, err := tx.Exec(ctx, `SET LOCAL lock_timeout = '30s'`); err != nil {
+		return fmt.Errorf("configure postgres migration lock timeout: %w", err)
+	}
+	return nil
+}
+
+type migrationSession interface {
+	Exec(context.Context, string, ...any) (pgconn.CommandTag, error)
 }
 
 func lockMigrationRelations(ctx context.Context, tx pgx.Tx) error {
