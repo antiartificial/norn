@@ -222,7 +222,11 @@ fresh live observation timestamps, allocation proof, authoritative retry
 lineage, and checkpoint references. Norn persists and re-reads that projection;
 it never derives checkpoint history from receipt timestamps. A service timeout
 is recovered only by reading the exact status generation and adopting an
-identical registration, claim, or commit response. The later protected cleanup
+identical registration, claim, or commit response. Its `sha256` is SHA-256 of
+the compact UTF-8 JSON projection with fields `id`, `ref`, `liveCheckedAt`,
+`nonceWrittenAt`, `nonceReadAt`, `verification`, `retryLineage`,
+`checkpointRefs`, and `allocations`, in that order, excluding only `sha256`.
+Nested fields use their declared lower-camel JSON names and array order. The later protected cleanup
 evidence CAS adds the absence-proof digest and only then exposes
 `cleanup_ready`; Norn compares every persisted admission, operation, receipt,
 snapshot, revision, intent, and absence binding before marking complete.

@@ -160,7 +160,13 @@ func TestExternalFleetLiveVerifierUsesOnlyRedactedNonceAndCanonicalEvidence(t *t
 			verification := verifiedExternalReceipt(receipt)
 			verification.PublicHTTPSVersion = server.URL + "/version"
 			verification.PrivateReadiness = ExternalFleetPrivateReadiness{Endpoint: "https://private.example.test/readyz", AllocationIDs: []string{"alloc-a", "alloc-b"}, CheckedAt: time.Now().UTC()}
-			_ = json.NewEncoder(w).Encode(ExternalFleetEvidenceAdmissionStatus{SchemaVersion: "norn.external-fleet-admission-status/v4", AdmissionID: receipt.AdmissionID, LogicalDigest: "sha256:" + strings.Repeat("b", 64), NonceSHA256: nonce.sha256(), Generation: 1, State: "claimed", Revision: 2, Snapshot: &ExternalFleetEvidenceSnapshot{ID: "snapshot-1", Ref: "evidence://snapshot-1", SHA256: strings.Repeat("c", 64), LiveCheckedAt: time.Now(), NonceWrittenAt: time.Now().Add(-time.Second), NonceReadAt: time.Now(), Verification: verification, Allocations: []externalFleetAllocationEvidence{{AllocationID: "alloc-a", JobID: receipt.Fleet.Runtime.JobID, EvalID: receipt.Fleet.Runtime.EvalID, Namespace: receipt.Fleet.Namespace, NodeID: "ingress-a", Region: "global", NomadStatus: "running", ConsulStatus: "passing"}, {AllocationID: "alloc-b", JobID: receipt.Fleet.Runtime.JobID, EvalID: receipt.Fleet.Runtime.EvalID, Namespace: receipt.Fleet.Namespace, NodeID: "ingress-b", Region: "global", NomadStatus: "running", ConsulStatus: "passing"}}}})
+			snapshot := &ExternalFleetEvidenceSnapshot{ID: "snapshot-1", Ref: "evidence://snapshot-1", LiveCheckedAt: time.Now(), NonceWrittenAt: time.Now().Add(-time.Second), NonceReadAt: time.Now(), Verification: verification, Allocations: []externalFleetAllocationEvidence{{AllocationID: "alloc-a", JobID: receipt.Fleet.Runtime.JobID, EvalID: receipt.Fleet.Runtime.EvalID, Namespace: receipt.Fleet.Namespace, NodeID: "ingress-a", Region: "global", NomadStatus: "running", ConsulStatus: "passing"}, {AllocationID: "alloc-b", JobID: receipt.Fleet.Runtime.JobID, EvalID: receipt.Fleet.Runtime.EvalID, Namespace: receipt.Fleet.Namespace, NodeID: "ingress-b", Region: "global", NomadStatus: "running", ConsulStatus: "passing"}}}
+			var digestErr error
+			snapshot.SHA256, digestErr = externalFleetSnapshotDigest(snapshot)
+			if digestErr != nil {
+				t.Fatal(digestErr)
+			}
+			_ = json.NewEncoder(w).Encode(ExternalFleetEvidenceAdmissionStatus{SchemaVersion: "norn.external-fleet-admission-status/v4", AdmissionID: receipt.AdmissionID, LogicalDigest: "sha256:" + strings.Repeat("b", 64), NonceSHA256: nonce.sha256(), Generation: 1, State: "claimed", Revision: 2, Snapshot: snapshot})
 			return
 		}
 		switch r.URL.Path {
@@ -930,7 +936,13 @@ func TestExternalCallbackBindingsRejectPlaceholderAndDrift(t *testing.T) {
 		t.Fatal("proof digest must not alias transport receipt digest")
 	}
 	claim := ExternalFleetEvidenceClaim{SchemaVersion: "norn.external-fleet-admission-callback/v4", AdmissionID: receipt.AdmissionID, LogicalDigest: "sha256:" + strings.Repeat("d", 64), AdmissionContextDigest: strings.Repeat("d", 64), NonceSHA256: strings.Repeat("e", 64), Generation: 1, ExpectedRevision: 2, ReceiptDigest: hex.EncodeToString(rd[:]), ProofDigest: proof}
-	status := &ExternalFleetEvidenceAdmissionStatus{SchemaVersion: "norn.external-fleet-admission-status/v4", AdmissionID: claim.AdmissionID, LogicalDigest: claim.LogicalDigest, AdmissionContextDigest: claim.AdmissionContextDigest, NonceSHA256: claim.NonceSHA256, Generation: 1, State: "claimed", Revision: 3, ReceiptDigest: claim.ReceiptDigest, ProofDigest: claim.ProofDigest, Snapshot: &ExternalFleetEvidenceSnapshot{ID: "snap", Ref: "evidence://snap", SHA256: strings.Repeat("c", 64), LiveCheckedAt: time.Now(), RetryLineage: []string{"root", "current"}, CheckpointRefs: []ExternalFleetCheckpointRef{{Phase: "external_admission", CheckpointID: "cp", AttemptID: "current", EvidenceRef: "evidence://cp", EvidenceSHA256: strings.Repeat("a", 64)}}}}
+	snapshot := &ExternalFleetEvidenceSnapshot{ID: "snap", Ref: "evidence://snap", LiveCheckedAt: time.Now(), RetryLineage: []string{"root", "current"}, CheckpointRefs: []ExternalFleetCheckpointRef{{Phase: "external_admission", CheckpointID: "cp", AttemptID: "current", EvidenceRef: "evidence://cp", EvidenceSHA256: strings.Repeat("a", 64)}}}
+	var snapshotErr error
+	snapshot.SHA256, snapshotErr = externalFleetSnapshotDigest(snapshot)
+	if snapshotErr != nil {
+		t.Fatal(snapshotErr)
+	}
+	status := &ExternalFleetEvidenceAdmissionStatus{SchemaVersion: "norn.external-fleet-admission-status/v4", AdmissionID: claim.AdmissionID, LogicalDigest: claim.LogicalDigest, AdmissionContextDigest: claim.AdmissionContextDigest, NonceSHA256: claim.NonceSHA256, Generation: 1, State: "claimed", Revision: 3, ReceiptDigest: claim.ReceiptDigest, ProofDigest: claim.ProofDigest, Snapshot: snapshot}
 	if !externalClaimStatusMatches(status, claim) {
 		t.Fatal("exact claimed callback rejected")
 	}

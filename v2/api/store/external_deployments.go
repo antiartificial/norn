@@ -120,18 +120,26 @@ type ExternalDeploymentServiceSnapshot struct {
 	SnapshotID          string
 	SnapshotRef         string
 	SnapshotSHA256      string
+	RetryLineage        []string
+	ReceiptDigest       string
+	ProofDigest         string
 	ClaimRevision       int64
 	CommitRevision      int64
+	CleanupRevision     int64
 	CleanupIntentSHA256 string
 	AbsenceProofSHA256  string
 }
 
 func (db *DB) RecordExternalDeploymentServiceSnapshot(ctx context.Context, snapshot ExternalDeploymentServiceSnapshot) error {
-	if db == nil || db.Pool == nil || snapshot.AdmissionID == "" || snapshot.SnapshotID == "" || snapshot.SnapshotRef == "" || len(snapshot.SnapshotSHA256) != 64 || snapshot.ClaimRevision < 1 {
+	if db == nil || db.Pool == nil || snapshot.AdmissionID == "" || snapshot.SnapshotID == "" || snapshot.SnapshotRef == "" || len(snapshot.SnapshotSHA256) != 64 || len(snapshot.ReceiptDigest) != 64 || len(snapshot.ProofDigest) != 64 || snapshot.ClaimRevision < 1 || len(snapshot.RetryLineage) == 0 {
 		return ErrExternalDeploymentAdmissionUnavailable
 	}
-	tag, err := db.Pool.Exec(ctx, `UPDATE external_deployment_admissions SET service_snapshot_id=$2, service_snapshot_ref=$3, service_snapshot_sha256=$4, service_claim_revision=$5, updated_at=now()
-		WHERE id=$1 AND state IN ('nonce_ready','evidence_claimed') AND (service_snapshot_id='' OR (service_snapshot_id=$2 AND service_snapshot_ref=$3 AND service_snapshot_sha256=$4 AND service_claim_revision=$5))`, snapshot.AdmissionID, snapshot.SnapshotID, snapshot.SnapshotRef, snapshot.SnapshotSHA256, snapshot.ClaimRevision)
+	lineage, err := json.Marshal(snapshot.RetryLineage)
+	if err != nil {
+		return err
+	}
+	tag, err := db.Pool.Exec(ctx, `UPDATE external_deployment_admissions SET service_snapshot_id=$2, service_snapshot_ref=$3, service_snapshot_sha256=$4, service_claim_revision=$5, service_retry_lineage=$6::jsonb, service_receipt_sha256=$7, service_proof_sha256=$8, updated_at=now()
+		WHERE id=$1 AND state IN ('nonce_ready','evidence_claimed') AND (service_snapshot_id='' OR (service_snapshot_id=$2 AND service_snapshot_ref=$3 AND service_snapshot_sha256=$4 AND service_claim_revision=$5 AND service_retry_lineage=$6::jsonb AND service_receipt_sha256=$7 AND service_proof_sha256=$8))`, snapshot.AdmissionID, snapshot.SnapshotID, snapshot.SnapshotRef, snapshot.SnapshotSHA256, snapshot.ClaimRevision, string(lineage), snapshot.ReceiptDigest, snapshot.ProofDigest)
 	if err != nil {
 		return err
 	}
@@ -142,11 +150,14 @@ func (db *DB) RecordExternalDeploymentServiceSnapshot(ctx context.Context, snaps
 }
 
 func (db *DB) RecordExternalDeploymentCleanupBindings(ctx context.Context, snapshot ExternalDeploymentServiceSnapshot) error {
-	if db == nil || db.Pool == nil || snapshot.AdmissionID == "" || snapshot.CommitRevision < 1 || len(snapshot.CleanupIntentSHA256) != 64 || len(snapshot.AbsenceProofSHA256) != 64 {
+	if db == nil || db.Pool == nil || snapshot.AdmissionID == "" || snapshot.CommitRevision < 1 || snapshot.CleanupRevision <= snapshot.CommitRevision || len(snapshot.CleanupIntentSHA256) != 64 || len(snapshot.AbsenceProofSHA256) != 64 {
 		return ErrExternalDeploymentAdmissionUnavailable
 	}
-	tag, err := db.Pool.Exec(ctx, `UPDATE external_deployment_admissions SET service_commit_revision=$2, cleanup_intent_sha256=$3, absence_proof_sha256=$4, updated_at=now()
-		WHERE id=$1 AND state IN ('committed','cleanup_pending') AND (cleanup_intent_sha256='' OR (service_commit_revision=$2 AND cleanup_intent_sha256=$3 AND absence_proof_sha256=$4))`, snapshot.AdmissionID, snapshot.CommitRevision, snapshot.CleanupIntentSHA256, snapshot.AbsenceProofSHA256)
+	// Commit writes the intent first. Cleanup can only append its absence proof
+	// against that exact commit revision; it can never replace the intent.
+	tag, err := db.Pool.Exec(ctx, `UPDATE external_deployment_admissions SET service_cleanup_revision=$3, absence_proof_sha256=$5, updated_at=now()
+		WHERE id=$1 AND state IN ('committed','cleanup_pending') AND service_commit_revision=$2 AND cleanup_intent_sha256=$4
+			AND (absence_proof_sha256='' OR (service_cleanup_revision=$3 AND absence_proof_sha256=$5))`, snapshot.AdmissionID, snapshot.CommitRevision, snapshot.CleanupRevision, snapshot.CleanupIntentSHA256, snapshot.AbsenceProofSHA256)
 	if err != nil {
 		return err
 	}
@@ -519,6 +530,7 @@ type ExternalDeploymentAdmission struct {
 	AdmissionID     string
 	NonceGeneration int64
 	CheckpointRefs  []ExternalDeploymentCheckpointRef
+	ServiceSnapshot ExternalDeploymentServiceSnapshot
 }
 
 type ExternalDeploymentAdmissionResult struct {
@@ -532,7 +544,7 @@ type ExternalDeploymentAdmissionResult struct {
 // same idempotency key and request digest return the original operation;
 // another request never gets to consume the nonce after that operation exists.
 func (db *DB) AdmitExternalDeployment(ctx context.Context, admission ExternalDeploymentAdmission) (*ExternalDeploymentAdmissionResult, error) {
-	if db == nil || db.Pool == nil || admission.Deployment == nil || admission.Operation == nil || admission.IdempotencyKey == "" || admission.RequestDigest == "" || admission.Nonce.ID == "" || admission.Nonce.NonceSHA256 == "" || admission.Nonce.App == "" || admission.Nonce.Environment == "" || admission.Nonce.CIRepository == "" || admission.Nonce.CIRunID == "" || admission.Nonce.CIRunAttempt == "" || !admission.Operation.Status.Terminal() || admission.Deployment.FinishedAt == nil || admission.Operation.FinishedAt == nil || len(admission.Regions) == 0 || (admission.AdmissionID != "" && admission.NonceGeneration <= 0) || (admission.AdmissionID == "" && admission.NonceGeneration != 0) {
+	if db == nil || db.Pool == nil || admission.Deployment == nil || admission.Operation == nil || admission.IdempotencyKey == "" || admission.RequestDigest == "" || admission.Nonce.ID == "" || admission.Nonce.NonceSHA256 == "" || admission.Nonce.App == "" || admission.Nonce.Environment == "" || admission.Nonce.CIRepository == "" || admission.Nonce.CIRunID == "" || admission.Nonce.CIRunAttempt == "" || !admission.Operation.Status.Terminal() || admission.Deployment.FinishedAt == nil || admission.Operation.FinishedAt == nil || len(admission.Regions) == 0 || (admission.AdmissionID != "" && (admission.NonceGeneration <= 0 || admission.ServiceSnapshot.SnapshotID == "" || len(admission.ServiceSnapshot.SnapshotSHA256) != 64 || len(admission.ServiceSnapshot.ReceiptDigest) != 64 || len(admission.ServiceSnapshot.ProofDigest) != 64)) || (admission.AdmissionID == "" && admission.NonceGeneration != 0) {
 		return nil, fmt.Errorf("external deployment admission store is unavailable")
 	}
 	for _, checkpoint := range admission.CheckpointRefs {
@@ -557,7 +569,6 @@ func (db *DB) AdmitExternalDeployment(ctx context.Context, admission ExternalDep
 	// permanent state. It is intentionally best-effort and cannot affect live
 	// rows because it selects only expired entries.
 	_, _ = tx.Exec(ctx, `DELETE FROM external_deployment_nonces WHERE ctid IN (SELECT ctid FROM external_deployment_nonces nonce WHERE expires_at < now() AND NOT EXISTS (SELECT 1 FROM external_deployment_admissions admission WHERE admission.nonce_id=nonce.id) LIMIT 1000)`)
-
 	var existingID, existingDigest string
 	err = tx.QueryRow(ctx, `SELECT id, COALESCE(metadata->>'requestDigest','') FROM operations WHERE metadata->>'idempotencyKey'=$1 FOR KEY SHARE`, admission.IdempotencyKey).Scan(&existingID, &existingDigest)
 	if err == nil {
@@ -578,6 +589,15 @@ func (db *DB) AdmitExternalDeployment(ctx context.Context, admission ExternalDep
 	}
 	if !errors.Is(err, pgx.ErrNoRows) {
 		return nil, err
+	}
+	if admission.AdmissionID != "" {
+		var snapshotID, snapshotRef, snapshotSHA, receiptDigest, proofDigest string
+		var claimRevision int64
+		err := tx.QueryRow(ctx, `SELECT service_snapshot_id, service_snapshot_ref, service_snapshot_sha256, service_receipt_sha256, service_proof_sha256, service_claim_revision
+			FROM external_deployment_admissions WHERE id=$1 AND nonce_id=$2 AND nonce_generation=$3 AND state IN ('nonce_ready','evidence_claimed') FOR KEY SHARE`, admission.AdmissionID, admission.Nonce.ID, admission.NonceGeneration).Scan(&snapshotID, &snapshotRef, &snapshotSHA, &receiptDigest, &proofDigest, &claimRevision)
+		if err != nil || snapshotID != admission.ServiceSnapshot.SnapshotID || snapshotRef != admission.ServiceSnapshot.SnapshotRef || snapshotSHA != admission.ServiceSnapshot.SnapshotSHA256 || receiptDigest != admission.ServiceSnapshot.ReceiptDigest || proofDigest != admission.ServiceSnapshot.ProofDigest || claimRevision != admission.ServiceSnapshot.ClaimRevision {
+			return nil, ErrExternalDeploymentAdmissionUnavailable
+		}
 	}
 
 	var nonceID string

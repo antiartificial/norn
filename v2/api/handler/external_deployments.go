@@ -170,6 +170,10 @@ type ExternalFleetDeploymentVerificationRequest struct {
 	CI                  CIIdentity
 	Config              ExternalFleetAdmissionConfig
 	AdmissionGeneration int64
+	// ServiceSnapshot is the exact hash-validated claim response persisted by
+	// the admission saga. Supplying it prevents a second status read from
+	// substituting evidence between claim and verification.
+	ServiceSnapshot *ExternalFleetEvidenceSnapshot
 }
 
 type ExternalFleetAdmissionConfig struct {
@@ -442,29 +446,16 @@ func (h *Handler) GetExternalFleetDeploymentAdmissionContext(w http.ResponseWrit
 		checkpoints = append(checkpoints, checkpoint)
 	}
 	rows.Close()
-	lineageRows, lineageErr := h.db.Pool.Query(r.Context(), `SELECT attempt_id FROM fleet_runner_checkpoint_refs WHERE admission_id=$1 ORDER BY created_at, phase`, admissionID)
-	if lineageErr != nil {
+	var lineageJSON []byte
+	if err := h.db.Pool.QueryRow(r.Context(), `SELECT service_retry_lineage FROM external_deployment_admissions WHERE id=$1`, admissionID).Scan(&lineageJSON); err != nil {
 		WriteControlProblem(w, r, http.StatusServiceUnavailable, "external_deployment_context_unavailable", "server-owned retry lineage is unavailable")
 		return
 	}
 	lineage := []string{}
-	for lineageRows.Next() {
-		var attemptID string
-		if err := lineageRows.Scan(&attemptID); err != nil {
-			lineageRows.Close()
-			WriteControlProblem(w, r, http.StatusServiceUnavailable, "external_deployment_context_unavailable", "server-owned retry lineage is invalid")
-			return
-		}
-		if len(lineage) == 0 || lineage[len(lineage)-1] != attemptID {
-			lineage = append(lineage, attemptID)
-		}
-	}
-	if err := lineageRows.Err(); err != nil {
-		lineageRows.Close()
+	if err := json.Unmarshal(lineageJSON, &lineage); err != nil || !validExternalRetryLineage(lineage) {
 		WriteControlProblem(w, r, http.StatusServiceUnavailable, "external_deployment_context_unavailable", "server-owned retry lineage is invalid")
 		return
 	}
-	lineageRows.Close()
 	// The response is deliberately derived from durable references, never a
 	// caller-supplied receipt. A missing or duplicate external phase is a
 	// conflict rather than an inferred successful recovery.
@@ -515,13 +506,17 @@ func (h *Handler) CompleteExternalFleetDeploymentCleanup(w http.ResponseWriter, 
 		return
 	}
 	var state, operationID, receiptDigest, expectedIntent, expectedAbsence, snapshotID, snapshotRef, snapshotSHA string
-	var claimRevision, commitRevision int64
-	err := h.db.Pool.QueryRow(r.Context(), `SELECT a.state, COALESCE(a.operation_id,''), COALESCE(o.metadata->>'externalFleetProofSHA256',''), COALESCE(a.cleanup_intent_sha256,''), COALESCE(a.absence_proof_sha256,''), COALESCE(a.service_snapshot_id,''), COALESCE(a.service_snapshot_ref,''), COALESCE(a.service_snapshot_sha256,''), COALESCE(a.service_claim_revision,0), COALESCE(a.service_commit_revision,0) FROM external_deployment_admissions a LEFT JOIN operations o ON o.id=a.operation_id WHERE a.id=$1 AND a.app=$2 AND a.environment=$3 AND a.ci_repository=$4`, request.AdmissionID, appID, principal.Environment, principal.CI.Repository).Scan(&state, &operationID, &receiptDigest, &expectedIntent, &expectedAbsence, &snapshotID, &snapshotRef, &snapshotSHA, &claimRevision, &commitRevision)
+	var claimRevision, commitRevision, cleanupRevision int64
+	err := h.db.Pool.QueryRow(r.Context(), `SELECT a.state, COALESCE(a.operation_id,''), COALESCE(o.metadata->>'externalFleetProofSHA256',''), COALESCE(a.cleanup_intent_sha256,''), COALESCE(a.absence_proof_sha256,''), COALESCE(a.service_snapshot_id,''), COALESCE(a.service_snapshot_ref,''), COALESCE(a.service_snapshot_sha256,''), COALESCE(a.service_claim_revision,0), COALESCE(a.service_commit_revision,0), COALESCE(a.service_cleanup_revision,0) FROM external_deployment_admissions a LEFT JOIN operations o ON o.id=a.operation_id WHERE a.id=$1 AND a.app=$2 AND a.environment=$3 AND a.ci_repository=$4`, request.AdmissionID, appID, principal.Environment, principal.CI.Repository).Scan(&state, &operationID, &receiptDigest, &expectedIntent, &expectedAbsence, &snapshotID, &snapshotRef, &snapshotSHA, &claimRevision, &commitRevision, &cleanupRevision)
 	if err != nil || operationID != request.OperationID || receiptDigest != request.ReceiptDigest {
 		WriteControlProblem(w, r, http.StatusConflict, "external_deployment_cleanup_conflict", "cleanup binding does not match the committed server admission")
 		return
 	}
 	if state == string(store.ExternalDeploymentAdmissionComplete) {
+		if expectedIntent == "" || expectedAbsence == "" || cleanupRevision <= commitRevision || expectedIntent != request.CleanupIntentDigest || expectedAbsence != request.AbsenceProofDigest {
+			WriteControlProblem(w, r, http.StatusConflict, "external_deployment_cleanup_conflict", "completed admission does not match the exact cleanup bindings")
+			return
+		}
 		writeJSON(w, externalFleetAdmissionResponse{SchemaVersion: "norn.external-fleet-admission/v4", AdmissionID: request.AdmissionID, State: state, OperationID: operationID})
 		return
 	}
@@ -542,18 +537,18 @@ func (h *Handler) CompleteExternalFleetDeploymentCleanup(w http.ResponseWriter, 
 	}
 	op, opErr := h.db.GetOperation(r.Context(), operationID)
 	opDigest, opDigestErr := externalOperationDigest(op)
-	if opErr != nil || opDigestErr != nil || status.AdmissionID != admission.ID || status.Generation != admission.NonceGeneration || status.OperationID != operationID || status.OperationDigest != opDigest || status.ReceiptDigest != receiptDigest || status.Snapshot == nil || status.Snapshot.ID != snapshotID || status.Snapshot.Ref != snapshotRef || status.Snapshot.SHA256 != snapshotSHA || status.Revision < commitRevision || claimRevision < 1 {
+	if opErr != nil || opDigestErr != nil || status.AdmissionID != admission.ID || status.Generation != admission.NonceGeneration || status.OperationID != operationID || status.OperationDigest != opDigest || status.ReceiptDigest != receiptDigest || status.Snapshot == nil || status.Snapshot.ID != snapshotID || status.Snapshot.Ref != snapshotRef || status.Snapshot.SHA256 != snapshotSHA || status.Revision <= commitRevision || claimRevision < 1 || expectedIntent == "" || expectedIntent != status.CleanupIntentDigest {
 		WriteControlProblem(w, r, http.StatusConflict, "external_deployment_cleanup_conflict", "service-owned cleanup status has drifted from the committed admission")
 		return
 	}
-	if expectedIntent == "" && expectedAbsence == "" {
-		if err := h.db.RecordExternalDeploymentCleanupBindings(r.Context(), store.ExternalDeploymentServiceSnapshot{AdmissionID: admission.ID, CommitRevision: status.Revision, CleanupIntentSHA256: status.CleanupIntentDigest, AbsenceProofSHA256: status.AbsenceProofDigest}); err != nil {
+	if expectedAbsence == "" {
+		if err := h.db.RecordExternalDeploymentCleanupBindings(r.Context(), store.ExternalDeploymentServiceSnapshot{AdmissionID: admission.ID, CommitRevision: commitRevision, CleanupRevision: status.Revision, CleanupIntentSHA256: expectedIntent, AbsenceProofSHA256: status.AbsenceProofDigest}); err != nil {
 			WriteControlProblem(w, r, http.StatusServiceUnavailable, "external_deployment_cleanup_unavailable", "service-owned cleanup bindings could not be persisted")
 			return
 		}
-		expectedIntent, expectedAbsence = status.CleanupIntentDigest, status.AbsenceProofDigest
+		expectedAbsence, cleanupRevision = status.AbsenceProofDigest, status.Revision
 	}
-	if expectedIntent != status.CleanupIntentDigest || expectedAbsence != status.AbsenceProofDigest || expectedIntent != request.CleanupIntentDigest || expectedAbsence != request.AbsenceProofDigest {
+	if expectedIntent != status.CleanupIntentDigest || expectedAbsence != status.AbsenceProofDigest || expectedIntent != request.CleanupIntentDigest || expectedAbsence != request.AbsenceProofDigest || cleanupRevision != status.Revision {
 		WriteControlProblem(w, r, http.StatusConflict, "external_deployment_cleanup_conflict", "cleanup request does not match persisted service-owned bindings")
 		return
 	}
@@ -649,6 +644,7 @@ func (h *Handler) AdmitExternalFleetDeployment(w http.ResponseWriter, r *http.Re
 	var serviceSnapshot *ExternalFleetEvidenceSnapshot
 	var serviceClaimRevision int64
 	var serviceProofDigest string
+	var serviceReceiptDigest string
 	if isV4 {
 		var beginErr error
 		admission, beginErr = h.db.BeginExternalDeploymentAdmission(r.Context(), receipt.AdmissionID, key, digest, appID, principal.Environment, principal.CI.Repository)
@@ -706,8 +702,8 @@ func (h *Handler) AdmitExternalFleetDeployment(w http.ResponseWriter, r *http.Re
 		// nonce claim visible. This leaves a timeout/crash recoverable solely by
 		// GET status, never by a second mutable evidence collection.
 		status := claimStatus
-		serviceSnapshot, serviceClaimRevision, serviceProofDigest = status.Snapshot, status.Revision, proofDigest
-		if err := h.db.RecordExternalDeploymentServiceSnapshot(r.Context(), store.ExternalDeploymentServiceSnapshot{AdmissionID: admission.ID, SnapshotID: status.Snapshot.ID, SnapshotRef: status.Snapshot.Ref, SnapshotSHA256: status.Snapshot.SHA256, ClaimRevision: status.Revision}); err != nil {
+		serviceSnapshot, serviceClaimRevision, serviceProofDigest, serviceReceiptDigest = status.Snapshot, status.Revision, proofDigest, claimRequest.ReceiptDigest
+		if err := h.db.RecordExternalDeploymentServiceSnapshot(r.Context(), store.ExternalDeploymentServiceSnapshot{AdmissionID: admission.ID, SnapshotID: status.Snapshot.ID, SnapshotRef: status.Snapshot.Ref, SnapshotSHA256: status.Snapshot.SHA256, RetryLineage: status.Snapshot.RetryLineage, ReceiptDigest: claimRequest.ReceiptDigest, ProofDigest: claimRequest.ProofDigest, ClaimRevision: status.Revision}); err != nil {
 			WriteControlProblem(w, r, http.StatusConflict, "external_deployment_snapshot_conflict", "immutable service snapshot conflicts with durable admission state")
 			return
 		}
@@ -721,7 +717,7 @@ func (h *Handler) AdmitExternalFleetDeployment(w http.ResponseWriter, r *http.Re
 			return
 		}
 	}
-	verification, err := h.externalFleetDeploymentVerifier.VerifyExternalFleetDeployment(r.Context(), ExternalFleetDeploymentVerificationRequest{Receipt: receipt, CI: *principal.CI, Config: configured, AdmissionGeneration: admission.NonceGeneration})
+	verification, err := h.externalFleetDeploymentVerifier.VerifyExternalFleetDeployment(r.Context(), ExternalFleetDeploymentVerificationRequest{Receipt: receipt, CI: *principal.CI, Config: configured, AdmissionGeneration: admission.NonceGeneration, ServiceSnapshot: serviceSnapshot})
 	if err != nil || verification == nil {
 		message := "independent Fleet runtime verification failed"
 		if err != nil {
@@ -769,7 +765,7 @@ func (h *Handler) AdmitExternalFleetDeployment(w http.ResponseWriter, r *http.Re
 			return admission.NonceGeneration
 		}
 		return 0
-	}(), CheckpointRefs: serviceCheckpointRefs})
+	}(), CheckpointRefs: serviceCheckpointRefs, ServiceSnapshot: store.ExternalDeploymentServiceSnapshot{AdmissionID: admission.ID, SnapshotID: serviceSnapshot.ID, SnapshotRef: serviceSnapshot.Ref, SnapshotSHA256: serviceSnapshot.SHA256, RetryLineage: serviceSnapshot.RetryLineage, ReceiptDigest: serviceReceiptDigest, ProofDigest: serviceProofDigest, ClaimRevision: serviceClaimRevision}})
 	if err != nil {
 		switch {
 		case errors.Is(err, store.ErrExternalDeploymentNonceConsumed):
@@ -1072,6 +1068,23 @@ func externalServiceCheckpointRefs(refs []ExternalFleetCheckpointRef) []store.Ex
 	return result
 }
 
+func validExternalRetryLineage(lineage []string) bool {
+	if len(lineage) == 0 || len(lineage) > 64 {
+		return false
+	}
+	seen := map[string]struct{}{}
+	for _, attempt := range lineage {
+		if attempt == "" || len(attempt) > 256 {
+			return false
+		}
+		if _, duplicate := seen[attempt]; duplicate {
+			return false
+		}
+		seen[attempt] = struct{}{}
+	}
+	return true
+}
+
 func validExternalBootstrapCandidate(candidate model.ReleaseCandidate, sourceSHA, artifact, trustMode string, configured ExternalFleetAdmissionConfig) bool {
 	return validReleaseCandidateForTrust(candidate, sourceSHA, artifact, trustMode) && candidate.SignerWorkflowRef == configured.BootstrapSignerRef && candidate.SignerWorkflowSHA == configured.BootstrapSignerRef[strings.LastIndex(configured.BootstrapSignerRef, "@")+1:]
 }
@@ -1302,22 +1315,50 @@ func externalCleanupIntentDigest(admissionID, operationID, operationDigest, rece
 	return hex.EncodeToString(d[:]), nil
 }
 
+// externalFleetSnapshotDigest is the v4 snapshot hash profile shared with the
+// evidence service. It hashes this compact JSON projection, excluding only the
+// digest field itself. The projection has no maps and therefore makes nested
+// field names and array order explicit across implementations.
+func externalFleetSnapshotDigest(snapshot *ExternalFleetEvidenceSnapshot) (string, error) {
+	if snapshot == nil {
+		return "", errors.New("missing evidence snapshot")
+	}
+	projection := struct {
+		ID             string                              `json:"id"`
+		Ref            string                              `json:"ref"`
+		LiveCheckedAt  time.Time                           `json:"liveCheckedAt"`
+		NonceWrittenAt time.Time                           `json:"nonceWrittenAt"`
+		NonceReadAt    time.Time                           `json:"nonceReadAt"`
+		Verification   ExternalFleetDeploymentVerification `json:"verification"`
+		RetryLineage   []string                            `json:"retryLineage"`
+		CheckpointRefs []ExternalFleetCheckpointRef        `json:"checkpointRefs"`
+		Allocations    []externalFleetAllocationEvidence   `json:"allocations"`
+	}{snapshot.ID, snapshot.Ref, snapshot.LiveCheckedAt, snapshot.NonceWrittenAt, snapshot.NonceReadAt, snapshot.Verification, snapshot.RetryLineage, snapshot.CheckpointRefs, snapshot.Allocations}
+	b, err := json.Marshal(projection)
+	if err != nil {
+		return "", err
+	}
+	d := sha256.Sum256(b)
+	return hex.EncodeToString(d[:]), nil
+}
+
 func externalRegistrationStatusMatches(status *ExternalFleetEvidenceAdmissionStatus, registration ExternalFleetEvidenceRegistration) bool {
 	return status != nil && status.SchemaVersion == "norn.external-fleet-admission-status/v4" &&
 		status.AdmissionID == registration.AdmissionID && status.LogicalDigest == registration.LogicalDigest &&
 		status.AdmissionContextDigest == registration.AdmissionContextDigest && status.NonceSHA256 == registration.NonceSHA256 &&
-		status.Generation == registration.Generation && status.State == "registered" && status.Revision >= registration.ExpectedRevision &&
+		status.Generation == registration.Generation && status.State == "registered" && status.Revision == registration.ExpectedRevision+1 &&
 		status.Snapshot == nil
 }
 
 func externalClaimStatusMatches(status *ExternalFleetEvidenceAdmissionStatus, claim ExternalFleetEvidenceClaim) bool {
-	if status == nil || status.SchemaVersion != "norn.external-fleet-admission-status/v4" || status.AdmissionID != claim.AdmissionID || status.LogicalDigest != claim.LogicalDigest || status.AdmissionContextDigest != claim.AdmissionContextDigest || status.NonceSHA256 != claim.NonceSHA256 || status.Generation != claim.Generation || status.State != "claimed" || status.Revision < claim.ExpectedRevision || status.ReceiptDigest != claim.ReceiptDigest || status.ProofDigest != claim.ProofDigest || status.Snapshot == nil {
+	if status == nil || status.SchemaVersion != "norn.external-fleet-admission-status/v4" || status.AdmissionID != claim.AdmissionID || status.LogicalDigest != claim.LogicalDigest || status.AdmissionContextDigest != claim.AdmissionContextDigest || status.NonceSHA256 != claim.NonceSHA256 || status.Generation != claim.Generation || status.State != "claimed" || status.Revision != claim.ExpectedRevision+1 || status.ReceiptDigest != claim.ReceiptDigest || status.ProofDigest != claim.ProofDigest || status.Snapshot == nil {
 		return false
 	}
 	s := status.Snapshot
-	return s.ID != "" && s.Ref != "" && sha256HexPattern.MatchString(s.SHA256) && !s.LiveCheckedAt.IsZero() && len(s.RetryLineage) > 0 && len(s.CheckpointRefs) > 0
+	actual, err := externalFleetSnapshotDigest(s)
+	return err == nil && s.ID != "" && s.Ref != "" && actual == s.SHA256 && !s.LiveCheckedAt.IsZero() && len(s.RetryLineage) > 0 && len(s.CheckpointRefs) > 0
 }
 
 func externalCommitStatusMatches(status *ExternalFleetEvidenceAdmissionStatus, claim ExternalFleetEvidenceClaim, snapshot *ExternalFleetEvidenceSnapshot) bool {
-	return status != nil && snapshot != nil && status.SchemaVersion == "norn.external-fleet-admission-status/v4" && status.AdmissionID == claim.AdmissionID && status.LogicalDigest == claim.LogicalDigest && status.AdmissionContextDigest == claim.AdmissionContextDigest && status.NonceSHA256 == claim.NonceSHA256 && status.Generation == claim.Generation && status.State == "committed" && status.Revision >= claim.ExpectedRevision && status.ReceiptDigest == claim.ReceiptDigest && status.ProofDigest == claim.ProofDigest && status.OperationID == claim.OperationID && status.OperationDigest == claim.OperationDigest && status.CleanupIntentDigest == claim.CleanupIntentDigest && status.Snapshot != nil && status.Snapshot.ID == snapshot.ID && status.Snapshot.Ref == snapshot.Ref && status.Snapshot.SHA256 == snapshot.SHA256
+	return status != nil && snapshot != nil && status.SchemaVersion == "norn.external-fleet-admission-status/v4" && status.AdmissionID == claim.AdmissionID && status.LogicalDigest == claim.LogicalDigest && status.AdmissionContextDigest == claim.AdmissionContextDigest && status.NonceSHA256 == claim.NonceSHA256 && status.Generation == claim.Generation && status.State == "committed" && status.Revision == claim.ExpectedRevision+1 && status.ReceiptDigest == claim.ReceiptDigest && status.ProofDigest == claim.ProofDigest && status.OperationID == claim.OperationID && status.OperationDigest == claim.OperationDigest && status.CleanupIntentDigest == claim.CleanupIntentDigest && status.Snapshot != nil && status.Snapshot.ID == snapshot.ID && status.Snapshot.Ref == snapshot.Ref && status.Snapshot.SHA256 == snapshot.SHA256
 }

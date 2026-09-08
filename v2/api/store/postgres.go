@@ -372,8 +372,12 @@ func Migrate(db *DB) error {
 		ALTER TABLE external_deployment_admissions ADD COLUMN IF NOT EXISTS service_snapshot_id TEXT NOT NULL DEFAULT '';
 		ALTER TABLE external_deployment_admissions ADD COLUMN IF NOT EXISTS service_snapshot_ref TEXT NOT NULL DEFAULT '';
 		ALTER TABLE external_deployment_admissions ADD COLUMN IF NOT EXISTS service_snapshot_sha256 TEXT NOT NULL DEFAULT '';
+		ALTER TABLE external_deployment_admissions ADD COLUMN IF NOT EXISTS service_retry_lineage JSONB NOT NULL DEFAULT '[]';
+		ALTER TABLE external_deployment_admissions ADD COLUMN IF NOT EXISTS service_receipt_sha256 TEXT NOT NULL DEFAULT '';
+		ALTER TABLE external_deployment_admissions ADD COLUMN IF NOT EXISTS service_proof_sha256 TEXT NOT NULL DEFAULT '';
 		ALTER TABLE external_deployment_admissions ADD COLUMN IF NOT EXISTS service_claim_revision BIGINT NOT NULL DEFAULT 0;
 		ALTER TABLE external_deployment_admissions ADD COLUMN IF NOT EXISTS service_commit_revision BIGINT NOT NULL DEFAULT 0;
+		ALTER TABLE external_deployment_admissions ADD COLUMN IF NOT EXISTS service_cleanup_revision BIGINT NOT NULL DEFAULT 0;
 		ALTER TABLE external_deployment_admissions ADD COLUMN IF NOT EXISTS cleanup_intent_sha256 TEXT NOT NULL DEFAULT '';
 		ALTER TABLE external_deployment_admissions ADD COLUMN IF NOT EXISTS absence_proof_sha256 TEXT NOT NULL DEFAULT '';
 		DO $$ BEGIN

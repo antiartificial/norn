@@ -148,6 +148,10 @@ func TestExternalDeploymentAdmissionV4Lifecycle(t *testing.T) {
 	if err := db.ClaimExternalDeploymentAdmissionEvidence(ctx, admissionID, nonce.ID); err != nil {
 		t.Fatalf("exact evidence claim replay = %v", err)
 	}
+	serviceSnapshot := ExternalDeploymentServiceSnapshot{AdmissionID: admissionID, SnapshotID: "snapshot-1", SnapshotRef: "evidence://snapshot-1", SnapshotSHA256: fmt.Sprintf("%064x", 10), RetryLineage: []string{"attempt-root", "attempt-1"}, ReceiptDigest: fmt.Sprintf("%064x", 11), ProofDigest: fmt.Sprintf("%064x", 12), ClaimRevision: 2}
+	if err := db.RecordExternalDeploymentServiceSnapshot(ctx, serviceSnapshot); err != nil {
+		t.Fatalf("record immutable service snapshot: %v", err)
+	}
 	if err := db.Pool.QueryRow(ctx, `SELECT n.state, a.state, n.revision FROM external_deployment_nonces n JOIN external_deployment_admissions a ON a.nonce_id=n.id WHERE n.id=$1`, nonce.ID).Scan(&nonceState, &admissionState, &revision); err != nil || nonceState != "claimed" || admissionState != string(ExternalDeploymentAdmissionEvidenceClaimed) || revision != 3 {
 		t.Fatalf("claimed nonce state=%q admission=%q revision=%d err=%v", nonceState, admissionState, revision, err)
 	}
@@ -156,6 +160,7 @@ func TestExternalDeploymentAdmissionV4Lifecycle(t *testing.T) {
 	terminal.RequestDigest = logicalDigest
 	terminal.Operation.Metadata["requestDigest"] = logicalDigest
 	terminal.AdmissionID, terminal.NonceGeneration = admissionID, 1
+	terminal.ServiceSnapshot = serviceSnapshot
 	terminal.CheckpointRefs = []ExternalDeploymentCheckpointRef{{Phase: "external_admission", CheckpointID: "admission-1", AttemptID: "attempt-1", EvidenceRef: "checkpoint://admission-1", EvidenceSHA256: fmt.Sprintf("%064x", 9)}}
 	result, err := db.AdmitExternalDeployment(ctx, terminal)
 	if err != nil || result == nil || result.Replayed {

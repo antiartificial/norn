@@ -665,11 +665,18 @@ func (v *ExternalFleetDeploymentLiveVerifier) VerifyExternalFleetDeployment(ctx 
 	nonceDigest := nonce.sha256()
 	// The immutable claim-time snapshot is the only live-evidence source. Do
 	// not fall back to the mutable receipt-shaped POST evidence endpoint.
-	status, err := v.GetExternalFleetAdmissionStatus(ctx, request.Receipt.AdmissionID, request.AdmissionGeneration)
-	if err != nil || status == nil || (status.State != "claimed" && status.State != "committed" && status.State != "cleanup_ready") || status.NonceSHA256 != nonceDigest || status.Snapshot == nil {
-		return nil, externalVerifierErr("snapshot-unavailable")
+	snapshot := request.ServiceSnapshot
+	if snapshot == nil {
+		status, err := v.GetExternalFleetAdmissionStatus(ctx, request.Receipt.AdmissionID, request.AdmissionGeneration)
+		if err != nil || status == nil || (status.State != "claimed" && status.State != "committed" && status.State != "cleanup_ready") || status.NonceSHA256 != nonceDigest || status.Snapshot == nil {
+			return nil, externalVerifierErr("snapshot-unavailable")
+		}
+		snapshot = status.Snapshot
 	}
-	snapshot := status.Snapshot
+	computedSnapshotSHA, snapshotErr := externalFleetSnapshotDigest(snapshot)
+	if snapshotErr != nil || computedSnapshotSHA != snapshot.SHA256 {
+		return nil, externalVerifierErr("snapshot-invalid")
+	}
 	now := time.Now().UTC()
 	if !sha256HexPattern.MatchString(snapshot.SHA256) || snapshot.ID == "" || snapshot.Ref == "" || snapshot.LiveCheckedAt.IsZero() || snapshot.LiveCheckedAt.After(now) || now.Sub(snapshot.LiveCheckedAt) > externalFleetAdmissionNonceTTL || snapshot.NonceWrittenAt.IsZero() || snapshot.NonceReadAt.IsZero() || snapshot.NonceReadAt.Before(snapshot.NonceWrittenAt) || snapshot.NonceReadAt.After(now) || now.Sub(snapshot.NonceReadAt) > externalFleetAdmissionNonceTTL {
 		return nil, externalVerifierErr("snapshot-invalid")
