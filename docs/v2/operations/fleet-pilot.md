@@ -179,11 +179,19 @@ The configured evidence origin returns one JSON object with
 `nonceReadAt`, `attempt`, and `checkpoints`. `attempt` has exact JSON names
 `planId`, `attemptId`, `rootAttemptId`, `revision`, `terminalStatus`,
 `currentPhase`, `sourceDispatchRunId`, `workflowUrl`, and `retryLineage`.
-It records terminal durable Fleet state (`succeeded`/`exercise`), not the
+It records terminal durable Fleet state (`succeeded`/`complete`), not the
 necessarily active GitHub apply/recover run. Each of exactly four checkpoints
 uses `id`, `phase`, `status`, `evidenceSha256`, and `attemptId`; phases are
 `prepare`, `migration`, `runtime`, and `exercise`, all succeeded and attempt
 bound. Prepare is checkpoint evidence, not a Nomad job.
+
+The receipt carries `fleet.rootAttemptId`. For an admission retry after a lost
+success response, reuse the same client `Idempotency-Key`; Norn derives its
+key from the authorized repository, staging environment, app, and that client
+key. Its request digest covers the candidate/source/artifact/plan/root-attempt
+identity only, deliberately excluding a rotated OIDC JTI, current run/attempt,
+and raw nonce. The new nonce remains one-use: this replay exception only
+returns an already durable matching admission.
 
 `verification` uses lower-camel names including `sourceSha`,
 `publicHttpsVersion`, `privateReadiness`, `ingressNodeIds`, and `chronology`.

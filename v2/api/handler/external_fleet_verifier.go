@@ -177,6 +177,9 @@ func NewExternalFleetDeploymentLiveVerifier(cfg ExternalFleetDeploymentVerifierC
 	if err != nil {
 		return nil, fmt.Errorf("external Fleet public URL: %w", err)
 	}
+	if strings.EqualFold(evidenceURL.Hostname(), publicURL.Hostname()) {
+		return nil, fmt.Errorf("external Fleet evidence and public origins must use distinct hostnames")
+	}
 	if err := externalVerifierSecretFile(cfg.EvidenceTokenFile); err != nil {
 		return nil, fmt.Errorf("external Fleet evidence token: %w", err)
 	}
@@ -234,6 +237,9 @@ func newExternalFleetHTTPClient(evidenceHost string, allowedRaw []string) (*http
 		if err != nil || !prefix.IsValid() {
 			return nil, fmt.Errorf("external Fleet evidence CIDR is invalid")
 		}
+		if !reviewedExternalEvidenceCIDR(prefix) {
+			return nil, fmt.Errorf("external Fleet evidence CIDR must be a narrow reviewed private or tailnet range")
+		}
 		allowed = append(allowed, prefix)
 	}
 	if evidenceHost == "" || len(allowed) == 0 {
@@ -265,6 +271,19 @@ func newExternalFleetHTTPClient(evidenceHost string, allowedRaw []string) (*http
 		return nil, errors.New("external host resolved to a forbidden address")
 	}}
 	return &http.Client{Transport: transport, Timeout: externalFleetHTTPTimeout, CheckRedirect: func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse }}, nil
+}
+
+func reviewedExternalEvidenceCIDR(prefix netip.Prefix) bool {
+	prefix = prefix.Masked()
+	if (!prefix.Addr().Is6() && prefix.Bits() < 24) || (prefix.Addr().Is6() && prefix.Bits() < 64) {
+		return false
+	}
+	for _, parent := range []netip.Prefix{netip.MustParsePrefix("10.0.0.0/8"), netip.MustParsePrefix("172.16.0.0/12"), netip.MustParsePrefix("192.168.0.0/16"), netip.MustParsePrefix("100.64.0.0/10"), netip.MustParsePrefix("fd00::/8")} {
+		if parent.Contains(prefix.Addr()) && prefix.Bits() >= parent.Bits() {
+			return true
+		}
+	}
+	return false
 }
 
 func externalPublicIP(ip netip.Addr) bool {
@@ -327,7 +346,7 @@ func readExternalVerifierSecret(path string) (string, error) {
 	file := os.NewFile(uintptr(fd), path)
 	defer file.Close()
 	var opened syscall.Stat_t
-	if err := syscall.Fstat(fd, &opened); err != nil || opened.Uid != uint32(os.Getuid()) || opened.Mode&0o077 != 0 {
+	if err := syscall.Fstat(fd, &opened); err != nil || opened.Mode&syscall.S_IFMT != syscall.S_IFREG || opened.Uid != uint32(os.Getuid()) || opened.Mode&0o077 != 0 {
 		return "", errors.New("unavailable")
 	}
 	value, err := io.ReadAll(io.LimitReader(file, 8193))
@@ -404,6 +423,9 @@ func (v *ExternalFleetDeploymentLiveVerifier) VerifyExternalFleetDeployment(ctx 
 	if request.CI.Provider != "github-actions" || request.CI.Repository == "" || request.CI.RunID != request.Receipt.Fleet.ApplyRunID || request.CI.RunAttempt != request.Receipt.Fleet.ApplyRunAttempt {
 		return nil, externalVerifierErr("ci-binding")
 	}
+	if sameExternalVerifierSecret(v.evidenceTokenFile, v.githubTokenFile) {
+		return nil, externalVerifierErr("credential-file-rotation")
+	}
 	githubToken, err := readExternalVerifierSecret(v.githubTokenFile)
 	if err != nil {
 		return nil, externalVerifierErr("github-token-unavailable")
@@ -419,6 +441,9 @@ func (v *ExternalFleetDeploymentLiveVerifier) VerifyExternalFleetDeployment(ctx 
 		return nil, externalVerifierErr("nonce")
 	}
 	nonceDigest := nonce.sha256()
+	if sameExternalVerifierSecret(v.evidenceTokenFile, v.githubTokenFile) {
+		return nil, externalVerifierErr("credential-file-rotation")
+	}
 	evidenceToken, err := readExternalVerifierSecret(v.evidenceTokenFile)
 	if err != nil {
 		return nil, externalVerifierErr("evidence-token-unavailable")
@@ -538,7 +563,7 @@ func decodeGitHubRunJSON(body io.Reader, target any) error {
 
 func validateExternalFleetEvidence(observed externalFleetEvidence, request ExternalFleetDeploymentVerificationRequest, nonceDigest string) error {
 	r := request.Receipt
-	if observed.SchemaVersion != "norn.external-fleet-evidence/v1" || observed.Repository != request.CI.Repository || observed.NonceSHA256 != nonceDigest || observed.NonceWrittenAt.IsZero() || observed.NonceReadAt.IsZero() || !observed.NonceReadAt.After(observed.NonceWrittenAt) || time.Since(observed.NonceReadAt) > externalFleetAdmissionNonceTTL || observed.PlanAttemptID != r.Fleet.RunnerAttemptID || observed.CheckpointAttemptID != r.Fleet.RunnerAttemptID || !validExternalFleetAttempt(observed.Attempt, r, request.CI) || !validExternalFleetCheckpoints(observed.Checkpoints, r) {
+	if observed.SchemaVersion != "norn.external-fleet-evidence/v1" || observed.Repository != request.CI.Repository || observed.NonceSHA256 != nonceDigest || observed.NonceWrittenAt.IsZero() || observed.NonceReadAt.IsZero() || observed.NonceWrittenAt.After(time.Now().UTC()) || observed.NonceReadAt.After(time.Now().UTC()) || !observed.NonceReadAt.After(observed.NonceWrittenAt) || observed.NonceReadAt.Sub(observed.NonceWrittenAt) > externalFleetAdmissionNonceTTL || time.Since(observed.NonceReadAt) > externalFleetAdmissionNonceTTL || observed.PlanAttemptID != r.Fleet.RunnerAttemptID || observed.CheckpointAttemptID != r.Fleet.RunnerAttemptID || !validExternalFleetAttempt(observed.Attempt, r, request.CI) || !validExternalFleetCheckpoints(observed.Checkpoints, r) {
 		return externalVerifierErr("evidence-binding")
 	}
 	if observed.FixtureHCLSHA256["migration"] != request.Config.MigrationHCLSHA256 || observed.FixtureHCLSHA256["runtime"] != request.Config.RuntimeHCLSHA256 {
@@ -556,7 +581,7 @@ func validateExternalFleetEvidence(observed externalFleetEvidence, request Exter
 }
 
 func validExternalFleetAttempt(attempt externalFleetAttemptEvidence, receipt ExternalFleetDeploymentReceipt, ci CIIdentity) bool {
-	if attempt.PlanID != receipt.Fleet.PlanID || attempt.AttemptID != receipt.Fleet.RunnerAttemptID || attempt.RootAttemptID == "" || attempt.Revision < 1 || attempt.TerminalStatus != "succeeded" || attempt.CurrentPhase != "exercise" || attempt.SourceDispatchRunID != receipt.Fleet.ApplyRunID || attempt.WorkflowURL != "https://github.com/"+ci.Repository+"/actions/runs/"+ci.RunID || len(attempt.RetryLineage) == 0 || attempt.RetryLineage[0] != attempt.RootAttemptID || attempt.RetryLineage[len(attempt.RetryLineage)-1] != attempt.AttemptID {
+	if attempt.PlanID != receipt.Fleet.PlanID || attempt.AttemptID != receipt.Fleet.RunnerAttemptID || attempt.RootAttemptID != receipt.Fleet.RootAttemptID || attempt.Revision < 1 || attempt.TerminalStatus != "succeeded" || attempt.CurrentPhase != "complete" || attempt.SourceDispatchRunID != receipt.Fleet.ApplyRunID || attempt.WorkflowURL != "https://github.com/"+ci.Repository+"/actions/runs/"+ci.RunID || len(attempt.RetryLineage) == 0 || attempt.RetryLineage[0] != attempt.RootAttemptID || attempt.RetryLineage[len(attempt.RetryLineage)-1] != attempt.AttemptID {
 		return false
 	}
 	seen := map[string]bool{}
@@ -589,12 +614,18 @@ func validExternalFleetAllocations(items []externalFleetAllocationEvidence, rece
 	if len(items) < 2 {
 		return false
 	}
-	ingress, seenNode, publicFound := map[string]bool{}, map[string]bool{}, false
+	ingress, seenNode, expectedAllocations, publicFound := map[string]bool{}, map[string]bool{}, map[string]bool{}, false
+	for _, allocation := range verified.PrivateReadiness.AllocationIDs {
+		expectedAllocations[allocation] = true
+	}
+	if len(expectedAllocations) != len(verified.PrivateReadiness.AllocationIDs) {
+		return false
+	}
 	for _, node := range verified.IngressNodeIDs {
 		ingress[node] = true
 	}
 	for _, item := range items {
-		if !externalNamePattern.MatchString(item.AllocationID) || item.JobID != receipt.Fleet.Runtime.JobID || item.EvalID != receipt.Fleet.Runtime.EvalID || item.Namespace != receipt.Fleet.Namespace || !ingress[item.NodeID] || item.Region == "" || item.NomadStatus != "running" || item.ConsulStatus != "passing" {
+		if !externalNamePattern.MatchString(item.AllocationID) || !expectedAllocations[item.AllocationID] || item.JobID != receipt.Fleet.Runtime.JobID || item.EvalID != receipt.Fleet.Runtime.EvalID || item.Namespace != receipt.Fleet.Namespace || !ingress[item.NodeID] || item.Region == "" || item.NomadStatus != "running" || item.ConsulStatus != "passing" {
 			return false
 		}
 		seenNode[item.NodeID] = true
@@ -602,7 +633,7 @@ func validExternalFleetAllocations(items []externalFleetAllocationEvidence, rece
 			publicFound = true
 		}
 	}
-	return publicFound && len(seenNode) >= 2
+	return publicFound && len(seenNode) >= 2 && len(items) == len(expectedAllocations)
 }
 
 func validExternalRepository(value string) bool {

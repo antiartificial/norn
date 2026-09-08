@@ -1344,7 +1344,7 @@ func externalFleetBridgeConfigured(cfg *config.Config) bool {
 }
 
 func externalFleetVerifierRequested(cfg *config.Config) bool {
-	return cfg != nil && (strings.TrimSpace(cfg.ExternalFleetVerifierURL) != "" || strings.TrimSpace(cfg.ExternalFleetVerifierTokenFile) != "" || strings.TrimSpace(cfg.ExternalFleetGitHubTokenFile) != "" || strings.TrimSpace(cfg.ExternalFleetGitHubCLIPath) != "" || strings.TrimSpace(cfg.ExternalFleetPublicBaseURL) != "")
+	return cfg != nil && (strings.TrimSpace(cfg.ExternalFleetVerifierURL) != "" || strings.TrimSpace(cfg.ExternalFleetVerifierTokenFile) != "" || strings.TrimSpace(cfg.ExternalFleetGitHubTokenFile) != "" || strings.TrimSpace(cfg.ExternalFleetGitHubCLIPath) != "" || strings.TrimSpace(cfg.ExternalFleetPublicBaseURL) != "" || len(cfg.ExternalFleetEvidenceAllowedCIDRs) != 0)
 }
 
 func externalFleetVerifierConfigured(cfg *config.Config) bool {

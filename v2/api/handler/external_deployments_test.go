@@ -54,7 +54,7 @@ func externalReceiptForTest() ExternalFleetDeploymentReceipt {
 		SchemaVersion: externalFleetReceiptSchema, Nonce: "00000000-0000-4000-8000-000000000001." + strings.Repeat("a", 64), App: "hello-norn-mysql",
 		SourceSHA: strings.Repeat("a", 40), Artifact: "ghcr.io/acme/hello-norn-mysql@sha256:" + strings.Repeat("b", 64), Candidate: candidate,
 		AttestationURI: "https://evidence.example.test/attestation", SBOMURI: "https://evidence.example.test/sbom",
-		Fleet: ExternalFleetExecutionProof{Namespace: "norn-pilot", Migration: ExternalFleetNomadJobProof{JobID: "hello-norn-mysql-migrate", HCLSHA256: strings.Repeat("c", 64), EvalID: "00000000-0000-4000-8000-000000000011", JobModifyIndex: 11, CheckpointID: "migration-1"}, Runtime: ExternalFleetNomadJobProof{JobID: "hello-norn-mysql", HCLSHA256: strings.Repeat("e", 64), EvalID: "00000000-0000-4000-8000-000000000012", JobModifyIndex: 12, CheckpointID: "runtime-1"}, PlanID: "plan-1", ApplyRunID: "123", ApplyRunAttempt: "1", PlanSHA256: strings.Repeat("d", 64), RunnerAttemptID: "attempt-1", NonceEvidenceRef: "nonce-1"},
+		Fleet: ExternalFleetExecutionProof{Namespace: "norn-pilot", Migration: ExternalFleetNomadJobProof{JobID: "hello-norn-mysql-migrate", HCLSHA256: strings.Repeat("c", 64), EvalID: "00000000-0000-4000-8000-000000000011", JobModifyIndex: 11, CheckpointID: "migration-1"}, Runtime: ExternalFleetNomadJobProof{JobID: "hello-norn-mysql", HCLSHA256: strings.Repeat("e", 64), EvalID: "00000000-0000-4000-8000-000000000012", JobModifyIndex: 12, CheckpointID: "runtime-1"}, PlanID: "plan-1", ApplyRunID: "123", ApplyRunAttempt: "1", PlanSHA256: strings.Repeat("d", 64), RunnerAttemptID: "attempt-1", RootAttemptID: "attempt-root", NonceEvidenceRef: "nonce-1"},
 		Chronology: []ExternalFleetChronologyStep{
 			{Phase: "prepare", OccurredAt: now, EvidenceRef: "https://evidence.example.test/prepare"},
 			{Phase: "migration", OccurredAt: now.Add(time.Second), EvidenceRef: "https://evidence.example.test/migration"},
@@ -134,7 +134,7 @@ func TestExternalFleetLiveVerifierUsesOnlyRedactedNonceAndCanonicalEvidence(t *t
 				FixtureHCLSHA256: map[string]string{"migration": request.Config.MigrationHCLSHA256, "runtime": request.Config.RuntimeHCLSHA256},
 				Canonical:        map[string]string{"prepare.tlsRouting": "sha256:prepare", "migration.migration": "sha256:migration", "runtime.update": "sha256:runtime", "readiness.consulNomad": "sha256:ready"},
 				PlanAttemptID:    receipt.Fleet.RunnerAttemptID, CheckpointAttemptID: receipt.Fleet.RunnerAttemptID, NonceSHA256: nonce.sha256(), NonceWrittenAt: time.Now().Add(-time.Second), NonceReadAt: time.Now(),
-				Attempt:     externalFleetAttemptEvidence{PlanID: receipt.Fleet.PlanID, AttemptID: receipt.Fleet.RunnerAttemptID, RootAttemptID: "attempt-root", Revision: 1, TerminalStatus: "succeeded", CurrentPhase: "exercise", SourceDispatchRunID: receipt.Fleet.ApplyRunID, WorkflowURL: "https://github.com/" + request.CI.Repository + "/actions/runs/" + request.CI.RunID, RetryLineage: []string{"attempt-root", receipt.Fleet.RunnerAttemptID}},
+				Attempt:     externalFleetAttemptEvidence{PlanID: receipt.Fleet.PlanID, AttemptID: receipt.Fleet.RunnerAttemptID, RootAttemptID: receipt.Fleet.RootAttemptID, Revision: 1, TerminalStatus: "succeeded", CurrentPhase: "complete", SourceDispatchRunID: receipt.Fleet.ApplyRunID, WorkflowURL: "https://github.com/" + request.CI.Repository + "/actions/runs/" + request.CI.RunID, RetryLineage: []string{receipt.Fleet.RootAttemptID, receipt.Fleet.RunnerAttemptID}},
 				Checkpoints: []externalFleetCheckpointEvidence{{ID: "prepare-1", Phase: "prepare", Status: "succeeded", EvidenceSHA256: strings.Repeat("1", 64), AttemptID: receipt.Fleet.RunnerAttemptID}, {ID: receipt.Fleet.Migration.CheckpointID, Phase: "migration", Status: "succeeded", EvidenceSHA256: strings.Repeat("2", 64), AttemptID: receipt.Fleet.RunnerAttemptID}, {ID: receipt.Fleet.Runtime.CheckpointID, Phase: "runtime", Status: "succeeded", EvidenceSHA256: strings.Repeat("3", 64), AttemptID: receipt.Fleet.RunnerAttemptID}, {ID: "exercise-1", Phase: "exercise", Status: "succeeded", EvidenceSHA256: strings.Repeat("4", 64), AttemptID: receipt.Fleet.RunnerAttemptID}},
 				Allocations: []externalFleetAllocationEvidence{{AllocationID: "alloc-a", JobID: receipt.Fleet.Runtime.JobID, EvalID: receipt.Fleet.Runtime.EvalID, Namespace: receipt.Fleet.Namespace, NodeID: "ingress-a", Region: "global", NomadStatus: "running", ConsulStatus: "passing"}, {AllocationID: "alloc-b", JobID: receipt.Fleet.Runtime.JobID, EvalID: receipt.Fleet.Runtime.EvalID, Namespace: receipt.Fleet.Namespace, NodeID: "ingress-b", Region: "global", NomadStatus: "running", ConsulStatus: "passing"}},
 			})
@@ -146,7 +146,7 @@ func TestExternalFleetLiveVerifierUsesOnlyRedactedNonceAndCanonicalEvidence(t *t
 	}))
 	defer server.Close()
 	evidenceURL, _ := url.Parse(server.URL)
-	token := func(t *testing.T) string {
+	newToken := func(t *testing.T) string {
 		file, err := os.CreateTemp(t.TempDir(), "token")
 		if err != nil {
 			t.Fatal(err)
@@ -161,8 +161,9 @@ func TestExternalFleetLiveVerifierUsesOnlyRedactedNonceAndCanonicalEvidence(t *t
 			t.Fatal(err)
 		}
 		return file.Name()
-	}(t)
-	verifier := &ExternalFleetDeploymentLiveVerifier{evidenceURL: evidenceURL, publicURL: evidenceURL, evidenceTokenFile: token, githubTokenFile: token, httpClient: server.Client(), githubRun: externalFleetGitHubRunVerifierFunc(func(_ context.Context, gotToken string, gotCI CIIdentity) error {
+	}
+	evidenceToken, githubToken := newToken(t), newToken(t)
+	verifier := &ExternalFleetDeploymentLiveVerifier{evidenceURL: evidenceURL, publicURL: evidenceURL, evidenceTokenFile: evidenceToken, githubTokenFile: githubToken, httpClient: server.Client(), githubRun: externalFleetGitHubRunVerifierFunc(func(_ context.Context, gotToken string, gotCI CIIdentity) error {
 		if gotToken != "test-token" || gotCI.RunAttempt != request.CI.RunAttempt {
 			t.Fatal("GitHub run verifier did not receive the authenticated attempt")
 		}
@@ -194,8 +195,32 @@ func TestExternalFleetEvidenceV1FixtureContract(t *testing.T) {
 		t.Fatal(err)
 	}
 	evidence := decoded.(*externalFleetEvidence)
-	if evidence.SchemaVersion != "norn.external-fleet-evidence/v1" || len(evidence.Checkpoints) != 4 || len(evidence.Allocations) != 2 || evidence.Attempt.TerminalStatus != "succeeded" || evidence.Attempt.CurrentPhase != "exercise" {
+	if evidence.SchemaVersion != "norn.external-fleet-evidence/v1" || len(evidence.Checkpoints) != 4 || len(evidence.Allocations) != 2 || evidence.Attempt.TerminalStatus != "succeeded" || evidence.Attempt.CurrentPhase != "complete" {
 		t.Fatalf("fixture does not preserve required bridge contract: %#v", evidence)
+	}
+}
+
+func TestExternalFleetAdmissionIdempotencySurvivesTransientRotation(t *testing.T) {
+	receipt := externalReceiptForTest()
+	principal := AccessPrincipal{TokenID: "rotating-jti", Environment: "staging", CI: &CIIdentity{Repository: "acme/norn-fleet", RunID: "123", RunAttempt: "1"}}
+	request := httptest.NewRequest(http.MethodPost, "/", nil)
+	request.Header.Set("Idempotency-Key", "stable-client-key")
+	key, digest, ok := externalFleetAdmissionIdempotency(httptest.NewRecorder(), request, principal, receipt.App, receipt)
+	if !ok {
+		t.Fatal("logical idempotency rejected")
+	}
+	rotated := receipt
+	rotated.Nonce = "00000000-0000-4000-8000-000000000002." + strings.Repeat("f", 64)
+	rotated.Fleet.ApplyRunID, rotated.Fleet.ApplyRunAttempt, rotated.Fleet.RunnerAttemptID = "456", "2", "attempt-2"
+	principal.TokenID, principal.CI.RunID, principal.CI.RunAttempt = "new-jti", "456", "2"
+	rotatedKey, rotatedDigest, ok := externalFleetAdmissionIdempotency(httptest.NewRecorder(), request, principal, rotated.App, rotated)
+	if !ok || key != rotatedKey || digest != rotatedDigest {
+		t.Fatal("transient replay identity changed")
+	}
+	rotated.Artifact = "ghcr.io/acme/hello-norn-mysql@sha256:" + strings.Repeat("c", 64)
+	_, changedDigest, ok := externalFleetAdmissionIdempotency(httptest.NewRecorder(), request, principal, rotated.App, rotated)
+	if !ok || digest == changedDigest {
+		t.Fatal("changed logical candidate was replayable")
 	}
 }
 

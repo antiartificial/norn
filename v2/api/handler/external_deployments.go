@@ -62,6 +62,7 @@ type ExternalFleetExecutionProof struct {
 	ApplyRunAttempt  string                     `json:"applyRunAttempt"`
 	PlanSHA256       string                     `json:"planSha256"`
 	RunnerAttemptID  string                     `json:"runnerAttemptId"`
+	RootAttemptID    string                     `json:"rootAttemptId"`
 	NonceEvidenceRef string                     `json:"nonceEvidenceRef"`
 }
 
@@ -209,7 +210,7 @@ func (h *Handler) AdmitExternalFleetDeployment(w http.ResponseWriter, r *http.Re
 		WriteControlProblem(w, r, http.StatusForbidden, "external_deployment_binding_mismatch", "external receipt source, artifact, and candidate do not match the server-owned app binding")
 		return
 	}
-	key, digest, ok := appOperationIdempotency(w, r, principal, appID, "app.deploy", receipt)
+	key, digest, ok := externalFleetAdmissionIdempotency(w, r, principal, appID, receipt)
 	if !ok {
 		return
 	}
@@ -291,6 +292,31 @@ func (h *Handler) AdmitExternalFleetDeployment(w http.ResponseWriter, r *http.Re
 
 func externalReceiptMatchesCI(receipt ExternalFleetDeploymentReceipt, ci CIIdentity) bool {
 	return receipt.Fleet.ApplyRunID == ci.RunID && receipt.Fleet.ApplyRunAttempt == ci.RunAttempt
+}
+
+// externalFleetAdmissionIdempotency deliberately excludes token JTI, raw nonce,
+// and the current GitHub run. A lost terminal response can therefore be replayed
+// after an OIDC/token/nonce rotation, while a changed logical deployment cannot.
+func externalFleetAdmissionIdempotency(w http.ResponseWriter, r *http.Request, principal AccessPrincipal, appID string, receipt ExternalFleetDeploymentReceipt) (string, string, bool) {
+	clientKey := strings.TrimSpace(r.Header.Get("Idempotency-Key"))
+	if clientKey == "" || len(clientKey) > 200 || principal.CI == nil || principal.CI.Repository == "" || principal.Environment == "" {
+		WriteControlProblem(w, r, http.StatusBadRequest, "invalid_idempotency_key", "a stable Idempotency-Key and authorized CI repository/environment are required")
+		return "", "", false
+	}
+	keySum := sha256.Sum256([]byte("external-fleet-admission\x00" + principal.CI.Repository + "\x00" + principal.Environment + "\x00" + appID + "\x00" + clientKey))
+	logical := struct {
+		Candidate     model.ReleaseCandidate `json:"candidate"`
+		SourceSHA     string                 `json:"sourceSha"`
+		Artifact      string                 `json:"artifact"`
+		PlanID        string                 `json:"planId"`
+		RootAttemptID string                 `json:"rootAttemptId"`
+	}{receipt.Candidate, receipt.SourceSHA, receipt.Artifact, receipt.Fleet.PlanID, receipt.Fleet.RootAttemptID}
+	canonical, err := json.Marshal(logical)
+	if err != nil {
+		return "", "", false
+	}
+	digest := sha256.Sum256(canonical)
+	return "app.deploy:" + hex.EncodeToString(keySum[:]), "sha256:" + hex.EncodeToString(digest[:]), true
 }
 
 func (h *Handler) issueExternalFleetAdmissionNonce(w http.ResponseWriter, r *http.Request, appID string, principal AccessPrincipal) {
@@ -391,7 +417,7 @@ func validateExternalFleetReceipt(receipt ExternalFleetDeploymentReceipt, config
 	if receipt.SchemaVersion != externalFleetReceiptSchema || receipt.App != app || !fullSourceSHAPattern.MatchString(receipt.SourceSHA) || !model.IsContentAddressedImage(receipt.Artifact) || !validExternalURI(receipt.AttestationURI) || !validExternalURI(receipt.SBOMURI) {
 		return fmt.Errorf("receipt schema, app, immutable source/artifact, or evidence references are invalid")
 	}
-	if receipt.Fleet.Namespace != configured.Namespace || !validExternalNomadJobProof(receipt.Fleet.Migration, configured.MigrationJobID, configured.MigrationHCLSHA256) || !validExternalNomadJobProof(receipt.Fleet.Runtime, configured.RuntimeJobID, configured.RuntimeHCLSHA256) || receipt.Fleet.Migration.EvalID == receipt.Fleet.Runtime.EvalID || receipt.Fleet.Migration.CheckpointID == receipt.Fleet.Runtime.CheckpointID || !externalNamePattern.MatchString(receipt.Fleet.PlanID) || !validGitHubNumericID(receipt.Fleet.ApplyRunID) || !validGitHubNumericID(receipt.Fleet.ApplyRunAttempt) || !sha256HexPattern.MatchString(receipt.Fleet.PlanSHA256) || !externalNamePattern.MatchString(receipt.Fleet.RunnerAttemptID) || !externalNamePattern.MatchString(receipt.Fleet.NonceEvidenceRef) {
+	if receipt.Fleet.Namespace != configured.Namespace || !validExternalNomadJobProof(receipt.Fleet.Migration, configured.MigrationJobID, configured.MigrationHCLSHA256) || !validExternalNomadJobProof(receipt.Fleet.Runtime, configured.RuntimeJobID, configured.RuntimeHCLSHA256) || receipt.Fleet.Migration.EvalID == receipt.Fleet.Runtime.EvalID || receipt.Fleet.Migration.CheckpointID == receipt.Fleet.Runtime.CheckpointID || !externalNamePattern.MatchString(receipt.Fleet.PlanID) || !validGitHubNumericID(receipt.Fleet.ApplyRunID) || !validGitHubNumericID(receipt.Fleet.ApplyRunAttempt) || !sha256HexPattern.MatchString(receipt.Fleet.PlanSHA256) || !externalNamePattern.MatchString(receipt.Fleet.RunnerAttemptID) || !externalNamePattern.MatchString(receipt.Fleet.RootAttemptID) || !externalNamePattern.MatchString(receipt.Fleet.NonceEvidenceRef) {
 		return fmt.Errorf("receipt Fleet namespace/migration/runtime/run/plan/attempt/nonce evidence binding is invalid")
 	}
 	if !validExternalChronology(receipt.Chronology) {
@@ -541,7 +567,8 @@ func validHTTPSVersion(version string) bool {
 }
 
 func validPrivateReadiness(readiness ExternalFleetPrivateReadiness) bool {
-	if !validExternalURI(readiness.Endpoint) || !strings.HasSuffix(strings.TrimSuffix(readiness.Endpoint, "/"), "/readyz") || readiness.CheckedAt.IsZero() || len(readiness.AllocationIDs) < 2 {
+	now := time.Now().UTC()
+	if !validExternalURI(readiness.Endpoint) || !strings.HasSuffix(strings.TrimSuffix(readiness.Endpoint, "/"), "/readyz") || readiness.CheckedAt.IsZero() || readiness.CheckedAt.After(now) || now.Sub(readiness.CheckedAt) > externalFleetAdmissionNonceTTL || len(readiness.AllocationIDs) < 2 {
 		return false
 	}
 	seen := map[string]bool{}
