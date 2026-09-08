@@ -2,7 +2,11 @@ package handler
 
 import (
 	"context"
+	"crypto/rand"
+	"crypto/rsa"
+	"crypto/x509"
 	"encoding/json"
+	"encoding/pem"
 	"errors"
 	"io"
 	"net/http"
@@ -233,6 +237,38 @@ func TestExternalFleetVerifiedAttestationOutputBindsOneExactCandidateAttempt(t *
 		if externalFleetVerifiedAttestationOutput(bad, "https://slsa.dev/provenance/v1", "acme/hello-norn-mysql", "77", "3") {
 			t.Fatal("ambiguous or wrong statement accepted")
 		}
+	}
+}
+
+func TestExternalFleetReadOnlyGitHubAppMintsOnlyAuditedInstallation(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/app/installations/9":
+			io.WriteString(w, `{"repository_selection":"selected","permissions":{"metadata":"read","actions":"read","attestations":"read"}}`)
+		case "/app/installations/9/access_tokens":
+			io.WriteString(w, `{"token":"ephemeral","expires_at":"2099-01-01T00:00:00Z"}`)
+		case "/installation/repositories":
+			if r.Header.Get("Authorization") != "Bearer ephemeral" {
+				t.Fatal("repository audit was not installation-token authenticated")
+			}
+			io.WriteString(w, `{"total_count":1,"repositories":[{"id":42}]}`)
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	defer server.Close()
+	key, _ := rsa.GenerateKey(rand.Reader, 2048)
+	pemBytes := pem.EncodeToMemory(&pem.Block{Type: "RSA PRIVATE KEY", Bytes: x509.MarshalPKCS1PrivateKey(key)})
+	path := t.TempDir() + "/app.pem"
+	if err := os.WriteFile(path, pemBytes, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	client, err := newExternalFleetGitHubApp(externalFleetGitHubAppConfig{AppID: "7", InstallationID: 9, PrivateKeyFile: path, RepositoryIDs: []string{"42"}, APIBaseURL: server.URL}, server.Client())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if token, err := client.token(context.Background()); err != nil || token != "ephemeral" {
+		t.Fatalf("mint=%q err=%v", token, err)
 	}
 }
 

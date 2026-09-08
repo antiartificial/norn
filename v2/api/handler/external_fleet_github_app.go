@@ -14,6 +14,7 @@ import (
 	"os"
 	"strconv"
 	"strings"
+	"syscall"
 	"time"
 
 	"github.com/golang-jwt/jwt/v5"
@@ -47,7 +48,17 @@ func newExternalFleetGitHubApp(cfg externalFleetGitHubAppConfig, client *http.Cl
 }
 
 func (c *externalFleetGitHubApp) appJWT() (string, error) {
-	pem, err := os.ReadFile(c.cfg.PrivateKeyFile)
+	fd, err := syscall.Open(c.cfg.PrivateKeyFile, syscall.O_RDONLY|syscall.O_NOFOLLOW, 0)
+	if err != nil {
+		return "", errors.New("read-only GitHub App key unavailable")
+	}
+	file := os.NewFile(uintptr(fd), c.cfg.PrivateKeyFile)
+	defer file.Close()
+	var stat syscall.Stat_t
+	if syscall.Fstat(fd, &stat) != nil || stat.Mode&syscall.S_IFMT != syscall.S_IFREG || stat.Uid != uint32(os.Getuid()) || stat.Mode&0o077 != 0 {
+		return "", errors.New("read-only GitHub App key unavailable")
+	}
+	pem, err := io.ReadAll(io.LimitReader(file, 64<<10+1))
 	if err != nil || len(pem) > 64<<10 {
 		return "", errors.New("read-only GitHub App key unavailable")
 	}
@@ -110,12 +121,6 @@ func (c *externalFleetGitHubApp) token(ctx context.Context) (string, error) {
 			ID int64 `json:"id"`
 		} `json:"repositories"`
 	}
-	if err = c.request(ctx, jwtValue, http.MethodGet, "/installation/repositories", nil, &repos); err != nil {
-		return "", err
-	}
-	if repos.TotalCount != len(c.cfg.RepositoryIDs) || !externalFleetRepositoryIDsMatch(repos.Repositories, c.cfg.RepositoryIDs) {
-		return "", errors.New("read-only GitHub App repository selection rejected")
-	}
 	var minted struct {
 		Token     string    `json:"token"`
 		ExpiresAt time.Time `json:"expires_at"`
@@ -125,6 +130,12 @@ func (c *externalFleetGitHubApp) token(ctx context.Context) (string, error) {
 	}
 	if minted.Token == "" || !minted.ExpiresAt.After(time.Now().Add(time.Minute)) {
 		return "", errors.New("read-only GitHub App mint rejected")
+	}
+	if err = c.request(ctx, minted.Token, http.MethodGet, "/installation/repositories", nil, &repos); err != nil {
+		return "", err
+	}
+	if repos.TotalCount != len(c.cfg.RepositoryIDs) || !externalFleetRepositoryIDsMatch(repos.Repositories, c.cfg.RepositoryIDs) {
+		return "", errors.New("read-only GitHub App repository selection rejected")
 	}
 	return minted.Token, nil
 }

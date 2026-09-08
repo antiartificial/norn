@@ -220,7 +220,10 @@ func (v externalFleetCommandAttestationVerifier) Verify(ctx context.Context, tok
 type ExternalFleetDeploymentVerifierConfig struct {
 	EvidenceURL          string
 	EvidenceTokenFile    string
-	GitHubTokenFile      string
+	GitHubAppID          string
+	GitHubInstallationID int64
+	GitHubPrivateKeyFile string
+	GitHubRepositoryIDs  []string
 	GitHubCLIPath        string
 	PublicBaseURL        string
 	EvidenceAllowedCIDRs []string
@@ -230,10 +233,12 @@ type ExternalFleetDeploymentLiveVerifier struct {
 	evidenceURL       *url.URL
 	publicURL         *url.URL
 	evidenceTokenFile string
-	githubTokenFile   string
-	httpClient        *http.Client
-	attest            ExternalFleetAttestationVerifier
-	githubRun         ExternalFleetGitHubRunVerifier
+	githubApp         *externalFleetGitHubApp
+	// githubTokenFile is test-only injection; constructors never populate it.
+	githubTokenFile string
+	httpClient      *http.Client
+	attest          ExternalFleetAttestationVerifier
+	githubRun       ExternalFleetGitHubRunVerifier
 }
 
 // NewExternalFleetDeploymentLiveVerifier refuses partial configuration. The
@@ -254,10 +259,11 @@ func NewExternalFleetDeploymentLiveVerifier(cfg ExternalFleetDeploymentVerifierC
 	if err := externalVerifierSecretFile(cfg.EvidenceTokenFile); err != nil {
 		return nil, fmt.Errorf("external Fleet evidence token: %w", err)
 	}
-	if err := externalVerifierSecretFile(cfg.GitHubTokenFile); err != nil {
-		return nil, fmt.Errorf("external Fleet GitHub token: %w", err)
+	githubApp, err := newExternalFleetGitHubApp(externalFleetGitHubAppConfig{AppID: cfg.GitHubAppID, InstallationID: cfg.GitHubInstallationID, PrivateKeyFile: cfg.GitHubPrivateKeyFile, RepositoryIDs: cfg.GitHubRepositoryIDs}, nil)
+	if err != nil {
+		return nil, fmt.Errorf("external Fleet read-only GitHub App: %w", err)
 	}
-	if sameExternalVerifierSecret(cfg.EvidenceTokenFile, cfg.GitHubTokenFile) {
+	if sameExternalVerifierSecret(cfg.EvidenceTokenFile, cfg.GitHubPrivateKeyFile) {
 		return nil, fmt.Errorf("external Fleet evidence and GitHub credentials must be distinct files")
 	}
 	if attest == nil {
@@ -276,14 +282,15 @@ func NewExternalFleetDeploymentLiveVerifier(cfg ExternalFleetDeploymentVerifierC
 			return nil, err
 		}
 	}
-	return &ExternalFleetDeploymentLiveVerifier{evidenceURL: evidenceURL, publicURL: publicURL, evidenceTokenFile: cfg.EvidenceTokenFile, githubTokenFile: cfg.GitHubTokenFile, httpClient: client, attest: attest, githubRun: externalFleetGitHubRunVerifier{client: client}}, nil
+	githubApp.client = client
+	return &ExternalFleetDeploymentLiveVerifier{evidenceURL: evidenceURL, publicURL: publicURL, evidenceTokenFile: cfg.EvidenceTokenFile, githubApp: githubApp, httpClient: client, attest: attest, githubRun: externalFleetGitHubRunVerifier{client: client}}, nil
 }
 
 func ExternalFleetDeploymentVerifierFromConfig(cfg *config.Config) (*ExternalFleetDeploymentLiveVerifier, error) {
 	if cfg == nil {
 		return nil, fmt.Errorf("external Fleet verifier is not configured")
 	}
-	return NewExternalFleetDeploymentLiveVerifier(ExternalFleetDeploymentVerifierConfig{EvidenceURL: cfg.ExternalFleetVerifierURL, EvidenceTokenFile: cfg.ExternalFleetVerifierTokenFile, GitHubTokenFile: cfg.ExternalFleetGitHubTokenFile, GitHubCLIPath: cfg.ExternalFleetGitHubCLIPath, PublicBaseURL: cfg.ExternalFleetPublicBaseURL, EvidenceAllowedCIDRs: cfg.ExternalFleetEvidenceAllowedCIDRs}, nil, nil)
+	return NewExternalFleetDeploymentLiveVerifier(ExternalFleetDeploymentVerifierConfig{EvidenceURL: cfg.ExternalFleetVerifierURL, EvidenceTokenFile: cfg.ExternalFleetVerifierTokenFile, GitHubAppID: cfg.ExternalFleetGitHubVerifierAppID, GitHubInstallationID: cfg.ExternalFleetGitHubVerifierInstallationID, GitHubPrivateKeyFile: cfg.ExternalFleetGitHubVerifierPrivateKeyFile, GitHubRepositoryIDs: cfg.ExternalFleetGitHubVerifierRepositoryIDs, GitHubCLIPath: cfg.ExternalFleetGitHubCLIPath, PublicBaseURL: cfg.ExternalFleetPublicBaseURL, EvidenceAllowedCIDRs: cfg.ExternalFleetEvidenceAllowedCIDRs}, nil, nil)
 }
 
 func externalVerifierURL(raw string) (*url.URL, error) {
@@ -488,16 +495,22 @@ type externalFleetAllocationEvidence struct {
 func (v *ExternalFleetDeploymentLiveVerifier) VerifyExternalFleetDeployment(ctx context.Context, request ExternalFleetDeploymentVerificationRequest) (*ExternalFleetDeploymentVerification, error) {
 	ctx, cancel := context.WithTimeout(ctx, externalFleetHTTPTimeout)
 	defer cancel()
-	if v == nil || v.evidenceURL == nil || v.publicURL == nil || v.attest == nil || v.githubRun == nil {
+	if v == nil || v.evidenceURL == nil || v.publicURL == nil || v.attest == nil || v.githubRun == nil || (v.githubApp == nil && v.githubTokenFile == "") {
 		return nil, externalVerifierErr("unconfigured")
 	}
 	if request.CI.Provider != "github-actions" || request.CI.Repository == "" || request.CI.RunID != request.Receipt.Fleet.ApplyRunID || request.CI.RunAttempt != request.Receipt.Fleet.ApplyRunAttempt {
 		return nil, externalVerifierErr("ci-binding")
 	}
-	if sameExternalVerifierSecret(v.evidenceTokenFile, v.githubTokenFile) {
-		return nil, externalVerifierErr("credential-file-rotation")
+	var githubToken string
+	var err error
+	if v.githubApp != nil {
+		if sameExternalVerifierSecret(v.evidenceTokenFile, v.githubApp.cfg.PrivateKeyFile) {
+			return nil, externalVerifierErr("credential-file-rotation")
+		}
+		githubToken, err = v.githubApp.token(ctx)
+	} else {
+		githubToken, err = readExternalVerifierSecret(v.githubTokenFile)
 	}
-	githubToken, err := readExternalVerifierSecret(v.githubTokenFile)
 	if err != nil {
 		return nil, externalVerifierErr("github-token-unavailable")
 	}
@@ -519,9 +532,6 @@ func (v *ExternalFleetDeploymentLiveVerifier) VerifyExternalFleetDeployment(ctx 
 		return nil, externalVerifierErr("nonce")
 	}
 	nonceDigest := nonce.sha256()
-	if sameExternalVerifierSecret(v.evidenceTokenFile, v.githubTokenFile) {
-		return nil, externalVerifierErr("credential-file-rotation")
-	}
 	evidenceToken, err := readExternalVerifierSecret(v.evidenceTokenFile)
 	if err != nil {
 		return nil, externalVerifierErr("evidence-token-unavailable")

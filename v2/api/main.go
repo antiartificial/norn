@@ -1344,11 +1344,11 @@ func externalFleetBridgeConfigured(cfg *config.Config) bool {
 }
 
 func externalFleetVerifierRequested(cfg *config.Config) bool {
-	return cfg != nil && (strings.TrimSpace(cfg.ExternalFleetVerifierURL) != "" || strings.TrimSpace(cfg.ExternalFleetVerifierTokenFile) != "" || strings.TrimSpace(cfg.ExternalFleetGitHubTokenFile) != "" || strings.TrimSpace(cfg.ExternalFleetGitHubCLIPath) != "" || strings.TrimSpace(cfg.ExternalFleetPublicBaseURL) != "" || len(cfg.ExternalFleetEvidenceAllowedCIDRs) != 0)
+	return cfg != nil && (strings.TrimSpace(cfg.ExternalFleetVerifierURL) != "" || strings.TrimSpace(cfg.ExternalFleetVerifierTokenFile) != "" || strings.TrimSpace(cfg.ExternalFleetGitHubVerifierAppID) != "" || cfg.ExternalFleetGitHubVerifierInstallationID != 0 || strings.TrimSpace(cfg.ExternalFleetGitHubVerifierPrivateKeyFile) != "" || len(cfg.ExternalFleetGitHubVerifierRepositoryIDs) != 0 || strings.TrimSpace(cfg.ExternalFleetGitHubCLIPath) != "" || strings.TrimSpace(cfg.ExternalFleetPublicBaseURL) != "" || len(cfg.ExternalFleetEvidenceAllowedCIDRs) != 0)
 }
 
 func externalFleetVerifierConfigured(cfg *config.Config) bool {
-	return cfg != nil && cfg.EnvironmentID() == "staging" && externalFleetBridgeConfigured(cfg) && externalFleetVerifierRequested(cfg) && strings.TrimSpace(cfg.ExternalFleetVerifierURL) != "" && strings.TrimSpace(cfg.ExternalFleetVerifierTokenFile) != "" && strings.TrimSpace(cfg.ExternalFleetGitHubTokenFile) != "" && strings.TrimSpace(cfg.ExternalFleetGitHubCLIPath) != "" && strings.TrimSpace(cfg.ExternalFleetPublicBaseURL) != "" && len(cfg.ExternalFleetEvidenceAllowedCIDRs) > 0
+	return cfg != nil && cfg.EnvironmentID() == "staging" && externalFleetBridgeConfigured(cfg) && externalFleetVerifierRequested(cfg) && strings.TrimSpace(cfg.ExternalFleetVerifierURL) != "" && strings.TrimSpace(cfg.ExternalFleetVerifierTokenFile) != "" && strings.TrimSpace(cfg.ExternalFleetGitHubVerifierAppID) != "" && cfg.ExternalFleetGitHubVerifierInstallationID > 0 && strings.TrimSpace(cfg.ExternalFleetGitHubVerifierPrivateKeyFile) != "" && len(cfg.ExternalFleetGitHubVerifierRepositoryIDs) > 0 && strings.TrimSpace(cfg.ExternalFleetGitHubCLIPath) != "" && strings.TrimSpace(cfg.ExternalFleetPublicBaseURL) != "" && len(cfg.ExternalFleetEvidenceAllowedCIDRs) > 0
 }
 
 func externalFleetSignerInNormalAllowlist(value string, allowed []string) bool {
