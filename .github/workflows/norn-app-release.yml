@@ -42,6 +42,16 @@ on:
         description: Release lane selected by the caller.
         required: true
         type: string
+      private_network:
+        description: Join a narrowly scoped ephemeral Tailscale node before contacting a private Norn API.
+        required: false
+        default: false
+        type: boolean
+      tailscale_target:
+        description: Exact MagicDNS hostname of the private Norn API; required only when private_network is true.
+        required: false
+        default: ''
+        type: string
       required_checks:
         description: Newline-delimited exact GitHub check-run names that must succeed for the staging SHA.
         required: false
@@ -110,6 +120,8 @@ jobs:
           BUILD_CONTRACT: ${{ inputs.build_contract }}
           GO_IMAGE: ${{ inputs.go_image }}
           RUNTIME_IMAGE: ${{ inputs.runtime_image }}
+          PRIVATE_NETWORK: ${{ inputs.private_network }}
+          TAILSCALE_TARGET: ${{ inputs.tailscale_target }}
         run: |
           set -euo pipefail
           [[ "$APP_ID" =~ ^[a-z0-9][a-z0-9-]*$ ]] || { echo "app_id is invalid" >&2; exit 1; }
@@ -135,6 +147,21 @@ jobs:
             public|private|internal) ;;
             *) echo "unsupported or missing GitHub repository visibility: $CALLER_REPOSITORY_VISIBILITY" >&2; exit 1 ;;
           esac
+          if [[ "$PRIVATE_NETWORK" == "true" ]]; then
+            python3 - "$TAILSCALE_TARGET" <<'PY'
+          import re
+          import sys
+          target = sys.argv[1]
+          labels = target.split(".")
+          if (target != target.lower() or len(target) > 253 or not target.endswith(".ts.net")
+                  or len(labels) < 4
+                  or any(not re.fullmatch(r"[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?", label) for label in labels)):
+              raise SystemExit("tailscale_target must be an exact lowercase .ts.net MagicDNS hostname")
+          PY
+          elif [[ -n "$TAILSCALE_TARGET" ]]; then
+            echo "tailscale_target is valid only when private_network is true" >&2
+            exit 1
+          fi
           # Visibility is signed GitHub evidence, not a trust-backend selector.
           # The staging control plane returns its configured mode after OIDC.
           printf 'repository_visibility=%s\n' "$CALLER_REPOSITORY_VISIBILITY" >> "$GITHUB_OUTPUT"
@@ -303,12 +330,26 @@ jobs:
           BUILD_CONTRACT: ${{ inputs.build_contract }}
           GO_IMAGE: ${{ inputs.go_image }}
           RUNTIME_IMAGE: ${{ inputs.runtime_image }}
+          PRIVATE_NETWORK: ${{ inputs.private_network }}
+          TAILSCALE_TARGET: ${{ inputs.tailscale_target }}
         run: |
           set -euo pipefail
           case "$NORN_API_URL" in
             https://*) ;;
             *) echo "NORN_API_URL must be an https URL" >&2; exit 1 ;;
           esac
+          if [[ "$PRIVATE_NETWORK" == "true" ]]; then
+            python3 - "$NORN_API_URL" "$TAILSCALE_TARGET" <<'PY'
+          import sys
+          from urllib.parse import urlsplit
+          url, target = sys.argv[1:]
+          parsed = urlsplit(url)
+          if (parsed.scheme != "https" or parsed.hostname != target or parsed.port not in (None, 443)
+                  or parsed.username is not None or parsed.password is not None
+                  or parsed.path not in ("", "/") or parsed.query or parsed.fragment):
+              raise SystemExit("private NORN_API_URL must be the exact pathless tailscale_target on HTTPS port 443")
+          PY
+          fi
           [[ "$APP_ID" =~ ^[a-z0-9][a-z0-9-]*$ ]] || { echo "app_id is invalid" >&2; exit 1; }
           [[ "$IMAGE_REPOSITORY" =~ ^ghcr\.io/[a-z0-9][a-z0-9._-]*(/[a-z0-9][a-z0-9._-]*)+$ ]] || {
             echo "image_repository must be a lowercase GHCR repository without a tag" >&2
@@ -326,6 +367,18 @@ jobs:
             fi
             echo NORN_BUILD_ARGS
           } >> "$GITHUB_OUTPUT"
+
+      - name: Join the private staging API route
+        if: inputs.private_network
+        uses: tailscale/github-action@6cae46e2d796f265265cfcf628b72a32b4d7cade # v3.3.0
+        with:
+          oauth-client-id: ${{ secrets.NORN_TAILSCALE_OAUTH_CLIENT_ID }}
+          oauth-secret: ${{ secrets.NORN_TAILSCALE_OAUTH_SECRET }}
+          tags: tag:norn-release-staging-ci
+          version: 1.102.3
+          sha256sum: 36ddd9b51be57ffc2990cf76323cfa13643bfbb1b8a969f6183fa164741cdef5
+          hostname: norn-ci-${{ inputs.lane }}-${{ github.run_id }}-${{ github.run_attempt }}
+          targets: ${{ inputs.tailscale_target }}
 
       - name: Resolve the server-owned attestation policy
         id: trust
@@ -656,12 +709,26 @@ jobs:
         id: inputs
         env:
           NORN_API_URL: ${{ vars.NORN_API_URL }}
+          PRIVATE_NETWORK: ${{ inputs.private_network }}
+          TAILSCALE_TARGET: ${{ inputs.tailscale_target }}
         run: |
           set -euo pipefail
           case "$NORN_API_URL" in
             https://*) ;;
             *) echo "NORN_API_URL must be an https URL" >&2; exit 1 ;;
           esac
+          if [[ "$PRIVATE_NETWORK" == "true" ]]; then
+            python3 - "$NORN_API_URL" "$TAILSCALE_TARGET" <<'PY'
+          import sys
+          from urllib.parse import urlsplit
+          url, target = sys.argv[1:]
+          parsed = urlsplit(url)
+          if (parsed.scheme != "https" or parsed.hostname != target or parsed.port not in (None, 443)
+                  or parsed.username is not None or parsed.password is not None
+                  or parsed.path not in ("", "/") or parsed.query or parsed.fragment):
+              raise SystemExit("private NORN_API_URL must be the exact pathless tailscale_target on HTTPS port 443")
+          PY
+          fi
           [[ "$APP_ID" =~ ^[a-z0-9][a-z0-9-]*$ ]] || { echo "app_id is invalid" >&2; exit 1; }
           source_sha="$(git rev-parse "${GITHUB_SHA}^{commit}")"
           [[ "$source_sha" =~ ^[0-9a-f]{40}$ ]] || { echo "tag does not resolve to a full lowercase commit SHA" >&2; exit 1; }
@@ -712,6 +779,18 @@ jobs:
           ' .norn-release/qualification.json >/dev/null
           printf 'receipt_id=%s\n' "$(jq -er '.id' .norn-release/qualification.json)" >> "$GITHUB_OUTPUT"
           printf 'artifact=%s\n' "$(jq -er '.artifact' .norn-release/qualification.json)" >> "$GITHUB_OUTPUT"
+
+      - name: Join the private production API route
+        if: inputs.private_network
+        uses: tailscale/github-action@6cae46e2d796f265265cfcf628b72a32b4d7cade # v3.3.0
+        with:
+          oauth-client-id: ${{ secrets.NORN_TAILSCALE_OAUTH_CLIENT_ID }}
+          oauth-secret: ${{ secrets.NORN_TAILSCALE_OAUTH_SECRET }}
+          tags: tag:norn-release-production-ci
+          version: 1.102.3
+          sha256sum: 36ddd9b51be57ffc2990cf76323cfa13643bfbb1b8a969f6183fa164741cdef5
+          hostname: norn-ci-${{ inputs.lane }}-${{ github.run_id }}-${{ github.run_attempt }}
+          targets: ${{ inputs.tailscale_target }}
 
       - name: Queue the immutable production promotion
         env:
@@ -796,12 +875,38 @@ jobs:
       - name: Validate staging recovery credentials
         env:
           NORN_API_URL: ${{ vars.NORN_API_URL }}
+          PRIVATE_NETWORK: ${{ inputs.private_network }}
+          TAILSCALE_TARGET: ${{ inputs.tailscale_target }}
         run: |
           set -euo pipefail
           case "$NORN_API_URL" in
             https://*) ;;
             *) echo "NORN_API_URL must be an https URL" >&2; exit 1 ;;
           esac
+          if [[ "$PRIVATE_NETWORK" == "true" ]]; then
+            python3 - "$NORN_API_URL" "$TAILSCALE_TARGET" <<'PY'
+          import sys
+          from urllib.parse import urlsplit
+          url, target = sys.argv[1:]
+          parsed = urlsplit(url)
+          if (parsed.scheme != "https" or parsed.hostname != target or parsed.port not in (None, 443)
+                  or parsed.username is not None or parsed.password is not None
+                  or parsed.path not in ("", "/") or parsed.query or parsed.fragment):
+              raise SystemExit("private NORN_API_URL must be the exact pathless tailscale_target on HTTPS port 443")
+          PY
+          fi
+
+      - name: Join the private staging API route
+        if: inputs.private_network
+        uses: tailscale/github-action@6cae46e2d796f265265cfcf628b72a32b4d7cade # v3.3.0
+        with:
+          oauth-client-id: ${{ secrets.NORN_TAILSCALE_OAUTH_CLIENT_ID }}
+          oauth-secret: ${{ secrets.NORN_TAILSCALE_OAUTH_SECRET }}
+          tags: tag:norn-release-staging-ci
+          version: 1.102.3
+          sha256sum: 36ddd9b51be57ffc2990cf76323cfa13643bfbb1b8a969f6183fa164741cdef5
+          hostname: norn-ci-${{ inputs.lane }}-${{ github.run_id }}-${{ github.run_attempt }}
+          targets: ${{ inputs.tailscale_target }}
 
       - name: Issue fresh evidence for the existing staging deployment
         env:
@@ -880,10 +985,36 @@ jobs:
         env:
           NORN_API_URL: ${{ vars.NORN_API_URL }}
           NORN_GITHUB_ACTIONS_OIDC_AUDIENCE: ${{ vars.NORN_GITHUB_ACTIONS_OIDC_AUDIENCE }}
+          PRIVATE_NETWORK: ${{ inputs.private_network }}
+          TAILSCALE_TARGET: ${{ inputs.tailscale_target }}
         run: |
           set -euo pipefail
           [[ "$NORN_API_URL" == https://* ]] || { echo "NORN_API_URL must be an https URL" >&2; exit 1; }
           [[ -n "$NORN_GITHUB_ACTIONS_OIDC_AUDIENCE" ]] || { echo "NORN_GITHUB_ACTIONS_OIDC_AUDIENCE environment variable is required" >&2; exit 1; }
+          if [[ "$PRIVATE_NETWORK" == "true" ]]; then
+            python3 - "$NORN_API_URL" "$TAILSCALE_TARGET" <<'PY'
+          import sys
+          from urllib.parse import urlsplit
+          url, target = sys.argv[1:]
+          parsed = urlsplit(url)
+          if (parsed.scheme != "https" or parsed.hostname != target or parsed.port not in (None, 443)
+                  or parsed.username is not None or parsed.password is not None
+                  or parsed.path not in ("", "/") or parsed.query or parsed.fragment):
+              raise SystemExit("private NORN_API_URL must be the exact pathless tailscale_target on HTTPS port 443")
+          PY
+          fi
+
+      - name: Join the private production API route
+        if: inputs.private_network
+        uses: tailscale/github-action@6cae46e2d796f265265cfcf628b72a32b4d7cade # v3.3.0
+        with:
+          oauth-client-id: ${{ secrets.NORN_TAILSCALE_OAUTH_CLIENT_ID }}
+          oauth-secret: ${{ secrets.NORN_TAILSCALE_OAUTH_SECRET }}
+          tags: tag:norn-release-production-ci
+          version: 1.102.3
+          sha256sum: 36ddd9b51be57ffc2990cf76323cfa13643bfbb1b8a969f6183fa164741cdef5
+          hostname: norn-ci-${{ inputs.lane }}-${{ github.run_id }}-${{ github.run_attempt }}
+          targets: ${{ inputs.tailscale_target }}
 
       - name: Record GitHub production rollback deployment
         id: github-deployment

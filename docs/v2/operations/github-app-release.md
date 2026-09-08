@@ -222,10 +222,57 @@ environment-scoped variables:
 | `NORN_API_URL` | HTTPS base URL of that environment's Norn control API, without credentials. |
 | `NORN_GITHUB_ACTIONS_OIDC_AUDIENCE` | Environment variable matching the audience configured on Norn; it is not a credential. |
 
+When the control API is private on Tailscale, set `private_network: true` and
+`tailscale_target` to the exact pathless MagicDNS hostname in every caller lane.
+The reusable workflow then requires these environment-scoped secrets; it never
+inherits them from the caller:
+
+| Secret | Meaning |
+| --- | --- |
+| `NORN_TAILSCALE_OAUTH_CLIENT_ID` | Environment-specific OAuth client ID with only the Tailscale `auth_keys` scope and permission to issue the matching release-CI tag. |
+| `NORN_TAILSCALE_OAUTH_SECRET` | Matching OAuth secret. Rotate it independently in staging and production. |
+
+```yaml
+    with:
+      private_network: true
+      tailscale_target: norn-staging.example-tailnet.ts.net
+```
+
+The workflow pins Tailscale's action, client version, and Linux-amd64 archive
+digest; it creates an ephemeral preapproved node and waits for the exact
+target. The node has the deterministic run-bound prefix
+`norn-ci-<lane>-<run-id>-<attempt>`. Tailscale removes an ephemeral node after
+the runner disappears, but a disposable pilot must also enumerate and delete
+those exact run-scoped devices before its final-zero receipt. The input hostname must exactly equal the hostname
+in `NORN_API_URL`; credentials, alternate ports, paths, query strings, and
+fragments are rejected. The `staging` and `requalify` lanes use
+`tag:norn-release-staging-ci`; `production` and `rollback` use
+`tag:norn-release-production-ci`.
+
+Make those tags ownerable only by the respective OAuth clients. Grant each tag
+TCP 443 only to the corresponding Norn control-plane tag, and add policy tests
+that deny SSH, Nomad, Consul, database, observability, peer-CI, and cross-lane
+access. For example, the disposable pilot staging grant is intentionally only:
+
+```json
+{
+  "src": ["tag:norn-release-staging-ci"],
+  "dst": ["tag:norn-pilot-control"],
+  "ip": ["tcp:443"]
+}
+```
+
+Do not grant this CI tag to the generic pilot-node tag if control nodes can
+carry a dedicated tag. The build still runs on a fresh GitHub-hosted runner;
+the overlay is a network path, not a provider credential or a self-hosted
+execution trust boundary. Protected refs, environment policy, GitHub OIDC,
+Norn's app/repository binding, and short-lived Norn scopes remain mandatory.
+
 Do not use `secrets: inherit` in a caller. The reusable workflow receives no
 caller secrets: after its job declares `staging` or `production`, GitHub makes
 that Environment's `NORN_API_URL` and `NORN_GITHUB_ACTIONS_OIDC_AUDIENCE`
-variables available through `vars`. Where the GitHub plan supports environment
+variables available through `vars` and, when enabled, makes the two narrowly
+scoped Tailscale OAuth values available through `secrets`. Where the GitHub plan supports environment
 reviewers, treat them as defense in depth. A personal private repository may
 not have that reviewer feature; Norn's production OIDC/ref policy and signed
 promotion gate remain authoritative. No GitHub App credential is supplied to
