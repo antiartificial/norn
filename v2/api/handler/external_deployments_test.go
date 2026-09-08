@@ -88,6 +88,7 @@ func verifiedExternalReceipt(receipt ExternalFleetDeploymentReceipt) ExternalFle
 
 func TestExternalFleetReceiptValidationFailsClosed(t *testing.T) {
 	receipt := externalReceiptForTest()
+	receipt.AdmissionID = "00000000-0000-4000-8000-000000000010"
 	if err := validateExternalFleetReceipt(receipt, externalConfigForTest(), receipt.App); err != nil {
 		t.Fatalf("valid receipt rejected: %v", err)
 	}
@@ -143,6 +144,7 @@ func TestExternalFleetChronologyIsHistoricalWhileLiveReadinessIsFresh(t *testing
 
 func TestExternalFleetLiveVerifierUsesOnlyRedactedNonceAndCanonicalEvidence(t *testing.T) {
 	receipt := externalReceiptForTest()
+	receipt.AdmissionID = "00000000-0000-4000-8000-000000000010"
 	request := ExternalFleetDeploymentVerificationRequest{Receipt: receipt, CI: CIIdentity{Provider: "github-actions", Repository: "acme/norn-fleet", RunID: "123", RunAttempt: "1"}, Config: externalConfigForTest()}
 	nonce, err := externalAdmissionNonceFromReceipt(receipt.Nonce)
 	if err != nil {
@@ -150,6 +152,16 @@ func TestExternalFleetLiveVerifierUsesOnlyRedactedNonceAndCanonicalEvidence(t *t
 	}
 	var server *httptest.Server
 	server = httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/v1/external-fleet/admissions/"+receipt.AdmissionID+"/status" {
+			if r.Method != http.MethodGet || r.URL.Query().Get("generation") != "1" || r.Header.Get("Authorization") != "Bearer registration-token" {
+				t.Fatalf("invalid immutable status request")
+			}
+			verification := verifiedExternalReceipt(receipt)
+			verification.PublicHTTPSVersion = server.URL + "/version"
+			verification.PrivateReadiness = ExternalFleetPrivateReadiness{Endpoint: "https://private.example.test/readyz", AllocationIDs: []string{"alloc-a", "alloc-b"}, CheckedAt: time.Now().UTC()}
+			_ = json.NewEncoder(w).Encode(ExternalFleetEvidenceAdmissionStatus{SchemaVersion: "norn.external-fleet-admission-status/v4", AdmissionID: receipt.AdmissionID, LogicalDigest: "sha256:" + strings.Repeat("b", 64), NonceSHA256: nonce.sha256(), Generation: 1, State: "claimed", Revision: 2, Snapshot: &ExternalFleetEvidenceSnapshot{ID: "snapshot-1", Ref: "evidence://snapshot-1", SHA256: strings.Repeat("c", 64), LiveCheckedAt: time.Now(), NonceWrittenAt: time.Now().Add(-time.Second), NonceReadAt: time.Now(), Verification: verification, Allocations: []externalFleetAllocationEvidence{{AllocationID: "alloc-a", JobID: receipt.Fleet.Runtime.JobID, EvalID: receipt.Fleet.Runtime.EvalID, Namespace: receipt.Fleet.Namespace, NodeID: "ingress-a", Region: "global", NomadStatus: "running", ConsulStatus: "passing"}, {AllocationID: "alloc-b", JobID: receipt.Fleet.Runtime.JobID, EvalID: receipt.Fleet.Runtime.EvalID, Namespace: receipt.Fleet.Namespace, NodeID: "ingress-b", Region: "global", NomadStatus: "running", ConsulStatus: "passing"}}}})
+			return
+		}
 		switch r.URL.Path {
 		case "/v1/external-fleet/evidence":
 			var got externalFleetEvidenceRequest
@@ -195,8 +207,12 @@ func TestExternalFleetLiveVerifierUsesOnlyRedactedNonceAndCanonicalEvidence(t *t
 		}
 		return file.Name()
 	}
-	evidenceToken, githubToken := newToken(t), newToken(t)
-	verifier := &ExternalFleetDeploymentLiveVerifier{evidenceURL: evidenceURL, publicURL: evidenceURL, evidenceTokenFile: evidenceToken, githubTokenFile: githubToken, httpClient: server.Client(), githubRun: externalFleetGitHubRunVerifierFunc(func(_ context.Context, gotToken string, gotCI CIIdentity) error {
+	evidenceToken, githubToken, registrationToken := newToken(t), newToken(t), newToken(t)
+	if err := os.WriteFile(registrationToken, []byte("registration-token"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	request.AdmissionGeneration = 1
+	verifier := &ExternalFleetDeploymentLiveVerifier{evidenceURL: evidenceURL, publicURL: evidenceURL, evidenceTokenFile: evidenceToken, registrationTokenFile: registrationToken, githubTokenFile: githubToken, httpClient: server.Client(), githubRun: externalFleetGitHubRunVerifierFunc(func(_ context.Context, gotToken string, gotCI CIIdentity) error {
 		if gotToken != "test-token" || gotCI.RunAttempt != request.CI.RunAttempt {
 			t.Fatal("GitHub run verifier did not receive the authenticated attempt")
 		}
