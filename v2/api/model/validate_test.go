@@ -381,6 +381,67 @@ func TestValidateSpecRejectsInvalidKafkaTopics(t *testing.T) {
 	assertErrorFinding(t, result, "infrastructure.kafka.topics[3]")
 }
 
+func TestValidateSpecAcceptsRestrictedNomadVariableFiles(t *testing.T) {
+	spec := &InfraSpec{
+		App: "pilot",
+		Processes: map[string]Process{
+			"web": {NomadVariables: &NomadVariableFiles{
+				UID: 65532, GID: 65532,
+				Files: []NomadVariableFile{{Key: "MYSQL_DSN", Destination: "mysql-dsn"}, {Key: "MYSQL_CA_PEM", Destination: "mysql-ca.pem"}},
+			}},
+		},
+	}
+	if result := ValidateSpec(spec); !result.Valid {
+		t.Fatalf("expected restricted variable file transport to validate: %+v", result.Findings)
+	}
+}
+
+func TestValidateSpecRejectsNomadVariableFilesWithGeneratedRuntimeInfrastructure(t *testing.T) {
+	for name, infrastructure := range map[string]*Infrastructure{
+		"object-storage": {ObjectStorage: &ObjectStorageInfra{Buckets: []ObjectStorageBucket{{Name: "pilot-uploads"}}}},
+		"kafka":          {Kafka: &KafkaInfra{Topics: []string{"events"}}},
+	} {
+		t.Run(name, func(t *testing.T) {
+			spec := &InfraSpec{
+				App:            "pilot",
+				Infrastructure: infrastructure,
+				Processes: map[string]Process{
+					"web": {NomadVariables: &NomadVariableFiles{UID: 65532, GID: 65532, Files: []NomadVariableFile{{Key: "DATABASE_URL", Destination: "database-url"}}}},
+				},
+			}
+			result := ValidateSpec(spec)
+			if result.Valid {
+				t.Fatalf("expected generated runtime environment conflict, got %+v", result.Findings)
+			}
+			assertErrorFinding(t, result, "processes.web.nomadVariables")
+		})
+	}
+}
+
+func TestValidateSpecRejectsUnsafeNomadVariableFiles(t *testing.T) {
+	spec := &InfraSpec{
+		App: "pilot",
+		Env: map[string]string{"MYSQL_DSN": "must-not-be-env"},
+		Processes: map[string]Process{
+			"web": {NomadVariables: &NomadVariableFiles{
+				UID: 0, GID: -1,
+				Files: []NomadVariableFile{
+					{Key: "bad.key", Destination: "../escape"},
+					{Key: "MYSQL_DSN", Destination: "mysql-dsn"},
+					{Key: "MYSQL_DSN", Destination: "mysql-dsn"},
+				},
+			}},
+		},
+	}
+	result := ValidateSpec(spec)
+	assertErrorFinding(t, result, "processes.web.nomadVariables")
+	assertErrorFinding(t, result, "processes.web.nomadVariables.files[0].key")
+	assertErrorFinding(t, result, "processes.web.nomadVariables.files[0].destination")
+	assertErrorFinding(t, result, "processes.web.nomadVariables.files[2].key")
+	assertErrorFinding(t, result, "processes.web.nomadVariables.files[2].destination")
+	assertErrorFinding(t, result, "env.MYSQL_DSN")
+}
+
 func assertFinding(t *testing.T, result *ValidationResult, field string) {
 	t.Helper()
 	for _, finding := range result.Findings {

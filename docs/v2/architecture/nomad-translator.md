@@ -87,6 +87,14 @@ Environment variables are merged from two sources:
 
 Process env takes final precedence for that task.
 
+For a process with `nomadVariables`, the pipeline `env` parameter is not
+merged at all. Instead, Norn derives `nomad/jobs/<job-id>` and emits one Nomad
+template per declared key under `secrets/<filename>`. Template data, source
+path, mode (`0400`), restart behavior, and missing-key handling are fixed by
+the translator; only a safe basename and the task UID/GID are declarative.
+This transport is intentionally file-only (`env = false`): values never appear
+in task environment fields or command arguments.
+
 ### Resources
 
 | Field | Default | Override |

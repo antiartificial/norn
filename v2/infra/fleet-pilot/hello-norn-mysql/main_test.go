@@ -113,11 +113,33 @@ func TestPilotWriteTokenRequiresStrongHeaderSafeValue(t *testing.T) {
 
 func TestDatabaseRequiresExplicitNetworkAndDatabase(t *testing.T) {
 	for _, dsn := range []string{"", "user:password@unix(/tmp/mysql.sock)/pilot", "user:password@tcp(db.example:25060)/"} {
-		t.Setenv("MYSQL_DSN", dsn)
+		path := filepath.Join(t.TempDir(), "mysql-dsn")
+		if err := os.WriteFile(path, []byte(dsn), 0o400); err != nil {
+			t.Fatal(err)
+		}
+		t.Setenv("MYSQL_DSN_FILE", path)
+		t.Setenv("MYSQL_PINNED_IP_FILE", path)
 		if db, err := openDatabase(); err == nil {
 			db.Close()
 			t.Fatal("accepted invalid database configuration")
 		}
+	}
+}
+
+func TestRequiredSecretFileReadsOnlyFileTransport(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "secret")
+	if err := os.WriteFile(path, []byte("value\n"), 0o400); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("MYSQL_DSN", "must-not-be-read")
+	t.Setenv("MYSQL_DSN_FILE", path)
+	value, err := requiredSecretFile("MYSQL_DSN_FILE")
+	if err != nil || value != "value" {
+		t.Fatalf("value=%q err=%v", value, err)
+	}
+	t.Setenv("MYSQL_DSN_FILE", "")
+	if _, err := requiredSecretFile("MYSQL_DSN_FILE"); err == nil {
+		t.Fatal("accepted missing file path")
 	}
 }
 

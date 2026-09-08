@@ -31,14 +31,15 @@ job "hello-norn-mysql-migrate" {
       }
 
       env {
-        MYSQL_CA_FILE = "${NOMAD_SECRETS_DIR}/mysql-ca.pem"
+        MYSQL_DSN_FILE       = "${NOMAD_SECRETS_DIR}/mysql-dsn"
+        MYSQL_CA_FILE        = "${NOMAD_SECRETS_DIR}/mysql-ca.pem"
+        MYSQL_PINNED_IP_FILE = "${NOMAD_SECRETS_DIR}/mysql-pinned-ip"
       }
 
       # Migration identity has CREATE only for pilot_records. It receives no
       # runtime table privileges and exists for this one job, never the web job.
       template {
-        destination          = "secrets/mysql-migration.env"
-        env                  = true
+        destination          = "secrets/mysql-dsn"
         change_mode          = "restart"
         perms                = "0400"
         uid                  = 65532
@@ -46,8 +47,21 @@ job "hello-norn-mysql-migrate" {
         error_on_missing_key = true
         data = <<-EOT
 {{ with nomadVar "nomad/jobs/hello-norn-mysql-migrate" }}
-MYSQL_DSN={{ .MYSQL_DSN.Value | toJSON }}
-MYSQL_PINNED_IP={{ .MYSQL_PINNED_IP.Value | toJSON }}
+{{ .MYSQL_DSN.Value }}
+{{ end }}
+EOT
+      }
+
+      template {
+        destination          = "secrets/mysql-pinned-ip"
+        change_mode          = "restart"
+        perms                = "0400"
+        uid                  = 65532
+        gid                  = 65532
+        error_on_missing_key = true
+        data = <<-EOT
+{{ with nomadVar "nomad/jobs/hello-norn-mysql-migrate" }}
+{{ .MYSQL_PINNED_IP.Value }}
 {{ end }}
 EOT
       }

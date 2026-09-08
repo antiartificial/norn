@@ -103,16 +103,16 @@ job "hello-norn-mysql" {
       }
 
       env {
-        # These are paths, not secret values. Nomad renders the DSN only into
-        # the process environment from the ACL-restricted runtime variable.
-        MYSQL_CA_FILE = "${NOMAD_SECRETS_DIR}/mysql-ca.pem"
+        # These are allocation file paths, never secret values.
+        MYSQL_DSN_FILE         = "${NOMAD_SECRETS_DIR}/mysql-dsn"
+        MYSQL_CA_FILE          = "${NOMAD_SECRETS_DIR}/mysql-ca.pem"
+        MYSQL_PINNED_IP_FILE   = "${NOMAD_SECRETS_DIR}/mysql-pinned-ip"
+        PILOT_WRITE_TOKEN_FILE = "${NOMAD_SECRETS_DIR}/pilot-write-token"
       }
 
       # Runtime identity: SELECT, INSERT and UPDATE on pilot_records only.
-      # toJSON preserves a DSN containing punctuation as one dotenv value.
       template {
-        destination          = "secrets/mysql-runtime.env"
-        env                  = true
+        destination          = "secrets/mysql-dsn"
         change_mode          = "restart"
         perms                = "0400"
         uid                  = 65532
@@ -120,9 +120,35 @@ job "hello-norn-mysql" {
         error_on_missing_key = true
         data = <<-EOT
 {{ with nomadVar "nomad/jobs/hello-norn-mysql" }}
-MYSQL_DSN={{ .MYSQL_DSN.Value | toJSON }}
-MYSQL_PINNED_IP={{ .MYSQL_PINNED_IP.Value | toJSON }}
-PILOT_WRITE_TOKEN={{ .PILOT_WRITE_TOKEN.Value | toJSON }}
+{{ .MYSQL_DSN.Value }}
+{{ end }}
+EOT
+      }
+
+      template {
+        destination          = "secrets/mysql-pinned-ip"
+        change_mode          = "restart"
+        perms                = "0400"
+        uid                  = 65532
+        gid                  = 65532
+        error_on_missing_key = true
+        data = <<-EOT
+{{ with nomadVar "nomad/jobs/hello-norn-mysql" }}
+{{ .MYSQL_PINNED_IP.Value }}
+{{ end }}
+EOT
+      }
+
+      template {
+        destination          = "secrets/pilot-write-token"
+        change_mode          = "restart"
+        perms                = "0400"
+        uid                  = 65532
+        gid                  = 65532
+        error_on_missing_key = true
+        data = <<-EOT
+{{ with nomadVar "nomad/jobs/hello-norn-mysql" }}
+{{ .PILOT_WRITE_TOKEN.Value }}
 {{ end }}
 EOT
       }

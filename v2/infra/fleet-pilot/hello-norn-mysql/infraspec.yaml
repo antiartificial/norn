@@ -14,10 +14,15 @@ build:
   # deployable evidence.
   image: registry.invalid/norn/hello-norn-mysql@sha256:0000000000000000000000000000000000000000000000000000000000000000
   test: go test ./...
-# This catalog stays intentionally disabled. Norn's current translator injects
-# encrypted catalog secrets into task.Env, which is not acceptable for a MySQL
-# password. Use the direct Nomad-variable job in nomad/ until that transport is
-# extended to render protected secret files.
+# The deployment gate remains disabled: this schema closes the secret file
+# transport gap, but does not yet express every reviewed direct-job property
+# (namespace/provenance metadata, restricted TLS router, liveness and rollout).
+# A catalog promotion must preserve those before it enables deployment.
+env:
+  MYSQL_DSN_FILE: "${NOMAD_SECRETS_DIR}/mysql-dsn"
+  MYSQL_CA_FILE: "${NOMAD_SECRETS_DIR}/mysql-ca.pem"
+  MYSQL_PINNED_IP_FILE: "${NOMAD_SECRETS_DIR}/mysql-pinned-ip"
+  PILOT_WRITE_TOKEN_FILE: "${NOMAD_SECRETS_DIR}/pilot-write-token"
 placement:
   nodePool: ingress
   distinctHosts: true
@@ -47,6 +52,21 @@ processes:
     drain:
       signal: SIGTERM
       timeout: 20s
+    # Nomad derives nomad/jobs/hello-norn-mysql from this service job ID; the
+    # source path is not configurable in InfraSpec. Every value is rendered as
+    # a 0400 allocation file owned by the image's non-root runtime user.
+    nomadVariables:
+      uid: 65532
+      gid: 65532
+      files:
+        - key: MYSQL_DSN
+          destination: mysql-dsn
+        - key: MYSQL_CA_PEM
+          destination: mysql-ca.pem
+        - key: MYSQL_PINNED_IP
+          destination: mysql-pinned-ip
+        - key: PILOT_WRITE_TOKEN
+          destination: pilot-write-token
 endpoints:
   # Catalog promotion replaces this non-routable placeholder with the reviewed
   # Access-protected staging origin before deployment can be enabled.

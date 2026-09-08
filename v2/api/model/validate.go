@@ -4,7 +4,9 @@ import (
 	"fmt"
 	"net"
 	"net/url"
+	"path"
 	"regexp"
+	"sort"
 	"strings"
 	"time"
 )
@@ -30,6 +32,8 @@ var bucketNameRe = regexp.MustCompile(`^[a-z0-9][a-z0-9.-]{1,61}[a-z0-9]$`)
 var envNameRe = regexp.MustCompile(`^[A-Za-z][A-Za-z0-9_]*$`)
 var kafkaTopicNameRe = regexp.MustCompile(`^[A-Za-z0-9._-]+$`)
 var postgresDatabaseNameRe = regexp.MustCompile(`^[A-Za-z0-9_.-]{1,63}$`)
+var nomadVariableKeyRe = regexp.MustCompile(`^[A-Z][A-Z0-9_]{0,127}$`)
+var nomadSecretFileNameRe = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$`)
 
 // IsSafePostgresDatabaseName restricts database names used by Norn's local
 // snapshot tooling to a portable PostgreSQL identifier subset. In addition to
@@ -96,6 +100,7 @@ func ValidateSpecWithOptions(spec *InfraSpec, opts ValidationOptions) *Validatio
 
 	for name, proc := range spec.Processes {
 		field := fmt.Sprintf("processes.%s", name)
+		validateNomadVariableFiles(r, spec, field, proc)
 		seenRegions := map[string]bool{}
 		for _, region := range proc.Regions {
 			if _, ok := spec.Regions[region]; !ok {
@@ -420,6 +425,123 @@ func validateEnvSecrets(r *ValidationResult, field string, env map[string]string
 		}
 		r.add(severity, field+"."+key, "secret-like value should move to secrets.enc.yaml and be listed in secrets")
 	}
+}
+
+func validateNomadVariableFiles(r *ValidationResult, spec *InfraSpec, field string, proc Process) {
+	transport := proc.NomadVariables
+	if transport == nil {
+		return
+	}
+	// The processEnvironment boundary intentionally withholds every runtime
+	// value when this transport is enabled. Object storage and Kafka provision
+	// values at submission time, so accepting the combination before those
+	// values have explicit typed file mappings would silently omit credentials
+	// and endpoints from the allocation. Fail before provisioning anything.
+	if generatedRuntimeEnvironmentKinds(spec) != "" {
+		r.add("error", field+".nomadVariables", "cannot be combined with generated "+generatedRuntimeEnvironmentKinds(spec)+" runtime values until typed generated-value file mappings are supported")
+	}
+	if len(transport.Files) == 0 {
+		r.add("error", field+".nomadVariables.files", "at least one file mapping is required")
+	}
+	if len(transport.Files) > 16 {
+		r.add("error", field+".nomadVariables.files", "at most 16 file mappings are allowed")
+	}
+	if transport.UID <= 0 || transport.GID <= 0 {
+		r.add("error", field+".nomadVariables", "uid and gid must be explicit positive task identity values")
+	}
+	if transport.UID > 2147483647 || transport.GID > 2147483647 {
+		r.add("error", field+".nomadVariables", "uid and gid must be valid Unix identity values")
+	}
+	keys := map[string]bool{}
+	destinations := map[string]bool{}
+	for i, file := range transport.Files {
+		fileField := fmt.Sprintf("%s.nomadVariables.files[%d]", field, i)
+		if !nomadVariableKeyRe.MatchString(file.Key) {
+			r.add("error", fileField+".key", "key must be an uppercase Nomad variable key")
+		}
+		if keys[file.Key] {
+			r.add("error", fileField+".key", "key must be unique")
+		}
+		keys[file.Key] = true
+		if !validNomadSecretDestination(file.Destination) {
+			r.add("error", fileField+".destination", "destination must be one safe allocation-relative filename")
+		}
+		if destinations[file.Destination] {
+			r.add("error", fileField+".destination", "destination must be unique")
+		}
+		destinations[file.Destination] = true
+		if spec.Env != nil {
+			if _, present := spec.Env[file.Key]; present {
+				r.add("error", "env."+file.Key, "a Nomad variable value must not also be supplied through task environment")
+			}
+		}
+		if _, present := proc.Env[file.Key]; present {
+			r.add("error", field+".env."+file.Key, "a Nomad variable value must not also be supplied through task environment")
+		}
+	}
+}
+
+func generatedRuntimeEnvironmentKinds(spec *InfraSpec) string {
+	if spec == nil || spec.Infrastructure == nil {
+		return ""
+	}
+	kinds := make([]string, 0, 2)
+	if spec.Infrastructure.ObjectStorage != nil {
+		kinds = append(kinds, "object-storage")
+	}
+	if spec.Infrastructure.Kafka != nil {
+		kinds = append(kinds, "Kafka")
+	}
+	return strings.Join(kinds, " and ")
+}
+
+// ValidateNomadVariableFilesForSpec re-applies the semantic constraints for
+// Nomad variable-file transport at scheduling time. Catalog validation is not
+// a sufficient boundary: an operator can modify an on-disk catalog after a
+// deployment has been accepted, and every Nomad submission must still fail
+// closed before it constructs template data.
+func ValidateNomadVariableFilesForSpec(spec *InfraSpec) error {
+	if spec == nil {
+		return fmt.Errorf("infraspec is required")
+	}
+	names := make([]string, 0, len(spec.Processes))
+	for name := range spec.Processes {
+		names = append(names, name)
+	}
+	sort.Strings(names)
+	for _, name := range names {
+		if err := ValidateNomadVariableFilesForProcess(spec, name, spec.Processes[name]); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+// ValidateNomadVariableFilesForProcess validates the process passed to a
+// direct scheduler path (periodic and function jobs use a copied process).
+// It intentionally checks only the transport contract, rather than requiring
+// every catalog-wide validation rule, so administrative schedule changes do
+// not change this narrow runtime safety boundary.
+func ValidateNomadVariableFilesForProcess(spec *InfraSpec, processName string, proc Process) error {
+	if spec == nil {
+		return fmt.Errorf("infraspec is required")
+	}
+	result := &ValidationResult{App: spec.App, Valid: true}
+	validateNomadVariableFiles(result, spec, "processes."+processName, proc)
+	if result.Valid {
+		return nil
+	}
+	findings := make([]string, 0, len(result.Findings))
+	for _, finding := range result.Findings {
+		if finding.Severity == "error" {
+			findings = append(findings, fmt.Sprintf("%s: %s", finding.Field, finding.Message))
+		}
+	}
+	return fmt.Errorf("invalid Nomad variable-file transport: %s", strings.Join(findings, "; "))
+}
+
+func validNomadSecretDestination(destination string) bool {
+	return path.Clean(destination) == destination && !strings.ContainsAny(destination, `/\\`) && nomadSecretFileNameRe.MatchString(destination) && destination != "." && destination != ".."
 }
 
 func looksSecretLike(key, value string) bool {

@@ -44,6 +44,9 @@ func (c *AppleConnector) Validate(spec *model.InfraSpec, production bool) error 
 		return fmt.Errorf("apple-container connector supports only the implicit local region")
 	}
 	for name, process := range spec.Processes {
+		if process.NomadVariables != nil {
+			return fmt.Errorf("process %s requires Nomad variable file transport, which is not supported by the apple-container connector", name)
+		}
 		if len(engine.ContainerName(spec.App, name, 0))+len("-new") > 63 {
 			return fmt.Errorf("process %s produces an Apple container name longer than 63 characters", name)
 		}
