@@ -946,6 +946,15 @@ func TestExternalCallbackBindingsRejectPlaceholderAndDrift(t *testing.T) {
 	if !externalClaimStatusMatches(status, claim) {
 		t.Fatal("exact claimed callback rejected")
 	}
+	status.Snapshot.Ref = "evidence://substituted"
+	if externalClaimStatusMatches(status, claim) {
+		t.Fatal("snapshot content drift accepted with stale snapshot digest")
+	}
+	status.Snapshot.Ref = "evidence://snap"
+	status.Snapshot.SHA256, snapshotErr = externalFleetSnapshotDigest(status.Snapshot)
+	if snapshotErr != nil {
+		t.Fatal(snapshotErr)
+	}
 	status.ProofDigest = strings.Repeat("0", 64)
 	if externalClaimStatusMatches(status, claim) {
 		t.Fatal("drifted proof callback accepted")
