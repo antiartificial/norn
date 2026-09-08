@@ -44,6 +44,7 @@ type ExternalDeploymentNonce struct {
 	ClaimedAt              *time.Time
 	SupersededAt           *time.Time
 	Revision               int64
+	ServiceRevision        int64
 }
 
 // ExternalDeploymentAdmissionState is a server-owned audit lifecycle. The
@@ -96,6 +97,7 @@ type ExternalDeploymentNonceRegistration struct {
 	ClaimedAt            *time.Time
 	SupersededAt         *time.Time
 	Revision             int64
+	ServiceRevision      int64
 }
 
 // ExternalDeploymentCheckpointRef persists opaque evidence pointers only. It
@@ -145,6 +147,24 @@ func (db *DB) RecordExternalDeploymentCleanupBindings(ctx context.Context, snaps
 	}
 	tag, err := db.Pool.Exec(ctx, `UPDATE external_deployment_admissions SET service_commit_revision=$2, cleanup_intent_sha256=$3, absence_proof_sha256=$4, updated_at=now()
 		WHERE id=$1 AND state IN ('committed','cleanup_pending') AND (cleanup_intent_sha256='' OR (service_commit_revision=$2 AND cleanup_intent_sha256=$3 AND absence_proof_sha256=$4))`, snapshot.AdmissionID, snapshot.CommitRevision, snapshot.CleanupIntentSHA256, snapshot.AbsenceProofSHA256)
+	if err != nil {
+		return err
+	}
+	if tag.RowsAffected() != 1 {
+		return ErrExternalDeploymentAdmissionUnavailable
+	}
+	return nil
+}
+
+// RecordExternalDeploymentCommitBinding records the service CAS result before
+// cleanup evidence exists.  Absence proof is intentionally not invented at
+// commit time: it is supplied only by the later protected cleanup transition.
+func (db *DB) RecordExternalDeploymentCommitBinding(ctx context.Context, snapshot ExternalDeploymentServiceSnapshot) error {
+	if db == nil || db.Pool == nil || snapshot.AdmissionID == "" || snapshot.CommitRevision < 1 || len(snapshot.CleanupIntentSHA256) != 64 {
+		return ErrExternalDeploymentAdmissionUnavailable
+	}
+	tag, err := db.Pool.Exec(ctx, `UPDATE external_deployment_admissions SET service_commit_revision=$2, cleanup_intent_sha256=$3, updated_at=now()
+		WHERE id=$1 AND state IN ('committed','cleanup_pending') AND (cleanup_intent_sha256='' OR (service_commit_revision=$2 AND cleanup_intent_sha256=$3))`, snapshot.AdmissionID, snapshot.CommitRevision, snapshot.CleanupIntentSHA256)
 	if err != nil {
 		return err
 	}
@@ -233,6 +253,11 @@ func (db *DB) GetExternalDeploymentNonceRegistration(ctx context.Context, admiss
 	if err := json.Unmarshal(metadata, &registration.RegistrationMetadata); err != nil {
 		return nil, fmt.Errorf("decode external deployment nonce registration metadata: %w", err)
 	}
+	if raw := registration.RegistrationMetadata["serviceRevision"]; raw != "" {
+		if _, err := fmt.Sscan(raw, &registration.ServiceRevision); err != nil || registration.ServiceRevision < 1 {
+			return nil, ErrExternalDeploymentAdmissionUnavailable
+		}
+	}
 	return &registration, nil
 }
 
@@ -282,8 +307,8 @@ func externalDeploymentEvidenceAlreadyClaimed(ctx context.Context, tx pgx.Tx, ad
 // MarkExternalDeploymentNonceReady is called only after the external nonce
 // registration write has succeeded. It is the registration-before-disclosure
 // barrier: callers must not return the raw nonce until this transaction commits.
-func (db *DB) MarkExternalDeploymentNonceReady(ctx context.Context, admissionID, nonceID string, generation int64, registrationRef string) error {
-	if db == nil || db.Pool == nil || admissionID == "" || nonceID == "" || generation <= 0 || registrationRef == "" {
+func (db *DB) MarkExternalDeploymentNonceReady(ctx context.Context, admissionID, nonceID string, generation int64, registrationRef string, serviceRevision int64) error {
+	if db == nil || db.Pool == nil || admissionID == "" || nonceID == "" || generation <= 0 || registrationRef == "" || serviceRevision < 1 {
 		return ErrExternalDeploymentAdmissionUnavailable
 	}
 	tx, err := db.Pool.Begin(ctx)
@@ -291,8 +316,8 @@ func (db *DB) MarkExternalDeploymentNonceReady(ctx context.Context, admissionID,
 		return err
 	}
 	defer tx.Rollback(ctx)
-	tag, err := tx.Exec(ctx, `UPDATE external_deployment_nonces SET state='ready', registered_at=now(), revision=revision+1
-		WHERE id=$1 AND admission_id=$2 AND registration_generation=$3 AND registration_ref=$4 AND state='registering' AND expires_at > now()`, nonceID, admissionID, generation, registrationRef)
+	tag, err := tx.Exec(ctx, `UPDATE external_deployment_nonces SET state='ready', registered_at=now(), revision=revision+1, registration_metadata=registration_metadata || jsonb_build_object('serviceRevision',$5::text)
+		WHERE id=$1 AND admission_id=$2 AND registration_generation=$3 AND registration_ref=$4 AND state='registering' AND expires_at > now()`, nonceID, admissionID, generation, registrationRef, fmt.Sprint(serviceRevision))
 	if err != nil {
 		return err
 	}
@@ -436,13 +461,15 @@ func (db *DB) IssueExternalDeploymentNonce(ctx context.Context, nonce ExternalDe
 			}
 			return err
 		}
-		if state != ExternalDeploymentAdmissionInitiated && state != ExternalDeploymentAdmissionNonceRegistering {
+		if state != ExternalDeploymentAdmissionInitiated && state != ExternalDeploymentAdmissionNonceRegistering && state != ExternalDeploymentAdmissionNonceReady {
 			return ErrExternalDeploymentAdmissionUnavailable
 		}
 		// A retried registration gets a new opaque nonce. Retire a previous
-		// undisclosed registration first so it cannot later become ready.
+		// unclaimed registration first so it cannot later become ready or be
+		// accepted by a local retry. The remote generation transition is CASed
+		// with the prior service revision by the handler.
 		if _, err := tx.Exec(ctx, `UPDATE external_deployment_nonces SET state='superseded', superseded_at=now(), revision=revision+1
-			WHERE admission_id=$1 AND state='registering'`, nonce.AdmissionID); err != nil {
+			WHERE admission_id=$1 AND state IN ('registering','ready')`, nonce.AdmissionID); err != nil {
 			return err
 		}
 	}
@@ -454,7 +481,7 @@ func (db *DB) IssueExternalDeploymentNonce(ctx context.Context, nonce ExternalDe
 	if nonce.AdmissionID != "" {
 		tag, err := tx.Exec(ctx, `UPDATE external_deployment_admissions
 			SET state='nonce_registering', nonce_id=$2, nonce_generation=$3, registration_ref=$4, updated_at=now()
-			WHERE id=$1 AND state IN ('initiated','nonce_registering')`, nonce.AdmissionID, nonce.ID, nonce.RegistrationGeneration, nonce.RegistrationRef)
+			WHERE id=$1 AND state IN ('initiated','nonce_registering','nonce_ready')`, nonce.AdmissionID, nonce.ID, nonce.RegistrationGeneration, nonce.RegistrationRef)
 		if err != nil {
 			return err
 		}

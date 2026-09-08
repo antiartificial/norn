@@ -204,20 +204,28 @@ of truth for state, logical identity/digest, nonce generation, operation,
 cleanup state, retry lineage, and server checkpoint references. A caller must
 not infer cleanup completion from a lost HTTP response.
 
-### Evidence-service v1 response contract
+### Evidence-service callback/status contract
 
-The configured evidence origin returns one JSON object with
-`schemaVersion: "norn.external-fleet-evidence/v1"`. Required fields are
-`repository`, `verification`, `fixtureHclSha256`, `canonical`,
-`planAttemptId`, `checkpointAttemptId`, `nonceSha256`, `nonceWrittenAt`,
-`nonceReadAt`, `attempt`, and `checkpoints`. `attempt` has exact JSON names
-`planId`, `attemptId`, `rootAttemptId`, `revision`, `terminalStatus`,
-`currentPhase`, `sourceDispatchRunId`, `workflowUrl`, and `retryLineage`.
-It records the actual Norn-owned durable state (`running`/`complete`), never
-an invented pre-admission transition or a post-Norn `succeeded` state. Each of exactly four checkpoints
-uses `id`, `phase`, `status`, `evidenceSha256`, and `attemptId`; phases are
-`prepare`, `migration`, `runtime`, and `exercise`, all succeeded and attempt
-bound. Prepare is checkpoint evidence, not a Nomad job.
+The legacy mutable `POST /v1/external-fleet/evidence` interface is not used.
+Norn uses the owner-only v4 callback resource instead: `PUT registration`,
+`POST claim`, `POST commit`, and authenticated `GET status`, all under the
+exact admission ID and generation. Every request and response declares a v4
+schema version and is a CAS operation. Registration carries the stable logical
+identity, current attempt/CI context, nonce SHA-256, generation, expected
+revision, and issuance window. Claim binds the canonical receipt and proof
+digests and returns one immutable snapshot. Commit binds that snapshot,
+receipt/proof digests, operation ID and canonical operation digest, and a
+deterministic cleanup-intent digest.
+
+The status snapshot is service-owned: it contains its immutable ID/ref/SHA-256,
+fresh live observation timestamps, allocation proof, authoritative retry
+lineage, and checkpoint references. Norn persists and re-reads that projection;
+it never derives checkpoint history from receipt timestamps. A service timeout
+is recovered only by reading the exact status generation and adopting an
+identical registration, claim, or commit response. The later protected cleanup
+evidence CAS adds the absence-proof digest and only then exposes
+`cleanup_ready`; Norn compares every persisted admission, operation, receipt,
+snapshot, revision, intent, and absence binding before marking complete.
 
 The receipt carries `fleet.rootAttemptId`. For an admission retry after a lost
 success response, reuse the same client `Idempotency-Key`; Norn derives its

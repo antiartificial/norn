@@ -136,10 +136,10 @@ func TestExternalDeploymentAdmissionV4Lifecycle(t *testing.T) {
 	if err := db.Pool.QueryRow(ctx, `SELECT n.state, a.state, n.registration_generation, n.revision FROM external_deployment_nonces n JOIN external_deployment_admissions a ON a.nonce_id=n.id WHERE n.id=$1`, nonce.ID).Scan(&nonceState, &admissionState, &generation, &revision); err != nil || nonceState != "registering" || admissionState != string(ExternalDeploymentAdmissionNonceRegistering) || generation != 1 || revision != 1 {
 		t.Fatalf("pre-disclosure nonce state=%q admission=%q generation=%d revision=%d err=%v", nonceState, admissionState, generation, revision, err)
 	}
-	if err := db.MarkExternalDeploymentNonceReady(ctx, admissionID, nonce.ID, 1, nonce.RegistrationRef); err != nil {
+	if err := db.MarkExternalDeploymentNonceReady(ctx, admissionID, nonce.ID, 1, nonce.RegistrationRef, 1); err != nil {
 		t.Fatal(err)
 	}
-	if err := db.MarkExternalDeploymentNonceReady(ctx, admissionID, nonce.ID, 1, nonce.RegistrationRef); err != nil {
+	if err := db.MarkExternalDeploymentNonceReady(ctx, admissionID, nonce.ID, 1, nonce.RegistrationRef, 1); err != nil {
 		t.Fatalf("exact ready replay = %v", err)
 	}
 	if err := db.ClaimExternalDeploymentAdmissionEvidence(ctx, admissionID, nonce.ID); err != nil {

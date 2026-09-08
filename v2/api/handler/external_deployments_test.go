@@ -8,6 +8,7 @@ import (
 	"crypto/sha256"
 	"crypto/x509"
 	"encoding/base64"
+	"encoding/hex"
 	"encoding/json"
 	"encoding/pem"
 	"errors"
@@ -903,6 +904,58 @@ func TestExternalFleetReceiptV4RequiresExactLiveNomadProof(t *testing.T) {
 	receipt.Fleet.Runtime.EvaluationChainIDs = []string{receipt.Fleet.Runtime.EvalID, receipt.Fleet.Runtime.EvalID}
 	if validExternalFleetReceiptV4(receipt, configured, receipt.App) {
 		t.Fatal("duplicate evaluation chain was accepted")
+	}
+}
+
+func TestExternalCallbackBindingsRejectPlaceholderAndDrift(t *testing.T) {
+	receipt := externalReceiptForTest()
+	receipt.SchemaVersion = externalFleetReceiptSchemaV4
+	receipt.AdmissionID = "00000000-0000-4000-8000-000000000099"
+	receipt.Fleet.FleetCommit = strings.Repeat("f", 40)
+	for _, proof := range []*ExternalFleetNomadJobProof{&receipt.Fleet.Migration, &receipt.Fleet.Runtime} {
+		proof.EvalCreateIndex, proof.EvalJobModifyIndex, proof.JobCreateIndex, proof.JobModifyIndex, proof.JobVersion = 1, 2, 1, 2, 0
+		proof.CurrentSpecSHA256, proof.SubmissionSHA256 = strings.Repeat("a", 64), strings.Repeat("b", 64)
+		proof.EvaluationChainIDs = []string{proof.EvalID}
+	}
+	canonical, err := externalReceiptCanonicalJSON(receipt)
+	if err != nil {
+		t.Fatal(err)
+	}
+	rd := sha256.Sum256(canonical)
+	proof, err := externalAdmissionProofDigest(receipt)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if proof == hex.EncodeToString(rd[:]) {
+		t.Fatal("proof digest must not alias transport receipt digest")
+	}
+	claim := ExternalFleetEvidenceClaim{SchemaVersion: "norn.external-fleet-admission-callback/v4", AdmissionID: receipt.AdmissionID, LogicalDigest: "sha256:" + strings.Repeat("d", 64), AdmissionContextDigest: strings.Repeat("d", 64), NonceSHA256: strings.Repeat("e", 64), Generation: 1, ExpectedRevision: 2, ReceiptDigest: hex.EncodeToString(rd[:]), ProofDigest: proof}
+	status := &ExternalFleetEvidenceAdmissionStatus{SchemaVersion: "norn.external-fleet-admission-status/v4", AdmissionID: claim.AdmissionID, LogicalDigest: claim.LogicalDigest, AdmissionContextDigest: claim.AdmissionContextDigest, NonceSHA256: claim.NonceSHA256, Generation: 1, State: "claimed", Revision: 3, ReceiptDigest: claim.ReceiptDigest, ProofDigest: claim.ProofDigest, Snapshot: &ExternalFleetEvidenceSnapshot{ID: "snap", Ref: "evidence://snap", SHA256: strings.Repeat("c", 64), LiveCheckedAt: time.Now(), RetryLineage: []string{"root", "current"}, CheckpointRefs: []ExternalFleetCheckpointRef{{Phase: "external_admission", CheckpointID: "cp", AttemptID: "current", EvidenceRef: "evidence://cp", EvidenceSHA256: strings.Repeat("a", 64)}}}}
+	if !externalClaimStatusMatches(status, claim) {
+		t.Fatal("exact claimed callback rejected")
+	}
+	status.ProofDigest = strings.Repeat("0", 64)
+	if externalClaimStatusMatches(status, claim) {
+		t.Fatal("drifted proof callback accepted")
+	}
+	status.ProofDigest = claim.ProofDigest
+	commit := claim
+	commit.ExpectedRevision, commit.OperationID, commit.OperationDigest = status.Revision, "op", strings.Repeat("f", 64)
+	intent, err := externalCleanupIntentDigest(claim.AdmissionID, commit.OperationID, commit.OperationDigest, claim.ReceiptDigest, status.Snapshot.ID, status.Snapshot.Ref, status.Snapshot.SHA256)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if intent == strings.Repeat("0", 64) {
+		t.Fatal("cleanup intent must never use placeholder digest")
+	}
+	commit.CleanupIntentDigest = intent
+	status.State, status.Revision, status.OperationID, status.OperationDigest, status.CleanupIntentDigest = "committed", 4, commit.OperationID, commit.OperationDigest, intent
+	if !externalCommitStatusMatches(status, commit, status.Snapshot) {
+		t.Fatal("exact committed callback rejected")
+	}
+	status.OperationDigest = strings.Repeat("0", 64)
+	if externalCommitStatusMatches(status, commit, status.Snapshot) {
+		t.Fatal("drifted operation digest accepted")
 	}
 }
 

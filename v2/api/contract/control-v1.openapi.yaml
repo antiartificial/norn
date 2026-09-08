@@ -2675,7 +2675,16 @@ components:
         checkpoints:
           type: array
           readOnly: true
-          items: { type: string }
+          items:
+            type: object
+            additionalProperties: false
+            required: [phase, checkpointId, attemptId, evidenceRef, evidenceSha256]
+            properties:
+              phase: { type: string }
+              checkpointId: { type: string }
+              attemptId: { type: string }
+              evidenceRef: { type: string }
+              evidenceSha256: { type: string, pattern: '^[0-9a-f]{64}$' }
     ExternalFleetChronologyStep:
       type: object
       additionalProperties: false

@@ -307,6 +307,7 @@ type ExternalFleetEvidenceClaim struct {
 	Generation             int64  `json:"generation"`
 	ExpectedRevision       int64  `json:"expectedRevision,omitempty"`
 	OperationID            string `json:"operationId,omitempty"`
+	OperationDigest        string `json:"operationDigest,omitempty"`
 	CleanupIntentDigest    string `json:"cleanupIntentDigest,omitempty"`
 }
 
@@ -686,33 +687,8 @@ func (v *ExternalFleetDeploymentLiveVerifier) VerifyExternalFleetDeployment(ctx 
 	return &snapshot.Verification, nil
 }
 
-func (v *ExternalFleetDeploymentLiveVerifier) postEvidence(ctx context.Context, body []byte, token string) (externalFleetEvidence, error) {
-	u := *v.evidenceURL
-	u.Path = strings.TrimRight(u.Path, "/") + "/v1/external-fleet/evidence"
-	u.RawQuery = ""
-	req, err := http.NewRequestWithContext(ctx, http.MethodPost, u.String(), bytes.NewReader(body))
-	if err != nil {
-		return externalFleetEvidence{}, externalVerifierErr("evidence-request")
-	}
-	req.Header.Set("Authorization", "Bearer "+token)
-	req.Header.Set("Content-Type", "application/json")
-	response, err := v.httpClient.Do(req)
-	if err != nil {
-		return externalFleetEvidence{}, externalVerifierErr("evidence-unavailable")
-	}
-	defer response.Body.Close()
-	if response.StatusCode != http.StatusOK {
-		return externalFleetEvidence{}, externalVerifierErr("evidence-rejected")
-	}
-	decoded, err := decodeExternalFleetJSON(response.Body, externalFleetEvidenceMaxBody, new(externalFleetEvidence))
-	if err != nil {
-		return externalFleetEvidence{}, externalVerifierErr("evidence-invalid")
-	}
-	return *decoded.(*externalFleetEvidence), nil
-}
-
 func (v *ExternalFleetDeploymentLiveVerifier) RegisterExternalFleetNonce(ctx context.Context, registration ExternalFleetEvidenceRegistration) (*ExternalFleetEvidenceAdmissionStatus, error) {
-	if registration.SchemaVersion != "norn.external-fleet-admission-callback/v4" || registration.AdmissionID == "" || registration.LogicalDigest == "" || !sha256HexPattern.MatchString(registration.NonceSHA256) || registration.Generation < 1 || registration.ExpectedRevision < 1 || registration.ExpiresAt.IsZero() || registration.IssuedAt.IsZero() || registration.AdmissionContextDigest == "" {
+	if registration.SchemaVersion != "norn.external-fleet-admission-callback/v4" || registration.AdmissionID == "" || registration.LogicalDigest == "" || !sha256HexPattern.MatchString(registration.NonceSHA256) || registration.Generation < 1 || registration.ExpectedRevision < 0 || registration.ExpiresAt.IsZero() || registration.IssuedAt.IsZero() || registration.AdmissionContextDigest == "" {
 		return nil, externalVerifierErr("registration-binding")
 	}
 	return v.registrationStatusRequest(ctx, http.MethodPut, "/v1/external-fleet/admissions/"+url.PathEscape(registration.AdmissionID)+"/registration", registration, registration.AdmissionID, registration.Generation, "registered")
@@ -726,7 +702,7 @@ func (v *ExternalFleetDeploymentLiveVerifier) ClaimExternalFleetNonce(ctx contex
 }
 
 func (v *ExternalFleetDeploymentLiveVerifier) CommitExternalFleetNonce(ctx context.Context, claim ExternalFleetEvidenceClaim) (*ExternalFleetEvidenceAdmissionStatus, error) {
-	if claim.SchemaVersion != "norn.external-fleet-admission-callback/v4" || claim.AdmissionID == "" || !sha256HexPattern.MatchString(claim.NonceSHA256) || claim.Generation < 1 || claim.ExpectedRevision < 1 || claim.OperationID == "" || !sha256HexPattern.MatchString(claim.ReceiptDigest) || !sha256HexPattern.MatchString(claim.ProofDigest) || !sha256HexPattern.MatchString(claim.CleanupIntentDigest) {
+	if claim.SchemaVersion != "norn.external-fleet-admission-callback/v4" || claim.AdmissionID == "" || !sha256HexPattern.MatchString(claim.NonceSHA256) || claim.Generation < 1 || claim.ExpectedRevision < 1 || claim.OperationID == "" || !sha256HexPattern.MatchString(claim.ReceiptDigest) || !sha256HexPattern.MatchString(claim.ProofDigest) || !sha256HexPattern.MatchString(claim.OperationDigest) || !sha256HexPattern.MatchString(claim.CleanupIntentDigest) {
 		return nil, externalVerifierErr("commit-binding")
 	}
 	return v.registrationStatusRequest(ctx, http.MethodPost, "/v1/external-fleet/admissions/"+url.PathEscape(claim.AdmissionID)+"/commit", claim, claim.AdmissionID, claim.Generation, "committed")
@@ -758,10 +734,6 @@ func (v *ExternalFleetDeploymentLiveVerifier) GetExternalFleetAdmissionStatus(ct
 		return nil, externalVerifierErr("status-invalid")
 	}
 	return &status, nil
-}
-
-func (v *ExternalFleetDeploymentLiveVerifier) registrationRequest(ctx context.Context, method, path string, payload any) error {
-	return v.registrationJSONRequest(ctx, method, path, payload, nil)
 }
 
 func (v *ExternalFleetDeploymentLiveVerifier) registrationJSONRequest(ctx context.Context, method, path string, payload any, destination any) error {
