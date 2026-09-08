@@ -593,7 +593,7 @@ type ExternalDeploymentAdmissionResult struct {
 // same idempotency key and request digest return the original operation;
 // another request never gets to consume the nonce after that operation exists.
 func (db *DB) AdmitExternalDeployment(ctx context.Context, admission ExternalDeploymentAdmission) (*ExternalDeploymentAdmissionResult, error) {
-	if db == nil || db.Pool == nil || admission.Deployment == nil || admission.Operation == nil || admission.IdempotencyKey == "" || admission.RequestDigest == "" || admission.Nonce.ID == "" || admission.Nonce.NonceSHA256 == "" || admission.Nonce.App == "" || admission.Nonce.Environment == "" || admission.Nonce.CIRepository == "" || admission.Nonce.CIRunID == "" || admission.Nonce.CIRunAttempt == "" || !admission.Operation.Status.Terminal() || admission.Deployment.FinishedAt == nil || admission.Operation.FinishedAt == nil || len(admission.Regions) == 0 || (admission.AdmissionID != "" && (admission.NonceGeneration <= 0 || admission.ServiceSnapshot.SnapshotID == "" || len(admission.ServiceSnapshot.SnapshotSHA256) != 64 || len(admission.ServiceSnapshot.ReceiptDigest) != 64 || len(admission.ServiceSnapshot.ProofDigest) != 64)) || (admission.AdmissionID == "" && admission.NonceGeneration != 0) {
+	if db == nil || db.Pool == nil || admission.Deployment == nil || admission.Operation == nil || admission.IdempotencyKey == "" || admission.RequestDigest == "" || admission.Nonce.ID == "" || admission.Nonce.NonceSHA256 == "" || admission.Nonce.App == "" || admission.Nonce.Environment == "" || admission.Nonce.CIRepository == "" || admission.Nonce.CIRunID == "" || admission.Nonce.CIRunAttempt == "" || !admission.Operation.Status.Terminal() || admission.Deployment.FinishedAt == nil || admission.Operation.FinishedAt == nil || len(admission.Regions) == 0 || (admission.AdmissionID != "" && (admission.NonceGeneration <= 0 || admission.ServiceSnapshot.SnapshotID == "" || len(admission.ServiceSnapshot.SnapshotSHA256) != 64 || len(admission.ServiceSnapshot.ReceiptDigest) != 64 || len(admission.ServiceSnapshot.ProofDigest) != 64 || len(admission.ServiceSnapshot.CleanupIntentSHA256) != 64)) || (admission.AdmissionID == "" && admission.NonceGeneration != 0) {
 		return nil, fmt.Errorf("external deployment admission store is unavailable")
 	}
 	for _, checkpoint := range admission.CheckpointRefs {
@@ -727,9 +727,9 @@ func completeExternalDeploymentAdmission(ctx context.Context, tx pgx.Tx, admissi
 		return nil
 	}
 	tag, err := tx.Exec(ctx, `UPDATE external_deployment_admissions
-		SET state='committed', operation_id=$2, failure_code='', updated_at=now(), completed_at=NULL
+		SET state='committed', operation_id=$2, cleanup_intent_sha256=$7, failure_code='', updated_at=now(), completed_at=NULL
 		WHERE id=$1 AND idempotency_key=$3 AND request_digest=$4 AND nonce_id=$5 AND nonce_generation=$6
-			AND state='evidence_claimed'`, admission.AdmissionID, operationID, admission.IdempotencyKey, admission.RequestDigest, admission.Nonce.ID, admission.NonceGeneration)
+			AND state='evidence_claimed' AND (cleanup_intent_sha256='' OR cleanup_intent_sha256=$7)`, admission.AdmissionID, operationID, admission.IdempotencyKey, admission.RequestDigest, admission.Nonce.ID, admission.NonceGeneration, admission.ServiceSnapshot.CleanupIntentSHA256)
 	if err != nil {
 		return err
 	}

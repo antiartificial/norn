@@ -531,9 +531,9 @@ func (h *Handler) CompleteExternalFleetDeploymentCleanup(w http.ResponseWriter, 
 		WriteControlProblem(w, r, http.StatusBadRequest, "invalid_external_deployment_cleanup", "cleanup requires admission, operation, receipt, intent, and absence-proof bindings")
 		return
 	}
-	var state, operationID, receiptDigest, expectedIntent, expectedAbsence, snapshotID, snapshotRef, snapshotSHA string
+	var state, operationID, receiptDigest, proofDigest, expectedIntent, expectedAbsence, snapshotID, snapshotRef, snapshotSHA string
 	var claimRevision, commitRevision, cleanupRevision int64
-	err := h.db.Pool.QueryRow(r.Context(), `SELECT a.state, COALESCE(a.operation_id,''), COALESCE(o.metadata->>'externalFleetProofSHA256',''), COALESCE(a.cleanup_intent_sha256,''), COALESCE(a.absence_proof_sha256,''), COALESCE(a.service_snapshot_id,''), COALESCE(a.service_snapshot_ref,''), COALESCE(a.service_snapshot_sha256,''), COALESCE(a.service_claim_revision,0), COALESCE(a.service_commit_revision,0), COALESCE(a.service_cleanup_revision,0) FROM external_deployment_admissions a LEFT JOIN operations o ON o.id=a.operation_id WHERE a.id=$1 AND a.app=$2 AND a.environment=$3 AND a.ci_repository=$4`, request.AdmissionID, appID, principal.Environment, principal.CI.Repository).Scan(&state, &operationID, &receiptDigest, &expectedIntent, &expectedAbsence, &snapshotID, &snapshotRef, &snapshotSHA, &claimRevision, &commitRevision, &cleanupRevision)
+	err := h.db.Pool.QueryRow(r.Context(), `SELECT a.state, COALESCE(a.operation_id,''), COALESCE(o.metadata->>'externalFleetProofSHA256',''), COALESCE(a.service_proof_sha256,''), COALESCE(a.cleanup_intent_sha256,''), COALESCE(a.absence_proof_sha256,''), COALESCE(a.service_snapshot_id,''), COALESCE(a.service_snapshot_ref,''), COALESCE(a.service_snapshot_sha256,''), COALESCE(a.service_claim_revision,0), COALESCE(a.service_commit_revision,0), COALESCE(a.service_cleanup_revision,0) FROM external_deployment_admissions a LEFT JOIN operations o ON o.id=a.operation_id WHERE a.id=$1 AND a.app=$2 AND a.environment=$3 AND a.ci_repository=$4`, request.AdmissionID, appID, principal.Environment, principal.CI.Repository).Scan(&state, &operationID, &receiptDigest, &proofDigest, &expectedIntent, &expectedAbsence, &snapshotID, &snapshotRef, &snapshotSHA, &claimRevision, &commitRevision, &cleanupRevision)
 	if err != nil || operationID != request.OperationID || receiptDigest != request.ReceiptDigest {
 		WriteControlProblem(w, r, http.StatusConflict, "external_deployment_cleanup_conflict", "cleanup binding does not match the committed server admission")
 		return
@@ -562,13 +562,14 @@ func (h *Handler) CompleteExternalFleetDeploymentCleanup(w http.ResponseWriter, 
 		return
 	}
 	status, statusErr := registrar.GetExternalFleetAdmissionStatus(r.Context(), admission.ID, admission.NonceGeneration)
-	if statusErr != nil || status == nil || status.State != "cleanup_ready" || status.LogicalDigest != admission.RequestDigest || !sha256HexPattern.MatchString(status.CleanupIntentDigest) || !sha256HexPattern.MatchString(status.AbsenceProofDigest) {
+	registration, registrationErr := h.db.GetExternalDeploymentNonceRegistration(r.Context(), admission.ID, admission.NonceID)
+	if statusErr != nil || registrationErr != nil || status == nil || status.State != "cleanup_ready" || status.LogicalDigest != admission.RequestDigest || status.AdmissionContextDigest != strings.TrimPrefix(admission.RequestDigest, "sha256:") || status.NonceSHA256 != registration.NonceSHA256 || status.ProofDigest != proofDigest || !sha256HexPattern.MatchString(status.CleanupIntentDigest) || !sha256HexPattern.MatchString(status.AbsenceProofDigest) {
 		WriteControlProblem(w, r, http.StatusConflict, "external_deployment_cleanup_conflict", "service-owned cleanup status does not exactly match the committed admission")
 		return
 	}
 	op, opErr := h.db.GetOperation(r.Context(), operationID)
 	opDigest, opDigestErr := externalOperationDigest(op)
-	if opErr != nil || opDigestErr != nil || status.AdmissionID != admission.ID || status.Generation != admission.NonceGeneration || status.OperationID != operationID || status.OperationDigest != opDigest || status.ReceiptDigest != receiptDigest || status.Snapshot == nil || status.Snapshot.ID != snapshotID || status.Snapshot.Ref != snapshotRef || status.Snapshot.SHA256 != snapshotSHA || status.Revision <= commitRevision || claimRevision < 1 || expectedIntent == "" || expectedIntent != status.CleanupIntentDigest {
+	if opErr != nil || opDigestErr != nil || status.AdmissionID != admission.ID || status.Generation != admission.NonceGeneration || status.OperationID != operationID || status.OperationDigest != opDigest || status.ReceiptDigest != receiptDigest || status.Snapshot == nil || status.Snapshot.ID != snapshotID || status.Snapshot.Ref != snapshotRef || status.Snapshot.SHA256 != snapshotSHA || status.Revision != commitRevision+1 || claimRevision < 1 || expectedIntent == "" || expectedIntent != status.CleanupIntentDigest {
 		WriteControlProblem(w, r, http.StatusConflict, "external_deployment_cleanup_conflict", "service-owned cleanup status has drifted from the committed admission")
 		return
 	}
@@ -632,7 +633,11 @@ func (h *Handler) ReconcileExternalFleetDeploymentAdmission(w http.ResponseWrite
 		return
 	}
 	if commitRevision > 0 {
-		writeJSON(w, externalFleetAdmissionResponse{SchemaVersion: "norn.external-fleet-admission/v4", AdmissionID: admission.ID, State: string(admission.State), OperationID: admission.OperationID, CleanupState: "pending"})
+		if err := h.db.MarkExternalDeploymentAdmissionCleanupPending(r.Context(), admission.ID); err != nil {
+			WriteControlProblem(w, r, http.StatusServiceUnavailable, "external_deployment_reconcile_unavailable", "committed remote admission could not advance to cleanup")
+			return
+		}
+		writeJSON(w, externalFleetAdmissionResponse{SchemaVersion: "norn.external-fleet-admission/v4", AdmissionID: admission.ID, State: string(store.ExternalDeploymentAdmissionCleanupPending), OperationID: admission.OperationID, CleanupState: "pending"})
 		return
 	}
 	registration, err := h.db.GetExternalDeploymentNonceRegistration(r.Context(), admission.ID, admission.NonceID)
@@ -848,6 +853,18 @@ func (h *Handler) AdmitExternalFleetDeployment(w http.ResponseWriter, r *http.Re
 	receiptHash := sha256.Sum256(canonicalReceipt)
 	metadata := map[string]interface{}{"idempotencyKey": key, "requestDigest": digest, "principal": principal.Subject, "principalTokenId": principal.TokenID, "requestCI": principal.CI, "environment": "staging", "candidate": receipt.Candidate, "externalFleetProof": redactedReceipt, "externalFleetProofSHA256": hex.EncodeToString(receiptHash[:]), "externalFleetVerification": verification, "nonceID": nonce.ID, "nonceSHA256": nonce.sha256()}
 	op := &model.Operation{ID: uuid.NewString(), Kind: "app.deploy", App: appID, SagaID: deployment.SagaID, Ref: receipt.SourceSHA, Status: model.OperationSucceeded, Risk: "externally executed staging workload", Source: "external-fleet-admission", Message: "independently verified external Fleet deployment admitted", Payload: map[string]interface{}{"deploymentId": deploymentID, "app": appID, "sourceSha": receipt.SourceSHA, "artifact": receipt.Artifact, "candidate": receipt.Candidate}, Metadata: metadata, StartedAt: now, FinishedAt: &now, MaxAttempts: 1}
+	// Persist the terminal operation and its exact remote-commit intent in the
+	// same transaction. A crash after this point is receipt-free recoverable.
+	opDigest, digestErr := externalOperationDigest(op)
+	if digestErr != nil || serviceSnapshot == nil {
+		WriteControlProblem(w, r, http.StatusInternalServerError, "external_deployment_store_failed", "failed to bind admitted operation")
+		return
+	}
+	cleanupDigest, cleanupErr := externalCleanupIntentDigest(admission.ID, op.ID, opDigest, hex.EncodeToString(receiptHash[:]), serviceSnapshot.ID, serviceSnapshot.Ref, serviceSnapshot.SHA256)
+	if cleanupErr != nil {
+		WriteControlProblem(w, r, http.StatusInternalServerError, "external_deployment_store_failed", "failed to bind cleanup intent")
+		return
+	}
 	regions, err := externalDeploymentRegions(spec.ResolvedRegions(), verification.Regions)
 	if err != nil {
 		WriteControlProblem(w, r, http.StatusForbidden, "external_deployment_verification_failed", err.Error())
@@ -867,7 +884,7 @@ func (h *Handler) AdmitExternalFleetDeployment(w http.ResponseWriter, r *http.Re
 			return admission.NonceGeneration
 		}
 		return 0
-	}(), CheckpointRefs: serviceCheckpointRefs, ServiceSnapshot: store.ExternalDeploymentServiceSnapshot{AdmissionID: admission.ID, SnapshotID: serviceSnapshot.ID, SnapshotRef: serviceSnapshot.Ref, SnapshotSHA256: serviceSnapshot.SHA256, RetryLineage: serviceSnapshot.RetryLineage, ReceiptDigest: serviceReceiptDigest, ProofDigest: serviceProofDigest, ClaimRevision: serviceClaimRevision}})
+	}(), CheckpointRefs: serviceCheckpointRefs, ServiceSnapshot: store.ExternalDeploymentServiceSnapshot{AdmissionID: admission.ID, SnapshotID: serviceSnapshot.ID, SnapshotRef: serviceSnapshot.Ref, SnapshotSHA256: serviceSnapshot.SHA256, RetryLineage: serviceSnapshot.RetryLineage, ReceiptDigest: serviceReceiptDigest, ProofDigest: serviceProofDigest, ClaimRevision: serviceClaimRevision, CleanupIntentSHA256: cleanupDigest}})
 	if err != nil {
 		switch {
 		case errors.Is(err, store.ErrExternalDeploymentNonceConsumed):
@@ -888,16 +905,6 @@ func (h *Handler) AdmitExternalFleetDeployment(w http.ResponseWriter, r *http.Re
 		registrar := h.externalFleetDeploymentVerifier.(ExternalFleetEvidenceRegistrationClient)
 		if serviceSnapshot == nil || serviceClaimRevision < 1 || serviceProofDigest == "" {
 			WriteControlProblem(w, r, http.StatusServiceUnavailable, "external_deployment_snapshot_unavailable", "claimed immutable service snapshot is unavailable")
-			return
-		}
-		opDigest, digestErr := externalOperationDigest(result.Operation)
-		if digestErr != nil {
-			WriteControlProblem(w, r, http.StatusInternalServerError, "external_deployment_store_failed", "failed to canonicalize admitted operation")
-			return
-		}
-		cleanupDigest, cleanupErr := externalCleanupIntentDigest(admission.ID, result.Operation.ID, opDigest, hex.EncodeToString(receiptHash[:]), serviceSnapshot.ID, serviceSnapshot.Ref, serviceSnapshot.SHA256)
-		if cleanupErr != nil {
-			WriteControlProblem(w, r, http.StatusInternalServerError, "external_deployment_store_failed", "failed to bind cleanup intent")
 			return
 		}
 		claim := ExternalFleetEvidenceClaim{SchemaVersion: "norn.external-fleet-admission-callback/v4", AdmissionID: admission.ID, LogicalDigest: digest, AdmissionContextDigest: strings.TrimPrefix(digest, "sha256:"), ReceiptDigest: hex.EncodeToString(receiptHash[:]), ProofDigest: serviceProofDigest, NonceSHA256: nonce.sha256(), Generation: admission.NonceGeneration, ExpectedRevision: serviceClaimRevision, OperationID: result.Operation.ID, OperationDigest: opDigest, CleanupIntentDigest: cleanupDigest}
