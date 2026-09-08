@@ -432,6 +432,14 @@ func validateNomadVariableFiles(r *ValidationResult, spec *InfraSpec, field stri
 	if transport == nil {
 		return
 	}
+	// The processEnvironment boundary intentionally withholds every runtime
+	// value when this transport is enabled. Object storage and Kafka provision
+	// values at submission time, so accepting the combination before those
+	// values have explicit typed file mappings would silently omit credentials
+	// and endpoints from the allocation. Fail before provisioning anything.
+	if generatedRuntimeEnvironmentKinds(spec) != "" {
+		r.add("error", field+".nomadVariables", "cannot be combined with generated "+generatedRuntimeEnvironmentKinds(spec)+" runtime values until typed generated-value file mappings are supported")
+	}
 	if len(transport.Files) == 0 {
 		r.add("error", field+".nomadVariables.files", "at least one file mapping is required")
 	}
@@ -471,6 +479,20 @@ func validateNomadVariableFiles(r *ValidationResult, spec *InfraSpec, field stri
 			r.add("error", field+".env."+file.Key, "a Nomad variable value must not also be supplied through task environment")
 		}
 	}
+}
+
+func generatedRuntimeEnvironmentKinds(spec *InfraSpec) string {
+	if spec == nil || spec.Infrastructure == nil {
+		return ""
+	}
+	kinds := make([]string, 0, 2)
+	if spec.Infrastructure.ObjectStorage != nil {
+		kinds = append(kinds, "object-storage")
+	}
+	if spec.Infrastructure.Kafka != nil {
+		kinds = append(kinds, "Kafka")
+	}
+	return strings.Join(kinds, " and ")
 }
 
 // ValidateNomadVariableFilesForSpec re-applies the semantic constraints for

@@ -36,3 +36,19 @@ func TestNomadConnectorValidateRejectsMutatedVariableFileTransport(t *testing.T)
 		t.Fatalf("err=%v, want variable transport rejection", err)
 	}
 }
+
+func TestNomadConnectorValidateRejectsGeneratedRuntimeValuesWithVariableFiles(t *testing.T) {
+	connector := &NomadConsulConnector{Nomad: &nomad.Client{}}
+	err := connector.Validate(&model.InfraSpec{
+		App: "orders",
+		Infrastructure: &model.Infrastructure{
+			Kafka: &model.KafkaInfra{Topics: []string{"orders.created"}},
+		},
+		Processes: map[string]model.Process{
+			"web": {NomadVariables: &model.NomadVariableFiles{UID: 65532, GID: 65532, Files: []model.NomadVariableFile{{Key: "DATABASE_URL", Destination: "database-url"}}}},
+		},
+	}, false)
+	if err == nil || !strings.Contains(err.Error(), "generated Kafka runtime values") {
+		t.Fatalf("err=%v, want generated runtime value rejection", err)
+	}
+}

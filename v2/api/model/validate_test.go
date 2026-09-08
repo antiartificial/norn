@@ -396,6 +396,28 @@ func TestValidateSpecAcceptsRestrictedNomadVariableFiles(t *testing.T) {
 	}
 }
 
+func TestValidateSpecRejectsNomadVariableFilesWithGeneratedRuntimeInfrastructure(t *testing.T) {
+	for name, infrastructure := range map[string]*Infrastructure{
+		"object-storage": {ObjectStorage: &ObjectStorageInfra{Buckets: []ObjectStorageBucket{{Name: "pilot-uploads"}}}},
+		"kafka":          {Kafka: &KafkaInfra{Topics: []string{"events"}}},
+	} {
+		t.Run(name, func(t *testing.T) {
+			spec := &InfraSpec{
+				App:            "pilot",
+				Infrastructure: infrastructure,
+				Processes: map[string]Process{
+					"web": {NomadVariables: &NomadVariableFiles{UID: 65532, GID: 65532, Files: []NomadVariableFile{{Key: "DATABASE_URL", Destination: "database-url"}}}},
+				},
+			}
+			result := ValidateSpec(spec)
+			if result.Valid {
+				t.Fatalf("expected generated runtime environment conflict, got %+v", result.Findings)
+			}
+			assertErrorFinding(t, result, "processes.web.nomadVariables")
+		})
+	}
+}
+
 func TestValidateSpecRejectsUnsafeNomadVariableFiles(t *testing.T) {
 	spec := &InfraSpec{
 		App: "pilot",

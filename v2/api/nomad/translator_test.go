@@ -131,6 +131,23 @@ func TestTranslationRejectsInvalidVariableFileTransportAtRuntime(t *testing.T) {
 	}
 }
 
+func TestTranslationRejectsGeneratedRuntimeInfrastructureWithVariableFilesAtScheduling(t *testing.T) {
+	spec := &model.InfraSpec{
+		App: "orders",
+		Infrastructure: &model.Infrastructure{
+			ObjectStorage: &model.ObjectStorageInfra{Buckets: []model.ObjectStorageBucket{{Name: "orders-assets"}}},
+			Kafka:         &model.KafkaInfra{Topics: []string{"orders.created"}},
+		},
+		Processes: map[string]model.Process{
+			"web": {NomadVariables: &model.NomadVariableFiles{UID: 65532, GID: 65532, Files: []model.NomadVariableFile{{Key: "DATABASE_URL", Destination: "database-url"}}}},
+		},
+	}
+	job, err := TranslateForRegion(spec, "orders:test", nil, spec.ResolvedRegions()[0])
+	if err == nil || job != nil || !strings.Contains(err.Error(), "generated object-storage and Kafka runtime values") {
+		t.Fatalf("job=%+v err=%v, want generated runtime environment rejection", job, err)
+	}
+}
+
 func TestPeriodicTranslationValidatesDirectProcessCopy(t *testing.T) {
 	spec := &model.InfraSpec{
 		App: "orders",
