@@ -104,11 +104,12 @@ type Config struct {
 	// ExternalFleetVerifier* is the read-only, separately credentialed pilot
 	// evidence adapter. It is intentionally all-or-nothing: partial values do
 	// not enable the direct-workload admission route.
-	ExternalFleetVerifierURL       string
-	ExternalFleetVerifierTokenFile string
-	ExternalFleetGitHubTokenFile   string
-	ExternalFleetGitHubCLIPath     string
-	ExternalFleetPublicBaseURL     string
+	ExternalFleetVerifierURL          string
+	ExternalFleetVerifierTokenFile    string
+	ExternalFleetGitHubTokenFile      string
+	ExternalFleetGitHubCLIPath        string
+	ExternalFleetPublicBaseURL        string
+	ExternalFleetEvidenceAllowedCIDRs []string
 
 	ReleaseAdmissionMode                   string
 	ReleaseAttestationIssuer               string
@@ -255,6 +256,7 @@ func Load() *Config {
 		ExternalFleetGitHubTokenFile:             strings.TrimSpace(os.Getenv("NORN_EXTERNAL_FLEET_GITHUB_TOKEN_FILE")),
 		ExternalFleetGitHubCLIPath:               strings.TrimSpace(os.Getenv("NORN_EXTERNAL_FLEET_GITHUB_CLI_PATH")),
 		ExternalFleetPublicBaseURL:               strings.TrimSpace(os.Getenv("NORN_EXTERNAL_FLEET_PUBLIC_BASE_URL")),
+		ExternalFleetEvidenceAllowedCIDRs:        splitNonEmpty(os.Getenv("NORN_EXTERNAL_FLEET_EVIDENCE_ALLOWED_CIDRS")),
 
 		ReleaseAdmissionMode:                   strings.ToLower(envOr("NORN_RELEASE_ADMISSION_MODE", "keyed")),
 		ReleaseAttestationIssuer:               strings.TrimSpace(os.Getenv("NORN_RELEASE_ATTESTATION_ISSUER")),

@@ -14,6 +14,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"net"
 	"net/http"
 	"net/netip"
 	"net/url"
@@ -62,6 +63,17 @@ type ExternalFleetGitHubRunVerifier interface {
 
 type externalFleetCommandAttestationVerifier struct{ path string }
 
+type externalFleetLimitedWriter struct{ remaining int }
+
+func (w *externalFleetLimitedWriter) Write(value []byte) (int, error) {
+	if len(value) > w.remaining {
+		w.remaining = 0
+		return 0, errors.New("attestation output exceeds limit")
+	}
+	w.remaining -= len(value)
+	return len(value), nil
+}
+
 type externalFleetGitHubRunVerifier struct{ client *http.Client }
 
 func (v externalFleetGitHubRunVerifier) Verify(ctx context.Context, token string, ci CIIdentity) error {
@@ -89,14 +101,19 @@ func (v externalFleetGitHubRunVerifier) Verify(ctx context.Context, token string
 		Conclusion string `json:"conclusion"`
 		Event      string `json:"event"`
 		Path       string `json:"path"`
+		HeadSHA    string `json:"head_sha"`
+		HeadBranch string `json:"head_branch"`
 		Repository struct {
 			FullName string `json:"full_name"`
 		} `json:"repository"`
+		HeadRepository struct {
+			FullName string `json:"full_name"`
+		} `json:"head_repository"`
 	}
-	if _, err := decodeExternalFleetJSON(response.Body, externalFleetEvidenceMaxBody, &run); err != nil {
+	if err := decodeGitHubRunJSON(response.Body, &run); err != nil {
 		return externalVerifierErr("github-run-invalid")
 	}
-	if fmt.Sprintf("%d", run.ID) != ci.RunID || fmt.Sprintf("%d", run.RunAttempt) != ci.RunAttempt || run.Status != "completed" || run.Conclusion != "success" || run.Repository.FullName != ci.Repository || (run.Event != "workflow_dispatch" && run.Event != "workflow_run") || !githubRunWorkflowMatches(ci, run.Path) {
+	if fmt.Sprintf("%d", run.ID) != ci.RunID || fmt.Sprintf("%d", run.RunAttempt) != ci.RunAttempt || !activeGitHubRunStatus(run.Status, run.Conclusion) || run.Repository.FullName != ci.Repository || run.HeadRepository.FullName != ci.Repository || run.HeadSHA != ci.SHA || !githubRunRefMatches(ci.Ref, run.HeadBranch) || (run.Event != "workflow_dispatch" && run.Event != "workflow_run") || !githubRunWorkflowMatches(ci, run.Path) {
 		return externalVerifierErr("github-run-mismatch")
 	}
 	return nil
@@ -111,12 +128,16 @@ func (v externalFleetCommandAttestationVerifier) Verify(ctx context.Context, tok
 	if !ok || signerSHA != candidate.SignerWorkflowSHA || signerPath == "" {
 		return externalVerifierErr("github-signer-binding")
 	}
+	if candidate.RepositoryVisibility != "" && candidate.RepositoryVisibility != "public" {
+		return externalVerifierErr("github-private-attestation-adapter-required")
+	}
 	for _, predicate := range []string{"https://slsa.dev/provenance/v1", "https://spdx.dev/Document/v2.3"} {
-		args := []string{"attestation", "verify", "oci://" + request.Receipt.Artifact, "--repo", candidate.Repository, "--hostname", "github.com", "--signer-workflow", "github.com/" + signerPath, "--signer-digest", signerSHA, "--cert-identity", "https://github.com/" + candidate.SignerWorkflowRef, "--source-digest", request.Receipt.SourceSHA, "--source-ref", candidate.Ref, "--predicate-type", predicate, "--cert-oidc-issuer", "https://token.actions.githubusercontent.com", "--no-public-good"}
+		args := []string{"attestation", "verify", "oci://" + request.Receipt.Artifact, "--repo", candidate.Repository, "--hostname", "github.com", "--signer-workflow", "github.com/" + signerPath, "--signer-digest", signerSHA, "--cert-identity", "https://github.com/" + candidate.SignerWorkflowRef, "--source-digest", request.Receipt.SourceSHA, "--source-ref", candidate.Ref, "--predicate-type", predicate, "--cert-oidc-issuer", "https://token.actions.githubusercontent.com"}
 		command := exec.CommandContext(ctx, v.path, args...)
 		command.Env = []string{"PATH=" + os.Getenv("PATH"), "GH_TOKEN=" + token, "GH_PROMPT_DISABLED=1", "NO_COLOR=1"}
-		output, err := command.Output()
-		if len(output) > externalFleetEvidenceMaxBody || err != nil {
+		bounded := &externalFleetLimitedWriter{remaining: externalFleetEvidenceMaxBody}
+		command.Stdout, command.Stderr = bounded, bounded
+		if err := command.Run(); err != nil {
 			return externalVerifierErr("github-attestation")
 		}
 	}
@@ -126,11 +147,12 @@ func (v externalFleetCommandAttestationVerifier) Verify(ctx context.Context, tok
 // ExternalFleetDeploymentVerifierConfig is intentionally not the app config:
 // it keeps all adapter inputs explicit and makes construction easy to test.
 type ExternalFleetDeploymentVerifierConfig struct {
-	EvidenceURL       string
-	EvidenceTokenFile string
-	GitHubTokenFile   string
-	GitHubCLIPath     string
-	PublicBaseURL     string
+	EvidenceURL          string
+	EvidenceTokenFile    string
+	GitHubTokenFile      string
+	GitHubCLIPath        string
+	PublicBaseURL        string
+	EvidenceAllowedCIDRs []string
 }
 
 type ExternalFleetDeploymentLiveVerifier struct {
@@ -161,6 +183,9 @@ func NewExternalFleetDeploymentLiveVerifier(cfg ExternalFleetDeploymentVerifierC
 	if err := externalVerifierSecretFile(cfg.GitHubTokenFile); err != nil {
 		return nil, fmt.Errorf("external Fleet GitHub token: %w", err)
 	}
+	if sameExternalVerifierSecret(cfg.EvidenceTokenFile, cfg.GitHubTokenFile) {
+		return nil, fmt.Errorf("external Fleet evidence and GitHub credentials must be distinct files")
+	}
 	if attest == nil {
 		if !filepath.IsAbs(cfg.GitHubCLIPath) {
 			return nil, fmt.Errorf("external Fleet GitHub CLI path must be absolute")
@@ -172,7 +197,10 @@ func NewExternalFleetDeploymentLiveVerifier(cfg ExternalFleetDeploymentVerifierC
 		attest = externalFleetCommandAttestationVerifier{path: cfg.GitHubCLIPath}
 	}
 	if client == nil {
-		client = &http.Client{Timeout: externalFleetHTTPTimeout, CheckRedirect: func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse }}
+		client, err = newExternalFleetHTTPClient(evidenceURL.Hostname(), cfg.EvidenceAllowedCIDRs)
+		if err != nil {
+			return nil, err
+		}
 	}
 	return &ExternalFleetDeploymentLiveVerifier{evidenceURL: evidenceURL, publicURL: publicURL, evidenceTokenFile: cfg.EvidenceTokenFile, githubTokenFile: cfg.GitHubTokenFile, httpClient: client, attest: attest, githubRun: externalFleetGitHubRunVerifier{client: client}}, nil
 }
@@ -181,7 +209,7 @@ func ExternalFleetDeploymentVerifierFromConfig(cfg *config.Config) (*ExternalFle
 	if cfg == nil {
 		return nil, fmt.Errorf("external Fleet verifier is not configured")
 	}
-	return NewExternalFleetDeploymentLiveVerifier(ExternalFleetDeploymentVerifierConfig{EvidenceURL: cfg.ExternalFleetVerifierURL, EvidenceTokenFile: cfg.ExternalFleetVerifierTokenFile, GitHubTokenFile: cfg.ExternalFleetGitHubTokenFile, GitHubCLIPath: cfg.ExternalFleetGitHubCLIPath, PublicBaseURL: cfg.ExternalFleetPublicBaseURL}, nil, nil)
+	return NewExternalFleetDeploymentLiveVerifier(ExternalFleetDeploymentVerifierConfig{EvidenceURL: cfg.ExternalFleetVerifierURL, EvidenceTokenFile: cfg.ExternalFleetVerifierTokenFile, GitHubTokenFile: cfg.ExternalFleetGitHubTokenFile, GitHubCLIPath: cfg.ExternalFleetGitHubCLIPath, PublicBaseURL: cfg.ExternalFleetPublicBaseURL, EvidenceAllowedCIDRs: cfg.ExternalFleetEvidenceAllowedCIDRs}, nil, nil)
 }
 
 func externalVerifierURL(raw string) (*url.URL, error) {
@@ -195,8 +223,73 @@ func externalVerifierURL(raw string) (*url.URL, error) {
 	return u, nil
 }
 
+// newExternalFleetHTTPClient validates the address selected at every TCP dial,
+// not only the URL hostname. This makes redirects and DNS rebinding fail
+// closed. The evidence host may use only the reviewed private CIDRs; every
+// other host (public ingress and api.github.com) must resolve to a public IP.
+func newExternalFleetHTTPClient(evidenceHost string, allowedRaw []string) (*http.Client, error) {
+	allowed := make([]netip.Prefix, 0, len(allowedRaw))
+	for _, raw := range allowedRaw {
+		prefix, err := netip.ParsePrefix(strings.TrimSpace(raw))
+		if err != nil || !prefix.IsValid() {
+			return nil, fmt.Errorf("external Fleet evidence CIDR is invalid")
+		}
+		allowed = append(allowed, prefix)
+	}
+	if evidenceHost == "" || len(allowed) == 0 {
+		return nil, fmt.Errorf("external Fleet evidence host and allowed CIDRs are required")
+	}
+	dialer := &net.Dialer{Timeout: externalFleetHTTPTimeout / 2, KeepAlive: 30 * time.Second}
+	transport := &http.Transport{Proxy: nil, ForceAttemptHTTP2: true, TLSHandshakeTimeout: externalFleetHTTPTimeout / 2, ResponseHeaderTimeout: externalFleetHTTPTimeout / 2, DialContext: func(ctx context.Context, network, address string) (net.Conn, error) {
+		host, port, err := net.SplitHostPort(address)
+		if err != nil {
+			return nil, err
+		}
+		ips, err := net.DefaultResolver.LookupNetIP(ctx, "ip", host)
+		if err != nil || len(ips) == 0 {
+			return nil, errors.New("external host resolution failed")
+		}
+		for _, ip := range ips {
+			if host == evidenceHost {
+				for _, prefix := range allowed {
+					if prefix.Contains(ip) {
+						return dialer.DialContext(ctx, network, net.JoinHostPort(ip.String(), port))
+					}
+				}
+				continue
+			}
+			if externalPublicIP(ip) {
+				return dialer.DialContext(ctx, network, net.JoinHostPort(ip.String(), port))
+			}
+		}
+		return nil, errors.New("external host resolved to a forbidden address")
+	}}
+	return &http.Client{Transport: transport, Timeout: externalFleetHTTPTimeout, CheckRedirect: func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse }}, nil
+}
+
+func externalPublicIP(ip netip.Addr) bool {
+	ip = ip.Unmap()
+	if !ip.IsValid() || !ip.IsGlobalUnicast() || ip.IsPrivate() || ip.IsLoopback() || ip.IsLinkLocalUnicast() || ip.IsMulticast() || ip.IsUnspecified() {
+		return false
+	}
+	for _, blocked := range []netip.Prefix{netip.MustParsePrefix("100.64.0.0/10"), netip.MustParsePrefix("192.0.0.0/24"), netip.MustParsePrefix("198.18.0.0/15"), netip.MustParsePrefix("198.51.100.0/24"), netip.MustParsePrefix("203.0.113.0/24"), netip.MustParsePrefix("240.0.0.0/4"), netip.MustParsePrefix("fc00::/7"), netip.MustParsePrefix("fe80::/10")} {
+		if blocked.Contains(ip) {
+			return false
+		}
+	}
+	return true
+}
+
 func externalVerifierSecretFile(path string) error {
-	info, err := os.Lstat(strings.TrimSpace(path))
+	canonical, err := filepath.EvalSymlinks(strings.TrimSpace(path))
+	if err != nil {
+		return errors.New("must use a canonical non-symlink path")
+	}
+	rawInfo, err := os.Lstat(strings.TrimSpace(path))
+	if err != nil || rawInfo.Mode()&os.ModeSymlink != 0 {
+		return errors.New("must use a canonical non-symlink path")
+	}
+	info, err := os.Lstat(canonical)
 	if err != nil || !info.Mode().IsRegular() || info.Mode().Perm()&0o077 != 0 {
 		return errors.New("must be an owner-only regular file")
 	}
@@ -207,11 +300,37 @@ func externalVerifierSecretFile(path string) error {
 	return nil
 }
 
+func sameExternalVerifierSecret(left, right string) bool {
+	leftPath, leftErr := filepath.EvalSymlinks(strings.TrimSpace(left))
+	rightPath, rightErr := filepath.EvalSymlinks(strings.TrimSpace(right))
+	if leftErr != nil || rightErr != nil {
+		return true
+	}
+	leftInfo, leftErr := os.Stat(leftPath)
+	rightInfo, rightErr := os.Stat(rightPath)
+	if leftErr != nil || rightErr != nil {
+		return true
+	}
+	leftStat, leftOK := leftInfo.Sys().(*syscall.Stat_t)
+	rightStat, rightOK := rightInfo.Sys().(*syscall.Stat_t)
+	return leftOK && rightOK && leftStat.Dev == rightStat.Dev && leftStat.Ino == rightStat.Ino
+}
+
 func readExternalVerifierSecret(path string) (string, error) {
 	if err := externalVerifierSecretFile(path); err != nil {
 		return "", err
 	}
-	value, err := os.ReadFile(path)
+	fd, err := syscall.Open(path, syscall.O_RDONLY|syscall.O_NOFOLLOW, 0)
+	if err != nil {
+		return "", errors.New("unavailable")
+	}
+	file := os.NewFile(uintptr(fd), path)
+	defer file.Close()
+	var opened syscall.Stat_t
+	if err := syscall.Fstat(fd, &opened); err != nil || opened.Uid != uint32(os.Getuid()) || opened.Mode&0o077 != 0 {
+		return "", errors.New("unavailable")
+	}
+	value, err := io.ReadAll(io.LimitReader(file, 8193))
 	if err != nil || len(value) == 0 || len(value) > 8192 {
 		return "", errors.New("unavailable")
 	}
@@ -244,6 +363,8 @@ type externalFleetEvidence struct {
 }
 
 func (v *ExternalFleetDeploymentLiveVerifier) VerifyExternalFleetDeployment(ctx context.Context, request ExternalFleetDeploymentVerificationRequest) (*ExternalFleetDeploymentVerification, error) {
+	ctx, cancel := context.WithTimeout(ctx, externalFleetHTTPTimeout)
+	defer cancel()
 	if v == nil || v.evidenceURL == nil || v.publicURL == nil || v.attest == nil || v.githubRun == nil {
 		return nil, externalVerifierErr("unconfigured")
 	}
@@ -358,6 +479,21 @@ func decodeExternalFleetJSON(body io.Reader, limit int64, target any) (any, erro
 	return target, nil
 }
 
+// GitHub adds fields to REST responses frequently. Unlike the private Norn
+// evidence schema, unknown GitHub fields are not a reason to reject an
+// otherwise exact run binding.
+func decodeGitHubRunJSON(body io.Reader, target any) error {
+	decoder := json.NewDecoder(io.LimitReader(body, externalFleetEvidenceMaxBody+1))
+	if err := decoder.Decode(target); err != nil {
+		return err
+	}
+	var extra any
+	if err := decoder.Decode(&extra); !errors.Is(err, io.EOF) {
+		return errors.New("trailing GitHub JSON")
+	}
+	return nil
+}
+
 func validateExternalFleetEvidence(observed externalFleetEvidence, request ExternalFleetDeploymentVerificationRequest, nonceDigest string) error {
 	r := request.Receipt
 	if observed.Repository != request.CI.Repository || observed.NonceSHA256 != nonceDigest || observed.NonceWrittenAt.IsZero() || observed.NonceReadAt.IsZero() || !observed.NonceReadAt.After(observed.NonceWrittenAt) || observed.PlanAttemptID != r.Fleet.RunnerAttemptID || observed.CheckpointAttemptID != r.Fleet.RunnerAttemptID {
@@ -389,6 +525,14 @@ func githubRunWorkflowMatches(ci CIIdentity, path string) bool {
 	}
 	workflowPath, _, ok := strings.Cut(workflowRef, "@")
 	return ok && strings.TrimPrefix(workflowPath, ci.Repository+"/") == path
+}
+
+func activeGitHubRunStatus(status, conclusion string) bool {
+	return (status == "queued" || status == "in_progress" || status == "waiting") && conclusion == ""
+}
+
+func githubRunRefMatches(ref, branch string) bool {
+	return strings.TrimPrefix(strings.TrimSpace(ref), "refs/heads/") == strings.TrimSpace(branch) && branch != ""
 }
 
 // externalFleetNonceDigest is retained for test contracts without exposing the

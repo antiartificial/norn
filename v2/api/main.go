@@ -337,7 +337,7 @@ func main() {
 	h := handler.New(db, nomadClient, consulClient, ws, cfg, pipe, beaconSvc, sec, sagaStore, s3Client, redpandaClient)
 	h.ConfigureWorkloads(workloads, localEngine, containerRuntime)
 	h.ConfigurePrivateReleaseSigner(nornPrivateSigner)
-	if externalFleetVerifierRequested(cfg) {
+	if cfg.EnvironmentID() == "staging" && externalFleetVerifierRequested(cfg) {
 		verifier, verifierErr := handler.ExternalFleetDeploymentVerifierFromConfig(cfg)
 		if verifierErr != nil {
 			log.Fatalf("external Fleet deployment verifier: %v", verifierErr)
@@ -1348,7 +1348,7 @@ func externalFleetVerifierRequested(cfg *config.Config) bool {
 }
 
 func externalFleetVerifierConfigured(cfg *config.Config) bool {
-	return externalFleetBridgeConfigured(cfg) && externalFleetVerifierRequested(cfg) && strings.TrimSpace(cfg.ExternalFleetVerifierURL) != "" && strings.TrimSpace(cfg.ExternalFleetVerifierTokenFile) != "" && strings.TrimSpace(cfg.ExternalFleetGitHubTokenFile) != "" && strings.TrimSpace(cfg.ExternalFleetGitHubCLIPath) != "" && strings.TrimSpace(cfg.ExternalFleetPublicBaseURL) != ""
+	return cfg != nil && cfg.EnvironmentID() == "staging" && externalFleetBridgeConfigured(cfg) && externalFleetVerifierRequested(cfg) && strings.TrimSpace(cfg.ExternalFleetVerifierURL) != "" && strings.TrimSpace(cfg.ExternalFleetVerifierTokenFile) != "" && strings.TrimSpace(cfg.ExternalFleetGitHubTokenFile) != "" && strings.TrimSpace(cfg.ExternalFleetGitHubCLIPath) != "" && strings.TrimSpace(cfg.ExternalFleetPublicBaseURL) != "" && len(cfg.ExternalFleetEvidenceAllowedCIDRs) > 0
 }
 
 func externalFleetSignerInNormalAllowlist(value string, allowed []string) bool {

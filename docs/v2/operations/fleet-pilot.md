@@ -126,6 +126,7 @@ NORN_EXTERNAL_FLEET_ADMISSION_RUNTIME_JOB_ID=<exact runtime Nomad job ID>
 NORN_EXTERNAL_FLEET_ADMISSION_RUNTIME_HCL_SHA256=<released runtime-HCL SHA-256>
 NORN_EXTERNAL_FLEET_ADMISSION_BOOTSTRAP_SIGNER_REF=<exact bootstrap workflow path@40-char SHA>
 NORN_EXTERNAL_FLEET_VERIFIER_URL=https://<private-read-only-fleet-evidence-origin>
+NORN_EXTERNAL_FLEET_EVIDENCE_ALLOWED_CIDRS=<exact tailscale-or-vpc-cidr>[,<additional-cidr>]
 NORN_EXTERNAL_FLEET_VERIFIER_TOKEN_FILE=/secure/norn/fleet-evidence-read.token
 NORN_EXTERNAL_FLEET_GITHUB_TOKEN_FILE=/secure/norn/github-attestations-read.token
 NORN_EXTERNAL_FLEET_GITHUB_CLI_PATH=/absolute/path/to/gh
@@ -145,7 +146,10 @@ read-only Fleet evidence service; it is never supplied by receipt text. Both
 token files must be regular owner-only files. Norn reads them only for a
 bounded verification call and never persists or returns their contents. The
 GitHub file contains only a selected-repository attestation-read installation
-token, refreshed by the runner outside Norn before it expires. `gh` verifies
+token with **Actions: read** and **Attestations: read**, refreshed by the
+runner outside Norn before it expires. Norn verifies the exact selected
+repository, run ID/attempt, head SHA/ref, workflow path and in-progress
+protected-run state before checking attestations. `gh` verifies
 the GitHub-hosted SLSA and SPDX statements using direct argument execution,
 never a shell. A real verifier
 is required before nonce issuance as well as receipt admission; at most three

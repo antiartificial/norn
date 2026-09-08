@@ -179,10 +179,10 @@ func TestExternalFleetGitHubRunVerifierBindsExactAttemptAndWorkflow(t *testing.T
 		if request.URL.String() != "https://api.github.com/repos/acme/norn-fleet/actions/runs/123" || request.Header.Get("Authorization") != "Bearer token" {
 			t.Fatalf("unexpected GitHub request: %s", request.URL)
 		}
-		body := `{"id":123,"run_attempt":2,"status":"completed","conclusion":"success","event":"workflow_dispatch","path":".github/workflows/apply.yml","repository":{"full_name":"acme/norn-fleet"}}`
+		body := `{"id":123,"run_attempt":2,"status":"in_progress","conclusion":null,"event":"workflow_dispatch","path":".github/workflows/apply.yml","head_sha":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa","head_branch":"main","repository":{"full_name":"acme/norn-fleet"},"head_repository":{"full_name":"acme/norn-fleet"},"new_github_field":"ignored"}`
 		return &http.Response{StatusCode: http.StatusOK, Header: make(http.Header), Body: io.NopCloser(strings.NewReader(body))}, nil
 	})}
-	identity := CIIdentity{Repository: "acme/norn-fleet", RunID: "123", RunAttempt: "2", WorkflowRef: "acme/norn-fleet/.github/workflows/apply.yml@" + strings.Repeat("a", 40)}
+	identity := CIIdentity{Repository: "acme/norn-fleet", RunID: "123", RunAttempt: "2", SHA: strings.Repeat("a", 40), Ref: "refs/heads/main", WorkflowRef: "acme/norn-fleet/.github/workflows/apply.yml@" + strings.Repeat("a", 40)}
 	if err := (externalFleetGitHubRunVerifier{client: client}).Verify(context.Background(), "token", identity); err != nil {
 		t.Fatalf("matching GitHub run rejected: %v", err)
 	}

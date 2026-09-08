@@ -796,7 +796,7 @@ func TestExternalFleetAdmissionCapabilityRequiresCompleteVerifierConfiguration(t
 		ExternalFleetAdmissionMigrationJobID: "hello-norn-mysql-migrate", ExternalFleetAdmissionMigrationHCLSHA256: strings.Repeat("a", 64),
 		ExternalFleetAdmissionRuntimeJobID: "hello-norn-mysql", ExternalFleetAdmissionRuntimeHCLSHA256: strings.Repeat("b", 64),
 		ExternalFleetAdmissionBootstrapSignerRef: "acme/hello-norn-mysql/.github/workflows/hello-norn-mysql-bootstrap-image.yml@" + strings.Repeat("c", 40),
-		ExternalFleetVerifierURL:                 "https://evidence.example.test", ExternalFleetVerifierTokenFile: "/secure/evidence.token", ExternalFleetGitHubTokenFile: "/secure/github.token", ExternalFleetGitHubCLIPath: "/usr/local/bin/gh", ExternalFleetPublicBaseURL: "https://pilot.example.test",
+		ExternalFleetVerifierURL:                 "https://evidence.example.test", ExternalFleetVerifierTokenFile: "/secure/evidence.token", ExternalFleetGitHubTokenFile: "/secure/github.token", ExternalFleetGitHubCLIPath: "/usr/local/bin/gh", ExternalFleetPublicBaseURL: "https://pilot.example.test", ExternalFleetEvidenceAllowedCIDRs: []string{"100.64.0.0/10"},
 	}, recorder, request)
 	var capability struct {
 		Features  []string          `json:"features"`
