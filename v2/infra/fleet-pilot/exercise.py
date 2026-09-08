@@ -33,8 +33,12 @@ def opener():
     )
 
 
-def request(base, method, record):
+def request(base, method, record, expected_source, allowed_allocations):
     """Return receipt metadata only; never retain service error bodies."""
+    if not SAFE_VERSION.fullmatch(expected_source) or not allowed_allocations or any(
+        not ALLOCATION_ID.fullmatch(item) for item in allowed_allocations
+    ):
+        raise ValueError("request provenance contract is invalid")
     start = time.monotonic()
     req = urllib.request.Request(base + "/records/" + record, method=method)
     try:
@@ -47,8 +51,14 @@ def request(base, method, record):
                 raise ValueError("response must be an object")
             allocation = data.get("allocation", "")
             source = data.get("version", "")
+            provenance_ok = (
+                isinstance(allocation, str)
+                and ALLOCATION_ID.fullmatch(allocation) is not None
+                and allocation in allowed_allocations
+                and source == expected_source
+            )
             return {
-                "ok": response.status == 200 and data.get("id") == record,
+                "ok": response.status == 200 and data.get("id") == record and provenance_ok,
                 "ms": (time.monotonic() - start) * 1000,
                 "allocation": allocation if isinstance(allocation, str) and ALLOCATION_ID.fullmatch(allocation) else "",
                 "version": source if isinstance(source, str) and SAFE_VERSION.fullmatch(source) else "",
@@ -58,7 +68,7 @@ def request(base, method, record):
         return {"ok": False, "ms": (time.monotonic() - start) * 1000, "id": record}
 
 
-def version(base):
+def version(base, expected_source, allowed_allocations):
     """Read allocation identity without retaining an endpoint payload."""
     try:
         with opener().open(urllib.request.Request(base + "/version"), timeout=5) as response:
@@ -70,6 +80,8 @@ def version(base):
                 raise ValueError("version response must be an object")
             allocation = data.get("allocation", "")
             source = data.get("version", "")
+            if source != expected_source or allocation not in allowed_allocations:
+                raise ValueError("version provenance mismatch")
             return {
                 "allocation": allocation if isinstance(allocation, str) and ALLOCATION_ID.fullmatch(allocation) else "",
                 "version": source if isinstance(source, str) and SAFE_VERSION.fullmatch(source) else "",
@@ -116,7 +128,7 @@ def nomad_json(arguments):
         return None
 
 
-def exercise_load(base, run_id, rps, seconds, workers, written):
+def exercise_load(base, run_id, rps, seconds, workers, written, expected_source, allowed_allocations):
     """Offer a worker-bounded request stream and stop at a bounded error rate."""
     rows = []
     started = time.monotonic()
@@ -130,7 +142,9 @@ def exercise_load(base, run_id, rps, seconds, workers, written):
                 time.sleep(max(0, started + index / rps - time.monotonic()))
                 method = "PUT" if not written or index % 10 < 3 else "GET"
                 record = f"{run_id}-{index}" if method == "PUT" else written[index % len(written)]
-                batch.append((method, pool.submit(request, base, method, record)))
+                batch.append((method, pool.submit(
+                    request, base, method, record, expected_source, allowed_allocations
+                )))
             for method, future in batch:
                 row = future.result()
                 rows.append(row)
@@ -142,7 +156,7 @@ def exercise_load(base, run_id, rps, seconds, workers, written):
     return rows, aborted
 
 
-def verify_writes(base, records, workers):
+def verify_writes(base, records, workers, expected_source, allowed_allocations):
     """Bound post-run readback so acknowledged writes remain durable evidence."""
     verified = []
     deadline = time.monotonic() + 60
@@ -151,13 +165,16 @@ def verify_writes(base, records, workers):
             if time.monotonic() >= deadline:
                 verified.extend({"id": item, "ok": False} for item in records[offset:])
                 break
-            verified.extend(pool.map(lambda item: request(base, "GET", item), records[offset:offset + workers]))
+            verified.extend(pool.map(
+                lambda item: request(base, "GET", item, expected_source, allowed_allocations),
+                records[offset:offset + workers],
+            ))
     return verified
 
 
-def proof(base, receipt):
-    write = request(base, "PUT", receipt)
-    read = request(base, "GET", receipt) if write["ok"] else {"ok": False}
+def proof(base, receipt, expected_source, allowed_allocations):
+    write = request(base, "PUT", receipt, expected_source, allowed_allocations)
+    read = request(base, "GET", receipt, expected_source, allowed_allocations) if write["ok"] else {"ok": False}
     return {
         "id": receipt,
         "write": bool(write["ok"]),
@@ -227,6 +244,18 @@ def wait_for_recovery(target, initial_ids, expected_image, expected_source, expe
     return [], [], False
 
 
+def wait_for_public_replacement(base, receipt, replacements, expected_source, seconds):
+    """Require the public record route to serve from a verified replacement."""
+    deadline = time.monotonic() + min(seconds, 60)
+    allowed = set(replacements)
+    while time.monotonic() < deadline:
+        row = request(base, "GET", receipt, expected_source, allowed)
+        if row["ok"] and row.get("allocation") in allowed:
+            return row["allocation"], True
+        time.sleep(1)
+    return "", False
+
+
 def percentile(rows, fraction):
     latencies = sorted(row["ms"] for row in rows)
     if not latencies:
@@ -267,24 +296,37 @@ def main():
     run_id = uuid.uuid4().hex
     started_at = datetime.datetime.now(datetime.timezone.utc).replace(microsecond=0).isoformat().replace("+00:00", "Z")
     started = time.monotonic()
-    pre = proof(base, f"{run_id}-pre")
-    written = [pre["id"]] if pre["write"] and pre["read"] else []
     topology, topology_verified = inventory_pilot(args.expected_image, args.expected_source_version, args.expected_hostname)
     initial_ids = {item["allocation"] for item in topology}
-    fault = {"requested": bool(args.fault_allocation), "target": args.fault_allocation or "", "stopAccepted": False, "targetStopped": not bool(args.fault_allocation), "recovered": not bool(args.fault_allocation), "replacementAllocations": []}
+    if not topology_verified:
+        initial_ids = set()
+    pre = proof(base, f"{run_id}-pre", args.expected_source_version, initial_ids)
+    written = [pre["id"]] if pre["write"] and pre["read"] else []
+    allowed_ids = initial_ids
+    fault = {"requested": bool(args.fault_allocation), "target": args.fault_allocation or "", "stopAccepted": False, "targetStopped": not bool(args.fault_allocation), "recovered": not bool(args.fault_allocation), "replacementAllocations": [], "publicReplacementAllocation": ""}
     if args.fault_allocation:
         fault["stopAccepted"] = args.fault_allocation in initial_ids and stop_pilot_allocation(args.fault_allocation)
         if fault["stopAccepted"]:
-            topology, replacements, fault["recovered"] = wait_for_recovery(args.fault_allocation, initial_ids, args.expected_image, args.expected_source_version, args.expected_hostname, args.recovery_seconds)
+            topology, replacements, topology_recovered = wait_for_recovery(args.fault_allocation, initial_ids, args.expected_image, args.expected_source_version, args.expected_hostname, args.recovery_seconds)
             fault["replacementAllocations"] = replacements
-            fault["targetStopped"] = fault["recovered"]
-            topology_verified = topology_verified or fault["recovered"]
+            fault["targetStopped"] = topology_recovered
+            topology_verified = topology_recovered
+            allowed_ids = {item["allocation"] for item in topology} if topology_recovered else set()
+            if topology_recovered and written:
+                replacement, public_recovered = wait_for_public_replacement(
+                    base, pre["id"], replacements, args.expected_source_version, args.recovery_seconds
+                )
+                fault["publicReplacementAllocation"] = replacement
+                fault["recovered"] = public_recovered
 
-    rows, aborted = exercise_load(base, run_id, args.rps, args.seconds, args.workers, written)
-    post = proof(base, f"{run_id}-post")
+    rows, aborted = exercise_load(
+        base, run_id, args.rps, args.seconds, args.workers, written,
+        args.expected_source_version, allowed_ids,
+    )
+    post = proof(base, f"{run_id}-post", args.expected_source_version, allowed_ids)
     if post["write"] and post["read"]:
         written.append(post["id"])
-    verification = verify_writes(base, written, args.workers)
+    verification = verify_writes(base, written, args.workers, args.expected_source_version, allowed_ids)
     errors = sum(not row["ok"] for row in rows)
     availability = (len(rows) - errors) / len(rows) if rows else 0
     unverified = sum(not row["ok"] for row in verification)

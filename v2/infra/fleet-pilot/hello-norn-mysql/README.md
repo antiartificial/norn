@@ -115,7 +115,11 @@ For the optional, allocation-only recovery rehearsal, select one current app
 allocation explicitly and run:
 
 ```sh
-python3 ../exercise.py --url https://YOUR-STAGING-HOST --fault-allocation ALLOCATION_ID
+python3 ../exercise.py --url https://YOUR-STAGING-HOST \
+  --fault-allocation ALLOCATION_ID \
+  --expected-image registry.example.com/hello-norn-mysql@sha256:… \
+  --expected-source-version EXACT_SOURCE_SHA \
+  --expected-hostname YOUR-STAGING-HOST
 ```
 
 The harness first verifies through Nomad that the ID belongs to this job, then

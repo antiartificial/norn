@@ -11,13 +11,31 @@ class Response(io.BytesIO):
 
 
 class ProbeTests(unittest.TestCase):
+    allocation = "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa"
+    source = "a" * 40
+
     def probe(self, payload):
         with patch("exercise.urllib.request.build_opener") as opener:
             opener.return_value.open.return_value = Response(payload)
-            return exercise.request("https://staging.example.test", "GET", "receipt-1")
+            return exercise.request(
+                "https://staging.example.test", "GET", "receipt-1",
+                self.source, {self.allocation},
+            )
 
     def test_matching_receipt(self):
-        self.assertTrue(self.probe(b'{"id":"receipt-1","allocation":"node-a"}')["ok"])
+        payload = json.dumps({"id": "receipt-1", "allocation": self.allocation, "version": self.source}).encode()
+        self.assertTrue(self.probe(payload)["ok"])
+
+    def test_missing_or_unrelated_provenance_fails(self):
+        unrelated = "bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb"
+        for value in (
+            {"id": "receipt-1"},
+            {"id": "receipt-1", "allocation": self.allocation},
+            {"id": "receipt-1", "allocation": unrelated, "version": self.source},
+            {"id": "receipt-1", "allocation": self.allocation, "version": "wrong"},
+        ):
+            with self.subTest(value=value):
+                self.assertFalse(self.probe(json.dumps(value).encode())["ok"])
 
     def test_wrong_receipt_fails(self):
         self.assertFalse(self.probe(b'{"id":"receipt-2"}')["ok"])
@@ -84,6 +102,17 @@ class ProbeTests(unittest.TestCase):
         self.assertTrue(recovered)
         self.assertEqual(proofs[1]["allocation"], replacement)
         self.assertEqual(replacements, [replacement])
+
+    @patch("exercise.time.sleep")
+    @patch("exercise.request")
+    def test_public_recovery_requires_replacement_response(self, request, _sleep):
+        replacement = "cccccccc-cccc-cccc-cccc-cccccccccccc"
+        request.return_value = {"ok": False, "allocation": ""}
+        allocation, recovered = exercise.wait_for_public_replacement(
+            "https://pilot.example.test", "receipt", [replacement], self.source, 0.001
+        )
+        self.assertFalse(recovered)
+        self.assertEqual(allocation, "")
 
 
 if __name__ == "__main__":
