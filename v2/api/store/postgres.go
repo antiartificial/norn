@@ -369,6 +369,13 @@ func Migrate(db *DB) error {
 		ALTER TABLE external_deployment_nonces ADD COLUMN IF NOT EXISTS claimed_at TIMESTAMPTZ;
 		ALTER TABLE external_deployment_nonces ADD COLUMN IF NOT EXISTS registered_at TIMESTAMPTZ;
 		ALTER TABLE external_deployment_nonces ADD COLUMN IF NOT EXISTS revision BIGINT NOT NULL DEFAULT 1;
+		ALTER TABLE external_deployment_admissions ADD COLUMN IF NOT EXISTS service_snapshot_id TEXT NOT NULL DEFAULT '';
+		ALTER TABLE external_deployment_admissions ADD COLUMN IF NOT EXISTS service_snapshot_ref TEXT NOT NULL DEFAULT '';
+		ALTER TABLE external_deployment_admissions ADD COLUMN IF NOT EXISTS service_snapshot_sha256 TEXT NOT NULL DEFAULT '';
+		ALTER TABLE external_deployment_admissions ADD COLUMN IF NOT EXISTS service_claim_revision BIGINT NOT NULL DEFAULT 0;
+		ALTER TABLE external_deployment_admissions ADD COLUMN IF NOT EXISTS service_commit_revision BIGINT NOT NULL DEFAULT 0;
+		ALTER TABLE external_deployment_admissions ADD COLUMN IF NOT EXISTS cleanup_intent_sha256 TEXT NOT NULL DEFAULT '';
+		ALTER TABLE external_deployment_admissions ADD COLUMN IF NOT EXISTS absence_proof_sha256 TEXT NOT NULL DEFAULT '';
 		DO $$ BEGIN
 			ALTER TABLE external_deployment_nonces ADD CONSTRAINT external_deployment_nonces_state_check
 				CHECK (state IN ('registering','ready','claimed','superseded','expired'));

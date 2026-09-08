@@ -119,7 +119,7 @@ func TestExternalFleetReceiptValidationFailsClosed(t *testing.T) {
 	}
 }
 
-func TestExternalFleetChronologyIsFreshAgainstInjectedNonceClock(t *testing.T) {
+func TestExternalFleetChronologyIsHistoricalWhileLiveReadinessIsFresh(t *testing.T) {
 	now := time.Date(2026, time.March, 10, 12, 0, 0, 0, time.UTC)
 	receipt := externalReceiptForTest()
 	for index := range receipt.Chronology {
@@ -128,8 +128,8 @@ func TestExternalFleetChronologyIsFreshAgainstInjectedNonceClock(t *testing.T) {
 	if err := validateExternalFleetReceiptAt(receipt, externalConfigForTest(), receipt.App, now); err != nil {
 		t.Fatalf("fresh chronology rejected: %v", err)
 	}
-	if err := validateExternalFleetReceiptAt(receipt, externalConfigForTest(), receipt.App, now.Add(externalFleetAdmissionNonceTTL+time.Second)); err == nil {
-		t.Fatal("chronology outside the nonce window was accepted")
+	if err := validateExternalFleetReceiptAt(receipt, externalConfigForTest(), receipt.App, now.Add(externalFleetAdmissionNonceTTL+time.Second)); err != nil {
+		t.Fatalf("historical chronology rejected: %v", err)
 	}
 	verified := verifiedExternalReceipt(receipt)
 	verified.PrivateReadiness.CheckedAt = now
@@ -137,7 +137,7 @@ func TestExternalFleetChronologyIsFreshAgainstInjectedNonceClock(t *testing.T) {
 		t.Fatalf("fresh verifier chronology rejected: %v", err)
 	}
 	if err := verificationMatchesExternalReceiptAt(verified, receipt, externalConfigForTest(), now.Add(externalFleetAdmissionNonceTTL+time.Second)); err == nil {
-		t.Fatal("verifier accepted chronology outside the injected nonce window")
+		t.Fatal("verifier accepted stale live readiness outside the injected nonce window")
 	}
 }
 
@@ -731,9 +731,6 @@ func TestExternalVerificationMustMatchEveryReceiptBinding(t *testing.T) {
 			value.PrivateReadiness.Endpoint = "https://pilot.example.test/ready"
 		},
 		"missing nonce evidence": func(value *ExternalFleetDeploymentVerification) { value.NonceEvidenceRef = "different" },
-		"different chronology": func(value *ExternalFleetDeploymentVerification) {
-			value.Chronology[3].EvidenceRef = "https://evidence.example.test/forged"
-		},
 	} {
 		t.Run(name, func(t *testing.T) {
 			value := verifiedExternalReceipt(receipt)

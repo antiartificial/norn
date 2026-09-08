@@ -109,6 +109,51 @@ type ExternalDeploymentCheckpointRef struct {
 	EvidenceSHA256 string
 }
 
+// ExternalDeploymentServiceSnapshot is the immutable, hash-only projection of
+// the Norn-owner evidence-service status response. It is deliberately stored
+// separately from a receipt so recovery cannot substitute caller timestamps or
+// cleanup claims for the service's observed state.
+type ExternalDeploymentServiceSnapshot struct {
+	AdmissionID         string
+	SnapshotID          string
+	SnapshotRef         string
+	SnapshotSHA256      string
+	ClaimRevision       int64
+	CommitRevision      int64
+	CleanupIntentSHA256 string
+	AbsenceProofSHA256  string
+}
+
+func (db *DB) RecordExternalDeploymentServiceSnapshot(ctx context.Context, snapshot ExternalDeploymentServiceSnapshot) error {
+	if db == nil || db.Pool == nil || snapshot.AdmissionID == "" || snapshot.SnapshotID == "" || snapshot.SnapshotRef == "" || len(snapshot.SnapshotSHA256) != 64 || snapshot.ClaimRevision < 1 {
+		return ErrExternalDeploymentAdmissionUnavailable
+	}
+	tag, err := db.Pool.Exec(ctx, `UPDATE external_deployment_admissions SET service_snapshot_id=$2, service_snapshot_ref=$3, service_snapshot_sha256=$4, service_claim_revision=$5, updated_at=now()
+		WHERE id=$1 AND state IN ('nonce_ready','evidence_claimed') AND (service_snapshot_id='' OR (service_snapshot_id=$2 AND service_snapshot_ref=$3 AND service_snapshot_sha256=$4 AND service_claim_revision=$5))`, snapshot.AdmissionID, snapshot.SnapshotID, snapshot.SnapshotRef, snapshot.SnapshotSHA256, snapshot.ClaimRevision)
+	if err != nil {
+		return err
+	}
+	if tag.RowsAffected() != 1 {
+		return ErrExternalDeploymentAdmissionUnavailable
+	}
+	return nil
+}
+
+func (db *DB) RecordExternalDeploymentCleanupBindings(ctx context.Context, snapshot ExternalDeploymentServiceSnapshot) error {
+	if db == nil || db.Pool == nil || snapshot.AdmissionID == "" || snapshot.CommitRevision < 1 || len(snapshot.CleanupIntentSHA256) != 64 || len(snapshot.AbsenceProofSHA256) != 64 {
+		return ErrExternalDeploymentAdmissionUnavailable
+	}
+	tag, err := db.Pool.Exec(ctx, `UPDATE external_deployment_admissions SET service_commit_revision=$2, cleanup_intent_sha256=$3, absence_proof_sha256=$4, updated_at=now()
+		WHERE id=$1 AND state IN ('committed','cleanup_pending') AND (cleanup_intent_sha256='' OR (service_commit_revision=$2 AND cleanup_intent_sha256=$3 AND absence_proof_sha256=$4))`, snapshot.AdmissionID, snapshot.CommitRevision, snapshot.CleanupIntentSHA256, snapshot.AbsenceProofSHA256)
+	if err != nil {
+		return err
+	}
+	if tag.RowsAffected() != 1 {
+		return ErrExternalDeploymentAdmissionUnavailable
+	}
+	return nil
+}
+
 // BeginExternalDeploymentAdmission creates (or retrieves) the durable
 // idempotency/lifecycle record before a nonce is registered or external facts
 // are checked. Exact retries return the existing row. A key can never be

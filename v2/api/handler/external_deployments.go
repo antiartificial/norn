@@ -424,11 +424,36 @@ func (h *Handler) GetExternalFleetDeploymentAdmissionContext(w http.ResponseWrit
 		checkpoints = append(checkpoints, checkpoint)
 	}
 	rows.Close()
+	lineageRows, lineageErr := h.db.Pool.Query(r.Context(), `SELECT DISTINCT attempt_id FROM fleet_runner_checkpoint_refs WHERE admission_id=$1 ORDER BY attempt_id`, admissionID)
+	if lineageErr != nil {
+		WriteControlProblem(w, r, http.StatusServiceUnavailable, "external_deployment_context_unavailable", "server-owned retry lineage is unavailable")
+		return
+	}
+	lineage := []string{}
+	for lineageRows.Next() {
+		var attemptID string
+		if err := lineageRows.Scan(&attemptID); err != nil {
+			lineageRows.Close()
+			WriteControlProblem(w, r, http.StatusServiceUnavailable, "external_deployment_context_unavailable", "server-owned retry lineage is invalid")
+			return
+		}
+		lineage = append(lineage, attemptID)
+	}
+	if err := lineageRows.Err(); err != nil {
+		lineageRows.Close()
+		WriteControlProblem(w, r, http.StatusServiceUnavailable, "external_deployment_context_unavailable", "server-owned retry lineage is invalid")
+		return
+	}
+	lineageRows.Close()
 	// The response is deliberately derived from durable references, never a
 	// caller-supplied receipt. A missing or duplicate external phase is a
 	// conflict rather than an inferred successful recovery.
 	if (admission.State == store.ExternalDeploymentAdmissionCommitted || admission.State == store.ExternalDeploymentAdmissionCleanupPending || admission.State == store.ExternalDeploymentAdmissionComplete) && len(checkpoints) != 2 {
 		WriteControlProblem(w, r, http.StatusConflict, "external_deployment_context_drift", "durable external admission checkpoint lineage is incomplete")
+		return
+	}
+	if (admission.State == store.ExternalDeploymentAdmissionCommitted || admission.State == store.ExternalDeploymentAdmissionCleanupPending || admission.State == store.ExternalDeploymentAdmissionComplete) && len(lineage) == 0 {
+		WriteControlProblem(w, r, http.StatusConflict, "external_deployment_context_drift", "durable retry lineage is incomplete")
 		return
 	}
 	cleanup := "pending"
@@ -443,7 +468,7 @@ func (h *Handler) GetExternalFleetDeploymentAdmissionContext(w http.ResponseWrit
 			return
 		}
 	}
-	writeJSON(w, externalFleetAdmissionContextResponse{SchemaVersion: "norn.external-fleet-admission-context/v4", AdmissionID: admissionID, State: string(admission.State), LogicalIdentity: identity, LogicalDigest: admission.RequestDigest, NonceGeneration: admission.NonceGeneration, OperationID: admission.OperationID, CleanupState: cleanup, RetryLineage: []string{}, Checkpoints: checkpoints})
+	writeJSON(w, externalFleetAdmissionContextResponse{SchemaVersion: "norn.external-fleet-admission-context/v4", AdmissionID: admissionID, State: string(admission.State), LogicalIdentity: identity, LogicalDigest: admission.RequestDigest, NonceGeneration: admission.NonceGeneration, OperationID: admission.OperationID, CleanupState: cleanup, RetryLineage: lineage, Checkpoints: checkpoints})
 }
 
 // CompleteExternalFleetDeploymentCleanup accepts only a typed absence-proof
@@ -469,8 +494,8 @@ func (h *Handler) CompleteExternalFleetDeploymentCleanup(w http.ResponseWriter, 
 		WriteControlProblem(w, r, http.StatusBadRequest, "invalid_external_deployment_cleanup", "cleanup requires admission, operation, receipt, intent, and absence-proof bindings")
 		return
 	}
-	var state, operationID, receiptDigest string
-	err := h.db.Pool.QueryRow(r.Context(), `SELECT a.state, COALESCE(a.operation_id,''), COALESCE(o.metadata->>'externalFleetProofSHA256','') FROM external_deployment_admissions a LEFT JOIN operations o ON o.id=a.operation_id WHERE a.id=$1 AND a.app=$2 AND a.environment=$3 AND a.ci_repository=$4`, request.AdmissionID, appID, principal.Environment, principal.CI.Repository).Scan(&state, &operationID, &receiptDigest)
+	var state, operationID, receiptDigest, expectedIntent, expectedAbsence string
+	err := h.db.Pool.QueryRow(r.Context(), `SELECT a.state, COALESCE(a.operation_id,''), COALESCE(o.metadata->>'externalFleetProofSHA256',''), COALESCE(a.cleanup_intent_sha256,''), COALESCE(a.absence_proof_sha256,'') FROM external_deployment_admissions a LEFT JOIN operations o ON o.id=a.operation_id WHERE a.id=$1 AND a.app=$2 AND a.environment=$3 AND a.ci_repository=$4`, request.AdmissionID, appID, principal.Environment, principal.CI.Repository).Scan(&state, &operationID, &receiptDigest, &expectedIntent, &expectedAbsence)
 	if err != nil || operationID != request.OperationID || receiptDigest != request.ReceiptDigest {
 		WriteControlProblem(w, r, http.StatusConflict, "external_deployment_cleanup_conflict", "cleanup binding does not match the committed server admission")
 		return
@@ -481,6 +506,28 @@ func (h *Handler) CompleteExternalFleetDeploymentCleanup(w http.ResponseWriter, 
 	}
 	if state != string(store.ExternalDeploymentAdmissionCleanupPending) {
 		WriteControlProblem(w, r, http.StatusConflict, "external_deployment_cleanup_conflict", "admission is not awaiting cleanup")
+		return
+	}
+	registrar, registrationOK := h.externalFleetDeploymentVerifier.(ExternalFleetEvidenceRegistrationClient)
+	admission, admissionErr := h.db.GetExternalDeploymentAdmission(r.Context(), request.AdmissionID, appID, principal.Environment, principal.CI.Repository)
+	if !registrationOK || admissionErr != nil {
+		WriteControlProblem(w, r, http.StatusServiceUnavailable, "external_deployment_cleanup_unavailable", "service-owned cleanup status is unavailable")
+		return
+	}
+	status, statusErr := registrar.GetExternalFleetAdmissionStatus(r.Context(), admission.ID, admission.NonceGeneration)
+	if statusErr != nil || status == nil || status.State != "cleanup_ready" || status.LogicalDigest != admission.RequestDigest || !sha256HexPattern.MatchString(status.CleanupIntentDigest) || !sha256HexPattern.MatchString(status.AbsenceProofDigest) {
+		WriteControlProblem(w, r, http.StatusConflict, "external_deployment_cleanup_conflict", "service-owned cleanup status does not exactly match the committed admission")
+		return
+	}
+	if expectedIntent == "" && expectedAbsence == "" {
+		if err := h.db.RecordExternalDeploymentCleanupBindings(r.Context(), store.ExternalDeploymentServiceSnapshot{AdmissionID: admission.ID, CommitRevision: status.Revision, CleanupIntentSHA256: status.CleanupIntentDigest, AbsenceProofSHA256: status.AbsenceProofDigest}); err != nil {
+			WriteControlProblem(w, r, http.StatusServiceUnavailable, "external_deployment_cleanup_unavailable", "service-owned cleanup bindings could not be persisted")
+			return
+		}
+		expectedIntent, expectedAbsence = status.CleanupIntentDigest, status.AbsenceProofDigest
+	}
+	if expectedIntent != status.CleanupIntentDigest || expectedAbsence != status.AbsenceProofDigest || expectedIntent != request.CleanupIntentDigest || expectedAbsence != request.AbsenceProofDigest {
+		WriteControlProblem(w, r, http.StatusConflict, "external_deployment_cleanup_conflict", "cleanup request does not match persisted service-owned bindings")
 		return
 	}
 	if err := h.db.CompleteExternalDeploymentAdmission(r.Context(), request.AdmissionID); err != nil {
@@ -903,8 +950,8 @@ func verificationMatchesExternalReceiptAt(verified ExternalFleetDeploymentVerifi
 	if verified.SourceSHA != receipt.SourceSHA || verified.Artifact != receipt.Artifact || verified.AttestationBundleSHA256 != receipt.AttestationBundleSHA256 || verified.SBOMBundleSHA256 != receipt.SBOMBundleSHA256 || verified.Namespace != configured.Namespace || !reflect.DeepEqual(verified.Migration, receipt.Fleet.Migration) || !reflect.DeepEqual(verified.Runtime, receipt.Fleet.Runtime) || verified.PlanID != receipt.Fleet.PlanID || verified.ApplyRunID != receipt.Fleet.ApplyRunID || verified.ApplyRunAttempt != receipt.Fleet.ApplyRunAttempt || verified.PlanSHA256 != receipt.Fleet.PlanSHA256 || verified.RunnerAttemptID != receipt.Fleet.RunnerAttemptID || verified.FleetCommit != receipt.Fleet.FleetCommit || verified.NonceEvidenceRef != receipt.Fleet.NonceEvidenceRef {
 		return fmt.Errorf("independent verifier observations do not exactly match the receipt")
 	}
-	if !validDistinctIngressNodes(verified.IngressNodeIDs) || !validHTTPSVersion(verified.PublicHTTPSVersion) || !validPrivateReadinessAt(verified.PrivateReadiness, now) || !sameExternalChronologyAt(verified.Chronology, receipt.Chronology, now) {
-		return fmt.Errorf("independent verifier did not prove two distinct ingress nodes, public HTTPS version, private readiness, and full chronology")
+	if !validDistinctIngressNodes(verified.IngressNodeIDs) || !validHTTPSVersion(verified.PublicHTTPSVersion) || !validPrivateReadinessAt(verified.PrivateReadiness, now) || !validExternalChronologyAt(verified.Chronology, now) {
+		return fmt.Errorf("independent verifier did not prove two distinct ingress nodes, public HTTPS version, private readiness, and server chronology")
 	}
 	return nil
 }
@@ -1033,7 +1080,7 @@ func validExternalChronologyAt(steps []ExternalFleetChronologyStep, now time.Tim
 	}
 	for index, phase := range []string{"prepare", "migration", "runtime", "exercise"} {
 		step := steps[index]
-		if step.Phase != phase || step.OccurredAt.IsZero() || step.OccurredAt.After(now) || now.Sub(step.OccurredAt) > externalFleetAdmissionNonceTTL || !validExternalURI(step.EvidenceRef) || (index > 0 && !step.OccurredAt.After(steps[index-1].OccurredAt)) {
+		if step.Phase != phase || step.OccurredAt.IsZero() || step.OccurredAt.After(now) || !validExternalURI(step.EvidenceRef) || (index > 0 && !step.OccurredAt.After(steps[index-1].OccurredAt)) {
 			return false
 		}
 	}

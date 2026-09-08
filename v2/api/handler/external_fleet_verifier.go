@@ -21,6 +21,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"syscall"
 	"time"
@@ -307,12 +308,49 @@ type ExternalFleetEvidenceClaim struct {
 	CleanupIntentDigest    string `json:"cleanupIntentDigest,omitempty"`
 }
 
+// ExternalFleetEvidenceSnapshot is immutable service-owned evidence. Norn
+// persists only its identifiers/digests; neither Actions nor a receipt can
+// supply this object.
+type ExternalFleetEvidenceSnapshot struct {
+	ID             string                              `json:"id"`
+	Ref            string                              `json:"ref"`
+	SHA256         string                              `json:"sha256"`
+	LiveCheckedAt  time.Time                           `json:"liveCheckedAt"`
+	NonceWrittenAt time.Time                           `json:"nonceWrittenAt"`
+	NonceReadAt    time.Time                           `json:"nonceReadAt"`
+	Verification   ExternalFleetDeploymentVerification `json:"verification"`
+	RetryLineage   []string                            `json:"retryLineage"`
+	CheckpointRefs []ExternalFleetCheckpointRef        `json:"checkpointRefs"`
+}
+
+type ExternalFleetCheckpointRef struct {
+	Phase          string `json:"phase"`
+	CheckpointID   string `json:"checkpointId"`
+	AttemptID      string `json:"attemptId"`
+	EvidenceRef    string `json:"evidenceRef"`
+	EvidenceSHA256 string `json:"evidenceSha256"`
+}
+
+type ExternalFleetEvidenceAdmissionStatus struct {
+	SchemaVersion       string                         `json:"schemaVersion"`
+	AdmissionID         string                         `json:"admissionId"`
+	LogicalDigest       string                         `json:"logicalDigest"`
+	NonceSHA256         string                         `json:"nonceSha256"`
+	Generation          int64                          `json:"generation"`
+	State               string                         `json:"state"`
+	Revision            int64                          `json:"revision"`
+	Snapshot            *ExternalFleetEvidenceSnapshot `json:"snapshot,omitempty"`
+	CleanupIntentDigest string                         `json:"cleanupIntentDigest,omitempty"`
+	AbsenceProofDigest  string                         `json:"absenceProofDigest,omitempty"`
+}
+
 // ExternalFleetEvidenceRegistrationClient deliberately separates stateful
 // nonce registration from read-only evidence retrieval.
 type ExternalFleetEvidenceRegistrationClient interface {
 	RegisterExternalFleetNonce(context.Context, ExternalFleetEvidenceRegistration) error
 	ClaimExternalFleetNonce(context.Context, ExternalFleetEvidenceClaim) error
 	CommitExternalFleetNonce(context.Context, ExternalFleetEvidenceClaim) error
+	GetExternalFleetAdmissionStatus(context.Context, string, int64) (*ExternalFleetEvidenceAdmissionStatus, error)
 }
 
 // NewExternalFleetDeploymentLiveVerifier refuses partial configuration. The
@@ -691,7 +729,28 @@ func (v *ExternalFleetDeploymentLiveVerifier) CommitExternalFleetNonce(ctx conte
 	return v.registrationRequest(ctx, http.MethodPost, "/v1/external-fleet/admissions/"+url.PathEscape(claim.AdmissionID)+"/nonce-commit", claim)
 }
 
+// GetExternalFleetAdmissionStatus is the recovery read: it uses the separate
+// Norn-owner credential and returns the immutable service-owned snapshot and
+// cleanup values for one exact admission generation. It never sends a nonce.
+func (v *ExternalFleetDeploymentLiveVerifier) GetExternalFleetAdmissionStatus(ctx context.Context, admissionID string, generation int64) (*ExternalFleetEvidenceAdmissionStatus, error) {
+	if v == nil || admissionID == "" || generation < 1 {
+		return nil, externalVerifierErr("status-binding")
+	}
+	status := ExternalFleetEvidenceAdmissionStatus{}
+	if err := v.registrationJSONRequest(ctx, http.MethodGet, "/v1/external-fleet/admissions/"+url.PathEscape(admissionID)+"/status?generation="+strconv.FormatInt(generation, 10), nil, &status); err != nil {
+		return nil, err
+	}
+	if status.SchemaVersion != "norn.external-fleet-admission-status/v4" || status.AdmissionID != admissionID || status.Generation != generation || status.Revision < 1 || !sha256HexPattern.MatchString(strings.TrimPrefix(status.LogicalDigest, "sha256:")) || !sha256HexPattern.MatchString(status.NonceSHA256) {
+		return nil, externalVerifierErr("status-invalid")
+	}
+	return &status, nil
+}
+
 func (v *ExternalFleetDeploymentLiveVerifier) registrationRequest(ctx context.Context, method, path string, payload any) error {
+	return v.registrationJSONRequest(ctx, method, path, payload, nil)
+}
+
+func (v *ExternalFleetDeploymentLiveVerifier) registrationJSONRequest(ctx context.Context, method, path string, payload any, destination any) error {
 	if v == nil || v.evidenceURL == nil || v.httpClient == nil || strings.TrimSpace(v.registrationTokenFile) == "" {
 		return externalVerifierErr("registration-unconfigured")
 	}
@@ -699,7 +758,12 @@ func (v *ExternalFleetDeploymentLiveVerifier) registrationRequest(ctx context.Co
 	if err != nil {
 		return externalVerifierErr("registration-credential")
 	}
-	body, err := json.Marshal(payload)
+	var body []byte
+	if payload != nil {
+		body, err = json.Marshal(payload)
+	} else {
+		body = []byte{}
+	}
 	if err != nil || len(body) > 16<<10 {
 		return externalVerifierErr("registration-request")
 	}
@@ -711,7 +775,9 @@ func (v *ExternalFleetDeploymentLiveVerifier) registrationRequest(ctx context.Co
 		return externalVerifierErr("registration-request")
 	}
 	request.Header.Set("Authorization", "Bearer "+token)
-	request.Header.Set("Content-Type", "application/json")
+	if payload != nil {
+		request.Header.Set("Content-Type", "application/json")
+	}
 	response, err := v.httpClient.Do(request)
 	if err != nil {
 		return externalVerifierErr("registration-unavailable")
@@ -719,6 +785,14 @@ func (v *ExternalFleetDeploymentLiveVerifier) registrationRequest(ctx context.Co
 	defer response.Body.Close()
 	if response.StatusCode != http.StatusOK && response.StatusCode != http.StatusCreated && response.StatusCode != http.StatusNoContent {
 		return externalVerifierErr("registration-rejected")
+	}
+	if destination != nil {
+		decoded, decodeErr := decodeExternalFleetJSON(response.Body, externalFleetEvidenceMaxBody, destination)
+		if decodeErr != nil {
+			return externalVerifierErr("status-invalid")
+		}
+		_ = decoded
+		return nil
 	}
 	if size, err := io.Copy(io.Discard, io.LimitReader(response.Body, 4097)); err != nil || size > 4096 {
 		return externalVerifierErr("registration-response")
