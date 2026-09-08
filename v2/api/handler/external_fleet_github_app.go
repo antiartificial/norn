@@ -187,10 +187,10 @@ func (c *externalFleetGitHubApp) nextAttestationListPath(headers []string, repo,
 	}
 	next := ""
 	for _, link := range links {
-		if !link.next {
+		if link.nextCount == 0 {
 			continue
 		}
-		if next != "" {
+		if link.nextCount != 1 || next != "" {
 			return "", false, errors.New("multiple next links")
 		}
 		next = link.target
@@ -230,8 +230,8 @@ func (c *externalFleetGitHubApp) nextAttestationListPath(headers []string, repo,
 }
 
 type externalFleetLink struct {
-	target string
-	next   bool
+	target    string
+	nextCount int
 }
 
 // externalFleetParseLinkHeaders accepts the RFC Link subset GitHub emits and
@@ -263,6 +263,7 @@ func externalFleetParseLinkHeaders(headers []string) ([]externalFleetLink, error
 			}
 			offset = end + 1
 			relation := ""
+			nextCount := 0
 			for {
 				for offset < len(header) && (header[offset] == ' ' || header[offset] == '\t') {
 					offset++
@@ -278,7 +279,7 @@ func externalFleetParseLinkHeaders(headers []string) ([]externalFleetLink, error
 					offset++
 				}
 				start := offset
-				for offset < len(header) && ((header[offset] >= 'a' && header[offset] <= 'z') || (header[offset] >= 'A' && header[offset] <= 'Z') || header[offset] == '-') {
+				for offset < len(header) && externalFleetLinkTokenByte(header[offset]) {
 					offset++
 				}
 				if start == offset || offset == len(header) || header[offset] != '=' {
@@ -292,17 +293,21 @@ func externalFleetParseLinkHeaders(headers []string) ([]externalFleetLink, error
 				var value string
 				if header[offset] == '"' {
 					offset++
-					start = offset
+					var decoded strings.Builder
 					for offset < len(header) && header[offset] != '"' {
 						if header[offset] == '\\' {
-							return nil, errors.New("escaped Link parameter unsupported")
+							offset++
+							if offset == len(header) {
+								return nil, errors.New("unterminated escaped Link parameter")
+							}
 						}
+						decoded.WriteByte(header[offset])
 						offset++
 					}
 					if offset == len(header) {
 						return nil, errors.New("unterminated Link parameter")
 					}
-					value, offset = header[start:offset], offset+1
+					value, offset = decoded.String(), offset+1
 				} else {
 					start = offset
 					for offset < len(header) && header[offset] != ';' && header[offset] != ',' && header[offset] != ' ' && header[offset] != '\t' {
@@ -317,10 +322,24 @@ func externalFleetParseLinkHeaders(headers []string) ([]externalFleetLink, error
 					if relation != "" {
 						return nil, errors.New("duplicate Link relation")
 					}
+					if value == "" {
+						return nil, errors.New("empty Link relation")
+					}
 					relation = value
+					for _, token := range strings.Fields(value) {
+						// Registered relation types are ASCII case-sensitive.
+						if token == "next" {
+							nextCount++
+						}
+					}
+				}
+				if name == "anchor" {
+					// An anchor changes the RFC 8288 link context. The list
+					// context is fixed, so accepting one could skip evidence.
+					return nil, errors.New("Link anchor unsupported")
 				}
 			}
-			links = append(links, externalFleetLink{target: target, next: strings.EqualFold(relation, "next")})
+			links = append(links, externalFleetLink{target: target, nextCount: nextCount})
 			if offset == len(header) {
 				break
 			}
@@ -331,6 +350,10 @@ func externalFleetParseLinkHeaders(headers []string) ([]externalFleetLink, error
 		}
 	}
 	return links, nil
+}
+
+func externalFleetLinkTokenByte(value byte) bool {
+	return (value >= 'a' && value <= 'z') || (value >= 'A' && value <= 'Z') || (value >= '0' && value <= '9') || strings.ContainsRune("!#$%&'*+-.^_`|~", rune(value))
 }
 
 func externalFleetRepositoryIDAllowed(id string, allowed []string) bool {

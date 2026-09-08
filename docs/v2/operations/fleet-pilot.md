@@ -224,15 +224,16 @@ it returns `external_deployment_verifier_unavailable` and records nothing.
 
 ### Current Fleet companion compatibility gate
 
-The verifier intentionally remains unavailable until the Fleet companion's
-workflow bridge is deployed. The companion correctly has only migration and
-runtime Nomad jobs; its `prepare` phase is a receipt/variable setup. It still
-does not exchange `fleet:external-admission`, request a Norn nonce, compose
-the v3 canonical-digest receipt, expose the read-only evidence service, or submit the
-receipt. The verifier checks public `/version` JSON for the source version;
-private `/readyz` plus Nomad/Consul evidence is required separately. Until the
-Fleet-side contract is reviewed and deployed, leave every verifier variable
-unset and the capability remains undiscoverable.
+Fleet commit `7ae090e` is a reviewed companion candidate: it implements the
+`fleet:external-admission` exchange, Norn nonce request, v3 canonical-digest
+receipt, read-only evidence service, and receipt submission. It correctly has
+only migration and runtime Nomad jobs; `prepare` remains receipt/variable
+setup. It is not deployed. The verifier checks public `/version` JSON for the
+source version; private `/readyz` plus Nomad/Consul evidence is required
+separately. Until that candidate is released, deployed, and independently
+qualified with the exact bridge bindings, leave every verifier variable unset
+and the capability undiscoverable. A reviewed source commit alone does not
+satisfy the release or deployment prerequisite.
 
 Only a fully verified receipt creates an immutable successful staging
 `app.deploy` operation and normal deployment history. The bootstrap artifact

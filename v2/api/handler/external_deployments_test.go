@@ -500,12 +500,19 @@ func TestExternalFleetAttestationNextLinkRejectsMalformedOrDriftedTargets(t *tes
 	if path, found, err := app.nextAttestationListPath([]string{"<" + valid + ">; rel=\"next\""}, "acme/app", digest, "provenance"); err != nil || !found || !strings.Contains(path, "before=cursor") {
 		t.Fatalf("valid GitHub cursor link rejected: path=%q found=%t err=%v", path, found, err)
 	}
+	if path, found, err := app.nextAttestationListPath([]string{"<" + valid + ">; rel=\"alternate next\"; x-note=\"cursor, continuation\""}, "acme/app", digest, "provenance"); err != nil || !found || !strings.Contains(path, "before=cursor") {
+		t.Fatalf("next relation token in a list rejected: path=%q found=%t err=%v", path, found, err)
+	}
 	for name, link := range map[string]string{
-		"malformed":     "not-a-link",
-		"multiple next": "<" + valid + ">; rel=\"next\", <" + valid + ">; rel=\"next\"",
-		"origin drift":  "<https://api.attacker.example/repos/acme/app/attestations/sha256:" + digest + "?per_page=30&predicate_type=provenance&before=cursor>; rel=\"next\"",
-		"path drift":    "<https://api.github.example/repos/acme/other/attestations/sha256:" + digest + "?per_page=30&predicate_type=provenance&before=cursor>; rel=\"next\"",
-		"query drift":   "<https://api.github.example/repos/acme/app/attestations/sha256:" + digest + "?per_page=30&predicate_type=provenance&page=2&before=cursor>; rel=\"next\"",
+		"malformed":            "not-a-link",
+		"multiple next":        "<" + valid + ">; rel=\"next\", <" + valid + ">; rel=\"next\"",
+		"duplicate next token": "<" + valid + ">; rel=\"alternate next next\"",
+		"empty relation":       "<" + valid + ">; rel=\"\"",
+		"relative link":        "</repos/acme/app/attestations/sha256:" + digest + "?per_page=30&predicate_type=provenance&before=cursor>; rel=\"next\"",
+		"anchor":               "<" + valid + ">; rel=\"next\"; anchor=\"https://api.github.example/context\"",
+		"origin drift":         "<https://api.attacker.example/repos/acme/app/attestations/sha256:" + digest + "?per_page=30&predicate_type=provenance&before=cursor>; rel=\"next\"",
+		"path drift":           "<https://api.github.example/repos/acme/other/attestations/sha256:" + digest + "?per_page=30&predicate_type=provenance&before=cursor>; rel=\"next\"",
+		"query drift":          "<https://api.github.example/repos/acme/app/attestations/sha256:" + digest + "?per_page=30&predicate_type=provenance&page=2&before=cursor>; rel=\"next\"",
 	} {
 		t.Run(name, func(t *testing.T) {
 			if _, _, err := app.nextAttestationListPath([]string{link}, "acme/app", digest, "provenance"); err == nil {
