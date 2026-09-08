@@ -56,6 +56,11 @@ func TestHelloNornMySQLBootstrapWorkflowIsArtifactOnlyAndBoundToProtectedMaster(
 			t.Errorf("artifact-only bootstrap must not contain %q", forbidden)
 		}
 	}
+	prepareEvidence := strings.Index(workflow, "- name: Prepare bootstrap evidence directory\n        run: mkdir -p bootstrap-evidence")
+	generateSBOM := strings.Index(workflow, "- name: Generate SPDX SBOM for the immutable artifact")
+	if prepareEvidence < 0 || generateSBOM < 0 || prepareEvidence > generateSBOM {
+		t.Error("bootstrap workflow must create bootstrap-evidence before generating the SBOM")
+	}
 }
 
 func TestHelloNornMySQLBootstrapDocsRequireIndependentVerificationPolicy(t *testing.T) {
