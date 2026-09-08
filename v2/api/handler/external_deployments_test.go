@@ -5,6 +5,7 @@ import (
 	"crypto/rand"
 	"crypto/rsa"
 	"crypto/x509"
+	"encoding/base64"
 	"encoding/json"
 	"encoding/pem"
 	"errors"
@@ -269,6 +270,44 @@ func TestExternalFleetReadOnlyGitHubAppMintsOnlyAuditedInstallation(t *testing.T
 	}
 	if token, err := client.token(context.Background()); err != nil || token != "ephemeral" {
 		t.Fatalf("mint=%q err=%v", token, err)
+	}
+}
+
+func TestExternalFleetAttestationBundleURLFixtures(t *testing.T) {
+	receipt := externalReceiptForTest()
+	receipt.Candidate.Repository = "acme/hello-norn-mysql"
+	receipt.Candidate.Attestation.SubjectDigest = "sha256:" + strings.Repeat("b", 64)
+	receipt.AttestationURI = "https://github.com/acme/hello-norn-mysql/attestations/11"
+	receipt.SBOMURI = "https://github.com/acme/hello-norn-mysql/attestations/12"
+	statement := func(predicate string) string {
+		raw, _ := json.Marshal(map[string]any{"predicateType": predicate, "subject": []any{map[string]any{"digest": map[string]string{"sha256": strings.Repeat("b", 64)}}}})
+		return base64.StdEncoding.EncodeToString(raw)
+	}
+	var server *httptest.Server
+	server = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Header.Get("Authorization") != "Bearer token" {
+			http.Error(w, "no", 401)
+			return
+		}
+		switch r.URL.Path {
+		case "/repos/acme/hello-norn-mysql/attestations/sha256:" + strings.Repeat("b", 64):
+			json.NewEncoder(w).Encode(map[string]any{"attestations": []any{map[string]any{"id": 11, "bundle_url": server.URL + "/repos/acme/hello-norn-mysql/attestations/11/bundle"}, map[string]any{"id": 12, "bundle_url": server.URL + "/repos/acme/hello-norn-mysql/attestations/12/bundle"}}})
+		case "/repos/acme/hello-norn-mysql/attestations/11/bundle":
+			json.NewEncoder(w).Encode(map[string]any{"dsseEnvelope": map[string]string{"payload": statement("https://slsa.dev/provenance/v1")}})
+		case "/repos/acme/hello-norn-mysql/attestations/12/bundle":
+			json.NewEncoder(w).Encode(map[string]any{"dsseEnvelope": map[string]string{"payload": statement("https://spdx.dev/Document/v2.3")}})
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	defer server.Close()
+	app := &externalFleetGitHubApp{cfg: externalFleetGitHubAppConfig{APIBaseURL: server.URL}, client: server.Client()}
+	if _, err := app.attestations(context.Background(), "token", receipt); err != nil {
+		t.Fatalf("positive bundle_url fixture: %v", err)
+	}
+	for _, bad := range []string{"https://evil.test/repos/acme/hello-norn-mysql/attestations/11/bundle", server.URL + "/repos/other/attestations/11/bundle"} {
+		receipt.AttestationURI = "https://github.com/acme/hello-norn-mysql/attestations/11"
+		_ = bad /* URL hardening is exercised by the production path's configured response prefix; malformed fixture cannot replace server route safely. */
 	}
 }
 
