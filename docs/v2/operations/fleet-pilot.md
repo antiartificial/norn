@@ -107,6 +107,52 @@ qualified authority and credentials. Sharing one database, signing key, OIDC
 audience, GitHub environment, or bootstrap secret set between staging and
 production is out of scope.
 
+## Temporary direct-workload admission
+
+`hello-norn-mysql` remains `deploy: false` until the normal Nomad translator
+can express its complete service, secret-file, TLS-routing, migration, and
+shutdown contract. Do not flip that bit merely to make a pilot test pass.
+
+The target staging control plane has a deliberately narrow, disabled-by-default
+bridge at `POST /api/v1/apps/{id}/external-deployments`. It is only enabled
+when all of these server-owned bindings are exact:
+
+```text
+NORN_EXTERNAL_FLEET_ADMISSION_APP=hello-norn-mysql
+NORN_EXTERNAL_FLEET_ADMISSION_NAMESPACE=<exact Nomad namespace>
+NORN_EXTERNAL_FLEET_ADMISSION_JOB_ID=<exact Nomad job ID>
+NORN_EXTERNAL_FLEET_ADMISSION_HCL_SHA256=<released direct-HCL SHA-256>
+```
+
+The runner exchanges GitHub OIDC only for `fleet:external-admission`, naming
+the route app. The exchange still requires the configured protected
+`norn-fleet` repository, SHA-pinned apply/recover workflow, protected staging
+environment, protected ref, and `apply` or `recover` intent. A regular Fleet
+token, static control token, legacy token, or administrator scope is not a
+substitute.
+
+The first POST with `{"action":"issue-nonce"}` produces a short-lived,
+one-use Norn nonce bound to that exact CI run. The runner writes it through the
+job's restricted runtime path and submits a canonical receipt only after its
+Fleet attempt checkpoints. The API persists only the nonce hash and consumes
+it once, after independent verification succeeds.
+
+Receipt text is evidence *pointers*, never authority. The server-owned verifier
+must independently read the released HCL digest, source/repository, OCI digest,
+attestation and SBOM references, Nomad namespace/job/submission proof, Fleet
+plan/run/attempt/checkpoint binding, nonce write/read proof, two distinct
+reviewed ingress nodes, public HTTPS `/version` and readiness probes, and the
+ordered `prepare → migration → runtime → exercise` chronology. The foundation
+intentionally has no generic live verifier yet; without a configured verifier,
+it returns `external_deployment_verifier_unavailable` and records nothing.
+
+Only a fully verified receipt creates an immutable successful staging
+`app.deploy` operation and normal deployment history. Existing qualification
+then works unchanged. This bridge neither changes `DiscoverApps` nor enables
+normal deployment of any `deploy: false` app. Retire it after the native
+translator path is released and proven; remove its environment bindings and
+verify the route disappears from capability discovery.
+
 ## Durable receipt chain
 
 Before provider mutation, the authority must durably bind:

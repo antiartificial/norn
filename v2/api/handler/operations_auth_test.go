@@ -95,6 +95,20 @@ func TestFleetOperationReadRequiresExactFleetPrincipal(t *testing.T) {
 	}
 }
 
+func TestExternalAdmissionOperationReadRequiresExactExternalPrincipal(t *testing.T) {
+	principal := operationReadPrincipal("hello-norn-mysql", "staging", ScopeFleetExternalAdmission)
+	operation := operationForPrincipal("app.deploy", "hello-norn-mysql", "staging", principal)
+	operation.Metadata["externalFleetReceipt"] = map[string]interface{}{"schemaVersion": externalFleetReceiptSchema}
+	if recorder, ok := operationReadAuthorized(principal, operation); !ok {
+		t.Fatalf("own external admission operation denied: status=%d body=%s", recorder.Code, recorder.Body.String())
+	}
+	ordinary := operation
+	ordinary.Metadata = map[string]interface{}{"principal": principal.Subject, "environment": "staging", "requestCI": principal.CI}
+	if recorder, ok := operationReadAuthorized(principal, ordinary); ok || recorder.Code != http.StatusForbidden {
+		t.Fatalf("external scope read ordinary deployment: ok=%v status=%d", ok, recorder.Code)
+	}
+}
+
 func TestOrdinaryOperationReadScopesRetainExistingBehavior(t *testing.T) {
 	operation := &model.Operation{ID: "operation-id", Kind: "app.deploy", App: "private-route"}
 	if recorder, ok := operationReadAuthorized(AccessPrincipal{Scopes: []string{ScopeAPIRead}}, operation); !ok {

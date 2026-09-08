@@ -64,13 +64,17 @@ type Handler struct {
 	fleetGitHubConfigError error
 	githubJWKS             *githubJWKCache
 	privateReleaseSigner   privateattestation.Signer
-	productionGateMu       sync.Mutex
-	productionGateAt       time.Time
-	productionGateBlockers []string
-	auditPruneMu           sync.Mutex
-	auditPruneAt           time.Time
-	wakeLocks              sync.Map
-	execConns              sync.Map
+	// externalFleetDeploymentVerifier is intentionally unset by default. It is
+	// the only authority that can turn a direct Fleet runtime receipt into a
+	// Norn deployment record.
+	externalFleetDeploymentVerifier ExternalFleetDeploymentVerifier
+	productionGateMu                sync.Mutex
+	productionGateAt                time.Time
+	productionGateBlockers          []string
+	auditPruneMu                    sync.Mutex
+	auditPruneAt                    time.Time
+	wakeLocks                       sync.Map
+	execConns                       sync.Map
 }
 
 // ConfigurePrivateReleaseSigner installs the staging-only signer after startup

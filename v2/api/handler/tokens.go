@@ -49,18 +49,23 @@ const (
 	ScopeReleasePromote  = "release:promote"
 	ScopeReleaseRollback = "release:rollback"
 	ScopeFleetOperate    = "fleet:operate"
-	ScopeAdmin           = "admin"
+	// ScopeFleetExternalAdmission is intentionally separate from fleet:operate.
+	// A protected runner needs it only to submit an independently verified
+	// staging receipt for the one configured external workload.
+	ScopeFleetExternalAdmission = "fleet:external-admission"
+	ScopeAdmin                  = "admin"
 )
 
 var accessTokenScopes = map[string]struct{}{
 	ScopeAPIRead: {}, ScopeAPIWrite: {}, ScopeEventsRead: {}, ScopeAppsExec: {},
 	ScopePlatformOperate: {}, ScopeHostOperate: {}, ScopeAdmin: {},
-	ScopeFleetOperate:  {},
-	ScopeReleaseAttest: {}, ScopeReleaseStage: {}, ScopeReleaseQualify: {}, ScopeReleasePromote: {}, ScopeReleaseRollback: {},
+	ScopeFleetOperate:           {},
+	ScopeFleetExternalAdmission: {},
+	ScopeReleaseAttest:          {}, ScopeReleaseStage: {}, ScopeReleaseQualify: {}, ScopeReleasePromote: {}, ScopeReleaseRollback: {},
 }
 
 func AccessTokenScopeNames() []string {
-	return []string{ScopeAPIRead, ScopeAPIWrite, ScopeEventsRead, ScopeAppsExec, ScopePlatformOperate, ScopeHostOperate, ScopeReleaseAttest, ScopeReleaseStage, ScopeReleaseQualify, ScopeReleasePromote, ScopeReleaseRollback, ScopeFleetOperate, ScopeAdmin}
+	return []string{ScopeAPIRead, ScopeAPIWrite, ScopeEventsRead, ScopeAppsExec, ScopePlatformOperate, ScopeHostOperate, ScopeReleaseAttest, ScopeReleaseStage, ScopeReleaseQualify, ScopeReleasePromote, ScopeReleaseRollback, ScopeFleetOperate, ScopeFleetExternalAdmission, ScopeAdmin}
 }
 
 // CIIdentity is copied from a verified GitHub OIDC assertion into Norn's own

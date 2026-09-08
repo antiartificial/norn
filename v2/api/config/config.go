@@ -84,9 +84,17 @@ type Config struct {
 	// Direct workflow_ref claims carry their branch ref, so entries use
 	// owner/repo/.github/workflows/file.yml@<full workflow_sha>. Authorization
 	// matches the claimed path and immutable workflow_sha independently.
-	GitHubActionsFleetAllowedWorkflowRefs  []string
-	GitHubActionsFleetAllowedEnvironments  []string
-	GitHubActionsFleetAllowedIntents       []string
+	GitHubActionsFleetAllowedWorkflowRefs []string
+	GitHubActionsFleetAllowedEnvironments []string
+	GitHubActionsFleetAllowedIntents      []string
+	// ExternalFleetAdmission* is an intentionally narrow staging escape hatch
+	// for a reviewed Fleet-owned Nomad job. It is not a second generic deploy
+	// API: every value is server configuration and the endpoint is unavailable
+	// until all four bindings are present.
+	ExternalFleetAdmissionApp              string
+	ExternalFleetAdmissionNamespace        string
+	ExternalFleetAdmissionJobID            string
+	ExternalFleetAdmissionHCLSHA256        string
 	ReleaseAdmissionMode                   string
 	ReleaseAttestationIssuer               string
 	ReleaseAttestationTrustMode            string
@@ -219,6 +227,10 @@ func Load() *Config {
 		GitHubActionsFleetAllowedWorkflowRefs:  splitNonEmpty(os.Getenv("NORN_GITHUB_ACTIONS_FLEET_ALLOWED_WORKFLOW_REFS")),
 		GitHubActionsFleetAllowedEnvironments:  splitNonEmpty(os.Getenv("NORN_GITHUB_ACTIONS_FLEET_ALLOWED_ENVIRONMENTS")),
 		GitHubActionsFleetAllowedIntents:       splitNonEmpty(os.Getenv("NORN_GITHUB_ACTIONS_FLEET_ALLOWED_INTENTS")),
+		ExternalFleetAdmissionApp:              strings.TrimSpace(os.Getenv("NORN_EXTERNAL_FLEET_ADMISSION_APP")),
+		ExternalFleetAdmissionNamespace:        strings.TrimSpace(os.Getenv("NORN_EXTERNAL_FLEET_ADMISSION_NAMESPACE")),
+		ExternalFleetAdmissionJobID:            strings.TrimSpace(os.Getenv("NORN_EXTERNAL_FLEET_ADMISSION_JOB_ID")),
+		ExternalFleetAdmissionHCLSHA256:        strings.ToLower(strings.TrimSpace(os.Getenv("NORN_EXTERNAL_FLEET_ADMISSION_HCL_SHA256"))),
 		ReleaseAdmissionMode:                   strings.ToLower(envOr("NORN_RELEASE_ADMISSION_MODE", "keyed")),
 		ReleaseAttestationIssuer:               strings.TrimSpace(os.Getenv("NORN_RELEASE_ATTESTATION_ISSUER")),
 		ReleaseAttestationTrustMode:            strings.ToLower(envOr("NORN_RELEASE_ATTESTATION_TRUST_MODE", "github-public")),

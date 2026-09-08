@@ -476,6 +476,7 @@ func main() {
 		r.With(handler.ValidateAppID).Post("/v1/apps/{id}/releases/preflight", h.QueueReleasePreflight)
 		r.With(handler.ValidateAppID).Post("/v1/apps/{id}/private-attestations", h.CreatePrivateReleaseAttestation)
 		r.With(handler.ValidateAppID).Post("/v1/apps/{id}/releases/deployments", h.QueueReleaseDeployment)
+		r.With(handler.ValidateAppID).Post("/v1/apps/{id}/external-deployments", h.AdmitExternalFleetDeployment)
 		r.With(handler.ValidateAppID).Post("/v1/apps/{id}/releases/rollbacks", h.QueueReleaseRollback)
 		r.With(handler.ValidateAppID).Get("/v1/apps/{id}/qualifications", h.ListReleaseQualifications)
 		r.With(handler.ValidateAppID).Post("/v1/apps/{id}/qualifications", h.CreateReleaseQualification)
@@ -1140,7 +1141,7 @@ func controlScopeForRequest(r *http.Request) string {
 		return ""
 	case path == "/api/v1/auth/rotate" || path == "/api/v1/auth/revoke":
 		return ""
-	case r.Method == http.MethodPost && (strings.HasSuffix(path, "/releases/preflight") || strings.HasSuffix(path, "/releases/deployments") || strings.HasSuffix(path, "/releases/rollbacks") || strings.HasSuffix(path, "/private-attestations") || strings.HasSuffix(path, "/qualifications") || strings.HasSuffix(path, "/promotions")):
+	case r.Method == http.MethodPost && (strings.HasSuffix(path, "/releases/preflight") || strings.HasSuffix(path, "/releases/deployments") || strings.HasSuffix(path, "/releases/rollbacks") || strings.HasSuffix(path, "/private-attestations") || strings.HasSuffix(path, "/qualifications") || strings.HasSuffix(path, "/promotions") || strings.HasSuffix(path, "/external-deployments")):
 		// The global middleware authenticates the Norn token but the release
 		// handlers own their exact scope plus app/environment/CI binding.
 		return ""
@@ -1257,6 +1258,10 @@ func writeControlCapabilitiesForConfig(cfg *config.Config, w http.ResponseWriter
 		endpoints["releaseQualifications"] = "/api/v1/apps/{id}/qualifications"
 		endpoints["releasePromotions"] = "/api/v1/apps/{id}/promotions"
 		endpoints["releaseRollbacks"] = "/api/v1/apps/{id}/releases/rollbacks"
+	}
+	if cfg.EnvironmentID() == "staging" && strings.TrimSpace(cfg.ExternalFleetAdmissionApp) != "" {
+		features = append(features, "external-fleet-deployment-admission-v1")
+		endpoints["externalFleetDeployments"] = "/api/v1/apps/{id}/external-deployments"
 	}
 	if cfg.IsAppCatalogReadOnly() {
 		features = withoutCapability(features, "app-creation")
