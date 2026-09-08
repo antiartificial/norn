@@ -351,6 +351,7 @@ type ExternalFleetEvidenceAdmissionStatus struct {
 	ProofDigest            string                         `json:"proofDigest,omitempty"`
 	OperationID            string                         `json:"operationId,omitempty"`
 	OperationDigest        string                         `json:"operationDigest,omitempty"`
+	CleanupCheckpoint      *ExternalFleetCheckpointRef    `json:"cleanupCheckpoint,omitempty"`
 }
 
 // ExternalFleetEvidenceRegistrationClient deliberately separates stateful

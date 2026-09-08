@@ -521,6 +521,11 @@ func (h *Handler) CompleteExternalFleetDeploymentCleanup(w http.ResponseWriter, 
 			WriteControlProblem(w, r, http.StatusConflict, "external_deployment_cleanup_conflict", "completed admission does not match the exact cleanup bindings")
 			return
 		}
+		var checkpointDigest string
+		if err := h.db.Pool.QueryRow(r.Context(), `SELECT evidence_sha256 FROM external_deployment_admission_checkpoints WHERE admission_id=$1 AND phase='external_cleanup'`, request.AdmissionID).Scan(&checkpointDigest); err != nil || checkpointDigest != expectedAbsence {
+			WriteControlProblem(w, r, http.StatusConflict, "external_deployment_cleanup_conflict", "completed admission lacks its exact cleanup checkpoint")
+			return
+		}
 		writeJSON(w, externalFleetAdmissionResponse{SchemaVersion: "norn.external-fleet-admission/v4", AdmissionID: request.AdmissionID, State: state, OperationID: operationID})
 		return
 	}
@@ -556,7 +561,18 @@ func (h *Handler) CompleteExternalFleetDeploymentCleanup(w http.ResponseWriter, 
 		WriteControlProblem(w, r, http.StatusConflict, "external_deployment_cleanup_conflict", "cleanup request does not match persisted service-owned bindings")
 		return
 	}
-	if err := h.db.CompleteExternalDeploymentAdmission(r.Context(), request.AdmissionID); err != nil {
+	var lineageJSON []byte
+	if err := h.db.Pool.QueryRow(r.Context(), `SELECT service_retry_lineage FROM external_deployment_admissions WHERE id=$1`, admission.ID).Scan(&lineageJSON); err != nil {
+		WriteControlProblem(w, r, http.StatusServiceUnavailable, "external_deployment_cleanup_unavailable", "persisted retry lineage is unavailable")
+		return
+	}
+	var lineage []string
+	checkpoint := status.CleanupCheckpoint
+	if json.Unmarshal(lineageJSON, &lineage) != nil || !validExternalRetryLineage(lineage) || checkpoint == nil || checkpoint.Phase != "external_cleanup" || checkpoint.AttemptID != lineage[len(lineage)-1] || checkpoint.EvidenceSHA256 != status.AbsenceProofDigest || checkpoint.CheckpointID == "" || checkpoint.EvidenceRef == "" {
+		WriteControlProblem(w, r, http.StatusConflict, "external_deployment_cleanup_conflict", "cleanup-ready status lacks the exact service-owned final checkpoint")
+		return
+	}
+	if err := h.db.CompleteExternalDeploymentAdmissionWithCleanupCheckpoint(r.Context(), request.AdmissionID, store.ExternalDeploymentCheckpointRef{Phase: checkpoint.Phase, CheckpointID: checkpoint.CheckpointID, AttemptID: checkpoint.AttemptID, EvidenceRef: checkpoint.EvidenceRef, EvidenceSHA256: checkpoint.EvidenceSHA256}); err != nil {
 		WriteControlProblem(w, r, http.StatusServiceUnavailable, "external_deployment_cleanup_unavailable", "durable cleanup completion could not be recorded")
 		return
 	}

@@ -238,6 +238,11 @@ Nested fields use their declared lower-camel JSON names and array order. The lat
 evidence CAS adds the absence-proof digest and only then exposes
 `cleanup_ready`; Norn compares every persisted admission, operation, receipt,
 snapshot, revision, intent, and absence binding before marking complete.
+`cleanup_ready` also carries one service-owned `cleanupCheckpoint` with phase
+`external_cleanup`, the final persisted retry-lineage attempt, an immutable
+checkpoint reference, and an evidence SHA-256 exactly equal to the absence
+proof. Norn writes that checkpoint atomically with `complete`; admission-time
+snapshots must not contain this final cleanup phase.
 
 The receipt carries `fleet.rootAttemptId`. For an admission retry after a lost
 success response, reuse the same client `Idempotency-Key`; Norn derives its

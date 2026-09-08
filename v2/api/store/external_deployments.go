@@ -410,6 +410,35 @@ func (db *DB) CompleteExternalDeploymentAdmission(ctx context.Context, admission
 	return nil
 }
 
+// CompleteExternalDeploymentAdmissionWithCleanupCheckpoint writes the final
+// service-owned absence checkpoint and lifecycle state in one transaction.
+// The checkpoint is never synthesized at admission time.
+func (db *DB) CompleteExternalDeploymentAdmissionWithCleanupCheckpoint(ctx context.Context, admissionID string, checkpoint ExternalDeploymentCheckpointRef) error {
+	if db == nil || db.Pool == nil || admissionID == "" || checkpoint.Phase != "external_cleanup" || !validExternalDeploymentCheckpointRef(checkpoint) {
+		return ErrExternalDeploymentAdmissionUnavailable
+	}
+	tx, err := db.Pool.Begin(ctx)
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback(ctx)
+	if err := upsertExternalDeploymentCheckpointRef(ctx, tx, "external_deployment_admission_checkpoints", admissionID, checkpoint); err != nil {
+		return err
+	}
+	if err := upsertExternalDeploymentCheckpointRef(ctx, tx, "fleet_runner_checkpoint_refs", admissionID, checkpoint); err != nil {
+		return err
+	}
+	tag, err := tx.Exec(ctx, `UPDATE external_deployment_admissions SET state='complete', updated_at=now(), completed_at=now()
+		WHERE id=$1 AND state IN ('committed','cleanup_pending','complete')`, admissionID)
+	if err != nil {
+		return err
+	}
+	if tag.RowsAffected() != 1 {
+		return ErrExternalDeploymentAdmissionUnavailable
+	}
+	return tx.Commit(ctx)
+}
+
 // ExpireExternalDeploymentAdmission records a safe terminal expiry without
 // replacing an already-committed operation.
 func (db *DB) ExpireExternalDeploymentAdmission(ctx context.Context, admissionID, failureCode string) error {
@@ -680,7 +709,15 @@ func validExternalDeploymentCheckpointRef(ref ExternalDeploymentCheckpointRef) b
 			return false
 		}
 	}
-	return len(ref.EvidenceSHA256) <= 128 && !strings.ContainsAny(ref.EvidenceSHA256, "\x00\r\n")
+	if len(ref.EvidenceSHA256) != 64 || strings.ContainsAny(ref.EvidenceSHA256, "\x00\r\n") {
+		return false
+	}
+	for _, c := range ref.EvidenceSHA256 {
+		if (c < '0' || c > '9') && (c < 'a' || c > 'f') {
+			return false
+		}
+	}
+	return true
 }
 
 func completeExternalDeploymentAdmission(ctx context.Context, tx pgx.Tx, admission ExternalDeploymentAdmission, operationID string) error {

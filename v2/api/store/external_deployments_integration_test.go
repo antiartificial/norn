@@ -182,11 +182,15 @@ func TestExternalDeploymentAdmissionV4Lifecycle(t *testing.T) {
 	if err := db.MarkExternalDeploymentAdmissionCleanupPending(ctx, admissionID); err != nil {
 		t.Fatal(err)
 	}
-	if err := db.CompleteExternalDeploymentAdmission(ctx, admissionID); err != nil {
+	cleanupCheckpoint := ExternalDeploymentCheckpointRef{Phase: "external_cleanup", CheckpointID: "cleanup-1", AttemptID: "attempt-1", EvidenceRef: "checkpoint://cleanup-1", EvidenceSHA256: fmt.Sprintf("%064x", 13)}
+	if err := db.CompleteExternalDeploymentAdmissionWithCleanupCheckpoint(ctx, admissionID, cleanupCheckpoint); err != nil {
 		t.Fatal(err)
 	}
 	if err := db.Pool.QueryRow(ctx, `SELECT state FROM external_deployment_admissions WHERE id=$1`, admissionID).Scan(&admissionState); err != nil || admissionState != string(ExternalDeploymentAdmissionComplete) {
 		t.Fatalf("complete lifecycle state=%q err=%v", admissionState, err)
+	}
+	if err := db.Pool.QueryRow(ctx, `SELECT evidence_sha256 FROM external_deployment_admission_checkpoints WHERE admission_id=$1 AND phase='external_cleanup'`, admissionID).Scan(&checkpointID); err != nil || checkpointID != cleanupCheckpoint.EvidenceSHA256 {
+		t.Fatalf("complete lifecycle cleanup checkpoint=%q err=%v", checkpointID, err)
 	}
 }
 
