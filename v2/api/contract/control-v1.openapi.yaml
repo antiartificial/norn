@@ -509,7 +509,7 @@ paths:
           headers:
             Cache-Control: { $ref: '#/components/headers/NoStoreCacheControl' }
             Pragma: { $ref: '#/components/headers/NoCachePragma' }
-          content: { application/json: { schema: { $ref: '#/components/schemas/ExternalFleetAdmissionContext' } } }
+          content: { application/json: { schema: { $ref: '#/components/schemas/ExternalFleetAdmissionReplayResponse' } } }
         '400': { $ref: '#/components/responses/Problem' }
         '403': { $ref: '#/components/responses/Problem' }
         '409': { $ref: '#/components/responses/Problem' }
@@ -2608,6 +2608,9 @@ components:
     ExternalFleetDeploymentAdmissionRequest:
       type: object
       additionalProperties: false
+      oneOf:
+        - required: [receipt]
+        - required: [admissionId]
       properties:
         admissionId: { type: string, format: uuid, description: Receipt-free terminal replay selector. Requires the original Idempotency-Key and exact authenticated app/repository/environment binding. }
         receipt: { $ref: '#/components/schemas/ExternalFleetDeploymentReceiptV4' }
@@ -2666,7 +2669,7 @@ components:
     ExternalFleetNomadJobProofV4:
       type: object
       additionalProperties: false
-      required: [jobId, hclSha256, evalId, evalCreateIndex, evalJobModifyIndex, jobCreateIndex, jobModifyIndex, jobVersion, currentSpecSha256, submissionSha256, evaluationChainIds, checkpointId]
+      required: [jobId, hclSha256, evalId, evalCreateIndex, evalJobModifyIndex, jobCreateIndex, jobModifyIndex, jobVersion, currentSpec, currentSpecSha256, submission, submissionSha256, evaluationChainIds, checkpointId]
       properties:
         jobId: { type: string }
         hclSha256: { type: string, pattern: '^[0-9a-f]{64}$' }
@@ -2676,7 +2679,15 @@ components:
         jobCreateIndex: { type: integer, format: int64, minimum: 1 }
         jobModifyIndex: { type: integer, format: int64, minimum: 1 }
         jobVersion: { type: integer, format: int64, minimum: 0 }
+        currentSpec:
+          type: object
+          additionalProperties: true
+          description: Exact Nomad job-inspect JSON. Norn verifies ID/namespace/create index/modify index/version, removes only Status, StatusDescription, Stable, ModifyIndex, CreateIndex, Version, JobModifyIndex, and SubmitTime at the root, then hashes sorted compact UTF-8 JSON without HTML escaping under norn.nomad-v4-canonical-json/v1.
         currentSpecSha256: { type: string, pattern: '^[0-9a-f]{64}$' }
+        submission:
+          type: object
+          additionalProperties: true
+          description: Exact versioned Nomad JobSubmission JSON. Norn requires Job identity/index/version plus Source and Variables, then hashes the complete sorted compact UTF-8 JSON under norn.nomad-v4-canonical-json/v1.
         submissionSha256: { type: string, pattern: '^[0-9a-f]{64}$' }
         evaluationChainIds:
           type: array
@@ -2686,7 +2697,7 @@ components:
     ExternalFleetAdmissionContext:
       type: object
       additionalProperties: false
-      required: [schemaVersion, admissionId, state, logicalIdentity, logicalDigest, nonceGeneration, operationId, cleanupState, retryLineage, checkpoints]
+      required: [schemaVersion, admissionId, state, logicalIdentity, logicalDigest, nonceGeneration, cleanupState, retryLineage, checkpoints]
       properties:
         schemaVersion: { const: norn.external-fleet-admission-context/v4 }
         admissionId: { type: string, format: uuid, readOnly: true }

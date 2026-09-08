@@ -289,6 +289,18 @@ ordered `prepare → migration → runtime → exercise` chronology. The foundat
 intentionally has no generic live verifier yet; without a configured verifier,
 it returns `external_deployment_verifier_unavailable` and records nothing.
 
+Nomad v4 proof hashes are not opaque strings. Fleet sends the exact job-inspect
+object and the exact versioned `JobSubmission` object alongside each digest.
+Norn verifies ID, namespace, creation/modify indices, and `JobVersion` (zero is
+valid), rejects duplicate keys and non-uint64 numeric forms, then emits sorted
+compact UTF-8 JSON without HTML escaping. Current-spec removes only root
+`Status`, `StatusDescription`, `Stable`, `ModifyIndex`, `CreateIndex`,
+`Version`, `JobModifyIndex`, and `SubmitTime`; submission retains every field,
+including `Source`, `Variables`, and `Job`. The cross-language fixture
+[`nomad-v4-canonical.json`](../../api/handler/testdata/nomad-v4-canonical.json)
+defines the exact `norn.nomad-v4-canonical-json/v1` bytes and SHA-256 values for
+Fleet and Norn implementations.
+
 ### Current Fleet companion compatibility gate
 
 Fleet commit `01d0b8` is **incompatible scaffolding, not a companion

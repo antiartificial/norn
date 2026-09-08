@@ -805,7 +805,7 @@ func TestExternalFleetAdmissionCapabilityRequiresCompleteVerifierConfiguration(t
 	if err := json.Unmarshal(recorder.Body.Bytes(), &capability); err != nil {
 		t.Fatal(err)
 	}
-	if !containsCapability(capability.Features, "external-fleet-deployment-admission-v4") || capability.Endpoints["externalFleetAdmissionBegin"] != "/api/v1/apps/{id}/external-deployments/begin" || capability.Endpoints["externalFleetAdmissionAdmit"] != "/api/v1/apps/{id}/external-deployments/admit" || capability.Endpoints["externalFleetAdmissionContext"] != "/api/v1/apps/{id}/external-deployments/context/{admissionId}" || capability.Endpoints["externalFleetAdmissionReconcile"] != "/api/v1/apps/{id}/external-deployments/reconcile" {
+	if !containsCapability(capability.Features, "external-fleet-deployment-admission-v4") || capability.Endpoints["externalFleetAdmissionBegin"] != "/api/v1/apps/{id}/external-deployments/begin" || capability.Endpoints["externalFleetAdmissionResume"] != "/api/v1/apps/{id}/external-deployments/resume" || capability.Endpoints["externalFleetAdmissionAdmit"] != "/api/v1/apps/{id}/external-deployments/admit" || capability.Endpoints["externalFleetAdmissionCleanup"] != "/api/v1/apps/{id}/external-deployments/cleanup" || capability.Endpoints["externalFleetAdmissionContext"] != "/api/v1/apps/{id}/external-deployments/context/{admissionId}" || capability.Endpoints["externalFleetAdmissionReconcile"] != "/api/v1/apps/{id}/external-deployments/reconcile" {
 		t.Fatalf("complete external verifier was not advertised: %#v", capability)
 	}
 }

@@ -1281,7 +1281,9 @@ func writeControlCapabilitiesForConfig(cfg *config.Config, w http.ResponseWriter
 	if externalFleetVerifierConfigured(cfg) {
 		features = append(features, "external-fleet-deployment-admission-v4")
 		endpoints["externalFleetAdmissionBegin"] = "/api/v1/apps/{id}/external-deployments/begin"
+		endpoints["externalFleetAdmissionResume"] = "/api/v1/apps/{id}/external-deployments/resume"
 		endpoints["externalFleetAdmissionAdmit"] = "/api/v1/apps/{id}/external-deployments/admit"
+		endpoints["externalFleetAdmissionCleanup"] = "/api/v1/apps/{id}/external-deployments/cleanup"
 		endpoints["externalFleetAdmissionContext"] = "/api/v1/apps/{id}/external-deployments/context/{admissionId}"
 		endpoints["externalFleetAdmissionReconcile"] = "/api/v1/apps/{id}/external-deployments/reconcile"
 	}

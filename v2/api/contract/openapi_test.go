@@ -139,13 +139,13 @@ func TestControlOpenAPIParsesAndLocalRefsResolve(t *testing.T) {
 		}
 	}
 	v4NomadProof := schemas["ExternalFleetNomadJobProofV4"].(map[string]interface{})
-	for _, field := range []string{"evalCreateIndex", "evalJobModifyIndex", "jobCreateIndex", "jobModifyIndex", "jobVersion", "currentSpecSha256", "submissionSha256", "evaluationChainIds", "checkpointId"} {
+	for _, field := range []string{"evalCreateIndex", "evalJobModifyIndex", "jobCreateIndex", "jobModifyIndex", "jobVersion", "currentSpec", "currentSpecSha256", "submission", "submissionSha256", "evaluationChainIds", "checkpointId"} {
 		if !containsRequiredField(v4NomadProof["required"].([]interface{}), field) {
 			t.Errorf("ExternalFleetNomadJobProofV4 must require %s", field)
 		}
 	}
 	v4Context := schemas["ExternalFleetAdmissionContext"].(map[string]interface{})
-	for _, field := range []string{"schemaVersion", "admissionId", "state", "logicalIdentity", "logicalDigest", "nonceGeneration", "operationId", "cleanupState", "retryLineage", "checkpoints"} {
+	for _, field := range []string{"schemaVersion", "admissionId", "state", "logicalIdentity", "logicalDigest", "nonceGeneration", "cleanupState", "retryLineage", "checkpoints"} {
 		if !containsRequiredField(v4Context["required"].([]interface{}), field) {
 			t.Errorf("ExternalFleetAdmissionContext must require %s", field)
 		}

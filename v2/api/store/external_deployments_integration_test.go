@@ -179,10 +179,19 @@ func TestExternalDeploymentAdmissionV4Lifecycle(t *testing.T) {
 	if _, err := db.AdmitExternalDeployment(ctx, conflictingReplay); !errors.Is(err, ErrExternalDeploymentCheckpointConflict) {
 		t.Fatalf("conflicting checkpoint replay error=%v, want checkpoint conflict", err)
 	}
+	if err := db.RecordExternalDeploymentCommitPending(ctx, admissionID, serviceSnapshot.CleanupIntentSHA256); err != nil {
+		t.Fatalf("persist terminal remote-commit intent: %v", err)
+	}
+	if err := db.RecordExternalDeploymentCommitBinding(ctx, ExternalDeploymentServiceSnapshot{AdmissionID: admissionID, CommitRevision: 3, CleanupIntentSHA256: serviceSnapshot.CleanupIntentSHA256}); err != nil {
+		t.Fatalf("bind terminal remote commit: %v", err)
+	}
 	if err := db.MarkExternalDeploymentAdmissionCleanupPending(ctx, admissionID); err != nil {
 		t.Fatal(err)
 	}
 	cleanupCheckpoint := ExternalDeploymentCheckpointRef{Phase: "external_cleanup", CheckpointID: "cleanup-1", AttemptID: "attempt-1", EvidenceRef: "checkpoint://cleanup-1", EvidenceSHA256: fmt.Sprintf("%064x", 13)}
+	if err := db.RecordExternalDeploymentCleanupBindings(ctx, ExternalDeploymentServiceSnapshot{AdmissionID: admissionID, CommitRevision: 3, CleanupRevision: 4, CleanupIntentSHA256: serviceSnapshot.CleanupIntentSHA256, AbsenceProofSHA256: cleanupCheckpoint.EvidenceSHA256}); err != nil {
+		t.Fatalf("bind service-owned cleanup absence: %v", err)
+	}
 	if err := db.CompleteExternalDeploymentAdmissionWithCleanupCheckpoint(ctx, admissionID, cleanupCheckpoint); err != nil {
 		t.Fatal(err)
 	}

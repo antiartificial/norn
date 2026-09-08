@@ -28,6 +28,7 @@ import (
 
 	"github.com/go-chi/chi/v5"
 	"github.com/golang/snappy"
+	"github.com/google/uuid"
 
 	"norn/v2/api/config"
 	"norn/v2/api/model"
@@ -80,6 +81,23 @@ func externalReceiptForTest() ExternalFleetDeploymentReceipt {
 
 func externalConfigForTest() ExternalFleetAdmissionConfig {
 	return ExternalFleetAdmissionConfig{App: "hello-norn-mysql", Namespace: "norn-pilot", MigrationJobID: "hello-norn-mysql-migrate", MigrationHCLSHA256: strings.Repeat("c", 64), RuntimeJobID: "hello-norn-mysql", RuntimeHCLSHA256: strings.Repeat("e", 64), BootstrapSignerRef: "acme/hello-norn-mysql/.github/workflows/hello-norn-mysql-bootstrap-image.yml@" + strings.Repeat("f", 40)}
+}
+
+func completeExternalNomadProofForTest(t *testing.T, proof *ExternalFleetNomadJobProof, namespace string) {
+	t.Helper()
+	proof.CurrentSpec = json.RawMessage(fmt.Sprintf(`{"ID":%q,"Namespace":%q,"CreateIndex":%d,"ModifyIndex":%d,"Version":%d,"Status":"running","StatusDescription":"ok","Stable":true,"JobModifyIndex":%d,"SubmitTime":123,"TaskGroups":[{"Name":"web"}]}`,
+		proof.JobID, namespace, proof.JobCreateIndex, proof.JobModifyIndex, proof.JobVersion, proof.JobModifyIndex))
+	proof.Submission = json.RawMessage(fmt.Sprintf(`{"Format":"hcl2","Job":{"ID":%q,"Namespace":%q,"CreateIndex":%d,"ModifyIndex":%d,"Version":%d},"Source":%q,"Variables":"{}"}`,
+		proof.JobID, namespace, proof.JobCreateIndex, proof.JobModifyIndex, proof.JobVersion, proof.JobID))
+	current, err := externalNomadCurrentSpecCanonicalJSON(proof.CurrentSpec, proof.JobID, namespace, proof.JobCreateIndex, proof.JobModifyIndex, proof.JobVersion)
+	if err != nil {
+		t.Fatal(err)
+	}
+	submission, err := externalNomadSubmissionCanonicalJSON(proof.Submission, proof.JobID, namespace, proof.JobVersion, proof.JobModifyIndex)
+	if err != nil {
+		t.Fatal(err)
+	}
+	proof.CurrentSpecSHA256, proof.SubmissionSHA256 = externalSHA256(current), externalSHA256(submission)
 }
 
 func verifiedExternalReceipt(receipt ExternalFleetDeploymentReceipt) ExternalFleetDeploymentVerification {
@@ -838,6 +856,46 @@ func TestExternalAdmissionDoesNotIssueNonceWithoutLiveVerifier(t *testing.T) {
 	}
 }
 
+func TestExternalAdmissionV4HandlersEnforceTheirBoundaryBeforePersistence(t *testing.T) {
+	configured := externalConfigForTest()
+	h := &Handler{cfg: &config.Config{Environment: "staging", ExternalFleetAdmissionApp: configured.App, ExternalFleetAdmissionNamespace: configured.Namespace, ExternalFleetAdmissionMigrationJobID: configured.MigrationJobID, ExternalFleetAdmissionMigrationHCLSHA256: configured.MigrationHCLSHA256, ExternalFleetAdmissionRuntimeJobID: configured.RuntimeJobID, ExternalFleetAdmissionRuntimeHCLSHA256: configured.RuntimeHCLSHA256, ExternalFleetAdmissionBootstrapSignerRef: configured.BootstrapSignerRef}}
+	principal := &AccessPrincipal{Subject: "github-actions:acme/norn-fleet:123", Scopes: []string{ScopeFleetExternalAdmission}, App: configured.App, Environment: "staging", CI: &CIIdentity{Repository: "acme/norn-fleet", RunID: "123", RunAttempt: "1", Environment: "staging", RefProtected: true, Intent: "apply"}}
+	identity := ExternalFleetLogicalIdentity{SchemaVersion: externalFleetLogicalIdentitySchemaV4, SourceSHA: strings.Repeat("a", 40), Artifact: "ghcr.io/acme/hello-norn-mysql@sha256:" + strings.Repeat("b", 64), Candidate: testReleaseCandidate(), Fleet: ExternalFleetLogicalExecutionIdentity{Namespace: configured.Namespace, PlanID: "plan-1", PlanSHA256: strings.Repeat("d", 64), RootAttemptID: "attempt-root", FleetCommit: strings.Repeat("f", 40)}}
+	identity.Candidate.Repository = "acme/hello-norn-mysql"
+	identity.Candidate.Attestation.MaterialSHA = strings.Repeat("a", 40)
+	withRoute := func(body string) *http.Request {
+		req := httptest.NewRequest(http.MethodPost, "/api/v1/apps/hello-norn-mysql/external-deployments", strings.NewReader(body))
+		req.Header.Set("Idempotency-Key", "handler-boundary-key")
+		route := chi.NewRouteContext()
+		route.URLParams.Add("id", configured.App)
+		return WithAccessPrincipal(req.WithContext(context.WithValue(req.Context(), chi.RouteCtxKey, route)), principal)
+	}
+	beginBody, _ := json.Marshal(externalFleetAdmissionBeginRequest{LogicalIdentity: identity})
+	begin := httptest.NewRecorder()
+	h.BeginExternalFleetDeploymentAdmission(begin, withRoute(string(beginBody)))
+	if begin.Code != http.StatusServiceUnavailable || !strings.Contains(begin.Body.String(), "external_deployment_registration_unavailable") {
+		t.Fatalf("begin did not reach durable registration boundary: %d %s", begin.Code, begin.Body.String())
+	}
+	resumeBody, _ := json.Marshal(externalFleetAdmissionResumeRequest{AdmissionID: uuid.NewString(), LogicalIdentity: identity})
+	resume := httptest.NewRecorder()
+	h.ResumeExternalFleetDeploymentAdmission(resume, withRoute(string(resumeBody)))
+	if resume.Code != http.StatusServiceUnavailable || !strings.Contains(resume.Body.String(), "external_deployment_store_unavailable") {
+		t.Fatalf("resume did not reach durable store boundary: %d %s", resume.Code, resume.Body.String())
+	}
+	reconcile := httptest.NewRecorder()
+	h.ReconcileExternalFleetDeploymentAdmission(reconcile, withRoute(`{"admissionId":"`+uuid.NewString()+`"}`))
+	if reconcile.Code != http.StatusServiceUnavailable || !strings.Contains(reconcile.Body.String(), "external_deployment_store_unavailable") {
+		t.Fatalf("reconcile did not reach durable store boundary: %d %s", reconcile.Code, reconcile.Body.String())
+	}
+	cleanupRequest := withRoute(`{"admissionId":"` + uuid.NewString() + `","operationId":"` + uuid.NewString() + `","receiptDigest":"` + strings.Repeat("a", 64) + `","cleanupIntentDigest":"` + strings.Repeat("b", 64) + `","absenceProofDigest":"` + strings.Repeat("c", 64) + `"}`)
+	cleanupRequest.Header.Del("Idempotency-Key")
+	cleanup := httptest.NewRecorder()
+	h.CompleteExternalFleetDeploymentCleanup(cleanup, cleanupRequest)
+	if cleanup.Code != http.StatusBadRequest || !strings.Contains(cleanup.Body.String(), "invalid_idempotency_key") {
+		t.Fatalf("cleanup accepted a missing Idempotency-Key: %d %s", cleanup.Code, cleanup.Body.String())
+	}
+}
+
 func TestExternalAdmissionProofNeverRetainsOrReturnsRawNonce(t *testing.T) {
 	receipt := externalReceiptForTest()
 	proof := redactExternalFleetReceipt(receipt)
@@ -900,7 +958,7 @@ func TestExternalFleetReceiptV4RequiresExactLiveNomadProof(t *testing.T) {
 	receipt.Fleet.FleetCommit = strings.Repeat("f", 40)
 	for index, proof := range []*ExternalFleetNomadJobProof{&receipt.Fleet.Migration, &receipt.Fleet.Runtime} {
 		proof.EvalCreateIndex, proof.EvalJobModifyIndex, proof.JobCreateIndex, proof.JobVersion = uint64(index+1), proof.JobModifyIndex, uint64(index+3), 0
-		proof.CurrentSpecSHA256, proof.SubmissionSHA256 = strings.Repeat("a", 64), strings.Repeat("b", 64)
+		completeExternalNomadProofForTest(t, proof, receipt.Fleet.Namespace)
 		proof.EvaluationChainIDs = []string{proof.EvalID}
 	}
 	configured := externalConfigForTest()
@@ -913,6 +971,71 @@ func TestExternalFleetReceiptV4RequiresExactLiveNomadProof(t *testing.T) {
 	}
 }
 
+func TestExternalNomadV4CanonicalFixtureAndAdversarialBindings(t *testing.T) {
+	raw, err := os.ReadFile("testdata/nomad-v4-canonical.json")
+	if err != nil {
+		t.Fatal(err)
+	}
+	var fixture struct {
+		JobID             string          `json:"jobId"`
+		Namespace         string          `json:"namespace"`
+		JobCreateIndex    uint64          `json:"jobCreateIndex"`
+		JobModifyIndex    uint64          `json:"jobModifyIndex"`
+		JobVersion        uint64          `json:"jobVersion"`
+		CurrentSpec       json.RawMessage `json:"currentSpec"`
+		Submission        json.RawMessage `json:"submission"`
+		CurrentSpecSHA256 string          `json:"currentSpecSha256"`
+		SubmissionSHA256  string          `json:"submissionSha256"`
+	}
+	if err := json.Unmarshal(raw, &fixture); err != nil {
+		t.Fatal(err)
+	}
+	current, err := externalNomadCurrentSpecCanonicalJSON(fixture.CurrentSpec, fixture.JobID, fixture.Namespace, fixture.JobCreateIndex, fixture.JobModifyIndex, fixture.JobVersion)
+	if err != nil {
+		t.Fatal(err)
+	}
+	submission, err := externalNomadSubmissionCanonicalJSON(fixture.Submission, fixture.JobID, fixture.Namespace, fixture.JobVersion, fixture.JobModifyIndex)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := externalSHA256(current); got != fixture.CurrentSpecSHA256 {
+		t.Fatalf("current-spec canonical digest = %s", got)
+	}
+	if got := externalSHA256(submission); got != fixture.SubmissionSHA256 {
+		t.Fatalf("submission canonical digest = %s", got)
+	}
+	var indented bytes.Buffer
+	if err := json.Indent(&indented, fixture.CurrentSpec, "", "  "); err != nil {
+		t.Fatal(err)
+	}
+	prettySame, err := externalNomadCurrentSpecCanonicalJSON(indented.Bytes(), fixture.JobID, fixture.Namespace, fixture.JobCreateIndex, fixture.JobModifyIndex, fixture.JobVersion)
+	if err != nil || !bytes.Equal(prettySame, current) {
+		t.Fatal("whitespace-only current-spec representation changed its canonical bytes")
+	}
+	changedSpec := bytes.Replace(append([]byte(nil), fixture.CurrentSpec...), []byte(`"Count":2`), []byte(`"Count":3`), 1)
+	changed, err := externalNomadCurrentSpecCanonicalJSON(changedSpec, fixture.JobID, fixture.Namespace, fixture.JobCreateIndex, fixture.JobModifyIndex, fixture.JobVersion)
+	if err != nil || bytes.Equal(changed, current) {
+		t.Fatal("semantic current-spec change did not affect canonical bytes")
+	}
+	prettyCurrent := json.RawMessage(`{
+  "ID": "hello-norn-mysql", "Namespace":"norn-pilot", "TaskGroups":[{"Count":2,"Name":"web"}],
+  "CreateIndex":999, "ModifyIndex":999, "Version":999, "Status":"different", "StatusDescription":"different", "Stable":false, "JobModifyIndex":999, "SubmitTime":1
+}`)
+	pretty, err := externalNomadCurrentSpecCanonicalJSON(prettyCurrent, fixture.JobID, fixture.Namespace, fixture.JobCreateIndex, fixture.JobModifyIndex, fixture.JobVersion)
+	if err == nil || len(pretty) != 0 {
+		t.Fatal("mismatched live current-spec indices were accepted")
+	}
+	duplicate := json.RawMessage(`{"ID":"hello-norn-mysql","ID":"other","Namespace":"norn-pilot","CreateIndex":41,"ModifyIndex":44,"Version":0}`)
+	if _, err := externalNomadCurrentSpecCanonicalJSON(duplicate, fixture.JobID, fixture.Namespace, 41, 44, 0); err == nil {
+		t.Fatal("duplicate-key current-spec was accepted")
+	}
+	wrongVersion := append(json.RawMessage(nil), fixture.Submission...)
+	wrongVersion = bytes.Replace(wrongVersion, []byte(`"Version":0`), []byte(`"Version":1`), 1)
+	if _, err := externalNomadSubmissionCanonicalJSON(wrongVersion, fixture.JobID, fixture.Namespace, fixture.JobVersion, fixture.JobModifyIndex); err == nil {
+		t.Fatal("wrong submission JobVersion was accepted")
+	}
+}
+
 func TestExternalCallbackBindingsRejectPlaceholderAndDrift(t *testing.T) {
 	receipt := externalReceiptForTest()
 	receipt.SchemaVersion = externalFleetReceiptSchemaV4
@@ -920,7 +1043,7 @@ func TestExternalCallbackBindingsRejectPlaceholderAndDrift(t *testing.T) {
 	receipt.Fleet.FleetCommit = strings.Repeat("f", 40)
 	for _, proof := range []*ExternalFleetNomadJobProof{&receipt.Fleet.Migration, &receipt.Fleet.Runtime} {
 		proof.EvalCreateIndex, proof.EvalJobModifyIndex, proof.JobCreateIndex, proof.JobModifyIndex, proof.JobVersion = 1, 2, 1, 2, 0
-		proof.CurrentSpecSHA256, proof.SubmissionSHA256 = strings.Repeat("a", 64), strings.Repeat("b", 64)
+		completeExternalNomadProofForTest(t, proof, receipt.Fleet.Namespace)
 		proof.EvaluationChainIDs = []string{proof.EvalID}
 	}
 	canonical, err := externalReceiptCanonicalJSON(receipt)
