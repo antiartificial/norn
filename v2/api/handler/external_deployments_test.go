@@ -138,7 +138,7 @@ func TestExternalFleetLiveVerifierUsesOnlyRedactedNonceAndCanonicalEvidence(t *t
 				FixtureHCLSHA256: map[string]string{"migration": request.Config.MigrationHCLSHA256, "runtime": request.Config.RuntimeHCLSHA256},
 				Canonical:        map[string]string{"prepare.tlsRouting": "sha256:prepare", "migration.migration": "sha256:migration", "runtime.update": "sha256:runtime", "readiness.consulNomad": "sha256:ready"},
 				PlanAttemptID:    receipt.Fleet.RunnerAttemptID, CheckpointAttemptID: receipt.Fleet.RunnerAttemptID, NonceSHA256: nonce.sha256(), NonceWrittenAt: time.Now().Add(-time.Second), NonceReadAt: time.Now(),
-				Attempt:     externalFleetAttemptEvidence{PlanID: receipt.Fleet.PlanID, AttemptID: receipt.Fleet.RunnerAttemptID, RootAttemptID: receipt.Fleet.RootAttemptID, Revision: 1, TerminalStatus: "succeeded", CurrentPhase: "complete", SourceDispatchRunID: receipt.Fleet.ApplyRunID, WorkflowURL: "https://github.com/" + request.CI.Repository + "/actions/runs/" + request.CI.RunID, RetryLineage: []string{receipt.Fleet.RootAttemptID, receipt.Fleet.RunnerAttemptID}},
+				Attempt:     externalFleetAttemptEvidence{PlanID: receipt.Fleet.PlanID, AttemptID: receipt.Fleet.RunnerAttemptID, RootAttemptID: receipt.Fleet.RootAttemptID, Revision: 1, TerminalStatus: "admission_ready", CurrentPhase: "admission_ready", SourceDispatchRunID: receipt.Fleet.ApplyRunID, WorkflowURL: "https://github.com/" + request.CI.Repository + "/actions/runs/" + request.CI.RunID, RetryLineage: []string{receipt.Fleet.RootAttemptID, receipt.Fleet.RunnerAttemptID}},
 				Checkpoints: []externalFleetCheckpointEvidence{{ID: "prepare-1", Phase: "prepare", Status: "succeeded", EvidenceSHA256: strings.Repeat("1", 64), AttemptID: receipt.Fleet.RunnerAttemptID}, {ID: receipt.Fleet.Migration.CheckpointID, Phase: "migration", Status: "succeeded", EvidenceSHA256: strings.Repeat("2", 64), AttemptID: receipt.Fleet.RunnerAttemptID}, {ID: receipt.Fleet.Runtime.CheckpointID, Phase: "runtime", Status: "succeeded", EvidenceSHA256: strings.Repeat("3", 64), AttemptID: receipt.Fleet.RunnerAttemptID}, {ID: "exercise-1", Phase: "exercise", Status: "succeeded", EvidenceSHA256: strings.Repeat("4", 64), AttemptID: receipt.Fleet.RunnerAttemptID}},
 				Allocations: []externalFleetAllocationEvidence{{AllocationID: "alloc-a", JobID: receipt.Fleet.Runtime.JobID, EvalID: receipt.Fleet.Runtime.EvalID, Namespace: receipt.Fleet.Namespace, NodeID: "ingress-a", Region: "global", NomadStatus: "running", ConsulStatus: "passing"}, {AllocationID: "alloc-b", JobID: receipt.Fleet.Runtime.JobID, EvalID: receipt.Fleet.Runtime.EvalID, Namespace: receipt.Fleet.Namespace, NodeID: "ingress-b", Region: "global", NomadStatus: "running", ConsulStatus: "passing"}},
 			})
@@ -199,7 +199,7 @@ func TestExternalFleetEvidenceV1FixtureContract(t *testing.T) {
 		t.Fatal(err)
 	}
 	evidence := decoded.(*externalFleetEvidence)
-	if evidence.SchemaVersion != "norn.external-fleet-evidence/v1" || len(evidence.Checkpoints) != 4 || len(evidence.Allocations) != 2 || evidence.Attempt.TerminalStatus != "succeeded" || evidence.Attempt.CurrentPhase != "complete" {
+	if evidence.SchemaVersion != "norn.external-fleet-evidence/v1" || len(evidence.Checkpoints) != 4 || len(evidence.Allocations) != 2 || evidence.Attempt.TerminalStatus != "admission_ready" || evidence.Attempt.CurrentPhase != "admission_ready" {
 		t.Fatalf("fixture does not preserve required bridge contract: %#v", evidence)
 	}
 }

@@ -558,13 +558,6 @@ func (v *ExternalFleetDeploymentLiveVerifier) VerifyExternalFleetDeployment(ctx 
 	if err != nil {
 		return nil, err
 	}
-	if concrete, ok := v.githubRun.(interface {
-		VerifyInstallationToken(context.Context, string, string) error
-	}); ok {
-		if err := concrete.VerifyInstallationToken(ctx, githubToken, request.CI.Repository); err != nil {
-			return nil, err
-		}
-	}
 	if err := v.githubRun.Verify(ctx, githubToken, request.CI); err != nil {
 		return nil, err
 	}
@@ -710,7 +703,8 @@ func validateExternalFleetEvidence(observed externalFleetEvidence, request Exter
 }
 
 func validExternalFleetAttempt(attempt externalFleetAttemptEvidence, receipt ExternalFleetDeploymentReceipt, ci CIIdentity) bool {
-	if attempt.PlanID != receipt.Fleet.PlanID || attempt.AttemptID != receipt.Fleet.RunnerAttemptID || attempt.RootAttemptID != receipt.Fleet.RootAttemptID || attempt.Revision < 1 || attempt.TerminalStatus != "succeeded" || attempt.CurrentPhase != "complete" || attempt.SourceDispatchRunID != receipt.Fleet.ApplyRunID || attempt.WorkflowURL != "https://github.com/"+ci.Repository+"/actions/runs/"+ci.RunID || len(attempt.RetryLineage) == 0 || attempt.RetryLineage[0] != attempt.RootAttemptID || attempt.RetryLineage[len(attempt.RetryLineage)-1] != attempt.AttemptID {
+	admissionReady := (attempt.TerminalStatus == "admission_ready" && attempt.CurrentPhase == "admission_ready") || (attempt.TerminalStatus == "running" && attempt.CurrentPhase == "complete")
+	if attempt.PlanID != receipt.Fleet.PlanID || attempt.AttemptID != receipt.Fleet.RunnerAttemptID || attempt.RootAttemptID != receipt.Fleet.RootAttemptID || attempt.Revision < 1 || !admissionReady || attempt.SourceDispatchRunID != receipt.Fleet.ApplyRunID || attempt.WorkflowURL != "https://github.com/"+ci.Repository+"/actions/runs/"+ci.RunID || len(attempt.RetryLineage) == 0 || attempt.RetryLineage[0] != attempt.RootAttemptID || attempt.RetryLineage[len(attempt.RetryLineage)-1] != attempt.AttemptID {
 		return false
 	}
 	seen := map[string]bool{}

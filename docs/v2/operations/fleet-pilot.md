@@ -143,11 +143,12 @@ runtime job IDs and their HCL digests must each be different. Prepare remains
 a distinct receipt/checkpoint phase, not an invented third Nomad job. The verifier
 URL is a single configured HTTPS origin for a separately credentialed,
 read-only Fleet evidence service; it is never supplied by receipt text. Both
-token files must be regular owner-only files. Norn reads them only for a
-bounded verification call and never persists or returns their contents. The
-GitHub file contains only a selected-repository attestation-read installation
-token with **Actions: read** and **Attestations: read**, refreshed by the
-runner outside Norn before it expires. Norn verifies the exact selected
+evidence token file must be a regular owner-only file. The GitHub verifier is
+a **separate read-only GitHub App**, configured with its App ID, installation
+ID, owner-only private key, and exact selected Fleet plus artifact repository
+IDs. Norn mints an unpersisted request-scoped installation token and audits
+selected-repository policy and the metadata/actions/attestations read-only
+permission whitelist before use. Norn verifies the exact selected
 repository, run ID/attempt, head SHA/ref, workflow path and in-progress
 protected-run state before checking attestations. `gh` verifies
 the GitHub-hosted SLSA and SPDX statements using direct argument execution,
@@ -179,8 +180,9 @@ The configured evidence origin returns one JSON object with
 `nonceReadAt`, `attempt`, and `checkpoints`. `attempt` has exact JSON names
 `planId`, `attemptId`, `rootAttemptId`, `revision`, `terminalStatus`,
 `currentPhase`, `sourceDispatchRunId`, `workflowUrl`, and `retryLineage`.
-It records terminal durable Fleet state (`succeeded`/`complete`), not the
-necessarily active GitHub apply/recover run. Each of exactly four checkpoints
+It records independently durable pre-admission state
+(`admission_ready`/`admission_ready`, preferred; `running`/`complete` is the
+honest compatibility state), never a post-Norn `succeeded` state. Each of exactly four checkpoints
 uses `id`, `phase`, `status`, `evidenceSha256`, and `attemptId`; phases are
 `prepare`, `migration`, `runtime`, and `exercise`, all succeeded and attempt
 bound. Prepare is checkpoint evidence, not a Nomad job.

@@ -207,7 +207,15 @@ func (c *externalFleetGitHubApp) token(ctx context.Context) (string, error) {
 }
 
 func externalFleetReadOnlyPermissions(p map[string]string) bool {
-	return p["metadata"] == "read" && p["actions"] == "read" && (p["attestations"] == "read" || p["artifact_metadata"] == "read") && len(p) >= 3 && p["contents"] == "" && p["pull_requests"] == "" && p["checks"] == "" && p["administration"] == ""
+	if p["metadata"] != "read" || p["actions"] != "read" || (p["attestations"] != "read" && p["artifact_metadata"] != "read") {
+		return false
+	}
+	for name, value := range p {
+		if value != "read" || (name != "metadata" && name != "actions" && name != "attestations" && name != "artifact_metadata") {
+			return false
+		}
+	}
+	return true
 }
 func externalFleetRepositoryIDsMatch(got []struct {
 	ID int64 `json:"id"`
