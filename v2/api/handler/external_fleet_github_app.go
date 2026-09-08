@@ -18,10 +18,12 @@ import (
 	"net/netip"
 	"net/url"
 	"os"
+	"regexp"
 	"strconv"
 	"strings"
 	"syscall"
 	"time"
+	"unicode/utf8"
 
 	"github.com/golang-jwt/jwt/v5"
 	"github.com/golang/snappy"
@@ -39,6 +41,15 @@ const (
 // GitHub. The suffix is the reviewed Azure Blob service boundary; tests inject
 // an exact host list through the internal configuration.
 var externalFleetDefaultStorageHosts = []string{".blob.core.windows.net"}
+
+// The canonical handoff profile intentionally covers every JSON value in a
+// Sigstore bundle, rather than a lossy projection. It accepts the JSON grammar
+// emitted by actions/attest: non-negative integer numeric fields and strings
+// without encoder-divergent code points. Those restrictions make Go's sorted
+// encoding exactly match the checked-in Python publisher helper while retaining
+// all signed material. Unknown or future representations fail closed until both
+// publisher and verifier support them.
+var externalFleetCanonicalInteger = regexp.MustCompile(`^(0|[1-9][0-9]*)$`)
 
 type externalFleetGitHubAppConfig struct {
 	AppID          string
@@ -211,10 +222,16 @@ func (c *externalFleetGitHubApp) fetchBundle(ctx context.Context, capability, di
 }
 
 // externalFleetCanonicalBundleDigest is the stable receipt/handoff binding.
-// It parses the complete Sigstore bundle and marshals the same JSON value with
-// deterministic object-key ordering before hashing, so insignificant transport
-// whitespace (including actions/attest's trailing EOL) cannot change identity.
+// It parses and validates the complete bundle under the documented canonical
+// profile, then hashes sorted compact JSON. This removes transport whitespace
+// (including actions/attest's trailing EOL) without excluding signed content.
 func externalFleetCanonicalBundleDigest(raw []byte) (string, error) {
+	if !utf8.Valid(raw) {
+		return "", errors.New("bundle is not valid UTF-8 JSON")
+	}
+	if err := rejectExternalFleetDuplicateBundleKeys(raw); err != nil {
+		return "", err
+	}
 	decoder := json.NewDecoder(bytes.NewReader(raw))
 	decoder.UseNumber()
 	var value any
@@ -225,12 +242,98 @@ func externalFleetCanonicalBundleDigest(raw []byte) (string, error) {
 	if err := decoder.Decode(&extra); !errors.Is(err, io.EOF) {
 		return "", errors.New("trailing JSON")
 	}
-	canonical, err := json.Marshal(value)
-	if err != nil {
+	if _, ok := value.(map[string]any); !ok || !validExternalFleetCanonicalBundleValue(value) {
+		return "", errors.New("unsupported bundle canonical representation")
+	}
+	var encoded bytes.Buffer
+	encoder := json.NewEncoder(&encoded)
+	encoder.SetEscapeHTML(false)
+	if err := encoder.Encode(value); err != nil {
 		return "", err
 	}
+	canonical := bytes.TrimSuffix(encoded.Bytes(), []byte("\n"))
 	sum := sha256.Sum256(canonical)
 	return hex.EncodeToString(sum[:]), nil
+}
+
+func rejectExternalFleetDuplicateBundleKeys(raw []byte) error {
+	decoder := json.NewDecoder(bytes.NewReader(raw))
+	if err := checkExternalFleetBundleJSONValue(decoder); err != nil {
+		return err
+	}
+	if _, err := decoder.Token(); !errors.Is(err, io.EOF) {
+		return errors.New("trailing JSON")
+	}
+	return nil
+}
+
+func checkExternalFleetBundleJSONValue(decoder *json.Decoder) error {
+	token, err := decoder.Token()
+	if err != nil {
+		return err
+	}
+	delimiter, nested := token.(json.Delim)
+	if !nested {
+		return nil
+	}
+	switch delimiter {
+	case '{':
+		seen := make(map[string]struct{})
+		for decoder.More() {
+			key, err := decoder.Token()
+			if err != nil {
+				return err
+			}
+			name, ok := key.(string)
+			if !ok {
+				return errors.New("invalid bundle object key")
+			}
+			if _, duplicate := seen[name]; duplicate {
+				return errors.New("duplicate bundle object key")
+			}
+			seen[name] = struct{}{}
+			if err := checkExternalFleetBundleJSONValue(decoder); err != nil {
+				return err
+			}
+		}
+	case '[':
+		for decoder.More() {
+			if err := checkExternalFleetBundleJSONValue(decoder); err != nil {
+				return err
+			}
+		}
+	default:
+		return errors.New("invalid bundle JSON delimiter")
+	}
+	_, err = decoder.Token()
+	return err
+}
+
+func validExternalFleetCanonicalBundleValue(value any) bool {
+	switch typed := value.(type) {
+	case nil, bool:
+		return true
+	case string:
+		return !strings.ContainsAny(typed, "<>&\u2028\u2029\ufffd")
+	case json.Number:
+		return externalFleetCanonicalInteger.MatchString(typed.String())
+	case []any:
+		for _, item := range typed {
+			if !validExternalFleetCanonicalBundleValue(item) {
+				return false
+			}
+		}
+		return true
+	case map[string]any:
+		for key, item := range typed {
+			if !validExternalFleetCanonicalBundleValue(key) || !validExternalFleetCanonicalBundleValue(item) {
+				return false
+			}
+		}
+		return true
+	default:
+		return false
+	}
 }
 
 func externalFleetStatementSubject(subject []struct {

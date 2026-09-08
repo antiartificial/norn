@@ -84,10 +84,10 @@ func TestControlOpenAPIParsesAndLocalRefsResolve(t *testing.T) {
 		t.Error("ExternalFleetDeploymentReceipt.nonce must be write-only")
 	}
 	if externalReceiptProperties["schemaVersion"].(map[string]interface{})["const"] != "norn.external-fleet-deployment-receipt/v3" {
-		t.Error("ExternalFleetDeploymentReceipt must use the v2 migration/runtime proof contract")
+		t.Error("ExternalFleetDeploymentReceipt must use the v3 canonical bundle proof contract")
 	}
 	externalProof := schemas["ExternalFleetExecutionProof"].(map[string]interface{})
-	for _, field := range []string{"migration", "runtime", "planId"} {
+	for _, field := range []string{"migration", "runtime", "planId", "rootAttemptId"} {
 		if !containsRequiredField(externalProof["required"].([]interface{}), field) {
 			t.Errorf("ExternalFleetExecutionProof must require %s proof", field)
 		}

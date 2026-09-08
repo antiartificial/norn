@@ -432,13 +432,19 @@ func externalNonceStoreRecord(nonce externalAdmissionNonce, app, environment str
 }
 
 func validateExternalFleetReceipt(receipt ExternalFleetDeploymentReceipt, configured ExternalFleetAdmissionConfig, app string) error {
+	return validateExternalFleetReceiptAt(receipt, configured, app, time.Now().UTC())
+}
+
+// validateExternalFleetReceiptAt keeps the nonce-window freshness decision on
+// the same injected clock as the rest of external-admission verification.
+func validateExternalFleetReceiptAt(receipt ExternalFleetDeploymentReceipt, configured ExternalFleetAdmissionConfig, app string, now time.Time) error {
 	if receipt.SchemaVersion != externalFleetReceiptSchema || receipt.App != app || !fullSourceSHAPattern.MatchString(receipt.SourceSHA) || !model.IsContentAddressedImage(receipt.Artifact) || !sha256HexPattern.MatchString(receipt.AttestationBundleSHA256) || !sha256HexPattern.MatchString(receipt.SBOMBundleSHA256) || receipt.AttestationBundleSHA256 == receipt.SBOMBundleSHA256 {
 		return fmt.Errorf("receipt schema, app, immutable source/artifact, or evidence references are invalid")
 	}
 	if receipt.Fleet.Namespace != configured.Namespace || !validExternalNomadJobProof(receipt.Fleet.Migration, configured.MigrationJobID, configured.MigrationHCLSHA256) || !validExternalNomadJobProof(receipt.Fleet.Runtime, configured.RuntimeJobID, configured.RuntimeHCLSHA256) || receipt.Fleet.Migration.EvalID == receipt.Fleet.Runtime.EvalID || receipt.Fleet.Migration.CheckpointID == receipt.Fleet.Runtime.CheckpointID || !externalNamePattern.MatchString(receipt.Fleet.PlanID) || !validGitHubNumericID(receipt.Fleet.ApplyRunID) || !validGitHubNumericID(receipt.Fleet.ApplyRunAttempt) || !sha256HexPattern.MatchString(receipt.Fleet.PlanSHA256) || !externalNamePattern.MatchString(receipt.Fleet.RunnerAttemptID) || !externalNamePattern.MatchString(receipt.Fleet.RootAttemptID) || !externalNamePattern.MatchString(receipt.Fleet.NonceEvidenceRef) {
 		return fmt.Errorf("receipt Fleet namespace/migration/runtime/run/plan/attempt/nonce evidence binding is invalid")
 	}
-	if !validExternalChronology(receipt.Chronology) {
+	if !validExternalChronologyAt(receipt.Chronology, now) {
 		return fmt.Errorf("receipt must carry ordered prepare, migration, runtime, and exercise evidence")
 	}
 	return nil
@@ -452,7 +458,7 @@ func verificationMatchesExternalReceiptAt(verified ExternalFleetDeploymentVerifi
 	if verified.SourceSHA != receipt.SourceSHA || verified.Artifact != receipt.Artifact || verified.AttestationBundleSHA256 != receipt.AttestationBundleSHA256 || verified.SBOMBundleSHA256 != receipt.SBOMBundleSHA256 || verified.Namespace != configured.Namespace || verified.Migration != receipt.Fleet.Migration || verified.Runtime != receipt.Fleet.Runtime || verified.PlanID != receipt.Fleet.PlanID || verified.ApplyRunID != receipt.Fleet.ApplyRunID || verified.ApplyRunAttempt != receipt.Fleet.ApplyRunAttempt || verified.PlanSHA256 != receipt.Fleet.PlanSHA256 || verified.RunnerAttemptID != receipt.Fleet.RunnerAttemptID || verified.NonceEvidenceRef != receipt.Fleet.NonceEvidenceRef {
 		return fmt.Errorf("independent verifier observations do not exactly match the receipt")
 	}
-	if !validDistinctIngressNodes(verified.IngressNodeIDs) || !validHTTPSVersion(verified.PublicHTTPSVersion) || !validPrivateReadinessAt(verified.PrivateReadiness, now) || !sameExternalChronology(verified.Chronology, receipt.Chronology) {
+	if !validDistinctIngressNodes(verified.IngressNodeIDs) || !validHTTPSVersion(verified.PublicHTTPSVersion) || !validPrivateReadinessAt(verified.PrivateReadiness, now) || !sameExternalChronologyAt(verified.Chronology, receipt.Chronology, now) {
 		return fmt.Errorf("independent verifier did not prove two distinct ingress nodes, public HTTPS version, private readiness, and full chronology")
 	}
 	return nil
@@ -546,12 +552,16 @@ func externalDeploymentRegions(expected []model.ResolvedRegion, observed []Exter
 }
 
 func validExternalChronology(steps []ExternalFleetChronologyStep) bool {
+	return validExternalChronologyAt(steps, time.Now().UTC())
+}
+
+func validExternalChronologyAt(steps []ExternalFleetChronologyStep, now time.Time) bool {
 	if len(steps) != 4 {
 		return false
 	}
 	for index, phase := range []string{"prepare", "migration", "runtime", "exercise"} {
 		step := steps[index]
-		if step.Phase != phase || step.OccurredAt.IsZero() || !validExternalURI(step.EvidenceRef) || (index > 0 && !step.OccurredAt.After(steps[index-1].OccurredAt)) {
+		if step.Phase != phase || step.OccurredAt.IsZero() || step.OccurredAt.After(now) || now.Sub(step.OccurredAt) > externalFleetAdmissionNonceTTL || !validExternalURI(step.EvidenceRef) || (index > 0 && !step.OccurredAt.After(steps[index-1].OccurredAt)) {
 			return false
 		}
 	}
@@ -559,7 +569,11 @@ func validExternalChronology(steps []ExternalFleetChronologyStep) bool {
 }
 
 func sameExternalChronology(left, right []ExternalFleetChronologyStep) bool {
-	if !validExternalChronology(left) || !validExternalChronology(right) || len(left) != len(right) {
+	return sameExternalChronologyAt(left, right, time.Now().UTC())
+}
+
+func sameExternalChronologyAt(left, right []ExternalFleetChronologyStep, now time.Time) bool {
+	if !validExternalChronologyAt(left, now) || !validExternalChronologyAt(right, now) || len(left) != len(right) {
 		return false
 	}
 	for index := range left {

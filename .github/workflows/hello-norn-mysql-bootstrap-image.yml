@@ -200,10 +200,11 @@ jobs:
           set -euo pipefail
           mkdir -p bootstrap-evidence
           [[ -n "$PROVENANCE_BUNDLE" && -n "$SBOM_BUNDLE" && -f "$PROVENANCE_BUNDLE" && -f "$SBOM_BUNDLE" ]]
-          # The receipt binds canonical parsed JSON, not the action's JSON
-          # serialization bytes: GitHub may return equivalent minified JSON.
-          provenance_sha256="$(jq -ceS . "$PROVENANCE_BUNDLE" | tr -d '\n' | sha256sum | awk '{print $1}')"
-          sbom_sha256="$(jq -ceS . "$SBOM_BUNDLE" | tr -d '\n' | sha256sum | awk '{print $1}')"
+          # The receipt binds canonical parsed JSON, not action serialization
+          # bytes. This checked-in v3 profile rejects ambiguous JSON before
+          # hashing and is byte-identical to the Go verifier's representation.
+          provenance_sha256="$(python3 v2/scripts/canonical-sigstore-bundle-digest "$PROVENANCE_BUNDLE")"
+          sbom_sha256="$(python3 v2/scripts/canonical-sigstore-bundle-digest "$SBOM_BUNDLE")"
           cp "$PROVENANCE_BUNDLE" bootstrap-evidence/provenance.sigstore.json
           cp "$SBOM_BUNDLE" bootstrap-evidence/sbom.sigstore.json
           jq -n \

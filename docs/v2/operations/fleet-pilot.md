@@ -183,9 +183,8 @@ The configured evidence origin returns one JSON object with
 `nonceReadAt`, `attempt`, and `checkpoints`. `attempt` has exact JSON names
 `planId`, `attemptId`, `rootAttemptId`, `revision`, `terminalStatus`,
 `currentPhase`, `sourceDispatchRunId`, `workflowUrl`, and `retryLineage`.
-It records independently durable pre-admission state
-(`admission_ready`/`admission_ready`, preferred; `running`/`complete` is the
-honest compatibility state), never a post-Norn `succeeded` state. Each of exactly four checkpoints
+It records the actual Norn-owned durable state (`running`/`complete`), never
+an invented pre-admission transition or a post-Norn `succeeded` state. Each of exactly four checkpoints
 uses `id`, `phase`, `status`, `evidenceSha256`, and `attemptId`; phases are
 `prepare`, `migration`, `runtime`, and `exercise`, all succeeded and attempt
 bound. Prepare is checkpoint evidence, not a Nomad job.
@@ -194,7 +193,8 @@ The receipt carries `fleet.rootAttemptId`. For an admission retry after a lost
 success response, reuse the same client `Idempotency-Key`; Norn derives its
 key from the authorized repository, staging environment, app, and that client
 key. Its request digest covers the candidate/source/artifact/plan/root-attempt
-identity only, deliberately excluding a rotated OIDC JTI, current run/attempt,
+identity (including namespace, plan ID, and plan SHA-256) only, deliberately
+excluding a rotated OIDC JTI, current run/attempt, per-attempt Nomad evidence,
 and raw nonce. The new nonce remains one-use: this replay exception only
 returns an already durable matching admission.
 
@@ -207,7 +207,12 @@ bound to its reported allocation and region. Nonce timestamps must be ordered
 and fresh within the admission nonce lifetime. SHA-256 evidence digests are
 identifiers only: raw nonce material and credentials are prohibited.
 
-Receipt text is evidence *pointers*, never authority. The server-owned verifier
+The external receipt is v3 and carries canonical SHA-256 digests of the full
+parsed Sigstore provenance and SPDX bundle JSON; the checked-in
+`v2/scripts/canonical-sigstore-bundle-digest` profile sorts compact JSON while
+retaining every value and rejects ambiguous numeric, duplicate-key, and
+encoder-divergent string representations. Publisher/web URLs are display
+pointers only. The server-owned verifier
 must independently read the released HCL digest, source/repository, OCI digest,
 attestation and SBOM references, Nomad v2 migration/runtime job proof
 (`JobID`, `EvalID`, and `JobModifyIndex`), Fleet
@@ -219,12 +224,11 @@ it returns `external_deployment_verifier_unavailable` and records nothing.
 
 ### Current Fleet companion compatibility gate
 
-The verifier intentionally remains unavailable against the current Fleet
-remote-main companion (`6ff2397008accf3f694ab4cbcc4d97ed7df31361`) until its
+The verifier intentionally remains unavailable until the Fleet companion's
 workflow bridge is deployed. The companion correctly has only migration and
 runtime Nomad jobs; its `prepare` phase is a receipt/variable setup. It still
 does not exchange `fleet:external-admission`, request a Norn nonce, compose
-the v2 composite receipt, expose the read-only evidence service, or submit the
+the v3 canonical-digest receipt, expose the read-only evidence service, or submit the
 receipt. The verifier checks public `/version` JSON for the source version;
 private `/readyz` plus Nomad/Consul evidence is required separately. Until the
 Fleet-side contract is reviewed and deployed, leave every verifier variable

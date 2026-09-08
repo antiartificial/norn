@@ -5,10 +5,8 @@ import (
 	"context"
 	"crypto/rand"
 	"crypto/rsa"
-	"crypto/sha256"
 	"crypto/x509"
 	"encoding/base64"
-	"encoding/hex"
 	"encoding/json"
 	"encoding/pem"
 	"errors"
@@ -56,7 +54,7 @@ func (fn externalFleetRoundTripperFunc) RoundTrip(request *http.Request) (*http.
 }
 
 func externalReceiptForTest() ExternalFleetDeploymentReceipt {
-	now := time.Now().UTC().Truncate(time.Second)
+	now := time.Now().UTC().Truncate(time.Second).Add(-4 * time.Second)
 	candidate := testReleaseCandidate()
 	candidate.Repository = "acme/hello-norn-mysql"
 	candidate.Attestation.MaterialSHA = strings.Repeat("a", 40)
@@ -115,6 +113,28 @@ func TestExternalFleetReceiptValidationFailsClosed(t *testing.T) {
 				t.Fatal("unsafe external receipt accepted")
 			}
 		})
+	}
+}
+
+func TestExternalFleetChronologyIsFreshAgainstInjectedNonceClock(t *testing.T) {
+	now := time.Date(2026, time.March, 10, 12, 0, 0, 0, time.UTC)
+	receipt := externalReceiptForTest()
+	for index := range receipt.Chronology {
+		receipt.Chronology[index].OccurredAt = now.Add(time.Duration(index-4) * time.Second)
+	}
+	if err := validateExternalFleetReceiptAt(receipt, externalConfigForTest(), receipt.App, now); err != nil {
+		t.Fatalf("fresh chronology rejected: %v", err)
+	}
+	if err := validateExternalFleetReceiptAt(receipt, externalConfigForTest(), receipt.App, now.Add(externalFleetAdmissionNonceTTL+time.Second)); err == nil {
+		t.Fatal("chronology outside the nonce window was accepted")
+	}
+	verified := verifiedExternalReceipt(receipt)
+	verified.PrivateReadiness.CheckedAt = now
+	if err := verificationMatchesExternalReceiptAt(verified, receipt, externalConfigForTest(), now); err != nil {
+		t.Fatalf("fresh verifier chronology rejected: %v", err)
+	}
+	if err := verificationMatchesExternalReceiptAt(verified, receipt, externalConfigForTest(), now.Add(externalFleetAdmissionNonceTTL+time.Second)); err == nil {
+		t.Fatal("verifier accepted chronology outside the injected nonce window")
 	}
 }
 
@@ -410,16 +430,52 @@ func TestExternalFleetCanonicalBundleDigestIsWhitespaceInsensitiveAndMatchesHand
 		t.Fatalf("semantic bundle change did not change digest: %q %v", got, err)
 	}
 
-	command := exec.Command("jq", "-ceS", ".")
-	command.Stdin = bytes.NewReader(pretty)
-	canonical, err := command.Output()
+	path := filepath.Join(t.TempDir(), "bundle.json")
+	if err := os.WriteFile(path, pretty, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	canonical, err := exec.Command("python3", "../../scripts/canonical-sigstore-bundle-digest", path).Output()
 	if err != nil {
 		t.Fatal(err)
 	}
-	canonical = bytes.TrimSuffix(canonical, []byte("\n"))
-	sum := sha256.Sum256(canonical)
-	if handoffDigest := hex.EncodeToString(sum[:]); handoffDigest != want {
-		t.Fatalf("workflow jq canonical digest = %s, Go verifier = %s", handoffDigest, want)
+	if handoffDigest := strings.TrimSpace(string(canonical)); handoffDigest != want {
+		t.Fatalf("workflow canonical digest = %s, Go verifier = %s", handoffDigest, want)
+	}
+}
+
+func TestExternalFleetCanonicalBundleDigestRejectsCrossRuntimeAmbiguity(t *testing.T) {
+	valid := []byte(`{"bundle":"café","nested":{"count":1}}`)
+	want, err := externalFleetCanonicalBundleDigest(valid)
+	if err != nil {
+		t.Fatalf("valid canonical-profile bundle rejected: %v", err)
+	}
+	path := filepath.Join(t.TempDir(), "bundle.json")
+	if err := os.WriteFile(path, valid, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	output, err := exec.Command("python3", "../../scripts/canonical-sigstore-bundle-digest", path).Output()
+	if err != nil || strings.TrimSpace(string(output)) != want {
+		t.Fatalf("publisher digest %q err=%v, want %q", output, err, want)
+	}
+	for name, raw := range map[string][]byte{
+		"fractional number":     []byte(`{"count":1.0}`),
+		"negative number":       []byte(`{"count":-1}`),
+		"HTML-sensitive string": []byte(`{"value":"<"}`),
+		"line separator":        []byte("{\"value\":\"\\u2028\"}"),
+		"duplicate key":         []byte(`{"value":1,"value":2}`),
+	} {
+		t.Run(name, func(t *testing.T) {
+			if _, err := externalFleetCanonicalBundleDigest(raw); err == nil {
+				t.Fatal("ambiguous bundle representation was accepted")
+			}
+			candidate := filepath.Join(t.TempDir(), "bundle.json")
+			if err := os.WriteFile(candidate, raw, 0o600); err != nil {
+				t.Fatal(err)
+			}
+			if err := exec.Command("python3", "../../scripts/canonical-sigstore-bundle-digest", candidate).Run(); err == nil {
+				t.Fatal("publisher canonicalizer accepted an ambiguous representation")
+			}
+		})
 	}
 }
 

@@ -2425,8 +2425,8 @@ components:
         sourceSha: { type: string, pattern: '^[0-9a-f]{40}$' }
         artifact: { type: string, pattern: '^.+@sha256:[0-9a-f]{64}$' }
         candidate: { $ref: '#/components/schemas/ReleaseCandidate' }
-        attestationBundleSha256: { type: string, pattern: '^[0-9a-f]{64}$', description: SHA-256 of canonical parsed Sigstore provenance bundle JSON; transport whitespace is excluded. }
-        sbomBundleSha256: { type: string, pattern: '^[0-9a-f]{64}$', description: SHA-256 of canonical parsed Sigstore SPDX bundle JSON; transport whitespace is excluded. }
+        attestationBundleSha256: { type: string, pattern: '^[0-9a-f]{64}$', description: SHA-256 of the full canonical Sigstore provenance bundle JSON under the Norn v3 profile; transport whitespace is excluded and ambiguous JSON fails closed. }
+        sbomBundleSha256: { type: string, pattern: '^[0-9a-f]{64}$', description: SHA-256 of the full canonical Sigstore SPDX bundle JSON under the Norn v3 profile; transport whitespace is excluded and ambiguous JSON fails closed. }
         fleet: { $ref: '#/components/schemas/ExternalFleetExecutionProof' }
         chronology:
           type: array
@@ -2436,7 +2436,7 @@ components:
     ExternalFleetExecutionProof:
       type: object
       additionalProperties: false
-      required: [namespace, migration, runtime, planId, applyRunId, applyRunAttempt, planSha256, runnerAttemptId, nonceEvidenceRef]
+      required: [namespace, migration, runtime, planId, applyRunId, applyRunAttempt, planSha256, runnerAttemptId, rootAttemptId, nonceEvidenceRef]
       properties:
         namespace: { type: string }
         migration: { $ref: '#/components/schemas/ExternalFleetNomadJobProof' }
@@ -2446,6 +2446,7 @@ components:
         applyRunAttempt: { type: string }
         planSha256: { type: string, pattern: '^[0-9a-f]{64}$' }
         runnerAttemptId: { type: string }
+        rootAttemptId: { type: string }
         nonceEvidenceRef: { type: string }
     ExternalFleetNomadJobProof:
       type: object
