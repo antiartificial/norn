@@ -16,11 +16,14 @@ client; use a rolling release on the fixed two-client topology.
 
 `MYSQL_DSN` uses Go MySQL driver syntax, such as
 `pilot:password@tcp(database.example:25060)/pilot`. It is rendered from an
-ACL-restricted Nomad runtime variable into the allocation only. The process
-requires `MYSQL_CA_FILE`; it trusts only that mounted provider CA, verifies the
-database hostname and TLS 1.2+, and uses bounded connection timeouts with an
-eight-connection pool. Never use `skip-verify`, the system trust pool, or a
-public database allowlist.
+ACL-restricted Nomad runtime variable into the allocation only. The same
+variable must carry an independently reviewed, canonical RFC1918 IPv4 literal
+as `MYSQL_PINNED_IP`. The custom driver dialer connects only to that exact
+IP and DSN port and rechecks the resulting peer, while TLS continues to verify
+the provider DNS hostname from the DSN. The process requires `MYSQL_CA_FILE`;
+it trusts only that mounted provider CA, verifies TLS 1.2+, and uses bounded
+connection timeouts with an eight-connection pool. Never use `skip-verify`,
+the system trust pool, runtime DNS resolution, or a public database allowlist.
 
 Run `/hello-norn-mysql migrate` once using the migration database identity.
 This creates only `pilot_records`. The runtime identity needs SELECT, INSERT
@@ -31,10 +34,11 @@ For a direct-Nomad rehearsal after `norn-fleet` bootstrap, a protected
 bootstrap/migration procedure must create two job-owned variable paths:
 
 - `nomad/jobs/hello-norn-mysql`: runtime `MYSQL_DSN` with only `SELECT`,
-  `INSERT`, and `UPDATE` on `pilot_records`, plus `MYSQL_CA_PEM`;
+  `INSERT`, and `UPDATE` on `pilot_records`, plus `MYSQL_CA_PEM` and the
+  independently reviewed `MYSQL_PINNED_IP`;
 - `nomad/jobs/hello-norn-mysql-migrate`: one-time `MYSQL_DSN` whose identity
   can create `pilot_records`, plus the runtime table privileges and its own
-  `MYSQL_CA_PEM`.
+  `MYSQL_CA_PEM` and the same independently reviewed `MYSQL_PINNED_IP`.
 
 Nomad's job-owned variable ACL paths keep each job limited to its own DSN and
 CA. The direct job renders the DSN through a quoted dotenv template and mounts
@@ -44,7 +48,7 @@ field or catalog secret. Submit only a reviewed digest, source SHA and exact
 pilot hostname:
 
 ```sh
-nomad job run \
+nomad job run -namespace=norn-pilot-EXACT_RUN_ID \
   -var 'image=REGISTRY/hello-norn-mysql@sha256:…' \
   -var 'source_version=EXACT_SOURCE_SHA' \
   -var 'hostname=pilot.example.com' \
@@ -58,11 +62,15 @@ on `:443` to Traefik's `websecure :443` entrypoint. The explicit router enables
 only this exact host's `/records/*` and `/version` routes; readiness stays
 private. Consul requires `/readyz`, while Nomad restarts a failed `/healthz`
 liveness check without restarting merely for a database readiness failure.
+Every job, allocation inspection and recovery command uses the exact
+`norn-pilot-<PILOT_RUN_ID>` namespace, where `PILOT_RUN_ID` is the reviewed
+Fleet run ID (8–24 lowercase alphanumeric characters). Do not use `default`,
+a Nomad namespace prefix, or a different run's namespace.
 
 Run the migration once before the web job, with the same reviewed image:
 
 ```sh
-nomad job run -var 'image=REGISTRY/hello-norn-mysql@sha256:…' \
+nomad job run -namespace=norn-pilot-EXACT_RUN_ID -var 'image=REGISTRY/hello-norn-mysql@sha256:…' \
   nomad/hello-norn-mysql-migrate.nomad.hcl
 ```
 
@@ -95,6 +103,7 @@ From outside the fleet, run the bounded probe and retain its JSON stdout:
 
 ```sh
 python3 ../exercise.py --url https://YOUR-STAGING-HOST --rps 5 --seconds 60 \
+  --namespace norn-pilot-EXACT_RUN_ID \
   --expected-image registry.example.com/hello-norn-mysql@sha256:… \
   --expected-source-version EXACT_SOURCE_SHA \
   --expected-hostname YOUR-STAGING-HOST
@@ -116,6 +125,7 @@ allocation explicitly and run:
 
 ```sh
 python3 ../exercise.py --url https://YOUR-STAGING-HOST \
+  --namespace norn-pilot-EXACT_RUN_ID \
   --fault-allocation ALLOCATION_ID \
   --expected-image registry.example.com/hello-norn-mysql@sha256:… \
   --expected-source-version EXACT_SOURCE_SHA \

@@ -1,18 +1,34 @@
 package main
 
 import (
+	"context"
 	"crypto/rand"
 	"crypto/rsa"
 	"crypto/x509"
 	"crypto/x509/pkix"
 	"encoding/pem"
 	"math/big"
+	"net"
 	"net/http/httptest"
 	"os"
 	"path/filepath"
 	"testing"
 	"time"
 )
+
+type fakeConn struct {
+	remote net.Addr
+	closed bool
+}
+
+func (c *fakeConn) Read([]byte) (int, error)         { return 0, nil }
+func (c *fakeConn) Write(p []byte) (int, error)      { return len(p), nil }
+func (c *fakeConn) Close() error                     { c.closed = true; return nil }
+func (c *fakeConn) LocalAddr() net.Addr              { return &net.TCPAddr{} }
+func (c *fakeConn) RemoteAddr() net.Addr             { return c.remote }
+func (c *fakeConn) SetDeadline(time.Time) error      { return nil }
+func (c *fakeConn) SetReadDeadline(time.Time) error  { return nil }
+func (c *fakeConn) SetWriteDeadline(time.Time) error { return nil }
 
 func testPEM(t *testing.T) string {
 	t.Helper()
@@ -58,6 +74,73 @@ func TestDatabaseRequiresExplicitNetworkAndDatabase(t *testing.T) {
 	}
 }
 
+func TestMySQLDialerPinsReviewedPrivatePeer(t *testing.T) {
+	var destination string
+	conn := &fakeConn{remote: &net.TCPAddr{IP: net.ParseIP("10.20.30.40"), Port: 25060}}
+	dialer, err := mysqlPinnedDialer("database.example:25060", "10.20.30.40", func(_ context.Context, network, address string) (net.Conn, error) {
+		if network != "tcp4" {
+			t.Fatalf("network = %q", network)
+		}
+		destination = address
+		return conn, nil
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	got, err := dialer(context.Background(), "database.example:25060")
+	if err != nil || got != conn || destination != "10.20.30.40:25060" {
+		t.Fatalf("got conn=%v destination=%q err=%v", got, destination, err)
+	}
+	if _, err := dialer(context.Background(), "changed.example:25060"); err == nil {
+		t.Fatal("accepted changed DSN address")
+	}
+}
+
+func TestMySQLDialerRejectsUnreviewedPeerAndInvalidPin(t *testing.T) {
+	for _, pin := range []string{"", "database.example", "127.0.0.1", "8.8.8.8", "10.020.30.40"} {
+		if _, err := mysqlPinnedDialer("database.example:25060", pin, nil); err == nil {
+			t.Fatalf("accepted pin %q", pin)
+		}
+	}
+	conn := &fakeConn{remote: &net.TCPAddr{IP: net.ParseIP("10.20.30.41"), Port: 25060}}
+	dialer, err := mysqlPinnedDialer("database.example:25060", "10.20.30.40", func(context.Context, string, string) (net.Conn, error) { return conn, nil })
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := dialer(context.Background(), "database.example:25060"); err == nil || !conn.closed {
+		t.Fatal("accepted unreviewed peer or failed to close it")
+	}
+}
+
+func TestMySQLDialerRequiresDNSNameAndCallableDialer(t *testing.T) {
+	for _, address := range []string{
+		"10.20.30.40:25060", "10.20.30.040:25060", "database..example:25060", "database_example:25060",
+	} {
+		if _, err := mysqlPinnedDialer(address, "10.20.30.40", func(context.Context, string, string) (net.Conn, error) { return nil, nil }); err == nil {
+			t.Fatalf("accepted non-DNS address %q", address)
+		}
+	}
+	if _, err := mysqlPinnedDialer("database.example:25060", "10.20.30.40", nil); err == nil {
+		t.Fatal("accepted nil dialer")
+	}
+}
+
+func TestMySQLDialerRejectsNonTCPPeerWithoutPanic(t *testing.T) {
+	conn := &fakeConn{remote: fakeAddr("not-tcp")}
+	dialer, err := mysqlPinnedDialer("database.example:25060", "10.20.30.40", func(context.Context, string, string) (net.Conn, error) { return conn, nil })
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := dialer(context.Background(), "database.example:25060"); err == nil || !conn.closed {
+		t.Fatal("accepted non-TCP peer or failed to close it")
+	}
+}
+
+type fakeAddr string
+
+func (a fakeAddr) Network() string { return "fake" }
+func (a fakeAddr) String() string  { return string(a) }
+
 func TestMySQLTLSUsesOnlyRequiredProviderCAFile(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "provider-ca.pem")
 	if err := os.WriteFile(path, []byte(testPEM(t)), 0o400); err != nil {
@@ -70,7 +153,7 @@ func TestMySQLTLSUsesOnlyRequiredProviderCAFile(t *testing.T) {
 	if config.RootCAs == nil || config.ServerName != "database.example" || config.InsecureSkipVerify {
 		t.Fatalf("unexpected TLS config: %+v", config)
 	}
-	for _, input := range []struct{ address, path string }{{"database.example:25060", ""}, {"database.example:25060", filepath.Join(t.TempDir(), "missing")}, {"bad-address", path}} {
+	for _, input := range []struct{ address, path string }{{"database.example:25060", ""}, {"database.example:25060", filepath.Join(t.TempDir(), "missing")}, {"bad-address", path}, {"10.20.30.40:25060", path}} {
 		if _, err := mysqlTLSConfig(input.address, input.path); err == nil {
 			t.Fatalf("accepted invalid TLS input: %+v", input)
 		}

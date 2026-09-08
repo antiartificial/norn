@@ -21,6 +21,9 @@ MAX_RESPONSE_BYTES = 65536
 ALLOCATION_ID = re.compile(r"^[0-9a-fA-F]{8}-(?:[0-9a-fA-F]{4}-){3}[0-9a-fA-F]{12}$")
 SAFE_VERSION = re.compile(r"^[A-Za-z0-9._-]{1,128}$")
 OCI_DIGEST = re.compile(r"^[a-z0-9./:_-]+@sha256:[0-9a-f]{64}$")
+# Fleet admits disposable run IDs as 8–24 lowercase alphanumeric characters.
+# The unique Nomad namespace must be derived from that exact reviewed ID.
+PILOT_NAMESPACE = re.compile(r"^norn-pilot-[a-z0-9]{8,24}$")
 
 
 def opener():
@@ -90,23 +93,24 @@ def version(base, expected_source, allowed_allocations):
         return {"allocation": "", "version": ""}
 
 
-def stop_pilot_allocation(allocation):
+def stop_pilot_allocation(allocation, namespace):
     """Stop only a caller-selected app allocation, after binding it to this job."""
-    if not ALLOCATION_ID.fullmatch(allocation) or not shutil.which("nomad"):
+    if not ALLOCATION_ID.fullmatch(allocation) or not PILOT_NAMESPACE.fullmatch(namespace) or not shutil.which("nomad"):
         return False
     try:
         inspect = subprocess.run(
-            ["nomad", "alloc", "status", "-json", allocation],
+            ["nomad", "alloc", "status", "-namespace=" + namespace, "-json", allocation],
             check=False, capture_output=True, text=True, timeout=15,
         )
         if inspect.returncode != 0 or len(inspect.stdout) > MAX_RESPONSE_BYTES:
             return False
         body = json.loads(inspect.stdout)
         job_id = body.get("JobID") if isinstance(body, dict) else ""
-        if job_id != "hello-norn-mysql":
+        inspected_namespace = body.get("Namespace") if isinstance(body, dict) else ""
+        if job_id != "hello-norn-mysql" or inspected_namespace != namespace:
             return False
         stopped = subprocess.run(
-            ["nomad", "alloc", "stop", "-yes", allocation],
+            ["nomad", "alloc", "stop", "-namespace=" + namespace, "-yes", allocation],
             check=False, capture_output=True, text=True, timeout=30,
         )
         return stopped.returncode == 0
@@ -184,9 +188,11 @@ def proof(base, receipt, expected_source, allowed_allocations):
     }
 
 
-def inventory_pilot(expected_image, expected_source, expected_hostname, expected_namespace="default"):
+def inventory_pilot(expected_image, expected_source, expected_hostname, expected_namespace):
     """Prove exactly two running, distinct ingress nodes for the reviewed job."""
-    listed = nomad_json(["job", "allocs", "-json", "hello-norn-mysql"])
+    if not PILOT_NAMESPACE.fullmatch(expected_namespace):
+        return [], False
+    listed = nomad_json(["job", "allocs", "-namespace=" + expected_namespace, "-json", "hello-norn-mysql"])
     if not isinstance(listed, list):
         return [], False
     running = [item for item in listed if isinstance(item, dict) and item.get("ClientStatus") == "running"]
@@ -197,7 +203,7 @@ def inventory_pilot(expected_image, expected_source, expected_hostname, expected
         allocation = item.get("ID", "")
         if not ALLOCATION_ID.fullmatch(allocation):
             return proofs, False
-        body = nomad_json(["alloc", "status", "-json", allocation])
+        body = nomad_json(["alloc", "status", "-namespace=" + expected_namespace, "-json", allocation])
         if not isinstance(body, dict):
             return proofs, False
         job = body.get("Job", {})
@@ -230,12 +236,12 @@ def inventory_pilot(expected_image, expected_source, expected_hostname, expected
     return proofs, True
 
 
-def wait_for_recovery(target, initial_ids, expected_image, expected_source, expected_hostname, seconds):
+def wait_for_recovery(target, initial_ids, expected_image, expected_source, expected_hostname, namespace, seconds):
     """Require a stopped target and a two-node running inventory with a replacement."""
     deadline = time.monotonic() + seconds
     while time.monotonic() < deadline:
-        target_status = nomad_json(["alloc", "status", "-json", target])
-        proofs, healthy = inventory_pilot(expected_image, expected_source, expected_hostname)
+        target_status = nomad_json(["alloc", "status", "-namespace=" + namespace, "-json", target])
+        proofs, healthy = inventory_pilot(expected_image, expected_source, expected_hostname, namespace)
         current_ids = {item["allocation"] for item in proofs}
         replacements = sorted(current_ids - initial_ids)
         if healthy and isinstance(target_status, dict) and target_status.get("ClientStatus") != "running" and replacements:
@@ -273,6 +279,7 @@ def main():
     parser.add_argument("--expected-image", required=True)
     parser.add_argument("--expected-source-version", required=True)
     parser.add_argument("--expected-hostname", required=True)
+    parser.add_argument("--namespace", required=True, help="exact run-scoped norn-pilot-* Nomad namespace")
     parser.add_argument("--fault-allocation", help="explicit hello-norn-mysql allocation to stop")
     parser.add_argument("--recovery-seconds", type=int, default=180)
     args = parser.parse_args()
@@ -287,6 +294,8 @@ def main():
         parser.error("fault allocation must be a Nomad allocation ID")
     if not OCI_DIGEST.fullmatch(args.expected_image) or not SAFE_VERSION.fullmatch(args.expected_source_version):
         parser.error("expected image must be a lowercase OCI digest and source version must be a safe revision")
+    if not PILOT_NAMESPACE.fullmatch(args.namespace):
+        parser.error("namespace must be the exact run-scoped norn-pilot-* namespace")
     if urllib.parse.urlsplit("//" + args.expected_hostname).hostname != args.expected_hostname.lower():
         parser.error("expected hostname must be a hostname without a scheme or port")
     if url.hostname.lower() != args.expected_hostname.lower():
@@ -296,7 +305,7 @@ def main():
     run_id = uuid.uuid4().hex
     started_at = datetime.datetime.now(datetime.timezone.utc).replace(microsecond=0).isoformat().replace("+00:00", "Z")
     started = time.monotonic()
-    topology, topology_verified = inventory_pilot(args.expected_image, args.expected_source_version, args.expected_hostname)
+    topology, topology_verified = inventory_pilot(args.expected_image, args.expected_source_version, args.expected_hostname, args.namespace)
     initial_ids = {item["allocation"] for item in topology}
     if not topology_verified:
         initial_ids = set()
@@ -305,9 +314,9 @@ def main():
     allowed_ids = initial_ids
     fault = {"requested": bool(args.fault_allocation), "target": args.fault_allocation or "", "stopAccepted": False, "targetStopped": not bool(args.fault_allocation), "recovered": not bool(args.fault_allocation), "replacementAllocations": [], "publicReplacementAllocation": ""}
     if args.fault_allocation:
-        fault["stopAccepted"] = args.fault_allocation in initial_ids and stop_pilot_allocation(args.fault_allocation)
+        fault["stopAccepted"] = args.fault_allocation in initial_ids and stop_pilot_allocation(args.fault_allocation, args.namespace)
         if fault["stopAccepted"]:
-            topology, replacements, topology_recovered = wait_for_recovery(args.fault_allocation, initial_ids, args.expected_image, args.expected_source_version, args.expected_hostname, args.recovery_seconds)
+            topology, replacements, topology_recovered = wait_for_recovery(args.fault_allocation, initial_ids, args.expected_image, args.expected_source_version, args.expected_hostname, args.namespace, args.recovery_seconds)
             fault["replacementAllocations"] = replacements
             fault["targetStopped"] = topology_recovered
             topology_verified = topology_recovered
@@ -340,7 +349,7 @@ def main():
         "startedAt": started_at,
         "endedAt": datetime.datetime.now(datetime.timezone.utc).replace(microsecond=0).isoformat().replace("+00:00", "Z"),
         "requestedLoad": {"rps": args.rps, "seconds": args.seconds, "workers": args.workers, "minAvailability": args.min_availability},
-        "expectedArtifact": {"image": args.expected_image, "sourceVersion": args.expected_source_version, "hostname": args.expected_hostname},
+        "expectedArtifact": {"image": args.expected_image, "sourceVersion": args.expected_source_version, "hostname": args.expected_hostname, "namespace": args.namespace},
         "requests": len(rows),
         "elapsedSeconds": round(time.monotonic() - started, 2),
         "availability": round(availability, 4),

@@ -10,9 +10,12 @@ import (
 	"log"
 	"net"
 	"net/http"
+	"net/netip"
 	"os"
 	"os/signal"
 	"regexp"
+	"strconv"
+	"strings"
 	"sync/atomic"
 	"syscall"
 	"time"
@@ -44,6 +47,12 @@ func openDatabase() (*sql.DB, error) {
 	if err := mysql.RegisterTLSConfig("pilot-verified", tlsConfig); err != nil {
 		return nil, err
 	}
+	dial, err := mysqlPinnedDialer(cfg.Addr, os.Getenv("MYSQL_PINNED_IP"), (&net.Dialer{}).DialContext)
+	if err != nil {
+		return nil, err
+	}
+	mysql.RegisterDialContext("pilot-pinned", dial)
+	cfg.Net = "pilot-pinned"
 	cfg.TLSConfig = "pilot-verified"
 	cfg.AllowAllFiles = false
 	cfg.MultiStatements = false
@@ -60,6 +69,89 @@ func openDatabase() (*sql.DB, error) {
 	return db, nil
 }
 
+type contextDialer func(context.Context, string, string) (net.Conn, error)
+
+func mysqlPinnedDialer(expectedAddress, pinnedIP string, dial contextDialer) (mysql.DialContextFunc, error) {
+	_, port, err := mysqlDNSAddress(expectedAddress)
+	if err != nil {
+		return nil, err
+	}
+	if dial == nil {
+		return nil, fmt.Errorf("MySQL pinned dialer is unavailable")
+	}
+	pinned, err := netip.ParseAddr(pinnedIP)
+	if err != nil || !pinned.Is4() || !pinned.IsPrivate() || pinned.String() != pinnedIP {
+		return nil, fmt.Errorf("MYSQL_PINNED_IP requires a canonical RFC1918 IPv4 literal")
+	}
+	endpoint := netip.AddrPortFrom(pinned, uint16(port)).String()
+	return func(ctx context.Context, address string) (net.Conn, error) {
+		if address != expectedAddress {
+			return nil, fmt.Errorf("MySQL address changed after review")
+		}
+		conn, err := dial(ctx, "tcp4", endpoint)
+		if err != nil {
+			return nil, err
+		}
+		peer, ok := conn.RemoteAddr().(*net.TCPAddr)
+		if !ok {
+			conn.Close()
+			return nil, fmt.Errorf("MySQL peer differs from reviewed private endpoint")
+		}
+		peerIP, validPeer := netip.AddrFromSlice(peer.IP)
+		if !validPeer || peerIP.Unmap() != pinned || peer.Port != int(port) {
+			conn.Close()
+			return nil, fmt.Errorf("MySQL peer differs from reviewed private endpoint")
+		}
+		return conn, nil
+	}, nil
+}
+
+func mysqlDNSAddress(address string) (string, uint16, error) {
+	host, portText, err := net.SplitHostPort(address)
+	if err != nil || !validMySQLDNSHost(host) {
+		return "", 0, fmt.Errorf("MYSQL_DSN requires a DNS hostname and port")
+	}
+	port, err := strconv.ParseUint(portText, 10, 16)
+	if err != nil || port == 0 {
+		return "", 0, fmt.Errorf("MYSQL_DSN requires a valid TCP port")
+	}
+	return host, uint16(port), nil
+}
+
+func validMySQLDNSHost(host string) bool {
+	if host == "" || len(host) > 253 || net.ParseIP(host) != nil {
+		return false
+	}
+	labels := strings.Split(host, ".")
+	if len(labels) > 1 {
+		numeric := true
+		for _, label := range labels {
+			if label == "" {
+				return false
+			}
+			for _, char := range label {
+				if char < '0' || char > '9' {
+					numeric = false
+				}
+			}
+		}
+		if numeric {
+			return false
+		}
+	}
+	for _, label := range labels {
+		if len(label) == 0 || len(label) > 63 || label[0] == '-' || label[len(label)-1] == '-' {
+			return false
+		}
+		for _, char := range label {
+			if (char < 'a' || char > 'z') && (char < 'A' || char > 'Z') && (char < '0' || char > '9') && char != '-' {
+				return false
+			}
+		}
+	}
+	return true
+}
+
 func mysqlTLSConfig(address, path string) (*tls.Config, error) {
 	if path == "" {
 		return nil, fmt.Errorf("MYSQL_CA_FILE is required")
@@ -72,9 +164,9 @@ func mysqlTLSConfig(address, path string) (*tls.Config, error) {
 	if !roots.AppendCertsFromPEM(pem) {
 		return nil, fmt.Errorf("invalid MySQL provider CA")
 	}
-	host, _, err := net.SplitHostPort(address)
-	if err != nil || host == "" {
-		return nil, fmt.Errorf("MYSQL_DSN requires a valid TCP host")
+	host, _, err := mysqlDNSAddress(address)
+	if err != nil {
+		return nil, err
 	}
 	return &tls.Config{MinVersion: tls.VersionTLS12, RootCAs: roots, ServerName: host}, nil
 }

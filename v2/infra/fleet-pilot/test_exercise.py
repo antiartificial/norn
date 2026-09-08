@@ -13,6 +13,7 @@ class Response(io.BytesIO):
 class ProbeTests(unittest.TestCase):
     allocation = "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa"
     source = "a" * 40
+    namespace = "norn-pilot-pilot260907a"
 
     def probe(self, payload):
         with patch("exercise.urllib.request.build_opener") as opener:
@@ -49,25 +50,36 @@ class ProbeTests(unittest.TestCase):
         self.assertFalse(self.probe(b" " * 65537)["ok"])
 
     def test_fault_rejects_short_allocation_prefix(self):
-        self.assertFalse(exercise.stop_pilot_allocation("aaaaaaaa"))
+        self.assertFalse(exercise.stop_pilot_allocation("aaaaaaaa", self.namespace))
 
     @patch("exercise.shutil.which", return_value="/usr/bin/nomad")
     @patch("exercise.subprocess.run")
     def test_fault_stop_requires_target_job(self, run, _which):
         run.return_value.returncode = 0
-        run.return_value.stdout = json.dumps({"JobID": "another-job"})
-        self.assertFalse(exercise.stop_pilot_allocation("aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa"))
+        run.return_value.stdout = json.dumps({"JobID": "another-job", "Namespace": self.namespace})
+        self.assertFalse(exercise.stop_pilot_allocation("aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa", self.namespace))
         self.assertEqual(run.call_count, 1)
 
     @patch("exercise.shutil.which", return_value="/usr/bin/nomad")
     @patch("exercise.subprocess.run")
     def test_fault_stop_is_scoped_to_pilot_allocation(self, run, _which):
-        inspect = type("Result", (), {"returncode": 0, "stdout": json.dumps({"JobID": "hello-norn-mysql"})})()
+        inspect = type("Result", (), {"returncode": 0, "stdout": json.dumps({"JobID": "hello-norn-mysql", "Namespace": self.namespace})})()
         stopped = type("Result", (), {"returncode": 0, "stdout": ""})()
         run.side_effect = [inspect, stopped]
         allocation = "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa"
-        self.assertTrue(exercise.stop_pilot_allocation(allocation))
-        self.assertEqual(run.call_args_list[1].args[0], ["nomad", "alloc", "stop", "-yes", allocation])
+        self.assertTrue(exercise.stop_pilot_allocation(allocation, self.namespace))
+        self.assertEqual(run.call_args_list[0].args[0], ["nomad", "alloc", "status", "-namespace=" + self.namespace, "-json", allocation])
+        self.assertEqual(run.call_args_list[1].args[0], ["nomad", "alloc", "stop", "-namespace=" + self.namespace, "-yes", allocation])
+
+    @patch("exercise.shutil.which", return_value="/usr/bin/nomad")
+    @patch("exercise.subprocess.run")
+    def test_fault_stop_rejects_same_job_in_another_namespace(self, run, _which):
+        run.return_value.returncode = 0
+        run.return_value.stdout = json.dumps({"JobID": "hello-norn-mysql", "Namespace": "norn-pilot-pilot260908b"})
+        self.assertFalse(exercise.stop_pilot_allocation(
+            "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa", self.namespace
+        ))
+        self.assertEqual(run.call_count, 1)
 
     @patch("exercise.shutil.which", return_value="/usr/bin/nomad")
     @patch("exercise.subprocess.run")
@@ -78,16 +90,24 @@ class ProbeTests(unittest.TestCase):
             return type("Result", (), {"returncode": 0, "stdout": json.dumps(value)})()
         run.side_effect = [
             result([{"ID": allocations[0], "ClientStatus": "running"}, {"ID": allocations[1], "ClientStatus": "running"}]),
-            result({"JobID": "hello-norn-mysql", "ClientStatus": "running", "Namespace": "default", "NodeID": "node-a", "CreateIndex": 10, "ModifyIndex": 11, "Job": {"Meta": {"pilot_image": image, "pilot_source_version": "a" * 40, "pilot_hostname": "pilot.example.test"}}}),
+            result({"JobID": "hello-norn-mysql", "ClientStatus": "running", "Namespace": self.namespace, "NodeID": "node-a", "CreateIndex": 10, "ModifyIndex": 11, "Job": {"Meta": {"pilot_image": image, "pilot_source_version": "a" * 40, "pilot_hostname": "pilot.example.test"}}}),
             result({"NodePool": "ingress"}),
-            result({"JobID": "hello-norn-mysql", "ClientStatus": "running", "Namespace": "default", "NodeID": "node-b", "CreateIndex": 12, "ModifyIndex": 13, "Job": {"Meta": {"pilot_image": image, "pilot_source_version": "a" * 40, "pilot_hostname": "pilot.example.test"}}}),
+            result({"JobID": "hello-norn-mysql", "ClientStatus": "running", "Namespace": self.namespace, "NodeID": "node-b", "CreateIndex": 12, "ModifyIndex": 13, "Job": {"Meta": {"pilot_image": image, "pilot_source_version": "a" * 40, "pilot_hostname": "pilot.example.test"}}}),
             result({"NodePool": "ingress"}),
         ]
-        proofs, verified = exercise.inventory_pilot(image, "a" * 40, "pilot.example.test")
+        proofs, verified = exercise.inventory_pilot(image, "a" * 40, "pilot.example.test", self.namespace)
         self.assertTrue(verified)
         self.assertEqual(proofs[0]["image"], image)
         self.assertEqual(proofs[0]["sourceVersion"], "a" * 40)
         self.assertEqual({proof["nodeID"] for proof in proofs}, {"node-a", "node-b"})
+        self.assertEqual(run.call_args_list[0].args[0], ["nomad", "job", "allocs", "-namespace=" + self.namespace, "-json", "hello-norn-mysql"])
+        self.assertEqual(run.call_args_list[1].args[0], ["nomad", "alloc", "status", "-namespace=" + self.namespace, "-json", allocations[0]])
+
+    def test_namespace_requires_exact_fleet_run_id_shape(self):
+        for namespace in ("default", "norn-pilot-run1", "norn-pilot-pilot-260907a", "norn-pilot-pilot260907a-"):
+            with self.subTest(namespace=namespace):
+                self.assertFalse(exercise.PILOT_NAMESPACE.fullmatch(namespace))
+        self.assertTrue(exercise.PILOT_NAMESPACE.fullmatch(self.namespace))
 
     @patch("exercise.time.sleep")
     @patch("exercise.inventory_pilot")
@@ -98,10 +118,15 @@ class ProbeTests(unittest.TestCase):
         replacement = "cccccccc-cccc-cccc-cccc-cccccccccccc"
         nomad_json.return_value = {"ClientStatus": "complete"}
         inventory.return_value = ([{"allocation": kept}, {"allocation": replacement}], True)
-        proofs, replacements, recovered = exercise.wait_for_recovery(old, {old, kept}, "image", "source", "pilot.example.test", 1)
+        proofs, replacements, recovered = exercise.wait_for_recovery(old, {old, kept}, "image", "source", "pilot.example.test", self.namespace, 1)
         self.assertTrue(recovered)
         self.assertEqual(proofs[1]["allocation"], replacement)
         self.assertEqual(replacements, [replacement])
+        self.assertEqual(
+            nomad_json.call_args.args[0],
+            ["alloc", "status", "-namespace=" + self.namespace, "-json", old],
+        )
+        self.assertEqual(inventory.call_args.args[-1], self.namespace)
 
     @patch("exercise.time.sleep")
     @patch("exercise.request")

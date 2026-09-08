@@ -118,6 +118,7 @@ job "hello-norn-mysql" {
         data = <<-EOT
 {{ with nomadVar "nomad/jobs/hello-norn-mysql" }}
 MYSQL_DSN={{ .MYSQL_DSN.Value | toJSON }}
+MYSQL_PINNED_IP={{ .MYSQL_PINNED_IP.Value | toJSON }}
 {{ end }}
 EOT
       }
