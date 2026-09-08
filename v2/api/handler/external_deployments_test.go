@@ -9,11 +9,14 @@ import (
 	"encoding/json"
 	"encoding/pem"
 	"errors"
+	"fmt"
 	"io"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
 	"os"
+	"path/filepath"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -338,6 +341,207 @@ func TestExternalFleetAttestationFixtureRejectsMalformedStatements(t *testing.T)
 			t.Fatalf("malformed bundle was accepted or leaked token: %v", err)
 		}
 		s.Close()
+	}
+}
+
+// This matrix deliberately uses the same REST shape GitHub served for version
+// 2026-03-10.  It protects the adapter boundary rather than merely unit
+// testing DSSE parsing: every network response is hostile until it is pinned
+// to the selected repository, attestation IDs, predicates, and subject digest.
+func TestExternalFleetAttestationBundleURLReleaseGate(t *testing.T) {
+	const (
+		slsa = "https://slsa.dev/provenance/v1"
+		spdx = "https://spdx.dev/Document/v2.3"
+	)
+	digest := strings.Repeat("b", 64)
+	statement := func(predicate, subject string) string {
+		raw, err := json.Marshal(map[string]any{"predicateType": predicate, "subject": []any{map[string]any{"digest": map[string]string{"sha256": subject}}}})
+		if err != nil {
+			t.Fatal(err)
+		}
+		return base64.StdEncoding.EncodeToString(raw)
+	}
+	type scenario struct {
+		name       string
+		listStatus int
+		bundleCode map[int]int
+		redirect   string
+		list       func(string) []map[string]any
+		bundle     func(int) any
+		wantOK     bool
+	}
+	baseList := func(origin string) []map[string]any {
+		return []map[string]any{{"id": 1, "bundle_url": origin + "/repos/acme/app/attestations/1/bundle"}, {"id": 2, "bundle_url": origin + "/repos/acme/app/attestations/2/bundle"}}
+	}
+	goodBundle := func(id int) any {
+		if id == 1 {
+			return map[string]any{"dsseEnvelope": map[string]string{"payload": statement(slsa, digest)}}
+		}
+		return map[string]any{"dsseEnvelope": map[string]string{"payload": statement(spdx, digest)}}
+	}
+	cases := []scenario{
+		{name: "exact 2026-03-10 positive response", list: baseList, bundle: goodBundle, wantOK: true},
+		{name: "redirected list refused", redirect: "list", list: baseList, bundle: goodBundle},
+		{name: "redirected bundle refused", redirect: "bundle", list: baseList, bundle: goodBundle},
+		{name: "list 401 refused", listStatus: http.StatusUnauthorized, list: baseList, bundle: goodBundle},
+		{name: "bundle 403 refused", bundleCode: map[int]int{1: http.StatusForbidden}, list: baseList, bundle: goodBundle},
+		{name: "oversized attestation list refused", list: func(origin string) []map[string]any {
+			items := baseList(origin)
+			for id := 3; id <= externalFleetMaxAttestations+1; id++ {
+				items = append(items, map[string]any{"id": id, "bundle_url": origin + "/repos/acme/app/attestations/" + strconv.Itoa(id) + "/bundle"})
+			}
+			return items
+		}, bundle: goodBundle},
+		{name: "missing SLSA refused", list: func(origin string) []map[string]any { items := baseList(origin); items = items[1:]; return items }, bundle: goodBundle},
+		{name: "missing SPDX refused", list: func(origin string) []map[string]any { return baseList(origin)[:1] }, bundle: goodBundle},
+		{name: "duplicate SLSA refused", list: baseList, bundle: func(id int) any {
+			return map[string]any{"dsseEnvelope": map[string]string{"payload": statement(slsa, digest)}}
+		}},
+		{name: "duplicate matching attestation refused", list: func(origin string) []map[string]any { items := baseList(origin); return append(items, items[0]) }, bundle: goodBundle},
+		{name: "duplicate bundle URL refused", list: func(origin string) []map[string]any {
+			return []map[string]any{{"id": 1, "bundle_url": origin + "/repos/acme/app/attestations/1/bundle"}, {"id": 2, "bundle_url": origin + "/repos/acme/app/attestations/1/bundle"}}
+		}, bundle: goodBundle},
+		{name: "wrong bundle repo refused", list: func(origin string) []map[string]any {
+			items := baseList(origin)
+			items[0]["bundle_url"] = origin + "/repos/acme/other/attestations/1/bundle"
+			return items
+		}, bundle: goodBundle},
+		{name: "wrong bundle path refused", list: func(origin string) []map[string]any {
+			items := baseList(origin)
+			items[0]["bundle_url"] = origin + "/repos/acme/app/attestations/1/bundle/extra"
+			return items
+		}, bundle: goodBundle},
+		{name: "wrong bundle subject refused", list: func(origin string) []map[string]any {
+			items := baseList(origin)
+			items[0]["bundle_url"] = origin + "/repos/acme/app/attestations/2/bundle"
+			return items
+		}, bundle: goodBundle},
+		{name: "duplicate SPDX refused", list: baseList, bundle: func(int) any {
+			return map[string]any{"dsseEnvelope": map[string]string{"payload": statement(spdx, digest)}}
+		}},
+		{name: "malformed DSSE refused", list: baseList, bundle: func(int) any { return map[string]any{"dsseEnvelope": map[string]string{}} }},
+		{name: "malformed base64 refused", list: baseList, bundle: func(int) any { return map[string]any{"dsseEnvelope": map[string]string{"payload": "not-base64"}} }},
+		{name: "malformed bundle JSON refused", list: baseList, bundle: func(int) any { return json.RawMessage(`{"dsseEnvelope":`) }},
+		{name: "malformed statement JSON refused", list: baseList, bundle: func(int) any {
+			return map[string]any{"dsseEnvelope": map[string]string{"payload": base64.StdEncoding.EncodeToString([]byte(`not-json`))}}
+		}},
+		{name: "wrong subject digest refused", list: baseList, bundle: func(id int) any {
+			predicate := slsa
+			if id == 2 {
+				predicate = spdx
+			}
+			return map[string]any{"dsseEnvelope": map[string]string{"payload": statement(predicate, strings.Repeat("c", 64))}}
+		}},
+		{name: "wrong predicate refused", list: baseList, bundle: func(int) any {
+			return map[string]any{"dsseEnvelope": map[string]string{"payload": statement("https://example.test/wrong", digest)}}
+		}},
+		{name: "oversized bundle refused", list: baseList, bundle: func(int) any {
+			return map[string]any{"dsseEnvelope": map[string]string{"payload": strings.Repeat("a", externalFleetEvidenceMaxBody+1)}}
+		}},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			var server *httptest.Server
+			server = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				if r.Header.Get("Authorization") != "Bearer installation-token" {
+					http.Error(w, "unauthorized", http.StatusUnauthorized)
+					return
+				}
+				if r.Header.Get("X-GitHub-Api-Version") != "2026-03-10" {
+					t.Errorf("GitHub API version = %q", r.Header.Get("X-GitHub-Api-Version"))
+				}
+				if strings.Contains(r.URL.Path, "sha256:") {
+					if tc.redirect == "list" {
+						http.Redirect(w, r, server.URL+"/redirect-target", http.StatusFound)
+						return
+					}
+					if tc.listStatus != 0 {
+						http.Error(w, "denied", tc.listStatus)
+						return
+					}
+					_ = json.NewEncoder(w).Encode(map[string]any{"attestations": tc.list(server.URL)})
+					return
+				}
+				id := 0
+				_, _ = fmt.Sscanf(r.URL.Path, "/repos/acme/app/attestations/%d/bundle", &id)
+				if tc.redirect == "bundle" {
+					http.Redirect(w, r, server.URL+"/redirect-target", http.StatusFound)
+					return
+				}
+				if code := tc.bundleCode[id]; code != 0 {
+					http.Error(w, "denied", code)
+					return
+				}
+				value := tc.bundle(id)
+				if raw, ok := value.(json.RawMessage); ok {
+					_, _ = w.Write(raw)
+					return
+				}
+				_ = json.NewEncoder(w).Encode(value)
+			}))
+			defer server.Close()
+			receipt := externalReceiptForTest()
+			receipt.Candidate.Repository = "acme/app"
+			receipt.Candidate.Attestation.SubjectDigest = "sha256:" + digest
+			receipt.AttestationURI = "https://github.com/acme/app/attestations/1"
+			receipt.SBOMURI = "https://github.com/acme/app/attestations/2"
+			app := &externalFleetGitHubApp{cfg: externalFleetGitHubAppConfig{APIBaseURL: server.URL}, client: server.Client()}
+			got, err := app.attestations(context.Background(), "installation-token", receipt)
+			if tc.wantOK {
+				if err != nil || len(got) != 2 || len(got[slsa]) == 0 || len(got[spdx]) == 0 {
+					t.Fatalf("positive 2026-03-10 response got=%v err=%v", got, err)
+				}
+				return
+			}
+			if err == nil {
+				t.Fatal("hostile attestation response accepted")
+			}
+			for _, secret := range []string{"installation-token", "evidence-token", "-----BEGIN PRIVATE KEY-----", "eyJhbGciOiJSUzI1NiJ9"} {
+				if strings.Contains(err.Error(), secret) {
+					t.Fatalf("error leaked secret %q: %v", secret, err)
+				}
+			}
+		})
+	}
+}
+
+func TestExternalFleetCommandAttestationVerifierCleansTemporaryBundles(t *testing.T) {
+	tmp := t.TempDir()
+	t.Setenv("TMPDIR", tmp)
+	receipt := externalReceiptForTest()
+	receipt.Candidate.Repository = "acme/app"
+	receipt.Candidate.RunID = "3"
+	receipt.Candidate.RunAttempt = "1"
+	request := ExternalFleetDeploymentVerificationRequest{Receipt: receipt}
+	bundles := map[string]json.RawMessage{
+		"https://slsa.dev/provenance/v1": json.RawMessage(`{"dsseEnvelope":{"payload":"cHJvdmVuYW5jZQ=="}}`),
+		"https://spdx.dev/Document/v2.3": json.RawMessage(`{"dsseEnvelope":{"payload":"c3BkeA=="}}`),
+	}
+	good := `[ {"verificationResult":{"statement":{"predicateType":"PREDICATE"},"signature":{"certificate":{"runInvocationURI":"https://github.com/acme/app/actions/runs/3/attempts/1"}},"verifiedTimestamps":[{}]}} ]`
+	for _, tc := range []struct {
+		name    string
+		script  string
+		wantErr bool
+	}{
+		{name: "success", script: "case \"$*\" in *provenance*) echo '" + strings.ReplaceAll(good, "PREDICATE", "https://slsa.dev/provenance/v1") + "';; *) echo '" + strings.ReplaceAll(good, "PREDICATE", "https://spdx.dev/Document/v2.3") + "';; esac"},
+		{name: "command error", script: "exit 1", wantErr: true},
+		{name: "second command error", script: "case \"$*\" in *provenance*) echo '" + strings.ReplaceAll(good, "PREDICATE", "https://slsa.dev/provenance/v1") + "';; *) exit 1;; esac", wantErr: true},
+		{name: "binding error", script: "echo '[]'", wantErr: true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			path := filepath.Join(t.TempDir(), "fake-gh")
+			if err := os.WriteFile(path, []byte("#!/bin/sh\n"+tc.script+"\n"), 0o700); err != nil {
+				t.Fatal(err)
+			}
+			err := (externalFleetCommandAttestationVerifier{path: path}).VerifyBundles(context.Background(), "installation-token", request, bundles)
+			if (err != nil) != tc.wantErr {
+				t.Fatalf("VerifyBundles error = %v, wantErr=%v", err, tc.wantErr)
+			}
+			left, globErr := filepath.Glob(filepath.Join(tmp, "norn-fleet-bundle-*"))
+			if globErr != nil || len(left) != 0 {
+				t.Fatalf("temporary bundles leaked: %v (%v)", left, globErr)
+			}
+		})
 	}
 }
 
