@@ -230,15 +230,10 @@ func (v externalFleetCommandAttestationVerifier) verify(ctx context.Context, tok
 		}
 		command := exec.CommandContext(ctx, v.path, args...)
 		// CommandContext invokes Cancel at deadline; WaitDelay bounds descendants
-		// which inherited pipe descriptors. We use direct execution (no shell),
-		// so the portable process handle is the verifier process itself.
+		// which inherited pipe descriptors. Unix uses a dedicated process group;
+		// platforms without one use the direct process handle.
 		command.WaitDelay = time.Second
-		command.Cancel = func() error {
-			if command.Process == nil {
-				return nil
-			}
-			return command.Process.Kill()
-		}
+		externalFleetConfigureCommandCancellation(command)
 		command.Env = []string{"PATH=" + os.Getenv("PATH"), "GH_TOKEN=" + token, "GH_PROMPT_DISABLED=1", "NO_COLOR=1"}
 		stdout, stderr := &externalFleetLimitedWriter{remaining: externalFleetEvidenceMaxBody}, &externalFleetLimitedWriter{remaining: externalFleetEvidenceMaxBody}
 		command.Stdout, command.Stderr = stdout, stderr
