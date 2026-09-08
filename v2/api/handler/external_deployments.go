@@ -25,7 +25,7 @@ import (
 // externalFleetReceiptSchema is a deliberately narrow bridge for the pilot
 // hello-norn-mysql job. It does not make deploy:false apps deployable through
 // the normal pipeline and it is unavailable without an injected live verifier.
-const externalFleetReceiptSchema = "norn.external-fleet-deployment-receipt/v2"
+const externalFleetReceiptSchema = "norn.external-fleet-deployment-receipt/v3"
 const externalFleetAdmissionNonceTTL = 10 * time.Minute
 
 var sha256HexPattern = regexp.MustCompile(`^[0-9a-f]{64}$`)
@@ -41,16 +41,16 @@ type externalDeploymentRequest struct {
 // booleans. The independent verifier below must obtain every claimed runtime
 // fact from Nomad/Consul/ingress/GitHub before this is persisted.
 type ExternalFleetDeploymentReceipt struct {
-	SchemaVersion  string                        `json:"schemaVersion"`
-	Nonce          string                        `json:"nonce"`
-	App            string                        `json:"app"`
-	SourceSHA      string                        `json:"sourceSha"`
-	Artifact       string                        `json:"artifact"`
-	Candidate      model.ReleaseCandidate        `json:"candidate"`
-	AttestationURI string                        `json:"attestationUri"`
-	SBOMURI        string                        `json:"sbomUri"`
-	Fleet          ExternalFleetExecutionProof   `json:"fleet"`
-	Chronology     []ExternalFleetChronologyStep `json:"chronology"`
+	SchemaVersion           string                        `json:"schemaVersion"`
+	Nonce                   string                        `json:"nonce"`
+	App                     string                        `json:"app"`
+	SourceSHA               string                        `json:"sourceSha"`
+	Artifact                string                        `json:"artifact"`
+	Candidate               model.ReleaseCandidate        `json:"candidate"`
+	AttestationBundleSHA256 string                        `json:"attestationBundleSha256"`
+	SBOMBundleSHA256        string                        `json:"sbomBundleSha256"`
+	Fleet                   ExternalFleetExecutionProof   `json:"fleet"`
+	Chronology              []ExternalFleetChronologyStep `json:"chronology"`
 }
 
 type ExternalFleetExecutionProof struct {
@@ -113,24 +113,24 @@ type ExternalFleetAdmissionConfig struct {
 // facts. It intentionally has no `healthy`/`approved` flag: every field must
 // match the canonical request and verifier adapters must fail on missing proof.
 type ExternalFleetDeploymentVerification struct {
-	SourceSHA          string                        `json:"sourceSha"`
-	Artifact           string                        `json:"artifact"`
-	AttestationURI     string                        `json:"attestationUri"`
-	SBOMURI            string                        `json:"sbomUri"`
-	Namespace          string                        `json:"namespace"`
-	Migration          ExternalFleetNomadJobProof    `json:"migration"`
-	Runtime            ExternalFleetNomadJobProof    `json:"runtime"`
-	PlanID             string                        `json:"planId"`
-	ApplyRunID         string                        `json:"applyRunId"`
-	ApplyRunAttempt    string                        `json:"applyRunAttempt"`
-	PlanSHA256         string                        `json:"planSha256"`
-	RunnerAttemptID    string                        `json:"runnerAttemptId"`
-	NonceEvidenceRef   string                        `json:"nonceEvidenceRef"`
-	Regions            []ExternalFleetRegionProof    `json:"regions"`
-	IngressNodeIDs     []string                      `json:"ingressNodeIds"`
-	PublicHTTPSVersion string                        `json:"publicHttpsVersion"`
-	PrivateReadiness   ExternalFleetPrivateReadiness `json:"privateReadiness"`
-	Chronology         []ExternalFleetChronologyStep `json:"chronology"`
+	SourceSHA               string                        `json:"sourceSha"`
+	Artifact                string                        `json:"artifact"`
+	AttestationBundleSHA256 string                        `json:"attestationBundleSha256"`
+	SBOMBundleSHA256        string                        `json:"sbomBundleSha256"`
+	Namespace               string                        `json:"namespace"`
+	Migration               ExternalFleetNomadJobProof    `json:"migration"`
+	Runtime                 ExternalFleetNomadJobProof    `json:"runtime"`
+	PlanID                  string                        `json:"planId"`
+	ApplyRunID              string                        `json:"applyRunId"`
+	ApplyRunAttempt         string                        `json:"applyRunAttempt"`
+	PlanSHA256              string                        `json:"planSha256"`
+	RunnerAttemptID         string                        `json:"runnerAttemptId"`
+	NonceEvidenceRef        string                        `json:"nonceEvidenceRef"`
+	Regions                 []ExternalFleetRegionProof    `json:"regions"`
+	IngressNodeIDs          []string                      `json:"ingressNodeIds"`
+	PublicHTTPSVersion      string                        `json:"publicHttpsVersion"`
+	PrivateReadiness        ExternalFleetPrivateReadiness `json:"privateReadiness"`
+	Chronology              []ExternalFleetChronologyStep `json:"chronology"`
 }
 
 // ExternalFleetPrivateReadiness preserves the independently observed private
@@ -206,7 +206,7 @@ func (h *Handler) AdmitExternalFleetDeployment(w http.ResponseWriter, r *http.Re
 		WriteControlProblem(w, r, http.StatusConflict, "external_deployment_app_invalid", "external admission requires the configured deploy:false app with a server-owned repository")
 		return
 	}
-	if err := validateReleaseSpecBinding(spec, receipt.Candidate, receipt.Artifact, h.pipelineRegistryURL()); err != nil || receipt.Candidate.Attestation.MaterialSHA != receipt.SourceSHA || receipt.Candidate.Attestation.ProvenanceURI != receipt.AttestationURI || receipt.Candidate.Attestation.SBOMURI != receipt.SBOMURI || !validExternalBootstrapCandidate(receipt.Candidate, receipt.SourceSHA, receipt.Artifact, h.releaseTrustMode(), configured) {
+	if err := validateReleaseSpecBinding(spec, receipt.Candidate, receipt.Artifact, h.pipelineRegistryURL()); err != nil || receipt.Candidate.Attestation.MaterialSHA != receipt.SourceSHA || !validExternalBootstrapCandidate(receipt.Candidate, receipt.SourceSHA, receipt.Artifact, h.releaseTrustMode(), configured) {
 		WriteControlProblem(w, r, http.StatusForbidden, "external_deployment_binding_mismatch", "external receipt source, artifact, and candidate do not match the server-owned app binding")
 		return
 	}
@@ -305,25 +305,38 @@ func externalFleetAdmissionIdempotency(w http.ResponseWriter, r *http.Request, p
 	}
 	keySum := sha256.Sum256([]byte("external-fleet-admission\x00" + principal.CI.Repository + "\x00" + principal.Environment + "\x00" + appID + "\x00" + clientKey))
 	logical := struct {
-		Repository    string                     `json:"repository"`
-		Environment   string                     `json:"environment"`
-		App           string                     `json:"app"`
-		Candidate     model.ReleaseCandidate     `json:"candidate"`
-		SourceSHA     string                     `json:"sourceSha"`
-		Artifact      string                     `json:"artifact"`
-		Namespace     string                     `json:"namespace"`
-		PlanID        string                     `json:"planId"`
-		PlanSHA256    string                     `json:"planSha256"`
-		RootAttemptID string                     `json:"rootAttemptId"`
-		Migration     ExternalFleetNomadJobProof `json:"migration"`
-		Runtime       ExternalFleetNomadJobProof `json:"runtime"`
-	}{principal.CI.Repository, principal.Environment, appID, receipt.Candidate, receipt.SourceSHA, receipt.Artifact, receipt.Fleet.Namespace, receipt.Fleet.PlanID, receipt.Fleet.PlanSHA256, receipt.Fleet.RootAttemptID, receipt.Fleet.Migration, receipt.Fleet.Runtime}
+		Repository    string                        `json:"repository"`
+		Environment   string                        `json:"environment"`
+		App           string                        `json:"app"`
+		Candidate     externalFleetLogicalCandidate `json:"candidate"`
+		SourceSHA     string                        `json:"sourceSha"`
+		Artifact      string                        `json:"artifact"`
+		Namespace     string                        `json:"namespace"`
+		PlanID        string                        `json:"planId"`
+		PlanSHA256    string                        `json:"planSha256"`
+		RootAttemptID string                        `json:"rootAttemptId"`
+		Migration     ExternalFleetNomadJobProof    `json:"migration"`
+		Runtime       ExternalFleetNomadJobProof    `json:"runtime"`
+	}{principal.CI.Repository, principal.Environment, appID, externalFleetReplayCandidate(receipt.Candidate), receipt.SourceSHA, receipt.Artifact, receipt.Fleet.Namespace, receipt.Fleet.PlanID, receipt.Fleet.PlanSHA256, receipt.Fleet.RootAttemptID, receipt.Fleet.Migration, receipt.Fleet.Runtime}
 	canonical, err := json.Marshal(logical)
 	if err != nil {
 		return "", "", false
 	}
 	digest := sha256.Sum256(canonical)
 	return "app.deploy:" + hex.EncodeToString(keySum[:]), "sha256:" + hex.EncodeToString(digest[:]), true
+}
+
+// externalFleetLogicalCandidate deliberately excludes the ephemeral GitHub
+// run/attempt and attestation URLs. Those are re-authorized evidence for a
+// retry, not the immutable deployment identity used to recover a lost result.
+type externalFleetLogicalCandidate struct {
+	Provider, Repository, RepositoryID, OwnerID, RepositoryVisibility   string
+	WorkflowRef, WorkflowSHA, SignerWorkflowRef, SignerWorkflowSHA, Ref string
+	Mode, Issuer, SubjectDigest, MaterialSHA                            string
+}
+
+func externalFleetReplayCandidate(c model.ReleaseCandidate) externalFleetLogicalCandidate {
+	return externalFleetLogicalCandidate{c.Provider, c.Repository, c.RepositoryID, c.OwnerID, c.RepositoryVisibility, c.WorkflowRef, c.WorkflowSHA, c.SignerWorkflowRef, c.SignerWorkflowSHA, c.Ref, c.Attestation.Mode, c.Attestation.Issuer, c.Attestation.SubjectDigest, c.Attestation.MaterialSHA}
 }
 
 func (h *Handler) issueExternalFleetAdmissionNonce(w http.ResponseWriter, r *http.Request, appID string, principal AccessPrincipal) {
@@ -421,7 +434,7 @@ func externalNonceStoreRecord(nonce externalAdmissionNonce, app, environment str
 }
 
 func validateExternalFleetReceipt(receipt ExternalFleetDeploymentReceipt, configured ExternalFleetAdmissionConfig, app string) error {
-	if receipt.SchemaVersion != externalFleetReceiptSchema || receipt.App != app || !fullSourceSHAPattern.MatchString(receipt.SourceSHA) || !model.IsContentAddressedImage(receipt.Artifact) || !validExternalURI(receipt.AttestationURI) || !validExternalURI(receipt.SBOMURI) {
+	if receipt.SchemaVersion != externalFleetReceiptSchema || receipt.App != app || !fullSourceSHAPattern.MatchString(receipt.SourceSHA) || !model.IsContentAddressedImage(receipt.Artifact) || !sha256HexPattern.MatchString(receipt.AttestationBundleSHA256) || !sha256HexPattern.MatchString(receipt.SBOMBundleSHA256) || receipt.AttestationBundleSHA256 == receipt.SBOMBundleSHA256 {
 		return fmt.Errorf("receipt schema, app, immutable source/artifact, or evidence references are invalid")
 	}
 	if receipt.Fleet.Namespace != configured.Namespace || !validExternalNomadJobProof(receipt.Fleet.Migration, configured.MigrationJobID, configured.MigrationHCLSHA256) || !validExternalNomadJobProof(receipt.Fleet.Runtime, configured.RuntimeJobID, configured.RuntimeHCLSHA256) || receipt.Fleet.Migration.EvalID == receipt.Fleet.Runtime.EvalID || receipt.Fleet.Migration.CheckpointID == receipt.Fleet.Runtime.CheckpointID || !externalNamePattern.MatchString(receipt.Fleet.PlanID) || !validGitHubNumericID(receipt.Fleet.ApplyRunID) || !validGitHubNumericID(receipt.Fleet.ApplyRunAttempt) || !sha256HexPattern.MatchString(receipt.Fleet.PlanSHA256) || !externalNamePattern.MatchString(receipt.Fleet.RunnerAttemptID) || !externalNamePattern.MatchString(receipt.Fleet.RootAttemptID) || !externalNamePattern.MatchString(receipt.Fleet.NonceEvidenceRef) {
@@ -434,7 +447,7 @@ func validateExternalFleetReceipt(receipt ExternalFleetDeploymentReceipt, config
 }
 
 func verificationMatchesExternalReceipt(verified ExternalFleetDeploymentVerification, receipt ExternalFleetDeploymentReceipt, configured ExternalFleetAdmissionConfig) error {
-	if verified.SourceSHA != receipt.SourceSHA || verified.Artifact != receipt.Artifact || verified.AttestationURI != receipt.AttestationURI || verified.SBOMURI != receipt.SBOMURI || verified.Namespace != configured.Namespace || verified.Migration != receipt.Fleet.Migration || verified.Runtime != receipt.Fleet.Runtime || verified.PlanID != receipt.Fleet.PlanID || verified.ApplyRunID != receipt.Fleet.ApplyRunID || verified.ApplyRunAttempt != receipt.Fleet.ApplyRunAttempt || verified.PlanSHA256 != receipt.Fleet.PlanSHA256 || verified.RunnerAttemptID != receipt.Fleet.RunnerAttemptID || verified.NonceEvidenceRef != receipt.Fleet.NonceEvidenceRef {
+	if verified.SourceSHA != receipt.SourceSHA || verified.Artifact != receipt.Artifact || verified.AttestationBundleSHA256 != receipt.AttestationBundleSHA256 || verified.SBOMBundleSHA256 != receipt.SBOMBundleSHA256 || verified.Namespace != configured.Namespace || verified.Migration != receipt.Fleet.Migration || verified.Runtime != receipt.Fleet.Runtime || verified.PlanID != receipt.Fleet.PlanID || verified.ApplyRunID != receipt.Fleet.ApplyRunID || verified.ApplyRunAttempt != receipt.Fleet.ApplyRunAttempt || verified.PlanSHA256 != receipt.Fleet.PlanSHA256 || verified.RunnerAttemptID != receipt.Fleet.RunnerAttemptID || verified.NonceEvidenceRef != receipt.Fleet.NonceEvidenceRef {
 		return fmt.Errorf("independent verifier observations do not exactly match the receipt")
 	}
 	if !validDistinctIngressNodes(verified.IngressNodeIDs) || !validHTTPSVersion(verified.PublicHTTPSVersion) || !validPrivateReadiness(verified.PrivateReadiness) || !sameExternalChronology(verified.Chronology, receipt.Chronology) {

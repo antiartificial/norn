@@ -128,7 +128,10 @@ NORN_EXTERNAL_FLEET_ADMISSION_BOOTSTRAP_SIGNER_REF=<exact bootstrap workflow pat
 NORN_EXTERNAL_FLEET_VERIFIER_URL=https://<private-read-only-fleet-evidence-origin>
 NORN_EXTERNAL_FLEET_EVIDENCE_ALLOWED_CIDRS=<exact tailscale-or-vpc-cidr>[,<additional-cidr>]
 NORN_EXTERNAL_FLEET_VERIFIER_TOKEN_FILE=/secure/norn/fleet-evidence-read.token
-NORN_EXTERNAL_FLEET_GITHUB_TOKEN_FILE=/secure/norn/github-attestations-read.token
+NORN_EXTERNAL_FLEET_GITHUB_VERIFIER_APP_ID=<read-only-GitHub-App-ID>
+NORN_EXTERNAL_FLEET_GITHUB_VERIFIER_INSTALLATION_ID=<selected-read-only-installation-ID>
+NORN_EXTERNAL_FLEET_GITHUB_VERIFIER_PRIVATE_KEY_FILE=/secure/norn/github-attestations-read.pem
+NORN_EXTERNAL_FLEET_GITHUB_VERIFIER_REPOSITORY_IDS=<fleet-repository-id>,<artifact-repository-id>
 NORN_EXTERNAL_FLEET_GITHUB_CLI_PATH=/absolute/path/to/gh
 NORN_EXTERNAL_FLEET_PUBLIC_BASE_URL=https://<reviewed-public-pilot-origin>
 ```

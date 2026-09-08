@@ -6,12 +6,16 @@ package handler
 import (
 	"bytes"
 	"context"
+	"crypto/sha256"
 	"encoding/base64"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
+	"net"
 	"net/http"
+	"net/netip"
 	"net/url"
 	"os"
 	"strconv"
@@ -20,9 +24,20 @@ import (
 	"time"
 
 	"github.com/golang-jwt/jwt/v5"
+	"github.com/klauspost/compress/s2"
 )
 
-const externalFleetMaxAttestations = 30
+const (
+	externalFleetMaxAttestations       = 30
+	externalFleetBundleCompressedMax   = 1 << 20
+	externalFleetBundleDecompressedMax = 4 << 20
+)
+
+// GitHub returns a short-lived Azure Blob SAS capability. It is deliberately
+// opaque: its query is neither parsed, logged, persisted, nor sent back to
+// GitHub. The suffix is the reviewed Azure Blob service boundary; tests inject
+// an exact host list through the internal configuration.
+var externalFleetDefaultStorageHosts = []string{".blob.core.windows.net"}
 
 type externalFleetGitHubAppConfig struct {
 	AppID          string
@@ -30,122 +45,146 @@ type externalFleetGitHubAppConfig struct {
 	PrivateKeyFile string
 	RepositoryIDs  []string
 	APIBaseURL     string
+	StorageHosts   []string
+}
+
+// externalFleetBundle retains exact decompressed bytes for gh. Parsed fields
+// are a separate typed view used solely for local fail-closed binding checks.
+type externalFleetBundle struct {
+	Raw       json.RawMessage
+	SHA256    string
+	Predicate string
+}
+
+type externalFleetListAttestation struct {
+	RepositoryID int64           `json:"repository_id"`
+	BundleURL    string          `json:"bundle_url"`
+	Initiator    json.RawMessage `json:"initiator"`
 }
 
 func (c *externalFleetGitHubApp) attestations(ctx context.Context, token string, receipt ExternalFleetDeploymentReceipt) (map[string]json.RawMessage, error) {
 	repo := receipt.Candidate.Repository
 	digest := strings.TrimPrefix(receipt.Candidate.Attestation.SubjectDigest, "sha256:")
-	if !validExternalRepository(repo) || len(digest) != 64 {
-		return nil, errors.New("attestation subject binding invalid")
+	repositoryID, err := strconv.ParseInt(receipt.Candidate.RepositoryID, 10, 64)
+	if !validExternalRepository(repo) || len(digest) != 64 || err != nil || repositoryID <= 0 || !externalFleetRepositoryIDAllowed(receipt.Candidate.RepositoryID, c.cfg.RepositoryIDs) {
+		return nil, errors.New("attestation subject or repository binding invalid")
 	}
-	var response struct {
-		Attestations []struct {
-			ID     int64 `json:"id"`
-			Bundle struct {
-				DSSEEnvelope struct {
-					Payload string `json:"payload"`
-				} `json:"dsseEnvelope"`
-			} `json:"bundle"`
-			BundleURL string `json:"bundle_url"`
-		} `json:"attestations"`
+	want := map[string]string{
+		"https://slsa.dev/provenance/v1": receipt.AttestationBundleSHA256,
+		"https://spdx.dev/Document/v2.3": receipt.SBOMBundleSHA256,
 	}
-	if err := c.request(ctx, token, http.MethodGet, "/repos/"+repo+"/attestations/sha256:"+digest+"?per_page=30", nil, &response); err != nil {
-		return nil, err
+	if !sha256HexPattern.MatchString(want["https://slsa.dev/provenance/v1"]) || !sha256HexPattern.MatchString(want["https://spdx.dev/Document/v2.3"]) || want["https://slsa.dev/provenance/v1"] == want["https://spdx.dev/Document/v2.3"] {
+		return nil, errors.New("attestation receipt digest binding invalid")
 	}
-	if len(response.Attestations) > externalFleetMaxAttestations {
-		return nil, errors.New("attestation list exceeds limit")
-	}
-	bundles := map[string]json.RawMessage{}
-	want := map[string]string{receipt.AttestationURI: "https://slsa.dev/provenance/v1", receipt.SBOMURI: "https://spdx.dev/Document/v2.3"}
-	if len(want) != 2 {
-		return nil, errors.New("attestation receipt URL binding invalid")
-	}
-	found := map[string]bool{}
-	seenAttestation := map[string]bool{}
-	seenBundleURL := map[string]bool{}
-	for _, item := range response.Attestations {
-		uri := "https://github.com/" + repo + "/attestations/" + strconv.FormatInt(item.ID, 10)
-		expected, ok := want[uri]
-		if !ok {
-			continue
+	found := make(map[string]bool, len(want))
+	seenCapabilities := make(map[string]bool, len(want))
+	bundles := make(map[string]json.RawMessage, len(want))
+	for predicate, filter := range map[string]string{"https://slsa.dev/provenance/v1": "provenance", "https://spdx.dev/Document/v2.3": "sbom"} {
+		var response struct {
+			Attestations []externalFleetListAttestation `json:"attestations"`
 		}
-		if seenAttestation[uri] {
-			return nil, errors.New("attestation receipt URL is ambiguous")
+		if err := c.request(ctx, token, http.MethodGet, "/repos/"+repo+"/attestations/sha256:"+digest+"?per_page=30&predicate_type="+filter, nil, &response); err != nil {
+			return nil, errors.New("attestation list unavailable")
 		}
-		seenAttestation[uri] = true
-		bundle := item.Bundle
-		if item.BundleURL == "" {
-			return nil, errors.New("attestation bundle URL missing")
+		if len(response.Attestations) == 0 || len(response.Attestations) > externalFleetMaxAttestations {
+			return nil, errors.New("attestation list cardinality invalid")
 		}
-		if !c.validBundleURL(item.BundleURL, repo, item.ID) || seenBundleURL[item.BundleURL] {
-			return nil, errors.New("attestation bundle URL rejected")
+		for _, item := range response.Attestations {
+			if item.RepositoryID != repositoryID || !c.validStorageBundleURL(item.BundleURL) || seenCapabilities[item.BundleURL] {
+				return nil, errors.New("attestation capability binding invalid")
+			}
+			seenCapabilities[item.BundleURL] = true
+			bundle, err := c.fetchBundle(ctx, item.BundleURL, digest)
+			if err != nil {
+				return nil, errors.New("attestation bundle unavailable")
+			}
+			expectedDigest, wanted := want[bundle.Predicate]
+			if !wanted || bundle.Predicate != predicate {
+				return nil, errors.New("attestation predicate binding invalid")
+			}
+			if found[bundle.Predicate] || bundle.SHA256 != expectedDigest {
+				return nil, errors.New("attestation bundle binding invalid")
+			}
+			found[bundle.Predicate] = true
+			bundles[bundle.Predicate] = bundle.Raw
 		}
-		seenBundleURL[item.BundleURL] = true
-		req, err := http.NewRequestWithContext(ctx, http.MethodGet, item.BundleURL, nil)
-		if err != nil {
-			return nil, errors.New("attestation bundle request invalid")
-		}
-		req.Header.Set("Authorization", "Bearer "+token)
-		req.Header.Set("Accept", "application/vnd.github+json")
-		req.Header.Set("X-GitHub-Api-Version", "2026-03-10")
-		res, err := c.noRedirectClient().Do(req)
-		if err != nil {
-			return nil, errors.New("attestation bundle unavailable")
-		}
-		if res.StatusCode != http.StatusOK {
-			res.Body.Close()
-			return nil, errors.New("attestation bundle unavailable")
-		}
-		err = decodeExternalFleetGitHubJSON(res.Body, externalFleetEvidenceMaxBody, &bundle)
-		res.Body.Close()
-		if err != nil {
-			return nil, errors.New("attestation bundle invalid")
-		}
-		payload, err := base64.StdEncoding.DecodeString(bundle.DSSEEnvelope.Payload)
-		if err != nil {
-			return nil, errors.New("attestation bundle payload invalid")
-		}
-		var statement struct {
-			PredicateType string `json:"predicateType"`
-			Subject       []struct {
-				Digest map[string]string `json:"digest"`
-			} `json:"subject"`
-		}
-		if json.Unmarshal(payload, &statement) != nil || statement.PredicateType == "" || !externalFleetStatementSubject(statement.Subject, digest) {
-			return nil, errors.New("attestation bundle statement invalid")
-		}
-		if statement.PredicateType != expected || found[statement.PredicateType] {
-			return nil, errors.New("attestation bundle predicate invalid")
-		}
-		found[statement.PredicateType] = true
-		raw, _ := json.Marshal(bundle)
-		bundles[statement.PredicateType] = raw
 	}
 	if !found["https://slsa.dev/provenance/v1"] || !found["https://spdx.dev/Document/v2.3"] {
-		return nil, errors.New("attestation receipt URL binding missing")
+		return nil, errors.New("attestation receipt digest binding missing")
 	}
 	return bundles, nil
 }
 
-// validBundleURL pins a bundle to the exact GitHub REST resource represented
-// by the selected attestation. Prefix checks would accept sibling repositories,
-// extra path components, or an attacker-controlled query/fragment.
-func (c *externalFleetGitHubApp) validBundleURL(raw, repo string, id int64) bool {
-	u, err := url.Parse(raw)
-	if err != nil || u.User != nil || u.RawQuery != "" || u.Fragment != "" {
-		return false
+func externalFleetRepositoryIDAllowed(id string, allowed []string) bool {
+	for _, candidate := range allowed {
+		if candidate == id {
+			return true
+		}
 	}
-	base, err := url.Parse(c.cfg.APIBaseURL)
-	if err != nil || u.Scheme != base.Scheme || !strings.EqualFold(u.Host, base.Host) {
-		return false
-	}
-	return u.EscapedPath() == "/repos/"+repo+"/attestations/"+strconv.FormatInt(id, 10)+"/bundle"
+	return false
 }
 
-func (c *externalFleetGitHubApp) noRedirectClient() *http.Client {
-	clone := *c.client
-	clone.CheckRedirect = func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse }
-	return &clone
+func (c *externalFleetGitHubApp) validStorageBundleURL(raw string) bool {
+	u, err := url.Parse(raw)
+	if err != nil || u.Scheme != "https" || u.User != nil || u.Hostname() == "" || u.Fragment != "" || u.RawQuery == "" {
+		return false
+	}
+	host := strings.ToLower(u.Hostname())
+	for _, allowed := range c.cfg.StorageHosts {
+		allowed = strings.ToLower(strings.TrimSpace(allowed))
+		if allowed != "" && (host == strings.TrimPrefix(allowed, ".") || strings.HasSuffix(host, allowed)) {
+			return true
+		}
+	}
+	return false
+}
+
+func (c *externalFleetGitHubApp) fetchBundle(ctx context.Context, capability, digest string) (externalFleetBundle, error) {
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, capability, nil)
+	if err != nil {
+		return externalFleetBundle{}, err
+	}
+	// Do not inherit Authorization, Accept, or GitHub API headers.
+	res, err := c.storageHTTPClient().Do(req)
+	if err != nil {
+		return externalFleetBundle{}, err
+	}
+	defer res.Body.Close()
+	if res.StatusCode != http.StatusOK || !strings.EqualFold(strings.TrimSpace(strings.Split(res.Header.Get("Content-Type"), ";")[0]), "application/x-snappy") {
+		return externalFleetBundle{}, errors.New("storage response rejected")
+	}
+	compressed, err := io.ReadAll(io.LimitReader(res.Body, externalFleetBundleCompressedMax+1))
+	if err != nil || len(compressed) > externalFleetBundleCompressedMax {
+		return externalFleetBundle{}, errors.New("compressed bundle exceeds limit")
+	}
+	reader := s2.NewReader(bytes.NewReader(compressed))
+	raw, err := io.ReadAll(io.LimitReader(reader, externalFleetBundleDecompressedMax+1))
+	if err != nil || len(raw) == 0 || len(raw) > externalFleetBundleDecompressedMax {
+		return externalFleetBundle{}, errors.New("decompressed bundle exceeds limit")
+	}
+	var parsed struct {
+		DSSEEnvelope struct {
+			Payload string `json:"payload"`
+		} `json:"dsseEnvelope"`
+	}
+	if err := json.Unmarshal(raw, &parsed); err != nil {
+		return externalFleetBundle{}, errors.New("bundle JSON invalid")
+	}
+	payload, err := base64.StdEncoding.DecodeString(parsed.DSSEEnvelope.Payload)
+	if err != nil {
+		return externalFleetBundle{}, errors.New("bundle DSSE invalid")
+	}
+	var statement struct {
+		PredicateType string `json:"predicateType"`
+		Subject       []struct {
+			Digest map[string]string `json:"digest"`
+		} `json:"subject"`
+	}
+	if json.Unmarshal(payload, &statement) != nil || statement.PredicateType == "" || !externalFleetStatementSubject(statement.Subject, digest) {
+		return externalFleetBundle{}, errors.New("bundle statement invalid")
+	}
+	sum := sha256.Sum256(raw)
+	return externalFleetBundle{Raw: append(json.RawMessage(nil), raw...), SHA256: hex.EncodeToString(sum[:]), Predicate: statement.PredicateType}, nil
 }
 
 func externalFleetStatementSubject(subject []struct {
@@ -160,8 +199,9 @@ func externalFleetStatementSubject(subject []struct {
 }
 
 type externalFleetGitHubApp struct {
-	cfg    externalFleetGitHubAppConfig
-	client *http.Client
+	cfg           externalFleetGitHubAppConfig
+	client        *http.Client
+	storageClient *http.Client
 }
 
 func newExternalFleetGitHubApp(cfg externalFleetGitHubAppConfig, client *http.Client) (*externalFleetGitHubApp, error) {
@@ -175,7 +215,47 @@ func newExternalFleetGitHubApp(cfg externalFleetGitHubAppConfig, client *http.Cl
 		cfg.APIBaseURL = "https://api.github.com"
 	}
 	cfg.APIBaseURL = strings.TrimRight(cfg.APIBaseURL, "/")
-	return &externalFleetGitHubApp{cfg, client}, nil
+	if len(cfg.StorageHosts) == 0 {
+		cfg.StorageHosts = append([]string(nil), externalFleetDefaultStorageHosts...)
+	}
+	storage, err := newExternalFleetStorageHTTPClient()
+	if err != nil {
+		return nil, err
+	}
+	return &externalFleetGitHubApp{cfg: cfg, client: client, storageClient: storage}, nil
+}
+
+func newExternalFleetStorageHTTPClient() (*http.Client, error) {
+	dialer := &net.Dialer{Timeout: externalFleetHTTPTimeout / 2, KeepAlive: 30 * time.Second}
+	transport := &http.Transport{Proxy: nil, ForceAttemptHTTP2: true, TLSHandshakeTimeout: externalFleetHTTPTimeout / 2, ResponseHeaderTimeout: externalFleetHTTPTimeout / 2, DialContext: func(ctx context.Context, network, address string) (net.Conn, error) {
+		host, port, err := net.SplitHostPort(address)
+		if err != nil {
+			return nil, err
+		}
+		ips, err := net.DefaultResolver.LookupNetIP(ctx, "ip", host)
+		if err != nil || len(ips) == 0 {
+			return nil, errors.New("storage host resolution failed")
+		}
+		for _, ip := range ips {
+			if externalFleetStoragePublicIP(ip) {
+				return dialer.DialContext(ctx, network, net.JoinHostPort(ip.String(), port))
+			}
+		}
+		return nil, errors.New("storage host resolved to a forbidden address")
+	}}
+	return &http.Client{Transport: transport, Timeout: externalFleetHTTPTimeout, CheckRedirect: func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse }}, nil
+}
+
+func externalFleetStoragePublicIP(ip netip.Addr) bool { return externalPublicIP(ip) }
+
+func (c *externalFleetGitHubApp) storageHTTPClient() *http.Client {
+	if c.storageClient != nil {
+		clone := *c.storageClient
+		clone.CheckRedirect = func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse }
+		return &clone
+	}
+	client, _ := newExternalFleetStorageHTTPClient()
+	return client
 }
 
 func (c *externalFleetGitHubApp) appJWT() (string, error) {
@@ -199,6 +279,12 @@ func (c *externalFleetGitHubApp) appJWT() (string, error) {
 	}
 	now := time.Now().UTC()
 	return jwt.NewWithClaims(jwt.SigningMethodRS256, jwt.MapClaims{"iat": now.Add(-time.Minute).Unix(), "exp": now.Add(9 * time.Minute).Unix(), "iss": c.cfg.AppID}).SignedString(key)
+}
+
+func (c *externalFleetGitHubApp) noRedirectClient() *http.Client {
+	clone := *c.client
+	clone.CheckRedirect = func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse }
+	return &clone
 }
 
 func (c *externalFleetGitHubApp) request(ctx context.Context, token, method, path string, body any, out any) error {

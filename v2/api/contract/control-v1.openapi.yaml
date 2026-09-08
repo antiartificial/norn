@@ -2417,16 +2417,16 @@ components:
     ExternalFleetDeploymentReceipt:
       type: object
       additionalProperties: false
-      required: [schemaVersion, nonce, app, sourceSha, artifact, candidate, attestationUri, sbomUri, fleet, chronology]
+      required: [schemaVersion, nonce, app, sourceSha, artifact, candidate, attestationBundleSha256, sbomBundleSha256, fleet, chronology]
       properties:
-        schemaVersion: { const: norn.external-fleet-deployment-receipt/v2 }
+        schemaVersion: { const: norn.external-fleet-deployment-receipt/v3 }
         nonce: { type: string, writeOnly: true }
         app: { type: string }
         sourceSha: { type: string, pattern: '^[0-9a-f]{40}$' }
         artifact: { type: string, pattern: '^.+@sha256:[0-9a-f]{64}$' }
         candidate: { $ref: '#/components/schemas/ReleaseCandidate' }
-        attestationUri: { type: string, format: uri }
-        sbomUri: { type: string, format: uri }
+        attestationBundleSha256: { type: string, pattern: '^[0-9a-f]{64}$', description: SHA-256 of the exact publisher-recorded decompressed Sigstore provenance bundle. }
+        sbomBundleSha256: { type: string, pattern: '^[0-9a-f]{64}$', description: SHA-256 of the exact publisher-recorded decompressed Sigstore SPDX bundle. }
         fleet: { $ref: '#/components/schemas/ExternalFleetExecutionProof' }
         chronology:
           type: array

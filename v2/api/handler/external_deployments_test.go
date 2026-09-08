@@ -1,27 +1,29 @@
 package handler
 
 import (
+	"bytes"
 	"context"
 	"crypto/rand"
 	"crypto/rsa"
+	"crypto/sha256"
 	"crypto/x509"
 	"encoding/base64"
+	"encoding/hex"
 	"encoding/json"
 	"encoding/pem"
 	"errors"
-	"fmt"
 	"io"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
 	"os"
 	"path/filepath"
-	"strconv"
 	"strings"
 	"testing"
 	"time"
 
 	"github.com/go-chi/chi/v5"
+	"github.com/klauspost/compress/s2"
 
 	"norn/v2/api/config"
 	"norn/v2/api/model"
@@ -61,7 +63,7 @@ func externalReceiptForTest() ExternalFleetDeploymentReceipt {
 	return ExternalFleetDeploymentReceipt{
 		SchemaVersion: externalFleetReceiptSchema, Nonce: "00000000-0000-4000-8000-000000000001." + strings.Repeat("a", 64), App: "hello-norn-mysql",
 		SourceSHA: strings.Repeat("a", 40), Artifact: "ghcr.io/acme/hello-norn-mysql@sha256:" + strings.Repeat("b", 64), Candidate: candidate,
-		AttestationURI: "https://evidence.example.test/attestation", SBOMURI: "https://evidence.example.test/sbom",
+		AttestationBundleSHA256: strings.Repeat("1", 64), SBOMBundleSHA256: strings.Repeat("2", 64),
 		Fleet: ExternalFleetExecutionProof{Namespace: "norn-pilot", Migration: ExternalFleetNomadJobProof{JobID: "hello-norn-mysql-migrate", HCLSHA256: strings.Repeat("c", 64), EvalID: "00000000-0000-4000-8000-000000000011", JobModifyIndex: 11, CheckpointID: "migration-1"}, Runtime: ExternalFleetNomadJobProof{JobID: "hello-norn-mysql", HCLSHA256: strings.Repeat("e", 64), EvalID: "00000000-0000-4000-8000-000000000012", JobModifyIndex: 12, CheckpointID: "runtime-1"}, PlanID: "plan-1", ApplyRunID: "123", ApplyRunAttempt: "1", PlanSHA256: strings.Repeat("d", 64), RunnerAttemptID: "attempt-1", RootAttemptID: "attempt-root", NonceEvidenceRef: "nonce-1"},
 		Chronology: []ExternalFleetChronologyStep{
 			{Phase: "prepare", OccurredAt: now, EvidenceRef: "https://evidence.example.test/prepare"},
@@ -78,7 +80,7 @@ func externalConfigForTest() ExternalFleetAdmissionConfig {
 
 func verifiedExternalReceipt(receipt ExternalFleetDeploymentReceipt) ExternalFleetDeploymentVerification {
 	chronology := append([]ExternalFleetChronologyStep(nil), receipt.Chronology...)
-	return ExternalFleetDeploymentVerification{SourceSHA: receipt.SourceSHA, Artifact: receipt.Artifact, AttestationURI: receipt.AttestationURI, SBOMURI: receipt.SBOMURI, Namespace: receipt.Fleet.Namespace, Migration: receipt.Fleet.Migration, Runtime: receipt.Fleet.Runtime, PlanID: receipt.Fleet.PlanID, ApplyRunID: receipt.Fleet.ApplyRunID, ApplyRunAttempt: receipt.Fleet.ApplyRunAttempt, PlanSHA256: receipt.Fleet.PlanSHA256, RunnerAttemptID: receipt.Fleet.RunnerAttemptID, NonceEvidenceRef: receipt.Fleet.NonceEvidenceRef, IngressNodeIDs: []string{"ingress-a", "ingress-b"}, PublicHTTPSVersion: "https://pilot.example.test/version", PrivateReadiness: ExternalFleetPrivateReadiness{Endpoint: "https://private.example.test/readyz", AllocationIDs: []string{"alloc-a", "alloc-b"}, CheckedAt: time.Now().UTC()}, Chronology: chronology, Regions: []ExternalFleetRegionProof{{Region: "global", NomadRegion: "global", EvalID: "00000000-0000-4000-8000-000000000012", DesiredWeight: 100, ActiveWeight: 100}}}
+	return ExternalFleetDeploymentVerification{SourceSHA: receipt.SourceSHA, Artifact: receipt.Artifact, AttestationBundleSHA256: receipt.AttestationBundleSHA256, SBOMBundleSHA256: receipt.SBOMBundleSHA256, Namespace: receipt.Fleet.Namespace, Migration: receipt.Fleet.Migration, Runtime: receipt.Fleet.Runtime, PlanID: receipt.Fleet.PlanID, ApplyRunID: receipt.Fleet.ApplyRunID, ApplyRunAttempt: receipt.Fleet.ApplyRunAttempt, PlanSHA256: receipt.Fleet.PlanSHA256, RunnerAttemptID: receipt.Fleet.RunnerAttemptID, NonceEvidenceRef: receipt.Fleet.NonceEvidenceRef, IngressNodeIDs: []string{"ingress-a", "ingress-b"}, PublicHTTPSVersion: "https://pilot.example.test/version", PrivateReadiness: ExternalFleetPrivateReadiness{Endpoint: "https://private.example.test/readyz", AllocationIDs: []string{"alloc-a", "alloc-b"}, CheckedAt: time.Now().UTC()}, Chronology: chronology, Regions: []ExternalFleetRegionProof{{Region: "global", NomadRegion: "global", EvalID: "00000000-0000-4000-8000-000000000012", DesiredWeight: 100, ActiveWeight: 100}}}
 }
 
 func TestExternalFleetReceiptValidationFailsClosed(t *testing.T) {
@@ -87,13 +89,11 @@ func TestExternalFleetReceiptValidationFailsClosed(t *testing.T) {
 		t.Fatalf("valid receipt rejected: %v", err)
 	}
 	for name, mutate := range map[string]func(*ExternalFleetDeploymentReceipt){
-		"wrong schema":      func(value *ExternalFleetDeploymentReceipt) { value.SchemaVersion = "v0" },
-		"foreign app":       func(value *ExternalFleetDeploymentReceipt) { value.App = "billing" },
-		"mutable image":     func(value *ExternalFleetDeploymentReceipt) { value.Artifact = "ghcr.io/acme/hello-norn-mysql:latest" },
-		"wrong runtime hcl": func(value *ExternalFleetDeploymentReceipt) { value.Fleet.Runtime.HCLSHA256 = strings.Repeat("f", 64) },
-		"credential evidence": func(value *ExternalFleetDeploymentReceipt) {
-			value.AttestationURI = "https://token@example.test/evidence"
-		},
+		"wrong schema":                 func(value *ExternalFleetDeploymentReceipt) { value.SchemaVersion = "v0" },
+		"foreign app":                  func(value *ExternalFleetDeploymentReceipt) { value.App = "billing" },
+		"mutable image":                func(value *ExternalFleetDeploymentReceipt) { value.Artifact = "ghcr.io/acme/hello-norn-mysql:latest" },
+		"wrong runtime hcl":            func(value *ExternalFleetDeploymentReceipt) { value.Fleet.Runtime.HCLSHA256 = strings.Repeat("f", 64) },
+		"invalid bundle digest":        func(value *ExternalFleetDeploymentReceipt) { value.AttestationBundleSHA256 = "short" },
 		"foreign namespace":            func(value *ExternalFleetDeploymentReceipt) { value.Fleet.Namespace = "other" },
 		"invalid migration submission": func(value *ExternalFleetDeploymentReceipt) { value.Fleet.Migration.EvalID = "not-a-uuid" },
 		"shared evaluation":            func(value *ExternalFleetDeploymentReceipt) { value.Fleet.Runtime.EvalID = value.Fleet.Migration.EvalID },
@@ -142,7 +142,7 @@ func TestExternalFleetLiveVerifierUsesOnlyRedactedNonceAndCanonicalEvidence(t *t
 				FixtureHCLSHA256: map[string]string{"migration": request.Config.MigrationHCLSHA256, "runtime": request.Config.RuntimeHCLSHA256},
 				Canonical:        map[string]string{"prepare.tlsRouting": "sha256:prepare", "migration.migration": "sha256:migration", "runtime.update": "sha256:runtime", "readiness.consulNomad": "sha256:ready"},
 				PlanAttemptID:    receipt.Fleet.RunnerAttemptID, CheckpointAttemptID: receipt.Fleet.RunnerAttemptID, NonceSHA256: nonce.sha256(), NonceWrittenAt: time.Now().Add(-time.Second), NonceReadAt: time.Now(),
-				Attempt:     externalFleetAttemptEvidence{PlanID: receipt.Fleet.PlanID, AttemptID: receipt.Fleet.RunnerAttemptID, RootAttemptID: receipt.Fleet.RootAttemptID, Revision: 1, TerminalStatus: "admission_ready", CurrentPhase: "admission_ready", SourceDispatchRunID: receipt.Fleet.ApplyRunID, WorkflowURL: "https://github.com/" + request.CI.Repository + "/actions/runs/" + request.CI.RunID, RetryLineage: []string{receipt.Fleet.RootAttemptID, receipt.Fleet.RunnerAttemptID}},
+				Attempt:     externalFleetAttemptEvidence{PlanID: receipt.Fleet.PlanID, AttemptID: receipt.Fleet.RunnerAttemptID, RootAttemptID: receipt.Fleet.RootAttemptID, Revision: 1, TerminalStatus: "running", CurrentPhase: "complete", SourceDispatchRunID: receipt.Fleet.ApplyRunID, WorkflowURL: "https://github.com/" + request.CI.Repository + "/actions/runs/" + request.CI.RunID, RetryLineage: []string{receipt.Fleet.RootAttemptID, receipt.Fleet.RunnerAttemptID}},
 				Checkpoints: []externalFleetCheckpointEvidence{{ID: "prepare-1", Phase: "prepare", Status: "succeeded", EvidenceSHA256: strings.Repeat("1", 64), AttemptID: receipt.Fleet.RunnerAttemptID}, {ID: receipt.Fleet.Migration.CheckpointID, Phase: "migration", Status: "succeeded", EvidenceSHA256: strings.Repeat("2", 64), AttemptID: receipt.Fleet.RunnerAttemptID}, {ID: receipt.Fleet.Runtime.CheckpointID, Phase: "runtime", Status: "succeeded", EvidenceSHA256: strings.Repeat("3", 64), AttemptID: receipt.Fleet.RunnerAttemptID}, {ID: "exercise-1", Phase: "exercise", Status: "succeeded", EvidenceSHA256: strings.Repeat("4", 64), AttemptID: receipt.Fleet.RunnerAttemptID}},
 				Allocations: []externalFleetAllocationEvidence{{AllocationID: "alloc-a", JobID: receipt.Fleet.Runtime.JobID, EvalID: receipt.Fleet.Runtime.EvalID, Namespace: receipt.Fleet.Namespace, NodeID: "ingress-a", Region: "global", NomadStatus: "running", ConsulStatus: "passing"}, {AllocationID: "alloc-b", JobID: receipt.Fleet.Runtime.JobID, EvalID: receipt.Fleet.Runtime.EvalID, Namespace: receipt.Fleet.Namespace, NodeID: "ingress-b", Region: "global", NomadStatus: "running", ConsulStatus: "passing"}},
 			})
@@ -203,8 +203,21 @@ func TestExternalFleetEvidenceV1FixtureContract(t *testing.T) {
 		t.Fatal(err)
 	}
 	evidence := decoded.(*externalFleetEvidence)
-	if evidence.SchemaVersion != "norn.external-fleet-evidence/v1" || len(evidence.Checkpoints) != 4 || len(evidence.Allocations) != 2 || evidence.Attempt.TerminalStatus != "admission_ready" || evidence.Attempt.CurrentPhase != "admission_ready" {
+	if evidence.SchemaVersion != "norn.external-fleet-evidence/v1" || len(evidence.Checkpoints) != 4 || len(evidence.Allocations) != 2 || evidence.Attempt.TerminalStatus != "running" || evidence.Attempt.CurrentPhase != "complete" {
 		t.Fatalf("fixture does not preserve required bridge contract: %#v", evidence)
+	}
+	receipt := externalReceiptForTest()
+	verification := verifiedExternalReceipt(receipt)
+	evidence.Verification = verification
+	evidence.Repository = "acme/norn-fleet"
+	evidence.Attempt.PlanID, evidence.Attempt.AttemptID, evidence.Attempt.RootAttemptID = receipt.Fleet.PlanID, receipt.Fleet.RunnerAttemptID, receipt.Fleet.RootAttemptID
+	evidence.Attempt.SourceDispatchRunID = receipt.Fleet.ApplyRunID
+	evidence.Attempt.WorkflowURL = "https://github.com/acme/norn-fleet/actions/runs/" + receipt.Fleet.ApplyRunID
+	evidence.Attempt.RetryLineage = []string{receipt.Fleet.RootAttemptID, receipt.Fleet.RunnerAttemptID}
+	evidence.NonceSHA256 = externalAdmissionNonce{ID: "00000000-0000-4000-8000-000000000001", Secret: strings.Repeat("a", 64)}.sha256()
+	evidence.FixtureHCLSHA256["runtime"] = receipt.Fleet.Runtime.HCLSHA256
+	if err := validateExternalFleetEvidenceAt(*evidence, ExternalFleetDeploymentVerificationRequest{Receipt: receipt, CI: CIIdentity{Repository: evidence.Repository, RunID: receipt.Fleet.ApplyRunID}, Config: externalConfigForTest()}, evidence.NonceSHA256, evidence.NonceReadAt.Add(time.Minute)); err != nil {
+		t.Fatalf("fresh-clock fixture failed production validation: %v", err)
 	}
 }
 
@@ -276,272 +289,96 @@ func TestExternalFleetReadOnlyGitHubAppMintsOnlyAuditedInstallation(t *testing.T
 	}
 }
 
-func TestExternalFleetAttestationBundleURLFixtures(t *testing.T) {
-	receipt := externalReceiptForTest()
-	receipt.Candidate.Repository = "acme/hello-norn-mysql"
-	receipt.Candidate.Attestation.SubjectDigest = "sha256:" + strings.Repeat("b", 64)
-	receipt.AttestationURI = "https://github.com/acme/hello-norn-mysql/attestations/11"
-	receipt.SBOMURI = "https://github.com/acme/hello-norn-mysql/attestations/12"
-	statement := func(predicate string) string {
-		raw, _ := json.Marshal(map[string]any{"predicateType": predicate, "subject": []any{map[string]any{"digest": map[string]string{"sha256": strings.Repeat("b", 64)}}}})
-		return base64.StdEncoding.EncodeToString(raw)
-	}
-	var server *httptest.Server
-	badURL := ""
-	server = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if r.Header.Get("Authorization") != "Bearer token" {
-			http.Error(w, "no", 401)
-			return
-		}
-		switch r.URL.Path {
-		case "/repos/acme/hello-norn-mysql/attestations/sha256:" + strings.Repeat("b", 64):
-			first := server.URL + "/repos/acme/hello-norn-mysql/attestations/11/bundle"
-			if badURL != "" {
-				first = badURL
-			}
-			json.NewEncoder(w).Encode(map[string]any{"attestations": []any{map[string]any{"id": 11, "bundle_url": first}, map[string]any{"id": 12, "bundle_url": server.URL + "/repos/acme/hello-norn-mysql/attestations/12/bundle"}}})
-		case "/repos/acme/hello-norn-mysql/attestations/11/bundle":
-			json.NewEncoder(w).Encode(map[string]any{"dsseEnvelope": map[string]string{"payload": statement("https://slsa.dev/provenance/v1")}})
-		case "/repos/acme/hello-norn-mysql/attestations/12/bundle":
-			json.NewEncoder(w).Encode(map[string]any{"dsseEnvelope": map[string]string{"payload": statement("https://spdx.dev/Document/v2.3")}})
-		default:
-			http.NotFound(w, r)
-		}
-	}))
-	defer server.Close()
-	app := &externalFleetGitHubApp{cfg: externalFleetGitHubAppConfig{APIBaseURL: server.URL}, client: server.Client()}
-	if _, err := app.attestations(context.Background(), "token", receipt); err != nil {
-		t.Fatalf("positive bundle_url fixture: %v", err)
-	}
-	for _, bad := range []string{"https://evil.test/repos/acme/hello-norn-mysql/attestations/11/bundle", server.URL + "/repos/other/attestations/11/bundle"} {
-		badURL = bad
-		if _, err := app.attestations(context.Background(), "token", receipt); err == nil {
-			t.Fatalf("unsafe bundle URL accepted: %s", bad)
-		}
-	}
-}
-
-func TestExternalFleetAttestationFixtureRejectsMalformedStatements(t *testing.T) {
-	receipt := externalReceiptForTest()
-	receipt.Candidate.Repository = "acme/app"
-	receipt.Candidate.Attestation.SubjectDigest = "sha256:" + strings.Repeat("b", 64)
-	receipt.AttestationURI = "https://github.com/acme/app/attestations/1"
-	receipt.SBOMURI = "https://github.com/acme/app/attestations/2"
-	for _, payload := range []string{"not-base64", base64.StdEncoding.EncodeToString([]byte(`not-json`)), base64.StdEncoding.EncodeToString([]byte(`{"predicateType":"https://spdx.dev/Document/v2.3","subject":[]}`))} {
-		var s *httptest.Server
-		s = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-			if strings.Contains(r.URL.Path, "sha256:") {
-				json.NewEncoder(w).Encode(map[string]any{"attestations": []any{map[string]any{"id": 1, "bundle_url": s.URL + "/repos/acme/app/attestations/1/bundle"}, map[string]any{"id": 2, "bundle_url": s.URL + "/repos/acme/app/attestations/2/bundle"}}})
-				return
-			}
-			json.NewEncoder(w).Encode(map[string]any{"dsseEnvelope": map[string]string{"payload": payload}})
-		}))
-		app := &externalFleetGitHubApp{cfg: externalFleetGitHubAppConfig{APIBaseURL: s.URL}, client: s.Client()}
-		if _, err := app.attestations(context.Background(), "secret-token", receipt); err == nil || strings.Contains(err.Error(), "secret-token") {
-			t.Fatalf("malformed bundle was accepted or leaked token: %v", err)
-		}
-		s.Close()
-	}
-}
-
-// This matrix deliberately uses the same REST shape GitHub served for version
-// 2026-03-10.  It protects the adapter boundary rather than merely unit
-// testing DSSE parsing: every network response is hostile until it is pinned
-// to the selected repository, attestation IDs, predicates, and subject digest.
-func TestExternalFleetAttestationBundleURLReleaseGate(t *testing.T) {
-	const (
-		slsa = "https://slsa.dev/provenance/v1"
-		spdx = "https://spdx.dev/Document/v2.3"
-	)
+func TestExternalFleetLiveGitHubAttestationCapabilityShape(t *testing.T) {
+	const slsa = "https://slsa.dev/provenance/v1"
+	const spdx = "https://spdx.dev/Document/v2.3"
 	digest := strings.Repeat("b", 64)
-	statement := func(predicate, subject string) string {
-		raw, err := json.Marshal(map[string]any{"predicateType": predicate, "subject": []any{map[string]any{"digest": map[string]string{"sha256": subject}}}})
+	makeBundle := func(predicate string) []byte {
+		statement, err := json.Marshal(map[string]any{"predicateType": predicate, "subject": []any{map[string]any{"digest": map[string]string{"sha256": digest}}}})
 		if err != nil {
 			t.Fatal(err)
 		}
-		return base64.StdEncoding.EncodeToString(raw)
+		return []byte("{\n  \"dsseEnvelope\": {\"payload\": \"" + base64.StdEncoding.EncodeToString(statement) + "\"}\n}\n")
 	}
-	type scenario struct {
-		name       string
-		listStatus int
-		bundleCode map[int]int
-		redirect   string
-		list       func(string) []map[string]any
-		bundle     func(int) any
-		wantOK     bool
-	}
-	baseList := func(origin string) []map[string]any {
-		return []map[string]any{{"id": 1, "bundle_url": origin + "/repos/acme/app/attestations/1/bundle"}, {"id": 2, "bundle_url": origin + "/repos/acme/app/attestations/2/bundle"}}
-	}
-	goodBundle := func(id int) any {
-		if id == 1 {
-			return map[string]any{"dsseEnvelope": map[string]string{"payload": statement(slsa, digest)}}
+	slsaRaw, spdxRaw := makeBundle(slsa), makeBundle(spdx)
+	hash := func(raw []byte) string { sum := sha256.Sum256(raw); return hex.EncodeToString(sum[:]) }
+	storage := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Header.Get("Authorization") != "" || r.Header.Get("Accept") != "" || r.Header.Get("X-GitHub-Api-Version") != "" {
+			t.Error("storage request carried GitHub credentials or headers")
 		}
-		return map[string]any{"dsseEnvelope": map[string]string{"payload": statement(spdx, digest)}}
+		w.Header().Set("Content-Type", "application/x-snappy")
+		writer := s2.NewWriter(w)
+		if strings.HasPrefix(r.URL.Path, "/provenance") {
+			_, _ = writer.Write(slsaRaw)
+		} else {
+			_, _ = writer.Write(spdxRaw)
+		}
+		_ = writer.Close()
+	}))
+	defer storage.Close()
+	list := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Header.Get("Authorization") != "Bearer installation-token" || r.Header.Get("X-GitHub-Api-Version") != "2026-03-10" {
+			t.Error("GitHub list request was not exact 2026-03-10 authentication")
+		}
+		path := "/provenance?opaque=capability"
+		if r.URL.Query().Get("predicate_type") == "sbom" {
+			path = "/spdx?opaque=capability"
+		}
+		_ = json.NewEncoder(w).Encode(map[string]any{"attestations": []any{map[string]any{"repository_id": 1, "bundle_url": storage.URL + path, "initiator": map[string]any{"login": "norn"}}}})
+	}))
+	defer list.Close()
+	receipt := externalReceiptForTest()
+	receipt.Candidate.Repository = "acme/app"
+	receipt.Candidate.RepositoryID = "1"
+	receipt.AttestationBundleSHA256, receipt.SBOMBundleSHA256 = hash(slsaRaw), hash(spdxRaw)
+	app := &externalFleetGitHubApp{cfg: externalFleetGitHubAppConfig{APIBaseURL: list.URL, RepositoryIDs: []string{"1"}, StorageHosts: []string{"127.0.0.1"}}, client: list.Client(), storageClient: storage.Client()}
+	got, err := app.attestations(context.Background(), "installation-token", receipt)
+	if err != nil || !bytes.Equal(got[slsa], slsaRaw) || !bytes.Equal(got[spdx], spdxRaw) {
+		t.Fatalf("live-shape bundles did not preserve exact raw bytes: %v", err)
 	}
-	cases := []scenario{
-		{name: "exact 2026-03-10 positive response", list: baseList, bundle: goodBundle, wantOK: true},
-		{name: "redirected list refused", redirect: "list", list: baseList, bundle: goodBundle},
-		{name: "redirected bundle refused", redirect: "bundle", list: baseList, bundle: goodBundle},
-		{name: "list 401 refused", listStatus: http.StatusUnauthorized, list: baseList, bundle: goodBundle},
-		{name: "bundle 403 refused", bundleCode: map[int]int{1: http.StatusForbidden}, list: baseList, bundle: goodBundle},
-		{name: "oversized attestation list refused", list: func(origin string) []map[string]any {
-			items := baseList(origin)
-			for id := 3; id <= externalFleetMaxAttestations+1; id++ {
-				items = append(items, map[string]any{"id": id, "bundle_url": origin + "/repos/acme/app/attestations/" + strconv.Itoa(id) + "/bundle"})
-			}
-			return items
-		}, bundle: goodBundle},
-		{name: "missing SLSA refused", list: func(origin string) []map[string]any { items := baseList(origin); items = items[1:]; return items }, bundle: goodBundle},
-		{name: "missing SPDX refused", list: func(origin string) []map[string]any { return baseList(origin)[:1] }, bundle: goodBundle},
-		{name: "duplicate SLSA refused", list: baseList, bundle: func(id int) any {
-			return map[string]any{"dsseEnvelope": map[string]string{"payload": statement(slsa, digest)}}
-		}},
-		{name: "duplicate matching attestation refused", list: func(origin string) []map[string]any { items := baseList(origin); return append(items, items[0]) }, bundle: goodBundle},
-		{name: "duplicate bundle URL refused", list: func(origin string) []map[string]any {
-			return []map[string]any{{"id": 1, "bundle_url": origin + "/repos/acme/app/attestations/1/bundle"}, {"id": 2, "bundle_url": origin + "/repos/acme/app/attestations/1/bundle"}}
-		}, bundle: goodBundle},
-		{name: "wrong bundle repo refused", list: func(origin string) []map[string]any {
-			items := baseList(origin)
-			items[0]["bundle_url"] = origin + "/repos/acme/other/attestations/1/bundle"
-			return items
-		}, bundle: goodBundle},
-		{name: "wrong bundle path refused", list: func(origin string) []map[string]any {
-			items := baseList(origin)
-			items[0]["bundle_url"] = origin + "/repos/acme/app/attestations/1/bundle/extra"
-			return items
-		}, bundle: goodBundle},
-		{name: "wrong bundle subject refused", list: func(origin string) []map[string]any {
-			items := baseList(origin)
-			items[0]["bundle_url"] = origin + "/repos/acme/app/attestations/2/bundle"
-			return items
-		}, bundle: goodBundle},
-		{name: "duplicate SPDX refused", list: baseList, bundle: func(int) any {
-			return map[string]any{"dsseEnvelope": map[string]string{"payload": statement(spdx, digest)}}
-		}},
-		{name: "malformed DSSE refused", list: baseList, bundle: func(int) any { return map[string]any{"dsseEnvelope": map[string]string{}} }},
-		{name: "malformed base64 refused", list: baseList, bundle: func(int) any { return map[string]any{"dsseEnvelope": map[string]string{"payload": "not-base64"}} }},
-		{name: "malformed bundle JSON refused", list: baseList, bundle: func(int) any { return json.RawMessage(`{"dsseEnvelope":`) }},
-		{name: "malformed statement JSON refused", list: baseList, bundle: func(int) any {
-			return map[string]any{"dsseEnvelope": map[string]string{"payload": base64.StdEncoding.EncodeToString([]byte(`not-json`))}}
-		}},
-		{name: "wrong subject digest refused", list: baseList, bundle: func(id int) any {
-			predicate := slsa
-			if id == 2 {
-				predicate = spdx
-			}
-			return map[string]any{"dsseEnvelope": map[string]string{"payload": statement(predicate, strings.Repeat("c", 64))}}
-		}},
-		{name: "wrong predicate refused", list: baseList, bundle: func(int) any {
-			return map[string]any{"dsseEnvelope": map[string]string{"payload": statement("https://example.test/wrong", digest)}}
-		}},
-		{name: "oversized bundle refused", list: baseList, bundle: func(int) any {
-			return map[string]any{"dsseEnvelope": map[string]string{"payload": strings.Repeat("a", externalFleetEvidenceMaxBody+1)}}
-		}},
-	}
-	for _, tc := range cases {
-		t.Run(tc.name, func(t *testing.T) {
-			var server *httptest.Server
-			server = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-				if r.Header.Get("Authorization") != "Bearer installation-token" {
-					http.Error(w, "unauthorized", http.StatusUnauthorized)
-					return
-				}
-				if r.Header.Get("X-GitHub-Api-Version") != "2026-03-10" {
-					t.Errorf("GitHub API version = %q", r.Header.Get("X-GitHub-Api-Version"))
-				}
-				if strings.Contains(r.URL.Path, "sha256:") {
-					if tc.redirect == "list" {
-						http.Redirect(w, r, server.URL+"/redirect-target", http.StatusFound)
-						return
-					}
-					if tc.listStatus != 0 {
-						http.Error(w, "denied", tc.listStatus)
-						return
-					}
-					_ = json.NewEncoder(w).Encode(map[string]any{"attestations": tc.list(server.URL)})
-					return
-				}
-				id := 0
-				_, _ = fmt.Sscanf(r.URL.Path, "/repos/acme/app/attestations/%d/bundle", &id)
-				if tc.redirect == "bundle" {
-					http.Redirect(w, r, server.URL+"/redirect-target", http.StatusFound)
-					return
-				}
-				if code := tc.bundleCode[id]; code != 0 {
-					http.Error(w, "denied", code)
-					return
-				}
-				value := tc.bundle(id)
-				if raw, ok := value.(json.RawMessage); ok {
-					_, _ = w.Write(raw)
-					return
-				}
-				_ = json.NewEncoder(w).Encode(value)
-			}))
-			defer server.Close()
-			receipt := externalReceiptForTest()
-			receipt.Candidate.Repository = "acme/app"
-			receipt.Candidate.Attestation.SubjectDigest = "sha256:" + digest
-			receipt.AttestationURI = "https://github.com/acme/app/attestations/1"
-			receipt.SBOMURI = "https://github.com/acme/app/attestations/2"
-			app := &externalFleetGitHubApp{cfg: externalFleetGitHubAppConfig{APIBaseURL: server.URL}, client: server.Client()}
-			got, err := app.attestations(context.Background(), "installation-token", receipt)
-			if tc.wantOK {
-				if err != nil || len(got) != 2 || len(got[slsa]) == 0 || len(got[spdx]) == 0 {
-					t.Fatalf("positive 2026-03-10 response got=%v err=%v", got, err)
-				}
-				return
-			}
-			if err == nil {
-				t.Fatal("hostile attestation response accepted")
-			}
-			for _, secret := range []string{"installation-token", "evidence-token", "-----BEGIN PRIVATE KEY-----", "eyJhbGciOiJSUzI1NiJ9"} {
-				if strings.Contains(err.Error(), secret) {
-					t.Fatalf("error leaked secret %q: %v", secret, err)
-				}
+
+	for name, mutate := range map[string]func(*ExternalFleetDeploymentReceipt, *externalFleetGitHubApp){
+		"wrong repository ID": func(r *ExternalFleetDeploymentReceipt, _ *externalFleetGitHubApp) { r.Candidate.RepositoryID = "2" },
+		"wrong stable bundle digest": func(r *ExternalFleetDeploymentReceipt, _ *externalFleetGitHubApp) {
+			r.AttestationBundleSHA256 = strings.Repeat("0", 64)
+		},
+		"unreviewed storage host": func(_ *ExternalFleetDeploymentReceipt, a *externalFleetGitHubApp) {
+			a.cfg.StorageHosts = []string{"example.invalid"}
+		},
+	} {
+		t.Run(name, func(t *testing.T) {
+			copyReceipt, copyApp := receipt, *app
+			mutate(&copyReceipt, &copyApp)
+			_, err := copyApp.attestations(context.Background(), "installation-token", copyReceipt)
+			if err == nil || strings.Contains(err.Error(), "opaque=capability") || strings.Contains(err.Error(), "installation-token") {
+				t.Fatalf("invalid live capability binding was accepted or leaked: %v", err)
 			}
 		})
 	}
 }
 
-func TestExternalFleetCommandAttestationVerifierCleansTemporaryBundles(t *testing.T) {
+func TestExternalFleetCommandVerifierUsesExactRawBundleFile(t *testing.T) {
 	tmp := t.TempDir()
-	t.Setenv("TMPDIR", tmp)
+	raw := json.RawMessage(`{ "dsseEnvelope" : { "payload" : "cHJlc2VydmUtbWU=" } }`)
+	expected := filepath.Join(tmp, "expected.json")
+	if err := os.WriteFile(expected, raw, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	output := func(predicate string) string {
+		return `[{"verificationResult":{"statement":{"predicateType":"` + predicate + `"},"signature":{"certificate":{"runInvocationURI":"https://github.com/acme/app/actions/runs/3/attempts/1"}},"verifiedTimestamps":[{}]}}]`
+	}
+	path := filepath.Join(tmp, "fake-gh")
+	script := "#!/bin/sh\nfor arg in \"$@\"; do if [ \"$last\" = --bundle ]; then cmp -s \"$arg\" \"" + expected + "\" || exit 9; fi; last=$arg; done\ncase \"$*\" in *provenance*) echo '" + output("https://slsa.dev/provenance/v1") + "';; *) echo '" + output("https://spdx.dev/Document/v2.3") + "';; esac\n"
+	if err := os.WriteFile(path, []byte(script), 0o700); err != nil {
+		t.Fatal(err)
+	}
 	receipt := externalReceiptForTest()
 	receipt.Candidate.Repository = "acme/app"
 	receipt.Candidate.RunID = "3"
 	receipt.Candidate.RunAttempt = "1"
-	request := ExternalFleetDeploymentVerificationRequest{Receipt: receipt}
-	bundles := map[string]json.RawMessage{
-		"https://slsa.dev/provenance/v1": json.RawMessage(`{"dsseEnvelope":{"payload":"cHJvdmVuYW5jZQ=="}}`),
-		"https://spdx.dev/Document/v2.3": json.RawMessage(`{"dsseEnvelope":{"payload":"c3BkeA=="}}`),
-	}
-	good := `[ {"verificationResult":{"statement":{"predicateType":"PREDICATE"},"signature":{"certificate":{"runInvocationURI":"https://github.com/acme/app/actions/runs/3/attempts/1"}},"verifiedTimestamps":[{}]}} ]`
-	for _, tc := range []struct {
-		name    string
-		script  string
-		wantErr bool
-	}{
-		{name: "success", script: "case \"$*\" in *provenance*) echo '" + strings.ReplaceAll(good, "PREDICATE", "https://slsa.dev/provenance/v1") + "';; *) echo '" + strings.ReplaceAll(good, "PREDICATE", "https://spdx.dev/Document/v2.3") + "';; esac"},
-		{name: "command error", script: "exit 1", wantErr: true},
-		{name: "second command error", script: "case \"$*\" in *provenance*) echo '" + strings.ReplaceAll(good, "PREDICATE", "https://slsa.dev/provenance/v1") + "';; *) exit 1;; esac", wantErr: true},
-		{name: "binding error", script: "echo '[]'", wantErr: true},
-	} {
-		t.Run(tc.name, func(t *testing.T) {
-			path := filepath.Join(t.TempDir(), "fake-gh")
-			if err := os.WriteFile(path, []byte("#!/bin/sh\n"+tc.script+"\n"), 0o700); err != nil {
-				t.Fatal(err)
-			}
-			err := (externalFleetCommandAttestationVerifier{path: path}).VerifyBundles(context.Background(), "installation-token", request, bundles)
-			if (err != nil) != tc.wantErr {
-				t.Fatalf("VerifyBundles error = %v, wantErr=%v", err, tc.wantErr)
-			}
-			left, globErr := filepath.Glob(filepath.Join(tmp, "norn-fleet-bundle-*"))
-			if globErr != nil || len(left) != 0 {
-				t.Fatalf("temporary bundles leaked: %v (%v)", left, globErr)
-			}
-		})
+	bundles := map[string]json.RawMessage{"https://slsa.dev/provenance/v1": raw, "https://spdx.dev/Document/v2.3": raw}
+	if err := (externalFleetCommandAttestationVerifier{path: path}).VerifyBundles(context.Background(), "installation-token", ExternalFleetDeploymentVerificationRequest{Receipt: receipt}, bundles); err != nil {
+		t.Fatalf("exact raw bundle file rejected: %v", err)
 	}
 }
 
