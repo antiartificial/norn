@@ -8,6 +8,8 @@ import (
 	"encoding/pem"
 	"math/big"
 	"net/http/httptest"
+	"os"
+	"path/filepath"
 	"testing"
 	"time"
 )
@@ -56,12 +58,21 @@ func TestDatabaseRequiresExplicitNetworkAndDatabase(t *testing.T) {
 	}
 }
 
-func TestInlineMySQLCAIsAppendedAndMalformedCAIsRejected(t *testing.T) {
-	roots := x509.NewCertPool()
-	if err := appendMySQLCAs(roots, "", testPEM(t)); err != nil {
-		t.Fatalf("valid inline CA: %v", err)
+func TestMySQLTLSUsesOnlyRequiredProviderCAFile(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "provider-ca.pem")
+	if err := os.WriteFile(path, []byte(testPEM(t)), 0o400); err != nil {
+		t.Fatal(err)
 	}
-	if err := appendMySQLCAs(x509.NewCertPool(), "", "not a certificate"); err == nil {
-		t.Fatal("accepted malformed inline CA")
+	config, err := mysqlTLSConfig("database.example:25060", path)
+	if err != nil {
+		t.Fatalf("valid provider CA: %v", err)
+	}
+	if config.RootCAs == nil || config.ServerName != "database.example" || config.InsecureSkipVerify {
+		t.Fatalf("unexpected TLS config: %+v", config)
+	}
+	for _, input := range []struct{ address, path string }{{"database.example:25060", ""}, {"database.example:25060", filepath.Join(t.TempDir(), "missing")}, {"bad-address", path}} {
+		if _, err := mysqlTLSConfig(input.address, input.path); err == nil {
+			t.Fatalf("accepted invalid TLS input: %+v", input)
+		}
 	}
 }

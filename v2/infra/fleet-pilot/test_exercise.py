@@ -51,6 +51,20 @@ class ProbeTests(unittest.TestCase):
         self.assertTrue(exercise.stop_pilot_allocation(allocation))
         self.assertEqual(run.call_args_list[1].args[0], ["nomad", "alloc", "stop", "-yes", allocation])
 
+    @patch("exercise.shutil.which", return_value="/usr/bin/nomad")
+    @patch("exercise.subprocess.run")
+    def test_nomad_evidence_binds_pilot_digest_and_source(self, run, _which):
+        allocation = "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa"
+        image = "registry.example.test/norn/hello@sha256:" + "a" * 64
+        run.return_value = type("Result", (), {"returncode": 0, "stdout": json.dumps({
+            "JobID": "hello-norn-mysql", "ClientStatus": "running", "CreateIndex": 10, "ModifyIndex": 11,
+            "Job": {"Meta": {"pilot_image": image, "pilot_source_version": "a" * 40}},
+        })})()
+        proofs, verified = exercise.inspect_pilot_allocations([allocation])
+        self.assertTrue(verified)
+        self.assertEqual(proofs[0]["image"], image)
+        self.assertEqual(proofs[0]["sourceVersion"], "a" * 40)
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -14,6 +14,10 @@ build:
   # deployable evidence.
   image: registry.invalid/norn/hello-norn-mysql@sha256:0000000000000000000000000000000000000000000000000000000000000000
   test: go test ./...
+# This catalog stays intentionally disabled. Norn's current translator injects
+# encrypted catalog secrets into task.Env, which is not acceptable for a MySQL
+# password. Use the direct Nomad-variable job in nomad/ until that transport is
+# extended to render protected secret files.
 placement:
   nodePool: ingress
   distinctHosts: true
@@ -43,9 +47,6 @@ processes:
     drain:
       signal: SIGTERM
       timeout: 20s
-secrets:
-  - MYSQL_DSN
-  - MYSQL_CA_PEM
 endpoints:
   # Catalog promotion replaces this non-routable placeholder with the reviewed
   # Access-protected staging origin before deployment can be enabled.
