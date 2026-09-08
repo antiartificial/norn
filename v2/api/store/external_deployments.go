@@ -86,6 +86,9 @@ type ExternalDeploymentNonceRegistration struct {
 	AdmissionID          string
 	NonceID              string
 	NonceSHA256          string
+	CIRepository         string
+	CIRunID              string
+	CIRunAttempt         string
 	Generation           int64
 	RegistrationRef      string
 	IssuerSubject        string
@@ -267,10 +270,10 @@ func (db *DB) GetExternalDeploymentNonceRegistration(ctx context.Context, admiss
 	}
 	var registration ExternalDeploymentNonceRegistration
 	var metadata []byte
-	err := db.Pool.QueryRow(ctx, `SELECT admission_id, id, nonce_sha256, registration_generation, registration_ref,
+	err := db.Pool.QueryRow(ctx, `SELECT admission_id, id, nonce_sha256, ci_repository, ci_run_id, ci_run_attempt, registration_generation, registration_ref,
 		issuer_subject, issuer_token_id, registration_metadata, state, expires_at, registered_at, claimed_at, superseded_at, revision
 		FROM external_deployment_nonces WHERE admission_id=$1 AND id=$2`, admissionID, nonceID).Scan(
-		&registration.AdmissionID, &registration.NonceID, &registration.NonceSHA256, &registration.Generation, &registration.RegistrationRef,
+		&registration.AdmissionID, &registration.NonceID, &registration.NonceSHA256, &registration.CIRepository, &registration.CIRunID, &registration.CIRunAttempt, &registration.Generation, &registration.RegistrationRef,
 		&registration.IssuerSubject, &registration.IssuerTokenID, &metadata, &registration.State, &registration.ExpiresAt,
 		&registration.RegisteredAt, &registration.ClaimedAt, &registration.SupersededAt, &registration.Revision)
 	if errors.Is(err, pgx.ErrNoRows) {
@@ -360,6 +363,10 @@ func (db *DB) MarkExternalDeploymentNonceReady(ctx context.Context, admissionID,
 	}
 	if tag.RowsAffected() != 1 {
 		return externalDeploymentNonceAlreadyReady(ctx, tx, admissionID, nonceID, generation, registrationRef)
+	}
+	if _, err := tx.Exec(ctx, `UPDATE external_deployment_nonces SET state='superseded', superseded_at=now(), revision=revision+1
+		WHERE admission_id=$1 AND id<>$2 AND state IN ('registering','ready')`, admissionID, nonceID); err != nil {
+		return err
 	}
 	return tx.Commit(ctx)
 }
@@ -522,14 +529,9 @@ func (db *DB) IssueExternalDeploymentNonce(ctx context.Context, nonce ExternalDe
 		if state != ExternalDeploymentAdmissionInitiated && state != ExternalDeploymentAdmissionNonceRegistering && state != ExternalDeploymentAdmissionNonceReady {
 			return ErrExternalDeploymentAdmissionUnavailable
 		}
-		// A retried registration gets a new opaque nonce. Retire a previous
-		// unclaimed registration first so it cannot later become ready or be
-		// accepted by a local retry. The remote generation transition is CASed
-		// with the prior service revision by the handler.
-		if _, err := tx.Exec(ctx, `UPDATE external_deployment_nonces SET state='superseded', superseded_at=now(), revision=revision+1
-			WHERE admission_id=$1 AND state IN ('registering','ready')`, nonce.AdmissionID); err != nil {
-			return err
-		}
+		// The admission pointer moves to the successor registering row, so the
+		// old nonce cannot be consumed. It remains locally intact until the
+		// successor remote registration is recorded by MarkReady.
 	}
 	if _, err := tx.Exec(ctx, `INSERT INTO external_deployment_nonces
 		(id, nonce_sha256, app, environment, ci_repository, ci_run_id, ci_run_attempt, expires_at, admission_id, registration_generation, registration_ref, issuer_subject, issuer_token_id, registration_metadata, state)

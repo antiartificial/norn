@@ -244,6 +244,12 @@ checkpoint reference, and an evidence SHA-256 exactly equal to the absence
 proof. Norn writes that checkpoint atomically with `complete`; admission-time
 snapshots must not contain this final cleanup phase.
 
+The claim-time snapshot has exactly one checkpoint: `external_admission`, tied
+to the final element of its ordered, unique retry lineage. The context permits
+an empty lineage before claim, requires that admission checkpoint while
+committed or cleanup-pending, and requires exactly that checkpoint plus
+`external_cleanup` once complete.
+
 The receipt carries `fleet.rootAttemptId`. For an admission retry after a lost
 success response, reuse the same client `Idempotency-Key`; Norn derives its
 key from the authorized repository, staging environment, app, and that client

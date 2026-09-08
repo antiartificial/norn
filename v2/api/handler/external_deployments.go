@@ -14,6 +14,7 @@ import (
 	"net/url"
 	"reflect"
 	"regexp"
+	"strconv"
 	"strings"
 	"time"
 
@@ -308,8 +309,21 @@ func (h *Handler) BeginExternalFleetDeploymentAdmission(w http.ResponseWriter, r
 			return
 		}
 		if previous.ServiceRevision < 1 {
-			status, statusErr := registrar.GetExternalFleetAdmissionStatus(r.Context(), admission.ID, previous.Generation)
-			if statusErr != nil || status == nil || status.State != "registered" || status.AdmissionID != admission.ID || status.LogicalDigest != digest || status.AdmissionContextDigest != strings.TrimPrefix(digest, "sha256:") || status.NonceSHA256 != previous.NonceSHA256 || status.Generation != previous.Generation || status.Revision < 1 {
+			var previousIdentity ExternalFleetLogicalIdentity
+			expected, parseErr := strconv.ParseInt(previous.RegistrationMetadata["expectedRevision"], 10, 64)
+			issued, issuedErr := time.Parse(time.RFC3339Nano, previous.RegistrationMetadata["issuedAt"])
+			if parseErr != nil || expected < 0 || issuedErr != nil || json.Unmarshal([]byte(previous.RegistrationMetadata["logicalIdentity"]), &previousIdentity) != nil || !reflect.DeepEqual(previousIdentity, request.LogicalIdentity) {
+				WriteControlProblem(w, r, http.StatusConflict, "external_deployment_registration_unavailable", "pending registration context is not exact")
+				return
+			}
+			// A crash after the local registering write is healed by replaying the
+			// exact original PUT, not by inventing a successor generation.
+			pending := ExternalFleetEvidenceRegistration{SchemaVersion: "norn.external-fleet-admission-callback/v4", AdmissionID: admission.ID, LogicalDigest: digest, LogicalIdentity: previousIdentity, AdmissionContextDigest: strings.TrimPrefix(digest, "sha256:"), CurrentAttemptID: previous.CIRunID + ":" + previous.CIRunAttempt, CIRepository: previous.CIRepository, CIRunID: previous.CIRunID, CIRunAttempt: previous.CIRunAttempt, NonceSHA256: previous.NonceSHA256, Generation: previous.Generation, ExpectedRevision: expected, IssuedAt: issued, ExpiresAt: previous.ExpiresAt}
+			status, statusErr := registrar.RegisterExternalFleetNonce(r.Context(), pending)
+			if statusErr != nil {
+				status, statusErr = registrar.GetExternalFleetAdmissionStatus(r.Context(), admission.ID, previous.Generation)
+			}
+			if statusErr != nil || !externalRegistrationStatusMatches(status, pending) {
 				WriteControlProblem(w, r, http.StatusServiceUnavailable, "external_deployment_registration_unavailable", "registration outcome cannot be reconciled before nonce rotation")
 				return
 			}
@@ -330,18 +344,18 @@ func (h *Handler) BeginExternalFleetDeploymentAdmission(w http.ResponseWriter, r
 	}
 	nonce := externalAdmissionNonce{ID: uuid.NewString(), Secret: hex.EncodeToString(raw)}
 	generation := admission.NonceGeneration + 1
+	issuedAt := time.Now().UTC()
 	expiresAt := time.Now().UTC().Add(externalFleetAdmissionNonceTTL)
 	registrationRef := admission.ID + ":" + fmt.Sprint(generation)
 	stored := externalNonceStoreRecord(nonce, appID, h.cfg.EnvironmentID(), *principal.CI)
 	stored.ExpiresAt, stored.AdmissionID, stored.RegistrationGeneration, stored.RegistrationRef = expiresAt, admission.ID, generation, registrationRef
 	stored.IssuerSubject, stored.IssuerTokenID = principal.Subject, principal.TokenID
 	identityJSON, _ := json.Marshal(request.LogicalIdentity)
-	stored.RegistrationMetadata = map[string]string{"logicalDigest": digest, "logicalIdentity": string(identityJSON)}
+	stored.RegistrationMetadata = map[string]string{"logicalDigest": digest, "logicalIdentity": string(identityJSON), "expectedRevision": strconv.FormatInt(expectedRegistrationRevision, 10), "issuedAt": issuedAt.Format(time.RFC3339Nano)}
 	if err := h.db.IssueExternalDeploymentNonce(r.Context(), stored); err != nil {
 		WriteControlProblem(w, r, http.StatusServiceUnavailable, "external_deployment_nonce_unavailable", "durable nonce registration could not be started")
 		return
 	}
-	issuedAt := time.Now().UTC()
 	// A first generation starts at revision zero. A replacement generation is
 	// chained to the exact persisted unclaimed registration revision.
 	registration := ExternalFleetEvidenceRegistration{SchemaVersion: "norn.external-fleet-admission-callback/v4", AdmissionID: admission.ID, LogicalDigest: digest, LogicalIdentity: request.LogicalIdentity, AdmissionContextDigest: strings.TrimPrefix(digest, "sha256:"), CurrentAttemptID: principal.CI.RunID + ":" + principal.CI.RunAttempt, CIRepository: principal.CI.Repository, CIRunID: principal.CI.RunID, CIRunAttempt: principal.CI.RunAttempt, NonceSHA256: nonce.sha256(), Generation: generation, ExpectedRevision: expectedRegistrationRevision, IssuedAt: issuedAt, ExpiresAt: expiresAt}
@@ -456,18 +470,26 @@ func (h *Handler) GetExternalFleetDeploymentAdmissionContext(w http.ResponseWrit
 		return
 	}
 	lineage := []string{}
-	if err := json.Unmarshal(lineageJSON, &lineage); err != nil || !validExternalRetryLineage(lineage) {
+	if err := json.Unmarshal(lineageJSON, &lineage); err != nil || (len(lineage) > 0 && !validExternalRetryLineage(lineage)) {
 		WriteControlProblem(w, r, http.StatusServiceUnavailable, "external_deployment_context_unavailable", "server-owned retry lineage is invalid")
 		return
 	}
 	// The response is deliberately derived from durable references, never a
-	// caller-supplied receipt. A missing or duplicate external phase is a
-	// conflict rather than an inferred successful recovery.
-	if (admission.State == store.ExternalDeploymentAdmissionCommitted || admission.State == store.ExternalDeploymentAdmissionCleanupPending || admission.State == store.ExternalDeploymentAdmissionComplete) && len(checkpoints) != 2 {
+	// caller-supplied receipt. Before cleanup only external_admission exists;
+	// completion atomically adds exactly the service-owned external_cleanup.
+	terminal := admission.State == store.ExternalDeploymentAdmissionCommitted || admission.State == store.ExternalDeploymentAdmissionCleanupPending || admission.State == store.ExternalDeploymentAdmissionComplete
+	expectedCheckpoints := 0
+	if terminal {
+		expectedCheckpoints = 1
+	}
+	if admission.State == store.ExternalDeploymentAdmissionComplete {
+		expectedCheckpoints = 2
+	}
+	if len(checkpoints) != expectedCheckpoints || (expectedCheckpoints >= 1 && checkpoints[0].Phase != "external_admission") || (expectedCheckpoints == 2 && checkpoints[1].Phase != "external_cleanup") {
 		WriteControlProblem(w, r, http.StatusConflict, "external_deployment_context_drift", "durable external admission checkpoint lineage is incomplete")
 		return
 	}
-	if (admission.State == store.ExternalDeploymentAdmissionCommitted || admission.State == store.ExternalDeploymentAdmissionCleanupPending || admission.State == store.ExternalDeploymentAdmissionComplete) && len(lineage) == 0 {
+	if terminal && !validExternalRetryLineage(lineage) {
 		WriteControlProblem(w, r, http.StatusConflict, "external_deployment_context_drift", "durable retry lineage is incomplete")
 		return
 	}
@@ -788,7 +810,7 @@ func (h *Handler) AdmitExternalFleetDeployment(w http.ResponseWriter, r *http.Re
 			return
 		}
 		serviceCheckpointRefs = externalServiceCheckpointRefs(status.Snapshot.CheckpointRefs)
-		if len(serviceCheckpointRefs) == 0 {
+		if len(serviceCheckpointRefs) != 1 || serviceCheckpointRefs[0].Phase != "external_admission" || serviceCheckpointRefs[0].AttemptID != status.Snapshot.RetryLineage[len(status.Snapshot.RetryLineage)-1] {
 			WriteControlProblem(w, r, http.StatusConflict, "external_deployment_snapshot_conflict", "service snapshot has no durable checkpoint references")
 			return
 		}
