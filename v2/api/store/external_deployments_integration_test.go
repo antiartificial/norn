@@ -127,6 +127,10 @@ func TestExternalDeploymentAdmissionV4Lifecycle(t *testing.T) {
 	if err := db.IssueExternalDeploymentNonce(ctx, nonce); err != nil {
 		t.Fatal(err)
 	}
+	registration, err := db.GetExternalDeploymentNonceRegistration(ctx, admissionID, nonce.ID)
+	if err != nil || registration.State != "registering" || registration.Generation != 1 || registration.RegistrationRef != nonce.RegistrationRef || registration.Revision != 1 || registration.RegisteredAt != nil || registration.RegistrationMetadata["workflow"] != "fleet-apply" {
+		t.Fatalf("persisted registration = %+v, %v", registration, err)
+	}
 	var nonceState, admissionState string
 	var generation, revision int64
 	if err := db.Pool.QueryRow(ctx, `SELECT n.state, a.state, n.registration_generation, n.revision FROM external_deployment_nonces n JOIN external_deployment_admissions a ON a.nonce_id=n.id WHERE n.id=$1`, nonce.ID).Scan(&nonceState, &admissionState, &generation, &revision); err != nil || nonceState != "registering" || admissionState != string(ExternalDeploymentAdmissionNonceRegistering) || generation != 1 || revision != 1 {
@@ -135,8 +139,14 @@ func TestExternalDeploymentAdmissionV4Lifecycle(t *testing.T) {
 	if err := db.MarkExternalDeploymentNonceReady(ctx, admissionID, nonce.ID, 1, nonce.RegistrationRef); err != nil {
 		t.Fatal(err)
 	}
+	if err := db.MarkExternalDeploymentNonceReady(ctx, admissionID, nonce.ID, 1, nonce.RegistrationRef); err != nil {
+		t.Fatalf("exact ready replay = %v", err)
+	}
 	if err := db.ClaimExternalDeploymentAdmissionEvidence(ctx, admissionID, nonce.ID); err != nil {
 		t.Fatal(err)
+	}
+	if err := db.ClaimExternalDeploymentAdmissionEvidence(ctx, admissionID, nonce.ID); err != nil {
+		t.Fatalf("exact evidence claim replay = %v", err)
 	}
 	if err := db.Pool.QueryRow(ctx, `SELECT n.state, a.state, n.revision FROM external_deployment_nonces n JOIN external_deployment_admissions a ON a.nonce_id=n.id WHERE n.id=$1`, nonce.ID).Scan(&nonceState, &admissionState, &revision); err != nil || nonceState != "claimed" || admissionState != string(ExternalDeploymentAdmissionEvidenceClaimed) || revision != 3 {
 		t.Fatalf("claimed nonce state=%q admission=%q revision=%d err=%v", nonceState, admissionState, revision, err)
@@ -154,6 +164,15 @@ func TestExternalDeploymentAdmissionV4Lifecycle(t *testing.T) {
 	var checkpointID string
 	if err := db.Pool.QueryRow(ctx, `SELECT a.state, a.operation_id, c.checkpoint_id FROM external_deployment_admissions a JOIN external_deployment_admission_checkpoints c ON c.admission_id=a.id WHERE a.id=$1`, admissionID).Scan(&admissionState, new(string), &checkpointID); err != nil || admissionState != string(ExternalDeploymentAdmissionCommitted) || checkpointID != "migration-1" {
 		t.Fatalf("committed lifecycle state=%q checkpoint=%q err=%v", admissionState, checkpointID, err)
+	}
+	if err := db.Pool.QueryRow(ctx, `SELECT checkpoint_id FROM fleet_runner_checkpoint_refs WHERE admission_id=$1 AND phase='external_admission'`, admissionID).Scan(&checkpointID); err != nil || checkpointID != "migration-1" {
+		t.Fatalf("runner checkpoint ledger=%q err=%v", checkpointID, err)
+	}
+	conflictingReplay := terminal
+	conflictingReplay.CheckpointRefs = append([]ExternalDeploymentCheckpointRef(nil), terminal.CheckpointRefs...)
+	conflictingReplay.CheckpointRefs[0].EvidenceRef = "checkpoint://conflicting-migration"
+	if _, err := db.AdmitExternalDeployment(ctx, conflictingReplay); !errors.Is(err, ErrExternalDeploymentCheckpointConflict) {
+		t.Fatalf("conflicting checkpoint replay error=%v, want checkpoint conflict", err)
 	}
 	if err := db.MarkExternalDeploymentAdmissionCleanupPending(ctx, admissionID); err != nil {
 		t.Fatal(err)

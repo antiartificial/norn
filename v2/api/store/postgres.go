@@ -394,6 +394,22 @@ func Migrate(db *DB) error {
 			UNIQUE (admission_id, checkpoint_id)
 		);
 
+		-- Keep the append-only checkpoint pointers in their own durable namespace
+		-- as well as the admission-context projection above. The duplicate
+		-- projection preserves the v4 context API while this table is the
+		-- server-owned runner evidence ledger used for reconciliation.
+		CREATE TABLE IF NOT EXISTS fleet_runner_checkpoint_refs (
+			admission_id TEXT NOT NULL REFERENCES external_deployment_admissions(id) ON DELETE CASCADE,
+			phase TEXT NOT NULL,
+			checkpoint_id TEXT NOT NULL,
+			attempt_id TEXT NOT NULL,
+			evidence_ref TEXT NOT NULL,
+			evidence_sha256 TEXT NOT NULL DEFAULT '',
+			created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+			PRIMARY KEY (admission_id, phase),
+			UNIQUE (admission_id, checkpoint_id)
+		);
+
 		CREATE TABLE IF NOT EXISTS webhook_deliveries (
 			id          TEXT PRIMARY KEY,
 			provider    TEXT NOT NULL,
