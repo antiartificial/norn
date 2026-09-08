@@ -188,6 +188,12 @@ func (v externalFleetGitHubRunVerifier) Verify(ctx context.Context, token string
 }
 
 func (v externalFleetCommandAttestationVerifier) Verify(ctx context.Context, token string, request ExternalFleetDeploymentVerificationRequest) error {
+	return v.verify(ctx, token, request, nil)
+}
+func (v externalFleetCommandAttestationVerifier) VerifyBundles(ctx context.Context, token string, request ExternalFleetDeploymentVerificationRequest, bundles map[string]json.RawMessage) error {
+	return v.verify(ctx, token, request, bundles)
+}
+func (v externalFleetCommandAttestationVerifier) verify(ctx context.Context, token string, request ExternalFleetDeploymentVerificationRequest, bundles map[string]json.RawMessage) error {
 	if strings.TrimSpace(token) == "" {
 		return externalVerifierErr("github-token-unavailable")
 	}
@@ -201,6 +207,27 @@ func (v externalFleetCommandAttestationVerifier) Verify(ctx context.Context, tok
 	}
 	for _, predicate := range []string{"https://slsa.dev/provenance/v1", "https://spdx.dev/Document/v2.3"} {
 		args := []string{"attestation", "verify", "oci://" + request.Receipt.Artifact, "--repo", candidate.Repository, "--hostname", "github.com", "--signer-workflow", "github.com/" + signerPath, "--signer-digest", signerSHA, "--cert-identity", "https://github.com/" + candidate.SignerWorkflowRef, "--source-digest", request.Receipt.SourceSHA, "--source-ref", candidate.Ref, "--predicate-type", predicate, "--cert-oidc-issuer", "https://token.actions.githubusercontent.com", "--format", "json"}
+		var temp string
+		if bundles != nil {
+			raw := bundles[predicate]
+			if len(raw) == 0 {
+				return externalVerifierErr("github-attestation-bundle")
+			}
+			f, e := os.CreateTemp("", "norn-fleet-bundle-*")
+			if e != nil {
+				return externalVerifierErr("github-attestation-bundle")
+			}
+			temp = f.Name()
+			_ = f.Chmod(0o600)
+			if _, e = f.Write(raw); e != nil {
+				f.Close()
+				os.Remove(temp)
+				return externalVerifierErr("github-attestation-bundle")
+			}
+			f.Close()
+			defer os.Remove(temp)
+			args = append(args, "--bundle", temp)
+		}
 		command := exec.CommandContext(ctx, v.path, args...)
 		command.Env = []string{"PATH=" + os.Getenv("PATH"), "GH_TOKEN=" + token, "GH_PROMPT_DISABLED=1", "NO_COLOR=1"}
 		stdout, stderr := &externalFleetLimitedWriter{remaining: externalFleetEvidenceMaxBody}, &externalFleetLimitedWriter{remaining: externalFleetEvidenceMaxBody}
@@ -514,12 +541,21 @@ func (v *ExternalFleetDeploymentLiveVerifier) VerifyExternalFleetDeployment(ctx 
 	if err != nil {
 		return nil, externalVerifierErr("github-token-unavailable")
 	}
+	var bundles map[string]json.RawMessage
 	if v.githubApp != nil {
-		if err := v.githubApp.attestations(ctx, githubToken, request.Receipt); err != nil {
+		bundles, err = v.githubApp.attestations(ctx, githubToken, request.Receipt)
+		if err != nil {
 			return nil, externalVerifierErr("github-attestation-api-binding")
 		}
 	}
-	if err := v.attest.Verify(ctx, githubToken, request); err != nil {
+	if exact, ok := v.attest.(interface {
+		VerifyBundles(context.Context, string, ExternalFleetDeploymentVerificationRequest, map[string]json.RawMessage) error
+	}); ok && bundles != nil {
+		err = exact.VerifyBundles(ctx, githubToken, request, bundles)
+	} else {
+		err = v.attest.Verify(ctx, githubToken, request)
+	}
+	if err != nil {
 		return nil, err
 	}
 	if concrete, ok := v.githubRun.(interface {
