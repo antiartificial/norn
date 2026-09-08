@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"strings"
 	"time"
 
 	"github.com/jackc/pgx/v5"
@@ -16,20 +17,243 @@ import (
 var ErrExternalDeploymentNonceConsumed = errors.New("external deployment nonce is consumed or unavailable")
 var ErrExternalDeploymentIdempotencyConflict = errors.New("external deployment idempotency key conflicts")
 var ErrExternalDeploymentNonceLimit = errors.New("external deployment nonce issuance limit reached")
+var ErrExternalDeploymentAdmissionUnavailable = errors.New("external deployment admission is unavailable")
 
 const externalDeploymentNonceMaxOutstandingPerRun = 3
 
 // ExternalDeploymentNonce is deliberately metadata-only. Callers receive the
 // opaque raw nonce once; the database keeps only a SHA-256 digest.
 type ExternalDeploymentNonce struct {
-	ID           string
-	NonceSHA256  string
-	App          string
-	Environment  string
-	CIRepository string
-	CIRunID      string
-	CIRunAttempt string
-	ExpiresAt    time.Time
+	ID                     string
+	NonceSHA256            string
+	App                    string
+	Environment            string
+	CIRepository           string
+	CIRunID                string
+	CIRunAttempt           string
+	ExpiresAt              time.Time
+	AdmissionID            string
+	RegistrationGeneration int64
+	RegistrationRef        string
+	IssuerSubject          string
+	IssuerTokenID          string
+	RegistrationMetadata   map[string]string
+}
+
+// ExternalDeploymentAdmissionState is a server-owned audit lifecycle. The
+// receipt itself remains in the operation metadata; this small row provides a
+// durable, queryable binding between an idempotent admission, its nonce, and
+// its terminal operation without retaining raw nonce material.
+type ExternalDeploymentAdmissionState string
+
+const (
+	ExternalDeploymentAdmissionInitiated        ExternalDeploymentAdmissionState = "initiated"
+	ExternalDeploymentAdmissionNonceRegistering ExternalDeploymentAdmissionState = "nonce_registering"
+	ExternalDeploymentAdmissionNonceReady       ExternalDeploymentAdmissionState = "nonce_ready"
+	ExternalDeploymentAdmissionEvidenceClaimed  ExternalDeploymentAdmissionState = "evidence_claimed"
+	ExternalDeploymentAdmissionCommitted        ExternalDeploymentAdmissionState = "committed"
+	ExternalDeploymentAdmissionCleanupPending   ExternalDeploymentAdmissionState = "cleanup_pending"
+	ExternalDeploymentAdmissionComplete         ExternalDeploymentAdmissionState = "complete"
+	ExternalDeploymentAdmissionExpired          ExternalDeploymentAdmissionState = "expired"
+)
+
+type ExternalDeploymentAdmissionLifecycle struct {
+	ID              string
+	IdempotencyKey  string
+	RequestDigest   string
+	App             string
+	Environment     string
+	CIRepository    string
+	State           ExternalDeploymentAdmissionState
+	NonceID         string
+	NonceGeneration int64
+	RegistrationRef string
+	OperationID     string
+	FailureCode     string
+}
+
+// ExternalDeploymentCheckpointRef persists opaque evidence pointers only. It
+// intentionally does not duplicate checkpoint payloads, deployment secrets,
+// or raw nonce material in the control-plane database.
+type ExternalDeploymentCheckpointRef struct {
+	Phase          string
+	CheckpointID   string
+	AttemptID      string
+	EvidenceRef    string
+	EvidenceSHA256 string
+}
+
+// BeginExternalDeploymentAdmission creates (or retrieves) the durable
+// idempotency/lifecycle record before a nonce is registered or external facts
+// are checked. Exact retries return the existing row. A key can never be
+// rebound to different logical deployment material.
+func (db *DB) BeginExternalDeploymentAdmission(ctx context.Context, admissionID, idempotencyKey, requestDigest, app, environment, ciRepository string) (*ExternalDeploymentAdmissionLifecycle, error) {
+	if db == nil || db.Pool == nil || admissionID == "" || idempotencyKey == "" || requestDigest == "" || app == "" || environment == "" || ciRepository == "" {
+		return nil, ErrExternalDeploymentAdmissionUnavailable
+	}
+	row := db.Pool.QueryRow(ctx, `INSERT INTO external_deployment_admissions
+		(id, idempotency_key, request_digest, app, environment, ci_repository, state)
+		VALUES ($1,$2,$3,$4,$5,$6,'initiated')
+		ON CONFLICT (idempotency_key) DO NOTHING
+		RETURNING id, idempotency_key, request_digest, app, environment, ci_repository, state, nonce_id, nonce_generation, registration_ref, operation_id, failure_code`,
+		admissionID, idempotencyKey, requestDigest, app, environment, ciRepository)
+	admission, err := scanExternalDeploymentAdmission(row)
+	if err == nil {
+		return admission, nil
+	}
+	if !errors.Is(err, pgx.ErrNoRows) {
+		if pgErr, duplicate := err.(*pgconn.PgError); duplicate && pgErr.Code == "23505" {
+			return nil, ErrExternalDeploymentIdempotencyConflict
+		}
+		return nil, err
+	}
+	admission, err = scanExternalDeploymentAdmission(db.Pool.QueryRow(ctx, `SELECT id, idempotency_key, request_digest, app, environment, ci_repository, state, nonce_id, nonce_generation, registration_ref, operation_id, failure_code
+		FROM external_deployment_admissions WHERE idempotency_key=$1`, idempotencyKey))
+	if errors.Is(err, pgx.ErrNoRows) {
+		// A conflicting primary-key insert may have won while the index lookup
+		// was resolving. Do not turn that ambiguity into a new admission.
+		return nil, ErrExternalDeploymentIdempotencyConflict
+	}
+	if err != nil {
+		return nil, err
+	}
+	if admission.RequestDigest != requestDigest || admission.App != app || admission.Environment != environment || admission.CIRepository != ciRepository {
+		return nil, ErrExternalDeploymentIdempotencyConflict
+	}
+	return admission, nil
+}
+
+// ClaimExternalDeploymentAdmissionEvidence atomically moves a ready nonce
+// into evidence verification. It is deliberately monotonic and idempotent so
+// an API retry cannot move an admission backwards.
+func (db *DB) ClaimExternalDeploymentAdmissionEvidence(ctx context.Context, admissionID, nonceID string) error {
+	if db == nil || db.Pool == nil || admissionID == "" || nonceID == "" {
+		return ErrExternalDeploymentAdmissionUnavailable
+	}
+	tx, err := db.Pool.Begin(ctx)
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback(ctx)
+	tag, err := tx.Exec(ctx, `UPDATE external_deployment_nonces SET state='claimed', claimed_at=now(), revision=revision+1
+		WHERE id=$1 AND admission_id=$2 AND state='ready'`, nonceID, admissionID)
+	if err != nil {
+		return err
+	}
+	if tag.RowsAffected() != 1 {
+		return ErrExternalDeploymentAdmissionUnavailable
+	}
+	tag, err = tx.Exec(ctx, `UPDATE external_deployment_admissions SET state='evidence_claimed', updated_at=now()
+		WHERE id=$1 AND nonce_id=$2 AND state='nonce_ready'`, admissionID, nonceID)
+	if err != nil {
+		return err
+	}
+	if tag.RowsAffected() != 1 {
+		return ErrExternalDeploymentAdmissionUnavailable
+	}
+	return tx.Commit(ctx)
+}
+
+// MarkExternalDeploymentNonceReady is called only after the external nonce
+// registration write has succeeded. It is the registration-before-disclosure
+// barrier: callers must not return the raw nonce until this transaction commits.
+func (db *DB) MarkExternalDeploymentNonceReady(ctx context.Context, admissionID, nonceID string, generation int64, registrationRef string) error {
+	if db == nil || db.Pool == nil || admissionID == "" || nonceID == "" || generation <= 0 || registrationRef == "" {
+		return ErrExternalDeploymentAdmissionUnavailable
+	}
+	tx, err := db.Pool.Begin(ctx)
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback(ctx)
+	tag, err := tx.Exec(ctx, `UPDATE external_deployment_nonces SET state='ready', registered_at=now(), revision=revision+1
+		WHERE id=$1 AND admission_id=$2 AND registration_generation=$3 AND registration_ref=$4 AND state='registering'`, nonceID, admissionID, generation, registrationRef)
+	if err != nil {
+		return err
+	}
+	if tag.RowsAffected() != 1 {
+		return ErrExternalDeploymentAdmissionUnavailable
+	}
+	tag, err = tx.Exec(ctx, `UPDATE external_deployment_admissions SET state='nonce_ready', updated_at=now()
+		WHERE id=$1 AND nonce_id=$2 AND nonce_generation=$3 AND registration_ref=$4 AND state='nonce_registering'`, admissionID, nonceID, generation, registrationRef)
+	if err != nil {
+		return err
+	}
+	if tag.RowsAffected() != 1 {
+		return ErrExternalDeploymentAdmissionUnavailable
+	}
+	return tx.Commit(ctx)
+}
+
+// MarkExternalDeploymentAdmissionCleanupPending and
+// CompleteExternalDeploymentAdmission make post-commit cleanup durable. A
+// caller can retry cleanup without reopening an evidence claim or receipt.
+func (db *DB) MarkExternalDeploymentAdmissionCleanupPending(ctx context.Context, admissionID string) error {
+	if db == nil || db.Pool == nil || admissionID == "" {
+		return ErrExternalDeploymentAdmissionUnavailable
+	}
+	tag, err := db.Pool.Exec(ctx, `UPDATE external_deployment_admissions SET state='cleanup_pending', updated_at=now()
+		WHERE id=$1 AND state IN ('committed','cleanup_pending')`, admissionID)
+	if err != nil {
+		return err
+	}
+	if tag.RowsAffected() != 1 {
+		return ErrExternalDeploymentAdmissionUnavailable
+	}
+	return nil
+}
+
+func (db *DB) CompleteExternalDeploymentAdmission(ctx context.Context, admissionID string) error {
+	if db == nil || db.Pool == nil || admissionID == "" {
+		return ErrExternalDeploymentAdmissionUnavailable
+	}
+	tag, err := db.Pool.Exec(ctx, `UPDATE external_deployment_admissions SET state='complete', updated_at=now(), completed_at=now()
+		WHERE id=$1 AND state IN ('committed','cleanup_pending','complete')`, admissionID)
+	if err != nil {
+		return err
+	}
+	if tag.RowsAffected() != 1 {
+		return ErrExternalDeploymentAdmissionUnavailable
+	}
+	return nil
+}
+
+// ExpireExternalDeploymentAdmission records a safe terminal expiry without
+// replacing an already-committed operation.
+func (db *DB) ExpireExternalDeploymentAdmission(ctx context.Context, admissionID, failureCode string) error {
+	if db == nil || db.Pool == nil || admissionID == "" {
+		return ErrExternalDeploymentAdmissionUnavailable
+	}
+	tx, err := db.Pool.Begin(ctx)
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback(ctx)
+	if _, err := tx.Exec(ctx, `UPDATE external_deployment_nonces SET state='expired', revision=revision+1
+		WHERE admission_id=$1 AND state IN ('registering','ready','claimed')`, admissionID); err != nil {
+		return err
+	}
+	tag, err := tx.Exec(ctx, `UPDATE external_deployment_admissions SET state='expired', failure_code=$2, updated_at=now(), completed_at=now()
+		WHERE id=$1 AND state IN ('initiated','nonce_registering','nonce_ready','evidence_claimed')`, admissionID, failureCode)
+	if err != nil {
+		return err
+	}
+	if tag.RowsAffected() != 1 {
+		return ErrExternalDeploymentAdmissionUnavailable
+	}
+	return tx.Commit(ctx)
+}
+
+type externalDeploymentAdmissionScanner interface {
+	Scan(...any) error
+}
+
+func scanExternalDeploymentAdmission(row externalDeploymentAdmissionScanner) (*ExternalDeploymentAdmissionLifecycle, error) {
+	var admission ExternalDeploymentAdmissionLifecycle
+	if err := row.Scan(&admission.ID, &admission.IdempotencyKey, &admission.RequestDigest, &admission.App, &admission.Environment, &admission.CIRepository, &admission.State, &admission.NonceID, &admission.NonceGeneration, &admission.RegistrationRef, &admission.OperationID, &admission.FailureCode); err != nil {
+		return nil, err
+	}
+	return &admission, nil
 }
 
 func (db *DB) IssueExternalDeploymentNonce(ctx context.Context, nonce ExternalDeploymentNonce) error {
@@ -43,7 +267,7 @@ func (db *DB) IssueExternalDeploymentNonce(ctx context.Context, nonce ExternalDe
 	defer tx.Rollback(ctx)
 	// Remove expired rows whether or not they were consumed. Issuance performs
 	// this bounded maintenance so abandoned pilot runs cannot accumulate state.
-	if _, err := tx.Exec(ctx, `DELETE FROM external_deployment_nonces WHERE ctid IN (SELECT ctid FROM external_deployment_nonces WHERE expires_at < now() LIMIT 1000)`); err != nil {
+	if _, err := tx.Exec(ctx, `DELETE FROM external_deployment_nonces WHERE ctid IN (SELECT ctid FROM external_deployment_nonces nonce WHERE expires_at < now() AND NOT EXISTS (SELECT 1 FROM external_deployment_admissions admission WHERE admission.nonce_id=nonce.id) LIMIT 1000)`); err != nil {
 		return err
 	}
 	// Serialize the per-run count-and-insert decision. Advisory-lock collisions
@@ -53,14 +277,52 @@ func (db *DB) IssueExternalDeploymentNonce(ctx context.Context, nonce ExternalDe
 		return err
 	}
 	var outstanding int
-	if err := tx.QueryRow(ctx, `SELECT count(*) FROM external_deployment_nonces WHERE app=$1 AND environment=$2 AND ci_repository=$3 AND ci_run_id=$4 AND ci_run_attempt=$5 AND consumed_at IS NULL AND expires_at > now()`, nonce.App, nonce.Environment, nonce.CIRepository, nonce.CIRunID, nonce.CIRunAttempt).Scan(&outstanding); err != nil {
+	if err := tx.QueryRow(ctx, `SELECT count(*) FROM external_deployment_nonces WHERE app=$1 AND environment=$2 AND ci_repository=$3 AND ci_run_id=$4 AND ci_run_attempt=$5 AND consumed_at IS NULL AND expires_at > now() AND state IN ('registering','ready')`, nonce.App, nonce.Environment, nonce.CIRepository, nonce.CIRunID, nonce.CIRunAttempt).Scan(&outstanding); err != nil {
 		return err
 	}
 	if outstanding >= externalDeploymentNonceMaxOutstandingPerRun {
 		return ErrExternalDeploymentNonceLimit
 	}
-	if _, err := tx.Exec(ctx, `INSERT INTO external_deployment_nonces (id, nonce_sha256, app, environment, ci_repository, ci_run_id, ci_run_attempt, expires_at) VALUES ($1,$2,$3,$4,$5,$6,$7,$8)`, nonce.ID, nonce.NonceSHA256, nonce.App, nonce.Environment, nonce.CIRepository, nonce.CIRunID, nonce.CIRunAttempt, nonce.ExpiresAt); err != nil {
+	registrationMetadata, err := json.Marshal(nonce.RegistrationMetadata)
+	if err != nil {
+		return fmt.Errorf("encode external deployment nonce registration metadata: %w", err)
+	}
+	if nonce.AdmissionID != "" {
+		if nonce.RegistrationGeneration <= 0 || nonce.RegistrationRef == "" {
+			return ErrExternalDeploymentAdmissionUnavailable
+		}
+		var state ExternalDeploymentAdmissionState
+		if err := tx.QueryRow(ctx, `SELECT state FROM external_deployment_admissions WHERE id=$1 AND app=$2 AND environment=$3 AND ci_repository=$4 FOR UPDATE`, nonce.AdmissionID, nonce.App, nonce.Environment, nonce.CIRepository).Scan(&state); err != nil {
+			if errors.Is(err, pgx.ErrNoRows) {
+				return ErrExternalDeploymentAdmissionUnavailable
+			}
+			return err
+		}
+		if state != ExternalDeploymentAdmissionInitiated && state != ExternalDeploymentAdmissionNonceRegistering {
+			return ErrExternalDeploymentAdmissionUnavailable
+		}
+		// A retried registration gets a new opaque nonce. Retire a previous
+		// undisclosed registration first so it cannot later become ready.
+		if _, err := tx.Exec(ctx, `UPDATE external_deployment_nonces SET state='superseded', superseded_at=now(), revision=revision+1
+			WHERE admission_id=$1 AND state='registering'`, nonce.AdmissionID); err != nil {
+			return err
+		}
+	}
+	if _, err := tx.Exec(ctx, `INSERT INTO external_deployment_nonces
+		(id, nonce_sha256, app, environment, ci_repository, ci_run_id, ci_run_attempt, expires_at, admission_id, registration_generation, registration_ref, issuer_subject, issuer_token_id, registration_metadata, state)
+		VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,CASE WHEN $9<>'' THEN 'registering' ELSE 'ready' END)`, nonce.ID, nonce.NonceSHA256, nonce.App, nonce.Environment, nonce.CIRepository, nonce.CIRunID, nonce.CIRunAttempt, nonce.ExpiresAt, nonce.AdmissionID, nonce.RegistrationGeneration, nonce.RegistrationRef, nonce.IssuerSubject, nonce.IssuerTokenID, registrationMetadata); err != nil {
 		return err
+	}
+	if nonce.AdmissionID != "" {
+		tag, err := tx.Exec(ctx, `UPDATE external_deployment_admissions
+			SET state='nonce_registering', nonce_id=$2, nonce_generation=$3, registration_ref=$4, updated_at=now()
+			WHERE id=$1 AND state IN ('initiated','nonce_registering')`, nonce.AdmissionID, nonce.ID, nonce.RegistrationGeneration, nonce.RegistrationRef)
+		if err != nil {
+			return err
+		}
+		if tag.RowsAffected() != 1 {
+			return ErrExternalDeploymentAdmissionUnavailable
+		}
 	}
 	return tx.Commit(ctx)
 }
@@ -72,7 +334,7 @@ func (db *DB) ConsumeExternalDeploymentNonce(ctx context.Context, nonce External
 	if db == nil || db.Pool == nil || nonce.ID == "" || nonce.NonceSHA256 == "" || nonce.App == "" || nonce.Environment == "" || nonce.CIRepository == "" || nonce.CIRunID == "" || nonce.CIRunAttempt == "" {
 		return false, fmt.Errorf("external deployment nonce store is unavailable")
 	}
-	tag, err := db.Pool.Exec(ctx, `UPDATE external_deployment_nonces SET consumed_at=now() WHERE id=$1 AND nonce_sha256=$2 AND app=$3 AND environment=$4 AND ci_repository=$5 AND ci_run_id=$6 AND ci_run_attempt=$7 AND consumed_at IS NULL AND expires_at > now()`, nonce.ID, nonce.NonceSHA256, nonce.App, nonce.Environment, nonce.CIRepository, nonce.CIRunID, nonce.CIRunAttempt)
+	tag, err := db.Pool.Exec(ctx, `UPDATE external_deployment_nonces SET consumed_at=now(), state='claimed', claimed_at=COALESCE(claimed_at, now()), revision=revision+1 WHERE id=$1 AND nonce_sha256=$2 AND app=$3 AND environment=$4 AND ci_repository=$5 AND ci_run_id=$6 AND ci_run_attempt=$7 AND state='ready' AND consumed_at IS NULL AND expires_at > now()`, nonce.ID, nonce.NonceSHA256, nonce.App, nonce.Environment, nonce.CIRepository, nonce.CIRunID, nonce.CIRunAttempt)
 	if err != nil {
 		return false, err
 	}
@@ -83,12 +345,15 @@ func (db *DB) ConsumeExternalDeploymentNonce(ctx context.Context, nonce External
 // verifier-approved direct Fleet workload. The raw nonce never reaches this
 // type; only its SHA-256 binding is accepted.
 type ExternalDeploymentAdmission struct {
-	Nonce          ExternalDeploymentNonce
-	Deployment     *model.Deployment
-	Regions        []model.DeploymentRegion
-	Operation      *model.Operation
-	IdempotencyKey string
-	RequestDigest  string
+	Nonce           ExternalDeploymentNonce
+	Deployment      *model.Deployment
+	Regions         []model.DeploymentRegion
+	Operation       *model.Operation
+	IdempotencyKey  string
+	RequestDigest   string
+	AdmissionID     string
+	NonceGeneration int64
+	CheckpointRefs  []ExternalDeploymentCheckpointRef
 }
 
 type ExternalDeploymentAdmissionResult struct {
@@ -102,8 +367,13 @@ type ExternalDeploymentAdmissionResult struct {
 // same idempotency key and request digest return the original operation;
 // another request never gets to consume the nonce after that operation exists.
 func (db *DB) AdmitExternalDeployment(ctx context.Context, admission ExternalDeploymentAdmission) (*ExternalDeploymentAdmissionResult, error) {
-	if db == nil || db.Pool == nil || admission.Deployment == nil || admission.Operation == nil || admission.IdempotencyKey == "" || admission.RequestDigest == "" || admission.Nonce.ID == "" || admission.Nonce.NonceSHA256 == "" || admission.Nonce.App == "" || admission.Nonce.Environment == "" || admission.Nonce.CIRepository == "" || admission.Nonce.CIRunID == "" || admission.Nonce.CIRunAttempt == "" || !admission.Operation.Status.Terminal() || admission.Deployment.FinishedAt == nil || admission.Operation.FinishedAt == nil || len(admission.Regions) == 0 {
+	if db == nil || db.Pool == nil || admission.Deployment == nil || admission.Operation == nil || admission.IdempotencyKey == "" || admission.RequestDigest == "" || admission.Nonce.ID == "" || admission.Nonce.NonceSHA256 == "" || admission.Nonce.App == "" || admission.Nonce.Environment == "" || admission.Nonce.CIRepository == "" || admission.Nonce.CIRunID == "" || admission.Nonce.CIRunAttempt == "" || !admission.Operation.Status.Terminal() || admission.Deployment.FinishedAt == nil || admission.Operation.FinishedAt == nil || len(admission.Regions) == 0 || (admission.AdmissionID != "" && admission.NonceGeneration <= 0) || (admission.AdmissionID == "" && admission.NonceGeneration != 0) {
 		return nil, fmt.Errorf("external deployment admission store is unavailable")
+	}
+	for _, checkpoint := range admission.CheckpointRefs {
+		if !validExternalDeploymentCheckpointRef(checkpoint) {
+			return nil, fmt.Errorf("external deployment checkpoint reference is invalid")
+		}
 	}
 	payload, metadata, err := prepareOperation(admission.Operation)
 	if err != nil {
@@ -121,13 +391,16 @@ func (db *DB) AdmitExternalDeployment(ctx context.Context, admission ExternalDep
 	// Bound expiry cleanup prevents one nonce row per pilot run from becoming
 	// permanent state. It is intentionally best-effort and cannot affect live
 	// rows because it selects only expired entries.
-	_, _ = tx.Exec(ctx, `DELETE FROM external_deployment_nonces WHERE ctid IN (SELECT ctid FROM external_deployment_nonces WHERE expires_at < now() LIMIT 1000)`)
+	_, _ = tx.Exec(ctx, `DELETE FROM external_deployment_nonces WHERE ctid IN (SELECT ctid FROM external_deployment_nonces nonce WHERE expires_at < now() AND NOT EXISTS (SELECT 1 FROM external_deployment_admissions admission WHERE admission.nonce_id=nonce.id) LIMIT 1000)`)
 
 	var existingID, existingDigest string
 	err = tx.QueryRow(ctx, `SELECT id, COALESCE(metadata->>'requestDigest','') FROM operations WHERE metadata->>'idempotencyKey'=$1 FOR KEY SHARE`, admission.IdempotencyKey).Scan(&existingID, &existingDigest)
 	if err == nil {
 		if existingDigest != admission.RequestDigest {
 			return nil, ErrExternalDeploymentIdempotencyConflict
+		}
+		if err := completeExternalDeploymentAdmission(ctx, tx, admission, existingID); err != nil {
+			return nil, err
 		}
 		if err := tx.Commit(ctx); err != nil {
 			return nil, err
@@ -143,9 +416,11 @@ func (db *DB) AdmitExternalDeployment(ctx context.Context, admission ExternalDep
 	}
 
 	var nonceID string
-	err = tx.QueryRow(ctx, `UPDATE external_deployment_nonces SET consumed_at=now()
+	err = tx.QueryRow(ctx, `UPDATE external_deployment_nonces SET consumed_at=now(), state='claimed', claimed_at=COALESCE(claimed_at, now()), revision=revision+1
 		WHERE id=$1 AND nonce_sha256=$2 AND app=$3 AND environment=$4 AND ci_repository=$5 AND ci_run_id=$6 AND ci_run_attempt=$7 AND consumed_at IS NULL AND expires_at > now()
-		RETURNING id`, admission.Nonce.ID, admission.Nonce.NonceSHA256, admission.Nonce.App, admission.Nonce.Environment, admission.Nonce.CIRepository, admission.Nonce.CIRunID, admission.Nonce.CIRunAttempt).Scan(&nonceID)
+			AND ($8='' OR (admission_id=$8 AND registration_generation=$9))
+			AND (($8='' AND state='ready') OR ($8<>'' AND state='claimed'))
+		RETURNING id`, admission.Nonce.ID, admission.Nonce.NonceSHA256, admission.Nonce.App, admission.Nonce.Environment, admission.Nonce.CIRepository, admission.Nonce.CIRunID, admission.Nonce.CIRunAttempt, admission.AdmissionID, admission.NonceGeneration).Scan(&nonceID)
 	if errors.Is(err, pgx.ErrNoRows) {
 		// Another matching request may have committed while this transaction was
 		// waiting on the nonce row. In read-committed mode this fresh query sees
@@ -187,8 +462,52 @@ func (db *DB) AdmitExternalDeployment(ctx context.Context, admission ExternalDep
 		}
 		return nil, err
 	}
+	if err := completeExternalDeploymentAdmission(ctx, tx, admission, admission.Operation.ID); err != nil {
+		return nil, err
+	}
 	if err := tx.Commit(ctx); err != nil {
 		return nil, err
 	}
 	return &ExternalDeploymentAdmissionResult{Operation: admission.Operation}, nil
+}
+
+func validExternalDeploymentCheckpointRef(ref ExternalDeploymentCheckpointRef) bool {
+	for _, value := range []string{ref.Phase, ref.CheckpointID, ref.AttemptID, ref.EvidenceRef} {
+		if value == "" || len(value) > 512 || strings.ContainsAny(value, "\x00\r\n") {
+			return false
+		}
+	}
+	return len(ref.EvidenceSHA256) <= 128 && !strings.ContainsAny(ref.EvidenceSHA256, "\x00\r\n")
+}
+
+func completeExternalDeploymentAdmission(ctx context.Context, tx pgx.Tx, admission ExternalDeploymentAdmission, operationID string) error {
+	if admission.AdmissionID == "" {
+		return nil
+	}
+	tag, err := tx.Exec(ctx, `UPDATE external_deployment_admissions
+		SET state='committed', operation_id=$2, failure_code='', updated_at=now(), completed_at=NULL
+		WHERE id=$1 AND idempotency_key=$3 AND request_digest=$4 AND nonce_id=$5 AND nonce_generation=$6
+			AND state='evidence_claimed'`, admission.AdmissionID, operationID, admission.IdempotencyKey, admission.RequestDigest, admission.Nonce.ID, admission.NonceGeneration)
+	if err != nil {
+		return err
+	}
+	if tag.RowsAffected() == 0 {
+		var existingOperationID string
+		err := tx.QueryRow(ctx, `SELECT operation_id FROM external_deployment_admissions
+			WHERE id=$1 AND idempotency_key=$2 AND request_digest=$3 AND nonce_id=$4 AND nonce_generation=$5 AND state IN ('committed','cleanup_pending','complete')`, admission.AdmissionID, admission.IdempotencyKey, admission.RequestDigest, admission.Nonce.ID, admission.NonceGeneration).Scan(&existingOperationID)
+		if err != nil || existingOperationID != operationID {
+			if errors.Is(err, pgx.ErrNoRows) {
+				return ErrExternalDeploymentAdmissionUnavailable
+			}
+			return err
+		}
+	}
+	for _, checkpoint := range admission.CheckpointRefs {
+		if _, err := tx.Exec(ctx, `INSERT INTO external_deployment_admission_checkpoints
+			(admission_id, phase, checkpoint_id, attempt_id, evidence_ref, evidence_sha256)
+			VALUES ($1,$2,$3,$4,$5,$6) ON CONFLICT (admission_id, phase) DO NOTHING`, admission.AdmissionID, checkpoint.Phase, checkpoint.CheckpointID, checkpoint.AttemptID, checkpoint.EvidenceRef, checkpoint.EvidenceSHA256); err != nil {
+			return err
+		}
+	}
+	return nil
 }
