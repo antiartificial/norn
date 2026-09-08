@@ -1126,7 +1126,11 @@ func externalServiceCheckpointRefs(refs []ExternalFleetCheckpointRef) []store.Ex
 	}
 	result := make([]store.ExternalDeploymentCheckpointRef, 0, len(refs))
 	seen := map[string]struct{}{}
+	allowed := map[string]struct{}{"prepare": {}, "migration": {}, "runtime": {}, "exercise": {}, "external_admission": {}}
 	for _, ref := range refs {
+		if _, permitted := allowed[ref.Phase]; !permitted || ref.CheckpointID == "" || ref.AttemptID == "" || ref.EvidenceRef == "" || !sha256HexPattern.MatchString(ref.EvidenceSHA256) {
+			return nil
+		}
 		if _, duplicate := seen[ref.Phase]; duplicate {
 			return nil
 		}
