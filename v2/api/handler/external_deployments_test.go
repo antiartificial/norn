@@ -5,11 +5,13 @@ import (
 	"context"
 	"crypto/rand"
 	"crypto/rsa"
+	"crypto/sha256"
 	"crypto/x509"
 	"encoding/base64"
 	"encoding/json"
 	"encoding/pem"
 	"errors"
+	"fmt"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -220,6 +222,11 @@ func TestExternalFleetEvidenceV1FixtureContract(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	// Fleet's final bridge commit 7ae090e asserts this same byte hash. Keeping
+	// it here makes accidental cross-repository fixture drift fail closed.
+	if got := fmt.Sprintf("%x", sha256.Sum256(contents)); got != "ff54aa118c9b9712ebf57cdbf6794502cf2ca9de2792423ad72e47e9debd0633" {
+		t.Fatalf("Fleet evidence fixture SHA-256 = %s", got)
+	}
 	decoded, err := decodeExternalFleetJSON(strings.NewReader(string(contents)), externalFleetEvidenceMaxBody, new(externalFleetEvidence))
 	if err != nil {
 		t.Fatal(err)
@@ -360,16 +367,21 @@ func TestExternalFleetLiveGitHubAttestationCapabilityShape(t *testing.T) {
 		}
 	}))
 	defer storage.Close()
-	list := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	var list *httptest.Server
+	list = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.Header.Get("Authorization") != "Bearer installation-token" || r.Header.Get("X-GitHub-Api-Version") != "2026-03-10" {
 			t.Error("GitHub list request was not exact 2026-03-10 authentication")
 		}
-		filter, page := r.URL.Query().Get("predicate_type"), r.URL.Query().Get("page")
-		if filter == "provenance" && page == "1" {
+		filter, cursor := r.URL.Query().Get("predicate_type"), r.URL.Query().Get("before")
+		if r.URL.Query().Get("page") != "" {
+			t.Error("attestation pagination must use GitHub cursors, not page numbers")
+		}
+		if filter == "provenance" && cursor == "" {
 			items := make([]any, 0, externalFleetMaxAttestations)
 			for index := 0; index < externalFleetMaxAttestations; index++ {
 				items = append(items, map[string]any{"repository_id": 1, "bundle_url": storage.URL + "/provenance-old/" + strconv.Itoa(index) + "?opaque=capability", "initiator": map[string]any{"login": "norn"}})
 			}
+			w.Header().Set("Link", "<"+list.URL+r.URL.Path+"?per_page=30&predicate_type=provenance&before=older>; rel=\"next\"")
 			_ = json.NewEncoder(w).Encode(map[string]any{"attestations": items})
 			return
 		}
@@ -405,6 +417,99 @@ func TestExternalFleetLiveGitHubAttestationCapabilityShape(t *testing.T) {
 			_, err := copyApp.attestations(context.Background(), "installation-token", copyReceipt)
 			if err == nil || strings.Contains(err.Error(), "opaque=capability") || strings.Contains(err.Error(), "installation-token") {
 				t.Fatalf("invalid live capability binding was accepted or leaked: %v", err)
+			}
+		})
+	}
+}
+
+func TestExternalFleetAttestationCursorPaginationFailsClosed(t *testing.T) {
+	const slsa = "https://slsa.dev/provenance/v1"
+	digest := strings.Repeat("b", 64)
+	makeBundle := func(marker string) []byte {
+		statement, err := json.Marshal(map[string]any{"predicateType": slsa, "subject": []any{map[string]any{"digest": map[string]string{"sha256": digest}}}, "marker": marker})
+		if err != nil {
+			t.Fatal(err)
+		}
+		return []byte(`{"dsseEnvelope":{"payload":"` + base64.StdEncoding.EncodeToString(statement) + `"}}`)
+	}
+	desired, historical := makeBundle("desired"), makeBundle("historical")
+	desiredDigest, err := externalFleetCanonicalBundleDigest(desired)
+	if err != nil {
+		t.Fatal(err)
+	}
+	storage := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/x-snappy")
+		if strings.Contains(r.URL.Path, "desired") {
+			_, _ = w.Write(snappy.Encode(nil, desired))
+			return
+		}
+		_, _ = w.Write(snappy.Encode(nil, historical))
+	}))
+	defer storage.Close()
+
+	for _, scenario := range []string{"cursor loop", "path drift", "cursor overflow", "duplicate desired"} {
+		t.Run(scenario, func(t *testing.T) {
+			var list *httptest.Server
+			list = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				cursor := r.URL.Query().Get("before")
+				if r.URL.Query().Get("predicate_type") != "provenance" {
+					t.Fatal("unexpected predicate request after a failed provenance scan")
+				}
+				bundlePath := "/historical-" + cursor
+				nextCursor := "next-" + cursor
+				switch scenario {
+				case "cursor loop":
+					if cursor == "" {
+						nextCursor = "loop"
+					} else {
+						nextCursor = "loop"
+					}
+				case "path drift":
+					w.Header().Set("Link", "<"+list.URL+"/repos/acme/other/attestations/sha256:"+digest+"?per_page=30&predicate_type=provenance&before=drift>; rel=\"next\"")
+					_ = json.NewEncoder(w).Encode(map[string]any{"attestations": []any{map[string]any{"repository_id": 1, "bundle_url": storage.URL + bundlePath + "?opaque=capability"}}})
+					return
+				case "duplicate desired":
+					bundlePath = "/desired-" + cursor
+					if cursor == "" {
+						nextCursor = "duplicate"
+					} else {
+						_ = json.NewEncoder(w).Encode(map[string]any{"attestations": []any{map[string]any{"repository_id": 1, "bundle_url": storage.URL + bundlePath + "?opaque=capability"}}})
+						return
+					}
+				}
+				w.Header().Set("Link", "<"+list.URL+r.URL.Path+"?per_page=30&predicate_type=provenance&before="+nextCursor+">; rel=\"next\"")
+				_ = json.NewEncoder(w).Encode(map[string]any{"attestations": []any{map[string]any{"repository_id": 1, "bundle_url": storage.URL + bundlePath + "?opaque=capability"}}})
+			}))
+			defer list.Close()
+			receipt := externalReceiptForTest()
+			receipt.Candidate.Repository, receipt.Candidate.RepositoryID = "acme/app", "1"
+			receipt.AttestationBundleSHA256 = desiredDigest
+			receipt.SBOMBundleSHA256 = strings.Repeat("2", 64)
+			app := &externalFleetGitHubApp{cfg: externalFleetGitHubAppConfig{APIBaseURL: list.URL, RepositoryIDs: []string{"1"}, StorageHosts: []string{"127.0.0.1"}}, client: list.Client(), storageClient: storage.Client()}
+			if _, err := app.attestations(context.Background(), "installation-token", receipt); err == nil || strings.Contains(err.Error(), "opaque=capability") {
+				t.Fatalf("%s was accepted or leaked a capability: %v", scenario, err)
+			}
+		})
+	}
+}
+
+func TestExternalFleetAttestationNextLinkRejectsMalformedOrDriftedTargets(t *testing.T) {
+	digest := strings.Repeat("b", 64)
+	app := &externalFleetGitHubApp{cfg: externalFleetGitHubAppConfig{APIBaseURL: "https://api.github.example"}}
+	valid := "https://api.github.example/repos/acme/app/attestations/sha256:" + digest + "?per_page=30&predicate_type=provenance&before=cursor"
+	if path, found, err := app.nextAttestationListPath([]string{"<" + valid + ">; rel=\"next\""}, "acme/app", digest, "provenance"); err != nil || !found || !strings.Contains(path, "before=cursor") {
+		t.Fatalf("valid GitHub cursor link rejected: path=%q found=%t err=%v", path, found, err)
+	}
+	for name, link := range map[string]string{
+		"malformed":     "not-a-link",
+		"multiple next": "<" + valid + ">; rel=\"next\", <" + valid + ">; rel=\"next\"",
+		"origin drift":  "<https://api.attacker.example/repos/acme/app/attestations/sha256:" + digest + "?per_page=30&predicate_type=provenance&before=cursor>; rel=\"next\"",
+		"path drift":    "<https://api.github.example/repos/acme/other/attestations/sha256:" + digest + "?per_page=30&predicate_type=provenance&before=cursor>; rel=\"next\"",
+		"query drift":   "<https://api.github.example/repos/acme/app/attestations/sha256:" + digest + "?per_page=30&predicate_type=provenance&page=2&before=cursor>; rel=\"next\"",
+	} {
+		t.Run(name, func(t *testing.T) {
+			if _, _, err := app.nextAttestationListPath([]string{link}, "acme/app", digest, "provenance"); err == nil {
+				t.Fatal("unsafe Link target was accepted")
 			}
 		})
 	}
@@ -457,9 +562,26 @@ func TestExternalFleetCanonicalBundleDigestRejectsCrossRuntimeAmbiguity(t *testi
 	if err != nil || strings.TrimSpace(string(output)) != want {
 		t.Fatalf("publisher digest %q err=%v, want %q", output, err, want)
 	}
+	maxInteger := []byte(`{"count":18446744073709551615}`)
+	maxDigest, err := externalFleetCanonicalBundleDigest(maxInteger)
+	if err != nil {
+		t.Fatalf("uint64-max canonical integer rejected: %v", err)
+	}
+	maxPath := filepath.Join(t.TempDir(), "max-integer.json")
+	if err := os.WriteFile(maxPath, maxInteger, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	maxOutput, err := exec.Command("python3", "../../scripts/canonical-sigstore-bundle-digest", maxPath).Output()
+	if err != nil || strings.TrimSpace(string(maxOutput)) != maxDigest {
+		t.Fatalf("publisher uint64-max digest %q err=%v, want %q", maxOutput, err, maxDigest)
+	}
 	for name, raw := range map[string][]byte{
 		"fractional number":     []byte(`{"count":1.0}`),
 		"negative number":       []byte(`{"count":-1}`),
+		"overflow integer":      []byte(`{"count":18446744073709551616}`),
+		"oversized integer":     []byte(`{"count":100000000000000000000}`),
+		"leading zero":          []byte(`{"count":01}`),
+		"exponent":              []byte(`{"count":1e0}`),
 		"HTML-sensitive string": []byte(`{"value":"<"}`),
 		"line separator":        []byte("{\"value\":\"\\u2028\"}"),
 		"duplicate key":         []byte(`{"value":1,"value":2}`),

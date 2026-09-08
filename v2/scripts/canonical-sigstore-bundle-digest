@@ -2,7 +2,7 @@
 """Print the Norn v3 canonical digest for one Sigstore bundle JSON file.
 
 The restricted profile deliberately preserves the complete parsed bundle. Its
-integer/string constraints make Python's sorted compact JSON representation
+uint64-integer/string constraints make Python's sorted compact JSON representation
 byte-for-byte equivalent to the Go verifier's representation.
 """
 
@@ -13,11 +13,16 @@ import sys
 
 
 INTEGER = re.compile(r"(?:0|[1-9][0-9]*)\Z")
+INTEGER_MAX = "18446744073709551615"
 UNSAFE_STRING = re.compile(r"[<>&\u2028\u2029\ufffd]")
 
 
 def parse_integer(value: str) -> int:
-    if not INTEGER.fullmatch(value):
+    if (
+        not INTEGER.fullmatch(value)
+        or len(value) > len(INTEGER_MAX)
+        or (len(value) == len(INTEGER_MAX) and value > INTEGER_MAX)
+    ):
         raise ValueError("bundle numbers must be non-negative canonical integers")
     return int(value)
 

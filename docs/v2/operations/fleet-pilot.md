@@ -210,7 +210,7 @@ identifiers only: raw nonce material and credentials are prohibited.
 The external receipt is v3 and carries canonical SHA-256 digests of the full
 parsed Sigstore provenance and SPDX bundle JSON; the checked-in
 `v2/scripts/canonical-sigstore-bundle-digest` profile sorts compact JSON while
-retaining every value and rejects ambiguous numeric, duplicate-key, and
+retaining every value and rejects non-uint64/ambiguous numeric, duplicate-key, and
 encoder-divergent string representations. Publisher/web URLs are display
 pointers only. The server-owned verifier
 must independently read the released HCL digest, source/repository, OCI digest,

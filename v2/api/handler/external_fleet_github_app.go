@@ -32,6 +32,7 @@ import (
 const (
 	externalFleetMaxAttestations       = 30
 	externalFleetMaxAttestationPages   = 4
+	externalFleetMaxAttestationItems   = 2 * externalFleetMaxAttestations * externalFleetMaxAttestationPages
 	externalFleetBundleCompressedMax   = 1 << 20
 	externalFleetBundleDecompressedMax = 4 << 20
 )
@@ -44,12 +45,14 @@ var externalFleetDefaultStorageHosts = []string{".blob.core.windows.net"}
 
 // The canonical handoff profile intentionally covers every JSON value in a
 // Sigstore bundle, rather than a lossy projection. It accepts the JSON grammar
-// emitted by actions/attest: non-negative integer numeric fields and strings
+// emitted by actions/attest: non-negative uint64 numeric fields and strings
 // without encoder-divergent code points. Those restrictions make Go's sorted
 // encoding exactly match the checked-in Python publisher helper while retaining
 // all signed material. Unknown or future representations fail closed until both
 // publisher and verifier support them.
 var externalFleetCanonicalInteger = regexp.MustCompile(`^(0|[1-9][0-9]*)$`)
+
+const externalFleetCanonicalIntegerMax = "18446744073709551615"
 
 type externalFleetGitHubAppConfig struct {
 	AppID          string
@@ -91,28 +94,49 @@ func (c *externalFleetGitHubApp) attestations(ctx context.Context, token string,
 	found := make(map[string]bool, len(want))
 	seenCapabilities := make(map[string]bool, externalFleetMaxAttestations*externalFleetMaxAttestationPages)
 	bundles := make(map[string]json.RawMessage, len(want))
+	totalItems, totalDownloads := 0, 0
 	for _, wantedPredicate := range []struct{ predicate, filter string }{{"https://slsa.dev/provenance/v1", "provenance"}, {"https://spdx.dev/Document/v2.3", "sbom"}} {
 		listed := false
-		for page := 1; page <= externalFleetMaxAttestationPages; page++ {
+		listPath, err := externalFleetAttestationListPath(repo, digest, wantedPredicate.filter)
+		if err != nil {
+			return nil, errors.New("attestation list binding invalid")
+		}
+		seenPages := map[string]bool{listPath: true}
+		for page := 0; page < externalFleetMaxAttestationPages; page++ {
 			var response struct {
 				Attestations []externalFleetListAttestation `json:"attestations"`
 			}
-			path := "/repos/" + repo + "/attestations/sha256:" + digest + "?per_page=" + strconv.Itoa(externalFleetMaxAttestations) + "&predicate_type=" + wantedPredicate.filter + "&page=" + strconv.Itoa(page)
-			if err := c.request(ctx, token, http.MethodGet, path, nil, &response); err != nil {
+			headers, err := c.requestHeaders(ctx, token, http.MethodGet, listPath, nil, &response)
+			if err != nil {
 				return nil, errors.New("attestation list unavailable")
 			}
 			if len(response.Attestations) > externalFleetMaxAttestations {
 				return nil, errors.New("attestation list cardinality invalid")
 			}
+			nextPath, hasNext, err := c.nextAttestationListPath(headers.Values("Link"), repo, digest, wantedPredicate.filter)
+			if err != nil {
+				return nil, errors.New("attestation list pagination invalid")
+			}
 			if len(response.Attestations) == 0 {
+				if hasNext {
+					return nil, errors.New("attestation list cardinality invalid")
+				}
 				break
 			}
 			listed = true
 			for _, item := range response.Attestations {
+				totalItems++
+				if totalItems > externalFleetMaxAttestationItems {
+					return nil, errors.New("attestation list exceeds bounds")
+				}
 				if item.RepositoryID != repositoryID || !c.validStorageBundleURL(item.BundleURL) || seenCapabilities[item.BundleURL] {
 					return nil, errors.New("attestation capability binding invalid")
 				}
 				seenCapabilities[item.BundleURL] = true
+				totalDownloads++
+				if totalDownloads > externalFleetMaxAttestationItems {
+					return nil, errors.New("attestation downloads exceed bounds")
+				}
 				bundle, err := c.fetchBundle(ctx, item.BundleURL, digest)
 				if err != nil {
 					return nil, errors.New("attestation bundle unavailable")
@@ -129,9 +153,14 @@ func (c *externalFleetGitHubApp) attestations(ctx context.Context, token string,
 				found[bundle.Predicate] = true
 				bundles[bundle.Predicate] = bundle.Raw
 			}
-			if len(response.Attestations) < externalFleetMaxAttestations {
+			if !hasNext {
 				break
 			}
+			if page+1 == externalFleetMaxAttestationPages || seenPages[nextPath] {
+				return nil, errors.New("attestation list pagination exceeds bounds")
+			}
+			seenPages[nextPath] = true
+			listPath = nextPath
 		}
 		if !listed {
 			return nil, errors.New("attestation list cardinality invalid")
@@ -141,6 +170,167 @@ func (c *externalFleetGitHubApp) attestations(ctx context.Context, token string,
 		return nil, errors.New("attestation receipt digest binding missing")
 	}
 	return bundles, nil
+}
+
+func externalFleetAttestationListPath(repo, digest, predicateFilter string) (string, error) {
+	if !validExternalRepository(repo) || len(digest) != 64 || (predicateFilter != "provenance" && predicateFilter != "sbom") {
+		return "", errors.New("invalid attestation list identity")
+	}
+	query := url.Values{"per_page": {strconv.Itoa(externalFleetMaxAttestations)}, "predicate_type": {predicateFilter}}
+	return "/repos/" + repo + "/attestations/sha256:" + digest + "?" + query.Encode(), nil
+}
+
+func (c *externalFleetGitHubApp) nextAttestationListPath(headers []string, repo, digest, predicateFilter string) (string, bool, error) {
+	links, err := externalFleetParseLinkHeaders(headers)
+	if err != nil {
+		return "", false, err
+	}
+	next := ""
+	for _, link := range links {
+		if !link.next {
+			continue
+		}
+		if next != "" {
+			return "", false, errors.New("multiple next links")
+		}
+		next = link.target
+	}
+	if next == "" {
+		return "", false, nil
+	}
+	base, err := url.Parse(c.cfg.APIBaseURL)
+	if err != nil || base.Scheme == "" || base.Host == "" || base.User != nil || base.Fragment != "" || base.RawQuery != "" || base.Path != "" {
+		return "", false, errors.New("reviewed GitHub API origin invalid")
+	}
+	candidate, err := url.Parse(next)
+	if err != nil || candidate.Scheme != base.Scheme || !strings.EqualFold(candidate.Host, base.Host) || candidate.User != nil || candidate.Fragment != "" || candidate.RawPath != "" {
+		return "", false, errors.New("next link origin invalid")
+	}
+	expectedPath := "/repos/" + repo + "/attestations/sha256:" + digest
+	if candidate.Path != expectedPath {
+		return "", false, errors.New("next link path invalid")
+	}
+	query, err := url.ParseQuery(candidate.RawQuery)
+	if err != nil {
+		return "", false, errors.New("next link query invalid")
+	}
+	for key, values := range query {
+		if (key != "per_page" && key != "predicate_type" && key != "before" && key != "after") || len(values) != 1 || values[0] == "" {
+			return "", false, errors.New("next link query invalid")
+		}
+	}
+	if query.Get("per_page") != strconv.Itoa(externalFleetMaxAttestations) || query.Get("predicate_type") != predicateFilter {
+		return "", false, errors.New("next link filter invalid")
+	}
+	before, after := query.Get("before"), query.Get("after")
+	if (before == "" && after == "") || (before != "" && after != "") {
+		return "", false, errors.New("next link cursor invalid")
+	}
+	return candidate.EscapedPath() + "?" + query.Encode(), true, nil
+}
+
+type externalFleetLink struct {
+	target string
+	next   bool
+}
+
+// externalFleetParseLinkHeaders accepts the RFC Link subset GitHub emits and
+// rejects malformed framing rather than guessing at a pagination target.
+func externalFleetParseLinkHeaders(headers []string) ([]externalFleetLink, error) {
+	var links []externalFleetLink
+	for _, header := range headers {
+		if strings.TrimSpace(header) == "" {
+			return nil, errors.New("empty Link header")
+		}
+		for offset := 0; ; {
+			for offset < len(header) && (header[offset] == ' ' || header[offset] == '\t') {
+				offset++
+			}
+			if offset == len(header) {
+				break
+			}
+			if header[offset] != '<' {
+				return nil, errors.New("malformed Link header")
+			}
+			end := strings.IndexByte(header[offset+1:], '>')
+			if end < 0 {
+				return nil, errors.New("malformed Link target")
+			}
+			end += offset + 1
+			target := header[offset+1 : end]
+			if target == "" {
+				return nil, errors.New("empty Link target")
+			}
+			offset = end + 1
+			relation := ""
+			for {
+				for offset < len(header) && (header[offset] == ' ' || header[offset] == '\t') {
+					offset++
+				}
+				if offset == len(header) || header[offset] == ',' {
+					break
+				}
+				if header[offset] != ';' {
+					return nil, errors.New("malformed Link parameter")
+				}
+				offset++
+				for offset < len(header) && (header[offset] == ' ' || header[offset] == '\t') {
+					offset++
+				}
+				start := offset
+				for offset < len(header) && ((header[offset] >= 'a' && header[offset] <= 'z') || (header[offset] >= 'A' && header[offset] <= 'Z') || header[offset] == '-') {
+					offset++
+				}
+				if start == offset || offset == len(header) || header[offset] != '=' {
+					return nil, errors.New("malformed Link parameter")
+				}
+				name := strings.ToLower(header[start:offset])
+				offset++
+				if offset == len(header) {
+					return nil, errors.New("missing Link parameter value")
+				}
+				var value string
+				if header[offset] == '"' {
+					offset++
+					start = offset
+					for offset < len(header) && header[offset] != '"' {
+						if header[offset] == '\\' {
+							return nil, errors.New("escaped Link parameter unsupported")
+						}
+						offset++
+					}
+					if offset == len(header) {
+						return nil, errors.New("unterminated Link parameter")
+					}
+					value, offset = header[start:offset], offset+1
+				} else {
+					start = offset
+					for offset < len(header) && header[offset] != ';' && header[offset] != ',' && header[offset] != ' ' && header[offset] != '\t' {
+						offset++
+					}
+					if start == offset {
+						return nil, errors.New("missing Link parameter value")
+					}
+					value = header[start:offset]
+				}
+				if name == "rel" {
+					if relation != "" {
+						return nil, errors.New("duplicate Link relation")
+					}
+					relation = value
+				}
+			}
+			links = append(links, externalFleetLink{target: target, next: strings.EqualFold(relation, "next")})
+			if offset == len(header) {
+				break
+			}
+			offset++
+			if strings.TrimSpace(header[offset:]) == "" {
+				return nil, errors.New("trailing Link separator")
+			}
+		}
+	}
+	return links, nil
 }
 
 func externalFleetRepositoryIDAllowed(id string, allowed []string) bool {
@@ -258,6 +448,7 @@ func externalFleetCanonicalBundleDigest(raw []byte) (string, error) {
 
 func rejectExternalFleetDuplicateBundleKeys(raw []byte) error {
 	decoder := json.NewDecoder(bytes.NewReader(raw))
+	decoder.UseNumber()
 	if err := checkExternalFleetBundleJSONValue(decoder); err != nil {
 		return err
 	}
@@ -274,6 +465,9 @@ func checkExternalFleetBundleJSONValue(decoder *json.Decoder) error {
 	}
 	delimiter, nested := token.(json.Delim)
 	if !nested {
+		if number, ok := token.(json.Number); ok && !validExternalFleetCanonicalInteger(number.String()) {
+			return errors.New("unsupported bundle integer")
+		}
 		return nil
 	}
 	switch delimiter {
@@ -316,7 +510,7 @@ func validExternalFleetCanonicalBundleValue(value any) bool {
 	case string:
 		return !strings.ContainsAny(typed, "<>&\u2028\u2029\ufffd")
 	case json.Number:
-		return externalFleetCanonicalInteger.MatchString(typed.String())
+		return validExternalFleetCanonicalInteger(typed.String())
 	case []any:
 		for _, item := range typed {
 			if !validExternalFleetCanonicalBundleValue(item) {
@@ -334,6 +528,14 @@ func validExternalFleetCanonicalBundleValue(value any) bool {
 	default:
 		return false
 	}
+}
+
+func validExternalFleetCanonicalInteger(value string) bool {
+	if len(value) > len(externalFleetCanonicalIntegerMax) || !externalFleetCanonicalInteger.MatchString(value) {
+		return false
+	}
+	_, err := strconv.ParseUint(value, 10, 64)
+	return err == nil
 }
 
 func externalFleetStatementSubject(subject []struct {
@@ -437,17 +639,22 @@ func (c *externalFleetGitHubApp) noRedirectClient() *http.Client {
 }
 
 func (c *externalFleetGitHubApp) request(ctx context.Context, token, method, path string, body any, out any) error {
+	_, err := c.requestHeaders(ctx, token, method, path, body, out)
+	return err
+}
+
+func (c *externalFleetGitHubApp) requestHeaders(ctx context.Context, token, method, path string, body any, out any) (http.Header, error) {
 	var reader io.Reader
 	if body != nil {
 		raw, err := json.Marshal(body)
 		if err != nil {
-			return err
+			return nil, err
 		}
 		reader = bytes.NewReader(raw)
 	}
 	req, err := http.NewRequestWithContext(ctx, method, c.cfg.APIBaseURL+path, reader)
 	if err != nil {
-		return err
+		return nil, err
 	}
 	req.Header.Set("Authorization", "Bearer "+token)
 	req.Header.Set("Accept", "application/vnd.github+json")
@@ -457,13 +664,16 @@ func (c *externalFleetGitHubApp) request(ctx context.Context, token, method, pat
 	}
 	res, err := c.noRedirectClient().Do(req)
 	if err != nil {
-		return err
+		return nil, err
 	}
 	defer res.Body.Close()
 	if res.StatusCode < 200 || res.StatusCode >= 300 {
-		return fmt.Errorf("GitHub API returned %d", res.StatusCode)
+		return nil, fmt.Errorf("GitHub API returned %d", res.StatusCode)
 	}
-	return decodeExternalFleetGitHubJSON(res.Body, externalFleetEvidenceMaxBody, out)
+	if err := decodeExternalFleetGitHubJSON(res.Body, externalFleetEvidenceMaxBody, out); err != nil {
+		return nil, err
+	}
+	return res.Header.Clone(), nil
 }
 
 func decodeExternalFleetGitHubJSON(body io.Reader, limit int64, out any) error {
