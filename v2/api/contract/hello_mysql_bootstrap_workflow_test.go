@@ -29,6 +29,7 @@ func TestHelloNornMySQLBootstrapWorkflowIsArtifactOnlyAndBoundToProtectedMaster(
 		"sbom-path: bootstrap-evidence/sbom.spdx.json",
 		"norn.hello-norn-mysql.bootstrap-handoff/v1",
 		"oci://",
+		"--predicate-type https://slsa.dev/provenance/v1",
 		"--predicate-type https://spdx.dev/Document/v2.3",
 		"--signer-workflow",
 		"--signer-digest ${REVIEWED_WORKFLOW_SHA",
@@ -72,6 +73,7 @@ func TestHelloNornMySQLBootstrapDocsRequireIndependentVerificationPolicy(t *test
 		"--signer-digest",
 		"--source-digest",
 		"--source-ref refs/heads/master",
+		"--predicate-type https://slsa.dev/provenance/v1",
 		"--predicate-type https://spdx.dev/Document/v2.3",
 		"--deny-self-hosted-runners",
 	} {

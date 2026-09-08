@@ -64,7 +64,7 @@ signer=antiartificial/norn/.github/workflows/hello-norn-mysql-bootstrap-image.ym
 gh attestation verify "oci://$artifact" --repo antiartificial/norn \
   --signer-workflow "$signer" --signer-digest "$REVIEWED_WORKFLOW_SHA" \
   --source-digest "$REVIEWED_SOURCE_SHA" --source-ref refs/heads/master \
-  --deny-self-hosted-runners
+  --predicate-type https://slsa.dev/provenance/v1 --deny-self-hosted-runners
 
 gh attestation verify "oci://$artifact" --repo antiartificial/norn \
   --signer-workflow "$signer" --signer-digest "$REVIEWED_WORKFLOW_SHA" \
