@@ -43,6 +43,7 @@ func (c *externalFleetGitHubApp) attestations(ctx context.Context, token string,
 					Payload string `json:"payload"`
 				} `json:"dsseEnvelope"`
 			} `json:"bundle"`
+			BundleURL string `json:"bundle_url"`
 		} `json:"attestations"`
 	}
 	if err := c.request(ctx, token, http.MethodGet, "/repos/"+repo+"/attestations/sha256:"+digest+"?per_page=30", nil, &response); err != nil {
@@ -57,7 +58,34 @@ func (c *externalFleetGitHubApp) attestations(ctx context.Context, token string,
 		if !ok {
 			continue
 		}
-		payload, err := base64.StdEncoding.DecodeString(item.Bundle.DSSEEnvelope.Payload)
+		bundle := item.Bundle
+		if item.BundleURL == "" {
+			return nil, errors.New("attestation bundle URL missing")
+		}
+		if item.BundleURL != "" {
+			if !strings.HasPrefix(item.BundleURL, c.cfg.APIBaseURL+"/repos/"+repo+"/attestations/") {
+				return nil, errors.New("attestation bundle URL rejected")
+			}
+			req, err := http.NewRequestWithContext(ctx, http.MethodGet, item.BundleURL, nil)
+			if err != nil {
+				return nil, err
+			}
+			req.Header.Set("Authorization", "Bearer "+token)
+			res, err := c.client.Do(req)
+			if err != nil {
+				return nil, err
+			}
+			if res.StatusCode != http.StatusOK {
+				res.Body.Close()
+				return nil, errors.New("attestation bundle unavailable")
+			}
+			err = json.NewDecoder(io.LimitReader(res.Body, externalFleetEvidenceMaxBody)).Decode(&bundle)
+			res.Body.Close()
+			if err != nil {
+				return nil, errors.New("attestation bundle invalid")
+			}
+		}
+		payload, err := base64.StdEncoding.DecodeString(bundle.DSSEEnvelope.Payload)
 		if err != nil {
 			return nil, errors.New("attestation bundle payload invalid")
 		}
@@ -74,7 +102,7 @@ func (c *externalFleetGitHubApp) attestations(ctx context.Context, token string,
 			return nil, errors.New("attestation bundle predicate invalid")
 		}
 		found[statement.PredicateType] = true
-		raw, _ := json.Marshal(item.Bundle)
+		raw, _ := json.Marshal(bundle)
 		bundles[statement.PredicateType] = raw
 	}
 	if !found["https://slsa.dev/provenance/v1"] || !found["https://spdx.dev/Document/v2.3"] {

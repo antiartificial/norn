@@ -305,12 +305,19 @@ func externalFleetAdmissionIdempotency(w http.ResponseWriter, r *http.Request, p
 	}
 	keySum := sha256.Sum256([]byte("external-fleet-admission\x00" + principal.CI.Repository + "\x00" + principal.Environment + "\x00" + appID + "\x00" + clientKey))
 	logical := struct {
-		Candidate     model.ReleaseCandidate `json:"candidate"`
-		SourceSHA     string                 `json:"sourceSha"`
-		Artifact      string                 `json:"artifact"`
-		PlanID        string                 `json:"planId"`
-		RootAttemptID string                 `json:"rootAttemptId"`
-	}{receipt.Candidate, receipt.SourceSHA, receipt.Artifact, receipt.Fleet.PlanID, receipt.Fleet.RootAttemptID}
+		Repository    string                     `json:"repository"`
+		Environment   string                     `json:"environment"`
+		App           string                     `json:"app"`
+		Candidate     model.ReleaseCandidate     `json:"candidate"`
+		SourceSHA     string                     `json:"sourceSha"`
+		Artifact      string                     `json:"artifact"`
+		Namespace     string                     `json:"namespace"`
+		PlanID        string                     `json:"planId"`
+		PlanSHA256    string                     `json:"planSha256"`
+		RootAttemptID string                     `json:"rootAttemptId"`
+		Migration     ExternalFleetNomadJobProof `json:"migration"`
+		Runtime       ExternalFleetNomadJobProof `json:"runtime"`
+	}{principal.CI.Repository, principal.Environment, appID, receipt.Candidate, receipt.SourceSHA, receipt.Artifact, receipt.Fleet.Namespace, receipt.Fleet.PlanID, receipt.Fleet.PlanSHA256, receipt.Fleet.RootAttemptID, receipt.Fleet.Migration, receipt.Fleet.Runtime}
 	canonical, err := json.Marshal(logical)
 	if err != nil {
 		return "", "", false
