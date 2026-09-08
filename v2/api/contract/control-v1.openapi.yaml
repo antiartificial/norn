@@ -2608,8 +2608,8 @@ components:
     ExternalFleetDeploymentAdmissionRequest:
       type: object
       additionalProperties: false
-      required: [receipt]
       properties:
+        admissionId: { type: string, format: uuid, description: Receipt-free terminal replay selector. Requires the original Idempotency-Key and exact authenticated app/repository/environment binding. }
         receipt: { $ref: '#/components/schemas/ExternalFleetDeploymentReceiptV4' }
     ExternalFleetAdmissionCleanupRequest:
       type: object

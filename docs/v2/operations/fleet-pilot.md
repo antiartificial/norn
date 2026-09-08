@@ -191,6 +191,12 @@ Exact terminal begin/admit retries return `200`, never a second nonce or a
 second operation. A first successful admission returns `201` and a `Location`
 header for its operation.
 
+For a stale or unavailable receipt, `/admit` also accepts the receipt-free
+terminal replay shape `{ "admissionId": "..." }` with the original
+`Idempotency-Key`. Norn resolves it locally before current configuration,
+nonce, GitHub, or evidence checks; a different key or non-terminal admission
+conflicts.
+
 If the terminal Norn transaction succeeds but the owner-only evidence-service
 commit is interrupted, Norn stores the exact pending commit intent and exposes
 `POST .../external-deployments/reconcile`. It accepts only an admission ID from

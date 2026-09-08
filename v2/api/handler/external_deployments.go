@@ -37,8 +37,9 @@ var sha256HexPattern = regexp.MustCompile(`^[0-9a-f]{64}$`)
 var externalNamePattern = regexp.MustCompile(`^[a-z0-9][a-z0-9._-]{0,127}$`)
 
 type externalDeploymentRequest struct {
-	Action  string                          `json:"action,omitempty"`
-	Receipt *ExternalFleetDeploymentReceipt `json:"receipt,omitempty"`
+	Action      string                          `json:"action,omitempty"`
+	AdmissionID string                          `json:"admissionId,omitempty"`
+	Receipt     *ExternalFleetDeploymentReceipt `json:"receipt,omitempty"`
 }
 
 type externalFleetAdmissionBeginRequest struct {
@@ -676,11 +677,6 @@ func (h *Handler) AdmitExternalFleetDeployment(w http.ResponseWriter, r *http.Re
 	if !ok {
 		return
 	}
-	configured, err := h.externalFleetAdmissionConfig(appID)
-	if err != nil {
-		WriteControlProblem(w, r, http.StatusConflict, "external_deployment_unavailable", err.Error())
-		return
-	}
 	if h.db == nil {
 		WriteControlProblem(w, r, http.StatusServiceUnavailable, "external_deployment_store_unavailable", "durable external deployment admission storage is unavailable")
 		return
@@ -694,6 +690,34 @@ func (h *Handler) AdmitExternalFleetDeployment(w http.ResponseWriter, r *http.Re
 	var request externalDeploymentRequest
 	if err := decodeControlJSONLimit(w, r, &request, maxReleaseEvidenceJSONBody); err != nil {
 		WriteControlProblem(w, r, http.StatusBadRequest, "invalid_external_deployment_request", err.Error())
+		return
+	}
+	// Receipt-free terminal replay is intentionally before current config,
+	// receipt, nonce, GitHub, or freshness checks. The admission ID plus the
+	// scoped idempotency key selects only one durable server operation.
+	if request.AdmissionID != "" && request.Receipt == nil && request.Action == "" {
+		if uuid.Validate(request.AdmissionID) != nil {
+			WriteControlProblem(w, r, http.StatusBadRequest, "invalid_external_deployment_request", "admissionId must be a UUID")
+			return
+		}
+		clientKey := strings.TrimSpace(r.Header.Get("Idempotency-Key"))
+		keySum := sha256.Sum256([]byte("external-fleet-admission\x00" + principal.CI.Repository + "\x00" + principal.Environment + "\x00" + appID + "\x00" + clientKey))
+		admission, lookupErr := h.db.GetExternalDeploymentAdmission(r.Context(), request.AdmissionID, appID, principal.Environment, principal.CI.Repository)
+		if clientKey == "" || lookupErr != nil || admission.IdempotencyKey != "app.deploy:"+hex.EncodeToString(keySum[:]) || (admission.State != store.ExternalDeploymentAdmissionCommitted && admission.State != store.ExternalDeploymentAdmissionCleanupPending && admission.State != store.ExternalDeploymentAdmissionComplete) {
+			WriteControlProblem(w, r, http.StatusConflict, "external_deployment_admission_conflict", "receipt-free replay does not match a terminal admission")
+			return
+		}
+		if op, err := h.db.GetOperation(r.Context(), admission.OperationID); err == nil {
+			op.AttachReceipt()
+			writeJSON(w, op)
+			return
+		}
+		WriteControlProblem(w, r, http.StatusConflict, "external_deployment_admission_conflict", "terminal admission operation is unavailable")
+		return
+	}
+	configured, err := h.externalFleetAdmissionConfig(appID)
+	if err != nil {
+		WriteControlProblem(w, r, http.StatusConflict, "external_deployment_unavailable", err.Error())
 		return
 	}
 	if request.Action != "" || request.Receipt == nil || request.Receipt.SchemaVersion != externalFleetReceiptSchemaV4 {
