@@ -226,7 +226,7 @@ func (h *Handler) AdmitExternalFleetDeployment(w http.ResponseWriter, r *http.Re
 	if err != nil || verification == nil {
 		message := "independent Fleet runtime verification failed"
 		if err != nil {
-			message += ": " + safeExternalVerificationError(err)
+			message += ": " + safeExternalVerificationError(err, nonce)
 		}
 		WriteControlProblem(w, r, http.StatusForbidden, "external_deployment_verification_failed", message)
 		return
@@ -538,13 +538,13 @@ func validExternalURI(value string) bool {
 	return err == nil && parsed.Scheme == "https" && parsed.Hostname() != "" && parsed.User == nil && parsed.RawQuery == "" && parsed.Fragment == ""
 }
 
-func safeExternalVerificationError(err error) string {
+func safeExternalVerificationError(err error, nonce externalAdmissionNonce) string {
 	// Verifiers can hold provider, Nomad, and registry responses. Only an error
 	// explicitly marked safe is allowed across the control-plane boundary.
 	type safe interface{ SafeExternalVerificationError() string }
 	if typed, ok := err.(safe); ok {
 		value := strings.TrimSpace(typed.SafeExternalVerificationError())
-		if value != "" && len(value) <= 240 && !strings.ContainsAny(value, "\r\n") {
+		if value != "" && len(value) <= 240 && !strings.ContainsAny(value, "\r\n") && !strings.Contains(value, nonce.String()) && !strings.Contains(value, nonce.Secret) {
 			return value
 		}
 	}

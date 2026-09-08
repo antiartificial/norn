@@ -3,6 +3,7 @@ package store
 import (
 	"context"
 	"errors"
+	"fmt"
 	"os"
 	"sync"
 	"testing"
@@ -12,6 +13,77 @@ import (
 
 	"norn/v2/api/model"
 )
+
+func TestExternalDeploymentNonceIssuanceCapAndExpiryCleanup(t *testing.T) {
+	if os.Getenv("NORN_TEST_DATABASE_URL") == "" {
+		t.Skip("NORN_TEST_DATABASE_URL is not set")
+	}
+	db, err := Connect(os.Getenv("NORN_TEST_DATABASE_URL"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(db.Close)
+	if err := Migrate(db); err != nil {
+		t.Fatal(err)
+	}
+	ctx := context.Background()
+	base := ExternalDeploymentNonce{App: "hello-norn-mysql", Environment: "staging", CIRepository: "acme/norn-fleet", CIRunID: "nonce-cap-" + uuid.NewString(), CIRunAttempt: "1", ExpiresAt: time.Now().Add(time.Hour)}
+	issue := func(index int) error {
+		nonce := base
+		nonce.ID, nonce.NonceSHA256 = uuid.NewString(), fmt.Sprintf("%064x", index+1)
+		return db.IssueExternalDeploymentNonce(ctx, nonce)
+	}
+	var wg sync.WaitGroup
+	errs := make(chan error, 8)
+	for index := 0; index < 8; index++ {
+		wg.Add(1)
+		go func(value int) {
+			defer wg.Done()
+			errs <- issue(value)
+		}(index)
+	}
+	wg.Wait()
+	close(errs)
+	var issued, capped int
+	for err := range errs {
+		if err == nil {
+			issued++
+		} else if errors.Is(err, ErrExternalDeploymentNonceLimit) {
+			capped++
+		} else {
+			t.Fatalf("concurrent nonce issue: %v", err)
+		}
+	}
+	if issued != externalDeploymentNonceMaxOutstandingPerRun || capped != 8-externalDeploymentNonceMaxOutstandingPerRun {
+		t.Fatalf("concurrent nonce cap issued=%d capped=%d", issued, capped)
+	}
+	t.Cleanup(func() {
+		_, _ = db.Pool.Exec(context.Background(), `DELETE FROM external_deployment_nonces WHERE ci_run_id=$1`, base.CIRunID)
+	})
+
+	expiredConsumed, expiredUnconsumed := uuid.NewString(), uuid.NewString()
+	for index, id := range []string{expiredConsumed, expiredUnconsumed} {
+		consumedAt := interface{}(nil)
+		if index == 0 {
+			consumedAt = time.Now().Add(-time.Hour)
+		}
+		if _, err := db.Pool.Exec(ctx, `INSERT INTO external_deployment_nonces (id, nonce_sha256, app, environment, ci_repository, ci_run_id, ci_run_attempt, expires_at, consumed_at) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9)`, id, fmt.Sprintf("%064x", index+100), base.App, base.Environment, base.CIRepository, "expired-"+base.CIRunID, base.CIRunAttempt, time.Now().Add(-time.Hour), consumedAt); err != nil {
+			t.Fatal(err)
+		}
+	}
+	cleanupTrigger := base
+	cleanupTrigger.ID, cleanupTrigger.NonceSHA256, cleanupTrigger.CIRunID = uuid.NewString(), fmt.Sprintf("%064x", 200), "cleanup-"+base.CIRunID
+	if err := db.IssueExternalDeploymentNonce(ctx, cleanupTrigger); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() {
+		_, _ = db.Pool.Exec(context.Background(), `DELETE FROM external_deployment_nonces WHERE ci_run_id=$1`, cleanupTrigger.CIRunID)
+	})
+	var expiredRemaining int
+	if err := db.Pool.QueryRow(ctx, `SELECT count(*) FROM external_deployment_nonces WHERE id IN ($1,$2)`, expiredConsumed, expiredUnconsumed).Scan(&expiredRemaining); err != nil || expiredRemaining != 0 {
+		t.Fatalf("expired consumed/unconsumed cleanup remaining=%d err=%v", expiredRemaining, err)
+	}
+}
 
 // TestExternalDeploymentAdmissionAtomicReplayAndRace proves the three failure
 // boundaries that matter for the external bridge: a failed terminal write does

@@ -17,6 +17,11 @@ import (
 	"norn/v2/api/store"
 )
 
+type externalSafeVerifierError string
+
+func (e externalSafeVerifierError) Error() string                         { return string(e) }
+func (e externalSafeVerifierError) SafeExternalVerificationError() string { return string(e) }
+
 func externalReceiptForTest() ExternalFleetDeploymentReceipt {
 	now := time.Now().UTC().Truncate(time.Second)
 	candidate := testReleaseCandidate()
@@ -220,15 +225,27 @@ func TestExternalAdmissionProofNeverRetainsOrReturnsRawNonce(t *testing.T) {
 	if err != nil || strings.Contains(string(encoded), receipt.Nonce) || strings.Contains(string(encoded), "."+strings.Repeat("a", 64)) {
 		t.Fatalf("durable proof leaked raw nonce: %s err=%v", encoded, err)
 	}
-	if got := safeExternalVerificationError(errors.New("mysql://secret@example.test")); got != "independent evidence was rejected" {
+	nonce := externalAdmissionNonce{ID: receipt.Nonce[:36], Secret: receipt.Nonce[37:]}
+	if got := safeExternalVerificationError(errors.New("mysql://secret@example.test"), nonce); got != "independent evidence was rejected" {
 		t.Fatalf("untyped verifier error leaked: %q", got)
 	}
 	// Nested evidence and DSSE maps are caller controlled too. Matching the
 	// simple identifier grammar is not sufficient because a nonce does.
 	proof.Fleet.NonceEvidenceRef = receipt.Nonce
 	proof.Candidate.Attestation.Bundle = &model.ReleaseAttestationBundle{Provenance: model.DSSEEnvelope{Payload: receipt.Nonce[37:]}}
-	if !externalValueContainsNonce(proof, externalAdmissionNonce{ID: receipt.Nonce[:36], Secret: receipt.Nonce[37:]}) {
+	if !externalValueContainsNonce(proof, nonce) {
 		t.Fatal("recursive nonce scanner missed nested raw nonce material")
+	}
+	for _, leaked := range []externalSafeVerifierError{
+		externalSafeVerifierError("Nomad read failed for " + receipt.Nonce + " during verification"),
+		externalSafeVerifierError("Consul evidence contains secret=" + nonce.Secret + " (adapter context)"),
+	} {
+		if got := safeExternalVerificationError(leaked, nonce); got != "independent evidence was rejected" {
+			t.Fatalf("typed verifier error leaked nonce material: %q", got)
+		}
+	}
+	if got := safeExternalVerificationError(externalSafeVerifierError("Nomad allocation missing after independent lookup"), nonce); got != "Nomad allocation missing after independent lookup" {
+		t.Fatalf("safe verifier detail was unnecessarily discarded: %q", got)
 	}
 }
 
