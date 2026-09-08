@@ -514,6 +514,28 @@ paths:
         '403': { $ref: '#/components/responses/Problem' }
         '409': { $ref: '#/components/responses/Problem' }
         '503': { $ref: '#/components/responses/Problem' }
+  /api/v1/apps/{id}/external-deployments/reconcile:
+    parameters:
+      - $ref: '#/components/parameters/AppID'
+    post:
+      operationId: reconcileExternalFleetDeploymentAdmission
+      description: Reconciles only a durably pending v4 evidence-service commit. Norn reconstructs every CAS binding from its persisted admission and operation; callers never provide a nonce, snapshot, receipt, proof, or cleanup digest.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/ExternalFleetAdmissionReconcileRequest' }
+      responses:
+        '200':
+          description: Durable pending or cleanup-pending admission state
+          headers:
+            Cache-Control: { $ref: '#/components/headers/NoStoreCacheControl' }
+            Pragma: { $ref: '#/components/headers/NoCachePragma' }
+          content: { application/json: { schema: { $ref: '#/components/schemas/ExternalFleetAdmissionReplayResponse' } } }
+        '400': { $ref: '#/components/responses/Problem' }
+        '403': { $ref: '#/components/responses/Problem' }
+        '409': { $ref: '#/components/responses/Problem' }
+        '503': { $ref: '#/components/responses/Problem' }
   /api/v1/apps/{id}/external-deployments/context/{admissionId}:
     parameters:
       - $ref: '#/components/parameters/AppID'
@@ -2599,6 +2621,12 @@ components:
         receiptDigest: { type: string, pattern: '^[0-9a-f]{64}$', description: Server-canonical SHA-256 digest of the admitted receipt. }
         cleanupIntentDigest: { type: string, pattern: '^[0-9a-f]{64}$', description: SHA-256 digest of the evidence-service cleanup intent bound to this terminal admission. }
         absenceProofDigest: { type: string, pattern: '^[0-9a-f]{64}$', description: SHA-256 digest of the evidence-service proof that the registered nonce material is absent. }
+    ExternalFleetAdmissionReconcileRequest:
+      type: object
+      additionalProperties: false
+      required: [admissionId]
+      properties:
+        admissionId: { type: string, format: uuid }
     ExternalFleetDeploymentReceiptV4:
       type: object
       additionalProperties: false

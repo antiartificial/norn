@@ -37,6 +37,7 @@ func TestControlOpenAPIParsesAndLocalRefsResolve(t *testing.T) {
 		"/api/v1/apps/{id}/private-attestations",
 		"/api/v1/apps/{id}/external-deployments/begin", "/api/v1/apps/{id}/external-deployments/resume",
 		"/api/v1/apps/{id}/external-deployments/admit", "/api/v1/apps/{id}/external-deployments/cleanup",
+		"/api/v1/apps/{id}/external-deployments/reconcile",
 		"/api/v1/apps/{id}/external-deployments/context/{admissionId}",
 		"/api/v1/fleet/plans/{planID}/github/pull-request", "/api/v1/fleet/plans/{planID}/github/dispatch",
 	} {

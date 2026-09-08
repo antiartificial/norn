@@ -81,6 +81,10 @@ type externalFleetAdmissionCleanupRequest struct {
 	AbsenceProofDigest  string `json:"absenceProofDigest"`
 }
 
+type externalFleetAdmissionReconcileRequest struct {
+	AdmissionID string `json:"admissionId"`
+}
+
 // ExternalFleetLogicalIdentity is the retry-stable part of an admission. It
 // deliberately excludes run/attempt/JTI, nonce, and Nomad observations.
 type ExternalFleetLogicalIdentity struct {
@@ -559,6 +563,66 @@ func (h *Handler) CompleteExternalFleetDeploymentCleanup(w http.ResponseWriter, 
 	writeJSON(w, externalFleetAdmissionResponse{SchemaVersion: "norn.external-fleet-admission/v4", AdmissionID: request.AdmissionID, State: string(store.ExternalDeploymentAdmissionComplete), OperationID: operationID})
 }
 
+// ReconcileExternalFleetDeploymentAdmission completes an explicitly durable
+// remote commit after a network loss. It is intentionally receipt-free: every
+// CAS field is reloaded from Norn's persisted claim and operation projection.
+func (h *Handler) ReconcileExternalFleetDeploymentAdmission(w http.ResponseWriter, r *http.Request) {
+	preventSensitiveResponseCaching(w)
+	appID := chi.URLParam(r, "id")
+	principal, ok := requireExternalFleetAdmissionScope(w, r, appID)
+	if !ok || h.db == nil {
+		if ok {
+			WriteControlProblem(w, r, http.StatusServiceUnavailable, "external_deployment_store_unavailable", "durable external admission storage is unavailable")
+		}
+		return
+	}
+	var request externalFleetAdmissionReconcileRequest
+	if err := decodeControlJSONLimit(w, r, &request, maxReleaseEvidenceJSONBody); err != nil || uuid.Validate(request.AdmissionID) != nil {
+		WriteControlProblem(w, r, http.StatusBadRequest, "invalid_external_deployment_reconcile", "reconcile requires an admissionId")
+		return
+	}
+	admission, err := h.db.GetExternalDeploymentAdmission(r.Context(), request.AdmissionID, appID, principal.Environment, principal.CI.Repository)
+	if err != nil || (admission.State != store.ExternalDeploymentAdmissionCommitted && admission.State != store.ExternalDeploymentAdmissionCleanupPending) || admission.OperationID == "" {
+		WriteControlProblem(w, r, http.StatusConflict, "external_deployment_reconcile_conflict", "admission is not a durable pending remote commit")
+		return
+	}
+	var snapshotID, snapshotRef, snapshotSHA, receiptDigest, proofDigest, cleanupIntent string
+	var claimRevision, commitRevision int64
+	err = h.db.Pool.QueryRow(r.Context(), `SELECT service_snapshot_id, service_snapshot_ref, service_snapshot_sha256, service_receipt_sha256, service_proof_sha256, cleanup_intent_sha256, service_claim_revision, service_commit_revision FROM external_deployment_admissions WHERE id=$1`, admission.ID).Scan(&snapshotID, &snapshotRef, &snapshotSHA, &receiptDigest, &proofDigest, &cleanupIntent, &claimRevision, &commitRevision)
+	if err != nil || snapshotID == "" || snapshotRef == "" || !sha256HexPattern.MatchString(snapshotSHA) || !sha256HexPattern.MatchString(receiptDigest) || !sha256HexPattern.MatchString(proofDigest) || !sha256HexPattern.MatchString(cleanupIntent) || claimRevision < 1 {
+		WriteControlProblem(w, r, http.StatusConflict, "external_deployment_reconcile_conflict", "persisted remote commit bindings are incomplete")
+		return
+	}
+	if commitRevision > 0 {
+		writeJSON(w, externalFleetAdmissionResponse{SchemaVersion: "norn.external-fleet-admission/v4", AdmissionID: admission.ID, State: string(admission.State), OperationID: admission.OperationID, CleanupState: "pending"})
+		return
+	}
+	registration, err := h.db.GetExternalDeploymentNonceRegistration(r.Context(), admission.ID, admission.NonceID)
+	op, opErr := h.db.GetOperation(r.Context(), admission.OperationID)
+	opDigest, digestErr := externalOperationDigest(op)
+	registrar, registered := h.externalFleetDeploymentVerifier.(ExternalFleetEvidenceRegistrationClient)
+	if err != nil || opErr != nil || digestErr != nil || !registered || registration.Generation != admission.NonceGeneration || registration.ServiceRevision < 1 {
+		WriteControlProblem(w, r, http.StatusServiceUnavailable, "external_deployment_reconcile_unavailable", "remote commit cannot be reconstructed")
+		return
+	}
+	status, statusErr := registrar.GetExternalFleetAdmissionStatus(r.Context(), admission.ID, admission.NonceGeneration)
+	snapshot := &ExternalFleetEvidenceSnapshot{ID: snapshotID, Ref: snapshotRef, SHA256: snapshotSHA}
+	claim := ExternalFleetEvidenceClaim{SchemaVersion: "norn.external-fleet-admission-callback/v4", AdmissionID: admission.ID, LogicalDigest: admission.RequestDigest, AdmissionContextDigest: strings.TrimPrefix(admission.RequestDigest, "sha256:"), ReceiptDigest: receiptDigest, ProofDigest: proofDigest, NonceSHA256: registration.NonceSHA256, Generation: admission.NonceGeneration, ExpectedRevision: claimRevision, OperationID: admission.OperationID, OperationDigest: opDigest, CleanupIntentDigest: cleanupIntent}
+	if statusErr == nil && externalCommitStatusMatches(status, claim, snapshot) {
+		if err := h.db.RecordExternalDeploymentCommitBinding(r.Context(), store.ExternalDeploymentServiceSnapshot{AdmissionID: admission.ID, CommitRevision: status.Revision, CleanupIntentSHA256: cleanupIntent}); err == nil {
+			_ = h.db.MarkExternalDeploymentAdmissionCleanupPending(r.Context(), admission.ID)
+			writeJSON(w, externalFleetAdmissionResponse{SchemaVersion: "norn.external-fleet-admission/v4", AdmissionID: admission.ID, State: string(store.ExternalDeploymentAdmissionCleanupPending), OperationID: admission.OperationID, CleanupState: "pending"})
+			return
+		}
+	}
+	committed, commitErr := registrar.CommitExternalFleetNonce(r.Context(), claim)
+	if commitErr != nil || !externalCommitStatusMatches(committed, claim, snapshot) || h.db.RecordExternalDeploymentCommitBinding(r.Context(), store.ExternalDeploymentServiceSnapshot{AdmissionID: admission.ID, CommitRevision: committed.Revision, CleanupIntentSHA256: cleanupIntent}) != nil || h.db.MarkExternalDeploymentAdmissionCleanupPending(r.Context(), admission.ID) != nil {
+		WriteControlProblem(w, r, http.StatusServiceUnavailable, "external_deployment_reconcile_unavailable", "remote commit remains pending")
+		return
+	}
+	writeJSON(w, externalFleetAdmissionResponse{SchemaVersion: "norn.external-fleet-admission/v4", AdmissionID: admission.ID, State: string(store.ExternalDeploymentAdmissionCleanupPending), OperationID: admission.OperationID, CleanupState: "pending"})
+}
+
 // AdmitExternalFleetDeployment either issues a one-time Norn nonce or admits
 // one independently verified staging receipt. It is a separate route/scope so
 // normal DiscoverApps and release deployment behavior stay unchanged.
@@ -799,6 +863,10 @@ func (h *Handler) AdmitExternalFleetDeployment(w http.ResponseWriter, r *http.Re
 			return
 		}
 		claim := ExternalFleetEvidenceClaim{SchemaVersion: "norn.external-fleet-admission-callback/v4", AdmissionID: admission.ID, LogicalDigest: digest, AdmissionContextDigest: strings.TrimPrefix(digest, "sha256:"), ReceiptDigest: hex.EncodeToString(receiptHash[:]), ProofDigest: serviceProofDigest, NonceSHA256: nonce.sha256(), Generation: admission.NonceGeneration, ExpectedRevision: serviceClaimRevision, OperationID: result.Operation.ID, OperationDigest: opDigest, CleanupIntentDigest: cleanupDigest}
+		if err := h.db.RecordExternalDeploymentCommitPending(r.Context(), admission.ID, cleanupDigest); err != nil {
+			WriteControlProblem(w, r, http.StatusServiceUnavailable, "external_deployment_cleanup_pending", "deployment committed but durable remote commit recovery could not be recorded")
+			return
+		}
 		commitStatus, commitErr := registrar.CommitExternalFleetNonce(r.Context(), claim)
 		if commitErr != nil {
 			commitStatus, commitErr = registrar.GetExternalFleetAdmissionStatus(r.Context(), admission.ID, admission.NonceGeneration)

@@ -488,6 +488,7 @@ func main() {
 		r.With(handler.ValidateAppID).Post("/v1/apps/{id}/external-deployments/resume", h.ResumeExternalFleetDeploymentAdmission)
 		r.With(handler.ValidateAppID).Post("/v1/apps/{id}/external-deployments/admit", h.AdmitExternalFleetDeploymentV4)
 		r.With(handler.ValidateAppID).Post("/v1/apps/{id}/external-deployments/cleanup", h.CompleteExternalFleetDeploymentCleanup)
+		r.With(handler.ValidateAppID).Post("/v1/apps/{id}/external-deployments/reconcile", h.ReconcileExternalFleetDeploymentAdmission)
 		r.With(handler.ValidateAppID).Get("/v1/apps/{id}/external-deployments/context/{admissionId}", h.GetExternalFleetDeploymentAdmissionContext)
 		r.With(handler.ValidateAppID).Post("/v1/apps/{id}/external-deployments", h.AdmitExternalFleetDeployment)
 		r.With(handler.ValidateAppID).Post("/v1/apps/{id}/releases/rollbacks", h.QueueReleaseRollback)
@@ -1159,7 +1160,7 @@ func controlScopeForRequest(r *http.Request) string {
 		// requiring api:read here would incorrectly reject that constrained CI
 		// identity before its server-owned admission context can be checked.
 		return ""
-	case r.Method == http.MethodPost && (strings.HasSuffix(path, "/releases/preflight") || strings.HasSuffix(path, "/releases/deployments") || strings.HasSuffix(path, "/releases/rollbacks") || strings.HasSuffix(path, "/private-attestations") || strings.HasSuffix(path, "/qualifications") || strings.HasSuffix(path, "/promotions") || strings.HasSuffix(path, "/external-deployments") || strings.HasSuffix(path, "/external-deployments/begin") || strings.HasSuffix(path, "/external-deployments/resume") || strings.HasSuffix(path, "/external-deployments/admit") || strings.HasSuffix(path, "/external-deployments/cleanup")):
+	case r.Method == http.MethodPost && (strings.HasSuffix(path, "/releases/preflight") || strings.HasSuffix(path, "/releases/deployments") || strings.HasSuffix(path, "/releases/rollbacks") || strings.HasSuffix(path, "/private-attestations") || strings.HasSuffix(path, "/qualifications") || strings.HasSuffix(path, "/promotions") || strings.HasSuffix(path, "/external-deployments") || strings.HasSuffix(path, "/external-deployments/begin") || strings.HasSuffix(path, "/external-deployments/resume") || strings.HasSuffix(path, "/external-deployments/admit") || strings.HasSuffix(path, "/external-deployments/cleanup") || strings.HasSuffix(path, "/external-deployments/reconcile")):
 		// The global middleware authenticates the Norn token but the release
 		// handlers own their exact scope plus app/environment/CI binding.
 		return ""
@@ -1282,6 +1283,7 @@ func writeControlCapabilitiesForConfig(cfg *config.Config, w http.ResponseWriter
 		endpoints["externalFleetAdmissionBegin"] = "/api/v1/apps/{id}/external-deployments/begin"
 		endpoints["externalFleetAdmissionAdmit"] = "/api/v1/apps/{id}/external-deployments/admit"
 		endpoints["externalFleetAdmissionContext"] = "/api/v1/apps/{id}/external-deployments/context/{admissionId}"
+		endpoints["externalFleetAdmissionReconcile"] = "/api/v1/apps/{id}/external-deployments/reconcile"
 	}
 	if cfg.IsAppCatalogReadOnly() {
 		features = withoutCapability(features, "app-creation")

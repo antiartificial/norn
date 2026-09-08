@@ -175,7 +175,25 @@ func (db *DB) RecordExternalDeploymentCommitBinding(ctx context.Context, snapsho
 		return ErrExternalDeploymentAdmissionUnavailable
 	}
 	tag, err := db.Pool.Exec(ctx, `UPDATE external_deployment_admissions SET service_commit_revision=$2, cleanup_intent_sha256=$3, updated_at=now()
-		WHERE id=$1 AND state IN ('committed','cleanup_pending') AND (cleanup_intent_sha256='' OR (service_commit_revision=$2 AND cleanup_intent_sha256=$3))`, snapshot.AdmissionID, snapshot.CommitRevision, snapshot.CleanupIntentSHA256)
+		WHERE id=$1 AND state IN ('committed','cleanup_pending') AND (cleanup_intent_sha256='' OR (service_commit_revision=0 AND cleanup_intent_sha256=$3) OR (service_commit_revision=$2 AND cleanup_intent_sha256=$3))`, snapshot.AdmissionID, snapshot.CommitRevision, snapshot.CleanupIntentSHA256)
+	if err != nil {
+		return err
+	}
+	if tag.RowsAffected() != 1 {
+		return ErrExternalDeploymentAdmissionUnavailable
+	}
+	return nil
+}
+
+// RecordExternalDeploymentCommitPending makes a post-operation remote commit
+// recoverable. It stores the deterministic intent before any network call;
+// a later authenticated reconciliation can reconstruct only the exact CAS.
+func (db *DB) RecordExternalDeploymentCommitPending(ctx context.Context, admissionID, cleanupIntentSHA256 string) error {
+	if db == nil || db.Pool == nil || admissionID == "" || len(cleanupIntentSHA256) != 64 {
+		return ErrExternalDeploymentAdmissionUnavailable
+	}
+	tag, err := db.Pool.Exec(ctx, `UPDATE external_deployment_admissions SET cleanup_intent_sha256=$2, updated_at=now()
+		WHERE id=$1 AND state IN ('committed','cleanup_pending') AND (cleanup_intent_sha256='' OR cleanup_intent_sha256=$2)`, admissionID, cleanupIntentSHA256)
 	if err != nil {
 		return err
 	}

@@ -191,6 +191,14 @@ Exact terminal begin/admit retries return `200`, never a second nonce or a
 second operation. A first successful admission returns `201` and a `Location`
 header for its operation.
 
+If the terminal Norn transaction succeeds but the owner-only evidence-service
+commit is interrupted, Norn stores the exact pending commit intent and exposes
+`POST .../external-deployments/reconcile`. It accepts only an admission ID from
+the protected Fleet identity and reconstructs the nonce hash, claim revision,
+snapshot, receipt/proof, operation digest, and cleanup intent from Norn's
+durable state. It is therefore safe to retry and cannot become a caller-shaped
+commit endpoint.
+
 If registration, verification, or post-commit evidence cleanup is interrupted,
 Fleet calls `POST .../external-deployments/resume` with the original admission
 ID and exact logical identity under the same key. Norn either returns the
