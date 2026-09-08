@@ -14,14 +14,24 @@ import (
 // Translate converts an InfraSpec into a Nomad job specification.
 // Each process in the infraspec becomes a TaskGroup within the job.
 // Scheduled processes (cron) are translated into separate periodic batch jobs.
-func Translate(spec *model.InfraSpec, imageTag string, env map[string]string) *nomadapi.Job {
-	return TranslateForRegion(spec, imageTag, env, spec.ResolvedRegions()[0])
+func Translate(spec *model.InfraSpec, imageTag string, env map[string]string) (*nomadapi.Job, error) {
+	if err := model.ValidateNomadVariableFilesForSpec(spec); err != nil {
+		return nil, err
+	}
+	return translateForRegion(spec, imageTag, env, spec.ResolvedRegions()[0]), nil
 }
 
 // TranslateForRegion creates the regional service job and filters processes by
 // their effective placement. Nomad regions provide an independent namespace,
 // so the same stable app job ID is intentionally reused in every region.
-func TranslateForRegion(spec *model.InfraSpec, imageTag string, env map[string]string, region model.ResolvedRegion) *nomadapi.Job {
+func TranslateForRegion(spec *model.InfraSpec, imageTag string, env map[string]string, region model.ResolvedRegion) (*nomadapi.Job, error) {
+	if err := model.ValidateNomadVariableFilesForSpec(spec); err != nil {
+		return nil, err
+	}
+	return translateForRegion(spec, imageTag, env, region), nil
+}
+
+func translateForRegion(spec *model.InfraSpec, imageTag string, env map[string]string, region model.ResolvedRegion) *nomadapi.Job {
 	jobID := spec.App
 	jobType := "service"
 
@@ -304,11 +314,28 @@ func servicePlacementTags(spec *model.InfraSpec, region model.ResolvedRegion) []
 }
 
 // TranslatePeriodic creates a separate Nomad periodic batch job for a scheduled process.
-func TranslatePeriodic(spec *model.InfraSpec, procName string, proc model.Process, imageTag string, env map[string]string) *nomadapi.Job {
-	return TranslatePeriodicForRegion(spec, procName, proc, imageTag, env, spec.ResolvedRegions()[0])
+func TranslatePeriodic(spec *model.InfraSpec, procName string, proc model.Process, imageTag string, env map[string]string) (*nomadapi.Job, error) {
+	if err := validatePeriodicTranslation(spec, procName, proc); err != nil {
+		return nil, err
+	}
+	return translatePeriodicForRegion(spec, procName, proc, imageTag, env, spec.ResolvedRegions()[0]), nil
 }
 
-func TranslatePeriodicForRegion(spec *model.InfraSpec, procName string, proc model.Process, imageTag string, env map[string]string, region model.ResolvedRegion) *nomadapi.Job {
+func TranslatePeriodicForRegion(spec *model.InfraSpec, procName string, proc model.Process, imageTag string, env map[string]string, region model.ResolvedRegion) (*nomadapi.Job, error) {
+	if err := validatePeriodicTranslation(spec, procName, proc); err != nil {
+		return nil, err
+	}
+	return translatePeriodicForRegion(spec, procName, proc, imageTag, env, region), nil
+}
+
+func validatePeriodicTranslation(spec *model.InfraSpec, procName string, proc model.Process) error {
+	if err := model.ValidateNomadVariableFilesForSpec(spec); err != nil {
+		return err
+	}
+	return model.ValidateNomadVariableFilesForProcess(spec, procName, proc)
+}
+
+func translatePeriodicForRegion(spec *model.InfraSpec, procName string, proc model.Process, imageTag string, env map[string]string, region model.ResolvedRegion) *nomadapi.Job {
 	jobID := fmt.Sprintf("%s-%s", spec.App, procName)
 	job := nomadapi.NewBatchJob(jobID, jobID, region.NomadRegion, 50)
 	if pool := spec.EffectiveNodePool(); pool != "" {
@@ -385,7 +412,29 @@ func TranslatePeriodicForRegion(spec *model.InfraSpec, procName string, proc mod
 }
 
 // TranslateBatch creates a one-shot Nomad batch job for a function invocation.
-func TranslateBatch(spec *model.InfraSpec, procName string, proc model.Process, imageTag string, env map[string]string, jobID string) *nomadapi.Job {
+func TranslateBatch(spec *model.InfraSpec, procName string, proc model.Process, imageTag string, env map[string]string, jobID string) (*nomadapi.Job, error) {
+	if err := model.ValidateNomadVariableFilesForSpec(spec); err != nil {
+		return nil, err
+	}
+	if err := model.ValidateNomadVariableFilesForProcess(spec, procName, proc); err != nil {
+		return nil, err
+	}
+	if proc.NomadVariables != nil && hasFunctionRequestMetadata(env) {
+		return nil, fmt.Errorf("function request metadata is unsupported when nomadVariables are configured")
+	}
+	return translateBatch(spec, procName, proc, imageTag, env, jobID), nil
+}
+
+func hasFunctionRequestMetadata(env map[string]string) bool {
+	for key := range env {
+		if strings.HasPrefix(key, "NORN_REQUEST_") {
+			return true
+		}
+	}
+	return false
+}
+
+func translateBatch(spec *model.InfraSpec, procName string, proc model.Process, imageTag string, env map[string]string, jobID string) *nomadapi.Job {
 	job := nomadapi.NewBatchJob(jobID, jobID, "global", 50)
 	job.Datacenters = []string{"dc1"}
 

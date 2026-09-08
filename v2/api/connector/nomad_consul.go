@@ -40,7 +40,7 @@ func (c *NomadConsulConnector) Validate(spec *model.InfraSpec, production bool) 
 	if c == nil || c.Nomad == nil {
 		return fmt.Errorf("nomad connector is not configured")
 	}
-	return nil
+	return model.ValidateNomadVariableFilesForSpec(spec)
 }
 
 func (c *NomadConsulConnector) Healthy(ctx context.Context) error {
@@ -62,7 +62,10 @@ func (c *NomadConsulConnector) Submit(ctx context.Context, req SubmitRequest) (s
 	}
 	var firstEval string
 	if serviceProcessCount(req.Spec, req.Region.Name) > 0 {
-		job := nomad.TranslateForRegion(req.Spec, req.Image, req.Environment, req.Region)
+		job, err := nomad.TranslateForRegion(req.Spec, req.Image, req.Environment, req.Region)
+		if err != nil {
+			return "", err
+		}
 		eval, err := c.Nomad.SubmitJobRegion(job, req.Region.NomadRegion)
 		if err != nil {
 			return "", err
@@ -73,7 +76,10 @@ func (c *NomadConsulConnector) Submit(ctx context.Context, req SubmitRequest) (s
 		if process.Schedule == "" || !req.Spec.ProcessRunsInRegion(process, req.Region.Name) {
 			continue
 		}
-		job := nomad.TranslatePeriodicForRegion(req.Spec, name, process, req.Image, req.Environment, req.Region)
+		job, err := nomad.TranslatePeriodicForRegion(req.Spec, name, process, req.Image, req.Environment, req.Region)
+		if err != nil {
+			return "", fmt.Errorf("periodic process %s: %w", name, err)
+		}
 		eval, err := c.Nomad.SubmitJobRegion(job, req.Region.NomadRegion)
 		if err != nil {
 			return "", fmt.Errorf("periodic process %s: %w", name, err)

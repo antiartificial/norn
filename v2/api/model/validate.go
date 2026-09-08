@@ -6,6 +6,7 @@ import (
 	"net/url"
 	"path"
 	"regexp"
+	"sort"
 	"strings"
 	"time"
 )
@@ -470,6 +471,51 @@ func validateNomadVariableFiles(r *ValidationResult, spec *InfraSpec, field stri
 			r.add("error", field+".env."+file.Key, "a Nomad variable value must not also be supplied through task environment")
 		}
 	}
+}
+
+// ValidateNomadVariableFilesForSpec re-applies the semantic constraints for
+// Nomad variable-file transport at scheduling time. Catalog validation is not
+// a sufficient boundary: an operator can modify an on-disk catalog after a
+// deployment has been accepted, and every Nomad submission must still fail
+// closed before it constructs template data.
+func ValidateNomadVariableFilesForSpec(spec *InfraSpec) error {
+	if spec == nil {
+		return fmt.Errorf("infraspec is required")
+	}
+	names := make([]string, 0, len(spec.Processes))
+	for name := range spec.Processes {
+		names = append(names, name)
+	}
+	sort.Strings(names)
+	for _, name := range names {
+		if err := ValidateNomadVariableFilesForProcess(spec, name, spec.Processes[name]); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+// ValidateNomadVariableFilesForProcess validates the process passed to a
+// direct scheduler path (periodic and function jobs use a copied process).
+// It intentionally checks only the transport contract, rather than requiring
+// every catalog-wide validation rule, so administrative schedule changes do
+// not change this narrow runtime safety boundary.
+func ValidateNomadVariableFilesForProcess(spec *InfraSpec, processName string, proc Process) error {
+	if spec == nil {
+		return fmt.Errorf("infraspec is required")
+	}
+	result := &ValidationResult{App: spec.App, Valid: true}
+	validateNomadVariableFiles(result, spec, "processes."+processName, proc)
+	if result.Valid {
+		return nil
+	}
+	findings := make([]string, 0, len(result.Findings))
+	for _, finding := range result.Findings {
+		if finding.Severity == "error" {
+			findings = append(findings, fmt.Sprintf("%s: %s", finding.Field, finding.Message))
+		}
+	}
+	return fmt.Errorf("invalid Nomad variable-file transport: %s", strings.Join(findings, "; "))
 }
 
 func validNomadSecretDestination(destination string) bool {

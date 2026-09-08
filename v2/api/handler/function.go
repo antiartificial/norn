@@ -58,6 +58,14 @@ func (h *Handler) InvokeFunction(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusNotFound, fmt.Sprintf("process %s not found", procName))
 		return
 	}
+	// Request metadata is delivered through the function runtime environment.
+	// Nomad variable-file transport deliberately withholds that environment to
+	// prevent secret values from reaching task.Env, so accepting both would
+	// silently drop the caller's request. Reject before recording an execution.
+	if proc.NomadVariables != nil && (req.Body != "" || req.Method != "" || req.Path != "") {
+		writeError(w, http.StatusBadRequest, "function request metadata is unsupported when nomadVariables are configured")
+		return
+	}
 
 	// Resolve image tag from last deployment
 	deps, err := h.db.ListDeployments(r.Context(), id, 1)
@@ -106,7 +114,12 @@ func (h *Handler) InvokeFunction(w http.ResponseWriter, r *http.Request) {
 	h.db.InsertFuncExecution(r.Context(), fe)
 
 	// Build and submit batch job
-	batchJob := nomad.TranslateBatch(spec, procName, proc, imageTag, env, jobID)
+	batchJob, err := nomad.TranslateBatch(spec, procName, proc, imageTag, env, jobID)
+	if err != nil {
+		h.db.UpdateFuncExecution(r.Context(), execID, "failed", 1, 0)
+		writeError(w, http.StatusBadRequest, err.Error())
+		return
+	}
 	_, err = h.nomad.SubmitJob(batchJob)
 	if err != nil {
 		h.db.UpdateFuncExecution(r.Context(), execID, "failed", 1, 0)

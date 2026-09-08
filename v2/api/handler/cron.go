@@ -214,7 +214,11 @@ func (h *Handler) CronResume(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// Re-submit periodic job
-	periodicJob := nomad.TranslatePeriodic(spec, req.Process, proc, imageTag, env)
+	periodicJob, err := nomad.TranslatePeriodic(spec, req.Process, proc, imageTag, env)
+	if err != nil {
+		writeError(w, http.StatusBadRequest, err.Error())
+		return
+	}
 	_, err = h.nomad.SubmitJob(periodicJob)
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, err.Error())
@@ -293,7 +297,11 @@ func (h *Handler) CronUpdateSchedule(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// Re-submit periodic job with new schedule
-	periodicJob := nomad.TranslatePeriodic(spec, req.Process, proc, imageTag, env)
+	periodicJob, err := nomad.TranslatePeriodic(spec, req.Process, proc, imageTag, env)
+	if err != nil {
+		writeError(w, http.StatusBadRequest, err.Error())
+		return
+	}
 	_, err = h.nomad.SubmitJob(periodicJob)
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, err.Error())

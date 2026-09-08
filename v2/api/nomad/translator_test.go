@@ -12,13 +12,49 @@ import (
 
 func testIntPointer(value int) *int { return &value }
 
+func mustTranslate(t *testing.T, spec *model.InfraSpec, image string, env map[string]string) *nomadapi.Job {
+	t.Helper()
+	job, err := Translate(spec, image, env)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return job
+}
+
+func mustTranslateForRegion(t *testing.T, spec *model.InfraSpec, image string, env map[string]string, region model.ResolvedRegion) *nomadapi.Job {
+	t.Helper()
+	job, err := TranslateForRegion(spec, image, env, region)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return job
+}
+
+func mustTranslatePeriodic(t *testing.T, spec *model.InfraSpec, name string, proc model.Process, image string, env map[string]string) *nomadapi.Job {
+	t.Helper()
+	job, err := TranslatePeriodic(spec, name, proc, image, env)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return job
+}
+
+func mustTranslateBatch(t *testing.T, spec *model.InfraSpec, name string, proc model.Process, image string, env map[string]string, jobID string) *nomadapi.Job {
+	t.Helper()
+	job, err := TranslateBatch(spec, name, proc, image, env, jobID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return job
+}
+
 func TestTranslatePreservesContentAddressedImage(t *testing.T) {
 	image := "registry.example.test/norn/demo@sha256:" + strings.Repeat("a", 64)
 	spec := &model.InfraSpec{
 		App:       "demo",
 		Processes: map[string]model.Process{"web": {Port: 8080}},
 	}
-	job := Translate(spec, image, nil)
+	job := mustTranslate(t, spec, image, nil)
 	if len(job.TaskGroups) != 1 || len(job.TaskGroups[0].Tasks) != 1 {
 		t.Fatalf("unexpected translated task shape: %+v", job.TaskGroups)
 	}
@@ -51,7 +87,7 @@ func TestTranslateRendersJobOwnedVariableFilesWithoutSecretTaskEnv(t *testing.T)
 			},
 		},
 	}
-	job := Translate(spec, image, map[string]string{
+	job := mustTranslate(t, spec, image, map[string]string{
 		"MYSQL_DSN": dsn, "MYSQL_CA_PEM": "private-ca", "MYSQL_PINNED_IP": "10.20.30.40", "PILOT_WRITE_TOKEN": token,
 	})
 	task := job.TaskGroups[0].Tasks[0]
@@ -82,6 +118,42 @@ func TestTranslateRendersJobOwnedVariableFilesWithoutSecretTaskEnv(t *testing.T)
 	}
 }
 
+func TestTranslationRejectsInvalidVariableFileTransportAtRuntime(t *testing.T) {
+	spec := &model.InfraSpec{
+		App: "orders",
+		Processes: map[string]model.Process{
+			"web": {NomadVariables: &model.NomadVariableFiles{UID: 65532, GID: 65532, Files: []model.NomadVariableFile{{Key: "DATABASE_URL", Destination: "../escape"}}}},
+		},
+	}
+	job, err := TranslateForRegion(spec, "orders:test", nil, spec.ResolvedRegions()[0])
+	if err == nil || job != nil || !strings.Contains(err.Error(), "destination must be one safe allocation-relative filename") {
+		t.Fatalf("job=%+v err=%v, want runtime transport rejection", job, err)
+	}
+}
+
+func TestPeriodicTranslationValidatesDirectProcessCopy(t *testing.T) {
+	spec := &model.InfraSpec{
+		App: "orders",
+		Processes: map[string]model.Process{
+			"nightly": {Schedule: "0 1 * * *"},
+		},
+	}
+	mutated := model.Process{Schedule: "0 2 * * *", NomadVariables: &model.NomadVariableFiles{UID: 0, GID: 0, Files: []model.NomadVariableFile{{Key: "DATABASE_URL", Destination: "db"}}}}
+	job, err := TranslatePeriodic(spec, "nightly", mutated, "orders:test", nil)
+	if err == nil || job != nil || !strings.Contains(err.Error(), "uid and gid must be explicit positive task identity values") {
+		t.Fatalf("job=%+v err=%v, want direct periodic transport rejection", job, err)
+	}
+}
+
+func TestBatchTranslationRejectsRequestMetadataWithVariableFiles(t *testing.T) {
+	proc := model.Process{Function: &model.FunctionSpec{}, NomadVariables: &model.NomadVariableFiles{UID: 65532, GID: 65532, Files: []model.NomadVariableFile{{Key: "DATABASE_URL", Destination: "db"}}}}
+	spec := &model.InfraSpec{App: "orders", Processes: map[string]model.Process{"function": proc}}
+	job, err := TranslateBatch(spec, "function", proc, "orders:test", map[string]string{"DATABASE_URL": "secret", "NORN_REQUEST_BODY": "caller-data"}, "orders-function-1")
+	if err == nil || job != nil || !strings.Contains(err.Error(), "function request metadata is unsupported") {
+		t.Fatalf("job=%+v err=%v, want request metadata rejection", job, err)
+	}
+}
+
 func TestTranslatePeriodicUsesAppTimezone(t *testing.T) {
 	spec := &model.InfraSpec{
 		App: "field-harbor",
@@ -92,7 +164,7 @@ func TestTranslatePeriodicUsesAppTimezone(t *testing.T) {
 		Command:  "./scripts/sync-and-ingest.sh",
 	}
 
-	job := TranslatePeriodic(spec, "field-harbor-sync-am", proc, "field-harbor:test", nil)
+	job := mustTranslatePeriodic(t, spec, "field-harbor-sync-am", proc, "field-harbor:test", nil)
 	if job.Periodic == nil || job.Periodic.TimeZone == nil {
 		t.Fatal("periodic timezone was not set")
 	}
@@ -112,7 +184,7 @@ func TestTranslatePeriodicProcessTimezoneOverridesAppTimezone(t *testing.T) {
 		Command:  "./scripts/sync-and-ingest.sh",
 	}
 
-	job := TranslatePeriodic(spec, "field-harbor-sync-am", proc, "field-harbor:test", nil)
+	job := mustTranslatePeriodic(t, spec, "field-harbor-sync-am", proc, "field-harbor:test", nil)
 	if job.Periodic == nil || job.Periodic.TimeZone == nil {
 		t.Fatal("periodic timezone was not set")
 	}
@@ -125,14 +197,14 @@ func TestTranslatePeriodicDisablesRestartsAndReschedules(t *testing.T) {
 	spec := &model.InfraSpec{App: "field-harbor"}
 	proc := model.Process{Schedule: "10 8 * * *", Command: "./scripts/sync-and-ingest.sh"}
 
-	assertBatchJobDoesNotRetry(t, TranslatePeriodic(spec, "field-harbor-sync-am", proc, "field-harbor:test", nil))
+	assertBatchJobDoesNotRetry(t, mustTranslatePeriodic(t, spec, "field-harbor-sync-am", proc, "field-harbor:test", nil))
 }
 
 func TestTranslateBatchDisablesRestartsAndReschedules(t *testing.T) {
 	spec := &model.InfraSpec{App: "field-harbor"}
 	proc := model.Process{Command: "./functions/daily-capture.sh"}
 
-	assertBatchJobDoesNotRetry(t, TranslateBatch(spec, "daily-capture", proc, "field-harbor:test", nil, "field-harbor-daily-capture-123"))
+	assertBatchJobDoesNotRetry(t, mustTranslateBatch(t, spec, "daily-capture", proc, "field-harbor:test", nil, "field-harbor-daily-capture-123"))
 }
 
 func assertBatchJobDoesNotRetry(t *testing.T, job *nomadapi.Job) {
@@ -151,11 +223,11 @@ func assertBatchJobDoesNotRetry(t *testing.T, job *nomadapi.Job) {
 
 func TestTranslatePinsServiceAndPeriodicJobsToLogicalNodePool(t *testing.T) {
 	spec := &model.InfraSpec{App: "orders", Placement: &model.PlacementSpec{NodePool: "app"}, Processes: map[string]model.Process{"web": {Port: 8080}}}
-	service := Translate(spec, "orders:test", nil)
+	service := mustTranslate(t, spec, "orders:test", nil)
 	if service.NodePool == nil || *service.NodePool != "app" {
 		t.Fatalf("service node pool = %v", service.NodePool)
 	}
-	periodic := TranslatePeriodic(spec, "digest", model.Process{Schedule: "0 8 * * *"}, "orders:test", nil)
+	periodic := mustTranslatePeriodic(t, spec, "digest", model.Process{Schedule: "0 8 * * *"}, "orders:test", nil)
 	if periodic.NodePool == nil || *periodic.NodePool != "app" {
 		t.Fatalf("periodic node pool = %v", periodic.NodePool)
 	}
@@ -167,7 +239,7 @@ func TestTranslateUsesGroupScopedDistinctHostConstraintForHAService(t *testing.T
 		Placement: &model.PlacementSpec{NodePool: "app", DistinctHosts: true},
 		Processes: map[string]model.Process{"web": {Port: 8080, Scaling: &model.Scaling{Min: 2}, Canary: &model.CanaryConfig{Count: 1}}},
 	}
-	service := Translate(spec, "orders:test", nil)
+	service := mustTranslate(t, spec, "orders:test", nil)
 	if len(service.TaskGroups) != 1 || len(service.TaskGroups[0].Constraints) != 1 {
 		t.Fatalf("HA constraints = %+v", service.TaskGroups)
 	}
@@ -184,7 +256,7 @@ func TestTranslateUsesGroupScopedDistinctHostConstraintForHAService(t *testing.T
 	if *service.TaskGroups[0].Count+*service.TaskGroups[0].Update.Canary != 3 {
 		t.Fatalf("concurrent HA allocation requirement = %d, want 3", *service.TaskGroups[0].Count+*service.TaskGroups[0].Update.Canary)
 	}
-	periodic := TranslatePeriodic(spec, "digest", model.Process{Schedule: "0 8 * * *"}, "orders:test", nil)
+	periodic := mustTranslatePeriodic(t, spec, "digest", model.Process{Schedule: "0 8 * * *"}, "orders:test", nil)
 	if len(periodic.TaskGroups[0].Constraints) != 0 {
 		t.Fatalf("periodic job inherited service HA constraint: %+v", periodic.TaskGroups[0].Constraints)
 	}
@@ -205,7 +277,7 @@ func TestTranslateForRegionFiltersPlacementAndAddsIngressTags(t *testing.T) {
 		Endpoints: []model.Endpoint{{URL: "https://orders.example.com"}},
 	}
 	region := spec.ResolvedRegions()[0] // iad sorts first
-	job := TranslateForRegion(spec, "orders:test", nil, region)
+	job := mustTranslateForRegion(t, spec, "orders:test", nil, region)
 	if job.Region == nil || *job.Region != "us-east" {
 		t.Fatalf("region=%v", job.Region)
 	}
@@ -226,7 +298,7 @@ func TestTranslateForRegionFiltersPlacementAndAddsIngressTags(t *testing.T) {
 
 func TestServicePlacementTagsExistWithoutPublicEndpoint(t *testing.T) {
 	spec := &model.InfraSpec{App: "worker", Placement: &model.PlacementSpec{NodePool: "app"}, Processes: map[string]model.Process{"health": {Port: 8080}}}
-	job := TranslateForRegion(spec, "worker:test", nil, spec.ResolvedRegions()[0])
+	job := mustTranslateForRegion(t, spec, "worker:test", nil, spec.ResolvedRegions()[0])
 	tags := strings.Join(job.TaskGroups[0].Services[0].Tags, "\n")
 	if !strings.Contains(tags, "norn.region=local") || !strings.Contains(tags, "norn.node-pool=app") || !strings.Contains(tags, "norn.allocation=${NOMAD_ALLOC_ID}") {
 		t.Fatalf("placement tags=%s", tags)
