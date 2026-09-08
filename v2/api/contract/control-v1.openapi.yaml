@@ -418,6 +418,63 @@ paths:
         '403': { $ref: '#/components/responses/Problem' }
         '409': { $ref: '#/components/responses/Problem' }
         '503': { $ref: '#/components/responses/Problem' }
+  /api/v1/apps/{id}/external-deployments/begin:
+    parameters:
+      - $ref: '#/components/parameters/AppID'
+    post:
+      operationId: beginExternalFleetDeploymentAdmission
+      description: Starts a v4 external Fleet admission for one stable logical deployment identity and returns a short-lived, one-use Norn nonce. Requires fleet:external-admission from the exact protected Norn Fleet OIDC identity. The logical identity deliberately excludes retry-specific Nomad evaluation and allocation evidence.
+      parameters:
+        - $ref: '#/components/parameters/IdempotencyKey'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/ExternalFleetAdmissionBeginRequest' }
+      responses:
+        '201':
+          description: Short-lived admission nonce bound to the stable logical identity
+          content: { application/json: { schema: { $ref: '#/components/schemas/ExternalFleetAdmissionBeginResponse' } } }
+        '400': { $ref: '#/components/responses/Problem' }
+        '403': { $ref: '#/components/responses/Problem' }
+        '409': { $ref: '#/components/responses/Problem' }
+        '503': { $ref: '#/components/responses/Problem' }
+  /api/v1/apps/{id}/external-deployments/admit:
+    parameters:
+      - $ref: '#/components/parameters/AppID'
+    post:
+      operationId: admitExternalFleetDeploymentV4
+      description: Consumes a v4 admission nonce and independently verifies the receipt before admitting an immutable operation. Requires fleet:external-admission from the exact protected Norn Fleet OIDC identity.
+      parameters:
+        - $ref: '#/components/parameters/IdempotencyKey'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/ExternalFleetDeploymentAdmissionRequest' }
+      responses:
+        '201': { $ref: '#/components/responses/AcceptedOperation' }
+        '400': { $ref: '#/components/responses/Problem' }
+        '403': { $ref: '#/components/responses/Problem' }
+        '409': { $ref: '#/components/responses/Problem' }
+        '503': { $ref: '#/components/responses/Problem' }
+  /api/v1/apps/{id}/external-deployments/context/{admissionId}:
+    parameters:
+      - $ref: '#/components/parameters/AppID'
+      - name: admissionId
+        in: path
+        required: true
+        schema: { type: string, format: uuid }
+    get:
+      operationId: getExternalFleetDeploymentAdmissionContext
+      description: Returns server-owned v4 admission state, retry lineage, and checkpoint references. Requires fleet:external-admission.
+      responses:
+        '200':
+          description: Durable external Fleet admission context
+          content: { application/json: { schema: { $ref: '#/components/schemas/ExternalFleetAdmissionContext' } } }
+        '403': { $ref: '#/components/responses/Problem' }
+        '404': { $ref: '#/components/responses/Problem' }
+        '503': { $ref: '#/components/responses/Problem' }
   /api/v1/apps/{id}/private-attestations:
     parameters:
       - $ref: '#/components/parameters/AppID'
@@ -2414,6 +2471,120 @@ components:
       oneOf:
         - required: [action]
         - required: [receipt]
+    ExternalFleetAdmissionBeginRequest:
+      type: object
+      additionalProperties: false
+      required: [logicalIdentity]
+      properties:
+        logicalIdentity: { $ref: '#/components/schemas/ExternalFleetLogicalIdentity' }
+    ExternalFleetLogicalIdentity:
+      type: object
+      additionalProperties: false
+      required: [schemaVersion, sourceSha, artifact, candidate, fleet]
+      properties:
+        schemaVersion: { const: norn.external-fleet-logical-identity/v4 }
+        sourceSha: { type: string, pattern: '^[0-9a-f]{40}$' }
+        artifact: { type: string, pattern: '^.+@sha256:[0-9a-f]{64}$' }
+        candidate: { $ref: '#/components/schemas/ReleaseCandidate' }
+        fleet: { $ref: '#/components/schemas/ExternalFleetLogicalExecutionIdentity' }
+    ExternalFleetLogicalExecutionIdentity:
+      type: object
+      additionalProperties: false
+      required: [namespace, planId, planSha256, rootAttemptId, fleetCommit]
+      properties:
+        namespace: { type: string }
+        planId: { type: string }
+        planSha256: { type: string, pattern: '^[0-9a-f]{64}$' }
+        rootAttemptId: { type: string }
+        fleetCommit: { type: string, pattern: '^[0-9a-f]{40}$' }
+    ExternalFleetAdmissionBeginResponse:
+      type: object
+      additionalProperties: false
+      required: [admissionId, state, nonce, expiresAt]
+      properties:
+        admissionId: { type: string, format: uuid, readOnly: true }
+        state: { type: string, enum: [issued, admitted, expired, rejected], readOnly: true }
+        nonce: { type: string, writeOnly: true }
+        expiresAt: { type: string, format: date-time, readOnly: true }
+    ExternalFleetDeploymentAdmissionRequest:
+      type: object
+      additionalProperties: false
+      required: [receipt]
+      properties:
+        receipt: { $ref: '#/components/schemas/ExternalFleetDeploymentReceiptV4' }
+    ExternalFleetDeploymentReceiptV4:
+      type: object
+      additionalProperties: false
+      required: [schemaVersion, admissionId, nonce, app, sourceSha, artifact, candidate, attestationBundleSha256, sbomBundleSha256, fleet, chronology]
+      properties:
+        schemaVersion: { const: norn.external-fleet-deployment-receipt/v4 }
+        admissionId: { type: string, format: uuid }
+        nonce: { type: string, writeOnly: true }
+        app: { type: string }
+        sourceSha: { type: string, pattern: '^[0-9a-f]{40}$' }
+        artifact: { type: string, pattern: '^.+@sha256:[0-9a-f]{64}$' }
+        candidate: { $ref: '#/components/schemas/ReleaseCandidate' }
+        attestationBundleSha256: { type: string, pattern: '^[0-9a-f]{64}$', description: SHA-256 of the full canonical Sigstore provenance bundle JSON under the Norn v4 profile. }
+        sbomBundleSha256: { type: string, pattern: '^[0-9a-f]{64}$', description: SHA-256 of the full canonical Sigstore SPDX bundle JSON under the Norn v4 profile. }
+        fleet: { $ref: '#/components/schemas/ExternalFleetExecutionProofV4' }
+        chronology:
+          type: array
+          minItems: 4
+          maxItems: 4
+          items: { $ref: '#/components/schemas/ExternalFleetChronologyStep' }
+    ExternalFleetExecutionProofV4:
+      type: object
+      additionalProperties: false
+      required: [namespace, migration, runtime, planId, applyRunId, applyRunAttempt, planSha256, runnerAttemptId, rootAttemptId, fleetCommit, nonceEvidenceRef]
+      properties:
+        namespace: { type: string }
+        migration: { $ref: '#/components/schemas/ExternalFleetNomadJobProofV4' }
+        runtime: { $ref: '#/components/schemas/ExternalFleetNomadJobProofV4' }
+        planId: { type: string }
+        applyRunId: { type: string }
+        applyRunAttempt: { type: string }
+        planSha256: { type: string, pattern: '^[0-9a-f]{64}$' }
+        runnerAttemptId: { type: string }
+        rootAttemptId: { type: string }
+        fleetCommit: { type: string, pattern: '^[0-9a-f]{40}$' }
+        nonceEvidenceRef: { type: string }
+    ExternalFleetNomadJobProofV4:
+      type: object
+      additionalProperties: false
+      required: [jobId, hclSha256, evalId, evalCreateIndex, evalJobModifyIndex, jobCreateIndex, jobModifyIndex, jobVersion, currentSpecSha256, submissionSha256, evaluationChainIds, checkpointId]
+      properties:
+        jobId: { type: string }
+        hclSha256: { type: string, pattern: '^[0-9a-f]{64}$' }
+        evalId: { type: string, format: uuid, description: Nomad v2 JobRegisterResponse EvalID. }
+        evalCreateIndex: { type: integer, format: int64, minimum: 1 }
+        evalJobModifyIndex: { type: integer, format: int64, minimum: 1 }
+        jobCreateIndex: { type: integer, format: int64, minimum: 1 }
+        jobModifyIndex: { type: integer, format: int64, minimum: 1 }
+        jobVersion: { type: integer, format: int64, minimum: 0 }
+        currentSpecSha256: { type: string, pattern: '^[0-9a-f]{64}$' }
+        submissionSha256: { type: string, pattern: '^[0-9a-f]{64}$' }
+        evaluationChainIds:
+          type: array
+          minItems: 1
+          items: { type: string, format: uuid }
+        checkpointId: { type: string }
+    ExternalFleetAdmissionContext:
+      type: object
+      additionalProperties: false
+      required: [admissionId, state, operationId, cleanupState, retryLineage, checkpoints]
+      properties:
+        admissionId: { type: string, format: uuid, readOnly: true }
+        state: { type: string, enum: [issued, admitted, expired, rejected], readOnly: true }
+        operationId: { type: string, format: uuid, readOnly: true }
+        cleanupState: { type: string, readOnly: true }
+        retryLineage:
+          type: array
+          readOnly: true
+          items: { type: string, format: uuid }
+        checkpoints:
+          type: array
+          readOnly: true
+          items: { type: string }
     ExternalFleetDeploymentReceipt:
       type: object
       additionalProperties: false

@@ -35,6 +35,8 @@ func TestControlOpenAPIParsesAndLocalRefsResolve(t *testing.T) {
 		"/api/v1/fleet/plans/{planID}/attempts/{attemptID}/cancel",
 		"/api/v1/deployments", "/api/v1/deployments/{id}", "/api/v1/deployments/{id}/steps", "/api/v1/services/manifest",
 		"/api/v1/apps/{id}/private-attestations",
+		"/api/v1/apps/{id}/external-deployments", "/api/v1/apps/{id}/external-deployments/begin",
+		"/api/v1/apps/{id}/external-deployments/admit", "/api/v1/apps/{id}/external-deployments/context/{admissionId}",
 		"/api/v1/fleet/plans/{planID}/github/pull-request", "/api/v1/fleet/plans/{planID}/github/dispatch",
 	} {
 		if _, ok := paths[required]; !ok {
@@ -96,6 +98,56 @@ func TestControlOpenAPIParsesAndLocalRefsResolve(t *testing.T) {
 	for _, field := range []string{"jobId", "hclSha256", "evalId", "jobModifyIndex", "checkpointId"} {
 		if !containsRequiredField(nomadProof["required"].([]interface{}), field) {
 			t.Errorf("ExternalFleetNomadJobProof must require %s", field)
+		}
+	}
+	beginRequest := schemas["ExternalFleetAdmissionBeginRequest"].(map[string]interface{})
+	if !containsRequiredField(beginRequest["required"].([]interface{}), "logicalIdentity") {
+		t.Error("ExternalFleetAdmissionBeginRequest must require logicalIdentity")
+	}
+	logicalIdentity := schemas["ExternalFleetLogicalIdentity"].(map[string]interface{})
+	if logicalIdentity["properties"].(map[string]interface{})["schemaVersion"].(map[string]interface{})["const"] != "norn.external-fleet-logical-identity/v4" {
+		t.Error("ExternalFleetLogicalIdentity must use the v4 logical identity schema")
+	}
+	logicalFleet := schemas["ExternalFleetLogicalExecutionIdentity"].(map[string]interface{})
+	for _, field := range []string{"namespace", "planId", "planSha256", "rootAttemptId", "fleetCommit"} {
+		if !containsRequiredField(logicalFleet["required"].([]interface{}), field) {
+			t.Errorf("ExternalFleetLogicalExecutionIdentity must require stable %s", field)
+		}
+	}
+	beginResponse := schemas["ExternalFleetAdmissionBeginResponse"].(map[string]interface{})
+	for _, field := range []string{"admissionId", "state", "nonce", "expiresAt"} {
+		if !containsRequiredField(beginResponse["required"].([]interface{}), field) {
+			t.Errorf("ExternalFleetAdmissionBeginResponse must require %s", field)
+		}
+	}
+	if beginResponse["properties"].(map[string]interface{})["nonce"].(map[string]interface{})["writeOnly"] != true {
+		t.Error("ExternalFleetAdmissionBeginResponse.nonce must be write-only")
+	}
+	v4Receipt := schemas["ExternalFleetDeploymentReceiptV4"].(map[string]interface{})
+	if v4Receipt["properties"].(map[string]interface{})["schemaVersion"].(map[string]interface{})["const"] != "norn.external-fleet-deployment-receipt/v4" {
+		t.Error("ExternalFleetDeploymentReceiptV4 must use the v4 receipt contract")
+	}
+	for _, field := range []string{"admissionId", "nonce", "sourceSha", "artifact", "candidate", "fleet"} {
+		if !containsRequiredField(v4Receipt["required"].([]interface{}), field) {
+			t.Errorf("ExternalFleetDeploymentReceiptV4 must require %s", field)
+		}
+	}
+	v4Proof := schemas["ExternalFleetExecutionProofV4"].(map[string]interface{})
+	for _, field := range []string{"migration", "runtime", "planId", "rootAttemptId", "fleetCommit"} {
+		if !containsRequiredField(v4Proof["required"].([]interface{}), field) {
+			t.Errorf("ExternalFleetExecutionProofV4 must require %s", field)
+		}
+	}
+	v4NomadProof := schemas["ExternalFleetNomadJobProofV4"].(map[string]interface{})
+	for _, field := range []string{"evalCreateIndex", "evalJobModifyIndex", "jobCreateIndex", "jobModifyIndex", "jobVersion", "currentSpecSha256", "submissionSha256", "evaluationChainIds", "checkpointId"} {
+		if !containsRequiredField(v4NomadProof["required"].([]interface{}), field) {
+			t.Errorf("ExternalFleetNomadJobProofV4 must require %s", field)
+		}
+	}
+	v4Context := schemas["ExternalFleetAdmissionContext"].(map[string]interface{})
+	for _, field := range []string{"admissionId", "state", "operationId", "cleanupState", "retryLineage", "checkpoints"} {
+		if !containsRequiredField(v4Context["required"].([]interface{}), field) {
+			t.Errorf("ExternalFleetAdmissionContext must require %s", field)
 		}
 	}
 	runnerAttempt := schemas["FleetRunnerAttempt"].(map[string]interface{})
