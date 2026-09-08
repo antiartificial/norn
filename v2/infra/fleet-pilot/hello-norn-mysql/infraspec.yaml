@@ -1,5 +1,23 @@
 name: hello-norn-mysql
 deploy: false
+repo:
+  # A catalog promotion replaces this inert source location with the reviewed
+  # private application repository and exact source branch. The Norn API must
+  # consume the root-owned, read-only catalog after Fleet bootstrap.
+  url: https://example.invalid/norn/hello-norn-mysql.git
+  branch: main
+  repoWeb: https://example.invalid/norn/hello-norn-mysql
+build:
+  dockerfile: Dockerfile
+  # The catalog promotion replaces only this inert sentinel with the signed
+  # OCI manifest digest produced for the exact source revision. Tags are not
+  # deployable evidence.
+  image: registry.invalid/norn/hello-norn-mysql@sha256:0000000000000000000000000000000000000000000000000000000000000000
+  test: go test ./...
+# This catalog stays intentionally disabled. Norn's current translator injects
+# encrypted catalog secrets into task.Env, which is not acceptable for a MySQL
+# password. Use the direct Nomad-variable job in nomad/ until that transport is
+# extended to render protected secret files.
 placement:
   nodePool: ingress
   distinctHosts: true
@@ -11,9 +29,10 @@ primaryRegion: nyc3
 processes:
   web:
     port: 8080
-    command: /hello-norn-mysql
+    # Use the image's immutable ENTRYPOINT. The Norn translator treats a
+    # command as a shell snippet, which would make the image depend on a shell.
     health:
-      path: /health/ready
+      path: /readyz
       interval: 5s
       timeout: 3s
     metrics:
@@ -28,9 +47,10 @@ processes:
     drain:
       signal: SIGTERM
       timeout: 20s
-secrets:
-  - MYSQL_DSN
-  - MYSQL_CA_PEM
-# Bind the private app repository, signed OCI digest and HTTPS endpoint in the
-# reviewed catalog before enabling deployment. Run migrate separately with
-# the migration identity; the web identity should have SELECT/INSERT only.
+endpoints:
+  # Catalog promotion replaces this non-routable placeholder with the reviewed
+  # Access-protected staging origin before deployment can be enabled.
+  - url: https://hello-norn-mysql.invalid
+    region: nyc3
+# Run migrate separately with the migration identity; the web identity should
+# have SELECT/INSERT only.

@@ -8,6 +8,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"log"
+	"net"
 	"net/http"
 	"os"
 	"os/signal"
@@ -36,14 +37,11 @@ func openDatabase() (*sql.DB, error) {
 	if cfg.Net != "tcp" || cfg.Addr == "" || cfg.DBName == "" {
 		return nil, fmt.Errorf("MYSQL_DSN requires TCP address and database")
 	}
-	roots, err := x509.SystemCertPool()
+	tlsConfig, err := mysqlTLSConfig(cfg.Addr, os.Getenv("MYSQL_CA_FILE"))
 	if err != nil {
 		return nil, err
 	}
-	if err := appendMySQLCAs(roots, os.Getenv("MYSQL_CA_FILE"), os.Getenv("MYSQL_CA_PEM")); err != nil {
-		return nil, err
-	}
-	if err := mysql.RegisterTLSConfig("pilot-verified", &tls.Config{MinVersion: tls.VersionTLS12, RootCAs: roots}); err != nil {
+	if err := mysql.RegisterTLSConfig("pilot-verified", tlsConfig); err != nil {
 		return nil, err
 	}
 	cfg.TLSConfig = "pilot-verified"
@@ -62,29 +60,35 @@ func openDatabase() (*sql.DB, error) {
 	return db, nil
 }
 
-func appendMySQLCAs(roots *x509.CertPool, path, inline string) error {
-	if path != "" {
-		pem, err := os.ReadFile(path)
-		if err != nil {
-			return fmt.Errorf("read MySQL CA file")
-		}
-		if !roots.AppendCertsFromPEM(pem) {
-			return fmt.Errorf("invalid MySQL CA")
-		}
+func mysqlTLSConfig(address, path string) (*tls.Config, error) {
+	if path == "" {
+		return nil, fmt.Errorf("MYSQL_CA_FILE is required")
 	}
-	if inline != "" && !roots.AppendCertsFromPEM([]byte(inline)) {
-		return fmt.Errorf("invalid MySQL CA")
+	pem, err := os.ReadFile(path)
+	if err != nil || len(pem) == 0 || len(pem) > 1<<20 {
+		return nil, fmt.Errorf("read MySQL provider CA")
 	}
-	return nil
+	roots := x509.NewCertPool()
+	if !roots.AppendCertsFromPEM(pem) {
+		return nil, fmt.Errorf("invalid MySQL provider CA")
+	}
+	host, _, err := net.SplitHostPort(address)
+	if err != nil || host == "" {
+		return nil, fmt.Errorf("MYSQL_DSN requires a valid TCP host")
+	}
+	return &tls.Config{MinVersion: tls.VersionTLS12, RootCAs: roots, ServerName: host}, nil
 }
 
 func (s *service) routes() http.Handler {
 	mux := http.NewServeMux()
-	mux.HandleFunc("GET /health/live", func(w http.ResponseWriter, r *http.Request) { w.WriteHeader(http.StatusOK) })
-	mux.HandleFunc("GET /health/ready", func(w http.ResponseWriter, r *http.Request) {
+	// healthz deliberately has no dependency on MySQL. It lets Nomad restart a
+	// wedged process without turning a transient managed-database issue into a
+	// restart storm.
+	mux.HandleFunc("GET /healthz", func(w http.ResponseWriter, r *http.Request) { w.WriteHeader(http.StatusOK) })
+	mux.HandleFunc("GET /readyz", func(w http.ResponseWriter, r *http.Request) {
 		ctx, cancel := context.WithTimeout(r.Context(), 2*time.Second)
 		defer cancel()
-		if os.Getenv("PILOT_FAIL_READINESS") == "true" || s.db.PingContext(ctx) != nil {
+		if os.Getenv("PILOT_FAIL_READINESS") == "true" || s.db == nil || s.db.PingContext(ctx) != nil {
 			http.Error(w, "not ready", 503)
 			return
 		}
