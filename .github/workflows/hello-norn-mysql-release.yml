@@ -1,0 +1,47 @@
+name: Hello Norn MySQL release
+
+on:
+  push:
+    branches: [master]
+    tags: ["v*"]
+    # GitHub evaluates paths only for branch pushes, so merging this caller
+    # itself cannot stage a release. Tag pushes remain the production lane.
+    paths:
+      - "v2/infra/fleet-pilot/hello-norn-mysql/**"
+
+permissions: {}
+
+jobs:
+  staging:
+    if: github.event_name == 'push' && github.ref == 'refs/heads/master' && github.ref_protected
+    permissions:
+      checks: read
+      contents: read
+      packages: write
+      id-token: write
+      attestations: write
+      artifact-metadata: write
+    uses: antiartificial/norn/.github/workflows/norn-app-release.yml@1d3f5802b5554e06ea1593146f00402d00ca9b2b
+    with:
+      lane: staging
+      app_id: hello-norn-mysql
+      image_repository: ghcr.io/antiartificial/hello-norn-mysql
+      dockerfile: v2/infra/fleet-pilot/hello-norn-mysql/Dockerfile
+      build_context: v2/infra/fleet-pilot/hello-norn-mysql
+      build_contract: pilot-go
+      go_image: golang@sha256:484ef6066fa69acb059fdfeda7ba2b8f7391f2ef6abc6f9b8411e669ebd56466
+      runtime_image: gcr.io/distroless/static-debian12:nonroot@sha256:afa5c872c891853ca7fcf1f12c3edb23f7eeef36189728842dd51042ff57f7ab
+      required_checks: |
+        Fleet pilot workload	15368
+
+  production:
+    if: github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v') && github.ref_protected
+    permissions:
+      actions: read
+      contents: read
+      id-token: write
+    uses: antiartificial/norn/.github/workflows/norn-app-release.yml@1d3f5802b5554e06ea1593146f00402d00ca9b2b
+    with:
+      lane: production
+      app_id: hello-norn-mysql
+      image_repository: ghcr.io/antiartificial/hello-norn-mysql
