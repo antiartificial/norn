@@ -1,0 +1,208 @@
+name: Bootstrap Hello Norn MySQL image
+
+# This is deliberately a one-time artifact lane. It contains no reusable Norn
+# release workflow, network-overlay join, or control-plane credential surface.
+on:
+  workflow_dispatch:
+    inputs:
+      commit_sha:
+        description: Exact lowercase 40-character SHA already merged to protected master
+        required: true
+        type: string
+
+permissions: {}
+
+concurrency:
+  group: hello-norn-mysql-bootstrap-${{ inputs.commit_sha }}
+  cancel-in-progress: false
+
+jobs:
+  authorize:
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: read
+    outputs:
+      source_sha: ${{ steps.source.outputs.source_sha }}
+    steps:
+      - name: Require protected master and exact selected commit
+        env:
+          REQUESTED_SHA: ${{ inputs.commit_sha }}
+          REF_PROTECTED: ${{ github.ref_protected }}
+        run: |
+          set -euo pipefail
+          [[ "$GITHUB_REF" == "refs/heads/master" ]] || {
+            echo "Run this bootstrap only from master." >&2
+            exit 1
+          }
+          [[ "$REF_PROTECTED" == "true" ]] || {
+            echo "master must be protected before image bootstrap is enabled." >&2
+            exit 1
+          }
+          [[ "$REQUESTED_SHA" =~ ^[0-9a-f]{40}$ ]] || {
+            echo "commit_sha must be an exact lowercase 40-character SHA." >&2
+            exit 1
+          }
+          [[ "$REQUESTED_SHA" == "$GITHUB_SHA" ]] || {
+            echo "commit_sha must exactly equal the protected master SHA that dispatched this run." >&2
+            exit 1
+          }
+
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+          ref: ${{ inputs.commit_sha }}
+          persist-credentials: false
+
+      - name: Verify source identity and public attestation availability
+        id: source
+        env:
+          REQUESTED_SHA: ${{ inputs.commit_sha }}
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          [[ "$(git rev-parse HEAD)" == "$REQUESTED_SHA" ]] || {
+            echo "checked-out source differs from commit_sha" >&2
+            exit 1
+          }
+          git fetch --no-tags origin master
+          git merge-base --is-ancestor "$REQUESTED_SHA" origin/master || {
+            echo "commit_sha is not reachable from master" >&2
+            exit 1
+          }
+          visibility="$(gh api "repos/$GITHUB_REPOSITORY" --jq .visibility)"
+          [[ "$visibility" == public ]] || {
+            echo "This artifact-only bootstrap uses GitHub public OIDC attestations and refuses $visibility repositories. Configure an independently operated attestation signer outside this workflow before enabling a private/internal bootstrap lane." >&2
+            exit 1
+          }
+          printf 'source_sha=%s\n' "$REQUESTED_SHA" >> "$GITHUB_OUTPUT"
+
+  build:
+    needs: authorize
+    runs-on: ubuntu-24.04
+    permissions:
+      attestations: write
+      contents: read
+      id-token: write
+      packages: write
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ needs.authorize.outputs.source_sha }}
+          persist-credentials: false
+
+      - name: Recheck the exact build source
+        env:
+          SOURCE_SHA: ${{ needs.authorize.outputs.source_sha }}
+        run: |
+          set -euo pipefail
+          [[ "$SOURCE_SHA" =~ ^[0-9a-f]{40}$ ]]
+          [[ "$(git rev-parse HEAD)" == "$SOURCE_SHA" ]]
+
+      - uses: docker/setup-buildx-action@8d2750c68a42422c14e847fe6c8ac0403b4cbd6f # v3.12.0
+
+      - name: Authenticate to GitHub Container Registry
+        uses: docker/login-action@c94ce9fb468520275223c153574b00df6fe4bcc9 # v3.7.0
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ github.token }}
+
+      - name: Refuse to move an existing bootstrap tag
+        env:
+          IMAGE_REPOSITORY: ghcr.io/antiartificial/hello-norn-mysql
+          SOURCE_SHA: ${{ needs.authorize.outputs.source_sha }}
+        run: |
+          set -euo pipefail
+          tag="$IMAGE_REPOSITORY:bootstrap-$SOURCE_SHA"
+          if docker buildx imagetools inspect "$tag" >/dev/null 2>&1; then
+            echo "immutable bootstrap tag already exists: $tag" >&2
+            exit 1
+          fi
+
+      - name: Build and publish the exact source image
+        id: build
+        uses: docker/build-push-action@10e90e3645eae34f1e60eeb005ba3a3d33f178e8 # v6.19.2
+        with:
+          context: v2/infra/fleet-pilot/hello-norn-mysql
+          file: v2/infra/fleet-pilot/hello-norn-mysql/Dockerfile
+          push: true
+          provenance: mode=max
+          sbom: true
+          tags: ghcr.io/antiartificial/hello-norn-mysql:bootstrap-${{ needs.authorize.outputs.source_sha }}
+          build-args: |
+            APP_VERSION=${{ needs.authorize.outputs.source_sha }}
+            GO_IMAGE=golang@sha256:484ef6066fa69acb059fdfeda7ba2b8f7391f2ef6abc6f9b8411e669ebd56466
+            RUNTIME_IMAGE=gcr.io/distroless/static-debian12:nonroot@sha256:afa5c872c891853ca7fcf1f12c3edb23f7eeef36189728842dd51042ff57f7ab
+
+      - name: Bind the immutable artifact digest
+        id: artifact
+        env:
+          DIGEST: ${{ steps.build.outputs.digest }}
+        run: |
+          set -euo pipefail
+          [[ "$DIGEST" =~ ^sha256:[0-9a-f]{64}$ ]] || {
+            echo "build did not produce an OCI sha256 digest" >&2
+            exit 1
+          }
+          printf 'artifact=ghcr.io/antiartificial/hello-norn-mysql@%s\n' "$DIGEST" >> "$GITHUB_OUTPUT"
+
+      - name: Generate SPDX SBOM for the immutable artifact
+        uses: anchore/sbom-action@8e94d75ddd33f69f691467e42275782e4bfefe84 # v0.20.9
+        with:
+          image: ${{ steps.artifact.outputs.artifact }}
+          format: spdx-json
+          output-file: bootstrap-evidence/sbom.spdx.json
+          upload-artifact: false
+
+      - name: Attest GitHub build provenance for the immutable artifact
+        uses: actions/attest@508db95dd578ae2727ebd6217d5ba78e4fbda05d # v4.2.1
+        with:
+          subject-name: ghcr.io/antiartificial/hello-norn-mysql
+          subject-digest: ${{ steps.build.outputs.digest }}
+          push-to-registry: true
+
+      - name: Attest SPDX SBOM for the immutable artifact
+        uses: actions/attest@508db95dd578ae2727ebd6217d5ba78e4fbda05d # v4.2.1
+        with:
+          subject-name: ghcr.io/antiartificial/hello-norn-mysql
+          subject-digest: ${{ steps.build.outputs.digest }}
+          sbom-path: bootstrap-evidence/sbom.spdx.json
+          push-to-registry: true
+
+      - name: Write digest handoff and independent verification instructions
+        env:
+          SOURCE_SHA: ${{ needs.authorize.outputs.source_sha }}
+          ARTIFACT: ${{ steps.artifact.outputs.artifact }}
+        run: |
+          set -euo pipefail
+          mkdir -p bootstrap-evidence
+          jq -n \
+            --arg sourceSha "$SOURCE_SHA" \
+            --arg artifact "$ARTIFACT" \
+            --arg repository "$GITHUB_REPOSITORY" \
+            --arg workflowRef "$GITHUB_WORKFLOW_REF" \
+            --arg workflowSha "$GITHUB_WORKFLOW_SHA" \
+            '{schemaVersion: "norn.hello-norn-mysql.bootstrap-handoff/v1", sourceSha: $sourceSha, artifact: $artifact, repository: $repository, workflowRef: $workflowRef, workflowSha: $workflowSha, verification: {provenance: "gh attestation verify --repo " + $repository + " " + $artifact, sbom: "gh attestation verify --repo " + $repository + " " + $artifact}}' \
+            > bootstrap-evidence/handoff.json
+
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: hello-norn-mysql-bootstrap-${{ needs.authorize.outputs.source_sha }}
+          path: bootstrap-evidence/
+          if-no-files-found: error
+          retention-days: 30
+
+      - name: Publish digest handoff summary
+        env:
+          SOURCE_SHA: ${{ needs.authorize.outputs.source_sha }}
+          ARTIFACT: ${{ steps.artifact.outputs.artifact }}
+        run: |
+          set -euo pipefail
+          {
+            echo '## Hello Norn MySQL bootstrap artifact'
+            echo
+            echo "- Source: \`$SOURCE_SHA\`"
+            echo "- Immutable artifact: \`$ARTIFACT\`"
+            echo '- Evidence: attached GitHub provenance and SPDX attestations, plus the retained handoff artifact.'
+            echo '- This workflow publishes an artifact only; it cannot contact a fleet or control plane.'
+          } >> "$GITHUB_STEP_SUMMARY"
