@@ -17,6 +17,10 @@ class ProbeTests(unittest.TestCase):
     allocation = "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa"
     source = "a" * 40
     namespace = "norn-pilot-pilot260907a"
+    ingress_nodes = frozenset({
+        "11111111-1111-1111-1111-111111111111",
+        "22222222-2222-2222-2222-222222222222",
+    })
 
     def probe(self, payload):
         with patch("exercise.urllib.request.build_opener") as opener:
@@ -103,6 +107,25 @@ class ProbeTests(unittest.TestCase):
             with self.assertRaises(ValueError):
                 exercise.load_write_token("token")
 
+    def test_write_token_file_rejects_same_size_in_place_mutation_during_read(self):
+        original_read = os.read
+        with tempfile.TemporaryDirectory() as directory:
+            path = os.path.join(directory, "token")
+            with open(path, "w", encoding="ascii") as handle:
+                handle.write("a" * 32)
+            os.chmod(path, 0o600)
+
+            def mutate(fd, size):
+                prior = os.stat(path)
+                with open(path, "w", encoding="ascii") as handle:
+                    handle.write("b" * 32)
+                os.chmod(path, 0o600)
+                os.utime(path, ns=(prior.st_atime_ns, prior.st_mtime_ns + 1_000_000_000))
+                return original_read(fd, size)
+
+            with patch("exercise.os.read", side_effect=mutate), self.assertRaises(ValueError):
+                exercise.load_write_token(path)
+
     def test_runtime_hcl_keeps_write_token_out_of_migration_and_drains_before_stop(self):
         root = Path(__file__).parent / "hello-norn-mysql" / "nomad"
         runtime = (root / "hello-norn-mysql.nomad.hcl").read_text(encoding="utf-8")
@@ -131,7 +154,7 @@ class ProbeTests(unittest.TestCase):
         allocation = "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa"
         self.assertTrue(exercise.stop_pilot_allocation(allocation, self.namespace))
         self.assertEqual(run.call_args_list[0].args[0], ["nomad", "alloc", "status", "-namespace=" + self.namespace, "-json", allocation])
-        self.assertEqual(run.call_args_list[1].args[0], ["nomad", "alloc", "stop", "-namespace=" + self.namespace, "-yes", allocation])
+        self.assertEqual(run.call_args_list[1].args[0], ["nomad", "alloc", "stop", "-namespace=" + self.namespace, "-detach", allocation])
 
     @patch("exercise.shutil.which", return_value="/usr/bin/nomad")
     @patch("exercise.subprocess.run")
@@ -152,18 +175,43 @@ class ProbeTests(unittest.TestCase):
             return type("Result", (), {"returncode": 0, "stdout": json.dumps(value)})()
         run.side_effect = [
             result([{"ID": allocations[0], "ClientStatus": "running"}, {"ID": allocations[1], "ClientStatus": "running"}]),
-            result({"JobID": "hello-norn-mysql", "ClientStatus": "running", "Namespace": self.namespace, "NodeID": "node-a", "CreateIndex": 10, "ModifyIndex": 11, "Job": {"Meta": {"pilot_image": image, "pilot_source_version": "a" * 40, "pilot_hostname": "pilot.example.test"}}}),
-            result({"NodePool": "ingress"}),
-            result({"JobID": "hello-norn-mysql", "ClientStatus": "running", "Namespace": self.namespace, "NodeID": "node-b", "CreateIndex": 12, "ModifyIndex": 13, "Job": {"Meta": {"pilot_image": image, "pilot_source_version": "a" * 40, "pilot_hostname": "pilot.example.test"}}}),
-            result({"NodePool": "ingress"}),
+            result({"JobID": "hello-norn-mysql", "ClientStatus": "running", "Namespace": self.namespace, "NodeID": "11111111-1111-1111-1111-111111111111", "CreateIndex": 10, "ModifyIndex": 11, "Job": {"NodePool": "ingress", "Meta": {"pilot_image": image, "pilot_source_version": "a" * 40, "pilot_hostname": "pilot.example.test"}}}),
+            result({"JobID": "hello-norn-mysql", "ClientStatus": "running", "Namespace": self.namespace, "NodeID": "22222222-2222-2222-2222-222222222222", "CreateIndex": 12, "ModifyIndex": 13, "Job": {"NodePool": "ingress", "Meta": {"pilot_image": image, "pilot_source_version": "a" * 40, "pilot_hostname": "pilot.example.test"}}}),
         ]
-        proofs, verified = exercise.inventory_pilot(image, "a" * 40, "pilot.example.test", self.namespace)
+        proofs, verified = exercise.inventory_pilot(image, "a" * 40, "pilot.example.test", self.namespace, self.ingress_nodes)
         self.assertTrue(verified)
         self.assertEqual(proofs[0]["image"], image)
         self.assertEqual(proofs[0]["sourceVersion"], "a" * 40)
-        self.assertEqual({proof["nodeID"] for proof in proofs}, {"node-a", "node-b"})
+        self.assertEqual({proof["nodeID"] for proof in proofs}, self.ingress_nodes)
         self.assertEqual(run.call_args_list[0].args[0], ["nomad", "job", "allocs", "-namespace=" + self.namespace, "-json", "hello-norn-mysql"])
         self.assertEqual(run.call_args_list[1].args[0], ["nomad", "alloc", "status", "-namespace=" + self.namespace, "-json", allocations[0]])
+        self.assertEqual(len(run.call_args_list), 3)
+
+    def test_nomad_inventory_rejects_unreviewed_or_non_ingress_node(self):
+        image = "registry.example.test/norn/hello@sha256:" + "a" * 64
+        self.assertEqual(
+            exercise.inventory_pilot(image, "a" * 40, "pilot.example.test", self.namespace, frozenset({"not-a-node"})),
+            ([], False),
+        )
+
+    @patch("exercise.shutil.which", return_value="/usr/bin/nomad")
+    @patch("exercise.subprocess.run")
+    def test_nomad_inventory_rejects_job_outside_ingress_pool_without_node_read(self, run, _which):
+        allocation = "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa"
+        image = "registry.example.test/norn/hello@sha256:" + "a" * 64
+
+        def result(value):
+            return type("Result", (), {"returncode": 0, "stdout": json.dumps(value)})()
+
+        run.side_effect = [
+            result([{"ID": allocation, "ClientStatus": "running"}, {"ID": "bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb", "ClientStatus": "running"}]),
+            result({"JobID": "hello-norn-mysql", "ClientStatus": "running", "Namespace": self.namespace, "NodeID": "11111111-1111-1111-1111-111111111111", "Job": {"NodePool": "control", "Meta": {"pilot_image": image, "pilot_source_version": "a" * 40, "pilot_hostname": "pilot.example.test"}}}),
+        ]
+        proofs, verified = exercise.inventory_pilot(image, "a" * 40, "pilot.example.test", self.namespace, self.ingress_nodes)
+        self.assertFalse(verified)
+        self.assertEqual(proofs, [])
+        self.assertEqual(len(run.call_args_list), 2)
+        self.assertNotIn("node", run.call_args_list[1].args[0])
 
     def test_namespace_requires_exact_fleet_run_id_shape(self):
         for namespace in ("default", "norn-pilot-run1", "norn-pilot-pilot-260907a", "norn-pilot-pilot260907a-"):
@@ -180,7 +228,9 @@ class ProbeTests(unittest.TestCase):
         replacement = "cccccccc-cccc-cccc-cccc-cccccccccccc"
         nomad_json.return_value = {"ClientStatus": "complete"}
         inventory.return_value = ([{"allocation": kept}, {"allocation": replacement}], True)
-        proofs, replacements, recovered = exercise.wait_for_recovery(old, {old, kept}, "image", "source", "pilot.example.test", self.namespace, 1)
+        proofs, replacements, recovered = exercise.wait_for_recovery(
+            old, {old, kept}, "image", "source", "pilot.example.test", self.namespace, self.ingress_nodes, 1
+        )
         self.assertTrue(recovered)
         self.assertEqual(proofs[1]["allocation"], replacement)
         self.assertEqual(replacements, [replacement])
@@ -188,7 +238,7 @@ class ProbeTests(unittest.TestCase):
             nomad_json.call_args.args[0],
             ["alloc", "status", "-namespace=" + self.namespace, "-json", old],
         )
-        self.assertEqual(inventory.call_args.args[-1], self.namespace)
+        self.assertEqual(inventory.call_args.args[-2:], (self.namespace, self.ingress_nodes))
 
     @patch("exercise.time.sleep")
     @patch("exercise.request")

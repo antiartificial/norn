@@ -113,6 +113,7 @@ From outside the fleet, run the bounded probe and retain its JSON stdout:
 ```sh
 python3 ../exercise.py --url https://YOUR-STAGING-HOST --rps 5 --seconds 60 \
   --namespace norn-pilot-EXACT_RUN_ID \
+  --ingress-node-ids-json '["FULL-INGRESS-NODE-ID-1","FULL-INGRESS-NODE-ID-2"]' \
   --write-token-file /ABSOLUTE/OWNER-ONLY/TOKEN-FILE \
   --expected-image registry.example.com/hello-norn-mysql@sha256:… \
   --expected-source-version EXACT_SOURCE_SHA \
@@ -136,6 +137,7 @@ allocation explicitly and run:
 ```sh
 python3 ../exercise.py --url https://YOUR-STAGING-HOST \
   --namespace norn-pilot-EXACT_RUN_ID \
+  --ingress-node-ids-json '["FULL-INGRESS-NODE-ID-1","FULL-INGRESS-NODE-ID-2"]' \
   --write-token-file /ABSOLUTE/OWNER-ONLY/TOKEN-FILE \
   --fault-allocation ALLOCATION_ID \
   --expected-image registry.example.com/hello-norn-mysql@sha256:… \
@@ -144,11 +146,18 @@ python3 ../exercise.py --url https://YOUR-STAGING-HOST \
 ```
 
 The harness first verifies through Nomad that the ID belongs to this job, then
-uses `nomad alloc stop` on that allocation only and waits for the two-replica
+uses `nomad alloc stop -namespace=norn-pilot-EXACT_RUN_ID -detach` on that
+allocation only and waits for the two-replica
 service to recover through the public origin. It never calls a managed MySQL
 failover, changes database configuration, or runs provider commands. Use one
 fault at a time and capture gateway, Nomad, Consul, host and database metrics
 alongside the JSON evidence.
+
+Before the exercise, record the two exact lowercase UUID Nomad node IDs for
+the reviewed `ingress` clients. The required JSON argument is non-secret and
+is retained in the evidence. The harness accepts only those two distinct
+allocation node IDs and verifies the current job's `NodePool` is `ingress`; it
+does not query global Nomad node state.
 
 The exercise reads the write bearer exactly once from an absolute regular file
 owned by its invoking user with exact mode `0600`; symlinks, other owners,

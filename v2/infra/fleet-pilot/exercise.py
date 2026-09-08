@@ -22,6 +22,7 @@ MAX_WRITE_TOKEN_BYTES = 257
 # Reject Nomad's convenient short-ID form: a destructive rehearsal must name
 # one unambiguous allocation, not whichever prefix currently resolves.
 ALLOCATION_ID = re.compile(r"^[0-9a-fA-F]{8}-(?:[0-9a-fA-F]{4}-){3}[0-9a-fA-F]{12}$")
+NODE_ID = re.compile(r"^[0-9a-f]{8}-(?:[0-9a-f]{4}-){3}[0-9a-f]{12}$")
 SAFE_VERSION = re.compile(r"^[A-Za-z0-9._-]{1,128}$")
 OCI_DIGEST = re.compile(r"^[a-z0-9./:_-]+@sha256:[0-9a-f]{64}$")
 # Fleet admits disposable run IDs as 8–24 lowercase alphanumeric characters.
@@ -43,6 +44,14 @@ def valid_write_token(token):
     return isinstance(token, str) and 32 <= len(token) <= 256 and all(0x21 <= ord(char) <= 0x7e for char in token)
 
 
+def token_file_binding(status):
+    """Return every stable field that binds a secret read to one unchanged inode."""
+    return (
+        status.st_dev, status.st_ino, status.st_mode, status.st_uid, status.st_size,
+        status.st_mtime_ns, getattr(status, "st_ctime_ns", None),
+    )
+
+
 def load_write_token(path):
     """Read one owner-only token file without following a replacement or symlink."""
     if not isinstance(path, str) or not os.path.isabs(path) or not hasattr(os, "O_NOFOLLOW"):
@@ -58,8 +67,7 @@ def load_write_token(path):
     try:
         opened = os.fstat(fd)
         if (not stat.S_ISREG(opened.st_mode) or opened.st_uid != os.getuid() or
-                stat.S_IMODE(opened.st_mode) != 0o600 or opened.st_dev != before.st_dev or
-                opened.st_ino != before.st_ino or opened.st_size != before.st_size):
+                stat.S_IMODE(opened.st_mode) != 0o600 or token_file_binding(opened) != token_file_binding(before)):
             raise ValueError("write token file changed before open")
         raw = os.read(fd, MAX_WRITE_TOKEN_BYTES + 1)
         closed = os.fstat(fd)
@@ -70,8 +78,8 @@ def load_write_token(path):
     except OSError as err:
         raise ValueError("write token file changed during read") from err
     if (len(raw) > MAX_WRITE_TOKEN_BYTES or closed.st_size != len(raw) or
-            (after.st_dev, after.st_ino, after.st_mode, after.st_uid, after.st_size) !=
-            (opened.st_dev, opened.st_ino, opened.st_mode, opened.st_uid, opened.st_size)):
+            token_file_binding(closed) != token_file_binding(opened) or
+            token_file_binding(after) != token_file_binding(opened)):
         raise ValueError("write token file changed during read")
     try:
         token = raw.decode("ascii")
@@ -163,7 +171,7 @@ def stop_pilot_allocation(allocation, namespace):
         if job_id != "hello-norn-mysql" or inspected_namespace != namespace:
             return False
         stopped = subprocess.run(
-            ["nomad", "alloc", "stop", "-namespace=" + namespace, "-yes", allocation],
+            ["nomad", "alloc", "stop", "-namespace=" + namespace, "-detach", allocation],
             check=False, capture_output=True, text=True, timeout=30,
         )
         return stopped.returncode == 0
@@ -241,9 +249,10 @@ def proof(base, receipt, expected_source, allowed_allocations, write_token):
     }
 
 
-def inventory_pilot(expected_image, expected_source, expected_hostname, expected_namespace):
+def inventory_pilot(expected_image, expected_source, expected_hostname, expected_namespace, expected_ingress_node_ids):
     """Prove exactly two running, distinct ingress nodes for the reviewed job."""
-    if not PILOT_NAMESPACE.fullmatch(expected_namespace):
+    if (not PILOT_NAMESPACE.fullmatch(expected_namespace) or not isinstance(expected_ingress_node_ids, frozenset) or
+            len(expected_ingress_node_ids) != 2 or any(not NODE_ID.fullmatch(item) for item in expected_ingress_node_ids)):
         return [], False
     listed = nomad_json(["job", "allocs", "-namespace=" + expected_namespace, "-json", "hello-norn-mysql"])
     if not isinstance(listed, list):
@@ -265,10 +274,10 @@ def inventory_pilot(expected_image, expected_source, expected_hostname, expected
         source = meta.get("pilot_source_version", "") if isinstance(meta, dict) else ""
         hostname = meta.get("pilot_hostname", "") if isinstance(meta, dict) else ""
         node_id = body.get("NodeID", "")
-        node = nomad_json(["node", "status", "-json", node_id]) if isinstance(node_id, str) else None
         if (body.get("JobID") != "hello-norn-mysql" or body.get("ClientStatus") != "running" or
-                body.get("Namespace") != expected_namespace or not isinstance(node, dict) or
-                node.get("NodePool") != "ingress" or image != expected_image or
+                body.get("Namespace") != expected_namespace or not isinstance(node_id, str) or
+                not NODE_ID.fullmatch(node_id) or node_id not in expected_ingress_node_ids or
+                not isinstance(job, dict) or job.get("NodePool") != "ingress" or image != expected_image or
                 source != expected_source or hostname != expected_hostname):
             return proofs, False
         proofs.append({
@@ -289,12 +298,12 @@ def inventory_pilot(expected_image, expected_source, expected_hostname, expected
     return proofs, True
 
 
-def wait_for_recovery(target, initial_ids, expected_image, expected_source, expected_hostname, namespace, seconds):
+def wait_for_recovery(target, initial_ids, expected_image, expected_source, expected_hostname, namespace, expected_ingress_node_ids, seconds):
     """Require a stopped target and a two-node running inventory with a replacement."""
     deadline = time.monotonic() + seconds
     while time.monotonic() < deadline:
         target_status = nomad_json(["alloc", "status", "-namespace=" + namespace, "-json", target])
-        proofs, healthy = inventory_pilot(expected_image, expected_source, expected_hostname, namespace)
+        proofs, healthy = inventory_pilot(expected_image, expected_source, expected_hostname, namespace, expected_ingress_node_ids)
         current_ids = {item["allocation"] for item in proofs}
         replacements = sorted(current_ids - initial_ids)
         if healthy and isinstance(target_status, dict) and target_status.get("ClientStatus") != "running" and replacements:
@@ -333,6 +342,7 @@ def main():
     parser.add_argument("--expected-source-version", required=True)
     parser.add_argument("--expected-hostname", required=True)
     parser.add_argument("--namespace", required=True, help="exact run-scoped norn-pilot-* Nomad namespace")
+    parser.add_argument("--ingress-node-ids-json", required=True, help="JSON array of exactly two reviewed full ingress Nomad node IDs")
     parser.add_argument("--write-token-file", required=True, help="absolute owner-owned mode-0600 runtime write-token file")
     parser.add_argument("--fault-allocation", help="explicit hello-norn-mysql allocation to stop")
     parser.add_argument("--recovery-seconds", type=int, default=180)
@@ -350,6 +360,12 @@ def main():
         parser.error("expected image must be a lowercase OCI digest and source version must be a safe revision")
     if not PILOT_NAMESPACE.fullmatch(args.namespace):
         parser.error("namespace must be the exact run-scoped norn-pilot-* namespace")
+    try:
+        ingress_node_ids = frozenset(json.loads(args.ingress_node_ids_json))
+    except (TypeError, ValueError, json.JSONDecodeError):
+        parser.error("ingress node IDs must be a JSON array of exactly two full lowercase Nomad node IDs")
+    if len(ingress_node_ids) != 2 or any(not isinstance(node_id, str) or not NODE_ID.fullmatch(node_id) for node_id in ingress_node_ids):
+        parser.error("ingress node IDs must be a JSON array of exactly two full lowercase Nomad node IDs")
     if urllib.parse.urlsplit("//" + args.expected_hostname).hostname != args.expected_hostname.lower():
         parser.error("expected hostname must be a hostname without a scheme or port")
     if url.hostname.lower() != args.expected_hostname.lower():
@@ -363,7 +379,9 @@ def main():
     run_id = uuid.uuid4().hex
     started_at = datetime.datetime.now(datetime.timezone.utc).replace(microsecond=0).isoformat().replace("+00:00", "Z")
     started = time.monotonic()
-    topology, topology_verified = inventory_pilot(args.expected_image, args.expected_source_version, args.expected_hostname, args.namespace)
+    topology, topology_verified = inventory_pilot(
+        args.expected_image, args.expected_source_version, args.expected_hostname, args.namespace, ingress_node_ids
+    )
     initial_ids = {item["allocation"] for item in topology}
     if not topology_verified:
         initial_ids = set()
@@ -374,7 +392,10 @@ def main():
     if args.fault_allocation:
         fault["stopAccepted"] = args.fault_allocation in initial_ids and stop_pilot_allocation(args.fault_allocation, args.namespace)
         if fault["stopAccepted"]:
-            topology, replacements, topology_recovered = wait_for_recovery(args.fault_allocation, initial_ids, args.expected_image, args.expected_source_version, args.expected_hostname, args.namespace, args.recovery_seconds)
+            topology, replacements, topology_recovered = wait_for_recovery(
+                args.fault_allocation, initial_ids, args.expected_image, args.expected_source_version,
+                args.expected_hostname, args.namespace, ingress_node_ids, args.recovery_seconds,
+            )
             fault["replacementAllocations"] = replacements
             fault["targetStopped"] = topology_recovered
             topology_verified = topology_recovered
@@ -407,7 +428,11 @@ def main():
         "startedAt": started_at,
         "endedAt": datetime.datetime.now(datetime.timezone.utc).replace(microsecond=0).isoformat().replace("+00:00", "Z"),
         "requestedLoad": {"rps": args.rps, "seconds": args.seconds, "workers": args.workers, "minAvailability": args.min_availability},
-        "expectedArtifact": {"image": args.expected_image, "sourceVersion": args.expected_source_version, "hostname": args.expected_hostname, "namespace": args.namespace},
+        "expectedArtifact": {
+            "image": args.expected_image, "sourceVersion": args.expected_source_version,
+            "hostname": args.expected_hostname, "namespace": args.namespace,
+            "ingressNodeIDs": sorted(ingress_node_ids),
+        },
         "requests": len(rows),
         "elapsedSeconds": round(time.monotonic() - started, 2),
         "availability": round(availability, 4),

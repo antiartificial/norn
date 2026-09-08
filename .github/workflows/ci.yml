@@ -48,6 +48,27 @@ jobs:
         working-directory: v2/cli
         run: go test ./...
 
+  fleet-pilot:
+    name: Fleet pilot workload
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version: 1.26.6
+          cache-dependency-path: v2/infra/fleet-pilot/hello-norn-mysql/go.sum
+      - name: Verify pilot Go workload
+        working-directory: v2/infra/fleet-pilot/hello-norn-mysql
+        run: |
+          go test ./... -count=1
+          go vet ./...
+          go mod verify
+      - name: Run pilot exercise tests
+        working-directory: v2/infra/fleet-pilot
+        run: PYTHONDONTWRITEBYTECODE=1 python3 -m unittest test_exercise.py -v
+
   openapi:
     name: OpenAPI contract
     runs-on: ubuntu-24.04

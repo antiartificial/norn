@@ -23,6 +23,21 @@ on:
         required: false
         default: .
         type: string
+      build_contract:
+        description: Build-argument contract. Use pilot-go only with the immutable GO_IMAGE/RUNTIME_IMAGE pair.
+        required: false
+        default: standard
+        type: string
+      go_image:
+        description: Optional digest-pinned Go build image; required by the pilot-go contract.
+        required: false
+        default: ''
+        type: string
+      runtime_image:
+        description: Optional digest-pinned runtime image; required by the pilot-go contract.
+        required: false
+        default: ''
+        type: string
       lane:
         description: Release lane selected by the caller.
         required: true
@@ -92,6 +107,9 @@ jobs:
           ROLLBACK_DEPLOYMENT_ID: ${{ inputs.rollback_deployment_id }}
           ROLLBACK_ARTIFACT: ${{ inputs.rollback_artifact }}
           ROLLBACK_CONFIRMATION: ${{ inputs.rollback_confirmation }}
+          BUILD_CONTRACT: ${{ inputs.build_contract }}
+          GO_IMAGE: ${{ inputs.go_image }}
+          RUNTIME_IMAGE: ${{ inputs.runtime_image }}
         run: |
           set -euo pipefail
           [[ "$APP_ID" =~ ^[a-z0-9][a-z0-9-]*$ ]] || { echo "app_id is invalid" >&2; exit 1; }
@@ -99,6 +117,20 @@ jobs:
             echo "image_repository must be a lowercase GHCR repository without a tag" >&2
             exit 1
           }
+          case "$BUILD_CONTRACT" in
+            standard|pilot-go) ;;
+            *) echo "build_contract must be standard or pilot-go" >&2; exit 1 ;;
+          esac
+          if [[ -n "$GO_IMAGE" || -n "$RUNTIME_IMAGE" || "$BUILD_CONTRACT" == pilot-go ]]; then
+            [[ "$GO_IMAGE" =~ ^[a-z0-9][a-z0-9./:_-]*@sha256:[0-9a-f]{64}$ ]] || {
+              echo "go_image must be a lowercase digest-pinned OCI reference" >&2
+              exit 1
+            }
+            [[ "$RUNTIME_IMAGE" =~ ^[a-z0-9][a-z0-9./:_-]*@sha256:[0-9a-f]{64}$ ]] || {
+              echo "runtime_image must be a lowercase digest-pinned OCI reference" >&2
+              exit 1
+            }
+          fi
           case "$CALLER_REPOSITORY_VISIBILITY" in
             public|private|internal) ;;
             *) echo "unsupported or missing GitHub repository visibility: $CALLER_REPOSITORY_VISIBILITY" >&2; exit 1 ;;
@@ -268,6 +300,9 @@ jobs:
         id: inputs
         env:
           NORN_API_URL: ${{ vars.NORN_API_URL }}
+          BUILD_CONTRACT: ${{ inputs.build_contract }}
+          GO_IMAGE: ${{ inputs.go_image }}
+          RUNTIME_IMAGE: ${{ inputs.runtime_image }}
         run: |
           set -euo pipefail
           case "$NORN_API_URL" in
@@ -282,6 +317,15 @@ jobs:
           source_sha='${{ needs.required-checks.outputs.source_sha }}'
           [[ "$source_sha" =~ ^[0-9a-f]{40}$ ]] || { echo "resolved source is not a full lowercase commit SHA" >&2; exit 1; }
           printf 'source_sha=%s\n' "$source_sha" >> "$GITHUB_OUTPUT"
+          {
+            echo 'build_args<<NORN_BUILD_ARGS'
+            echo "APP_VERSION=$source_sha"
+            if [[ -n "$GO_IMAGE" || -n "$RUNTIME_IMAGE" || "$BUILD_CONTRACT" == pilot-go ]]; then
+              echo "GO_IMAGE=$GO_IMAGE"
+              echo "RUNTIME_IMAGE=$RUNTIME_IMAGE"
+            fi
+            echo NORN_BUILD_ARGS
+          } >> "$GITHUB_OUTPUT"
 
       - name: Resolve the server-owned attestation policy
         id: trust
@@ -319,6 +363,7 @@ jobs:
           provenance: mode=max
           sbom: true
           tags: ${{ inputs.image_repository }}:sha-${{ steps.inputs.outputs.source_sha }}
+          build-args: ${{ steps.inputs.outputs.build_args }}
 
       - name: Bind the published digest
         id: artifact
