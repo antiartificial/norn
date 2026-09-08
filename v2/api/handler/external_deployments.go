@@ -243,8 +243,7 @@ func (h *Handler) BeginExternalFleetDeploymentAdmission(w http.ResponseWriter, r
 		WriteControlProblem(w, r, http.StatusConflict, "external_deployment_unavailable", err.Error())
 		return
 	}
-	registrar, ok := h.externalFleetDeploymentVerifier.(ExternalFleetEvidenceRegistrationClient)
-	if h.db == nil || !ok {
+	if h.db == nil {
 		WriteControlProblem(w, r, http.StatusServiceUnavailable, "external_deployment_registration_unavailable", "Norn-owned evidence nonce registration is not configured")
 		return
 	}
@@ -279,6 +278,11 @@ func (h *Handler) BeginExternalFleetDeploymentAdmission(w http.ResponseWriter, r
 			cleanupState = "complete"
 		}
 		writeJSON(w, externalFleetAdmissionResponse{SchemaVersion: "norn.external-fleet-admission/v4", AdmissionID: admission.ID, State: string(admission.State), NonceGeneration: admission.NonceGeneration, OperationID: admission.OperationID, CleanupState: cleanupState})
+		return
+	}
+	registrar, ok := h.externalFleetDeploymentVerifier.(ExternalFleetEvidenceRegistrationClient)
+	if !ok {
+		WriteControlProblem(w, r, http.StatusServiceUnavailable, "external_deployment_registration_unavailable", "Norn-owned evidence nonce registration is not configured")
 		return
 	}
 	if admission.State == store.ExternalDeploymentAdmissionEvidenceClaimed || admission.State == store.ExternalDeploymentAdmissionExpired {
