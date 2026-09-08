@@ -327,8 +327,8 @@ func externalFleetParseLinkHeaders(headers []string) ([]externalFleetLink, error
 					}
 					relation = value
 					for _, token := range strings.Fields(value) {
-						// Registered relation types are ASCII case-sensitive.
-						if token == "next" {
+						// Registered relation types are ASCII case-insensitive.
+						if strings.EqualFold(token, "next") {
 							nextCount++
 						}
 					}

@@ -503,10 +503,17 @@ func TestExternalFleetAttestationNextLinkRejectsMalformedOrDriftedTargets(t *tes
 	if path, found, err := app.nextAttestationListPath([]string{"<" + valid + ">; rel=\"alternate next\"; x-note=\"cursor, continuation\""}, "acme/app", digest, "provenance"); err != nil || !found || !strings.Contains(path, "before=cursor") {
 		t.Fatalf("next relation token in a list rejected: path=%q found=%t err=%v", path, found, err)
 	}
+	for _, relation := range []string{"Next", "NEXT", "alternate Next"} {
+		if path, found, err := app.nextAttestationListPath([]string{"<" + valid + ">; rel=\"" + relation + "\""}, "acme/app", digest, "provenance"); err != nil || !found || !strings.Contains(path, "before=cursor") {
+			t.Fatalf("case-insensitive next relation %q rejected: path=%q found=%t err=%v", relation, path, found, err)
+		}
+	}
 	for name, link := range map[string]string{
 		"malformed":            "not-a-link",
 		"multiple next":        "<" + valid + ">; rel=\"next\", <" + valid + ">; rel=\"next\"",
 		"duplicate next token": "<" + valid + ">; rel=\"alternate next next\"",
+		"mixed-case duplicate": "<" + valid + ">; rel=\"next NEXT\"",
+		"mixed-case links":     "<" + valid + ">; rel=\"Next\", <" + valid + ">; rel=\"NEXT\"",
 		"empty relation":       "<" + valid + ">; rel=\"\"",
 		"relative link":        "</repos/acme/app/attestations/sha256:" + digest + "?per_page=30&predicate_type=provenance&before=cursor>; rel=\"next\"",
 		"anchor":               "<" + valid + ">; rel=\"next\"; anchor=\"https://api.github.example/context\"",
