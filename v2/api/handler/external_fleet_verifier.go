@@ -708,7 +708,7 @@ func validateExternalFleetEvidenceAt(observed externalFleetEvidence, request Ext
 			return externalVerifierErr("canonical-" + strings.ReplaceAll(field, ".", "-"))
 		}
 	}
-	if err := verificationMatchesExternalReceipt(observed.Verification, r, request.Config); err != nil {
+	if err := verificationMatchesExternalReceiptAt(observed.Verification, r, request.Config, now); err != nil {
 		return externalVerifierErr("receipt-mismatch")
 	}
 	return nil

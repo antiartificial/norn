@@ -24,11 +24,12 @@ import (
 	"time"
 
 	"github.com/golang-jwt/jwt/v5"
-	"github.com/klauspost/compress/s2"
+	"github.com/golang/snappy"
 )
 
 const (
 	externalFleetMaxAttestations       = 30
+	externalFleetMaxAttestationPages   = 4
 	externalFleetBundleCompressedMax   = 1 << 20
 	externalFleetBundleDecompressedMax = 4 << 20
 )
@@ -77,36 +78,52 @@ func (c *externalFleetGitHubApp) attestations(ctx context.Context, token string,
 		return nil, errors.New("attestation receipt digest binding invalid")
 	}
 	found := make(map[string]bool, len(want))
-	seenCapabilities := make(map[string]bool, len(want))
+	seenCapabilities := make(map[string]bool, externalFleetMaxAttestations*externalFleetMaxAttestationPages)
 	bundles := make(map[string]json.RawMessage, len(want))
-	for predicate, filter := range map[string]string{"https://slsa.dev/provenance/v1": "provenance", "https://spdx.dev/Document/v2.3": "sbom"} {
-		var response struct {
-			Attestations []externalFleetListAttestation `json:"attestations"`
+	for _, wantedPredicate := range []struct{ predicate, filter string }{{"https://slsa.dev/provenance/v1", "provenance"}, {"https://spdx.dev/Document/v2.3", "sbom"}} {
+		listed := false
+		for page := 1; page <= externalFleetMaxAttestationPages; page++ {
+			var response struct {
+				Attestations []externalFleetListAttestation `json:"attestations"`
+			}
+			path := "/repos/" + repo + "/attestations/sha256:" + digest + "?per_page=" + strconv.Itoa(externalFleetMaxAttestations) + "&predicate_type=" + wantedPredicate.filter + "&page=" + strconv.Itoa(page)
+			if err := c.request(ctx, token, http.MethodGet, path, nil, &response); err != nil {
+				return nil, errors.New("attestation list unavailable")
+			}
+			if len(response.Attestations) > externalFleetMaxAttestations {
+				return nil, errors.New("attestation list cardinality invalid")
+			}
+			if len(response.Attestations) == 0 {
+				break
+			}
+			listed = true
+			for _, item := range response.Attestations {
+				if item.RepositoryID != repositoryID || !c.validStorageBundleURL(item.BundleURL) || seenCapabilities[item.BundleURL] {
+					return nil, errors.New("attestation capability binding invalid")
+				}
+				seenCapabilities[item.BundleURL] = true
+				bundle, err := c.fetchBundle(ctx, item.BundleURL, digest)
+				if err != nil {
+					return nil, errors.New("attestation bundle unavailable")
+				}
+				if bundle.Predicate != wantedPredicate.predicate {
+					return nil, errors.New("attestation predicate binding invalid")
+				}
+				if bundle.SHA256 != want[wantedPredicate.predicate] {
+					continue
+				}
+				if found[bundle.Predicate] {
+					return nil, errors.New("attestation bundle binding invalid")
+				}
+				found[bundle.Predicate] = true
+				bundles[bundle.Predicate] = bundle.Raw
+			}
+			if len(response.Attestations) < externalFleetMaxAttestations {
+				break
+			}
 		}
-		if err := c.request(ctx, token, http.MethodGet, "/repos/"+repo+"/attestations/sha256:"+digest+"?per_page=30&predicate_type="+filter, nil, &response); err != nil {
-			return nil, errors.New("attestation list unavailable")
-		}
-		if len(response.Attestations) == 0 || len(response.Attestations) > externalFleetMaxAttestations {
+		if !listed {
 			return nil, errors.New("attestation list cardinality invalid")
-		}
-		for _, item := range response.Attestations {
-			if item.RepositoryID != repositoryID || !c.validStorageBundleURL(item.BundleURL) || seenCapabilities[item.BundleURL] {
-				return nil, errors.New("attestation capability binding invalid")
-			}
-			seenCapabilities[item.BundleURL] = true
-			bundle, err := c.fetchBundle(ctx, item.BundleURL, digest)
-			if err != nil {
-				return nil, errors.New("attestation bundle unavailable")
-			}
-			expectedDigest, wanted := want[bundle.Predicate]
-			if !wanted || bundle.Predicate != predicate {
-				return nil, errors.New("attestation predicate binding invalid")
-			}
-			if found[bundle.Predicate] || bundle.SHA256 != expectedDigest {
-				return nil, errors.New("attestation bundle binding invalid")
-			}
-			found[bundle.Predicate] = true
-			bundles[bundle.Predicate] = bundle.Raw
 		}
 	}
 	if !found["https://slsa.dev/provenance/v1"] || !found["https://spdx.dev/Document/v2.3"] {
@@ -157,10 +174,13 @@ func (c *externalFleetGitHubApp) fetchBundle(ctx context.Context, capability, di
 	if err != nil || len(compressed) > externalFleetBundleCompressedMax {
 		return externalFleetBundle{}, errors.New("compressed bundle exceeds limit")
 	}
-	reader := s2.NewReader(bytes.NewReader(compressed))
-	raw, err := io.ReadAll(io.LimitReader(reader, externalFleetBundleDecompressedMax+1))
-	if err != nil || len(raw) == 0 || len(raw) > externalFleetBundleDecompressedMax {
+	decodedLen, err := snappy.DecodedLen(compressed)
+	if err != nil || decodedLen <= 0 || decodedLen > externalFleetBundleDecompressedMax {
 		return externalFleetBundle{}, errors.New("decompressed bundle exceeds limit")
+	}
+	raw, err := snappy.Decode(make([]byte, 0, decodedLen), compressed)
+	if err != nil || len(raw) != decodedLen {
+		return externalFleetBundle{}, errors.New("decompressed bundle invalid")
 	}
 	var parsed struct {
 		DSSEEnvelope struct {
@@ -183,8 +203,34 @@ func (c *externalFleetGitHubApp) fetchBundle(ctx context.Context, capability, di
 	if json.Unmarshal(payload, &statement) != nil || statement.PredicateType == "" || !externalFleetStatementSubject(statement.Subject, digest) {
 		return externalFleetBundle{}, errors.New("bundle statement invalid")
 	}
-	sum := sha256.Sum256(raw)
-	return externalFleetBundle{Raw: append(json.RawMessage(nil), raw...), SHA256: hex.EncodeToString(sum[:]), Predicate: statement.PredicateType}, nil
+	canonicalDigest, err := externalFleetCanonicalBundleDigest(raw)
+	if err != nil {
+		return externalFleetBundle{}, errors.New("bundle canonical form invalid")
+	}
+	return externalFleetBundle{Raw: append(json.RawMessage(nil), raw...), SHA256: canonicalDigest, Predicate: statement.PredicateType}, nil
+}
+
+// externalFleetCanonicalBundleDigest is the stable receipt/handoff binding.
+// It parses the complete Sigstore bundle and marshals the same JSON value with
+// deterministic object-key ordering before hashing, so insignificant transport
+// whitespace (including actions/attest's trailing EOL) cannot change identity.
+func externalFleetCanonicalBundleDigest(raw []byte) (string, error) {
+	decoder := json.NewDecoder(bytes.NewReader(raw))
+	decoder.UseNumber()
+	var value any
+	if err := decoder.Decode(&value); err != nil {
+		return "", err
+	}
+	var extra any
+	if err := decoder.Decode(&extra); !errors.Is(err, io.EOF) {
+		return "", errors.New("trailing JSON")
+	}
+	canonical, err := json.Marshal(value)
+	if err != nil {
+		return "", err
+	}
+	sum := sha256.Sum256(canonical)
+	return hex.EncodeToString(sum[:]), nil
 }
 
 func externalFleetStatementSubject(subject []struct {

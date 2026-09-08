@@ -315,9 +315,7 @@ func externalFleetAdmissionIdempotency(w http.ResponseWriter, r *http.Request, p
 		PlanID        string                        `json:"planId"`
 		PlanSHA256    string                        `json:"planSha256"`
 		RootAttemptID string                        `json:"rootAttemptId"`
-		Migration     ExternalFleetNomadJobProof    `json:"migration"`
-		Runtime       ExternalFleetNomadJobProof    `json:"runtime"`
-	}{principal.CI.Repository, principal.Environment, appID, externalFleetReplayCandidate(receipt.Candidate), receipt.SourceSHA, receipt.Artifact, receipt.Fleet.Namespace, receipt.Fleet.PlanID, receipt.Fleet.PlanSHA256, receipt.Fleet.RootAttemptID, receipt.Fleet.Migration, receipt.Fleet.Runtime}
+	}{principal.CI.Repository, principal.Environment, appID, externalFleetReplayCandidate(receipt.Candidate), receipt.SourceSHA, receipt.Artifact, receipt.Fleet.Namespace, receipt.Fleet.PlanID, receipt.Fleet.PlanSHA256, receipt.Fleet.RootAttemptID}
 	canonical, err := json.Marshal(logical)
 	if err != nil {
 		return "", "", false
@@ -447,10 +445,14 @@ func validateExternalFleetReceipt(receipt ExternalFleetDeploymentReceipt, config
 }
 
 func verificationMatchesExternalReceipt(verified ExternalFleetDeploymentVerification, receipt ExternalFleetDeploymentReceipt, configured ExternalFleetAdmissionConfig) error {
+	return verificationMatchesExternalReceiptAt(verified, receipt, configured, time.Now().UTC())
+}
+
+func verificationMatchesExternalReceiptAt(verified ExternalFleetDeploymentVerification, receipt ExternalFleetDeploymentReceipt, configured ExternalFleetAdmissionConfig, now time.Time) error {
 	if verified.SourceSHA != receipt.SourceSHA || verified.Artifact != receipt.Artifact || verified.AttestationBundleSHA256 != receipt.AttestationBundleSHA256 || verified.SBOMBundleSHA256 != receipt.SBOMBundleSHA256 || verified.Namespace != configured.Namespace || verified.Migration != receipt.Fleet.Migration || verified.Runtime != receipt.Fleet.Runtime || verified.PlanID != receipt.Fleet.PlanID || verified.ApplyRunID != receipt.Fleet.ApplyRunID || verified.ApplyRunAttempt != receipt.Fleet.ApplyRunAttempt || verified.PlanSHA256 != receipt.Fleet.PlanSHA256 || verified.RunnerAttemptID != receipt.Fleet.RunnerAttemptID || verified.NonceEvidenceRef != receipt.Fleet.NonceEvidenceRef {
 		return fmt.Errorf("independent verifier observations do not exactly match the receipt")
 	}
-	if !validDistinctIngressNodes(verified.IngressNodeIDs) || !validHTTPSVersion(verified.PublicHTTPSVersion) || !validPrivateReadiness(verified.PrivateReadiness) || !sameExternalChronology(verified.Chronology, receipt.Chronology) {
+	if !validDistinctIngressNodes(verified.IngressNodeIDs) || !validHTTPSVersion(verified.PublicHTTPSVersion) || !validPrivateReadinessAt(verified.PrivateReadiness, now) || !sameExternalChronology(verified.Chronology, receipt.Chronology) {
 		return fmt.Errorf("independent verifier did not prove two distinct ingress nodes, public HTTPS version, private readiness, and full chronology")
 	}
 	return nil
@@ -587,7 +589,10 @@ func validHTTPSVersion(version string) bool {
 }
 
 func validPrivateReadiness(readiness ExternalFleetPrivateReadiness) bool {
-	now := time.Now().UTC()
+	return validPrivateReadinessAt(readiness, time.Now().UTC())
+}
+
+func validPrivateReadinessAt(readiness ExternalFleetPrivateReadiness, now time.Time) bool {
 	if !validExternalURI(readiness.Endpoint) || !strings.HasSuffix(strings.TrimSuffix(readiness.Endpoint, "/"), "/readyz") || readiness.CheckedAt.IsZero() || readiness.CheckedAt.After(now) || now.Sub(readiness.CheckedAt) > externalFleetAdmissionNonceTTL || len(readiness.AllocationIDs) < 2 {
 		return false
 	}

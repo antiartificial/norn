@@ -17,13 +17,15 @@ import (
 	"net/http/httptest"
 	"net/url"
 	"os"
+	"os/exec"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
 
 	"github.com/go-chi/chi/v5"
-	"github.com/klauspost/compress/s2"
+	"github.com/golang/snappy"
 
 	"norn/v2/api/config"
 	"norn/v2/api/model"
@@ -207,17 +209,17 @@ func TestExternalFleetEvidenceV1FixtureContract(t *testing.T) {
 		t.Fatalf("fixture does not preserve required bridge contract: %#v", evidence)
 	}
 	receipt := externalReceiptForTest()
-	verification := verifiedExternalReceipt(receipt)
-	evidence.Verification = verification
-	evidence.Repository = "acme/norn-fleet"
-	evidence.Attempt.PlanID, evidence.Attempt.AttemptID, evidence.Attempt.RootAttemptID = receipt.Fleet.PlanID, receipt.Fleet.RunnerAttemptID, receipt.Fleet.RootAttemptID
-	evidence.Attempt.SourceDispatchRunID = receipt.Fleet.ApplyRunID
-	evidence.Attempt.WorkflowURL = "https://github.com/acme/norn-fleet/actions/runs/" + receipt.Fleet.ApplyRunID
-	evidence.Attempt.RetryLineage = []string{receipt.Fleet.RootAttemptID, receipt.Fleet.RunnerAttemptID}
-	evidence.NonceSHA256 = externalAdmissionNonce{ID: "00000000-0000-4000-8000-000000000001", Secret: strings.Repeat("a", 64)}.sha256()
-	evidence.FixtureHCLSHA256["runtime"] = receipt.Fleet.Runtime.HCLSHA256
-	if err := validateExternalFleetEvidenceAt(*evidence, ExternalFleetDeploymentVerificationRequest{Receipt: receipt, CI: CIIdentity{Repository: evidence.Repository, RunID: receipt.Fleet.ApplyRunID}, Config: externalConfigForTest()}, evidence.NonceSHA256, evidence.NonceReadAt.Add(time.Minute)); err != nil {
+	base := time.Date(2026, time.January, 1, 0, 0, 0, 0, time.UTC)
+	receipt.Chronology = []ExternalFleetChronologyStep{{Phase: "prepare", OccurredAt: base, EvidenceRef: "https://evidence.example.test/prepare"}, {Phase: "migration", OccurredAt: base.Add(time.Second), EvidenceRef: "https://evidence.example.test/migration"}, {Phase: "runtime", OccurredAt: base.Add(2 * time.Second), EvidenceRef: "https://evidence.example.test/runtime"}, {Phase: "exercise", OccurredAt: base.Add(3 * time.Second), EvidenceRef: "https://evidence.example.test/exercise"}}
+	nonce := externalAdmissionNonce{ID: "00000000-0000-4000-8000-000000000001", Secret: strings.Repeat("a", 64)}
+	if evidence.NonceSHA256 != nonce.sha256() {
+		t.Fatal("fixture nonce digest is not bound to the canonical fixture nonce")
+	}
+	if err := validateExternalFleetEvidenceAt(*evidence, ExternalFleetDeploymentVerificationRequest{Receipt: receipt, CI: CIIdentity{Repository: evidence.Repository, RunID: receipt.Fleet.ApplyRunID}, Config: externalConfigForTest()}, nonce.sha256(), evidence.NonceReadAt.Add(time.Minute)); err != nil {
 		t.Fatalf("fresh-clock fixture failed production validation: %v", err)
+	}
+	if !validExternalFleetAllocations(evidence.Allocations, receipt, evidence.Verification, externalFleetPublicVersion{Allocation: "alloc-a", Region: "global"}) {
+		t.Fatal("fixture allocations failed production allocation validation")
 	}
 }
 
@@ -233,6 +235,9 @@ func TestExternalFleetAdmissionIdempotencySurvivesTransientRotation(t *testing.T
 	rotated := receipt
 	rotated.Nonce = "00000000-0000-4000-8000-000000000002." + strings.Repeat("f", 64)
 	rotated.Fleet.ApplyRunID, rotated.Fleet.ApplyRunAttempt, rotated.Fleet.RunnerAttemptID = "456", "2", "attempt-2"
+	rotated.Fleet.Migration.EvalID, rotated.Fleet.Runtime.EvalID = "00000000-0000-4000-8000-000000000021", "00000000-0000-4000-8000-000000000022"
+	rotated.Fleet.Migration.JobModifyIndex, rotated.Fleet.Runtime.JobModifyIndex = 21, 22
+	rotated.Fleet.Migration.CheckpointID, rotated.Fleet.Runtime.CheckpointID = "migration-2", "runtime-2"
 	principal.TokenID, principal.CI.RunID, principal.CI.RunAttempt = "new-jti", "456", "2"
 	rotatedKey, rotatedDigest, ok := externalFleetAdmissionIdempotency(httptest.NewRecorder(), request, principal, rotated.App, rotated)
 	if !ok || key != rotatedKey || digest != rotatedDigest {
@@ -242,6 +247,18 @@ func TestExternalFleetAdmissionIdempotencySurvivesTransientRotation(t *testing.T
 	_, changedDigest, ok := externalFleetAdmissionIdempotency(httptest.NewRecorder(), request, principal, rotated.App, rotated)
 	if !ok || digest == changedDigest {
 		t.Fatal("changed logical candidate was replayable")
+	}
+	rotated = receipt
+	rotated.Fleet.PlanSHA256 = strings.Repeat("f", 64)
+	_, changedDigest, ok = externalFleetAdmissionIdempotency(httptest.NewRecorder(), request, principal, rotated.App, rotated)
+	if !ok || digest == changedDigest {
+		t.Fatal("changed immutable plan hash was replayable")
+	}
+	rotated = receipt
+	rotated.Fleet.Namespace = "other"
+	_, changedDigest, ok = externalFleetAdmissionIdempotency(httptest.NewRecorder(), request, principal, rotated.App, rotated)
+	if !ok || digest == changedDigest {
+		t.Fatal("changed immutable namespace was replayable")
 	}
 }
 
@@ -301,27 +318,43 @@ func TestExternalFleetLiveGitHubAttestationCapabilityShape(t *testing.T) {
 		return []byte("{\n  \"dsseEnvelope\": {\"payload\": \"" + base64.StdEncoding.EncodeToString(statement) + "\"}\n}\n")
 	}
 	slsaRaw, spdxRaw := makeBundle(slsa), makeBundle(spdx)
-	hash := func(raw []byte) string { sum := sha256.Sum256(raw); return hex.EncodeToString(sum[:]) }
+	oldSLSARaw := []byte(strings.Replace(string(slsaRaw), "\n}\n", ",\"historical\":true\n}\n", 1))
+	hash := func(raw []byte) string {
+		value, err := externalFleetCanonicalBundleDigest(raw)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return value
+	}
 	storage := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.Header.Get("Authorization") != "" || r.Header.Get("Accept") != "" || r.Header.Get("X-GitHub-Api-Version") != "" {
 			t.Error("storage request carried GitHub credentials or headers")
 		}
 		w.Header().Set("Content-Type", "application/x-snappy")
-		writer := s2.NewWriter(w)
-		if strings.HasPrefix(r.URL.Path, "/provenance") {
-			_, _ = writer.Write(slsaRaw)
+		if strings.HasPrefix(r.URL.Path, "/provenance-old") {
+			_, _ = w.Write(snappy.Encode(nil, oldSLSARaw))
+		} else if strings.HasPrefix(r.URL.Path, "/provenance") {
+			_, _ = w.Write(snappy.Encode(nil, slsaRaw))
 		} else {
-			_, _ = writer.Write(spdxRaw)
+			_, _ = w.Write(snappy.Encode(nil, spdxRaw))
 		}
-		_ = writer.Close()
 	}))
 	defer storage.Close()
 	list := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.Header.Get("Authorization") != "Bearer installation-token" || r.Header.Get("X-GitHub-Api-Version") != "2026-03-10" {
 			t.Error("GitHub list request was not exact 2026-03-10 authentication")
 		}
+		filter, page := r.URL.Query().Get("predicate_type"), r.URL.Query().Get("page")
+		if filter == "provenance" && page == "1" {
+			items := make([]any, 0, externalFleetMaxAttestations)
+			for index := 0; index < externalFleetMaxAttestations; index++ {
+				items = append(items, map[string]any{"repository_id": 1, "bundle_url": storage.URL + "/provenance-old/" + strconv.Itoa(index) + "?opaque=capability", "initiator": map[string]any{"login": "norn"}})
+			}
+			_ = json.NewEncoder(w).Encode(map[string]any{"attestations": items})
+			return
+		}
 		path := "/provenance?opaque=capability"
-		if r.URL.Query().Get("predicate_type") == "sbom" {
+		if filter == "sbom" {
 			path = "/spdx?opaque=capability"
 		}
 		_ = json.NewEncoder(w).Encode(map[string]any{"attestations": []any{map[string]any{"repository_id": 1, "bundle_url": storage.URL + path, "initiator": map[string]any{"login": "norn"}}}})
@@ -354,6 +387,39 @@ func TestExternalFleetLiveGitHubAttestationCapabilityShape(t *testing.T) {
 				t.Fatalf("invalid live capability binding was accepted or leaked: %v", err)
 			}
 		})
+	}
+}
+
+func TestExternalFleetCanonicalBundleDigestIsWhitespaceInsensitiveAndMatchesHandoff(t *testing.T) {
+	pretty := []byte("{\n  \"mediaType\": \"application/vnd.dev.sigstore.bundle+json;version=0.3\",\n  \"dsseEnvelope\": { \"payload\": \"c2lnbmVkLWNvbnRlbnQ=\" },\n  \"verificationMaterial\": {\"tlogEntries\": []}\n}\n")
+	minified := []byte(`{"dsseEnvelope":{"payload":"c2lnbmVkLWNvbnRlbnQ="},"mediaType":"application/vnd.dev.sigstore.bundle+json;version=0.3","verificationMaterial":{"tlogEntries":[]}}`)
+	withNewline := append(append([]byte(nil), minified...), '\n')
+	want, err := externalFleetCanonicalBundleDigest(pretty)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, raw := range [][]byte{minified, withNewline} {
+		got, err := externalFleetCanonicalBundleDigest(raw)
+		if err != nil || got != want {
+			t.Fatalf("canonical digest changed with whitespace: %q %v", got, err)
+		}
+	}
+	changed := []byte(`{"dsseEnvelope":{"payload":"ZGlmZmVyZW50LXNpZ25lZC1jb250ZW50"},"mediaType":"application/vnd.dev.sigstore.bundle+json;version=0.3","verificationMaterial":{"tlogEntries":[]}}`)
+	got, err := externalFleetCanonicalBundleDigest(changed)
+	if err != nil || got == want {
+		t.Fatalf("semantic bundle change did not change digest: %q %v", got, err)
+	}
+
+	command := exec.Command("jq", "-ceS", ".")
+	command.Stdin = bytes.NewReader(pretty)
+	canonical, err := command.Output()
+	if err != nil {
+		t.Fatal(err)
+	}
+	canonical = bytes.TrimSuffix(canonical, []byte("\n"))
+	sum := sha256.Sum256(canonical)
+	if handoffDigest := hex.EncodeToString(sum[:]); handoffDigest != want {
+		t.Fatalf("workflow jq canonical digest = %s, Go verifier = %s", handoffDigest, want)
 	}
 }
 

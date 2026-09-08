@@ -2425,8 +2425,8 @@ components:
         sourceSha: { type: string, pattern: '^[0-9a-f]{40}$' }
         artifact: { type: string, pattern: '^.+@sha256:[0-9a-f]{64}$' }
         candidate: { $ref: '#/components/schemas/ReleaseCandidate' }
-        attestationBundleSha256: { type: string, pattern: '^[0-9a-f]{64}$', description: SHA-256 of the exact publisher-recorded decompressed Sigstore provenance bundle. }
-        sbomBundleSha256: { type: string, pattern: '^[0-9a-f]{64}$', description: SHA-256 of the exact publisher-recorded decompressed Sigstore SPDX bundle. }
+        attestationBundleSha256: { type: string, pattern: '^[0-9a-f]{64}$', description: SHA-256 of canonical parsed Sigstore provenance bundle JSON; transport whitespace is excluded. }
+        sbomBundleSha256: { type: string, pattern: '^[0-9a-f]{64}$', description: SHA-256 of canonical parsed Sigstore SPDX bundle JSON; transport whitespace is excluded. }
         fleet: { $ref: '#/components/schemas/ExternalFleetExecutionProof' }
         chronology:
           type: array

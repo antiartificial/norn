@@ -7,15 +7,25 @@
 	"attestationBundleSha256": "1111111111111111111111111111111111111111111111111111111111111111",
 	"sbomBundleSha256": "2222222222222222222222222222222222222222222222222222222222222222",
     "namespace": "norn-pilot",
+	"migration": {"jobId":"hello-norn-mysql-migrate","hclSha256":"cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc","evalId":"00000000-0000-4000-8000-000000000011","jobModifyIndex":11,"checkpointId":"migration-1"},
+	"runtime": {"jobId":"hello-norn-mysql","hclSha256":"eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee","evalId":"00000000-0000-4000-8000-000000000012","jobModifyIndex":12,"checkpointId":"runtime-1"},
+	"planId":"plan-1", "applyRunId":"123", "applyRunAttempt":"1", "planSha256":"dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd", "runnerAttemptId":"attempt-1", "nonceEvidenceRef":"nonce-1",
     "publicHttpsVersion": "https://pilot.example.test/version",
     "privateReadiness": {"endpoint": "https://private.example.test/readyz", "allocationIds": ["alloc-a", "alloc-b"], "checkedAt": "2026-01-01T00:00:01Z"},
-    "ingressNodeIds": ["ingress-a", "ingress-b"]
+	"ingressNodeIds": ["ingress-a", "ingress-b"],
+	"chronology":[
+	  {"phase":"prepare","occurredAt":"2026-01-01T00:00:00Z","evidenceRef":"https://evidence.example.test/prepare"},
+	  {"phase":"migration","occurredAt":"2026-01-01T00:00:01Z","evidenceRef":"https://evidence.example.test/migration"},
+	  {"phase":"runtime","occurredAt":"2026-01-01T00:00:02Z","evidenceRef":"https://evidence.example.test/runtime"},
+	  {"phase":"exercise","occurredAt":"2026-01-01T00:00:03Z","evidenceRef":"https://evidence.example.test/exercise"}
+	],
+	"regions":[{"region":"global","nomadRegion":"global","evalId":"00000000-0000-4000-8000-000000000012","desiredWeight":100,"activeWeight":100}]
   },
-  "fixtureHclSha256": {"migration": "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc", "runtime": "dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd"},
+	"fixtureHclSha256": {"migration": "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc", "runtime": "eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee"},
   "canonical": {"prepare.tlsRouting": "sha256:prepare", "migration.migration": "sha256:migration", "runtime.update": "sha256:runtime", "readiness.consulNomad": "sha256:ready"},
-  "planAttemptId": "attempt-1", "checkpointAttemptId": "attempt-1", "nonceSha256": "eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee",
+  "planAttemptId": "attempt-1", "checkpointAttemptId": "attempt-1", "nonceSha256": "75ff3a3201e2bd004325533ba870f226a47047538c3cfa791ec3a215a6606fc5",
   "nonceWrittenAt": "2026-01-01T00:00:00Z", "nonceReadAt": "2026-01-01T00:00:01Z",
-	"attempt": {"planId": "plan-1", "attemptId": "attempt-1", "rootAttemptId": "root-1", "revision": 1, "terminalStatus": "running", "currentPhase": "complete", "sourceDispatchRunId": "123", "workflowUrl": "https://github.com/acme/norn-fleet/actions/runs/123", "retryLineage": ["root-1", "attempt-1"]},
+	"attempt": {"planId": "plan-1", "attemptId": "attempt-1", "rootAttemptId": "attempt-root", "revision": 1, "terminalStatus": "running", "currentPhase": "complete", "sourceDispatchRunId": "123", "workflowUrl": "https://github.com/acme/norn-fleet/actions/runs/123", "retryLineage": ["attempt-root", "attempt-1"]},
   "checkpoints": [
     {"id": "prepare-1", "phase": "prepare", "status": "succeeded", "evidenceSha256": "1111111111111111111111111111111111111111111111111111111111111111", "attemptId": "attempt-1"},
     {"id": "migration-1", "phase": "migration", "status": "succeeded", "evidenceSha256": "2222222222222222222222222222222222222222222222222222222222222222", "attemptId": "attempt-1"},

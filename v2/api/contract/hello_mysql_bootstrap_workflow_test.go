@@ -32,8 +32,8 @@ func TestHelloNornMySQLBootstrapWorkflowIsArtifactOnlyAndBoundToProtectedMaster(
 		"sbom-path: bootstrap-evidence/sbom.spdx.json",
 		"norn.hello-norn-mysql.bootstrap-handoff/v2",
 		"outputs.bundle-path",
-		"sha256sum \"$PROVENANCE_BUNDLE\"",
-		"sha256sum \"$SBOM_BUNDLE\"",
+		"jq -ceS . \"$PROVENANCE_BUNDLE\" | tr -d '\\n' | sha256sum",
+		"jq -ceS . \"$SBOM_BUNDLE\" | tr -d '\\n' | sha256sum",
 		"attestationBundleSha256",
 		"sbomBundleSha256",
 		"oci://",
@@ -179,7 +179,7 @@ func TestHelloNornMySQLBootstrapHandoffJQFilterGeneratesIndependentVerificationC
 		t.Fatalf("handoff metadata does not preserve representative inputs: %+v", handoff)
 	}
 	if handoff.AttestationBundleSHA256 != strings.Repeat("1", 64) || handoff.SBOMBundleSHA256 != strings.Repeat("2", 64) {
-		t.Fatalf("handoff does not carry exact bundle digests: %+v", handoff)
+		t.Fatalf("handoff does not carry canonical bundle digests: %+v", handoff)
 	}
 	if strings.Join(handoff.Verification.RequiredInputs, ",") != "REVIEWED_SOURCE_SHA,REVIEWED_WORKFLOW_SHA" {
 		t.Fatalf("handoff verification required inputs = %#v", handoff.Verification.RequiredInputs)
