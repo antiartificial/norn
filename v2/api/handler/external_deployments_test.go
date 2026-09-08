@@ -224,6 +224,18 @@ func TestExternalFleetAdmissionIdempotencySurvivesTransientRotation(t *testing.T
 	}
 }
 
+func TestExternalFleetVerifiedAttestationOutputBindsOneExactCandidateAttempt(t *testing.T) {
+	good := []byte(`[{"verificationResult":{"statement":{"predicateType":"https://slsa.dev/provenance/v1"},"signature":{"certificate":{"runInvocationURI":"https://github.com/acme/hello-norn-mysql/actions/runs/77/attempts/3"}},"verifiedTimestamps":[{}]}}]`)
+	if !externalFleetVerifiedAttestationOutput(good, "https://slsa.dev/provenance/v1", "acme/hello-norn-mysql", "77", "3") {
+		t.Fatal("exact verified statement rejected")
+	}
+	for _, bad := range [][]byte{[]byte(`[]`), []byte(`[{"verificationResult":{"statement":{"predicateType":"https://spdx.dev/Document/v2.3"},"signature":{"certificate":{"runInvocationURI":"https://github.com/acme/hello-norn-mysql/actions/runs/77/attempts/3"}},"verifiedTimestamps":[{}]}}]`), []byte(`[{"verificationResult":{"statement":{"predicateType":"https://slsa.dev/provenance/v1"},"signature":{"certificate":{"runInvocationURI":"https://github.com/acme/hello-norn-mysql/actions/runs/77/attempts/3"}},"verifiedTimestamps":[{}]}},{"verificationResult":{"statement":{"predicateType":"https://slsa.dev/provenance/v1"},"signature":{"certificate":{"runInvocationURI":"https://github.com/acme/hello-norn-mysql/actions/runs/77/attempts/3"}},"verifiedTimestamps":[{}]}}]`)} {
+		if externalFleetVerifiedAttestationOutput(bad, "https://slsa.dev/provenance/v1", "acme/hello-norn-mysql", "77", "3") {
+			t.Fatal("ambiguous or wrong statement accepted")
+		}
+	}
+}
+
 func TestExternalFleetGitHubRunVerifierBindsExactAttemptAndWorkflow(t *testing.T) {
 	client := &http.Client{Transport: externalFleetRoundTripperFunc(func(request *http.Request) (*http.Response, error) {
 		if request.URL.String() != "https://api.github.com/repos/acme/norn-fleet/actions/runs/123" || request.Header.Get("Authorization") != "Bearer token" {
