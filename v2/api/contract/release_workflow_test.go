@@ -4,7 +4,19 @@ import (
 	"os"
 	"strings"
 	"testing"
+
+	"gopkg.in/yaml.v3"
 )
+
+type releaseWorkflow struct {
+	Jobs map[string]struct {
+		Steps []struct {
+			Name string            `yaml:"name"`
+			Uses string            `yaml:"uses"`
+			With map[string]string `yaml:"with"`
+		} `yaml:"steps"`
+	} `yaml:"jobs"`
+}
 
 func TestReusableReleaseWorkflowKeepsPrivateEvidenceServerSelectedAndOffArgv(t *testing.T) {
 	raw, err := os.ReadFile("../../../.github/workflows/norn-app-release.yml")
@@ -34,6 +46,97 @@ func TestReusableReleaseWorkflowKeepsPrivateEvidenceServerSelectedAndOffArgv(t *
 	}
 	if strings.Contains(workflow, `request="$(jq -nc --arg sourceSha "$SOURCE_SHA" --arg artifact "$ARTIFACT" --slurpfile`) {
 		t.Fatal("large embedded release evidence is carried in a shell variable/argv")
+	}
+}
+
+func TestReusableReleaseWorkflowSupportsPrivateTailscaleAPIs(t *testing.T) {
+	raw, err := os.ReadFile("../../../.github/workflows/norn-app-release.yml")
+	if err != nil {
+		t.Fatal(err)
+	}
+	workflow := string(raw)
+	for _, required := range []string{
+		`private_network:`,
+		`tailscale_target:`,
+		`private NORN_API_URL must be the exact pathless tailscale_target on HTTPS port 443`,
+		`tailscale/github-action@6cae46e2d796f265265cfcf628b72a32b4d7cade # v3.3.0`,
+		`oauth-client-id: ${{ secrets.NORN_TAILSCALE_OAUTH_CLIENT_ID }}`,
+		`oauth-secret: ${{ secrets.NORN_TAILSCALE_OAUTH_SECRET }}`,
+		`tags: tag:norn-release-staging-ci`,
+		`tags: tag:norn-release-production-ci`,
+		`version: 1.102.3`,
+		`sha256sum: 36ddd9b51be57ffc2990cf76323cfa13643bfbb1b8a969f6183fa164741cdef5`,
+		`hostname: norn-ci-${{ inputs.lane }}-${{ github.run_id }}-${{ github.run_attempt }}`,
+		`targets: ${{ inputs.tailscale_target }}`,
+	} {
+		if !strings.Contains(workflow, required) {
+			t.Errorf("private release route is missing %q", required)
+		}
+	}
+	if got := strings.Count(workflow, `uses: tailscale/github-action@6cae46e2d796f265265cfcf628b72a32b4d7cade`); got != 4 {
+		t.Fatalf("private release route joins = %d, want exactly staging, production, requalify, and rollback", got)
+	}
+	for value, want := range map[string]int{
+		`sha256sum: 36ddd9b51be57ffc2990cf76323cfa13643bfbb1b8a969f6183fa164741cdef5`:         4,
+		`hostname: norn-ci-${{ inputs.lane }}-${{ github.run_id }}-${{ github.run_attempt }}`: 4,
+		`tags: tag:norn-release-staging-ci`:                                                   2,
+		`tags: tag:norn-release-production-ci`:                                                2,
+	} {
+		if got := strings.Count(workflow, value); got != want {
+			t.Errorf("private release route contains %q %d times, want %d", value, got, want)
+		}
+	}
+	if strings.Contains(workflow, `authkey:`) || strings.Contains(workflow, `secrets: inherit`) {
+		t.Fatal("private release route must use environment-scoped OAuth credentials without caller secret inheritance")
+	}
+
+	var parsed releaseWorkflow
+	if err := yaml.Unmarshal(raw, &parsed); err != nil {
+		t.Fatalf("parse release workflow: %v", err)
+	}
+	lanes := map[string]struct {
+		joinName     string
+		firstRequest string
+		tag          string
+	}{
+		"staging":    {"Join the private staging API route", "Resolve the server-owned attestation policy", "tag:norn-release-staging-ci"},
+		"production": {"Join the private production API route", "Queue the immutable production promotion", "tag:norn-release-production-ci"},
+		"requalify":  {"Join the private staging API route", "Issue fresh evidence for the existing staging deployment", "tag:norn-release-staging-ci"},
+		"rollback":   {"Join the private production API route", "Queue and wait for the exact Norn rollback", "tag:norn-release-production-ci"},
+	}
+	for lane, expectation := range lanes {
+		job, ok := parsed.Jobs[lane]
+		if !ok {
+			t.Errorf("release workflow is missing %s job", lane)
+			continue
+		}
+		joinIndex, requestIndex := -1, -1
+		for i, step := range job.Steps {
+			switch step.Name {
+			case expectation.joinName:
+				joinIndex = i
+				if step.Uses != "tailscale/github-action@6cae46e2d796f265265cfcf628b72a32b4d7cade" {
+					t.Errorf("%s private route uses %q", lane, step.Uses)
+				}
+				wantWith := map[string]string{
+					"tags":      expectation.tag,
+					"version":   "1.102.3",
+					"sha256sum": "36ddd9b51be57ffc2990cf76323cfa13643bfbb1b8a969f6183fa164741cdef5",
+					"hostname":  "norn-ci-${{ inputs.lane }}-${{ github.run_id }}-${{ github.run_attempt }}",
+					"targets":   "${{ inputs.tailscale_target }}",
+				}
+				for key, want := range wantWith {
+					if got := step.With[key]; got != want {
+						t.Errorf("%s private route %s = %q, want %q", lane, key, got, want)
+					}
+				}
+			case expectation.firstRequest:
+				requestIndex = i
+			}
+		}
+		if joinIndex < 0 || requestIndex < 0 || joinIndex > requestIndex {
+			t.Errorf("%s must join its private route before its first Norn API request", lane)
+		}
 	}
 }
 
