@@ -966,6 +966,42 @@ func TestExternalFleetSnapshotTypedCanonicalFixture(t *testing.T) {
 	}
 }
 
+func TestExternalFleetCleanupReceiptDigestFixture(t *testing.T) {
+	raw, err := os.ReadFile("testdata/external-fleet-receipt-digest-v4.json")
+	if err != nil {
+		t.Fatal(err)
+	}
+	var fixture struct {
+		Receipt ExternalFleetDeploymentReceipt `json:"receipt"`
+		SHA256  string                         `json:"sha256"`
+	}
+	if err := json.Unmarshal(raw, &fixture); err != nil {
+		t.Fatal(err)
+	}
+	canonical, err := externalReceiptCanonicalJSON(fixture.Receipt)
+	if err != nil {
+		t.Fatal(err)
+	}
+	baseline := externalSHA256(canonical)
+	if baseline != fixture.SHA256 {
+		t.Fatalf("typed cleanup receipt digest = %s", baseline)
+	}
+	// The cleanup digest is a typed redacted receipt projection. Neither the
+	// one-use nonce nor raw Nomad response spelling can alter it.
+	fixture.Receipt.Nonce = "00000000-0000-4000-8000-000000000099." + strings.Repeat("f", 64)
+	fixture.Receipt.Fleet.Migration.CurrentSpec = json.RawMessage(`{"ID":"changed raw transport"}`)
+	fixture.Receipt.Fleet.Runtime.Submission = json.RawMessage(`{"Source":"changed raw transport"}`)
+	canonical, err = externalReceiptCanonicalJSON(fixture.Receipt)
+	if err != nil || externalSHA256(canonical) != baseline {
+		t.Fatalf("redacted raw transport changed cleanup digest: %s, %v", externalSHA256(canonical), err)
+	}
+	fixture.Receipt.Fleet.Runtime.SubmissionSHA256 = strings.Repeat("a", 64)
+	canonical, err = externalReceiptCanonicalJSON(fixture.Receipt)
+	if err != nil || externalSHA256(canonical) == baseline {
+		t.Fatalf("typed Nomad digest drift did not change cleanup digest: %s, %v", externalSHA256(canonical), err)
+	}
+}
+
 func TestExternalAdmissionRequiresOnlyExactScopedFleetIdentity(t *testing.T) {
 	principal := AccessPrincipal{Subject: "github-actions:acme/norn-fleet:123", Scopes: []string{ScopeFleetExternalAdmission}, App: "hello-norn-mysql", Environment: "staging", CI: &CIIdentity{Repository: "acme/norn-fleet", RunID: "123", RunAttempt: "1", Environment: "staging", RefProtected: true, Intent: "apply"}}
 	request := httptest.NewRequest(http.MethodPost, "/api/v1/apps/hello-norn-mysql/external-deployments", nil)

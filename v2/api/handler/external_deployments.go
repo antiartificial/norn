@@ -1799,20 +1799,45 @@ func externalCanonicalFleetExecutionProof(proof ExternalFleetExecutionProof) ext
 // retained, so PostgreSQL JSONB key ordering cannot alter a durable digest.
 func externalReceiptCanonicalJSON(receipt ExternalFleetDeploymentReceipt) ([]byte, error) {
 	receipt = redactExternalFleetReceipt(receipt)
+	chronology := make([]externalFleetReceiptChronologyProjection, len(receipt.Chronology))
+	for i, step := range receipt.Chronology {
+		occurredAt, err := externalFleetSnapshotTimestamp(step.OccurredAt)
+		if err != nil {
+			return nil, err
+		}
+		chronology[i] = externalFleetReceiptChronologyProjection{Phase: step.Phase, OccurredAt: occurredAt, EvidenceRef: step.EvidenceRef}
+	}
 	projection := struct {
-		SchemaVersion           string                               `json:"schemaVersion"`
-		AdmissionID             string                               `json:"admissionId,omitempty"`
-		Nonce                   string                               `json:"nonce"`
-		App                     string                               `json:"app"`
-		SourceSHA               string                               `json:"sourceSha"`
-		Artifact                string                               `json:"artifact"`
-		Candidate               model.ReleaseCandidate               `json:"candidate"`
-		AttestationBundleSHA256 string                               `json:"attestationBundleSha256"`
-		SBOMBundleSHA256        string                               `json:"sbomBundleSha256"`
-		Fleet                   externalFleetExecutionProofCanonical `json:"fleet"`
-		Chronology              []ExternalFleetChronologyStep        `json:"chronology"`
-	}{receipt.SchemaVersion, receipt.AdmissionID, receipt.Nonce, receipt.App, receipt.SourceSHA, receipt.Artifact, receipt.Candidate, receipt.AttestationBundleSHA256, receipt.SBOMBundleSHA256, externalCanonicalFleetExecutionProof(receipt.Fleet), receipt.Chronology}
-	return json.Marshal(projection)
+		SchemaVersion           string                                     `json:"schemaVersion"`
+		AdmissionID             string                                     `json:"admissionId,omitempty"`
+		Nonce                   string                                     `json:"nonce"`
+		App                     string                                     `json:"app"`
+		SourceSHA               string                                     `json:"sourceSha"`
+		Artifact                string                                     `json:"artifact"`
+		Candidate               model.ReleaseCandidate                     `json:"candidate"`
+		AttestationBundleSHA256 string                                     `json:"attestationBundleSha256"`
+		SBOMBundleSHA256        string                                     `json:"sbomBundleSha256"`
+		Fleet                   externalFleetExecutionProofCanonical       `json:"fleet"`
+		Chronology              []externalFleetReceiptChronologyProjection `json:"chronology"`
+	}{receipt.SchemaVersion, receipt.AdmissionID, receipt.Nonce, receipt.App, receipt.SourceSHA, receipt.Artifact, receipt.Candidate, receipt.AttestationBundleSHA256, receipt.SBOMBundleSHA256, externalCanonicalFleetExecutionProof(receipt.Fleet), chronology}
+	var encoded bytes.Buffer
+	encoder := json.NewEncoder(&encoded)
+	// This is a cross-language receipt-digest contract. Keep compact UTF-8
+	// JSON and disable Go's HTML escaping to match the Fleet bridge.
+	encoder.SetEscapeHTML(false)
+	if err := encoder.Encode(projection); err != nil {
+		return nil, err
+	}
+	return bytes.TrimSuffix(encoded.Bytes(), []byte("\n")), nil
+}
+
+// externalFleetReceiptChronologyProjection uses the shared millisecond UTC
+// profile instead of time.Time's variable RFC3339 JSON representation. Fleet
+// writes exactly three fractional digits, including .000, before it hashes.
+type externalFleetReceiptChronologyProjection struct {
+	Phase       string `json:"phase"`
+	OccurredAt  string `json:"occurredAt"`
+	EvidenceRef string `json:"evidenceRef"`
 }
 
 // externalAdmissionProofDigest deliberately has a different domain from the
