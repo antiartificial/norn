@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"crypto/subtle"
 	"crypto/tls"
 	"crypto/x509"
 	"database/sql"
@@ -27,9 +28,10 @@ var version = "development"
 var validID = regexp.MustCompile(`^[A-Za-z0-9_-]{1,96}$`)
 
 type service struct {
-	db       *sql.DB
-	requests atomic.Uint64
-	failures atomic.Uint64
+	db         *sql.DB
+	writeToken []byte
+	requests   atomic.Uint64
+	failures   atomic.Uint64
 }
 
 func openDatabase() (*sql.DB, error) {
@@ -208,6 +210,12 @@ func (s *service) routes() http.Handler {
 
 func (s *service) record(w http.ResponseWriter, r *http.Request) {
 	s.requests.Add(1)
+	if r.Method == http.MethodPut && !s.authorizedWrite(r) {
+		w.Header().Set("Cache-Control", "no-store")
+		w.Header().Set("WWW-Authenticate", "Bearer")
+		http.Error(w, "write authorization required", http.StatusUnauthorized)
+		return
+	}
 	id := r.PathValue("id")
 	if !validID.MatchString(id) {
 		http.Error(w, "invalid id", 400)
@@ -239,6 +247,27 @@ func (s *service) record(w http.ResponseWriter, r *http.Request) {
 	json.NewEncoder(w).Encode(map[string]string{"id": stored, "version": version, "allocation": os.Getenv("NOMAD_ALLOC_ID")})
 }
 
+func (s *service) authorizedWrite(r *http.Request) bool {
+	const bearer = "Bearer "
+	provided := r.Header.Get("Authorization")
+	if !strings.HasPrefix(provided, bearer) || len(s.writeToken) == 0 {
+		return false
+	}
+	return subtle.ConstantTimeCompare([]byte(strings.TrimPrefix(provided, bearer)), s.writeToken) == 1
+}
+
+func pilotWriteToken(value string) ([]byte, error) {
+	if len(value) < 32 || len(value) > 256 {
+		return nil, fmt.Errorf("PILOT_WRITE_TOKEN must be 32 to 256 bytes")
+	}
+	for _, char := range []byte(value) {
+		if char < 0x21 || char > 0x7e {
+			return nil, fmt.Errorf("PILOT_WRITE_TOKEN must be printable without whitespace")
+		}
+	}
+	return []byte(value), nil
+}
+
 func main() {
 	db, err := openDatabase()
 	if err != nil {
@@ -253,7 +282,11 @@ func main() {
 		}
 		return
 	}
-	s := &service{db: db}
+	writeToken, err := pilotWriteToken(os.Getenv("PILOT_WRITE_TOKEN"))
+	if err != nil {
+		log.Fatal(err)
+	}
+	s := &service{db: db, writeToken: writeToken}
 	server := &http.Server{Addr: ":8080", Handler: s.routes(), ReadHeaderTimeout: 5 * time.Second, ReadTimeout: 10 * time.Second, WriteTimeout: 10 * time.Second, IdleTimeout: 30 * time.Second}
 	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGTERM, syscall.SIGINT)
 	defer stop()

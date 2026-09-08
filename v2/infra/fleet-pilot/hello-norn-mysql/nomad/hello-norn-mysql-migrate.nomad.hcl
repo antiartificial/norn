@@ -34,8 +34,8 @@ job "hello-norn-mysql-migrate" {
         MYSQL_CA_FILE = "${NOMAD_SECRETS_DIR}/mysql-ca.pem"
       }
 
-      # Migration identity has CREATE only for pilot_records plus the runtime
-      # table privileges. It exists for this one job, never the web job.
+      # Migration identity has CREATE only for pilot_records. It receives no
+      # runtime table privileges and exists for this one job, never the web job.
       template {
         destination          = "secrets/mysql-migration.env"
         env                  = true

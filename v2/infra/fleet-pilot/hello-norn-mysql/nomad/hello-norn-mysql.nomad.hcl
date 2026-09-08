@@ -36,6 +36,9 @@ job "hello-norn-mysql" {
 
   group "web" {
     count = 2
+    # Let Consul/Traefik withdraw a draining allocation before SIGTERM; the
+    # task then receives its configured 20-second kill timeout.
+    shutdown_delay = "10s"
 
     constraint {
       operator = "distinct_hosts"
@@ -119,6 +122,7 @@ job "hello-norn-mysql" {
 {{ with nomadVar "nomad/jobs/hello-norn-mysql" }}
 MYSQL_DSN={{ .MYSQL_DSN.Value | toJSON }}
 MYSQL_PINNED_IP={{ .MYSQL_PINNED_IP.Value | toJSON }}
+PILOT_WRITE_TOKEN={{ .PILOT_WRITE_TOKEN.Value | toJSON }}
 {{ end }}
 EOT
       }

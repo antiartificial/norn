@@ -9,6 +9,7 @@ import (
 	"encoding/pem"
 	"math/big"
 	"net"
+	"net/http"
 	"net/http/httptest"
 	"os"
 	"path/filepath"
@@ -56,11 +57,57 @@ func TestReadinessFailureDoesNotStopLiveness(t *testing.T) {
 }
 
 func TestRecordRejectsInvalidIDBeforeDatabase(t *testing.T) {
-	s := &service{}
+	s := &service{writeToken: []byte("0123456789abcdef0123456789abcdef")}
 	w := httptest.NewRecorder()
-	s.routes().ServeHTTP(w, httptest.NewRequest("PUT", "/records/bad%20id", nil))
+	req := httptest.NewRequest("PUT", "/records/bad%20id", nil)
+	req.Header.Set("Authorization", "Bearer 0123456789abcdef0123456789abcdef")
+	s.routes().ServeHTTP(w, req)
 	if w.Code != 400 {
 		t.Fatalf("got %d", w.Code)
+	}
+}
+
+func TestRecordWriteRequiresBearerBeforeDatabaseAccess(t *testing.T) {
+	const token = "0123456789abcdef0123456789abcdef"
+	s := &service{writeToken: []byte(token)} // A nil DB would panic if an unauthorized request reached it.
+	for name, authorization := range map[string]string{
+		"missing": "",
+		"wrong":   "Bearer 0123456789abcdef0123456789abcdeg",
+	} {
+		t.Run(name, func(t *testing.T) {
+			w := httptest.NewRecorder()
+			req := httptest.NewRequest("PUT", "/records/valid-record", nil)
+			if authorization != "" {
+				req.Header.Set("Authorization", authorization)
+			}
+			s.routes().ServeHTTP(w, req)
+			if w.Code != http.StatusUnauthorized || w.Header().Get("Cache-Control") != "no-store" || w.Header().Get("WWW-Authenticate") != "Bearer" {
+				t.Fatalf("status=%d cache=%q challenge=%q", w.Code, w.Header().Get("Cache-Control"), w.Header().Get("WWW-Authenticate"))
+			}
+		})
+	}
+	w := httptest.NewRecorder()
+	req := httptest.NewRequest("PUT", "/records/bad%20id", nil)
+	req.Header.Set("Authorization", "Bearer "+token)
+	s.routes().ServeHTTP(w, req)
+	if w.Code != http.StatusBadRequest {
+		t.Fatalf("valid bearer was not admitted to request validation: %d", w.Code)
+	}
+	read := httptest.NewRecorder()
+	s.routes().ServeHTTP(read, httptest.NewRequest("GET", "/version", nil))
+	if read.Code != http.StatusOK {
+		t.Fatalf("public version status=%d", read.Code)
+	}
+}
+
+func TestPilotWriteTokenRequiresStrongHeaderSafeValue(t *testing.T) {
+	for _, value := range []string{"", "short", "0123456789abcdef0123456789abcde\n", "0123456789abcdef0123456789abcde\x7f"} {
+		if _, err := pilotWriteToken(value); err == nil {
+			t.Fatalf("accepted invalid write token %q", value)
+		}
+	}
+	if _, err := pilotWriteToken("0123456789abcdef0123456789abcdef"); err != nil {
+		t.Fatalf("rejected valid write token: %v", err)
 	}
 }
 

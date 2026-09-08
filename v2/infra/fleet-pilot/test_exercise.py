@@ -1,5 +1,8 @@
 import io
 import json
+import os
+from pathlib import Path
+import tempfile
 import unittest
 from unittest.mock import patch
 
@@ -48,6 +51,65 @@ class ProbeTests(unittest.TestCase):
 
     def test_oversized_response_fails(self):
         self.assertFalse(self.probe(b" " * 65537)["ok"])
+
+    def test_write_request_uses_bearer_only_for_fixed_put_origin(self):
+        token = "t" * 32
+        payload = json.dumps({"id": "receipt-1", "allocation": self.allocation, "version": self.source}).encode()
+        with patch("exercise.urllib.request.build_opener") as build:
+            build.return_value.open.return_value = Response(payload)
+            result = exercise.request(
+                "https://staging.example.test", "PUT", "receipt-1", self.source, {self.allocation}, token
+            )
+            sent = build.return_value.open.call_args.args[0]
+        self.assertTrue(result["ok"])
+        self.assertEqual(sent.full_url, "https://staging.example.test/records/receipt-1")
+        self.assertEqual(sent.get_header("Authorization"), "Bearer " + token)
+
+    def test_get_never_sends_write_token_and_put_rejects_missing_token(self):
+        payload = json.dumps({"id": "receipt-1", "allocation": self.allocation, "version": self.source}).encode()
+        with patch("exercise.urllib.request.build_opener") as build:
+            build.return_value.open.return_value = Response(payload)
+            result = exercise.request(
+                "https://staging.example.test", "GET", "receipt-1", self.source, {self.allocation}, "t" * 32
+            )
+            sent = build.return_value.open.call_args.args[0]
+        self.assertTrue(result["ok"])
+        self.assertIsNone(sent.get_header("Authorization"))
+        with self.assertRaises(ValueError):
+            exercise.request("https://staging.example.test", "PUT", "receipt-1", self.source, {self.allocation})
+
+    def test_no_redirect_handler_prevents_bearer_exfiltration(self):
+        with patch("exercise.urllib.request.build_opener") as build:
+            exercise.opener()
+            redirect = next(item for item in build.call_args.args if isinstance(item, exercise.urllib.request.HTTPRedirectHandler))
+        self.assertIsNone(redirect.redirect_request(None, None, None, None, None, None, None))
+
+    def test_write_token_file_requires_owner_owned_mode_0600_no_symlink(self):
+        token = "t" * 32
+        with tempfile.TemporaryDirectory() as directory:
+            path = os.path.join(directory, "token")
+            with open(path, "w", encoding="ascii") as handle:
+                handle.write(token + "\n")
+            os.chmod(path, 0o600)
+            self.assertEqual(exercise.load_write_token(path), token)
+            os.chmod(path, 0o644)
+            with self.assertRaises(ValueError):
+                exercise.load_write_token(path)
+            os.chmod(path, 0o600)
+            link = os.path.join(directory, "token-link")
+            os.symlink(path, link)
+            with self.assertRaises(ValueError):
+                exercise.load_write_token(link)
+            with self.assertRaises(ValueError):
+                exercise.load_write_token("token")
+
+    def test_runtime_hcl_keeps_write_token_out_of_migration_and_drains_before_stop(self):
+        root = Path(__file__).parent / "hello-norn-mysql" / "nomad"
+        runtime = (root / "hello-norn-mysql.nomad.hcl").read_text(encoding="utf-8")
+        migration = (root / "hello-norn-mysql-migrate.nomad.hcl").read_text(encoding="utf-8")
+        self.assertIn("PILOT_WRITE_TOKEN={{ .PILOT_WRITE_TOKEN.Value | toJSON }}", runtime)
+        self.assertNotIn("PILOT_WRITE_TOKEN", migration)
+        self.assertIn('shutdown_delay = "10s"', runtime)
 
     def test_fault_rejects_short_allocation_prefix(self):
         self.assertFalse(exercise.stop_pilot_allocation("aaaaaaaa", self.namespace))

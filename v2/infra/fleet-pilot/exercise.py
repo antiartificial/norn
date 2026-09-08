@@ -4,9 +4,11 @@ import argparse
 import concurrent.futures
 import datetime
 import json
+import os
 import re
 import shutil
 import ssl
+import stat
 import subprocess
 import time
 import urllib.error
@@ -16,6 +18,7 @@ import uuid
 
 
 MAX_RESPONSE_BYTES = 65536
+MAX_WRITE_TOKEN_BYTES = 257
 # Reject Nomad's convenient short-ID form: a destructive rehearsal must name
 # one unambiguous allocation, not whichever prefix currently resolves.
 ALLOCATION_ID = re.compile(r"^[0-9a-fA-F]{8}-(?:[0-9a-fA-F]{4}-){3}[0-9a-fA-F]{12}$")
@@ -36,14 +39,64 @@ def opener():
     )
 
 
-def request(base, method, record, expected_source, allowed_allocations):
+def valid_write_token(token):
+    return isinstance(token, str) and 32 <= len(token) <= 256 and all(0x21 <= ord(char) <= 0x7e for char in token)
+
+
+def load_write_token(path):
+    """Read one owner-only token file without following a replacement or symlink."""
+    if not isinstance(path, str) or not os.path.isabs(path) or not hasattr(os, "O_NOFOLLOW"):
+        raise ValueError("write token file must be an absolute no-follow path")
+    try:
+        before = os.lstat(path)
+        if (not stat.S_ISREG(before.st_mode) or before.st_uid != os.getuid() or
+                stat.S_IMODE(before.st_mode) != 0o600 or not 32 <= before.st_size <= MAX_WRITE_TOKEN_BYTES):
+            raise ValueError("write token file must be owner-owned regular mode 0600 and bounded")
+        fd = os.open(path, os.O_RDONLY | os.O_CLOEXEC | os.O_NOFOLLOW)
+    except OSError as err:
+        raise ValueError("write token file is unavailable") from err
+    try:
+        opened = os.fstat(fd)
+        if (not stat.S_ISREG(opened.st_mode) or opened.st_uid != os.getuid() or
+                stat.S_IMODE(opened.st_mode) != 0o600 or opened.st_dev != before.st_dev or
+                opened.st_ino != before.st_ino or opened.st_size != before.st_size):
+            raise ValueError("write token file changed before open")
+        raw = os.read(fd, MAX_WRITE_TOKEN_BYTES + 1)
+        closed = os.fstat(fd)
+    finally:
+        os.close(fd)
+    try:
+        after = os.lstat(path)
+    except OSError as err:
+        raise ValueError("write token file changed during read") from err
+    if (len(raw) > MAX_WRITE_TOKEN_BYTES or closed.st_size != len(raw) or
+            (after.st_dev, after.st_ino, after.st_mode, after.st_uid, after.st_size) !=
+            (opened.st_dev, opened.st_ino, opened.st_mode, opened.st_uid, opened.st_size)):
+        raise ValueError("write token file changed during read")
+    try:
+        token = raw.decode("ascii")
+    except UnicodeDecodeError as err:
+        raise ValueError("write token file must contain ASCII") from err
+    if token.endswith("\n"):
+        token = token[:-1]
+    if not valid_write_token(token):
+        raise ValueError("write token file must contain a strong printable token")
+    return token
+
+
+def request(base, method, record, expected_source, allowed_allocations, write_token=None):
     """Return receipt metadata only; never retain service error bodies."""
     if not SAFE_VERSION.fullmatch(expected_source) or not allowed_allocations or any(
         not ALLOCATION_ID.fullmatch(item) for item in allowed_allocations
     ):
         raise ValueError("request provenance contract is invalid")
+    if method not in ("GET", "PUT"):
+        raise ValueError("only GET and PUT probe methods are supported")
+    if method == "PUT" and not valid_write_token(write_token):
+        raise ValueError("write token contract is invalid")
     start = time.monotonic()
-    req = urllib.request.Request(base + "/records/" + record, method=method)
+    headers = {"Authorization": "Bearer " + write_token} if method == "PUT" else {}
+    req = urllib.request.Request(base + "/records/" + record, headers=headers, method=method)
     try:
         with opener().open(req, timeout=5) as response:
             payload = response.read(MAX_RESPONSE_BYTES + 1)
@@ -132,7 +185,7 @@ def nomad_json(arguments):
         return None
 
 
-def exercise_load(base, run_id, rps, seconds, workers, written, expected_source, allowed_allocations):
+def exercise_load(base, run_id, rps, seconds, workers, written, expected_source, allowed_allocations, write_token):
     """Offer a worker-bounded request stream and stop at a bounded error rate."""
     rows = []
     started = time.monotonic()
@@ -147,7 +200,7 @@ def exercise_load(base, run_id, rps, seconds, workers, written, expected_source,
                 method = "PUT" if not written or index % 10 < 3 else "GET"
                 record = f"{run_id}-{index}" if method == "PUT" else written[index % len(written)]
                 batch.append((method, pool.submit(
-                    request, base, method, record, expected_source, allowed_allocations
+                    request, base, method, record, expected_source, allowed_allocations, write_token
                 )))
             for method, future in batch:
                 row = future.result()
@@ -176,8 +229,8 @@ def verify_writes(base, records, workers, expected_source, allowed_allocations):
     return verified
 
 
-def proof(base, receipt, expected_source, allowed_allocations):
-    write = request(base, "PUT", receipt, expected_source, allowed_allocations)
+def proof(base, receipt, expected_source, allowed_allocations, write_token):
+    write = request(base, "PUT", receipt, expected_source, allowed_allocations, write_token)
     read = request(base, "GET", receipt, expected_source, allowed_allocations) if write["ok"] else {"ok": False}
     return {
         "id": receipt,
@@ -280,6 +333,7 @@ def main():
     parser.add_argument("--expected-source-version", required=True)
     parser.add_argument("--expected-hostname", required=True)
     parser.add_argument("--namespace", required=True, help="exact run-scoped norn-pilot-* Nomad namespace")
+    parser.add_argument("--write-token-file", required=True, help="absolute owner-owned mode-0600 runtime write-token file")
     parser.add_argument("--fault-allocation", help="explicit hello-norn-mysql allocation to stop")
     parser.add_argument("--recovery-seconds", type=int, default=180)
     args = parser.parse_args()
@@ -300,6 +354,10 @@ def main():
         parser.error("expected hostname must be a hostname without a scheme or port")
     if url.hostname.lower() != args.expected_hostname.lower():
         parser.error("URL origin hostname must exactly match --expected-hostname")
+    try:
+        write_token = load_write_token(args.write_token_file)
+    except ValueError as err:
+        parser.error(str(err))
 
     base = args.url.rstrip("/")
     run_id = uuid.uuid4().hex
@@ -309,7 +367,7 @@ def main():
     initial_ids = {item["allocation"] for item in topology}
     if not topology_verified:
         initial_ids = set()
-    pre = proof(base, f"{run_id}-pre", args.expected_source_version, initial_ids)
+    pre = proof(base, f"{run_id}-pre", args.expected_source_version, initial_ids, write_token)
     written = [pre["id"]] if pre["write"] and pre["read"] else []
     allowed_ids = initial_ids
     fault = {"requested": bool(args.fault_allocation), "target": args.fault_allocation or "", "stopAccepted": False, "targetStopped": not bool(args.fault_allocation), "recovered": not bool(args.fault_allocation), "replacementAllocations": [], "publicReplacementAllocation": ""}
@@ -330,9 +388,9 @@ def main():
 
     rows, aborted = exercise_load(
         base, run_id, args.rps, args.seconds, args.workers, written,
-        args.expected_source_version, allowed_ids,
+        args.expected_source_version, allowed_ids, write_token,
     )
-    post = proof(base, f"{run_id}-post", args.expected_source_version, allowed_ids)
+    post = proof(base, f"{run_id}-post", args.expected_source_version, allowed_ids, write_token)
     if post["write"] and post["read"]:
         written.append(post["id"])
     verification = verify_writes(base, written, args.workers, args.expected_source_version, allowed_ids)
