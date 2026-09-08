@@ -102,18 +102,18 @@ def stop_pilot_allocation(allocation):
         return False
 
 
-def wait_for_two_allocations(base, stopped, seconds):
-    """Require two live, post-stop identities; this proves scheduler recovery."""
-    observed = set()
-    deadline = time.monotonic() + seconds
-    while time.monotonic() < deadline:
-        allocation = version(base)["allocation"]
-        if allocation and allocation != stopped:
-            observed.add(allocation)
-            if len(observed) >= 2:
-                return sorted(observed), True
-        time.sleep(1)
-    return sorted(observed), False
+def nomad_json(arguments):
+    """Run one bounded Nomad read without retaining or reporting stderr."""
+    if not shutil.which("nomad"):
+        return None
+    try:
+        result = subprocess.run(["nomad", *arguments], check=False, capture_output=True, text=True, timeout=15)
+        if result.returncode != 0 or len(result.stdout) > MAX_RESPONSE_BYTES:
+            return None
+        value = json.loads(result.stdout)
+        return value
+    except (OSError, ValueError, subprocess.TimeoutExpired):
+        return None
 
 
 def exercise_load(base, run_id, rps, seconds, workers, written):
@@ -167,40 +167,64 @@ def proof(base, receipt):
     }
 
 
-def inspect_pilot_allocations(allocations):
-    """Return bounded, value-safe Nomad proof for the allocations this run used."""
-    if not allocations or not shutil.which("nomad"):
+def inventory_pilot(expected_image, expected_source, expected_hostname, expected_namespace="default"):
+    """Prove exactly two running, distinct ingress nodes for the reviewed job."""
+    listed = nomad_json(["job", "allocs", "-json", "hello-norn-mysql"])
+    if not isinstance(listed, list):
+        return [], False
+    running = [item for item in listed if isinstance(item, dict) and item.get("ClientStatus") == "running"]
+    if len(running) != 2:
         return [], False
     proofs = []
-    for allocation in sorted(allocations):
+    for item in sorted(running, key=lambda value: value.get("ID", "")):
+        allocation = item.get("ID", "")
         if not ALLOCATION_ID.fullmatch(allocation):
             return proofs, False
-        try:
-            result = subprocess.run(
-                ["nomad", "alloc", "status", "-json", allocation],
-                check=False, capture_output=True, text=True, timeout=15,
-            )
-            if result.returncode != 0 or len(result.stdout) > MAX_RESPONSE_BYTES:
-                return proofs, False
-            body = json.loads(result.stdout)
-            job = body.get("Job", {}) if isinstance(body, dict) else {}
-            meta = job.get("Meta", {}) if isinstance(job, dict) else {}
-            image = meta.get("pilot_image", "") if isinstance(meta, dict) else ""
-            source = meta.get("pilot_source_version", "") if isinstance(meta, dict) else ""
-            if body.get("JobID") != "hello-norn-mysql" or not OCI_DIGEST.fullmatch(image) or not SAFE_VERSION.fullmatch(source):
-                return proofs, False
-            proofs.append({
-                "allocation": allocation,
-                "job": "hello-norn-mysql",
-                "clientStatus": body.get("ClientStatus", ""),
-                "image": image,
-                "sourceVersion": source,
-                "createIndex": body.get("CreateIndex", 0),
-                "modifyIndex": body.get("ModifyIndex", 0),
-            })
-        except (OSError, ValueError, subprocess.TimeoutExpired):
+        body = nomad_json(["alloc", "status", "-json", allocation])
+        if not isinstance(body, dict):
             return proofs, False
+        job = body.get("Job", {})
+        meta = job.get("Meta", {}) if isinstance(job, dict) else {}
+        image = meta.get("pilot_image", "") if isinstance(meta, dict) else ""
+        source = meta.get("pilot_source_version", "") if isinstance(meta, dict) else ""
+        hostname = meta.get("pilot_hostname", "") if isinstance(meta, dict) else ""
+        node_id = body.get("NodeID", "")
+        node = nomad_json(["node", "status", "-json", node_id]) if isinstance(node_id, str) else None
+        if (body.get("JobID") != "hello-norn-mysql" or body.get("ClientStatus") != "running" or
+                body.get("Namespace") != expected_namespace or not isinstance(node, dict) or
+                node.get("NodePool") != "ingress" or image != expected_image or
+                source != expected_source or hostname != expected_hostname):
+            return proofs, False
+        proofs.append({
+            "allocation": allocation,
+            "job": "hello-norn-mysql",
+            "namespace": expected_namespace,
+            "nodeID": node_id,
+            "nodePool": "ingress",
+            "clientStatus": "running",
+            "image": image,
+            "sourceVersion": source,
+            "hostname": hostname,
+            "createIndex": body.get("CreateIndex", 0),
+            "modifyIndex": body.get("ModifyIndex", 0),
+        })
+    if len({item["nodeID"] for item in proofs}) != 2:
+        return proofs, False
     return proofs, True
+
+
+def wait_for_recovery(target, initial_ids, expected_image, expected_source, expected_hostname, seconds):
+    """Require a stopped target and a two-node running inventory with a replacement."""
+    deadline = time.monotonic() + seconds
+    while time.monotonic() < deadline:
+        target_status = nomad_json(["alloc", "status", "-json", target])
+        proofs, healthy = inventory_pilot(expected_image, expected_source, expected_hostname)
+        current_ids = {item["allocation"] for item in proofs}
+        replacements = sorted(current_ids - initial_ids)
+        if healthy and isinstance(target_status, dict) and target_status.get("ClientStatus") != "running" and replacements:
+            return proofs, replacements, True
+        time.sleep(1)
+    return [], [], False
 
 
 def percentile(rows, fraction):
@@ -217,6 +241,9 @@ def main():
     parser.add_argument("--seconds", type=int, default=60)
     parser.add_argument("--workers", type=int, default=8)
     parser.add_argument("--min-availability", type=float, default=0.80)
+    parser.add_argument("--expected-image", required=True)
+    parser.add_argument("--expected-source-version", required=True)
+    parser.add_argument("--expected-hostname", required=True)
     parser.add_argument("--fault-allocation", help="explicit hello-norn-mysql allocation to stop")
     parser.add_argument("--recovery-seconds", type=int, default=180)
     args = parser.parse_args()
@@ -229,6 +256,12 @@ def main():
         parser.error("min availability is (0,1]; recovery seconds is 1–300")
     if args.fault_allocation and not ALLOCATION_ID.fullmatch(args.fault_allocation):
         parser.error("fault allocation must be a Nomad allocation ID")
+    if not OCI_DIGEST.fullmatch(args.expected_image) or not SAFE_VERSION.fullmatch(args.expected_source_version):
+        parser.error("expected image must be a lowercase OCI digest and source version must be a safe revision")
+    if urllib.parse.urlsplit("//" + args.expected_hostname).hostname != args.expected_hostname.lower():
+        parser.error("expected hostname must be a hostname without a scheme or port")
+    if url.hostname.lower() != args.expected_hostname.lower():
+        parser.error("URL origin hostname must exactly match --expected-hostname")
 
     base = args.url.rstrip("/")
     run_id = uuid.uuid4().hex
@@ -236,14 +269,16 @@ def main():
     started = time.monotonic()
     pre = proof(base, f"{run_id}-pre")
     written = [pre["id"]] if pre["write"] and pre["read"] else []
-    fault = {"requested": bool(args.fault_allocation), "target": args.fault_allocation or "", "stopAccepted": False, "recovered": True, "observedAllocations": []}
+    topology, topology_verified = inventory_pilot(args.expected_image, args.expected_source_version, args.expected_hostname)
+    initial_ids = {item["allocation"] for item in topology}
+    fault = {"requested": bool(args.fault_allocation), "target": args.fault_allocation or "", "stopAccepted": False, "targetStopped": not bool(args.fault_allocation), "recovered": not bool(args.fault_allocation), "replacementAllocations": []}
     if args.fault_allocation:
-        fault["stopAccepted"] = stop_pilot_allocation(args.fault_allocation)
+        fault["stopAccepted"] = args.fault_allocation in initial_ids and stop_pilot_allocation(args.fault_allocation)
         if fault["stopAccepted"]:
-            recovered, fault["recovered"] = wait_for_two_allocations(base, args.fault_allocation, args.recovery_seconds)
-            fault["observedAllocations"] = recovered
-        else:
-            fault["recovered"] = False
+            topology, replacements, fault["recovered"] = wait_for_recovery(args.fault_allocation, initial_ids, args.expected_image, args.expected_source_version, args.expected_hostname, args.recovery_seconds)
+            fault["replacementAllocations"] = replacements
+            fault["targetStopped"] = fault["recovered"]
+            topology_verified = topology_verified or fault["recovered"]
 
     rows, aborted = exercise_load(base, run_id, args.rps, args.seconds, args.workers, written)
     post = proof(base, f"{run_id}-post")
@@ -253,23 +288,17 @@ def main():
     errors = sum(not row["ok"] for row in rows)
     availability = (len(rows) - errors) / len(rows) if rows else 0
     unverified = sum(not row["ok"] for row in verification)
-    allocations = sorted({row.get("allocation") for row in rows if row.get("allocation")})
-    allocations.extend(item for item in (pre.get("allocation"), post.get("allocation")) if item)
-    allocations.extend(row.get("allocation") for row in verification if row.get("allocation"))
-    if args.fault_allocation:
-        allocations.append(args.fault_allocation)
-    allocations = sorted(set(allocations))
     sources = sorted({row.get("version") for row in rows + verification if SAFE_VERSION.fullmatch(row.get("version", ""))})
     sources.extend(item.get("version") for item in (pre, post) if SAFE_VERSION.fullmatch(item.get("version", "")))
-    nomad_proof, nomad_verified = inspect_pilot_allocations(allocations)
     sources = sorted(set(sources))
-    source_verified = bool(sources) and nomad_verified and set(sources).issubset({item["sourceVersion"] for item in nomad_proof})
+    source_verified = bool(sources) and set(sources) == {args.expected_source_version}
     report = {
         "runId": run_id,
         "origin": base,
         "startedAt": started_at,
         "endedAt": datetime.datetime.now(datetime.timezone.utc).replace(microsecond=0).isoformat().replace("+00:00", "Z"),
         "requestedLoad": {"rps": args.rps, "seconds": args.seconds, "workers": args.workers, "minAvailability": args.min_availability},
+        "expectedArtifact": {"image": args.expected_image, "sourceVersion": args.expected_source_version, "hostname": args.expected_hostname},
         "requests": len(rows),
         "elapsedSeconds": round(time.monotonic() - started, 2),
         "availability": round(availability, 4),
@@ -278,10 +307,10 @@ def main():
         "p50Ms": percentile(rows, .5),
         "p95Ms": percentile(rows, .95),
         "p99Ms": percentile(rows, .99),
-        "allocations": allocations,
+        "allocations": [item["allocation"] for item in topology],
         "observedSourceVersions": sources,
-        "nomadAllocations": nomad_proof,
-        "nomadEvidenceVerified": nomad_verified,
+        "nomadAllocations": topology,
+        "nomadEvidenceVerified": topology_verified,
         "sourceVersionMatchesNomad": source_verified,
         "preDatabaseProof": pre,
         "postDatabaseProof": post,
@@ -290,7 +319,7 @@ def main():
         "fault": fault,
     }
     print(json.dumps(report, indent=2, sort_keys=True))
-    return 0 if (rows and availability >= args.min_availability and pre["read"] and post["read"] and not unverified and fault["recovered"] and nomad_verified and source_verified) else 1
+    return 0 if (rows and availability >= args.min_availability and pre["read"] and post["read"] and not unverified and fault["recovered"] and topology_verified and source_verified) else 1
 
 
 if __name__ == "__main__":

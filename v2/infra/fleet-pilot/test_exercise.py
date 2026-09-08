@@ -53,17 +53,37 @@ class ProbeTests(unittest.TestCase):
 
     @patch("exercise.shutil.which", return_value="/usr/bin/nomad")
     @patch("exercise.subprocess.run")
-    def test_nomad_evidence_binds_pilot_digest_and_source(self, run, _which):
-        allocation = "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa"
+    def test_nomad_inventory_requires_two_distinct_ingress_nodes(self, run, _which):
+        allocations = ["aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa", "bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb"]
         image = "registry.example.test/norn/hello@sha256:" + "a" * 64
-        run.return_value = type("Result", (), {"returncode": 0, "stdout": json.dumps({
-            "JobID": "hello-norn-mysql", "ClientStatus": "running", "CreateIndex": 10, "ModifyIndex": 11,
-            "Job": {"Meta": {"pilot_image": image, "pilot_source_version": "a" * 40}},
-        })})()
-        proofs, verified = exercise.inspect_pilot_allocations([allocation])
+        def result(value):
+            return type("Result", (), {"returncode": 0, "stdout": json.dumps(value)})()
+        run.side_effect = [
+            result([{"ID": allocations[0], "ClientStatus": "running"}, {"ID": allocations[1], "ClientStatus": "running"}]),
+            result({"JobID": "hello-norn-mysql", "ClientStatus": "running", "Namespace": "default", "NodeID": "node-a", "CreateIndex": 10, "ModifyIndex": 11, "Job": {"Meta": {"pilot_image": image, "pilot_source_version": "a" * 40, "pilot_hostname": "pilot.example.test"}}}),
+            result({"NodePool": "ingress"}),
+            result({"JobID": "hello-norn-mysql", "ClientStatus": "running", "Namespace": "default", "NodeID": "node-b", "CreateIndex": 12, "ModifyIndex": 13, "Job": {"Meta": {"pilot_image": image, "pilot_source_version": "a" * 40, "pilot_hostname": "pilot.example.test"}}}),
+            result({"NodePool": "ingress"}),
+        ]
+        proofs, verified = exercise.inventory_pilot(image, "a" * 40, "pilot.example.test")
         self.assertTrue(verified)
         self.assertEqual(proofs[0]["image"], image)
         self.assertEqual(proofs[0]["sourceVersion"], "a" * 40)
+        self.assertEqual({proof["nodeID"] for proof in proofs}, {"node-a", "node-b"})
+
+    @patch("exercise.time.sleep")
+    @patch("exercise.inventory_pilot")
+    @patch("exercise.nomad_json")
+    def test_fault_recovery_requires_stopped_target_and_replacement(self, nomad_json, inventory, _sleep):
+        old = "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa"
+        kept = "bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb"
+        replacement = "cccccccc-cccc-cccc-cccc-cccccccccccc"
+        nomad_json.return_value = {"ClientStatus": "complete"}
+        inventory.return_value = ([{"allocation": kept}, {"allocation": replacement}], True)
+        proofs, replacements, recovered = exercise.wait_for_recovery(old, {old, kept}, "image", "source", "pilot.example.test", 1)
+        self.assertTrue(recovered)
+        self.assertEqual(proofs[1]["allocation"], replacement)
+        self.assertEqual(replacements, [replacement])
 
 
 if __name__ == "__main__":

@@ -56,7 +56,6 @@ job "hello-norn-mysql" {
         "traefik.http.routers.hello-norn-mysql.rule=Host(`${var.hostname}`) && (PathPrefix(`/records/`) || Path(`/version`))",
         "traefik.http.routers.hello-norn-mysql.entrypoints=websecure",
         "traefik.http.routers.hello-norn-mysql.tls=true",
-        "traefik.http.services.hello-norn-mysql.loadbalancer.server.port=8080",
       ]
 
       # Readiness controls Consul/Traefik admission. The public router does
@@ -117,8 +116,8 @@ job "hello-norn-mysql" {
         gid                  = 65532
         error_on_missing_key = true
         data = <<-EOT
-{{ with nomadVar "nomad/jobs/hello-norn-mysql/runtime" }}
-MYSQL_DSN={{ .MYSQL_DSN | toJSON }}
+{{ with nomadVar "nomad/jobs/hello-norn-mysql" }}
+MYSQL_DSN={{ .MYSQL_DSN.Value | toJSON }}
 {{ end }}
 EOT
       }
@@ -133,8 +132,8 @@ EOT
         gid                  = 65532
         error_on_missing_key = true
         data = <<-EOT
-{{ with nomadVar "nomad/pilot/hello-norn-mysql/provider-ca" }}
-{{ .PEM }}
+{{ with nomadVar "nomad/jobs/hello-norn-mysql" }}
+{{ .MYSQL_CA_PEM.Value }}
 {{ end }}
 EOT
       }

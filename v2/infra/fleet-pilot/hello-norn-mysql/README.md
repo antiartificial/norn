@@ -28,17 +28,17 @@ and UPDATE on that table. Norn's PostgreSQL snapshot path does not protect
 MySQL: retain provider backup/restore evidence before schema changes.
 
 For a direct-Nomad rehearsal after `norn-fleet` bootstrap, a protected
-bootstrap/migration procedure must create three separate variable paths:
+bootstrap/migration procedure must create two job-owned variable paths:
 
-- `nomad/pilot/hello-norn-mysql/provider-ca`: reviewed provider CA PEM only;
-- `nomad/jobs/hello-norn-mysql/runtime`: runtime `MYSQL_DSN` with only
-  `SELECT`, `INSERT`, and `UPDATE` on `pilot_records`;
-- `nomad/jobs/hello-norn-mysql/migration`: one-time `MYSQL_DSN` whose identity
-  can create `pilot_records`, plus the runtime table privileges.
+- `nomad/jobs/hello-norn-mysql`: runtime `MYSQL_DSN` with only `SELECT`,
+  `INSERT`, and `UPDATE` on `pilot_records`, plus `MYSQL_CA_PEM`;
+- `nomad/jobs/hello-norn-mysql-migrate`: one-time `MYSQL_DSN` whose identity
+  can create `pilot_records`, plus the runtime table privileges and its own
+  `MYSQL_CA_PEM`.
 
-Nomad ACL policies must give the web job only `runtime` plus `provider-ca`, and
-the migration job only `migration` plus `provider-ca`. The direct job renders
-the DSN through a quoted dotenv template and mounts the multiline CA as
+Nomad's job-owned variable ACL paths keep each job limited to its own DSN and
+CA. The direct job renders the DSN through a quoted dotenv template and mounts
+the multiline CA as
 `secrets/mysql-ca.pem` with mode `0400`; neither value is a task environment
 field or catalog secret. Submit only a reviewed digest, source SHA and exact
 pilot hostname:
@@ -66,12 +66,13 @@ nomad job run -var 'image=REGISTRY/hello-norn-mysql@sha256:…' \
   nomad/hello-norn-mysql-migrate.nomad.hcl
 ```
 
-Retain the successful allocation receipt, then revoke and remove the
-`migration` variable and its ACL policy binding. Do not retain a cluster-admin
-DSN: the Fleet-owned bootstrap must derive/create these two least-privilege
-database identities and write only their scoped DSNs to the matching Nomad
-variables. On pilot retirement, stop the web job first, then remove the
-runtime variable, provider-CA variable, and their scoped ACL bindings.
+Retain the successful allocation receipt, then revoke the database migration
+identity and purge both the `hello-norn-mysql-migrate` job and its job-owned
+Nomad variable. Do not retain a cluster-admin DSN: the Fleet-owned bootstrap
+must derive/create these two least-privilege database identities and write only
+their scoped DSNs to the matching Nomad variables. On pilot retirement, stop
+and purge the web job first, revoke its database identity, then purge its
+job-owned variable.
 
 Build with reviewed, digest-pinned `GO_IMAGE` and `RUNTIME_IMAGE` build args
 and the exact app source SHA as `APP_VERSION`. Run `go test ./...` first.
@@ -93,7 +94,10 @@ the InfraSpec allows 20 seconds before forced termination.
 From outside the fleet, run the bounded probe and retain its JSON stdout:
 
 ```sh
-python3 ../exercise.py --url https://YOUR-STAGING-HOST --rps 5 --seconds 60
+python3 ../exercise.py --url https://YOUR-STAGING-HOST --rps 5 --seconds 60 \
+  --expected-image registry.example.com/hello-norn-mysql@sha256:… \
+  --expected-source-version EXACT_SOURCE_SHA \
+  --expected-hostname YOUR-STAGING-HOST
 ```
 
 The probe uses at most 16 workers, 50 offered requests/second and ten minutes.

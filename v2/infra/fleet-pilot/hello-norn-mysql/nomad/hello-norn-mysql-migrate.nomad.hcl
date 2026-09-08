@@ -45,8 +45,8 @@ job "hello-norn-mysql-migrate" {
         gid                  = 65532
         error_on_missing_key = true
         data = <<-EOT
-{{ with nomadVar "nomad/jobs/hello-norn-mysql/migration" }}
-MYSQL_DSN={{ .MYSQL_DSN | toJSON }}
+{{ with nomadVar "nomad/jobs/hello-norn-mysql-migrate" }}
+MYSQL_DSN={{ .MYSQL_DSN.Value | toJSON }}
 {{ end }}
 EOT
       }
@@ -59,8 +59,8 @@ EOT
         gid                  = 65532
         error_on_missing_key = true
         data = <<-EOT
-{{ with nomadVar "nomad/pilot/hello-norn-mysql/provider-ca" }}
-{{ .PEM }}
+{{ with nomadVar "nomad/jobs/hello-norn-mysql-migrate" }}
+{{ .MYSQL_CA_PEM.Value }}
 {{ end }}
 EOT
       }
