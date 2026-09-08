@@ -101,6 +101,14 @@ type Config struct {
 	// immutable signer identity for the artifact-only first-image bootstrap.
 	// It is not a substitute for the normal release signer allowlist.
 	ExternalFleetAdmissionBootstrapSignerRef string
+	// ExternalFleetVerifier* is the read-only, separately credentialed pilot
+	// evidence adapter. It is intentionally all-or-nothing: partial values do
+	// not enable the direct-workload admission route.
+	ExternalFleetVerifierURL       string
+	ExternalFleetVerifierTokenFile string
+	ExternalFleetGitHubTokenFile   string
+	ExternalFleetGitHubCLIPath     string
+	ExternalFleetPublicBaseURL     string
 
 	ReleaseAdmissionMode                   string
 	ReleaseAttestationIssuer               string
@@ -242,6 +250,11 @@ func Load() *Config {
 		ExternalFleetAdmissionMigrationJobID:     strings.TrimSpace(os.Getenv("NORN_EXTERNAL_FLEET_ADMISSION_MIGRATION_JOB_ID")),
 		ExternalFleetAdmissionMigrationHCLSHA256: strings.ToLower(strings.TrimSpace(os.Getenv("NORN_EXTERNAL_FLEET_ADMISSION_MIGRATION_HCL_SHA256"))),
 		ExternalFleetAdmissionBootstrapSignerRef: strings.TrimSpace(os.Getenv("NORN_EXTERNAL_FLEET_ADMISSION_BOOTSTRAP_SIGNER_REF")),
+		ExternalFleetVerifierURL:                 strings.TrimSpace(os.Getenv("NORN_EXTERNAL_FLEET_VERIFIER_URL")),
+		ExternalFleetVerifierTokenFile:           strings.TrimSpace(os.Getenv("NORN_EXTERNAL_FLEET_VERIFIER_TOKEN_FILE")),
+		ExternalFleetGitHubTokenFile:             strings.TrimSpace(os.Getenv("NORN_EXTERNAL_FLEET_GITHUB_TOKEN_FILE")),
+		ExternalFleetGitHubCLIPath:               strings.TrimSpace(os.Getenv("NORN_EXTERNAL_FLEET_GITHUB_CLI_PATH")),
+		ExternalFleetPublicBaseURL:               strings.TrimSpace(os.Getenv("NORN_EXTERNAL_FLEET_PUBLIC_BASE_URL")),
 
 		ReleaseAdmissionMode:                   strings.ToLower(envOr("NORN_RELEASE_ADMISSION_MODE", "keyed")),
 		ReleaseAttestationIssuer:               strings.TrimSpace(os.Getenv("NORN_RELEASE_ATTESTATION_ISSUER")),

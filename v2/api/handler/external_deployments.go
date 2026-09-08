@@ -57,6 +57,7 @@ type ExternalFleetExecutionProof struct {
 	Namespace        string                     `json:"namespace"`
 	Migration        ExternalFleetNomadJobProof `json:"migration"`
 	Runtime          ExternalFleetNomadJobProof `json:"runtime"`
+	PlanID           string                     `json:"planId"`
 	ApplyRunID       string                     `json:"applyRunId"`
 	ApplyRunAttempt  string                     `json:"applyRunAttempt"`
 	PlanSHA256       string                     `json:"planSha256"`
@@ -118,6 +119,7 @@ type ExternalFleetDeploymentVerification struct {
 	Namespace          string
 	Migration          ExternalFleetNomadJobProof
 	Runtime            ExternalFleetNomadJobProof
+	PlanID             string
 	ApplyRunID         string
 	ApplyRunAttempt    string
 	PlanSHA256         string
@@ -126,8 +128,17 @@ type ExternalFleetDeploymentVerification struct {
 	Regions            []ExternalFleetRegionProof
 	IngressNodeIDs     []string
 	PublicHTTPSVersion string
-	PublicHTTPSReady   string
+	PrivateReadiness   ExternalFleetPrivateReadiness
 	Chronology         []ExternalFleetChronologyStep
+}
+
+// ExternalFleetPrivateReadiness preserves the independently observed private
+// /readyz proof without misrepresenting the pilot's deliberately private
+// readiness endpoint as public ingress evidence.
+type ExternalFleetPrivateReadiness struct {
+	Endpoint      string
+	AllocationIDs []string
+	CheckedAt     time.Time
 }
 
 type ExternalFleetRegionProof struct {
@@ -380,7 +391,7 @@ func validateExternalFleetReceipt(receipt ExternalFleetDeploymentReceipt, config
 	if receipt.SchemaVersion != externalFleetReceiptSchema || receipt.App != app || !fullSourceSHAPattern.MatchString(receipt.SourceSHA) || !model.IsContentAddressedImage(receipt.Artifact) || !validExternalURI(receipt.AttestationURI) || !validExternalURI(receipt.SBOMURI) {
 		return fmt.Errorf("receipt schema, app, immutable source/artifact, or evidence references are invalid")
 	}
-	if receipt.Fleet.Namespace != configured.Namespace || !validExternalNomadJobProof(receipt.Fleet.Migration, configured.MigrationJobID, configured.MigrationHCLSHA256) || !validExternalNomadJobProof(receipt.Fleet.Runtime, configured.RuntimeJobID, configured.RuntimeHCLSHA256) || receipt.Fleet.Migration.EvalID == receipt.Fleet.Runtime.EvalID || receipt.Fleet.Migration.CheckpointID == receipt.Fleet.Runtime.CheckpointID || !validGitHubNumericID(receipt.Fleet.ApplyRunID) || !validGitHubNumericID(receipt.Fleet.ApplyRunAttempt) || !sha256HexPattern.MatchString(receipt.Fleet.PlanSHA256) || !externalNamePattern.MatchString(receipt.Fleet.RunnerAttemptID) || !externalNamePattern.MatchString(receipt.Fleet.NonceEvidenceRef) {
+	if receipt.Fleet.Namespace != configured.Namespace || !validExternalNomadJobProof(receipt.Fleet.Migration, configured.MigrationJobID, configured.MigrationHCLSHA256) || !validExternalNomadJobProof(receipt.Fleet.Runtime, configured.RuntimeJobID, configured.RuntimeHCLSHA256) || receipt.Fleet.Migration.EvalID == receipt.Fleet.Runtime.EvalID || receipt.Fleet.Migration.CheckpointID == receipt.Fleet.Runtime.CheckpointID || !externalNamePattern.MatchString(receipt.Fleet.PlanID) || !validGitHubNumericID(receipt.Fleet.ApplyRunID) || !validGitHubNumericID(receipt.Fleet.ApplyRunAttempt) || !sha256HexPattern.MatchString(receipt.Fleet.PlanSHA256) || !externalNamePattern.MatchString(receipt.Fleet.RunnerAttemptID) || !externalNamePattern.MatchString(receipt.Fleet.NonceEvidenceRef) {
 		return fmt.Errorf("receipt Fleet namespace/migration/runtime/run/plan/attempt/nonce evidence binding is invalid")
 	}
 	if !validExternalChronology(receipt.Chronology) {
@@ -390,11 +401,11 @@ func validateExternalFleetReceipt(receipt ExternalFleetDeploymentReceipt, config
 }
 
 func verificationMatchesExternalReceipt(verified ExternalFleetDeploymentVerification, receipt ExternalFleetDeploymentReceipt, configured ExternalFleetAdmissionConfig) error {
-	if verified.SourceSHA != receipt.SourceSHA || verified.Artifact != receipt.Artifact || verified.AttestationURI != receipt.AttestationURI || verified.SBOMURI != receipt.SBOMURI || verified.Namespace != configured.Namespace || verified.Migration != receipt.Fleet.Migration || verified.Runtime != receipt.Fleet.Runtime || verified.ApplyRunID != receipt.Fleet.ApplyRunID || verified.ApplyRunAttempt != receipt.Fleet.ApplyRunAttempt || verified.PlanSHA256 != receipt.Fleet.PlanSHA256 || verified.RunnerAttemptID != receipt.Fleet.RunnerAttemptID || verified.NonceEvidenceRef != receipt.Fleet.NonceEvidenceRef {
+	if verified.SourceSHA != receipt.SourceSHA || verified.Artifact != receipt.Artifact || verified.AttestationURI != receipt.AttestationURI || verified.SBOMURI != receipt.SBOMURI || verified.Namespace != configured.Namespace || verified.Migration != receipt.Fleet.Migration || verified.Runtime != receipt.Fleet.Runtime || verified.PlanID != receipt.Fleet.PlanID || verified.ApplyRunID != receipt.Fleet.ApplyRunID || verified.ApplyRunAttempt != receipt.Fleet.ApplyRunAttempt || verified.PlanSHA256 != receipt.Fleet.PlanSHA256 || verified.RunnerAttemptID != receipt.Fleet.RunnerAttemptID || verified.NonceEvidenceRef != receipt.Fleet.NonceEvidenceRef {
 		return fmt.Errorf("independent verifier observations do not exactly match the receipt")
 	}
-	if !validDistinctIngressNodes(verified.IngressNodeIDs) || !validHTTPSEvidence(verified.PublicHTTPSVersion, verified.PublicHTTPSReady) || !sameExternalChronology(verified.Chronology, receipt.Chronology) {
-		return fmt.Errorf("independent verifier did not prove two distinct ingress nodes, public HTTPS version/ready, and full chronology")
+	if !validDistinctIngressNodes(verified.IngressNodeIDs) || !validHTTPSVersion(verified.PublicHTTPSVersion) || !validPrivateReadiness(verified.PrivateReadiness) || !sameExternalChronology(verified.Chronology, receipt.Chronology) {
+		return fmt.Errorf("independent verifier did not prove two distinct ingress nodes, public HTTPS version, private readiness, and full chronology")
 	}
 	return nil
 }
@@ -525,8 +536,22 @@ func validDistinctIngressNodes(nodes []string) bool {
 	return len(seen) >= 2
 }
 
-func validHTTPSEvidence(version, ready string) bool {
-	return validExternalURI(version) && validExternalURI(ready) && strings.HasPrefix(version, "https://") && strings.HasPrefix(ready, "https://")
+func validHTTPSVersion(version string) bool {
+	return validExternalURI(version) && strings.HasPrefix(version, "https://") && strings.HasSuffix(strings.TrimSuffix(version, "/"), "/version")
+}
+
+func validPrivateReadiness(readiness ExternalFleetPrivateReadiness) bool {
+	if !validExternalURI(readiness.Endpoint) || !strings.HasSuffix(strings.TrimSuffix(readiness.Endpoint, "/"), "/readyz") || readiness.CheckedAt.IsZero() || len(readiness.AllocationIDs) < 2 {
+		return false
+	}
+	seen := map[string]bool{}
+	for _, id := range readiness.AllocationIDs {
+		if !externalNamePattern.MatchString(id) || seen[id] {
+			return false
+		}
+		seen[id] = true
+	}
+	return true
 }
 
 func validExternalURI(value string) bool {

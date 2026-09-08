@@ -404,7 +404,7 @@ paths:
       - $ref: '#/components/parameters/AppID'
     post:
       operationId: admitExternalFleetDeployment
-      description: Staging-only admission for the one configured deploy:false external Fleet migration/runtime pair. Requires fleet:external-admission from the exact protected norn-fleet apply/recover OIDC identity. action issue-nonce returns a one-use Norn nonce; receipt admission fails closed unless a server-owned verifier independently confirms live Fleet, Nomad v2 evaluations, ingress, attestation/SBOM, chronology, and per-region traffic evidence.
+      description: Staging-only admission for the one configured deploy:false external Fleet migration/runtime pair. Requires fleet:external-admission from the exact protected norn-fleet apply/recover OIDC identity. action issue-nonce returns a one-use Norn nonce; receipt admission fails closed unless a server-owned verifier independently confirms the GitHub run/attestations, live Fleet, Nomad v2 evaluations, ingress, public HTTPS version, private readiness, chronology, and per-region traffic evidence.
       parameters:
         - $ref: '#/components/parameters/IdempotencyKey'
       requestBody:
@@ -2436,11 +2436,12 @@ components:
     ExternalFleetExecutionProof:
       type: object
       additionalProperties: false
-      required: [namespace, migration, runtime, applyRunId, applyRunAttempt, planSha256, runnerAttemptId, nonceEvidenceRef]
+      required: [namespace, migration, runtime, planId, applyRunId, applyRunAttempt, planSha256, runnerAttemptId, nonceEvidenceRef]
       properties:
         namespace: { type: string }
         migration: { $ref: '#/components/schemas/ExternalFleetNomadJobProof' }
         runtime: { $ref: '#/components/schemas/ExternalFleetNomadJobProof' }
+        planId: { type: string }
         applyRunId: { type: string }
         applyRunAttempt: { type: string }
         planSha256: { type: string, pattern: '^[0-9a-f]{64}$' }

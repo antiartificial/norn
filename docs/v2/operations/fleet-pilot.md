@@ -125,6 +125,11 @@ NORN_EXTERNAL_FLEET_ADMISSION_MIGRATION_HCL_SHA256=<released migration-HCL SHA-2
 NORN_EXTERNAL_FLEET_ADMISSION_RUNTIME_JOB_ID=<exact runtime Nomad job ID>
 NORN_EXTERNAL_FLEET_ADMISSION_RUNTIME_HCL_SHA256=<released runtime-HCL SHA-256>
 NORN_EXTERNAL_FLEET_ADMISSION_BOOTSTRAP_SIGNER_REF=<exact bootstrap workflow path@40-char SHA>
+NORN_EXTERNAL_FLEET_VERIFIER_URL=https://<private-read-only-fleet-evidence-origin>
+NORN_EXTERNAL_FLEET_VERIFIER_TOKEN_FILE=/secure/norn/fleet-evidence-read.token
+NORN_EXTERNAL_FLEET_GITHUB_TOKEN_FILE=/secure/norn/github-attestations-read.token
+NORN_EXTERNAL_FLEET_GITHUB_CLI_PATH=/absolute/path/to/gh
+NORN_EXTERNAL_FLEET_PUBLIC_BASE_URL=https://<reviewed-public-pilot-origin>
 ```
 
 Use the same complete bridge binding set on the production control plane to
@@ -133,7 +138,16 @@ external-admission route there: its protected identity remains staging-only.
 The bootstrap signer ref must be absent from
 `NORN_RELEASE_ATTESTATION_ALLOWED_WORKFLOW_REFS`; it is a separate, exact
 first-image adoption identity, not a normal release signer. Migration and
-runtime job IDs and their HCL digests must each be different. A real verifier
+runtime job IDs and their HCL digests must each be different. Prepare remains
+a distinct receipt/checkpoint phase, not an invented third Nomad job. The verifier
+URL is a single configured HTTPS origin for a separately credentialed,
+read-only Fleet evidence service; it is never supplied by receipt text. Both
+token files must be regular owner-only files. Norn reads them only for a
+bounded verification call and never persists or returns their contents. The
+GitHub file contains only a selected-repository attestation-read installation
+token, refreshed by the runner outside Norn before it expires. `gh` verifies
+the GitHub-hosted SLSA and SPDX statements using direct argument execution,
+never a shell. A real verifier
 is required before nonce issuance as well as receipt admission; at most three
 unconsumed nonces may exist for one protected CI run, and expired nonce rows
 are removed in bounded batches.
@@ -161,6 +175,19 @@ reviewed ingress nodes, public HTTPS `/version` and readiness probes, and the
 ordered `prepare → migration → runtime → exercise` chronology. The foundation
 intentionally has no generic live verifier yet; without a configured verifier,
 it returns `external_deployment_verifier_unavailable` and records nothing.
+
+### Current Fleet companion compatibility gate
+
+The verifier intentionally remains unavailable against the current Fleet
+remote-main companion (`6ff2397008accf3f694ab4cbcc4d97ed7df31361`) until its
+workflow bridge is deployed. The companion correctly has only migration and
+runtime Nomad jobs; its `prepare` phase is a receipt/variable setup. It still
+does not exchange `fleet:external-admission`, request a Norn nonce, compose
+the v2 composite receipt, expose the read-only evidence service, or submit the
+receipt. The verifier checks public `/version` JSON for the source version;
+private `/readyz` plus Nomad/Consul evidence is required separately. Until the
+Fleet-side contract is reviewed and deployed, leave every verifier variable
+unset and the capability remains undiscoverable.
 
 Only a fully verified receipt creates an immutable successful staging
 `app.deploy` operation and normal deployment history. The bootstrap artifact

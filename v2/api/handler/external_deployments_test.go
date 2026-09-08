@@ -4,8 +4,11 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"io"
 	"net/http"
 	"net/http/httptest"
+	"net/url"
+	"os"
 	"strings"
 	"testing"
 	"time"
@@ -22,6 +25,24 @@ type externalSafeVerifierError string
 func (e externalSafeVerifierError) Error() string                         { return string(e) }
 func (e externalSafeVerifierError) SafeExternalVerificationError() string { return string(e) }
 
+type externalFleetAttestationVerifierFunc func(context.Context, string, ExternalFleetDeploymentVerificationRequest) error
+
+func (fn externalFleetAttestationVerifierFunc) Verify(ctx context.Context, token string, request ExternalFleetDeploymentVerificationRequest) error {
+	return fn(ctx, token, request)
+}
+
+type externalFleetGitHubRunVerifierFunc func(context.Context, string, CIIdentity) error
+
+func (fn externalFleetGitHubRunVerifierFunc) Verify(ctx context.Context, token string, ci CIIdentity) error {
+	return fn(ctx, token, ci)
+}
+
+type externalFleetRoundTripperFunc func(*http.Request) (*http.Response, error)
+
+func (fn externalFleetRoundTripperFunc) RoundTrip(request *http.Request) (*http.Response, error) {
+	return fn(request)
+}
+
 func externalReceiptForTest() ExternalFleetDeploymentReceipt {
 	now := time.Now().UTC().Truncate(time.Second)
 	candidate := testReleaseCandidate()
@@ -33,7 +54,7 @@ func externalReceiptForTest() ExternalFleetDeploymentReceipt {
 		SchemaVersion: externalFleetReceiptSchema, Nonce: "00000000-0000-4000-8000-000000000001." + strings.Repeat("a", 64), App: "hello-norn-mysql",
 		SourceSHA: strings.Repeat("a", 40), Artifact: "ghcr.io/acme/hello-norn-mysql@sha256:" + strings.Repeat("b", 64), Candidate: candidate,
 		AttestationURI: "https://evidence.example.test/attestation", SBOMURI: "https://evidence.example.test/sbom",
-		Fleet: ExternalFleetExecutionProof{Namespace: "norn-pilot", Migration: ExternalFleetNomadJobProof{JobID: "hello-norn-mysql-migrate", HCLSHA256: strings.Repeat("c", 64), EvalID: "00000000-0000-4000-8000-000000000011", JobModifyIndex: 11, CheckpointID: "migration-1"}, Runtime: ExternalFleetNomadJobProof{JobID: "hello-norn-mysql", HCLSHA256: strings.Repeat("e", 64), EvalID: "00000000-0000-4000-8000-000000000012", JobModifyIndex: 12, CheckpointID: "runtime-1"}, ApplyRunID: "123", ApplyRunAttempt: "1", PlanSHA256: strings.Repeat("d", 64), RunnerAttemptID: "attempt-1", NonceEvidenceRef: "nonce-1"},
+		Fleet: ExternalFleetExecutionProof{Namespace: "norn-pilot", Migration: ExternalFleetNomadJobProof{JobID: "hello-norn-mysql-migrate", HCLSHA256: strings.Repeat("c", 64), EvalID: "00000000-0000-4000-8000-000000000011", JobModifyIndex: 11, CheckpointID: "migration-1"}, Runtime: ExternalFleetNomadJobProof{JobID: "hello-norn-mysql", HCLSHA256: strings.Repeat("e", 64), EvalID: "00000000-0000-4000-8000-000000000012", JobModifyIndex: 12, CheckpointID: "runtime-1"}, PlanID: "plan-1", ApplyRunID: "123", ApplyRunAttempt: "1", PlanSHA256: strings.Repeat("d", 64), RunnerAttemptID: "attempt-1", NonceEvidenceRef: "nonce-1"},
 		Chronology: []ExternalFleetChronologyStep{
 			{Phase: "prepare", OccurredAt: now, EvidenceRef: "https://evidence.example.test/prepare"},
 			{Phase: "migration", OccurredAt: now.Add(time.Second), EvidenceRef: "https://evidence.example.test/migration"},
@@ -49,7 +70,7 @@ func externalConfigForTest() ExternalFleetAdmissionConfig {
 
 func verifiedExternalReceipt(receipt ExternalFleetDeploymentReceipt) ExternalFleetDeploymentVerification {
 	chronology := append([]ExternalFleetChronologyStep(nil), receipt.Chronology...)
-	return ExternalFleetDeploymentVerification{SourceSHA: receipt.SourceSHA, Artifact: receipt.Artifact, AttestationURI: receipt.AttestationURI, SBOMURI: receipt.SBOMURI, Namespace: receipt.Fleet.Namespace, Migration: receipt.Fleet.Migration, Runtime: receipt.Fleet.Runtime, ApplyRunID: receipt.Fleet.ApplyRunID, ApplyRunAttempt: receipt.Fleet.ApplyRunAttempt, PlanSHA256: receipt.Fleet.PlanSHA256, RunnerAttemptID: receipt.Fleet.RunnerAttemptID, NonceEvidenceRef: receipt.Fleet.NonceEvidenceRef, IngressNodeIDs: []string{"ingress-a", "ingress-b"}, PublicHTTPSVersion: "https://pilot.example.test/version", PublicHTTPSReady: "https://pilot.example.test/ready", Chronology: chronology, Regions: []ExternalFleetRegionProof{{Region: "global", NomadRegion: "global", EvalID: "00000000-0000-4000-8000-000000000012", DesiredWeight: 100, ActiveWeight: 100}}}
+	return ExternalFleetDeploymentVerification{SourceSHA: receipt.SourceSHA, Artifact: receipt.Artifact, AttestationURI: receipt.AttestationURI, SBOMURI: receipt.SBOMURI, Namespace: receipt.Fleet.Namespace, Migration: receipt.Fleet.Migration, Runtime: receipt.Fleet.Runtime, PlanID: receipt.Fleet.PlanID, ApplyRunID: receipt.Fleet.ApplyRunID, ApplyRunAttempt: receipt.Fleet.ApplyRunAttempt, PlanSHA256: receipt.Fleet.PlanSHA256, RunnerAttemptID: receipt.Fleet.RunnerAttemptID, NonceEvidenceRef: receipt.Fleet.NonceEvidenceRef, IngressNodeIDs: []string{"ingress-a", "ingress-b"}, PublicHTTPSVersion: "https://pilot.example.test/version", PrivateReadiness: ExternalFleetPrivateReadiness{Endpoint: "https://private.example.test/readyz", AllocationIDs: []string{"alloc-a", "alloc-b"}, CheckedAt: time.Now().UTC()}, Chronology: chronology, Regions: []ExternalFleetRegionProof{{Region: "global", NomadRegion: "global", EvalID: "00000000-0000-4000-8000-000000000012", DesiredWeight: 100, ActiveWeight: 100}}}
 }
 
 func TestExternalFleetReceiptValidationFailsClosed(t *testing.T) {
@@ -87,6 +108,90 @@ func TestExternalFleetReceiptValidationFailsClosed(t *testing.T) {
 	}
 }
 
+func TestExternalFleetLiveVerifierUsesOnlyRedactedNonceAndCanonicalEvidence(t *testing.T) {
+	receipt := externalReceiptForTest()
+	request := ExternalFleetDeploymentVerificationRequest{Receipt: receipt, CI: CIIdentity{Provider: "github-actions", Repository: "acme/norn-fleet", RunID: "123", RunAttempt: "1"}, Config: externalConfigForTest()}
+	nonce, err := externalAdmissionNonceFromReceipt(receipt.Nonce)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var server *httptest.Server
+	server = httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/v1/external-fleet/evidence":
+			var got externalFleetEvidenceRequest
+			if err := json.NewDecoder(r.Body).Decode(&got); err != nil {
+				t.Fatal(err)
+			}
+			if got.Receipt.Nonce != "" || got.NonceSHA256 != nonce.sha256() || got.Repository != request.CI.Repository {
+				t.Fatalf("unsafe evidence request: %#v", got)
+			}
+			verification := verifiedExternalReceipt(receipt)
+			verification.PublicHTTPSVersion = server.URL + "/version"
+			verification.PrivateReadiness = ExternalFleetPrivateReadiness{Endpoint: "https://private.example.test/readyz", AllocationIDs: []string{"alloc-a", "alloc-b"}, CheckedAt: time.Now().UTC()}
+			_ = json.NewEncoder(w).Encode(externalFleetEvidence{Repository: request.CI.Repository, Verification: verification, FixtureHCLSHA256: map[string]string{"migration": request.Config.MigrationHCLSHA256, "runtime": request.Config.RuntimeHCLSHA256}, Canonical: map[string]string{"prepare.tlsRouting": "sha256:prepare", "migration.migration": "sha256:migration", "runtime.update": "sha256:runtime", "readiness.consulNomad": "sha256:ready"}, PlanAttemptID: receipt.Fleet.RunnerAttemptID, CheckpointAttemptID: receipt.Fleet.RunnerAttemptID, NonceSHA256: nonce.sha256(), NonceWrittenAt: time.Now().Add(-time.Second), NonceReadAt: time.Now()})
+		case "/version":
+			_ = json.NewEncoder(w).Encode(map[string]string{"version": receipt.SourceSHA, "allocation": "alloc-a", "region": "global"})
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	defer server.Close()
+	evidenceURL, _ := url.Parse(server.URL)
+	token := func(t *testing.T) string {
+		file, err := os.CreateTemp(t.TempDir(), "token")
+		if err != nil {
+			t.Fatal(err)
+		}
+		if _, err := file.WriteString("test-token"); err != nil {
+			t.Fatal(err)
+		}
+		if err := file.Close(); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.Chmod(file.Name(), 0o600); err != nil {
+			t.Fatal(err)
+		}
+		return file.Name()
+	}(t)
+	verifier := &ExternalFleetDeploymentLiveVerifier{evidenceURL: evidenceURL, publicURL: evidenceURL, evidenceTokenFile: token, githubTokenFile: token, httpClient: server.Client(), githubRun: externalFleetGitHubRunVerifierFunc(func(_ context.Context, gotToken string, gotCI CIIdentity) error {
+		if gotToken != "test-token" || gotCI.RunAttempt != request.CI.RunAttempt {
+			t.Fatal("GitHub run verifier did not receive the authenticated attempt")
+		}
+		return nil
+	}), attest: externalFleetAttestationVerifierFunc(func(_ context.Context, gotToken string, gotRequest ExternalFleetDeploymentVerificationRequest) error {
+		if gotToken != "test-token" || gotRequest.Receipt.Artifact != receipt.Artifact {
+			t.Fatal("attestation verifier did not receive bounded identity")
+		}
+		return nil
+	})}
+	verified, err := verifier.VerifyExternalFleetDeployment(context.Background(), request)
+	if err != nil {
+		t.Fatalf("live verifier rejected complete fake evidence: %v", err)
+	}
+	if verified.PlanID != receipt.Fleet.PlanID || verified.Migration != receipt.Fleet.Migration {
+		t.Fatalf("verification = %#v", verified)
+	}
+}
+
+func TestExternalFleetGitHubRunVerifierBindsExactAttemptAndWorkflow(t *testing.T) {
+	client := &http.Client{Transport: externalFleetRoundTripperFunc(func(request *http.Request) (*http.Response, error) {
+		if request.URL.String() != "https://api.github.com/repos/acme/norn-fleet/actions/runs/123" || request.Header.Get("Authorization") != "Bearer token" {
+			t.Fatalf("unexpected GitHub request: %s", request.URL)
+		}
+		body := `{"id":123,"run_attempt":2,"status":"completed","conclusion":"success","event":"workflow_dispatch","path":".github/workflows/apply.yml","repository":{"full_name":"acme/norn-fleet"}}`
+		return &http.Response{StatusCode: http.StatusOK, Header: make(http.Header), Body: io.NopCloser(strings.NewReader(body))}, nil
+	})}
+	identity := CIIdentity{Repository: "acme/norn-fleet", RunID: "123", RunAttempt: "2", WorkflowRef: "acme/norn-fleet/.github/workflows/apply.yml@" + strings.Repeat("a", 40)}
+	if err := (externalFleetGitHubRunVerifier{client: client}).Verify(context.Background(), "token", identity); err != nil {
+		t.Fatalf("matching GitHub run rejected: %v", err)
+	}
+	identity.RunAttempt = "3"
+	if err := (externalFleetGitHubRunVerifier{client: client}).Verify(context.Background(), "token", identity); err == nil {
+		t.Fatal("foreign GitHub attempt accepted")
+	}
+}
+
 func TestExternalReceiptBindsApplyRunAndAttemptToAuthenticatedCI(t *testing.T) {
 	receipt := externalReceiptForTest()
 	ci := CIIdentity{RunID: receipt.Fleet.ApplyRunID, RunAttempt: receipt.Fleet.ApplyRunAttempt}
@@ -113,8 +218,8 @@ func TestExternalVerificationMustMatchEveryReceiptBinding(t *testing.T) {
 		"duplicate ingress node": func(value *ExternalFleetDeploymentVerification) {
 			value.IngressNodeIDs = []string{"ingress-a", "ingress-a"}
 		},
-		"non HTTPS readiness": func(value *ExternalFleetDeploymentVerification) {
-			value.PublicHTTPSReady = "http://pilot.example.test/ready"
+		"private readiness is public": func(value *ExternalFleetDeploymentVerification) {
+			value.PrivateReadiness.Endpoint = "https://pilot.example.test/ready"
 		},
 		"missing nonce evidence": func(value *ExternalFleetDeploymentVerification) { value.NonceEvidenceRef = "different" },
 		"different chronology": func(value *ExternalFleetDeploymentVerification) {

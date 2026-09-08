@@ -87,7 +87,7 @@ func TestControlOpenAPIParsesAndLocalRefsResolve(t *testing.T) {
 		t.Error("ExternalFleetDeploymentReceipt must use the v2 migration/runtime proof contract")
 	}
 	externalProof := schemas["ExternalFleetExecutionProof"].(map[string]interface{})
-	for _, field := range []string{"migration", "runtime"} {
+	for _, field := range []string{"migration", "runtime", "planId"} {
 		if !containsRequiredField(externalProof["required"].([]interface{}), field) {
 			t.Errorf("ExternalFleetExecutionProof must require %s proof", field)
 		}
