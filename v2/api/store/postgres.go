@@ -3,10 +3,13 @@ package store
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"strings"
 	"time"
 
+	"github.com/jackc/pgx/v5"
+	"github.com/jackc/pgx/v5/pgconn"
 	"github.com/jackc/pgx/v5/pgxpool"
 
 	"norn/v2/api/model"
@@ -18,9 +21,11 @@ type DB struct {
 
 // migrationAdvisoryLockKey serializes the whole idempotent schema program
 // across API processes and parallel package tests sharing a PostgreSQL 16
-// database. It is held by one acquired session, so a crash releases it with
-// the connection and cannot leave a durable migration lock behind.
+// database. It is transaction-scoped so rollback releases it with every DDL
+// lock rather than leaving a session waiter during a failed migration.
 const migrationAdvisoryLockKey int64 = 0x4e4f524e5f4d4947
+
+const migrationAttempts = 5
 
 func Connect(databaseURL string) (*DB, error) {
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
@@ -65,18 +70,53 @@ func Migrate(db *DB) error {
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Minute)
 	defer cancel()
+	var err error
+	for attempt := 0; attempt < migrationAttempts; attempt++ {
+		err = migrateOnce(ctx, db)
+		if err == nil {
+			return nil
+		}
+		if !migrationLockContention(err) || attempt == migrationAttempts-1 {
+			return err
+		}
+		select {
+		case <-ctx.Done():
+			return fmt.Errorf("postgres migration: %w", ctx.Err())
+		case <-time.After(time.Duration(attempt+1) * 100 * time.Millisecond):
+		}
+	}
+	return err
+}
+
+// migrateOnce makes the complete schema program atomic. Before any DDL it
+// locks every extant application relation in lexical order. This drains live
+// DML before ALTER/CREATE INDEX begins, and a deadlock/lock-timeout is rolled
+// back as one unit then retried from no partial schema state. New databases
+// have no extant relations and therefore take the same atomic path directly.
+func migrateOnce(ctx context.Context, db *DB) error {
 	conn, err := db.Pool.Acquire(ctx)
 	if err != nil {
 		return fmt.Errorf("acquire postgres migration session: %w", err)
 	}
 	defer conn.Release()
-	if _, err := conn.Exec(ctx, `SELECT pg_advisory_lock($1)`, migrationAdvisoryLockKey); err != nil {
+	tx, err := conn.BeginTx(ctx, pgx.TxOptions{})
+	if err != nil {
+		return fmt.Errorf("begin postgres migration: %w", err)
+	}
+	defer func() { _ = tx.Rollback(context.Background()) }()
+	if _, err := tx.Exec(ctx, `SET LOCAL lock_timeout = '30s'`); err != nil {
+		return fmt.Errorf("configure postgres migration lock timeout: %w", err)
+	}
+	if _, err := tx.Exec(ctx, `SET LOCAL deadlock_timeout = '1s'`); err != nil {
+		return fmt.Errorf("configure postgres migration deadlock timeout: %w", err)
+	}
+	if _, err := tx.Exec(ctx, `SELECT pg_advisory_xact_lock($1)`, migrationAdvisoryLockKey); err != nil {
 		return fmt.Errorf("lock postgres migration: %w", err)
 	}
-	defer func() {
-		_, _ = conn.Exec(context.Background(), `SELECT pg_advisory_unlock($1)`, migrationAdvisoryLockKey)
-	}()
-	_, err = conn.Exec(ctx, `
+	if err := lockMigrationRelations(ctx, tx); err != nil {
+		return err
+	}
+	_, err = tx.Exec(ctx, `
 		CREATE TABLE IF NOT EXISTS saga_events (
 			id         TEXT PRIMARY KEY,
 			saga_id    TEXT NOT NULL,
@@ -650,7 +690,51 @@ func Migrate(db *DB) error {
 		CREATE INDEX IF NOT EXISTS idx_access_observation_app_last ON access_observation_buckets(app, process, last_seen DESC);
 		CREATE INDEX IF NOT EXISTS idx_access_observation_bucket ON access_observation_buckets(bucket_start DESC);
 	`)
-	return err
+	if err != nil {
+		return fmt.Errorf("apply postgres migration: %w", err)
+	}
+	if err := tx.Commit(ctx); err != nil {
+		return fmt.Errorf("commit postgres migration: %w", err)
+	}
+	return nil
+}
+
+func lockMigrationRelations(ctx context.Context, tx pgx.Tx) error {
+	rows, err := tx.Query(ctx, `
+		SELECT quote_ident(tablename)
+		FROM pg_tables
+		WHERE schemaname = current_schema()
+		ORDER BY tablename
+	`)
+	if err != nil {
+		return fmt.Errorf("list postgres migration relations: %w", err)
+	}
+	defer rows.Close()
+	var relations []string
+	for rows.Next() {
+		var relation string
+		if err := rows.Scan(&relation); err != nil {
+			return fmt.Errorf("scan postgres migration relation: %w", err)
+		}
+		relations = append(relations, relation)
+	}
+	if err := rows.Err(); err != nil {
+		return fmt.Errorf("read postgres migration relations: %w", err)
+	}
+	if len(relations) == 0 {
+		return nil
+	}
+	// SHARE ROW EXCLUSIVE blocks writers before this migration can take a
+	// stronger DDL lock. All known tables are acquired in one sorted statement.
+	if _, err := tx.Exec(ctx, `LOCK TABLE `+strings.Join(relations, ", ")+` IN SHARE ROW EXCLUSIVE MODE`); err != nil {
+		return fmt.Errorf("gate live DML during postgres migration: %w", err)
+	}
+	return nil
+}
+
+func migrationLockContention(err error) bool {
+	var pgErr *pgconn.PgError
+	return errors.As(err, &pgErr) && (pgErr.Code == "40P01" || pgErr.Code == "55P03")
 }
 
 func (db *DB) InsertDeployment(ctx context.Context, d *model.Deployment) error {

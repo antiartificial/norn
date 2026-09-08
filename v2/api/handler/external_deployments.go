@@ -149,7 +149,8 @@ type ExternalFleetNomadJobProof struct {
 	EvalJobModifyIndex uint64 `json:"evalJobModifyIndex,omitempty"`
 	JobCreateIndex     uint64 `json:"jobCreateIndex,omitempty"`
 	JobModifyIndex     uint64 `json:"jobModifyIndex"`
-	JobVersion         uint64 `json:"jobVersion,omitempty"`
+	// JobVersion is required even when Nomad's valid initial version is zero.
+	JobVersion uint64 `json:"jobVersion"`
 	// CurrentSpec is the exact JSON returned by Nomad job inspect. Norn hashes
 	// a narrowly documented projection rather than trusting a Fleet-supplied
 	// digest: only the eight volatile root fields below are removed.
@@ -162,6 +163,47 @@ type ExternalFleetNomadJobProof struct {
 	SubmissionSHA256   string          `json:"submissionSha256,omitempty"`
 	EvaluationChainIDs []string        `json:"evaluationChainIds,omitempty"`
 	CheckpointID       string          `json:"checkpointId"`
+	// jobVersionPresent is intentionally not serialized. JSON number zero is a
+	// valid Nomad version, so v4 validation must distinguish it from omission.
+	jobVersionPresent bool
+}
+
+// UnmarshalJSON preserves the required-field distinction that Go's uint64
+// decoder otherwise erases: missing and JSON null are not version zero. V3
+// receipts remain parseable, but v4 validation requires this bit.
+func (proof *ExternalFleetNomadJobProof) UnmarshalJSON(raw []byte) error {
+	type wire ExternalFleetNomadJobProof
+	var value wire
+	if err := json.Unmarshal(raw, &value); err != nil {
+		return err
+	}
+	var fields map[string]json.RawMessage
+	decoder := json.NewDecoder(bytes.NewReader(raw))
+	decoder.UseNumber()
+	if err := decoder.Decode(&fields); err != nil {
+		return err
+	}
+	versionRaw, present := fields["jobVersion"]
+	if present {
+		var number json.Number
+		versionDecoder := json.NewDecoder(bytes.NewReader(versionRaw))
+		versionDecoder.UseNumber()
+		if err := versionDecoder.Decode(&number); err != nil || !validExternalFleetCanonicalInteger(number.String()) {
+			return errors.New("jobVersion must be an unsigned decimal integer")
+		}
+		version, err := strconv.ParseUint(number.String(), 10, 64)
+		if err != nil {
+			return errors.New("jobVersion is outside uint64")
+		}
+		value.JobVersion = version
+	}
+	*proof = ExternalFleetNomadJobProof(value)
+	proof.jobVersionPresent = present
+	return nil
+}
+
+func (proof *ExternalFleetNomadJobProof) markJobVersionPresent() {
+	proof.jobVersionPresent = true
 }
 
 type ExternalFleetChronologyStep struct {
@@ -1206,7 +1248,7 @@ func verificationMatchesExternalReceipt(verified ExternalFleetDeploymentVerifica
 }
 
 func verificationMatchesExternalReceiptAt(verified ExternalFleetDeploymentVerification, receipt ExternalFleetDeploymentReceipt, configured ExternalFleetAdmissionConfig, now time.Time) error {
-	if verified.SourceSHA != receipt.SourceSHA || verified.Artifact != receipt.Artifact || verified.AttestationBundleSHA256 != receipt.AttestationBundleSHA256 || verified.SBOMBundleSHA256 != receipt.SBOMBundleSHA256 || verified.Namespace != configured.Namespace || !reflect.DeepEqual(verified.Migration, receipt.Fleet.Migration) || !reflect.DeepEqual(verified.Runtime, receipt.Fleet.Runtime) || verified.PlanID != receipt.Fleet.PlanID || verified.ApplyRunID != receipt.Fleet.ApplyRunID || verified.ApplyRunAttempt != receipt.Fleet.ApplyRunAttempt || verified.PlanSHA256 != receipt.Fleet.PlanSHA256 || verified.RunnerAttemptID != receipt.Fleet.RunnerAttemptID || verified.FleetCommit != receipt.Fleet.FleetCommit || verified.NonceEvidenceRef != receipt.Fleet.NonceEvidenceRef {
+	if verified.SourceSHA != receipt.SourceSHA || verified.Artifact != receipt.Artifact || verified.AttestationBundleSHA256 != receipt.AttestationBundleSHA256 || verified.SBOMBundleSHA256 != receipt.SBOMBundleSHA256 || verified.Namespace != configured.Namespace || !externalNomadProofStableMatch(verified.Migration, receipt.Fleet.Migration) || !externalNomadProofStableMatch(verified.Runtime, receipt.Fleet.Runtime) || verified.PlanID != receipt.Fleet.PlanID || verified.ApplyRunID != receipt.Fleet.ApplyRunID || verified.ApplyRunAttempt != receipt.Fleet.ApplyRunAttempt || verified.PlanSHA256 != receipt.Fleet.PlanSHA256 || verified.RunnerAttemptID != receipt.Fleet.RunnerAttemptID || verified.FleetCommit != receipt.Fleet.FleetCommit || verified.NonceEvidenceRef != receipt.Fleet.NonceEvidenceRef {
 		return fmt.Errorf("independent verifier observations do not exactly match the receipt")
 	}
 	if !validDistinctIngressNodes(verified.IngressNodeIDs) || !validHTTPSVersion(verified.PublicHTTPSVersion) || !validPrivateReadinessAt(verified.PrivateReadiness, now) || !validExternalChronologyAt(verified.Chronology, now) {
@@ -1215,12 +1257,31 @@ func verificationMatchesExternalReceiptAt(verified ExternalFleetDeploymentVerifi
 	return nil
 }
 
+// externalNomadProofStableMatch deliberately compares the complete stable
+// evidence binding but not the raw JSON transport spelling. Nomad may alter
+// volatile inspect fields between Fleet's observation and Norn's verification;
+// CurrentSpecSHA256 and SubmissionSHA256 bind their documented canonical bytes.
+func externalNomadProofStableMatch(observed, receipt ExternalFleetNomadJobProof) bool {
+	return observed.JobID == receipt.JobID &&
+		observed.HCLSHA256 == receipt.HCLSHA256 &&
+		observed.EvalID == receipt.EvalID &&
+		observed.EvalCreateIndex == receipt.EvalCreateIndex &&
+		observed.EvalJobModifyIndex == receipt.EvalJobModifyIndex &&
+		observed.JobCreateIndex == receipt.JobCreateIndex &&
+		observed.JobModifyIndex == receipt.JobModifyIndex &&
+		observed.JobVersion == receipt.JobVersion &&
+		observed.CurrentSpecSHA256 == receipt.CurrentSpecSHA256 &&
+		observed.SubmissionSHA256 == receipt.SubmissionSHA256 &&
+		observed.CheckpointID == receipt.CheckpointID &&
+		reflect.DeepEqual(observed.EvaluationChainIDs, receipt.EvaluationChainIDs)
+}
+
 func validExternalNomadJobProof(proof ExternalFleetNomadJobProof, jobID, hclSHA256 string) bool {
 	return proof.JobID == jobID && proof.HCLSHA256 == hclSHA256 && uuid.Validate(proof.EvalID) == nil && proof.JobModifyIndex > 0 && externalNamePattern.MatchString(proof.CheckpointID)
 }
 
 func validExternalNomadJobProofV4(proof ExternalFleetNomadJobProof, jobID, hclSHA256, namespace string) bool {
-	if !validExternalNomadJobProof(proof, jobID, hclSHA256) || proof.EvalCreateIndex == 0 || proof.EvalJobModifyIndex != proof.JobModifyIndex || proof.JobCreateIndex == 0 || !sha256HexPattern.MatchString(proof.CurrentSpecSHA256) || !sha256HexPattern.MatchString(proof.SubmissionSHA256) || len(proof.EvaluationChainIDs) == 0 || len(proof.EvaluationChainIDs) > 32 {
+	if !validExternalNomadJobProof(proof, jobID, hclSHA256) || !proof.jobVersionPresent || proof.EvalCreateIndex == 0 || proof.EvalJobModifyIndex != proof.JobModifyIndex || proof.JobCreateIndex == 0 || !sha256HexPattern.MatchString(proof.CurrentSpecSHA256) || !sha256HexPattern.MatchString(proof.SubmissionSHA256) || len(proof.EvaluationChainIDs) == 0 || len(proof.EvaluationChainIDs) > 32 {
 		return false
 	}
 	currentSpec, err := externalNomadCurrentSpecCanonicalJSON(proof.CurrentSpec, proof.JobID, namespace, proof.JobCreateIndex, proof.JobModifyIndex, proof.JobVersion)
@@ -1257,12 +1318,12 @@ var externalNomadCurrentSpecVolatileFields = map[string]struct{}{
 // removes exactly Nomad's listed volatile root fields, and serializes sorted,
 // compact UTF-8 JSON with HTML escaping disabled. Fleet's implementation must
 // use this exact profile; the shared fixture documents representative bytes.
-func externalNomadCurrentSpecCanonicalJSON(raw []byte, jobID, namespace string, createIndex, modifyIndex, version uint64) ([]byte, error) {
+func externalNomadCurrentSpecCanonicalJSON(raw []byte, jobID, namespace string, createIndex, jobModifyIndex, version uint64) ([]byte, error) {
 	value, err := externalNomadEvidenceObject(raw)
 	if err != nil {
 		return nil, err
 	}
-	if !externalNomadObjectIdentity(value, jobID, namespace, createIndex, modifyIndex, version) {
+	if !externalNomadObjectIdentity(value, jobID, namespace, createIndex, jobModifyIndex, version) {
 		return nil, errors.New("Nomad current job identity/index/version mismatch")
 	}
 	projected := make(map[string]any, len(value))
@@ -1284,12 +1345,17 @@ func externalNomadSubmissionCanonicalJSON(raw []byte, jobID, namespace string, v
 	if err != nil {
 		return nil, err
 	}
-	if externalNomadString(value, "JobID") != jobID || externalNomadString(value, "Namespace") != namespace || externalNomadUint(value, "Version") != version {
+	observedVersion, versionPresent := externalNomadUint(value, "Version")
+	if externalNomadString(value, "JobID") != jobID || externalNomadString(value, "Namespace") != namespace || !versionPresent || observedVersion != version {
 		return nil, errors.New("Nomad submission job identity/index/version mismatch")
 	}
-	jobIndex := externalNomadUint(value, "JobModifyIndex")
-	if jobIndex == 0 {
-		jobIndex = externalNomadUint(value, "JobIndex")
+	jobIndex, jobIndexPresent := externalNomadUint(value, "JobModifyIndex")
+	legacyJobIndex, legacyJobIndexPresent := externalNomadUint(value, "JobIndex")
+	if jobIndexPresent == legacyJobIndexPresent {
+		return nil, errors.New("Nomad submission requires exactly one job modify index")
+	}
+	if !jobIndexPresent {
+		jobIndex = legacyJobIndex
 	}
 	if jobIndex != modifyIndex {
 		return nil, errors.New("Nomad submission job modify index mismatch")
@@ -1332,11 +1398,16 @@ func externalNomadEvidenceObject(raw []byte) (map[string]any, error) {
 	return object, nil
 }
 
-func externalNomadObjectIdentity(object map[string]any, jobID, namespace string, createIndex, modifyIndex, version uint64) bool {
-	if externalNomadString(object, "ID") != jobID || externalNomadString(object, "Namespace") != namespace || externalNomadUint(object, "ModifyIndex") != modifyIndex || externalNomadUint(object, "Version") != version {
+func externalNomadObjectIdentity(object map[string]any, jobID, namespace string, createIndex, jobModifyIndex, version uint64) bool {
+	observedCreateIndex, createIndexPresent := externalNomadUint(object, "CreateIndex")
+	observedJobModifyIndex, jobModifyIndexPresent := externalNomadUint(object, "JobModifyIndex")
+	observedVersion, versionPresent := externalNomadUint(object, "Version")
+	// ModifyIndex is deliberately not compared here: it is a volatile inspect
+	// field. The proof's JobModifyIndex is the stable Nomad registration index.
+	if externalNomadString(object, "ID") != jobID || externalNomadString(object, "Namespace") != namespace || !createIndexPresent || !jobModifyIndexPresent || !versionPresent || observedJobModifyIndex != jobModifyIndex || observedVersion != version {
 		return false
 	}
-	return createIndex == 0 || externalNomadUint(object, "CreateIndex") == createIndex
+	return createIndex == 0 || observedCreateIndex == createIndex
 }
 
 func externalNomadString(object map[string]any, field string) string {
@@ -1344,16 +1415,16 @@ func externalNomadString(object map[string]any, field string) string {
 	return value
 }
 
-func externalNomadUint(object map[string]any, field string) uint64 {
+func externalNomadUint(object map[string]any, field string) (uint64, bool) {
 	number, ok := object[field].(json.Number)
 	if !ok || !validExternalFleetCanonicalInteger(number.String()) {
-		return 0
+		return 0, false
 	}
 	value, err := strconv.ParseUint(number.String(), 10, 64)
 	if err != nil {
-		return 0
+		return 0, false
 	}
-	return value
+	return value, true
 }
 
 func externalNomadCanonicalJSON(value any) ([]byte, error) {
@@ -1638,29 +1709,151 @@ func externalCleanupIntentDigest(admissionID, operationID, operationDigest, rece
 	return hex.EncodeToString(d[:]), nil
 }
 
+const externalFleetSnapshotTimestampLayout = "2006-01-02T15:04:05.000Z"
+
+// externalFleetSnapshotTimestamp is the cross-language snapshot timestamp
+// profile. Every instant is normalized to UTC and truncated (never rounded) to
+// milliseconds, then written with exactly three fractional digits. Python's
+// Fleet companion uses the same floor-to-millisecond RFC3339 form; in
+// particular, .12Z is represented as .120Z rather than omitted or expanded.
+func externalFleetSnapshotTimestamp(t time.Time) (string, error) {
+	if t.IsZero() {
+		// The digest profile preserves an absent optional timestamp as an empty
+		// string. Callers that require a live observation separately reject it;
+		// treating it as a fabricated instant would weaken that validation.
+		return "", nil
+	}
+	return t.UTC().Truncate(time.Millisecond).Format(externalFleetSnapshotTimestampLayout), nil
+}
+
+type externalFleetSnapshotChronologyProjection struct {
+	Phase       string `json:"phase"`
+	OccurredAt  string `json:"occurredAt"`
+	EvidenceRef string `json:"evidenceRef"`
+}
+
+// externalFleetSnapshotNomadProofProjection excludes raw transport JSON. Its
+// two canonical digests retain the stable, independently validated Nomad
+// binding without making whitespace or volatile inspect state hash-relevant.
+type externalFleetSnapshotNomadProofProjection struct {
+	JobID              string   `json:"jobId"`
+	HCLSHA256          string   `json:"hclSha256"`
+	EvalID             string   `json:"evalId"`
+	EvalCreateIndex    uint64   `json:"evalCreateIndex,omitempty"`
+	EvalJobModifyIndex uint64   `json:"evalJobModifyIndex,omitempty"`
+	JobCreateIndex     uint64   `json:"jobCreateIndex,omitempty"`
+	JobModifyIndex     uint64   `json:"jobModifyIndex"`
+	JobVersion         uint64   `json:"jobVersion"`
+	CurrentSpecSHA256  string   `json:"currentSpecSha256,omitempty"`
+	SubmissionSHA256   string   `json:"submissionSha256,omitempty"`
+	EvaluationChainIDs []string `json:"evaluationChainIds,omitempty"`
+	CheckpointID       string   `json:"checkpointId"`
+}
+
+func externalFleetSnapshotNomadProof(proof ExternalFleetNomadJobProof) externalFleetSnapshotNomadProofProjection {
+	return externalFleetSnapshotNomadProofProjection{
+		JobID: proof.JobID, HCLSHA256: proof.HCLSHA256, EvalID: proof.EvalID, EvalCreateIndex: proof.EvalCreateIndex,
+		EvalJobModifyIndex: proof.EvalJobModifyIndex, JobCreateIndex: proof.JobCreateIndex, JobModifyIndex: proof.JobModifyIndex,
+		JobVersion: proof.JobVersion, CurrentSpecSHA256: proof.CurrentSpecSHA256, SubmissionSHA256: proof.SubmissionSHA256,
+		EvaluationChainIDs: proof.EvaluationChainIDs, CheckpointID: proof.CheckpointID,
+	}
+}
+
+type externalFleetSnapshotVerificationProjection struct {
+	SourceSHA               string                                    `json:"sourceSha"`
+	Artifact                string                                    `json:"artifact"`
+	AttestationBundleSHA256 string                                    `json:"attestationBundleSha256"`
+	SBOMBundleSHA256        string                                    `json:"sbomBundleSha256"`
+	Namespace               string                                    `json:"namespace"`
+	Migration               externalFleetSnapshotNomadProofProjection `json:"migration"`
+	Runtime                 externalFleetSnapshotNomadProofProjection `json:"runtime"`
+	PlanID                  string                                    `json:"planId"`
+	ApplyRunID              string                                    `json:"applyRunId"`
+	ApplyRunAttempt         string                                    `json:"applyRunAttempt"`
+	PlanSHA256              string                                    `json:"planSha256"`
+	RunnerAttemptID         string                                    `json:"runnerAttemptId"`
+	FleetCommit             string                                    `json:"fleetCommit"`
+	NonceEvidenceRef        string                                    `json:"nonceEvidenceRef"`
+	Regions                 []ExternalFleetRegionProof                `json:"regions"`
+	IngressNodeIDs          []string                                  `json:"ingressNodeIds"`
+	PublicHTTPSVersion      string                                    `json:"publicHttpsVersion"`
+	PrivateReadiness        struct {
+		Endpoint      string   `json:"endpoint"`
+		AllocationIDs []string `json:"allocationIds"`
+		CheckedAt     string   `json:"checkedAt"`
+	} `json:"privateReadiness"`
+	Chronology []externalFleetSnapshotChronologyProjection `json:"chronology"`
+}
+
+func externalFleetSnapshotVerificationCanonical(v ExternalFleetDeploymentVerification) (externalFleetSnapshotVerificationProjection, error) {
+	checkedAt, err := externalFleetSnapshotTimestamp(v.PrivateReadiness.CheckedAt)
+	if err != nil {
+		return externalFleetSnapshotVerificationProjection{}, err
+	}
+	chronology := make([]externalFleetSnapshotChronologyProjection, len(v.Chronology))
+	for i, step := range v.Chronology {
+		occurredAt, timestampErr := externalFleetSnapshotTimestamp(step.OccurredAt)
+		if timestampErr != nil {
+			return externalFleetSnapshotVerificationProjection{}, timestampErr
+		}
+		chronology[i] = externalFleetSnapshotChronologyProjection{Phase: step.Phase, OccurredAt: occurredAt, EvidenceRef: step.EvidenceRef}
+	}
+	result := externalFleetSnapshotVerificationProjection{
+		SourceSHA: v.SourceSHA, Artifact: v.Artifact, AttestationBundleSHA256: v.AttestationBundleSHA256, SBOMBundleSHA256: v.SBOMBundleSHA256,
+		Namespace: v.Namespace, Migration: externalFleetSnapshotNomadProof(v.Migration), Runtime: externalFleetSnapshotNomadProof(v.Runtime), PlanID: v.PlanID, ApplyRunID: v.ApplyRunID, ApplyRunAttempt: v.ApplyRunAttempt,
+		PlanSHA256: v.PlanSHA256, RunnerAttemptID: v.RunnerAttemptID, FleetCommit: v.FleetCommit, NonceEvidenceRef: v.NonceEvidenceRef,
+		Regions: v.Regions, IngressNodeIDs: v.IngressNodeIDs, PublicHTTPSVersion: v.PublicHTTPSVersion, Chronology: chronology,
+	}
+	result.PrivateReadiness.Endpoint = v.PrivateReadiness.Endpoint
+	result.PrivateReadiness.AllocationIDs = v.PrivateReadiness.AllocationIDs
+	result.PrivateReadiness.CheckedAt = checkedAt
+	return result, nil
+}
+
 // externalFleetSnapshotDigest is the v4 snapshot hash profile shared with the
-// evidence service. It hashes this compact JSON projection, excluding only the
-// digest field itself. The projection has no maps and therefore makes nested
-// field names and array order explicit across implementations.
+// evidence service. It hashes a compact typed projection, excluding only the
+// digest field itself. Typed timestamp strings avoid Go RFC3339Nano and Python
+// isoformat differences while preserving array order and every signed fact.
 func externalFleetSnapshotDigest(snapshot *ExternalFleetEvidenceSnapshot) (string, error) {
 	if snapshot == nil {
 		return "", errors.New("missing evidence snapshot")
 	}
-	projection := struct {
-		ID             string                              `json:"id"`
-		Ref            string                              `json:"ref"`
-		LiveCheckedAt  time.Time                           `json:"liveCheckedAt"`
-		NonceWrittenAt time.Time                           `json:"nonceWrittenAt"`
-		NonceReadAt    time.Time                           `json:"nonceReadAt"`
-		Verification   ExternalFleetDeploymentVerification `json:"verification"`
-		RetryLineage   []string                            `json:"retryLineage"`
-		CheckpointRefs []ExternalFleetCheckpointRef        `json:"checkpointRefs"`
-		Allocations    []externalFleetAllocationEvidence   `json:"allocations"`
-	}{snapshot.ID, snapshot.Ref, snapshot.LiveCheckedAt, snapshot.NonceWrittenAt, snapshot.NonceReadAt, snapshot.Verification, snapshot.RetryLineage, snapshot.CheckpointRefs, snapshot.Allocations}
-	b, err := json.Marshal(projection)
+	liveCheckedAt, err := externalFleetSnapshotTimestamp(snapshot.LiveCheckedAt)
 	if err != nil {
 		return "", err
 	}
+	nonceWrittenAt, err := externalFleetSnapshotTimestamp(snapshot.NonceWrittenAt)
+	if err != nil {
+		return "", err
+	}
+	nonceReadAt, err := externalFleetSnapshotTimestamp(snapshot.NonceReadAt)
+	if err != nil {
+		return "", err
+	}
+	verification, err := externalFleetSnapshotVerificationCanonical(snapshot.Verification)
+	if err != nil {
+		return "", err
+	}
+	projection := struct {
+		ID             string                                      `json:"id"`
+		Ref            string                                      `json:"ref"`
+		LiveCheckedAt  string                                      `json:"liveCheckedAt"`
+		NonceWrittenAt string                                      `json:"nonceWrittenAt"`
+		NonceReadAt    string                                      `json:"nonceReadAt"`
+		Verification   externalFleetSnapshotVerificationProjection `json:"verification"`
+		RetryLineage   []string                                    `json:"retryLineage"`
+		CheckpointRefs []ExternalFleetCheckpointRef                `json:"checkpointRefs"`
+		Allocations    []externalFleetAllocationEvidence           `json:"allocations"`
+	}{snapshot.ID, snapshot.Ref, liveCheckedAt, nonceWrittenAt, nonceReadAt, verification, snapshot.RetryLineage, snapshot.CheckpointRefs, snapshot.Allocations}
+	var encoded bytes.Buffer
+	encoder := json.NewEncoder(&encoded)
+	// Match the shared Nomad canonical profile: compact UTF-8 JSON with no Go
+	// HTML escaping. The projection has no maps, so field order is explicit.
+	encoder.SetEscapeHTML(false)
+	if err := encoder.Encode(projection); err != nil {
+		return "", err
+	}
+	b := bytes.TrimSuffix(encoded.Bytes(), []byte("\n"))
 	d := sha256.Sum256(b)
 	return hex.EncodeToString(d[:]), nil
 }
