@@ -318,6 +318,29 @@ func TestExternalFleetAttestationBundleURLFixtures(t *testing.T) {
 	}
 }
 
+func TestExternalFleetAttestationFixtureRejectsMalformedStatements(t *testing.T) {
+	receipt := externalReceiptForTest()
+	receipt.Candidate.Repository = "acme/app"
+	receipt.Candidate.Attestation.SubjectDigest = "sha256:" + strings.Repeat("b", 64)
+	receipt.AttestationURI = "https://github.com/acme/app/attestations/1"
+	receipt.SBOMURI = "https://github.com/acme/app/attestations/2"
+	for _, payload := range []string{"not-base64", base64.StdEncoding.EncodeToString([]byte(`not-json`)), base64.StdEncoding.EncodeToString([]byte(`{"predicateType":"https://spdx.dev/Document/v2.3","subject":[]}`))} {
+		var s *httptest.Server
+		s = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			if strings.Contains(r.URL.Path, "sha256:") {
+				json.NewEncoder(w).Encode(map[string]any{"attestations": []any{map[string]any{"id": 1, "bundle_url": s.URL + "/repos/acme/app/attestations/1/bundle"}, map[string]any{"id": 2, "bundle_url": s.URL + "/repos/acme/app/attestations/2/bundle"}}})
+				return
+			}
+			json.NewEncoder(w).Encode(map[string]any{"dsseEnvelope": map[string]string{"payload": payload}})
+		}))
+		app := &externalFleetGitHubApp{cfg: externalFleetGitHubAppConfig{APIBaseURL: s.URL}, client: s.Client()}
+		if _, err := app.attestations(context.Background(), "secret-token", receipt); err == nil || strings.Contains(err.Error(), "secret-token") {
+			t.Fatalf("malformed bundle was accepted or leaked token: %v", err)
+		}
+		s.Close()
+	}
+}
+
 func TestExternalFleetGitHubRunVerifierBindsExactAttemptAndWorkflow(t *testing.T) {
 	client := &http.Client{Transport: externalFleetRoundTripperFunc(func(request *http.Request) (*http.Response, error) {
 		if request.URL.String() != "https://api.github.com/repos/acme/norn-fleet/actions/runs/123" || request.Header.Get("Authorization") != "Bearer token" {
