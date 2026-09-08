@@ -210,17 +210,6 @@ func (h *Handler) AdmitExternalFleetDeployment(w http.ResponseWriter, r *http.Re
 		WriteControlProblem(w, r, http.StatusForbidden, "external_deployment_binding_mismatch", "external receipt source, artifact, and candidate do not match the server-owned app binding")
 		return
 	}
-	key, digest, ok := externalFleetAdmissionIdempotency(w, r, principal, appID, receipt)
-	if !ok {
-		return
-	}
-	if existing, handled := h.resolveAppOperationIdempotency(w, r, key, digest, "app.deploy", appID); handled {
-		if existing != nil {
-			existing.AttachReceipt()
-			writeJSON(w, existing)
-		}
-		return
-	}
 	nonce, err := externalAdmissionNonceFromReceipt(receipt.Nonce)
 	if err != nil {
 		WriteControlProblem(w, r, http.StatusBadRequest, "external_deployment_nonce_invalid", err.Error())
@@ -232,6 +221,17 @@ func (h *Handler) AdmitExternalFleetDeployment(w http.ResponseWriter, r *http.Re
 	}
 	if !externalReceiptMatchesCI(receipt, *principal.CI) {
 		WriteControlProblem(w, r, http.StatusForbidden, "external_deployment_identity_denied", "receipt apply run and attempt must match the authenticated Fleet identity")
+		return
+	}
+	key, digest, ok := externalFleetAdmissionIdempotency(w, r, principal, appID, receipt)
+	if !ok {
+		return
+	}
+	if existing, handled := h.resolveAppOperationIdempotency(w, r, key, digest, "app.deploy", appID); handled {
+		if existing != nil {
+			existing.AttachReceipt()
+			writeJSON(w, existing)
+		}
 		return
 	}
 	verification, err := h.externalFleetDeploymentVerifier.VerifyExternalFleetDeployment(r.Context(), ExternalFleetDeploymentVerificationRequest{Receipt: receipt, CI: *principal.CI, Config: configured})
