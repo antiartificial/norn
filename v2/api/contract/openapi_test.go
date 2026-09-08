@@ -150,6 +150,10 @@ func TestControlOpenAPIParsesAndLocalRefsResolve(t *testing.T) {
 			t.Errorf("ExternalFleetAdmissionContext must require %s", field)
 		}
 	}
+	lineageItems := v4Context["properties"].(map[string]interface{})["retryLineage"].(map[string]interface{})["items"].(map[string]interface{})
+	if lineageItems["format"] != "uuid" {
+		t.Error("ExternalFleetAdmissionContext.retryLineage must expose UUID attempt IDs")
+	}
 	assertV4ExternalAdmissionPaths(t, paths)
 	runnerAttempt := schemas["FleetRunnerAttempt"].(map[string]interface{})
 	if !containsRequiredField(runnerAttempt["required"].([]interface{}), "rootAttemptId") {

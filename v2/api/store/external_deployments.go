@@ -8,6 +8,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgconn"
 
@@ -134,7 +135,7 @@ type ExternalDeploymentServiceSnapshot struct {
 }
 
 func (db *DB) RecordExternalDeploymentServiceSnapshot(ctx context.Context, snapshot ExternalDeploymentServiceSnapshot) error {
-	if db == nil || db.Pool == nil || snapshot.AdmissionID == "" || snapshot.SnapshotID == "" || snapshot.SnapshotRef == "" || len(snapshot.SnapshotSHA256) != 64 || len(snapshot.ReceiptDigest) != 64 || len(snapshot.ProofDigest) != 64 || snapshot.ClaimRevision < 1 || len(snapshot.RetryLineage) == 0 {
+	if db == nil || db.Pool == nil || snapshot.AdmissionID == "" || snapshot.SnapshotID == "" || snapshot.SnapshotRef == "" || len(snapshot.SnapshotSHA256) != 64 || len(snapshot.ReceiptDigest) != 64 || len(snapshot.ProofDigest) != 64 || snapshot.ClaimRevision < 1 || !validExternalDeploymentRetryLineage(snapshot.RetryLineage) {
 		return ErrExternalDeploymentAdmissionUnavailable
 	}
 	lineage, err := json.Marshal(snapshot.RetryLineage)
@@ -150,6 +151,23 @@ func (db *DB) RecordExternalDeploymentServiceSnapshot(ctx context.Context, snaps
 		return ErrExternalDeploymentAdmissionUnavailable
 	}
 	return nil
+}
+
+func validExternalDeploymentRetryLineage(lineage []string) bool {
+	if len(lineage) == 0 || len(lineage) > 64 {
+		return false
+	}
+	seen := make(map[string]struct{}, len(lineage))
+	for _, attemptID := range lineage {
+		if uuid.Validate(attemptID) != nil {
+			return false
+		}
+		if _, duplicate := seen[attemptID]; duplicate {
+			return false
+		}
+		seen[attemptID] = struct{}{}
+	}
+	return true
 }
 
 func (db *DB) RecordExternalDeploymentCleanupBindings(ctx context.Context, snapshot ExternalDeploymentServiceSnapshot) error {

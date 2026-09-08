@@ -918,7 +918,7 @@ func TestExternalAdmissionV4HandlersEnforceTheirBoundaryBeforePersistence(t *tes
 	configured := externalConfigForTest()
 	h := &Handler{cfg: &config.Config{Environment: "staging", ExternalFleetAdmissionApp: configured.App, ExternalFleetAdmissionNamespace: configured.Namespace, ExternalFleetAdmissionMigrationJobID: configured.MigrationJobID, ExternalFleetAdmissionMigrationHCLSHA256: configured.MigrationHCLSHA256, ExternalFleetAdmissionRuntimeJobID: configured.RuntimeJobID, ExternalFleetAdmissionRuntimeHCLSHA256: configured.RuntimeHCLSHA256, ExternalFleetAdmissionBootstrapSignerRef: configured.BootstrapSignerRef}}
 	principal := &AccessPrincipal{Subject: "github-actions:acme/norn-fleet:123", Scopes: []string{ScopeFleetExternalAdmission}, App: configured.App, Environment: "staging", CI: &CIIdentity{Repository: "acme/norn-fleet", RunID: "123", RunAttempt: "1", Environment: "staging", RefProtected: true, Intent: "apply"}}
-	identity := ExternalFleetLogicalIdentity{SchemaVersion: externalFleetLogicalIdentitySchemaV4, SourceSHA: strings.Repeat("a", 40), Artifact: "ghcr.io/acme/hello-norn-mysql@sha256:" + strings.Repeat("b", 64), Candidate: testReleaseCandidate(), Fleet: ExternalFleetLogicalExecutionIdentity{Namespace: configured.Namespace, PlanID: "plan-1", PlanSHA256: strings.Repeat("d", 64), RootAttemptID: "attempt-root", FleetCommit: strings.Repeat("f", 40)}}
+	identity := ExternalFleetLogicalIdentity{SchemaVersion: externalFleetLogicalIdentitySchemaV4, SourceSHA: strings.Repeat("a", 40), Artifact: "ghcr.io/acme/hello-norn-mysql@sha256:" + strings.Repeat("b", 64), Candidate: testReleaseCandidate(), Fleet: ExternalFleetLogicalExecutionIdentity{Namespace: configured.Namespace, PlanID: "plan-1", PlanSHA256: strings.Repeat("d", 64), RootAttemptID: "00000000-0000-4000-8000-000000000021", FleetCommit: strings.Repeat("f", 40)}}
 	identity.Candidate.Repository = "acme/hello-norn-mysql"
 	identity.Candidate.Attestation.MaterialSHA = strings.Repeat("a", 40)
 	withRoute := func(body string) *http.Request {
@@ -969,7 +969,7 @@ func TestExternalTerminalReplaysSurviveConfigurationRemoval(t *testing.T) {
 	}
 	appID, repository, environment := "hello-norn-mysql", "acme/norn-fleet", "staging"
 	principal := &AccessPrincipal{Subject: "github-actions:acme/norn-fleet:123", Scopes: []string{ScopeFleetExternalAdmission}, App: appID, Environment: environment, CI: &CIIdentity{Repository: repository, RunID: "123", RunAttempt: "1", Environment: environment, RefProtected: true, Intent: "apply"}}
-	identity := ExternalFleetLogicalIdentity{SchemaVersion: externalFleetLogicalIdentitySchemaV4, SourceSHA: strings.Repeat("a", 40), Artifact: "ghcr.io/acme/hello-norn-mysql@sha256:" + strings.Repeat("b", 64), Candidate: testReleaseCandidate(), Fleet: ExternalFleetLogicalExecutionIdentity{Namespace: "norn-pilot", PlanID: "plan-1", PlanSHA256: strings.Repeat("d", 64), RootAttemptID: "attempt-root", FleetCommit: strings.Repeat("f", 40)}}
+	identity := ExternalFleetLogicalIdentity{SchemaVersion: externalFleetLogicalIdentitySchemaV4, SourceSHA: strings.Repeat("a", 40), Artifact: "ghcr.io/acme/hello-norn-mysql@sha256:" + strings.Repeat("b", 64), Candidate: testReleaseCandidate(), Fleet: ExternalFleetLogicalExecutionIdentity{Namespace: "norn-pilot", PlanID: "plan-1", PlanSHA256: strings.Repeat("d", 64), RootAttemptID: "00000000-0000-4000-8000-000000000021", FleetCommit: strings.Repeat("f", 40)}}
 	identity.Candidate.Repository, identity.Candidate.Attestation.MaterialSHA = "acme/hello-norn-mysql", identity.SourceSHA
 	admissionID, operationID := uuid.NewString(), uuid.NewString()
 	keyHeader := "terminal-replay-" + uuid.NewString()
@@ -1017,10 +1017,35 @@ func TestExternalTerminalReplaysSurviveConfigurationRemoval(t *testing.T) {
 	if resume.Code != http.StatusOK || !strings.Contains(resume.Body.String(), operationID) || !strings.Contains(resume.Body.String(), `"nonceGeneration":7`) {
 		t.Fatalf("terminal resume replay after config removal = %d %s", resume.Code, resume.Body.String())
 	}
+	wrongKeyRequest := func(body string) *http.Request {
+		req := makeRequest(body)
+		req.Header.Set("Idempotency-Key", "wrong-"+uuid.NewString())
+		return req
+	}
+	wrongResume := httptest.NewRecorder()
+	h.ResumeExternalFleetDeploymentAdmission(wrongResume, wrongKeyRequest(string(resumeBody)))
+	if wrongResume.Code != http.StatusConflict || strings.Contains(wrongResume.Body.String(), operationID) {
+		t.Fatalf("wrong-key terminal resume replay = %d %s", wrongResume.Code, wrongResume.Body.String())
+	}
 	admit := httptest.NewRecorder()
 	h.AdmitExternalFleetDeploymentV4(admit, makeRequest(`{"admissionId":"`+admissionID+`"}`))
 	if admit.Code != http.StatusOK || !strings.Contains(admit.Body.String(), operationID) {
 		t.Fatalf("receipt-free terminal admit replay without verifier = %d %s", admit.Code, admit.Body.String())
+	}
+	wrongAdmit := httptest.NewRecorder()
+	h.AdmitExternalFleetDeploymentV4(wrongAdmit, wrongKeyRequest(`{"admissionId":"`+admissionID+`"}`))
+	if wrongAdmit.Code != http.StatusConflict || strings.Contains(wrongAdmit.Body.String(), operationID) {
+		t.Fatalf("wrong-key terminal admit replay = %d %s", wrongAdmit.Code, wrongAdmit.Body.String())
+	}
+	both := httptest.NewRecorder()
+	h.AdmitExternalFleetDeploymentV4(both, makeRequest(`{"admissionId":"`+admissionID+`","receipt":{}}`))
+	if both.Code != http.StatusBadRequest || !strings.Contains(both.Body.String(), "exactly one") {
+		t.Fatalf("admit accepted both receipt and admissionId = %d %s", both.Code, both.Body.String())
+	}
+	wrongCleanup := httptest.NewRecorder()
+	h.CompleteExternalFleetDeploymentCleanup(wrongCleanup, wrongKeyRequest(`{"admissionId":"`+admissionID+`","operationId":"`+operationID+`","receiptDigest":"`+strings.Repeat("a", 64)+`","cleanupIntentDigest":"`+strings.Repeat("b", 64)+`","absenceProofDigest":"`+strings.Repeat("c", 64)+`"}`))
+	if wrongCleanup.Code != http.StatusConflict {
+		t.Fatalf("wrong-key cleanup replay = %d %s", wrongCleanup.Code, wrongCleanup.Body.String())
 	}
 }
 
@@ -1054,7 +1079,7 @@ func TestExternalBeginRecoversLostRegistrationResponseBeforeNonceDisclosure(t *t
 	}
 	bootstrapSHA := strings.Repeat("f", 40)
 	configured := ExternalFleetAdmissionConfig{App: "hello-norn-mysql", Namespace: "norn-pilot", MigrationJobID: "hello-norn-mysql-migrate", MigrationHCLSHA256: strings.Repeat("c", 64), RuntimeJobID: "hello-norn-mysql", RuntimeHCLSHA256: strings.Repeat("e", 64), BootstrapSignerRef: "owner/repo/.github/workflows/hello-norn-mysql-bootstrap-image.yml@" + bootstrapSHA}
-	identity := ExternalFleetLogicalIdentity{SchemaVersion: externalFleetLogicalIdentitySchemaV4, SourceSHA: strings.Repeat("a", 40), Artifact: artifact, Candidate: testReleaseCandidate(), Fleet: ExternalFleetLogicalExecutionIdentity{Namespace: configured.Namespace, PlanID: "plan-1", PlanSHA256: strings.Repeat("d", 64), RootAttemptID: "attempt-root", FleetCommit: strings.Repeat("f", 40)}}
+	identity := ExternalFleetLogicalIdentity{SchemaVersion: externalFleetLogicalIdentitySchemaV4, SourceSHA: strings.Repeat("a", 40), Artifact: artifact, Candidate: testReleaseCandidate(), Fleet: ExternalFleetLogicalExecutionIdentity{Namespace: configured.Namespace, PlanID: "plan-1", PlanSHA256: strings.Repeat("d", 64), RootAttemptID: "00000000-0000-4000-8000-000000000021", FleetCommit: strings.Repeat("f", 40)}}
 	identity.Candidate.Repository = "owner/repo"
 	identity.Candidate.SignerWorkflowRef, identity.Candidate.SignerWorkflowSHA = configured.BootstrapSignerRef, bootstrapSHA
 	identity.Candidate.Attestation.MaterialSHA, identity.Candidate.Attestation.SubjectDigest = identity.SourceSHA, "sha256:"+strings.Repeat("b", 64)
@@ -1089,6 +1114,7 @@ func TestExternalBeginRecoversLostRegistrationResponseBeforeNonceDisclosure(t *t
 	receipt.SchemaVersion, receipt.AdmissionID, receipt.Nonce, receipt.App = externalFleetReceiptSchemaV4, decoded.AdmissionID, decoded.Nonce, configured.App
 	receipt.SourceSHA, receipt.Artifact, receipt.Candidate = identity.SourceSHA, identity.Artifact, identity.Candidate
 	receipt.Fleet.FleetCommit = identity.Fleet.FleetCommit
+	receipt.Fleet.RootAttemptID, receipt.Fleet.RunnerAttemptID = identity.Fleet.RootAttemptID, "00000000-0000-4000-8000-000000000022"
 	for index, proof := range []*ExternalFleetNomadJobProof{&receipt.Fleet.Migration, &receipt.Fleet.Runtime} {
 		proof.EvalCreateIndex, proof.EvalJobModifyIndex, proof.JobCreateIndex, proof.JobVersion = uint64(index+1), proof.JobModifyIndex, uint64(index+3), 0
 		completeExternalNomadProofForTest(t, proof, receipt.Fleet.Namespace)
@@ -1098,7 +1124,7 @@ func TestExternalBeginRecoversLostRegistrationResponseBeforeNonceDisclosure(t *t
 	verification.FleetCommit = receipt.Fleet.FleetCommit
 	verification.Regions = []ExternalFleetRegionProof{{Region: "nyc3", NomadRegion: "global", EvalID: receipt.Fleet.Runtime.EvalID, DesiredWeight: 100, ActiveWeight: 100}}
 	fake.verification = &verification
-	fake.snapshot = &ExternalFleetEvidenceSnapshot{ID: "snapshot-" + uuid.NewString(), Ref: "evidence://snapshot/" + decoded.AdmissionID, LiveCheckedAt: time.Now().UTC(), NonceWrittenAt: time.Now().UTC(), NonceReadAt: time.Now().UTC(), Verification: verification, RetryLineage: []string{"attempt-root", "attempt-1"}, CheckpointRefs: []ExternalFleetCheckpointRef{{Phase: "external_admission", CheckpointID: "checkpoint-" + uuid.NewString(), AttemptID: "attempt-1", EvidenceRef: "evidence://checkpoint/" + decoded.AdmissionID, EvidenceSHA256: strings.Repeat("9", 64)}}, Allocations: []externalFleetAllocationEvidence{{AllocationID: "alloc-a", JobID: receipt.Fleet.Runtime.JobID, EvalID: receipt.Fleet.Runtime.EvalID, Namespace: receipt.Fleet.Namespace, NodeID: "ingress-a", Region: "nyc3", NomadStatus: "running", ConsulStatus: "passing"}, {AllocationID: "alloc-b", JobID: receipt.Fleet.Runtime.JobID, EvalID: receipt.Fleet.Runtime.EvalID, Namespace: receipt.Fleet.Namespace, NodeID: "ingress-b", Region: "nyc3", NomadStatus: "running", ConsulStatus: "passing"}}}
+	fake.snapshot = &ExternalFleetEvidenceSnapshot{ID: "snapshot-" + uuid.NewString(), Ref: "evidence://snapshot/" + decoded.AdmissionID, LiveCheckedAt: time.Now().UTC(), NonceWrittenAt: time.Now().UTC(), NonceReadAt: time.Now().UTC(), Verification: verification, RetryLineage: []string{receipt.Fleet.RootAttemptID, receipt.Fleet.RunnerAttemptID}, CheckpointRefs: []ExternalFleetCheckpointRef{{Phase: "external_admission", CheckpointID: "checkpoint-" + uuid.NewString(), AttemptID: receipt.Fleet.RunnerAttemptID, EvidenceRef: "evidence://checkpoint/" + decoded.AdmissionID, EvidenceSHA256: strings.Repeat("9", 64)}}, Allocations: []externalFleetAllocationEvidence{{AllocationID: "alloc-a", JobID: receipt.Fleet.Runtime.JobID, EvalID: receipt.Fleet.Runtime.EvalID, Namespace: receipt.Fleet.Namespace, NodeID: "ingress-a", Region: "nyc3", NomadStatus: "running", ConsulStatus: "passing"}, {AllocationID: "alloc-b", JobID: receipt.Fleet.Runtime.JobID, EvalID: receipt.Fleet.Runtime.EvalID, Namespace: receipt.Fleet.Namespace, NodeID: "ingress-b", Region: "nyc3", NomadStatus: "running", ConsulStatus: "passing"}}}
 	var digestErr error
 	fake.snapshot.SHA256, digestErr = externalFleetSnapshotDigest(fake.snapshot)
 	if digestErr != nil {
@@ -1199,6 +1225,18 @@ func TestExternalFleetReceiptV4RequiresExactLiveNomadProof(t *testing.T) {
 	}
 }
 
+func TestExternalAdmissionRetryLineageRequiresDistinctUUIDs(t *testing.T) {
+	valid := []string{"00000000-0000-4000-8000-000000000021", "00000000-0000-4000-8000-000000000022"}
+	if !validExternalRetryLineage(valid) {
+		t.Fatal("UUID retry lineage rejected")
+	}
+	for _, invalid := range [][]string{{"attempt-root", "attempt-1"}, {valid[0], valid[0]}, {}} {
+		if validExternalRetryLineage(invalid) {
+			t.Fatalf("invalid retry lineage accepted: %#v", invalid)
+		}
+	}
+}
+
 func TestExternalNomadV4CanonicalFixtureAndAdversarialBindings(t *testing.T) {
 	raw, err := os.ReadFile("testdata/nomad-v4-canonical.json")
 	if err != nil {
@@ -1295,7 +1333,7 @@ func TestExternalCallbackBindingsRejectPlaceholderAndDrift(t *testing.T) {
 		t.Fatal("proof digest must not alias transport receipt digest")
 	}
 	claim := ExternalFleetEvidenceClaim{SchemaVersion: "norn.external-fleet-admission-callback/v4", AdmissionID: receipt.AdmissionID, LogicalDigest: "sha256:" + strings.Repeat("d", 64), AdmissionContextDigest: strings.Repeat("d", 64), NonceSHA256: strings.Repeat("e", 64), Generation: 1, ExpectedRevision: 2, ReceiptDigest: hex.EncodeToString(rd[:]), ProofDigest: proof}
-	snapshot := &ExternalFleetEvidenceSnapshot{ID: "snap", Ref: "evidence://snap", LiveCheckedAt: time.Now(), RetryLineage: []string{"root", "current"}, CheckpointRefs: []ExternalFleetCheckpointRef{{Phase: "external_admission", CheckpointID: "cp", AttemptID: "current", EvidenceRef: "evidence://cp", EvidenceSHA256: strings.Repeat("a", 64)}}}
+	snapshot := &ExternalFleetEvidenceSnapshot{ID: "snap", Ref: "evidence://snap", LiveCheckedAt: time.Now(), RetryLineage: []string{"00000000-0000-4000-8000-000000000021", "00000000-0000-4000-8000-000000000022"}, CheckpointRefs: []ExternalFleetCheckpointRef{{Phase: "external_admission", CheckpointID: "cp", AttemptID: "00000000-0000-4000-8000-000000000022", EvidenceRef: "evidence://cp", EvidenceSHA256: strings.Repeat("a", 64)}}}
 	var snapshotErr error
 	snapshot.SHA256, snapshotErr = externalFleetSnapshotDigest(snapshot)
 	if snapshotErr != nil {

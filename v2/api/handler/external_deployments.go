@@ -425,12 +425,12 @@ func (h *Handler) ResumeExternalFleetDeploymentAdmission(w http.ResponseWriter, 
 		WriteControlProblem(w, r, http.StatusBadRequest, "invalid_external_deployment_resume", "resume requires a valid admissionId and unchanged logical identity")
 		return
 	}
-	_, digest, valid := externalFleetAdmissionIdentityIdempotency(w, r, principal, appID, request.LogicalIdentity)
+	key, digest, valid := externalFleetAdmissionIdentityIdempotency(w, r, principal, appID, request.LogicalIdentity)
 	if !valid {
 		return
 	}
 	admission, err := h.db.GetExternalDeploymentAdmission(r.Context(), request.AdmissionID, appID, principal.Environment, principal.CI.Repository)
-	if err != nil || admission.RequestDigest != digest {
+	if err != nil || admission.RequestDigest != digest || admission.IdempotencyKey != key {
 		WriteControlProblem(w, r, http.StatusConflict, "external_deployment_admission_conflict", "resume identity does not match the server-owned admission")
 		return
 	}
@@ -561,10 +561,19 @@ func (h *Handler) CompleteExternalFleetDeploymentCleanup(w http.ResponseWriter, 
 		WriteControlProblem(w, r, http.StatusBadRequest, "invalid_external_deployment_cleanup", "cleanup requires admission, operation, receipt, intent, and absence-proof bindings")
 		return
 	}
+	// Cleanup is receipt-free, so scope the supplied client key exactly as begin
+	// did and compare that durable identity before any terminal replay or remote
+	// cleanup status lookup.
+	scopedKey, scopedKeyOK := externalFleetAdmissionScopedIdempotency(r, principal, appID)
+	if !scopedKeyOK {
+		WriteControlProblem(w, r, http.StatusBadRequest, "invalid_idempotency_key", "cleanup requires the original scoped Idempotency-Key")
+		return
+	}
 	var state, operationID, receiptDigest, proofDigest, expectedIntent, expectedAbsence, snapshotID, snapshotRef, snapshotSHA string
 	var nonceGeneration, claimRevision, commitRevision, cleanupRevision int64
-	err := h.db.Pool.QueryRow(r.Context(), `SELECT a.state, COALESCE(a.operation_id,''), a.nonce_generation, COALESCE(o.metadata->>'externalFleetProofSHA256',''), COALESCE(a.service_proof_sha256,''), COALESCE(a.cleanup_intent_sha256,''), COALESCE(a.absence_proof_sha256,''), COALESCE(a.service_snapshot_id,''), COALESCE(a.service_snapshot_ref,''), COALESCE(a.service_snapshot_sha256,''), COALESCE(a.service_claim_revision,0), COALESCE(a.service_commit_revision,0), COALESCE(a.service_cleanup_revision,0) FROM external_deployment_admissions a LEFT JOIN operations o ON o.id=a.operation_id WHERE a.id=$1 AND a.app=$2 AND a.environment=$3 AND a.ci_repository=$4`, request.AdmissionID, appID, principal.Environment, principal.CI.Repository).Scan(&state, &operationID, &nonceGeneration, &receiptDigest, &proofDigest, &expectedIntent, &expectedAbsence, &snapshotID, &snapshotRef, &snapshotSHA, &claimRevision, &commitRevision, &cleanupRevision)
-	if err != nil || operationID != request.OperationID || receiptDigest != request.ReceiptDigest {
+	var persistedKey string
+	err := h.db.Pool.QueryRow(r.Context(), `SELECT a.state, COALESCE(a.operation_id,''), a.idempotency_key, a.nonce_generation, COALESCE(o.metadata->>'externalFleetProofSHA256',''), COALESCE(a.service_proof_sha256,''), COALESCE(a.cleanup_intent_sha256,''), COALESCE(a.absence_proof_sha256,''), COALESCE(a.service_snapshot_id,''), COALESCE(a.service_snapshot_ref,''), COALESCE(a.service_snapshot_sha256,''), COALESCE(a.service_claim_revision,0), COALESCE(a.service_commit_revision,0), COALESCE(a.service_cleanup_revision,0) FROM external_deployment_admissions a LEFT JOIN operations o ON o.id=a.operation_id WHERE a.id=$1 AND a.app=$2 AND a.environment=$3 AND a.ci_repository=$4`, request.AdmissionID, appID, principal.Environment, principal.CI.Repository).Scan(&state, &operationID, &persistedKey, &nonceGeneration, &receiptDigest, &proofDigest, &expectedIntent, &expectedAbsence, &snapshotID, &snapshotRef, &snapshotSHA, &claimRevision, &commitRevision, &cleanupRevision)
+	if err != nil || persistedKey != scopedKey || operationID != request.OperationID || receiptDigest != request.ReceiptDigest {
 		WriteControlProblem(w, r, http.StatusConflict, "external_deployment_cleanup_conflict", "cleanup binding does not match the committed server admission")
 		return
 	}
@@ -718,15 +727,18 @@ func (h *Handler) AdmitExternalFleetDeployment(w http.ResponseWriter, r *http.Re
 	// Receipt-free terminal replay is intentionally before current config,
 	// receipt, nonce, GitHub, or freshness checks. The admission ID plus the
 	// scoped idempotency key selects only one durable server operation.
-	if request.AdmissionID != "" && request.Receipt == nil && request.Action == "" {
+	if request.Action != "" || (request.Receipt == nil) == (request.AdmissionID == "") {
+		WriteControlProblem(w, r, http.StatusBadRequest, "invalid_external_deployment_request", "external deployment admission requires exactly one of receipt or admissionId")
+		return
+	}
+	if request.AdmissionID != "" {
 		if uuid.Validate(request.AdmissionID) != nil {
 			WriteControlProblem(w, r, http.StatusBadRequest, "invalid_external_deployment_request", "admissionId must be a UUID")
 			return
 		}
-		clientKey := strings.TrimSpace(r.Header.Get("Idempotency-Key"))
-		keySum := sha256.Sum256([]byte("external-fleet-admission\x00" + principal.CI.Repository + "\x00" + principal.Environment + "\x00" + appID + "\x00" + clientKey))
+		scopedKey, scopedKeyOK := externalFleetAdmissionScopedIdempotency(r, principal, appID)
 		admission, lookupErr := h.db.GetExternalDeploymentAdmission(r.Context(), request.AdmissionID, appID, principal.Environment, principal.CI.Repository)
-		if clientKey == "" || lookupErr != nil || admission.IdempotencyKey != "app.deploy:"+hex.EncodeToString(keySum[:]) || (admission.State != store.ExternalDeploymentAdmissionCommitted && admission.State != store.ExternalDeploymentAdmissionCleanupPending && admission.State != store.ExternalDeploymentAdmissionComplete) {
+		if !scopedKeyOK || lookupErr != nil || admission.IdempotencyKey != scopedKey || (admission.State != store.ExternalDeploymentAdmissionCommitted && admission.State != store.ExternalDeploymentAdmissionCleanupPending && admission.State != store.ExternalDeploymentAdmissionComplete) {
 			WriteControlProblem(w, r, http.StatusConflict, "external_deployment_admission_conflict", "receipt-free replay does not match a terminal admission")
 			return
 		}
@@ -998,12 +1010,11 @@ func externalFleetAdmissionIdempotency(w http.ResponseWriter, r *http.Request, p
 }
 
 func externalFleetAdmissionIdentityIdempotency(w http.ResponseWriter, r *http.Request, principal AccessPrincipal, appID string, identity ExternalFleetLogicalIdentity) (string, string, bool) {
-	clientKey := strings.TrimSpace(r.Header.Get("Idempotency-Key"))
-	if clientKey == "" || len(clientKey) > 200 || principal.CI == nil || principal.CI.Repository == "" || principal.Environment == "" {
+	key, ok := externalFleetAdmissionScopedIdempotency(r, principal, appID)
+	if !ok {
 		WriteControlProblem(w, r, http.StatusBadRequest, "invalid_idempotency_key", "a stable Idempotency-Key and authorized CI repository/environment are required")
 		return "", "", false
 	}
-	keySum := sha256.Sum256([]byte("external-fleet-admission\x00" + principal.CI.Repository + "\x00" + principal.Environment + "\x00" + appID + "\x00" + clientKey))
 	logical := struct {
 		Repository    string                        `json:"repository"`
 		Environment   string                        `json:"environment"`
@@ -1022,7 +1033,20 @@ func externalFleetAdmissionIdentityIdempotency(w http.ResponseWriter, r *http.Re
 		return "", "", false
 	}
 	digest := sha256.Sum256(canonical)
-	return "app.deploy:" + hex.EncodeToString(keySum[:]), "sha256:" + hex.EncodeToString(digest[:]), true
+	return key, "sha256:" + hex.EncodeToString(digest[:]), true
+}
+
+// externalFleetAdmissionScopedIdempotency is intentionally independent of
+// mutable receipt/configuration data. Resume, cleanup, and terminal replay
+// can therefore derive the exact original key from the authenticated route
+// scope, while any changed caller key fails before creating or replaying work.
+func externalFleetAdmissionScopedIdempotency(r *http.Request, principal AccessPrincipal, appID string) (string, bool) {
+	clientKey := strings.TrimSpace(r.Header.Get("Idempotency-Key"))
+	if clientKey == "" || len(clientKey) > 200 || principal.CI == nil || principal.CI.Repository == "" || principal.Environment == "" || appID == "" {
+		return "", false
+	}
+	keySum := sha256.Sum256([]byte("external-fleet-admission\x00" + principal.CI.Repository + "\x00" + principal.Environment + "\x00" + appID + "\x00" + clientKey))
+	return "app.deploy:" + hex.EncodeToString(keySum[:]), true
 }
 
 func (h *Handler) validateExternalFleetLogicalIdentity(appID string, configured ExternalFleetAdmissionConfig, identity ExternalFleetLogicalIdentity) error {
@@ -1373,7 +1397,7 @@ func validExternalRetryLineage(lineage []string) bool {
 	}
 	seen := map[string]struct{}{}
 	for _, attempt := range lineage {
-		if attempt == "" || len(attempt) > 256 {
+		if uuid.Validate(attempt) != nil {
 			return false
 		}
 		if _, duplicate := seen[attempt]; duplicate {
@@ -1655,7 +1679,7 @@ func externalClaimStatusMatches(status *ExternalFleetEvidenceAdmissionStatus, cl
 	}
 	s := status.Snapshot
 	actual, err := externalFleetSnapshotDigest(s)
-	return err == nil && s.ID != "" && s.Ref != "" && actual == s.SHA256 && !s.LiveCheckedAt.IsZero() && len(s.RetryLineage) > 0 && len(s.CheckpointRefs) > 0
+	return err == nil && s.ID != "" && s.Ref != "" && actual == s.SHA256 && !s.LiveCheckedAt.IsZero() && validExternalRetryLineage(s.RetryLineage) && len(s.CheckpointRefs) > 0
 }
 
 func externalCommitStatusMatches(status *ExternalFleetEvidenceAdmissionStatus, claim ExternalFleetEvidenceClaim, snapshot *ExternalFleetEvidenceSnapshot) bool {

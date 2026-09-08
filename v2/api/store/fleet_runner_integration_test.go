@@ -5,6 +5,7 @@ import (
 	"errors"
 	"os"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -55,6 +56,33 @@ func isolatedMigrationDB(t *testing.T) *DB {
 		admin.Close()
 	})
 	return db
+}
+
+// TestMigrateSerializesParallelCalls exercises the same shared-database shape
+// used by `go test ./...`: each caller must wait for the one advisory-locked
+// schema program rather than interleaving ALTER/CREATE INDEX operations.
+func TestMigrateSerializesParallelCalls(t *testing.T) {
+	db := isolatedMigrationDB(t)
+	const callers = 8
+	start := make(chan struct{})
+	errs := make(chan error, callers)
+	var wg sync.WaitGroup
+	for range callers {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			<-start
+			errs <- Migrate(db)
+		}()
+	}
+	close(start)
+	wg.Wait()
+	close(errs)
+	for err := range errs {
+		if err != nil {
+			t.Fatalf("parallel Migrate: %v", err)
+		}
+	}
 }
 
 // TestFleetRunnerAttemptLifecycle exercises PostgreSQL uniqueness, optimistic

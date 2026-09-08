@@ -16,6 +16,12 @@ type DB struct {
 	Pool *pgxpool.Pool
 }
 
+// migrationAdvisoryLockKey serializes the whole idempotent schema program
+// across API processes and parallel package tests sharing a PostgreSQL 16
+// database. It is held by one acquired session, so a crash releases it with
+// the connection and cannot leave a durable migration lock behind.
+const migrationAdvisoryLockKey int64 = 0x4e4f524e5f4d4947
+
 func Connect(databaseURL string) (*DB, error) {
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
@@ -54,8 +60,23 @@ func (db *DB) Close() {
 }
 
 func Migrate(db *DB) error {
-	ctx := context.Background()
-	_, err := db.Pool.Exec(ctx, `
+	if db == nil || db.Pool == nil {
+		return fmt.Errorf("postgres migration database is unavailable")
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Minute)
+	defer cancel()
+	conn, err := db.Pool.Acquire(ctx)
+	if err != nil {
+		return fmt.Errorf("acquire postgres migration session: %w", err)
+	}
+	defer conn.Release()
+	if _, err := conn.Exec(ctx, `SELECT pg_advisory_lock($1)`, migrationAdvisoryLockKey); err != nil {
+		return fmt.Errorf("lock postgres migration: %w", err)
+	}
+	defer func() {
+		_, _ = conn.Exec(context.Background(), `SELECT pg_advisory_unlock($1)`, migrationAdvisoryLockKey)
+	}()
+	_, err = conn.Exec(ctx, `
 		CREATE TABLE IF NOT EXISTS saga_events (
 			id         TEXT PRIMARY KEY,
 			saga_id    TEXT NOT NULL,

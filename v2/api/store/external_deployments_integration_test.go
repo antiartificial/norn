@@ -155,7 +155,8 @@ func TestExternalDeploymentAdmissionV4Lifecycle(t *testing.T) {
 	if err := db.ClaimExternalDeploymentAdmissionEvidence(ctx, admissionID, nonce.ID); err != nil {
 		t.Fatalf("exact evidence claim replay = %v", err)
 	}
-	serviceSnapshot := ExternalDeploymentServiceSnapshot{AdmissionID: admissionID, SnapshotID: "snapshot-1", SnapshotRef: "evidence://snapshot-1", SnapshotSHA256: fmt.Sprintf("%064x", 10), RetryLineage: []string{"attempt-root", "attempt-1"}, ReceiptDigest: fmt.Sprintf("%064x", 11), ProofDigest: fmt.Sprintf("%064x", 12), CleanupIntentSHA256: fmt.Sprintf("%064x", 14), ClaimRevision: 2}
+	rootAttemptID, currentAttemptID := uuid.NewString(), uuid.NewString()
+	serviceSnapshot := ExternalDeploymentServiceSnapshot{AdmissionID: admissionID, SnapshotID: "snapshot-1", SnapshotRef: "evidence://snapshot-1", SnapshotSHA256: fmt.Sprintf("%064x", 10), RetryLineage: []string{rootAttemptID, currentAttemptID}, ReceiptDigest: fmt.Sprintf("%064x", 11), ProofDigest: fmt.Sprintf("%064x", 12), CleanupIntentSHA256: fmt.Sprintf("%064x", 14), ClaimRevision: 2}
 	if err := db.RecordExternalDeploymentServiceSnapshot(ctx, serviceSnapshot); err != nil {
 		t.Fatalf("record immutable service snapshot: %v", err)
 	}
@@ -168,7 +169,7 @@ func TestExternalDeploymentAdmissionV4Lifecycle(t *testing.T) {
 	terminal.Operation.Metadata["requestDigest"] = logicalDigest
 	terminal.AdmissionID, terminal.NonceGeneration = admissionID, 1
 	terminal.ServiceSnapshot = serviceSnapshot
-	terminal.CheckpointRefs = []ExternalDeploymentCheckpointRef{{Phase: "external_admission", CheckpointID: "admission-1", AttemptID: "attempt-1", EvidenceRef: "checkpoint://admission-1", EvidenceSHA256: fmt.Sprintf("%064x", 9)}}
+	terminal.CheckpointRefs = []ExternalDeploymentCheckpointRef{{Phase: "external_admission", CheckpointID: "admission-1", AttemptID: currentAttemptID, EvidenceRef: "checkpoint://admission-1", EvidenceSHA256: fmt.Sprintf("%064x", 9)}}
 	result, err := db.AdmitExternalDeployment(ctx, terminal)
 	if err != nil || result == nil || result.Replayed {
 		t.Fatalf("commit v4 admission result=%+v err=%v", result, err)
@@ -195,7 +196,7 @@ func TestExternalDeploymentAdmissionV4Lifecycle(t *testing.T) {
 	if err := db.MarkExternalDeploymentAdmissionCleanupPending(ctx, admissionID); err != nil {
 		t.Fatal(err)
 	}
-	cleanupCheckpoint := ExternalDeploymentCheckpointRef{Phase: "external_cleanup", CheckpointID: "cleanup-1", AttemptID: "attempt-1", EvidenceRef: "checkpoint://cleanup-1", EvidenceSHA256: fmt.Sprintf("%064x", 13)}
+	cleanupCheckpoint := ExternalDeploymentCheckpointRef{Phase: "external_cleanup", CheckpointID: "cleanup-1", AttemptID: currentAttemptID, EvidenceRef: "checkpoint://cleanup-1", EvidenceSHA256: fmt.Sprintf("%064x", 13)}
 	if err := db.RecordExternalDeploymentCleanupBindings(ctx, ExternalDeploymentServiceSnapshot{AdmissionID: admissionID, CommitRevision: 3, CleanupRevision: 4, CleanupIntentSHA256: serviceSnapshot.CleanupIntentSHA256, AbsenceProofSHA256: cleanupCheckpoint.EvidenceSHA256}); err != nil {
 		t.Fatalf("bind service-owned cleanup absence: %v", err)
 	}
