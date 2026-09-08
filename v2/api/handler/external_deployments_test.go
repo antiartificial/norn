@@ -1,6 +1,7 @@
 package handler
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"net/http"
@@ -9,7 +10,11 @@ import (
 	"testing"
 	"time"
 
+	"github.com/go-chi/chi/v5"
+
 	"norn/v2/api/config"
+	"norn/v2/api/model"
+	"norn/v2/api/store"
 )
 
 func externalReceiptForTest() ExternalFleetDeploymentReceipt {
@@ -57,7 +62,11 @@ func TestExternalFleetReceiptValidationFailsClosed(t *testing.T) {
 		},
 		"foreign namespace":            func(value *ExternalFleetDeploymentReceipt) { value.Fleet.Namespace = "other" },
 		"invalid migration submission": func(value *ExternalFleetDeploymentReceipt) { value.Fleet.Migration.EvalID = "not-a-uuid" },
-		"missing nonce proof":          func(value *ExternalFleetDeploymentReceipt) { value.Fleet.NonceEvidenceRef = "" },
+		"shared evaluation":            func(value *ExternalFleetDeploymentReceipt) { value.Fleet.Runtime.EvalID = value.Fleet.Migration.EvalID },
+		"shared checkpoint": func(value *ExternalFleetDeploymentReceipt) {
+			value.Fleet.Runtime.CheckpointID = value.Fleet.Migration.CheckpointID
+		},
+		"missing nonce proof": func(value *ExternalFleetDeploymentReceipt) { value.Fleet.NonceEvidenceRef = "" },
 		"unordered chronology": func(value *ExternalFleetDeploymentReceipt) {
 			value.Chronology[2].OccurredAt = value.Chronology[1].OccurredAt
 		},
@@ -70,6 +79,18 @@ func TestExternalFleetReceiptValidationFailsClosed(t *testing.T) {
 				t.Fatal("unsafe external receipt accepted")
 			}
 		})
+	}
+}
+
+func TestExternalReceiptBindsApplyRunAndAttemptToAuthenticatedCI(t *testing.T) {
+	receipt := externalReceiptForTest()
+	ci := CIIdentity{RunID: receipt.Fleet.ApplyRunID, RunAttempt: receipt.Fleet.ApplyRunAttempt}
+	if !externalReceiptMatchesCI(receipt, ci) {
+		t.Fatal("matching protected Fleet run was rejected")
+	}
+	ci.RunAttempt = "2"
+	if externalReceiptMatchesCI(receipt, ci) {
+		t.Fatal("receipt from another Fleet run attempt was accepted")
 	}
 }
 
@@ -141,6 +162,15 @@ func TestExternalAdmissionDisabledWithoutCompleteExactConfiguration(t *testing.T
 	for _, mutate := range []func(*config.Config){
 		func(value *config.Config) { value.ExternalFleetAdmissionApp = "other" },
 		func(value *config.Config) { value.ExternalFleetAdmissionRuntimeHCLSHA256 = "short" },
+		func(value *config.Config) {
+			value.ExternalFleetAdmissionRuntimeJobID = value.ExternalFleetAdmissionMigrationJobID
+		},
+		func(value *config.Config) {
+			value.ExternalFleetAdmissionRuntimeHCLSHA256 = value.ExternalFleetAdmissionMigrationHCLSHA256
+		},
+		func(value *config.Config) {
+			value.ReleaseAttestationWorkflowRefs = []string{value.ExternalFleetAdmissionBootstrapSignerRef}
+		},
 	} {
 		copy := *h.cfg
 		mutate(&copy)
@@ -162,6 +192,20 @@ func TestExternalAdmissionNonceFormatRejectsForgedValues(t *testing.T) {
 	}
 }
 
+func TestExternalAdmissionDoesNotIssueNonceWithoutLiveVerifier(t *testing.T) {
+	h := &Handler{db: &store.DB{}, cfg: &config.Config{Environment: "staging", ExternalFleetAdmissionApp: "hello-norn-mysql", ExternalFleetAdmissionNamespace: "norn-pilot", ExternalFleetAdmissionMigrationJobID: "hello-norn-mysql-migrate", ExternalFleetAdmissionMigrationHCLSHA256: strings.Repeat("c", 64), ExternalFleetAdmissionRuntimeJobID: "hello-norn-mysql", ExternalFleetAdmissionRuntimeHCLSHA256: strings.Repeat("e", 64), ExternalFleetAdmissionBootstrapSignerRef: "acme/hello-norn-mysql/.github/workflows/hello-norn-mysql-bootstrap-image.yml@" + strings.Repeat("f", 40)}}
+	principal := AccessPrincipal{Scopes: []string{ScopeFleetExternalAdmission}, App: "hello-norn-mysql", Environment: "staging", CI: &CIIdentity{Repository: "acme/norn-fleet", RunID: "123", RunAttempt: "1", Environment: "staging", RefProtected: true, Intent: "apply"}}
+	request := httptest.NewRequest(http.MethodPost, "/api/v1/apps/hello-norn-mysql/external-deployments", strings.NewReader(`{"action":"issue-nonce"}`))
+	route := chi.NewRouteContext()
+	route.URLParams.Add("id", "hello-norn-mysql")
+	request = request.WithContext(context.WithValue(request.Context(), chi.RouteCtxKey, route))
+	recorder := httptest.NewRecorder()
+	h.AdmitExternalFleetDeployment(recorder, WithAccessPrincipal(request, &principal))
+	if recorder.Code != http.StatusServiceUnavailable || !strings.Contains(recorder.Body.String(), "external_deployment_verifier_unavailable") {
+		t.Fatalf("nil verifier nonce issuance status=%d body=%s", recorder.Code, recorder.Body.String())
+	}
+}
+
 func TestExternalAdmissionProofNeverRetainsOrReturnsRawNonce(t *testing.T) {
 	receipt := externalReceiptForTest()
 	proof := redactExternalFleetReceipt(receipt)
@@ -179,6 +223,13 @@ func TestExternalAdmissionProofNeverRetainsOrReturnsRawNonce(t *testing.T) {
 	if got := safeExternalVerificationError(errors.New("mysql://secret@example.test")); got != "independent evidence was rejected" {
 		t.Fatalf("untyped verifier error leaked: %q", got)
 	}
+	// Nested evidence and DSSE maps are caller controlled too. Matching the
+	// simple identifier grammar is not sufficient because a nonce does.
+	proof.Fleet.NonceEvidenceRef = receipt.Nonce
+	proof.Candidate.Attestation.Bundle = &model.ReleaseAttestationBundle{Provenance: model.DSSEEnvelope{Payload: receipt.Nonce[37:]}}
+	if !externalValueContainsNonce(proof, externalAdmissionNonce{ID: receipt.Nonce[:36], Secret: receipt.Nonce[37:]}) {
+		t.Fatal("recursive nonce scanner missed nested raw nonce material")
+	}
 }
 
 func TestExternalBootstrapSignerIsSeparatelyPinned(t *testing.T) {
@@ -195,5 +246,24 @@ func TestExternalBootstrapSignerIsSeparatelyPinned(t *testing.T) {
 	receipt.Candidate.SignerWorkflowSHA = strings.Repeat("a", 40)
 	if validExternalBootstrapCandidate(receipt.Candidate, receipt.SourceSHA, receipt.Artifact, "github-public", configured) {
 		t.Fatal("bootstrap signer SHA mismatch was accepted")
+	}
+}
+
+func TestBootstrapSignerAdoptionSupportsQualificationAndPromotionPolicy(t *testing.T) {
+	candidate := externalReceiptForTest().Candidate
+	configured := externalConfigForTest()
+	candidate.SignerWorkflowRef = configured.BootstrapSignerRef
+	candidate.SignerWorkflowSHA = configured.BootstrapSignerRef[strings.LastIndex(configured.BootstrapSignerRef, "@")+1:]
+	h := &Handler{cfg: &config.Config{Environment: "production", ExternalFleetAdmissionApp: configured.App, ExternalFleetAdmissionNamespace: configured.Namespace, ExternalFleetAdmissionMigrationJobID: configured.MigrationJobID, ExternalFleetAdmissionMigrationHCLSHA256: configured.MigrationHCLSHA256, ExternalFleetAdmissionRuntimeJobID: configured.RuntimeJobID, ExternalFleetAdmissionRuntimeHCLSHA256: configured.RuntimeHCLSHA256, ExternalFleetAdmissionBootstrapSignerRef: configured.BootstrapSignerRef}}
+	ci := &CIIdentity{Provider: candidate.Provider, Repository: candidate.Repository, RepositoryID: candidate.RepositoryID, RepositoryOwnerID: candidate.OwnerID, RepositoryVisibility: candidate.RepositoryVisibility, Intent: "requalify", JobWorkflowRef: "acme/hello-norn-mysql/.github/workflows/requalify.yml@" + strings.Repeat("d", 40), JobWorkflowSHA: strings.Repeat("d", 40)}
+	principal := AccessPrincipal{CI: ci}
+	if !h.externalBootstrapCandidateForApp(configured.App, candidate) {
+		t.Fatal("server-pinned bootstrap candidate was not usable for promotion verification")
+	}
+	if allowed, reason := h.qualificationIntentPermitsCandidate(configured.App, principal, candidate); !allowed || reason != "" {
+		t.Fatalf("separate protected requalification could not adopt bootstrap evidence: allowed=%v reason=%q", allowed, reason)
+	}
+	if releasePromotionMatchesPrincipal(candidate, principal) || !releaseRepositoryMatchesPrincipal(candidate, principal) {
+		t.Fatal("bootstrap promotion compatibility did not preserve distinct normal and bootstrap signer boundaries")
 	}
 }

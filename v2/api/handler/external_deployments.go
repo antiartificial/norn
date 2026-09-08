@@ -10,6 +10,7 @@ import (
 	"fmt"
 	"net/http"
 	"net/url"
+	"reflect"
 	"regexp"
 	"strings"
 	"time"
@@ -160,6 +161,12 @@ func (h *Handler) AdmitExternalFleetDeployment(w http.ResponseWriter, r *http.Re
 		WriteControlProblem(w, r, http.StatusServiceUnavailable, "external_deployment_store_unavailable", "durable external deployment admission storage is unavailable")
 		return
 	}
+	// A nonce is authority to submit a receipt, so issuance is not allowed
+	// until the same independent verifier that will consume it is live.
+	if h.externalFleetDeploymentVerifier == nil {
+		WriteControlProblem(w, r, http.StatusServiceUnavailable, "external_deployment_verifier_unavailable", "independent Fleet runtime verification is not configured; nonce issuance is disabled")
+		return
+	}
 	var request externalDeploymentRequest
 	if err := decodeControlJSONLimit(w, r, &request, maxReleaseEvidenceJSONBody); err != nil {
 		WriteControlProblem(w, r, http.StatusBadRequest, "invalid_external_deployment_request", err.Error())
@@ -207,6 +214,14 @@ func (h *Handler) AdmitExternalFleetDeployment(w http.ResponseWriter, r *http.Re
 		WriteControlProblem(w, r, http.StatusBadRequest, "external_deployment_nonce_invalid", err.Error())
 		return
 	}
+	if externalValueContainsNonce(redactExternalFleetReceipt(receipt), nonce) {
+		WriteControlProblem(w, r, http.StatusBadRequest, "external_deployment_nonce_leak", "receipt fields must not contain the raw Norn nonce or its secret")
+		return
+	}
+	if !externalReceiptMatchesCI(receipt, *principal.CI) {
+		WriteControlProblem(w, r, http.StatusForbidden, "external_deployment_identity_denied", "receipt apply run and attempt must match the authenticated Fleet identity")
+		return
+	}
 	verification, err := h.externalFleetDeploymentVerifier.VerifyExternalFleetDeployment(r.Context(), ExternalFleetDeploymentVerificationRequest{Receipt: receipt, CI: *principal.CI, Config: configured})
 	if err != nil || verification == nil {
 		message := "independent Fleet runtime verification failed"
@@ -214,6 +229,10 @@ func (h *Handler) AdmitExternalFleetDeployment(w http.ResponseWriter, r *http.Re
 			message += ": " + safeExternalVerificationError(err)
 		}
 		WriteControlProblem(w, r, http.StatusForbidden, "external_deployment_verification_failed", message)
+		return
+	}
+	if externalValueContainsNonce(*verification, nonce) {
+		WriteControlProblem(w, r, http.StatusForbidden, "external_deployment_verification_failed", "independent verification returned raw nonce material")
 		return
 	}
 	if err := verificationMatchesExternalReceipt(*verification, receipt, configured); err != nil {
@@ -259,6 +278,10 @@ func (h *Handler) AdmitExternalFleetDeployment(w http.ResponseWriter, r *http.Re
 	writeJSONStatus(w, http.StatusCreated, op)
 }
 
+func externalReceiptMatchesCI(receipt ExternalFleetDeploymentReceipt, ci CIIdentity) bool {
+	return receipt.Fleet.ApplyRunID == ci.RunID && receipt.Fleet.ApplyRunAttempt == ci.RunAttempt
+}
+
 func (h *Handler) issueExternalFleetAdmissionNonce(w http.ResponseWriter, r *http.Request, appID string, principal AccessPrincipal) {
 	if h.db == nil || h.cfg == nil || principal.CI == nil {
 		WriteControlProblem(w, r, http.StatusServiceUnavailable, "external_deployment_nonce_unavailable", "durable Norn nonce issuance is unavailable")
@@ -272,6 +295,10 @@ func (h *Handler) issueExternalFleetAdmissionNonce(w http.ResponseWriter, r *htt
 	nonce := externalAdmissionNonce{ID: uuid.NewString(), Secret: hex.EncodeToString(raw)}
 	expiresAt := time.Now().UTC().Add(externalFleetAdmissionNonceTTL)
 	if err := h.db.IssueExternalDeploymentNonce(r.Context(), store.ExternalDeploymentNonce{ID: nonce.ID, NonceSHA256: nonce.sha256(), App: appID, Environment: h.cfg.EnvironmentID(), CIRepository: principal.CI.Repository, CIRunID: principal.CI.RunID, CIRunAttempt: principal.CI.RunAttempt, ExpiresAt: expiresAt}); err != nil {
+		if errors.Is(err, store.ErrExternalDeploymentNonceLimit) {
+			WriteControlProblem(w, r, http.StatusConflict, "external_deployment_nonce_limit", "the protected Fleet run already has the maximum outstanding admission nonces")
+			return
+		}
 		WriteControlProblem(w, r, http.StatusServiceUnavailable, "external_deployment_nonce_unavailable", "failed to durably issue the Norn nonce")
 		return
 	}
@@ -279,7 +306,7 @@ func (h *Handler) issueExternalFleetAdmissionNonce(w http.ResponseWriter, r *htt
 }
 
 func (h *Handler) externalFleetAdmissionConfig(appID string) (ExternalFleetAdmissionConfig, error) {
-	if h == nil || h.cfg == nil || (h.cfg.EnvironmentID() != "staging" && h.cfg.EnvironmentID() != "production") || h.cfg.ExternalFleetAdmissionApp == "" || h.cfg.ExternalFleetAdmissionApp != appID || !externalNamePattern.MatchString(h.cfg.ExternalFleetAdmissionNamespace) || !externalNamePattern.MatchString(h.cfg.ExternalFleetAdmissionMigrationJobID) || !externalNamePattern.MatchString(h.cfg.ExternalFleetAdmissionRuntimeJobID) || !sha256HexPattern.MatchString(h.cfg.ExternalFleetAdmissionMigrationHCLSHA256) || !sha256HexPattern.MatchString(h.cfg.ExternalFleetAdmissionRuntimeHCLSHA256) || !validExternalBootstrapSignerRef(h.cfg.ExternalFleetAdmissionBootstrapSignerRef) {
+	if h == nil || h.cfg == nil || (h.cfg.EnvironmentID() != "staging" && h.cfg.EnvironmentID() != "production") || h.cfg.ExternalFleetAdmissionApp == "" || h.cfg.ExternalFleetAdmissionApp != appID || !externalNamePattern.MatchString(h.cfg.ExternalFleetAdmissionNamespace) || !externalNamePattern.MatchString(h.cfg.ExternalFleetAdmissionMigrationJobID) || !externalNamePattern.MatchString(h.cfg.ExternalFleetAdmissionRuntimeJobID) || h.cfg.ExternalFleetAdmissionMigrationJobID == h.cfg.ExternalFleetAdmissionRuntimeJobID || !sha256HexPattern.MatchString(h.cfg.ExternalFleetAdmissionMigrationHCLSHA256) || !sha256HexPattern.MatchString(h.cfg.ExternalFleetAdmissionRuntimeHCLSHA256) || h.cfg.ExternalFleetAdmissionMigrationHCLSHA256 == h.cfg.ExternalFleetAdmissionRuntimeHCLSHA256 || !validExternalBootstrapSignerRef(h.cfg.ExternalFleetAdmissionBootstrapSignerRef) || stringInSlice(h.cfg.ExternalFleetAdmissionBootstrapSignerRef, h.cfg.ReleaseAttestationWorkflowRefs) {
 		return ExternalFleetAdmissionConfig{}, fmt.Errorf("external Fleet admission is disabled or its exact staging app/migration/runtime/bootstrap-signer binding is incomplete")
 	}
 	return ExternalFleetAdmissionConfig{App: appID, Namespace: h.cfg.ExternalFleetAdmissionNamespace, MigrationJobID: h.cfg.ExternalFleetAdmissionMigrationJobID, MigrationHCLSHA256: h.cfg.ExternalFleetAdmissionMigrationHCLSHA256, RuntimeJobID: h.cfg.ExternalFleetAdmissionRuntimeJobID, RuntimeHCLSHA256: h.cfg.ExternalFleetAdmissionRuntimeHCLSHA256, BootstrapSignerRef: h.cfg.ExternalFleetAdmissionBootstrapSignerRef}, nil
@@ -353,7 +380,7 @@ func validateExternalFleetReceipt(receipt ExternalFleetDeploymentReceipt, config
 	if receipt.SchemaVersion != externalFleetReceiptSchema || receipt.App != app || !fullSourceSHAPattern.MatchString(receipt.SourceSHA) || !model.IsContentAddressedImage(receipt.Artifact) || !validExternalURI(receipt.AttestationURI) || !validExternalURI(receipt.SBOMURI) {
 		return fmt.Errorf("receipt schema, app, immutable source/artifact, or evidence references are invalid")
 	}
-	if receipt.Fleet.Namespace != configured.Namespace || !validExternalNomadJobProof(receipt.Fleet.Migration, configured.MigrationJobID, configured.MigrationHCLSHA256) || !validExternalNomadJobProof(receipt.Fleet.Runtime, configured.RuntimeJobID, configured.RuntimeHCLSHA256) || !validGitHubNumericID(receipt.Fleet.ApplyRunID) || !validGitHubNumericID(receipt.Fleet.ApplyRunAttempt) || !sha256HexPattern.MatchString(receipt.Fleet.PlanSHA256) || !externalNamePattern.MatchString(receipt.Fleet.RunnerAttemptID) || !externalNamePattern.MatchString(receipt.Fleet.NonceEvidenceRef) {
+	if receipt.Fleet.Namespace != configured.Namespace || !validExternalNomadJobProof(receipt.Fleet.Migration, configured.MigrationJobID, configured.MigrationHCLSHA256) || !validExternalNomadJobProof(receipt.Fleet.Runtime, configured.RuntimeJobID, configured.RuntimeHCLSHA256) || receipt.Fleet.Migration.EvalID == receipt.Fleet.Runtime.EvalID || receipt.Fleet.Migration.CheckpointID == receipt.Fleet.Runtime.CheckpointID || !validGitHubNumericID(receipt.Fleet.ApplyRunID) || !validGitHubNumericID(receipt.Fleet.ApplyRunAttempt) || !sha256HexPattern.MatchString(receipt.Fleet.PlanSHA256) || !externalNamePattern.MatchString(receipt.Fleet.RunnerAttemptID) || !externalNamePattern.MatchString(receipt.Fleet.NonceEvidenceRef) {
 		return fmt.Errorf("receipt Fleet namespace/migration/runtime/run/plan/attempt/nonce evidence binding is invalid")
 	}
 	if !validExternalChronology(receipt.Chronology) {
@@ -383,6 +410,55 @@ func validExternalBootstrapCandidate(candidate model.ReleaseCandidate, sourceSHA
 func redactExternalFleetReceipt(receipt ExternalFleetDeploymentReceipt) ExternalFleetDeploymentReceipt {
 	receipt.Nonce = ""
 	return receipt
+}
+
+// externalValueContainsNonce walks every caller-controlled nested string,
+// including DSSE fields and evidence references, before any value can enter a
+// durable operation or response. The nonce field itself is cleared first.
+func externalValueContainsNonce(value interface{}, nonce externalAdmissionNonce) bool {
+	return externalValueContainsNonceAt(reflect.ValueOf(value), nonce.String(), nonce.Secret, 0)
+}
+
+func externalValueContainsNonceAt(value reflect.Value, raw, secret string, depth int) bool {
+	if !value.IsValid() || depth > 32 {
+		return false
+	}
+	if value.Kind() == reflect.Interface || value.Kind() == reflect.Pointer {
+		return !value.IsNil() && externalValueContainsNonceAt(value.Elem(), raw, secret, depth+1)
+	}
+	switch value.Kind() {
+	case reflect.String:
+		return strings.Contains(value.String(), raw) || strings.Contains(value.String(), secret)
+	case reflect.Struct:
+		for index := 0; index < value.NumField(); index++ {
+			if value.Type().Field(index).PkgPath == "" && externalValueContainsNonceAt(value.Field(index), raw, secret, depth+1) {
+				return true
+			}
+		}
+	case reflect.Array, reflect.Slice:
+		for index := 0; index < value.Len(); index++ {
+			if externalValueContainsNonceAt(value.Index(index), raw, secret, depth+1) {
+				return true
+			}
+		}
+	case reflect.Map:
+		iterator := value.MapRange()
+		for iterator.Next() {
+			if externalValueContainsNonceAt(iterator.Key(), raw, secret, depth+1) || externalValueContainsNonceAt(iterator.Value(), raw, secret, depth+1) {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+func stringInSlice(value string, values []string) bool {
+	for _, candidate := range values {
+		if value == candidate {
+			return true
+		}
+	}
+	return false
 }
 
 func externalDeploymentRegions(expected []model.ResolvedRegion, observed []ExternalFleetRegionProof) ([]model.DeploymentRegion, error) {

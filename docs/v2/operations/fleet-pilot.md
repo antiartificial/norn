@@ -127,6 +127,17 @@ NORN_EXTERNAL_FLEET_ADMISSION_RUNTIME_HCL_SHA256=<released runtime-HCL SHA-256>
 NORN_EXTERNAL_FLEET_ADMISSION_BOOTSTRAP_SIGNER_REF=<exact bootstrap workflow path@40-char SHA>
 ```
 
+Use the same complete bridge binding set on the production control plane to
+verify the staging qualification during promotion, but do not expose the
+external-admission route there: its protected identity remains staging-only.
+The bootstrap signer ref must be absent from
+`NORN_RELEASE_ATTESTATION_ALLOWED_WORKFLOW_REFS`; it is a separate, exact
+first-image adoption identity, not a normal release signer. Migration and
+runtime job IDs and their HCL digests must each be different. A real verifier
+is required before nonce issuance as well as receipt admission; at most three
+unconsumed nonces may exist for one protected CI run, and expired nonce rows
+are removed in bounded batches.
+
 The runner exchanges GitHub OIDC only for `fleet:external-admission`, naming
 the route app. The exchange still requires the configured protected
 `norn-fleet` repository, SHA-pinned apply/recover workflow, protected staging

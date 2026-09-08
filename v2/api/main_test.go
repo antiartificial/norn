@@ -803,6 +803,11 @@ func TestExternalBootstrapSignerCannotWidenPipelineTrustWithoutExactBridge(t *te
 		t.Fatalf("non-bootstrap workflow widened pipeline trust: %q", got)
 	}
 	config.ExternalFleetAdmissionBootstrapSignerRef = "acme/hello-norn-mysql/.github/workflows/hello-norn-mysql-bootstrap-image.yml@" + strings.Repeat("c", 40)
+	config.ReleaseAttestationWorkflowRefs = []string{config.ExternalFleetAdmissionBootstrapSignerRef}
+	if got := externalFleetBootstrapSignerForPipeline(config); got != "" {
+		t.Fatalf("normal signer allowlist overlap widened bootstrap trust: %q", got)
+	}
+	config.ReleaseAttestationWorkflowRefs = nil
 	config.ExternalFleetAdmissionRuntimeHCLSHA256 = ""
 	if got := externalFleetBootstrapSignerForPipeline(config); got != "" {
 		t.Fatalf("incomplete bridge widened pipeline trust: %q", got)

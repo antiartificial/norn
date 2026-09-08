@@ -8,12 +8,16 @@ import (
 	"time"
 
 	"github.com/jackc/pgx/v5"
+	"github.com/jackc/pgx/v5/pgconn"
 
 	"norn/v2/api/model"
 )
 
 var ErrExternalDeploymentNonceConsumed = errors.New("external deployment nonce is consumed or unavailable")
 var ErrExternalDeploymentIdempotencyConflict = errors.New("external deployment idempotency key conflicts")
+var ErrExternalDeploymentNonceLimit = errors.New("external deployment nonce issuance limit reached")
+
+const externalDeploymentNonceMaxOutstandingPerRun = 3
 
 // ExternalDeploymentNonce is deliberately metadata-only. Callers receive the
 // opaque raw nonce once; the database keeps only a SHA-256 digest.
@@ -32,8 +36,33 @@ func (db *DB) IssueExternalDeploymentNonce(ctx context.Context, nonce ExternalDe
 	if db == nil || db.Pool == nil || nonce.ID == "" || nonce.NonceSHA256 == "" || nonce.App == "" || nonce.Environment == "" || nonce.CIRepository == "" || nonce.CIRunID == "" || nonce.CIRunAttempt == "" || nonce.ExpiresAt.IsZero() {
 		return fmt.Errorf("external deployment nonce store is unavailable")
 	}
-	_, err := db.Pool.Exec(ctx, `INSERT INTO external_deployment_nonces (id, nonce_sha256, app, environment, ci_repository, ci_run_id, ci_run_attempt, expires_at) VALUES ($1,$2,$3,$4,$5,$6,$7,$8)`, nonce.ID, nonce.NonceSHA256, nonce.App, nonce.Environment, nonce.CIRepository, nonce.CIRunID, nonce.CIRunAttempt, nonce.ExpiresAt)
-	return err
+	tx, err := db.Pool.Begin(ctx)
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback(ctx)
+	// Remove expired rows whether or not they were consumed. Issuance performs
+	// this bounded maintenance so abandoned pilot runs cannot accumulate state.
+	if _, err := tx.Exec(ctx, `DELETE FROM external_deployment_nonces WHERE ctid IN (SELECT ctid FROM external_deployment_nonces WHERE expires_at < now() LIMIT 1000)`); err != nil {
+		return err
+	}
+	// Serialize the per-run count-and-insert decision. Advisory-lock collisions
+	// only make independent issuances wait; they cannot exceed the cap.
+	scope := fmt.Sprintf("%d:%s%d:%s%d:%s%d:%s%d:%s", len(nonce.App), nonce.App, len(nonce.Environment), nonce.Environment, len(nonce.CIRepository), nonce.CIRepository, len(nonce.CIRunID), nonce.CIRunID, len(nonce.CIRunAttempt), nonce.CIRunAttempt)
+	if _, err := tx.Exec(ctx, `SELECT pg_advisory_xact_lock(hashtext($1))`, scope); err != nil {
+		return err
+	}
+	var outstanding int
+	if err := tx.QueryRow(ctx, `SELECT count(*) FROM external_deployment_nonces WHERE app=$1 AND environment=$2 AND ci_repository=$3 AND ci_run_id=$4 AND ci_run_attempt=$5 AND consumed_at IS NULL AND expires_at > now()`, nonce.App, nonce.Environment, nonce.CIRepository, nonce.CIRunID, nonce.CIRunAttempt).Scan(&outstanding); err != nil {
+		return err
+	}
+	if outstanding >= externalDeploymentNonceMaxOutstandingPerRun {
+		return ErrExternalDeploymentNonceLimit
+	}
+	if _, err := tx.Exec(ctx, `INSERT INTO external_deployment_nonces (id, nonce_sha256, app, environment, ci_repository, ci_run_id, ci_run_attempt, expires_at) VALUES ($1,$2,$3,$4,$5,$6,$7,$8)`, nonce.ID, nonce.NonceSHA256, nonce.App, nonce.Environment, nonce.CIRepository, nonce.CIRunID, nonce.CIRunAttempt, nonce.ExpiresAt); err != nil {
+		return err
+	}
+	return tx.Commit(ctx)
 }
 
 // ConsumeExternalDeploymentNonce is the final compare-and-set before durable
@@ -92,7 +121,7 @@ func (db *DB) AdmitExternalDeployment(ctx context.Context, admission ExternalDep
 	// Bound expiry cleanup prevents one nonce row per pilot run from becoming
 	// permanent state. It is intentionally best-effort and cannot affect live
 	// rows because it selects only expired entries.
-	_, _ = tx.Exec(ctx, `DELETE FROM external_deployment_nonces WHERE ctid IN (SELECT ctid FROM external_deployment_nonces WHERE expires_at < now() AND consumed_at IS NOT NULL LIMIT 1000)`)
+	_, _ = tx.Exec(ctx, `DELETE FROM external_deployment_nonces WHERE ctid IN (SELECT ctid FROM external_deployment_nonces WHERE expires_at < now() LIMIT 1000)`)
 
 	var existingID, existingDigest string
 	err = tx.QueryRow(ctx, `SELECT id, COALESCE(metadata->>'requestDigest','') FROM operations WHERE metadata->>'idempotencyKey'=$1 FOR KEY SHARE`, admission.IdempotencyKey).Scan(&existingID, &existingDigest)
@@ -152,7 +181,10 @@ func (db *DB) AdmitExternalDeployment(ctx context.Context, admission ExternalDep
 		}
 	}
 	if _, err = tx.Exec(ctx, `INSERT INTO operations (id, kind, app, saga_id, ref, status, risk, source, message, payload, metadata, attempts, max_attempts, next_attempt_at, started_at, updated_at, finished_at)
-		VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,now(),$17)`, admission.Operation.ID, admission.Operation.Kind, admission.Operation.App, admission.Operation.SagaID, admission.Operation.Ref, admission.Operation.Status, admission.Operation.Risk, admission.Operation.Source, admission.Operation.Message, payload, metadata, admission.Operation.Attempts, admission.Operation.MaxAttempts, admission.Operation.NextAttemptAt, admission.Operation.StartedAt, admission.Operation.FinishedAt); err != nil {
+		VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,now(),$16)`, admission.Operation.ID, admission.Operation.Kind, admission.Operation.App, admission.Operation.SagaID, admission.Operation.Ref, admission.Operation.Status, admission.Operation.Risk, admission.Operation.Source, admission.Operation.Message, payload, metadata, admission.Operation.Attempts, admission.Operation.MaxAttempts, admission.Operation.NextAttemptAt, admission.Operation.StartedAt, admission.Operation.FinishedAt); err != nil {
+		if pgErr, duplicate := err.(*pgconn.PgError); duplicate && pgErr.Code == "23505" {
+			return nil, ErrExternalDeploymentIdempotencyConflict
+		}
 		return nil, err
 	}
 	if err := tx.Commit(ctx); err != nil {

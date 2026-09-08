@@ -1325,10 +1325,19 @@ func releasePipelineConfigured(cfg *config.Config) bool {
 // first-image signer only when the entire disabled-by-default external bridge
 // is server-pinned; an incomplete bridge cannot widen normal release trust.
 func externalFleetBootstrapSignerForPipeline(cfg *config.Config) string {
-	if cfg == nil || (cfg.EnvironmentID() != "staging" && cfg.EnvironmentID() != "production") || strings.TrimSpace(cfg.ExternalFleetAdmissionApp) == "" || strings.TrimSpace(cfg.ExternalFleetAdmissionNamespace) == "" || strings.TrimSpace(cfg.ExternalFleetAdmissionMigrationJobID) == "" || strings.TrimSpace(cfg.ExternalFleetAdmissionRuntimeJobID) == "" || !lowerSHA256(cfg.ExternalFleetAdmissionMigrationHCLSHA256) || !lowerSHA256(cfg.ExternalFleetAdmissionRuntimeHCLSHA256) || !externalFleetBootstrapSignerRef(cfg.ExternalFleetAdmissionBootstrapSignerRef) {
+	if cfg == nil || (cfg.EnvironmentID() != "staging" && cfg.EnvironmentID() != "production") || strings.TrimSpace(cfg.ExternalFleetAdmissionApp) == "" || strings.TrimSpace(cfg.ExternalFleetAdmissionNamespace) == "" || strings.TrimSpace(cfg.ExternalFleetAdmissionMigrationJobID) == "" || strings.TrimSpace(cfg.ExternalFleetAdmissionRuntimeJobID) == "" || cfg.ExternalFleetAdmissionMigrationJobID == cfg.ExternalFleetAdmissionRuntimeJobID || !lowerSHA256(cfg.ExternalFleetAdmissionMigrationHCLSHA256) || !lowerSHA256(cfg.ExternalFleetAdmissionRuntimeHCLSHA256) || cfg.ExternalFleetAdmissionMigrationHCLSHA256 == cfg.ExternalFleetAdmissionRuntimeHCLSHA256 || !externalFleetBootstrapSignerRef(cfg.ExternalFleetAdmissionBootstrapSignerRef) || externalFleetSignerInNormalAllowlist(cfg.ExternalFleetAdmissionBootstrapSignerRef, cfg.ReleaseAttestationWorkflowRefs) {
 		return ""
 	}
 	return cfg.ExternalFleetAdmissionBootstrapSignerRef
+}
+
+func externalFleetSignerInNormalAllowlist(value string, allowed []string) bool {
+	for _, candidate := range allowed {
+		if value == candidate {
+			return true
+		}
+	}
+	return false
 }
 
 func externalFleetBootstrapSignerRef(value string) bool {

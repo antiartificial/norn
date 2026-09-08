@@ -122,6 +122,52 @@ func TestExternalDeploymentAdmissionAtomicReplayAndRace(t *testing.T) {
 	if created != 1 || replayed != 1 {
 		t.Fatalf("race created=%d replayed=%d, want exactly one each", created, replayed)
 	}
+
+	// Different nonces may race on the same idempotency key. The losing
+	// transaction reaches the database unique index, not the initial lookup,
+	// and must still surface the typed idempotency conflict.
+	leftNonce := racingNonce
+	leftNonce.ID, leftNonce.NonceSHA256 = uuid.NewString(), "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc"
+	rightNonce := racingNonce
+	rightNonce.ID, rightNonce.NonceSHA256 = uuid.NewString(), "dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd"
+	for _, issued := range []ExternalDeploymentNonce{leftNonce, rightNonce} {
+		if err := db.IssueExternalDeploymentNonce(ctx, issued); err != nil {
+			t.Fatal(err)
+		}
+	}
+	conflictKey := "external-conflict-" + uuid.NewString()
+	left, right := externalAdmissionForTest(leftNonce, conflictKey), externalAdmissionForTest(rightNonce, conflictKey)
+	right.RequestDigest = "different-" + right.RequestDigest
+	right.Operation.Metadata["requestDigest"] = right.RequestDigest
+	t.Cleanup(func() {
+		_, _ = db.Pool.Exec(context.Background(), `DELETE FROM operations WHERE metadata->>'idempotencyKey'=$1`, conflictKey)
+		_, _ = db.Pool.Exec(context.Background(), `DELETE FROM deployments WHERE saga_id IN ($1,$2)`, "external-fleet:"+leftNonce.ID, "external-fleet:"+rightNonce.ID)
+		_, _ = db.Pool.Exec(context.Background(), `DELETE FROM external_deployment_nonces WHERE id IN ($1,$2)`, leftNonce.ID, rightNonce.ID)
+	})
+	errs = make(chan error, 2)
+	for _, value := range []ExternalDeploymentAdmission{left, right} {
+		wg.Add(1)
+		go func(admission ExternalDeploymentAdmission) {
+			defer wg.Done()
+			_, err := db.AdmitExternalDeployment(ctx, admission)
+			errs <- err
+		}(value)
+	}
+	wg.Wait()
+	close(errs)
+	var admitted, conflicts int
+	for err := range errs {
+		if err == nil {
+			admitted++
+		} else if errors.Is(err, ErrExternalDeploymentIdempotencyConflict) {
+			conflicts++
+		} else {
+			t.Fatalf("different-nonce idempotency race err=%v", err)
+		}
+	}
+	if admitted != 1 || conflicts != 1 {
+		t.Fatalf("different-nonce idempotency race admitted=%d conflicts=%d", admitted, conflicts)
+	}
 }
 
 func externalAdmissionForTest(nonce ExternalDeploymentNonce, key string) ExternalDeploymentAdmission {
