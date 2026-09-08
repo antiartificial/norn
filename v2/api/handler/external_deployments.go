@@ -166,9 +166,10 @@ type ExternalFleetDeploymentVerifier interface {
 }
 
 type ExternalFleetDeploymentVerificationRequest struct {
-	Receipt ExternalFleetDeploymentReceipt
-	CI      CIIdentity
-	Config  ExternalFleetAdmissionConfig
+	Receipt             ExternalFleetDeploymentReceipt
+	CI                  CIIdentity
+	Config              ExternalFleetAdmissionConfig
+	AdmissionGeneration int64
 }
 
 type ExternalFleetAdmissionConfig struct {
@@ -618,6 +619,7 @@ func (h *Handler) AdmitExternalFleetDeployment(w http.ResponseWriter, r *http.Re
 		return
 	}
 	var admission *store.ExternalDeploymentAdmissionLifecycle
+	var serviceCheckpointRefs []store.ExternalDeploymentCheckpointRef
 	if isV4 {
 		var beginErr error
 		admission, beginErr = h.db.BeginExternalDeploymentAdmission(r.Context(), receipt.AdmissionID, key, digest, appID, principal.Environment, principal.CI.Repository)
@@ -663,8 +665,22 @@ func (h *Handler) AdmitExternalFleetDeployment(w http.ResponseWriter, r *http.Re
 			WriteControlProblem(w, r, http.StatusConflict, "external_deployment_nonce_consumed", "server-registered nonce is already claimed or unavailable")
 			return
 		}
+		status, statusErr := registrar.GetExternalFleetAdmissionStatus(r.Context(), admission.ID, admission.NonceGeneration)
+		if statusErr != nil || status == nil || status.State != "claimed" || status.LogicalDigest != digest || status.NonceSHA256 != nonce.sha256() || status.Snapshot == nil || !sha256HexPattern.MatchString(status.Snapshot.SHA256) || status.Snapshot.ID == "" || status.Snapshot.Ref == "" {
+			WriteControlProblem(w, r, http.StatusServiceUnavailable, "external_deployment_snapshot_unavailable", "immutable claim-time evidence snapshot is unavailable")
+			return
+		}
+		if err := h.db.RecordExternalDeploymentServiceSnapshot(r.Context(), store.ExternalDeploymentServiceSnapshot{AdmissionID: admission.ID, SnapshotID: status.Snapshot.ID, SnapshotRef: status.Snapshot.Ref, SnapshotSHA256: status.Snapshot.SHA256, ClaimRevision: status.Revision}); err != nil {
+			WriteControlProblem(w, r, http.StatusConflict, "external_deployment_snapshot_conflict", "immutable service snapshot conflicts with durable admission state")
+			return
+		}
+		serviceCheckpointRefs = externalServiceCheckpointRefs(status.Snapshot.CheckpointRefs)
+		if len(serviceCheckpointRefs) == 0 {
+			WriteControlProblem(w, r, http.StatusConflict, "external_deployment_snapshot_conflict", "service snapshot has no durable checkpoint references")
+			return
+		}
 	}
-	verification, err := h.externalFleetDeploymentVerifier.VerifyExternalFleetDeployment(r.Context(), ExternalFleetDeploymentVerificationRequest{Receipt: receipt, CI: *principal.CI, Config: configured})
+	verification, err := h.externalFleetDeploymentVerifier.VerifyExternalFleetDeployment(r.Context(), ExternalFleetDeploymentVerificationRequest{Receipt: receipt, CI: *principal.CI, Config: configured, AdmissionGeneration: admission.NonceGeneration})
 	if err != nil || verification == nil {
 		message := "independent Fleet runtime verification failed"
 		if err != nil {
@@ -712,7 +728,7 @@ func (h *Handler) AdmitExternalFleetDeployment(w http.ResponseWriter, r *http.Re
 			return admission.NonceGeneration
 		}
 		return 0
-	}(), CheckpointRefs: externalAdmissionCheckpointRefs(receipt)})
+	}(), CheckpointRefs: serviceCheckpointRefs})
 	if err != nil {
 		switch {
 		case errors.Is(err, store.ErrExternalDeploymentNonceConsumed):
@@ -977,14 +993,20 @@ func validExternalNomadJobProofV4(proof ExternalFleetNomadJobProof, jobID, hclSH
 	return proof.EvaluationChainIDs[0] == proof.EvalID
 }
 
-func externalAdmissionCheckpointRefs(receipt ExternalFleetDeploymentReceipt) []store.ExternalDeploymentCheckpointRef {
-	if receipt.SchemaVersion != externalFleetReceiptSchemaV4 {
+func externalServiceCheckpointRefs(refs []ExternalFleetCheckpointRef) []store.ExternalDeploymentCheckpointRef {
+	if len(refs) == 0 || len(refs) > 32 {
 		return nil
 	}
-	return []store.ExternalDeploymentCheckpointRef{
-		{Phase: "external_admission", CheckpointID: receipt.Fleet.Migration.CheckpointID, AttemptID: receipt.Fleet.RootAttemptID, EvidenceRef: receipt.Fleet.NonceEvidenceRef, EvidenceSHA256: receipt.Fleet.Migration.SubmissionSHA256},
-		{Phase: "external_cleanup", CheckpointID: receipt.Fleet.Runtime.CheckpointID, AttemptID: receipt.Fleet.RootAttemptID, EvidenceRef: receipt.Fleet.NonceEvidenceRef, EvidenceSHA256: receipt.Fleet.Runtime.SubmissionSHA256},
+	result := make([]store.ExternalDeploymentCheckpointRef, 0, len(refs))
+	seen := map[string]struct{}{}
+	for _, ref := range refs {
+		if _, duplicate := seen[ref.Phase]; duplicate {
+			return nil
+		}
+		seen[ref.Phase] = struct{}{}
+		result = append(result, store.ExternalDeploymentCheckpointRef{Phase: ref.Phase, CheckpointID: ref.CheckpointID, AttemptID: ref.AttemptID, EvidenceRef: ref.EvidenceRef, EvidenceSHA256: ref.EvidenceSHA256})
 	}
+	return result
 }
 
 func validExternalBootstrapCandidate(candidate model.ReleaseCandidate, sourceSHA, artifact, trustMode string, configured ExternalFleetAdmissionConfig) bool {

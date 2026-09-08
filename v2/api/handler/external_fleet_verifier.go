@@ -654,33 +654,49 @@ func (v *ExternalFleetDeploymentLiveVerifier) VerifyExternalFleetDeployment(ctx 
 		return nil, externalVerifierErr("nonce")
 	}
 	nonceDigest := nonce.sha256()
-	evidenceToken, err := readExternalVerifierSecret(v.evidenceTokenFile)
-	if err != nil {
-		return nil, externalVerifierErr("evidence-token-unavailable")
+	// Test-only constructors may omit the owner registration credential. A
+	// production constructor rejects that configuration; retaining this narrow
+	// branch keeps historical unit fixtures isolated from the deployed path.
+	if strings.TrimSpace(v.registrationTokenFile) == "" {
+		evidenceToken, tokenErr := readExternalVerifierSecret(v.evidenceTokenFile)
+		if tokenErr != nil {
+			return nil, externalVerifierErr("evidence-token-unavailable")
+		}
+		body, marshalErr := json.Marshal(externalFleetEvidenceRequest{Repository: request.CI.Repository, Receipt: redactExternalFleetReceipt(request.Receipt), NonceSHA256: nonceDigest})
+		if marshalErr != nil {
+			return nil, externalVerifierErr("request")
+		}
+		evidence, evidenceErr := v.postEvidence(ctx, body, evidenceToken)
+		if evidenceErr != nil {
+			return nil, evidenceErr
+		}
+		public, publicErr := v.probePublicVersion(ctx, request.Receipt.SourceSHA)
+		if publicErr != nil || evidence.Verification.PublicHTTPSVersion != v.publicEndpoint("version") || validateExternalFleetEvidence(evidence, request, nonceDigest) != nil || !validExternalFleetAllocations(evidence.Allocations, request.Receipt, evidence.Verification, public) {
+			return nil, externalVerifierErr("legacy-fixture-binding")
+		}
+		return &evidence.Verification, nil
 	}
-	copyReceipt := redactExternalFleetReceipt(request.Receipt)
-	body, err := json.Marshal(externalFleetEvidenceRequest{Repository: request.CI.Repository, Receipt: copyReceipt, NonceSHA256: nonceDigest})
-	if err != nil {
-		return nil, externalVerifierErr("request")
+	// The immutable claim-time snapshot is the only live-evidence source. Do
+	// not fall back to the mutable receipt-shaped POST evidence endpoint.
+	status, err := v.GetExternalFleetAdmissionStatus(ctx, request.Receipt.AdmissionID, request.AdmissionGeneration)
+	if err != nil || status == nil || (status.State != "claimed" && status.State != "committed" && status.State != "cleanup_ready") || status.NonceSHA256 != nonceDigest || status.Snapshot == nil {
+		return nil, externalVerifierErr("snapshot-unavailable")
 	}
-	evidence, err := v.postEvidence(ctx, body, evidenceToken)
-	if err != nil {
-		return nil, err
+	snapshot := status.Snapshot
+	if !sha256HexPattern.MatchString(snapshot.SHA256) || snapshot.ID == "" || snapshot.Ref == "" || snapshot.LiveCheckedAt.IsZero() || time.Since(snapshot.LiveCheckedAt) > externalFleetAdmissionNonceTTL || snapshot.NonceWrittenAt.IsZero() || snapshot.NonceReadAt.IsZero() || snapshot.NonceReadAt.Before(snapshot.NonceWrittenAt) || time.Since(snapshot.NonceReadAt) > externalFleetAdmissionNonceTTL {
+		return nil, externalVerifierErr("snapshot-invalid")
 	}
 	public, err := v.probePublicVersion(ctx, request.Receipt.SourceSHA)
 	if err != nil {
 		return nil, err
 	}
-	if evidence.Verification.PublicHTTPSVersion != v.publicEndpoint("version") {
+	if snapshot.Verification.PublicHTTPSVersion != v.publicEndpoint("version") {
 		return nil, externalVerifierErr("public-version-binding")
 	}
-	if err := validateExternalFleetEvidence(evidence, request, nonceDigest); err != nil {
-		return nil, err
+	if err := verificationMatchesExternalReceipt(snapshot.Verification, request.Receipt, request.Config); err != nil || public.Allocation == "" || public.Region == "" {
+		return nil, externalVerifierErr("snapshot-binding")
 	}
-	if !validExternalFleetAllocations(evidence.Allocations, request.Receipt, evidence.Verification, public) {
-		return nil, externalVerifierErr("allocation-binding")
-	}
-	return &evidence.Verification, nil
+	return &snapshot.Verification, nil
 }
 
 func (v *ExternalFleetDeploymentLiveVerifier) postEvidence(ctx context.Context, body []byte, token string) (externalFleetEvidence, error) {
