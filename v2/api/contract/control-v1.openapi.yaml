@@ -399,42 +399,62 @@ paths:
         '400': { $ref: '#/components/responses/Problem' }
         '403': { $ref: '#/components/responses/Problem' }
         '409': { $ref: '#/components/responses/Problem' }
-  /api/v1/apps/{id}/external-deployments:
-    parameters:
-      - $ref: '#/components/parameters/AppID'
-    post:
-      operationId: admitExternalFleetDeployment
-      description: Staging-only admission for the one configured deploy:false external Fleet migration/runtime pair. Requires fleet:external-admission from the exact protected norn-fleet apply/recover OIDC identity. action issue-nonce returns a one-use Norn nonce; receipt admission fails closed unless a server-owned verifier independently confirms the GitHub run/attestations, live Fleet, Nomad v2 evaluations, ingress, public HTTPS version, private readiness, chronology, and per-region traffic evidence.
-      parameters:
-        - $ref: '#/components/parameters/IdempotencyKey'
-      requestBody:
-        required: true
-        content:
-          application/json:
-            schema: { $ref: '#/components/schemas/ExternalFleetDeploymentRequest' }
-      responses:
-        '201': { description: Norn nonce or immutable admitted deployment operation }
-        '400': { $ref: '#/components/responses/Problem' }
-        '403': { $ref: '#/components/responses/Problem' }
-        '409': { $ref: '#/components/responses/Problem' }
-        '503': { $ref: '#/components/responses/Problem' }
   /api/v1/apps/{id}/external-deployments/begin:
     parameters:
       - $ref: '#/components/parameters/AppID'
     post:
       operationId: beginExternalFleetDeploymentAdmission
-      description: Starts a v4 external Fleet admission for one stable logical deployment identity and returns a short-lived, one-use Norn nonce. Requires fleet:external-admission from the exact protected Norn Fleet OIDC identity. The logical identity deliberately excludes retry-specific Nomad evaluation and allocation evidence.
+      description: Starts a v4 external Fleet admission for one stable logical deployment identity and returns a short-lived, one-use Norn nonce only after hash-only registration is durable. Requires fleet:external-admission from the exact protected Norn Fleet OIDC identity. The logical identity deliberately excludes retry-specific Nomad evaluation and allocation evidence. Reusing the same Idempotency-Key and identity after a lost terminal response returns the existing terminal admission; it never returns another raw nonce.
       parameters:
-        - $ref: '#/components/parameters/IdempotencyKey'
+        - $ref: '#/components/parameters/RequiredIdempotencyKey'
       requestBody:
         required: true
         content:
           application/json:
             schema: { $ref: '#/components/schemas/ExternalFleetAdmissionBeginRequest' }
       responses:
+        '200':
+          description: Existing terminal admission recovered by exact idempotent replay
+          headers:
+            Cache-Control: { $ref: '#/components/headers/NoStoreCacheControl' }
+            Pragma: { $ref: '#/components/headers/NoCachePragma' }
+          content: { application/json: { schema: { $ref: '#/components/schemas/ExternalFleetAdmissionReplayResponse' } } }
         '201':
           description: Short-lived admission nonce bound to the stable logical identity
-          content: { application/json: { schema: { $ref: '#/components/schemas/ExternalFleetAdmissionBeginResponse' } } }
+          headers:
+            Cache-Control: { $ref: '#/components/headers/NoStoreCacheControl' }
+            Pragma: { $ref: '#/components/headers/NoCachePragma' }
+          content: { application/json: { schema: { $ref: '#/components/schemas/ExternalFleetAdmissionNonceResponse' } } }
+        '400': { $ref: '#/components/responses/Problem' }
+        '403': { $ref: '#/components/responses/Problem' }
+        '409': { $ref: '#/components/responses/Problem' }
+        '503': { $ref: '#/components/responses/Problem' }
+  /api/v1/apps/{id}/external-deployments/resume:
+    parameters:
+      - $ref: '#/components/parameters/AppID'
+    post:
+      operationId: resumeExternalFleetDeploymentAdmission
+      description: Resumes a durable v4 admission after an interrupted registration, claim, verification, or cleanup. The request must name the original admission and exactly repeat its logical identity under the original Idempotency-Key. It can return a rotated nonce only after the replacement hash is registered; it never accepts a new logical deployment identity.
+      parameters:
+        - $ref: '#/components/parameters/RequiredIdempotencyKey'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/ExternalFleetAdmissionResumeRequest' }
+      responses:
+        '200':
+          description: Existing terminal admission recovered or current durable context returned
+          headers:
+            Cache-Control: { $ref: '#/components/headers/NoStoreCacheControl' }
+            Pragma: { $ref: '#/components/headers/NoCachePragma' }
+          content: { application/json: { schema: { $ref: '#/components/schemas/ExternalFleetAdmissionReplayResponse' } } }
+        '201':
+          description: A replacement nonce whose registration is durable
+          headers:
+            Cache-Control: { $ref: '#/components/headers/NoStoreCacheControl' }
+            Pragma: { $ref: '#/components/headers/NoCachePragma' }
+          content: { application/json: { schema: { $ref: '#/components/schemas/ExternalFleetAdmissionNonceResponse' } } }
         '400': { $ref: '#/components/responses/Problem' }
         '403': { $ref: '#/components/responses/Problem' }
         '409': { $ref: '#/components/responses/Problem' }
@@ -444,16 +464,52 @@ paths:
       - $ref: '#/components/parameters/AppID'
     post:
       operationId: admitExternalFleetDeploymentV4
-      description: Consumes a v4 admission nonce and independently verifies the receipt before admitting an immutable operation. Requires fleet:external-admission from the exact protected Norn Fleet OIDC identity.
+      description: Accepts exactly the v4 admission envelope, claims its pre-registered nonce hash, and independently verifies the receipt before atomically admitting an immutable operation. The legacy receipt and issue-nonce forms are not accepted on this route. Requires fleet:external-admission from the exact protected Norn Fleet OIDC identity.
       parameters:
-        - $ref: '#/components/parameters/IdempotencyKey'
+        - $ref: '#/components/parameters/RequiredIdempotencyKey'
       requestBody:
         required: true
         content:
           application/json:
             schema: { $ref: '#/components/schemas/ExternalFleetDeploymentAdmissionRequest' }
       responses:
-        '201': { $ref: '#/components/responses/AcceptedOperation' }
+        '200':
+          description: Existing immutable operation recovered by exact idempotent replay
+          headers:
+            Cache-Control: { $ref: '#/components/headers/NoStoreCacheControl' }
+            Pragma: { $ref: '#/components/headers/NoCachePragma' }
+          content: { application/json: { schema: { $ref: '#/components/schemas/Operation' } } }
+        '201':
+          description: Immutable externally verified deployment operation admitted
+          headers:
+            Location: { schema: { type: string, format: uri-reference } }
+            Cache-Control: { $ref: '#/components/headers/NoStoreCacheControl' }
+            Pragma: { $ref: '#/components/headers/NoCachePragma' }
+          content: { application/json: { schema: { $ref: '#/components/schemas/Operation' } } }
+        '400': { $ref: '#/components/responses/Problem' }
+        '403': { $ref: '#/components/responses/Problem' }
+        '409': { $ref: '#/components/responses/Problem' }
+        '503': { $ref: '#/components/responses/Problem' }
+  /api/v1/apps/{id}/external-deployments/cleanup:
+    parameters:
+      - $ref: '#/components/parameters/AppID'
+    post:
+      operationId: cleanupExternalFleetDeploymentAdmission
+      description: Completes durable v4 evidence-service cleanup after a terminal admission. Norn accepts cleanup only when immutable operation, receipt, cleanup-intent, and absence-proof digests match the server-owned admission; the raw nonce is never sent or stored in this request.
+      parameters:
+        - $ref: '#/components/parameters/RequiredIdempotencyKey'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/ExternalFleetAdmissionCleanupRequest' }
+      responses:
+        '200':
+          description: Server-owned cleanup context
+          headers:
+            Cache-Control: { $ref: '#/components/headers/NoStoreCacheControl' }
+            Pragma: { $ref: '#/components/headers/NoCachePragma' }
+          content: { application/json: { schema: { $ref: '#/components/schemas/ExternalFleetAdmissionContext' } } }
         '400': { $ref: '#/components/responses/Problem' }
         '403': { $ref: '#/components/responses/Problem' }
         '409': { $ref: '#/components/responses/Problem' }
@@ -471,6 +527,9 @@ paths:
       responses:
         '200':
           description: Durable external Fleet admission context
+          headers:
+            Cache-Control: { $ref: '#/components/headers/NoStoreCacheControl' }
+            Pragma: { $ref: '#/components/headers/NoCachePragma' }
           content: { application/json: { schema: { $ref: '#/components/schemas/ExternalFleetAdmissionContext' } } }
         '403': { $ref: '#/components/responses/Problem' }
         '404': { $ref: '#/components/responses/Problem' }
@@ -1231,6 +1290,14 @@ components:
     RecoveryDrillID: { name: id, in: path, required: true, schema: { type: string, format: uuid } }
     StepUpToken: { name: X-Norn-Step-Up, in: header, required: true, schema: { type: string } }
     IdempotencyKey: { name: Idempotency-Key, in: header, schema: { type: string, maxLength: 200 } }
+    RequiredIdempotencyKey: { name: Idempotency-Key, in: header, required: true, description: Stable client key bound to one logical external Fleet admission; it must be reused for recovery and must not be reused for another logical deployment., schema: { type: string, minLength: 1, maxLength: 200 } }
+  headers:
+    NoStoreCacheControl:
+      description: Sensitive admission material and server-owned progress must not be cached.
+      schema: { const: no-store }
+    NoCachePragma:
+      description: Compatibility cache-control directive for sensitive admission material.
+      schema: { const: no-cache }
   responses:
     Problem:
       description: Stable machine-readable error
@@ -2462,15 +2529,6 @@ components:
         ref: { type: string }
         mode: { type: string, enum: [restart, proxy], default: restart }
         drainMode: { type: string, enum: [fail, wait, force], default: fail }
-    ExternalFleetDeploymentRequest:
-      type: object
-      additionalProperties: false
-      properties:
-        action: { type: string, enum: [issue-nonce] }
-        receipt: { $ref: '#/components/schemas/ExternalFleetDeploymentReceipt' }
-      oneOf:
-        - required: [action]
-        - required: [receipt]
     ExternalFleetAdmissionBeginRequest:
       type: object
       additionalProperties: false
@@ -2497,23 +2555,50 @@ components:
         planSha256: { type: string, pattern: '^[0-9a-f]{64}$' }
         rootAttemptId: { type: string }
         fleetCommit: { type: string, pattern: '^[0-9a-f]{40}$' }
-    ExternalFleetAdmissionBeginResponse:
+    ExternalFleetAdmissionNonceResponse:
       type: object
       additionalProperties: false
-      required: [schemaVersion, admissionId, state, nonce, expiresAt]
+      required: [schemaVersion, admissionId, state, nonce, expiresAt, nonceGeneration]
       properties:
         schemaVersion: { const: norn.external-fleet-admission/v4 }
         admissionId: { type: string, format: uuid, readOnly: true }
-        state: { type: string, enum: [initiated, nonce_registering, nonce_ready, evidence_claimed, committed, cleanup_pending, complete, expired], readOnly: true }
-        nonce: { type: string, writeOnly: true }
+        state: { const: nonce_ready, readOnly: true }
+        nonce: { type: string, minLength: 101, maxLength: 101, description: Raw short-lived one-use nonce. It is returned exactly once after hash-only registration is durable; clients must not log, persist, or echo it outside the v4 receipt nonce field., x-sensitive: true }
         expiresAt: { type: string, format: date-time, readOnly: true }
+        nonceGeneration: { type: integer, format: int64, minimum: 1, readOnly: true }
+    ExternalFleetAdmissionReplayResponse:
+      type: object
+      additionalProperties: false
+      required: [schemaVersion, admissionId, state, operationId]
+      properties:
+        schemaVersion: { const: norn.external-fleet-admission/v4 }
+        admissionId: { type: string, format: uuid, readOnly: true }
+        state: { type: string, enum: [committed, cleanup_pending, complete], readOnly: true }
         operationId: { type: string, format: uuid, readOnly: true }
+        cleanupState: { type: string, enum: [pending, complete], readOnly: true }
+    ExternalFleetAdmissionResumeRequest:
+      type: object
+      additionalProperties: false
+      required: [admissionId, logicalIdentity]
+      properties:
+        admissionId: { type: string, format: uuid }
+        logicalIdentity: { $ref: '#/components/schemas/ExternalFleetLogicalIdentity' }
     ExternalFleetDeploymentAdmissionRequest:
       type: object
       additionalProperties: false
       required: [receipt]
       properties:
         receipt: { $ref: '#/components/schemas/ExternalFleetDeploymentReceiptV4' }
+    ExternalFleetAdmissionCleanupRequest:
+      type: object
+      additionalProperties: false
+      required: [admissionId, operationId, receiptDigest, cleanupIntentDigest, absenceProofDigest]
+      properties:
+        admissionId: { type: string, format: uuid }
+        operationId: { type: string, format: uuid }
+        receiptDigest: { type: string, pattern: '^[0-9a-f]{64}$', description: Server-canonical SHA-256 digest of the admitted receipt. }
+        cleanupIntentDigest: { type: string, pattern: '^[0-9a-f]{64}$', description: SHA-256 digest of the evidence-service cleanup intent bound to this terminal admission. }
+        absenceProofDigest: { type: string, pattern: '^[0-9a-f]{64}$', description: SHA-256 digest of the evidence-service proof that the registered nonce material is absent. }
     ExternalFleetDeploymentReceiptV4:
       type: object
       additionalProperties: false
@@ -2573,12 +2658,16 @@ components:
     ExternalFleetAdmissionContext:
       type: object
       additionalProperties: false
-      required: [admissionId, state, operationId, cleanupState, retryLineage, checkpoints]
+      required: [schemaVersion, admissionId, state, logicalIdentity, logicalDigest, nonceGeneration, operationId, cleanupState, retryLineage, checkpoints]
       properties:
+        schemaVersion: { const: norn.external-fleet-admission-context/v4 }
         admissionId: { type: string, format: uuid, readOnly: true }
         state: { type: string, enum: [initiated, nonce_registering, nonce_ready, evidence_claimed, committed, cleanup_pending, complete, expired], readOnly: true }
+        logicalIdentity: { $ref: '#/components/schemas/ExternalFleetLogicalIdentity', readOnly: true }
+        logicalDigest: { type: string, pattern: '^sha256:[0-9a-f]{64}$', readOnly: true }
+        nonceGeneration: { type: integer, format: int64, minimum: 0, readOnly: true }
         operationId: { type: string, format: uuid, readOnly: true }
-        cleanupState: { type: string, readOnly: true }
+        cleanupState: { type: string, enum: [not_required, pending, complete], readOnly: true }
         retryLineage:
           type: array
           readOnly: true
@@ -2587,50 +2676,6 @@ components:
           type: array
           readOnly: true
           items: { type: string }
-    ExternalFleetDeploymentReceipt:
-      type: object
-      additionalProperties: false
-      required: [schemaVersion, nonce, app, sourceSha, artifact, candidate, attestationBundleSha256, sbomBundleSha256, fleet, chronology]
-      properties:
-        schemaVersion: { const: norn.external-fleet-deployment-receipt/v3 }
-        nonce: { type: string, writeOnly: true }
-        app: { type: string }
-        sourceSha: { type: string, pattern: '^[0-9a-f]{40}$' }
-        artifact: { type: string, pattern: '^.+@sha256:[0-9a-f]{64}$' }
-        candidate: { $ref: '#/components/schemas/ReleaseCandidate' }
-        attestationBundleSha256: { type: string, pattern: '^[0-9a-f]{64}$', description: SHA-256 of the full canonical Sigstore provenance bundle JSON under the Norn v3 profile; transport whitespace is excluded and ambiguous JSON fails closed. }
-        sbomBundleSha256: { type: string, pattern: '^[0-9a-f]{64}$', description: SHA-256 of the full canonical Sigstore SPDX bundle JSON under the Norn v3 profile; transport whitespace is excluded and ambiguous JSON fails closed. }
-        fleet: { $ref: '#/components/schemas/ExternalFleetExecutionProof' }
-        chronology:
-          type: array
-          minItems: 4
-          maxItems: 4
-          items: { $ref: '#/components/schemas/ExternalFleetChronologyStep' }
-    ExternalFleetExecutionProof:
-      type: object
-      additionalProperties: false
-      required: [namespace, migration, runtime, planId, applyRunId, applyRunAttempt, planSha256, runnerAttemptId, rootAttemptId, nonceEvidenceRef]
-      properties:
-        namespace: { type: string }
-        migration: { $ref: '#/components/schemas/ExternalFleetNomadJobProof' }
-        runtime: { $ref: '#/components/schemas/ExternalFleetNomadJobProof' }
-        planId: { type: string }
-        applyRunId: { type: string }
-        applyRunAttempt: { type: string }
-        planSha256: { type: string, pattern: '^[0-9a-f]{64}$' }
-        runnerAttemptId: { type: string }
-        rootAttemptId: { type: string }
-        nonceEvidenceRef: { type: string }
-    ExternalFleetNomadJobProof:
-      type: object
-      additionalProperties: false
-      required: [jobId, hclSha256, evalId, jobModifyIndex, checkpointId]
-      properties:
-        jobId: { type: string }
-        hclSha256: { type: string, pattern: '^[0-9a-f]{64}$' }
-        evalId: { type: string, format: uuid, description: Nomad v2 JobRegisterResponse EvalID. }
-        jobModifyIndex: { type: integer, format: int64, minimum: 1, description: Nomad v2 JobRegisterResponse JobModifyIndex. }
-        checkpointId: { type: string }
     ExternalFleetChronologyStep:
       type: object
       additionalProperties: false

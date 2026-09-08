@@ -114,7 +114,9 @@ can express its complete service, secret-file, TLS-routing, migration, and
 shutdown contract. Do not flip that bit merely to make a pilot test pass.
 
 The target staging control plane has a deliberately narrow, disabled-by-default
-bridge at `POST /api/v1/apps/{id}/external-deployments`. It is only enabled
+v4 bridge at `POST /api/v1/apps/{id}/external-deployments/begin`,
+`.../admit`, `.../resume`, `.../cleanup`, and
+`GET .../context/{admissionId}`. It is only enabled
 when all of these server-owned bindings are exact:
 
 ```text
@@ -128,6 +130,7 @@ NORN_EXTERNAL_FLEET_ADMISSION_BOOTSTRAP_SIGNER_REF=<exact bootstrap workflow pat
 NORN_EXTERNAL_FLEET_VERIFIER_URL=https://<private-read-only-fleet-evidence-origin>
 NORN_EXTERNAL_FLEET_EVIDENCE_ALLOWED_CIDRS=<exact tailscale-or-vpc-cidr>[,<additional-cidr>]
 NORN_EXTERNAL_FLEET_VERIFIER_TOKEN_FILE=/secure/norn/fleet-evidence-read.token
+NORN_EXTERNAL_FLEET_EVIDENCE_REGISTRATION_TOKEN_FILE=/secure/norn/fleet-evidence-registration.token
 NORN_EXTERNAL_FLEET_GITHUB_VERIFIER_APP_ID=<read-only-GitHub-App-ID>
 NORN_EXTERNAL_FLEET_GITHUB_VERIFIER_INSTALLATION_ID=<selected-read-only-installation-ID>
 NORN_EXTERNAL_FLEET_GITHUB_VERIFIER_PRIVATE_KEY_FILE=/secure/norn/github-attestations-read.pem
@@ -144,9 +147,11 @@ The bootstrap signer ref must be absent from
 first-image adoption identity, not a normal release signer. Migration and
 runtime job IDs and their HCL digests must each be different. Prepare remains
 a distinct receipt/checkpoint phase, not an invented third Nomad job. The verifier
-URL is a single configured HTTPS origin for a separately credentialed,
-read-only Fleet evidence service; it is never supplied by receipt text. Both
-evidence token file must be a regular owner-only file. The GitHub verifier is
+URL is a single configured HTTPS origin for a separately credentialed Fleet
+evidence service; it is never supplied by receipt text. The read-only evidence
+token and the distinct registration token must each be regular owner-only files
+and must not be the GitHub App key or each other. The runner never receives the
+registration token. The GitHub verifier is
 a **separate read-only GitHub App**, configured with its App ID, installation
 ID, owner-only private key, and exact selected Fleet plus artifact repository
 IDs. Norn mints an unpersisted request-scoped installation token and audits
@@ -176,6 +181,28 @@ runner never receives that credential. It then submits the v4 receipt to
 live verification and atomically commits the terminal deployment, verified
 region truth, operation, and server checkpoint references. Exact completed
 replays resolve the stored operation without a new nonce or live verifier.
+
+`/admit` accepts exactly `{ "receipt": <norn.external-fleet-deployment-receipt/v4> }`.
+The removed v3 envelope and its `action: "issue-nonce"` form are not an
+alternative admission path. Every v4 mutation requires the original stable
+`Idempotency-Key`; responses use `Cache-Control: no-store` and `Pragma:
+no-cache`. A new admission returns `201` with the raw nonce exactly once.
+Exact terminal begin/admit retries return `200`, never a second nonce or a
+second operation. A first successful admission returns `201` and a `Location`
+header for its operation.
+
+If registration, verification, or post-commit evidence cleanup is interrupted,
+Fleet calls `POST .../external-deployments/resume` with the original admission
+ID and exact logical identity under the same key. Norn either returns the
+existing terminal admission (`200`) or registers a replacement nonce before
+returning it (`201`); a resume cannot change the logical deployment. Cleanup is
+an explicit `POST .../external-deployments/cleanup`: its request carries the
+admission and operation IDs plus the server-comparable receipt,
+cleanup-intent, and absence-proof SHA-256 digests, never raw nonce material.
+It returns the durable context. `GET .../context/{admissionId}` is the source
+of truth for state, logical identity/digest, nonce generation, operation,
+cleanup state, retry lineage, and server checkpoint references. A caller must
+not infer cleanup completion from a lost HTTP response.
 
 ### Evidence-service v1 response contract
 
@@ -227,17 +254,19 @@ it returns `external_deployment_verifier_unavailable` and records nothing.
 
 ### Current Fleet companion compatibility gate
 
-Fleet commit `7ae090e` is a reviewed companion candidate: it implements the
-`fleet:external-admission` exchange, canonical-digest receipt, read-only
-evidence service, and receipt submission. It still needs the v4 begin/admit
-registration/claim/commit protocol before this Norn capability can be used. It correctly has
-only migration and runtime Nomad jobs; `prepare` remains receipt/variable
-setup. It is not deployed. The verifier checks public `/version` JSON for the
+Fleet commit `01d0b8` is **incompatible scaffolding, not a companion
+candidate**. It does not implement Norn's final v4 begin/admit/resume/cleanup
+contract, hash-only registration/claim/commit lifecycle, required digest-bound
+cleanup proofs, or the exact context/replay behavior described above. Do not
+configure it against this API, treat its receipt shape as compatible, or enable
+this capability from that commit. Fleet remains blocked until a final reviewed
+commit implements the complete published v4 contract and is then released,
+deployed, and independently qualified with the exact bridge bindings. It must
+continue to use only migration and runtime Nomad jobs; `prepare` remains
+receipt/variable setup. The verifier checks public `/version` JSON for the
 source version; private `/readyz` plus Nomad/Consul evidence is required
-separately. Until that candidate is released, deployed, and independently
-qualified with the exact bridge bindings, leave every verifier variable unset
-and the capability undiscoverable. A reviewed source commit alone does not
-satisfy the release or deployment prerequisite.
+separately. A reviewed source commit alone does not satisfy the release or
+deployment prerequisite.
 
 Only a fully verified receipt creates an immutable successful staging
 `app.deploy` operation and normal deployment history. The bootstrap artifact

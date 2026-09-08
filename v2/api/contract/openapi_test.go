@@ -35,8 +35,9 @@ func TestControlOpenAPIParsesAndLocalRefsResolve(t *testing.T) {
 		"/api/v1/fleet/plans/{planID}/attempts/{attemptID}/cancel",
 		"/api/v1/deployments", "/api/v1/deployments/{id}", "/api/v1/deployments/{id}/steps", "/api/v1/services/manifest",
 		"/api/v1/apps/{id}/private-attestations",
-		"/api/v1/apps/{id}/external-deployments", "/api/v1/apps/{id}/external-deployments/begin",
-		"/api/v1/apps/{id}/external-deployments/admit", "/api/v1/apps/{id}/external-deployments/context/{admissionId}",
+		"/api/v1/apps/{id}/external-deployments/begin", "/api/v1/apps/{id}/external-deployments/resume",
+		"/api/v1/apps/{id}/external-deployments/admit", "/api/v1/apps/{id}/external-deployments/cleanup",
+		"/api/v1/apps/{id}/external-deployments/context/{admissionId}",
 		"/api/v1/fleet/plans/{planID}/github/pull-request", "/api/v1/fleet/plans/{planID}/github/dispatch",
 	} {
 		if _, ok := paths[required]; !ok {
@@ -77,28 +78,8 @@ func TestControlOpenAPIParsesAndLocalRefsResolve(t *testing.T) {
 			t.Errorf("ReleaseAttestationIdentity.%s must be server-derived/readOnly", field)
 		}
 	}
-	externalReceipt := schemas["ExternalFleetDeploymentReceipt"].(map[string]interface{})
-	if !containsRequiredField(externalReceipt["required"].([]interface{}), "app") {
-		t.Error("ExternalFleetDeploymentReceipt must require app")
-	}
-	externalReceiptProperties := externalReceipt["properties"].(map[string]interface{})
-	if externalReceiptProperties["nonce"].(map[string]interface{})["writeOnly"] != true {
-		t.Error("ExternalFleetDeploymentReceipt.nonce must be write-only")
-	}
-	if externalReceiptProperties["schemaVersion"].(map[string]interface{})["const"] != "norn.external-fleet-deployment-receipt/v3" {
-		t.Error("ExternalFleetDeploymentReceipt must use the v3 canonical bundle proof contract")
-	}
-	externalProof := schemas["ExternalFleetExecutionProof"].(map[string]interface{})
-	for _, field := range []string{"migration", "runtime", "planId", "rootAttemptId"} {
-		if !containsRequiredField(externalProof["required"].([]interface{}), field) {
-			t.Errorf("ExternalFleetExecutionProof must require %s proof", field)
-		}
-	}
-	nomadProof := schemas["ExternalFleetNomadJobProof"].(map[string]interface{})
-	for _, field := range []string{"jobId", "hclSha256", "evalId", "jobModifyIndex", "checkpointId"} {
-		if !containsRequiredField(nomadProof["required"].([]interface{}), field) {
-			t.Errorf("ExternalFleetNomadJobProof must require %s", field)
-		}
+	if _, legacy := paths["/api/v1/apps/{id}/external-deployments"]; legacy {
+		t.Error("legacy external-deployments endpoint must not be advertised beside v4 admission")
 	}
 	beginRequest := schemas["ExternalFleetAdmissionBeginRequest"].(map[string]interface{})
 	if !containsRequiredField(beginRequest["required"].([]interface{}), "logicalIdentity") {
@@ -114,14 +95,32 @@ func TestControlOpenAPIParsesAndLocalRefsResolve(t *testing.T) {
 			t.Errorf("ExternalFleetLogicalExecutionIdentity must require stable %s", field)
 		}
 	}
-	beginResponse := schemas["ExternalFleetAdmissionBeginResponse"].(map[string]interface{})
-	for _, field := range []string{"admissionId", "state", "nonce", "expiresAt"} {
-		if !containsRequiredField(beginResponse["required"].([]interface{}), field) {
-			t.Errorf("ExternalFleetAdmissionBeginResponse must require %s", field)
+	nonceResponse := schemas["ExternalFleetAdmissionNonceResponse"].(map[string]interface{})
+	for _, field := range []string{"admissionId", "state", "nonce", "expiresAt", "nonceGeneration"} {
+		if !containsRequiredField(nonceResponse["required"].([]interface{}), field) {
+			t.Errorf("ExternalFleetAdmissionNonceResponse must require %s", field)
 		}
 	}
-	if beginResponse["properties"].(map[string]interface{})["nonce"].(map[string]interface{})["writeOnly"] != true {
-		t.Error("ExternalFleetAdmissionBeginResponse.nonce must be write-only")
+	if nonceResponse["properties"].(map[string]interface{})["nonce"].(map[string]interface{})["x-sensitive"] != true {
+		t.Error("ExternalFleetAdmissionNonceResponse.nonce must be explicitly sensitive")
+	}
+	replayResponse := schemas["ExternalFleetAdmissionReplayResponse"].(map[string]interface{})
+	for _, field := range []string{"admissionId", "state", "operationId"} {
+		if !containsRequiredField(replayResponse["required"].([]interface{}), field) {
+			t.Errorf("ExternalFleetAdmissionReplayResponse must require %s", field)
+		}
+	}
+	resumeRequest := schemas["ExternalFleetAdmissionResumeRequest"].(map[string]interface{})
+	for _, field := range []string{"admissionId", "logicalIdentity"} {
+		if !containsRequiredField(resumeRequest["required"].([]interface{}), field) {
+			t.Errorf("ExternalFleetAdmissionResumeRequest must require %s", field)
+		}
+	}
+	cleanupRequest := schemas["ExternalFleetAdmissionCleanupRequest"].(map[string]interface{})
+	for _, field := range []string{"admissionId", "operationId", "receiptDigest", "cleanupIntentDigest", "absenceProofDigest"} {
+		if !containsRequiredField(cleanupRequest["required"].([]interface{}), field) {
+			t.Errorf("ExternalFleetAdmissionCleanupRequest must require immutable %s", field)
+		}
 	}
 	v4Receipt := schemas["ExternalFleetDeploymentReceiptV4"].(map[string]interface{})
 	if v4Receipt["properties"].(map[string]interface{})["schemaVersion"].(map[string]interface{})["const"] != "norn.external-fleet-deployment-receipt/v4" {
@@ -145,11 +144,12 @@ func TestControlOpenAPIParsesAndLocalRefsResolve(t *testing.T) {
 		}
 	}
 	v4Context := schemas["ExternalFleetAdmissionContext"].(map[string]interface{})
-	for _, field := range []string{"admissionId", "state", "operationId", "cleanupState", "retryLineage", "checkpoints"} {
+	for _, field := range []string{"schemaVersion", "admissionId", "state", "logicalIdentity", "logicalDigest", "nonceGeneration", "operationId", "cleanupState", "retryLineage", "checkpoints"} {
 		if !containsRequiredField(v4Context["required"].([]interface{}), field) {
 			t.Errorf("ExternalFleetAdmissionContext must require %s", field)
 		}
 	}
+	assertV4ExternalAdmissionPaths(t, paths)
 	runnerAttempt := schemas["FleetRunnerAttempt"].(map[string]interface{})
 	if !containsRequiredField(runnerAttempt["required"].([]interface{}), "rootAttemptId") {
 		t.Error("FleetRunnerAttempt must require server-owned rootAttemptId")
@@ -209,6 +209,63 @@ func containsRequiredField(fields []interface{}, want string) bool {
 		}
 	}
 	return false
+}
+
+func assertV4ExternalAdmissionPaths(t *testing.T, paths map[string]interface{}) {
+	t.Helper()
+	for _, path := range []string{
+		"/api/v1/apps/{id}/external-deployments/begin",
+		"/api/v1/apps/{id}/external-deployments/resume",
+		"/api/v1/apps/{id}/external-deployments/admit",
+		"/api/v1/apps/{id}/external-deployments/cleanup",
+	} {
+		operation := paths[path].(map[string]interface{})["post"].(map[string]interface{})
+		parameters := operation["parameters"].([]interface{})
+		if len(parameters) != 1 || parameters[0].(map[string]interface{})["$ref"] != "#/components/parameters/RequiredIdempotencyKey" {
+			t.Errorf("%s must require the stable Idempotency-Key", path)
+		}
+		responses := operation["responses"].(map[string]interface{})
+		if _, ok := responses["200"]; !ok {
+			t.Errorf("%s must document idempotent/recovery success", path)
+		}
+	}
+
+	admit := paths["/api/v1/apps/{id}/external-deployments/admit"].(map[string]interface{})["post"].(map[string]interface{})
+	admitSchema := admit["requestBody"].(map[string]interface{})["content"].(map[string]interface{})["application/json"].(map[string]interface{})["schema"].(map[string]interface{})
+	if admitSchema["$ref"] != "#/components/schemas/ExternalFleetDeploymentAdmissionRequest" {
+		t.Error("v4 admit must expose only its v4 envelope")
+	}
+	if _, legacy := paths["/api/v1/apps/{id}/external-deployments"]; legacy {
+		t.Error("legacy action/receipt endpoint must not be a public contract path")
+	}
+	admitResponses := admit["responses"].(map[string]interface{})
+	created := admitResponses["201"].(map[string]interface{})
+	if _, ok := created["headers"].(map[string]interface{})["Location"]; !ok {
+		t.Error("v4 admission creation must document its operation Location header")
+	}
+	for _, path := range []string{
+		"/api/v1/apps/{id}/external-deployments/begin",
+		"/api/v1/apps/{id}/external-deployments/resume",
+		"/api/v1/apps/{id}/external-deployments/admit",
+		"/api/v1/apps/{id}/external-deployments/cleanup",
+		"/api/v1/apps/{id}/external-deployments/context/{admissionId}",
+	} {
+		method := "post"
+		if strings.Contains(path, "/context/") {
+			method = "get"
+		}
+		responses := paths[path].(map[string]interface{})[method].(map[string]interface{})["responses"].(map[string]interface{})
+		for status, raw := range responses {
+			if status == "400" || status == "403" || status == "404" || status == "409" || status == "503" {
+				continue
+			}
+			response := raw.(map[string]interface{})
+			headers, ok := response["headers"].(map[string]interface{})
+			if !ok || headers["Cache-Control"] == nil || headers["Pragma"] == nil {
+				t.Errorf("%s %s must document no-store response headers", method, path)
+			}
+		}
+	}
 }
 
 func walkRefs(t *testing.T, root map[string]interface{}, value interface{}) {
