@@ -284,6 +284,7 @@ func TestExternalFleetAttestationBundleURLFixtures(t *testing.T) {
 		return base64.StdEncoding.EncodeToString(raw)
 	}
 	var server *httptest.Server
+	badURL := ""
 	server = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.Header.Get("Authorization") != "Bearer token" {
 			http.Error(w, "no", 401)
@@ -291,7 +292,11 @@ func TestExternalFleetAttestationBundleURLFixtures(t *testing.T) {
 		}
 		switch r.URL.Path {
 		case "/repos/acme/hello-norn-mysql/attestations/sha256:" + strings.Repeat("b", 64):
-			json.NewEncoder(w).Encode(map[string]any{"attestations": []any{map[string]any{"id": 11, "bundle_url": server.URL + "/repos/acme/hello-norn-mysql/attestations/11/bundle"}, map[string]any{"id": 12, "bundle_url": server.URL + "/repos/acme/hello-norn-mysql/attestations/12/bundle"}}})
+			first := server.URL + "/repos/acme/hello-norn-mysql/attestations/11/bundle"
+			if badURL != "" {
+				first = badURL
+			}
+			json.NewEncoder(w).Encode(map[string]any{"attestations": []any{map[string]any{"id": 11, "bundle_url": first}, map[string]any{"id": 12, "bundle_url": server.URL + "/repos/acme/hello-norn-mysql/attestations/12/bundle"}}})
 		case "/repos/acme/hello-norn-mysql/attestations/11/bundle":
 			json.NewEncoder(w).Encode(map[string]any{"dsseEnvelope": map[string]string{"payload": statement("https://slsa.dev/provenance/v1")}})
 		case "/repos/acme/hello-norn-mysql/attestations/12/bundle":
@@ -306,8 +311,10 @@ func TestExternalFleetAttestationBundleURLFixtures(t *testing.T) {
 		t.Fatalf("positive bundle_url fixture: %v", err)
 	}
 	for _, bad := range []string{"https://evil.test/repos/acme/hello-norn-mysql/attestations/11/bundle", server.URL + "/repos/other/attestations/11/bundle"} {
-		receipt.AttestationURI = "https://github.com/acme/hello-norn-mysql/attestations/11"
-		_ = bad /* URL hardening is exercised by the production path's configured response prefix; malformed fixture cannot replace server route safely. */
+		badURL = bad
+		if _, err := app.attestations(context.Background(), "token", receipt); err == nil {
+			t.Fatalf("unsafe bundle URL accepted: %s", bad)
+		}
 	}
 }
 
