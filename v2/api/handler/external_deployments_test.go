@@ -886,7 +886,7 @@ func TestExternalFleetReceiptV4RequiresExactLiveNomadProof(t *testing.T) {
 	receipt.AdmissionID = "00000000-0000-4000-8000-000000000099"
 	receipt.Fleet.FleetCommit = strings.Repeat("f", 40)
 	for index, proof := range []*ExternalFleetNomadJobProof{&receipt.Fleet.Migration, &receipt.Fleet.Runtime} {
-		proof.EvalCreateIndex, proof.EvalJobModifyIndex, proof.JobCreateIndex, proof.JobVersion = uint64(index+1), uint64(index+2), uint64(index+3), 1
+		proof.EvalCreateIndex, proof.EvalJobModifyIndex, proof.JobCreateIndex, proof.JobVersion = uint64(index+1), proof.JobModifyIndex, uint64(index+3), 0
 		proof.CurrentSpecSHA256, proof.SubmissionSHA256 = strings.Repeat("a", 64), strings.Repeat("b", 64)
 		proof.EvaluationChainIDs = []string{proof.EvalID}
 	}

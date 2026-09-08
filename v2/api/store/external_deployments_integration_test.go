@@ -156,16 +156,16 @@ func TestExternalDeploymentAdmissionV4Lifecycle(t *testing.T) {
 	terminal.RequestDigest = logicalDigest
 	terminal.Operation.Metadata["requestDigest"] = logicalDigest
 	terminal.AdmissionID, terminal.NonceGeneration = admissionID, 1
-	terminal.CheckpointRefs = []ExternalDeploymentCheckpointRef{{Phase: "migration", CheckpointID: "migration-1", AttemptID: "attempt-1", EvidenceRef: "checkpoint://migration-1", EvidenceSHA256: fmt.Sprintf("%064x", 9)}}
+	terminal.CheckpointRefs = []ExternalDeploymentCheckpointRef{{Phase: "external_admission", CheckpointID: "admission-1", AttemptID: "attempt-1", EvidenceRef: "checkpoint://admission-1", EvidenceSHA256: fmt.Sprintf("%064x", 9)}}
 	result, err := db.AdmitExternalDeployment(ctx, terminal)
 	if err != nil || result == nil || result.Replayed {
 		t.Fatalf("commit v4 admission result=%+v err=%v", result, err)
 	}
 	var checkpointID string
-	if err := db.Pool.QueryRow(ctx, `SELECT a.state, a.operation_id, c.checkpoint_id FROM external_deployment_admissions a JOIN external_deployment_admission_checkpoints c ON c.admission_id=a.id WHERE a.id=$1`, admissionID).Scan(&admissionState, new(string), &checkpointID); err != nil || admissionState != string(ExternalDeploymentAdmissionCommitted) || checkpointID != "migration-1" {
+	if err := db.Pool.QueryRow(ctx, `SELECT a.state, a.operation_id, c.checkpoint_id FROM external_deployment_admissions a JOIN external_deployment_admission_checkpoints c ON c.admission_id=a.id WHERE a.id=$1`, admissionID).Scan(&admissionState, new(string), &checkpointID); err != nil || admissionState != string(ExternalDeploymentAdmissionCommitted) || checkpointID != "admission-1" {
 		t.Fatalf("committed lifecycle state=%q checkpoint=%q err=%v", admissionState, checkpointID, err)
 	}
-	if err := db.Pool.QueryRow(ctx, `SELECT checkpoint_id FROM fleet_runner_checkpoint_refs WHERE admission_id=$1 AND phase='external_admission'`, admissionID).Scan(&checkpointID); err != nil || checkpointID != "migration-1" {
+	if err := db.Pool.QueryRow(ctx, `SELECT checkpoint_id FROM fleet_runner_checkpoint_refs WHERE admission_id=$1 AND phase='external_admission'`, admissionID).Scan(&checkpointID); err != nil || checkpointID != "admission-1" {
 		t.Fatalf("runner checkpoint ledger=%q err=%v", checkpointID, err)
 	}
 	conflictingReplay := terminal

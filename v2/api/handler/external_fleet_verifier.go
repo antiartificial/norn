@@ -279,17 +279,32 @@ type ExternalFleetDeploymentLiveVerifier struct {
 // only a nonce hash: the raw one-use nonce is disclosed to Actions only after
 // Fleet durably accepts this registration.
 type ExternalFleetEvidenceRegistration struct {
-	AdmissionID   string    `json:"admissionId"`
-	LogicalDigest string    `json:"logicalDigest"`
-	NonceSHA256   string    `json:"nonceSha256"`
-	Generation    int64     `json:"generation"`
-	ExpiresAt     time.Time `json:"expiresAt"`
+	AdmissionID            string                       `json:"admissionId"`
+	LogicalDigest          string                       `json:"logicalDigest"`
+	LogicalIdentity        ExternalFleetLogicalIdentity `json:"logicalIdentity"`
+	AdmissionContextDigest string                       `json:"admissionContextDigest"`
+	CurrentAttemptID       string                       `json:"currentAttemptId"`
+	CIRepository           string                       `json:"ciRepository"`
+	CIRunID                string                       `json:"ciRunId"`
+	CIRunAttempt           string                       `json:"ciRunAttempt"`
+	NonceSHA256            string                       `json:"nonceSha256"`
+	Generation             int64                        `json:"generation"`
+	ExpectedRevision       int64                        `json:"expectedRevision"`
+	IssuedAt               time.Time                    `json:"issuedAt"`
+	ExpiresAt              time.Time                    `json:"expiresAt"`
 }
 
 type ExternalFleetEvidenceClaim struct {
-	AdmissionID string `json:"admissionId"`
-	NonceSHA256 string `json:"nonceSha256"`
-	Generation  int64  `json:"generation"`
+	AdmissionID            string `json:"admissionId"`
+	LogicalDigest          string `json:"logicalDigest,omitempty"`
+	AdmissionContextDigest string `json:"admissionContextDigest,omitempty"`
+	ReceiptDigest          string `json:"receiptDigest,omitempty"`
+	ProofDigest            string `json:"proofDigest,omitempty"`
+	NonceSHA256            string `json:"nonceSha256"`
+	Generation             int64  `json:"generation"`
+	ExpectedRevision       int64  `json:"expectedRevision,omitempty"`
+	OperationID            string `json:"operationId,omitempty"`
+	CleanupIntentDigest    string `json:"cleanupIntentDigest,omitempty"`
 }
 
 // ExternalFleetEvidenceRegistrationClient deliberately separates stateful
