@@ -30,7 +30,12 @@ func TestHelloNornMySQLBootstrapWorkflowIsArtifactOnlyAndBoundToProtectedMaster(
 		"actions/attest@508db95dd578ae2727ebd6217d5ba78e4fbda05d",
 		"artifact-metadata: write",
 		"sbom-path: bootstrap-evidence/sbom.spdx.json",
-		"norn.hello-norn-mysql.bootstrap-handoff/v1",
+		"norn.hello-norn-mysql.bootstrap-handoff/v2",
+		"outputs.bundle-path",
+		"python3 v2/scripts/canonical-sigstore-bundle-digest \"$PROVENANCE_BUNDLE\"",
+		"python3 v2/scripts/canonical-sigstore-bundle-digest \"$SBOM_BUNDLE\"",
+		"attestationBundleSha256",
+		"sbomBundleSha256",
 		"oci://",
 		"--predicate-type https://slsa.dev/provenance/v1",
 		"--predicate-type https://spdx.dev/Document/v2.3",
@@ -119,7 +124,7 @@ func TestHelloNornMySQLBootstrapHandoffJQFilterGeneratesIndependentVerificationC
 	// Execute the filter embedded in the workflow, rather than a duplicate copy,
 	// so a syntactically invalid handoff filter fails this contract test before it
 	// can reach the artifact-producing workflow.
-	match := regexp.MustCompile(`(?s)--arg verifiedWorkflowSha "\$REVIEWED_WORKFLOW_SHA"\s*\\\s*'([^']+)'\s*\\\s*> bootstrap-evidence/handoff\.json`).FindStringSubmatch(string(raw))
+	match := regexp.MustCompile(`(?s)--arg verifiedWorkflowSha "\$REVIEWED_WORKFLOW_SHA".*?--arg sbomURL "\$SBOM_URL"\s*\\\s*'([^']+)'\s*\\\s*> bootstrap-evidence/handoff\.json`).FindStringSubmatch(string(raw))
 	if len(match) != 2 {
 		t.Fatal("could not find the handoff jq filter in the bootstrap workflow")
 	}
@@ -139,20 +144,26 @@ func TestHelloNornMySQLBootstrapHandoffJQFilterGeneratesIndependentVerificationC
 		"--arg", "repository", repository,
 		"--arg", "signerWorkflow", signerWorkflow,
 		"--arg", "verifiedWorkflowSha", reviewedWorkflowSHA,
+		"--arg", "provenanceBundleSha256", strings.Repeat("1", 64),
+		"--arg", "sbomBundleSha256", strings.Repeat("2", 64),
+		"--arg", "provenanceURL", "https://github.com/antiartificial/norn/attestations/one",
+		"--arg", "sbomURL", "https://github.com/antiartificial/norn/attestations/two",
 		filter,
-	).Output()
+	).CombinedOutput()
 	if err != nil {
-		t.Fatalf("handoff jq filter must compile and run: %v", err)
+		t.Fatalf("handoff jq filter must compile and run: %v: %s", err, output)
 	}
 
 	var handoff struct {
-		SchemaVersion       string `json:"schemaVersion"`
-		SourceSHA           string `json:"sourceSha"`
-		Artifact            string `json:"artifact"`
-		Repository          string `json:"repository"`
-		SignerWorkflow      string `json:"signerWorkflow"`
-		ReportedWorkflowSHA string `json:"reportedWorkflowSha"`
-		Verification        struct {
+		SchemaVersion           string `json:"schemaVersion"`
+		SourceSHA               string `json:"sourceSha"`
+		Artifact                string `json:"artifact"`
+		Repository              string `json:"repository"`
+		SignerWorkflow          string `json:"signerWorkflow"`
+		ReportedWorkflowSHA     string `json:"reportedWorkflowSha"`
+		AttestationBundleSHA256 string `json:"attestationBundleSha256"`
+		SBOMBundleSHA256        string `json:"sbomBundleSha256"`
+		Verification            struct {
 			RequiredInputs []string `json:"requiredInputs"`
 			Provenance     string   `json:"provenance"`
 			SBOM           string   `json:"sbom"`
@@ -161,11 +172,14 @@ func TestHelloNornMySQLBootstrapHandoffJQFilterGeneratesIndependentVerificationC
 	if err := json.Unmarshal(output, &handoff); err != nil {
 		t.Fatalf("handoff jq filter emitted invalid JSON: %v", err)
 	}
-	if handoff.SchemaVersion != "norn.hello-norn-mysql.bootstrap-handoff/v1" ||
+	if handoff.SchemaVersion != "norn.hello-norn-mysql.bootstrap-handoff/v2" ||
 		handoff.SourceSHA != sourceSHA || handoff.Artifact != artifact ||
 		handoff.Repository != repository || handoff.SignerWorkflow != signerWorkflow ||
 		handoff.ReportedWorkflowSHA != reviewedWorkflowSHA {
 		t.Fatalf("handoff metadata does not preserve representative inputs: %+v", handoff)
+	}
+	if handoff.AttestationBundleSHA256 != strings.Repeat("1", 64) || handoff.SBOMBundleSHA256 != strings.Repeat("2", 64) {
+		t.Fatalf("handoff does not carry canonical bundle digests: %+v", handoff)
 	}
 	if strings.Join(handoff.Verification.RequiredInputs, ",") != "REVIEWED_SOURCE_SHA,REVIEWED_WORKFLOW_SHA" {
 		t.Fatalf("handoff verification required inputs = %#v", handoff.Verification.RequiredInputs)

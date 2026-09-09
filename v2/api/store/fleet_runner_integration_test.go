@@ -5,6 +5,7 @@ import (
 	"errors"
 	"os"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -55,6 +56,75 @@ func isolatedMigrationDB(t *testing.T) *DB {
 		admin.Close()
 	})
 	return db
+}
+
+// TestMigrateSerializesParallelCalls exercises the same shared-database shape
+// used by `go test ./...`: each caller must wait for the one advisory-locked
+// schema program rather than interleaving ALTER/CREATE INDEX operations.
+func TestMigrateSerializesParallelCalls(t *testing.T) {
+	db := isolatedMigrationDB(t)
+	const callers = 8
+	start := make(chan struct{})
+	errs := make(chan error, callers)
+	var wg sync.WaitGroup
+	for range callers {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			<-start
+			errs <- Migrate(db)
+		}()
+	}
+	close(start)
+	wg.Wait()
+	close(errs)
+	for err := range errs {
+		if err != nil {
+			t.Fatalf("parallel Migrate: %v", err)
+		}
+	}
+}
+
+// TestMigrateGatesLiveDML proves that the migration transaction drains an
+// already-running writer instead of interleaving DDL with it. It is purposely
+// run against an isolated PostgreSQL 16 database: an advisory migration lock
+// alone would not cover this separate DML transaction.
+func TestMigrateGatesLiveDML(t *testing.T) {
+	db := isolatedMigrationDB(t)
+	if err := Migrate(db); err != nil {
+		t.Fatal(err)
+	}
+	ctx := context.Background()
+	tx, err := db.Pool.Begin(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := tx.Exec(ctx, `INSERT INTO control_events (type, app_id) VALUES ('migration-live-dml', 'test')`); err != nil {
+		_ = tx.Rollback(ctx)
+		t.Fatal(err)
+	}
+	done := make(chan error, 1)
+	go func() { done <- Migrate(db) }()
+	select {
+	case err := <-done:
+		if err == nil {
+			t.Fatal("migration completed while its conflicting live DML transaction was open")
+		}
+		t.Fatalf("migration failed instead of waiting for live DML: %v", err)
+	case <-time.After(150 * time.Millisecond):
+		// Expected: LOCK TABLE waits for the writer without a deadlock.
+	}
+	if err := tx.Commit(ctx); err != nil {
+		t.Fatal(err)
+	}
+	select {
+	case err := <-done:
+		if err != nil {
+			t.Fatalf("migration after live DML: %v", err)
+		}
+	case <-time.After(10 * time.Second):
+		t.Fatal("migration did not complete after live DML committed")
+	}
 }
 
 // TestFleetRunnerAttemptLifecycle exercises PostgreSQL uniqueness, optimistic

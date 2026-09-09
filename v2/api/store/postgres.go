@@ -3,10 +3,13 @@ package store
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"strings"
 	"time"
 
+	"github.com/jackc/pgx/v5"
+	"github.com/jackc/pgx/v5/pgconn"
 	"github.com/jackc/pgx/v5/pgxpool"
 
 	"norn/v2/api/model"
@@ -15,6 +18,14 @@ import (
 type DB struct {
 	Pool *pgxpool.Pool
 }
+
+// migrationAdvisoryLockKey serializes the whole idempotent schema program
+// across API processes and parallel package tests sharing a PostgreSQL 16
+// database. It is transaction-scoped so rollback releases it with every DDL
+// lock rather than leaving a session waiter during a failed migration.
+const migrationAdvisoryLockKey int64 = 0x4e4f524e5f4d4947
+
+const migrationAttempts = 5
 
 func Connect(databaseURL string) (*DB, error) {
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
@@ -54,8 +65,55 @@ func (db *DB) Close() {
 }
 
 func Migrate(db *DB) error {
-	ctx := context.Background()
-	_, err := db.Pool.Exec(ctx, `
+	if db == nil || db.Pool == nil {
+		return fmt.Errorf("postgres migration database is unavailable")
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Minute)
+	defer cancel()
+	var err error
+	for attempt := 0; attempt < migrationAttempts; attempt++ {
+		err = migrateOnce(ctx, db)
+		if err == nil {
+			return nil
+		}
+		if !migrationLockContention(err) || attempt == migrationAttempts-1 {
+			return err
+		}
+		select {
+		case <-ctx.Done():
+			return fmt.Errorf("postgres migration: %w", ctx.Err())
+		case <-time.After(time.Duration(attempt+1) * 100 * time.Millisecond):
+		}
+	}
+	return err
+}
+
+// migrateOnce makes the complete schema program atomic. Before any DDL it
+// locks every extant application relation in lexical order. This drains live
+// DML before ALTER/CREATE INDEX begins, and a deadlock/lock-timeout is rolled
+// back as one unit then retried from no partial schema state. New databases
+// have no extant relations and therefore take the same atomic path directly.
+func migrateOnce(ctx context.Context, db *DB) error {
+	conn, err := db.Pool.Acquire(ctx)
+	if err != nil {
+		return fmt.Errorf("acquire postgres migration session: %w", err)
+	}
+	defer conn.Release()
+	tx, err := conn.BeginTx(ctx, pgx.TxOptions{})
+	if err != nil {
+		return fmt.Errorf("begin postgres migration: %w", err)
+	}
+	defer func() { _ = tx.Rollback(context.Background()) }()
+	if err := configureMigrationSession(ctx, tx); err != nil {
+		return err
+	}
+	if _, err := tx.Exec(ctx, `SELECT pg_advisory_xact_lock($1)`, migrationAdvisoryLockKey); err != nil {
+		return fmt.Errorf("lock postgres migration: %w", err)
+	}
+	if err := lockMigrationRelations(ctx, tx); err != nil {
+		return err
+	}
+	_, err = tx.Exec(ctx, `
 		CREATE TABLE IF NOT EXISTS saga_events (
 			id         TEXT PRIMARY KEY,
 			saga_id    TEXT NOT NULL,
@@ -331,6 +389,100 @@ func Migrate(db *DB) error {
 		);
 		CREATE INDEX IF NOT EXISTS idx_external_deployment_nonces_expiry ON external_deployment_nonces(expires_at);
 
+		-- The admission row is deliberately separate from operations: it starts
+		-- before an external verifier is invoked and preserves nonce issuance and
+		-- failure lifecycle without storing an unredacted receipt or nonce.
+		CREATE TABLE IF NOT EXISTS external_deployment_admissions (
+			id TEXT PRIMARY KEY,
+			idempotency_key TEXT NOT NULL UNIQUE,
+			request_digest TEXT NOT NULL,
+			app TEXT NOT NULL,
+			environment TEXT NOT NULL,
+			ci_repository TEXT NOT NULL,
+			state TEXT NOT NULL DEFAULT 'initiated',
+			nonce_id TEXT REFERENCES external_deployment_nonces(id) ON DELETE SET NULL,
+			nonce_generation BIGINT NOT NULL DEFAULT 0,
+			registration_ref TEXT NOT NULL DEFAULT '',
+			operation_id TEXT REFERENCES operations(id) ON DELETE SET NULL,
+			failure_code TEXT NOT NULL DEFAULT '',
+			created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+			updated_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+			completed_at TIMESTAMPTZ,
+			CHECK (state IN ('initiated','nonce_registering','nonce_ready','evidence_claimed','committed','cleanup_pending','complete','expired')),
+			CHECK (nonce_generation >= 0)
+		);
+		CREATE INDEX IF NOT EXISTS idx_external_deployment_admissions_nonce ON external_deployment_admissions(nonce_id);
+		CREATE INDEX IF NOT EXISTS idx_external_deployment_admissions_state ON external_deployment_admissions(state, updated_at DESC);
+
+		-- These ALTERs make the v4 lifecycle additive for an already-running
+		-- control plane. Legacy nonce rows retain empty registration bindings.
+		ALTER TABLE external_deployment_nonces ADD COLUMN IF NOT EXISTS admission_id TEXT NOT NULL DEFAULT '';
+		ALTER TABLE external_deployment_nonces ADD COLUMN IF NOT EXISTS registration_generation BIGINT NOT NULL DEFAULT 0;
+		ALTER TABLE external_deployment_nonces ADD COLUMN IF NOT EXISTS registration_ref TEXT NOT NULL DEFAULT '';
+		ALTER TABLE external_deployment_nonces ADD COLUMN IF NOT EXISTS issuer_subject TEXT NOT NULL DEFAULT '';
+		ALTER TABLE external_deployment_nonces ADD COLUMN IF NOT EXISTS issuer_token_id TEXT NOT NULL DEFAULT '';
+		ALTER TABLE external_deployment_nonces ADD COLUMN IF NOT EXISTS registration_metadata JSONB NOT NULL DEFAULT '{}';
+		ALTER TABLE external_deployment_nonces ADD COLUMN IF NOT EXISTS state TEXT NOT NULL DEFAULT 'ready';
+		ALTER TABLE external_deployment_nonces ADD COLUMN IF NOT EXISTS superseded_at TIMESTAMPTZ;
+		ALTER TABLE external_deployment_nonces ADD COLUMN IF NOT EXISTS claimed_at TIMESTAMPTZ;
+		ALTER TABLE external_deployment_nonces ADD COLUMN IF NOT EXISTS registered_at TIMESTAMPTZ;
+		ALTER TABLE external_deployment_nonces ADD COLUMN IF NOT EXISTS revision BIGINT NOT NULL DEFAULT 1;
+		ALTER TABLE external_deployment_admissions ADD COLUMN IF NOT EXISTS service_snapshot_id TEXT NOT NULL DEFAULT '';
+		ALTER TABLE external_deployment_admissions ADD COLUMN IF NOT EXISTS service_snapshot_ref TEXT NOT NULL DEFAULT '';
+		ALTER TABLE external_deployment_admissions ADD COLUMN IF NOT EXISTS service_snapshot_sha256 TEXT NOT NULL DEFAULT '';
+		ALTER TABLE external_deployment_admissions ADD COLUMN IF NOT EXISTS service_retry_lineage JSONB NOT NULL DEFAULT '[]';
+		ALTER TABLE external_deployment_admissions ADD COLUMN IF NOT EXISTS service_receipt_sha256 TEXT NOT NULL DEFAULT '';
+		ALTER TABLE external_deployment_admissions ADD COLUMN IF NOT EXISTS service_proof_sha256 TEXT NOT NULL DEFAULT '';
+		-- A redacted, canonical claim envelope is stored before the remote claim.
+		-- It has no raw nonce and lets the protected owner reconcile a crash
+		-- without asking Actions to resubmit a one-use secret.
+		ALTER TABLE external_deployment_admissions ADD COLUMN IF NOT EXISTS claimed_receipt JSONB NOT NULL DEFAULT '{}';
+		ALTER TABLE external_deployment_admissions ADD COLUMN IF NOT EXISTS service_claim_revision BIGINT NOT NULL DEFAULT 0;
+		ALTER TABLE external_deployment_admissions ADD COLUMN IF NOT EXISTS service_commit_revision BIGINT NOT NULL DEFAULT 0;
+		ALTER TABLE external_deployment_admissions ADD COLUMN IF NOT EXISTS service_cleanup_revision BIGINT NOT NULL DEFAULT 0;
+		ALTER TABLE external_deployment_admissions ADD COLUMN IF NOT EXISTS cleanup_intent_sha256 TEXT NOT NULL DEFAULT '';
+		ALTER TABLE external_deployment_admissions ADD COLUMN IF NOT EXISTS absence_proof_sha256 TEXT NOT NULL DEFAULT '';
+		DO $$ BEGIN
+			ALTER TABLE external_deployment_nonces ADD CONSTRAINT external_deployment_nonces_state_check
+				CHECK (state IN ('registering','ready','claimed','superseded','expired'));
+		EXCEPTION WHEN duplicate_object THEN NULL; END $$;
+		DO $$ BEGIN
+			ALTER TABLE external_deployment_nonces ADD CONSTRAINT external_deployment_nonces_revision_check CHECK (revision > 0);
+		EXCEPTION WHEN duplicate_object THEN NULL; END $$;
+		CREATE UNIQUE INDEX IF NOT EXISTS idx_external_deployment_nonces_admission_generation
+			ON external_deployment_nonces(admission_id, registration_generation)
+			WHERE admission_id <> '';
+		CREATE INDEX IF NOT EXISTS idx_external_deployment_nonces_admission ON external_deployment_nonces(admission_id)
+			WHERE admission_id <> '';
+
+		CREATE TABLE IF NOT EXISTS external_deployment_admission_checkpoints (
+			admission_id TEXT NOT NULL REFERENCES external_deployment_admissions(id) ON DELETE CASCADE,
+			phase TEXT NOT NULL,
+			checkpoint_id TEXT NOT NULL,
+			attempt_id TEXT NOT NULL,
+			evidence_ref TEXT NOT NULL,
+			evidence_sha256 TEXT NOT NULL DEFAULT '',
+			created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+			PRIMARY KEY (admission_id, phase),
+			UNIQUE (admission_id, checkpoint_id)
+		);
+
+		-- Keep the append-only checkpoint pointers in their own durable namespace
+		-- as well as the admission-context projection above. The duplicate
+		-- projection preserves the v4 context API while this table is the
+		-- server-owned runner evidence ledger used for reconciliation.
+		CREATE TABLE IF NOT EXISTS fleet_runner_checkpoint_refs (
+			admission_id TEXT NOT NULL REFERENCES external_deployment_admissions(id) ON DELETE CASCADE,
+			phase TEXT NOT NULL,
+			checkpoint_id TEXT NOT NULL,
+			attempt_id TEXT NOT NULL,
+			evidence_ref TEXT NOT NULL,
+			evidence_sha256 TEXT NOT NULL DEFAULT '',
+			created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+			PRIMARY KEY (admission_id, phase),
+			UNIQUE (admission_id, checkpoint_id)
+		);
+
 		CREATE TABLE IF NOT EXISTS webhook_deliveries (
 			id          TEXT PRIMARY KEY,
 			provider    TEXT NOT NULL,
@@ -539,7 +691,66 @@ func Migrate(db *DB) error {
 		CREATE INDEX IF NOT EXISTS idx_access_observation_app_last ON access_observation_buckets(app, process, last_seen DESC);
 		CREATE INDEX IF NOT EXISTS idx_access_observation_bucket ON access_observation_buckets(bucket_start DESC);
 	`)
-	return err
+	if err != nil {
+		return fmt.Errorf("apply postgres migration: %w", err)
+	}
+	if err := tx.Commit(ctx); err != nil {
+		return fmt.Errorf("commit postgres migration: %w", err)
+	}
+	return nil
+}
+
+// configureMigrationSession only changes settings ordinary application roles
+// may set themselves. deadlock_timeout is a superuser-only setting in
+// PostgreSQL, so migrations rely on PostgreSQL's configured deadlock detector
+// and retain the retry path below for any reported deadlock.
+func configureMigrationSession(ctx context.Context, tx migrationSession) error {
+	if _, err := tx.Exec(ctx, `SET LOCAL lock_timeout = '30s'`); err != nil {
+		return fmt.Errorf("configure postgres migration lock timeout: %w", err)
+	}
+	return nil
+}
+
+type migrationSession interface {
+	Exec(context.Context, string, ...any) (pgconn.CommandTag, error)
+}
+
+func lockMigrationRelations(ctx context.Context, tx pgx.Tx) error {
+	rows, err := tx.Query(ctx, `
+		SELECT quote_ident(tablename)
+		FROM pg_tables
+		WHERE schemaname = current_schema()
+		ORDER BY tablename
+	`)
+	if err != nil {
+		return fmt.Errorf("list postgres migration relations: %w", err)
+	}
+	defer rows.Close()
+	var relations []string
+	for rows.Next() {
+		var relation string
+		if err := rows.Scan(&relation); err != nil {
+			return fmt.Errorf("scan postgres migration relation: %w", err)
+		}
+		relations = append(relations, relation)
+	}
+	if err := rows.Err(); err != nil {
+		return fmt.Errorf("read postgres migration relations: %w", err)
+	}
+	if len(relations) == 0 {
+		return nil
+	}
+	// SHARE ROW EXCLUSIVE blocks writers before this migration can take a
+	// stronger DDL lock. All known tables are acquired in one sorted statement.
+	if _, err := tx.Exec(ctx, `LOCK TABLE `+strings.Join(relations, ", ")+` IN SHARE ROW EXCLUSIVE MODE`); err != nil {
+		return fmt.Errorf("gate live DML during postgres migration: %w", err)
+	}
+	return nil
+}
+
+func migrationLockContention(err error) bool {
+	var pgErr *pgconn.PgError
+	return errors.As(err, &pgErr) && (pgErr.Code == "40P01" || pgErr.Code == "55P03")
 }
 
 func (db *DB) InsertDeployment(ctx context.Context, d *model.Deployment) error {

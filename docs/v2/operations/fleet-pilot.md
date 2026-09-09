@@ -114,7 +114,9 @@ can express its complete service, secret-file, TLS-routing, migration, and
 shutdown contract. Do not flip that bit merely to make a pilot test pass.
 
 The target staging control plane has a deliberately narrow, disabled-by-default
-bridge at `POST /api/v1/apps/{id}/external-deployments`. It is only enabled
+v4 bridge at `POST /api/v1/apps/{id}/external-deployments/begin`,
+`.../admit`, `.../resume`, `.../cleanup`, and
+`GET .../context/{admissionId}`. It is only enabled
 when all of these server-owned bindings are exact:
 
 ```text
@@ -125,6 +127,16 @@ NORN_EXTERNAL_FLEET_ADMISSION_MIGRATION_HCL_SHA256=<released migration-HCL SHA-2
 NORN_EXTERNAL_FLEET_ADMISSION_RUNTIME_JOB_ID=<exact runtime Nomad job ID>
 NORN_EXTERNAL_FLEET_ADMISSION_RUNTIME_HCL_SHA256=<released runtime-HCL SHA-256>
 NORN_EXTERNAL_FLEET_ADMISSION_BOOTSTRAP_SIGNER_REF=<exact bootstrap workflow path@40-char SHA>
+NORN_EXTERNAL_FLEET_VERIFIER_URL=https://<private-read-only-fleet-evidence-origin>
+NORN_EXTERNAL_FLEET_EVIDENCE_ALLOWED_CIDRS=<exact tailscale-or-vpc-cidr>[,<additional-cidr>]
+NORN_EXTERNAL_FLEET_VERIFIER_TOKEN_FILE=/secure/norn/fleet-evidence-read.token
+NORN_EXTERNAL_FLEET_EVIDENCE_REGISTRATION_TOKEN_FILE=/secure/norn/fleet-evidence-registration.token
+NORN_EXTERNAL_FLEET_GITHUB_VERIFIER_APP_ID=<read-only-GitHub-App-ID>
+NORN_EXTERNAL_FLEET_GITHUB_VERIFIER_INSTALLATION_ID=<selected-read-only-installation-ID>
+NORN_EXTERNAL_FLEET_GITHUB_VERIFIER_PRIVATE_KEY_FILE=/secure/norn/github-attestations-read.pem
+NORN_EXTERNAL_FLEET_GITHUB_VERIFIER_REPOSITORY_IDS=<fleet-repository-id>,<artifact-repository-id>
+NORN_EXTERNAL_FLEET_GITHUB_CLI_PATH=/absolute/path/to/gh
+NORN_EXTERNAL_FLEET_PUBLIC_BASE_URL=https://<reviewed-public-pilot-origin>
 ```
 
 Use the same complete bridge binding set on the production control plane to
@@ -133,7 +145,22 @@ external-admission route there: its protected identity remains staging-only.
 The bootstrap signer ref must be absent from
 `NORN_RELEASE_ATTESTATION_ALLOWED_WORKFLOW_REFS`; it is a separate, exact
 first-image adoption identity, not a normal release signer. Migration and
-runtime job IDs and their HCL digests must each be different. A real verifier
+runtime job IDs and their HCL digests must each be different. Prepare remains
+a distinct receipt/checkpoint phase, not an invented third Nomad job. The verifier
+URL is a single configured HTTPS origin for a separately credentialed Fleet
+evidence service; it is never supplied by receipt text. The read-only evidence
+token and the distinct registration token must each be regular owner-only files
+and must not be the GitHub App key or each other. The runner never receives the
+registration token. The GitHub verifier is
+a **separate read-only GitHub App**, configured with its App ID, installation
+ID, owner-only private key, and exact selected Fleet plus artifact repository
+IDs. Norn mints an unpersisted request-scoped installation token and audits
+selected-repository policy and the metadata/actions/attestations read-only
+permission whitelist before use. Norn verifies the exact selected
+repository, run ID/attempt, head SHA/ref, workflow path and in-progress
+protected-run state before checking attestations. `gh` verifies
+the GitHub-hosted SLSA and SPDX statements using direct argument execution,
+never a shell. A real verifier
 is required before nonce issuance as well as receipt admission; at most three
 unconsumed nonces may exist for one protected CI run, and expired nonce rows
 are removed in bounded batches.
@@ -145,14 +172,114 @@ environment, protected ref, and `apply` or `recover` intent. A regular Fleet
 token, static control token, legacy token, or administrator scope is not a
 substitute.
 
-The first POST with `{"action":"issue-nonce"}` produces a short-lived,
-one-use Norn nonce bound to that exact CI run. The runner writes it through the
-job's restricted runtime path and submits a canonical receipt only after its
-Fleet attempt checkpoints. The API persists a redacted normalized proof plus a
-nonce hash only; it atomically consumes that hash and writes the terminal
-deployment, verified region weights/evaluations, and operation together.
+Admission v4 starts with `POST .../external-deployments/begin`, carrying a
+stable logical identity and `Idempotency-Key`. Norn persists that identity,
+registers only a nonce hash with its owner-only evidence-service credential,
+and returns the raw short-lived nonce only after registration is durable. The
+runner never receives that credential. It then submits the v4 receipt to
+`.../external-deployments/admit`; Norn claims the pre-registered hash before
+live verification and atomically commits the terminal deployment, verified
+region truth, operation, and server checkpoint references. Exact completed
+replays resolve the stored operation without a new nonce or live verifier.
 
-Receipt text is evidence *pointers*, never authority. The server-owned verifier
+`/admit` accepts exactly `{ "receipt": <norn.external-fleet-deployment-receipt/v4> }`.
+The removed v3 envelope and its `action: "issue-nonce"` form are not an
+alternative admission path. Every v4 mutation requires the original stable
+`Idempotency-Key`; responses use `Cache-Control: no-store` and `Pragma:
+no-cache`. A new admission returns `201` with the raw nonce exactly once.
+Exact terminal begin/admit retries return `200`, never a second nonce or a
+second operation. A first successful admission returns `201` and a `Location`
+header for its operation.
+
+For a stale or unavailable receipt, `/admit` also accepts the receipt-free
+terminal replay shape `{ "admissionId": "..." }` with the original
+`Idempotency-Key`. Norn resolves it locally before current configuration,
+nonce, GitHub, or evidence checks; a different key or non-terminal admission
+conflicts.
+
+If the terminal Norn transaction succeeds but the owner-only evidence-service
+commit is interrupted, Norn stores the exact pending commit intent and exposes
+`POST .../external-deployments/reconcile`. It accepts only an admission ID from
+the protected Fleet identity and reconstructs the nonce hash, claim revision,
+snapshot, receipt/proof, operation digest, and cleanup intent from Norn's
+durable state. It is therefore safe to retry and cannot become a caller-shaped
+commit endpoint.
+
+If registration, verification, or post-commit evidence cleanup is interrupted,
+Fleet calls `POST .../external-deployments/resume` with the original admission
+ID and exact logical identity under the same key. Norn either returns the
+existing terminal admission (`200`) or registers a replacement nonce before
+returning it (`201`); a resume cannot change the logical deployment. Cleanup is
+an explicit `POST .../external-deployments/cleanup`: its request carries the
+admission and operation IDs plus the server-comparable receipt,
+cleanup-intent, and absence-proof SHA-256 digests, never raw nonce material.
+It returns the durable context. `GET .../context/{admissionId}` is the source
+of truth for state, logical identity/digest, nonce generation, operation,
+cleanup state, retry lineage, and server checkpoint references. A caller must
+not infer cleanup completion from a lost HTTP response.
+
+### Evidence-service callback/status contract
+
+The legacy mutable `POST /v1/external-fleet/evidence` interface is not used.
+Norn uses the owner-only v4 callback resource instead: `PUT registration`,
+`POST claim`, `POST commit`, and authenticated `GET status`, all under the
+exact admission ID and generation. Every request and response declares a v4
+schema version and is a CAS operation. Registration carries the stable logical
+identity, current attempt/CI context, nonce SHA-256, generation, expected
+revision, and issuance window. Claim binds the canonical receipt and proof
+digests and returns one immutable snapshot. Commit binds that snapshot,
+receipt/proof digests, operation ID and canonical operation digest, and a
+deterministic cleanup-intent digest.
+
+The status snapshot is service-owned: it contains its immutable ID/ref/SHA-256,
+fresh live observation timestamps, allocation proof, authoritative retry
+lineage, and checkpoint references. Norn persists and re-reads that projection;
+it never derives checkpoint history from receipt timestamps. A service timeout
+is recovered only by reading the exact status generation and adopting an
+identical registration, claim, or commit response. Its `sha256` is SHA-256 of
+the compact UTF-8 JSON projection with fields `id`, `ref`, `liveCheckedAt`,
+`nonceWrittenAt`, `nonceReadAt`, `verification`, `retryLineage`,
+`checkpointRefs`, and `allocations`, in that order, excluding only `sha256`.
+Nested fields use their declared lower-camel JSON names and array order. The later protected cleanup
+evidence CAS adds the absence-proof digest and only then exposes
+`cleanup_ready`; Norn compares every persisted admission, operation, receipt,
+snapshot, revision, intent, and absence binding before marking complete.
+`cleanup_ready` also carries one service-owned `cleanupCheckpoint` with phase
+`external_cleanup`, the final persisted retry-lineage attempt, an immutable
+checkpoint reference, and an evidence SHA-256 exactly equal to the absence
+proof. Norn writes that checkpoint atomically with `complete`; admission-time
+snapshots must not contain this final cleanup phase.
+
+The claim-time snapshot has exactly one checkpoint: `external_admission`, tied
+to the final element of its ordered, unique retry lineage. The context permits
+an empty lineage before claim, requires that admission checkpoint while
+committed or cleanup-pending, and requires exactly that checkpoint plus
+`external_cleanup` once complete.
+
+The receipt carries `fleet.rootAttemptId`. For an admission retry after a lost
+success response, reuse the same client `Idempotency-Key`; Norn derives its
+key from the authorized repository, staging environment, app, and that client
+key. Its request digest covers the candidate/source/artifact/plan/root-attempt
+identity (including namespace, plan ID, and plan SHA-256) only, deliberately
+excluding a rotated OIDC JTI, current run/attempt, per-attempt Nomad evidence,
+and raw nonce. The new nonce remains one-use: this replay exception only
+returns an already durable matching admission.
+
+`verification` uses lower-camel names including `sourceSha`,
+`publicHttpsVersion`, `privateReadiness`, `ingressNodeIds`, and `chronology`.
+Private readiness names only the configured private `/readyz` origin and fresh
+allocation IDs; the bridge binds those IDs to runtime job/evaluation/namespace
+and Consul/Nomad health. The public `/version` is independently fetched and
+bound to its reported allocation and region. Nonce timestamps must be ordered
+and fresh within the admission nonce lifetime. SHA-256 evidence digests are
+identifiers only: raw nonce material and credentials are prohibited.
+
+The external receipt is v4 and carries canonical SHA-256 digests of the full
+parsed Sigstore provenance and SPDX bundle JSON; the checked-in
+`v2/scripts/canonical-sigstore-bundle-digest` profile sorts compact JSON while
+retaining every value and rejects non-uint64/ambiguous numeric, duplicate-key, and
+encoder-divergent string representations. Publisher/web URLs are display
+pointers only. The server-owned verifier
 must independently read the released HCL digest, source/repository, OCI digest,
 attestation and SBOM references, Nomad v2 migration/runtime job proof
 (`JobID`, `EvalID`, and `JobModifyIndex`), Fleet
@@ -161,6 +288,41 @@ reviewed ingress nodes, public HTTPS `/version` and readiness probes, and the
 ordered `prepare → migration → runtime → exercise` chronology. The foundation
 intentionally has no generic live verifier yet; without a configured verifier,
 it returns `external_deployment_verifier_unavailable` and records nothing.
+
+Nomad v4 proof hashes are not opaque strings. Fleet sends the exact job-inspect
+object and the exact versioned `JobSubmission` object alongside each digest.
+Norn verifies ID, namespace, creation/modify indices, and `JobVersion` (zero is
+valid), rejects duplicate keys and non-uint64 numeric forms, then emits sorted
+compact UTF-8 JSON without HTML escaping. Current-spec removes only root
+`Status`, `StatusDescription`, `Stable`, `ModifyIndex`, `CreateIndex`,
+`Version`, `JobModifyIndex`, and `SubmitTime`; submission retains every field,
+including root `JobID`, `Namespace`, `Version`, `JobModifyIndex` (or legacy
+`JobIndex`), `Source`, `Variables`, `VariableFlags`, and `Format`. The
+cross-language fixture
+[`nomad-v4-canonical.json`](../../api/handler/testdata/nomad-v4-canonical.json)
+defines the exact `norn.nomad-v4-canonical-json/v1` bytes and SHA-256 values for
+Fleet and Norn implementations.
+
+The unadvertised `POST /api/v1/apps/{id}/external-deployments` compatibility
+alias is deprecated. It delegates to the same v4-only admission handler and
+rejects legacy action/nonce issuance and v3 receipt forms; new Fleet callers
+must use `/begin`, `/resume`, `/admit`, `/reconcile`, and `/cleanup`.
+
+### Current Fleet companion compatibility gate
+
+Fleet commit `01d0b8` is **incompatible scaffolding, not a companion
+candidate**. It does not implement Norn's final v4 begin/admit/resume/cleanup
+contract, hash-only registration/claim/commit lifecycle, required digest-bound
+cleanup proofs, or the exact context/replay behavior described above. Do not
+configure it against this API, treat its receipt shape as compatible, or enable
+this capability from that commit. Fleet remains blocked until a final reviewed
+commit implements the complete published v4 contract and is then released,
+deployed, and independently qualified with the exact bridge bindings. It must
+continue to use only migration and runtime Nomad jobs; `prepare` remains
+receipt/variable setup. The verifier checks public `/version` JSON for the
+source version; private `/readyz` plus Nomad/Consul evidence is required
+separately. A reviewed source commit alone does not satisfy the release or
+deployment prerequisite.
 
 Only a fully verified receipt creates an immutable successful staging
 `app.deploy` operation and normal deployment history. The bootstrap artifact

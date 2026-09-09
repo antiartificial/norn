@@ -1,0 +1,10 @@
+{
+  "profile": "norn.external-fleet-snapshot/v4",
+  "description": "All snapshot times are UTC, truncated to milliseconds, and emitted with exactly three fractional digits. Fleet and Norn must therefore hash .12Z, .120Z, and .120000000Z identically.",
+  "liveCheckedAt": "2026-03-10T12:00:00.120Z",
+  "nonceWrittenAt": "2026-03-10T12:00:00.100Z",
+  "nonceReadAt": "2026-03-10T12:00:00.120000000Z",
+  "privateReadyCheckedAt": "2026-03-10T12:00:00.12Z",
+  "chronologyOccurredAt": "2026-03-10T12:00:00.120Z",
+  "sha256": "f8fc6683406aa348821209c26c68ae711c41ea5a846170b72e4dd4b0d2cf17c2"
+}

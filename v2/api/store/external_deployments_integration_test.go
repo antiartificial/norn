@@ -85,6 +85,145 @@ func TestExternalDeploymentNonceIssuanceCapAndExpiryCleanup(t *testing.T) {
 	}
 }
 
+// TestExternalDeploymentAdmissionV4Lifecycle proves the nonce is persisted as
+// registering before disclosure, becomes claimable only after registration is
+// acknowledged, and commits checkpoint pointers with the terminal receipt.
+func TestExternalDeploymentAdmissionV4Lifecycle(t *testing.T) {
+	if os.Getenv("NORN_TEST_DATABASE_URL") == "" {
+		t.Skip("NORN_TEST_DATABASE_URL is not set")
+	}
+	db, err := Connect(os.Getenv("NORN_TEST_DATABASE_URL"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(db.Close)
+	if err := Migrate(db); err != nil {
+		t.Fatal(err)
+	}
+	ctx := context.Background()
+	admissionID, key := uuid.NewString(), "external-v4-"+uuid.NewString()
+	logicalDigest := "sha256:" + fmt.Sprintf("%064x", 7)
+	started, err := db.BeginExternalDeploymentAdmission(ctx, admissionID, key, logicalDigest, "hello-norn-mysql", "staging", "acme/norn-fleet")
+	if err != nil || started.State != ExternalDeploymentAdmissionInitiated {
+		t.Fatalf("begin admission = %+v, %v", started, err)
+	}
+	replay, err := db.BeginExternalDeploymentAdmission(ctx, uuid.NewString(), key, logicalDigest, "hello-norn-mysql", "staging", "acme/norn-fleet")
+	if err != nil || replay.ID != admissionID || replay.State != ExternalDeploymentAdmissionInitiated {
+		t.Fatalf("exact begin replay = %+v, %v", replay, err)
+	}
+	lookup, err := db.FindExternalDeploymentAdmissionByIdempotency(ctx, key, logicalDigest, "hello-norn-mysql", "staging", "acme/norn-fleet")
+	if err != nil || lookup.ID != admissionID {
+		t.Fatalf("scoped idempotency lookup = %+v, %v", lookup, err)
+	}
+	if _, err := db.FindExternalDeploymentAdmissionByIdempotency(ctx, key, "sha256:wrong", "hello-norn-mysql", "staging", "acme/norn-fleet"); !errors.Is(err, ErrExternalDeploymentIdempotencyConflict) {
+		t.Fatalf("different idempotency lookup error = %v, want conflict", err)
+	}
+	if _, err := db.BeginExternalDeploymentAdmission(ctx, uuid.NewString(), key, "sha256:different", "hello-norn-mysql", "staging", "acme/norn-fleet"); !errors.Is(err, ErrExternalDeploymentIdempotencyConflict) {
+		t.Fatalf("different logical replay error = %v, want idempotency conflict", err)
+	}
+
+	nonce := ExternalDeploymentNonce{
+		ID: uuid.NewString(), NonceSHA256: fmt.Sprintf("%064x", 8), App: "hello-norn-mysql", Environment: "staging", CIRepository: "acme/norn-fleet", CIRunID: "v4-" + uuid.NewString(), CIRunAttempt: "1", ExpiresAt: time.Now().Add(time.Hour),
+		AdmissionID: admissionID, RegistrationGeneration: 1, RegistrationRef: "nonce-registration-1", IssuerSubject: "repo:acme/norn-fleet", IssuerTokenID: "oidc-jti", RegistrationMetadata: map[string]string{"workflow": "fleet-apply"},
+	}
+	t.Cleanup(func() {
+		_, _ = db.Pool.Exec(context.Background(), `DELETE FROM operations WHERE metadata->>'idempotencyKey'=$1`, key)
+		_, _ = db.Pool.Exec(context.Background(), `DELETE FROM external_deployment_admissions WHERE id=$1`, admissionID)
+		_, _ = db.Pool.Exec(context.Background(), `DELETE FROM external_deployment_nonces WHERE id=$1`, nonce.ID)
+	})
+	if err := db.IssueExternalDeploymentNonce(ctx, nonce); err != nil {
+		t.Fatal(err)
+	}
+	registration, err := db.GetExternalDeploymentNonceRegistration(ctx, admissionID, nonce.ID)
+	if err != nil || registration.State != "registering" || registration.Generation != 1 || registration.RegistrationRef != nonce.RegistrationRef || registration.Revision != 1 || registration.RegisteredAt != nil || registration.RegistrationMetadata["workflow"] != "fleet-apply" {
+		t.Fatalf("persisted registration = %+v, %v", registration, err)
+	}
+	var nonceState, admissionState string
+	var generation, revision int64
+	if err := db.Pool.QueryRow(ctx, `SELECT n.state, a.state, n.registration_generation, n.revision FROM external_deployment_nonces n JOIN external_deployment_admissions a ON a.nonce_id=n.id WHERE n.id=$1`, nonce.ID).Scan(&nonceState, &admissionState, &generation, &revision); err != nil || nonceState != "registering" || admissionState != string(ExternalDeploymentAdmissionNonceRegistering) || generation != 1 || revision != 1 {
+		t.Fatalf("pre-disclosure nonce state=%q admission=%q generation=%d revision=%d err=%v", nonceState, admissionState, generation, revision, err)
+	}
+	if err := db.MarkExternalDeploymentNonceReady(ctx, admissionID, nonce.ID, 1, nonce.RegistrationRef, 1); err != nil {
+		t.Fatal(err)
+	}
+	if err := db.MarkExternalDeploymentNonceReady(ctx, admissionID, nonce.ID, 1, nonce.RegistrationRef, 1); err != nil {
+		t.Fatalf("exact ready replay = %v", err)
+	}
+	claimedReceipt := []byte(`{"schemaVersion":"norn.external-fleet-deployment-receipt/v4","nonce":"","fleet":{"currentSpecSha256":"bound"}}`)
+	if err := db.RecordExternalDeploymentClaimedEvidence(ctx, admissionID, claimedReceipt, fmt.Sprintf("%064x", 11), fmt.Sprintf("%064x", 12)); err != nil {
+		t.Fatalf("record pre-claim redacted evidence: %v", err)
+	}
+	if err := db.RecordExternalDeploymentClaimedEvidence(ctx, admissionID, claimedReceipt, fmt.Sprintf("%064x", 11), fmt.Sprintf("%064x", 12)); err != nil {
+		t.Fatalf("exact pre-claim evidence replay: %v", err)
+	}
+	if err := db.RecordExternalDeploymentClaimedEvidence(ctx, admissionID, []byte(`{"nonce":"raw-nonce-forbidden"}`), fmt.Sprintf("%064x", 11), fmt.Sprintf("%064x", 12)); !errors.Is(err, ErrExternalDeploymentAdmissionUnavailable) {
+		t.Fatalf("unredacted pre-claim evidence = %v", err)
+	}
+	if err := db.RecordExternalDeploymentClaimedEvidence(ctx, admissionID, []byte(`{"nonce":"different"}`), fmt.Sprintf("%064x", 11), fmt.Sprintf("%064x", 12)); !errors.Is(err, ErrExternalDeploymentAdmissionUnavailable) {
+		t.Fatalf("conflicting pre-claim evidence = %v", err)
+	}
+	if err := db.ClaimExternalDeploymentAdmissionEvidence(ctx, admissionID, nonce.ID); err != nil {
+		t.Fatal(err)
+	}
+	if err := db.ClaimExternalDeploymentAdmissionEvidence(ctx, admissionID, nonce.ID); err != nil {
+		t.Fatalf("exact evidence claim replay = %v", err)
+	}
+	rootAttemptID, currentAttemptID := uuid.NewString(), uuid.NewString()
+	serviceSnapshot := ExternalDeploymentServiceSnapshot{AdmissionID: admissionID, SnapshotID: "snapshot-1", SnapshotRef: "evidence://snapshot-1", SnapshotSHA256: fmt.Sprintf("%064x", 10), RetryLineage: []string{rootAttemptID, currentAttemptID}, ReceiptDigest: fmt.Sprintf("%064x", 11), ProofDigest: fmt.Sprintf("%064x", 12), CleanupIntentSHA256: fmt.Sprintf("%064x", 14), ClaimRevision: 2}
+	if err := db.RecordExternalDeploymentServiceSnapshot(ctx, serviceSnapshot); err != nil {
+		t.Fatalf("record immutable service snapshot: %v", err)
+	}
+	if err := db.Pool.QueryRow(ctx, `SELECT n.state, a.state, n.revision FROM external_deployment_nonces n JOIN external_deployment_admissions a ON a.nonce_id=n.id WHERE n.id=$1`, nonce.ID).Scan(&nonceState, &admissionState, &revision); err != nil || nonceState != "claimed" || admissionState != string(ExternalDeploymentAdmissionEvidenceClaimed) || revision != 3 {
+		t.Fatalf("claimed nonce state=%q admission=%q revision=%d err=%v", nonceState, admissionState, revision, err)
+	}
+
+	terminal := externalAdmissionForTest(nonce, key)
+	terminal.RequestDigest = logicalDigest
+	terminal.Operation.Metadata["requestDigest"] = logicalDigest
+	terminal.AdmissionID, terminal.NonceGeneration = admissionID, 1
+	terminal.ServiceSnapshot = serviceSnapshot
+	terminal.CheckpointRefs = []ExternalDeploymentCheckpointRef{{Phase: "external_admission", CheckpointID: "admission-1", AttemptID: currentAttemptID, EvidenceRef: "checkpoint://admission-1", EvidenceSHA256: fmt.Sprintf("%064x", 9)}}
+	result, err := db.AdmitExternalDeployment(ctx, terminal)
+	if err != nil || result == nil || result.Replayed {
+		t.Fatalf("commit v4 admission result=%+v err=%v", result, err)
+	}
+	var checkpointID string
+	if err := db.Pool.QueryRow(ctx, `SELECT a.state, a.operation_id, c.checkpoint_id FROM external_deployment_admissions a JOIN external_deployment_admission_checkpoints c ON c.admission_id=a.id WHERE a.id=$1`, admissionID).Scan(&admissionState, new(string), &checkpointID); err != nil || admissionState != string(ExternalDeploymentAdmissionCommitted) || checkpointID != "admission-1" {
+		t.Fatalf("committed lifecycle state=%q checkpoint=%q err=%v", admissionState, checkpointID, err)
+	}
+	if err := db.Pool.QueryRow(ctx, `SELECT checkpoint_id FROM fleet_runner_checkpoint_refs WHERE admission_id=$1 AND phase='external_admission'`, admissionID).Scan(&checkpointID); err != nil || checkpointID != "admission-1" {
+		t.Fatalf("runner checkpoint ledger=%q err=%v", checkpointID, err)
+	}
+	conflictingReplay := terminal
+	conflictingReplay.CheckpointRefs = append([]ExternalDeploymentCheckpointRef(nil), terminal.CheckpointRefs...)
+	conflictingReplay.CheckpointRefs[0].EvidenceRef = "checkpoint://conflicting-migration"
+	if _, err := db.AdmitExternalDeployment(ctx, conflictingReplay); !errors.Is(err, ErrExternalDeploymentCheckpointConflict) {
+		t.Fatalf("conflicting checkpoint replay error=%v, want checkpoint conflict", err)
+	}
+	if err := db.RecordExternalDeploymentCommitPending(ctx, admissionID, serviceSnapshot.CleanupIntentSHA256); err != nil {
+		t.Fatalf("persist terminal remote-commit intent: %v", err)
+	}
+	if err := db.RecordExternalDeploymentCommitBinding(ctx, ExternalDeploymentServiceSnapshot{AdmissionID: admissionID, CommitRevision: 3, CleanupIntentSHA256: serviceSnapshot.CleanupIntentSHA256}); err != nil {
+		t.Fatalf("bind terminal remote commit: %v", err)
+	}
+	if err := db.MarkExternalDeploymentAdmissionCleanupPending(ctx, admissionID); err != nil {
+		t.Fatal(err)
+	}
+	cleanupCheckpoint := ExternalDeploymentCheckpointRef{Phase: "external_cleanup", CheckpointID: "cleanup-1", AttemptID: currentAttemptID, EvidenceRef: "checkpoint://cleanup-1", EvidenceSHA256: fmt.Sprintf("%064x", 13)}
+	if err := db.RecordExternalDeploymentCleanupBindings(ctx, ExternalDeploymentServiceSnapshot{AdmissionID: admissionID, CommitRevision: 3, CleanupRevision: 4, CleanupIntentSHA256: serviceSnapshot.CleanupIntentSHA256, AbsenceProofSHA256: cleanupCheckpoint.EvidenceSHA256}); err != nil {
+		t.Fatalf("bind service-owned cleanup absence: %v", err)
+	}
+	if err := db.CompleteExternalDeploymentAdmissionWithCleanupCheckpoint(ctx, admissionID, cleanupCheckpoint); err != nil {
+		t.Fatal(err)
+	}
+	if err := db.Pool.QueryRow(ctx, `SELECT state FROM external_deployment_admissions WHERE id=$1`, admissionID).Scan(&admissionState); err != nil || admissionState != string(ExternalDeploymentAdmissionComplete) {
+		t.Fatalf("complete lifecycle state=%q err=%v", admissionState, err)
+	}
+	if err := db.Pool.QueryRow(ctx, `SELECT evidence_sha256 FROM external_deployment_admission_checkpoints WHERE admission_id=$1 AND phase='external_cleanup'`, admissionID).Scan(&checkpointID); err != nil || checkpointID != cleanupCheckpoint.EvidenceSHA256 {
+		t.Fatalf("complete lifecycle cleanup checkpoint=%q err=%v", checkpointID, err)
+	}
+}
+
 // TestExternalDeploymentAdmissionAtomicReplayAndRace proves the three failure
 // boundaries that matter for the external bridge: a failed terminal write does
 // not burn the nonce, a successful exact replay returns the same receipt, and

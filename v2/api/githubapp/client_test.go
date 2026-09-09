@@ -385,7 +385,7 @@ func TestDispatchDiscoversMergedReviewAndBoundPlanArtifact(t *testing.T) {
 	}
 }
 
-func TestDisposableDispatchCarriesAndPinsPilotRunID(t *testing.T) {
+func TestExternalMacDispatchCarriesAndPinsPilotRunID(t *testing.T) {
 	planID := "25252525-2525-4252-8252-252525252525"
 	planSHA := strings.Repeat("a", 64)
 	headSHA := strings.Repeat("b", 40)
@@ -407,24 +407,25 @@ func TestDisposableDispatchCarriesAndPinsPilotRunID(t *testing.T) {
 			_ = json.NewDecoder(r.Body).Decode(&dispatched)
 			fmt.Fprint(w, `{"workflow_run_id":93,"html_url":"https://github.com/acme/norn-fleet/actions/runs/93"}`)
 		case r.URL.Path == "/repos/acme/norn-fleet/actions/runs/93":
-			fmt.Fprintf(w, `{"id":93,"html_url":"https://github.com/acme/norn-fleet/actions/runs/93","event":"workflow_dispatch","head_sha":%q,"head_branch":"main","path":".github/workflows/apply.yml@main","name":"apply","display_title":%q,"actor":{"login":"norn[bot]","type":"Bot"}}`, headSHA, "Apply disposable/fleet/nyc3 Norn plan "+planID+" nonce "+nonce)
+			fmt.Fprintf(w, `{"id":93,"html_url":"https://github.com/acme/norn-fleet/actions/runs/93","event":"workflow_dispatch","head_sha":%q,"head_branch":"main","path":".github/workflows/apply.yml@main","name":"apply","display_title":%q,"actor":{"login":"norn[bot]","type":"Bot"}}`, headSHA, "Apply disposable/external-mac/nyc3 Norn plan "+planID+" nonce "+nonce)
 		default:
 			http.NotFound(w, r)
 		}
 	}))
 	client.cfg.PilotRunID = pilotRunID
+	client.cfg.ConfigPath = "environments/disposable/external-mac/nyc3/cluster.yaml"
 	approved := &Dispatch{PlanRunID: 91, PlanSHA: planSHA, ApprovedHeadSHA: headSHA, PilotRunID: pilotRunID}
-	result, err := client.DispatchBoundPlan(context.Background(), planID, "disposable/fleet/nyc3", false, approved, nonce)
+	result, err := client.DispatchBoundPlan(context.Background(), planID, "disposable/external-mac/nyc3", false, approved, nonce)
 	if err != nil {
 		t.Fatal(err)
 	}
 	inputs := dispatched["inputs"].(map[string]any)
-	if result.PilotRunID != pilotRunID || inputs["pilot_run_id"] != pilotRunID || inputs["fleet_environment"] != "disposable/fleet/nyc3" {
+	if result.PilotRunID != pilotRunID || inputs["pilot_run_id"] != pilotRunID || inputs["fleet_environment"] != "disposable/external-mac/nyc3" {
 		t.Fatalf("result=%#v dispatch=%#v", result, dispatched)
 	}
 
 	approved.PilotRunID = "pilot20260908"
-	if _, err := client.DispatchBoundPlan(context.Background(), planID, "disposable/fleet/nyc3", false, approved, nonce); err == nil {
+	if _, err := client.DispatchBoundPlan(context.Background(), planID, "disposable/external-mac/nyc3", false, approved, nonce); err == nil {
 		t.Fatal("dispatch accepted a pilot run different from the durable approved binding")
 	}
 }
@@ -645,13 +646,20 @@ func TestConfigRequiresExplicitFleetEnvironment(t *testing.T) {
 	}
 }
 
-func TestConfigAdmitsOnlyCanonicalRunBoundDisposableFleet(t *testing.T) {
-	valid := Config{AppID: "1", InstallationID: 2, PrivateKeyFile: "key", Repository: "acme/fleet", Environment: "staging", PilotRunID: "pilot20260907", ConfigPath: "environments/disposable/fleet/nyc3/cluster.yaml"}
-	client, err := New(valid, nil)
-	if err != nil || client.fleetRoot() != "disposable/fleet/nyc3" {
-		t.Fatalf("canonical disposable config rejected: client=%v err=%v", client, err)
+func TestConfigAdmitsOnlyAllowlistedRunBoundDisposableFleetRoots(t *testing.T) {
+	for configPath, wantRoot := range map[string]string{
+		"environments/disposable/fleet/nyc3/cluster.yaml":        "disposable/fleet/nyc3",
+		"environments/disposable/external-mac/nyc3/cluster.yaml": "disposable/external-mac/nyc3",
+	} {
+		t.Run(wantRoot, func(t *testing.T) {
+			valid := Config{AppID: "1", InstallationID: 2, PrivateKeyFile: "key", Repository: "acme/fleet", Environment: "staging", PilotRunID: "pilot20260907", ConfigPath: configPath}
+			client, err := New(valid, nil)
+			if err != nil || client.fleetRoot() != wantRoot {
+				t.Fatalf("allowlisted disposable config rejected: client=%v err=%v", client, err)
+			}
+		})
 	}
-	valid.PilotRunID = "bad-run-id"
+	valid := Config{AppID: "1", InstallationID: 2, PrivateKeyFile: "key", Repository: "acme/fleet", Environment: "staging", PilotRunID: "bad-run-id", ConfigPath: "environments/disposable/fleet/nyc3/cluster.yaml"}
 	if _, err := New(valid, nil); err == nil {
 		t.Fatal("noncanonical disposable run ID accepted")
 	}
@@ -659,6 +667,18 @@ func TestConfigAdmitsOnlyCanonicalRunBoundDisposableFleet(t *testing.T) {
 	valid.ConfigPath = "environments/disposable/other/nyc3/cluster.yaml"
 	if _, err := New(valid, nil); err == nil {
 		t.Fatal("arbitrary disposable root accepted")
+	}
+}
+
+func TestConfigRetainsCanonicalStagingAndProductionFleetRoots(t *testing.T) {
+	for environment := range map[string]struct{}{"staging": {}, "production": {}} {
+		t.Run(environment, func(t *testing.T) {
+			valid := Config{AppID: "1", InstallationID: 2, PrivateKeyFile: "key", Repository: "acme/fleet", Environment: environment, ConfigPath: "environments/" + environment + "/nyc3/cluster.yaml"}
+			client, err := New(valid, nil)
+			if err != nil || client.fleetRoot() != environment+"/nyc3" {
+				t.Fatalf("canonical %s config rejected: client=%v err=%v", environment, client, err)
+			}
+		})
 	}
 }
 

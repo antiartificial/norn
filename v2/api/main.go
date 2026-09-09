@@ -337,6 +337,13 @@ func main() {
 	h := handler.New(db, nomadClient, consulClient, ws, cfg, pipe, beaconSvc, sec, sagaStore, s3Client, redpandaClient)
 	h.ConfigureWorkloads(workloads, localEngine, containerRuntime)
 	h.ConfigurePrivateReleaseSigner(nornPrivateSigner)
+	if cfg.EnvironmentID() == "staging" && externalFleetVerifierRequested(cfg) {
+		verifier, verifierErr := handler.ExternalFleetDeploymentVerifierFromConfig(cfg)
+		if verifierErr != nil {
+			log.Fatalf("external Fleet deployment verifier: %v", verifierErr)
+		}
+		h.ConfigureExternalFleetDeploymentVerifier(verifier)
+	}
 
 	// Router
 	r := chi.NewRouter()
@@ -477,7 +484,15 @@ func main() {
 		r.With(handler.ValidateAppID).Post("/v1/apps/{id}/releases/preflight", h.QueueReleasePreflight)
 		r.With(handler.ValidateAppID).Post("/v1/apps/{id}/private-attestations", h.CreatePrivateReleaseAttestation)
 		r.With(handler.ValidateAppID).Post("/v1/apps/{id}/releases/deployments", h.QueueReleaseDeployment)
-		r.With(handler.ValidateAppID).Post("/v1/apps/{id}/external-deployments", h.AdmitExternalFleetDeployment)
+		r.With(handler.ValidateAppID).Post("/v1/apps/{id}/external-deployments/begin", h.BeginExternalFleetDeploymentAdmission)
+		r.With(handler.ValidateAppID).Post("/v1/apps/{id}/external-deployments/resume", h.ResumeExternalFleetDeploymentAdmission)
+		r.With(handler.ValidateAppID).Post("/v1/apps/{id}/external-deployments/admit", h.AdmitExternalFleetDeploymentV4)
+		r.With(handler.ValidateAppID).Post("/v1/apps/{id}/external-deployments/cleanup", h.CompleteExternalFleetDeploymentCleanup)
+		r.With(handler.ValidateAppID).Post("/v1/apps/{id}/external-deployments/reconcile", h.ReconcileExternalFleetDeploymentAdmission)
+		r.With(handler.ValidateAppID).Get("/v1/apps/{id}/external-deployments/context/{admissionId}", h.GetExternalFleetDeploymentAdmissionContext)
+		// Deprecated compatibility alias: it delegates to the same v4-only
+		// handler and is intentionally absent from the public OpenAPI contract.
+		r.With(handler.ValidateAppID).Post("/v1/apps/{id}/external-deployments", h.AdmitExternalFleetDeploymentV4)
 		r.With(handler.ValidateAppID).Post("/v1/apps/{id}/releases/rollbacks", h.QueueReleaseRollback)
 		r.With(handler.ValidateAppID).Get("/v1/apps/{id}/qualifications", h.ListReleaseQualifications)
 		r.With(handler.ValidateAppID).Post("/v1/apps/{id}/qualifications", h.CreateReleaseQualification)
@@ -1142,7 +1157,12 @@ func controlScopeForRequest(r *http.Request) string {
 		return ""
 	case path == "/api/v1/auth/rotate" || path == "/api/v1/auth/revoke":
 		return ""
-	case r.Method == http.MethodPost && (strings.HasSuffix(path, "/releases/preflight") || strings.HasSuffix(path, "/releases/deployments") || strings.HasSuffix(path, "/releases/rollbacks") || strings.HasSuffix(path, "/private-attestations") || strings.HasSuffix(path, "/qualifications") || strings.HasSuffix(path, "/promotions") || strings.HasSuffix(path, "/external-deployments")):
+	case r.Method == http.MethodGet && strings.Contains(path, "/external-deployments/context/"):
+		// The handler validates the exact fleet:external-admission principal;
+		// requiring api:read here would incorrectly reject that constrained CI
+		// identity before its server-owned admission context can be checked.
+		return ""
+	case r.Method == http.MethodPost && (strings.HasSuffix(path, "/releases/preflight") || strings.HasSuffix(path, "/releases/deployments") || strings.HasSuffix(path, "/releases/rollbacks") || strings.HasSuffix(path, "/private-attestations") || strings.HasSuffix(path, "/qualifications") || strings.HasSuffix(path, "/promotions") || strings.HasSuffix(path, "/external-deployments") || strings.HasSuffix(path, "/external-deployments/begin") || strings.HasSuffix(path, "/external-deployments/resume") || strings.HasSuffix(path, "/external-deployments/admit") || strings.HasSuffix(path, "/external-deployments/cleanup") || strings.HasSuffix(path, "/external-deployments/reconcile")):
 		// The global middleware authenticates the Norn token but the release
 		// handlers own their exact scope plus app/environment/CI binding.
 		return ""
@@ -1260,9 +1280,15 @@ func writeControlCapabilitiesForConfig(cfg *config.Config, w http.ResponseWriter
 		endpoints["releasePromotions"] = "/api/v1/apps/{id}/promotions"
 		endpoints["releaseRollbacks"] = "/api/v1/apps/{id}/releases/rollbacks"
 	}
-	// The external-Fleet route remains intentionally undiscoverable until a
-	// concrete live Nomad/Consul/ingress verifier is installed. Configuration
-	// alone is not a capability: the nil verifier rejects every receipt.
+	if externalFleetVerifierConfigured(cfg) {
+		features = append(features, "external-fleet-deployment-admission-v4")
+		endpoints["externalFleetAdmissionBegin"] = "/api/v1/apps/{id}/external-deployments/begin"
+		endpoints["externalFleetAdmissionResume"] = "/api/v1/apps/{id}/external-deployments/resume"
+		endpoints["externalFleetAdmissionAdmit"] = "/api/v1/apps/{id}/external-deployments/admit"
+		endpoints["externalFleetAdmissionCleanup"] = "/api/v1/apps/{id}/external-deployments/cleanup"
+		endpoints["externalFleetAdmissionContext"] = "/api/v1/apps/{id}/external-deployments/context/{admissionId}"
+		endpoints["externalFleetAdmissionReconcile"] = "/api/v1/apps/{id}/external-deployments/reconcile"
+	}
 	if cfg.IsAppCatalogReadOnly() {
 		features = withoutCapability(features, "app-creation")
 		features = append(features, "app-catalog-read-only-v1")
@@ -1325,10 +1351,22 @@ func releasePipelineConfigured(cfg *config.Config) bool {
 // first-image signer only when the entire disabled-by-default external bridge
 // is server-pinned; an incomplete bridge cannot widen normal release trust.
 func externalFleetBootstrapSignerForPipeline(cfg *config.Config) string {
-	if cfg == nil || (cfg.EnvironmentID() != "staging" && cfg.EnvironmentID() != "production") || strings.TrimSpace(cfg.ExternalFleetAdmissionApp) == "" || strings.TrimSpace(cfg.ExternalFleetAdmissionNamespace) == "" || strings.TrimSpace(cfg.ExternalFleetAdmissionMigrationJobID) == "" || strings.TrimSpace(cfg.ExternalFleetAdmissionRuntimeJobID) == "" || cfg.ExternalFleetAdmissionMigrationJobID == cfg.ExternalFleetAdmissionRuntimeJobID || !lowerSHA256(cfg.ExternalFleetAdmissionMigrationHCLSHA256) || !lowerSHA256(cfg.ExternalFleetAdmissionRuntimeHCLSHA256) || cfg.ExternalFleetAdmissionMigrationHCLSHA256 == cfg.ExternalFleetAdmissionRuntimeHCLSHA256 || !externalFleetBootstrapSignerRef(cfg.ExternalFleetAdmissionBootstrapSignerRef) || externalFleetSignerInNormalAllowlist(cfg.ExternalFleetAdmissionBootstrapSignerRef, cfg.ReleaseAttestationWorkflowRefs) {
+	if !externalFleetBridgeConfigured(cfg) {
 		return ""
 	}
 	return cfg.ExternalFleetAdmissionBootstrapSignerRef
+}
+
+func externalFleetBridgeConfigured(cfg *config.Config) bool {
+	return cfg != nil && (cfg.EnvironmentID() == "staging" || cfg.EnvironmentID() == "production") && strings.TrimSpace(cfg.ExternalFleetAdmissionApp) != "" && strings.TrimSpace(cfg.ExternalFleetAdmissionNamespace) != "" && strings.TrimSpace(cfg.ExternalFleetAdmissionMigrationJobID) != "" && strings.TrimSpace(cfg.ExternalFleetAdmissionRuntimeJobID) != "" && cfg.ExternalFleetAdmissionMigrationJobID != cfg.ExternalFleetAdmissionRuntimeJobID && lowerSHA256(cfg.ExternalFleetAdmissionMigrationHCLSHA256) && lowerSHA256(cfg.ExternalFleetAdmissionRuntimeHCLSHA256) && cfg.ExternalFleetAdmissionMigrationHCLSHA256 != cfg.ExternalFleetAdmissionRuntimeHCLSHA256 && externalFleetBootstrapSignerRef(cfg.ExternalFleetAdmissionBootstrapSignerRef) && !externalFleetSignerInNormalAllowlist(cfg.ExternalFleetAdmissionBootstrapSignerRef, cfg.ReleaseAttestationWorkflowRefs)
+}
+
+func externalFleetVerifierRequested(cfg *config.Config) bool {
+	return cfg != nil && (strings.TrimSpace(cfg.ExternalFleetVerifierURL) != "" || strings.TrimSpace(cfg.ExternalFleetVerifierTokenFile) != "" || strings.TrimSpace(cfg.ExternalFleetEvidenceRegistrationTokenFile) != "" || strings.TrimSpace(cfg.ExternalFleetGitHubVerifierAppID) != "" || cfg.ExternalFleetGitHubVerifierInstallationID != 0 || strings.TrimSpace(cfg.ExternalFleetGitHubVerifierPrivateKeyFile) != "" || len(cfg.ExternalFleetGitHubVerifierRepositoryIDs) != 0 || strings.TrimSpace(cfg.ExternalFleetGitHubCLIPath) != "" || strings.TrimSpace(cfg.ExternalFleetPublicBaseURL) != "" || len(cfg.ExternalFleetEvidenceAllowedCIDRs) != 0)
+}
+
+func externalFleetVerifierConfigured(cfg *config.Config) bool {
+	return cfg != nil && cfg.EnvironmentID() == "staging" && externalFleetBridgeConfigured(cfg) && externalFleetVerifierRequested(cfg) && strings.TrimSpace(cfg.ExternalFleetVerifierURL) != "" && strings.TrimSpace(cfg.ExternalFleetVerifierTokenFile) != "" && strings.TrimSpace(cfg.ExternalFleetEvidenceRegistrationTokenFile) != "" && strings.TrimSpace(cfg.ExternalFleetGitHubVerifierAppID) != "" && cfg.ExternalFleetGitHubVerifierInstallationID > 0 && strings.TrimSpace(cfg.ExternalFleetGitHubVerifierPrivateKeyFile) != "" && len(cfg.ExternalFleetGitHubVerifierRepositoryIDs) > 0 && strings.TrimSpace(cfg.ExternalFleetGitHubCLIPath) != "" && strings.TrimSpace(cfg.ExternalFleetPublicBaseURL) != "" && len(cfg.ExternalFleetEvidenceAllowedCIDRs) > 0
 }
 
 func externalFleetSignerInNormalAllowlist(value string, allowed []string) bool {

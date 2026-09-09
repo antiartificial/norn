@@ -1,0 +1,82 @@
+{
+  "profile": "norn.external-fleet-receipt-digest/v4",
+  "description": "Exact cross-language cleanup receipt digest. Serialize the declared typed projection as compact UTF-8 JSON with no key sorting or HTML escaping; set nonce to an empty string, omit raw Nomad currentSpec/submission transport objects, and retain their canonical digest fields. Chronology timestamps use UTC with exactly three fractional digits.",
+  "receipt": {
+    "schemaVersion": "norn.external-fleet-deployment-receipt/v4",
+    "admissionId": "00000000-0000-4000-8000-000000000010",
+    "nonce": "",
+    "app": "hello-norn-mysql",
+    "sourceSha": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+    "artifact": "ghcr.io/acme/hello-norn-mysql@sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+    "candidate": {
+      "provider": "github-actions",
+      "repository": "acme/hello-norn-mysql",
+      "repositoryId": "1",
+      "ownerId": "2",
+      "repositoryVisibility": "private",
+      "runId": "123",
+      "runAttempt": "1",
+      "workflowRef": "acme/hello-norn-mysql/.github/workflows/release.yml@aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+      "workflowSha": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+      "signerWorkflowRef": "acme/hello-norn-mysql/.github/workflows/signer.yml@ffffffffffffffffffffffffffffffffffffffff",
+      "signerWorkflowSha": "ffffffffffffffffffffffffffffffffffffffff",
+      "ref": "refs/heads/main",
+      "attestation": {
+        "mode": "github-private",
+        "issuer": "https://token.actions.githubusercontent.com",
+        "subjectDigest": "sha256:cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
+        "materialSha": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+      }
+    },
+    "attestationBundleSha256": "1111111111111111111111111111111111111111111111111111111111111111",
+    "sbomBundleSha256": "2222222222222222222222222222222222222222222222222222222222222222",
+    "fleet": {
+      "namespace": "norn-pilot",
+      "migration": {
+        "jobId": "hello-norn-mysql-migrate",
+        "hclSha256": "3333333333333333333333333333333333333333333333333333333333333333",
+        "evalId": "00000000-0000-4000-8000-000000000011",
+        "evalCreateIndex": 1,
+        "evalJobModifyIndex": 2,
+        "jobCreateIndex": 3,
+        "jobModifyIndex": 2,
+        "jobVersion": 0,
+        "currentSpec": {"ID": "raw-migration-transport"},
+        "currentSpecSha256": "4444444444444444444444444444444444444444444444444444444444444444",
+        "submission": {"Source": "raw migration transport"},
+        "submissionSha256": "5555555555555555555555555555555555555555555555555555555555555555",
+        "evaluationChainIds": ["00000000-0000-4000-8000-000000000011"],
+        "checkpointId": "migration-checkpoint"
+      },
+      "runtime": {
+        "jobId": "hello-norn-mysql",
+        "hclSha256": "6666666666666666666666666666666666666666666666666666666666666666",
+        "evalId": "00000000-0000-4000-8000-000000000012",
+        "evalCreateIndex": 4,
+        "evalJobModifyIndex": 5,
+        "jobCreateIndex": 6,
+        "jobModifyIndex": 5,
+        "jobVersion": 0,
+        "currentSpec": {"ID": "raw-runtime-transport"},
+        "currentSpecSha256": "7777777777777777777777777777777777777777777777777777777777777777",
+        "submission": {"Source": "raw runtime transport"},
+        "submissionSha256": "8888888888888888888888888888888888888888888888888888888888888888",
+        "evaluationChainIds": ["00000000-0000-4000-8000-000000000012"],
+        "checkpointId": "runtime-checkpoint"
+      },
+      "planId": "plan-1",
+      "applyRunId": "123",
+      "applyRunAttempt": "1",
+      "planSha256": "9999999999999999999999999999999999999999999999999999999999999999",
+      "runnerAttemptId": "00000000-0000-4000-8000-000000000022",
+      "rootAttemptId": "00000000-0000-4000-8000-000000000021",
+      "fleetCommit": "ffffffffffffffffffffffffffffffffffffffff",
+      "nonceEvidenceRef": "nonce-evidence"
+    },
+    "chronology": [
+      {"phase": "prepare", "occurredAt": "2026-03-10T12:00:00.000Z", "evidenceRef": "https://evidence.example.test/prepare"},
+      {"phase": "migration", "occurredAt": "2026-03-10T12:00:01.120Z", "evidenceRef": "https://evidence.example.test/migration"}
+    ]
+  },
+  "sha256": "72c9712796f09d6ea92c236238cac5eefaeed6eb6ee40bce8c9a8f2f14cfc0bc"
+}

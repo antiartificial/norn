@@ -783,8 +783,30 @@ func TestExternalFleetAdmissionIsNotAdvertisedWithoutALiveVerifier(t *testing.T)
 	if err := json.Unmarshal(recorder.Body.Bytes(), &capability); err != nil {
 		t.Fatal(err)
 	}
-	if containsCapability(capability.Features, "external-fleet-deployment-admission-v1") || capability.Endpoints["externalFleetDeployments"] != "" {
+	if containsCapability(capability.Features, "external-fleet-deployment-admission-v4") || capability.Endpoints["externalFleetAdmissionBegin"] != "" {
 		t.Fatalf("configuration without a live verifier was advertised as a capability: %#v", capability)
+	}
+}
+
+func TestExternalFleetAdmissionCapabilityRequiresCompleteVerifierConfiguration(t *testing.T) {
+	request := httptest.NewRequest(http.MethodGet, "/api/v1/capabilities", nil)
+	recorder := httptest.NewRecorder()
+	writeControlCapabilitiesForConfig(&config.Config{
+		Environment: "staging", ExternalFleetAdmissionApp: "hello-norn-mysql", ExternalFleetAdmissionNamespace: "norn-pilot",
+		ExternalFleetAdmissionMigrationJobID: "hello-norn-mysql-migrate", ExternalFleetAdmissionMigrationHCLSHA256: strings.Repeat("a", 64),
+		ExternalFleetAdmissionRuntimeJobID: "hello-norn-mysql", ExternalFleetAdmissionRuntimeHCLSHA256: strings.Repeat("b", 64),
+		ExternalFleetAdmissionBootstrapSignerRef: "acme/hello-norn-mysql/.github/workflows/hello-norn-mysql-bootstrap-image.yml@" + strings.Repeat("c", 40),
+		ExternalFleetVerifierURL:                 "https://evidence.example.test", ExternalFleetVerifierTokenFile: "/secure/evidence.token", ExternalFleetEvidenceRegistrationTokenFile: "/secure/evidence-registration.token", ExternalFleetGitHubVerifierAppID: "123", ExternalFleetGitHubVerifierInstallationID: 456, ExternalFleetGitHubVerifierPrivateKeyFile: "/secure/github-app.pem", ExternalFleetGitHubVerifierRepositoryIDs: []string{"42"}, ExternalFleetGitHubCLIPath: "/usr/local/bin/gh", ExternalFleetPublicBaseURL: "https://pilot.example.test", ExternalFleetEvidenceAllowedCIDRs: []string{"100.64.0.0/10"},
+	}, recorder, request)
+	var capability struct {
+		Features  []string          `json:"features"`
+		Endpoints map[string]string `json:"endpoints"`
+	}
+	if err := json.Unmarshal(recorder.Body.Bytes(), &capability); err != nil {
+		t.Fatal(err)
+	}
+	if !containsCapability(capability.Features, "external-fleet-deployment-admission-v4") || capability.Endpoints["externalFleetAdmissionBegin"] != "/api/v1/apps/{id}/external-deployments/begin" || capability.Endpoints["externalFleetAdmissionResume"] != "/api/v1/apps/{id}/external-deployments/resume" || capability.Endpoints["externalFleetAdmissionAdmit"] != "/api/v1/apps/{id}/external-deployments/admit" || capability.Endpoints["externalFleetAdmissionCleanup"] != "/api/v1/apps/{id}/external-deployments/cleanup" || capability.Endpoints["externalFleetAdmissionContext"] != "/api/v1/apps/{id}/external-deployments/context/{admissionId}" || capability.Endpoints["externalFleetAdmissionReconcile"] != "/api/v1/apps/{id}/external-deployments/reconcile" {
+		t.Fatalf("complete external verifier was not advertised: %#v", capability)
 	}
 }
 

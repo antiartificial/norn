@@ -171,6 +171,7 @@ jobs:
           upload-artifact: false
 
       - name: Attest GitHub build provenance for the immutable artifact
+        id: provenance-attestation
         uses: actions/attest@508db95dd578ae2727ebd6217d5ba78e4fbda05d # v4.2.1
         with:
           subject-name: ghcr.io/antiartificial/hello-norn-mysql
@@ -178,6 +179,7 @@ jobs:
           push-to-registry: true
 
       - name: Attest SPDX SBOM for the immutable artifact
+        id: sbom-attestation
         uses: actions/attest@508db95dd578ae2727ebd6217d5ba78e4fbda05d # v4.2.1
         with:
           subject-name: ghcr.io/antiartificial/hello-norn-mysql
@@ -190,16 +192,32 @@ jobs:
           SOURCE_SHA: ${{ needs.authorize.outputs.source_sha }}
           ARTIFACT: ${{ steps.artifact.outputs.artifact }}
           REVIEWED_WORKFLOW_SHA: ${{ inputs.reviewed_workflow_sha }}
+          PROVENANCE_BUNDLE: ${{ steps.provenance-attestation.outputs.bundle-path }}
+          SBOM_BUNDLE: ${{ steps.sbom-attestation.outputs.bundle-path }}
+          PROVENANCE_URL: ${{ steps.provenance-attestation.outputs.attestation-url }}
+          SBOM_URL: ${{ steps.sbom-attestation.outputs.attestation-url }}
         run: |
           set -euo pipefail
           mkdir -p bootstrap-evidence
+          [[ -n "$PROVENANCE_BUNDLE" && -n "$SBOM_BUNDLE" && -f "$PROVENANCE_BUNDLE" && -f "$SBOM_BUNDLE" ]]
+          # The receipt binds canonical parsed JSON, not action serialization
+          # bytes. This checked-in v3 profile rejects ambiguous JSON before
+          # hashing and is byte-identical to the Go verifier's representation.
+          provenance_sha256="$(python3 v2/scripts/canonical-sigstore-bundle-digest "$PROVENANCE_BUNDLE")"
+          sbom_sha256="$(python3 v2/scripts/canonical-sigstore-bundle-digest "$SBOM_BUNDLE")"
+          cp "$PROVENANCE_BUNDLE" bootstrap-evidence/provenance.sigstore.json
+          cp "$SBOM_BUNDLE" bootstrap-evidence/sbom.sigstore.json
           jq -n \
             --arg sourceSha "$SOURCE_SHA" \
             --arg artifact "$ARTIFACT" \
             --arg repository "$GITHUB_REPOSITORY" \
             --arg signerWorkflow "$GITHUB_REPOSITORY/.github/workflows/hello-norn-mysql-bootstrap-image.yml" \
             --arg verifiedWorkflowSha "$REVIEWED_WORKFLOW_SHA" \
-            '{schemaVersion: "norn.hello-norn-mysql.bootstrap-handoff/v1", sourceSha: $sourceSha, artifact: $artifact, repository: $repository, signerWorkflow: $signerWorkflow, reportedWorkflowSha: $verifiedWorkflowSha, verification: {requiredInputs: ["REVIEWED_SOURCE_SHA", "REVIEWED_WORKFLOW_SHA"], provenance: ("gh attestation verify oci://" + $artifact + " --repo " + $repository + " --signer-workflow " + $signerWorkflow + " --signer-digest ${REVIEWED_WORKFLOW_SHA:?set from independently reviewed policy} --source-digest ${REVIEWED_SOURCE_SHA:?set from independently reviewed policy} --source-ref refs/heads/master --predicate-type https://slsa.dev/provenance/v1 --deny-self-hosted-runners"), sbom: ("gh attestation verify oci://" + $artifact + " --repo " + $repository + " --signer-workflow " + $signerWorkflow + " --signer-digest ${REVIEWED_WORKFLOW_SHA:?set from independently reviewed policy} --source-digest ${REVIEWED_SOURCE_SHA:?set from independently reviewed policy} --source-ref refs/heads/master --predicate-type https://spdx.dev/Document/v2.3 --deny-self-hosted-runners")}}' \
+            --arg provenanceBundleSha256 "$provenance_sha256" \
+            --arg sbomBundleSha256 "$sbom_sha256" \
+            --arg provenanceURL "$PROVENANCE_URL" \
+            --arg sbomURL "$SBOM_URL" \
+            '{schemaVersion: "norn.hello-norn-mysql.bootstrap-handoff/v2", sourceSha: $sourceSha, artifact: $artifact, repository: $repository, signerWorkflow: $signerWorkflow, reportedWorkflowSha: $verifiedWorkflowSha, attestationBundleSha256: $provenanceBundleSha256, sbomBundleSha256: $sbomBundleSha256, attestationUrl: $provenanceURL, sbomUrl: $sbomURL, verification: {requiredInputs: ["REVIEWED_SOURCE_SHA", "REVIEWED_WORKFLOW_SHA"], provenance: ("gh attestation verify oci://" + $artifact + " --repo " + $repository + " --signer-workflow " + $signerWorkflow + " --signer-digest ${REVIEWED_WORKFLOW_SHA:?set from independently reviewed policy} --source-digest ${REVIEWED_SOURCE_SHA:?set from independently reviewed policy} --source-ref refs/heads/master --predicate-type https://slsa.dev/provenance/v1 --deny-self-hosted-runners"), sbom: ("gh attestation verify oci://" + $artifact + " --repo " + $repository + " --signer-workflow " + $signerWorkflow + " --signer-digest ${REVIEWED_WORKFLOW_SHA:?set from independently reviewed policy} --source-digest ${REVIEWED_SOURCE_SHA:?set from independently reviewed policy} --source-ref refs/heads/master --predicate-type https://spdx.dev/Document/v2.3 --deny-self-hosted-runners")}}' \
             > bootstrap-evidence/handoff.json
 
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2

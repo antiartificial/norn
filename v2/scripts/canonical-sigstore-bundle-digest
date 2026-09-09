@@ -1,0 +1,75 @@
+#!/usr/bin/env python3
+"""Print the Norn v3 canonical digest for one Sigstore bundle JSON file.
+
+The restricted profile deliberately preserves the complete parsed bundle. Its
+uint64-integer/string constraints make Python's sorted compact JSON representation
+byte-for-byte equivalent to the Go verifier's representation.
+"""
+
+import hashlib
+import json
+import re
+import sys
+
+
+INTEGER = re.compile(r"(?:0|[1-9][0-9]*)\Z")
+INTEGER_MAX = "18446744073709551615"
+UNSAFE_STRING = re.compile(r"[<>&\u2028\u2029\ufffd]")
+
+
+def parse_integer(value: str) -> int:
+    if (
+        not INTEGER.fullmatch(value)
+        or len(value) > len(INTEGER_MAX)
+        or (len(value) == len(INTEGER_MAX) and value > INTEGER_MAX)
+    ):
+        raise ValueError("bundle numbers must be non-negative canonical integers")
+    return int(value)
+
+
+def reject_float(_: str) -> None:
+    raise ValueError("bundle numbers must be non-negative canonical integers")
+
+
+def reject_constant(_: str) -> None:
+    raise ValueError("bundle contains a non-JSON numeric constant")
+
+
+def object_no_duplicates(pairs: list[tuple[str, object]]) -> dict[str, object]:
+    result: dict[str, object] = {}
+    for key, value in pairs:
+        if key in result:
+            raise ValueError("bundle contains a duplicate object key")
+        result[key] = value
+    return result
+
+
+def valid(value: object) -> bool:
+    if value is None or isinstance(value, (bool, int)):
+        return True
+    if isinstance(value, str):
+        return UNSAFE_STRING.search(value) is None
+    if isinstance(value, list):
+        return all(valid(item) for item in value)
+    if isinstance(value, dict):
+        return all(valid(key) and valid(item) for key, item in value.items())
+    return False
+
+
+if len(sys.argv) != 2:
+    raise SystemExit("usage: canonical-sigstore-bundle-digest BUNDLE.json")
+
+with open(sys.argv[1], "r", encoding="utf-8") as bundle:
+    parsed = json.load(
+        bundle,
+        parse_int=parse_integer,
+        parse_float=reject_float,
+        parse_constant=reject_constant,
+        object_pairs_hook=object_no_duplicates,
+    )
+
+if not isinstance(parsed, dict) or not valid(parsed):
+    raise SystemExit("bundle is outside the Norn v3 canonical Sigstore JSON profile")
+
+canonical = json.dumps(parsed, ensure_ascii=False, sort_keys=True, separators=(",", ":")).encode("utf-8")
+print(hashlib.sha256(canonical).hexdigest())

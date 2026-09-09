@@ -54,6 +54,16 @@ job "hello-norn-mysql" {
       name     = "hello-norn-mysql-web"
       provider = "consul"
       port     = "http"
+      # These scheduler-owned values make the Consul registration
+      # independently correlatable with the exact Nomad allocation. They are
+      # evidence only; routing continues to use the service name and checks.
+      meta {
+        norn_alloc_id  = "${NOMAD_ALLOC_ID}"
+        norn_node_id   = "${node.unique.id}"
+        norn_job_id    = "${NOMAD_JOB_ID}"
+        norn_namespace = "${NOMAD_NAMESPACE}"
+        norn_region    = "${node.region}"
+      }
       tags = [
         "traefik.enable=true",
         "traefik.http.routers.hello-norn-mysql.rule=Host(`${var.hostname}`) && (PathPrefix(`/records/`) || Path(`/version`))",
