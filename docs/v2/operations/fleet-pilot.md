@@ -87,6 +87,21 @@ In authority-only mode Norn now:
 5. Advertises the restricted mode and supported routes through capabilities so
    clients do not present application or host actions.
 
+When the complete, separately credentialed direct-workload bridge below is
+configured, this allowlist adds only its six v4 external-admission routes and
+advertises that capability. It does not enable ordinary application, release,
+host, runtime, or workload routes; startup rejects partial verifier settings
+before the authority starts serving requests.
+
+That exception also requires a readable, read-only `NORN_APPS_DIR` catalog
+with exactly one `deploy: false` `hello-norn-mysql` spec. Its source must be
+the canonical `https://github.com/antiartificial/norn.git`, and its bootstrap
+signer must be the pinned
+`antiartificial/norn/.github/workflows/hello-norn-mysql-bootstrap-image.yml`.
+Its build image must be a digest under
+`ghcr.io/antiartificial/hello-norn-mysql`; a placeholder, tag, duplicate, or
+different repository prevents authority startup.
+
 Before release, qualification must also prove that the GitHub API endpoint is
 pinned to `api.github.com` in this mode, the GitHub JWKS endpoint is rejected at
 startup unless it is the fixed issuer endpoint, and the served OpenAPI document

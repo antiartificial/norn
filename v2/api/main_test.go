@@ -323,6 +323,63 @@ nodePools:
 	}
 }
 
+func configureExternalFleetVerifierForTest(t *testing.T, cfg *config.Config) {
+	t.Helper()
+	dir := t.TempDir()
+	writeOwnerOnly := func(name, value string) string {
+		path := filepath.Join(dir, name)
+		if err := os.WriteFile(path, []byte(value), 0o600); err != nil {
+			t.Fatal(err)
+		}
+		return path
+	}
+	ghPath := filepath.Join(dir, "gh")
+	if err := os.WriteFile(ghPath, []byte("#!/bin/sh\nexit 0\n"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	cfg.ExternalFleetAdmissionApp = "hello-norn-mysql"
+	cfg.ExternalFleetAdmissionNamespace = "norn-pilot"
+	cfg.ExternalFleetAdmissionMigrationJobID = "hello-norn-mysql-migrate"
+	cfg.ExternalFleetAdmissionMigrationHCLSHA256 = strings.Repeat("a", 64)
+	cfg.ExternalFleetAdmissionRuntimeJobID = "hello-norn-mysql"
+	cfg.ExternalFleetAdmissionRuntimeHCLSHA256 = strings.Repeat("b", 64)
+	cfg.ExternalFleetAdmissionBootstrapSignerRef = fleetAuthorityExternalBootstrapWorkflow + "@" + strings.Repeat("c", 40)
+	cfg.ExternalFleetVerifierURL = "https://evidence.example.test"
+	cfg.ExternalFleetVerifierTokenFile = writeOwnerOnly("evidence.token", "read-token")
+	cfg.ExternalFleetEvidenceRegistrationTokenFile = writeOwnerOnly("registration.token", "registration-token")
+	cfg.ExternalFleetGitHubVerifierAppID = "123"
+	cfg.ExternalFleetGitHubVerifierInstallationID = 456
+	cfg.ExternalFleetGitHubVerifierPrivateKeyFile = writeOwnerOnly("github-app.pem", "test-private-key")
+	cfg.ExternalFleetGitHubVerifierRepositoryIDs = []string{"42", "43"}
+	cfg.ExternalFleetGitHubCLIPath = ghPath
+	cfg.ExternalFleetPublicBaseURL = "https://pilot.example.test"
+	cfg.ExternalFleetEvidenceAllowedCIDRs = []string{"100.64.0.0/24"}
+	writeFleetAuthorityExternalCatalogForTest(t, cfg, fleetAuthorityExternalCatalogSpecForTest())
+}
+
+func fleetAuthorityExternalCatalogSpecForTest() string {
+	return "name: " + fleetAuthorityExternalApp + "\n" +
+		"deploy: false\n" +
+		"repo:\n  url: https://github.com/" + fleetAuthorityExternalSourceRepository + ".git\n" +
+		"build:\n  image: " + fleetAuthorityExternalArtifactRepository + "@sha256:" + strings.Repeat("a", 64) + "\n" +
+		"regions:\n  nyc3:\n    nomadRegion: global\n    datacenters: [nyc3]\n"
+}
+
+func writeFleetAuthorityExternalCatalogForTest(t *testing.T, cfg *config.Config, spec string) string {
+	t.Helper()
+	appsDir := t.TempDir()
+	appDir := filepath.Join(appsDir, fleetAuthorityExternalApp)
+	if err := os.Mkdir(appDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	path := filepath.Join(appDir, "infraspec.yaml")
+	if err := os.WriteFile(path, []byte(spec), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	cfg.AppsDir = appsDir
+	return path
+}
+
 func TestFleetAuthorityOnlySecurityConfigurationAndRouterAllowlist(t *testing.T) {
 	valid := fleetAuthorityOnlyTestConfig(t)
 	if err := validateControlSecurity(valid); err != nil {
@@ -346,6 +403,7 @@ func TestFleetAuthorityOnlySecurityConfigurationAndRouterAllowlist(t *testing.T)
 		}},
 		{"rejects release authority", func(c *config.Config) { c.GitHubActionsReleaseBindings = []string{"app=acme/app@1@2"} }},
 		{"rejects private release trust", func(c *config.Config) { c.ReleaseAttestationTrustMode = "norn-signed-private" }},
+		{"rejects incomplete external verifier", func(c *config.Config) { c.ExternalFleetVerifierURL = "https://evidence.example.test" }},
 	} {
 		t.Run(tt.name, func(t *testing.T) {
 			candidate := *valid
@@ -387,6 +445,9 @@ func TestFleetAuthorityOnlySecurityConfigurationAndRouterAllowlist(t *testing.T)
 	if containsCapability(capabilities.Features, "openapi-3.1") || capabilities.Endpoints["openapi"] != "" {
 		t.Fatalf("Fleet authority advertised unavailable OpenAPI: %#v", capabilities)
 	}
+	if containsCapability(capabilities.Features, "external-fleet-deployment-admission-v4") || capabilities.Endpoints["externalFleetAdmissionBegin"] != "" {
+		t.Fatalf("Fleet authority advertised external admission without a verifier: %#v", capabilities)
+	}
 	req := httptest.NewRequest(http.MethodGet, "/api/v1/fleet/plans", nil)
 	req.Header.Set("Authorization", "Bearer "+valid.APIToken)
 	rec := httptest.NewRecorder()
@@ -400,6 +461,165 @@ func TestFleetAuthorityOnlySecurityConfigurationAndRouterAllowlist(t *testing.T)
 	router.ServeHTTP(rec, req)
 	if rec.Code == http.StatusNotFound {
 		t.Fatal("mutation audit read route is not registered")
+	}
+}
+
+func TestFleetAuthorityOnlyExternalAdmissionUsesInitializedVerifier(t *testing.T) {
+	cfg := fleetAuthorityOnlyTestConfig(t)
+	configureExternalFleetVerifierForTest(t, cfg)
+	if err := validateControlSecurity(cfg); err != nil {
+		t.Fatalf("complete external Fleet authority config rejected: %v", err)
+	}
+	h, err := newFleetAuthorityOnlyHandler(cfg, nil)
+	if err != nil {
+		t.Fatalf("external verifier was not initialized before authority router construction: %v", err)
+	}
+	router := fleetAuthorityOnlyRouterWithHandler(cfg, h)
+
+	for _, tt := range []struct {
+		method string
+		path   string
+	}{
+		{http.MethodPost, "/api/v1/apps/hello-norn-mysql/external-deployments/begin"},
+		{http.MethodPost, "/api/v1/apps/hello-norn-mysql/external-deployments/resume"},
+		{http.MethodPost, "/api/v1/apps/hello-norn-mysql/external-deployments/admit"},
+		{http.MethodPost, "/api/v1/apps/hello-norn-mysql/external-deployments/cleanup"},
+		{http.MethodPost, "/api/v1/apps/hello-norn-mysql/external-deployments/reconcile"},
+		{http.MethodGet, "/api/v1/apps/hello-norn-mysql/external-deployments/context/00000000-0000-0000-0000-000000000000"},
+	} {
+		req := httptest.NewRequest(tt.method, tt.path, nil)
+		req.Header.Set("Authorization", "Bearer "+cfg.APIToken)
+		rec := httptest.NewRecorder()
+		router.ServeHTTP(rec, req)
+		if rec.Code == http.StatusNotFound {
+			t.Fatalf("%s %s was not registered in the authority-only router", tt.method, tt.path)
+		}
+	}
+	for _, path := range []string{"/api/v1/apps", "/api/v1/releases", "/api/v1/platform/upgrades", "/api/v1/host/status"} {
+		req := httptest.NewRequest(http.MethodGet, path, nil)
+		req.Header.Set("Authorization", "Bearer "+cfg.APIToken)
+		rec := httptest.NewRecorder()
+		router.ServeHTTP(rec, req)
+		if rec.Code != http.StatusNotFound {
+			t.Fatalf("ordinary authority-only exclusion %s status=%d, want 404", path, rec.Code)
+		}
+	}
+	capabilitiesRequest := httptest.NewRequest(http.MethodGet, "/api/v1/capabilities", nil)
+	capabilitiesResponse := httptest.NewRecorder()
+	router.ServeHTTP(capabilitiesResponse, capabilitiesRequest)
+	var capabilities struct {
+		Features  []string          `json:"features"`
+		Endpoints map[string]string `json:"endpoints"`
+	}
+	if err := json.Unmarshal(capabilitiesResponse.Body.Bytes(), &capabilities); err != nil {
+		t.Fatal(err)
+	}
+	if !containsCapability(capabilities.Features, "external-fleet-deployment-admission-v4") || capabilities.Endpoints["externalFleetAdmissionBegin"] != "/api/v1/apps/{id}/external-deployments/begin" || capabilities.Endpoints["externalFleetAdmissionContext"] != "/api/v1/apps/{id}/external-deployments/context/{admissionId}" {
+		t.Fatalf("authority-only external admission capability missing: %#v", capabilities)
+	}
+}
+
+func TestFleetAuthorityOnlyExternalAdmissionRejectsEveryPartialSetting(t *testing.T) {
+	valid := fleetAuthorityOnlyTestConfig(t)
+	configureExternalFleetVerifierForTest(t, valid)
+	if err := validateControlSecurity(valid); err != nil {
+		t.Fatalf("complete external Fleet authority config rejected: %v", err)
+	}
+	for _, tt := range []struct {
+		name   string
+		delete func(*config.Config)
+	}{
+		{"admission app", func(c *config.Config) { c.ExternalFleetAdmissionApp = "" }},
+		{"admission namespace", func(c *config.Config) { c.ExternalFleetAdmissionNamespace = "" }},
+		{"migration job ID", func(c *config.Config) { c.ExternalFleetAdmissionMigrationJobID = "" }},
+		{"migration HCL digest", func(c *config.Config) { c.ExternalFleetAdmissionMigrationHCLSHA256 = "" }},
+		{"runtime job ID", func(c *config.Config) { c.ExternalFleetAdmissionRuntimeJobID = "" }},
+		{"runtime HCL digest", func(c *config.Config) { c.ExternalFleetAdmissionRuntimeHCLSHA256 = "" }},
+		{"bootstrap signer", func(c *config.Config) { c.ExternalFleetAdmissionBootstrapSignerRef = "" }},
+		{"verifier URL", func(c *config.Config) { c.ExternalFleetVerifierURL = "" }},
+		{"verifier read token", func(c *config.Config) { c.ExternalFleetVerifierTokenFile = "" }},
+		{"verifier registration token", func(c *config.Config) { c.ExternalFleetEvidenceRegistrationTokenFile = "" }},
+		{"verifier GitHub App ID", func(c *config.Config) { c.ExternalFleetGitHubVerifierAppID = "" }},
+		{"verifier GitHub installation ID", func(c *config.Config) { c.ExternalFleetGitHubVerifierInstallationID = 0 }},
+		{"verifier GitHub private key", func(c *config.Config) { c.ExternalFleetGitHubVerifierPrivateKeyFile = "" }},
+		{"verifier GitHub repository IDs", func(c *config.Config) { c.ExternalFleetGitHubVerifierRepositoryIDs = nil }},
+		{"verifier GitHub CLI", func(c *config.Config) { c.ExternalFleetGitHubCLIPath = "" }},
+		{"public base URL", func(c *config.Config) { c.ExternalFleetPublicBaseURL = "" }},
+		{"evidence CIDRs", func(c *config.Config) { c.ExternalFleetEvidenceAllowedCIDRs = nil }},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			candidate := *valid
+			tt.delete(&candidate)
+			if err := validateControlSecurity(&candidate); err == nil {
+				t.Fatal("partial external admission configuration passed validation")
+			}
+			if _, err := newFleetAuthorityOnlyHandler(&candidate, nil); err == nil {
+				t.Fatal("partial external admission configuration reached authority startup")
+			}
+		})
+	}
+}
+
+func TestFleetAuthorityOnlyExternalAdmissionRequiresExactCatalogBinding(t *testing.T) {
+	for _, tt := range []struct {
+		name    string
+		mutate  func(t *testing.T, cfg *config.Config)
+		wantErr bool
+	}{
+		{name: "exact catalog"},
+		{name: "configured app mismatch", wantErr: true, mutate: func(_ *testing.T, cfg *config.Config) { cfg.ExternalFleetAdmissionApp = "other-app" }},
+		{name: "bootstrap signer repository mismatch", wantErr: true, mutate: func(_ *testing.T, cfg *config.Config) {
+			cfg.ExternalFleetAdmissionBootstrapSignerRef = "acme/hello-norn-mysql/.github/workflows/hello-norn-mysql-bootstrap-image.yml@" + strings.Repeat("c", 40)
+		}},
+		{name: "missing catalog", wantErr: true, mutate: func(_ *testing.T, cfg *config.Config) { cfg.AppsDir = filepath.Join(cfg.AppsDir, "missing") }},
+		{name: "deploy enabled", wantErr: true, mutate: func(t *testing.T, cfg *config.Config) {
+			rewriteFleetAuthorityExternalCatalogForTest(t, cfg, strings.Replace(fleetAuthorityExternalCatalogSpecForTest(), "deploy: false", "deploy: true", 1))
+		}},
+		{name: "noncanonical source", wantErr: true, mutate: func(t *testing.T, cfg *config.Config) {
+			rewriteFleetAuthorityExternalCatalogForTest(t, cfg, strings.Replace(fleetAuthorityExternalCatalogSpecForTest(), "https://github.com/"+fleetAuthorityExternalSourceRepository+".git", "https://example.invalid/"+fleetAuthorityExternalSourceRepository+".git", 1))
+		}},
+		{name: "wrong source", wantErr: true, mutate: func(t *testing.T, cfg *config.Config) {
+			rewriteFleetAuthorityExternalCatalogForTest(t, cfg, strings.Replace(fleetAuthorityExternalCatalogSpecForTest(), fleetAuthorityExternalSourceRepository, "antiartificial/other", 1))
+		}},
+		{name: "tagged image", wantErr: true, mutate: func(t *testing.T, cfg *config.Config) {
+			rewriteFleetAuthorityExternalCatalogForTest(t, cfg, strings.Replace(fleetAuthorityExternalCatalogSpecForTest(), "@sha256:"+strings.Repeat("a", 64), ":latest", 1))
+		}},
+		{name: "wrong digest repository", wantErr: true, mutate: func(t *testing.T, cfg *config.Config) {
+			rewriteFleetAuthorityExternalCatalogForTest(t, cfg, strings.Replace(fleetAuthorityExternalCatalogSpecForTest(), fleetAuthorityExternalArtifactRepository, "ghcr.io/antiartificial/other", 1))
+		}},
+		{name: "duplicate app", wantErr: true, mutate: func(t *testing.T, cfg *config.Config) {
+			duplicate := filepath.Join(cfg.AppsDir, "duplicate")
+			if err := os.Mkdir(duplicate, 0o755); err != nil {
+				t.Fatal(err)
+			}
+			if err := os.WriteFile(filepath.Join(duplicate, "infraspec.yaml"), []byte(fleetAuthorityExternalCatalogSpecForTest()), 0o600); err != nil {
+				t.Fatal(err)
+			}
+		}},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			cfg := fleetAuthorityOnlyTestConfig(t)
+			configureExternalFleetVerifierForTest(t, cfg)
+			if tt.mutate != nil {
+				tt.mutate(t, cfg)
+			}
+			err := validateControlSecurity(cfg)
+			if (err != nil) != tt.wantErr {
+				t.Fatalf("validation error = %v, wantErr %v", err, tt.wantErr)
+			}
+			_, startupErr := newFleetAuthorityOnlyHandler(cfg, nil)
+			if (startupErr != nil) != tt.wantErr {
+				t.Fatalf("startup error = %v, wantErr %v", startupErr, tt.wantErr)
+			}
+		})
+	}
+}
+
+func rewriteFleetAuthorityExternalCatalogForTest(t *testing.T, cfg *config.Config, spec string) {
+	t.Helper()
+	path := filepath.Join(cfg.AppsDir, fleetAuthorityExternalApp, "infraspec.yaml")
+	if err := os.WriteFile(path, []byte(spec), 0o600); err != nil {
+		t.Fatal(err)
 	}
 }
 
