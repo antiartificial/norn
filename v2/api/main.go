@@ -902,6 +902,71 @@ func validateFleetAuthorityOnly(cfg *config.Config, profile, environment string)
 	if (cfg.ReleaseAdmissionMode != "" && cfg.ReleaseAdmissionMode != "keyed") || (cfg.ReleaseAttestationTrustMode != "" && cfg.ReleaseAttestationTrustMode != "github-public") || len(cfg.GitHubActionsReleaseBindings) != 0 || len(cfg.GitHubActionsAllowedWorkflowRefs) != 0 || len(cfg.GitHubActionsAllowedEnvironments) != 0 || strings.TrimSpace(cfg.QualificationSigningKey) != "" || len(cfg.TrustedQualificationSigningKeys) != 0 || strings.TrimSpace(cfg.ReleasePrivateSigningBackend) != "" || strings.TrimSpace(cfg.ReleasePrivateSigningKeyFile) != "" || strings.TrimSpace(cfg.ReleasePrivateKMSHelper) != "" || strings.TrimSpace(cfg.ReleasePrivateKMSKeyID) != "" {
 		return fmt.Errorf("Fleet authority-only mode must not configure application release or private signing authority")
 	}
+	// The direct-workload bridge is the one intentionally narrow exception to
+	// the authority-only application-route exclusion. A partial verifier must
+	// never leave the process serving a route that cannot independently verify
+	// its Fleet evidence.
+	if externalFleetAdmissionRequested(cfg) {
+		if !externalFleetVerifierConfigured(cfg) {
+			return fmt.Errorf("Fleet authority-only mode requires a complete external Fleet admission bridge and verifier when any external admission setting is present")
+		}
+		if err := validateFleetAuthorityOnlyExternalCatalog(cfg); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+const (
+	fleetAuthorityExternalApp                = "hello-norn-mysql"
+	fleetAuthorityExternalSourceRepository   = "antiartificial/norn"
+	fleetAuthorityExternalArtifactRepository = "ghcr.io/antiartificial/hello-norn-mysql"
+	fleetAuthorityExternalBootstrapWorkflow  = "antiartificial/norn/.github/workflows/hello-norn-mysql-bootstrap-image.yml"
+)
+
+// validateFleetAuthorityOnlyExternalCatalog binds the narrowly allowed direct
+// workload API to a single read-only catalog entry. The external handler reads
+// this same specification to bind CI source, image repository, and regions.
+func validateFleetAuthorityOnlyExternalCatalog(cfg *config.Config) error {
+	if cfg == nil || strings.TrimSpace(cfg.AppsDir) == "" {
+		return fmt.Errorf("Fleet authority-only external admission requires a readable NORN_APPS_DIR catalog")
+	}
+	if cfg.ExternalFleetAdmissionApp != fleetAuthorityExternalApp {
+		return fmt.Errorf("Fleet authority-only external admission requires NORN_EXTERNAL_FLEET_ADMISSION_APP=%s", fleetAuthorityExternalApp)
+	}
+	bootstrapWorkflow, _, _ := strings.Cut(cfg.ExternalFleetAdmissionBootstrapSignerRef, "@")
+	if bootstrapWorkflow != fleetAuthorityExternalBootstrapWorkflow {
+		return fmt.Errorf("Fleet authority-only external admission requires bootstrap signer workflow %s", fleetAuthorityExternalBootstrapWorkflow)
+	}
+	info, err := os.Stat(cfg.AppsDir)
+	if err != nil || !info.IsDir() {
+		return fmt.Errorf("Fleet authority-only external admission requires a readable NORN_APPS_DIR catalog")
+	}
+	specs, err := model.DiscoverAllApps(cfg.AppsDir)
+	if err != nil {
+		return fmt.Errorf("Fleet authority-only external admission cannot read NORN_APPS_DIR: %w", err)
+	}
+	var selected *model.InfraSpec
+	for _, spec := range specs {
+		if spec != nil && spec.App == fleetAuthorityExternalApp {
+			if selected != nil {
+				return fmt.Errorf("Fleet authority-only external admission requires exactly one %s catalog spec", fleetAuthorityExternalApp)
+			}
+			selected = spec
+		}
+	}
+	if selected == nil || selected.Deploy || selected.Repo == nil {
+		return fmt.Errorf("Fleet authority-only external admission requires the fixed deploy:false %s catalog spec with a server-owned repository", fleetAuthorityExternalApp)
+	}
+	if source, ok := model.CanonicalGitHubRepository(selected.Repo.URL); !ok || source != fleetAuthorityExternalSourceRepository {
+		return fmt.Errorf("Fleet authority-only external admission requires %s to use canonical source repository %s", fleetAuthorityExternalApp, fleetAuthorityExternalSourceRepository)
+	}
+	if selected.Build == nil || !model.IsContentAddressedImage(selected.Build.Image) {
+		return fmt.Errorf("Fleet authority-only external admission requires %s to pin an authorized digest image", fleetAuthorityExternalApp)
+	}
+	if repository, ok := model.ReleaseArtifactRepository(selected, cfg.RegistryURL); !ok || repository != fleetAuthorityExternalArtifactRepository {
+		return fmt.Errorf("Fleet authority-only external admission requires %s to authorize digest repository %s", fleetAuthorityExternalApp, fleetAuthorityExternalArtifactRepository)
+	}
 	return nil
 }
 
@@ -1224,22 +1289,25 @@ func writeControlCapabilitiesForConfig(cfg *config.Config, w http.ResponseWriter
 		}
 	}
 	if cfg != nil && cfg.IsFleetAuthorityOnly() {
+		features := []string{"fleet-authority-only-v1", "device-enrollment", "token-rotation", "token-revocation", "device-listing", "principal-scope-discovery-v1", "scoped-access-tokens", "durable-operations", "durable-mutation-audit", "fleet-v1", "fleet-inventory", "durable-fleet-capacity-plans", "fleet-reconciliation-v1", "fleet-runner-attempts-v1", "fleet-github-app-v1", "github-actions-oidc-exchange-v1"}
+		endpoints := map[string]string{
+			"operationList": "/api/operations", "activeOperations": "/api/operations/active",
+			"enrollments": "/api/v1/enrollments", "devices": "/api/v1/devices", "tokenRotate": "/api/v1/auth/rotate", "tokenRevoke": "/api/v1/auth/revoke",
+			"operations": "/api/v1/operations/{id}", "mutationAudit": "/api/v1/audit/mutations", "fleetValidation": "/api/v1/fleet/validate", "fleetNodePools": "/api/v1/fleet/node-pools", "fleetPlans": "/api/v1/fleet/plans", "fleetReconciliations": "/api/v1/fleet/plans/{planID}/reconciliations", "fleetRunnerAttempts": "/api/v1/fleet/plans/{planID}/attempts", "fleetGitHub": "/api/v1/fleet/github", "fleetGitHubPullRequest": "/api/v1/fleet/plans/{planID}/github/pull-request", "fleetGitHubDispatch": "/api/v1/fleet/plans/{planID}/github/dispatch",
+		}
+		features, endpoints = withExternalFleetAdmissionCapabilities(cfg, features, endpoints)
 		_ = json.NewEncoder(w).Encode(map[string]interface{}{
 			"protocolVersion": 1, "serverVersion": Version,
 			"environment": map[string]string{"id": cfg.EnvironmentID(), "profile": profile},
 			"authority":   "fleet-only",
-			"features":    []string{"fleet-authority-only-v1", "device-enrollment", "token-rotation", "token-revocation", "device-listing", "principal-scope-discovery-v1", "scoped-access-tokens", "durable-operations", "durable-mutation-audit", "fleet-v1", "fleet-inventory", "durable-fleet-capacity-plans", "fleet-reconciliation-v1", "fleet-runner-attempts-v1", "fleet-github-app-v1", "github-actions-oidc-exchange-v1"},
+			"features":    features,
 			"auth": map[string]interface{}{
 				"scopes": handler.AccessTokenScopeNames(), "principal": principalInfo,
 				"githubActionsExchange": "/api/v1/auth/github-actions/exchange",
 				"enrollmentScopes":      []string{handler.ScopeAPIRead, handler.ScopeAPIWrite},
 				"websocketBearerHeader": false, "websocketQueryToken": false, "deviceEnrollment": true,
 			},
-			"endpoints": map[string]string{
-				"operationList": "/api/operations", "activeOperations": "/api/operations/active",
-				"enrollments": "/api/v1/enrollments", "devices": "/api/v1/devices", "tokenRotate": "/api/v1/auth/rotate", "tokenRevoke": "/api/v1/auth/revoke",
-				"operations": "/api/v1/operations/{id}", "mutationAudit": "/api/v1/audit/mutations", "fleetValidation": "/api/v1/fleet/validate", "fleetNodePools": "/api/v1/fleet/node-pools", "fleetPlans": "/api/v1/fleet/plans", "fleetReconciliations": "/api/v1/fleet/plans/{planID}/reconciliations", "fleetRunnerAttempts": "/api/v1/fleet/plans/{planID}/attempts", "fleetGitHub": "/api/v1/fleet/github", "fleetGitHubPullRequest": "/api/v1/fleet/plans/{planID}/github/pull-request", "fleetGitHubDispatch": "/api/v1/fleet/plans/{planID}/github/dispatch",
-			},
+			"endpoints": endpoints,
 		})
 		return
 	}
@@ -1280,15 +1348,7 @@ func writeControlCapabilitiesForConfig(cfg *config.Config, w http.ResponseWriter
 		endpoints["releasePromotions"] = "/api/v1/apps/{id}/promotions"
 		endpoints["releaseRollbacks"] = "/api/v1/apps/{id}/releases/rollbacks"
 	}
-	if externalFleetVerifierConfigured(cfg) {
-		features = append(features, "external-fleet-deployment-admission-v4")
-		endpoints["externalFleetAdmissionBegin"] = "/api/v1/apps/{id}/external-deployments/begin"
-		endpoints["externalFleetAdmissionResume"] = "/api/v1/apps/{id}/external-deployments/resume"
-		endpoints["externalFleetAdmissionAdmit"] = "/api/v1/apps/{id}/external-deployments/admit"
-		endpoints["externalFleetAdmissionCleanup"] = "/api/v1/apps/{id}/external-deployments/cleanup"
-		endpoints["externalFleetAdmissionContext"] = "/api/v1/apps/{id}/external-deployments/context/{admissionId}"
-		endpoints["externalFleetAdmissionReconcile"] = "/api/v1/apps/{id}/external-deployments/reconcile"
-	}
+	features, endpoints = withExternalFleetAdmissionCapabilities(cfg, features, endpoints)
 	if cfg.IsAppCatalogReadOnly() {
 		features = withoutCapability(features, "app-creation")
 		features = append(features, "app-catalog-read-only-v1")
@@ -1329,6 +1389,20 @@ func withoutCapability(features []string, capability string) []string {
 	return filtered
 }
 
+func withExternalFleetAdmissionCapabilities(cfg *config.Config, features []string, endpoints map[string]string) ([]string, map[string]string) {
+	if !externalFleetAdmissionCapabilityConfigured(cfg) {
+		return features, endpoints
+	}
+	features = append(features, "external-fleet-deployment-admission-v4")
+	endpoints["externalFleetAdmissionBegin"] = "/api/v1/apps/{id}/external-deployments/begin"
+	endpoints["externalFleetAdmissionResume"] = "/api/v1/apps/{id}/external-deployments/resume"
+	endpoints["externalFleetAdmissionAdmit"] = "/api/v1/apps/{id}/external-deployments/admit"
+	endpoints["externalFleetAdmissionCleanup"] = "/api/v1/apps/{id}/external-deployments/cleanup"
+	endpoints["externalFleetAdmissionContext"] = "/api/v1/apps/{id}/external-deployments/context/{admissionId}"
+	endpoints["externalFleetAdmissionReconcile"] = "/api/v1/apps/{id}/external-deployments/reconcile"
+	return features, endpoints
+}
+
 // releasePipelineConfigured makes the advertised release surface truthful. It
 // is intentionally conservative: a server must have an explicit release lane,
 // app-to-repository binding, and the lane's signing/trust material before the
@@ -1365,6 +1439,21 @@ func externalFleetVerifierRequested(cfg *config.Config) bool {
 	return cfg != nil && (strings.TrimSpace(cfg.ExternalFleetVerifierURL) != "" || strings.TrimSpace(cfg.ExternalFleetVerifierTokenFile) != "" || strings.TrimSpace(cfg.ExternalFleetEvidenceRegistrationTokenFile) != "" || strings.TrimSpace(cfg.ExternalFleetGitHubVerifierAppID) != "" || cfg.ExternalFleetGitHubVerifierInstallationID != 0 || strings.TrimSpace(cfg.ExternalFleetGitHubVerifierPrivateKeyFile) != "" || len(cfg.ExternalFleetGitHubVerifierRepositoryIDs) != 0 || strings.TrimSpace(cfg.ExternalFleetGitHubCLIPath) != "" || strings.TrimSpace(cfg.ExternalFleetPublicBaseURL) != "" || len(cfg.ExternalFleetEvidenceAllowedCIDRs) != 0)
 }
 
+func externalFleetBridgeRequested(cfg *config.Config) bool {
+	return cfg != nil && (strings.TrimSpace(cfg.ExternalFleetAdmissionApp) != "" || strings.TrimSpace(cfg.ExternalFleetAdmissionNamespace) != "" || strings.TrimSpace(cfg.ExternalFleetAdmissionMigrationJobID) != "" || strings.TrimSpace(cfg.ExternalFleetAdmissionMigrationHCLSHA256) != "" || strings.TrimSpace(cfg.ExternalFleetAdmissionRuntimeJobID) != "" || strings.TrimSpace(cfg.ExternalFleetAdmissionRuntimeHCLSHA256) != "" || strings.TrimSpace(cfg.ExternalFleetAdmissionBootstrapSignerRef) != "")
+}
+
+func externalFleetAdmissionRequested(cfg *config.Config) bool {
+	return externalFleetBridgeRequested(cfg) || externalFleetVerifierRequested(cfg)
+}
+
+func externalFleetAdmissionCapabilityConfigured(cfg *config.Config) bool {
+	if !externalFleetVerifierConfigured(cfg) {
+		return false
+	}
+	return !cfg.IsFleetAuthorityOnly() || validateFleetAuthorityOnlyExternalCatalog(cfg) == nil
+}
+
 func externalFleetVerifierConfigured(cfg *config.Config) bool {
 	return cfg != nil && cfg.EnvironmentID() == "staging" && externalFleetBridgeConfigured(cfg) && externalFleetVerifierRequested(cfg) && strings.TrimSpace(cfg.ExternalFleetVerifierURL) != "" && strings.TrimSpace(cfg.ExternalFleetVerifierTokenFile) != "" && strings.TrimSpace(cfg.ExternalFleetEvidenceRegistrationTokenFile) != "" && strings.TrimSpace(cfg.ExternalFleetGitHubVerifierAppID) != "" && cfg.ExternalFleetGitHubVerifierInstallationID > 0 && strings.TrimSpace(cfg.ExternalFleetGitHubVerifierPrivateKeyFile) != "" && len(cfg.ExternalFleetGitHubVerifierRepositoryIDs) > 0 && strings.TrimSpace(cfg.ExternalFleetGitHubCLIPath) != "" && strings.TrimSpace(cfg.ExternalFleetPublicBaseURL) != "" && len(cfg.ExternalFleetEvidenceAllowedCIDRs) > 0
 }
@@ -1399,7 +1488,18 @@ func lowerSHA256(value string) bool {
 // Keeping the allowlist here makes an accidental workload, host-maintenance,
 // or release route visible in review instead of relying on a denylist.
 func fleetAuthorityOnlyRouter(cfg *config.Config, db *store.DB) http.Handler {
-	h := handler.New(db, nil, nil, nil, cfg, nil, nil, nil, nil, nil, nil)
+	h, err := newFleetAuthorityOnlyHandler(cfg, db)
+	if err != nil {
+		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			handler.WriteControlProblem(w, r, http.StatusServiceUnavailable, "fleet_authority_unavailable", "Fleet authority verifier initialization failed")
+		})
+	}
+	return fleetAuthorityOnlyRouterWithHandler(cfg, h)
+}
+
+// fleetAuthorityOnlyRouterWithHandler keeps the constrained route allowlist
+// independently testable after startup has constructed its optional verifier.
+func fleetAuthorityOnlyRouterWithHandler(cfg *config.Config, h *handler.Handler) http.Handler {
 	allowedOrigins := []string{}
 	for _, origin := range strings.Split(cfg.AllowedOrigins, ",") {
 		if origin = strings.TrimSpace(origin); origin != "" {
@@ -1454,6 +1554,14 @@ func fleetAuthorityOnlyRouter(cfg *config.Config, db *store.DB) http.Handler {
 		r.Post("/fleet/plans/{planID}/github/pull-request", h.CreateFleetGitHubPullRequest)
 		r.Post("/fleet/plans/{planID}/github/dispatch", h.DispatchFleetGitHubApply)
 		r.Post("/fleet/node-pools/{pool}/plan", h.PlanFleetCapacity)
+		if externalFleetAdmissionCapabilityConfigured(cfg) {
+			r.With(handler.ValidateAppID).Post("/apps/{id}/external-deployments/begin", h.BeginExternalFleetDeploymentAdmission)
+			r.With(handler.ValidateAppID).Post("/apps/{id}/external-deployments/resume", h.ResumeExternalFleetDeploymentAdmission)
+			r.With(handler.ValidateAppID).Post("/apps/{id}/external-deployments/admit", h.AdmitExternalFleetDeploymentV4)
+			r.With(handler.ValidateAppID).Post("/apps/{id}/external-deployments/cleanup", h.CompleteExternalFleetDeploymentCleanup)
+			r.With(handler.ValidateAppID).Post("/apps/{id}/external-deployments/reconcile", h.ReconcileExternalFleetDeploymentAdmission)
+			r.With(handler.ValidateAppID).Get("/apps/{id}/external-deployments/context/{admissionId}", h.GetExternalFleetDeploymentAdmissionContext)
+		}
 	})
 	// The static management shell contains no credentials. API access remains
 	// independently authenticated; enabling the UI never enables runtime workers.
@@ -1463,9 +1571,32 @@ func fleetAuthorityOnlyRouter(cfg *config.Config, db *store.DB) http.Handler {
 	return r
 }
 
+func newFleetAuthorityOnlyHandler(cfg *config.Config, db *store.DB) (*handler.Handler, error) {
+	h := handler.New(db, nil, nil, nil, cfg, nil, nil, nil, nil, nil, nil)
+	if !externalFleetAdmissionRequested(cfg) {
+		return h, nil
+	}
+	if !externalFleetVerifierConfigured(cfg) {
+		return nil, fmt.Errorf("external Fleet verifier configuration is incomplete")
+	}
+	if err := validateFleetAuthorityOnlyExternalCatalog(cfg); err != nil {
+		return nil, err
+	}
+	verifier, err := handler.ExternalFleetDeploymentVerifierFromConfig(cfg)
+	if err != nil {
+		return nil, fmt.Errorf("external Fleet deployment verifier: %w", err)
+	}
+	h.ConfigureExternalFleetDeploymentVerifier(verifier)
+	return h, nil
+}
+
 func serveFleetAuthorityOnly(cfg *config.Config, db *store.DB) {
+	h, err := newFleetAuthorityOnlyHandler(cfg, db)
+	if err != nil {
+		log.Fatalf("Fleet authority-only startup: %v", err)
+	}
 	srv := &http.Server{
-		Addr: cfg.BindAddr + ":" + cfg.Port, Handler: otelhttp.NewHandler(fleetAuthorityOnlyRouter(cfg, db), "norn.fleet-authority"),
+		Addr: cfg.BindAddr + ":" + cfg.Port, Handler: otelhttp.NewHandler(fleetAuthorityOnlyRouterWithHandler(cfg, h), "norn.fleet-authority"),
 		ReadHeaderTimeout: 10 * time.Second, IdleTimeout: 2 * time.Minute, MaxHeaderBytes: 1 << 20,
 	}
 	go func() {
