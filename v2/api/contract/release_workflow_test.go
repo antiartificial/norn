@@ -18,6 +18,12 @@ type releaseWorkflow struct {
 	} `yaml:"jobs"`
 }
 
+type releaseCallerWorkflow struct {
+	Jobs map[string]struct {
+		Permissions map[string]string `yaml:"permissions"`
+	} `yaml:"jobs"`
+}
+
 func TestReusableReleaseWorkflowKeepsPrivateEvidenceServerSelectedAndOffArgv(t *testing.T) {
 	raw, err := os.ReadFile("../../../.github/workflows/norn-app-release.yml")
 	if err != nil {
@@ -167,4 +173,47 @@ func TestHelloNornMySQLReleaseCallerIsPinnedAndWorkloadScoped(t *testing.T) {
 	if strings.Contains(workflow, ".github/workflows/hello-norn-mysql-release.yml\"") {
 		t.Fatal("caller workflow path would trigger staging when the caller itself merges")
 	}
+
+	var caller releaseCallerWorkflow
+	if err := yaml.Unmarshal(raw, &caller); err != nil {
+		t.Fatalf("parse release caller workflow: %v", err)
+	}
+	// GitHub validates the permissions of every job in a reusable workflow,
+	// even when the lane input makes some of them ineligible to run. These are
+	// the exact union requested by the immutable norn-app-release.yml pin.
+	wantPermissions := map[string]string{
+		"actions":           "read",
+		"artifact-metadata": "write",
+		"attestations":      "write",
+		"checks":            "read",
+		"contents":          "read",
+		"deployments":       "write",
+		"id-token":          "write",
+		"packages":          "write",
+	}
+	for _, lane := range []string{"staging", "production"} {
+		job, ok := caller.Jobs[lane]
+		if !ok {
+			t.Errorf("caller workflow is missing %s", lane)
+			continue
+		}
+		if diff := diffStringMaps(wantPermissions, job.Permissions); diff != "" {
+			t.Errorf("%s caller permissions (-want +got):\n%s", lane, diff)
+		}
+	}
+}
+
+func diffStringMaps(want, got map[string]string) string {
+	var differences []string
+	for key, wantValue := range want {
+		if gotValue := got[key]; gotValue != wantValue {
+			differences = append(differences, "- "+key+": "+wantValue, "+ "+key+": "+gotValue)
+		}
+	}
+	for key, gotValue := range got {
+		if _, ok := want[key]; !ok {
+			differences = append(differences, "+ "+key+": "+gotValue)
+		}
+	}
+	return strings.Join(differences, "\n")
 }

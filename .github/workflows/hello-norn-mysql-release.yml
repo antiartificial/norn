@@ -15,8 +15,13 @@ jobs:
   staging:
     if: github.event_name == 'push' && github.ref == 'refs/heads/master' && github.ref_protected
     permissions:
+      # GitHub validates every job in the reusable workflow, not only the
+      # staging-lane jobs selected by its input. Keep this the exact union of
+      # the permissions requested by the immutable callee pin below.
+      actions: read
       checks: read
       contents: read
+      deployments: write
       packages: write
       id-token: write
       attestations: write
@@ -38,8 +43,13 @@ jobs:
     if: github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v') && github.ref_protected
     permissions:
       actions: read
+      checks: read
       contents: read
+      deployments: write
       id-token: write
+      packages: write
+      attestations: write
+      artifact-metadata: write
     uses: antiartificial/norn/.github/workflows/norn-app-release.yml@1d3f5802b5554e06ea1593146f00402d00ca9b2b
     with:
       lane: production
