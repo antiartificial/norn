@@ -877,6 +877,9 @@ func TestControlCapabilitiesAdvertisesHostMetrics(t *testing.T) {
 	if err := json.Unmarshal(rec.Body.Bytes(), &capability); err != nil {
 		t.Fatal(err)
 	}
+	if capability.Endpoints["hostMetricsHistory"] != "/api/v1/host/metrics/history" {
+		t.Fatalf("missing historical metrics endpoint")
+	}
 	if capability.Endpoints["hostMetrics"] != "/api/v1/host/metrics" {
 		t.Fatalf("hostMetrics endpoint = %q", capability.Endpoints["hostMetrics"])
 	}
