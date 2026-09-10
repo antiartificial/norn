@@ -531,6 +531,7 @@ func main() {
 		r.Get("/v1/releases", h.PlatformReleases)
 		r.Get("/v1/host/status", h.HostStatus)
 		r.Get("/v1/host/metrics", h.HostMetrics)
+		r.Get("/v1/host/metrics/history", h.HostMetricsHistory)
 		r.Get("/v1/host/runtime", h.RuntimeInfo)
 		r.Get("/v1/production/readiness", h.ProductionReadiness)
 		r.Get("/v1/production/drills", h.ListRecoveryDrills)
@@ -1318,7 +1319,7 @@ func writeControlCapabilitiesForConfig(cfg *config.Config, w http.ResponseWriter
 		"openapi-3.1", "standard-problems", "event-stream-info", "event-gap-detection",
 		"event-heartbeat", "event-subscriptions", "operation-cancellation", "typed-operation-receipts",
 		"versioned-resources", "device-enrollment", "token-rotation", "token-revocation", "device-listing",
-		"device-key-step-up", "exec-sessions", "exec-audit", "exec-session-expiry", "exec-protocol-v1", "host-metrics", "host-runtime", "workload-connectors-v1", "apple-container-local", "app-creation", "durable-app-recovery-v1", "durable-snapshots", "standalone-migrations", "regional-deployments", "versioned-deployment-history-v1", "service-instance-placement-v2", "principal-scope-discovery-v1", "consul-traefik-ingress", "production-readiness", "durable-mutation-audit", "production-mutation-admission", "recovery-drill-receipts", "document-validation", "fleet-v1", "fleet-inventory", "durable-fleet-capacity-plans", "fleet-reconciliation-v1", "fleet-runner-attempts-v1", "fleet-github-app-v1",
+		"device-key-step-up", "exec-sessions", "exec-audit", "exec-session-expiry", "exec-protocol-v1", "host-metrics", "host-metrics-history", "host-runtime", "workload-connectors-v1", "apple-container-local", "app-creation", "durable-app-recovery-v1", "durable-snapshots", "standalone-migrations", "regional-deployments", "versioned-deployment-history-v1", "service-instance-placement-v2", "principal-scope-discovery-v1", "consul-traefik-ingress", "production-readiness", "durable-mutation-audit", "production-mutation-admission", "recovery-drill-receipts", "document-validation", "fleet-v1", "fleet-inventory", "durable-fleet-capacity-plans", "fleet-reconciliation-v1", "fleet-runner-attempts-v1", "fleet-github-app-v1",
 	}
 	if releaseConfigured {
 		features = append(features, "release-provenance-v1", "release-qualifications-v2", "release-promotions-v1", "github-actions-oidc-exchange-v1", "release-app-repository-bindings-v1")
@@ -1332,7 +1333,7 @@ func writeControlCapabilitiesForConfig(cfg *config.Config, w http.ResponseWriter
 		"platformRollbacks": "/api/v1/platform/rollbacks", "platformSmoke": "/api/v1/platform/smoke", "hostAssurances": "/api/v1/host/assurances",
 		"openapi": "/api/v1/openapi.yaml", "eventInfo": "/api/v1/events/info", "apps": "/api/v1/apps", "appCreation": "/api/v1/apps", "appDeployment": "/api/v1/apps/{id}/deployment", "deployments": "/api/v1/deployments", "deployment": "/api/v1/deployments/{id}", "deploymentSteps": "/api/v1/deployments/{id}/steps", "serviceManifest": "/api/v1/services/manifest",
 		"appSnapshots": "/api/v1/apps/{id}/snapshots", "appSnapshotRetention": "/api/v1/apps/{id}/snapshots/retention", "appSnapshotRestore": "/api/v1/apps/{id}/snapshots/{snapshot}/restore", "appMigrations": "/api/v1/apps/{id}/migrations", "appRollbacks": "/api/v1/apps/{id}/rollbacks",
-		"releases": "/api/v1/releases", "hostStatus": "/api/v1/host/status", "hostMetrics": "/api/v1/host/metrics", "hostRuntime": "/api/v1/host/runtime", "productionReadiness": "/api/v1/production/readiness", "recoveryDrills": "/api/v1/production/drills", "mutationAudit": "/api/v1/audit/mutations", "enrollments": "/api/v1/enrollments",
+		"releases": "/api/v1/releases", "hostStatus": "/api/v1/host/status", "hostMetrics": "/api/v1/host/metrics", "hostMetricsHistory": "/api/v1/host/metrics/history", "hostRuntime": "/api/v1/host/runtime", "productionReadiness": "/api/v1/production/readiness", "recoveryDrills": "/api/v1/production/drills", "mutationAudit": "/api/v1/audit/mutations", "enrollments": "/api/v1/enrollments",
 		"devices": "/api/v1/devices", "tokenRotate": "/api/v1/auth/rotate", "tokenRevoke": "/api/v1/auth/revoke",
 		"stepUpChallenges": "/api/v1/auth/step-up/challenges", "execSessions": "/api/v1/exec-sessions",
 		"infraSpecValidation": "/api/v1/validate/infraspec", "fleetValidation": "/api/v1/fleet/validate", "fleetNodePools": "/api/v1/fleet/node-pools", "fleetPlans": "/api/v1/fleet/plans", "fleetReconciliations": "/api/v1/fleet/plans/{planID}/reconciliations", "fleetRunnerAttempts": "/api/v1/fleet/plans/{planID}/attempts", "fleetGitHub": "/api/v1/fleet/github", "fleetGitHubPullRequest": "/api/v1/fleet/plans/{planID}/github/pull-request", "fleetGitHubDispatch": "/api/v1/fleet/plans/{planID}/github/dispatch",

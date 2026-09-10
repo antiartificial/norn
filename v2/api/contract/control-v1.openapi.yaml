@@ -1096,6 +1096,62 @@ paths:
         '401': { $ref: '#/components/responses/Problem' }
         '403': { $ref: '#/components/responses/Problem' }
         '503': { $ref: '#/components/responses/Problem' }
+  /api/v1/host/metrics/history:
+    get:
+      operationId: getHostMetricsHistory
+      description: >-
+        Authenticated bounded native-host history from Prometheus. Requires api:read.
+        At most 720 points per series and 12 app/process series. Coarse buckets preserve maxima.
+        Host memory uses Nomad semantics; service CPU and memory are relative to native host capacity.
+        Retention is at most 30 days and may be shortened by monitoring storage limits.
+      parameters:
+        - { in: query, name: start, required: true, schema: { type: string, format: date-time } }
+        - { in: query, name: end, required: true, schema: { type: string, format: date-time } }
+        - { in: query, name: step, schema: { type: integer, minimum: 1 }, description: Requested seconds; clamped to range and age density bounds. }
+        - { in: query, name: includeServices, schema: { type: boolean, default: false } }
+      responses:
+        '200':
+          description: Historical samples; empty arrays mean no retained samples in this range.
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [schemaVersion, source, sourceSemantics, start, end, stepSeconds, retentionSeconds, host, services]
+                properties:
+                  schemaVersion: { const: norn.host-metrics-history/v1 }
+                  source: { const: nomad-prometheus }
+                  sourceSemantics: { type: string }
+                  start: { type: string, format: date-time }
+                  end: { type: string, format: date-time }
+                  stepSeconds: { type: integer }
+                  retentionSeconds: { type: integer }
+                  host:
+                    type: array
+                    maxItems: 720
+                    items:
+                      type: object
+                      required: [observedAt, cpuPercent, memoryUsedBytes, memoryTotalBytes]
+                      properties:
+                        observedAt: { type: string, format: date-time }
+                        cpuPercent: { type: number }
+                        memoryUsedBytes: { type: integer }
+                        memoryTotalBytes: { type: integer }
+                  services:
+                    type: array
+                    maxItems: 8640
+                    items:
+                      type: object
+                      required: [observedAt, app, process, cpuPercent, memoryPercent]
+                      properties:
+                        observedAt: { type: string, format: date-time }
+                        app: { type: string }
+                        process: { type: string }
+                        cpuPercent: { type: number }
+                        memoryPercent: { type: number }
+        '400': { $ref: '#/components/responses/Problem' }
+        '401': { $ref: '#/components/responses/Problem' }
+        '403': { $ref: '#/components/responses/Problem' }
+        '503': { $ref: '#/components/responses/Problem' }
   /api/v1/host/runtime:
     get:
       operationId: getHostRuntime

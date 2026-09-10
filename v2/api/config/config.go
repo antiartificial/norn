@@ -148,9 +148,11 @@ type Config struct {
 	// macOS connector and is never selected by auto-detection.
 	WorkloadConnector string
 
-	NomadAddr  string // Nomad API address
-	ConsulAddr string // Consul API address
-	IngressURL string // Regional Traefik origin used by Cloudflared
+	NomadAddr                string // Nomad API address
+	ConsulAddr               string // Consul API address
+	HostMetricsPrometheusURL string // Optional trusted Prometheus origin
+	HostMetricsHostname      string // Exact Nomad host label; defaults to OS hostname
+	IngressURL               string // Regional Traefik origin used by Cloudflared
 	// ExternalIngress disables local cloudflared mutation when DNS/global edge
 	// routing is owned outside this Norn process.
 	ExternalIngress bool
@@ -293,12 +295,14 @@ func Load() *Config {
 		NetworkMode:                            networkMode(envOr("NORN_NETWORK_MODE", "local")),
 		WorkloadConnector:                      workloadConnector(envOr("NORN_WORKLOAD_CONNECTOR", "nomad-consul")),
 
-		NomadAddr:           envOr("NORN_NOMAD_ADDR", "http://localhost:4646"),
-		ConsulAddr:          envOr("NORN_CONSUL_ADDR", "http://localhost:8500"),
-		IngressURL:          strings.TrimRight(os.Getenv("NORN_INGRESS_URL"), "/"),
-		ExternalIngress:     envBoolOr("NORN_EXTERNAL_INGRESS", false),
-		NomadTLSSkipVerify:  envBoolOr("NOMAD_SKIP_VERIFY", false),
-		ConsulTLSSkipVerify: !envBoolOr("CONSUL_HTTP_SSL_VERIFY", true),
+		NomadAddr:                envOr("NORN_NOMAD_ADDR", "http://localhost:4646"),
+		ConsulAddr:               envOr("NORN_CONSUL_ADDR", "http://localhost:8500"),
+		HostMetricsPrometheusURL: os.Getenv("NORN_HOST_METRICS_PROMETHEUS_URL"),
+		HostMetricsHostname:      os.Getenv("NORN_HOST_METRICS_HOSTNAME"),
+		IngressURL:               strings.TrimRight(os.Getenv("NORN_INGRESS_URL"), "/"),
+		ExternalIngress:          envBoolOr("NORN_EXTERNAL_INGRESS", false),
+		NomadTLSSkipVerify:       envBoolOr("NOMAD_SKIP_VERIFY", false),
+		ConsulTLSSkipVerify:      !envBoolOr("CONSUL_HTTP_SSL_VERIFY", true),
 
 		S3Endpoint:          os.Getenv("NORN_S3_ENDPOINT"),
 		S3AccessKey:         os.Getenv("NORN_S3_ACCESS_KEY"),
