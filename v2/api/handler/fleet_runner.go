@@ -63,6 +63,15 @@ func (h *Handler) StartFleetRunnerAttempt(w http.ResponseWriter, r *http.Request
 	if !ok {
 		return
 	}
+	// Serialize attempt creation with the same per-plan lock used by the
+	// GitHub rerun fence. Without this, a runner could adopt consumed authority
+	// between the rerun's history check and its POST.
+	release, locked, lockErr := h.db.AcquireAppOperationLock(r.Context(), "fleet-github-dispatch:"+plan.ID)
+	if lockErr != nil || !locked {
+		WriteControlProblem(w, r, http.StatusConflict, "fleet_github_dispatch_in_progress", "another protected dispatch or same-run retry is resolving this fleet plan")
+		return
+	}
+	defer release()
 	var request fleet.RunnerAttemptStartRequest
 	if err := decodeControlJSON(w, r, &request); err != nil {
 		WriteControlProblem(w, r, http.StatusBadRequest, "invalid_fleet_runner_attempt", err.Error())
@@ -133,6 +142,13 @@ func (h *Handler) StartFleetRunnerAttempt(w http.ResponseWriter, r *http.Request
 			WriteControlProblem(w, r, http.StatusConflict, "fleet_runner_attempt_binding_conflict", "recovery does not match the durable source runner attempt")
 			return
 		}
+		// A recovery must adopt the original authority-consumption tuple exactly.
+		// In particular it cannot replace a consumed owner approval or receipt
+		// while retaining the same plan and source dispatch.
+		if !authorityMetadataMatches(previous, request) {
+			WriteControlProblem(w, r, http.StatusConflict, "fleet_runner_attempt_binding_conflict", "recovery authority consumption does not match the durable source attempt")
+			return
+		}
 		previousClassification := fleetTimingClassificationForAttempt(previous)
 		if classification.OperationClass == "" {
 			classification = previousClassification
@@ -149,7 +165,7 @@ func (h *Handler) StartFleetRunnerAttempt(w http.ResponseWriter, r *http.Request
 			PrincipalSubject: principalIdentity(principal), RetryOf: previous.ID,
 			HeartbeatTimeoutSeconds: previous.HeartbeatTimeoutSeconds, Revision: 1,
 			StartedAt: now, HeartbeatAt: now, UpdatedAt: now,
-			Metadata: fleetRunnerTimingMetadata(classification),
+			Metadata: mergeFleetRunnerMetadata(fleetRunnerTimingMetadata(classification), map[string]interface{}{"authorityConsumption": fleetRunnerAuthorityMetadata(request)}),
 		}
 		recovery.Metadata["recoveryReason"] = "verified GitHub Actions recovery workflow"
 		if err := h.db.RecoverFleetRunnerAttempt(r.Context(), previous, recovery); errors.Is(err, store.ErrFleetRunnerAttemptConflict) {
@@ -196,7 +212,7 @@ func (h *Handler) StartFleetRunnerAttempt(w http.ResponseWriter, r *http.Request
 		SourceDispatchRunID: request.SourceDispatchRunID, PilotRunID: request.PilotRunID, Recovery: request.Resume,
 		PrincipalSubject: principalIdentity(principal), HeartbeatTimeoutSeconds: normalizedFleetHeartbeatTimeout(request.HeartbeatTimeoutSeconds),
 		Revision: 1, StartedAt: now, PhaseStartedAt: now, HeartbeatAt: now, UpdatedAt: now,
-		Metadata: fleetRunnerTimingMetadata(classification),
+		Metadata: mergeFleetRunnerMetadata(fleetRunnerTimingMetadata(classification), map[string]interface{}{"authorityConsumption": fleetRunnerAuthorityMetadata(request)}),
 	}
 	if err := h.db.CreateFleetRunnerAttempt(r.Context(), attempt); err != nil {
 		if pgErr, ok := err.(*pgconn.PgError); ok && pgErr.Code == "23505" {
@@ -444,6 +460,9 @@ func validateFleetRunnerStart(request fleet.RunnerAttemptStartRequest) error {
 	if !fleetDispatchNonceRe.MatchString(request.DispatchNonce) || request.SourceDispatchRunID <= 0 {
 		return fmt.Errorf("dispatchNonce and a positive sourceDispatchRunId are required")
 	}
+	if request.ApprovalEnvelopeSHA256 != "" && !fleetPlanSHARe.MatchString(request.ApprovalEnvelopeSHA256) || request.ConsumptionReceiptSHA256 != "" && !fleetPlanSHARe.MatchString(request.ConsumptionReceiptSHA256) {
+		return fmt.Errorf("authority consumption digests must be lowercase SHA-256 values")
+	}
 	if strings.TrimSpace(request.PilotRunID) != request.PilotRunID {
 		return fmt.Errorf("pilotRunId must be exact without surrounding whitespace")
 	}
@@ -480,6 +499,20 @@ func fleetRunnerTimingMetadata(classification model.FleetTimingClassification) m
 	}}
 }
 
+func fleetRunnerAuthorityMetadata(request fleet.RunnerAttemptStartRequest) map[string]interface{} {
+	return map[string]interface{}{"approvalEnvelopeSHA256": request.ApprovalEnvelopeSHA256, "consumptionReceiptSHA256": request.ConsumptionReceiptSHA256}
+}
+
+func mergeFleetRunnerMetadata(parts ...map[string]interface{}) map[string]interface{} {
+	merged := map[string]interface{}{}
+	for _, part := range parts {
+		for key, value := range part {
+			merged[key] = value
+		}
+	}
+	return merged
+}
+
 func fleetTimingClassificationForAttempt(attempt *model.FleetRunnerAttempt) model.FleetTimingClassification {
 	if attempt == nil || attempt.Metadata == nil {
 		return model.FleetTimingClassification{}
@@ -509,7 +542,19 @@ func fleetRunnerAttemptMatchesStartRequest(attempt *model.FleetRunnerAttempt, re
 		attempt.Recovery == request.Resume &&
 		attempt.WorkflowURL == strings.TrimSpace(request.WorkflowURL) &&
 		attempt.HeartbeatTimeoutSeconds == normalizedFleetHeartbeatTimeout(request.HeartbeatTimeoutSeconds) &&
-		fleetTimingClassificationEqual(fleetTimingClassificationForAttempt(attempt), classification)
+		fleetTimingClassificationEqual(fleetTimingClassificationForAttempt(attempt), classification) &&
+		authorityMetadataMatches(attempt, request)
+}
+
+func authorityMetadataMatches(attempt *model.FleetRunnerAttempt, request fleet.RunnerAttemptStartRequest) bool {
+	if attempt == nil || attempt.Metadata == nil {
+		return request.ApprovalEnvelopeSHA256 == "" && request.ConsumptionReceiptSHA256 == ""
+	}
+	value, ok := attempt.Metadata["authorityConsumption"].(map[string]interface{})
+	if !ok {
+		return request.ApprovalEnvelopeSHA256 == "" && request.ConsumptionReceiptSHA256 == ""
+	}
+	return value["approvalEnvelopeSHA256"] == request.ApprovalEnvelopeSHA256 && value["consumptionReceiptSHA256"] == request.ConsumptionReceiptSHA256
 }
 
 func fleetRunnerRecoveryCandidateMatchesStartRequest(candidate *model.FleetRunnerAttempt, retryOf string, request fleet.RunnerAttemptStartRequest, classification model.FleetTimingClassification) bool {
@@ -544,6 +589,13 @@ func validateFleetRunnerDispatchBinding(cfg *config.Config, principal AccessPrin
 	if len(binding.DispatchNonceSHA256) != 64 || subtle.ConstantTimeCompare([]byte(fleetDispatchNonceHash(request.DispatchNonce)), []byte(binding.DispatchNonceSHA256)) != 1 {
 		return fmt.Errorf("dispatchNonce does not match the protected dispatch")
 	}
+	if binding.FleetEnvironment == "disposable/external-mac/nyc3" {
+		if binding.ApprovalEnvelopeSHA256 == "" || request.ApprovalEnvelopeSHA256 == "" || request.ConsumptionReceiptSHA256 == "" || subtle.ConstantTimeCompare([]byte(binding.ApprovalEnvelopeSHA256), []byte(request.ApprovalEnvelopeSHA256)) != 1 {
+			return fmt.Errorf("external-Mac runner requires exact dispatch-bound approval and consumption receipt digests")
+		}
+	} else if request.ApprovalEnvelopeSHA256 != "" || request.ConsumptionReceiptSHA256 != "" {
+		return fmt.Errorf("ordinary Fleet runner lanes require empty authority-consumption digests")
+	}
 	if request.PlanSHA256 != binding.PlanSHA256 || request.CommitSHA != binding.ApprovedHeadSHA || (!request.Resume && ci.SHA != binding.ApprovedHeadSHA) {
 		return fmt.Errorf("runner commit or plan does not match the protected dispatch")
 	}
@@ -551,7 +603,7 @@ func validateFleetRunnerDispatchBinding(cfg *config.Config, principal AccessPrin
 	// disposable lane.  The exact run travels from the workflow request through
 	// the durable dispatch and must still be the authority's current run.  A
 	// non-disposable lane has no pilot capability at all, so every copy is empty.
-	if binding.FleetEnvironment == "disposable/fleet/nyc3" {
+	if binding.FleetEnvironment == "disposable/fleet/nyc3" || binding.FleetEnvironment == "disposable/external-mac/nyc3" {
 		current := configuredPilotRunID(cfg)
 		if current == "" || request.PilotRunID == "" || request.PilotRunID != binding.PilotRunID || binding.PilotRunID != current {
 			return fmt.Errorf("disposable runner pilotRunId does not match dispatch and current authority")
@@ -569,6 +621,10 @@ func validateFleetRunnerDispatchBinding(cfg *config.Config, principal AccessPrin
 	if err != nil || currentRun <= 0 {
 		return fmt.Errorf("runner GitHub run identity is invalid")
 	}
+	currentAttempt, err := strconv.ParseInt(ci.RunAttempt, 10, 32)
+	if err != nil || currentAttempt <= 0 {
+		return fmt.Errorf("runner GitHub run attempt is invalid")
+	}
 	if request.Resume {
 		if ci.Intent != "recover" || binding.RunID <= 0 || request.SourceDispatchRunID != binding.RunID || currentRun == binding.RunID {
 			return fmt.Errorf("recovery must resume a bound source dispatch from a distinct recover workflow run")
@@ -577,6 +633,9 @@ func validateFleetRunnerDispatchBinding(cfg *config.Config, principal AccessPrin
 	}
 	if ci.Intent != "apply" || currentRun != request.SourceDispatchRunID || binding.RunID != request.SourceDispatchRunID {
 		return fmt.Errorf("apply runner does not match the protected source dispatch")
+	}
+	if binding.RunAttempt <= 0 || currentAttempt != int64(binding.RunAttempt) {
+		return fmt.Errorf("apply runner GitHub run attempt does not match the protected source dispatch")
 	}
 	return nil
 }
@@ -609,7 +668,7 @@ func fleetControlEnvironment(value string) string {
 	// Disposable runs intentionally use the staging GitHub Environment for
 	// secret access. The exact pilotRunId binding is what separates those runs;
 	// deriving "disposable" here would reject the checked-in protected lane.
-	if value == "disposable/fleet/nyc3" {
+	if value == "disposable/fleet/nyc3" || value == "disposable/external-mac/nyc3" {
 		return "staging"
 	}
 	environment, _, _ := strings.Cut(strings.TrimSpace(value), "/")

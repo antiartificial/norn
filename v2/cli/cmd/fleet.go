@@ -4,7 +4,9 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"path/filepath"
 	"sort"
+	"syscall"
 	"text/tabwriter"
 	"time"
 
@@ -15,18 +17,30 @@ import (
 )
 
 var (
-	fleetDesired          int
-	fleetSize             string
-	fleetStrategy         string
-	fleetReason           string
-	fleetAllowDestructive bool
+	fleetDesired                int
+	fleetSize                   string
+	fleetStrategy               string
+	fleetReason                 string
+	fleetAllowDestructive       bool
+	fleetDispatchNonceFile      string
+	fleetApprovalEnvelopeSHA256 string
+	fleetConfirmLostNonce       bool
 )
 
 func init() {
 	rootCmd.AddCommand(fleetCmd)
 	fleetCmd.AddCommand(fleetPoolsCmd, fleetValidateCmd, fleetPlanCmd, fleetReplaceCmd, fleetReconcileCmd, fleetCheckpointsCmd, fleetAttemptsCmd, fleetGitHubCmd)
-	fleetGitHubCmd.AddCommand(fleetGitHubStatusCmd, fleetGitHubPullRequestCmd, fleetGitHubApplyCmd)
+	fleetGitHubCmd.AddCommand(fleetGitHubStatusCmd, fleetGitHubPullRequestCmd, fleetGitHubApplyCmd, fleetGitHubPrepareCmd, fleetGitHubPrepareResetCmd, fleetGitHubExecuteCmd, fleetGitHubRerunCmd)
 	fleetGitHubApplyCmd.Flags().BoolVar(&fleetAllowDestructive, "allow-destructive", false, "Acknowledge a reviewed replacement or contraction")
+	fleetGitHubPrepareCmd.Flags().BoolVar(&fleetAllowDestructive, "allow-destructive", false, "Acknowledge a reviewed replacement or contraction")
+	fleetGitHubPrepareCmd.Flags().StringVar(&fleetDispatchNonceFile, "nonce-file", "", "New absolute 0600 file for the one-time external-Mac nonce")
+	fleetGitHubPrepareResetCmd.Flags().BoolVar(&fleetAllowDestructive, "allow-destructive", false, "Match the original reviewed replacement or contraction acknowledgement")
+	fleetGitHubPrepareResetCmd.Flags().BoolVar(&fleetConfirmLostNonce, "confirm-lost-nonce", false, "Confirm the no-store preparation response was lost before approval or execute")
+	fleetGitHubExecuteCmd.Flags().BoolVar(&fleetAllowDestructive, "allow-destructive", false, "Acknowledge a reviewed replacement or contraction")
+	fleetGitHubExecuteCmd.Flags().StringVar(&fleetDispatchNonceFile, "nonce-file", "", "Existing 0600 file holding the prepared nonce")
+	fleetGitHubExecuteCmd.Flags().StringVar(&fleetApprovalEnvelopeSHA256, "approval-envelope-sha256", "", "Canonical signed approval-envelope SHA-256")
+	fleetGitHubRerunCmd.Flags().BoolVar(&fleetAllowDestructive, "allow-destructive", false, "Acknowledge a reviewed replacement or contraction")
+	fleetGitHubRerunCmd.Flags().StringVar(&fleetApprovalEnvelopeSHA256, "approval-envelope-sha256", "", "Exact approval-envelope SHA-256 bound to the source dispatch")
 	for _, command := range []*cobra.Command{fleetPlanCmd, fleetReplaceCmd, fleetReconcileCmd} {
 		command.Flags().IntVar(&fleetDesired, "desired", 0, "Proposed desired node count")
 		command.Flags().StringVar(&fleetSize, "size", "", "Proposed immutable provider VM size")
@@ -37,6 +51,112 @@ func init() {
 		panic(err)
 	}
 }
+
+var fleetGitHubPrepareCmd = &cobra.Command{Use: "prepare <plan-id>", Short: "Prepare an external-Mac apply and store its one-time nonce", Args: cobra.ExactArgs(1), RunE: func(cmd *cobra.Command, args []string) error {
+	if !filepath.IsAbs(fleetDispatchNonceFile) {
+		return fmt.Errorf("--nonce-file must be an absolute path")
+	}
+	prepared, err := client.PrepareFleetApply(args[0], fleetAllowDestructive)
+	if err != nil {
+		return fmt.Errorf("fleet GitHub prepare: %w", err)
+	}
+	if len(prepared.DispatchNonce) != 64 {
+		return fmt.Errorf("fleet GitHub prepare did not return a new one-time nonce; inspect the existing preparation")
+	}
+	f, err := os.OpenFile(fleetDispatchNonceFile, os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0o600)
+	if err != nil {
+		return fmt.Errorf("create private nonce file: %w; if the prepare response is irretrievably lost before approval or execute, run `norn fleet github prepare-reset %s --confirm-lost-nonce`", err, args[0])
+	}
+	written, err := f.WriteString(prepared.DispatchNonce + "\n")
+	if err != nil || written != 65 {
+		f.Close()
+		return fmt.Errorf("write private nonce file: incomplete private nonce write; do not execute; if no approval was issued, run `norn fleet github prepare-reset %s --confirm-lost-nonce`", args[0])
+	}
+	if err := f.Sync(); err != nil {
+		f.Close()
+		return fmt.Errorf("sync private nonce file: %w", err)
+	}
+	if err := f.Close(); err != nil {
+		return fmt.Errorf("close private nonce file: %w", err)
+	}
+	fmt.Fprintf(cmd.OutOrStdout(), "%s prepared plan %s (nonce hash %s)\n", style.Healthy.Render("recorded"), prepared.PlanID, prepared.DispatchNonceSHA256)
+	return nil
+}}
+
+var fleetGitHubPrepareResetCmd = &cobra.Command{Use: "prepare-reset <plan-id>", Short: "Reset only a confirmed lost unapproved external-Mac preparation", Args: cobra.ExactArgs(1), RunE: func(cmd *cobra.Command, args []string) error {
+	if !fleetConfirmLostNonce {
+		return fmt.Errorf("--confirm-lost-nonce is required; never reset after owner approval or execute")
+	}
+	if err := client.ResetFleetApplyPreparation(args[0], fleetAllowDestructive); err != nil {
+		return fmt.Errorf("fleet GitHub prepare reset: %w", err)
+	}
+	fmt.Fprintln(cmd.OutOrStdout(), style.Healthy.Render("unapproved preparation reset"))
+	return nil
+}}
+
+var fleetGitHubExecuteCmd = &cobra.Command{Use: "execute <plan-id>", Short: "Execute a prepared external-Mac apply with owner approval", Args: cobra.ExactArgs(1), RunE: func(cmd *cobra.Command, args []string) error {
+	if !filepath.IsAbs(fleetDispatchNonceFile) || len(fleetApprovalEnvelopeSHA256) != 64 {
+		return fmt.Errorf("--nonce-file and a 64-character --approval-envelope-sha256 are required")
+	}
+	nonce, err := readPrivateFleetDispatchNonce(fleetDispatchNonceFile)
+	if err != nil {
+		return err
+	}
+	op, err := client.ExecuteFleetApply(args[0], fleetAllowDestructive, nonce, fleetApprovalEnvelopeSHA256)
+	if err != nil {
+		return fmt.Errorf("fleet GitHub execute: %w", err)
+	}
+	fmt.Fprintf(cmd.OutOrStdout(), "%s apply dispatch receipt %s\n", style.Healthy.Render("recorded"), op.ID)
+	if value, ok := op.Payload["url"].(string); ok && value != "" {
+		fmt.Fprintln(cmd.OutOrStdout(), value)
+	}
+	return nil
+}}
+
+// readPrivateFleetDispatchNonce binds validation and reading to one opened
+// inode. The write-only nonce is sensitive until execute submits it to GitHub;
+// following a swapped path or symlink here would silently authorize another
+// process's value.
+func readPrivateFleetDispatchNonce(path string) (string, error) {
+	pre, err := os.Lstat(path)
+	if err != nil || !pre.Mode().IsRegular() || pre.Mode().Perm() != 0o600 {
+		return "", fmt.Errorf("--nonce-file must be an existing regular mode-0600 file")
+	}
+	preStat, ok := pre.Sys().(*syscall.Stat_t)
+	if !ok || preStat.Uid != uint32(os.Geteuid()) || preStat.Nlink != 1 || pre.Size() != 65 {
+		return "", fmt.Errorf("--nonce-file must be a single-link 65-byte private file")
+	}
+	fd, err := syscall.Open(path, syscall.O_RDONLY|syscall.O_NOFOLLOW, 0)
+	if err != nil {
+		return "", fmt.Errorf("open private nonce file: %w", err)
+	}
+	file := os.NewFile(uintptr(fd), path)
+	defer file.Close()
+	var opened syscall.Stat_t
+	if err := syscall.Fstat(fd, &opened); err != nil || opened.Dev != preStat.Dev || opened.Ino != preStat.Ino || opened.Uid != uint32(os.Geteuid()) || opened.Nlink != 1 || opened.Size != 65 || opened.Mode&syscall.S_IFMT != syscall.S_IFREG || opened.Mode&0o777 != 0o600 {
+		return "", fmt.Errorf("--nonce-file changed or is not an exact private regular inode")
+	}
+	raw, err := io.ReadAll(io.LimitReader(file, 66))
+	if err != nil || len(raw) != 65 || raw[64] != '\n' {
+		return "", fmt.Errorf("read private nonce file: expected one nonce line")
+	}
+	return string(raw[:64]), nil
+}
+
+var fleetGitHubRerunCmd = &cobra.Command{Use: "rerun <plan-id>", Short: "Rerun one conclusively failed or cancelled external-Mac apply generation", Args: cobra.ExactArgs(1), RunE: func(cmd *cobra.Command, args []string) error {
+	if len(fleetApprovalEnvelopeSHA256) != 64 {
+		return fmt.Errorf("a 64-character --approval-envelope-sha256 is required")
+	}
+	op, err := client.RerunFleetApply(args[0], fleetAllowDestructive, fleetApprovalEnvelopeSHA256)
+	if err != nil {
+		return fmt.Errorf("fleet GitHub rerun: %w", err)
+	}
+	fmt.Fprintf(cmd.OutOrStdout(), "%s apply rerun receipt %s\n", style.Healthy.Render("recorded"), op.ID)
+	if value, ok := op.Payload["url"].(string); ok && value != "" {
+		fmt.Fprintln(cmd.OutOrStdout(), value)
+	}
+	return nil
+}}
 
 var fleetCmd = &cobra.Command{Use: "fleet", Short: "Inspect and plan GitOps-managed fleet capacity"}
 var fleetGitHubCmd = &cobra.Command{Use: "github", Short: "Use the repository-scoped GitHub App fleet bridge"}

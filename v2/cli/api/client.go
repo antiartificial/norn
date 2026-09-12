@@ -1837,6 +1837,62 @@ func (c *Client) DispatchFleetApply(planID string, allowDestructive bool) (*Oper
 	return &operation, nil
 }
 
+// FleetGitHubPreparation intentionally exposes the raw nonce only in the
+// immediate authenticated prepare response. Callers must store it privately.
+type FleetGitHubPreparation struct {
+	PlanID                 string `json:"planId"`
+	PlanRunID              int64  `json:"planRunId"`
+	PlanSHA256             string `json:"planSha256"`
+	ApprovedHeadSHA        string `json:"approvedHeadSha"`
+	DispatchNonceSHA256    string `json:"dispatchNonceSHA256"`
+	DispatchNonce          string `json:"dispatchNonce"`
+	ApprovalEnvelopeSHA256 string `json:"approvalEnvelopeSHA256"`
+}
+
+func (c *Client) ResetFleetApplyPreparation(planID string, allowDestructive bool) error {
+	body, err := json.Marshal(map[string]any{"allowDestructive": allowDestructive, "confirmLostNonce": true})
+	if err != nil {
+		return err
+	}
+	return c.postJSON("/api/v1/fleet/plans/"+url.PathEscape(planID)+"/github/prepare/reset", string(body), nil)
+}
+
+func (c *Client) PrepareFleetApply(planID string, allowDestructive bool) (*FleetGitHubPreparation, error) {
+	body, err := json.Marshal(map[string]bool{"allowDestructive": allowDestructive})
+	if err != nil {
+		return nil, err
+	}
+	var result FleetGitHubPreparation
+	if err := c.postJSON("/api/v1/fleet/plans/"+url.PathEscape(planID)+"/github/prepare", string(body), &result); err != nil {
+		return nil, err
+	}
+	return &result, nil
+}
+
+func (c *Client) ExecuteFleetApply(planID string, allowDestructive bool, nonce, approvalEnvelopeSHA256 string) (*Operation, error) {
+	body, err := json.Marshal(map[string]any{"allowDestructive": allowDestructive, "dispatchNonce": nonce, "approvalEnvelopeSHA256": approvalEnvelopeSHA256})
+	if err != nil {
+		return nil, err
+	}
+	var operation Operation
+	if err := c.postJSON("/api/v1/fleet/plans/"+url.PathEscape(planID)+"/github/execute", string(body), &operation); err != nil {
+		return nil, err
+	}
+	return &operation, nil
+}
+
+func (c *Client) RerunFleetApply(planID string, allowDestructive bool, approvalEnvelopeSHA256 string) (*Operation, error) {
+	body, err := json.Marshal(map[string]any{"allowDestructive": allowDestructive, "approvalEnvelopeSHA256": approvalEnvelopeSHA256})
+	if err != nil {
+		return nil, err
+	}
+	var operation Operation
+	if err := c.postJSON("/api/v1/fleet/plans/"+url.PathEscape(planID)+"/github/rerun", string(body), &operation); err != nil {
+		return nil, err
+	}
+	return &operation, nil
+}
+
 func (c *Client) PlanFleetCapacity(pool string, desired *int, size, strategy, reason string) (*Operation, error) {
 	request := map[string]interface{}{"size": size, "strategy": strategy, "reason": reason}
 	if desired != nil {
@@ -2302,6 +2358,9 @@ func (c *Client) postJSON(path, body string, v any) error {
 	if resp.StatusCode >= 400 {
 		b, _ := io.ReadAll(resp.Body)
 		return fmt.Errorf("HTTP %d: %s", resp.StatusCode, string(b))
+	}
+	if resp.StatusCode == http.StatusNoContent || v == nil {
+		return nil
 	}
 	return json.NewDecoder(resp.Body).Decode(v)
 }

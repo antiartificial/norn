@@ -150,7 +150,7 @@ func TestFleetRunnerStartRequiresExactDispatchAndOIDCProvenance(t *testing.T) {
 	if request.RunnerAttemptID != "github-actions:acme/norn-fleet:93:1" {
 		t.Fatalf("Fleet workflow runner identity must use the canonical github-actions prefix, got %q", request.RunnerAttemptID)
 	}
-	binding := store.FleetGitHubDispatch{PlanID: "plan-1", PlanRunID: 91, PlanSHA256: planSHA, ApprovedHeadSHA: commit, FleetEnvironment: "production/nyc3", DispatchNonceSHA256: fleetDispatchNonceHash(nonce), RunID: 93}
+	binding := store.FleetGitHubDispatch{PlanID: "plan-1", PlanRunID: 91, PlanSHA256: planSHA, ApprovedHeadSHA: commit, FleetEnvironment: "production/nyc3", DispatchNonceSHA256: fleetDispatchNonceHash(nonce), RunID: 93, RunAttempt: 1}
 	if err := validateFleetRunnerDispatchBinding(cfg, principal, "plan-1", request, binding); err != nil {
 		t.Fatalf("bound apply rejected: %v", err)
 	}
@@ -177,6 +177,17 @@ func TestFleetRunnerStartRequiresExactDispatchAndOIDCProvenance(t *testing.T) {
 			ci.RunID = "94"
 			r.RunnerAttemptID = canonicalFleetRunnerAttemptID(ci)
 			r.WorkflowURL = canonicalFleetWorkflowURL(ci)
+		},
+		"stale GitHub run attempt": func(r *fleet.RunnerAttemptStartRequest, ci *CIIdentity, _ *store.FleetGitHubDispatch) {
+			ci.RunAttempt = "2"
+			r.RunnerAttemptID, r.WorkflowURL = canonicalFleetRunnerAttemptID(ci), canonicalFleetWorkflowURL(ci)
+		},
+		"malformed GitHub run attempt": func(r *fleet.RunnerAttemptStartRequest, ci *CIIdentity, _ *store.FleetGitHubDispatch) {
+			ci.RunAttempt = "not-a-number"
+			r.RunnerAttemptID, r.WorkflowURL = canonicalFleetRunnerAttemptID(ci), canonicalFleetWorkflowURL(ci)
+		},
+		"missing durable GitHub run attempt": func(_ *fleet.RunnerAttemptStartRequest, _ *CIIdentity, b *store.FleetGitHubDispatch) {
+			b.RunAttempt = 0
 		},
 	} {
 		t.Run(name, func(t *testing.T) {
@@ -212,7 +223,7 @@ func TestDisposableFleetRunnerStartRequiresExactCurrentPilotRun(t *testing.T) {
 	ci := &CIIdentity{Provider: "github-actions", Repository: "acme/norn-fleet", RunID: "93", RunAttempt: "1", Environment: "staging", SHA: commit, RefProtected: true, Intent: "apply"}
 	principal := AccessPrincipal{Scopes: []string{ScopeFleetOperate}, CI: ci}
 	request := fleet.RunnerAttemptStartRequest{RunnerAttemptID: canonicalFleetRunnerAttemptID(ci), CommitSHA: commit, PlanSHA256: planSHA, DispatchNonce: nonce, SourceDispatchRunID: 93, PilotRunID: pilotA, WorkflowURL: canonicalFleetWorkflowURL(ci)}
-	binding := store.FleetGitHubDispatch{PlanID: "plan-1", PlanRunID: 91, PlanSHA256: planSHA, ApprovedHeadSHA: commit, PilotRunID: pilotA, FleetEnvironment: "disposable/fleet/nyc3", DispatchNonceSHA256: fleetDispatchNonceHash(nonce), RunID: 93}
+	binding := store.FleetGitHubDispatch{PlanID: "plan-1", PlanRunID: 91, PlanSHA256: planSHA, ApprovedHeadSHA: commit, PilotRunID: pilotA, FleetEnvironment: "disposable/fleet/nyc3", DispatchNonceSHA256: fleetDispatchNonceHash(nonce), RunID: 93, RunAttempt: 1}
 	if err := validateFleetRunnerDispatchBinding(cfg, principal, "plan-1", request, binding); err != nil {
 		t.Fatalf("exact disposable pilot binding rejected: %v", err)
 	}
@@ -250,6 +261,40 @@ func TestDisposableFleetRunnerStartRequiresExactCurrentPilotRun(t *testing.T) {
 	ordinaryRequest.PilotRunID = pilotA
 	if err := validateFleetRunnerDispatchBinding(&ordinaryCfg, AccessPrincipal{Scopes: []string{ScopeFleetOperate}, CI: &ordinaryCI}, "plan-1", ordinaryRequest, ordinaryBinding); err == nil {
 		t.Fatal("ordinary lane accepted a pilot run")
+	}
+}
+
+func TestExternalMacRunnerUsesStagingPilotBindingAndExactConsumedAuthority(t *testing.T) {
+	nonce := strings.Repeat("c", 64)
+	commit := strings.Repeat("a", 40)
+	planSHA := strings.Repeat("b", 64)
+	approval, receipt := strings.Repeat("d", 64), strings.Repeat("e", 64)
+	pilot := "pilot20260907"
+	cfg := &config.Config{GitHubActionsFleetAllowedRepository: "acme/norn-fleet@101@202", FleetGitHubPilotRunID: pilot}
+	ci := &CIIdentity{Provider: "github-actions", Repository: "acme/norn-fleet", RunID: "93", RunAttempt: "1", Environment: "staging", SHA: commit, RefProtected: true, Intent: "apply"}
+	request := fleet.RunnerAttemptStartRequest{RunnerAttemptID: canonicalFleetRunnerAttemptID(ci), CommitSHA: commit, PlanSHA256: planSHA, DispatchNonce: nonce, SourceDispatchRunID: 93, PilotRunID: pilot, WorkflowURL: canonicalFleetWorkflowURL(ci), ApprovalEnvelopeSHA256: approval, ConsumptionReceiptSHA256: receipt}
+	binding := store.FleetGitHubDispatch{PlanID: "plan-1", PlanRunID: 91, PlanSHA256: planSHA, ApprovedHeadSHA: commit, PilotRunID: pilot, FleetEnvironment: "disposable/external-mac/nyc3", DispatchNonceSHA256: fleetDispatchNonceHash(nonce), ApprovalEnvelopeSHA256: approval, RunID: 93, RunAttempt: 1}
+	if err := validateFleetRunnerDispatchBinding(cfg, AccessPrincipal{Scopes: []string{ScopeFleetOperate}, CI: ci}, "plan-1", request, binding); err != nil {
+		t.Fatalf("exact external-Mac staging binding rejected: %v", err)
+	}
+	if fleetControlEnvironment("disposable/external-mac/nyc3") != "staging" {
+		t.Fatal("external-Mac lane did not map to protected staging environment")
+	}
+	previous := &model.FleetRunnerAttempt{Metadata: mergeFleetRunnerMetadata(map[string]interface{}{"authorityConsumption": fleetRunnerAuthorityMetadata(request)})}
+	if !authorityMetadataMatches(previous, request) {
+		t.Fatal("exact consumed authority did not match original attempt")
+	}
+	for name, mutate := range map[string]func(*fleet.RunnerAttemptStartRequest){
+		"approval": func(value *fleet.RunnerAttemptStartRequest) { value.ApprovalEnvelopeSHA256 = strings.Repeat("f", 64) },
+		"receipt":  func(value *fleet.RunnerAttemptStartRequest) { value.ConsumptionReceiptSHA256 = strings.Repeat("f", 64) },
+	} {
+		t.Run(name, func(t *testing.T) {
+			candidate := request
+			mutate(&candidate)
+			if authorityMetadataMatches(previous, candidate) {
+				t.Fatal("recovery accepted a substituted authority-consumption digest")
+			}
+		})
 	}
 }
 

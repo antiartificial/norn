@@ -338,16 +338,22 @@ func migrateOnce(ctx context.Context, db *DB) error {
 			fleet_environment TEXT NOT NULL,
 			allow_destructive BOOLEAN NOT NULL,
 			dispatch_nonce_sha256 TEXT NOT NULL,
+			approval_envelope_sha256 TEXT NOT NULL DEFAULT '',
 			dispatch_state TEXT NOT NULL DEFAULT 'prepared',
 			submission_started_at TIMESTAMPTZ,
 			run_id BIGINT NOT NULL DEFAULT 0,
+			run_attempt INT NOT NULL DEFAULT 0,
 			workflow_url TEXT NOT NULL DEFAULT '',
+			rerun_started_at TIMESTAMPTZ,
 			created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
 			updated_at TIMESTAMPTZ NOT NULL DEFAULT now()
 		);
 		ALTER TABLE fleet_github_dispatches ADD COLUMN IF NOT EXISTS dispatch_state TEXT NOT NULL DEFAULT 'prepared';
 		ALTER TABLE fleet_github_dispatches ADD COLUMN IF NOT EXISTS submission_started_at TIMESTAMPTZ;
 		ALTER TABLE fleet_github_dispatches ADD COLUMN IF NOT EXISTS pilot_run_id TEXT NOT NULL DEFAULT '';
+		ALTER TABLE fleet_github_dispatches ADD COLUMN IF NOT EXISTS approval_envelope_sha256 TEXT NOT NULL DEFAULT '';
+		ALTER TABLE fleet_github_dispatches ADD COLUMN IF NOT EXISTS run_attempt INT NOT NULL DEFAULT 0;
+		ALTER TABLE fleet_github_dispatches ADD COLUMN IF NOT EXISTS rerun_started_at TIMESTAMPTZ;
 		ALTER TABLE fleet_github_dispatches DROP COLUMN IF EXISTS dispatch_nonce;
 		CREATE UNIQUE INDEX IF NOT EXISTS idx_fleet_github_dispatch_nonce ON fleet_github_dispatches(dispatch_nonce_sha256);
 
