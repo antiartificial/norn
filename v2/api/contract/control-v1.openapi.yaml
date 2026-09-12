@@ -216,6 +216,7 @@ paths:
       description: External-Mac only. Re-runs the exact already-bound GitHub workflow run only after its current generation conclusively failed or was cancelled. Every observed runAttempt gets one durable rerun fence; once a durable runner attempt exists, protected recovery is required instead.
       requestBody: { required: true, content: { application/json: { schema: { $ref: '#/components/schemas/FleetGitHubRerunRequest' } } } }
       responses:
+        '200': { description: Existing durable receipt for this exact same-run rerun generation, content: { application/json: { schema: { $ref: '#/components/schemas/Operation' } } } }
         '201': { description: Exact same-run rerun observed and durably recorded, content: { application/json: { schema: { $ref: '#/components/schemas/Operation' } } } }
         '400': { $ref: '#/components/responses/Problem' }
         '409': { $ref: '#/components/responses/Problem' }
