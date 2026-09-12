@@ -171,6 +171,56 @@ paths:
         '409': { $ref: '#/components/responses/Problem' }
         '502': { $ref: '#/components/responses/Problem' }
         '503': { $ref: '#/components/responses/Problem' }
+  /api/v1/fleet/plans/{planID}/github/prepare:
+    parameters:
+      - { name: planID, in: path, required: true, schema: { type: string, format: uuid } }
+    post:
+      operationId: prepareFleetGitHubApply
+      description: External-Mac only. Resolves a protected plan and returns a one-time no-store nonce whose SHA-256 is durably bound; clients must write the nonce directly to a new owner-only file.
+      requestBody: { required: true, content: { application/json: { schema: { $ref: '#/components/schemas/FleetGitHubDispatchRequest' } } } }
+      responses:
+        '200': { description: Existing prepared metadata; no raw nonce is replayed, content: { application/json: { schema: { $ref: '#/components/schemas/FleetGitHubPreparation' } } } }
+        '201': { description: Fresh preparation with one-time raw nonce, content: { application/json: { schema: { $ref: '#/components/schemas/FleetGitHubPreparation' } } } }
+        '400': { $ref: '#/components/responses/Problem' }
+        '409': { $ref: '#/components/responses/Problem' }
+        '502': { $ref: '#/components/responses/Problem' }
+  /api/v1/fleet/plans/{planID}/github/prepare/reset:
+    parameters:
+      - { name: planID, in: path, required: true, schema: { type: string, format: uuid } }
+    post:
+      operationId: resetFleetGitHubPreparation
+      description: External-Mac only. Deletes only a confirmed unapproved, pre-submit preparation after the one-time nonce response was lost; a bound approval, submission, dispatch, or rerun is never reset.
+      requestBody: { required: true, content: { application/json: { schema: { $ref: '#/components/schemas/FleetGitHubPrepareResetRequest' } } } }
+      responses:
+        '204': { description: The unapproved preparation was removed, or was already absent. }
+        '400': { $ref: '#/components/responses/Problem' }
+        '409': { $ref: '#/components/responses/Problem' }
+        '503': { $ref: '#/components/responses/Problem' }
+  /api/v1/fleet/plans/{planID}/github/execute:
+    parameters:
+      - { name: planID, in: path, required: true, schema: { type: string, format: uuid } }
+    post:
+      operationId: executeFleetGitHubApply
+      description: External-Mac only. Matches the transient prepared nonce and immutable signed-approval digest, then permits one fenced workflow dispatch.
+      requestBody: { required: true, content: { application/json: { schema: { $ref: '#/components/schemas/FleetGitHubExecuteRequest' } } } }
+      responses:
+        '201': { description: Protected apply dispatched or recovered, content: { application/json: { schema: { $ref: '#/components/schemas/Operation' } } } }
+        '400': { $ref: '#/components/responses/Problem' }
+        '409': { $ref: '#/components/responses/Problem' }
+        '502': { $ref: '#/components/responses/Problem' }
+  /api/v1/fleet/plans/{planID}/github/rerun:
+    parameters:
+      - { name: planID, in: path, required: true, schema: { type: string, format: uuid } }
+    post:
+      operationId: rerunFleetGitHubApply
+      description: External-Mac only. Re-runs the exact already-bound GitHub workflow run only after its current generation conclusively failed or was cancelled. Every observed runAttempt gets one durable rerun fence; once a durable runner attempt exists, protected recovery is required instead.
+      requestBody: { required: true, content: { application/json: { schema: { $ref: '#/components/schemas/FleetGitHubRerunRequest' } } } }
+      responses:
+        '200': { description: Existing durable receipt for this exact same-run rerun generation, content: { application/json: { schema: { $ref: '#/components/schemas/Operation' } } } }
+        '201': { description: Exact same-run rerun observed and durably recorded, content: { application/json: { schema: { $ref: '#/components/schemas/Operation' } } } }
+        '400': { $ref: '#/components/responses/Problem' }
+        '409': { $ref: '#/components/responses/Problem' }
+        '502': { $ref: '#/components/responses/Problem' }
   /api/v1/fleet/plans/{planID}/reconciliations:
     parameters:
       - { name: planID, in: path, required: true, schema: { type: string, format: uuid } }
@@ -2111,6 +2161,45 @@ components:
       required: [allowDestructive]
       properties:
         allowDestructive: { type: boolean }
+    FleetGitHubExecuteRequest:
+      type: object
+      additionalProperties: false
+      required: [allowDestructive, dispatchNonce, approvalEnvelopeSHA256]
+      properties:
+        allowDestructive: { type: boolean }
+        dispatchNonce: { type: string, pattern: '^[0-9a-f]{64}$', writeOnly: true }
+        approvalEnvelopeSHA256: { type: string, pattern: '^[0-9a-f]{64}$' }
+    FleetGitHubPrepareResetRequest:
+      type: object
+      additionalProperties: false
+      required: [allowDestructive, confirmLostNonce]
+      properties:
+        allowDestructive: { type: boolean }
+        confirmLostNonce: { type: boolean, const: true }
+    FleetGitHubRerunRequest:
+      type: object
+      additionalProperties: false
+      required: [allowDestructive, approvalEnvelopeSHA256]
+      properties:
+        allowDestructive: { type: boolean }
+        approvalEnvelopeSHA256: { type: string, pattern: '^[0-9a-f]{64}$' }
+    FleetGitHubPreparation:
+      type: object
+      additionalProperties: false
+      required: [schemaVersion, planId, planRunId, planSha256, approvedHeadSha, pilotRunId, fleetEnvironment, allowDestructive, dispatchNonceSHA256, dispatchState]
+      properties:
+        schemaVersion: { const: norn.fleet-github-dispatch-preparation/v1 }
+        planId: { type: string, format: uuid }
+        planRunId: { type: integer, format: int64 }
+        planSha256: { type: string, pattern: '^[0-9a-f]{64}$' }
+        approvedHeadSha: { type: string, pattern: '^[0-9a-f]{40}$' }
+        pilotRunId: { type: string }
+        fleetEnvironment: { type: string }
+        allowDestructive: { type: boolean }
+        dispatchNonceSHA256: { type: string, pattern: '^[0-9a-f]{64}$' }
+        dispatchNonce: { type: string, pattern: '^[0-9a-f]{64}$', writeOnly: true }
+        approvalEnvelopeSHA256: { type: string, pattern: '^[0-9a-f]{64}$', description: Empty until execute has immutably bound the canonical owner approval envelope. }
+        dispatchState: { type: string, enum: [prepared, submitting, dispatched, rerun_submitting] }
     FleetCapacityPlanRequest:
       type: object
       additionalProperties: false
@@ -2200,6 +2289,8 @@ components:
         heartbeatTimeoutSeconds: { type: integer, minimum: 30, maximum: 900, default: 120 }
         operationClass: { type: string, enum: [cold_start, unknown], description: Optional protected-runner classification derived from the reviewed provider-plan summary. cold_start requires exactly five creates; unknown is a conservative abstention. }
         createdNodeCount: { type: integer, minimum: 0, maximum: 1000, description: Optional reviewed provider-plan count. cold_start accepts exactly 5; unknown accepts 0 through 1000. }
+        approvalEnvelopeSHA256: { type: string, pattern: '^[0-9a-f]{64}$', description: External-Mac only canonical owner approval envelope digest; empty on ordinary Fleet lanes. }
+        consumptionReceiptSHA256: { type: string, pattern: '^[0-9a-f]{64}$', description: External-Mac only signed consumption-marker digest; empty on ordinary Fleet lanes. }
     FleetTimingRange:
       type: object
       additionalProperties: false

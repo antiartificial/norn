@@ -1,6 +1,8 @@
 package handler
 
 import (
+	"encoding/json"
+	"strings"
 	"testing"
 
 	"norn/v2/api/config"
@@ -67,5 +69,21 @@ func TestCompletedDispatchReceiptCannotCrossDisposablePilotAuthority(t *testing.
 	}
 	if fleetGitHubDispatchMatchesCurrentLane(binding, "disposable/fleet/nyc3", "pilot20260908", false) {
 		t.Fatal("completed receipt from old pilot authority was replay-compatible")
+	}
+}
+
+func TestExternalMacPreparationResponseRedactsLostNonce(t *testing.T) {
+	raw := strings.Repeat("a", 64)
+	binding := &store.FleetGitHubDispatch{
+		PlanID: "plan-1", PlanRunID: 91, PlanSHA256: strings.Repeat("b", 64), ApprovedHeadSHA: strings.Repeat("c", 40),
+		PilotRunID: "pilot20260907", FleetEnvironment: "disposable/external-mac/nyc3", DispatchNonceSHA256: strings.Repeat("d", 64), DispatchState: "prepared",
+	}
+	issued, err := json.Marshal(preparationResponse(binding, raw))
+	if err != nil || !strings.Contains(string(issued), raw) {
+		t.Fatalf("initial preparation response=%s err=%v", issued, err)
+	}
+	redacted, err := json.Marshal(preparationResponse(binding, ""))
+	if err != nil || strings.Contains(string(redacted), raw) || strings.Contains(string(redacted), `"dispatchNonce":`) || !strings.Contains(string(redacted), binding.DispatchNonceSHA256) {
+		t.Fatalf("lost-nonce response=%s err=%v", redacted, err)
 	}
 }

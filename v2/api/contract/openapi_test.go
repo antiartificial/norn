@@ -39,7 +39,7 @@ func TestControlOpenAPIParsesAndLocalRefsResolve(t *testing.T) {
 		"/api/v1/apps/{id}/external-deployments/admit", "/api/v1/apps/{id}/external-deployments/cleanup",
 		"/api/v1/apps/{id}/external-deployments/reconcile",
 		"/api/v1/apps/{id}/external-deployments/context/{admissionId}",
-		"/api/v1/fleet/plans/{planID}/github/pull-request", "/api/v1/fleet/plans/{planID}/github/dispatch",
+		"/api/v1/fleet/plans/{planID}/github/pull-request", "/api/v1/fleet/plans/{planID}/github/dispatch", "/api/v1/fleet/plans/{planID}/github/prepare", "/api/v1/fleet/plans/{planID}/github/prepare/reset", "/api/v1/fleet/plans/{planID}/github/execute", "/api/v1/fleet/plans/{planID}/github/rerun",
 	} {
 		if _, ok := paths[required]; !ok {
 			t.Errorf("missing path %s", required)
@@ -185,6 +185,21 @@ func TestControlOpenAPIParsesAndLocalRefsResolve(t *testing.T) {
 	for _, field := range []string{"operationClass", "createdNodeCount"} {
 		if _, ok := runnerStart["properties"].(map[string]interface{})[field]; !ok {
 			t.Errorf("FleetRunnerAttemptStartRequest must expose optional %s", field)
+		}
+	}
+	for _, field := range []string{"approvalEnvelopeSHA256", "consumptionReceiptSHA256"} {
+		if _, ok := runnerStart["properties"].(map[string]interface{})[field]; !ok {
+			t.Errorf("FleetRunnerAttemptStartRequest must expose external-Mac %s", field)
+		}
+	}
+	preparation := schemas["FleetGitHubPreparation"].(map[string]interface{})
+	if _, ok := preparation["properties"].(map[string]interface{})["approvalEnvelopeSHA256"]; !ok {
+		t.Error("FleetGitHubPreparation must expose its immutable approval envelope digest")
+	}
+	reset := schemas["FleetGitHubPrepareResetRequest"].(map[string]interface{})
+	for _, field := range []string{"allowDestructive", "confirmLostNonce"} {
+		if !containsRequiredField(reset["required"].([]interface{}), field) {
+			t.Errorf("FleetGitHubPrepareResetRequest must require %s", field)
 		}
 	}
 	operationClass := runnerStart["properties"].(map[string]interface{})["operationClass"].(map[string]interface{})

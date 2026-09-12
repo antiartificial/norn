@@ -430,6 +430,126 @@ func TestExternalMacDispatchCarriesAndPinsPilotRunID(t *testing.T) {
 	}
 }
 
+func TestExternalMacRerunRequiresTerminalFailureAndObservedAttemptIncrement(t *testing.T) {
+	planID := "26262626-2626-4262-8262-262626262626"
+	planSHA := strings.Repeat("a", 64)
+	headSHA := strings.Repeat("b", 40)
+	nonce := strings.Repeat("c", 64)
+	nonceSum := sha256.Sum256([]byte(nonce))
+	nonceHash := hex.EncodeToString(nonceSum[:])
+	pilotRunID := "pilot20260907"
+	postCount, getCount := 0, 0
+	client := testClient(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/app" {
+			fmt.Fprint(w, `{"slug":"norn"}`)
+			return
+		}
+		if tokenResponse(w, r, map[string]string{"actions": "write", "contents": "read", "pull_requests": "read"}) {
+			return
+		}
+		if r.URL.Path == "/repos/acme/norn-fleet/actions/runs/93" {
+			getCount++
+			attempt := 1
+			status, conclusion := "completed", "failure"
+			if postCount > 0 {
+				attempt, status, conclusion = 2, "queued", ""
+			}
+			fmt.Fprintf(w, `{"id":93,"html_url":"https://github.com/acme/norn-fleet/actions/runs/93","event":"workflow_dispatch","head_sha":%q,"head_branch":"main","path":".github/workflows/apply.yml@main","name":"apply","display_title":%q,"status":%q,"conclusion":%q,"run_attempt":%d,"actor":{"login":"norn[bot]","type":"Bot"}}`, headSHA, "Apply disposable/external-mac/nyc3 Norn plan "+planID+" nonce "+nonce, status, conclusion, attempt)
+			return
+		}
+		if r.Method == http.MethodPost && r.URL.Path == "/repos/acme/norn-fleet/actions/runs/93/rerun" {
+			postCount++
+			w.WriteHeader(http.StatusCreated)
+			return
+		}
+		http.NotFound(w, r)
+	}))
+	client.cfg.PilotRunID = pilotRunID
+	client.cfg.ConfigPath = "environments/disposable/external-mac/nyc3/cluster.yaml"
+	approved := &Dispatch{PlanRunID: 91, PlanSHA: planSHA, ApprovedHeadSHA: headSHA, PilotRunID: pilotRunID}
+	result, err := client.RerunBoundExternalMacPlan(context.Background(), planID, "disposable/external-mac/nyc3", false, approved, nonceHash, strings.Repeat("d", 64), 93, 1)
+	if err != nil || result.RunAttempt != 2 || postCount != 1 || getCount < 2 {
+		t.Fatalf("rerun result=%#v err=%v post=%d get=%d", result, err, postCount, getCount)
+	}
+}
+
+func TestExternalMacRerunNeverPostsForNonterminalOrWrongAttempt(t *testing.T) {
+	planID := "27272727-2727-4272-8272-272727272727"
+	planSHA := strings.Repeat("a", 64)
+	headSHA := strings.Repeat("b", 40)
+	nonce := strings.Repeat("c", 64)
+	nonceSum := sha256.Sum256([]byte(nonce))
+	nonceHash := hex.EncodeToString(nonceSum[:])
+	postCount := 0
+	client := testClient(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/app" {
+			fmt.Fprint(w, `{"slug":"norn"}`)
+			return
+		}
+		if tokenResponse(w, r, map[string]string{"actions": "write", "contents": "read", "pull_requests": "read"}) {
+			return
+		}
+		if r.URL.Path == "/repos/acme/norn-fleet/actions/runs/93" {
+			fmt.Fprintf(w, `{"id":93,"html_url":"https://github.com/acme/norn-fleet/actions/runs/93","event":"workflow_dispatch","head_sha":%q,"head_branch":"main","path":".github/workflows/apply.yml@main","name":"apply","display_title":%q,"status":"in_progress","conclusion":"","run_attempt":1,"actor":{"login":"norn[bot]","type":"Bot"}}`, headSHA, "Apply disposable/external-mac/nyc3 Norn plan "+planID+" nonce "+nonce)
+			return
+		}
+		if r.Method == http.MethodPost {
+			postCount++
+			w.WriteHeader(http.StatusCreated)
+			return
+		}
+		http.NotFound(w, r)
+	}))
+	client.cfg.PilotRunID = "pilot20260907"
+	client.cfg.ConfigPath = "environments/disposable/external-mac/nyc3/cluster.yaml"
+	approved := &Dispatch{PlanRunID: 91, PlanSHA: planSHA, ApprovedHeadSHA: headSHA, PilotRunID: client.cfg.PilotRunID}
+	if _, err := client.RerunBoundExternalMacPlan(context.Background(), planID, "disposable/external-mac/nyc3", false, approved, nonceHash, strings.Repeat("d", 64), 93, 1); !errors.Is(err, ErrRerunIneligible) || postCount != 0 {
+		t.Fatalf("nonterminal rerun err=%v post=%d", err, postCount)
+	}
+}
+
+func TestExternalMacRerunTreatsSkippedGenerationAsAmbiguous(t *testing.T) {
+	planID := "28282828-2828-4282-8282-282828282828"
+	planSHA := strings.Repeat("a", 64)
+	headSHA := strings.Repeat("b", 40)
+	nonce := strings.Repeat("c", 64)
+	nonceSum := sha256.Sum256([]byte(nonce))
+	nonceHash := hex.EncodeToString(nonceSum[:])
+	postCount := 0
+	client := testClient(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/app" {
+			fmt.Fprint(w, `{"slug":"norn"}`)
+			return
+		}
+		if tokenResponse(w, r, map[string]string{"actions": "write", "contents": "read", "pull_requests": "read"}) {
+			return
+		}
+		if r.URL.Path == "/repos/acme/norn-fleet/actions/runs/93" {
+			attempt := 1
+			status, conclusion := "completed", "failure"
+			if postCount > 0 {
+				// A manual/out-of-band rerun advanced the run by more than the
+				// generation Norn submitted.  It must not be adopted.
+				attempt, status, conclusion = 3, "queued", ""
+			}
+			fmt.Fprintf(w, `{"id":93,"html_url":"https://github.com/acme/norn-fleet/actions/runs/93","event":"workflow_dispatch","head_sha":%q,"head_branch":"main","path":".github/workflows/apply.yml@main","name":"apply","display_title":%q,"status":%q,"conclusion":%q,"run_attempt":%d,"actor":{"login":"norn[bot]","type":"Bot"}}`, headSHA, "Apply disposable/external-mac/nyc3 Norn plan "+planID+" nonce "+nonce, status, conclusion, attempt)
+			return
+		}
+		if r.Method == http.MethodPost && r.URL.Path == "/repos/acme/norn-fleet/actions/runs/93/rerun" {
+			postCount++
+			w.WriteHeader(http.StatusCreated)
+			return
+		}
+		http.NotFound(w, r)
+	}))
+	client.cfg.PilotRunID = "pilot20260907"
+	client.cfg.ConfigPath = "environments/disposable/external-mac/nyc3/cluster.yaml"
+	approved := &Dispatch{PlanRunID: 91, PlanSHA: planSHA, ApprovedHeadSHA: headSHA, PilotRunID: client.cfg.PilotRunID}
+	if _, err := client.RerunBoundExternalMacPlan(context.Background(), planID, "disposable/external-mac/nyc3", false, approved, nonceHash, strings.Repeat("d", 64), 93, 1); !errors.Is(err, ErrDispatchAmbiguous) || postCount != 1 {
+		t.Fatalf("skipped-generation rerun err=%v post=%d", err, postCount)
+	}
+}
+
 func TestFindApplyRunRequiresFullBoundWorkflowIdentity(t *testing.T) {
 	planID := "33333333-3333-4333-8333-333333333333"
 	nonce := strings.Repeat("d", 64)

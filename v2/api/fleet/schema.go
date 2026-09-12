@@ -131,6 +131,10 @@ type RunnerAttemptStartRequest struct {
 	// provider work.
 	OperationClass   string `json:"operationClass,omitempty"`
 	CreatedNodeCount int    `json:"createdNodeCount,omitempty"`
+	// External-Mac only: durable proof that this exact runner has adopted the
+	// owner-only one-use authority before any provider-applying transition.
+	ApprovalEnvelopeSHA256   string `json:"approvalEnvelopeSHA256,omitempty"`
+	ConsumptionReceiptSHA256 string `json:"consumptionReceiptSHA256,omitempty"`
 }
 
 type RunnerHeartbeatRequest struct {

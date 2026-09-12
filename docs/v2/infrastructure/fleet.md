@@ -196,6 +196,10 @@ The API equivalents are:
 | `GET` | `/api/v1/fleet/github` | Value-safe GitHub App installation status |
 | `POST` | `/api/v1/fleet/plans/{planID}/github/pull-request` | Create or recover the deterministic reviewed PR |
 | `POST` | `/api/v1/fleet/plans/{planID}/github/dispatch` | Discover the merged SHA-bound plan artifact and create or recover protected apply |
+| `POST` | `/api/v1/fleet/plans/{planID}/github/prepare` | External-Mac only: mint one no-store nonce and bind its SHA-256 to the resolved reviewed plan |
+| `POST` | `/api/v1/fleet/plans/{planID}/github/prepare/reset` | External-Mac only: remove a confirmed lost, unapproved pre-submit preparation; bound or submitted authority is never reset |
+| `POST` | `/api/v1/fleet/plans/{planID}/github/execute` | External-Mac only: match the private nonce and signed approval digest, then make the single dispatch |
+| `POST` | `/api/v1/fleet/plans/{planID}/github/rerun` | External-Mac only: re-run a conclusively failed, cancelled, or timed-out exact workflow generation before any durable runner attempt exists |
 
 An invalid document returns HTTP 200 with `valid: false`; malformed request envelopes use `application/problem+json`. This makes validation deterministic for UI and CI clients without treating user-authored validation findings as transport failures.
 
@@ -208,8 +212,24 @@ norn fleet replace app --size s-8vcpu-16gb --reason "memory pressure"
 norn fleet reconcile app
 norn fleet github status
 norn fleet github pr PLAN_UUID
+norn fleet github prepare PLAN_UUID --nonce-file /absolute/private/dispatch-nonce
+# Only before approval/execute, if the no-store response was lost:
+norn fleet github prepare-reset PLAN_UUID --confirm-lost-nonce
+# Sign the returned metadata plus dispatchNonceSHA256 with the external-Mac owner procedure.
+norn fleet github execute PLAN_UUID --nonce-file /absolute/private/dispatch-nonce --approval-envelope-sha256 APPROVAL_SHA256
+norn fleet github rerun PLAN_UUID --approval-envelope-sha256 APPROVAL_SHA256
 norn fleet github apply PLAN_UUID
 ```
+
+Norn stores and returns only the nonce SHA-256 after preparation. The protected
+GitHub apply workflow currently carries the raw nonce in its run title so Norn
+can recover a lost dispatch response by matching that title's hash. This makes
+the nonce a GitHub-resident post-submit value; it is not a Norn database,
+operation, audit, or API-response value. A rerun reuses that exact run and is
+fenced once per observed GitHub `run_attempt`; the apply runner must present
+that exact durable run attempt, not merely the same run ID. An ambiguous submission is never
+posted again, and any durable runner attempt requires the separate recovery
+workflow instead.
 
 Protected runner automation uses the dedicated attempt protocol:
 
