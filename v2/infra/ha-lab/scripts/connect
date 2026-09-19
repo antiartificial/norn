@@ -1,0 +1,71 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+# Prints exactly what NornUI (macOS) and the norn CLI need to reach the cluster.
+# The API only listens on the leader; HAProxy's :8810 frontend on every node
+# transparently follows leadership, so pointing at any reachable node works.
+# :8810 is VPC/Tailscale-only by design (never public), so we prefer a node's
+# Tailscale IP and fall back to an SSH tunnel over the node's public IP.
+
+script_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+lab_root="$(cd "${script_dir}/.." && pwd)"
+export PATH="${lab_root}/.tools/bin:${PATH}"
+terraform_dir="${lab_root}/terraform"
+tf() { terraform -chdir="${terraform_dir}" "$@"; }
+
+lab_name="$(tf output -raw name_prefix 2>/dev/null || true)"
+[[ -n "${lab_name}" ]] || { echo "no applied cluster (empty terraform state); run 'lab up' first" >&2; exit 1; }
+
+secret_file="$(${script_dir}/secrets path "${lab_name}")"
+[[ -f "${secret_file}" ]] || { echo "no secrets file for '${lab_name}'" >&2; exit 1; }
+set -a
+# shellcheck disable=SC1090
+source "${secret_file}"
+set +a
+token="${NORN_HA_NORN_API_TOKEN:-}"
+[[ -n "${token}" ]] || { echo "NORN_HA_NORN_API_TOKEN missing from the .env" >&2; exit 1; }
+
+nodes_json="$(tf output -json lab_nodes)"
+first_public="$(printf '%s' "${nodes_json}" | jq -r 'to_entries | sort_by(.key) | first.value.public_ip')"
+hosts="$(printf '%s' "${nodes_json}" | jq -r 'keys[]' | sort)"
+
+ts_ip_for() {
+  command -v tailscale >/dev/null 2>&1 || return 0
+  tailscale status --json 2>/dev/null \
+    | jq -r --arg h "$1" '(.Peer // {}) | to_entries[] | .value | select(.HostName==$h or ((.DNSName // "")|startswith($h+"."))) | .TailscaleIPs[0] // empty' \
+    | head -1
+}
+
+# Find the first node reachable on :8810 over Tailscale.
+reachable_ts=""
+for h in ${hosts}; do
+  ip="$(ts_ip_for "${h}")"
+  [[ -n "${ip}" ]] || continue
+  if curl -fsS --max-time 4 "http://${ip}:8810/api/health" >/dev/null 2>&1; then
+    reachable_ts="${ip}"; break
+  fi
+done
+
+put_clip() {
+  if command -v pbcopy >/dev/null 2>&1; then printf '%s' "$1" | pbcopy && echo "(NORN_API_TOKEN copied to clipboard)"; else echo "(no pbcopy; retrieve the token from: ${secret_file})"; fi
+}
+
+echo "Fleet: ${lab_name}"
+echo
+if [[ -n "${reachable_ts}" ]]; then
+  echo "NornUI (macOS) — add a cluster:"
+  echo "  Host:  http://${reachable_ts}:8810"
+  echo "  Token: "; put_clip "${token}"
+  echo
+  echo "norn CLI:"
+  echo "  export NORN_ADDR=http://${reachable_ts}:8810"
+  echo "  export NORN_API_TOKEN=…   # copied to clipboard"
+else
+  echo "No node reachable on :8810 over Tailscale from this machine."
+  echo "Either this machine isn't on the antiartificial tailnet, or the cluster was"
+  echo "launched with --no-tailscale. Reach it with an SSH tunnel instead:"
+  echo
+  echo "  ssh -N -L 8810:127.0.0.1:8810 root@${first_public}"
+  echo "then point NornUI/CLI at http://127.0.0.1:8810"
+  echo "  Token: "; put_clip "${token}"
+fi

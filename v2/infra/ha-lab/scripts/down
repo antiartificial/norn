@@ -1,0 +1,55 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+# Tear the fleet down and stop DO billing. Destructive, so it requires typed
+# confirmation (retype the cluster name) unless --confirm is passed.
+#
+# usage: lab down [NAME] [--confirm] [--keep-spaces]
+#   --confirm      skip the typed prompt (for scripted teardown)
+#   --keep-spaces  leave the WAL backup bucket/key in place
+
+script_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+lab_root="$(cd "${script_dir}/.." && pwd)"
+export PATH="${lab_root}/.tools/bin:${PATH}"
+lab="${script_dir}/lab"
+tfvars="${lab_root}/terraform/terraform.tfvars"
+
+confirm=0 keep_spaces=0 name=""
+while [[ $# -gt 0 ]]; do
+  case "$1" in
+    --confirm)     confirm=1 ;;
+    --keep-spaces) keep_spaces=1 ;;
+    -*)            echo "unknown flag: $1" >&2; exit 2 ;;
+    *)             name="$1" ;;
+  esac
+  shift
+done
+if [[ -z "${name}" && -f "${tfvars}" ]]; then
+  name="$(awk -F= '/^[[:space:]]*name_prefix[[:space:]]*=/ {v=$2; gsub(/[[:space:]"]/,"",v); print v; exit}' "${tfvars}")"
+fi
+[[ -n "${name}" ]] || { echo "usage: lab down NAME [--confirm] [--keep-spaces]" >&2; exit 2; }
+
+echo "This will DESTROY every droplet, load balancer, VPC, and firewall for fleet '${name}'."
+echo "It stops DO billing for the cluster. This cannot be undone."
+if [[ "${confirm}" -eq 0 ]]; then
+  printf "Retype the fleet name to confirm: " >&2
+  read -r typed
+  [[ "${typed}" == "${name}" ]] || { echo "name mismatch; aborting." >&2; exit 1; }
+fi
+
+echo "==> terraform destroy"
+"${lab}" destroy --confirm-disposable-lab
+
+if [[ "${keep_spaces}" -eq 0 ]]; then
+  echo "==> remove the WAL backup bucket + Spaces key"
+  "${lab}" backup-repository cleanup-destroyed --confirm-disposable-lab || \
+    echo "    (backup cleanup skipped/failed — remove '${name}-backups*' in DO Spaces manually if it remains)"
+fi
+
+echo "==> clear the local terraform backend cache"
+rm -rf "${lab_root}/terraform/.terraform" || true
+
+echo
+echo "fleet '${name}' destroyed."
+echo "Note: the terraform *state* Spaces bucket is retained (no auto-destroy); remove it from the"
+echo "DO Spaces console if you won't relaunch '${name}'. Verify zero droplets: doctl compute droplet list"

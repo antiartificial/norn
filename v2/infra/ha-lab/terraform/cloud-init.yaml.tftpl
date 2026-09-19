@@ -33,6 +33,10 @@ write_files:
       hostname=${hostname}
 
 runcmd:
+%{ if tailscale_authkey != "" ~}
+  - ['sh', '-c', 'curl -fsSL https://tailscale.com/install.sh | sh']
+  - ['tailscale', 'up', '--authkey=${tailscale_authkey}', '--hostname=${hostname}', '--accept-dns=false', '--ssh=false']
+%{ endif ~}
   - systemctl reload ssh
   - touch /var/lib/cloud/instance/norn-bootstrap-ready
 

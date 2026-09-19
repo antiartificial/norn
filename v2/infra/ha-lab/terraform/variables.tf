@@ -99,3 +99,10 @@ variable "ingress_port" {
     error_message = "ingress_port must be an unprivileged TCP port."
   }
 }
+
+variable "tailscale_authkey" {
+  description = "Reusable, pre-authorized Tailscale auth key (tagged tag:norn-pilot-node). When set, every node joins the tailnet at boot so NornUI/CLI can reach :8810 privately. Leave empty to skip Tailscale (VPC/SSH-tunnel access only)."
+  type        = string
+  default     = ""
+  sensitive   = true
+}

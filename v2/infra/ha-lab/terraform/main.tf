@@ -31,7 +31,8 @@ resource "digitalocean_droplet" "node" {
   tags       = concat(local.common_tags, ["norn-ha-member"])
 
   user_data = templatefile("${path.module}/cloud-init.yaml.tftpl", {
-    hostname = each.key
+    hostname          = each.key
+    tailscale_authkey = var.tailscale_authkey
   })
 
   lifecycle {

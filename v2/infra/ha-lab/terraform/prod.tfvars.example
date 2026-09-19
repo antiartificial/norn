@@ -1,0 +1,24 @@
+# Fleet description (production profile — bigger, more robust hardware).
+# Launch with: lab up my-prod-fleet   (after: cp prod.tfvars.example terraform.tfvars)
+#
+# Robustness intent: a small number of larger, dedicated-CPU nodes that host all
+# services/apps co-located, rather than many small coupled droplets. Pair this
+# with the Postgres tuning tracked in RESIZING.md / P5 before real workloads.
+
+name_prefix = "norn-ha-prod"
+owner       = "platform"
+expires_on  = "2027-01-01"     # set a real review date; still enforced
+region      = "nyc3"
+vpc_cidr    = "10.141.0.0/20"
+node_count  = 3                # keep odd for quorum; 3 is the durable minimum
+node_size   = "g-4vcpu-16gb"   # dedicated-CPU, more RAM/disk headroom for Postgres + apps
+
+enable_backups = true          # whole-droplet backups in addition to WAL archiving
+
+ssh_key_fingerprints = [
+  "replace-with-controller-key-fingerprint",
+]
+
+ssh_source_cidrs = [
+  "203.0.113.10/32",
+]

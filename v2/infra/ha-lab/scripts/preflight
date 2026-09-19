@@ -1,0 +1,64 @@
+#!/usr/bin/env bash
+set -uo pipefail
+
+# Tells a developer exactly which credentials/tools they need before `lab up`.
+# Hard blockers exit non-zero; "needed later" items warn but do not block launch.
+# See PREREQUISITES.md for where to obtain each credential and with what scope.
+
+script_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+lab_root="$(cd "${script_dir}/.." && pwd)"
+export PATH="${lab_root}/.tools/bin:${PATH}"
+
+lab_name="${1:-}"
+blockers=0
+
+pass()  { printf '  \033[32mok\033[0m    %s\n' "$1"; }
+warn()  { printf '  \033[33mwarn\033[0m  %s\n' "$1"; }
+fail()  { printf '  \033[31mFAIL\033[0m  %s\n' "$1"; blockers=$((blockers + 1)); }
+
+echo "Norn HA lab preflight"
+echo
+
+echo "Local tooling"
+if [[ -x "${lab_root}/.tools/bin/terraform" ]]; then pass "lab tools installed (.tools/bin)"; else warn "run 'lab bootstrap-tools' to install terraform/ansible/cosign/age/sops"; fi
+command -v jq   >/dev/null 2>&1 && pass "jq"   || fail "jq is required (brew install jq)"
+command -v curl >/dev/null 2>&1 && pass "curl" || fail "curl is required"
+command -v tailscale >/dev/null 2>&1 && pass "tailscale CLI (needed by 'lab connect')" || warn "tailscale CLI absent locally: 'lab connect' can't resolve tailnet IPs (SSH-tunnel fallback only)"
+echo
+
+echo "DigitalOcean (X: DO account  perms: read+write)"
+if command -v doctl >/dev/null 2>&1; then
+  if doctl account get >/dev/null 2>&1; then pass "doctl authenticated"; else fail "doctl not authenticated: run 'doctl auth init' with a read+write API token"; fi
+  if doctl registry get >/dev/null 2>&1; then pass "container registry exists"; else fail "no DO container registry: 'doctl registry create <name>' (images are pulled from it)"; fi
+  key_count="$(doctl compute ssh-key list --no-header --format ID 2>/dev/null | grep -c . || true)"
+  if [[ "${key_count:-0}" -gt 0 ]]; then pass "SSH key(s) registered in DO (${key_count})"; else fail "no SSH key in DO: 'doctl compute ssh-key import' so nodes are reachable"; fi
+else
+  fail "doctl not installed (https://docs.digitalocean.com/reference/doctl/how-to/install/)"
+fi
+echo
+
+echo "GitHub (needed for the demo-app deploy via Norn)"
+if command -v gh >/dev/null 2>&1; then
+  gh auth status >/dev/null 2>&1 && pass "gh authenticated" || warn "gh not authenticated: 'gh auth login' (deploy-app pushes the app catalog repo)"
+else
+  warn "gh CLI absent: needed only for 'lab deploy-app' (the demo workload)"
+fi
+echo
+
+if [[ -n "${lab_name}" ]]; then
+  echo "External credentials in the .env for '${lab_name}'"
+  secret_file="$(${script_dir}/secrets path "${lab_name}" 2>/dev/null || true)"
+  if [[ -n "${secret_file}" && -f "${secret_file}" ]]; then
+    "${script_dir}/artifacts" status "${lab_name}" | sed 's/^/  /'
+    echo "  (missing external creds are minted or prompted by 'lab artifacts ensure-external ${lab_name}')"
+  else
+    warn "no secrets file yet: 'lab up' creates it via 'lab secrets init ${lab_name}'"
+  fi
+  echo
+fi
+
+if [[ "${blockers}" -gt 0 ]]; then
+  echo "preflight: ${blockers} blocker(s) — resolve the FAIL items above (see PREREQUISITES.md), then re-run."
+  exit 1
+fi
+echo "preflight: ready to launch."
