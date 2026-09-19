@@ -14,10 +14,13 @@
         path: /etc/norn-ha-lab
       register: lab_guard
 
-    - name: Require the disposable-lab marker
+    - name: Require the disposable-lab marker and pgbackrest to Spaces archiving
       ansible.builtin.assert:
-        that: lab_guard.stat.exists
-        fail_msg: "Refusing recovery work outside a managed Norn HA lab."
+        that:
+          - lab_guard.stat.exists
+          - postgres_archive_mode == 's3'
+          - backup_bucket | length > 0
+        fail_msg: "Refusing recovery work: needs the Norn HA lab marker plus pgbackrest->Spaces archiving (set NORN_HA_BACKUP_*)."
 
     - name: Freeze one PITR drill identifier
       ansible.builtin.set_fact:
@@ -132,7 +135,7 @@
 
     - name: Wait for WAL archiving to catch up
       ansible.builtin.command:
-        argv: [psql, --host=127.0.0.1, --port=5432, --username=postgres, --dbname=postgres, --tuples-only, --no-align, --command=SELECT count(*) FROM pg_stat_archiver WHERE failed_count = 0 AND last_archived_time > now() - interval '2 minutes']
+        argv: [psql, --host=127.0.0.1, --port=5432, --username=postgres, --dbname=postgres, --tuples-only, --no-align, --command=SELECT count(*) FROM pg_stat_archiver WHERE last_archived_time > now() - interval '2 minutes' AND (last_failed_time IS NULL OR last_archived_time > last_failed_time)]
       become_user: postgres
       environment:
         PGPASSWORD: "{{ postgres_superuser_password }}"
@@ -155,7 +158,7 @@
         group: postgres
         mode: "0600"
         content: |
-          restore_command = 'cp /var/lib/postgresql/wal-archive/%f %p'
+          restore_command = 'pgbackrest --stanza={{ postgres_cluster_name }} --pg1-path={{ restore_dir }} archive-get %f %p'
           recovery_target_time = '{{ recovery_target }}'
           recovery_target_action = 'promote'
           port = {{ restore_port }}

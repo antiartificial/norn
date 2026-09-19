@@ -1,7 +1,12 @@
 ---
 lab_cluster_name: norn-ha-lab
-consul_package_version: "2.0.3-1"
-nomad_package_version: "2.0.5-1"
+# Pinned to the tested 1.20.x / 1.9.x line. (Was 2.0.3-1 / 2.0.5-1 — the 2.0.x
+# series caused drill leader-detection / quorum wait timeouts vs the versions the
+# lab was built against.) allow_downgrade is set in site.yml, so a re-converge
+# downgrades in place. Verify the exact available patch with
+# `apt-cache madison consul` / `apt-cache madison nomad` on a droplet first.
+consul_package_version: "1.20.6-1"
+nomad_package_version: "1.9.7-1"
 postgresql_major_version: 16
 postgresql_package_version: "16+257build1.1"
 patroni_package_version: "3.2.2-2"
