@@ -183,28 +183,33 @@ func main() {
 
 	// Deploy pipeline
 	pipe := &pipeline.Pipeline{
-		DB:                       db,
-		Nomad:                    nomadClient,
-		Consul:                   consulClient,
-		WS:                       ws,
-		SagaStore:                sagaStore,
-		Secrets:                  sec,
-		AppsDir:                  cfg.AppsDir,
-		GitToken:                 cfg.GitToken,
-		GitSSHKey:                cfg.GitSSHKey,
-		RegistryURL:              cfg.RegistryURL,
-		NetworkMode:              cfg.NetworkMode,
-		IngressURL:               cfg.IngressURL,
-		ExternalIngress:          cfg.ExternalIngress,
-		Production:               cfg.Production(),
-		StrictSecrets:            cfg.StrictSecrets,
-		ArtifactSigningPublicKey: cfg.ArtifactSigningPublicKey,
-		ArtifactDenySeverities:   cfg.ArtifactDenySeverities,
-		CosignPath:               cfg.CosignPath,
-		TrivyPath:                cfg.TrivyPath,
-		Beacon:                   beaconSvc,
-		Storage:                  s3Client,
-		Redpanda:                 redpandaClient,
+		DB:                             db,
+		Nomad:                          nomadClient,
+		Consul:                         consulClient,
+		WS:                             ws,
+		SagaStore:                      sagaStore,
+		Secrets:                        sec,
+		AppsDir:                        cfg.AppsDir,
+		GitToken:                       cfg.GitToken,
+		GitSSHKey:                      cfg.GitSSHKey,
+		RegistryURL:                    cfg.RegistryURL,
+		NetworkMode:                    cfg.NetworkMode,
+		IngressURL:                     cfg.IngressURL,
+		ExternalIngress:                cfg.ExternalIngress,
+		Production:                     cfg.Production(),
+		StrictSecrets:                  cfg.StrictSecrets,
+		ArtifactSigningPublicKey:       cfg.ArtifactSigningPublicKey,
+		ArtifactDenySeverities:         cfg.ArtifactDenySeverities,
+		CosignPath:                     cfg.CosignPath,
+		TrivyPath:                      cfg.TrivyPath,
+		ReleaseAdmissionMode:           cfg.ReleaseAdmissionMode,
+		ReleaseAttestationIssuer:       cfg.ReleaseAttestationIssuer,
+		ReleaseAttestationRepositories: cfg.ReleaseAttestationRepositories,
+		ReleaseAttestationWorkflowRefs: cfg.ReleaseAttestationWorkflowRefs,
+		ReleaseRequireSBOM:             cfg.ReleaseRequireSBOM,
+		Beacon:                         beaconSvc,
+		Storage:                        s3Client,
+		Redpanda:                       redpandaClient,
 	}
 
 	workerCtx, workerCancel := context.WithCancel(context.Background())
@@ -342,7 +347,7 @@ func main() {
 		r.Get("/ops/contextdb/evaluator-readiness", h.EvaluatorReadiness)
 
 		r.Get("/v1/capabilities", func(w http.ResponseWriter, r *http.Request) {
-			writeControlCapabilities(w)
+			writeControlCapabilities(w, cfg)
 		})
 		r.Get("/v1/openapi.yaml", contract.ServeOpenAPI)
 		r.Post("/v1/enrollments", h.StartDeviceEnrollment)
@@ -353,12 +358,19 @@ func main() {
 		r.Delete("/v1/devices/{id}", h.RevokeDevice)
 		r.Post("/v1/auth/rotate", h.RotateCurrentToken)
 		r.Post("/v1/auth/revoke", h.RevokeCurrentToken)
+		r.Post("/v1/auth/github-actions/exchange", h.ExchangeGitHubActionsOIDC)
 		r.Post("/v1/auth/step-up/challenges", h.CreateStepUpChallenge)
 		r.Post("/v1/auth/step-up/challenges/{id}/verify", h.VerifyStepUpChallenge)
 		r.Get("/v1/apps", h.ListApps)
 		r.Post("/v1/apps", h.CreateApp)
 		r.With(handler.ValidateAppID).Get("/v1/apps/{id}", h.GetApp)
 		r.With(handler.ValidateAppID).Put("/v1/apps/{id}/deployment", h.UpdateAppDeployment)
+		r.With(handler.ValidateAppID).Post("/v1/apps/{id}/releases/preflight", h.QueueReleasePreflight)
+		r.With(handler.ValidateAppID).Post("/v1/apps/{id}/releases/deployments", h.QueueReleaseDeployment)
+		r.With(handler.ValidateAppID).Post("/v1/apps/{id}/releases/rollbacks", h.QueueReleaseRollback)
+		r.With(handler.ValidateAppID).Get("/v1/apps/{id}/qualifications", h.ListReleaseQualifications)
+		r.With(handler.ValidateAppID).Post("/v1/apps/{id}/qualifications", h.CreateReleaseQualification)
+		r.With(handler.ValidateAppID).Post("/v1/apps/{id}/promotions", h.QueueReleasePromotion)
 		r.With(handler.ValidateAppID).Post("/v1/apps/{id}/exec-sessions", h.CreateExecSession)
 		r.With(handler.ValidateAppID).Get("/v1/apps/{id}/snapshots", h.ListAppSnapshotsV1)
 		r.With(handler.ValidateAppID).Post("/v1/apps/{id}/snapshots", h.QueueAppSnapshot)
@@ -373,6 +385,12 @@ func main() {
 		r.Get("/v1/fleet/github", h.FleetGitHubStatus)
 		r.Get("/v1/fleet/plans/{planID}/reconciliations", h.ListFleetReconciliations)
 		r.Post("/v1/fleet/plans/{planID}/reconciliations", h.RecordFleetReconciliation)
+		r.Get("/v1/fleet/plans/{planID}/attempts", h.ListFleetRunnerAttempts)
+		r.Post("/v1/fleet/plans/{planID}/attempts", h.CreateFleetRunnerAttempt)
+		r.Get("/v1/fleet/plans/{planID}/attempts/{attemptID}", h.GetFleetRunnerAttempt)
+		r.Post("/v1/fleet/plans/{planID}/attempts/{attemptID}/heartbeat", h.HeartbeatFleetRunnerAttempt)
+		r.Post("/v1/fleet/plans/{planID}/attempts/{attemptID}/advance", h.AdvanceFleetRunnerAttempt)
+		r.Post("/v1/fleet/plans/{planID}/attempts/{attemptID}/cancel", h.CancelFleetRunnerAttempt)
 		r.Post("/v1/fleet/plans/{planID}/github/pull-request", h.CreateFleetGitHubPullRequest)
 		r.Post("/v1/fleet/plans/{planID}/github/dispatch", h.DispatchFleetGitHubApply)
 		r.Post("/v1/fleet/node-pools/{pool}/plan", h.PlanFleetCapacity)
@@ -481,6 +499,43 @@ func validateControlSecurity(cfg *config.Config) error {
 	if profile != "development" && profile != "production" {
 		return fmt.Errorf("NORN_PROFILE must be development or production")
 	}
+	environment := cfg.EnvironmentID()
+	if environment != "development" && environment != "staging" && environment != "production" {
+		return fmt.Errorf("NORN_ENVIRONMENT must be development, staging, or production")
+	}
+	if environment == "production" && profile != "production" {
+		return fmt.Errorf("NORN_ENVIRONMENT=production requires NORN_PROFILE=production")
+	}
+	if environment == "staging" {
+		if err := handler.ValidateQualificationSigningConfiguration(cfg.QualificationSigningKey, nil, true); err != nil {
+			return fmt.Errorf("NORN_ENVIRONMENT=staging requires a valid Ed25519 NORN_QUALIFICATION_SIGNING_KEY: %w", err)
+		}
+		if qualificationKeyOverlapsAuditKeys(cfg, cfg.QualificationSigningKey) {
+			return fmt.Errorf("NORN_QUALIFICATION_SIGNING_KEY must be distinct from NORN_AUDIT_SIGNING_KEY")
+		}
+	}
+	if environment == "production" {
+		if len(cfg.TrustedQualificationSigningKeys) == 0 {
+			return fmt.Errorf("NORN_ENVIRONMENT=production requires NORN_TRUSTED_QUALIFICATION_SIGNING_KEYS")
+		}
+		for _, key := range cfg.TrustedQualificationSigningKeys {
+			if err := handler.ValidateQualificationSigningConfiguration("", []string{key}, false); err != nil {
+				return fmt.Errorf("every NORN_TRUSTED_QUALIFICATION_SIGNING_KEYS entry must be an Ed25519 public key: %w", err)
+			}
+			if qualificationKeyOverlapsAuditKeys(cfg, key) {
+				return fmt.Errorf("trusted qualification signing keys must be distinct from NORN_AUDIT_SIGNING_KEY")
+			}
+		}
+	}
+	if environment == "staging" || environment == "production" {
+		if strings.TrimSpace(cfg.GitHubActionsOIDCAudience) == "" || len(cfg.GitHubActionsAllowedRepositories) == 0 || len(cfg.GitHubActionsAllowedWorkflowRefs) == 0 || len(cfg.GitHubActionsAllowedRefs) == 0 || len(cfg.GitHubActionsAllowedEvents) == 0 || len(cfg.GitHubActionsAllowedApps) == 0 || len(cfg.GitHubActionsAllowedEnvironments) == 0 || !validGitHubActionsDefaultBranch(cfg.GitHubActionsDefaultBranch) {
+			return fmt.Errorf("staging/production requires explicit NORN_GITHUB_ACTIONS_OIDC_* release identity allowlists and a valid NORN_GITHUB_ACTIONS_DEFAULT_BRANCH")
+		}
+		parsed, err := url.Parse(cfg.GitHubActionsOIDCJWKSURL)
+		if err != nil || parsed.Scheme != "https" || parsed.Hostname() != "token.actions.githubusercontent.com" || parsed.Path != "/.well-known/jwks" {
+			return fmt.Errorf("NORN_GITHUB_ACTIONS_OIDC_JWKS_URL must be the fixed GitHub issuer JWKS")
+		}
+	}
 	if err := validateAllowedOrigins(cfg.AllowedOrigins, profile == "production"); err != nil {
 		return err
 	}
@@ -500,6 +555,12 @@ func validateControlSecurity(cfg *config.Config) error {
 		}
 	}
 	if profile == "production" {
+		if cfg.ReleaseAdmissionMode != "keyless" {
+			return fmt.Errorf("NORN_PROFILE=production requires NORN_RELEASE_ADMISSION_MODE=keyless")
+		}
+		if strings.TrimSpace(cfg.ReleaseAttestationIssuer) == "" || len(cfg.ReleaseAttestationRepositories) == 0 || len(cfg.ReleaseAttestationWorkflowRefs) == 0 || !cfg.ReleaseRequireSBOM {
+			return fmt.Errorf("NORN_PROFILE=production requires keyless release attestation issuer/repository/workflow and SBOM policy")
+		}
 		if !cfg.RequireExplicitAuth {
 			return fmt.Errorf("NORN_PROFILE=production requires NORN_REQUIRE_EXPLICIT_AUTH=true")
 		}
@@ -524,7 +585,7 @@ func validateControlSecurity(cfg *config.Config) error {
 		if strings.TrimSpace(cfg.RegistryURL) == "" {
 			return fmt.Errorf("NORN_PROFILE=production requires NORN_REGISTRY_URL")
 		}
-		if strings.TrimSpace(cfg.ArtifactSigningPublicKey) == "" {
+		if cfg.ReleaseAdmissionMode == "keyed" && strings.TrimSpace(cfg.ArtifactSigningPublicKey) == "" {
 			return fmt.Errorf("NORN_PROFILE=production requires NORN_ARTIFACT_SIGNING_PUBLIC_KEY")
 		}
 		if len(cfg.ArtifactDenySeverities) == 0 {
@@ -546,6 +607,37 @@ func validateControlSecurity(cfg *config.Config) error {
 		}
 	}
 	return nil
+}
+
+// validGitHubActionsDefaultBranch intentionally accepts a branch name only.
+// Ref names are rejected so a config value cannot accidentally change the
+// immutable refs/heads/ namespace used by the release lane matrix.
+func validGitHubActionsDefaultBranch(value string) bool {
+	branch := strings.TrimSpace(value)
+	if branch == "" || len(branch) > 200 || strings.HasPrefix(branch, "refs/") || strings.HasPrefix(branch, "/") || strings.HasSuffix(branch, "/") || strings.HasPrefix(branch, ".") || strings.HasSuffix(branch, ".") || strings.HasSuffix(branch, ".lock") || strings.Contains(branch, "//") || strings.Contains(branch, "..") || strings.Contains(branch, "@{") {
+		return false
+	}
+	for _, r := range branch {
+		if r <= ' ' || r == 0x7f || strings.ContainsRune("~^:?*[\\", r) {
+			return false
+		}
+	}
+	return true
+}
+
+func qualificationKeyOverlapsAuditKeys(cfg *config.Config, qualificationKey string) bool {
+	if cfg == nil || qualificationKey == "" {
+		return false
+	}
+	auditKeys := make([]string, 0, 1+len(cfg.AuditPreviousSigningKeys))
+	auditKeys = append(auditKeys, cfg.AuditSigningKey)
+	auditKeys = append(auditKeys, cfg.AuditPreviousSigningKeys...)
+	for _, auditKey := range auditKeys {
+		if auditKey != "" && len(auditKey) == len(qualificationKey) && subtle.ConstantTimeCompare([]byte(auditKey), []byte(qualificationKey)) == 1 {
+			return true
+		}
+	}
+	return false
 }
 
 func validateAllowedOrigins(raw string, production bool) error {
@@ -613,7 +705,7 @@ func bearerAuth(token string, h *handler.Handler, requireExplicit bool) func(htt
 			}
 			if strings.HasPrefix(authorization, "Bearer ") && h != nil {
 				if principal, ok := h.VerifyAccessToken(authorization[7:]); ok {
-					if !principal.Allows(requiredScope) {
+					if !principal.Allows(requiredScope) && !allowsScopedRead(principal, r, requiredScope) && !allowsReleaseOperatorWrite(principal, r, requiredScope) && !allowsFleetOperatorWrite(principal, r, requiredScope) {
 						handler.WriteControlProblem(w, r, http.StatusForbidden, "insufficient_scope", "token lacks required scope "+requiredScope)
 						return
 					}
@@ -654,7 +746,7 @@ func publicControlPath(path string) bool {
 }
 
 func publicControlPathForMode(path string, requireExplicit bool) bool {
-	if path == "/api/health" || path == "/api/version" || path == "/api/v1/openapi.yaml" || path == "/api/v1/capabilities" {
+	if path == "/api/health" || path == "/api/version" || path == "/api/v1/openapi.yaml" || path == "/api/v1/capabilities" || path == "/api/v1/auth/github-actions/exchange" {
 		return true
 	}
 	if requireExplicit && path == "/metrics" {
@@ -674,6 +766,20 @@ func publicControlPathForMode(path string, requireExplicit bool) bool {
 func controlScopeForRequest(r *http.Request) string {
 	path := r.URL.Path
 	switch {
+	case strings.HasSuffix(path, "/releases/preflight") || strings.HasSuffix(path, "/releases/deployments"):
+		return handler.ScopeReleaseStage
+	case strings.HasSuffix(path, "/qualifications") && r.Method == http.MethodPost:
+		return handler.ScopeReleaseQualify
+	case strings.HasSuffix(path, "/promotions"):
+		return handler.ScopeReleasePromote
+	case strings.HasSuffix(path, "/releases/rollbacks"):
+		return handler.ScopeReleaseRollback
+	case strings.HasPrefix(path, "/api/v1/fleet/") && r.Method != http.MethodGet && r.Method != http.MethodHead:
+		return handler.ScopeFleetOperate
+	case r.Method == http.MethodGet && (strings.Contains(path, "/api/v1/fleet/plans/") && (strings.HasSuffix(path, "/reconciliations") || strings.Contains(path, "/attempts"))):
+		return handler.ScopeFleetOperate
+	case r.Method == http.MethodGet && isSingleV1OperationPath(path):
+		return handler.ScopeAPIRead
 	case path == "/ws" || path == "/api/v1/events":
 		return handler.ScopeEventsRead
 	case path == "/api/v1/events/info":
@@ -705,18 +811,43 @@ func controlScopeForRequest(r *http.Request) string {
 	}
 }
 
-func writeControlCapabilities(w http.ResponseWriter) {
+// Workload tokens are intentionally not global api:read credentials. The
+// narrow GET allowance only reaches handlers that re-check plan/object binding.
+func allowsScopedRead(principal *handler.AccessPrincipal, r *http.Request, requiredScope string) bool {
+	if principal == nil || r.Method != http.MethodGet {
+		return false
+	}
+	if requiredScope == handler.ScopeFleetOperate {
+		return principal.Allows(handler.ScopeAPIRead)
+	}
+	return requiredScope == handler.ScopeAPIRead && isSingleV1OperationPath(r.URL.Path) && (principal.Allows(handler.ScopeReleaseStage) || principal.Allows(handler.ScopeReleaseQualify) || principal.Allows(handler.ScopeReleasePromote) || principal.Allows(handler.ScopeReleaseRollback))
+}
+func allowsReleaseOperatorWrite(principal *handler.AccessPrincipal, r *http.Request, requiredScope string) bool {
+	return principal != nil && r.Method != http.MethodGet && principal.CI == nil && principal.Allows(handler.ScopeAPIWrite) && (requiredScope == handler.ScopeReleaseStage || requiredScope == handler.ScopeReleaseQualify || requiredScope == handler.ScopeReleasePromote || requiredScope == handler.ScopeReleaseRollback)
+}
+func allowsFleetOperatorWrite(principal *handler.AccessPrincipal, r *http.Request, requiredScope string) bool {
+	return principal != nil && r.Method != http.MethodGet && principal.CI == nil && principal.Allows(handler.ScopeAPIWrite) && requiredScope == handler.ScopeFleetOperate
+}
+
+func isSingleV1OperationPath(path string) bool {
+	prefix := "/api/v1/operations/"
+	id := strings.TrimPrefix(path, prefix)
+	return strings.HasPrefix(path, prefix) && id != "" && !strings.Contains(id, "/")
+}
+
+func writeControlCapabilities(w http.ResponseWriter, cfg *config.Config) {
 	w.Header().Set("Content-Type", "application/json")
 	_ = json.NewEncoder(w).Encode(map[string]interface{}{
 		"protocolVersion": 1,
 		"serverVersion":   Version,
+		"environment":     map[string]string{"id": cfg.EnvironmentID(), "profile": cfg.ProfileID()},
 		"features": []string{
 			"durable-operations", "event-cursor-replay", "platform-preflight", "platform-upgrade",
 			"platform-rollback", "platform-smoke", "host-assurance", "scoped-access-tokens",
 			"openapi-3.1", "standard-problems", "event-stream-info", "event-gap-detection",
 			"event-heartbeat", "event-subscriptions", "operation-cancellation", "typed-operation-receipts",
 			"versioned-resources", "device-enrollment", "token-rotation", "token-revocation", "device-listing",
-			"device-key-step-up", "exec-sessions", "exec-audit", "exec-session-expiry", "exec-protocol-v1", "host-metrics", "app-creation", "durable-app-recovery-v1", "durable-snapshots", "standalone-migrations", "regional-deployments", "consul-traefik-ingress", "production-readiness", "durable-mutation-audit", "production-mutation-admission", "recovery-drill-receipts", "document-validation", "fleet-v1", "fleet-inventory", "durable-fleet-capacity-plans", "fleet-reconciliation-v1", "fleet-github-app-v1",
+			"device-key-step-up", "exec-sessions", "exec-audit", "exec-session-expiry", "exec-protocol-v1", "host-metrics", "app-creation", "durable-app-recovery-v1", "durable-snapshots", "standalone-migrations", "regional-deployments", "consul-traefik-ingress", "production-readiness", "durable-mutation-audit", "production-mutation-admission", "recovery-drill-receipts", "document-validation", "fleet-v1", "fleet-inventory", "durable-fleet-capacity-plans", "fleet-reconciliation-v1", "fleet-runner-attempts-v1", "fleet-github-app-v1", "release-provenance-v1", "release-qualifications-v1", "release-qualifications-v2", "release-promotions-v1", "release-rollback-v1", "github-actions-oidc-exchange-v1", "server-environment-identity-v1",
 		},
 		"auth": map[string]interface{}{
 			"scopes":                handler.AccessTokenScopeNames(),
@@ -741,7 +872,8 @@ func writeControlCapabilities(w http.ResponseWriter) {
 			"releases": "/api/v1/releases", "hostStatus": "/api/v1/host/status", "hostMetrics": "/api/v1/host/metrics", "productionReadiness": "/api/v1/production/readiness", "recoveryDrills": "/api/v1/production/drills", "mutationAudit": "/api/v1/audit/mutations", "enrollments": "/api/v1/enrollments",
 			"devices": "/api/v1/devices", "tokenRotate": "/api/v1/auth/rotate", "tokenRevoke": "/api/v1/auth/revoke",
 			"stepUpChallenges": "/api/v1/auth/step-up/challenges", "execSessions": "/api/v1/exec-sessions",
-			"infraSpecValidation": "/api/v1/validate/infraspec", "fleetValidation": "/api/v1/fleet/validate", "fleetNodePools": "/api/v1/fleet/node-pools", "fleetPlans": "/api/v1/fleet/plans", "fleetReconciliations": "/api/v1/fleet/plans/{planID}/reconciliations", "fleetGitHub": "/api/v1/fleet/github", "fleetGitHubPullRequest": "/api/v1/fleet/plans/{planID}/github/pull-request", "fleetGitHubDispatch": "/api/v1/fleet/plans/{planID}/github/dispatch",
+			"infraSpecValidation": "/api/v1/validate/infraspec", "fleetValidation": "/api/v1/fleet/validate", "fleetNodePools": "/api/v1/fleet/node-pools", "fleetPlans": "/api/v1/fleet/plans", "fleetReconciliations": "/api/v1/fleet/plans/{planID}/reconciliations", "fleetRunnerAttempts": "/api/v1/fleet/plans/{planID}/attempts", "fleetGitHub": "/api/v1/fleet/github", "fleetGitHubPullRequest": "/api/v1/fleet/plans/{planID}/github/pull-request", "fleetGitHubDispatch": "/api/v1/fleet/plans/{planID}/github/dispatch",
+			"releasePreflight": "/api/v1/apps/{id}/releases/preflight", "releaseDeployments": "/api/v1/apps/{id}/releases/deployments", "releaseQualifications": "/api/v1/apps/{id}/qualifications", "releasePromotions": "/api/v1/apps/{id}/promotions", "releaseRollback": "/api/v1/apps/{id}/releases/rollbacks",
 		},
 	})
 }

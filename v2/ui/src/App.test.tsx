@@ -24,6 +24,18 @@ const unhealthyApp = {
   nomadStatus: 'failed',
 }
 
+function releaseQualification(overrides: Record<string, unknown> = {}) {
+  const sourceSha = 'a'.repeat(40)
+  const artifact = `registry.example/api@sha256:${'b'.repeat(64)}`
+  return {
+    schemaVersion: 'norn.release-qualification/v2', id: 'qualification-1', app: 'api', environment: 'staging', deploymentId: 'deploy-staging-1', sourceSha, artifact,
+    issuedAt: '2026-08-31T15:00:00Z', expiresAt: '2026-12-01T15:00:00Z', keyId: 'staging-key-1', signature: 'base64-signature',
+    candidate: { provider: 'github-actions', repository: 'acme/api', repositoryId: '1', ownerId: '2', runId: '3', runAttempt: '1', workflowRef: `acme/api/.github/workflows/caller.yml@${'c'.repeat(40)}`, workflowSha: 'c'.repeat(40), signerWorkflowRef: `acme/norn/.github/workflows/release.yml@${'d'.repeat(40)}`, signerWorkflowSha: 'd'.repeat(40), ref: 'refs/heads/main', attestation: { issuer: 'https://token.actions.githubusercontent.com', subjectDigest: `sha256:${'b'.repeat(64)}`, materialSha: sourceSha } },
+    dsse: { payloadType: 'application/vnd.norn.release-qualification.v2+json', payload: 'payload', signatures: [{ keyid: 'staging-key-1', sig: 'base64-signature' }] },
+    ...overrides,
+  }
+}
+
 function appWith(name: string, healthy = true) {
   return {
     ...app,
@@ -66,7 +78,7 @@ function installFetch(overrides: Record<string, Response | (() => Response)> = {
     if (url.includes('/api/cloudflared/ingress')) return json({ hostnames: [] })
     if (url.includes('/api/version')) return json({ version: 'test' })
     if (url.includes('/api/v1/fleet/node-pools')) return json({ schemaVersion: 'norn.fleet-inventory/v1', configured: false, nodePools: {} })
-    if (url.includes('/reconciliations')) return json({ schemaVersion: 'norn.fleet-reconciliations/v1', planId: 'plan-1', count: 0, reconciliations: [] })
+    if (url.includes('/reconciliations')) return json({ schemaVersion: 'norn.fleet-reconciliation/v1', planId: 'plan-1', count: 0, reconciliations: [] })
     if (url.includes('/api/v1/fleet/plans')) return json({ count: 0, plans: [] })
     if (url.includes('/api/health')) return json({ status: 'ok', services: { postgres: 'up', nomad: 'up', consul: 'up' } })
     if (url.includes('/api/events/active')) return json({ incidents: [] })
@@ -161,6 +173,88 @@ describe('App shell routing', () => {
     expect(switchToDark.querySelector('.fa-sun')).toBeInTheDocument()
   })
 
+  it('shows a capability-gated production promotion using selected staging evidence', async () => {
+    const { calls, fetchMock } = installFetch({
+      '/api/v1/capabilities': json({
+        protocolVersion: 1,
+        serverVersion: 'test',
+        features: ['release-provenance-v1', 'release-qualifications-v2', 'release-promotions-v1'],
+        environment: { id: 'production', profile: 'production' },
+      }),
+      '/api/v1/apps/api/qualifications': json({ schemaVersion: 'norn.release-qualifications/v2', qualifications: [releaseQualification()], count: 1 }),
+      '/api/v1/apps/api/promotions': json({ id: 'promotion-1', kind: 'app.deploy', status: 'queued' }, 202),
+    })
+    renderApp('/releases')
+
+    expect(await screen.findByRole('heading', { name: 'Release pipeline' })).toBeInTheDocument()
+    expect(screen.getAllByText('production').length).toBeGreaterThan(0)
+    expect(await screen.findByText('deploy-stagi…')).toBeInTheDocument()
+    fireEvent.click(screen.getByRole('button', { name: 'Select evidence' }))
+    expect(screen.getByRole('combobox', { name: 'Application' })).toHaveValue('api')
+    fireEvent.click(screen.getByRole('button', { name: 'Review promotion' }))
+    expect(screen.getByText(/will deploy a{12}/i)).toBeInTheDocument()
+    expect(screen.getByText(/will not rebuild/i)).toBeInTheDocument()
+    fireEvent.click(screen.getByRole('button', { name: 'Queue production promotion' }))
+    await waitFor(() => expect(calls).toContain('POST /api/v1/apps/api/promotions'))
+    const promotionCall = fetchMock.mock.calls.find(([url]) => String(url).includes('/api/v1/apps/api/promotions'))
+    const body = JSON.parse(String(promotionCall?.[1]?.body))
+    expect(body.qualification).toMatchObject({ id: 'qualification-1', app: 'api', signature: 'base64-signature', keyId: 'staging-key-1' })
+    expect(new Headers(promotionCall?.[1]?.headers).get('Idempotency-Key')).toMatch(/^norn-web-/)
+  })
+
+  it('clears production promotion evidence when the selected application changes', async () => {
+    installFetch({
+	  '/api/v1/capabilities': json({ protocolVersion: 1, serverVersion: 'test', features: ['release-provenance-v1', 'release-qualifications-v2', 'release-promotions-v1'], environment: { id: 'production', profile: 'production' } }),
+      '/api/v1/apps/api/qualifications': json({ schemaVersion: 'norn.release-qualifications/v2', qualifications: [releaseQualification()], count: 1 }),
+    })
+    renderApp('/releases')
+    await screen.findByRole('heading', { name: 'Release pipeline' })
+    fireEvent.click(await screen.findByRole('button', { name: 'Select evidence' }))
+    expect(screen.getByRole('button', { name: 'Review promotion' })).toBeEnabled()
+    fireEvent.change(screen.getByRole('combobox', { name: 'Application' }), { target: { value: 'worker' } })
+    expect(screen.getByRole('button', { name: 'Review promotion' })).toBeDisabled()
+    expect(screen.getByRole('textbox', { name: 'Paste signed staging qualification JSON' })).toHaveValue('')
+  })
+
+  it('records a first staging qualification from an explicit successful deployment UUID', async () => {
+    const deploymentID = 'a2719d82-4f6c-4ac3-8c60-3e5a7b4c9d11'
+    const { calls, fetchMock } = installFetch({
+      '/api/v1/capabilities': json({
+        protocolVersion: 1,
+        serverVersion: 'test',
+        features: ['release-provenance-v1', 'release-qualifications-v2', 'release-promotions-v1'],
+        environment: { id: 'staging', profile: 'development' },
+      }),
+      '/api/v1/apps/api/qualifications': json(releaseQualification({ id: 'qualification-new', deploymentId: deploymentID, expiresAt: '2026-09-01T15:00:00Z' }), 201),
+    })
+    renderApp('/releases')
+
+    expect(await screen.findByRole('heading', { name: 'Record successful staging qualification' })).toBeInTheDocument()
+    fireEvent.change(screen.getByRole('textbox', { name: 'Deployment UUID' }), { target: { value: deploymentID } })
+    fireEvent.click(screen.getByRole('button', { name: 'Record qualification' }))
+    await waitFor(() => expect(calls).toContain('POST /api/v1/apps/api/qualifications'))
+    const qualificationCall = fetchMock.mock.calls.find(([url, init]) => String(url).includes('/api/v1/apps/api/qualifications') && init?.method === 'POST')
+    expect(JSON.parse(String(qualificationCall?.[1]?.body))).toEqual({ deploymentId: deploymentID })
+    expect(new Headers(qualificationCall?.[1]?.headers).get('Idempotency-Key')).toMatch(/^norn-web-/)
+  })
+
+  it('rejects an expired signed qualification before production promotion', async () => {
+    installFetch({
+      '/api/v1/capabilities': json({ protocolVersion: 1, serverVersion: 'test', features: ['release-provenance-v1', 'release-qualifications-v2', 'release-promotions-v1'], environment: { id: 'production', profile: 'production' } }),
+      '/api/v1/apps/api/qualifications': json({ qualifications: [] }),
+    })
+    renderApp('/releases')
+    await screen.findByRole('heading', { name: 'Release pipeline' })
+    const expiredEvidence = releaseQualification({
+	  schemaVersion: 'norn.release-qualification/v2', id: 'expired-qualification', app: 'api', deploymentId: 'a2719d82-4f6c-4ac3-8c60-3e5a7b4c9d11', sourceSha: 'a'.repeat(40),
+	  artifact: `registry.example/api@sha256:${'b'.repeat(64)}`, environment: 'staging', issuedAt: '2025-01-01T00:00:00Z', expiresAt: '2025-01-02T00:00:00Z', keyId: 'staging-key-1', signature: 'expired-signature', dsse: { payloadType: 'application/vnd.norn.release-qualification.v2+json', payload: 'payload', signatures: [{ keyid: 'staging-key-1', sig: 'expired-signature' }] },
+    })
+    fireEvent.change(screen.getByRole('textbox', { name: 'Paste signed staging qualification JSON' }), { target: { value: JSON.stringify(expiredEvidence) } })
+    fireEvent.click(screen.getByRole('button', { name: 'Load signed evidence' }))
+    expect(await screen.findByText(/has expired/i)).toBeInTheDocument()
+    expect(screen.getByRole('button', { name: 'Review promotion' })).toBeDisabled()
+  })
+
   it('renders desired fleet pools and creates a durable expansion receipt', async () => {
     const { calls } = installFetch({
       '/api/v1/fleet/node-pools/app/plan': () => json({ id: 'plan-1', kind: 'fleet.capacity-plan', status: 'succeeded', message: 'capacity plan recorded', payload: { pool: 'app', action: 'scale', current: { desired: 2 }, proposed: { desired: 3 } }, metadata: {} }, 201),
@@ -191,7 +285,7 @@ describe('App shell routing', () => {
         validation: { schemaVersion: 'norn.validation-report/v1', documentKind: 'fleet', valid: true, findings: [] },
         nodePools: { app: { size: 's-4vcpu-8gb', min: 2, desired: 3, max: 8 } },
       }),
-      '/api/v1/fleet/plans/plan-1/reconciliations': json({ schemaVersion: 'norn.fleet-reconciliations/v1', planId: 'plan-1', count: 2, reconciliations: [
+      '/api/v1/fleet/plans/plan-1/reconciliations': json({ schemaVersion: 'norn.fleet-reconciliation/v1', planId: 'plan-1', count: 2, reconciliations: [
         { id: 'checkpoint-1', status: 'succeeded', payload: { phase: 'infrastructure_applied' } },
         { id: 'checkpoint-2', status: 'succeeded', payload: { phase: 'readiness_verified' } },
       ] }),

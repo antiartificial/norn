@@ -1,5 +1,9 @@
 # Fleet GitOps
 
+The normative operator sequence and recovery/safety boundaries are in
+[Fleet operations](../operations/fleet.md). This page documents the Fleet
+document and GitOps handoff.
+
 Norn fleet management deliberately has two owners:
 
 | Concern | Owner |
@@ -13,7 +17,7 @@ Norn fleet management deliberately has two owners:
 
 There is no `norn-fleet` daemon in v1. The infrastructure repository is desired state; the existing Norn application is the operator experience.
 
-## Five-minute start
+## Staging quickstart
 
 Clone the private infrastructure repository and run its secret-safe assistant:
 
@@ -36,8 +40,8 @@ places them in process arguments. The required inputs are:
 - versioned S3-compatible state storage and a key with bucket
   list/read/write/delete access;
 - SSH fingerprints, administrator CIDRs, and reviewed cloud-init;
-- a trusted HTTPS Norn endpoint and runner token with `api:read` and
-  `api:write`; and
+- a trusted HTTPS Norn endpoint and a GitHub Actions OIDC workload identity
+  constrained to `fleet:operate` for the protected runner; and
 - checked-in idempotent configuration, enrollment, and readiness hook commands.
 
 Norn can do the schema validation, durable planning, fleet inventory,
@@ -50,10 +54,14 @@ interactive and environment-driven setup.
 Point the Norn server at a read-only checkout and verify the handoff:
 
 ```sh
-NORN_FLEET_CONFIG=/srv/norn-fleet/environments/production/nyc3/cluster.yaml
-norn fleet validate environments/production/nyc3/cluster.yaml
+NORN_FLEET_CONFIG=/srv/norn-fleet/environments/staging/nyc3/cluster.yaml
+norn fleet validate environments/staging/nyc3/cluster.yaml
 norn fleet pools
 ```
+
+Start with staging. Production must remain inactive/unqualified until its
+protected environment, signed/audited planning, recovery rehearsal, and
+assurance prerequisites are proven; staging success does not promote it.
 
 ### Repository-scoped GitHub App
 
@@ -69,11 +77,25 @@ NORN_FLEET_GITHUB_APP_ID=123456
 NORN_FLEET_GITHUB_INSTALLATION_ID=789012
 NORN_FLEET_GITHUB_PRIVATE_KEY_FILE=/etc/norn/fleet-github-app.pem
 NORN_FLEET_GITHUB_REPOSITORY=YOUR-ORG/norn-fleet
-NORN_FLEET_GITHUB_CONFIG_PATH=environments/production/nyc3/cluster.yaml
+NORN_FLEET_GITHUB_CONFIG_PATH=environments/staging/nyc3/cluster.yaml
 NORN_FLEET_GITHUB_DEFAULT_BRANCH=main
 NORN_FLEET_GITHUB_PLAN_WORKFLOW=plan.yml
 NORN_FLEET_GITHUB_APPLY_WORKFLOW=apply.yml
 ```
+
+Authorize both protected runner workflows by exact identity on each control
+plane. For staging, the identity policy includes both refs:
+
+```sh
+NORN_GITHUB_ACTIONS_FLEET_ALLOWED_REPOSITORY=YOUR-GITHUB-OWNER/norn-fleet@<repository-id>@<owner-id>
+NORN_GITHUB_ACTIONS_FLEET_ALLOWED_WORKFLOW_REFS=YOUR-GITHUB-OWNER/norn-fleet/.github/workflows/apply.yml@<full-apply-workflow-sha>,YOUR-GITHUB-OWNER/norn-fleet/.github/workflows/recover.yml@<full-recover-workflow-sha>
+NORN_GITHUB_ACTIONS_FLEET_ALLOWED_ENVIRONMENTS=staging
+NORN_GITHUB_ACTIONS_FLEET_ALLOWED_INTENTS=apply,recover
+```
+
+Production uses its own control plane, audience, environment, and independently
+pinned workflow identities. Do not copy staging identity or credentials into
+production.
 
 The private key never leaves the Norn server. Norn signs a short-lived App JWT,
 requests a one-hour installation token narrowed to that repository and the
@@ -107,6 +129,10 @@ flowchart LR
 ```
 
 Norn never receives a DigitalOcean token and the plan API never mutates provider state.
+Both the protected `apply` and `recover` workflows must pin every action and
+reusable-workflow reference to a full immutable commit SHA. Their runner uses
+the narrow GitHub OIDC `fleet:operate` identity, never a broad reusable
+`api:write` runner token.
 
 ## Fleet document
 
@@ -116,22 +142,33 @@ Each environment/region has a pinned document:
 apiVersion: norn.dev/fleet/v1
 kind: Cluster
 metadata:
-  repository: antiartificial/norn-fleet
-  environment: production
-  workflowURL: https://github.com/antiartificial/norn-fleet/actions/workflows/apply.yml
+  repository: YOUR-GITHUB-OWNER/norn-fleet
+  environment: staging
+  workflowURL: https://github.com/YOUR-GITHUB-OWNER/norn-fleet/actions/workflows/apply.yml
 cluster:
-  name: production-nyc3
+  name: tk-staging-nyc3
   provider: digitalocean
   region: nyc3
 nodePools:
-  app:
-    size: s-4vcpu-8gb
+  control:
+    size: s-2vcpu-4gb
+    min: 3
+    desired: 3
+    max: 3
+    labels: { workload: control-plane }
+    replacement:
+      strategy: rolling
+      requireCapacityHeadroom: true
+      drainTimeout: 15m
+      requireReadiness: true
+  ingress:
+    size: s-1vcpu-2gb
     min: 2
     desired: 2
-    max: 8
-    labels: { workload: app }
+    max: 2
+    labels: { workload: ingress }
     replacement:
-      strategy: blueGreen
+      strategy: rolling
       requireCapacityHeadroom: true
       drainTimeout: 15m
       requireReadiness: true
@@ -140,7 +177,7 @@ nodePools:
 Configure the Norn server with a read-only checkout:
 
 ```sh
-NORN_FLEET_CONFIG=/srv/norn-fleet/environments/production/nyc3/cluster.yaml
+NORN_FLEET_CONFIG=/srv/norn-fleet/environments/staging/nyc3/cluster.yaml
 ```
 
 The API returns `configured: false` when this is absent. That is a supported development state, not permission to infer infrastructure from Nomad.
@@ -150,8 +187,8 @@ The API returns `configured: false` when this is absent. That is a supported dev
 Validation is strict: unknown YAML fields, multiple YAML documents, unsafe quorum, invalid capacity ordering, missing blue/green headroom/readiness, weak ingress redundancy, and invalid drain windows produce stable finding codes.
 
 ```sh
-norn fleet validate environments/production/nyc3/cluster.yaml
-norn validate --file ./infraspec.yaml --fleet environments/production/nyc3/cluster.yaml
+norn fleet validate environments/staging/nyc3/cluster.yaml
+norn validate --file ./infraspec.yaml --fleet environments/staging/nyc3/cluster.yaml
 ```
 
 The API equivalents are:
@@ -172,9 +209,7 @@ An invalid document returns HTTP 200 with `valid: false`; malformed request enve
 
 ```sh
 norn fleet pools
-norn fleet plan app --desired 4 --reason "launch headroom"
-norn fleet replace app --size s-8vcpu-16gb --reason "memory pressure"
-norn fleet reconcile app
+norn fleet reconcile control --reason "bootstrap staging from protected main"
 norn fleet github status
 norn fleet github pr PLAN_UUID
 norn fleet github apply PLAN_UUID
@@ -184,11 +219,16 @@ With the GitHub App configured, create the durable plan before any repository
 edit. Norn then creates the source-digest-bound branch and pull request:
 
 ```sh
-norn fleet plan app --desired 4 --reason "launch headroom"
+norn fleet reconcile control --reason "bootstrap staging from protected main"
 norn fleet github pr PLAN_UUID
 # review and merge; wait for the main-branch plan workflow
 norn fleet github apply PLAN_UUID
 ```
+
+The fixed staging pilot has no scalable `app` pool. After a separately reviewed
+Fleet document introduces one, ordinary capacity and size planning use
+`norn fleet plan app ...` and `norn fleet replace app ...`; a replacement plan
+does not imply that the current protected runner can execute that replacement.
 
 For a downsize, both the capacity plan and apply dispatch require explicit
 destructive intent:
@@ -200,11 +240,14 @@ norn fleet github pr PLAN_UUID
 norn fleet github apply PLAN_UUID --allow-destructive
 ```
 
-The staged contraction lane binds exact droplet addresses to current node IDs,
-proves the remaining capacity, reruns configuration/enrollment/readiness hooks,
-drains the selected nodes, and only then consumes the reviewed deletion.
-Reissuing either GitHub command recovers the deterministic pull request or
-existing workflow run instead of creating a duplicate.
+An explicit acknowledgement records destructive intent; it does not make a
+delete safe by itself. Reissuing either GitHub command recovers the
+deterministic pull request or existing workflow run instead of creating a
+duplicate. A destructive apply must fail closed unless its configured staged
+executor can bind exact existing nodes, prove the remaining declared capacity
+and readiness, drain the selected nodes, and only then consume the reviewed
+deletion. Preserving both generations is an additional requirement for a future
+replacement executor, not for the current pure-contraction lane.
 
 `./scripts/setup scale` remains available as a repository-only manual fallback.
 For that path, create the Norn capacity plan from unchanged `main` first and
@@ -221,7 +264,17 @@ Planning safety in v1:
 - no plan applies Terraform or calls a provider;
 - the infrastructure runner must check out an immutable reviewed SHA and record the Norn plan ID.
 
-GitHub's current private-repository plan does not provide environment required reviewers. The private `norn-fleet` repository therefore restricts both secret-bearing environments to protected branches, requires pull requests and the strict `contract` check on `main`, binds apply to the reviewed current-main plan artifact, and requires a separate manual dispatch. With one operator, repository write access remains production access; require an independent approval before granting another person write access. This repository policy is not an active Norn control-plane guarantee.
+GitHub's current private-repository plan does not provide environment required
+reviewers. The private `norn-fleet` repository therefore keeps four protected
+GitHub Environments: `staging-plan`, `staging`, `production-plan`, and
+`production`. Plan environments produce review evidence; the matching staging
+or production environment owns apply/recovery mutation and bootstrap inputs.
+It requires pull requests and the strict `contract`
+check on `main`, binds apply to the reviewed current-main plan artifact, and
+requires a separate manual dispatch. With one operator, repository write
+access remains production access; require an independent approval before
+granting another person write access. This repository policy is not an active
+Norn control-plane guarantee.
 
 The GitHub App improves authentication and recovery, not authorization policy:
 the PR must still merge through protected `main`, the plan workflow must succeed
@@ -234,9 +287,23 @@ recoverable after a Norn restart.
 
 For non-destructive plans, the runner records a recovery binding before provider mutation. A failed, cancelled, timed-out, or manually selected apply run is replanned under the remote state lock; recovery proceeds only when every remaining action is a non-destructive subset of the originally reviewed plan. Configuration, enrollment, and assurance hooks are idempotent, and Norn's append-only reconciliation checkpoints let a replacement runner resume after the last proven phase.
 
-The initial hands-off lane deliberately refuses plans containing deletes or same-address replacements. `create_before_destroy` alone cannot prove that a new node enrolled and became ready before OpenTofu removes its predecessor. Destructive blue/green work therefore remains supervised until a staged executor can retain both generations, prove readiness, drain the old generation, and only then consume the reviewed deletion approval. This fail-closed boundary is part of the API/workflow contract, not an operator convention.
+The current protected workflow supports only a pure node contraction already
+bound to the reviewed plan. It identifies exact existing nodes, proves the
+remaining capacity and readiness, drains the selected nodes, and only then
+applies their deletion. Recovery can resume only while every reviewed node is
+still present. Same-address replacement, mixed destructive plans, core-network
+deletion, and post-deletion recovery remain fail-closed. `create_before_destroy`
+alone cannot prove safe replacement; those operations need a separately
+reviewed generation/adoption executor.
 
-Reconciliation phases are `infrastructure_applied`, `inventory_generated`, `nodes_configured`, `nodes_enrolled`, `readiness_verified`, optional `old_nodes_drained`, and `complete`. The API rejects out-of-order success, binding changes, missing drain proof for replacement/downsize plans, invalid state serials, and idempotency-key reuse with different evidence.
+Attempt-bound reconciliation phases are `prechange_verified`,
+`provider_applying`, `infrastructure_applied`, `inventory_generated`,
+`nodes_configured`, `nodes_enrolled`, `readiness_verified`, optional
+`old_nodes_drained`, and `complete`. The exact plan-specific sequencing and
+recovery rules are normative in [Fleet operations](../operations/fleet.md). The
+API rejects out-of-order success, binding changes, missing drain proof for
+replacement/downsize plans, invalid state serials, and idempotency-key reuse
+with different evidence.
 
 Rolling replacement remains an explicit alternative for operators who accept reduced headroom. It is never selected automatically for a size change.
 

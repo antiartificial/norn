@@ -1,0 +1,80 @@
+name: Norn CI
+
+on:
+  pull_request:
+  push:
+    branches: [master]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: norn-ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  api-and-cli:
+    name: ${{ matrix.component }}
+    runs-on: ubuntu-24.04
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - component: api
+            directory: v2/api
+          - component: cli
+            directory: v2/cli
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.0.2
+      - uses: actions/setup-go@924ae3a1cded613372ab5595356fb5720e22ba16 # v6.0.0
+        with:
+          go-version-file: ${{ matrix.directory }}/go.mod
+          cache-dependency-path: ${{ matrix.directory }}/go.sum
+      - name: Test ${{ matrix.component }}
+        working-directory: ${{ matrix.directory }}
+        run: go test ./...
+
+  web:
+    name: web
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.0.2
+      - uses: pnpm/action-setup@f520eceda224fe1a4aed5a2a27a194379a409996 # v6.0.0
+        with:
+          version: 10
+      - uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6.0.1
+        with:
+          node-version: 24
+          cache: pnpm
+          cache-dependency-path: v2/ui/pnpm-lock.yaml
+      - name: Install web dependencies
+        working-directory: v2/ui
+        run: pnpm install --frozen-lockfile
+      - name: Test web
+        working-directory: v2/ui
+        run: pnpm test
+      - name: Build web
+        working-directory: v2/ui
+        run: pnpm build
+
+  workflows:
+    name: workflow validation
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.0.2
+      - uses: actions/setup-go@924ae3a1cded613372ab5595356fb5720e22ba16 # v6.0.0
+        with:
+          go-version: '1.26.6'
+      - name: Validate GitHub Actions syntax
+        run: GOWORK=off go run github.com/rhysd/actionlint/cmd/actionlint@v1.7.7
+      - name: Require immutable third-party action references
+        run: |
+          set -euo pipefail
+          while IFS= read -r action_ref; do
+            [[ "$action_ref" == ./* ]] && continue
+            revision="${action_ref##*@}"
+            [[ "$revision" =~ ^[0-9a-f]{40}$ ]] || {
+              echo "action is not pinned to a full lowercase commit SHA: $action_ref" >&2
+              exit 1
+            }
+          done < <(find .github/workflows -type f \( -name '*.yml' -o -name '*.yaml' \) -exec sed -nE 's/^[[:space:]]*-?[[:space:]]*uses:[[:space:]]*([^[:space:]#]+).*/\1/p' {} +)

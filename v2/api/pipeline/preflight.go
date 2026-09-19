@@ -60,11 +60,18 @@ func truthyEnv(key string) bool {
 }
 
 func (p *Pipeline) runPreflight(ctx context.Context, spec *model.InfraSpec, ref string, sg *saga.Saga, operationID string) {
+	p.runPreflightWithArtifact(ctx, spec, ref, "", model.ReleaseCandidate{}, sg, operationID)
+}
+
+func (p *Pipeline) runPreflightWithArtifact(ctx context.Context, spec *model.InfraSpec, ref, artifact string, candidate model.ReleaseCandidate, sg *saga.Saga, operationID string) {
 	st := &state{
-		spec:      spec,
-		commitSHA: ref,
-		sourceRef: ref,
-		preflight: true,
+		spec:          spec,
+		commitSHA:     ref,
+		sourceRef:     ref,
+		preflight:     true,
+		imageTag:      artifact,
+		artifactBound: artifact != "",
+		candidate:     candidate,
 	}
 	defer func() {
 		if st.workDir != "" {

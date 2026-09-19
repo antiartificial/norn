@@ -2,6 +2,8 @@
 // repository contract. It deliberately contains no cloud-provider clients.
 package fleet
 
+import "time"
+
 const (
 	APIVersion = "norn.dev/fleet/v1"
 	Kind       = "Cluster"
@@ -107,4 +109,70 @@ type ReconciliationRequest struct {
 	StateSerial    int64  `json:"stateSerial,omitempty"`
 	EvidenceDigest string `json:"evidenceDigest"`
 	Message        string `json:"message,omitempty"`
+	AttemptID      string `json:"attemptId,omitempty"`
+}
+
+const RunnerAttemptSchemaVersion = "norn.fleet-runner-attempt/v1"
+
+// RunnerAttempt is the server-owned, restart-safe lease held by a protected
+// fleet runner. It never contains credentials or provider state.
+type RunnerAttempt struct {
+	SchemaVersion   string `json:"schemaVersion"`
+	ID              string `json:"id"`
+	PlanID          string `json:"planId"`
+	Attempt         int    `json:"attempt"`
+	RunnerAttemptID string `json:"runnerAttemptId"`
+	Status          string `json:"status"`
+	CurrentPhase    string `json:"currentPhase"`
+	CommitSHA       string `json:"commitSha"`
+	PlanSHA256      string `json:"planSha256"`
+	WorkflowURL     string `json:"workflowUrl"`
+	// RootAttemptID is output-only server-owned ancestry. Clients cannot set it.
+	RootAttemptID           string     `json:"rootAttemptId"`
+	RetryOf                 string     `json:"retryOf,omitempty"`
+	HeartbeatSequence       int64      `json:"heartbeatSequence"`
+	HeartbeatTimeoutSeconds int        `json:"heartbeatTimeoutSeconds"`
+	Revision                int64      `json:"revision"`
+	StartedAt               time.Time  `json:"startedAt"`
+	HeartbeatAt             time.Time  `json:"heartbeatAt"`
+	HeartbeatExpiresAt      time.Time  `json:"heartbeatExpiresAt"`
+	UpdatedAt               time.Time  `json:"updatedAt"`
+	FinishedAt              *time.Time `json:"finishedAt,omitempty"`
+	LastError               string     `json:"lastError,omitempty"`
+}
+
+type RunnerAttemptCreateRequest struct {
+	SchemaVersion           string `json:"schemaVersion"`
+	RunnerAttemptID         string `json:"runnerAttemptId"`
+	CommitSHA               string `json:"commitSha"`
+	PlanSHA256              string `json:"planSha256"`
+	WorkflowURL             string `json:"workflowUrl"`
+	DispatchNonce           string `json:"dispatchNonce"`
+	SourceDispatchRunID     string `json:"sourceDispatchRunId"`
+	Resume                  bool   `json:"resume,omitempty"`
+	HeartbeatTimeoutSeconds int    `json:"heartbeatTimeoutSeconds"`
+}
+type RunnerAttemptHeartbeatRequest struct {
+	SchemaVersion string `json:"schemaVersion"`
+	Phase         string `json:"phase"`
+	Sequence      int64  `json:"sequence"`
+	Revision      int64  `json:"revision"`
+	Message       string `json:"message,omitempty"`
+}
+type RunnerAttemptAdvanceRequest struct {
+	SchemaVersion string `json:"schemaVersion"`
+	ExpectedPhase string `json:"expectedPhase"`
+	Revision      int64  `json:"revision"`
+}
+type RunnerAttemptCancelRequest struct {
+	SchemaVersion string `json:"schemaVersion"`
+	Revision      int64  `json:"revision"`
+	Reason        string `json:"reason,omitempty"`
+}
+type RunnerAttemptRetryRequest struct {
+	SchemaVersion   string `json:"schemaVersion"`
+	Revision        int64  `json:"revision"`
+	RunnerAttemptID string `json:"runnerAttemptId"`
+	WorkflowURL     string `json:"workflowUrl"`
+	Reason          string `json:"reason,omitempty"`
 }

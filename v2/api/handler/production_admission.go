@@ -54,6 +54,7 @@ func productionSubstrateMutation(r *http.Request) bool {
 	}
 	path := r.URL.Path
 	return strings.HasPrefix(path, "/api/apps/") ||
+		strings.HasPrefix(path, "/api/v1/apps/") ||
 		strings.HasPrefix(path, "/api/deploy-groups/") ||
 		strings.HasPrefix(path, "/api/platform/releases/") ||
 		strings.HasPrefix(path, "/api/v1/platform/") ||

@@ -76,6 +76,36 @@ func TestProductionAdmissionRejectsBuildWithoutPrepublishedDigest(t *testing.T) 
 	}
 }
 
+func TestProductionAdmissionAcceptsCallerBoundArtifactWithDockerfileBuild(t *testing.T) {
+	p := &Pipeline{Production: true, NetworkMode: "tailnet", RegistryURL: "registry.example.test/norn"}
+	st := &state{sourceKind: "git_clone", artifactBound: true, imageTag: "registry.example.test/norn/demo@sha256:" + strings.Repeat("a", 64), spec: &model.InfraSpec{
+		App: "demo", Repo: &model.RepoSpec{URL: "https://example.test/demo.git"}, Build: &model.BuildSpec{Dockerfile: "Dockerfile"},
+		Processes: map[string]model.Process{"web": {Port: 8080, Health: &model.HealthSpec{Path: "/health"}}},
+	}}
+	if err := p.admission(context.Background(), st, nil); err != nil {
+		t.Fatalf("bound release artifact should satisfy immutable image admission: %v", err)
+	}
+}
+
+func TestProductionArtifactAdmissionBindsRepositoryToAppPolicy(t *testing.T) {
+	p := &Pipeline{
+		Production: true, RegistryURL: "registry.example.test/norn",
+		VerifyArtifact: func(context.Context, string) error { return nil }, VerifySignature: func(context.Context, string) error { return nil }, ScanArtifact: func(context.Context, string) error { return nil },
+	}
+	st := &state{
+		artifactBound: true,
+		imageTag:      "registry.example.test/another/demo@sha256:" + strings.Repeat("a", 64),
+		spec:          &model.InfraSpec{App: "demo", Build: &model.BuildSpec{Dockerfile: "Dockerfile"}},
+	}
+	if err := p.artifactAdmission(context.Background(), st, nil); err == nil || !strings.Contains(err.Error(), "authorized repository") {
+		t.Fatalf("cross-repository artifact error=%v", err)
+	}
+	st.imageTag = "registry.example.test/norn/demo@sha256:" + strings.Repeat("a", 64)
+	if err := p.artifactAdmission(context.Background(), st, nil); err != nil {
+		t.Fatalf("authorized app artifact rejected: %v", err)
+	}
+}
+
 func TestProductionArtifactAdmissionRequiresDigest(t *testing.T) {
 	verified := ""
 	p := &Pipeline{

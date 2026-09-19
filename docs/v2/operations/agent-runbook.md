@@ -28,6 +28,7 @@ Useful surfaces:
 | Observability bundle/services | `GET /api/observability/bundle`, `POST /api/observability/services/install`, `norn observability install` |
 | Secret migration plan | `GET /api/secrets/migration-plan`, `norn secrets migrate-plan` |
 | Networking truth | `GET /api/services/manifest`, `norn network` |
+| Fleet desired state, plans, attempts, and checkpoints | `GET /api/v1/fleet/node-pools`, `/plans`, `/plans/{planID}/attempts`, `/reconciliations`; `norn fleet pools`, `norn fleet checkpoints <plan-id>` |
 
 If a protected endpoint returns `401`, do not assume the platform is unhealthy. Verify auth context separately and fall back to public health/version endpoints, local DB checks, process manager state, or an authenticated shell when available.
 
@@ -74,6 +75,15 @@ When deploying an app:
 7. Smoke-test the app endpoint or health path that users actually rely on.
 
 Do not treat an HTTP handler's immediate `queued` response as completion. The worker still has to claim and execute the operation.
+
+## Fleet operations
+
+Fleet plans are durable intent receipts, not provider mutations. The protected
+Fleet runner creates a numbered attempt before mutation, heartbeats for
+liveness only, records evidence-bound checkpoints, and advances only after
+proof. Use the [Fleet operations runbook](./fleet.md) for ownership, the
+preflight/apply/recovery sequence, drift handling, destructive-operation
+boundaries, and advisory timing semantics.
 
 ## Webhook Replay
 

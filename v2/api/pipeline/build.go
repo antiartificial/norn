@@ -14,6 +14,12 @@ import (
 )
 
 func (p *Pipeline) build(ctx context.Context, st *state, sg *saga.Saga) error {
+	if st.artifactBound {
+		if !model.IsContentAddressedImage(st.imageTag) {
+			return fmt.Errorf("bound release artifact must be pinned by sha256 OCI digest")
+		}
+		return nil
+	}
 	if st.spec.Build == nil {
 		st.imageTag = fmt.Sprintf("%s:latest", st.spec.App)
 		return nil

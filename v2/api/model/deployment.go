@@ -20,6 +20,7 @@ type Deployment struct {
 	App           string             `json:"app"`
 	CommitSHA     string             `json:"commitSha"`
 	ImageTag      string             `json:"imageTag"`
+	Environment   string             `json:"environment,omitempty"`
 	SagaID        string             `json:"sagaId"`
 	Status        DeployStatus       `json:"status"`
 	SourceKind    string             `json:"sourceKind,omitempty"`

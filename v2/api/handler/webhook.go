@@ -84,6 +84,11 @@ func (h *Handler) Webhook(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, map[string]bool{"ignored": true})
 		return
 	}
+	if h.productionRequiresSignedPromotion() {
+		h.finishWebhookDelivery(r, delivery, "ignored", "production requires signed staging promotion")
+		writeJSON(w, map[string]bool{"ignored": true})
+		return
+	}
 
 	// Parse push payload
 	var payload struct {
@@ -158,6 +163,10 @@ func (h *Handler) ReplayWebhookDelivery(w http.ResponseWriter, r *http.Request) 
 	}
 	if req.Mode != "deploy" && req.Mode != "preflight" {
 		writeError(w, http.StatusBadRequest, "mode must be deploy or preflight")
+		return
+	}
+	if req.Mode == "deploy" && h.productionRequiresSignedPromotion() {
+		WriteControlProblem(w, r, http.StatusConflict, "signed_promotion_required", "production webhook replay cannot bypass signed staging promotion")
 		return
 	}
 

@@ -84,6 +84,7 @@ func Migrate(db *DB) error {
 			app         TEXT NOT NULL,
 			commit_sha  TEXT NOT NULL,
 			image_tag   TEXT NOT NULL,
+			environment TEXT NOT NULL DEFAULT '',
 			saga_id     TEXT NOT NULL,
 			status      TEXT NOT NULL DEFAULT 'running',
 			source_kind TEXT NOT NULL DEFAULT '',
@@ -110,6 +111,7 @@ func Migrate(db *DB) error {
 		CREATE INDEX IF NOT EXISTS idx_deployment_regions_region ON deployment_regions(region, updated_at DESC);
 
 		ALTER TABLE deployments ADD COLUMN IF NOT EXISTS source_kind TEXT NOT NULL DEFAULT '';
+		ALTER TABLE deployments ADD COLUMN IF NOT EXISTS environment TEXT NOT NULL DEFAULT '';
 		ALTER TABLE deployments ADD COLUMN IF NOT EXISTS source_ref TEXT NOT NULL DEFAULT '';
 		ALTER TABLE deployments ADD COLUMN IF NOT EXISTS source_dirty BOOLEAN NOT NULL DEFAULT false;
 		ALTER TABLE deployments ADD COLUMN IF NOT EXISTS source_changes JSONB NOT NULL DEFAULT '[]';
@@ -209,6 +211,9 @@ func Migrate(db *DB) error {
 		CREATE UNIQUE INDEX IF NOT EXISTS idx_operations_idempotency
 			ON operations ((metadata->>'idempotencyKey'))
 			WHERE metadata ? 'idempotencyKey' AND metadata->>'idempotencyKey' <> '';
+		CREATE UNIQUE INDEX IF NOT EXISTS idx_operations_promotion_qualification
+			ON operations ((metadata->'promotionQualification'->>'id'))
+			WHERE kind = 'app.deploy' AND metadata->'promotionQualification'->>'id' <> '';
 
 		ALTER TABLE operations ADD COLUMN IF NOT EXISTS payload JSONB NOT NULL DEFAULT '{}';
 		ALTER TABLE operations ADD COLUMN IF NOT EXISTS attempts INT NOT NULL DEFAULT 0;
@@ -218,6 +223,54 @@ func Migrate(db *DB) error {
 		ALTER TABLE operations ADD COLUMN IF NOT EXISTS next_attempt_at TIMESTAMPTZ NOT NULL DEFAULT now();
 		ALTER TABLE operations ADD COLUMN IF NOT EXISTS last_error TEXT NOT NULL DEFAULT '';
 		CREATE INDEX IF NOT EXISTS idx_operations_queue ON operations(status, next_attempt_at, kind);
+
+		CREATE TABLE IF NOT EXISTS fleet_runner_attempts (
+			id TEXT PRIMARY KEY,
+			plan_id TEXT NOT NULL,
+			attempt INT NOT NULL,
+			runner_attempt_id TEXT NOT NULL,
+			commit_sha TEXT NOT NULL,
+			plan_sha256 TEXT NOT NULL,
+			workflow_url TEXT NOT NULL,
+			status TEXT NOT NULL,
+			current_phase TEXT NOT NULL,
+			root_attempt_id TEXT NOT NULL DEFAULT '',
+			retry_of TEXT NOT NULL DEFAULT '',
+			heartbeat_sequence BIGINT NOT NULL DEFAULT 0,
+			heartbeat_timeout_seconds INT NOT NULL,
+			revision BIGINT NOT NULL DEFAULT 1,
+			heartbeat_at TIMESTAMPTZ NOT NULL,
+			heartbeat_expires_at TIMESTAMPTZ NOT NULL,
+			message TEXT NOT NULL DEFAULT '',
+			started_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+			updated_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+			finished_at TIMESTAMPTZ
+		);
+		ALTER TABLE fleet_runner_attempts ADD COLUMN IF NOT EXISTS root_attempt_id TEXT NOT NULL DEFAULT '';
+		UPDATE fleet_runner_attempts target SET root_attempt_id = first_attempt.id
+		FROM (SELECT DISTINCT ON (plan_id) plan_id, id FROM fleet_runner_attempts ORDER BY plan_id, attempt ASC) first_attempt
+		WHERE target.plan_id = first_attempt.plan_id AND target.root_attempt_id = '';
+		CREATE UNIQUE INDEX IF NOT EXISTS idx_fleet_runner_attempt_identity ON fleet_runner_attempts(plan_id, runner_attempt_id);
+		CREATE UNIQUE INDEX IF NOT EXISTS idx_fleet_runner_attempt_number ON fleet_runner_attempts(plan_id, attempt);
+		CREATE UNIQUE INDEX IF NOT EXISTS idx_fleet_runner_attempt_live_plan ON fleet_runner_attempts(plan_id) WHERE status IN ('queued', 'running');
+		CREATE INDEX IF NOT EXISTS idx_fleet_runner_attempt_plan ON fleet_runner_attempts(plan_id, attempt DESC);
+		CREATE INDEX IF NOT EXISTS idx_fleet_runner_attempt_expiry ON fleet_runner_attempts(status, heartbeat_expires_at);
+
+		CREATE TABLE IF NOT EXISTS fleet_github_dispatches (
+			plan_id TEXT PRIMARY KEY,
+			plan_run_id BIGINT NOT NULL,
+			plan_sha256 TEXT NOT NULL,
+			approved_head_sha TEXT NOT NULL,
+			fleet_environment TEXT NOT NULL,
+			allow_destructive BOOLEAN NOT NULL,
+			dispatch_nonce TEXT NOT NULL,
+			dispatch_nonce_sha256 TEXT NOT NULL,
+			run_id BIGINT NOT NULL DEFAULT 0,
+			workflow_url TEXT NOT NULL DEFAULT '',
+			created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+			updated_at TIMESTAMPTZ NOT NULL DEFAULT now()
+		);
+		CREATE UNIQUE INDEX IF NOT EXISTS idx_fleet_github_dispatch_nonce ON fleet_github_dispatches(dispatch_nonce_sha256);
 
 		CREATE TABLE IF NOT EXISTS webhook_deliveries (
 			id          TEXT PRIMARY KEY,
@@ -290,6 +343,14 @@ func Migrate(db *DB) error {
 			revoked_at   TIMESTAMPTZ,
 			rotated_from TEXT NOT NULL DEFAULT ''
 		);
+		CREATE TABLE IF NOT EXISTS github_actions_assertion_uses (
+			issuer     TEXT NOT NULL,
+			jti        TEXT NOT NULL,
+			expires_at TIMESTAMPTZ NOT NULL,
+			used_at    TIMESTAMPTZ NOT NULL DEFAULT now(),
+			PRIMARY KEY (issuer, jti)
+		);
+		CREATE INDEX IF NOT EXISTS idx_github_actions_assertion_uses_expiry ON github_actions_assertion_uses(expires_at);
 		CREATE INDEX IF NOT EXISTS idx_access_tokens_device ON access_tokens(device_id, issued_at DESC);
 		CREATE INDEX IF NOT EXISTS idx_access_tokens_active ON access_tokens(revoked_at, expires_at);
 
@@ -435,9 +496,9 @@ func Migrate(db *DB) error {
 func (db *DB) InsertDeployment(ctx context.Context, d *model.Deployment) error {
 	changes, _ := json.Marshal(d.SourceChanges)
 	_, err := db.Pool.Exec(ctx,
-		`INSERT INTO deployments (id, app, commit_sha, image_tag, saga_id, status, source_kind, source_ref, source_dirty, source_changes, started_at)
-		 VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)`,
-		d.ID, d.App, d.CommitSHA, d.ImageTag, d.SagaID, d.Status, d.SourceKind, d.SourceRef, d.SourceDirty, changes, d.StartedAt,
+		`INSERT INTO deployments (id, app, commit_sha, image_tag, environment, saga_id, status, source_kind, source_ref, source_dirty, source_changes, started_at)
+		 VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12)`,
+		d.ID, d.App, d.CommitSHA, d.ImageTag, d.Environment, d.SagaID, d.Status, d.SourceKind, d.SourceRef, d.SourceDirty, changes, d.StartedAt,
 	)
 	return err
 }
@@ -518,9 +579,9 @@ func (db *DB) UpdateDeploymentResult(ctx context.Context, d *model.Deployment) e
 	}
 	_, err := db.Pool.Exec(ctx,
 		`UPDATE deployments
-		 SET status = $1, commit_sha = $2, image_tag = $3, source_kind = $4, source_ref = $5, source_dirty = $6, source_changes = $7, finished_at = $8
-		 WHERE id = $9`,
-		d.Status, d.CommitSHA, d.ImageTag, d.SourceKind, d.SourceRef, d.SourceDirty, changes, finished, d.ID,
+		 SET status = $1, commit_sha = $2, image_tag = $3, environment = $4, source_kind = $5, source_ref = $6, source_dirty = $7, source_changes = $8, finished_at = $9
+		 WHERE id = $10`,
+		d.Status, d.CommitSHA, d.ImageTag, d.Environment, d.SourceKind, d.SourceRef, d.SourceDirty, changes, finished, d.ID,
 	)
 	return err
 }
@@ -529,7 +590,7 @@ func (db *DB) ListDeployments(ctx context.Context, app string, limit int) ([]mod
 	if limit <= 0 {
 		limit = 20
 	}
-	query := `SELECT id, app, commit_sha, image_tag, saga_id, status, source_kind, source_ref, source_dirty, source_changes, started_at, finished_at
+	query := `SELECT id, app, commit_sha, image_tag, environment, saga_id, status, source_kind, source_ref, source_dirty, source_changes, started_at, finished_at
 		 FROM deployments`
 	args := []interface{}{}
 	if app != "" {
@@ -550,7 +611,7 @@ func (db *DB) ListDeployments(ctx context.Context, app string, limit int) ([]mod
 	for rows.Next() {
 		var d model.Deployment
 		var changes []byte
-		if err := rows.Scan(&d.ID, &d.App, &d.CommitSHA, &d.ImageTag, &d.SagaID, &d.Status, &d.SourceKind, &d.SourceRef, &d.SourceDirty, &changes, &d.StartedAt, &d.FinishedAt); err != nil {
+		if err := rows.Scan(&d.ID, &d.App, &d.CommitSHA, &d.ImageTag, &d.Environment, &d.SagaID, &d.Status, &d.SourceKind, &d.SourceRef, &d.SourceDirty, &changes, &d.StartedAt, &d.FinishedAt); err != nil {
 			return nil, err
 		}
 		_ = json.Unmarshal(changes, &d.SourceChanges)
@@ -564,11 +625,11 @@ func (db *DB) GetDeployment(ctx context.Context, id string) (*model.Deployment, 
 	var d model.Deployment
 	var changes []byte
 	err := db.Pool.QueryRow(ctx,
-		`SELECT id, app, commit_sha, image_tag, saga_id, status, source_kind, source_ref, source_dirty, source_changes, started_at, finished_at
+		`SELECT id, app, commit_sha, image_tag, environment, saga_id, status, source_kind, source_ref, source_dirty, source_changes, started_at, finished_at
 		 FROM deployments
 		 WHERE id = $1`,
 		id,
-	).Scan(&d.ID, &d.App, &d.CommitSHA, &d.ImageTag, &d.SagaID, &d.Status, &d.SourceKind, &d.SourceRef, &d.SourceDirty, &changes, &d.StartedAt, &d.FinishedAt)
+	).Scan(&d.ID, &d.App, &d.CommitSHA, &d.ImageTag, &d.Environment, &d.SagaID, &d.Status, &d.SourceKind, &d.SourceRef, &d.SourceDirty, &changes, &d.StartedAt, &d.FinishedAt)
 	if err != nil {
 		return nil, err
 	}
@@ -581,12 +642,28 @@ func (db *DB) LastSuccessfulDeployment(ctx context.Context, app, excludeID strin
 	var d model.Deployment
 	var changes []byte
 	err := db.Pool.QueryRow(ctx,
-		`SELECT id, app, commit_sha, image_tag, saga_id, status, source_kind, source_ref, source_dirty, source_changes, started_at, finished_at
+		`SELECT id, app, commit_sha, image_tag, environment, saga_id, status, source_kind, source_ref, source_dirty, source_changes, started_at, finished_at
 		 FROM deployments
 		 WHERE app = $1 AND status = 'deployed' AND id != $2
 		 ORDER BY started_at DESC LIMIT 1`,
 		app, excludeID,
-	).Scan(&d.ID, &d.App, &d.CommitSHA, &d.ImageTag, &d.SagaID, &d.Status, &d.SourceKind, &d.SourceRef, &d.SourceDirty, &changes, &d.StartedAt, &d.FinishedAt)
+	).Scan(&d.ID, &d.App, &d.CommitSHA, &d.ImageTag, &d.Environment, &d.SagaID, &d.Status, &d.SourceKind, &d.SourceRef, &d.SourceDirty, &changes, &d.StartedAt, &d.FinishedAt)
+	if err != nil {
+		return nil, err
+	}
+	_ = json.Unmarshal(changes, &d.SourceChanges)
+	d.Regions, _ = db.DeploymentRegions(ctx, d.ID)
+	return &d, nil
+}
+
+// LatestSuccessfulDeployment is the authoritative active deployment for a
+// control-plane environment. Failed or queued rows must never displace it.
+func (db *DB) LatestSuccessfulDeployment(ctx context.Context, app, environment string) (*model.Deployment, error) {
+	var d model.Deployment
+	var changes []byte
+	err := db.Pool.QueryRow(ctx, `SELECT id, app, commit_sha, image_tag, environment, saga_id, status, source_kind, source_ref, source_dirty, source_changes, started_at, finished_at
+		 FROM deployments WHERE app=$1 AND environment=$2 AND status='deployed' ORDER BY started_at DESC LIMIT 1`, app, environment).
+		Scan(&d.ID, &d.App, &d.CommitSHA, &d.ImageTag, &d.Environment, &d.SagaID, &d.Status, &d.SourceKind, &d.SourceRef, &d.SourceDirty, &changes, &d.StartedAt, &d.FinishedAt)
 	if err != nil {
 		return nil, err
 	}

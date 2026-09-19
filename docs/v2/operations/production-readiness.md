@@ -63,14 +63,19 @@ prerequisites before critical mutations are allowed:
 - strict-secret validation;
 - an expired legacy token-signing compatibility window.
 
-Production app deploys and preflights gain an `admission` stage after source
-resolution. It rejects local fallbacks, local copies, dirty checkouts, missing
-registry configuration, missing build configuration, strict-secret errors,
-services without health checks, and endpoint-backed processes that request
-multiple allocations before Norn has a load-balanced endpoint implementation.
-Production requires an externally published `build.image` pinned by OCI digest;
-Norn does not hold a publisher private key. Before deploy or rollback it resolves
-the digest from the registry, verifies a Cosign signature carrying the exact
+Production promotion and rollback run source and artifact admission before
+runtime mutation. Source admission rejects local fallbacks, local copies, dirty
+checkouts, missing registry/build policy, strict-secret errors, services without
+health checks, and endpoint-backed processes that request multiple allocations
+before Norn has a load-balanced endpoint implementation. Direct production
+deploy, deploy-group, and webhook-deploy paths are rejected; the legacy
+preflight remains a read-only diagnostic.
+
+A promoted release must carry the caller-bound OCI digest from its signed
+staging qualification. Its repository must match the pinned `build.image`
+repository or `NORN_REGISTRY_URL/<app>` when the build spec contains only a
+Dockerfile. Norn does not hold a publisher private key. Before promotion or
+rollback it resolves the digest, verifies a Cosign signature carrying the exact
 `norn.git.sha` source annotation, and rejects configured Trivy vulnerability
 severities. The publishing lane should emit maximum-provenance and SBOM
 attestations. Development behavior is unchanged when the profile is not enabled.

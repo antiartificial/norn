@@ -12,6 +12,10 @@ import (
 var ErrRateLimited = errors.New("rate limited")
 var ErrEnrollmentLocked = errors.New("enrollment locked")
 
+// ErrGitHubActionsAssertionConsumed is returned when a verified GitHub OIDC
+// issuer/jti pair has already minted (or attempted to mint) a Norn token.
+var ErrGitHubActionsAssertionConsumed = errors.New("GitHub Actions assertion already consumed")
+
 type AccessDevice struct {
 	ID         string        `json:"id"`
 	Name       string        `json:"name"`
@@ -239,6 +243,30 @@ func (db *DB) RecordAccessToken(ctx context.Context, token *AccessToken) error {
 		VALUES($1,NULLIF($2,''),$3,$4,$5,$6,$7)
 	`, token.JTI, token.DeviceID, token.Subject, scopes, token.IssuedAt, token.ExpiresAt, token.RotatedFrom)
 	return err
+}
+
+// ConsumeGitHubActionsAssertion durably reserves a verified issuer+jti before
+// any stateless Norn token is signed. It retains no raw JWT material. The
+// unique key is the replay boundary; concurrent exchange requests race safely
+// and exactly one succeeds. Expired reservations are pruned opportunistically.
+func (db *DB) ConsumeGitHubActionsAssertion(ctx context.Context, issuer, jti string, expiresAt time.Time) error {
+	if db == nil || db.Pool == nil {
+		return errors.New("access token store is unavailable")
+	}
+	if issuer == "" || jti == "" || expiresAt.IsZero() {
+		return errors.New("assertion identity and expiry are required")
+	}
+	if _, err := db.Pool.Exec(ctx, `DELETE FROM github_actions_assertion_uses WHERE expires_at <= now()`); err != nil {
+		return err
+	}
+	command, err := db.Pool.Exec(ctx, `INSERT INTO github_actions_assertion_uses(issuer,jti,expires_at) VALUES($1,$2,$3) ON CONFLICT DO NOTHING`, issuer, jti, expiresAt.UTC())
+	if err != nil {
+		return err
+	}
+	if command.RowsAffected() != 1 {
+		return ErrGitHubActionsAssertionConsumed
+	}
+	return nil
 }
 
 func insertAccessToken(ctx context.Context, tx pgx.Tx, token *AccessToken) error {

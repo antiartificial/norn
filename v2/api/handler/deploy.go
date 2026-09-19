@@ -12,6 +12,10 @@ import (
 )
 
 func (h *Handler) Deploy(w http.ResponseWriter, r *http.Request) {
+	if h.productionRequiresSignedPromotion() {
+		WriteControlProblem(w, r, http.StatusConflict, "signed_promotion_required", "direct production deploys are disabled; promote a signed staging qualification through /api/v1/apps/{id}/promotions")
+		return
+	}
 	id := chi.URLParam(r, "id")
 
 	var req struct {

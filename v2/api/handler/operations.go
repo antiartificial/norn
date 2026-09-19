@@ -1,6 +1,7 @@
 package handler
 
 import (
+	"encoding/json"
 	"net/http"
 	"strconv"
 
@@ -65,8 +66,60 @@ func (h *Handler) GetOperation(w http.ResponseWriter, r *http.Request) {
 		WriteControlProblem(w, r, http.StatusInternalServerError, "operation_lookup_failed", "failed to load operation")
 		return
 	}
+	if !releaseOperationReadable(r, op) {
+		WriteControlProblem(w, r, http.StatusForbidden, "operation_read_forbidden", "workload token may read only its own compatible release operation")
+		return
+	}
 	op.AttachReceipt()
 	writeJSON(w, op)
+}
+
+func releaseOperationReadable(r *http.Request, op *model.Operation) bool {
+	principal, present := AccessPrincipalFromRequest(r)
+	if !present || principal.Legacy || principal.Allows(ScopeAdmin) || principal.Allows(ScopeAPIRead) || principal.Allows(ScopeAPIWrite) {
+		return true
+	}
+	if op == nil || principal.App == "" || principal.App != op.App || principal.Environment == "" {
+		return false
+	}
+	environment, _ := op.Metadata["environment"].(string)
+	if environment != principal.Environment {
+		return false
+	}
+	if !releaseOperationKindAllowed(principal, op) {
+		return false
+	}
+	var requested CIIdentity
+	if raw, ok := op.Metadata["requestCI"]; ok {
+		encoded, _ := json.Marshal(raw)
+		_ = json.Unmarshal(encoded, &requested)
+	}
+	if requested.Provider == "" && principal.Allows(ScopeReleaseStage) {
+		if raw, ok := op.Metadata["candidate"]; ok {
+			encoded, _ := json.Marshal(raw)
+			var candidate model.ReleaseCandidate
+			_ = json.Unmarshal(encoded, &candidate)
+			requested = CIIdentity{Provider: candidate.Provider, Repository: candidate.Repository, RepositoryID: candidate.RepositoryID, RepositoryOwnerID: candidate.OwnerID, RunID: candidate.RunID, RunAttempt: candidate.RunAttempt, WorkflowRef: candidate.WorkflowRef, WorkflowSHA: candidate.WorkflowSHA, JobWorkflowRef: candidate.SignerWorkflowRef, JobWorkflowSHA: candidate.SignerWorkflowSHA, Ref: candidate.Ref, SHA: candidate.Attestation.MaterialSHA}
+		}
+	}
+	return ciIdentityMatches(principal.CI, &requested)
+}
+
+func releaseOperationKindAllowed(principal AccessPrincipal, op *model.Operation) bool {
+	if principal.Allows(ScopeReleaseStage) {
+		return (op.Kind == "app.preflight" || op.Kind == "app.deploy") && op.Metadata["promotionQualification"] == nil && op.Metadata["releaseRollback"] == nil
+	}
+	if principal.Allows(ScopeReleaseQualify) {
+		return op.Kind == "release.qualification"
+	}
+	if principal.Allows(ScopeReleasePromote) {
+		return op.Kind == "app.deploy" && op.Metadata["promotionQualification"] != nil
+	}
+	return principal.Allows(ScopeReleaseRollback) && op.Metadata["releaseRollback"] == true
+}
+
+func ciIdentityMatches(actual, expected *CIIdentity) bool {
+	return actual != nil && expected != nil && expected.Provider != "" && actual.Provider == expected.Provider && actual.Repository == expected.Repository && actual.RepositoryID == expected.RepositoryID && actual.RepositoryOwnerID == expected.RepositoryOwnerID && actual.RunID == expected.RunID && actual.RunAttempt == expected.RunAttempt && actual.WorkflowRef == expected.WorkflowRef && actual.WorkflowSHA == expected.WorkflowSHA && actual.JobWorkflowRef == expected.JobWorkflowRef && actual.JobWorkflowSHA == expected.JobWorkflowSHA && actual.Ref == expected.Ref && actual.SHA == expected.SHA
 }
 
 func (h *Handler) CancelOperation(w http.ResponseWriter, r *http.Request) {

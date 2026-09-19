@@ -8,7 +8,14 @@ import (
 	"strings"
 	"time"
 
+	"github.com/jackc/pgx/v5"
+
 	"norn/v2/api/model"
+)
+
+const (
+	hostCapacityEventApp       = "norn-host"
+	hostCapacityCorrelationKey = "norn-host:minimum-capacity"
 )
 
 type eventReconcileRequest struct {
@@ -105,19 +112,55 @@ func (h *Handler) reconcileEvent(ctx context.Context, event model.BeaconEvent) e
 }
 
 func (h *Handler) reconcileCapacityWarning(ctx context.Context, event model.BeaconEvent, decision eventReconcileDecision) eventReconcileDecision {
-	later, err := h.db.LaterBeaconEventExists(ctx, event.App, "host.assurance.recovered", event.OccurredAt)
-	if err != nil {
-		decision.Reason = "failed to check later host assurance"
+	if reason := capacityWarningScopeError(event); reason != "" {
+		decision.Reason = reason
 		return decision
 	}
-	if !later {
-		decision.Reason = "no later successful host assurance proves capacity recovery"
+	recovery, err := h.db.LaterBeaconEventForCorrelation(ctx, event.Source, hostCapacityEventApp, event.Environment, "service.capacity.recovered", hostCapacityCorrelationKey, event.OccurredAt)
+	if err == pgx.ErrNoRows {
+		decision.Reason = "no later service.capacity.recovered event proves aggregate capacity recovery"
+		return decision
+	}
+	if err != nil {
+		decision.Reason = "failed to check later capacity recovery"
+		return decision
+	}
+	if !capacityWarningSupersededBy(event, recovery) {
+		decision.Reason = "later capacity recovery does not match this host-scoped aggregate"
 		return decision
 	}
 	decision.Action = "acknowledge"
-	decision.Reason = "later host assurance proved minimum capacity recovery"
-	decision.Evidence = append(decision.Evidence, "later host.assurance.recovered exists")
+	decision.Reason = "later service.capacity.recovered proved aggregate minimum capacity recovery"
+	decision.Evidence = append(decision.Evidence, fmt.Sprintf("later service.capacity.recovered=%s", recovery.ID))
 	return decision
+}
+
+// Capacity warnings are a host-scoped aggregate of every deployable process
+// below its declared minimum. They may only be closed by the matching aggregate
+// recovery; reconciling a single affected app would silently hide remaining
+// drift in the same warning.
+func capacityWarningScopeError(event model.BeaconEvent) string {
+	if event.App != hostCapacityEventApp {
+		return "capacity warning is not the host-scoped aggregate"
+	}
+	if metadataString(event.Metadata, "correlationKey") != hostCapacityCorrelationKey {
+		return "capacity warning lacks the host minimum-capacity correlation key"
+	}
+	return ""
+}
+
+func capacityWarningSupersededBy(warning model.BeaconEvent, recovery *model.BeaconEvent) bool {
+	if recovery == nil {
+		return false
+	}
+	return warning.Type == "service.capacity.below_minimum" &&
+		capacityWarningScopeError(warning) == "" &&
+		recovery.Type == "service.capacity.recovered" &&
+		recovery.Source == warning.Source &&
+		recovery.App == hostCapacityEventApp &&
+		recovery.Environment == warning.Environment &&
+		metadataString(recovery.Metadata, "correlationKey") == hostCapacityCorrelationKey &&
+		recovery.OccurredAt.After(warning.OccurredAt)
 }
 
 func (h *Handler) reconcileDeployFailed(ctx context.Context, event model.BeaconEvent, decision eventReconcileDecision) eventReconcileDecision {

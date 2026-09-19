@@ -1,6 +1,7 @@
 package handler
 
 import (
+	"context"
 	"fmt"
 	"net"
 	"net/http"
@@ -43,11 +44,15 @@ func (h *Handler) buildServiceManifest() (model.ServiceManifest, error) {
 			serviceName := spec.App + "-" + processName
 			processType := manifestProcessType(processName, process)
 			entry := model.ServiceManifestEntry{
-				Name:     serviceName,
-				App:      spec.App,
-				Process:  processName,
-				Type:     processType,
-				Status:   "unknown",
+				Name:    serviceName,
+				App:     spec.App,
+				Process: processName,
+				Type:    processType,
+				Status:  "unknown",
+				ExpectedState: manifestExpectedState(
+					context.Background(), h, spec.App, processName, spec.Deploy, process,
+				),
+				Schedule: process.Schedule,
 				Metadata: serviceMetadata(spec.App, processName, serviceName),
 			}
 			entry.Metadata["networkMode"] = h.cfg.NetworkMode
@@ -91,6 +96,28 @@ func (h *Handler) buildServiceManifest() (model.ServiceManifest, error) {
 	}
 
 	return manifest, nil
+}
+
+// manifestExpectedState preserves the difference between a missing long-lived
+// service and a process that is expected to have no allocation most of the
+// time. The manifest remains useful to lightweight callers even when the
+// optional cron-state store is unavailable.
+func manifestExpectedState(ctx context.Context, h *Handler, app, processName string, deploy bool, process model.Process) string {
+	if !deploy {
+		return "disabled"
+	}
+	if process.Function != nil {
+		return "on_demand"
+	}
+	if process.Schedule != "" {
+		if h.db != nil {
+			if state, err := h.db.GetCronState(ctx, app, processName); err == nil && state.Paused {
+				return "paused"
+			}
+		}
+		return "scheduled"
+	}
+	return "running"
 }
 
 func (h *Handler) serviceMetrics(app, processName string, process model.Process, fallbackInstances []model.ServiceInstance) *model.ServiceMetrics {

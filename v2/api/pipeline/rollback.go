@@ -42,6 +42,7 @@ func (p *Pipeline) RollbackRegionsOperationContext(ctx context.Context, spec *mo
 		App:           spec.App,
 		CommitSHA:     prev.CommitSHA,
 		ImageTag:      prev.ImageTag,
+		Environment:   current.Environment,
 		SagaID:        sg.ID,
 		Status:        model.StatusQueued,
 		SourceKind:    "rollback",

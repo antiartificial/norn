@@ -126,9 +126,9 @@ func (db *DB) InsertRollbackOperation(ctx context.Context, deployment *model.Dep
 		return fmt.Errorf("encode rollback source changes: %w", err)
 	}
 	if _, err = tx.Exec(ctx, `INSERT INTO deployments
-		(id, app, commit_sha, image_tag, saga_id, status, source_kind, source_ref, source_dirty, source_changes, started_at)
-		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)`,
-		deployment.ID, deployment.App, deployment.CommitSHA, deployment.ImageTag, deployment.SagaID, deployment.Status,
+		(id, app, commit_sha, image_tag, environment, saga_id, status, source_kind, source_ref, source_dirty, source_changes, started_at)
+		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12)`,
+		deployment.ID, deployment.App, deployment.CommitSHA, deployment.ImageTag, deployment.Environment, deployment.SagaID, deployment.Status,
 		deployment.SourceKind, deployment.SourceRef, deployment.SourceDirty, changes, deployment.StartedAt); err != nil {
 		return err
 	}
@@ -147,6 +147,75 @@ func (db *DB) InsertRollbackOperation(ctx context.Context, deployment *model.Dep
 		return err
 	}
 	return tx.Commit(ctx)
+}
+
+// InsertDeploymentOperation commits a queued deployment, its regional intent,
+// and its durable operation together. Release promotion relies on this boundary
+// so an idempotent request can never leave an orphaned deployment record.
+func (db *DB) InsertDeploymentOperation(ctx context.Context, deployment *model.Deployment, regions []model.ResolvedRegion, op *model.Operation) error {
+	if db == nil || db.Pool == nil || deployment == nil || op == nil {
+		return fmt.Errorf("deployment operation store is unavailable")
+	}
+	payload, metadata, err := prepareOperation(op)
+	if err != nil {
+		return err
+	}
+	changes, err := json.Marshal(deployment.SourceChanges)
+	if err != nil {
+		return fmt.Errorf("encode deployment source changes: %w", err)
+	}
+	tx, err := db.Pool.Begin(ctx)
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback(ctx)
+	if _, err = tx.Exec(ctx, `INSERT INTO deployments
+		(id, app, commit_sha, image_tag, environment, saga_id, status, source_kind, source_ref, source_dirty, source_changes, started_at)
+		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12)`,
+		deployment.ID, deployment.App, deployment.CommitSHA, deployment.ImageTag, deployment.Environment, deployment.SagaID, deployment.Status,
+		deployment.SourceKind, deployment.SourceRef, deployment.SourceDirty, changes, deployment.StartedAt); err != nil {
+		return err
+	}
+	for _, region := range regions {
+		if _, err = tx.Exec(ctx, `INSERT INTO deployment_regions
+			(deployment_id, region, nomad_region, status, desired_weight, active_weight)
+			VALUES ($1, $2, $3, $4, $5, 0)`, deployment.ID, region.Name, region.NomadRegion, model.StatusQueued, region.TrafficWeight); err != nil {
+			return err
+		}
+	}
+	if _, err = tx.Exec(ctx, `INSERT INTO operations
+		(id, kind, app, saga_id, ref, status, risk, source, message, payload, metadata, attempts, max_attempts, next_attempt_at, started_at, updated_at)
+		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, now())`,
+		op.ID, op.Kind, op.App, op.SagaID, op.Ref, op.Status, op.Risk, op.Source, op.Message, payload, metadata,
+		op.Attempts, op.MaxAttempts, op.NextAttemptAt, op.StartedAt); err != nil {
+		return err
+	}
+	return tx.Commit(ctx)
+}
+
+// GetReleaseOperationByDeploymentID returns the durable request that created a
+// release deployment. Qualification reads its candidate from this immutable
+// operation record rather than accepting a caller-supplied provenance claim.
+func (db *DB) GetReleaseOperationByDeploymentID(ctx context.Context, deploymentID string) (*model.Operation, error) {
+	if db == nil || db.Pool == nil {
+		return nil, fmt.Errorf("operation store is unavailable")
+	}
+	var id string
+	if err := db.Pool.QueryRow(ctx, `SELECT id FROM operations WHERE payload->>'deploymentId'=$1 AND kind='app.deploy' ORDER BY started_at DESC LIMIT 1`, deploymentID).Scan(&id); err != nil {
+		return nil, err
+	}
+	return db.GetOperation(ctx, id)
+}
+
+func (db *DB) GetPromotionOperationByDeploymentID(ctx context.Context, deploymentID string) (*model.Operation, error) {
+	if db == nil || db.Pool == nil {
+		return nil, fmt.Errorf("operation store is unavailable")
+	}
+	var id string
+	if err := db.Pool.QueryRow(ctx, `SELECT id FROM operations WHERE payload->>'deploymentId'=$1 AND kind='app.deploy' AND status='succeeded' AND metadata ? 'promotionQualification' LIMIT 1`, deploymentID).Scan(&id); err != nil {
+		return nil, err
+	}
+	return db.GetOperation(ctx, id)
 }
 
 // InsertCompletedOperation persists a terminal, planning-only operation in a
@@ -393,6 +462,15 @@ func decodeOperationFields(op *model.Operation, payload, metadata []byte) error 
 func (db *DB) GetOperationByIdempotencyKey(ctx context.Context, key string) (*model.Operation, error) {
 	var id string
 	err := db.Pool.QueryRow(ctx, `SELECT id FROM operations WHERE metadata->>'idempotencyKey' = $1`, key).Scan(&id)
+	if err != nil {
+		return nil, err
+	}
+	return db.GetOperation(ctx, id)
+}
+
+func (db *DB) GetOperationByPromotionQualificationID(ctx context.Context, qualificationID string) (*model.Operation, error) {
+	var id string
+	err := db.Pool.QueryRow(ctx, `SELECT id FROM operations WHERE kind = 'app.deploy' AND metadata->'promotionQualification'->>'id' = $1`, qualificationID).Scan(&id)
 	if err != nil {
 		return nil, err
 	}

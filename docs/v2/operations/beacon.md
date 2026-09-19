@@ -119,7 +119,7 @@ Current deterministic rules are deliberately narrow:
 | `service.health.warning` or `service.health.critical` | A later `service.health.recovered` event, or every current Consul check for the affected service is passing |
 | `cron.failed`, `cron.lost`, `cron.hung`, or `cron.missed_run` | The Nomad periodic parent is running and unpaused with no running or pending children; a referenced child must be terminal or absent |
 | `nomad.task.restarted` | The app is currently healthy and the restart event occurred at least 15 minutes ago, whether the original allocation remains active or has been replaced. The reconciler does not prove continuous health throughout that interval |
-| `service.capacity.below_minimum` | A later `host.assurance.recovered` event proves the minimum-capacity assurance passed |
+| `service.capacity.below_minimum` | A later host-scoped `service.capacity.recovered` event from the same source and environment with the same `norn-host:minimum-capacity` correlation key. The aggregate warning is never partially reconciled for one affected app. |
 
 The reconciliation endpoint accepts `app`, `limit`, `dryRun`, and `by` in its
 JSON body. It does not infer recovery from an old acknowledgement, a matching

@@ -339,6 +339,31 @@ func (db *DB) LaterBeaconEventExists(ctx context.Context, app, eventType string,
 	return exists, err
 }
 
+// LaterBeaconEventForCorrelation returns the newest event of a correlated
+// event family after the supplied timestamp. Callers use the complete event to
+// verify that a recovery has the same scope as the incident it would close.
+func (db *DB) LaterBeaconEventForCorrelation(ctx context.Context, source, app, environment, eventType, correlationKey string, after time.Time) (*model.BeaconEvent, error) {
+	row := db.Pool.QueryRow(ctx, `
+		SELECT id, source, app, environment, type, severity, title, body,
+		       dedupe_key, occurred_at, acknowledged_at, acknowledged_by,
+		       acknowledgement_note, snoozed_until, metadata
+		FROM beacon_events
+		WHERE source = $1
+		  AND app = $2
+		  AND environment = $3
+		  AND type = $4
+		  AND metadata->>'correlationKey' = $5
+		  AND occurred_at > $6
+		ORDER BY occurred_at DESC, id DESC
+		LIMIT 1
+	`, source, app, environment, eventType, correlationKey, after)
+	event, err := scanBeaconEvent(row)
+	if err != nil {
+		return nil, err
+	}
+	return &event, nil
+}
+
 func (db *DB) RecentDedupeExists(ctx context.Context, dedupeKey string, within time.Duration) (bool, error) {
 	var exists bool
 	err := db.Pool.QueryRow(ctx, `
@@ -430,18 +455,22 @@ func (db *DB) ListActiveIncidents(ctx context.Context, limit int) ([]ActiveIncid
 	return incidents, rows.Err()
 }
 
-func (db *DB) AutoAckCorrelatedEvents(ctx context.Context, correlationKey, resolvingEventID string) (int, error) {
+func (db *DB) AutoAckCorrelatedEvents(ctx context.Context, source, app, environment, correlationKey, resolvingEventID string, resolvingOccurredAt time.Time) (int, error) {
 	tag, err := db.Pool.Exec(ctx, `
 		UPDATE beacon_events
 		SET acknowledged_at = now(),
 		    acknowledged_by = 'system',
-		    acknowledgement_note = 'resolved by ' || $2,
+		    acknowledgement_note = 'resolved by ' || $5,
 		    snoozed_until = NULL
-		WHERE metadata->>'correlationKey' = $1
+		WHERE source = $1
+		  AND app = $2
+		  AND environment = $3
+		  AND metadata->>'correlationKey' = $4
 		  AND severity IN ('warning', 'critical')
 		  AND acknowledged_at IS NULL
-		  AND id != $2
-	`, correlationKey, resolvingEventID)
+		  AND id != $5
+		  AND occurred_at <= $6
+	`, source, app, environment, correlationKey, resolvingEventID, resolvingOccurredAt)
 	if err != nil {
 		return 0, err
 	}

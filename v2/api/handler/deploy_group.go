@@ -24,6 +24,10 @@ func (h *Handler) ListDeployGroups(w http.ResponseWriter, r *http.Request) {
 }
 
 func (h *Handler) DeployGroup(w http.ResponseWriter, r *http.Request) {
+	if h.productionRequiresSignedPromotion() {
+		WriteControlProblem(w, r, http.StatusConflict, "signed_promotion_required", "production deploy groups cannot bypass per-app signed staging promotion")
+		return
+	}
 	name := chi.URLParam(r, "name")
 
 	var req struct {

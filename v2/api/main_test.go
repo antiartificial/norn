@@ -1,6 +1,8 @@
 package main
 
 import (
+	"bytes"
+	"crypto/ed25519"
 	"crypto/hmac"
 	"crypto/sha256"
 	"encoding/base64"
@@ -19,6 +21,13 @@ import (
 	"norn/v2/api/config"
 	"norn/v2/api/handler"
 )
+
+func testEd25519Private(ch byte) string {
+	return base64.RawStdEncoding.EncodeToString(bytes.Repeat([]byte{ch}, ed25519.SeedSize))
+}
+func testEd25519Public(ch byte) string {
+	return base64.RawStdEncoding.EncodeToString(ed25519.NewKeyFromSeed(bytes.Repeat([]byte{ch}, ed25519.SeedSize)).Public().(ed25519.PublicKey))
+}
 
 func TestFileServerServesRootAndIndexFallback(t *testing.T) {
 	dir := t.TempDir()
@@ -254,19 +263,38 @@ func TestControlSecurityConfiguration(t *testing.T) {
 		{name: "strict auth without provider", config: &config.Config{BindAddr: "127.0.0.1", RequireExplicitAuth: true}, wantErr: true},
 		{name: "strict auth with Cloudflare Access", config: &config.Config{BindAddr: "127.0.0.1", RequireExplicitAuth: true, CFAccessTeamDomain: "team.example.test", CFAccessAUD: "audience"}},
 		{name: "unknown profile", config: &config.Config{Profile: "mystery", BindAddr: "127.0.0.1"}, wantErr: true},
+		{name: "unknown environment", config: &config.Config{Profile: "development", Environment: "preview", BindAddr: "127.0.0.1"}, wantErr: true},
+		{name: "production environment requires production profile", config: &config.Config{Profile: "development", Environment: "production", BindAddr: "127.0.0.1"}, wantErr: true},
+		{name: "staging environment requires qualification signer", config: &config.Config{Profile: "development", Environment: "staging", BindAddr: "127.0.0.1"}, wantErr: true},
+		{name: "staging signer is purpose separated", config: &config.Config{Profile: "development", Environment: "staging", BindAddr: "127.0.0.1", AuditSigningKey: strings.Repeat("s", 32), QualificationSigningKey: strings.Repeat("s", 32)}, wantErr: true},
+		{name: "staging environment accepts dedicated qualification signer", config: &config.Config{Profile: "development", Environment: "staging", BindAddr: "127.0.0.1", QualificationSigningKey: testEd25519Private('q'), GitHubActionsOIDCAudience: "norn", GitHubActionsOIDCJWKSURL: "https://token.actions.githubusercontent.com/.well-known/jwks", GitHubActionsAllowedRepositories: []string{"owner/repo@1@2"}, GitHubActionsAllowedWorkflowRefs: []string{"owner/repo/.github/workflows/release.yml@" + strings.Repeat("a", 40)}, GitHubActionsAllowedRefs: []string{"refs/heads/main"}, GitHubActionsAllowedEvents: []string{"push"}, GitHubActionsAllowedApps: []string{"demo"}, GitHubActionsAllowedEnvironments: []string{"staging"}, GitHubActionsDefaultBranch: "main"}},
+		{name: "staging requires GitHub Actions default branch", config: &config.Config{Profile: "development", Environment: "staging", BindAddr: "127.0.0.1", QualificationSigningKey: testEd25519Private('q'), GitHubActionsOIDCAudience: "norn", GitHubActionsOIDCJWKSURL: "https://token.actions.githubusercontent.com/.well-known/jwks", GitHubActionsAllowedRepositories: []string{"owner/repo@1@2"}, GitHubActionsAllowedWorkflowRefs: []string{"owner/repo/.github/workflows/release.yml@" + strings.Repeat("a", 40)}, GitHubActionsAllowedRefs: []string{"refs/heads/main"}, GitHubActionsAllowedEvents: []string{"push"}, GitHubActionsAllowedApps: []string{"demo"}, GitHubActionsAllowedEnvironments: []string{"staging"}}, wantErr: true},
+		{name: "staging rejects ref-form GitHub Actions default branch", config: &config.Config{Profile: "development", Environment: "staging", BindAddr: "127.0.0.1", QualificationSigningKey: testEd25519Private('q'), GitHubActionsOIDCAudience: "norn", GitHubActionsOIDCJWKSURL: "https://token.actions.githubusercontent.com/.well-known/jwks", GitHubActionsAllowedRepositories: []string{"owner/repo@1@2"}, GitHubActionsAllowedWorkflowRefs: []string{"owner/repo/.github/workflows/release.yml@" + strings.Repeat("a", 40)}, GitHubActionsAllowedRefs: []string{"refs/heads/main"}, GitHubActionsAllowedEvents: []string{"push"}, GitHubActionsAllowedApps: []string{"demo"}, GitHubActionsAllowedEnvironments: []string{"staging"}, GitHubActionsDefaultBranch: "refs/heads/main"}, wantErr: true},
+		{name: "production environment requires trusted staging signer", config: &config.Config{Profile: "production", Environment: "production", BindAddr: "127.0.0.1"}, wantErr: true},
 		{name: "production requires explicit auth", config: &config.Config{Profile: "production", BindAddr: "127.0.0.1", APIToken: strings.Repeat("x", 32), StrictSecrets: true, NomadAddr: "https://nomad:4646", ConsulAddr: "https://consul:8501", DatabaseURL: "postgres://db/norn?sslmode=verify-full", RegistryURL: "registry.example.test/norn"}, wantErr: true},
 		{name: "production rejects Nomad skip verify", config: &config.Config{Profile: "production", BindAddr: "127.0.0.1", APIToken: strings.Repeat("x", 32), RequireExplicitAuth: true, StrictSecrets: true, NomadAddr: "https://nomad:4646", NomadTLSSkipVerify: true, ConsulAddr: "https://consul:8501", DatabaseURL: "postgres://db/norn?sslmode=verify-full", RegistryURL: "registry.example.test/norn", LegacyTokenSigningUntil: time.Now().Add(-time.Hour)}, wantErr: true},
 		{name: "production rejects Consul skip verify", config: &config.Config{Profile: "production", BindAddr: "127.0.0.1", APIToken: strings.Repeat("x", 32), RequireExplicitAuth: true, StrictSecrets: true, NomadAddr: "https://nomad:4646", ConsulAddr: "https://consul:8501", ConsulTLSSkipVerify: true, DatabaseURL: "postgres://db/norn?sslmode=verify-full", RegistryURL: "registry.example.test/norn", LegacyTokenSigningUntil: time.Now().Add(-time.Hour)}, wantErr: true},
 		{name: "production rejects unverified database TLS", config: &config.Config{Profile: "production", BindAddr: "127.0.0.1", APIToken: strings.Repeat("x", 32), RequireExplicitAuth: true, StrictSecrets: true, NomadAddr: "https://nomad:4646", ConsulAddr: "https://consul:8501", DatabaseURL: "postgres://db/norn?sslmode=require", RegistryURL: "registry.example.test/norn", LegacyTokenSigningUntil: time.Now().Add(-time.Hour)}, wantErr: true},
 		{name: "production rejects weak previous audit key", config: &config.Config{Profile: "production", BindAddr: "127.0.0.1", APIToken: strings.Repeat("x", 32), AuditSigningKey: strings.Repeat("a", 32), AuditPreviousSigningKeys: []string{"short"}, RequireExplicitAuth: true, StrictSecrets: true, NomadAddr: "https://nomad:4646", ConsulAddr: "https://consul:8501", DatabaseURL: "postgres://db/norn?sslmode=verify-full", RegistryURL: "registry.example.test/norn", LegacyTokenSigningUntil: time.Now().Add(-time.Hour)}, wantErr: true},
 		{name: "production rejects short audit retention", config: &config.Config{Profile: "production", BindAddr: "127.0.0.1", APIToken: strings.Repeat("x", 32), AuditSigningKey: strings.Repeat("a", 32), AuditRetentionDays: 30, RequireExplicitAuth: true, StrictSecrets: true, NomadAddr: "https://nomad:4646", ConsulAddr: "https://consul:8501", DatabaseURL: "postgres://db/norn?sslmode=verify-full", RegistryURL: "registry.example.test/norn", LegacyTokenSigningUntil: time.Now().Add(-time.Hour)}, wantErr: true},
-		{name: "production hardened", config: &config.Config{Profile: "production", BindAddr: "127.0.0.1", APIToken: strings.Repeat("x", 32), AuditSigningKey: strings.Repeat("a", 32), AuditRetentionDays: 365, RequireExplicitAuth: true, StrictSecrets: true, NomadAddr: "https://nomad:4646", ConsulAddr: "https://consul:8501", DatabaseURL: "postgres://db/norn?sslmode=verify-full", RegistryURL: "registry.example.test/norn", ArtifactSigningPublicKey: "/etc/norn/cosign.pub", ArtifactDenySeverities: []string{"HIGH", "CRITICAL"}, LegacyTokenSigningUntil: time.Now().Add(-time.Hour)}},
+		{name: "production hardened", config: &config.Config{Profile: "production", Environment: "production", BindAddr: "127.0.0.1", APIToken: strings.Repeat("x", 32), AuditSigningKey: strings.Repeat("a", 32), AuditRetentionDays: 365, RequireExplicitAuth: true, StrictSecrets: true, NomadAddr: "https://nomad:4646", ConsulAddr: "https://consul:8501", DatabaseURL: "postgres://db/norn?sslmode=verify-full", RegistryURL: "registry.example.test/norn", ArtifactSigningPublicKey: "/etc/norn/cosign.pub", ArtifactDenySeverities: []string{"HIGH", "CRITICAL"}, LegacyTokenSigningUntil: time.Now().Add(-time.Hour), TrustedQualificationSigningKeys: []string{testEd25519Public('q')}, ReleaseAdmissionMode: "keyless", ReleaseAttestationIssuer: "https://token.actions.githubusercontent.com", ReleaseAttestationRepositories: []string{"owner/repo"}, ReleaseAttestationWorkflowRefs: []string{"owner/repo/.github/workflows/release.yml@" + strings.Repeat("a", 40)}, ReleaseRequireSBOM: true, GitHubActionsOIDCAudience: "norn", GitHubActionsOIDCJWKSURL: "https://token.actions.githubusercontent.com/.well-known/jwks", GitHubActionsAllowedRepositories: []string{"owner/repo@1@2"}, GitHubActionsAllowedWorkflowRefs: []string{"owner/repo/.github/workflows/release.yml@" + strings.Repeat("a", 40)}, GitHubActionsAllowedRefs: []string{"refs/tags/v*"}, GitHubActionsAllowedEvents: []string{"push"}, GitHubActionsAllowedApps: []string{"demo"}, GitHubActionsAllowedEnvironments: []string{"production"}, GitHubActionsDefaultBranch: "main"}},
 	} {
 		t.Run(tt.name, func(t *testing.T) {
 			if err := validateControlSecurity(tt.config); (err != nil) != tt.wantErr {
 				t.Fatalf("error = %v, wantErr %v", err, tt.wantErr)
 			}
 		})
+	}
+}
+
+func TestQualificationKeysStaySeparateFromRetainedAuditKeys(t *testing.T) {
+	formerAuditKey := strings.Repeat("p", 32)
+	cfg := &config.Config{AuditSigningKey: strings.Repeat("a", 32), AuditPreviousSigningKeys: []string{formerAuditKey}}
+	if !qualificationKeyOverlapsAuditKeys(cfg, formerAuditKey) {
+		t.Fatal("retained previous audit key was accepted as qualification key material")
+	}
+	if qualificationKeyOverlapsAuditKeys(cfg, strings.Repeat("q", 32)) {
+		t.Fatal("purpose-separated qualification key was rejected")
 	}
 }
 
@@ -372,10 +400,14 @@ func TestExplicitAuthWithCloudflareOnlyRejectsMissingCredentials(t *testing.T) {
 
 func TestControlCapabilitiesAdvertisesHostMetrics(t *testing.T) {
 	rec := httptest.NewRecorder()
-	writeControlCapabilities(rec)
+	writeControlCapabilities(rec, &config.Config{Profile: "development", Environment: "staging"})
 	var capability struct {
-		Features  []string          `json:"features"`
-		Endpoints map[string]string `json:"endpoints"`
+		Features    []string          `json:"features"`
+		Endpoints   map[string]string `json:"endpoints"`
+		Environment struct {
+			ID      string `json:"id"`
+			Profile string `json:"profile"`
+		} `json:"environment"`
 	}
 	if err := json.Unmarshal(rec.Body.Bytes(), &capability); err != nil {
 		t.Fatal(err)
@@ -397,6 +429,12 @@ func TestControlCapabilitiesAdvertisesHostMetrics(t *testing.T) {
 	}
 	if capability.Endpoints["appSnapshots"] == "" || capability.Endpoints["appMigrations"] == "" || capability.Endpoints["appRollbacks"] == "" {
 		t.Fatalf("durable app recovery endpoints = %v", capability.Endpoints)
+	}
+	if capability.Endpoints["releaseDeployments"] == "" || capability.Endpoints["releaseQualifications"] == "" || capability.Endpoints["releasePromotions"] == "" || capability.Endpoints["releaseRollback"] != "/api/v1/apps/{id}/releases/rollbacks" {
+		t.Fatalf("release endpoints = %v", capability.Endpoints)
+	}
+	if capability.Environment.ID != "staging" || capability.Environment.Profile != "development" {
+		t.Fatalf("environment = %+v", capability.Environment)
 	}
 	found := false
 	productionFound := false

@@ -3,11 +3,12 @@ import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { NavLink } from 'react-router-dom'
 import { apiFetch } from '../lib/api.ts'
 import { clearDurableIntent, durableIntent, type DurableIntent } from '../lib/durableIntent.ts'
-import type { FleetGitHubStatus, FleetInventory, FleetNodePool, FleetPlansResponse, FleetReconciliationResponse, Operation } from '../types/index.ts'
+import type { FleetGitHubStatus, FleetInventory, FleetNodePool, FleetPlansResponse, FleetReconciliationResponse, FleetRunnerAttemptResponse, Operation } from '../types/index.ts'
 import { EmptyState, StatusChip, useToast } from '../components/ui/index.ts'
 
 const reconciliationPhases = [
-  'infrastructure_applied', 'inventory_generated', 'nodes_configured',
+	'prechange_verified', 'provider_applying',
+	'infrastructure_applied', 'inventory_generated', 'nodes_configured',
   'nodes_enrolled', 'readiness_verified', 'old_nodes_drained', 'complete',
 ]
 
@@ -136,11 +137,22 @@ function PlanJourney({ plan, fallbackWorkflowURL, githubConnected }: { plan: Ope
   const [applyURL, setApplyURL] = useState<string>()
   const { toast } = useToast()
   const planID = plan.id ?? ''
-  const checkpoints = useQuery({ queryKey: ['fleet', 'plans', planID, 'reconciliations'], queryFn: () => apiFetch<FleetReconciliationResponse>(`/api/v1/fleet/plans/${encodeURIComponent(planID)}/reconciliations`), enabled: expanded && planID.length > 0, refetchInterval: expanded ? 10_000 : false })
+  const checkpoints = useQuery({
+    queryKey: ['fleet', 'plans', planID, 'reconciliations'],
+    queryFn: async () => {
+      const response = await apiFetch<FleetReconciliationResponse>(`/api/v1/fleet/plans/${encodeURIComponent(planID)}/reconciliations`)
+      if (response.schemaVersion !== 'norn.fleet-reconciliation/v1') throw new Error('Unsupported fleet reconciliation response schema')
+      return response
+    },
+    enabled: expanded && planID.length > 0,
+    refetchInterval: expanded ? 10_000 : false,
+  })
+  const attempts = useQuery({ queryKey: ['fleet', 'plans', planID, 'attempts'], queryFn: () => apiFetch<FleetRunnerAttemptResponse>(`/api/v1/fleet/plans/${encodeURIComponent(planID)}/attempts`), enabled: expanded && planID.length > 0, refetchInterval: expanded ? 10_000 : false })
   const current = objectValue(plan.payload?.current)
   const proposed = objectValue(plan.payload?.proposed)
   const completed = new Set((checkpoints.data?.reconciliations ?? []).filter((item) => item.status === 'succeeded').map((item) => String(item.payload?.phase ?? '')))
   const complete = completed.has('complete')
+  const runner = attempts.data?.attempts[0]
   const workflowURL = safeWorkflowURL(String(plan.payload?.workflowUrl ?? fallbackWorkflowURL ?? ''))
   const action = String(plan.payload?.action ?? 'reconcile')
   const destructive = action === 'replace' || (action === 'scale' && Number(proposed.desired) < Number(current.desired))
@@ -172,6 +184,7 @@ function PlanJourney({ plan, fallbackWorkflowURL, githubConnected }: { plan: Ope
       {expanded && (
         <div className="fleet-journey-detail">
           {checkpoints.isLoading ? <div className="panel-skeleton" aria-label="Loading recovery checkpoints"><span /><span /></div> : <ol className="fleet-checkpoints">{reconciliationPhases.map((phase) => <li className={completed.has(phase) ? 'complete' : ''} key={phase}><span aria-hidden="true">{completed.has(phase) ? '✓' : '○'}</span><span>{humanize(phase)}</span><small>{completed.has(phase) ? 'Proven' : 'Pending'}</small></li>)}</ol>}
+          {runner && <section className="fleet-runner-attempt" aria-label="Protected runner status"><div><strong>Protected runner · attempt {runner.attempt}</strong><StatusChip tone={runner.status === 'succeeded' ? 'success' : runner.status === 'abandoned' || runner.status === 'failed' ? 'danger' : 'warning'} label={runner.status} /></div><p>Phase: <strong>{humanize(runner.currentPhase)}</strong> · lease {runner.status === 'abandoned' ? 'expired' : `until ${new Date(runner.heartbeatExpiresAt).toLocaleTimeString()}`}</p>{safeWorkflowURL(runner.workflowUrl) && <a href={safeWorkflowURL(runner.workflowUrl)} target="_blank" rel="noreferrer">Open protected workflow ↗</a>}{runner.status === 'abandoned' && <p className="fleet-change-warning" role="status">Runner heartbeat expired. Start a protected retry; Norn will not infer that provider work completed.</p>}<p className="fleet-change-note">Runner phases advance only from protected workflow evidence.</p></section>}
           {checkpoints.error && <p className="fleet-change-warning" role="alert">Recovery checkpoints could not be refreshed. The durable plan remains safe in Norn.</p>}
           <div className="fleet-handoff"><code>{planID}</code>{planID && <NavLink className="filter-btn" to={`/operations/${planID}`}>View receipt</NavLink>}{githubConnected ? <><button className="filter-btn" type="button" disabled={pullRequest.isPending} onClick={() => pullRequest.mutate()}>{pullRequest.isPending ? 'Opening…' : 'Open review'}</button><button className="filter-btn active" type="button" disabled={dispatch.isPending} onClick={() => dispatch.mutate()}>{dispatch.isPending ? 'Dispatching…' : destructive ? 'Apply reviewed change' : 'Apply after review'}</button></> : workflowURL && <a className="filter-btn" href={workflowURL} target="_blank" rel="noreferrer">Continue in protected runner ↗</a>}</div>
           {(pullRequestURL || applyURL) && <div className="fleet-github-links">{pullRequestURL && <a href={pullRequestURL} target="_blank" rel="noreferrer">View pull request ↗</a>}{applyURL && <a href={applyURL} target="_blank" rel="noreferrer">View apply run ↗</a>}</div>}

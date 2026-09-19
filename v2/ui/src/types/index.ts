@@ -284,10 +284,40 @@ export interface FleetGitHubStatus {
 }
 
 export interface FleetReconciliationResponse {
-  schemaVersion: 'norn.fleet-reconciliations/v1'
+  schemaVersion: 'norn.fleet-reconciliation/v1'
   planId: string
   count: number
   reconciliations: Operation[]
+}
+
+export interface FleetRunnerAttempt {
+  schemaVersion: 'norn.fleet-runner-attempt/v1'
+  id: string
+  planId: string
+  attempt: number
+  runnerAttemptId: string
+  status: 'queued' | 'running' | 'succeeded' | 'failed' | 'canceled' | 'abandoned'
+  currentPhase: string
+  commitSha: string
+  planSha256: string
+  workflowUrl: string
+  retryOf?: string
+  heartbeatSequence: number
+  heartbeatTimeoutSeconds: number
+  revision: number
+  heartbeatAt: string
+  heartbeatExpiresAt: string
+  updatedAt: string
+  finishedAt?: string
+  lastError?: string
+}
+
+export interface FleetRunnerAttemptResponse {
+  schemaVersion: 'norn.fleet-runner-attempt/v1'
+  planId: string
+  attempts: FleetRunnerAttempt[]
+  count: number
+  serverTime: string
 }
 
 export interface VersionResponse {
@@ -298,6 +328,55 @@ export interface CapabilitiesResponse {
   protocolVersion: number
   serverVersion: string
   features: string[]
+  environment?: {
+    id: 'development' | 'staging' | 'production' | string
+    profile: 'development' | 'production' | string
+  }
+}
+
+/** Immutable staging evidence that may be promoted by a production control plane. */
+export interface ReleaseQualification {
+	schemaVersion: 'norn.release-qualification/v2'
+  id: string
+  deploymentId: string
+  app: string
+  sourceSha: string
+  artifact: string
+  environment: string
+	issuedAt: string
+	expiresAt: string
+	keyId: string
+	signature: string
+  candidate: ReleaseCandidate
+  dsse: DSSEEnvelope
+}
+
+export interface ReleaseCandidate {
+  provider: 'github-actions' | string
+  repository: string
+  repositoryId: string
+  ownerId: string
+  runId: string
+  runAttempt?: string
+  workflowRef: string
+  workflowSha: string
+  signerWorkflowRef: string
+  signerWorkflowSha: string
+  ref: string
+  attestation: { issuer: string; subjectDigest: string; materialSha: string; provenanceUri?: string; sbomUri?: string }
+}
+
+export interface DSSEEnvelope { payloadType: string; payload: string; signatures: Array<{ keyid: string; sig: string }> }
+
+export interface ReleaseQualificationResponse {
+	schemaVersion: 'norn.release-qualifications/v2'
+  qualifications: ReleaseQualification[]
+  count: number
+}
+
+export interface ReleaseActionRequest {
+  sourceSha: string
+  artifact?: string
 }
 
 export interface WSEvent {

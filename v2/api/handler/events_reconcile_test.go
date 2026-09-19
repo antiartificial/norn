@@ -3,6 +3,8 @@ package handler
 import (
 	"testing"
 	"time"
+
+	"norn/v2/api/model"
 )
 
 func TestCronParentJobID(t *testing.T) {
@@ -69,5 +71,110 @@ func TestTaskRestartStabilityWindow(t *testing.T) {
 	}
 	if taskRestartStable(time.Time{}, now) || taskRestartStable(now.Add(time.Minute), now) {
 		t.Fatal("missing or future restart timestamps must not reconcile")
+	}
+}
+
+func TestCapacityWarningRecoveryEvidence(t *testing.T) {
+	now := time.Now().UTC()
+	warning := model.BeaconEvent{
+		Type:        "service.capacity.below_minimum",
+		Source:      "norn-mini",
+		App:         hostCapacityEventApp,
+		Environment: "development",
+		OccurredAt:  now,
+		Metadata:    map[string]interface{}{"correlationKey": hostCapacityCorrelationKey},
+	}
+
+	tests := []struct {
+		name     string
+		recovery *model.BeaconEvent
+		want     bool
+	}{
+		{
+			name: "later aggregate capacity recovery",
+			recovery: &model.BeaconEvent{
+				ID:          "capacity-recovery",
+				Type:        "service.capacity.recovered",
+				Source:      "norn-mini",
+				App:         hostCapacityEventApp,
+				Environment: "development",
+				OccurredAt:  now.Add(time.Minute),
+				Metadata:    map[string]interface{}{"correlationKey": hostCapacityCorrelationKey},
+			},
+			want: true,
+		},
+		{
+			name: "host assurance recovery is not capacity recovery",
+			recovery: &model.BeaconEvent{
+				Type:        "host.assurance.recovered",
+				Source:      "norn-mini",
+				App:         hostCapacityEventApp,
+				Environment: "development",
+				OccurredAt:  now.Add(time.Minute),
+				Metadata:    map[string]interface{}{"correlationKey": "norn-host:assurance"},
+			},
+			want: false,
+		},
+		{
+			name: "app scoped recovery cannot close host aggregate",
+			recovery: &model.BeaconEvent{
+				Type:        "service.capacity.recovered",
+				Source:      "norn-mini",
+				App:         "turnkey-offer-intake",
+				Environment: "development",
+				OccurredAt:  now.Add(time.Minute),
+				Metadata:    map[string]interface{}{"correlationKey": hostCapacityCorrelationKey},
+			},
+			want: false,
+		},
+		{
+			name: "recovery from another environment cannot close warning",
+			recovery: &model.BeaconEvent{
+				Type:        "service.capacity.recovered",
+				Source:      "norn-mini",
+				App:         hostCapacityEventApp,
+				Environment: "production",
+				OccurredAt:  now.Add(time.Minute),
+				Metadata:    map[string]interface{}{"correlationKey": hostCapacityCorrelationKey},
+			},
+			want: false,
+		},
+		{
+			name: "recovery from another source cannot close warning",
+			recovery: &model.BeaconEvent{
+				Type:        "service.capacity.recovered",
+				Source:      "another-host",
+				App:         hostCapacityEventApp,
+				Environment: "development",
+				OccurredAt:  now.Add(time.Minute),
+				Metadata:    map[string]interface{}{"correlationKey": hostCapacityCorrelationKey},
+			},
+			want: false,
+		},
+		{
+			name:     "no recovery",
+			recovery: nil,
+			want:     false,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := capacityWarningSupersededBy(warning, tt.recovery); got != tt.want {
+				t.Fatalf("capacityWarningSupersededBy() = %t, want %t", got, tt.want)
+			}
+		})
+	}
+}
+
+func TestCapacityWarningScopeRejectsAppScopedAndUncorrelatedEvents(t *testing.T) {
+	tests := []model.BeaconEvent{
+		{App: "turnkey-offer-intake", Metadata: map[string]interface{}{"correlationKey": hostCapacityCorrelationKey}},
+		{App: hostCapacityEventApp, Metadata: map[string]interface{}{"correlationKey": "app:turnkey-offer-intake"}},
+	}
+	for _, event := range tests {
+		if capacityWarningScopeError(event) == "" {
+			t.Fatalf("capacityWarningScopeError(%#v) accepted an unsafe scope", event)
+		}
 	}
 }

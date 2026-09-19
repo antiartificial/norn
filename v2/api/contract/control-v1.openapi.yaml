@@ -1,7 +1,7 @@
 openapi: 3.1.0
 info:
   title: Norn Control Protocol
-  version: 1.6.0
+  version: 1.7.0
   description: Versioned contract for native and automated Norn control clients.
 servers:
   - url: /
@@ -194,7 +194,7 @@ paths:
         '503': { $ref: '#/components/responses/Problem' }
     post:
       operationId: recordFleetReconciliation
-      description: Appends a plan-, commit-, state-, and evidence-bound recovery checkpoint. Successful phases are accepted only in lifecycle order. Requires api:write.
+      description: Appends a plan-, commit-, state-, and evidence-bound recovery checkpoint. GitHub Actions workloads require fleet:operate and an active, unexpired runner-attempt lease at the exact current phase; interactive api:write remains available for operator recovery.
       parameters:
         - $ref: '#/components/parameters/IdempotencyKey'
       requestBody:
@@ -217,6 +217,51 @@ paths:
         '404': { $ref: '#/components/responses/Problem' }
         '409': { $ref: '#/components/responses/Problem' }
         '503': { $ref: '#/components/responses/Problem' }
+  /api/v1/fleet/plans/{planID}/attempts:
+    parameters:
+      - { name: planID, in: path, required: true, schema: { type: string, format: uuid } }
+    get:
+      operationId: listFleetRunnerAttempts
+      description: Lists durable, expiring protected-runner attempts for one capacity plan. Requires api:read or the bound fleet:operate workload token.
+      responses:
+        '200': { description: Runner attempts, content: { application/json: { schema: { $ref: '#/components/schemas/FleetRunnerAttemptList' } } } }
+        '404': { $ref: '#/components/responses/Problem' }
+    post:
+      operationId: createFleetRunnerAttempt
+      description: Atomically acquires or resumes one bounded heartbeat lease for a verified GitHub Actions fleet:operate runner. The source dispatch nonce binds recovery to the original apply run.
+      requestBody:
+        required: true
+        content: { application/json: { schema: { $ref: '#/components/schemas/FleetRunnerAttemptCreateRequest' } } }
+      responses:
+        '200': { description: Existing same-runner attempt, content: { application/json: { schema: { $ref: '#/components/schemas/FleetRunnerAttempt' } } } }
+        '201': { description: Runner attempt created, content: { application/json: { schema: { $ref: '#/components/schemas/FleetRunnerAttempt' } } } }
+        '403': { $ref: '#/components/responses/Problem' }
+        '409': { $ref: '#/components/responses/Problem' }
+  /api/v1/fleet/plans/{planID}/attempts/{attemptID}:
+    parameters:
+      - { name: planID, in: path, required: true, schema: { type: string, format: uuid } }
+      - { name: attemptID, in: path, required: true, schema: { type: string, format: uuid } }
+    get:
+      operationId: getFleetRunnerAttempt
+      responses:
+        '200': { description: Runner attempt, content: { application/json: { schema: { $ref: '#/components/schemas/FleetRunnerAttempt' } } } }
+        '403': { $ref: '#/components/responses/Problem' }
+        '404': { $ref: '#/components/responses/Problem' }
+  /api/v1/fleet/plans/{planID}/attempts/{attemptID}/heartbeat:
+    post:
+      operationId: heartbeatFleetRunnerAttempt
+      requestBody: { required: true, content: { application/json: { schema: { $ref: '#/components/schemas/FleetRunnerAttemptHeartbeatRequest' } } } }
+      responses: { '200': { description: Lease refreshed, content: { application/json: { schema: { $ref: '#/components/schemas/FleetRunnerAttempt' } } } }, '403': { $ref: '#/components/responses/Problem' }, '409': { $ref: '#/components/responses/Problem' } }
+  /api/v1/fleet/plans/{planID}/attempts/{attemptID}/advance:
+    post:
+      operationId: advanceFleetRunnerAttempt
+      requestBody: { required: true, content: { application/json: { schema: { $ref: '#/components/schemas/FleetRunnerAttemptAdvanceRequest' } } } }
+      responses: { '200': { description: Evidence-gated phase advanced, content: { application/json: { schema: { $ref: '#/components/schemas/FleetRunnerAttempt' } } } }, '403': { $ref: '#/components/responses/Problem' }, '409': { $ref: '#/components/responses/Problem' } }
+  /api/v1/fleet/plans/{planID}/attempts/{attemptID}/cancel:
+    post:
+      operationId: cancelFleetRunnerAttempt
+      requestBody: { required: true, content: { application/json: { schema: { $ref: '#/components/schemas/FleetRunnerAttemptCancelRequest' } } } }
+      responses: { '200': { description: Attempt cancelled, content: { application/json: { schema: { $ref: '#/components/schemas/FleetRunnerAttempt' } } } }, '403': { $ref: '#/components/responses/Problem' }, '409': { $ref: '#/components/responses/Problem' } }
   /api/v1/fleet/node-pools/{pool}/plan:
     post:
       operationId: createFleetCapacityPlan
@@ -268,6 +313,86 @@ paths:
             application/json:
               schema: { $ref: '#/components/schemas/AppMutationReceipt' }
         '404': { $ref: '#/components/responses/Problem' }
+  /api/v1/apps/{id}/releases/preflight:
+    parameters: [ { $ref: '#/components/parameters/AppID' } ]
+    post:
+      operationId: queueReleasePreflight
+      description: Staging only. Requires release:stage and an Idempotency-Key.
+      parameters: [ { $ref: '#/components/parameters/IdempotencyKey' } ]
+      requestBody:
+        required: true
+        content: { application/json: { schema: { $ref: '#/components/schemas/ReleaseRequest' } } }
+      responses:
+        '200': { $ref: '#/components/responses/AcceptedOperation' }
+        '202': { $ref: '#/components/responses/AcceptedOperation' }
+        '400': { $ref: '#/components/responses/Problem' }
+        '409': { $ref: '#/components/responses/Problem' }
+  /api/v1/apps/{id}/releases/deployments:
+    parameters: [ { $ref: '#/components/parameters/AppID' } ]
+    post:
+      operationId: queueReleaseDeployment
+      description: Staging only. Requires release:stage and an Idempotency-Key. A supplied digest is adopted without rebuilding.
+      parameters: [ { $ref: '#/components/parameters/IdempotencyKey' } ]
+      requestBody:
+        required: true
+        content: { application/json: { schema: { $ref: '#/components/schemas/ReleaseRequest' } } }
+      responses:
+        '200': { $ref: '#/components/responses/AcceptedOperation' }
+        '202': { $ref: '#/components/responses/AcceptedOperation' }
+        '400': { $ref: '#/components/responses/Problem' }
+        '409': { $ref: '#/components/responses/Problem' }
+  /api/v1/apps/{id}/qualifications:
+    parameters: [ { $ref: '#/components/parameters/AppID' } ]
+    get:
+      operationId: listReleaseQualifications
+      description: Lists staging qualification receipts for this app. Requires api:read.
+      responses:
+        '200':
+          description: Qualification receipt list
+          content: { application/json: { schema: { $ref: '#/components/schemas/ReleaseQualificationList' } } }
+    post:
+      operationId: createReleaseQualification
+      description: Staging only. Signs a portable qualification after verifying the persisted deployment was successful, staging-scoped, and immutable.
+      parameters: [ { $ref: '#/components/parameters/IdempotencyKey' } ]
+      requestBody:
+        required: true
+        content: { application/json: { schema: { $ref: '#/components/schemas/ReleaseQualificationRequest' } } }
+      responses:
+        '200': { description: Existing qualification, content: { application/json: { schema: { $ref: '#/components/schemas/ReleaseQualification' } } } }
+        '201': { description: Signed qualification, content: { application/json: { schema: { $ref: '#/components/schemas/ReleaseQualification' } } } }
+        '400': { $ref: '#/components/responses/Problem' }
+        '409': { $ref: '#/components/responses/Problem' }
+        '503': { $ref: '#/components/responses/Problem' }
+  /api/v1/apps/{id}/promotions:
+    parameters: [ { $ref: '#/components/parameters/AppID' } ]
+    post:
+      operationId: queueReleasePromotion
+      description: Production only. Verifies and single-consumes a fresh staging qualification against NORN_TRUSTED_QUALIFICATION_SIGNING_KEYS, then queues the exact non-empty source/artifact through the normal durable deployment pipeline.
+      parameters: [ { $ref: '#/components/parameters/IdempotencyKey' } ]
+      requestBody:
+        required: true
+        content: { application/json: { schema: { $ref: '#/components/schemas/ReleasePromotionRequest' } } }
+      responses:
+        '200': { $ref: '#/components/responses/AcceptedOperation' }
+        '202': { $ref: '#/components/responses/AcceptedOperation' }
+        '400': { $ref: '#/components/responses/Problem' }
+        '403': { $ref: '#/components/responses/Problem' }
+        '409': { $ref: '#/components/responses/Problem' }
+  /api/v1/apps/{id}/releases/rollbacks:
+    parameters: [ { $ref: '#/components/parameters/AppID' } ]
+    post:
+      operationId: queueReleaseRollback
+      description: Production only. Requires release:rollback, confirmation, and an exact earlier production-promoted digest; never rebuilds.
+      parameters: [ { $ref: '#/components/parameters/IdempotencyKey' } ]
+      requestBody:
+        required: true
+        content: { application/json: { schema: { $ref: '#/components/schemas/ReleaseRollbackRequest' } } }
+      responses:
+        '200': { $ref: '#/components/responses/AcceptedOperation' }
+        '202': { $ref: '#/components/responses/AcceptedOperation' }
+        '400': { $ref: '#/components/responses/Problem' }
+        '403': { $ref: '#/components/responses/Problem' }
+        '409': { $ref: '#/components/responses/Problem' }
   /api/v1/apps/{id}/snapshots:
     parameters:
       - $ref: '#/components/parameters/AppID'
@@ -939,6 +1064,20 @@ components:
         - invalid_upgrade_mode
         - invalid_drain_mode
         - invalid_release_sha
+        - invalid_release_request
+        - invalid_release_provenance
+        - invalid_qualification_request
+        - qualification_environment_invalid
+        - qualification_signing_unavailable
+        - qualification_list_failed
+        - qualification_store_failed
+        - deployment_not_found
+        - deployment_lookup_failed
+        - deployment_not_qualifiable
+        - promotion_environment_invalid
+        - invalid_promotion_request
+        - promotion_provenance_mismatch
+        - qualification_untrusted
         - invalid_idempotency_key
         - invalid_device_name
         - invalid_scope
@@ -1039,10 +1178,16 @@ components:
         - idempotency_key_reused
     Capabilities:
       type: object
-      required: [protocolVersion, serverVersion, features, auth, endpoints]
+      required: [protocolVersion, serverVersion, environment, features, auth, endpoints]
       properties:
         protocolVersion: { type: integer }
         serverVersion: { type: string }
+        environment:
+          type: object
+          required: [id, profile]
+          properties:
+            id: { type: string, enum: [development, staging, production] }
+            profile: { type: string, enum: [development, production] }
         features: { type: array, items: { type: string } }
         auth:
           type: object
@@ -1437,6 +1582,92 @@ components:
         app: { type: string }
         created: { type: boolean }
         spec: { type: object, additionalProperties: true }
+    ReleaseRequest:
+      type: object
+      additionalProperties: false
+      required: [sourceSha]
+      properties:
+        sourceSha: { type: string, pattern: '^[0-9a-f]{40}$' }
+        artifact: { type: string, pattern: '^.+@sha256:[0-9a-fA-F]{64}$', description: Optional immutable OCI artifact. }
+        candidate: { $ref: '#/components/schemas/ReleaseCandidate' }
+    ReleaseQualificationRequest:
+      type: object
+      additionalProperties: false
+      required: [deploymentId]
+      properties:
+        deploymentId: { type: string, format: uuid }
+    ReleaseQualification:
+      type: object
+      required: [schemaVersion, id, app, environment, deploymentId, sourceSha, artifact, issuedAt, expiresAt, keyId, signature, candidate, dsse]
+      properties:
+        schemaVersion: { const: norn.release-qualification/v2 }
+        id: { type: string, format: uuid }
+        app: { type: string }
+        environment: { const: staging }
+        deploymentId: { type: string, format: uuid }
+        sourceSha: { type: string, pattern: '^[0-9a-f]{40}$' }
+        artifact: { type: string, pattern: '^.+@sha256:[0-9a-fA-F]{64}$' }
+        issuedAt: { type: string, format: date-time }
+        expiresAt: { type: string, format: date-time }
+        keyId: { type: string }
+        signature: { type: string }
+        candidate: { $ref: '#/components/schemas/ReleaseCandidate' }
+        dsse: { $ref: '#/components/schemas/DSSEEnvelope' }
+    ReleaseQualificationList:
+      type: object
+      required: [schemaVersion, qualifications, count]
+      properties:
+        schemaVersion: { const: norn.release-qualifications/v2 }
+        qualifications: { type: array, items: { $ref: '#/components/schemas/ReleaseQualification' } }
+        count: { type: integer, minimum: 0 }
+    ReleasePromotionRequest:
+      type: object
+      additionalProperties: false
+      required: [sourceSha, artifact, qualification]
+      properties:
+        sourceSha: { type: string, pattern: '^[0-9a-f]{40}$' }
+        artifact: { type: string, pattern: '^.+@sha256:[0-9a-fA-F]{64}$' }
+        qualification: { $ref: '#/components/schemas/ReleaseQualification' }
+    ReleaseRollbackRequest:
+      type: object
+      additionalProperties: false
+      required: [deploymentId, sourceSha, artifact, confirm]
+      properties:
+        deploymentId: { type: string, format: uuid }
+        sourceSha: { type: string, pattern: '^[0-9a-f]{40}$' }
+        artifact: { type: string, pattern: '^.+@sha256:[0-9a-fA-F]{64}$' }
+        confirm: { const: true }
+    ReleaseCandidate:
+      type: object
+      required: [provider, repository, repositoryId, ownerId, runId, workflowRef, workflowSha, signerWorkflowRef, signerWorkflowSha, ref, attestation]
+      properties:
+        provider: { const: github-actions }
+        repository: { type: string }
+        repositoryId: { type: string }
+        ownerId: { type: string }
+        runId: { type: string }
+        runAttempt: { type: string }
+        workflowRef: { type: string }
+        workflowSha: { type: string, pattern: '^[0-9a-f]{40}$' }
+        signerWorkflowRef: { type: string, minLength: 1 }
+        signerWorkflowSha: { type: string, pattern: '^[0-9a-f]{40}$' }
+        ref: { type: string }
+        attestation:
+          type: object
+          required: [issuer, subjectDigest, materialSha]
+          properties:
+            provenanceUri: { type: string }
+            sbomUri: { type: string }
+            issuer: { type: string }
+            subjectDigest: { type: string, pattern: '^sha256:[0-9a-f]{64}$' }
+            materialSha: { type: string, pattern: '^[0-9a-f]{40}$' }
+    DSSEEnvelope:
+      type: object
+      required: [payloadType, payload, signatures]
+      properties:
+        payloadType: { const: application/vnd.norn.release-qualification.v2+json }
+        payload: { type: string }
+        signatures: { type: array, minItems: 1, items: { type: object, required: [keyid, sig], properties: { keyid: { type: string }, sig: { type: string } } } }
     DocumentValidationRequest:
       type: object
       additionalProperties: false
@@ -1562,18 +1793,93 @@ components:
     FleetReconciliationRequest:
       type: object
       additionalProperties: false
-      required: [schemaVersion, phase, status, commitSha, planSha256, evidenceDigest]
+      required: [schemaVersion, phase, status, commitSha, planSha256, evidenceDigest, attemptId]
       properties:
         schemaVersion: { const: norn.fleet-reconciliation/v1 }
         phase:
           type: string
-          enum: [infrastructure_applied, inventory_generated, nodes_configured, nodes_enrolled, readiness_verified, old_nodes_drained, complete]
+          enum: [prechange_verified, provider_applying, infrastructure_applied, inventory_generated, nodes_configured, nodes_enrolled, readiness_verified, old_nodes_drained, complete]
         status: { type: string, enum: [succeeded, failed] }
         commitSha: { type: string, pattern: '^[0-9a-f]{40}$' }
         planSha256: { type: string, pattern: '^[0-9a-f]{64}$' }
         stateSerial: { type: integer, format: int64, minimum: 0 }
         evidenceDigest: { type: string, pattern: '^sha256:[0-9a-f]{64}$' }
         message: { type: string, maxLength: 1000 }
+        attemptId: { type: string, format: uuid }
+    FleetRunnerAttempt:
+      type: object
+      required: [schemaVersion, id, planId, attempt, runnerAttemptId, status, currentPhase, commitSha, planSha256, workflowUrl, rootAttemptId, heartbeatSequence, heartbeatTimeoutSeconds, revision, startedAt, heartbeatAt, heartbeatExpiresAt, updatedAt]
+      properties:
+        schemaVersion: { const: norn.fleet-runner-attempt/v1 }
+        id: { type: string, format: uuid }
+        planId: { type: string, format: uuid }
+        attempt: { type: integer, minimum: 1 }
+        runnerAttemptId: { type: string, maxLength: 200 }
+        status: { type: string, enum: [queued, running, succeeded, failed, canceled, abandoned] }
+        currentPhase: { type: string, enum: [prechange_verified, provider_applying, infrastructure_applied, inventory_generated, nodes_configured, nodes_enrolled, readiness_verified, old_nodes_drained, complete] }
+        commitSha: { type: string, pattern: '^[0-9a-f]{40}$' }
+        planSha256: { type: string, pattern: '^[0-9a-f]{64}$' }
+        workflowUrl: { type: string, format: uri }
+        rootAttemptId: { type: string, format: uuid, readOnly: true }
+        retryOf: { type: string, format: uuid }
+        heartbeatSequence: { type: integer, format: int64, minimum: 0 }
+        heartbeatTimeoutSeconds: { type: integer, minimum: 30, maximum: 900 }
+        revision: { type: integer, format: int64, minimum: 1 }
+        startedAt: { type: string, format: date-time }
+        heartbeatAt: { type: string, format: date-time }
+        heartbeatExpiresAt: { type: string, format: date-time }
+        updatedAt: { type: string, format: date-time }
+        finishedAt: { type: string, format: date-time }
+        lastError: { type: string }
+    FleetRunnerAttemptList:
+      type: object
+      required: [schemaVersion, planId, attempts, count, serverTime]
+      properties:
+        schemaVersion: { const: norn.fleet-runner-attempt/v1 }
+        planId: { type: string, format: uuid }
+        attempts: { type: array, items: { $ref: '#/components/schemas/FleetRunnerAttempt' } }
+        count: { type: integer, minimum: 0 }
+        serverTime: { type: string, format: date-time }
+    FleetRunnerAttemptCreateRequest:
+      type: object
+      additionalProperties: false
+      required: [schemaVersion, runnerAttemptId, commitSha, planSha256, workflowUrl, dispatchNonce, sourceDispatchRunId, heartbeatTimeoutSeconds]
+      properties:
+        schemaVersion: { const: norn.fleet-runner-attempt/v1 }
+        runnerAttemptId: { type: string, minLength: 1, maxLength: 200 }
+        commitSha: { type: string, pattern: '^[0-9a-f]{40}$' }
+        planSha256: { type: string, pattern: '^[0-9a-f]{64}$' }
+        workflowUrl: { type: string, format: uri }
+        dispatchNonce: { type: string, pattern: '^[0-9a-f]{64}$' }
+        sourceDispatchRunId: { type: string, pattern: '^[1-9][0-9]*$' }
+        heartbeatTimeoutSeconds: { type: integer, minimum: 30, maximum: 900 }
+        resume: { type: boolean, default: false }
+    FleetRunnerAttemptHeartbeatRequest:
+      type: object
+      additionalProperties: false
+      required: [schemaVersion, phase, sequence, revision]
+      properties:
+        schemaVersion: { const: norn.fleet-runner-attempt/v1 }
+        phase: { type: string }
+        sequence: { type: integer, format: int64, minimum: 1 }
+        revision: { type: integer, format: int64, minimum: 1 }
+        message: { type: string, maxLength: 500 }
+    FleetRunnerAttemptAdvanceRequest:
+      type: object
+      additionalProperties: false
+      required: [schemaVersion, expectedPhase, revision]
+      properties:
+        schemaVersion: { const: norn.fleet-runner-attempt/v1 }
+        expectedPhase: { type: string }
+        revision: { type: integer, format: int64, minimum: 1 }
+    FleetRunnerAttemptCancelRequest:
+      type: object
+      additionalProperties: false
+      required: [schemaVersion, revision]
+      properties:
+        schemaVersion: { const: norn.fleet-runner-attempt/v1 }
+        revision: { type: integer, format: int64, minimum: 1 }
+        reason: { type: string, maxLength: 1000 }
     RegionTarget:
       type: object
       properties:

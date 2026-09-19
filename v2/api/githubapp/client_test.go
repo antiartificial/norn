@@ -50,6 +50,12 @@ func testClient(t *testing.T, handler http.Handler) *Client {
 	return client
 }
 
+func TestApplyRunDisplayTitleUsesNonceContract(t *testing.T) {
+	if got := fmt.Sprintf(applyRunDisplayTitleFormat, "production/nyc3", "plan", strings.Repeat("a", 64)); got != "Apply production/nyc3 Norn plan plan nonce "+strings.Repeat("a", 64) {
+		t.Fatalf("server run-name format=%q", got)
+	}
+}
+
 func tokenResponse(w http.ResponseWriter, r *http.Request, permissions map[string]string) bool {
 	if r.URL.Path != "/app/installations/5678/access_tokens" {
 		return false
@@ -113,6 +119,7 @@ func TestCreatePullRequestBindsSourceDigestAndUsesDeterministicBranch(t *testing
 kind: Cluster
 metadata:
   repository: acme/norn-fleet
+  environment: production
 cluster:
   name: production-nyc3
   provider: digitalocean
@@ -182,6 +189,8 @@ nodePools:
 func TestDispatchDiscoversMergedReviewAndBoundPlanArtifact(t *testing.T) {
 	planID := "22222222-2222-4222-8222-222222222222"
 	planSHA := strings.Repeat("a", 64)
+	headSHA := strings.Repeat("b", 40)
+	nonce := strings.Repeat("c", 64)
 	var archive bytes.Buffer
 	zipWriter := zip.NewWriter(&archive)
 	entry, _ := zipWriter.Create("fleet-plan.sha256")
@@ -189,6 +198,10 @@ func TestDispatchDiscoversMergedReviewAndBoundPlanArtifact(t *testing.T) {
 	_ = zipWriter.Close()
 	var dispatched map[string]any
 	client := testClient(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/app" {
+			fmt.Fprint(w, `{"slug":"norn"}`)
+			return
+		}
 		if tokenResponse(w, r, map[string]string{"actions": "write", "contents": "read", "pull_requests": "read"}) {
 			return
 		}
@@ -198,27 +211,121 @@ func TestDispatchDiscoversMergedReviewAndBoundPlanArtifact(t *testing.T) {
 		case r.Method == http.MethodGet && strings.HasSuffix(r.URL.Path, "/pulls"):
 			fmt.Fprint(w, `[{"number":8,"html_url":"https://github.com/acme/norn-fleet/pull/8","state":"closed","merged_at":"2027-01-15T08:00:00Z"}]`)
 		case r.URL.Path == "/repos/acme/norn-fleet/pulls/8":
-			fmt.Fprint(w, `{"merge_commit_sha":"merged-sha","merged_at":"2027-01-15T08:00:00Z"}`)
+			fmt.Fprintf(w, `{"merge_commit_sha":%q,"merged_at":"2027-01-15T08:00:00Z"}`, headSHA)
 		case strings.Contains(r.URL.Path, "/actions/workflows/plan.yml/runs"):
-			fmt.Fprint(w, `{"workflow_runs":[{"id":91,"head_sha":"merged-sha","status":"completed","conclusion":"success"}]}`)
+			fmt.Fprintf(w, `{"workflow_runs":[{"id":91,"head_sha":%q,"status":"completed","conclusion":"success"}]}`, headSHA)
 		case r.URL.Path == "/repos/acme/norn-fleet/actions/runs/91/artifacts":
-			fmt.Fprint(w, `{"artifacts":[{"id":92,"name":"fleet-plan-91","expired":false}]}`)
+			fmt.Fprint(w, `{"artifacts":[{"id":92,"name":"fleet-plan-production-nyc3-91","expired":false}]}`)
 		case r.URL.Path == "/repos/acme/norn-fleet/actions/artifacts/92/zip":
 			_, _ = w.Write(archive.Bytes())
 		case r.Method == http.MethodPost && strings.Contains(r.URL.Path, "/actions/workflows/apply.yml/dispatches"):
 			_ = json.NewDecoder(r.Body).Decode(&dispatched)
 			fmt.Fprint(w, `{"workflow_run_id":93,"html_url":"https://github.com/acme/norn-fleet/actions/runs/93"}`)
+		case r.URL.Path == "/repos/acme/norn-fleet/actions/runs/93":
+			fmt.Fprintf(w, `{"id":93,"html_url":"https://github.com/acme/norn-fleet/actions/runs/93","event":"workflow_dispatch","head_sha":%q,"head_branch":"main","path":".github/workflows/apply.yml","name":"apply","display_title":%q,"inputs":{"fleet_environment":"production/nyc3","plan_run_id":"91","plan_sha256":%q,"norn_plan_id":%q,"allow_destructive":"true","dispatch_nonce":%q},"actor":{"login":"norn[bot]","type":"Bot"}}`, headSHA, "Apply production/nyc3 Norn plan "+planID+" nonce "+nonce, planSHA, planID, nonce)
 		default:
 			http.NotFound(w, r)
 		}
 	}))
-	result, err := client.DispatchApprovedPlan(context.Background(), planID, true)
+	approved, err := client.ResolveApprovedPlan(context.Background(), planID, "production/nyc3")
+	if err != nil {
+		t.Fatal(err)
+	}
+	result, err := client.DispatchBoundPlan(context.Background(), planID, "production/nyc3", true, approved, nonce)
 	if err != nil {
 		t.Fatal(err)
 	}
 	inputs := dispatched["inputs"].(map[string]any)
-	if result.RunID != 93 || inputs["plan_run_id"] != "91" || inputs["plan_sha256"] != planSHA || inputs["norn_plan_id"] != planID || inputs["allow_destructive"] != "true" {
+	if result.RunID != 93 || inputs["fleet_environment"] != "production/nyc3" || inputs["plan_run_id"] != "91" || inputs["plan_sha256"] != planSHA || inputs["norn_plan_id"] != planID || inputs["allow_destructive"] != "true" || inputs["dispatch_nonce"] != nonce || dispatched["return_run_details"] != true {
 		t.Fatalf("result=%#v dispatch=%#v", result, dispatched)
+	}
+}
+
+func TestFleetEnvironmentBindingIsPathAndDocumentScoped(t *testing.T) {
+	if got, err := fleetEnvironmentFromConfigPath("environments/staging/nyc3/cluster.yaml"); err != nil || got != "staging/nyc3" {
+		t.Fatalf("staging path = %q, %v", got, err)
+	}
+	if _, err := fleetEnvironmentFromConfigPath("environments/staging/sfo3/cluster.yaml"); err == nil {
+		t.Fatal("unsupported fleet root accepted")
+	}
+	document := &fleet.Document{Metadata: fleet.Metadata{Environment: "staging"}, Cluster: fleet.Cluster{Region: "nyc3"}}
+	if got, err := fleetEnvironmentFromDocument(document); err != nil || got != "staging/nyc3" {
+		t.Fatalf("document root = %q, %v", got, err)
+	}
+	document.Metadata.Environment = "production"
+	if got, err := fleetEnvironmentFromDocument(document); err != nil || got != "production/nyc3" {
+		t.Fatalf("production document root = %q, %v", got, err)
+	}
+	if got := fleetPlanArtifactName("staging/nyc3", 91); got != "fleet-plan-staging-nyc3-91" {
+		t.Fatalf("artifact name = %q", got)
+	}
+}
+
+func TestFindApplyRunRequiresFullBoundWorkflowIdentity(t *testing.T) {
+	planID := "33333333-3333-4333-8333-333333333333"
+	nonce := strings.Repeat("d", 64)
+	headSHA := strings.Repeat("e", 40)
+	approved := &Dispatch{PlanRunID: 91, PlanSHA: strings.Repeat("f", 64), ApprovedHeadSHA: headSHA}
+	client := testClient(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if strings.Contains(r.URL.Path, "/actions/workflows/apply.yml/runs") {
+			fmt.Fprint(w, `{"workflow_runs":[{"id":99}]}`)
+			return
+		}
+		if r.URL.Path == "/repos/acme/norn-fleet/actions/runs/99" {
+			fmt.Fprintf(w, `{"id":99,"html_url":"https://github.com/acme/norn-fleet/actions/runs/99","event":"workflow_dispatch","head_sha":%q,"head_branch":"main","path":".github/workflows/apply.yml","name":"apply","display_title":%q,"inputs":{"fleet_environment":"production/nyc3","plan_run_id":"91","plan_sha256":%q,"norn_plan_id":%q,"allow_destructive":"true","dispatch_nonce":%q},"actor":{"login":"norn[bot]","type":"Bot"}}`, headSHA, "Apply production/nyc3 Norn plan "+planID+" nonce "+nonce, approved.PlanSHA, planID, nonce)
+			return
+		}
+		http.NotFound(w, r)
+	}))
+	run, err := client.findApplyRun(context.Background(), "installation-token", planID, "production/nyc3", true, approved, nonce, "norn[bot]")
+	if err != nil || run == nil || run.RunID != 99 {
+		t.Fatalf("environment-bound apply run = %#v, %v", run, err)
+	}
+}
+
+func TestPlanArtifactSHARejectsAmbiguousOrUnsafeChecksumEntries(t *testing.T) {
+	planSHA := strings.Repeat("a", 64)
+	for _, entries := range [][]string{{"fleet-plan.sha256", "fleet-plan.sha256"}, {".fleet-plan.sha256"}, {"nested/fleet-plan.sha256"}, {"../fleet-plan.sha256"}} {
+		t.Run(strings.Join(entries, ","), func(t *testing.T) {
+			var archive bytes.Buffer
+			writer := zip.NewWriter(&archive)
+			for _, name := range entries {
+				file, err := writer.Create(name)
+				if err != nil {
+					t.Fatal(err)
+				}
+				_, _ = file.Write([]byte(planSHA + "\n"))
+			}
+			if err := writer.Close(); err != nil {
+				t.Fatal(err)
+			}
+			client := testClient(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				switch r.URL.Path {
+				case "/repos/acme/norn-fleet/actions/runs/91/artifacts":
+					fmt.Fprint(w, `{"artifacts":[{"id":92,"name":"fleet-plan-production-nyc3-91","expired":false}]}`)
+				case "/repos/acme/norn-fleet/actions/artifacts/92/zip":
+					_, _ = w.Write(archive.Bytes())
+				default:
+					http.NotFound(w, r)
+				}
+			}))
+			if _, err := client.planArtifactSHA(context.Background(), "installation-token", 91, "production/nyc3"); !errorsIs(err, ErrNotReady) {
+				t.Fatalf("unsafe artifact entries accepted: %v", err)
+			}
+		})
+	}
+}
+
+func TestPlanArtifactSHARejectsDuplicateArtifactNames(t *testing.T) {
+	client := testClient(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/repos/acme/norn-fleet/actions/runs/91/artifacts" {
+			fmt.Fprint(w, `{"artifacts":[{"id":92,"name":"fleet-plan-production-nyc3-91","expired":false},{"id":93,"name":"fleet-plan-production-nyc3-91","expired":false}]}`)
+			return
+		}
+		http.NotFound(w, r)
+	}))
+	if _, err := client.planArtifactSHA(context.Background(), "installation-token", 91, "production/nyc3"); !errorsIs(err, ErrNotReady) {
+		t.Fatalf("duplicate artifacts accepted: %v", err)
 	}
 }
 

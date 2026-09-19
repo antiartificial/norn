@@ -2,6 +2,7 @@ package pipeline
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"log"
 	"strconv"
@@ -23,31 +24,40 @@ import (
 )
 
 type Pipeline struct {
-	DB                       *store.DB
-	Nomad                    *nomad.Client
-	Consul                   *consul.Client
-	WS                       *hub.Hub
-	SagaStore                saga.Store
-	Secrets                  *secrets.Manager
-	AppsDir                  string
-	GitToken                 string
-	GitSSHKey                string
-	RegistryURL              string
-	NetworkMode              string
-	IngressURL               string
-	ExternalIngress          bool
-	Production               bool
-	StrictSecrets            bool
-	Beacon                   *beacon.Service
-	Storage                  *storage.Client
-	Redpanda                 *redpanda.Client
-	VerifyArtifact           func(context.Context, string) error
-	VerifySignature          func(context.Context, string) error
-	ScanArtifact             func(context.Context, string) error
-	ArtifactSigningPublicKey string
-	ArtifactDenySeverities   []string
-	CosignPath               string
-	TrivyPath                string
+	DB                             *store.DB
+	Nomad                          *nomad.Client
+	Consul                         *consul.Client
+	WS                             *hub.Hub
+	SagaStore                      saga.Store
+	Secrets                        *secrets.Manager
+	AppsDir                        string
+	GitToken                       string
+	GitSSHKey                      string
+	RegistryURL                    string
+	NetworkMode                    string
+	IngressURL                     string
+	ExternalIngress                bool
+	Production                     bool
+	StrictSecrets                  bool
+	Beacon                         *beacon.Service
+	Storage                        *storage.Client
+	Redpanda                       *redpanda.Client
+	VerifyArtifact                 func(context.Context, string) error
+	VerifySignature                func(context.Context, string) error
+	ScanArtifact                   func(context.Context, string) error
+	ArtifactSigningPublicKey       string
+	ArtifactDenySeverities         []string
+	CosignPath                     string
+	TrivyPath                      string
+	ReleaseAdmissionMode           string
+	ReleaseAttestationIssuer       string
+	ReleaseAttestationRepositories []string
+	ReleaseAttestationWorkflowRefs []string
+	ReleaseRequireSBOM             bool
+	VerifyKeylessAttestations      func(context.Context, string, string, string, model.ReleaseCandidate) error
+	// RunArtifactCommand is an injectable command boundary for admission tests.
+	// Production uses exec.CommandContext through runArtifactCommand.
+	RunArtifactCommand func(context.Context, string, ...string) ([]byte, error)
 }
 
 type state struct {
@@ -55,6 +65,7 @@ type state struct {
 	workDir       string
 	commitSHA     string
 	imageTag      string
+	artifactBound bool
 	sourceKind    string
 	sourcePath    string
 	sourceDirty   bool
@@ -63,6 +74,59 @@ type state struct {
 	preflight     bool
 	deploymentID  string
 	regionEvals   map[string]string
+	candidate     model.ReleaseCandidate
+}
+
+// QueueReleaseDeployment records an immutable-source deployment request using
+// the normal app.deploy worker and saga pipeline. The caller supplies a full
+// source SHA and may bind an already-published OCI digest; the latter skips
+// rebuilding so the exact staged artifact can be promoted.
+func (p *Pipeline) QueueReleaseDeployment(ctx context.Context, spec *model.InfraSpec, sourceSHA, artifact, environment string, metadata map[string]interface{}) (*model.Operation, error) {
+	if p == nil || p.DB == nil || p.SagaStore == nil || spec == nil {
+		return nil, fmt.Errorf("release deployment pipeline is unavailable")
+	}
+	sg := saga.New(p.SagaStore, spec.App, "pipeline", "deploy")
+	now := time.Now().UTC()
+	deployment := &model.Deployment{ID: uuid.NewString(), App: spec.App, CommitSHA: sourceSHA, ImageTag: artifact, Environment: environment, SagaID: sg.ID, Status: model.StatusQueued, SourceRef: sourceSHA, StartedAt: now}
+	if metadata == nil {
+		metadata = map[string]interface{}{}
+	}
+	metadata["deploymentId"] = deployment.ID
+	metadata["sourceSha"] = sourceSHA
+	metadata["artifact"] = artifact
+	metadata["environment"] = environment
+	op := &model.Operation{
+		ID: uuid.NewString(), Kind: "app.deploy", App: spec.App, SagaID: sg.ID, Ref: sourceSHA,
+		Status: model.OperationQueued, Risk: "app rolling update", Source: "release-control-api",
+		Message: fmt.Sprintf("queued release deploy for %s", spec.App), StartedAt: now, MaxAttempts: 2,
+		Payload: map[string]interface{}{"deploymentId": deployment.ID, "app": spec.App, "sourceSha": sourceSHA, "artifact": artifact, "candidate": metadata["candidate"]}, Metadata: metadata,
+	}
+	if err := p.DB.InsertDeploymentOperation(ctx, deployment, spec.ResolvedRegions(), op); err != nil {
+		return nil, err
+	}
+	sg.Log(ctx, "deploy.queued", fmt.Sprintf("queued release deploy for %s (sha: %s)", spec.App, sourceSHA), map[string]string{"operationId": op.ID, "deploymentId": deployment.ID, "artifact": artifact})
+	return op, nil
+}
+
+// QueueReleasePreflight creates the existing app.preflight operation with
+// explicit release provenance. It remains read-only and therefore has no
+// deployment row.
+func (p *Pipeline) QueueReleasePreflight(ctx context.Context, spec *model.InfraSpec, sourceSHA, artifact, environment string, metadata map[string]interface{}) (*model.Operation, error) {
+	if p == nil || p.DB == nil || p.SagaStore == nil || spec == nil {
+		return nil, fmt.Errorf("release preflight pipeline is unavailable")
+	}
+	sg := saga.New(p.SagaStore, spec.App, "pipeline", "preflight")
+	now := time.Now().UTC()
+	if metadata == nil {
+		metadata = map[string]interface{}{}
+	}
+	metadata["sourceSha"], metadata["artifact"], metadata["environment"] = sourceSHA, artifact, environment
+	op := &model.Operation{ID: uuid.NewString(), Kind: "app.preflight", App: spec.App, SagaID: sg.ID, Ref: sourceSHA, Status: model.OperationQueued, Risk: "read-only", Source: "release-control-api", Message: fmt.Sprintf("queued release preflight for %s", spec.App), StartedAt: now, MaxAttempts: 3, Payload: map[string]interface{}{"app": spec.App, "sourceSha": sourceSHA, "artifact": artifact, "candidate": metadata["candidate"]}, Metadata: metadata}
+	if err := p.DB.InsertOperation(ctx, op); err != nil {
+		return nil, err
+	}
+	sg.Log(ctx, "preflight.queued", fmt.Sprintf("queued release preflight for %s (sha: %s)", spec.App, sourceSHA), map[string]string{"operationId": op.ID, "artifact": artifact})
+	return op, nil
 }
 
 type step struct {
@@ -205,7 +269,10 @@ func (p *Pipeline) ExecuteOperation(ctx context.Context, op *model.Operation) er
 			"operationId": op.ID,
 			"attempt":     strconv.Itoa(op.Attempts),
 		})
-		p.runPreflight(ctx, spec, op.Ref, sg, op.ID)
+		var candidate model.ReleaseCandidate
+		encoded, _ := json.Marshal(op.Metadata["candidate"])
+		_ = json.Unmarshal(encoded, &candidate)
+		p.runPreflightWithArtifact(ctx, spec, op.Ref, stringFromMap(op.Payload, "artifact"), candidate, sg, op.ID)
 		return nil
 	default:
 		return fmt.Errorf("unsupported operation kind %s", op.Kind)
@@ -251,12 +318,22 @@ func stringSliceFromMap(values map[string]interface{}, key string) []string {
 }
 
 func (p *Pipeline) run(ctx context.Context, spec *model.InfraSpec, deploy *model.Deployment, sg *saga.Saga, operationID string, attempt int) {
+	var candidate model.ReleaseCandidate
+	if operationID != "" && p.DB != nil {
+		if op, err := p.DB.GetOperation(ctx, operationID); err == nil {
+			encoded, _ := json.Marshal(op.Metadata["candidate"])
+			_ = json.Unmarshal(encoded, &candidate)
+		}
+	}
 	st := &state{
-		spec:         spec,
-		commitSHA:    deploy.CommitSHA,
-		sourceRef:    deploy.CommitSHA,
-		deploymentID: deploy.ID,
-		regionEvals:  make(map[string]string),
+		spec:          spec,
+		commitSHA:     deploy.CommitSHA,
+		sourceRef:     deploy.CommitSHA,
+		deploymentID:  deploy.ID,
+		regionEvals:   make(map[string]string),
+		imageTag:      deploy.ImageTag,
+		artifactBound: deploy.ImageTag != "",
+		candidate:     candidate,
 	}
 
 	steps := []step{
