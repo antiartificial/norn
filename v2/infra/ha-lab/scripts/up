@@ -37,8 +37,10 @@ while [[ $# -gt 0 ]]; do
 done
 
 # Ordered step ids; --from names one of these.
+# backup (backup-repository init) provisions the Spaces bucket + keys and must run
+# before state (state-backend init), which consumes NORN_HA_BACKUP_*.
 # Note: cutover already runs verify at its end, so there is no separate verify step.
-STEPS=(preflight tools tfvars secrets external state backup apply pki cosign catalog registry converge cutover traefik app connect)
+STEPS=(preflight tools tfvars secrets external backup state apply pki cosign catalog registry converge cutover traefik app connect)
 active=1; [[ -n "${from}" ]] && active=0
 if [[ -n "${from}" ]]; then
   printf '%s\n' "${STEPS[@]}" | grep -qx "${from}" || { echo "unknown --from step '${from}'; valid: ${STEPS[*]}" >&2; exit 2; }
@@ -111,10 +113,10 @@ step_external() {
   [[ "${no_tailscale}" -eq 1 ]] && export NORN_SKIP_TAILSCALE=1
   "${lab}" artifacts ensure-external "${name}"
 }
-step_state()    { "${lab}" init; }
+step_state()    { rm -rf "${lab_root}/terraform/.terraform"; "${lab}" init; }  # drop any stale backend cache (old bucket) before init
 step_backup()   { "${lab}" backup-repository init; }
 step_apply()    { "${lab}" apply -auto-approve -var-file="${tfvars}"; }
-step_pki()      { "${lab}" pki control-init; }
+step_pki()      { "${lab}" pki init; "${lab}" pki control-init; }  # control-init requires the PostgreSQL PKI (pki init) first
 step_cosign()   { "${lab}" supply-chain init; }
 step_catalog()  { "${lab}" catalog sync >/dev/null && echo "catalog synced (age recipient + encrypted app secret in place)"; }
 step_registry() { "${lab}" artifacts ensure "${name}"; }
@@ -140,7 +142,7 @@ for id in "${STEPS[@]}"; do
   case "${id}" in
     preflight) step_preflight ;;
     tools)     step_tools ;;
-    tfvars)    step_tfvars    || failed_resume tfvars ;;
+    tfvars)    step_tfvars && "${lab}" fleet validate "${name}" || failed_resume tfvars ;;
     secrets)   step_secrets   || failed_resume secrets ;;
     external)  step_external  || failed_resume external ;;
     state)     step_state     || failed_resume state ;;

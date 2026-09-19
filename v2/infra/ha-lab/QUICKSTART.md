@@ -13,17 +13,16 @@ cd v2/infra/ha-lab
 scripts/lab preflight
 ```
 
-You need a **DO API token** (`doctl auth init`), a **DO container registry**, an
-**SSH key in DO**, a **DO Spaces key**, and a **Tailscale auth key** (antiartificial
-tailnet, `tag:norn-pilot-node`). The last two are prompted once — or auto-minted
-if you export a parent credential first. See [PREREQUISITES.md](PREREQUISITES.md).
+You need a **DO API token** (`doctl auth init`), a **DO container registry**, and an
+**SSH key in DO**. Spaces (state + WAL backup) is provisioned automatically. For cluster
+access you also want a **Tailscale auth key** (antiartificial tailnet, `tag:norn-pilot-node`) —
+prompted once, auto-minted, or skipped with `--no-tailscale`. See [PREREQUISITES.md](PREREQUISITES.md).
 
-Optional auto-mint (skip the manual key creation):
+Optional — auto-mint the Tailscale key instead of pasting it:
 
 ```bash
 export TS_API_KEY="tskey-api-…"           # Tailscale API access token
 export TS_TAILNET="antiartificial.github" # your tailnet
-# (DO Spaces key is minted from your doctl token automatically)
 ```
 
 ## 2. Launch

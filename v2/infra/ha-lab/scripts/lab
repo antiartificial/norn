@@ -55,6 +55,9 @@ case "${command_name}" in
   artifacts)
     "${script_dir}/artifacts" "$@"
     ;;
+  fleet)
+    "${script_dir}/fleet" "$@"
+    ;;
   up)
     "${script_dir}/up" "$@"
     ;;
@@ -196,6 +199,7 @@ patronictl -c /etc/patroni/config.yml list'
 Norn DigitalOcean HA lab
 
   lab up NAME [--no-app] [--no-tailscale] [--from STEP] [--yes]
+  lab fleet sizes [REGION] | regions | validate [NAME]
   lab connect [NAME]
   lab deploy-app
   lab down NAME [--confirm]

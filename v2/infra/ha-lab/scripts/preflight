@@ -50,7 +50,7 @@ if [[ -n "${lab_name}" ]]; then
   secret_file="$(${script_dir}/secrets path "${lab_name}" 2>/dev/null || true)"
   if [[ -n "${secret_file}" && -f "${secret_file}" ]]; then
     "${script_dir}/artifacts" status "${lab_name}" | sed 's/^/  /'
-    echo "  (missing external creds are minted or prompted by 'lab artifacts ensure-external ${lab_name}')"
+    echo "  (registry-config + Tailscale key: 'lab artifacts …'; Spaces BACKUP_* are provisioned by backup-repository init)"
   else
     warn "no secrets file yet: 'lab up' creates it via 'lab secrets init ${lab_name}'"
   fi
