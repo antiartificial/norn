@@ -14,10 +14,13 @@
         path: /etc/norn-ha-lab
       register: lab_guard
 
-    - name: Require the disposable-lab marker
+    - name: Require the disposable-lab marker and pgbackrest to Spaces archiving
       ansible.builtin.assert:
-        that: lab_guard.stat.exists
-        fail_msg: "Refusing recovery work outside a managed Norn HA lab."
+        that:
+          - lab_guard.stat.exists
+          - postgres_archive_mode == 's3'
+          - backup_bucket | length > 0
+        fail_msg: "Refusing recovery work: needs the Norn HA lab marker plus pgbackrest->Spaces archiving (set NORN_HA_BACKUP_*)."
 
     - name: Freeze one PITR drill identifier
       ansible.builtin.set_fact:

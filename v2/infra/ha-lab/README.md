@@ -88,11 +88,18 @@ a different primary and successful writes, then rejoins the old member.
 an exact timestamp, restores into an isolated PostgreSQL instance, and proves
 that only the before-target record exists.
 
-The default WAL archive is local to keep this disposable test self-contained.
-It proves PostgreSQL recovery mechanics but does **not** prove off-host or
-regional backup durability. Before production admission, configure pgBackRest
-or WAL-G with versioned S3-compatible storage, retention lock where required,
-and run the same restore after deleting the source node.
+WAL archiving is mode-driven (`postgres_archive_mode`, derived automatically):
+when `NORN_HA_BACKUP_*` is configured — the normal lab state — archiving is
+**pgBackRest to a versioned DigitalOcean Spaces repo**, and `scripts/lab pitr`
+restores WAL from Spaces via `pgbackrest archive-get`. Without Spaces creds it
+falls back to a local `cp` archive for a fully self-contained, credential-free
+run. `scripts/lab offsite-pitr` proves off-host durability end to end: it takes
+a full pgBackRest base backup and restores from Spaces after the source is gone.
+Note: converge runs `pgbackrest stanza-create` + `check` but does **not** take an
+initial base backup, so `pgbackrest info` shows "no valid backups" until an
+offsite drill (or a manual `pgbackrest backup`) runs — WAL is archived, but a
+restore-from-Spaces-alone needs that base backup. For production, add scheduled
+backups and retention lock.
 
 `scripts/lab security-cutover cutover --confirm-disposable-lab` performs the
 existing-cluster migration in resumable stages: Consul TLS/ACL transition,

@@ -22,8 +22,8 @@
 
     - name: Reboot one member and wait for SSH
       ansible.builtin.reboot:
-        reboot_timeout: 600
-        connect_timeout: 10
+        reboot_timeout: 900
+        connect_timeout: 30
         post_reboot_delay: 5
 
     - name: Require every managed service after restart
@@ -42,8 +42,8 @@
         - norn-cadvisor
       register: restarted_services
       changed_when: false
-      retries: 30
-      delay: 2
+      retries: 60
+      delay: 3
       until: restarted_services.rc == 0
 
     - name: Wait for full Consul membership after this restart
@@ -52,8 +52,8 @@
         executable: /bin/bash
       register: consul_members
       changed_when: false
-      retries: 60
-      delay: 2
+      retries: 120
+      delay: 5
       until: consul_members.stdout | int == groups['norn_ha'] | length
 
     - name: Wait for full Nomad raft membership after this restart
@@ -62,16 +62,16 @@
         executable: /bin/bash
       register: nomad_members
       changed_when: false
-      retries: 60
-      delay: 2
+      retries: 120
+      delay: 5
       until: nomad_members.stdout | int == groups['norn_ha'] | length
 
     - name: Wait for full Patroni streaming topology after this restart
       ansible.builtin.command: patronictl -c /etc/patroni/config.yml list --format json
       register: patroni_members
       changed_when: false
-      retries: 60
-      delay: 2
+      retries: 120
+      delay: 5
       until: >-
         (patroni_members.stdout | from_json | selectattr('State', 'in', ['running', 'streaming']) | list | length)
         == (groups['norn_ha'] | length)
@@ -90,8 +90,8 @@
         url: http://127.0.0.1:8500/v1/health/service/norn-api?passing=true
         return_content: true
       register: norn_services
-      retries: 60
-      delay: 2
+      retries: 120
+      delay: 5
       until: norn_services.json | length == 1
 
     - name: Emit value-safe restart evidence
