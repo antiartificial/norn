@@ -1,0 +1,209 @@
+/* Fleet Builder — design-time topology editor. Uses global tokens from tokens.css. */
+
+.fleet-builder-page {
+  display: flex;
+  flex-direction: column;
+  height: 100%;
+  min-height: 0;
+}
+
+.fleet-builder-toolbar {
+  display: flex;
+  align-items: center;
+  gap: 14px;
+  padding: 10px 16px;
+  border-bottom: 1px solid var(--border);
+  background: var(--surface-1);
+  overflow-x: auto;
+  flex: none;
+}
+.fleet-builder-toolbar-spacer { flex: 1 1 auto; }
+.fleet-builder-add { display: flex; gap: 6px; }
+
+.fleet-builder-field { display: flex; align-items: center; gap: 6px; white-space: nowrap; }
+.fleet-builder-field > span {
+  font-size: 11px; text-transform: uppercase; letter-spacing: 0.06em;
+  color: var(--text-3); font-weight: 600;
+}
+.fleet-builder-field select {
+  font: inherit; font-size: 12.5px; color: var(--text-1);
+  background: var(--surface-3); border: 1px solid var(--border-strong);
+  border-radius: var(--radius-sm); padding: 3px 8px;
+}
+.fleet-builder-name {
+  font: inherit; font-family: var(--mono); font-size: 12.5px; color: var(--text-1);
+  background: var(--surface-3); border: 1px solid var(--border-strong);
+  border-radius: var(--radius-sm); padding: 3px 8px; width: 132px;
+}
+.fleet-builder-name:focus { outline: none; border-color: var(--accent); box-shadow: 0 0 0 2px var(--accent-soft); }
+.fleet-builder-stepper {
+  display: inline-flex; align-items: center;
+  border: 1px solid var(--border-strong); border-radius: var(--radius-sm);
+  overflow: hidden; background: var(--surface-3);
+}
+.fleet-builder-stepper button {
+  font: inherit; width: 24px; height: 24px; border: 0; background: transparent;
+  color: var(--text-2); cursor: pointer; font-size: 15px; line-height: 1;
+}
+.fleet-builder-stepper button:hover { background: var(--accent-soft); color: var(--accent); }
+.fleet-builder-stepper .mono { min-width: 22px; text-align: center; font-family: var(--mono); font-weight: 600; }
+
+.fleet-builder-body { display: flex; flex: 1 1 auto; min-height: 0; }
+.fleet-builder-canvas { flex: 1 1 auto; min-width: 0; position: relative; background: var(--bg); }
+
+/* Live generated cluster.yaml pane */
+.fleet-builder-yaml {
+  width: 380px; flex: none; min-width: 260px; max-width: 560px;
+  display: flex; flex-direction: column; min-height: 0;
+  border-left: 1px solid var(--border); background: var(--surface-1);
+  resize: horizontal; overflow: hidden;
+}
+.fleet-builder-yaml-head {
+  display: flex; align-items: center; gap: 7px;
+  padding: 8px 12px; border-bottom: 1px solid var(--border); flex: none;
+}
+.fleet-builder-yaml-head strong { font-size: 13px; color: var(--text-1); }
+.fleet-builder-yaml-head .mono { font-family: var(--mono); font-size: 10.5px; color: var(--text-3); }
+.fleet-builder-yaml-body {
+  margin: 0; padding: 12px; overflow: auto; flex: 1 1 auto;
+  font-family: var(--mono); font-size: 11.5px; line-height: 1.5; color: var(--text-1);
+  white-space: pre; tab-size: 2;
+}
+
+/* Connector legend (React Flow bottom-center panel) */
+.fleet-legend {
+  display: flex; flex-wrap: wrap; gap: 8px 16px; justify-content: center;
+  padding: 8px 14px; border-radius: 999px;
+  background: color-mix(in srgb, var(--surface-1) 88%, transparent);
+  border: 1px solid var(--border); box-shadow: 0 4px 14px rgba(0,0,0,.28);
+  backdrop-filter: blur(6px); max-width: 78vw;
+}
+.fleet-legend-item { display: inline-flex; align-items: center; gap: 6px; font-size: 11px; color: var(--text-2); white-space: nowrap; }
+.fleet-legend-swatch { flex: none; overflow: visible; }
+.fleet-legend-swatch line.marching { animation: fleet-march 0.5s linear infinite; }
+@keyframes fleet-march { to { stroke-dashoffset: -12; } }
+
+/* Region container frames (custom RF node behind fleet nodes) */
+.fleet-region {
+  width: 100%; height: 100%; box-sizing: border-box;
+  border: 1.5px dashed color-mix(in srgb, var(--accent) 45%, transparent);
+  border-radius: 16px; background: color-mix(in srgb, var(--accent) 6%, transparent);
+  position: relative; pointer-events: none;
+}
+.fleet-region-1 {
+  border-color: color-mix(in srgb, var(--info) 50%, transparent);
+  background: color-mix(in srgb, var(--info) 6%, transparent);
+}
+.fleet-region-label {
+  position: absolute; top: 8px; left: 10px;
+  display: inline-flex; align-items: center; gap: 5px;
+  font-size: 10.5px; font-weight: 600; letter-spacing: 0.02em;
+  color: var(--accent); background: color-mix(in srgb, var(--surface-1) 90%, transparent);
+  padding: 2px 8px; border-radius: 999px;
+  pointer-events: auto; cursor: pointer;
+  border: 1px solid transparent;
+}
+.fleet-region-label:hover { border-color: color-mix(in srgb, var(--accent) 50%, transparent); }
+.fleet-region-1 .fleet-region-label:hover { border-color: color-mix(in srgb, var(--info) 50%, transparent); }
+.fleet-region-1 .fleet-region-label { color: var(--info); }
+
+.fleet-builder-inspector {
+  width: 328px; flex: none; border-left: 1px solid var(--border);
+  background: var(--surface-1); overflow-y: auto;
+  display: flex; flex-direction: column; gap: 14px; padding: 16px;
+}
+.fleet-builder-panel {
+  background: var(--surface-2); border: 1px solid var(--border);
+  border-radius: var(--radius); padding: 13px 14px;
+  display: flex; flex-direction: column; gap: 9px;
+}
+.fleet-builder-panel h3 {
+  margin: 0; font-size: 11px; text-transform: uppercase; letter-spacing: 0.08em;
+  color: var(--text-3); font-weight: 700;
+}
+.fleet-builder-hint { margin: 0; font-size: 12.5px; color: var(--text-2); line-height: 1.45; }
+
+.fleet-builder-row { display: flex; align-items: center; justify-content: space-between; gap: 10px; font-size: 12.5px; color: var(--text-2); }
+.fleet-builder-row select {
+  font: inherit; font-size: 12px; font-family: var(--mono); color: var(--text-1);
+  background: var(--surface-3); border: 1px solid var(--border-strong);
+  border-radius: var(--radius-sm); padding: 4px 7px; max-width: 210px;
+}
+.fleet-builder-toggle { display: flex; align-items: center; gap: 8px; font-size: 12.5px; color: var(--text-1); }
+
+.fleet-builder-seg {
+  display: flex; border: 1px solid var(--border-strong);
+  border-radius: var(--radius-sm); overflow: hidden;
+}
+.fleet-builder-seg button {
+  flex: 1; font: inherit; font-size: 12px; padding: 5px 6px; border: 0;
+  background: transparent; color: var(--text-2); cursor: pointer;
+}
+.fleet-builder-seg button[aria-pressed="true"] { background: var(--accent); color: #fff; font-weight: 600; }
+.fleet-builder-seg button:disabled { opacity: 0.4; cursor: not-allowed; }
+
+.fleet-builder-findings { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 8px; }
+.fleet-builder-findings li { display: flex; align-items: flex-start; gap: 8px; }
+.fleet-builder-findings li > div { display: flex; flex-direction: column; gap: 1px; }
+.fleet-builder-findings .ui-status-dot { margin-top: 4px; flex: none; }
+.fleet-finding-msg { font-size: 12.5px; color: var(--text-1); }
+.fleet-finding-fix { font-size: 11.5px; color: var(--text-3); }
+
+.fleet-builder-cost { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 4px; }
+.fleet-builder-cost li { display: flex; justify-content: space-between; font-size: 12px; color: var(--text-2); }
+.fleet-builder-cost .mono { font-family: var(--mono); font-variant-numeric: tabular-nums; color: var(--text-1); }
+.fleet-builder-cost-total { border-top: 1px solid var(--border); margin-top: 5px; padding-top: 8px; font-size: 14px; color: var(--text-1); font-weight: 600; }
+
+.fleet-builder-actions { display: flex; flex-direction: column; gap: 8px; }
+.fleet-builder-foot { font-size: 11px; color: var(--text-3); text-align: center; margin: 0; }
+
+/* Nodes */
+.fleet-node {
+  width: 176px; box-sizing: border-box;
+  background: var(--surface-1); border: 1px solid var(--border-strong);
+  border-radius: 10px; padding: 9px 11px; box-shadow: 0 1px 2px rgba(0,0,0,.3), 0 6px 14px rgba(0,0,0,.35);
+  display: flex; flex-direction: column; gap: 3px; font-family: var(--font);
+}
+.fleet-node.selected { border-color: var(--accent); box-shadow: 0 0 0 3px var(--accent-soft), 0 6px 14px rgba(0,0,0,.35); }
+.fleet-node.invalid { border-color: var(--danger); }
+.fleet-node-head { display: flex; align-items: center; gap: 8px; }
+.fleet-node-icon {
+  width: 24px; height: 24px; border-radius: 7px; flex: none;
+  display: grid; place-items: center; font-size: 12px;
+  background: var(--accent-soft); color: var(--accent);
+}
+.fleet-node-app .fleet-node-icon { background: var(--info-soft); color: var(--info); }
+.fleet-node-dbPrimary .fleet-node-icon,
+.fleet-node-dbReplica .fleet-node-icon,
+.fleet-node-dbExtra .fleet-node-icon { background: rgba(139,124,246,.16); color: var(--accent); }
+.fleet-node-cache .fleet-node-icon { background: var(--ok-soft); color: var(--ok); }
+.fleet-node-queue .fleet-node-icon { background: var(--warn-soft); color: var(--warn); }
+.fleet-node-title { font-size: 12.5px; font-weight: 600; color: var(--text-1); display: flex; align-items: center; gap: 5px; }
+.fleet-node-badge {
+  font-size: 8.5px; font-weight: 700; text-transform: uppercase; letter-spacing: 0.04em;
+  padding: 1px 5px; border-radius: 4px; background: var(--accent-soft); color: var(--accent);
+}
+.fleet-node-meta { font-family: var(--mono); font-size: 10.5px; color: var(--text-3); }
+.fleet-handle { width: 7px; height: 7px; background: var(--surface-3); border: 1.5px solid var(--accent); }
+
+/* React Flow chrome themed to tokens */
+.react-flow__node-fleet { background: transparent; border: none; padding: 0; width: auto; }
+.fleet-builder-canvas .react-flow__controls { box-shadow: none; }
+.fleet-builder-canvas .react-flow__controls-button {
+  background: var(--surface-2); border-bottom: 1px solid var(--border); color: var(--text-1); fill: var(--text-1);
+}
+.fleet-builder-canvas .react-flow__controls-button:hover { background: var(--surface-3); }
+.fleet-builder-canvas .react-flow__minimap { background: var(--surface-1); }
+.fleet-builder-canvas .react-flow__attribution { display: none; }
+
+/* Honor Reduce Motion: stop the marching ants (legend swatches + React Flow animated edges). */
+@media (prefers-reduced-motion: reduce) {
+  .fleet-legend-swatch line.marching { animation: none; }
+  .fleet-builder-canvas .react-flow__edge.animated path { animation: none; }
+}
+
+@media (max-width: 920px) {
+  .fleet-builder-body { flex-direction: column; }
+  .fleet-builder-inspector { width: auto; border-left: 0; border-top: 1px solid var(--border); max-height: 45%; }
+  .fleet-builder-yaml { width: auto; border-left: 0; border-top: 1px solid var(--border); max-height: 40%; resize: none; }
+}
