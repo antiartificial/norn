@@ -11,7 +11,10 @@ set -euo pipefail
 #   cosign signing keypair ........... scripts/supply-chain init
 #   PKI tree ......................... scripts/pki control-init
 #   Spaces state backend ............. scripts/state-backend init
-#   WAL backup repository ............ scripts/backup-repository init
+#   WAL backup bucket + Spaces keys .. scripts/backup-repository init
+#     (it mints the key, creates the versioned bucket, and writes every
+#      NORN_HA_BACKUP_* itself -- it refuses if the section is already set, so
+#      this script must NOT touch the backup credentials.)
 
 script_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 lab_root="$(cd "${script_dir}/.." && pwd)"
@@ -25,16 +28,14 @@ usage() {
 usage:
   artifacts ensure NAME           generate the DO registry docker-config the converge path
                                   installs from NORN_HA_REGISTRY_CONFIG_PATH
-  artifacts ensure-external NAME  ensure external creds exist in the .env, minting when a parent
-                                  credential is present, otherwise prompting once:
-                                    - Tailscale auth key  -> NORN_HA_TAILSCALE_AUTHKEY
-                                    - DO Spaces key       -> NORN_HA_BACKUP_ACCESS_KEY/SECRET_KEY
-                                    - Spaces bucket/region/endpoint (config)
+  artifacts ensure-external NAME  ensure the Tailscale auth key exists in the .env, minting when
+                                  TS_API_KEY+TS_TAILNET are present, otherwise prompting once
+                                  (-> NORN_HA_TAILSCALE_AUTHKEY). Spaces keys are NOT handled here;
+                                  backup-repository init provisions them.
   artifacts status NAME           report which artifacts/creds are present vs missing
 
 Optional auto-mint (export a parent credential before running):
   TS_API_KEY + TS_TAILNET   mint a reusable, pre-authorized tag:norn-pilot-node Tailscale key
-  DIGITALOCEAN_TOKEN        mint a scoped DO Spaces key via the DO API
 EOF
   exit 2
 }
@@ -107,42 +108,12 @@ ensure_tailscale_key() {
   put_env NORN_HA_TAILSCALE_AUTHKEY "${ts_key}"
 }
 
-ensure_spaces_keys() {
-  if [[ -n "${NORN_HA_BACKUP_ACCESS_KEY:-}" && -n "${NORN_HA_BACKUP_SECRET_KEY:-}" ]]; then
-    echo "Spaces keys already set."
-  else
-    local ak="" sk="" resp=""
-    if [[ -n "${DIGITALOCEAN_TOKEN:-}" ]]; then
-      echo "minting a DO Spaces key via the DO API..."
-      resp="$(curl -fsSL -X POST "https://api.digitalocean.com/v2/spaces/keys" \
-        -H "Authorization: Bearer ${DIGITALOCEAN_TOKEN}" \
-        -H 'Content-Type: application/json' \
-        --data '{"name":"norn-ha-'"${lab_name}"'","grants":[{"bucket":"","permission":"fullaccess"}]}')" || resp=""
-      ak="$(printf '%s' "${resp}" | jq -r '.key.access_key // empty' 2>/dev/null || true)"
-      sk="$(printf '%s' "${resp}" | jq -r '.key.secret_key // empty' 2>/dev/null || true)"
-      [[ -n "${ak}" && -n "${sk}" ]] || echo "DO Spaces key mint unavailable; falling back to prompt." >&2
-    fi
-    if [[ -z "${ak}" || -z "${sk}" ]]; then
-      printf 'DO Spaces ACCESS key: ' >&2; read -r ak
-      printf 'DO Spaces SECRET key [hidden]: ' >&2; read -rs sk; echo >&2
-    fi
-    [[ -n "${ak}" && -n "${sk}" ]] || { echo "Spaces keys are required for state + WAL backup" >&2; exit 1; }
-    put_env NORN_HA_BACKUP_ACCESS_KEY "${ak}"
-    put_env NORN_HA_BACKUP_SECRET_KEY "${sk}"
-  fi
-  local region="${NORN_HA_BACKUP_REGION:-nyc3}"
-  put_env NORN_HA_BACKUP_REGION "${region}"
-  put_env NORN_HA_BACKUP_BUCKET "${NORN_HA_BACKUP_BUCKET:-${lab_name}-backups}"
-  put_env NORN_HA_BACKUP_ENDPOINT "${NORN_HA_BACKUP_ENDPOINT:-https://${region}.digitaloceanspaces.com}"
-}
-
 case "${command_name}" in
   ensure)
     ensure_registry_config
     ;;
   ensure-external)
     ensure_tailscale_key
-    ensure_spaces_keys
     ;;
   status)
     printf '%-32s %s\n' "NORN_HA_REGISTRY_CONFIG_PATH" "$([[ -n "${NORN_HA_REGISTRY_CONFIG_PATH:-}" && -s "${NORN_HA_REGISTRY_CONFIG_PATH:-/nonexistent}" ]] && echo present || echo MISSING)"

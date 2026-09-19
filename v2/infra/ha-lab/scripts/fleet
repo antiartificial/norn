@@ -1,0 +1,111 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+# Discover valid DigitalOcean sizes/regions and validate a fleet description
+# against the live catalog + platform policy, so you learn a size/region is wrong
+# (and what it costs) BEFORE a slow terraform apply. This is the validation core a
+# richer builder (CLI wizard or NornUI canvas) can reuse.
+
+script_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+lab_root="$(cd "${script_dir}/.." && pwd)"
+export PATH="${lab_root}/.tools/bin:${PATH}"
+terraform_dir="${lab_root}/terraform"
+
+# --- platform policy (co-located ha-lab topology) -------------------------
+MIN_VCPU=2
+MIN_MEM_MB=4096
+# DO Spaces is only offered in these regions; state + WAL backup need one.
+SPACES_REGIONS="nyc3 sfo3 ams3 sgp1 fra1 syd1 blr1"
+
+command_name="${1:-help}"
+
+need_doctl() { command -v doctl >/dev/null 2>&1 || { echo "doctl is required" >&2; exit 1; }; }
+
+case "${command_name}" in
+  sizes)
+    need_doctl
+    region="${2:-}"
+    if [[ -n "${region}" ]]; then
+      # sizes offered in this region, joined with their specs/price
+      avail="$(doctl compute region list -o json | jq -r --arg r "${region}" '.[] | select(.slug==$r) | .sizes[]')"
+      [[ -n "${avail}" ]] || { echo "no such region '${region}' (see: lab fleet regions)" >&2; exit 1; }
+      doctl compute size list -o json \
+        | jq -r --argjson keep "$(printf '%s' "${avail}" | jq -R . | jq -s .)" '
+            .[] | select(.slug as $s | $keep | index($s)) | select(.available)
+            | [.slug, (.vcpus|tostring)+"vcpu", (.memory/1024|tostring)+"gb", (.disk|tostring)+"gb", "$"+(.price_monthly|tostring)+"/mo"] | @tsv' \
+        | sort | column -t
+    else
+      doctl compute size list -o json \
+        | jq -r '.[] | select(.available) | [.slug, (.vcpus|tostring)+"vcpu", (.memory/1024|tostring)+"gb", (.disk|tostring)+"gb", "$"+(.price_monthly|tostring)+"/mo"] | @tsv' \
+        | sort | column -t
+    fi
+    ;;
+  regions)
+    need_doctl
+    doctl compute region list -o json \
+      | jq -r '.[] | select(.available) | [.slug, .name] | @tsv' \
+      | while IFS="$(printf '\t')" read -r slug name; do
+          if printf '%s' "${SPACES_REGIONS}" | tr ' ' '\n' | grep -qx "${slug}"; then sp="spaces:yes"; else sp="spaces:NO"; fi
+          printf '%s\t%s\t%s\n' "${slug}" "${name}" "${sp}"
+        done \
+      | sort | column -t -s "$(printf '\t')"
+    ;;
+  validate)
+    need_doctl
+    tfvars="${terraform_dir}/terraform.tfvars"
+    [[ -f "${tfvars}" ]] || { echo "no terraform.tfvars to validate (run 'lab up NAME' to scaffold one)" >&2; exit 1; }
+    getv() { awk -F= -v k="$1" '$0 ~ "^[[:space:]]*"k"[[:space:]]*=" {v=$2; gsub(/[[:space:]"]/,"",v); print v; exit}' "${tfvars}"; }
+    region="$(getv region)"; region="${region:-tor1}"
+    size="$(getv node_size)"; size="${size:-s-2vcpu-4gb}"
+    count="$(getv node_count)"; count="${count:-3}"
+
+    errs=0
+    warn() { printf '  \033[33mwarn\033[0m  %s\n' "$1"; }
+    fail() { printf '  \033[31mFAIL\033[0m  %s\n' "$1"; errs=$((errs+1)); }
+    ok()   { printf '  \033[32mok\033[0m    %s\n' "$1"; }
+
+    echo "Validating fleet description: region=${region} node_size=${size} node_count=${count}"
+
+    # region available?
+    region_json="$(doctl compute region list -o json | jq -r --arg r "${region}" '.[] | select(.slug==$r)')"
+    if [[ -z "${region_json}" ]]; then fail "region '${region}' is not a valid DO region (lab fleet regions)"; else ok "region ${region} valid"; fi
+
+    # Spaces present in region?
+    if printf '%s' "${SPACES_REGIONS}" | tr ' ' '\n' | grep -qx "${region}"; then ok "region ${region} has DO Spaces (state + WAL backup)"; else fail "region ${region} has no DO Spaces; pick one of: ${SPACES_REGIONS}"; fi
+
+    # size available in region?
+    if [[ -n "${region_json}" ]]; then
+      if printf '%s' "${region_json}" | jq -e --arg s "${size}" '.sizes | index($s)' >/dev/null; then ok "size ${size} offered in ${region}"; else fail "size ${size} is not offered in ${region} (lab fleet sizes ${region})"; fi
+    fi
+
+    # size meets co-located role minimums + cost
+    size_json="$(doctl compute size list -o json | jq -r --arg s "${size}" '.[] | select(.slug==$s)')"
+    if [[ -z "${size_json}" ]]; then
+      fail "size '${size}' is not a valid DO size (lab fleet sizes)"
+    else
+      vcpu="$(printf '%s' "${size_json}" | jq -r '.vcpus')"
+      memmb="$(printf '%s' "${size_json}" | jq -r '.memory')"
+      price="$(printf '%s' "${size_json}" | jq -r '.price_monthly')"
+      [[ "${vcpu}" -ge "${MIN_VCPU}" ]] && ok "vcpus ${vcpu} >= ${MIN_VCPU}" || fail "vcpus ${vcpu} < required ${MIN_VCPU} for the co-located topology"
+      [[ "${memmb}" -ge "${MIN_MEM_MB}" ]] && ok "memory ${memmb}MB >= ${MIN_MEM_MB}MB" || fail "memory ${memmb}MB < required ${MIN_MEM_MB}MB for the co-located topology"
+      total="$(awk -v p="${price}" -v n="${count}" 'BEGIN{printf "%.2f", p*n}')"
+      echo "  cost  ~\$${total}/mo for ${count}x ${size} (+ ~\$12/mo regional LB)"
+    fi
+
+    # quorum
+    if [[ $((count % 2)) -eq 1 && "${count}" -ge 3 ]]; then ok "node_count ${count} satisfies quorum (odd, >=3)"; else fail "node_count ${count} must be odd and >=3 for quorum"; fi
+
+    echo
+    if [[ "${errs}" -gt 0 ]]; then echo "validate: ${errs} problem(s) — fix terraform.tfvars before launching."; exit 1; fi
+    echo "validate: fleet description is valid."
+    ;;
+  help|*)
+    cat >&2 <<'EOF'
+usage:
+  lab fleet sizes [REGION]   list valid droplet sizes (specs + monthly price); filter to a region
+  lab fleet regions          list valid regions and whether each has DO Spaces
+  lab fleet validate [NAME]   check terraform.tfvars (region/size/count) vs catalog + policy + cost
+EOF
+    exit 2
+    ;;
+esac
