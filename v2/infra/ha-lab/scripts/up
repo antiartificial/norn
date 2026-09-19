@@ -1,0 +1,162 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+# One-command "describe & launch a Norn fleet" for a fresh developer.
+#
+# Chains the existing, individually-idempotent lab steps in the only order the
+# platform allows (converge asserts the catalog's age_recipient/toy_secrets exist,
+# so `catalog sync` must precede `converge`). Every step self-skips when already
+# satisfied, so re-running `lab up` resumes; `--from STEP` forces a restart point.
+#
+# usage: lab up NAME [--no-app] [--no-tailscale] [--from STEP] [--yes]
+#   NAME            fleet/cluster name (name_prefix); optional if terraform.tfvars exists
+#   --no-app        converge the platform + register the app catalog, but don't build/deploy
+#                   the running demo workload
+#   --no-tailscale  don't join the tailnet (reach the cluster via VPC/SSH tunnel only)
+#   --from STEP     resume from a step id (see STEPS below)
+#   --yes           non-interactive; fail instead of prompting for anything missing
+
+script_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+lab_root="$(cd "${script_dir}/.." && pwd)"
+lab="${script_dir}/lab"
+tfvars="${lab_root}/terraform/terraform.tfvars"
+export PATH="${lab_root}/.tools/bin:${PATH}"
+
+no_app=0 no_tailscale=0 assume_yes=0 from="" name=""
+while [[ $# -gt 0 ]]; do
+  case "$1" in
+    --no-app)       no_app=1 ;;
+    --no-tailscale) no_tailscale=1 ;;
+    --yes)          assume_yes=1 ;;
+    --from)         from="${2:-}"; shift ;;
+    --from=*)       from="${1#--from=}" ;;
+    -*)             echo "unknown flag: $1" >&2; exit 2 ;;
+    *)              name="$1" ;;
+  esac
+  shift
+done
+
+# Ordered step ids; --from names one of these.
+# Note: cutover already runs verify at its end, so there is no separate verify step.
+STEPS=(preflight tools tfvars secrets external state backup apply pki cosign catalog registry converge cutover traefik app connect)
+active=1; [[ -n "${from}" ]] && active=0
+if [[ -n "${from}" ]]; then
+  printf '%s\n' "${STEPS[@]}" | grep -qx "${from}" || { echo "unknown --from step '${from}'; valid: ${STEPS[*]}" >&2; exit 2; }
+fi
+should_run() {
+  [[ "${active}" -eq 1 ]] && return 0
+  [[ "$1" == "${from}" ]] && { active=1; return 0; }
+  return 1
+}
+say()  { printf '\n\033[1m==> %s\033[0m\n' "$1"; }
+skip() { printf '    (skip %s)\n' "$1"; }
+
+# Resolve the fleet name from the arg or an existing tfvars.
+if [[ -z "${name}" && -f "${tfvars}" ]]; then
+  name="$(awk -F= '/^[[:space:]]*name_prefix[[:space:]]*=/ {v=$2; gsub(/[[:space:]"]/,"",v); print v; exit}' "${tfvars}")"
+fi
+[[ -n "${name}" ]] || { echo "usage: lab up NAME [--no-app] [--no-tailscale] [--from STEP] [--yes]" >&2; exit 2; }
+
+failed_resume() { echo; echo "step '$1' failed. Fix the cause, then resume: lab up ${name} --from $1" >&2; exit 1; }
+
+# ---- steps ---------------------------------------------------------------
+
+step_preflight() { "${lab}" preflight "${name}" || failed_resume preflight; }
+step_tools()     { "${lab}" bootstrap-tools; }
+
+step_tfvars() {
+  if [[ -f "${tfvars}" ]]; then skip "terraform.tfvars exists"; return; fi
+  say "Describe the fleet -> ${tfvars}"
+  command -v doctl >/dev/null 2>&1 || { echo "doctl required to scaffold tfvars" >&2; return 1; }
+  local owner expires region node_count node_size fps cidr ip
+  region="nyc3"; node_count=3; node_size="s-2vcpu-4gb"; owner="${USER:-platform}"
+  expires="$(date -u -v+14d +%Y-%m-%d 2>/dev/null || date -u -d '+14 days' +%Y-%m-%d)"
+  if [[ "${assume_yes}" -eq 0 ]]; then
+    read -r -p "owner [${owner}]: " a || true; owner="${a:-${owner}}"
+    read -r -p "expires_on (YYYY-MM-DD) [${expires}]: " a || true; expires="${a:-${expires}}"
+    read -r -p "region [${region}]: " a || true; region="${a:-${region}}"
+    read -r -p "node_count [${node_count}]: " a || true; node_count="${a:-${node_count}}"
+    read -r -p "node_size [${node_size}]: " a || true; node_size="${a:-${node_size}}"
+  fi
+  fps="$(doctl compute ssh-key list --no-header --format FingerPrint 2>/dev/null | awk 'NF' | sed 's/.*/  "&",/')"
+  [[ -n "${fps}" ]] || { echo "no DO SSH key found; import one (see PREREQUISITES.md)" >&2; return 1; }
+  ip="$(curl -fsS https://api.ipify.org 2>/dev/null || true)"
+  [[ -n "${ip}" ]] || { echo "could not determine your public IP for ssh_source_cidrs" >&2; return 1; }
+  cidr="${ip}/32"
+  cat >"${tfvars}" <<EOF
+# Fleet description for '${name}'. Edit and re-run 'lab up' to change the cluster.
+name_prefix = "${name}"
+owner       = "${owner}"
+expires_on  = "${expires}"
+region      = "${region}"
+node_count  = ${node_count}
+node_size   = "${node_size}"
+
+ssh_key_fingerprints = [
+${fps}
+]
+
+ssh_source_cidrs = [
+  "${cidr}",
+]
+EOF
+  echo "wrote ${tfvars} (ssh from ${cidr}; $(printf '%s' "${fps}" | grep -c . ) DO key(s))"
+}
+
+step_secrets() {
+  if [[ -f "$("${script_dir}/secrets" path "${name}" 2>/dev/null || true)" ]]; then skip "secrets .env exists"; return; fi
+  "${lab}" secrets init "${name}"
+}
+step_external() {
+  [[ "${no_tailscale}" -eq 1 ]] && export NORN_SKIP_TAILSCALE=1
+  "${lab}" artifacts ensure-external "${name}"
+}
+step_state()    { "${lab}" init; }
+step_backup()   { "${lab}" backup-repository init; }
+step_apply()    { "${lab}" apply -auto-approve -var-file="${tfvars}"; }
+step_pki()      { "${lab}" pki control-init; }
+step_cosign()   { "${lab}" supply-chain init; }
+step_catalog()  { "${lab}" catalog sync >/dev/null && echo "catalog synced (age recipient + encrypted app secret in place)"; }
+step_registry() { "${lab}" artifacts ensure "${name}"; }
+step_converge() { "${lab}" converge; }
+step_cutover()  { "${lab}" security-cutover cutover --confirm-disposable-lab; }
+step_traefik()  { "${lab}" deploy-traefik; }
+
+step_app() {
+  if [[ "${no_app}" -eq 1 ]]; then skip "demo workload (--no-app)"; return; fi
+  if [[ -x "${script_dir}/deploy-app" ]]; then "${lab}" deploy-app || failed_resume app
+  else echo "    (deploy-app not installed yet; run 'lab deploy-app' when available)"; fi
+}
+step_connect() {
+  if [[ -x "${script_dir}/connect" ]]; then "${lab}" connect
+  else echo "    (connect helper not installed yet; run 'lab connect' when available)"; fi
+}
+
+# ---- run -----------------------------------------------------------------
+
+for id in "${STEPS[@]}"; do
+  should_run "${id}" || { skip "${id}"; continue; }
+  say "${id}"
+  case "${id}" in
+    preflight) step_preflight ;;
+    tools)     step_tools ;;
+    tfvars)    step_tfvars    || failed_resume tfvars ;;
+    secrets)   step_secrets   || failed_resume secrets ;;
+    external)  step_external  || failed_resume external ;;
+    state)     step_state     || failed_resume state ;;
+    backup)    step_backup    || failed_resume backup ;;
+    apply)     step_apply     || failed_resume apply ;;
+    pki)       step_pki       || failed_resume pki ;;
+    cosign)    step_cosign    || failed_resume cosign ;;
+    catalog)   step_catalog   || failed_resume catalog ;;
+    registry)  step_registry  || failed_resume registry ;;
+    converge)  step_converge  || failed_resume converge ;;
+    cutover)   step_cutover   || failed_resume cutover ;;
+    traefik)   step_traefik   || failed_resume traefik ;;
+    app)       step_app ;;
+    connect)   step_connect ;;
+  esac
+done
+
+say "fleet '${name}' is up"
+echo "Tear down with: lab down ${name}"

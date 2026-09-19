@@ -22,7 +22,25 @@ failure-domain layout.
 - Drill logs are written below ignored `.evidence/`; durable production receipts
   should contain only their object-storage ID/checksum and measured RTO/RPO.
 
-## One-path workflow
+## Quickstart
+
+Most developers should use the one-command path — it chains everything below,
+generates every key, joins Tailscale, deploys the demo app, and prints how to
+connect NornUI/CLI:
+
+```bash
+scripts/lab preflight        # names any missing credential (see PREREQUISITES.md)
+scripts/lab up my-fleet      # describe + launch the whole fleet
+scripts/lab connect          # NornUI host + token
+scripts/lab down my-fleet    # tear down, stops billing
+```
+
+See [QUICKSTART.md](QUICKSTART.md) and [PREREQUISITES.md](PREREQUISITES.md).
+
+## Advanced: manual step-by-step workflow
+
+The individual subcommands `lab up` chains, for when you need to run or debug a
+single stage (drills and production activation live here too):
 
 ```bash
 cd v2/infra/ha-lab

@@ -1,0 +1,157 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+# Fills the credential gaps that no other lab script produces, so that a fresh
+# developer can reach a converged, app-ready cluster without hand-crafting files.
+#
+# NOT handled here (already covered elsewhere, do not duplicate):
+#   .env randoms / ACL tokens ........ scripts/secrets init|ensure
+#   age key + NORN_HA_AGE_RECIPIENT .. scripts/catalog sync
+#   git deploy key + toy secret ...... scripts/catalog sync
+#   cosign signing keypair ........... scripts/supply-chain init
+#   PKI tree ......................... scripts/pki control-init
+#   Spaces state backend ............. scripts/state-backend init
+#   WAL backup repository ............ scripts/backup-repository init
+
+script_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+lab_root="$(cd "${script_dir}/.." && pwd)"
+export PATH="${lab_root}/.tools/bin:${PATH}"
+
+command_name="${1:-help}"
+lab_name="${2:-}"
+
+usage() {
+  cat >&2 <<'EOF'
+usage:
+  artifacts ensure NAME           generate the DO registry docker-config the converge path
+                                  installs from NORN_HA_REGISTRY_CONFIG_PATH
+  artifacts ensure-external NAME  ensure external creds exist in the .env, minting when a parent
+                                  credential is present, otherwise prompting once:
+                                    - Tailscale auth key  -> NORN_HA_TAILSCALE_AUTHKEY
+                                    - DO Spaces key       -> NORN_HA_BACKUP_ACCESS_KEY/SECRET_KEY
+                                    - Spaces bucket/region/endpoint (config)
+  artifacts status NAME           report which artifacts/creds are present vs missing
+
+Optional auto-mint (export a parent credential before running):
+  TS_API_KEY + TS_TAILNET   mint a reusable, pre-authorized tag:norn-pilot-node Tailscale key
+  DIGITALOCEAN_TOKEN        mint a scoped DO Spaces key via the DO API
+EOF
+  exit 2
+}
+
+[[ -n "${lab_name}" && "${command_name}" != "help" ]] || usage
+
+secret_file="$(${script_dir}/secrets path "${lab_name}")"
+[[ -f "${secret_file}" ]] || { echo "no secrets file for '${lab_name}'; run: lab secrets init ${lab_name}" >&2; exit 1; }
+config_dir="$(dirname "${secret_file}")"
+
+set -a
+# shellcheck disable=SC1090
+source "${secret_file}"
+set +a
+
+# Idempotent KEY=value upsert into the secrets .env. Strips any existing line and
+# appends, avoiding sed escaping pitfalls with Spaces secret keys (contain / and +).
+put_env() {
+  local key="$1" value="$2" tmp
+  tmp="$(mktemp)"
+  grep -v "^${key}=" "${secret_file}" >"${tmp}" || true
+  mv "${tmp}" "${secret_file}"
+  printf '%s=%s\n' "${key}" "${value}" >>"${secret_file}"
+  chmod 0600 "${secret_file}"
+  export "${key}=${value}"
+}
+
+ensure_registry_config() {
+  local registry_path="${NORN_HA_REGISTRY_CONFIG_PATH:-${config_dir}/registry-config.json}"
+  if [[ ! -s "${registry_path}" ]]; then
+    command -v doctl >/dev/null 2>&1 || { echo "doctl is required to generate the registry docker-config" >&2; exit 1; }
+    install -d -m 0700 "$(dirname "${registry_path}")"
+    ( umask 077; doctl registry docker-config --expiry-seconds 604800 >"${registry_path}" )
+    chmod 0600 "${registry_path}"
+    echo "generated DO registry docker-config: ${registry_path} (valid 7 days; re-run to refresh)"
+  else
+    echo "registry docker-config present: ${registry_path}"
+  fi
+  put_env NORN_HA_REGISTRY_CONFIG_PATH "${registry_path}"
+}
+
+ensure_tailscale_key() {
+  if [[ "${NORN_SKIP_TAILSCALE:-}" == "1" ]]; then
+    echo "Tailscale skipped (--no-tailscale); cluster reachable via VPC/SSH-tunnel only."
+    return
+  fi
+  if [[ -n "${NORN_HA_TAILSCALE_AUTHKEY:-}" ]]; then
+    echo "Tailscale auth key already set."
+    return
+  fi
+  if [[ -n "${TS_API_KEY:-}" && -n "${TS_TAILNET:-}" ]]; then
+    echo "minting a reusable tag:norn-pilot-node Tailscale auth key for tailnet ${TS_TAILNET}..."
+    local key
+    key="$(curl -fsSL -u "${TS_API_KEY}:" \
+      "https://api.tailscale.com/api/v2/tailnet/${TS_TAILNET}/keys" \
+      -H 'Content-Type: application/json' \
+      --data '{"capabilities":{"devices":{"create":{"reusable":true,"ephemeral":false,"preauthorized":true,"tags":["tag:norn-pilot-node"]}}},"expirySeconds":7776000,"description":"norn-ha lab '"${lab_name}"'"}' \
+      | jq -r '.key // empty')" || key=""
+    if [[ -n "${key}" ]]; then
+      put_env NORN_HA_TAILSCALE_AUTHKEY "${key}"
+      echo "minted Tailscale auth key."
+      return
+    fi
+    echo "Tailscale key mint failed; falling back to prompt." >&2
+  fi
+  local ts_key
+  printf 'Tailscale auth key (antiartificial tailnet, reusable, tag:norn-pilot-node) [hidden]: ' >&2
+  read -rs ts_key; echo >&2
+  [[ -n "${ts_key}" ]] || { echo "a Tailscale auth key is required (or launch with --no-tailscale)" >&2; exit 1; }
+  put_env NORN_HA_TAILSCALE_AUTHKEY "${ts_key}"
+}
+
+ensure_spaces_keys() {
+  if [[ -n "${NORN_HA_BACKUP_ACCESS_KEY:-}" && -n "${NORN_HA_BACKUP_SECRET_KEY:-}" ]]; then
+    echo "Spaces keys already set."
+  else
+    local ak="" sk="" resp=""
+    if [[ -n "${DIGITALOCEAN_TOKEN:-}" ]]; then
+      echo "minting a DO Spaces key via the DO API..."
+      resp="$(curl -fsSL -X POST "https://api.digitalocean.com/v2/spaces/keys" \
+        -H "Authorization: Bearer ${DIGITALOCEAN_TOKEN}" \
+        -H 'Content-Type: application/json' \
+        --data '{"name":"norn-ha-'"${lab_name}"'","grants":[{"bucket":"","permission":"fullaccess"}]}')" || resp=""
+      ak="$(printf '%s' "${resp}" | jq -r '.key.access_key // empty' 2>/dev/null || true)"
+      sk="$(printf '%s' "${resp}" | jq -r '.key.secret_key // empty' 2>/dev/null || true)"
+      [[ -n "${ak}" && -n "${sk}" ]] || echo "DO Spaces key mint unavailable; falling back to prompt." >&2
+    fi
+    if [[ -z "${ak}" || -z "${sk}" ]]; then
+      printf 'DO Spaces ACCESS key: ' >&2; read -r ak
+      printf 'DO Spaces SECRET key [hidden]: ' >&2; read -rs sk; echo >&2
+    fi
+    [[ -n "${ak}" && -n "${sk}" ]] || { echo "Spaces keys are required for state + WAL backup" >&2; exit 1; }
+    put_env NORN_HA_BACKUP_ACCESS_KEY "${ak}"
+    put_env NORN_HA_BACKUP_SECRET_KEY "${sk}"
+  fi
+  local region="${NORN_HA_BACKUP_REGION:-nyc3}"
+  put_env NORN_HA_BACKUP_REGION "${region}"
+  put_env NORN_HA_BACKUP_BUCKET "${NORN_HA_BACKUP_BUCKET:-${lab_name}-backups}"
+  put_env NORN_HA_BACKUP_ENDPOINT "${NORN_HA_BACKUP_ENDPOINT:-https://${region}.digitaloceanspaces.com}"
+}
+
+case "${command_name}" in
+  ensure)
+    ensure_registry_config
+    ;;
+  ensure-external)
+    ensure_tailscale_key
+    ensure_spaces_keys
+    ;;
+  status)
+    printf '%-32s %s\n' "NORN_HA_REGISTRY_CONFIG_PATH" "$([[ -n "${NORN_HA_REGISTRY_CONFIG_PATH:-}" && -s "${NORN_HA_REGISTRY_CONFIG_PATH:-/nonexistent}" ]] && echo present || echo MISSING)"
+    printf '%-32s %s\n' "NORN_HA_TAILSCALE_AUTHKEY" "$([[ -n "${NORN_HA_TAILSCALE_AUTHKEY:-}" ]] && echo present || echo MISSING)"
+    printf '%-32s %s\n' "NORN_HA_BACKUP_ACCESS_KEY" "$([[ -n "${NORN_HA_BACKUP_ACCESS_KEY:-}" ]] && echo present || echo MISSING)"
+    printf '%-32s %s\n' "NORN_HA_BACKUP_SECRET_KEY" "$([[ -n "${NORN_HA_BACKUP_SECRET_KEY:-}" ]] && echo present || echo MISSING)"
+    printf '%-32s %s\n' "NORN_HA_BACKUP_BUCKET" "${NORN_HA_BACKUP_BUCKET:-MISSING}"
+    ;;
+  help|*)
+    usage
+    ;;
+esac
