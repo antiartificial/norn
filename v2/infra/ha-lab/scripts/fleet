@@ -21,6 +21,9 @@ command_name="${1:-help}"
 
 need_doctl() { command -v doctl >/dev/null 2>&1 || { echo "doctl is required" >&2; exit 1; }; }
 
+tfvars_file="${terraform_dir}/terraform.tfvars"
+tfget() { awk -F= -v k="$1" '$0 ~ "^[[:space:]]*"k"[[:space:]]*=" {v=$2; sub(/#.*/,"",v); gsub(/[[:space:]"]/,"",v); print v; exit}' "${tfvars_file}" 2>/dev/null; }
+
 case "${command_name}" in
   sizes)
     need_doctl
@@ -99,12 +102,75 @@ case "${command_name}" in
     if [[ "${errs}" -gt 0 ]]; then echo "validate: ${errs} problem(s) — fix terraform.tfvars before launching."; exit 1; fi
     echo "validate: fleet description is valid."
     ;;
+  export)
+    # Emit the current terraform.tfvars as a portable Fleet Builder JSON (the same shape
+    # NornUI / the web builder share), so a lab can be opened/shared in the builder.
+    command -v jq >/dev/null 2>&1 || { echo "jq is required" >&2; exit 1; }
+    [[ -f "${tfvars_file}" ]] || { echo "no terraform.tfvars to export (run 'lab up NAME' first)" >&2; exit 1; }
+    name="$(tfget name_prefix)"; region="$(tfget region)"; region="${region:-nyc3}"
+    nsize="$(tfget node_size)"; nsize="${nsize:-s-2vcpu-4gb}"
+    ncount="$(tfget node_count)"; ncount="${ncount:-3}"
+    dbsize="$(tfget db_size)"; dbsize="${dbsize:-db-s-1vcpu-2gb}"
+    [[ "$(tfget use_managed_db)" == "true" ]] && mode="managed" || mode="self"
+    json="$(jq -n --arg name "${name}" --arg region "${region}" --arg nsize "${nsize}" \
+      --argjson ncount "${ncount}" --arg mode "${mode}" --arg dbsize "${dbsize}" '{
+        name:$name, region:$region, secondRegion:"sfo3", regions:1, edge:"none",
+        controlA:$ncount, controlB:0, appA:2, appB:2,
+        db:{mode:$mode, engine:"pg", replica:false, replicaRegion:"same", managedSize:$dbsize, selfSize:$nsize},
+        services:[], extras:[], sizes:{control:$nsize, app:$nsize}, positions:{}
+      }')"
+    out="${2:-}"
+    if [[ -n "${out}" ]]; then printf '%s\n' "${json}" >"${out}"; echo "wrote ${out}"; else printf '%s\n' "${json}"; fi
+    ;;
+  import)
+    # Translate a Fleet Builder JSON into terraform.tfvars for the co-located lab (primary
+    # region only). Preserves ssh_* in an existing tfvars; writes placeholders otherwise.
+    command -v jq >/dev/null 2>&1 || { echo "jq is required" >&2; exit 1; }
+    src="${2:-}"
+    [[ -n "${src}" && -f "${src}" ]] || { echo "usage: lab fleet import FLEET.json" >&2; exit 2; }
+    name="$(jq -r '.name // empty' "${src}")"
+    [[ -n "${name}" ]] || { echo "fleet JSON missing .name" >&2; exit 1; }
+    region="$(jq -r '.region // "nyc3"' "${src}")"
+    nsize="$(jq -r '.sizes.app // .sizes.control // "s-2vcpu-4gb"' "${src}")"
+    ncount="$(jq -r '.controlA // 3' "${src}")"
+    dbsize="$(jq -r '.db.managedSize // "db-s-1vcpu-2gb"' "${src}")"
+    [[ "$(jq -r '.db.mode // "self"' "${src}")" == "managed" ]] && umdb="true" || umdb="false"
+    (( ncount < 3 )) && ncount=3
+    (( ncount % 2 == 0 )) && ncount=$((ncount + 1))
+    if [[ -f "${tfvars_file}" ]]; then
+      setk() {
+        if grep -qE "^[[:space:]]*$1[[:space:]]*=" "${tfvars_file}"; then
+          sed -i '' -E "s|^([[:space:]]*$1[[:space:]]*=).*|\1 $2|" "${tfvars_file}"
+        else printf '%s = %s\n' "$1" "$2" >>"${tfvars_file}"; fi
+      }
+      setk name_prefix "\"${name}\""; setk region "\"${region}\""; setk node_size "\"${nsize}\""
+      setk node_count "${ncount}"; setk use_managed_db "${umdb}"; setk db_size "\"${dbsize}\""
+      echo "updated ${tfvars_file} from ${src} (ssh_* preserved). Review, then 'lab up ${name}'."
+    else
+      cat >"${tfvars_file}" <<EOF
+name_prefix = "${name}"
+owner       = "platform"
+expires_on  = "REPLACE-YYYY-MM-DD"
+region      = "${region}"
+node_count  = ${ncount}
+node_size   = "${nsize}"
+use_managed_db = ${umdb}
+db_size        = "${dbsize}"
+
+ssh_key_fingerprints = [ "REPLACE-with-doctl-ssh-key-fingerprint" ]
+ssh_source_cidrs     = [ "REPLACE-your.ip/32" ]
+EOF
+      echo "wrote ${tfvars_file} from ${src} — set expires_on + ssh_* before 'lab up ${name}'."
+    fi
+    ;;
   help|*)
     cat >&2 <<'EOF'
 usage:
-  lab fleet sizes [REGION]   list valid droplet sizes (specs + monthly price); filter to a region
-  lab fleet regions          list valid regions and whether each has DO Spaces
-  lab fleet validate [NAME]   check terraform.tfvars (region/size/count) vs catalog + policy + cost
+  lab fleet sizes [REGION]    list valid droplet sizes (specs + monthly price); filter to a region
+  lab fleet regions           list valid regions and whether each has DO Spaces
+  lab fleet validate [NAME]    check terraform.tfvars (region/size/count) vs catalog + policy + cost
+  lab fleet export [FILE]      emit terraform.tfvars as portable Fleet Builder JSON (stdout or FILE)
+  lab fleet import FLEET.json  translate a Fleet Builder JSON into terraform.tfvars (co-located lab)
 EOF
     exit 2
     ;;

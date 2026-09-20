@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useState, type ReactNode } from 'react'
+import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from 'react'
 import {
   Background, Controls, MiniMap, Panel, ReactFlow, useNodesState,
   type Edge, type NodeMouseHandler,
@@ -87,6 +87,32 @@ export function FleetBuilderPage() {
       const a = document.createElement('a')
       a.href = url; a.download = doc.filename; a.click()
       URL.revokeObjectURL(url)
+    }
+  }
+
+  // Share Fleet: the full FleetDraft as portable JSON (the whole topology, distinct from
+  // the applied cluster.yaml). Round-trips across NornUI, the web builder, and the CLI.
+  const draftJson = useMemo(() => JSON.stringify(draft, null, 2), [draft])
+  const fileRef = useRef<HTMLInputElement>(null)
+  const exportFleetJson = () => {
+    const url = URL.createObjectURL(new Blob([draftJson], { type: 'application/json' }))
+    const a = document.createElement('a')
+    a.href = url; a.download = `${draft.name || 'fleet'}.fleet.json`; a.click()
+    URL.revokeObjectURL(url)
+  }
+  const onImportFile = async (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.currentTarget.files?.[0]
+    e.currentTarget.value = ''
+    if (!file) return
+    try {
+      const parsed = JSON.parse(await file.text())
+      if (typeof parsed !== 'object' || parsed === null || typeof parsed.name !== 'string' || !parsed.db || !parsed.sizes) {
+        throw new Error('not a fleet JSON (missing name/db/sizes)')
+      }
+      mutate(() => parsed as FleetDraft)
+      setSelectedId(null)
+    } catch (err) {
+      window.alert(`Import failed: ${(err as Error).message}`)
     }
   }
 
@@ -210,6 +236,12 @@ export function FleetBuilderPage() {
           <div className="fleet-builder-actions">
             <CopyButton value={yaml} label="Copy fleet YAML" />
             <Button variant="secondary" icon="fa-download" onClick={downloadYaml}>Export fleet YAML</Button>
+          </div>
+          <div className="fleet-builder-actions">
+            <CopyButton value={draftJson} label="Copy fleet JSON" />
+            <Button variant="ghost" icon="fa-file-export" onClick={exportFleetJson}>Share fleet JSON</Button>
+            <Button variant="ghost" icon="fa-file-import" onClick={() => fileRef.current?.click()}>Import fleet JSON</Button>
+            <input ref={fileRef} type="file" accept="application/json,.json" style={{ display: 'none' }} onChange={onImportFile} />
           </div>
           <p className="fleet-builder-foot">{totalApps(draft)} app nodes · design-time preview · applying is done through the GitOps path</p>
         </aside>
