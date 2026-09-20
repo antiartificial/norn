@@ -108,8 +108,11 @@ refresh_registry_cred() {
 }
 
 put_nomad_var() {
-  echo "==> write nomad var nomad/jobs/feedmap-trinity (secrets + managed connections)"
-  local mysql redis app_key redis_host
+  # Nomad workload identity only grants a job read access to nomad/jobs/<its-own-
+  # job-id>. The service, migrate, and one-shot jobs have distinct ids, so write
+  # the same secret set to each job's own var path.
+  echo "==> write nomad vars (secrets + managed connections) for each trinity job"
+  local mysql redis app_key redis_host items
   mysql="$(tf output -json managed_mysql)"
   redis="$(tf output -json managed_redis)"
   [[ "${mysql}" != "null" ]] || { echo "managed_mysql output is null — provision with use_managed_mysql=true" >&2; exit 1; }
@@ -118,7 +121,7 @@ put_nomad_var() {
   # DO managed Redis requires TLS; phpredis honors a tls:// host prefix.
   redis_host="tls://$(jq -r '.host' <<<"${redis}")"
 
-  jq -cn \
+  items="$(jq -cn \
     --arg app_key "${app_key}" \
     --arg db_host "$(jq -r '.host' <<<"${mysql}")" \
     --arg db_port "$(jq -r '.port' <<<"${mysql}")" \
@@ -131,14 +134,19 @@ put_nomad_var() {
     --arg sp_bucket "${feed_bucket}" \
     --arg sp_region "${spaces_region}" \
     --arg sp_endpoint "${spaces_endpoint}" \
-    '{Path:"nomad/jobs/feedmap-trinity",Items:{
-       APP_KEY:$app_key,
-       DB_HOST:$db_host, DB_PORT:$db_port, DB_PASSWORD:$db_password,
-       REDIS_HOST:$redis_host, REDIS_PORT:$redis_port, REDIS_PASSWORD:$redis_password,
-       DIGITALOCEAN_SPACES_KEY:$sp_key, DIGITALOCEAN_SPACES_SECRET:$sp_secret,
-       DIGITALOCEAN_SPACES_BUCKET:$sp_bucket, DIGITALOCEAN_SPACES_REGION:$sp_region,
-       DIGITALOCEAN_SPACES_ENDPOINT:$sp_endpoint}}' \
-    | on_first 'nomad var put -force -in=json -' >/dev/null
+    '{APP_KEY:$app_key,
+      DB_HOST:$db_host, DB_PORT:$db_port, DB_PASSWORD:$db_password,
+      REDIS_HOST:$redis_host, REDIS_PORT:$redis_port, REDIS_PASSWORD:$redis_password,
+      DIGITALOCEAN_SPACES_KEY:$sp_key, DIGITALOCEAN_SPACES_SECRET:$sp_secret,
+      DIGITALOCEAN_SPACES_BUCKET:$sp_bucket, DIGITALOCEAN_SPACES_REGION:$sp_region,
+      DIGITALOCEAN_SPACES_ENDPOINT:$sp_endpoint}')"
+
+  local jobname
+  for jobname in feedmap-trinity feedmap-trinity-migrate feedmap-trinity-oneshot; do
+    jq -cn --argjson items "${items}" --arg path "nomad/jobs/${jobname}" '{Path:$path,Items:$items}' \
+      | on_first 'nomad var put -force -in=json -' >/dev/null
+    echo "    wrote nomad/jobs/${jobname}"
+  done
 }
 
 ensure_bucket() {
@@ -150,17 +158,22 @@ c.head_bucket(Bucket=b); print('    ok')"
 run_migrate() {
   echo "==> run one-shot migration (batch job)"
   scp -q "${job_migrate}" "root@${first_ip}:/tmp/feedmap-trinity-migrate.nomad.hcl"
+  # Purge any prior (terminal) batch job first: re-submitting an identical dead
+  # batch spec does not spawn fresh allocations.
+  on_first "nomad job stop -purge feedmap-trinity-migrate >/dev/null 2>&1 || true"
   on_first "nomad job run -detach -var 'image=${image}' /tmp/feedmap-trinity-migrate.nomad.hcl" >/dev/null
-  local i status client
-  for i in $(seq 1 60); do
-    status="$(on_first 'nomad job status -json feedmap-trinity-migrate 2>/dev/null' | jq -r '.[0].Status // empty' 2>/dev/null || true)"
-    if [[ "${status}" == "dead" ]]; then
-      client="$(on_first 'nomad job status -json feedmap-trinity-migrate' | jq -r '[.[0].Allocations[]?] | sort_by(.CreateTime) | last | .ClientStatus // "unknown"')"
-      if [[ "${client}" == "complete" ]]; then echo "    migration complete"; return 0; fi
-      echo "migration alloc ended with status: ${client}" >&2
-      on_first 'alloc=$(nomad job status -json feedmap-trinity-migrate | jq -r "[.[0].Allocations[]?]|sort_by(.CreateTime)|last|.ID"); nomad alloc logs -stderr "$alloc" 2>/dev/null | tail -30' >&2 || true
-      return 1
-    fi
+  # `nomad job status -json <id>` returns [{Allocations,Evaluations,Summary,...}]
+  # with no top-level Status field, so poll the latest allocation's ClientStatus.
+  local i client
+  for i in $(seq 1 100); do
+    client="$(on_first 'nomad job status -json feedmap-trinity-migrate 2>/dev/null' | jq -r '[.[0].Allocations[]?] | sort_by(.CreateTime) | last | .ClientStatus // "none"' 2>/dev/null || true)"
+    case "${client}" in
+      complete) echo "    migration complete"; return 0 ;;
+      failed|lost)
+        echo "migration alloc ended with status: ${client}" >&2
+        on_first 'alloc=$(nomad job status -json feedmap-trinity-migrate | jq -r "[.[0].Allocations[]?]|sort_by(.CreateTime)|last|.ID"); nomad alloc logs -stderr "$alloc" 2>/dev/null | tail -30' >&2 || true
+        return 1 ;;
+    esac
     sleep 3
   done
   echo "migration did not finish in time" >&2; return 1
@@ -197,16 +210,21 @@ case "${command_name}" in
   artisan)
     shift
     [[ $# -ge 1 ]] || { echo "usage: lab deploy-trinity artisan CMD..." >&2; exit 2; }
-    # Reuse the migrate batch shape to run an arbitrary one-shot artisan command.
-    args_json="$(printf '%s\n' "$@" | jq -R . | jq -cs '["artisan"] + .')"
-    tmp="$(mktemp)"; trap 'rm -f "${tmp}"' EXIT
-    sed -E "s#\\[\"artisan\", \"migrate\", \"--force\", \"--no-interaction\"\\]#${args_json}#" "${job_migrate}" \
-      | sed -E 's#job "feedmap-trinity-migrate"#job "feedmap-trinity-oneshot"#' >"${tmp}"
-    scp -q "${tmp}" "root@${first_ip}:/tmp/feedmap-trinity-oneshot.nomad.hcl"
-    on_first "nomad job run -detach -var 'image=${image}' /tmp/feedmap-trinity-oneshot.nomad.hcl" >/dev/null
-    echo "==> streaming one-shot logs (feedmap-trinity-oneshot)"
-    sleep 6
-    on_first 'alloc=$(nomad job status -json feedmap-trinity-oneshot | jq -r "[.[0].Allocations[]?]|sort_by(.CreateTime)|last|.ID"); nomad alloc logs "$alloc"; echo "--- stderr ---"; nomad alloc logs -stderr "$alloc"' || true
+    # Run an arbitrary artisan command as a one-shot batch job (full staging env +
+    # secrets). cmd = ["artisan", <args...>].
+    cmd_json="$(printf '%s\n' "$@" | jq -R . | jq -cs '["artisan"] + .')"
+    job_oneshot="${lab_root}/nomad/feedmap-trinity-oneshot.nomad.hcl"
+    scp -q "${job_oneshot}" "root@${first_ip}:/tmp/feedmap-trinity-oneshot.nomad.hcl"
+    on_first "nomad job stop -purge feedmap-trinity-oneshot >/dev/null 2>&1 || true"
+    on_first "nomad job run -detach -var 'image=${image}' -var 'cmd=${cmd_json}' /tmp/feedmap-trinity-oneshot.nomad.hcl" >/dev/null
+    echo "==> waiting for one-shot to finish (artisan $*)"
+    for _ in $(seq 1 60); do
+      st="$(on_first 'nomad job status -json feedmap-trinity-oneshot 2>/dev/null' | jq -r '.[0].Status // empty' 2>/dev/null || true)"
+      [[ "${st}" == "dead" ]] && break
+      sleep 3
+    done
+    echo "--- stdout ---"
+    on_first 'alloc=$(nomad job status -json feedmap-trinity-oneshot | jq -r "[.[0].Allocations[]?]|sort_by(.CreateTime)|last|.ID"); nomad alloc logs "$alloc" 2>/dev/null; echo "--- stderr ---"; nomad alloc logs -stderr "$alloc" 2>/dev/null' || true
     ;;
   feeds)
     echo "feed objects in ${feed_bucket}/${feed_prefix}/:"

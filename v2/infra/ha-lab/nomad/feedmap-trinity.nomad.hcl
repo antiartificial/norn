@@ -88,6 +88,11 @@ job "feedmap-trinity" {
         SESSION_DRIVER        = "file"
         HEALTH_CHECK_DATABASE = "true"
         HEALTH_CHECK_REDIS    = "true"
+        # Telescope instruments every HTTP request and blocks `php artisan serve`
+        # (single worker); disable it. Let the built-in server fork workers so a
+        # slow request can't starve the health check.
+        TELESCOPE_ENABLED      = "false"
+        PHP_CLI_SERVER_WORKERS = "4"
       }
 
       template {

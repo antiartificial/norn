@@ -69,6 +69,20 @@ MySQL with two 422s:
    **Valkey `8`**, **PostgreSQL `16`/`17`**. A plain major like `"8"` for MySQL
    is rejected.
 
+**DO managed MySQL rejects tables without a primary key.** MySQL 8.x on DO ships
+with `sql_require_primary_key = ON`, so migrations that create a PK-less table
+(e.g. Laravel's default `password_resets`) fail with `ERROR 3750 ... Unable to
+create or change a table without a primary key`. Disable it per-cluster (no app
+change, propagates in seconds):
+
+```sh
+doctl databases configuration update <mysql-id> --engine mysql \
+  --config-json '{"sql_require_primary_key": false}'
+```
+
+(Note: `doctl ... -o json | jq '.x // empty'` hides a `false` value — `//` treats
+false as absent. Use `select(has("x"))` to read booleans.)
+
 **Rule of thumb — verify before you apply.** The catalog is authoritative and
 changes over time; never hardcode a version on faith. Check with:
 

@@ -51,7 +51,7 @@ job "feedmap-trinity-migrate" {
         env         = true
         change_mode = "noop"
         data        = <<EOH
-{{ with nomadVar "nomad/jobs/feedmap-trinity" }}
+{{ with nomadVar "nomad/jobs/feedmap-trinity-migrate" }}
 APP_KEY={{ .APP_KEY }}
 DB_HOST={{ .DB_HOST }}
 DB_PORT={{ .DB_PORT }}
