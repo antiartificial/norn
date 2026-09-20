@@ -30,7 +30,7 @@ if [[ "${command_name}" == "help" || "${command_name}" == "-h" || "${command_nam
   exit 0
 fi
 
-image="registry.digitalocean.com/antiartificial/feedmap-trinity@sha256:3a09484aa1e2cd5b8ae558a3f7fa3d2f3172c07917070f361d969418706f2a02"
+image="registry.digitalocean.com/antiartificial/feedmap-trinity@sha256:a5d036a09ff993304af760cd4be5f2a7f431bea98eb34303cecbccaa330c7c21"
 job_service="${lab_root}/nomad/feedmap-trinity.nomad.hcl"
 job_migrate="${lab_root}/nomad/feedmap-trinity-migrate.nomad.hcl"
 
