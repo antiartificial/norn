@@ -30,7 +30,7 @@ if [[ "${command_name}" == "help" || "${command_name}" == "-h" || "${command_nam
   exit 0
 fi
 
-image="registry.digitalocean.com/antiartificial/feedmap-trinity@sha256:bdb688e966835baaa10716637f8efc3d0c6058b2e0c0ab9895bd6e7b12773828"
+image="registry.digitalocean.com/antiartificial/feedmap-trinity@sha256:3a09484aa1e2cd5b8ae558a3f7fa3d2f3172c07917070f361d969418706f2a02"
 job_service="${lab_root}/nomad/feedmap-trinity.nomad.hcl"
 job_migrate="${lab_root}/nomad/feedmap-trinity-migrate.nomad.hcl"
 
@@ -247,13 +247,15 @@ case "${command_name}" in
     exit "${rc}"
     ;;
   feeds)
-    echo "feed objects in ${feed_bucket}/${feed_prefix}/:"
+    echo "feed objects in ${feed_bucket} (source/ + ${feed_prefix}/):"
     spaces_py "
-p = c.get_paginator('list_objects_v2'); n = 0
-for page in p.paginate(Bucket=b, Prefix=pfx + '/'):
-    for o in page.get('Contents', []):
-        print(f\"  {o['Key']}  {o['Size']} bytes\"); n += 1
-print(f'({n} objects)' if n else '(no feeds published yet)')"
+p = c.get_paginator('list_objects_v2'); n = 0; tot = 0
+for pref in ['source/', pfx + '/']:
+    for page in p.paginate(Bucket=b, Prefix=pref):
+        for o in page.get('Contents', []):
+            if n < 12: print(f\"  {o['Key']}  {o['Size']} bytes\")
+            n += 1; tot += o['Size']
+print(f'... ({n} objects, {tot/1024/1024:.1f} MB total)' if n else '(no feeds published yet)')"
     ;;
   down)
     on_first 'nomad job stop -purge feedmap-trinity 2>/dev/null || true; nomad job stop -purge feedmap-trinity-migrate 2>/dev/null || true; nomad job stop -purge feedmap-trinity-oneshot 2>/dev/null || true'
