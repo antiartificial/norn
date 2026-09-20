@@ -29,7 +29,7 @@ if [[ "${command_name}" == "help" || "${command_name}" == "-h" || "${command_nam
   exit 0
 fi
 
-image="registry.digitalocean.com/antiartificial/feedmap-pipeline@sha256:7096ee896e3be111dc689bc55ee9cf50605daff4b945fb08d4fb5f477b1d620d"
+image="registry.digitalocean.com/antiartificial/feedmap-pipeline@sha256:d1ac4533e910144b25b23b30efa1f27657020def707f82d4405873ed58a8a662"
 
 lab_name="$(awk -F= '/^[[:space:]]*name_prefix[[:space:]]*=/ {v=$2; gsub(/[[:space:]"]/,"",v); print v; exit}' "${terraform_dir}/terraform.tfvars" 2>/dev/null || true)"
 [[ "${lab_name}" =~ ^[a-z][a-z0-9-]{2,23}$ ]] || { echo "no valid name_prefix in terraform.tfvars; run 'lab up' first" >&2; exit 1; }
