@@ -67,6 +67,9 @@ case "${command_name}" in
   deploy-app)
     "${script_dir}/deploy-app" "$@"
     ;;
+  deploy-trinity)
+    bash "${script_dir}/deploy-trinity" "$@"
+    ;;
   managed-db-grant)
     "${script_dir}/managed-db-grant" "$@"
     ;;
