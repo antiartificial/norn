@@ -131,27 +131,27 @@ variable "mysql_size" {
 }
 
 variable "mysql_version" {
-  description = "Managed MySQL major version. Only used when use_managed_mysql = true."
+  description = "Managed MySQL version. Only used when use_managed_mysql = true. DO currently offers 8.4."
   type        = string
-  default     = "8"
+  default     = "8.4"
 }
 
 variable "use_managed_redis" {
-  description = "Provision a DigitalOcean managed Redis cluster (cache/queue backend)."
+  description = "Provision a DigitalOcean managed Valkey cluster (Redis-protocol compatible cache/queue backend)."
   type        = bool
   default     = false
 }
 
 variable "redis_size" {
-  description = "Managed Redis node size slug. Only used when use_managed_redis = true."
+  description = "Managed Valkey node size slug. Only used when use_managed_redis = true."
   type        = string
   default     = "db-s-1vcpu-1gb"
 }
 
 variable "redis_version" {
-  description = "Managed Redis major version. Only used when use_managed_redis = true."
+  description = "Managed Valkey major version. Only used when use_managed_redis = true. DO currently offers 8."
   type        = string
-  default     = "7"
+  default     = "8"
 }
 
 variable "tailscale_authkey" {

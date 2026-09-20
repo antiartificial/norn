@@ -212,13 +212,14 @@ resource "digitalocean_database_firewall" "mysql" {
   }
 }
 
-# Optional managed Redis (opt-in via use_managed_redis) for cache/queue workloads. Redis clusters
-# expose a single default user + password (no per-db/user resources).
+# Optional managed Valkey (opt-in via use_managed_redis) for cache/queue workloads. DigitalOcean
+# replaced managed Redis with Valkey (Redis-protocol compatible), so clients keep using REDIS_*
+# config. Valkey clusters expose a single default user + password (no per-db/user resources).
 resource "digitalocean_database_cluster" "redis" {
   count = var.use_managed_redis ? 1 : 0
 
-  name                 = "${var.name_prefix}-redis"
-  engine               = "redis"
+  name                 = "${var.name_prefix}-valkey"
+  engine               = "valkey"
   version              = var.redis_version
   size                 = var.redis_size
   region               = var.region
