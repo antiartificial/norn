@@ -28,7 +28,7 @@ if [[ "${command_name}" == "help" || "${command_name}" == "-h" || "${command_nam
   exit 0
 fi
 
-image="registry.digitalocean.com/antiartificial/feedmap-trinity@sha256:bcc12ed6df2669bf05dac6836b6e0fefff4460c3c36468d702ef54ea7289ef77"
+image="registry.digitalocean.com/antiartificial/feedmap-trinity@sha256:fce56c1cc51e1432e70e85ffaa31047994c4de2914a6b1634a504d6560f0dd08"
 job_service="${lab_root}/nomad/feedmap-trinity.nomad.hcl"
 job_migrate="${lab_root}/nomad/feedmap-trinity-migrate.nomad.hcl"
 
