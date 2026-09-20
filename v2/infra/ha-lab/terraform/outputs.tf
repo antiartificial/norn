@@ -56,3 +56,25 @@ output "managed_db_uri" {
     digitalocean_database_db.app[0].name,
   ) : ""
 }
+
+output "managed_mysql" {
+  description = "Private connection fields for the optional managed MySQL. Null when disabled."
+  sensitive   = true
+  value = var.use_managed_mysql ? {
+    host     = digitalocean_database_cluster.mysql[0].private_host
+    port     = digitalocean_database_cluster.mysql[0].port
+    database = digitalocean_database_db.mysql_app[0].name
+    username = digitalocean_database_user.mysql_app[0].name
+    password = digitalocean_database_user.mysql_app[0].password
+  } : null
+}
+
+output "managed_redis" {
+  description = "Private connection fields for the optional managed Redis. Null when disabled."
+  sensitive   = true
+  value = var.use_managed_redis ? {
+    host     = digitalocean_database_cluster.redis[0].private_host
+    port     = digitalocean_database_cluster.redis[0].port
+    password = digitalocean_database_cluster.redis[0].password
+  } : null
+}

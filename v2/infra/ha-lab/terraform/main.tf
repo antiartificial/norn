@@ -172,6 +172,74 @@ resource "digitalocean_database_firewall" "pg" {
   }
 }
 
+# Optional managed MySQL (opt-in via use_managed_mysql) for apps that need MySQL/MariaDB — e.g. the
+# feedmap-trinity Laravel workload. Same VPC + droplet-only firewall as the managed PostgreSQL.
+resource "digitalocean_database_cluster" "mysql" {
+  count = var.use_managed_mysql ? 1 : 0
+
+  name                 = "${var.name_prefix}-mysql"
+  engine               = "mysql"
+  version              = var.mysql_version
+  size                 = var.mysql_size
+  region               = var.region
+  node_count           = 1
+  private_network_uuid = digitalocean_vpc.lab.id
+  tags                 = local.common_tags
+}
+
+resource "digitalocean_database_db" "mysql_app" {
+  count      = var.use_managed_mysql ? 1 : 0
+  cluster_id = digitalocean_database_cluster.mysql[0].id
+  name       = "feedmap"
+}
+
+resource "digitalocean_database_user" "mysql_app" {
+  count      = var.use_managed_mysql ? 1 : 0
+  cluster_id = digitalocean_database_cluster.mysql[0].id
+  name       = "feedmap"
+}
+
+resource "digitalocean_database_firewall" "mysql" {
+  count      = var.use_managed_mysql ? 1 : 0
+  cluster_id = digitalocean_database_cluster.mysql[0].id
+
+  dynamic "rule" {
+    for_each = digitalocean_droplet.node
+    content {
+      type  = "droplet"
+      value = rule.value.id
+    }
+  }
+}
+
+# Optional managed Redis (opt-in via use_managed_redis) for cache/queue workloads. Redis clusters
+# expose a single default user + password (no per-db/user resources).
+resource "digitalocean_database_cluster" "redis" {
+  count = var.use_managed_redis ? 1 : 0
+
+  name                 = "${var.name_prefix}-redis"
+  engine               = "redis"
+  version              = var.redis_version
+  size                 = var.redis_size
+  region               = var.region
+  node_count           = 1
+  private_network_uuid = digitalocean_vpc.lab.id
+  tags                 = local.common_tags
+}
+
+resource "digitalocean_database_firewall" "redis" {
+  count      = var.use_managed_redis ? 1 : 0
+  cluster_id = digitalocean_database_cluster.redis[0].id
+
+  dynamic "rule" {
+    for_each = digitalocean_droplet.node
+    content {
+      type  = "droplet"
+      value = rule.value.id
+    }
+  }
+}
+
 resource "digitalocean_project" "lab" {
   name        = "${var.name_prefix} (expires ${var.expires_on})"
   description = "Disposable Norn HA/PITR acceptance lab owned by ${var.owner}."
@@ -181,5 +249,7 @@ resource "digitalocean_project" "lab" {
     [for node in digitalocean_droplet.node : node.urn],
     [digitalocean_loadbalancer.regional_ingress.urn],
     var.use_managed_db ? [digitalocean_database_cluster.pg[0].urn] : [],
+    var.use_managed_mysql ? [digitalocean_database_cluster.mysql[0].urn] : [],
+    var.use_managed_redis ? [digitalocean_database_cluster.redis[0].urn] : [],
   )
 }
