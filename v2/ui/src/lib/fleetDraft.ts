@@ -188,40 +188,93 @@ export function costLines(d: FleetDraft): CostLine[] {
 
 export const totalMonthlyUSD = (d: FleetDraft): number => costLines(d).reduce((sum, l) => sum + l.usdMonthly, 0)
 
-export function toClusterYaml(d: FleetDraft): string {
-  const pool = (name: string, size: string, count: number) =>
-    `    - name: ${name}\n      size: ${size}\n      count: ${count}\n`
+export interface FleetDocument { filename: string; yaml: string }
+
+// Auto-derive capacity bounds from the single builder count. Stateful/quorum pools stay pinned;
+// stateless pools get one node of blue/green headroom. Mirror of FleetDraft.swift.
+function nodePoolYaml(name: string, size: string, min: number, desired: number, max: number, workload: string): string {
+  let out = `  ${name}:\n`
+  out += `    size: ${size}\n`
+  out += `    min: ${min}\n    desired: ${desired}\n    max: ${max}\n`
+  out += `    labels:\n      workload: ${workload}\n`
+  out += '    replacement:\n'
+  out += '      strategy: blueGreen\n'
+  out += '      requireCapacityHeadroom: true\n'
+  out += '      requireReadiness: true\n'
+  out += '      drainTimeout: 15m\n'
+  return out
+}
+
+function clusterDoc(d: FleetDraft, r: number, regionName: string): string {
   let out = ''
   out += 'apiVersion: norn.dev/fleet/v1\n'
   out += 'kind: Cluster\n'
-  out += `metadata:\n  name: ${d.name}\n`
-  out += 'spec:\n'
-  out += '  provider: digitalocean\n'
-  out += '  regions:\n'
-  out += `    - name: ${d.region}\n      role: primary\n`
-  if (d.regions === 2) out += `    - name: ${d.secondRegion}\n      role: secondary\n`
-  out += '  nodePools:\n'
-  out += pool(`control-${d.region}`, d.sizes.control, d.controlA)
-  if (d.regions === 2 && d.controlB > 0) out += pool(`control-${d.secondRegion}`, d.sizes.control, d.controlB)
-  out += pool(`app-${d.region}`, d.sizes.app, d.appA)
-  if (d.regions === 2) out += pool(`app-${d.secondRegion}`, d.sizes.app, d.appB)
-  out += '  database:\n'
-  if (d.db.mode === 'managed') {
-    out += `    managed: true\n    engine: ${d.db.engine}\n    size: ${d.db.managedSize}\n    region: ${d.region}\n`
-    if (d.db.replica) out += `    readReplica:\n      region: ${replicaResidesInRegionB(d) ? d.secondRegion : d.region}\n`
-  } else {
-    out += `    managed: false\n    engine: pg\n    patroni: 3\n    size: ${d.db.selfSize}\n    region: ${d.region}\n`
-  }
-  if (d.services.length > 0) {
-    out += '  services:\n'
-    for (const sv of d.services) {
-      out += `    - kind: ${sv.kind}\n      engine: ${sv.engine.toLowerCase()}\n      size: ${sv.size}\n      count: ${sv.count}\n`
+  out += `cluster:\n  name: ${d.name}\n  provider: digitalocean\n  region: ${regionName}\n`
+  out += `# objectStorage: DO Spaces (terraform state + WAL) in ${d.region}${hasSpaces(d.region) ? '' : ' — none available'}\n`
+  if (d.edge === 'cloudflare') out += '# edge: cloudflare in front of the regional load balancer\n'
+  out += 'nodePools:\n'
+
+  const controlCount = r === 0 ? d.controlA : d.controlB
+  if (controlCount > 0) out += nodePoolYaml(`control-${regionName}`, d.sizes.control, controlCount, controlCount, controlCount, 'control')
+  const appCount = r === 0 ? d.appA : d.appB
+  out += nodePoolYaml(`app-${regionName}`, d.sizes.app, appCount, appCount, appCount + 1, 'app')
+
+  // DB, cache/queue and self-managed test DBs live in the primary region.
+  if (r === 0) {
+    if (d.db.mode === 'self') out += nodePoolYaml(`db-${regionName}`, d.db.selfSize, 3, 3, 3, 'database')
+    let cacheN = 0, queueN = 0
+    for (const svc of d.services) {
+      const kind = svc.kind === 'cache' ? 'cache' : 'queue'
+      const n = svc.kind === 'cache' ? cacheN++ : queueN++
+      const poolName = n === 0 ? `${kind}-${regionName}` : `${kind}-${regionName}-${n + 1}`
+      out += nodePoolYaml(poolName, svc.size, svc.count, svc.count, svc.count + 1, kind)
     }
+    d.extras.forEach((ex, i) => {
+      if (ex.mode === 'self') out += nodePoolYaml(`db-test-${i + 1}-${regionName}`, ex.size, 1, 1, 1, 'database')
+    })
   }
-  out += '  ingress:\n    loadBalancer: do-regional\n'
-  if (d.edge === 'cloudflare') out += '    edge: cloudflare\n'
-  out += `  objectStorage:\n    spaces: ${hasSpaces(d.region)}\n`
   return out
+}
+
+function extrasDoc(d: FleetDraft): string | null {
+  const managedExtras = d.extras.filter(e => e.mode === 'managed')
+  if (d.db.mode !== 'managed' && d.edge !== 'cloudflare' && managedExtras.length === 0) return null
+
+  let out = '# Managed services not modelled by norn.dev/fleet/v1 — provisioned separately.\n'
+  out += 'apiVersion: norn.dev/fleet-extras/v1\n'
+  out += `cluster: ${d.name}\n`
+  if (d.db.mode === 'managed') {
+    out += `managedDatabase:\n  engine: ${d.db.engine}\n  size: ${d.db.managedSize}\n  region: ${d.region}\n`
+    if (d.db.replica) out += `  readReplica:\n    region: ${replicaResidesInRegionB(d) ? d.secondRegion : d.region}\n`
+  }
+  if (managedExtras.length > 0) {
+    out += 'testDatabases:\n'
+    for (const ex of managedExtras) out += `  - engine: ${ex.engine}\n    size: ${ex.size}\n    region: ${d.region}\n`
+  }
+  if (d.edge === 'cloudflare') out += 'edge:\n  provider: cloudflare\n'
+  out += `objectStorage:\n  spaces: ${hasSpaces(d.region)}\n  region: ${d.region}\n`
+  return out
+}
+
+/**
+ * The emitted documents: one valid single-region `norn.dev/fleet/v1` Cluster per region, plus a
+ * `fleet-extras.yaml` sidecar for managed services the contract doesn't model. 1:1 with the macOS
+ * client (NornUI/Features/FleetBuilder/FleetDraft.swift `fleetDocuments`).
+ */
+export function fleetDocuments(d: FleetDraft): FleetDocument[] {
+  const docs: FleetDocument[] = []
+  for (let r = 0; r < d.regions; r++) {
+    const regionName = r === 0 ? d.region : d.secondRegion
+    docs.push({ filename: `${d.name}-${regionName}.cluster.yaml`, yaml: clusterDoc(d, r, regionName) })
+  }
+  const extras = extrasDoc(d)
+  if (extras) docs.push({ filename: `${d.name}.fleet-extras.yaml`, yaml: extras })
+  return docs
+}
+
+/** Combined, human-readable view of every emitted document (for the YAML pane + clipboard). */
+export function clusterYaml(d: FleetDraft): string {
+  return fleetDocuments(d).map(doc => `# ===== ${doc.filename} =====\n${doc.yaml}`).join('\n')
 }
 
 // Void reference so the unused import lint doesn't trip if MANAGED_SIZES/NODE_SIZES aren't

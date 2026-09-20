@@ -1,6 +1,6 @@
 import { describe, it, expect } from 'vitest'
 import {
-  defaultDraft, validateDraft, hasBlockingFindings, costLines, totalMonthlyUSD, toClusterYaml,
+  defaultDraft, validateDraft, hasBlockingFindings, costLines, totalMonthlyUSD, fleetDocuments,
   type FleetDraft,
 } from './fleetDraft'
 
@@ -69,12 +69,46 @@ describe('fleet cost', () => {
   })
 })
 
-describe('cluster.yaml', () => {
-  it('emits a norn.dev/fleet/v1 Cluster', () => {
-    const yaml = toClusterYaml(defaultDraft())
-    expect(yaml).toContain('apiVersion: norn.dev/fleet/v1')
-    expect(yaml).toContain('kind: Cluster')
-    expect(yaml).toContain('name: norn-prod')
-    expect(yaml).toContain('managed: false')
+describe('fleet documents', () => {
+  it('default draft emits one valid norn.dev/fleet/v1 Cluster', () => {
+    const docs = fleetDocuments(defaultDraft())
+    expect(docs).toHaveLength(1)
+    expect(docs[0].filename).toBe('norn-prod-nyc3.cluster.yaml')
+    const y = docs[0].yaml
+    expect(y).toContain('apiVersion: norn.dev/fleet/v1')
+    expect(y).toContain('kind: Cluster')
+    expect(y).toContain('cluster:\n  name: norn-prod\n  provider: digitalocean\n  region: nyc3')
+    expect(y).toContain('nodePools:')
+    expect(y).toContain('control-nyc3:')
+    expect(y).toContain('app-nyc3:')
+    expect(y).toContain('db-nyc3:')
+    expect(y).toContain('workload: control')
+    // Control quorum is pinned; apps get one node of headroom.
+    expect(y).toContain('min: 3\n    desired: 3\n    max: 3')
+    expect(y).toContain('min: 2\n    desired: 2\n    max: 3')
+    expect(y).toContain('strategy: blueGreen')
+    expect(y).toContain('requireCapacityHeadroom: true')
+    expect(y).toContain('drainTimeout: 15m')
+  })
+
+  it('managed database goes to the fleet-extras sidecar', () => {
+    const d = { ...defaultDraft(), db: { ...defaultDraft().db, mode: 'managed' as const } }
+    const docs = fleetDocuments(d)
+    expect(docs).toHaveLength(2)
+    expect(docs[0].yaml).not.toContain('db-nyc3:')
+    expect(docs[1].filename).toBe('norn-prod.fleet-extras.yaml')
+    expect(docs[1].yaml).toContain('apiVersion: norn.dev/fleet-extras/v1')
+    expect(docs[1].yaml).toContain('managedDatabase:')
+  })
+
+  it('two regions emit one cluster document each', () => {
+    const d = { ...defaultDraft(), regions: 2, secondRegion: 'sfo3' }
+    const docs = fleetDocuments(d)
+    expect(docs.some(x => x.filename === 'norn-prod-nyc3.cluster.yaml')).toBe(true)
+    expect(docs.some(x => x.filename === 'norn-prod-sfo3.cluster.yaml')).toBe(true)
+    const b = docs.find(x => x.filename.includes('sfo3'))!.yaml
+    expect(b).toContain('region: sfo3')
+    expect(b).toContain('app-sfo3:')
+    expect(b).not.toContain('db-sfo3:')
   })
 })

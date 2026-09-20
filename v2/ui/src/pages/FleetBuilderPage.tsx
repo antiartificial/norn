@@ -9,7 +9,7 @@ import {
   type FleetFlowNode, type FleetRegionNode, type EdgeKind,
 } from '../lib/fleetLayout.ts'
 import {
-  defaultDraft, validateDraft, costLines, totalMonthlyUSD, toClusterYaml, totalApps,
+  defaultDraft, validateDraft, costLines, totalMonthlyUSD, clusterYaml, fleetDocuments, totalApps,
   type FleetDraft, type FleetDBMode, type FleetDBEngine, type FleetEdgeMode,
   type FleetReplicaRegion, type FleetServiceKind, type FleetSeverity,
 } from '../lib/fleetDraft.ts'
@@ -73,7 +73,7 @@ export function FleetBuilderPage() {
     const present = new Set(edges.map(e => (e.data as { kind?: EdgeKind } | undefined)?.kind).filter(Boolean) as EdgeKind[])
     return EDGE_ORDER.filter(k => present.has(k))
   }, [edges])
-  const yaml = useMemo(() => toClusterYaml(draft), [draft])
+  const yaml = useMemo(() => clusterYaml(draft), [draft])
 
   const onNodeClick = useCallback<NodeMouseHandler>((_, node) => setSelectedId(node.id), [])
   const onNodeDragStop = useCallback((_: unknown, node: { id: string; position: { x: number; y: number } }) => {
@@ -81,11 +81,13 @@ export function FleetBuilderPage() {
   }, [])
 
   const downloadYaml = () => {
-    const blob = new Blob([toClusterYaml(draft)], { type: 'text/yaml' })
-    const url = URL.createObjectURL(blob)
-    const a = document.createElement('a')
-    a.href = url; a.download = 'cluster.yaml'; a.click()
-    URL.revokeObjectURL(url)
+    // One valid file per document (a cluster.yaml per region + an optional fleet-extras.yaml).
+    for (const doc of fleetDocuments(draft)) {
+      const url = URL.createObjectURL(new Blob([doc.yaml], { type: 'text/yaml' }))
+      const a = document.createElement('a')
+      a.href = url; a.download = doc.filename; a.click()
+      URL.revokeObjectURL(url)
+    }
   }
 
   return (
@@ -206,8 +208,8 @@ export function FleetBuilderPage() {
             </ul>
           </section>
           <div className="fleet-builder-actions">
-            <CopyButton value={toClusterYaml(draft)} label="Copy cluster.yaml" />
-            <Button variant="secondary" icon="fa-download" onClick={downloadYaml}>Export cluster.yaml</Button>
+            <CopyButton value={yaml} label="Copy fleet YAML" />
+            <Button variant="secondary" icon="fa-download" onClick={downloadYaml}>Export fleet YAML</Button>
           </div>
           <p className="fleet-builder-foot">{totalApps(draft)} app nodes · design-time preview · applying is done through the GitOps path</p>
         </aside>
