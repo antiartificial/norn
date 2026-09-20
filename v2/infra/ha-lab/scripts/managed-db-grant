@@ -1,0 +1,40 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+# When the fleet uses a managed database (use_managed_db=true), grant the application role the
+# schema privileges that PostgreSQL 15+ withholds from freshly-created users by default. Without
+# this the app's first migration fails with "permission denied for schema public".
+#
+# The managed database is private (firewalled to the fleet droplets), so the grant is executed
+# from a fleet node — the same network path the application uses. Idempotent; a no-op when the
+# fleet uses the co-located self-managed database.
+#
+# usage: lab managed-db-grant
+
+script_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+lab_root="$(cd "${script_dir}/.." && pwd)"
+export PATH="${lab_root}/.tools/bin:${PATH}"
+tf() { terraform -chdir="${lab_root}/terraform" "$@"; }
+
+if [[ "$(tf output -raw use_managed_db 2>/dev/null || echo false)" != "true" ]]; then
+  echo "self-managed database; no managed grant required"
+  exit 0
+fi
+
+name="$(tf output -raw name_prefix)"
+first_public="$(tf output -json lab_nodes | jq -r 'to_entries | sort_by(.key) | first.value.public_ip')"
+[[ -n "${first_public}" && "${first_public}" != "null" ]] || { echo "no reachable node for the managed grant" >&2; exit 1; }
+
+dbid="$(doctl databases list --no-header --format ID,Name | awk -v n="${name}-pg" '$2==n{print $1}')"
+[[ -n "${dbid}" ]] || { echo "managed database ${name}-pg not found" >&2; exit 1; }
+
+# doadmin private connection string, retargeted at the application's database.
+admin_uri="$(doctl databases connection "${dbid}" --private --format URI --no-header | sed -E 's#/[^/?]+\?#/norn_test?#')"
+
+printf '%s\n' \
+  "GRANT ALL ON SCHEMA public TO norn_test;" \
+  "ALTER DATABASE norn_test OWNER TO norn_test;" \
+  | ssh -o BatchMode=yes -o StrictHostKeyChecking=accept-new "root@${first_public}" \
+      "docker run --rm -i -e U='${admin_uri}' postgres:16 sh -lc 'psql \"\$U\" -v ON_ERROR_STOP=1 -f -'" >/dev/null
+
+echo "granted schema privileges to norn_test on the managed database ${name}-pg"

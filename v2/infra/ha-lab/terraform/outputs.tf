@@ -38,3 +38,21 @@ output "regional_ingress" {
     port = var.ingress_port
   }
 }
+
+output "use_managed_db" {
+  description = "Whether the fleet uses a DigitalOcean managed database instead of co-located Patroni."
+  value       = var.use_managed_db
+}
+
+output "managed_db_uri" {
+  description = "Private DSN for the optional managed PostgreSQL. Empty string when self-managed."
+  sensitive   = true
+  value = var.use_managed_db ? format(
+    "postgres://%s:%s@%s:%d/%s?sslmode=require",
+    digitalocean_database_user.app[0].name,
+    digitalocean_database_user.app[0].password,
+    digitalocean_database_cluster.pg[0].private_host,
+    digitalocean_database_cluster.pg[0].port,
+    digitalocean_database_db.app[0].name,
+  ) : ""
+}

@@ -51,9 +51,15 @@ case "${command_name}" in
       printf 'NORN_HA_AGE_RECIPIENT=%s\n' "${recipient}" >>"${secret_file}"
     fi
     export NORN_HA_AGE_RECIPIENT="${recipient}"
-    # Nomad's Docker bridge reaches the node-local HAProxy/PostgreSQL endpoint
-    # through the Linux bridge gateway, not the container loopback address.
-    database_url="postgres://norn_test:${NORN_HA_NORN_DB_PASSWORD}@172.17.0.1:6432/norn_test?sslmode=require"
+    # If the fleet was provisioned with a managed database (use_managed_db), point the app at its
+    # private DSN; otherwise use the co-located Patroni endpoint reached through the Linux bridge
+    # gateway (Nomad's Docker bridge cannot use the container loopback address).
+    managed_uri="$(terraform -chdir="${lab_root}/terraform" output -raw managed_db_uri 2>/dev/null || true)"
+    if [[ -n "${managed_uri}" ]]; then
+      database_url="${managed_uri}"
+    else
+      database_url="postgres://norn_test:${NORN_HA_NORN_DB_PASSWORD}@172.17.0.1:6432/norn_test?sslmode=require"
+    fi
     printf 'DATABASE_URL: %s\n' "${database_url}" | sops --config /dev/null --encrypt --input-type yaml --output-type yaml --age "${recipient}" /dev/stdin >"${NORN_HA_TOY_SECRETS_PATH}"
     chmod 0600 "${NORN_HA_TOY_SECRETS_PATH}"
     git -C "${catalog_dir}" rev-parse HEAD

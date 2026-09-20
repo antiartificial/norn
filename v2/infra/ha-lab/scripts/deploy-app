@@ -45,6 +45,10 @@ echo "==> sync + replicate the app catalog"
 "${lab}" catalog sync >/dev/null
 "${lab}" converge --tags catalog
 
+# Managed database: ensure the app role can create its schema objects (PG15+ default revokes this).
+# No-op for the co-located self-managed database.
+"${lab}" managed-db-grant
+
 echo "==> trigger the Norn deploy pipeline (leader-following :8810)"
 saga="$(ssh -o BatchMode=yes "root@${first_public}" '
   set -a; source /etc/norn/norn.env; set +a
