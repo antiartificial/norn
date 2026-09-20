@@ -257,8 +257,22 @@ nomad acl policy apply norn-observability "${work}/observability.hcl" >/dev/null
 nomad acl policy apply anonymous "${work}/anonymous.hcl" >/dev/null
 create_nomad_token() {
   local accessor="$1" secret="$2" name="$3" policy="$4"
-  if nomad acl token info "${accessor}" >/dev/null 2>&1; then return; fi
-  printf '%s\n' "${secret}" | nomad acl token create -accessor "${accessor}" -name "${name}" -policy "${policy}" - >/dev/null
+  # Nomad >= 1.10 can import a token with a pre-specified accessor + secret, which
+  # keeps the token's SecretID in sync with the value already provisioned to its
+  # consumers (Norn controller API, Prometheus->Nomad scrape).
+  if nomad acl token create -help 2>&1 | grep -q -- '-accessor'; then
+    if nomad acl token info "${accessor}" >/dev/null 2>&1; then return; fi
+    printf '%s\n' "${secret}" | nomad acl token create -accessor "${accessor}" -name "${name}" -policy "${policy}" - >/dev/null
+    return
+  fi
+  # Nomad < 1.10 (e.g. the 1.9.x nodes) cannot pre-specify token IDs. Create the
+  # token idempotently by name with a server-generated accessor/secret so cutover
+  # can complete (notably `nomad setup consul`, which the data plane needs). The
+  # generated SecretID differs from the pre-provisioned value, so any consumer
+  # pinned to the pre-provisioned token needs the regenerated secret — see
+  # OBSERVATIONS.md. Workload identity + the data plane are unaffected.
+  if nomad acl token list -json 2>/dev/null | jq -e --arg n "${name}" 'any(.[]; .Name == $n)' >/dev/null 2>&1; then return; fi
+  nomad acl token create -name "${name}" -policy "${policy}" >/dev/null
 }
 create_nomad_token "$(jq -r .norn_accessor <<<"${payload}")" "$(jq -r .norn <<<"${payload}")" "Norn controller" norn-controller
 create_nomad_token "$(jq -r .observability_accessor <<<"${payload}")" "$(jq -r .observability <<<"${payload}")" "Prometheus" norn-observability

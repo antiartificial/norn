@@ -3,8 +3,9 @@ set -euo pipefail
 
 # Deploy feedmap-trinity onto the running lab via DIRECT Nomad submit (the image
 # is pre-built + pushed to the DO registry; the cluster pulls it — no git-clone
-# admission). Managed MySQL + Redis + a disposable DO Spaces bucket back it, all
-# wired through the nomad var "nomad/jobs/feedmap-trinity".
+# admission). Managed MySQL + Valkey + a dedicated feed prefix in the lab's
+# disposable Spaces bucket back it, wired through the nomad var
+# "nomad/jobs/feedmap-trinity".
 #
 # SAFETY: staging profile only. The job sets STAGING_WRITES_ENABLED=true and
 # REMOTE_WRITES_ENABLED=false, so derived feeds go to the disposable bucket and
@@ -28,18 +29,16 @@ if [[ "${command_name}" == "help" || "${command_name}" == "-h" || "${command_nam
   exit 0
 fi
 
-image="registry.digitalocean.com/antiartificial/feedmap-trinity@sha256:fce56c1cc51e1432e70e85ffaa31047994c4de2914a6b1634a504d6560f0dd08"
+image="registry.digitalocean.com/antiartificial/feedmap-trinity@sha256:bdb688e966835baaa10716637f8efc3d0c6058b2e0c0ab9895bd6e7b12773828"
 job_service="${lab_root}/nomad/feedmap-trinity.nomad.hcl"
 job_migrate="${lab_root}/nomad/feedmap-trinity-migrate.nomad.hcl"
 
-lab_name="$(tf output -raw name_prefix 2>/dev/null || true)"
-[[ -n "${lab_name}" ]] || { echo "no applied cluster; run 'lab up' first" >&2; exit 1; }
-first_ip="$(tf output -json lab_nodes | jq -r 'to_entries | sort_by(.key) | first.value.public_ip')"
-public_ips="$(tf output -json lab_nodes | jq -r 'to_entries | sort_by(.key)[] | .value.public_ip')"
-lb_ip="$(tf output -json regional_ingress 2>/dev/null | jq -r '.ip // empty' || true)"
+# Resolve the lab name from tfvars (not `tf output`, which needs the Spaces
+# backend creds we are about to load).
+lab_name="$(awk -F= '/^[[:space:]]*name_prefix[[:space:]]*=/ {v=$2; gsub(/[[:space:]"]/,"",v); print v; exit}' "${terraform_dir}/terraform.tfvars" 2>/dev/null || true)"
+[[ "${lab_name}" =~ ^[a-z][a-z0-9-]{2,23}$ ]] || { echo "no valid name_prefix in terraform.tfvars; run 'lab up' first" >&2; exit 1; }
 
-# Spaces credentials + endpoint from the per-lab secret store (same account keys
-# used for the TF state backend).
+# Spaces credentials + endpoint + Nomad token from the per-lab secret store.
 secret_file="$(${script_dir}/secrets path "${lab_name}")"
 [[ -f "${secret_file}" ]] || { echo "missing lab secret file; run 'lab up' first" >&2; exit 1; }
 set -a; # shellcheck disable=SC1090
@@ -47,20 +46,53 @@ source "${secret_file}"; set +a
 : "${NORN_HA_BACKUP_ACCESS_KEY:?Spaces access key not configured}"
 : "${NORN_HA_BACKUP_SECRET_KEY:?Spaces secret key not configured}"
 : "${NORN_HA_BACKUP_REGION:?Spaces region not configured}"
+: "${NORN_HA_NOMAD_MANAGEMENT_TOKEN:?Nomad management token not configured}"
+
+# Terraform state lives in the DO Spaces backend; export creds so `tf output` works.
+export AWS_ACCESS_KEY_ID="${NORN_HA_BACKUP_ACCESS_KEY}"
+export AWS_SECRET_ACCESS_KEY="${NORN_HA_BACKUP_SECRET_KEY}"
+export AWS_EC2_METADATA_DISABLED=true
+
+first_ip="$(tf output -json lab_nodes | jq -r 'to_entries | sort_by(.key) | first.value.public_ip')"
+public_ips="$(tf output -json lab_nodes | jq -r 'to_entries | sort_by(.key)[] | .value.public_ip')"
+lb_ip="$(tf output -json regional_ingress 2>/dev/null | jq -r '.ip // empty' || true)"
 
 spaces_region="${NORN_HA_BACKUP_REGION}"
 spaces_endpoint="https://${spaces_region}.digitaloceanspaces.com"
-feed_bucket="${lab_name}-feeds"
+# The only Spaces key available is the lab's scoped backup key, which has access
+# solely to the backup bucket. Reuse it for derived feeds under a dedicated
+# prefix (isolated from terraform/state and WAL). Disposable Norn infra — never a
+# customer/production bucket. Purge is prefix-scoped so it can never touch state.
+feed_bucket="${NORN_HA_BACKUP_BUCKET:?backup bucket not configured}"
+feed_prefix="feeds"
 
-s3() {
+# DO Spaces operations via boto3 in the lab Python venv (no aws CLI dependency).
+# $1 is a Python snippet with a ready boto3 client `c` and bucket name `b`.
+lab_python="${lab_root}/.tools/ansible/bin/python"
+spaces_py() {
   AWS_ACCESS_KEY_ID="${NORN_HA_BACKUP_ACCESS_KEY}" \
   AWS_SECRET_ACCESS_KEY="${NORN_HA_BACKUP_SECRET_KEY}" \
-  AWS_EC2_METADATA_DISABLED=true \
-  aws --endpoint-url "${spaces_endpoint}" --region "${spaces_region}" "$@"
+  SP_ENDPOINT="${spaces_endpoint}" SP_REGION="${spaces_region}" SP_BUCKET="${feed_bucket}" SP_PREFIX="${feed_prefix}" \
+  "${lab_python}" -c "
+import os, boto3
+c = boto3.client('s3', endpoint_url=os.environ['SP_ENDPOINT'], region_name=os.environ['SP_REGION'])
+b = os.environ['SP_BUCKET']
+pfx = os.environ.get('SP_PREFIX', '')
+$1"
 }
 
-# Run a command on the leader-following first node with the Nomad env loaded.
-on_first() { ssh -o BatchMode=yes "root@${first_ip}" "set -a; source /etc/norn/norn.env; set +a; export NOMAD_ADDR=\"\${NORN_NOMAD_ADDR}\"; $1"; }
+# Run a command on the leader-following first node with the Nomad mTLS env +
+# management token. Self-sufficient (does not depend on norn.env being updated by
+# a completed cutover): the API is HTTPS with client-cert + ACL after converge.
+on_first() {
+  ssh -o BatchMode=yes "root@${first_ip}" "
+    export NOMAD_ADDR=https://127.0.0.1:4646
+    export NOMAD_CACERT=/etc/nomad.d/pki/nomad-ca.pem
+    export NOMAD_CLIENT_CERT=/etc/nomad.d/pki/nomad.pem
+    export NOMAD_CLIENT_KEY=/etc/nomad.d/pki/nomad-key.pem
+    export NOMAD_TOKEN='${NORN_HA_NOMAD_MANAGEMENT_TOKEN}'
+    $1"
+}
 
 refresh_registry_cred() {
   echo "==> refresh short-lived registry credential on nodes"
@@ -110,13 +142,9 @@ put_nomad_var() {
 }
 
 ensure_bucket() {
-  echo "==> ensure disposable staging Spaces bucket: ${feed_bucket}"
-  if s3 s3api head-bucket --bucket "${feed_bucket}" >/dev/null 2>&1; then
-    echo "    exists"
-  else
-    s3 s3api create-bucket --bucket "${feed_bucket}" >/dev/null
-    echo "    created ${feed_bucket} in ${spaces_region}"
-  fi
+  echo "==> verify staging feed bucket reachable: ${feed_bucket} (prefix ${feed_prefix}/)"
+  spaces_py "
+c.head_bucket(Bucket=b); print('    ok')"
 }
 
 run_migrate() {
@@ -181,16 +209,28 @@ case "${command_name}" in
     on_first 'alloc=$(nomad job status -json feedmap-trinity-oneshot | jq -r "[.[0].Allocations[]?]|sort_by(.CreateTime)|last|.ID"); nomad alloc logs "$alloc"; echo "--- stderr ---"; nomad alloc logs -stderr "$alloc"' || true
     ;;
   feeds)
-    echo "objects in ${feed_bucket}:"
-    s3 s3 ls "s3://${feed_bucket}" --recursive 2>/dev/null || echo "(bucket empty or not created yet)"
+    echo "feed objects in ${feed_bucket}/${feed_prefix}/:"
+    spaces_py "
+p = c.get_paginator('list_objects_v2'); n = 0
+for page in p.paginate(Bucket=b, Prefix=pfx + '/'):
+    for o in page.get('Contents', []):
+        print(f\"  {o['Key']}  {o['Size']} bytes\"); n += 1
+print(f'({n} objects)' if n else '(no feeds published yet)')"
     ;;
   down)
     on_first 'nomad job stop -purge feedmap-trinity 2>/dev/null || true; nomad job stop -purge feedmap-trinity-migrate 2>/dev/null || true; nomad job stop -purge feedmap-trinity-oneshot 2>/dev/null || true'
     echo "trinity jobs stopped."
     if [[ "${2:-}" == "--purge" ]]; then
-      s3 s3 rb "s3://${feed_bucket}" --force 2>/dev/null && echo "purged bucket ${feed_bucket}" || echo "bucket ${feed_bucket} not removed"
+      # Prefix-scoped: delete ONLY the feed prefix. Never the bucket or state.
+      spaces_py "
+assert pfx and pfx not in ('', 'terraform', 'wal'), 'unsafe prefix'
+p = c.get_paginator('list_objects_v2'); n = 0
+for page in p.paginate(Bucket=b, Prefix=pfx + '/'):
+    for o in page.get('Contents', []):
+        c.delete_object(Bucket=b, Key=o['Key']); n += 1
+print(f'purged {n} object(s) under {b}/{pfx}/')"
     else
-      echo "kept staging bucket ${feed_bucket} (pass --purge to delete)"
+      echo "kept feed objects under ${feed_bucket}/${feed_prefix}/ (pass --purge to delete)"
     fi
     ;;
   *)
