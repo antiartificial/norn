@@ -2,9 +2,12 @@ variable "image" {
   type = string
 }
 
-# Artisan invocation as argv, e.g. ["artisan","db:seed","--class=ASeed","--force"].
+# Shell command to run, e.g. "php artisan db:seed --force" or a chain like
+# "php artisan parser:observe 5 && php artisan feeds:publish-staging 5".
+# A chain matters because parse writes to the alloc's local storage/app and
+# feeds:publish-staging reads it — they must run in the same allocation.
 variable "cmd" {
-  type = list(string)
+  type = string
 }
 
 # One-shot artisan runner for feedmap-trinity staging operations (seed, ingest,
@@ -33,8 +36,8 @@ job "feedmap-trinity-oneshot" {
 
       config {
         image   = var.image
-        command = "php"
-        args    = var.cmd
+        command = "sh"
+        args    = ["-lc", var.cmd]
       }
 
       env {
