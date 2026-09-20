@@ -1,0 +1,147 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+# Deploy feedmap-pipeline onto the running lab via DIRECT Nomad submit. It reads
+# raw dealer-inventory source feeds that trinity mirrored to DO Spaces (under
+# source/), ingests them into the co-located Patroni PostgreSQL inventory schema,
+# and serves them over its read-only API.
+#
+# The pipeline DB (feedmap_inventory + owner/writer/reader roles) is bootstrapped
+# separately as the PG superuser; this script only uses the least-privilege role
+# DSNs (from the lab secret file). See BREAK-GLASS.md.
+#
+# usage:
+#   lab deploy-pipeline init                  apply the inventory schema (migrations, owner role)
+#   lab deploy-pipeline ingest KEY DEALER     ingest a Spaces source feed (KEY under source/), DEALER = dealer id
+#   lab deploy-pipeline api                   deploy the read-only inventory API (service)
+#   lab deploy-pipeline query DEALER          query current inventory for DEALER via the API
+#   lab deploy-pipeline down                  stop the pipeline jobs
+
+script_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+lab_root="$(cd "${script_dir}/.." && pwd)"
+export PATH="${lab_root}/.tools/bin:${PATH}"
+terraform_dir="${lab_root}/terraform"
+tf() { terraform -chdir="${terraform_dir}" "$@"; }
+
+command_name="${1:-help}"
+if [[ "${command_name}" == "help" || "${command_name}" == "-h" || "${command_name}" == "--help" ]]; then
+  sed -n '11,17p' "${BASH_SOURCE[0]}" | sed 's/^# \{0,1\}//'
+  exit 0
+fi
+
+image="registry.digitalocean.com/antiartificial/feedmap-pipeline@sha256:7096ee896e3be111dc689bc55ee9cf50605daff4b945fb08d4fb5f477b1d620d"
+
+lab_name="$(awk -F= '/^[[:space:]]*name_prefix[[:space:]]*=/ {v=$2; gsub(/[[:space:]"]/,"",v); print v; exit}' "${terraform_dir}/terraform.tfvars" 2>/dev/null || true)"
+[[ "${lab_name}" =~ ^[a-z][a-z0-9-]{2,23}$ ]] || { echo "no valid name_prefix in terraform.tfvars; run 'lab up' first" >&2; exit 1; }
+secret_file="$(${script_dir}/secrets path "${lab_name}")"
+[[ -f "${secret_file}" ]] || { echo "missing lab secret file; run 'lab up' first" >&2; exit 1; }
+set -a; # shellcheck disable=SC1090
+source "${secret_file}"; set +a
+: "${NORN_HA_NOMAD_MANAGEMENT_TOKEN:?Nomad management token not configured}"
+: "${NORN_HA_PIPELINE_OWNER_PASSWORD:?pipeline owner password not in secret file (bootstrap the DB first)}"
+: "${NORN_HA_PIPELINE_WRITER_PASSWORD:?pipeline writer password not in secret file}"
+: "${NORN_HA_PIPELINE_READER_PASSWORD:?pipeline reader password not in secret file}"
+: "${NORN_HA_BACKUP_ACCESS_KEY:?Spaces access key not configured}"
+: "${NORN_HA_BACKUP_SECRET_KEY:?Spaces secret key not configured}"
+: "${NORN_HA_BACKUP_REGION:?Spaces region not configured}"
+: "${NORN_HA_BACKUP_BUCKET:?Spaces bucket not configured}"
+
+export AWS_ACCESS_KEY_ID="${NORN_HA_BACKUP_ACCESS_KEY}"
+export AWS_SECRET_ACCESS_KEY="${NORN_HA_BACKUP_SECRET_KEY}"
+export AWS_EC2_METADATA_DISABLED=true
+
+first_ip="$(tf output -json lab_nodes | jq -r 'to_entries | sort_by(.key) | first.value.public_ip')"
+spaces_region="${NORN_HA_BACKUP_REGION}"
+spaces_endpoint="https://${spaces_region}.digitaloceanspaces.com"
+
+# Least-privilege role DSNs; from a container the co-located PG is 172.17.0.1:6432.
+pg="172.17.0.1:6432/feedmap_inventory?sslmode=require"
+owner_dsn="postgresql://feedmap_inventory_owner:${NORN_HA_PIPELINE_OWNER_PASSWORD}@${pg}"
+writer_dsn="postgresql://feedmap_inventory_writer:${NORN_HA_PIPELINE_WRITER_PASSWORD}@${pg}"
+read_dsn="postgresql://feedmap_inventory_reader:${NORN_HA_PIPELINE_READER_PASSWORD}@${pg}"
+
+on_first() {
+  ssh -o BatchMode=yes "root@${first_ip}" "
+    export NOMAD_ADDR=https://127.0.0.1:4646
+    export NOMAD_CACERT=/etc/nomad.d/pki/nomad-ca.pem
+    export NOMAD_CLIENT_CERT=/etc/nomad.d/pki/nomad.pem
+    export NOMAD_CLIENT_KEY=/etc/nomad.d/pki/nomad-key.pem
+    export NOMAD_TOKEN='${NORN_HA_NOMAD_MANAGEMENT_TOKEN}'
+    $1"
+}
+
+put_var() { # $1=job path suffix, $2=json items
+  jq -cn --argjson items "$2" --arg path "nomad/jobs/$1" '{Path:$path,Items:$items}' \
+    | on_first 'nomad var put -force -in=json -' >/dev/null
+}
+
+# Wait for a batch job's latest alloc to reach a terminal state; echo status.
+wait_batch() { # $1=jobid
+  local i client=""
+  for i in $(seq 1 100); do
+    client="$(on_first "nomad job status -json $1 2>/dev/null" | jq -r '[.[0].Allocations[]?]|sort_by(.CreateTime)|last|.ClientStatus // "none"' 2>/dev/null || true)"
+    case "${client}" in complete|failed|lost) break ;; esac
+    sleep 3
+  done
+  echo "${client}"
+}
+dump_logs() { # $1=jobid
+  on_first "alloc=\$(nomad job status -json $1 | jq -r '[.[0].Allocations[]?]|sort_by(.CreateTime)|last|.ID'); nomad alloc logs \$alloc 2>/dev/null; echo '=== stderr ==='; nomad alloc logs -stderr \$alloc 2>/dev/null" || true
+}
+
+case "${command_name}" in
+  init)
+    put_var feedmap-pipeline-initdb "$(jq -cn --arg o "${owner_dsn}" '{OWNER_DSN:$o}')"
+    scp -q "${lab_root}/nomad/feedmap-pipeline-initdb.nomad.hcl" "root@${first_ip}:/tmp/"
+    on_first "nomad job stop -purge feedmap-pipeline-initdb >/dev/null 2>&1 || true"
+    on_first "nomad job run -detach -var 'image=${image}' /tmp/feedmap-pipeline-initdb.nomad.hcl" >/dev/null
+    echo "==> applying inventory schema (init-db)"
+    st="$(wait_batch feedmap-pipeline-initdb)"; echo "--- init-db (${st}) ---"; dump_logs feedmap-pipeline-initdb
+    [[ "${st}" == "complete" ]]
+    ;;
+  ingest)
+    key="${2:-}"; dealer="${3:-}"
+    [[ -n "${key}" && -n "${dealer}" ]] || { echo "usage: lab deploy-pipeline ingest KEY DEALER   (KEY under source/, e.g. vauto/MP21047.txt)" >&2; exit 2; }
+    feed_file="$(basename "${key}")"
+    identifier="${feed_file%.*}"
+    feed_url="s3::${spaces_endpoint}/${NORN_HA_BACKUP_BUCKET}/source/${key}?region=${spaces_region}"
+    put_var feedmap-pipeline-ingest "$(jq -cn --arg o "${owner_dsn}" --arg w "${writer_dsn}" --arg r "${read_dsn}" '{OWNER_DSN:$o,WRITER_DSN:$w,READ_DSN:$r}')"
+    scp -q "${lab_root}/nomad/feedmap-pipeline-ingest.nomad.hcl" "root@${first_ip}:/tmp/"
+    on_first "nomad job stop -purge feedmap-pipeline-ingest >/dev/null 2>&1 || true"
+    on_first "nomad job run -detach \
+      -var 'image=${image}' -var 'feed_url=${feed_url}' -var 'feed_file=${feed_file}' \
+      -var 'dealer_id=${dealer}' -var 'dealer_identifier=${identifier}' \
+      -var 'sp_key=${NORN_HA_BACKUP_ACCESS_KEY}' -var 'sp_secret=${NORN_HA_BACKUP_SECRET_KEY}' \
+      /tmp/feedmap-pipeline-ingest.nomad.hcl" >/dev/null
+    echo "==> ingesting source/${key} (dealer ${dealer})"
+    st="$(wait_batch feedmap-pipeline-ingest)"; echo "--- ingest (${st}) ---"; dump_logs feedmap-pipeline-ingest
+    [[ "${st}" == "complete" ]]
+    ;;
+  api)
+    put_var feedmap-pipeline-api "$(jq -cn --arg r "${read_dsn}" '{READ_DSN:$r}')"
+    scp -q "${lab_root}/nomad/feedmap-pipeline-api.nomad.hcl" "root@${first_ip}:/tmp/"
+    on_first "nomad job run -detach -var 'image=${image}' /tmp/feedmap-pipeline-api.nomad.hcl" >/dev/null
+    echo "==> waiting for API service"
+    for _ in $(seq 1 40); do
+      r="$(on_first 'nomad job status -json feedmap-pipeline-api 2>/dev/null' | jq -r '.[0].Summary.Summary.api.Running // 0' 2>/dev/null || echo 0)"
+      [[ "${r}" == "1" ]] && { echo "feedmap-pipeline-api running"; break; }
+      sleep 3
+    done
+    ;;
+  query)
+    dealer="${2:-}"; limit="${3:-5}"; [[ -n "${dealer}" ]] || { echo "usage: lab deploy-pipeline query DEALER [LIMIT]" >&2; exit 2; }
+    # The read API serves 127.0.0.1:8765 in the alloc, but the slim image has no
+    # curl; `inventory latest` reads the same DB via the reader role.
+    on_first "alloc=\$(nomad job status -json feedmap-pipeline-api | jq -r '[.[0].Allocations[]?|select(.ClientStatus==\"running\")]|sort_by(.CreateTime)|last|.ID'); \
+      echo '--- inventory latest --dealer-id ${dealer} ---'; \
+      nomad alloc exec -task api \$alloc feedmap-pipeline inventory latest --dealer-id ${dealer} --limit ${limit} 2>/dev/null"
+    ;;
+  down)
+    on_first 'for j in feedmap-pipeline-api feedmap-pipeline-ingest feedmap-pipeline-initdb; do nomad job stop -purge "$j" 2>/dev/null || true; done'
+    echo "pipeline jobs stopped."
+    ;;
+  *)
+    sed -n '11,17p' "${BASH_SOURCE[0]}" | sed 's/^# \{0,1\}//'
+    exit 2
+    ;;
+esac
