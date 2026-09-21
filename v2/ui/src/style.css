@@ -432,6 +432,41 @@ body {
   color: var(--text-2);
   font-family: var(--mono);
 }
+.audit-route {
+  flex: 1 1 240px;
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+.audit-detail {
+  flex-basis: 100%;
+}
+.audit-detail summary {
+  color: var(--text-3);
+  cursor: pointer;
+  font-size: 12px;
+}
+.audit-meta {
+  display: grid;
+  gap: 4px;
+  margin: 8px 0 0;
+}
+.audit-meta > div {
+  display: flex;
+  gap: 8px;
+}
+.audit-meta dt {
+  color: var(--text-3);
+  flex: 0 0 64px;
+  font-size: 11px;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+}
+.audit-meta dd {
+  color: var(--text-2);
+  margin: 0;
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
 .platform-summary {
   display: grid;
   gap: 10px;
