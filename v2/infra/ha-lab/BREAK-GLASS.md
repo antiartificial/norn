@@ -6,17 +6,22 @@ with the `name_prefix` from `terraform/terraform.tfvars` (e.g. `norn-trinity`).
 
 ## Where the secrets live
 
-Every lab secret is in a single per-operator file, mode `0600`:
+Two forms of the same material, both mode `0600`, under `~/.config/norn/ha-lab/`:
 
 ```
-~/.config/norn/ha-lab/<lab>.env          # print the path: lab secrets path <lab>
+<lab>.env         # plaintext WORKING copy every script sources (print path: lab secrets path <lab>)
+<lab>.sops.env    # SEALED, multi-recipient copy — the shared + backed-up artifact (SOPS/age)
+<lab>.recipients  # age public keys allowed to open the sealed copy
 ```
 
-Source it to load everything:
+Source the working copy to load everything:
 
 ```sh
 set -a; source "$(scripts/lab secrets path <lab>)"; set +a
 ```
+
+A new operator, or a machine that only has the sealed copy, materializes the
+working copy from the sealed one — see §0.
 
 Key entries:
 
@@ -35,6 +40,68 @@ Node IPs (SSH targets):
 
 ```sh
 doctl compute droplet list --format Name,PublicIPv4 --no-header | grep <lab>
+```
+
+## 0. Operator identity, sealing & recovery (multi-operator)
+
+Secrets live in three tiers; the **root-of-trust never lives in the cluster or
+in Spaces alone**:
+
+| Tier | What | Where |
+|---|---|---|
+| Root-of-trust | your personal age **private** key; the DO/Spaces bootstrap creds | your **password manager**, per operator |
+| Operational | the lab secret (DB / ACL / API tokens, …) | working `<lab>.env` + sealed `<lab>.sops.env` |
+| Sealed backup | ciphertext copy of the sealed file | DO Spaces (`secrets/<lab>.sops.env`, versioned) |
+
+**Identify & guard your local secret**
+
+```sh
+scripts/lab secrets operator-init     # once per machine: creates ~/.config/norn/operator-age.key (0600)
+scripts/lab secrets operator-id       # prints your age recipient (safe to share)
+```
+
+- `~/.config/norn/operator-age.key` is your break-glass identity — the **only**
+  thing that opens a sealed secret. Copy it into your password manager. If a
+  laptop is lost, an existing operator runs `secrets rm-operator <lab> <that
+  recipient>` and rotates.
+- The working `<lab>.env` is plaintext at `0600`; the sealed `<lab>.sops.env`
+  and `<lab>.recipients` are safe to sync / back up (ciphertext / public keys).
+
+**Onboard / offboard operators**
+
+```sh
+scripts/lab secrets add-operator <lab> age1...   # grant (colleague runs `secrets operator-id`) + re-seal
+scripts/lab secrets operators <lab>              # list recipients
+scripts/lab secrets rm-operator <lab> age1...    # revoke + re-seal (then rotate — see NOTE it prints)
+```
+
+**Read a value (break-glass; no persistent plaintext)**
+
+```sh
+scripts/lab secrets view <lab> NORN_HA_NOMAD_MANAGEMENT_TOKEN   # one key
+scripts/lab secrets view <lab>                                  # everything
+```
+
+**Back up to / recover from Spaces**
+
+```sh
+scripts/lab secrets seal <lab>     # encrypt working -> sealed, to every recipient
+scripts/lab secrets push <lab>     # upload sealed -> Spaces (a new version each push)
+
+# Fresh machine / disaster recovery (no working copy yet):
+export NORN_HA_BACKUP_ACCESS_KEY=... NORN_HA_BACKUP_SECRET_KEY=... \
+       NORN_HA_BACKUP_REGION=... NORN_HA_BACKUP_BUCKET=...   # from your password manager
+scripts/lab secrets pull <lab>     # download sealed from Spaces
+scripts/lab secrets open <lab>     # decrypt -> working <lab>.env (needs your operator key)
+```
+
+**Raw-tools fallback** — if the `lab` / `secrets` wrapper is unavailable, decrypt
+with age/sops directly (this is the true offline break-glass):
+
+```sh
+export SOPS_AGE_KEY_FILE=~/.config/norn/operator-age.key
+sops --config /dev/null -d --input-type binary --output-type binary \
+     ~/.config/norn/ha-lab/<lab>.sops.env      # prints the decrypted .env to stdout
 ```
 
 ## 1. App nodes (SSH)
