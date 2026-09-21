@@ -11,7 +11,7 @@ const DeploysPage = lazy(() => import('./pages/DeploysPage.tsx').then((module) =
 const ReleasesPage = lazy(() => import('./pages/ReleasesPage.tsx').then((module) => ({ default: module.ReleasesPage })))
 const IncidentsPage = lazy(() => import('./pages/IncidentsPage.tsx').then((module) => ({ default: module.IncidentsPage })))
 const OperationsPage = lazy(() => import('./pages/OperationsPage.tsx').then((module) => ({ default: module.OperationsPage })))
-const AuditPage = lazy(() => import('./pages/AuditPage.tsx').then((module) => ({ default: module.AuditPage })))
+const ActivityLogPage = lazy(() => import('./pages/ActivityLogPage.tsx').then((module) => ({ default: module.ActivityLogPage })))
 const FleetPage = lazy(() => import('./pages/FleetPage.tsx').then((module) => ({ default: module.FleetPage })))
 const FleetBuilderPage = lazy(() => import('./pages/FleetBuilderPage.tsx').then((module) => ({ default: module.FleetBuilderPage })))
 const TopologyView = lazy(() => import('./components/TopologyView.tsx').then((module) => ({ default: module.TopologyView })))
@@ -51,7 +51,7 @@ export function App() {
               <Route path="/incidents" element={<IncidentsPage />} />
               <Route path="/operations" element={<OperationsPage />} />
               <Route path="/operations/:sagaId" element={<OperationsPage />} />
-              <Route path="/audit" element={<AuditPage />} />
+              <Route path="/activity-log" element={<ActivityLogPage />} />
               <Route path="/fleet" element={runtime.fleetAvailable ? <FleetPage /> : <EmptyState icon="!" title="Fleet unavailable" hint="This server does not advertise the complete fleet-v1 capability set." />} />
               <Route path="/fleet-builder" element={<FleetBuilderPage />} />
               <Route
