@@ -117,6 +117,39 @@ Nomad, Consul, Patroni, Docker, and the PG endpoints below.
 
 ## 2. Pods / allocations (exec + logs)
 
+The control API and the Nomad/Consul UIs are **Tailscale/VPC-only** (never
+public). Reach them from your laptop with `lab connect`, which prints a node's
+Tailscale endpoint or an SSH-tunnel command:
+
+```sh
+lab connect                                            # prints NORN_ADDR + token
+# tunnel fallback if you're not on the tailnet:
+ssh -N -L 8810:127.0.0.1:8810 root@<node-public-ip>    # then NORN_ADDR=http://127.0.0.1:8810
+```
+
+**Escalation ladder — prefer the managed path; drop to the node only if needed.**
+
+**(a) Managed exec — over the control API, no node login:**
+
+```sh
+export NORN_ADDR=http://<tailscale-or-tunnel-host>:8810
+export NORN_API_TOKEN="$NORN_HA_NORN_API_TOKEN"
+norn exec <app> -- sh                    # shell into a running allocation
+norn exec <app> -p <process> -- <cmd>    # target a specific process/group
+```
+
+The NornUI web app exposes the same thing as a per-app browser terminal
+(xterm). Both ride the `apps:exec` scope — the break-glass `NORN_API_TOKEN` is a
+full-scope legacy token, so it works without device enrollment.
+
+**(b) Guarded exec sessions** (`norn.exec/v1`) — the audited path for enrolled
+operators: a device-bound token plus a one-time `X-Norn-Step-Up` challenge gate
+`POST /api/v1/apps/<app>/exec-sessions`, and every session is recorded in the
+`exec_sessions` table (`norn production` / admin can list them). Use this when
+you want the exec attributed and logged rather than the fast token above.
+
+**(c) Node-level `nomad alloc exec`** (deepest fallback — direct data plane):
+
 Nomad's API is HTTPS + ACL after converge. `norn.env` on the node is not a
 reliable source (its `NORN_NOMAD_ADDR` stays `http://…` until cutover fully
 finishes) — set the mTLS env explicitly:
@@ -145,6 +178,11 @@ export CONSUL_CLIENT_KEY=/etc/consul.d/pki/consul-key.pem
 export CONSUL_HTTP_TOKEN="$NORN_HA_CONSUL_MANAGEMENT_TOKEN"
 consul members; consul catalog services
 ```
+
+The Nomad (`:4646`) and Consul (`:8501`) web UIs bind each node's **private** IP.
+Browse to a node's Tailscale IP (or through the SSH tunnel above) to reach them —
+but both need the mTLS client cert + token, so the CLI above is usually the
+faster break-glass than the browser UI.
 
 ## 3. Co-located PostgreSQL (Patroni)
 
