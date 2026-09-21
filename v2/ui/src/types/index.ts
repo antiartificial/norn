@@ -228,6 +228,44 @@ export interface OperationsResponse {
   operations: Operation[]
 }
 
+export interface MutationAuditIncident {
+  id: string
+  auditEventId: string
+  reasonCode: string
+  explanation: string
+  acknowledgedBy: string
+  acknowledgedAt: string
+  keyId?: string
+  integrity?: string
+}
+
+export interface MutationAuditEvent {
+  id: string
+  requestId?: string
+  principalSubject: string
+  tokenId?: string
+  deviceId?: string
+  scopes?: string[]
+  method: string
+  path: string
+  clientIp?: string
+  userAgent?: string
+  status: number
+  outcome: string
+  startedAt: string
+  finishedAt?: string
+  durationMs: number
+  keyId?: string
+  integrity?: string
+  incident?: MutationAuditIncident
+}
+
+export interface MutationAuditResponse {
+  schema: string
+  count: number
+  events: MutationAuditEvent[]
+}
+
 export interface ValidationFinding {
   severity: 'error' | 'warning' | 'info'
   code: string
