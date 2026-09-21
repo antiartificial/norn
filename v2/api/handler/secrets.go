@@ -255,6 +255,10 @@ func (h *Handler) UpdateSecrets(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusInternalServerError, err.Error())
 		return
 	}
+	keys := secretKeyNames(updates)
+	h.emitAppActivity(r, id, "app.secret-updated", "Secrets updated",
+		fmt.Sprintf("%d secret key(s) updated on %s", len(keys), id),
+		map[string]interface{}{"keys": keys})
 	writeJSON(w, map[string]string{"status": "updated"})
 }
 
@@ -265,5 +269,8 @@ func (h *Handler) DeleteSecret(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusInternalServerError, err.Error())
 		return
 	}
+	h.emitAppActivity(r, id, "app.secret-deleted", "Secret deleted",
+		fmt.Sprintf("secret %q deleted on %s", key, id),
+		map[string]interface{}{"key": key})
 	writeJSON(w, map[string]string{"status": "deleted"})
 }

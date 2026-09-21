@@ -205,6 +205,7 @@ func (h *Handler) RestartApp(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusInternalServerError, err.Error())
 		return
 	}
+	h.emitAppActivity(r, id, "app.restarted", "App restarted", id+" was restarted", nil)
 	writeJSON(w, map[string]string{"status": "restarted"})
 }
 
@@ -232,5 +233,8 @@ func (h *Handler) ScaleApp(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusInternalServerError, err.Error())
 		return
 	}
+	h.emitAppActivity(r, id, "app.scaled", "App scaled",
+		fmt.Sprintf("%s process %q scaled to %d", id, req.Group, req.Count),
+		map[string]interface{}{"group": req.Group, "count": req.Count})
 	writeJSON(w, map[string]string{"status": "scaled"})
 }

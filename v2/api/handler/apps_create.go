@@ -166,6 +166,13 @@ func (h *Handler) UpdateAppDeployment(w http.ResponseWriter, r *http.Request) {
 		WriteControlProblem(w, r, http.StatusInternalServerError, "app_update_failed", "updated InfraSpec could not be read")
 		return
 	}
+	state := "disabled"
+	if req.Enabled {
+		state = "enabled"
+	}
+	h.emitAppActivity(r, id, "app.config-updated", "Deployment "+state,
+		"deployment "+state+" for "+id,
+		map[string]interface{}{"deploy": req.Enabled})
 	writeJSON(w, AppMutationReceipt{App: id, Spec: spec})
 }
 
