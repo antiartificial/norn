@@ -8,7 +8,7 @@ import type { AppStatus } from '../types/index.ts'
 import { CommandPalette } from './CommandPalette.tsx'
 
 const navGroups = [
-  { label: 'Operate', items: [['/overview', 'Overview', 'fa-gauge-high'], ['/apps', 'Apps', 'fa-grid'], ['/deploys', 'Deploys', 'fa-rocket-launch'], ['/releases', 'Releases', 'fa-code-branch'], ['/incidents', 'Incidents', 'fa-circle-exclamation'], ['/operations', 'Operations', 'fa-clipboard-check'], ['/audit', 'Audit', 'fa-shield-halved']] },
+  { label: 'Operate', items: [['/overview', 'Overview', 'fa-gauge-high'], ['/apps', 'Apps', 'fa-grid'], ['/deploys', 'Deploys', 'fa-rocket-launch'], ['/releases', 'Releases', 'fa-code-branch'], ['/incidents', 'Incidents', 'fa-circle-exclamation'], ['/operations', 'Operations', 'fa-clipboard-check'], ['/activity-log', 'Activity Log', 'fa-shield-halved']] },
   { label: 'Understand', items: [['/topology', 'Topology', 'fa-map'], ['/fleet', 'Fleet', 'fa-server']] },
   { label: 'Configure', items: [['/platform', 'Platform', 'fa-sliders']] },
 ] as const
@@ -29,7 +29,7 @@ export function Shell({ children, connected, version, apps, activity, runAction,
     if (location.pathname.startsWith('/incidents')) return 'Incidents'
     if (location.pathname.startsWith('/operations')) return 'Operations'
     if (location.pathname.startsWith('/releases')) return 'Releases'
-    if (location.pathname.startsWith('/audit')) return 'Audit'
+    if (location.pathname.startsWith('/activity-log')) return 'Activity Log'
     if (location.pathname.startsWith('/topology')) return 'Topology'
     if (location.pathname.startsWith('/fleet')) return 'Fleet'
     if (location.pathname.startsWith('/platform')) return 'Platform'

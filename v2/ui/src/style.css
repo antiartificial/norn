@@ -467,6 +467,19 @@ body {
   min-width: 0;
   overflow-wrap: anywhere;
 }
+.activity-title {
+  flex: 1 1 220px;
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+.activity-app {
+  color: var(--text-2);
+  font-family: var(--mono);
+}
+.activity-body {
+  flex-basis: 100%;
+  color: var(--text-3);
+}
 .platform-summary {
   display: grid;
   gap: 10px;
