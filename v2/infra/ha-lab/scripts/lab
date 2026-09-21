@@ -223,6 +223,7 @@ Norn DigitalOcean HA lab
   lab secrets operator-init | operator-id
   lab secrets operators NAME | add-operator NAME age1... | rm-operator NAME age1...
   lab secrets seal NAME | open NAME | view NAME [KEY] | push NAME | pull NAME
+  lab secrets log NAME | rollback NAME VERSION-ID
   lab backup-repository init|status
   lab state-backend init|status
   lab audit-export
