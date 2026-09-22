@@ -2113,6 +2113,31 @@ components:
         max: { type: integer, minimum: 1 }
         labels: { type: object, additionalProperties: { type: string } }
         replacement: { $ref: '#/components/schemas/FleetReplacementPolicy' }
+    FleetManagedDatabaseNetwork:
+      type: object
+      additionalProperties: false
+      required: [exposure, tls]
+      properties:
+        exposure: { const: vpc-only, description: Managed database access is private to the Fleet VPC. }
+        tls: { const: required, description: TLS is mandatory for managed database clients. }
+    FleetManagedDatabaseReplica:
+      type: object
+      additionalProperties: false
+      required: [name, region]
+      properties:
+        name: { type: string, pattern: '^[a-z0-9][a-z0-9-]*$' }
+        region: { type: string, minLength: 1 }
+    FleetManagedDatabase:
+      type: object
+      additionalProperties: false
+      required: [name, engine, size, region, network]
+      properties:
+        name: { type: string, pattern: '^[a-z0-9][a-z0-9-]*$' }
+        engine: { type: string, enum: [postgresql, mysql] }
+        size: { type: string, minLength: 1 }
+        region: { type: string, minLength: 1 }
+        network: { $ref: '#/components/schemas/FleetManagedDatabaseNetwork' }
+        readReplica: { $ref: '#/components/schemas/FleetManagedDatabaseReplica' }
     FleetDocument:
       type: object
       additionalProperties: false
@@ -2125,6 +2150,9 @@ components:
         nodePools:
           type: object
           additionalProperties: { $ref: '#/components/schemas/FleetNodePool' }
+        managedDatabases:
+          type: array
+          items: { $ref: '#/components/schemas/FleetManagedDatabase' }
     FleetInventory:
       type: object
       required: [schemaVersion, configured, nodePools]

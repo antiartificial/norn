@@ -133,7 +133,53 @@ func Validate(config *Document) *ValidationReport {
 			}
 		}
 	}
+	validateManagedDatabases(config.ManagedDatabases, report)
 	return report
+}
+
+func validateManagedDatabases(databases []ManagedDatabase, report *ValidationReport) {
+	names := make(map[string]struct{}, len(databases))
+	for i, database := range databases {
+		field := fmt.Sprintf("managedDatabases[%d]", i)
+		name := strings.TrimSpace(database.Name)
+		if !namePattern.MatchString(name) {
+			report.add("error", "fleet.managed-database.name.invalid", field+".name", "managed database name must be DNS-compatible", "Use lowercase letters, numbers, and hyphens.")
+		} else if _, duplicate := names[name]; duplicate {
+			report.add("error", "fleet.managed-database.name.duplicate", field+".name", fmt.Sprintf("managed database name %q is declared more than once", name), "Give each managed database and replica a distinct resource name.")
+		} else {
+			names[name] = struct{}{}
+		}
+		if database.Engine != "postgresql" && database.Engine != "mysql" {
+			report.add("error", "fleet.managed-database.engine.unsupported", field+".engine", "managed database engine must be postgresql or mysql", "Choose postgresql or mysql.")
+		}
+		if strings.TrimSpace(database.Size) == "" {
+			report.add("error", "fleet.managed-database.size.required", field+".size", "managed database size is required", "Pin the provider size slug selected during review.")
+		}
+		if strings.TrimSpace(database.Region) == "" {
+			report.add("error", "fleet.managed-database.region.required", field+".region", "managed database region is required", "Set the provider region for this managed database.")
+		}
+		if database.Network.Exposure != "vpc-only" {
+			report.add("error", "fleet.managed-database.network.exposure.required", field+".network.exposure", "managed databases must be VPC-only", "Set network.exposure: vpc-only; public database access is not supported by this contract.")
+		}
+		if database.Network.TLS != "required" {
+			report.add("error", "fleet.managed-database.network.tls.required", field+".network.tls", "managed databases must require TLS", "Set network.tls: required.")
+		}
+		if replica := database.ReadReplica; replica != nil {
+			replicaName := strings.TrimSpace(replica.Name)
+			if !namePattern.MatchString(replicaName) {
+				report.add("error", "fleet.managed-database.read-replica.name.invalid", field+".readReplica.name", "read replica name must be DNS-compatible", "Use lowercase letters, numbers, and hyphens.")
+			} else if replicaName == name {
+				report.add("error", "fleet.managed-database.read-replica.name.duplicate", field+".readReplica.name", "read replica name must differ from its primary", "Give the read replica a separate resource name.")
+			} else if _, duplicate := names[replicaName]; duplicate {
+				report.add("error", "fleet.managed-database.read-replica.name.duplicate", field+".readReplica.name", fmt.Sprintf("read replica name %q is already declared", replicaName), "Give each managed database and replica a distinct resource name.")
+			} else {
+				names[replicaName] = struct{}{}
+			}
+			if strings.TrimSpace(replica.Region) == "" {
+				report.add("error", "fleet.managed-database.read-replica.region.required", field+".readReplica.region", "read replica region is required", "Set the provider region for the read replica.")
+			}
+		}
+	}
 }
 
 func ValidateInfraSpec(spec *model.InfraSpec, config *Document, base *model.ValidationResult) *model.ValidationResult {

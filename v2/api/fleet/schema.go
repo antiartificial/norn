@@ -8,11 +8,12 @@ const (
 )
 
 type Document struct {
-	APIVersion string              `yaml:"apiVersion" json:"apiVersion"`
-	Kind       string              `yaml:"kind" json:"kind"`
-	Metadata   Metadata            `yaml:"metadata,omitempty" json:"metadata,omitempty"`
-	Cluster    Cluster             `yaml:"cluster" json:"cluster"`
-	NodePools  map[string]NodePool `yaml:"nodePools" json:"nodePools"`
+	APIVersion       string              `yaml:"apiVersion" json:"apiVersion"`
+	Kind             string              `yaml:"kind" json:"kind"`
+	Metadata         Metadata            `yaml:"metadata,omitempty" json:"metadata,omitempty"`
+	Cluster          Cluster             `yaml:"cluster" json:"cluster"`
+	NodePools        map[string]NodePool `yaml:"nodePools" json:"nodePools"`
+	ManagedDatabases []ManagedDatabase   `yaml:"managedDatabases,omitempty" json:"managedDatabases,omitempty"`
 }
 
 type Metadata struct {
@@ -34,6 +35,29 @@ type NodePool struct {
 	Max         int               `yaml:"max" json:"max"`
 	Labels      map[string]string `yaml:"labels,omitempty" json:"labels,omitempty"`
 	Replacement Replacement       `yaml:"replacement,omitempty" json:"replacement,omitempty"`
+}
+
+// ManagedDatabase is desired-state only. Norn validates and exposes this
+// declaration but never receives provider credentials or creates a database.
+// The protected Fleet repository maps it to provider resources after its own
+// review and qualification gates.
+type ManagedDatabase struct {
+	Name        string                  `yaml:"name" json:"name"`
+	Engine      string                  `yaml:"engine" json:"engine"`
+	Size        string                  `yaml:"size" json:"size"`
+	Region      string                  `yaml:"region" json:"region"`
+	Network     ManagedDatabaseNetwork  `yaml:"network" json:"network"`
+	ReadReplica *ManagedDatabaseReplica `yaml:"readReplica,omitempty" json:"readReplica,omitempty"`
+}
+
+type ManagedDatabaseNetwork struct {
+	Exposure string `yaml:"exposure" json:"exposure"`
+	TLS      string `yaml:"tls" json:"tls"`
+}
+
+type ManagedDatabaseReplica struct {
+	Name   string `yaml:"name" json:"name"`
+	Region string `yaml:"region" json:"region"`
 }
 
 type Replacement struct {

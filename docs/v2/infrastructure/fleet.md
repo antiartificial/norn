@@ -160,7 +160,27 @@ nodePools:
       requireCapacityHeadroom: true
       drainTimeout: 15m
       requireReadiness: true
+managedDatabases:
+  - name: production-primary
+    engine: postgresql
+    size: db-s-2vcpu-4gb
+    region: nyc3
+    network:
+      exposure: vpc-only
+      tls: required
+    readReplica:
+      name: production-reader
+      region: sfo3
 ```
+
+`managedDatabases` is desired infrastructure intent, not a Norn provider
+integration. Each entry must be a uniquely named PostgreSQL or MySQL cluster
+with a provider size and region. The schema accepts only `vpc-only` exposure
+and `required` TLS. A named read replica is optional, but when declared it
+must have a distinct name and an explicit region. Norn validates and exposes
+this state; the reviewed private Fleet repository remains responsible for any
+provider plan, apply, backup/restore qualification, cost evidence, and
+teardown proof.
 
 Configure the Norn server with a read-only checkout:
 
