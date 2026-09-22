@@ -1,0 +1,68 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+# When the fleet uses a managed database (use_managed_db=true), grant the application role the
+# schema privileges that PostgreSQL 15+ withholds from freshly-created users by default. Without
+# this the app's first migration fails with "permission denied for schema public". The app role is
+# granted only schema usage/create privileges; it never becomes the database owner.
+#
+# The managed database is private (firewalled to the fleet droplets), so the grant is executed
+# from a fleet node — the same network path the application uses. Idempotent; a no-op when the
+# fleet uses the co-located self-managed database.
+#
+# usage: lab managed-db-grant
+
+script_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+lab_root="$(cd "${script_dir}/.." && pwd)"
+export PATH="${lab_root}/.tools/bin:${PATH}"
+tf() { terraform -chdir="${lab_root}/terraform" "$@"; }
+
+if [[ "$(tf output -raw use_managed_db 2>/dev/null || echo false)" != "true" ]]; then
+  echo "self-managed database; no managed grant required"
+  exit 0
+fi
+
+name="$(tf output -raw name_prefix)"
+first_public="$(tf output -json lab_nodes | jq -r 'to_entries | sort_by(.key) | first.value.public_ip')"
+[[ -n "${first_public}" && "${first_public}" != "null" ]] || { echo "no reachable node for the managed grant" >&2; exit 1; }
+
+dbid="$(doctl databases list --no-header --format ID,Name | awk -v n="${name}-pg" '$2==n{print $1}')"
+[[ -n "${dbid}" ]] || { echo "managed database ${name}-pg not found" >&2; exit 1; }
+
+# doadmin private connection string, retargeted at the application's database.
+admin_uri="$(doctl databases connection "${dbid}" --private --format URI --no-header | sed -E 's#/[^/?]+\?#/norn_test?#')"
+[[ -n "${admin_uri}" && "${admin_uri}" != *$'\n'* && "${admin_uri}" != *$'\r'* ]] || {
+  echo "managed database returned an invalid private connection URI" >&2
+  exit 1
+}
+
+# Keep the URI out of the SSH command, Docker environment, and psql arguments.
+# The remote file is created with mode 0600 before its contents arrive; libpq
+# reads it inside the short-lived client container. Both copies are removed on
+# exit, including failures.
+umask 077
+local_service_file="$(mktemp "${TMPDIR:-/tmp}/norn-ha-managed-db-service.XXXXXX")"
+remote_service_file="/root/.cache/norn-ha-managed-db-service.$$.conf"
+cleanup() {
+  rm -f -- "${local_service_file}"
+  ssh -o BatchMode=yes -o StrictHostKeyChecking=accept-new "root@${first_public}" \
+    "rm -f -- ${remote_service_file}" >/dev/null 2>&1 || true
+}
+trap cleanup EXIT
+
+printf '[managed]\ndbname=%s\n' "${admin_uri}" >"${local_service_file}"
+chmod 0600 "${local_service_file}"
+ssh -o BatchMode=yes -o StrictHostKeyChecking=accept-new "root@${first_public}" \
+  "install -d -m 0700 /root/.cache && install -m 0600 /dev/stdin ${remote_service_file}" \
+  <"${local_service_file}"
+
+printf '%s\n' \
+  "GRANT USAGE, CREATE ON SCHEMA public TO norn_test;" \
+  | ssh -o BatchMode=yes -o StrictHostKeyChecking=accept-new "root@${first_public}" \
+      "docker run --rm -i \
+        --mount type=bind,src=${remote_service_file},dst=/run/secrets/pg_service.conf,readonly \
+        -e PGSERVICE=managed \
+        -e PGSERVICEFILE=/run/secrets/pg_service.conf \
+        postgres:16 psql -v ON_ERROR_STOP=1 -f -" >/dev/null
+
+echo "granted schema privileges to norn_test on the managed database ${name}-pg"
