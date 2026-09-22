@@ -254,6 +254,13 @@ function clusterDoc(d: FleetDraft, r: number, regionName: string): string {
   out += `cluster:\n  name: ${d.name}\n  provider: digitalocean\n  region: ${regionName}\n`
   out += `# objectStorage: DO Spaces (terraform state + WAL) in ${d.region}${hasSpaces(d.region) ? '' : ' — none available'}\n`
   if (d.edge === 'cloudflare') out += '# edge: cloudflare in front of the regional load balancer\n'
+  if (r === 0 && d.db.mode === 'managed') {
+    const engine = d.db.engine === 'pg' ? 'postgresql' : 'mysql'
+    out += 'managedDatabases:\n'
+    out += `  - name: ${d.name}-db\n    engine: ${engine}\n    size: ${d.db.managedSize}\n    region: ${d.region}\n`
+    out += '    network:\n      exposure: vpc-only\n      tls: required\n'
+    if (d.db.replica) out += `    readReplica:\n      name: ${d.name}-db-replica\n      region: ${replicaResidesInRegionB(d) ? d.secondRegion : d.region}\n`
+  }
   out += 'nodePools:\n'
 
   const controlCount = r === 0 ? d.controlA : d.controlB
@@ -280,15 +287,11 @@ function clusterDoc(d: FleetDraft, r: number, regionName: string): string {
 
 function extrasDoc(d: FleetDraft): string | null {
   const managedExtras = d.extras.filter(e => e.mode === 'managed')
-  if (d.db.mode !== 'managed' && d.edge !== 'cloudflare' && managedExtras.length === 0 && d.managedValkey.length === 0) return null
+  if (d.edge !== 'cloudflare' && managedExtras.length === 0 && d.managedValkey.length === 0) return null
 
   let out = '# Managed services not modelled by norn.dev/fleet/v1 — provisioned separately.\n'
   out += 'apiVersion: norn.dev/fleet-extras/v1\n'
   out += `cluster: ${d.name}\n`
-  if (d.db.mode === 'managed') {
-    out += `managedDatabase:\n  engine: ${d.db.engine}\n  size: ${d.db.managedSize}\n  region: ${d.region}\n`
-    if (d.db.replica) out += `  readReplica:\n    region: ${replicaResidesInRegionB(d) ? d.secondRegion : d.region}\n`
-  }
   if (managedExtras.length > 0) {
     out += 'testDatabases:\n'
     for (const ex of managedExtras) out += `  - engine: ${ex.engine}\n    size: ${ex.size}\n    region: ${d.region}\n`
@@ -308,8 +311,8 @@ function extrasDoc(d: FleetDraft): string | null {
 
 /**
  * The emitted documents: one valid single-region `norn.dev/fleet/v1` Cluster per region, plus a
- * `fleet-extras.yaml` sidecar for managed services the contract doesn't model. 1:1 with the macOS
- * client (NornUI/Features/FleetBuilder/FleetDraft.swift `fleetDocuments`).
+ * `fleet-extras.yaml` sidecar for services the contract does not model. Managed databases are
+ * emitted in the validated norn.dev/fleet/v1 document; managed Valkey remains export-only.
  */
 export function fleetDocuments(d: FleetDraft): FleetDocument[] {
   const docs: FleetDocument[] = []

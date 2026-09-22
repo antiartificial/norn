@@ -179,6 +179,11 @@ It does not inspect live provider state, create a Fleet plan, or apply infrastru
 The exported YAML enters the reviewed Fleet GitOps workflow, where provider plans and
 applies remain protected, evidence-gated operations.
 
+Managed PostgreSQL and MySQL are emitted as validated `managedDatabases` declarations in
+the primary `norn.dev/fleet/v1` Cluster document. They require VPC-only access and TLS;
+an optional read replica is still desired-state only and does not qualify provider PITR,
+restore, cost, teardown, or failover behavior.
+
 Managed Valkey is an export-only sidecar description, never a `Cluster` node pool:
 one single-node cluster per named application, VPC-only reachability, and TLS required.
 It is marked cache-only and requires cache-aside/read-through behavior backed by a durable

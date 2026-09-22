@@ -91,14 +91,23 @@ describe('fleet documents', () => {
     expect(y).toContain('drainTimeout: 15m')
   })
 
-  it('managed database goes to the fleet-extras sidecar', () => {
+  it('managed database is emitted in the validated fleet document', () => {
     const d = { ...defaultDraft(), db: { ...defaultDraft().db, mode: 'managed' as const } }
     const docs = fleetDocuments(d)
-    expect(docs).toHaveLength(2)
+    expect(docs).toHaveLength(1)
     expect(docs[0].yaml).not.toContain('db-nyc3:')
-    expect(docs[1].filename).toBe('norn-prod.fleet-extras.yaml')
-    expect(docs[1].yaml).toContain('apiVersion: norn.dev/fleet-extras/v1')
-    expect(docs[1].yaml).toContain('managedDatabase:')
+    expect(docs[0].yaml).toContain('managedDatabases:')
+    expect(docs[0].yaml).toContain('engine: postgresql')
+    expect(docs[0].yaml).toContain('exposure: vpc-only')
+    expect(docs[0].yaml).toContain('tls: required')
+  })
+
+  it('emits a named replica in the selected region', () => {
+    const d = defaultDraft()
+    d.regions = 2; d.secondRegion = 'sfo3'; d.db.mode = 'managed'; d.db.replica = true; d.db.replicaRegion = 'b'
+    const primary = fleetDocuments(d).find(doc => doc.filename.includes('nyc3'))!.yaml
+    expect(primary).toContain('name: norn-prod-db-replica')
+    expect(primary).toContain('region: sfo3')
   })
 
   it('exports one VPC/TLS-only managed Valkey cluster per application', () => {
