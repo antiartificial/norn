@@ -128,6 +128,7 @@ export function FleetBuilderPage() {
         {draft.regions === 2 && <Stepper label="App·B" value={draft.appB} onStep={s => mutate(d => ({ ...d, appB: appStep(d.appB, s) }))} />}
         <div className="fleet-builder-add">
           <Button size="sm" variant="secondary" icon="fa-bolt" onClick={() => mutate(addService('cache'))}>Cache</Button>
+          <Button size="sm" variant="secondary" icon="fa-server" onClick={() => mutate(addManagedValkey)}>Managed Valkey</Button>
           <Button size="sm" variant="secondary" icon="fa-bars-staggered" onClick={() => mutate(addService('queue'))}>Queue</Button>
           <Button size="sm" variant="secondary" icon="fa-flask" onClick={() => mutate(addTestDB)}>Test DB</Button>
         </div>
@@ -234,6 +235,13 @@ function addService(kind: FleetServiceKind) {
 function addTestDB(d: FleetDraft): FleetDraft {
   return { ...d, extras: [...d.extras, { id: crypto.randomUUID(), mode: 'self', engine: 'pg', size: 's-2vcpu-4gb', x: 0, y: 0 }] }
 }
+function addManagedValkey(d: FleetDraft): FleetDraft {
+  const ordinal = d.managedValkey.length + 1
+  return { ...d, managedValkey: [...d.managedValkey, {
+    id: crypto.randomUUID(), application: `app-${ordinal}`, name: `${d.name}-cache-${ordinal}`,
+    size: 'db-s-1vcpu-2gb', region: d.region, x: 0, y: 0,
+  }] }
+}
 
 // MARK: small controls
 
@@ -298,7 +306,7 @@ function Inspector({ selected, draft, mutate }: {
     return (
       <section className="fleet-builder-panel">
         <h3>Fleet Builder</h3>
-        <p className="fleet-builder-hint">Select a node to configure it, or click a region label to reassign it. Drag nodes to rearrange. Use the bar above to add regions, control planes, app pools, cache, queue, and databases.</p>
+        <p className="fleet-builder-hint">Select a node to configure it, or click a region label to reassign it. Drag nodes to rearrange. Use the bar above to add regions, control planes, app pools, cache, managed Valkey, queue, and databases.</p>
       </section>
     )
   }
@@ -329,6 +337,7 @@ function Inspector({ selected, draft, mutate }: {
       {(kind === 'dbPrimary' || kind === 'dbReplica') && <DBEditor draft={draft} mutate={mutate} />}
       {kind === 'dbExtra' && selected.data.extraId && <TestDBEditor id={selected.data.extraId} draft={draft} mutate={mutate} />}
       {(kind === 'cache' || kind === 'queue') && selected.data.serviceId && <ServiceEditor id={selected.data.serviceId} draft={draft} mutate={mutate} />}
+      {kind === 'managedValkey' && selected.data.managedValkeyId && <ManagedValkeyEditor id={selected.data.managedValkeyId} draft={draft} mutate={mutate} />}
       {(kind === 'lb' || kind === 'edgeCloudflare' || kind === 'edgeDNS') && (
         <>
           <Seg options={[['none', 'None'], ['cloudflare', 'Cloudflare']]} value={draft.edge} onChange={v => mutate(d => ({ ...d, edge: v }))} />
@@ -425,6 +434,23 @@ function ServiceEditor({ id, draft, mutate }: { id: string; draft: FleetDraft; m
   )
 }
 
+function ManagedValkeyEditor({ id, draft, mutate }: { id: string; draft: FleetDraft; mutate: (fn: (d: FleetDraft) => FleetDraft) => void }) {
+  const cache = draft.managedValkey.find(c => c.id === id)
+  if (!cache) return null
+  const update = (fn: (c: FleetDraft['managedValkey'][number]) => FleetDraft['managedValkey'][number]) =>
+    mutate(d => ({ ...d, managedValkey: d.managedValkey.map(c => (c.id === id ? fn(c) : c)) }))
+  return (
+    <>
+      <label className="fleet-builder-row"><span>Application</span><input value={cache.application} onChange={e => update(c => ({ ...c, application: e.currentTarget.value }))} /></label>
+      <label className="fleet-builder-row"><span>Cluster name</span><input value={cache.name} onChange={e => update(c => ({ ...c, name: e.currentTarget.value }))} /></label>
+      <label className="fleet-builder-row"><span>Region</span><select value={cache.region} onChange={e => update(c => ({ ...c, region: e.currentTarget.value }))}><option value={draft.region}>Region A · {draft.region}</option>{draft.regions === 2 && <option value={draft.secondRegion}>Region B · {draft.secondRegion}</option>}</select></label>
+      <label className="fleet-builder-row"><span>Size</span><SizeSelect value={cache.size} sizes={MANAGED_SIZES} onChange={v => update(c => ({ ...c, size: v }))} /></label>
+      <p className="fleet-builder-hint">One managed Valkey node for this application only. It is VPC-only with TLS required, and is cache-only: the application must repopulate it from durable data using cache-aside or read-through.</p>
+      <Button size="sm" variant="danger" onClick={() => mutate(d => ({ ...d, managedValkey: d.managedValkey.filter(c => c.id !== id) }))}>Remove managed Valkey</Button>
+    </>
+  )
+}
+
 function inspectorTitle(kind: string): string {
   switch (kind) {
     case 'control': return 'Control plane'
@@ -433,6 +459,7 @@ function inspectorTitle(kind: string): string {
     case 'dbReplica': return 'Read replica'
     case 'dbExtra': return 'Test database'
     case 'cache': return 'Cache'
+    case 'managedValkey': return 'Managed Valkey'
     case 'queue': return 'Queue'
     case 'spaces': return 'Object storage'
     default: return 'Ingress'
