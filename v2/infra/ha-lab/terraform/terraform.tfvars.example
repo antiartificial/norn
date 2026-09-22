@@ -1,15 +1,20 @@
-name_prefix = "norn-ha-eval"
-owner       = "platform"
-expires_on  = "2026-08-25"
-region      = "tor1"
+# Fleet description (dev/eval profile). `lab up NAME` scaffolds this file for you
+# with your SSH key + current IP; copy it manually only for the advanced workflow.
+
+name_prefix = "norn-ha-eval" # fleet/cluster name (3-24 lowercase)
+owner       = "platform"     # responsible team/operator (billing tag)
+expires_on  = "2026-08-25"   # UTC YYYY-MM-DD; cleanup tooling enforces it
+region      = "nyc3"         # DO region (align with your Spaces region)
 vpc_cidr    = "10.140.0.0/20"
-node_count  = 3
-node_size   = "s-2vcpu-4gb"
+node_count  = 3              # odd, >=3 co-located Consul/Nomad/Postgres members
+node_size   = "s-2vcpu-4gb"  # tested minimum for the co-located topology
+
+# enable_backups = false     # DO whole-droplet backups (extra cost)
 
 ssh_key_fingerprints = [
-  "replace-with-controller-key-fingerprint",
+  "replace-with-controller-key-fingerprint", # doctl compute ssh-key list
 ]
 
 ssh_source_cidrs = [
-  "203.0.113.10/32",
+  "203.0.113.10/32", # your operator /32; 0.0.0.0/0 is forbidden
 ]

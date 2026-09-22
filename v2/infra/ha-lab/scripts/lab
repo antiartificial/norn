@@ -18,6 +18,9 @@ if [[ -f "${terraform_dir}/terraform.tfvars" ]]; then
       export AWS_SECRET_ACCESS_KEY="${NORN_HA_BACKUP_SECRET_KEY}"
       export AWS_EC2_METADATA_DISABLED=true
     fi
+    if [[ -n "${NORN_HA_TAILSCALE_AUTHKEY:-}" ]]; then
+      export TF_VAR_tailscale_authkey="${NORN_HA_TAILSCALE_AUTHKEY}"
+    fi
   fi
 fi
 if [[ -x "${lab_root}/.tools/ansible/bin/python" ]] && "${lab_root}/.tools/ansible/bin/python" -c 'import certifi' 2>/dev/null; then
@@ -45,6 +48,27 @@ run_evidenced_playbook() {
 case "${command_name}" in
   bootstrap-tools)
     "${script_dir}/bootstrap-tools"
+    ;;
+  preflight)
+    "${script_dir}/preflight" "$@"
+    ;;
+  artifacts)
+    "${script_dir}/artifacts" "$@"
+    ;;
+  fleet)
+    "${script_dir}/fleet" "$@"
+    ;;
+  up)
+    "${script_dir}/up" "$@"
+    ;;
+  connect)
+    "${script_dir}/connect" "$@"
+    ;;
+  deploy-app)
+    "${script_dir}/deploy-app" "$@"
+    ;;
+  down)
+    "${script_dir}/down" "$@"
     ;;
   init)
     "${script_dir}/state-backend" init
@@ -180,7 +204,14 @@ patronictl -c /etc/patroni/config.yml list'
     cat <<'EOF'
 Norn DigitalOcean HA lab
 
+  lab up NAME [--no-app] [--no-tailscale] [--from STEP] [--yes]
+  lab fleet sizes [REGION] | regions | validate [NAME]
+  lab connect [NAME]
+  lab deploy-app
+  lab down NAME [--confirm]
   lab bootstrap-tools
+  lab preflight [NAME]
+  lab artifacts ensure NAME | ensure-external NAME | status NAME
   lab init
   lab check
   lab plan -var-file=terraform.tfvars
