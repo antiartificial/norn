@@ -11,6 +11,13 @@ node_size   = "s-2vcpu-4gb"  # tested minimum for the co-located topology
 
 # enable_backups = false     # DO whole-droplet backups (extra cost)
 
+# Managed database (optional). Default keeps the co-located self-managed Patroni cluster.
+# Set use_managed_db = true to provision a DigitalOcean managed PostgreSQL in the lab VPC and
+# point the demo app's DATABASE_URL at it instead.
+# use_managed_db = true
+# db_size        = "db-s-1vcpu-2gb" # managed node size (extra cost while running)
+# db_version     = "16"
+
 ssh_key_fingerprints = [
   "replace-with-controller-key-fingerprint", # doctl compute ssh-key list
 ]

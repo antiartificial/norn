@@ -45,6 +45,11 @@ echo "==> sync + replicate the app catalog"
 "${lab}" catalog sync >/dev/null
 "${lab}" converge --tags catalog
 
+# Managed PostgreSQL starts with a protected public schema. Grant the app role
+# its minimum schema privileges through the owner-only secret handoff; this is
+# a no-op for the co-located self-managed database.
+"${lab}" managed-db-grant
+
 echo "==> trigger the Norn deploy pipeline (leader-following :8810)"
 saga="$(ssh -o BatchMode=yes "root@${first_public}" '
   set -a; source /etc/norn/norn.env; set +a
