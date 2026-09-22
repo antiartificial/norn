@@ -216,7 +216,10 @@ Norn DigitalOcean HA lab
   lab check
   lab plan -var-file=terraform.tfvars
   lab apply -var-file=terraform.tfvars
-  lab secrets init NAME
+  lab secrets init NAME | ensure NAME | path NAME
+  lab secrets operator-init | operator-id
+  lab secrets operators NAME | add-operator NAME age1... | rm-operator NAME age1...
+  lab secrets seal NAME | open NAME | view NAME [KEY] | push NAME | pull NAME
   lab backup-repository init|status
   lab state-backend init|status
   lab audit-export
