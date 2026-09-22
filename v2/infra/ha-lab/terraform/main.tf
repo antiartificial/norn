@@ -140,10 +140,57 @@ resource "digitalocean_firewall" "lab" {
   }
 }
 
+# Optional DigitalOcean managed PostgreSQL. Opt-in via use_managed_db; when disabled (default) the
+# fleet keeps its co-located self-managed Patroni database and none of these resources are created.
+# When enabled, the app's DATABASE_URL is pointed here (see scripts/catalog + outputs.managed_db_uri).
+resource "digitalocean_database_cluster" "pg" {
+  count = var.use_managed_db ? 1 : 0
+
+  name                 = "${var.name_prefix}-pg"
+  engine               = "pg"
+  version              = var.db_version
+  size                 = var.db_size
+  region               = var.region
+  node_count           = 1
+  private_network_uuid = digitalocean_vpc.lab.id
+  tags                 = local.common_tags
+}
+
+resource "digitalocean_database_db" "app" {
+  count      = var.use_managed_db ? 1 : 0
+  cluster_id = digitalocean_database_cluster.pg[0].id
+  name       = "norn_test"
+}
+
+resource "digitalocean_database_user" "app" {
+  count      = var.use_managed_db ? 1 : 0
+  cluster_id = digitalocean_database_cluster.pg[0].id
+  name       = "norn_test"
+}
+
+# Trust only the fleet droplets. Combined with private_network_uuid this keeps the managed database
+# reachable exclusively from inside the lab VPC.
+resource "digitalocean_database_firewall" "pg" {
+  count      = var.use_managed_db ? 1 : 0
+  cluster_id = digitalocean_database_cluster.pg[0].id
+
+  dynamic "rule" {
+    for_each = digitalocean_droplet.node
+    content {
+      type  = "droplet"
+      value = rule.value.id
+    }
+  }
+}
+
 resource "digitalocean_project" "lab" {
   name        = "${var.name_prefix} (expires ${var.expires_on})"
   description = "Disposable Norn HA/PITR acceptance lab owned by ${var.owner}."
   purpose     = "Operational / Developer tooling"
   environment = "Development"
-  resources   = concat([for node in digitalocean_droplet.node : node.urn], [digitalocean_loadbalancer.regional_ingress.urn])
+  resources = concat(
+    [for node in digitalocean_droplet.node : node.urn],
+    [digitalocean_loadbalancer.regional_ingress.urn],
+    var.use_managed_db ? [digitalocean_database_cluster.pg[0].urn] : [],
+  )
 }

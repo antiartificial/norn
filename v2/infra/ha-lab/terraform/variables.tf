@@ -100,6 +100,24 @@ variable "ingress_port" {
   }
 }
 
+variable "use_managed_db" {
+  description = "Provision a DigitalOcean managed PostgreSQL cluster and point the demo app at it, instead of the co-located self-managed Patroni database. Default keeps the self-managed topology."
+  type        = bool
+  default     = false
+}
+
+variable "db_size" {
+  description = "Managed database node size slug. Only used when use_managed_db = true."
+  type        = string
+  default     = "db-s-1vcpu-2gb"
+}
+
+variable "db_version" {
+  description = "Managed PostgreSQL major version. Only used when use_managed_db = true."
+  type        = string
+  default     = "16"
+}
+
 variable "tailscale_authkey" {
   description = "Reusable, pre-authorized Tailscale auth key (tagged tag:norn-pilot-node). When set, every node joins the tailnet at boot so NornUI/CLI can reach :8810 privately. Leave empty to skip Tailscale (VPC/SSH-tunnel access only)."
   type        = string
