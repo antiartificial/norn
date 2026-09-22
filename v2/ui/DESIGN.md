@@ -90,13 +90,15 @@ Left **sidebar** (collapsible to icons, 220px ↔ 56px, persisted) replaces head
 /apps/:id/(overview|logs|deploys|snapshots|cron|functions|shell)
 /deploys         Deploy history + live deploy tracking
 /incidents       Beacon events: ack/snooze/open, severity, correlation
+/activity-log    Operator activity: Pods, Cell, and signed mutation receipts
 /operations      Durable operations queue + saga inspector (/operations/:sagaId)
 /topology        React Flow graph (rethemed dark)
 /platform        Platform hub with sub-tabs:
 /platform/(releases|network|access|notifications|observability|contextdb)
 ```
 
-Sidebar sections: **Operate** (Overview, Apps, Deploys, Incidents, Operations),
+Sidebar sections: **Operate** (Overview, Apps, Deploys, Releases, Incidents, Operations,
+Activity Log),
 **Understand** (Topology), **Configure** (Platform). Sidebar footer: theme toggle,
 version, WS connection indicator (green dot "Live" / amber "Reconnecting…").
 
@@ -150,6 +152,13 @@ severity-grouped list (critical/warning/info), state chips, ack / snooze / re-op
 actions (`POST /api/events/{id}/ack|snooze|open`), filter by app and state,
 relative + absolute timestamps. Live insert via `beacon.event` ws type with toast for
 critical severity. Include notification sinks status link to /platform/notifications.
+
+### Activity Log
+Read-only, scope-graded operational history. **Pods** shows app-scoped Beacon events;
+**Cell** shows Beacon events without an app; and **Receipts** shows signed control-plane
+mutation-audit records from `/api/v1/audit/mutations`. Pods and Cell require ordinary
+event-read access, while Receipts remains subject to the mutation-audit authorization
+boundary. Secret activity displays key names only, never values.
 
 ### Operations (new)
 Durable operations queue from `/api/operations` (+ `/active`): table of kind, app,
