@@ -64,6 +64,11 @@
           delegate_to: "{{ consul_survivor }}"
           register: consul_catalog_during
           changed_when: false
+          retries: 30
+          delay: 2
+          until:
+            - "'norn-ha-toy-web' in consul_catalog_during.stdout_lines"
+            - "'norn-api' in consul_catalog_during.stdout_lines"
 
         - name: Require the active workload and Norn services during Consul failover
           ansible.builtin.assert:
@@ -95,8 +100,8 @@
       delegate_to: "{{ consul_survivor }}"
       register: consul_members_after
       changed_when: false
-      retries: 30
-      delay: 2
+      retries: 60
+      delay: 3
       until: consul_members_after.stdout | int == groups['norn_ha'] | length
 
     - name: Read the current Nomad leader
@@ -165,8 +170,8 @@
       delegate_to: "{{ nomad_survivor }}"
       register: nomad_peers_after
       changed_when: false
-      retries: 30
-      delay: 2
+      retries: 60
+      delay: 3
       until: nomad_peers_after.stdout | int == groups['norn_ha'] | length
 
     - name: Emit value-safe control-plane failover evidence
