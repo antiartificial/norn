@@ -101,6 +101,29 @@ describe('fleet documents', () => {
     expect(docs[1].yaml).toContain('managedDatabase:')
   })
 
+  it('exports one VPC/TLS-only managed Valkey cluster per application', () => {
+    const d = defaultDraft()
+    d.managedValkey = [{ id: 'cache-1', application: 'api', name: 'norn-prod-api-cache', size: 'db-s-1vcpu-2gb', region: 'nyc3', x: 0, y: 0 }]
+    const docs = fleetDocuments(d)
+    expect(docs).toHaveLength(2)
+    const extras = docs[1].yaml
+    expect(extras).toContain('managedValkey:')
+    expect(extras).toContain('application: api')
+    expect(extras).toContain('nodes: 1')
+    expect(extras).toContain('exposure: vpc-only')
+    expect(extras).toContain('tls: required')
+    expect(extras).toContain('durableSourceOfTruth: required')
+  })
+
+  it('rejects more than one managed Valkey cluster for an application', () => {
+    const d = defaultDraft()
+    d.managedValkey = [
+      { id: 'cache-1', application: 'api', name: 'api-cache-a', size: 'db-s-1vcpu-2gb', region: 'nyc3', x: 0, y: 0 },
+      { id: 'cache-2', application: 'api', name: 'api-cache-b', size: 'db-s-1vcpu-2gb', region: 'nyc3', x: 0, y: 0 },
+    ]
+    expect(find(d, 'managed-valkey-separate-cluster')?.severity).toBe('error')
+  })
+
   it('two regions emit one cluster document each', () => {
     const d = { ...defaultDraft(), regions: 2, secondRegion: 'sfo3' }
     const docs = fleetDocuments(d)

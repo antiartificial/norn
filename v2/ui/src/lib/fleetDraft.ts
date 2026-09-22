@@ -43,6 +43,17 @@ export interface FleetTestDB {
   y: number
 }
 
+/** A deliberately narrow managed-cache description. It is exported as a Fleet sidecar, not a node pool. */
+export interface FleetManagedValkey {
+  id: string
+  application: string
+  name: string
+  size: string
+  region: string
+  x: number
+  y: number
+}
+
 export interface FleetDraft {
   name: string
   region: string
@@ -63,6 +74,7 @@ export interface FleetDraft {
   }
   services: FleetServicePool[]
   extras: FleetTestDB[]
+  managedValkey: FleetManagedValkey[]
   sizes: { control: string; app: string }
   positions: Record<string, { x: number; y: number }>
 }
@@ -81,6 +93,7 @@ export function defaultDraft(): FleetDraft {
     db: { mode: 'self', engine: 'pg', replica: false, replicaRegion: 'same', managedSize: 'db-s-2vcpu-4gb', selfSize: 'g-4vcpu-16gb' },
     services: [],
     extras: [],
+    managedValkey: [],
     sizes: { control: 'g-2vcpu-8gb', app: 's-4vcpu-8gb' },
     positions: {},
   }
@@ -115,6 +128,31 @@ export function validateDraft(d: FleetDraft): FleetFinding[] {
         message: `Region B control (${d.controlB}) can't hold quorum`,
         remediation: `Use 0 (dependent on ${d.region}) or an odd number ≥3 (federated).` })
     }
+  }
+
+  const assignedApps = new Set<string>()
+  for (const cache of d.managedValkey) {
+    const application = cache.application.trim()
+    const name = cache.name.trim()
+    if (!application || !name) {
+      out.push({ severity: 'error', code: 'managed-valkey-identity', field: 'managedValkey',
+        message: 'Managed Valkey needs both an application and a cluster name.',
+        remediation: 'Name the owning application and its separate managed Valkey cluster.' })
+    } else if (assignedApps.has(application)) {
+      out.push({ severity: 'error', code: 'managed-valkey-separate-cluster', field: 'managedValkey',
+        message: `Managed Valkey application ${application} is assigned more than one cluster.`,
+        remediation: 'Keep one separate managed Valkey cluster per application.' })
+    } else {
+      assignedApps.add(application)
+    }
+    if (cache.region !== d.region && !(d.regions === 2 && cache.region === d.secondRegion)) {
+      out.push({ severity: 'error', code: 'managed-valkey-region', field: 'managedValkey.region',
+        message: `Managed Valkey ${name || 'cluster'} is outside this Fleet's regions.`,
+        remediation: 'Select Region A or Region B.' })
+    }
+    out.push({ severity: 'info', code: `managed-valkey-${cache.id}`, field: 'managedValkey',
+      message: `Managed Valkey ${name || 'cluster'}: single node, VPC-only, TLS required, cache-only.`,
+      remediation: 'Applications must use cache-aside/read-through behavior with a durable source of truth.' })
   }
 
   out.push(hasSpaces(d.region)
@@ -179,6 +217,10 @@ export function costLines(d: FleetDraft): CostLine[] {
     const unit = nodeSize(sv.size)?.usdMonthly ?? 0
     lines.push({ label: `${sv.kind === 'cache' ? 'Cache' : 'Queue'} · ${sv.count}×${sv.size}`, usdMonthly: unit * sv.count })
   })
+  d.managedValkey.forEach(cache => {
+    const unit = managedSize(cache.size)?.usdMonthly ?? 0
+    lines.push({ label: `Managed Valkey · ${cache.application || 'unassigned'} · 1×${cache.size}`, usdMonthly: unit })
+  })
 
   if (d.edge === 'cloudflare') lines.push({ label: 'Cloudflare edge', usdMonthly: 0 })
   lines.push({ label: `Regional LB · ${d.regions}×`, usdMonthly: LB_MONTHLY * d.regions })
@@ -238,7 +280,7 @@ function clusterDoc(d: FleetDraft, r: number, regionName: string): string {
 
 function extrasDoc(d: FleetDraft): string | null {
   const managedExtras = d.extras.filter(e => e.mode === 'managed')
-  if (d.db.mode !== 'managed' && d.edge !== 'cloudflare' && managedExtras.length === 0) return null
+  if (d.db.mode !== 'managed' && d.edge !== 'cloudflare' && managedExtras.length === 0 && d.managedValkey.length === 0) return null
 
   let out = '# Managed services not modelled by norn.dev/fleet/v1 — provisioned separately.\n'
   out += 'apiVersion: norn.dev/fleet-extras/v1\n'
@@ -250,6 +292,14 @@ function extrasDoc(d: FleetDraft): string | null {
   if (managedExtras.length > 0) {
     out += 'testDatabases:\n'
     for (const ex of managedExtras) out += `  - engine: ${ex.engine}\n    size: ${ex.size}\n    region: ${d.region}\n`
+  }
+  if (d.managedValkey.length > 0) {
+    out += 'managedValkey:\n'
+    for (const cache of d.managedValkey) {
+      out += `  - application: ${cache.application}\n    name: ${cache.name}\n    size: ${cache.size}\n    region: ${cache.region}\n`
+      out += '    topology:\n      nodes: 1\n    network:\n      exposure: vpc-only\n      tls: required\n'
+      out += '    usage:\n      purpose: cache-only\n      consistency: best-effort\n      applicationPattern: cache-aside-or-read-through\n      durableSourceOfTruth: required\n'
+    }
   }
   if (d.edge === 'cloudflare') out += 'edge:\n  provider: cloudflare\n'
   out += `objectStorage:\n  spaces: ${hasSpaces(d.region)}\n  region: ${d.region}\n`

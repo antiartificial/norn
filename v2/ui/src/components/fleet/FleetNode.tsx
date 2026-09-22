@@ -8,6 +8,7 @@ const ICON: Record<FleetNodeKind, string> = {
   dbReplica: 'fa-database',
   dbExtra: 'fa-flask',
   cache: 'fa-bolt',
+  managedValkey: 'fa-bolt',
   queue: 'fa-bars-staggered',
   lb: 'fa-code-branch',
   edgeCloudflare: 'fa-cloud',

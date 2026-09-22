@@ -10,7 +10,7 @@ import {
 
 export type FleetNodeKind =
   | 'control' | 'app' | 'dbPrimary' | 'dbReplica' | 'dbExtra'
-  | 'cache' | 'queue' | 'lb' | 'edgeCloudflare' | 'edgeDNS' | 'spaces'
+  | 'cache' | 'managedValkey' | 'queue' | 'lb' | 'edgeCloudflare' | 'edgeDNS' | 'spaces'
 
 export interface FleetNodeData extends Record<string, unknown> {
   kind: FleetNodeKind
@@ -21,6 +21,7 @@ export interface FleetNodeData extends Record<string, unknown> {
   invalid: boolean
   serviceId?: string
   extraId?: string
+  managedValkeyId?: string
 }
 
 /** Data for a region container frame that encapsulates its nodes (rendered behind them). */
@@ -156,6 +157,10 @@ export function layout(d: FleetDraft): { nodes: FleetFlowNode[]; edges: Edge[] }
   d.services.forEach((sv, i) => {
     push(`sv${i}`, { kind: sv.kind === 'cache' ? 'cache' : 'queue', title: sv.kind === 'cache' ? 'Cache' : 'Queue', badge: sv.engine, meta: `${sv.count}× ${sv.size}`, region: 0, invalid: false, serviceId: sv.id }, sv.x || 210 + i * 32, sv.y || (twoR ? 360 : 320))
   })
+  d.managedValkey.forEach((cache, i) => {
+    const region = cache.region === d.secondRegion && twoR ? 1 : 0
+    push(`mv${i}`, { kind: 'managedValkey', title: 'Valkey', badge: 'Managed', meta: `${cache.application || 'unassigned'} · VPC + TLS`, region, invalid: blocking.has('managed-valkey-identity') || blocking.has('managed-valkey-separate-cluster'), managedValkeyId: cache.id }, cache.x || 210 + i * 32, cache.y || (region === 1 ? bandTop(1) + 300 : (twoR ? 360 : 320)))
+  })
 
   // Edges
   const apps = nodes.filter(n => n.data.kind === 'app')
@@ -185,6 +190,9 @@ export function layout(d: FleetDraft): { nodes: FleetFlowNode[]; edges: Edge[] }
 
   for (const sv of nodes.filter(n => n.data.kind === 'cache' || n.data.kind === 'queue')) {
     for (const a of apps) edges.push(edge(`e-${a.id}-${sv.id}`, a.id, sv.id, sv.data.kind === 'cache' ? 'cache' : 'queue'))
+  }
+  for (const cache of nodes.filter(n => n.data.kind === 'managedValkey')) {
+    for (const a of apps.filter(a => a.data.region === cache.data.region)) edges.push(edge(`e-${a.id}-${cache.id}`, a.id, cache.id, 'cache'))
   }
 
   return { nodes, edges }

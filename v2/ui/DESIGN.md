@@ -179,6 +179,11 @@ It does not inspect live provider state, create a Fleet plan, or apply infrastru
 The exported YAML enters the reviewed Fleet GitOps workflow, where provider plans and
 applies remain protected, evidence-gated operations.
 
+Managed Valkey is an export-only sidecar description, never a `Cluster` node pool:
+one single-node cluster per named application, VPC-only reachability, and TLS required.
+It is marked cache-only and requires cache-aside/read-through behavior backed by a durable
+source of truth. The builder neither provisions nor qualifies the managed service.
+
 ### Platform
 Split the current 571-line PlatformPanel firehose into sub-tab routes:
 - **Releases**: platform releases + rollback (ConfirmDialog), deploy groups.
