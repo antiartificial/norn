@@ -52,6 +52,72 @@ func TestParseAndValidateAcceptsSafeFleet(t *testing.T) {
 	}
 }
 
+func TestFleetValidationAcceptsVPCOnlyTLSManagedDatabases(t *testing.T) {
+	document := validFleetDocument + `managedDatabases:
+  - name: production-primary
+    engine: postgresql
+    size: db-s-2vcpu-4gb
+    region: nyc3
+    network:
+      exposure: vpc-only
+      tls: required
+    readReplica:
+      name: production-reader
+      region: sfo3
+  - name: reporting
+    engine: mysql
+    size: db-s-1vcpu-2gb
+    region: nyc3
+    network:
+      exposure: vpc-only
+      tls: required
+`
+	config, report := ParseAndValidate([]byte(document))
+	if config == nil || !report.Valid {
+		t.Fatalf("valid managed databases rejected: %#v", report.Findings)
+	}
+	if len(config.ManagedDatabases) != 2 || config.ManagedDatabases[0].ReadReplica == nil {
+		t.Fatalf("managed databases = %#v", config.ManagedDatabases)
+	}
+}
+
+func TestFleetValidationRejectsManagedDatabasePublicAccessAndInvalidReplica(t *testing.T) {
+	document := validFleetDocument + `managedDatabases:
+  - name: primary
+    engine: redis
+    size: ""
+    region: ""
+    network:
+      exposure: public
+      tls: optional
+    readReplica:
+      name: primary
+      region: ""
+  - name: primary
+    engine: mysql
+    size: db-s-1vcpu-2gb
+    region: nyc3
+    network:
+      exposure: vpc-only
+      tls: required
+`
+	_, report := ParseAndValidate([]byte(document))
+	for _, code := range []string{
+		"fleet.managed-database.engine.unsupported",
+		"fleet.managed-database.size.required",
+		"fleet.managed-database.region.required",
+		"fleet.managed-database.network.exposure.required",
+		"fleet.managed-database.network.tls.required",
+		"fleet.managed-database.read-replica.name.duplicate",
+		"fleet.managed-database.read-replica.region.required",
+		"fleet.managed-database.name.duplicate",
+	} {
+		if !hasCode(report.Findings, code) {
+			t.Fatalf("expected %s in %#v", code, report.Findings)
+		}
+	}
+}
+
 func TestFleetValidationRejectsUnsafeQuorumAndReplacement(t *testing.T) {
 	document := strings.Replace(validFleetDocument, "desired: 3", "desired: 2", 1)
 	document = strings.Replace(document, "requireCapacityHeadroom: true", "requireCapacityHeadroom: false", 1)

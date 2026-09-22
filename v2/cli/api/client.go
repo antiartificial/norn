@@ -390,7 +390,21 @@ type FleetDocument struct {
 		Provider string `json:"provider"`
 		Region   string `json:"region"`
 	} `json:"cluster"`
-	NodePools map[string]FleetNodePool `json:"nodePools"`
+	NodePools        map[string]FleetNodePool `json:"nodePools"`
+	ManagedDatabases []struct {
+		Name    string `json:"name"`
+		Engine  string `json:"engine"`
+		Size    string `json:"size"`
+		Region  string `json:"region"`
+		Network struct {
+			Exposure string `json:"exposure"`
+			TLS      string `json:"tls"`
+		} `json:"network"`
+		ReadReplica *struct {
+			Name   string `json:"name"`
+			Region string `json:"region"`
+		} `json:"readReplica,omitempty"`
+	} `json:"managedDatabases,omitempty"`
 }
 
 type StatsResponse struct {
