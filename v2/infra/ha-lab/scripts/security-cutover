@@ -57,6 +57,25 @@ set_profile() {
   echo "norn_profile=${profile}"
 }
 
+update_env() {
+  # Set KEY=VALUE in the lab secret file (replacing an existing line or appending),
+  # mirroring set_phase/set_profile. Used to persist Nomad token secrets that are
+  # server-generated on Nomad < 2.0 (see seed_nomad) so later converges template
+  # norn.env with the token that actually exists.
+  local key="$1" value="$2" temp_file
+  temp_file="$(mktemp "$(dirname "${secret_file}")/.env-update.XXXXXX")"
+  trap 'rm -f -- "${temp_file}"' RETURN
+  awk -v key="${key}" -v value="${value}" '
+    BEGIN { replaced = 0 }
+    index($0, key "=") == 1 { print key "=" value; replaced = 1; next }
+    { print }
+    END { if (!replaced) print key "=" value }
+  ' "${secret_file}" >"${temp_file}"
+  chmod 0600 "${temp_file}"
+  mv "${temp_file}" "${secret_file}"
+  trap - RETURN
+}
+
 readiness_report() {
   printf '%s\n' "${NORN_HA_NORN_API_TOKEN}" | ssh -o BatchMode=yes "root@${first_ip}" 'IFS= read -r token
 active="$(curl -fsS --max-time 5 "http://127.0.0.1:8500/v1/health/service/norn-api?passing=true" | jq -er '\''if length == 1 then .[0].Service.Address else error("exactly one active Norn API required") end'\'')"
@@ -257,22 +276,35 @@ nomad acl policy apply norn-observability "${work}/observability.hcl" >/dev/null
 nomad acl policy apply anonymous "${work}/anonymous.hcl" >/dev/null
 create_nomad_token() {
   local accessor="$1" secret="$2" name="$3" policy="$4"
-  # Nomad >= 1.10 can import a token with a pre-specified accessor + secret, which
-  # keeps the token's SecretID in sync with the value already provisioned to its
-  # consumers (Norn controller API, Prometheus->Nomad scrape).
+  # Nomad >= 2.0 can import a token with a pre-specified accessor + secret (the
+  # `-accessor` flag; NOT present in 1.9.x/1.10.x/1.11.x), which keeps the token's
+  # SecretID in sync with the value already provisioned to its consumers (Norn
+  # controller API, Prometheus->Nomad scrape). On older Nomad (incl. the pinned
+  # 1.9.7) the fallback below creates a server-generated SecretID that does NOT
+  # match the provisioned value — see the warning there.
   if nomad acl token create -help 2>&1 | grep -q -- '-accessor'; then
     if nomad acl token info "${accessor}" >/dev/null 2>&1; then return; fi
     printf '%s\n' "${secret}" | nomad acl token create -accessor "${accessor}" -name "${name}" -policy "${policy}" - >/dev/null
     return
   fi
-  # Nomad < 1.10 (e.g. the 1.9.x nodes) cannot pre-specify token IDs. Create the
-  # token idempotently by name with a server-generated accessor/secret so cutover
-  # can complete (notably `nomad setup consul`, which the data plane needs). The
-  # generated SecretID differs from the pre-provisioned value, so any consumer
-  # pinned to the pre-provisioned token needs the regenerated secret — see
-  # OBSERVATIONS.md. Workload identity + the data plane are unaffected.
-  if nomad acl token list -json 2>/dev/null | jq -e --arg n "${name}" 'any(.[]; .Name == $n)' >/dev/null 2>&1; then return; fi
-  nomad acl token create -name "${name}" -policy "${policy}" >/dev/null
+  # Nomad < 2.0 (incl. the pinned 1.9.7) cannot import a pre-specified SecretID, so
+  # the token is created with a SERVER-GENERATED secret that will not match the
+  # pre-provisioned NORN_HA value templated into norn.env. To keep norn (and the
+  # Prometheus->Nomad scrape) authenticated, recreate the token deterministically —
+  # dropping any stale same-name token so we always know the fresh SecretID — and
+  # EMIT accessor+secret on stdout. The controller (seed_nomad) parses these and
+  # writes them back into the lab .env BEFORE the norn/observability converges that
+  # follow, so norn.env is templated with the token that actually exists.
+  # NOTE: this rotates the token secret on every cutover — fine for a disposable lab.
+  local stale created new_accessor new_secret
+  for stale in $(nomad acl token list -json 2>/dev/null | jq -r --arg n "${name}" '.[] | select(.Name == $n) | .AccessorID'); do
+    nomad acl token delete "${stale}" >/dev/null 2>&1 || true
+  done
+  created="$(nomad acl token create -name "${name}" -policy "${policy}" -json)"
+  new_accessor="$(jq -r '.AccessorID' <<<"${created}")"
+  new_secret="$(jq -r '.SecretID' <<<"${created}")"
+  # Structured, parseable line; the controller strips these from user-facing output.
+  printf 'NOMAD_TOKEN_OUT %s %s %s\n' "${policy}" "${new_accessor}" "${new_secret}"
 }
 create_nomad_token "$(jq -r .norn_accessor <<<"${payload}")" "$(jq -r .norn <<<"${payload}")" "Norn controller" norn-controller
 create_nomad_token "$(jq -r .observability_accessor <<<"${payload}")" "$(jq -r .observability <<<"${payload}")" "Prometheus" norn-observability
@@ -288,7 +320,35 @@ nomad setup consul -y \
 nomad acl token list -json | jq -e 'length >= 3' >/dev/null
 echo "nomad_acl_seeded=true"
 REMOTE
-  } | ssh -o BatchMode=yes "root@${first_ip}" 'IFS= read -r NORN_CUTOVER_PAYLOAD; export NORN_CUTOVER_PAYLOAD; exec bash -s'
+  } | ssh -o BatchMode=yes "root@${first_ip}" 'IFS= read -r NORN_CUTOVER_PAYLOAD; export NORN_CUTOVER_PAYLOAD; exec bash -s' | while IFS= read -r line; do
+    # On Nomad < 2.0 the node can't import our pre-provisioned SecretID, so it emits
+    # the server-generated accessor+secret per token as `NOMAD_TOKEN_OUT <policy>
+    # <accessor> <secret>`. Persist those into the lab .env so the norn/observability
+    # converges that follow template norn.env with the token that actually exists.
+    # (This while-read runs in a subshell; the .env FILE writes persist, and the
+    # parent re-sources the file below to pick the new values into its environment.)
+    # Every other line is the node's normal progress — pass it through verbatim. On
+    # Nomad >= 2.0 no NOMAD_TOKEN_OUT lines are emitted (the -accessor import kept ours).
+    if [[ "${line}" == "NOMAD_TOKEN_OUT "* ]]; then
+      read -r _ out_policy out_accessor out_secret <<<"${line}"
+      case "${out_policy}" in
+        norn-controller)
+          update_env NORN_HA_NOMAD_NORN_ACCESSOR "${out_accessor}"
+          update_env NORN_HA_NOMAD_NORN_TOKEN "${out_secret}" ;;
+        norn-observability)
+          update_env NORN_HA_NOMAD_OBSERVABILITY_ACCESSOR "${out_accessor}"
+          update_env NORN_HA_NOMAD_OBSERVABILITY_TOKEN "${out_secret}" ;;
+      esac
+    else
+      printf '%s\n' "${line}"
+    fi
+  done
+  # Re-read the (possibly updated) tokens into this shell so the subsequent
+  # converge_tags calls hand ansible the token that Nomad actually issued.
+  set -a
+  # shellcheck disable=SC1090
+  source "${secret_file}"
+  set +a
 }
 
 case "${action}" in

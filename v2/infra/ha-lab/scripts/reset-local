@@ -1,0 +1,108 @@
+#!/usr/bin/env bash
+set -uo pipefail
+
+# Remove the LOCAL identity/config a lab leaves behind, so a torn-down (or a
+# half-finished, aborted) fleet name can be relaunched without tripping the
+# PKI / signing-key overwrite guards ("refusing to overwrite ...").
+#
+# Cloud resources are `lab down`/`destroy`'s job; this only deletes local files
+# under ~/.config/norn/ha-lab/<name>-* plus a matching terraform.tfvars. It never
+# touches the shared per-machine operator age key (operator-age.key), which is
+# your identity across every lab, not a per-fleet artifact.
+#
+# SAFETY: refuses while droplets named "<name>-NN" still exist (the cluster is
+# live) unless --force. This is what makes it safe to call from `lab down` and
+# safe to run against a stale name without fear of nuking a running fleet.
+#
+# usage: lab reset-local NAME [--confirm-disposable-lab] [--force]
+#   --confirm-disposable-lab  skip the typed name prompt (for scripted teardown)
+#   --force                   purge even if droplets still appear to exist
+
+script_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+lab_root="$(cd "${script_dir}/.." && pwd)"
+export PATH="${lab_root}/.tools/bin:${PATH}"
+config_dir="${XDG_CONFIG_HOME:-${HOME}/.config}/norn/ha-lab"
+tfvars="${lab_root}/terraform/terraform.tfvars"
+
+confirm=0 force=0 name=""
+while [[ $# -gt 0 ]]; do
+  case "$1" in
+    --confirm-disposable-lab) confirm=1 ;;
+    --force)                  force=1 ;;
+    -*)                       echo "unknown flag: $1" >&2; exit 2 ;;
+    *)                        name="$1" ;;
+  esac
+  shift
+done
+if [[ -z "${name}" && -f "${tfvars}" ]]; then
+  name="$(awk -F= '/^[[:space:]]*name_prefix[[:space:]]*=/ {v=$2; gsub(/[[:space:]"]/,"",v); print v; exit}' "${tfvars}")"
+fi
+[[ -n "${name}" ]] || { echo "usage: lab reset-local NAME [--confirm-disposable-lab] [--force]" >&2; exit 2; }
+[[ "${name}" =~ ^[a-z][a-z0-9-]{2,23}$ ]] || { echo "refusing: '${name}' is not a valid lab name" >&2; exit 2; }
+
+# ---- safety: never purge local identity for a still-running cluster ----------
+# Fail CLOSED: if we can't positively confirm the fleet is gone, refuse. --force
+# is the only bypass; --confirm-disposable-lab only skips the typed-name prompt.
+if [[ "${force}" -eq 0 ]]; then
+  command -v doctl >/dev/null 2>&1 || {
+    echo "refusing: doctl unavailable, so the cluster's destruction can't be confirmed." >&2
+    echo "Pass --force only if you are certain '${name}' is torn down." >&2
+    exit 1
+  }
+  if ! droplets="$(doctl compute droplet list --no-header --format Name 2>/dev/null)"; then
+    echo "refusing: could not query DigitalOcean to confirm '${name}' is destroyed (doctl error)." >&2
+    echo "Retry, or pass --force if you are certain it's gone." >&2
+    exit 1
+  fi
+  live="$(printf '%s\n' "${droplets}" | grep -cE "^${name}-[0-9]" || true)"
+  if [[ "${live:-0}" -gt 0 ]]; then
+    echo "refusing: ${live} droplet(s) named '${name}-*' still exist — the fleet looks live." >&2
+    echo "Tear it down first ('lab down ${name}'), or pass --force if you know it's gone." >&2
+    exit 1
+  fi
+fi
+
+# ---- confirm -----------------------------------------------------------------
+echo "This deletes ALL local identity/config for lab '${name}' (PKI, signing key,"
+echo "deploy key, .env, sealed vault, recipients) and a matching terraform.tfvars."
+if [[ "${confirm}" -eq 0 ]]; then
+  printf "Retype the fleet name to confirm: " >&2
+  read -r typed
+  [[ "${typed}" == "${name}" ]] || { echo "name mismatch; aborting." >&2; exit 1; }
+fi
+
+# ---- purge (explicit list — never a glob) ------------------------------------
+removed=0
+rm_path() {
+  local p="$1"
+  if [[ -e "${p}" ]]; then
+    rm -rf "${p}" && { printf '  removed  %s\n' "${p}"; removed=$((removed + 1)); }
+  fi
+}
+
+rm_path "${config_dir}/${name}-pki"
+rm_path "${config_dir}/${name}-cosign.key"
+rm_path "${config_dir}/${name}-cosign.pub"
+rm_path "${config_dir}/${name}-github-deploy"
+rm_path "${config_dir}/${name}-github-deploy.pub"
+rm_path "${config_dir}/${name}.env"
+rm_path "${config_dir}/${name}.sops.env"
+rm_path "${config_dir}/${name}.recipients"
+
+# terraform.tfvars only if it describes THIS lab (don't clobber another fleet's).
+if [[ -f "${tfvars}" ]]; then
+  tfvars_name="$(awk -F= '/^[[:space:]]*name_prefix[[:space:]]*=/ {v=$2; gsub(/[[:space:]"]/,"",v); print v; exit}' "${tfvars}")"
+  if [[ "${tfvars_name}" == "${name}" ]]; then
+    rm_path "${tfvars}"
+  else
+    printf '  kept     %s (describes \047%s\047, not \047%s\047)\n' "${tfvars}" "${tfvars_name}" "${name}"
+  fi
+fi
+
+echo
+if [[ "${removed}" -eq 0 ]]; then
+  echo "reset-local: nothing to remove for '${name}' (already clean)."
+else
+  echo "reset-local: removed ${removed} local artifact(s) for '${name}'. The name can be relaunched cleanly."
+fi
+echo "note: the shared operator identity (${config_dir%/ha-lab}/operator-age.key) was left untouched."

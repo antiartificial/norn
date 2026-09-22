@@ -115,7 +115,22 @@ step_external() {
 }
 step_state()    { rm -rf "${lab_root}/terraform/.terraform"; "${lab}" init; }  # drop any stale backend cache (old bucket) before init
 step_backup()   { "${lab}" backup-repository init; }
-step_apply()    { "${lab}" apply -auto-approve -var-file="${tfvars}"; }
+step_apply() {
+  # Retry a failed apply a few times: `terraform apply` is idempotent, and DO's
+  # API is eventually consistent — e.g. a load balancer create can 422 with
+  # "target droplets have no public nor private IP assigned" when the droplets
+  # were reported created a moment before their IPs propagated. A short backoff
+  # clears these transient flakes without a manual `--from apply`; a genuinely
+  # broken config still fails every attempt and surfaces via failed_resume.
+  local attempt=1 max=3
+  while true; do
+    "${lab}" apply -auto-approve -var-file="${tfvars}" && return 0
+    if [[ "${attempt}" -ge "${max}" ]]; then return 1; fi
+    echo "    apply attempt ${attempt}/${max} failed; retrying in $((attempt * 15))s (transient DO API errors clear on retry)…"
+    sleep $((attempt * 15))
+    attempt=$((attempt + 1))
+  done
+}
 step_pki()      { "${lab}" pki init; "${lab}" pki control-init; }  # control-init requires the PostgreSQL PKI (pki init) first
 step_cosign()   { "${lab}" supply-chain init; }
 step_catalog()  { "${lab}" catalog sync >/dev/null && echo "catalog synced (age recipient + encrypted app secret in place)"; }

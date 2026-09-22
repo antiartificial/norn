@@ -4,9 +4,11 @@ set -euo pipefail
 # Tear the fleet down and stop DO billing. Destructive, so it requires typed
 # confirmation (retype the cluster name) unless --confirm is passed.
 #
-# usage: lab down [NAME] [--confirm] [--keep-spaces]
+# usage: lab down [NAME] [--confirm] [--keep-spaces] [--keep-local]
 #   --confirm      skip the typed prompt (for scripted teardown)
 #   --keep-spaces  leave the WAL backup bucket/key in place
+#   --keep-local   leave local identity/config (PKI, keys, .env) in place
+#                  (default: purge it so the name can be relaunched cleanly)
 
 script_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 lab_root="$(cd "${script_dir}/.." && pwd)"
@@ -14,11 +16,12 @@ export PATH="${lab_root}/.tools/bin:${PATH}"
 lab="${script_dir}/lab"
 tfvars="${lab_root}/terraform/terraform.tfvars"
 
-confirm=0 keep_spaces=0 name=""
+confirm=0 keep_spaces=0 keep_local=0 name=""
 while [[ $# -gt 0 ]]; do
   case "$1" in
     --confirm)     confirm=1 ;;
     --keep-spaces) keep_spaces=1 ;;
+    --keep-local)  keep_local=1 ;;
     -*)            echo "unknown flag: $1" >&2; exit 2 ;;
     *)             name="$1" ;;
   esac
@@ -48,6 +51,14 @@ fi
 
 echo "==> clear the local terraform backend cache"
 rm -rf "${lab_root}/terraform/.terraform" || true
+
+if [[ "${keep_local}" -eq 0 ]]; then
+  echo "==> purge local identity/config so '${name}' can be relaunched cleanly"
+  # Destroy has removed the droplets, so reset-local's live-cluster guard passes;
+  # if destroy only partially succeeded it will refuse, and we surface that.
+  "${lab}" reset-local "${name}" --confirm-disposable-lab || \
+    echo "    (local purge skipped — run 'lab reset-local ${name} --confirm-disposable-lab' once teardown is complete)"
+fi
 
 echo
 echo "fleet '${name}' destroyed."

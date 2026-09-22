@@ -16,6 +16,15 @@ resource "digitalocean_vpc" "lab" {
   ip_range = var.vpc_cidr
 }
 
+# A fleet-scoped tag the regional load balancer selects on, instead of a static
+# droplet_ids list. DigitalOcean resolves tag membership dynamically, so the LB
+# never 422s on the eventual-consistency window where a just-created droplet has
+# no public/private IP assigned yet. Scoped to name_prefix so it selects only
+# this fleet's nodes (unlike the global "norn-ha-member" tag).
+resource "digitalocean_tag" "member" {
+  name = "${var.name_prefix}-member"
+}
+
 resource "digitalocean_droplet" "node" {
   for_each = local.nodes
 
@@ -28,7 +37,7 @@ resource "digitalocean_droplet" "node" {
   monitoring = true
   backups    = var.enable_backups
   ipv6       = true
-  tags       = concat(local.common_tags, ["norn-ha-member"])
+  tags       = concat(local.common_tags, ["norn-ha-member", digitalocean_tag.member.name])
 
   user_data = templatefile("${path.module}/cloud-init.yaml.tftpl", {
     hostname          = each.key
@@ -50,7 +59,7 @@ resource "digitalocean_loadbalancer" "regional_ingress" {
   network     = "EXTERNAL"
   size        = "lb-small"
   vpc_uuid    = digitalocean_vpc.lab.id
-  droplet_ids = [for node in digitalocean_droplet.node : node.id]
+  droplet_tag = digitalocean_tag.member.name
 
   forwarding_rule {
     entry_protocol  = "http"

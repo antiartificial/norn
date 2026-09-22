@@ -265,17 +265,17 @@ def main() -> None:
             scoped_access_key = find_value(scoped, "accesskey")
             access_key = scoped_access_key
             secret_key = find_value(scoped, "secretkey")
-            store_env(
-                args.secret_file,
-                lines,
-                {
-                    "NORN_HA_BACKUP_BUCKET": new_bucket,
-                    "NORN_HA_BACKUP_REGION": args.region,
-                    "NORN_HA_BACKUP_ENDPOINT": f"{args.region}.digitaloceanspaces.com",
-                    "NORN_HA_BACKUP_ACCESS_KEY": access_key,
-                    "NORN_HA_BACKUP_SECRET_KEY": secret_key,
-                },
-            )
+            backup_settings = {
+                "NORN_HA_BACKUP_BUCKET": new_bucket,
+                "NORN_HA_BACKUP_REGION": args.region,
+                "NORN_HA_BACKUP_ENDPOINT": f"{args.region}.digitaloceanspaces.com",
+                "NORN_HA_BACKUP_ACCESS_KEY": access_key,
+                "NORN_HA_BACKUP_SECRET_KEY": secret_key,
+            }
+            store_env(args.secret_file, lines, backup_settings)
+            # Keep the in-memory env in sync so the post-init verify below (which
+            # reads NORN_HA_BACKUP_REGION) doesn't see the pre-provision empty value.
+            env.update(backup_settings)
             subprocess.run(
                 ("doctl", "spaces", "keys", "delete", bootstrap_access_key),
                 check=True,

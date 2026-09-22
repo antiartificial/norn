@@ -25,17 +25,27 @@ RECAP: 0 failed), then the `security-cutover` script died with
 **Why:** `scripts/security-cutover` seeds two Nomad **client** tokens with
 pre-specified IDs via `nomad acl token create -accessor <id> -policy ... -`
 (so Norn's controller + Prometheus authenticate with known tokens). The
-`-accessor` import flag only exists in **Nomad ≥ 1.10**; the nodes install
-**Nomad 1.9.7**, whose `acl token create` has no `-accessor`. Version skew
-between the tooling and the pinned node binary. (The Nomad ACL *bootstrap* of
-the management token earlier in the same script works fine on 1.9.7 — only the
-two client-token imports fail.)
+`-accessor` import flag does **not** exist in Nomad 1.9.x, 1.10.x, or 1.11.x —
+it was added in **Nomad 2.0** (verified against HashiCorp's versioned docs; the
+earlier "≥1.10" claim here was wrong). The nodes install **Nomad 1.9.7**. Version
+skew between the tooling and the pinned node binary. (The Nomad ACL *bootstrap* of
+the management token earlier in the same script works fine on 1.9.7.)
 
-**Impact is narrow.** After converge the cluster is fully functional: Nomad ACL
-is bootstrapped, all nodes ready, the management token works over the mTLS API
-(`https://127.0.0.1:4646` with `/etc/nomad.d/pki/nomad{-ca,,-key}.pem`). Only the
-two pre-seeded client tokens are missing, which degrades Norn-controller / the
-Prometheus→Nomad scrape — not the data plane.
+**Impact is NOT narrow (corrected).** `create_nomad_token` now guards the flag at
+runtime (`-help | grep -- -accessor`), so cutover no longer dies — but on <2.0 it
+falls through to creating the token with a **server-generated SecretID** that does
+not match the pre-provisioned `NOMAD_TOKEN` templated into `/etc/norn/norn.env`.
+Result: the Norn controller can't authenticate to Nomad and the **deploy pipeline
+fails at `submit` with 403** — i.e. Norn cannot deploy any workload. (Confirmed on
+a clean bootstrap: clone→build→test all pass, `submit` 403s; `nomad acl token self`
+with norn.env's token returns 404.)
+
+**Resolved by** the fix-B write-back in `seed_nomad`/`create_nomad_token`: on
+Nomad <2.0 the node recreates the token deterministically, emits its real
+accessor+secret, and the controller persists them into the lab `.env` before the
+norn/observability converges re-template `norn.env`. Version-independent; needs
+end-to-end validation on a fresh <2.0 cluster. (Alternative: bump to Nomad 2.0 and
+use the `-accessor` path — a major-version upgrade requiring full re-validation.)
 
 **Workaround used:** `scripts/deploy-trinity` talks to Nomad directly with the
 mTLS env + the management token (from the lab secret file), so it does not depend

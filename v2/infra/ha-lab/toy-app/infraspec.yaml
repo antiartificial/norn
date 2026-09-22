@@ -10,7 +10,7 @@ repo:
   branch: main
   repoWeb: https://github.com/antiartificial/norn-ha-toy
 build:
-  image: registry.digitalocean.com/antiartificial/norn-ha-toy@sha256:81ae97709855876c7ed43f58c72287c649b79b63469044c460506afcd1ea7a04
+  image: registry.digitalocean.com/antiartificial/norn-ha-toy@sha256:bc237dcf410424033e8af9554ca09751b817c376e7e31732eac28f6f4d3627dd
   test: >-
     docker run --rm
     -v "$PWD:/src:ro"

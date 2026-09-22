@@ -25,6 +25,11 @@ infraspec="${lab_root}/toy-app/infraspec.yaml"
 
 lab_name="$(tf output -raw name_prefix 2>/dev/null || true)"
 [[ -n "${lab_name}" ]] || { echo "no applied cluster; run 'lab up' first" >&2; exit 1; }
+# Load the lab secrets for the Nomad management token (norn.env's own token can't
+# read cross-job status), mirroring deploy-traefik / lab status.
+secret_file="$(${script_dir}/secrets path "${lab_name}")"
+set -a; # shellcheck disable=SC1090
+source "${secret_file}"; set +a
 first_public="$(tf output -json lab_nodes | jq -r 'to_entries | sort_by(.key) | first.value.public_ip')"
 lb_ip="$(tf output -json regional_ingress 2>/dev/null | jq -r '.ip // empty' || true)"
 
@@ -62,8 +67,8 @@ echo "    sagaId=${saga}"
 
 echo "==> wait for two healthy allocations"
 for _ in $(seq 1 90); do
-  if ssh -o BatchMode=yes "root@${first_public}" '
-    set -a; source /etc/norn/norn.env; set +a; export NOMAD_ADDR="${NORN_NOMAD_ADDR}"
+  if printf '%s\n' "${NORN_HA_NOMAD_MANAGEMENT_TOKEN}" | ssh -o BatchMode=yes "root@${first_public}" '
+    IFS= read -r nomad_token; set -a; source /etc/norn/norn.env; set +a; export NOMAD_ADDR="${NORN_NOMAD_ADDR}" NOMAD_TOKEN="${nomad_token}"
     nomad job status -json norn-ha-toy 2>/dev/null | jq -e ".[0].Summary.Summary.web.Running >= 2" >/dev/null &&
     nomad deployment list -json 2>/dev/null | jq -e "[.[] | select(.JobID==\"norn-ha-toy\")] | sort_by(.CreateIndex) | last | .Status == \"successful\"" >/dev/null'; then
     echo "demo app '${version}' deployed via Norn (${digest})"

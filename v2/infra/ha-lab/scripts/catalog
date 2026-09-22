@@ -26,15 +26,33 @@ case "${command_name}" in
     if ! gh repo view "${repo}" >/dev/null 2>&1; then
       gh repo create "${repo}" --private --description "Disposable Norn HA production-admission pilot" --disable-issues --disable-wiki
     fi
-    if ! gh repo deploy-key list -R "${repo}" | grep -Fq "${lab_name} read-only deploy"; then
+    # Reconcile the deploy key by its ACTUAL value, not just the title. When a lab
+    # name is reused after the local key was regenerated (e.g. by `lab reset-local`),
+    # a stale same-titled key from a prior run otherwise lingers on the repo and the
+    # new key never gets registered — norn then fails to clone with "Permission
+    # denied (publickey)" and silently falls back to a source-less local copy.
+    want_key="$(awk '{print $2}' "${NORN_HA_GIT_DEPLOY_KEY_PATH}.pub")"
+    registered_keys="$(gh repo deploy-key list -R "${repo}" --json id,key,title 2>/dev/null || echo '[]')"
+    if ! printf '%s' "${registered_keys}" | jq -e --arg k "${want_key}" 'any(.[]; .key | contains($k))' >/dev/null 2>&1; then
+      # our current key isn't registered: drop any stale key with our title, then add it
+      printf '%s' "${registered_keys}" | jq -r --arg t "${lab_name} read-only deploy" '.[] | select(.title==$t) | .id' | while read -r stale_id; do
+        [[ -n "${stale_id}" ]] && gh repo deploy-key delete "${stale_id}" -R "${repo}" >/dev/null 2>&1 || true
+      done
       gh repo deploy-key add "${NORN_HA_GIT_DEPLOY_KEY_PATH}.pub" -R "${repo}" --title "${lab_name} read-only deploy"
     fi
     install -d -m 0700 "${catalog_dir}"
-    rsync -a --delete --exclude .git "${lab_root}/toy-app/" "${catalog_dir}/"
     if [[ ! -d "${catalog_dir}/.git" ]]; then
       git -C "${catalog_dir}" init -b main >/dev/null
       git -C "${catalog_dir}" remote add origin "https://github.com/${repo}.git"
     fi
+    # Base on the remote's current main so the push fast-forwards even when a
+    # prior run (or another operator) already pushed to this catalog repo. A
+    # freshly init'd local repo shares no history with a non-empty remote, so
+    # without this the push is rejected as a non-fast-forward.
+    if git -C "${catalog_dir}" fetch -q origin main 2>/dev/null; then
+      git -C "${catalog_dir}" reset -q --soft FETCH_HEAD
+    fi
+    rsync -a --delete --exclude .git "${lab_root}/toy-app/" "${catalog_dir}/"
     git -C "${catalog_dir}" add --all
     if ! git -C "${catalog_dir}" diff --cached --quiet; then
       git -C "${catalog_dir}" -c user.name='Norn HA Lab' -c user.email='norn-ha-lab@users.noreply.github.com' commit -m 'Update HA toy service' >/dev/null

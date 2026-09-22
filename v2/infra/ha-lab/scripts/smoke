@@ -1,0 +1,286 @@
+#!/usr/bin/env bash
+set -uo pipefail
+
+# Read-only "is the cell actually online?" gate runner.
+#
+# Where `lab up` builds a fleet and `lab verify` runs the durability drills,
+# `lab smoke` asserts — layer by layer, in the order traffic actually flows —
+# that a running cell is healthy end to end. It mutates nothing on the cluster
+# (the secrets gate re-seals the LOCAL working .env, which is idempotent), so it
+# is safe to run repeatedly against a live fleet.
+#
+# Gates (each PASS/warn/FAIL, ordered by dependency):
+#   quorum    Consul members alive, Nomad raft quorum, Patroni has a leader
+#   api       Norn control API healthy on :8810 (leader-following HAProxy frontend)
+#   ingress   Cloudflare-shaped path: regional LB -> Traefik -> a routed service
+#   workload  the demo app has running allocations + a successful deployment
+#   secrets   the current operator can seal+decrypt the vault; Spaces has a backup
+#   activity  the operator-facing beacon feed + admin receipts are reachable
+#
+# usage: lab smoke [NAME] [--only g1,g2,...] [--list]
+#   NAME     fleet name (name_prefix); optional if terraform state is applied
+#   --only   run just these gates (comma-separated; see the list above)
+#   --list   print the gate ids and exit
+
+script_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+lab_root="$(cd "${script_dir}/.." && pwd)"
+export PATH="${lab_root}/.tools/bin:${PATH}"
+terraform_dir="${lab_root}/terraform"
+infraspec="${lab_root}/toy-app/infraspec.yaml"
+app_id="norn-ha-toy"                       # the lab's pinned demo workload
+# Local end of the :8810 SSH forward — pick a FREE port, not a hardcoded one, so
+# a local squatter (Docker, another lab) can't make us tunnel-to-nothing and
+# misreport the API/activity gates. Falls back to a fixed port if python is absent.
+api_lport="$("${lab_root}/.tools/ansible/bin/python" -c 'import socket; s=socket.socket(); s.bind(("127.0.0.1",0)); print(s.getsockname()[1]); s.close()' 2>/dev/null || echo 18810)"
+tf() { terraform -chdir="${terraform_dir}" "$@"; }
+
+ALL_GATES=(quorum api ingress workload secrets activity)
+
+# ---- args ----------------------------------------------------------------
+name="" only=""
+while [[ $# -gt 0 ]]; do
+  case "$1" in
+    --list)   printf '%s\n' "${ALL_GATES[@]}"; exit 0 ;;
+    --only)   only="${2:-}"; shift ;;
+    --only=*) only="${1#--only=}" ;;
+    -*)       echo "unknown flag: $1" >&2; exit 2 ;;
+    *)        name="$1" ;;
+  esac
+  shift
+done
+
+gates=("${ALL_GATES[@]}")
+if [[ -n "${only}" ]]; then
+  IFS=',' read -r -a gates <<< "${only}"
+  for g in "${gates[@]}"; do
+    printf '%s\n' "${ALL_GATES[@]}" | grep -qx "${g}" || { echo "unknown gate '${g}'; valid: ${ALL_GATES[*]}" >&2; exit 2; }
+  done
+fi
+
+# ---- resolve the fleet + credentials -------------------------------------
+[[ -n "${name}" ]] || name="$(tf output -raw name_prefix 2>/dev/null || true)"
+[[ -n "${name}" ]] || { echo "no applied cluster (empty terraform state); run 'lab up' first, or pass NAME" >&2; exit 1; }
+
+secret_file="$(${script_dir}/secrets path "${name}" 2>/dev/null || true)"
+[[ -n "${secret_file}" && -f "${secret_file}" ]] || { echo "no secrets .env for '${name}'; run 'lab secrets init ${name}' (or 'lab secrets pull ${name}')" >&2; exit 1; }
+set -a; # shellcheck disable=SC1090
+source "${secret_file}"; set +a
+
+nodes_json="$(tf output -json lab_nodes 2>/dev/null || true)"
+[[ -n "${nodes_json}" && "${nodes_json}" != "null" ]] || { echo "no node inventory in terraform state; is the cluster applied?" >&2; exit 1; }
+first_public="$(printf '%s' "${nodes_json}" | jq -r 'to_entries | sort_by(.key) | first.value.public_ip')"
+
+# Evidence: keep the whole run in the main shell (so gate counters survive) while
+# also teeing to a timestamped log, via process substitution rather than a pipe.
+evidence_dir="${lab_root}/.evidence"
+mkdir -p "${evidence_dir}"
+evidence_file="${evidence_dir}/smoke-$(date -u +%Y%m%dT%H%M%SZ).log"
+exec > >(tee "${evidence_file}") 2>&1
+
+# ---- output + accounting -------------------------------------------------
+blockers=0; warns=0; gate_failed=0
+declare -a results=()
+pass() { printf '  \033[32mok\033[0m    %s\n' "$1"; }
+warn() { printf '  \033[33mwarn\033[0m  %s\n' "$1"; warns=$((warns + 1)); }
+fail() { printf '  \033[31mFAIL\033[0m  %s\n' "$1"; blockers=$((blockers + 1)); gate_failed=1; }
+say()  { printf '\n\033[1m==> %s\033[0m\n' "$1"; }
+
+# ---- :8810 tunnel (shared by api + activity) -----------------------------
+tunnel_pid=""
+ensure_tunnel() {
+  [[ -n "${tunnel_pid}" ]] && return 0
+  ssh -o BatchMode=yes -o ExitOnForwardFailure=yes -o ServerAliveInterval=15 \
+    -N -L "${api_lport}:127.0.0.1:8810" "root@${first_public}" &
+  tunnel_pid=$!
+  trap 'kill "${tunnel_pid}" 2>/dev/null || true' EXIT
+  # give the forward a moment to establish (mirrors `lab verify`)
+  for _ in $(seq 1 8); do
+    curl -fsS --max-time 2 "http://127.0.0.1:${api_lport}/api/health" >/dev/null 2>&1 && return 0
+    sleep 1
+  done
+  return 0   # let the gate that needs it report the failure with detail
+}
+
+# curl helper: prints "BODY\nCODE"; caller splits on the trailing line.
+http() { curl -s -w $'\n%{http_code}' --max-time "${1}" "${@:2}"; }
+
+# ---- gates ---------------------------------------------------------------
+
+gate_quorum() {
+  local out
+  out="$(printf '%s\n%s\n' "${NORN_HA_CONSUL_MANAGEMENT_TOKEN:-}" "${NORN_HA_NOMAD_MANAGEMENT_TOKEN:-}" | \
+    ssh -o BatchMode=yes "root@${first_public}" 'IFS= read -r consul_token; IFS= read -r nomad_token
+export CONSUL_HTTP_ADDR=https://127.0.0.1:8501 CONSUL_CACERT=/etc/consul.d/pki/ca.pem CONSUL_CLIENT_CERT=/etc/consul.d/pki/consul.pem CONSUL_CLIENT_KEY=/etc/consul.d/pki/consul-key.pem CONSUL_TLS_SERVER_NAME=server.dc1.consul CONSUL_HTTP_TOKEN="${consul_token}"
+export NOMAD_ADDR=https://127.0.0.1:4646 NOMAD_CACERT=/etc/nomad.d/pki/nomad-ca.pem NOMAD_CLIENT_CERT=/etc/nomad.d/pki/nomad.pem NOMAD_CLIENT_KEY=/etc/nomad.d/pki/nomad-key.pem NOMAD_TLS_SERVER_NAME=server.global.nomad NOMAD_TOKEN="${nomad_token}"
+echo "#consul"; consul members 2>&1
+echo "#nomad"; nomad operator raft list-peers 2>&1
+echo "#patroni"; patronictl -c /etc/patroni/config.yml list 2>&1' 2>&1)" || { fail "SSH to ${first_public} failed (quorum unqueryable)"; return; }
+
+  local consul nomad patroni
+  consul="$(printf '%s' "${out}"  | awk '/^#consul/{f=1;next} /^#nomad/{f=0} f')"
+  nomad="$(printf '%s'  "${out}"  | awk '/^#nomad/{f=1;next} /^#patroni/{f=0} f')"
+  patroni="$(printf '%s' "${out}" | awk '/^#patroni/{f=1;next} f')"
+
+  local alive
+  alive="$(printf '%s' "${consul}" | grep -c 'alive' || true)"
+  if [[ "${alive}" -ge 3 ]] && ! printf '%s' "${consul}" | grep -qiE 'failed|left'; then
+    pass "consul: ${alive} members alive, none failed/left"
+  else
+    fail "consul: quorum unhealthy (${alive} alive; check for failed/left members)"
+  fi
+
+  local voters
+  voters="$(printf '%s' "${nomad}" | grep -c 'true' || true)"   # Voter column == true
+  if [[ "${voters}" -ge 3 ]]; then
+    pass "nomad: ${voters} raft voters"
+  else
+    fail "nomad: raft has ${voters} voter(s) (want odd >= 3)"
+  fi
+
+  if printf '%s' "${patroni}" | grep -qiE 'Leader' && ! printf '%s' "${patroni}" | grep -qiE 'stopped|start failed'; then
+    pass "patroni: leader present, no stopped members"
+  else
+    fail "patroni: no healthy leader (or a member is stopped)"
+  fi
+}
+
+gate_api() {
+  ensure_tunnel
+  local resp code
+  resp="$(http 5 "http://127.0.0.1:${api_lport}/api/health")"; code="${resp##*$'\n'}"
+  if [[ "${code}" == "200" ]]; then
+    pass "norn control API healthy (:8810 /api/health)"
+  else
+    fail "norn API /api/health returned '${code:-no-response}' (leader down, or :8810 unreachable)"
+  fi
+}
+
+gate_ingress() {
+  local lb_ip lb_port host resp code
+  lb_ip="$(tf output -json regional_ingress 2>/dev/null | jq -r '.ip // empty')"
+  lb_port="$(tf output -json regional_ingress 2>/dev/null | jq -r '.port // 80')"
+  if [[ -z "${lb_ip}" ]]; then warn "no regional load balancer in terraform state — ingress gate skipped"; return; fi
+  host="$(awk '/^endpoints:/{e=1;next} e&&/url:[[:space:]]*https?:\/\//{sub(/.*:\/\//,"");sub(/\/.*/,"");print;exit}' "${infraspec}" 2>/dev/null)"
+  if [[ -z "${host}" ]]; then warn "no endpoint host in ${infraspec##*/} — cannot exercise a route"; return; fi
+
+  resp="$(http 8 -H "Host: ${host}" "http://${lb_ip}:${lb_port}/")"; code="${resp##*$'\n'}"
+  case "${code}" in
+    2*|3*) pass "ingress: LB ${lb_ip}:${lb_port} -> Traefik -> route for ${host} (HTTP ${code})" ;;
+    404)   warn "ingress: LB->Traefik reachable but no route for ${host} (HTTP 404) — deploy the app" ;;
+    "")    fail "ingress: no response from LB ${lb_ip}:${lb_port} (LB/Traefik down or firewalled)" ;;
+    *)     fail "ingress: LB ${lb_ip}:${lb_port} returned HTTP ${code} for ${host}" ;;
+  esac
+}
+
+gate_workload() {
+  local out running deployed
+  out="$(ssh -o BatchMode=yes "root@${first_public}" '
+    set -a; source /etc/norn/norn.env; set +a; export NOMAD_ADDR="${NORN_NOMAD_ADDR}"
+    echo "running=$(nomad job status -json '"${app_id}"' 2>/dev/null | jq -r "[.[0].TaskGroups[].Summary.Running // .[0].Summary.Summary[].Running] | add // 0")"
+    echo "deployed=$(nomad deployment list -json 2>/dev/null | jq -r "[.[] | select(.JobID==\"'"${app_id}"'\")] | sort_by(.CreateIndex) | last | .Status // \"none\"")"
+  ' 2>/dev/null)" || { warn "could not query Nomad for '${app_id}' (SSH failed) — workload gate skipped"; return; }
+
+  running="$(printf '%s' "${out}" | awk -F= '/^running=/{print $2}')"
+  deployed="$(printf '%s' "${out}" | awk -F= '/^deployed=/{print $2}')"
+  running="${running:-0}"
+
+  if [[ "${deployed}" == "none" || -z "${deployed}" ]]; then
+    warn "demo app '${app_id}' not deployed (run 'lab deploy-app', or launched with --no-app)"
+    return
+  fi
+  if [[ "${running}" -ge 1 && "${deployed}" == "successful" ]]; then
+    pass "workload: '${app_id}' has ${running} running alloc(s), last deployment successful"
+  elif [[ "${running}" -ge 1 ]]; then
+    warn "workload: '${app_id}' running (${running}) but last deployment is '${deployed}'"
+  else
+    fail "workload: '${app_id}' has no running allocations (last deployment '${deployed}')"
+  fi
+}
+
+gate_secrets() {
+  local ops
+  ops="$(${script_dir}/secrets operators "${name}" 2>/dev/null | grep -c 'age1' || true)"
+  if [[ "${ops}" -eq 0 ]]; then
+    warn "no operators enrolled for '${name}' — run 'lab secrets add-operator ${name} <age1...>' then 'lab secrets seal ${name}'"
+  else
+    # Re-seal the local working .env (idempotent) and prove THIS operator can
+    # decrypt it. Never print the value — redirect to /dev/null, assert exit 0.
+    if ${script_dir}/secrets seal "${name}" >/dev/null 2>&1; then
+      if ${script_dir}/secrets view "${name}" NORN_HA_NORN_API_TOKEN >/dev/null 2>&1; then
+        pass "secrets: ${ops} operator(s) enrolled; this operator can seal+decrypt the vault"
+      else
+        fail "secrets: sealed vault present but THIS operator cannot decrypt it (recipient missing?)"
+      fi
+    else
+      fail "secrets: 'seal ${name}' failed (no operator identity? run 'lab secrets operator-init')"
+    fi
+  fi
+
+  # Spaces backup is optional (needs BACKUP_* creds); report but never block.
+  local log
+  if log="$(${script_dir}/secrets log "${name}" 2>/dev/null)"; then
+    if printf '%s' "${log}" | grep -q 'LATEST'; then
+      local n; n="$(printf '%s' "${log}" | grep -cE '^[0-9]+ ' || true)"
+      pass "secrets: Spaces backup present (${n} sealed version(s) — rollback target available)"
+    else
+      warn "secrets: no sealed backup in Spaces yet — run 'lab secrets push ${name}'"
+    fi
+  else
+    warn "secrets: Spaces backup not checked (no BACKUP_* creds in the .env)"
+  fi
+}
+
+gate_activity() {
+  ensure_tunnel
+  local auth="Authorization: Bearer ${NORN_HA_NORN_API_TOKEN:-}"
+
+  local resp code body
+  resp="$(http 6 -H "${auth}" "http://127.0.0.1:${api_lport}/api/events")"
+  code="${resp##*$'\n'}"; body="${resp%$'\n'*}"
+  case "${code}" in
+    200)
+      local total app_scoped
+      total="$(printf '%s' "${body}" | jq -r '(.events // []) | length' 2>/dev/null || echo 0)"
+      app_scoped="$(printf '%s' "${body}" | jq -r '[(.events // [])[] | select(.app != null and .app != "")] | length' 2>/dev/null || echo 0)"
+      if [[ "${app_scoped}" -ge 1 ]]; then
+        pass "activity: beacon feed reachable (${total} events, ${app_scoped} app-scoped) — Pods tab has data"
+      else
+        warn "activity: beacon feed reachable (${total} events) but 0 app-scoped — restart/scale the app to generate one"
+      fi ;;
+    404) warn "activity: /api/events absent — deployed norn predates the Activity Log (rebuild/redeploy norn)" ;;
+    401|403) fail "activity: /api/events denied (HTTP ${code}) — token lacks api:read" ;;
+    "")  fail "activity: no response from /api/events (API down or :8810 unreachable)" ;;
+    *)   fail "activity: /api/events returned HTTP ${code}" ;;
+  esac
+
+  resp="$(http 6 -H "${auth}" "http://127.0.0.1:${api_lport}/api/v1/audit/mutations")"
+  code="${resp##*$'\n'}"
+  case "${code}" in
+    200) pass "activity: admin mutation receipts reachable (/api/v1/audit/mutations) — Receipts tab has data" ;;
+    404) warn "activity: /api/v1/audit/mutations absent — deployed norn predates signed receipts" ;;
+    401|403) warn "activity: receipts require admin scope — this token can't read them (expected for non-admin)" ;;
+    "")  warn "activity: no response from /api/v1/audit/mutations" ;;
+    *)   warn "activity: /api/v1/audit/mutations returned HTTP ${code}" ;;
+  esac
+}
+
+# ---- run -----------------------------------------------------------------
+echo "Norn cell smoke test — fleet '${name}' via ${first_public}"
+echo "gates: ${gates[*]}"
+
+for g in "${gates[@]}"; do
+  gate_failed=0
+  say "gate: ${g}"
+  "gate_${g}"
+  if [[ "${gate_failed}" -eq 1 ]]; then results+=("FAIL ${g}"); else results+=("ok   ${g}"); fi
+done
+
+say "summary"
+printf '  %s\n' "${results[@]}"
+echo
+echo "evidence: ${evidence_file}"
+if [[ "${blockers}" -gt 0 ]]; then
+  echo "smoke: ${blockers} blocker(s), ${warns} warning(s) — the cell is NOT fully online."
+  exit 1
+fi
+echo "smoke: online (${warns} warning(s)). All hard gates passed."

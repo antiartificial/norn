@@ -139,6 +139,12 @@ case "${command_name}" in
   verify)
     "${script_dir}/verify" "$@"
     ;;
+  smoke)
+    "${script_dir}/smoke" "$@"
+    ;;
+  reset-local)
+    bash "${script_dir}/reset-local" "$@"
+    ;;
   receipt)
     "${script_dir}/recovery-receipt" "$@"
     ;;
@@ -211,7 +217,8 @@ Norn DigitalOcean HA lab
   lab fleet sizes [REGION] | regions | validate [NAME]
   lab connect [NAME]
   lab deploy-app
-  lab down NAME [--confirm]
+  lab down NAME [--confirm] [--keep-spaces] [--keep-local]
+  lab reset-local NAME [--confirm-disposable-lab] [--force]
   lab bootstrap-tools
   lab preflight [NAME]
   lab artifacts ensure NAME | ensure-external NAME | status NAME
@@ -236,6 +243,7 @@ Norn DigitalOcean HA lab
   lab deploy-traefik
   lab durability-pilot check|dependencies|exercise|fault|teardown
   lab verify
+  lab smoke [NAME] [--only quorum,api,ingress,workload,secrets,activity] [--list]
   lab receipt start KIND TARGET
   lab receipt complete ID passed key=value
   lab replace-member MEMBER --confirm-disposable-lab

@@ -19,17 +19,29 @@ set +a
 mkdir -p "${evidence_dir}"
 
 first_ip="$(terraform -chdir="${lab_root}/terraform" output -json lab_nodes | jq -r 'to_entries | sort_by(.key) | first.value.public_ip')"
-ssh -o ExitOnForwardFailure=yes -o ServerAliveInterval=15 -N -L 55432:127.0.0.1:6432 "root@${first_ip}" &
+# Pick a FREE local port for the PG tunnel instead of a hardcoded one: a fixed
+# port (was 55432) collides with whatever else the developer runs locally
+# (Docker Desktop, another lab), and with ExitOnForwardFailure the tunnel then
+# dies silently and the test connects to the squatter — surfacing as a bogus
+# "server refused TLS connection".
+pg_lport="$("${lab_root}/.tools/ansible/bin/python" -c 'import socket; s=socket.socket(); s.bind(("127.0.0.1",0)); print(s.getsockname()[1]); s.close()')"
+ssh -o ExitOnForwardFailure=yes -o ServerAliveInterval=15 -N -L "${pg_lport}:127.0.0.1:6432" "root@${first_ip}" &
 tunnel_pid=$!
 trap 'kill "${tunnel_pid}" 2>/dev/null || true' EXIT
-sleep 2
+# Wait for the forward to actually accept connections (and fail loudly if it never does).
+for _ in $(seq 1 15); do
+  if "${lab_root}/.tools/ansible/bin/python" -c "import socket,sys; socket.create_connection(('127.0.0.1',${pg_lport}),timeout=1).close()" 2>/dev/null; then break; fi
+  sleep 1
+done
+"${lab_root}/.tools/ansible/bin/python" -c "import socket; socket.create_connection(('127.0.0.1',${pg_lport}),timeout=1).close()" 2>/dev/null \
+  || { echo "PG tunnel to ${first_ip} never came up on 127.0.0.1:${pg_lport}" >&2; exit 1; }
 
 {
   echo "Norn HA verification started $(date -u +%FT%TZ)"
   ANSIBLE_CONFIG="${lab_root}/ansible/ansible.cfg" ansible-playbook "${lab_root}/ansible/site.yml" --tags verify
   (
     cd "${repo_root}/v2/api"
-    NORN_TEST_DATABASE_URL="postgres://norn_test:${NORN_HA_NORN_DB_PASSWORD}@127.0.0.1:55432/norn_test?sslmode=require" \
+    NORN_TEST_DATABASE_URL="postgres://norn_test:${NORN_HA_NORN_DB_PASSWORD}@127.0.0.1:${pg_lport}/norn_test?sslmode=require" \
       go test ./store -run 'TestProductionEvidenceLifecycle|TestExecAuthorizationLifecycle' -count=1 -v
   )
   echo "Norn HA verification completed $(date -u +%FT%TZ)"
