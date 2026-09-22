@@ -13,6 +13,7 @@ const OperationsPage = lazy(() => import('./pages/OperationsPage.tsx').then((mod
 const ReleasesPage = lazy(() => import('./pages/ReleasesPage.tsx').then((module) => ({ default: module.ReleasesPage })))
 const ActivityLogPage = lazy(() => import('./pages/ActivityLogPage.tsx').then((module) => ({ default: module.ActivityLogPage })))
 const FleetPage = lazy(() => import('./pages/FleetPage.tsx').then((module) => ({ default: module.FleetPage })))
+const FleetBuilderPage = lazy(() => import('./pages/FleetBuilderPage.tsx').then((module) => ({ default: module.FleetBuilderPage })))
 const TopologyView = lazy(() => import('./components/TopologyView.tsx').then((module) => ({ default: module.TopologyView })))
 const PlatformPanel = lazy(() => import('./components/PlatformPanel.tsx').then((module) => ({ default: module.PlatformPanel })))
 const ManagementOnlyPage = lazy(() => import('./pages/ManagementOnlyPage.tsx').then((module) => ({ default: module.ManagementOnlyPage })))
@@ -57,6 +58,7 @@ export function App() {
               <Route path="/releases" element={runtime.runtimeAvailable ? <ReleasesPage /> : <ManagementOnlyPage area="Releases" />} />
               <Route path="/activity-log" element={<ActivityLogPage />} />
               <Route path="/fleet" element={runtime.fleetAvailable ? <FleetPage /> : <EmptyState icon="!" title="Fleet unavailable" hint="This server does not advertise the complete fleet-v1 capability set." />} />
+              <Route path="/fleet-builder" element={<FleetBuilderPage />} />
               <Route
                 path="/topology"
                 element={(

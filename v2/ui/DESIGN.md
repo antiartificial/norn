@@ -93,13 +93,14 @@ Left **sidebar** (collapsible to icons, 220px ↔ 56px, persisted) replaces head
 /activity-log    Operator activity: Pods, Cell, and signed mutation receipts
 /operations      Durable operations queue + saga inspector (/operations/:sagaId)
 /topology        React Flow graph (rethemed dark)
+/fleet-builder   Design-time Fleet topology composer and YAML export
 /platform        Platform hub with sub-tabs:
 /platform/(releases|network|access|notifications|observability|contextdb)
 ```
 
 Sidebar sections: **Operate** (Overview, Apps, Deploys, Releases, Incidents, Operations,
 Activity Log),
-**Understand** (Topology), **Configure** (Platform). Sidebar footer: theme toggle,
+**Understand** (Topology, Fleet, Fleet Builder), **Configure** (Platform). Sidebar footer: theme toggle,
 version, WS connection indicator (green dot "Live" / amber "Reconnecting…").
 
 Header (slim, per-page): page title, contextual actions, global search button (⌘K),
@@ -170,6 +171,13 @@ rendered as a timeline (mono, timestamped, payload collapsible).
 ### Topology
 Keep the React Flow structure; retheme to design tokens (dark + light via CSS vars),
 remove the hardcoded `'ft-trove'` preferred app (default = first app or none).
+
+### Fleet Builder
+Provide a design-time, client-side topology composer that validates region, quorum,
+and estimated-capacity constraints before exporting `norn.dev/fleet/v1` documents.
+It does not inspect live provider state, create a Fleet plan, or apply infrastructure.
+The exported YAML enters the reviewed Fleet GitOps workflow, where provider plans and
+applies remain protected, evidence-gated operations.
 
 ### Platform
 Split the current 571-line PlatformPanel firehose into sub-tab routes:
