@@ -194,6 +194,16 @@ Rollbacks emit:
 | `rollback.succeeded` | `info` | A rollback completes |
 | `rollback.failed` | `critical` | A rollback fails |
 
+App operator actions emit:
+
+| Type | Severity | When |
+| --- | --- | --- |
+| `app.restarted` | `info` | An operator restarts an app |
+| `app.scaled` | `info` | An operator changes an app's scale |
+| `app.secret-updated` | `info` | An operator updates a secret; metadata contains the key name only |
+| `app.secret-deleted` | `info` | An operator deletes a secret; metadata contains the key name only |
+| `app.config-updated` | `info` | An operator updates app configuration |
+
 Cron control actions emit:
 
 | Type | Severity | When |
