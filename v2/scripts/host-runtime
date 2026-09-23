@@ -1141,18 +1141,26 @@ security_init() {
   bundle_root="$temp_root/bundle"
   mkdir -m 700 "$temp_root/nomad" "$temp_root/consul" "$bundle_root" "$bundle_root/nomad" "$bundle_root/consul"
 
-  (
-    cd "$temp_root/nomad"
-    "$nomad_bin" tls ca create -days=1825
-    "$nomad_bin" tls cert create -server -region=global -additional-ipaddress="$detected" -days="$cert_days"
-    "$nomad_bin" tls cert create -cli -additional-ipaddress="$detected" -days="$cert_days"
-  )
-  (
-    cd "$temp_root/consul"
-    "$consul_bin" tls ca create -days="$((cert_days * 5))"
-    "$consul_bin" tls cert create -server -dc=dc1 -node="$node_name" -additional-ipaddress="$detected" -days="$cert_days"
-    "$consul_bin" tls cert create -client -additional-ipaddress="$detected" -days="$cert_days"
-  )
+  if ! (
+    cd "$temp_root/nomad" || exit
+    "$nomad_bin" tls ca create -days=1825 || exit
+    "$nomad_bin" tls cert create -server -region=global -additional-ipaddress="$detected" -days="$cert_days" || exit
+    "$nomad_bin" tls cert create -cli -additional-ipaddress="$detected" -days="$cert_days" || exit
+  ); then
+    find "$temp_root" -depth -delete >/dev/null 2>&1 || true
+    trap - EXIT
+    return 1
+  fi
+  if ! (
+    cd "$temp_root/consul" || exit
+    "$consul_bin" tls ca create -days="$((cert_days * 5))" || exit
+    "$consul_bin" tls cert create -server -dc=dc1 -node="$node_name" -additional-ipaddress="$detected" -days="$cert_days" || exit
+    "$consul_bin" tls cert create -client -additional-ipaddress="$detected" -days="$cert_days" || exit
+  ); then
+    find "$temp_root" -depth -delete >/dev/null 2>&1 || true
+    trap - EXIT
+    return 1
+  fi
 
   cp "$temp_root"/nomad/*.pem "$bundle_root/nomad/"
   cp "$temp_root"/consul/*.pem "$bundle_root/consul/"
