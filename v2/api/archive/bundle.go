@@ -109,6 +109,9 @@ func ObjectKey(subject Subject, sequence int) (string, error) {
 // Seal completes a bundle's checksums and cutoff from its events, and
 // encodes it. The encoding is the stored bytes; they are never re-encoded.
 func Seal(bundle *Bundle) ([]byte, error) {
+	if err := validateOperationBundle(bundle); err != nil {
+		return nil, err
+	}
 	bundle.Schema = BundleSchema
 	ids := make([]string, 0, len(bundle.Events))
 	var last time.Time
@@ -179,5 +182,23 @@ func Open(data []byte) (*Bundle, error) {
 	if _, err := ObjectKey(bundle.Subject, bundle.Sequence); err != nil {
 		return nil, fmt.Errorf("%w: %v", ErrObjectCorrupt, err)
 	}
+	if err := validateOperationBundle(&bundle); err != nil {
+		return nil, fmt.Errorf("%w: %v", ErrObjectCorrupt, err)
+	}
 	return &bundle, nil
+}
+
+func validateOperationBundle(bundle *Bundle) error {
+	if bundle == nil || bundle.Subject.Kind != "operation" {
+		return nil
+	}
+	if len(bundle.Events) != 0 || len(bytes.TrimSpace(bundle.Operation)) == 0 || bundle.Acceptance == nil {
+		return fmt.Errorf("operation evidence bundle requires an operation, signed acceptance and no saga events")
+	}
+	switch bundle.Subject.OperationKind {
+	case "fleet.github.pull-request", "fleet.github.apply-dispatch":
+		return nil
+	default:
+		return fmt.Errorf("operation evidence bundle kind is not supported")
+	}
 }

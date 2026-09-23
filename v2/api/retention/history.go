@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"sort"
+	"time"
 
 	"github.com/jackc/pgx/v5"
 
@@ -193,11 +194,12 @@ type IndexRecovery struct {
 // RestoreIndex rebuilds the evidence index from the archive alone (for a
 // control store restored without its historical rows): every bundle object
 // is read, verified for internal consistency (and its acceptance signature
-// when a signer is given) and recorded as pruned history, so archive-aware
-// reads resolve it. Existing index rows are never overwritten.
+// when a signer is given) and recorded from its own validated subject. This
+// includes saga history and terminal operation receipts. Existing index rows
+// are never overwritten.
 func RestoreIndex(ctx context.Context, db *store.DB, objects archive.Reader, signer store.AcceptanceSigner) (IndexRecovery, error) {
 	var recovery IndexRecovery
-	keys, err := objects.List(ctx, "evidence/saga/")
+	keys, err := objects.List(ctx, "evidence/")
 	if err != nil {
 		return recovery, err
 	}
@@ -209,10 +211,14 @@ func RestoreIndex(ctx context.Context, db *store.DB, objects archive.Reader, sig
 			recovery.Rejected = append(recovery.Rejected, key+": "+err.Error())
 			continue
 		}
-		cutoff := bundle.Cutoff.LastTimestamp
+		var cutoff *time.Time
+		if bundle.Cutoff.EventCount > 0 {
+			value := bundle.Cutoff.LastTimestamp
+			cutoff = &value
+		}
 		restored, err := db.RestoreEvidenceIntent(ctx, store.EvidenceIntent{
-			ID: "ei-restored-" + info.SHA256[:24], SubjectKind: "saga", SubjectID: bundle.Subject.ID, App: bundle.Subject.App,
-			OperationID: bundle.Subject.OperationID, Sequence: bundle.Sequence, EventIDs: bundle.Cutoff.EventIDs, CutoffTimestamp: &cutoff,
+			ID: "ei-restored-" + info.SHA256[:24], SubjectKind: bundle.Subject.Kind, SubjectID: bundle.Subject.ID, App: bundle.Subject.App,
+			OperationID: bundle.Subject.OperationID, Sequence: bundle.Sequence, EventIDs: bundle.Cutoff.EventIDs, CutoffTimestamp: cutoff,
 			ObjectKey: info.Key, ObjectSHA256: info.SHA256, ObjectBytes: info.Size,
 		})
 		if err != nil {

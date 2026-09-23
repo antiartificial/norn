@@ -7,8 +7,10 @@
 package retention
 
 import (
+	"bytes"
 	"context"
 	"encoding/base64"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"reflect"
@@ -203,7 +205,7 @@ func (a *Archiver) publish(ctx context.Context, intent store.EvidenceIntent, sou
 	if err != nil {
 		return store.EvidencePublication{}, err
 	}
-	return a.readBack(ctx, info, intent)
+	return a.readBack(ctx, info, intent, source)
 }
 
 func (a *Archiver) adopt(ctx context.Context, key string, intent store.EvidenceIntent, source store.EvidenceSource) (store.EvidencePublication, error) {
@@ -228,13 +230,13 @@ func (a *Archiver) adopt(ctx context.Context, key string, intent store.EvidenceI
 			return store.EvidencePublication{}, fmt.Errorf("existing archive object %s holds events that are not this subject's hot evidence", key)
 		}
 	}
-	return a.readBack(ctx, info, intent)
+	return a.readBack(ctx, info, intent, source)
 }
 
 // readBack re-reads the published object, requires its exact identity,
 // re-opens and validates the bundle, and verifies the original acceptance
 // signature bytes when a signer is configured.
-func (a *Archiver) readBack(ctx context.Context, info archive.ObjectInfo, intent store.EvidenceIntent) (store.EvidencePublication, error) {
+func (a *Archiver) readBack(ctx context.Context, info archive.ObjectInfo, intent store.EvidenceIntent, sources ...store.EvidenceSource) (store.EvidencePublication, error) {
 	if err := a.Archive.Verify(ctx, info); err != nil {
 		return store.EvidencePublication{}, fmt.Errorf("read-back verification: %w", err)
 	}
@@ -252,6 +254,11 @@ func (a *Archiver) readBack(ctx context.Context, info archive.ObjectInfo, intent
 	if err := subjectMatches(bundle, intent, info.Key); err != nil {
 		return store.EvidencePublication{}, err
 	}
+	if intent.SubjectKind == "operation" {
+		if len(sources) != 1 || !operationBundleMatchesSource(bundle, sources[0]) {
+			return store.EvidencePublication{}, fmt.Errorf("operation evidence bundle differs from current signed receipt source")
+		}
+	}
 	if err := a.verifyAcceptance(ctx, bundle); err != nil {
 		return store.EvidencePublication{}, err
 	}
@@ -261,6 +268,23 @@ func (a *Archiver) readBack(ctx context.Context, info archive.ObjectInfo, intent
 		cutoff = &last
 	}
 	return store.EvidencePublication{EventIDs: bundle.Cutoff.EventIDs, CutoffTimestamp: cutoff, ObjectKey: info.Key, ObjectSHA256: info.SHA256, ObjectBytes: info.Size}, nil
+}
+
+func operationBundleMatchesSource(bundle *archive.Bundle, source store.EvidenceSource) bool {
+	if bundle == nil || bundle.Subject.Kind != "operation" || bundle.Acceptance == nil || source.Acceptance == nil ||
+		!sameJSONBytes(bundle.Operation, source.OperationJSON) || !sameJSONBytes(bundle.Effects, source.EffectsJSON) {
+		return false
+	}
+	a, b := bundle.Acceptance, source.Acceptance
+	return a.IntentID == b.IntentID && a.RequestIdentityID == b.RequestIdentityID && a.RequestReceiptID == b.RequestReceiptID &&
+		a.FingerprintVersion == b.FingerprintVersion && a.FingerprintDigest == b.FingerprintDigest &&
+		bytes.Equal(a.RequestCanonicalBytes, b.RequestCanonicalBytes) && bytes.Equal(a.CanonicalBytes, b.CanonicalBytes) &&
+		a.CanonicalDigest == b.CanonicalDigest && a.SigningAlgorithm == b.SigningAlgorithm && a.SigningKeyID == b.SigningKeyID && a.Signature == b.Signature
+}
+
+func sameJSONBytes(a, b []byte) bool {
+	var left, right any
+	return json.Unmarshal(a, &left) == nil && json.Unmarshal(b, &right) == nil && reflect.DeepEqual(left, right)
 }
 
 // verifyAcceptance binds the archived signed acceptance to the archived

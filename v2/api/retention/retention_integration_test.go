@@ -382,6 +382,105 @@ func TestTerminalFleetGitHubReceiptReserveExhaustionLeavesRecoverableAcceptance(
 	}
 }
 
+func TestRestoreIndexRestoresTerminalFleetGitHubReceiptBundle(t *testing.T) {
+	f := newRetentionFixture(t)
+	ctx := context.Background()
+	accepted := f.terminalFleetGitHubReceipt()
+	if report, err := f.archiver.RunOnce(ctx); err != nil || report.Published != 1 {
+		t.Fatalf("publish = %+v, %v", report, err)
+	}
+	if _, err := f.db.Pool.Exec(ctx, `DELETE FROM evidence_archive_intents`); err != nil {
+		t.Fatal(err)
+	}
+	recovery, err := RestoreIndex(ctx, f.db, f.objects, f.signer)
+	if err != nil || recovery.Restored != 1 || len(recovery.Rejected) != 0 {
+		t.Fatalf("operation receipt index recovery = %+v, %v", recovery, err)
+	}
+	intents, err := f.db.EvidenceIntentsForSubject(ctx, "operation", accepted.Operation.ID)
+	if err != nil || len(intents) != 1 || intents[0].SubjectKind != "operation" || intents[0].OperationID != accepted.Operation.ID || intents[0].State != "pruned" {
+		t.Fatalf("restored operation receipt index = %+v, %v", intents, err)
+	}
+}
+
+func TestLegacySagaEvidenceIntentToleratesMissingOperation(t *testing.T) {
+	f := newRetentionFixture(t)
+	ctx := context.Background()
+	sagaID := "legacy-saga-" + uuid.NewString()
+	if err := saga.NewWithID(f.hot, sagaID, "legacy", "test", "archive").Log(ctx, "completed", "legacy evidence", nil); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := f.db.Pool.Exec(ctx, `INSERT INTO evidence_archive_intents (id,subject_kind,subject_id,app,operation_id,sequence,state)
+		VALUES ($1,'saga',$2,'legacy','missing-legacy-operation',1,'pending')`, "ei-legacy-"+uuid.NewString(), sagaID); err != nil {
+		t.Fatal(err)
+	}
+	if report, err := f.archiver.RunOnce(ctx); err != nil || report.Published != 1 || len(report.PublishErrors) != 0 {
+		t.Fatalf("legacy saga archive = %+v, %v", report, err)
+	}
+	intents, err := f.db.EvidenceIntentsForSubject(ctx, "saga", sagaID)
+	if err != nil || len(intents) != 1 || intents[0].State != "verified" {
+		t.Fatalf("legacy saga intent = %+v, %v", intents, err)
+	}
+}
+
+func TestOperationReceiptAdoptionRejectsMissingOrSwappedAcceptance(t *testing.T) {
+	f := newRetentionFixture(t)
+	ctx := context.Background()
+	first, second := f.terminalFleetGitHubReceipt(), f.terminalFleetGitHubReceipt()
+	if report, err := f.archiver.RunOnce(ctx); err != nil || report.Published != 2 {
+		t.Fatalf("publish = %+v, %v", report, err)
+	}
+	firstIntent, secondIntent := mustOperationIntent(t, f, first.Operation.ID), mustOperationIntent(t, f, second.Operation.ID)
+	firstBundle, err := LoadBundle(ctx, f.objects, firstIntent)
+	if err != nil {
+		t.Fatal(err)
+	}
+	secondBundle, err := LoadBundle(ctx, f.objects, secondIntent)
+	if err != nil {
+		t.Fatal(err)
+	}
+	missing := *firstBundle
+	missing.Acceptance = nil
+	if _, err := archive.Seal(&missing); err == nil {
+		t.Fatal("operation bundle without signed acceptance was sealed")
+	}
+	if _, err := f.db.Pool.Exec(ctx, `DELETE FROM evidence_archive_intents WHERE id=$1`, firstIntent.ID); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := f.db.BackfillNonSagaFleetGitHubEvidenceIntents(ctx, 0, 1); err != nil {
+		t.Fatal(err)
+	}
+	_, err = f.db.ProcessPendingEvidenceIntent(ctx, 0, func(ctx context.Context, intent store.EvidenceIntent, source store.EvidenceSource) (store.EvidencePublication, error) {
+		forged := *firstBundle
+		acceptance := *secondBundle.Acceptance
+		forged.Acceptance = &acceptance
+		data, err := archive.Seal(&forged)
+		if err != nil {
+			return store.EvidencePublication{}, err
+		}
+		objects, err := archive.OpenLocal(filepath.Join(t.TempDir(), "forged-operation"), 1<<20)
+		if err != nil {
+			return store.EvidencePublication{}, err
+		}
+		defer objects.Close()
+		if _, err := objects.PutImmutable(ctx, firstIntent.ObjectKey, data); err != nil {
+			return store.EvidencePublication{}, err
+		}
+		return (&Archiver{Archive: objects, Signer: f.signer}).adopt(ctx, firstIntent.ObjectKey, intent, source)
+	})
+	if err == nil || !strings.Contains(err.Error(), "differs from current signed receipt source") {
+		t.Fatalf("swapped operation acceptance adoption = %v", err)
+	}
+}
+
+func mustOperationIntent(t *testing.T, f *retentionFixture, operationID string) store.EvidenceIntent {
+	t.Helper()
+	intents, err := f.db.EvidenceIntentsForSubject(context.Background(), "operation", operationID)
+	if err != nil || len(intents) != 1 {
+		t.Fatalf("operation intent %s = %+v, %v", operationID, intents, err)
+	}
+	return intents[0]
+}
+
 // failingStore simulates archive outages and crash boundaries.
 type failingStore struct {
 	archive.Store

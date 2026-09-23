@@ -254,9 +254,12 @@ func loadEvidenceSource(ctx context.Context, tx pgx.Tx, intent EvidenceIntent) (
 	if intent.OperationID != "" {
 		if err := tx.QueryRow(ctx, `SELECT row_to_json(o)::text::jsonb, o.kind FROM operations o WHERE o.id = $1`, intent.OperationID).Scan(&source.OperationJSON, &source.OperationKind); err != nil {
 			if errors.Is(err, pgx.ErrNoRows) {
-				return source, fmt.Errorf("evidence intent %s operation is missing", intent.ID)
+				if intent.SubjectKind == "operation" {
+					return source, fmt.Errorf("operation evidence intent %s operation is missing", intent.ID)
+				}
+			} else {
+				return source, err
 			}
-			return source, err
 		}
 		var acceptance AcceptanceEvidenceRow
 		var receipt *string
