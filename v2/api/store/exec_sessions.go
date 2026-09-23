@@ -293,6 +293,23 @@ func (db *DB) CancelActiveExecSessions(ctx context.Context, column, value, error
 	return ids, nil
 }
 
+// ExecSessionAuthorized reports whether the session is still active (pending or
+// running) and its bound device is not revoked — the execution-boundary fence
+// re-checked at use, independent of the session's own status cascade.
+func (db *DB) ExecSessionAuthorized(ctx context.Context, sessionID string) (bool, error) {
+	var authorized bool
+	err := db.Pool.QueryRow(ctx, `
+		SELECT EXISTS(
+			SELECT 1 FROM exec_sessions s
+			JOIN access_devices d ON d.id = s.device_id
+			WHERE s.id = $1
+			  AND s.status IN ('pending','running')
+			  AND d.revoked_at IS NULL
+		)
+	`, sessionID).Scan(&authorized)
+	return authorized, err
+}
+
 func (db *DB) FinishExecSession(ctx context.Context, id, status string, exitCode *int, errorCode string) error {
 	_, err := db.Pool.Exec(ctx, `
 		UPDATE exec_sessions SET status=$2,finished_at=now(),exit_code=$3,error_code=$4

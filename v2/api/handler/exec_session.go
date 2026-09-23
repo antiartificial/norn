@@ -242,11 +242,20 @@ func (h *Handler) watchExecSessionRevocation(ctx context.Context, sessionID stri
 		case <-ticker.C:
 			lookupCtx, cancel := context.WithTimeout(ctx, 2*time.Second)
 			session, err := h.db.GetExecSession(lookupCtx, sessionID)
-			cancel()
 			if err == pgx.ErrNoRows || (err == nil && session.Status != "running") {
+				cancel()
 				_ = conn.Close()
 				return
 			}
+			// Execution-boundary fence (ADR 0007): independently re-check that the
+			// session's credential is still live at use, so a revoked device drops
+			// the live connection even if the cancel cascade had not landed.
+			if authorized, ferr := h.db.ExecSessionAuthorized(lookupCtx, sessionID); ferr == nil && !authorized {
+				cancel()
+				_ = conn.Close()
+				return
+			}
+			cancel()
 		}
 	}
 }

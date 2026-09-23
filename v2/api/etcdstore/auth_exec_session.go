@@ -379,6 +379,33 @@ func (s *AuthStore) FinishExecSession(ctx context.Context, id, status string, ex
 	return fmt.Errorf("finish session %s: exhausted retries under contention", id)
 }
 
+// ExecSessionAuthorized reports whether the session is still active and its
+// bound device is not revoked — the execution-boundary fence re-checked at use,
+// independent of the session's status cascade. Mirrors the PostgreSQL adapter.
+func (s *AuthStore) ExecSessionAuthorized(ctx context.Context, sessionID string) (bool, error) {
+	sess, _, err := s.loadSession(ctx, sessionID)
+	if errors.Is(err, ErrNotFound) {
+		return false, nil
+	}
+	if err != nil {
+		return false, err
+	}
+	if sess.Status != "pending" && sess.Status != "running" {
+		return false, nil
+	}
+	dev, _, derr := s.loadDevice(ctx, sess.DeviceID)
+	if errors.Is(derr, ErrNotFound) {
+		return false, nil
+	}
+	if derr != nil {
+		return false, derr
+	}
+	if dev.RevokedAt != nil {
+		return false, nil
+	}
+	return true, nil
+}
+
 func (s *AuthStore) ListExecSessions(ctx context.Context, deviceID string, all bool) ([]store.ExecSession, error) {
 	_ = s.ExpireExecSessions(ctx)
 	sessions, err := s.scanSessions(ctx)

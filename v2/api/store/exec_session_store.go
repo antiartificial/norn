@@ -37,6 +37,13 @@ type ExecSessionStore interface {
 	FinishExecSession(ctx context.Context, id, status string, exitCode *int, errorCode string) error
 	ListExecSessions(ctx context.Context, deviceID string, all bool) ([]ExecSession, error)
 
+	// ExecSessionAuthorized re-checks, at use time, that a session is still
+	// active and its bound device is still live — an execution-boundary fence
+	// (ADR 0007) applied independently of the revoke-plus-cancel cascade, so a
+	// revoked device is refused at the session's next fenced check even if the
+	// cancel had not propagated. Returns false (no error) for a missing session.
+	ExecSessionAuthorized(ctx context.Context, sessionID string) (bool, error)
+
 	// CancelActiveExecSessions cancels the pending/running sessions bound to a
 	// credential (column "token_jti" or "device_id") and returns their ids.
 	CancelActiveExecSessions(ctx context.Context, column, value, errorCode string) ([]string, error)

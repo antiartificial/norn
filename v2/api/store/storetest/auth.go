@@ -126,6 +126,27 @@ func RunAuthAggregateConformance(t *testing.T, newStore func(t *testing.T) store
 		}
 	})
 
+	t.Run("FenceRefusesAfterDeviceRevocation", func(t *testing.T) {
+		s := newStore(t)
+		dev, jti := uuid.NewString(), uuid.NewString()
+		registerDevice(t, s, dev)
+		sessionID := provisionSession(t, s, dev, jti, "web")
+		if err := s.ConnectExecSession(ctx, sessionID, "owner-A"); err != nil {
+			t.Fatal(err)
+		}
+		if ok, _ := s.ExecSessionAuthorized(ctx, sessionID); !ok {
+			t.Fatal("session should be authorized before revocation")
+		}
+		if _, err := s.RevokeAccessDevice(ctx, dev); err != nil {
+			t.Fatal(err)
+		}
+		// The execution-boundary fence refuses the session once its device is
+		// revoked, independent of the cancel cascade.
+		if ok, _ := s.ExecSessionAuthorized(ctx, sessionID); ok {
+			t.Fatal("session must be fenced after its device is revoked")
+		}
+	})
+
 	t.Run("NoSessionSurvivesItsCredentialRevocation", func(t *testing.T) {
 		s := newStore(t)
 		dev, jti := uuid.NewString(), uuid.NewString()

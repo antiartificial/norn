@@ -195,6 +195,33 @@ func RunExecSessionStoreConformance(t *testing.T, newStore func(t *testing.T) st
 		}
 	})
 
+	t.Run("AuthorizedReflectsSessionActivity", func(t *testing.T) {
+		s := newStore(t)
+		dev, app, jti := uuid.NewString(), "web", "jti-auth"
+		registerDevice(t, dev)
+		ch := mkVerifiedChallenge(t, s, dev, app, jti)
+		session := newSession(dev, app, jti, ch)
+		if err := s.CreateExecSession(ctx, session); err != nil {
+			t.Fatal(err)
+		}
+		if err := s.ConnectExecSession(ctx, session.ID, "owner-A"); err != nil {
+			t.Fatal(err)
+		}
+		if ok, err := s.ExecSessionAuthorized(ctx, session.ID); err != nil || !ok {
+			t.Fatalf("running session should be authorized: ok=%v err=%v", ok, err)
+		}
+		code := 0
+		if err := s.FinishExecSession(ctx, session.ID, "completed", &code, ""); err != nil {
+			t.Fatal(err)
+		}
+		if ok, _ := s.ExecSessionAuthorized(ctx, session.ID); ok {
+			t.Fatal("finished session should not be authorized")
+		}
+		if ok, _ := s.ExecSessionAuthorized(ctx, "missing"); ok {
+			t.Fatal("missing session should not be authorized")
+		}
+	})
+
 	t.Run("RecoverFailsOwnedAndOrphansNotOthers", func(t *testing.T) {
 		s := newStore(t)
 		connect := func(owner string) string {
