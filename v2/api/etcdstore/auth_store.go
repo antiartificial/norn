@@ -29,6 +29,7 @@ import (
 type AuthStore struct {
 	kv     clientv3.KV
 	prefix string
+	test   struct{ beforeConnectCommit func() }
 }
 
 // NewAuthStore returns an etcd auth store rooted at prefix.
@@ -38,21 +39,21 @@ func NewAuthStore(kv clientv3.KV, prefix string) *AuthStore {
 
 var _ store.AuthStore = (*AuthStore)(nil)
 
-func (s *AuthStore) deviceKey(id string) string    { return s.prefix + "/auth/device/" + id }
-func (s *AuthStore) devicePrefix() string           { return s.prefix + "/auth/device/" }
-func (s *AuthStore) tokenKey(jti string) string     { return s.prefix + "/auth/token/" + jti }
-func (s *AuthStore) tokenPrefix() string            { return s.prefix + "/auth/token/" }
-func (s *AuthStore) enrollKey(id string) string     { return s.prefix + "/auth/enroll/" + id }
-func (s *AuthStore) enrollPrefix() string           { return s.prefix + "/auth/enroll/" }
+func (s *AuthStore) deviceKey(id string) string { return s.prefix + "/auth/device/" + id }
+func (s *AuthStore) devicePrefix() string       { return s.prefix + "/auth/device/" }
+func (s *AuthStore) tokenKey(jti string) string { return s.prefix + "/auth/token/" + jti }
+func (s *AuthStore) tokenPrefix() string        { return s.prefix + "/auth/token/" }
+func (s *AuthStore) enrollKey(id string) string { return s.prefix + "/auth/enroll/" + id }
+func (s *AuthStore) enrollPrefix() string       { return s.prefix + "/auth/enroll/" }
 func (s *AuthStore) oidcKey(issuer, jti string) string {
 	return s.prefix + "/auth/oidc/" + issuer + "\x00" + jti
 }
-func (s *AuthStore) grantKey(id string) string      { return s.prefix + "/auth/grant/" + id }
-func (s *AuthStore) grantPrefix() string            { return s.prefix + "/auth/grant/" }
-func (s *AuthStore) challengeKey(id string) string  { return s.prefix + "/auth/challenge/" + id }
-func (s *AuthStore) challengePrefix() string        { return s.prefix + "/auth/challenge/" }
-func (s *AuthStore) sessionKey(id string) string    { return s.prefix + "/auth/session/" + id }
-func (s *AuthStore) sessionPrefix() string          { return s.prefix + "/auth/session/" }
+func (s *AuthStore) grantKey(id string) string     { return s.prefix + "/auth/grant/" + id }
+func (s *AuthStore) grantPrefix() string           { return s.prefix + "/auth/grant/" }
+func (s *AuthStore) challengeKey(id string) string { return s.prefix + "/auth/challenge/" + id }
+func (s *AuthStore) challengePrefix() string       { return s.prefix + "/auth/challenge/" }
+func (s *AuthStore) sessionKey(id string) string   { return s.prefix + "/auth/session/" + id }
+func (s *AuthStore) sessionPrefix() string         { return s.prefix + "/auth/session/" }
 
 // --- stored wrappers: persist json:"-" fields the model hides ---
 

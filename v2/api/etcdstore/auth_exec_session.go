@@ -301,9 +301,16 @@ func (s *AuthStore) ConnectExecSession(ctx context.Context, id string, claim sto
 		if sess.Status != "pending" || !sess.ExpiresAt.After(time.Now()) {
 			return false, nil
 		}
-		dev, _, err := s.loadDevice(ctx, sess.DeviceID)
-		if err != nil || dev.RevokedAt != nil {
+		dev, devRev, err := s.loadDevice(ctx, sess.DeviceID)
+		if err != nil {
 			return false, err
+		}
+		token, tokenRev, err := s.loadToken(ctx, sess.TokenJTI)
+		if err != nil {
+			return false, err
+		}
+		if dev.RevokedAt != nil || token.RevokedAt != nil || !token.ExpiresAt.After(time.Now()) || token.DeviceID != sess.DeviceID {
+			return false, nil
 		}
 		now := time.Now()
 		until := now.Add(claim.LeaseDuration)
@@ -314,7 +321,14 @@ func (s *AuthStore) ConnectExecSession(ctx context.Context, id string, claim sto
 		if err != nil {
 			return false, err
 		}
-		txn, err := s.kv.Txn(ctx).If(clientv3.Compare(clientv3.ModRevision(s.sessionKey(id)), "=", resp.Kvs[0].ModRevision)).Then(op).Commit()
+		if s.test.beforeConnectCommit != nil {
+			s.test.beforeConnectCommit()
+		}
+		txn, err := s.kv.Txn(ctx).If(
+			clientv3.Compare(clientv3.ModRevision(s.sessionKey(id)), "=", resp.Kvs[0].ModRevision),
+			clientv3.Compare(clientv3.ModRevision(s.deviceKey(dev.ID)), "=", devRev),
+			clientv3.Compare(clientv3.ModRevision(s.tokenKey(token.JTI)), "=", tokenRev),
+		).Then(op).Commit()
 		if err != nil {
 			return false, err
 		}
