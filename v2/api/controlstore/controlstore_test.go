@@ -78,4 +78,23 @@ func TestControlStore_Etcd(t *testing.T) {
 	storetest.RunEventStoreConformance(t, func(t *testing.T) hub.EventStore { wipe(t); return cs })
 	storetest.RunFleetAttemptStoreConformance(t, func(t *testing.T) store.FleetAttemptStore { wipe(t); return cs })
 	storetest.RunMutationAuditStoreConformance(t, func(t *testing.T) store.MutationAuditStore { wipe(t); return cs })
+
+	// The full store surface routes through the same composed ControlStore.
+	storetest.RunIdentityStoreConformance(t, func(t *testing.T) store.IdentityStore { wipe(t); return cs })
+	storetest.RunExecSessionStoreConformance(t,
+		func(t *testing.T) store.ExecSessionStore { wipe(t); return cs },
+		func(t *testing.T, deviceID string) {
+			if err := cs.CreateAccessDevice(context.Background(), &store.AccessDevice{ID: deviceID, Name: "cs-device", CreatedAt: time.Now()}); err != nil {
+				t.Fatalf("register device: %v", err)
+			}
+		})
+	storetest.RunAuthAggregateConformance(t, func(t *testing.T) store.AuthStore { wipe(t); return cs })
+	storetest.RunNotificationStoreConformance(t, func(t *testing.T) store.NotificationStore { wipe(t); return cs })
+	storetest.RunWebhookStoreConformance(t, func(t *testing.T) store.WebhookStore { wipe(t); return cs })
+	storetest.RunCronStoreConformance(t, func(t *testing.T) store.CronStore { wipe(t); return cs })
+	storetest.RunFuncExecutionStoreConformance(t, func(t *testing.T) store.FuncExecutionStore { wipe(t); return cs })
+	storetest.RunRecoveryDrillStoreConformance(t, func(t *testing.T) store.RecoveryDrillStore { wipe(t); return cs })
+	storetest.RunAccessPatternStoreConformance(t, func(t *testing.T) store.AccessPatternStore { wipe(t); return cs })
+	storetest.RunFleetGitHubDispatchStoreConformance(t, func(t *testing.T) store.FleetGitHubDispatchStore { wipe(t); return cs })
+	storetest.RunBeaconStoreConformance(t, func(t *testing.T) store.BeaconStore { wipe(t); return cs })
 }

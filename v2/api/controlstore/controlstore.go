@@ -1,14 +1,19 @@
-// Package controlstore selects and constructs the backend for Norn's core
-// control-plane boundaries (operations, deployments, events, Fleet attempts and
-// evidence). The same ControlStore contract is satisfied by the PostgreSQL
-// adapter (*store.DB) and by the etcd adapters (etcdstore), so the control plane
-// can be pointed at either — the mechanism v3 needs for a fresh HA Fleet on etcd
-// with no control PostgreSQL.
+// Package controlstore selects and constructs the backend for Norn's
+// control-plane store boundaries. The same ControlStore contract is satisfied by
+// the PostgreSQL adapter (*store.DB) and by the etcd adapters (etcdstore), so the
+// control plane can be pointed at either — the mechanism v3 needs for a fresh HA
+// Fleet on etcd with no control PostgreSQL.
 //
-// NOTE: this selects only the five control boundaries. The rest of Norn's store
-// surface (devices/tokens, webhooks, beacon, access grants, exec sessions, etc.)
-// is not yet abstracted, so the etcd backend is control-boundary-only and
-// experimental until those land; the PostgreSQL default is unchanged.
+// Every extracted domain boundary now has an etcd adapter and is included here:
+// the five core boundaries (operations, deployments, events, Fleet attempts,
+// evidence), the auth aggregate (identity + exec sessions, with atomic
+// revoke-plus-cancel), notifications, webhooks, cron state, function executions,
+// recovery drills, access patterns, GitHub dispatches, beacon incidents and
+// control-backend readiness. Each passes the same conformance suite on both
+// backends. The etcd backend remains experimental pending live-Fleet bootstrap/
+// quorum/restore qualification; the PostgreSQL default is byte-for-byte unchanged.
+// Migrating handler/pipeline consumers off concrete *store.DB onto these
+// interfaces is a separate follow-on refactor.
 package controlstore
 
 import (
@@ -25,14 +30,25 @@ import (
 	"norn/v2/api/store"
 )
 
-// ControlStore is the union of the five backend-neutral control boundaries.
-// Both *store.DB and the etcd composite satisfy it.
+// ControlStore is the union of every backend-neutral control boundary. Both
+// *store.DB and the etcd composite satisfy it. The boundaries have no
+// overlapping exported method names, so the union is unambiguous.
 type ControlStore interface {
 	store.OperationStore
 	store.DeploymentStore
 	store.FleetAttemptStore
 	store.MutationAuditStore
 	hub.EventStore
+	store.AuthStore
+	store.NotificationStore
+	store.WebhookStore
+	store.CronStore
+	store.FuncExecutionStore
+	store.RecoveryDrillStore
+	store.AccessPatternStore
+	store.FleetGitHubDispatchStore
+	store.BeaconStore
+	store.DatabaseRecoveryInspector
 }
 
 const (
@@ -70,14 +86,25 @@ func ConfigFromEnv() Config {
 	return Config{Backend: backend, EtcdEndpoints: endpoints, EtcdPrefix: prefix}
 }
 
-// etcdControlStore composes the five etcd adapters into one ControlStore. The
-// boundaries have no overlapping method names, so promotion is unambiguous.
+// etcdControlStore composes the etcd adapters into one ControlStore. The
+// boundaries have no overlapping exported method names, so promotion is
+// unambiguous.
 type etcdControlStore struct {
 	*etcdstore.OperationStore
 	*etcdstore.DeploymentStore
 	*etcdstore.FleetAttemptStore
 	*etcdstore.MutationAuditStore
 	*etcdstore.EventStore
+	*etcdstore.AuthStore
+	*etcdstore.NotificationStore
+	*etcdstore.WebhookStore
+	*etcdstore.CronStore
+	*etcdstore.FuncExecutionStore
+	*etcdstore.RecoveryDrillStore
+	*etcdstore.AccessPatternStore
+	*etcdstore.FleetGitHubDispatchStore
+	*etcdstore.BeaconStore
+	*etcdstore.RecoveryInspector
 }
 
 var (
@@ -112,11 +139,21 @@ func New(pgDB *store.DB, cfg Config) (ControlStore, io.Closer, error) {
 			return nil, nil, fmt.Errorf("controlstore: dial etcd: %w", err)
 		}
 		cs := &etcdControlStore{
-			OperationStore:     etcdstore.NewOperationStore(cli, cfg.EtcdPrefix),
-			DeploymentStore:    etcdstore.NewDeploymentStore(cli, cfg.EtcdPrefix),
-			FleetAttemptStore:  etcdstore.NewFleetAttemptStore(cli, cfg.EtcdPrefix),
-			MutationAuditStore: etcdstore.NewMutationAuditStore(cli, cfg.EtcdPrefix),
-			EventStore:         etcdstore.NewEventStore(cli, cfg.EtcdPrefix),
+			OperationStore:           etcdstore.NewOperationStore(cli, cfg.EtcdPrefix),
+			DeploymentStore:          etcdstore.NewDeploymentStore(cli, cfg.EtcdPrefix),
+			FleetAttemptStore:        etcdstore.NewFleetAttemptStore(cli, cfg.EtcdPrefix),
+			MutationAuditStore:       etcdstore.NewMutationAuditStore(cli, cfg.EtcdPrefix),
+			EventStore:               etcdstore.NewEventStore(cli, cfg.EtcdPrefix),
+			AuthStore:                etcdstore.NewAuthStore(cli, cfg.EtcdPrefix),
+			NotificationStore:        etcdstore.NewNotificationStore(cli, cfg.EtcdPrefix),
+			WebhookStore:             etcdstore.NewWebhookStore(cli, cfg.EtcdPrefix),
+			CronStore:                etcdstore.NewCronStore(cli, cfg.EtcdPrefix),
+			FuncExecutionStore:       etcdstore.NewFuncExecutionStore(cli, cfg.EtcdPrefix),
+			RecoveryDrillStore:       etcdstore.NewRecoveryDrillStore(cli, cfg.EtcdPrefix),
+			AccessPatternStore:       etcdstore.NewAccessPatternStore(cli, cfg.EtcdPrefix),
+			FleetGitHubDispatchStore: etcdstore.NewFleetGitHubDispatchStore(cli, cfg.EtcdPrefix),
+			BeaconStore:              etcdstore.NewBeaconStore(cli, cfg.EtcdPrefix),
+			RecoveryInspector:        etcdstore.NewRecoveryInspector(cli),
 		}
 		return cs, cli, nil
 	default:
