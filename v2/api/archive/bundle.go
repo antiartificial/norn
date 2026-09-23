@@ -34,6 +34,10 @@ type Bundle struct {
 	// Operation is the operation row exactly as stored (payload and metadata
 	// included, not the API read projection).
 	Operation json.RawMessage `json:"operation,omitempty"`
+	// Effects is the terminal operation's durable external-effect outcome and
+	// output references. It is retained with the signed acceptance rather than
+	// reconstructed from a later projection.
+	Effects json.RawMessage `json:"effects,omitempty"`
 	// Acceptance carries the original signed acceptance bytes, never
 	// reconstructed from reformatted JSON.
 	Acceptance   *SignedAcceptance `json:"acceptance,omitempty"`

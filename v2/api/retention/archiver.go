@@ -161,7 +161,7 @@ func (a *Archiver) publish(ctx context.Context, intent store.EvidenceIntent, sou
 	if err != nil {
 		return store.EvidencePublication{}, err
 	}
-	bundle := &archive.Bundle{Subject: subject, Sequence: intent.Sequence, Operation: source.OperationJSON, SealedAt: intent.CreatedAt.UTC(), Events: []saga.Event{}}
+	bundle := &archive.Bundle{Subject: subject, Sequence: intent.Sequence, Operation: source.OperationJSON, Effects: source.EffectsJSON, SealedAt: intent.CreatedAt.UTC(), Events: []saga.Event{}}
 	if intent.OperationID != "" {
 		bundle.Links = append(bundle.Links, archive.Link{Kind: "operation", ID: intent.OperationID})
 	}

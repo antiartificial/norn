@@ -167,13 +167,14 @@ func TestBundleSealOpenDetectsTampering(t *testing.T) {
 			{ID: "e2", SagaID: "s-1", Timestamp: now.Add(time.Second), App: "shop", Action: "step.complete", Message: "clone"},
 		},
 		Acceptance: &SignedAcceptance{IntentID: "i-1", CanonicalBytes: []byte(`{"signed":"exact bytes"}`), Signature: "sig"},
+		Effects:    []byte(`[{"id":"effect-1","lifecycle":"resolved","result_reference":"object://result"}]`),
 		SealedAt:   now}
 	encoded, err := Seal(bundle)
 	if err != nil {
 		t.Fatal(err)
 	}
 	opened, err := Open(encoded)
-	if err != nil || opened.Cutoff.EventCount != 2 || string(opened.Acceptance.CanonicalBytes) != `{"signed":"exact bytes"}` || !opened.Cutoff.LastTimestamp.Equal(now.Add(time.Second)) {
+	if err != nil || opened.Cutoff.EventCount != 2 || string(opened.Acceptance.CanonicalBytes) != `{"signed":"exact bytes"}` || string(opened.Effects) != `[{"id":"effect-1","lifecycle":"resolved","result_reference":"object://result"}]` || !opened.Cutoff.LastTimestamp.Equal(now.Add(time.Second)) {
 		t.Fatalf("open = %+v, %v", opened, err)
 	}
 	for name, mutate := range map[string]func(string) string{

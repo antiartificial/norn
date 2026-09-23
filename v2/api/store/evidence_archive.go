@@ -103,9 +103,12 @@ func (db *DB) EnsureSupplementaryEvidenceIntents(ctx context.Context, quiet time
 type EvidenceSource struct {
 	OperationJSON json.RawMessage
 	OperationKind string
-	Acceptance    *AcceptanceEvidenceRow
-	DeploymentID  string
-	Events        []EvidenceEvent
+	// EffectsJSON preserves terminal external-effect outcome and output
+	// references exactly as held by PostgreSQL at archive cutoff.
+	EffectsJSON  json.RawMessage
+	Acceptance   *AcceptanceEvidenceRow
+	DeploymentID string
+	Events       []EvidenceEvent
 }
 
 // AcceptanceEvidenceRow is the persisted signed acceptance, byte-exact.
@@ -234,6 +237,10 @@ func loadEvidenceSource(ctx context.Context, tx pgx.Tx, intent EvidenceIntent) (
 			}
 			source.Acceptance = &acceptance
 		case !errors.Is(err, pgx.ErrNoRows):
+			return source, err
+		}
+		if err := tx.QueryRow(ctx, `SELECT COALESCE(jsonb_agg(row_to_json(f) ORDER BY f.created_at, f.id), '[]'::jsonb)::text::jsonb
+			FROM operation_effects f WHERE f.operation_id = $1`, intent.OperationID).Scan(&source.EffectsJSON); err != nil {
 			return source, err
 		}
 	}
