@@ -14,7 +14,7 @@ import (
 )
 
 type OperationWorker struct {
-	db       *store.DB
+	db       store.OperationStore
 	pipeline *pipeline.Pipeline
 	id       string
 	kinds    []string
@@ -22,7 +22,7 @@ type OperationWorker struct {
 	poll     time.Duration
 }
 
-func NewOperationWorker(db *store.DB, p *pipeline.Pipeline) *OperationWorker {
+func NewOperationWorker(db store.OperationStore, p *pipeline.Pipeline) *OperationWorker {
 	host, _ := os.Hostname()
 	if host == "" {
 		host = "unknown-host"

@@ -481,7 +481,7 @@ func (db *DB) CancelQueuedOperation(ctx context.Context, id, requestedBy string)
 	result, err := db.Pool.Exec(ctx, `
 		UPDATE operations
 		SET status = 'canceled', message = 'operation canceled before execution',
-		    metadata = metadata || jsonb_build_object('canceledBy', $1),
+		    metadata = metadata || jsonb_build_object('canceledBy', $1::text),
 		    locked_by = '', locked_until = NULL, updated_at = now(), finished_at = now()
 		WHERE id = $2 AND status = 'queued'
 	`, requestedBy, id)
