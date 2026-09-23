@@ -13,8 +13,9 @@ An Architecture Decision Record (ADR) captures a consequential choice, its alter
 5. [ADR 0004 — Scaling and placement](adrs/0004-scaling-and-placement.md).
 6. [ADR 0005 — Upgrade compatibility](adrs/0005-upgrade-compatibility.md).
 7. [ADR 0006 — Migration authority](adrs/0006-migration-authority.md).
-8. [Planning contracts](planning-contracts.md): state inventory, interface/resource proposals, compatibility, measurement and acceptance plan.
-9. [Execution milestones](execution-milestones.md): delivery sequence, parallel work, exit gates and release evidence.
+8. [ADR 0007 — The auth aggregate and cross-boundary atomic revocation](adrs/0007-auth-aggregate-and-revocation.md).
+9. [Planning contracts](planning-contracts.md): state inventory, interface/resource proposals, compatibility, measurement and acceptance plan.
+10. [Execution milestones](execution-milestones.md): delivery sequence, parallel work, exit gates and release evidence.
 
 ## Recommended decisions for review
 
