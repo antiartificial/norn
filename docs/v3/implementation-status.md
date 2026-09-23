@@ -198,9 +198,16 @@ servers):
 - All 13 reviewer `*review*_test.go` files are kept and passing.
 
 Remaining M2 retention requirements (not complete):
-- **Archived domains.** Only saga events are archived and pruned. Every
-  table classed `hot-evidence-archival-pending` in the inventory still
-  stays hot. That includes operations, acceptance intents, effects,
+- **Archived domains.** Saga events are archived and pruned. Terminal signed
+  Fleet GitHub receipts without a saga are also reserved and archived as
+  immutable operation bundles, including their original signed bytes, but
+  their hot operation, acceptance intent and identity are deliberately not
+  pruned because protected-action replay and recovery do not yet read them
+  from the archive. The GitHub action still precedes final receipt acceptance:
+  a reserve outage after external success is recovered by retrying the same
+  protected result, rather than by a pre-dispatch reservation. Every other
+  table classed `hot-evidence-archival-pending` in the inventory still stays
+  hot. That includes operations, acceptance intents, effects,
   checkpoints, deployments, control events, webhook deliveries, Fleet
   attempts, exec sessions and audit incidents. Control events also need
   expired-cursor/resync behaviour before bounded replay pruning. The

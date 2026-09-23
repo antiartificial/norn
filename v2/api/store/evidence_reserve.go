@@ -82,9 +82,18 @@ func (e *EvidenceReserveExhaustedError) Error() string {
 
 // reserveAcceptedEvidence creates the archive outbox reservation in the same
 // transaction as signed operation acceptance. Locking the singleton policy
-// row serializes the pending-count check with every new reservation.
+// row serializes the pending-count check with every new reservation. Saga
+// operations retain their existing saga subject. Terminal Fleet GitHub
+// receipts deliberately have no saga: each gets an operation subject so its
+// signed bytes cannot bypass the evidence reserve or remain archive-less.
 func reserveAcceptedEvidence(ctx context.Context, tx pgx.Tx, acceptance OperationAcceptance) error {
-	if acceptance.Operation.SagaID == "" {
+	subjectKind, subjectID := "", ""
+	switch {
+	case acceptance.Operation.SagaID != "":
+		subjectKind, subjectID = "saga", acceptance.Operation.SagaID
+	case acceptance.Operation.Status.Terminal() && (acceptance.Operation.Kind == "fleet.github.pull-request" || acceptance.Operation.Kind == "fleet.github.apply-dispatch"):
+		subjectKind, subjectID = "operation", acceptance.Operation.ID
+	default:
 		return nil
 	}
 	var enabled, archiveExhausted bool
@@ -119,8 +128,8 @@ func reserveAcceptedEvidence(ctx context.Context, tx pgx.Tx, acceptance Operatio
 		}
 	}
 	_, err := tx.Exec(ctx, `INSERT INTO evidence_archive_intents (id, subject_kind, subject_id, app, operation_id, sequence, state)
-		VALUES ($1, 'saga', $2, $3, $4, 1, 'pending')
-		ON CONFLICT (subject_kind, subject_id, sequence) DO NOTHING`, "ei-"+uuid.NewString(), acceptance.Operation.SagaID, acceptance.Operation.App, acceptance.Operation.ID)
+		VALUES ($1, $2, $3, $4, $5, 1, 'pending')
+		ON CONFLICT (subject_kind, subject_id, sequence) DO NOTHING`, "ei-"+uuid.NewString(), subjectKind, subjectID, acceptance.Operation.App, acceptance.Operation.ID)
 	return err
 }
 

@@ -74,6 +74,30 @@ func (db *DB) BackfillEvidenceIntents(ctx context.Context, finishedBefore time.D
 	return result.RowsAffected(), nil
 }
 
+// BackfillNonSagaFleetGitHubEvidenceIntents restores archive work for signed
+// terminal Fleet GitHub receipts written before the operation-subject outbox
+// existed. It deliberately joins acceptance evidence: an unsigned operation
+// is not substituted for a protected receipt, and missing signed bytes leave
+// no misleading archive intent behind.
+func (db *DB) BackfillNonSagaFleetGitHubEvidenceIntents(ctx context.Context, finishedBefore time.Duration, limit int) (int64, error) {
+	result, err := db.Pool.Exec(ctx, `
+		INSERT INTO evidence_archive_intents (id, subject_kind, subject_id, app, operation_id, sequence, state)
+		SELECT 'ei-' || gen_random_uuid()::text, 'operation', o.id, o.app, o.id, 1, 'pending'
+		FROM operations o
+		JOIN operation_acceptance_intents ai ON ai.operation_id = o.id
+		WHERE o.status IN `+terminalStatusSQL+` AND o.saga_id = ''
+		  AND o.kind IN ('fleet.github.pull-request', 'fleet.github.apply-dispatch')
+		  AND o.finished_at < now() - $1::interval
+		  AND NOT EXISTS (SELECT 1 FROM evidence_archive_intents i WHERE i.subject_kind = 'operation' AND i.subject_id = o.id)
+		ORDER BY o.finished_at
+		LIMIT $2
+		ON CONFLICT (subject_kind, subject_id, sequence) DO NOTHING`, finishedBefore.String(), limit)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected(), nil
+}
+
 // EnsureSupplementaryEvidenceIntents creates the next-sequence pending
 // intent for sagas that already have bundles but gained events outside every
 // bundle (late publication after terminalization), once they are quiet.
@@ -157,9 +181,16 @@ func (db *DB) ProcessPendingEvidenceIntent(ctx context.Context, quiet time.Durat
 	defer tx.Rollback(ctx)
 	intent, err := scanEvidenceIntent(tx.QueryRow(ctx, `
 		SELECT `+evidenceIntentColumns+` FROM evidence_archive_intents i
-		WHERE i.state = 'pending' AND i.subject_kind = 'saga'
-		  AND NOT EXISTS (SELECT 1 FROM operations o WHERE o.saga_id = i.subject_id AND o.status NOT IN `+terminalStatusSQL+`)
-		  AND NOT EXISTS (SELECT 1 FROM saga_events e WHERE e.saga_id = i.subject_id AND e.timestamp > now() - $1::interval)
+		WHERE i.state = 'pending' AND (
+			(i.subject_kind = 'saga'
+			  AND NOT EXISTS (SELECT 1 FROM operations o WHERE o.saga_id = i.subject_id AND o.status NOT IN `+terminalStatusSQL+`)
+			  AND NOT EXISTS (SELECT 1 FROM saga_events e WHERE e.saga_id = i.subject_id AND e.timestamp > now() - $1::interval))
+			OR
+			(i.subject_kind = 'operation'
+			  AND EXISTS (SELECT 1 FROM operations o JOIN operation_acceptance_intents ai ON ai.operation_id = o.id
+			              WHERE o.id = i.operation_id AND o.id = i.subject_id AND o.saga_id = ''
+			                AND o.kind IN ('fleet.github.pull-request', 'fleet.github.apply-dispatch') AND o.status IN `+terminalStatusSQL+`))
+		)
 		ORDER BY i.created_at LIMIT 1 FOR UPDATE SKIP LOCKED`, quiet.String()))
 	if errors.Is(err, pgx.ErrNoRows) {
 		return EvidenceIntent{}, ErrNoEvidenceWork
@@ -221,7 +252,10 @@ func truncateError(message string) string {
 func loadEvidenceSource(ctx context.Context, tx pgx.Tx, intent EvidenceIntent) (EvidenceSource, error) {
 	var source EvidenceSource
 	if intent.OperationID != "" {
-		if err := tx.QueryRow(ctx, `SELECT row_to_json(o)::text::jsonb, o.kind FROM operations o WHERE o.id = $1`, intent.OperationID).Scan(&source.OperationJSON, &source.OperationKind); err != nil && !errors.Is(err, pgx.ErrNoRows) {
+		if err := tx.QueryRow(ctx, `SELECT row_to_json(o)::text::jsonb, o.kind FROM operations o WHERE o.id = $1`, intent.OperationID).Scan(&source.OperationJSON, &source.OperationKind); err != nil {
+			if errors.Is(err, pgx.ErrNoRows) {
+				return source, fmt.Errorf("evidence intent %s operation is missing", intent.ID)
+			}
 			return source, err
 		}
 		var acceptance AcceptanceEvidenceRow
@@ -239,12 +273,20 @@ func loadEvidenceSource(ctx context.Context, tx pgx.Tx, intent EvidenceIntent) (
 		case !errors.Is(err, pgx.ErrNoRows):
 			return source, err
 		}
+		if intent.SubjectKind == "operation" && source.Acceptance == nil {
+			return source, fmt.Errorf("operation evidence intent %s has no signed acceptance", intent.ID)
+		}
 		if err := tx.QueryRow(ctx, `SELECT COALESCE(jsonb_agg(row_to_json(f) ORDER BY f.created_at, f.id), '[]'::jsonb)::text::jsonb
 			FROM operation_effects f WHERE f.operation_id = $1`, intent.OperationID).Scan(&source.EffectsJSON); err != nil {
 			return source, err
 		}
 	}
-	_ = tx.QueryRow(ctx, `SELECT id FROM deployments WHERE saga_id = $1 ORDER BY started_at DESC LIMIT 1`, intent.SubjectID).Scan(&source.DeploymentID)
+	if intent.SubjectKind == "saga" {
+		_ = tx.QueryRow(ctx, `SELECT id FROM deployments WHERE saga_id = $1 ORDER BY started_at DESC LIMIT 1`, intent.SubjectID).Scan(&source.DeploymentID)
+	}
+	if intent.SubjectKind != "saga" {
+		return source, nil
+	}
 	rows, err := tx.Query(ctx, `
 		SELECT e.id, e.saga_id, e.timestamp, e.source, e.app, e.category, e.action, e.message, e.metadata
 		FROM saga_events e

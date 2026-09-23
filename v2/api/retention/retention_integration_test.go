@@ -21,15 +21,16 @@ import (
 )
 
 type retentionFixture struct {
-	t        *testing.T
-	db       *store.DB
-	pipe     *pipeline.Pipeline
-	request  pipeline.EnqueueRequest
-	signer   store.AcceptanceSigner
-	hot      *saga.PostgresStore
-	objects  *archive.LocalStore
-	root     string
-	archiver *Archiver
+	t          *testing.T
+	db         *store.DB
+	pipe       *pipeline.Pipeline
+	operations *store.PGOperationStore
+	request    pipeline.EnqueueRequest
+	signer     store.AcceptanceSigner
+	hot        *saga.PostgresStore
+	objects    *archive.LocalStore
+	root       string
+	archiver   *Archiver
 }
 
 // retentionServer starts a private scoped PostgreSQL server: pruning holds
@@ -94,8 +95,34 @@ func newRetentionFixtureAt(t *testing.T, databaseURL string) *retentionFixture {
 	t.Cleanup(func() { objects.Close() })
 	pipe := &pipeline.Pipeline{DB: db, SagaStore: hot, OperationStore: operations, AppsDir: t.TempDir()}
 	request := pipeline.EnqueueRequest{Authority: authority, Actor: store.OperationActor{Issuer: authority + "/test", Subject: "operator"}, Key: "k", Audit: store.AcceptanceAuditContext{Source: "retention-test"}}
-	return &retentionFixture{t: t, db: db, pipe: pipe, request: request, signer: signer, hot: hot, objects: objects, root: root,
+	return &retentionFixture{t: t, db: db, pipe: pipe, operations: operations, request: request, signer: signer, hot: hot, objects: objects, root: root,
 		archiver: &Archiver{DB: db, Archive: objects, Signer: signer, Mode: ModeShadow, Quiet: 0, BackfillAfter: time.Hour, MinAge: 0, BatchSize: 20}}
+}
+
+func (f *retentionFixture) terminalFleetGitHubReceipt() store.AcceptedOperation {
+	f.t.Helper()
+	accepted, err := f.operations.Accept(context.Background(), f.terminalFleetGitHubAcceptance())
+	if err != nil {
+		f.t.Fatal(err)
+	}
+	return accepted
+}
+
+func (f *retentionFixture) terminalFleetGitHubAcceptance() store.OperationAcceptance {
+	f.t.Helper()
+	now := time.Now().UTC()
+	finished := now
+	op := model.Operation{ID: uuid.NewString(), Kind: "fleet.github.pull-request", Ref: uuid.NewString(), Status: model.OperationSucceeded,
+		Source: "control-api", Message: "fleet pull request opened", Payload: map[string]interface{}{"planId": "plan-1", "url": "https://github.example.test/acme/fleet/pull/1"},
+		Metadata: map[string]interface{}{}, StartedAt: now, UpdatedAt: now, FinishedAt: &finished, MaxAttempts: 1}
+	identity := store.OperationRequestIdentity{Authority: f.request.Authority, Actor: f.request.Actor, Kind: op.Kind, Resource: op.Ref, Key: "fleet-receipt-" + uuid.NewString()}
+	acceptance := store.OperationAcceptance{Identity: identity, Operation: op, Audit: store.AcceptanceAuditContext{Source: "retention-test"}, Semantics: map[string]interface{}{"fleetGitHub": map[string]interface{}{"planId": op.Ref, "kind": op.Kind}}}
+	var err error
+	acceptance.Fingerprint, err = store.CanonicalOperationRequestFingerprint(acceptance)
+	if err != nil {
+		f.t.Fatal(err)
+	}
+	return acceptance
 }
 
 // finishedSaga accepts a signed operation, logs saga events, and finishes it
@@ -254,6 +281,104 @@ func TestEvidenceArchiveLifecycleWithHoldsPruningAndArchiveReads(t *testing.T) {
 	var unavailable *ErrArchivedHistoryUnavailable
 	if _, err := history.ListBySaga(ctx, op.SagaID); !errors.As(err, &unavailable) {
 		t.Fatalf("corrupted history read = %v", err)
+	}
+}
+
+func TestTerminalFleetGitHubReceiptArchivesOriginalSignedBytes(t *testing.T) {
+	f := newRetentionFixture(t)
+	ctx := context.Background()
+	accepted := f.terminalFleetGitHubReceipt()
+
+	intents, err := f.db.EvidenceIntentsForSubject(ctx, "operation", accepted.Operation.ID)
+	if err != nil || len(intents) != 1 || intents[0].State != "pending" {
+		t.Fatalf("atomic non-saga reservation = %+v, %v", intents, err)
+	}
+	if intents[0].SubjectID != accepted.Operation.ID || intents[0].OperationID != accepted.Operation.ID {
+		t.Fatalf("operation subject = %+v", intents[0])
+	}
+	// Historical signed Fleet receipts predate this outbox shape. Simulate an
+	// interrupted older writer and prove the bounded backfill restores only
+	// the accepted terminal operation.
+	if _, err := f.db.Pool.Exec(ctx, `DELETE FROM evidence_archive_intents WHERE id=$1`, intents[0].ID); err != nil {
+		t.Fatal(err)
+	}
+	f.archiver.BackfillAfter = 0
+	var originalCanonical, originalRequest []byte
+	if err := f.db.Pool.QueryRow(ctx, `SELECT canonical_bytes,request_canonical_bytes FROM operation_acceptance_intents WHERE operation_id=$1`, accepted.Operation.ID).Scan(&originalCanonical, &originalRequest); err != nil {
+		t.Fatal(err)
+	}
+
+	report, err := f.archiver.RunOnce(ctx)
+	if err != nil || report.Backfilled != 1 || report.Published != 1 || len(report.PublishErrors) != 0 {
+		t.Fatalf("archive pass = %+v, %v", report, err)
+	}
+	intents, err = f.db.EvidenceIntentsForSubject(ctx, "operation", accepted.Operation.ID)
+	if err != nil || len(intents) != 1 || intents[0].State != "verified" || intents[0].ObjectKey == "" {
+		t.Fatalf("verified operation archive = %+v, %v", intents, err)
+	}
+	bundle, err := LoadBundle(ctx, f.objects, intents[0])
+	if err != nil {
+		t.Fatal(err)
+	}
+	if bundle.Subject.Kind != "operation" || bundle.Subject.ID != accepted.Operation.ID || bundle.Acceptance == nil ||
+		string(bundle.Acceptance.CanonicalBytes) != string(originalCanonical) || string(bundle.Acceptance.RequestCanonicalBytes) != string(originalRequest) {
+		t.Fatalf("archived signed receipt was not byte exact: %#v", bundle)
+	}
+	if err := f.archiver.verifyAcceptance(ctx, bundle); err != nil {
+		t.Fatalf("archived signed receipt did not verify: %v", err)
+	}
+	// The saga pruner must not claim that it can remove replay-critical hot
+	// acceptance state for this operation subject.
+	f.archiver.Mode = ModePrune
+	report, err = f.archiver.RunOnce(ctx)
+	if err != nil || report.Pruned != 0 {
+		t.Fatalf("operation receipt prune pass = %+v, %v", report, err)
+	}
+	intents, err = f.db.EvidenceIntentsForSubject(ctx, "operation", accepted.Operation.ID)
+	if err != nil || intents[0].State != "verified" {
+		t.Fatalf("operation receipt was incorrectly pruned: %+v, %v", intents, err)
+	}
+}
+
+func TestTerminalFleetGitHubReceiptReserveExhaustionLeavesRecoverableAcceptance(t *testing.T) {
+	f := newRetentionFixture(t)
+	ctx := context.Background()
+	if err := f.db.SetEvidenceReservePolicy(ctx, store.EvidenceReservePolicy{Enabled: true, MaxPending: 1, MaxPendingAge: time.Hour}); err != nil {
+		t.Fatal(err)
+	}
+	first := f.terminalFleetGitHubReceipt()
+	candidate := f.terminalFleetGitHubAcceptance()
+	_, err := f.operations.Accept(ctx, candidate)
+	var exhausted *store.EvidenceReserveExhaustedError
+	if !errors.As(err, &exhausted) {
+		t.Fatalf("exhausted reserve acceptance = %v", err)
+	}
+	var operations, identities, intents int
+	if err := f.db.Pool.QueryRow(ctx, `SELECT count(*) FROM operations WHERE id=$1`, candidate.Operation.ID).Scan(&operations); err != nil {
+		t.Fatal(err)
+	}
+	if err := f.db.Pool.QueryRow(ctx, `SELECT count(*) FROM operation_request_identities WHERE operation_id=$1`, candidate.Operation.ID).Scan(&identities); err != nil {
+		t.Fatal(err)
+	}
+	if err := f.db.Pool.QueryRow(ctx, `SELECT count(*) FROM operation_acceptance_intents WHERE operation_id=$1`, candidate.Operation.ID).Scan(&intents); err != nil {
+		t.Fatal(err)
+	}
+	if operations != 0 || identities != 0 || intents != 0 {
+		t.Fatalf("failed receipt left partial recovery state: operations=%d identities=%d intents=%d", operations, identities, intents)
+	}
+	if err := f.db.SetEvidenceReservePolicy(ctx, store.EvidenceReservePolicy{Enabled: true, MaxPending: 2, MaxPendingAge: time.Hour}); err != nil {
+		t.Fatal(err)
+	}
+	recovered, err := f.operations.Accept(ctx, candidate)
+	if err != nil {
+		t.Fatalf("same external result could not be accepted after reserve recovery: %v", err)
+	}
+	if recovered.Operation.ID != candidate.Operation.ID || recovered.Operation.ID == first.Operation.ID {
+		t.Fatalf("recovered receipt = %q, first=%q", recovered.Operation.ID, first.Operation.ID)
+	}
+	reserved, err := f.db.EvidenceIntentsForSubject(ctx, "operation", recovered.Operation.ID)
+	if err != nil || len(reserved) != 1 || reserved[0].State != "pending" {
+		t.Fatalf("recovered receipt archive reservation = %+v, %v", reserved, err)
 	}
 }
 

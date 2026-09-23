@@ -80,6 +80,11 @@ func (a *Archiver) RunOnce(ctx context.Context) (Report, error) {
 	if report.Backfilled, err = a.DB.BackfillEvidenceIntents(ctx, a.BackfillAfter, a.batch()); err != nil {
 		return report, fmt.Errorf("backfill evidence intents: %w", err)
 	}
+	if backfilled, err := a.DB.BackfillNonSagaFleetGitHubEvidenceIntents(ctx, a.BackfillAfter, a.batch()); err != nil {
+		return report, fmt.Errorf("backfill non-saga Fleet GitHub evidence intents: %w", err)
+	} else {
+		report.Backfilled += backfilled
+	}
 	if report.Supplementary, err = a.DB.EnsureSupplementaryEvidenceIntents(ctx, a.Quiet); err != nil {
 		return report, fmt.Errorf("supplementary evidence intents: %w", err)
 	}
@@ -106,6 +111,12 @@ func (a *Archiver) RunOnce(ctx context.Context) (Report, error) {
 		return report, err
 	}
 	for _, intent := range verified {
+		// The archive preserves operation-subject receipts, while their hot
+		// acceptance and identity remain authoritative for protected-action
+		// replay and recovery. No archive-aware replacement exists yet.
+		if intent.SubjectKind != "saga" {
+			continue
+		}
 		if a.Mode != ModePrune {
 			mismatch, err := a.compare(ctx, intent)
 			report.ShadowCompared++
@@ -156,7 +167,7 @@ func errString(err error) string {
 
 // publish seals, publishes, reads back and verifies one bundle.
 func (a *Archiver) publish(ctx context.Context, intent store.EvidenceIntent, source store.EvidenceSource) (store.EvidencePublication, error) {
-	subject := archive.Subject{Kind: "saga", ID: intent.SubjectID, App: intent.App, OperationID: intent.OperationID, OperationKind: source.OperationKind}
+	subject := archive.Subject{Kind: intent.SubjectKind, ID: intent.SubjectID, App: intent.App, OperationID: intent.OperationID, OperationKind: source.OperationKind}
 	key, err := archive.ObjectKey(subject, intent.Sequence)
 	if err != nil {
 		return store.EvidencePublication{}, err
@@ -185,9 +196,8 @@ func (a *Archiver) publish(ctx context.Context, intent store.EvidenceIntent, sou
 	info, err := a.Archive.PutImmutable(ctx, key, encoded)
 	if errors.Is(err, archive.ErrImmutableConflict) {
 		// A previous attempt published this subject/sequence and crashed
-		// before acknowledging, and events changed since. The existing
-		// object is adopted only if it proves itself: a valid bundle for
-		// this subject and sequence whose every event equals a hot event.
+		// before acknowledging. The existing object is adopted only if it
+		// proves itself against the same source evidence.
 		return a.adopt(ctx, key, intent, source)
 	}
 	if err != nil {
@@ -215,7 +225,7 @@ func (a *Archiver) adopt(ctx context.Context, key string, intent store.EvidenceI
 	for _, event := range bundle.Events {
 		current, ok := hot[event.ID]
 		if !ok || !sameEvent(current, event) {
-			return store.EvidencePublication{}, fmt.Errorf("existing archive object %s holds events that are not this saga's hot evidence", key)
+			return store.EvidencePublication{}, fmt.Errorf("existing archive object %s holds events that are not this subject's hot evidence", key)
 		}
 	}
 	return a.readBack(ctx, info, intent)
@@ -266,7 +276,7 @@ func (a *Archiver) verifyAcceptance(ctx context.Context, bundle *archive.Bundle)
 		IntentID: acceptance.IntentID, RequestIdentityID: acceptance.RequestIdentityID, RequestReceiptID: acceptance.RequestReceiptID,
 		FingerprintVersion: acceptance.FingerprintVersion, FingerprintDigest: acceptance.FingerprintDigest, RequestCanonicalBytes: acceptance.RequestCanonicalBytes,
 		CanonicalBytes: acceptance.CanonicalBytes, CanonicalDigest: acceptance.CanonicalDigest, SigningAlgorithm: acceptance.SigningAlgorithm, SigningKeyID: acceptance.SigningKeyID,
-		OperationRow: bundle.Operation, OperationID: bundle.Subject.OperationID, SagaID: bundle.Subject.ID,
+		OperationRow: bundle.Operation, OperationID: bundle.Subject.OperationID, SagaID: bundleSagaID(bundle),
 	}); err != nil {
 		return fmt.Errorf("%w: %v", archive.ErrObjectCorrupt, err)
 	}
@@ -304,6 +314,9 @@ func (a *Archiver) compare(ctx context.Context, intent store.EvidenceIntent) (st
 	if err != nil {
 		return "", err
 	}
+	if intent.SubjectKind != "saga" {
+		return "", nil
+	}
 	hot, err := saga.NewPostgresStore(a.DB.Pool).ListBySaga(ctx, intent.SubjectID)
 	if err != nil {
 		return "", err
@@ -324,11 +337,11 @@ func (a *Archiver) compare(ctx context.Context, intent store.EvidenceIntent) (st
 	return "", nil
 }
 
-// subjectMatches binds a bundle to the whole recorded subject: kind, saga,
-// app, operation, sequence and the object key derived from them.
+// subjectMatches binds a bundle to the whole recorded subject: kind, subject
+// ID, app, operation, sequence and the object key derived from them.
 func subjectMatches(bundle *archive.Bundle, intent store.EvidenceIntent, key string) error {
 	subject := bundle.Subject
-	if subject.Kind != "saga" || subject.ID != intent.SubjectID || subject.App != intent.App || subject.OperationID != intent.OperationID || bundle.Sequence != intent.Sequence {
+	if subject.Kind != intent.SubjectKind || subject.ID != intent.SubjectID || subject.App != intent.App || subject.OperationID != intent.OperationID || bundle.Sequence != intent.Sequence {
 		return fmt.Errorf("%w: bundle subject differs from the recorded subject", archive.ErrObjectCorrupt)
 	}
 	expected, err := archive.ObjectKey(subject, bundle.Sequence)
@@ -336,6 +349,13 @@ func subjectMatches(bundle *archive.Bundle, intent store.EvidenceIntent, key str
 		return fmt.Errorf("%w: bundle is stored under another key", archive.ErrObjectCorrupt)
 	}
 	return nil
+}
+
+func bundleSagaID(bundle *archive.Bundle) string {
+	if bundle != nil && bundle.Subject.Kind == "saga" {
+		return bundle.Subject.ID
+	}
+	return ""
 }
 
 func sameEvent(a, b saga.Event) bool {

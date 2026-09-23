@@ -12,8 +12,8 @@ func TestControlSchemaAdoptsLegacyRowsWithoutReplacingEvidence(t *testing.T) {
 	pool := schemaMigrationTestPools(t, 1)[0]
 	ctx := context.Background()
 	migrations := ControlSchemaMigrations()
-	if len(migrations) != 9 || migrations[0].Version != 1 || migrations[1].Version != 2 || migrations[2].Version != 3 || migrations[3].Version != 4 || migrations[4].Version != 5 || migrations[5].Version != 6 || migrations[6].Version != 7 || migrations[7].Version != 8 || migrations[8].Version != 9 {
-		t.Fatalf("control migrations = %#v, want immutable baseline 1 followed by acceptance 2, effects 3, checkpoints 4, database catalog 5, evidence archive 6, archive reader contract 7, evidence reserve 8 and event replay retention 9", migrations)
+	if len(migrations) != 10 || migrations[0].Version != 1 || migrations[1].Version != 2 || migrations[2].Version != 3 || migrations[3].Version != 4 || migrations[4].Version != 5 || migrations[5].Version != 6 || migrations[6].Version != 7 || migrations[7].Version != 8 || migrations[8].Version != 9 || migrations[9].Version != 10 {
+		t.Fatalf("control migrations = %#v, want immutable baseline 1 followed by acceptance 2, effects 3, checkpoints 4, database catalog 5, evidence archive 6, archive reader contract 7, evidence reserve 8, event replay retention 9 and non-saga receipt evidence 10", migrations)
 	}
 	// Simulate the unversioned v2 database before the migration ledger existed.
 	if _, err := pool.Exec(ctx, migrations[0].SQL); err != nil {
@@ -50,7 +50,7 @@ func TestControlSchemaAdoptsLegacyRowsWithoutReplacingEvidence(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if status.CurrentMigrationVersion != 9 || len(status.AppliedVersions) != 9 || status.AppliedVersions[0] != 1 || status.AppliedVersions[1] != 2 || status.AppliedVersions[2] != 3 || status.AppliedVersions[3] != 4 || status.AppliedVersions[4] != 5 || status.AppliedVersions[5] != 6 || status.AppliedVersions[6] != 7 || status.AppliedVersions[7] != 8 || status.AppliedVersions[8] != 9 || status.MinimumReaderVersion != EvidenceArchiveReaderVersion || status.MinimumWriterVersion != EvidenceReserveWriterVersion {
+	if status.CurrentMigrationVersion != 10 || len(status.AppliedVersions) != 10 || status.AppliedVersions[0] != 1 || status.AppliedVersions[1] != 2 || status.AppliedVersions[2] != 3 || status.AppliedVersions[3] != 4 || status.AppliedVersions[4] != 5 || status.AppliedVersions[5] != 6 || status.AppliedVersions[6] != 7 || status.AppliedVersions[7] != 8 || status.AppliedVersions[8] != 9 || status.AppliedVersions[9] != 10 || status.MinimumReaderVersion != EvidenceArchiveReaderVersion || status.MinimumWriterVersion != NonSagaEvidenceWriterVersion {
 		t.Fatalf("migration status = %#v", status)
 	}
 

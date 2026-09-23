@@ -63,6 +63,13 @@ func TestFleetGitHubReceiptUsesSignedAtomicAcceptance(t *testing.T) {
 	if operations != 1 || intents != 1 {
 		t.Fatalf("durable receipt counts operations=%d intents=%d, want 1/1", operations, intents)
 	}
+	var subjectKind, subjectID, archiveOperationID, archiveState string
+	if err := db.Pool.QueryRow(context.Background(), `SELECT subject_kind,subject_id,operation_id,state FROM evidence_archive_intents WHERE operation_id=$1`, first.ID).Scan(&subjectKind, &subjectID, &archiveOperationID, &archiveState); err != nil {
+		t.Fatalf("non-saga receipt did not reserve archive work: %v", err)
+	}
+	if subjectKind != "operation" || subjectID != first.ID || archiveOperationID != first.ID || archiveState != "pending" {
+		t.Fatalf("non-saga archive reservation = %q/%q/%q/%q", subjectKind, subjectID, archiveOperationID, archiveState)
+	}
 
 	var canonical []byte
 	var algorithm, keyID, signature string

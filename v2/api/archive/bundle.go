@@ -19,8 +19,8 @@ const BundleSchema = "norn.evidence-bundle/v1"
 // MaxBundleBytes bounds a single bundle (writes and reads).
 const MaxBundleBytes = 16 << 20
 
-// Bundle is one immutable unit of archived evidence for a subject (today: a
-// saga and the operation that produced it).
+// Bundle is one immutable unit of archived evidence for a saga or a terminal
+// signed operation that has no saga.
 type Bundle struct {
 	Schema   string  `json:"schema"`
 	Subject  Subject `json:"subject"`
@@ -90,10 +90,20 @@ func ObjectKey(subject Subject, sequence int) (string, error) {
 	if app == "" {
 		app = "none"
 	}
-	if subject.Kind != "saga" || !subjectIDPattern.MatchString(subject.ID) || !subjectIDPattern.MatchString(app) || sequence < 1 {
+	if !subjectIDPattern.MatchString(subject.ID) || !subjectIDPattern.MatchString(app) || sequence < 1 {
 		return "", fmt.Errorf("bundle subject cannot form an archive key")
 	}
-	return fmt.Sprintf("evidence/saga/%s/%s/%06d.json", app, subject.ID, sequence), nil
+	switch subject.Kind {
+	case "saga":
+		return fmt.Sprintf("evidence/saga/%s/%s/%06d.json", app, subject.ID, sequence), nil
+	case "operation":
+		if subject.OperationID != subject.ID {
+			return "", fmt.Errorf("operation evidence subject must name its operation")
+		}
+		return fmt.Sprintf("evidence/operation/%s/%s/%06d.json", app, subject.ID, sequence), nil
+	default:
+		return "", fmt.Errorf("bundle subject cannot form an archive key")
+	}
 }
 
 // Seal completes a bundle's checksums and cutoff from its events, and
@@ -103,8 +113,8 @@ func Seal(bundle *Bundle) ([]byte, error) {
 	ids := make([]string, 0, len(bundle.Events))
 	var last time.Time
 	for _, event := range bundle.Events {
-		if event.SagaID != bundle.Subject.ID {
-			return nil, fmt.Errorf("event %s belongs to another saga", event.ID)
+		if bundle.Subject.Kind != "saga" || event.SagaID != bundle.Subject.ID {
+			return nil, fmt.Errorf("event %s does not belong to this evidence subject", event.ID)
 		}
 		ids = append(ids, event.ID)
 		if event.Timestamp.After(last) {
@@ -156,7 +166,7 @@ func Open(data []byte) (*Bundle, error) {
 		return nil, fmt.Errorf("%w: event checksum or cutoff mismatch", ErrObjectCorrupt)
 	}
 	for index, event := range bundle.Events {
-		if event.ID != bundle.Cutoff.EventIDs[index] || event.SagaID != bundle.Subject.ID {
+		if bundle.Subject.Kind != "saga" || event.ID != bundle.Cutoff.EventIDs[index] || event.SagaID != bundle.Subject.ID {
 			return nil, fmt.Errorf("%w: event outside the cutoff", ErrObjectCorrupt)
 		}
 	}
