@@ -24,11 +24,15 @@ func RunSignedExecutionConformance(t *testing.T, authority string, accept func(c
 	if _, err = accept(ctx, a); err != nil {
 		t.Fatal(err)
 	}
-	op, first, err := execution.ClaimNextOperation(ctx, "worker-a", 20*time.Millisecond, []string{a.Operation.Kind})
+	op, first, err := execution.ClaimNextOperation(ctx, "worker-a", time.Minute, []string{a.Operation.Kind})
 	if err != nil || op == nil {
 		t.Fatalf("first claim = %v, %v", op, err)
 	}
-	time.Sleep(35 * time.Millisecond)
+	// A deliberate defer provides a safe requeue without asserting that an
+	// unknown expired external effect can be replayed automatically.
+	if err := execution.DeferClaimedOperation(ctx, first, "retry later", time.Now().Add(-time.Second), nil); err != nil {
+		t.Fatal(err)
+	}
 	op, second, err := execution.ClaimNextOperation(ctx, "worker-b", time.Minute, []string{a.Operation.Kind})
 	if err != nil || op == nil {
 		t.Fatalf("replacement claim = %v, %v", op, err)

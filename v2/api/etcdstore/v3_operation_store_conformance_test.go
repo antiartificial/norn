@@ -25,7 +25,7 @@ func TestV3OperationStoreSignedExecutionConformanceEtcd(t *testing.T) {
 	t.Cleanup(func() { _ = client.Close() })
 	prefix := "/norn-conf/v3-ops/" + uuid.NewString()
 	t.Cleanup(func() { _, _ = client.Delete(context.Background(), prefix, clientv3.WithPrefix()) })
-	signer, err := store.NewHMACAcceptanceSigner("norn-etcd-conformance-key")
+	signer, err := store.NewHMACAcceptanceSigner("norn-etcd-conformance-key-000000000000")
 	if err != nil {
 		t.Fatal(err)
 	}

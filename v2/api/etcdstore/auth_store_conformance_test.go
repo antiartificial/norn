@@ -7,6 +7,8 @@ import (
 	"testing"
 	"time"
 
+	"github.com/google/uuid"
+
 	clientv3 "go.etcd.io/etcd/client/v3"
 
 	"norn/v2/api/etcdstore"
@@ -30,7 +32,7 @@ func TestAuthStoreConformance_Etcd(t *testing.T) {
 		t.Fatal(err)
 	}
 	t.Cleanup(func() { _ = cli.Close() })
-	const prefix = "/norn-conf/auth"
+	prefix := "/norn-conf/auth/" + uuid.NewString()
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 	if _, err := cli.Delete(ctx, prefix, clientv3.WithPrefix()); err != nil {
