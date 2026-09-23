@@ -63,6 +63,12 @@ func (s *V3OperationStore) Accept(ctx context.Context, a store.OperationAcceptan
 	if a.Identity.Authority != s.authority {
 		return store.AcceptedOperation{}, &store.AcceptanceAuthorityError{Expected: s.authority, Actual: a.Identity.Authority}
 	}
+	// The current adapter does not yet implement these multi-record admission
+	// aggregates. Refuse them before any write instead of storing a receipt
+	// whose domain state or policy was never enforced.
+	if a.Deployment != nil || len(a.Regions) > 0 || a.Admission.OneActiveMutablePerApp || a.FleetReconciliation != nil || a.FleetRunnerAttempt != nil {
+		return store.AcceptedOperation{}, &store.AcceptanceValidationError{Reason: "etcd operation aggregate admission is not implemented"}
+	}
 	if strings.TrimSpace(a.Identity.Actor.Issuer) == "" || strings.TrimSpace(a.Identity.Actor.Subject) == "" || strings.TrimSpace(a.Identity.Kind) == "" || strings.TrimSpace(a.Identity.Resource) == "" || strings.TrimSpace(a.Identity.Key) == "" || a.Operation.ID == "" || a.Operation.Kind != a.Identity.Kind || strings.TrimSpace(a.Audit.Source) == "" {
 		return store.AcceptedOperation{}, &store.AcceptanceValidationError{Reason: "complete signed operation identity, operation, and audit source are required"}
 	}
