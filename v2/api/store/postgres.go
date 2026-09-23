@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"time"
 
+	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
 
 	"norn/v2/api/model"
@@ -52,9 +53,48 @@ func (db *DB) Close() {
 	db.Pool.Close()
 }
 
+// SchemaVersion is the control schema version this binary reads and writes.
+// Migrate refuses to run against a persisted version newer than this, so an
+// older binary cannot corrupt a schema written by a newer one.
+const SchemaVersion = 1
+
+// migrationLockKey is the fixed advisory-lock key that serializes migrations to
+// a single owner at a time (rolling deploys, multiple starting instances).
+const migrationLockKey int64 = 0x6e6f726e5f6d6967 // "norn_mig"
+
 func Migrate(db *DB) error {
 	ctx := context.Background()
-	_, err := db.Pool.Exec(ctx, `
+	// Single migration owner: hold one advisory lock for the whole migration so
+	// concurrent starters serialize rather than race on DDL. Session-scoped on a
+	// dedicated connection, released when it returns.
+	conn, err := db.Pool.Acquire(ctx)
+	if err != nil {
+		return err
+	}
+	defer conn.Release()
+	if _, err := conn.Exec(ctx, `SELECT pg_advisory_lock($1)`, migrationLockKey); err != nil {
+		return err
+	}
+	defer func() { _, _ = conn.Exec(context.Background(), `SELECT pg_advisory_unlock($1)`, migrationLockKey) }()
+
+	// Compatibility guard: refuse to migrate down from a newer persisted schema.
+	if _, err := conn.Exec(ctx, `
+		CREATE TABLE IF NOT EXISTS control_schema_version (
+			id         INT PRIMARY KEY,
+			version    INT NOT NULL,
+			updated_at TIMESTAMPTZ NOT NULL DEFAULT now()
+		)`); err != nil {
+		return err
+	}
+	var persisted int
+	if err := conn.QueryRow(ctx, `SELECT version FROM control_schema_version WHERE id=1`).Scan(&persisted); err != nil && err != pgx.ErrNoRows {
+		return err
+	}
+	if persisted > SchemaVersion {
+		return fmt.Errorf("control schema version %d is newer than this binary supports (%d); upgrade the binary before starting", persisted, SchemaVersion)
+	}
+
+	_, err = conn.Exec(ctx, `
 		CREATE TABLE IF NOT EXISTS saga_events (
 			id         TEXT PRIMARY KEY,
 			saga_id    TEXT NOT NULL,
@@ -493,6 +533,14 @@ func Migrate(db *DB) error {
 		CREATE INDEX IF NOT EXISTS idx_access_observation_app_last ON access_observation_buckets(app, process, last_seen DESC);
 		CREATE INDEX IF NOT EXISTS idx_access_observation_bucket ON access_observation_buckets(bucket_start DESC);
 	`)
+	if err != nil {
+		return err
+	}
+	// Record the applied schema version (monotonic; never downgraded here).
+	_, err = conn.Exec(ctx, `
+		INSERT INTO control_schema_version (id, version, updated_at) VALUES (1, $1, now())
+		ON CONFLICT (id) DO UPDATE SET version=GREATEST(control_schema_version.version, $1), updated_at=now()
+	`, SchemaVersion)
 	return err
 }
 
