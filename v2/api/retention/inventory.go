@@ -68,4 +68,5 @@ var PayloadInventory = []PayloadRetention{
 	{"database_catalog_retirements", ClassCurrentState, nil, "retired identities"},
 	{"evidence_archive_intents", ClassCurrentState, []string{"event_ids"}, "archive index; rebuildable from the archive (archive-reindex)"},
 	{"evidence_reserve", ClassCurrentState, nil, "admission policy and capacity observation"},
+	{"control_event_retention", ClassCurrentState, nil, "singleton replay-compaction watermark; retained so expired cursors can require resynchronization"},
 }
