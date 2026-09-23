@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"time"
 
 	"github.com/jackc/pgx/v5"
@@ -234,6 +235,32 @@ func cancelActiveExecSessionsTx(ctx context.Context, tx pgx.Tx, column, value, e
 		ids = append(ids, id)
 	}
 	return ids, rows.Err()
+}
+
+// CancelActiveExecSessions cancels every pending/running exec session bound to
+// a credential and returns their ids. column must be "token_jti" or "device_id"
+// (allowlisted; it is interpolated into SQL). This is the public, own-
+// transaction entry point; identity revocation still cancels within its own
+// transaction via the tx-scoped helper so revocation stays atomic.
+func (db *DB) CancelActiveExecSessions(ctx context.Context, column, value, errorCode string) ([]string, error) {
+	switch column {
+	case "token_jti", "device_id":
+	default:
+		return nil, fmt.Errorf("unsupported exec session cancel column %q", column)
+	}
+	tx, err := db.Pool.Begin(ctx)
+	if err != nil {
+		return nil, err
+	}
+	defer tx.Rollback(ctx)
+	ids, err := cancelActiveExecSessionsTx(ctx, tx, column, value, errorCode)
+	if err != nil {
+		return nil, err
+	}
+	if err := tx.Commit(ctx); err != nil {
+		return nil, err
+	}
+	return ids, nil
 }
 
 func (db *DB) FinishExecSession(ctx context.Context, id, status string, exitCode *int, errorCode string) error {
