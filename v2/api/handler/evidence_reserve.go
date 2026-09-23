@@ -40,7 +40,11 @@ func (h *Handler) EvidenceReserveAdmissionMiddleware(next http.Handler) http.Han
 }
 
 func evidenceReserveExempt(r *http.Request) bool {
-	return r.URL.Path == "/api/v1/auth/revoke"
+	// V3 accepted mutations reserve evidence atomically after resolving their
+	// identity. Letting them reach that transaction keeps an exact replay
+	// available even while the reserve is exhausted; this cached middleware
+	// check remains for non-idempotent legacy mutations.
+	return r.URL.Path == "/api/v1/auth/revoke" || strings.TrimSpace(r.Header.Get("Idempotency-Key")) != ""
 }
 
 func (h *Handler) evidenceReserve(ctx context.Context) (store.EvidenceReserveStatus, error) {

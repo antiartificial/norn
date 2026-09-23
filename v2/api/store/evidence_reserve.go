@@ -4,8 +4,10 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"strings"
 	"time"
 
+	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
 )
 
@@ -67,6 +69,55 @@ type EvidenceReserveStatus struct {
 	MaxPendingAge    string     `json:"maxPendingAge"`
 	ArchiveExhausted bool       `json:"archiveExhausted"`
 	ArchiveDetail    string     `json:"archiveDetail,omitempty"`
+}
+
+// EvidenceReserveExhaustedError refuses a new acceptance before it writes any
+// domain state. Replays resolve before this check and remain available during
+// an archive outage.
+type EvidenceReserveExhaustedError struct{ Reasons []string }
+
+func (e *EvidenceReserveExhaustedError) Error() string {
+	return "evidence reserve exhausted: " + strings.Join(e.Reasons, "; ")
+}
+
+// reserveAcceptedEvidence creates the archive outbox reservation in the same
+// transaction as signed operation acceptance. Locking the singleton policy
+// row serializes the pending-count check with every new reservation.
+func reserveAcceptedEvidence(ctx context.Context, tx pgx.Tx, acceptance OperationAcceptance) error {
+	if acceptance.Operation.SagaID == "" {
+		return nil
+	}
+	var enabled, archiveExhausted bool
+	var maxPending, maxAgeSeconds int
+	var archiveDetail string
+	if err := tx.QueryRow(ctx, `SELECT enabled, max_pending, max_pending_age_seconds, archive_exhausted, archive_detail
+		FROM evidence_reserve WHERE singleton FOR UPDATE`).Scan(&enabled, &maxPending, &maxAgeSeconds, &archiveExhausted, &archiveDetail); err != nil {
+		return err
+	}
+	if enabled {
+		var pending int
+		var oldest *time.Time
+		if err := tx.QueryRow(ctx, `SELECT count(*), min(created_at) FROM evidence_archive_intents WHERE state = 'pending'`).Scan(&pending, &oldest); err != nil {
+			return err
+		}
+		reasons := []string{}
+		if pending >= maxPending {
+			reasons = append(reasons, fmt.Sprintf("%d unarchived evidence bundles reach the reserve limit of %d", pending, maxPending))
+		}
+		if oldest != nil && time.Since(*oldest) >= time.Duration(maxAgeSeconds)*time.Second {
+			reasons = append(reasons, fmt.Sprintf("evidence has waited for archiving longer than %s", time.Duration(maxAgeSeconds)*time.Second))
+		}
+		if archiveExhausted {
+			reasons = append(reasons, "archive capacity is exhausted: "+archiveDetail)
+		}
+		if len(reasons) > 0 {
+			return &EvidenceReserveExhaustedError{Reasons: reasons}
+		}
+	}
+	_, err := tx.Exec(ctx, `INSERT INTO evidence_archive_intents (id, subject_kind, subject_id, app, operation_id, sequence, state)
+		VALUES ($1, 'saga', $2, $3, $4, 1, 'pending')
+		ON CONFLICT (subject_kind, subject_id, sequence) DO NOTHING`, "ei-"+uuid.NewString(), acceptance.Operation.SagaID, acceptance.Operation.App, acceptance.Operation.ID)
+	return err
 }
 
 // SetEvidenceReservePolicy records the policy. Enabling is done by

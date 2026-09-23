@@ -473,4 +473,89 @@ func TestControlAuthorityIsPersistedAndExpectedMatchIsEnforced(t *testing.T) {
 	}
 }
 
+func TestAcceptanceReservesEvidenceAtomicallyAndReplaysDuringExhaustion(t *testing.T) {
+	stores, dbs := acceptanceIntegrationStores(t, 2)
+	ctx := context.Background()
+	if err := dbs[0].SetEvidenceReservePolicy(ctx, EvidenceReservePolicy{Enabled: true, MaxPending: 1, MaxPendingAge: time.Hour}); err != nil {
+		t.Fatal(err)
+	}
+	first := newAcceptance(t, stores[0], "reserve-first", "operator", "reserve-app", false)
+	accepted, err := stores[0].Accept(ctx, first)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var pending, operations int
+	if err := dbs[0].Pool.QueryRow(ctx, `SELECT (SELECT count(*) FROM evidence_archive_intents WHERE state = 'pending'), (SELECT count(*) FROM operations)`).Scan(&pending, &operations); err != nil {
+		t.Fatal(err)
+	}
+	if pending != 1 || operations != 1 {
+		t.Fatalf("first acceptance pending=%d operations=%d", pending, operations)
+	}
+	// Identity resolution precedes reserve admission, so a retry remains an
+	// exact replay even when the one-slot reserve is now full.
+	replayed, err := stores[1].Accept(ctx, regeneratedAcceptance(t, first))
+	if err != nil || !replayed.Replayed || replayed.Operation.ID != accepted.Operation.ID {
+		t.Fatalf("exhausted replay=%+v err=%v", replayed, err)
+	}
+
+	second := newAcceptance(t, stores[1], "reserve-second", "operator", "reserve-app-two", false)
+	var exhausted *EvidenceReserveExhaustedError
+	if _, err := stores[1].Accept(ctx, second); !errors.As(err, &exhausted) {
+		t.Fatalf("new acceptance under exhaustion error=%v", err)
+	}
+	if err := dbs[0].Pool.QueryRow(ctx, `SELECT (SELECT count(*) FROM evidence_archive_intents WHERE state = 'pending'), (SELECT count(*) FROM operations)`).Scan(&pending, &operations); err != nil {
+		t.Fatal(err)
+	}
+	if pending != 1 || operations != 1 {
+		t.Fatalf("exhausted acceptance wrote rows pending=%d operations=%d", pending, operations)
+	}
+}
+
+func TestAcceptanceEvidenceReservationSerializesConcurrentNewRequests(t *testing.T) {
+	stores, dbs := acceptanceIntegrationStores(t, 2)
+	ctx := context.Background()
+	if err := dbs[0].SetEvidenceReservePolicy(ctx, EvidenceReservePolicy{Enabled: true, MaxPending: 1, MaxPendingAge: time.Hour}); err != nil {
+		t.Fatal(err)
+	}
+	requests := []OperationAcceptance{
+		newAcceptance(t, stores[0], "reserve-race-one", "operator", "reserve-race-one", false),
+		newAcceptance(t, stores[1], "reserve-race-two", "operator", "reserve-race-two", false),
+	}
+	errs := make(chan error, len(requests))
+	var wait sync.WaitGroup
+	for index := range requests {
+		wait.Add(1)
+		go func(index int) {
+			defer wait.Done()
+			_, err := stores[index].Accept(ctx, requests[index])
+			errs <- err
+		}(index)
+	}
+	wait.Wait()
+	close(errs)
+	var acceptedCount, exhaustedCount int
+	for err := range errs {
+		if err == nil {
+			acceptedCount++
+			continue
+		}
+		var exhausted *EvidenceReserveExhaustedError
+		if errors.As(err, &exhausted) {
+			exhaustedCount++
+			continue
+		}
+		t.Fatalf("concurrent acceptance error=%v", err)
+	}
+	if acceptedCount != 1 || exhaustedCount != 1 {
+		t.Fatalf("concurrent outcomes accepted=%d exhausted=%d", acceptedCount, exhaustedCount)
+	}
+	var pending, operations int
+	if err := dbs[0].Pool.QueryRow(ctx, `SELECT (SELECT count(*) FROM evidence_archive_intents WHERE state = 'pending'), (SELECT count(*) FROM operations)`).Scan(&pending, &operations); err != nil {
+		t.Fatal(err)
+	}
+	if pending != 1 || operations != 1 {
+		t.Fatalf("concurrent reservation wrote pending=%d operations=%d", pending, operations)
+	}
+}
+
 var _ OperationStore = (*PGOperationStore)(nil)

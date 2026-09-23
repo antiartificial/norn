@@ -136,6 +136,9 @@ func (s *PGOperationStore) Accept(ctx context.Context, input OperationAcceptance
 		_ = tx.Rollback(context.Background())
 		return s.resolveFresh(acceptance.Identity, acceptance.Fingerprint)
 	}
+	if err := reserveAcceptedEvidence(ctx, tx, acceptance); err != nil {
+		return AcceptedOperation{}, err
+	}
 
 	if acceptance.Admission.OneActiveMutablePerApp {
 		if err := enforceActiveAppAdmission(ctx, tx, acceptance.Operation.App); err != nil {
