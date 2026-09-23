@@ -1,6 +1,10 @@
 # ADR 0004: Durable scaling and explicit placement
 
-Status: proposed, 2026-09-22. Planning only; no provisioning or implementation authorized.
+Status: Accepted (architecture), 2026-09-22. Accepted: 2026-09-23. Numeric budgets and policy precedence pending M0.
+
+## Disposition (2026-09-23)
+
+The architecture is accepted: durable VM-capacity and process-replica desired state as independent resources, role-based pools decoupled from names, generation-based node replacement, and reviewed (not implicit) rebalancing. This composes with the **single-active-first** API serving decision recorded in [ADR 0005](0005-upgrade-compatibility.md) — control-membership quorum is held through changes and app replacement cannot authorize control retirement. Left open and gated on M0/measurement, not this review: scale-vs-config write precedence, default placement policy by workload class, surge-quota policy, drain deadlines and numerical request/job availability budgets. These block their specific public contracts, not read-only capacity modeling.
 
 ## Context
 

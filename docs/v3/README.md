@@ -1,6 +1,6 @@
 # Norn v3 planning package
 
-Status: proposed architecture, 2026-09-22. These documents authorize no implementation or live operations.
+Status: architecture accepted 2026-09-23 (planning package dated 2026-09-22). ADRs 0001–0007 are Accepted; their draft numeric budgets and measurement-gated items remain open pending M0/P0. These documents authorize no live operations or provisioning; implementation follows the accepted architecture within the execution milestones.
 
 An Architecture Decision Record (ADR) captures a consequential choice, its alternatives, rationale, consequences and validation. `Proposed` means ready for review; `Accepted` means the choice has been agreed, not that it is implemented. Later changes supersede records rather than erase the rationale.
 
@@ -36,8 +36,8 @@ Architecture can be reviewed now. The following still need an agreed product pol
 | --- | --- | --- |
 | Availability and recovery budgets | Separate app/control/database/job budgets; draft targets in planning contracts | Confirm acceptable interruptions, then benchmark and qualify |
 | Logs | Seven-day local / 30-day Fleet diagnostic targets under hard disk caps | Confirm retention/cost needs; collector/backend spike |
-| Etcd support | Required for initial HA Fleet GA; PG required for the Mini upgrade | Shared invariants plus isolated partition, restore and fresh-bootstrap evidence; no general backend-conversion gate |
-| API serving model | Single-active handoff first | Decide whether measured handoff meets the required API budget |
-| Initial app DB scope | PG plus MySQL for WordPress | Confirm engine workflows included at GA; defer Cockroach |
+| Etcd support | **Decided 2026-09-23: dedicated etcd** (not Consul reuse); required for initial HA Fleet GA; PG required for the Mini upgrade | Shared invariants met for the 5 core boundaries; remaining gates = isolated partition, restore and fresh-bootstrap evidence; no general backend-conversion gate |
+| API serving model | **Decided 2026-09-23: single-active handoff first**; active-active is a separate later decision | Qualify measured handoff against the required API budget |
+| Initial app DB scope | **Decided 2026-09-23: PG plus MySQL/MariaDB at GA** for WordPress; Cockroach deferred | Qualify the MySQL backup/restore/reconnect adapter |
 
-Measurements, prototypes and deployment are future work packages. None of the acceptance results in this package have been recorded as passing. Before implementation, mark each ADR accepted or revise it, resolve product-level budgets, and assign the bounded engineering spikes. Update milestone status based on evidence rather than the existence of these documents.
+Measurements, prototypes and deployment are future work packages. None of the acceptance *results* (measured budgets, qualification evidence) in this package have been recorded as passing. The ADRs are now accepted (2026-09-23), which unblocks implementation of the accepted architecture; still outstanding for M0 closure are the product-level numeric budgets (retention bytes, RPO/RTO, availability lanes — measurement-gated) and the remaining bounded engineering spikes (collector/query backend, exact schema/API versions). Update milestone status based on evidence rather than the existence of these documents.

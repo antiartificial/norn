@@ -1,6 +1,10 @@
 # ADR 0006: Fenced authority for database and control-store migration
 
-Status: proposed, 2026-09-22. Planning only; no migration authorized.
+Status: Accepted (architecture), 2026-09-22. Accepted: 2026-09-23. No migration authorized; trust-root/RPO/RTO choices pending.
+
+## Disposition (2026-09-23)
+
+The safety architecture is accepted: an externally supervised migration coordinator with a durable signed manifest and checkpoints stored outside both candidate stores, one authoritative writer generation at a time, freeze-fence-transfer-verify-activate ordering, epoch-reacquired execution ownership, and dump/restore as the baseline transfer with online replication qualified separately per engine/provider. Initial GA scope stands as written — Mini upgrade retaining control PG, fresh etcd Fleet bootstrap, supported application-DB cutovers and one Mini→Fleet application rehearsal — with general PG↔etcd control conversion deferred. Left open: coordinator hosting/ownership, manifest storage and trust roots, per-consumer/provider fencing mechanisms, consistency-group syntax and numerical RPO/RTO, all gated on design spikes and M0 measurement rather than this review.
 
 ## Context
 

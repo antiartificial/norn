@@ -1,6 +1,10 @@
 # ADR 0003: Shared logical resources across local and Fleet profiles
 
-Status: Proposed. Date: 2026-09-22. Owners: Norn contracts/clients; norn-fleet provisioning.
+Status: Accepted. Date: 2026-09-22. Accepted: 2026-09-23. Owners: Norn contracts/clients; norn-fleet provisioning.
+
+## Disposition (2026-09-23)
+
+Accepted, with initial app-DB engine scope resolved to **PostgreSQL plus MySQL/MariaDB at GA**. WordPress requires MySQL/MariaDB, so the MySQL engine binding — with its own backup/restore/reconnect adapter — is in the initial release, not a later capability; PostgreSQL compatibility is never assumed for it. CockroachDB orchestration stays deferred. Acceptance covers the shared-logical-resource architecture, the versioned `DatabaseService`/`DatabaseBinding` resolver, generation-fenced connections and the legacy-default compatibility path. Exact schema/API versions and managed-resource sizing remain open and are gated on P0 measurement and a compatibility review, not on this decision.
 
 ## Context
 

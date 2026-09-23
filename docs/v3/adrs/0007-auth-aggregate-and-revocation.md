@@ -1,6 +1,15 @@
 # ADR 0007: The auth aggregate and cross-boundary atomic revocation
 
-Status: Proposed. Date: 2026-09-23. Owner: Norn.
+Status: Accepted. Date: 2026-09-23. Accepted: 2026-09-23. Owner: Norn.
+
+## Disposition (2026-09-23)
+
+Accepted. The release-gating invariant stands: identity and exec-sessions are one auth aggregate, and revoking a credential while cancelling its authorized sessions is a single atomic, fenced operation on one backend, with the cancelled session ids observable to the caller. The two open build-shape decisions are resolved:
+
+- **Interface shape: compose, do not supersede.** The etcd auth adapter is a combined `AuthStore` that composes the already-verified `IdentityStore` and `ExecSessionStore` under one atomicity boundary, rather than replacing them with a single unified interface. This preserves the two green conformance suites unchanged as the contract.
+- **Fencing: add execution-boundary fencing generations now**, as defense in depth alongside single-store atomic revoke-plus-cancel — not deferred. Every exec mutation re-checks a monotonic credential/authority generation at use, so a paused-then-resumed process under a revoked credential is refused at its next fenced action even if its session record was not yet cancelled.
+
+This unblocks implementation of the combined etcd `AuthStore` adapter: single-cluster multi-key CAS for the atomic revoke-plus-cancel, composed over the two existing interfaces, with fencing generations at the execution boundary. The etcd adapter must pass both existing suites plus the aggregate-level tests named below.
 
 ## Context
 

@@ -1,6 +1,10 @@
 # ADR 0001: Separate control state, evidence and observability
 
-Status: Proposed. Date: 2026-09-22. Owner: Norn. Parent: [roadmap](../architecture-roadmap.md).
+Status: Accepted. Date: 2026-09-22. Accepted: 2026-09-23. Owner: Norn. Parent: [roadmap](../architecture-roadmap.md).
+
+## Disposition (2026-09-23)
+
+Acceptance covers the architecture: the three separate storage contracts (authoritative control state, durable evidence archive, diagnostic logs), the outbox-with-verified-watermark archive protocol, and the fail-closed evidence-reserve rule. The storage separation is validated by implementation — the control-store boundaries (operations, deployments, events, Fleet attempts, mutation-audit) are already extracted behind interfaces and archive-eligible bulk is distinguished from authoritative state. Collector/query-backend selection, byte budgets and organization-specific retention windows remain open and are gated on P0 measurement, not on this review; they do not hold the architecture.
 
 ## Context
 

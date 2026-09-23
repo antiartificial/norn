@@ -1,6 +1,10 @@
 # ADR 0002: Domain storage contracts for Mini PG and Fleet etcd
 
-Status: Proposed. Date: 2026-09-22. Owner: Norn; Fleet owns etcd host lifecycle.
+Status: Accepted. Date: 2026-09-22. Accepted: 2026-09-23. Owner: Norn; Fleet owns etcd host lifecycle.
+
+## Disposition (2026-09-23)
+
+Accepted, with the store-selection comparison resolved in favor of **dedicated etcd**. The ADR required comparing dedicated etcd against Consul KV/session reuse before final selection; that comparison is now decided for dedicated etcd, on the grounds it isolates Norn control-store growth and restore from service discovery and gives the transaction/watch semantics the contract needs. The decision is backed by implementation: the interface-first path this ADR prescribes ("implement PG behind those interfaces first, with shared invariant tests, then build the etcd adapter against that contract") is done for the five core boundaries — operations, deployments, events, Fleet attempts and mutation-audit — each passing one shared conformance suite (`store/storetest`) on both PostgreSQL and etcd against a live cluster. Identity + exec-sessions are one coupled aggregate and are handled under [ADR 0007](0007-auth-aggregate-and-revocation.md). Remaining gates are qualification, not architecture: fresh three-member bootstrap, membership/quorum-loss, snapshot/restore and successive-upgrade evidence, plus supported upstream version pinning, must pass before etcd receives GA status.
 
 ## Context
 
@@ -37,4 +41,4 @@ Acceptance: identical PG/etcd invariants, concurrent duplicate submission, revoc
 
 ## Open decisions
 
-Select supported upstream versions and limits through tests. Dedicated etcd versus Consul reuse needs a documented comparison; etcd is the requested Fleet target. Etcd cannot receive GA status until shared conformance, fresh bootstrap, membership, upgrade and full restore gates pass. Deferred cross-backend conversion is not one of those gates.
+Select supported upstream versions and limits through tests. Dedicated etcd versus Consul reuse is **resolved (2026-09-23) in favor of dedicated etcd** (see Disposition). Etcd cannot receive GA status until shared conformance, fresh bootstrap, membership, upgrade and full restore gates pass; shared conformance for the five core boundaries is met, the remaining bootstrap/membership/restore/upgrade gates are open. Deferred cross-backend conversion is not one of those gates.

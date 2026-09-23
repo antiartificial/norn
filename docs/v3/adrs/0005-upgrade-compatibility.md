@@ -1,6 +1,10 @@
 # ADR 0005: Independent upgrades and bounded compatibility
 
-Status: proposed, 2026-09-22. Planning only; no upgrade authorized.
+Status: Accepted, 2026-09-22. Accepted: 2026-09-23. No live upgrade authorized; numeric budgets pending M0.
+
+## Disposition (2026-09-23)
+
+Accepted, with the API serving model resolved to **single-active handoff first**. Owner-aware session recovery plus controlled single-active API handoff are qualified before any continuous-control-API-availability promise; active-active serving is explicitly a separate, later concurrency decision and is out of initial v3 scope. This closes the ADR's central open fork. Acceptance also covers the compatibility matrix, additive expand/contract migrations under one migration owner, the bounded mixed-binary window and both initial release paths (Mini v2→v3 on PG; fresh HA Fleet on etcd) with no PG↔etcd conversion required. The mixed-version window length, schema-contraction delay and numerical availability budgets remain open and are gated on M0 measurement.
 
 ## Context
 
