@@ -256,6 +256,33 @@ func (h *Hub) pollExternalEvents() {
 	if h.store == nil {
 		return
 	}
+	if replayStore, ok := h.store.(ReplayEventStore); ok {
+		events, bounds, decision, err := replayStore.ReplayHubEvents(context.Background(), h.externalCursor, 500)
+		if err != nil {
+			log.Printf("hub: poll external events: %v", err)
+			return
+		}
+		if !decision.Replayable {
+			// This hub has missed a compacted prefix. Every connected client must
+			// establish a new replay boundary against authoritative state: keeping
+			// any connection alive would let it receive a partial history as if it
+			// were contiguous. Advance the local poll cursor to the resync point so
+			// a newly connected client can receive events committed after it.
+			h.externalCursor = decision.ResyncCursor
+			if h.externalCursor < bounds.PrunedThroughCursor {
+				h.externalCursor = bounds.PrunedThroughCursor
+			}
+			h.disconnectForResync()
+			return
+		}
+		for _, event := range events {
+			if event.ID > h.externalCursor {
+				h.externalCursor = event.ID
+			}
+			h.deliverExternal(event)
+		}
+		return
+	}
 	events, err := h.store.ListHubEventsAfter(context.Background(), h.externalCursor, 500)
 	if err != nil {
 		log.Printf("hub: poll external events: %v", err)
@@ -266,6 +293,18 @@ func (h *Hub) pollExternalEvents() {
 			h.externalCursor = event.ID
 		}
 		h.deliverExternal(event)
+	}
+}
+
+// disconnectForResync closes every live stream after the hub has crossed a
+// durable compaction watermark. A reconnect using the former cursor receives
+// the explicit event_cursor_expired response before WebSocket upgrade.
+func (h *Hub) disconnectForResync() {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	for c := range h.clients {
+		close(c.send)
+		delete(h.clients, c)
 	}
 }
 

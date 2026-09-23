@@ -32,11 +32,21 @@ type registrationGateStore struct {
 type appendFailureStore struct{ *memoryEventStore }
 type racingReplayStore struct{ *memoryEventStore }
 
+type expiredPollReplayStore struct{ *memoryEventStore }
+
 func (s *racingReplayStore) ReplayHubEvents(_ context.Context, after int64, _ int) ([]Event, EventBounds, ResyncDecision, error) {
 	// Models compaction between the legacy preflight bounds read and list call.
 	s.prunedThrough = 10
 	s.events = nil
 	bounds, _ := s.HubEventBounds(context.Background())
+	return nil, bounds, EvaluateReplay(bounds, after), nil
+}
+
+func (s *expiredPollReplayStore) ReplayHubEvents(ctx context.Context, after int64, limit int) ([]Event, EventBounds, ResyncDecision, error) {
+	bounds, err := s.HubEventBounds(ctx)
+	if err != nil {
+		return nil, bounds, ResyncDecision{}, err
+	}
 	return nil, bounds, EvaluateReplay(bounds, after), nil
 }
 
@@ -246,6 +256,33 @@ func TestExternalPollDoesNotDuplicateRegistrationReplay(t *testing.T) {
 	case duplicate := <-c.send:
 		t.Fatalf("external poll duplicated replayed event: %s", duplicate)
 	default:
+	}
+}
+
+func TestExternalPollDisconnectsClientsWhenCompactionExpiresHubCursor(t *testing.T) {
+	store := &expiredPollReplayStore{memoryEventStore: &memoryEventStore{
+		events:        []Event{{ID: 11, Timestamp: time.Now().UTC(), Type: "retained"}},
+		prunedThrough: 10,
+	}}
+	h := New(nil)
+	h.SetStore(store)
+	h.externalCursor = 3
+	c := &client{send: make(chan []byte, 1), cursor: 3}
+	h.clients[c] = true
+
+	h.pollExternalEvents()
+
+	if h.externalCursor != 11 {
+		t.Fatalf("poll cursor=%d, want resync cursor 11", h.externalCursor)
+	}
+	h.mu.RLock()
+	_, connected := h.clients[c]
+	h.mu.RUnlock()
+	if connected {
+		t.Fatal("client remained connected after hub cursor crossed compaction watermark")
+	}
+	if _, ok := <-c.send; ok {
+		t.Fatal("client stream remained open after resync disconnect")
 	}
 }
 
