@@ -271,7 +271,7 @@ func (a *Archiver) readBack(ctx context.Context, info archive.ObjectInfo, intent
 }
 
 func operationBundleMatchesSource(bundle *archive.Bundle, source store.EvidenceSource) bool {
-	if bundle == nil || bundle.Subject.Kind != "operation" || bundle.Acceptance == nil || source.Acceptance == nil ||
+	if bundle == nil || bundle.Subject.Kind != "operation" || bundle.Subject.OperationKind != source.OperationKind || bundle.Acceptance == nil || source.Acceptance == nil ||
 		!sameJSONBytes(bundle.Operation, source.OperationJSON) || !sameJSONBytes(bundle.Effects, source.EffectsJSON) {
 		return false
 	}

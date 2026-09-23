@@ -202,3 +202,30 @@ func TestBundleSealOpenDetectsTampering(t *testing.T) {
 		t.Fatal("event from another saga sealed")
 	}
 }
+
+func TestOperationBundleBindsSubjectKindToArchivedOperation(t *testing.T) {
+	bundle := &Bundle{Subject: Subject{Kind: "operation", ID: "op-1", App: "none", OperationID: "op-1", OperationKind: "fleet.github.pull-request"}, Sequence: 1,
+		Operation: []byte(`{"kind":"fleet.github.pull-request"}`), Acceptance: &SignedAcceptance{CanonicalBytes: []byte(`{"signed":"exact bytes"}`)}}
+	encoded, err := Seal(bundle)
+	if err != nil {
+		t.Fatal(err)
+	}
+	forged := *bundle
+	forged.Subject.OperationKind = "fleet.github.apply-dispatch"
+	if _, err := Seal(&forged); err == nil {
+		t.Fatal("operation kind swapped during sealing")
+	}
+	// A forged stored object bypasses Seal, so Open must bind the same field.
+	forged = *bundle
+	forged.Subject.OperationKind = "fleet.github.apply-dispatch"
+	encodedForged, err := json.Marshal(&forged)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := Open(encodedForged); err == nil {
+		t.Fatal("operation kind swapped in stored bundle")
+	}
+	if _, err := Open(encoded); err != nil {
+		t.Fatalf("valid operation bundle = %v", err)
+	}
+}

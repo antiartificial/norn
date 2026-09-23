@@ -197,8 +197,14 @@ func validateOperationBundle(bundle *Bundle) error {
 	}
 	switch bundle.Subject.OperationKind {
 	case "fleet.github.pull-request", "fleet.github.apply-dispatch":
-		return nil
 	default:
 		return fmt.Errorf("operation evidence bundle kind is not supported")
 	}
+	var operation struct {
+		Kind string `json:"kind"`
+	}
+	if err := json.Unmarshal(bundle.Operation, &operation); err != nil || operation.Kind != bundle.Subject.OperationKind {
+		return fmt.Errorf("operation evidence subject kind differs from archived operation")
+	}
+	return nil
 }
