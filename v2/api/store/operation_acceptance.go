@@ -584,11 +584,46 @@ func newAcceptanceEnvelope(a OperationAcceptance, identityID, intentID string, a
 }
 
 func (s *PGOperationStore) signEnvelope(ctx context.Context, envelope *acceptanceEnvelope) ([]byte, AcceptanceSignature, error) {
+	return signAcceptanceEnvelope(ctx, s.signer, envelope)
+}
+
+// SealOperationAcceptance produces the same signed envelope and canonical
+// request evidence used by the PostgreSQL acceptance boundary. Alternate
+// control stores use it while preparing their atomic domain admission: the
+// supplied acceptance must therefore be the normalized, persisted shape,
+// including generated IDs and timestamps.
+func SealOperationAcceptance(ctx context.Context, signer AcceptanceSigner, acceptance OperationAcceptance, requestIdentityID, intentID string, acceptedAt time.Time) (SignedAcceptanceIntent, error) {
+	if signer == nil {
+		return SignedAcceptanceIntent{}, &AcceptanceValidationError{Reason: "acceptance signer is required"}
+	}
+	requestCanonical, err := canonicalRequestMaterial(acceptance)
+	if err != nil {
+		return SignedAcceptanceIntent{}, &AcceptanceValidationError{Reason: "canonical request: " + err.Error()}
+	}
+	envelope := newAcceptanceEnvelope(acceptance, requestIdentityID, intentID, acceptedAt)
+	canonical, signature, err := signAcceptanceEnvelope(ctx, signer, &envelope)
+	if err != nil {
+		return SignedAcceptanceIntent{}, err
+	}
+	digest := sha256.Sum256(canonical)
+	intent := SignedAcceptanceIntent{
+		ID: intentID, Schema: OperationAcceptanceEnvelopeSchema, RequestIdentityID: requestIdentityID,
+		OperationID: acceptance.Operation.ID, AcceptedAt: acceptedAt, CanonicalBytes: canonical,
+		CanonicalDigest: hex.EncodeToString(digest[:]), RequestCanonicalBytes: requestCanonical,
+		Signature: signature, Fingerprint: acceptance.Fingerprint, Audit: acceptance.Audit,
+	}
+	if acceptance.Deployment != nil {
+		intent.DeploymentID = acceptance.Deployment.ID
+	}
+	return intent, nil
+}
+
+func signAcceptanceEnvelope(ctx context.Context, signer AcceptanceSigner, envelope *acceptanceEnvelope) ([]byte, AcceptanceSignature, error) {
 	probe, err := json.Marshal(envelope)
 	if err != nil {
 		return nil, AcceptanceSignature{}, &AcceptanceValidationError{Reason: "encode acceptance envelope: " + err.Error()}
 	}
-	metadata, err := s.signer.Sign(ctx, probe)
+	metadata, err := signer.Sign(ctx, probe)
 	if err != nil {
 		return nil, AcceptanceSignature{}, &AcceptanceSignatureError{Err: err}
 	}
@@ -600,7 +635,7 @@ func (s *PGOperationStore) signEnvelope(ctx context.Context, envelope *acceptanc
 	if err != nil {
 		return nil, AcceptanceSignature{}, &AcceptanceValidationError{Reason: "encode acceptance envelope: " + err.Error()}
 	}
-	signature, err := s.signer.Sign(ctx, canonical)
+	signature, err := signer.Sign(ctx, canonical)
 	if err != nil {
 		return nil, AcceptanceSignature{}, &AcceptanceSignatureError{Err: err}
 	}

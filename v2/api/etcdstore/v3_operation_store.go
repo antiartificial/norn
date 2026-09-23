@@ -32,7 +32,8 @@ type v3Record struct {
 	Generation int64           `json:"generation"`
 }
 type v3Acceptance struct {
-	Accepted store.AcceptedOperation `json:"accepted"`
+	Identity store.OperationRequestIdentity `json:"identity"`
+	Accepted store.AcceptedOperation        `json:"accepted"`
 }
 
 func NewV3OperationStore(kv clientv3.KV, prefix, authority string, signer store.AcceptanceSigner) (*V3OperationStore, error) {
@@ -60,24 +61,15 @@ func (s *V3OperationStore) acceptanceKey(i store.OperationRequestIdentity) strin
 func (s *V3OperationStore) Authority(context.Context) (string, error) { return s.authority, nil }
 
 func (s *V3OperationStore) Accept(ctx context.Context, a store.OperationAcceptance) (store.AcceptedOperation, error) {
-	if a.Identity.Authority != s.authority {
-		return store.AcceptedOperation{}, &store.AcceptanceAuthorityError{Expected: s.authority, Actual: a.Identity.Authority}
-	}
 	// The current adapter does not yet implement these multi-record admission
 	// aggregates. Refuse them before any write instead of storing a receipt
 	// whose domain state or policy was never enforced.
 	if a.Deployment != nil || len(a.Regions) > 0 || a.Admission.OneActiveMutablePerApp || a.FleetReconciliation != nil || a.FleetRunnerAttempt != nil {
 		return store.AcceptedOperation{}, &store.AcceptanceValidationError{Reason: "etcd operation aggregate admission is not implemented"}
 	}
-	if strings.TrimSpace(a.Identity.Actor.Issuer) == "" || strings.TrimSpace(a.Identity.Actor.Subject) == "" || strings.TrimSpace(a.Identity.Kind) == "" || strings.TrimSpace(a.Identity.Resource) == "" || strings.TrimSpace(a.Identity.Key) == "" || a.Operation.ID == "" || a.Operation.Kind != a.Identity.Kind || strings.TrimSpace(a.Audit.Source) == "" {
-		return store.AcceptedOperation{}, &store.AcceptanceValidationError{Reason: "complete signed operation identity, operation, and audit source are required"}
-	}
-	want, err := store.CanonicalOperationRequestFingerprint(a)
-	if err != nil {
+	var err error
+	if a, err = s.normalize(a); err != nil {
 		return store.AcceptedOperation{}, err
-	}
-	if a.Fingerprint != want {
-		return store.AcceptedOperation{}, &store.AcceptanceValidationError{Reason: "request fingerprint does not match accepted operation semantics"}
 	}
 	key := s.acceptanceKey(a.Identity)
 	existing, err := s.loadAcceptance(ctx, key)
@@ -87,53 +79,22 @@ func (s *V3OperationStore) Accept(ctx context.Context, a store.OperationAcceptan
 	if !errors.Is(err, ErrNotFound) {
 		return store.AcceptedOperation{}, err
 	}
-	now := time.Now().UTC().Truncate(time.Microsecond)
-	op := a.Operation
-	if op.Status == "" {
-		op.Status = model.OperationQueued
-	}
-	if op.Status != model.OperationQueued && !op.Status.Terminal() {
-		return store.AcceptedOperation{}, &store.AcceptanceValidationError{Reason: "accepted operation must be queued or terminal"}
-	}
-	if op.Status == model.OperationQueued && (op.Attempts != 0 || op.LockGeneration != 0 || op.LockedBy != "" || op.LockedUntil != nil) {
-		return store.AcceptedOperation{}, &store.AcceptanceValidationError{Reason: "new queued operation cannot carry execution ownership"}
-	}
-	if op.Payload == nil {
-		op.Payload = map[string]interface{}{}
-	}
-	if op.Metadata == nil {
-		op.Metadata = map[string]interface{}{}
-	}
-	if op.StartedAt.IsZero() {
-		op.StartedAt = now
-	}
-	if op.NextAttemptAt.IsZero() {
-		op.NextAttemptAt = op.StartedAt
-	}
-	if op.MaxAttempts <= 0 {
-		op.MaxAttempts = 1
-	}
-	if op.Status.Terminal() && op.FinishedAt == nil {
-		finished := now
-		op.FinishedAt = &finished
-	}
-	request, err := json.Marshal(a)
+	acceptedAt := time.Now().UTC().Truncate(time.Microsecond)
+	identityID, intentID := uuid.NewString(), uuid.NewString()
+	intent, err := store.SealOperationAcceptance(ctx, s.signer, a, identityID, intentID, acceptedAt)
 	if err != nil {
 		return store.AcceptedOperation{}, err
 	}
-	sig, err := s.signer.Sign(ctx, request)
+	accepted := store.AcceptedOperation{Operation: a.Operation, Deployment: a.Deployment, Regions: a.Regions, RequestIdentityID: identityID, AcceptanceIntentID: intentID, Intent: intent}
+	av, err := json.Marshal(v3Acceptance{Identity: a.Identity, Accepted: accepted})
 	if err != nil {
-		return store.AcceptedOperation{}, &store.AcceptanceSignatureError{Err: err}
+		return store.AcceptedOperation{}, err
 	}
-	if sig.Algorithm == "" || sig.KeyID == "" || sig.Value == "" {
-		return store.AcceptedOperation{}, &store.AcceptanceSignatureError{}
+	ov, err := json.Marshal(v3Record{Operation: a.Operation})
+	if err != nil {
+		return store.AcceptedOperation{}, err
 	}
-	digest := sha256.Sum256(request)
-	intent := store.SignedAcceptanceIntent{ID: uuid.NewString(), Schema: store.OperationAcceptanceEnvelopeSchema, RequestIdentityID: uuid.NewString(), OperationID: op.ID, AcceptedAt: now, CanonicalBytes: request, CanonicalDigest: hex.EncodeToString(digest[:]), RequestCanonicalBytes: request, Signature: sig, Fingerprint: a.Fingerprint, Audit: a.Audit}
-	accepted := store.AcceptedOperation{Operation: op, Deployment: a.Deployment, Regions: a.Regions, RequestIdentityID: intent.RequestIdentityID, AcceptanceIntentID: intent.ID, Intent: intent}
-	av, _ := json.Marshal(v3Acceptance{Accepted: accepted})
-	ov, _ := json.Marshal(v3Record{Operation: op})
-	txn, err := s.kv.Txn(ctx).If(clientv3.Compare(clientv3.CreateRevision(key), "=", 0), clientv3.Compare(clientv3.CreateRevision(s.opKey(op.ID)), "=", 0)).Then(clientv3.OpPut(key, string(av)), clientv3.OpPut(s.opKey(op.ID), string(ov))).Commit()
+	txn, err := s.kv.Txn(ctx).If(clientv3.Compare(clientv3.CreateRevision(key), "=", 0), clientv3.Compare(clientv3.CreateRevision(s.opKey(a.Operation.ID)), "=", 0)).Then(clientv3.OpPut(key, string(av)), clientv3.OpPut(s.opKey(a.Operation.ID), string(ov))).Commit()
 	if err != nil {
 		return store.AcceptedOperation{}, err
 	}
@@ -147,27 +108,39 @@ func (s *V3OperationStore) Accept(ctx context.Context, a store.OperationAcceptan
 	return accepted, nil
 }
 
-func (s *V3OperationStore) loadAcceptance(ctx context.Context, key string) (store.AcceptedOperation, error) {
+func (s *V3OperationStore) loadAcceptance(ctx context.Context, key string) (v3Acceptance, error) {
 	r, e := s.kv.Get(ctx, key)
 	if e != nil {
-		return store.AcceptedOperation{}, e
+		return v3Acceptance{}, e
 	}
 	if len(r.Kvs) == 0 {
-		return store.AcceptedOperation{}, ErrNotFound
+		return v3Acceptance{}, ErrNotFound
 	}
 	var a v3Acceptance
 	if e = json.Unmarshal(r.Kvs[0].Value, &a); e != nil {
-		return store.AcceptedOperation{}, e
+		return v3Acceptance{}, e
 	}
-	return a.Accepted, nil
+	return a, nil
 }
-func (s *V3OperationStore) replay(ctx context.Context, got store.AcceptedOperation, identity store.OperationRequestIdentity, fp store.RequestFingerprint) (store.AcceptedOperation, error) {
+func (s *V3OperationStore) replay(ctx context.Context, record v3Acceptance, identity store.OperationRequestIdentity, fp store.RequestFingerprint) (store.AcceptedOperation, error) {
+	got := record.Accepted
+	if record.Identity != identity || got.RequestIdentityID != got.Intent.RequestIdentityID || got.AcceptanceIntentID != got.Intent.ID {
+		return store.AcceptedOperation{}, &store.AcceptanceSignatureError{Err: fmt.Errorf("etcd signed acceptance identity links differ")}
+	}
 	if got.Intent.Fingerprint != fp {
 		return store.AcceptedOperation{}, &store.AcceptanceConflictError{Identity: identity}
 	}
 	if e := s.signer.Verify(ctx, got.Intent.Signature, got.Intent.CanonicalBytes); e != nil {
 		return store.AcceptedOperation{}, &store.AcceptanceSignatureError{Err: e}
 	}
+	persisted, _, e := s.load(ctx, got.Operation.ID)
+	if e != nil {
+		return store.AcceptedOperation{}, &store.AcceptanceSignatureError{Err: fmt.Errorf("load accepted etcd operation: %w", e)}
+	}
+	if e := store.VerifyAcceptanceEvidence(store.AcceptanceEvidence{Identity: identity, IdentityFingerprint: got.Intent.Fingerprint, IdentityOperationID: got.Operation.ID, Intent: got.Intent, Operation: persisted.Operation}); e != nil {
+		return store.AcceptedOperation{}, &store.AcceptanceSignatureError{Err: e}
+	}
+	got.Operation = persisted.Operation
 	got.Replayed = true
 	return got, nil
 }
@@ -185,6 +158,9 @@ func (s *V3OperationStore) Resolve(ctx context.Context, i store.OperationRequest
 	return s.replay(ctx, got, i, fp)
 }
 func (s *V3OperationStore) ResolveIdentity(ctx context.Context, i store.OperationRequestIdentity) (store.AcceptedOperation, error) {
+	if i.Authority != s.authority {
+		return store.AcceptedOperation{}, &store.AcceptanceAuthorityError{Expected: s.authority, Actual: i.Authority}
+	}
 	got, e := s.loadAcceptance(ctx, s.acceptanceKey(i))
 	if errors.Is(e, ErrNotFound) {
 		return store.AcceptedOperation{}, &store.AcceptanceNotFoundError{Identity: i}
@@ -192,7 +168,85 @@ func (s *V3OperationStore) ResolveIdentity(ctx context.Context, i store.Operatio
 	if e != nil {
 		return store.AcceptedOperation{}, e
 	}
-	return s.replay(ctx, got, i, got.Intent.Fingerprint)
+	return s.replay(ctx, got, i, got.Accepted.Intent.Fingerprint)
+}
+
+// normalize accepts only the narrow operation aggregate implemented by this
+// adapter. It mirrors the PG boundary's identity, audit, request-fingerprint,
+// and initial-operation checks before an etcd transaction can create records.
+func (s *V3OperationStore) normalize(a store.OperationAcceptance) (store.OperationAcceptance, error) {
+	a.Identity.Authority = strings.TrimSpace(a.Identity.Authority)
+	a.Identity.Actor.Issuer = strings.TrimSpace(a.Identity.Actor.Issuer)
+	a.Identity.Actor.Subject = strings.TrimSpace(a.Identity.Actor.Subject)
+	a.Identity.Kind = strings.TrimSpace(a.Identity.Kind)
+	a.Identity.Resource = strings.TrimSpace(a.Identity.Resource)
+	a.Identity.Key = strings.TrimSpace(a.Identity.Key)
+	if a.Identity.Authority != s.authority {
+		return store.OperationAcceptance{}, &store.AcceptanceAuthorityError{Expected: s.authority, Actual: a.Identity.Authority}
+	}
+	if a.Identity.Actor.Issuer == "" || a.Identity.Actor.Subject == "" || a.Identity.Kind == "" || a.Identity.Resource == "" || a.Identity.Key == "" || len(a.Identity.Key) > 512 || len(a.Identity.Actor.Issuer) > 512 || len(a.Identity.Actor.Subject) > 512 || len(a.Identity.Kind) > 256 || len(a.Identity.Resource) > 1024 {
+		return store.OperationAcceptance{}, &store.AcceptanceValidationError{Reason: "complete bounded operation request identity is required"}
+	}
+	a.Audit.Source = strings.TrimSpace(a.Audit.Source)
+	if a.Audit.Source == "" || len(a.Audit.Source) > 256 || len(a.Audit.RequestID) > 512 || len(a.Audit.RequestReceiptID) > 512 || len(a.Audit.CredentialID) > 512 || len(a.Audit.DeviceID) > 512 {
+		return store.OperationAcceptance{}, &store.AcceptanceValidationError{Reason: "complete bounded audit source is required"}
+	}
+	a.Operation.ID, a.Operation.Kind = strings.TrimSpace(a.Operation.ID), strings.TrimSpace(a.Operation.Kind)
+	if a.Operation.ID == "" || a.Operation.Kind == "" || a.Operation.Kind != a.Identity.Kind {
+		return store.OperationAcceptance{}, &store.AcceptanceValidationError{Reason: "operation ID and identity-matching kind are required"}
+	}
+	if _, exists := a.Operation.Metadata["idempotencyKey"]; exists {
+		return store.OperationAcceptance{}, &store.AcceptanceValidationError{Reason: "new acceptance cannot use the legacy global idempotency key"}
+	}
+	if a.Operation.Status == "" {
+		a.Operation.Status = model.OperationQueued
+	}
+	if a.Operation.Status != model.OperationQueued && !a.Operation.Status.Terminal() {
+		return store.OperationAcceptance{}, &store.AcceptanceValidationError{Reason: "accepted operation must be queued or terminal"}
+	}
+	if a.Operation.Status == model.OperationQueued && (a.Operation.FinishedAt != nil || a.Operation.Attempts != 0 || a.Operation.LockGeneration != 0 || a.Operation.LockedBy != "" || a.Operation.LockedUntil != nil) {
+		return store.OperationAcceptance{}, &store.AcceptanceValidationError{Reason: "new queued operation cannot carry execution ownership or terminal state"}
+	}
+	now := time.Now().UTC().Truncate(time.Microsecond)
+	if a.Operation.StartedAt.IsZero() {
+		a.Operation.StartedAt = now
+	} else {
+		a.Operation.StartedAt = a.Operation.StartedAt.UTC().Truncate(time.Microsecond)
+	}
+	if a.Operation.NextAttemptAt.IsZero() {
+		a.Operation.NextAttemptAt = a.Operation.StartedAt
+	} else {
+		a.Operation.NextAttemptAt = a.Operation.NextAttemptAt.UTC().Truncate(time.Microsecond)
+	}
+	if a.Operation.MaxAttempts <= 0 {
+		a.Operation.MaxAttempts = 1
+	}
+	if a.Operation.Payload == nil {
+		a.Operation.Payload = map[string]interface{}{}
+	}
+	if a.Operation.Metadata == nil {
+		a.Operation.Metadata = map[string]interface{}{}
+	}
+	if a.Operation.Status.Terminal() {
+		if a.Operation.FinishedAt == nil {
+			finished := a.Operation.StartedAt
+			a.Operation.FinishedAt = &finished
+		} else {
+			finished := a.Operation.FinishedAt.UTC().Truncate(time.Microsecond)
+			a.Operation.FinishedAt = &finished
+		}
+	}
+	want, err := store.CanonicalOperationRequestFingerprint(a)
+	if err != nil {
+		return store.OperationAcceptance{}, err
+	}
+	if a.Fingerprint.Version != store.OperationRequestFingerprintVersion || len(a.Fingerprint.Digest) != 64 || strings.ToLower(a.Fingerprint.Digest) != a.Fingerprint.Digest {
+		return store.OperationAcceptance{}, &store.AcceptanceValidationError{Reason: "unsupported request fingerprint"}
+	}
+	if a.Fingerprint != want {
+		return store.OperationAcceptance{}, &store.AcceptanceValidationError{Reason: "request fingerprint does not match accepted operation semantics"}
+	}
+	return a, nil
 }
 
 func (s *V3OperationStore) load(ctx context.Context, id string) (v3Record, int64, error) {
