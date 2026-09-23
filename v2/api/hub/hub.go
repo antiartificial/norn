@@ -33,6 +33,19 @@ type EventStore interface {
 	HubEventBounds(context.Context) (EventBounds, error)
 }
 
+// ReplayEventStore snapshots the compaction watermark and replay page
+// together. Implementations must never return a truncated page as valid.
+type ReplayEventStore interface {
+	ReplayHubEvents(context.Context, int64, int) ([]Event, EventBounds, ResyncDecision, error)
+}
+
+type ReplayCursorExpiredError struct {
+	Bounds   EventBounds
+	Decision ResyncDecision
+}
+
+func (e *ReplayCursorExpiredError) Error() string { return "event cursor expired" }
+
 type EventBounds struct {
 	OldestCursor        int64      `json:"oldestCursor"`
 	LatestCursor        int64      `json:"latestCursor"`
@@ -190,7 +203,18 @@ func (h *Hub) registerClient(registration registration) error {
 	c.cursor = registration.after
 	if h.store != nil {
 		if registration.replay {
-			events, err := h.store.ListHubEventsAfter(context.Background(), registration.after, 501)
+			var events []Event
+			var err error
+			if replayStore, ok := h.store.(ReplayEventStore); ok {
+				var bounds EventBounds
+				var decision ResyncDecision
+				events, bounds, decision, err = replayStore.ReplayHubEvents(context.Background(), registration.after, 501)
+				if err == nil && !decision.Replayable {
+					return &ReplayCursorExpiredError{Bounds: bounds, Decision: decision}
+				}
+			} else {
+				events, err = h.store.ListHubEventsAfter(context.Background(), registration.after, 501)
+			}
 			if err != nil {
 				return fmt.Errorf("replay after %d: %w", registration.after, err)
 			}
@@ -359,6 +383,11 @@ func (h *Hub) HandleConnect(w http.ResponseWriter, r *http.Request) {
 		log.Printf("hub: register stream: %v", registerErr)
 		if errors.Is(registerErr, errReplayPageExceeded) {
 			writeStreamProblem(w, http.StatusConflict, "event_replay_too_large", "more than one replay page is pending; refresh authoritative state and reconnect from the current stream head", nil, nil)
+			return
+		}
+		var expired *ReplayCursorExpiredError
+		if errors.As(registerErr, &expired) {
+			writeStreamProblem(w, http.StatusConflict, "event_cursor_expired", "the requested cursor is older than retained event history", &expired.Bounds, &expired.Decision)
 			return
 		}
 		writeStreamProblem(w, http.StatusServiceUnavailable, "event_store_unavailable", "the event stream could not establish a durable cursor", nil, nil)

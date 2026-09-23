@@ -30,6 +30,15 @@ type registrationGateStore struct {
 }
 
 type appendFailureStore struct{ *memoryEventStore }
+type racingReplayStore struct{ *memoryEventStore }
+
+func (s *racingReplayStore) ReplayHubEvents(_ context.Context, after int64, _ int) ([]Event, EventBounds, ResyncDecision, error) {
+	// Models compaction between the legacy preflight bounds read and list call.
+	s.prunedThrough = 10
+	s.events = nil
+	bounds, _ := s.HubEventBounds(context.Background())
+	return nil, bounds, EvaluateReplay(bounds, after), nil
+}
 
 func (s *appendFailureStore) AppendHubEvent(_ context.Context, event *Event) error {
 	event.ID = 99
@@ -377,6 +386,25 @@ func TestEventStreamRejectsExpiredCursorWithResyncBeforeUpgrade(t *testing.T) {
 	resync, ok := problem["resync"].(map[string]interface{})
 	if !ok || resync["replayable"] != false || resync["resyncCursor"] != float64(11) {
 		t.Fatalf("missing resync instruction: %s", body)
+	}
+}
+
+func TestEventStreamRechecksExpiryAtAtomicReplayBoundary(t *testing.T) {
+	store := &racingReplayStore{memoryEventStore: &memoryEventStore{events: []Event{{ID: 10, Timestamp: time.Now().UTC(), Type: "retained"}}}}
+	h := New(nil)
+	h.SetStore(store)
+	go h.Run()
+	server := httptest.NewServer(http.HandlerFunc(h.HandleConnect))
+	defer server.Close()
+	url := "ws" + strings.TrimPrefix(server.URL, "http") + "?after=3"
+	_, response, err := websocket.DefaultDialer.Dial(url, nil)
+	if err == nil || response == nil {
+		t.Fatal("expected replay boundary expiry")
+	}
+	defer response.Body.Close()
+	body, _ := io.ReadAll(response.Body)
+	if response.StatusCode != http.StatusConflict || !strings.Contains(string(body), `"code":"event_cursor_expired"`) || !strings.Contains(string(body), `"resyncCursor":10`) {
+		t.Fatalf("status=%d body=%s", response.StatusCode, body)
 	}
 }
 

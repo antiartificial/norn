@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"time"
 
+	"github.com/jackc/pgx/v5"
 	"norn/v2/api/hub"
 )
 
@@ -60,6 +61,52 @@ func (db *DB) HubEventBounds(ctx context.Context) (hub.EventBounds, error) {
 	bounds.OldestTimestamp = oldest
 	bounds.LatestTimestamp = latest
 	return bounds, err
+}
+
+// ReplayHubEvents observes the watermark and replay page in one repeatable
+// read snapshot. Compaction therefore yields either the entire valid page or
+// an explicit resync decision, never a silently shortened replay.
+func (db *DB) ReplayHubEvents(ctx context.Context, after int64, limit int) ([]hub.Event, hub.EventBounds, hub.ResyncDecision, error) {
+	if limit <= 0 || limit > 1000 {
+		limit = 500
+	}
+	tx, err := db.Pool.BeginTx(ctx, pgx.TxOptions{IsoLevel: pgx.RepeatableRead})
+	if err != nil {
+		return nil, hub.EventBounds{}, hub.ResyncDecision{}, err
+	}
+	defer tx.Rollback(ctx)
+	var bounds hub.EventBounds
+	var oldest, latest *time.Time
+	err = tx.QueryRow(ctx, `SELECT COALESCE(MIN(events.id), 0), GREATEST(COALESCE(MAX(events.id), 0), retention.pruned_through_cursor), retention.pruned_through_cursor, COUNT(events.id)::bigint, MIN(events.timestamp), MAX(events.timestamp) FROM control_event_retention retention LEFT JOIN control_events events ON true WHERE retention.id=true GROUP BY retention.pruned_through_cursor`).Scan(&bounds.OldestCursor, &bounds.LatestCursor, &bounds.PrunedThroughCursor, &bounds.RetainedEvents, &oldest, &latest)
+	if err != nil {
+		return nil, bounds, hub.ResyncDecision{}, err
+	}
+	bounds.OldestTimestamp, bounds.LatestTimestamp = oldest, latest
+	decision := hub.EvaluateReplay(bounds, after)
+	if !decision.Replayable {
+		return nil, bounds, decision, tx.Commit(ctx)
+	}
+	rows, err := tx.Query(ctx, `SELECT id,timestamp,type,app_id,payload FROM control_events WHERE id>$1 ORDER BY id LIMIT $2`, after, limit)
+	if err != nil {
+		return nil, bounds, decision, err
+	}
+	defer rows.Close()
+	events := []hub.Event{}
+	for rows.Next() {
+		var event hub.Event
+		var payload []byte
+		if err := rows.Scan(&event.ID, &event.Timestamp, &event.Type, &event.AppID, &payload); err != nil {
+			return nil, bounds, decision, err
+		}
+		if err := json.Unmarshal(payload, &event.Payload); err != nil {
+			return nil, bounds, decision, err
+		}
+		events = append(events, event)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, bounds, decision, err
+	}
+	return events, bounds, decision, tx.Commit(ctx)
 }
 
 // PruneHubEventsBefore compacts only a timestamp-qualified prefix. Keeping a
