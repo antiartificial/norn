@@ -8,6 +8,10 @@ This ledger tracks code integration separately from milestone qualification. It 
 
 The Mini inventory API reported version `v2.20.0-platform-30-ga5da8ef`, 27 app records, no active operations, 13 active incidents, host status `ok`, and no configured Fleet/node pools. This is a point-in-time API inventory, not a database-size measurement, private restore fixture, or upgrade rehearsal. The M0 baseline still needs exact installed binary/source/schema provenance, app/job/route ownership, database growth and connection measurements, and a sanitized fixture. No Mini runtime mutation was made.
 
+A later read-only refresh on the same date records the release SHA, deployment
+flags, service counts, and remaining measurement work in the [M0 Mini baseline
+checkpoint](m0-mini-baseline-2026-09-23.md).
+
 ## Canonical contract decisions
 
 | Domain | Canonical contract | Durable work to adapt | Unsafe shortcut to reject |
