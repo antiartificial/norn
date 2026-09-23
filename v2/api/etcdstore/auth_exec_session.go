@@ -187,10 +187,16 @@ func (s *AuthStore) CreateExecSession(ctx context.Context, session *store.ExecSe
 	}
 	for attempt := 0; attempt < 32; attempt++ {
 		now := time.Now()
-		// Expire stale sessions before counting. The admission gate below makes
-		// competing creators serialize, while the per-session compares keep an
-		// observed finish or cancellation from being counted stale.
+		// Expire stale sessions before counting. Read the gate before the
+		// session snapshot: a creator that commits after this read changes its
+		// revision and makes our transaction retry, while a creator that
+		// committed before it is visible to the subsequent session scan.
 		_ = s.ExpireExecSessions(ctx)
+		gate := s.sessionGateKey(session.DeviceID)
+		gateResp, err := s.kv.Get(ctx, gate)
+		if err != nil {
+			return err
+		}
 		sessions, err := s.scanSessions(ctx)
 		if err != nil {
 			return err
@@ -259,11 +265,6 @@ func (s *AuthStore) CreateExecSession(ctx context.Context, session *store.ExecSe
 			return err
 		}
 
-		gate := s.sessionGateKey(session.DeviceID)
-		gateResp, err := s.kv.Get(ctx, gate)
-		if err != nil {
-			return err
-		}
 		if len(gateResp.Kvs) == 0 {
 			cmps = append(cmps, clientv3.Compare(clientv3.CreateRevision(gate), "=", 0))
 		} else {

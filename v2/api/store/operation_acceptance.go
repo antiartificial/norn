@@ -87,7 +87,7 @@ func (s *PGOperationStore) Authority(ctx context.Context) (string, error) {
 // endpoint-specific Semantics object is included.
 func CanonicalOperationRequestFingerprint(acceptance OperationAcceptance) (RequestFingerprint, error) {
 	acceptance = normalizeFingerprintSemantics(acceptance)
-	material, err := canonicalRequestMaterial(acceptance)
+	material, err := CanonicalOperationRequest(acceptance)
 	if err != nil {
 		return RequestFingerprint{}, &AcceptanceValidationError{Reason: "canonical request: " + err.Error()}
 	}
@@ -265,16 +265,8 @@ func (s *PGOperationStore) normalize(ctx context.Context, input OperationAccepta
 	if err != nil {
 		return OperationAcceptance{}, err
 	}
-	input.Audit.Source = strings.TrimSpace(input.Audit.Source)
-	if input.Audit.Source == "" {
-		return OperationAcceptance{}, &AcceptanceValidationError{Reason: "audit source is required"}
-	}
-	if len(input.Audit.Source) > 256 || len(input.Audit.RequestID) > 512 || len(input.Audit.RequestReceiptID) > 512 || len(input.Audit.CredentialID) > 512 || len(input.Audit.DeviceID) > 512 {
-		return OperationAcceptance{}, &AcceptanceValidationError{Reason: "audit evidence exceeds configured bounds"}
-	}
-	input.Audit.Scopes = sortedUniqueStrings(input.Audit.Scopes)
-	if len(input.Audit.Scopes) > 256 {
-		return OperationAcceptance{}, &AcceptanceValidationError{Reason: "too many audit scopes"}
+	if err := NormalizeAcceptanceAudit(&input.Audit); err != nil {
+		return OperationAcceptance{}, err
 	}
 	if err := normalizeOperationDomain(&input); err != nil {
 		return OperationAcceptance{}, err
@@ -295,7 +287,7 @@ func (s *PGOperationStore) normalize(ctx context.Context, input OperationAccepta
 	if !sameFingerprint(want, input.Fingerprint) {
 		return OperationAcceptance{}, &AcceptanceValidationError{Reason: "request fingerprint does not match accepted operation semantics"}
 	}
-	requestBytes, err := canonicalRequestMaterial(input)
+	requestBytes, err := CanonicalOperationRequest(input)
 	if err != nil {
 		return OperationAcceptance{}, &AcceptanceValidationError{Reason: "canonical request: " + err.Error()}
 	}
@@ -303,6 +295,32 @@ func (s *PGOperationStore) normalize(ctx context.Context, input OperationAccepta
 		return OperationAcceptance{}, &AcceptanceValidationError{Reason: "canonical request exceeds configured limit"}
 	}
 	return input, nil
+}
+
+// NormalizeAcceptanceAudit applies the bounded, canonical audit semantics
+// shared by every durable control backend before request fingerprinting.
+func NormalizeAcceptanceAudit(audit *AcceptanceAuditContext) error {
+	if audit == nil {
+		return &AcceptanceValidationError{Reason: "audit context is required"}
+	}
+	audit.Source = strings.TrimSpace(audit.Source)
+	if audit.Source == "" {
+		return &AcceptanceValidationError{Reason: "audit source is required"}
+	}
+	if len(audit.Source) > 256 || len(audit.RequestID) > 512 || len(audit.RequestReceiptID) > 512 || len(audit.CredentialID) > 512 || len(audit.DeviceID) > 512 {
+		return &AcceptanceValidationError{Reason: "audit evidence exceeds configured bounds"}
+	}
+	audit.Scopes = sortedUniqueStrings(audit.Scopes)
+	if len(audit.Scopes) > 256 {
+		return &AcceptanceValidationError{Reason: "too many audit scopes"}
+	}
+	return nil
+}
+
+// CanonicalOperationRequest returns the exact fingerprinted request bytes.
+// Backends must enforce their admission size limit before persisting them.
+func CanonicalOperationRequest(acceptance OperationAcceptance) ([]byte, error) {
+	return canonicalRequestMaterial(acceptance)
 }
 
 func normalizeIdentity(identity OperationRequestIdentity, authority string, keyLimit int) (OperationRequestIdentity, error) {
@@ -596,7 +614,7 @@ func SealOperationAcceptance(ctx context.Context, signer AcceptanceSigner, accep
 	if signer == nil {
 		return SignedAcceptanceIntent{}, &AcceptanceValidationError{Reason: "acceptance signer is required"}
 	}
-	requestCanonical, err := canonicalRequestMaterial(acceptance)
+	requestCanonical, err := CanonicalOperationRequest(acceptance)
 	if err != nil {
 		return SignedAcceptanceIntent{}, &AcceptanceValidationError{Reason: "canonical request: " + err.Error()}
 	}

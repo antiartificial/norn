@@ -1,6 +1,7 @@
 package etcdstore
 
 import (
+	"bytes"
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
@@ -187,9 +188,8 @@ func (s *V3OperationStore) normalize(a store.OperationAcceptance) (store.Operati
 	if a.Identity.Actor.Issuer == "" || a.Identity.Actor.Subject == "" || a.Identity.Kind == "" || a.Identity.Resource == "" || a.Identity.Key == "" || len(a.Identity.Key) > 512 || len(a.Identity.Actor.Issuer) > 512 || len(a.Identity.Actor.Subject) > 512 || len(a.Identity.Kind) > 256 || len(a.Identity.Resource) > 1024 {
 		return store.OperationAcceptance{}, &store.AcceptanceValidationError{Reason: "complete bounded operation request identity is required"}
 	}
-	a.Audit.Source = strings.TrimSpace(a.Audit.Source)
-	if a.Audit.Source == "" || len(a.Audit.Source) > 256 || len(a.Audit.RequestID) > 512 || len(a.Audit.RequestReceiptID) > 512 || len(a.Audit.CredentialID) > 512 || len(a.Audit.DeviceID) > 512 {
-		return store.OperationAcceptance{}, &store.AcceptanceValidationError{Reason: "complete bounded audit source is required"}
+	if err := store.NormalizeAcceptanceAudit(&a.Audit); err != nil {
+		return store.OperationAcceptance{}, err
 	}
 	a.Operation.ID, a.Operation.Kind = strings.TrimSpace(a.Operation.ID), strings.TrimSpace(a.Operation.Kind)
 	if a.Operation.ID == "" || a.Operation.Kind == "" || a.Operation.Kind != a.Identity.Kind {
@@ -246,7 +246,20 @@ func (s *V3OperationStore) normalize(a store.OperationAcceptance) (store.Operati
 	if a.Fingerprint != want {
 		return store.OperationAcceptance{}, &store.AcceptanceValidationError{Reason: "request fingerprint does not match accepted operation semantics"}
 	}
+	request, err := store.CanonicalOperationRequest(a)
+	if err != nil {
+		return store.OperationAcceptance{}, err
+	}
+	if len(request) > 1024*1024 {
+		return store.OperationAcceptance{}, &store.AcceptanceValidationError{Reason: "canonical request exceeds configured limit"}
+	}
 	return a, nil
+}
+
+func decodeV3Record(encoded []byte, target interface{}) error {
+	decoder := json.NewDecoder(bytes.NewReader(encoded))
+	decoder.UseNumber()
+	return decoder.Decode(target)
 }
 
 func (s *V3OperationStore) load(ctx context.Context, id string) (v3Record, int64, error) {
@@ -258,7 +271,7 @@ func (s *V3OperationStore) load(ctx context.Context, id string) (v3Record, int64
 		return v3Record{}, 0, ErrNotFound
 	}
 	var v v3Record
-	if e = json.Unmarshal(r.Kvs[0].Value, &v); e != nil {
+	if e = decodeV3Record(r.Kvs[0].Value, &v); e != nil {
 		return v3Record{}, 0, e
 	}
 	return v, r.Kvs[0].ModRevision, nil
@@ -291,7 +304,7 @@ func (s *V3OperationStore) ClaimNextOperation(ctx context.Context, owner string,
 	now := time.Now()
 	for _, kv := range r.Kvs {
 		var v v3Record
-		if json.Unmarshal(kv.Value, &v) != nil {
+		if decodeV3Record(kv.Value, &v) != nil {
 			continue
 		}
 		if v.Operation.Status == model.OperationQueued && !v.Operation.NextAttemptAt.After(now) && v.Operation.Attempts < v.Operation.MaxAttempts && (len(allowed) == 0 || allowed[v.Operation.Kind]) {

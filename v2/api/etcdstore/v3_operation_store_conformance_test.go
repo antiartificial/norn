@@ -122,6 +122,27 @@ func TestV3OperationStoreCanonicalAcceptanceReplayAndTamperEtcd(t *testing.T) {
 		}
 	})
 
+	t.Run("persisted large JSON integer replays exactly", func(t *testing.T) {
+		a := newAcceptance("canonical-large-integer")
+		a.Operation.Payload["generation"] = json.Number("9007199254740993")
+		var err error
+		a.Fingerprint, err = store.CanonicalOperationRequestFingerprint(a)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if _, err := adapter.Accept(ctx, a); err != nil {
+			t.Fatal(err)
+		}
+		replayed, err := adapter.Resolve(ctx, a.Identity, a.Fingerprint)
+		if err != nil {
+			t.Fatal(err)
+		}
+		value, ok := replayed.Operation.Payload["generation"].(json.Number)
+		if !ok || value.String() != "9007199254740993" {
+			t.Fatalf("replayed large integer=%#v", replayed.Operation.Payload["generation"])
+		}
+	})
+
 	t.Run("stored identity tamper is rejected", func(t *testing.T) {
 		a := newAcceptance("canonical-identity-tamper")
 		if _, err := adapter.Accept(ctx, a); err != nil {
