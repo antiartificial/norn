@@ -7,6 +7,7 @@ import (
 	"net/http/httptest"
 	"strings"
 	"testing"
+	"time"
 
 	"norn/v2/api/config"
 	"norn/v2/api/store"
@@ -21,6 +22,12 @@ func TestFleetGitHubReceiptUsesSignedAtomicAcceptance(t *testing.T) {
 	const auditKey = "fleet-github-acceptance-signing-key-0001"
 	h := New(db, nil, nil, nil, &config.Config{AuditSigningKey: auditKey}, nil, nil, nil, nil, nil, nil)
 	planID := "7d4b716d-788a-4e43-8f0b-5d4b8f3a2a4c"
+	if err := db.ReserveMutationAudit(context.Background(), &store.MutationAuditEvent{
+		ID: "receipt-fleet-github", RequestID: "request-fleet-github", PrincipalSubject: "operator-1",
+		Method: http.MethodPost, Path: "/api/v1/fleet/plans/{planID}/github/pull-request", StartedAt: time.Now().UTC(),
+	}); err != nil {
+		t.Fatal(err)
+	}
 	req := httptest.NewRequest(http.MethodPost, "/api/v1/fleet/plans/"+planID+"/github/pull-request", nil)
 	req = withOperationAcceptanceRequestContext(req, operationAcceptanceRequestContext{
 		ReceiptID: "receipt-fleet-github", RequestID: "request-fleet-github",
