@@ -148,6 +148,75 @@ func TestHubEventAppendSerializesResolvedTableCommitOrderAcrossSearchPaths(t *te
 	}
 }
 
+func TestHubEventPruningPersistsReplayWatermarkAcrossAnEmptyWindow(t *testing.T) {
+	databaseURL := os.Getenv("NORN_TEST_DATABASE_URL")
+	if databaseURL == "" {
+		t.Skip("NORN_TEST_DATABASE_URL is not set")
+	}
+	pool := schemaMigrationTestPools(t, 1)[0]
+	db := &DB{Pool: pool}
+	if err := Migrate(db); err != nil {
+		t.Fatal(err)
+	}
+	ctx := context.Background()
+	now := time.Now().UTC()
+	events := []hub.Event{
+		{Timestamp: now.Add(-3 * time.Hour), Type: "old-one", Payload: map[string]string{}},
+		{Timestamp: now.Add(-2 * time.Hour), Type: "old-two", Payload: map[string]string{}},
+		{Timestamp: now.Add(-time.Hour), Type: "retained", Payload: map[string]string{}},
+	}
+	for index := range events {
+		if err := db.AppendHubEvent(ctx, &events[index]); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	pruned, err := db.PruneHubEventsBefore(ctx, now.Add(-90*time.Minute))
+	if err != nil || pruned != 2 {
+		t.Fatalf("first prune = %d, %v", pruned, err)
+	}
+	bounds, err := db.HubEventBounds(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if bounds.OldestCursor != events[2].ID || bounds.LatestCursor != events[2].ID || bounds.PrunedThroughCursor != events[1].ID || bounds.RetainedEvents != 1 {
+		t.Fatalf("partially pruned bounds = %#v", bounds)
+	}
+	if decision := hub.EvaluateReplay(bounds, events[0].ID); decision.Replayable || decision.ResyncCursor != events[2].ID {
+		t.Fatalf("expired replay decision = %#v", decision)
+	}
+	if decision := hub.EvaluateReplay(bounds, events[1].ID); !decision.Replayable {
+		t.Fatalf("cursor at watermark must replay retained suffix: %#v", decision)
+	}
+
+	pruned, err = db.PruneHubEventsBefore(ctx, now)
+	if err != nil || pruned != 1 {
+		t.Fatalf("final prune = %d, %v", pruned, err)
+	}
+	bounds, err = db.HubEventBounds(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if bounds.OldestCursor != 0 || bounds.LatestCursor != events[2].ID || bounds.PrunedThroughCursor != events[2].ID || bounds.RetainedEvents != 0 {
+		t.Fatalf("empty retained window bounds = %#v", bounds)
+	}
+	if decision := hub.EvaluateReplay(bounds, events[1].ID); decision.Replayable || decision.ResyncCursor != events[2].ID {
+		t.Fatalf("empty-window expiry decision = %#v", decision)
+	}
+
+	fresh := hub.Event{Timestamp: now.Add(time.Minute), Type: "fresh", Payload: map[string]string{}}
+	if err := db.AppendHubEvent(ctx, &fresh); err != nil {
+		t.Fatal(err)
+	}
+	bounds, err = db.HubEventBounds(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if bounds.LatestCursor != fresh.ID || bounds.PrunedThroughCursor != events[2].ID || !hub.EvaluateReplay(bounds, events[2].ID).Replayable {
+		t.Fatalf("post-prune append bounds = %#v", bounds)
+	}
+}
+
 func waitForHubEventAppendWaiter(t *testing.T, pool *pgxpool.Pool, applicationName string) {
 	t.Helper()
 	deadline := time.Now().Add(5 * time.Second)

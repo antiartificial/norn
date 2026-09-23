@@ -125,8 +125,11 @@ detection is active. Connect to `/api/v1/events` with:
 | `apps=x,y` | Exact-match app subscription |
 | `heartbeat=10..120` | Opt-in heartbeat interval in seconds |
 
-A cursor older than retained history returns `event_cursor_gap`; one newer than
-the stream returns `event_cursor_ahead`. Both responses include `eventBounds`.
+An expired cursor returns `event_cursor_expired` with `eventBounds` and a
+`resync` object. Refresh authoritative state, then reconnect at
+`resync.resyncCursor`. `prunedThroughCursor` remains available when every
+retained event has been compacted. A cursor newer than the stream returns
+`event_cursor_ahead`.
 The client must reconcile versioned REST resources and then resume from the
 latest cursor. A heartbeat is liveness evidence, not operation completion.
 

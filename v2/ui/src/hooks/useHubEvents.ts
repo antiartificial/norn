@@ -17,7 +17,7 @@ let lifecycleGeneration = 0
 const queryClients = new Map<QueryClient, number>()
 
 interface HubStreamInfo {
-  bounds: { oldestCursor: number; latestCursor: number }
+  bounds: { oldestCursor: number; latestCursor: number; prunedThroughCursor?: number }
   retention: { replayPageSize: number }
 }
 
@@ -35,15 +35,19 @@ export async function reconcileHubCursor(
   info: HubStreamInfo,
   refreshAuthoritativeState: () => Promise<unknown>,
 ): Promise<number> {
-  const values = [cursor, info.bounds.oldestCursor, info.bounds.latestCursor, info.retention.replayPageSize]
+  const prunedThroughCursor = info.bounds.prunedThroughCursor ?? 0
+  const values = [cursor, info.bounds.oldestCursor, info.bounds.latestCursor, prunedThroughCursor, info.retention.replayPageSize]
   if (values.some((value) => !Number.isSafeInteger(value) || value < 0) || info.retention.replayPageSize < 1) {
     throw new Error('event stream metadata contains an invalid cursor or replay page size')
+  }
+  if (prunedThroughCursor > info.bounds.latestCursor) {
+    throw new Error('event stream metadata has a compaction watermark beyond its stream head')
   }
   if (cursor === 0) return cursor
   const minimum = Math.max(0, info.bounds.oldestCursor - 1)
   const maximum = Math.max(0, info.bounds.latestCursor)
   const replayPageSize = Math.max(1, info.retention.replayPageSize)
-  if (cursor >= minimum && cursor <= maximum && maximum - cursor <= replayPageSize) return cursor
+  if (cursor >= minimum && cursor >= prunedThroughCursor && cursor <= maximum && maximum - cursor <= replayPageSize) return cursor
   await refreshAuthoritativeState()
   return maximum
 }

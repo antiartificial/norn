@@ -57,6 +57,22 @@ describe('useHubEvents', () => {
     expect(refresh).toHaveBeenCalledOnce()
   })
 
+  it('refreshes authoritative state when the durable compaction watermark expires the cursor', async () => {
+    const refresh = vi.fn().mockResolvedValue(undefined)
+    await expect(reconcileHubCursor(5, {
+      bounds: { oldestCursor: 0, latestCursor: 10, prunedThroughCursor: 10 },
+      retention: { replayPageSize: 500 },
+    }, refresh)).resolves.toBe(10)
+    expect(refresh).toHaveBeenCalledOnce()
+  })
+
+  it('rejects a compaction watermark beyond the advertised stream head', async () => {
+    await expect(reconcileHubCursor(4, {
+      bounds: { oldestCursor: 0, latestCursor: 10, prunedThroughCursor: 11 },
+      retention: { replayPageSize: 500 },
+    }, vi.fn())).rejects.toThrow('compaction watermark')
+  })
+
   it('retains the durable cursor when authoritative refresh fails', async () => {
     const refresh = vi.fn().mockRejectedValue(new Error('refresh failed'))
     await expect(reconcileHubCursor(1, {
