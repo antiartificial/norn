@@ -36,6 +36,18 @@ func TestDeploymentStoreConformance_Postgres(t *testing.T) {
 	})
 }
 
+// resetOperationTables clears the operation queue and the deployment-aggregate
+// tables, so each conformance subtest starts empty regardless of table-wide
+// operations. Children are deleted before parents to respect foreign keys.
+func resetOperationTables(t *testing.T, db *DB) {
+	t.Helper()
+	for _, table := range []string{"deployment_steps", "deployment_regions", "deployments", "operations"} {
+		if _, err := db.Pool.Exec(context.Background(), "DELETE FROM "+table); err != nil {
+			t.Fatalf("reset %s: %v", table, err)
+		}
+	}
+}
+
 // runDeploymentStoreConformance is the backend-neutral behavioral contract for
 // DeploymentStore. newStore must return a store backed by empty deployment
 // tables on each call.
