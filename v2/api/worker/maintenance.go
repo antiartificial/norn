@@ -153,13 +153,15 @@ type MaintenanceWorker struct {
 	poll     time.Duration
 }
 
-func NewMaintenanceWorker(db *store.DB, executor MaintenanceExecutor) *MaintenanceWorker {
+func NewMaintenanceWorker(execution store.ExecutionStore, events interface {
+	AppendHubEvent(context.Context, *hub.Event) error
+}, executor MaintenanceExecutor) *MaintenanceWorker {
 	host, _ := os.Hostname()
 	if host == "" {
 		host = "unknown-host"
 	}
 	return &MaintenanceWorker{
-		db: db, events: db, executor: executor, id: fmt.Sprintf("host-agent:%s:%d", host, os.Getpid()),
+		db: execution, events: events, executor: executor, id: fmt.Sprintf("host-agent:%s:%d", host, os.Getpid()),
 		kinds: []string{"platform.preflight", "platform.upgrade", "platform.rollback", "platform.smoke", "host.assure"},
 		lease: 5 * time.Minute, poll: 2 * time.Second,
 	}

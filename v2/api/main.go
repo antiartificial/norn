@@ -46,6 +46,13 @@ import (
 )
 
 func main() {
+	if handled, err := startup.WriteControlBackendProbe(os.Args[1:], os.Getenv, os.Stdout); handled {
+		if err != nil {
+			fmt.Fprintln(os.Stderr, err)
+			os.Exit(1)
+		}
+		return
+	}
 	if handled, err := startup.WriteContractProbe(os.Args[1:], os.Stdout); handled {
 		if err != nil {
 			fmt.Fprintln(os.Stderr, err)
@@ -56,6 +63,13 @@ func main() {
 	startupCfg, err := startup.Parse(os.Getenv)
 	if err != nil {
 		log.Fatalf("startup configuration: %v", err)
+	}
+	backendCfg, err := startup.ParseControlBackend(os.Getenv)
+	if err != nil {
+		log.Fatalf("control backend: %v", err)
+	}
+	if err := startup.RequireRuntimeCapabilities(backendCfg); err != nil {
+		log.Fatalf("control backend: %v", err)
 	}
 	cfg := config.Load()
 	databaseID := databaseIdentity(cfg.DatabaseURL, cfg.AuditSigningKey)

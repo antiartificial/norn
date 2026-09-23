@@ -16,6 +16,13 @@ import (
 )
 
 func main() {
+	if handled, err := startup.WriteControlBackendProbe(os.Args[1:], os.Getenv, os.Stdout); handled {
+		if err != nil {
+			fmt.Fprintln(os.Stderr, err)
+			os.Exit(1)
+		}
+		return
+	}
 	if handled, err := startup.WriteContractProbe(os.Args[1:], os.Stdout); handled {
 		if err != nil {
 			fmt.Fprintln(os.Stderr, err)
@@ -26,6 +33,13 @@ func main() {
 	startupCfg, err := startup.Parse(os.Getenv)
 	if err != nil {
 		log.Fatalf("startup configuration: %v", err)
+	}
+	backendCfg, err := startup.ParseControlBackend(os.Getenv)
+	if err != nil {
+		log.Fatalf("control backend: %v", err)
+	}
+	if err := startup.RequireRuntimeCapabilities(backendCfg); err != nil {
+		log.Fatalf("control backend: %v", err)
 	}
 	if startupCfg.StartupMode == startup.ModePassive {
 		log.Fatalf("startup configuration: %s=passive is supported only by norn-api", startup.StartupModeEnv)
@@ -57,5 +71,5 @@ func main() {
 	ctx, cancel := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer cancel()
 	executor := &worker.CommandMaintenanceExecutor{Repo: *repo, PlatformScript: *platformScript, HostScript: *hostScript}
-	worker.NewMaintenanceWorker(db, executor).Run(ctx)
+	worker.NewMaintenanceWorker(db, db, executor).Run(ctx)
 }
