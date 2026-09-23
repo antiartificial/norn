@@ -68,6 +68,17 @@ func TestEvidenceReserveRefusesAuditedMutationsUntilEvidenceIsArchived(t *testin
 	if rec.Code != http.StatusServiceUnavailable || !strings.Contains(rec.Body.String(), "evidence_reserve_exhausted") || !strings.Contains(rec.Body.String(), "2 unarchived") || reached != before {
 		t.Fatalf("backlog over reserve = %d %s", rec.Code, rec.Body.String())
 	}
+	// A caller can attach this header to any legacy mutation. It must not be
+	// treated as proof that the route reaches signed atomic acceptance.
+	h.evidenceReserveAt = time.Time{}
+	withKey := httptest.NewRequest(http.MethodPost, "/api/events", nil)
+	withKey.Header.Set("Idempotency-Key", "caller-controlled")
+	withKey = WithAccessPrincipal(withKey, &AccessPrincipal{Subject: "operator", Source: AccessPrincipalSourceSharedAPI, Scopes: []string{ScopeAdmin}})
+	withKeyResponse := httptest.NewRecorder()
+	chain.ServeHTTP(withKeyResponse, withKey)
+	if withKeyResponse.Code != http.StatusServiceUnavailable || reached != before {
+		t.Fatalf("header bypassed reserve: %d %s", withKeyResponse.Code, withKeyResponse.Body.String())
+	}
 	var refusedAudits int
 	if err := db.Pool.QueryRow(ctx, `SELECT count(*) FROM mutation_audit_events WHERE path = '/api/v1/apps/shop/deploy' AND status = 503`).Scan(&refusedAudits); err != nil || refusedAudits != 1 {
 		t.Fatalf("refusal audit rows = %d, %v", refusedAudits, err)
