@@ -1020,8 +1020,9 @@ paths:
       operationId: connectEvents
       description: >-
         Upgrade to WebSocket. Event frames use Event. When heartbeat is requested,
-        heartbeat frames use HeartbeatFrame. A stale or ahead cursor is rejected
-        before upgrade with event_cursor_gap or event_cursor_ahead.
+        heartbeat frames use HeartbeatFrame. An expired cursor is rejected before
+        upgrade with event_cursor_expired and a resync cursor; refresh
+        authoritative state before reconnecting at that cursor.
       parameters:
         - { name: after, in: query, schema: { type: integer, format: int64, minimum: 0 } }
         - { name: types, in: query, schema: { type: string }, description: Comma-separated exact event types. }
@@ -1169,6 +1170,7 @@ components:
         requestId: { type: string }
         error: { type: string, deprecated: true }
         eventBounds: { $ref: '#/components/schemas/EventBounds' }
+        resync: { $ref: '#/components/schemas/EventResyncDecision' }
     ErrorCode:
       type: string
       description: Stable machine-readable code. Clients must preserve unknown future values.
@@ -1185,7 +1187,7 @@ components:
         - invalid_event_filter
         - invalid_heartbeat
         - event_store_unavailable
-        - event_cursor_gap
+        - event_cursor_expired
         - event_cursor_ahead
         - operation_not_found
         - operation_lookup_failed
@@ -2061,10 +2063,11 @@ components:
         observedAt: { type: string, format: date-time }
     EventBounds:
       type: object
-      required: [oldestCursor, latestCursor, retainedEvents]
+      required: [oldestCursor, latestCursor, prunedThroughCursor, retainedEvents]
       properties:
         oldestCursor: { type: integer, format: int64 }
         latestCursor: { type: integer, format: int64 }
+        prunedThroughCursor: { type: integer, format: int64, description: Highest compacted event cursor. }
         retainedEvents: { type: integer, format: int64 }
         oldestTimestamp: { type: string, format: date-time }
         latestTimestamp: { type: string, format: date-time }
@@ -2079,13 +2082,20 @@ components:
           type: object
           required: [mode, automaticPruning, replayPageSize]
           properties:
-            mode: { type: string, enum: [unbounded] }
-            automaticPruning: { type: boolean }
+            mode: { type: string, enum: [bounded] }
+            automaticPruning: { type: boolean, description: Whether this server runs compaction automatically. }
             replayPageSize: { type: integer }
         gapDetection: { type: boolean }
         heartbeatMinimumSeconds: { type: integer }
         heartbeatMaximumSeconds: { type: integer }
         filters: { type: array, items: { type: string } }
+    EventResyncDecision:
+      type: object
+      required: [replayable]
+      properties:
+        replayable: { type: boolean }
+        resyncCursor: { type: integer, format: int64 }
+        reason: { type: string }
     Event:
       type: object
       required: [id, timestamp, type, payload]

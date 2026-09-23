@@ -7,6 +7,7 @@ import (
 	"net/http"
 	"net/url"
 	"os"
+	"strconv"
 	"strings"
 	"time"
 
@@ -17,6 +18,31 @@ type Client struct {
 	BaseURL    string
 	Token      string
 	HTTPClient *http.Client
+}
+
+// EventBounds describes the durable event window advertised by the v3 control
+// API. PrunedThroughCursor remains meaningful even when the retained window is
+// empty.
+type EventBounds struct {
+	OldestCursor        int64 `json:"oldestCursor"`
+	LatestCursor        int64 `json:"latestCursor"`
+	PrunedThroughCursor int64 `json:"prunedThroughCursor"`
+	RetainedEvents      int64 `json:"retainedEvents"`
+}
+
+type EventRetention struct {
+	Mode             string `json:"mode"`
+	AutomaticPruning bool   `json:"automaticPruning"`
+	ReplayPageSize   int    `json:"replayPageSize"`
+}
+
+// EventStreamInfo is the discovery response clients use before retaining or
+// replaying an event cursor.
+type EventStreamInfo struct {
+	ProtocolVersion int            `json:"protocolVersion"`
+	Bounds          EventBounds    `json:"bounds"`
+	Retention       EventRetention `json:"retention"`
+	GapDetection    bool           `json:"gapDetection"`
 }
 
 func New(baseURL string) *Client {
@@ -2021,6 +2047,22 @@ func (c *Client) FunctionHistory(appID string) ([]FuncExecution, error) {
 
 func (c *Client) WebSocketURL() string {
 	return c.WebSocketURLFor("/api/v1/events")
+}
+
+// EventStreamURLAfter returns the replay endpoint for a durable cursor.
+func (c *Client) EventStreamURLAfter(cursor int64) (string, error) {
+	if cursor < 0 {
+		return "", fmt.Errorf("event cursor must be non-negative")
+	}
+	return c.WebSocketURL() + "?after=" + strconv.FormatInt(cursor, 10), nil
+}
+
+func (c *Client) EventStreamInfo() (*EventStreamInfo, error) {
+	var info EventStreamInfo
+	if err := c.get("/api/v1/events/info", &info); err != nil {
+		return nil, err
+	}
+	return &info, nil
 }
 
 func (c *Client) WebSocketURLFor(path string) string {

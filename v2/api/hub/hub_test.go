@@ -16,8 +16,9 @@ import (
 )
 
 type memoryEventStore struct {
-	mu     sync.Mutex
-	events []Event
+	mu            sync.Mutex
+	events        []Event
+	prunedThrough int64
 }
 
 type registrationGateStore struct {
@@ -100,12 +101,15 @@ func (s *memoryEventStore) LatestHubEventID(_ context.Context) (int64, error) {
 func (s *memoryEventStore) HubEventBounds(_ context.Context) (EventBounds, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	bounds := EventBounds{RetainedEvents: int64(len(s.events))}
+	bounds := EventBounds{RetainedEvents: int64(len(s.events)), PrunedThroughCursor: s.prunedThrough}
 	if len(s.events) > 0 {
 		bounds.OldestCursor = s.events[0].ID
 		bounds.LatestCursor = s.events[len(s.events)-1].ID
 		oldest, latest := s.events[0].Timestamp, s.events[len(s.events)-1].Timestamp
 		bounds.OldestTimestamp, bounds.LatestTimestamp = &oldest, &latest
+	}
+	if bounds.LatestCursor < bounds.PrunedThroughCursor {
+		bounds.LatestCursor = bounds.PrunedThroughCursor
 	}
 	return bounds, nil
 }
@@ -343,13 +347,16 @@ func TestEventStreamInfoReportsRetentionBounds(t *testing.T) {
 	}
 }
 
-func TestEventStreamRejectsCursorGapBeforeUpgrade(t *testing.T) {
+func TestEventStreamRejectsExpiredCursorWithResyncBeforeUpgrade(t *testing.T) {
 	store := &memoryEventStore{events: []Event{
 		{ID: 10, Timestamp: time.Now().UTC(), Type: "retained"},
 		{ID: 11, Timestamp: time.Now().UTC(), Type: "retained"},
 	}}
 	h := New(nil)
 	h.SetStore(store)
+	// A production store persists this value after compaction. Set it here to
+	// model the same retained window without requiring a PostgreSQL fixture.
+	store.prunedThrough = 9
 	server := httptest.NewServer(http.HandlerFunc(h.HandleConnect))
 	defer server.Close()
 	url := "ws" + strings.TrimPrefix(server.URL, "http") + "?after=3"
@@ -360,8 +367,16 @@ func TestEventStreamRejectsCursorGapBeforeUpgrade(t *testing.T) {
 	defer response.Body.Close()
 	body, _ := io.ReadAll(response.Body)
 	var problem map[string]interface{}
-	if json.Unmarshal(body, &problem) != nil || problem["code"] != "event_cursor_gap" {
+	if json.Unmarshal(body, &problem) != nil || problem["code"] != "event_cursor_expired" {
 		t.Fatalf("problem = %s", body)
+	}
+	bounds, ok := problem["eventBounds"].(map[string]interface{})
+	if !ok || bounds["latestCursor"] != float64(11) {
+		t.Fatalf("missing stream bounds: %s", body)
+	}
+	resync, ok := problem["resync"].(map[string]interface{})
+	if !ok || resync["replayable"] != false || resync["resyncCursor"] != float64(11) {
+		t.Fatalf("missing resync instruction: %s", body)
 	}
 }
 

@@ -42,7 +42,7 @@ var PayloadInventory = []PayloadRetention{
 	{"deployments", ClassHotEvidence, []string{"source_changes"}, "current and rollback candidates, routing state"},
 	{"deployment_regions", ClassHotEvidence, nil, "regional routing of current deployments"},
 	{"deployment_steps", ClassHotEvidence, []string{"message", "metadata"}, "unresolved steps of active deployments"},
-	{"control_events", ClassHotEvidence, []string{"payload"}, "needs explicit expired-cursor/resync behaviour before bounded replay pruning"},
+	{"control_events", ClassHotEvidence, []string{"payload"}, "bounded replay pruning uses an explicit expired-cursor resync contract and durable compaction watermark"},
 	{"webhook_deliveries", ClassHotEvidence, []string{"payload"}, "pending and replayable deliveries"},
 	{"func_executions", ClassHotEvidence, nil, "unresolved invocations (output is not stored)"},
 	{"fleet_runner_attempts", ClassHotEvidence, nil, "root/retry lineage and active attempts"},

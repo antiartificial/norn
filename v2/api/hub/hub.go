@@ -34,11 +34,12 @@ type EventStore interface {
 }
 
 type EventBounds struct {
-	OldestCursor    int64      `json:"oldestCursor"`
-	LatestCursor    int64      `json:"latestCursor"`
-	RetainedEvents  int64      `json:"retainedEvents"`
-	OldestTimestamp *time.Time `json:"oldestTimestamp,omitempty"`
-	LatestTimestamp *time.Time `json:"latestTimestamp,omitempty"`
+	OldestCursor        int64      `json:"oldestCursor"`
+	LatestCursor        int64      `json:"latestCursor"`
+	PrunedThroughCursor int64      `json:"prunedThroughCursor"`
+	RetainedEvents      int64      `json:"retainedEvents"`
+	OldestTimestamp     *time.Time `json:"oldestTimestamp,omitempty"`
+	LatestTimestamp     *time.Time `json:"latestTimestamp,omitempty"`
 }
 
 type StreamInfo struct {
@@ -312,7 +313,7 @@ func (h *Hub) HandleConnect(w http.ResponseWriter, r *http.Request) {
 	if rawAfter != "" {
 		parsed, err := strconv.ParseInt(rawAfter, 10, 64)
 		if err != nil || parsed < 0 {
-			writeStreamProblem(w, http.StatusBadRequest, "invalid_event_cursor", "event cursor must be a non-negative integer", nil)
+			writeStreamProblem(w, http.StatusBadRequest, "invalid_event_cursor", "event cursor must be a non-negative integer", nil, nil)
 			return
 		}
 		after = parsed
@@ -320,26 +321,27 @@ func (h *Hub) HandleConnect(w http.ResponseWriter, r *http.Request) {
 	}
 	filter, err := parseEventFilter(r)
 	if err != nil {
-		writeStreamProblem(w, http.StatusBadRequest, "invalid_event_filter", err.Error(), nil)
+		writeStreamProblem(w, http.StatusBadRequest, "invalid_event_filter", err.Error(), nil, nil)
 		return
 	}
 	heartbeat, err := parseHeartbeat(r.URL.Query().Get("heartbeat"))
 	if err != nil {
-		writeStreamProblem(w, http.StatusBadRequest, "invalid_heartbeat", err.Error(), nil)
+		writeStreamProblem(w, http.StatusBadRequest, "invalid_heartbeat", err.Error(), nil, nil)
 		return
 	}
 	if replay && h.store != nil {
 		bounds, boundsErr := h.store.HubEventBounds(r.Context())
 		if boundsErr != nil {
-			writeStreamProblem(w, http.StatusServiceUnavailable, "event_store_unavailable", "event metadata is unavailable", nil)
+			writeStreamProblem(w, http.StatusServiceUnavailable, "event_store_unavailable", "event metadata is unavailable", nil, nil)
 			return
 		}
 		if after > bounds.LatestCursor && bounds.LatestCursor > 0 {
-			writeStreamProblem(w, http.StatusConflict, "event_cursor_ahead", "the requested cursor is newer than the event stream", &bounds)
+			writeStreamProblem(w, http.StatusConflict, "event_cursor_ahead", "the requested cursor is newer than the event stream", &bounds, nil)
 			return
 		}
-		if after > 0 && bounds.OldestCursor > 0 && after < bounds.OldestCursor-1 {
-			writeStreamProblem(w, http.StatusConflict, "event_cursor_gap", "the requested cursor is older than retained event history", &bounds)
+		decision := EvaluateReplay(bounds, after)
+		if !decision.Replayable {
+			writeStreamProblem(w, http.StatusConflict, "event_cursor_expired", "the requested cursor is older than retained event history", &bounds, &decision)
 			return
 		}
 	}
@@ -356,10 +358,10 @@ func (h *Hub) HandleConnect(w http.ResponseWriter, r *http.Request) {
 		close(c.send)
 		log.Printf("hub: register stream: %v", registerErr)
 		if errors.Is(registerErr, errReplayPageExceeded) {
-			writeStreamProblem(w, http.StatusConflict, "event_replay_too_large", "more than one replay page is pending; refresh authoritative state and reconnect from the current stream head", nil)
+			writeStreamProblem(w, http.StatusConflict, "event_replay_too_large", "more than one replay page is pending; refresh authoritative state and reconnect from the current stream head", nil, nil)
 			return
 		}
-		writeStreamProblem(w, http.StatusServiceUnavailable, "event_store_unavailable", "the event stream could not establish a durable cursor", nil)
+		writeStreamProblem(w, http.StatusServiceUnavailable, "event_store_unavailable", "the event stream could not establish a durable cursor", nil, nil)
 		return
 	}
 	conn, err := h.upgrader.Upgrade(w, r, nil)
@@ -403,18 +405,18 @@ func (c *client) writePump() {
 
 func (h *Hub) HandleInfo(w http.ResponseWriter, r *http.Request) {
 	if h.store == nil {
-		writeStreamProblem(w, http.StatusServiceUnavailable, "event_store_unavailable", "event persistence is not configured", nil)
+		writeStreamProblem(w, http.StatusServiceUnavailable, "event_store_unavailable", "event persistence is not configured", nil, nil)
 		return
 	}
 	bounds, err := h.store.HubEventBounds(r.Context())
 	if err != nil {
-		writeStreamProblem(w, http.StatusServiceUnavailable, "event_store_unavailable", "event metadata is unavailable", nil)
+		writeStreamProblem(w, http.StatusServiceUnavailable, "event_store_unavailable", "event metadata is unavailable", nil, nil)
 		return
 	}
 	w.Header().Set("Content-Type", "application/json")
 	_ = json.NewEncoder(w).Encode(StreamInfo{
-		ProtocolVersion: 1, Bounds: bounds, RetentionPolicy: "database-retained",
-		Retention:    EventRetention{Mode: "unbounded", AutomaticPruning: false, ReplayPageSize: 500},
+		ProtocolVersion: 2, Bounds: bounds, RetentionPolicy: "bounded-with-resync",
+		Retention:    EventRetention{Mode: "bounded", AutomaticPruning: false, ReplayPageSize: 500},
 		GapDetection: true, HeartbeatMinimum: 10, HeartbeatMaximum: 120,
 		Filters: []string{"types", "apps"},
 	})
@@ -460,7 +462,7 @@ func parseHeartbeat(raw string) (time.Duration, error) {
 	return time.Duration(seconds) * time.Second, nil
 }
 
-func writeStreamProblem(w http.ResponseWriter, status int, code, detail string, bounds *EventBounds) {
+func writeStreamProblem(w http.ResponseWriter, status int, code, detail string, bounds *EventBounds, resync *ResyncDecision) {
 	w.Header().Set("Content-Type", "application/problem+json")
 	w.WriteHeader(status)
 	body := map[string]interface{}{
@@ -469,6 +471,9 @@ func writeStreamProblem(w http.ResponseWriter, status int, code, detail string, 
 	}
 	if bounds != nil {
 		body["eventBounds"] = bounds
+	}
+	if resync != nil {
+		body["resync"] = resync
 	}
 	_ = json.NewEncoder(w).Encode(body)
 }
