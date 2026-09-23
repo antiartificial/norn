@@ -97,14 +97,18 @@ func reserveAcceptedEvidence(ctx context.Context, tx pgx.Tx, acceptance Operatio
 	if enabled {
 		var pending int
 		var oldest *time.Time
-		if err := tx.QueryRow(ctx, `SELECT count(*), min(created_at) FROM evidence_archive_intents WHERE state = 'pending'`).Scan(&pending, &oldest); err != nil {
+		var databaseNow time.Time
+		// clock_timestamp is evaluated after the policy-row lock is acquired.
+		// Transaction-start now() could predate a long lock wait and admit work
+		// whose oldest pending evidence has already crossed the age limit.
+		if err := tx.QueryRow(ctx, `SELECT count(*), min(created_at), clock_timestamp() FROM evidence_archive_intents WHERE state = 'pending'`).Scan(&pending, &oldest, &databaseNow); err != nil {
 			return err
 		}
 		reasons := []string{}
 		if pending >= maxPending {
 			reasons = append(reasons, fmt.Sprintf("%d unarchived evidence bundles reach the reserve limit of %d", pending, maxPending))
 		}
-		if oldest != nil && time.Since(*oldest) >= time.Duration(maxAgeSeconds)*time.Second {
+		if oldest != nil && databaseNow.Sub(*oldest) >= time.Duration(maxAgeSeconds)*time.Second {
 			reasons = append(reasons, fmt.Sprintf("evidence has waited for archiving longer than %s", time.Duration(maxAgeSeconds)*time.Second))
 		}
 		if archiveExhausted {
