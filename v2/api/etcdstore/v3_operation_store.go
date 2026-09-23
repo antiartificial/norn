@@ -321,18 +321,14 @@ func (s *V3OperationStore) FinishClaimedOperation(ctx context.Context, c store.O
 		}
 	})
 }
-func (s *V3OperationStore) RecoverExpiredOperations(ctx context.Context) error { return nil }
+
+// Recovery requires the same checkpoint and external-effect classification as
+// the PostgreSQL adapter. Refuse worker startup until that path is implemented.
+func (s *V3OperationStore) RecoverExpiredOperations(context.Context) error {
+	return fmt.Errorf("etcd operation recovery is not implemented")
+}
 func (s *V3OperationStore) AcquireAppOperationLock(ctx context.Context, app string) (func(), bool, error) {
-	owner := uuid.NewString()
-	key := s.prefix + "/v3/app-locks/" + app
-	r, e := s.kv.Txn(ctx).If(clientv3.Compare(clientv3.CreateRevision(key), "=", 0)).Then(clientv3.OpPut(key, owner)).Commit()
-	if e != nil {
-		return func() {}, false, e
-	}
-	if !r.Succeeded {
-		return func() {}, false, nil
-	}
-	return func() {
-		_, _ = s.kv.Txn(context.Background()).If(clientv3.Compare(clientv3.Value(key), "=", owner)).Then(clientv3.OpDelete(key)).Commit()
-	}, true, nil
+	// A lock without an ownership lease can survive a worker crash forever.
+	// The M3 lock must be lease-backed and fenced before app mutations use it.
+	return func() {}, false, fmt.Errorf("etcd app operation lock is not implemented")
 }
