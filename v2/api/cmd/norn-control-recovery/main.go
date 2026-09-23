@@ -244,7 +244,7 @@ func runArchiveCommand(ctx context.Context, command string, arguments []string) 
 			return err
 		}
 	}
-	objects, closer, err := archive.OpenStore(ctx, settings)
+	objects, closer, err := archive.OpenReader(ctx, settings)
 	if err != nil {
 		return fmt.Errorf("open evidence archive: %w", err)
 	}

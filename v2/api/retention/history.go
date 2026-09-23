@@ -195,7 +195,7 @@ type IndexRecovery struct {
 // is read, verified for internal consistency (and its acceptance signature
 // when a signer is given) and recorded as pruned history, so archive-aware
 // reads resolve it. Existing index rows are never overwritten.
-func RestoreIndex(ctx context.Context, db *store.DB, objects archive.Store, signer store.AcceptanceSigner) (IndexRecovery, error) {
+func RestoreIndex(ctx context.Context, db *store.DB, objects archive.Reader, signer store.AcceptanceSigner) (IndexRecovery, error) {
 	var recovery IndexRecovery
 	keys, err := objects.List(ctx, "evidence/saga/")
 	if err != nil {
@@ -230,7 +230,7 @@ func RestoreIndex(ctx context.Context, db *store.DB, objects archive.Store, sign
 // verifiedBundleAt reads one archived object (bounded), decodes and
 // validates the bundle, requires the key derived from its subject, and binds
 // (and, with a signer, verifies) its signed acceptance.
-func (a *Archiver) verifiedBundleAt(ctx context.Context, objects archive.Store, key string) (*archive.Bundle, archive.ObjectInfo, error) {
+func (a *Archiver) verifiedBundleAt(ctx context.Context, objects archive.Reader, key string) (*archive.Bundle, archive.ObjectInfo, error) {
 	data, info, err := objects.Get(ctx, key, archive.MaxBundleBytes)
 	if err != nil {
 		return nil, info, err
@@ -261,7 +261,7 @@ type ArchiveVerification struct {
 // VerifyArchive reads and verifies every evidence object without any
 // control database: bounded reads, bundle integrity, subject-derived keys
 // and acceptance content binding, plus signatures when a signer is given.
-func VerifyArchive(ctx context.Context, objects archive.Store, signer store.AcceptanceSigner) (ArchiveVerification, error) {
+func VerifyArchive(ctx context.Context, objects archive.Reader, signer store.AcceptanceSigner) (ArchiveVerification, error) {
 	report := ArchiveVerification{SignaturesVerified: signer != nil}
 	keys, err := objects.List(ctx, "evidence/")
 	if err != nil {

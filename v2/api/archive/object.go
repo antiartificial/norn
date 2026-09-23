@@ -42,9 +42,10 @@ type ObjectStoreConfig struct {
 // creation, since it could silently replace published evidence. The adapter
 // never deletes or overwrites objects.
 type ObjectStore struct {
-	client *minio.Client
-	bucket string
-	prefix string
+	client   *minio.Client
+	bucket   string
+	prefix   string
+	readOnly bool
 }
 
 const (
@@ -55,6 +56,16 @@ const (
 // OpenObjectStore connects, requires the bucket, and proves the store
 // enforces conditional creation.
 func OpenObjectStore(ctx context.Context, config ObjectStoreConfig) (*ObjectStore, error) {
+	return openObjectStore(ctx, config, true)
+}
+
+// OpenObjectReader checks bucket access without publishing a probe object.
+// It is for offline verification and reindexing with Get/List-only credentials.
+func OpenObjectReader(ctx context.Context, config ObjectStoreConfig) (*ObjectStore, error) {
+	return openObjectStore(ctx, config, false)
+}
+
+func openObjectStore(ctx context.Context, config ObjectStoreConfig, probeWrite bool) (*ObjectStore, error) {
 	if config.Endpoint == "" || config.Bucket == "" || config.Region == "" || config.AccessKey == "" || config.SecretKey == "" {
 		return nil, fmt.Errorf("object archive needs an endpoint, bucket, region and dedicated credentials")
 	}
@@ -75,7 +86,7 @@ func OpenObjectStore(ctx context.Context, config ObjectStoreConfig) (*ObjectStor
 	if err != nil {
 		return nil, fmt.Errorf("object archive client: %w", err)
 	}
-	store := &ObjectStore{client: client, bucket: config.Bucket, prefix: prefix}
+	store := &ObjectStore{client: client, bucket: config.Bucket, prefix: prefix, readOnly: !probeWrite}
 	exists, err := client.BucketExists(ctx, config.Bucket)
 	if err != nil {
 		return nil, fmt.Errorf("object archive bucket check: %w", err)
@@ -83,8 +94,10 @@ func OpenObjectStore(ctx context.Context, config ObjectStoreConfig) (*ObjectStor
 	if !exists {
 		return nil, fmt.Errorf("object archive bucket %s does not exist; it is provisioned outside Norn", config.Bucket)
 	}
-	if err := store.probeConditionalCreate(ctx); err != nil {
-		return nil, err
+	if probeWrite {
+		if err := store.probeConditionalCreate(ctx); err != nil {
+			return nil, err
+		}
 	}
 	return store, nil
 }
@@ -139,6 +152,9 @@ func translateObjectError(err error) error {
 }
 
 func (s *ObjectStore) PutImmutable(ctx context.Context, key string, data []byte) (ObjectInfo, error) {
+	if s.readOnly {
+		return ObjectInfo{}, fmt.Errorf("archive was opened read-only")
+	}
 	if !ValidKey(key) {
 		return ObjectInfo{}, fmt.Errorf("invalid archive key")
 	}

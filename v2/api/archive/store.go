@@ -17,19 +17,25 @@ type ObjectInfo struct {
 	Size   int64  `json:"size"`
 }
 
-// Store is the immutable archive contract shared by the local filesystem
-// adapter (LocalStore) and future object-storage adapters.
-type Store interface {
-	// PutImmutable publishes data under key without ever replacing it. An
-	// existing object with identical content is a successful duplicate; any
-	// other existing content is ErrImmutableConflict.
-	PutImmutable(ctx context.Context, key string, data []byte) (ObjectInfo, error)
+// Reader is the capability needed for offline verification and index recovery.
+// Opening a Reader must not publish a probe object or require write permission.
+type Reader interface {
 	// Get returns an object's bytes, refusing objects larger than maxBytes.
 	Get(ctx context.Context, key string, maxBytes int64) ([]byte, ObjectInfo, error)
 	// Verify proves the stored object has exactly the recorded identity.
 	Verify(ctx context.Context, expected ObjectInfo) error
 	// List returns keys under a prefix, sorted.
 	List(ctx context.Context, prefix string) ([]string, error)
+}
+
+// Store adds immutable publication to Reader. Writer opening qualifies the
+// backend's conditional-create guarantee before any evidence is pruned.
+type Store interface {
+	Reader
+	// PutImmutable publishes data under key without ever replacing it. An
+	// existing object with identical content is a successful duplicate; any
+	// other existing content is ErrImmutableConflict.
+	PutImmutable(ctx context.Context, key string, data []byte) (ObjectInfo, error)
 }
 
 // CapacityReporter is implemented by stores with a known capacity bound

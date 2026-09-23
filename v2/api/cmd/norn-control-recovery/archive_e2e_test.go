@@ -189,11 +189,21 @@ func TestArchiveVerifyOpensTheObjectProfile(t *testing.T) {
 		"--archive-access-key-file", writeFile(t, filepath.Join(directory, "access"), []byte("archive-reader"), 0o600),
 		"--archive-secret-key-file", writeFile(t, filepath.Join(directory, "secret"), []byte("secret"), 0o600),
 		"--archive-ca-file", writeFile(t, filepath.Join(directory, "ca.pem"), pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: objectServer.Certificate().Raw}), 0o600)}
+	var putsBefore int
+	emulator.Configure(func(e *s3emulator.Emulator) {
+		putsBefore = e.Requests["PUT"]
+		e.FailWrites = true
+	})
 	result := runCLI(t, flags...)
 	var report retention.ArchiveVerification
 	if result.err != nil || json.Unmarshal(result.stdout, &report) != nil || report.Verified != 1 {
 		t.Fatalf("object verify = %s %s %v", result.stdout, result.stderr, result.err)
 	}
+	emulator.Configure(func(e *s3emulator.Emulator) {
+		if e.Requests["PUT"] != putsBefore {
+			t.Fatalf("read-only verify issued %d PUTs", e.Requests["PUT"]-putsBefore)
+		}
+	})
 	emulator.Configure(func(e *s3emulator.Emulator) { e.CorruptReads = true })
 	if result = runCLI(t, flags...); result.err == nil {
 		t.Fatalf("corrupted object reads verified: %s", result.stdout)

@@ -42,12 +42,28 @@ func (nopCloser) Close() error { return nil }
 // OpenStore opens the configured backend. The returned closer releases
 // local resources.
 func OpenStore(ctx context.Context, settings Settings) (Store, io.Closer, error) {
+	return openConfiguredStore(ctx, settings, true)
+}
+
+// OpenReader opens an existing archive for verification or index recovery.
+// It performs no writes, including conditional-create capability probes.
+func OpenReader(ctx context.Context, settings Settings) (Reader, io.Closer, error) {
+	return openConfiguredStore(ctx, settings, false)
+}
+
+func openConfiguredStore(ctx context.Context, settings Settings, writer bool) (Store, io.Closer, error) {
 	switch settings.Backend {
 	case "local":
 		if settings.Endpoint != "" || settings.Bucket != "" {
 			return nil, nil, fmt.Errorf("the local archive backend does not take object storage settings")
 		}
-		store, err := OpenLocal(settings.Dir, settings.MaxBytes)
+		var store *LocalStore
+		var err error
+		if writer {
+			store, err = OpenLocal(settings.Dir, settings.MaxBytes)
+		} else {
+			store, err = OpenLocalReader(settings.Dir)
+		}
 		if err != nil {
 			return nil, nil, err
 		}
@@ -81,8 +97,14 @@ func OpenStore(ctx context.Context, settings Settings) (Store, io.Closer, error)
 			base.TLSClientConfig = &tls.Config{RootCAs: pool, MinVersion: tls.VersionTLS12}
 			transport = base
 		}
-		store, err := OpenObjectStore(ctx, ObjectStoreConfig{Endpoint: settings.Endpoint, Bucket: settings.Bucket, Prefix: settings.Prefix, Region: settings.Region,
-			AccessKey: accessKey, SecretKey: secretKey, Transport: transport})
+		config := ObjectStoreConfig{Endpoint: settings.Endpoint, Bucket: settings.Bucket, Prefix: settings.Prefix, Region: settings.Region,
+			AccessKey: accessKey, SecretKey: secretKey, Transport: transport}
+		var store *ObjectStore
+		if writer {
+			store, err = OpenObjectStore(ctx, config)
+		} else {
+			store, err = OpenObjectReader(ctx, config)
+		}
 		if err != nil {
 			return nil, nil, err
 		}

@@ -63,14 +63,39 @@ func OpenLocal(root string, maxBytes int64) (*LocalStore, error) {
 	return &LocalStore{root: confined, maxBytes: maxBytes, lock: lock}, nil
 }
 
+// OpenLocalReader opens an existing private archive without creating its root
+// or lock file. The returned value is used only through Reader.
+func OpenLocalReader(root string) (*LocalStore, error) {
+	if !filepath.IsAbs(root) {
+		return nil, fmt.Errorf("archive root must be absolute")
+	}
+	info, err := os.Lstat(root)
+	if err != nil || !info.IsDir() || info.Mode().Perm()&0o077 != 0 {
+		return nil, fmt.Errorf("archive root must be an existing owner-only directory")
+	}
+	if stat, ok := info.Sys().(*syscall.Stat_t); ok && int(stat.Uid) != os.Geteuid() {
+		return nil, fmt.Errorf("archive root must be owned by the archive process")
+	}
+	confined, err := os.OpenRoot(root)
+	if err != nil {
+		return nil, err
+	}
+	return &LocalStore{root: confined}, nil
+}
+
 // Close releases the root.
 func (s *LocalStore) Close() error {
-	_ = s.lock.Close()
+	if s.lock != nil {
+		_ = s.lock.Close()
+	}
 	return s.root.Close()
 }
 
 // exclusive holds the in-process mutex and the cross-process flock.
 func (s *LocalStore) exclusive() (func(), error) {
+	if s.lock == nil {
+		return nil, fmt.Errorf("archive was opened read-only")
+	}
 	s.mu.Lock()
 	if err := syscall.Flock(int(s.lock.Fd()), syscall.LOCK_EX); err != nil {
 		s.mu.Unlock()
