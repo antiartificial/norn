@@ -196,7 +196,7 @@ func (h *Handler) ExecSessionStream(w http.ResponseWriter, r *http.Request) {
 	}
 	defer conn.Close()
 	conn.SetReadLimit(64 << 10)
-	if err := h.db.ConnectExecSession(r.Context(), session.ID); err != nil {
+	if err := h.db.ConnectExecSession(r.Context(), session.ID, store.LocalExecOwnerID()); err != nil {
 		_ = conn.SetWriteDeadline(time.Now().Add(10 * time.Second))
 		_ = conn.WriteJSON(map[string]interface{}{
 			"frame": "error", "sequence": 1, "timestamp": time.Now().UTC().Format(time.RFC3339Nano),

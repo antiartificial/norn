@@ -183,15 +183,44 @@ func RunExecSessionStoreConformance(t *testing.T, newStore func(t *testing.T) st
 		if err := s.CreateExecSession(ctx, session); err != nil {
 			t.Fatal(err)
 		}
-		if err := s.ConnectExecSession(ctx, session.ID); err != nil {
+		if err := s.ConnectExecSession(ctx, session.ID, "owner-A"); err != nil {
 			t.Fatalf("connect for a live device failed: %v", err)
 		}
 		if got, _ := s.GetExecSession(ctx, session.ID); got.Status != "running" {
 			t.Fatalf("status after connect = %q, want running", got.Status)
 		}
 		// A second connect on a non-pending session is rejected.
-		if err := s.ConnectExecSession(ctx, session.ID); err == nil {
+		if err := s.ConnectExecSession(ctx, session.ID, "owner-A"); err == nil {
 			t.Fatal("connecting an already-running session should error")
+		}
+	})
+
+	t.Run("RecoverFailsOwnedAndOrphansNotOthers", func(t *testing.T) {
+		s := newStore(t)
+		connect := func(owner string) string {
+			dev, app, jti := uuid.NewString(), "web", uuid.NewString()
+			registerDevice(t, dev)
+			ch := mkVerifiedChallenge(t, s, dev, app, jti)
+			session := newSession(dev, app, jti, ch)
+			if err := s.CreateExecSession(ctx, session); err != nil {
+				t.Fatal(err)
+			}
+			if err := s.ConnectExecSession(ctx, session.ID, owner); err != nil {
+				t.Fatal(err)
+			}
+			return session.ID
+		}
+		mine := connect("owner-A")
+		other := connect("owner-B")
+		// This instance (owner-A) recovers after a restart.
+		if err := s.RecoverExecSessions(ctx, "owner-A"); err != nil {
+			t.Fatal(err)
+		}
+		if got, _ := s.GetExecSession(ctx, mine); got.Status != "failed" || got.ErrorCode != "server_restarted" {
+			t.Fatalf("own orphaned session not recovered: status=%q code=%q", got.Status, got.ErrorCode)
+		}
+		if got, _ := s.GetExecSession(ctx, other); got.Status != "running" {
+			t.Fatalf("another live instance's session was invalidated: status=%q", got.Status)
 		}
 	})
 }

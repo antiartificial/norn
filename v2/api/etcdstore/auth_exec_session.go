@@ -272,7 +272,7 @@ func (s *AuthStore) ExpireExecSessions(ctx context.Context) error {
 	return nil
 }
 
-func (s *AuthStore) ConnectExecSession(ctx context.Context, id string) error {
+func (s *AuthStore) ConnectExecSession(ctx context.Context, id, ownerID string) error {
 	for attempt := 0; attempt < 32; attempt++ {
 		sess, rev, err := s.loadSession(ctx, id)
 		if err != nil {
@@ -294,6 +294,7 @@ func (s *AuthStore) ConnectExecSession(ctx context.Context, id string) error {
 		now := time.Now()
 		sess.Status = "running"
 		sess.ConnectedAt = &now
+		sess.OwnerID = ownerID
 		sess.Command = []string{}
 		op, err := s.sessionOp(sess)
 		if err != nil {
@@ -310,6 +311,38 @@ func (s *AuthStore) ConnectExecSession(ctx context.Context, id string) error {
 		}
 	}
 	return fmt.Errorf("connect session %s: exhausted retries under contention", id)
+}
+
+// RecoverExecSessions fails the running sessions a dead instance owned (ownerID),
+// owner-less legacy sessions, and any past their deadline, leaving another live
+// instance's healthy sessions untouched. Mirrors the PostgreSQL adapter.
+func (s *AuthStore) RecoverExecSessions(ctx context.Context, ownerID string) error {
+	sessions, err := s.scanSessions(ctx)
+	if err != nil {
+		return err
+	}
+	now := time.Now()
+	for _, sr := range sessions {
+		if sr.s.Status != "running" {
+			continue
+		}
+		if sr.s.OwnerID != ownerID && sr.s.OwnerID != "" && sr.s.ExpiresAt.After(now) {
+			continue
+		}
+		sr.s.Status = "failed"
+		sr.s.FinishedAt = &now
+		sr.s.ErrorCode = "server_restarted"
+		op, err := s.sessionOp(sr.s)
+		if err != nil {
+			return err
+		}
+		// CAS so a concurrent finish/cancel is not clobbered; a lost race means
+		// the session already moved off running, which is fine.
+		_, _ = s.kv.Txn(ctx).
+			If(clientv3.Compare(clientv3.ModRevision(s.sessionKey(sr.s.ID)), "=", sr.rev)).
+			Then(op).Commit()
+	}
+	return nil
 }
 
 func (s *AuthStore) FinishExecSession(ctx context.Context, id, status string, exitCode *int, errorCode string) error {

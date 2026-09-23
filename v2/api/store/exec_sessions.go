@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"os"
 	"time"
 
 	"github.com/jackc/pgx/v5"
@@ -48,6 +49,10 @@ type ExecSession struct {
 	ErrorCode     string     `json:"errorCode,omitempty"`
 	RemoteAddr    string     `json:"remoteAddress,omitempty"`
 	UserAgent     string     `json:"userAgent,omitempty"`
+	// OwnerID identifies the API instance that connected (owns) a running
+	// session — its host identity. Recovery uses it to fail only the sessions a
+	// dead instance owned, never another live instance's healthy sessions.
+	OwnerID string `json:"ownerId,omitempty"`
 }
 
 func (db *DB) ActiveAccessDevice(ctx context.Context, id string) (*AccessDevice, error) {
@@ -173,7 +178,7 @@ func (db *DB) CreateExecSession(ctx context.Context, session *ExecSession) error
 }
 
 const execSessionColumns = `id,device_id,token_jti,challenge_id,app_id,allocation_id,task,command,command_digest,terminal,
-	columns,rows,status,created_at,expires_at,connected_at,finished_at,exit_code,error_code,remote_addr,user_agent`
+	columns,rows,status,created_at,expires_at,connected_at,finished_at,exit_code,error_code,remote_addr,user_agent,owner_id`
 
 func scanExecSession(row pgx.Row) (*ExecSession, error) {
 	var session ExecSession
@@ -182,7 +187,7 @@ func scanExecSession(row pgx.Row) (*ExecSession, error) {
 		&session.AppID, &session.AllocationID, &session.Task, &command, &session.CommandDigest, &session.Terminal,
 		&session.Columns, &session.Rows, &session.Status, &session.CreatedAt, &session.ExpiresAt,
 		&session.ConnectedAt, &session.FinishedAt, &session.ExitCode, &session.ErrorCode,
-		&session.RemoteAddr, &session.UserAgent)
+		&session.RemoteAddr, &session.UserAgent, &session.OwnerID)
 	if err != nil {
 		return nil, err
 	}
@@ -203,12 +208,12 @@ func (db *DB) ExpireExecSessions(ctx context.Context) error {
 	return err
 }
 
-func (db *DB) ConnectExecSession(ctx context.Context, id string) error {
+func (db *DB) ConnectExecSession(ctx context.Context, id, ownerID string) error {
 	result, err := db.Pool.Exec(ctx, `
-		UPDATE exec_sessions SET status='running',connected_at=now(),command='[]'
+		UPDATE exec_sessions SET status='running',connected_at=now(),command='[]',owner_id=$2
 		WHERE id=$1 AND status='pending' AND expires_at>now()
 		  AND EXISTS (SELECT 1 FROM access_devices WHERE id=exec_sessions.device_id AND revoked_at IS NULL)
-	`, id)
+	`, id, ownerID)
 	if err != nil {
 		return err
 	}
@@ -216,6 +221,31 @@ func (db *DB) ConnectExecSession(ctx context.Context, id string) error {
 		return pgx.ErrNoRows
 	}
 	return nil
+}
+
+// RecoverExecSessions fails the running exec sessions a dead instance left
+// behind: those this instance (ownerID) previously owned, any legacy sessions
+// with no owner recorded, and any whose deadline has already passed. A running
+// session owned by another live instance — not past its deadline — is left
+// untouched, so a starting candidate never invalidates healthy sessions. This
+// replaces the blanket startup sweep that failed every running session.
+func (db *DB) RecoverExecSessions(ctx context.Context, ownerID string) error {
+	_, err := db.Pool.Exec(ctx, `
+		UPDATE exec_sessions SET status='failed',finished_at=now(),error_code='server_restarted'
+		WHERE status='running' AND (owner_id=$1 OR owner_id='' OR expires_at<=now())
+	`, ownerID)
+	return err
+}
+
+// LocalExecOwnerID is the stable per-host identity used to own and recover exec
+// sessions. It is deliberately host-scoped (not per-process) so a restart
+// reclaims its own prior sessions.
+func LocalExecOwnerID() string {
+	host, _ := os.Hostname()
+	if host == "" {
+		host = "unknown-host"
+	}
+	return host
 }
 
 func cancelActiveExecSessionsTx(ctx context.Context, tx pgx.Tx, column, value, errorCode string) ([]string, error) {

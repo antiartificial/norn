@@ -416,13 +416,16 @@ func Migrate(db *DB) error {
 			exit_code     INT,
 			error_code    TEXT NOT NULL DEFAULT '',
 			remote_addr   TEXT NOT NULL DEFAULT '',
-			user_agent    TEXT NOT NULL DEFAULT ''
+			user_agent    TEXT NOT NULL DEFAULT '',
+			owner_id      TEXT NOT NULL DEFAULT ''
 		);
 		ALTER TABLE exec_sessions ADD COLUMN IF NOT EXISTS command_digest TEXT NOT NULL DEFAULT '';
+		ALTER TABLE exec_sessions ADD COLUMN IF NOT EXISTS owner_id TEXT NOT NULL DEFAULT '';
 		CREATE INDEX IF NOT EXISTS idx_exec_sessions_device ON exec_sessions(device_id, created_at DESC);
 		CREATE INDEX IF NOT EXISTS idx_exec_sessions_status ON exec_sessions(status, expires_at);
-		UPDATE exec_sessions SET status='failed',finished_at=now(),error_code='server_restarted'
-		WHERE status='running';
+		-- Orphaned running sessions are recovered explicitly and owner-aware at
+		-- startup (RecoverExecSessions), not blanket-failed here: a starting
+		-- candidate must not invalidate another live instance's healthy sessions.
 
 		CREATE TABLE IF NOT EXISTS mutation_audit_events (
 			id                TEXT PRIMARY KEY,

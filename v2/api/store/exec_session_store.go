@@ -27,9 +27,13 @@ type ExecSessionStore interface {
 	CreateExecSession(ctx context.Context, session *ExecSession) error
 	GetExecSession(ctx context.Context, id string) (*ExecSession, error)
 	ExpireExecSessions(ctx context.Context) error
-	// ConnectExecSession transitions a pending session to running, refusing a
-	// revoked device.
-	ConnectExecSession(ctx context.Context, id string) error
+	// ConnectExecSession transitions a pending session to running, stamping the
+	// owning instance (ownerID), and refusing a revoked device.
+	ConnectExecSession(ctx context.Context, id, ownerID string) error
+	// RecoverExecSessions fails the running sessions a dead instance owned
+	// (ownerID), any owner-less legacy sessions, and any past their deadline,
+	// without touching another live instance's healthy sessions.
+	RecoverExecSessions(ctx context.Context, ownerID string) error
 	FinishExecSession(ctx context.Context, id, status string, exitCode *int, errorCode string) error
 	ListExecSessions(ctx context.Context, deviceID string, all bool) ([]ExecSession, error)
 

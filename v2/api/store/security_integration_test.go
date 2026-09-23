@@ -85,7 +85,7 @@ func TestExecAuthorizationLifecycle(t *testing.T) {
 	if err := db.CreateExecSession(ctx, &baseSession); err != nil {
 		t.Fatal(err)
 	}
-	if err := db.ConnectExecSession(ctx, sessionID); err != nil {
+	if err := db.ConnectExecSession(ctx, sessionID, "test-owner"); err != nil {
 		t.Fatal(err)
 	}
 	connected, err := db.GetExecSession(ctx, sessionID)
@@ -136,7 +136,7 @@ func TestExecAuthorizationLifecycle(t *testing.T) {
 	if err := db.CreateExecSession(ctx, &rotateSession); err != nil {
 		t.Fatal(err)
 	}
-	if err := db.ConnectExecSession(ctx, rotateSessionID); err != nil {
+	if err := db.ConnectExecSession(ctx, rotateSessionID, "test-owner"); err != nil {
 		t.Fatal(err)
 	}
 	replacement := &AccessToken{

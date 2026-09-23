@@ -101,6 +101,12 @@ func main() {
 	} else if err := db.RecoverInFlightOperations(context.Background()); err != nil {
 		log.Printf("WARNING: operation recovery: %v", err)
 	}
+	// Owner-aware exec-session recovery: fail only the running sessions this host
+	// previously owned (its process died) plus any expired ones, so a starting
+	// candidate never invalidates another live instance's healthy sessions.
+	if err := db.RecoverExecSessions(context.Background(), store.LocalExecOwnerID()); err != nil {
+		log.Printf("WARNING: exec session recovery: %v", err)
+	}
 
 	// Nomad
 	nomadClient, err := nomad.NewClient(cfg.NomadAddr)
