@@ -7,7 +7,18 @@ import (
 	"time"
 
 	"norn/v2/api/hub"
+	"norn/v2/api/memstore"
 )
+
+// TestEventStoreConformance_Memory runs the same event-store conformance suite
+// against the in-memory adapter. It needs no database, so it proves in ordinary
+// CI that the contract is backend-neutral rather than PostgreSQL-specific — the
+// second-backend acceptance mechanism the etcd adapter will reuse.
+func TestEventStoreConformance_Memory(t *testing.T) {
+	runEventStoreConformance(t, func(t *testing.T) hub.EventStore {
+		return memstore.NewEventStore()
+	})
+}
 
 // TestEventStoreConformance_Postgres runs the shared event-store conformance
 // suite against the PostgreSQL adapter. Opt-in via NORN_TEST_DATABASE_URL. A
