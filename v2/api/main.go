@@ -29,6 +29,7 @@ import (
 	"norn/v2/api/config"
 	"norn/v2/api/consul"
 	"norn/v2/api/contract"
+	"norn/v2/api/controlstore"
 	"norn/v2/api/handler"
 	"norn/v2/api/hub"
 	"norn/v2/api/nomad"
@@ -74,6 +75,20 @@ func main() {
 
 	if err := store.Migrate(db); err != nil {
 		log.Fatalf("migration: %v", err)
+	}
+
+	// Select the backend for the core control boundaries. Defaults to the
+	// PostgreSQL *store.DB (unchanged behavior); NORN_CONTROL_BACKEND=etcd points
+	// them at etcd. The etcd backend is control-boundary-only and experimental
+	// until the remaining store concerns are abstracted.
+	controlCfg := controlstore.ConfigFromEnv()
+	controlStore, controlCloser, err := controlstore.New(db, controlCfg)
+	if err != nil {
+		log.Fatalf("control store: %v", err)
+	}
+	defer controlCloser.Close()
+	if controlCfg.Backend != controlstore.BackendPostgres {
+		log.Printf("WARNING: control backend %q is experimental; other subsystems still require PostgreSQL", controlCfg.Backend)
 	}
 
 	if os.Getenv("NORN_SKIP_DEPLOYMENT_RECOVERY") == "true" {
@@ -217,7 +232,7 @@ func main() {
 	if os.Getenv("NORN_SKIP_OPERATION_WORKER") == "true" {
 		log.Println("operation worker skipped")
 	} else {
-		opWorker := worker.NewOperationWorker(db, pipe)
+		opWorker := worker.NewOperationWorker(controlStore, pipe)
 		go opWorker.Run(workerCtx)
 	}
 	if os.Getenv("NORN_SKIP_NOMAD_WATCHER") == "true" {
