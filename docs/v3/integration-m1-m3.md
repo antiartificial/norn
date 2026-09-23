@@ -4,6 +4,10 @@ Integration base: `feature/norn-v3-planning-handoff` at `ab22961`.
 Source of selected adapters and conformance tests: `feature/durable-app-recovery-ui` at `2102c24`.
 This ledger tracks code integration separately from milestone qualification. It does not authorize a live Mini change or a provider apply.
 
+## Initial read-only baseline (2026-09-23)
+
+The Mini inventory API reported version `v2.20.0-platform-30-ga5da8ef`, 27 app records, no active operations, 13 active incidents, host status `ok`, and no configured Fleet/node pools. This is a point-in-time API inventory, not a database-size measurement, private restore fixture, or upgrade rehearsal. The M0 baseline still needs exact installed binary/source/schema provenance, app/job/route ownership, database growth and connection measurements, and a sanitized fixture. No Mini runtime mutation was made.
+
 ## Canonical contract decisions
 
 | Domain | Canonical contract | Durable work to adapt | Unsafe shortcut to reject |
