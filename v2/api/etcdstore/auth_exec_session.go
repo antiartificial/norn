@@ -182,71 +182,111 @@ func (s *AuthStore) loadSession(ctx context.Context, id string) (*store.ExecSess
 }
 
 func (s *AuthStore) CreateExecSession(ctx context.Context, session *store.ExecSession) error {
-	now := time.Now()
-	// Expire the device's stale pending sessions and count active/recent ones,
-	// mirroring the PostgreSQL adapter's pre-insert bookkeeping.
-	_ = s.ExpireExecSessions(ctx)
-	sessions, err := s.scanSessions(ctx)
-	if err != nil {
-		return err
-	}
-	active, recent := 0, 0
-	for _, sr := range sessions {
-		if sr.s.DeviceID != session.DeviceID {
-			continue
-		}
-		if sr.s.Status == "pending" || sr.s.Status == "running" {
-			active++
-		}
-		if sr.s.CreatedAt.After(now.Add(-time.Hour)) {
-			recent++
-		}
-	}
-	if active >= 3 {
-		return store.ErrTooManyActiveExecSessions
-	}
-	if recent >= 30 {
-		return store.ErrRateLimited
-	}
-	// Consume the matching verified challenge and insert the session atomically.
-	ch, chRev, err := s.loadChallenge(ctx, session.ChallengeID)
-	if err != nil {
-		if errors.Is(err, ErrNotFound) {
-			return ErrNotFound
-		}
-		return err
-	}
-	if ch.DeviceID != session.DeviceID || ch.Purpose != "exec" || ch.Resource != session.AppID ||
-		ch.TokenJTI != session.TokenJTI || ch.Status != "verified" || !ch.ExpiresAt.After(now) {
-		return ErrNotFound
-	}
-	ch.Status = "consumed"
-	ch.ConsumedAt = &now
 	if session.Status == "" {
 		session.Status = "pending"
 	}
-	chOp, err := opPut(s.challengeKey(ch.ID), storedChallenge{StepUpChallenge: *ch, NonceHashStored: ch.NonceHash})
-	if err != nil {
-		return err
-	}
-	sessOp, err := s.sessionOp(session)
-	if err != nil {
-		return err
-	}
-	resp, err := s.kv.Txn(ctx).
-		If(
+	for attempt := 0; attempt < 32; attempt++ {
+		now := time.Now()
+		// Expire stale sessions before counting. The admission gate below makes
+		// competing creators serialize, while the per-session compares keep an
+		// observed finish or cancellation from being counted stale.
+		_ = s.ExpireExecSessions(ctx)
+		sessions, err := s.scanSessions(ctx)
+		if err != nil {
+			return err
+		}
+		active, recent := 0, 0
+		cmps := make([]clientv3.Cmp, 0, len(sessions)+5)
+		for _, sr := range sessions {
+			if sr.s.DeviceID != session.DeviceID {
+				continue
+			}
+			cmps = append(cmps, clientv3.Compare(clientv3.ModRevision(s.sessionKey(sr.s.ID)), "=", sr.rev))
+			if sr.s.Status == "pending" || sr.s.Status == "running" {
+				active++
+			}
+			if sr.s.CreatedAt.After(now.Add(-time.Hour)) {
+				recent++
+			}
+		}
+		if active >= 3 {
+			return store.ErrTooManyActiveExecSessions
+		}
+		if recent >= 30 {
+			return store.ErrRateLimited
+		}
+
+		// The device and token revisions are part of the same transaction as
+		// session creation. A revoke that wins after these reads makes the CAS
+		// fail, after which the next iteration rejects the revoked credential.
+		dev, devRev, err := s.loadDevice(ctx, session.DeviceID)
+		if errors.Is(err, ErrNotFound) {
+			return ErrNotFound
+		}
+		if err != nil {
+			return err
+		}
+		token, tokenRev, err := s.loadToken(ctx, session.TokenJTI)
+		if errors.Is(err, ErrNotFound) {
+			return ErrNotFound
+		}
+		if err != nil {
+			return err
+		}
+		if dev.RevokedAt != nil || token.RevokedAt != nil || !token.ExpiresAt.After(now) || token.DeviceID != session.DeviceID {
+			return ErrNotFound
+		}
+
+		ch, chRev, err := s.loadChallenge(ctx, session.ChallengeID)
+		if errors.Is(err, ErrNotFound) {
+			return ErrNotFound
+		}
+		if err != nil {
+			return err
+		}
+		if ch.DeviceID != session.DeviceID || ch.Purpose != "exec" || ch.Resource != session.AppID ||
+			ch.TokenJTI != session.TokenJTI || ch.Status != "verified" || !ch.ExpiresAt.After(now) {
+			return ErrNotFound
+		}
+		ch.Status = "consumed"
+		ch.ConsumedAt = &now
+		chOp, err := opPut(s.challengeKey(ch.ID), storedChallenge{StepUpChallenge: *ch, NonceHashStored: ch.NonceHash})
+		if err != nil {
+			return err
+		}
+		sessOp, err := s.sessionOp(session)
+		if err != nil {
+			return err
+		}
+
+		gate := s.sessionGateKey(session.DeviceID)
+		gateResp, err := s.kv.Get(ctx, gate)
+		if err != nil {
+			return err
+		}
+		if len(gateResp.Kvs) == 0 {
+			cmps = append(cmps, clientv3.Compare(clientv3.CreateRevision(gate), "=", 0))
+		} else {
+			cmps = append(cmps, clientv3.Compare(clientv3.ModRevision(gate), "=", gateResp.Kvs[0].ModRevision))
+		}
+		cmps = append(cmps,
+			clientv3.Compare(clientv3.ModRevision(s.deviceKey(dev.ID)), "=", devRev),
+			clientv3.Compare(clientv3.ModRevision(s.tokenKey(token.JTI)), "=", tokenRev),
 			clientv3.Compare(clientv3.ModRevision(s.challengeKey(ch.ID)), "=", chRev),
 			clientv3.Compare(clientv3.CreateRevision(s.sessionKey(session.ID)), "=", 0),
-		).
-		Then(chOp, sessOp).Commit()
-	if err != nil {
-		return err
+		)
+		if s.test.beforeCreateCommit != nil {
+			s.test.beforeCreateCommit()
+		}
+		resp, err := s.kv.Txn(ctx).If(cmps...).Then(chOp, sessOp, clientv3.OpPut(gate, now.UTC().Format(time.RFC3339Nano))).Commit()
+		if err != nil {
+			return err
+		}
+		if resp.Succeeded {
+			return nil
+		}
 	}
-	if !resp.Succeeded {
-		// The challenge was consumed or the session id already exists.
-		return ErrNotFound
-	}
-	return nil
+	return fmt.Errorf("create exec session %s: exhausted retries under contention", session.ID)
 }
 
 func (s *AuthStore) GetExecSession(ctx context.Context, id string) (*store.ExecSession, error) {

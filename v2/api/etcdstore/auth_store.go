@@ -29,7 +29,10 @@ import (
 type AuthStore struct {
 	kv     clientv3.KV
 	prefix string
-	test   struct{ beforeConnectCommit func() }
+	test   struct {
+		beforeConnectCommit func()
+		beforeCreateCommit  func()
+	}
 }
 
 // NewAuthStore returns an etcd auth store rooted at prefix.
@@ -54,6 +57,13 @@ func (s *AuthStore) challengeKey(id string) string { return s.prefix + "/auth/ch
 func (s *AuthStore) challengePrefix() string       { return s.prefix + "/auth/challenge/" }
 func (s *AuthStore) sessionKey(id string) string   { return s.prefix + "/auth/session/" + id }
 func (s *AuthStore) sessionPrefix() string         { return s.prefix + "/auth/session/" }
+
+// sessionGateKey serializes per-device admission. It is deliberately separate
+// from individual session records: a create that only compares the sessions it
+// read can otherwise race another new session that it did not observe.
+func (s *AuthStore) sessionGateKey(deviceID string) string {
+	return s.prefix + "/auth/session-gate/" + deviceID
+}
 
 // --- stored wrappers: persist json:"-" fields the model hides ---
 
