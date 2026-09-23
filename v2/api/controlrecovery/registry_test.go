@@ -2,10 +2,10 @@ package controlrecovery
 
 import "testing"
 
-func TestInspectionRegistryPinsMigrationTwoSchemaAndSensitiveExclusions(t *testing.T) {
+func TestInspectionRegistryPinsCurrentSchemaAndSensitiveExclusions(t *testing.T) {
 	registry := InspectionRegistry()
-	if len(registry) != 35 {
-		t.Fatalf("registry has %d tables, want 35", len(registry))
+	if len(registry) != 36 {
+		t.Fatalf("registry has %d tables, want 36", len(registry))
 	}
 	if err := validateRegistry(registry); err != nil {
 		t.Fatalf("registry validation: %v", err)

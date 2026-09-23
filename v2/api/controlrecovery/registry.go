@@ -34,9 +34,8 @@ func classified(included []Column, excluded ...string) []Column {
 	return columns
 }
 
-// InspectionRegistry returns a fresh copy of the explicit migration-2 control
-// schema registry. The registry includes schema metadata created by the
-// migration runner as well as every table in migrations 1 and 2.
+// InspectionRegistry returns a fresh copy of the classified control schema.
+// Every new migration must be classified here before inspection can proceed.
 func InspectionRegistry() []Table {
 	tables := []Table{
 		{Name: "norn_schema_migrations", OrderBy: []string{"version"}, Columns: include("version", "name", "checksum", "minimum_reader_version", "minimum_writer_version", "applied_at")},
@@ -80,6 +79,7 @@ func InspectionRegistry() []Table {
 			"object_key", "object_sha256", "object_bytes", "attempts", "last_error", "pruned_events", "created_at", "updated_at", "verified_at", "pruned_at")},
 		{Name: "evidence_reserve", OrderBy: []string{"singleton"}, Columns: include("singleton", "enabled", "max_pending", "max_pending_age_seconds", "archive_exhausted", "archive_detail",
 			"archive_observed_at", "updated_at")},
+		{Name: "control_event_retention", OrderBy: []string{"id"}, Columns: include("id", "pruned_through_cursor", "updated_at")},
 	}
 
 	result := make([]Table, len(tables))
