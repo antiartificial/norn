@@ -168,6 +168,9 @@ jobs:
           set -euo pipefail
           source_sha="$GITHUB_SHA"
           [[ "$source_sha" =~ ^[0-9a-f]{40}$ ]] || { echo "GitHub did not provide a full lowercase commit SHA" >&2; exit 1; }
+          # REQUIRED_CHECKS is supplied through this step's GitHub Actions environment.
+          # The static shell linter cannot infer that assignment from YAML.
+          # shellcheck disable=SC2153
           mapfile -t required_checks < <(sed '/^[[:space:]]*$/d' <<<"$REQUIRED_CHECKS")
           (( ${#required_checks[@]} > 0 )) || { echo "required_checks is empty" >&2; exit 1; }
           declare -A seen_checks=()
@@ -187,6 +190,8 @@ jobs:
           done
           # gh api --paginate --slurp returns one array containing page objects.
           # Keep this selector shared with the fixture regression check below.
+          # The jq variables must remain literal until jq evaluates the filter.
+          # shellcheck disable=SC2016
           check_filter='[.[].check_runs[] | select(.name == $name and (.app.id|tostring) == $appId)]'
           selector_fixture='[{"check_runs":[{"name":"required","app":{"id":12345},"status":"completed","conclusion":"success"}]},{"check_runs":[{"name":"required","app":{"id":67890},"status":"completed","conclusion":"success"}]}]'
           selector_matches="$(jq --arg name required --arg appId 12345 "$check_filter" <<<"$selector_fixture")"
