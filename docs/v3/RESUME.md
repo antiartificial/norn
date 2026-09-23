@@ -1,5 +1,9 @@
 # Norn v3 pause and resume handoff
 
+Current M0–M3 integration status is recorded in the [2026-09-23 checkpoint](m0-m3-checkpoint-2026-09-23.md).
+The pause-state and implementation descriptions below are historical as of
+2026-09-22; use the newer checkpoint and current branch before resuming work.
+
 Paused at the user's request on 2026-09-22 (America/Chicago).
 The full M0–M9 goal is paused, not completed. No full milestone exit gate is
 claimed achieved. Significant M1/M2 implementation checkpoints are verified.
