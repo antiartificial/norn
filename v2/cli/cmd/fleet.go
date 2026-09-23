@@ -18,6 +18,7 @@ var (
 	fleetSize             string
 	fleetStrategy         string
 	fleetReason           string
+	fleetIdempotencyKey   string
 	fleetAllowDestructive bool
 )
 
@@ -31,6 +32,7 @@ func init() {
 		command.Flags().StringVar(&fleetSize, "size", "", "Proposed immutable provider VM size")
 		command.Flags().StringVar(&fleetStrategy, "strategy", "", "Replacement strategy: blueGreen or rolling")
 		command.Flags().StringVar(&fleetReason, "reason", "", "Operator reason recorded with the durable plan")
+		command.Flags().StringVar(&fleetIdempotencyKey, "idempotency-key", "", "Stable retry key (generated and printed when omitted)")
 	}
 	if err := fleetReplaceCmd.MarkFlagRequired("size"); err != nil {
 		panic(err)
@@ -178,7 +180,11 @@ func fleetPlanCommand(use, short, forcedStrategy string) *cobra.Command {
 		if forcedStrategy != "" {
 			strategy = forcedStrategy
 		}
-		op, err := client.PlanFleetCapacity(args[0], desired, fleetSize, strategy, fleetReason)
+		key, err := requestIdempotencyKey(cmd, fleetIdempotencyKey, "norn-fleet-plan")
+		if err != nil {
+			return err
+		}
+		op, err := client.PlanFleetCapacity(args[0], desired, fleetSize, strategy, fleetReason, key)
 		if err != nil {
 			return fmt.Errorf("fleet plan: %w", err)
 		}

@@ -78,7 +78,7 @@ func (h *Handler) Metrics(w http.ResponseWriter, r *http.Request) {
 			}
 			fmt.Fprintf(&b, "norn_object_storage_buckets{app=%q,provider=%q} %d\n", promLabel(spec.App), promLabel(provider), len(spec.Infrastructure.ObjectStorage.Buckets))
 		}
-		if snapshotStatus := summarizeSnapshots(spec); snapshotStatus != nil {
+		if snapshotStatus := h.summarizeSnapshots(r.Context(), spec); snapshotStatus != nil {
 			fmt.Fprintf(&b, "norn_snapshots_total{app=%q,database=%q} %d\n", promLabel(spec.App), promLabel(snapshotStatus.Database), snapshotStatus.Count)
 			fmt.Fprintf(&b, "norn_snapshot_over_limit_total{app=%q,database=%q} %d\n", promLabel(spec.App), promLabel(snapshotStatus.Database), snapshotStatus.OverLimit)
 		}

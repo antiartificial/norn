@@ -203,6 +203,8 @@ func ValidateSpecWithOptions(spec *InfraSpec, opts ValidationOptions) *Validatio
 		}
 	}
 
+	validateDatabaseDeclarations(r, spec)
+
 	// Postgres infra requires database name
 	if spec.Infrastructure != nil && spec.Infrastructure.Postgres != nil {
 		database := spec.Infrastructure.Postgres.Database

@@ -791,14 +791,14 @@ func (h *Handler) buildOperatorSnapshotReadiness(r *http.Request) (operatorSnaps
 	}
 	out := operatorSnapshotReadiness{GeneratedAt: time.Now().UTC().Format(time.RFC3339)}
 	for _, spec := range specs {
-		if spec.Infrastructure == nil || spec.Infrastructure.Postgres == nil {
+		if !spec.DeclaresDatabase() {
 			continue
 		}
-		snaps := listSnapshotsForSpec(spec)
+		snaps := h.snapshotsForSpec(r.Context(), spec)
 		keep := snapshotKeepForSpec(spec, 3)
 		app := operatorSnapshotReadinessApp{
 			App:       spec.App,
-			Database:  spec.Infrastructure.Postgres.Database,
+			Database:  databaseLabel(spec),
 			Status:    "ready",
 			Keep:      keep,
 			Count:     len(snaps),

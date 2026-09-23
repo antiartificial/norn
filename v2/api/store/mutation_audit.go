@@ -154,7 +154,12 @@ func (db *DB) CountStaleMutationAudits(ctx context.Context, before time.Time) (i
 
 func (db *DB) PruneMutationAudits(ctx context.Context, before time.Time) (int64, error) {
 	result, err := db.Pool.Exec(ctx, `
-		DELETE FROM mutation_audit_events WHERE finished_at IS NOT NULL AND finished_at<$1
+		DELETE FROM mutation_audit_events audit
+		WHERE finished_at IS NOT NULL AND finished_at<$1
+		  AND NOT EXISTS (
+			SELECT 1 FROM operation_acceptance_intents intent
+			WHERE intent.request_receipt_id=audit.id
+		  )
 	`, before)
 	if err != nil {
 		return 0, err

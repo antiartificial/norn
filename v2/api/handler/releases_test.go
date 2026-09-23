@@ -156,25 +156,6 @@ func TestReleaseActionsCannotBypassTheProductionPromotionGate(t *testing.T) {
 	}
 }
 
-func TestQualificationDuplicateRecoveryStaysBoundToTheOriginalRequest(t *testing.T) {
-	existing := &model.Operation{
-		Kind: "release.qualification",
-		App:  "demo",
-		Metadata: map[string]interface{}{
-			"requestDigest": "sha256:one",
-		},
-	}
-	if !qualificationReplayMatches(existing, "demo", "sha256:one") {
-		t.Fatal("matching qualification replay was rejected")
-	}
-	if qualificationReplayMatches(existing, "demo", "sha256:two") {
-		t.Fatal("qualification replay accepted a different deployment request")
-	}
-	if qualificationReplayMatches(existing, "another-app", "sha256:one") {
-		t.Fatal("qualification replay crossed the application boundary")
-	}
-}
-
 func TestProductionEnvironmentRequiresSignedPromotionForLegacyDeployPaths(t *testing.T) {
 	production := &Handler{cfg: &config.Config{Environment: "production"}}
 	if !production.productionRequiresSignedPromotion() {

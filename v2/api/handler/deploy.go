@@ -28,6 +28,10 @@ func (h *Handler) Deploy(w http.ResponseWriter, r *http.Request) {
 	if req.Ref == "" {
 		req.Ref = "HEAD"
 	}
+	enqueue, ok := h.pipelineEnqueueRequest(w, r, r.Header.Get("Idempotency-Key"), map[string]interface{}{"ref": req.Ref, "action": "deploy"})
+	if !ok {
+		return
+	}
 
 	specs, err := model.DiscoverApps(h.cfg.AppsDir)
 	if err != nil {
@@ -47,11 +51,16 @@ func (h *Handler) Deploy(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	sagaID := h.pipeline.Run(spec, req.Ref)
+	accepted, err := h.pipeline.Run(r.Context(), spec, req.Ref, enqueue)
+	if err != nil {
+		writeOperationAcceptanceError(w, r, err)
+		return
+	}
 
 	writeJSON(w, map[string]string{
-		"sagaId": sagaID,
-		"status": "queued",
+		"sagaId":      accepted.Operation.SagaID,
+		"operationId": accepted.Operation.ID,
+		"status":      string(accepted.Operation.Status),
 	})
 }
 
@@ -67,6 +76,10 @@ func (h *Handler) Preflight(w http.ResponseWriter, r *http.Request) {
 	}
 	if req.Ref == "" {
 		req.Ref = "HEAD"
+	}
+	enqueue, ok := h.pipelineEnqueueRequest(w, r, r.Header.Get("Idempotency-Key"), map[string]interface{}{"ref": req.Ref, "action": "preflight"})
+	if !ok {
+		return
 	}
 
 	specs, err := model.DiscoverAllApps(h.cfg.AppsDir)
@@ -87,11 +100,16 @@ func (h *Handler) Preflight(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	sagaID := h.pipeline.Preflight(spec, req.Ref)
+	accepted, err := h.pipeline.Preflight(r.Context(), spec, req.Ref, enqueue)
+	if err != nil {
+		writeOperationAcceptanceError(w, r, err)
+		return
+	}
 
 	writeJSON(w, map[string]string{
-		"sagaId": sagaID,
-		"status": "queued",
+		"sagaId":      accepted.Operation.SagaID,
+		"operationId": accepted.Operation.ID,
+		"status":      string(accepted.Operation.Status),
 	})
 }
 

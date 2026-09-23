@@ -58,5 +58,6 @@ func (p *Pipeline) canary(ctx context.Context, st *state, sg *saga.Saga) error {
 	}
 
 	sg.Log(ctx, "canary.promoted", fmt.Sprintf("canary promoted for %s", spec.App), nil)
-	return nil
+	// Canary promotion is the rollout's readiness point for database delivery.
+	return p.promoteDatabases(ctx, st, sg)
 }

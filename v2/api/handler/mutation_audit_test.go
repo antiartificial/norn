@@ -32,6 +32,20 @@ func TestMutationAuditDigestDetectsTampering(t *testing.T) {
 	}
 }
 
+func TestMutationAuditCanonicalBytesRemainLegacyCompatible(t *testing.T) {
+	finished := time.Date(2026, 9, 22, 12, 34, 56, 654321000, time.UTC)
+	event := store.MutationAuditEvent{
+		ID: "audit-1", RequestID: "request-1", PrincipalSubject: "operator", TokenID: "token-1", DeviceID: "device-1", KeyID: "key-1",
+		Scopes: []string{"api:write", "platform:operate"}, Method: http.MethodPost, Path: "/api/v1/platform/upgrades",
+		ClientIP: "127.0.0.1", UserAgent: "norn-test", StartedAt: time.Date(2026, 9, 22, 12, 34, 55, 123456000, time.UTC),
+		FinishedAt: &finished, Status: http.StatusAccepted, Outcome: "succeeded", DurationMs: 1530,
+	}
+	want := `{"Schema":"norn.mutation-audit/v1","ID":"audit-1","RequestID":"request-1","PrincipalSubject":"operator","TokenID":"token-1","DeviceID":"device-1","KeyID":"key-1","Scopes":["api:write","platform:operate"],"Method":"POST","Path":"/api/v1/platform/upgrades","ClientIP":"127.0.0.1","UserAgent":"norn-test","StartedAt":"2026-09-22T12:34:55.123456Z","FinishedAt":"2026-09-22T12:34:56.654321Z","Status":202,"Outcome":"succeeded","DurationMs":1530}`
+	if got := mutationAuditCanonical(event); got != want {
+		t.Fatalf("canonical bytes changed\n got: %s\nwant: %s", got, want)
+	}
+}
+
 func TestMutationAuditSupportsPreviousVerificationKey(t *testing.T) {
 	finished := time.Now().UTC()
 	oldKey := strings.Repeat("o", 32)

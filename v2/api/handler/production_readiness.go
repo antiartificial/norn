@@ -171,11 +171,11 @@ func (h *Handler) buildProductionReadiness(ctx context.Context) ProductionReadin
 					input.SecretProblems++
 				}
 				input.SecretMigrationItems += len(h.secretMigrationItems(spec))
-				if spec.Infrastructure == nil || spec.Infrastructure.Postgres == nil {
+				if !spec.DeclaresDatabase() {
 					continue
 				}
 				input.StatefulApps++
-				snapshots := listSnapshotsForSpec(spec)
+				snapshots := h.snapshotsForSpec(ctx, spec)
 				if len(snapshots) == 0 {
 					input.MissingSnapshots = append(input.MissingSnapshots, spec.App)
 				} else if createdAt, err := time.Parse(time.RFC3339, snapshots[0].CreatedAt); err != nil || time.Since(createdAt) > 7*24*time.Hour {

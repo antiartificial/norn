@@ -1,8 +1,11 @@
 package nomad
 
 import (
+	"encoding/json"
 	"strings"
 	"testing"
+
+	nomadapi "github.com/hashicorp/nomad/api"
 
 	"norn/v2/api/model"
 )
@@ -21,6 +24,39 @@ func TestTranslatePreservesContentAddressedImage(t *testing.T) {
 	}
 	if got := job.TaskGroups[0].Tasks[0].Config["image"]; got != image {
 		t.Fatalf("translated image = %v, want %s", got, image)
+	}
+}
+
+// Service, periodic and batch jobs submit explicit log rotation limits, and
+// the budget fits each group's ephemeral disk as Nomad validates it.
+func TestTranslateSubmitsExplicitTaskLogRotation(t *testing.T) {
+	spec := &model.InfraSpec{App: "orders", Processes: map[string]model.Process{"web": {Port: 8080}, "worker": {Command: "./work"}}}
+	jobs := map[string]*nomadapi.Job{
+		"service":  Translate(spec, "orders:test", nil),
+		"periodic": TranslatePeriodic(spec, "digest", model.Process{Schedule: "0 8 * * *", Command: "./digest"}, "orders:test", nil),
+		"batch":    TranslateBatch(spec, "fn", model.Process{Command: "./fn"}, "orders:test", nil, "orders-fn-1"),
+	}
+	for kind, job := range jobs {
+		encoded, err := json.Marshal(job)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if !strings.Contains(string(encoded), `"LogConfig":{"MaxFiles":5,"MaxFileSizeMB":10`) {
+			t.Fatalf("%s job submits no explicit log rotation: %s", kind, encoded)
+		}
+		job.Canonicalize()
+		for _, group := range job.TaskGroups {
+			budget := 0
+			for _, task := range group.Tasks {
+				if task.LogConfig == nil || *task.LogConfig.MaxFiles != TaskLogMaxFiles || *task.LogConfig.MaxFileSizeMB != TaskLogMaxFileSizeMB || *task.LogConfig.Disabled {
+					t.Fatalf("%s task %s log config = %+v", kind, task.Name, task.LogConfig)
+				}
+				budget += *task.LogConfig.MaxFiles * *task.LogConfig.MaxFileSizeMB
+			}
+			if group.EphemeralDisk == nil || budget >= *group.EphemeralDisk.SizeMB {
+				t.Fatalf("%s group %s log budget %d MB exceeds ephemeral disk %+v", kind, *group.Name, budget, group.EphemeralDisk)
+			}
+		}
 	}
 }
 

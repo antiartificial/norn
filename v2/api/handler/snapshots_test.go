@@ -7,11 +7,13 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"github.com/go-chi/chi/v5"
 
 	"norn/v2/api/config"
+	"norn/v2/api/pipeline"
 )
 
 func TestParseSnapshotEntryHandlesDatabaseUnderscores(t *testing.T) {
@@ -119,6 +121,51 @@ processes:
 
 	if rec.Code != http.StatusBadRequest {
 		t.Fatalf("status = %d, want 400; body=%s", rec.Code, rec.Body.String())
+	}
+}
+
+func TestDirectSnapshotMutationsAreRefusedWhileDatabaseTargetsAreConfigured(t *testing.T) {
+	h := &Handler{cfg: &config.Config{AppsDir: t.TempDir()}, pipeline: &pipeline.Pipeline{DatabaseTargets: &pipeline.DatabaseTargets{ProfileID: "mini-local"}}}
+	for name, call := range map[string]func(http.ResponseWriter, *http.Request){
+		// Import is not listed: with a profile it takes the target-bound
+		// import path (manifest + digest), which mutates no database.
+		"restore": h.RestoreSnapshot, "retention": h.ApplySnapshotRetention,
+	} {
+		req := httptest.NewRequest(http.MethodPost, "/api/apps/contextdb/snapshots/20260605T171500/restore?confirm=true", nil)
+		req = withSnapshotTS(withAppID(req, "contextdb"), "20260605T171500")
+		rec := httptest.NewRecorder()
+		call(rec, req)
+		if rec.Code != http.StatusConflict || !strings.Contains(rec.Body.String(), "database_targets_active") {
+			t.Fatalf("%s status = %d body=%s", name, rec.Code, rec.Body.String())
+		}
+	}
+	// The unconfigured-store import never falls back to the flat v2 import.
+	req := withAppID(httptest.NewRequest(http.MethodPost, "/api/apps/contextdb/snapshots/import", strings.NewReader(`{"key":"snapshots/contextdb/x.dump"}`)), "contextdb")
+	rec := httptest.NewRecorder()
+	h.ImportSnapshot(rec, req)
+	if rec.Code == http.StatusOK || strings.Contains(rec.Body.String(), "imported") {
+		t.Fatalf("import with a profile = %d %s", rec.Code, rec.Body.String())
+	}
+}
+
+// Recording a database baseline is a platform:operate mutation that needs a
+// database profile; api:write alone and a missing profile are refused before
+// anything is accepted.
+func TestDatabaseBaselineRequiresPlatformScopeAndProfile(t *testing.T) {
+	h := &Handler{cfg: &config.Config{AppsDir: t.TempDir()}, pipeline: &pipeline.Pipeline{}}
+	serve := func(scopes []string) *httptest.ResponseRecorder {
+		req := withAppID(httptest.NewRequest(http.MethodPost, "/api/v1/apps/shop/databases/baseline", strings.NewReader(`{"confirm":true}`)), "shop")
+		req.Header.Set("Idempotency-Key", "baseline-1")
+		req = WithAccessPrincipal(req, &AccessPrincipal{Subject: "operator", Source: AccessPrincipalSourceSharedAPI, Scopes: scopes})
+		rec := httptest.NewRecorder()
+		h.RecordDatabaseBaseline(rec, req)
+		return rec
+	}
+	if rec := serve([]string{ScopeAPIRead, ScopeAPIWrite}); rec.Code != http.StatusForbidden {
+		t.Fatalf("api:write baseline = %d %s", rec.Code, rec.Body.String())
+	}
+	if rec := serve([]string{ScopePlatformOperate}); rec.Code != http.StatusConflict || !strings.Contains(rec.Body.String(), "database_profile_not_configured") {
+		t.Fatalf("baseline without a profile = %d %s", rec.Code, rec.Body.String())
 	}
 }
 

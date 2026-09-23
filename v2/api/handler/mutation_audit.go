@@ -92,6 +92,8 @@ func (h *Handler) MutationAuditMiddleware(next http.Handler) http.Handler {
 		}
 
 		recorder := &statusRecorder{ResponseWriter: w, status: http.StatusOK}
+		acceptanceContext := h.buildOperationAcceptanceRequestContext(r.Context(), r, event.ID, event.RequestID)
+		r = withOperationAcceptanceRequestContext(r, acceptanceContext)
 		defer func() {
 			// chi finalizes the matched route pattern while the downstream router
 			// runs. Persist the template rather than resource identifiers from the

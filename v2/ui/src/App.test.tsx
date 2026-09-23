@@ -1,5 +1,5 @@
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
-import { fireEvent, render, screen, waitFor } from '@testing-library/react'
+import { fireEvent, render, screen, waitFor, within } from '@testing-library/react'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { App } from './App.tsx'
 import { ToastProvider } from './components/ui/Toast.tsx'
@@ -138,6 +138,69 @@ describe('App shell routing', () => {
       removeItem: (key: string) => store.delete(key),
       clear: () => store.clear(),
     })
+  })
+
+  it('sends a stable preflight intent and renders an authoritative terminal replay', async () => {
+    const { fetchMock } = installFetch({
+      '/api/apps/api/preflight': json({ sagaId: 'saga-replay', operationId: 'operation-replay', status: 'succeeded', replayed: true }),
+    })
+    renderApp('/apps')
+    const card = (await screen.findByRole('button', { name: 'api' })).closest('.app-card') as HTMLElement | null
+    if (!card) throw new Error('api card missing')
+    fireEvent.click(within(card).getByRole('button', { name: 'Check' }))
+
+    expect(await screen.findByText(/resolved existing accepted operation operation-replay/i)).toBeInTheDocument()
+    expect(screen.getByText(/status: passed/i)).toBeInTheDocument()
+    const request = fetchMock.mock.calls.find(([url, init]) => String(url).includes('/api/apps/api/preflight') && init?.method === 'POST')
+    expect(new Headers(request?.[1]?.headers).get('Idempotency-Key')).toMatch(/^norn-web-/)
+  })
+
+  it('preserves an indeterminate preflight key through a later auth rejection', async () => {
+    const outcomes = [json({ error: 'temporarily unavailable' }, 503), json({ error: 'session expired' }, 401), json({ sagaId: 'saga-recovered', operationId: 'operation-recovered', status: 'succeeded', replayed: true })]
+    const { fetchMock } = installFetch({ '/api/apps/api/preflight': () => outcomes.shift() ?? json({ error: 'unexpected' }, 500) })
+    renderApp('/apps')
+    const card = (await screen.findByRole('button', { name: 'api' })).closest('.app-card') as HTMLElement | null
+    if (!card) throw new Error('api card missing')
+    fireEvent.click(within(card).getByRole('button', { name: 'Check' }))
+    fireEvent.click(await screen.findByRole('button', { name: 'Retry same request' }))
+    await waitFor(() => expect(fetchMock.mock.calls.filter(([url, init]) => String(url).includes('/api/apps/api/preflight') && init?.method === 'POST')).toHaveLength(2))
+    fireEvent.click(screen.getByRole('button', { name: 'Retry same request' }))
+    await waitFor(() => expect(fetchMock.mock.calls.filter(([url, init]) => String(url).includes('/api/apps/api/preflight') && init?.method === 'POST')).toHaveLength(3))
+    const requests = fetchMock.mock.calls.filter(([url, init]) => String(url).includes('/api/apps/api/preflight') && init?.method === 'POST')
+    const keys = requests.map((request) => new Headers(request[1]?.headers).get('Idempotency-Key'))
+    expect(new Set(keys).size).toBe(1)
+    expect(await screen.findByText(/resolved existing accepted operation operation-recovered/i)).toBeInTheDocument()
+  })
+
+  it('retains the preflight key after a definitive rejection', async () => {
+    const { fetchMock } = installFetch({ '/api/apps/api/preflight': () => json({ error: 'invalid ref' }, 400) })
+    renderApp('/apps')
+    const card = (await screen.findByRole('button', { name: 'api' })).closest('.app-card') as HTMLElement | null
+    if (!card) throw new Error('api card missing')
+    fireEvent.click(within(card).getByRole('button', { name: 'Check' }))
+    expect(await screen.findByRole('alert')).toHaveTextContent('Request rejected: invalid ref')
+    fireEvent.click(screen.getByRole('button', { name: 'Retry same request' }))
+    await waitFor(() => expect(fetchMock.mock.calls.filter(([url, init]) => String(url).includes('/api/apps/api/preflight') && init?.method === 'POST')).toHaveLength(2))
+    const requests = fetchMock.mock.calls.filter(([url, init]) => String(url).includes('/api/apps/api/preflight') && init?.method === 'POST')
+    expect(new Headers(requests[0][1]?.headers).get('Idempotency-Key')).toBe(new Headers(requests[1][1]?.headers).get('Idempotency-Key'))
+  })
+
+  it('keeps an accepted operation while polling recovers from a transient failure', async () => {
+    let polls = 0
+    installFetch({
+      '/api/apps/api/preflight': json({ sagaId: 'saga-poll', operationId: 'operation-poll', status: 'running' }),
+      '/api/v1/operations/operation-poll': () => {
+        polls += 1
+        return polls === 1 ? json({ error: 'temporarily unavailable' }, 503) : json({ id: 'operation-poll', status: 'succeeded' })
+      },
+    })
+    renderApp('/apps')
+    const card = (await screen.findByRole('button', { name: 'api' })).closest('.app-card') as HTMLElement | null
+    if (!card) throw new Error('api card missing')
+    fireEvent.click(within(card).getByRole('button', { name: 'Check' }))
+    expect(await screen.findByText('Operation status is temporarily unavailable; retrying.')).toBeInTheDocument()
+    expect(await screen.findByText(/status: passed/i, {}, { timeout: 4_000 })).toBeInTheDocument()
+    expect(polls).toBeGreaterThanOrEqual(2)
   })
 
   afterEach(() => {

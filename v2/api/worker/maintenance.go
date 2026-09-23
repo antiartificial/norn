@@ -12,6 +12,7 @@ import (
 	"strings"
 	"time"
 
+	"norn/v2/api/capture"
 	"norn/v2/api/hub"
 	"norn/v2/api/model"
 	"norn/v2/api/store"
@@ -38,14 +39,12 @@ func (e *CommandMaintenanceExecutor) Execute(ctx context.Context, op *model.Oper
 	}
 	cmd := exec.CommandContext(ctx, program, args...)
 	cmd.Env = append(os.Environ(), extraEnv...)
-	output, runErr := cmd.CombinedOutput()
-	truncated := false
-	if len(output) > maintenanceOutputLimit {
-		output = output[len(output)-maintenanceOutputLimit:]
-		truncated = true
-	}
+	// Output is bounded while the process runs, not after it exits.
+	output := capture.New(maintenanceOutputLimit/4, maintenanceOutputLimit-maintenanceOutputLimit/4)
+	cmd.Stdout, cmd.Stderr = output, output
+	runErr := cmd.Run()
 	metadata := map[string]interface{}{
-		"output": strings.TrimSpace(string(output)), "outputTruncated": truncated,
+		"output": strings.TrimSpace(output.String()), "outputTruncated": output.Truncated(), "outputBytes": output.Total(),
 	}
 	if runErr != nil {
 		var exitErr *exec.ExitError
@@ -143,7 +142,10 @@ func payloadString(payload map[string]interface{}, key, fallback string) string 
 }
 
 type MaintenanceWorker struct {
-	db       *store.DB
+	db     store.ExecutionStore
+	events interface {
+		AppendHubEvent(context.Context, *hub.Event) error
+	}
 	executor MaintenanceExecutor
 	id       string
 	kinds    []string
@@ -157,14 +159,14 @@ func NewMaintenanceWorker(db *store.DB, executor MaintenanceExecutor) *Maintenan
 		host = "unknown-host"
 	}
 	return &MaintenanceWorker{
-		db: db, executor: executor, id: fmt.Sprintf("host-agent:%s:%d", host, os.Getpid()),
+		db: db, events: db, executor: executor, id: fmt.Sprintf("host-agent:%s:%d", host, os.Getpid()),
 		kinds: []string{"platform.preflight", "platform.upgrade", "platform.rollback", "platform.smoke", "host.assure"},
 		lease: 5 * time.Minute, poll: 2 * time.Second,
 	}
 }
 
 func (w *MaintenanceWorker) Run(ctx context.Context) {
-	if err := w.db.RecoverMaintenanceOperations(ctx); err != nil {
+	if err := w.db.RecoverExpiredOperations(ctx); err != nil {
 		log.Printf("maintenance recovery: %v", err)
 	}
 	log.Printf("maintenance worker %s started", w.id)
@@ -185,45 +187,75 @@ func (w *MaintenanceWorker) Run(ctx context.Context) {
 
 func (w *MaintenanceWorker) runOnce(ctx context.Context) error {
 	for {
-		op, err := w.db.ClaimNextOperation(ctx, w.id, w.lease, w.kinds)
+		op, claim, err := w.db.ClaimNextOperation(ctx, w.id, w.lease, w.kinds)
 		if err != nil || op == nil {
 			return err
 		}
-		w.handle(ctx, op)
+		w.handle(ctx, op, claim)
 	}
 }
 
-func (w *MaintenanceWorker) handle(ctx context.Context, op *model.Operation) {
+func (w *MaintenanceWorker) handle(ctx context.Context, op *model.Operation, claim store.OperationClaim) {
 	w.recordEvent(ctx, op, "maintenance.started", "running", "maintenance operation started")
-	heartbeatCtx, stopHeartbeat := context.WithCancel(ctx)
+	executionCtx, cancelExecution := context.WithCancel(ctx)
+	defer cancelExecution()
+	renewalStop := make(chan struct{})
 	heartbeatDone := make(chan struct{})
+	renewalResult := make(chan error, 1)
 	go func() {
 		defer close(heartbeatDone)
-		ticker := time.NewTicker(time.Minute)
+		interval := w.lease / 3
+		if interval <= 0 {
+			interval = time.Millisecond
+		}
+		ticker := time.NewTicker(interval)
 		defer ticker.Stop()
 		for {
 			select {
-			case <-heartbeatCtx.Done():
+			case <-executionCtx.Done():
+				renewalResult <- nil
+				return
+			case <-renewalStop:
+				renewalResult <- nil
 				return
 			case <-ticker.C:
-				if err := w.db.RenewOperationLease(heartbeatCtx, op.ID, w.id, time.Now().Add(w.lease)); err != nil {
-					log.Printf("maintenance lease %s: %v", op.ID, err)
+				renewCtx, cancel := context.WithTimeout(executionCtx, interval)
+				err := w.db.RenewOperationClaim(renewCtx, claim, w.lease)
+				cancel()
+				if err != nil {
+					if executionCtx.Err() != nil {
+						renewalResult <- nil
+						return
+					}
+					cancelExecution()
+					renewalResult <- err
+					return
 				}
 			}
 		}
 	}()
-	metadata, err := w.executor.Execute(ctx, op)
-	stopHeartbeat()
+	metadata, err := w.executor.Execute(executionCtx, op)
+	close(renewalStop)
 	<-heartbeatDone
+	if renewErr := <-renewalResult; renewErr != nil {
+		log.Printf("maintenance ownership renewal stopped %s: %v", op.ID, renewErr)
+		return
+	}
 	if metadata == nil {
 		metadata = map[string]interface{}{}
 	}
 	if err != nil {
-		_ = w.db.FinishOperation(ctx, op.ID, model.OperationFailed, err.Error(), metadata)
+		if finishErr := w.db.FinishClaimedOperation(ctx, claim, model.OperationFailed, err.Error(), metadata); finishErr != nil {
+			log.Printf("maintenance finish %s: %v", op.ID, finishErr)
+			return
+		}
 		w.recordEvent(ctx, op, "maintenance.failed", "failed", err.Error())
 		return
 	}
-	_ = w.db.FinishOperation(ctx, op.ID, model.OperationSucceeded, op.Kind+" complete", metadata)
+	if finishErr := w.db.FinishClaimedOperation(ctx, claim, model.OperationSucceeded, op.Kind+" complete", metadata); finishErr != nil {
+		log.Printf("maintenance finish %s: %v", op.ID, finishErr)
+		return
+	}
 	w.recordEvent(ctx, op, "maintenance.completed", "succeeded", op.Kind+" complete")
 }
 
@@ -231,7 +263,10 @@ func (w *MaintenanceWorker) recordEvent(ctx context.Context, op *model.Operation
 	event := hub.Event{Timestamp: time.Now().UTC(), Type: eventType, Payload: map[string]interface{}{
 		"operationId": op.ID, "kind": op.Kind, "status": status, "message": message,
 	}}
-	if err := w.db.AppendHubEvent(ctx, &event); err != nil {
+	if w.events == nil {
+		return
+	}
+	if err := w.events.AppendHubEvent(ctx, &event); err != nil {
 		log.Printf("maintenance event %s: %v", op.ID, err)
 	}
 }

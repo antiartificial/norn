@@ -3,6 +3,7 @@ package handler
 import (
 	"fmt"
 	"net/http"
+	"sort"
 
 	"github.com/go-chi/chi/v5"
 
@@ -58,33 +59,26 @@ func (h *Handler) DeployGroup(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusNotFound, fmt.Sprintf("deploy group %s not found", name))
 		return
 	}
-
-	type deployResult struct {
-		App    string `json:"app"`
-		SagaID string `json:"sagaId,omitempty"`
-		Error  string `json:"error,omitempty"`
-	}
-
-	var deploys []deployResult
+	members := make([]string, 0, len(group.Apps))
 	for _, app := range group.Apps {
-		spec := h.findSpec(app.App)
-		if spec == nil {
-			deploys = append(deploys, deployResult{
-				App:   app.App,
-				Error: fmt.Sprintf("app %s not found", app.App),
-			})
-			continue
-		}
-		sagaID := h.pipeline.Run(spec, req.Ref)
-		deploys = append(deploys, deployResult{
-			App:    app.App,
-			SagaID: sagaID,
-		})
+		members = append(members, app.App)
+	}
+	sort.Strings(members)
+	enqueue, ok := h.pipelineEnqueueRequest(w, r, r.Header.Get("Idempotency-Key"), map[string]interface{}{"group": name, "members": members, "ref": req.Ref})
+	if !ok {
+		return
+	}
+	queued, err := h.pipeline.RunGroup(r.Context(), group, req.Ref, h.cfg.AppsDir, enqueue)
+	if err != nil {
+		writeOperationAcceptanceError(w, r, err)
+		return
 	}
 
 	writeJSON(w, map[string]interface{}{
-		"group":   name,
-		"deploys": deploys,
-		"ref":     req.Ref,
+		"group":       name,
+		"operationId": queued.OperationID,
+		"replayed":    queued.Replayed,
+		"deploys":     queued.Deploys,
+		"ref":         req.Ref,
 	})
 }

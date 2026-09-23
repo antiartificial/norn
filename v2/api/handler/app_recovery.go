@@ -15,6 +15,7 @@ import (
 	"github.com/jackc/pgx/v5"
 
 	"norn/v2/api/model"
+	"norn/v2/api/pipeline"
 	"norn/v2/api/store"
 )
 
@@ -101,7 +102,7 @@ func (h *Handler) QueueAppMigration(w http.ResponseWriter, r *http.Request) {
 }
 
 func (h *Handler) QueueAppRollback(w http.ResponseWriter, r *http.Request) {
-	principal, ok := requireControlScope(w, r, ScopeAPIWrite)
+	_, ok := requireControlScope(w, r, ScopeAPIWrite)
 	if !ok {
 		return
 	}
@@ -130,18 +131,17 @@ func (h *Handler) QueueAppRollback(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 	}
-	idempotency, digest, ok := appOperationIdempotency(w, r, principal, appID, "app.rollback", request)
+	enqueue, ok := h.pipelineEnqueueRequest(w, r, r.Header.Get("Idempotency-Key"), map[string]interface{}{"action": "app-rollback", "app": appID, "regions": request.Regions, "confirm": request.Confirm})
 	if !ok {
 		return
 	}
-	if existing, handled := h.resolveAppOperationIdempotency(w, r, idempotency, digest, "app.rollback", appID); handled {
-		if existing != nil {
-			existing.AttachReceipt()
-			writeJSON(w, existing)
-		}
+	enqueue.Admission.OneActiveMutablePerApp = true
+	enqueue = pipeline.DerivedChildRequest(enqueue, "rollback-route", "app-recovery", enqueue.Semantics)
+	if replayed, found, resolveErr := h.resolveRollbackReplay(r.Context(), enqueue, appID, request.Regions, ""); resolveErr != nil {
+		writeOperationAcceptanceError(w, r, resolveErr)
 		return
-	}
-	if !h.requireNoActiveAppOperation(w, r, appID) {
+	} else if found {
+		writeJSON(w, replayed.Operation)
 		return
 	}
 	deployments, err := h.db.ListDeployments(r.Context(), appID, 1)
@@ -154,32 +154,25 @@ func (h *Handler) QueueAppRollback(w http.ResponseWriter, r *http.Request) {
 		WriteControlProblem(w, r, http.StatusNotFound, "rollback_target_missing", "no previous successful deployment is available")
 		return
 	}
-	_, operationID, queueErr := h.pipeline.RollbackRegionsOperationContext(r.Context(), spec, deployments[0], previous, request.Regions, map[string]interface{}{
-		"idempotencyKey": idempotency, "requestDigest": digest, "principal": principal.Subject,
-	})
+	accepted, queueErr := h.pipeline.QueueRollback(r.Context(), spec, deployments[0], previous, request.Regions, enqueue, map[string]interface{}{"requestedByActor": enqueue.Actor.Subject})
 	if queueErr != nil {
-		if existing, lookupErr := h.db.GetOperationByIdempotencyKey(r.Context(), idempotency); lookupErr == nil {
-			storedDigest, _ := existing.Metadata["requestDigest"].(string)
-			if existing.Kind == "app.rollback" && existing.App == appID && storedDigest == digest {
-				existing.AttachReceipt()
-				writeJSON(w, existing)
-				return
-			}
+		if replayed, found, _ := h.resolveRollbackReplay(r.Context(), enqueue, appID, request.Regions, ""); found {
+			writeJSON(w, replayed.Operation)
+			return
 		}
-		WriteControlProblem(w, r, http.StatusInternalServerError, "rollback_queue_failed", "failed to persist rollback operation")
+		writeOperationAcceptanceError(w, r, queueErr)
 		return
 	}
-	op, err := h.db.GetOperation(r.Context(), operationID)
-	if err != nil {
-		WriteControlProblem(w, r, http.StatusInternalServerError, "rollback_queue_failed", "failed to read the persisted rollback operation")
+	w.Header().Set("Location", "/api/v1/operations/"+accepted.Operation.ID)
+	if accepted.Replayed {
+		writeJSON(w, accepted.Operation)
 		return
 	}
-	w.Header().Set("Location", "/api/v1/operations/"+op.ID)
-	writeJSONStatus(w, http.StatusAccepted, op)
+	writeJSONStatus(w, http.StatusAccepted, accepted.Operation)
 }
 
 func (h *Handler) queueAppDataOperation(w http.ResponseWriter, r *http.Request, kind, risk string, payload map[string]interface{}, maxAttempts int) {
-	principal, ok := requireControlScope(w, r, ScopeAPIWrite)
+	_, ok := requireControlScope(w, r, ScopeAPIWrite)
 	if !ok {
 		return
 	}
@@ -193,27 +186,27 @@ func (h *Handler) queueAppDataOperation(w http.ResponseWriter, r *http.Request, 
 		WriteControlProblem(w, r, http.StatusNotFound, "app_not_found", "app was not found or deployment is disabled")
 		return
 	}
-	if spec.Infrastructure == nil || spec.Infrastructure.Postgres == nil {
+	if !spec.DeclaresDatabase() {
 		WriteControlProblem(w, r, http.StatusConflict, "postgres_not_configured", "app has no postgres database")
 		return
 	}
+	// A v2 app selects which named database a snapshot, prune or restore
+	// acts on (optional when it declares one). The selection enters the
+	// signed request; acceptance resolves it with the execution resolver.
+	if selected := strings.TrimSpace(r.URL.Query().Get("database")); selected != "" {
+		if _, declared := spec.DatabaseByName(selected); !declared || kind == "app.migrate" {
+			WriteControlProblem(w, r, http.StatusBadRequest, "invalid_database_selection", "database must name one of the app's declared databases (migrations use migrationDatabase)")
+			return
+		}
+		selectedPayload := make(map[string]interface{}, len(payload)+1)
+		for key, value := range payload {
+			selectedPayload[key] = value
+		}
+		selectedPayload["database"] = selected
+		payload = selectedPayload
+	}
 	if kind == "app.migrate" && strings.TrimSpace(spec.Migrations) == "" {
 		WriteControlProblem(w, r, http.StatusConflict, "migration_not_configured", "app has no migrations command")
-		return
-	}
-	request := map[string]interface{}{"payload": payload}
-	idempotency, digest, ok := appOperationIdempotency(w, r, principal, appID, kind, request)
-	if !ok {
-		return
-	}
-	if existing, handled := h.resolveAppOperationIdempotency(w, r, idempotency, digest, kind, appID); handled {
-		if existing != nil {
-			existing.AttachReceipt()
-			writeJSON(w, existing)
-		}
-		return
-	}
-	if !h.requireNoActiveAppOperation(w, r, appID) {
 		return
 	}
 	ref := ""
@@ -221,29 +214,27 @@ func (h *Handler) queueAppDataOperation(w http.ResponseWriter, r *http.Request, 
 		ref, _ = payload["ref"].(string)
 	}
 	now := time.Now().UTC()
-	op := &model.Operation{
+	op := model.Operation{
 		ID: uuid.NewString(), Kind: kind, App: appID, SagaID: uuid.NewString(), Ref: ref,
 		Status: model.OperationQueued, Risk: risk, Source: "control-api", Message: "queued " + kind,
-		Payload: payload, Metadata: map[string]interface{}{
-			"idempotencyKey": idempotency, "requestDigest": digest, "principal": principal.Subject,
-		}, StartedAt: now, MaxAttempts: maxAttempts,
+		Payload: payload, Metadata: map[string]interface{}{}, StartedAt: now, MaxAttempts: maxAttempts,
 	}
-	if err := h.db.InsertOperation(r.Context(), op); err != nil {
-		if existing, lookupErr := h.db.GetOperationByIdempotencyKey(r.Context(), idempotency); lookupErr == nil && existing.Kind == kind && existing.App == appID {
-			storedDigest, _ := existing.Metadata["requestDigest"].(string)
-			if storedDigest == digest {
-				existing.AttachReceipt()
-				writeJSON(w, existing)
-				return
-			}
-			WriteControlProblem(w, r, http.StatusConflict, "idempotency_key_reused", "Idempotency-Key was already used for a different app operation")
-			return
-		}
-		WriteControlProblem(w, r, http.StatusInternalServerError, "operation_create_failed", "failed to durably queue app operation")
+	enqueue, ok := h.pipelineEnqueueRequest(w, r, r.Header.Get("Idempotency-Key"), map[string]interface{}{"action": kind, "app": appID, "payload": payload})
+	if !ok {
 		return
 	}
-	w.Header().Set("Location", "/api/v1/operations/"+op.ID)
-	writeJSONStatus(w, http.StatusAccepted, op)
+	enqueue.Admission.OneActiveMutablePerApp = true
+	accepted, err := h.pipeline.QueueOperation(r.Context(), op, enqueue)
+	if err != nil {
+		writeOperationAcceptanceError(w, r, err)
+		return
+	}
+	w.Header().Set("Location", "/api/v1/operations/"+accepted.Operation.ID)
+	if accepted.Replayed {
+		writeJSON(w, accepted.Operation)
+		return
+	}
+	writeJSONStatus(w, http.StatusAccepted, accepted.Operation)
 }
 
 func appOperationIdempotency(w http.ResponseWriter, r *http.Request, principal AccessPrincipal, appID, kind string, request interface{}) (string, string, bool) {

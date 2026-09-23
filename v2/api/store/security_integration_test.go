@@ -85,8 +85,8 @@ func TestExecAuthorizationLifecycle(t *testing.T) {
 	if err := db.CreateExecSession(ctx, &baseSession); err != nil {
 		t.Fatal(err)
 	}
-	if err := db.ConnectExecSession(ctx, sessionID); err != nil {
-		t.Fatal(err)
+	if claimed, err := db.ConnectExecSession(ctx, sessionID, ExecSessionClaim{OwnerID: "security-test", OwnerToken: "security-token", LeaseDuration: time.Minute}); err != nil || !claimed {
+		t.Fatalf("ConnectExecSession claimed=%v err=%v", claimed, err)
 	}
 	connected, err := db.GetExecSession(ctx, sessionID)
 	if err != nil {
@@ -136,8 +136,8 @@ func TestExecAuthorizationLifecycle(t *testing.T) {
 	if err := db.CreateExecSession(ctx, &rotateSession); err != nil {
 		t.Fatal(err)
 	}
-	if err := db.ConnectExecSession(ctx, rotateSessionID); err != nil {
-		t.Fatal(err)
+	if claimed, err := db.ConnectExecSession(ctx, rotateSessionID, ExecSessionClaim{OwnerID: "security-test", OwnerToken: "rotate-token", LeaseDuration: time.Minute}); err != nil || !claimed {
+		t.Fatalf("ConnectExecSession claimed=%v err=%v", claimed, err)
 	}
 	replacement := &AccessToken{
 		JTI: replacementTokenID, DeviceID: deviceID, Subject: "security rotation test", Scopes: []string{"apps:exec"},

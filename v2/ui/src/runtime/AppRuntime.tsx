@@ -1,19 +1,34 @@
-import { createContext, useCallback, useContext, useMemo, useRef, useState, type ReactNode } from 'react'
+import { createContext, useCallback, useContext, useEffect, useMemo, useRef, useState, type ReactNode } from 'react'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
-import { apiFetch } from '../lib/api.ts'
+import { ApiError, apiAuthority, apiFetch } from '../lib/api.ts'
+import { clearDurableIntent, durableIntent } from '../lib/durableIntent.ts'
 import { appGroups } from '../lib/format.ts'
-import { useDeployProgress } from '../hooks/useDeployProgress.ts'
+import { applyDurableOperationSnapshot, useDeployProgress } from '../hooks/useDeployProgress.ts'
 import { useHubEvents } from '../hooks/useHubEvents.ts'
 import { DeployPanel } from '../components/DeployPanel.tsx'
 import { ScaleModal } from '../components/ScaleModal.tsx'
 import { useToast } from '../components/ui/index.ts'
-import type { AccessPattern, AccessPatternResponse, AppStatus, CapabilitiesResponse, ServiceManifest, VersionResponse } from '../types/index.ts'
+import type { AccessPattern, AccessPatternResponse, AppStatus, CapabilitiesResponse, Operation, ServiceManifest, VersionResponse } from '../types/index.ts'
 import type { HubEvent } from '../types/ws.ts'
 
 export type AppAction = 'preflight' | 'deploy' | 'restart'
 
 export interface DeploymentStep { step?: string; kind?: string; status?: string; attempt?: number; durationMs?: number; message?: string }
 export interface ActivityEntry { id: number; event: HubEvent; capturedAt: string }
+interface AppActionAcceptance { sagaId?: string; operationId?: string; status?: string; replayed?: boolean; message?: string }
+
+const acceptedStatuses = new Set(['queued', 'running', 'succeeded', 'failed', 'canceled'])
+
+function validateAppActionAcceptance(value: AppActionAcceptance): AppActionAcceptance {
+  if (!value.operationId || !value.status || !acceptedStatuses.has(value.status)) {
+    throw new Error('Server returned an invalid durable operation acceptance')
+  }
+  return value
+}
+
+function isDefinitiveRejection(error: unknown): boolean {
+  return error instanceof ApiError && [400, 401, 403, 404, 409, 422].includes(error.status)
+}
 
 export interface RuntimeContext {
   apps: AppStatus[]
@@ -28,7 +43,7 @@ export interface RuntimeContext {
   setDeployState: ReturnType<typeof useDeployProgress>['setDeployState']
   mutations: ReturnType<typeof useAppMutations>
   toggleEndpoint: (appId: string, hostname: string, enabled: boolean) => void
-	toggleDeployment: (appId: string, enabled: boolean) => Promise<void>
+  toggleDeployment: (appId: string, enabled: boolean) => Promise<void>
   fleetAvailable: boolean
   appRecoveryAvailable: boolean
   environment: { id: string; profile: string }
@@ -112,15 +127,56 @@ export function useAppMutations(onScale: (state: { appId: string; groups: { name
 
   const runAppAction = useCallback(async (appId: string, action: AppAction) => {
     if (action === 'deploy' || action === 'preflight') {
-      setDeployState({ appId, operation: action, steps: [], status: 'queued' })
+      const body = { ref: 'HEAD' }
+      const intent = durableIntent(`${apiAuthority()}:app-action:${appId}:${action}`, body)
+      setDeployState({ appId, operation: action, steps: [], status: 'requesting', retryMode: 'same-intent' })
+      try {
+        const accepted = validateAppActionAcceptance(await apiFetch<AppActionAcceptance>(`/api/apps/${encodeURIComponent(appId)}/${action}`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json', 'Idempotency-Key': intent.key },
+          body: JSON.stringify(body),
+        }))
+        clearDurableIntent(intent)
+        const terminalFailure = accepted.status === 'failed' || accepted.status === 'canceled'
+        const terminalSuccess = accepted.status === 'succeeded'
+        setDeployState({
+          appId,
+          operation: action,
+          steps: [],
+          status: terminalFailure ? 'failed' : terminalSuccess ? (action === 'deploy' ? 'deployed' : 'passed') : accepted.status ?? 'queued',
+          sagaId: accepted.sagaId,
+          operationId: accepted.operationId,
+          replayed: accepted.replayed,
+          retryMode: 'new-intent',
+          error: terminalFailure ? accepted.message ?? `Accepted operation ${accepted.operationId ?? ''} ${accepted.status}`.trim() : undefined,
+        })
+        toast({
+          kind: terminalFailure ? 'error' : terminalSuccess ? 'success' : 'info',
+          title: terminalFailure ? `${action} ${accepted.status}` : terminalSuccess ? `${action} already complete` : `${action} accepted`,
+          description: accepted.operationId ? `${appId} · operation ${accepted.operationId}` : appId,
+        })
+        invalidate(appId)
+        return
+      } catch (error) {
+        const rejected = isDefinitiveRejection(error)
+        const persistenceNote = intent.persistence === 'memory' ? ' Keep this tab open because browser storage is unavailable.' : ''
+        setDeployState({
+          appId,
+          operation: action,
+          steps: [],
+          status: 'failed',
+          retryMode: 'same-intent',
+          error: rejected
+            ? `Request rejected: ${error instanceof Error ? error.message : String(error)}. The same request key is retained because an earlier acceptance outcome may be unknown. Retry after resolving access or policy.${persistenceNote}`
+            : `Acceptance outcome is unknown. Retry reuses the same request.${persistenceNote}`,
+        })
+        throw error
+      }
     }
-    const body = action === 'deploy' || action === 'preflight' ? { ref: 'HEAD' } : undefined
     await apiFetch(`/api/apps/${appId}/${action}`, {
       method: 'POST',
-      headers: body ? { 'Content-Type': 'application/json' } : undefined,
-      body: body ? JSON.stringify(body) : undefined,
     })
-    toast({ kind: 'info', title: `${action === 'preflight' ? 'Preflight' : action === 'deploy' ? 'Deploy' : 'Restart'} requested`, description: appId })
+    toast({ kind: 'info', title: 'Restart requested', description: appId })
     invalidate(appId)
   }, [invalidate, setDeployState, toast])
 
@@ -151,6 +207,28 @@ function RuntimeInner({ children }: { children: (runtime: RuntimeContext & { con
   const { toast } = useToast()
   const queryClient = useQueryClient()
   const { deployState, setDeployState, applyDeployEvent } = useDeployProgressContext()
+
+  useEffect(() => {
+    const operationId = deployState?.operationId
+    if (!operationId || ['deployed', 'passed', 'failed'].includes(deployState.status)) return
+    let cancelled = false
+    let timer: number | undefined
+    const poll = async () => {
+      try {
+        const operation = await apiFetch<Operation>(`/api/v1/operations/${encodeURIComponent(operationId)}`)
+        if (!cancelled) setDeployState((current) => applyDurableOperationSnapshot(current, operation))
+      } catch {
+        if (!cancelled) setDeployState((current) => current?.operationId === operationId ? { ...current, pollError: 'Operation status is temporarily unavailable; retrying.' } : current)
+      } finally {
+        if (!cancelled) timer = window.setTimeout(poll, 2_000)
+      }
+    }
+    void poll()
+    return () => {
+      cancelled = true
+      if (timer !== undefined) window.clearTimeout(timer)
+    }
+  }, [deployState?.operationId, deployState?.status, setDeployState])
 
   const handleWsEvent = useCallback((event: HubEvent) => {
     setActivity((items) => [{ id: ++activityId.current, event, capturedAt: new Date().toISOString() }, ...items].slice(0, 20))
@@ -225,6 +303,10 @@ function RuntimeInner({ children }: { children: (runtime: RuntimeContext & { con
           status={deployState.status}
           error={deployState.error}
           sagaId={deployState.sagaId}
+          operationId={deployState.operationId}
+          replayed={deployState.replayed}
+          retryMode={deployState.retryMode}
+          pollError={deployState.pollError}
           onClose={() => setDeployState(null)}
           onRetry={() => {
             const { appId, operation } = deployState

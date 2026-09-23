@@ -4,7 +4,6 @@ import (
 	"context"
 	"fmt"
 	"io/fs"
-	"log"
 	"os"
 	"path/filepath"
 	"strings"
@@ -12,20 +11,24 @@ import (
 
 	"github.com/google/uuid"
 
+	"norn/v2/api/effect"
 	"norn/v2/api/hub"
 	"norn/v2/api/model"
 	"norn/v2/api/saga"
+	"norn/v2/api/store"
 )
 
-// Preflight runs a read-only deploy rehearsal for an app.
+// Preflight atomically accepts a read-only deploy rehearsal for an app.
 // It validates the spec, prepares the same source tree deploy would use, builds
 // the image locally, and runs build.test without snapshot, migration, submit, or
 // forge side effects.
-func (p *Pipeline) Preflight(spec *model.InfraSpec, ref string) string {
+func (p *Pipeline) Preflight(ctx context.Context, spec *model.InfraSpec, ref string, request EnqueueRequest) (store.AcceptedOperation, error) {
+	if p == nil || p.DB == nil || p.SagaStore == nil || spec == nil {
+		return store.AcceptedOperation{}, fmt.Errorf("preflight pipeline is unavailable")
+	}
 	sg := saga.New(p.SagaStore, spec.App, "pipeline", "preflight")
-	ctx := context.Background()
 	operationID := uuid.New().String()
-	if err := p.DB.InsertOperation(ctx, &model.Operation{
+	operation := model.Operation{
 		ID:          operationID,
 		Kind:        "app.preflight",
 		App:         spec.App,
@@ -41,13 +44,15 @@ func (p *Pipeline) Preflight(spec *model.InfraSpec, ref string) string {
 			"app": spec.App,
 			"ref": ref,
 		},
-	}); err != nil {
-		log.Printf("preflight: insert operation: %v", err)
-		operationID = ""
 	}
-
-	sg.Log(ctx, "preflight.queued", fmt.Sprintf("queued preflight for %s (ref: %s)", spec.App, ref), nil)
-	return sg.ID
+	accepted, err := p.acceptOperation(ctx, request, operation, nil, nil)
+	if err != nil {
+		return store.AcceptedOperation{}, err
+	}
+	if !accepted.Replayed {
+		sg.Log(ctx, "preflight.queued", fmt.Sprintf("queued preflight for %s (ref: %s)", spec.App, ref), map[string]string{"operationId": accepted.Operation.ID})
+	}
+	return accepted, nil
 }
 
 func truthyEnv(key string) bool {
@@ -59,11 +64,7 @@ func truthyEnv(key string) bool {
 	}
 }
 
-func (p *Pipeline) runPreflight(ctx context.Context, spec *model.InfraSpec, ref string, sg *saga.Saga, operationID string) {
-	p.runPreflightWithArtifact(ctx, spec, ref, "", model.ReleaseCandidate{}, sg, operationID)
-}
-
-func (p *Pipeline) runPreflightWithArtifact(ctx context.Context, spec *model.InfraSpec, ref, artifact string, candidate model.ReleaseCandidate, sg *saga.Saga, operationID string) {
+func (p *Pipeline) runPreflightWithArtifact(ctx context.Context, spec *model.InfraSpec, ref, artifact string, candidate model.ReleaseCandidate, sg *saga.Saga, claim store.OperationClaim) *OperationResult {
 	st := &state{
 		spec:          spec,
 		commitSHA:     ref,
@@ -72,16 +73,19 @@ func (p *Pipeline) runPreflightWithArtifact(ctx context.Context, spec *model.Inf
 		imageTag:      artifact,
 		artifactBound: artifact != "",
 		candidate:     candidate,
+		claim:         claim,
 	}
+	keepWorkDir := false
 	defer func() {
-		if st.workDir != "" {
+		// A deferred effect may still be running in this checkout.
+		if st.workDir != "" && !keepWorkDir {
 			_ = os.RemoveAll(st.workDir)
 		}
 	}()
 
 	steps := []step{
 		{name: "validate", fn: p.preflightValidate},
-		{name: "clone", fn: p.clone},
+		{name: "clone", fn: p.checkpointedClone},
 		{name: "admission", fn: p.admission},
 		{name: "inspect", fn: p.preflightInspect},
 		{name: "build", fn: p.build},
@@ -91,47 +95,41 @@ func (p *Pipeline) runPreflightWithArtifact(ctx context.Context, spec *model.Inf
 
 	total := fmt.Sprintf("%d", len(steps))
 	for i, s := range steps {
+		if err := ctx.Err(); err != nil {
+			return &OperationResult{Claim: claim, Status: model.OperationFailed, Message: fmt.Sprintf("preflight canceled before %s: %v", s.name, err), Metadata: map[string]interface{}{"step": s.name}}
+		}
 		idx := fmt.Sprintf("%d", i+1)
 		sg.StepStart(ctx, s.name)
 		p.broadcastPreflightStep(spec.App, sg.ID, s.name, "running", idx, total, 0)
 
 		start := time.Now()
-		err := s.fn(ctx, st, sg)
+		err := runClaimedStep(ctx, func() error { return s.fn(ctx, st, sg) })
 		elapsed := time.Since(start).Milliseconds()
 
+		if err != nil && effect.IsDeferred(err) {
+			keepWorkDir = true
+			sg.Log(ctx, "preflight.step.pending", fmt.Sprintf("%s awaiting external effect recovery: %v", s.name, err), map[string]string{"step": s.name})
+			return deferredResult(claim, err)
+		}
 		if err != nil {
 			sg.StepFailed(ctx, s.name, err)
 			p.broadcastPreflightStep(spec.App, sg.ID, s.name, "failed", idx, total, elapsed)
-			sg.Log(ctx, "preflight.failed", fmt.Sprintf("preflight failed at %s: %v", s.name, err), nil)
-			if operationID != "" {
-				_ = p.DB.FinishOperation(ctx, operationID, model.OperationFailed, fmt.Sprintf("preflight failed at %s: %v", s.name, err), map[string]interface{}{
-					"step": s.name,
-				})
-			}
-			p.broadcastPreflightDone("preflight.failed", spec.App, sg.ID, map[string]string{"error": err.Error()})
-			return
+			stepName, stepErr := s.name, err
+			message := fmt.Sprintf("preflight failed at %s: %v", stepName, stepErr)
+			return &OperationResult{Claim: claim, Status: model.OperationFailed, Message: message, Metadata: map[string]interface{}{"step": stepName}, publish: func(publishCtx context.Context) {
+				sg.Log(publishCtx, "preflight.failed", message, nil)
+				p.broadcastPreflightDone("preflight.failed", spec.App, sg.ID, map[string]string{"error": stepErr.Error()})
+			}}
 		}
 
 		sg.StepComplete(ctx, s.name, elapsed)
 		p.broadcastPreflightStep(spec.App, sg.ID, s.name, "complete", idx, total, elapsed)
 	}
 
-	sg.Log(ctx, "preflight.complete", fmt.Sprintf("preflight complete: %s -> %s", spec.App, st.imageTag), map[string]string{
-		"commitSha":  st.commitSHA,
-		"imageTag":   st.imageTag,
-		"sourceKind": st.sourceKind,
-		"sourceRef":  st.sourceRef,
-	})
-	if operationID != "" {
-		_ = p.DB.FinishOperation(ctx, operationID, model.OperationSucceeded, fmt.Sprintf("preflight complete: %s", spec.App), map[string]interface{}{
-			"commitSha": st.commitSHA,
-			"imageTag":  st.imageTag,
-		})
-	}
-	p.broadcastPreflightDone("preflight.completed", spec.App, sg.ID, map[string]string{
-		"imageTag":  st.imageTag,
-		"commitSha": st.commitSHA,
-	})
+	return &OperationResult{Claim: claim, Status: model.OperationSucceeded, Message: fmt.Sprintf("preflight complete: %s", spec.App), Metadata: map[string]interface{}{"commitSha": st.commitSHA, "imageTag": st.imageTag}, publish: func(publishCtx context.Context) {
+		sg.Log(publishCtx, "preflight.complete", fmt.Sprintf("preflight complete: %s -> %s", spec.App, st.imageTag), map[string]string{"commitSha": st.commitSHA, "imageTag": st.imageTag, "sourceKind": st.sourceKind, "sourceRef": st.sourceRef})
+		p.broadcastPreflightDone("preflight.completed", spec.App, sg.ID, map[string]string{"imageTag": st.imageTag, "commitSha": st.commitSHA})
+	}}
 }
 
 func (p *Pipeline) preflightValidate(ctx context.Context, st *state, sg *saga.Saga) error {

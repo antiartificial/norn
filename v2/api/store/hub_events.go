@@ -13,11 +13,35 @@ func (db *DB) AppendHubEvent(ctx context.Context, event *hub.Event) error {
 	if err != nil {
 		return err
 	}
-	return db.Pool.QueryRow(ctx, `
+	tx, err := db.Pool.Begin(ctx)
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback(ctx)
+	// BIGSERIAL values are allocated before commit. Without a transaction-wide
+	// writer lock, ID N+1 can commit and advance stream cursors while ID N is
+	// still invisible, permanently hiding N from replay. Every v3 writer locks
+	// the resolved table OID before allocating an ID and holds it through commit;
+	// unlike current_schema(), this remains identical when search_path begins
+	// with another schema but resolves control_events from the same later schema.
+	if _, err := tx.Exec(ctx, `/* hub-event-append-lock */
+		SELECT pg_advisory_xact_lock(hashtext('norn.control-events.append'), 'control_events'::regclass::oid::integer)
+	`); err != nil {
+		return err
+	}
+	var eventID int64
+	if err := tx.QueryRow(ctx, `
 		INSERT INTO control_events (timestamp, type, app_id, payload)
 		VALUES ($1, $2, $3, $4)
 		RETURNING id
-	`, event.Timestamp, event.Type, event.AppID, payload).Scan(&event.ID)
+	`, event.Timestamp, event.Type, event.AppID, payload).Scan(&eventID); err != nil {
+		return err
+	}
+	if err := tx.Commit(ctx); err != nil {
+		return err
+	}
+	event.ID = eventID
+	return nil
 }
 
 func (db *DB) HubEventBounds(ctx context.Context) (hub.EventBounds, error) {

@@ -7,7 +7,6 @@ import (
 	"testing"
 
 	"norn/v2/api/fleet"
-	"norn/v2/api/model"
 )
 
 func TestRunnerAttemptRequestValidationAndPhaseOrdering(t *testing.T) {
@@ -27,15 +26,10 @@ func TestRunnerAttemptRequestValidationAndPhaseOrdering(t *testing.T) {
 	}
 }
 
-func TestDestructiveRecoveryAlwaysRestartsAtPrechangeProof(t *testing.T) {
-	destructive := &model.Operation{Payload: map[string]interface{}{"action": "replace"}}
-	previous := fleet.RunnerAttempt{CurrentPhase: "provider_applying"}
-	if got := fleetRunnerAttemptResumePhase(destructive, previous); got != "prechange_verified" {
-		t.Fatalf("destructive recovery phase=%q, want prechange_verified", got)
-	}
-	nondestructive := &model.Operation{Payload: map[string]interface{}{"action": "scale", "current": map[string]interface{}{"desired": 2}, "proposed": map[string]interface{}{"desired": 3}}}
-	if got := fleetRunnerAttemptResumePhase(nondestructive, previous); got != "provider_applying" {
-		t.Fatalf("non-destructive recovery phase=%q, want inherited provider_applying", got)
+func TestCanonicalRunnerAttemptIDMatchesFleetCallerContract(t *testing.T) {
+	ci := &CIIdentity{Repository: "acme/norn-fleet", RunID: "123456789", RunAttempt: "3"}
+	if got, want := canonicalRunnerAttemptID(ci), "github-actions:acme/norn-fleet:123456789:3"; got != want {
+		t.Fatalf("canonical runner attempt ID = %q, want %q", got, want)
 	}
 }
 

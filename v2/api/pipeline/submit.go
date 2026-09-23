@@ -22,6 +22,9 @@ func (p *Pipeline) submit(ctx context.Context, st *state, sg *saga.Saga) error {
 			env[k] = v
 		}
 	}
+	if conflicts := st.spec.DatabaseEnvConflicts(env); len(conflicts) > 0 {
+		return databaseEnvConflictError(conflicts)
+	}
 
 	if st.spec.Infrastructure != nil && st.spec.Infrastructure.ObjectStorage != nil {
 		if p.Storage == nil {
@@ -71,6 +74,22 @@ func (p *Pipeline) submit(ctx context.Context, st *state, sg *saga.Saga) error {
 		}
 	}
 
+	// Provisioned-service variables must not shadow database delivery either.
+	if conflicts := st.spec.DatabaseEnvConflicts(env); len(conflicts) > 0 {
+		return databaseEnvConflictError(conflicts)
+	}
+	if err := p.deliverDatabases(ctx, st, sg); err != nil {
+		return err
+	}
+	if st.spec.NamedDatabases() {
+		if err := p.requireLiveClaim(ctx, st); err != nil {
+			return err
+		}
+		if nomad.HasRuntimeDatabases(st.spec) && st.deliveryRevision == 0 {
+			return &DatabaseTargetError{Reason: "no staged database delivery revision for this deploy"}
+		}
+	}
+
 	// Check for port conflicts before submitting
 	for _, proc := range st.spec.Processes {
 		if proc.Port > 0 && len(st.spec.Endpoints) > 0 {
@@ -90,7 +109,7 @@ func (p *Pipeline) submit(ctx context.Context, st *state, sg *saga.Saga) error {
 
 	for _, region := range st.spec.ResolvedRegions() {
 		if regionalServiceProcessCount(st.spec, region.Name) > 0 {
-			job := nomad.TranslateForRegion(st.spec, st.imageTag, env, region)
+			job := nomad.TranslateForRegionAt(st.spec, st.imageTag, env, region, st.deliveryRevision)
 			evalID, err := p.Nomad.SubmitJobRegion(job, region.NomadRegion)
 			if err != nil {
 				_ = p.DB.UpdateDeploymentRegion(ctx, st.deploymentID, region.Name, model.StatusFailed, "", err.Error(), 0)
@@ -107,7 +126,7 @@ func (p *Pipeline) submit(ctx context.Context, st *state, sg *saga.Saga) error {
 			if proc.Schedule == "" || !st.spec.ProcessRunsInRegion(proc, region.Name) {
 				continue
 			}
-			periodicJob := nomad.TranslatePeriodicForRegion(st.spec, procName, proc, st.imageTag, env, region)
+			periodicJob := nomad.TranslatePeriodicForRegionAt(st.spec, procName, proc, st.imageTag, env, region, st.deliveryRevision)
 			periodicEvalID, err := p.Nomad.SubmitJobRegion(periodicJob, region.NomadRegion)
 			if err != nil {
 				_ = p.DB.UpdateDeploymentRegion(ctx, st.deploymentID, region.Name, model.StatusFailed, "", err.Error(), 0)

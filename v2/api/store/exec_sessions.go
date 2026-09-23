@@ -49,6 +49,14 @@ type ExecSession struct {
 	UserAgent     string     `json:"userAgent,omitempty"`
 }
 
+// ExecSessionClaim is an internal, single-runtime claim on a running exec
+// session. It is deliberately not part of the API session representation.
+type ExecSessionClaim struct {
+	OwnerID       string
+	OwnerToken    string
+	LeaseDuration time.Duration
+}
+
 func (db *DB) ActiveAccessDevice(ctx context.Context, id string) (*AccessDevice, error) {
 	var device AccessDevice
 	err := db.Pool.QueryRow(ctx, `
@@ -128,10 +136,22 @@ func (db *DB) CreateExecSession(ctx context.Context, session *ExecSession) error
 	if _, err := tx.Exec(ctx, `SELECT pg_advisory_xact_lock(hashtext($1))`, "norn.exec-session."+session.DeviceID); err != nil {
 		return err
 	}
-	_, _ = tx.Exec(ctx, `
+	// Reclaim expired owned sessions before enforcing the per-device active
+	// limit. This is safe for every replica and does not invalidate a live
+	// owner's lease.
+	if _, err := tx.Exec(ctx, `
 		UPDATE exec_sessions SET status='expired',finished_at=now(),error_code='exec_session_expired'
-		WHERE device_id=$1 AND status='pending' AND expires_at<=now()
-	`, session.DeviceID)
+		WHERE device_id=$1 AND status IN ('pending','running') AND expires_at<=now()
+	`, session.DeviceID); err != nil {
+		return err
+	}
+	if _, err := tx.Exec(ctx, `
+		UPDATE exec_sessions SET status='failed',finished_at=now(),error_code='exec_owner_lost'
+		WHERE device_id=$1 AND status='running' AND owner_id<>'' AND owner_token<>''
+		  AND owner_lease_until IS NOT NULL AND owner_lease_until<=now()
+	`, session.DeviceID); err != nil {
+		return err
+	}
 	var active, recent int
 	if err := tx.QueryRow(ctx, `
 		SELECT count(*) FILTER (WHERE status IN ('pending','running')),
@@ -190,31 +210,76 @@ func scanExecSession(row pgx.Row) (*ExecSession, error) {
 }
 
 func (db *DB) GetExecSession(ctx context.Context, id string) (*ExecSession, error) {
-	_ = db.ExpireExecSessions(ctx)
+	if err := db.ReconcileExecSessions(ctx); err != nil {
+		return nil, err
+	}
 	return scanExecSession(db.Pool.QueryRow(ctx, `SELECT `+execSessionColumns+` FROM exec_sessions WHERE id=$1`, id))
 }
 
 func (db *DB) ExpireExecSessions(ctx context.Context) error {
 	_, err := db.Pool.Exec(ctx, `
 		UPDATE exec_sessions SET status='expired',finished_at=now(),error_code='exec_session_expired'
-		WHERE status='pending' AND expires_at<=now()
+		WHERE status IN ('pending','running') AND expires_at<=now()
 	`)
 	return err
 }
 
-func (db *DB) ConnectExecSession(ctx context.Context, id string) error {
-	result, err := db.Pool.Exec(ctx, `
-		UPDATE exec_sessions SET status='running',connected_at=now(),command='[]'
-		WHERE id=$1 AND status='pending' AND expires_at>now()
-		  AND EXISTS (SELECT 1 FROM access_devices WHERE id=exec_sessions.device_id AND revoked_at IS NULL)
-	`, id)
-	if err != nil {
+// RecoverExpiredExecSessions marks only expired, owned running sessions as
+// failed. Unowned legacy rows are retained until their normal hard expiry.
+func (db *DB) RecoverExpiredExecSessions(ctx context.Context) error {
+	_, err := db.Pool.Exec(ctx, `
+		UPDATE exec_sessions SET status='failed',finished_at=now(),error_code='exec_owner_lost'
+		WHERE status='running' AND owner_id<>'' AND owner_token<>''
+		  AND owner_lease_until IS NOT NULL AND owner_lease_until<=now()
+	`)
+	return err
+}
+
+// ReconcileExecSessions gives every replica a bounded, idempotent recovery
+// trigger while it serves exec lifecycle traffic. Hard TTL takes precedence
+// over lease loss so a completed stream can never outlive authorization.
+func (db *DB) ReconcileExecSessions(ctx context.Context) error {
+	if err := db.ExpireExecSessions(ctx); err != nil {
 		return err
 	}
-	if result.RowsAffected() != 1 {
-		return pgx.ErrNoRows
+	return db.RecoverExpiredExecSessions(ctx)
+}
+
+// ConnectExecSession atomically changes a pending session to running and
+// binds it to one API runtime. A false result means another actor won or the
+// session is no longer eligible; it is not a database error.
+func (db *DB) ConnectExecSession(ctx context.Context, id string, claim ExecSessionClaim) (bool, error) {
+	if claim.OwnerID == "" || claim.OwnerToken == "" || claim.LeaseDuration <= 0 {
+		return false, errors.New("exec session claim is incomplete")
 	}
-	return nil
+	result, err := db.Pool.Exec(ctx, `
+		UPDATE exec_sessions
+		SET status='running',connected_at=now(),command='[]',owner_id=$2,owner_token=$3,
+		    owner_lease_until=now()+($4::bigint * interval '1 microsecond')
+		WHERE id=$1 AND status='pending' AND expires_at>now()
+		  AND EXISTS (SELECT 1 FROM access_devices WHERE id=exec_sessions.device_id AND revoked_at IS NULL)
+	`, id, claim.OwnerID, claim.OwnerToken, claim.LeaseDuration.Microseconds())
+	if err != nil {
+		return false, err
+	}
+	return result.RowsAffected() == 1, nil
+}
+
+// RenewExecSession extends a lease only for its current owner. This CAS is
+// the fencing boundary for a websocket that may have outlived its runtime.
+func (db *DB) RenewExecSession(ctx context.Context, id, ownerID, ownerToken string, leaseDuration time.Duration) (bool, error) {
+	if ownerID == "" || ownerToken == "" || leaseDuration <= 0 {
+		return false, errors.New("exec session lease renewal is incomplete")
+	}
+	result, err := db.Pool.Exec(ctx, `
+		UPDATE exec_sessions SET owner_lease_until=now()+($4::bigint * interval '1 microsecond')
+		WHERE id=$1 AND status='running' AND owner_id=$2 AND owner_token=$3
+		  AND owner_id<>'' AND owner_token<>'' AND owner_lease_until>now() AND expires_at>now()
+	`, id, ownerID, ownerToken, leaseDuration.Microseconds())
+	if err != nil {
+		return false, err
+	}
+	return result.RowsAffected() == 1, nil
 }
 
 func cancelActiveExecSessionsTx(ctx context.Context, tx pgx.Tx, column, value, errorCode string) ([]string, error) {
@@ -244,8 +309,28 @@ func (db *DB) FinishExecSession(ctx context.Context, id, status string, exitCode
 	return err
 }
 
+// FinishOwnedExecSession records normal stream completion only if the caller
+// still owns the running session. Cancellation and authorization revocation
+// intentionally use the separate ID-based path above.
+func (db *DB) FinishOwnedExecSession(ctx context.Context, id, ownerID, ownerToken, status string, exitCode *int, errorCode string) (bool, error) {
+	if ownerID == "" || ownerToken == "" {
+		return false, errors.New("exec session finish ownership is incomplete")
+	}
+	result, err := db.Pool.Exec(ctx, `
+		UPDATE exec_sessions SET status=$4,finished_at=now(),exit_code=$5,error_code=$6
+		WHERE id=$1 AND status='running' AND owner_id=$2 AND owner_token=$3
+		  AND owner_id<>'' AND owner_token<>'' AND owner_lease_until>now() AND expires_at>now()
+	`, id, ownerID, ownerToken, status, exitCode, errorCode)
+	if err != nil {
+		return false, err
+	}
+	return result.RowsAffected() == 1, nil
+}
+
 func (db *DB) ListExecSessions(ctx context.Context, deviceID string, all bool) ([]ExecSession, error) {
-	_ = db.ExpireExecSessions(ctx)
+	if err := db.ReconcileExecSessions(ctx); err != nil {
+		return nil, err
+	}
 	query := `SELECT ` + execSessionColumns + ` FROM exec_sessions`
 	args := []interface{}{}
 	if !all {

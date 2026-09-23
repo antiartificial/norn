@@ -1,9 +1,11 @@
 package worker
 
 import (
+	"context"
 	"os"
 	"path/filepath"
 	"slices"
+	"strings"
 	"testing"
 
 	"norn/v2/api/model"
@@ -30,6 +32,27 @@ func TestMaintenanceExecutorUsesOnlyAllowlistedCommands(t *testing.T) {
 		if !slices.Contains(env, expected) {
 			t.Errorf("environment missing %q: %#v", expected, env)
 		}
+	}
+}
+
+// A chatty maintenance script is drained while running: the operation keeps
+// its exit status and records bounded, explicitly truncated output.
+func TestMaintenanceExecutorBoundsOutputWhileRunning(t *testing.T) {
+	dir := t.TempDir()
+	platform := filepath.Join(dir, "platform-upgrade")
+	script := "#!/bin/sh\necho BEGIN\nhead -c 33554432 /dev/zero | tr '\\000' 'x'\necho\necho FINAL-LINE >&2\nexit 7\n"
+	if err := os.WriteFile(platform, []byte(script), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	executor := &CommandMaintenanceExecutor{PlatformScript: platform}
+	metadata, err := executor.Execute(context.Background(), &model.Operation{ID: "op-1", Kind: "platform.smoke"})
+	if err == nil || metadata["exitCode"] != 7 {
+		t.Fatalf("result = %v, %v", metadata["exitCode"], err)
+	}
+	output, _ := metadata["output"].(string)
+	if metadata["outputTruncated"] != true || metadata["outputBytes"].(int64) < 32<<20 || len(output) > maintenanceOutputLimit+128 ||
+		!strings.HasPrefix(output, "BEGIN") || !strings.HasSuffix(output, "FINAL-LINE") || !strings.Contains(output, "bytes of output truncated") {
+		t.Fatalf("output metadata: truncated=%v bytes=%v len=%d", metadata["outputTruncated"], metadata["outputBytes"], len(output))
 	}
 }
 

@@ -2655,6 +2655,8 @@ body {
   margin: 0;
   padding-left: 20px;
 }
+.deploy-group-result { display: grid; gap: 8px; margin-block-start: 12px; overflow-wrap: anywhere; }
+.deploy-group-result ul { margin: 0; padding-inline-start: 20px; }
 
 .incident-toolbar {
   align-items: center;

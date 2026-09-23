@@ -4,12 +4,34 @@ import (
 	"fmt"
 	"net/http"
 	"os"
+	"strings"
 
 	"github.com/go-chi/chi/v5"
+	nomadapi "github.com/hashicorp/nomad/api"
 
 	"norn/v2/api/model"
 	"norn/v2/api/nomad"
 )
+
+// periodicJobFor translates a scheduled process for resubmission. For an app
+// with delivered named databases the job references the periodic job's
+// promoted delivery revision, revalidated against the running targets; there
+// is no mutable fallback and no target substitution.
+func (h *Handler) periodicJobFor(r *http.Request, spec *model.InfraSpec, procName string, proc model.Process, imageTag string, env map[string]string) (*nomadapi.Job, error) {
+	region := spec.ResolvedRegions()[0]
+	revision := int64(0)
+	if spec.NamedDatabases() && nomad.HasRuntimeDatabases(spec) {
+		if h.pipeline == nil || h.pipeline.DatabaseTargets == nil {
+			return nil, fmt.Errorf("named databases require a database profile")
+		}
+		material, err := h.pipeline.RunningDeliveryRevision(r.Context(), spec, region.NomadRegion, spec.App+"-"+procName)
+		if err != nil {
+			return nil, err
+		}
+		revision = material.Revision
+	}
+	return nomad.TranslatePeriodicForRegionAt(spec, procName, proc, imageTag, env, region, revision), nil
+}
 
 type cronHistoryEntry struct {
 	Process  string          `json:"process"`
@@ -216,8 +238,17 @@ func (h *Handler) CronResume(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	// Re-submit periodic job
-	periodicJob := nomad.TranslatePeriodic(spec, req.Process, proc, imageTag, env)
+	// Re-submit periodic job; its templates read the delivery variable the
+	// latest deploy wrote, which no secret may shadow.
+	if conflicts := spec.DatabaseEnvConflicts(env); len(conflicts) > 0 {
+		writeError(w, http.StatusConflict, fmt.Sprintf("%s delivered by the database binding must not also come from app secrets", strings.Join(conflicts, ", ")))
+		return
+	}
+	periodicJob, err := h.periodicJobFor(r, spec, req.Process, proc, imageTag, env)
+	if err != nil {
+		writeError(w, http.StatusConflict, err.Error())
+		return
+	}
 	_, err = h.nomad.SubmitJob(periodicJob)
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, err.Error())
@@ -296,8 +327,16 @@ func (h *Handler) CronUpdateSchedule(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	// Re-submit periodic job with new schedule
-	periodicJob := nomad.TranslatePeriodic(spec, req.Process, proc, imageTag, env)
+	// Re-submit periodic job with new schedule (same delivery rule as resume)
+	if conflicts := spec.DatabaseEnvConflicts(env); len(conflicts) > 0 {
+		writeError(w, http.StatusConflict, fmt.Sprintf("%s delivered by the database binding must not also come from app secrets", strings.Join(conflicts, ", ")))
+		return
+	}
+	periodicJob, err := h.periodicJobFor(r, spec, req.Process, proc, imageTag, env)
+	if err != nil {
+		writeError(w, http.StatusConflict, err.Error())
+		return
+	}
 	_, err = h.nomad.SubmitJob(periodicJob)
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, err.Error())

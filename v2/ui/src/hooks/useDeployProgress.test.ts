@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { appendStepEvent, deployProgressReducer, upsertStep, type DeployProgressState } from './useDeployProgress.ts'
+import { appendStepEvent, applyDurableOperationSnapshot, deployProgressReducer, upsertStep, type DeployProgressState } from './useDeployProgress.ts'
 
 describe('deploy progress reducer', () => {
   it('upserts steps without dropping existing events', () => {
@@ -21,13 +21,13 @@ describe('deploy progress reducer', () => {
     expect(initial).toMatchObject({ appId: 'api', operation: 'deploy', status: 'running', sagaId: 's1' })
     expect(initial?.steps).toHaveLength(1)
 
-    const progressed = deployProgressReducer(initial, { type: 'deploy.progress', appId: 'api', payload: { step: 'build', message: 'pulling', node: 'n1' } }, 20)
+	const progressed = deployProgressReducer(initial, { type: 'deploy.progress', appId: 'api', payload: { step: 'build', message: 'pulling', node: 'n1', sagaId: 's1' } }, 20)
     expect(progressed?.steps[0].events?.[0]).toMatchObject({ message: 'pulling', timestamp: 20, node: 'n1' })
 
-    const completed = deployProgressReducer(progressed, { type: 'deploy.completed', appId: 'api', payload: {} }, 30)
+	const completed = deployProgressReducer(progressed, { type: 'deploy.completed', appId: 'api', payload: { sagaId: 's1' } }, 30)
     expect(completed?.status).toBe('deployed')
 
-    const failed = deployProgressReducer(progressed, { type: 'deploy.failed', appId: 'api', payload: { error: 'bad image' } }, 40)
+	const failed = deployProgressReducer(progressed, { type: 'deploy.failed', appId: 'api', payload: { error: 'bad image', sagaId: 's1' } }, 40)
     expect(failed?.status).toBe('failed')
     expect(failed?.error).toBe('bad image')
   })
@@ -37,4 +37,20 @@ describe('deploy progress reducer', () => {
     expect(deployProgressReducer(state, { type: 'preflight.completed', appId: 'web', payload: {} })?.status).toBe('passed')
     expect(deployProgressReducer(state, { type: 'preflight.failed', appId: 'web', payload: { message: 'invalid' } })?.error).toBe('invalid')
   })
+
+	it('ignores unrelated and stale events after a terminal accepted replay', () => {
+	  const terminal: DeployProgressState = { appId: 'api', operation: 'deploy', steps: [], status: 'deployed', sagaId: 's1', operationId: 'op-1' }
+	  expect(deployProgressReducer(terminal, { type: 'deploy.step', appId: 'worker', payload: { step: 'build', status: 'running', sagaId: 's2' } })).toBe(terminal)
+	  expect(deployProgressReducer(terminal, { type: 'deploy.step', appId: 'api', payload: { step: 'build', status: 'running', sagaId: 's1' } })).toBe(terminal)
+
+	  const running: DeployProgressState = { ...terminal, status: 'running' }
+	  expect(deployProgressReducer(running, { type: 'deploy.failed', appId: 'api', payload: { error: 'old failure', sagaId: 'old-saga' } })).toBe(running)
+	})
+
+	it('uses the durable operation snapshot as the terminal authority', () => {
+	  const running: DeployProgressState = { appId: 'api', operation: 'deploy', steps: [], status: 'running', operationId: 'op-1' }
+	  expect(applyDurableOperationSnapshot(running, { id: 'op-1', status: 'succeeded' })?.status).toBe('deployed')
+	  expect(applyDurableOperationSnapshot(running, { id: 'op-1', status: 'failed', lastError: 'build failed' })).toMatchObject({ status: 'failed', error: 'build failed', retryMode: 'new-intent' })
+	  expect(applyDurableOperationSnapshot(running, { id: 'other', status: 'failed' })).toBe(running)
+	})
 })

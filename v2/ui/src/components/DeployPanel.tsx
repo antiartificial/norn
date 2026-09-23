@@ -16,6 +16,10 @@ interface Props {
   status: string
   error?: string
   sagaId?: string
+  operationId?: string
+  replayed?: boolean
+  retryMode?: 'same-intent' | 'new-intent'
+  pollError?: string
   onClose: () => void
   onRetry: () => void
 }
@@ -49,7 +53,7 @@ function formatEventTime(ts: number | string): string {
   return d.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit' })
 }
 
-export function DeployPanel({ appId, operation, steps, status, error, sagaId, onClose, onRetry }: Props) {
+export function DeployPanel({ appId, operation, steps, status, error, sagaId, operationId, replayed, retryMode, pollError, onClose, onRetry }: Props) {
   const knownSteps = operation === 'preflight' ? PREFLIGHT_STEPS : DEPLOY_STEPS
   const isDone = status === 'deployed' || status === 'passed' || status === 'failed'
   const isSuccess = status === 'deployed' || status === 'passed'
@@ -211,15 +215,22 @@ export function DeployPanel({ appId, operation, steps, status, error, sagaId, on
           )
         })}
       </div>
+      {(operationId || replayed) && (
+        <p className="durable-receipt-banner" role="status">
+          {replayed ? 'Resolved existing accepted operation' : 'Accepted durable operation'}
+          {operationId ? ` ${operationId}` : ''}. Status: {status}.
+        </p>
+      )}
+      {pollError && <p className="deploy-error" role="status">{pollError}</p>}
       {status === 'failed' && error && (
-        <div className="deploy-error">
+        <div className="deploy-error" role="alert">
           <i className="fawsb fa-circle-exclamation" /> {error}
         </div>
       )}
       {status === 'failed' && (
         <div className="deploy-panel-footer">
           <button className="btn btn-primary" onClick={onRetry}>
-            <i className="fawsb fa-arrow-rotate-right" /> Retry
+            <i className="fawsb fa-arrow-rotate-right" /> {retryMode === 'same-intent' ? 'Retry same request' : `Start new ${operation}`}
           </button>
           <button className="btn" onClick={onClose}>Close</button>
         </div>

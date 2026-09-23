@@ -262,7 +262,7 @@ func (h *Handler) ContextDBOps(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	out.Snapshots = listSnapshotsForSpec(spec)
+	out.Snapshots = h.snapshotsForSpec(r.Context(), spec)
 	if h.db != nil {
 		if deployments, err := h.db.ListDeployments(r.Context(), appID, 5); err == nil {
 			out.Deployments = deployments

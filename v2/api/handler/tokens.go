@@ -95,7 +95,21 @@ type AccessPrincipal struct {
 	App         string      `json:"app,omitempty"`
 	Environment string      `json:"environment,omitempty"`
 	CI          *CIIdentity `json:"ci,omitempty"`
+	// Source records the authentication path that established this principal.
+	// It is set by trusted authentication middleware and is deliberately not
+	// serialized into API responses. Acceptance code must not infer provenance
+	// from Subject, which is only a display label for several credential types.
+	Source AccessPrincipalSource `json:"-"`
 }
+
+type AccessPrincipalSource string
+
+const (
+	AccessPrincipalSourceCloudflareAccess AccessPrincipalSource = "cloudflare-access"
+	AccessPrincipalSourceSharedAPI        AccessPrincipalSource = "shared-api-credential"
+	AccessPrincipalSourceManagedToken     AccessPrincipalSource = "managed-token"
+	AccessPrincipalSourceUnmanagedLegacy  AccessPrincipalSource = "unmanaged-legacy-token"
+)
 
 type accessPrincipalContextKey struct{}
 
@@ -319,5 +333,11 @@ func (h *Handler) VerifyAccessToken(token string) (*AccessPrincipal, bool) {
 		Subject: claims.Sub, TokenID: claims.Jti, DeviceID: claims.Did, Scopes: claims.Scopes,
 		ExpiresAt: time.Unix(claims.Exp, 0).UTC(), Legacy: !modern && len(claims.Scopes) == 0,
 		App: claims.App, Environment: claims.Environment, CI: claims.CI,
+		Source: func() AccessPrincipalSource {
+			if claims.Managed {
+				return AccessPrincipalSourceManagedToken
+			}
+			return AccessPrincipalSourceUnmanagedLegacy
+		}(),
 	}, true
 }

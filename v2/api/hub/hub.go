@@ -3,6 +3,7 @@ package hub
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"log"
 	"net/http"
@@ -14,6 +15,8 @@ import (
 
 	"github.com/gorilla/websocket"
 )
+
+var errReplayPageExceeded = errors.New("event replay exceeds one page")
 
 type Event struct {
 	ID        int64       `json:"id,omitempty"`
@@ -72,12 +75,14 @@ type client struct {
 	send      chan []byte
 	filter    eventFilter
 	heartbeat time.Duration
+	cursor    int64
 }
 
 type registration struct {
 	client *client
 	after  int64
 	replay bool
+	ready  chan error
 }
 
 type Hub struct {
@@ -89,7 +94,6 @@ type Hub struct {
 	upgrader       websocket.Upgrader
 	store          EventStore
 	externalCursor int64
-	deliveredIDs   map[int64]struct{}
 }
 
 func New(allowedOrigins []string) *Hub {
@@ -99,11 +103,10 @@ func New(allowedOrigins []string) *Hub {
 	}
 
 	return &Hub{
-		clients:      make(map[*client]bool),
-		broadcast:    make(chan Event, 256),
-		register:     make(chan registration),
-		unregister:   make(chan *client),
-		deliveredIDs: make(map[int64]struct{}),
+		clients:    make(map[*client]bool),
+		broadcast:  make(chan Event, 256),
+		register:   make(chan registration),
+		unregister: make(chan *client),
 		upgrader: websocket.Upgrader{
 			CheckOrigin: func(r *http.Request) bool { return OriginAllowed(r, allowed) },
 		},
@@ -143,39 +146,7 @@ func (h *Hub) Run() {
 	for {
 		select {
 		case registration := <-h.register:
-			c := registration.client
-			replayReady := true
-			if registration.replay && h.store != nil {
-				events, err := h.store.ListHubEventsAfter(context.Background(), registration.after, 500)
-				if err != nil {
-					log.Printf("hub: replay after %d: %v", registration.after, err)
-				} else {
-					for _, event := range events {
-						if !c.filter.allows(event) {
-							continue
-						}
-						data, marshalErr := json.Marshal(event)
-						if marshalErr != nil {
-							continue
-						}
-						select {
-						case c.send <- data:
-						default:
-							replayReady = false
-						}
-						if !replayReady {
-							break
-						}
-					}
-				}
-			}
-			if !replayReady {
-				close(c.send)
-				continue
-			}
-			h.mu.Lock()
-			h.clients[c] = true
-			h.mu.Unlock()
+			registration.ready <- h.registerClient(registration)
 		case c := <-h.unregister:
 			h.mu.Lock()
 			if _, ok := h.clients[c]; ok {
@@ -184,21 +155,76 @@ func (h *Hub) Run() {
 			}
 			h.mu.Unlock()
 		case event := <-h.broadcast:
-			if event.Timestamp.IsZero() {
-				event.Timestamp = time.Now().UTC()
-			}
-			if h.store != nil {
-				if err := h.store.AppendHubEvent(context.Background(), &event); err != nil {
-					log.Printf("hub: persist event: %v", err)
-				} else if event.ID > 0 {
-					h.deliveredIDs[event.ID] = struct{}{}
-				}
-			}
-			h.deliver(event)
+			h.persistAndDeliver(event)
 		case <-externalPoll.C:
 			h.pollExternalEvents()
 		}
 	}
+}
+
+func (h *Hub) persistAndDeliver(event Event) {
+	if event.Timestamp.IsZero() {
+		event.Timestamp = time.Now().UTC()
+	}
+	if h.store == nil {
+		h.deliver(event)
+		return
+	}
+	if err := h.store.AppendHubEvent(context.Background(), &event); err != nil {
+		log.Printf("hub: persist event: %v", err)
+		return
+	}
+	// The append protocol serializes ID allocation through commit. Drain from
+	// the last contiguous cursor so externally committed rows always precede
+	// this local row on every replica.
+	h.pollExternalEvents()
+}
+
+// registerClient establishes the client's durable stream boundary before the
+// WebSocket upgrade is exposed to the peer. The Hub event loop calls this
+// synchronously, so a local broadcast is either behind the captured cursor and
+// excluded or is processed after the client has joined the live set.
+func (h *Hub) registerClient(registration registration) error {
+	c := registration.client
+	c.cursor = registration.after
+	if h.store != nil {
+		if registration.replay {
+			events, err := h.store.ListHubEventsAfter(context.Background(), registration.after, 501)
+			if err != nil {
+				return fmt.Errorf("replay after %d: %w", registration.after, err)
+			}
+			if len(events) > 500 {
+				return errReplayPageExceeded
+			}
+			for _, event := range events {
+				if event.ID > c.cursor {
+					c.cursor = event.ID
+				}
+				if !c.filter.allows(event) {
+					continue
+				}
+				data, marshalErr := json.Marshal(event)
+				if marshalErr != nil {
+					continue
+				}
+				select {
+				case c.send <- data:
+				default:
+					return fmt.Errorf("replay exceeds client buffer")
+				}
+			}
+		} else {
+			cursor, err := h.store.LatestHubEventID(context.Background())
+			if err != nil {
+				return fmt.Errorf("capture live cursor: %w", err)
+			}
+			c.cursor = cursor
+		}
+	}
+	h.mu.Lock()
+	h.clients[c] = true
+	h.mu.Unlock()
+	return nil
 }
 
 func (h *Hub) pollExternalEvents() {
@@ -214,11 +240,7 @@ func (h *Hub) pollExternalEvents() {
 		if event.ID > h.externalCursor {
 			h.externalCursor = event.ID
 		}
-		if _, delivered := h.deliveredIDs[event.ID]; delivered {
-			delete(h.deliveredIDs, event.ID)
-			continue
-		}
-		h.deliver(event)
+		h.deliverExternal(event)
 	}
 }
 
@@ -231,6 +253,36 @@ func (h *Hub) deliver(event Event) {
 	h.mu.Lock()
 	defer h.mu.Unlock()
 	for c := range h.clients {
+		if !c.filter.allows(event) {
+			continue
+		}
+		select {
+		case c.send <- msg:
+		default:
+			close(c.send)
+			delete(h.clients, c)
+		}
+	}
+}
+
+// deliverExternal advances the contiguous durable cursor observed through the
+// store poller. Local broadcasts may be assigned a newer database ID before an
+// older external event is polled, so they must not advance this watermark.
+func (h *Hub) deliverExternal(event Event) {
+	msg, err := json.Marshal(event)
+	if err != nil {
+		log.Printf("hub: marshal external event: %v", err)
+		return
+	}
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	for c := range h.clients {
+		if event.ID > 0 {
+			if event.ID <= c.cursor {
+				continue
+			}
+			c.cursor = event.ID
+		}
 		if !c.filter.allows(event) {
 			continue
 		}
@@ -291,18 +343,35 @@ func (h *Hub) HandleConnect(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 	}
+	// One replay page fits without blocking the hub's single event loop. Slow
+	// clients are disconnected by the non-blocking replay/broadcast paths.
+	c := &client{send: make(chan []byte, 512), filter: filter, heartbeat: heartbeat}
+	ready := make(chan error, 1)
+	select {
+	case h.register <- registration{client: c, after: after, replay: replay, ready: ready}:
+	case <-r.Context().Done():
+		return
+	}
+	if registerErr := <-ready; registerErr != nil {
+		close(c.send)
+		log.Printf("hub: register stream: %v", registerErr)
+		if errors.Is(registerErr, errReplayPageExceeded) {
+			writeStreamProblem(w, http.StatusConflict, "event_replay_too_large", "more than one replay page is pending; refresh authoritative state and reconnect from the current stream head", nil)
+			return
+		}
+		writeStreamProblem(w, http.StatusServiceUnavailable, "event_store_unavailable", "the event stream could not establish a durable cursor", nil)
+		return
+	}
 	conn, err := h.upgrader.Upgrade(w, r, nil)
 	if err != nil {
+		h.unregister <- c
 		log.Printf("ws upgrade: %v", err)
 		return
 	}
+	c.conn = conn
 	conn.SetReadLimit(64 << 10)
 
-	// One replay page fits without blocking the hub's single event loop. Slow
-	// clients are disconnected by the non-blocking replay/broadcast paths.
-	c := &client{conn: conn, send: make(chan []byte, 512), filter: filter, heartbeat: heartbeat}
 	go c.writePump()
-	h.register <- registration{client: c, after: after, replay: replay}
 	go c.readPump(h)
 }
 

@@ -29,6 +29,7 @@ import (
 	"norn/v2/api/config"
 	"norn/v2/api/consul"
 	"norn/v2/api/contract"
+	"norn/v2/api/effect/supervisor"
 	"norn/v2/api/handler"
 	"norn/v2/api/hub"
 	"norn/v2/api/nomad"
@@ -37,6 +38,7 @@ import (
 	"norn/v2/api/redpanda"
 	"norn/v2/api/saga"
 	"norn/v2/api/secrets"
+	"norn/v2/api/startup"
 	"norn/v2/api/storage"
 	"norn/v2/api/store"
 	"norn/v2/api/watch"
@@ -44,10 +46,65 @@ import (
 )
 
 func main() {
+	if handled, err := startup.WriteContractProbe(os.Args[1:], os.Stdout); handled {
+		if err != nil {
+			fmt.Fprintln(os.Stderr, err)
+			os.Exit(1)
+		}
+		return
+	}
+	startupCfg, err := startup.Parse(os.Getenv)
+	if err != nil {
+		log.Fatalf("startup configuration: %v", err)
+	}
 	cfg := config.Load()
+	databaseID := databaseIdentity(cfg.DatabaseURL, cfg.AuditSigningKey)
 	if err := validateControlSecurity(cfg); err != nil {
 		log.Fatalf("security configuration: %v", err)
 	}
+	if startupCfg.StartupMode == startup.ModePassive {
+		if err := validatePassiveBind(cfg.BindAddr); err != nil {
+			log.Fatalf("startup configuration: %v", err)
+		}
+	}
+
+	// Establish schema compatibility before telemetry, runtime clients,
+	// recovery, watchers, or workers. Passive mode must remain a read-only
+	// database check and exposes only its three loopback status routes.
+	db, err := store.Connect(cfg.DatabaseURL)
+	if err != nil {
+		log.Fatalf("database: %v", err)
+	}
+	defer db.Close()
+	migrator, err := store.NewControlSchemaMigrator(db)
+	if err != nil {
+		log.Fatalf("schema migration catalog: %v", err)
+	}
+	schemaStatus, err := startup.ApplySchemaMode(context.Background(), migrator, startupCfg)
+	if err != nil {
+		log.Fatalf("schema: %v", err)
+	}
+	if startupCfg.SchemaMode == startup.SchemaModeMigrateOnly {
+		log.Printf("schema migration complete at version %d", schemaStatus.CurrentMigrationVersion)
+		return
+	}
+	if startupCfg.StartupMode == startup.ModePassive {
+		srv := newPassiveServer(cfg.BindAddr, cfg.Port, Version, databaseID, schemaStatus, startupCfg)
+		go func() {
+			log.Printf("norn %s passive schema status listening on %s", Version, srv.Addr)
+			if err := srv.ListenAndServe(); err != nil && err != http.ErrServerClosed {
+				log.Fatalf("passive server: %v", err)
+			}
+		}()
+		quit := make(chan os.Signal, 1)
+		signal.Notify(quit, syscall.SIGINT, syscall.SIGTERM)
+		<-quit
+		shutdownCtx, shutdownCancel := context.WithTimeout(context.Background(), 10*time.Second)
+		defer shutdownCancel()
+		_ = srv.Shutdown(shutdownCtx)
+		return
+	}
+
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	shutdownOTEL, err := observe.Setup(ctx, observe.ConfigFromEnv("norn-api"))
 	cancel()
@@ -65,25 +122,13 @@ func main() {
 
 	cloudflared.SetConfigPath(cfg.CloudflaredConfig)
 
-	// Database
-	db, err := store.Connect(cfg.DatabaseURL)
-	if err != nil {
-		log.Fatalf("database: %v", err)
-	}
-	defer db.Close()
-
-	if err := store.Migrate(db); err != nil {
-		log.Fatalf("migration: %v", err)
+	if err := db.ReconcileExecSessions(context.Background()); err != nil {
+		log.Printf("WARNING: exec session lease recovery: %v", err)
 	}
 
-	if os.Getenv("NORN_SKIP_DEPLOYMENT_RECOVERY") == "true" {
-		log.Println("deployment recovery skipped")
-	} else if err := db.RecoverInFlightDeployments(context.Background()); err != nil {
-		log.Printf("WARNING: deployment recovery: %v", err)
-	}
 	if os.Getenv("NORN_SKIP_OPERATION_RECOVERY") == "true" {
 		log.Println("operation recovery skipped")
-	} else if err := db.RecoverInFlightOperations(context.Background()); err != nil {
+	} else if err := db.RecoverExpiredOperations(context.Background()); err != nil {
 		log.Printf("WARNING: operation recovery: %v", err)
 	}
 
@@ -175,11 +220,37 @@ func main() {
 	notifier := beacon.NewNotifier(db)
 	beaconSvc.SetNotifier(notifier)
 
-	// Saga store
-	sagaStore := saga.NewPostgresStore(db.Pool)
+	// Saga store (archive-aware reads when an evidence archive is configured)
+	historyStore, evidenceArchiver, err := configureEvidenceArchive(cfg, db, saga.NewPostgresStore(db.Pool))
+	if err != nil {
+		log.Fatalf("evidence archive: %v", err)
+	}
+	if err := applyEvidenceReservePolicy(context.Background(), cfg, db, evidenceArchiver != nil); err != nil {
+		log.Fatalf("evidence reserve: %v", err)
+	}
+	sagaStore := historyStore
 
 	// Secrets manager
 	sec := secrets.NewManager(cfg.AppsDir)
+
+	databaseTargets, err := configureDatabaseTargets(context.Background(), cfg, db)
+	if err != nil {
+		log.Fatalf("database targets: %v", err)
+	}
+	if databaseTargets == nil {
+		log.Println("application databases use v2 routing (NORN_DATABASE_PROFILE unset)")
+	} else {
+		log.Printf("application database work binds catalog targets for profile %s", databaseTargets.ProfileID)
+	}
+	buildTestEffects, err := configureBuildTestEffects(cfg, db, supervisor.NewCgroupBackend)
+	if err != nil {
+		log.Fatalf("build.test execution: %v", err)
+	}
+	if buildTestEffects == nil {
+		log.Println("build.test runs in legacy unfenced mode (NORN_BUILD_TEST_EXECUTION=legacy-unfenced)")
+	} else {
+		log.Println("build.test runs through the supervised external-effect executor")
+	}
 
 	// Deploy pipeline
 	pipe := &pipeline.Pipeline{
@@ -210,6 +281,8 @@ func main() {
 		Beacon:                         beaconSvc,
 		Storage:                        s3Client,
 		Redpanda:                       redpandaClient,
+		BuildTestEffects:               buildTestEffects,
+		DatabaseTargets:                databaseTargets,
 	}
 
 	workerCtx, workerCancel := context.WithCancel(context.Background())
@@ -220,6 +293,10 @@ func main() {
 		opWorker := worker.NewOperationWorker(db, pipe)
 		go opWorker.Run(workerCtx)
 	}
+	if evidenceArchiver != nil {
+		log.Printf("evidence archive enabled in %s mode", evidenceArchiver.Mode)
+		go runEvidenceArchiver(workerCtx, evidenceArchiver, time.Minute)
+	}
 	if os.Getenv("NORN_SKIP_NOMAD_WATCHER") == "true" {
 		log.Println("nomad allocation watcher skipped")
 	} else {
@@ -229,6 +306,19 @@ func main() {
 
 	// Handler
 	h := handler.New(db, nomadClient, consulClient, ws, cfg, pipe, beaconSvc, sec, sagaStore, s3Client, redpandaClient)
+	pipe.SetOperationStore(h.OperationStore())
+	logSpool, logCollector, err := configureLogCollection(cfg, nomadClient)
+	if err != nil {
+		log.Fatalf("log collection: %v", err)
+	}
+	if logSpool != nil {
+		defer logSpool.Close()
+		h.SetLogSpool(logSpool)
+	}
+	if logCollector != nil {
+		log.Printf("log collection enabled in %s", cfg.LogSpoolDir)
+		go logCollector.Run(workerCtx, cfg.LogCollectInterval)
+	}
 
 	// Router
 	r := chi.NewRouter()
@@ -259,6 +349,7 @@ func main() {
 	}
 	r.Use(h.MutationAuditMiddleware)
 	r.Use(h.ProductionMutationAdmissionMiddleware)
+	r.Use(h.EvidenceReserveAdmissionMiddleware)
 	r.Use(h.AccessMiddleware)
 	r.Get("/metrics", h.Metrics)
 
@@ -268,6 +359,10 @@ func main() {
 		r.Get("/version", func(w http.ResponseWriter, r *http.Request) {
 			w.Header().Set("Content-Type", "application/json")
 			json.NewEncoder(w).Encode(map[string]string{"version": Version})
+		})
+		r.Get("/schema", func(w http.ResponseWriter, r *http.Request) {
+			w.Header().Set("Content-Type", "application/json")
+			json.NewEncoder(w).Encode(schemaPayload(Version, databaseID, schemaStatus, startupCfg))
 		})
 
 		r.Post("/webhooks/{provider}", h.Webhook)
@@ -377,6 +472,13 @@ func main() {
 		r.With(handler.ValidateAppID).Post("/v1/apps/{id}/snapshots/retention", h.QueueAppSnapshotRetention)
 		r.With(handler.ValidateAppID).Post("/v1/apps/{id}/snapshots/{snapshot}/restore", h.QueueAppSnapshotRestore)
 		r.With(handler.ValidateAppID).Post("/v1/apps/{id}/migrations", h.QueueAppMigration)
+		r.With(handler.ValidateAppID).Get("/v1/apps/{id}/databases/health", h.AppDatabaseHealth)
+		r.With(handler.ValidateAppID).Post("/v1/apps/{id}/databases/baseline", h.RecordDatabaseBaseline)
+		r.With(handler.ValidateAppID).Get("/v1/apps/{id}/sagas/{sagaId}", h.GetAppSagaHistory)
+		r.With(handler.ValidateAppID).Get("/v1/apps/{id}/logs/history", h.GetAppLogHistory)
+		r.Get("/v1/evidence/archive", h.GetEvidenceArchiveHealth)
+		r.Get("/v1/database/catalog", h.GetDatabaseCatalog)
+		r.Post("/v1/database/catalog/activations", h.ActivateDatabaseCatalog)
 		r.With(handler.ValidateAppID).Post("/v1/apps/{id}/rollbacks", h.QueueAppRollback)
 		r.Post("/v1/validate/infraspec", h.ValidateInfraSpecDocument)
 		r.Post("/v1/fleet/validate", h.ValidateFleetDocument)
@@ -692,14 +794,14 @@ func bearerAuth(token string, h *handler.Handler, requireExplicit bool) func(htt
 					subject = strings.TrimSpace(claims.Subject)
 				}
 				next.ServeHTTP(w, handler.WithAccessPrincipal(r, &handler.AccessPrincipal{
-					Subject: subject, Scopes: []string{handler.ScopeAdmin},
+					Subject: subject, Scopes: []string{handler.ScopeAdmin}, Source: handler.AccessPrincipalSourceCloudflareAccess,
 				}))
 				return
 			}
 			authorization := r.Header.Get("Authorization")
 			if token != "" && strings.HasPrefix(authorization, "Bearer ") && subtle.ConstantTimeCompare([]byte(authorization[7:]), []byte(token)) == 1 {
 				next.ServeHTTP(w, handler.WithAccessPrincipal(r, &handler.AccessPrincipal{
-					Subject: "control-plane", Scopes: []string{handler.ScopeAdmin}, Legacy: true,
+					Subject: "control-plane", Scopes: []string{handler.ScopeAdmin}, Legacy: true, Source: handler.AccessPrincipalSourceSharedAPI,
 				}))
 				return
 			}
@@ -869,6 +971,7 @@ func writeControlCapabilities(w http.ResponseWriter, cfg *config.Config) {
 			"platformRollbacks": "/api/v1/platform/rollbacks", "platformSmoke": "/api/v1/platform/smoke", "hostAssurances": "/api/v1/host/assurances",
 			"openapi": "/api/v1/openapi.yaml", "eventInfo": "/api/v1/events/info", "apps": "/api/v1/apps", "appCreation": "/api/v1/apps", "appDeployment": "/api/v1/apps/{id}/deployment",
 			"appSnapshots": "/api/v1/apps/{id}/snapshots", "appSnapshotRetention": "/api/v1/apps/{id}/snapshots/retention", "appSnapshotRestore": "/api/v1/apps/{id}/snapshots/{snapshot}/restore", "appMigrations": "/api/v1/apps/{id}/migrations", "appRollbacks": "/api/v1/apps/{id}/rollbacks",
+			"appDatabaseHealth": "/api/v1/apps/{id}/databases/health", "databaseCatalog": "/api/v1/database/catalog", "databaseCatalogActivations": "/api/v1/database/catalog/activations",
 			"releases": "/api/v1/releases", "hostStatus": "/api/v1/host/status", "hostMetrics": "/api/v1/host/metrics", "productionReadiness": "/api/v1/production/readiness", "recoveryDrills": "/api/v1/production/drills", "mutationAudit": "/api/v1/audit/mutations", "enrollments": "/api/v1/enrollments",
 			"devices": "/api/v1/devices", "tokenRotate": "/api/v1/auth/rotate", "tokenRevoke": "/api/v1/auth/revoke",
 			"stepUpChallenges": "/api/v1/auth/step-up/challenges", "execSessions": "/api/v1/exec-sessions",

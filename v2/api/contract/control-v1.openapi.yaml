@@ -196,7 +196,7 @@ paths:
       operationId: recordFleetReconciliation
       description: Appends a plan-, commit-, state-, and evidence-bound recovery checkpoint. GitHub Actions workloads require fleet:operate and an active, unexpired runner-attempt lease at the exact current phase; interactive api:write remains available for operator recovery.
       parameters:
-        - $ref: '#/components/parameters/IdempotencyKey'
+        - $ref: '#/components/parameters/RequiredIdempotencyKey'
       requestBody:
         required: true
         content:
@@ -229,6 +229,8 @@ paths:
     post:
       operationId: createFleetRunnerAttempt
       description: Atomically acquires or resumes one bounded heartbeat lease for a verified GitHub Actions fleet:operate runner. The source dispatch nonce binds recovery to the original apply run.
+      parameters:
+        - { $ref: '#/components/parameters/RequiredIdempotencyKey' }
       requestBody:
         required: true
         content: { application/json: { schema: { $ref: '#/components/schemas/FleetRunnerAttemptCreateRequest' } } }
@@ -318,7 +320,7 @@ paths:
     post:
       operationId: queueReleasePreflight
       description: Staging only. Requires release:stage and an Idempotency-Key.
-      parameters: [ { $ref: '#/components/parameters/IdempotencyKey' } ]
+      parameters: [ { $ref: '#/components/parameters/RequiredIdempotencyKey' } ]
       requestBody:
         required: true
         content: { application/json: { schema: { $ref: '#/components/schemas/ReleaseRequest' } } }
@@ -332,7 +334,7 @@ paths:
     post:
       operationId: queueReleaseDeployment
       description: Staging only. Requires release:stage and an Idempotency-Key. A supplied digest is adopted without rebuilding.
-      parameters: [ { $ref: '#/components/parameters/IdempotencyKey' } ]
+      parameters: [ { $ref: '#/components/parameters/RequiredIdempotencyKey' } ]
       requestBody:
         required: true
         content: { application/json: { schema: { $ref: '#/components/schemas/ReleaseRequest' } } }
@@ -353,7 +355,7 @@ paths:
     post:
       operationId: createReleaseQualification
       description: Staging only. Signs a portable qualification after verifying the persisted deployment was successful, staging-scoped, and immutable.
-      parameters: [ { $ref: '#/components/parameters/IdempotencyKey' } ]
+      parameters: [ { $ref: '#/components/parameters/RequiredIdempotencyKey' } ]
       requestBody:
         required: true
         content: { application/json: { schema: { $ref: '#/components/schemas/ReleaseQualificationRequest' } } }
@@ -368,7 +370,7 @@ paths:
     post:
       operationId: queueReleasePromotion
       description: Production only. Verifies and single-consumes a fresh staging qualification against NORN_TRUSTED_QUALIFICATION_SIGNING_KEYS, then queues the exact non-empty source/artifact through the normal durable deployment pipeline.
-      parameters: [ { $ref: '#/components/parameters/IdempotencyKey' } ]
+      parameters: [ { $ref: '#/components/parameters/RequiredIdempotencyKey' } ]
       requestBody:
         required: true
         content: { application/json: { schema: { $ref: '#/components/schemas/ReleasePromotionRequest' } } }
@@ -383,7 +385,7 @@ paths:
     post:
       operationId: queueReleaseRollback
       description: Production only. Requires release:rollback, confirmation, and an exact earlier production-promoted digest; never rebuilds.
-      parameters: [ { $ref: '#/components/parameters/IdempotencyKey' } ]
+      parameters: [ { $ref: '#/components/parameters/RequiredIdempotencyKey' } ]
       requestBody:
         required: true
         content: { application/json: { schema: { $ref: '#/components/schemas/ReleaseRollbackRequest' } } }
@@ -398,6 +400,7 @@ paths:
       - $ref: '#/components/parameters/AppID'
     get:
       operationId: listAppSnapshots
+      description: With a database profile, lists only snapshots whose provenance names each database's current catalog target (the layer restore uses); otherwise the v2 listing by database name.
       responses:
         '200':
           description: Local PostgreSQL snapshots, newest first
@@ -410,6 +413,7 @@ paths:
       description: Queues a resumable manual database snapshot. Requires api:write.
       parameters:
         - { name: Idempotency-Key, in: header, required: true, schema: { type: string, minLength: 1, maxLength: 200 } }
+        - $ref: '#/components/parameters/DatabaseSelection'
       responses:
         '200': { $ref: '#/components/responses/AcceptedOperation' }
         '202': { $ref: '#/components/responses/AcceptedOperation' }
@@ -422,6 +426,7 @@ paths:
       parameters:
         - $ref: '#/components/parameters/AppID'
         - { name: Idempotency-Key, in: header, required: true, schema: { type: string, minLength: 1, maxLength: 200 } }
+        - $ref: '#/components/parameters/DatabaseSelection'
       requestBody:
         required: true
         content:
@@ -445,6 +450,7 @@ paths:
         - $ref: '#/components/parameters/AppID'
         - { name: snapshot, in: path, required: true, description: Exact filename returned by snapshot inventory, or a legacy timestamp when it identifies exactly one snapshot., schema: { type: string, pattern: '^([0-9]{8}T[0-9]{6}|[A-Za-z0-9_.-]{1,240}[.]dump)$' } }
         - { name: Idempotency-Key, in: header, required: true, schema: { type: string, minLength: 1, maxLength: 200 } }
+        - $ref: '#/components/parameters/DatabaseSelection'
       requestBody:
         required: true
         content:
@@ -479,6 +485,122 @@ paths:
         '200': { $ref: '#/components/responses/AcceptedOperation' }
         '202': { $ref: '#/components/responses/AcceptedOperation' }
         '400': { $ref: '#/components/responses/Problem' }
+        '409': { $ref: '#/components/responses/Problem' }
+  /api/v1/apps/{id}/databases/health:
+    get:
+      operationId: getAppDatabaseHealth
+      description: Probes each database the app declares at its current catalog target (connects with private material and verifies database and role). Independent of Consul service health; engines without an adapter report unsupported. Requires api:read and a database profile.
+      parameters:
+        - $ref: '#/components/parameters/AppID'
+      responses:
+        '200':
+          description: Per-database probe results
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [app, databases]
+                properties:
+                  app: { type: string }
+                  databases:
+                    type: array
+                    items:
+                      type: object
+                      required: [database, status, checkedAt]
+                      properties:
+                        database: { type: string }
+                        status: { type: string, enum: [ok, failed, unsupported] }
+                        databaseName: { type: string }
+                        serviceId: { type: string }
+                        bindingId: { type: string }
+                        bindingGeneration: { type: integer, format: int64 }
+                        engine: { type: string }
+                        serverVersion: { type: string }
+                        detail: { type: string }
+                        checkedAt: { type: string, format: date-time }
+        '404': { $ref: '#/components/responses/Problem' }
+        '409': { $ref: '#/components/responses/Problem' }
+  /api/v1/apps/{id}/sagas/{sagaId}:
+    get:
+      operationId: getAppSagaHistory
+      description: Complete saga history (hot events merged with verified archived bundles). Requires api:read; an app-bound credential may read only its own app; a saga is served only under its owning app. Unverifiable archived history returns 503 rather than partial history.
+      parameters:
+        - $ref: '#/components/parameters/AppID'
+        - { name: sagaId, in: path, required: true, schema: { type: string } }
+      responses:
+        '200': { description: Saga history, content: { application/json: { schema: { type: object } } } }
+        '403': { $ref: '#/components/responses/Problem' }
+        '404': { $ref: '#/components/responses/Problem' }
+        '503': { $ref: '#/components/responses/Problem' }
+  /api/v1/apps/{id}/logs/history:
+    get:
+      operationId: getAppLogHistory
+      description: Collected diagnostic output of the app, oldest first, labelled by node, job, allocation, task group, task, stream, log file and offset. Requires api:read; an app-bound credential may read only its own app. Bounded (limit and scan budget, with a truncated flag); dropped diagnostics are reported as gap records and loss counters. 503 when log collection is not configured.
+      parameters:
+        - $ref: '#/components/parameters/AppID'
+        - { name: alloc, in: query, schema: { type: string } }
+        - { name: task, in: query, schema: { type: string } }
+        - { name: stream, in: query, schema: { type: string, enum: [stdout, stderr] } }
+        - { name: since, in: query, schema: { type: string, format: date-time } }
+        - { name: limit, in: query, schema: { type: integer, minimum: 1, maximum: 5000 } }
+      responses:
+        '200': { description: Labelled log records, content: { application/json: { schema: { type: object } } } }
+        '400': { $ref: '#/components/responses/Problem' }
+        '403': { $ref: '#/components/responses/Problem' }
+        '503': { $ref: '#/components/responses/Problem' }
+  /api/v1/evidence/archive:
+    get:
+      operationId: getEvidenceArchiveHealth
+      description: Evidence archive status (pending, verified and pruned bundles, oldest pending, latest publication error) and the durable evidence reserve (policy, live backlog, archive capacity, and whether audited mutations are currently refused). Requires api:read.
+      responses:
+        '200': { description: Archive health, content: { application/json: { schema: { type: object } } } }
+        '503': { $ref: '#/components/responses/Problem' }
+  /api/v1/apps/{id}/databases/baseline:
+    post:
+      operationId: recordAppDatabaseBaseline
+      description: Accepts an audited attestation that the app's running writers already use its current named targets (legacy-to-named transition). Execution probes each writer database. It cannot contradict recorded targets and is not a cutover. Requires platform:operate and a database profile.
+      parameters:
+        - $ref: '#/components/parameters/AppID'
+        - { name: Idempotency-Key, in: header, required: true, schema: { type: string, minLength: 1, maxLength: 200 } }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { type: object, required: [confirm], properties: { confirm: { const: true } } }
+      responses:
+        '200': { $ref: '#/components/responses/AcceptedOperation' }
+        '202': { $ref: '#/components/responses/AcceptedOperation' }
+        '400': { $ref: '#/components/responses/Problem' }
+        '403': { $ref: '#/components/responses/Problem' }
+        '409': { $ref: '#/components/responses/Problem' }
+  /api/v1/database/catalog:
+    get:
+      operationId: getDatabaseCatalog
+      description: Redacted inspection of the active database catalog revision (identity, endpoints, generations, whether credential/TLS material is configured; never secrets or secret references). Requires api:read.
+      responses:
+        '200': { description: Redacted catalog inspection, content: { application/json: { schema: { type: object } } } }
+        '404': { $ref: '#/components/responses/Problem' }
+  /api/v1/database/catalog/activations:
+    post:
+      operationId: activateDatabaseCatalog
+      description: Accepts a norn.database/v1alpha1 catalog activation as a durable, idempotent operation bound to the request's audit receipt. The catalog and its transition from expectedRevision are validated before acceptance; the operation worker applies it with an expected-revision compare-and-set. Requires platform:operate.
+      parameters:
+        - { name: Idempotency-Key, in: header, required: true, schema: { type: string, minLength: 1, maxLength: 200 } }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [expectedRevision, catalog]
+              properties:
+                expectedRevision: { type: integer, format: int64, minimum: 0 }
+                catalog: { type: object }
+      responses:
+        '200': { $ref: '#/components/responses/AcceptedOperation' }
+        '202': { $ref: '#/components/responses/AcceptedOperation' }
+        '400': { $ref: '#/components/responses/Problem' }
+        '403': { $ref: '#/components/responses/Problem' }
         '409': { $ref: '#/components/responses/Problem' }
   /api/v1/apps/{id}/rollbacks:
     post:
@@ -942,26 +1064,36 @@ paths:
   /api/v1/platform/preflights:
     post:
       operationId: queuePlatformPreflight
-      parameters: [ { $ref: '#/components/parameters/IdempotencyKey' } ]
+      parameters: [ { $ref: '#/components/parameters/RequiredIdempotencyKey' } ]
       requestBody:
         content:
           application/json:
             schema: { $ref: '#/components/schemas/PlatformRefRequest' }
-      responses: { '202': { $ref: '#/components/responses/AcceptedOperation' } }
+      responses:
+        '200': { $ref: '#/components/responses/AcceptedOperation' }
+        '202': { $ref: '#/components/responses/AcceptedOperation' }
+        '400': { $ref: '#/components/responses/Problem' }
+        '409': { $ref: '#/components/responses/Problem' }
+        '503': { $ref: '#/components/responses/Problem' }
   /api/v1/platform/upgrades:
     post:
       operationId: queuePlatformUpgrade
-      parameters: [ { $ref: '#/components/parameters/IdempotencyKey' } ]
+      parameters: [ { $ref: '#/components/parameters/RequiredIdempotencyKey' } ]
       requestBody:
         required: true
         content:
           application/json:
             schema: { $ref: '#/components/schemas/PlatformUpgradeRequest' }
-      responses: { '202': { $ref: '#/components/responses/AcceptedOperation' } }
+      responses:
+        '200': { $ref: '#/components/responses/AcceptedOperation' }
+        '202': { $ref: '#/components/responses/AcceptedOperation' }
+        '400': { $ref: '#/components/responses/Problem' }
+        '409': { $ref: '#/components/responses/Problem' }
+        '503': { $ref: '#/components/responses/Problem' }
   /api/v1/platform/rollbacks:
     post:
       operationId: queuePlatformRollback
-      parameters: [ { $ref: '#/components/parameters/IdempotencyKey' } ]
+      parameters: [ { $ref: '#/components/parameters/RequiredIdempotencyKey' } ]
       requestBody:
         required: true
         content:
@@ -970,22 +1102,38 @@ paths:
               type: object
               required: [sha]
               properties: { sha: { type: string } }
-      responses: { '202': { $ref: '#/components/responses/AcceptedOperation' } }
+      responses:
+        '200': { $ref: '#/components/responses/AcceptedOperation' }
+        '202': { $ref: '#/components/responses/AcceptedOperation' }
+        '400': { $ref: '#/components/responses/Problem' }
+        '409': { $ref: '#/components/responses/Problem' }
+        '503': { $ref: '#/components/responses/Problem' }
   /api/v1/platform/smoke:
     post:
       operationId: queuePlatformSmoke
-      parameters: [ { $ref: '#/components/parameters/IdempotencyKey' } ]
-      responses: { '202': { $ref: '#/components/responses/AcceptedOperation' } }
+      parameters: [ { $ref: '#/components/parameters/RequiredIdempotencyKey' } ]
+      responses:
+        '200': { $ref: '#/components/responses/AcceptedOperation' }
+        '202': { $ref: '#/components/responses/AcceptedOperation' }
+        '400': { $ref: '#/components/responses/Problem' }
+        '409': { $ref: '#/components/responses/Problem' }
+        '503': { $ref: '#/components/responses/Problem' }
   /api/v1/host/assurances:
     post:
       operationId: queueHostAssurance
-      parameters: [ { $ref: '#/components/parameters/IdempotencyKey' } ]
-      responses: { '202': { $ref: '#/components/responses/AcceptedOperation' } }
+      parameters: [ { $ref: '#/components/parameters/RequiredIdempotencyKey' } ]
+      responses:
+        '200': { $ref: '#/components/responses/AcceptedOperation' }
+        '202': { $ref: '#/components/responses/AcceptedOperation' }
+        '400': { $ref: '#/components/responses/Problem' }
+        '409': { $ref: '#/components/responses/Problem' }
+        '503': { $ref: '#/components/responses/Problem' }
 components:
   securitySchemes:
     bearerAuth: { type: http, scheme: bearer, bearerFormat: JWT }
   parameters:
     AppID: { name: id, in: path, required: true, schema: { type: string, pattern: '^[a-z0-9][a-z0-9-]*$' } }
+    DatabaseSelection: { name: database, in: query, required: false, description: 'Named database of a norn.app/v2 app (required when it declares several). It enters the signed request and is resolved at acceptance by the execution resolver.', schema: { type: string, pattern: '^[a-z][a-z0-9-]{0,62}$' } }
     OperationID: { name: id, in: path, required: true, schema: { type: string, format: uuid } }
     EnrollmentID: { name: id, in: path, required: true, schema: { type: string, format: uuid } }
     DeviceID: { name: id, in: path, required: true, schema: { type: string, format: uuid } }
@@ -994,6 +1142,7 @@ components:
     RecoveryDrillID: { name: id, in: path, required: true, schema: { type: string, format: uuid } }
     StepUpToken: { name: X-Norn-Step-Up, in: header, required: true, schema: { type: string } }
     IdempotencyKey: { name: Idempotency-Key, in: header, schema: { type: string, maxLength: 200 } }
+    RequiredIdempotencyKey: { name: Idempotency-Key, in: header, required: true, schema: { type: string, minLength: 1, maxLength: 200 } }
   responses:
     Problem:
       description: Stable machine-readable error
@@ -2032,6 +2181,10 @@ components:
         timestamp: { type: string, pattern: '^[0-9]{8}T[0-9]{6}$' }
         createdAt: { type: string, format: date-time }
         size: { type: integer, format: int64, minimum: 0 }
+        logicalDatabase: { type: string, description: Named database (norn.app/v2) when a database profile is configured. }
+        bindingId: { type: string, description: Catalog binding or legacy mapping whose current target the snapshot belongs to. }
+        bindingGeneration: { type: integer, format: int64, minimum: 1 }
+        provenance: { type: string, enum: [sidecar, adopted], description: How the dump is bound to the current target. }
     FleetOperationReceipt:
       type: object
       required: [planId]

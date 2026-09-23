@@ -2,27 +2,31 @@ package worker
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"log"
 	"os"
 	"runtime/debug"
 	"time"
 
+	"norn/v2/api/effect"
 	"norn/v2/api/model"
 	"norn/v2/api/pipeline"
 	"norn/v2/api/store"
 )
 
 type OperationWorker struct {
-	db       *store.DB
-	pipeline *pipeline.Pipeline
-	id       string
-	kinds    []string
-	lease    time.Duration
-	poll     time.Duration
+	db       store.ExecutionStore
+	pipeline interface {
+		ExecuteOperation(context.Context, *model.Operation, store.OperationClaim) (*pipeline.OperationResult, error)
+	}
+	id    string
+	kinds []string
+	lease time.Duration
+	poll  time.Duration
 }
 
-func NewOperationWorker(db *store.DB, p *pipeline.Pipeline) *OperationWorker {
+func NewOperationWorker(db store.ExecutionStore, p *pipeline.Pipeline) *OperationWorker {
 	host, _ := os.Hostname()
 	if host == "" {
 		host = "unknown-host"
@@ -34,6 +38,7 @@ func NewOperationWorker(db *store.DB, p *pipeline.Pipeline) *OperationWorker {
 		kinds: []string{
 			"app.preflight", "app.deploy", "app.rollback", "app.snapshot",
 			"app.snapshot-prune", "app.snapshot-restore", "app.migrate",
+			pipeline.CatalogActivationKind, pipeline.DatabaseBaselineKind,
 		},
 		lease: 90 * time.Second,
 		poll:  2 * time.Second,
@@ -59,78 +64,141 @@ func (w *OperationWorker) Run(ctx context.Context) {
 }
 
 func (w *OperationWorker) runOnce(ctx context.Context) error {
-	if err := w.db.RecoverInFlightOperations(ctx); err != nil {
+	if err := w.db.RecoverExpiredOperations(ctx); err != nil {
 		return fmt.Errorf("recover expired app operations: %w", err)
 	}
 	for {
-		op, err := w.db.ClaimNextOperation(ctx, w.id, w.lease, w.kinds)
+		op, claim, err := w.db.ClaimNextOperation(ctx, w.id, w.lease, w.kinds)
 		if err != nil {
 			return err
 		}
 		if op == nil {
 			return nil
 		}
-		w.handle(ctx, op)
+		w.handle(ctx, op, claim)
 	}
 }
 
-func (w *OperationWorker) handle(ctx context.Context, op *model.Operation) {
-	defer func() {
-		if recovered := recover(); recovered != nil {
-			log.Printf("operation worker: panic in %s: %v\n%s", op.ID, recovered, debug.Stack())
-			w.recordFailure(ctx, op, fmt.Errorf("operation executor panic; inspect server logs"))
-		}
-	}()
+func (w *OperationWorker) handle(ctx context.Context, op *model.Operation, claim store.OperationClaim) {
 	log.Printf("operation worker: claimed %s %s app=%s attempt=%d/%d", op.ID, op.Kind, op.App, op.Attempts, op.MaxAttempts)
-	release, locked, lockErr := w.db.AcquireAppOperationLock(ctx, op.App)
+	// App-less operations (the database catalog) serialize on kind:ref,
+	// which can never equal an app name (^[a-z0-9-]+$).
+	lockKey := op.App
+	if lockKey == "" {
+		lockKey = op.Kind + ":" + op.Ref
+	}
+	release, locked, lockErr := w.db.AcquireAppOperationLock(ctx, lockKey)
 	if lockErr != nil || !locked {
 		message := "another mutable operation is active for this app"
 		if lockErr != nil {
 			message = "could not acquire the durable app operation lock: " + lockErr.Error()
 		}
 		delay := 5 * time.Second
-		if err := w.db.DeferClaimedOperation(ctx, op.ID, message, time.Now().Add(delay), map[string]interface{}{"lockRetry": true}); err != nil {
+		if err := w.db.DeferClaimedOperation(ctx, claim, message, time.Now().Add(delay), map[string]interface{}{"lockRetry": true}); err != nil {
 			log.Printf("operation worker: defer locked operation %s: %v", op.ID, err)
 		}
 		return
 	}
 	defer release()
-	executionCtx, stopRenewal := context.WithCancel(ctx)
-	defer stopRenewal()
-	go w.renewLease(executionCtx, op.ID)
-	err := w.pipeline.ExecuteOperation(executionCtx, op)
-	if err == nil {
+	executionCtx, cancelExecution := context.WithCancel(ctx)
+	defer cancelExecution()
+	renewalStop := make(chan struct{})
+	renewalDone := make(chan error, 1)
+	go func() { renewalDone <- w.renewLease(executionCtx, claim, cancelExecution, renewalStop) }()
+	result, execErr := w.execute(executionCtx, op, claim)
+	close(renewalStop)
+	renewErr := <-renewalDone
+	if renewErr != nil {
+		// Do not guess whether a mutable downstream effect committed. The
+		// expired-claim recovery path classifies safe retry versus review after
+		// the executor has stopped and while this app lock is still held.
+		log.Printf("operation worker: ownership renewal stopped %s: %v", op.ID, renewErr)
 		return
 	}
-	w.recordFailure(ctx, op, err)
+	if execErr != nil {
+		if effect.IsDeferred(execErr) {
+			message := fmt.Sprintf("external effect recovery pending: %v", execErr)
+			if deferErr := w.db.DeferClaimedOperation(ctx, claim, message, time.Now().Add(5*time.Second), map[string]interface{}{
+				"externalEffectRecoveryPending": true,
+			}); deferErr != nil {
+				log.Printf("operation worker: defer unresolved effect %s: %v", op.ID, deferErr)
+			}
+			return
+		}
+		w.recordFailure(ctx, op, claim, execErr)
+		return
+	}
+	if result == nil {
+		w.recordFailure(ctx, op, claim, fmt.Errorf("operation executor returned no result"))
+		return
+	}
+	if result.Finished() {
+		// Committed atomically with the effect (catalog activation).
+		result.Publish(ctx)
+		return
+	}
+	if finishErr := w.db.FinishClaimedOperation(ctx, claim, result.Status, result.Message, result.Metadata); finishErr != nil {
+		log.Printf("operation worker: finish %s: %v", op.ID, finishErr)
+		return
+	}
+	result.Publish(ctx)
 }
 
-func (w *OperationWorker) recordFailure(ctx context.Context, op *model.Operation, err error) {
+func (w *OperationWorker) execute(ctx context.Context, op *model.Operation, claim store.OperationClaim) (result *pipeline.OperationResult, err error) {
+	defer func() {
+		if recovered := recover(); recovered != nil {
+			log.Printf("operation worker: panic in %s: %v\n%s", op.ID, recovered, debug.Stack())
+			result = nil
+			err = fmt.Errorf("operation executor panic; inspect server logs")
+		}
+	}()
+	return w.pipeline.ExecuteOperation(ctx, op, claim)
+}
+
+func (w *OperationWorker) recordFailure(ctx context.Context, op *model.Operation, claim store.OperationClaim, err error) {
 	message := fmt.Sprintf("%s failed: %v", op.Kind, err)
-	if op.Attempts < op.MaxAttempts {
+	if op.Attempts < op.MaxAttempts && (op.Kind == "app.preflight" || op.Kind == "app.deploy") {
 		delay := retryDelay(op.Attempts)
-		if retryErr := w.db.RetryOperation(ctx, op.ID, message, err.Error(), time.Now().Add(delay), map[string]interface{}{
+		if retryErr := w.db.RetryClaimedOperation(ctx, claim, message, err.Error(), time.Now().Add(delay), map[string]interface{}{
 			"retryDelaySeconds": int(delay.Seconds()),
 		}); retryErr != nil {
-			log.Printf("operation worker: retry %s: %v", op.ID, retryErr)
+			if !errors.Is(retryErr, store.ErrOperationRetryUnsafe) {
+				log.Printf("operation worker: retry %s: %v", op.ID, retryErr)
+				return
+			}
+			log.Printf("operation worker: retry refused for %s: %v", op.ID, retryErr)
+		} else {
+			return
 		}
-		return
 	}
-	if finishErr := w.db.FinishOperation(ctx, op.ID, model.OperationFailed, message, map[string]interface{}{}); finishErr != nil {
+	metadata := map[string]interface{}{}
+	if op.Kind != "app.preflight" {
+		metadata["manualRecoveryRequired"] = true
+	}
+	if finishErr := w.db.FinishClaimedOperation(ctx, claim, model.OperationFailed, message, metadata); finishErr != nil {
 		log.Printf("operation worker: finish failed %s: %v", op.ID, finishErr)
 	}
 }
 
-func (w *OperationWorker) renewLease(ctx context.Context, operationID string) {
+func (w *OperationWorker) renewLease(ctx context.Context, claim store.OperationClaim, cancelExecution context.CancelFunc, stop <-chan struct{}) error {
 	ticker := time.NewTicker(w.lease / 3)
 	defer ticker.Stop()
 	for {
 		select {
 		case <-ctx.Done():
-			return
+			return nil
+		case <-stop:
+			return nil
 		case <-ticker.C:
-			if err := w.db.RenewOperationLease(ctx, operationID, w.id, time.Now().Add(w.lease)); err != nil {
-				log.Printf("operation worker: renew lease %s: %v", operationID, err)
+			renewCtx, cancel := context.WithTimeout(ctx, w.lease/3)
+			err := w.db.RenewOperationClaim(renewCtx, claim, w.lease)
+			cancel()
+			if err != nil {
+				if ctx.Err() != nil {
+					return nil
+				}
+				cancelExecution()
+				return err
 			}
 		}
 	}

@@ -10,7 +10,10 @@ import (
 
 func init() {
 	rootCmd.AddCommand(rollbackCmd)
+	rollbackCmd.Flags().StringVar(&rollbackIdempotencyKey, "idempotency-key", "", "Stable retry key (generated and printed when omitted)")
 }
+
+var rollbackIdempotencyKey string
 
 var rollbackCmd = &cobra.Command{
 	Use:   "rollback <app>",
@@ -21,13 +24,17 @@ var rollbackCmd = &cobra.Command{
 
 		fmt.Println(style.Title.Render("rolling back " + appID))
 
-		sagaID, err := client.Rollback(appID)
+		key, err := requestIdempotencyKey(cmd, rollbackIdempotencyKey, "norn-rollback")
+		if err != nil {
+			return err
+		}
+		accepted, err := client.Rollback(appID, key)
 		if err != nil {
 			return fmt.Errorf("rollback failed: %w", err)
 		}
 
-		fmt.Printf("  saga: %s\n\n", style.DimText.Render(sagaID))
+		fmt.Printf("  saga: %s\n\n", style.DimText.Render(accepted.SagaID))
 
-		return streamSagaEvents(sagaID)
+		return finishEnqueue(accepted)
 	},
 }

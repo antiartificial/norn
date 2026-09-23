@@ -8,15 +8,14 @@ claimed achieved. Significant M1/M2 implementation checkpoints are verified.
 
 - Worktree: `/Users/arti/Desktop/Claude/norn-v3-foundations`.
 - Implementation originated on `codex/v3-foundations`; baseline: `7304f39`.
-  The checkout is now on `feature/norn-v3-planning-handoff`, created to commit
-  this documentation package only. Implementation changes remain in this same
-  worktree and are not included in the documentation commit.
-- Implementation changes are uncommitted, including many untracked source/test files.
-  Preserve the entire worktree. Do not reset, clean, or broadly stage it.
-- Only the documentation package is being committed for the pause handoff.
-  No implementation commits, pushes, releases, deployments, or live workload
-  migrations were performed in this workflow. Main and Fleet checkouts were
-  outside implementation scope.
+  The checkout is now on `feature/norn-v3-planning-handoff`. Documentation was
+  committed as `a1c52df`; the implementation is saved in a subsequent checkpoint
+  commit on this same branch at the user's request.
+- The checkpoint includes the existing API, CLI, UI, upgrade-script and test
+  changes. It is incomplete work, not a release or a completed milestone.
+  Recheck Git status before resuming and preserve any subsequent local edits.
+- No pushes, releases, deployments, or live workload migrations were performed
+  in this workflow. Main and Fleet checkouts were outside implementation scope.
 - Claude CLI was the sole implementation writer; Codex independently reviewed,
   added regressions, and reran tests. Latest implementation pass completed;
   its follow-up was launched and then interrupted for this pause before any

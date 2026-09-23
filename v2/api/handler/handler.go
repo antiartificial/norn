@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"os"
 	"regexp"
 	"strings"
 	"sync"
@@ -12,12 +13,14 @@ import (
 
 	"github.com/go-chi/chi/v5"
 	"github.com/go-chi/chi/v5/middleware"
+	"github.com/google/uuid"
 
 	"norn/v2/api/beacon"
 	"norn/v2/api/config"
 	"norn/v2/api/consul"
 	"norn/v2/api/githubapp"
 	"norn/v2/api/hub"
+	"norn/v2/api/logcollect"
 	"norn/v2/api/nomad"
 	"norn/v2/api/pipeline"
 	"norn/v2/api/redpanda"
@@ -34,28 +37,38 @@ const maxDocumentValidationJSONBody = 320 << 10
 const maxValidationDocumentBytes = 64 << 10
 
 type Handler struct {
-	db                     *store.DB
-	nomad                  *nomad.Client
-	consul                 *consul.Client
-	ws                     *hub.Hub
-	cfg                    *config.Config
-	pipeline               *pipeline.Pipeline
-	beacon                 *beacon.Service
-	secrets                *secrets.Manager
-	sagaStore              saga.Store
-	s3                     *storage.Client
-	redpanda               *redpanda.Client
-	access                 *AccessLog
-	hostMetrics            *hostMetricsCache
-	fleetGitHub            *githubapp.Client
-	fleetGitHubConfigError error
-	productionGateMu       sync.Mutex
-	productionGateAt       time.Time
-	productionGateBlockers []string
-	auditPruneMu           sync.Mutex
-	auditPruneAt           time.Time
-	wakeLocks              sync.Map
-	execConns              sync.Map
+	db                        *store.DB
+	nomad                     *nomad.Client
+	consul                    *consul.Client
+	ws                        *hub.Hub
+	cfg                       *config.Config
+	pipeline                  *pipeline.Pipeline
+	beacon                    *beacon.Service
+	secrets                   *secrets.Manager
+	sagaStore                 saga.Store
+	s3                        *storage.Client
+	redpanda                  *redpanda.Client
+	access                    *AccessLog
+	hostMetrics               *hostMetricsCache
+	fleetGitHub               *githubapp.Client
+	fleetGitHubConfigError    error
+	productionGateMu          sync.Mutex
+	productionGateAt          time.Time
+	productionGateBlockers    []string
+	evidenceReserveMu         sync.Mutex
+	evidenceReserveAt         time.Time
+	evidenceReserveStatus     store.EvidenceReserveStatus
+	logSpool                  *logcollect.Spool
+	auditPruneMu              sync.Mutex
+	auditPruneAt              time.Time
+	wakeLocks                 sync.Map
+	execConns                 sync.Map
+	execOwnerOnce             sync.Once
+	execOwnerID               string
+	execLeaseDurationOverride time.Duration
+	execWatchIntervalOverride time.Duration
+	accessTokenLineage        accessTokenLineageResolver
+	operationStore            store.OperationStore
 }
 
 func New(db *store.DB, n *nomad.Client, c *consul.Client, ws *hub.Hub, cfg *config.Config, p *pipeline.Pipeline, beaconSvc *beacon.Service, sec *secrets.Manager, ss saga.Store, s3 *storage.Client, rp *redpanda.Client) *Handler {
@@ -73,11 +86,38 @@ func New(db *store.DB, n *nomad.Client, c *consul.Client, ws *hub.Hub, cfg *conf
 		redpanda:    rp,
 		access:      NewAccessLog(defaultAccessLogLimit),
 		hostMetrics: newHostMetricsCache(defaultHostMetricsSampler, time.Now, defaultHostMetricsSamplePeriod),
+		execOwnerID: execRuntimeOwnerID(),
+	}
+	if db != nil && db.Pool != nil {
+		h.accessTokenLineage = postgresAccessTokenLineageResolver{db: db}
+		if cfg != nil {
+			if signer, err := store.NewHMACAcceptanceSigner(cfg.AuditSigningKey, cfg.AuditPreviousSigningKeys...); err == nil {
+				h.operationStore, _ = store.NewPGOperationStore(db, signer, store.AcceptancePolicy{ExpectedAuthority: cfg.ControlAuthority})
+			}
+		}
 	}
 	if cfg != nil && githubapp.Configured(fleetGitHubConfig(cfg)) {
 		h.fleetGitHub, h.fleetGitHubConfigError = githubapp.New(fleetGitHubConfig(cfg), nil)
 	}
 	return h
+}
+
+// OperationStore exposes the single signed acceptance boundary constructed
+// from this handler's audit-key and authority policy so pipeline producers use
+// the same signer and replay namespace as HTTP handlers.
+func (h *Handler) OperationStore() store.OperationStore {
+	if h == nil {
+		return nil
+	}
+	return h.operationStore
+}
+
+func execRuntimeOwnerID() string {
+	host, err := os.Hostname()
+	if err != nil || host == "" {
+		host = "unknown-host"
+	}
+	return fmt.Sprintf("%s:%d:%s", host, os.Getpid(), uuid.NewString())
 }
 
 func fleetGitHubConfig(cfg *config.Config) githubapp.Config {

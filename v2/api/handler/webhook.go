@@ -16,6 +16,7 @@ import (
 	"github.com/google/uuid"
 
 	"norn/v2/api/model"
+	"norn/v2/api/store"
 )
 
 func (h *Handler) Webhook(w http.ResponseWriter, r *http.Request) {
@@ -61,8 +62,12 @@ func (h *Handler) Webhook(w http.ResponseWriter, r *http.Request) {
 	}
 	if h.db != nil {
 		if err := h.db.InsertWebhookDelivery(r.Context(), delivery); err != nil {
-			log.Printf("webhook: insert delivery: %v", err)
+			WriteControlProblem(w, r, http.StatusServiceUnavailable, "webhook_provenance_unavailable", "failed to persist webhook delivery provenance")
+			return
 		}
+	} else {
+		WriteControlProblem(w, r, http.StatusServiceUnavailable, "webhook_provenance_unavailable", "webhook delivery provenance is unavailable")
+		return
 	}
 
 	secret := h.cfg.WebhookSecret
@@ -82,6 +87,11 @@ func (h *Handler) Webhook(w http.ResponseWriter, r *http.Request) {
 	if eventHeader != "push" {
 		h.finishWebhookDelivery(r, delivery, "ignored", "unsupported event: "+eventHeader)
 		writeJSON(w, map[string]bool{"ignored": true})
+		return
+	}
+	if strings.TrimSpace(deliveryID) == "" || len(deliveryID) > 256 {
+		h.finishWebhookDelivery(r, delivery, "failed", "missing or invalid provider delivery ID")
+		WriteControlProblem(w, r, http.StatusBadRequest, "invalid_webhook_delivery_id", "a bounded provider delivery ID is required")
 		return
 	}
 	if h.productionRequiresSignedPromotion() {
@@ -137,15 +147,31 @@ func (h *Handler) Webhook(w http.ResponseWriter, r *http.Request) {
 
 	log.Printf("webhook: auto-deploying %q (branch %q, provider %q)", spec.App, branch, provider)
 
-	sagaID := h.pipeline.Run(spec, payload.Ref)
+	bodySum := sha256.Sum256(body)
+	enqueue, err := h.systemPipelineEnqueueRequest(r, "webhook:"+provider, "webhook:"+provider+":"+deliveryID, "webhook-"+provider, map[string]interface{}{
+		"provider": provider, "deliveryId": deliveryID, "event": eventHeader, "bodySha256": hex.EncodeToString(bodySum[:]),
+		"repository": payload.Repository.CloneURL, "ref": payload.Ref, "app": spec.App,
+	})
+	if err != nil {
+		h.finishWebhookDelivery(r, delivery, "failed", "operation acceptance unavailable")
+		writeOperationAcceptanceError(w, r, err)
+		return
+	}
+	accepted, err := h.pipeline.Run(r.Context(), spec, payload.Ref, enqueue)
+	if err != nil {
+		h.finishWebhookDelivery(r, delivery, "failed", "operation acceptance failed")
+		writeOperationAcceptanceError(w, r, err)
+		return
+	}
 	delivery.App = spec.App
-	delivery.SagaID = sagaID
+	delivery.SagaID = accepted.Operation.SagaID
 	h.finishWebhookDelivery(r, delivery, "deploying", "matched app "+spec.App)
 
 	writeJSON(w, map[string]string{
-		"sagaId": sagaID,
-		"app":    spec.App,
-		"status": "queued",
+		"sagaId":      accepted.Operation.SagaID,
+		"operationId": accepted.Operation.ID,
+		"app":         spec.App,
+		"status":      string(accepted.Operation.Status),
 	})
 }
 
@@ -193,11 +219,22 @@ func (h *Handler) ReplayWebhookDelivery(w http.ResponseWriter, r *http.Request) 
 		ref = "HEAD"
 	}
 
-	var sagaID string
+	enqueue, ok := h.pipelineEnqueueRequest(w, r, r.Header.Get("Idempotency-Key"), map[string]interface{}{
+		"action": "webhook-replay", "deliveryId": delivery.ID, "providerDeliveryId": delivery.DeliveryID,
+		"provider": delivery.Provider, "mode": req.Mode, "ref": ref, "app": spec.App,
+	})
+	if !ok {
+		return
+	}
+	var accepted store.AcceptedOperation
 	if req.Mode == "preflight" {
-		sagaID = h.pipeline.Preflight(spec, ref)
+		accepted, err = h.pipeline.Preflight(r.Context(), spec, ref, enqueue)
 	} else {
-		sagaID = h.pipeline.Run(spec, ref)
+		accepted, err = h.pipeline.Run(r.Context(), spec, ref, enqueue)
+	}
+	if err != nil {
+		writeOperationAcceptanceError(w, r, err)
+		return
 	}
 
 	delivery.App = spec.App
@@ -205,7 +242,7 @@ func (h *Handler) ReplayWebhookDelivery(w http.ResponseWriter, r *http.Request) 
 	if delivery.Branch == "" {
 		delivery.Branch = strings.TrimPrefix(ref, "refs/heads/")
 	}
-	delivery.SagaID = sagaID
+	delivery.SagaID = accepted.Operation.SagaID
 	delivery.Status = "replayed"
 	delivery.Reason = "replayed as " + req.Mode
 	if delivery.Metadata == nil {
@@ -218,10 +255,11 @@ func (h *Handler) ReplayWebhookDelivery(w http.ResponseWriter, r *http.Request) 
 	}
 
 	writeJSON(w, map[string]string{
-		"sagaId": sagaID,
-		"app":    spec.App,
-		"mode":   req.Mode,
-		"status": "queued",
+		"sagaId":      accepted.Operation.SagaID,
+		"operationId": accepted.Operation.ID,
+		"app":         spec.App,
+		"mode":        req.Mode,
+		"status":      string(accepted.Operation.Status),
 	})
 }
 

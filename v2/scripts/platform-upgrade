@@ -10,6 +10,7 @@ Usage:
   platform-upgrade rollback <sha-prefix>
   platform-upgrade smoke
   platform-upgrade env-exec -- <command> [args...]
+  platform-upgrade startup-contract <norn-api-binary>
   platform-upgrade proxy-plan
   platform-upgrade proxy-status
   platform-upgrade proxy-render
@@ -66,7 +67,7 @@ fi
 shift || true
 
 case "$mode" in
-  preflight|upgrade|releases|rollback|smoke|env-exec|proxy-plan|proxy-status|proxy-render|proxy-switch) ;;
+  preflight|upgrade|releases|rollback|smoke|env-exec|startup-contract|proxy-plan|proxy-status|proxy-render|proxy-switch) ;;
   *) usage >&2; exit 2 ;;
 esac
 
@@ -109,8 +110,123 @@ if [[ -z "$node_bin" ]]; then
 fi
 node_bin="${node_bin:-node}"
 
+startup_contract_name='norn.startup/v2'
+last_startup_contract=''
+
+probe_startup_contract() {
+  local binary="$1"
+  [[ -x "$binary" ]] || fail "startup contract probe target is not executable: $binary"
+  local probe_dir probe_out probe_err probe_pid probe_result="" probe_done=false probe_status=0
+  probe_dir="$(mktemp -d "${TMPDIR:-/tmp}/norn-startup-probe.XXXXXX")"
+  probe_out="$probe_dir/stdout"
+  probe_err="$probe_dir/stderr"
+  env -i \
+    PATH="$PATH" \
+    TMPDIR="${TMPDIR:-/tmp}" \
+    NORN_DATABASE_URL="postgresql://norn-probe@127.0.0.1:1/norn_probe?sslmode=disable&connect_timeout=1" \
+    "$binary" --norn-startup-contract >"$probe_out" 2>"$probe_err" &
+  probe_pid="$!"
+  for _ in $(seq 1 50); do
+    if ! kill -0 "$probe_pid" >/dev/null 2>&1; then
+      if wait "$probe_pid"; then
+        probe_status=0
+      else
+        probe_status="$?"
+      fi
+      probe_done=true
+      break
+    fi
+    sleep 0.1
+  done
+  if [[ "$probe_done" != "true" ]]; then
+    kill "$probe_pid" >/dev/null 2>&1 || true
+    for _ in $(seq 1 10); do
+      if ! kill -0 "$probe_pid" >/dev/null 2>&1; then
+        break
+      fi
+      sleep 0.1
+    done
+    if kill -0 "$probe_pid" >/dev/null 2>&1; then
+      kill -9 "$probe_pid" >/dev/null 2>&1 || true
+    fi
+    wait "$probe_pid" >/dev/null 2>&1 || true
+    rm -rf "$probe_dir"
+    fail "release binary does not provide the bounded ${startup_contract_name} capability probe; refusing to execute it with passive or migration startup flags"
+  fi
+  if [[ "$probe_status" != "0" ]]; then
+    rm -rf "$probe_dir"
+    fail "release binary did not exit successfully from the exact ${startup_contract_name} probe; refusing to execute it against the control database"
+  fi
+  if [[ ! -s "$probe_out" || "$(wc -c <"$probe_out")" -gt 8192 ]]; then
+    rm -rf "$probe_dir"
+    fail "release binary returned a missing or oversized ${startup_contract_name} contract; refusing to execute it against the control database"
+  fi
+  require_cmd python3
+  if ! probe_result="$(python3 - "$probe_out" <<'PY'
+import json
+import sys
+
+def strict_object(pairs):
+    result = {}
+    for key, value in pairs:
+        if key in result:
+            raise ValueError(f"duplicate JSON field {key}")
+        result[key] = value
+    return result
+
+path = sys.argv[1]
+with open(path, encoding="utf-8") as handle:
+    contract = json.load(handle, object_pairs_hook=strict_object)
+expected_top = {"name", "schemaModes", "startupModes", "passiveRoutes", "schemaContract"}
+if type(contract) is not dict or set(contract) != expected_top:
+    raise SystemExit("startup contract fields are not exact")
+if contract["name"] != "norn.startup/v2":
+    raise SystemExit("startup contract name is unsupported")
+if contract["schemaModes"] != ["auto", "check", "migrate-only"]:
+    raise SystemExit("schema modes are unsupported")
+if contract["startupModes"] != ["active", "passive"]:
+    raise SystemExit("startup modes are unsupported")
+if contract["passiveRoutes"] != ["/api/health", "/api/version", "/api/schema"]:
+    raise SystemExit("passive routes are unsupported")
+schema = contract["schemaContract"]
+expected_schema = {
+    "readerVersion", "writerVersion", "catalogMigrationVersion",
+    "catalogMinimumReaderVersion", "catalogMinimumWriterVersion",
+}
+if type(schema) is not dict or set(schema) != expected_schema:
+    raise SystemExit("schema contract fields are not exact")
+for field in expected_schema:
+    if type(schema[field]) is not int or schema[field] < 0:
+        raise SystemExit(f"schema contract field {field} must be a nonnegative integer")
+if schema["catalogMigrationVersion"] < 1:
+    raise SystemExit("compiled migration catalog must be nonempty")
+if schema["catalogMinimumReaderVersion"] > schema["readerVersion"]:
+    raise SystemExit("binary cannot read its prospective catalog")
+if schema["catalogMinimumWriterVersion"] > schema["writerVersion"]:
+    raise SystemExit("binary cannot write its prospective catalog")
+print(json.dumps(contract, separators=(",", ":"), sort_keys=True))
+PY
+)"; then
+    rm -rf "$probe_dir"
+    fail "release binary does not advertise the exact ${startup_contract_name} contract; refusing to execute it against the control database"
+  fi
+  last_startup_contract="$probe_result"
+  rm -rf "$probe_dir"
+}
+
+if [[ "$mode" == "startup-contract" ]]; then
+  [[ -n "${1:-}" ]] || fail "startup-contract requires a norn-api binary"
+  probe_startup_contract "$1"
+  printf '%s\n' "$last_startup_contract"
+  exit 0
+fi
+
 if [[ "$upgrade_mode" == "proxy" && -z "${NORN_CANDIDATE_PORT:-}" ]]; then
   candidate_port="$proxy_candidate_port"
+fi
+
+if [[ "$mode" == "upgrade" && "$upgrade_mode" == "proxy" ]]; then
+  fail "proxy upgrade handoff is not yet supported by the owner-fenced startup contract; use NORN_PLATFORM_UPGRADE_MODE=restart after an explicit maintenance window"
 fi
 
 run_with_api_env() {
@@ -176,33 +292,14 @@ fi
 
 if [[ "$mode" == "proxy-plan" ]]; then
   cat <<EOF
-# Norn no-blip proxy plan
+# Norn proxy handoff status
 #
-# Goal:
-#   Keep a stable listener at ${proxy_listen}; run API releases on private ports;
-#   prewarm candidate releases, then switch the proxy upstream.
-#
-# Managed proxy files:
-#   State:  ${proxy_upstream_file}
-#   Config: ${proxy_caddyfile}
-#
-# Example Caddy config:
-$(render_proxy_config)
-
-# Candidate preflight should run with:
-NORN_BIND_ADDR=127.0.0.1
-NORN_PORT=${proxy_candidate_port}
-NORN_SKIP_DEPLOYMENT_RECOVERY=true
-NORN_SKIP_OPERATION_RECOVERY=true
-NORN_SKIP_OPERATION_WORKER=true
-
-# Cutover steps:
-#   1. Start current API on ${proxy_active_port} and proxy ${proxy_listen} to it.
-#   2. Build candidate release and boot it on ${proxy_candidate_port}.
-#   3. Check http://127.0.0.1:${proxy_candidate_port}/api/health and /api/version.
-#   4. Check active operations or wait for drain.
-#   5. Run: norn platform proxy-switch ${proxy_candidate_port}
-#   6. Stop the old API after in-flight requests drain.
+# Proxy upgrade is intentionally unavailable in this bounded tranche. The old
+# implementation retained a worker-disabled preflight process as the active
+# API, which cannot safely promote worker/recovery ownership. Use the restart
+# lane during an explicit control-plane maintenance window. A future proxy
+# handoff must start a fresh active process and prove ownership transfer before
+# this plan can be enabled.
 EOF
   exit 0
 fi
@@ -412,6 +509,7 @@ build_release() {
 
   (cd "$worktree/v2/api" && go build -ldflags "-X main.Version=$version" -o "$release/bin/norn-api" .)
   (cd "$worktree/v2/api" && go build -o "$release/bin/norn-host-agent" ./cmd/norn-host-agent)
+  (cd "$worktree/v2/api" && go build -o "$release/bin/norn-effect-runner" ./cmd/norn-effect-runner)
   (cd "$worktree/v2/cli" && go build -ldflags "-X norn/v2/cli/cmd.Version=$version" -o "$release/bin/norn" .)
   install -m 0755 "$worktree/v2/scripts/platform-upgrade" "$release/bin/platform-upgrade"
   install -m 0755 "$worktree/v2/scripts/host-runtime" "$release/bin/host-runtime"
@@ -437,54 +535,333 @@ EOF
 wait_health() {
   local base="$1"
   local tries="${2:-30}"
+  local watched_pid="${3:-}"
   local i
   for ((i = 1; i <= tries; i++)); do
     if curl -fsS "$base/api/health" >/dev/null 2>&1; then
       return 0
+    fi
+    if [[ -n "$watched_pid" ]] && ! kill -0 "$watched_pid" >/dev/null 2>&1; then
+      return 1
     fi
     sleep 1
   done
   return 1
 }
 
+release_version() {
+  local target="$1" fallback
+  fallback="$(basename "$target")"
+  if [[ -f "$target/release.env" ]]; then
+    local declared
+    declared="$(grep '^NORN_RELEASE_VERSION=' "$target/release.env" | head -1 | cut -d= -f2- || true)"
+    if [[ -n "$declared" ]]; then
+      printf '%s\n' "$declared"
+      return
+    fi
+  fi
+  printf '%s\n' "$fallback"
+}
+
+validate_prospective_schema_transition() {
+  local target_contract="$1"
+  [[ -L "$current_link" ]] || fail "current release link is required to prove rollback schema compatibility before migration"
+  local rollback_release rollback_binary
+  rollback_release="$(readlink "$current_link")"
+  rollback_binary="$rollback_release/bin/norn-api"
+  [[ -x "$rollback_binary" ]] || fail "rollback binary is unavailable for prospective schema compatibility: $rollback_binary"
+  local expected_active_version
+  expected_active_version="$(release_version "$rollback_release")"
+
+  local validation_dir="$work_root/validation"
+  mkdir -p "$validation_dir"
+  require_cmd python3
+  require_cmd launchctl
+  require_cmd lsof
+  local active_port
+  if ! active_port="$(python3 - "$api_base" <<'PY'
+import sys
+import urllib.parse
+
+parsed = urllib.parse.urlsplit(sys.argv[1])
+if parsed.scheme != "http" or parsed.hostname not in {"127.0.0.1", "::1"} or parsed.username or parsed.password:
+    raise SystemExit("active API must be direct numeric loopback HTTP")
+if parsed.path not in {"", "/"} or parsed.query or parsed.fragment or parsed.port is None:
+    raise SystemExit("active API must contain only a direct loopback host and explicit port")
+print(parsed.port)
+PY
+)"; then
+    fail "prospective schema migration supports only a direct numeric-loopback restart lane; proxy or remote API binding is not proven"
+  fi
+  if ! api_get "/api/schema" >"$validation_dir/active-schema.json"; then
+    fail "the actual serving API contract could not be read; database migration and release promotion were not attempted"
+  fi
+  local live_identity active_contract
+  if ! live_identity="$(python3 - "$expected_active_version" "$validation_dir/active-schema.json" <<'PY'
+import hashlib
+import hmac
+import json
+import os
+import sys
+import uuid
+
+def strict_object(pairs):
+    result = {}
+    for key, value in pairs:
+        if key in result:
+            raise ValueError(f"duplicate JSON field {key}")
+        result[key] = value
+    return result
+
+expected_version, schema_path = sys.argv[1:]
+with open(schema_path, encoding="utf-8") as handle:
+    status = json.load(handle, object_pairs_hook=strict_object)
+if status.get("version") != expected_version:
+    raise SystemExit(
+        f"serving API version {status.get('version')!r} does not match current release {expected_version!r}"
+    )
+if status.get("startupContract") != "norn.startup/v2" or status.get("startupMode") != "active":
+    raise SystemExit("serving process does not expose the active norn.startup/v2 contract")
+for field in ("operationRecoveryEnabled", "operationWorkerEnabled", "nomadWatcherEnabled"):
+    if status.get(field) is not True:
+        raise SystemExit(f"serving process does not have active {field}")
+schema = status.get("binarySchemaContract")
+expected = {
+    "readerVersion", "writerVersion", "catalogMigrationVersion",
+    "catalogMinimumReaderVersion", "catalogMinimumWriterVersion",
+}
+if type(schema) is not dict or set(schema) != expected:
+    raise SystemExit("serving process schema contract fields are not exact")
+for field in expected:
+    if type(schema[field]) is not int or schema[field] < 0:
+        raise SystemExit(f"serving process schema contract field {field} is invalid")
+current_schema = {
+    "migrationVersion": status.get("currentMigrationVersion"),
+    "minimumReaderVersion": status.get("minimumReaderVersion"),
+    "minimumWriterVersion": status.get("minimumWriterVersion"),
+}
+for field, value in current_schema.items():
+    if type(value) is not int or value < 0:
+        raise SystemExit(f"serving process current schema field {field} is invalid")
+pid = status.get("processId")
+instance = status.get("processInstanceId")
+if type(pid) is not int or pid <= 1:
+    raise SystemExit("serving process PID is invalid")
+try:
+    uuid.UUID(instance)
+except (TypeError, ValueError, AttributeError):
+    raise SystemExit("serving process instance ID is invalid")
+database_url = os.environ.get("NORN_DATABASE_URL", "")
+signing_key = os.environ.get("NORN_AUDIT_SIGNING_KEY", "")
+if not database_url or len(signing_key) < 32:
+    raise SystemExit("upgrade process lacks the API database/signing environment required to bind authority")
+expected_database = "hmac-sha256:" + hmac.new(
+    signing_key.encode(), b"norn.database-identity/v1\0" + database_url.encode(), hashlib.sha256
+).hexdigest()
+if not hmac.compare_digest(status.get("databaseIdentity", ""), expected_database):
+    raise SystemExit("serving process and upgrade process do not identify the same database configuration")
+print(f"{pid}\t{instance}\t" + json.dumps(
+    {"schemaContract": schema, "currentSchema": current_schema}, separators=(",", ":"), sort_keys=True
+))
+PY
+)"; then
+    fail "the actual serving API identity/schema contract is unverifiable; database migration and release promotion were not attempted"
+  fi
+  local serving_pid serving_instance
+  serving_pid="${live_identity%%$'\t'*}"
+  local identity_remainder="${live_identity#*$'\t'}"
+  serving_instance="${identity_remainder%%$'\t'*}"
+  active_contract="${identity_remainder#*$'\t'}"
+
+  local launch_state supervised_pid listener_pids
+  if ! launch_state="$(launchctl print "gui/$(id -u)/$launch_label" 2>/dev/null)"; then
+    fail "launchd state for $launch_label is unavailable; refusing prospective schema migration"
+  fi
+  supervised_pid="$(awk '/^[[:space:]]*pid = [0-9]+/{print $3; exit}' <<<"$launch_state")"
+  if [[ "$supervised_pid" != "$serving_pid" ]]; then
+    fail "serving API PID $serving_pid is not the launchd-supervised $launch_label PID ${supervised_pid:-unknown}; refusing schema migration"
+  fi
+  listener_pids="$(lsof -nP -iTCP:"$active_port" -sTCP:LISTEN -t 2>/dev/null | sort -u || true)"
+  if [[ "$listener_pids" != "$serving_pid" ]]; then
+    fail "loopback port $active_port is not owned solely by the verified serving PID $serving_pid; refusing schema migration"
+  fi
+  [[ -n "$serving_instance" ]] || fail "serving process instance identity is unavailable"
+
+  probe_startup_contract "$rollback_binary"
+  local rollback_contract="$last_startup_contract"
+
+  require_cmd python3
+  if ! python3 - "$target_contract" "$active_contract" "$rollback_contract" <<'PY'
+import json
+import sys
+
+target, active, rollback = (json.loads(value) for value in sys.argv[1:])
+requirements = target["schemaContract"]
+required_reader = requirements["catalogMinimumReaderVersion"]
+required_writer = requirements["catalogMinimumWriterVersion"]
+target_version = requirements["catalogMigrationVersion"]
+current = active["currentSchema"]
+if (required_reader > current["minimumReaderVersion"] or
+        required_writer > current["minimumWriterVersion"]):
+    raise SystemExit(
+        f"target catalog {target_version} raises the database reader/writer floor from "
+        f"{current['minimumReaderVersion']}/{current['minimumWriterVersion']} to "
+        f"{required_reader}/{required_writer}; this restart lane cannot prove every writer, "
+        "including norn-host-agent, is stopped or compatible"
+    )
+for role, contract in (("active", active), ("rollback", rollback)):
+    supported = contract["schemaContract"]
+    if supported["readerVersion"] < required_reader or supported["writerVersion"] < required_writer:
+        raise SystemExit(
+            f"{role} binary cannot survive target catalog {target_version}: "
+            f"requires reader/writer {required_reader}/{required_writer}, "
+            f"supports {supported['readerVersion']}/{supported['writerVersion']}"
+        )
+PY
+  then
+    fail "target schema migration is incompatible with the active or rollback binary; database migration and release promotion were not attempted"
+  fi
+  log "prospective target schema is compatible with active and rollback binary contracts"
+  log "schema floors are unchanged; compatibility does not prove admission quiescence or stopped-writer handoff, and this restart lane does not claim those M5/M6 guarantees"
+}
+
+validate_candidate_responses() {
+  local expected_version="$1" health_file="$2" version_file="$3" schema_file="$4"
+  require_cmd python3
+  python3 - "$expected_version" "$health_file" "$version_file" "$schema_file" <<'PY'
+import json
+import sys
+
+expected, health_path, version_path, schema_path = sys.argv[1:]
+with open(health_path, encoding="utf-8") as handle:
+    health = json.load(handle)
+with open(version_path, encoding="utf-8") as handle:
+    version = json.load(handle)
+with open(schema_path, encoding="utf-8") as handle:
+    schema = json.load(handle)
+if health.get("status") != "passive":
+    raise SystemExit(f"candidate health did not report passive status: {health!r}")
+if version.get("version") != expected:
+    raise SystemExit(f"candidate version {version.get('version')!r} does not match expected {expected!r}")
+if schema.get("startupMode") != "passive" or schema.get("schemaMode") != "check":
+    raise SystemExit(f"candidate startup contract is not passive/check: {schema!r}")
+for field in ("operationRecoveryEnabled", "operationWorkerEnabled", "nomadWatcherEnabled"):
+    if schema.get(field) is not False:
+        raise SystemExit(f"candidate unexpectedly enabled {field}: {schema!r}")
+if not isinstance(schema.get("currentMigrationVersion"), int) or schema["currentMigrationVersion"] < 1:
+    raise SystemExit(f"candidate schema status is incomplete: {schema!r}")
+PY
+}
+
+validate_active_responses() {
+  local expected_version="$1" version_file="$2" schema_file="$3"
+  require_cmd python3
+  python3 - "$expected_version" "$version_file" "$schema_file" <<'PY'
+import json
+import sys
+
+expected, version_path, schema_path = sys.argv[1:]
+with open(version_path, encoding="utf-8") as handle:
+    version = json.load(handle)
+with open(schema_path, encoding="utf-8") as handle:
+    schema = json.load(handle)
+if version.get("version") != expected:
+    raise SystemExit(f"active version {version.get('version')!r} does not match expected {expected!r}")
+if schema.get("startupMode") != "active" or schema.get("schemaMode") != "check":
+    raise SystemExit(f"active startup contract is not active/check: {schema!r}")
+for field in ("operationRecoveryEnabled", "operationWorkerEnabled", "nomadWatcherEnabled"):
+    if schema.get(field) is not True:
+        raise SystemExit(f"active runtime did not enable {field}: {schema!r}")
+PY
+}
+
 candidate_preflight() {
   if [[ "$skip_candidate" == "true" ]]; then
-    log "candidate API boot skipped"
-    return
+    fail "NORN_SKIP_CANDIDATE_API=true is incompatible with schema-safe preflight; the passive check is required"
   fi
 
-  log "starting candidate API on 127.0.0.1:$candidate_port"
+  if curl -sS --max-time 1 "http://127.0.0.1:$candidate_port/api/health" >/dev/null 2>&1; then
+    fail "candidate port $candidate_port is already serving; refusing to validate an unowned process"
+  fi
+  local validation_dir="$work_root/validation"
+  mkdir -p "$validation_dir"
+  log "starting passive schema-check candidate on 127.0.0.1:$candidate_port"
   pushd "$repo" >/dev/null
   if [[ "$upgrade_mode" == "proxy" ]]; then
     nohup env \
       NORN_PORT="$candidate_port" \
-      NORN_BIND_ADDR="${NORN_BIND_ADDR:-127.0.0.1}" \
+      NORN_BIND_ADDR=127.0.0.1 \
       NORN_UI_DIR="$release/ui" \
-      NORN_SKIP_DEPLOYMENT_RECOVERY=true \
-      NORN_SKIP_OPERATION_RECOVERY=true \
-      NORN_SKIP_OPERATION_WORKER=true \
-      "$release/bin/norn-api" >"$release/logs/proxy-candidate-api.log" 2>&1 &
+      NORN_STARTUP_MODE=passive \
+      NORN_SCHEMA_MODE=check \
+      "$release/bin/norn-api" >"$validation_dir/proxy-candidate-api.log" 2>&1 &
   else
     env \
     NORN_PORT="$candidate_port" \
-    NORN_BIND_ADDR="${NORN_BIND_ADDR:-127.0.0.1}" \
+    NORN_BIND_ADDR=127.0.0.1 \
     NORN_UI_DIR="$release/ui" \
-    NORN_SKIP_DEPLOYMENT_RECOVERY=true \
-    NORN_SKIP_OPERATION_RECOVERY=true \
-    NORN_SKIP_OPERATION_WORKER=true \
-    "$release/bin/norn-api" >"$release/logs/candidate-api.log" 2>&1 &
+    NORN_STARTUP_MODE=passive \
+    NORN_SCHEMA_MODE=check \
+    "$release/bin/norn-api" >"$validation_dir/candidate-api.log" 2>&1 &
   fi
   candidate_pid="$!"
   popd >/dev/null
 
-  if ! wait_health "http://127.0.0.1:$candidate_port" 30; then
-    tail -80 "$release/logs/candidate-api.log" >&2 || true
-    tail -80 "$release/logs/proxy-candidate-api.log" >&2 || true
+  if ! wait_health "http://127.0.0.1:$candidate_port" 30 "$candidate_pid"; then
+    tail -80 "$validation_dir/candidate-api.log" >&2 || true
+    tail -80 "$validation_dir/proxy-candidate-api.log" >&2 || true
+    if grep -q "schema migration required" "$validation_dir/candidate-api.log" "$validation_dir/proxy-candidate-api.log" 2>/dev/null; then
+      fail "candidate schema check requires a migration; preflight did not mutate the database. Run platform-upgrade upgrade during the approved maintenance window."
+    fi
     fail "candidate API did not become healthy"
   fi
-  curl -fsS "http://127.0.0.1:$candidate_port/api/version" | tee "$release/logs/candidate-version.json"
+  curl -fsS "http://127.0.0.1:$candidate_port/api/health" | tee "$validation_dir/candidate-health.json"
   printf '\n'
-  log "candidate healthy"
+  curl -fsS "http://127.0.0.1:$candidate_port/api/version" | tee "$validation_dir/candidate-version.json"
+  printf '\n'
+  curl -fsS "http://127.0.0.1:$candidate_port/api/schema" | tee "$validation_dir/candidate-schema.json"
+  printf '\n'
+  kill -0 "$candidate_pid" >/dev/null 2>&1 || fail "candidate exited before readiness validation completed"
+  validate_candidate_responses "$version" "$validation_dir/candidate-health.json" "$validation_dir/candidate-version.json" "$validation_dir/candidate-schema.json"
+  log "passive candidate schema check passed; regular API handlers and workers were not started"
+}
+
+stop_candidate() {
+  if [[ -n "$candidate_pid" ]]; then
+    stop_pid_if_running "$candidate_pid"
+    wait "$candidate_pid" >/dev/null 2>&1 || true
+    candidate_pid=""
+  fi
+}
+
+run_schema_migration() {
+  log "applying the target release schema in migrate-only mode"
+  env \
+    -u NORN_SKIP_DEPLOYMENT_RECOVERY \
+    -u NORN_SKIP_OPERATION_RECOVERY \
+    -u NORN_SKIP_OPERATION_WORKER \
+    -u NORN_SKIP_NOMAD_WATCHER \
+    NORN_STARTUP_MODE=active \
+    NORN_SCHEMA_MODE=migrate-only \
+    "$release/bin/norn-api"
+  log "target schema migration and compatibility check complete"
+}
+
+validate_current_rollback_target() {
+  [[ -L "$current_link" ]] || return 0
+  local previous_release saved_release saved_version
+  previous_release="$(readlink "$current_link")"
+  [[ -d "$previous_release" ]] || fail "current release link does not identify a rollback-capable release: $previous_release"
+  saved_release="$release"
+  saved_version="$version"
+  release="$previous_release"
+  version="$(release_version "$previous_release")"
+  probe_startup_contract "$previous_release/bin/norn-api"
+  candidate_preflight
+  stop_candidate
+  release="$saved_release"
+  version="$saved_version"
+  log "rollback target supports the startup contract and current schema"
 }
 
 postflight() {
@@ -492,20 +869,46 @@ postflight() {
   wait_health "$api_base" 30 || return 1
   curl -fsS "$api_base/api/version" | tee "$release/logs/postflight-version.json"
   printf '\n'
+  curl -fsS "$api_base/api/schema" | tee "$release/logs/postflight-schema.json"
+  printf '\n'
+  validate_active_responses "$version" "$release/logs/postflight-version.json" "$release/logs/postflight-schema.json"
 }
 
 restart_api() {
+  launchctl unsetenv NORN_SKIP_DEPLOYMENT_RECOVERY >/dev/null 2>&1 || true
+  launchctl unsetenv NORN_SKIP_OPERATION_RECOVERY >/dev/null 2>&1 || true
+  launchctl unsetenv NORN_SKIP_OPERATION_WORKER >/dev/null 2>&1 || true
+  launchctl unsetenv NORN_SKIP_NOMAD_WATCHER >/dev/null 2>&1 || true
+  launchctl setenv NORN_STARTUP_MODE active
+  launchctl setenv NORN_SCHEMA_MODE check
   launchctl kickstart -k "gui/$(id -u)/$launch_label"
+}
+
+# The supervised build.test runner lives beside norn-api, its default path.
+# It is staged in the same directory and renamed into place before the API
+# restarts, so an API never execs a partially written or mismatched helper;
+# the API still verifies its protocol at startup and refuses to run without it.
+install_effect_runner() {
+  local source="$1/bin/norn-effect-runner"
+  [[ -f "$source" ]] || return 0
+  local staged="$bin_dir/.norn-effect-runner.$$"
+  install -m 0755 "$source" "$staged"
+  mv -f "$staged" "$bin_dir/norn-effect-runner"
 }
 
 promote_release() {
   mkdir -p "$(dirname "$current_link")" "$bin_dir"
   previous=""
+  previous_version=""
   if [[ -L "$current_link" ]]; then
     previous="$(readlink "$current_link")"
+    if [[ -d "$previous" ]]; then
+      previous_version="$(release_version "$previous")"
+    fi
   fi
   log "promoting $release"
   ln -sfn "$release" "$current_link"
+  install_effect_runner "$release"
   install -m 0755 "$release/bin/norn-api" "$bin_dir/norn-api"
   install -m 0755 "$release/bin/norn" "$bin_dir/norn"
   mkdir -p "$(dirname "$host_agent_bin")"
@@ -522,6 +925,7 @@ promote_release() {
   log "postflight failed; rolling back"
   if [[ -n "$previous" && -d "$previous" ]]; then
     ln -sfn "$previous" "$current_link"
+    install_effect_runner "$previous"
     install -m 0755 "$previous/bin/norn-api" "$bin_dir/norn-api"
     install -m 0755 "$previous/bin/norn" "$bin_dir/norn"
     if [[ -f "$previous/bin/norn-host-agent" ]]; then
@@ -534,7 +938,13 @@ promote_release() {
       install -m 0755 "$previous/bin/host-runtime" "$host_runtime_bin"
     fi
     restart_api
-    wait_health "$api_base" 30 || fail "rollback health check failed"
+    saved_version="$version"
+    version="$previous_version"
+    if ! postflight; then
+      version="$saved_version"
+      fail "rollback startup contract validation failed"
+    fi
+    version="$saved_version"
     fail "upgrade failed and rollback completed"
   fi
   fail "upgrade failed and no previous release symlink was available"
@@ -569,6 +979,7 @@ restore_release_artifacts() {
     return 0
   fi
   ln -sfn "$target" "$current_link"
+  install_effect_runner "$target"
   [[ -f "$target/bin/norn-api" ]] && install -m 0755 "$target/bin/norn-api" "$bin_dir/norn-api"
   [[ -f "$target/bin/norn" ]] && install -m 0755 "$target/bin/norn" "$bin_dir/norn"
   [[ -f "$target/bin/norn-host-agent" ]] && install -m 0755 "$target/bin/norn-host-agent" "$host_agent_bin"
@@ -591,6 +1002,7 @@ promote_release_proxy() {
 
   log "promoting $release with proxy cutover"
   ln -sfn "$release" "$current_link"
+  install_effect_runner "$release"
   install -m 0755 "$release/bin/norn-api" "$bin_dir/norn-api"
   install -m 0755 "$release/bin/norn" "$bin_dir/norn"
   mkdir -p "$(dirname "$host_agent_bin")"
@@ -628,26 +1040,29 @@ promote_release_proxy() {
 
 if [[ "$mode" == "rollback" ]]; then
   release="$(resolve_release "${1:-}")"
-  version="$(basename "$release")"
-  if [[ -f "$release/release.env" ]]; then
-    version="$(grep '^NORN_RELEASE_VERSION=' "$release/release.env" | head -1 | cut -d= -f2- || true)"
-    version="${version:-$(basename "$release")}"
-  fi
+  version="$(release_version "$release")"
+  probe_startup_contract "$release/bin/norn-api"
   drain_check
+  candidate_preflight
+  stop_candidate
   promote_release
   exit 0
 fi
 
 build_release
-candidate_preflight
+probe_startup_contract "$release/bin/norn-api"
+target_startup_contract="$last_startup_contract"
 
 if [[ "$mode" == "upgrade" ]]; then
+  validate_prospective_schema_transition "$target_startup_contract"
   drain_check
-  if [[ "$upgrade_mode" == "proxy" ]]; then
-    promote_release_proxy
-  else
-    promote_release
-  fi
+  validate_current_rollback_target
+  run_schema_migration
+  validate_current_rollback_target
+  candidate_preflight
+  stop_candidate
+  promote_release
 else
+  candidate_preflight
   log "preflight complete: $version"
 fi

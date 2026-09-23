@@ -16,6 +16,11 @@ export function apiUrl(path: string): string {
   return `${API_BASE}${path}`
 }
 
+export function apiAuthority(): string {
+  const url = new URL(apiUrl('/'), window.location.href)
+  return `${url.origin}${url.pathname.replace(/\/$/, '')}`
+}
+
 export function wsUrl(): string {
   if (API_BASE) {
     const url = new URL(API_BASE)

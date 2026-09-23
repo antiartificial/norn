@@ -1,6 +1,6 @@
 import { useEffect, useState } from 'react'
-import { useQueryClient } from '@tanstack/react-query'
-import { wsUrl } from '../lib/api.ts'
+import { type QueryClient, useQueryClient } from '@tanstack/react-query'
+import { apiFetch, wsUrl } from '../lib/api.ts'
 import type { HubEvent } from '../types/ws.ts'
 
 type HubSubscriber = (event: HubEvent) => void
@@ -11,7 +11,15 @@ let ws: WebSocket | null = null
 let reconnectTimer: ReturnType<typeof setTimeout> | undefined
 let active = false
 let connected = false
+let connectingGeneration: number | null = null
 let lastEventId = 0
+let lifecycleGeneration = 0
+const queryClients = new Map<QueryClient, number>()
+
+interface HubStreamInfo {
+  bounds: { oldestCursor: number; latestCursor: number }
+  retention: { replayPageSize: number }
+}
 
 function emit(event: HubEvent) {
   for (const subscriber of subscribers) subscriber(event)
@@ -22,31 +30,99 @@ function setConnected(next: boolean) {
   for (const subscriber of connectionSubscribers) subscriber(next)
 }
 
-function connect() {
-  if (!active || ws) return
+export async function reconcileHubCursor(
+  cursor: number,
+  info: HubStreamInfo,
+  refreshAuthoritativeState: () => Promise<unknown>,
+): Promise<number> {
+  const values = [cursor, info.bounds.oldestCursor, info.bounds.latestCursor, info.retention.replayPageSize]
+  if (values.some((value) => !Number.isSafeInteger(value) || value < 0) || info.retention.replayPageSize < 1) {
+    throw new Error('event stream metadata contains an invalid cursor or replay page size')
+  }
+  if (cursor === 0) return cursor
+  const minimum = Math.max(0, info.bounds.oldestCursor - 1)
+  const maximum = Math.max(0, info.bounds.latestCursor)
+  const replayPageSize = Math.max(1, info.retention.replayPageSize)
+  if (cursor >= minimum && cursor <= maximum && maximum - cursor <= replayPageSize) return cursor
+  await refreshAuthoritativeState()
+  return maximum
+}
+
+async function refreshAuthoritativeState(clients: QueryClient[]) {
+  if (clients.length === 0) throw new Error('no authoritative query client is active')
+  await Promise.all(clients.map(async (queryClient) => {
+    await queryClient.invalidateQueries({ refetchType: 'none' })
+    await queryClient.refetchQueries({ type: 'active' }, { throwOnError: true })
+  }))
+}
+
+async function connect() {
+  const generation = lifecycleGeneration
+  if (!active || ws || connectingGeneration === generation) return
+  connectingGeneration = generation
+  const finishConnecting = () => {
+    if (connectingGeneration === generation) connectingGeneration = null
+  }
+  let cursor = lastEventId
+  const replay = cursor > 0
+  const authoritativeClients = [...queryClients.keys()]
+  if (cursor > 0) {
+    try {
+      const info = await apiFetch<HubStreamInfo>('/api/v1/events/info')
+      if (!active || generation !== lifecycleGeneration) {
+        finishConnecting()
+        return
+      }
+      cursor = await reconcileHubCursor(cursor, info, () => refreshAuthoritativeState(authoritativeClients))
+    } catch {
+      // Metadata failure is an ordinary transport failure. Retain the durable
+      // cursor and let the socket/reconnect path retry without discarding work.
+    }
+  }
+  if (!active || ws || generation !== lifecycleGeneration) {
+    finishConnecting()
+    return
+  }
+  lastEventId = cursor
   const url = new URL(wsUrl())
-  if (lastEventId > 0) url.searchParams.set('after', String(lastEventId))
-  ws = new WebSocket(url.toString())
-  ws.onopen = () => setConnected(true)
-  ws.onmessage = (message) => {
+  if (replay) url.searchParams.set('after', String(cursor))
+  let socket: WebSocket
+  try {
+    socket = new WebSocket(url.toString())
+    ws = socket
+  } catch {
+    finishConnecting()
+    if (active && generation === lifecycleGeneration) reconnectTimer = setTimeout(connect, 3000)
+    return
+  }
+  finishConnecting()
+  socket.onopen = () => {
+    if (ws === socket) setConnected(true)
+  }
+  socket.onmessage = (message) => {
+    if (ws !== socket) return
     try {
       const event = JSON.parse(message.data) as HubEvent
-      if (typeof event.id === 'number' && event.id > lastEventId) lastEventId = event.id
+      if (typeof event.id === 'number' && Number.isSafeInteger(event.id) && event.id >= 0 && event.id > lastEventId) lastEventId = event.id
       emit(event)
     } catch {
       // ignore malformed messages
     }
   }
-  ws.onclose = () => {
+  socket.onclose = () => {
+    if (ws !== socket) return
     ws = null
     setConnected(false)
     if (active) reconnectTimer = setTimeout(connect, 3000)
   }
-  ws.onerror = () => ws?.close()
+  socket.onerror = () => socket.close()
 }
 
 function ensureSocket() {
-  active = true
+  if (!active) {
+    active = true
+    lifecycleGeneration += 1
+  }
   clearTimeout(reconnectTimer)
   reconnectTimer = setTimeout(connect, 0)
 }
@@ -54,6 +130,7 @@ function ensureSocket() {
 function releaseSocket() {
   if (subscribers.size > 0) return
   active = false
+  lifecycleGeneration += 1
   clearTimeout(reconnectTimer)
   ws?.close()
   ws = null
@@ -97,6 +174,21 @@ export function invalidateForHubEvent(event: HubEvent, invalidate: (queryKey: re
   }
 }
 
+export function resetHubEventsForTesting() {
+  active = false
+  clearTimeout(reconnectTimer)
+  const current = ws
+  ws = null
+  current?.close()
+  connected = false
+  connectingGeneration = null
+  lastEventId = 0
+  lifecycleGeneration += 1
+  subscribers.clear()
+  connectionSubscribers.clear()
+  queryClients.clear()
+}
+
 export function useHubEvents(onEvent?: HubSubscriber) {
   const queryClient = useQueryClient()
   const [isConnected, setIsConnected] = useState(connected)
@@ -108,11 +200,15 @@ export function useHubEvents(onEvent?: HubSubscriber) {
     }
     subscribers.add(subscriber)
     connectionSubscribers.add(setIsConnected)
+    queryClients.set(queryClient, (queryClients.get(queryClient) ?? 0) + 1)
     setIsConnected(connected)
     ensureSocket()
     return () => {
       subscribers.delete(subscriber)
       connectionSubscribers.delete(setIsConnected)
+      const queryClientUsers = queryClients.get(queryClient) ?? 0
+      if (queryClientUsers <= 1) queryClients.delete(queryClient)
+      else queryClients.set(queryClient, queryClientUsers - 1)
       releaseSocket()
     }
   }, [onEvent, queryClient])

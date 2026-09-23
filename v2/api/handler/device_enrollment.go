@@ -251,6 +251,14 @@ func (h *Handler) RotateCurrentToken(w http.ResponseWriter, r *http.Request) {
 		WriteControlProblem(w, r, http.StatusUnauthorized, "managed_token_required", "rotation requires a managed device token")
 		return
 	}
+	// GitHub Actions tokens are refreshed by repeating the verified OIDC
+	// exchange. Generic rotation cannot re-verify the provider assertion and
+	// historically discarded the CI/app/environment restrictions, so accepting
+	// it here would change the stable actor and widen the credential.
+	if principal.CI != nil {
+		WriteControlProblem(w, r, http.StatusConflict, "github_actions_rotation_unsupported", "GitHub Actions tokens must be refreshed through the OIDC exchange")
+		return
+	}
 	token, record, err := h.issueDeviceToken(principal.DeviceID, principal.Subject, principal.Scopes, principal.TokenID)
 	if err != nil {
 		WriteControlProblem(w, r, http.StatusInternalServerError, "token_issue_failed", "failed to rotate token")

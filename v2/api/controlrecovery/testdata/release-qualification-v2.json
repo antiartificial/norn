@@ -1,0 +1,44 @@
+{
+  "publicKey": "4v4qObcyZkKCfW2C1JdiLNbCl/54Jw6qQ2sB8Ia288s",
+  "receipt": {
+    "app": "demo",
+    "artifact": "registry.example.test/demo@sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+    "candidate": {
+      "attestation": {
+        "issuer": "https://token.actions.githubusercontent.com",
+        "materialSha": "0123456789abcdef0123456789abcdef01234567",
+        "subjectDigest": "sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+      },
+      "ownerId": "202",
+      "provider": "github-actions",
+      "ref": "refs/heads/main",
+      "repository": "owner/demo",
+      "repositoryId": "101",
+      "runAttempt": "1",
+      "runId": "303",
+      "signerWorkflowRef": "owner/signing/.github/workflows/sign.yml@eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee",
+      "signerWorkflowSha": "eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee",
+      "workflowRef": "owner/demo/.github/workflows/release.yml@refs/heads/main",
+      "workflowSha": "cccccccccccccccccccccccccccccccccccccccc"
+    },
+    "deploymentId": "0b8f5d1e-2a3c-4e5f-8a9b-1c2d3e4f5a6b",
+    "dsse": {
+      "payload": "eyJTY2hlbWFWZXJzaW9uIjoibm9ybi5yZWxlYXNlLXF1YWxpZmljYXRpb24vdjIiLCJJRCI6IjZmMWMyYzFlLTRkMGItNGM1NS05YTdlLTNiN2IxZjBmNWEwMSIsIkFwcCI6ImRlbW8iLCJFbnZpcm9ubWVudCI6InN0YWdpbmciLCJEZXBsb3ltZW50SUQiOiIwYjhmNWQxZS0yYTNjLTRlNWYtOGE5Yi0xYzJkM2U0ZjVhNmIiLCJTb3VyY2VTSEEiOiIwMTIzNDU2Nzg5YWJjZGVmMDEyMzQ1Njc4OWFiY2RlZjAxMjM0NTY3IiwiQXJ0aWZhY3QiOiJyZWdpc3RyeS5leGFtcGxlLnRlc3QvZGVtb0BzaGEyNTY6YmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYiIsIklzc3VlZEF0IjoiMjAyNi0wOS0yMlQxMjowMDowMC4xMjM0NTZaIiwiRXhwaXJlc0F0IjoiMjAyNi0wOS0yOVQxMjowMDowMC4xMjM0NTZaIiwiQ2FuZGlkYXRlIjp7InByb3ZpZGVyIjoiZ2l0aHViLWFjdGlvbnMiLCJyZXBvc2l0b3J5Ijoib3duZXIvZGVtbyIsInJlcG9zaXRvcnlJZCI6IjEwMSIsIm93bmVySWQiOiIyMDIiLCJydW5JZCI6IjMwMyIsInJ1bkF0dGVtcHQiOiIxIiwid29ya2Zsb3dSZWYiOiJvd25lci9kZW1vLy5naXRodWIvd29ya2Zsb3dzL3JlbGVhc2UueW1sQHJlZnMvaGVhZHMvbWFpbiIsIndvcmtmbG93U2hhIjoiY2NjY2NjY2NjY2NjY2NjY2NjY2NjY2NjY2NjY2NjY2NjY2NjY2NjYyIsInNpZ25lcldvcmtmbG93UmVmIjoib3duZXIvc2lnbmluZy8uZ2l0aHViL3dvcmtmbG93cy9zaWduLnltbEBlZWVlZWVlZWVlZWVlZWVlZWVlZWVlZWVlZWVlZWVlZWVlZWVlZWVlIiwic2lnbmVyV29ya2Zsb3dTaGEiOiJlZWVlZWVlZWVlZWVlZWVlZWVlZWVlZWVlZWVlZWVlZWVlZWVlZWVlIiwicmVmIjoicmVmcy9oZWFkcy9tYWluIiwiYXR0ZXN0YXRpb24iOnsiaXNzdWVyIjoiaHR0cHM6Ly90b2tlbi5hY3Rpb25zLmdpdGh1YnVzZXJjb250ZW50LmNvbSIsInN1YmplY3REaWdlc3QiOiJzaGEyNTY6YmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYiIsIm1hdGVyaWFsU2hhIjoiMDEyMzQ1Njc4OWFiY2RlZjAxMjM0NTY3ODlhYmNkZWYwMTIzNDU2NyJ9fX0",
+      "payloadType": "application/vnd.norn.release-qualification.v2+json",
+      "signatures": [
+        {
+          "keyid": "ed25519:tB_YlPluyK3KGahf",
+          "sig": "I8OP6uC88pmkQtAewHXrVbNc0O5YhJ+MsYriH2/fbWfFY4on5DCgI4+aNfVs+JoAEGI8iSFzTgMvH0UAB3XLAw"
+        }
+      ]
+    },
+    "environment": "staging",
+    "expiresAt": "2026-09-29T12:00:00.123456789Z",
+    "id": "6f1c2c1e-4d0b-4c55-9a7e-3b7b1f0f5a01",
+    "issuedAt": "2026-09-22T12:00:00.123456789Z",
+    "keyId": "ed25519:tB_YlPluyK3KGahf",
+    "schemaVersion": "norn.release-qualification/v2",
+    "signature": "I8OP6uC88pmkQtAewHXrVbNc0O5YhJ+MsYriH2/fbWfFY4on5DCgI4+aNfVs+JoAEGI8iSFzTgMvH0UAB3XLAw",
+    "sourceSha": "0123456789abcdef0123456789abcdef01234567"
+  }
+}

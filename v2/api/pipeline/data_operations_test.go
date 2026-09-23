@@ -23,14 +23,14 @@ func TestSnapshotInventoryAndPruneAreDeterministic(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
-	snapshots, err := listDataSnapshots("orders")
+	snapshots, err := listDataSnapshots(legacySnapshotLocation("orders"))
 	if err != nil {
 		t.Fatal(err)
 	}
 	if len(snapshots) != 3 || snapshots[0].Timestamp != "20260825T140000" {
 		t.Fatalf("unexpected inventory: %#v", snapshots)
 	}
-	pruned, err := pruneDataSnapshots("orders", 2)
+	pruned, err := pruneDataSnapshots(legacySnapshotLocation("orders"), 2)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -44,7 +44,7 @@ func TestSnapshotInventoryAndPruneAreDeterministic(t *testing.T) {
 
 func TestSnapshotInventoryRejectsUnsafeNamesAndIgnoresSymlinks(t *testing.T) {
 	t.Chdir(t.TempDir())
-	if _, err := listDataSnapshots("../outside"); err == nil {
+	if _, err := listDataSnapshots(legacySnapshotLocation("../outside")); err == nil {
 		t.Fatal("expected unsafe database name to be rejected")
 	}
 	if err := os.MkdirAll("snapshots", 0o750); err != nil {
@@ -57,7 +57,7 @@ func TestSnapshotInventoryRejectsUnsafeNamesAndIgnoresSymlinks(t *testing.T) {
 	if err := os.Symlink(target, filepath.Join("snapshots", "orders_manual_20260825T140000.dump")); err != nil {
 		t.Fatal(err)
 	}
-	snapshots, err := listDataSnapshots("orders")
+	snapshots, err := listDataSnapshots(legacySnapshotLocation("orders"))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -79,10 +79,10 @@ func TestFindDataSnapshotRejectsAmbiguousTimestamp(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
-	if _, err := findDataSnapshot("orders", "20260825T140000"); err == nil {
+	if _, err := findDataSnapshot(legacySnapshotLocation("orders"), "20260825T140000"); err == nil {
 		t.Fatal("expected duplicate timestamps to be rejected as ambiguous")
 	}
-	target, err := findDataSnapshot("orders", "orders_pre-migrate_20260825T140000.dump")
+	target, err := findDataSnapshot(legacySnapshotLocation("orders"), "orders_pre-migrate_20260825T140000.dump")
 	if err != nil || target.Filename != "orders_pre-migrate_20260825T140000.dump" {
 		t.Fatalf("expected exact inventory filename to disambiguate restore: target=%#v err=%v", target, err)
 	}

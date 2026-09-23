@@ -193,22 +193,6 @@ func TestUnsignedCapacityPlanDigestIncludesUnsignedWarning(t *testing.T) {
 	}
 }
 
-func TestFleetPlanIdempotencyIsPrincipalScopedAndRequestBound(t *testing.T) {
-	request := fleet.PlanRequest{Reason: "capacity review"}
-	firstKey, firstDigest := fleetPlanIdempotency(AccessPrincipal{Subject: "one"}, "app", "retry-1", request)
-	secondKey, _ := fleetPlanIdempotency(AccessPrincipal{Subject: "two"}, "app", "retry-1", request)
-	if firstKey == secondKey {
-		t.Fatal("idempotency key was not principal scoped")
-	}
-	op := &model.Operation{Kind: "fleet.capacity-plan", Metadata: map[string]interface{}{"requestDigest": firstDigest}}
-	if !matchesFleetPlanRequest(op, firstDigest) {
-		t.Fatal("matching idempotent request rejected")
-	}
-	if matchesFleetPlanRequest(op, "sha256:other") {
-		t.Fatal("different request accepted for idempotency replay")
-	}
-}
-
 func TestFleetInventoryRequiresReadScopeAndRedactsConfigPath(t *testing.T) {
 	unconfigured, err := New(nil, nil, nil, nil, &config.Config{}, nil, nil, nil, nil, nil, nil).loadFleetInventory()
 	if err != nil || unconfigured.Configured || unconfigured.Source != "" {

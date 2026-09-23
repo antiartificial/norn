@@ -19,6 +19,8 @@ type FunctionSpec struct {
 }
 
 type InfraSpec struct {
+	// SchemaVersion is omitted for v1 specs; AppSchemaV2 enables Databases.
+	SchemaVersion  string             `yaml:"schemaVersion,omitempty" json:"schemaVersion,omitempty"`
 	App            string             `yaml:"name" json:"name"`
 	Repo           *RepoSpec          `yaml:"repo,omitempty" json:"repo,omitempty"`
 	Build          *BuildSpec         `yaml:"build,omitempty" json:"build,omitempty"`
@@ -28,9 +30,13 @@ type InfraSpec struct {
 	Migrations     string             `yaml:"migrations,omitempty" json:"migrations,omitempty"`
 	Env            map[string]string  `yaml:"env,omitempty" json:"-"`
 	Infrastructure *Infrastructure    `yaml:"infrastructure,omitempty" json:"infrastructure,omitempty"`
-	Endpoints      []Endpoint         `yaml:"endpoints,omitempty" json:"endpoints,omitempty"`
-	Volumes        []VolumeSpec       `yaml:"volumes,omitempty" json:"volumes,omitempty"`
-	Snapshots      *SnapshotPolicy    `yaml:"snapshots,omitempty" json:"snapshots,omitempty"`
+	// Databases and MigrationDatabase are AppSchemaV2 only; see
+	// database_requirements.go for validation.
+	Databases         []DatabaseRequirement `yaml:"databases,omitempty" json:"databases,omitempty"`
+	MigrationDatabase string                `yaml:"migrationDatabase,omitempty" json:"migrationDatabase,omitempty"`
+	Endpoints         []Endpoint            `yaml:"endpoints,omitempty" json:"endpoints,omitempty"`
+	Volumes           []VolumeSpec          `yaml:"volumes,omitempty" json:"volumes,omitempty"`
+	Snapshots         *SnapshotPolicy       `yaml:"snapshots,omitempty" json:"snapshots,omitempty"`
 	// Deploy is intentionally explicit in serialized specs. Its zero value is
 	// false, so a newly-created service cannot enter recovery or deployment
 	// workflows until an operator enables it.
@@ -252,6 +258,11 @@ func ParseInfraSpec(data []byte) (*InfraSpec, error) {
 	var spec InfraSpec
 	if err := yaml.Unmarshal(data, &spec); err != nil {
 		return nil, err
+	}
+	// v1 discovery stays lenient for compatibility; a versioned v2 document
+	// is always decoded strictly, so misspelled database fields never vanish.
+	if spec.SchemaVersion == AppSchemaV2 {
+		return ParseInfraSpecDocument(data)
 	}
 	applyDefaults(&spec)
 	return &spec, nil

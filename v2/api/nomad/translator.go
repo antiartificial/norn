@@ -22,6 +22,12 @@ func Translate(spec *model.InfraSpec, imageTag string, env map[string]string) *n
 // their effective placement. Nomad regions provide an independent namespace,
 // so the same stable app job ID is intentionally reused in every region.
 func TranslateForRegion(spec *model.InfraSpec, imageTag string, env map[string]string, region model.ResolvedRegion) *nomadapi.Job {
+	return TranslateForRegionAt(spec, imageTag, env, region, 0)
+}
+
+// TranslateForRegionAt is TranslateForRegion whose database templates read
+// the delivery staged for databaseRevision (0 reads the promoted delivery).
+func TranslateForRegionAt(spec *model.InfraSpec, imageTag string, env map[string]string, region model.ResolvedRegion, databaseRevision int64) *nomadapi.Job {
 	jobID := spec.App
 	jobType := "service"
 
@@ -98,7 +104,7 @@ func TranslateForRegion(spec *model.InfraSpec, imageTag string, env map[string]s
 		}
 
 		// Task
-		task := nomadapi.NewTask(procName, "docker")
+		task := newDockerTask(procName)
 		task.Config = map[string]interface{}{
 			"image": imageTag,
 		}
@@ -111,6 +117,7 @@ func TranslateForRegion(spec *model.InfraSpec, imageTag string, env map[string]s
 
 		// Environment
 		task.Env = mergeProcessEnv(mergedEnv, proc.Env)
+		addDatabaseTemplates(spec, jobID, databaseRevision, task)
 
 		// Resources
 		cpu := 100
@@ -289,6 +296,12 @@ func TranslatePeriodic(spec *model.InfraSpec, procName string, proc model.Proces
 }
 
 func TranslatePeriodicForRegion(spec *model.InfraSpec, procName string, proc model.Process, imageTag string, env map[string]string, region model.ResolvedRegion) *nomadapi.Job {
+	return TranslatePeriodicForRegionAt(spec, procName, proc, imageTag, env, region, 0)
+}
+
+// TranslatePeriodicForRegionAt is TranslatePeriodicForRegion reading the
+// delivery staged for databaseRevision (0 reads the promoted delivery).
+func TranslatePeriodicForRegionAt(spec *model.InfraSpec, procName string, proc model.Process, imageTag string, env map[string]string, region model.ResolvedRegion, databaseRevision int64) *nomadapi.Job {
 	jobID := fmt.Sprintf("%s-%s", spec.App, procName)
 	job := nomadapi.NewBatchJob(jobID, jobID, region.NomadRegion, 50)
 	if pool := spec.EffectiveNodePool(); pool != "" {
@@ -314,7 +327,7 @@ func TranslatePeriodicForRegion(spec *model.InfraSpec, procName string, proc mod
 	}
 
 	tg := nomadapi.NewTaskGroup(procName, 1)
-	task := nomadapi.NewTask(procName, "docker")
+	task := newDockerTask(procName)
 	task.Config = map[string]interface{}{
 		"image": imageTag,
 	}
@@ -323,6 +336,7 @@ func TranslatePeriodicForRegion(spec *model.InfraSpec, procName string, proc mod
 		task.Config["args"] = []string{"-c", proc.Command}
 	}
 	task.Env = mergeProcessEnv(mergedEnv, proc.Env)
+	addDatabaseTemplates(spec, jobID, databaseRevision, task)
 
 	cpu := 100
 	mem := 128
@@ -364,6 +378,12 @@ func TranslatePeriodicForRegion(spec *model.InfraSpec, procName string, proc mod
 
 // TranslateBatch creates a one-shot Nomad batch job for a function invocation.
 func TranslateBatch(spec *model.InfraSpec, procName string, proc model.Process, imageTag string, env map[string]string, jobID string) *nomadapi.Job {
+	return TranslateBatchAt(spec, procName, proc, imageTag, env, jobID, 0)
+}
+
+// TranslateBatchAt is TranslateBatch whose database templates read the
+// invocation's own copy of databaseRevision (0 fails closed at render).
+func TranslateBatchAt(spec *model.InfraSpec, procName string, proc model.Process, imageTag string, env map[string]string, jobID string, databaseRevision int64) *nomadapi.Job {
 	job := nomadapi.NewBatchJob(jobID, jobID, "global", 50)
 	job.Datacenters = []string{"dc1"}
 
@@ -389,7 +409,7 @@ func TranslateBatch(spec *model.InfraSpec, procName string, proc model.Process, 
 		Mode:     &mode,
 	}
 
-	task := nomadapi.NewTask(procName, "docker")
+	task := newDockerTask(procName)
 	task.Config = map[string]interface{}{
 		"image": imageTag,
 	}
@@ -398,6 +418,8 @@ func TranslateBatch(spec *model.InfraSpec, procName string, proc model.Process, 
 		task.Config["args"] = []string{"-c", proc.Command}
 	}
 	task.Env = mergeProcessEnv(mergedEnv, proc.Env)
+	// A function invocation reads its own copy of one delivery revision.
+	addDatabaseTemplates(spec, jobID, databaseRevision, task)
 
 	cpu := 100
 	mem := 128
@@ -438,6 +460,21 @@ func TranslateBatch(spec *model.InfraSpec, procName string, proc model.Process, 
 	job.TaskGroups = []*nomadapi.TaskGroup{tg}
 
 	return job
+}
+
+// Every task carries an explicit log rotation budget rather than relying on
+// runtime defaults: at most TaskLogMaxFiles files of TaskLogMaxFileSizeMB per
+// stream (stdout and stderr each), which fits Nomad's default ephemeral disk.
+const (
+	TaskLogMaxFiles      = 5
+	TaskLogMaxFileSizeMB = 10
+)
+
+func newDockerTask(name string) *nomadapi.Task {
+	task := nomadapi.NewTask(name, "docker")
+	maxFiles, maxFileSize, disabled := TaskLogMaxFiles, TaskLogMaxFileSizeMB, false
+	task.LogConfig = &nomadapi.LogConfig{MaxFiles: &maxFiles, MaxFileSizeMB: &maxFileSize, Disabled: &disabled}
+	return task
 }
 
 func boolPtr(b bool) *bool    { return &b }

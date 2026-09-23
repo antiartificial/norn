@@ -16,98 +16,167 @@ import (
 	"norn/v2/api/hub"
 	"norn/v2/api/model"
 	"norn/v2/api/saga"
+	"norn/v2/api/store"
 )
 
 type dataSnapshot struct {
 	Filename  string
 	Timestamp string
 	Size      int64
+	// sidecar is the target binding recorded with the dump, when present;
+	// foreign means it names a different target than the location's.
+	sidecar *snapshotSidecar
+	foreign bool
+	// adopted is the ownership-inventory entry for a pre-v3 unbound dump in a
+	// legacy-mapped namespace.
+	adopted *legacySnapshot
 }
 
 var snapshotCommitLabelPattern = regexp.MustCompile(`^[0-9a-f]{7,40}$`)
 
-func (p *Pipeline) executeDataOperation(ctx context.Context, op *model.Operation, spec *model.InfraSpec, sg *saga.Saga) error {
-	database, err := postgresDatabase(spec)
-	if err != nil {
-		return err
+func (p *Pipeline) executeDataOperation(ctx context.Context, op *model.Operation, claim store.OperationClaim, spec *model.InfraSpec, sg *saga.Saga) (*OperationResult, error) {
+	if err := ctx.Err(); err != nil {
+		return nil, err
 	}
-	metadata := map[string]interface{}{"database": database}
-	finish := func(message string, values map[string]interface{}) error {
+	set, err := p.openDatabaseTargets(ctx, op.Payload, spec)
+	if err != nil {
+		return nil, err
+	}
+	defer set.Close()
+	var database string
+	var bound *boundDatabase
+	metadata := map[string]interface{}{}
+	if spec.NamedDatabases() {
+		logical := spec.EffectiveMigrationDatabase()
+		if op.Kind != "app.migrate" {
+			if logical, err = selectedDatabase(spec, op.Payload); err != nil {
+				return nil, err
+			}
+		}
+		if bound = set.named[logical]; bound == nil {
+			return nil, &DatabaseTargetError{Reason: fmt.Sprintf("database %q was not bound at acceptance", logical)}
+		}
+		metadata["logicalDatabase"] = logical
+	} else {
+		if database, err = postgresDatabase(spec); err != nil {
+			return nil, err
+		}
+		if set != nil {
+			bound = set.legacy
+		}
+	}
+	metadata["database"] = database
+	if bound != nil {
+		required := map[string][]dbCapability{
+			"app.snapshot": {dbSnapshot}, "app.snapshot-prune": {dbSnapshot},
+			"app.snapshot-restore": {dbRestore, dbSnapshot}, "app.migrate": {dbMigration, dbSnapshot},
+		}[op.Kind]
+		if err := bound.requireCapabilities(required...); err != nil {
+			return nil, err
+		}
+		database = bound.resolved.Target.Database
+		metadata["database"] = database
+		metadata["databaseBinding"] = bound.resolved.Target.BindingID
+		metadata["databaseBindingGeneration"] = bound.resolved.Target.BindingGeneration
+	}
+	location, err := p.prepareSnapshotLocation(database, bound)
+	if err != nil {
+		return nil, err
+	}
+	finish := func(message string, values map[string]interface{}, publish func(context.Context)) *OperationResult {
 		for key, value := range values {
 			metadata[key] = value
 		}
-		return p.DB.FinishOperation(ctx, op.ID, model.OperationSucceeded, message, metadata)
+		return &OperationResult{Claim: claim, Status: model.OperationSucceeded, Message: message, Metadata: metadata, publish: publish}
 	}
 
 	switch op.Kind {
 	case "app.snapshot":
-		created, err := createDataSnapshotAt(ctx, database, "manual", op.StartedAt.UTC(), true)
+		created, err := createDataSnapshotAt(ctx, location, "manual", op.StartedAt.UTC(), true)
 		if err != nil {
-			return err
+			return nil, err
 		}
-		_ = sg.Log(ctx, "snapshot.created", "manual database snapshot created", map[string]string{"snapshot": created.Filename, "database": database})
-		p.broadcastDataEvent("snapshot.created", spec.App, map[string]string{"snapshot": created.Filename, "database": database, "operationId": op.ID})
-		return finish("snapshot created for "+spec.App, map[string]interface{}{"snapshot": created.Filename})
+		if err := ctx.Err(); err != nil {
+			return nil, err
+		}
+		return finish("snapshot created for "+spec.App, map[string]interface{}{"snapshot": created.Filename}, func(publishCtx context.Context) {
+			_ = sg.Log(publishCtx, "snapshot.created", "manual database snapshot created", map[string]string{"snapshot": created.Filename, "database": database})
+			p.broadcastDataEvent("snapshot.created", spec.App, map[string]string{"snapshot": created.Filename, "database": database, "operationId": op.ID})
+		}), nil
 
 	case "app.snapshot-prune":
 		keep := intFromMap(op.Payload, "keep")
 		if keep < 1 {
-			return fmt.Errorf("snapshot retention keep must be at least 1")
+			return nil, fmt.Errorf("snapshot retention keep must be at least 1")
 		}
-		pruned, err := pruneDataSnapshots(database, keep)
+		pruned, err := pruneDataSnapshots(location, keep)
 		if err != nil {
-			return err
+			return nil, err
 		}
-		_ = sg.Log(ctx, "snapshot.retention", fmt.Sprintf("pruned %d database snapshots", len(pruned)), map[string]string{"database": database, "keep": fmt.Sprintf("%d", keep)})
-		p.broadcastDataEvent("snapshot.retention", spec.App, map[string]string{"database": database, "keep": fmt.Sprintf("%d", keep), "operationId": op.ID})
-		return finish(fmt.Sprintf("snapshot retention kept %d for %s", keep, spec.App), map[string]interface{}{"keep": keep, "pruned": pruned})
+		if err := ctx.Err(); err != nil {
+			return nil, err
+		}
+		return finish(fmt.Sprintf("snapshot retention kept %d for %s", keep, spec.App), map[string]interface{}{"keep": keep, "pruned": pruned}, func(publishCtx context.Context) {
+			_ = sg.Log(publishCtx, "snapshot.retention", fmt.Sprintf("pruned %d database snapshots", len(pruned)), map[string]string{"database": database, "keep": fmt.Sprintf("%d", keep)})
+			p.broadcastDataEvent("snapshot.retention", spec.App, map[string]string{"database": database, "keep": fmt.Sprintf("%d", keep), "operationId": op.ID})
+		}), nil
 
 	case "app.snapshot-restore":
 		identifier := stringFromMap(op.Payload, "snapshot")
 		if identifier == "" {
 			identifier = stringFromMap(op.Payload, "timestamp") // pre-v2.20 compatibility
 		}
-		target, err := findDataSnapshot(database, identifier)
+		target, err := findDataSnapshot(location, identifier)
 		if err != nil {
-			return err
+			return nil, err
 		}
-		safety, err := createDataSnapshot(ctx, database, "pre-restore")
+		if err := verifySnapshotContent(location, *target); err != nil {
+			return nil, err
+		}
+		safety, err := createDataSnapshot(ctx, location, "pre-restore")
 		if err != nil {
-			return fmt.Errorf("pre-restore snapshot: %w", err)
+			return nil, fmt.Errorf("pre-restore snapshot: %w", err)
 		}
-		cmd := exec.CommandContext(ctx, "pg_restore", "--single-transaction", "--clean", "--if-exists", "-d", database, filepath.Join("snapshots", target.Filename))
-		if output, restoreErr := cmd.CombinedOutput(); restoreErr != nil {
-			return fmt.Errorf("pg_restore: %s", strings.TrimSpace(string(output)))
+		if err := restoreDataSnapshot(ctx, location, *target); err != nil {
+			return nil, err
 		}
-		_ = sg.Log(ctx, "snapshot.restored", "database snapshot restored", map[string]string{"snapshot": target.Filename, "preRestoreSnapshot": safety.Filename, "database": database})
-		p.broadcastDataEvent("snapshot.restored", spec.App, map[string]string{"snapshot": target.Filename, "preRestoreSnapshot": safety.Filename, "operationId": op.ID})
-		return finish("snapshot restored for "+spec.App, map[string]interface{}{"snapshot": target.Filename, "preRestoreSnapshot": safety.Filename})
+		if err := ctx.Err(); err != nil {
+			return nil, err
+		}
+		return finish("snapshot restored for "+spec.App, map[string]interface{}{"snapshot": target.Filename, "preRestoreSnapshot": safety.Filename}, func(publishCtx context.Context) {
+			_ = sg.Log(publishCtx, "snapshot.restored", "database snapshot restored", map[string]string{"snapshot": target.Filename, "preRestoreSnapshot": safety.Filename, "database": database})
+			p.broadcastDataEvent("snapshot.restored", spec.App, map[string]string{"snapshot": target.Filename, "preRestoreSnapshot": safety.Filename, "operationId": op.ID})
+		}), nil
 
 	case "app.migrate":
 		if strings.TrimSpace(spec.Migrations) == "" {
-			return fmt.Errorf("app has no migrations command")
+			return nil, fmt.Errorf("app has no migrations command")
 		}
-		st := &state{spec: spec, commitSHA: op.Ref, sourceRef: op.Ref}
+		st := &state{spec: spec, commitSHA: op.Ref, sourceRef: op.Ref, database: set, databaseOpened: true}
 		defer func() {
 			if st.workDir != "" {
 				_ = os.RemoveAll(st.workDir)
 			}
 		}()
 		if err := p.clone(ctx, st, sg); err != nil {
-			return fmt.Errorf("prepare migration source: %w", err)
+			return nil, fmt.Errorf("prepare migration source: %w", err)
 		}
-		safety, err := createDataSnapshot(ctx, database, "pre-migrate")
+		safety, err := createDataSnapshot(ctx, location, "pre-migrate")
 		if err != nil {
-			return fmt.Errorf("pre-migration snapshot: %w", err)
+			return nil, fmt.Errorf("pre-migration snapshot: %w", err)
 		}
 		if err := p.migrate(ctx, st, sg); err != nil {
-			return err
+			return nil, err
 		}
-		_ = sg.Log(ctx, "migration.completed", "schema migration completed", map[string]string{"snapshot": safety.Filename, "database": database, "ref": op.Ref})
-		p.broadcastDataEvent("migration.completed", spec.App, map[string]string{"snapshot": safety.Filename, "ref": op.Ref, "operationId": op.ID})
-		return finish("schema migration completed for "+spec.App, map[string]interface{}{"snapshot": safety.Filename, "commitSha": st.commitSHA})
+		if err := ctx.Err(); err != nil {
+			return nil, err
+		}
+		return finish("schema migration completed for "+spec.App, map[string]interface{}{"snapshot": safety.Filename, "commitSha": st.commitSHA}, func(publishCtx context.Context) {
+			_ = sg.Log(publishCtx, "migration.completed", "schema migration completed", map[string]string{"snapshot": safety.Filename, "database": database, "ref": op.Ref})
+			p.broadcastDataEvent("migration.completed", spec.App, map[string]string{"snapshot": safety.Filename, "ref": op.Ref, "operationId": op.ID})
+		}), nil
 	default:
-		return fmt.Errorf("unsupported data operation kind %s", op.Kind)
+		return nil, fmt.Errorf("unsupported data operation kind %s", op.Kind)
 	}
 }
 
@@ -128,25 +197,42 @@ func postgresDatabase(spec *model.InfraSpec) (string, error) {
 	return database, nil
 }
 
-func createDataSnapshot(ctx context.Context, database, label string) (*dataSnapshot, error) {
-	return createDataSnapshotAt(ctx, database, label, time.Now().UTC(), false)
+func legacySnapshotLocation(database string) snapshotLocation {
+	return snapshotLocation{dir: defaultSnapshotRoot, database: database}
 }
 
-func createDataSnapshotAt(ctx context.Context, database, label string, createdAt time.Time, reuse bool) (*dataSnapshot, error) {
+func createDataSnapshot(ctx context.Context, location snapshotLocation, label string) (*dataSnapshot, error) {
+	return createDataSnapshotAt(ctx, location, label, time.Now().UTC(), false)
+}
+
+func createDataSnapshotAt(ctx context.Context, location snapshotLocation, label string, createdAt time.Time, reuse bool) (*dataSnapshot, error) {
+	database, directory := location.database, location.dir
 	if !model.IsSafePostgresDatabaseName(database) {
 		return nil, fmt.Errorf("unsafe postgres database name")
 	}
-	if err := os.MkdirAll("snapshots", 0o750); err != nil {
+	if err := os.MkdirAll(directory, 0o750); err != nil {
 		return nil, fmt.Errorf("create snapshots directory: %w", err)
 	}
 	timestamp := createdAt.UTC().Format("20060102T150405")
 	filename := fmt.Sprintf("%s_%s_%s.dump", database, label, timestamp)
-	path := filepath.Join("snapshots", filename)
+	path := filepath.Join(directory, filename)
 	if info, err := os.Lstat(path); err == nil {
 		if !info.Mode().IsRegular() {
 			return nil, fmt.Errorf("snapshot target %s is not a regular file", filename)
 		}
-		if reuse && info.Size() > 0 {
+		if reuse && info.Size() > 0 && location.bound != nil {
+			// A replayed operation's dump is reused only with verified
+			// provenance for this target. Unknown bytes fail closed; a dump
+			// bound to another target is left alone and a new name is chosen.
+			switch err := verifyBoundDump(location, filename, info.Size()); {
+			case err == nil:
+				return &dataSnapshot{Filename: filename, Timestamp: timestamp, Size: info.Size()}, nil
+			case errors.Is(err, errSnapshotTargetMismatch):
+				reuse = false
+			default:
+				return nil, err
+			}
+		} else if reuse && info.Size() > 0 {
 			return &dataSnapshot{Filename: filename, Timestamp: timestamp, Size: info.Size()}, nil
 		}
 		if reuse {
@@ -158,7 +244,7 @@ func createDataSnapshotAt(ctx context.Context, database, label string, createdAt
 		return nil, fmt.Errorf("inspect snapshot target: %w", err)
 	}
 
-	temporary, err := os.CreateTemp("snapshots", ".norn-snapshot-*.tmp")
+	temporary, err := os.CreateTemp(directory, ".norn-snapshot-*.tmp")
 	if err != nil {
 		return nil, fmt.Errorf("reserve snapshot file: %w", err)
 	}
@@ -169,9 +255,17 @@ func createDataSnapshotAt(ctx context.Context, database, label string, createdAt
 	}
 	defer os.Remove(temporaryPath)
 
-	cmd := exec.CommandContext(ctx, "pg_dump", "-Fc", "-d", database, "-f", temporaryPath)
-	if output, err := cmd.CombinedOutput(); err != nil {
-		return nil, fmt.Errorf("pg_dump: %s", strings.TrimSpace(string(output)))
+	if location.bound != nil {
+		session := location.bound.session
+		args := append([]string{"-Fc", "-d", session.ServiceArgument(), "-f", temporaryPath}, location.dumpScope...)
+		if output, err := runCaptured(session.Command(ctx, "pg_dump", args...)); err != nil {
+			return nil, fmt.Errorf("pg_dump: %s", session.RedactCaptured(output))
+		}
+	} else {
+		cmd := exec.CommandContext(ctx, "pg_dump", "-Fc", "-d", database, "-f", temporaryPath)
+		if output, err := runCaptured(cmd); err != nil {
+			return nil, fmt.Errorf("pg_dump: %s", strings.TrimSpace(output.String()))
+		}
 	}
 	info, err := os.Lstat(temporaryPath)
 	if err != nil {
@@ -183,21 +277,43 @@ func createDataSnapshotAt(ctx context.Context, database, label string, createdAt
 	if err := os.Chmod(temporaryPath, 0o600); err != nil {
 		return nil, fmt.Errorf("secure snapshot permissions: %w", err)
 	}
+	digest := ""
+	if location.bound != nil {
+		if digest, err = fileSHA256(temporaryPath); err != nil {
+			return nil, err
+		}
+	}
 
 	// Hard-linking publishes the completed dump without overwriting an existing
 	// snapshot. If two safe snapshots land in the same second, advance the
-	// display timestamp until an unused filename is found.
+	// display timestamp until an unused filename is found. A bound dump's
+	// sidecar is written exclusively first, so a published bound dump always
+	// has its provenance and an interrupted publication leaves at most an
+	// orphan sidecar, never an unbound dump in a target namespace.
 	for offset := 0; offset < 1000; offset++ {
 		candidateTime := createdAt.UTC().Add(time.Duration(offset) * time.Second)
 		candidateTimestamp := candidateTime.Format("20060102T150405")
 		candidateFilename := fmt.Sprintf("%s_%s_%s.dump", database, label, candidateTimestamp)
-		candidatePath := filepath.Join("snapshots", candidateFilename)
+		candidatePath := filepath.Join(directory, candidateFilename)
+		if location.bound != nil {
+			if err := writeSidecarExclusive(location, candidateFilename, digest, info.Size()); errors.Is(err, fs.ErrExist) {
+				continue
+			} else if err != nil {
+				return nil, err
+			}
+		}
 		if linkErr := os.Link(temporaryPath, candidatePath); linkErr == nil {
 			return &dataSnapshot{Filename: candidateFilename, Timestamp: candidateTimestamp, Size: info.Size()}, nil
-		} else if !errors.Is(linkErr, fs.ErrExist) {
-			return nil, fmt.Errorf("publish snapshot: %w", linkErr)
+		} else {
+			if location.bound != nil {
+				// Our fresh sidecar must never describe a different dump.
+				_ = os.Remove(filepath.Join(directory, candidateFilename+sidecarSuffix))
+			}
+			if !errors.Is(linkErr, fs.ErrExist) {
+				return nil, fmt.Errorf("publish snapshot: %w", linkErr)
+			}
 		}
-		if reuse && offset == 0 {
+		if reuse && offset == 0 && location.bound == nil {
 			existing, statErr := os.Lstat(candidatePath)
 			if statErr == nil && existing.Mode().IsRegular() && existing.Size() > 0 {
 				return &dataSnapshot{Filename: candidateFilename, Timestamp: candidateTimestamp, Size: existing.Size()}, nil
@@ -207,11 +323,12 @@ func createDataSnapshotAt(ctx context.Context, database, label string, createdAt
 	return nil, fmt.Errorf("could not allocate a unique snapshot filename")
 }
 
-func listDataSnapshots(database string) ([]dataSnapshot, error) {
+func listDataSnapshots(location snapshotLocation) ([]dataSnapshot, error) {
+	database := location.database
 	if !model.IsSafePostgresDatabaseName(database) {
 		return nil, fmt.Errorf("unsafe postgres database name")
 	}
-	entries, err := os.ReadDir("snapshots")
+	entries, err := os.ReadDir(location.dir)
 	if os.IsNotExist(err) {
 		return []dataSnapshot{}, nil
 	}
@@ -238,7 +355,28 @@ func listDataSnapshots(database string) ([]dataSnapshot, error) {
 		if !info.Mode().IsRegular() {
 			continue
 		}
-		result = append(result, dataSnapshot{Filename: entry.Name(), Timestamp: timestamp, Size: info.Size()})
+		snapshot := dataSnapshot{Filename: entry.Name(), Timestamp: timestamp, Size: info.Size()}
+		if location.bound != nil {
+			sidecar, err := readSidecar(location, entry.Name())
+			if err != nil {
+				return nil, err
+			}
+			snapshot.sidecar = sidecar
+			if sidecar != nil {
+				snapshot.foreign = sidecar.Target != location.bound.resolved.Target
+			} else {
+				// Unbound dumps are restorable only when inventoried at
+				// adoption by this legacy namespace's owner, at that size,
+				// and only for the exact target they were adopted for.
+				adopted, ok := location.adopted[entry.Name()]
+				if !ok || adopted.Size != info.Size() {
+					continue
+				}
+				snapshot.adopted = &adopted
+				snapshot.foreign = location.adoptedTarget != location.bound.resolved.Target
+			}
+		}
+		result = append(result, snapshot)
 	}
 	sort.Slice(result, func(i, j int) bool {
 		if result[i].Timestamp == result[j].Timestamp {
@@ -249,43 +387,60 @@ func listDataSnapshots(database string) ([]dataSnapshot, error) {
 	return result, nil
 }
 
-func findDataSnapshot(database, identifier string) (*dataSnapshot, error) {
-	snapshots, err := listDataSnapshots(database)
+func findDataSnapshot(location snapshotLocation, identifier string) (*dataSnapshot, error) {
+	snapshots, err := listDataSnapshots(location)
 	if err != nil {
 		return nil, err
-	}
-	for i := range snapshots {
-		if snapshots[i].Filename == identifier {
-			return &snapshots[i], nil
-		}
 	}
 	var target *dataSnapshot
 	for i := range snapshots {
-		if snapshots[i].Timestamp == identifier {
-			if target != nil {
-				return nil, fmt.Errorf("snapshot timestamp %s is ambiguous; retry with its inventory filename", identifier)
-			}
+		if snapshots[i].Filename == identifier {
 			target = &snapshots[i]
+			break
 		}
 	}
-	if target != nil {
-		return target, nil
+	if target == nil {
+		for i := range snapshots {
+			if snapshots[i].Timestamp == identifier {
+				if target != nil {
+					return nil, fmt.Errorf("snapshot timestamp %s is ambiguous; retry with its inventory filename", identifier)
+				}
+				target = &snapshots[i]
+			}
+		}
 	}
-	return nil, fmt.Errorf("snapshot %s was not found", identifier)
+	if target == nil {
+		return nil, fmt.Errorf("snapshot %s was not found", identifier)
+	}
+	if target.foreign {
+		// Cross-target restore needs explicit, reviewed intent; a matching
+		// file name is never proof of the intended target.
+		return nil, fmt.Errorf("snapshot %s: %w", target.Filename, errSnapshotTargetMismatch)
+	}
+	return target, nil
 }
 
-func pruneDataSnapshots(database string, keep int) ([]string, error) {
-	snapshots, err := listDataSnapshots(database)
+func pruneDataSnapshots(location snapshotLocation, keep int) ([]string, error) {
+	all, err := listDataSnapshots(location)
 	if err != nil {
 		return nil, err
+	}
+	snapshots := make([]dataSnapshot, 0, len(all))
+	for _, snapshot := range all {
+		if !snapshot.foreign {
+			snapshots = append(snapshots, snapshot)
+		}
 	}
 	if len(snapshots) <= keep {
 		return []string{}, nil
 	}
 	pruned := make([]string, 0, len(snapshots)-keep)
 	for _, snapshot := range snapshots[keep:] {
-		if err := os.Remove(filepath.Join("snapshots", snapshot.Filename)); err != nil {
+		if err := os.Remove(filepath.Join(location.dir, snapshot.Filename)); err != nil {
 			return pruned, fmt.Errorf("prune snapshot %s: %w", snapshot.Filename, err)
+		}
+		if snapshot.sidecar != nil {
+			_ = os.Remove(filepath.Join(location.dir, snapshot.Filename+sidecarSuffix))
 		}
 		pruned = append(pruned, snapshot.Filename)
 	}

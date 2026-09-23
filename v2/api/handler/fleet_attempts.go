@@ -4,6 +4,7 @@ import (
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
+	"errors"
 	"fmt"
 	"net/http"
 	"net/url"
@@ -13,10 +14,10 @@ import (
 	"github.com/go-chi/chi/v5"
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
-	"github.com/jackc/pgx/v5/pgconn"
 
 	"norn/v2/api/fleet"
 	"norn/v2/api/model"
+	"norn/v2/api/pipeline"
 	"norn/v2/api/store"
 )
 
@@ -80,8 +81,40 @@ func (h *Handler) CreateFleetRunnerAttempt(w http.ResponseWriter, r *http.Reques
 		WriteControlProblem(w, r, http.StatusForbidden, "fleet_runner_attempt_identity_mismatch", "fleet workload token does not bind this commit and workflow run")
 		return
 	}
-	if !h.hasMatchingFleetDispatch(r.Context(), plan.ID, request, principal.CI) {
-		WriteControlProblem(w, r, http.StatusForbidden, "fleet_runner_attempt_dispatch_mismatch", "runner attempt is not bound to Norn's approved protected apply dispatch")
+	typedPlan, planErr := typedCapacityPlan(plan)
+	if planErr != nil || !h.verifyCapacityPlan(typedPlan) {
+		WriteControlProblem(w, r, http.StatusConflict, "fleet_plan_invalid", "fleet capacity plan failed portable integrity verification")
+		return
+	}
+	if h.pipeline == nil {
+		WriteControlProblem(w, r, http.StatusServiceUnavailable, "operation_acceptance_unavailable", "durable signed operation acceptance is unavailable")
+		return
+	}
+	admission := &store.FleetRunnerAttemptAdmission{
+		PlanID: plan.ID, AttemptID: uuid.NewString(), RunnerAttemptID: request.RunnerAttemptID,
+		CommitSHA: request.CommitSHA, PlanSHA256: request.PlanSHA256, WorkflowURL: request.WorkflowURL,
+		DispatchNonceSHA256: hashFleetDispatchNonce(request.DispatchNonce), SourceDispatchRunID: request.SourceDispatchRunID,
+		Resume: request.Resume, HeartbeatTimeoutSeconds: request.HeartbeatTimeoutSeconds,
+		WorkloadIntent: principal.CI.Intent, WorkloadRunID: principal.CI.RunID, WorkloadSHA: principal.CI.SHA,
+	}
+	semantics := map[string]interface{}{
+		"action": "fleet.runner-attempt", "planId": plan.ID,
+		"runnerAttemptId": request.RunnerAttemptID, "commitSha": request.CommitSHA, "planSha256": request.PlanSHA256,
+		"workflowUrl": request.WorkflowURL, "dispatchNonceSha256": admission.DispatchNonceSHA256,
+		"sourceDispatchRunId": request.SourceDispatchRunID, "resume": request.Resume,
+		"heartbeatTimeoutSeconds": request.HeartbeatTimeoutSeconds,
+		"workload":                map[string]interface{}{"intent": principal.CI.Intent, "runId": principal.CI.RunID, "sha": principal.CI.SHA},
+	}
+	enqueue, ok := h.pipelineEnqueueRequest(w, r, r.Header.Get("Idempotency-Key"), semantics)
+	if !ok {
+		return
+	}
+	enqueue.FleetRunnerAttempt = admission
+	if replayed, found, resolveErr := h.resolveFleetRunnerAttemptReplay(r.Context(), enqueue, plan.ID); resolveErr != nil {
+		writeOperationAcceptanceError(w, r, resolveErr)
+		return
+	} else if found {
+		writeJSON(w, replayed)
 		return
 	}
 	existing, err := h.db.ListFleetRunnerAttempts(r.Context(), plan.ID)
@@ -89,74 +122,54 @@ func (h *Handler) CreateFleetRunnerAttempt(w http.ResponseWriter, r *http.Reques
 		WriteControlProblem(w, r, http.StatusInternalServerError, "fleet_runner_attempt_read_failed", "failed to read existing runner attempts")
 		return
 	}
-	for _, item := range existing {
-		if item.RunnerAttemptID == request.RunnerAttemptID {
-			if item.CommitSHA != request.CommitSHA || item.PlanSHA256 != request.PlanSHA256 || item.WorkflowURL != request.WorkflowURL {
-				WriteControlProblem(w, r, http.StatusConflict, "fleet_runner_attempt_binding_mismatch", "runner attempt ID is already bound to different reviewed input")
-				return
-			}
-			writeJSON(w, item)
-			return
-		}
+	if len(existing) > 0 {
+		admission.ExpectedPredecessorID = existing[0].ID
 	}
-	if len(existing) > 0 && existing[0].CommitSHA != request.CommitSHA {
-		WriteControlProblem(w, r, http.StatusConflict, "fleet_runner_attempt_binding_mismatch", "plan already has a runner attempt bound to a different commit")
-		return
+	now := time.Now().UTC()
+	finished := now
+	payload := map[string]interface{}{
+		"attemptId": admission.AttemptID, "planId": plan.ID, "runnerAttemptId": request.RunnerAttemptID,
+		"commitSha": request.CommitSHA, "planSha256": request.PlanSHA256, "workflowUrl": request.WorkflowURL,
+		"dispatchNonceSha256": admission.DispatchNonceSHA256, "sourceDispatchRunId": request.SourceDispatchRunID,
+		"resume": request.Resume, "heartbeatTimeoutSeconds": request.HeartbeatTimeoutSeconds,
 	}
-	if len(existing) > 0 && existing[0].PlanSHA256 != request.PlanSHA256 {
-		WriteControlProblem(w, r, http.StatusConflict, "fleet_runner_attempt_binding_mismatch", "plan already has a runner attempt bound to a different plan digest")
-		return
-	}
-	retryOf := ""
-	phase := fleetRunnerAttemptInitialPhase(plan)
-	if len(existing) > 0 && existing[0].Status == "succeeded" {
-		WriteControlProblem(w, r, http.StatusConflict, "fleet_runner_attempt_complete", "fleet plan already has a successful runner attempt")
-		return
-	}
-	if len(existing) > 0 && (existing[0].Status == "queued" || existing[0].Status == "running") {
-		if !request.Resume {
-			WriteControlProblem(w, r, http.StatusConflict, "fleet_runner_attempt_active", "another runner attempt is still live")
-			return
-		}
-		if _, err := h.db.UpdateFleetRunnerAttempt(r.Context(), plan.ID, existing[0].ID, existing[0].Revision, "cancel", "superseded by verified protected recovery runner"); err != nil {
-			WriteControlProblem(w, r, http.StatusConflict, "fleet_runner_attempt_stale", "the live runner attempt changed before recovery could supersede it")
-			return
-		}
-		retryOf = existing[0].ID
-		phase = fleetRunnerAttemptResumePhase(plan, existing[0])
-	} else if len(existing) > 0 && (existing[0].Status == "failed" || existing[0].Status == "canceled" || existing[0].Status == "abandoned") {
-		retryOf = existing[0].ID
-		phase = fleetRunnerAttemptResumePhase(plan, existing[0])
-	}
-	item, err := h.db.CreateFleetRunnerAttempt(r.Context(), fleet.RunnerAttempt{ID: uuid.NewString(), PlanID: plan.ID, RunnerAttemptID: request.RunnerAttemptID, CommitSHA: request.CommitSHA, PlanSHA256: request.PlanSHA256, WorkflowURL: request.WorkflowURL, RetryOf: retryOf, CurrentPhase: phase, HeartbeatTimeoutSeconds: request.HeartbeatTimeoutSeconds})
+	op := model.Operation{ID: uuid.NewString(), Kind: "fleet.runner-attempt", Ref: plan.ID, Status: model.OperationSucceeded,
+		Risk: "bounded protected runner lease; external execution termination remains independently proven", Source: "fleet-runner",
+		Message: "protected fleet runner attempt accepted", Payload: payload, Metadata: map[string]interface{}{},
+		StartedAt: now, UpdatedAt: now, FinishedAt: &finished, MaxAttempts: 1}
+	accepted, err := h.pipeline.QueueOperation(r.Context(), op, enqueue)
 	if err != nil {
-		if pgErr, isConflict := err.(*pgconn.PgError); isConflict && pgErr.Code == "23505" {
-			WriteControlProblem(w, r, http.StatusConflict, "fleet_runner_attempt_active", "another runner attempt is still live")
+		if replayed, found, _ := h.resolveFleetRunnerAttemptReplay(r.Context(), enqueue, plan.ID); found {
+			writeJSON(w, replayed)
 			return
 		}
-		WriteControlProblem(w, r, http.StatusInternalServerError, "fleet_runner_attempt_store_failed", "failed to create runner attempt")
+		writeOperationAcceptanceError(w, r, err)
 		return
 	}
-	w.Header().Set("Location", "/api/v1/fleet/plans/"+plan.ID+"/attempts/"+item.ID)
-	writeJSONStatus(w, http.StatusCreated, item)
+	if accepted.FleetRunnerAttempt == nil {
+		WriteControlProblem(w, r, http.StatusInternalServerError, "fleet_runner_attempt_store_failed", "accepted runner attempt is unavailable")
+		return
+	}
+	w.Header().Set("Location", "/api/v1/fleet/plans/"+plan.ID+"/attempts/"+accepted.FleetRunnerAttempt.ID)
+	if accepted.Replayed {
+		writeJSON(w, accepted.FleetRunnerAttempt)
+		return
+	}
+	writeJSONStatus(w, http.StatusCreated, accepted.FleetRunnerAttempt)
 }
 
-func fleetRunnerAttemptInitialPhase(plan *model.Operation) string {
-	if fleetPlanRequiresDrain(plan) {
-		return "prechange_verified"
+func (h *Handler) resolveFleetRunnerAttemptReplay(ctx context.Context, request pipeline.EnqueueRequest, planID string) (*fleet.RunnerAttempt, bool, error) {
+	accepted, err := h.pipeline.ResolveEnqueue(ctx, request, "fleet.runner-attempt", planID)
+	if errors.Is(err, store.ErrAcceptanceNotFound) {
+		return nil, false, nil
 	}
-	return "provider_applying"
-}
-
-func fleetRunnerAttemptResumePhase(plan *model.Operation, previous fleet.RunnerAttempt) string {
-	// Destructive recovery must never reuse a pre-change proof from another
-	// lease. A crash during provider apply can leave partially changed
-	// infrastructure, so the new protected runner starts by creating its own
-	// prechange_verified receipt before it is allowed to continue apply.
-	if fleetPlanRequiresDrain(plan) {
-		return "prechange_verified"
+	if err != nil {
+		return nil, false, err
 	}
-	return previous.CurrentPhase
+	if !acceptedRequestMatches(accepted, request) || accepted.Operation.Kind != "fleet.runner-attempt" || accepted.Operation.Ref != planID || accepted.FleetRunnerAttempt == nil {
+		return nil, false, &store.AcceptanceConflictError{Identity: store.OperationRequestIdentity{Kind: "fleet.runner-attempt", Resource: planID}}
+	}
+	return accepted.FleetRunnerAttempt, true, nil
 }
 
 func (h *Handler) HeartbeatFleetRunnerAttempt(w http.ResponseWriter, r *http.Request) {
@@ -376,7 +389,7 @@ func canonicalRunnerAttemptID(ci *CIIdentity) string {
 	if ci == nil {
 		return ""
 	}
-	return "github:" + ci.Repository + ":" + ci.RunID + ":" + ci.RunAttempt
+	return "github-actions:" + ci.Repository + ":" + ci.RunID + ":" + ci.RunAttempt
 }
 func nextFleetReconciliationPhase(current string) string {
 	for i, phase := range fleetReconciliationPhases {
@@ -401,20 +414,6 @@ func (h *Handler) hasRunnerEvidence(ctx context.Context, item *fleet.RunnerAttem
 func validGitHubRunID(value string) bool {
 	return len(value) <= 20 && strings.TrimSpace(value) != "" && strings.TrimLeft(value, "0123456789") == "" && value[0] != '0'
 }
-func (h *Handler) hasMatchingFleetDispatch(ctx context.Context, planID string, request fleet.RunnerAttemptCreateRequest, ci *CIIdentity) bool {
-	binding, err := h.db.GetFleetGitHubDispatch(ctx, planID)
-	if err != nil || binding.PlanSHA256 != request.PlanSHA256 || binding.ApprovedHeadSHA != request.CommitSHA || binding.DispatchNonceSHA256 != hashFleetDispatchNonce(request.DispatchNonce) || binding.RunID <= 0 || request.SourceDispatchRunID != fmt.Sprintf("%d", binding.RunID) {
-		return false
-	}
-	// An apply token is minted in the dispatched run and must match its exact
-	// source commit. A recovery token is minted in a new run; it instead proves
-	// continuity through the original dispatch run ID and one-time nonce.
-	if ci.Intent == "apply" {
-		return ci.RunID == request.SourceDispatchRunID && ci.SHA == binding.ApprovedHeadSHA
-	}
-	return ci.Intent == "recover"
-}
-
 func hashFleetDispatchNonce(nonce string) string {
 	sum := sha256.Sum256([]byte(nonce))
 	return hex.EncodeToString(sum[:])

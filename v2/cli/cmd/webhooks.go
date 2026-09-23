@@ -14,6 +14,7 @@ import (
 var (
 	webhookLimit           int
 	webhookReplayPreflight bool
+	webhookIdempotencyKey  string
 )
 
 func init() {
@@ -21,6 +22,7 @@ func init() {
 	webhooksCmd.Flags().IntVar(&webhookLimit, "limit", 25, "Maximum deliveries to show")
 	webhooksCmd.AddCommand(webhooksReplayCmd)
 	webhooksReplayCmd.Flags().BoolVar(&webhookReplayPreflight, "preflight", false, "Queue a preflight instead of a deploy")
+	webhooksReplayCmd.Flags().StringVar(&webhookIdempotencyKey, "idempotency-key", "", "Stable retry key (generated and printed when omitted)")
 }
 
 var webhooksCmd = &cobra.Command{
@@ -45,9 +47,16 @@ var webhooksReplayCmd = &cobra.Command{
 		if webhookReplayPreflight {
 			mode = "preflight"
 		}
-		resp, err := client.ReplayWebhookDelivery(args[0], mode)
+		key, err := requestIdempotencyKey(cmd, webhookIdempotencyKey, "norn-webhook-replay")
 		if err != nil {
 			return err
+		}
+		resp, err := client.ReplayWebhookDelivery(args[0], mode, key)
+		if err != nil {
+			return err
+		}
+		if resp.Status == "failed" || resp.Status == "canceled" {
+			return fmt.Errorf("operation %s %s", resp.OperationID, resp.Status)
 		}
 		fmt.Printf("%s queued %s for %s saga=%s\n", style.Healthy.Render("replay"), resp.Mode, resp.App, resp.SagaID)
 		return nil

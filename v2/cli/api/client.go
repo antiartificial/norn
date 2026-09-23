@@ -733,10 +733,19 @@ type WebhookDelivery struct {
 }
 
 type WebhookReplayResponse struct {
-	SagaID string `json:"sagaId"`
-	App    string `json:"app"`
-	Mode   string `json:"mode"`
-	Status string `json:"status"`
+	SagaID      string `json:"sagaId"`
+	OperationID string `json:"operationId"`
+	App         string `json:"app"`
+	Mode        string `json:"mode"`
+	Status      string `json:"status"`
+	Replayed    bool   `json:"replayed,omitempty"`
+}
+
+type EnqueueResponse struct {
+	SagaID      string `json:"sagaId"`
+	OperationID string `json:"operationId"`
+	Status      string `json:"status"`
+	Replayed    bool   `json:"replayed,omitempty"`
 }
 
 type PlatformReleaseList struct {
@@ -1044,30 +1053,46 @@ func (c *Client) GetOperation(id string) (*Operation, error) {
 	return &op, nil
 }
 
-func (c *Client) QueuePlatformPreflight(ref string) (*Operation, error) {
-	return c.queueMaintenance("/api/v1/platform/preflights", map[string]interface{}{"ref": ref})
+func (c *Client) QueuePlatformPreflight(ref, idempotencyKey string) (*Operation, error) {
+	return c.queueMaintenance("/api/v1/platform/preflights", idempotencyKey, map[string]interface{}{"ref": ref})
 }
 
-func (c *Client) QueuePlatformUpgrade(ref, mode, drainMode string) (*Operation, error) {
-	return c.queueMaintenance("/api/v1/platform/upgrades", map[string]interface{}{"ref": ref, "mode": mode, "drainMode": drainMode})
+func (c *Client) QueuePlatformUpgrade(ref, mode, drainMode, idempotencyKey string) (*Operation, error) {
+	return c.queueMaintenance("/api/v1/platform/upgrades", idempotencyKey, map[string]interface{}{"ref": ref, "mode": mode, "drainMode": drainMode})
 }
 
-func (c *Client) QueuePlatformSmoke() (*Operation, error) {
-	return c.queueMaintenance("/api/v1/platform/smoke", map[string]interface{}{})
+func (c *Client) QueuePlatformSmoke(idempotencyKey string) (*Operation, error) {
+	return c.queueMaintenance("/api/v1/platform/smoke", idempotencyKey, map[string]interface{}{})
 }
 
-func (c *Client) QueuePlatformRollback(sha string) (*Operation, error) {
-	return c.queueMaintenance("/api/v1/platform/rollbacks", map[string]interface{}{"sha": sha})
+func (c *Client) QueuePlatformRollback(sha, idempotencyKey string) (*Operation, error) {
+	return c.queueMaintenance("/api/v1/platform/rollbacks", idempotencyKey, map[string]interface{}{"sha": sha})
 }
 
-func (c *Client) QueueHostAssurance() (*Operation, error) {
-	return c.queueMaintenance("/api/v1/host/assurances", map[string]interface{}{})
+func (c *Client) QueueHostAssurance(idempotencyKey string) (*Operation, error) {
+	return c.queueMaintenance("/api/v1/host/assurances", idempotencyKey, map[string]interface{}{})
 }
 
-func (c *Client) queueMaintenance(path string, request map[string]interface{}) (*Operation, error) {
+func (c *Client) queueMaintenance(path, idempotencyKey string, request map[string]interface{}) (*Operation, error) {
 	body, _ := json.Marshal(request)
+	req, err := http.NewRequest(http.MethodPost, c.BaseURL+path, strings.NewReader(string(body)))
+	if err != nil {
+		return nil, fmt.Errorf("request failed: %w", err)
+	}
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("Idempotency-Key", idempotencyKey)
+	c.authorize(req)
+	resp, err := c.HTTPClient.Do(req)
+	if err != nil {
+		return nil, fmt.Errorf("request failed: %w", err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode >= 400 {
+		responseBody, _ := io.ReadAll(resp.Body)
+		return nil, fmt.Errorf("HTTP %d: %s", resp.StatusCode, string(responseBody))
+	}
 	var op Operation
-	if err := c.postJSON(path, string(body), &op); err != nil {
+	if err := json.NewDecoder(resp.Body).Decode(&op); err != nil {
 		return nil, err
 	}
 	return &op, nil
@@ -1464,10 +1489,10 @@ func (c *Client) ListWebhookDeliveries(limit int) ([]WebhookDelivery, error) {
 	return resp.Deliveries, nil
 }
 
-func (c *Client) ReplayWebhookDelivery(id, mode string) (*WebhookReplayResponse, error) {
+func (c *Client) ReplayWebhookDelivery(id, mode, idempotencyKey string) (*WebhookReplayResponse, error) {
 	body := fmt.Sprintf(`{"mode":%q}`, mode)
 	var resp WebhookReplayResponse
-	if err := c.postJSON("/api/webhooks/deliveries/"+url.PathEscape(id)+"/replay", body, &resp); err != nil {
+	if err := c.postJSONWithIdempotency("/api/webhooks/deliveries/"+url.PathEscape(id)+"/replay", body, idempotencyKey, &resp); err != nil {
 		return nil, err
 	}
 	return &resp, nil
@@ -1501,36 +1526,30 @@ func (c *Client) GetApp(id string) (*AppStatus, error) {
 	return &app, nil
 }
 
-func (c *Client) Deploy(appID, ref string) (string, error) {
+func (c *Client) Deploy(appID, ref, idempotencyKey string) (*EnqueueResponse, error) {
 	body := fmt.Sprintf(`{"ref":%q}`, ref)
-	var resp struct {
-		SagaID string `json:"sagaId"`
+	var resp EnqueueResponse
+	if err := c.postJSONWithIdempotency("/api/apps/"+appID+"/deploy", body, idempotencyKey, &resp); err != nil {
+		return nil, err
 	}
-	if err := c.postJSON("/api/apps/"+appID+"/deploy", body, &resp); err != nil {
-		return "", err
-	}
-	return resp.SagaID, nil
+	return &resp, nil
 }
 
-func (c *Client) Preflight(appID, ref string) (string, error) {
+func (c *Client) Preflight(appID, ref, idempotencyKey string) (*EnqueueResponse, error) {
 	body := fmt.Sprintf(`{"ref":%q}`, ref)
-	var resp struct {
-		SagaID string `json:"sagaId"`
+	var resp EnqueueResponse
+	if err := c.postJSONWithIdempotency("/api/apps/"+appID+"/preflight", body, idempotencyKey, &resp); err != nil {
+		return nil, err
 	}
-	if err := c.postJSON("/api/apps/"+appID+"/preflight", body, &resp); err != nil {
-		return "", err
-	}
-	return resp.SagaID, nil
+	return &resp, nil
 }
 
-func (c *Client) Rollback(appID string) (string, error) {
-	var resp struct {
-		SagaID string `json:"sagaId"`
+func (c *Client) Rollback(appID, idempotencyKey string) (*EnqueueResponse, error) {
+	var resp EnqueueResponse
+	if err := c.postJSONWithIdempotency("/api/apps/"+appID+"/rollback", "{}", idempotencyKey, &resp); err != nil {
+		return nil, err
 	}
-	if err := c.postJSON("/api/apps/"+appID+"/rollback", "{}", &resp); err != nil {
-		return "", err
-	}
-	return resp.SagaID, nil
+	return &resp, nil
 }
 
 func (c *Client) Restart(appID string) error {
@@ -1770,7 +1789,7 @@ func (c *Client) DispatchFleetApply(planID string, allowDestructive bool) (*Oper
 	return &operation, nil
 }
 
-func (c *Client) PlanFleetCapacity(pool string, desired *int, size, strategy, reason string) (*Operation, error) {
+func (c *Client) PlanFleetCapacity(pool string, desired *int, size, strategy, reason, idempotencyKey string) (*Operation, error) {
 	request := map[string]interface{}{"size": size, "strategy": strategy, "reason": reason}
 	if desired != nil {
 		request["desired"] = *desired
@@ -1780,7 +1799,7 @@ func (c *Client) PlanFleetCapacity(pool string, desired *int, size, strategy, re
 		return nil, err
 	}
 	var operation Operation
-	if err := c.postJSON("/api/v1/fleet/node-pools/"+url.PathEscape(pool)+"/plan", string(body), &operation); err != nil {
+	if err := c.postJSONWithIdempotency("/api/v1/fleet/node-pools/"+url.PathEscape(pool)+"/plan", string(body), idempotencyKey, &operation); err != nil {
 		return nil, err
 	}
 	return &operation, nil
@@ -2059,11 +2078,26 @@ func (c *Client) post(path, body string) error {
 }
 
 func (c *Client) postJSON(path, body string, v any) error {
+	return c.postJSONRequest(path, body, "", v)
+}
+
+func (c *Client) postJSONWithIdempotency(path, body, idempotencyKey string, v any) error {
+	idempotencyKey = strings.TrimSpace(idempotencyKey)
+	if idempotencyKey == "" {
+		return fmt.Errorf("idempotency key is required")
+	}
+	return c.postJSONRequest(path, body, idempotencyKey, v)
+}
+
+func (c *Client) postJSONRequest(path, body, idempotencyKey string, v any) error {
 	req, err := http.NewRequest(http.MethodPost, c.BaseURL+path, strings.NewReader(body))
 	if err != nil {
 		return fmt.Errorf("request failed: %w", err)
 	}
 	req.Header.Set("Content-Type", "application/json")
+	if idempotencyKey != "" {
+		req.Header.Set("Idempotency-Key", idempotencyKey)
+	}
 	c.authorize(req)
 	resp, err := c.HTTPClient.Do(req)
 	if err != nil {
@@ -2247,15 +2281,19 @@ type DeployGroupApp struct {
 }
 
 type DeployGroupResult struct {
-	Group   string        `json:"group"`
-	Ref     string        `json:"ref"`
-	Deploys []GroupDeploy `json:"deploys"`
+	Group       string        `json:"group"`
+	Ref         string        `json:"ref"`
+	OperationID string        `json:"operationId"`
+	Replayed    bool          `json:"replayed,omitempty"`
+	Deploys     []GroupDeploy `json:"deploys"`
 }
 
 type GroupDeploy struct {
-	App    string `json:"app"`
-	SagaID string `json:"sagaId,omitempty"`
-	Error  string `json:"error,omitempty"`
+	App         string `json:"app"`
+	SagaID      string `json:"sagaId,omitempty"`
+	OperationID string `json:"operationId,omitempty"`
+	Replayed    bool   `json:"replayed,omitempty"`
+	Error       string `json:"error,omitempty"`
 }
 
 func (c *Client) ListDeployGroups() ([]DeployGroupInfo, error) {
@@ -2268,10 +2306,10 @@ func (c *Client) ListDeployGroups() ([]DeployGroupInfo, error) {
 	return resp.Groups, nil
 }
 
-func (c *Client) RunDeployGroup(name, ref string) (*DeployGroupResult, error) {
+func (c *Client) RunDeployGroup(name, ref, idempotencyKey string) (*DeployGroupResult, error) {
 	body := fmt.Sprintf(`{"ref":%q}`, ref)
 	var result DeployGroupResult
-	if err := c.postJSON("/api/deploy-groups/"+url.PathEscape(name)+"/deploy", body, &result); err != nil {
+	if err := c.postJSONWithIdempotency("/api/deploy-groups/"+url.PathEscape(name)+"/deploy", body, idempotencyKey, &result); err != nil {
 		return nil, err
 	}
 	return &result, nil

@@ -3,6 +3,7 @@ package store
 import (
 	"context"
 	"fmt"
+	"strings"
 	"time"
 
 	"github.com/jackc/pgx/v5"
@@ -51,9 +52,16 @@ func (db *DB) FinishFleetGitHubDispatch(ctx context.Context, planID, nonceHash s
 	if db == nil || db.Pool == nil {
 		return nil, fmt.Errorf("fleet GitHub dispatch store is unavailable")
 	}
+	workflowURL = strings.TrimSpace(workflowURL)
+	if runID <= 0 || workflowURL == "" {
+		return nil, fmt.Errorf("fleet GitHub dispatch completion requires a positive run ID and workflow URL")
+	}
 	return scanFleetGitHubDispatch(db.Pool.QueryRow(ctx, `UPDATE fleet_github_dispatches
-		SET run_id=$3, workflow_url=$4, updated_at=now()
+		SET run_id=CASE WHEN run_id=0 THEN $3 ELSE run_id END,
+		    workflow_url=CASE WHEN run_id=0 THEN $4 ELSE workflow_url END,
+		    updated_at=CASE WHEN run_id=0 THEN clock_timestamp() ELSE updated_at END
 		WHERE plan_id=$1 AND dispatch_nonce_sha256=$2
+		  AND (run_id=0 OR (run_id=$3 AND workflow_url=$4))
 		RETURNING `+fleetGitHubDispatchColumns, planID, nonceHash, runID, workflowURL))
 }
 

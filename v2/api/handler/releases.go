@@ -2,6 +2,7 @@ package handler
 
 import (
 	"bytes"
+	"context"
 	"crypto/ed25519"
 	"crypto/sha256"
 	"crypto/subtle"
@@ -9,6 +10,7 @@ import (
 	"encoding/base64"
 	"encoding/json"
 	"encoding/pem"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -22,6 +24,7 @@ import (
 	"github.com/jackc/pgx/v5/pgconn"
 
 	"norn/v2/api/model"
+	"norn/v2/api/pipeline"
 	"norn/v2/api/store"
 )
 
@@ -91,20 +94,6 @@ func (h *Handler) QueueReleaseRollback(w http.ResponseWriter, r *http.Request) {
 		WriteControlProblem(w, r, http.StatusNotFound, "app_not_found", "app was not found or deployment is disabled")
 		return
 	}
-	key, digest, ok := appOperationIdempotency(w, r, principal, appID, "app.rollback", request)
-	if !ok {
-		return
-	}
-	if existing, handled := h.resolveAppOperationIdempotency(w, r, key, digest, "app.rollback", appID); handled {
-		if existing != nil {
-			existing.AttachReceipt()
-			writeJSON(w, existing)
-		}
-		return
-	}
-	if !h.requireNoActiveAppOperation(w, r, appID) {
-		return
-	}
 	target, err := h.db.GetDeployment(r.Context(), request.DeploymentID)
 	if err != nil || target.App != appID || target.Environment != "production" || target.Status != model.StatusDeployed || target.CommitSHA != request.SourceSHA || target.ImageTag != request.Artifact {
 		WriteControlProblem(w, r, http.StatusNotFound, "rollback_target_missing", "exact previously admitted successful production deployment was not found")
@@ -130,23 +119,41 @@ func (h *Handler) QueueReleaseRollback(w http.ResponseWriter, r *http.Request) {
 		WriteControlProblem(w, r, http.StatusForbidden, "rollback_target_unadmitted", "rollback target no longer satisfies production artifact admission: "+err.Error())
 		return
 	}
+	enqueue, ok := h.pipelineEnqueueRequest(w, r, r.Header.Get("Idempotency-Key"), map[string]interface{}{"action": "release-rollback", "app": appID, "request": request, "targetDeploymentId": target.ID, "promotionOperationId": promotion.ID})
+	if !ok {
+		return
+	}
+	enqueue.Admission.OneActiveMutablePerApp = true
+	enqueue = pipeline.DerivedChildRequest(enqueue, "rollback-route", "release", enqueue.Semantics)
+	if replayed, found, resolveErr := h.resolveRollbackReplay(r.Context(), enqueue, appID, nil, target.ID); resolveErr != nil {
+		writeOperationAcceptanceError(w, r, resolveErr)
+		return
+	} else if found {
+		w.Header().Set("Location", "/api/v1/operations/"+replayed.Operation.ID)
+		writeJSON(w, replayed.Operation)
+		return
+	}
 	current, err := h.db.LatestSuccessfulDeployment(r.Context(), appID, "production")
 	if err != nil || current == nil || current.ID == target.ID {
 		WriteControlProblem(w, r, http.StatusConflict, "rollback_current_deployment_missing", "rollback target must differ from the current deployment")
 		return
 	}
-	_, operationID, err := h.pipeline.RollbackRegionsOperationContext(r.Context(), spec, *current, target, nil, map[string]interface{}{"idempotencyKey": key, "requestDigest": digest, "principal": principal.Subject, "requestCI": principal.CI, "environment": h.cfg.EnvironmentID(), "releaseRollback": true, "sourceSha": target.CommitSHA, "artifact": target.ImageTag, "targetDeploymentId": target.ID})
+	accepted, err := h.pipeline.QueueRollback(r.Context(), spec, *current, target, nil, enqueue, map[string]interface{}{"requestCI": principal.CI, "environment": h.cfg.EnvironmentID(), "releaseRollback": true, "sourceSha": target.CommitSHA, "artifact": target.ImageTag, "targetDeploymentId": target.ID})
 	if err != nil {
-		WriteControlProblem(w, r, http.StatusInternalServerError, "rollback_queue_failed", "failed to queue exact release rollback")
+		if replayed, found, _ := h.resolveRollbackReplay(r.Context(), enqueue, appID, nil, target.ID); found {
+			w.Header().Set("Location", "/api/v1/operations/"+replayed.Operation.ID)
+			writeJSON(w, replayed.Operation)
+			return
+		}
+		writeOperationAcceptanceError(w, r, err)
 		return
 	}
-	op, err := h.db.GetOperation(r.Context(), operationID)
-	if err != nil {
-		WriteControlProblem(w, r, http.StatusInternalServerError, "rollback_queue_failed", "failed to read release rollback operation")
+	w.Header().Set("Location", "/api/v1/operations/"+accepted.Operation.ID)
+	if accepted.Replayed {
+		writeJSON(w, accepted.Operation)
 		return
 	}
-	w.Header().Set("Location", "/api/v1/operations/"+op.ID)
-	writeJSONStatus(w, http.StatusAccepted, op)
+	writeJSONStatus(w, http.StatusAccepted, accepted.Operation)
 }
 
 func (h *Handler) queueRelease(w http.ResponseWriter, r *http.Request, preflight bool, promotion *model.ReleaseQualification) {
@@ -199,19 +206,30 @@ func (h *Handler) queueRelease(w http.ResponseWriter, r *http.Request, preflight
 	if preflight {
 		kind = "app.preflight"
 	}
-	key, digest, ok := appOperationIdempotency(w, r, principal, appID, kind, releaseIdempotencyPayload(request, promotion))
+	enqueue, ok := h.pipelineEnqueueRequest(w, r, r.Header.Get("Idempotency-Key"), map[string]interface{}{"action": kind, "app": appID, "release": releaseIdempotencyPayload(request, promotion), "environment": h.cfg.EnvironmentID()})
 	if !ok {
 		return
 	}
-	if existing, handled := h.resolveAppOperationIdempotency(w, r, key, digest, kind, appID); handled {
-		if existing != nil {
-			existing.AttachReceipt()
-			writeJSON(w, existing)
+	if !preflight {
+		enqueue.Admission.OneActiveMutablePerApp = true
+	}
+	if resolved, resolveErr := h.pipeline.ResolveEnqueue(r.Context(), enqueue, kind, appID); resolveErr == nil {
+		if !acceptedReleaseMatches(resolved, enqueue) {
+			writeOperationAcceptanceError(w, r, &store.AcceptanceConflictError{})
+			return
 		}
+		writeJSON(w, resolved.Operation)
+		return
+	} else if !errors.Is(resolveErr, store.ErrAcceptanceNotFound) {
+		writeOperationAcceptanceError(w, r, resolveErr)
 		return
 	}
 	if promotion != nil {
 		if _, err := h.db.GetOperationByPromotionQualificationID(r.Context(), promotion.ID); err == nil {
+			if resolved, resolveErr := h.pipeline.ResolveEnqueue(r.Context(), enqueue, kind, appID); resolveErr == nil && acceptedReleaseMatches(resolved, enqueue) {
+				writeJSON(w, resolved.Operation)
+				return
+			}
 			WriteControlProblem(w, r, http.StatusConflict, "qualification_already_consumed", "this staging qualification has already been consumed by a production promotion; issue a fresh qualification for an intentional re-promotion")
 			return
 		} else if err != pgx.ErrNoRows {
@@ -219,42 +237,39 @@ func (h *Handler) queueRelease(w http.ResponseWriter, r *http.Request, preflight
 			return
 		}
 	}
-	if !preflight && !h.requireNoActiveAppOperation(w, r, appID) {
-		return
-	}
-	metadata := map[string]interface{}{"idempotencyKey": key, "requestDigest": digest, "principal": principal.Subject, "candidate": request.Candidate, "requestCI": principal.CI}
+	metadata := map[string]interface{}{"candidate": request.Candidate, "requestCI": principal.CI}
 	if promotion != nil {
 		metadata["promotionQualification"] = qualificationToMap(*promotion)
 	}
-	var op *model.Operation
+	var accepted store.AcceptedOperation
 	var err error
 	if preflight {
-		op, err = h.pipeline.QueueReleasePreflight(r.Context(), spec, request.SourceSHA, request.Artifact, h.cfg.EnvironmentID(), metadata)
+		accepted, err = h.pipeline.QueueReleasePreflight(r.Context(), spec, request.SourceSHA, request.Artifact, h.cfg.EnvironmentID(), metadata, enqueue)
 	} else {
-		op, err = h.pipeline.QueueReleaseDeployment(r.Context(), spec, request.SourceSHA, request.Artifact, h.cfg.EnvironmentID(), metadata)
+		accepted, err = h.pipeline.QueueReleaseDeployment(r.Context(), spec, request.SourceSHA, request.Artifact, h.cfg.EnvironmentID(), metadata, enqueue)
 	}
 	if err != nil {
 		if pgErr, duplicate := err.(*pgconn.PgError); duplicate && pgErr.Code == "23505" {
-			if existing, lookupErr := h.db.GetOperationByIdempotencyKey(r.Context(), key); lookupErr == nil && existing.Kind == kind && existing.App == appID {
-				storedDigest, _ := existing.Metadata["requestDigest"].(string)
-				if storedDigest == digest {
-					existing.AttachReceipt()
-					writeJSON(w, existing)
-					return
-				}
-			}
 			if promotion != nil {
 				if _, lookupErr := h.db.GetOperationByPromotionQualificationID(r.Context(), promotion.ID); lookupErr == nil {
+					if resolved, resolveErr := h.pipeline.ResolveEnqueue(r.Context(), enqueue, kind, appID); resolveErr == nil && acceptedReleaseMatches(resolved, enqueue) {
+						writeJSON(w, resolved.Operation)
+						return
+					}
 					WriteControlProblem(w, r, http.StatusConflict, "qualification_already_consumed", "this staging qualification has already been consumed by a production promotion; issue a fresh qualification for an intentional re-promotion")
 					return
 				}
 			}
 		}
-		WriteControlProblem(w, r, http.StatusInternalServerError, "operation_create_failed", "failed to durably queue release operation")
+		writeOperationAcceptanceError(w, r, err)
 		return
 	}
-	w.Header().Set("Location", "/api/v1/operations/"+op.ID)
-	writeJSONStatus(w, http.StatusAccepted, op)
+	w.Header().Set("Location", "/api/v1/operations/"+accepted.Operation.ID)
+	if accepted.Replayed {
+		writeJSON(w, accepted.Operation)
+		return
+	}
+	writeJSONStatus(w, http.StatusAccepted, accepted.Operation)
 }
 
 func releaseIdempotencyPayload(request releaseRequest, promotion *model.ReleaseQualification) interface{} {
@@ -262,6 +277,10 @@ func releaseIdempotencyPayload(request releaseRequest, promotion *model.ReleaseQ
 		return request
 	}
 	return promotionRequest{SourceSHA: request.SourceSHA, Artifact: request.Artifact, Qualification: *promotion}
+}
+
+func acceptedReleaseMatches(accepted store.AcceptedOperation, request pipeline.EnqueueRequest) bool {
+	return acceptedRequestMatches(accepted, request)
 }
 
 func releaseActionEnvironmentAllowed(environment string, promoted bool) bool {
@@ -322,6 +341,23 @@ func (h *Handler) CreateReleaseQualification(w http.ResponseWriter, r *http.Requ
 		return
 	}
 	appID := chi.URLParam(r, "id")
+	enqueue, ok := h.pipelineEnqueueRequest(w, r, r.Header.Get("Idempotency-Key"), map[string]interface{}{
+		"action": "release-qualification", "app": appID, "environment": "staging", "deploymentId": request.DeploymentID,
+	})
+	if !ok {
+		return
+	}
+	if replayed, found, resolveErr := h.resolveReleaseQualificationReplay(r.Context(), enqueue, appID, request.DeploymentID); resolveErr != nil {
+		writeOperationAcceptanceError(w, r, resolveErr)
+		return
+	} else if found {
+		if permitted, reason := qualificationIntentPermitsCandidate(principal, replayed.Candidate); !permitted {
+			WriteControlProblem(w, r, http.StatusForbidden, reason, "workload token may not replay this staging qualification")
+			return
+		}
+		writeJSON(w, replayed)
+		return
+	}
 	deployment, err := h.db.GetDeployment(r.Context(), request.DeploymentID)
 	if err == pgx.ErrNoRows || (err == nil && deployment.App != appID) {
 		WriteControlProblem(w, r, http.StatusNotFound, "deployment_not_found", "successful deployment was not found for this app")
@@ -333,18 +369,6 @@ func (h *Handler) CreateReleaseQualification(w http.ResponseWriter, r *http.Requ
 	}
 	if deployment.Status != model.StatusDeployed || deployment.Environment != "staging" || !validReleaseProvenance(deployment.CommitSHA, deployment.ImageTag) || !model.IsContentAddressedImage(deployment.ImageTag) {
 		WriteControlProblem(w, r, http.StatusConflict, "deployment_not_qualifiable", "only a successful immutable staging release deployment may be qualified")
-		return
-	}
-	key, digest, ok := appOperationIdempotency(w, r, principal, appID, "release.qualification", request)
-	if !ok {
-		return
-	}
-	if existing, handled := h.resolveAppOperationIdempotency(w, r, key, digest, "release.qualification", appID); handled {
-		if existing != nil {
-			if receipt, valid := qualificationFromOperation(*existing); valid {
-				writeJSON(w, receipt)
-			}
-		}
 		return
 	}
 	candidate, err := h.releaseCandidateForDeployment(r, deployment.ID)
@@ -365,30 +389,62 @@ func (h *Handler) CreateReleaseQualification(w http.ResponseWriter, r *http.Requ
 		WriteControlProblem(w, r, http.StatusServiceUnavailable, "qualification_signing_unavailable", err.Error())
 		return
 	}
-	op := &model.Operation{ID: receipt.ID, Kind: "release.qualification", App: appID, Ref: receipt.SourceSHA, Status: model.OperationSucceeded, Risk: "staging release evidence", Source: "release-control-api", Message: "staging deployment qualified", Payload: qualificationToMap(receipt), Metadata: map[string]interface{}{"idempotencyKey": key, "requestDigest": digest, "principal": principal.Subject, "deploymentId": deployment.ID, "environment": h.cfg.EnvironmentID(), "requestCI": principal.CI}, StartedAt: now, FinishedAt: &now, MaxAttempts: 1}
-	if err := h.db.InsertCompletedOperation(r.Context(), op); err != nil {
-		if existing, lookupErr := h.db.GetOperationByIdempotencyKey(r.Context(), key); lookupErr == nil {
-			if !qualificationReplayMatches(existing, appID, digest) {
-				WriteControlProblem(w, r, http.StatusConflict, "idempotency_key_reused", "Idempotency-Key was already used for a different app operation")
+	op := model.Operation{ID: receipt.ID, Kind: "release.qualification", App: appID, Ref: receipt.SourceSHA, Status: model.OperationSucceeded, Risk: "staging release evidence", Source: "release-control-api", Message: "staging deployment qualified", Payload: qualificationToMap(receipt), Metadata: map[string]interface{}{"deploymentId": deployment.ID, "environment": h.cfg.EnvironmentID(), "requestCI": principal.CI}, StartedAt: now, FinishedAt: &now, MaxAttempts: 1}
+	accepted, err := h.pipeline.QueueOperation(r.Context(), op, enqueue)
+	if err != nil {
+		if replayed, found, _ := h.resolveReleaseQualificationReplay(r.Context(), enqueue, appID, request.DeploymentID); found {
+			if permitted, reason := qualificationIntentPermitsCandidate(principal, replayed.Candidate); !permitted {
+				WriteControlProblem(w, r, http.StatusForbidden, reason, "workload token may not replay this staging qualification")
 				return
 			}
-			if replay, valid := qualificationFromOperation(*existing); valid {
-				writeJSON(w, replay)
-				return
-			}
+			writeJSON(w, replayed)
+			return
 		}
-		WriteControlProblem(w, r, http.StatusInternalServerError, "qualification_store_failed", "failed to store staging qualification")
+		writeOperationAcceptanceError(w, r, err)
 		return
 	}
-	writeJSONStatus(w, http.StatusCreated, receipt)
+	acceptedReceipt, valid := qualificationFromOperation(accepted.Operation)
+	if !valid {
+		WriteControlProblem(w, r, http.StatusInternalServerError, "qualification_store_failed", "accepted staging qualification is malformed")
+		return
+	}
+	if accepted.Replayed {
+		writeJSON(w, acceptedReceipt)
+		return
+	}
+	writeJSONStatus(w, http.StatusCreated, acceptedReceipt)
 }
 
-func qualificationReplayMatches(existing *model.Operation, appID, requestDigest string) bool {
-	if existing == nil {
-		return false
+func (h *Handler) resolveReleaseQualificationReplay(ctx context.Context, request pipeline.EnqueueRequest, appID, deploymentID string) (model.ReleaseQualification, bool, error) {
+	accepted, err := h.pipeline.ResolveEnqueue(ctx, request, "release.qualification", appID)
+	if errors.Is(err, store.ErrAcceptanceNotFound) {
+		return model.ReleaseQualification{}, false, nil
 	}
-	storedDigest, _ := existing.Metadata["requestDigest"].(string)
-	return existing.Kind == "release.qualification" && existing.App == appID && storedDigest == requestDigest
+	if err != nil {
+		return model.ReleaseQualification{}, false, err
+	}
+	if !acceptedRequestMatches(accepted, request) {
+		return model.ReleaseQualification{}, false, &store.AcceptanceConflictError{Identity: store.OperationRequestIdentity{Kind: "release.qualification", Resource: appID}}
+	}
+	receipt, valid := qualificationFromOperation(accepted.Operation)
+	if !valid || receipt.App != appID || receipt.DeploymentID != deploymentID {
+		return model.ReleaseQualification{}, false, &store.AcceptanceSignatureError{Err: fmt.Errorf("accepted release qualification does not match request")}
+	}
+	if err := verifyReleaseQualificationSignature(h.releaseQualificationVerificationKeys(), receipt); err != nil {
+		return model.ReleaseQualification{}, false, &store.AcceptanceSignatureError{Err: err}
+	}
+	return receipt, true, nil
+}
+
+func (h *Handler) releaseQualificationVerificationKeys() []string {
+	if h == nil || h.cfg == nil {
+		return nil
+	}
+	keys := append([]string(nil), h.cfg.TrustedQualificationSigningKeys...)
+	if private, err := parseEd25519PrivateKey(h.cfg.QualificationSigningKey); err == nil {
+		keys = append(keys, base64.RawStdEncoding.EncodeToString(private.Public().(ed25519.PublicKey)))
+	}
+	return keys
 }
 
 func qualificationIntentPermitsCandidate(principal AccessPrincipal, candidate model.ReleaseCandidate) (bool, string) {

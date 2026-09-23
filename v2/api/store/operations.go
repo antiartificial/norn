@@ -3,6 +3,7 @@ package store
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"strings"
 	"time"
@@ -11,6 +12,75 @@ import (
 
 	"norn/v2/api/model"
 )
+
+// ExecutionStore is the deliberately narrow persistence boundary used by
+// operation executors. General API handlers continue to use *DB directly.
+type ExecutionStore interface {
+	RecoverExpiredOperations(context.Context) error
+	ClaimNextOperation(context.Context, string, time.Duration, []string) (*model.Operation, OperationClaim, error)
+	RenewOperationClaim(context.Context, OperationClaim, time.Duration) error
+	DeferClaimedOperation(context.Context, OperationClaim, string, time.Time, map[string]interface{}) error
+	RetryClaimedOperation(context.Context, OperationClaim, string, string, time.Time, map[string]interface{}) error
+	FinishClaimedOperation(context.Context, OperationClaim, model.OperationStatus, string, map[string]interface{}) error
+	AcquireAppOperationLock(context.Context, string) (func(), bool, error)
+}
+
+// OperationClaim is the immutable identity of one claimed execution. Attempts
+// remain retry-budget accounting; Generation is the fencing token and changes
+// on every successful claim.
+type OperationClaim struct {
+	operationID string
+	ownerID     string
+	generation  int64
+}
+
+func NewOperationClaim(operationID, ownerID string, generation int64) (OperationClaim, error) {
+	claim := OperationClaim{operationID: operationID, ownerID: ownerID, generation: generation}
+	if err := validateOperationClaim(claim); err != nil {
+		return OperationClaim{}, err
+	}
+	return claim, nil
+}
+
+func (c OperationClaim) OperationID() string { return c.operationID }
+func (c OperationClaim) OwnerID() string     { return c.ownerID }
+func (c OperationClaim) Generation() int64   { return c.generation }
+
+func (c OperationClaim) valid() bool {
+	return strings.TrimSpace(c.operationID) != "" && strings.TrimSpace(c.ownerID) != "" && c.generation > 0
+}
+
+var ErrOperationOwnershipLost = errors.New("operation ownership lost")
+var ErrOperationRetryUnsafe = errors.New("operation retry is unsafe after mutable execution")
+
+type OperationOwnershipLostError struct {
+	Claim OperationClaim
+}
+
+func (e *OperationOwnershipLostError) Error() string {
+	return fmt.Sprintf("operation %s ownership lost (owner %s generation %d)", e.Claim.OperationID(), e.Claim.OwnerID(), e.Claim.Generation())
+}
+
+func (e *OperationOwnershipLostError) Unwrap() error { return ErrOperationOwnershipLost }
+
+type OperationRetryUnsafeError struct {
+	Claim OperationClaim
+}
+
+func (e *OperationRetryUnsafeError) Error() string {
+	return fmt.Sprintf("operation %s cannot be retried after a mutable stage", e.Claim.OperationID())
+}
+
+func (e *OperationRetryUnsafeError) Unwrap() error { return ErrOperationRetryUnsafe }
+
+func ownershipLost(claim OperationClaim) error { return &OperationOwnershipLostError{Claim: claim} }
+
+func validateOperationClaim(claim OperationClaim) error {
+	if !claim.valid() {
+		return fmt.Errorf("operation claim is incomplete")
+	}
+	return nil
+}
 
 // AcquireAppOperationLock serializes mutable app operations across API
 // replicas. PostgreSQL advisory locks are session-scoped, so the returned
@@ -250,72 +320,152 @@ func (db *DB) InsertCompletedOperation(ctx context.Context, op *model.Operation)
 	return err
 }
 
-func (db *DB) FinishOperation(ctx context.Context, id string, status model.OperationStatus, message string, metadata map[string]interface{}) error {
-	if metadata == nil {
-		metadata = map[string]interface{}{}
+// CheckOperationClaim reports ErrOperationOwnershipLost unless the claim is
+// still current by the database's wall clock. It neither extends nor
+// changes the claim; callers use it right before an external write that no
+// database transaction can fence.
+func (db *DB) CheckOperationClaim(ctx context.Context, claim OperationClaim) error {
+	if err := validateOperationClaim(claim); err != nil {
+		return err
 	}
-	data, _ := json.Marshal(metadata)
-	_, err := db.Pool.Exec(ctx, `
-		UPDATE operations
-		SET status = $1, message = $2, metadata = metadata || $3::jsonb, locked_by = '', locked_until = NULL, updated_at = now(), finished_at = now()
-		WHERE id = $4
-	`, status, message, data, id)
+	var held bool
+	err := db.Pool.QueryRow(ctx, `SELECT true FROM operations WHERE id = $1 AND status = 'running' AND locked_by = $2
+		AND lock_generation = $3 AND locked_until > clock_timestamp()`, claim.OperationID(), claim.OwnerID(), claim.Generation()).Scan(&held)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return ownershipLost(claim)
+	}
 	return err
 }
 
-func (db *DB) FinishOperationBySaga(ctx context.Context, sagaID string, status model.OperationStatus, message string, metadata map[string]interface{}) error {
+func (db *DB) FinishClaimedOperation(ctx context.Context, claim OperationClaim, status model.OperationStatus, message string, metadata map[string]interface{}) error {
+	if err := validateOperationClaim(claim); err != nil {
+		return err
+	}
+	if !status.Terminal() {
+		return fmt.Errorf("operation completion status %q is not terminal", status)
+	}
 	if metadata == nil {
 		metadata = map[string]interface{}{}
 	}
 	data, _ := json.Marshal(metadata)
-	_, err := db.Pool.Exec(ctx, `
-		UPDATE operations
-		SET status = $1, message = $2, metadata = metadata || $3::jsonb, locked_by = '', locked_until = NULL, updated_at = now(), finished_at = now()
-		WHERE saga_id = $4 AND status IN ('queued', 'running')
-	`, status, message, data, sagaID)
-	return err
-}
-
-func (db *DB) RetryOperation(ctx context.Context, id, message, lastError string, nextAttemptAt time.Time, metadata map[string]interface{}) error {
-	if metadata == nil {
-		metadata = map[string]interface{}{}
+	// The terminal transition and its evidence archive intent (outbox) are
+	// one statement: an operation with a saga cannot become terminal without
+	// a pending intent. The intent seals nothing; the archiver fixes the
+	// cutoff later, after late publication events.
+	var finished int
+	err := db.Pool.QueryRow(ctx, `
+		WITH finished AS (
+			UPDATE operations
+			SET status = $1, message = $2, metadata = metadata || $3::jsonb,
+			    locked_by = '', locked_until = NULL, updated_at = now(), finished_at = now()
+			WHERE id = $4 AND status = 'running' AND locked_by = $5
+			  AND lock_generation = $6 AND locked_until > now()
+			RETURNING id, saga_id, app
+		), outbox AS (
+			INSERT INTO evidence_archive_intents (id, subject_kind, subject_id, app, operation_id, sequence, state)
+			SELECT 'ei-' || gen_random_uuid()::text, 'saga', saga_id, app, id, 1, 'pending' FROM finished WHERE saga_id <> ''
+			ON CONFLICT (subject_kind, subject_id, sequence) DO NOTHING
+		)
+		SELECT count(*) FROM finished
+	`, status, message, data, claim.OperationID(), claim.OwnerID(), claim.Generation()).Scan(&finished)
+	if err != nil {
+		return err
 	}
-	data, _ := json.Marshal(metadata)
-	_, err := db.Pool.Exec(ctx, `
-		UPDATE operations
-		SET status = 'queued',
-		    message = $1,
-		    last_error = $2,
-		    next_attempt_at = $3,
-		    metadata = metadata || $4::jsonb,
-		    locked_by = '',
-		    locked_until = NULL,
-		    updated_at = now()
-		WHERE id = $5
-	`, message, lastError, nextAttemptAt, data, id)
-	return err
+	if finished != 1 {
+		return ownershipLost(claim)
+	}
+	return nil
 }
 
 // DeferClaimedOperation returns an operation to the queue without consuming an
 // execution attempt. It is used when another replica holds the per-app lock;
 // no application work has started in that case.
-func (db *DB) DeferClaimedOperation(ctx context.Context, id, message string, nextAttemptAt time.Time, metadata map[string]interface{}) error {
+// DeferClaimedOperation releases only the operation claim and preserves its
+// retry budget. It is valid both before work begins and after an external
+// effect starts when that effect remains fenced by a durable effect
+// reservation; callers must not use it to imply that downstream work stopped.
+func (db *DB) DeferClaimedOperation(ctx context.Context, claim OperationClaim, message string, nextAttemptAt time.Time, metadata map[string]interface{}) error {
+	if err := validateOperationClaim(claim); err != nil {
+		return err
+	}
 	if metadata == nil {
 		metadata = map[string]interface{}{}
 	}
 	data, _ := json.Marshal(metadata)
-	_, err := db.Pool.Exec(ctx, `
+	result, err := db.Pool.Exec(ctx, `
 		UPDATE operations
 		SET status = 'queued', message = $1, next_attempt_at = $2,
 		    metadata = metadata || $3::jsonb, attempts = GREATEST(attempts - 1, 0),
 		    locked_by = '', locked_until = NULL, updated_at = now()
-		WHERE id = $4 AND status = 'running'
-	`, message, nextAttemptAt, data, id)
-	return err
+		WHERE id = $4 AND status = 'running' AND locked_by = $5
+		  AND lock_generation = $6 AND locked_until > now()
+	`, message, nextAttemptAt, data, claim.OperationID(), claim.OwnerID(), claim.Generation())
+	if err != nil {
+		return err
+	}
+	if result.RowsAffected() != 1 {
+		return ownershipLost(claim)
+	}
+	return nil
 }
 
-func (db *DB) ClaimNextOperation(ctx context.Context, workerID string, lease time.Duration, kinds []string) (*model.Operation, error) {
-	args := []interface{}{workerID, time.Now().Add(lease)}
+func (db *DB) RetryClaimedOperation(ctx context.Context, claim OperationClaim, message, lastError string, nextAttemptAt time.Time, metadata map[string]interface{}) error {
+	if err := validateOperationClaim(claim); err != nil {
+		return err
+	}
+	if metadata == nil {
+		metadata = map[string]interface{}{}
+	}
+	data, _ := json.Marshal(metadata)
+	var owned, retryable, retried bool
+	err := db.Pool.QueryRow(ctx, `
+		/* operation-retry-cas */
+		WITH owned AS MATERIALIZED (
+			SELECT id, kind, payload
+			FROM operations
+			WHERE id = $5 AND status = 'running' AND locked_by = $6
+			  AND lock_generation = $7 AND locked_until > now()
+		), retryable AS (
+			SELECT id FROM owned
+			WHERE kind = 'app.preflight'
+			   OR (kind = 'app.deploy' AND NOT EXISTS (
+				SELECT 1 FROM deployment_steps ds
+				WHERE ds.deployment_id = owned.payload->>'deploymentId'
+				  AND (ds.step NOT IN ('clone', 'admission', 'build', 'artifact-admission', 'test')
+				       OR ds.kind = 'mutable')
+			   ))
+		), updated AS (
+			UPDATE operations
+			SET status = 'queued', message = $1, last_error = $2,
+			    next_attempt_at = $3, metadata = metadata || $4::jsonb,
+			    locked_by = '', locked_until = NULL, updated_at = now()
+			WHERE id IN (SELECT id FROM retryable)
+			  AND status = 'running' AND locked_by = $6
+			  AND lock_generation = $7 AND locked_until > now()
+			RETURNING id
+		)
+		SELECT EXISTS(SELECT 1 FROM owned), EXISTS(SELECT 1 FROM retryable), EXISTS(SELECT 1 FROM updated)
+	`, message, lastError, nextAttemptAt, data, claim.OperationID(), claim.OwnerID(), claim.Generation()).Scan(&owned, &retryable, &retried)
+	if err != nil {
+		return err
+	}
+	if !owned {
+		return ownershipLost(claim)
+	}
+	if retryable && !retried {
+		return ownershipLost(claim)
+	}
+	if !retried {
+		return &OperationRetryUnsafeError{Claim: claim}
+	}
+	return nil
+}
+
+func (db *DB) ClaimNextOperation(ctx context.Context, workerID string, lease time.Duration, kinds []string) (*model.Operation, OperationClaim, error) {
+	if strings.TrimSpace(workerID) == "" || lease <= 0 {
+		return nil, OperationClaim{}, fmt.Errorf("operation claim owner and lease are required")
+	}
+	args := []interface{}{workerID, lease.Microseconds()}
 	kindClause := ""
 	if len(kinds) > 0 {
 		holders := make([]string, 0, len(kinds))
@@ -333,6 +483,9 @@ func (db *DB) ClaimNextOperation(ctx context.Context, workerID string, lease tim
 			  AND next_attempt_at <= now()
 			  AND attempts < max_attempts
 			  AND (locked_until IS NULL OR locked_until < now())
+			  AND (NOT acceptance_required OR EXISTS (
+				SELECT 1 FROM operation_acceptance_intents ai WHERE ai.operation_id = operations.id
+			  ))
 			  %s
 			ORDER BY started_at ASC
 			LIMIT 1
@@ -341,13 +494,14 @@ func (db *DB) ClaimNextOperation(ctx context.Context, workerID string, lease tim
 		UPDATE operations o
 		SET status = 'running',
 		    attempts = attempts + 1,
+		    lock_generation = lock_generation + 1,
 		    locked_by = $1,
-		    locked_until = $2,
+		    locked_until = now() + ($2::bigint * interval '1 microsecond'),
 		    updated_at = now()
 		FROM candidate
 		WHERE o.id = candidate.id
 		RETURNING o.id, o.kind, o.app, o.saga_id, o.ref, o.status, o.risk, o.source, o.message, o.payload, o.metadata,
-		          o.attempts, o.max_attempts, o.locked_by, o.locked_until, o.next_attempt_at, o.last_error,
+		          o.attempts, o.max_attempts, o.locked_by, o.lock_generation, o.locked_until, o.next_attempt_at, o.last_error,
 		          o.started_at, o.updated_at, o.finished_at
 	`, kindClause)
 
@@ -355,19 +509,23 @@ func (db *DB) ClaimNextOperation(ctx context.Context, workerID string, lease tim
 	var payload, metadata []byte
 	err := db.Pool.QueryRow(ctx, query, args...).Scan(
 		&op.ID, &op.Kind, &op.App, &op.SagaID, &op.Ref, &op.Status, &op.Risk, &op.Source, &op.Message, &payload, &metadata,
-		&op.Attempts, &op.MaxAttempts, &op.LockedBy, &op.LockedUntil, &op.NextAttemptAt, &op.LastError,
+		&op.Attempts, &op.MaxAttempts, &op.LockedBy, &op.LockGeneration, &op.LockedUntil, &op.NextAttemptAt, &op.LastError,
 		&op.StartedAt, &op.UpdatedAt, &op.FinishedAt,
 	)
 	if err == pgx.ErrNoRows {
-		return nil, nil
+		return nil, OperationClaim{}, nil
 	}
 	if err != nil {
-		return nil, err
+		return nil, OperationClaim{}, err
 	}
 	if err := decodeOperationFields(&op, payload, metadata); err != nil {
-		return nil, err
+		return nil, OperationClaim{}, err
 	}
-	return &op, nil
+	claim, err := NewOperationClaim(op.ID, op.LockedBy, op.LockGeneration)
+	if err != nil {
+		return nil, OperationClaim{}, err
+	}
+	return &op, claim, nil
 }
 
 func (db *DB) ListOperations(ctx context.Context, filter OperationFilter) ([]model.Operation, error) {
@@ -399,7 +557,7 @@ func (db *DB) ListOperations(ctx context.Context, filter OperationFilter) ([]mod
 		clauses = append(clauses, "status IN ('queued', 'running')")
 	}
 
-	query := `SELECT id, kind, app, saga_id, ref, status, risk, source, message, payload, metadata, attempts, max_attempts, locked_by, locked_until, next_attempt_at, last_error, started_at, updated_at, finished_at FROM operations`
+	query := `SELECT id, kind, app, saga_id, ref, status, risk, source, message, payload, metadata, attempts, max_attempts, locked_by, lock_generation, locked_until, next_attempt_at, last_error, started_at, updated_at, finished_at FROM operations`
 	if len(clauses) > 0 {
 		query += " WHERE " + strings.Join(clauses, " AND ")
 	}
@@ -416,7 +574,7 @@ func (db *DB) ListOperations(ctx context.Context, filter OperationFilter) ([]mod
 	for rows.Next() {
 		var op model.Operation
 		var payload, metadata []byte
-		if err := rows.Scan(&op.ID, &op.Kind, &op.App, &op.SagaID, &op.Ref, &op.Status, &op.Risk, &op.Source, &op.Message, &payload, &metadata, &op.Attempts, &op.MaxAttempts, &op.LockedBy, &op.LockedUntil, &op.NextAttemptAt, &op.LastError, &op.StartedAt, &op.UpdatedAt, &op.FinishedAt); err != nil {
+		if err := rows.Scan(&op.ID, &op.Kind, &op.App, &op.SagaID, &op.Ref, &op.Status, &op.Risk, &op.Source, &op.Message, &payload, &metadata, &op.Attempts, &op.MaxAttempts, &op.LockedBy, &op.LockGeneration, &op.LockedUntil, &op.NextAttemptAt, &op.LastError, &op.StartedAt, &op.UpdatedAt, &op.FinishedAt); err != nil {
 			return nil, err
 		}
 		if err := decodeOperationFields(&op, payload, metadata); err != nil {
@@ -432,12 +590,12 @@ func (db *DB) GetOperation(ctx context.Context, id string) (*model.Operation, er
 	var payload, metadata []byte
 	err := db.Pool.QueryRow(ctx, `
 		SELECT id, kind, app, saga_id, ref, status, risk, source, message, payload, metadata,
-		       attempts, max_attempts, locked_by, locked_until, next_attempt_at, last_error,
+		       attempts, max_attempts, locked_by, lock_generation, locked_until, next_attempt_at, last_error,
 		       started_at, updated_at, finished_at
 		FROM operations WHERE id = $1
 	`, id).Scan(
 		&op.ID, &op.Kind, &op.App, &op.SagaID, &op.Ref, &op.Status, &op.Risk, &op.Source, &op.Message,
-		&payload, &metadata, &op.Attempts, &op.MaxAttempts, &op.LockedBy, &op.LockedUntil,
+		&payload, &metadata, &op.Attempts, &op.MaxAttempts, &op.LockedBy, &op.LockGeneration, &op.LockedUntil,
 		&op.NextAttemptAt, &op.LastError, &op.StartedAt, &op.UpdatedAt, &op.FinishedAt,
 	)
 	if err != nil {
@@ -481,7 +639,7 @@ func (db *DB) CancelQueuedOperation(ctx context.Context, id, requestedBy string)
 	result, err := db.Pool.Exec(ctx, `
 		UPDATE operations
 		SET status = 'canceled', message = 'operation canceled before execution',
-		    metadata = metadata || jsonb_build_object('canceledBy', $1),
+		    metadata = metadata || jsonb_build_object('canceledBy', $1::text),
 		    locked_by = '', locked_until = NULL, updated_at = now(), finished_at = now()
 		WHERE id = $2 AND status = 'queued'
 	`, requestedBy, id)
@@ -492,33 +650,39 @@ func (db *DB) CancelQueuedOperation(ctx context.Context, id, requestedBy string)
 	return op, result.RowsAffected() == 1, getErr
 }
 
-func (db *DB) RenewOperationLease(ctx context.Context, id, workerID string, until time.Time) error {
-	_, err := db.Pool.Exec(ctx, `
-		UPDATE operations SET locked_until = $1, updated_at = now()
-		WHERE id = $2 AND locked_by = $3 AND status = 'running'
-	`, until, id, workerID)
-	return err
-}
-
-func (db *DB) RecoverMaintenanceOperations(ctx context.Context) error {
-	_, err := db.Pool.Exec(ctx, `
+func (db *DB) RenewOperationClaim(ctx context.Context, claim OperationClaim, lease time.Duration) error {
+	if err := validateOperationClaim(claim); err != nil {
+		return err
+	}
+	if lease <= 0 {
+		return fmt.Errorf("operation renewal lease must be positive")
+	}
+	result, err := db.Pool.Exec(ctx, `
 		UPDATE operations
-		SET status = 'failed',
-		    message = 'maintenance executor stopped before recording completion; inspect host state before retrying',
-		    last_error = 'maintenance executor lease expired',
-		    locked_by = '',
-		    locked_until = NULL,
-		    updated_at = now(),
-		    finished_at = now()
-		WHERE status = 'running'
-		  AND (kind LIKE 'platform.%' OR kind LIKE 'host.%')
-		  AND (locked_until IS NULL OR locked_until < now())
-	`)
-	return err
+		SET locked_until = now() + ($1::bigint * interval '1 microsecond'), updated_at = now()
+		WHERE id = $2 AND status = 'running' AND locked_by = $3
+		  AND lock_generation = $4 AND locked_until > now()
+	`, lease.Microseconds(), claim.OperationID(), claim.OwnerID(), claim.Generation())
+	if err != nil {
+		return err
+	}
+	if result.RowsAffected() != 1 {
+		return ownershipLost(claim)
+	}
+	return nil
 }
 
-func (db *DB) RecoverInFlightOperations(ctx context.Context) error {
-	_, err := db.Pool.Exec(ctx, `
+// RecoverExpiredOperations classifies only expired (or explicit legacy
+// ownerless) running work, then reconciles deployments from their owning
+// operation outcome in the same transaction. Live owners and safely requeued
+// operations are preserved.
+func (db *DB) RecoverExpiredOperations(ctx context.Context) error {
+	tx, err := db.Pool.Begin(ctx)
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback(ctx)
+	if _, err = tx.Exec(ctx, `
 		UPDATE operations
 		SET status = 'queued',
 		    message = 'operation recovered after API restart and queued for a safe retry',
@@ -532,16 +696,19 @@ func (db *DB) RecoverInFlightOperations(ctx context.Context) error {
 		  AND (locked_until IS NULL OR locked_until < now())
 		  AND attempts < max_attempts
 		  AND (
-		    kind != 'app.deploy'
-		    OR NOT EXISTS (
+		    kind = 'app.preflight'
+		    OR (kind = 'app.deploy' AND NOT EXISTS (
 		      SELECT 1
 		      FROM deployment_steps ds
 		      WHERE ds.deployment_id = operations.payload->>'deploymentId'
-		        AND ds.step IN ('snapshot', 'migrate', 'submit', 'healthy', 'forge', 'cleanup')
-		        AND ds.status IN ('running', 'complete')
-		    )
-		  );
-
+		        AND (ds.step NOT IN ('clone', 'admission', 'build', 'artifact-admission', 'test')
+		             OR ds.kind = 'mutable')
+		    ))
+		  )
+	`); err != nil {
+		return err
+	}
+	if _, err = tx.Exec(ctx, `
 		UPDATE operations
 		SET status = 'failed',
 		    message = CASE
@@ -561,8 +728,49 @@ func (db *DB) RecoverInFlightOperations(ctx context.Context) error {
 		WHERE status = 'running'
 		  AND kind LIKE 'app.%'
 		  AND (locked_until IS NULL OR locked_until < now())
-	`)
-	return err
+	`); err != nil {
+		return err
+	}
+	if _, err = tx.Exec(ctx, `
+		UPDATE operations
+		SET status = 'failed',
+		    message = 'maintenance executor stopped before recording completion; inspect host state before retrying',
+		    last_error = 'maintenance executor lease expired',
+		    metadata = metadata || '{"manualRecoveryRequired":true}'::jsonb,
+		    locked_by = '', locked_until = NULL, updated_at = now(), finished_at = now()
+		WHERE status = 'running'
+		  AND (kind LIKE 'platform.%' OR kind LIKE 'host.%')
+		  AND (locked_until IS NULL OR locked_until < now())
+	`); err != nil {
+		return err
+	}
+	if _, err = tx.Exec(ctx, `
+		WITH terminal AS (
+			SELECT d.id
+			FROM deployments d
+			JOIN operations o
+			  ON o.saga_id = d.saga_id
+			 AND o.kind IN ('app.deploy', 'app.rollback')
+			 AND (o.payload->>'deploymentId' = d.id OR o.metadata->>'deploymentId' = d.id)
+			WHERE d.status NOT IN ('deployed', 'failed')
+			  AND o.status IN ('failed', 'canceled')
+		), failed_regions AS (
+			UPDATE deployment_regions
+			SET status='failed', active_weight=0,
+			    last_error=CASE WHEN last_error='' THEN 'owning operation ended without deployment completion' ELSE last_error END,
+			    updated_at=now()
+			WHERE deployment_id IN (SELECT id FROM terminal)
+		)
+		UPDATE deployments SET status='failed', finished_at=now()
+		WHERE id IN (SELECT id FROM terminal)
+	`); err != nil {
+		return err
+	}
+	// A deployment without an authoritative app.deploy/app.rollback owner is
+	// preserved. Legacy creation was not atomic, so passive recovery cannot
+	// distinguish an abandoned row from one between deployment and operation
+	// insertion. It remains visible for explicit operator reconciliation.
+	return tx.Commit(ctx)
 }
 
 func (db *DB) OperationMetrics(ctx context.Context) ([]OperationMetric, error) {

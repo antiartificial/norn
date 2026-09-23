@@ -45,16 +45,42 @@ func operationPoolConfig(databaseURL string) (*pgxpool.Config, error) {
 	if config.MaxConns < 4 {
 		return nil, fmt.Errorf("postgres pool_max_conns must be at least 4 for durable operation locking")
 	}
+	DeclareReaderContract(config, "control")
 	return config, nil
+}
+
+// readerApplicationPrefix is how a control-store session declares the saga
+// history reader contract of the binary that opened it. Pruning refuses
+// while any session of the control role declares less than
+// EvidenceArchiveReaderVersion (or nothing: pre-archive binaries), because a
+// startup schema floor cannot retire processes that are already running.
+const readerApplicationPrefix = "norn/reader="
+
+// DeclareReaderContract sets application_name to this binary's reader
+// contract and component, overriding any value in the connection string.
+func DeclareReaderContract(config *pgxpool.Config, component string) {
+	config.ConnConfig.RuntimeParams["application_name"] = ReaderApplicationName(component)
+}
+
+// ReaderApplicationName is the application_name declaring this binary's
+// reader contract, bounded to PostgreSQL's 63-byte limit.
+func ReaderApplicationName(component string) string {
+	name := fmt.Sprintf("%s%d/%s", readerApplicationPrefix, ControlSchemaReaderVersion, component)
+	if len(name) > 63 {
+		name = name[:63]
+	}
+	return name
 }
 
 func (db *DB) Close() {
 	db.Pool.Close()
 }
 
-func Migrate(db *DB) error {
-	ctx := context.Background()
-	_, err := db.Pool.Exec(ctx, `
+// controlSchemaBaselineSQL is immutable migration 1. It intentionally retains
+// every legacy idempotent DDL statement and the historical fleet attempt
+// lineage repair so an existing unversioned v2 database can be adopted without
+// replacing IDs, receipts, or populated lineage.
+const controlSchemaBaselineSQL = `
 		CREATE TABLE IF NOT EXISTS saga_events (
 			id         TEXT PRIMARY KEY,
 			saga_id    TEXT NOT NULL,
@@ -197,6 +223,7 @@ func Migrate(db *DB) error {
 			attempts    INT NOT NULL DEFAULT 0,
 			max_attempts INT NOT NULL DEFAULT 1,
 			locked_by  TEXT NOT NULL DEFAULT '',
+			lock_generation BIGINT NOT NULL DEFAULT 0,
 			locked_until TIMESTAMPTZ,
 			next_attempt_at TIMESTAMPTZ NOT NULL DEFAULT now(),
 			last_error TEXT NOT NULL DEFAULT '',
@@ -219,6 +246,7 @@ func Migrate(db *DB) error {
 		ALTER TABLE operations ADD COLUMN IF NOT EXISTS attempts INT NOT NULL DEFAULT 0;
 		ALTER TABLE operations ADD COLUMN IF NOT EXISTS max_attempts INT NOT NULL DEFAULT 1;
 		ALTER TABLE operations ADD COLUMN IF NOT EXISTS locked_by TEXT NOT NULL DEFAULT '';
+		ALTER TABLE operations ADD COLUMN IF NOT EXISTS lock_generation BIGINT NOT NULL DEFAULT 0;
 		ALTER TABLE operations ADD COLUMN IF NOT EXISTS locked_until TIMESTAMPTZ;
 		ALTER TABLE operations ADD COLUMN IF NOT EXISTS next_attempt_at TIMESTAMPTZ NOT NULL DEFAULT now();
 		ALTER TABLE operations ADD COLUMN IF NOT EXISTS last_error TEXT NOT NULL DEFAULT '';
@@ -419,10 +447,14 @@ func Migrate(db *DB) error {
 			user_agent    TEXT NOT NULL DEFAULT ''
 		);
 		ALTER TABLE exec_sessions ADD COLUMN IF NOT EXISTS command_digest TEXT NOT NULL DEFAULT '';
+		ALTER TABLE exec_sessions ADD COLUMN IF NOT EXISTS owner_id TEXT NOT NULL DEFAULT '';
+		ALTER TABLE exec_sessions ADD COLUMN IF NOT EXISTS owner_token TEXT NOT NULL DEFAULT '';
+		ALTER TABLE exec_sessions ADD COLUMN IF NOT EXISTS owner_lease_until TIMESTAMPTZ;
 		CREATE INDEX IF NOT EXISTS idx_exec_sessions_device ON exec_sessions(device_id, created_at DESC);
 		CREATE INDEX IF NOT EXISTS idx_exec_sessions_status ON exec_sessions(status, expires_at);
-		UPDATE exec_sessions SET status='failed',finished_at=now(),error_code='server_restarted'
-		WHERE status='running';
+		CREATE INDEX IF NOT EXISTS idx_exec_sessions_running_lease
+			ON exec_sessions(owner_lease_until)
+			WHERE status='running' AND owner_id<>'';
 
 		CREATE TABLE IF NOT EXISTS mutation_audit_events (
 			id                TEXT PRIMARY KEY,
@@ -489,7 +521,47 @@ func Migrate(db *DB) error {
 		);
 		CREATE INDEX IF NOT EXISTS idx_access_observation_app_last ON access_observation_buckets(app, process, last_seen DESC);
 		CREATE INDEX IF NOT EXISTS idx_access_observation_bucket ON access_observation_buckets(bucket_start DESC);
-	`)
+	`
+
+// Reader contract 2 (EvidenceArchiveReaderVersion): saga history reads are
+// archive-aware and never serve pruned history as complete.
+const (
+	EvidenceArchiveReaderVersion int64 = 2
+	ControlSchemaReaderVersion   int64 = EvidenceArchiveReaderVersion
+	ControlSchemaWriterVersion   int64 = EvidenceReserveWriterVersion
+)
+
+// ControlSchemaMigrations returns a copy of the ordered, forward-only control
+// schema catalog. Never edit an applied definition; append a new version.
+func ControlSchemaMigrations() []SchemaMigration {
+	return []SchemaMigration{{
+		Version:              1,
+		Name:                 "legacy-control-schema-baseline",
+		SQL:                  controlSchemaBaselineSQL,
+		MinimumReaderVersion: 0,
+		MinimumWriterVersion: 0,
+	}, operationAcceptanceMigration(), operationEffectsMigration(), operationCheckpointsMigration(), databaseCatalogMigration(), evidenceArchiveMigration(), evidenceArchiveReaderMigration(), evidenceReserveMigration()}
+}
+
+func NewControlSchemaMigrator(db *DB) (*SchemaMigrator, error) {
+	if db == nil || db.Pool == nil {
+		return nil, fmt.Errorf("control schema database is unavailable")
+	}
+	return NewSchemaMigrator(db.Pool, ControlSchemaMigrations(), BinarySchemaCompatibility{
+		ReaderVersion: ControlSchemaReaderVersion,
+		WriterVersion: ControlSchemaWriterVersion,
+	}, SchemaMigratorOptions{})
+}
+
+// Migrate retains the compatibility entry point for existing tests and tools
+// while delegating all schema ownership and history validation to the
+// versioned runner.
+func Migrate(db *DB) error {
+	migrator, err := NewControlSchemaMigrator(db)
+	if err != nil {
+		return err
+	}
+	_, err = migrator.Migrate(context.Background())
 	return err
 }
 
@@ -670,23 +742,6 @@ func (db *DB) LatestSuccessfulDeployment(ctx context.Context, app, environment s
 	_ = json.Unmarshal(changes, &d.SourceChanges)
 	d.Regions, _ = db.DeploymentRegions(ctx, d.ID)
 	return &d, nil
-}
-
-func (db *DB) RecoverInFlightDeployments(ctx context.Context) error {
-	_, err := db.Pool.Exec(ctx,
-		`WITH recovered AS (
-			SELECT id FROM deployments WHERE status NOT IN ('deployed', 'failed')
-		), failed_regions AS (
-			UPDATE deployment_regions
-			SET status='failed', active_weight=0,
-				last_error=CASE WHEN last_error = '' THEN 'norn restarted during deployment' ELSE last_error END,
-				updated_at=now()
-			WHERE deployment_id IN (SELECT id FROM recovered)
-		)
-		UPDATE deployments SET status = 'failed', finished_at = now()
-		WHERE id IN (SELECT id FROM recovered)`,
-	)
-	return err
 }
 
 // Healthy checks the database connection.

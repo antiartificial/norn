@@ -9,8 +9,11 @@
   "scripts": {
     "dev": "vite",
     "build": "tsc && vite build",
+    "fixture:browser": "node browser-fixture/server.mjs",
     "preview": "vite preview",
+    "pretest": "npm run test:browser-fixture",
     "test": "vitest run",
+    "test:browser-fixture": "node --test browser-fixture/server.test.mjs",
     "test:watch": "vitest"
   },
   "devDependencies": {

@@ -20,6 +20,8 @@ import (
 )
 
 const execSessionTTL = time.Hour
+const defaultExecSessionLease = 5 * time.Second
+const defaultExecSessionWatchInterval = 500 * time.Millisecond
 
 type execSessionCreateRequest struct {
 	AllocationID string   `json:"allocationId"`
@@ -196,7 +198,12 @@ func (h *Handler) ExecSessionStream(w http.ResponseWriter, r *http.Request) {
 	}
 	defer conn.Close()
 	conn.SetReadLimit(64 << 10)
-	if err := h.db.ConnectExecSession(r.Context(), session.ID); err != nil {
+	claim := store.ExecSessionClaim{
+		OwnerID: h.execOwner(), OwnerToken: uuid.NewString(),
+		LeaseDuration: h.execLeaseDuration(),
+	}
+	claimed, err := h.db.ConnectExecSession(r.Context(), session.ID, claim)
+	if err != nil || !claimed {
 		_ = conn.SetWriteDeadline(time.Now().Add(10 * time.Second))
 		_ = conn.WriteJSON(map[string]interface{}{
 			"frame": "error", "sequence": 1, "timestamp": time.Now().UTC().Format(time.RFC3339Nano),
@@ -208,32 +215,63 @@ func (h *Handler) ExecSessionStream(w http.ResponseWriter, r *http.Request) {
 	defer h.execConns.Delete(session.ID)
 	revocationCtx, stopRevocationWatch := context.WithCancel(r.Context())
 	defer stopRevocationWatch()
-	go h.watchExecSessionRevocation(revocationCtx, session.ID, conn)
+	go h.watchExecSessionRevocation(revocationCtx, session.ID, claim, conn)
 	_ = conn.SetReadDeadline(session.ExpiresAt)
 	exitCode, execErr := h.nomad.ExecSessionWebSocket(session.AllocationID, session.Task, session.Command, session.Terminal, session.Columns, session.Rows, session.ExpiresAt, conn)
 	auditContext, cancelAudit := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancelAudit()
-	current, _ := h.db.GetExecSession(auditContext, session.ID)
-	if current != nil && current.Status == "canceled" {
-		return
-	}
 	if execErr != nil {
 		if !time.Now().Before(session.ExpiresAt) {
-			_ = h.db.FinishExecSession(auditContext, session.ID, "expired", &exitCode, "exec_session_expired")
+			_, _ = h.db.FinishOwnedExecSession(auditContext, session.ID, claim.OwnerID, claim.OwnerToken, "expired", &exitCode, "exec_session_expired")
 			return
 		}
-		_ = h.db.FinishExecSession(auditContext, session.ID, "failed", &exitCode, "exec_transport_failed")
+		_, _ = h.db.FinishOwnedExecSession(auditContext, session.ID, claim.OwnerID, claim.OwnerToken, "failed", &exitCode, "exec_transport_failed")
 		log.Printf("exec session %s failed: %v", session.ID, execErr)
 		return
 	}
-	_ = h.db.FinishExecSession(auditContext, session.ID, "completed", &exitCode, "")
+	_, _ = h.db.FinishOwnedExecSession(auditContext, session.ID, claim.OwnerID, claim.OwnerToken, "completed", &exitCode, "")
 }
 
-func (h *Handler) watchExecSessionRevocation(ctx context.Context, sessionID string, conn *websocket.Conn) {
+func (h *Handler) execOwner() string {
+	h.execOwnerOnce.Do(func() {
+		if h.execOwnerID == "" {
+			h.execOwnerID = execRuntimeOwnerID()
+		}
+	})
+	return h.execOwnerID
+}
+
+func (h *Handler) execLeaseDuration() time.Duration {
+	if h.execLeaseDurationOverride > 0 {
+		return h.execLeaseDurationOverride
+	}
+	return defaultExecSessionLease
+}
+
+func (h *Handler) execWatchInterval() time.Duration {
+	if h.execWatchIntervalOverride > 0 {
+		return h.execWatchIntervalOverride
+	}
+	return defaultExecSessionWatchInterval
+}
+
+func (h *Handler) watchExecSessionRevocation(ctx context.Context, sessionID string, claim store.ExecSessionClaim, conn *websocket.Conn) {
 	if h.db == nil || conn == nil {
 		return
 	}
-	ticker := time.NewTicker(500 * time.Millisecond)
+	h.watchExecSessionLease(ctx, sessionID, claim, func(ctx context.Context) (bool, error) {
+		return h.db.RenewExecSession(ctx, sessionID, claim.OwnerID, claim.OwnerToken, h.execLeaseDuration())
+	}, func() { _ = conn.Close() })
+}
+
+// watchExecSessionLease keeps the ownership lease and revocation watch in one
+// loop. A failed CAS or a database error is treated as ownership loss so an
+// unfenced websocket cannot continue after its lease expires.
+func (h *Handler) watchExecSessionLease(ctx context.Context, sessionID string, claim store.ExecSessionClaim, renew func(context.Context) (bool, error), closeConnection func()) {
+	if renew == nil || closeConnection == nil {
+		return
+	}
+	ticker := time.NewTicker(h.execWatchInterval())
 	defer ticker.Stop()
 	for {
 		select {
@@ -241,10 +279,10 @@ func (h *Handler) watchExecSessionRevocation(ctx context.Context, sessionID stri
 			return
 		case <-ticker.C:
 			lookupCtx, cancel := context.WithTimeout(ctx, 2*time.Second)
-			session, err := h.db.GetExecSession(lookupCtx, sessionID)
+			renewed, err := renew(lookupCtx)
 			cancel()
-			if err == pgx.ErrNoRows || (err == nil && session.Status != "running") {
-				_ = conn.Close()
+			if err != nil || !renewed {
+				closeConnection()
 				return
 			}
 		}

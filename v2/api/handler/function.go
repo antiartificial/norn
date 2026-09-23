@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"net/http"
 	"os"
+	"strings"
 	"time"
 
 	"github.com/go-chi/chi/v5"
@@ -107,10 +108,50 @@ func (h *Handler) InvokeFunction(w http.ResponseWriter, r *http.Request) {
 	}
 	h.db.InsertFuncExecution(r.Context(), fe)
 
+	// Named databases reach the invocation only through its own private,
+	// create-only copy of the app's promoted delivery revision, revalidated
+	// against the running targets. The copy is never updated; cleanup
+	// deletes only exactly that material.
+	var owned map[string]string
+	revision := int64(0)
+	if spec.NamedDatabases() {
+		fail := func(status int, message string) {
+			h.db.UpdateFuncExecution(r.Context(), execID, "failed", 1, 0)
+			writeError(w, status, message)
+		}
+		if conflicts := spec.DatabaseEnvConflicts(env); len(conflicts) > 0 {
+			fail(http.StatusConflict, fmt.Sprintf("%s delivered by the database binding must not also come from secrets or the request", strings.Join(conflicts, ", ")))
+			return
+		}
+		if nomad.HasRuntimeDatabases(spec) {
+			if h.pipeline == nil || h.pipeline.DatabaseTargets == nil {
+				fail(http.StatusConflict, "named databases require a database profile")
+				return
+			}
+			if h.findSpec(jobID) != nil {
+				fail(http.StatusConflict, "function job ID collides with an app name")
+				return
+			}
+			material, err := h.pipeline.RunningDeliveryRevision(r.Context(), spec, "global", id)
+			if err != nil {
+				fail(http.StatusConflict, err.Error())
+				return
+			}
+			if owned, err = h.nomad.CopyDatabaseVariable("global", jobID, material); err != nil {
+				fail(http.StatusConflict, err.Error())
+				return
+			}
+			revision = material.Revision
+		}
+	}
+
 	// Build and submit batch job
-	batchJob := nomad.TranslateBatch(spec, procName, proc, imageTag, env, jobID)
+	batchJob := nomad.TranslateBatchAt(spec, procName, proc, imageTag, env, jobID, revision)
 	_, err = h.nomad.SubmitJob(batchJob)
 	if err != nil {
+		if owned != nil {
+			_ = h.nomad.DeleteDatabaseVariable("global", jobID, owned)
+		}
 		h.db.UpdateFuncExecution(r.Context(), execID, "failed", 1, 0)
 		writeError(w, http.StatusInternalServerError, err.Error())
 		return
@@ -130,6 +171,12 @@ func (h *Handler) InvokeFunction(w http.ResponseWriter, r *http.Request) {
 		durationMs := time.Since(start).Milliseconds()
 
 		h.db.UpdateFuncExecution(r.Context(), execID, status, exitCode, durationMs)
+		if owned != nil && (status == "complete" || status == "failed") {
+			// The one-shot job was purged; its copy of the connection goes.
+			// Any other outcome leaves the copy, which only this unique job
+			// ID can read, rather than racing a still-pending allocation.
+			_ = h.nomad.DeleteDatabaseVariable("global", jobID, owned)
+		}
 		h.ws.Broadcast(hub.Event{
 			Type:  "function.completed",
 			AppID: id,
