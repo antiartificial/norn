@@ -876,7 +876,7 @@ func (db *DB) RecoverExpiredOperations(ctx context.Context) error {
 				WHERE spi.operation_id = operations.id AND spi.state IN ('prepared', 'published')
 			)))
 		  AND (
-		    kind IN ('app.preflight', 'app.restart', 'app.canary-promote')
+		    kind IN ('app.preflight', 'app.restart', 'app.canary-promote', 'app.cron-pause')
 		    OR (kind = 'app.snapshot' AND EXISTS (
 		      SELECT 1 FROM snapshot_publication_intents spi
 		      WHERE spi.operation_id = operations.id AND spi.state IN ('prepared', 'published')

@@ -1,6 +1,7 @@
 package handler
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"net/http"
@@ -15,6 +16,7 @@ import (
 
 	"norn/v2/api/model"
 	"norn/v2/api/nomad"
+	"norn/v2/api/pipeline"
 	"norn/v2/api/store"
 )
 
@@ -144,6 +146,26 @@ func (h *Handler) CronPause(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, err.Error())
 		return
 	}
+	if h.pipeline == nil {
+		WriteControlProblem(w, r, http.StatusServiceUnavailable, "cron_pause_execution_unavailable", "durable cron pause execution is unavailable")
+		return
+	}
+	enqueue, ok := h.pipelineEnqueueRequest(w, r, r.Header.Get("Idempotency-Key"), map[string]interface{}{"app": id, "process": req.Process, "action": "pause"})
+	if !ok {
+		return
+	}
+	// Resolve the original signed request before reading mutable Nomad state.
+	// A retry after a successful pause must return its receipt even though the
+	// periodic parent is now stopped and its ModifyIndex has changed.
+	if previous, replayed, err := h.resolveCronPauseReplay(r.Context(), enqueue, id, req.Process); err != nil {
+		writeOperationAcceptanceError(w, r, err)
+		return
+	} else if replayed {
+		previous.Operation.AttachReceipt()
+		w.Header().Set("Location", "/api/v1/operations/"+previous.Operation.ID)
+		writeJSON(w, previous.Operation)
+		return
+	}
 
 	spec := h.findSpec(id)
 	if spec == nil {
@@ -184,12 +206,9 @@ func (h *Handler) CronPause(w http.ResponseWriter, r *http.Request) {
 	// Keep uint64 revisions as decimal strings: generic JSON map decoding uses
 	// float64 and would silently lose a Nomad index above 2^53.
 	payload := map[string]interface{}{"app": id, "process": req.Process, "schedule": schedule, "timezone": timezone, "jobId": jobID, "version": fmt.Sprint(periodic.Version), "modifyIndex": fmt.Sprint(periodic.ModifyIndex), "action": "pause"}
-	enqueue, ok := h.pipelineEnqueueRequest(w, r, r.Header.Get("Idempotency-Key"), payload)
-	if !ok {
-		return
-	}
+	enqueue.Semantics = payload
 	now := time.Now().UTC()
-	op := model.Operation{ID: uuid.NewString(), Kind: "app.cron-pause", App: id, SagaID: uuid.NewString(), Ref: req.Process, Status: model.OperationQueued, Risk: "stop Nomad periodic job", Source: "app-control-api", Message: fmt.Sprintf("queued cron pause for %s process %q", id, req.Process), StartedAt: now, NextAttemptAt: now, MaxAttempts: 1, Payload: payload}
+	op := model.Operation{ID: uuid.NewString(), Kind: "app.cron-pause", App: id, SagaID: uuid.NewString(), Ref: req.Process, Status: model.OperationQueued, Risk: "stop Nomad periodic job", Source: "app-control-api", Message: fmt.Sprintf("queued cron pause for %s process %q", id, req.Process), StartedAt: now, NextAttemptAt: now, MaxAttempts: 3, Payload: payload}
 	accepted, err := h.pipeline.QueueOperation(r.Context(), op, enqueue)
 	if err != nil {
 		writeOperationAcceptanceError(w, r, err)
@@ -202,6 +221,20 @@ func (h *Handler) CronPause(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSONStatus(w, http.StatusAccepted, accepted.Operation)
+}
+
+func (h *Handler) resolveCronPauseReplay(ctx context.Context, request pipeline.EnqueueRequest, app, process string) (store.AcceptedOperation, bool, error) {
+	previous, err := h.pipeline.ResolveEnqueue(ctx, request, "app.cron-pause", app)
+	if errors.Is(err, store.ErrAcceptanceNotFound) {
+		return store.AcceptedOperation{}, false, nil
+	}
+	if err != nil {
+		return store.AcceptedOperation{}, false, err
+	}
+	if previous.Operation.Kind != "app.cron-pause" || previous.Operation.App != app || previous.Operation.Ref != process || previous.Operation.Payload["process"] != process {
+		return store.AcceptedOperation{}, false, &store.AcceptanceConflictError{Identity: store.OperationRequestIdentity{Kind: "app.cron-pause", Resource: app}}
+	}
+	return previous, true, nil
 }
 
 // cronPauseEffectiveSchedule treats a missing override as the declared
