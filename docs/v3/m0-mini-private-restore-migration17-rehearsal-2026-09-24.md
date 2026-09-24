@@ -8,7 +8,7 @@ application-runtime compatibility.
 
 ## Source identity and isolation
 
-The source was read only. At rehearsal time, the Mini's running
+The database extraction and catalog checks were read only. At rehearsal time, the Mini's running
 `/Users/0xadb/go/bin/norn-api` SHA-256 remained
 `2fdc974ec8b7234c9f73ec9f2156abf1eee06bd63e3d2853572c6f93f79e6e31`.
 The signed-source verification recorded in the
@@ -28,6 +28,14 @@ Docker inspection showed `network=none` and no published ports. The only
 target processes were PostgreSQL and a purpose-built schema-migrator binary;
 no Norn API, worker, webhook, cron, provider client, or application runtime
 started in the target.
+
+An attempted contract probe of the installed source `norn-api` binary used an
+unsupported argument. It began normal startup and failed to bind because the
+active API already owned the port. This process was outside the isolated
+target. A follow-up read-only source query found no queued or running
+operations and no rows updated in the preceding 15 minutes; those checks do
+not prove the attempted process had no side effects. The read-only claim above
+applies to the database extraction and catalog checks.
 
 ## Result
 
