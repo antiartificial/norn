@@ -98,7 +98,11 @@ func (p *Pipeline) executeScale(ctx context.Context, op *model.Operation, claim 
 		return &OperationResult{Claim: claim, Status: model.OperationFailed, Message: "Nomad scale request failed"}
 	}
 	metadata := map[string]interface{}{"group": request.Group, "count": request.Count, "effectId": result.EffectID, "effectReused": result.Reused}
-	return &OperationResult{Claim: claim, Status: model.OperationSucceeded, Message: fmt.Sprintf("%s process %q scaled to %d", request.App, request.Group, request.Count), Metadata: metadata, publish: func(context.Context) {
+	message := fmt.Sprintf("%s process %q scaled to %d", request.App, request.Group, request.Count)
+	if err := p.DB.FinishScaleClaimedOperation(ctx, claim, request.App, request.Group, request.Count, message, metadata); err != nil {
+		return &OperationResult{Claim: claim, Status: model.OperationFailed, Message: "persist desired scale intent: " + err.Error()}
+	}
+	return &OperationResult{Claim: claim, Status: model.OperationSucceeded, Message: message, Metadata: metadata, finished: true, publish: func(context.Context) {
 		if p.WS != nil {
 			p.WS.Broadcast(hub.Event{Type: "app.scaled", AppID: request.App, Payload: metadata})
 		}

@@ -11,6 +11,10 @@ import (
 )
 
 func (p *Pipeline) submit(ctx context.Context, st *state, sg *saga.Saga) error {
+	desiredCounts, err := p.DB.DesiredReplicaCounts(ctx, st.spec.App)
+	if err != nil {
+		return fmt.Errorf("load desired replica intent: %w", err)
+	}
 	// Resolve secrets for env injection
 	env := make(map[string]string)
 	if p.Secrets != nil {
@@ -110,6 +114,7 @@ func (p *Pipeline) submit(ctx context.Context, st *state, sg *saga.Saga) error {
 	for _, region := range st.spec.ResolvedRegions() {
 		if regionalServiceProcessCount(st.spec, region.Name) > 0 {
 			job := nomad.TranslateForRegionAt(st.spec, st.imageTag, env, region, st.deliveryRevision)
+			nomad.ApplyDesiredReplicaCounts(job, desiredCounts)
 			evalID, err := p.Nomad.SubmitJobRegion(job, region.NomadRegion)
 			if err != nil {
 				_ = p.DB.UpdateDeploymentRegion(ctx, st.deploymentID, region.Name, model.StatusFailed, "", err.Error(), 0)

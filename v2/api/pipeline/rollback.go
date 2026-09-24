@@ -147,7 +147,12 @@ func (p *Pipeline) runRollback(ctx context.Context, spec *model.InfraSpec, deplo
 					}
 					revision = material.Revision
 				}
+				desiredCounts, err := p.DB.DesiredReplicaCounts(ctx, spec.App)
+				if err != nil {
+					return fmt.Errorf("load desired replica intent: %w", err)
+				}
 				job := nomad.TranslateForRegionAt(spec, imageTag, env, region, revision)
+				nomad.ApplyDesiredReplicaCounts(job, desiredCounts)
 				evalID, err := p.Nomad.SubmitJobRegion(job, region.NomadRegion)
 				if err != nil {
 					_ = p.DB.UpdateDeploymentRegion(ctx, deploy.ID, region.Name, model.StatusFailed, "", err.Error(), 0)
