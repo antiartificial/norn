@@ -186,6 +186,66 @@ nodePools:
 	}
 }
 
+func TestCreatePullRequestClassifiesPrewriteAndExistingBranchFailures(t *testing.T) {
+	valid := []byte("apiVersion: norn.dev/fleet/v1\nkind: Cluster\nmetadata:\n  repository: acme/norn-fleet\n  environment: production\ncluster:\n  name: production-nyc3\n  provider: digitalocean\n  region: nyc3\nnodePools:\n  app:\n    size: s-4vcpu-8gb\n    min: 1\n    desired: 1\n    max: 2\n    replacement:\n      strategy: blueGreen\n      requireCapacityHeadroom: true\n      requireReadiness: true\n")
+	planID := "44444444-4444-4444-8444-444444444444"
+	proposed := fleet.NodePool{Size: "s-4vcpu-8gb", Min: 1, Desired: 2, Max: 2, Replacement: fleet.Replacement{Strategy: "blueGreen", RequireCapacityHeadroom: true, RequireReadiness: true}}
+	for _, tc := range []struct {
+		name         string
+		main         []byte
+		branchStatus int
+		branch       []byte
+		pulls        string
+		want         error
+		writes       int
+	}{
+		{"invalid-prewrite", []byte("invalid"), 0, nil, "", ErrPermanentNoWrite, 0},
+		{"transient-branch-read", valid, http.StatusInternalServerError, nil, "", nil, 1},
+		{"branch-mismatch", valid, http.StatusOK, []byte("different"), "", ErrPermanentAfterMutation, 1},
+		{"closed-pr", valid, http.StatusOK, valid, `[{"number":7,"state":"closed","merged_at":null}]`, ErrPermanentAfterMutation, 1},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			writes := 0
+			client := testClient(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				if tokenResponse(w, r, map[string]string{"contents": "write", "pull_requests": "write"}) {
+					return
+				}
+				if r.Method == http.MethodPost || r.Method == http.MethodPut || r.Method == http.MethodPatch {
+					writes++
+				}
+				switch {
+				case r.Method == http.MethodGet && strings.Contains(r.URL.Path, "/contents/") && strings.Contains(r.URL.RawQuery, "ref=norn%2Fplan-"):
+					if tc.branchStatus != http.StatusOK {
+						http.Error(w, "temporary", tc.branchStatus)
+						return
+					}
+					fmt.Fprintf(w, `{"content":%q,"encoding":"base64","sha":"x"}`, base64.StdEncoding.EncodeToString(tc.branch))
+				case r.Method == http.MethodGet && strings.Contains(r.URL.Path, "/contents/"):
+					fmt.Fprintf(w, `{"content":%q,"encoding":"base64","sha":"x"}`, base64.StdEncoding.EncodeToString(tc.main))
+				case r.Method == http.MethodGet && strings.Contains(r.URL.Path, "/git/ref/"):
+					fmt.Fprint(w, `{"object":{"sha":"base"}}`)
+				case r.Method == http.MethodPost && strings.HasSuffix(r.URL.Path, "/git/refs"):
+					http.Error(w, "exists", http.StatusUnprocessableEntity)
+				case r.Method == http.MethodGet && strings.HasSuffix(r.URL.Path, "/pulls"):
+					fmt.Fprint(w, tc.pulls)
+				default:
+					http.NotFound(w, r)
+				}
+			}))
+			_, err := client.CreatePullRequest(context.Background(), planID, "sha256:x", "app", "scale", proposed, fleet.Digest(tc.main))
+			if tc.want != nil && !errorsIs(err, tc.want) {
+				t.Fatalf("error=%v", err)
+			}
+			if tc.want == nil && (errorsIs(err, ErrPermanentNoWrite) || errorsIs(err, ErrPermanentAfterMutation)) {
+				t.Fatalf("transient error classified permanent: %v", err)
+			}
+			if writes != tc.writes {
+				t.Fatalf("writes=%d want=%d", writes, tc.writes)
+			}
+		})
+	}
+}
+
 func TestDispatchDiscoversMergedReviewAndBoundPlanArtifact(t *testing.T) {
 	planID := "22222222-2222-4222-8222-222222222222"
 	planSHA := strings.Repeat("a", 64)
