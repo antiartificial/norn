@@ -334,7 +334,20 @@ func TestExpiredCanaryPromotionRequeuesForDurableEffectReconciliation(t *testing
 	stores := operationTestStores(t, 2)
 	ctx := context.Background()
 	op := insertOperationFixture(t, stores[0], "app.canary-promote", 1, map[string]interface{}{"app": "demo"})
-	if _, _, err := stores[0].ClaimNextOperation(ctx, "canary-owner", 100*time.Millisecond, []string{"app.canary-promote"}); err != nil {
+	_, claim, err := stores[0].ClaimNextOperation(ctx, "canary-owner", 100*time.Millisecond, []string{"app.canary-promote"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	effectStore, err := NewPGEffectStore(stores[0])
+	if err != nil {
+		t.Fatal(err)
+	}
+	authority, err := effectStore.Authority(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	reservation := effectReservation(t, authority, "app/demo/canary-promote/us", "canary-crash", claim)
+	if _, err := effectStore.Reserve(ctx, reservation); err != nil {
 		t.Fatal(err)
 	}
 	time.Sleep(180 * time.Millisecond)
