@@ -12,8 +12,8 @@ func TestControlSchemaAdoptsLegacyRowsWithoutReplacingEvidence(t *testing.T) {
 	pool := schemaMigrationTestPools(t, 1)[0]
 	ctx := context.Background()
 	migrations := ControlSchemaMigrations()
-	if len(migrations) != 16 {
-		t.Fatalf("control migrations = %#v, want immutable baseline through snapshot publication migration 16", migrations)
+	if len(migrations) != 17 {
+		t.Fatalf("control migrations = %#v, want immutable baseline through acceptance retirement migration 17", migrations)
 	}
 	for index, migration := range migrations {
 		if migration.Version != int64(index+1) {

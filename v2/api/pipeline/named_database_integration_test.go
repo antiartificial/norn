@@ -12,11 +12,13 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
 
 	"norn/v2/api/database"
+	"norn/v2/api/effect/supervisor"
 	"norn/v2/api/internal/pgtest"
 	"norn/v2/api/model"
 )
@@ -94,6 +96,35 @@ databases:
 	p.AppsDir = appsDir
 	snapshots := t.TempDir()
 	p.DatabaseTargets = &DatabaseTargets{ProfileID: "mini", Catalog: db.ActiveDatabaseCatalog, Secrets: secrets, SnapshotRoot: snapshots}
+	// The named-database tests exercise snapshot execution, so give this
+	// disposable PostgreSQL fixture the same contained test supervisor used by
+	// the target-binding suite. Production admission still requires its own
+	// qualified Linux backend.
+	pgDump, err := exec.LookPath("pg_dump")
+	if err != nil {
+		t.Fatal(err)
+	}
+	pgDump, err = filepath.EvalSymlinks(pgDump)
+	if err != nil {
+		t.Fatal(err)
+	}
+	pgDumpBytes, err := os.ReadFile(pgDump)
+	if err != nil {
+		t.Fatal(err)
+	}
+	digest := sha256.Sum256(pgDumpBytes)
+	backend := newPortableSnapshotBackend()
+	manager, err := supervisor.NewManager(t.TempDir(), backend.key, backend)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := manager.SetSnapshotArtifactBudget(2 * supervisor.MaxSnapshotArtifactBytes); err != nil {
+		t.Fatal(err)
+	}
+	p.SnapshotEffects, err = NewSnapshotEffects(db, manager, pgDump, hex.EncodeToString(digest[:]), time.Minute)
+	if err != nil {
+		t.Fatal(err)
+	}
 	service := func(id string, engine database.Engine, endpoint database.DatabaseEndpoint) database.DatabaseService {
 		return database.DatabaseService{APIVersion: database.APIVersion, ID: id, Generation: 1, Purpose: database.PurposeApplication, Engine: engine,
 			EngineVersion: "16", ProviderRef: "local:" + id, Endpoint: endpoint,

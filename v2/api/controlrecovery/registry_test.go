@@ -4,8 +4,8 @@ import "testing"
 
 func TestInspectionRegistryPinsCurrentSchemaAndSensitiveExclusions(t *testing.T) {
 	registry := InspectionRegistry()
-	if len(registry) != 39 {
-		t.Fatalf("registry has %d tables, want 39", len(registry))
+	if len(registry) != 41 {
+		t.Fatalf("registry has %d tables, want 41", len(registry))
 	}
 	if err := validateRegistry(registry); err != nil {
 		t.Fatalf("registry validation: %v", err)
@@ -26,6 +26,7 @@ func TestInspectionRegistryPinsCurrentSchemaAndSensitiveExclusions(t *testing.T)
 		"database_catalog_revisions":   {"catalog"},
 		"operation_effects":            {"claim_owner", "claim_generation", "input_digest", "launch_payload", "supervisor_execution_id", "runtime_instance_id", "result_digest", "result_reference", "evidence_source", "evidence_reference", "evidence_observed_at"},
 		"restart_effect_sources":       {},
+		"snapshot_publication_intents": {"input_digest", "supervisor_root_id", "supervisor_execution_id", "target", "namespace", "filename"},
 	}
 	byTable := make(map[string]Table, len(registry))
 	for _, table := range registry {
