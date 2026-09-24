@@ -14,18 +14,21 @@ import (
 )
 
 var (
-	fleetDesired          int
-	fleetSize             string
-	fleetStrategy         string
-	fleetReason           string
-	fleetIdempotencyKey   string
-	fleetAllowDestructive bool
+	fleetDesired             int
+	fleetSize                string
+	fleetStrategy            string
+	fleetReason              string
+	fleetIdempotencyKey      string
+	fleetAllowDestructive    bool
+	fleetGitHubReconcileKind string
 )
 
 func init() {
 	rootCmd.AddCommand(fleetCmd)
 	fleetCmd.AddCommand(fleetPoolsCmd, fleetValidateCmd, fleetPlanCmd, fleetReplaceCmd, fleetReconcileCmd, fleetCheckpointsCmd, fleetGitHubCmd)
-	fleetGitHubCmd.AddCommand(fleetGitHubStatusCmd, fleetGitHubPullRequestCmd, fleetGitHubApplyCmd)
+	fleetGitHubCmd.AddCommand(fleetGitHubStatusCmd, fleetGitHubPullRequestCmd, fleetGitHubApplyCmd, fleetGitHubReconcileCmd)
+	fleetGitHubReconcileCmd.Flags().StringVar(&fleetGitHubReconcileKind, "kind", "", "Reservation kind: pull-request or apply-dispatch")
+	_ = fleetGitHubReconcileCmd.MarkFlagRequired("kind")
 	fleetGitHubApplyCmd.Flags().BoolVar(&fleetAllowDestructive, "allow-destructive", false, "Acknowledge a reviewed replacement or contraction")
 	for _, command := range []*cobra.Command{fleetPlanCmd, fleetReplaceCmd, fleetReconcileCmd} {
 		command.Flags().IntVar(&fleetDesired, "desired", 0, "Proposed desired node count")
@@ -93,6 +96,15 @@ var fleetGitHubApplyCmd = &cobra.Command{
 		return nil
 	},
 }
+
+var fleetGitHubReconcileCmd = &cobra.Command{Use: "reconcile <plan-id>", Short: "Verify and seal an indefinitely queued GitHub reservation", Args: cobra.ExactArgs(1), RunE: func(cmd *cobra.Command, args []string) error {
+	result, err := client.ReconcileFleetGitHub(args[0], fleetGitHubReconcileKind)
+	if err != nil {
+		return fmt.Errorf("fleet GitHub reconcile: %w", err)
+	}
+	fmt.Fprintf(cmd.OutOrStdout(), "%s  %s\n", result.Outcome, result.Operation.ID)
+	return nil
+}}
 
 var fleetPoolsCmd = &cobra.Command{
 	Use: "pools", Short: "List desired node pools from the checked-out norn-fleet document", Args: cobra.NoArgs,
