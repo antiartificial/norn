@@ -6,6 +6,7 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
+	"io"
 	"os"
 	"strings"
 	"sync"
@@ -45,6 +46,12 @@ func (b *backendFake) Start(_ context.Context, execution BackendExecution, _ eff
 
 func (b *backendFake) StartSnapshot(ctx context.Context, execution BackendExecution, _ SnapshotDescriptor, _ SnapshotLaunchMaterial) error {
 	return b.Start(ctx, execution, effect.LaunchMaterial{})
+}
+func (b *backendFake) QuerySnapshot(context.Context, BackendExecution, SnapshotDescriptor) (SnapshotManifest, error) {
+	return SnapshotManifest{}, nil
+}
+func (b *backendFake) CopySnapshotArtifact(context.Context, BackendExecution, SnapshotDescriptor, io.Writer) (SnapshotManifest, error) {
+	return SnapshotManifest{}, nil
 }
 
 func (b *backendFake) Observe(_ context.Context, execution BackendExecution) (BackendState, error) {

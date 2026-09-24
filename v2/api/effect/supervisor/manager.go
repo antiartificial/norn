@@ -8,6 +8,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"os"
 	"path/filepath"
 	"strings"
@@ -52,6 +53,8 @@ type Backend interface {
 // Its descriptor remains the durable, secret-free reservation payload.
 type SnapshotBackend interface {
 	StartSnapshot(context.Context, BackendExecution, SnapshotDescriptor, SnapshotLaunchMaterial) error
+	QuerySnapshot(context.Context, BackendExecution, SnapshotDescriptor) (SnapshotManifest, error)
+	CopySnapshotArtifact(context.Context, BackendExecution, SnapshotDescriptor, io.Writer) (SnapshotManifest, error)
 }
 
 type Manager struct {
@@ -320,6 +323,48 @@ func (m *Manager) LaunchSnapshot(ctx context.Context, reservation effect.Reserva
 		return nil
 	})
 	return identity, err
+}
+
+func (m *Manager) QuerySnapshot(ctx context.Context, reservation effect.Reservation, identity effect.ExecutionIdentity) (SnapshotManifest, error) {
+	d, err := m.verifySnapshotDescriptor(reservation.LaunchPayload, nil)
+	if err != nil {
+		return SnapshotManifest{}, err
+	}
+	b, ok := m.backend.(SnapshotBackend)
+	if !ok {
+		return SnapshotManifest{}, fmt.Errorf("snapshot supervisor backend is unavailable")
+	}
+	var out SnapshotManifest
+	err = m.withExecutionLock(identity.SupervisorExecutionID, func(directory string) error {
+		r, e := m.readBoundJournal(directory, reservation, identity)
+		if e != nil {
+			return e
+		}
+		out, e = b.QuerySnapshot(ctx, backendExecution(r, directory), d)
+		return e
+	})
+	return out, err
+}
+
+func (m *Manager) CopySnapshotArtifact(ctx context.Context, reservation effect.Reservation, identity effect.ExecutionIdentity, destination io.Writer) (SnapshotManifest, error) {
+	d, err := m.verifySnapshotDescriptor(reservation.LaunchPayload, nil)
+	if err != nil {
+		return SnapshotManifest{}, err
+	}
+	b, ok := m.backend.(SnapshotBackend)
+	if !ok {
+		return SnapshotManifest{}, fmt.Errorf("snapshot supervisor backend is unavailable")
+	}
+	var out SnapshotManifest
+	err = m.withExecutionLock(identity.SupervisorExecutionID, func(directory string) error {
+		r, e := m.readBoundJournal(directory, reservation, identity)
+		if e != nil {
+			return e
+		}
+		out, e = b.CopySnapshotArtifact(ctx, backendExecution(r, directory), d, destination)
+		return e
+	})
+	return out, err
 }
 
 func (m *Manager) Query(ctx context.Context, reservation effect.Reservation, identity effect.ExecutionIdentity) (effect.Observation, error) {

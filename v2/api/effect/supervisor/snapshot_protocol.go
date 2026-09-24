@@ -640,3 +640,47 @@ func VerifySnapshotManifestForDescriptor(manifest SnapshotManifest, descriptor S
 	}
 	return nil
 }
+
+// CopySnapshotArtifact re-verifies the signed descriptor-bound manifest before
+// streaming the private node-local artifact. Callers receive no filesystem
+// path, so publication must explicitly copy verified bytes into its namespace.
+func CopySnapshotArtifact(directory string, key []byte, runtimeID string, descriptor SnapshotDescriptor, contained bool, destination io.Writer) (SnapshotManifest, error) {
+	manifest, err := ReadSnapshotManifest(directory, key, runtimeID, contained)
+	if err != nil {
+		return SnapshotManifest{}, err
+	}
+	if err := VerifySnapshotManifestForDescriptor(manifest, descriptor, key, runtimeID); err != nil {
+		return SnapshotManifest{}, err
+	}
+	entries, err := os.ReadDir(directory)
+	if err != nil {
+		return SnapshotManifest{}, err
+	}
+	var private string
+	for _, e := range entries {
+		if e.IsDir() && strings.HasPrefix(e.Name(), ".snapshot-") {
+			if private != "" {
+				return SnapshotManifest{}, fmt.Errorf("snapshot artifact directory is ambiguous")
+			}
+			private = filepath.Join(directory, e.Name())
+		}
+	}
+	if private == "" {
+		return SnapshotManifest{}, fmt.Errorf("snapshot artifact directory is missing")
+	}
+	file, err := os.OpenFile(filepath.Join(private, "archive.dump"), os.O_RDONLY|syscall.O_NOFOLLOW|syscall.O_NONBLOCK|syscall.O_CLOEXEC, 0)
+	if err != nil {
+		return SnapshotManifest{}, err
+	}
+	defer file.Close()
+	info, err := file.Stat()
+	if err != nil || !info.Mode().IsRegular() || info.Size() != manifest.Artifact.Bytes {
+		return SnapshotManifest{}, fmt.Errorf("snapshot artifact changed before copy")
+	}
+	hash := sha256.New()
+	copied, err := io.Copy(io.MultiWriter(destination, hash), io.LimitReader(file, MaxSnapshotArtifactBytes+1))
+	if err != nil || copied != manifest.Artifact.Bytes || hex.EncodeToString(hash.Sum(nil)) != manifest.Artifact.SHA256 {
+		return SnapshotManifest{}, fmt.Errorf("snapshot artifact changed during copy")
+	}
+	return manifest, nil
+}

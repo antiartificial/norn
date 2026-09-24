@@ -6,6 +6,7 @@ import (
 	"encoding/hex"
 	"errors"
 	"fmt"
+	"io"
 	"os"
 	"path/filepath"
 	"strings"
@@ -13,6 +14,31 @@ import (
 
 	"norn/v2/api/effect"
 )
+
+func (b *cgroupBackend) QuerySnapshot(_ context.Context, execution BackendExecution, descriptor SnapshotDescriptor) (SnapshotManifest, error) {
+	populated, err := cgroupPopulated(b.cgroupPath(execution.RuntimeInstanceID))
+	if err != nil {
+		return SnapshotManifest{}, fmt.Errorf("snapshot containment is unavailable: %w", err)
+	}
+	if populated {
+		return SnapshotManifest{}, fmt.Errorf("snapshot containment is not proven")
+	}
+	return ReadSnapshotManifest(execution.StateDirectory, runnerStatusKey(b.key, execution.RuntimeInstanceID), execution.RuntimeInstanceID, true)
+}
+
+func (b *cgroupBackend) CopySnapshotArtifact(ctx context.Context, execution BackendExecution, descriptor SnapshotDescriptor, destination io.Writer) (SnapshotManifest, error) {
+	manifest, err := b.QuerySnapshot(ctx, execution, descriptor)
+	if err != nil {
+		return SnapshotManifest{}, err
+	}
+	if err := VerifySnapshotManifestForDescriptor(manifest, descriptor, runnerStatusKey(b.key, execution.RuntimeInstanceID), execution.RuntimeInstanceID); err != nil {
+		return SnapshotManifest{}, err
+	}
+	if _, err := CopySnapshotArtifact(execution.StateDirectory, runnerStatusKey(b.key, execution.RuntimeInstanceID), execution.RuntimeInstanceID, descriptor, true, destination); err != nil {
+		return SnapshotManifest{}, err
+	}
+	return manifest, nil
+}
 
 const maxCgroupEventsBytes = 4 << 10
 
