@@ -197,3 +197,93 @@ func TestV3CanaryEffectReservationAtomicallyFencesClaimAndAppEtcd(t *testing.T) 
 		t.Fatalf("recovered claim failed to reuse unresolved effect: %+v err=%v", result, err)
 	}
 }
+
+func TestV3CanaryReplayExpiryWaitsForTerminalEffectEtcd(t *testing.T) {
+	endpoints := os.Getenv("NORN_TEST_ETCD_ENDPOINTS")
+	if endpoints == "" {
+		t.Skip("NORN_TEST_ETCD_ENDPOINTS is not set")
+	}
+	ctx := context.Background()
+	client, err := clientv3.New(clientv3.Config{Endpoints: strings.Split(endpoints, ","), DialTimeout: 5 * time.Second})
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = client.Close() })
+	prefix := "/norn-tests/canary-replay/" + uuid.NewString()
+	t.Cleanup(func() { _, _ = client.Delete(context.Background(), prefix, clientv3.WithPrefix()) })
+	signer, err := store.NewHMACAcceptanceSigner("norn-etcd-canary-replay-test-signing-key-000000")
+	if err != nil {
+		t.Fatal(err)
+	}
+	authority := uuid.NewString()
+	operations, err := NewV3OperationStoreWithPolicy(client, prefix, authority, signer, store.AcceptancePolicy{ReplayTTL: time.Second})
+	if err != nil {
+		t.Fatal(err)
+	}
+	effects, err := NewV3CanaryEffectReservations(operations)
+	if err != nil {
+		t.Fatal(err)
+	}
+	id := uuid.NewString()
+	op := model.Operation{ID: id, Kind: "app.canary-promote", App: "widgets", Status: model.OperationQueued, MaxAttempts: 1,
+		Payload: map[string]interface{}{"app": "widgets", "region": "us-central", "nomadRegion": "global", "deploymentId": "deployment-123"}}
+	accepted := store.OperationAcceptance{Identity: store.OperationRequestIdentity{Authority: authority, Actor: store.OperationActor{Issuer: "test", Subject: "operator"}, Kind: op.Kind, Resource: "app/widgets", Key: id},
+		Operation: op, Audit: store.AcceptanceAuditContext{Source: "test"}, Semantics: map[string]interface{}{"app": "widgets", "region": "us-central", "nomadRegion": "global", "deploymentId": "deployment-123"}}
+	accepted.Fingerprint, err = store.CanonicalOperationRequestFingerprint(accepted)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := operations.Accept(ctx, accepted); err != nil {
+		t.Fatal(err)
+	}
+	claimed, claim, err := operations.ClaimNextOperation(ctx, "worker", time.Minute, []string{"app.canary-promote"})
+	if err != nil || claimed == nil {
+		t.Fatalf("claim = %+v err=%v", claimed, err)
+	}
+	payload, err := json.Marshal(canaryEffectInput{App: "widgets", Region: "us-central", NomadRegion: "global", DeploymentID: "deployment-123"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	r := effect.Reservation{Authority: authority, Resource: "app/widgets/canary-promote/us-central", Stage: "app.canary-promote.nomad", Supervisor: "nomad-canary-promotion", SupervisorExecutionID: "nomad-test-" + id,
+		OperationClaim: effect.OperationClaim{OperationID: claim.OperationID(), OwnerID: claim.OwnerID(), Generation: claim.Generation()}, LaunchPayload: payload}
+	r.InputDigest, err = effect.ComputeInputDigest(r)
+	if err != nil {
+		t.Fatal(err)
+	}
+	reserved, err := effects.Reserve(ctx, r)
+	if err != nil || !reserved.Created {
+		t.Fatalf("reserve = %+v err=%v", reserved, err)
+	}
+	deadline := time.Now().Add(5 * time.Second)
+	for {
+		live, err := client.Get(ctx, operations.replayLiveKey(operations.acceptanceKey(accepted.Identity)))
+		if err != nil {
+			t.Fatal(err)
+		}
+		if len(live.Kvs) == 0 {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatal("etcd replay lease did not expire")
+		}
+		time.Sleep(50 * time.Millisecond)
+	}
+	if err := operations.FinishClaimedOperation(ctx, claim, model.OperationSucceeded, "terminal receipt before effect acknowledgement", map[string]interface{}{"externalEffectRecoveryPending": true}); err != nil {
+		t.Fatal(err)
+	}
+	if replay, err := operations.ResolveIdentity(ctx, accepted.Identity); err != nil || !replay.Replayed {
+		t.Fatalf("expired TTL hid unresolved effect despite terminal operation: %+v err=%v", replay, err)
+	}
+	identity := effect.ExecutionIdentity{Supervisor: r.Supervisor, SupervisorExecutionID: r.SupervisorExecutionID, RuntimeInstanceID: "nomad-deployment:deployment-123"}
+	if err := effects.MarkLaunched(ctx, reserved.Record.Token, identity); err != nil {
+		t.Fatal(err)
+	}
+	v := effect.Verification{Decision: effect.VerificationSucceeded, InputDigest: r.InputDigest, SupervisorExecutionID: r.SupervisorExecutionID, RuntimeInstanceID: identity.RuntimeInstanceID,
+		ResultDigest: effect.DigestInput([]byte(`{"canaryPromoted":true}`)), ResultReference: "deployment-123", EvidenceSource: "nomad.deployment", EvidenceReference: "deployment-123", ObservedAt: time.Now().UTC()}
+	if err := effects.Complete(ctx, reserved.Record.Token, effect.Completion{Outcome: effect.OutcomeSucceeded, Verification: v}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := operations.ResolveIdentity(ctx, accepted.Identity); !errors.Is(err, store.ErrAcceptanceExpired) {
+		t.Fatalf("terminal effect did not release replay hold: %v", err)
+	}
+}

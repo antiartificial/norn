@@ -16,6 +16,7 @@ import (
 	"github.com/google/uuid"
 	clientv3 "go.etcd.io/etcd/client/v3"
 
+	"norn/v2/api/effect"
 	"norn/v2/api/model"
 	"norn/v2/api/store"
 )
@@ -209,11 +210,11 @@ func (s *V3OperationStore) Accept(ctx context.Context, a store.OperationAcceptan
 	if a.Deployment != nil || len(a.Regions) > 0 || a.Admission.OneActiveMutablePerApp || a.FleetReconciliation != nil || a.FleetRunnerAttempt != nil {
 		return store.AcceptedOperation{}, &store.AcceptanceValidationError{Reason: "etcd operation aggregate admission is not implemented"}
 	}
-	// This adapter has no external-effect aggregate. Replay expiry is therefore
-	// limited to the read-only operation kind it executes today; a future kind
-	// must add its own authoritative hold before it can opt in.
-	if s.policy.ReplayTTL > 0 && strings.TrimSpace(a.Operation.Kind) != "app.preflight" && strings.TrimSpace(a.Operation.Kind) != "fleet.capacity-plan" {
-		return store.AcceptedOperation{}, &store.AcceptanceValidationError{Reason: "etcd replay expiry is implemented only for app.preflight and fleet.capacity-plan"}
+	// Canary promotion has an atomic effect aggregate. Its replay identity may
+	// expire only after the operation and every reserved Nomad effect are
+	// terminal; all other mutable kinds remain refused by this policy.
+	if s.policy.ReplayTTL > 0 && strings.TrimSpace(a.Operation.Kind) != "app.preflight" && strings.TrimSpace(a.Operation.Kind) != "fleet.capacity-plan" && strings.TrimSpace(a.Operation.Kind) != "app.canary-promote" {
+		return store.AcceptedOperation{}, &store.AcceptanceValidationError{Reason: "etcd replay expiry is implemented only for app.preflight, fleet.capacity-plan, and app.canary-promote"}
 	}
 	var err error
 	if a, err = s.normalize(a); err != nil {
@@ -327,7 +328,16 @@ func (s *V3OperationStore) replay(ctx context.Context, key string, loaded loaded
 		if err != nil {
 			return store.AcceptedOperation{}, err
 		}
-		if len(live.Kvs) == 0 && replayOperationEligible(persisted.Operation) {
+		if len(live.Kvs) == 0 {
+			eligible, err := s.replayOperationEligible(ctx, persisted.Operation)
+			if err != nil {
+				return store.AcceptedOperation{}, err
+			}
+			if !eligible {
+				got.Operation = persisted.Operation
+				got.Replayed = true
+				return got, nil
+			}
 			now := time.Now().UTC().Truncate(time.Microsecond)
 			record.ReplayExpiredAt = &now
 			value, err := json.Marshal(record)
@@ -388,6 +398,51 @@ func replayOperationEligible(operation model.Operation) bool {
 		return false
 	}
 	return operation.Metadata["manualRecoveryRequired"] != true && operation.Metadata["externalEffectRecoveryPending"] != true
+}
+
+func (s *V3OperationStore) replayOperationEligible(ctx context.Context, operation model.Operation) (bool, error) {
+	if operation.Kind != "app.canary-promote" {
+		return replayOperationEligible(operation), nil
+	}
+	if !operation.Status.Terminal() || operation.Metadata["manualRecoveryRequired"] == true {
+		return false, nil
+	}
+	input := canaryEffectInput{App: operation.App, Region: effectPayloadString(operation.Payload, "region"), NomadRegion: effectPayloadString(operation.Payload, "nomadRegion"), DeploymentID: effectPayloadString(operation.Payload, "deploymentId")}
+	if input.App == "" || input.Region == "" || input.NomadRegion == "" || input.DeploymentID == "" {
+		return false, fmt.Errorf("terminal canary promotion lacks accepted effect identity")
+	}
+	data, err := json.Marshal(input)
+	if err != nil {
+		return false, err
+	}
+	reservation := effect.Reservation{Resource: "app/" + input.App + "/canary-promote/" + input.Region, Stage: "app.canary-promote.nomad", Supervisor: "nomad-canary-promotion", LaunchPayload: data,
+		OperationClaim: effect.OperationClaim{OperationID: operation.ID}}
+	reservation.InputDigest, err = effect.ComputeInputDigest(reservation)
+	if err != nil {
+		return false, err
+	}
+	effects := &V3CanaryEffectReservations{operations: s}
+	response, err := s.kv.Get(ctx, effects.effectPrefix(reservation), clientv3.WithPrefix())
+	if err != nil {
+		return false, err
+	}
+	if len(response.Kvs) == 0 {
+		// Terminal state without a durable effect receipt cannot prove no
+		// external write was attempted, even if the operation row says success.
+		return false, nil
+	}
+	for _, item := range response.Kvs {
+		var record effect.Record
+		if err := json.Unmarshal(item.Value, &record); err != nil {
+			return false, fmt.Errorf("decode canary replay effect: %w", err)
+		}
+		if record.Reservation.Authority != s.authority || record.Reservation.OperationClaim.OperationID != operation.ID ||
+			record.Reservation.InputDigest != reservation.InputDigest ||
+			(record.Lifecycle != effect.LifecycleCompleted && record.Lifecycle != effect.LifecycleResolved) {
+			return false, nil
+		}
+	}
+	return true, nil
 }
 
 // normalize accepts only the narrow operation aggregate implemented by this
