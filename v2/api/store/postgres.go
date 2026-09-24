@@ -528,7 +528,7 @@ const controlSchemaBaselineSQL = `
 const (
 	EvidenceArchiveReaderVersion int64 = 2
 	ControlSchemaReaderVersion   int64 = EvidenceArchiveReaderVersion
-	ControlSchemaWriterVersion   int64 = RegionalDesiredReplicaWriterVersion
+	ControlSchemaWriterVersion   int64 = RestartEffectSourceWriterVersion
 )
 
 // ControlSchemaMigrations returns a copy of the ordered, forward-only control

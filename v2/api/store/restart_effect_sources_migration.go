@@ -1,5 +1,7 @@
 package store
 
+const RestartEffectSourceWriterVersion int64 = 10
+
 const restartEffectSourcesMigrationSQL = `
 CREATE TABLE restart_effect_sources (
  operation_id TEXT NOT NULL REFERENCES operations(id) ON DELETE CASCADE,
@@ -9,5 +11,5 @@ CREATE TABLE restart_effect_sources (
 );`
 
 func restartEffectSourcesMigration() SchemaMigration {
-	return SchemaMigration{Version: 13, Name: "durable-restart-effect-sources", SQL: restartEffectSourcesMigrationSQL, MinimumReaderVersion: EvidenceArchiveReaderVersion, MinimumWriterVersion: RegionalDesiredReplicaWriterVersion}
+	return SchemaMigration{Version: 13, Name: "durable-restart-effect-sources", SQL: restartEffectSourcesMigrationSQL, MinimumReaderVersion: EvidenceArchiveReaderVersion, MinimumWriterVersion: RestartEffectSourceWriterVersion}
 }

@@ -33,3 +33,32 @@ func TestRestartEffectSourcesFenceAttemptsAndPreserveAcknowledgement(t *testing.
 		t.Fatal("stale generation recorded an attempt")
 	}
 }
+
+func TestRestartEffectSourcesAcceptSuccessorClaimForUnattemptedSource(t *testing.T) {
+	dbs, _, _ := setupEffectStores(t, 2)
+	ctx := context.Background()
+	op := insertOperationFixture(t, dbs[0], "app.restart", 2, map[string]interface{}{"app": "demo"})
+	_, first, err := dbs[0].ClaimNextOperation(ctx, "restart-one", 100*time.Millisecond, []string{"app.restart"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	source := nomad.RestartAllocation{ID: "source-b", JobID: "demo", CreateIndex: 8}
+	if err := dbs[0].EnsureRestartEffectSources(ctx, first, []nomad.RestartAllocation{source}); err != nil {
+		t.Fatal(err)
+	}
+	time.Sleep(180 * time.Millisecond)
+	if err := dbs[1].RecoverExpiredOperations(ctx); err != nil {
+		t.Fatal(err)
+	}
+	_, successor, err := dbs[1].ClaimNextOperation(ctx, "restart-two", time.Minute, []string{"app.restart"})
+	if err != nil || successor.Generation() != first.Generation()+1 {
+		t.Fatalf("successor=%+v first=%+v err=%v", successor, first, err)
+	}
+	if err := dbs[1].MarkRestartSourceAttempted(ctx, successor, source); err != nil {
+		t.Fatalf("successor could not advance unattempted source: %v", err)
+	}
+	rows, err := dbs[1].RestartEffectSources(ctx, op.ID)
+	if err != nil || len(rows) != 1 || !rows[0].Attempted {
+		t.Fatalf("rows=%+v err=%v", rows, err)
+	}
+}

@@ -101,7 +101,7 @@ func (p *Pipeline) executeRestart(ctx context.Context, op *model.Operation, clai
 		if requestErr != nil {
 			return deferredResult(claim, &effect.PendingError{Resource: restartResource(op.App), Reason: "stored restart descriptor is invalid", Cause: requestErr})
 		}
-		if _, continueErr := (&nomadRestartSupervisor{client: p.RestartEffects.client, db: p.RestartEffects.db}).continueUnattempted(ctx, prior.Reservation, request); continueErr != nil {
+		if _, continueErr := (&nomadRestartSupervisor{client: p.RestartEffects.client, db: p.RestartEffects.db}).continueUnattempted(ctx, prior.Reservation, claim, request); continueErr != nil {
 			return deferredResult(claim, &effect.PendingError{Resource: restartResource(op.App), Reason: "restart source continuation is unresolved", Cause: continueErr})
 		}
 		result, err = p.RestartEffects.executor.Recover(ctx, prior)
@@ -184,13 +184,13 @@ func (s *nomadRestartSupervisor) Launch(ctx context.Context, r effect.Reservatio
 	if err != nil {
 		return effect.ExecutionIdentity{}, err
 	}
-	return s.continueUnattempted(ctx, r, request)
-}
-func (s *nomadRestartSupervisor) continueUnattempted(ctx context.Context, r effect.Reservation, request restartRequest) (effect.ExecutionIdentity, error) {
 	claim, err := store.NewOperationClaim(r.OperationClaim.OperationID, r.OperationClaim.OwnerID, r.OperationClaim.Generation)
 	if err != nil {
 		return effect.ExecutionIdentity{}, err
 	}
+	return s.continueUnattempted(ctx, r, claim, request)
+}
+func (s *nomadRestartSupervisor) continueUnattempted(ctx context.Context, r effect.Reservation, claim store.OperationClaim, request restartRequest) (effect.ExecutionIdentity, error) {
 	states := map[string]store.RestartEffectSource{}
 	if s.db != nil {
 		rows, loadErr := s.db.RestartEffectSources(ctx, claim.OperationID())
