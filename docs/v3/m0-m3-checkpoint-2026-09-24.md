@@ -11,4 +11,6 @@ This updates the [2026-09-23 checkpoint](m0-m3-checkpoint-2026-09-23.md) after M
 
 The M2/M3 safety and reconciliation slices are merged; **no M0–M3 milestone is signed off**. The next dependency order is: finish M1 external-effect paths and concrete-store removal; close M2 retention and Mini recovery qualification; then complete M3 PG-free wiring and three-member Fleet qualification. M4 loaded capacity proof depends on those runtime contracts.
 
+[PR #54](https://github.com/antiartificial/norn/pull/54) also merged the first M4 foundation: signed, region-scoped app scale operations and durable desired-replica intent consumed by deploy and rollback. A PostgreSQL lock-wait test rejects expired claims; the full API suite passed against disposable PostgreSQL with the known Darwin host-metrics sample skipped. This does not establish loaded 2→3→2 placement, drain, or replacement behavior.
+
 Focused package and repository CI checks passed for both PRs. The merged branch passed `go test ./... -skip '^TestSampleDarwinHostMetrics$' -count=1 -p 1` from `v2/api` on 2026-09-24. The exact Darwin host-metrics sampler exclusion is a known local test-environment issue. Local etcd test members were stopped after verification. No live Norn deployment or provider mutation was performed.
