@@ -169,7 +169,15 @@ func TestRequireInitialEtcdBootstrapAcceptsOnlyConsistentRecord(t *testing.T) {
 		t.Fatal("normal etcd runtime bootstrap check accepted an empty prefix")
 	}
 	req := etcdBootstrapRequest{Output: filepath.Join(t.TempDir(), "initial-token"), Subject: "fleet-bootstrap", Scopes: []string{handler.ScopeAPIRead}, TTL: time.Hour}
-	if _, err := acceptInitialEtcdManagedCredential(context.Background(), client, prefix, secret, req); err != nil {
+	record, err := acceptInitialEtcdManagedCredential(context.Background(), client, prefix, secret, req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := requireInitialEtcdBootstrap(context.Background(), client, prefix, secret); err == nil {
+		t.Fatal("normal etcd runtime accepted an undistributed initial credential")
+	}
+	record, err = markEtcdBootstrapCredentialPublished(context.Background(), client, prefix, record, time.Now())
+	if err != nil {
 		t.Fatal(err)
 	}
 	if err := requireInitialEtcdBootstrap(context.Background(), client, prefix, secret); err != nil {
@@ -193,18 +201,25 @@ func TestEtcdManagedCredentialBootstrapBindsSigningKey(t *testing.T) {
 	if err := requireInitialEtcdBootstrap(context.Background(), client, prefix, secretB); err == nil {
 		t.Fatal("Fleet runtime accepted bootstrap signed by a different key")
 	}
+	if err := bootstrapEtcdManagedCredential(context.Background(), client, prefix, secretA, req, func(string, string) error { return nil }); err != nil {
+		t.Fatalf("same-key publication recovery: %v", err)
+	}
 	if err := requireInitialEtcdBootstrap(context.Background(), client, prefix, secretA); err != nil {
 		t.Fatalf("Fleet runtime rejected bootstrap signed by its bound key: %v", err)
 	}
 }
 
-func TestRequireInitialEtcdBootstrapRejectsExpiredOrRevokedInitialCredential(t *testing.T) {
+func TestRequireInitialEtcdBootstrapRestartsAfterInitialCredentialExpiresOrIsRevoked(t *testing.T) {
 	client := newEtcdBootstrapTestClient(t)
 	prefix := "/norn-test/bootstrap-expired/" + uuid.NewString()
 	t.Cleanup(func() { _, _ = client.Delete(context.Background(), prefix, clientv3.WithPrefix()) })
 	secret := "etcd-bootstrap-expired-secret-000"
 	req := etcdBootstrapRequest{Output: filepath.Join(t.TempDir(), "initial-token"), Subject: "fleet-bootstrap", Scopes: []string{handler.ScopeAPIRead}, TTL: time.Hour}
 	record, err := acceptInitialEtcdManagedCredential(context.Background(), client, prefix, secret, req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	record, err = markEtcdBootstrapCredentialPublished(context.Background(), client, prefix, record, time.Now())
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -222,8 +237,8 @@ func TestRequireInitialEtcdBootstrapRejectsExpiredOrRevokedInitialCredential(t *
 	if _, err := client.Txn(context.Background()).Then(clientv3.OpPut(etcdBootstrapMarkerKey(prefix), string(marker)), clientv3.OpPut(etcdBootstrapTokenKey(prefix, record.Token.JTI), string(token))).Commit(); err != nil {
 		t.Fatal(err)
 	}
-	if err := requireInitialEtcdBootstrap(context.Background(), client, prefix, secret); err == nil {
-		t.Fatal("Fleet runtime accepted an expired and revoked initial credential")
+	if err := requireInitialEtcdBootstrap(context.Background(), client, prefix, secret); err != nil {
+		t.Fatalf("Fleet restart rejected a published expired/revoked initial credential: %v", err)
 	}
 }
 

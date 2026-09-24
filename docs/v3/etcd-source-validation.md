@@ -63,7 +63,8 @@ non-secret marker and its managed-token registry entry in one etcd transaction.
 That transaction compares `Version(prefix)=0` across the full etcd key range,
 so a writer inserted after planning but before commit makes acceptance fail. It
 then writes the opaque token only to the exclusive owner-only file. File data
-and the directory are fsynced. It neither prints the token nor runs a server.
+and the directory are fsynced, then Norn records a compare-and-swap publication
+receipt in the marker. It neither prints the token nor runs a server.
 
 If the process fails after the etcd transaction and before publication, rerun
 with the same subject, scopes, TTL, and output path: Norn verifies the durable
@@ -77,10 +78,12 @@ credential-rotation procedure rather than silently producing another bearer.
 
 The normal Fleet router verifies this marker and the matching token-registry
 entry before it constructs its control stores, so it cannot become the first
-Norn writer in a fresh prefix. It also requires the initial bearer to be
-unrevoked and to have at least 30 minutes remaining. A historical marker alone
-does not qualify a fresh Fleet. Rotate the initial credential before that
-window; automated credential rotation remains a separate release requirement.
+Norn writer in a fresh prefix. It requires the publication receipt; an accepted
+but undistributed token is not fresh-Fleet readiness. Initial publication also
+requires an unrevoked bearer with at least 30 minutes remaining. Later normal
+restarts validate the durable receipt and marker/token consistency even after
+the initial bearer expires or is revoked; replacement credential rotation is a
+separate release requirement.
 
 `NORN_STARTUP_MODE=passive` with `NORN_SCHEMA_MODE=check` serves only the
 loopback `/api/health`, `/api/version`, and `/api/schema` status routes.

@@ -35,6 +35,7 @@ type etcdBootstrapRecord struct {
 	TTLNanoseconds int64             `json:"ttlNanoseconds"`
 	OutputPathHash string            `json:"outputPathSHA256"`
 	SigningKeyHash string            `json:"signingKeySHA256"`
+	PublishedAt    *time.Time        `json:"publishedAt,omitempty"`
 }
 
 const etcdBootstrapAccepted = "accepted"
@@ -103,6 +104,9 @@ func bootstrapEtcdManagedCredential(ctx context.Context, kv clientv3.KV, prefix,
 	}
 	if err := publish(req.Output, token); err != nil {
 		return fmt.Errorf("publish bootstrap token: %w", err)
+	}
+	if _, err := markEtcdBootstrapCredentialPublished(ctx, kv, prefix, record, time.Now()); err != nil {
+		return err
 	}
 	return nil
 }
@@ -228,6 +232,51 @@ func verifyEtcdBootstrapToken(ctx context.Context, kv clientv3.KV, prefix string
 	return nil
 }
 
+// markEtcdBootstrapCredentialPublished adds the durable publication receipt
+// only after the owner-only file has been fsynced. A crash between file
+// publication and this CAS is recoverable: the exact-file resume path repeats
+// the fsync and commits the same receipt. Normal Fleet startup requires this
+// proof, rather than treating an accepted but undistributed token as ready.
+func markEtcdBootstrapCredentialPublished(ctx context.Context, kv clientv3.KV, prefix string, expected *etcdBootstrapRecord, now time.Time) (*etcdBootstrapRecord, error) {
+	if expected == nil {
+		return nil, errors.New("bootstrap publication record is required")
+	}
+	key := etcdBootstrapMarkerKey(prefix)
+	for attempt := 0; attempt < 3; attempt++ {
+		response, err := kv.Get(ctx, key)
+		if err != nil {
+			return nil, fmt.Errorf("load bootstrap publication record: %w", err)
+		}
+		if len(response.Kvs) != 1 {
+			return nil, errors.New("bootstrap publication marker is missing")
+		}
+		var current etcdBootstrapRecord
+		if err := json.Unmarshal(response.Kvs[0].Value, &current); err != nil {
+			return nil, fmt.Errorf("decode bootstrap publication record: %w", err)
+		}
+		if current.Version != expected.Version || current.State != etcdBootstrapAccepted || current.SigningKeyHash != expected.SigningKeyHash || !sameBootstrapToken(&current.Token, &expected.Token) {
+			return nil, errors.New("bootstrap publication marker changed")
+		}
+		if current.PublishedAt != nil {
+			return &current, nil
+		}
+		publishedAt := now.UTC()
+		current.PublishedAt = &publishedAt
+		encoded, err := json.Marshal(&current)
+		if err != nil {
+			return nil, fmt.Errorf("encode bootstrap publication receipt: %w", err)
+		}
+		result, err := kv.Txn(ctx).If(clientv3.Compare(clientv3.ModRevision(key), "=", response.Kvs[0].ModRevision)).Then(clientv3.OpPut(key, string(encoded))).Commit()
+		if err != nil {
+			return nil, fmt.Errorf("record bootstrap publication receipt: %w", err)
+		}
+		if result.Succeeded {
+			return &current, nil
+		}
+	}
+	return nil, errors.New("bootstrap publication receipt changed under contention")
+}
+
 // requireInitialEtcdBootstrap prevents the normal Fleet router from becoming
 // the first Norn writer in a fresh prefix. The bootstrap command is the only
 // supported first-write path because it prepares and verifies the initial
@@ -241,13 +290,10 @@ func requireInitialEtcdBootstrap(ctx context.Context, kv clientv3.KV, prefix, si
 	if record == nil {
 		return errors.New("initial managed credential bootstrap is required before normal etcd Fleet runtime")
 	}
-	if record.Version != etcdBootstrapRecordVersion || record.State != etcdBootstrapAccepted || record.Token.JTI == "" || record.TTLNanoseconds <= 0 || record.OutputPathHash == "" || record.SigningKeyHash != hashBootstrapSigningKey(signingKey) {
+	if record.Version != etcdBootstrapRecordVersion || record.State != etcdBootstrapAccepted || record.Token.JTI == "" || record.TTLNanoseconds <= 0 || record.OutputPathHash == "" || record.SigningKeyHash != hashBootstrapSigningKey(signingKey) || record.PublishedAt == nil {
 		return errors.New("initial managed credential bootstrap record is invalid")
 	}
-	if err := verifyEtcdBootstrapToken(ctx, kv, prefix, record); err != nil {
-		return err
-	}
-	return requireUsableInitialEtcdCredential(record, time.Now())
+	return verifyEtcdBootstrapToken(ctx, kv, prefix, record)
 }
 
 func requireUsableInitialEtcdCredential(record *etcdBootstrapRecord, now time.Time) error {
