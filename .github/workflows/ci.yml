@@ -40,7 +40,7 @@ jobs:
           cache-dependency-path: ${{ matrix.directory }}/go.sum
       - name: Wait for etcd
         run: |
-          for attempt in {1..30}; do
+          for ((attempt=0; attempt<30; attempt++)); do
             if curl --fail --silent http://127.0.0.1:2379/health | grep -q '"health":"true"'; then
               exit 0
             fi
