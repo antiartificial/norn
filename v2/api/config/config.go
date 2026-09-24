@@ -152,14 +152,18 @@ type Config struct {
 	// (default, v2 behaviour: direct exec, no effect fencing) or "supervised"
 	// (fenced effect executor with a cgroup-v2 runner). Supervised mode has no
 	// fallback; incomplete configuration fails startup.
-	BuildTestExecution  string        // NORN_BUILD_TEST_EXECUTION
-	BuildTestTimeout    time.Duration // NORN_BUILD_TEST_TIMEOUT
-	BuildTestPath       string        // NORN_BUILD_TEST_PATH (command PATH; nothing else is inherited)
-	EffectSupervisorDir string        // NORN_EFFECT_SUPERVISOR_ROOT
-	EffectSigningKey    string        // NORN_EFFECT_SIGNING_KEY
-	EffectRunnerBinary  string        // NORN_EFFECT_RUNNER_BINARY (default: norn-effect-runner beside the API binary)
-	EffectRunnerSHA256  string        // NORN_EFFECT_RUNNER_SHA256 (optional pin)
-	EffectCgroupRoot    string        // NORN_EFFECT_CGROUP_ROOT (delegated cgroup-v2 directory)
+	BuildTestExecution   string        // NORN_BUILD_TEST_EXECUTION
+	BuildTestTimeout     time.Duration // NORN_BUILD_TEST_TIMEOUT
+	BuildTestPath        string        // NORN_BUILD_TEST_PATH (command PATH; nothing else is inherited)
+	EffectSupervisorDir  string        // NORN_EFFECT_SUPERVISOR_ROOT
+	EffectSigningKey     string        // NORN_EFFECT_SIGNING_KEY
+	EffectRunnerBinary   string        // NORN_EFFECT_RUNNER_BINARY (default: norn-effect-runner beside the API binary)
+	EffectRunnerSHA256   string        // NORN_EFFECT_RUNNER_SHA256 (optional pin)
+	EffectCgroupRoot     string        // NORN_EFFECT_CGROUP_ROOT (delegated cgroup-v2 directory)
+	SnapshotExecution    string        // NORN_SNAPSHOT_EXECUTION: supervised
+	SnapshotPGDumpPath   string        // NORN_SNAPSHOT_PGDUMP_PATH
+	SnapshotPGDumpSHA256 string        // NORN_SNAPSHOT_PGDUMP_SHA256
+	SnapshotTimeout      time.Duration // NORN_SNAPSHOT_TIMEOUT
 
 	// DatabaseProfile selects a deployment profile in the durable database
 	// catalog. It is independent of Profile (security hardening). Unset keeps
@@ -312,6 +316,10 @@ func Load() *Config {
 		EffectRunnerBinary:           strings.TrimSpace(os.Getenv("NORN_EFFECT_RUNNER_BINARY")),
 		EffectRunnerSHA256:           strings.ToLower(strings.TrimSpace(os.Getenv("NORN_EFFECT_RUNNER_SHA256"))),
 		EffectCgroupRoot:             strings.TrimSpace(os.Getenv("NORN_EFFECT_CGROUP_ROOT")),
+		SnapshotExecution:            strings.ToLower(strings.TrimSpace(os.Getenv("NORN_SNAPSHOT_EXECUTION"))),
+		SnapshotPGDumpPath:           strings.TrimSpace(os.Getenv("NORN_SNAPSHOT_PGDUMP_PATH")),
+		SnapshotPGDumpSHA256:         strings.ToLower(strings.TrimSpace(os.Getenv("NORN_SNAPSHOT_PGDUMP_SHA256"))),
+		SnapshotTimeout:              envDurationOr("NORN_SNAPSHOT_TIMEOUT", time.Hour),
 		DatabaseProfile:              strings.TrimSpace(os.Getenv("NORN_DATABASE_PROFILE")),
 		DatabaseSecretDir:            strings.TrimSpace(os.Getenv("NORN_DATABASE_SECRET_DIR")),
 		EvidenceArchiveDir:           strings.TrimSpace(os.Getenv("NORN_EVIDENCE_ARCHIVE_DIR")),

@@ -269,6 +269,10 @@ func main() {
 	if err != nil {
 		log.Fatalf("build.test execution: %v", err)
 	}
+	snapshotEffects, err := configureSnapshotEffects(cfg, db, supervisor.NewCgroupBackend)
+	if err != nil {
+		log.Fatalf("snapshot execution: %v", err)
+	}
 	if buildTestEffects == nil {
 		log.Println("build.test runs in legacy unfenced mode (NORN_BUILD_TEST_EXECUTION=legacy-unfenced)")
 	} else {
@@ -305,6 +309,7 @@ func main() {
 		Storage:                        s3Client,
 		Redpanda:                       redpandaClient,
 		BuildTestEffects:               buildTestEffects,
+		SnapshotEffects:                snapshotEffects,
 		DatabaseTargets:                databaseTargets,
 	}
 	scaleEffects, err := pipeline.NewNomadScaleEffects(db, nomadClient)
