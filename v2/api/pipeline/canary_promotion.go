@@ -23,8 +23,20 @@ const nomadCanaryPromotionStage = "app.canary-promote.nomad"
 // for Nomad's non-idempotent deployment-promotion endpoint.
 type NomadCanaryPromotionEffects struct {
 	executor *effect.Executor
-	store    *store.PGEffectStore
+	store    CanaryPromotionEffectStore
 }
+
+// CanaryPromotionEffectStore is the single-authority boundary for a promotion.
+// Reserve must validate the operation claim and acquire the app gate in the
+// same durable transaction. An etcd implementation must satisfy this contract
+// before the etcd runtime can admit canary promotions.
+type CanaryPromotionEffectStore interface {
+	effect.Store
+	effect.RecoveryStore
+	Authority(context.Context) (string, error)
+}
+
+var _ CanaryPromotionEffectStore = (*store.PGEffectStore)(nil)
 
 func NewNomadCanaryPromotionEffects(db *store.DB, client *nomad.Client) (*NomadCanaryPromotionEffects, error) {
 	if client == nil {
@@ -33,6 +45,16 @@ func NewNomadCanaryPromotionEffects(db *store.DB, client *nomad.Client) (*NomadC
 	effectStore, err := store.NewPGEffectStore(db)
 	if err != nil {
 		return nil, err
+	}
+	return NewNomadCanaryPromotionEffectsWithStore(effectStore, client)
+}
+
+// NewNomadCanaryPromotionEffectsWithStore permits a control backend to supply
+// its own atomic claim/effect store. A missing store is rejected rather than
+// allowing an unfenced Nomad write.
+func NewNomadCanaryPromotionEffectsWithStore(effectStore CanaryPromotionEffectStore, client *nomad.Client) (*NomadCanaryPromotionEffects, error) {
+	if effectStore == nil || client == nil {
+		return nil, fmt.Errorf("durable canary promotion requires an effect store and Nomad client")
 	}
 	return &NomadCanaryPromotionEffects{store: effectStore, executor: &effect.Executor{
 		Store: effectStore, Supervisor: &nomadCanaryPromotionSupervisor{client: client}, Verifier: nomadCanaryPromotionVerifier{},

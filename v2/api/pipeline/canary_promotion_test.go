@@ -7,7 +7,17 @@ import (
 
 	"norn/v2/api/effect"
 	"norn/v2/api/model"
+	"norn/v2/api/nomad"
 )
+
+func TestCanaryPromotionRejectsMissingDurableEffectBoundary(t *testing.T) {
+	if _, err := NewNomadCanaryPromotionEffectsWithStore(nil, &nomad.Client{}); err == nil {
+		t.Fatal("accepted a Nomad canary writer without an atomic effect store")
+	}
+	if (&Pipeline{}).CanaryPromotionAvailable() {
+		t.Fatal("admitted canary promotion without a durable effect boundary")
+	}
+}
 
 func TestCanaryPromotionRequestBindsLogicalAndNomadRegionsAndDeployment(t *testing.T) {
 	op := &model.Operation{App: "widgets", Payload: map[string]interface{}{"region": "us-central", "nomadRegion": "global", "deploymentId": "deployment-123"}}
