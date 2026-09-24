@@ -69,8 +69,14 @@ func main() {
 		log.Fatalf("control backend: %v", err)
 	}
 	cfg := config.Load()
-	if err := validateControlSecurity(cfg); err != nil {
+	if err := validateControlSecurityForBackend(cfg, backendCfg); err != nil {
 		log.Fatalf("security configuration: %v", err)
+	}
+	if handled, err := runEtcdManagedCredentialBootstrap(os.Args[1:], cfg, backendCfg); handled {
+		if err != nil {
+			log.Fatalf("etcd managed credential bootstrap: %v", err)
+		}
+		return
 	}
 	if backendCfg.Backend == startup.BackendEtcd && backendCfg.SourceValidation {
 		if err := startup.RequireEtcdSourceValidationStartup(startupCfg); err != nil {
@@ -78,6 +84,27 @@ func main() {
 		}
 		if err := runEtcdSourceValidation(cfg, backendCfg); err != nil {
 			log.Fatalf("etcd source validation: %v", err)
+		}
+		return
+	}
+	if backendCfg.Backend == startup.BackendEtcd {
+		if startupCfg.SchemaMode == startup.SchemaModeMigrateOnly {
+			if err := runEtcdMigrateOnly(backendCfg); err != nil {
+				log.Fatalf("etcd migrate-only: %v", err)
+			}
+			return
+		}
+		if startupCfg.StartupMode == startup.ModePassive {
+			if err := validatePassiveBind(cfg.BindAddr); err != nil {
+				log.Fatalf("startup configuration: %v", err)
+			}
+			if err := runEtcdPassiveRuntime(cfg, backendCfg); err != nil {
+				log.Fatalf("etcd passive runtime: %v", err)
+			}
+			return
+		}
+		if err := runEtcdFleetRuntime(cfg, backendCfg); err != nil {
+			log.Fatalf("etcd fleet runtime: %v", err)
 		}
 		return
 	}
@@ -640,6 +667,10 @@ func main() {
 }
 
 func validateControlSecurity(cfg *config.Config) error {
+	return validateControlSecurityForBackend(cfg, startup.ControlBackendConfig{Backend: startup.BackendPostgres})
+}
+
+func validateControlSecurityForBackend(cfg *config.Config, backend startup.ControlBackendConfig) error {
 	if cfg == nil {
 		return fmt.Errorf("configuration is required")
 	}
@@ -712,6 +743,11 @@ func validateControlSecurity(cfg *config.Config) error {
 		}
 	}
 	if profile == "production" {
+		if backend.Backend == startup.BackendEtcd {
+			if err := backend.ValidateEtcdProductionTransport(); err != nil {
+				return err
+			}
+		}
 		if cfg.ReleaseAdmissionMode != "keyless" {
 			return fmt.Errorf("NORN_PROFILE=production requires NORN_RELEASE_ADMISSION_MODE=keyless")
 		}
@@ -736,7 +772,7 @@ func validateControlSecurity(cfg *config.Config) error {
 		if cfg.ConsulTLSSkipVerify {
 			return fmt.Errorf("NORN_PROFILE=production requires CONSUL_HTTP_SSL_VERIFY=true")
 		}
-		if !secureDatabaseDSN(cfg.DatabaseURL) {
+		if backend.Backend != startup.BackendEtcd && !secureDatabaseDSN(cfg.DatabaseURL) {
 			return fmt.Errorf("NORN_PROFILE=production requires PostgreSQL sslmode=verify-full")
 		}
 		if strings.TrimSpace(cfg.RegistryURL) == "" {

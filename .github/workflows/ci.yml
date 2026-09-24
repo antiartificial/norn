@@ -16,6 +16,14 @@ jobs:
   api-and-cli:
     name: ${{ matrix.component }}
     runs-on: ubuntu-24.04
+    services:
+      etcd:
+        image: quay.io/coreos/etcd:v3.5.15
+        env:
+          ETCD_LISTEN_CLIENT_URLS: http://0.0.0.0:2379
+          ETCD_ADVERTISE_CLIENT_URLS: http://127.0.0.1:2379
+        ports:
+          - 2379:2379
     strategy:
       fail-fast: false
       matrix:
@@ -30,9 +38,35 @@ jobs:
         with:
           go-version-file: ${{ matrix.directory }}/go.mod
           cache-dependency-path: ${{ matrix.directory }}/go.sum
+      - name: Wait for etcd
+        run: |
+          for ((attempt=0; attempt<30; attempt++)); do
+            if curl --fail --silent http://127.0.0.1:2379/health | grep -q '"health":"true"'; then
+              exit 0
+            fi
+            sleep 1
+          done
+          exit 1
       - name: Test ${{ matrix.component }}
         working-directory: ${{ matrix.directory }}
+        env:
+          NORN_TEST_ETCD_ENDPOINTS: ${{ matrix.component == 'api' && 'http://127.0.0.1:2379' || '' }}
         run: go test ./...
+
+  api-production-etcd:
+    name: api production etcd TLS RBAC
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.0.2
+      - uses: actions/setup-go@924ae3a1cded613372ab5595356fb5720e22ba16 # v6.0.0
+        with:
+          go-version-file: v2/api/go.mod
+          cache-dependency-path: v2/api/go.sum
+      - name: Start disposable TLS etcd with scoped RBAC
+        run: v2/api/scripts/etcd-tls-rbac-fixture.sh
+      - name: Prove PG-free production Fleet plan and replay
+        working-directory: v2/api
+        run: go test ./... -run '^TestEtcdFleetRuntimeProductionTLSRBACProcess$' -count=1
 
   web:
     name: web

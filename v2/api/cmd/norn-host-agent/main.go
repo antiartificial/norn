@@ -41,6 +41,9 @@ func main() {
 	if err := startup.RequireRuntimeCapabilities(backendCfg); err != nil {
 		log.Fatalf("control backend: %v", err)
 	}
+	if backendCfg.Backend == startup.BackendEtcd {
+		log.Fatalf("control backend: norn-host-agent has no etcd execution lane")
+	}
 	if startupCfg.StartupMode == startup.ModePassive {
 		log.Fatalf("startup configuration: %s=passive is supported only by norn-api", startup.StartupModeEnv)
 	}
