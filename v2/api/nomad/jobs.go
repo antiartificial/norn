@@ -879,11 +879,12 @@ func (c *Client) JobResourceUsage(jobID string) ([]ResourceUsage, error) {
 
 // DeploymentInfo describes a Nomad deployment's state.
 type DeploymentInfo struct {
-	ID         string `json:"id"`
-	JobID      string `json:"jobId"`
-	Status     string `json:"status"`
-	StatusDesc string `json:"statusDescription"`
-	IsCanary   bool   `json:"isCanary"`
+	ID             string `json:"id"`
+	JobID          string `json:"jobId"`
+	Status         string `json:"status"`
+	StatusDesc     string `json:"statusDescription"`
+	IsCanary       bool   `json:"isCanary"`
+	CanaryPromoted bool   `json:"canaryPromoted"`
 }
 
 // LatestDeployment returns the most recent deployment for a job.
@@ -909,19 +910,10 @@ func (c *Client) LatestDeploymentRegion(jobID, region string) (*DeploymentInfo, 
 			latest = d
 		}
 	}
-	hasCanary := false
-	for _, tg := range latest.TaskGroups {
-		if len(tg.PlacedCanaries) > 0 {
-			hasCanary = true
-			break
-		}
-	}
+	hasCanary, canaryPromoted := deploymentCanaryState(latest.TaskGroups)
 	return &DeploymentInfo{
-		ID:         latest.ID,
-		JobID:      latest.JobID,
-		Status:     latest.Status,
-		StatusDesc: latest.StatusDescription,
-		IsCanary:   hasCanary,
+		ID: latest.ID, JobID: latest.JobID, Status: latest.Status, StatusDesc: latest.StatusDescription,
+		IsCanary: hasCanary && !canaryPromoted, CanaryPromoted: canaryPromoted,
 	}, nil
 }
 
@@ -938,15 +930,64 @@ func (c *Client) PromoteDeploymentRegion(jobID, region string) error {
 	if info == nil {
 		return fmt.Errorf("no deployment found for %s", jobID)
 	}
+	return c.PromoteDeploymentIDRegion(info.ID, region)
+}
+
+// PromoteDeploymentIDRegion promotes the exact Nomad deployment selected by a
+// durable control operation. Callers that cross a recovery boundary must not
+// re-resolve "latest": a newer deployment must never be promoted by mistake.
+func (c *Client) PromoteDeploymentIDRegion(deploymentID, region string) error {
+	if deploymentID == "" {
+		return fmt.Errorf("deployment id is required")
+	}
 	var opts *nomadapi.WriteOptions
 	if region != "" {
 		opts = &nomadapi.WriteOptions{Region: region}
 	}
-	_, _, err = c.api.Deployments().PromoteAll(info.ID, opts)
+	_, _, err := c.api.Deployments().PromoteAll(deploymentID, opts)
 	if err != nil {
 		return fmt.Errorf("promote deployment: %w", err)
 	}
 	return nil
+}
+
+// DeploymentByIDRegion returns the current state of one exact deployment.
+// It is used to reconcile an ambiguous promotion submission after recovery.
+func (c *Client) DeploymentByIDRegion(deploymentID, region string) (*DeploymentInfo, error) {
+	if deploymentID == "" {
+		return nil, fmt.Errorf("deployment id is required")
+	}
+	var opts *nomadapi.QueryOptions
+	if region != "" {
+		opts = &nomadapi.QueryOptions{Region: region}
+	}
+	deployment, _, err := c.api.Deployments().Info(deploymentID, opts)
+	if err != nil {
+		return nil, fmt.Errorf("get deployment %s: %w", deploymentID, err)
+	}
+	if deployment == nil {
+		return nil, nil
+	}
+	hasCanary, canaryPromoted := deploymentCanaryState(deployment.TaskGroups)
+	return &DeploymentInfo{ID: deployment.ID, JobID: deployment.JobID, Status: deployment.Status, StatusDesc: deployment.StatusDescription, IsCanary: hasCanary && !canaryPromoted, CanaryPromoted: canaryPromoted}, nil
+}
+
+// deploymentCanaryState distinguishes canaries waiting for promotion from
+// historical PlacedCanaries retained by Nomad after the task group is
+// promoted. A successful deployment is promotion evidence only when every
+// group that placed a canary reports Promoted.
+func deploymentCanaryState(groups map[string]*nomadapi.DeploymentState) (hasCanary, promoted bool) {
+	promoted = true
+	for _, group := range groups {
+		if len(group.PlacedCanaries) == 0 {
+			continue
+		}
+		hasCanary = true
+		if !group.Promoted {
+			promoted = false
+		}
+	}
+	return hasCanary, hasCanary && promoted
 }
 
 // FailDeployment marks the latest deployment as failed, triggering auto-revert if configured.

@@ -39,6 +39,7 @@ func NewOperationWorker(db store.ExecutionStore, p *pipeline.Pipeline) *Operatio
 			"app.preflight", "app.deploy", "app.rollback", "app.restart", "app.snapshot",
 			"app.snapshot-prune", "app.snapshot-restore", "app.migrate",
 			"app.scale",
+			"app.canary-promote",
 			pipeline.CatalogActivationKind, pipeline.DatabaseBaselineKind,
 		},
 		lease: 90 * time.Second,
