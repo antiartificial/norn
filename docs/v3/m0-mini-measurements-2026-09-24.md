@@ -6,6 +6,8 @@ Read-only snapshot at 2026-09-24 15:59 UTC. This extends the [API inventory](m0-
 
 The running `norn-api` process (PID 93746 at measurement time) resolved to `/Users/0xadb/go/bin/norn-api`. Its SHA-256 was `2fdc974ec8b7234c9f73ec9f2156abf1eee06bd63e3d2853572c6f93f79e6e31`. The 2026-09-23 API inventory reported release SHA `a5da8ef15d12e9eca7561e90b90d96f6dc652a21`; the hash and release record are separate observations and have not been proven to describe the same build.
 
+`go version -m` identifies the binary as `norn/v2/api`, built with Go 1.26.6 for Darwin/arm64 with `-trimpath=true`; it does not embed a VCS revision. That leaves the binary-to-source mapping unproven.
+
 Postgres.app 17.7 served local database `norn_v2` as user `0xadb`. This database had 28 public base tables and 483 `operations` rows. It contained operation `8744a975-9c35-48fd-ac4b-4145ee3350fa`, which the 2026-09-23 Norn API inventory also reported. The current v2 database has no `schema_migrations` or `control_schema_migrations` table. A schema-only `pg_dump --no-owner --no-privileges` had SHA-256 `6895808a4e773d85f724f58c5db4b8a77ffbec5418c77af0cec49549428c10c5`; this hash fingerprints the dump output, not a migration ledger.
 
 ## Size and connections
