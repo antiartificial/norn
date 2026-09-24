@@ -2,6 +2,7 @@ package store
 
 import (
 	"context"
+	"errors"
 	"strings"
 	"testing"
 	"time"
@@ -72,6 +73,14 @@ func TestSnapshotPublicationIntentSurvivesTerminatedBackendAndClaimTurnover(t *t
 	if _, err := db.PrepareSnapshotPublicationIntent(ctx, second, want); err != nil {
 		t.Fatalf("successor did not adopt exact intent: %v", err)
 	}
+	// A successor cannot terminal-fail the operation while the original worker
+	// may still finish the immutable pair. The failure CAS must leave its claim
+	// alive so the eventual receipt can terminalize success.
+	if err := db.FinishClaimedOperation(ctx, second, model.OperationFailed, "publication unavailable", nil); !errors.Is(err, ErrOperationOwnershipLost) {
+		t.Fatalf("failure with prepared intent = %v, want terminalization refused", err)
+	}
+	// This represents the old worker completing Link and read-back after its
+	// claim/session disappeared. Receipt recording is deliberately claim-free.
 	if err := db.RecordSnapshotPublicationReceipt(ctx, want); err != nil {
 		t.Fatal(err)
 	}

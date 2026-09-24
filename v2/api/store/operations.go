@@ -526,10 +526,16 @@ func (db *DB) FinishClaimedOperation(ctx context.Context, claim OperationClaim, 
 			    locked_by = '', locked_until = NULL, updated_at = now(), finished_at = now()
 			WHERE id = $4 AND status = 'running' AND locked_by = $5
 			  AND lock_generation = $6 AND locked_until > now()
-			  AND (kind <> 'app.snapshot' OR $1 <> 'succeeded' OR EXISTS (
-				SELECT 1 FROM snapshot_publication_intents spi
-				WHERE spi.operation_id = operations.id AND spi.state = 'published'
-			  ))
+			  AND (kind <> 'app.snapshot' OR
+				($1 = 'succeeded' AND EXISTS (
+					SELECT 1 FROM snapshot_publication_intents spi
+					WHERE spi.operation_id = operations.id AND spi.state = 'published'
+				)) OR
+				($1 <> 'succeeded' AND NOT EXISTS (
+					SELECT 1 FROM snapshot_publication_intents spi
+					WHERE spi.operation_id = operations.id AND spi.state IN ('prepared', 'published')
+				))
+			  )
 			RETURNING id, saga_id, app
 		), outbox AS (
 			INSERT INTO evidence_archive_intents (id, subject_kind, subject_id, app, operation_id, sequence, state)
@@ -864,9 +870,17 @@ func (db *DB) RecoverExpiredOperations(ctx context.Context) error {
 		WHERE status = 'running'
 		  AND kind LIKE 'app.%'
 		  AND (locked_until IS NULL OR locked_until < now())
-		  AND (attempts < max_attempts OR kind IN ('app.restart', 'app.canary-promote'))
+		  AND (attempts < max_attempts OR kind IN ('app.restart', 'app.canary-promote') OR
+			(kind = 'app.snapshot' AND EXISTS (
+				SELECT 1 FROM snapshot_publication_intents spi
+				WHERE spi.operation_id = operations.id AND spi.state IN ('prepared', 'published')
+			)))
 		  AND (
 		    kind IN ('app.preflight', 'app.restart', 'app.canary-promote')
+		    OR (kind = 'app.snapshot' AND EXISTS (
+		      SELECT 1 FROM snapshot_publication_intents spi
+		      WHERE spi.operation_id = operations.id AND spi.state IN ('prepared', 'published')
+		    ))
 		    OR (kind = 'app.deploy' AND NOT EXISTS (
 		      SELECT 1
 		      FROM deployment_steps ds
