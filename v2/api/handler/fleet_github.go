@@ -156,12 +156,13 @@ func (h *Handler) ReconcileFleetGitHubReservation(w http.ResponseWriter, r *http
 	if request.Kind == "apply-dispatch" {
 		lockName = "fleet-github-dispatch:" + plan.ID
 	}
-	release, locked, lockErr := h.db.AcquireAppOperationLock(r.Context(), lockName)
+	appLock, locked, lockErr := h.db.AcquireAppOperationLock(r.Context(), lockName)
 	if lockErr != nil || !locked {
 		WriteControlProblem(w, r, http.StatusConflict, "fleet_github_reconcile_in_progress", "another request is resolving this Fleet GitHub reservation")
 		return
 	}
-	defer release()
+	defer appLock.Release()
+	r = r.WithContext(appLock.Context())
 	op, found, err := h.resolveFleetGitHubOperation(r, plan.ID, kind)
 	if err != nil {
 		writeOperationAcceptanceError(w, r, err)
