@@ -66,6 +66,7 @@ var PayloadInventory = []PayloadRetention{
 	{"norn_schema_compatibility", ClassCurrentState, nil, "compatibility floor"},
 	{"database_catalog_revisions", ClassCurrentState, []string{"catalog"}, "catalog lineage; references credentials, never archived"},
 	{"database_catalog_retirements", ClassCurrentState, nil, "retired identities"},
+	{"app_desired_replicas", ClassCurrentState, nil, "authoritative regional operator replica intent consumed by deployment and rollback translation"},
 	{"evidence_archive_intents", ClassCurrentState, []string{"event_ids"}, "archive index; rebuildable from the archive (archive-reindex)"},
 	{"evidence_reserve", ClassCurrentState, nil, "admission policy and capacity observation"},
 	{"control_event_retention", ClassCurrentState, nil, "singleton replay-compaction watermark; retained so expired cursors can require resynchronization"},
