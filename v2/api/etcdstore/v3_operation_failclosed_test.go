@@ -5,8 +5,10 @@ import (
 	"errors"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/google/uuid"
+	clientv3 "go.etcd.io/etcd/client/v3"
 	"norn/v2/api/model"
 	"norn/v2/api/store"
 )
@@ -16,12 +18,44 @@ func TestIncompleteV3RecoveryAndAppLockFailClosed(t *testing.T) {
 	if err := s.RecoverExpiredOperations(context.Background()); err == nil {
 		t.Fatal("incomplete operation recovery must block worker startup")
 	}
-	release, acquired, err := s.AcquireAppOperationLock(context.Background(), "example")
-	if release != nil {
-		release()
+	lock, acquired, err := s.AcquireAppOperationLock(context.Background(), "example")
+	if lock != nil {
+		lock.Release()
 	}
 	if err == nil || acquired {
 		t.Fatalf("incomplete app lock acquired=%v err=%v", acquired, err)
+	}
+}
+
+func TestLegacyAppOperationLockFailsClosedWithoutLeaseClient(t *testing.T) {
+	lock, acquired, err := (&OperationStore{}).AcquireAppOperationLock(context.Background(), "example")
+	if lock != nil || acquired || err == nil {
+		t.Fatalf("legacy app lock lock=%v acquired=%v err=%v", lock, acquired, err)
+	}
+}
+
+type blackholeAppLockLease struct {
+	deadline time.Time
+}
+
+func (b *blackholeAppLockLease) KeepAliveOnce(ctx context.Context, _ clientv3.LeaseID) (*clientv3.LeaseKeepAliveResponse, error) {
+	b.deadline, _ = ctx.Deadline()
+	<-ctx.Done()
+	return nil, ctx.Err()
+}
+
+func TestAppLockKeepAliveDeadlineBoundsBlackhole(t *testing.T) {
+	blackhole := &blackholeAppLockLease{}
+	start := time.Now()
+	_, err := boundedAppLockKeepAlive(context.Background(), blackhole, 1, 100*time.Millisecond)
+	if !errors.Is(err, context.DeadlineExceeded) {
+		t.Fatalf("blackhole keepalive err=%v", err)
+	}
+	if blackhole.deadline.IsZero() || !blackhole.deadline.Before(start.Add(100*time.Millisecond)) {
+		t.Fatalf("keepalive deadline=%v is not shorter than remaining TTL", blackhole.deadline)
+	}
+	if elapsed := time.Since(start); elapsed >= 100*time.Millisecond {
+		t.Fatalf("blackhole keepalive took %v, want less than remaining TTL", elapsed)
 	}
 }
 

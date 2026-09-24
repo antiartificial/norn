@@ -175,3 +175,110 @@ func TestV3OperationStoreCanonicalAcceptanceReplayAndTamperEtcd(t *testing.T) {
 		}
 	})
 }
+
+// TestV3OperationStoreAppOperationLockEtcd proves the lease-backed part of the
+// execution contract against etcd itself. In particular, a delayed release
+// from an expired holder must not erase a newer holder, and a client that loses
+// its lease is told through the lock context before it can terminalize work.
+func TestV3OperationStoreAppOperationLockEtcd(t *testing.T) {
+	endpoints := os.Getenv("NORN_TEST_ETCD_ENDPOINTS")
+	if endpoints == "" {
+		t.Skip("NORN_TEST_ETCD_ENDPOINTS is not set")
+	}
+	ctx := context.Background()
+	client, err := clientv3.New(clientv3.Config{Endpoints: strings.Split(endpoints, ","), DialTimeout: 5 * time.Second})
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = client.Close() })
+	prefix := "/norn-conf/v3-app-lock/" + uuid.NewString()
+	t.Cleanup(func() { _, _ = client.Delete(context.Background(), prefix, clientv3.WithPrefix()) })
+	signer, err := store.NewHMACAcceptanceSigner("norn-etcd-app-lock-conformance-key")
+	if err != nil {
+		t.Fatal(err)
+	}
+	firstAuthority := uuid.NewString()
+	first, err := etcdstore.NewV3OperationStore(client, prefix, firstAuthority, signer)
+	if err != nil {
+		t.Fatal(err)
+	}
+	second, err := etcdstore.NewV3OperationStore(client, prefix, uuid.NewString(), signer)
+	if err != nil {
+		t.Fatal(err)
+	}
+	acceptance := store.OperationAcceptance{
+		Identity:  store.OperationRequestIdentity{Authority: firstAuthority, Actor: store.OperationActor{Issuer: "etcd-test", Subject: "worker"}, Kind: "app.deploy", Resource: "app/orders", Key: uuid.NewString()},
+		Operation: model.Operation{ID: uuid.NewString(), Kind: "app.deploy", App: "orders", Ref: "main", Risk: "low", Source: "etcd-test", MaxAttempts: 1},
+		Audit:     store.AcceptanceAuditContext{Source: "etcd-test", RequestID: uuid.NewString(), Scopes: []string{"apps:write"}},
+	}
+	acceptance.Fingerprint, err = store.CanonicalOperationRequestFingerprint(acceptance)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := first.Accept(ctx, acceptance); err != nil {
+		t.Fatal(err)
+	}
+	_, claim, err := first.ClaimNextOperation(ctx, "lock-test-worker", time.Minute, nil)
+	if err != nil || claim.OperationID() != acceptance.Operation.ID {
+		t.Fatalf("claim err=%v claim=%+v", err, claim)
+	}
+
+	lock, acquired, err := first.AcquireAppOperationLock(ctx, "orders")
+	if err != nil || !acquired || lock == nil {
+		t.Fatalf("first acquire lock=%v acquired=%v err=%v", lock, acquired, err)
+	}
+	t.Cleanup(lock.Release)
+	competing, acquired, err := second.AcquireAppOperationLock(ctx, "orders")
+	if err != nil || acquired || competing != nil {
+		if competing != nil {
+			competing.Release()
+		}
+		t.Fatalf("competing acquire lock=%v acquired=%v err=%v", competing, acquired, err)
+	}
+
+	// appLockKey hashes the app to make arbitrary app names unambiguous in the
+	// etcd hierarchy. Compute the same key here without depending on internals.
+	digest := sha256.Sum256([]byte("orders"))
+	key := prefix + "/v3/app-locks/" + hex.EncodeToString(digest[:])
+	record, err := client.Get(ctx, key)
+	if err != nil || len(record.Kvs) != 1 {
+		t.Fatalf("leased lock record err=%v records=%d", err, len(record.Kvs))
+	}
+	if record.Kvs[0].Lease == 0 {
+		t.Fatal("app lock record is not attached to an etcd lease")
+	}
+	if _, err := client.Revoke(ctx, clientv3.LeaseID(record.Kvs[0].Lease)); err != nil {
+		t.Fatal(err)
+	}
+	select {
+	case <-lock.Context().Done():
+		if !errors.Is(context.Cause(lock.Context()), store.ErrAppOperationLockLost) {
+			t.Fatalf("lock cancellation cause=%v", context.Cause(lock.Context()))
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("expired lease did not cancel lock context")
+	}
+
+	replacement, acquired, err := second.AcquireAppOperationLock(ctx, "orders")
+	if err != nil || !acquired || replacement == nil {
+		t.Fatalf("replacement acquire lock=%v acquired=%v err=%v", replacement, acquired, err)
+	}
+	defer replacement.Release()
+	lock.Release()
+	third, acquired, err := first.AcquireAppOperationLock(ctx, "orders")
+	if err != nil || acquired || third != nil {
+		if third != nil {
+			third.Release()
+		}
+		t.Fatalf("stale release erased replacement lock=%v acquired=%v err=%v", third, acquired, err)
+	}
+	if err := first.DeferClaimedOperationWithAppLock(ctx, claim, lock, "must not defer", time.Now().Add(time.Minute), nil); !errors.Is(err, store.ErrOperationOwnershipLost) {
+		t.Fatalf("stale app-lock fence deferred claimed operation: %v", err)
+	}
+	if err := first.RetryClaimedOperationWithAppLock(ctx, claim, lock, "must not retry", "stale", time.Now().Add(time.Minute), nil); !errors.Is(err, store.ErrOperationOwnershipLost) {
+		t.Fatalf("stale app-lock fence retried claimed operation: %v", err)
+	}
+	if err := first.FinishClaimedOperationWithAppLock(ctx, claim, lock, model.OperationSucceeded, "must not commit", nil); !errors.Is(err, store.ErrOperationOwnershipLost) {
+		t.Fatalf("stale app-lock fence terminalized claimed operation: %v", err)
+	}
+}
