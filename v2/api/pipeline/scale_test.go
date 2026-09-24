@@ -11,13 +11,13 @@ import (
 )
 
 func TestScaleRequestFromOperationRejectsAmbiguousCounts(t *testing.T) {
-	valid := &model.Operation{App: "widget", Payload: map[string]interface{}{"group": "web", "region": "us-central", "count": 2.0}}
+	valid := &model.Operation{App: "widget", Payload: map[string]interface{}{"group": "web", "region": "us-central", "nomadRegion": "global", "count": 2.0}}
 	got, err := scaleRequestFromOperation(valid)
-	if err != nil || got != (scaleRequest{App: "widget", Group: "web", Region: "us-central", Count: 2}) {
+	if err != nil || got != (scaleRequest{App: "widget", Group: "web", Region: "us-central", NomadRegion: "global", Count: 2}) {
 		t.Fatalf("valid request = %#v, %v", got, err)
 	}
 	for _, count := range []interface{}{-1, 1.5, "2"} {
-		_, err := scaleRequestFromOperation(&model.Operation{App: "widget", Payload: map[string]interface{}{"group": "web", "region": "us-central", "count": count}})
+		_, err := scaleRequestFromOperation(&model.Operation{App: "widget", Payload: map[string]interface{}{"group": "web", "region": "us-central", "nomadRegion": "global", "count": count}})
 		if err == nil {
 			t.Fatalf("count %#v was accepted", count)
 		}

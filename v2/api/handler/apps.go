@@ -255,14 +255,20 @@ func (h *Handler) ScaleApp(w http.ResponseWriter, r *http.Request) {
 		WriteControlProblem(w, r, http.StatusNotFound, "app_process_not_found", "app or process group was not found")
 		return
 	}
+	if process.Schedule != "" {
+		WriteControlProblem(w, r, http.StatusBadRequest, "scheduled_process_not_scalable", "scheduled process groups use periodic jobs and cannot be scaled")
+		return
+	}
 	regions := spec.ResolvedRegions()
 	if req.Region == "" && len(regions) == 1 {
 		req.Region = regions[0].Name
 	}
 	validRegion := false
+	nomadRegion := ""
 	for _, region := range regions {
 		if region.Name == req.Region && spec.ProcessRunsInRegion(process, region.Name) {
 			validRegion = true
+			nomadRegion = region.NomadRegion
 			break
 		}
 	}
@@ -270,12 +276,12 @@ func (h *Handler) ScaleApp(w http.ResponseWriter, r *http.Request) {
 		WriteControlProblem(w, r, http.StatusBadRequest, "invalid_scale_region", "region is required for this process and must be declared for the app")
 		return
 	}
-	enqueue, ok := h.pipelineEnqueueRequest(w, r, r.Header.Get("Idempotency-Key"), map[string]interface{}{"app": id, "group": req.Group, "region": req.Region, "count": req.Count})
+	enqueue, ok := h.pipelineEnqueueRequest(w, r, r.Header.Get("Idempotency-Key"), map[string]interface{}{"app": id, "group": req.Group, "region": req.Region, "nomadRegion": nomadRegion, "count": req.Count})
 	if !ok {
 		return
 	}
 	now := time.Now().UTC()
-	op := model.Operation{ID: uuid.NewString(), Kind: "app.scale", App: id, SagaID: uuid.NewString(), Ref: req.Region + "/" + req.Group, Status: model.OperationQueued, Risk: "Nomad task-group scale", Source: "app-control-api", Message: fmt.Sprintf("queued scale for %s/%s process %q to %d", id, req.Region, req.Group, req.Count), StartedAt: now, MaxAttempts: 1, Payload: map[string]interface{}{"app": id, "group": req.Group, "region": req.Region, "count": req.Count}}
+	op := model.Operation{ID: uuid.NewString(), Kind: "app.scale", App: id, SagaID: uuid.NewString(), Ref: req.Region + "/" + req.Group, Status: model.OperationQueued, Risk: "Nomad task-group scale", Source: "app-control-api", Message: fmt.Sprintf("queued scale for %s/%s process %q to %d", id, req.Region, req.Group, req.Count), StartedAt: now, MaxAttempts: 1, Payload: map[string]interface{}{"app": id, "group": req.Group, "region": req.Region, "nomadRegion": nomadRegion, "count": req.Count}}
 	accepted, err := h.pipeline.QueueOperation(r.Context(), op, enqueue)
 	if err != nil {
 		writeOperationAcceptanceError(w, r, err)

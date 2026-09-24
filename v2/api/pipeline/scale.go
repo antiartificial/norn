@@ -47,10 +47,11 @@ func (e *NomadScaleEffects) available() bool {
 }
 
 type scaleRequest struct {
-	App    string `json:"app"`
-	Group  string `json:"group"`
-	Region string `json:"region"`
-	Count  int    `json:"count"`
+	App         string `json:"app"`
+	Group       string `json:"group"`
+	Region      string `json:"region"`
+	NomadRegion string `json:"nomadRegion"`
+	Count       int    `json:"count"`
 }
 
 func (p *Pipeline) ScaleAvailable() bool { return p != nil && p.ScaleEffects.available() }
@@ -128,7 +129,7 @@ func scaleRequestFromOperation(op *model.Operation) (scaleRequest, error) {
 	if op == nil || strings.TrimSpace(op.App) == "" {
 		return scaleRequest{}, fmt.Errorf("scale operation app is required")
 	}
-	request := scaleRequest{App: op.App, Group: stringFromMap(op.Payload, "group"), Region: stringFromMap(op.Payload, "region")}
+	request := scaleRequest{App: op.App, Group: stringFromMap(op.Payload, "group"), Region: stringFromMap(op.Payload, "region"), NomadRegion: stringFromMap(op.Payload, "nomadRegion")}
 	value, ok := op.Payload["count"]
 	if !ok {
 		return scaleRequest{}, fmt.Errorf("scale operation count is required")
@@ -144,7 +145,7 @@ func scaleRequestFromOperation(op *model.Operation) (scaleRequest, error) {
 	default:
 		return scaleRequest{}, fmt.Errorf("scale operation count is invalid")
 	}
-	if strings.TrimSpace(request.Group) == "" || strings.TrimSpace(request.Region) == "" || request.Count < 0 {
+	if strings.TrimSpace(request.Group) == "" || strings.TrimSpace(request.Region) == "" || strings.TrimSpace(request.NomadRegion) == "" || request.Count < 0 {
 		return scaleRequest{}, fmt.Errorf("scale operation group, region, and non-negative count are required")
 	}
 	return request, nil
@@ -172,7 +173,7 @@ func (s *nomadScaleSupervisor) Launch(ctx context.Context, r effect.Reservation,
 	if err != nil {
 		return effect.ExecutionIdentity{}, err
 	}
-	evalID, err := s.client.ScaleJobWithMeta(request.App, request.Group, request.Region, request.Count, map[string]interface{}{"norn.operationId": r.OperationClaim.OperationID, "norn.claimGeneration": strconv.FormatInt(r.OperationClaim.Generation, 10), "norn.executionId": r.SupervisorExecutionID})
+	evalID, err := s.client.ScaleJobWithMeta(request.App, request.Group, request.NomadRegion, request.Count, map[string]interface{}{"norn.operationId": r.OperationClaim.OperationID, "norn.claimGeneration": strconv.FormatInt(r.OperationClaim.Generation, 10), "norn.executionId": r.SupervisorExecutionID})
 	if err != nil {
 		return effect.ExecutionIdentity{}, err
 	}
@@ -190,7 +191,7 @@ func (s *nomadScaleSupervisor) Query(ctx context.Context, r effect.Reservation, 
 		return effect.Observation{}, err
 	}
 	expectedEvalID := strings.TrimPrefix(identity.RuntimeInstanceID, "nomad-eval:")
-	desired, matched, evalID, err := s.client.ScaleStatus(request.App, request.Group, request.Region, r.OperationClaim.OperationID, strconv.FormatInt(r.OperationClaim.Generation, 10), r.SupervisorExecutionID, request.Count, expectedEvalID)
+	desired, matched, evalID, err := s.client.ScaleStatus(request.App, request.Group, request.NomadRegion, r.OperationClaim.OperationID, strconv.FormatInt(r.OperationClaim.Generation, 10), r.SupervisorExecutionID, request.Count, expectedEvalID)
 	if err != nil {
 		return effect.Observation{}, err
 	}
@@ -217,7 +218,7 @@ func scaleRequestFromReservation(r effect.Reservation) (scaleRequest, error) {
 	if err := json.Unmarshal(r.LaunchPayload, &request); err != nil {
 		return scaleRequest{}, fmt.Errorf("decode scale descriptor: %w", err)
 	}
-	if request.App == "" || request.Group == "" || request.Region == "" || request.Count < 0 {
+	if request.App == "" || request.Group == "" || request.Region == "" || request.NomadRegion == "" || request.Count < 0 {
 		return scaleRequest{}, fmt.Errorf("scale descriptor is invalid")
 	}
 	return request, nil

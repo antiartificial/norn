@@ -106,6 +106,7 @@ func TestScaleStatusRequiresExactSuccessfulDurableOperationEvent(t *testing.T) {
 			http.Error(w, "unexpected request", http.StatusNotFound)
 			return
 		}
+		if got := r.URL.Query().Get("region"); got != "global" { t.Fatalf("Nomad region=%q, want global", got) }
 		response := nomadapi.JobScaleStatusResponse{TaskGroups: map[string]nomadapi.TaskGroupScaleStatus{
 			"web": {Desired: 3, Events: []nomadapi.ScalingEvent{
 				{Meta: map[string]interface{}{"norn.operationId": "operation-1", "norn.claimGeneration": "1", "norn.executionId": "wrong-generation"}, Count: int64Pointer(3), EvalID: stringPointer("eval-wrong-generation")},
@@ -118,7 +119,7 @@ func TestScaleStatusRequiresExactSuccessfulDurableOperationEvent(t *testing.T) {
 		}}
 		_ = json.NewEncoder(w).Encode(response)
 	}))
-	desired, matched, evalID, err := client.ScaleStatus("widget", "web", "us-central", "operation-1", generation, "execution-1", 3, "eval-1")
+	desired, matched, evalID, err := client.ScaleStatus("widget", "web", "global", "operation-1", generation, "execution-1", 3, "eval-1")
 	if err != nil || desired != 3 || !matched || evalID != "eval-1" {
 		t.Fatalf("ScaleStatus() = %d, %t, %q, %v", desired, matched, evalID, err)
 	}
