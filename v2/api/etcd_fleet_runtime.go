@@ -27,8 +27,6 @@ import (
 	"github.com/go-chi/chi/v5"
 	"github.com/go-chi/chi/v5/middleware"
 	"github.com/google/uuid"
-	clientv3 "go.etcd.io/etcd/client/v3"
-
 	"norn/v2/api/config"
 	"norn/v2/api/etcdstore"
 	"norn/v2/api/fleet"
@@ -49,7 +47,7 @@ func runEtcdFleetRuntime(cfg *config.Config, backend startup.ControlBackendConfi
 	if err != nil {
 		return fmt.Errorf("acceptance signer: %w", err)
 	}
-	client, err := clientv3.New(clientv3.Config{Endpoints: backend.EtcdEndpoints, DialTimeout: 5 * time.Second})
+	client, err := newEtcdClient(backend)
 	if err != nil {
 		return fmt.Errorf("etcd client: %w", err)
 	}
@@ -57,7 +55,7 @@ func runEtcdFleetRuntime(cfg *config.Config, backend startup.ControlBackendConfi
 	if err := checkEtcdSourceHealth(context.Background(), client, backend.EtcdPrefix); err != nil {
 		return fmt.Errorf("etcd availability: %w", err)
 	}
-	operations, err := etcdstore.NewV3OperationStore(client, backend.EtcdPrefix, cfg.ControlAuthority, signer)
+	operations, err := etcdstore.NewV3OperationStoreWithPolicy(client, backend.EtcdPrefix, cfg.ControlAuthority, signer, store.AcceptancePolicy{ReplayTTL: cfg.OperationReplayTTL})
 	if err != nil {
 		return err
 	}

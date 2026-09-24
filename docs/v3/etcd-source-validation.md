@@ -1,8 +1,8 @@
 # Etcd source-validation runtime
 
-`NORN_CONTROL_BACKEND=etcd` remains refused by the ordinary API and host-agent
-runtimes. `norn-api` can start the narrow source-validation runtime only when
-all of the following are configured:
+`norn-api` has two deliberately bounded etcd runtimes. This page describes the
+development-only source-validation runtime, selected when all of the following
+are configured:
 
 - `NORN_ETCD_SOURCE_VALIDATION=true`
 - `NORN_ETCD_ENDPOINTS` and `NORN_ETCD_PREFIX`
@@ -40,3 +40,30 @@ archive retention, or any general API aggregate.
 This is a development source-validation mode. It does not establish Fleet
 bootstrap, TLS/member lifecycle, three-member quorum, recovery, backup/restore,
 fault, or soak qualification.
+
+## Normal Fleet runtime bootstrap
+
+The normal etcd runtime serves only signed Fleet capacity-plan receipts. In
+production it requires HTTPS endpoints, an explicit CA bundle, client
+certificate/key, and an etcd username/password (`NORN_ETCD_CA_FILE`,
+`NORN_ETCD_CERT_FILE`, `NORN_ETCD_KEY_FILE`, `NORN_ETCD_USERNAME`, and
+`NORN_ETCD_PASSWORD`).
+
+Before the first API process, an operator can create one initial revocable
+managed credential against an empty Norn prefix with:
+
+```text
+norn-api --norn-etcd-bootstrap
+```
+
+It requires `NORN_ETCD_BOOTSTRAP_TOKEN_FILE` (an absolute new path),
+`NORN_ETCD_BOOTSTRAP_SUBJECT`, `NORN_ETCD_BOOTSTRAP_SCOPES`, and
+`NORN_ETCD_BOOTSTRAP_TTL` (at most 72 hours). The command reserves the empty
+prefix, records the managed token, and writes the opaque token only to the new
+owner-only file. It neither prints the token nor runs a server. A second run or
+a non-empty prefix is refused.
+
+`NORN_STARTUP_MODE=passive` with `NORN_SCHEMA_MODE=check` serves only the
+loopback `/api/health`, `/api/version`, and `/api/schema` status routes.
+`NORN_SCHEMA_MODE=migrate-only` verifies the etcd schema/read path and exits
+without serving or writing records.

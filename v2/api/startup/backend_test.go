@@ -59,3 +59,22 @@ func TestEtcdSourceValidationProbeRejectsPostgresModes(t *testing.T) {
 		})
 	}
 }
+
+func TestEtcdTransportRejectsPartialCredentialsAndProductionDowngrades(t *testing.T) {
+	partialTLS := ControlBackendConfig{Backend: BackendEtcd, EtcdCertFile: "cert.pem"}
+	if _, err := partialTLS.EtcdTLSConfig(); err == nil || !strings.Contains(err.Error(), EtcdKeyFileEnv) {
+		t.Fatalf("partial TLS error=%v", err)
+	}
+	partialAuth := ControlBackendConfig{Backend: BackendEtcd, EtcdUsername: "norn"}
+	if _, err := partialAuth.EtcdTLSConfig(); err == nil || !strings.Contains(err.Error(), EtcdPasswordEnv) {
+		t.Fatalf("partial auth error=%v", err)
+	}
+	for _, cfg := range []ControlBackendConfig{
+		{Backend: BackendEtcd, EtcdEndpoints: []string{"http://127.0.0.1:2379"}},
+		{Backend: BackendEtcd, EtcdEndpoints: []string{"https://etcd.example.test:2379"}},
+	} {
+		if err := cfg.ValidateEtcdProductionTransport(); err == nil {
+			t.Fatalf("production downgrade accepted: %#v", cfg)
+		}
+	}
+}

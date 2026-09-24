@@ -51,7 +51,7 @@ func runEtcdSourceValidation(cfg *config.Config, backend startup.ControlBackendC
 	if err != nil {
 		return fmt.Errorf("acceptance signer: %w", err)
 	}
-	client, err := clientv3.New(clientv3.Config{Endpoints: backend.EtcdEndpoints, DialTimeout: 5 * time.Second})
+	client, err := newEtcdClient(backend)
 	if err != nil {
 		return fmt.Errorf("etcd client: %w", err)
 	}
@@ -62,7 +62,7 @@ func runEtcdSourceValidation(cfg *config.Config, backend startup.ControlBackendC
 	if err != nil {
 		return fmt.Errorf("etcd availability: %w", err)
 	}
-	operations, err := etcdstore.NewV3OperationStore(client, backend.EtcdPrefix, cfg.ControlAuthority, signer)
+	operations, err := etcdstore.NewV3OperationStoreWithPolicy(client, backend.EtcdPrefix, cfg.ControlAuthority, signer, store.AcceptancePolicy{ReplayTTL: cfg.OperationReplayTTL})
 	if err != nil {
 		return err
 	}

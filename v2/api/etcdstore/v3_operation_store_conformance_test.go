@@ -138,6 +138,21 @@ func TestV3OperationStoreReplayExpiryIsDurableAndHoldAwareEtcd(t *testing.T) {
 	if _, err := adapter.Accept(ctx, unsafe); !errors.Is(err, store.ErrAcceptanceInvalid) {
 		t.Fatalf("effect-capable kind opted into etcd replay expiry: %v", err)
 	}
+	fleet := a
+	fleet.Identity.Kind = "fleet.capacity-plan"
+	fleet.Identity.Resource = "control"
+	fleet.Identity.Key = "fleet-expiry-key"
+	fleet.Operation.ID = uuid.NewString()
+	fleet.Operation.Kind = "fleet.capacity-plan"
+	fleet.Operation.Ref = "control"
+	fleet.Operation.Status = model.OperationSucceeded
+	fleet.Fingerprint, err = store.CanonicalOperationRequestFingerprint(fleet)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := adapter.Accept(ctx, fleet); err != nil {
+		t.Fatalf("read-only Fleet receipt did not receive configured replay TTL: %v", err)
+	}
 	if _, err := adapter.Accept(ctx, a); err != nil {
 		t.Fatal(err)
 	}

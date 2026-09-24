@@ -212,8 +212,8 @@ func (s *V3OperationStore) Accept(ctx context.Context, a store.OperationAcceptan
 	// This adapter has no external-effect aggregate. Replay expiry is therefore
 	// limited to the read-only operation kind it executes today; a future kind
 	// must add its own authoritative hold before it can opt in.
-	if s.policy.ReplayTTL > 0 && strings.TrimSpace(a.Operation.Kind) != "app.preflight" {
-		return store.AcceptedOperation{}, &store.AcceptanceValidationError{Reason: "etcd replay expiry is implemented only for app.preflight"}
+	if s.policy.ReplayTTL > 0 && strings.TrimSpace(a.Operation.Kind) != "app.preflight" && strings.TrimSpace(a.Operation.Kind) != "fleet.capacity-plan" {
+		return store.AcceptedOperation{}, &store.AcceptanceValidationError{Reason: "etcd replay expiry is implemented only for app.preflight and fleet.capacity-plan"}
 	}
 	var err error
 	if a, err = s.normalize(a); err != nil {
