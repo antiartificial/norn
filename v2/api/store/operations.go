@@ -472,7 +472,12 @@ func (db *DB) CheckOperationClaim(ctx context.Context, claim OperationClaim) err
 // row. Claim expiry or replacement therefore cannot pass between the final
 // ownership check and a node-local publication. The callback must stay small:
 // it is deliberately limited to the irreversible publication boundary.
-func (db *DB) WithOperationClaimFence(ctx context.Context, claim OperationClaim, publish func() error) (err error) {
+//
+// The transaction has no durable writes, so it is always rolled back after
+// publish. In particular, it must not Commit with the caller's context after
+// publication: cancellation at that point would make a completed os.Link look
+// failed even though the public pair is already visible.
+func (db *DB) WithOperationClaimFence(ctx context.Context, claim OperationClaim, publish func() error) error {
 	if err := validateOperationClaim(claim); err != nil {
 		return err
 	}
@@ -483,13 +488,9 @@ func (db *DB) WithOperationClaimFence(ctx context.Context, claim OperationClaim,
 	if err != nil {
 		return err
 	}
-	defer func() {
-		if err != nil {
-			_ = tx.Rollback(ctx)
-			return
-		}
-		err = tx.Commit(ctx)
-	}()
+	// Rollback only releases the SELECT FOR UPDATE lock. Use an independent
+	// context so cancellation after the public Link cannot change its outcome.
+	defer func() { _ = tx.Rollback(context.Background()) }()
 	var held bool
 	err = tx.QueryRow(ctx, `SELECT true FROM operations WHERE id = $1 AND status = 'running' AND locked_by = $2
 		AND lock_generation = $3 AND locked_until > clock_timestamp() FOR UPDATE`, claim.OperationID(), claim.OwnerID(), claim.Generation()).Scan(&held)

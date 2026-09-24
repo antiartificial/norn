@@ -512,6 +512,52 @@ func TestAttestedSnapshotPublicationHoldsClaimFenceThroughLink(t *testing.T) {
 	}
 }
 
+// The publication fence has only a row lock to release, so a caller deadline
+// that fires immediately after the irreversible Link must not turn a complete
+// public pair into a reported failure.
+func TestAttestedSnapshotPublicationSurvivesFenceContextCancellationAfterLink(t *testing.T) {
+	server := pgtest.Start(t)
+	controlDatabase, targetDatabase := "norn_snapshot_cancel_control", "norn_snapshot_cancel_target"
+	server.CreateDatabase(t, controlDatabase)
+	server.CreateDatabase(t, targetDatabase)
+	t.Setenv("NORN_TEST_DATABASE_URL", server.URL(controlDatabase))
+	t.Setenv("NORN_TEST_RECOVERY_TARGET_DATABASE_URL", server.URL(targetDatabase))
+	f := newTargetFixture(t)
+	if _, err := f.db.ActivateDatabaseCatalog(context.Background(), 0, f.catalog, "operator"); err != nil {
+		t.Fatal(err)
+	}
+	op, err := f.queue(t, "app.snapshot", map[string]interface{}{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	claimed, claim, err := f.db.ClaimNextOperation(context.Background(), "publication-worker", time.Minute, []string{"app.snapshot"})
+	if err != nil || claimed == nil || claimed.ID != op.ID {
+		t.Fatalf("claim = %+v, %v", claimed, err)
+	}
+
+	fenceCtx, cancelFence := context.WithCancel(context.Background())
+	defer cancelFence()
+	originalLink := linkAttestedSnapshot
+	linkAttestedSnapshot = func(oldname, newname string) error {
+		err := originalLink(oldname, newname)
+		cancelFence()
+		return err
+	}
+	t.Cleanup(func() { linkAttestedSnapshot = originalLink })
+	artifact := testAttestedArtifact(op.ID, []byte("attested snapshot bytes"), func() error { return nil })
+	artifact.Fence = func(publish func() error) error {
+		return f.db.WithOperationClaimFence(fenceCtx, claim, publish)
+	}
+	location := testAttestedSnapshotLocation(t)
+	published, err := PublishAttestedSnapshot(location, time.Date(2026, 9, 24, 12, 0, 0, 0, time.UTC), artifact)
+	if err != nil {
+		t.Fatalf("publication after Link cancellation = %v", err)
+	}
+	if err := verifyBoundDump(location, published.Filename, published.Size); err != nil {
+		t.Fatalf("published pair after cancellation = %v", err)
+	}
+}
+
 func TestDatabaseTargetsBindAcceptanceAndDriveSnapshotRestoreMigration(t *testing.T) {
 	f := newTargetFixture(t)
 	ctx := context.Background()
