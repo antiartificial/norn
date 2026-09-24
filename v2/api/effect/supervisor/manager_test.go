@@ -47,6 +47,9 @@ func (b *backendFake) Start(_ context.Context, execution BackendExecution, _ eff
 func (b *backendFake) StartSnapshot(ctx context.Context, execution BackendExecution, _ SnapshotDescriptor, _ SnapshotLaunchMaterial) error {
 	return b.Start(ctx, execution, effect.LaunchMaterial{})
 }
+func (b *backendFake) ObserveSnapshot(ctx context.Context, execution BackendExecution, _ SnapshotDescriptor) (BackendState, error) {
+	return b.Observe(ctx, execution)
+}
 func (b *backendFake) QuerySnapshot(context.Context, BackendExecution, SnapshotDescriptor) (SnapshotManifest, error) {
 	return SnapshotManifest{}, nil
 }

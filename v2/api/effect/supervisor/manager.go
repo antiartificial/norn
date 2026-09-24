@@ -53,6 +53,7 @@ type Backend interface {
 // Its descriptor remains the durable, secret-free reservation payload.
 type SnapshotBackend interface {
 	StartSnapshot(context.Context, BackendExecution, SnapshotDescriptor, SnapshotLaunchMaterial) error
+	ObserveSnapshot(context.Context, BackendExecution, SnapshotDescriptor) (BackendState, error)
 	QuerySnapshot(context.Context, BackendExecution, SnapshotDescriptor) (SnapshotManifest, error)
 	CopySnapshotArtifact(context.Context, BackendExecution, SnapshotDescriptor, io.Writer) (SnapshotManifest, error)
 }
@@ -344,6 +345,52 @@ func (m *Manager) QuerySnapshot(ctx context.Context, reservation effect.Reservat
 		return e
 	})
 	return out, err
+}
+
+// ObserveSnapshot returns signed generic effect evidence for the snapshot
+// protocol. It never accepts runner-local state without the backend's
+// containment proof, which lets effect.Executor recover the same durable
+// reservation after an expired operation claim.
+func (m *Manager) ObserveSnapshot(ctx context.Context, reservation effect.Reservation, identity effect.ExecutionIdentity) (effect.Observation, error) {
+	descriptor, err := m.verifySnapshotDescriptor(reservation.LaunchPayload, nil)
+	if err != nil {
+		return effect.Observation{}, err
+	}
+	backend, ok := m.backend.(SnapshotBackend)
+	if !ok {
+		return effect.Observation{}, fmt.Errorf("snapshot supervisor backend is unavailable")
+	}
+	var observation effect.Observation
+	err = m.withExecutionLock(identity.SupervisorExecutionID, func(directory string) error {
+		record, err := m.readBoundJournal(directory, reservation, identity)
+		if err != nil {
+			return err
+		}
+		if record.RuntimeInstanceID == "" {
+			observation, err = m.observation(record, BackendState{Phase: effect.SupervisorNotFound, ContainmentProven: true, EvidenceReference: "registered-not-launched/" + reservation.SupervisorExecutionID})
+			return err
+		}
+		state, err := backend.ObserveSnapshot(ctx, backendExecution(record, directory), descriptor)
+		if err != nil {
+			return err
+		}
+		observation, err = m.observation(record, state)
+		return err
+	})
+	return observation, err
+}
+
+// RetrieveSnapshotResult re-observes the exact execution and returns its
+// signed-manifest output. Artifact bytes remain behind CopySnapshotArtifact.
+func (m *Manager) RetrieveSnapshotResult(ctx context.Context, reservation effect.Reservation, identity effect.ExecutionIdentity, _ string) ([]byte, error) {
+	observation, err := m.ObserveSnapshot(ctx, reservation, identity)
+	if err != nil {
+		return nil, err
+	}
+	if observation.Phase != effect.SupervisorSucceeded && observation.Phase != effect.SupervisorFailed {
+		return nil, fmt.Errorf("snapshot execution has no terminal result")
+	}
+	return observation.Output, nil
 }
 
 func (m *Manager) CopySnapshotArtifact(ctx context.Context, reservation effect.Reservation, identity effect.ExecutionIdentity, destination io.Writer) (SnapshotManifest, error) {

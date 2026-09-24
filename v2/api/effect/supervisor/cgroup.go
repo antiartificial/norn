@@ -4,6 +4,7 @@ import (
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
@@ -24,6 +25,50 @@ func (b *cgroupBackend) QuerySnapshot(_ context.Context, execution BackendExecut
 		return SnapshotManifest{}, fmt.Errorf("snapshot containment is not proven")
 	}
 	return ReadSnapshotManifest(execution.StateDirectory, runnerStatusKey(b.key, execution.RuntimeInstanceID), execution.RuntimeInstanceID, true)
+}
+
+func (b *cgroupBackend) ObserveSnapshot(_ context.Context, execution BackendExecution, descriptor SnapshotDescriptor) (BackendState, error) {
+	unknown := BackendState{Phase: effect.SupervisorUnknown, EvidenceReference: b.reference(execution)}
+	populated, err := cgroupPopulated(b.cgroupPath(execution.RuntimeInstanceID))
+	if errors.Is(err, os.ErrNotExist) {
+		return unknown, nil
+	}
+	if err != nil {
+		return BackendState{}, err
+	}
+	status, err := readSnapshotStatus(execution.StateDirectory, runnerStatusKey(b.key, execution.RuntimeInstanceID), execution.RuntimeInstanceID)
+	if errors.Is(err, os.ErrNotExist) {
+		if populated {
+			return BackendState{Phase: effect.SupervisorRunning, EvidenceReference: b.reference(execution)}, nil
+		}
+		return unknown, nil
+	}
+	if err != nil {
+		return BackendState{}, err
+	}
+	if populated || status.Phase == effect.SupervisorRunning {
+		return BackendState{Phase: effect.SupervisorRunning, EvidenceReference: b.reference(execution)}, nil
+	}
+	if status.Phase != effect.SupervisorSucceeded && status.Phase != effect.SupervisorFailed {
+		return unknown, nil
+	}
+	var output []byte
+	if status.Phase == effect.SupervisorSucceeded {
+		manifest, err := b.QuerySnapshot(context.Background(), execution, descriptor)
+		if err != nil {
+			return BackendState{}, err
+		}
+		output, err = json.Marshal(manifest)
+		if err != nil {
+			return BackendState{}, err
+		}
+	} else {
+		output, err = json.Marshal(status)
+		if err != nil {
+			return BackendState{}, err
+		}
+	}
+	return BackendState{Phase: status.Phase, ExitCode: status.ExitCode, Output: output, ContainmentProven: true, TimedOut: status.TimedOut, EvidenceReference: b.reference(execution)}, nil
 }
 
 func (b *cgroupBackend) CopySnapshotArtifact(ctx context.Context, execution BackendExecution, descriptor SnapshotDescriptor, destination io.Writer) (SnapshotManifest, error) {
