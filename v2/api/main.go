@@ -73,6 +73,9 @@ func main() {
 		log.Fatalf("security configuration: %v", err)
 	}
 	if backendCfg.Backend == startup.BackendEtcd && backendCfg.SourceValidation {
+		if err := startup.RequireEtcdSourceValidationStartup(startupCfg); err != nil {
+			log.Fatalf("etcd source validation: %v", err)
+		}
 		if err := runEtcdSourceValidation(cfg, backendCfg); err != nil {
 			log.Fatalf("etcd source validation: %v", err)
 		}

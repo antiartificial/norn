@@ -11,6 +11,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -42,7 +43,7 @@ func TestEtcdSourceValidationProcess(t *testing.T) {
 	setupCtx, cancelSetup := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancelSetup()
 	if _, err := client.Get(setupCtx, prefix, clientv3.WithLimit(1)); err != nil {
-		t.Skipf("etcd endpoint is unavailable: %v", err)
+		t.Fatalf("NORN_TEST_ETCD_ENDPOINTS is set but unavailable: %v", err)
 	}
 	token, record, err := handler.IssueManagedAccessToken(setupCtx, secret, identities, "operator", []string{handler.ScopeAPIWrite}, time.Hour)
 	if err != nil {
@@ -74,7 +75,7 @@ func TestEtcdSourceValidationProcess(t *testing.T) {
 		t.Fatalf("build norn-api: %v\n%s", err, output)
 	}
 	command := exec.Command(binary)
-	var output bytes.Buffer
+	var output lockedBuffer
 	command.Stdout, command.Stderr = &output, &output
 	command.Env = append(os.Environ(),
 		"NORN_CONTROL_BACKEND=etcd",
@@ -196,7 +197,24 @@ func postSourcePreflight(t *testing.T, base, token, key string) (int, sourcePref
 	return response.StatusCode, payload
 }
 
-func waitForSourceHealth(t *testing.T, base string, output *bytes.Buffer) {
+type lockedBuffer struct {
+	mu sync.Mutex
+	b  bytes.Buffer
+}
+
+func (b *lockedBuffer) Write(value []byte) (int, error) {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	return b.b.Write(value)
+}
+
+func (b *lockedBuffer) String() string {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	return b.b.String()
+}
+
+func waitForSourceHealth(t *testing.T, base string, output *lockedBuffer) {
 	t.Helper()
 	deadline := time.Now().Add(12 * time.Second)
 	for time.Now().Before(deadline) {

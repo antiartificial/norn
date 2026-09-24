@@ -27,6 +27,10 @@ import (
 	"norn/v2/api/worker"
 )
 
+type etcdStatusClient interface {
+	Status(context.Context, string) (*clientv3.StatusResponse, error)
+}
+
 // runEtcdSourceValidation starts the only PG-free API surface currently
 // supported by norn-api. It owns no recovery, effects, or general handler
 // aggregates: it accepts and executes source-only preflights on etcd.
@@ -74,9 +78,7 @@ func runEtcdSourceValidation(cfg *config.Config, backend startup.ControlBackendC
 
 	router := chi.NewRouter()
 	router.Use(middleware.RequestID, middleware.Recoverer)
-	router.Get("/api/health", func(w http.ResponseWriter, r *http.Request) {
-		writeEtcdSourceJSON(w, http.StatusOK, map[string]string{"status": "ok", "backend": "etcd", "mode": "source-validation"})
-	})
+	router.Get("/api/health", sourceValidationHealthHandler(client, backend.EtcdEndpoints))
 	router.Get("/api/version", func(w http.ResponseWriter, r *http.Request) {
 		writeEtcdSourceJSON(w, http.StatusOK, map[string]string{"version": Version})
 	})
@@ -118,6 +120,39 @@ func runEtcdSourceValidation(cfg *config.Config, backend startup.ControlBackendC
 		defer cancel()
 		return srv.Shutdown(shutdownCtx)
 	}
+}
+
+func sourceValidationHealthHandler(client etcdStatusClient, endpoints []string) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		if err := checkEtcdSourceHealth(r.Context(), client, endpoints); err != nil {
+			handler.WriteControlProblem(w, r, http.StatusServiceUnavailable, "source_validation_unavailable", "etcd is unavailable")
+			return
+		}
+		writeEtcdSourceJSON(w, http.StatusOK, map[string]string{"status": "ok", "backend": "etcd", "mode": "source-validation"})
+	}
+}
+
+// checkEtcdSourceHealth confirms that at least one configured member can
+// answer a linearizable status request. A running HTTP listener is therefore
+// never reported healthy after its control store becomes unavailable.
+func checkEtcdSourceHealth(parent context.Context, client etcdStatusClient, endpoints []string) error {
+	if client == nil || len(endpoints) == 0 {
+		return fmt.Errorf("etcd status client is unavailable")
+	}
+	var last error
+	for _, endpoint := range endpoints {
+		ctx, cancel := context.WithTimeout(parent, 2*time.Second)
+		_, err := client.Status(ctx, endpoint)
+		cancel()
+		if err == nil {
+			return nil
+		}
+		last = err
+	}
+	if last == nil {
+		last = fmt.Errorf("no etcd endpoints configured")
+	}
+	return last
 }
 
 func etcdManagedTokenAuth(cfg *config.Config, identities store.IdentityStore, requiredScopes ...string) func(http.Handler) http.Handler {

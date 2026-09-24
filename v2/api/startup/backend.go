@@ -58,6 +58,18 @@ func RequireRuntimeCapabilities(cfg ControlBackendConfig) error {
 	return nil
 }
 
+// RequireEtcdSourceValidationStartup keeps the narrow PG-free runtime from
+// silently changing the meaning of PostgreSQL schema or passive status modes.
+func RequireEtcdSourceValidationStartup(cfg Config) error {
+	if cfg.StartupMode != ModeActive {
+		return fmt.Errorf("etcd source validation requires %s=active", StartupModeEnv)
+	}
+	if cfg.SchemaMode != SchemaModeAuto {
+		return fmt.Errorf("etcd source validation requires %s=auto", SchemaModeEnv)
+	}
+	return nil
+}
+
 // WriteControlBackendProbe proves backend-first selection without opening PostgreSQL or dialing etcd.
 func WriteControlBackendProbe(args []string, getenv func(string) string, w io.Writer) (bool, error) {
 	if len(args) != 1 || args[0] != ControlBackendProbeArgument {
@@ -67,7 +79,15 @@ func WriteControlBackendProbe(args []string, getenv func(string) string, w io.Wr
 	if err != nil {
 		return true, err
 	}
-	if err = RequireRuntimeCapabilities(cfg); err != nil {
+	if cfg.Backend == BackendEtcd && cfg.SourceValidation {
+		startupCfg, parseErr := Parse(getenv)
+		if parseErr != nil {
+			return true, parseErr
+		}
+		if err = RequireEtcdSourceValidationStartup(startupCfg); err != nil {
+			return true, err
+		}
+	} else if err = RequireRuntimeCapabilities(cfg); err != nil {
 		return true, err
 	}
 	if err = json.NewEncoder(w).Encode(cfg); err != nil {
