@@ -11,6 +11,7 @@ const (
 	ControlBackendEnv           = "NORN_CONTROL_BACKEND"
 	EtcdEndpointsEnv            = "NORN_ETCD_ENDPOINTS"
 	EtcdPrefixEnv               = "NORN_ETCD_PREFIX"
+	EtcdSourceValidationModeEnv = "NORN_ETCD_SOURCE_VALIDATION"
 	ControlBackendProbeArgument = "--norn-control-backend-probe"
 	BackendPostgres             = "postgres"
 	BackendEtcd                 = "etcd"
@@ -20,6 +21,9 @@ type ControlBackendConfig struct {
 	Backend       string   `json:"backend"`
 	EtcdEndpoints []string `json:"etcdEndpoints,omitempty"`
 	EtcdPrefix    string   `json:"etcdPrefix,omitempty"`
+	// SourceValidation is an intentionally narrow API runtime. It is not a
+	// general etcd control-plane enablement and is consumed only by norn-api.
+	SourceValidation bool `json:"sourceValidation,omitempty"`
 }
 
 func ParseControlBackend(getenv func(string) string) (ControlBackendConfig, error) {
@@ -43,7 +47,7 @@ func ParseControlBackend(getenv func(string) string) (ControlBackendConfig, erro
 	if backend == BackendEtcd && len(endpoints) == 0 {
 		return ControlBackendConfig{}, fmt.Errorf("%s=etcd requires %s", ControlBackendEnv, EtcdEndpointsEnv)
 	}
-	return ControlBackendConfig{Backend: backend, EtcdEndpoints: endpoints, EtcdPrefix: prefix}, nil
+	return ControlBackendConfig{Backend: backend, EtcdEndpoints: endpoints, EtcdPrefix: prefix, SourceValidation: strings.EqualFold(strings.TrimSpace(getenv(EtcdSourceValidationModeEnv)), "true")}, nil
 }
 
 // RequireRuntimeCapabilities rejects etcd before either executable opens PostgreSQL.
