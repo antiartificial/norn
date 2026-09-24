@@ -40,13 +40,27 @@ func (db *DB) DesiredReplicaCounts(ctx context.Context, app, region string) (map
 // coalesce one dormant period without replaying a prior wake after an operator
 // has explicitly returned the target to zero.
 func (db *DB) LatestWakeCapacityCycle(ctx context.Context, app, process, region string) (int64, model.OperationStatus, bool, error) {
+	var malformed string
+	err := db.Pool.QueryRow(ctx, `
+		SELECT metadata->>'wakeCycle'
+		FROM operations
+		WHERE kind='app.scale' AND source='wake-gateway' AND app=$1 AND ref=$2
+		  AND metadata ? 'wakeCycle'
+		  AND (metadata->>'wakeCycle' !~ '^[1-9][0-9]*$')
+		LIMIT 1`, app, region+"/"+process).Scan(&malformed)
+	if err == nil {
+		return 0, "", false, fmt.Errorf("wake cycle metadata is invalid: %q", malformed)
+	}
+	if err != pgx.ErrNoRows {
+		return 0, "", false, err
+	}
 	var cycle int64
 	var status model.OperationStatus
-	err := db.Pool.QueryRow(ctx, `
+	err = db.Pool.QueryRow(ctx, `
 		SELECT COALESCE((metadata->>'wakeCycle')::bigint, 1), status
 		FROM operations
 		WHERE kind='app.scale' AND source='wake-gateway' AND app=$1 AND ref=$2
-		ORDER BY started_at DESC, id DESC
+		ORDER BY COALESCE((metadata->>'wakeCycle')::bigint, 1) DESC, id DESC
 		LIMIT 1`, app, region+"/"+process).Scan(&cycle, &status)
 	if err != nil {
 		if err == pgx.ErrNoRows {

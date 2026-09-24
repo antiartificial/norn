@@ -403,6 +403,16 @@ regions:
 	if third.ID != second.ID {
 		t.Fatalf("second wake cycle replay = %s, want %s", third.ID, second.ID)
 	}
+	if _, err := db.Pool.Exec(context.Background(), `UPDATE operations SET status='succeeded', started_at=started_at - interval '1 day', finished_at=now() WHERE id=$1`, second.ID); err != nil {
+		t.Fatal(err)
+	}
+	fourth, err := h.queueWakeGatewayCapacityIntent(context.Background(), target)
+	if err != nil {
+		t.Fatalf("wake cycle after clock-skewed prior cycle: %v", err)
+	}
+	if fourth.ID == second.ID || fourth.Payload["wakeCycle"] != int64(3) {
+		t.Fatalf("clock-skewed wake cycle = %#v, want new cycle 3", fourth)
+	}
 }
 
 func TestWakeGatewayCapacityIntentRejectsAmbiguousOrInvalidWakeTarget(t *testing.T) {
