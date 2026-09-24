@@ -159,6 +159,9 @@ func newTargetFixture(t *testing.T) *targetFixture {
 	if err != nil {
 		t.Fatal(err)
 	}
+	if err := manager.SetSnapshotArtifactBudget(supervisor.MaxSnapshotArtifactBytes); err != nil {
+		t.Fatal(err)
+	}
 	effects, err := NewSnapshotEffects(db, manager, pgDump, hex.EncodeToString(digest[:]), time.Minute)
 	if err != nil {
 		t.Fatal(err)
