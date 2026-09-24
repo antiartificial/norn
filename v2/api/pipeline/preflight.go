@@ -23,10 +23,15 @@ import (
 // the image locally, and runs build.test without snapshot, migration, submit, or
 // forge side effects.
 func (p *Pipeline) Preflight(ctx context.Context, spec *model.InfraSpec, ref string, request EnqueueRequest) (store.AcceptedOperation, error) {
-	if p == nil || p.DB == nil || p.SagaStore == nil || spec == nil {
+	if p == nil || spec == nil || (p.DB == nil && p.CheckpointStore == nil) || (p.DB != nil && p.SagaStore == nil) {
 		return store.AcceptedOperation{}, fmt.Errorf("preflight pipeline is unavailable")
 	}
-	sg := saga.New(p.SagaStore, spec.App, "pipeline", "preflight")
+	if p.backendNeutralPreflight() {
+		if err := p.validateBackendNeutralPreflight(spec); err != nil {
+			return store.AcceptedOperation{}, err
+		}
+	}
+	sg := saga.New(p.preflightSagaStore(), spec.App, "pipeline", "preflight")
 	operationID := uuid.New().String()
 	operation := model.Operation{
 		ID:          operationID,
@@ -126,10 +131,39 @@ func (p *Pipeline) runPreflightWithArtifact(ctx context.Context, spec *model.Inf
 		p.broadcastPreflightStep(spec.App, sg.ID, s.name, "complete", idx, total, elapsed)
 	}
 
-	return &OperationResult{Claim: claim, Status: model.OperationSucceeded, Message: fmt.Sprintf("preflight complete: %s", spec.App), Metadata: map[string]interface{}{"commitSha": st.commitSHA, "imageTag": st.imageTag}, publish: func(publishCtx context.Context) {
+	return &OperationResult{Claim: claim, Status: model.OperationSucceeded, Message: fmt.Sprintf("preflight complete: %s", spec.App), Metadata: map[string]interface{}{"commitSha": st.commitSHA, "imageTag": st.imageTag, "sourceIdentity": st.sourceIdentity, "sourceKind": st.sourceKind, "sourceRef": st.sourceRef}, publish: func(publishCtx context.Context) {
 		sg.Log(publishCtx, "preflight.complete", fmt.Sprintf("preflight complete: %s -> %s", spec.App, st.imageTag), map[string]string{"commitSha": st.commitSHA, "imageTag": st.imageTag, "sourceKind": st.sourceKind, "sourceRef": st.sourceRef})
 		p.broadcastPreflightDone("preflight.completed", spec.App, sg.ID, map[string]string{"imageTag": st.imageTag, "commitSha": st.commitSHA})
 	}}
+}
+
+// backendNeutralPreflight identifies the bounded M3 aggregate. It has an
+// independently durable signed acceptance, claim, source checkpoint, app
+// lock, and terminal record. Docker build/test and production artifact
+// admission remain outside this aggregate because their effects need a
+// backend-neutral fenced effect executor first.
+func (p *Pipeline) backendNeutralPreflight() bool {
+	return p != nil && p.DB == nil && p.CheckpointStore != nil
+}
+
+func (p *Pipeline) validateBackendNeutralPreflight(spec *model.InfraSpec) error {
+	if p.CheckpointStore == nil {
+		return fmt.Errorf("backend-neutral preflight requires an operation checkpoint store")
+	}
+	if p.Production {
+		return fmt.Errorf("backend-neutral preflight does not support production admission")
+	}
+	if spec.Build != nil {
+		return fmt.Errorf("backend-neutral preflight supports source validation only; build and test execution require fenced effects")
+	}
+	return nil
+}
+
+func (p *Pipeline) preflightSagaStore() saga.Store {
+	if p != nil && p.backendNeutralPreflight() {
+		return saga.DiscardStore{}
+	}
+	return p.SagaStore
 }
 
 func (p *Pipeline) preflightValidate(ctx context.Context, st *state, sg *saga.Saga) error {

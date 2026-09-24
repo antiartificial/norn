@@ -27,6 +27,17 @@ type Store interface {
 	ListRecent(ctx context.Context, limit int) ([]Event, error)
 }
 
+// DiscardStore makes operation progress best-effort when a control backend
+// does not yet provide a durable saga archive. It is intentionally explicit:
+// callers retain the operation receipt and terminal record, but cannot claim
+// historical saga-event support.
+type DiscardStore struct{}
+
+func (DiscardStore) Append(context.Context, *Event) error                    { return nil }
+func (DiscardStore) ListBySaga(context.Context, string) ([]Event, error)     { return nil, nil }
+func (DiscardStore) ListByApp(context.Context, string, int) ([]Event, error) { return nil, nil }
+func (DiscardStore) ListRecent(context.Context, int) ([]Event, error)        { return nil, nil }
+
 // Saga is a helper for logging structured events in a deployment or operation.
 type Saga struct {
 	ID       string

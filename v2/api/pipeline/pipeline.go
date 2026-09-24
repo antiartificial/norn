@@ -25,8 +25,11 @@ import (
 )
 
 type Pipeline struct {
-	DB                             *store.DB
-	OperationStore                 store.OperationStore
+	DB             *store.DB
+	OperationStore store.OperationStore
+	// CheckpointStore persists source/build identity for executions that do not
+	// use PostgreSQL. When nil, the PostgreSQL DB remains the legacy store.
+	CheckpointStore                store.OperationCheckpointStore
 	Nomad                          *nomad.Client
 	Consul                         *consul.Client
 	WS                             *hub.Hub
@@ -196,10 +199,15 @@ func (p *Pipeline) QueueReleaseDeployment(ctx context.Context, spec *model.Infra
 // explicit release provenance. It remains read-only and therefore has no
 // deployment row.
 func (p *Pipeline) QueueReleasePreflight(ctx context.Context, spec *model.InfraSpec, sourceSHA, artifact, environment string, metadata map[string]interface{}, request EnqueueRequest) (store.AcceptedOperation, error) {
-	if p == nil || p.DB == nil || p.SagaStore == nil || spec == nil {
+	if p == nil || spec == nil || (p.DB == nil && p.CheckpointStore == nil) || (p.DB != nil && p.SagaStore == nil) {
 		return store.AcceptedOperation{}, fmt.Errorf("release preflight pipeline is unavailable")
 	}
-	sg := saga.New(p.SagaStore, spec.App, "pipeline", "preflight")
+	if p.backendNeutralPreflight() {
+		if err := p.validateBackendNeutralPreflight(spec); err != nil {
+			return store.AcceptedOperation{}, err
+		}
+	}
+	sg := saga.New(p.preflightSagaStore(), spec.App, "pipeline", "preflight")
 	now := time.Now().UTC()
 	if metadata == nil {
 		metadata = map[string]interface{}{}
@@ -316,6 +324,11 @@ func (p *Pipeline) ExecuteOperation(ctx context.Context, op *model.Operation, cl
 	if spec == nil {
 		return nil, fmt.Errorf("app %s not found", op.App)
 	}
+	if op.Kind == "app.preflight" && p.backendNeutralPreflight() {
+		if err := p.validateBackendNeutralPreflight(spec); err != nil {
+			return nil, err
+		}
+	}
 
 	category := "deploy"
 	if op.Kind == "app.preflight" {
@@ -325,7 +338,11 @@ func (p *Pipeline) ExecuteOperation(ctx context.Context, op *model.Operation, cl
 	} else if strings.HasPrefix(op.Kind, "app.snapshot") {
 		category = "snapshot"
 	}
-	sg := saga.NewWithID(p.SagaStore, op.SagaID, spec.App, "pipeline", category)
+	sagaStore := p.SagaStore
+	if op.Kind == "app.preflight" && p.backendNeutralPreflight() {
+		sagaStore = saga.DiscardStore{}
+	}
+	sg := saga.NewWithID(sagaStore, op.SagaID, spec.App, "pipeline", category)
 
 	switch op.Kind {
 	case "app.snapshot", "app.snapshot-prune", "app.snapshot-restore", "app.migrate":

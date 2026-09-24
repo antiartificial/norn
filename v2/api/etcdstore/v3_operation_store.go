@@ -65,12 +65,16 @@ func NewV3OperationStore(kv leasedKV, prefix, authority string, signer store.Acc
 var _ store.OperationStore = (*V3OperationStore)(nil)
 var _ store.OperationIdentityResolver = (*V3OperationStore)(nil)
 var _ store.ExecutionStore = (*V3OperationStore)(nil)
+var _ store.OperationCheckpointStore = (*V3OperationStore)(nil)
 
 func (s *V3OperationStore) opKey(id string) string      { return s.prefix + "/v3/operations/" + id }
 func (s *V3OperationStore) opsPrefix() string           { return s.prefix + "/v3/operations/" }
 func (s *V3OperationStore) runningKey(id string) string { return s.prefix + "/v3/running/" + id }
 func (s *V3OperationStore) runningPrefix() string       { return s.prefix + "/v3/running/" }
 func (s *V3OperationStore) ownerKey(id string) string   { return s.prefix + "/v3/owners/" + id }
+func (s *V3OperationStore) checkpointKey(id, stage string) string {
+	return s.prefix + "/v3/checkpoints/" + id + "/" + stage
+}
 func (s *V3OperationStore) appLockKey(app string) string {
 	digest := sha256.Sum256([]byte(app))
 	return s.prefix + "/v3/app-locks/" + hex.EncodeToString(digest[:])
@@ -315,6 +319,109 @@ func (s *V3OperationStore) write(ctx context.Context, id string, rev int64, v v3
 	r, e := s.kv.Txn(ctx).If(clientv3.Compare(clientv3.ModRevision(s.opKey(id)), "=", rev)).Then(clientv3.OpPut(s.opKey(id), string(b))).Commit()
 	return r.Succeeded, e
 }
+
+type v3Checkpoint struct {
+	OperationID     string          `json:"operationId"`
+	Stage           string          `json:"stage"`
+	ClaimGeneration int64           `json:"claimGeneration"`
+	Outputs         json.RawMessage `json:"outputs"`
+	OutputsDigest   string          `json:"outputsDigest"`
+	CreatedAt       time.Time       `json:"createdAt"`
+}
+
+// RecordOperationCheckpoint writes a source/build receipt only while the
+// fenced claim remains the live owner. A checkpoint is immutable: an equal
+// retry returns the original record; a different output is surfaced as a
+// conflict rather than replacing provenance from an earlier claim.
+func (s *V3OperationStore) RecordOperationCheckpoint(ctx context.Context, claim store.OperationClaim, stage string, outputs json.RawMessage) (store.OperationCheckpoint, error) {
+	if claim.OperationID() == "" || claim.OwnerID() == "" || claim.Generation() <= 0 {
+		return store.OperationCheckpoint{}, fmt.Errorf("operation claim is incomplete")
+	}
+	if (stage != store.CheckpointSource && stage != store.CheckpointBuild) || len(outputs) < 2 || len(outputs) > 65536 || !json.Valid(outputs) {
+		return store.OperationCheckpoint{}, fmt.Errorf("operation checkpoint is invalid")
+	}
+	key := s.checkpointKey(claim.OperationID(), stage)
+	for attempt := 0; attempt < 4; attempt++ {
+		record, revision, err := s.load(ctx, claim.OperationID())
+		if err != nil {
+			return store.OperationCheckpoint{}, store.ErrOperationOwnershipLost
+		}
+		owner, err := s.kv.Get(ctx, s.ownerKey(claim.OperationID()))
+		if err != nil || len(owner.Kvs) != 1 || string(owner.Kvs[0].Value) != claimOwnerValue(claim.OwnerID(), claim.Generation()) || owner.Kvs[0].Lease == 0 || record.Operation.Status != model.OperationRunning || record.Operation.LockedBy != claim.OwnerID() || record.Generation != claim.Generation() {
+			return store.OperationCheckpoint{}, store.ErrOperationOwnershipLost
+		}
+		existing, err := s.loadCheckpoint(ctx, key)
+		if err == nil {
+			if existing.OutputsDigest != checkpointDigest(outputs) {
+				return existing, store.ErrCheckpointConflict
+			}
+			return existing, nil
+		}
+		if !errors.Is(err, ErrNotFound) {
+			return store.OperationCheckpoint{}, err
+		}
+		candidate := store.OperationCheckpoint{OperationID: claim.OperationID(), Stage: stage, ClaimGeneration: claim.Generation(), Outputs: bytes.Clone(outputs), OutputsDigest: checkpointDigest(outputs), CreatedAt: time.Now().UTC().Truncate(time.Microsecond)}
+		encoded, err := json.Marshal(v3Checkpoint{OperationID: candidate.OperationID, Stage: candidate.Stage, ClaimGeneration: candidate.ClaimGeneration, Outputs: candidate.Outputs, OutputsDigest: candidate.OutputsDigest, CreatedAt: candidate.CreatedAt})
+		if err != nil {
+			return store.OperationCheckpoint{}, err
+		}
+		txn, err := s.kv.Txn(ctx).If(
+			clientv3.Compare(clientv3.ModRevision(s.opKey(claim.OperationID())), "=", revision),
+			clientv3.Compare(clientv3.ModRevision(s.ownerKey(claim.OperationID())), "=", owner.Kvs[0].ModRevision),
+			clientv3.Compare(clientv3.Value(s.ownerKey(claim.OperationID())), "=", claimOwnerValue(claim.OwnerID(), claim.Generation())),
+			clientv3.Compare(clientv3.CreateRevision(key), "=", 0),
+		).Then(clientv3.OpPut(key, string(encoded))).Commit()
+		if err != nil {
+			return store.OperationCheckpoint{}, err
+		}
+		if txn.Succeeded {
+			return candidate, nil
+		}
+	}
+	return store.OperationCheckpoint{}, store.ErrOperationOwnershipLost
+}
+
+// LoadOperationCheckpoint verifies the stored digest before returning any
+// execution-affecting receipt. A corrupt or foreign value fails closed.
+func (s *V3OperationStore) LoadOperationCheckpoint(ctx context.Context, operationID, stage string) (*store.OperationCheckpoint, error) {
+	if operationID == "" || (stage != store.CheckpointSource && stage != store.CheckpointBuild) {
+		return nil, fmt.Errorf("operation checkpoint stage is invalid")
+	}
+	checkpoint, err := s.loadCheckpoint(ctx, s.checkpointKey(operationID, stage))
+	if errors.Is(err, ErrNotFound) {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, err
+	}
+	if checkpoint.OperationID != operationID || checkpoint.Stage != stage {
+		return nil, fmt.Errorf("operation checkpoint identity is invalid")
+	}
+	return &checkpoint, nil
+}
+
+func (s *V3OperationStore) loadCheckpoint(ctx context.Context, key string) (store.OperationCheckpoint, error) {
+	response, err := s.kv.Get(ctx, key)
+	if err != nil {
+		return store.OperationCheckpoint{}, err
+	}
+	if len(response.Kvs) == 0 {
+		return store.OperationCheckpoint{}, ErrNotFound
+	}
+	var stored v3Checkpoint
+	if err := decodeV3Record(response.Kvs[0].Value, &stored); err != nil {
+		return store.OperationCheckpoint{}, fmt.Errorf("decode etcd operation checkpoint: %w", err)
+	}
+	if stored.OperationID == "" || stored.Stage == "" || stored.ClaimGeneration <= 0 || len(stored.Outputs) < 2 || !json.Valid(stored.Outputs) || checkpointDigest(stored.Outputs) != stored.OutputsDigest {
+		return store.OperationCheckpoint{}, fmt.Errorf("operation checkpoint failed integrity verification")
+	}
+	return store.OperationCheckpoint{OperationID: stored.OperationID, Stage: stored.Stage, ClaimGeneration: stored.ClaimGeneration, Outputs: bytes.Clone(stored.Outputs), OutputsDigest: stored.OutputsDigest, CreatedAt: stored.CreatedAt}, nil
+}
+
+func checkpointDigest(outputs []byte) string {
+	digest := sha256.Sum256(outputs)
+	return "sha256:" + hex.EncodeToString(digest[:])
+}
 func (s *V3OperationStore) ClaimNextOperation(ctx context.Context, owner string, lease time.Duration, kinds []string) (*model.Operation, store.OperationClaim, error) {
 	if owner == "" || lease <= 0 {
 		return nil, store.OperationClaim{}, fmt.Errorf("operation claim owner and lease are required")
@@ -393,6 +500,9 @@ func (s *V3OperationStore) mutateClaimWithComparisons(ctx context.Context, c sto
 	owner, e := s.kv.Get(ctx, s.ownerKey(c.OperationID()))
 	if e != nil || len(owner.Kvs) != 1 || string(owner.Kvs[0].Value) != claimOwnerValue(c.OwnerID(), c.Generation()) || owner.Kvs[0].Lease == 0 || v.Operation.Status != model.OperationRunning || v.Operation.LockedBy != c.OwnerID() || v.Generation != c.Generation() {
 		return store.ErrOperationOwnershipLost
+	}
+	if v.Operation.Metadata == nil {
+		v.Operation.Metadata = map[string]interface{}{}
 	}
 	f(&v.Operation)
 	encoded, e := json.Marshal(v)
