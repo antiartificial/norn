@@ -276,6 +276,24 @@ func newFakeVariableClient(t *testing.T) (*Client, *fakeVariables) {
 	return client, fake
 }
 
+func TestDatabaseDeliveryRejectsOversizedStagedVariableBeforeWrite(t *testing.T) {
+	client, fake := newFakeVariableClient(t)
+	secret := strings.Repeat("x", maxDatabaseVariableItemBytes/2)
+	items := map[string]string{DatabaseComponentItemKey("primary", "password"): secret}
+	err := client.DeliverDatabaseVariable("global", "shop", items, 7)
+	if !errors.Is(err, ErrDatabaseVariableTooLarge) || strings.Contains(err.Error(), secret) || fake.writes != 0 {
+		t.Fatalf("oversized initial delivery: err=%v writes=%d", err, fake.writes)
+	}
+	if err := client.DeliverDatabaseVariable("global", "shop", map[string]string{DatabaseComponentItemKey("primary", "password"): strings.Repeat("s", 30_000)}, 7); err != nil {
+		t.Fatal(err)
+	}
+	before := fake.writes
+	err = client.DeliverDatabaseVariable("global", "shop", map[string]string{DatabaseComponentItemKey("primary", "password"): strings.Repeat("y", 6_000)}, 8)
+	if !errors.Is(err, ErrDatabaseVariableTooLarge) || fake.writes != before {
+		t.Fatalf("oversized second revision: err=%v writes=%d", err, fake.writes)
+	}
+}
+
 func TestDatabaseVariableWritesAreCheckedIdempotentAndRedacted(t *testing.T) {
 	client, fake := newFakeVariableClient(t)
 	items := DatabaseVariableItems(map[string]string{"primary": "postgresql://app:" + deliveryCanary + "@db:5432/shop?sslmode=disable"})

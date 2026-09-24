@@ -47,3 +47,14 @@ credential rotation, TLS use, or database backup/restore qualification. The
 test requires `NORN_TEST_MYSQL_ALLOCATION_HOST`, `NORN_TEST_MYSQL_USER`,
 `NORN_TEST_MYSQL_PASSWORD`, and `NORN_TEST_MYSQL_DATABASE` in addition to the
 Nomad address. Use only a disposable MySQL target because it runs SQL writes.
+
+## Variable capacity
+
+Nomad's [Variable API restriction](https://developer.hashicorp.com/nomad/api-docs/variables/variables#restrictions)
+caps the sum of unencrypted item key and value bytes at 64 KiB. Database
+delivery now checks the complete prospective variable before every create or
+update. That includes current items, revision-keyed staged material and the
+retained previous revision. An oversized delivery returns a redacted error
+before any Nomad write. The regression covers both initial and cumulative
+staging overflow; it does not establish a long-term retention policy for old
+revision material or a Nomad cluster-wide variable capacity budget.

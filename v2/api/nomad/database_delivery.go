@@ -43,6 +43,8 @@ const (
 	componentItemPrefix  = "norn_db_component_"
 	targetItemPrefix     = "norn_db_target_"
 	deliveryRevisionItem = "norn_delivery_catalog_revision"
+	// Nomad limits the sum of unencrypted Variable item key and value bytes.
+	maxDatabaseVariableItemBytes = 64 << 10
 )
 
 // DatabaseVariablePath is the Nomad Variable a job's templates read.
@@ -204,6 +206,10 @@ func databaseTemplate(data, destination string, env bool) *nomadapi.Template {
 // ErrDatabaseVariableConflict reports that a delivery variable holds other
 // values (or changed concurrently) and was not replaced.
 var ErrDatabaseVariableConflict = errors.New("database delivery variable holds other values")
+
+// ErrDatabaseVariableTooLarge prevents an oversized staged revision from
+// reaching Nomad. It never includes connection material in its error text.
+var ErrDatabaseVariableTooLarge = errors.New("database delivery variable exceeds Nomad's item size limit")
 
 // ErrStaleDatabaseDelivery reports a delivery resolved against an older
 // catalog revision than the one already promoted for the job.
@@ -417,6 +423,9 @@ func (c *Client) peekDatabaseVariable(region, jobID string, items map[string]str
 // writeDatabaseVariable creates (index 0) or check-and-set updates.
 func (c *Client) writeDatabaseVariable(region string, variable *nomadapi.Variable, items map[string]string) error {
 	jobID := strings.TrimPrefix(variable.Path, "nomad/jobs/")
+	if err := checkDatabaseVariableItemSize(variable.Items); err != nil {
+		return fmt.Errorf("%w for %s", err, jobID)
+	}
 	write := &nomadapi.WriteOptions{Region: region}
 	var err error
 	if variable.ModifyIndex == 0 {
@@ -430,6 +439,18 @@ func (c *Client) writeDatabaseVariable(region string, variable *nomadapi.Variabl
 	}
 	if err != nil {
 		return fmt.Errorf("write database delivery variable for %s: %s", jobID, redactItems(err.Error(), items))
+	}
+	return nil
+}
+
+func checkDatabaseVariableItemSize(items map[string]string) error {
+	total := 0
+	for key, value := range items {
+		bytes := len(key) + len(value)
+		if bytes > maxDatabaseVariableItemBytes-total {
+			return ErrDatabaseVariableTooLarge
+		}
+		total += bytes
 	}
 	return nil
 }
