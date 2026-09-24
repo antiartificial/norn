@@ -81,6 +81,40 @@ func TestControlSchemaMiniAdoptionFailsClosed(t *testing.T) {
 		}
 		assertNoMigrationMetadata(t, pool)
 	})
+	t.Run("unrelated baseline table drift", func(t *testing.T) {
+		pool := schemaMigrationTestPools(t, 1)[0]
+		createMiniPilotFixture(t, pool)
+		if _, err := pool.Exec(context.Background(), `CREATE TABLE access_tokens(id TEXT PRIMARY KEY, subject TEXT NOT NULL)`); err != nil {
+			t.Fatal(err)
+		}
+		tx, err := pool.Begin(context.Background())
+		if err != nil {
+			t.Fatal(err)
+		}
+		fingerprint, err := miniSchemaStructuralFingerprint(context.Background(), tx)
+		if rollbackErr := tx.Rollback(context.Background()); err == nil && rollbackErr != nil {
+			err = rollbackErr
+		}
+		if err != nil {
+			t.Fatal(err)
+		}
+		if _, err := pool.Exec(context.Background(), `ALTER TABLE access_tokens DROP COLUMN subject`); err != nil {
+			t.Fatal(err)
+		}
+		migrator, err := NewControlSchemaMigrator(&DB{Pool: pool})
+		if err != nil {
+			t.Fatal(err)
+		}
+		migrator.adoptUnversioned = func(ctx context.Context, tx pgx.Tx) error {
+			return adoptMiniControlSchemaFingerprint(ctx, tx, fingerprint, []string{"access_tokens", "external_deployment_admission_checkpoints", "external_deployment_admissions", "external_deployment_nonces", "fleet_github_dispatches", "fleet_runner_attempts", "fleet_runner_checkpoint_refs", "operations"})
+		}
+		_, err = migrator.Migrate(context.Background())
+		var adoptionErr *MiniSchemaAdoptionError
+		if !errors.As(err, &adoptionErr) {
+			t.Fatalf("error = %T %v", err, err)
+		}
+		assertNoMigrationMetadata(t, pool)
+	})
 	t.Run("dispatch rows", func(t *testing.T) {
 		pool := schemaMigrationTestPools(t, 1)[0]
 		createMiniPilotFixture(t, pool)
