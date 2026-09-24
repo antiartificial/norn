@@ -10,38 +10,39 @@ import (
 	clientv3 "go.etcd.io/etcd/client/v3"
 )
 
-type etcdStatusStub struct {
-	errs map[string]error
+type etcdHealthStub struct {
+	err error
+	key string
 }
 
-func (s etcdStatusStub) Status(_ context.Context, endpoint string) (*clientv3.StatusResponse, error) {
-	if err := s.errs[endpoint]; err != nil {
-		return nil, err
+func (s *etcdHealthStub) Get(_ context.Context, key string, _ ...clientv3.OpOption) (*clientv3.GetResponse, error) {
+	s.key = key
+	if s.err != nil {
+		return nil, s.err
 	}
-	return &clientv3.StatusResponse{}, nil
+	return &clientv3.GetResponse{}, nil
 }
 
-func TestCheckEtcdSourceHealthAcceptsAnyConfiguredMember(t *testing.T) {
-	err := checkEtcdSourceHealth(context.Background(), etcdStatusStub{errs: map[string]error{
-		"http://first": errors.New("unavailable"),
-	}}, []string{"http://first", "http://second"})
+func TestCheckEtcdSourceHealthUsesControlPrefixRead(t *testing.T) {
+	client := &etcdHealthStub{}
+	err := checkEtcdSourceHealth(context.Background(), client, "/norn/source-validation")
 	if err != nil {
-		t.Fatalf("healthy second member: %v", err)
+		t.Fatalf("linearizable read: %v", err)
+	}
+	if client.key != "/norn/source-validation" {
+		t.Fatalf("read key=%q", client.key)
 	}
 }
 
-func TestCheckEtcdSourceHealthFailsWhenEveryMemberIsUnavailable(t *testing.T) {
-	err := checkEtcdSourceHealth(context.Background(), etcdStatusStub{errs: map[string]error{
-		"http://first":  errors.New("first unavailable"),
-		"http://second": errors.New("second unavailable"),
-	}}, []string{"http://first", "http://second"})
+func TestCheckEtcdSourceHealthFailsWhenQuorumReadFails(t *testing.T) {
+	err := checkEtcdSourceHealth(context.Background(), &etcdHealthStub{err: errors.New("quorum unavailable")}, "/norn/source-validation")
 	if err == nil {
-		t.Fatal("all unavailable members must fail health")
+		t.Fatal("unavailable quorum read must fail health")
 	}
 }
 
 func TestSourceHealthUnavailableProblemShape(t *testing.T) {
-	handler := sourceValidationHealthHandler(etcdStatusStub{errs: map[string]error{"http://only": errors.New("down")}}, []string{"http://only"})
+	handler := sourceValidationHealthHandler(&etcdHealthStub{err: errors.New("down")}, "/norn/source-validation")
 	recorder := httptest.NewRecorder()
 	handler.ServeHTTP(recorder, httptest.NewRequest(http.MethodGet, "/api/health", nil))
 	if recorder.Code != http.StatusServiceUnavailable {

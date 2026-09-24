@@ -19,7 +19,7 @@ The raw shared API secret is never accepted as a request credential.
 
 | Endpoint | Behavior |
 | --- | --- |
-| `GET /api/health` | Checks configured etcd members and returns `503 source_validation_unavailable` if none answer. |
+| `GET /api/health` | Performs a bounded linearizable etcd read at the configured control prefix and returns `503 source_validation_unavailable` when that quorum-backed path is unavailable. |
 | `GET /api/version` | Returns the API version. |
 | `GET /api/v1/capabilities` | Advertises the bounded source-validation capability set. |
 | `POST /api/v1/source-validation/apps/{id}/preflights` | Requires a managed etcd token with `api:write` and an idempotency key. Accepts only source-only preflight. |
