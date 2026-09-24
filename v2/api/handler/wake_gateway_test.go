@@ -1,16 +1,21 @@
 package handler
 
 import (
+	"context"
 	"io"
 	"net/http"
 	"net/http/httptest"
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"testing"
 
 	"norn/v2/api/config"
 	"norn/v2/api/model"
+	"norn/v2/api/pipeline"
+	"norn/v2/api/saga"
+	"norn/v2/api/store"
 )
 
 func TestWakeGatewayTargetForHostMapsPublicServiceEndpoint(t *testing.T) {
@@ -315,4 +320,104 @@ func TestRequestHostnameNormalizesHostHeader(t *testing.T) {
 	if got := requestHostname(req); got != "trove.example.com" {
 		t.Fatalf("hostname = %q, want trove.example.com", got)
 	}
+}
+
+func TestWakeGatewayCapacityIntentIsSignedAndReplayedAcrossConcurrentRequests(t *testing.T) {
+	db := acceptanceIntegrationDB(t)
+	appsDir := t.TempDir()
+	appDir := filepath.Join(appsDir, "sleeper")
+	if err := os.Mkdir(appDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(appDir, "infraspec.yaml"), []byte(`name: sleeper
+deploy: true
+processes:
+  web:
+    command: serve
+regions:
+  local:
+    nomadRegion: global
+`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	pipe := &pipeline.Pipeline{DB: db, SagaStore: saga.NewPostgresStore(db.Pool)}
+	h := New(db, nil, nil, nil, &config.Config{AppsDir: appsDir, AuditSigningKey: strings.Repeat("w", 32)}, pipe, nil, nil, pipe.SagaStore, nil, nil)
+	pipe.SetOperationStore(h.OperationStore())
+	target := wakeGatewayTarget{App: "sleeper", Process: "web"}
+
+	var wg sync.WaitGroup
+	errs := make(chan error, 2)
+	for range 2 {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			errs <- h.queueWakeGatewayCapacityIntent(context.Background(), target)
+		}()
+	}
+	wg.Wait()
+	close(errs)
+	for err := range errs {
+		if err != nil {
+			t.Fatalf("concurrent wake capacity intent: %v", err)
+		}
+	}
+	if err := h.queueWakeGatewayCapacityIntent(context.Background(), target); err != nil {
+		t.Fatalf("replay wake capacity intent: %v", err)
+	}
+
+	ops, err := db.ListOperations(context.Background(), store.OperationFilter{App: "sleeper", Kind: "app.scale", Limit: 10})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(ops) != 1 {
+		t.Fatalf("scale operations = %d, want one durable replay target", len(ops))
+	}
+	if got := ops[0].Payload; got["group"] != "web" || got["region"] != "local" || got["nomadRegion"] != "global" || got["count"] != float64(1) {
+		t.Fatalf("wake scale payload = %#v", got)
+	}
+	var signed int
+	if err := db.Pool.QueryRow(context.Background(), `SELECT count(*) FROM operation_acceptance_intents WHERE operation_id=$1`, ops[0].ID).Scan(&signed); err != nil {
+		t.Fatal(err)
+	}
+	if signed != 1 {
+		t.Fatalf("signed acceptance intents = %d, want 1", signed)
+	}
+}
+
+func TestWakeGatewayCapacityIntentRejectsAmbiguousOrInvalidWakeTarget(t *testing.T) {
+	appsDir := t.TempDir()
+	appDir := filepath.Join(appsDir, "multi")
+	if err := os.Mkdir(appDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(appDir, "infraspec.yaml"), []byte(`name: multi
+deploy: true
+processes:
+  web:
+    command: serve
+regions:
+  iad: {}
+  ord: {}
+`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	h := &Handler{cfg: &config.Config{AppsDir: appsDir}, pipeline: &pipeline.Pipeline{}, operationStore: wakeTestOperationStore{}}
+	if err := h.queueWakeGatewayCapacityIntent(context.Background(), wakeGatewayTarget{App: "multi", Process: "web"}); err == nil || !strings.Contains(err.Error(), "exactly one declared process region") {
+		t.Fatalf("ambiguous wake error = %v", err)
+	}
+	if err := h.queueWakeGatewayCapacityIntent(context.Background(), wakeGatewayTarget{App: "multi", Process: "missing"}); err == nil || !strings.Contains(err.Error(), "not a scalable service process") {
+		t.Fatalf("invalid wake error = %v", err)
+	}
+}
+
+type wakeTestOperationStore struct{}
+
+func (wakeTestOperationStore) Authority(context.Context) (string, error) {
+	return "00000000-0000-0000-0000-000000000001", nil
+}
+func (wakeTestOperationStore) Accept(context.Context, store.OperationAcceptance) (store.AcceptedOperation, error) {
+	return store.AcceptedOperation{}, nil
+}
+func (wakeTestOperationStore) Resolve(context.Context, store.OperationRequestIdentity, store.RequestFingerprint) (store.AcceptedOperation, error) {
+	return store.AcceptedOperation{}, nil
 }
