@@ -46,6 +46,7 @@ var inspectionCatalog = []knownMigration{
 	{version: 10, name: "non-saga-signed-receipt-evidence", checksum: "698e04711a17727f46cd788bb33e55508f8f49ab99b09a62d8c07fbfd26e709a", minimumReader: 2, minimumWriter: 7},
 	{version: 11, name: "durable-app-desired-replicas", checksum: "c3ce6b77e9428e83d8282e06c65c17a13e29c2a85bf374bdb81fc7438dd3cb07", minimumReader: 2, minimumWriter: 8},
 	{version: 12, name: "regional-durable-app-desired-replicas", checksum: "379253085218d1161710dbc72afb9c227bd6b464da94244ec0d8edf7e2a09ae4", minimumReader: 2, minimumWriter: 9},
+	{version: 13, name: "durable-restart-effect-sources", checksum: "6bc653a27de50c14482fd840ea4af06f78ffbf4443fd568da2a8b960c1bcd00a", minimumReader: 2, minimumWriter: 10},
 }
 
 // Inspection is a redacted, non-restorable view of one repeatable-read control

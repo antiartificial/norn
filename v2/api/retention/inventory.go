@@ -38,6 +38,7 @@ var PayloadInventory = []PayloadRetention{
 	{"operation_request_identities", ClassHotEvidence, nil, "replay identities until an explicit expiry contract"},
 	{"operation_acceptance_intents", ClassHotEvidence, []string{"request_canonical_bytes", "canonical_bytes"}, "original signed bytes; archived byte-exact inside saga bundles and terminal Fleet GitHub receipt bundles; hot replay identity remains authoritative"},
 	{"operation_effects", ClassHotEvidence, []string{"launch_payload"}, "unresolved effects and retry-safety evidence"},
+	{"restart_effect_sources", ClassHotEvidence, nil, "per-source restart attempt and acknowledgement evidence"},
 	{"operation_checkpoints", ClassHotEvidence, []string{"outputs"}, "retry-safety checkpoints of unresolved operations"},
 	{"deployments", ClassHotEvidence, []string{"source_changes"}, "current and rollback candidates, routing state"},
 	{"deployment_regions", ClassHotEvidence, nil, "regional routing of current deployments"},

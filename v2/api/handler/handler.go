@@ -61,7 +61,6 @@ type Handler struct {
 	logSpool                  *logcollect.Spool
 	auditPruneMu              sync.Mutex
 	auditPruneAt              time.Time
-	wakeLocks                 sync.Map
 	execConns                 sync.Map
 	execOwnerOnce             sync.Once
 	execOwnerID               string

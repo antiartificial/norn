@@ -199,6 +199,33 @@ func TestPGEffectStoreLocatesBlockingEffectAndRecordsFinalFailure(t *testing.T) 
 	}
 }
 
+func TestPGEffectStoreBlocksDifferentUnresolvedEffectsForSameApp(t *testing.T) {
+	dbs, stores, authority := setupEffectStores(t, 1)
+	ctx := context.Background()
+	_, firstClaim := claimEffectOperation(t, dbs[0], "restart", time.Minute)
+	first := effectReservation(t, authority, "app/demo/restart", "restart-effect", firstClaim)
+	reserved, err := stores[0].Reserve(ctx, first)
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, secondClaim := claimEffectOperation(t, dbs[0], "canary", time.Minute)
+	second := effectReservation(t, authority, "app/demo/canary", "canary-effect", secondClaim)
+	if _, err := stores[0].Reserve(ctx, second); !errors.Is(err, effect.ErrResourceBlocked) {
+		t.Fatalf("different app effect overlap err=%v", err)
+	}
+	identity := effect.ExecutionIdentity{Supervisor: first.Supervisor, SupervisorExecutionID: first.SupervisorExecutionID, RuntimeInstanceID: "restart-runtime"}
+	if err := stores[0].MarkLaunched(ctx, reserved.Record.Token, identity); err != nil {
+		t.Fatal(err)
+	}
+	verification := effectVerification(first, identity.RuntimeInstanceID, effect.VerificationFailed)
+	if err := stores[0].Complete(ctx, reserved.Record.Token, effect.Completion{Outcome: effect.OutcomeFailed, Verification: verification}); err != nil {
+		t.Fatal(err)
+	}
+	if result, err := stores[0].Reserve(ctx, second); err != nil || !result.Created {
+		t.Fatalf("resolved app gate did not reopen result=%+v err=%v", result, err)
+	}
+}
+
 func TestPGEffectStoreResolutionCannotEraseRecordedLaunch(t *testing.T) {
 	dbs, stores, authority := setupEffectStores(t, 1)
 	ctx := context.Background()

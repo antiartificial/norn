@@ -3,9 +3,25 @@ package store
 import (
 	"context"
 	"errors"
+	"strings"
 	"testing"
 	"time"
 )
+
+func TestLatestWakeCapacityCycleRejectsMalformedMetadata(t *testing.T) {
+	pools := schemaMigrationTestPools(t, 1)
+	db := &DB{Pool: pools[0]}
+	if err := Migrate(db); err != nil {
+		t.Fatal(err)
+	}
+	op := insertOperationFixture(t, db, "app.scale", 1, map[string]interface{}{})
+	if _, err := db.Pool.Exec(context.Background(), `UPDATE operations SET source='wake-gateway', ref='local/web', metadata='{"wakeCycle":"not-a-number"}'::jsonb WHERE id=$1`, op.ID); err != nil {
+		t.Fatal(err)
+	}
+	if _, _, _, err := db.LatestWakeCapacityCycle(context.Background(), op.App, "web", "local"); err == nil || !strings.Contains(err.Error(), "wake cycle metadata is invalid") {
+		t.Fatalf("malformed wake cycle error = %v", err)
+	}
+}
 
 func TestFinishScaleClaimedOperationRejectsLeaseExpiredWhileWaitingForRowLock(t *testing.T) {
 	pools := schemaMigrationTestPools(t, 2)
