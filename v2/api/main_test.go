@@ -20,6 +20,7 @@ import (
 	"norn/v2/api/auth"
 	"norn/v2/api/config"
 	"norn/v2/api/handler"
+	"norn/v2/api/startup"
 )
 
 func testEd25519Private(ch byte) string {
@@ -297,6 +298,17 @@ func TestInvalidOperationReplayTTLStopsStartupValidation(t *testing.T) {
 				t.Fatalf("startup validation error = %v, want explicit replay TTL rejection", err)
 			}
 		})
+	}
+}
+
+func TestEtcdProductionSecurityDoesNotRequirePostgreSQLDSN(t *testing.T) {
+	cfg := &config.Config{Profile: "production", Environment: "production", BindAddr: "127.0.0.1", APIToken: strings.Repeat("x", 32), AuditSigningKey: strings.Repeat("a", 32), AuditRetentionDays: 365, RequireExplicitAuth: true, StrictSecrets: true, NomadAddr: "https://nomad:4646", ConsulAddr: "https://consul:8501", DatabaseURL: "postgres://poisoned.invalid:1/never-open", RegistryURL: "registry.example.test/norn", ArtifactDenySeverities: []string{"HIGH"}, LegacyTokenSigningUntil: time.Now().Add(-time.Hour), TrustedQualificationSigningKeys: []string{testEd25519Public('q')}, ReleaseAdmissionMode: "keyless", ReleaseAttestationIssuer: "https://token.actions.githubusercontent.com", ReleaseAttestationRepositories: []string{"owner/repo"}, ReleaseAttestationWorkflowRefs: []string{"owner/repo/.github/workflows/release.yml@" + strings.Repeat("a", 40)}, ReleaseRequireSBOM: true, GitHubActionsOIDCAudience: "norn", GitHubActionsOIDCJWKSURL: "https://token.actions.githubusercontent.com/.well-known/jwks", GitHubActionsAllowedRepositories: []string{"owner/repo@1@2"}, GitHubActionsAllowedWorkflowRefs: []string{"owner/repo/.github/workflows/release.yml@" + strings.Repeat("a", 40)}, GitHubActionsAllowedRefs: []string{"refs/tags/v*"}, GitHubActionsAllowedEvents: []string{"push"}, GitHubActionsAllowedApps: []string{"demo"}, GitHubActionsAllowedEnvironments: []string{"production"}, GitHubActionsDefaultBranch: "main"}
+	etcdBackend := startup.ControlBackendConfig{Backend: startup.BackendEtcd, EtcdEndpoints: []string{"https://etcd.example.test:2379"}, EtcdCAFile: "/no/such/ca.pem", EtcdCertFile: "/no/such/cert.pem", EtcdKeyFile: "/no/such/key.pem", EtcdUsername: "norn", EtcdPassword: "secret"}
+	if err := validateControlSecurityForBackend(cfg, etcdBackend); err == nil || !strings.Contains(err.Error(), startup.EtcdCAFileEnv) || strings.Contains(err.Error(), "PostgreSQL") {
+		t.Fatalf("production etcd validation should reach its transport check before PostgreSQL: %v", err)
+	}
+	if err := validateControlSecurityForBackend(cfg, startup.ControlBackendConfig{Backend: startup.BackendPostgres}); err == nil || !strings.Contains(err.Error(), "PostgreSQL") {
+		t.Fatalf("postgres security error = %v, want PostgreSQL DSN rejection", err)
 	}
 }
 

@@ -30,7 +30,7 @@ func NewOperationWorker(db store.ExecutionStore, p *pipeline.Pipeline) *Operatio
 	return NewOperationWorkerForKinds(db, p, []string{
 		"app.preflight", "app.deploy", "app.rollback", "app.restart", "app.snapshot",
 		"app.snapshot-prune", "app.snapshot-restore", "app.migrate",
-		"app.scale",
+		"app.scale", "app.cron-pause",
 		"app.canary-promote",
 		pipeline.CatalogActivationKind, pipeline.DatabaseBaselineKind,
 	})
@@ -133,9 +133,16 @@ func (w *OperationWorker) handle(ctx context.Context, op *model.Operation, claim
 	if execErr != nil {
 		if effect.IsDeferred(execErr) {
 			message := fmt.Sprintf("external effect recovery pending: %v", execErr)
-			if deferErr := w.deferClaimedOperation(ctx, claim, appLock, message, time.Now().Add(5*time.Second), map[string]interface{}{
-				"externalEffectRecoveryPending": true,
-			}); deferErr != nil {
+			metadata := deferredEffectMetadata(execErr)
+			if op.Kind == "app.cron-pause" {
+				if terminal, deferErr := w.deferOrFailCronPauseClaimedOperation(ctx, claim, appLock, message, time.Now().Add(5*time.Second), metadata); deferErr != nil {
+					log.Printf("operation worker: defer unresolved cron pause effect %s: %v", op.ID, deferErr)
+				} else if terminal {
+					log.Printf("operation worker: cron pause effect retry budget exhausted %s", op.ID)
+				}
+				return
+			}
+			if deferErr := w.deferClaimedOperation(ctx, claim, appLock, message, time.Now().Add(5*time.Second), metadata); deferErr != nil {
 				log.Printf("operation worker: defer unresolved effect %s: %v", op.ID, deferErr)
 			}
 			return
@@ -165,6 +172,23 @@ func (w *OperationWorker) handle(ctx context.Context, op *model.Operation, claim
 		return
 	}
 	result.Publish(ctx)
+}
+
+func deferredEffectMetadata(err error) map[string]interface{} {
+	metadata := map[string]interface{}{"externalEffectRecoveryPending": true}
+	var pending *effect.PendingError
+	if errors.As(err, &pending) {
+		if pending.EffectID != "" {
+			metadata["effectId"] = pending.EffectID
+		}
+		if pending.Resource != "" {
+			metadata["effectResource"] = pending.Resource
+		}
+		if pending.Reason != "" {
+			metadata["effectRecoveryReason"] = pending.Reason
+		}
+	}
+	return metadata
 }
 
 func (w *OperationWorker) execute(ctx context.Context, op *model.Operation, claim store.OperationClaim) (result *pipeline.OperationResult, err error) {
@@ -208,6 +232,18 @@ func (w *OperationWorker) deferClaimedOperation(ctx context.Context, claim store
 		return fenced.DeferClaimedOperationWithAppLock(ctx, claim, appLock, message, next, metadata)
 	}
 	return w.db.DeferClaimedOperation(ctx, claim, message, next, metadata)
+}
+
+func (w *OperationWorker) deferOrFailCronPauseClaimedOperation(ctx context.Context, claim store.OperationClaim, appLock store.AppOperationLock, message string, next time.Time, metadata map[string]interface{}) (bool, error) {
+	if recovery, ok := w.db.(store.CronPauseRecoveryStore); ok {
+		return recovery.DeferOrFailCronPauseClaimedOperation(ctx, claim, appLock, message, next, metadata)
+	}
+	// Every durable production store implements the dedicated path. A legacy
+	// adapter cannot safely refund an ambiguous cron-pause effect, so preserve
+	// its evidence in a claim-fenced manual-review receipt.
+	metadata["manualRecoveryRequired"] = true
+	metadata["retryBudgetExhausted"] = true
+	return true, w.finishClaimedOperation(ctx, claim, appLock, model.OperationFailed, "cron pause effect recovery path is unavailable; manual recovery is required: "+message, metadata)
 }
 
 func (w *OperationWorker) retryClaimedOperation(ctx context.Context, claim store.OperationClaim, appLock store.AppOperationLock, message, lastError string, next time.Time, metadata map[string]interface{}) error {

@@ -881,6 +881,53 @@ func (db *DB) UpsertCronState(ctx context.Context, app, process string, paused b
 	return err
 }
 
+// FinishCronPauseClaimedOperation atomically makes a verified pause visible
+// with its terminal receipt. The operation lease is checked in the same
+// transaction so a superseded worker cannot publish stale cron state.
+func (db *DB) FinishCronPauseClaimedOperation(ctx context.Context, claim OperationClaim, app, process, schedule, message string, metadata map[string]interface{}) error {
+	if err := validateOperationClaim(claim); err != nil {
+		return err
+	}
+	if app == "" || process == "" || schedule == "" {
+		return fmt.Errorf("cron pause intent is invalid")
+	}
+	if metadata == nil {
+		metadata = map[string]interface{}{}
+	}
+	data, _ := json.Marshal(metadata)
+	tx, err := db.Pool.Begin(ctx)
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback(ctx)
+	var status, owner string
+	var generation int64
+	var lockedUntil *time.Time
+	if err = tx.QueryRow(ctx, `SELECT status, locked_by, lock_generation, locked_until FROM operations WHERE id=$1 FOR UPDATE`, claim.OperationID()).Scan(&status, &owner, &generation, &lockedUntil); err != nil {
+		return err
+	}
+	var now time.Time
+	if err = tx.QueryRow(ctx, `SELECT clock_timestamp()`).Scan(&now); err != nil {
+		return err
+	}
+	if status != "running" || owner != claim.OwnerID() || generation != claim.Generation() || lockedUntil == nil || !lockedUntil.After(now) {
+		return ownershipLost(claim)
+	}
+	if _, err = tx.Exec(ctx, `INSERT INTO cron_states (app, process, paused, schedule, updated_at) VALUES ($1,$2,true,$3,now()) ON CONFLICT (app,process) DO UPDATE SET paused=true,schedule=EXCLUDED.schedule,updated_at=now()`, app, process, schedule); err != nil {
+		return err
+	}
+	var sagaID, operationApp string
+	if err = tx.QueryRow(ctx, `UPDATE operations SET status='succeeded', message=$1, metadata=metadata || $2::jsonb, locked_by='', locked_until=NULL, updated_at=now(), finished_at=now() WHERE id=$3 RETURNING saga_id,app`, message, data, claim.OperationID()).Scan(&sagaID, &operationApp); err != nil {
+		return err
+	}
+	if sagaID != "" {
+		if _, err = tx.Exec(ctx, `INSERT INTO evidence_archive_intents (id,subject_kind,subject_id,app,operation_id,sequence,state) VALUES ('ei-' || gen_random_uuid()::text,'saga',$1,$2,$3,1,'pending') ON CONFLICT (subject_kind,subject_id,sequence) DO NOTHING`, sagaID, operationApp, claim.OperationID()); err != nil {
+			return err
+		}
+	}
+	return tx.Commit(ctx)
+}
+
 // FuncExecution represents a function invocation record.
 type FuncExecution struct {
 	ID         string     `json:"id"`

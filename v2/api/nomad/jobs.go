@@ -4,11 +4,21 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"strconv"
 	"strings"
 	"time"
 
 	nomadapi "github.com/hashicorp/nomad/api"
 )
+
+// ErrJobRevisionChanged means Nomad refused a mutation because the job is no
+// longer the revision the caller authorized.
+var (
+	ErrJobRevisionChanged      = errors.New("Nomad job revision changed")
+	ErrAtomicJobCASUnsupported = errors.New("Nomad server does not provide atomic job CAS")
+)
+
+const cronPauseEffectMetaKey = "norn.cron-pause.effect-id"
 
 // SubmitJob registers a job with Nomad.
 func (c *Client) SubmitJob(job *nomadapi.Job) (string, error) {
@@ -35,6 +45,90 @@ func (c *Client) SubmitJobRegion(job *nomadapi.Job, region string) (string, erro
 func (c *Client) StopJob(jobID string, purge bool) error {
 	_, _, err := c.api.Jobs().Deregister(jobID, purge, nil)
 	return err
+}
+
+// PausePeriodicJob atomically sets the periodic parent's Stop flag only when
+// its current JobModifyIndex still matches expectedModifyIndex. Deregister does
+// not offer a compare-and-swap guard, so pausing uses Nomad's guarded job
+// registration endpoint instead.
+func (c *Client) PausePeriodicJob(jobID string, expectedModifyIndex uint64, effectID string) error {
+	if strings.TrimSpace(jobID) == "" || expectedModifyIndex == 0 || strings.TrimSpace(effectID) == "" {
+		return fmt.Errorf("periodic job pause requires a job ID, modify index, and effect ID")
+	}
+	if err := c.requireAtomicJobCAS(); err != nil {
+		return err
+	}
+	job, _, err := c.api.Jobs().Info(jobID, nil)
+	if err != nil {
+		return fmt.Errorf("read periodic job %s for pause: %w", jobID, err)
+	}
+	if job == nil || job.Periodic == nil {
+		return fmt.Errorf("job %s is not periodic", jobID)
+	}
+	if job.JobModifyIndex == nil || *job.JobModifyIndex != expectedModifyIndex {
+		return fmt.Errorf("%w for %s", ErrJobRevisionChanged, jobID)
+	}
+	if job.Stop != nil && *job.Stop {
+		return fmt.Errorf("periodic job %s is already stopped", jobID)
+	}
+
+	stopped := true
+	job.Stop = &stopped
+	if job.Meta == nil {
+		job.Meta = make(map[string]string)
+	}
+	job.Meta[cronPauseEffectMetaKey] = effectID
+	_, _, err = c.api.Jobs().RegisterOpts(job, &nomadapi.RegisterOptions{
+		EnforceIndex: true,
+		ModifyIndex:  expectedModifyIndex,
+	}, nil)
+	if err != nil {
+		if strings.Contains(err.Error(), nomadapi.RegisterEnforceIndexErrPrefix) {
+			return fmt.Errorf("%w for %s: %v", ErrJobRevisionChanged, jobID, err)
+		}
+		return fmt.Errorf("pause periodic job %s: %w", jobID, err)
+	}
+	return nil
+}
+
+func (c *Client) requireAtomicJobCAS() error {
+	self, err := c.api.Agent().Self()
+	if err != nil {
+		return fmt.Errorf("inspect Nomad version for atomic job CAS: %w", err)
+	}
+	version, _ := self.Config["Version"].(string)
+	if !supportsAtomicJobCAS(version) {
+		return fmt.Errorf("%w: %q requires 1.10.11, 1.11.5, or 2.0.1 and later", ErrAtomicJobCASUnsupported, version)
+	}
+	return nil
+}
+
+func supportsAtomicJobCAS(version string) bool {
+	// A prerelease may predate the server-side CAS fix even when its eventual
+	// release number meets the floor.
+	if strings.Contains(version, "-") {
+		return false
+	}
+	parts := strings.Split(strings.TrimPrefix(strings.TrimSpace(version), "v"), ".")
+	if len(parts) < 3 {
+		return false
+	}
+	values := [3]int{}
+	for i := range parts[:3] {
+		// Ignore an allowed prerelease/build suffix on the patch component.
+		number := strings.TrimSuffix(parts[i], strings.TrimLeft(parts[i], "0123456789"))
+		parsed, err := strconv.Atoi(number)
+		if err != nil {
+			return false
+		}
+		values[i] = parsed
+	}
+	switch values[0] {
+	case 1:
+		return values[1] > 11 || (values[1] == 11 && values[2] >= 5) || (values[1] == 10 && values[2] >= 11)
+	default:
+		return values[0] >= 2 && (values[0] > 2 || values[1] > 0 || values[2] >= 1)
+	}
 }
 
 // RestartJob replaces every active allocation for a job. Stopping an
@@ -536,15 +630,18 @@ func (c *Client) PeriodicChildren(parentJobID string) ([]CronRun, error) {
 
 // PeriodicJobInfo holds scheduling metadata for a periodic job.
 type PeriodicJobInfo struct {
-	JobID           string `json:"jobId"`
-	Schedule        string `json:"schedule"`
-	TimeZone        string `json:"timezone,omitempty"`
-	SubmittedAt     string `json:"submittedAt,omitempty"`
-	Paused          bool   `json:"paused"`
-	Status          string `json:"status"`
-	ChildrenPending int64  `json:"childrenPending,omitempty"`
-	ChildrenRunning int64  `json:"childrenRunning,omitempty"`
-	ChildrenDead    int64  `json:"childrenDead,omitempty"`
+	JobID             string `json:"jobId"`
+	Schedule          string `json:"schedule"`
+	TimeZone          string `json:"timezone,omitempty"`
+	Version           uint64 `json:"version"`
+	ModifyIndex       uint64 `json:"modifyIndex"`
+	SubmittedAt       string `json:"submittedAt,omitempty"`
+	Paused            bool   `json:"paused"`
+	Status            string `json:"status"`
+	CronPauseEffectID string `json:"cronPauseEffectId,omitempty"`
+	ChildrenPending   int64  `json:"childrenPending,omitempty"`
+	ChildrenRunning   int64  `json:"childrenRunning,omitempty"`
+	ChildrenDead      int64  `json:"childrenDead,omitempty"`
 }
 
 // PeriodicJobSchedule returns the cron spec and status for a periodic parent job.
@@ -560,6 +657,12 @@ func (c *Client) PeriodicJobSchedule(jobID string) (*PeriodicJobInfo, error) {
 		JobID:  jobID,
 		Status: *job.Status,
 	}
+	if job.Version != nil {
+		info.Version = *job.Version
+	}
+	if job.JobModifyIndex != nil {
+		info.ModifyIndex = *job.JobModifyIndex
+	}
 	if job.SubmitTime != nil {
 		info.SubmittedAt = time.Unix(0, *job.SubmitTime).Format(time.RFC3339)
 	}
@@ -572,6 +675,7 @@ func (c *Client) PeriodicJobSchedule(jobID string) (*PeriodicJobInfo, error) {
 	if job.Stop != nil {
 		info.Paused = *job.Stop
 	}
+	info.CronPauseEffectID = job.Meta[cronPauseEffectMetaKey]
 	if jobs, _, listErr := c.api.Jobs().List(&nomadapi.QueryOptions{Prefix: jobID}); listErr == nil {
 		for _, j := range jobs {
 			if j.ID != jobID || j.JobSummary == nil || j.JobSummary.Children == nil {

@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"crypto/sha256"
+	"encoding/base64"
 	"encoding/hex"
 	"encoding/json"
 	"errors"
@@ -86,6 +87,67 @@ var _ store.OperationIdentityResolver = (*V3OperationStore)(nil)
 var _ store.ExecutionStore = (*V3OperationStore)(nil)
 var _ store.OperationCheckpointStore = (*V3OperationStore)(nil)
 
+// ListOperations returns a bounded, stable snapshot of accepted operations.
+// It is intentionally a small read surface for the etcd Fleet runtime; callers
+// must apply their own kind and result limits rather than treating etcd as the
+// unrestricted historical query engine used by PostgreSQL deployments.
+func (s *V3OperationStore) ListOperations(ctx context.Context, limit int) ([]model.Operation, error) {
+	if limit <= 0 || limit > 100 {
+		return nil, fmt.Errorf("operation list limit must be between 1 and 100")
+	}
+	response, err := s.kv.Get(ctx, s.opsPrefix(), clientv3.WithPrefix(), clientv3.WithLimit(int64(limit)), clientv3.WithSort(clientv3.SortByKey, clientv3.SortAscend))
+	if err != nil {
+		return nil, err
+	}
+	operations := make([]model.Operation, 0, min(limit, len(response.Kvs)))
+	for _, kv := range response.Kvs {
+		var record v3Record
+		if err := json.Unmarshal(kv.Value, &record); err != nil {
+			return nil, fmt.Errorf("decode operation %q: %w", string(kv.Key), err)
+		}
+		operations = append(operations, record.Operation)
+		if len(operations) == limit {
+			break
+		}
+	}
+	sort.SliceStable(operations, func(i, j int) bool {
+		if operations[i].StartedAt.Equal(operations[j].StartedAt) {
+			return operations[i].ID < operations[j].ID
+		}
+		return operations[i].StartedAt.After(operations[j].StartedAt)
+	})
+	return operations, nil
+}
+
+// ListOperationsByKind reads from the immutable kind/time index. The limit is
+// applied by etcd after kind and descending acceptance-time filtering, rather
+// than before filtering an arbitrary UUID-keyed operation prefix.
+func (s *V3OperationStore) ListOperationsByKind(ctx context.Context, kind string, limit int) ([]model.Operation, error) {
+	if strings.TrimSpace(kind) == "" || limit <= 0 || limit > 100 {
+		return nil, fmt.Errorf("operation kind and a list limit between 1 and 100 are required")
+	}
+	response, err := s.kv.Get(ctx, s.operationKindIndexPrefix(kind), clientv3.WithPrefix(), clientv3.WithLimit(int64(limit)), clientv3.WithSort(clientv3.SortByKey, clientv3.SortAscend))
+	if err != nil {
+		return nil, err
+	}
+	operations := make([]model.Operation, 0, len(response.Kvs))
+	for _, item := range response.Kvs {
+		id := string(item.Value)
+		if id == "" {
+			return nil, fmt.Errorf("operation kind index contains an empty ID")
+		}
+		record, _, err := s.load(ctx, id)
+		if err != nil {
+			return nil, fmt.Errorf("load indexed operation %q: %w", id, err)
+		}
+		if record.Operation.ID != id || record.Operation.Kind != kind {
+			return nil, fmt.Errorf("operation kind index integrity check failed for %q", id)
+		}
+		operations = append(operations, record.Operation)
+	}
+	return operations, nil
+}
+
 // GetOperation returns a single accepted operation for the narrow
 // source-validation status surface. It intentionally does not add listing or
 // recovery semantics to the etcd adapter.
@@ -101,8 +163,15 @@ func (s *V3OperationStore) GetOperation(ctx context.Context, id string) (*model.
 	return &operation, nil
 }
 
-func (s *V3OperationStore) opKey(id string) string      { return s.prefix + "/v3/operations/" + id }
-func (s *V3OperationStore) opsPrefix() string           { return s.prefix + "/v3/operations/" }
+func (s *V3OperationStore) opKey(id string) string { return s.prefix + "/v3/operations/" + id }
+func (s *V3OperationStore) opsPrefix() string      { return s.prefix + "/v3/operations/" }
+func (s *V3OperationStore) operationKindIndexPrefix(kind string) string {
+	return s.prefix + "/v3/operation-index/" + base64.RawURLEncoding.EncodeToString([]byte(kind)) + "/"
+}
+func (s *V3OperationStore) operationKindIndexKey(kind string, acceptedAt time.Time, id string) string {
+	// Complemented unsigned nanoseconds produce lexical descending time order.
+	return fmt.Sprintf("%s%020d/%s", s.operationKindIndexPrefix(kind), ^uint64(acceptedAt.UnixNano()), id)
+}
 func (s *V3OperationStore) runningKey(id string) string { return s.prefix + "/v3/running/" + id }
 func (s *V3OperationStore) runningPrefix() string       { return s.prefix + "/v3/running/" }
 func (s *V3OperationStore) ownerKey(id string) string   { return s.prefix + "/v3/owners/" + id }
@@ -143,8 +212,8 @@ func (s *V3OperationStore) Accept(ctx context.Context, a store.OperationAcceptan
 	// This adapter has no external-effect aggregate. Replay expiry is therefore
 	// limited to the read-only operation kind it executes today; a future kind
 	// must add its own authoritative hold before it can opt in.
-	if s.policy.ReplayTTL > 0 && strings.TrimSpace(a.Operation.Kind) != "app.preflight" {
-		return store.AcceptedOperation{}, &store.AcceptanceValidationError{Reason: "etcd replay expiry is implemented only for app.preflight"}
+	if s.policy.ReplayTTL > 0 && strings.TrimSpace(a.Operation.Kind) != "app.preflight" && strings.TrimSpace(a.Operation.Kind) != "fleet.capacity-plan" {
+		return store.AcceptedOperation{}, &store.AcceptanceValidationError{Reason: "etcd replay expiry is implemented only for app.preflight and fleet.capacity-plan"}
 	}
 	var err error
 	if a, err = s.normalize(a); err != nil {
@@ -191,7 +260,7 @@ func (s *V3OperationStore) Accept(ctx context.Context, a store.OperationAcceptan
 		}
 		return store.AcceptedOperation{}, err
 	}
-	puts := []clientv3.Op{clientv3.OpPut(key, string(av)), clientv3.OpPut(s.opKey(a.Operation.ID), string(ov))}
+	puts := []clientv3.Op{clientv3.OpPut(key, string(av)), clientv3.OpPut(s.opKey(a.Operation.ID), string(ov)), clientv3.OpPut(s.operationKindIndexKey(a.Operation.Kind, acceptedAt, a.Operation.ID), a.Operation.ID)}
 	if replayLease != 0 {
 		puts = append(puts, clientv3.OpPut(s.replayLiveKey(key), store.OperationReplayContractVersion, clientv3.WithLease(replayLease)))
 	}
@@ -687,6 +756,42 @@ func (s *V3OperationStore) DeferClaimedOperationWithAppLock(ctx context.Context,
 			o.Metadata[k] = v
 		}
 	})
+}
+
+// DeferOrFailCronPauseClaimedOperation preserves every claimed recovery
+// attempt. A persistent ambiguous Nomad effect therefore reaches the request
+// budget and becomes a manual-review receipt instead of cycling forever.
+func (s *V3OperationStore) DeferOrFailCronPauseClaimedOperation(ctx context.Context, c store.OperationClaim, lock store.AppOperationLock, msg string, next time.Time, m map[string]interface{}) (bool, error) {
+	terminal := false
+	err := s.mutateClaimWithAppLock(ctx, c, lock, func(o *model.Operation) {
+		for k, v := range m {
+			o.Metadata[k] = v
+		}
+		if o.Attempts >= o.MaxAttempts {
+			now := time.Now().UTC()
+			o.Status = model.OperationFailed
+			o.Message = "cron pause effect recovery retry budget exhausted; manual recovery is required: " + msg
+			o.LastError = msg
+			o.LockedBy = ""
+			o.LockedUntil = nil
+			o.FinishedAt = &now
+			o.Metadata["manualRecoveryRequired"] = true
+			o.Metadata["externalEffectRecoveryPending"] = true
+			o.Metadata["retryBudgetExhausted"] = true
+			terminal = true
+			return
+		}
+		o.Status = model.OperationQueued
+		o.Message = msg
+		o.LastError = msg
+		o.NextAttemptAt = next
+		o.LockedBy = ""
+		o.LockedUntil = nil
+	})
+	if err != nil {
+		return false, err
+	}
+	return terminal, nil
 }
 func (s *V3OperationStore) RetryClaimedOperation(ctx context.Context, c store.OperationClaim, msg, last string, next time.Time, m map[string]interface{}) error {
 	return s.mutateClaim(ctx, c, func(o *model.Operation) {
