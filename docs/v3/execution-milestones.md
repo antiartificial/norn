@@ -33,7 +33,7 @@ After M1, profile/archive, etcd and scheduling work can overlap at agreed interf
 ## M0 — Decisions, baseline and fixtures
 
 - Record deployed Mini binary/source/schema versions, supervisor configuration, app specs, enabled/disabled state, actual job IDs/counts, routes/ports, secrets references and volume/database ownership. Prior conversation snapshots are not sufficient.
-- Measure PG table/index sizes, growth and connection use; classify all 24 tables and non-SQL stores. Record archive, encryption/signing keys and restore requirements without printing credentials.
+- Measure PG table/index sizes, growth and connection use; classify all observed control tables and non-SQL stores. Record archive, encryption/signing keys and restore requirements without printing credentials.
 - Build a sanitized representative fixture for routine CI. Separately plan a private restore rehearsal for fidelity, with denied production network egress and all workers/webhooks/cron/provider mutation disabled.
 - Resolve scale precedence: proposed rule is a revisioned desired-scale object seeded by import, with explicit scale changes retained across code deploys. Applying a changed declared scale is an explicit configuration operation with conflict detection, not an implicit deploy reset.
 - Decide API handoff contract, pool/ingress roles, resource schema ownership, first app engine support, diagnostic budget and log backend spike. Draft numerical targets in planning-contracts are not yet accepted SLAs.
