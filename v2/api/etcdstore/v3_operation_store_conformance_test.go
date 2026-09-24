@@ -160,17 +160,22 @@ func TestV3OperationStoreReplayExpiryIsDurableAndHoldAwareEtcd(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	var replayLease clientv3.LeaseID
+	replayLeases := map[clientv3.LeaseID]struct{}{}
 	for _, record := range records.Kvs {
 		if strings.HasSuffix(string(record.Key), "/replay-live") {
-			replayLease = clientv3.LeaseID(record.Lease)
+			replayLeases[clientv3.LeaseID(record.Lease)] = struct{}{}
 		}
 	}
-	if replayLease == 0 {
-		t.Fatal("replay live marker is not attached to an etcd lease")
+	if len(replayLeases) != 2 || len(records.Kvs) == 0 {
+		t.Fatalf("replay live markers have %d leases, want one per accepted identity", len(replayLeases))
 	}
-	if _, err := client.Revoke(ctx, replayLease); err != nil {
-		t.Fatal(err)
+	for replayLease := range replayLeases {
+		if replayLease == 0 {
+			t.Fatal("replay live marker is not attached to an etcd lease")
+		}
+		if _, err := client.Revoke(ctx, replayLease); err != nil {
+			t.Fatal(err)
+		}
 	}
 	if replayed, err := adapter.Resolve(ctx, a.Identity, a.Fingerprint); err != nil || !replayed.Replayed {
 		t.Fatalf("active operation must hold replay: %+v err=%v", replayed, err)
