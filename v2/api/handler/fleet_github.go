@@ -103,6 +103,14 @@ func (h *Handler) CreateFleetGitHubPullRequest(w http.ResponseWriter, r *http.Re
 		WriteControlProblem(w, r, http.StatusConflict, "fleet_github_pull_request_refused", "GitHub rejected this plan before creating a pull request; create a fresh plan")
 		return
 	}
+	if errors.Is(err, githubapp.ErrPermanentAfterMutation) {
+		if _, finishErr := h.finishFleetGitHubReservation(r.Context(), reservation.ID, plan.ID, "fleet.github.pull-request", model.OperationFailed, "fleet pull request was refused after a possible branch mutation", map[string]interface{}{"planId": plan.ID, "outcome": "permanent-after-mutation"}); finishErr != nil {
+			WriteControlProblem(w, r, http.StatusInternalServerError, "fleet_github_receipt_failed", "GitHub terminal outcome could not be durably recorded; retry safely")
+			return
+		}
+		WriteControlProblem(w, r, http.StatusConflict, "fleet_github_pull_request_refused", "GitHub rejected this plan after a protected branch mutation; create a fresh plan")
+		return
+	}
 	if err != nil {
 		WriteControlProblem(w, r, http.StatusBadGateway, "fleet_github_pull_request_failed", "GitHub could not create or recover the fleet pull request")
 		return
