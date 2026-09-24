@@ -2,7 +2,6 @@ package nomad
 
 import (
 	"context"
-	"encoding/json"
 	"errors"
 	"fmt"
 	"strings"
@@ -266,7 +265,7 @@ func (c *Client) ScaleJobWithMeta(jobID, group string, count int, meta map[strin
 // ScaleStatus reconciles a scale request against the exact durable operation
 // claim. A matching desired count alone is insufficient: another scaler can
 // produce it, and a failed event must never acknowledge this mutation.
-func (c *Client) ScaleStatus(jobID, group, operationID string, generation int64, executionID string, count int, expectedEvalID string) (desired int, matched bool, evalID string, err error) {
+func (c *Client) ScaleStatus(jobID, group, operationID, generation, executionID string, count int, expectedEvalID string) (desired int, matched bool, evalID string, err error) {
 	status, _, err := c.api.Jobs().ScaleStatus(jobID, nil)
 	if err != nil {
 		return 0, false, "", err
@@ -277,7 +276,7 @@ func (c *Client) ScaleStatus(jobID, group, operationID string, generation int64,
 	}
 	for _, event := range target.Events {
 		if event.Meta == nil || fmt.Sprint(event.Meta["norn.operationId"]) != operationID ||
-			!scaleMetaIntEquals(event.Meta["norn.claimGeneration"], generation) ||
+			fmt.Sprint(event.Meta["norn.claimGeneration"]) != generation ||
 			fmt.Sprint(event.Meta["norn.executionId"]) != executionID || event.Error ||
 			event.Count == nil || *event.Count != int64(count) || event.EvalID == nil || *event.EvalID == "" {
 			continue
@@ -290,22 +289,6 @@ func (c *Client) ScaleStatus(jobID, group, operationID string, generation int64,
 		break
 	}
 	return target.Desired, matched, evalID, nil
-}
-
-func scaleMetaIntEquals(value interface{}, expected int64) bool {
-	switch actual := value.(type) {
-	case int64:
-		return actual == expected
-	case int:
-		return int64(actual) == expected
-	case float64:
-		return actual == float64(expected)
-	case json.Number:
-		parsed, err := actual.Int64()
-		return err == nil && parsed == expected
-	default:
-		return false
-	}
 }
 
 // UptimeEntry describes a long-running allocation for the uptime leaderboard.

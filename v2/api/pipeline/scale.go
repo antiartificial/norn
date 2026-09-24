@@ -7,6 +7,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"strconv"
 	"strings"
 	"time"
 
@@ -99,14 +100,27 @@ func (p *Pipeline) executeScale(ctx context.Context, op *model.Operation, claim 
 	}
 	metadata := map[string]interface{}{"group": request.Group, "count": request.Count, "effectId": result.EffectID, "effectReused": result.Reused}
 	message := fmt.Sprintf("%s process %q scaled to %d", request.App, request.Group, request.Count)
-	if err := p.DB.FinishScaleClaimedOperation(ctx, claim, request.App, request.Group, request.Count, message, metadata); err != nil {
-		return &OperationResult{Claim: claim, Status: model.OperationFailed, Message: "persist desired scale intent: " + err.Error()}
+	if err := p.finishScaleIntent(ctx, claim, request.App, request.Group, request.Count, message, metadata); err != nil {
+		// Nomad's completed effect remains durably reusable. Do not terminalize
+		// a post-effect database outage: defer so a successor claim retries only
+		// the atomic intent/receipt write, never the Nomad launch.
+		return deferredResult(claim, &effect.PendingError{EffectID: result.EffectID, Resource: scaleResource(request), Reason: "persist desired scale intent", Cause: err})
 	}
 	return &OperationResult{Claim: claim, Status: model.OperationSucceeded, Message: message, Metadata: metadata, finished: true, publish: func(context.Context) {
 		if p.WS != nil {
 			p.WS.Broadcast(hub.Event{Type: "app.scaled", AppID: request.App, Payload: metadata})
 		}
 	}}
+}
+
+func (p *Pipeline) finishScaleIntent(ctx context.Context, claim store.OperationClaim, app, group string, count int, message string, metadata map[string]interface{}) error {
+	if p != nil && p.FinishScaleIntent != nil {
+		return p.FinishScaleIntent(ctx, claim, app, group, count, message, metadata)
+	}
+	if p == nil || p.DB == nil {
+		return fmt.Errorf("desired replica store is unavailable")
+	}
+	return p.DB.FinishScaleClaimedOperation(ctx, claim, app, group, count, message, metadata)
 }
 
 func scaleRequestFromOperation(op *model.Operation) (scaleRequest, error) {
@@ -157,7 +171,7 @@ func (s *nomadScaleSupervisor) Launch(ctx context.Context, r effect.Reservation,
 	if err != nil {
 		return effect.ExecutionIdentity{}, err
 	}
-	evalID, err := s.client.ScaleJobWithMeta(request.App, request.Group, request.Count, map[string]interface{}{"norn.operationId": r.OperationClaim.OperationID, "norn.claimGeneration": r.OperationClaim.Generation, "norn.executionId": r.SupervisorExecutionID})
+	evalID, err := s.client.ScaleJobWithMeta(request.App, request.Group, request.Count, map[string]interface{}{"norn.operationId": r.OperationClaim.OperationID, "norn.claimGeneration": strconv.FormatInt(r.OperationClaim.Generation, 10), "norn.executionId": r.SupervisorExecutionID})
 	if err != nil {
 		return effect.ExecutionIdentity{}, err
 	}
@@ -175,7 +189,7 @@ func (s *nomadScaleSupervisor) Query(ctx context.Context, r effect.Reservation, 
 		return effect.Observation{}, err
 	}
 	expectedEvalID := strings.TrimPrefix(identity.RuntimeInstanceID, "nomad-eval:")
-	desired, matched, evalID, err := s.client.ScaleStatus(request.App, request.Group, r.OperationClaim.OperationID, r.OperationClaim.Generation, r.SupervisorExecutionID, request.Count, expectedEvalID)
+	desired, matched, evalID, err := s.client.ScaleStatus(request.App, request.Group, r.OperationClaim.OperationID, strconv.FormatInt(r.OperationClaim.Generation, 10), r.SupervisorExecutionID, request.Count, expectedEvalID)
 	if err != nil {
 		return effect.Observation{}, err
 	}

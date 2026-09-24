@@ -70,6 +70,9 @@ type Pipeline struct {
 	// ScaleEffects fences Nomad's non-idempotent scale endpoint behind a
 	// durable external-effect reservation. It is required for app.scale.
 	ScaleEffects *NomadScaleEffects
+	// FinishScaleIntent is the claim-fenced atomic desired-replica and terminal
+	// operation write. Tests may inject a transient failure; production uses DB.
+	FinishScaleIntent func(context.Context, store.OperationClaim, string, string, int, string, map[string]interface{}) error
 	// DatabaseTargets binds database-consuming operations to catalog
 	// targets. When nil (no NORN_DATABASE_PROFILE), v2 routing is unchanged.
 	DatabaseTargets *DatabaseTargets

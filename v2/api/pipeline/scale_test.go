@@ -1,10 +1,13 @@
 package pipeline
 
 import (
+	"context"
+	"errors"
 	"testing"
 
 	"norn/v2/api/effect"
 	"norn/v2/api/model"
+	"norn/v2/api/store"
 )
 
 func TestScaleRequestFromOperationRejectsAmbiguousCounts(t *testing.T) {
@@ -18,6 +21,29 @@ func TestScaleRequestFromOperationRejectsAmbiguousCounts(t *testing.T) {
 		if err == nil {
 			t.Fatalf("count %#v was accepted", count)
 		}
+	}
+}
+
+func TestScaleIntentWriteFailureDefersForCompletedEffectRecovery(t *testing.T) {
+	claim, err := store.NewOperationClaim("operation", "worker", 1)
+	if err != nil {
+		t.Fatal(err)
+	}
+	calls := 0
+	p := &Pipeline{FinishScaleIntent: func(context.Context, store.OperationClaim, string, string, int, string, map[string]interface{}) error {
+		calls++
+		if calls == 1 {
+			return errors.New("temporary database outage")
+		}
+		return nil
+	}}
+	err = p.finishScaleIntent(context.Background(), claim, "widget", "web", 3, "scaled", nil)
+	result := deferredResult(claim, &effect.PendingError{EffectID: "completed-effect", Resource: "app/widget/scale/web", Reason: "persist desired scale intent", Cause: err})
+	if result.deferred == nil || !effect.IsDeferred(result.deferred) || result.Status != "" {
+		t.Fatalf("intent persistence failure terminalized completed effect: %#v", result)
+	}
+	if err := p.finishScaleIntent(context.Background(), claim, "widget", "web", 3, "scaled", nil); err != nil || calls != 2 {
+		t.Fatalf("reclaimed completed effect did not retry only intent write: calls=%d err=%v", calls, err)
 	}
 }
 
