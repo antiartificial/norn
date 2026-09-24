@@ -330,6 +330,23 @@ func TestExpiredRestartRequeuesForDurableEffectReconciliation(t *testing.T) {
 	}
 }
 
+func TestExpiredCanaryPromotionRequeuesForDurableEffectReconciliation(t *testing.T) {
+	stores := operationTestStores(t, 2)
+	ctx := context.Background()
+	op := insertOperationFixture(t, stores[0], "app.canary-promote", 1, map[string]interface{}{"app": "demo"})
+	if _, _, err := stores[0].ClaimNextOperation(ctx, "canary-owner", 100*time.Millisecond, []string{"app.canary-promote"}); err != nil {
+		t.Fatal(err)
+	}
+	time.Sleep(180 * time.Millisecond)
+	if err := stores[1].RecoverExpiredOperations(ctx); err != nil {
+		t.Fatal(err)
+	}
+	got, err := stores[1].GetOperation(ctx, op.ID)
+	if err != nil || got.Status != model.OperationQueued || got.Metadata["recoveredAfterRestart"] != true || got.Metadata["manualRecoveryRequired"] != nil {
+		t.Fatalf("recovered canary = %+v err=%v", got, err)
+	}
+}
+
 func TestDeploymentRecoveryIgnoresForeignTerminalReferencesAndPreservesOrphans(t *testing.T) {
 	stores := operationTestStores(t, 2)
 	ctx := context.Background()
