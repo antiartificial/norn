@@ -95,7 +95,7 @@ func bootstrapEtcdManagedCredential(ctx context.Context, kv clientv3.KV, prefix,
 	if err != nil {
 		return err
 	}
-	if err := requireUsableInitialEtcdCredential(record, time.Now()); err != nil {
+	if err := requireUsableInitialEtcdCredential(ctx, kv, prefix, record, time.Now()); err != nil {
 		return err
 	}
 	token, err := handler.SignManagedAccessToken(secret, &record.Token)
@@ -226,10 +226,25 @@ func verifyEtcdBootstrapToken(ctx context.Context, kv clientv3.KV, prefix string
 	if err := json.Unmarshal(response.Kvs[0].Value, &token); err != nil {
 		return fmt.Errorf("decode accepted bootstrap token: %w", err)
 	}
-	if !sameBootstrapToken(&record.Token, &token) {
+	if !sameBootstrapTokenIdentity(&record.Token, &token) {
 		return errors.New("accepted bootstrap marker and token registry disagree")
 	}
 	return nil
+}
+
+func loadEtcdBootstrapToken(ctx context.Context, kv clientv3.KV, prefix, jti string) (*store.AccessToken, error) {
+	response, err := kv.Get(ctx, etcdBootstrapTokenKey(prefix, jti))
+	if err != nil {
+		return nil, fmt.Errorf("load accepted bootstrap token: %w", err)
+	}
+	if len(response.Kvs) != 1 {
+		return nil, errors.New("accepted bootstrap marker has no token registry entry")
+	}
+	var token store.AccessToken
+	if err := json.Unmarshal(response.Kvs[0].Value, &token); err != nil {
+		return nil, fmt.Errorf("decode accepted bootstrap token: %w", err)
+	}
+	return &token, nil
 }
 
 // markEtcdBootstrapCredentialPublished adds the durable publication receipt
@@ -254,7 +269,7 @@ func markEtcdBootstrapCredentialPublished(ctx context.Context, kv clientv3.KV, p
 		if err := json.Unmarshal(response.Kvs[0].Value, &current); err != nil {
 			return nil, fmt.Errorf("decode bootstrap publication record: %w", err)
 		}
-		if current.Version != expected.Version || current.State != etcdBootstrapAccepted || current.SigningKeyHash != expected.SigningKeyHash || !sameBootstrapToken(&current.Token, &expected.Token) {
+		if current.Version != expected.Version || current.State != etcdBootstrapAccepted || current.SigningKeyHash != expected.SigningKeyHash || !sameBootstrapTokenIdentity(&current.Token, &expected.Token) {
 			return nil, errors.New("bootstrap publication marker changed")
 		}
 		if current.PublishedAt != nil {
@@ -296,21 +311,40 @@ func requireInitialEtcdBootstrap(ctx context.Context, kv clientv3.KV, prefix, si
 	return verifyEtcdBootstrapToken(ctx, kv, prefix, record)
 }
 
-func requireUsableInitialEtcdCredential(record *etcdBootstrapRecord, now time.Time) error {
-	if record == nil || record.Token.RevokedAt != nil {
+// requireUsableInitialEtcdCredential protects publication and re-publication.
+// The marker preserves the original immutable identity, while the auth record
+// is authoritative for mutable revocation. A normal runtime can start from a
+// delivered receipt after this credential is retired; bootstrap itself must
+// never issue a newly requested copy of a retired or near-expiry credential.
+func requireUsableInitialEtcdCredential(ctx context.Context, kv clientv3.KV, prefix string, record *etcdBootstrapRecord, now time.Time) error {
+	if record == nil {
+		return errors.New("initial managed credential is missing")
+	}
+	token, err := loadEtcdBootstrapToken(ctx, kv, prefix, record.Token.JTI)
+	if err != nil {
+		return err
+	}
+	if !sameBootstrapTokenIdentity(&record.Token, token) {
+		return errors.New("accepted bootstrap marker and token registry disagree")
+	}
+	if token.RevokedAt != nil {
 		return errors.New("initial managed credential is revoked")
 	}
-	if !record.Token.ExpiresAt.After(now.UTC().Add(minimumBootstrapRemaining)) {
+	if !token.ExpiresAt.After(now.UTC().Add(minimumBootstrapRemaining)) {
 		return fmt.Errorf("initial managed credential must remain valid for at least %s", minimumBootstrapRemaining)
 	}
 	return nil
 }
 
-func sameBootstrapToken(a, b *store.AccessToken) bool {
+// sameBootstrapTokenIdentity deliberately excludes RevokedAt. Revocation is
+// mutable registry state; the bootstrap marker is an immutable delivery
+// receipt. Requiring them to remain byte-for-byte identical would make a
+// Fleet unable to restart after the one-shot bootstrap credential is revoked.
+func sameBootstrapTokenIdentity(a, b *store.AccessToken) bool {
 	if a == nil || b == nil || a.JTI != b.JTI || a.DeviceID != b.DeviceID || a.Subject != b.Subject || !a.IssuedAt.Equal(b.IssuedAt) || !a.ExpiresAt.Equal(b.ExpiresAt) || a.RotatedFrom != b.RotatedFrom || !sameBootstrapScopes(a.Scopes, b.Scopes) {
 		return false
 	}
-	return (a.RevokedAt == nil && b.RevokedAt == nil) || (a.RevokedAt != nil && b.RevokedAt != nil && a.RevokedAt.Equal(*b.RevokedAt))
+	return true
 }
 
 func sameBootstrapScopes(a, b []string) bool {

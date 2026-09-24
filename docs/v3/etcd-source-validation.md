@@ -81,8 +81,10 @@ entry before it constructs its control stores, so it cannot become the first
 Norn writer in a fresh prefix. It requires the publication receipt; an accepted
 but undistributed token is not fresh-Fleet readiness. Initial publication also
 requires an unrevoked bearer with at least 30 minutes remaining. Later normal
-restarts validate the durable receipt and marker/token consistency even after
-the initial bearer expires or is revoked; replacement credential rotation is a
+restarts validate the durable receipt and immutable marker/token identity even
+after the initial bearer expires or is revoked. Revocation remains in the
+authoritative token-registry record and prevents bootstrap re-publication, but
+does not mutate the delivery receipt. Replacement credential rotation is a
 separate release requirement.
 
 `NORN_STARTUP_MODE=passive` with `NORN_SCHEMA_MODE=check` serves only the

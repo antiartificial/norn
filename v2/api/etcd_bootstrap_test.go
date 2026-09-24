@@ -209,7 +209,7 @@ func TestEtcdManagedCredentialBootstrapBindsSigningKey(t *testing.T) {
 	}
 }
 
-func TestRequireInitialEtcdBootstrapRestartsAfterInitialCredentialExpiresOrIsRevoked(t *testing.T) {
+func TestRequireInitialEtcdBootstrapRestartsAfterInitialCredentialIsRevoked(t *testing.T) {
 	client := newEtcdBootstrapTestClient(t)
 	prefix := "/norn-test/bootstrap-expired/" + uuid.NewString()
 	t.Cleanup(func() { _, _ = client.Delete(context.Background(), prefix, clientv3.WithPrefix()) })
@@ -223,9 +223,29 @@ func TestRequireInitialEtcdBootstrapRestartsAfterInitialCredentialExpiresOrIsRev
 	if err != nil {
 		t.Fatal(err)
 	}
-	expired := time.Now().Add(-time.Hour).UTC()
-	record.Token.ExpiresAt = expired
-	record.Token.RevokedAt = &expired
+	if _, err := etcdstore.NewAuthStore(client, prefix).RevokeAccessToken(context.Background(), record.Token.JTI); err != nil {
+		t.Fatalf("revoke bootstrap credential through AuthStore: %v", err)
+	}
+	if err := requireInitialEtcdBootstrap(context.Background(), client, prefix, secret); err != nil {
+		t.Fatalf("Fleet restart rejected a published credential revoked through AuthStore: %v", err)
+	}
+	if err := bootstrapEtcdManagedCredential(context.Background(), client, prefix, secret, req, func(string, string) error { return nil }); err == nil || !strings.Contains(err.Error(), "initial managed credential is revoked") {
+		t.Fatalf("bootstrap retry published a revoked credential: %v", err)
+	}
+}
+
+func TestRequireInitialEtcdBootstrapRestartsAfterInitialCredentialExpires(t *testing.T) {
+	client := newEtcdBootstrapTestClient(t)
+	prefix := "/norn-test/bootstrap-expired/" + uuid.NewString()
+	t.Cleanup(func() { _, _ = client.Delete(context.Background(), prefix, clientv3.WithPrefix()) })
+	secret := "etcd-bootstrap-expired-secret-000"
+	req := etcdBootstrapRequest{Output: filepath.Join(t.TempDir(), "initial-token"), Subject: "fleet-bootstrap", Scopes: []string{handler.ScopeAPIRead}, TTL: time.Hour}
+	record, err := newEtcdBootstrapRecord(req, secret, time.Now().Add(-2*time.Hour))
+	if err != nil {
+		t.Fatal(err)
+	}
+	publishedAt := time.Now().Add(-time.Hour).UTC()
+	record.PublishedAt = &publishedAt
 	marker, err := json.Marshal(record)
 	if err != nil {
 		t.Fatal(err)
@@ -238,7 +258,7 @@ func TestRequireInitialEtcdBootstrapRestartsAfterInitialCredentialExpiresOrIsRev
 		t.Fatal(err)
 	}
 	if err := requireInitialEtcdBootstrap(context.Background(), client, prefix, secret); err != nil {
-		t.Fatalf("Fleet restart rejected a published expired/revoked initial credential: %v", err)
+		t.Fatalf("Fleet restart rejected a published expired initial credential: %v", err)
 	}
 }
 
