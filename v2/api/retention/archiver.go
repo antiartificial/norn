@@ -62,6 +62,7 @@ type Report struct {
 	Published      int      `json:"published"`
 	PublishErrors  []string `json:"publishErrors,omitempty"`
 	Pruned         int      `json:"prunedEvents"`
+	Retired        int      `json:"retiredAcceptances"`
 	Held           int      `json:"held"`
 	ShadowCompared int      `json:"shadowCompared"`
 	ShadowMismatch []string `json:"shadowMismatch,omitempty"`
@@ -113,9 +114,31 @@ func (a *Archiver) RunOnce(ctx context.Context) (Report, error) {
 		return report, err
 	}
 	for _, intent := range verified {
-		// The archive preserves operation-subject receipts, while their hot
-		// acceptance and identity remain authoritative for protected-action
-		// replay and recovery. No archive-aware replacement exists yet.
+		// A verified operation receipt can replace an expired hot acceptance.
+		if intent.SubjectKind == "operation" {
+			if a.Mode != ModePrune {
+				continue
+			}
+			// Retirement is allowed only when this process can verify the
+			// original signature, not merely parse the sealed archive object.
+			if a.Signer == nil {
+				report.Held++
+				continue
+			}
+			retired, holds, err := a.DB.RetireVerifiedOperationAcceptance(ctx, intent.ID, a.verifyStored)
+			if err != nil {
+				report.PublishErrors = append(report.PublishErrors, fmt.Sprintf("%s: %v", intent.ID, err))
+				continue
+			}
+			if len(holds) > 0 {
+				report.Held++
+				continue
+			}
+			if retired {
+				report.Retired++
+			}
+			continue
+		}
 		if intent.SubjectKind != "saga" {
 			continue
 		}

@@ -36,7 +36,9 @@ func operationTestStores(t *testing.T, count int) []*DB {
 
 func insertOperationFixture(t *testing.T, db *DB, kind string, maxAttempts int, payload map[string]interface{}) *model.Operation {
 	t.Helper()
-	now := time.Now().UTC()
+	// PostgreSQL in a disposable container can lag the host clock slightly.
+	// Keep queued fixture admission independent of that clock skew.
+	now := time.Now().UTC().Add(-time.Second)
 	op := &model.Operation{ID: "operation-fence-" + uuid.NewString(), Kind: kind, App: "app-" + uuid.NewString(), SagaID: "saga-" + uuid.NewString(), Status: model.OperationQueued, MaxAttempts: maxAttempts, StartedAt: now, NextAttemptAt: now, Payload: payload, Metadata: map[string]interface{}{}}
 	if err := db.InsertOperation(context.Background(), op); err != nil {
 		t.Fatal(err)
@@ -47,7 +49,7 @@ func insertOperationFixture(t *testing.T, db *DB, kind string, maxAttempts int, 
 
 func insertDeploymentOperationFixture(t *testing.T, db *DB, maxAttempts int) (*model.Deployment, *model.Operation) {
 	t.Helper()
-	now := time.Now().UTC()
+	now := time.Now().UTC().Add(-time.Second)
 	deployment := &model.Deployment{ID: "deployment-fence-" + uuid.NewString(), App: "app-" + uuid.NewString(), SagaID: "saga-" + uuid.NewString(), Status: model.StatusQueued, StartedAt: now}
 	op := &model.Operation{ID: "operation-fence-" + uuid.NewString(), Kind: "app.deploy", App: deployment.App, SagaID: deployment.SagaID, Status: model.OperationQueued, MaxAttempts: maxAttempts, StartedAt: now, NextAttemptAt: now, Payload: map[string]interface{}{"deploymentId": deployment.ID}, Metadata: map[string]interface{}{"deploymentId": deployment.ID}}
 	regions := []model.ResolvedRegion{{Name: "test", NomadRegion: "global", TrafficWeight: 100}}
@@ -346,10 +348,13 @@ func TestExpiredCanaryPromotionRequeuesForDurableEffectReconciliation(t *testing
 	if err != nil {
 		t.Fatal(err)
 	}
-	reservation := effectReservation(t, authority, "app/demo/canary-promote/us", "canary-crash", claim)
+	reservation := effectReservation(t, authority, "app/"+op.App+"/canary-promote/us", "canary-crash-"+op.ID, claim)
 	if _, err := effectStore.Reserve(ctx, reservation); err != nil {
 		t.Fatal(err)
 	}
+	t.Cleanup(func() {
+		_, _ = stores[0].Pool.Exec(context.Background(), `DELETE FROM operation_effects WHERE operation_id=$1`, op.ID)
+	})
 	time.Sleep(180 * time.Millisecond)
 	if err := stores[1].RecoverExpiredOperations(ctx); err != nil {
 		t.Fatal(err)

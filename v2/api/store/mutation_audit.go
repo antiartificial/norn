@@ -160,6 +160,10 @@ func (db *DB) PruneMutationAudits(ctx context.Context, before time.Time) (int64,
 			SELECT 1 FROM operation_acceptance_intents intent
 			WHERE intent.request_receipt_id=audit.id
 		  )
+		  AND NOT EXISTS (
+			SELECT 1 FROM retired_operation_acceptances retired
+			WHERE retired.request_receipt_id=audit.id
+		  )
 	`, before)
 	if err != nil {
 		return 0, err

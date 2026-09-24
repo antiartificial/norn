@@ -340,6 +340,125 @@ func TestTerminalFleetGitHubReceiptArchivesOriginalSignedBytes(t *testing.T) {
 	}
 }
 
+func TestExpiredFleetGitHubReceiptRetiresHotPayloadAndReservationAtomically(t *testing.T) {
+	f := newRetentionFixture(t)
+	ctx := context.Background()
+	expiring, err := store.NewPGOperationStore(f.db, f.signer, store.AcceptancePolicy{ReplayTTL: time.Hour})
+	if err != nil {
+		t.Fatal(err)
+	}
+	acceptance := f.terminalFleetGitHubAcceptance()
+	receiptID := uuid.NewString()
+	now := time.Now().UTC().Add(-time.Hour)
+	if err := f.db.ReserveMutationAudit(ctx, &store.MutationAuditEvent{ID: receiptID, PrincipalSubject: "operator", Method: "POST", Path: "/fleet/github", StartedAt: now}); err != nil {
+		t.Fatal(err)
+	}
+	if err := f.db.FinishMutationAudit(ctx, receiptID, "/fleet/github", 202, "succeeded", now.Add(time.Second), 1, "receipt-digest"); err != nil {
+		t.Fatal(err)
+	}
+	acceptance.Audit.RequestReceiptID = receiptID
+	acceptance.Fingerprint, err = store.CanonicalOperationRequestFingerprint(acceptance)
+	if err != nil {
+		t.Fatal(err)
+	}
+	accepted, err := expiring.Accept(ctx, acceptance)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := f.db.Pool.Exec(ctx, `UPDATE operation_request_identities SET replay_expires_at=clock_timestamp()-interval '1 second' WHERE id=$1`, accepted.RequestIdentityID); err != nil {
+		t.Fatal(err)
+	}
+	if report, err := f.archiver.RunOnce(ctx); err != nil || report.Published != 1 {
+		t.Fatalf("publish receipt = %+v, %v", report, err)
+	}
+
+	// A failure during retirement must leave the replay live as well as both
+	// hot rows. The trigger represents a transactional failure at that boundary.
+	if _, err := f.db.Pool.Exec(ctx, `CREATE FUNCTION reject_acceptance_retirement() RETURNS trigger LANGUAGE plpgsql AS $$ BEGIN RAISE EXCEPTION 'test acceptance retirement failure'; END $$;
+		CREATE TRIGGER reject_acceptance_retirement BEFORE DELETE ON operation_acceptance_intents FOR EACH ROW EXECUTE FUNCTION reject_acceptance_retirement();`); err != nil {
+		t.Fatal(err)
+	}
+	f.archiver.Mode = ModePrune
+	if report, err := f.archiver.RunOnce(ctx); err != nil || len(report.PublishErrors) != 1 || report.Retired != 0 {
+		t.Fatalf("injected retirement failure = %+v, %v", report, err)
+	}
+	var intents, reservations int
+	if err := f.db.Pool.QueryRow(ctx, `SELECT (SELECT count(*) FROM operation_acceptance_intents WHERE operation_id=$1), (SELECT count(*) FROM signed_acceptance_byte_reservations WHERE operation_id=$1)`, accepted.Operation.ID).Scan(&intents, &reservations); err != nil {
+		t.Fatal(err)
+	}
+	if intents != 1 || reservations != 1 {
+		t.Fatalf("failed retirement was not atomic: intents=%d reservations=%d", intents, reservations)
+	}
+	var prematurelyExpired bool
+	if err := f.db.Pool.QueryRow(ctx, `SELECT replay_expired_at IS NOT NULL FROM operation_request_identities WHERE id=$1`, accepted.RequestIdentityID).Scan(&prematurelyExpired); err != nil || prematurelyExpired {
+		t.Fatalf("failed retirement expired replay: expired=%v err=%v", prematurelyExpired, err)
+	}
+	if _, err := f.db.Pool.Exec(ctx, `UPDATE operation_request_identities SET replay_expires_at=clock_timestamp()+interval '1 hour' WHERE id=$1`, accepted.RequestIdentityID); err != nil {
+		t.Fatal(err)
+	}
+	if replayed, err := expiring.Resolve(ctx, acceptance.Identity, acceptance.Fingerprint); err != nil || !replayed.Replayed {
+		t.Fatalf("failed retirement lost replay: %+v, %v", replayed, err)
+	}
+	if _, err := f.db.Pool.Exec(ctx, `UPDATE operation_request_identities SET replay_expires_at=clock_timestamp()-interval '1 second' WHERE id=$1`, accepted.RequestIdentityID); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := f.db.Pool.Exec(ctx, `DROP TRIGGER reject_acceptance_retirement ON operation_acceptance_intents; DROP FUNCTION reject_acceptance_retirement()`); err != nil {
+		t.Fatal(err)
+	}
+
+	if report, err := f.archiver.RunOnce(ctx); err != nil || report.Retired != 1 {
+		t.Fatalf("retire receipt = %+v, %v", report, err)
+	}
+	if err := f.db.Pool.QueryRow(ctx, `SELECT (SELECT count(*) FROM operation_acceptance_intents WHERE operation_id=$1), (SELECT count(*) FROM signed_acceptance_byte_reservations WHERE operation_id=$1)`, accepted.Operation.ID).Scan(&intents, &reservations); err != nil {
+		t.Fatal(err)
+	}
+	if intents != 0 || reservations != 0 {
+		t.Fatalf("retired hot rows: intents=%d reservations=%d", intents, reservations)
+	}
+	var fingerprint string
+	var expired bool
+	if err := f.db.Pool.QueryRow(ctx, `SELECT fingerprint_digest,replay_expired_at IS NOT NULL FROM operation_request_identities WHERE id=$1`, accepted.RequestIdentityID).Scan(&fingerprint, &expired); err != nil {
+		t.Fatal(err)
+	}
+	if fingerprint != acceptance.Fingerprint.Digest || !expired {
+		t.Fatalf("identity tombstone = fingerprint=%q expired=%v", fingerprint, expired)
+	}
+	var retiredReceiptRows int
+	if err := f.db.Pool.QueryRow(ctx, `SELECT count(*) FROM retired_operation_acceptances WHERE operation_id=$1`, accepted.Operation.ID).Scan(&retiredReceiptRows); err != nil || retiredReceiptRows != 1 {
+		t.Fatalf("retired acceptance audit link = %d, %v", retiredReceiptRows, err)
+	}
+	if deleted, err := f.db.PruneMutationAudits(ctx, time.Now().Add(time.Hour)); err != nil || deleted != 0 {
+		t.Fatalf("retired receipt audit prune = %d, %v", deleted, err)
+	}
+	if _, err := f.db.GetMutationAudit(ctx, receiptID); err != nil {
+		t.Fatalf("retired receipt audit was pruned: %v", err)
+	}
+	if _, err := expiring.Resolve(ctx, acceptance.Identity, acceptance.Fingerprint); !errors.Is(err, store.ErrAcceptanceExpired) {
+		t.Fatalf("retired replay = %v", err)
+	}
+	changed := acceptance.Fingerprint
+	changed.Digest = strings.Repeat("f", 64)
+	if _, err := expiring.Resolve(ctx, acceptance.Identity, changed); !errors.Is(err, store.ErrAcceptanceConflict) {
+		t.Fatalf("retired collision = %v", err)
+	}
+	if _, err := expiring.Accept(ctx, acceptance); !errors.Is(err, store.ErrAcceptanceExpired) {
+		t.Fatalf("retired acceptance replay = %v", err)
+	}
+	intentsForSubject, err := f.db.EvidenceIntentsForSubject(ctx, "operation", accepted.Operation.ID)
+	if err != nil || len(intentsForSubject) != 1 || intentsForSubject[0].State != "pruned" {
+		t.Fatalf("archive index after retirement = %+v, %v", intentsForSubject, err)
+	}
+	if _, err := LoadBundle(ctx, f.objects, intentsForSubject[0]); err != nil {
+		t.Fatalf("archive receipt after retirement = %v", err)
+	}
+	// Archive-only index recovery must fail closed when the matching control
+	// database backup (including its permanent replay identity) is absent.
+	fresh := newRetentionFixture(t)
+	if _, err := RestoreIndex(ctx, fresh.db, f.objects, f.signer); err == nil || !strings.Contains(err.Error(), "restore the matching control database backup") {
+		t.Fatalf("archive-only retired receipt recovery error = %v", err)
+	}
+}
+
 func TestTerminalFleetGitHubReceiptReserveExhaustionLeavesRecoverableAcceptance(t *testing.T) {
 	f := newRetentionFixture(t)
 	ctx := context.Background()
