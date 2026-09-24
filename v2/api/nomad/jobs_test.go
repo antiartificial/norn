@@ -2,6 +2,7 @@ package nomad
 
 import (
 	"encoding/json"
+	"errors"
 	"net/http"
 	"net/http/httptest"
 	"reflect"
@@ -61,23 +62,97 @@ func TestCronRunHealthDetectsOOMRestartsAndFailedAllocation(t *testing.T) {
 	}
 }
 
-func TestPeriodicJobSchedulePreservesVersionAndModifyIndex(t *testing.T) {
+func TestPeriodicJobSchedulePreservesVersionAndJobModifyIndex(t *testing.T) {
 	jobID, status, schedule, timezone := "widget-nightly", "running", "0 2 * * *", "America/Chicago"
-	version, modifyIndex := uint64(3), uint64(42)
+	version, modifyIndex, genericModifyIndex := uint64(3), uint64(42), uint64(99)
 	client := newTestNomadClient(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.Method != http.MethodGet || r.URL.Path != "/v1/job/widget-nightly" {
 			http.Error(w, "unexpected request", http.StatusNotFound)
 			return
 		}
-		_ = json.NewEncoder(w).Encode(&nomadapi.Job{ID: &jobID, Status: &status, Version: &version, ModifyIndex: &modifyIndex, Periodic: &nomadapi.PeriodicConfig{Spec: &schedule, TimeZone: &timezone}})
+		_ = json.NewEncoder(w).Encode(&nomadapi.Job{ID: &jobID, Status: &status, Version: &version, ModifyIndex: &genericModifyIndex, JobModifyIndex: &modifyIndex, Meta: map[string]string{cronPauseEffectMetaKey: "effect-1"}, Periodic: &nomadapi.PeriodicConfig{Spec: &schedule, TimeZone: &timezone}})
 	}))
 
 	info, err := client.PeriodicJobSchedule(jobID)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if info.Version != version || info.ModifyIndex != modifyIndex || info.Schedule != schedule || info.TimeZone != timezone {
+	if info.Version != version || info.ModifyIndex != modifyIndex || info.Schedule != schedule || info.TimeZone != timezone || info.CronPauseEffectID != "effect-1" {
 		t.Fatalf("periodic info = %#v", info)
+	}
+}
+
+func TestPausePeriodicJobRejectsMutationBetweenReadAndCASWrite(t *testing.T) {
+	jobID, status, schedule := "widget-nightly", "running", "0 2 * * *"
+	modifyIndex, genericModifyIndex := uint64(42), uint64(99)
+	var wrote bool
+	client := newTestNomadClient(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch {
+		case r.Method == http.MethodGet && r.URL.Path == "/v1/agent/self":
+			_ = json.NewEncoder(w).Encode(&nomadapi.AgentSelf{Config: map[string]interface{}{"Version": "1.11.5"}})
+		case r.Method == http.MethodGet && r.URL.Path == "/v1/job/widget-nightly":
+			_ = json.NewEncoder(w).Encode(&nomadapi.Job{ID: &jobID, Status: &status, ModifyIndex: &genericModifyIndex, JobModifyIndex: &modifyIndex, Periodic: &nomadapi.PeriodicConfig{Spec: &schedule}})
+		case r.Method == http.MethodPut && r.URL.Path == "/v1/jobs":
+			var request nomadapi.JobRegisterRequest
+			if err := json.NewDecoder(r.Body).Decode(&request); err != nil {
+				t.Fatal(err)
+			}
+			if !request.EnforceIndex || request.JobModifyIndex != modifyIndex {
+				t.Fatalf("CAS request = enforce=%t modifyIndex=%d", request.EnforceIndex, request.JobModifyIndex)
+			}
+			if request.Job == nil || request.Job.Stop == nil || !*request.Job.Stop {
+				t.Fatalf("pause request did not set job Stop: %#v", request.Job)
+			}
+			if got := request.Job.Meta[cronPauseEffectMetaKey]; got != "effect-1" {
+				t.Fatalf("pause effect marker = %q", got)
+			}
+			// Another writer changed the parent after our read. Nomad must reject
+			// the guarded registration rather than pausing that replacement.
+			wrote = true
+			http.Error(w, nomadapi.RegisterEnforceIndexErrPrefix+": job changed", http.StatusConflict)
+		default:
+			http.Error(w, "unexpected request", http.StatusNotFound)
+		}
+	}))
+
+	err := client.PausePeriodicJob(jobID, modifyIndex, "effect-1")
+	if !errors.Is(err, ErrJobRevisionChanged) {
+		t.Fatalf("PausePeriodicJob() error = %v, want revision conflict", err)
+	}
+	if !wrote {
+		t.Fatal("expected guarded registration attempt")
+	}
+}
+
+func TestPausePeriodicJobRejectsUnsupportedAtomicCASServer(t *testing.T) {
+	client := newTestNomadClient(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodGet || r.URL.Path != "/v1/agent/self" {
+			t.Fatalf("unexpected request %s %s", r.Method, r.URL.Path)
+		}
+		_ = json.NewEncoder(w).Encode(&nomadapi.AgentSelf{Config: map[string]interface{}{"Version": "1.9.7"}})
+	}))
+
+	err := client.PausePeriodicJob("widget-nightly", 42, "effect-1")
+	if !errors.Is(err, ErrAtomicJobCASUnsupported) {
+		t.Fatalf("PausePeriodicJob() error = %v, want unsupported atomic CAS", err)
+	}
+}
+
+func TestSupportsAtomicJobCAS(t *testing.T) {
+	for version, want := range map[string]bool{
+		"1.9.7":   false,
+		"1.10.10": false,
+		"1.10.11": true,
+		"1.11.4":  false,
+		"1.11.5":  true,
+		"2.0.0":   false,
+		"2.0.1":   true,
+		"v2.1.0":  true,
+		"unknown": false,
+	} {
+		if got := supportsAtomicJobCAS(version); got != want {
+			t.Errorf("supportsAtomicJobCAS(%q) = %t, want %t", version, got, want)
+		}
 	}
 }
 

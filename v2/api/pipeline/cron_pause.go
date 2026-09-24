@@ -198,9 +198,14 @@ func (s *nomadCronPauseSupervisor) Launch(ctx context.Context, r effect.Reservat
 	if state.Paused || !cronPauseIntentMatches(q, state, true) {
 		return effect.ExecutionIdentity{}, fmt.Errorf("Nomad periodic job no longer matches cron pause intent")
 	}
-	err = s.client.StopJob(q.JobID, false)
-	if err != nil { // Deregistration may have committed before a transport error; Query is authoritative.
-		if state, checkErr := s.client.PeriodicJobSchedule(q.JobID); checkErr != nil || !state.Paused {
+	err = s.client.PausePeriodicJob(q.JobID, q.ModifyIndex, r.SupervisorExecutionID)
+	if errors.Is(err, nomad.ErrJobRevisionChanged) {
+		// Nomad acknowledged that the guarded write did not apply. Do not
+		// reinterpret a later independently-paused parent as this effect.
+		return effect.ExecutionIdentity{}, err
+	}
+	if err != nil { // A transport failure may follow a committed CAS update; Query is authoritative.
+		if state, checkErr := s.client.PeriodicJobSchedule(q.JobID); checkErr != nil || !state.Paused || state.CronPauseEffectID != r.SupervisorExecutionID || !cronPauseIntentMatches(q, state, false) {
 			return effect.ExecutionIdentity{}, err
 		}
 	}
@@ -221,13 +226,13 @@ func (s *nomadCronPauseSupervisor) Query(ctx context.Context, r effect.Reservati
 	// Omit Nomad's mutable status and ModifyIndex from the result: recovery
 	// retrieves this output later and must validate the same stopped evidence
 	// even after Nomad advances bookkeeping indexes.
-	out, _ := json.Marshal(map[string]interface{}{"jobId": q.JobID, "paused": state.Paused, "schedule": state.Schedule, "timezone": state.TimeZone})
+	out, _ := json.Marshal(map[string]interface{}{"jobId": q.JobID, "paused": state.Paused, "schedule": state.Schedule, "timezone": state.TimeZone, "cronPauseEffectId": state.CronPauseEffectID})
 	id.Supervisor, id.SupervisorExecutionID = r.Supervisor, r.SupervisorExecutionID
 	if id.RuntimeInstanceID == "" {
 		id.RuntimeInstanceID = "nomad-cron-pause:" + r.SupervisorExecutionID
 	}
 	phase := effect.SupervisorUnknown
-	if state.Paused {
+	if state.Paused && state.CronPauseEffectID == r.SupervisorExecutionID {
 		phase = effect.SupervisorSucceeded
 	}
 	return effect.Observation{Identity: id, Phase: phase, Output: out, Evidence: effect.RawEvidence{Source: "nomad.job-status", Reference: q.JobID, Payload: out}}, nil
