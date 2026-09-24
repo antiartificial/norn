@@ -107,6 +107,16 @@ type memorySupervisor struct {
 	launchEntered map[string]chan struct{}
 }
 
+type privateMemorySupervisor struct {
+	*memorySupervisor
+	private any
+}
+
+func (s *privateMemorySupervisor) LaunchPrivate(ctx context.Context, reservation Reservation, material any) (ExecutionIdentity, error) {
+	s.private = material
+	return s.Launch(ctx, reservation, LaunchMaterial{})
+}
+
 func newMemorySupervisor() *memorySupervisor {
 	return &memorySupervisor{
 		executions:    map[string]supervisorExecution{},
@@ -117,6 +127,21 @@ func newMemorySupervisor() *memorySupervisor {
 		retrievals:    map[string]int{},
 		blockLaunch:   map[string]chan struct{}{},
 		launchEntered: map[string]chan struct{}{},
+	}
+}
+
+func TestExecutorPassesPrivateLaunchMaterialOnlyToPrivateSupervisor(t *testing.T) {
+	supervisor := &privateMemorySupervisor{memorySupervisor: newMemorySupervisor()}
+	executor := &Executor{Store: newMemoryStore(), Supervisor: supervisor, Verifier: memoryVerifier{}}
+	request := ExecuteRequest{Reservation: testReservation(t, "private-launch", "app/demo/snapshot", "private-execution", "snapshot", 1)}
+	secret := struct{ Password string }{Password: "not-durable"}
+	request.PrivateLaunch = secret
+	result, err := executor.Execute(context.Background(), request)
+	if err != nil || result.Outcome != OutcomeSucceeded {
+		t.Fatalf("private execution = %+v, %v", result, err)
+	}
+	if got, ok := supervisor.private.(struct{ Password string }); !ok || got != secret {
+		t.Fatalf("private launch material = %#v", supervisor.private)
 	}
 }
 

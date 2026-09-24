@@ -2,6 +2,7 @@ package effect
 
 import (
 	"bytes"
+	"context"
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
@@ -141,6 +142,20 @@ type ExecuteRequest struct {
 	// stored in the control database; the persisted LaunchPayload must contain
 	// a secret-free descriptor that cryptographically binds this material.
 	LaunchMaterial LaunchMaterial
+	// PrivateLaunch is an in-memory, initial-launch-only value for a supervisor
+	// that implements PrivateLaunchSupervisor. It is never serialized by the
+	// executor or persisted by an effect store. Protocol-specific supervisors
+	// use it for material (such as database credentials) whose durable binding
+	// is the secret-free Reservation.LaunchPayload.
+	PrivateLaunch any
+}
+
+// PrivateLaunchSupervisor is an intentionally narrow extension of Supervisor
+// for protocols whose launch material cannot be represented as a generic
+// command. Recovery never calls this method: it observes only the durable
+// reservation and execution identity.
+type PrivateLaunchSupervisor interface {
+	LaunchPrivate(context.Context, Reservation, any) (ExecutionIdentity, error)
 }
 
 type LaunchMaterial struct {
