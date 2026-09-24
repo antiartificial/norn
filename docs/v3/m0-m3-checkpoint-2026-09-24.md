@@ -1,5 +1,26 @@
 # M0–M3 integration checkpoint — 2026-09-24
 
+## Current integration update
+
+PR [#67](https://github.com/antiartificial/norn/pull/67) added versioned
+operation replay expiry; it does not release every retained hot signed-identity
+or byte reservation. PR [#68](https://github.com/antiartificial/norn/pull/68)
+added a narrow etcd source-validation process that starts without control PG;
+normal Fleet consumers are not yet backend-neutral. PR
+[#69](https://github.com/antiartificial/norn/pull/69) integrated supervised
+`app.snapshot`, including bounded artifact admission, signed terminal-result
+replay, and durable publication intent/receipt. Its local PostgreSQL and Linux
+cgroup tests passed; a deployed Mini/Fleet runner and restore qualification
+remain open. PR [#70](https://github.com/antiartificial/norn/pull/70) recorded
+the exact Mini source-to-schema mapping through candidate migration 16.
+
+A subsequent [private-data restore rehearsal](m0-mini-private-restore-rehearsal-2026-09-24.md)
+restored a copied Mini control database into an isolated PostgreSQL 16
+container, applied migrations 1–16, and preserved all 28 legacy table counts
+and selected stable-field hashes. It did not start either API, exercise
+rollback, or verify app/job/route/volume/database ownership. **No M0–M3
+milestone gate is signed off, and no v3 code was deployed to Mini or Fleet.**
+
 ## Further integration update
 
 PRs [#62](https://github.com/antiartificial/norn/pull/62),
