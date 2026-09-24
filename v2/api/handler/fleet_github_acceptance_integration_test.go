@@ -131,7 +131,7 @@ func TestFleetGitHubReceiptUsesSignedAtomicAcceptance(t *testing.T) {
 		}); err != nil {
 			return store.EvidencePublication{}, err
 		}
-		return store.EvidencePublication{ObjectKey: "test/" + intent.ID, ObjectSHA256: "test-sha", ObjectBytes: 1}, nil
+		return store.EvidencePublication{ObjectKey: "test/" + intent.ID, ObjectSHA256: strings.Repeat("a", 64), ObjectBytes: 1}, nil
 	}); err != nil {
 		t.Fatalf("completed reservation was not archivable: %v", err)
 	}
@@ -150,7 +150,7 @@ func TestFleetGitHubReceiptUsesSignedAtomicAcceptance(t *testing.T) {
 	if err := db.Pool.QueryRow(context.Background(), `SELECT subject_kind,subject_id,operation_id,state FROM evidence_archive_intents WHERE operation_id=$1`, first.ID).Scan(&subjectKind, &subjectID, &archiveOperationID, &archiveState); err != nil {
 		t.Fatalf("non-saga receipt did not reserve archive work: %v", err)
 	}
-	if subjectKind != "operation" || subjectID != first.ID || archiveOperationID != first.ID || archiveState != "pending" {
+	if subjectKind != "operation" || subjectID != first.ID || archiveOperationID != first.ID || archiveState != "verified" {
 		t.Fatalf("non-saga archive reservation = %q/%q/%q/%q", subjectKind, subjectID, archiveOperationID, archiveState)
 	}
 
@@ -173,7 +173,7 @@ func TestFleetGitHubReceiptUsesSignedAtomicAcceptance(t *testing.T) {
 
 func TestFleetGitHubVerifiedNoWriteCompletionIsIdempotent(t *testing.T) {
 	db := acceptanceIntegrationDB(t)
-	h := New(db, nil, nil, nil, &config.Config{AuditSigningKey: "fleet-github-no-write-key-0001"}, nil, nil, nil, nil, nil, nil)
+	h := New(db, nil, nil, nil, &config.Config{AuditSigningKey: "fleet-github-no-write-signing-key-0001"}, nil, nil, nil, nil, nil, nil)
 	const planID = "8d4b716d-788a-4e43-8f0b-5d4b8f3a2a4c"
 	if err := db.ReserveMutationAudit(context.Background(), &store.MutationAuditEvent{ID: "receipt-no-write", RequestID: "request-no-write", PrincipalSubject: "operator-1", Method: http.MethodPost, Path: "/api/v1/fleet/plans/{planID}/github/reconcile", StartedAt: time.Now().UTC()}); err != nil {
 		t.Fatal(err)
@@ -196,6 +196,13 @@ func TestFleetGitHubVerifiedNoWriteCompletionIsIdempotent(t *testing.T) {
 	resolved, found, err := h.resolveFleetGitHubOperation(req, planID, "fleet.github.pull-request")
 	if err != nil || !found || resolved.Status != model.OperationCanceled {
 		t.Fatalf("terminal reconciliation lookup=%+v found=%v err=%v", resolved, found, err)
+	}
+}
+
+func TestFleetGitHubOperationIdentityFailsClosedWithoutAcceptanceStore(t *testing.T) {
+	h := &Handler{}
+	if _, err := h.fleetGitHubOperationIdentity(context.Background(), "plan-1", "fleet.github.pull-request"); err == nil || !strings.Contains(err.Error(), "acceptance is unavailable") {
+		t.Fatalf("missing operation store error=%v", err)
 	}
 }
 

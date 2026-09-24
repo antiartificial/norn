@@ -486,6 +486,9 @@ func (h *Handler) verifyCapacityPlan(plan *fleet.CapacityPlan) bool {
 // external-action receipt. The initiating credential remains signed audit
 // evidence, but must not make a second receipt possible for the same plan.
 func (h *Handler) fleetGitHubOperationIdentity(ctx context.Context, planID, kind string) (store.OperationRequestIdentity, error) {
+	if h == nil || h.operationStore == nil {
+		return store.OperationRequestIdentity{}, fmt.Errorf("signed operation acceptance is unavailable")
+	}
 	authority, err := h.operationStore.Authority(ctx)
 	if err != nil {
 		return store.OperationRequestIdentity{}, err
