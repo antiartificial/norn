@@ -50,7 +50,7 @@ func TestWordPressDatabaseDeliveryIsPrivateAndRevisionBound(t *testing.T) {
 				}
 				data := *task.Templates[0].EmbeddedTmpl
 				for field, env := range map[string]string{"host": "WORDPRESS_DB_HOST", "user": "WORDPRESS_DB_USER", "password": "WORDPRESS_DB_PASSWORD", "name": "WORDPRESS_DB_NAME"} {
-					want := env + "={{ ." + stagedKey(DatabaseComponentItemKey("primary", field), 7) + " | toJSON }}"
+					want := env + "={{ ." + stagedKey(DatabaseComponentItemKey("primary", field), 7) + ".Value | toJSON }}"
 					if !strings.Contains(data, want) {
 						t.Fatalf("%s lacks staged %s field: %q", *job.ID, field, data)
 					}
@@ -139,7 +139,7 @@ func TestDatabaseDeliveryTemplatesOnEveryTranslationPath(t *testing.T) {
 				files[*template.DestPath] = data
 			}
 		}
-		if envTemplate == nil || !strings.Contains(*envTemplate.EmbeddedTmpl, "DATABASE_URL={{ .norn_rev5_db_url_primary }}") || strings.Contains(*envTemplate.EmbeddedTmpl, "ANALYTICS") {
+		if envTemplate == nil || !strings.Contains(*envTemplate.EmbeddedTmpl, "DATABASE_URL={{ .norn_rev5_db_url_primary.Value | toJSON }}") || strings.Contains(*envTemplate.EmbeddedTmpl, "ANALYTICS") {
 			t.Fatalf("%s env template = %+v", name, envTemplate)
 		}
 		if !strings.Contains(files["secrets/norn-databases/primary.url"], ".norn_rev5_db_url_primary") || !strings.Contains(files["secrets/norn-databases/analytics-db.url"], ".norn_rev5_db_url_analytics_db") {

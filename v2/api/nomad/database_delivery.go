@@ -163,7 +163,7 @@ func addDatabaseTemplates(spec *model.InfraSpec, jobID string, revision int64, t
 		}
 		key := DatabaseRevisionItemKey(requirement.Name, revision)
 		if requirement.Runtime.Env != "" {
-			envLines = append(envLines, fmt.Sprintf("%s={{ .%s }}", requirement.Runtime.Env, key))
+			envLines = append(envLines, fmt.Sprintf("%s={{ .%s.Value | toJSON }}", requirement.Runtime.Env, key))
 		}
 		if requirement.Runtime.FileEnv != "" {
 			destination := "secrets/" + databaseSecretsDir + "/" + requirement.Name + ".url"
@@ -180,7 +180,7 @@ func addDatabaseTemplates(spec *model.InfraSpec, jobID string, revision int64, t
 				// Component passwords are raw values, unlike percent-encoded
 				// URLs. Nomad's env parser needs JSON quoting for characters
 				// such as spaces, quotes and backslashes.
-				envLines = append(envLines, fmt.Sprintf("%s={{ .%s | toJSON }}", field.env, stagedKey(DatabaseComponentItemKey(requirement.Name, field.component), revision)))
+				envLines = append(envLines, fmt.Sprintf("%s={{ .%s.Value | toJSON }}", field.env, stagedKey(DatabaseComponentItemKey(requirement.Name, field.component), revision)))
 			}
 		}
 	}
