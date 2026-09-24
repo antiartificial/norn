@@ -224,7 +224,7 @@ func (s *PGEffectStore) CompletedSnapshotOperations(ctx context.Context) ([]effe
 	if s == nil || s.db == nil || s.db.Pool == nil {
 		return nil, fmt.Errorf("operation effect lookup is unavailable")
 	}
-	rows, err := s.db.Pool.Query(ctx, `SELECT `+effectColumns+` FROM operation_effects e JOIN operations o ON o.id=e.operation_id WHERE e.stage='app.snapshot' AND e.lifecycle='completed' AND o.status='succeeded'`)
+	rows, err := s.db.Pool.Query(ctx, `SELECT `+effectColumns+` FROM operation_effects WHERE stage='app.snapshot' AND lifecycle='completed' AND operation_id IN (SELECT id FROM operations WHERE status='succeeded')`)
 	if err != nil {
 		return nil, err
 	}

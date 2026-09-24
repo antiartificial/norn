@@ -115,3 +115,45 @@ func TestDiscardSnapshotArtifactIsIdempotentAfterDurablePublication(t *testing.T
 		t.Fatalf("reconciled cleanup was not idempotent: %v", err)
 	}
 }
+
+func TestDiscardSnapshotArtifactReconcilesAdmissionAfterArchiveRemovalCrash(t *testing.T) {
+	backend := newBackendFake()
+	manager := testManager(t, t.TempDir(), backend)
+	if err := manager.SetSnapshotArtifactBudget(MaxSnapshotArtifactBytes); err != nil {
+		t.Fatal(err)
+	}
+	material := SnapshotLaunchMaterial{PGDumpPath: "/usr/bin/pg_dump", PGDumpSHA256: strings.Repeat("a", 64), ServiceName: "demo", ServiceFile: []byte("[demo]\nhost=localhost\nuser=demo\n"), Password: "secret", Subject: "app:demo/db:main@generation:1", Timeout: time.Minute}
+	payload, err := manager.BuildSnapshotDescriptor(material)
+	if err != nil {
+		t.Fatal(err)
+	}
+	reservation := effect.Reservation{Authority: "authority", Resource: "app/demo/app.snapshot", OperationClaim: effect.OperationClaim{OperationID: "snapshot-op", OwnerID: "worker", Generation: 1}, Stage: SnapshotStage, Supervisor: "snapshot-runner", SupervisorExecutionID: "snapshot-crash-window", LaunchPayload: payload}
+	if reservation.InputDigest, err = effect.ComputeInputDigest(reservation); err != nil {
+		t.Fatal(err)
+	}
+	if err := manager.Prepare(context.Background(), reservation); err != nil {
+		t.Fatal(err)
+	}
+	identity, err := manager.LaunchSnapshot(context.Background(), reservation, material)
+	if err != nil {
+		t.Fatal(err)
+	}
+	directory := filepath.Join(manager.root, sha256DirectoryName(reservation.SupervisorExecutionID))
+	private := filepath.Join(directory, ".snapshot-published")
+	if err := os.MkdirAll(private, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(private, "archive.dump"), []byte("published"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	// Model a crash after archive removal but before admission-marker cleanup.
+	if err := os.Remove(filepath.Join(private, "archive.dump")); err != nil {
+		t.Fatal(err)
+	}
+	if err := manager.DiscardSnapshotArtifact(context.Background(), reservation, identity); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := os.Lstat(filepath.Join(directory, "snapshot-admission")); !os.IsNotExist(err) {
+		t.Fatalf("admission marker remained after crash recovery: %v", err)
+	}
+}

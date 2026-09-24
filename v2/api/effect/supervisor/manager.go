@@ -359,13 +359,13 @@ func (m *Manager) DiscardSnapshotArtifact(ctx context.Context, reservation effec
 		}
 		private, err := snapshotArtifactDirectory(directory)
 		if errors.Is(err, os.ErrNotExist) {
-			return nil
+			return removeSnapshotAdmission(directory)
 		}
 		if err != nil {
 			return err
 		}
 		if _, err := os.Lstat(filepath.Join(private, "archive.dump")); errors.Is(err, os.ErrNotExist) {
-			return nil
+			return removeSnapshotAdmission(directory)
 		} else if err != nil {
 			return err
 		}
@@ -380,14 +380,18 @@ func (m *Manager) DiscardSnapshotArtifact(ctx context.Context, reservation effec
 		if err := os.Remove(filepath.Join(private, "archive.dump")); err != nil && !errors.Is(err, os.ErrNotExist) {
 			return err
 		}
-		if err := os.Remove(filepath.Join(directory, "snapshot-admission")); err != nil && !errors.Is(err, os.ErrNotExist) {
-			return err
-		}
 		if err := syncDirectory(private); err != nil {
 			return err
 		}
-		return syncDirectory(directory)
+		return removeSnapshotAdmission(directory)
 	})
+}
+
+func removeSnapshotAdmission(directory string) error {
+	if err := os.Remove(filepath.Join(directory, "snapshot-admission")); err != nil && !errors.Is(err, os.ErrNotExist) {
+		return err
+	}
+	return syncDirectory(directory)
 }
 
 func snapshotArtifactDirectory(directory string) (string, error) {

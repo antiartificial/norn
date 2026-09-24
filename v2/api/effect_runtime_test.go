@@ -2,18 +2,25 @@ package main
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"errors"
+	"io"
+	"os"
 	"path/filepath"
 	"runtime"
 	"strings"
 	"testing"
 	"time"
 
+	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5/pgxpool"
 
 	"norn/v2/api/config"
 	"norn/v2/api/effect"
 	"norn/v2/api/effect/supervisor"
+	"norn/v2/api/internal/pgtest"
+	"norn/v2/api/model"
 	"norn/v2/api/store"
 )
 
@@ -30,6 +37,21 @@ func (startupBackend) Revoke(context.Context, supervisor.BackendExecution) (supe
 }
 func (startupBackend) RetrieveResult(context.Context, supervisor.BackendExecution, string) ([]byte, error) {
 	return nil, errors.New("not used")
+}
+
+type startupSnapshotBackend struct{ startupBackend }
+
+func (startupSnapshotBackend) StartSnapshot(context.Context, supervisor.BackendExecution, supervisor.SnapshotDescriptor, supervisor.SnapshotLaunchMaterial) error {
+	return nil
+}
+func (startupSnapshotBackend) ObserveSnapshot(context.Context, supervisor.BackendExecution, supervisor.SnapshotDescriptor) (supervisor.BackendState, error) {
+	return supervisor.BackendState{Phase: effect.SupervisorUnknown}, nil
+}
+func (startupSnapshotBackend) QuerySnapshot(context.Context, supervisor.BackendExecution, supervisor.SnapshotDescriptor) (supervisor.SnapshotManifest, error) {
+	return supervisor.SnapshotManifest{}, nil
+}
+func (startupSnapshotBackend) CopySnapshotArtifact(context.Context, supervisor.BackendExecution, supervisor.SnapshotDescriptor, io.Writer) (supervisor.SnapshotManifest, error) {
+	return supervisor.SnapshotManifest{}, errors.New("not used")
 }
 
 func supervisedConfig(t *testing.T) *config.Config {
@@ -103,5 +125,94 @@ func TestSupervisedBuildTestWiresRunnerBesideBinaryAndPrivateEnvironment(t *test
 		if _, err := supervisor.NewCgroupBackend(cfg.EffectCgroupRoot, gotRunner, "", []byte(cfg.EffectSigningKey)); err == nil {
 			t.Fatal("cgroup backend constructed on a platform without qualified containment")
 		}
+	}
+}
+
+func TestConfigureSnapshotEffectsReconcilesPublishedArtifactAfterRestart(t *testing.T) {
+	server := pgtest.Start(t)
+	server.CreateDatabase(t, "norn_snapshot_reconcile")
+	db, err := store.Connect(server.URL("norn_snapshot_reconcile"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+	if err := store.Migrate(db); err != nil {
+		t.Fatal(err)
+	}
+	ctx := context.Background()
+	root := t.TempDir()
+	key := strings.Repeat("k", 32)
+	manager, err := supervisor.NewManager(filepath.Join(root, "snapshots"), []byte(key), startupSnapshotBackend{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := manager.SetSnapshotArtifactBudget(supervisor.MaxSnapshotArtifactBytes); err != nil {
+		t.Fatal(err)
+	}
+	operation := &model.Operation{ID: uuid.NewString(), Kind: "app.snapshot", App: "demo", Status: model.OperationQueued, Source: "test", Payload: map[string]interface{}{}, Metadata: map[string]interface{}{}, StartedAt: time.Now().UTC(), MaxAttempts: 1}
+	if err := db.InsertOperation(ctx, operation); err != nil {
+		t.Fatal(err)
+	}
+	claimed, claim, err := db.ClaimNextOperation(ctx, "snapshot-worker", time.Minute, []string{"app.snapshot"})
+	if err != nil || claimed == nil {
+		t.Fatalf("claim snapshot operation = %+v, %v", claimed, err)
+	}
+	var authority string
+	if err := db.Pool.QueryRow(ctx, `SELECT authority::text FROM control_plane_identity WHERE singleton`).Scan(&authority); err != nil {
+		t.Fatal(err)
+	}
+	material := supervisor.SnapshotLaunchMaterial{PGDumpPath: "/usr/bin/pg_dump", PGDumpSHA256: strings.Repeat("a", 64), ServiceName: "demo", ServiceFile: []byte("[demo]\nhost=localhost\nuser=demo\n"), Password: "secret", Subject: "app:demo/db:main@generation:1", Timeout: time.Minute}
+	payload, err := manager.BuildSnapshotDescriptor(material)
+	if err != nil {
+		t.Fatal(err)
+	}
+	reservation := effect.Reservation{Authority: authority, Resource: "app/demo/snapshot", OperationClaim: effect.OperationClaim{OperationID: claim.OperationID(), OwnerID: claim.OwnerID(), Generation: claim.Generation()}, Stage: "app.snapshot", Supervisor: "snapshot-runner", SupervisorExecutionID: "snapshot-restart", LaunchPayload: payload}
+	if reservation.InputDigest, err = effect.ComputeInputDigest(reservation); err != nil {
+		t.Fatal(err)
+	}
+	effects, err := store.NewPGEffectStore(db)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := manager.Prepare(ctx, reservation); err != nil {
+		t.Fatal(err)
+	}
+	reserved, err := effects.Reserve(ctx, reservation)
+	if err != nil || !reserved.Created {
+		t.Fatalf("reserve = %+v, %v", reserved, err)
+	}
+	identity, err := manager.LaunchSnapshot(ctx, reservation, material)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := effects.MarkLaunched(ctx, reserved.Record.Token, identity); err != nil {
+		t.Fatal(err)
+	}
+	verification := effect.Verification{Decision: effect.VerificationSucceeded, InputDigest: reservation.InputDigest, ResultDigest: effect.DigestInput([]byte("manifest")), ResultReference: "result/" + reservation.SupervisorExecutionID, SupervisorExecutionID: reservation.SupervisorExecutionID, RuntimeInstanceID: identity.RuntimeInstanceID, EvidenceSource: "test", EvidenceReference: "test/" + identity.RuntimeInstanceID, ObservedAt: time.Now().UTC()}
+	if err := effects.Complete(ctx, reserved.Record.Token, effect.Completion{Outcome: effect.OutcomeSucceeded, Verification: verification}); err != nil {
+		t.Fatal(err)
+	}
+	if err := db.FinishClaimedOperation(ctx, claim, model.OperationSucceeded, "published", nil); err != nil {
+		t.Fatal(err)
+	}
+	digest := sha256.Sum256([]byte(reservation.SupervisorExecutionID))
+	directory := filepath.Join(root, "snapshots", hex.EncodeToString(digest[:]))
+	private := filepath.Join(directory, ".snapshot-published")
+	if err := os.MkdirAll(private, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	archive := filepath.Join(private, "archive.dump")
+	if err := os.WriteFile(archive, []byte("published"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	cfg := &config.Config{SnapshotExecution: "supervised", EffectSupervisorDir: root, EffectSigningKey: key, EffectCgroupRoot: "/test/cgroup", EffectRunnerBinary: "/test/runner", SnapshotPGDumpPath: "/usr/bin/pg_dump", SnapshotPGDumpSHA256: strings.Repeat("a", 64), SnapshotTimeout: time.Minute, SnapshotArtifactBudgetBytes: supervisor.MaxSnapshotArtifactBytes}
+	if _, err := configureSnapshotEffects(cfg, db, func(string, string, string, []byte) (supervisor.Backend, error) { return startupSnapshotBackend{}, nil }); err != nil {
+		t.Fatalf("startup snapshot reconciliation = %v", err)
+	}
+	if _, err := os.Lstat(archive); !os.IsNotExist(err) {
+		t.Fatalf("published private archive survived startup reconciliation: %v", err)
+	}
+	if _, err := os.Lstat(filepath.Join(directory, "snapshot-admission")); !os.IsNotExist(err) {
+		t.Fatalf("snapshot admission survived startup reconciliation: %v", err)
 	}
 }
