@@ -92,20 +92,11 @@ func (p *Pipeline) executeDataOperation(ctx context.Context, op *model.Operation
 
 	switch op.Kind {
 	case "app.snapshot":
-		if p.SnapshotEffects != nil {
-			created, _, err := p.executeAttestedSnapshot(ctx, op, claim, bound, location)
-			if err != nil {
-				return nil, err
-			}
-			return finish("snapshot created for "+spec.App, map[string]interface{}{"snapshot": created.Filename}, func(publishCtx context.Context) {
-				_ = sg.Log(publishCtx, "snapshot.created", "manual database snapshot created", map[string]string{"snapshot": created.Filename, "database": database})
-			}), nil
+		if p.SnapshotEffects == nil || !p.SnapshotEffects.available() {
+			return nil, fmt.Errorf("durable app.snapshot execution is unavailable")
 		}
-		created, err := createDataSnapshotAt(ctx, location, "manual", op.StartedAt.UTC(), true)
+		created, _, err := p.executeAttestedSnapshot(ctx, op, claim, bound, location)
 		if err != nil {
-			return nil, err
-		}
-		if err := ctx.Err(); err != nil {
 			return nil, err
 		}
 		return finish("snapshot created for "+spec.App, map[string]interface{}{"snapshot": created.Filename}, func(publishCtx context.Context) {
