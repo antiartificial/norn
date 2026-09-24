@@ -53,6 +53,21 @@ jobs:
           NORN_TEST_ETCD_ENDPOINTS: ${{ matrix.component == 'api' && 'http://127.0.0.1:2379' || '' }}
         run: go test ./...
 
+  api-production-etcd:
+    name: api production etcd TLS RBAC
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.0.2
+      - uses: actions/setup-go@924ae3a1cded613372ab5595356fb5720e22ba16 # v6.0.0
+        with:
+          go-version-file: v2/api/go.mod
+          cache-dependency-path: v2/api/go.sum
+      - name: Start disposable TLS etcd with scoped RBAC
+        run: v2/api/scripts/etcd-tls-rbac-fixture.sh
+      - name: Prove PG-free production Fleet plan and replay
+        working-directory: v2/api
+        run: go test ./... -run '^TestEtcdFleetRuntimeProductionTLSRBACProcess$' -count=1
+
   web:
     name: web
     runs-on: ubuntu-24.04

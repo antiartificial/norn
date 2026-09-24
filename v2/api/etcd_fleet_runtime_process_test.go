@@ -20,8 +20,16 @@ import (
 	"norn/v2/api/etcdstore"
 	"norn/v2/api/handler"
 	"norn/v2/api/model"
+	"norn/v2/api/startup"
 	"norn/v2/api/store"
 )
+
+type etcdFleetRuntimeFixture struct {
+	endpoints  string
+	prefixBase string
+	backend    startup.ControlBackendConfig
+	production bool
+}
 
 // TestEtcdFleetRuntimeProcess proves the normal norn-api binary starts before
 // touching a poisoned PostgreSQL URL and exposes only the bounded Fleet slice.
@@ -34,24 +42,88 @@ func TestEtcdFleetRuntimeProcess(t *testing.T) {
 		{name: "poisoned PostgreSQL DSN", databaseURL: "postgres://poisoned.invalid:1/never-open"},
 	} {
 		t.Run(tt.name, func(t *testing.T) {
-			testEtcdFleetRuntimeProcess(t, tt.databaseURL)
+			testEtcdFleetRuntimeProcess(t, tt.databaseURL, etcdFleetRuntimeFixture{
+				endpoints:  strings.TrimSpace(os.Getenv("NORN_TEST_ETCD_ENDPOINTS")),
+				prefixBase: "/norn-test/fleet-runtime/",
+			})
 		})
 	}
 }
 
-func testEtcdFleetRuntimeProcess(t *testing.T, databaseURL string) {
+// TestEtcdFleetRuntimeProductionTLSRBACProcess proves the PG-free normal
+// Fleet slice under the production transport contract. The fixture user is a
+// non-root etcd principal whose role is limited to NORN_TEST_ETCD_TLS_PREFIX.
+func TestEtcdFleetRuntimeProductionTLSRBACProcess(t *testing.T) {
+	backend := startup.ControlBackendConfig{
+		Backend:       startup.BackendEtcd,
+		EtcdEndpoints: splitEtcdEndpoints(os.Getenv("NORN_TEST_ETCD_TLS_ENDPOINTS")),
+		EtcdCAFile:    strings.TrimSpace(os.Getenv("NORN_TEST_ETCD_TLS_CA_FILE")),
+		EtcdCertFile:  strings.TrimSpace(os.Getenv("NORN_TEST_ETCD_TLS_CERT_FILE")),
+		EtcdKeyFile:   strings.TrimSpace(os.Getenv("NORN_TEST_ETCD_TLS_KEY_FILE")),
+		EtcdUsername:  strings.TrimSpace(os.Getenv("NORN_TEST_ETCD_TLS_USERNAME")),
+		EtcdPassword:  os.Getenv("NORN_TEST_ETCD_TLS_PASSWORD"),
+	}
+	prefixBase := strings.TrimSuffix(strings.TrimSpace(os.Getenv("NORN_TEST_ETCD_TLS_PREFIX")), "/") + "/"
+	if len(backend.EtcdEndpoints) == 0 || backend.EtcdCAFile == "" || backend.EtcdCertFile == "" || backend.EtcdKeyFile == "" || backend.EtcdUsername == "" || backend.EtcdPassword == "" || prefixBase == "/" {
+		t.Skip("NORN_TEST_ETCD_TLS_* fixture is not configured")
+	}
+	if err := backend.ValidateEtcdProductionTransport(); err != nil {
+		t.Fatalf("production etcd fixture does not meet transport contract: %v", err)
+	}
+	for _, databaseURL := range []string{"", "postgres://poisoned.invalid:1/never-open"} {
+		t.Run(map[bool]string{true: "poisoned PostgreSQL DSN", false: "absent PostgreSQL DSN"}[databaseURL != ""], func(t *testing.T) {
+			testEtcdFleetRuntimeProcess(t, databaseURL, etcdFleetRuntimeFixture{
+				endpoints: strings.Join(backend.EtcdEndpoints, ","), prefixBase: prefixBase, backend: backend, production: true,
+			})
+		})
+	}
+}
+
+func splitEtcdEndpoints(raw string) []string {
+	var endpoints []string
+	for _, endpoint := range strings.Split(raw, ",") {
+		if endpoint = strings.TrimSpace(endpoint); endpoint != "" {
+			endpoints = append(endpoints, endpoint)
+		}
+	}
+	return endpoints
+}
+
+func testEtcdFleetRuntimeProcess(t *testing.T, databaseURL string, fixture etcdFleetRuntimeFixture) {
 	t.Helper()
-	endpoints := strings.TrimSpace(os.Getenv("NORN_TEST_ETCD_ENDPOINTS"))
+	endpoints := fixture.endpoints
 	if endpoints == "" {
 		t.Skip("NORN_TEST_ETCD_ENDPOINTS is not set")
 	}
-	client, err := clientv3.New(clientv3.Config{Endpoints: strings.Split(endpoints, ","), DialTimeout: 5 * time.Second})
+	var client *clientv3.Client
+	var err error
+	if fixture.production {
+		client, err = newEtcdClient(fixture.backend)
+	} else {
+		client, err = clientv3.New(clientv3.Config{Endpoints: strings.Split(endpoints, ","), DialTimeout: 5 * time.Second})
+	}
 	if err != nil {
 		t.Fatal(err)
 	}
 	t.Cleanup(func() { _ = client.Close() })
-	prefix := "/norn-test/fleet-runtime/" + uuid.NewString()
+	prefix := fixture.prefixBase + uuid.NewString()
 	t.Cleanup(func() { _, _ = client.Delete(context.Background(), prefix, clientv3.WithPrefix()) })
+	if fixture.production {
+		for _, attempt := range []struct {
+			name string
+			run  func() error
+		}{
+			{name: "get", run: func() error { _, err := client.Get(context.Background(), "/norn-test/out-of-prefix"); return err }},
+			{name: "write", run: func() error {
+				_, err := client.Put(context.Background(), "/norn-test/out-of-prefix", "denied")
+				return err
+			}},
+		} {
+			if err := attempt.run(); err == nil || !strings.Contains(strings.ToLower(err.Error()), "permission denied") {
+				t.Fatalf("out-of-prefix %s error=%v, want permission denied", attempt.name, err)
+			}
+		}
+	}
 	secret := "fleet-runtime-process-token-secret-000"
 	authority := uuid.NewString()
 	identities := etcdstore.NewAuthStore(client, prefix)
@@ -104,17 +176,27 @@ func testEtcdFleetRuntimeProcess(t *testing.T, databaseURL string) {
 	var output lockedBuffer
 	command.Stdout, command.Stderr = &output, &output
 	environment := os.Environ()
+	profile, environmentID := "development", "development"
+	if fixture.production {
+		profile, environmentID = "production", "production"
+	}
 	if databaseURL == "" {
 		environment = withoutEnvironment(environment, "NORN_DATABASE_URL")
 	}
 	command.Env = append(environment,
 		"NORN_CONTROL_BACKEND=etcd", "NORN_ETCD_ENDPOINTS="+endpoints, "NORN_ETCD_PREFIX="+prefix, "NORN_CONTROL_AUTHORITY="+authority,
-		"NORN_PROFILE=development", "NORN_ENVIRONMENT=development", "NORN_API_TOKEN="+secret, "NORN_AUDIT_SIGNING_KEY=fleet-runtime-process-audit-key-000", "NORN_AUDIT_RETENTION_DAYS=365", "NORN_REQUIRE_EXPLICIT_AUTH=true",
+		"NORN_PROFILE="+profile, "NORN_ENVIRONMENT="+environmentID, "NORN_API_TOKEN="+secret, "NORN_AUDIT_SIGNING_KEY=fleet-runtime-process-audit-key-000", "NORN_AUDIT_RETENTION_DAYS=365", "NORN_REQUIRE_EXPLICIT_AUTH=true",
 		"NORN_NOMAD_ADDR=https://nomad.example.test:4646", "NORN_CONSUL_ADDR=https://consul.example.test:8501", "CONSUL_HTTP_SSL_VERIFY=true", "NORN_REGISTRY_URL=registry.example.test/norn",
 		"NORN_RELEASE_ADMISSION_MODE=keyless", "NORN_RELEASE_ATTESTATION_ISSUER=https://token.actions.githubusercontent.com", "NORN_RELEASE_ATTESTATION_ALLOWED_REPOSITORIES=example/norn", "NORN_RELEASE_ATTESTATION_ALLOWED_WORKFLOW_REFS=example/norn/.github/workflows/release.yml@"+strings.Repeat("a", 40), "NORN_RELEASE_REQUIRE_SBOM=true",
 		"NORN_TRUSTED_QUALIFICATION_SIGNING_KEYS="+testEd25519Public('q'), "NORN_GITHUB_ACTIONS_OIDC_AUDIENCE=norn", "NORN_GITHUB_ACTIONS_ALLOWED_REPOSITORIES=example/norn@1@2", "NORN_GITHUB_ACTIONS_ALLOWED_WORKFLOW_REFS=example/norn/.github/workflows/release.yml@"+strings.Repeat("a", 40), "NORN_GITHUB_ACTIONS_ALLOWED_REFS=refs/tags/v*", "NORN_GITHUB_ACTIONS_ALLOWED_EVENTS=push", "NORN_GITHUB_ACTIONS_ALLOWED_APPS=demo", "NORN_GITHUB_ACTIONS_ALLOWED_ENVIRONMENTS=production", "NORN_GITHUB_ACTIONS_DEFAULT_BRANCH=main", "NORN_LEGACY_TOKEN_SIGNING_UNTIL=2020-01-01T00:00:00Z",
 		"NORN_BIND_ADDR=127.0.0.1", fmt.Sprintf("NORN_PORT=%d", port), "NORN_FLEET_CONFIG="+configPath, "NORN_UI_DIR=",
 	)
+	if fixture.production {
+		command.Env = append(command.Env,
+			"NORN_ETCD_CA_FILE="+fixture.backend.EtcdCAFile, "NORN_ETCD_CERT_FILE="+fixture.backend.EtcdCertFile, "NORN_ETCD_KEY_FILE="+fixture.backend.EtcdKeyFile,
+			"NORN_ETCD_USERNAME="+fixture.backend.EtcdUsername, "NORN_ETCD_PASSWORD="+fixture.backend.EtcdPassword,
+		)
+	}
 	if databaseURL != "" {
 		command.Env = append(command.Env, "NORN_DATABASE_URL="+databaseURL)
 	}
