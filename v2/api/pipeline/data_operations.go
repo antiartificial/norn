@@ -92,6 +92,15 @@ func (p *Pipeline) executeDataOperation(ctx context.Context, op *model.Operation
 
 	switch op.Kind {
 	case "app.snapshot":
+		if p.SnapshotEffects != nil {
+			created, _, err := p.executeAttestedSnapshot(ctx, op, claim, bound, location)
+			if err != nil {
+				return nil, err
+			}
+			return finish("snapshot created for "+spec.App, map[string]interface{}{"snapshot": created.Filename}, func(publishCtx context.Context) {
+				_ = sg.Log(publishCtx, "snapshot.created", "manual database snapshot created", map[string]string{"snapshot": created.Filename, "database": database})
+			}), nil
+		}
 		created, err := createDataSnapshotAt(ctx, location, "manual", op.StartedAt.UTC(), true)
 		if err != nil {
 			return nil, err
