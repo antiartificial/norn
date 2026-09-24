@@ -8,11 +8,16 @@ import (
 	"norn/v2/api/effect"
 	"norn/v2/api/model"
 	"norn/v2/api/nomad"
+	"norn/v2/api/store"
 )
 
 func TestCanaryPromotionRejectsMissingDurableEffectBoundary(t *testing.T) {
 	if _, err := NewNomadCanaryPromotionEffectsWithStore(nil, &nomad.Client{}); err == nil {
 		t.Fatal("accepted a Nomad canary writer without an atomic effect store")
+	}
+	var typedNil *store.PGEffectStore
+	if _, err := NewNomadCanaryPromotionEffectsWithStore(typedNil, &nomad.Client{}); err == nil {
+		t.Fatal("accepted a typed-nil effect store")
 	}
 	if (&Pipeline{}).CanaryPromotionAvailable() {
 		t.Fatal("admitted canary promotion without a durable effect boundary")

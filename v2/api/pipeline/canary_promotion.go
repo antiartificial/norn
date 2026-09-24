@@ -7,6 +7,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"reflect"
 	"strings"
 	"time"
 
@@ -54,6 +55,10 @@ func NewNomadCanaryPromotionEffects(db *store.DB, client *nomad.Client) (*NomadC
 // allowing an unfenced Nomad write.
 func NewNomadCanaryPromotionEffectsWithStore(effectStore CanaryPromotionEffectStore, client *nomad.Client) (*NomadCanaryPromotionEffects, error) {
 	if effectStore == nil || client == nil {
+		return nil, fmt.Errorf("durable canary promotion requires an effect store and Nomad client")
+	}
+	value := reflect.ValueOf(effectStore)
+	if value.Kind() == reflect.Ptr && value.IsNil() {
 		return nil, fmt.Errorf("durable canary promotion requires an effect store and Nomad client")
 	}
 	return &NomadCanaryPromotionEffects{store: effectStore, executor: &effect.Executor{
