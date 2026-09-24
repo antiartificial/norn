@@ -213,3 +213,30 @@ func TestCgroupRevokeWaitsForEmptyGroup(t *testing.T) {
 }
 
 func mkfifo(path string) error { return syscall.Mkfifo(path, 0o600) }
+
+func TestObserveSnapshotScrubsDeadRunningHelper(t *testing.T) {
+	fake := newFakeCgroup(t)
+	fake.events(t, "populated 0\n")
+	key := runnerStatusKey(fake.backend.key, fake.execution.RuntimeInstanceID)
+	if err := writeSnapshotStatus(fake.execution.StateDirectory, key, snapshotRunnerStatus{Protocol: SnapshotProtocolV1, RuntimeInstanceID: fake.execution.RuntimeInstanceID, DescriptorSHA256: strings.Repeat("a", 64), Phase: effect.SupervisorRunning, UpdatedAt: time.Now().UTC()}); err != nil {
+		t.Fatal(err)
+	}
+	private := filepath.Join(fake.execution.StateDirectory, ".snapshot-crashed")
+	if err := os.Mkdir(private, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	for _, name := range []string{"service.conf", "passfile"} {
+		if err := os.WriteFile(filepath.Join(private, name), []byte("secret"), 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	state, err := fake.backend.ObserveSnapshot(context.Background(), fake.execution, SnapshotDescriptor{})
+	if err != nil || state.Phase != effect.SupervisorUnknown {
+		t.Fatalf("state=%+v err=%v", state, err)
+	}
+	for _, name := range []string{"service.conf", "passfile"} {
+		if _, err := os.Stat(filepath.Join(private, name)); !errors.Is(err, os.ErrNotExist) {
+			t.Fatalf("%s remains: %v", name, err)
+		}
+	}
+}
