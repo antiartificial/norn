@@ -6,6 +6,7 @@ import (
 	"encoding/hex"
 	"errors"
 	"io"
+	"io/fs"
 	"os"
 	"path/filepath"
 	"strings"
@@ -13,6 +14,7 @@ import (
 	"time"
 
 	"norn/v2/api/database"
+	"norn/v2/api/effect"
 )
 
 func testAttestedSnapshotLocation(t *testing.T) snapshotLocation {
@@ -85,5 +87,41 @@ func TestPublishAttestedSnapshotFencesReplay(t *testing.T) {
 	artifact.Fence = func(func() error) error { return errors.New("claim expired") }
 	if _, err := PublishAttestedSnapshot(location, at, artifact); err == nil || !strings.Contains(err.Error(), "before replay") {
 		t.Fatalf("stale replay = %v", err)
+	}
+}
+
+// A process may link the dump and die before it records the durable receipt.
+// On replay Link returns EEXIST; the verified matching pair is proof enough to
+// record that missing receipt rather than leaving terminalization impossible.
+func TestPublishAttestedSnapshotRecordsReceiptWhenLinkFindsMatchingPair(t *testing.T) {
+	location := testAttestedSnapshotLocation(t)
+	data := []byte("attested snapshot bytes")
+	at := time.Date(2026, 9, 24, 12, 0, 0, 0, time.UTC)
+	artifact := testAttestedArtifact("snapshot-operation", data, func() error { return nil })
+	receipts := 0
+	artifact.Receipt = func(string) error { receipts++; return nil }
+	original := linkAttestedSnapshot
+	linkAttestedSnapshot = func(oldname, newname string) error {
+		if err := original(oldname, newname); err != nil {
+			return err
+		}
+		return fs.ErrExist // emulate a crash/uncertain Link acknowledgement.
+	}
+	t.Cleanup(func() { linkAttestedSnapshot = original })
+	if _, err := PublishAttestedSnapshot(location, at, artifact); err != nil {
+		t.Fatal(err)
+	}
+	if receipts != 1 {
+		t.Fatalf("publication receipts = %d, want 1", receipts)
+	}
+}
+
+func TestPublishAttestedSnapshotDefersWhenReceiptPersistenceIsUnavailable(t *testing.T) {
+	location := testAttestedSnapshotLocation(t)
+	artifact := testAttestedArtifact("snapshot-operation", []byte("attested snapshot bytes"), func() error { return nil })
+	artifact.Receipt = func(string) error { return errors.New("postgres unavailable") }
+	_, err := PublishAttestedSnapshot(location, time.Date(2026, 9, 24, 12, 0, 0, 0, time.UTC), artifact)
+	if !effect.IsDeferred(err) {
+		t.Fatalf("receipt persistence error = %v, want deferred", err)
 	}
 }

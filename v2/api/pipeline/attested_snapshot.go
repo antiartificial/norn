@@ -15,6 +15,8 @@ import (
 	"path/filepath"
 	"strings"
 	"time"
+
+	"norn/v2/api/effect"
 )
 
 type AttestedSnapshotArtifact struct {
@@ -73,10 +75,8 @@ func PublishAttestedSnapshot(location snapshotLocation, at time.Time, artifact A
 		if digest, e := fileSHA256(path); e != nil || digest != artifact.SHA256 {
 			return nil, fmt.Errorf("existing snapshot publication differs from attested artifact")
 		}
-		if artifact.Receipt != nil {
-			if err := artifact.Receipt(filename); err != nil {
-				return nil, fmt.Errorf("record snapshot publication receipt: %w", err)
-			}
+		if err := recordAttestedSnapshotReceipt(artifact, filename); err != nil {
+			return nil, err
 		}
 		return &dataSnapshot{Filename: filename, Timestamp: at.UTC().Format("20060102T150405"), Size: info.Size()}, nil
 	} else if !os.IsNotExist(err) {
@@ -126,6 +126,9 @@ func PublishAttestedSnapshot(location snapshotLocation, at time.Time, artifact A
 		if errors.Is(err, fs.ErrExist) {
 			if info, e := os.Lstat(path); e == nil && info.Mode().IsRegular() && info.Size() == artifact.Size && verifyBoundDump(location, filename, info.Size()) == nil {
 				if digest, e := fileSHA256(path); e == nil && digest == artifact.SHA256 {
+					if e := recordAttestedSnapshotReceipt(artifact, filename); e != nil {
+						return nil, e
+					}
 					return &dataSnapshot{Filename: filename, Timestamp: at.UTC().Format("20060102T150405"), Size: info.Size()}, nil
 				}
 			}
@@ -136,12 +139,23 @@ func PublishAttestedSnapshot(location snapshotLocation, at time.Time, artifact A
 	if err := verifyBoundDump(location, filename, artifact.Size); err != nil {
 		return nil, fmt.Errorf("verify published snapshot pair: %w", err)
 	}
-	if artifact.Receipt != nil {
-		if err := artifact.Receipt(filename); err != nil {
-			return nil, fmt.Errorf("record snapshot publication receipt: %w", err)
-		}
+	if err := recordAttestedSnapshotReceipt(artifact, filename); err != nil {
+		return nil, err
 	}
 	return &dataSnapshot{Filename: filename, Timestamp: at.UTC().Format("20060102T150405"), Size: artifact.Size}, nil
+}
+
+// Once a matching public pair is visible, failure to record its receipt is
+// ambiguous rather than a failed snapshot. Leave it queued for exact replay;
+// integrity failures above remain ordinary fail-closed errors.
+func recordAttestedSnapshotReceipt(artifact AttestedSnapshotArtifact, filename string) error {
+	if artifact.Receipt == nil {
+		return nil
+	}
+	if err := artifact.Receipt(filename); err != nil {
+		return &effect.PendingError{EffectID: artifact.OperationID, Resource: "snapshot/" + artifact.OperationID, Reason: "persist snapshot publication receipt", Cause: err}
+	}
+	return nil
 }
 
 // removeAttestedSnapshotStaging removes only abandoned private staging files
