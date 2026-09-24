@@ -2,6 +2,7 @@ package pipeline
 
 import (
 	"context"
+	"crypto/hmac"
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
@@ -221,12 +222,14 @@ type portableSnapshotArtifact struct {
 type portableSnapshotBackend struct {
 	artifacts map[string]portableSnapshotArtifact
 	failures  map[string][]byte
+	key       []byte
 	starts    int
 	failCopy  bool
+	rebooted  bool
 }
 
 func newPortableSnapshotBackend() *portableSnapshotBackend {
-	return &portableSnapshotBackend{artifacts: map[string]portableSnapshotArtifact{}, failures: map[string][]byte{}}
+	return &portableSnapshotBackend{artifacts: map[string]portableSnapshotArtifact{}, failures: map[string][]byte{}, key: []byte("snapshot-pg-integration-signing-key-32")}
 }
 
 func (b *portableSnapshotBackend) Start(context.Context, supervisor.BackendExecution, effect.LaunchMaterial) error {
@@ -283,10 +286,35 @@ func (b *portableSnapshotBackend) StartSnapshot(ctx context.Context, execution s
 		return err
 	}
 	descriptorDigest := sha256.Sum256(descriptorBytes)
-	b.artifacts[execution.SupervisorExecutionID] = portableSnapshotArtifact{data: data, manifest: supervisor.SnapshotManifest{Protocol: supervisor.SnapshotProtocolV1, RuntimeInstanceID: execution.RuntimeInstanceID, DescriptorSHA256: hex.EncodeToString(descriptorDigest[:]), Artifact: supervisor.SnapshotArtifact{Reference: "portable/" + execution.SupervisorExecutionID, Bytes: int64(len(data)), SHA256: hex.EncodeToString(digest[:]), Regular: true, NoFollow: true}, ContainmentProven: true, ObservedAt: time.Now().UTC()}}
+	manifest := supervisor.SnapshotManifest{Protocol: supervisor.SnapshotProtocolV1, RuntimeInstanceID: execution.RuntimeInstanceID, DescriptorSHA256: hex.EncodeToString(descriptorDigest[:]), Artifact: supervisor.SnapshotArtifact{Reference: "portable/" + execution.SupervisorExecutionID, Bytes: int64(len(data)), SHA256: hex.EncodeToString(digest[:]), Regular: true, NoFollow: true}, ContainmentProven: true, ObservedAt: time.Now().UTC()}
+	manifest.MAC = portableSnapshotManifestMAC(b.key, manifest)
+	b.artifacts[execution.SupervisorExecutionID] = portableSnapshotArtifact{data: data, manifest: manifest}
 	return nil
 }
+
+func portableSnapshotManifestMAC(key []byte, manifest supervisor.SnapshotManifest) string {
+	payload, _ := json.Marshal(struct {
+		Protocol          string                      `json:"protocol"`
+		RuntimeInstanceID string                      `json:"runtimeInstanceId"`
+		DescriptorSHA256  string                      `json:"descriptorSha256"`
+		Artifact          supervisor.SnapshotArtifact `json:"artifact"`
+		ContainmentProven bool                        `json:"containmentProven"`
+		ObservedAt        time.Time                   `json:"observedAt"`
+	}{manifest.Protocol, manifest.RuntimeInstanceID, manifest.DescriptorSHA256, manifest.Artifact, manifest.ContainmentProven, manifest.ObservedAt})
+	statusKey := hmac.New(sha256.New, key)
+	statusKey.Write([]byte("norn-effect-runner-status-v1\x00"))
+	statusKey.Write([]byte(manifest.RuntimeInstanceID))
+	mac := hmac.New(sha256.New, statusKey.Sum(nil))
+	mac.Write(payload)
+	return hex.EncodeToString(mac.Sum(nil))
+}
 func (b *portableSnapshotBackend) ObserveSnapshot(_ context.Context, execution supervisor.BackendExecution, _ supervisor.SnapshotDescriptor) (supervisor.BackendState, error) {
+	if b.rebooted {
+		// A host reboot removes the execution containment namespace. The
+		// already-completed effect must retrieve its signed output without
+		// re-observing this now-unknown runtime.
+		return supervisor.BackendState{Phase: effect.SupervisorUnknown, EvidenceReference: "portable-test-rebooted"}, nil
+	}
 	if output, failed := b.failures[execution.SupervisorExecutionID]; failed {
 		exit := 1
 		return supervisor.BackendState{Phase: effect.SupervisorFailed, ExitCode: &exit, Output: append([]byte(nil), output...), ContainmentProven: true, EvidenceReference: "portable-test-failed/" + execution.RuntimeInstanceID}, nil
@@ -425,6 +453,14 @@ func TestSupervisedPostgresSnapshotReservationReplayAfterPublicationCrash(t *tes
 	}
 	if f.snapshotBackend.starts != 1 {
 		t.Fatalf("pg_dump starts after interrupted publication = %d, want 1", f.snapshotBackend.starts)
+	}
+	// Effect completion committed before operation publication. Simulate the
+	// post-crash host boot where the cgroup/containment namespace has gone away;
+	// replay must use the exact authenticated output that completion bound.
+	f.snapshotBackend.rebooted = true
+	replayedOutput, err := f.p.SnapshotEffects.Manager.RetrieveSnapshotResult(ctx, record.Reservation, record.Execution, record.Completion.Verification.ResultReference)
+	if err != nil || effect.DigestInput(replayedOutput) != record.Completion.Verification.ResultDigest {
+		t.Fatalf("reboot replay result = %q, %v", replayedOutput, err)
 	}
 
 	// Idempotent request acceptance returns the original operation. Its later

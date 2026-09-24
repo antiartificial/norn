@@ -250,6 +250,24 @@ type signedEvidence struct {
 	MAC       string            `json:"mac"`
 }
 
+// snapshotResult preserves the exact terminal output used for durable effect
+// completion. Runner status establishes containment; this authenticated record
+// is what permits a completed effect to replay after reboot cleanup removes its
+// cgroup.
+type snapshotResult struct {
+	InputDigest           string `json:"inputDigest"`
+	SupervisorExecutionID string `json:"supervisorExecutionId"`
+	RuntimeInstanceID     string `json:"runtimeInstanceId"`
+	Reference             string `json:"reference"`
+	Digest                string `json:"digest"`
+	Output                []byte `json:"output"`
+}
+
+type signedSnapshotResult struct {
+	Result snapshotResult `json:"result"`
+	MAC    string         `json:"mac"`
+}
+
 func (m *Manager) Launch(ctx context.Context, reservation effect.Reservation, material effect.LaunchMaterial) (effect.ExecutionIdentity, error) {
 	_, err := m.verifyDescriptor(reservation.LaunchPayload, &material)
 	if err != nil {
@@ -689,23 +707,33 @@ func (m *Manager) ObserveSnapshot(ctx context.Context, reservation effect.Reserv
 		if err != nil {
 			return err
 		}
+		if state.Phase == effect.SupervisorSucceeded || state.Phase == effect.SupervisorFailed {
+			if !state.ContainmentProven {
+				return fmt.Errorf("snapshot terminal result lacks containment proof")
+			}
+			if err := m.writeSnapshotResult(directory, record, state.Output); err != nil {
+				return err
+			}
+		}
 		observation, err = m.observation(record, state)
 		return err
 	})
 	return observation, err
 }
 
-// RetrieveSnapshotResult re-observes the exact execution and returns its
-// signed-manifest output. Artifact bytes remain behind CopySnapshotArtifact.
-func (m *Manager) RetrieveSnapshotResult(ctx context.Context, reservation effect.Reservation, identity effect.ExecutionIdentity, _ string) ([]byte, error) {
-	observation, err := m.ObserveSnapshot(ctx, reservation, identity)
-	if err != nil {
-		return nil, err
-	}
-	if observation.Phase != effect.SupervisorSucceeded && observation.Phase != effect.SupervisorFailed {
-		return nil, fmt.Errorf("snapshot execution has no terminal result")
-	}
-	return observation.Output, nil
+// RetrieveSnapshotResult returns the authenticated terminal output preserved
+// before completion. It never re-observes a completed snapshot execution.
+func (m *Manager) RetrieveSnapshotResult(_ context.Context, reservation effect.Reservation, identity effect.ExecutionIdentity, reference string) ([]byte, error) {
+	var output []byte
+	err := m.withExecutionLock(identity.SupervisorExecutionID, func(directory string) error {
+		record, err := m.readBoundJournal(directory, reservation, identity)
+		if err != nil {
+			return err
+		}
+		output, err = m.readSnapshotResult(directory, record, reference)
+		return err
+	})
+	return output, err
 }
 
 func (m *Manager) CopySnapshotArtifact(ctx context.Context, reservation effect.Reservation, identity effect.ExecutionIdentity, destination io.Writer) (SnapshotManifest, error) {
@@ -723,8 +751,40 @@ func (m *Manager) CopySnapshotArtifact(ctx context.Context, reservation effect.R
 		if e != nil {
 			return e
 		}
-		out, e = b.CopySnapshotArtifact(ctx, backendExecution(r, directory), d, destination)
-		return e
+		output, e := m.readSnapshotResult(directory, r, "result/"+reservation.SupervisorExecutionID)
+		if e != nil {
+			return e
+		}
+		if e = json.Unmarshal(output, &out); e != nil {
+			return fmt.Errorf("decode durable snapshot result: %w", e)
+		}
+		key := runnerStatusKey(m.key, r.RuntimeInstanceID)
+		if e = VerifySnapshotManifestForDescriptor(out, d, key, r.RuntimeInstanceID); e != nil {
+			return e
+		}
+		// Test-only snapshot backends do not persist runner-private status or
+		// artifacts. Production runners do; their durable result permits direct
+		// artifact copying after the cgroup has disappeared on reboot.
+		if _, statErr := os.Lstat(filepath.Join(directory, "snapshot-status.json")); errors.Is(statErr, os.ErrNotExist) {
+			copied, copyErr := b.CopySnapshotArtifact(ctx, backendExecution(r, directory), d, destination)
+			if copyErr != nil {
+				return copyErr
+			}
+			if copied.Artifact != out.Artifact {
+				return fmt.Errorf("snapshot artifact does not match durable result")
+			}
+			return nil
+		} else if statErr != nil {
+			return statErr
+		}
+		copied, e := CopySnapshotArtifact(directory, key, r.RuntimeInstanceID, d, true, destination)
+		if e != nil {
+			return e
+		}
+		if copied.Artifact != out.Artifact {
+			return fmt.Errorf("snapshot artifact does not match durable result")
+		}
+		return nil
 	})
 	return out, err
 }
@@ -1034,6 +1094,56 @@ func (m *Manager) readJournal(directory string) (journal, error) {
 		return journal{}, fmt.Errorf("effect supervisor journal authentication failed")
 	}
 	return envelope.Record, nil
+}
+
+func (m *Manager) writeSnapshotResult(directory string, record journal, output []byte) error {
+	if record.RuntimeInstanceID == "" || int64(len(output)) > maxRunnerStatusBytes {
+		return fmt.Errorf("snapshot terminal result is incomplete")
+	}
+	result := snapshotResult{
+		InputDigest: record.InputDigest, SupervisorExecutionID: record.SupervisorExecutionID,
+		RuntimeInstanceID: record.RuntimeInstanceID, Reference: "result/" + record.SupervisorExecutionID,
+		Digest: effect.DigestInput(output), Output: append([]byte(nil), output...),
+	}
+	path := filepath.Join(directory, "snapshot-result.json")
+	if _, err := os.Lstat(path); err == nil {
+		existing, readErr := m.readSnapshotResult(directory, record, result.Reference)
+		if readErr != nil {
+			return readErr
+		}
+		if !hmac.Equal(existing, result.Output) {
+			return fmt.Errorf("snapshot terminal result changed after durable observation")
+		}
+		return nil
+	} else if !errors.Is(err, os.ErrNotExist) {
+		return err
+	}
+	encoded, err := json.Marshal(result)
+	if err != nil {
+		return err
+	}
+	return writeDurableJSON(directory, "snapshot-result.json", signedSnapshotResult{Result: result, MAC: m.mac(encoded)})
+}
+
+func (m *Manager) readSnapshotResult(directory string, record journal, reference string) ([]byte, error) {
+	data, err := readBoundedRegular(filepath.Join(directory, "snapshot-result.json"), maxRunnerStatusBytes)
+	if err != nil {
+		return nil, err
+	}
+	var envelope signedSnapshotResult
+	if err := decodeStrict(data, &envelope); err != nil {
+		return nil, fmt.Errorf("snapshot terminal result is malformed")
+	}
+	encoded, _ := json.Marshal(envelope.Result)
+	result := envelope.Result
+	if !hmac.Equal([]byte(envelope.MAC), []byte(m.mac(encoded))) ||
+		result.InputDigest != record.InputDigest || result.SupervisorExecutionID != record.SupervisorExecutionID ||
+		result.RuntimeInstanceID != record.RuntimeInstanceID || result.Reference != reference ||
+		int64(len(result.Output)) > maxRunnerStatusBytes ||
+		result.Digest != effect.DigestInput(result.Output) {
+		return nil, fmt.Errorf("snapshot terminal result authentication failed")
+	}
+	return append([]byte(nil), result.Output...), nil
 }
 
 func (m *Manager) writeTombstone(directory string, record journal) error {
