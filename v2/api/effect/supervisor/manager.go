@@ -48,6 +48,12 @@ type Backend interface {
 	RetrieveResult(context.Context, BackendExecution, string) ([]byte, error)
 }
 
+// SnapshotBackend carries private snapshot material only over the runner pipe.
+// Its descriptor remains the durable, secret-free reservation payload.
+type SnapshotBackend interface {
+	StartSnapshot(context.Context, BackendExecution, SnapshotDescriptor, SnapshotLaunchMaterial) error
+}
+
 type Manager struct {
 	root    string
 	rootID  string
@@ -108,7 +114,7 @@ func NewManager(root string, signingKey []byte, backend Backend) (*Manager, erro
 }
 
 func (m *Manager) Prepare(_ context.Context, reservation effect.Reservation) error {
-	descriptor, err := m.verifyDescriptor(reservation.LaunchPayload, nil)
+	descriptor, err := m.verifyAnyDescriptor(reservation.LaunchPayload)
 	if err != nil {
 		return err
 	}
@@ -166,6 +172,21 @@ func (m *Manager) Prepare(_ context.Context, reservation effect.Reservation) err
 		}
 		return m.registerExecution(binding)
 	})
+}
+
+func (m *Manager) verifyAnyDescriptor(payload json.RawMessage) (Descriptor, error) {
+	var header struct{ Protocol, Stage string }
+	if err := json.Unmarshal(payload, &header); err != nil {
+		return Descriptor{}, err
+	}
+	if header.Protocol == SnapshotProtocolV1 && header.Stage == SnapshotStage {
+		s, err := m.verifySnapshotDescriptor(payload, nil)
+		if err != nil {
+			return Descriptor{}, err
+		}
+		return Descriptor{Protocol: s.Protocol, SupervisorRootID: s.SupervisorRootID, Stage: s.Stage, MaterialMAC: s.MaterialMAC}, nil
+	}
+	return m.verifyDescriptor(payload, nil)
 }
 
 type journal struct {
@@ -248,6 +269,52 @@ func (m *Manager) Launch(ctx context.Context, reservation effect.Reservation, ma
 		record.Phase = "launched"
 		if err := m.writeJournal(directory, record); err != nil {
 			return fmt.Errorf("record supervised launch: %w", err)
+		}
+		identity = journalIdentity(record)
+		return nil
+	})
+	return identity, err
+}
+
+// LaunchSnapshot mirrors Launch but never converts SnapshotLaunchMaterial into
+// generic LaunchMaterial, preventing its service file/password from entering
+// the normal supervisor journal or effect reservation.
+func (m *Manager) LaunchSnapshot(ctx context.Context, reservation effect.Reservation, material SnapshotLaunchMaterial) (effect.ExecutionIdentity, error) {
+	descriptor, err := m.verifySnapshotDescriptor(reservation.LaunchPayload, &material)
+	if err != nil {
+		return effect.ExecutionIdentity{}, err
+	}
+	backend, ok := m.backend.(SnapshotBackend)
+	if !ok {
+		return effect.ExecutionIdentity{}, fmt.Errorf("snapshot supervisor backend is unavailable")
+	}
+	var identity effect.ExecutionIdentity
+	err = m.withExecutionLock(reservation.SupervisorExecutionID, func(directory string) error {
+		record, err := m.readBoundJournal(directory, reservation, effect.ExecutionIdentity{Supervisor: reservation.Supervisor, SupervisorExecutionID: reservation.SupervisorExecutionID})
+		if err != nil {
+			return err
+		}
+		if record.RuntimeInstanceID != "" {
+			identity = journalIdentity(record)
+			return nil
+		}
+		record.RuntimeInstanceID, record.Phase = uuid.NewString(), "prepared"
+		if err := m.recordLaunchRuntime(record); err != nil {
+			return err
+		}
+		encoded, _ := json.Marshal(record)
+		if err := writeDurableJSON(directory, launchIntentName, map[string]string{"runtimeInstanceId": record.RuntimeInstanceID, "mac": m.mac(encoded)}); err != nil {
+			return err
+		}
+		if err := m.writeJournal(directory, record); err != nil {
+			return err
+		}
+		if err := backend.StartSnapshot(ctx, backendExecution(record, directory), descriptor, material); err != nil {
+			return fmt.Errorf("start supervised snapshot: %w", err)
+		}
+		record.Phase = "launched"
+		if err := m.writeJournal(directory, record); err != nil {
+			return err
 		}
 		identity = journalIdentity(record)
 		return nil
@@ -356,7 +423,7 @@ func (m *Manager) observation(record journal, state BackendState) (effect.Observ
 }
 
 func (m *Manager) readBoundJournal(directory string, reservation effect.Reservation, identity effect.ExecutionIdentity) (journal, error) {
-	if _, err := m.verifyDescriptor(reservation.LaunchPayload, nil); err != nil {
+	if _, err := m.verifyAnyDescriptor(reservation.LaunchPayload); err != nil {
 		return journal{}, err
 	}
 	registered, err := m.registryEntry(reservation.SupervisorExecutionID)

@@ -43,6 +43,10 @@ func (b *backendFake) Start(_ context.Context, execution BackendExecution, _ eff
 	return nil
 }
 
+func (b *backendFake) StartSnapshot(ctx context.Context, execution BackendExecution, _ SnapshotDescriptor, _ SnapshotLaunchMaterial) error {
+	return b.Start(ctx, execution, effect.LaunchMaterial{})
+}
+
 func (b *backendFake) Observe(_ context.Context, execution BackendExecution) (BackendState, error) {
 	b.mu.Lock()
 	defer b.mu.Unlock()
