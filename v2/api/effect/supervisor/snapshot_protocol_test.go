@@ -9,6 +9,8 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"norn/v2/api/effect"
 )
 
 const snapshotSecretCanary = "NORN_SNAPSHOT_PASSWORD_CANARY_5d21"
@@ -17,7 +19,7 @@ func snapshotHelperRequest(t *testing.T, directory string) (snapshotRunnerReques
 	t.Helper()
 	pgDump := filepath.Join(t.TempDir(), "pg_dump")
 	script := strings.Join([]string{
-		"#!/bin/sh", "set -eu", "out=''", "while [ \"$#\" -gt 0 ]; do", "  if [ \"$1\" = \"--file\" ]; then out=\"$2\"; shift 2; continue; fi", "  shift", "done", "[ -n \"$out\" ]", "printf 'pg-dump-artifact' > \"$out\"", "printf 'diagnostic only' >&2", "",
+		"#!/bin/sh", "set -eu", "printf 'pg-dump-artifact'", "printf 'diagnostic only' >&2", "",
 	}, "\n")
 	if err := os.WriteFile(pgDump, []byte(script), 0o700); err != nil {
 		t.Fatal(err)
@@ -54,6 +56,15 @@ func runSnapshotRequest(t *testing.T, request snapshotRunnerRequest) error {
 		t.Fatal(err)
 	}
 	return RunHelper(strings.NewReader(string(data)))
+}
+
+func runSnapshotRequestWithLimit(t *testing.T, request snapshotRunnerRequest, limit int64) error {
+	t.Helper()
+	data, err := json.Marshal(request)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return runSnapshotHelperWithArtifactLimit(data, limit)
 }
 
 func TestSnapshotRunnerProducesAttestedPrivateArtifactOnlyAfterContainment(t *testing.T) {
@@ -161,6 +172,86 @@ func TestSnapshotRunnerExecutesTheVerifiedDescriptorAfterPathReplacement(t *test
 	output, err := command.Output()
 	if err != nil || string(output) != "old" {
 		t.Fatalf("verified descriptor output = %q, %v", output, err)
+	}
+}
+
+func TestSnapshotCommandCapsArtifactDuringExecution(t *testing.T) {
+	directory := t.TempDir()
+	pgDump := filepath.Join(directory, "pg_dump")
+	script := "#!/bin/sh\nhead -c 4096 /dev/zero\n"
+	if err := os.WriteFile(pgDump, []byte(script), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	digest := sha256.Sum256([]byte(script))
+	artifact, err := os.OpenFile(filepath.Join(directory, "archive.dump"), os.O_CREATE|os.O_EXCL|os.O_WRONLY, 0o600)
+	if err != nil {
+		t.Fatal(err)
+	}
+	diagnostic, err := os.OpenFile(filepath.Join(directory, "diagnostic.bin"), os.O_CREATE|os.O_EXCL|os.O_WRONLY, 0o600)
+	if err != nil {
+		t.Fatal(err)
+	}
+	capture := &boundedCapture{file: diagnostic, hash: sha256.New(), limit: maxSnapshotDiagnosticBytes}
+	material := SnapshotLaunchMaterial{PGDumpPath: pgDump, PGDumpSHA256: hex.EncodeToString(digest[:]), ServiceName: "norn_snapshot", ServiceFile: []byte("[norn_snapshot]\nhost=localhost\nuser=snapshot\ndbname=norn\n"), Password: snapshotSecretCanary, Subject: "app:demo/database:main@generation:7", Timeout: time.Minute}
+	_, limited, runErr := runSnapshotCommandWithLimit(material, artifact, "unused-service", "unused-password", capture, 128)
+	if !limited || runErr == nil {
+		t.Fatalf("bounded dump = limited:%v err:%v", limited, runErr)
+	}
+	if err := artifact.Close(); err != nil {
+		t.Fatal(err)
+	}
+	if err := diagnostic.Close(); err != nil {
+		t.Fatal(err)
+	}
+	info, err := os.Stat(filepath.Join(directory, "archive.dump"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if info.Size() != 128 {
+		t.Fatalf("artifact size after limit = %d, want 128", info.Size())
+	}
+}
+
+func TestSnapshotRunnerClassifiesArtifactLimitAsBoundedFailure(t *testing.T) {
+	directory := t.TempDir()
+	request, key := snapshotHelperRequest(t, directory)
+	request.Material.PGDumpPath = filepath.Join(directory, "large-pg_dump")
+	script := "#!/bin/sh\nhead -c 4096 /dev/zero\n"
+	if err := os.WriteFile(request.Material.PGDumpPath, []byte(script), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	digest := sha256.Sum256([]byte(script))
+	request.Material.PGDumpSHA256 = hex.EncodeToString(digest[:])
+	manager, err := NewManager(t.TempDir(), testSigningKey, &backendFake{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	descriptor, err := manager.BuildSnapshotDescriptor(request.Material)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := json.Unmarshal(descriptor, &request.Descriptor); err != nil {
+		t.Fatal(err)
+	}
+	if err := runSnapshotRequestWithLimit(t, request, 128); err != nil {
+		t.Fatal(err)
+	}
+	status, err := readSnapshotStatus(directory, key, request.Execution.RuntimeInstanceID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if status.Phase != effect.SupervisorFailed || !status.ArtifactLimited || status.Artifact != nil {
+		t.Fatalf("limit status = %+v", status)
+	}
+	diagnostic, err := os.ReadFile(filepath.Join(snapshotPrivateDir(t, directory), "diagnostic.bin"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(diagnostic), "snapshot artifact limit exceeded") {
+		t.Fatalf("limit diagnostic = %q", diagnostic)
+	}
+	if _, err := os.Lstat(filepath.Join(snapshotPrivateDir(t, directory), "archive.dump")); !os.IsNotExist(err) {
+		t.Fatalf("failed limit artifact remained: %v", err)
 	}
 }
 

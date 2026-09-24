@@ -101,6 +101,7 @@ type snapshotRunnerStatus struct {
 	DiagnosticSHA256  string                 `json:"diagnosticSha256,omitempty"`
 	DiagnosticDropped int64                  `json:"diagnosticDropped,omitempty"`
 	TimedOut          bool                   `json:"timedOut,omitempty"`
+	ArtifactLimited   bool                   `json:"artifactLimited,omitempty"`
 	UpdatedAt         time.Time              `json:"updatedAt"`
 }
 
@@ -232,6 +233,12 @@ func snapshotDescriptorDigest(descriptor SnapshotDescriptor) (string, error) {
 }
 
 func runSnapshotHelper(data []byte) error {
+	return runSnapshotHelperWithArtifactLimit(data, MaxSnapshotArtifactBytes)
+}
+
+// runSnapshotHelperWithArtifactLimit keeps the execution-time limit injectable
+// for tests. Production calls always use MaxSnapshotArtifactBytes.
+func runSnapshotHelperWithArtifactLimit(data []byte, artifactLimit int64) error {
 	var request snapshotRunnerRequest
 	if err := decodeStrict(data, &request); err != nil {
 		return fmt.Errorf("snapshot runner request is malformed")
@@ -285,15 +292,24 @@ func runSnapshotHelper(data []byte) error {
 	if err != nil {
 		return fmt.Errorf("snapshot runner artifact reservation failed")
 	}
-	if err := reserved.Close(); err != nil {
-		return err
-	}
 	diagnostic, err := os.OpenFile(filepath.Join(private, "diagnostic.bin"), os.O_CREATE|os.O_EXCL|os.O_WRONLY|syscall.O_NOFOLLOW|syscall.O_CLOEXEC, 0o600)
 	if err != nil {
+		_ = reserved.Close()
 		return fmt.Errorf("snapshot runner diagnostic file is unavailable")
 	}
 	capture := &boundedCapture{file: diagnostic, hash: sha256.New(), limit: maxSnapshotDiagnosticBytes}
-	timedOut, runErr := runSnapshotCommand(request.Material, artifactPath, servicePath, passwordPath, capture)
+	timedOut, artifactLimited, runErr := runSnapshotCommandWithLimit(request.Material, reserved, servicePath, passwordPath, capture, artifactLimit)
+	if syncErr := reserved.Sync(); runErr == nil && syncErr != nil {
+		runErr = fmt.Errorf("sync snapshot artifact: %w", syncErr)
+	}
+	if closeErr := reserved.Close(); runErr == nil && closeErr != nil {
+		runErr = fmt.Errorf("close snapshot artifact: %w", closeErr)
+	}
+	if artifactLimited {
+		// This is terminal, bounded evidence rather than an unclassified
+		// pg_dump failure. The artifact is removed below with every failed run.
+		_, _ = capture.Write([]byte("snapshot artifact limit exceeded\n"))
+	}
 	// pg_dump has exited at this point. Scrub its private connection material
 	// before inspecting, publishing, or even retaining a failed outcome.
 	if err := removeSnapshotSecrets(servicePath, passwordPath); err != nil {
@@ -312,7 +328,7 @@ func runSnapshotHelper(data []byte) error {
 			exitCode = exitErr.ExitCode()
 		}
 	}
-	status := snapshotRunnerStatus{Protocol: SnapshotProtocolV1, RuntimeInstanceID: request.Execution.RuntimeInstanceID, DescriptorSHA256: descriptorDigest, Phase: phase, ExitCode: &exitCode, DiagnosticBytes: capture.stored, DiagnosticSHA256: hex.EncodeToString(capture.hash.Sum(nil)), DiagnosticDropped: capture.discarded, TimedOut: timedOut, UpdatedAt: time.Now().UTC()}
+	status := snapshotRunnerStatus{Protocol: SnapshotProtocolV1, RuntimeInstanceID: request.Execution.RuntimeInstanceID, DescriptorSHA256: descriptorDigest, Phase: phase, ExitCode: &exitCode, DiagnosticBytes: capture.stored, DiagnosticSHA256: hex.EncodeToString(capture.hash.Sum(nil)), DiagnosticDropped: capture.discarded, TimedOut: timedOut, ArtifactLimited: artifactLimited, UpdatedAt: time.Now().UTC()}
 	if phase == effect.SupervisorSucceeded {
 		artifact, err := attestSnapshotArtifact(private, artifactPath, request.Execution.SupervisorExecutionID)
 		if err != nil {
@@ -445,31 +461,76 @@ func verifiedSnapshotCommand(binary *os.File, arguments ...string) *exec.Cmd {
 	return exec.Command("/dev/fd/3", arguments...)
 }
 
-func runSnapshotCommand(material SnapshotLaunchMaterial, artifact, service, password string, capture *boundedCapture) (bool, error) {
+var errSnapshotArtifactLimit = errors.New("snapshot artifact limit exceeded")
+
+// snapshotArtifactWriter is the only writer for archive.dump. pg_dump writes
+// to a bounded pipe; it never receives the artifact path, so it cannot extend
+// the on-disk archive past limit before the runner observes the failure.
+type snapshotArtifactWriter struct {
+	file       *os.File
+	limit      int64
+	written    int64
+	terminator commandTerminator
+	limited    bool
+	ready      <-chan struct{}
+}
+
+func (w *snapshotArtifactWriter) Write(data []byte) (int, error) {
+	// exec starts its stdout copier before Start returns. Hold its first write
+	// until the process identity is installed in the terminator, so an
+	// immediate limit hit cannot race against terminator.started.
+	<-w.ready
+	remaining := w.limit - w.written
+	if remaining <= 0 {
+		w.limited = true
+		_ = w.terminator.terminate()
+		return 0, errSnapshotArtifactLimit
+	}
+	if int64(len(data)) > remaining {
+		n, err := w.file.Write(data[:remaining])
+		w.written += int64(n)
+		w.limited = true
+		_ = w.terminator.terminate()
+		if err != nil {
+			return n, err
+		}
+		return n, errSnapshotArtifactLimit
+	}
+	n, err := w.file.Write(data)
+	w.written += int64(n)
+	return n, err
+}
+
+// runSnapshotCommandWithLimit exists so tests can prove the execution-time
+// cap without allocating a production-sized archive.
+func runSnapshotCommandWithLimit(material SnapshotLaunchMaterial, artifact *os.File, service, password string, capture *boundedCapture, limit int64) (bool, bool, error) {
 	terminator := commandTerminator(&processGroupTerminator{})
 	defer terminator.close()
-	if !exitObservationSupported {
-		return false, fmt.Errorf("snapshot runner cannot observe pg_dump exit safely")
+	if !exitObservationSupported || artifact == nil || limit <= 0 {
+		return false, false, fmt.Errorf("snapshot runner cannot start bounded pg_dump")
 	}
 	binary, err := openVerifiedSnapshotPGDump(material.PGDumpPath, material.PGDumpSHA256)
 	if err != nil {
-		return false, err
+		return false, false, err
 	}
 	defer binary.Close()
 	// ExtraFiles duplicates binary as child fd 3 without close-on-exec. Running
 	// /dev/fd/3 executes exactly the regular no-follow descriptor we hashed;
 	// replacing material.PGDumpPath after verification cannot change these bytes.
-	command := verifiedSnapshotCommand(binary, "-Fc", "--no-owner", "--no-privileges", "--file", artifact, "--dbname=service="+material.ServiceName)
+	command := verifiedSnapshotCommand(binary, "-Fc", "--no-owner", "--no-privileges", "--dbname=service="+material.ServiceName)
 	command.ExtraFiles = []*os.File{binary}
 	command.Env = []string{"PATH=/usr/bin:/bin:/usr/sbin:/sbin", "PGSERVICEFILE=" + service, "PGPASSFILE=" + password}
-	command.Stdout, command.Stderr, command.WaitDelay = capture, capture, outputDrainDelay
+	ready := make(chan struct{})
+	writer := &snapshotArtifactWriter{file: artifact, limit: limit, terminator: terminator, ready: ready}
+	command.Stdout, command.Stderr, command.WaitDelay = writer, capture, outputDrainDelay
 	if err := terminator.configure(command); err != nil {
-		return false, err
+		return false, false, err
 	}
 	if err := command.Start(); err != nil {
-		return false, err
+		return false, false, err
 	}
 	terminator.started(command.Process.Pid)
+	close(ready)
 	guard := startTimeoutGuard(material.Timeout, terminator.terminate, realSchedule)
 	exitErr := waitExitWithoutReaping(command.Process.Pid)
 	timedOut, _ := guard.close()
@@ -477,7 +538,7 @@ func runSnapshotCommand(material SnapshotLaunchMaterial, artifact, service, pass
 	if exitErr != nil && err == nil {
 		err = fmt.Errorf("observe pg_dump exit: %w", exitErr)
 	}
-	return timedOut, err
+	return timedOut, writer.limited, err
 }
 
 func attestSnapshotArtifact(private, path, executionID string) (SnapshotArtifact, error) {
@@ -541,7 +602,7 @@ func readSnapshotStatus(directory string, key []byte, runtimeID string) (snapsho
 		return snapshotRunnerStatus{}, fmt.Errorf("snapshot runner terminal status is incomplete")
 	}
 	if status.Phase == effect.SupervisorSucceeded {
-		if status.Artifact == nil || !status.Artifact.Regular || !status.Artifact.NoFollow || status.Artifact.Bytes <= 0 || status.Artifact.Bytes > MaxSnapshotArtifactBytes || !validSHA256(status.Artifact.SHA256) || status.Artifact.Reference == "" {
+		if status.ArtifactLimited || status.Artifact == nil || !status.Artifact.Regular || !status.Artifact.NoFollow || status.Artifact.Bytes <= 0 || status.Artifact.Bytes > MaxSnapshotArtifactBytes || !validSHA256(status.Artifact.SHA256) || status.Artifact.Reference == "" {
 			return snapshotRunnerStatus{}, fmt.Errorf("snapshot runner status has no valid artifact")
 		}
 	} else if status.Phase != effect.SupervisorFailed {
