@@ -6,6 +6,7 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
+	"io"
 	"os"
 	"strings"
 	"sync"
@@ -18,11 +19,13 @@ import (
 var testSigningKey = []byte("0123456789abcdef0123456789abcdef")
 
 type backendFake struct {
-	mu           sync.Mutex
-	states       map[string]BackendState
-	starts       int
-	startEntered chan struct{}
-	startRelease chan struct{}
+	mu               sync.Mutex
+	states           map[string]BackendState
+	starts           int
+	startEntered     chan struct{}
+	startRelease     chan struct{}
+	snapshotQueryErr error
+	snapshotStartErr error
 }
 
 func newBackendFake() *backendFake {
@@ -41,6 +44,22 @@ func (b *backendFake) Start(_ context.Context, execution BackendExecution, _ eff
 		b.states[execution.SupervisorExecutionID] = BackendState{Phase: effect.SupervisorRunning, EvidenceReference: "running/" + execution.RuntimeInstanceID}
 	}
 	return nil
+}
+
+func (b *backendFake) StartSnapshot(ctx context.Context, execution BackendExecution, _ SnapshotDescriptor, _ SnapshotLaunchMaterial) error {
+	if b.snapshotStartErr != nil {
+		return b.snapshotStartErr
+	}
+	return b.Start(ctx, execution, effect.LaunchMaterial{})
+}
+func (b *backendFake) ObserveSnapshot(ctx context.Context, execution BackendExecution, _ SnapshotDescriptor) (BackendState, error) {
+	return b.Observe(ctx, execution)
+}
+func (b *backendFake) QuerySnapshot(context.Context, BackendExecution, SnapshotDescriptor) (SnapshotManifest, error) {
+	return SnapshotManifest{}, b.snapshotQueryErr
+}
+func (b *backendFake) CopySnapshotArtifact(context.Context, BackendExecution, SnapshotDescriptor, io.Writer) (SnapshotManifest, error) {
+	return SnapshotManifest{}, nil
 }
 
 func (b *backendFake) Observe(_ context.Context, execution BackendExecution) (BackendState, error) {

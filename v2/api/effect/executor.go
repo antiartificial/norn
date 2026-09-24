@@ -49,7 +49,17 @@ func (e *Executor) Execute(ctx context.Context, request ExecuteRequest) (Execute
 	}
 
 	if reserved.Created {
-		identity, launchErr := e.Supervisor.Launch(ctx, record.Reservation, request.LaunchMaterial)
+		var identity ExecutionIdentity
+		var launchErr error
+		if request.PrivateLaunch != nil {
+			private, ok := e.Supervisor.(PrivateLaunchSupervisor)
+			if !ok {
+				return ExecuteResult{}, pending(record, "supervisor does not support private launch material", nil)
+			}
+			identity, launchErr = private.LaunchPrivate(ctx, record.Reservation, request.PrivateLaunch)
+		} else {
+			identity, launchErr = e.Supervisor.Launch(ctx, record.Reservation, request.LaunchMaterial)
+		}
 		if launchErr != nil {
 			return ExecuteResult{}, pending(record, "launch outcome is unknown", launchErr)
 		}

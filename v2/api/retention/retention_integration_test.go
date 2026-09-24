@@ -132,7 +132,7 @@ func (f *retentionFixture) finishedSaga(app string, events int) *model.Operation
 	ctx := context.Background()
 	request := f.request
 	request.Key = "retention-" + uuid.NewString()
-	op := model.Operation{ID: uuid.NewString(), Kind: "app.snapshot", App: app, SagaID: uuid.NewString(), Status: model.OperationQueued, Source: "control-api",
+	op := model.Operation{ID: uuid.NewString(), Kind: "app.preflight", App: app, SagaID: uuid.NewString(), Status: model.OperationQueued, Source: "control-api",
 		Payload: map[string]interface{}{}, Metadata: map[string]interface{}{}, MaxAttempts: 1}
 	accepted, err := f.pipe.QueueOperation(ctx, op, request)
 	if err != nil {
@@ -147,7 +147,7 @@ func (f *retentionFixture) finishedSaga(app string, events int) *model.Operation
 	if _, err := f.db.Pool.Exec(ctx, `UPDATE operations SET next_attempt_at = CASE WHEN id=$1 THEN now() - interval '1 second' ELSE now() + interval '1 hour' END WHERE status='queued'`, accepted.Operation.ID); err != nil {
 		f.t.Fatal(err)
 	}
-	claimed, claim, err := f.db.ClaimNextOperation(ctx, "retention-worker", time.Minute, []string{"app.snapshot"})
+	claimed, claim, err := f.db.ClaimNextOperation(ctx, "retention-worker", time.Minute, []string{"app.preflight"})
 	if err != nil || claimed == nil || claimed.ID != accepted.Operation.ID {
 		f.t.Fatalf("claim = %+v, %v", claimed, err)
 	}

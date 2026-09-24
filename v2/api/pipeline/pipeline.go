@@ -70,6 +70,7 @@ type Pipeline struct {
 	// When nil, the legacy unfenced direct execution is used; startup selects
 	// this explicitly and never falls back from supervised mode.
 	BuildTestEffects *BuildTestEffects
+	SnapshotEffects  *SnapshotEffects
 	// ScaleEffects fences Nomad's non-idempotent scale endpoint behind a
 	// durable external-effect reservation. It is required for app.scale.
 	ScaleEffects *NomadScaleEffects

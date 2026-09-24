@@ -468,6 +468,41 @@ func (db *DB) CheckOperationClaim(ctx context.Context, claim OperationClaim) err
 	return err
 }
 
+// WithOperationClaimFence runs publish while holding the claimed operation
+// row. Claim expiry or replacement therefore cannot pass between the final
+// ownership check and a node-local publication. The callback must stay small:
+// it is deliberately limited to the irreversible publication boundary.
+//
+// The transaction has no durable writes, so it is always rolled back after
+// publish. In particular, it must not Commit with the caller's context after
+// publication: cancellation at that point would make a completed os.Link look
+// failed even though the public pair is already visible.
+func (db *DB) WithOperationClaimFence(ctx context.Context, claim OperationClaim, publish func() error) error {
+	if err := validateOperationClaim(claim); err != nil {
+		return err
+	}
+	if publish == nil {
+		return fmt.Errorf("operation claim publication callback is required")
+	}
+	tx, err := db.Pool.Begin(ctx)
+	if err != nil {
+		return err
+	}
+	// Rollback only releases the SELECT FOR UPDATE lock. Use an independent
+	// context so cancellation after the public Link cannot change its outcome.
+	defer func() { _ = tx.Rollback(context.Background()) }()
+	var held bool
+	err = tx.QueryRow(ctx, `SELECT true FROM operations WHERE id = $1 AND status = 'running' AND locked_by = $2
+		AND lock_generation = $3 AND locked_until > clock_timestamp() FOR UPDATE`, claim.OperationID(), claim.OwnerID(), claim.Generation()).Scan(&held)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return ownershipLost(claim)
+	}
+	if err != nil {
+		return err
+	}
+	return publish()
+}
+
 func (db *DB) FinishClaimedOperation(ctx context.Context, claim OperationClaim, status model.OperationStatus, message string, metadata map[string]interface{}) error {
 	if err := validateOperationClaim(claim); err != nil {
 		return err
@@ -491,6 +526,16 @@ func (db *DB) FinishClaimedOperation(ctx context.Context, claim OperationClaim, 
 			    locked_by = '', locked_until = NULL, updated_at = now(), finished_at = now()
 			WHERE id = $4 AND status = 'running' AND locked_by = $5
 			  AND lock_generation = $6 AND locked_until > now()
+			  AND (kind <> 'app.snapshot' OR
+				($1 = 'succeeded' AND EXISTS (
+					SELECT 1 FROM snapshot_publication_intents spi
+					WHERE spi.operation_id = operations.id AND spi.state = 'published'
+				)) OR
+				($1 <> 'succeeded' AND NOT EXISTS (
+					SELECT 1 FROM snapshot_publication_intents spi
+					WHERE spi.operation_id = operations.id AND spi.state IN ('prepared', 'published')
+				))
+			  )
 			RETURNING id, saga_id, app
 		), outbox AS (
 			INSERT INTO evidence_archive_intents (id, subject_kind, subject_id, app, operation_id, sequence, state)
@@ -825,9 +870,17 @@ func (db *DB) RecoverExpiredOperations(ctx context.Context) error {
 		WHERE status = 'running'
 		  AND kind LIKE 'app.%'
 		  AND (locked_until IS NULL OR locked_until < now())
-		  AND (attempts < max_attempts OR kind IN ('app.restart', 'app.canary-promote'))
+		  AND (attempts < max_attempts OR kind IN ('app.restart', 'app.canary-promote') OR
+			(kind = 'app.snapshot' AND EXISTS (
+				SELECT 1 FROM snapshot_publication_intents spi
+				WHERE spi.operation_id = operations.id AND spi.state IN ('prepared', 'published')
+			)))
 		  AND (
 		    kind IN ('app.preflight', 'app.restart', 'app.canary-promote')
+		    OR (kind = 'app.snapshot' AND EXISTS (
+		      SELECT 1 FROM snapshot_publication_intents spi
+		      WHERE spi.operation_id = operations.id AND spi.state IN ('prepared', 'published')
+		    ))
 		    OR (kind = 'app.deploy' AND NOT EXISTS (
 		      SELECT 1
 		      FROM deployment_steps ds

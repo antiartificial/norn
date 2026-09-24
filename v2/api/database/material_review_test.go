@@ -2,9 +2,14 @@ package database
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"strings"
 	"testing"
+	"time"
+
+	"norn/v2/api/effect"
+	"norn/v2/api/effect/supervisor"
 )
 
 type reviewMaterialSource string
@@ -67,5 +72,70 @@ func TestReviewMaterialFormattingIsRedacted(t *testing.T) {
 		if strings.Contains(fmt.Sprintf(verb, session), canary) {
 			t.Fatalf("session formatting with %s exposes private password", verb)
 		}
+	}
+}
+
+type snapshotDescriptorBackend struct{}
+
+func (snapshotDescriptorBackend) Start(context.Context, supervisor.BackendExecution, effect.LaunchMaterial) error {
+	return nil
+}
+func (snapshotDescriptorBackend) Observe(context.Context, supervisor.BackendExecution) (supervisor.BackendState, error) {
+	return supervisor.BackendState{}, nil
+}
+func (snapshotDescriptorBackend) Revoke(context.Context, supervisor.BackendExecution) (supervisor.BackendState, error) {
+	return supervisor.BackendState{}, nil
+}
+func (snapshotDescriptorBackend) RetrieveResult(context.Context, supervisor.BackendExecution, string) ([]byte, error) {
+	return nil, nil
+}
+
+func TestSnapshotLaunchMaterialStaysPrivateAndRotatesWithSession(t *testing.T) {
+	manager, err := supervisor.NewManager(t.TempDir(), []byte("0123456789abcdef0123456789abcdef"), snapshotDescriptorBackend{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	options := SnapshotLaunchOptions{PGDumpPath: "/usr/bin/pg_dump", PGDumpSHA256: strings.Repeat("a", 64), Subject: "app:review/db:main@generation:1", Timeout: time.Minute}
+	descriptor := func(password string) []byte {
+		t.Helper()
+		session, err := OpenSession(context.Background(), reviewMaterialBinding(), reviewMaterialSource(`{"password":"`+password+`"}`))
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer session.Close()
+		var payload []byte
+		err = session.WithSnapshotLaunchMaterial(options, func(material supervisor.SnapshotLaunchMaterial) error {
+			if material.Password != password || !strings.Contains(string(material.ServiceFile), "host=127.0.0.1") {
+				t.Fatalf("private launch material was incomplete")
+			}
+			if strings.Contains(string(material.ServiceFile), password) || strings.Contains(string(material.ServiceFile), "passfile=") {
+				t.Fatal("runner service file retained session-only credentials")
+			}
+			payload, err = manager.BuildSnapshotDescriptor(material)
+			return err
+		})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if strings.Contains(string(payload), password) || strings.Contains(string(payload), "127.0.0.1") {
+			t.Fatal("durable descriptor persisted private session material")
+		}
+		if err := json.Unmarshal(payload, &map[string]any{}); err != nil {
+			t.Fatalf("descriptor is not JSON: %v", err)
+		}
+		return payload
+	}
+	first := descriptor("first-rotating-secret")
+	second := descriptor("second-rotating-secret")
+	if string(first) != string(second) {
+		t.Fatal("credential rotation changed the durable descriptor")
+	}
+}
+
+func TestSnapshotLaunchMaterialRejectsSessionTLSPaths(t *testing.T) {
+	// TLS paths name session-private files. The snapshot runner has no protocol
+	// for carrying them, so the bridge must refuse rather than reuse the path.
+	if _, err := snapshotServiceFile([]byte("[norn_target]\nhost=127.0.0.1\nport=5432\ndbname=review\nuser=review\nsslmode=verify-ca\nsslrootcert=/private/ca.pem\n")); err == nil {
+		t.Fatal("snapshot service accepted node-local TLS paths")
 	}
 }

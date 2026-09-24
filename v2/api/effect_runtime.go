@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -84,4 +85,35 @@ func configureBuildTestEffects(cfg *config.Config, db *store.DB, newBackend effe
 		Environment: environment,
 		Timeout:     cfg.BuildTestTimeout,
 	}, nil
+}
+
+func configureSnapshotEffects(cfg *config.Config, db *store.DB, newBackend effectBackendFactory) (*pipeline.SnapshotEffects, error) {
+	if cfg.SnapshotExecution == "" {
+		return nil, nil
+	}
+	if cfg.SnapshotExecution != "supervised" {
+		return nil, fmt.Errorf("NORN_SNAPSHOT_EXECUTION must be supervised when set")
+	}
+	if !filepath.IsAbs(cfg.EffectSupervisorDir) || len(cfg.EffectSigningKey) < 32 || cfg.EffectCgroupRoot == "" || !filepath.IsAbs(cfg.SnapshotPGDumpPath) || len(cfg.SnapshotPGDumpSHA256) != 64 || cfg.SnapshotTimeout <= 0 || cfg.SnapshotTimeout > supervisor.MaxSnapshotTimeout || cfg.SnapshotArtifactBudgetBytes < supervisor.MaxSnapshotArtifactBytes {
+		return nil, fmt.Errorf("supervised app.snapshot configuration is incomplete")
+	}
+	backend, err := newBackend(cfg.EffectCgroupRoot, cfg.EffectRunnerBinary, cfg.EffectRunnerSHA256, []byte(cfg.EffectSigningKey))
+	if err != nil {
+		return nil, err
+	}
+	manager, err := supervisor.NewManager(filepath.Join(cfg.EffectSupervisorDir, "snapshots"), []byte(cfg.EffectSigningKey), backend)
+	if err != nil {
+		return nil, err
+	}
+	if err := manager.SetSnapshotArtifactBudget(cfg.SnapshotArtifactBudgetBytes); err != nil {
+		return nil, err
+	}
+	effects, err := pipeline.NewSnapshotEffects(db, manager, cfg.SnapshotPGDumpPath, cfg.SnapshotPGDumpSHA256, cfg.SnapshotTimeout)
+	if err != nil {
+		return nil, err
+	}
+	if err := effects.ReconcilePublishedArtifacts(context.Background()); err != nil {
+		return nil, fmt.Errorf("reconcile supervised snapshot artifacts: %w", err)
+	}
+	return effects, nil
 }

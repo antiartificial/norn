@@ -69,18 +69,18 @@ func archivedSaga(t *testing.T, db *store.DB, objects archive.Store) string {
 	pipe := &pipeline.Pipeline{DB: db, SagaStore: hot, OperationStore: operations, AppsDir: t.TempDir()}
 	request := pipeline.EnqueueRequest{Authority: authority, Actor: store.OperationActor{Issuer: authority + "/test", Subject: "operator"}, Key: "archive-" + uuid.NewString(),
 		Audit: store.AcceptanceAuditContext{Source: "recovery-test"}}
-	accepted, err := pipe.QueueOperation(ctx, model.Operation{ID: uuid.NewString(), Kind: "app.snapshot", App: "recovered", SagaID: uuid.NewString(), Status: model.OperationQueued,
+	accepted, err := pipe.QueueOperation(ctx, model.Operation{ID: uuid.NewString(), Kind: "app.preflight", App: "recovered", SagaID: uuid.NewString(), Status: model.OperationQueued,
 		Source: "control-api", Payload: map[string]interface{}{}, Metadata: map[string]interface{}{}, MaxAttempts: 1}, request)
 	if err != nil {
 		t.Fatal(err)
 	}
-	log := saga.NewWithID(hot, accepted.Operation.SagaID, "recovered", "pipeline", "snapshot")
+	log := saga.NewWithID(hot, accepted.Operation.SagaID, "recovered", "pipeline", "preflight")
 	for _, message := range []string{"one", "two", "three"} {
 		if err := log.Log(ctx, "step.progress", message, nil); err != nil {
 			t.Fatal(err)
 		}
 	}
-	claimed, claim, err := db.ClaimNextOperation(ctx, "recovery-worker", time.Minute, []string{"app.snapshot"})
+	claimed, claim, err := db.ClaimNextOperation(ctx, "recovery-worker", time.Minute, []string{"app.preflight"})
 	if err != nil || claimed == nil {
 		t.Fatalf("claim = %+v, %v", claimed, err)
 	}

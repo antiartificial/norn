@@ -218,6 +218,59 @@ func (s *PGEffectStore) LatestForOperation(ctx context.Context, operationID, sta
 	return record, true, nil
 }
 
+// CompletedSnapshotOperations returns only effects whose public operation
+// success is already durable and whose descriptor belongs to this supervisor
+// root. Another replica's node-local artifact cannot be inspected here.
+func (s *PGEffectStore) CompletedSnapshotOperations(ctx context.Context, supervisorRootID string) ([]effect.Record, error) {
+	if s == nil || s.db == nil || s.db.Pool == nil || strings.TrimSpace(supervisorRootID) == "" {
+		return nil, fmt.Errorf("operation effect lookup is unavailable")
+	}
+	rows, err := s.db.Pool.Query(ctx, `SELECT `+effectColumns+` FROM operation_effects WHERE stage='app.snapshot' AND lifecycle='completed' AND outcome='succeeded' AND launch_payload->>'supervisorRootId'=$1 AND operation_id IN (SELECT id FROM operations WHERE status='succeeded')`, supervisorRootID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var records []effect.Record
+	for rows.Next() {
+		record, err := scanEffectRecord(rows)
+		if err != nil {
+			return nil, err
+		}
+		records = append(records, record)
+	}
+	return records, rows.Err()
+}
+
+// TerminalSnapshotCleanupEffects returns local snapshot effects whose durable
+// effect state proves their admission cannot be replayed. Failed effects retain
+// their effect record for idempotent recovery, while never-launched resolutions
+// permit a successor reservation; neither needs private artifact capacity.
+func (s *PGEffectStore) TerminalSnapshotCleanupEffects(ctx context.Context, supervisorRootID string) (failed, abandoned []effect.Record, err error) {
+	if s == nil || s.db == nil || s.db.Pool == nil || strings.TrimSpace(supervisorRootID) == "" {
+		return nil, nil, fmt.Errorf("operation effect lookup is unavailable")
+	}
+	rows, err := s.db.Pool.Query(ctx, `SELECT `+effectColumns+` FROM operation_effects
+		WHERE stage='app.snapshot' AND launch_payload->>'supervisorRootId'=$1
+		  AND ((lifecycle='completed' AND outcome='failed')
+	       OR (lifecycle='resolved' AND resolution_decision='never-launched'))`, supervisorRootID)
+	if err != nil {
+		return nil, nil, err
+	}
+	defer rows.Close()
+	for rows.Next() {
+		record, scanErr := scanEffectRecord(rows)
+		if scanErr != nil {
+			return nil, nil, scanErr
+		}
+		if record.Lifecycle == effect.LifecycleCompleted {
+			failed = append(failed, record)
+		} else {
+			abandoned = append(abandoned, record)
+		}
+	}
+	return failed, abandoned, rows.Err()
+}
+
 func (s *PGEffectStore) MarkLaunched(ctx context.Context, token effect.Token, identity effect.ExecutionIdentity) error {
 	if err := validateEffectToken(token); err != nil {
 		return err
@@ -334,6 +387,10 @@ const effectColumns = `
 func queryEffectRecord(ctx context.Context, queryer interface {
 	QueryRow(context.Context, string, ...any) pgx.Row
 }, query string, args ...any) (effect.Record, error) {
+	return scanEffectRecord(queryer.QueryRow(ctx, query, args...))
+}
+
+func scanEffectRecord(row interface{ Scan(...any) error }) (effect.Record, error) {
 	var record effect.Record
 	var launchPayload []byte
 	var outcome effect.Outcome
@@ -341,7 +398,6 @@ func queryEffectRecord(ctx context.Context, queryer interface {
 	var resultDigest, resultReference, evidenceSource, evidenceReference string
 	var evidenceObservedAt *time.Time
 	var resolutionDecision effect.VerificationDecision
-	row := queryer.QueryRow(ctx, query, args...)
 	err := row.Scan(
 		&record.Token.EffectID, &record.Token.Generation, &record.Reservation.Authority,
 		&record.Reservation.Resource, &record.Reservation.OperationClaim.OperationID,

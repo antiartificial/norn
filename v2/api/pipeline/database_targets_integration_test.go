@@ -2,9 +2,13 @@ package pipeline
 
 import (
 	"context"
+	"crypto/hmac"
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"net/url"
 	"os"
 	"os/exec"
@@ -12,11 +16,15 @@ import (
 	"strconv"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
 
 	"norn/v2/api/database"
+	"norn/v2/api/effect"
+	"norn/v2/api/effect/supervisor"
+	"norn/v2/api/internal/pgtest"
 	"norn/v2/api/model"
 	"norn/v2/api/store"
 )
@@ -32,21 +40,22 @@ import (
 const targetCanary = "NORN_DB_TARGET_CANARY_19ac"
 
 type targetFixture struct {
-	p          *Pipeline
-	db         *store.DB
-	request    EnqueueRequest
-	app        string
-	appSchema  string
-	appDB      *pgx.Conn
-	appDBName  string
-	appRole    string
-	appHost    string
-	appPort    int
-	catalog    database.Catalog
-	snapshots  string
-	controlDB  string
-	secretDir  string
-	requestSeq int
+	p               *Pipeline
+	db              *store.DB
+	request         EnqueueRequest
+	app             string
+	appSchema       string
+	appDB           *pgx.Conn
+	appDBName       string
+	appRole         string
+	appHost         string
+	appPort         int
+	catalog         database.Catalog
+	snapshots       string
+	controlDB       string
+	secretDir       string
+	requestSeq      int
+	snapshotBackend *portableSnapshotBackend
 }
 
 func newTargetFixture(t *testing.T) *targetFixture {
@@ -129,6 +138,36 @@ func newTargetFixture(t *testing.T) *targetFixture {
 		ProfileID: "mini-local", Catalog: db.ActiveDatabaseCatalog, Secrets: secrets, SnapshotRoot: snapshots,
 		dumpScope: []string{"--schema=" + appSchema},
 	}
+	// app.snapshot is fail closed unless it has a supervisor. This portable
+	// backend is test-only: it runs the pinned pg_dump against this fixture's
+	// disposable PostgreSQL target and reports containment after the synchronous
+	// child has exited. It never stands in for the Linux cgroup backend.
+	pgDump, err := exec.LookPath("pg_dump")
+	if err != nil {
+		t.Fatal(err)
+	}
+	pgDump, err = filepath.EvalSymlinks(pgDump)
+	if err != nil {
+		t.Fatal(err)
+	}
+	pgDumpBytes, err := os.ReadFile(pgDump)
+	if err != nil {
+		t.Fatal(err)
+	}
+	digest := sha256.Sum256(pgDumpBytes)
+	backend := newPortableSnapshotBackend()
+	manager, err := supervisor.NewManager(t.TempDir(), []byte("snapshot-pg-integration-signing-key-32"), backend)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := manager.SetSnapshotArtifactBudget(supervisor.MaxSnapshotArtifactBytes); err != nil {
+		t.Fatal(err)
+	}
+	effects, err := NewSnapshotEffects(db, manager, pgDump, hex.EncodeToString(digest[:]), time.Minute)
+	if err != nil {
+		t.Fatal(err)
+	}
+	p.SnapshotEffects = effects
 	// Ambient routing and control secrets that must never reach app tools.
 	t.Setenv("NORN_DATABASE_URL", "postgres://norn:"+targetCanary+"@control/norn")
 	t.Setenv("PGDATABASE", controlDB)
@@ -140,7 +179,7 @@ func newTargetFixture(t *testing.T) *targetFixture {
 		Profiles: []database.DeploymentProfile{{APIVersion: database.APIVersion, ID: "mini-local", Topology: database.DeploymentTopologyLocal, AvailabilityClass: database.AvailabilitySingleHost,
 			LegacyPostgres: &database.LegacyPostgresDefault{MappingID: "mini-legacy-pg", ServiceID: "mini-app-pg", Role: parsed.User.Username(), Generation: 1, CredentialRef: "secret:legacy", TLS: database.DatabaseTLS{Mode: database.TLSDisabled}}}},
 	}
-	return &targetFixture{p: p, db: db, request: request, app: app, appSchema: appSchema, appDB: appDB, appDBName: appDBName, appRole: parsed.User.Username(), appHost: host, appPort: port, catalog: catalog, snapshots: snapshots, controlDB: controlDB, secretDir: secretDir}
+	return &targetFixture{p: p, db: db, request: request, app: app, appSchema: appSchema, appDB: appDB, appDBName: appDBName, appRole: parsed.User.Username(), appHost: host, appPort: port, catalog: catalog, snapshots: snapshots, controlDB: controlDB, secretDir: secretDir, snapshotBackend: backend}
 }
 
 func (f *targetFixture) queue(t *testing.T, kind string, payload map[string]interface{}) (model.Operation, error) {
@@ -154,6 +193,11 @@ func (f *targetFixture) queue(t *testing.T, kind string, payload map[string]inte
 }
 
 func (f *targetFixture) execute(t *testing.T, operationID string) (*OperationResult, error) {
+	result, _, err := f.executeWithClaim(t, operationID)
+	return result, err
+}
+
+func (f *targetFixture) executeWithClaim(t *testing.T, operationID string) (*OperationResult, store.OperationClaim, error) {
 	t.Helper()
 	ctx := context.Background()
 	if _, err := f.db.Pool.Exec(ctx, `UPDATE operations SET next_attempt_at = CASE WHEN id=$1 THEN now() - interval '1 second' ELSE now() + interval '1 hour' END WHERE status='queued'`, operationID); err != nil {
@@ -163,7 +207,207 @@ func (f *targetFixture) execute(t *testing.T, operationID string) (*OperationRes
 	if err != nil || claimed == nil || claimed.ID != operationID {
 		t.Fatalf("claim %s = %+v, %v", operationID, claimed, err)
 	}
-	return f.p.ExecuteOperation(ctx, claimed, claim)
+	result, err := f.p.ExecuteOperation(ctx, claimed, claim)
+	return result, claim, err
+}
+
+type portableSnapshotArtifact struct {
+	manifest supervisor.SnapshotManifest
+	data     []byte
+}
+
+// portableSnapshotBackend is a test seam for the real PostgreSQL integration
+// suite. It has no process-tree containment mechanism and therefore must not
+// be used by startup or Linux cgroup qualification tests.
+type portableSnapshotBackend struct {
+	artifacts map[string]portableSnapshotArtifact
+	failures  map[string][]byte
+	key       []byte
+	starts    int
+	failCopy  bool
+	rebooted  bool
+}
+
+func newPortableSnapshotBackend() *portableSnapshotBackend {
+	return &portableSnapshotBackend{artifacts: map[string]portableSnapshotArtifact{}, failures: map[string][]byte{}, key: []byte("snapshot-pg-integration-signing-key-32")}
+}
+
+func (b *portableSnapshotBackend) Start(context.Context, supervisor.BackendExecution, effect.LaunchMaterial) error {
+	return fmt.Errorf("portable snapshot backend accepts only snapshot work")
+}
+func (b *portableSnapshotBackend) Observe(context.Context, supervisor.BackendExecution) (supervisor.BackendState, error) {
+	return supervisor.BackendState{Phase: effect.SupervisorUnknown}, nil
+}
+func (b *portableSnapshotBackend) Revoke(context.Context, supervisor.BackendExecution) (supervisor.BackendState, error) {
+	return supervisor.BackendState{Phase: effect.SupervisorStopped, ContainmentProven: true, EvidenceReference: "portable-test-revoked"}, nil
+}
+func (b *portableSnapshotBackend) RetrieveResult(context.Context, supervisor.BackendExecution, string) ([]byte, error) {
+	return nil, os.ErrNotExist
+}
+func (b *portableSnapshotBackend) StartSnapshot(ctx context.Context, execution supervisor.BackendExecution, descriptor supervisor.SnapshotDescriptor, material supervisor.SnapshotLaunchMaterial) error {
+	binary, err := os.ReadFile(material.PGDumpPath)
+	if err != nil {
+		return err
+	}
+	binaryDigest := sha256.Sum256(binary)
+	if hex.EncodeToString(binaryDigest[:]) != material.PGDumpSHA256 || descriptor.PGDumpSHA256 != material.PGDumpSHA256 {
+		return fmt.Errorf("portable pg_dump does not match the reserved descriptor")
+	}
+	private, err := os.MkdirTemp(execution.StateDirectory, ".portable-snapshot-")
+	if err != nil {
+		return err
+	}
+	defer os.RemoveAll(private)
+	service, passfile, output := filepath.Join(private, "pg_service.conf"), filepath.Join(private, "pgpass"), filepath.Join(private, "archive.dump")
+	if err := os.WriteFile(service, material.ServiceFile, 0o600); err != nil {
+		return err
+	}
+	if err := os.WriteFile(passfile, []byte("*:*:*:*:"+material.Password+"\n"), 0o600); err != nil {
+		return err
+	}
+	command := exec.CommandContext(ctx, material.PGDumpPath, "-Fc", "--no-owner", "--no-privileges", "--file", output, "--dbname=service="+material.ServiceName)
+	command.Env = []string{"PATH=/usr/bin:/bin:/usr/sbin:/sbin", "PGSERVICEFILE=" + service, "PGPASSFILE=" + passfile}
+	outputBytes, commandErr := command.CombinedOutput()
+	b.starts++
+	if commandErr != nil {
+		// The process has exited before this synchronous test backend returns.
+		// Preserve a bounded terminal failure so the effect executor can record
+		// its exact no-replay outcome and release the snapshot admission.
+		b.failures[execution.SupervisorExecutionID] = append([]byte(nil), outputBytes...)
+		return nil
+	}
+	data, err := os.ReadFile(output)
+	if err != nil {
+		return err
+	}
+	digest := sha256.Sum256(data)
+	descriptorBytes, err := json.Marshal(descriptor)
+	if err != nil {
+		return err
+	}
+	descriptorDigest := sha256.Sum256(descriptorBytes)
+	manifest := supervisor.SnapshotManifest{Protocol: supervisor.SnapshotProtocolV1, RuntimeInstanceID: execution.RuntimeInstanceID, DescriptorSHA256: hex.EncodeToString(descriptorDigest[:]), Artifact: supervisor.SnapshotArtifact{Reference: "portable/" + execution.SupervisorExecutionID, Bytes: int64(len(data)), SHA256: hex.EncodeToString(digest[:]), Regular: true, NoFollow: true}, ContainmentProven: true, ObservedAt: time.Now().UTC()}
+	manifest.MAC = portableSnapshotManifestMAC(b.key, manifest)
+	b.artifacts[execution.SupervisorExecutionID] = portableSnapshotArtifact{data: data, manifest: manifest}
+	return nil
+}
+
+func portableSnapshotManifestMAC(key []byte, manifest supervisor.SnapshotManifest) string {
+	payload, _ := json.Marshal(struct {
+		Protocol          string                      `json:"protocol"`
+		RuntimeInstanceID string                      `json:"runtimeInstanceId"`
+		DescriptorSHA256  string                      `json:"descriptorSha256"`
+		Artifact          supervisor.SnapshotArtifact `json:"artifact"`
+		ContainmentProven bool                        `json:"containmentProven"`
+		ObservedAt        time.Time                   `json:"observedAt"`
+	}{manifest.Protocol, manifest.RuntimeInstanceID, manifest.DescriptorSHA256, manifest.Artifact, manifest.ContainmentProven, manifest.ObservedAt})
+	statusKey := hmac.New(sha256.New, key)
+	statusKey.Write([]byte("norn-effect-runner-status-v1\x00"))
+	statusKey.Write([]byte(manifest.RuntimeInstanceID))
+	mac := hmac.New(sha256.New, statusKey.Sum(nil))
+	mac.Write(payload)
+	return hex.EncodeToString(mac.Sum(nil))
+}
+func (b *portableSnapshotBackend) ObserveSnapshot(_ context.Context, execution supervisor.BackendExecution, _ supervisor.SnapshotDescriptor) (supervisor.BackendState, error) {
+	if b.rebooted {
+		// A host reboot removes the execution containment namespace. The
+		// already-completed effect must retrieve its signed output without
+		// re-observing this now-unknown runtime.
+		return supervisor.BackendState{Phase: effect.SupervisorUnknown, EvidenceReference: "portable-test-rebooted"}, nil
+	}
+	if output, failed := b.failures[execution.SupervisorExecutionID]; failed {
+		exit := 1
+		return supervisor.BackendState{Phase: effect.SupervisorFailed, ExitCode: &exit, Output: append([]byte(nil), output...), ContainmentProven: true, EvidenceReference: "portable-test-failed/" + execution.RuntimeInstanceID}, nil
+	}
+	artifact, ok := b.artifacts[execution.SupervisorExecutionID]
+	if !ok {
+		return supervisor.BackendState{Phase: effect.SupervisorUnknown, EvidenceReference: "portable-test-missing"}, nil
+	}
+	output, err := json.Marshal(artifact.manifest)
+	if err != nil {
+		return supervisor.BackendState{}, err
+	}
+	exit := 0
+	return supervisor.BackendState{Phase: effect.SupervisorSucceeded, ExitCode: &exit, Output: output, ContainmentProven: true, EvidenceReference: "portable-test/" + execution.RuntimeInstanceID}, nil
+}
+
+func TestSupervisedPostgresSnapshotPGDumpFailureReleasesAdmissionForRetry(t *testing.T) {
+	server := pgtest.Start(t)
+	controlDatabase, targetDatabase := "norn_snapshot_failure_control", "norn_snapshot_failure_target"
+	server.CreateDatabase(t, controlDatabase)
+	server.CreateDatabase(t, targetDatabase)
+	t.Setenv("NORN_TEST_DATABASE_URL", server.URL(controlDatabase))
+	t.Setenv("NORN_TEST_RECOVERY_TARGET_DATABASE_URL", server.URL(targetDatabase))
+	f := newTargetFixture(t)
+	ctx := context.Background()
+	if _, err := f.db.ActivateDatabaseCatalog(ctx, 0, f.catalog, "operator"); err != nil {
+		t.Fatal(err)
+	}
+	// Exercise a real pg_dump connection to the disposable PostgreSQL target,
+	// then force its wrapper to return a terminal non-zero status.
+	real, err := exec.LookPath("pg_dump")
+	if err != nil {
+		t.Fatal(err)
+	}
+	wrapper := filepath.Join(t.TempDir(), "pg_dump-fail")
+	script := fmt.Sprintf("#!/bin/sh\n%q \"$@\"\nexit 1\n", real)
+	if err := os.WriteFile(wrapper, []byte(script), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	bytes, err := os.ReadFile(wrapper)
+	if err != nil {
+		t.Fatal(err)
+	}
+	digest := sha256.Sum256(bytes)
+	f.p.SnapshotEffects.PGDumpPath = wrapper
+	f.p.SnapshotEffects.PGDumpSHA256 = hex.EncodeToString(digest[:])
+	op, err := f.queue(t, "app.snapshot", map[string]interface{}{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result, _, err := f.executeWithClaim(t, op.ID); err == nil || result != nil {
+		t.Fatalf("failed pg_dump snapshot = %+v, %v", result, err)
+	}
+	record, found, err := f.p.SnapshotEffects.Store.LatestForOperation(ctx, op.ID, "app.snapshot")
+	if err != nil || !found || record.Lifecycle != effect.LifecycleCompleted || record.Completion == nil || record.Completion.Outcome != effect.OutcomeFailed {
+		t.Fatalf("failed pg_dump effect = %+v, found=%v, err=%v", record, found, err)
+	}
+	realBytes, err := os.ReadFile(real)
+	if err != nil {
+		t.Fatal(err)
+	}
+	realDigest := sha256.Sum256(realBytes)
+	f.p.SnapshotEffects.PGDumpPath = real
+	f.p.SnapshotEffects.PGDumpSHA256 = hex.EncodeToString(realDigest[:])
+	retry, err := f.queue(t, "app.snapshot", map[string]interface{}{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result, err := f.execute(t, retry.ID); err != nil || result.Status != model.OperationSucceeded {
+		t.Fatalf("snapshot retry after failed pg_dump = %+v, %v", result, err)
+	}
+	if f.snapshotBackend.starts != 2 {
+		t.Fatalf("snapshot retry did not receive a fresh admission: starts=%d", f.snapshotBackend.starts)
+	}
+}
+func (b *portableSnapshotBackend) QuerySnapshot(_ context.Context, execution supervisor.BackendExecution, _ supervisor.SnapshotDescriptor) (supervisor.SnapshotManifest, error) {
+	artifact, ok := b.artifacts[execution.SupervisorExecutionID]
+	if !ok {
+		return supervisor.SnapshotManifest{}, os.ErrNotExist
+	}
+	return artifact.manifest, nil
+}
+func (b *portableSnapshotBackend) CopySnapshotArtifact(_ context.Context, execution supervisor.BackendExecution, _ supervisor.SnapshotDescriptor, destination io.Writer) (supervisor.SnapshotManifest, error) {
+	if b.failCopy {
+		b.failCopy = false
+		return supervisor.SnapshotManifest{}, fmt.Errorf("portable publication interruption")
+	}
+	artifact, ok := b.artifacts[execution.SupervisorExecutionID]
+	if !ok {
+		return supervisor.SnapshotManifest{}, os.ErrNotExist
+	}
+	_, err := destination.Write(artifact.data)
+	return artifact.manifest, err
 }
 
 func (f *targetFixture) orderState(t *testing.T) string {
@@ -173,6 +417,181 @@ func (f *targetFixture) orderState(t *testing.T) string {
 		t.Fatal(err)
 	}
 	return state
+}
+
+// This exercises the production pipeline path against PostgreSQL while using
+// only a portable, test-scoped containment assertion. A publication failure
+// happens after the effect is durably complete; the next claim must reuse that
+// reservation and artifact instead of launching pg_dump a second time.
+func TestSupervisedPostgresSnapshotReservationReplayAfterPublicationCrash(t *testing.T) {
+	server := pgtest.Start(t)
+	controlDatabase, targetDatabase := "norn_snapshot_control", "norn_snapshot_target"
+	server.CreateDatabase(t, controlDatabase)
+	server.CreateDatabase(t, targetDatabase)
+	t.Setenv("NORN_TEST_DATABASE_URL", server.URL(controlDatabase))
+	t.Setenv("NORN_TEST_RECOVERY_TARGET_DATABASE_URL", server.URL(targetDatabase))
+	f := newTargetFixture(t)
+	ctx := context.Background()
+	if _, err := f.db.ActivateDatabaseCatalog(ctx, 0, f.catalog, "operator"); err != nil {
+		t.Fatal(err)
+	}
+	accepted, err := f.queueKey(t, "supervised-snapshot-publication-crash", "app.snapshot", map[string]interface{}{})
+	if err != nil || accepted.Replayed {
+		t.Fatalf("snapshot acceptance = %+v, %v", accepted, err)
+	}
+	// The failure is at publication, after the effect's reservation, launch,
+	// result and durable completion have all been recorded.
+	f.snapshotBackend.failCopy = true
+	if result, claim, err := f.executeWithClaim(t, accepted.Operation.ID); err == nil || result != nil {
+		t.Fatalf("interrupted publication = %+v, %v", result, err)
+	} else if err := f.db.DeferClaimedOperation(ctx, claim, "test publication interruption", time.Now().Add(-time.Second), nil); err != nil {
+		t.Fatal(err)
+	}
+	record, found, err := f.p.SnapshotEffects.Store.LatestForOperation(ctx, accepted.Operation.ID, "app.snapshot")
+	if err != nil || !found || record.Lifecycle != effect.LifecycleCompleted || record.Completion == nil || record.Completion.Outcome != effect.OutcomeSucceeded {
+		t.Fatalf("durable snapshot effect after crash = %+v, found=%v, err=%v", record, found, err)
+	}
+	if f.snapshotBackend.starts != 1 {
+		t.Fatalf("pg_dump starts after interrupted publication = %d, want 1", f.snapshotBackend.starts)
+	}
+	// Effect completion committed before operation publication. Simulate the
+	// post-crash host boot where the cgroup/containment namespace has gone away;
+	// replay must use the exact authenticated output that completion bound.
+	f.snapshotBackend.rebooted = true
+	replayedOutput, err := f.p.SnapshotEffects.Manager.RetrieveSnapshotResult(ctx, record.Reservation, record.Execution, record.Completion.Verification.ResultReference)
+	if err != nil || effect.DigestInput(replayedOutput) != record.Completion.Verification.ResultDigest {
+		t.Fatalf("reboot replay result = %q, %v", replayedOutput, err)
+	}
+
+	// Idempotent request acceptance returns the original operation. Its later
+	// claim recovers the completed effect and publishes the original artifact.
+	replay, err := f.queueKey(t, "supervised-snapshot-publication-crash", "app.snapshot", map[string]interface{}{})
+	if err != nil || !replay.Replayed || replay.Operation.ID != accepted.Operation.ID {
+		t.Fatalf("snapshot replay acceptance = %+v, %v", replay, err)
+	}
+	result, err := f.execute(t, accepted.Operation.ID)
+	if err != nil || result.Status != model.OperationSucceeded {
+		t.Fatalf("replayed publication = %+v, %v", result, err)
+	}
+	if f.snapshotBackend.starts != 1 {
+		t.Fatalf("replay launched pg_dump again: starts=%d", f.snapshotBackend.starts)
+	}
+	snapshot, _ := result.Metadata["snapshot"].(string)
+	sidecar, err := readSidecar(snapshotLocation{dir: f.snapshots}, snapshot)
+	if err != nil || sidecar == nil || len(sidecar.SHA256) != 64 || sidecar.Size <= 0 {
+		t.Fatalf("replayed publication sidecar = %+v, %v", sidecar, err)
+	}
+}
+
+// This deliberately pauses at os.Link while WithOperationClaimFence holds the
+// operation row. A concurrent claim transition must remain blocked until the
+// public sidecar/dump pair is complete; checking ownership before Link alone
+// would let this test turn the claim over and then publish stale bytes.
+func TestAttestedSnapshotPublicationHoldsClaimFenceThroughLink(t *testing.T) {
+	server := pgtest.Start(t)
+	controlDatabase, targetDatabase := "norn_snapshot_fence_control", "norn_snapshot_fence_target"
+	server.CreateDatabase(t, controlDatabase)
+	server.CreateDatabase(t, targetDatabase)
+	t.Setenv("NORN_TEST_DATABASE_URL", server.URL(controlDatabase))
+	t.Setenv("NORN_TEST_RECOVERY_TARGET_DATABASE_URL", server.URL(targetDatabase))
+	f := newTargetFixture(t)
+	ctx := context.Background()
+	if _, err := f.db.ActivateDatabaseCatalog(ctx, 0, f.catalog, "operator"); err != nil {
+		t.Fatal(err)
+	}
+	op, err := f.queue(t, "app.snapshot", map[string]interface{}{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	claimed, claim, err := f.db.ClaimNextOperation(ctx, "publication-worker", time.Minute, []string{"app.snapshot"})
+	if err != nil || claimed == nil || claimed.ID != op.ID {
+		t.Fatalf("claim = %+v, %v", claimed, err)
+	}
+
+	originalLink := linkAttestedSnapshot
+	enteredLink := make(chan struct{})
+	releaseLink := make(chan struct{})
+	linkAttestedSnapshot = func(oldname, newname string) error {
+		close(enteredLink)
+		<-releaseLink
+		return originalLink(oldname, newname)
+	}
+	t.Cleanup(func() { linkAttestedSnapshot = originalLink })
+
+	artifact := testAttestedArtifact(op.ID, []byte("attested snapshot bytes"), func() error { return nil })
+	artifact.Fence = func(publish func() error) error {
+		return f.db.WithOperationClaimFence(ctx, claim, publish)
+	}
+	location := testAttestedSnapshotLocation(t)
+	published := make(chan error, 1)
+	go func() {
+		_, err := PublishAttestedSnapshot(location, time.Date(2026, 9, 24, 12, 0, 0, 0, time.UTC), artifact)
+		published <- err
+	}()
+	<-enteredLink
+
+	transitioned := make(chan error, 1)
+	go func() {
+		transitioned <- f.db.DeferClaimedOperation(ctx, claim, "claim turnover", time.Now().Add(-time.Second), nil)
+	}()
+	select {
+	case err := <-transitioned:
+		t.Fatalf("claim transitioned while Link was paused: %v", err)
+	case <-time.After(100 * time.Millisecond):
+	}
+	close(releaseLink)
+	if err := <-published; err != nil {
+		t.Fatalf("publication = %v", err)
+	}
+	if err := <-transitioned; err != nil {
+		t.Fatalf("claim transition after publication = %v", err)
+	}
+}
+
+// The publication fence has only a row lock to release, so a caller deadline
+// that fires immediately after the irreversible Link must not turn a complete
+// public pair into a reported failure.
+func TestAttestedSnapshotPublicationSurvivesFenceContextCancellationAfterLink(t *testing.T) {
+	server := pgtest.Start(t)
+	controlDatabase, targetDatabase := "norn_snapshot_cancel_control", "norn_snapshot_cancel_target"
+	server.CreateDatabase(t, controlDatabase)
+	server.CreateDatabase(t, targetDatabase)
+	t.Setenv("NORN_TEST_DATABASE_URL", server.URL(controlDatabase))
+	t.Setenv("NORN_TEST_RECOVERY_TARGET_DATABASE_URL", server.URL(targetDatabase))
+	f := newTargetFixture(t)
+	if _, err := f.db.ActivateDatabaseCatalog(context.Background(), 0, f.catalog, "operator"); err != nil {
+		t.Fatal(err)
+	}
+	op, err := f.queue(t, "app.snapshot", map[string]interface{}{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	claimed, claim, err := f.db.ClaimNextOperation(context.Background(), "publication-worker", time.Minute, []string{"app.snapshot"})
+	if err != nil || claimed == nil || claimed.ID != op.ID {
+		t.Fatalf("claim = %+v, %v", claimed, err)
+	}
+
+	fenceCtx, cancelFence := context.WithCancel(context.Background())
+	defer cancelFence()
+	originalLink := linkAttestedSnapshot
+	linkAttestedSnapshot = func(oldname, newname string) error {
+		err := originalLink(oldname, newname)
+		cancelFence()
+		return err
+	}
+	t.Cleanup(func() { linkAttestedSnapshot = originalLink })
+	artifact := testAttestedArtifact(op.ID, []byte("attested snapshot bytes"), func() error { return nil })
+	artifact.Fence = func(publish func() error) error {
+		return f.db.WithOperationClaimFence(fenceCtx, claim, publish)
+	}
+	location := testAttestedSnapshotLocation(t)
+	published, err := PublishAttestedSnapshot(location, time.Date(2026, 9, 24, 12, 0, 0, 0, time.UTC), artifact)
+	if err != nil {
+		t.Fatalf("publication after Link cancellation = %v", err)
+	}
+	if err := verifyBoundDump(location, published.Filename, published.Size); err != nil {
+		t.Fatalf("published pair after cancellation = %v", err)
+	}
 }
 
 func TestDatabaseTargetsBindAcceptanceAndDriveSnapshotRestoreMigration(t *testing.T) {

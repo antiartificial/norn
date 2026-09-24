@@ -4,8 +4,10 @@ import (
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
+	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"os"
 	"path/filepath"
 	"strings"
@@ -13,6 +15,84 @@ import (
 
 	"norn/v2/api/effect"
 )
+
+func (b *cgroupBackend) QuerySnapshot(_ context.Context, execution BackendExecution, descriptor SnapshotDescriptor) (SnapshotManifest, error) {
+	populated, err := cgroupPopulated(b.cgroupPath(execution.RuntimeInstanceID))
+	if err != nil {
+		return SnapshotManifest{}, fmt.Errorf("snapshot containment is unavailable: %w", err)
+	}
+	if populated {
+		return SnapshotManifest{}, fmt.Errorf("snapshot containment is not proven")
+	}
+	return ReadSnapshotManifest(execution.StateDirectory, runnerStatusKey(b.key, execution.RuntimeInstanceID), execution.RuntimeInstanceID, true)
+}
+
+func (b *cgroupBackend) ObserveSnapshot(_ context.Context, execution BackendExecution, descriptor SnapshotDescriptor) (BackendState, error) {
+	unknown := BackendState{Phase: effect.SupervisorUnknown, EvidenceReference: b.reference(execution)}
+	populated, err := cgroupPopulated(b.cgroupPath(execution.RuntimeInstanceID))
+	if errors.Is(err, os.ErrNotExist) {
+		return unknown, nil
+	}
+	if err != nil {
+		return BackendState{}, err
+	}
+	status, err := readSnapshotStatus(execution.StateDirectory, runnerStatusKey(b.key, execution.RuntimeInstanceID), execution.RuntimeInstanceID)
+	if errors.Is(err, os.ErrNotExist) {
+		if populated {
+			return BackendState{Phase: effect.SupervisorRunning, EvidenceReference: b.reference(execution)}, nil
+		}
+		return unknown, nil
+	}
+	if err != nil {
+		return BackendState{}, err
+	}
+	if populated {
+		return BackendState{Phase: effect.SupervisorRunning, EvidenceReference: b.reference(execution)}, nil
+	}
+	if status.Phase == effect.SupervisorRunning {
+		// The helper died before a terminal attestation. Its private service and
+		// pass files cannot be retained for a later claim, and the absence of a
+		// terminal outcome is deliberately unknown rather than retry-safe.
+		if err := RecoverSnapshotPrivateMaterial(execution.StateDirectory, runnerStatusKey(b.key, execution.RuntimeInstanceID), execution.RuntimeInstanceID); err != nil {
+			return BackendState{}, fmt.Errorf("recover dead snapshot private material: %w", err)
+		}
+		return unknown, nil
+	}
+	if status.Phase != effect.SupervisorSucceeded && status.Phase != effect.SupervisorFailed {
+		return unknown, nil
+	}
+	var output []byte
+	if status.Phase == effect.SupervisorSucceeded {
+		manifest, err := b.QuerySnapshot(context.Background(), execution, descriptor)
+		if err != nil {
+			return BackendState{}, err
+		}
+		output, err = json.Marshal(manifest)
+		if err != nil {
+			return BackendState{}, err
+		}
+	} else {
+		output, err = json.Marshal(status)
+		if err != nil {
+			return BackendState{}, err
+		}
+	}
+	return BackendState{Phase: status.Phase, ExitCode: status.ExitCode, Output: output, ContainmentProven: true, TimedOut: status.TimedOut, EvidenceReference: b.reference(execution)}, nil
+}
+
+func (b *cgroupBackend) CopySnapshotArtifact(ctx context.Context, execution BackendExecution, descriptor SnapshotDescriptor, destination io.Writer) (SnapshotManifest, error) {
+	manifest, err := b.QuerySnapshot(ctx, execution, descriptor)
+	if err != nil {
+		return SnapshotManifest{}, err
+	}
+	if err := VerifySnapshotManifestForDescriptor(manifest, descriptor, runnerStatusKey(b.key, execution.RuntimeInstanceID), execution.RuntimeInstanceID); err != nil {
+		return SnapshotManifest{}, err
+	}
+	if _, err := CopySnapshotArtifact(execution.StateDirectory, runnerStatusKey(b.key, execution.RuntimeInstanceID), execution.RuntimeInstanceID, descriptor, true, destination); err != nil {
+		return SnapshotManifest{}, err
+	}
+	return manifest, nil
+}
 
 const maxCgroupEventsBytes = 4 << 10
 

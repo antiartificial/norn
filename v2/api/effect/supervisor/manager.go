@@ -8,6 +8,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"os"
 	"path/filepath"
 	"strings"
@@ -48,11 +49,40 @@ type Backend interface {
 	RetrieveResult(context.Context, BackendExecution, string) ([]byte, error)
 }
 
+// SnapshotBackend carries private snapshot material only over the runner pipe.
+// Its descriptor remains the durable, secret-free reservation payload.
+type SnapshotBackend interface {
+	StartSnapshot(context.Context, BackendExecution, SnapshotDescriptor, SnapshotLaunchMaterial) error
+	ObserveSnapshot(context.Context, BackendExecution, SnapshotDescriptor) (BackendState, error)
+	QuerySnapshot(context.Context, BackendExecution, SnapshotDescriptor) (SnapshotManifest, error)
+	CopySnapshotArtifact(context.Context, BackendExecution, SnapshotDescriptor, io.Writer) (SnapshotManifest, error)
+}
+
 type Manager struct {
-	root    string
-	rootID  string
-	key     []byte
-	backend Backend
+	root                   string
+	rootID                 string
+	key                    []byte
+	backend                Backend
+	snapshotArtifactBudget int64
+}
+
+// RootID identifies the local supervisor namespace. It is safe to use for
+// selecting durable effect records, but it is not an execution credential.
+func (m *Manager) RootID() string {
+	if m == nil {
+		return ""
+	}
+	return m.rootID
+}
+
+// SetSnapshotArtifactBudget configures the total admission ceiling for private
+// snapshot dumps. A zero value disables snapshot admission.
+func (m *Manager) SetSnapshotArtifactBudget(bytes int64) error {
+	if m == nil || bytes < MaxSnapshotArtifactBytes {
+		return fmt.Errorf("snapshot artifact budget must be at least %d bytes", MaxSnapshotArtifactBytes)
+	}
+	m.snapshotArtifactBudget = bytes
+	return nil
 }
 
 // registryEntry is the root-level record of an execution namespace. The
@@ -108,7 +138,7 @@ func NewManager(root string, signingKey []byte, backend Backend) (*Manager, erro
 }
 
 func (m *Manager) Prepare(_ context.Context, reservation effect.Reservation) error {
-	descriptor, err := m.verifyDescriptor(reservation.LaunchPayload, nil)
+	descriptor, err := m.verifyAnyDescriptor(reservation.LaunchPayload)
 	if err != nil {
 		return err
 	}
@@ -168,6 +198,21 @@ func (m *Manager) Prepare(_ context.Context, reservation effect.Reservation) err
 	})
 }
 
+func (m *Manager) verifyAnyDescriptor(payload json.RawMessage) (Descriptor, error) {
+	var header struct{ Protocol, Stage string }
+	if err := json.Unmarshal(payload, &header); err != nil {
+		return Descriptor{}, err
+	}
+	if header.Protocol == SnapshotProtocolV1 && header.Stage == SnapshotStage {
+		s, err := m.verifySnapshotDescriptor(payload, nil)
+		if err != nil {
+			return Descriptor{}, err
+		}
+		return Descriptor{Protocol: s.Protocol, SupervisorRootID: s.SupervisorRootID, Stage: s.Stage, MaterialMAC: s.MaterialMAC}, nil
+	}
+	return m.verifyDescriptor(payload, nil)
+}
+
 type journal struct {
 	Protocol              string    `json:"protocol"`
 	InputDigest           string    `json:"inputDigest"`
@@ -203,6 +248,25 @@ type evidenceAssertion struct {
 type signedEvidence struct {
 	Assertion evidenceAssertion `json:"assertion"`
 	MAC       string            `json:"mac"`
+}
+
+// snapshotResult preserves the exact terminal output used for durable effect
+// completion. Runner status establishes containment; this authenticated record
+// is what permits a completed effect to replay after reboot cleanup removes its
+// cgroup.
+type snapshotResult struct {
+	InputDigest           string             `json:"inputDigest"`
+	SupervisorExecutionID string             `json:"supervisorExecutionId"`
+	RuntimeInstanceID     string             `json:"runtimeInstanceId"`
+	Reference             string             `json:"reference"`
+	Digest                string             `json:"digest"`
+	Output                []byte             `json:"output"`
+	Observation           effect.Observation `json:"observation"`
+}
+
+type signedSnapshotResult struct {
+	Result snapshotResult `json:"result"`
+	MAC    string         `json:"mac"`
 }
 
 func (m *Manager) Launch(ctx context.Context, reservation effect.Reservation, material effect.LaunchMaterial) (effect.ExecutionIdentity, error) {
@@ -253,6 +317,494 @@ func (m *Manager) Launch(ctx context.Context, reservation effect.Reservation, ma
 		return nil
 	})
 	return identity, err
+}
+
+// LaunchSnapshot mirrors Launch but never converts SnapshotLaunchMaterial into
+// generic LaunchMaterial, preventing its service file/password from entering
+// the normal supervisor journal or effect reservation.
+func (m *Manager) LaunchSnapshot(ctx context.Context, reservation effect.Reservation, material SnapshotLaunchMaterial) (effect.ExecutionIdentity, error) {
+	descriptor, err := m.verifySnapshotDescriptor(reservation.LaunchPayload, &material)
+	if err != nil {
+		return effect.ExecutionIdentity{}, err
+	}
+	backend, ok := m.backend.(SnapshotBackend)
+	if !ok {
+		return effect.ExecutionIdentity{}, fmt.Errorf("snapshot supervisor backend is unavailable")
+	}
+	var identity effect.ExecutionIdentity
+	err = m.withExecutionLock(reservation.SupervisorExecutionID, func(directory string) error {
+		record, err := m.readBoundJournal(directory, reservation, effect.ExecutionIdentity{Supervisor: reservation.Supervisor, SupervisorExecutionID: reservation.SupervisorExecutionID})
+		if err != nil {
+			return err
+		}
+		if record.RuntimeInstanceID != "" {
+			identity = journalIdentity(record)
+			return nil
+		}
+		if err := m.admitSnapshotArtifact(reservation.SupervisorExecutionID); err != nil {
+			return err
+		}
+		record.RuntimeInstanceID, record.Phase = uuid.NewString(), "prepared"
+		if err := m.recordLaunchRuntime(record); err != nil {
+			return err
+		}
+		encoded, _ := json.Marshal(record)
+		if err := writeDurableJSON(directory, launchIntentName, map[string]string{"runtimeInstanceId": record.RuntimeInstanceID, "mac": m.mac(encoded)}); err != nil {
+			return err
+		}
+		if err := m.writeJournal(directory, record); err != nil {
+			return err
+		}
+		if err := backend.StartSnapshot(ctx, backendExecution(record, directory), descriptor, material); err != nil {
+			return fmt.Errorf("start supervised snapshot: %w", err)
+		}
+		record.Phase = "launched"
+		if err := m.writeJournal(directory, record); err != nil {
+			return err
+		}
+		identity = journalIdentity(record)
+		return nil
+	})
+	return identity, err
+}
+
+// DiscardSnapshotArtifact removes only the already-published private dump.
+// Its caller must have a durable terminal operation record; without it the
+// dump remains available for effect replay.
+func (m *Manager) DiscardSnapshotArtifact(ctx context.Context, reservation effect.Reservation, identity effect.ExecutionIdentity) error {
+	d, err := m.verifySnapshotDescriptor(reservation.LaunchPayload, nil)
+	if err != nil {
+		return err
+	}
+	b, ok := m.backend.(SnapshotBackend)
+	if !ok {
+		return fmt.Errorf("snapshot supervisor backend is unavailable")
+	}
+	return m.withExecutionLock(identity.SupervisorExecutionID, func(directory string) error {
+		r, err := m.readBoundJournal(directory, reservation, identity)
+		if err != nil {
+			return err
+		}
+		private, err := snapshotArtifactDirectory(directory)
+		if errors.Is(err, os.ErrNotExist) {
+			return removeSnapshotAdmission(directory)
+		}
+		if err != nil {
+			return err
+		}
+		if _, err := os.Lstat(filepath.Join(private, "archive.dump")); errors.Is(err, os.ErrNotExist) {
+			return removeSnapshotAdmission(directory)
+		} else if err != nil {
+			return err
+		}
+		// This proves a signed successful terminal status and containment before
+		// deleting the one private archive. It is intentionally idempotent.
+		if _, err := b.QuerySnapshot(ctx, backendExecution(r, directory), d); err != nil {
+			var integrity *SnapshotArtifactIntegrityError
+			if errors.As(err, &integrity) {
+				if cleanupErr := removeDisposableSnapshotArtifact(private); cleanupErr != nil {
+					return cleanupErr
+				}
+				if admissionErr := removeSnapshotAdmission(directory); admissionErr != nil {
+					return admissionErr
+				}
+				return &PublishedSnapshotCorruptionError{ExecutionID: identity.SupervisorExecutionID, Cause: err}
+			}
+			return err
+		}
+		if err := os.Remove(filepath.Join(private, "archive.dump")); err != nil && !errors.Is(err, os.ErrNotExist) {
+			return err
+		}
+		if err := syncDirectory(private); err != nil {
+			return err
+		}
+		return removeSnapshotAdmission(directory)
+	})
+}
+
+// DiscardFailedSnapshotArtifact releases the private namespace only after the
+// runner still reports a contained, terminal failure for this exact execution.
+// A missing status, a running helper, or an ambiguous backend observation is
+// deliberately retained: the effect may still need recovery rather than a
+// new admission.
+func (m *Manager) DiscardFailedSnapshotArtifact(ctx context.Context, reservation effect.Reservation, identity effect.ExecutionIdentity) error {
+	d, err := m.verifySnapshotDescriptor(reservation.LaunchPayload, nil)
+	if err != nil {
+		return err
+	}
+	b, ok := m.backend.(SnapshotBackend)
+	if !ok {
+		return fmt.Errorf("snapshot supervisor backend is unavailable")
+	}
+	return m.withExecutionLock(identity.SupervisorExecutionID, func(directory string) error {
+		r, err := m.readBoundJournal(directory, reservation, identity)
+		if err != nil {
+			return err
+		}
+		if r.RuntimeInstanceID == "" {
+			return fmt.Errorf("snapshot failure cleanup has no durable launch identity")
+		}
+		state, err := b.ObserveSnapshot(ctx, backendExecution(r, directory), d)
+		if err != nil {
+			return err
+		}
+		if state.Phase != effect.SupervisorFailed || !state.ContainmentProven {
+			return fmt.Errorf("snapshot failure cleanup requires a contained terminal failure")
+		}
+		private, err := snapshotArtifactDirectory(directory)
+		if errors.Is(err, os.ErrNotExist) {
+			return removeSnapshotAdmission(directory)
+		}
+		if err != nil {
+			return err
+		}
+		if err := removeDisposableSnapshotArtifact(private); err != nil {
+			return err
+		}
+		return removeSnapshotAdmission(directory)
+	})
+}
+
+// DiscardDurablyTerminalSnapshotArtifact releases private snapshot material
+// after the control-plane effect record has durably attested a terminal
+// outcome. It deliberately does not consult the runtime backend: a host
+// reboot can remove the cgroup after the terminal evidence was stored, and
+// the missing cgroup is not evidence about an otherwise unresolved helper.
+//
+// Callers must additionally establish any operation-level precondition (for
+// example, that a successful snapshot's public operation committed). This
+// method verifies the stored terminal record and its local signed launch
+// binding before it removes local material. The removal is idempotent so the
+// same durable terminal record can be reconciled on every startup.
+func (m *Manager) DiscardDurablyTerminalSnapshotArtifact(ctx context.Context, record effect.Record) error {
+	if record.Reservation.Stage != SnapshotStage || record.Lifecycle != effect.LifecycleCompleted || record.Completion == nil ||
+		(record.Completion.Outcome != effect.OutcomeSucceeded && record.Completion.Outcome != effect.OutcomeFailed) {
+		return fmt.Errorf("snapshot cleanup requires a durable terminal effect record")
+	}
+	digest, err := effect.ComputeInputDigest(record.Reservation)
+	if err != nil || digest != record.Reservation.InputDigest {
+		return fmt.Errorf("snapshot cleanup reservation digest is invalid")
+	}
+	verification := record.Completion.Verification
+	if strings.TrimSpace(record.Execution.RuntimeInstanceID) == "" ||
+		verification.InputDigest != record.Reservation.InputDigest ||
+		verification.SupervisorExecutionID != record.Reservation.SupervisorExecutionID ||
+		verification.RuntimeInstanceID != record.Execution.RuntimeInstanceID ||
+		verification.EvidenceSource != evidenceSource ||
+		strings.TrimSpace(verification.EvidenceReference) == "" || verification.ObservedAt.IsZero() {
+		return fmt.Errorf("snapshot cleanup terminal record is not bound to the execution")
+	}
+	if (record.Completion.Outcome == effect.OutcomeSucceeded && verification.Decision != effect.VerificationSucceeded) ||
+		(record.Completion.Outcome == effect.OutcomeFailed && verification.Decision != effect.VerificationFailed) {
+		return fmt.Errorf("snapshot cleanup terminal decision does not prove the recorded outcome")
+	}
+	if record.Completion.Outcome == effect.OutcomeSucceeded &&
+		(strings.TrimSpace(verification.ResultDigest) == "" || verification.ResultReference != "result/"+record.Reservation.SupervisorExecutionID) {
+		return fmt.Errorf("successful snapshot cleanup lacks durable result evidence")
+	}
+	if record.Completion.Outcome == effect.OutcomeFailed &&
+		(record.Completion.ExitCode == nil || strings.TrimSpace(verification.ResultDigest) == "" || verification.ResultReference != "result/"+record.Reservation.SupervisorExecutionID) {
+		return fmt.Errorf("failed snapshot cleanup lacks durable terminal evidence")
+	}
+	if _, err := m.verifySnapshotDescriptor(record.Reservation.LaunchPayload, nil); err != nil {
+		return err
+	}
+	return m.withExecutionLock(record.Execution.SupervisorExecutionID, func(directory string) error {
+		r, err := m.readBoundJournal(directory, record.Reservation, record.Execution)
+		if err != nil {
+			return err
+		}
+		if r.RuntimeInstanceID == "" {
+			return fmt.Errorf("snapshot terminal cleanup has no durable launch identity")
+		}
+		private, err := snapshotArtifactDirectory(directory)
+		if errors.Is(err, os.ErrNotExist) {
+			return removeSnapshotAdmission(directory)
+		}
+		if err != nil {
+			return err
+		}
+		if err := removeDisposableSnapshotArtifact(private); err != nil {
+			return err
+		}
+		return removeSnapshotAdmission(directory)
+	})
+}
+
+// DiscardAbandonedSnapshotArtifact releases admission only for an execution
+// whose durable journal proves that no runtime was ever assigned. This is the
+// sole safe cleanup path for a resolved never-launched effect.
+func (m *Manager) DiscardAbandonedSnapshotArtifact(_ context.Context, reservation effect.Reservation, identity effect.ExecutionIdentity) error {
+	if _, err := m.verifySnapshotDescriptor(reservation.LaunchPayload, nil); err != nil {
+		return err
+	}
+	return m.withExecutionLock(identity.SupervisorExecutionID, func(directory string) error {
+		r, err := m.readBoundJournal(directory, reservation, identity)
+		if err != nil {
+			return err
+		}
+		if r.RuntimeInstanceID != "" {
+			return fmt.Errorf("snapshot abandonment cleanup cannot discard a launched execution")
+		}
+		return removeSnapshotAdmission(directory)
+	})
+}
+
+// PublishedSnapshotCorruptionError reports that a disposable private artifact
+// was removed after its public snapshot and successful operation were
+// already durable. Callers may report this without preventing startup.
+type PublishedSnapshotCorruptionError struct {
+	ExecutionID string
+	Cause       error
+}
+
+func (e *PublishedSnapshotCorruptionError) Error() string {
+	return fmt.Sprintf("published snapshot corrupt private artifact %s was removed: %v", e.ExecutionID, e.Cause)
+}
+
+func (e *PublishedSnapshotCorruptionError) Unwrap() error { return e.Cause }
+
+func removeDisposableSnapshotArtifact(private string) error {
+	for _, name := range []string{"archive.dump", "service.conf", "passfile"} {
+		if err := os.Remove(filepath.Join(private, name)); err != nil && !errors.Is(err, os.ErrNotExist) {
+			return err
+		}
+	}
+	return syncDirectory(private)
+}
+
+func removeSnapshotAdmission(directory string) error {
+	if err := os.Remove(filepath.Join(directory, "snapshot-admission")); err != nil && !errors.Is(err, os.ErrNotExist) {
+		return err
+	}
+	return syncDirectory(directory)
+}
+
+func snapshotArtifactDirectory(directory string) (string, error) {
+	entries, err := os.ReadDir(directory)
+	if err != nil {
+		return "", err
+	}
+	var private string
+	for _, entry := range entries {
+		if entry.IsDir() && strings.HasPrefix(entry.Name(), ".snapshot-") {
+			if private != "" {
+				return "", fmt.Errorf("snapshot artifact directory is ambiguous")
+			}
+			private = filepath.Join(directory, entry.Name())
+		}
+	}
+	if private == "" {
+		return "", os.ErrNotExist
+	}
+	return private, nil
+}
+
+func (m *Manager) admitSnapshotArtifact(executionID string) error {
+	if m.snapshotArtifactBudget < MaxSnapshotArtifactBytes {
+		return fmt.Errorf("snapshot artifact admission budget is not configured")
+	}
+	return m.withRegistryLock(func(*registry) error {
+		digest := sha256.Sum256([]byte(executionID))
+		currentDirectory := hex.EncodeToString(digest[:])
+		var used int64
+		entries, err := os.ReadDir(m.root)
+		if err != nil {
+			return err
+		}
+		for _, entry := range entries {
+			if !entry.IsDir() {
+				continue
+			}
+			directory := filepath.Join(m.root, entry.Name())
+			admission := filepath.Join(directory, "snapshot-admission")
+			if info, err := os.Lstat(admission); err == nil {
+				if !info.Mode().IsRegular() || info.Size() > 4<<10 || used > m.snapshotArtifactBudget-MaxSnapshotArtifactBytes {
+					return fmt.Errorf("snapshot artifact admission accounting is invalid")
+				}
+				if entry.Name() == currentDirectory {
+					continue
+				}
+				used += MaxSnapshotArtifactBytes
+				continue
+			} else if !errors.Is(err, os.ErrNotExist) {
+				return err
+			}
+			private, err := snapshotArtifactDirectory(directory)
+			if errors.Is(err, os.ErrNotExist) {
+				continue
+			}
+			if err != nil {
+				return err
+			}
+			info, err := os.Lstat(filepath.Join(private, "archive.dump"))
+			if errors.Is(err, os.ErrNotExist) {
+				continue
+			}
+			if err != nil || !info.Mode().IsRegular() || info.Size() < 0 {
+				return fmt.Errorf("snapshot artifact accounting is invalid")
+			}
+			if info.Size() > MaxSnapshotArtifactBytes || used > m.snapshotArtifactBudget-info.Size() {
+				return fmt.Errorf("snapshot artifact budget is exhausted")
+			}
+			used += info.Size()
+		}
+		if used > m.snapshotArtifactBudget-MaxSnapshotArtifactBytes {
+			return fmt.Errorf("snapshot artifact budget cannot admit another bounded dump")
+		}
+		directory := filepath.Join(m.root, currentDirectory)
+		if err := writeDurableJSON(directory, "snapshot-admission", map[string]int64{"reservedBytes": MaxSnapshotArtifactBytes}); err != nil {
+			return fmt.Errorf("record snapshot artifact admission: %w", err)
+		}
+		return nil
+	})
+}
+
+func (m *Manager) QuerySnapshot(ctx context.Context, reservation effect.Reservation, identity effect.ExecutionIdentity) (SnapshotManifest, error) {
+	d, err := m.verifySnapshotDescriptor(reservation.LaunchPayload, nil)
+	if err != nil {
+		return SnapshotManifest{}, err
+	}
+	b, ok := m.backend.(SnapshotBackend)
+	if !ok {
+		return SnapshotManifest{}, fmt.Errorf("snapshot supervisor backend is unavailable")
+	}
+	var out SnapshotManifest
+	err = m.withExecutionLock(identity.SupervisorExecutionID, func(directory string) error {
+		r, e := m.readBoundJournal(directory, reservation, identity)
+		if e != nil {
+			return e
+		}
+		out, e = b.QuerySnapshot(ctx, backendExecution(r, directory), d)
+		return e
+	})
+	return out, err
+}
+
+// ObserveSnapshot returns signed generic effect evidence for the snapshot
+// protocol. It never accepts runner-local state without the backend's
+// containment proof, which lets effect.Executor recover the same durable
+// reservation after an expired operation claim.
+func (m *Manager) ObserveSnapshot(ctx context.Context, reservation effect.Reservation, identity effect.ExecutionIdentity) (effect.Observation, error) {
+	descriptor, err := m.verifySnapshotDescriptor(reservation.LaunchPayload, nil)
+	if err != nil {
+		return effect.Observation{}, err
+	}
+	backend, ok := m.backend.(SnapshotBackend)
+	if !ok {
+		return effect.Observation{}, fmt.Errorf("snapshot supervisor backend is unavailable")
+	}
+	var observation effect.Observation
+	err = m.withExecutionLock(identity.SupervisorExecutionID, func(directory string) error {
+		record, err := m.readBoundJournal(directory, reservation, identity)
+		if err != nil {
+			return err
+		}
+		if record.RuntimeInstanceID == "" {
+			observation, err = m.observation(record, BackendState{Phase: effect.SupervisorNotFound, ContainmentProven: true, EvidenceReference: "registered-not-launched/" + reservation.SupervisorExecutionID})
+			return err
+		}
+		state, err := backend.ObserveSnapshot(ctx, backendExecution(record, directory), descriptor)
+		if err != nil {
+			return err
+		}
+		if state.Phase == effect.SupervisorUnknown {
+			stored, storedErr := m.readSnapshotObservation(directory, record)
+			if storedErr == nil {
+				observation = stored
+				return nil
+			}
+			if !errors.Is(storedErr, os.ErrNotExist) {
+				return storedErr
+			}
+		}
+		if state.Phase == effect.SupervisorSucceeded || state.Phase == effect.SupervisorFailed {
+			if !state.ContainmentProven {
+				return fmt.Errorf("snapshot terminal result lacks containment proof")
+			}
+			fresh, err := m.observation(record, state)
+			if err != nil {
+				return err
+			}
+			stable, err := m.writeSnapshotResult(directory, record, descriptor, fresh)
+			if err != nil {
+				return err
+			}
+			observation = stable
+			return nil
+		}
+		observation, err = m.observation(record, state)
+		return err
+	})
+	return observation, err
+}
+
+// RetrieveSnapshotResult returns the authenticated terminal output preserved
+// before completion. It never re-observes a completed snapshot execution.
+func (m *Manager) RetrieveSnapshotResult(_ context.Context, reservation effect.Reservation, identity effect.ExecutionIdentity, reference string) ([]byte, error) {
+	var output []byte
+	err := m.withExecutionLock(identity.SupervisorExecutionID, func(directory string) error {
+		record, err := m.readBoundJournal(directory, reservation, identity)
+		if err != nil {
+			return err
+		}
+		output, err = m.readSnapshotResult(directory, record, reference)
+		return err
+	})
+	return output, err
+}
+
+func (m *Manager) CopySnapshotArtifact(ctx context.Context, reservation effect.Reservation, identity effect.ExecutionIdentity, destination io.Writer) (SnapshotManifest, error) {
+	d, err := m.verifySnapshotDescriptor(reservation.LaunchPayload, nil)
+	if err != nil {
+		return SnapshotManifest{}, err
+	}
+	b, ok := m.backend.(SnapshotBackend)
+	if !ok {
+		return SnapshotManifest{}, fmt.Errorf("snapshot supervisor backend is unavailable")
+	}
+	var out SnapshotManifest
+	err = m.withExecutionLock(identity.SupervisorExecutionID, func(directory string) error {
+		r, e := m.readBoundJournal(directory, reservation, identity)
+		if e != nil {
+			return e
+		}
+		output, e := m.readSnapshotResult(directory, r, "result/"+reservation.SupervisorExecutionID)
+		if e != nil {
+			return e
+		}
+		if e = json.Unmarshal(output, &out); e != nil {
+			return fmt.Errorf("decode durable snapshot result: %w", e)
+		}
+		key := runnerStatusKey(m.key, r.RuntimeInstanceID)
+		if e = VerifySnapshotManifestForDescriptor(out, d, key, r.RuntimeInstanceID); e != nil {
+			return e
+		}
+		// Test-only snapshot backends do not persist runner-private status or
+		// artifacts. Production runners do; their durable result permits direct
+		// artifact copying after the cgroup has disappeared on reboot.
+		if _, statErr := os.Lstat(filepath.Join(directory, "snapshot-status.json")); errors.Is(statErr, os.ErrNotExist) {
+			copied, copyErr := b.CopySnapshotArtifact(ctx, backendExecution(r, directory), d, destination)
+			if copyErr != nil {
+				return copyErr
+			}
+			if copied.Artifact != out.Artifact {
+				return fmt.Errorf("snapshot artifact does not match durable result")
+			}
+			return nil
+		} else if statErr != nil {
+			return statErr
+		}
+		copied, e := CopySnapshotArtifact(directory, key, r.RuntimeInstanceID, d, true, destination)
+		if e != nil {
+			return e
+		}
+		if copied.Artifact != out.Artifact {
+			return fmt.Errorf("snapshot artifact does not match durable result")
+		}
+		return nil
+	})
+	return out, err
 }
 
 func (m *Manager) Query(ctx context.Context, reservation effect.Reservation, identity effect.ExecutionIdentity) (effect.Observation, error) {
@@ -356,7 +908,7 @@ func (m *Manager) observation(record journal, state BackendState) (effect.Observ
 }
 
 func (m *Manager) readBoundJournal(directory string, reservation effect.Reservation, identity effect.ExecutionIdentity) (journal, error) {
-	if _, err := m.verifyDescriptor(reservation.LaunchPayload, nil); err != nil {
+	if _, err := m.verifyAnyDescriptor(reservation.LaunchPayload); err != nil {
 		return journal{}, err
 	}
 	registered, err := m.registryEntry(reservation.SupervisorExecutionID)
@@ -560,6 +1112,108 @@ func (m *Manager) readJournal(directory string) (journal, error) {
 		return journal{}, fmt.Errorf("effect supervisor journal authentication failed")
 	}
 	return envelope.Record, nil
+}
+
+func (m *Manager) writeSnapshotResult(directory string, record journal, descriptor SnapshotDescriptor, observation effect.Observation) (effect.Observation, error) {
+	if record.RuntimeInstanceID == "" || int64(len(observation.Output)) > maxRunnerStatusBytes ||
+		(observation.Phase != effect.SupervisorSucceeded && observation.Phase != effect.SupervisorFailed) {
+		return effect.Observation{}, fmt.Errorf("snapshot terminal result is incomplete")
+	}
+	result := snapshotResult{
+		InputDigest: record.InputDigest, SupervisorExecutionID: record.SupervisorExecutionID,
+		RuntimeInstanceID: record.RuntimeInstanceID, Reference: "result/" + record.SupervisorExecutionID,
+		Digest: effect.DigestInput(observation.Output), Output: append([]byte(nil), observation.Output...), Observation: observation,
+	}
+	path := filepath.Join(directory, "snapshot-result.json")
+	if _, err := os.Lstat(path); err == nil {
+		existing, readErr := m.readSnapshotObservation(directory, record)
+		if readErr != nil {
+			return effect.Observation{}, readErr
+		}
+		if err := m.matchSnapshotTerminalResult(record, descriptor, existing, observation); err != nil {
+			return effect.Observation{}, err
+		}
+		return existing, nil
+	} else if !errors.Is(err, os.ErrNotExist) {
+		return effect.Observation{}, err
+	}
+	encoded, err := json.Marshal(result)
+	if err != nil {
+		return effect.Observation{}, err
+	}
+	if err := writeDurableJSON(directory, "snapshot-result.json", signedSnapshotResult{Result: result, MAC: m.mac(encoded)}); err != nil {
+		return effect.Observation{}, err
+	}
+	return observation, nil
+}
+
+func (m *Manager) matchSnapshotTerminalResult(record journal, descriptor SnapshotDescriptor, prior, current effect.Observation) error {
+	if prior.Phase != current.Phase || prior.ExitCode == nil || current.ExitCode == nil || *prior.ExitCode != *current.ExitCode {
+		return fmt.Errorf("snapshot terminal observation changed after durable observation")
+	}
+	if current.Phase == effect.SupervisorFailed {
+		if !hmac.Equal(prior.Output, current.Output) {
+			return fmt.Errorf("snapshot failed terminal result changed after durable observation")
+		}
+		return nil
+	}
+	if current.Phase != effect.SupervisorSucceeded {
+		return fmt.Errorf("snapshot terminal phase is unsupported")
+	}
+	var priorManifest, currentManifest SnapshotManifest
+	if err := json.Unmarshal(prior.Output, &priorManifest); err != nil {
+		return fmt.Errorf("decode durable snapshot result: %w", err)
+	}
+	if err := json.Unmarshal(current.Output, &currentManifest); err != nil {
+		return fmt.Errorf("decode observed snapshot result: %w", err)
+	}
+	key := runnerStatusKey(m.key, record.RuntimeInstanceID)
+	if err := VerifySnapshotManifestForDescriptor(priorManifest, descriptor, key, record.RuntimeInstanceID); err != nil {
+		return err
+	}
+	if err := VerifySnapshotManifestForDescriptor(currentManifest, descriptor, key, record.RuntimeInstanceID); err != nil {
+		return err
+	}
+	if priorManifest.Artifact != currentManifest.Artifact || priorManifest.DescriptorSHA256 != currentManifest.DescriptorSHA256 || priorManifest.RuntimeInstanceID != currentManifest.RuntimeInstanceID || priorManifest.Protocol != currentManifest.Protocol || !priorManifest.ContainmentProven || !currentManifest.ContainmentProven {
+		return fmt.Errorf("snapshot successful terminal result changed after durable observation")
+	}
+	return nil
+}
+
+func (m *Manager) readSnapshotResult(directory string, record journal, reference string) ([]byte, error) {
+	observation, err := m.readSnapshotObservation(directory, record)
+	if err != nil {
+		return nil, err
+	}
+	if reference != "result/"+record.SupervisorExecutionID {
+		return nil, fmt.Errorf("snapshot terminal result authentication failed")
+	}
+	return append([]byte(nil), observation.Output...), nil
+}
+
+func (m *Manager) readSnapshotObservation(directory string, record journal) (effect.Observation, error) {
+	data, err := readBoundedRegular(filepath.Join(directory, "snapshot-result.json"), maxRunnerStatusBytes)
+	if err != nil {
+		return effect.Observation{}, err
+	}
+	var envelope signedSnapshotResult
+	if err := decodeStrict(data, &envelope); err != nil {
+		return effect.Observation{}, fmt.Errorf("snapshot terminal result is malformed")
+	}
+	encoded, _ := json.Marshal(envelope.Result)
+	result := envelope.Result
+	if !hmac.Equal([]byte(envelope.MAC), []byte(m.mac(encoded))) ||
+		result.InputDigest != record.InputDigest || result.SupervisorExecutionID != record.SupervisorExecutionID ||
+		result.RuntimeInstanceID != record.RuntimeInstanceID || result.Reference != "result/"+record.SupervisorExecutionID ||
+		int64(len(result.Output)) > maxRunnerStatusBytes ||
+		result.Digest != effect.DigestInput(result.Output) {
+		return effect.Observation{}, fmt.Errorf("snapshot terminal result authentication failed")
+	}
+	if result.Observation.Identity.Supervisor != record.Supervisor || result.Observation.Identity.SupervisorExecutionID != record.SupervisorExecutionID || result.Observation.Identity.RuntimeInstanceID != record.RuntimeInstanceID ||
+		(result.Observation.Phase != effect.SupervisorSucceeded && result.Observation.Phase != effect.SupervisorFailed) || !hmac.Equal(result.Observation.Output, result.Output) || result.Observation.Evidence.Source != evidenceSource || result.Observation.Evidence.Reference == "" || len(result.Observation.Evidence.Payload) == 0 {
+		return effect.Observation{}, fmt.Errorf("snapshot terminal observation authentication failed")
+	}
+	return result.Observation, nil
 }
 
 func (m *Manager) writeTombstone(directory string, record journal) error {

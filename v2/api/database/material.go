@@ -14,11 +14,13 @@ import (
 	"strconv"
 	"strings"
 	"syscall"
+	"time"
 
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgconn"
 
 	"norn/v2/api/capture"
+	"norn/v2/api/effect/supervisor"
 )
 
 const (
@@ -156,6 +158,16 @@ type Session struct {
 	runtimeURL string
 }
 
+// SnapshotLaunchOptions contains the reviewed non-secret runner identity.
+// The session supplies the service file and password itself only while the
+// caller's launch callback is executing.
+type SnapshotLaunchOptions struct {
+	PGDumpPath   string
+	PGDumpSHA256 string
+	Subject      string
+	Timeout      time.Duration
+}
+
 // OpenSession builds private material for an application target. Only
 // PostgreSQL has an adapter; control-purpose targets are never opened here.
 func OpenSession(ctx context.Context, resolved ResolvedBinding, secrets SecretSource) (*Session, error) {
@@ -273,6 +285,86 @@ func OpenSession(ctx context.Context, resolved ResolvedBinding, secrets SecretSo
 }
 
 func (s *Session) Target() TargetIdentity { return s.target }
+
+// WithSnapshotLaunchMaterial makes the connection material available only to
+// the synchronous in-process snapshot-launch boundary. Callers receive no
+// standalone accessor for the password or service file, and must not retain
+// the supplied value after use. The supervisor validates the resulting
+// material before it can be serialized into its private runner request.
+func (s *Session) WithSnapshotLaunchMaterial(options SnapshotLaunchOptions, launch func(supervisor.SnapshotLaunchMaterial) error) error {
+	if s == nil || s.directory == "" || launch == nil {
+		return fmt.Errorf("snapshot launch material is unavailable")
+	}
+	servicePath := filepath.Join(s.directory, "pg_service.conf")
+	service, err := readPrivateServiceFile(servicePath)
+	if err != nil {
+		return fmt.Errorf("read private snapshot service material: %w", err)
+	}
+	service, err = snapshotServiceFile(service)
+	if err != nil {
+		return err
+	}
+	material := supervisor.SnapshotLaunchMaterial{
+		PGDumpPath: options.PGDumpPath, PGDumpSHA256: options.PGDumpSHA256,
+		ServiceName: ServiceName, ServiceFile: service, Password: s.password,
+		Subject: options.Subject, Timeout: options.Timeout,
+	}
+	return launch(material)
+}
+
+// snapshotServiceFile rebuilds the runner service file from the small set of
+// transport settings its protocol can safely carry. The session's password
+// and local passfile are deliberately omitted because the runner creates its
+// own passfile. TLS file paths are node-local session material, so snapshot
+// launch fails closed until the runner protocol carries and scrubs them.
+func snapshotServiceFile(service []byte) ([]byte, error) {
+	lines := strings.Split(string(service), "\n")
+	if len(lines) == 0 || lines[0] != "["+ServiceName+"]" {
+		return nil, fmt.Errorf("snapshot service material is invalid")
+	}
+	allowed := map[string]bool{"host": true, "port": true, "dbname": true, "user": true, "sslmode": true}
+	seen := map[string]bool{}
+	var result strings.Builder
+	result.WriteString(lines[0] + "\n")
+	for _, line := range lines[1:] {
+		if line == "" {
+			continue
+		}
+		key, value, found := strings.Cut(line, "=")
+		if found && (key == "password" || key == "passfile") {
+			continue
+		}
+		if !found || !allowed[key] || seen[key] || value == "" || strings.ContainsAny(value, "\x00\r\n") {
+			return nil, fmt.Errorf("snapshot runner cannot safely carry this database service configuration")
+		}
+		seen[key] = true
+		result.WriteString(key + "=" + value + "\n")
+	}
+	for _, required := range []string{"host", "port", "dbname", "user", "sslmode"} {
+		if !seen[required] {
+			return nil, fmt.Errorf("snapshot service material is incomplete")
+		}
+	}
+	return []byte(result.String()), nil
+}
+
+func readPrivateServiceFile(path string) ([]byte, error) {
+	file, err := os.OpenFile(path, os.O_RDONLY|syscall.O_NOFOLLOW|syscall.O_NONBLOCK, 0)
+	if err != nil {
+		return nil, err
+	}
+	defer file.Close()
+	info, err := file.Stat()
+	if err != nil || !info.Mode().IsRegular() || info.Mode().Perm()&0o077 != 0 || info.Size() <= 0 || info.Size() > 64<<10 {
+
+		return nil, fmt.Errorf("service file is not a bounded owner-only regular file")
+	}
+	data, err := io.ReadAll(io.LimitReader(file, 64<<10+1))
+	if err != nil || int64(len(data)) != info.Size() || len(data) > 64<<10 {
+		return nil, fmt.Errorf("service file is unreadable")
+	}
+	return data, nil
+}
 
 // String and GoString keep diagnostic formatting (%v, %+v, %#v, value or
 // pointer) from printing the private password or configuration.

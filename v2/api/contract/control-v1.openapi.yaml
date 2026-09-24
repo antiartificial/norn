@@ -447,6 +447,7 @@ paths:
         '400': { $ref: '#/components/responses/Problem' }
         '409': { $ref: '#/components/responses/Problem' }
         '410': { $ref: '#/components/responses/Problem' }
+        '503': { $ref: '#/components/responses/Problem' }
   /api/v1/apps/{id}/snapshots/retention:
     post:
       operationId: queueAppSnapshotRetention
@@ -1236,6 +1237,7 @@ components:
         - invalid_idempotency_key
         - idempotency_key_reused
         - idempotency_window_expired
+        - snapshot_execution_unavailable
         - app_operation_active
         - postgres_not_configured
         - migration_not_configured

@@ -121,3 +121,77 @@ func (b *cgroupBackend) Start(ctx context.Context, execution BackendExecution, m
 		}
 	}
 }
+
+// StartSnapshot sends the credential-bearing request only through the private
+// pipe. Neither the cgroup name, journal, nor process environment contains it.
+func (b *cgroupBackend) StartSnapshot(ctx context.Context, execution BackendExecution, descriptor SnapshotDescriptor, material SnapshotLaunchMaterial) error {
+	cgroupPath := b.cgroupPath(execution.RuntimeInstanceID)
+	if err := os.Mkdir(cgroupPath, 0o755); err != nil && !errors.Is(err, os.ErrExist) {
+		return err
+	}
+	cgroup, err := os.Open(cgroupPath)
+	if err != nil {
+		return err
+	}
+	defer cgroup.Close()
+	request := snapshotRunnerRequest{Protocol: SnapshotProtocolV1, Execution: execution, Descriptor: descriptor, Material: material, StatusKey: hex.EncodeToString(runnerStatusKey(b.key, execution.RuntimeInstanceID))}
+	encoded, err := json.Marshal(request)
+	if err != nil {
+		return err
+	}
+	logFile, err := os.OpenFile(filepath.Join(execution.StateDirectory, "snapshot-runner.log"), os.O_CREATE|os.O_EXCL|os.O_WRONLY|syscall.O_NOFOLLOW, 0o600)
+	if err != nil {
+		return err
+	}
+	inputReader, inputWriter, err := os.Pipe()
+	if err != nil {
+		logFile.Close()
+		return err
+	}
+	command := exec.Command(b.runnerBinary)
+	command.Stdin, command.Stdout, command.Stderr = inputReader, logFile, logFile
+	command.Env = []string{"PATH=/usr/bin:/bin:/usr/sbin:/sbin"}
+	command.SysProcAttr = &syscall.SysProcAttr{Setsid: true, UseCgroupFD: true, CgroupFD: int(cgroup.Fd())}
+	startErr := command.Start()
+	_ = inputReader.Close()
+	_ = logFile.Close()
+	if startErr != nil {
+		_ = inputWriter.Close()
+		return startErr
+	}
+	go func() { _ = command.Wait() }()
+	written := make(chan error, 1)
+	go func() {
+		_, e := inputWriter.Write(encoded)
+		if closeErr := inputWriter.Close(); e == nil {
+			e = closeErr
+		}
+		written <- e
+	}()
+	select {
+	case e := <-written:
+		if e != nil {
+			return fmt.Errorf("send snapshot runner request: %w", e)
+		}
+	case <-ctx.Done():
+		return fmt.Errorf("snapshot runner request handoff is ambiguous: %w", ctx.Err())
+	}
+	ticker := time.NewTicker(10 * time.Millisecond)
+	defer ticker.Stop()
+	timeout := time.NewTimer(2 * time.Second)
+	defer timeout.Stop()
+	for {
+		if _, e := readSnapshotStatus(execution.StateDirectory, runnerStatusKey(b.key, execution.RuntimeInstanceID), execution.RuntimeInstanceID); e == nil {
+			return nil
+		} else if !errors.Is(e, os.ErrNotExist) {
+			return e
+		}
+		select {
+		case <-ctx.Done():
+			return fmt.Errorf("snapshot runner startup is ambiguous: %w", ctx.Err())
+		case <-timeout.C:
+			return fmt.Errorf("snapshot runner startup handshake timed out")
+		case <-ticker.C:
+		}
+	}
+}
