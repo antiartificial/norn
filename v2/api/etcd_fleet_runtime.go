@@ -32,9 +32,14 @@ import (
 	"norn/v2/api/fleet"
 	"norn/v2/api/handler"
 	"norn/v2/api/model"
+	"norn/v2/api/nomad"
+	"norn/v2/api/pipeline"
 	"norn/v2/api/startup"
 	"norn/v2/api/store"
+	"norn/v2/api/worker"
 )
+
+const etcdCanaryWorkerEnv = "NORN_ETCD_CANARY_WORKER"
 
 func runEtcdFleetRuntime(cfg *config.Config, backend startup.ControlBackendConfig) error {
 	if cfg == nil || backend.Backend != startup.BackendEtcd || backend.SourceValidation {
@@ -63,6 +68,19 @@ func runEtcdFleetRuntime(cfg *config.Config, backend startup.ControlBackendConfi
 		return err
 	}
 	identities := etcdstore.NewAuthStore(client, backend.EtcdPrefix)
+	workerCtx, stopWorker := context.WithCancel(context.Background())
+	defer stopWorker()
+	// This opt-in runs the real signed-operation/effect worker for controlled
+	// qualification. The HTTP route stays absent until the full admission and
+	// crash matrix has been proved against a Nomad cluster.
+	if strings.EqualFold(strings.TrimSpace(os.Getenv(etcdCanaryWorkerEnv)), "true") {
+		canaryWorker, err := newEtcdCanaryWorker(cfg, operations)
+		if err != nil {
+			return fmt.Errorf("configure etcd canary worker: %w", err)
+		}
+		go canaryWorker.Run(workerCtx)
+		log.Printf("etcd canary operation worker enabled; HTTP promotion admission remains unavailable")
+	}
 
 	router := chi.NewRouter()
 	router.Use(middleware.RequestID, middleware.Recoverer)
@@ -120,6 +138,26 @@ func runEtcdFleetRuntime(cfg *config.Config, backend startup.ControlBackendConfi
 		defer cancel()
 		return srv.Shutdown(ctx)
 	}
+}
+
+func newEtcdCanaryWorker(cfg *config.Config, operations *etcdstore.V3OperationStore) (*worker.OperationWorker, error) {
+	if cfg == nil || operations == nil || strings.TrimSpace(cfg.NomadAddr) == "" {
+		return nil, fmt.Errorf("etcd canary worker requires configured Nomad and operation stores")
+	}
+	nomadClient, err := nomad.NewClient(cfg.NomadAddr)
+	if err != nil {
+		return nil, err
+	}
+	effectStore, err := etcdstore.NewV3CanaryEffectReservations(operations)
+	if err != nil {
+		return nil, err
+	}
+	effects, err := pipeline.NewNomadCanaryPromotionEffectsWithStore(effectStore, nomadClient)
+	if err != nil {
+		return nil, err
+	}
+	p := &pipeline.Pipeline{OperationStore: operations, Nomad: nomadClient, CanaryPromotionEffects: effects}
+	return worker.NewOperationWorkerForKinds(operations, p, []string{"app.canary-promote"}), nil
 }
 
 func etcdFleetInventory(cfg *config.Config) http.HandlerFunc {
