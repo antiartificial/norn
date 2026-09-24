@@ -62,7 +62,17 @@ func TestCompletedSnapshotOperationsQueriesDurableSuccessesWithRealPostgres(t *t
 		if err := store.Complete(ctx, reserved.Record.Token, effect.Completion{Outcome: outcome, Verification: verification}); err != nil {
 			t.Fatal(err)
 		}
-		if err := db.FinishClaimedOperation(ctx, claim, model.OperationSucceeded, "snapshot published", nil); err != nil {
+		if outcome == effect.OutcomeSucceeded {
+			if _, err := db.Pool.Exec(ctx, `INSERT INTO snapshot_publication_intents (operation_id, origin_claim_generation, effect_id, input_digest, supervisor_root_id, supervisor_execution_id, target, catalog_revision, namespace, filename, sha256, size, state, published_at)
+				VALUES ($1,$2,$3,$4,$5,$6,'{}',1,'snapshots','demo.dump',$7,1,'published',now())`, op.ID, claim.Generation(), reserved.Record.Token.EffectID, reservation.InputDigest, rootID, executionID, "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"); err != nil {
+				t.Fatal(err)
+			}
+		}
+		status := model.OperationSucceeded
+		if outcome == effect.OutcomeFailed {
+			status = model.OperationFailed
+		}
+		if err := db.FinishClaimedOperation(ctx, claim, status, "snapshot published", nil); err != nil {
 			t.Fatal(err)
 		}
 		return completed{op: op, identity: identity}

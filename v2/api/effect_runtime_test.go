@@ -213,6 +213,10 @@ func TestConfigureSnapshotEffectsReconcilesPublishedArtifactAfterRestart(t *test
 	if err := effects.Complete(ctx, reserved.Record.Token, effect.Completion{Outcome: effect.OutcomeSucceeded, Verification: verification}); err != nil {
 		t.Fatal(err)
 	}
+	if _, err := db.Pool.Exec(ctx, `INSERT INTO snapshot_publication_intents (operation_id, origin_claim_generation, effect_id, input_digest, supervisor_root_id, supervisor_execution_id, target, catalog_revision, namespace, filename, sha256, size, state, published_at)
+		VALUES ($1,$2,$3,$4,$5,$6,'{}',1,'snapshots','demo.dump',$7,1,'published',now())`, operation.ID, claim.Generation(), reserved.Record.Token.EffectID, reservation.InputDigest, manager.RootID(), reservation.SupervisorExecutionID, strings.Repeat("a", 64)); err != nil {
+		t.Fatal(err)
+	}
 	if err := db.FinishClaimedOperation(ctx, claim, model.OperationSucceeded, "published", nil); err != nil {
 		t.Fatal(err)
 	}
@@ -270,6 +274,10 @@ func TestConfigureSnapshotEffectsReconcilesPublishedArtifactAfterRestart(t *test
 	}
 	foreignVerification := effect.Verification{Decision: effect.VerificationSucceeded, InputDigest: foreignReservation.InputDigest, ResultDigest: effect.DigestInput([]byte("manifest")), ResultReference: "result/" + foreignReservation.SupervisorExecutionID, SupervisorExecutionID: foreignReservation.SupervisorExecutionID, RuntimeInstanceID: foreignIdentity.RuntimeInstanceID, EvidenceSource: "norn-effect-supervisor/v1", EvidenceReference: "test/" + foreignIdentity.RuntimeInstanceID, ObservedAt: time.Now().UTC()}
 	if err := effects.Complete(ctx, foreignReserved.Record.Token, effect.Completion{Outcome: effect.OutcomeSucceeded, Verification: foreignVerification}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := db.Pool.Exec(ctx, `INSERT INTO snapshot_publication_intents (operation_id, origin_claim_generation, effect_id, input_digest, supervisor_root_id, supervisor_execution_id, target, catalog_revision, namespace, filename, sha256, size, state, published_at)
+		VALUES ($1,$2,$3,$4,$5,$6,'{}',1,'snapshots','foreign.dump',$7,1,'published',now())`, foreignOperation.ID, foreignClaim.Generation(), foreignReserved.Record.Token.EffectID, foreignReservation.InputDigest, foreignManager.RootID(), foreignReservation.SupervisorExecutionID, strings.Repeat("a", 64)); err != nil {
 		t.Fatal(err)
 	}
 	if err := db.FinishClaimedOperation(ctx, foreignClaim, model.OperationSucceeded, "published", nil); err != nil {

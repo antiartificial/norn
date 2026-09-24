@@ -23,6 +23,11 @@ type AttestedSnapshotArtifact struct {
 	SHA256          string
 	Size            int64
 	Copy            func(io.Writer) error
+	// Prepare commits the immutable operation intent before either member of
+	// the public pair exists. Receipt is called only after the pair has been
+	// verified; production callers use both callbacks.
+	Prepare func(string) error
+	Receipt func(string) error
 	// Fence holds operation ownership while it runs the sidecar and dump
 	// publication callback. A stale worker may stage bytes but cannot create a
 	// trusted public pair after claim turnover.
@@ -36,7 +41,7 @@ var linkAttestedSnapshot = os.Link
 // makes an accepted replay target one deterministic filename; it may reuse
 // only a bound dump with the exact expected bytes.
 func PublishAttestedSnapshot(location snapshotLocation, at time.Time, artifact AttestedSnapshotArtifact) (*dataSnapshot, error) {
-	if location.bound == nil || artifact.OperationID == "" || artifact.ClaimGeneration <= 0 || artifact.Size <= 0 || len(artifact.SHA256) != 64 || artifact.Copy == nil || artifact.Fence == nil {
+	if location.bound == nil || artifact.OperationID == "" || artifact.ClaimGeneration <= 0 || artifact.Size <= 0 || len(artifact.SHA256) != 64 || artifact.Copy == nil {
 		return nil, fmt.Errorf("attested snapshot publication is incomplete")
 	}
 	if err := os.MkdirAll(location.dir, 0o750); err != nil {
@@ -51,15 +56,27 @@ func PublishAttestedSnapshot(location snapshotLocation, at time.Time, artifact A
 	}
 	filename := fmt.Sprintf("%s_%s_%s.dump", location.database, label, at.UTC().Format("20060102T150405"))
 	path := filepath.Join(location.dir, filename)
+	if artifact.Prepare != nil {
+		if err := artifact.Prepare(filename); err != nil {
+			return nil, fmt.Errorf("prepare snapshot publication intent: %w", err)
+		}
+	}
 	if info, err := os.Lstat(path); err == nil {
-		if err := artifact.Fence(func() error { return nil }); err != nil {
-			return nil, fmt.Errorf("snapshot claim fence before replay: %w", err)
+		if artifact.Prepare == nil && artifact.Fence != nil {
+			if err := artifact.Fence(func() error { return nil }); err != nil {
+				return nil, fmt.Errorf("snapshot claim fence before replay: %w", err)
+			}
 		}
 		if !info.Mode().IsRegular() || info.Size() != artifact.Size || verifyBoundDump(location, filename, info.Size()) != nil {
 			return nil, fmt.Errorf("existing snapshot publication is unverified")
 		}
 		if digest, e := fileSHA256(path); e != nil || digest != artifact.SHA256 {
 			return nil, fmt.Errorf("existing snapshot publication differs from attested artifact")
+		}
+		if artifact.Receipt != nil {
+			if err := artifact.Receipt(filename); err != nil {
+				return nil, fmt.Errorf("record snapshot publication receipt: %w", err)
+			}
 		}
 		return &dataSnapshot{Filename: filename, Timestamp: at.UTC().Format("20060102T150405"), Size: info.Size()}, nil
 	} else if !os.IsNotExist(err) {
@@ -94,12 +111,17 @@ func PublishAttestedSnapshot(location snapshotLocation, at time.Time, artifact A
 	if err != nil || !info.Mode().IsRegular() || info.Size() != artifact.Size || hex.EncodeToString(hash.Sum(nil)) != artifact.SHA256 {
 		return nil, fmt.Errorf("attested artifact bytes do not match manifest")
 	}
-	err = artifact.Fence(func() error {
+	publish := func() error {
 		if err := ensureAttestedSidecar(location, filename, artifact.SHA256, artifact.Size); err != nil {
 			return err
 		}
 		return linkAttestedSnapshot(tmpPath, path)
-	})
+	}
+	if artifact.Prepare == nil && artifact.Fence != nil {
+		err = artifact.Fence(publish)
+	} else {
+		err = publish()
+	}
 	if err != nil {
 		if errors.Is(err, fs.ErrExist) {
 			if info, e := os.Lstat(path); e == nil && info.Mode().IsRegular() && info.Size() == artifact.Size && verifyBoundDump(location, filename, info.Size()) == nil {
@@ -109,7 +131,15 @@ func PublishAttestedSnapshot(location snapshotLocation, at time.Time, artifact A
 			}
 			return nil, fmt.Errorf("snapshot publication raced with different bytes")
 		}
-		return nil, fmt.Errorf("snapshot claim fence before publication: %w", err)
+		return nil, fmt.Errorf("snapshot publication: %w", err)
+	}
+	if err := verifyBoundDump(location, filename, artifact.Size); err != nil {
+		return nil, fmt.Errorf("verify published snapshot pair: %w", err)
+	}
+	if artifact.Receipt != nil {
+		if err := artifact.Receipt(filename); err != nil {
+			return nil, fmt.Errorf("record snapshot publication receipt: %w", err)
+		}
 	}
 	return &dataSnapshot{Filename: filename, Timestamp: at.UTC().Format("20060102T150405"), Size: artifact.Size}, nil
 }

@@ -176,9 +176,27 @@ func (p *Pipeline) executeAttestedSnapshot(ctx context.Context, op *model.Operat
 	if e = json.Unmarshal(result.Output, &manifest); e != nil {
 		return nil, result, e
 	}
-	created, e := PublishAttestedSnapshot(loc, op.StartedAt.UTC(), AttestedSnapshotArtifact{OperationID: op.ID, ClaimGeneration: claim.Generation(), SHA256: manifest.Artifact.SHA256, Size: manifest.Artifact.Bytes, Fence: func(publish func() error) error { return p.DB.WithOperationClaimFence(ctx, claim, publish) }, Copy: func(w io.Writer) error {
-		_, e := p.SnapshotEffects.Manager.CopySnapshotArtifact(ctx, rec.Reservation, rec.Execution, w)
-		return e
-	}})
+	target, e := json.Marshal(bound.resolved.Target)
+	if e != nil {
+		return nil, result, e
+	}
+	intent := store.SnapshotPublicationIntent{OperationID: op.ID, EffectID: rec.Token.EffectID, InputDigest: rec.Reservation.InputDigest,
+		SupervisorRootID: p.SnapshotEffects.Manager.RootID(), SupervisorExecutionID: rec.Execution.SupervisorExecutionID,
+		Target: target, CatalogRevision: bound.recorded.CatalogRevision, Namespace: loc.dir, SHA256: manifest.Artifact.SHA256, Size: manifest.Artifact.Bytes, OriginClaimGeneration: claim.Generation()}
+	created, e := PublishAttestedSnapshot(loc, op.StartedAt.UTC(), AttestedSnapshotArtifact{OperationID: op.ID, ClaimGeneration: claim.Generation(), SHA256: manifest.Artifact.SHA256, Size: manifest.Artifact.Bytes,
+		Prepare: func(filename string) error {
+			intent.Filename = filename
+			_, err := p.DB.PrepareSnapshotPublicationIntent(ctx, claim, intent)
+			return err
+		},
+		Receipt: func(filename string) error {
+			if intent.Filename != filename {
+				return fmt.Errorf("snapshot receipt filename differs from intent")
+			}
+			return p.DB.RecordSnapshotPublicationReceipt(context.Background(), intent)
+		}, Copy: func(w io.Writer) error {
+			_, e := p.SnapshotEffects.Manager.CopySnapshotArtifact(ctx, rec.Reservation, rec.Execution, w)
+			return e
+		}})
 	return created, result, e
 }
