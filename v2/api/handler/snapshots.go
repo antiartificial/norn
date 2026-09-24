@@ -14,7 +14,6 @@ import (
 
 	"github.com/go-chi/chi/v5"
 
-	"norn/v2/api/hub"
 	"norn/v2/api/model"
 	"norn/v2/api/storage"
 )
@@ -55,15 +54,23 @@ func databaseLabel(spec *model.InfraSpec) string {
 // one it is the unchanged v2 listing. Named databases are never listed by
 // database name alone.
 func (h *Handler) snapshotsForSpec(ctx context.Context, spec *model.InfraSpec) []snapshotEntry {
+	entries, err := h.snapshotsForSpecResult(ctx, spec)
+	if err != nil {
+		return []snapshotEntry{}
+	}
+	return entries
+}
+
+func (h *Handler) snapshotsForSpecResult(ctx context.Context, spec *model.InfraSpec) ([]snapshotEntry, error) {
 	if h.pipeline == nil || h.pipeline.DatabaseTargets == nil {
 		if spec.NamedDatabases() {
-			return []snapshotEntry{}
+			return nil, fmt.Errorf("named database snapshot targets are unavailable")
 		}
-		return listSnapshotsForSpec(spec)
+		return listSnapshotsForSpec(spec), nil
 	}
 	groups, err := h.pipeline.TargetSnapshots(ctx, spec)
 	if err != nil {
-		return []snapshotEntry{}
+		return nil, err
 	}
 	out := []snapshotEntry{}
 	for _, group := range groups {
@@ -82,16 +89,7 @@ func (h *Handler) snapshotsForSpec(ctx context.Context, spec *model.InfraSpec) [
 		}
 		return out[i].Timestamp > out[j].Timestamp
 	})
-	return out
-}
-
-type restoreReceipt struct {
-	Status             string         `json:"status"`
-	App                string         `json:"app"`
-	Database           string         `json:"database"`
-	Snapshot           snapshotEntry  `json:"snapshot"`
-	PreRestoreSnapshot *snapshotEntry `json:"preRestoreSnapshot,omitempty"`
-	RestoredAt         string         `json:"restoredAt"`
+	return out, nil
 }
 
 type snapshotRetentionReceipt struct {
@@ -222,40 +220,8 @@ func (h *Handler) importTargetSnapshot(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, map[string]interface{}{"status": "imported", "app": id, "snapshot": manifest})
 }
 
-// refuseDirectDatabaseMutation rejects synchronous snapshot mutations while a
-// database profile is configured: they would route by database name through
-// ambient libpq instead of the recorded catalog target. Durable operations
-// (app.snapshot, app.snapshot-restore, app.snapshot-prune) remain available.
-func (h *Handler) refuseDirectDatabaseMutation(w http.ResponseWriter, r *http.Request) bool {
-	if h.pipeline == nil || h.pipeline.DatabaseTargets == nil {
-		return false
-	}
-	WriteControlProblem(w, r, http.StatusConflict, "database_targets_active", "direct snapshot mutation is disabled while database targets are configured; use the durable app operation")
-	return true
-}
-
 func (h *Handler) RestoreSnapshot(w http.ResponseWriter, r *http.Request) {
-	if h.refuseDirectDatabaseMutation(w, r) {
-		return
-	}
-	id := chi.URLParam(r, "id")
 	ts := chi.URLParam(r, "ts")
-
-	spec := h.findSpec(id)
-	if spec == nil {
-		writeError(w, http.StatusNotFound, fmt.Sprintf("app %s not found", id))
-		return
-	}
-	if spec.Infrastructure == nil || spec.Infrastructure.Postgres == nil {
-		writeError(w, http.StatusBadRequest, "app has no postgres database")
-		return
-	}
-
-	dbName := spec.Infrastructure.Postgres.Database
-	if !model.IsSafePostgresDatabaseName(dbName) {
-		writeError(w, http.StatusConflict, "app postgres database name is unsafe for snapshot storage")
-		return
-	}
 	if !snapshotTimestampPattern.MatchString(ts) {
 		writeError(w, http.StatusBadRequest, "snapshot timestamp is invalid")
 		return
@@ -264,97 +230,13 @@ func (h *Handler) RestoreSnapshot(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, "restore requires confirm=true")
 		return
 	}
-
-	// Find matching snapshot file
-	entries, err := os.ReadDir("snapshots")
-	if err != nil {
-		writeError(w, http.StatusInternalServerError, "cannot read snapshots directory")
-		return
-	}
-
-	var matches []snapshotEntry
-	for _, entry := range entries {
-		name := entry.Name()
-		if entry.Type()&os.ModeSymlink == 0 && strings.HasPrefix(name, dbName+"_") && strings.HasSuffix(name, ".dump") {
-			info, err := entry.Info()
-			if err != nil || !info.Mode().IsRegular() {
-				continue
-			}
-			parsed := parseSnapshotEntry(dbName, name, info.Size())
-			if parsed != nil && parsed.Timestamp == ts {
-				matches = append(matches, *parsed)
-			}
-		}
-	}
-
-	if len(matches) == 0 {
-		writeError(w, http.StatusNotFound, fmt.Sprintf("no snapshot found for timestamp %s", ts))
-		return
-	}
-	if len(matches) > 1 {
-		writeError(w, http.StatusConflict, fmt.Sprintf("snapshot timestamp %s is ambiguous", ts))
-		return
-	}
-	match := &matches[0]
-
-	snapshotPath := filepath.Join("snapshots", match.Filename)
-	var preRestore *snapshotEntry
-	preRestoreRequested := r.URL.Query().Get("preRestore") == "true" || (spec.Snapshots != nil && spec.Snapshots.PreRestore)
-	if preRestoreRequested {
-		created, err := createSnapshotForSpec(r.Context(), spec, "pre-restore")
-		if err != nil {
-			writeError(w, http.StatusInternalServerError, fmt.Sprintf("pre-restore snapshot: %v", err))
-			return
-		}
-		preRestore = created
-	}
-
-	// #nosec G702 G204 -- no shell is used; the database name is strictly validated
-	// and snapshotPath comes from the regular-file inventory.
-	cmd := exec.CommandContext(r.Context(), "pg_restore", "--single-transaction", "--clean", "--if-exists", "-d", dbName, snapshotPath)
-	out, err := cmd.CombinedOutput()
-	if err != nil {
-		writeError(w, http.StatusInternalServerError, fmt.Sprintf("pg_restore: %s", string(out)))
-		return
-	}
-
-	if h.ws != nil {
-		h.ws.Broadcast(hub.Event{
-			Type:  "snapshot.restored",
-			AppID: id,
-			Payload: map[string]string{
-				"database":  dbName,
-				"snapshot":  match.Filename,
-				"timestamp": ts,
-			},
-		})
-	}
-	if h.beacon != nil {
-		metadata := map[string]interface{}{
-			"database":  dbName,
-			"snapshot":  match.Filename,
-			"timestamp": ts,
-		}
-		if preRestore != nil {
-			metadata["preRestoreSnapshot"] = preRestore.Filename
-		}
-		h.emitSnapshotEvent(r, id, "snapshot.restored", model.BeaconWarning, "snapshot restored", fmt.Sprintf("%s restored snapshot %s", id, match.Filename), metadata)
-	}
-
-	writeJSON(w, restoreReceipt{
-		Status:             "restored",
-		App:                id,
-		Database:           dbName,
-		Snapshot:           *match,
-		PreRestoreSnapshot: preRestore,
-		RestoredAt:         timeNowUTC(),
-	})
+	// The compatibility route shares the signed durable operation used by the
+	// v1 control API. The worker validates snapshot ownership and always takes
+	// a safety snapshot before restore; the API must never run pg_restore inline.
+	h.queueAppDataOperation(w, r, "app.snapshot-restore", "destructive database restore with safety snapshot", map[string]interface{}{"snapshot": ts}, 1)
 }
 
 func (h *Handler) ApplySnapshotRetention(w http.ResponseWriter, r *http.Request) {
-	if h.refuseDirectDatabaseMutation(w, r) {
-		return
-	}
 	id := chi.URLParam(r, "id")
 	spec := h.findSpec(id)
 	if spec == nil {
@@ -362,17 +244,58 @@ func (h *Handler) ApplySnapshotRetention(w http.ResponseWriter, r *http.Request)
 		return
 	}
 	keep := queryIntDefault(r, "keep", snapshotKeepForSpec(spec, 3))
-	if keep < 1 {
-		writeError(w, http.StatusBadRequest, "keep must be at least 1")
+	if keep < 1 || keep > 1000 {
+		writeError(w, http.StatusBadRequest, "keep must be between 1 and 1000")
 		return
 	}
 	confirm := r.URL.Query().Get("confirm") == "true"
-	snapshots := listSnapshotsForSpec(spec)
+	if confirm {
+		// File deletion belongs to the accepted worker operation. A repeated
+		// compatibility request must resolve through the same idempotency key.
+		h.queueAppDataOperation(w, r, "app.snapshot-prune", "destructive snapshot retention", map[string]interface{}{"keep": keep}, 1)
+		return
+	}
+	selected := strings.TrimSpace(r.URL.Query().Get("database"))
+	if spec.NamedDatabases() {
+		if selected == "" && len(spec.Databases) == 1 {
+			selected = spec.Databases[0].Name
+		}
+		requirement, declared := spec.DatabaseByName(selected)
+		if !declared {
+			WriteControlProblem(w, r, http.StatusBadRequest, "invalid_database_selection", "database must name one of the app's declared databases")
+			return
+		}
+		canSnapshot := false
+		for _, capability := range requirement.Capabilities {
+			canSnapshot = canSnapshot || capability == "snapshot"
+		}
+		if !canSnapshot {
+			WriteControlProblem(w, r, http.StatusConflict, "snapshot_not_configured", "selected database does not declare snapshot capability")
+			return
+		}
+	} else if selected != "" {
+		WriteControlProblem(w, r, http.StatusBadRequest, "invalid_database_selection", "database selection requires a named database")
+		return
+	}
+	snapshots, err := h.snapshotsForSpecResult(r.Context(), spec)
+	if err != nil {
+		WriteControlProblem(w, r, http.StatusServiceUnavailable, "snapshot_inventory_unavailable", "snapshot inventory could not be verified for retention preview")
+		return
+	}
+	if spec.NamedDatabases() {
+		filtered := snapshots[:0]
+		for _, snapshot := range snapshots {
+			if snapshot.LogicalDatabase == selected {
+				filtered = append(filtered, snapshot)
+			}
+		}
+		snapshots = filtered
+	}
 	receipt := snapshotRetentionReceipt{
 		Status:    "preview",
 		App:       id,
 		Keep:      keep,
-		DryRun:    !confirm,
+		DryRun:    true,
 		AppliedAt: timeNowUTC(),
 	}
 	for i, snapshot := range snapshots {
@@ -380,32 +303,7 @@ func (h *Handler) ApplySnapshotRetention(w http.ResponseWriter, r *http.Request)
 			receipt.Kept = append(receipt.Kept, snapshot)
 			continue
 		}
-		if !confirm {
-			receipt.WouldPrune = append(receipt.WouldPrune, snapshot)
-			continue
-		}
-		if err := os.Remove(filepath.Join("snapshots", snapshot.Filename)); err != nil {
-			writeError(w, http.StatusInternalServerError, fmt.Sprintf("prune %s: %v", snapshot.Filename, err))
-			return
-		}
-		receipt.Pruned = append(receipt.Pruned, snapshot)
-	}
-	if confirm {
-		receipt.Status = "applied"
-		if h.ws != nil {
-			h.ws.Broadcast(hub.Event{
-				Type:  "snapshot.retention",
-				AppID: id,
-				Payload: map[string]string{
-					"keep":   fmt.Sprintf("%d", keep),
-					"pruned": fmt.Sprintf("%d", len(receipt.Pruned)),
-				},
-			})
-		}
-		h.emitSnapshotEvent(r, id, "snapshot.retention.applied", model.BeaconInfo, "snapshot retention applied", fmt.Sprintf("%s pruned %d snapshot(s)", id, len(receipt.Pruned)), map[string]interface{}{
-			"keep":   keep,
-			"pruned": len(receipt.Pruned),
-		})
+		receipt.WouldPrune = append(receipt.WouldPrune, snapshot)
 	}
 	writeJSON(w, receipt)
 }

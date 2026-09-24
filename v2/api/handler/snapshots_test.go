@@ -13,7 +13,9 @@ import (
 	"github.com/go-chi/chi/v5"
 
 	"norn/v2/api/config"
+	"norn/v2/api/model"
 	"norn/v2/api/pipeline"
+	"norn/v2/api/saga"
 )
 
 func TestParseSnapshotEntryHandlesDatabaseUnderscores(t *testing.T) {
@@ -124,27 +126,124 @@ processes:
 	}
 }
 
-func TestDirectSnapshotMutationsAreRefusedWhileDatabaseTargetsAreConfigured(t *testing.T) {
-	h := &Handler{cfg: &config.Config{AppsDir: t.TempDir()}, pipeline: &pipeline.Pipeline{DatabaseTargets: &pipeline.DatabaseTargets{ProfileID: "mini-local"}}}
-	for name, call := range map[string]func(http.ResponseWriter, *http.Request){
-		// Import is not listed: with a profile it takes the target-bound
-		// import path (manifest + digest), which mutates no database.
-		"restore": h.RestoreSnapshot, "retention": h.ApplySnapshotRetention,
-	} {
-		req := httptest.NewRequest(http.MethodPost, "/api/apps/contextdb/snapshots/20260605T171500/restore?confirm=true", nil)
-		req = withSnapshotTS(withAppID(req, "contextdb"), "20260605T171500")
-		rec := httptest.NewRecorder()
-		call(rec, req)
-		if rec.Code != http.StatusConflict || !strings.Contains(rec.Body.String(), "database_targets_active") {
-			t.Fatalf("%s status = %d body=%s", name, rec.Code, rec.Body.String())
-		}
+func TestLegacySnapshotPruneRequiresDurableOperationStore(t *testing.T) {
+	root := t.TempDir()
+	appsDir := filepath.Join(root, "apps")
+	appDir := filepath.Join(appsDir, "contextdb")
+	if err := os.MkdirAll(appDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	spec := []byte("name: contextdb\ndeploy: true\ninfrastructure:\n  postgres:\n    database: hermes_contextdb\nprocesses:\n  web:\n    port: 7701\n")
+	if err := os.WriteFile(filepath.Join(appDir, "infraspec.yaml"), spec, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	h := &Handler{cfg: &config.Config{AppsDir: appsDir}, pipeline: &pipeline.Pipeline{DatabaseTargets: &pipeline.DatabaseTargets{ProfileID: "mini-local"}}}
+	// Import is not listed: with a profile it takes the target-bound
+	// import path (manifest + digest), which mutates no database.
+	req := withAppID(httptest.NewRequest(http.MethodPost, "/api/apps/contextdb/snapshots/retention?confirm=true", nil), "contextdb")
+	req = WithAccessPrincipal(req, &AccessPrincipal{Subject: "operator", Scopes: []string{ScopeAPIWrite}, App: "contextdb"})
+	rec := httptest.NewRecorder()
+	h.ApplySnapshotRetention(rec, req)
+	if rec.Code != http.StatusServiceUnavailable || !strings.Contains(rec.Body.String(), "operation_store_unavailable") {
+		t.Fatalf("retention status = %d body=%s", rec.Code, rec.Body.String())
 	}
 	// The unconfigured-store import never falls back to the flat v2 import.
-	req := withAppID(httptest.NewRequest(http.MethodPost, "/api/apps/contextdb/snapshots/import", strings.NewReader(`{"key":"snapshots/contextdb/x.dump"}`)), "contextdb")
-	rec := httptest.NewRecorder()
+	req = withAppID(httptest.NewRequest(http.MethodPost, "/api/apps/contextdb/snapshots/import", strings.NewReader(`{"key":"snapshots/contextdb/x.dump"}`)), "contextdb")
+	rec = httptest.NewRecorder()
 	h.ImportSnapshot(rec, req)
 	if rec.Code == http.StatusOK || strings.Contains(rec.Body.String(), "imported") {
 		t.Fatalf("import with a profile = %d %s", rec.Code, rec.Body.String())
+	}
+}
+
+func TestLegacyRetentionPreviewRequiresNamedDatabaseSelection(t *testing.T) {
+	appsDir := t.TempDir()
+	appDir := filepath.Join(appsDir, "shop")
+	if err := os.MkdirAll(appDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	spec := []byte("schemaVersion: norn.app/v2\nname: shop\ndeploy: true\nprocesses:\n  web:\n    command: x\ndatabases:\n  - name: primary\n    purpose: application\n    capabilities: [snapshot, restore]\n  - name: analytics\n    purpose: application\n    capabilities: [snapshot, restore]\n")
+	if err := os.WriteFile(filepath.Join(appDir, "infraspec.yaml"), spec, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	h := &Handler{cfg: &config.Config{AppsDir: appsDir}}
+	for _, test := range []struct {
+		query  string
+		status int
+	}{
+		{query: "", status: http.StatusBadRequest},
+		{query: "?database=missing", status: http.StatusBadRequest},
+		{query: "?database=primary", status: http.StatusServiceUnavailable},
+	} {
+		req := withAppID(httptest.NewRequest(http.MethodPost, "/api/apps/shop/snapshots/retention"+test.query, nil), "shop")
+		rec := httptest.NewRecorder()
+		h.ApplySnapshotRetention(rec, req)
+		if rec.Code != test.status {
+			t.Fatalf("query %q status=%d body=%s", test.query, rec.Code, rec.Body.String())
+		}
+	}
+}
+
+func TestLegacyRestoreRequiresDurableOperationStore(t *testing.T) {
+	root := t.TempDir()
+	appsDir := filepath.Join(root, "apps")
+	appDir := filepath.Join(appsDir, "contextdb")
+	if err := os.MkdirAll(appDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	spec := []byte("name: contextdb\ndeploy: true\ninfrastructure:\n  postgres:\n    database: hermes_contextdb\nprocesses:\n  web:\n    port: 7701\n")
+	if err := os.WriteFile(filepath.Join(appDir, "infraspec.yaml"), spec, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	h := &Handler{cfg: &config.Config{AppsDir: appsDir}, pipeline: &pipeline.Pipeline{}}
+	req := httptest.NewRequest(http.MethodPost, "/api/apps/contextdb/snapshots/20260605T171500/restore?confirm=true", nil)
+	req = withSnapshotTS(withAppID(req, "contextdb"), "20260605T171500")
+	req = WithAccessPrincipal(req, &AccessPrincipal{Subject: "operator", Scopes: []string{ScopeAPIWrite}, App: "contextdb"})
+	rec := httptest.NewRecorder()
+	h.RestoreSnapshot(rec, req)
+	if rec.Code != http.StatusServiceUnavailable || !strings.Contains(rec.Body.String(), "operation_store_unavailable") {
+		t.Fatalf("restore status = %d body=%s", rec.Code, rec.Body.String())
+	}
+}
+
+func TestLegacyRestoreAcceptsSignedDurableOperation(t *testing.T) {
+	db := acceptanceIntegrationDB(t)
+	root := t.TempDir()
+	appsDir := filepath.Join(root, "apps")
+	appDir := filepath.Join(appsDir, "contextdb")
+	if err := os.MkdirAll(appDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	spec := []byte("name: contextdb\ndeploy: true\ninfrastructure:\n  postgres:\n    database: hermes_contextdb\nprocesses:\n  web:\n    port: 7701\n")
+	if err := os.WriteFile(filepath.Join(appDir, "infraspec.yaml"), spec, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	cfg := &config.Config{AppsDir: appsDir, AuditSigningKey: strings.Repeat("r", 32)}
+	pipe := &pipeline.Pipeline{DB: db, SagaStore: saga.NewPostgresStore(db.Pool)}
+	h := New(db, nil, nil, nil, cfg, pipe, nil, nil, pipe.SagaStore, nil, nil)
+	pipe.SetOperationStore(h.OperationStore())
+	serve := func() (int, model.Operation) {
+		req := httptest.NewRequest(http.MethodPost, "/api/apps/contextdb/snapshots/20260605T171500/restore?confirm=true", nil)
+		req.Header.Set("Idempotency-Key", "legacy-restore-1")
+		req = withSnapshotTS(withAppID(req, "contextdb"), "20260605T171500")
+		req = WithAccessPrincipal(req, &AccessPrincipal{Subject: "operator", Source: AccessPrincipalSourceSharedAPI, Scopes: []string{ScopeAPIWrite}})
+		rec := httptest.NewRecorder()
+		h.MutationAuditMiddleware(http.HandlerFunc(h.RestoreSnapshot)).ServeHTTP(rec, req)
+		var operation model.Operation
+		if rec.Code == http.StatusAccepted || rec.Code == http.StatusOK {
+			if err := json.Unmarshal(rec.Body.Bytes(), &operation); err != nil {
+				t.Fatal(err)
+			}
+		}
+		return rec.Code, operation
+	}
+	firstStatus, first := serve()
+	if firstStatus != http.StatusAccepted || first.Kind != "app.snapshot-restore" || first.Status != model.OperationQueued || first.Payload["snapshot"] != "20260605T171500" {
+		t.Fatalf("first restore status=%d operation=%+v", firstStatus, first)
+	}
+	replayStatus, replay := serve()
+	if replayStatus != http.StatusOK || replay.ID != first.ID {
+		t.Fatalf("restore replay status=%d operation=%+v, first=%+v", replayStatus, replay, first)
 	}
 }
 
