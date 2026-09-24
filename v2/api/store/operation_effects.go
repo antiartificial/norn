@@ -34,6 +34,15 @@ func (s *PGEffectStore) Reserve(ctx context.Context, reservation effect.Reservat
 		return effect.ReservationResult{}, err
 	}
 	defer tx.Rollback(ctx)
+	app := appEffectResource(reservation.Resource)
+	if app != "" {
+		// Every unresolved mutable app effect shares one durable transaction
+		// gate. Workers release their advisory app lock while deferred, so this
+		// is the boundary that prevents restart and canary effects overlapping.
+		if _, err := tx.Exec(ctx, `SELECT pg_advisory_xact_lock(hashtextextended($1, 0))`, "norn:effect-app:"+app); err != nil {
+			return effect.ReservationResult{}, err
+		}
+	}
 
 	var authority string
 	if err := tx.QueryRow(ctx, `SELECT authority::text FROM control_plane_identity WHERE singleton FOR SHARE`).Scan(&authority); err != nil {
@@ -87,6 +96,16 @@ func (s *PGEffectStore) Reserve(ctx context.Context, reservation effect.Reservat
 	if !errors.Is(err, pgx.ErrNoRows) {
 		return effect.ReservationResult{}, err
 	}
+	if app != "" {
+		var blockingID string
+		err = tx.QueryRow(ctx, `SELECT id FROM operation_effects WHERE authority=$1::uuid AND split_part(resource,'/',2)=$2 AND lifecycle IN ('reserved','launched') LIMIT 1`, reservation.Authority, app).Scan(&blockingID)
+		if err == nil {
+			return effect.ReservationResult{}, &effect.ResourceBlockedError{Resource: reservation.Resource, BlockingEffectID: blockingID}
+		}
+		if !errors.Is(err, pgx.ErrNoRows) {
+			return effect.ReservationResult{}, err
+		}
+	}
 
 	token := effect.Token{EffectID: uuid.NewString(), Generation: reservation.OperationClaim.Generation}
 	result, err := tx.Exec(ctx, `
@@ -128,11 +147,11 @@ func (s *PGEffectStore) Reserve(ctx context.Context, reservation effect.Reservat
 	}
 
 	var blockingID string
-	err = tx.QueryRow(ctx, `
-		SELECT id FROM operation_effects
-		WHERE authority=$1::uuid AND resource=$2 AND lifecycle IN ('reserved','launched')
-		LIMIT 1
-	`, reservation.Authority, reservation.Resource).Scan(&blockingID)
+	query, args := `SELECT id FROM operation_effects WHERE authority=$1::uuid AND resource=$2 AND lifecycle IN ('reserved','launched') LIMIT 1`, []any{reservation.Authority, reservation.Resource}
+	if app != "" {
+		query, args = `SELECT id FROM operation_effects WHERE authority=$1::uuid AND split_part(resource,'/',2)=$2 AND lifecycle IN ('reserved','launched') LIMIT 1`, []any{reservation.Authority, app}
+	}
+	err = tx.QueryRow(ctx, query, args...).Scan(&blockingID)
 	if err == nil {
 		return effect.ReservationResult{}, &effect.ResourceBlockedError{Resource: reservation.Resource, BlockingEffectID: blockingID}
 	}
@@ -140,6 +159,14 @@ func (s *PGEffectStore) Reserve(ctx context.Context, reservation effect.Reservat
 		return effect.ReservationResult{}, err
 	}
 	return effect.ReservationResult{}, fmt.Errorf("supervisor execution identity is already reserved")
+}
+
+func appEffectResource(resource string) string {
+	parts := strings.Split(resource, "/")
+	if len(parts) >= 3 && parts[0] == "app" && strings.TrimSpace(parts[1]) != "" {
+		return parts[1]
+	}
+	return ""
 }
 
 // Authority returns the control-plane authority that scopes effect rows.
@@ -159,6 +186,29 @@ func (s *PGEffectStore) UnresolvedForResource(ctx context.Context, authority, re
 		FROM operation_effects
 		WHERE authority=$1::uuid AND resource=$2 AND lifecycle IN ('reserved','launched')
 	`, authority, resource)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return effect.Record{}, false, nil
+	}
+	if err != nil {
+		return effect.Record{}, false, err
+	}
+	return record, true, nil
+}
+
+// LatestForOperation returns the original durable effect for an operation
+// stage, including a completed record whose terminal operation write was lost.
+// Recovery must use its stored descriptor instead of sampling a changed runtime.
+func (s *PGEffectStore) LatestForOperation(ctx context.Context, operationID, stage string) (effect.Record, bool, error) {
+	if s == nil || s.db == nil || s.db.Pool == nil || strings.TrimSpace(operationID) == "" || strings.TrimSpace(stage) == "" {
+		return effect.Record{}, false, fmt.Errorf("operation effect lookup is unavailable")
+	}
+	record, err := queryEffectRecord(ctx, s.db.Pool, `
+		SELECT `+effectColumns+`
+		FROM operation_effects
+		WHERE operation_id=$1 AND stage=$2
+		ORDER BY created_at DESC
+		LIMIT 1
+	`, operationID, stage)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return effect.Record{}, false, nil
 	}

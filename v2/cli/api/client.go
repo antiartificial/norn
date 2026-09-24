@@ -1578,8 +1578,12 @@ func (c *Client) Rollback(appID, idempotencyKey string) (*EnqueueResponse, error
 	return &resp, nil
 }
 
-func (c *Client) Restart(appID string) error {
-	return c.post("/api/apps/"+appID+"/restart", "{}")
+func (c *Client) Restart(appID, idempotencyKey string) (*Operation, error) {
+	var operation Operation
+	if err := c.postJSONWithIdempotency("/api/v1/apps/"+appID+"/restart", "{}", idempotencyKey, &operation); err != nil {
+		return nil, err
+	}
+	return &operation, nil
 }
 
 func (c *Client) StreamLogs(appID string) (io.ReadCloser, error) {
