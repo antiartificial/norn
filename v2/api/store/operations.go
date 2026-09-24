@@ -325,29 +325,30 @@ func (db *DB) InsertCompletedOperation(ctx context.Context, op *model.Operation)
 // immutable protected-plan intent; the recovered GitHub result is attached as
 // completion metadata. A retry may only return the same result, which keeps a
 // competing or ambiguous remote response from rewriting the reservation.
-func (db *DB) FinishReservedFleetGitHubOperation(ctx context.Context, operationID, planID, kind, message string, result map[string]interface{}) (*model.Operation, error) {
+func (db *DB) FinishReservedFleetGitHubOperation(ctx context.Context, operationID, planID, kind string, status model.OperationStatus, message string, completion map[string]interface{}) (*model.Operation, error) {
 	if db == nil || db.Pool == nil {
 		return nil, fmt.Errorf("operation store is unavailable")
 	}
 	if operationID == "" || planID == "" || (kind != "fleet.github.pull-request" && kind != "fleet.github.apply-dispatch") {
 		return nil, fmt.Errorf("fleet GitHub reservation is incomplete")
 	}
-	if result == nil {
-		return nil, fmt.Errorf("fleet GitHub result is required")
+	if !status.Terminal() || completion == nil {
+		return nil, fmt.Errorf("fleet GitHub completion is incomplete")
 	}
-	encoded, err := json.Marshal(result)
+	encoded, err := json.Marshal(completion)
 	if err != nil {
 		return nil, err
 	}
 	var completed bool
 	err = db.Pool.QueryRow(ctx, `
 		UPDATE operations
-		SET status='succeeded', message=$1,
-		    metadata=metadata || jsonb_build_object('fleetGitHubResult', $2::jsonb),
+		SET status=$1, message=$2,
+		    payload=payload || ($3::jsonb->'result'),
+		    metadata=metadata || jsonb_build_object('fleetGitHubCompletion', $3::jsonb),
 		    updated_at=now(), finished_at=now()
-		WHERE id=$3 AND kind=$4 AND ref=$5 AND saga_id='' AND status='queued'
+		WHERE id=$4 AND kind=$5 AND ref=$6 AND saga_id='' AND status='queued'
 		RETURNING true
-	`, message, encoded, operationID, kind, planID).Scan(&completed)
+	`, status, message, encoded, operationID, kind, planID).Scan(&completed)
 	if err == nil && completed {
 		return db.GetOperation(ctx, operationID)
 	}
@@ -355,8 +356,8 @@ func (db *DB) FinishReservedFleetGitHubOperation(ctx context.Context, operationI
 		return nil, err
 	}
 	var same bool
-	err = db.Pool.QueryRow(ctx, `SELECT metadata->'fleetGitHubResult' = $1::jsonb
-		FROM operations WHERE id=$2 AND kind=$3 AND ref=$4 AND saga_id='' AND status='succeeded'`, encoded, operationID, kind, planID).Scan(&same)
+	err = db.Pool.QueryRow(ctx, `SELECT metadata->'fleetGitHubCompletion' = $1::jsonb
+		FROM operations WHERE id=$2 AND kind=$3 AND ref=$4 AND saga_id='' AND status=$5`, encoded, operationID, kind, planID, status).Scan(&same)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return nil, fmt.Errorf("fleet GitHub reservation %s is not completable", operationID)
 	}

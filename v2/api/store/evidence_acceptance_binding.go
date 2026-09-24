@@ -98,7 +98,13 @@ func VerifyArchivedAcceptance(a ArchivedAcceptance) error {
 	if envelope.FleetRunnerAttempt != nil {
 		accepted.FleetRunnerAttempt = &FleetRunnerAttemptAdmission{AttemptID: envelope.FleetRunnerAttempt.ID}
 	}
-	if !exactJSONEqual(original.Operation.Payload, semanticOperationMap(op.Payload, accepted)) {
+	if original.Operation.Status == string(model.OperationQueued) && (op.Kind == "fleet.github.pull-request" || op.Kind == "fleet.github.apply-dispatch") {
+		acceptedIntent, ok := original.Operation.Payload["fleetGitHub"]
+		currentIntent, currentOK := op.Payload["fleetGitHub"]
+		if !ok || !currentOK || !exactJSONEqual(acceptedIntent, currentIntent) {
+			return fmt.Errorf("archived Fleet GitHub reservation payload differs from the accepted request")
+		}
+	} else if !exactJSONEqual(original.Operation.Payload, semanticOperationMap(op.Payload, accepted)) {
 		return fmt.Errorf("archived operation payload differs from the accepted request")
 	}
 	return nil

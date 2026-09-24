@@ -2,6 +2,7 @@ package handler
 
 import (
 	"context"
+	"encoding/base64"
 	"errors"
 	"net/http"
 	"net/http/httptest"
@@ -11,6 +12,7 @@ import (
 	"time"
 
 	"norn/v2/api/config"
+	"norn/v2/api/model"
 	"norn/v2/api/store"
 )
 
@@ -69,7 +71,7 @@ func TestFleetGitHubReceiptUsesSignedAtomicAcceptance(t *testing.T) {
 		go func(candidate map[string]interface{}) {
 			defer wg.Done()
 			<-start
-			_, err := db.FinishReservedFleetGitHubOperation(context.Background(), first.ID, planID, "fleet.github.pull-request", "fleet pull request opened", candidate)
+			_, err := h.finishFleetGitHubReservation(context.Background(), first.ID, planID, "fleet.github.pull-request", model.OperationSucceeded, "fleet pull request opened", candidate)
 			errs <- err
 		}(candidate)
 	}
@@ -86,6 +88,22 @@ func TestFleetGitHubReceiptUsesSignedAtomicAcceptance(t *testing.T) {
 	}
 	if succeeded != 1 || rejected != 1 {
 		t.Fatalf("competing completion outcomes succeeded=%d rejected=%d", succeeded, rejected)
+	}
+	var completion map[string]interface{}
+	if err := db.Pool.QueryRow(context.Background(), `SELECT metadata->'fleetGitHubCompletion' FROM operations WHERE id=$1`, first.ID).Scan(&completion); err != nil {
+		t.Fatal(err)
+	}
+	canonicalText, _ := completion["canonicalBytes"].(string)
+	completionCanonical, err := base64.StdEncoding.DecodeString(canonicalText)
+	if err != nil {
+		t.Fatal(err)
+	}
+	completionSigner, err := store.NewHMACAcceptanceSigner(auditKey)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := completionSigner.Verify(context.Background(), store.AcceptanceSignature{Algorithm: completion["signingAlgorithm"].(string), KeyID: completion["signingKeyId"].(string), Value: completion["signature"].(string)}, completionCanonical); err != nil {
+		t.Fatalf("stored Fleet GitHub completion signature did not verify: %v", err)
 	}
 	// The queued signed intent and terminal operation must still be a valid
 	// archive bundle after completion. This protects the recovery path from a

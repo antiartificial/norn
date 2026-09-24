@@ -311,7 +311,86 @@ func (a *Archiver) verifyAcceptance(ctx context.Context, bundle *archive.Bundle)
 	if err := a.Signer.Verify(ctx, signature, acceptance.CanonicalBytes); err != nil {
 		return fmt.Errorf("archived acceptance signature does not verify: %w", err)
 	}
+	if bundle.Subject.Kind == "operation" && (bundle.Subject.OperationKind == "fleet.github.pull-request" || bundle.Subject.OperationKind == "fleet.github.apply-dispatch") && fleetGitHubAcceptanceWasReserved(acceptance.RequestCanonicalBytes) {
+		if err := a.verifyFleetGitHubCompletion(ctx, bundle); err != nil {
+			return err
+		}
+	}
 	return nil
+}
+
+func fleetGitHubAcceptanceWasReserved(request []byte) bool {
+	var accepted struct {
+		Operation struct {
+			Status string `json:"status"`
+		} `json:"operation"`
+	}
+	return json.Unmarshal(request, &accepted) == nil && accepted.Operation.Status == "queued"
+}
+
+// verifyFleetGitHubCompletion proves that the terminal GitHub result retained
+// in the operation row was signed for this reserved operation and plan.
+func (a *Archiver) verifyFleetGitHubCompletion(ctx context.Context, bundle *archive.Bundle) error {
+	var row struct {
+		ID       string                 `json:"id"`
+		Kind     string                 `json:"kind"`
+		Ref      string                 `json:"ref"`
+		Status   string                 `json:"status"`
+		Payload  map[string]interface{} `json:"payload"`
+		Metadata map[string]interface{} `json:"metadata"`
+	}
+	if err := json.Unmarshal(bundle.Operation, &row); err != nil {
+		return fmt.Errorf("archived Fleet GitHub completion operation is malformed: %w", err)
+	}
+	completion, ok := row.Metadata["fleetGitHubCompletion"].(map[string]interface{})
+	if !ok {
+		return fmt.Errorf("archived Fleet GitHub completion is missing")
+	}
+	canonicalText, _ := completion["canonicalBytes"].(string)
+	algorithm, _ := completion["signingAlgorithm"].(string)
+	keyID, _ := completion["signingKeyId"].(string)
+	value, _ := completion["signature"].(string)
+	canonical, err := base64.StdEncoding.DecodeString(canonicalText)
+	if err != nil || len(canonical) == 0 {
+		return fmt.Errorf("archived Fleet GitHub completion canonical bytes are invalid")
+	}
+	var signed struct {
+		Schema      string          `json:"schema"`
+		OperationID string          `json:"operationId"`
+		PlanID      string          `json:"planId"`
+		Kind        string          `json:"kind"`
+		Status      string          `json:"status"`
+		Result      json.RawMessage `json:"result"`
+	}
+	if err := json.Unmarshal(canonical, &signed); err != nil || signed.Schema != "norn.fleet-github-completion/v1" || signed.OperationID != row.ID || signed.PlanID != row.Ref || signed.Kind != row.Kind || signed.Status != row.Status || len(signed.Result) == 0 {
+		return fmt.Errorf("archived Fleet GitHub completion does not bind this terminal operation")
+	}
+	exposed, err := json.Marshal(completion["result"])
+	if err != nil || !sameJSONBytes(exposed, signed.Result) {
+		return fmt.Errorf("archived Fleet GitHub completion result differs from its signed outcome")
+	}
+	var resultFields map[string]interface{}
+	if json.Unmarshal(signed.Result, &resultFields) != nil {
+		return fmt.Errorf("archived Fleet GitHub completion result is malformed")
+	}
+	for key, value := range resultFields {
+		if !sameJSONValue(row.Payload[key], value) {
+			return fmt.Errorf("archived Fleet GitHub operation payload differs from its signed completion")
+		}
+	}
+	if a.Signer == nil {
+		return fmt.Errorf("archived Fleet GitHub completion signer is unavailable")
+	}
+	if err := a.Signer.Verify(ctx, store.AcceptanceSignature{Algorithm: algorithm, KeyID: keyID, Value: value}, canonical); err != nil {
+		return fmt.Errorf("archived Fleet GitHub completion signature does not verify: %w", err)
+	}
+	return nil
+}
+
+func sameJSONValue(left, right interface{}) bool {
+	a, aErr := json.Marshal(left)
+	b, bErr := json.Marshal(right)
+	return aErr == nil && bErr == nil && sameJSONBytes(a, b)
 }
 
 // verifyStored re-proves a verified intent's object right before pruning.
