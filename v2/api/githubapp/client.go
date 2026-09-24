@@ -33,14 +33,16 @@ import (
 const apiVersion = "2026-03-10"
 
 var (
-	repositoryRe    = regexp.MustCompile(`^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$`)
-	workflowRe      = regexp.MustCompile(`^[A-Za-z0-9_.-]+\.ya?ml$`)
-	branchRe        = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9._/-]{0,199}$`)
-	commitSHARe     = regexp.MustCompile(`^[0-9a-f]{40}$`)
-	sha256Re        = regexp.MustCompile(`^[0-9a-f]{64}$`)
-	dispatchNonceRe = regexp.MustCompile(`^[0-9a-f]{64}$`)
-	ErrNotReady     = errors.New("reviewed fleet plan is not ready")
-	ErrStalePlan    = errors.New("fleet plan no longer matches GitHub main")
+	repositoryRe              = regexp.MustCompile(`^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$`)
+	workflowRe                = regexp.MustCompile(`^[A-Za-z0-9_.-]+\.ya?ml$`)
+	branchRe                  = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9._/-]{0,199}$`)
+	commitSHARe               = regexp.MustCompile(`^[0-9a-f]{40}$`)
+	sha256Re                  = regexp.MustCompile(`^[0-9a-f]{64}$`)
+	dispatchNonceRe           = regexp.MustCompile(`^[0-9a-f]{64}$`)
+	ErrNotReady               = errors.New("reviewed fleet plan is not ready")
+	ErrStalePlan              = errors.New("fleet plan no longer matches GitHub main")
+	ErrPermanentNoWrite       = errors.New("Fleet GitHub request was refused before mutation")
+	ErrPermanentAfterMutation = errors.New("Fleet GitHub request was refused after a possible mutation")
 )
 
 const applyRunDisplayTitleFormat = "Apply %s Norn plan %s nonce %s"
@@ -215,20 +217,20 @@ func (c *Client) CreatePullRequest(ctx context.Context, planID, planDigest, pool
 	}
 	document, report := fleet.ParseAndValidate(content)
 	if document == nil || report == nil || !report.Valid {
-		return nil, fmt.Errorf("GitHub fleet document does not pass Norn validation")
+		return nil, fmt.Errorf("%w: GitHub fleet document does not pass Norn validation", ErrPermanentNoWrite)
 	}
 	if !strings.EqualFold(document.Metadata.Repository, c.cfg.Repository) {
-		return nil, fmt.Errorf("GitHub fleet document repository does not match the configured installation")
+		return nil, fmt.Errorf("%w: GitHub fleet document repository does not match the configured installation", ErrPermanentNoWrite)
 	}
 	configuredEnvironment, err := c.fleetEnvironment()
 	if err != nil {
 		return nil, err
 	}
 	if remoteEnvironment, err := fleetEnvironmentFromDocument(document); err != nil || remoteEnvironment != configuredEnvironment {
-		return nil, fmt.Errorf("GitHub fleet document environment does not match the configured fleet root")
+		return nil, fmt.Errorf("%w: GitHub fleet document environment does not match the configured fleet root", ErrPermanentNoWrite)
 	}
 	if _, ok := document.NodePools[poolName]; !ok {
-		return nil, fmt.Errorf("capacity plan node pool is not present on GitHub main")
+		return nil, fmt.Errorf("%w: capacity plan node pool is not present on GitHub main", ErrPermanentNoWrite)
 	}
 	document.NodePools[poolName] = proposed
 	updated, err := yaml.Marshal(document)
@@ -236,7 +238,7 @@ func (c *Client) CreatePullRequest(ctx context.Context, planID, planDigest, pool
 		return nil, fmt.Errorf("encode fleet document: %w", err)
 	}
 	if _, check := fleet.ParseAndValidate(updated); check == nil || !check.Valid {
-		return nil, fmt.Errorf("proposed fleet document failed validation")
+		return nil, fmt.Errorf("%w: proposed fleet document failed validation", ErrPermanentNoWrite)
 	}
 	branch := "norn/plan-" + planID
 	baseSHA, err := c.getRef(ctx, token, c.cfg.DefaultBranch)
@@ -254,13 +256,16 @@ func (c *Client) CreatePullRequest(ctx context.Context, planID, planDigest, pool
 		}
 	} else {
 		existing, _, getErr := c.getContent(ctx, token, branch)
-		if getErr != nil || !bytes.Equal(existing, updated) {
-			return nil, fmt.Errorf("plan branch already exists with different content")
+		if getErr != nil {
+			return nil, getErr
+		}
+		if !bytes.Equal(existing, updated) {
+			return nil, fmt.Errorf("%w: plan branch already exists with different content", ErrPermanentAfterMutation)
 		}
 	}
 	if existing, _ := c.findPullRequest(ctx, token, branch); existing != nil {
 		if existing.State == "closed" && !existing.Merged {
-			return nil, fmt.Errorf("fleet pull request was closed without merge; create a fresh Norn plan")
+			return nil, fmt.Errorf("%w: fleet pull request was closed without merge; create a fresh Norn plan", ErrPermanentAfterMutation)
 		}
 		return existing, nil
 	}

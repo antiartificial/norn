@@ -83,15 +83,16 @@ func (e *EvidenceReserveExhaustedError) Error() string {
 // reserveAcceptedEvidence creates the archive outbox reservation in the same
 // transaction as signed operation acceptance. Locking the singleton policy
 // row serializes the pending-count check with every new reservation. Saga
-// operations retain their existing saga subject. Terminal Fleet GitHub
-// receipts deliberately have no saga: each gets an operation subject so its
-// signed bytes cannot bypass the evidence reserve or remain archive-less.
+// operations retain their existing saga subject. Fleet GitHub actions reserve
+// their operation subject before the external call. The operation becomes
+// terminal only after GitHub responds, but the capacity decision must happen
+// before that call so a full archive cannot create an unrecorded mutation.
 func reserveAcceptedEvidence(ctx context.Context, tx pgx.Tx, acceptance OperationAcceptance) error {
 	subjectKind, subjectID := "", ""
 	switch {
 	case acceptance.Operation.SagaID != "":
 		subjectKind, subjectID = "saga", acceptance.Operation.SagaID
-	case acceptance.Operation.Status.Terminal() && (acceptance.Operation.Kind == "fleet.github.pull-request" || acceptance.Operation.Kind == "fleet.github.apply-dispatch"):
+	case acceptance.Operation.Kind == "fleet.github.pull-request" || acceptance.Operation.Kind == "fleet.github.apply-dispatch":
 		subjectKind, subjectID = "operation", acceptance.Operation.ID
 	default:
 		return nil

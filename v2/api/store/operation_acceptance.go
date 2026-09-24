@@ -944,7 +944,13 @@ func verifyImmutableAcceptedDomain(identity OperationRequestIdentity, envelope a
 		runnerAdmission.AttemptID = envelope.FleetRunnerAttempt.ID
 		currentAcceptance.FleetRunnerAttempt = &runnerAdmission
 	}
-	if !exactJSONEqual(original.Operation.Payload, semanticOperationMap(op.Payload, currentAcceptance)) {
+	if original.Operation.Status == string(model.OperationQueued) && (op.Kind == "fleet.github.pull-request" || op.Kind == "fleet.github.apply-dispatch") {
+		acceptedIntent, ok := original.Operation.Payload["fleetGitHub"]
+		currentIntent, currentOK := op.Payload["fleetGitHub"]
+		if !ok || !currentOK || !exactJSONEqual(acceptedIntent, currentIntent) {
+			return fmt.Errorf("immutable Fleet GitHub reservation payload differs from accepted request")
+		}
+	} else if !exactJSONEqual(original.Operation.Payload, semanticOperationMap(op.Payload, currentAcceptance)) {
 		return fmt.Errorf("immutable operation payload differs from accepted request")
 	}
 	currentMetadata := semanticOperationMap(op.Metadata, currentAcceptance)

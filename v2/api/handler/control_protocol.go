@@ -171,6 +171,11 @@ func (h *Handler) queueMaintenanceOperation(w http.ResponseWriter, r *http.Reque
 }
 
 func writeOperationAcceptanceError(w http.ResponseWriter, r *http.Request, err error) {
+	var evidenceReserve *store.EvidenceReserveExhaustedError
+	if errors.As(err, &evidenceReserve) {
+		WriteControlProblem(w, r, http.StatusServiceUnavailable, "evidence_reserve_exhausted", "protected operation receipt capacity is exhausted; retry after archived evidence is available")
+		return
+	}
 	var runnerAdmission *store.FleetRunnerAttemptAdmissionError
 	if errors.As(err, &runnerAdmission) {
 		status := http.StatusConflict

@@ -1,10 +1,10 @@
 package store
 
 // Migration 10 extends the evidence outbox with a deliberately narrow
-// operation subject. Fleet GitHub receipts are terminal signed acceptances
-// created after GitHub has created or recovered the corresponding protected
-// action. They have no saga, so migration 6's saga-only outbox could neither
-// reserve archive capacity nor retain their original signed bytes. Operation
+// operation subject. Fleet GitHub actions are signed acceptances created
+// before GitHub creates or recovers the corresponding protected action. They
+// have no saga, so migration 6's saga-only outbox could neither reserve
+// archive capacity nor retain their original signed bytes. Operation
 // subjects are immutable, single-sequence receipt bundles; they are archived
 // and verified but never pruned by the saga-history pruner because replay and
 // protected-action recovery still resolve the hot acceptance records.
@@ -16,8 +16,8 @@ const nonSagaEvidenceMigrationSQL = `
 		CHECK (subject_kind IN ('saga', 'operation'));
 `
 
-// NonSagaEvidenceWriterVersion is the first writer that reserves terminal
-// Fleet GitHub receipts as archive work during signed acceptance.
+// NonSagaEvidenceWriterVersion is the first writer that reserves Fleet GitHub
+// receipt capacity during signed acceptance.
 const NonSagaEvidenceWriterVersion int64 = 7
 
 func nonSagaEvidenceMigration() SchemaMigration {

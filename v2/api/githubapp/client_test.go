@@ -21,6 +21,7 @@ import (
 
 	"github.com/golang-jwt/jwt/v5"
 
+	"gopkg.in/yaml.v3"
 	"norn/v2/api/fleet"
 )
 
@@ -183,6 +184,80 @@ nodePools:
 	_, err = client.CreatePullRequest(context.Background(), planID, "sha256:plan", "app", "scale", proposed, "sha256:"+strings.Repeat("0", 64))
 	if !errorsIs(err, ErrStalePlan) {
 		t.Fatalf("stale plan error = %v", err)
+	}
+}
+
+func TestCreatePullRequestClassifiesPrewriteAndExistingBranchFailures(t *testing.T) {
+	valid := []byte("apiVersion: norn.dev/fleet/v1\nkind: Cluster\nmetadata:\n  repository: acme/norn-fleet\n  environment: production\ncluster:\n  name: production-nyc3\n  provider: digitalocean\n  region: nyc3\nnodePools:\n  app:\n    size: s-4vcpu-8gb\n    min: 1\n    desired: 1\n    max: 2\n    replacement:\n      strategy: blueGreen\n      requireCapacityHeadroom: true\n      requireReadiness: true\n")
+	planID := "44444444-4444-4444-8444-444444444444"
+	proposed := fleet.NodePool{Size: "s-4vcpu-8gb", Min: 1, Desired: 2, Max: 2, Replacement: fleet.Replacement{Strategy: "blueGreen", RequireCapacityHeadroom: true, RequireReadiness: true}}
+	document, report := fleet.ParseAndValidate(valid)
+	if report == nil || !report.Valid {
+		t.Fatal("fixture is invalid")
+	}
+	document.NodePools["app"] = proposed
+	updated, err := yaml.Marshal(document)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, tc := range []struct {
+		name         string
+		main         []byte
+		branchStatus int
+		branch       []byte
+		pulls        string
+		want         error
+		writes       int
+	}{
+		{"invalid-prewrite", []byte("invalid"), 0, nil, "", ErrPermanentNoWrite, 0},
+		{"transient-branch-read", valid, http.StatusInternalServerError, nil, "", nil, 1},
+		{"branch-mismatch", valid, http.StatusOK, []byte("different"), "", ErrPermanentAfterMutation, 1},
+		{"closed-pr", valid, http.StatusOK, updated, `[{"number":7,"state":"closed","merged_at":null}]`, ErrPermanentAfterMutation, 1},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			writes := 0
+			pulls := 0
+			client := testClient(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				if tokenResponse(w, r, map[string]string{"contents": "write", "pull_requests": "write"}) {
+					return
+				}
+				if r.Method == http.MethodPost || r.Method == http.MethodPut || r.Method == http.MethodPatch {
+					writes++
+				}
+				switch {
+				case r.Method == http.MethodGet && strings.Contains(r.URL.Path, "/contents/") && strings.Contains(r.URL.RawQuery, "ref=norn%2Fplan-"):
+					if tc.branchStatus != http.StatusOK {
+						http.Error(w, "temporary", tc.branchStatus)
+						return
+					}
+					fmt.Fprintf(w, `{"content":%q,"encoding":"base64","sha":"x"}`, base64.StdEncoding.EncodeToString(tc.branch))
+				case r.Method == http.MethodGet && strings.Contains(r.URL.Path, "/contents/"):
+					fmt.Fprintf(w, `{"content":%q,"encoding":"base64","sha":"x"}`, base64.StdEncoding.EncodeToString(tc.main))
+				case r.Method == http.MethodGet && strings.Contains(r.URL.Path, "/git/ref/"):
+					fmt.Fprint(w, `{"object":{"sha":"base"}}`)
+				case r.Method == http.MethodPost && strings.HasSuffix(r.URL.Path, "/git/refs"):
+					http.Error(w, "exists", http.StatusUnprocessableEntity)
+				case r.Method == http.MethodGet && strings.HasSuffix(r.URL.Path, "/pulls"):
+					pulls++
+					fmt.Fprint(w, tc.pulls)
+				default:
+					http.NotFound(w, r)
+				}
+			}))
+			_, err := client.CreatePullRequest(context.Background(), planID, "sha256:x", "app", "scale", proposed, fleet.Digest(tc.main))
+			if tc.want != nil && !errorsIs(err, tc.want) {
+				t.Fatalf("error=%v", err)
+			}
+			if tc.want == nil && (errorsIs(err, ErrPermanentNoWrite) || errorsIs(err, ErrPermanentAfterMutation)) {
+				t.Fatalf("transient error classified permanent: %v", err)
+			}
+			if writes != tc.writes {
+				t.Fatalf("writes=%d want=%d", writes, tc.writes)
+			}
+			if tc.name == "closed-pr" && pulls != 1 {
+				t.Fatalf("closed PR lookup calls=%d", pulls)
+			}
+		})
 	}
 }
 
