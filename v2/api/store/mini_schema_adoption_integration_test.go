@@ -7,6 +7,7 @@ import (
 	"time"
 
 	"github.com/jackc/pgx/v5"
+	"github.com/jackc/pgx/v5/pgconn"
 	"github.com/jackc/pgx/v5/pgxpool"
 )
 
@@ -148,12 +149,26 @@ func TestMiniDispatchLockBlocksLegacyInsertUntilAdoptionTransactionEnds(t *testi
 		_ = tx.Rollback(context.Background())
 		t.Fatal(err)
 	}
-	waitCtx, cancel := context.WithTimeout(context.Background(), 150*time.Millisecond)
-	defer cancel()
-	_, err = pools[1].Exec(waitCtx, `INSERT INTO fleet_github_dispatches(plan_id,plan_run_id,plan_sha256,approved_head_sha,fleet_environment,allow_destructive,dispatch_nonce_sha256) VALUES ('plan-1',1,'plan','head','pilot',false,'digest')`)
-	if !errors.Is(err, context.DeadlineExceeded) {
+	blocked, err := pools[1].Begin(context.Background())
+	if err != nil {
 		_ = tx.Rollback(context.Background())
-		t.Fatalf("concurrent insert error = %T %v, want deadline", err, err)
+		t.Fatal(err)
+	}
+	if _, err := blocked.Exec(context.Background(), `SET LOCAL lock_timeout = '150ms'`); err != nil {
+		_ = blocked.Rollback(context.Background())
+		_ = tx.Rollback(context.Background())
+		t.Fatal(err)
+	}
+	_, err = blocked.Exec(context.Background(), `INSERT INTO fleet_github_dispatches(plan_id,plan_run_id,plan_sha256,approved_head_sha,fleet_environment,allow_destructive,dispatch_nonce_sha256) VALUES ('plan-1',1,'plan','head','pilot',false,'digest')`)
+	var pgErr *pgconn.PgError
+	if !errors.As(err, &pgErr) || pgErr.Code != "55P03" {
+		_ = blocked.Rollback(context.Background())
+		_ = tx.Rollback(context.Background())
+		t.Fatalf("concurrent insert error = %T %v, want server lock timeout", err, err)
+	}
+	if err := blocked.Rollback(context.Background()); err != nil {
+		_ = tx.Rollback(context.Background())
+		t.Fatal(err)
 	}
 	if err := tx.Rollback(context.Background()); err != nil {
 		t.Fatal(err)
