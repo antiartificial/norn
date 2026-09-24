@@ -36,7 +36,7 @@ func NewOperationWorker(db store.ExecutionStore, p *pipeline.Pipeline) *Operatio
 		pipeline: p,
 		id:       fmt.Sprintf("%s:%d", host, os.Getpid()),
 		kinds: []string{
-			"app.preflight", "app.deploy", "app.rollback", "app.snapshot",
+			"app.preflight", "app.deploy", "app.rollback", "app.restart", "app.snapshot",
 			"app.snapshot-prune", "app.snapshot-restore", "app.migrate",
 			"app.scale",
 			pipeline.CatalogActivationKind, pipeline.DatabaseBaselineKind,

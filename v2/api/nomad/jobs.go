@@ -78,6 +78,108 @@ func isRestartableAllocation(alloc *nomadapi.AllocationListStub) bool {
 		alloc.ClientStatus == nomadapi.AllocClientStatusUnknown
 }
 
+// RestartAllocation is the immutable source identity for a durable restart.
+// CreateIndex prevents an allocation ID from being treated as a fungible target.
+type RestartAllocation struct {
+	ID          string `json:"id"`
+	JobID       string `json:"jobId"`
+	Namespace   string `json:"namespace"`
+	TaskGroup   string `json:"taskGroup"`
+	CreateIndex uint64 `json:"createIndex"`
+}
+
+type RestartSourceStatus struct {
+	ID                string `json:"id"`
+	CreateIndex       uint64 `json:"createIndex"`
+	ClientStatus      string `json:"clientStatus"`
+	NextAllocation    string `json:"nextAllocation"`
+	ReplacementStatus string `json:"replacementStatus"`
+}
+
+type RestartStatus struct {
+	App      string                `json:"app"`
+	Replaced bool                  `json:"replaced"`
+	Sources  []RestartSourceStatus `json:"sources"`
+}
+
+func (c *Client) RestartSnapshot(ctx context.Context, jobID string) ([]RestartAllocation, error) {
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
+	allocs, _, err := c.api.Jobs().Allocations(jobID, false, nil)
+	if err != nil {
+		return nil, fmt.Errorf("list allocations for %s: %w", jobID, err)
+	}
+	sources := make([]RestartAllocation, 0, len(allocs))
+	for _, alloc := range allocs {
+		if isRestartableAllocation(alloc) && alloc.CreateIndex > 0 {
+			sources = append(sources, RestartAllocation{ID: alloc.ID, JobID: jobID, Namespace: alloc.Namespace, TaskGroup: alloc.TaskGroup, CreateIndex: alloc.CreateIndex})
+		}
+	}
+	return sources, nil
+}
+
+// StopRestartAllocation re-reads the exact source before the irreversible
+// request. A changed source is ambiguous and must be reconciled, never replaced.
+func (c *Client) StopRestartAllocation(ctx context.Context, source RestartAllocation) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	query := &nomadapi.QueryOptions{Namespace: source.Namespace}
+	alloc, _, err := c.api.Allocations().Info(source.ID, query)
+	if err != nil {
+		return fmt.Errorf("read source allocation: %w", err)
+	}
+	if alloc.ID != source.ID || alloc.JobID != source.JobID || alloc.CreateIndex != source.CreateIndex || !isRestartableAllocation(alloc.Stub()) {
+		return fmt.Errorf("source allocation no longer matches durable restart snapshot")
+	}
+	if _, err := c.api.Allocations().Stop(&nomadapi.Allocation{ID: source.ID}, query); err != nil {
+		return err
+	}
+	return nil
+}
+
+// RestartStatus verifies each recorded source became terminal and that its
+// recorded successor lineage is a distinct running allocation. It never uses
+// the job's current active set as replacement input.
+func (c *Client) RestartStatus(ctx context.Context, jobID string, sources []RestartAllocation) (RestartStatus, error) {
+	if err := ctx.Err(); err != nil {
+		return RestartStatus{}, err
+	}
+	allocs, _, err := c.api.Jobs().Allocations(jobID, false, nil)
+	if err != nil {
+		return RestartStatus{}, fmt.Errorf("list restart allocations: %w", err)
+	}
+	byID := make(map[string]*nomadapi.AllocationListStub, len(allocs))
+	for _, alloc := range allocs {
+		byID[alloc.ID] = alloc
+	}
+	status := RestartStatus{App: jobID, Sources: make([]RestartSourceStatus, 0, len(sources)), Replaced: len(sources) > 0}
+	for _, source := range sources {
+		current := byID[source.ID]
+		entry := RestartSourceStatus{ID: source.ID, CreateIndex: source.CreateIndex}
+		if current == nil || current.CreateIndex != source.CreateIndex || current.JobID != source.JobID {
+			status.Replaced = false
+			status.Sources = append(status.Sources, entry)
+			continue
+		}
+		entry.ClientStatus, entry.NextAllocation = current.ClientStatus, current.NextAllocation
+		replacement := byID[current.NextAllocation]
+		if replacement != nil {
+			entry.ReplacementStatus = replacement.ClientStatus
+		}
+		if !isTerminalRestartAllocation(current) || current.NextAllocation == "" || current.NextAllocation == source.ID || replacement == nil || replacement.ClientStatus != nomadapi.AllocClientStatusRunning {
+			status.Replaced = false
+		}
+		status.Sources = append(status.Sources, entry)
+	}
+	return status, nil
+}
+
+func isTerminalRestartAllocation(alloc *nomadapi.AllocationListStub) bool {
+	return alloc != nil && (alloc.ClientStatus == nomadapi.AllocClientStatusComplete || alloc.ClientStatus == nomadapi.AllocClientStatusFailed || alloc.ClientStatus == nomadapi.AllocClientStatusLost)
+}
+
 // JobStatus returns the status of a Nomad job.
 func (c *Client) JobStatus(jobID string) (string, error) {
 	job, _, err := c.api.Jobs().Info(jobID, nil)

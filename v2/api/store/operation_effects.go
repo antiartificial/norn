@@ -168,6 +168,29 @@ func (s *PGEffectStore) UnresolvedForResource(ctx context.Context, authority, re
 	return record, true, nil
 }
 
+// LatestForOperation returns the original durable effect for an operation
+// stage, including a completed record whose terminal operation write was lost.
+// Recovery must use its stored descriptor instead of sampling a changed runtime.
+func (s *PGEffectStore) LatestForOperation(ctx context.Context, operationID, stage string) (effect.Record, bool, error) {
+	if s == nil || s.db == nil || s.db.Pool == nil || strings.TrimSpace(operationID) == "" || strings.TrimSpace(stage) == "" {
+		return effect.Record{}, false, fmt.Errorf("operation effect lookup is unavailable")
+	}
+	record, err := queryEffectRecord(ctx, s.db.Pool, `
+		SELECT `+effectColumns+`
+		FROM operation_effects
+		WHERE operation_id=$1 AND stage=$2
+		ORDER BY created_at DESC
+		LIMIT 1
+	`, operationID, stage)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return effect.Record{}, false, nil
+	}
+	if err != nil {
+		return effect.Record{}, false, err
+	}
+	return record, true, nil
+}
+
 func (s *PGEffectStore) MarkLaunched(ctx context.Context, token effect.Token, identity effect.ExecutionIdentity) error {
 	if err := validateEffectToken(token); err != nil {
 		return err

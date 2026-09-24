@@ -70,6 +70,12 @@ type Pipeline struct {
 	// ScaleEffects fences Nomad's non-idempotent scale endpoint behind a
 	// durable external-effect reservation. It is required for app.scale.
 	ScaleEffects *NomadScaleEffects
+	// RestartEffects records the exact allocations selected for a replacement
+	// before asking Nomad to stop any of them. It is required for app.restart.
+	RestartEffects *NomadRestartEffects
+	// RestartAvailability is a test-only admission seam. Production leaves it
+	// nil and requires RestartEffects.
+	RestartAvailability func() bool
 	// FinishScaleIntent is the claim-fenced atomic desired-replica and terminal
 	// operation write. Tests may inject a transient failure; production uses DB.
 	FinishScaleIntent func(context.Context, store.OperationClaim, string, string, string, int, string, map[string]interface{}) error
@@ -280,6 +286,9 @@ func (p *Pipeline) ExecuteOperation(ctx context.Context, op *model.Operation, cl
 	}
 	if op.Kind == "app.scale" {
 		return operationOutcome(p.executeScale(ctx, op, claim))
+	}
+	if op.Kind == "app.restart" {
+		return operationOutcome(p.executeRestart(ctx, op, claim))
 	}
 	var specs []*model.InfraSpec
 	var err error

@@ -827,7 +827,7 @@ func (db *DB) RecoverExpiredOperations(ctx context.Context) error {
 		  AND (locked_until IS NULL OR locked_until < now())
 		  AND attempts < max_attempts
 		  AND (
-		    kind = 'app.preflight'
+		    kind IN ('app.preflight', 'app.restart')
 		    OR (kind = 'app.deploy' AND NOT EXISTS (
 		      SELECT 1
 		      FROM deployment_steps ds
