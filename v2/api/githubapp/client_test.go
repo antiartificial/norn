@@ -115,6 +115,43 @@ func TestStatusUsesRepositoryScopedShortLivedAuthentication(t *testing.T) {
 	}
 }
 
+func TestReconcilePullRequestClassifiesObservedRemoteState(t *testing.T) {
+	const planID = "11111111-1111-4111-8111-111111111111"
+	for _, test := range []struct {
+		name, pulls string
+		refStatus   int
+		want        string
+	}{
+		{name: "verified no write", pulls: `[]`, refStatus: http.StatusNotFound, want: "verified-no-write"},
+		{name: "branch without pull request is ambiguous", pulls: `[]`, refStatus: http.StatusOK, want: "ambiguous"},
+		{name: "pull request is remote success", pulls: `[{"number":42,"html_url":"https://github.com/acme/norn-fleet/pull/42","state":"open"}]`, want: "remote-success"},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			client := testClient(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				if tokenResponse(w, r, map[string]string{"contents": "read", "pull_requests": "read"}) {
+					return
+				}
+				switch {
+				case r.URL.Path == "/repos/acme/norn-fleet/pulls":
+					fmt.Fprint(w, test.pulls)
+				case strings.HasPrefix(r.URL.Path, "/repos/acme/norn-fleet/git/ref/heads/"):
+					if test.refStatus == http.StatusOK {
+						fmt.Fprint(w, `{"object":{"sha":"0123456789012345678901234567890123456789"}}`)
+					} else {
+						http.NotFound(w, r)
+					}
+				default:
+					http.NotFound(w, r)
+				}
+			}))
+			got, err := client.ReconcilePullRequest(context.Background(), planID)
+			if err != nil || got.Outcome != test.want {
+				t.Fatalf("reconciliation=%+v err=%v, want %s", got, err, test.want)
+			}
+		})
+	}
+}
+
 func TestCreatePullRequestBindsSourceDigestAndUsesDeterministicBranch(t *testing.T) {
 	document := []byte(`apiVersion: norn.dev/fleet/v1
 kind: Cluster

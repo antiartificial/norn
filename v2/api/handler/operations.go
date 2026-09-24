@@ -145,6 +145,10 @@ func (h *Handler) CancelOperation(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
+	if existing.Kind == "fleet.github.pull-request" || existing.Kind == "fleet.github.apply-dispatch" {
+		WriteControlProblem(w, r, http.StatusConflict, "fleet_github_reconciliation_required", "Fleet GitHub reservations require remote reconciliation before cancellation")
+		return
+	}
 	if principal.Subject != "" {
 		requestedBy = principal.Subject
 	}

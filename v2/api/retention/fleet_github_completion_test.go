@@ -50,3 +50,23 @@ func TestFleetGitHubCompletionRejectsTamperedExposedResult(t *testing.T) {
 		t.Fatalf("unsigned payload field error=%v", err)
 	}
 }
+
+func TestFleetGitHubVerifiedNoWriteCancellationRemainsArchivable(t *testing.T) {
+	signer, err := store.NewHMACAcceptanceSigner("fleet-github-cancellation-test-key-0001")
+	if err != nil {
+		t.Fatal(err)
+	}
+	result := map[string]interface{}{"planId": "plan-1", "outcome": "verified-no-write", "verifiedAt": "2026-09-24T12:00:00Z"}
+	canonical, _ := json.Marshal(map[string]interface{}{"schema": "norn.fleet-github-completion/v1", "operationId": "op-1", "planId": "plan-1", "kind": "fleet.github.pull-request", "status": "canceled", "result": result})
+	signature, err := signer.Sign(context.Background(), canonical)
+	if err != nil {
+		t.Fatal(err)
+	}
+	completion := map[string]interface{}{"canonicalBytes": base64.StdEncoding.EncodeToString(canonical), "signingAlgorithm": signature.Algorithm, "signingKeyId": signature.KeyID, "signature": signature.Value, "result": result}
+	row := map[string]interface{}{"id": "op-1", "kind": "fleet.github.pull-request", "ref": "plan-1", "status": "canceled", "payload": map[string]interface{}{"fleetGitHub": map[string]interface{}{"planId": "plan-1"}, "planId": "plan-1", "outcome": "verified-no-write", "verifiedAt": "2026-09-24T12:00:00Z"}, "metadata": map[string]interface{}{"fleetGitHubCompletion": completion}}
+	encoded, _ := json.Marshal(row)
+	bundle := &archive.Bundle{Subject: archive.Subject{Kind: "operation", ID: "op-1", OperationID: "op-1", OperationKind: "fleet.github.pull-request"}, Operation: encoded}
+	if err := (&Archiver{Signer: signer}).verifyFleetGitHubCompletion(context.Background(), bundle); err != nil {
+		t.Fatalf("signed verified-no-write cancellation rejected: %v", err)
+	}
+}

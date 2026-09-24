@@ -103,6 +103,62 @@ type Dispatch struct {
 	Existing        bool   `json:"existing"`
 }
 
+type Reconciliation struct {
+	Outcome     string       `json:"outcome"`
+	PullRequest *PullRequest `json:"pullRequest,omitempty"`
+	Dispatch    *Dispatch    `json:"dispatch,omitempty"`
+}
+
+// ReconcilePullRequest observes the deterministic branch and pull request
+// identity without making a GitHub write. Absence is safe to treat as a
+// verified no-write only when both read requests completed authoritatively.
+func (c *Client) ReconcilePullRequest(ctx context.Context, planID string) (*Reconciliation, error) {
+	token, err := c.installationToken(ctx, map[string]string{"contents": "read", "pull_requests": "read"})
+	if err != nil {
+		return nil, err
+	}
+	branch := "norn/plan-" + planID
+	pr, err := c.findPullRequest(ctx, token, branch)
+	if err != nil {
+		return nil, err
+	}
+	if pr != nil {
+		return &Reconciliation{Outcome: "remote-success", PullRequest: pr}, nil
+	}
+	_, err = c.getRef(ctx, token, branch)
+	if err == nil {
+		return &Reconciliation{Outcome: "ambiguous"}, nil
+	}
+	var apiErr *apiError
+	if errors.As(err, &apiErr) && apiErr.Status == http.StatusNotFound {
+		return &Reconciliation{Outcome: "verified-no-write"}, nil
+	}
+	return nil, err
+}
+
+// ReconcileDispatch searches for the server-bound nonce without dispatching.
+// An absent result remains ambiguous because GitHub's run listing is bounded
+// and eventually consistent; an operator assertion cannot cancel it.
+func (c *Client) ReconcileDispatch(ctx context.Context, planID, fleetEnvironment string, allowDestructive bool, approved *Dispatch, nonce string) (*Reconciliation, error) {
+	token, err := c.installationToken(ctx, map[string]string{"actions": "read", "contents": "read", "pull_requests": "read"})
+	if err != nil {
+		return nil, err
+	}
+	actor, err := c.appActorLogin(ctx)
+	if err != nil {
+		return nil, err
+	}
+	run, err := c.findApplyRun(ctx, token, planID, fleetEnvironment, allowDestructive, approved, nonce, actor)
+	if err != nil {
+		return nil, err
+	}
+	if run == nil {
+		return &Reconciliation{Outcome: "ambiguous"}, nil
+	}
+	run.Existing = true
+	return &Reconciliation{Outcome: "remote-success", Dispatch: run}, nil
+}
+
 type apiError struct {
 	Status  int
 	Message string
