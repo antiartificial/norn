@@ -4,6 +4,7 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"os"
 	"path/filepath"
 	"strings"
@@ -307,6 +308,11 @@ func TestSnapshotRunnerFailsClosedForCrashTamperAndForeignArtifact(t *testing.T)
 		}
 		if _, err := ReadSnapshotManifest(directory, key, request.Execution.RuntimeInstanceID, true); err == nil {
 			t.Fatal("tampered artifact was accepted")
+		} else {
+			var integrity *SnapshotArtifactIntegrityError
+			if !errors.As(err, &integrity) {
+				t.Fatalf("tampered artifact was not classified as integrity corruption: %v", err)
+			}
 		}
 	})
 	t.Run("foreign precreated artifact", func(t *testing.T) {

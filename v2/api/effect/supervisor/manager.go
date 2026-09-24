@@ -66,6 +66,15 @@ type Manager struct {
 	snapshotArtifactBudget int64
 }
 
+// RootID identifies the local supervisor namespace. It is safe to use for
+// selecting durable effect records, but it is not an execution credential.
+func (m *Manager) RootID() string {
+	if m == nil {
+		return ""
+	}
+	return m.rootID
+}
+
 // SetSnapshotArtifactBudget configures the total admission ceiling for private
 // snapshot dumps. A zero value disables snapshot admission.
 func (m *Manager) SetSnapshotArtifactBudget(bytes int64) error {
@@ -372,8 +381,15 @@ func (m *Manager) DiscardSnapshotArtifact(ctx context.Context, reservation effec
 		// This proves a signed successful terminal status and containment before
 		// deleting the one private archive. It is intentionally idempotent.
 		if _, err := b.QuerySnapshot(ctx, backendExecution(r, directory), d); err != nil {
-			if errors.Is(err, os.ErrNotExist) {
-				return nil
+			var integrity *SnapshotArtifactIntegrityError
+			if errors.As(err, &integrity) {
+				if cleanupErr := removeDisposableSnapshotArtifact(private); cleanupErr != nil {
+					return cleanupErr
+				}
+				if admissionErr := removeSnapshotAdmission(directory); admissionErr != nil {
+					return admissionErr
+				}
+				return &PublishedSnapshotCorruptionError{ExecutionID: identity.SupervisorExecutionID, Cause: err}
 			}
 			return err
 		}
@@ -385,6 +401,29 @@ func (m *Manager) DiscardSnapshotArtifact(ctx context.Context, reservation effec
 		}
 		return removeSnapshotAdmission(directory)
 	})
+}
+
+// PublishedSnapshotCorruptionError reports that a disposable private artifact
+// was removed after its public snapshot and successful operation were
+// already durable. Callers may report this without preventing startup.
+type PublishedSnapshotCorruptionError struct {
+	ExecutionID string
+	Cause       error
+}
+
+func (e *PublishedSnapshotCorruptionError) Error() string {
+	return fmt.Sprintf("published snapshot corrupt private artifact %s was removed: %v", e.ExecutionID, e.Cause)
+}
+
+func (e *PublishedSnapshotCorruptionError) Unwrap() error { return e.Cause }
+
+func removeDisposableSnapshotArtifact(private string) error {
+	for _, name := range []string{"archive.dump", "service.conf", "passfile"} {
+		if err := os.Remove(filepath.Join(private, name)); err != nil && !errors.Is(err, os.ErrNotExist) {
+			return err
+		}
+	}
+	return syncDirectory(private)
 }
 
 func removeSnapshotAdmission(directory string) error {

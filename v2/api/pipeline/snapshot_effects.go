@@ -5,8 +5,10 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
+	"log"
 	"time"
 
 	"norn/v2/api/database"
@@ -87,12 +89,17 @@ func (s *SnapshotEffects) ReconcilePublishedArtifacts(ctx context.Context) error
 	if !s.available() {
 		return fmt.Errorf("snapshot effects incomplete")
 	}
-	records, err := s.Store.CompletedSnapshotOperations(ctx)
+	records, err := s.Store.CompletedSnapshotOperations(ctx, s.Manager.RootID())
 	if err != nil {
 		return err
 	}
 	for _, record := range records {
 		if err := s.Manager.DiscardSnapshotArtifact(ctx, record.Reservation, record.Execution); err != nil {
+			var corruption *supervisor.PublishedSnapshotCorruptionError
+			if errors.As(err, &corruption) {
+				log.Printf("WARNING: supervised snapshot reconciliation: %v", corruption)
+				continue
+			}
 			return err
 		}
 	}

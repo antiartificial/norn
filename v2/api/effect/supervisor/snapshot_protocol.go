@@ -110,6 +110,18 @@ type signedSnapshotRunnerStatus struct {
 	MAC    string               `json:"mac"`
 }
 
+// SnapshotArtifactIntegrityError identifies corrupt or missing runner status
+// or private artifact content. Environmental and backend errors are left
+// unwrapped so startup reconciliation continues to fail closed on them.
+type SnapshotArtifactIntegrityError struct{ Cause error }
+
+func (e *SnapshotArtifactIntegrityError) Error() string { return e.Cause.Error() }
+func (e *SnapshotArtifactIntegrityError) Unwrap() error { return e.Cause }
+
+func snapshotArtifactIntegrity(err error) error {
+	return &SnapshotArtifactIntegrityError{Cause: err}
+}
+
 // SnapshotManifest is a bounded signed assertion intended for the future
 // snapshot effect verifier. It is issued only after its caller has established
 // containment for this helper execution; a runner status alone never claims it.
@@ -579,18 +591,21 @@ func writeSnapshotStatus(directory string, key []byte, status snapshotRunnerStat
 func readSnapshotStatus(directory string, key []byte, runtimeID string) (snapshotRunnerStatus, error) {
 	data, err := readBoundedRegular(filepath.Join(directory, "snapshot-status.json"), maxRunnerStatusBytes)
 	if err != nil {
+		if errors.Is(err, os.ErrNotExist) {
+			return snapshotRunnerStatus{}, snapshotArtifactIntegrity(err)
+		}
 		return snapshotRunnerStatus{}, err
 	}
 	var envelope signedSnapshotRunnerStatus
 	if err := decodeStrict(data, &envelope); err != nil {
-		return snapshotRunnerStatus{}, fmt.Errorf("snapshot runner status is malformed")
+		return snapshotRunnerStatus{}, snapshotArtifactIntegrity(fmt.Errorf("snapshot runner status is malformed"))
 	}
 	encoded, _ := json.Marshal(envelope.Status)
 	mac := hmac.New(sha256.New, key)
 	mac.Write(encoded)
 	status := envelope.Status
 	if !hmac.Equal([]byte(envelope.MAC), []byte(hex.EncodeToString(mac.Sum(nil)))) || status.Protocol != SnapshotProtocolV1 || status.RuntimeInstanceID != runtimeID || !validSHA256(status.DescriptorSHA256) {
-		return snapshotRunnerStatus{}, fmt.Errorf("snapshot runner status authentication failed")
+		return snapshotRunnerStatus{}, snapshotArtifactIntegrity(fmt.Errorf("snapshot runner status authentication failed"))
 	}
 	if status.Phase == effect.SupervisorRunning {
 		// A running record is deliberately readable for recovery, but it has no
@@ -599,14 +614,14 @@ func readSnapshotStatus(directory string, key []byte, runtimeID string) (snapsho
 		return status, nil
 	}
 	if status.ExitCode == nil || status.DiagnosticBytes < 0 || !validSHA256(status.DiagnosticSHA256) {
-		return snapshotRunnerStatus{}, fmt.Errorf("snapshot runner terminal status is incomplete")
+		return snapshotRunnerStatus{}, snapshotArtifactIntegrity(fmt.Errorf("snapshot runner terminal status is incomplete"))
 	}
 	if status.Phase == effect.SupervisorSucceeded {
 		if status.ArtifactLimited || status.Artifact == nil || !status.Artifact.Regular || !status.Artifact.NoFollow || status.Artifact.Bytes <= 0 || status.Artifact.Bytes > MaxSnapshotArtifactBytes || !validSHA256(status.Artifact.SHA256) || status.Artifact.Reference == "" {
-			return snapshotRunnerStatus{}, fmt.Errorf("snapshot runner status has no valid artifact")
+			return snapshotRunnerStatus{}, snapshotArtifactIntegrity(fmt.Errorf("snapshot runner status has no valid artifact"))
 		}
 	} else if status.Phase != effect.SupervisorFailed {
-		return snapshotRunnerStatus{}, fmt.Errorf("snapshot runner status phase is unsupported")
+		return snapshotRunnerStatus{}, snapshotArtifactIntegrity(fmt.Errorf("snapshot runner status phase is unsupported"))
 	}
 	return status, nil
 }
@@ -636,13 +651,13 @@ func ReadSnapshotManifest(directory string, key []byte, runtimeID string, contai
 	for _, entry := range entries {
 		if entry.IsDir() && strings.HasPrefix(entry.Name(), ".snapshot-") {
 			if candidate != "" {
-				return SnapshotManifest{}, fmt.Errorf("snapshot artifact directory is ambiguous")
+				return SnapshotManifest{}, snapshotArtifactIntegrity(fmt.Errorf("snapshot artifact directory is ambiguous"))
 			}
 			candidate = filepath.Join(directory, entry.Name())
 		}
 	}
 	if candidate == "" {
-		return SnapshotManifest{}, fmt.Errorf("snapshot artifact directory is missing")
+		return SnapshotManifest{}, snapshotArtifactIntegrity(fmt.Errorf("snapshot artifact directory is missing"))
 	}
 	privateEntries, err := os.ReadDir(candidate)
 	if err != nil {
@@ -650,15 +665,19 @@ func ReadSnapshotManifest(directory string, key []byte, runtimeID string, contai
 	}
 	for _, entry := range privateEntries {
 		if entry.Name() == "service.conf" || entry.Name() == "passfile" {
-			return SnapshotManifest{}, fmt.Errorf("snapshot private connection material remains")
+			return SnapshotManifest{}, snapshotArtifactIntegrity(fmt.Errorf("snapshot private connection material remains"))
 		}
 	}
 	artifact, err := attestSnapshotArtifact(candidate, filepath.Join(candidate, "archive.dump"), strings.TrimPrefix(status.Artifact.Reference, "snapshot/"))
 	if err != nil {
+		var pathErr *os.PathError
+		if errors.Is(err, os.ErrNotExist) || !errors.As(err, &pathErr) {
+			return SnapshotManifest{}, snapshotArtifactIntegrity(err)
+		}
 		return SnapshotManifest{}, err
 	}
 	if artifact != *status.Artifact {
-		return SnapshotManifest{}, fmt.Errorf("snapshot artifact does not match signed status")
+		return SnapshotManifest{}, snapshotArtifactIntegrity(fmt.Errorf("snapshot artifact does not match signed status"))
 	}
 	manifest := SnapshotManifest{Protocol: SnapshotProtocolV1, RuntimeInstanceID: runtimeID, DescriptorSHA256: status.DescriptorSHA256, Artifact: artifact, ContainmentProven: true, ObservedAt: time.Now().UTC()}
 	encoded, _ := json.Marshal(snapshotManifestPayload{manifest.Protocol, manifest.RuntimeInstanceID, manifest.DescriptorSHA256, manifest.Artifact, manifest.ContainmentProven, manifest.ObservedAt})

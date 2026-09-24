@@ -19,11 +19,12 @@ import (
 var testSigningKey = []byte("0123456789abcdef0123456789abcdef")
 
 type backendFake struct {
-	mu           sync.Mutex
-	states       map[string]BackendState
-	starts       int
-	startEntered chan struct{}
-	startRelease chan struct{}
+	mu               sync.Mutex
+	states           map[string]BackendState
+	starts           int
+	startEntered     chan struct{}
+	startRelease     chan struct{}
+	snapshotQueryErr error
 }
 
 func newBackendFake() *backendFake {
@@ -51,7 +52,7 @@ func (b *backendFake) ObserveSnapshot(ctx context.Context, execution BackendExec
 	return b.Observe(ctx, execution)
 }
 func (b *backendFake) QuerySnapshot(context.Context, BackendExecution, SnapshotDescriptor) (SnapshotManifest, error) {
-	return SnapshotManifest{}, nil
+	return SnapshotManifest{}, b.snapshotQueryErr
 }
 func (b *backendFake) CopySnapshotArtifact(context.Context, BackendExecution, SnapshotDescriptor, io.Writer) (SnapshotManifest, error) {
 	return SnapshotManifest{}, nil

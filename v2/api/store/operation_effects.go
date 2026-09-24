@@ -219,12 +219,13 @@ func (s *PGEffectStore) LatestForOperation(ctx context.Context, operationID, sta
 }
 
 // CompletedSnapshotOperations returns only effects whose public operation
-// success is already durable. Those are safe private-artifact cleanup targets.
-func (s *PGEffectStore) CompletedSnapshotOperations(ctx context.Context) ([]effect.Record, error) {
-	if s == nil || s.db == nil || s.db.Pool == nil {
+// success is already durable and whose descriptor belongs to this supervisor
+// root. Another replica's node-local artifact cannot be inspected here.
+func (s *PGEffectStore) CompletedSnapshotOperations(ctx context.Context, supervisorRootID string) ([]effect.Record, error) {
+	if s == nil || s.db == nil || s.db.Pool == nil || strings.TrimSpace(supervisorRootID) == "" {
 		return nil, fmt.Errorf("operation effect lookup is unavailable")
 	}
-	rows, err := s.db.Pool.Query(ctx, `SELECT `+effectColumns+` FROM operation_effects WHERE stage='app.snapshot' AND lifecycle='completed' AND operation_id IN (SELECT id FROM operations WHERE status='succeeded')`)
+	rows, err := s.db.Pool.Query(ctx, `SELECT `+effectColumns+` FROM operation_effects WHERE stage='app.snapshot' AND lifecycle='completed' AND launch_payload->>'supervisorRootId'=$1 AND operation_id IN (SELECT id FROM operations WHERE status='succeeded')`, supervisorRootID)
 	if err != nil {
 		return nil, err
 	}

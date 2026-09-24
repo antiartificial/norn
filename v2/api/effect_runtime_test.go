@@ -205,6 +205,64 @@ func TestConfigureSnapshotEffectsReconcilesPublishedArtifactAfterRestart(t *test
 	if err := os.WriteFile(archive, []byte("published"), 0o600); err != nil {
 		t.Fatal(err)
 	}
+	// Replica B shares the control database but owns a different node-local
+	// supervisor root. Its completed record and private artifact must not be
+	// inspected or block replica A's startup reconciliation.
+	foreignRoot := filepath.Join(root, "foreign-snapshots")
+	foreignManager, err := supervisor.NewManager(foreignRoot, []byte(key), startupSnapshotBackend{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := foreignManager.SetSnapshotArtifactBudget(supervisor.MaxSnapshotArtifactBytes); err != nil {
+		t.Fatal(err)
+	}
+	foreignOperation := &model.Operation{ID: uuid.NewString(), Kind: "app.snapshot", App: "foreign", Status: model.OperationQueued, Source: "test", Payload: map[string]interface{}{}, Metadata: map[string]interface{}{}, StartedAt: time.Now().UTC(), MaxAttempts: 1}
+	if err := db.InsertOperation(ctx, foreignOperation); err != nil {
+		t.Fatal(err)
+	}
+	foreignClaimed, foreignClaim, err := db.ClaimNextOperation(ctx, "foreign-worker", time.Minute, []string{"app.snapshot"})
+	if err != nil || foreignClaimed == nil || foreignClaimed.ID != foreignOperation.ID {
+		t.Fatalf("claim foreign snapshot operation = %+v, %v", foreignClaimed, err)
+	}
+	foreignPayload, err := foreignManager.BuildSnapshotDescriptor(material)
+	if err != nil {
+		t.Fatal(err)
+	}
+	foreignReservation := effect.Reservation{Authority: authority, Resource: "app/foreign/snapshot", OperationClaim: effect.OperationClaim{OperationID: foreignClaim.OperationID(), OwnerID: foreignClaim.OwnerID(), Generation: foreignClaim.Generation()}, Stage: "app.snapshot", Supervisor: "snapshot-runner", SupervisorExecutionID: "snapshot-foreign", LaunchPayload: foreignPayload}
+	foreignReservation.InputDigest, err = effect.ComputeInputDigest(foreignReservation)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := foreignManager.Prepare(ctx, foreignReservation); err != nil {
+		t.Fatal(err)
+	}
+	foreignReserved, err := effects.Reserve(ctx, foreignReservation)
+	if err != nil || !foreignReserved.Created {
+		t.Fatalf("reserve foreign snapshot = %+v, %v", foreignReserved, err)
+	}
+	foreignIdentity, err := foreignManager.LaunchSnapshot(ctx, foreignReservation, material)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := effects.MarkLaunched(ctx, foreignReserved.Record.Token, foreignIdentity); err != nil {
+		t.Fatal(err)
+	}
+	foreignVerification := effect.Verification{Decision: effect.VerificationSucceeded, InputDigest: foreignReservation.InputDigest, ResultDigest: effect.DigestInput([]byte("manifest")), ResultReference: "result/" + foreignReservation.SupervisorExecutionID, SupervisorExecutionID: foreignReservation.SupervisorExecutionID, RuntimeInstanceID: foreignIdentity.RuntimeInstanceID, EvidenceSource: "test", EvidenceReference: "test/" + foreignIdentity.RuntimeInstanceID, ObservedAt: time.Now().UTC()}
+	if err := effects.Complete(ctx, foreignReserved.Record.Token, effect.Completion{Outcome: effect.OutcomeSucceeded, Verification: foreignVerification}); err != nil {
+		t.Fatal(err)
+	}
+	if err := db.FinishClaimedOperation(ctx, foreignClaim, model.OperationSucceeded, "published", nil); err != nil {
+		t.Fatal(err)
+	}
+	foreignDigest := sha256.Sum256([]byte(foreignReservation.SupervisorExecutionID))
+	foreignPrivate := filepath.Join(foreignRoot, hex.EncodeToString(foreignDigest[:]), ".snapshot-published")
+	if err := os.MkdirAll(foreignPrivate, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	foreignArchive := filepath.Join(foreignPrivate, "archive.dump")
+	if err := os.WriteFile(foreignArchive, []byte("foreign"), 0o600); err != nil {
+		t.Fatal(err)
+	}
 	cfg := &config.Config{SnapshotExecution: "supervised", EffectSupervisorDir: root, EffectSigningKey: key, EffectCgroupRoot: "/test/cgroup", EffectRunnerBinary: "/test/runner", SnapshotPGDumpPath: "/usr/bin/pg_dump", SnapshotPGDumpSHA256: strings.Repeat("a", 64), SnapshotTimeout: time.Minute, SnapshotArtifactBudgetBytes: supervisor.MaxSnapshotArtifactBytes}
 	if _, err := configureSnapshotEffects(cfg, db, func(string, string, string, []byte) (supervisor.Backend, error) { return startupSnapshotBackend{}, nil }); err != nil {
 		t.Fatalf("startup snapshot reconciliation = %v", err)
@@ -214,5 +272,8 @@ func TestConfigureSnapshotEffectsReconcilesPublishedArtifactAfterRestart(t *test
 	}
 	if _, err := os.Lstat(filepath.Join(directory, "snapshot-admission")); !os.IsNotExist(err) {
 		t.Fatalf("snapshot admission survived startup reconciliation: %v", err)
+	}
+	if _, err := os.Lstat(foreignArchive); err != nil {
+		t.Fatalf("replica A touched replica B private archive: %v", err)
 	}
 }
