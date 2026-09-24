@@ -467,7 +467,8 @@ func (m *Manager) DiscardDurablyTerminalSnapshotArtifact(ctx context.Context, re
 		return fmt.Errorf("snapshot cleanup reservation digest is invalid")
 	}
 	verification := record.Completion.Verification
-	if verification.InputDigest != record.Reservation.InputDigest ||
+	if strings.TrimSpace(record.Execution.RuntimeInstanceID) == "" ||
+		verification.InputDigest != record.Reservation.InputDigest ||
 		verification.SupervisorExecutionID != record.Reservation.SupervisorExecutionID ||
 		verification.RuntimeInstanceID != record.Execution.RuntimeInstanceID ||
 		verification.EvidenceSource != evidenceSource ||
@@ -479,11 +480,11 @@ func (m *Manager) DiscardDurablyTerminalSnapshotArtifact(ctx context.Context, re
 		return fmt.Errorf("snapshot cleanup terminal decision does not prove the recorded outcome")
 	}
 	if record.Completion.Outcome == effect.OutcomeSucceeded &&
-		(strings.TrimSpace(verification.ResultDigest) == "" || strings.TrimSpace(verification.ResultReference) == "") {
+		(strings.TrimSpace(verification.ResultDigest) == "" || verification.ResultReference != "result/"+record.Reservation.SupervisorExecutionID) {
 		return fmt.Errorf("successful snapshot cleanup lacks durable result evidence")
 	}
 	if record.Completion.Outcome == effect.OutcomeFailed &&
-		(record.Completion.ExitCode == nil || strings.TrimSpace(verification.ResultDigest) == "" || strings.TrimSpace(verification.ResultReference) == "") {
+		(record.Completion.ExitCode == nil || strings.TrimSpace(verification.ResultDigest) == "" || verification.ResultReference != "result/"+record.Reservation.SupervisorExecutionID) {
 		return fmt.Errorf("failed snapshot cleanup lacks durable terminal evidence")
 	}
 	if _, err := m.verifySnapshotDescriptor(record.Reservation.LaunchPayload, nil); err != nil {
