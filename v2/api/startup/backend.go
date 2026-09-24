@@ -11,6 +11,7 @@ const (
 	ControlBackendEnv           = "NORN_CONTROL_BACKEND"
 	EtcdEndpointsEnv            = "NORN_ETCD_ENDPOINTS"
 	EtcdPrefixEnv               = "NORN_ETCD_PREFIX"
+	EtcdSourceValidationModeEnv = "NORN_ETCD_SOURCE_VALIDATION"
 	ControlBackendProbeArgument = "--norn-control-backend-probe"
 	BackendPostgres             = "postgres"
 	BackendEtcd                 = "etcd"
@@ -20,6 +21,9 @@ type ControlBackendConfig struct {
 	Backend       string   `json:"backend"`
 	EtcdEndpoints []string `json:"etcdEndpoints,omitempty"`
 	EtcdPrefix    string   `json:"etcdPrefix,omitempty"`
+	// SourceValidation is an intentionally narrow API runtime. It is not a
+	// general etcd control-plane enablement and is consumed only by norn-api.
+	SourceValidation bool `json:"sourceValidation,omitempty"`
 }
 
 func ParseControlBackend(getenv func(string) string) (ControlBackendConfig, error) {
@@ -43,13 +47,25 @@ func ParseControlBackend(getenv func(string) string) (ControlBackendConfig, erro
 	if backend == BackendEtcd && len(endpoints) == 0 {
 		return ControlBackendConfig{}, fmt.Errorf("%s=etcd requires %s", ControlBackendEnv, EtcdEndpointsEnv)
 	}
-	return ControlBackendConfig{Backend: backend, EtcdEndpoints: endpoints, EtcdPrefix: prefix}, nil
+	return ControlBackendConfig{Backend: backend, EtcdEndpoints: endpoints, EtcdPrefix: prefix, SourceValidation: strings.EqualFold(strings.TrimSpace(getenv(EtcdSourceValidationModeEnv)), "true")}, nil
 }
 
 // RequireRuntimeCapabilities rejects etcd before either executable opens PostgreSQL.
 func RequireRuntimeCapabilities(cfg ControlBackendConfig) error {
 	if cfg.Backend == BackendEtcd {
 		return fmt.Errorf("etcd control backend is not available: operation recovery, lease-backed app locks, and API aggregate consumers are not yet backend-neutral")
+	}
+	return nil
+}
+
+// RequireEtcdSourceValidationStartup keeps the narrow PG-free runtime from
+// silently changing the meaning of PostgreSQL schema or passive status modes.
+func RequireEtcdSourceValidationStartup(cfg Config) error {
+	if cfg.StartupMode != ModeActive {
+		return fmt.Errorf("etcd source validation requires %s=active", StartupModeEnv)
+	}
+	if cfg.SchemaMode != SchemaModeAuto {
+		return fmt.Errorf("etcd source validation requires %s=auto", SchemaModeEnv)
 	}
 	return nil
 }
@@ -63,7 +79,15 @@ func WriteControlBackendProbe(args []string, getenv func(string) string, w io.Wr
 	if err != nil {
 		return true, err
 	}
-	if err = RequireRuntimeCapabilities(cfg); err != nil {
+	if cfg.Backend == BackendEtcd && cfg.SourceValidation {
+		startupCfg, parseErr := Parse(getenv)
+		if parseErr != nil {
+			return true, parseErr
+		}
+		if err = RequireEtcdSourceValidationStartup(startupCfg); err != nil {
+			return true, err
+		}
+	} else if err = RequireRuntimeCapabilities(cfg); err != nil {
 		return true, err
 	}
 	if err = json.NewEncoder(w).Encode(cfg); err != nil {

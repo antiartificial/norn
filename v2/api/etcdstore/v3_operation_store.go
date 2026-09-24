@@ -86,6 +86,21 @@ var _ store.OperationIdentityResolver = (*V3OperationStore)(nil)
 var _ store.ExecutionStore = (*V3OperationStore)(nil)
 var _ store.OperationCheckpointStore = (*V3OperationStore)(nil)
 
+// GetOperation returns a single accepted operation for the narrow
+// source-validation status surface. It intentionally does not add listing or
+// recovery semantics to the etcd adapter.
+func (s *V3OperationStore) GetOperation(ctx context.Context, id string) (*model.Operation, error) {
+	if strings.TrimSpace(id) == "" {
+		return nil, fmt.Errorf("operation ID is required")
+	}
+	record, _, err := s.load(ctx, id)
+	if err != nil {
+		return nil, err
+	}
+	operation := record.Operation
+	return &operation, nil
+}
+
 func (s *V3OperationStore) opKey(id string) string      { return s.prefix + "/v3/operations/" + id }
 func (s *V3OperationStore) opsPrefix() string           { return s.prefix + "/v3/operations/" }
 func (s *V3OperationStore) runningKey(id string) string { return s.prefix + "/v3/running/" + id }

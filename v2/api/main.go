@@ -68,14 +68,23 @@ func main() {
 	if err != nil {
 		log.Fatalf("control backend: %v", err)
 	}
-	if err := startup.RequireRuntimeCapabilities(backendCfg); err != nil {
-		log.Fatalf("control backend: %v", err)
-	}
 	cfg := config.Load()
-	databaseID := databaseIdentity(cfg.DatabaseURL, cfg.AuditSigningKey)
 	if err := validateControlSecurity(cfg); err != nil {
 		log.Fatalf("security configuration: %v", err)
 	}
+	if backendCfg.Backend == startup.BackendEtcd && backendCfg.SourceValidation {
+		if err := startup.RequireEtcdSourceValidationStartup(startupCfg); err != nil {
+			log.Fatalf("etcd source validation: %v", err)
+		}
+		if err := runEtcdSourceValidation(cfg, backendCfg); err != nil {
+			log.Fatalf("etcd source validation: %v", err)
+		}
+		return
+	}
+	if err := startup.RequireRuntimeCapabilities(backendCfg); err != nil {
+		log.Fatalf("control backend: %v", err)
+	}
+	databaseID := databaseIdentity(cfg.DatabaseURL, cfg.AuditSigningKey)
 	if startupCfg.StartupMode == startup.ModePassive {
 		if err := validatePassiveBind(cfg.BindAddr); err != nil {
 			log.Fatalf("startup configuration: %v", err)
