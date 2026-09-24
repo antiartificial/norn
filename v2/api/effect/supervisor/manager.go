@@ -59,10 +59,21 @@ type SnapshotBackend interface {
 }
 
 type Manager struct {
-	root    string
-	rootID  string
-	key     []byte
-	backend Backend
+	root                   string
+	rootID                 string
+	key                    []byte
+	backend                Backend
+	snapshotArtifactBudget int64
+}
+
+// SetSnapshotArtifactBudget configures the total admission ceiling for private
+// snapshot dumps. A zero value disables snapshot admission.
+func (m *Manager) SetSnapshotArtifactBudget(bytes int64) error {
+	if m == nil || bytes < MaxSnapshotArtifactBytes {
+		return fmt.Errorf("snapshot artifact budget must be at least %d bytes", MaxSnapshotArtifactBytes)
+	}
+	m.snapshotArtifactBudget = bytes
+	return nil
 }
 
 // registryEntry is the root-level record of an execution namespace. The
@@ -302,6 +313,9 @@ func (m *Manager) LaunchSnapshot(ctx context.Context, reservation effect.Reserva
 			identity = journalIdentity(record)
 			return nil
 		}
+		if err := m.admitSnapshotArtifact(reservation.SupervisorExecutionID); err != nil {
+			return err
+		}
 		record.RuntimeInstanceID, record.Phase = uuid.NewString(), "prepared"
 		if err := m.recordLaunchRuntime(record); err != nil {
 			return err
@@ -324,6 +338,136 @@ func (m *Manager) LaunchSnapshot(ctx context.Context, reservation effect.Reserva
 		return nil
 	})
 	return identity, err
+}
+
+// DiscardSnapshotArtifact removes only the already-published private dump.
+// Its caller must have a durable terminal operation record; without it the
+// dump remains available for effect replay.
+func (m *Manager) DiscardSnapshotArtifact(ctx context.Context, reservation effect.Reservation, identity effect.ExecutionIdentity) error {
+	d, err := m.verifySnapshotDescriptor(reservation.LaunchPayload, nil)
+	if err != nil {
+		return err
+	}
+	b, ok := m.backend.(SnapshotBackend)
+	if !ok {
+		return fmt.Errorf("snapshot supervisor backend is unavailable")
+	}
+	return m.withExecutionLock(identity.SupervisorExecutionID, func(directory string) error {
+		r, err := m.readBoundJournal(directory, reservation, identity)
+		if err != nil {
+			return err
+		}
+		private, err := snapshotArtifactDirectory(directory)
+		if errors.Is(err, os.ErrNotExist) {
+			return nil
+		}
+		if err != nil {
+			return err
+		}
+		if _, err := os.Lstat(filepath.Join(private, "archive.dump")); errors.Is(err, os.ErrNotExist) {
+			return nil
+		} else if err != nil {
+			return err
+		}
+		// This proves a signed successful terminal status and containment before
+		// deleting the one private archive. It is intentionally idempotent.
+		if _, err := b.QuerySnapshot(ctx, backendExecution(r, directory), d); err != nil {
+			if errors.Is(err, os.ErrNotExist) {
+				return nil
+			}
+			return err
+		}
+		if err := os.Remove(filepath.Join(private, "archive.dump")); err != nil && !errors.Is(err, os.ErrNotExist) {
+			return err
+		}
+		if err := os.Remove(filepath.Join(directory, "snapshot-admission")); err != nil && !errors.Is(err, os.ErrNotExist) {
+			return err
+		}
+		if err := syncDirectory(private); err != nil {
+			return err
+		}
+		return syncDirectory(directory)
+	})
+}
+
+func snapshotArtifactDirectory(directory string) (string, error) {
+	entries, err := os.ReadDir(directory)
+	if err != nil {
+		return "", err
+	}
+	var private string
+	for _, entry := range entries {
+		if entry.IsDir() && strings.HasPrefix(entry.Name(), ".snapshot-") {
+			if private != "" {
+				return "", fmt.Errorf("snapshot artifact directory is ambiguous")
+			}
+			private = filepath.Join(directory, entry.Name())
+		}
+	}
+	if private == "" {
+		return "", os.ErrNotExist
+	}
+	return private, nil
+}
+
+func (m *Manager) admitSnapshotArtifact(executionID string) error {
+	if m.snapshotArtifactBudget < MaxSnapshotArtifactBytes {
+		return fmt.Errorf("snapshot artifact admission budget is not configured")
+	}
+	return m.withRegistryLock(func(*registry) error {
+		digest := sha256.Sum256([]byte(executionID))
+		currentDirectory := hex.EncodeToString(digest[:])
+		var used int64
+		entries, err := os.ReadDir(m.root)
+		if err != nil {
+			return err
+		}
+		for _, entry := range entries {
+			if !entry.IsDir() {
+				continue
+			}
+			directory := filepath.Join(m.root, entry.Name())
+			admission := filepath.Join(directory, "snapshot-admission")
+			if info, err := os.Lstat(admission); err == nil {
+				if !info.Mode().IsRegular() || info.Size() > 4<<10 || used > m.snapshotArtifactBudget-MaxSnapshotArtifactBytes {
+					return fmt.Errorf("snapshot artifact admission accounting is invalid")
+				}
+				if entry.Name() == currentDirectory {
+					continue
+				}
+				used += MaxSnapshotArtifactBytes
+				continue
+			} else if !errors.Is(err, os.ErrNotExist) {
+				return err
+			}
+			private, err := snapshotArtifactDirectory(directory)
+			if errors.Is(err, os.ErrNotExist) {
+				continue
+			}
+			if err != nil {
+				return err
+			}
+			info, err := os.Lstat(filepath.Join(private, "archive.dump"))
+			if errors.Is(err, os.ErrNotExist) {
+				continue
+			}
+			if err != nil || !info.Mode().IsRegular() || info.Size() < 0 {
+				return fmt.Errorf("snapshot artifact accounting is invalid")
+			}
+			if info.Size() > MaxSnapshotArtifactBytes || used > m.snapshotArtifactBudget-info.Size() {
+				return fmt.Errorf("snapshot artifact budget is exhausted")
+			}
+			used += info.Size()
+		}
+		if used > m.snapshotArtifactBudget-MaxSnapshotArtifactBytes {
+			return fmt.Errorf("snapshot artifact budget cannot admit another bounded dump")
+		}
+		directory := filepath.Join(m.root, currentDirectory)
+		if err := writeDurableJSON(directory, "snapshot-admission", map[string]int64{"reservedBytes": MaxSnapshotArtifactBytes}); err != nil {
+			return fmt.Errorf("record snapshot artifact admission: %w", err)
+		}
+		return nil
+	})
 }
 
 func (m *Manager) QuerySnapshot(ctx context.Context, reservation effect.Reservation, identity effect.ExecutionIdentity) (SnapshotManifest, error) {

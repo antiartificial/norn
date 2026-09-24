@@ -218,6 +218,28 @@ func (s *PGEffectStore) LatestForOperation(ctx context.Context, operationID, sta
 	return record, true, nil
 }
 
+// CompletedSnapshotOperations returns only effects whose public operation
+// success is already durable. Those are safe private-artifact cleanup targets.
+func (s *PGEffectStore) CompletedSnapshotOperations(ctx context.Context) ([]effect.Record, error) {
+	if s == nil || s.db == nil || s.db.Pool == nil {
+		return nil, fmt.Errorf("operation effect lookup is unavailable")
+	}
+	rows, err := s.db.Pool.Query(ctx, `SELECT `+effectColumns+` FROM operation_effects e JOIN operations o ON o.id=e.operation_id WHERE e.stage='app.snapshot' AND e.lifecycle='completed' AND o.status='succeeded'`)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var records []effect.Record
+	for rows.Next() {
+		record, err := scanEffectRecord(rows)
+		if err != nil {
+			return nil, err
+		}
+		records = append(records, record)
+	}
+	return records, rows.Err()
+}
+
 func (s *PGEffectStore) MarkLaunched(ctx context.Context, token effect.Token, identity effect.ExecutionIdentity) error {
 	if err := validateEffectToken(token); err != nil {
 		return err
@@ -334,6 +356,10 @@ const effectColumns = `
 func queryEffectRecord(ctx context.Context, queryer interface {
 	QueryRow(context.Context, string, ...any) pgx.Row
 }, query string, args ...any) (effect.Record, error) {
+	return scanEffectRecord(queryer.QueryRow(ctx, query, args...))
+}
+
+func scanEffectRecord(row interface{ Scan(...any) error }) (effect.Record, error) {
 	var record effect.Record
 	var launchPayload []byte
 	var outcome effect.Outcome
@@ -341,7 +367,6 @@ func queryEffectRecord(ctx context.Context, queryer interface {
 	var resultDigest, resultReference, evidenceSource, evidenceReference string
 	var evidenceObservedAt *time.Time
 	var resolutionDecision effect.VerificationDecision
-	row := queryer.QueryRow(ctx, query, args...)
 	err := row.Scan(
 		&record.Token.EffectID, &record.Token.Generation, &record.Reservation.Authority,
 		&record.Reservation.Resource, &record.Reservation.OperationClaim.OperationID,

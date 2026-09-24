@@ -164,6 +164,9 @@ type Config struct {
 	SnapshotPGDumpPath   string        // NORN_SNAPSHOT_PGDUMP_PATH
 	SnapshotPGDumpSHA256 string        // NORN_SNAPSHOT_PGDUMP_SHA256
 	SnapshotTimeout      time.Duration // NORN_SNAPSHOT_TIMEOUT
+	// SnapshotArtifactBudgetBytes bounds all private supervised snapshot dumps.
+	// It must accommodate at least one hard-capped artifact in supervised mode.
+	SnapshotArtifactBudgetBytes int64 // NORN_SNAPSHOT_ARTIFACT_BUDGET_BYTES
 
 	// DatabaseProfile selects a deployment profile in the durable database
 	// catalog. It is independent of Profile (security hardening). Unset keeps
@@ -320,6 +323,7 @@ func Load() *Config {
 		SnapshotPGDumpPath:           strings.TrimSpace(os.Getenv("NORN_SNAPSHOT_PGDUMP_PATH")),
 		SnapshotPGDumpSHA256:         strings.ToLower(strings.TrimSpace(os.Getenv("NORN_SNAPSHOT_PGDUMP_SHA256"))),
 		SnapshotTimeout:              envDurationOr("NORN_SNAPSHOT_TIMEOUT", time.Hour),
+		SnapshotArtifactBudgetBytes:  envInt64Or("NORN_SNAPSHOT_ARTIFACT_BUDGET_BYTES", 0),
 		DatabaseProfile:              strings.TrimSpace(os.Getenv("NORN_DATABASE_PROFILE")),
 		DatabaseSecretDir:            strings.TrimSpace(os.Getenv("NORN_DATABASE_SECRET_DIR")),
 		EvidenceArchiveDir:           strings.TrimSpace(os.Getenv("NORN_EVIDENCE_ARCHIVE_DIR")),

@@ -79,6 +79,33 @@ func snapshotExecutionID(r effect.Reservation) string {
 	x := sha256.Sum256([]byte(r.Authority + "\x00" + r.OperationClaim.OperationID + "\x00" + r.InputDigest + "\x00" + fmt.Sprint(r.OperationClaim.Generation)))
 	return "snapshot-" + hex.EncodeToString(x[:16])
 }
+
+// ReconcilePublishedArtifacts removes private dumps only for snapshot effects
+// whose owning operation has a durable succeeded record. It closes the crash
+// window after the terminal operation CAS but before the worker callback.
+func (s *SnapshotEffects) ReconcilePublishedArtifacts(ctx context.Context) error {
+	if !s.available() {
+		return fmt.Errorf("snapshot effects incomplete")
+	}
+	records, err := s.Store.CompletedSnapshotOperations(ctx)
+	if err != nil {
+		return err
+	}
+	for _, record := range records {
+		if err := s.Manager.DiscardSnapshotArtifact(ctx, record.Reservation, record.Execution); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func (s *SnapshotEffects) DiscardPublishedArtifact(ctx context.Context, operationID string) error {
+	record, found, err := s.Store.LatestForOperation(ctx, operationID, "app.snapshot")
+	if err != nil || !found {
+		return fmt.Errorf("durable snapshot effect record unavailable: %w", err)
+	}
+	return s.Manager.DiscardSnapshotArtifact(ctx, record.Reservation, record.Execution)
+}
 func (p *Pipeline) executeAttestedSnapshot(ctx context.Context, op *model.Operation, claim store.OperationClaim, bound *boundDatabase, loc snapshotLocation) (*dataSnapshot, effect.ExecuteResult, error) {
 	if !p.SnapshotEffects.available() || p.DB == nil || bound == nil || bound.session == nil {
 		return nil, effect.ExecuteResult{}, &SnapshotExecutionUnavailableError{}

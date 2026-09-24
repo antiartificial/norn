@@ -100,6 +100,9 @@ func (p *Pipeline) executeDataOperation(ctx context.Context, op *model.Operation
 			return nil, err
 		}
 		return finish("snapshot created for "+spec.App, map[string]interface{}{"snapshot": created.Filename}, func(publishCtx context.Context) {
+			// Publish executes only after the worker's terminal claim CAS. A later
+			// startup reconciliation retries this cleanup if this process crashes.
+			_ = p.SnapshotEffects.DiscardPublishedArtifact(publishCtx, op.ID)
 			_ = sg.Log(publishCtx, "snapshot.created", "manual database snapshot created", map[string]string{"snapshot": created.Filename, "database": database})
 			p.broadcastDataEvent("snapshot.created", spec.App, map[string]string{"snapshot": created.Filename, "database": database, "operationId": op.ID})
 		}), nil
