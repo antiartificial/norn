@@ -64,12 +64,13 @@ func (h *Handler) CreateFleetGitHubPullRequest(w http.ResponseWriter, r *http.Re
 	// The lock covers the signed receipt as well as the external call. GitHub
 	// can recover a duplicate PR request, but it cannot create the one signed
 	// Norn receipt that represents that protected plan mutation.
-	release, locked, lockErr := h.db.AcquireAppOperationLock(r.Context(), "fleet-github-pull-request:"+plan.ID)
+	appLock, locked, lockErr := h.db.AcquireAppOperationLock(r.Context(), "fleet-github-pull-request:"+plan.ID)
 	if lockErr != nil || !locked {
 		WriteControlProblem(w, r, http.StatusConflict, "fleet_github_pull_request_in_progress", "another protected pull request is resolving this fleet plan")
 		return
 	}
-	defer release()
+	defer appLock.Release()
+	r = r.WithContext(appLock.Context())
 	if existing, found, err := h.existingFleetGitHubOperation(r, plan.ID, "fleet.github.pull-request"); err != nil {
 		writeOperationAcceptanceError(w, r, err)
 		return
@@ -155,12 +156,13 @@ func (h *Handler) ReconcileFleetGitHubReservation(w http.ResponseWriter, r *http
 	if request.Kind == "apply-dispatch" {
 		lockName = "fleet-github-dispatch:" + plan.ID
 	}
-	release, locked, lockErr := h.db.AcquireAppOperationLock(r.Context(), lockName)
+	appLock, locked, lockErr := h.db.AcquireAppOperationLock(r.Context(), lockName)
 	if lockErr != nil || !locked {
 		WriteControlProblem(w, r, http.StatusConflict, "fleet_github_reconcile_in_progress", "another request is resolving this Fleet GitHub reservation")
 		return
 	}
-	defer release()
+	defer appLock.Release()
+	r = r.WithContext(appLock.Context())
 	op, found, err := h.resolveFleetGitHubOperation(r, plan.ID, kind)
 	if err != nil {
 		writeOperationAcceptanceError(w, r, err)
@@ -273,12 +275,13 @@ func (h *Handler) DispatchFleetGitHubApply(w http.ResponseWriter, r *http.Reques
 	// This lock serializes durable binding creation and external dispatch for a
 	// plan. It prevents two API requests from racing past a find-then-dispatch
 	// check with the same approved infrastructure intent.
-	release, locked, lockErr := h.db.AcquireAppOperationLock(r.Context(), "fleet-github-dispatch:"+plan.ID)
+	appLock, locked, lockErr := h.db.AcquireAppOperationLock(r.Context(), "fleet-github-dispatch:"+plan.ID)
 	if lockErr != nil || !locked {
 		WriteControlProblem(w, r, http.StatusConflict, "fleet_github_dispatch_in_progress", "another protected dispatch is resolving this fleet plan")
 		return
 	}
-	defer release()
+	defer appLock.Release()
+	r = r.WithContext(appLock.Context())
 	if existing, found, err := h.existingFleetGitHubOperation(r, plan.ID, "fleet.github.apply-dispatch"); err != nil {
 		writeOperationAcceptanceError(w, r, err)
 		return

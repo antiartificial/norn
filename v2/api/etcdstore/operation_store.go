@@ -176,23 +176,12 @@ func mergeMetadata(op *model.Operation, patch map[string]interface{}) {
 	}
 }
 
-func (s *OperationStore) AcquireAppOperationLock(ctx context.Context, app string) (func(), bool, error) {
-	if strings.TrimSpace(app) == "" {
-		return func() {}, false, errors.New("app operation lock is unavailable")
-	}
-	resp, err := s.kv.Txn(ctx).
-		If(clientv3.Compare(clientv3.CreateRevision(s.lockKey(app)), "=", 0)).
-		Then(clientv3.OpPut(s.lockKey(app), "1")).
-		Commit()
-	if err != nil {
-		return func() {}, false, err
-	}
-	if !resp.Succeeded {
-		return func() {}, false, nil
-	}
-	return func() {
-		_, _ = s.kv.Delete(context.Background(), s.lockKey(app))
-	}, true, nil
+func (s *OperationStore) AcquireAppOperationLock(ctx context.Context, app string) (store.AppOperationLock, bool, error) {
+	// This legacy adapter receives only clientv3.KV, so it cannot attach its
+	// key to a lease or observe ownership loss. Refuse app execution rather
+	// than recreating the crash-persistent lock it used to expose. V3 callers
+	// must use V3OperationStore, whose leasedKV boundary provides both.
+	return nil, false, errors.New("legacy etcd app operation lock is unavailable without lease support")
 }
 
 func (s *OperationStore) InsertOperation(ctx context.Context, op *model.Operation) error {

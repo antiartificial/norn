@@ -88,7 +88,7 @@ func (w *OperationWorker) handle(ctx context.Context, op *model.Operation, claim
 	if lockKey == "" {
 		lockKey = op.Kind + ":" + op.Ref
 	}
-	release, locked, lockErr := w.db.AcquireAppOperationLock(ctx, lockKey)
+	appLock, locked, lockErr := w.db.AcquireAppOperationLock(ctx, lockKey)
 	if lockErr != nil || !locked {
 		message := "another mutable operation is active for this app"
 		if lockErr != nil {
@@ -100,8 +100,8 @@ func (w *OperationWorker) handle(ctx context.Context, op *model.Operation, claim
 		}
 		return
 	}
-	defer release()
-	executionCtx, cancelExecution := context.WithCancel(ctx)
+	defer appLock.Release()
+	executionCtx, cancelExecution := context.WithCancel(appLock.Context())
 	defer cancelExecution()
 	renewalStop := make(chan struct{})
 	renewalDone := make(chan error, 1)
@@ -116,29 +116,43 @@ func (w *OperationWorker) handle(ctx context.Context, op *model.Operation, claim
 		log.Printf("operation worker: ownership renewal stopped %s: %v", op.ID, renewErr)
 		return
 	}
+	if lockErr := appLock.Context().Err(); lockErr != nil {
+		// A backend lease can expire while an executor is unwinding. Its result
+		// cannot be terminalized because a newer holder may have started work.
+		log.Printf("operation worker: app lock ownership stopped %s: %v", op.ID, context.Cause(appLock.Context()))
+		return
+	}
 	if execErr != nil {
 		if effect.IsDeferred(execErr) {
 			message := fmt.Sprintf("external effect recovery pending: %v", execErr)
-			if deferErr := w.db.DeferClaimedOperation(ctx, claim, message, time.Now().Add(5*time.Second), map[string]interface{}{
+			if deferErr := w.deferClaimedOperation(ctx, claim, appLock, message, time.Now().Add(5*time.Second), map[string]interface{}{
 				"externalEffectRecoveryPending": true,
 			}); deferErr != nil {
 				log.Printf("operation worker: defer unresolved effect %s: %v", op.ID, deferErr)
 			}
 			return
 		}
-		w.recordFailure(ctx, op, claim, execErr)
+		w.recordFailure(ctx, op, claim, appLock, execErr)
 		return
 	}
 	if result == nil {
-		w.recordFailure(ctx, op, claim, fmt.Errorf("operation executor returned no result"))
+		w.recordFailure(ctx, op, claim, appLock, fmt.Errorf("operation executor returned no result"))
 		return
 	}
 	if result.Finished() {
+		if _, fenced := w.db.(store.AppLockFencedExecutionStore); fenced {
+			// The V3 adapter can fence its own terminal CAS, but this result was
+			// committed by a separate effect boundary. Until that boundary accepts
+			// the app-lock fence in its own transaction, publishing would make an
+			// unfenced mutable execution visible.
+			log.Printf("operation worker: refusing unfenced pre-finished result %s", op.ID)
+			return
+		}
 		// Committed atomically with the effect (catalog activation).
 		result.Publish(ctx)
 		return
 	}
-	if finishErr := w.db.FinishClaimedOperation(ctx, claim, result.Status, result.Message, result.Metadata); finishErr != nil {
+	if finishErr := w.finishClaimedOperation(ctx, claim, appLock, result.Status, result.Message, result.Metadata); finishErr != nil {
 		log.Printf("operation worker: finish %s: %v", op.ID, finishErr)
 		return
 	}
@@ -156,11 +170,11 @@ func (w *OperationWorker) execute(ctx context.Context, op *model.Operation, clai
 	return w.pipeline.ExecuteOperation(ctx, op, claim)
 }
 
-func (w *OperationWorker) recordFailure(ctx context.Context, op *model.Operation, claim store.OperationClaim, err error) {
+func (w *OperationWorker) recordFailure(ctx context.Context, op *model.Operation, claim store.OperationClaim, appLock store.AppOperationLock, err error) {
 	message := fmt.Sprintf("%s failed: %v", op.Kind, err)
 	if op.Attempts < op.MaxAttempts && (op.Kind == "app.preflight" || op.Kind == "app.deploy") {
 		delay := retryDelay(op.Attempts)
-		if retryErr := w.db.RetryClaimedOperation(ctx, claim, message, err.Error(), time.Now().Add(delay), map[string]interface{}{
+		if retryErr := w.retryClaimedOperation(ctx, claim, appLock, message, err.Error(), time.Now().Add(delay), map[string]interface{}{
 			"retryDelaySeconds": int(delay.Seconds()),
 		}); retryErr != nil {
 			if !errors.Is(retryErr, store.ErrOperationRetryUnsafe) {
@@ -176,9 +190,30 @@ func (w *OperationWorker) recordFailure(ctx context.Context, op *model.Operation
 	if op.Kind != "app.preflight" {
 		metadata["manualRecoveryRequired"] = true
 	}
-	if finishErr := w.db.FinishClaimedOperation(ctx, claim, model.OperationFailed, message, metadata); finishErr != nil {
+	if finishErr := w.finishClaimedOperation(ctx, claim, appLock, model.OperationFailed, message, metadata); finishErr != nil {
 		log.Printf("operation worker: finish failed %s: %v", op.ID, finishErr)
 	}
+}
+
+func (w *OperationWorker) deferClaimedOperation(ctx context.Context, claim store.OperationClaim, appLock store.AppOperationLock, message string, next time.Time, metadata map[string]interface{}) error {
+	if fenced, ok := w.db.(store.AppLockFencedExecutionStore); ok {
+		return fenced.DeferClaimedOperationWithAppLock(ctx, claim, appLock, message, next, metadata)
+	}
+	return w.db.DeferClaimedOperation(ctx, claim, message, next, metadata)
+}
+
+func (w *OperationWorker) retryClaimedOperation(ctx context.Context, claim store.OperationClaim, appLock store.AppOperationLock, message, lastError string, next time.Time, metadata map[string]interface{}) error {
+	if fenced, ok := w.db.(store.AppLockFencedExecutionStore); ok {
+		return fenced.RetryClaimedOperationWithAppLock(ctx, claim, appLock, message, lastError, next, metadata)
+	}
+	return w.db.RetryClaimedOperation(ctx, claim, message, lastError, next, metadata)
+}
+
+func (w *OperationWorker) finishClaimedOperation(ctx context.Context, claim store.OperationClaim, appLock store.AppOperationLock, status model.OperationStatus, message string, metadata map[string]interface{}) error {
+	if fenced, ok := w.db.(store.AppLockFencedExecutionStore); ok {
+		return fenced.FinishClaimedOperationWithAppLock(ctx, claim, appLock, status, message, metadata)
+	}
+	return w.db.FinishClaimedOperation(ctx, claim, status, message, metadata)
 }
 
 func (w *OperationWorker) renewLease(ctx context.Context, claim store.OperationClaim, cancelExecution context.CancelFunc, stop <-chan struct{}) error {

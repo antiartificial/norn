@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/jackc/pgx/v5"
@@ -22,7 +23,87 @@ type ExecutionStore interface {
 	DeferClaimedOperation(context.Context, OperationClaim, string, time.Time, map[string]interface{}) error
 	RetryClaimedOperation(context.Context, OperationClaim, string, string, time.Time, map[string]interface{}) error
 	FinishClaimedOperation(context.Context, OperationClaim, model.OperationStatus, string, map[string]interface{}) error
-	AcquireAppOperationLock(context.Context, string) (func(), bool, error)
+	AcquireAppOperationLock(context.Context, string) (AppOperationLock, bool, error)
+}
+
+// AppLockFencedExecutionStore can atomically bind terminalization to the
+// current app-lock fence. Workers use it when available rather than treating a
+// local context check as proof that no replacement holder exists.
+type AppLockFencedExecutionStore interface {
+	DeferClaimedOperationWithAppLock(context.Context, OperationClaim, AppOperationLock, string, time.Time, map[string]interface{}) error
+	RetryClaimedOperationWithAppLock(context.Context, OperationClaim, AppOperationLock, string, string, time.Time, map[string]interface{}) error
+	FinishClaimedOperationWithAppLock(context.Context, OperationClaim, AppOperationLock, model.OperationStatus, string, map[string]interface{}) error
+}
+
+// AppOperationLock is an app-scoped serialization lease. Callers must execute
+// mutable work using Context and must Release it when that work ends. Context
+// is canceled when the backend can no longer prove that this holder owns the
+// lock; a successful acquisition is therefore never an unmonitored lease.
+type AppOperationLock interface {
+	Context() context.Context
+	Fence() string
+	Release()
+}
+
+// ErrAppOperationLockLost is the cancellation cause when a lease-backed lock
+// loses its backend ownership before its caller releases it.
+var ErrAppOperationLockLost = errors.New("app operation lock ownership lost")
+
+// AppOperationLockHandle is the common implementation used by backends. A
+// backend calls Fail when its ownership monitor can no longer renew or verify
+// the lease. Release is idempotent so every error path can safely defer it.
+type AppOperationLockHandle struct {
+	ctx     context.Context
+	cancel  context.CancelCauseFunc
+	release func()
+	fence   string
+	once    sync.Once
+}
+
+func NewAppOperationLock(ctx context.Context, release func()) *AppOperationLockHandle {
+	return NewFencedAppOperationLock(ctx, "", release)
+}
+
+func NewFencedAppOperationLock(ctx context.Context, fence string, release func()) *AppOperationLockHandle {
+	if release == nil {
+		release = func() {}
+	}
+	lockCtx, cancel := context.WithCancelCause(ctx)
+	return &AppOperationLockHandle{ctx: lockCtx, cancel: cancel, release: release, fence: fence}
+}
+
+func (l *AppOperationLockHandle) Fence() string {
+	if l == nil {
+		return ""
+	}
+	return l.fence
+}
+
+func (l *AppOperationLockHandle) Context() context.Context {
+	if l == nil || l.ctx == nil {
+		return context.Background()
+	}
+	return l.ctx
+}
+
+func (l *AppOperationLockHandle) Fail(err error) {
+	if l == nil {
+		return
+	}
+	if err == nil {
+		err = ErrAppOperationLockLost
+	}
+	l.cancel(err)
+}
+
+func (l *AppOperationLockHandle) Release() {
+	if l == nil {
+		return
+	}
+	l.once.Do(func() {
+		l.cancel(nil)
+		l.release()
+	})
 }
 
 // OperationClaim is the immutable identity of one claimed execution. Attempts
@@ -85,27 +166,27 @@ func validateOperationClaim(claim OperationClaim) error {
 // AcquireAppOperationLock serializes mutable app operations across API
 // replicas. PostgreSQL advisory locks are session-scoped, so the returned
 // release function must always be called to return the pinned connection.
-func (db *DB) AcquireAppOperationLock(ctx context.Context, app string) (func(), bool, error) {
+func (db *DB) AcquireAppOperationLock(ctx context.Context, app string) (AppOperationLock, bool, error) {
 	if db == nil || db.Pool == nil || strings.TrimSpace(app) == "" {
-		return func() {}, false, fmt.Errorf("app operation lock is unavailable")
+		return nil, false, fmt.Errorf("app operation lock is unavailable")
 	}
 	conn, err := db.Pool.Acquire(ctx)
 	if err != nil {
-		return func() {}, false, err
+		return nil, false, err
 	}
 	var locked bool
 	if err := conn.QueryRow(ctx, `SELECT pg_try_advisory_lock(hashtextextended($1, 0))`, "norn:app:"+app).Scan(&locked); err != nil {
 		conn.Release()
-		return func() {}, false, err
+		return nil, false, err
 	}
 	if !locked {
 		conn.Release()
-		return func() {}, false, nil
+		return nil, false, nil
 	}
-	return func() {
+	return NewAppOperationLock(ctx, func() {
 		_, _ = conn.Exec(context.Background(), `SELECT pg_advisory_unlock(hashtextextended($1, 0))`, "norn:app:"+app)
 		conn.Release()
-	}, true, nil
+	}), true, nil
 }
 
 type OperationFilter struct {
