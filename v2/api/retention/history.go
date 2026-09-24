@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"sort"
+	"strings"
 	"time"
 
 	"github.com/jackc/pgx/v5"
@@ -191,12 +192,11 @@ type IndexRecovery struct {
 	Rejected []string `json:"rejected,omitempty"`
 }
 
-// RestoreIndex rebuilds the evidence index from the archive alone (for a
-// control store restored without its historical rows): every bundle object
-// is read, verified for internal consistency (and its acceptance signature
-// when a signer is given) and recorded from its own validated subject. This
-// includes saga history and terminal operation receipts. Existing index rows
-// are never overwritten.
+// RestoreIndex rebuilds the evidence index from archive objects. Saga history
+// can be indexed without its old hot rows. Operation receipts require a
+// matching control database backup containing their permanent replay identity
+// and a signer; otherwise recovery fails closed before accepting new writes.
+// Existing index rows are never overwritten.
 func RestoreIndex(ctx context.Context, db *store.DB, objects archive.Reader, signer store.AcceptanceSigner) (IndexRecovery, error) {
 	var recovery IndexRecovery
 	keys, err := objects.List(ctx, "evidence/")
@@ -208,8 +208,19 @@ func RestoreIndex(ctx context.Context, db *store.DB, objects archive.Reader, sig
 		recovery.Objects++
 		bundle, info, err := verifier.verifiedBundleAt(ctx, objects, key)
 		if err != nil {
+			if strings.HasPrefix(key, "evidence/operation/") {
+				return recovery, fmt.Errorf("operation index recovery requires every receipt to verify: %s: %w", key, err)
+			}
 			recovery.Rejected = append(recovery.Rejected, key+": "+err.Error())
 			continue
+		}
+		if bundle.Subject.Kind == "operation" {
+			if signer == nil || bundle.Acceptance == nil {
+				return recovery, fmt.Errorf("operation index recovery requires a signed acceptance verifier and restored control database identity")
+			}
+			if err := db.VerifyArchivedOperationIdentity(ctx, bundle.Acceptance.CanonicalBytes, bundle.Acceptance.RequestIdentityID, bundle.Subject.OperationID); err != nil {
+				return recovery, fmt.Errorf("operation index recovery for %s: %w", key, err)
+			}
 		}
 		var cutoff *time.Time
 		if bundle.Cutoff.EventCount > 0 {

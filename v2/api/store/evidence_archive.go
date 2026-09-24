@@ -496,6 +496,106 @@ func (db *DB) PruneVerifiedEvidence(ctx context.Context, intentID string, minAge
 	return pruned, nil, nil
 }
 
+// RetireVerifiedOperationAcceptance removes only the hot signed acceptance
+// payload and its logical-byte reservation for an archive-supported Fleet
+// GitHub receipt. It leaves the operation, immutable archive index, and the
+// expired request identity fingerprint tombstone in place. Verification runs
+// before the short transaction; the transaction then re-proves every mutable
+// condition and releases the reservation with the payload atomically.
+func (db *DB) RetireVerifiedOperationAcceptance(ctx context.Context, intentID string, verify func(context.Context, EvidenceIntent) error) (bool, []string, error) {
+	intent, err := db.EvidenceIntent(ctx, intentID)
+	if err != nil {
+		return false, nil, err
+	}
+	if intent.State != "verified" || intent.SubjectKind != "operation" {
+		return false, nil, nil
+	}
+	if err := verify(ctx, intent); err != nil {
+		return false, nil, fmt.Errorf("archived object failed verification before acceptance retirement: %w", err)
+	}
+	tx, err := db.Pool.BeginTx(ctx, pgx.TxOptions{})
+	if err != nil {
+		return false, nil, err
+	}
+	defer tx.Rollback(ctx)
+	locked, err := scanEvidenceIntent(tx.QueryRow(ctx, `SELECT `+evidenceIntentColumns+` FROM evidence_archive_intents WHERE id=$1 FOR UPDATE`, intentID))
+	if err != nil {
+		return false, nil, err
+	}
+	if locked.State != "verified" || locked.SubjectKind != "operation" || locked.ObjectSHA256 != intent.ObjectSHA256 {
+		return false, []string{"archive-intent-changed"}, nil
+	}
+	var operationID, acceptanceID, identityID, receiptID, status, kind, sagaID string
+	var recoveryHold, effectHold bool
+	err = tx.QueryRow(ctx, `SELECT o.id,ai.id,ai.request_identity_id,COALESCE(ai.request_receipt_id,''),o.status,o.kind,o.saga_id,
+		COALESCE(o.metadata->>'manualRecoveryRequired'='true',false) OR COALESCE(o.metadata->>'externalEffectRecoveryPending'='true',false),
+		EXISTS(SELECT 1 FROM operation_effects f WHERE f.operation_id=o.id AND f.lifecycle <> 'resolved')
+		FROM operations o
+		JOIN operation_acceptance_intents ai ON ai.operation_id=o.id
+		JOIN operation_request_identities ri ON ri.id=ai.request_identity_id
+		WHERE o.id=$1 FOR UPDATE OF o,ai,ri`, locked.OperationID).Scan(
+		&operationID, &acceptanceID, &identityID, &receiptID, &status, &kind, &sagaID, &recoveryHold, &effectHold)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return false, []string{"acceptance-already-retired"}, nil
+	}
+	if err != nil {
+		return false, nil, err
+	}
+	holds := []string{}
+	if locked.SubjectID != operationID || sagaID != "" || (kind != "fleet.github.pull-request" && kind != "fleet.github.apply-dispatch") {
+		holds = append(holds, "unsupported-operation-subject")
+	}
+	if status != "succeeded" && status != "failed" && status != "canceled" {
+		holds = append(holds, "operation-active")
+	}
+	if recoveryHold {
+		holds = append(holds, "manual-recovery")
+	}
+	if effectHold {
+		holds = append(holds, "unresolved-effect")
+	}
+	var legacyReaders bool
+	if err := tx.QueryRow(ctx, `SELECT NOT EXISTS (SELECT 1 FROM norn_schema_compatibility WHERE singleton AND minimum_reader_version >= $1)`, OperationAcceptanceRetirementReaderVersion).Scan(&legacyReaders); err != nil {
+		return false, nil, err
+	}
+	if legacyReaders {
+		holds = append(holds, "legacy-readers-admitted")
+	}
+	if err := tx.QueryRow(ctx, unretiredReaderSessionsSQL, OperationAcceptanceRetirementReaderVersion).Scan(&legacyReaders); err != nil {
+		return false, nil, err
+	}
+	if legacyReaders {
+		holds = append(holds, "unretired-readers-connected")
+	}
+	if len(holds) > 0 {
+		return false, holds, nil
+	}
+	expired, _, err := expireReplayIdentityInTx(ctx, tx, identityID)
+	if err != nil {
+		return false, nil, err
+	}
+	if !expired {
+		return false, []string{"replay-not-expired"}, nil
+	}
+	if _, err := tx.Exec(ctx, `INSERT INTO retired_operation_acceptances (operation_id,request_identity_id,request_receipt_id,archive_intent_id)
+		VALUES ($1,$2,NULLIF($3,''),$4)`, operationID, identityID, receiptID, locked.ID); err != nil {
+		return false, nil, err
+	}
+	if _, err := tx.Exec(ctx, `DELETE FROM signed_acceptance_byte_reservations WHERE acceptance_intent_id=$1`, acceptanceID); err != nil {
+		return false, nil, err
+	}
+	if _, err := tx.Exec(ctx, `DELETE FROM operation_acceptance_intents WHERE operation_id=$1`, operationID); err != nil {
+		return false, nil, err
+	}
+	if _, err := tx.Exec(ctx, `UPDATE evidence_archive_intents SET state='pruned',pruned_at=now(),pruned_events=0,updated_at=now() WHERE id=$1`, locked.ID); err != nil {
+		return false, nil, err
+	}
+	if err := tx.Commit(ctx); err != nil {
+		return false, nil, err
+	}
+	return true, nil, nil
+}
+
 // PrunedEvidenceIntents pages through pruned saga bundles holding events,
 // newest cutoff first, optionally for one app ("" for all apps).
 func (db *DB) PrunedEvidenceIntents(ctx context.Context, app string, offset, limit int) ([]EvidenceIntent, error) {

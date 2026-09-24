@@ -1,14 +1,45 @@
 package store
 
 import (
+	"context"
 	"crypto/sha256"
 	"crypto/subtle"
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
 
+	"github.com/jackc/pgx/v5"
+
 	"norn/v2/api/model"
 )
+
+// VerifyArchivedOperationIdentity requires the replay namespace to have been
+// restored from a control-database backup before an operation archive index is
+// rebuilt. The archive contains the signed identity, but RestoreIndex alone
+// does not restore the operation and audit rows it references. Refusing an
+// incomplete restore prevents an old idempotency key from being accepted anew.
+func (db *DB) VerifyArchivedOperationIdentity(ctx context.Context, canonical []byte, identityID, operationID string) error {
+	var envelope acceptanceEnvelope
+	if err := decodeStrictAcceptanceJSON(canonical, &envelope); err != nil {
+		return err
+	}
+	if envelope.RequestIdentityID != identityID || envelope.OperationID != operationID {
+		return fmt.Errorf("archived operation identity differs from the signed acceptance")
+	}
+	var authority, issuer, subject, kind, resource, key, version, digest, storedOperation string
+	err := db.Pool.QueryRow(ctx, `SELECT authority::text,actor_issuer,actor_subject,kind,resource,request_key,fingerprint_version,fingerprint_digest,operation_id
+		FROM operation_request_identities WHERE id=$1`, identityID).Scan(&authority, &issuer, &subject, &kind, &resource, &key, &version, &digest, &storedOperation)
+	if err == pgx.ErrNoRows {
+		return fmt.Errorf("archived operation replay identity is absent; restore the matching control database backup before index recovery")
+	}
+	if err != nil {
+		return err
+	}
+	if authority != envelope.Authority || issuer != envelope.Actor.Issuer || subject != envelope.Actor.Subject || kind != envelope.Kind || resource != envelope.Resource || key != envelope.RequestKey || version != envelope.Fingerprint.Version || digest != envelope.Fingerprint.Digest || storedOperation != operationID {
+		return fmt.Errorf("archived operation replay identity conflicts with the restored control database")
+	}
+	return nil
+}
 
 // ArchivedAcceptance is the signed acceptance carried by an evidence bundle
 // together with the operation row it claims to have admitted.
