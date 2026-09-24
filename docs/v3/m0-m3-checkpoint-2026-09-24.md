@@ -14,11 +14,12 @@ cgroup tests passed; a deployed Mini/Fleet runner and restore qualification
 remain open. PR [#70](https://github.com/antiartificial/norn/pull/70) recorded
 the exact Mini source-to-schema mapping through candidate migration 16.
 
-A subsequent [private-data restore rehearsal](m0-mini-private-restore-rehearsal-2026-09-24.md)
-restored a copied Mini control database into an isolated PostgreSQL 16
-container, applied migrations 1–16, and preserved all 28 legacy table counts
-and selected stable-field hashes. It did not start either API, exercise
-rollback, or verify app/job/route/volume/database ownership. **No M0–M3
+A subsequent [private-data migration-17 rehearsal](m0-mini-private-restore-migration17-rehearsal-2026-09-24.md)
+restored a copied Mini control database into an isolated PostgreSQL 17
+container, applied migrations 1–17, and preserved all 28 legacy table counts
+and primary-key fingerprints. The second migrator invocation applied no
+versions and did not change compatibility metadata. It did not start either
+API, exercise rollback, or verify app/job/route/volume/database ownership. **No M0–M3
 milestone gate is signed off, and no v3 code was deployed to Mini or Fleet.**
 
 ## Further integration update
@@ -78,8 +79,8 @@ schema-only rehearsal. Representative data/rollback rehearsal, old-worker
 compatibility, growth budgets, and app/route/volume ownership remain M0/M5
 exit work. No Mini database was changed.
 
-The next review order is: complete private representative-data restore and
-rollback evidence; convert the remaining M1 external effects and remove
+The next review order is: complete private rollback and mixed-version
+evidence; convert the remaining M1 external effects and remove
 concrete PostgreSQL control consumers; qualify M2 retention, database
 bindings, and representative recovery; then finish M3 backend-neutral runtime
 and three-member etcd bootstrap, fault, restore, and soak testing. A loaded
@@ -89,7 +90,7 @@ This updates the [2026-09-23 checkpoint](m0-m3-checkpoint-2026-09-23.md) after M
 
 | Milestone | Added evidence | Remaining exit gate |
 | --- | --- | --- |
-| M0 | [Mini control-store measurements](m0-mini-measurements-2026-09-24.md) bind the running binary to an exact signed release/source SHA and record active PostgreSQL identity, schema-only dump hash, bytes, and two short-interval samples. A [topology comparison](m0-mini-topology-2026-09-24.md) records app, manifest, ingress counts, and unresolved duplicate/inactive cases. The [decision register](decision-register-2026-09-24.md) reconciles accepted ADR 0007 with six proposed ADRs. | Prove schema migration/version mapping; measure representative growth; map jobs/routes/volumes/database owners; make sanitized CI and isolated private restore fixtures; review proposed ADRs, owners, and numeric budgets. |
+| M0 | [Mini control-store measurements](m0-mini-measurements-2026-09-24.md) bind the running binary to an exact signed release/source SHA and record active PostgreSQL identity, schema-only dump hash, bytes, and two short-interval samples. A [migration-17 private restore rehearsal](m0-mini-private-restore-migration17-rehearsal-2026-09-24.md) preserves all legacy row counts and primary-key fingerprints, and proves migration idempotence in a network-disabled PostgreSQL 17 target. A [topology comparison](m0-mini-topology-2026-09-24.md) records app, manifest, ingress counts, and unresolved duplicate/inactive cases. The [decision register](decision-register-2026-09-24.md) reconciles accepted ADR 0007 with six proposed ADRs. | Measure representative growth; map jobs/routes/volumes/database owners; make a retained sanitized CI fixture; rehearse rollback and mixed-version compatibility; review proposed ADRs, owners, and numeric budgets. |
 | M1 | Signed acceptance, fencing, and auth boundaries remain integrated. The [external-effect audit](m1-control-boundary-audit.md) still identifies inline effectful paths. | Convert each live external effect to a durable accepted/reserved/reconciled execution path; qualify two-replica races and old-data compatibility; remove concrete PostgreSQL consumers. The app-restart candidate is isolated because it would accept a request only to fail it without executing a restart. |
 | M2 | Fleet GitHub PR/apply reserves a signed plan-scoped intent and archive capacity **before** external dispatch. A separately signed completion binds the operation, plan, status, and GitHub result; archive verification checks the exact exposed payload. [PR #52](https://github.com/antiartificial/norn/pull/52) adds operator reconciliation of queued reservations through signed acceptance and idempotent verified no-write completion. Focused PostgreSQL acceptance and archive tests passed. | Bound hot receipt/identity lifetime and byte reserve; cover remaining non-saga domains; qualify live GitHub crash boundaries, MySQL, Nomad, object service, growth, and restore. |
 | M3 | Etcd operation claims use server leases, generation-fenced mutations, a running index, and paginated recovery. [PR #53](https://github.com/antiartificial/norn/pull/53) adds leased app locks and atomic lock-fence comparison on success, defer, retry, and failed terminalization. Local live-etcd race and recovery tests and repository CI passed. | Drain or explicitly migrate pre-lease etcd running records before mixed-version rollout. Implement checkpoint/effect aggregates, backend-neutral consumers, and PG-free startup; qualify TLS three-member Fleet, quorum faults, restore, and soak. |
