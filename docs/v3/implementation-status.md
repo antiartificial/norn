@@ -139,9 +139,24 @@ Nomad agent.
     `NORN_EVIDENCE_RESERVE=disabled` disables it; dropping archive
     configuration does not.
   - Diagnostic log loss is never an input.
+  - Migration 14 adds an optional, narrower signed-acceptance payload budget.
+    `NORN_EVIDENCE_RESERVE_MAX_SIGNED_ACCEPTANCE_BYTES` defaults to `0`
+    (disabled). When configured, authoritative acceptance locks the durable
+    policy row and atomically reserves the exact persisted request canonical
+    bytes, signed envelope bytes, and signature bytes. Existing acceptances
+    are backfilled, concurrent admissions cannot oversubscribe the limit, and
+    idempotent replay does not reserve twice.
+  - Signed-acceptance reservations are not released because the current
+    archive/prune lifecycle retains those hot rows. This counter does not
+    include duplicated domain rows, PostgreSQL heap/index/TOAST/WAL overhead,
+    or later operation, effect, and event growth. It is not a total hot-store
+    byte bound; queued/running growth remains an M2 requirement.
   - Tests: `TestEvidenceReserveRefusesAuditedMutationsUntilEvidenceIsArchived`
     (backlog, archive headroom, audit row, revocation, recovery after
-    archiving) and `TestEvidenceReservePolicyIsDurableAndOnlyExplicitlyDisabled`.
+    archiving), `TestEvidenceReservePolicyIsDurableAndOnlyExplicitlyDisabled`,
+    `TestSignedAcceptanceByteReserveMigrationBackfillsExistingPayloads`,
+    `TestSignedAcceptanceByteReserveRejectsOversizedPayloadAtomically`, and
+    `TestSignedAcceptanceByteReserveSerializesConcurrentCapacity`.
 - **R10: archive-aware listings and payload inventory.**
   `HistoryStore.ListByApp` and `ListRecent` merge pruned bundles, newest
   first, and stop only when no remaining bundle can hold a newer event. A

@@ -53,22 +53,25 @@ func evidenceReserveMigration() SchemaMigration {
 
 // EvidenceReservePolicy is the durable admission policy.
 type EvidenceReservePolicy struct {
-	Enabled       bool
-	MaxPending    int
-	MaxPendingAge time.Duration
+	Enabled                  bool
+	MaxPending               int
+	MaxPendingAge            time.Duration
+	MaxSignedAcceptanceBytes int64
 }
 
 // EvidenceReserveStatus is the admission decision input.
 type EvidenceReserveStatus struct {
-	Enabled          bool       `json:"enabled"`
-	Exhausted        bool       `json:"exhausted"`
-	Reasons          []string   `json:"reasons,omitempty"`
-	Pending          int        `json:"pending"`
-	OldestPendingAt  *time.Time `json:"oldestPendingAt,omitempty"`
-	MaxPending       int        `json:"maxPending"`
-	MaxPendingAge    string     `json:"maxPendingAge"`
-	ArchiveExhausted bool       `json:"archiveExhausted"`
-	ArchiveDetail    string     `json:"archiveDetail,omitempty"`
+	Enabled                       bool       `json:"enabled"`
+	Exhausted                     bool       `json:"exhausted"`
+	Reasons                       []string   `json:"reasons,omitempty"`
+	Pending                       int        `json:"pending"`
+	OldestPendingAt               *time.Time `json:"oldestPendingAt,omitempty"`
+	MaxPending                    int        `json:"maxPending"`
+	MaxPendingAge                 string     `json:"maxPendingAge"`
+	ReservedSignedAcceptanceBytes int64      `json:"reservedSignedAcceptanceBytes"`
+	MaxSignedAcceptanceBytes      int64      `json:"maxSignedAcceptanceBytes"`
+	ArchiveExhausted              bool       `json:"archiveExhausted"`
+	ArchiveDetail                 string     `json:"archiveDetail,omitempty"`
 }
 
 // EvidenceReserveExhaustedError refuses a new acceptance before it writes any
@@ -80,30 +83,36 @@ func (e *EvidenceReserveExhaustedError) Error() string {
 	return "evidence reserve exhausted: " + strings.Join(e.Reasons, "; ")
 }
 
-// reserveAcceptedEvidence creates the archive outbox reservation in the same
+// reserveAcceptedEvidence creates an exact signed-payload byte reservation
+// and, where the archive supports the subject, an outbox intent in the same
 // transaction as signed operation acceptance. Locking the singleton policy
-// row serializes the pending-count check with every new reservation. Saga
-// operations retain their existing saga subject. Fleet GitHub actions reserve
-// their operation subject before the external call. The operation becomes
-// terminal only after GitHub responds, but the capacity decision must happen
-// before that call so a full archive cannot create an unrecorded mutation.
-func reserveAcceptedEvidence(ctx context.Context, tx pgx.Tx, acceptance OperationAcceptance) error {
+// row serializes the capacity decision across replicas. Later operation,
+// effect and event growth and PostgreSQL physical overhead are not included.
+func reserveAcceptedEvidence(ctx context.Context, tx pgx.Tx, acceptance OperationAcceptance, intentID string, requestCanonical, canonical []byte, signature AcceptanceSignature) error {
 	subjectKind, subjectID := "", ""
 	switch {
 	case acceptance.Operation.SagaID != "":
 		subjectKind, subjectID = "saga", acceptance.Operation.SagaID
 	case acceptance.Operation.Kind == "fleet.github.pull-request" || acceptance.Operation.Kind == "fleet.github.apply-dispatch":
 		subjectKind, subjectID = "operation", acceptance.Operation.ID
-	default:
-		return nil
 	}
 	var enabled, archiveExhausted bool
 	var maxPending, maxAgeSeconds int
+	var maxSignedAcceptanceBytes int64
 	var archiveDetail string
-	if err := tx.QueryRow(ctx, `SELECT enabled, max_pending, max_pending_age_seconds, archive_exhausted, archive_detail
-		FROM evidence_reserve WHERE singleton FOR UPDATE`).Scan(&enabled, &maxPending, &maxAgeSeconds, &archiveExhausted, &archiveDetail); err != nil {
+	if err := tx.QueryRow(ctx, `SELECT enabled, max_pending, max_pending_age_seconds, max_signed_acceptance_bytes, archive_exhausted, archive_detail
+		FROM evidence_reserve WHERE singleton FOR UPDATE`).Scan(&enabled, &maxPending, &maxAgeSeconds, &maxSignedAcceptanceBytes, &archiveExhausted, &archiveDetail); err != nil {
 		return err
 	}
+	var reservedSignedAcceptanceBytes int64
+	if err := tx.QueryRow(ctx, `SELECT coalesce(sum(reserved_bytes), 0) FROM signed_acceptance_byte_reservations`).Scan(&reservedSignedAcceptanceBytes); err != nil {
+		return err
+	}
+	signedBytes := int64(len(requestCanonical) + len(canonical) + len(signature.Value))
+	if signedBytes <= 0 {
+		return &AcceptanceValidationError{Reason: "signed acceptance evidence is empty"}
+	}
+	reservationBytes := signedBytes
 	if enabled {
 		var pending int
 		var oldest *time.Time
@@ -124,9 +133,25 @@ func reserveAcceptedEvidence(ctx context.Context, tx pgx.Tx, acceptance Operatio
 		if archiveExhausted {
 			reasons = append(reasons, "archive capacity is exhausted: "+archiveDetail)
 		}
+		if maxSignedAcceptanceBytes > 0 && reservationBytes > maxSignedAcceptanceBytes {
+			reasons = append(reasons, fmt.Sprintf("signed acceptance payload of %d bytes exceeds the configured limit of %d bytes", reservationBytes, maxSignedAcceptanceBytes))
+		} else if maxSignedAcceptanceBytes > 0 && reservedSignedAcceptanceBytes > maxSignedAcceptanceBytes-reservationBytes {
+			remaining := maxSignedAcceptanceBytes - reservedSignedAcceptanceBytes
+			if remaining < 0 {
+				remaining = 0
+			}
+			reasons = append(reasons, fmt.Sprintf("signed acceptance payload of %d bytes exceeds the %d bytes remaining in the configured signed-acceptance reserve", reservationBytes, remaining))
+		}
 		if len(reasons) > 0 {
 			return &EvidenceReserveExhaustedError{Reasons: reasons}
 		}
+	}
+	if _, err := tx.Exec(ctx, `INSERT INTO signed_acceptance_byte_reservations (operation_id, acceptance_intent_id, reserved_bytes)
+		VALUES ($1, $2, $3)`, acceptance.Operation.ID, intentID, signedBytes); err != nil {
+		return err
+	}
+	if subjectKind == "" {
+		return nil
 	}
 	_, err := tx.Exec(ctx, `INSERT INTO evidence_archive_intents (id, subject_kind, subject_id, app, operation_id, sequence, state)
 		VALUES ($1, $2, $3, $4, $5, 1, 'pending')
@@ -141,8 +166,12 @@ func (db *DB) SetEvidenceReservePolicy(ctx context.Context, policy EvidenceReser
 	if policy.MaxPending <= 0 || policy.MaxPendingAge <= 0 {
 		return fmt.Errorf("evidence reserve limits must be positive")
 	}
-	_, err := db.Pool.Exec(ctx, `UPDATE evidence_reserve SET enabled = $1, max_pending = $2, max_pending_age_seconds = $3, updated_at = now() WHERE singleton`,
-		policy.Enabled, policy.MaxPending, int(policy.MaxPendingAge/time.Second))
+	if policy.MaxSignedAcceptanceBytes < 0 {
+		return fmt.Errorf("signed acceptance byte limit cannot be negative")
+	}
+	_, err := db.Pool.Exec(ctx, `UPDATE evidence_reserve SET enabled = $1, max_pending = $2, max_pending_age_seconds = $3,
+		max_signed_acceptance_bytes = $4, updated_at = now() WHERE singleton`,
+		policy.Enabled, policy.MaxPending, int(policy.MaxPendingAge/time.Second), policy.MaxSignedAcceptanceBytes)
 	return err
 }
 
@@ -158,11 +187,12 @@ func (db *DB) EvidenceReserve(ctx context.Context) (EvidenceReserveStatus, error
 	var status EvidenceReserveStatus
 	var ageSeconds int
 	err := db.Pool.QueryRow(ctx, `
-		SELECT r.enabled, r.max_pending, r.max_pending_age_seconds, r.archive_exhausted, r.archive_detail,
+		SELECT r.enabled, r.max_pending, r.max_pending_age_seconds, r.max_signed_acceptance_bytes, r.archive_exhausted, r.archive_detail,
 		       (SELECT count(*) FROM evidence_archive_intents WHERE state = 'pending'),
-		       (SELECT min(created_at) FROM evidence_archive_intents WHERE state = 'pending')
-		FROM evidence_reserve r WHERE r.singleton`).Scan(&status.Enabled, &status.MaxPending, &ageSeconds, &status.ArchiveExhausted, &status.ArchiveDetail,
-		&status.Pending, &status.OldestPendingAt)
+		       (SELECT min(created_at) FROM evidence_archive_intents WHERE state = 'pending'),
+		       (SELECT coalesce(sum(reserved_bytes), 0) FROM signed_acceptance_byte_reservations)
+		FROM evidence_reserve r WHERE r.singleton`).Scan(&status.Enabled, &status.MaxPending, &ageSeconds, &status.MaxSignedAcceptanceBytes,
+		&status.ArchiveExhausted, &status.ArchiveDetail, &status.Pending, &status.OldestPendingAt, &status.ReservedSignedAcceptanceBytes)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return status, fmt.Errorf("evidence reserve state is missing")
 	}
@@ -182,6 +212,9 @@ func (db *DB) EvidenceReserve(ctx context.Context) (EvidenceReserveStatus, error
 	}
 	if status.ArchiveExhausted {
 		status.Reasons = append(status.Reasons, "archive capacity is exhausted: "+status.ArchiveDetail)
+	}
+	if status.MaxSignedAcceptanceBytes > 0 && status.ReservedSignedAcceptanceBytes >= status.MaxSignedAcceptanceBytes {
+		status.Reasons = append(status.Reasons, fmt.Sprintf("%d signed acceptance payload bytes reach the configured reserve limit of %d", status.ReservedSignedAcceptanceBytes, status.MaxSignedAcceptanceBytes))
 	}
 	status.Exhausted = len(status.Reasons) > 0
 	return status, nil

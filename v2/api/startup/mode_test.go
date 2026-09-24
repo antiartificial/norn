@@ -64,8 +64,8 @@ func TestWriteContractProbe(t *testing.T) {
 		t.Fatal(err)
 	}
 	if contract.Name != ContractName || len(contract.PassiveRoutes) != 3 || contract.SchemaContract != (SchemaContract{
-		ReaderVersion: 2, WriterVersion: 10, CatalogMigrationVersion: 13,
-		CatalogMinimumReaderVersion: 2, CatalogMinimumWriterVersion: 10,
+		ReaderVersion: 2, WriterVersion: 11, CatalogMigrationVersion: 14,
+		CatalogMinimumReaderVersion: 2, CatalogMinimumWriterVersion: 11,
 	}) {
 		t.Fatalf("unexpected contract: %#v", contract)
 	}

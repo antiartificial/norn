@@ -12,8 +12,13 @@ func TestControlSchemaAdoptsLegacyRowsWithoutReplacingEvidence(t *testing.T) {
 	pool := schemaMigrationTestPools(t, 1)[0]
 	ctx := context.Background()
 	migrations := ControlSchemaMigrations()
-	if len(migrations) != 13 || migrations[0].Version != 1 || migrations[1].Version != 2 || migrations[2].Version != 3 || migrations[3].Version != 4 || migrations[4].Version != 5 || migrations[5].Version != 6 || migrations[6].Version != 7 || migrations[7].Version != 8 || migrations[8].Version != 9 || migrations[9].Version != 10 || migrations[10].Version != 11 || migrations[11].Version != 12 || migrations[12].Version != 13 {
-		t.Fatalf("control migrations = %#v, want immutable baseline through restart effect source migration 13", migrations)
+	if len(migrations) != 14 {
+		t.Fatalf("control migrations = %#v, want immutable baseline through evidence byte reserve migration 14", migrations)
+	}
+	for index, migration := range migrations {
+		if migration.Version != int64(index+1) {
+			t.Fatalf("control migration position %d has version %d", index, migration.Version)
+		}
 	}
 	// Simulate the unversioned v2 database before the migration ledger existed.
 	if _, err := pool.Exec(ctx, migrations[0].SQL); err != nil {
@@ -50,7 +55,7 @@ func TestControlSchemaAdoptsLegacyRowsWithoutReplacingEvidence(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if status.CurrentMigrationVersion != 13 || len(status.AppliedVersions) != 13 || status.AppliedVersions[0] != 1 || status.AppliedVersions[1] != 2 || status.AppliedVersions[2] != 3 || status.AppliedVersions[3] != 4 || status.AppliedVersions[4] != 5 || status.AppliedVersions[5] != 6 || status.AppliedVersions[6] != 7 || status.AppliedVersions[7] != 8 || status.AppliedVersions[8] != 9 || status.AppliedVersions[9] != 10 || status.AppliedVersions[10] != 11 || status.AppliedVersions[11] != 12 || status.AppliedVersions[12] != 13 || status.MinimumReaderVersion != EvidenceArchiveReaderVersion || status.MinimumWriterVersion != RestartEffectSourceWriterVersion {
+	if status.CurrentMigrationVersion != 14 || len(status.AppliedVersions) != 14 || status.AppliedVersions[13] != 14 || status.MinimumReaderVersion != EvidenceArchiveReaderVersion || status.MinimumWriterVersion != SignedAcceptanceByteReserveWriterVersion {
 		t.Fatalf("migration status = %#v", status)
 	}
 
@@ -125,5 +130,70 @@ func TestControlSchemaAdoptsLegacyRowsWithoutReplacingEvidence(t *testing.T) {
 	}
 	if len(repeated.AppliedVersions) != 0 || !after.Equal(before) {
 		t.Fatalf("repeated migration mutated metadata: status=%#v before=%s after=%s", repeated, before, after)
+	}
+}
+
+func TestSignedAcceptanceByteReserveMigrationBackfillsExistingPayloads(t *testing.T) {
+	pool := schemaMigrationTestPools(t, 1)[0]
+	ctx := context.Background()
+	migrations := ControlSchemaMigrations()
+	oldMigrator, err := NewSchemaMigrator(pool, migrations[:13], BinarySchemaCompatibility{
+		ReaderVersion: EvidenceArchiveReaderVersion, WriterVersion: RestartEffectSourceWriterVersion,
+	}, SchemaMigratorOptions{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := oldMigrator.Migrate(ctx); err != nil {
+		t.Fatal(err)
+	}
+	var authority string
+	if err := pool.QueryRow(ctx, `SELECT authority::text FROM control_plane_identity WHERE singleton`).Scan(&authority); err != nil {
+		t.Fatal(err)
+	}
+	const fingerprint = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+	tx, err := pool.Begin(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer tx.Rollback(ctx)
+	if _, err := tx.Exec(ctx, `INSERT INTO operations(id,kind,status,acceptance_required) VALUES ('backfill-operation','app.preflight','queued',true)`); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := tx.Exec(ctx, `INSERT INTO operation_request_identities
+			(id,authority,actor_issuer,actor_subject,kind,resource,request_key,fingerprint_version,fingerprint_digest,operation_id,created_at)
+		VALUES ('backfill-identity',$1::uuid,'issuer','actor','app.preflight','app','key',$2,$3,'backfill-operation',now())`,
+		authority, OperationRequestFingerprintVersion, fingerprint); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := tx.Exec(ctx, `INSERT INTO operation_acceptance_intents
+			(id,schema_version,request_identity_id,operation_id,accepted_at,source,scopes,fingerprint_version,fingerprint_digest,
+			 request_canonical_bytes,canonical_bytes,canonical_digest,signing_algorithm,signing_key_id,signature)
+		VALUES ('backfill-intent',$1,'backfill-identity','backfill-operation',now(),'migration-test','[]',$2,$3,$4,$5,$3,'hmac-sha256','key','signature-bytes')`,
+		OperationAcceptanceEnvelopeSchema, OperationRequestFingerprintVersion, fingerprint, []byte("request-bytes"), []byte("envelope-bytes")); err != nil {
+		t.Fatal(err)
+	}
+	if err := tx.Commit(ctx); err != nil {
+		t.Fatal(err)
+	}
+	db := &DB{Pool: pool}
+	newMigrator, err := NewControlSchemaMigrator(db)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := newMigrator.Migrate(ctx); err != nil {
+		t.Fatal(err)
+	}
+	var reserved, expected, configured int64
+	if err := pool.QueryRow(ctx, `SELECT r.reserved_bytes,
+		octet_length(i.request_canonical_bytes) + octet_length(i.canonical_bytes) + octet_length(convert_to(i.signature, 'UTF8')),
+		e.max_signed_acceptance_bytes
+		FROM signed_acceptance_byte_reservations r
+		JOIN operation_acceptance_intents i ON i.id=r.acceptance_intent_id
+		CROSS JOIN evidence_reserve e
+		WHERE r.operation_id='backfill-operation'`).Scan(&reserved, &expected, &configured); err != nil {
+		t.Fatal(err)
+	}
+	if reserved != expected || configured != 0 {
+		t.Fatalf("backfilled reservation=%d expected=%d configured limit=%d", reserved, expected, configured)
 	}
 }
