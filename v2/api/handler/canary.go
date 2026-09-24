@@ -46,23 +46,24 @@ func (h *Handler) PromoteCanary(w http.ResponseWriter, r *http.Request) {
 		WriteControlProblem(w, r, http.StatusServiceUnavailable, "durable_canary_promotion_unavailable", "durable Nomad canary promotion is unavailable")
 		return
 	}
-	logicalRegion, nomadRegion, ok := h.canaryRegion(w, r, id)
+	enqueue, ok := h.pipelineEnqueueRequest(w, r, r.Header.Get("Idempotency-Key"), map[string]interface{}{"app": id})
 	if !ok {
 		return
 	}
-	enqueue, ok := h.pipelineEnqueueRequest(w, r, r.Header.Get("Idempotency-Key"), map[string]interface{}{"app": id, "region": logicalRegion, "nomadRegion": nomadRegion})
-	if !ok {
-		return
-	}
-	// Recover an existing signed identity before reading Nomad. Retrying after a
-	// successful promotion has no live canary, but must still return its receipt.
-	if accepted, replayed, err := h.resolveCanaryPromotionReplay(r.Context(), enqueue, id, logicalRegion, nomadRegion); err != nil {
+	// Replay is independent of current declarative app state. A client that
+	// already holds a receipt can retry after a region mapping or app file
+	// changes; an explicitly supplied region still has to match the receipt.
+	if accepted, replayed, err := h.resolveCanaryPromotionReplay(r.Context(), enqueue, id, r.URL.Query().Get("region")); err != nil {
 		writeOperationAcceptanceError(w, r, err)
 		return
 	} else if replayed {
 		accepted.Operation.AttachReceipt()
 		w.Header().Set("Location", "/api/v1/operations/"+accepted.Operation.ID)
 		writeJSON(w, accepted.Operation)
+		return
+	}
+	logicalRegion, nomadRegion, ok := h.canaryRegion(w, r, id)
+	if !ok {
 		return
 	}
 	info, err := h.nomad.LatestDeploymentRegion(id, nomadRegion)
@@ -126,7 +127,7 @@ func (h *Handler) canaryRegion(w http.ResponseWriter, r *http.Request, app strin
 	return "", "", false
 }
 
-func (h *Handler) resolveCanaryPromotionReplay(ctx context.Context, request pipeline.EnqueueRequest, app, region, nomadRegion string) (store.AcceptedOperation, bool, error) {
+func (h *Handler) resolveCanaryPromotionReplay(ctx context.Context, request pipeline.EnqueueRequest, app, explicitRegion string) (store.AcceptedOperation, bool, error) {
 	accepted, err := h.pipeline.ResolveEnqueue(ctx, request, "app.canary-promote", app)
 	if errors.Is(err, store.ErrAcceptanceNotFound) {
 		return store.AcceptedOperation{}, false, nil
@@ -134,7 +135,7 @@ func (h *Handler) resolveCanaryPromotionReplay(ctx context.Context, request pipe
 	if err != nil {
 		return store.AcceptedOperation{}, false, err
 	}
-	if accepted.Operation.Kind != "app.canary-promote" || accepted.Operation.App != app || canaryPayloadString(accepted.Operation.Payload, "region") != region || canaryPayloadString(accepted.Operation.Payload, "nomadRegion") != nomadRegion || canaryPayloadString(accepted.Operation.Payload, "deploymentId") == "" {
+	if accepted.Operation.Kind != "app.canary-promote" || accepted.Operation.App != app || (explicitRegion != "" && canaryPayloadString(accepted.Operation.Payload, "region") != explicitRegion) || canaryPayloadString(accepted.Operation.Payload, "nomadRegion") == "" || canaryPayloadString(accepted.Operation.Payload, "deploymentId") == "" {
 		return store.AcceptedOperation{}, false, &store.AcceptanceConflictError{Identity: store.OperationRequestIdentity{Kind: "app.canary-promote", Resource: app}}
 	}
 	return accepted, true, nil

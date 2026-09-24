@@ -45,6 +45,30 @@ func TestCanaryPromotionVerifierRecordsTerminalNomadFailure(t *testing.T) {
 	}
 }
 
+func TestCanaryPromotionVerifierRequiresPromotedTaskGroupEvidence(t *testing.T) {
+	request := canaryPromotionRequest{App: "widgets", Region: "us-central", NomadRegion: "global", DeploymentID: "deployment-123"}
+	payload, err := json.Marshal(request)
+	if err != nil {
+		t.Fatal(err)
+	}
+	reservation := effect.Reservation{Authority: "authority", Resource: canaryPromotionResource(request), Stage: nomadCanaryPromotionStage, Supervisor: "nomad-canary-promotion", LaunchPayload: payload, OperationClaim: effect.OperationClaim{OperationID: "operation", OwnerID: "worker", Generation: 1}}
+	if reservation.InputDigest, err = effect.ComputeInputDigest(reservation); err != nil {
+		t.Fatal(err)
+	}
+	reservation.SupervisorExecutionID = canaryPromotionExecutionID(reservation)
+	for _, output := range [][]byte{[]byte(`{"canaryPromoted":false}`), []byte(`{}`)} {
+		_, err := (nomadCanaryPromotionVerifier{}).Verify(context.Background(), effect.Record{Reservation: reservation}, effect.Observation{Phase: effect.SupervisorSucceeded, Output: output, Identity: effect.ExecutionIdentity{Supervisor: reservation.Supervisor, SupervisorExecutionID: reservation.SupervisorExecutionID, RuntimeInstanceID: "nomad-deployment:deployment-123"}})
+		if err == nil {
+			t.Fatalf("accepted success evidence %s", output)
+		}
+	}
+	output := []byte(`{"canaryPromoted":true}`)
+	verification, err := (nomadCanaryPromotionVerifier{}).Verify(context.Background(), effect.Record{Reservation: reservation}, effect.Observation{Phase: effect.SupervisorSucceeded, Output: output, Identity: effect.ExecutionIdentity{Supervisor: reservation.Supervisor, SupervisorExecutionID: reservation.SupervisorExecutionID, RuntimeInstanceID: "nomad-deployment:deployment-123"}})
+	if err != nil || verification.Decision != effect.VerificationSucceeded {
+		t.Fatalf("verified success = %#v, %v", verification, err)
+	}
+}
+
 func TestCanaryPromotionRejectsIncompleteAcceptedPayload(t *testing.T) {
 	for _, payload := range []map[string]interface{}{
 		{"region": "us-central", "nomadRegion": "global"},

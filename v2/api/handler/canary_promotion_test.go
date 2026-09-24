@@ -27,7 +27,7 @@ func TestCanaryPromotionReplayDoesNotRequireLiveCanary(t *testing.T) {
 	p := &pipeline.Pipeline{}
 	p.SetOperationStore(canaryReplayStore{accepted: accepted})
 	h := &Handler{pipeline: p}
-	result, replayed, err := h.resolveCanaryPromotionReplay(context.Background(), pipeline.EnqueueRequest{Authority: "authority", Actor: store.OperationActor{Issuer: "issuer", Subject: "subject"}, Key: "same-key"}, "widgets", "us-central", "global")
+	result, replayed, err := h.resolveCanaryPromotionReplay(context.Background(), pipeline.EnqueueRequest{Authority: "authority", Actor: store.OperationActor{Issuer: "issuer", Subject: "subject"}, Key: "same-key"}, "widgets", "us-central")
 	if err != nil || !replayed || result.Operation.ID != "operation-1" {
 		t.Fatalf("replay = %#v, %t, %v", result, replayed, err)
 	}

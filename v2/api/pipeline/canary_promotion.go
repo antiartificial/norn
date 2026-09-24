@@ -89,6 +89,11 @@ func (p *Pipeline) executeCanaryPromotion(ctx context.Context, op *model.Operati
 		}
 		if found {
 			_, err = p.CanaryPromotionEffects.executor.Recover(ctx, blocking)
+			if err == nil {
+				// A resolved predecessor releases the region gate for a successor
+				// claim. This claim cannot safely assume it owns that next launch.
+				return deferredResult(claim, &effect.PendingError{Resource: reservation.Resource, Reason: "blocking canary promotion resolved; defer successor for fresh launch"})
+			}
 		}
 	}
 	if err != nil {
@@ -168,7 +173,7 @@ func (s *nomadCanaryPromotionSupervisor) Query(ctx context.Context, r effect.Res
 	if info == nil || info.ID != request.DeploymentID || info.JobID != request.App {
 		return effect.Observation{}, fmt.Errorf("Nomad deployment identity no longer matches accepted promotion")
 	}
-	output, _ := json.Marshal(map[string]string{"app": request.App, "region": request.Region, "nomadRegion": request.NomadRegion, "deploymentId": info.ID, "status": info.Status, "statusDescription": info.StatusDesc})
+	output, _ := json.Marshal(map[string]interface{}{"app": request.App, "region": request.Region, "nomadRegion": request.NomadRegion, "deploymentId": info.ID, "status": info.Status, "statusDescription": info.StatusDesc, "canaryPromoted": info.CanaryPromoted})
 	identity.Supervisor, identity.SupervisorExecutionID = r.Supervisor, r.SupervisorExecutionID
 	if identity.RuntimeInstanceID == "" {
 		identity.RuntimeInstanceID = "nomad-deployment:" + request.DeploymentID
@@ -216,6 +221,14 @@ func (nomadCanaryPromotionVerifier) Verify(_ context.Context, record effect.Reco
 		decision = effect.VerificationFailed
 	} else if observation.Phase != effect.SupervisorSucceeded {
 		return effect.Verification{}, fmt.Errorf("Nomad canary promotion has no verified terminal outcome")
+	}
+	if decision == effect.VerificationSucceeded {
+		var evidence struct {
+			CanaryPromoted bool `json:"canaryPromoted"`
+		}
+		if err := json.Unmarshal(observation.Output, &evidence); err != nil || !evidence.CanaryPromoted {
+			return effect.Verification{}, fmt.Errorf("Nomad canary promotion success is missing promoted task-group evidence")
+		}
 	}
 	return effect.Verification{Decision: decision, InputDigest: record.Reservation.InputDigest, ResultDigest: effect.DigestInput(observation.Output), ResultReference: observation.Evidence.Reference, SupervisorExecutionID: observation.Identity.SupervisorExecutionID, RuntimeInstanceID: observation.Identity.RuntimeInstanceID, EvidenceSource: observation.Evidence.Source, EvidenceReference: observation.Evidence.Reference, ObservedAt: time.Now().UTC()}, nil
 }
