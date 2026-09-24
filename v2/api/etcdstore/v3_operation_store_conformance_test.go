@@ -197,13 +197,30 @@ func TestV3OperationStoreAppOperationLockEtcd(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	first, err := etcdstore.NewV3OperationStore(client, prefix, uuid.NewString(), signer)
+	firstAuthority := uuid.NewString()
+	first, err := etcdstore.NewV3OperationStore(client, prefix, firstAuthority, signer)
 	if err != nil {
 		t.Fatal(err)
 	}
 	second, err := etcdstore.NewV3OperationStore(client, prefix, uuid.NewString(), signer)
 	if err != nil {
 		t.Fatal(err)
+	}
+	acceptance := store.OperationAcceptance{
+		Identity:  store.OperationRequestIdentity{Authority: firstAuthority, Actor: store.OperationActor{Issuer: "etcd-test", Subject: "worker"}, Kind: "app.deploy", Resource: "app/orders", Key: uuid.NewString()},
+		Operation: model.Operation{ID: uuid.NewString(), Kind: "app.deploy", App: "orders", Ref: "main", Risk: "low", Source: "etcd-test", MaxAttempts: 1},
+		Audit:     store.AcceptanceAuditContext{Source: "etcd-test", RequestID: uuid.NewString(), Scopes: []string{"apps:write"}},
+	}
+	acceptance.Fingerprint, err = store.CanonicalOperationRequestFingerprint(acceptance)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := first.Accept(ctx, acceptance); err != nil {
+		t.Fatal(err)
+	}
+	_, claim, err := first.ClaimNextOperation(ctx, "lock-test-worker", time.Minute, nil)
+	if err != nil || claim.OperationID() != acceptance.Operation.ID {
+		t.Fatalf("claim err=%v claim=%+v", err, claim)
 	}
 
 	lock, acquired, err := first.AcquireAppOperationLock(ctx, "orders")
@@ -254,5 +271,8 @@ func TestV3OperationStoreAppOperationLockEtcd(t *testing.T) {
 			third.Release()
 		}
 		t.Fatalf("stale release erased replacement lock=%v acquired=%v err=%v", third, acquired, err)
+	}
+	if err := first.FinishClaimedOperationWithAppLock(ctx, claim, lock, model.OperationSucceeded, "must not commit", nil); !errors.Is(err, store.ErrOperationOwnershipLost) {
+		t.Fatalf("stale app-lock fence terminalized claimed operation: %v", err)
 	}
 }

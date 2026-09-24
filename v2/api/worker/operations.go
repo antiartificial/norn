@@ -139,11 +139,25 @@ func (w *OperationWorker) handle(ctx context.Context, op *model.Operation, claim
 		return
 	}
 	if result.Finished() {
+		if _, fenced := w.db.(store.AppLockFencedExecutionStore); fenced {
+			// The V3 adapter can fence its own terminal CAS, but this result was
+			// committed by a separate effect boundary. Until that boundary accepts
+			// the app-lock fence in its own transaction, publishing would make an
+			// unfenced mutable execution visible.
+			log.Printf("operation worker: refusing unfenced pre-finished result %s", op.ID)
+			return
+		}
 		// Committed atomically with the effect (catalog activation).
 		result.Publish(ctx)
 		return
 	}
-	if finishErr := w.db.FinishClaimedOperation(ctx, claim, result.Status, result.Message, result.Metadata); finishErr != nil {
+	finish := w.db.FinishClaimedOperation
+	if fenced, ok := w.db.(store.AppLockFencedExecutionStore); ok {
+		finish = func(finishCtx context.Context, finishClaim store.OperationClaim, status model.OperationStatus, message string, metadata map[string]interface{}) error {
+			return fenced.FinishClaimedOperationWithAppLock(finishCtx, finishClaim, appLock, status, message, metadata)
+		}
+	}
+	if finishErr := finish(ctx, claim, result.Status, result.Message, result.Metadata); finishErr != nil {
 		log.Printf("operation worker: finish %s: %v", op.ID, finishErr)
 		return
 	}

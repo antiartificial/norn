@@ -26,12 +26,20 @@ type ExecutionStore interface {
 	AcquireAppOperationLock(context.Context, string) (AppOperationLock, bool, error)
 }
 
+// AppLockFencedExecutionStore can atomically bind terminalization to the
+// current app-lock fence. Workers use it when available rather than treating a
+// local context check as proof that no replacement holder exists.
+type AppLockFencedExecutionStore interface {
+	FinishClaimedOperationWithAppLock(context.Context, OperationClaim, AppOperationLock, model.OperationStatus, string, map[string]interface{}) error
+}
+
 // AppOperationLock is an app-scoped serialization lease. Callers must execute
 // mutable work using Context and must Release it when that work ends. Context
 // is canceled when the backend can no longer prove that this holder owns the
 // lock; a successful acquisition is therefore never an unmonitored lease.
 type AppOperationLock interface {
 	Context() context.Context
+	Fence() string
 	Release()
 }
 
@@ -46,15 +54,27 @@ type AppOperationLockHandle struct {
 	ctx     context.Context
 	cancel  context.CancelCauseFunc
 	release func()
+	fence   string
 	once    sync.Once
 }
 
 func NewAppOperationLock(ctx context.Context, release func()) *AppOperationLockHandle {
+	return NewFencedAppOperationLock(ctx, "", release)
+}
+
+func NewFencedAppOperationLock(ctx context.Context, fence string, release func()) *AppOperationLockHandle {
 	if release == nil {
 		release = func() {}
 	}
 	lockCtx, cancel := context.WithCancelCause(ctx)
-	return &AppOperationLockHandle{ctx: lockCtx, cancel: cancel, release: release}
+	return &AppOperationLockHandle{ctx: lockCtx, cancel: cancel, release: release, fence: fence}
+}
+
+func (l *AppOperationLockHandle) Fence() string {
+	if l == nil {
+		return ""
+	}
+	return l.fence
 }
 
 func (l *AppOperationLockHandle) Context() context.Context {
