@@ -509,6 +509,7 @@ func main() {
 		r.Post("/v1/fleet/plans/{planID}/attempts/{attemptID}/cancel", h.CancelFleetRunnerAttempt)
 		r.Post("/v1/fleet/plans/{planID}/github/pull-request", h.CreateFleetGitHubPullRequest)
 		r.Post("/v1/fleet/plans/{planID}/github/dispatch", h.DispatchFleetGitHubApply)
+		r.Post("/v1/fleet/plans/{planID}/github/reconcile", h.ReconcileFleetGitHubReservation)
 		r.Post("/v1/fleet/node-pools/{pool}/plan", h.PlanFleetCapacity)
 		r.Get("/v1/exec-sessions", h.ListExecSessions)
 		r.Get("/v1/exec-sessions/{id}", h.GetExecSession)
@@ -989,7 +990,7 @@ func writeControlCapabilities(w http.ResponseWriter, cfg *config.Config) {
 			"releases": "/api/v1/releases", "hostStatus": "/api/v1/host/status", "hostMetrics": "/api/v1/host/metrics", "productionReadiness": "/api/v1/production/readiness", "recoveryDrills": "/api/v1/production/drills", "mutationAudit": "/api/v1/audit/mutations", "enrollments": "/api/v1/enrollments",
 			"devices": "/api/v1/devices", "tokenRotate": "/api/v1/auth/rotate", "tokenRevoke": "/api/v1/auth/revoke",
 			"stepUpChallenges": "/api/v1/auth/step-up/challenges", "execSessions": "/api/v1/exec-sessions",
-			"infraSpecValidation": "/api/v1/validate/infraspec", "fleetValidation": "/api/v1/fleet/validate", "fleetNodePools": "/api/v1/fleet/node-pools", "fleetPlans": "/api/v1/fleet/plans", "fleetReconciliations": "/api/v1/fleet/plans/{planID}/reconciliations", "fleetRunnerAttempts": "/api/v1/fleet/plans/{planID}/attempts", "fleetGitHub": "/api/v1/fleet/github", "fleetGitHubPullRequest": "/api/v1/fleet/plans/{planID}/github/pull-request", "fleetGitHubDispatch": "/api/v1/fleet/plans/{planID}/github/dispatch",
+			"infraSpecValidation": "/api/v1/validate/infraspec", "fleetValidation": "/api/v1/fleet/validate", "fleetNodePools": "/api/v1/fleet/node-pools", "fleetPlans": "/api/v1/fleet/plans", "fleetReconciliations": "/api/v1/fleet/plans/{planID}/reconciliations", "fleetRunnerAttempts": "/api/v1/fleet/plans/{planID}/attempts", "fleetGitHub": "/api/v1/fleet/github", "fleetGitHubPullRequest": "/api/v1/fleet/plans/{planID}/github/pull-request", "fleetGitHubDispatch": "/api/v1/fleet/plans/{planID}/github/dispatch", "fleetGitHubReconcile": "/api/v1/fleet/plans/{planID}/github/reconcile",
 			"releasePreflight": "/api/v1/apps/{id}/releases/preflight", "releaseDeployments": "/api/v1/apps/{id}/releases/deployments", "releaseQualifications": "/api/v1/apps/{id}/qualifications", "releasePromotions": "/api/v1/apps/{id}/promotions", "releaseRollback": "/api/v1/apps/{id}/releases/rollbacks",
 		},
 	})

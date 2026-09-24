@@ -87,11 +87,16 @@ type Status struct {
 }
 
 type PullRequest struct {
-	Number int    `json:"number"`
-	URL    string `json:"url"`
-	Branch string `json:"branch"`
-	State  string `json:"state"`
-	Merged bool   `json:"merged"`
+	Number     int    `json:"number"`
+	URL        string `json:"url"`
+	Branch     string `json:"branch"`
+	State      string `json:"state"`
+	Merged     bool   `json:"merged"`
+	HeadSHA    string `json:"headSha,omitempty"`
+	HeadBranch string `json:"headBranch,omitempty"`
+	BaseBranch string `json:"baseBranch,omitempty"`
+	Title      string `json:"-"`
+	Body       string `json:"-"`
 }
 
 type Dispatch struct {
@@ -101,6 +106,103 @@ type Dispatch struct {
 	PlanSHA         string `json:"planSha256"`
 	ApprovedHeadSHA string `json:"approvedHeadSha"`
 	Existing        bool   `json:"existing"`
+}
+
+type Reconciliation struct {
+	Outcome     string       `json:"outcome"`
+	PullRequest *PullRequest `json:"pullRequest,omitempty"`
+	Dispatch    *Dispatch    `json:"dispatch,omitempty"`
+}
+
+// ReconcilePullRequest observes the deterministic branch and pull request
+// identity without making a GitHub write. Absence is safe to treat as a
+// verified no-write only when both read requests completed authoritatively.
+func (c *Client) ReconcilePullRequest(ctx context.Context, planID, planDigest, poolName, action string, proposed fleet.NodePool, sourceDigest string) (*Reconciliation, error) {
+	token, err := c.installationToken(ctx, map[string]string{"contents": "read", "pull_requests": "read"})
+	if err != nil {
+		return nil, err
+	}
+	branch := "norn/plan-" + planID
+	pr, err := c.findPullRequest(ctx, token, branch)
+	if err != nil {
+		return nil, err
+	}
+	if pr != nil {
+		main, _, readErr := c.getContent(ctx, token, c.cfg.DefaultBranch)
+		if readErr != nil {
+			return nil, readErr
+		}
+		digest := sha256.Sum256(main)
+		if sourceDigest != "sha256:"+hex.EncodeToString(digest[:]) {
+			return &Reconciliation{Outcome: "ambiguous"}, nil
+		}
+		document, report := fleet.ParseAndValidate(main)
+		if document == nil || report == nil || !report.Valid || !strings.EqualFold(document.Metadata.Repository, c.cfg.Repository) {
+			return &Reconciliation{Outcome: "ambiguous"}, nil
+		}
+		configuredEnvironment, envErr := c.fleetEnvironment()
+		remoteEnvironment, remoteErr := fleetEnvironmentFromDocument(document)
+		if envErr != nil || remoteErr != nil || configuredEnvironment != remoteEnvironment {
+			return &Reconciliation{Outcome: "ambiguous"}, nil
+		}
+		if _, ok := document.NodePools[poolName]; !ok {
+			return &Reconciliation{Outcome: "ambiguous"}, nil
+		}
+		document.NodePools[poolName] = proposed
+		expected, marshalErr := yaml.Marshal(document)
+		if marshalErr != nil {
+			return nil, marshalErr
+		}
+		branchContent, _, branchErr := c.getContent(ctx, token, branch)
+		expectedTitle := fmt.Sprintf("Fleet: %s %s", action, poolName)
+		expectedBody := fmt.Sprintf("Norn capacity plan `%s`\n\nDigest: `%s`\n\nThis pull request changes desired infrastructure only. Provider and state credentials remain in the protected runner.", planID, planDigest)
+		if branchErr != nil || !bytes.Equal(branchContent, expected) || pr.HeadBranch != branch || pr.BaseBranch != c.cfg.DefaultBranch || pr.HeadSHA == "" || pr.Title != expectedTitle || pr.Body != expectedBody {
+			return &Reconciliation{Outcome: "ambiguous"}, nil
+		}
+		branchSHA, refErr := c.getRef(ctx, token, branch)
+		if refErr != nil || branchSHA != pr.HeadSHA || (pr.State == "closed" && !pr.Merged) {
+			return &Reconciliation{Outcome: "ambiguous"}, nil
+		}
+		return &Reconciliation{Outcome: "remote-success", PullRequest: pr}, nil
+	}
+	for attempt := 0; attempt < 2; attempt++ {
+		_, err = c.getRef(ctx, token, branch)
+		var apiErr *apiError
+		if err == nil || !errors.As(err, &apiErr) || apiErr.Status != http.StatusNotFound {
+			return &Reconciliation{Outcome: "ambiguous"}, nil
+		}
+		pr, err = c.findPullRequest(ctx, token, branch)
+		if err != nil {
+			return nil, err
+		}
+		if pr != nil {
+			return &Reconciliation{Outcome: "ambiguous"}, nil
+		}
+	}
+	return &Reconciliation{Outcome: "verified-no-write"}, nil
+}
+
+// ReconcileDispatch searches for the server-bound nonce without dispatching.
+// An absent result remains ambiguous because GitHub's run listing is bounded
+// and eventually consistent; an operator assertion cannot cancel it.
+func (c *Client) ReconcileDispatch(ctx context.Context, planID, fleetEnvironment string, allowDestructive bool, approved *Dispatch, nonce string) (*Reconciliation, error) {
+	token, err := c.installationToken(ctx, map[string]string{"actions": "read", "contents": "read", "pull_requests": "read"})
+	if err != nil {
+		return nil, err
+	}
+	actor, err := c.appActorLogin(ctx)
+	if err != nil {
+		return nil, err
+	}
+	run, err := c.findApplyRun(ctx, token, planID, fleetEnvironment, allowDestructive, approved, nonce, actor)
+	if err != nil {
+		return nil, err
+	}
+	if run == nil {
+		return &Reconciliation{Outcome: "ambiguous"}, nil
+	}
+	run.Existing = true
+	return &Reconciliation{Outcome: "remote-success", Dispatch: run}, nil
 }
 
 type apiError struct {
@@ -601,6 +703,15 @@ func (c *Client) findPullRequest(ctx context.Context, token, branch string) (*Pu
 		HTMLURL  string `json:"html_url"`
 		State    string `json:"state"`
 		MergedAt string `json:"merged_at"`
+		Head     struct {
+			Ref string `json:"ref"`
+			SHA string `json:"sha"`
+		} `json:"head"`
+		Base struct {
+			Ref string `json:"ref"`
+		} `json:"base"`
+		Title string `json:"title"`
+		Body  string `json:"body"`
 	}
 	if err := c.request(ctx, token, http.MethodGet, c.repoPath("/pulls"+query), nil, &pulls); err != nil {
 		return nil, err
@@ -608,7 +719,7 @@ func (c *Client) findPullRequest(ctx context.Context, token, branch string) (*Pu
 	if len(pulls) == 0 {
 		return nil, nil
 	}
-	return &PullRequest{Number: pulls[0].Number, URL: pulls[0].HTMLURL, Branch: branch, State: pulls[0].State, Merged: pulls[0].MergedAt != ""}, nil
+	return &PullRequest{Number: pulls[0].Number, URL: pulls[0].HTMLURL, Branch: branch, State: pulls[0].State, Merged: pulls[0].MergedAt != "", HeadSHA: pulls[0].Head.SHA, HeadBranch: pulls[0].Head.Ref, BaseBranch: pulls[0].Base.Ref, Title: pulls[0].Title, Body: pulls[0].Body}, nil
 }
 
 func (c *Client) getRef(ctx context.Context, token, branch string) (string, error) {
