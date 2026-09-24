@@ -1,5 +1,35 @@
 # M0–M3 integration checkpoint — 2026-09-24
 
+## Later integration update
+
+PRs [#55](https://github.com/antiartificial/norn/pull/55),
+[#56](https://github.com/antiartificial/norn/pull/56),
+[#57](https://github.com/antiartificial/norn/pull/57), and
+[#58](https://github.com/antiartificial/norn/pull/58) subsequently merged into
+`feature/norn-v3-planning-handoff`. Legacy snapshot restore and confirmed
+pruning, canary promotion, app restart, and wake-gateway scaling now accept
+signed operations for worker execution. Restart records per-allocation stop
+attempts; unresolved app effects exclude other app effect reservations until they are
+reconciled. Expired restart and canary claims requeue for that reconciliation.
+Wake requests coalesce by a durable cycle number and can wake again after an
+explicit scale to zero.
+
+These changes close four paths in the historical [M1 external-effect audit](m1-control-boundary-audit.md).
+Cron, forge, ContextDB rollback, function execution, and other effect paths
+still need durable boundaries. Snapshot restore still needs a crash and
+lease-loss rehearsal around its worker subprocess. Concrete PostgreSQL
+consumers and PG-free etcd startup remain open. The Mini's observed schema
+does not yet migrate from its unversioned state without an adoption repair;
+that work is under separate review. **No M0–M3 milestone is signed off and no
+v3 deployment is implied by these merges.**
+
+The next review order is: finish the guarded Mini schema adoption and private
+restore evidence; convert the remaining M1 external effects and remove
+concrete PostgreSQL control consumers; qualify M2 retention, database
+bindings, and representative recovery; then finish M3 backend-neutral runtime
+and three-member etcd bootstrap, fault, restore, and soak testing. A loaded
+M4 capacity exercise depends on those control contracts.
+
 This updates the [2026-09-23 checkpoint](m0-m3-checkpoint-2026-09-23.md) after M2 PR [#51](https://github.com/antiartificial/norn/pull/51) and M3 PR [#50](https://github.com/antiartificial/norn/pull/50) merged into `feature/norn-v3-planning-handoff`. It records code integration, not milestone exit or release qualification. The v3 feature branch has not been deployed to Mini or Fleet.
 
 | Milestone | Added evidence | Remaining exit gate |
