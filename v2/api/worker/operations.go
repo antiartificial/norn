@@ -38,6 +38,7 @@ func NewOperationWorker(db store.ExecutionStore, p *pipeline.Pipeline) *Operatio
 		kinds: []string{
 			"app.preflight", "app.deploy", "app.rollback", "app.snapshot",
 			"app.snapshot-prune", "app.snapshot-restore", "app.migrate",
+			"app.scale",
 			pipeline.CatalogActivationKind, pipeline.DatabaseBaselineKind,
 		},
 		lease: 90 * time.Second,

@@ -177,6 +177,26 @@ func TranslateForRegionAt(spec *model.InfraSpec, imageTag string, env map[string
 	return job
 }
 
+// ApplyDesiredReplicaCounts overlays acknowledged control-plane scale intent
+// on a newly translated service job. An absent entry deliberately preserves
+// the InfraSpec Scaling.Min/PerRegion result, which is the compatibility
+// behavior for apps never scaled through the durable API.
+func ApplyDesiredReplicaCounts(job *nomadapi.Job, counts map[string]int) {
+	if job == nil || len(counts) == 0 {
+		return
+	}
+	for _, group := range job.TaskGroups {
+		if group == nil || group.Name == nil {
+			continue
+		}
+		if count, ok := counts[*group.Name]; ok {
+			group.Count = replicaCountPtr(count)
+		}
+	}
+}
+
+func replicaCountPtr(value int) *int { return &value }
+
 func configureProcessNetworking(spec *model.InfraSpec, procName string, proc model.Process, region model.ResolvedRegion, task *nomadapi.Task, tg *nomadapi.TaskGroup) {
 	ports := []string{}
 	net := &nomadapi.NetworkResource{}

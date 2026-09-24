@@ -247,8 +247,48 @@ func (c *Client) NodeInfo(nodeID string) (*NodeInfo, error) {
 
 // ScaleJob updates the count for a specific task group.
 func (c *Client) ScaleJob(jobID, group string, count int) error {
-	_, _, err := c.api.Jobs().Scale(jobID, group, &count, "scaled via norn", false, nil, nil)
+	_, err := c.ScaleJobWithMeta(jobID, group, "", count, nil)
 	return err
+}
+
+// ScaleJobWithMeta applies a scale request and returns Nomad's evaluation ID.
+// The metadata is persisted in Nomad's scaling event and lets a recovering
+// control-plane operation distinguish its own request from another scaler.
+func (c *Client) ScaleJobWithMeta(jobID, group, region string, count int, meta map[string]interface{}) (string, error) {
+	response, _, err := c.api.Jobs().Scale(jobID, group, &count, "scaled via norn", false, meta, &nomadapi.WriteOptions{Region: region})
+	if err != nil {
+		return "", err
+	}
+	return response.EvalID, nil
+}
+
+// ScaleStatus reconciles a scale request against the exact durable operation
+// claim. A matching desired count alone is insufficient: another scaler can
+// produce it, and a failed event must never acknowledge this mutation.
+func (c *Client) ScaleStatus(jobID, group, region, operationID, generation, executionID string, count int, expectedEvalID string) (desired int, matched bool, evalID string, err error) {
+	status, _, err := c.api.Jobs().ScaleStatus(jobID, &nomadapi.QueryOptions{Region: region})
+	if err != nil {
+		return 0, false, "", err
+	}
+	target, ok := status.TaskGroups[group]
+	if !ok {
+		return 0, false, "", fmt.Errorf("task group %q not found", group)
+	}
+	for _, event := range target.Events {
+		if event.Meta == nil || fmt.Sprint(event.Meta["norn.operationId"]) != operationID ||
+			fmt.Sprint(event.Meta["norn.claimGeneration"]) != generation ||
+			fmt.Sprint(event.Meta["norn.executionId"]) != executionID || event.Error ||
+			event.Count == nil || *event.Count != int64(count) || event.EvalID == nil || *event.EvalID == "" {
+			continue
+		}
+		if expectedEvalID != "" && *event.EvalID != expectedEvalID {
+			continue
+		}
+		matched = true
+		evalID = *event.EvalID
+		break
+	}
+	return target.Desired, matched, evalID, nil
 }
 
 // UptimeEntry describes a long-running allocation for the uptime leaderboard.

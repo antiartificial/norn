@@ -98,6 +98,36 @@ func TestRestartJobStopsOnlyActiveDesiredAllocations(t *testing.T) {
 	}
 }
 
+func TestScaleStatusRequiresExactSuccessfulDurableOperationEvent(t *testing.T) {
+	t.Parallel()
+	const generation = "9007199254740993"
+	client := newTestNomadClient(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodGet || r.URL.Path != "/v1/job/widget/scale" {
+			http.Error(w, "unexpected request", http.StatusNotFound)
+			return
+		}
+		if got := r.URL.Query().Get("region"); got != "global" { t.Fatalf("Nomad region=%q, want global", got) }
+		response := nomadapi.JobScaleStatusResponse{TaskGroups: map[string]nomadapi.TaskGroupScaleStatus{
+			"web": {Desired: 3, Events: []nomadapi.ScalingEvent{
+				{Meta: map[string]interface{}{"norn.operationId": "operation-1", "norn.claimGeneration": "1", "norn.executionId": "wrong-generation"}, Count: int64Pointer(3), EvalID: stringPointer("eval-wrong-generation")},
+				{Meta: map[string]interface{}{"norn.operationId": "operation-1", "norn.claimGeneration": "2", "norn.executionId": "wrong-execution"}, Count: int64Pointer(3), EvalID: stringPointer("eval-wrong-execution")},
+				{Meta: map[string]interface{}{"norn.operationId": "operation-1", "norn.claimGeneration": generation, "norn.executionId": "execution-1"}, Count: int64Pointer(3), Error: true, EvalID: stringPointer("eval-error")},
+				{Meta: map[string]interface{}{"norn.operationId": "operation-1", "norn.claimGeneration": generation, "norn.executionId": "execution-1"}, Count: int64Pointer(2), EvalID: stringPointer("eval-wrong-count")},
+				{Meta: map[string]interface{}{"norn.operationId": "operation-1", "norn.claimGeneration": float64(9007199254740992), "norn.executionId": "execution-1"}, Count: int64Pointer(3), EvalID: stringPointer("eval-lossy-number")},
+				{Meta: map[string]interface{}{"norn.operationId": "operation-1", "norn.claimGeneration": generation, "norn.executionId": "execution-1"}, Count: int64Pointer(3), EvalID: stringPointer("eval-1")},
+			}},
+		}}
+		_ = json.NewEncoder(w).Encode(response)
+	}))
+	desired, matched, evalID, err := client.ScaleStatus("widget", "web", "global", "operation-1", generation, "execution-1", 3, "eval-1")
+	if err != nil || desired != 3 || !matched || evalID != "eval-1" {
+		t.Fatalf("ScaleStatus() = %d, %t, %q, %v", desired, matched, evalID, err)
+	}
+}
+
+func stringPointer(value string) *string { return &value }
+func int64Pointer(value int64) *int64    { return &value }
+
 func TestRestartJobRequiresActiveAllocation(t *testing.T) {
 	t.Parallel()
 
