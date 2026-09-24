@@ -3,6 +3,7 @@ package handler
 import (
 	"bytes"
 	"context"
+	"errors"
 	"fmt"
 	"io"
 	"net"
@@ -116,9 +117,16 @@ func (h *Handler) serveWakeGatewayTarget(w http.ResponseWriter, r *http.Request,
 	ctx, cancel := context.WithTimeout(r.Context(), timeout)
 	defer cancel()
 
-	instance, woke, err := h.ensureWakeGatewayReady(ctx, target)
+	instance, woke, wakeOperationID, err := h.ensureWakeGatewayReady(ctx, target)
+	if wakeOperationID != "" {
+		w.Header().Set("X-Norn-Wake-Operation", wakeOperationID)
+	}
 	if err != nil {
 		status = http.StatusGatewayTimeout
+		var terminal *wakeGatewayOperationTerminalError
+		if errors.As(err, &terminal) {
+			status = http.StatusServiceUnavailable
+		}
 		w.Header().Set("Retry-After", "5")
 		writeError(w, status, err.Error())
 		return
@@ -167,6 +175,9 @@ func (h *Handler) serveWakeGatewayTarget(w http.ResponseWriter, r *http.Request,
 		out.Header.Set("X-Norn-Wake-Gateway", "true")
 		out.Header.Set("X-Norn-Wake-App", target.App)
 		out.Header.Set("X-Norn-Wake-Process", target.Process)
+		if wakeOperationID != "" {
+			out.Header.Set("X-Norn-Wake-Operation", wakeOperationID)
+		}
 		if woke {
 			out.Header.Set("X-Norn-Wake-Action", "scaled")
 		} else {
@@ -176,6 +187,9 @@ func (h *Handler) serveWakeGatewayTarget(w http.ResponseWriter, r *http.Request,
 	proxy.ModifyResponse = func(resp *http.Response) error {
 		status = resp.StatusCode
 		resp.Header.Set("X-Norn-Wake-Gateway", "true")
+		if wakeOperationID != "" {
+			resp.Header.Set("X-Norn-Wake-Operation", wakeOperationID)
+		}
 		if woke {
 			resp.Header.Set("X-Norn-Wake-Action", "scaled")
 		} else {
@@ -194,20 +208,21 @@ func (h *Handler) serveWakeGatewayTarget(w http.ResponseWriter, r *http.Request,
 	proxy.ServeHTTP(w, r)
 }
 
-func (h *Handler) ensureWakeGatewayReady(ctx context.Context, target wakeGatewayTarget) (model.ServiceInstance, bool, error) {
+func (h *Handler) ensureWakeGatewayReady(ctx context.Context, target wakeGatewayTarget) (model.ServiceInstance, bool, string, error) {
 	if manifest, err := h.buildServiceManifest(); err == nil {
 		if refreshed, ok := wakeGatewayTargetForHost(manifest.Services, target.Key); ok {
 			target = refreshed
 		}
 	}
 	if instance, ok := firstReadyInstance(target.Service); ok {
-		return instance, false, nil
+		return instance, false, "", nil
 	}
 	if h.pipeline == nil || !h.pipeline.ScaleAvailable() {
-		return model.ServiceInstance{}, false, fmt.Errorf("durable wake capacity execution is unavailable")
+		return model.ServiceInstance{}, false, "", fmt.Errorf("durable wake capacity execution is unavailable")
 	}
-	if err := h.queueWakeGatewayCapacityIntent(ctx, target); err != nil {
-		return model.ServiceInstance{}, false, err
+	wakeOperation, err := h.queueWakeGatewayCapacityIntent(ctx, target)
+	if err != nil {
+		return model.ServiceInstance{}, false, "", err
 	}
 
 	ticker := time.NewTicker(time.Second)
@@ -215,8 +230,15 @@ func (h *Handler) ensureWakeGatewayReady(ctx context.Context, target wakeGateway
 	for {
 		select {
 		case <-ctx.Done():
-			return model.ServiceInstance{}, true, fmt.Errorf("timeout waiting for %s/%s to wake", target.App, target.Process)
+			return model.ServiceInstance{}, true, wakeOperation.ID, fmt.Errorf("timeout waiting for %s/%s to wake (operation %s)", target.App, target.Process, wakeOperation.ID)
 		case <-ticker.C:
+			operation, operationErr := h.db.GetOperation(ctx, wakeOperation.ID)
+			if operationErr != nil {
+				return model.ServiceInstance{}, true, wakeOperation.ID, fmt.Errorf("read wake operation %s: %w", wakeOperation.ID, operationErr)
+			}
+			if terminalErr := wakeGatewayTerminalOperationError(operation); terminalErr != nil {
+				return model.ServiceInstance{}, true, wakeOperation.ID, terminalErr
+			}
 			manifest, err := h.buildServiceManifest()
 			if err != nil {
 				continue
@@ -226,7 +248,7 @@ func (h *Handler) ensureWakeGatewayReady(ctx context.Context, target wakeGateway
 				continue
 			}
 			if instance, ok := firstReadyInstance(refreshed.Service); ok {
-				return instance, true, nil
+				return instance, true, wakeOperation.ID, nil
 			}
 		}
 	}
@@ -236,13 +258,37 @@ func (h *Handler) ensureWakeGatewayReady(ctx context.Context, target wakeGateway
 // signed operation log. Its stable identity collapses concurrent requests from
 // every gateway replica into one app.scale operation; the worker's effect
 // reservation is the durable Nomad mutation fence.
-func (h *Handler) queueWakeGatewayCapacityIntent(ctx context.Context, target wakeGatewayTarget) error {
+type wakeGatewayOperationTerminalError struct {
+	OperationID string
+	Status      model.OperationStatus
+	Detail      string
+}
+
+func (e *wakeGatewayOperationTerminalError) Error() string {
+	return fmt.Sprintf("wake capacity operation %s %s: %s", e.OperationID, e.Status, e.Detail)
+}
+
+func wakeGatewayTerminalOperationError(operation *model.Operation) error {
+	if operation == nil || (operation.Status != model.OperationFailed && operation.Status != model.OperationCanceled) {
+		return nil
+	}
+	detail := operation.LastError
+	if detail == "" {
+		detail = operation.Message
+	}
+	if detail == "" {
+		detail = string(operation.Status)
+	}
+	return &wakeGatewayOperationTerminalError{OperationID: operation.ID, Status: operation.Status, Detail: detail}
+}
+
+func (h *Handler) queueWakeGatewayCapacityIntent(ctx context.Context, target wakeGatewayTarget) (model.Operation, error) {
 	if h == nil || h.cfg == nil || h.pipeline == nil || h.operationStore == nil {
-		return fmt.Errorf("durable wake capacity execution is unavailable")
+		return model.Operation{}, fmt.Errorf("durable wake capacity execution is unavailable")
 	}
 	specs, err := model.DiscoverApps(h.cfg.AppsDir)
 	if err != nil {
-		return fmt.Errorf("discover wake app intent: %w", err)
+		return model.Operation{}, fmt.Errorf("discover wake app intent: %w", err)
 	}
 	var spec *model.InfraSpec
 	for _, candidate := range specs {
@@ -252,11 +298,11 @@ func (h *Handler) queueWakeGatewayCapacityIntent(ctx context.Context, target wak
 		}
 	}
 	if spec == nil || !spec.Deploy {
-		return fmt.Errorf("wake target %s/%s is not a deployable app process", target.App, target.Process)
+		return model.Operation{}, fmt.Errorf("wake target %s/%s is not a deployable app process", target.App, target.Process)
 	}
 	process, ok := spec.Processes[target.Process]
 	if !ok || process.Schedule != "" || process.Function != nil {
-		return fmt.Errorf("wake target %s/%s is not a scalable service process", target.App, target.Process)
+		return model.Operation{}, fmt.Errorf("wake target %s/%s is not a scalable service process", target.App, target.Process)
 	}
 	var regions []model.ResolvedRegion
 	for _, region := range spec.ResolvedRegions() {
@@ -265,28 +311,44 @@ func (h *Handler) queueWakeGatewayCapacityIntent(ctx context.Context, target wak
 		}
 	}
 	if len(regions) != 1 {
-		return fmt.Errorf("wake target %s/%s requires exactly one declared process region", target.App, target.Process)
+		return model.Operation{}, fmt.Errorf("wake target %s/%s requires exactly one declared process region", target.App, target.Process)
 	}
 	region := regions[0]
+	if h.db == nil {
+		return model.Operation{}, fmt.Errorf("durable wake capacity execution is unavailable")
+	}
+	counts, err := h.db.DesiredReplicaCounts(ctx, target.App, region.Name)
+	if err != nil {
+		return model.Operation{}, fmt.Errorf("read wake capacity intent: %w", err)
+	}
+	cycle, latestStatus, found, err := h.db.LatestWakeCapacityCycle(ctx, target.App, target.Process, region.Name)
+	if err != nil {
+		return model.Operation{}, fmt.Errorf("read wake capacity cycle: %w", err)
+	}
+	if !found {
+		cycle = 1
+	} else if desired, explicit := counts[target.Process]; explicit && desired == 0 && latestStatus.Terminal() {
+		cycle++
+	}
 	authority, err := h.operationStore.Authority(ctx)
 	if err != nil {
-		return fmt.Errorf("wake control authority: %w", err)
+		return model.Operation{}, fmt.Errorf("wake control authority: %w", err)
 	}
-	key := "wake-capacity-v1:" + target.App + ":" + region.Name + ":" + target.Process
+	key := fmt.Sprintf("wake-capacity-v1:%s:%s:%s:%d", target.App, region.Name, target.Process, cycle)
 	enqueue := pipeline.EnqueueRequest{
 		Authority: authority,
 		Actor:     store.OperationActor{Issuer: authority + "/system", Subject: "wake-gateway:" + target.App + "/" + target.Process},
 		Key:       key,
 		Audit:     store.AcceptanceAuditContext{Source: "wake-gateway"},
-		Semantics: map[string]interface{}{"trigger": "wake-gateway", "app": target.App, "process": target.Process, "region": region.Name, "nomadRegion": region.NomadRegion, "count": 1},
+		Semantics: map[string]interface{}{"trigger": "wake-gateway", "app": target.App, "process": target.Process, "region": region.Name, "nomadRegion": region.NomadRegion, "count": 1, "wakeCycle": cycle},
 	}
 	now := time.Now().UTC()
-	op := model.Operation{ID: uuid.NewString(), Kind: "app.scale", App: target.App, SagaID: uuid.NewString(), Ref: region.Name + "/" + target.Process, Status: model.OperationQueued, Risk: "wake gateway capacity intent", Source: "wake-gateway", Message: fmt.Sprintf("queued wake capacity for %s/%s process %q to 1", target.App, region.Name, target.Process), StartedAt: now, MaxAttempts: 1, Payload: map[string]interface{}{"app": target.App, "group": target.Process, "region": region.Name, "nomadRegion": region.NomadRegion, "count": 1}}
-	_, err = h.pipeline.QueueOperation(ctx, op, enqueue)
+	op := model.Operation{ID: uuid.NewString(), Kind: "app.scale", App: target.App, SagaID: uuid.NewString(), Ref: region.Name + "/" + target.Process, Status: model.OperationQueued, Risk: "wake gateway capacity intent", Source: "wake-gateway", Message: fmt.Sprintf("queued wake capacity for %s/%s process %q to 1", target.App, region.Name, target.Process), StartedAt: now, MaxAttempts: 1, Payload: map[string]interface{}{"app": target.App, "group": target.Process, "region": region.Name, "nomadRegion": region.NomadRegion, "count": 1, "wakeCycle": cycle}, Metadata: map[string]interface{}{"wakeCycle": cycle}}
+	accepted, err := h.pipeline.QueueOperation(ctx, op, enqueue)
 	if err != nil {
-		return fmt.Errorf("accept wake capacity intent: %w", err)
+		return model.Operation{}, fmt.Errorf("accept wake capacity intent: %w", err)
 	}
-	return nil
+	return accepted.Operation, nil
 }
 
 func wakeGatewayTargetForHost(services []model.ServiceManifestEntry, hostname string) (wakeGatewayTarget, bool) {

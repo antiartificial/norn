@@ -351,7 +351,8 @@ regions:
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
-			errs <- h.queueWakeGatewayCapacityIntent(context.Background(), target)
+			_, err := h.queueWakeGatewayCapacityIntent(context.Background(), target)
+			errs <- err
 		}()
 	}
 	wg.Wait()
@@ -361,7 +362,7 @@ regions:
 			t.Fatalf("concurrent wake capacity intent: %v", err)
 		}
 	}
-	if err := h.queueWakeGatewayCapacityIntent(context.Background(), target); err != nil {
+	if _, err := h.queueWakeGatewayCapacityIntent(context.Background(), target); err != nil {
 		t.Fatalf("replay wake capacity intent: %v", err)
 	}
 
@@ -372,7 +373,7 @@ regions:
 	if len(ops) != 1 {
 		t.Fatalf("scale operations = %d, want one durable replay target", len(ops))
 	}
-	if got := ops[0].Payload; got["group"] != "web" || got["region"] != "local" || got["nomadRegion"] != "global" || got["count"] != float64(1) {
+	if got := ops[0].Payload; got["group"] != "web" || got["region"] != "local" || got["nomadRegion"] != "global" || got["count"] != float64(1) || got["wakeCycle"] != float64(1) {
 		t.Fatalf("wake scale payload = %#v", got)
 	}
 	var signed int
@@ -381,6 +382,26 @@ regions:
 	}
 	if signed != 1 {
 		t.Fatalf("signed acceptance intents = %d, want 1", signed)
+	}
+	if _, err := db.Pool.Exec(context.Background(), `UPDATE operations SET status='succeeded', finished_at=now() WHERE id=$1`, ops[0].ID); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := db.Pool.Exec(context.Background(), `INSERT INTO app_desired_replicas(app,process,region,desired_count,revision,operation_id) VALUES('sleeper','web','local',0,1,$1)`, ops[0].ID); err != nil {
+		t.Fatal(err)
+	}
+	second, err := h.queueWakeGatewayCapacityIntent(context.Background(), target)
+	if err != nil {
+		t.Fatalf("second dormant wake cycle: %v", err)
+	}
+	if second.ID == ops[0].ID || second.Payload["wakeCycle"] != int64(2) {
+		t.Fatalf("second wake cycle = %#v, want new cycle 2", second)
+	}
+	third, err := h.queueWakeGatewayCapacityIntent(context.Background(), target)
+	if err != nil {
+		t.Fatalf("replay second dormant wake cycle: %v", err)
+	}
+	if third.ID != second.ID {
+		t.Fatalf("second wake cycle replay = %s, want %s", third.ID, second.ID)
 	}
 }
 
@@ -402,11 +423,21 @@ regions:
 		t.Fatal(err)
 	}
 	h := &Handler{cfg: &config.Config{AppsDir: appsDir}, pipeline: &pipeline.Pipeline{}, operationStore: wakeTestOperationStore{}}
-	if err := h.queueWakeGatewayCapacityIntent(context.Background(), wakeGatewayTarget{App: "multi", Process: "web"}); err == nil || !strings.Contains(err.Error(), "exactly one declared process region") {
+	if _, err := h.queueWakeGatewayCapacityIntent(context.Background(), wakeGatewayTarget{App: "multi", Process: "web"}); err == nil || !strings.Contains(err.Error(), "exactly one declared process region") {
 		t.Fatalf("ambiguous wake error = %v", err)
 	}
-	if err := h.queueWakeGatewayCapacityIntent(context.Background(), wakeGatewayTarget{App: "multi", Process: "missing"}); err == nil || !strings.Contains(err.Error(), "not a scalable service process") {
+	if _, err := h.queueWakeGatewayCapacityIntent(context.Background(), wakeGatewayTarget{App: "multi", Process: "missing"}); err == nil || !strings.Contains(err.Error(), "not a scalable service process") {
 		t.Fatalf("invalid wake error = %v", err)
+	}
+}
+
+func TestWakeGatewayTerminalOperationErrorIncludesOperationIdentity(t *testing.T) {
+	err := wakeGatewayTerminalOperationError(&model.Operation{ID: "wake-operation", Status: model.OperationFailed, LastError: "Nomad rejected scale"})
+	if err == nil || !strings.Contains(err.Error(), "wake-operation") || !strings.Contains(err.Error(), "Nomad rejected scale") {
+		t.Fatalf("terminal wake error = %v", err)
+	}
+	if err := wakeGatewayTerminalOperationError(&model.Operation{ID: "wake-operation", Status: model.OperationSucceeded}); err != nil {
+		t.Fatalf("successful wake operation should keep readiness polling: %v", err)
 	}
 }
 
