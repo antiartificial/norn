@@ -58,10 +58,36 @@ norn-api --norn-etcd-bootstrap
 
 It requires `NORN_ETCD_BOOTSTRAP_TOKEN_FILE` (an absolute new path),
 `NORN_ETCD_BOOTSTRAP_SUBJECT`, `NORN_ETCD_BOOTSTRAP_SCOPES`, and
-`NORN_ETCD_BOOTSTRAP_TTL` (at most 72 hours). The command reserves the empty
-prefix, records the managed token, and writes the opaque token only to the new
-owner-only file. It neither prints the token nor runs a server. A second run or
-a non-empty prefix is refused.
+`NORN_ETCD_BOOTSTRAP_TTL` (at most 72 hours). It accepts a versioned,
+non-secret prepared record and its managed-token registry entry in one etcd
+transaction. It then rechecks that the prefix contains only those two records
+and promotes the marker to accepted before writing the opaque token to the
+exclusive owner-only file. File data and the directory are fsynced. It neither
+prints the token nor runs a server.
+
+etcd has no transaction predicate for absence of an arbitrary key range. Fleet
+bootstrap must therefore grant the bootstrap principal exclusive write access
+to the chosen Norn prefix until the marker is accepted; do not grant the normal
+Fleet role write access or start a normal Norn process before that point. The
+post-prepare exact-prefix check fails closed for a writer observed between the
+initial scan and finalization. This RBAC boundary is the remaining invariant
+that makes a fresh-prefix claim meaningful.
+
+If the process fails after the etcd transaction and before publication, rerun
+with the same subject, scopes, TTL, and output path: Norn verifies the durable
+record and recreates the identical signed bearer. It refuses a changed request,
+a changed signing key, a marker/token mismatch, or a non-empty unbootstrapped
+prefix. An existing owner-only file containing the exact accepted bearer is
+fsynced again and treated as a resumed publication; any other existing path is
+refused and never overwritten. The bootstrap marker binds a SHA-256 fingerprint
+of the signing key, so changing `NORN_API_TOKEN` requires a deliberate future
+credential-rotation procedure rather than silently producing another bearer.
+
+The normal Fleet router verifies this marker and the matching token-registry
+entry before it constructs its control stores, so it cannot become the first
+Norn writer in a fresh prefix. The initial credential may subsequently expire
+or be revoked; the router requires its durable historical record, not a live
+bootstrap bearer.
 
 `NORN_STARTUP_MODE=passive` with `NORN_SCHEMA_MODE=check` serves only the
 loopback `/api/health`, `/api/version`, and `/api/schema` status routes.

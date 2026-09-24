@@ -55,6 +55,9 @@ func runEtcdFleetRuntime(cfg *config.Config, backend startup.ControlBackendConfi
 	if err := checkEtcdSourceHealth(context.Background(), client, backend.EtcdPrefix); err != nil {
 		return fmt.Errorf("etcd availability: %w", err)
 	}
+	if err := requireInitialEtcdBootstrap(context.Background(), client, backend.EtcdPrefix, cfg.APIToken); err != nil {
+		return fmt.Errorf("etcd bootstrap: %w", err)
+	}
 	operations, err := etcdstore.NewV3OperationStoreWithPolicy(client, backend.EtcdPrefix, cfg.ControlAuthority, signer, store.AcceptancePolicy{ReplayTTL: cfg.OperationReplayTTL})
 	if err != nil {
 		return err
