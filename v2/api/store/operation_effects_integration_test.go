@@ -199,6 +199,21 @@ func TestPGEffectStoreLocatesBlockingEffectAndRecordsFinalFailure(t *testing.T) 
 	}
 }
 
+func TestPGEffectStoreBlocksDifferentUnresolvedEffectsForSameApp(t *testing.T) {
+	dbs, stores, authority := setupEffectStores(t, 1)
+	ctx := context.Background()
+	_, firstClaim := claimEffectOperation(t, dbs[0], "restart", time.Minute)
+	first := effectReservation(t, authority, "app/demo/restart", "restart-effect", firstClaim)
+	if _, err := stores[0].Reserve(ctx, first); err != nil {
+		t.Fatal(err)
+	}
+	_, secondClaim := claimEffectOperation(t, dbs[0], "canary", time.Minute)
+	second := effectReservation(t, authority, "app/demo/canary", "canary-effect", secondClaim)
+	if _, err := stores[0].Reserve(ctx, second); !errors.Is(err, effect.ErrResourceBlocked) {
+		t.Fatalf("different app effect overlap err=%v", err)
+	}
+}
+
 func TestPGEffectStoreResolutionCannotEraseRecordedLaunch(t *testing.T) {
 	dbs, stores, authority := setupEffectStores(t, 1)
 	ctx := context.Background()
