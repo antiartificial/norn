@@ -71,8 +71,9 @@ func InspectionRegistry() []Table {
 		{Name: "recovery_drills", OrderBy: []string{"id"}, Columns: classified(include("id", "kind", "target", "status", "initiated_by", "started_at", "finished_at"), "evidence")},
 		{Name: "access_observation_buckets", OrderBy: []string{"app", "process", "endpoint", "source", "bucket_start"}, Columns: include("app", "process", "endpoint", "source", "bucket_start", "requests", "successes", "client_errors", "server_errors", "first_seen", "last_seen")},
 		{Name: "control_plane_identity", OrderBy: []string{"singleton"}, Columns: include("singleton", "authority", "created_at")},
-		{Name: "operation_request_identities", OrderBy: []string{"id"}, Columns: classified(include("id", "authority", "actor_issuer", "actor_subject", "kind", "resource", "fingerprint_version", "fingerprint_digest", "operation_id", "created_at"), "request_key")},
+		{Name: "operation_request_identities", OrderBy: []string{"id"}, Columns: classified(include("id", "authority", "actor_issuer", "actor_subject", "kind", "resource", "fingerprint_version", "fingerprint_digest", "operation_id", "created_at", "replay_contract_version", "replay_expires_at", "replay_expired_at"), "request_key")},
 		{Name: "operation_acceptance_intents", OrderBy: []string{"id"}, Columns: classified(include("id", "schema_version", "request_identity_id", "operation_id", "deployment_id", "accepted_at", "request_receipt_id", "request_id", "credential_id", "device_id", "source", "scopes", "fingerprint_version", "fingerprint_digest", "canonical_digest", "signing_algorithm", "signing_key_id"), "request_canonical_bytes", "canonical_bytes", "signature")},
+		{Name: "signed_acceptance_byte_reservations", OrderBy: []string{"operation_id"}, Columns: include("operation_id", "acceptance_intent_id", "reserved_bytes", "created_at")},
 		{Name: "operation_effects", OrderBy: []string{"id"}, Columns: classified(include("id", "generation", "authority", "resource", "operation_id", "stage", "supervisor", "lifecycle", "outcome", "exit_code", "resolution_decision", "created_at", "launched_at", "completed_at", "resolved_at", "updated_at"), "claim_owner", "claim_generation", "input_digest", "launch_payload", "supervisor_execution_id", "runtime_instance_id", "result_digest", "result_reference", "evidence_source", "evidence_reference", "evidence_observed_at")},
 		{Name: "restart_effect_sources", OrderBy: []string{"operation_id", "allocation_id"}, Columns: include("operation_id", "allocation_id", "job_id", "namespace", "task_group", "create_index", "attempted_at", "acknowledged_at", "updated_at")},
 		// Checkpoint outputs name source paths, changed files and image
@@ -85,7 +86,7 @@ func InspectionRegistry() []Table {
 		{Name: "database_catalog_retirements", OrderBy: []string{"kind", "id"}, Columns: include("kind", "id", "retired_revision")},
 		{Name: "evidence_archive_intents", OrderBy: []string{"id"}, Columns: include("id", "subject_kind", "subject_id", "app", "operation_id", "sequence", "state", "event_ids", "event_count", "cutoff_timestamp",
 			"object_key", "object_sha256", "object_bytes", "attempts", "last_error", "pruned_events", "created_at", "updated_at", "verified_at", "pruned_at")},
-		{Name: "evidence_reserve", OrderBy: []string{"singleton"}, Columns: include("singleton", "enabled", "max_pending", "max_pending_age_seconds", "archive_exhausted", "archive_detail",
+		{Name: "evidence_reserve", OrderBy: []string{"singleton"}, Columns: include("singleton", "enabled", "max_pending", "max_pending_age_seconds", "max_signed_acceptance_bytes", "archive_exhausted", "archive_detail",
 			"archive_observed_at", "updated_at")},
 		{Name: "control_event_retention", OrderBy: []string{"id"}, Columns: include("id", "pruned_through_cursor", "updated_at")},
 	}

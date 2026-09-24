@@ -27,6 +27,7 @@ type V3OperationStore struct {
 	lease             clientv3.Lease
 	prefix, authority string
 	signer            store.AcceptanceSigner
+	policy            store.AcceptancePolicy
 }
 
 // appOperationLockLease is renewed well before expiry. The lock's Context is
@@ -42,8 +43,16 @@ type v3Record struct {
 	Generation int64           `json:"generation"`
 }
 type v3Acceptance struct {
-	Identity store.OperationRequestIdentity `json:"identity"`
-	Accepted store.AcceptedOperation        `json:"accepted"`
+	Identity              store.OperationRequestIdentity `json:"identity"`
+	Accepted              store.AcceptedOperation        `json:"accepted"`
+	ReplayContractVersion string                         `json:"replayContractVersion,omitempty"`
+	ReplayExpiresAt       *time.Time                     `json:"replayExpiresAt,omitempty"`
+	ReplayExpiredAt       *time.Time                     `json:"replayExpiredAt,omitempty"`
+}
+
+type loadedV3Acceptance struct {
+	record   v3Acceptance
+	revision int64
 }
 
 type leasedKV interface {
@@ -52,14 +61,24 @@ type leasedKV interface {
 }
 
 func NewV3OperationStore(kv leasedKV, prefix, authority string, signer store.AcceptanceSigner) (*V3OperationStore, error) {
+	return NewV3OperationStoreWithPolicy(kv, prefix, authority, signer, store.AcceptancePolicy{})
+}
+
+// NewV3OperationStoreWithPolicy opts newly accepted etcd identities into the
+// same replay contract as PostgreSQL. The historical constructor remains an
+// indefinite-replay compatibility boundary.
+func NewV3OperationStoreWithPolicy(kv leasedKV, prefix, authority string, signer store.AcceptanceSigner, policy store.AcceptancePolicy) (*V3OperationStore, error) {
 	if kv == nil || strings.TrimSpace(prefix) == "" || signer == nil {
 		return nil, fmt.Errorf("etcd v3 operation store requires kv, prefix, and signer")
+	}
+	if policy.ReplayTTL < 0 {
+		return nil, &store.AcceptanceValidationError{Reason: "replay TTL cannot be negative"}
 	}
 	parsed, err := uuid.Parse(authority)
 	if err != nil {
 		return nil, fmt.Errorf("etcd v3 operation store authority: %w", err)
 	}
-	return &V3OperationStore{kv: kv, lease: kv, prefix: strings.TrimRight(prefix, "/"), authority: parsed.String(), signer: signer}, nil
+	return &V3OperationStore{kv: kv, lease: kv, prefix: strings.TrimRight(prefix, "/"), authority: parsed.String(), signer: signer, policy: policy}, nil
 }
 
 var _ store.OperationStore = (*V3OperationStore)(nil)
@@ -94,6 +113,9 @@ func (s *V3OperationStore) acceptanceKey(i store.OperationRequestIdentity) strin
 	d := sha256.Sum256(b)
 	return s.prefix + "/v3/acceptance/" + hex.EncodeToString(d[:])
 }
+func (s *V3OperationStore) replayLiveKey(acceptanceKey string) string {
+	return acceptanceKey + "/replay-live"
+}
 func (s *V3OperationStore) Authority(context.Context) (string, error) { return s.authority, nil }
 
 func (s *V3OperationStore) Accept(ctx context.Context, a store.OperationAcceptance) (store.AcceptedOperation, error) {
@@ -103,6 +125,12 @@ func (s *V3OperationStore) Accept(ctx context.Context, a store.OperationAcceptan
 	if a.Deployment != nil || len(a.Regions) > 0 || a.Admission.OneActiveMutablePerApp || a.FleetReconciliation != nil || a.FleetRunnerAttempt != nil {
 		return store.AcceptedOperation{}, &store.AcceptanceValidationError{Reason: "etcd operation aggregate admission is not implemented"}
 	}
+	// This adapter has no external-effect aggregate. Replay expiry is therefore
+	// limited to the read-only operation kind it executes today; a future kind
+	// must add its own authoritative hold before it can opt in.
+	if s.policy.ReplayTTL > 0 && strings.TrimSpace(a.Operation.Kind) != "app.preflight" {
+		return store.AcceptedOperation{}, &store.AcceptanceValidationError{Reason: "etcd replay expiry is implemented only for app.preflight"}
+	}
 	var err error
 	if a, err = s.normalize(a); err != nil {
 		return store.AcceptedOperation{}, err
@@ -110,7 +138,7 @@ func (s *V3OperationStore) Accept(ctx context.Context, a store.OperationAcceptan
 	key := s.acceptanceKey(a.Identity)
 	existing, err := s.loadAcceptance(ctx, key)
 	if err == nil {
-		return s.replay(ctx, existing, a.Identity, a.Fingerprint)
+		return s.replay(ctx, key, existing, a.Identity, a.Fingerprint)
 	}
 	if !errors.Is(err, ErrNotFound) {
 		return store.AcceptedOperation{}, err
@@ -122,44 +150,72 @@ func (s *V3OperationStore) Accept(ctx context.Context, a store.OperationAcceptan
 		return store.AcceptedOperation{}, err
 	}
 	accepted := store.AcceptedOperation{Operation: a.Operation, Deployment: a.Deployment, Regions: a.Regions, RequestIdentityID: identityID, AcceptanceIntentID: intentID, Intent: intent}
-	av, err := json.Marshal(v3Acceptance{Identity: a.Identity, Accepted: accepted})
+	record := v3Acceptance{Identity: a.Identity, Accepted: accepted}
+	var replayLease clientv3.LeaseID
+	if s.policy.ReplayTTL > 0 {
+		lease, err := s.lease.Grant(ctx, leaseTTL(s.policy.ReplayTTL))
+		if err != nil {
+			return store.AcceptedOperation{}, err
+		}
+		replayLease = lease.ID
+		expiresAt := acceptedAt.Add(time.Duration(lease.TTL) * time.Second)
+		record.ReplayContractVersion = store.OperationReplayContractVersion
+		record.ReplayExpiresAt = &expiresAt
+	}
+	av, err := json.Marshal(record)
 	if err != nil {
+		if replayLease != 0 {
+			_, _ = s.lease.Revoke(context.Background(), replayLease)
+		}
 		return store.AcceptedOperation{}, err
 	}
 	ov, err := json.Marshal(v3Record{Operation: a.Operation})
 	if err != nil {
+		if replayLease != 0 {
+			_, _ = s.lease.Revoke(context.Background(), replayLease)
+		}
 		return store.AcceptedOperation{}, err
 	}
-	txn, err := s.kv.Txn(ctx).If(clientv3.Compare(clientv3.CreateRevision(key), "=", 0), clientv3.Compare(clientv3.CreateRevision(s.opKey(a.Operation.ID)), "=", 0)).Then(clientv3.OpPut(key, string(av)), clientv3.OpPut(s.opKey(a.Operation.ID), string(ov))).Commit()
+	puts := []clientv3.Op{clientv3.OpPut(key, string(av)), clientv3.OpPut(s.opKey(a.Operation.ID), string(ov))}
+	if replayLease != 0 {
+		puts = append(puts, clientv3.OpPut(s.replayLiveKey(key), store.OperationReplayContractVersion, clientv3.WithLease(replayLease)))
+	}
+	txn, err := s.kv.Txn(ctx).If(clientv3.Compare(clientv3.CreateRevision(key), "=", 0), clientv3.Compare(clientv3.CreateRevision(s.opKey(a.Operation.ID)), "=", 0)).Then(puts...).Commit()
 	if err != nil {
+		if replayLease != 0 {
+			_, _ = s.lease.Revoke(context.Background(), replayLease)
+		}
 		return store.AcceptedOperation{}, err
 	}
 	if !txn.Succeeded {
+		if replayLease != 0 {
+			_, _ = s.lease.Revoke(context.Background(), replayLease)
+		}
 		existing, err := s.loadAcceptance(ctx, key)
 		if err != nil {
 			return store.AcceptedOperation{}, &store.AcceptanceIndeterminateError{Err: err}
 		}
-		return s.replay(ctx, existing, a.Identity, a.Fingerprint)
+		return s.replay(ctx, key, existing, a.Identity, a.Fingerprint)
 	}
 	return accepted, nil
 }
 
-func (s *V3OperationStore) loadAcceptance(ctx context.Context, key string) (v3Acceptance, error) {
+func (s *V3OperationStore) loadAcceptance(ctx context.Context, key string) (loadedV3Acceptance, error) {
 	r, e := s.kv.Get(ctx, key)
 	if e != nil {
-		return v3Acceptance{}, e
+		return loadedV3Acceptance{}, e
 	}
 	if len(r.Kvs) == 0 {
-		return v3Acceptance{}, ErrNotFound
+		return loadedV3Acceptance{}, ErrNotFound
 	}
 	var a v3Acceptance
 	if e = json.Unmarshal(r.Kvs[0].Value, &a); e != nil {
-		return v3Acceptance{}, e
+		return loadedV3Acceptance{}, e
 	}
-	return a, nil
+	return loadedV3Acceptance{record: a, revision: r.Kvs[0].ModRevision}, nil
 }
-func (s *V3OperationStore) replay(ctx context.Context, record v3Acceptance, identity store.OperationRequestIdentity, fp store.RequestFingerprint) (store.AcceptedOperation, error) {
-	got := record.Accepted
+func (s *V3OperationStore) replay(ctx context.Context, key string, loaded loadedV3Acceptance, identity store.OperationRequestIdentity, fp store.RequestFingerprint) (store.AcceptedOperation, error) {
+	record, got := loaded.record, loaded.record.Accepted
 	if record.Identity != identity || got.RequestIdentityID != got.Intent.RequestIdentityID || got.AcceptanceIntentID != got.Intent.ID {
 		return store.AcceptedOperation{}, &store.AcceptanceSignatureError{Err: fmt.Errorf("etcd signed acceptance identity links differ")}
 	}
@@ -169,12 +225,48 @@ func (s *V3OperationStore) replay(ctx context.Context, record v3Acceptance, iden
 	if e := s.signer.Verify(ctx, got.Intent.Signature, got.Intent.CanonicalBytes); e != nil {
 		return store.AcceptedOperation{}, &store.AcceptanceSignatureError{Err: e}
 	}
-	persisted, _, e := s.load(ctx, got.Operation.ID)
+	persisted, operationRevision, e := s.load(ctx, got.Operation.ID)
 	if e != nil {
 		return store.AcceptedOperation{}, &store.AcceptanceSignatureError{Err: fmt.Errorf("load accepted etcd operation: %w", e)}
 	}
 	if e := store.VerifyAcceptanceEvidence(store.AcceptanceEvidence{Identity: identity, IdentityFingerprint: got.Intent.Fingerprint, IdentityOperationID: got.Operation.ID, Intent: got.Intent, Operation: persisted.Operation}); e != nil {
 		return store.AcceptedOperation{}, &store.AcceptanceSignatureError{Err: e}
+	}
+	if record.ReplayContractVersion != "" {
+		if record.ReplayContractVersion != store.OperationReplayContractVersion || record.ReplayExpiresAt == nil {
+			return store.AcceptedOperation{}, &store.AcceptanceSignatureError{Err: fmt.Errorf("unsupported replay contract %q", record.ReplayContractVersion)}
+		}
+		if record.ReplayExpiredAt != nil {
+			return store.AcceptedOperation{}, &store.AcceptanceExpiredError{Identity: identity, ExpiresAt: *record.ReplayExpiresAt}
+		}
+		live, err := s.kv.Get(ctx, s.replayLiveKey(key))
+		if err != nil {
+			return store.AcceptedOperation{}, err
+		}
+		if len(live.Kvs) == 0 && replayOperationEligible(persisted.Operation) {
+			now := time.Now().UTC().Truncate(time.Microsecond)
+			record.ReplayExpiredAt = &now
+			value, err := json.Marshal(record)
+			if err != nil {
+				return store.AcceptedOperation{}, err
+			}
+			txn, err := s.kv.Txn(ctx).If(
+				clientv3.Compare(clientv3.ModRevision(key), "=", loaded.revision),
+				clientv3.Compare(clientv3.ModRevision(s.opKey(got.Operation.ID)), "=", operationRevision),
+				clientv3.Compare(clientv3.CreateRevision(s.replayLiveKey(key)), "=", 0),
+			).Then(clientv3.OpPut(key, string(value))).Commit()
+			if err != nil {
+				return store.AcceptedOperation{}, err
+			}
+			if !txn.Succeeded {
+				fresh, err := s.loadAcceptance(ctx, key)
+				if err != nil {
+					return store.AcceptedOperation{}, &store.AcceptanceIndeterminateError{Err: err}
+				}
+				return s.replay(ctx, key, fresh, identity, fp)
+			}
+			return store.AcceptedOperation{}, &store.AcceptanceExpiredError{Identity: identity, ExpiresAt: *record.ReplayExpiresAt}
+		}
 	}
 	got.Operation = persisted.Operation
 	got.Replayed = true
@@ -191,7 +283,7 @@ func (s *V3OperationStore) Resolve(ctx context.Context, i store.OperationRequest
 	if e != nil {
 		return store.AcceptedOperation{}, e
 	}
-	return s.replay(ctx, got, i, fp)
+	return s.replay(ctx, s.acceptanceKey(i), got, i, fp)
 }
 func (s *V3OperationStore) ResolveIdentity(ctx context.Context, i store.OperationRequestIdentity) (store.AcceptedOperation, error) {
 	if i.Authority != s.authority {
@@ -204,7 +296,14 @@ func (s *V3OperationStore) ResolveIdentity(ctx context.Context, i store.Operatio
 	if e != nil {
 		return store.AcceptedOperation{}, e
 	}
-	return s.replay(ctx, got, i, got.Accepted.Intent.Fingerprint)
+	return s.replay(ctx, s.acceptanceKey(i), got, i, got.record.Accepted.Intent.Fingerprint)
+}
+
+func replayOperationEligible(operation model.Operation) bool {
+	if !operation.Status.Terminal() {
+		return false
+	}
+	return operation.Metadata["manualRecoveryRequired"] != true && operation.Metadata["externalEffectRecoveryPending"] != true
 }
 
 // normalize accepts only the narrow operation aggregate implemented by this

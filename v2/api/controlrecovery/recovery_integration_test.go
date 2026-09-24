@@ -7,6 +7,7 @@ import (
 	"crypto/rand"
 	"encoding/base64"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"os"
 	"os/exec"
@@ -168,6 +169,14 @@ func TestCreateVerifyRestorePassiveRoundTrip(t *testing.T) {
 	if operationCount != 1 || acceptanceCount != 1 || auditCount != 1 {
 		t.Fatalf("restored counts operation=%d acceptance=%d audit=%d", operationCount, acceptanceCount, auditCount)
 	}
+	var replayContract string
+	var replayExpiresAt, replayExpiredAt *time.Time
+	if err := target.QueryRow(ctx, `SELECT replay_contract_version,replay_expires_at,replay_expired_at FROM `+pgx.Identifier{schema, "operation_request_identities"}.Sanitize()+` WHERE operation_id='operation-roundtrip'`).Scan(&replayContract, &replayExpiresAt, &replayExpiredAt); err != nil {
+		t.Fatal(err)
+	}
+	if replayContract != store.OperationReplayContractVersion || replayExpiresAt == nil || replayExpiredAt == nil {
+		t.Fatalf("restored replay tombstone = %q %v %v", replayContract, replayExpiresAt, replayExpiredAt)
+	}
 	if _, err := target.Exec(ctx, `UPDATE `+pgx.Identifier{schema, "operations"}.Sanitize()+` SET payload=jsonb_set(payload,'{sequence}','9007199254740992'::jsonb) WHERE id='operation-roundtrip'`); err != nil {
 		t.Fatal(err)
 	}
@@ -246,7 +255,7 @@ func seedAuthenticRecoveryEvidence(t *testing.T, ctx context.Context, pool *pgxp
 	if err != nil {
 		t.Fatal(err)
 	}
-	operationStore, err := store.NewPGOperationStore(db, signer, store.AcceptancePolicy{})
+	operationStore, err := store.NewPGOperationStore(db, signer, store.AcceptancePolicy{ReplayTTL: time.Hour})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -265,8 +274,21 @@ func seedAuthenticRecoveryEvidence(t *testing.T, ctx context.Context, pool *pgxp
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := operationStore.Accept(ctx, acceptance); err != nil {
+	accepted, err := operationStore.Accept(ctx, acceptance)
+	if err != nil {
 		t.Fatal(err)
+	}
+	if _, err := pool.Exec(ctx, `UPDATE operation_request_identities SET replay_expires_at=clock_timestamp()-interval '1 second' WHERE id=$1`, accepted.RequestIdentityID); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := pool.Exec(ctx, `UPDATE operations SET status='failed',finished_at=clock_timestamp() WHERE id=$1`, accepted.Operation.ID); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := pool.Exec(ctx, `UPDATE deployments SET status='failed',finished_at=clock_timestamp() WHERE id=$1`, accepted.Deployment.ID); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := operationStore.Resolve(ctx, acceptance.Identity, acceptance.Fingerprint); !errors.Is(err, store.ErrAcceptanceExpired) {
+		t.Fatalf("seed replay tombstone: %v", err)
 	}
 }
 

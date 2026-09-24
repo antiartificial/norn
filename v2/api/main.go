@@ -335,6 +335,9 @@ func main() {
 
 	// Handler
 	h := handler.New(db, nomadClient, consulClient, ws, cfg, pipe, beaconSvc, sec, sagaStore, s3Client, redpandaClient)
+	if err := h.OperationStoreError(); err != nil {
+		log.Fatalf("operation acceptance: %v", err)
+	}
 	pipe.SetOperationStore(h.OperationStore())
 	logSpool, logCollector, err := configureLogCollection(cfg, nomadClient)
 	if err != nil {
@@ -620,6 +623,9 @@ func main() {
 func validateControlSecurity(cfg *config.Config) error {
 	if cfg == nil {
 		return fmt.Errorf("configuration is required")
+	}
+	if cfg.OperationReplayTTL < 0 {
+		return fmt.Errorf("NORN_OPERATION_REPLAY_TTL must be zero or a positive Go duration")
 	}
 	if cfg.APIToken != "" && len(cfg.APIToken) < 32 {
 		return fmt.Errorf("NORN_API_TOKEN must contain at least 32 bytes")

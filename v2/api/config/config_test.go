@@ -19,6 +19,29 @@ func TestLegacyTokenSigningDeadline(t *testing.T) {
 	}
 }
 
+func TestOperationReplayTTLIsExplicitAndDisabledByDefault(t *testing.T) {
+	t.Setenv("NORN_OPERATION_REPLAY_TTL", "")
+	if got := Load().OperationReplayTTL; got != 0 {
+		t.Fatalf("default operation replay TTL = %s", got)
+	}
+	t.Setenv("NORN_OPERATION_REPLAY_TTL", "720h")
+	if got := Load().OperationReplayTTL; got != 30*24*time.Hour {
+		t.Fatalf("operation replay TTL = %s", got)
+	}
+	t.Setenv("NORN_OPERATION_REPLAY_TTL", "malformed")
+	if got := Load().OperationReplayTTL; got >= 0 {
+		t.Fatalf("malformed operation replay TTL did not fail closed: %s", got)
+	}
+	t.Setenv("NORN_OPERATION_REPLAY_TTL", "-1h")
+	if got := Load().OperationReplayTTL; got >= 0 {
+		t.Fatalf("negative operation replay TTL did not fail closed: %s", got)
+	}
+	t.Setenv("NORN_OPERATION_REPLAY_TTL", "0")
+	if got := Load().OperationReplayTTL; got != 0 {
+		t.Fatalf("explicit zero operation replay TTL = %s", got)
+	}
+}
+
 func TestHashiCorpTLSVerificationEnvironment(t *testing.T) {
 	t.Setenv("NOMAD_SKIP_VERIFY", "true")
 	t.Setenv("CONSUL_HTTP_SSL_VERIFY", "false")

@@ -4,8 +4,8 @@ import "testing"
 
 func TestInspectionRegistryPinsCurrentSchemaAndSensitiveExclusions(t *testing.T) {
 	registry := InspectionRegistry()
-	if len(registry) != 38 {
-		t.Fatalf("registry has %d tables, want 38", len(registry))
+	if len(registry) != 39 {
+		t.Fatalf("registry has %d tables, want 39", len(registry))
 	}
 	if err := validateRegistry(registry); err != nil {
 		t.Fatalf("registry validation: %v", err)

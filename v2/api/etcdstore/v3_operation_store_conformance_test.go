@@ -43,6 +43,94 @@ func TestV3OperationStoreSignedExecutionConformanceEtcd(t *testing.T) {
 	storetest.RunSignedExecutionConformance(t, authority, adapter.Accept, adapter)
 }
 
+func TestV3OperationStoreReplayExpiryIsDurableAndHoldAwareEtcd(t *testing.T) {
+	endpoints := os.Getenv("NORN_TEST_ETCD_ENDPOINTS")
+	if endpoints == "" {
+		t.Skip("NORN_TEST_ETCD_ENDPOINTS is not set")
+	}
+	ctx := context.Background()
+	client, err := clientv3.New(clientv3.Config{Endpoints: strings.Split(endpoints, ","), DialTimeout: 5 * time.Second})
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = client.Close() })
+	prefix := "/norn-conf/v3-replay-expiry/" + uuid.NewString()
+	t.Cleanup(func() { _, _ = client.Delete(context.Background(), prefix, clientv3.WithPrefix()) })
+	signer, err := store.NewHMACAcceptanceSigner("norn-etcd-replay-expiry-key-000000000")
+	if err != nil {
+		t.Fatal(err)
+	}
+	authority := uuid.NewString()
+	adapter, err := etcdstore.NewV3OperationStoreWithPolicy(client, prefix, authority, signer, store.AcceptancePolicy{ReplayTTL: time.Second})
+	if err != nil {
+		t.Fatal(err)
+	}
+	a := store.OperationAcceptance{
+		Identity:  store.OperationRequestIdentity{Authority: authority, Actor: store.OperationActor{Issuer: "etcd-test", Subject: "operator"}, Kind: "app.preflight", Resource: "app/replay-expiry", Key: "expiry-key"},
+		Operation: model.Operation{ID: uuid.NewString(), Kind: "app.preflight", App: "replay-expiry", Ref: "main", Risk: "read-only", Source: "etcd-test", MaxAttempts: 1},
+		Audit:     store.AcceptanceAuditContext{Source: "etcd-test", RequestID: uuid.NewString(), Scopes: []string{"apps:write"}},
+	}
+	a.Fingerprint, err = store.CanonicalOperationRequestFingerprint(a)
+	if err != nil {
+		t.Fatal(err)
+	}
+	unsafe := a
+	unsafe.Identity.Kind = "app.deploy"
+	unsafe.Identity.Key = "unsafe-expiry-key"
+	unsafe.Operation.Kind = "app.deploy"
+	unsafe.Operation.ID = uuid.NewString()
+	unsafe.Fingerprint, err = store.CanonicalOperationRequestFingerprint(unsafe)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := adapter.Accept(ctx, unsafe); !errors.Is(err, store.ErrAcceptanceInvalid) {
+		t.Fatalf("effect-capable kind opted into etcd replay expiry: %v", err)
+	}
+	if _, err := adapter.Accept(ctx, a); err != nil {
+		t.Fatal(err)
+	}
+	records, err := client.Get(ctx, prefix+"/v3/acceptance/", clientv3.WithPrefix())
+	if err != nil {
+		t.Fatal(err)
+	}
+	var replayLease clientv3.LeaseID
+	for _, record := range records.Kvs {
+		if strings.HasSuffix(string(record.Key), "/replay-live") {
+			replayLease = clientv3.LeaseID(record.Lease)
+		}
+	}
+	if replayLease == 0 {
+		t.Fatal("replay live marker is not attached to an etcd lease")
+	}
+	if _, err := client.Revoke(ctx, replayLease); err != nil {
+		t.Fatal(err)
+	}
+	if replayed, err := adapter.Resolve(ctx, a.Identity, a.Fingerprint); err != nil || !replayed.Replayed {
+		t.Fatalf("active operation must hold replay: %+v err=%v", replayed, err)
+	}
+	_, claim, err := adapter.ClaimNextOperation(ctx, "expiry-worker", time.Minute, []string{"app.preflight"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := adapter.FinishClaimedOperation(ctx, claim, model.OperationSucceeded, "complete", nil); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := adapter.Resolve(ctx, a.Identity, a.Fingerprint); !errors.Is(err, store.ErrAcceptanceExpired) {
+		t.Fatalf("eligible identity expiry error=%v", err)
+	}
+	if _, err := adapter.ResolveIdentity(ctx, a.Identity); !errors.Is(err, store.ErrAcceptanceExpired) {
+		t.Fatalf("durable tombstone resolve error=%v", err)
+	}
+	changed := a.Fingerprint
+	changed.Digest = strings.Repeat("f", 64)
+	if changed == a.Fingerprint {
+		changed.Digest = strings.Repeat("e", 64)
+	}
+	if _, err := adapter.Resolve(ctx, a.Identity, changed); !errors.Is(err, store.ErrAcceptanceConflict) {
+		t.Fatalf("changed fingerprint after expiry error=%v", err)
+	}
+}
+
 func TestV3OperationStoreCanonicalAcceptanceReplayAndTamperEtcd(t *testing.T) {
 	endpoints := os.Getenv("NORN_TEST_ETCD_ENDPOINTS")
 	if endpoints == "" {

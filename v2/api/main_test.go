@@ -258,6 +258,7 @@ func TestControlSecurityConfiguration(t *testing.T) {
 		{name: "local development", config: &config.Config{BindAddr: "127.0.0.1"}},
 		{name: "remote without auth", config: &config.Config{BindAddr: "0.0.0.0"}, wantErr: true},
 		{name: "weak token", config: &config.Config{BindAddr: "127.0.0.1", APIToken: "short"}, wantErr: true},
+		{name: "invalid operation replay TTL", config: &config.Config{BindAddr: "127.0.0.1", OperationReplayTTL: -1}, wantErr: true},
 		{name: "remote strong token", config: &config.Config{BindAddr: "0.0.0.0", APIToken: strings.Repeat("x", 32)}},
 		{name: "partial Cloudflare Access", config: &config.Config{BindAddr: "127.0.0.1", CFAccessTeamDomain: "team.example.test"}, wantErr: true},
 		{name: "strict auth without provider", config: &config.Config{BindAddr: "127.0.0.1", RequireExplicitAuth: true}, wantErr: true},
@@ -282,6 +283,18 @@ func TestControlSecurityConfiguration(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			if err := validateControlSecurity(tt.config); (err != nil) != tt.wantErr {
 				t.Fatalf("error = %v, wantErr %v", err, tt.wantErr)
+			}
+		})
+	}
+}
+
+func TestInvalidOperationReplayTTLStopsStartupValidation(t *testing.T) {
+	for _, value := range []string{"malformed", "-1h"} {
+		t.Run(value, func(t *testing.T) {
+			t.Setenv("NORN_OPERATION_REPLAY_TTL", value)
+			err := validateControlSecurity(config.Load())
+			if err == nil || !strings.Contains(err.Error(), "NORN_OPERATION_REPLAY_TTL") {
+				t.Fatalf("startup validation error = %v, want explicit replay TTL rejection", err)
 			}
 		})
 	}

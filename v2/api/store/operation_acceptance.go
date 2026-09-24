@@ -42,6 +42,9 @@ type PGOperationStore struct {
 }
 
 func NewPGOperationStore(db *DB, signer AcceptanceSigner, policy AcceptancePolicy) (*PGOperationStore, error) {
+	if policy.ReplayTTL < 0 {
+		return nil, &AcceptanceValidationError{Reason: "replay TTL cannot be negative"}
+	}
 	if db == nil || db.Pool == nil {
 		return nil, &AcceptanceValidationError{Reason: "PostgreSQL is unavailable"}
 	}
@@ -128,7 +131,7 @@ func (s *PGOperationStore) Accept(ctx context.Context, input OperationAcceptance
 		return AcceptedOperation{}, &LegacyReplayAmbiguousError{Kind: acceptance.Identity.Kind, Resource: acceptance.Identity.Resource}
 	}
 
-	inserted, err := insertRequestIdentity(ctx, tx, requestIdentityID, acceptance, acceptedAt)
+	inserted, err := insertRequestIdentity(ctx, tx, requestIdentityID, acceptance, acceptedAt, s.policy.ReplayTTL)
 	if err != nil {
 		return AcceptedOperation{}, err
 	}
@@ -225,6 +228,9 @@ func (s *PGOperationStore) Resolve(ctx context.Context, identity OperationReques
 		return AcceptedOperation{}, &AcceptanceConflictError{Identity: identity}
 	}
 	if err := s.verifyLoadedAcceptance(ctx, identity, record); err != nil {
+		return AcceptedOperation{}, err
+	}
+	if err := s.expireReplayIfEligible(ctx, identity, record.intent.RequestIdentityID); err != nil {
 		return AcceptedOperation{}, err
 	}
 	result := AcceptedOperation{
@@ -662,14 +668,20 @@ func signAcceptanceEnvelope(ctx context.Context, signer AcceptanceSigner, envelo
 	return canonical, signature, nil
 }
 
-func insertRequestIdentity(ctx context.Context, tx pgx.Tx, id string, a OperationAcceptance, now time.Time) (bool, error) {
+func insertRequestIdentity(ctx context.Context, tx pgx.Tx, id string, a OperationAcceptance, now time.Time, replayTTL time.Duration) (bool, error) {
+	replayContract := ""
+	var replayInterval interface{}
+	if replayTTL > 0 {
+		replayContract = OperationReplayContractVersion
+		replayInterval = replayTTL.String()
+	}
 	result, err := tx.Exec(ctx, `
 		INSERT INTO operation_request_identities
-		(id,authority,actor_issuer,actor_subject,kind,resource,request_key,fingerprint_version,fingerprint_digest,operation_id,created_at)
-		VALUES($1,$2::uuid,$3,$4,$5,$6,$7,$8,$9,$10,$11)
+		(id,authority,actor_issuer,actor_subject,kind,resource,request_key,fingerprint_version,fingerprint_digest,operation_id,created_at,replay_contract_version,replay_expires_at)
+		VALUES($1,$2::uuid,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,CASE WHEN $13::text IS NULL THEN NULL ELSE clock_timestamp()+$13::interval END)
 		ON CONFLICT (authority,actor_issuer,actor_subject,kind,resource,request_key) DO NOTHING
 	`, id, a.Identity.Authority, a.Identity.Actor.Issuer, a.Identity.Actor.Subject, a.Identity.Kind, a.Identity.Resource, a.Identity.Key,
-		a.Fingerprint.Version, a.Fingerprint.Digest, a.Operation.ID, now)
+		a.Fingerprint.Version, a.Fingerprint.Digest, a.Operation.ID, now, replayContract, replayInterval)
 	if err != nil {
 		return false, err
 	}
@@ -781,6 +793,105 @@ type loadedAcceptance struct {
 	regions                 []model.ResolvedRegion
 	fleetRunnerAttempt      *fleet.RunnerAttempt
 	fleetRunnerLineageValid bool
+}
+
+// expireReplayIfEligible records a durable tombstone after the signed record
+// has been verified. It locks the owning operation before evaluating holds, so
+// a worker cannot reserve a new external effect or change terminal state
+// between the hold proof and the tombstone write.
+func (s *PGOperationStore) expireReplayIfEligible(ctx context.Context, identity OperationRequestIdentity, identityID string) error {
+	tx, err := s.db.Pool.BeginTx(ctx, pgx.TxOptions{})
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback(context.Background())
+
+	var contract, operationID, status, kind, ref string
+	var expiresAt, expiredAt *time.Time
+	var recoveryHold bool
+	err = tx.QueryRow(ctx, `
+		SELECT ri.replay_contract_version,ri.replay_expires_at,ri.replay_expired_at,
+			o.id,o.status,o.kind,o.ref,
+			COALESCE(o.metadata->>'manualRecoveryRequired'='true',false) OR COALESCE(o.metadata->>'externalEffectRecoveryPending'='true',false)
+		FROM operation_request_identities ri
+		JOIN operations o ON o.id=ri.operation_id
+		WHERE ri.id=$1
+		FOR UPDATE OF ri,o
+	`, identityID).Scan(&contract, &expiresAt, &expiredAt, &operationID, &status, &kind, &ref, &recoveryHold)
+	if err != nil {
+		return err
+	}
+	if contract == "" {
+		return nil
+	}
+	if contract != OperationReplayContractVersion || expiresAt == nil {
+		return &AcceptanceSignatureError{Err: fmt.Errorf("unsupported replay contract %q", contract)}
+	}
+	if expiredAt != nil {
+		return &AcceptanceExpiredError{Identity: identity, ExpiresAt: *expiresAt}
+	}
+	var databaseNow time.Time
+	if err := tx.QueryRow(ctx, `SELECT clock_timestamp()`).Scan(&databaseNow); err != nil {
+		return err
+	}
+	if databaseNow.Before(*expiresAt) || recoveryHold || !model.OperationStatus(status).Terminal() {
+		return nil
+	}
+
+	var effectHold bool
+	// Completed effects remain a hold: completion can precede a lost terminal
+	// operation write, while resolved is the explicit recovery decision that
+	// proves the effect no longer needs replay protection.
+	if err := tx.QueryRow(ctx, `SELECT EXISTS(SELECT 1 FROM operation_effects WHERE operation_id=$1 AND lifecycle <> 'resolved')`, operationID).Scan(&effectHold); err != nil {
+		return err
+	}
+	if effectHold {
+		return nil
+	}
+
+	// Fleet runner state is an external execution aggregate outside
+	// operation_effects. Keep both runner and reconciliation identities live
+	// while any attempt for the accepted plan remains active.
+	if kind == "fleet.runner-attempt" || kind == "fleet.reconciliation" {
+		var runnerHold bool
+		if err := tx.QueryRow(ctx, `SELECT EXISTS(SELECT 1 FROM fleet_runner_attempts WHERE plan_id=$1 AND status IN ('queued','running'))`, ref).Scan(&runnerHold); err != nil {
+			return err
+		}
+		if runnerHold {
+			return nil
+		}
+	}
+
+	var deploymentID string
+	if err := tx.QueryRow(ctx, `SELECT COALESCE(deployment_id,'') FROM operation_acceptance_intents WHERE request_identity_id=$1`, identityID).Scan(&deploymentID); err != nil {
+		return err
+	}
+	if deploymentID != "" {
+		var deploymentStatus, app string
+		if err := tx.QueryRow(ctx, `SELECT status,app FROM deployments WHERE id=$1 FOR UPDATE`, deploymentID).Scan(&deploymentStatus, &app); err != nil {
+			return err
+		}
+		if deploymentStatus != string(model.StatusDeployed) && deploymentStatus != string(model.StatusFailed) {
+			return nil
+		}
+		if deploymentStatus == string(model.StatusDeployed) {
+			var rollbackHold bool
+			if err := tx.QueryRow(ctx, `SELECT $1=ANY(ARRAY(SELECT id FROM deployments WHERE app=$2 AND status='deployed' ORDER BY started_at DESC LIMIT 2))`, deploymentID, app).Scan(&rollbackHold); err != nil {
+				return err
+			}
+			if rollbackHold {
+				return nil
+			}
+		}
+	}
+
+	if _, err := tx.Exec(ctx, `UPDATE operation_request_identities SET replay_expired_at=clock_timestamp() WHERE id=$1`, identityID); err != nil {
+		return err
+	}
+	if err := tx.Commit(ctx); err != nil {
+		return err
+	}
+	return &AcceptanceExpiredError{Identity: identity, ExpiresAt: *expiresAt}
 }
 
 func (s *PGOperationStore) loadAcceptance(ctx context.Context, identity OperationRequestIdentity) (loadedAcceptance, error) {

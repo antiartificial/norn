@@ -469,8 +469,144 @@ func TestControlAuthorityIsPersistedAndExpectedMatchIsEnforced(t *testing.T) {
 	if err := dbs[0].Pool.QueryRow(context.Background(), `SELECT current_migration_version,minimum_writer_version FROM norn_schema_compatibility WHERE singleton=true`).Scan(&version, &minimumWriter); err != nil {
 		t.Fatal(err)
 	}
-	if version != 14 || minimumWriter != SignedAcceptanceByteReserveWriterVersion {
+	if version != 15 || minimumWriter != OperationReplayExpiryWriterVersion {
 		t.Fatalf("schema version=%d minimum writer=%d", version, minimumWriter)
+	}
+}
+
+func TestAcceptanceReplayExpiryIsOptInDurableAndHoldAware(t *testing.T) {
+	stores, dbs := acceptanceIntegrationStores(t, 1)
+	ctx := context.Background()
+
+	legacy := newAcceptance(t, stores[0], "indefinite-replay", "operator", "indefinite-app", false)
+	legacy.Operation.Status = model.OperationSucceeded
+	finished := legacy.Operation.StartedAt
+	legacy.Operation.FinishedAt = &finished
+	legacy.Fingerprint, _ = CanonicalOperationRequestFingerprint(legacy)
+	if _, err := stores[0].Accept(ctx, legacy); err != nil {
+		t.Fatal(err)
+	}
+	var contract string
+	var expiresAt, expiredAt *time.Time
+	if err := dbs[0].Pool.QueryRow(ctx, `SELECT replay_contract_version,replay_expires_at,replay_expired_at FROM operation_request_identities WHERE operation_id=$1`, legacy.Operation.ID).Scan(&contract, &expiresAt, &expiredAt); err != nil {
+		t.Fatal(err)
+	}
+	if contract != "" || expiresAt != nil || expiredAt != nil {
+		t.Fatalf("indefinite identity unexpectedly has expiry metadata: %q %v %v", contract, expiresAt, expiredAt)
+	}
+	if replayed, err := stores[0].Resolve(ctx, legacy.Identity, legacy.Fingerprint); err != nil || !replayed.Replayed {
+		t.Fatalf("indefinite replay=%+v err=%v", replayed, err)
+	}
+
+	expiring, err := NewPGOperationStore(dbs[0], stores[0].signer, AcceptancePolicy{ReplayTTL: time.Hour})
+	if err != nil {
+		t.Fatal(err)
+	}
+	a := newAcceptance(t, expiring, "expiring-replay", "operator", "expiring-app", false)
+	accepted, err := expiring.Accept(ctx, a)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := dbs[0].Pool.Exec(ctx, `UPDATE operation_request_identities SET replay_expires_at=clock_timestamp()-interval '1 second' WHERE id=$1`, accepted.RequestIdentityID); err != nil {
+		t.Fatal(err)
+	}
+	if replayed, err := expiring.Resolve(ctx, a.Identity, a.Fingerprint); err != nil || !replayed.Replayed {
+		t.Fatalf("active operation must hold replay: %+v err=%v", replayed, err)
+	}
+	if _, err := dbs[0].Pool.Exec(ctx, `UPDATE operations SET status='succeeded',finished_at=clock_timestamp() WHERE id=$1`, accepted.Operation.ID); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := expiring.Resolve(ctx, a.Identity, a.Fingerprint); !errors.Is(err, ErrAcceptanceExpired) {
+		t.Fatalf("eligible identity expiry error=%v", err)
+	}
+	if _, err := expiring.ResolveIdentity(ctx, a.Identity); !errors.Is(err, ErrAcceptanceExpired) {
+		t.Fatalf("durable tombstone resolve error=%v", err)
+	}
+	var tombstoned bool
+	if err := dbs[0].Pool.QueryRow(ctx, `SELECT replay_contract_version=$2 AND replay_expired_at IS NOT NULL FROM operation_request_identities WHERE id=$1`, accepted.RequestIdentityID, OperationReplayContractVersion).Scan(&tombstoned); err != nil || !tombstoned {
+		t.Fatalf("tombstone=%v err=%v", tombstoned, err)
+	}
+	changed := a.Fingerprint
+	changed.Digest = strings.Repeat("f", 64)
+	if changed == a.Fingerprint {
+		changed.Digest = strings.Repeat("e", 64)
+	}
+	if _, err := expiring.Resolve(ctx, a.Identity, changed); !errors.Is(err, ErrAcceptanceConflict) {
+		t.Fatalf("changed fingerprint after expiry error=%v", err)
+	}
+}
+
+func TestAcceptanceReplayExpiryWaitsForEffectResolution(t *testing.T) {
+	stores, dbs := acceptanceIntegrationStores(t, 1)
+	ctx := context.Background()
+	expiring, err := NewPGOperationStore(dbs[0], stores[0].signer, AcceptancePolicy{ReplayTTL: time.Hour})
+	if err != nil {
+		t.Fatal(err)
+	}
+	a := newAcceptance(t, expiring, "effect-held-replay", "operator", "effect-held-app", false)
+	a.Operation.Status = model.OperationSucceeded
+	finished := a.Operation.StartedAt
+	a.Operation.FinishedAt = &finished
+	a.Fingerprint, _ = CanonicalOperationRequestFingerprint(a)
+	accepted, err := expiring.Accept(ctx, a)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := dbs[0].Pool.Exec(ctx, `UPDATE operation_request_identities SET replay_expires_at=clock_timestamp()-interval '1 second' WHERE id=$1`, accepted.RequestIdentityID); err != nil {
+		t.Fatal(err)
+	}
+	authority, _ := expiring.Authority(ctx)
+	if _, err := dbs[0].Pool.Exec(ctx, `INSERT INTO operation_effects
+		(id,generation,authority,resource,operation_id,claim_owner,claim_generation,stage,input_digest,launch_payload,supervisor,supervisor_execution_id,lifecycle)
+		VALUES($1,1,$2::uuid,$3,$4,'test-owner',1,'test','sha256:'||repeat('a',64),'{}','test-supervisor',$5,'reserved')`,
+		uuid.NewString(), authority, "app/effect-held-app/deploy", accepted.Operation.ID, uuid.NewString()); err != nil {
+		t.Fatal(err)
+	}
+	if replayed, err := expiring.Resolve(ctx, a.Identity, a.Fingerprint); err != nil || !replayed.Replayed {
+		t.Fatalf("unresolved effect must hold replay: %+v err=%v", replayed, err)
+	}
+	if _, err := dbs[0].Pool.Exec(ctx, `UPDATE operation_effects SET lifecycle='resolved',resolution_decision='never-launched',resolved_at=clock_timestamp(),updated_at=clock_timestamp() WHERE operation_id=$1`, accepted.Operation.ID); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := expiring.Resolve(ctx, a.Identity, a.Fingerprint); !errors.Is(err, ErrAcceptanceExpired) {
+		t.Fatalf("resolved effect expiry error=%v", err)
+	}
+}
+
+func TestAcceptanceReplayExpiryKeepsDeploymentRollbackCandidates(t *testing.T) {
+	stores, dbs := acceptanceIntegrationStores(t, 1)
+	ctx := context.Background()
+	expiring, err := NewPGOperationStore(dbs[0], stores[0].signer, AcceptancePolicy{ReplayTTL: time.Hour})
+	if err != nil {
+		t.Fatal(err)
+	}
+	a := newAcceptance(t, expiring, "rollback-held-replay", "operator", "rollback-held-app", true)
+	accepted, err := expiring.Accept(ctx, a)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := dbs[0].Pool.Exec(ctx, `UPDATE operation_request_identities SET replay_expires_at=clock_timestamp()-interval '1 second' WHERE id=$1`, accepted.RequestIdentityID); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := dbs[0].Pool.Exec(ctx, `UPDATE operations SET status='succeeded',finished_at=clock_timestamp() WHERE id=$1`, accepted.Operation.ID); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := dbs[0].Pool.Exec(ctx, `UPDATE deployments SET status='deployed',finished_at=clock_timestamp() WHERE id=$1`, accepted.Deployment.ID); err != nil {
+		t.Fatal(err)
+	}
+	if replayed, err := expiring.Resolve(ctx, a.Identity, a.Fingerprint); err != nil || !replayed.Replayed {
+		t.Fatalf("current deployment must hold replay: %+v err=%v", replayed, err)
+	}
+	for index := 1; index <= 2; index++ {
+		if _, err := dbs[0].Pool.Exec(ctx, `INSERT INTO deployments
+			(id,app,commit_sha,image_tag,environment,saga_id,status,source_kind,source_ref,source_dirty,source_changes,started_at,finished_at)
+			SELECT $1,app,commit_sha,image_tag,environment,$2,'deployed',source_kind,source_ref,source_dirty,source_changes,started_at+$3*interval '1 hour',clock_timestamp()
+			FROM deployments WHERE id=$4`, uuid.NewString(), uuid.NewString(), index, accepted.Deployment.ID); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if _, err := expiring.Resolve(ctx, a.Identity, a.Fingerprint); !errors.Is(err, ErrAcceptanceExpired) {
+		t.Fatalf("retired rollback candidate expiry error=%v", err)
 	}
 }
 
