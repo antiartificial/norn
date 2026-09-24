@@ -111,6 +111,39 @@ func TestV3CanaryEffectReservationAtomicallyFencesClaimAndAppEtcd(t *testing.T) 
 	if winners != 1 || blocked != 1 {
 		t.Fatalf("concurrent reservations: winners=%d blocked=%d", winners, blocked)
 	}
+	winner, loser := 0, 1
+	if !results[winner].Created {
+		winner, loser = loser, winner
+	}
+	original := results[winner].Record
+	if blocking, found, err := effects.UnresolvedForResource(ctx, authority, reservations[loser].Resource); err != nil || !found || blocking.Token.EffectID != original.Token.EffectID {
+		t.Fatalf("cross-operation app gate lookup = %+v found=%v err=%v", blocking, found, err)
+	}
+	identity := effect.ExecutionIdentity{Supervisor: original.Reservation.Supervisor, SupervisorExecutionID: original.Reservation.SupervisorExecutionID, RuntimeInstanceID: "nomad-deployment:" + effectPayloadString(ops[winner].Payload, "deploymentId")}
+	if err := effects.MarkLaunched(ctx, original.Token, identity); err != nil {
+		t.Fatal(err)
+	}
+	verification := effect.Verification{Decision: effect.VerificationNeverLaunched, InputDigest: original.Reservation.InputDigest, SupervisorExecutionID: identity.SupervisorExecutionID, EvidenceSource: "nomad.deployment", EvidenceReference: "deployment", ObservedAt: time.Now().UTC()}
+	if err := effects.Resolve(ctx, original.Token, effect.Resolution{Decision: effect.VerificationNeverLaunched, Verification: verification}); err == nil {
+		t.Fatal("never-launched resolution erased a recorded Nomad launch")
+	}
+	verification.Decision = effect.VerificationSucceeded
+	verification.RuntimeInstanceID = identity.RuntimeInstanceID
+	verification.ResultDigest = effect.DigestInput([]byte(`{"canaryPromoted":true}`))
+	verification.ResultReference = effectPayloadString(ops[winner].Payload, "deploymentId")
+	if err := effects.Complete(ctx, original.Token, effect.Completion{Outcome: effect.OutcomeSucceeded, Verification: verification}); err != nil {
+		t.Fatal(err)
+	}
+	if _, found, err := effects.UnresolvedForResource(ctx, authority, reservations[winner].Resource); err != nil || found {
+		t.Fatalf("completed effect retained app gate: found=%v err=%v", found, err)
+	}
+	if result, err := effects.Reserve(ctx, reservations[winner]); err != nil || result.Created || result.Record.Lifecycle != effect.LifecycleCompleted {
+		t.Fatalf("completed effect replay = %+v err=%v", result, err)
+	}
+	newResult, err := effects.Reserve(ctx, reservations[loser])
+	if err != nil || !newResult.Created {
+		t.Fatalf("successor reservation after terminal effect = %+v err=%v", newResult, err)
+	}
 	for i := range claims {
 		if results[i].Created {
 			if err := operations.FinishClaimedOperation(ctx, claims[i], model.OperationSucceeded, "done", nil); err != nil {
@@ -120,5 +153,47 @@ func TestV3CanaryEffectReservationAtomicallyFencesClaimAndAppEtcd(t *testing.T) 
 				t.Fatalf("finished claim reserved again: %v", err)
 			}
 		}
+	}
+	neverLaunched := effect.Verification{Decision: effect.VerificationNeverLaunched, InputDigest: reservations[loser].InputDigest,
+		SupervisorExecutionID: reservations[loser].SupervisorExecutionID, EvidenceSource: "nomad.deployment", EvidenceReference: effectPayloadString(ops[loser].Payload, "deploymentId"), ObservedAt: time.Now().UTC()}
+	if err := effects.Resolve(ctx, newResult.Record.Token, effect.Resolution{Decision: effect.VerificationNeverLaunched, Verification: neverLaunched}); err != nil {
+		t.Fatal(err)
+	}
+	if err := operations.DeferClaimedOperation(ctx, claims[loser], "repeat safe", time.Now().Add(-time.Second), nil); err != nil {
+		t.Fatal(err)
+	}
+	reclaimed, nextClaim, err := operations.ClaimNextOperation(ctx, "successor-worker", time.Minute, []string{"app.canary-promote"})
+	if err != nil || reclaimed == nil || reclaimed.ID != ops[loser].ID || nextClaim.Generation() <= claims[loser].Generation() {
+		t.Fatalf("claim after repeat-safe resolution = %+v %+v err=%v", reclaimed, nextClaim, err)
+	}
+	next := reservations[loser]
+	next.OperationClaim = effect.OperationClaim{OperationID: nextClaim.OperationID(), OwnerID: nextClaim.OwnerID(), Generation: nextClaim.Generation()}
+	next.SupervisorExecutionID = "nomad-test-successor-" + reclaimed.ID
+	replacement, err := effects.Reserve(ctx, next)
+	if err != nil || !replacement.Created || replacement.Record.Token.EffectID == newResult.Record.Token.EffectID {
+		t.Fatalf("repeat-safe successor did not get a fresh effect: %+v err=%v", replacement, err)
+	}
+	owner, err := client.Get(ctx, operations.ownerKey(nextClaim.OperationID()))
+	if err != nil || len(owner.Kvs) != 1 || owner.Kvs[0].Lease == 0 {
+		t.Fatalf("successor owner lease = %+v err=%v", owner, err)
+	}
+	if _, err := client.Revoke(ctx, clientv3.LeaseID(owner.Kvs[0].Lease)); err != nil {
+		t.Fatal(err)
+	}
+	if err := operations.RecoverExpiredOperations(ctx); err != nil {
+		t.Fatal(err)
+	}
+	recovered, err := operations.GetOperation(ctx, nextClaim.OperationID())
+	if err != nil || recovered.Status != model.OperationQueued || recovered.Metadata["manualRecoveryRequired"] != nil {
+		t.Fatalf("expired canary operation recovery = %+v err=%v", recovered, err)
+	}
+	again, recoveredClaim, err := operations.ClaimNextOperation(ctx, "recovery-worker", time.Minute, []string{"app.canary-promote"})
+	if err != nil || again == nil || again.ID != nextClaim.OperationID() {
+		t.Fatalf("recovered canary claim = %+v %+v err=%v", again, recoveredClaim, err)
+	}
+	next.OperationClaim = effect.OperationClaim{OperationID: recoveredClaim.OperationID(), OwnerID: recoveredClaim.OwnerID(), Generation: recoveredClaim.Generation()}
+	next.SupervisorExecutionID = "nomad-test-recovered-" + again.ID
+	if result, err := effects.Reserve(ctx, next); err != nil || result.Created || result.Record.Token.EffectID != replacement.Record.Token.EffectID {
+		t.Fatalf("recovered claim failed to reuse unresolved effect: %+v err=%v", result, err)
 	}
 }

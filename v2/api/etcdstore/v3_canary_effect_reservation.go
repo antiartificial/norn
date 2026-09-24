@@ -17,9 +17,8 @@ import (
 )
 
 // V3CanaryEffectReservations establishes the etcd side of the canary effect
-// boundary. It is deliberately not an effect.Store yet: launch acknowledgement,
-// terminal evidence, and lease-expiry recovery must be implemented before the
-// etcd runtime may expose the promotion endpoint.
+// boundary. The normal etcd runtime must still provide an app execution worker
+// and lease-expiry reconciliation before it may expose promotion admission.
 type V3CanaryEffectReservations struct{ operations *V3OperationStore }
 
 func NewV3CanaryEffectReservations(operations *V3OperationStore) (*V3CanaryEffectReservations, error) {
@@ -34,15 +33,23 @@ func (s *V3CanaryEffectReservations) Authority(ctx context.Context) (string, err
 }
 
 func (s *V3CanaryEffectReservations) effectKey(r effect.Reservation) string {
+	return fmt.Sprintf("%s%020d", s.effectPrefix(r), r.OperationClaim.Generation)
+}
+
+func (s *V3CanaryEffectReservations) effectPrefix(r effect.Reservation) string {
 	material := r.OperationClaim.OperationID + "\x00" + r.Stage + "\x00" + r.InputDigest
 	sum := sha256.Sum256([]byte(material))
-	return s.operations.prefix + "/v3/effects/canary/" + hex.EncodeToString(sum[:])
+	return s.operations.prefix + "/v3/effects/canary/" + hex.EncodeToString(sum[:]) + "/"
 }
 
 func (s *V3CanaryEffectReservations) gateKey(app string) string {
 	sum := sha256.Sum256([]byte(app))
 	// Every future etcd app effect must use this gate, irrespective of stage.
 	return s.operations.prefix + "/v3/effects/app-gates/" + hex.EncodeToString(sum[:])
+}
+
+func (s *V3CanaryEffectReservations) tokenKey(id string) string {
+	return s.operations.prefix + "/v3/effects/tokens/" + id
 }
 
 type canaryEffectInput struct {
@@ -107,7 +114,7 @@ func (s *V3CanaryEffectReservations) Reserve(ctx context.Context, r effect.Reser
 		return effect.ReservationResult{}, store.ErrOperationOwnershipLost
 	}
 	effectKey, gateKey := s.effectKey(r), s.gateKey(app)
-	prior, err := s.operations.kv.Get(ctx, effectKey)
+	prior, err := s.operations.kv.Get(ctx, s.effectPrefix(r), clientv3.WithPrefix(), clientv3.WithSort(clientv3.SortByKey, clientv3.SortDescend), clientv3.WithLimit(1))
 	if err != nil {
 		return effect.ReservationResult{}, err
 	}
@@ -121,18 +128,21 @@ func (s *V3CanaryEffectReservations) Reserve(ctx context.Context, r effect.Reser
 			record.Reservation.SupervisorExecutionID == "" || record.Token.EffectID == "" {
 			return effect.ReservationResult{}, fmt.Errorf("existing canary effect identity does not match reservation")
 		}
+		priorKey := string(prior.Kvs[0].Key)
 		gate, err := s.operations.kv.Get(ctx, gateKey)
 		if err != nil {
 			return effect.ReservationResult{}, err
 		}
 		if record.Lifecycle == effect.LifecycleReserved || record.Lifecycle == effect.LifecycleLaunched {
-			if len(gate.Kvs) != 1 || string(gate.Kvs[0].Value) != effectKey {
+			if len(gate.Kvs) != 1 || string(gate.Kvs[0].Value) != priorKey {
 				return effect.ReservationResult{}, fmt.Errorf("existing canary effect lost its app gate")
 			}
-		} else if len(gate.Kvs) != 0 && string(gate.Kvs[0].Value) == effectKey {
+		} else if len(gate.Kvs) != 0 && string(gate.Kvs[0].Value) == priorKey {
 			return effect.ReservationResult{}, fmt.Errorf("terminal canary effect still owns the app gate")
 		}
-		return effect.ReservationResult{Record: record}, nil
+		if record.Lifecycle != effect.LifecycleResolved || record.Token.Generation >= r.OperationClaim.Generation {
+			return effect.ReservationResult{Record: record}, nil
+		}
 	}
 	record := effect.Record{Token: effect.Token{EffectID: uuid.NewString(), Generation: r.OperationClaim.Generation}, Reservation: r, Lifecycle: effect.LifecycleReserved}
 	encoded, err := json.Marshal(record)
@@ -145,7 +155,8 @@ func (s *V3CanaryEffectReservations) Reserve(ctx context.Context, r effect.Reser
 		clientv3.Compare(clientv3.Value(ownerKey), "=", claimOwnerValue(r.OperationClaim.OwnerID, r.OperationClaim.Generation)),
 		clientv3.Compare(clientv3.CreateRevision(effectKey), "=", 0),
 		clientv3.Compare(clientv3.CreateRevision(gateKey), "=", 0),
-	).Then(clientv3.OpPut(effectKey, string(encoded)), clientv3.OpPut(gateKey, effectKey)).Commit()
+		clientv3.Compare(clientv3.CreateRevision(s.tokenKey(record.Token.EffectID)), "=", 0),
+	).Then(clientv3.OpPut(effectKey, string(encoded)), clientv3.OpPut(gateKey, effectKey), clientv3.OpPut(s.tokenKey(record.Token.EffectID), effectKey)).Commit()
 	if err != nil {
 		return effect.ReservationResult{}, err
 	}

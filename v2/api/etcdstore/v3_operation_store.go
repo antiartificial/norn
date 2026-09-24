@@ -864,12 +864,11 @@ func (s *V3OperationStore) mutateClaimWithAppLock(ctx context.Context, c store.O
 	}, f)
 }
 
-// RecoverExpiredOperations never requeues an expired etcd claim. This adapter
-// has no checkpoint or external-effect aggregate yet, so it cannot prove that
-// a prior executor stopped before a mutable side effect. It atomically fences
-// each expired owner by terminalizing the operation for manual recovery and
-// explicitly records unresolved external-effect ambiguity. A concurrent renew,
-// finish, or replacement claim changes the record revision and wins instead.
+// RecoverExpiredOperations requeues only the canary operation whose Nomad
+// effect has an atomic etcd reservation and a read-only reconciliation path.
+// Other expired claims remain manual recovery until their mutable effects have
+// equivalent durable boundaries. A concurrent renew or finish changes the
+// record revision and wins instead.
 func (s *V3OperationStore) RecoverExpiredOperations(ctx context.Context) error {
 	if s == nil || s.kv == nil || s.lease == nil {
 		return fmt.Errorf("etcd operation recovery is unavailable")
@@ -922,15 +921,26 @@ func (s *V3OperationStore) RecoverExpiredOperations(ctx context.Context) error {
 			if op.Metadata == nil {
 				op.Metadata = map[string]interface{}{}
 			}
-			op.Status = model.OperationFailed
-			op.Message = "operation executor lease expired; manual recovery is required before retry"
-			op.LastError = "operation executor lease expired with external effect outcome unresolved"
-			op.Metadata["manualRecoveryRequired"] = true
-			op.Metadata["externalEffectRecoveryPending"] = true
-			op.Metadata["recoveredAfterLeaseExpiry"] = true
+			if op.Kind == "app.canary-promote" {
+				op.Status = model.OperationQueued
+				if op.Attempts > 0 {
+					op.Attempts--
+				}
+				op.NextAttemptAt = now
+				op.Message = "canary promotion owner lease expired; effect reconciliation pending"
+				op.Metadata["externalEffectRecoveryPending"] = true
+				op.Metadata["recoveredAfterLeaseExpiry"] = true
+			} else {
+				op.Status = model.OperationFailed
+				op.Message = "operation executor lease expired; manual recovery is required before retry"
+				op.LastError = "operation executor lease expired with external effect outcome unresolved"
+				op.Metadata["manualRecoveryRequired"] = true
+				op.Metadata["externalEffectRecoveryPending"] = true
+				op.Metadata["recoveredAfterLeaseExpiry"] = true
+				op.FinishedAt = &now
+			}
 			op.LockedBy = ""
 			op.LockedUntil = nil
-			op.FinishedAt = &now
 			op.UpdatedAt = now
 			encoded, err := json.Marshal(record)
 			if err != nil {
