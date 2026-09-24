@@ -73,8 +73,8 @@ func runEtcdFleetRuntime(cfg *config.Config, backend startup.ControlBackendConfi
 	router.Get("/api/v1/capabilities", func(w http.ResponseWriter, r *http.Request) {
 		writeEtcdSourceJSON(w, http.StatusOK, map[string]interface{}{
 			"protocolVersion": 1, "serverVersion": Version, "backend": "etcd", "mode": "normal-fleet",
-			"features":    []string{"etcd-normal-router-v1", "managed-token-revocation", "signed-operation-acceptance", "fleet-inventory", "durable-fleet-capacity-plans"},
-			"endpoints":   map[string]string{"fleetNodePools": "/api/v1/fleet/node-pools", "fleetPlans": "/api/v1/fleet/plans", "fleetPlan": "/api/v1/fleet/node-pools/{pool}/plan", "operation": "/api/v1/operations/{id}"},
+			"features":    []string{"etcd-normal-router-v1", "managed-token-revocation", "managed-token-lifecycle", "signed-operation-acceptance", "fleet-inventory", "durable-fleet-capacity-plans"},
+			"endpoints":   map[string]string{"fleetNodePools": "/api/v1/fleet/node-pools", "fleetPlans": "/api/v1/fleet/plans", "fleetPlan": "/api/v1/fleet/node-pools/{pool}/plan", "operation": "/api/v1/operations/{id}", "tokenRotate": "/api/v1/auth/rotate", "tokenRevoke": "/api/v1/auth/revoke"},
 			"unsupported": []string{"app-mutations", "fleet-runner-attempts", "fleet-github-bridge", "operation-cancellation"},
 		})
 	})
@@ -87,6 +87,14 @@ func runEtcdFleetRuntime(cfg *config.Config, backend startup.ControlBackendConfi
 	router.With(read).Get("/api/v1/fleet/plans", etcdFleetPlans(operations))
 	router.With(plan).Post("/api/v1/fleet/node-pools/{pool}/plan", etcdFleetPlan(cfg, operations))
 	router.With(read).Get("/api/v1/operations/{id}", etcdFleetOperation(operations))
+	// A credential may retire itself regardless of its application scopes.
+	managed := etcdManagedTokenAuth(cfg, identities)
+	router.With(managed).Post("/api/v1/auth/rotate", func(w http.ResponseWriter, r *http.Request) {
+		handler.RotateManagedToken(cfg, identities, nil, w, r)
+	})
+	router.With(managed).Post("/api/v1/auth/revoke", func(w http.ResponseWriter, r *http.Request) {
+		handler.RevokeManagedToken(identities, nil, w, r)
+	})
 	router.NotFound(func(w http.ResponseWriter, r *http.Request) {
 		if strings.HasPrefix(r.URL.Path, "/api/") || r.URL.Path == "/ws" {
 			handler.WriteControlProblem(w, r, http.StatusNotImplemented, "backend_route_unsupported", "route is not implemented by the etcd normal Fleet capability set")

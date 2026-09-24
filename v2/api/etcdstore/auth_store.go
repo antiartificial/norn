@@ -718,10 +718,13 @@ func (s *AuthStore) RotateAccessToken(ctx context.Context, previousJTI string, t
 	for attempt := 0; attempt < 32; attempt++ {
 		prev, prevRev, err := s.loadToken(ctx, previousJTI)
 		if err != nil {
+			if errors.Is(err, ErrNotFound) {
+				return nil, errors.Join(err, store.ErrIdentityNotFound)
+			}
 			return nil, err
 		}
 		if prev.RevokedAt != nil || !prev.ExpiresAt.After(time.Now()) {
-			return nil, ErrNotFound
+			return nil, errors.Join(ErrNotFound, store.ErrIdentityNotFound)
 		}
 		now := time.Now()
 		prev.RevokedAt = &now
@@ -757,6 +760,9 @@ func (s *AuthStore) RevokeAccessToken(ctx context.Context, jti string) ([]string
 	for attempt := 0; attempt < 32; attempt++ {
 		tok, rev, err := s.loadToken(ctx, jti)
 		if err != nil {
+			if errors.Is(err, ErrNotFound) {
+				return nil, errors.Join(err, store.ErrIdentityNotFound)
+			}
 			return nil, err
 		}
 		if tok.RevokedAt == nil {

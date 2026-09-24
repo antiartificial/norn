@@ -154,7 +154,7 @@ func etcdManagedTokenAuth(cfg *config.Config, identities store.IdentityStore, re
 				handler.WriteControlProblem(w, r, http.StatusUnauthorized, "unauthorized", "a managed etcd access token is required")
 				return
 			}
-			allowed := false
+			allowed := len(requiredScopes) == 0
 			for _, scope := range requiredScopes {
 				allowed = allowed || principal.Allows(scope)
 			}

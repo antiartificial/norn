@@ -2,8 +2,13 @@ package store
 
 import (
 	"context"
+	"errors"
 	"time"
 )
+
+// ErrIdentityNotFound is returned by backend-neutral credential operations
+// when a token is absent or is no longer active.
+var ErrIdentityNotFound = errors.New("identity not found")
 
 // IdentityStore is the control boundary for enrollment, managed devices,
 // bearer-token lifecycle, replay tombstones, and IP access grants.
