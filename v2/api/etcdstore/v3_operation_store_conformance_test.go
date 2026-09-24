@@ -7,6 +7,7 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"github.com/google/uuid"
 	clientv3 "go.etcd.io/etcd/client/v3"
 	"norn/v2/api/etcdstore"
@@ -41,6 +42,57 @@ func TestV3OperationStoreSignedExecutionConformanceEtcd(t *testing.T) {
 		t.Fatal(err)
 	}
 	storetest.RunSignedExecutionConformance(t, authority, adapter.Accept, adapter)
+}
+
+func TestV3OperationStoreListByKindFiltersBeforeApplyingLimitEtcd(t *testing.T) {
+	endpoints := os.Getenv("NORN_TEST_ETCD_ENDPOINTS")
+	if endpoints == "" {
+		t.Skip("NORN_TEST_ETCD_ENDPOINTS is not set")
+	}
+	client, err := clientv3.New(clientv3.Config{Endpoints: strings.Split(endpoints, ","), DialTimeout: 5 * time.Second})
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = client.Close() })
+	prefix := "/norn-conf/v3-kind-index/" + uuid.NewString()
+	t.Cleanup(func() { _, _ = client.Delete(context.Background(), prefix, clientv3.WithPrefix()) })
+	signer, err := store.NewHMACAcceptanceSigner("norn-etcd-kind-index-key-000000000000")
+	if err != nil {
+		t.Fatal(err)
+	}
+	authority := uuid.NewString()
+	adapter, err := etcdstore.NewV3OperationStore(client, prefix, authority, signer)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for i := 0; i < 120; i++ {
+		kind := "app.preflight"
+		if i%2 == 0 {
+			kind = "fleet.capacity-plan"
+		}
+		now := time.Now().UTC()
+		op := model.Operation{ID: uuid.NewString(), Kind: kind, Ref: fmt.Sprintf("item-%03d", i), Status: model.OperationSucceeded, Source: "test", Risk: "read-only", StartedAt: now, FinishedAt: &now, MaxAttempts: 1, Payload: map[string]interface{}{}, Metadata: map[string]interface{}{}}
+		acceptance := store.OperationAcceptance{Identity: store.OperationRequestIdentity{Authority: authority, Actor: store.OperationActor{Issuer: "test", Subject: "operator"}, Kind: kind, Resource: op.Ref, Key: fmt.Sprintf("key-%03d", i)}, Operation: op, Audit: store.AcceptanceAuditContext{Source: "test"}, Semantics: map[string]interface{}{"ordinal": i}}
+		acceptance.Fingerprint, err = store.CanonicalOperationRequestFingerprint(acceptance)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if _, err := adapter.Accept(context.Background(), acceptance); err != nil {
+			t.Fatalf("accept %d: %v", i, err)
+		}
+	}
+	plans, err := adapter.ListOperationsByKind(context.Background(), "fleet.capacity-plan", 50)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(plans) != 50 {
+		t.Fatalf("plans = %d, want 50 from 60 mixed operations", len(plans))
+	}
+	for _, plan := range plans {
+		if plan.Kind != "fleet.capacity-plan" {
+			t.Fatalf("unfiltered operation returned: %#v", plan)
+		}
+	}
 }
 
 func TestV3OperationStoreReplayExpiryIsDurableAndHoldAwareEtcd(t *testing.T) {

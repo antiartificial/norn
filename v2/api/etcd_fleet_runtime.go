@@ -18,6 +18,7 @@ import (
 	"os"
 	"os/signal"
 	"path/filepath"
+	"reflect"
 	"sort"
 	"strings"
 	"syscall"
@@ -76,11 +77,14 @@ func runEtcdFleetRuntime(cfg *config.Config, backend startup.ControlBackendConfi
 			"unsupported": []string{"app-mutations", "fleet-runner-attempts", "fleet-github-bridge", "operation-cancellation"},
 		})
 	})
-	read := etcdManagedTokenAuth(cfg, identities, handler.ScopeAPIRead, handler.ScopeFleetOperate)
-	operate := etcdManagedTokenAuth(cfg, identities, handler.ScopeFleetOperate)
+	// Fleet runners carry fleet:operate for their narrowly bound attempt
+	// endpoints.  This normal router does not expose those endpoints, so that
+	// scope must never become a general inventory or receipt-read capability.
+	read := etcdManagedTokenAuth(cfg, identities, handler.ScopeAPIRead)
+	plan := etcdManagedTokenAuth(cfg, identities, handler.ScopeAPIWrite)
 	router.With(read).Get("/api/v1/fleet/node-pools", etcdFleetInventory(cfg))
 	router.With(read).Get("/api/v1/fleet/plans", etcdFleetPlans(operations))
-	router.With(operate).Post("/api/v1/fleet/node-pools/{pool}/plan", etcdFleetPlan(cfg, operations))
+	router.With(plan).Post("/api/v1/fleet/node-pools/{pool}/plan", etcdFleetPlan(cfg, operations))
 	router.With(read).Get("/api/v1/operations/{id}", etcdFleetOperation(operations))
 	router.NotFound(func(w http.ResponseWriter, r *http.Request) {
 		if strings.HasPrefix(r.URL.Path, "/api/") || r.URL.Path == "/ws" {
@@ -147,17 +151,15 @@ func loadEtcdFleetInventory(cfg *config.Config) (*fleet.Inventory, error) {
 }
 func etcdFleetPlans(operations *etcdstore.V3OperationStore) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
-		ops, err := operations.ListOperations(r.Context(), 50)
+		ops, err := operations.ListOperationsByKind(r.Context(), "fleet.capacity-plan", 50)
 		if err != nil {
 			handler.WriteControlProblem(w, r, http.StatusServiceUnavailable, "fleet_plan_read_failed", "failed to read capacity plans")
 			return
 		}
 		plans := make([]model.Operation, 0)
 		for _, op := range ops {
-			if op.Kind == "fleet.capacity-plan" {
-				op.AttachReceipt()
-				plans = append(plans, op)
-			}
+			op.AttachReceipt()
+			plans = append(plans, op)
 		}
 		writeEtcdSourceJSON(w, http.StatusOK, map[string]interface{}{"plans": plans, "count": len(plans)})
 	}
@@ -191,6 +193,10 @@ func etcdFleetPlan(cfg *config.Config, operations *etcdstore.V3OperationStore) h
 			handler.WriteControlProblem(w, r, http.StatusUnauthorized, "unauthorized", "a managed etcd access token is required")
 			return
 		}
+		if principal.CI != nil || !principal.Allows(handler.ScopeAPIWrite) {
+			handler.WriteControlProblem(w, r, http.StatusForbidden, "insufficient_scope", "Fleet capacity planning requires a non-CI api:write operator")
+			return
+		}
 		var request fleet.PlanRequest
 		decoder := json.NewDecoder(http.MaxBytesReader(w, r.Body, 64<<10))
 		decoder.DisallowUnknownFields()
@@ -201,6 +207,28 @@ func etcdFleetPlan(cfg *config.Config, operations *etcdstore.V3OperationStore) h
 		var trailing interface{}
 		if err := decoder.Decode(&trailing); err != io.EOF {
 			handler.WriteControlProblem(w, r, http.StatusBadRequest, "invalid_fleet_plan_request", "request body must contain one JSON value")
+			return
+		}
+		authority, err := operations.Authority(r.Context())
+		if err != nil {
+			handler.WriteControlProblem(w, r, http.StatusServiceUnavailable, "authority_unavailable", "control authority is unavailable")
+			return
+		}
+		identity := store.OperationRequestIdentity{Authority: authority, Actor: store.OperationActor{Issuer: "norn://managed-token", Subject: principal.TokenID}, Kind: "fleet.capacity-plan", Resource: pool, Key: key}
+		// Resolve before reading mutable Fleet configuration. A verified receipt
+		// is immutable evidence for this identity, including when the document
+		// that informed its original plan has changed or disappeared.
+		if accepted, resolveErr := operations.ResolveIdentity(r.Context(), identity); resolveErr == nil {
+			if !etcdFleetReplayRequestMatches(accepted, pool, request) {
+				handler.WriteControlProblem(w, r, http.StatusConflict, "idempotency_key_reused", "Idempotency-Key was already used for a different operation request")
+				return
+			}
+			accepted.Operation.AttachReceipt()
+			w.Header().Set("Location", "/api/v1/operations/"+accepted.Operation.ID)
+			writeEtcdSourceJSON(w, http.StatusOK, accepted.Operation)
+			return
+		} else if !errors.Is(resolveErr, store.ErrAcceptanceNotFound) {
+			writeEtcdFleetAcceptanceError(w, r, resolveErr)
 			return
 		}
 		inventory, err := loadEtcdFleetInventory(cfg)
@@ -236,13 +264,8 @@ func etcdFleetPlan(cfg *config.Config, operations *etcdstore.V3OperationStore) h
 		_ = json.Unmarshal(payloadBytes, &payload)
 		now := time.Now().UTC()
 		finished := now
-		authority, err := operations.Authority(r.Context())
-		if err != nil {
-			handler.WriteControlProblem(w, r, http.StatusServiceUnavailable, "authority_unavailable", "control authority is unavailable")
-			return
-		}
 		op := model.Operation{ID: plan.ID, Kind: "fleet.capacity-plan", Ref: pool, Status: model.OperationSucceeded, Risk: "read-only infrastructure capacity plan; Git review and protected apply remain required", Source: "etcd-control-api", Message: "capacity plan recorded; no provider mutation performed", Payload: payload, Metadata: map[string]interface{}{"planId": plan.ID, "planDigest": plan.Digest, "signature": plan.Signature}, StartedAt: now, UpdatedAt: now, FinishedAt: &finished, MaxAttempts: 1}
-		acceptance := store.OperationAcceptance{Identity: store.OperationRequestIdentity{Authority: authority, Actor: store.OperationActor{Issuer: "norn://managed-token", Subject: principal.TokenID}, Kind: op.Kind, Resource: pool, Key: key}, Operation: op, Audit: store.AcceptanceAuditContext{CredentialID: principal.TokenID, DeviceID: principal.DeviceID, Source: "etcd-normal-fleet", Scopes: principal.Scopes}, Semantics: map[string]interface{}{"pool": pool, "request": request, "planDigest": plan.Digest}}
+		acceptance := store.OperationAcceptance{Identity: identity, Operation: op, Audit: store.AcceptanceAuditContext{CredentialID: principal.TokenID, DeviceID: principal.DeviceID, Source: "etcd-normal-fleet", Scopes: principal.Scopes}, Semantics: map[string]interface{}{"pool": pool, "request": request, "planDigest": plan.Digest}}
 		acceptance.Fingerprint, err = store.CanonicalOperationRequestFingerprint(acceptance)
 		if err != nil {
 			handler.WriteControlProblem(w, r, http.StatusInternalServerError, "operation_acceptance_failed", "failed to fingerprint operation")
@@ -261,6 +284,21 @@ func etcdFleetPlan(cfg *config.Config, operations *etcdstore.V3OperationStore) h
 		}
 		writeEtcdSourceJSON(w, status, accepted.Operation)
 	}
+}
+
+func etcdFleetReplayRequestMatches(accepted store.AcceptedOperation, pool string, request fleet.PlanRequest) bool {
+	var receipt struct {
+		Kind      string `json:"kind"`
+		Resource  string `json:"resource"`
+		Semantics struct {
+			Pool    string            `json:"pool"`
+			Request fleet.PlanRequest `json:"request"`
+		} `json:"semantics"`
+	}
+	if err := json.Unmarshal(accepted.Intent.RequestCanonicalBytes, &receipt); err != nil {
+		return false
+	}
+	return receipt.Kind == "fleet.capacity-plan" && receipt.Resource == pool && receipt.Semantics.Pool == pool && reflect.DeepEqual(receipt.Semantics.Request, request)
 }
 func etcdFleetName(value string) bool {
 	if value == "" {

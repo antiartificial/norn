@@ -16,6 +16,16 @@ jobs:
   api-and-cli:
     name: ${{ matrix.component }}
     runs-on: ubuntu-24.04
+    services:
+      etcd:
+        image: quay.io/coreos/etcd:v3.5.15
+        ports:
+          - 2379:2379
+        options: >-
+          --health-cmd "ETCDCTL_API=3 etcdctl endpoint health"
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
     strategy:
       fail-fast: false
       matrix:
@@ -32,6 +42,8 @@ jobs:
           cache-dependency-path: ${{ matrix.directory }}/go.sum
       - name: Test ${{ matrix.component }}
         working-directory: ${{ matrix.directory }}
+        env:
+          NORN_TEST_ETCD_ENDPOINTS: ${{ matrix.component == 'api' && 'http://127.0.0.1:2379' || '' }}
         run: go test ./...
 
   web:

@@ -69,7 +69,7 @@ func main() {
 		log.Fatalf("control backend: %v", err)
 	}
 	cfg := config.Load()
-	if err := validateControlSecurity(cfg); err != nil {
+	if err := validateControlSecurityForBackend(cfg, backendCfg); err != nil {
 		log.Fatalf("security configuration: %v", err)
 	}
 	if backendCfg.Backend == startup.BackendEtcd && backendCfg.SourceValidation {
@@ -641,6 +641,10 @@ func main() {
 }
 
 func validateControlSecurity(cfg *config.Config) error {
+	return validateControlSecurityForBackend(cfg, startup.ControlBackendConfig{Backend: startup.BackendPostgres})
+}
+
+func validateControlSecurityForBackend(cfg *config.Config, backend startup.ControlBackendConfig) error {
 	if cfg == nil {
 		return fmt.Errorf("configuration is required")
 	}
@@ -737,7 +741,7 @@ func validateControlSecurity(cfg *config.Config) error {
 		if cfg.ConsulTLSSkipVerify {
 			return fmt.Errorf("NORN_PROFILE=production requires CONSUL_HTTP_SSL_VERIFY=true")
 		}
-		if !secureDatabaseDSN(cfg.DatabaseURL) {
+		if backend.Backend != startup.BackendEtcd && !secureDatabaseDSN(cfg.DatabaseURL) {
 			return fmt.Errorf("NORN_PROFILE=production requires PostgreSQL sslmode=verify-full")
 		}
 		if strings.TrimSpace(cfg.RegistryURL) == "" {

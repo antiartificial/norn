@@ -37,7 +37,11 @@ func TestEtcdFleetRuntimeProcess(t *testing.T) {
 	t.Cleanup(func() { _, _ = client.Delete(context.Background(), prefix, clientv3.WithPrefix()) })
 	secret := "fleet-runtime-process-token-secret-000"
 	identities := etcdstore.NewAuthStore(client, prefix)
-	token, _, err := handler.IssueManagedAccessToken(context.Background(), secret, identities, "operator", []string{handler.ScopeAPIRead, handler.ScopeFleetOperate}, time.Hour)
+	token, _, err := handler.IssueManagedAccessToken(context.Background(), secret, identities, "operator", []string{handler.ScopeAPIRead, handler.ScopeAPIWrite}, time.Hour)
+	if err != nil {
+		t.Fatal(err)
+	}
+	runnerToken, _, err := handler.IssueManagedAccessToken(context.Background(), secret, identities, "fleet-runner", []string{handler.ScopeFleetOperate}, time.Hour)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -91,6 +95,11 @@ func TestEtcdFleetRuntimeProcess(t *testing.T) {
 	if id == "" {
 		t.Fatalf("plan response missing id: %#v", plan)
 	}
+	// The receipt remains the replay source after its original mutable YAML
+	// document changes or vanishes.
+	if err := os.Remove(configPath); err != nil {
+		t.Fatal(err)
+	}
 	request, _ = http.NewRequest(http.MethodPost, base+"/api/v1/fleet/node-pools/control/plan", bytes.NewBufferString(`{"desired":4,"reason":"process proof"}`))
 	request.Header.Set("Authorization", "Bearer "+token)
 	request.Header.Set("Idempotency-Key", "fleet-runtime-1")
@@ -102,6 +111,28 @@ func TestEtcdFleetRuntimeProcess(t *testing.T) {
 	response.Body.Close()
 	if response.StatusCode != http.StatusOK {
 		t.Fatalf("replay status=%d", response.StatusCode)
+	}
+	request, _ = http.NewRequest(http.MethodGet, base+"/api/v1/fleet/plans", nil)
+	request.Header.Set("Authorization", "Bearer "+runnerToken)
+	response, err = http.DefaultClient.Do(request)
+	if err != nil {
+		t.Fatal(err)
+	}
+	response.Body.Close()
+	if response.StatusCode != http.StatusForbidden {
+		t.Fatalf("runner global Fleet list status=%d", response.StatusCode)
+	}
+	request, _ = http.NewRequest(http.MethodPost, base+"/api/v1/fleet/node-pools/control/plan", bytes.NewBufferString(`{"desired":4}`))
+	request.Header.Set("Authorization", "Bearer "+runnerToken)
+	request.Header.Set("Idempotency-Key", "runner-must-not-plan")
+	request.Header.Set("Content-Type", "application/json")
+	response, err = http.DefaultClient.Do(request)
+	if err != nil {
+		t.Fatal(err)
+	}
+	response.Body.Close()
+	if response.StatusCode != http.StatusForbidden {
+		t.Fatalf("runner plan status=%d", response.StatusCode)
 	}
 	request, _ = http.NewRequest(http.MethodGet, base+"/api/v1/operations/"+id, nil)
 	request.Header.Set("Authorization", "Bearer "+token)

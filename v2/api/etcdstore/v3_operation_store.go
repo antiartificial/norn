@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"crypto/sha256"
+	"encoding/base64"
 	"encoding/hex"
 	"encoding/json"
 	"errors"
@@ -118,6 +119,35 @@ func (s *V3OperationStore) ListOperations(ctx context.Context, limit int) ([]mod
 	return operations, nil
 }
 
+// ListOperationsByKind reads from the immutable kind/time index. The limit is
+// applied by etcd after kind and descending acceptance-time filtering, rather
+// than before filtering an arbitrary UUID-keyed operation prefix.
+func (s *V3OperationStore) ListOperationsByKind(ctx context.Context, kind string, limit int) ([]model.Operation, error) {
+	if strings.TrimSpace(kind) == "" || limit <= 0 || limit > 100 {
+		return nil, fmt.Errorf("operation kind and a list limit between 1 and 100 are required")
+	}
+	response, err := s.kv.Get(ctx, s.operationKindIndexPrefix(kind), clientv3.WithPrefix(), clientv3.WithLimit(int64(limit)), clientv3.WithSort(clientv3.SortByKey, clientv3.SortAscend))
+	if err != nil {
+		return nil, err
+	}
+	operations := make([]model.Operation, 0, len(response.Kvs))
+	for _, item := range response.Kvs {
+		id := string(item.Value)
+		if id == "" {
+			return nil, fmt.Errorf("operation kind index contains an empty ID")
+		}
+		record, _, err := s.load(ctx, id)
+		if err != nil {
+			return nil, fmt.Errorf("load indexed operation %q: %w", id, err)
+		}
+		if record.Operation.ID != id || record.Operation.Kind != kind {
+			return nil, fmt.Errorf("operation kind index integrity check failed for %q", id)
+		}
+		operations = append(operations, record.Operation)
+	}
+	return operations, nil
+}
+
 // GetOperation returns a single accepted operation for the narrow
 // source-validation status surface. It intentionally does not add listing or
 // recovery semantics to the etcd adapter.
@@ -133,8 +163,15 @@ func (s *V3OperationStore) GetOperation(ctx context.Context, id string) (*model.
 	return &operation, nil
 }
 
-func (s *V3OperationStore) opKey(id string) string      { return s.prefix + "/v3/operations/" + id }
-func (s *V3OperationStore) opsPrefix() string           { return s.prefix + "/v3/operations/" }
+func (s *V3OperationStore) opKey(id string) string { return s.prefix + "/v3/operations/" + id }
+func (s *V3OperationStore) opsPrefix() string      { return s.prefix + "/v3/operations/" }
+func (s *V3OperationStore) operationKindIndexPrefix(kind string) string {
+	return s.prefix + "/v3/operation-index/" + base64.RawURLEncoding.EncodeToString([]byte(kind)) + "/"
+}
+func (s *V3OperationStore) operationKindIndexKey(kind string, acceptedAt time.Time, id string) string {
+	// Complemented unsigned nanoseconds produce lexical descending time order.
+	return fmt.Sprintf("%s%020d/%s", s.operationKindIndexPrefix(kind), ^uint64(acceptedAt.UnixNano()), id)
+}
 func (s *V3OperationStore) runningKey(id string) string { return s.prefix + "/v3/running/" + id }
 func (s *V3OperationStore) runningPrefix() string       { return s.prefix + "/v3/running/" }
 func (s *V3OperationStore) ownerKey(id string) string   { return s.prefix + "/v3/owners/" + id }
@@ -223,7 +260,7 @@ func (s *V3OperationStore) Accept(ctx context.Context, a store.OperationAcceptan
 		}
 		return store.AcceptedOperation{}, err
 	}
-	puts := []clientv3.Op{clientv3.OpPut(key, string(av)), clientv3.OpPut(s.opKey(a.Operation.ID), string(ov))}
+	puts := []clientv3.Op{clientv3.OpPut(key, string(av)), clientv3.OpPut(s.opKey(a.Operation.ID), string(ov)), clientv3.OpPut(s.operationKindIndexKey(a.Operation.Kind, acceptedAt, a.Operation.ID), a.Operation.ID)}
 	if replayLease != 0 {
 		puts = append(puts, clientv3.OpPut(s.replayLiveKey(key), store.OperationReplayContractVersion, clientv3.WithLease(replayLease)))
 	}
