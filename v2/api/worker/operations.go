@@ -27,6 +27,19 @@ type OperationWorker struct {
 }
 
 func NewOperationWorker(db store.ExecutionStore, p *pipeline.Pipeline) *OperationWorker {
+	return NewOperationWorkerForKinds(db, p, []string{
+		"app.preflight", "app.deploy", "app.rollback", "app.restart", "app.snapshot",
+		"app.snapshot-prune", "app.snapshot-restore", "app.migrate",
+		"app.scale",
+		"app.canary-promote",
+		pipeline.CatalogActivationKind, pipeline.DatabaseBaselineKind,
+	})
+}
+
+// NewOperationWorkerForKinds binds a runtime to an explicit execution
+// capability set. Backend-neutral runtimes use this to avoid claiming an
+// operation whose aggregate they cannot execute.
+func NewOperationWorkerForKinds(db store.ExecutionStore, p *pipeline.Pipeline, kinds []string) *OperationWorker {
 	host, _ := os.Hostname()
 	if host == "" {
 		host = "unknown-host"
@@ -35,15 +48,9 @@ func NewOperationWorker(db store.ExecutionStore, p *pipeline.Pipeline) *Operatio
 		db:       db,
 		pipeline: p,
 		id:       fmt.Sprintf("%s:%d", host, os.Getpid()),
-		kinds: []string{
-			"app.preflight", "app.deploy", "app.rollback", "app.restart", "app.snapshot",
-			"app.snapshot-prune", "app.snapshot-restore", "app.migrate",
-			"app.scale",
-			"app.canary-promote",
-			pipeline.CatalogActivationKind, pipeline.DatabaseBaselineKind,
-		},
-		lease: 90 * time.Second,
-		poll:  2 * time.Second,
+		kinds:    append([]string(nil), kinds...),
+		lease:    90 * time.Second,
+		poll:     2 * time.Second,
 	}
 }
 

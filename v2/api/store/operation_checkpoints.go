@@ -20,6 +20,13 @@ const (
 
 var ErrCheckpointConflict = errors.New("operation checkpoint already records different outputs")
 
+// OperationCheckpointStore preserves execution-affecting stage outputs across
+// claims without exposing a storage backend to the pipeline.
+type OperationCheckpointStore interface {
+	RecordOperationCheckpoint(context.Context, OperationClaim, string, json.RawMessage) (OperationCheckpoint, error)
+	LoadOperationCheckpoint(context.Context, string, string) (*OperationCheckpoint, error)
+}
+
 // OperationCheckpoint is a write-once record of one execution stage's outputs
 // for an accepted operation. Outputs are stored as the exact bytes whose
 // digest is recorded, so a read verifies integrity before use.

@@ -49,7 +49,17 @@ func (e *SourceIdentityChangedError) Error() string {
 }
 
 func (p *Pipeline) executionCheckpointsEnabled(st *state) bool {
-	return p.BuildTestEffects != nil && p.DB != nil && st.claim.OperationID() != "" && st.claim.Generation() > 0
+	return p.checkpointStore() != nil && st.claim.OperationID() != "" && st.claim.Generation() > 0 && (p.CheckpointStore != nil || p.BuildTestEffects != nil)
+}
+
+func (p *Pipeline) checkpointStore() store.OperationCheckpointStore {
+	if p != nil && p.CheckpointStore != nil {
+		return p.CheckpointStore
+	}
+	if p != nil && p.DB != nil {
+		return p.DB
+	}
+	return nil
 }
 
 func checkpointPending(st *state, stage string, err error) error {
@@ -63,7 +73,8 @@ func (p *Pipeline) checkpointedClone(ctx context.Context, st *state, sg *saga.Sa
 	if !p.executionCheckpointsEnabled(st) {
 		return p.clone(ctx, st, sg)
 	}
-	recordedCheckpoint, err := p.DB.LoadOperationCheckpoint(ctx, st.claim.OperationID(), store.CheckpointSource)
+	checkpointStore := p.checkpointStore()
+	recordedCheckpoint, err := checkpointStore.LoadOperationCheckpoint(ctx, st.claim.OperationID(), store.CheckpointSource)
 	if err != nil {
 		return checkpointPending(st, store.CheckpointSource, err)
 	}
@@ -90,7 +101,7 @@ func (p *Pipeline) checkpointedClone(ctx context.Context, st *state, sg *saga.Sa
 		if err != nil {
 			return err
 		}
-		stored, err := p.DB.RecordOperationCheckpoint(ctx, st.claim, store.CheckpointSource, encoded)
+		stored, err := checkpointStore.RecordOperationCheckpoint(ctx, st.claim, store.CheckpointSource, encoded)
 		if err != nil && !errors.Is(err, store.ErrCheckpointConflict) {
 			return checkpointPending(st, store.CheckpointSource, err)
 		}
@@ -136,7 +147,7 @@ func (p *Pipeline) reuseCheckpointedBuild(ctx context.Context, st *state, sg *sa
 	if st.sourceIdentity == "" {
 		return false, fmt.Errorf("build checkpoint requires a recorded source identity")
 	}
-	recorded, err := p.DB.LoadOperationCheckpoint(ctx, st.claim.OperationID(), store.CheckpointBuild)
+	recorded, err := p.checkpointStore().LoadOperationCheckpoint(ctx, st.claim.OperationID(), store.CheckpointBuild)
 	if err != nil {
 		return false, checkpointPending(st, store.CheckpointBuild, err)
 	}
@@ -166,7 +177,7 @@ func (p *Pipeline) recordBuild(ctx context.Context, st *state) error {
 	if err != nil {
 		return err
 	}
-	if _, err := p.DB.RecordOperationCheckpoint(ctx, st.claim, store.CheckpointBuild, encoded); err != nil {
+	if _, err := p.checkpointStore().RecordOperationCheckpoint(ctx, st.claim, store.CheckpointBuild, encoded); err != nil {
 		return fmt.Errorf("record build checkpoint: %w", err)
 	}
 	return nil
