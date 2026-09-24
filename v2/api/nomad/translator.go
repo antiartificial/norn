@@ -54,8 +54,8 @@ func TranslateForRegionAt(spec *model.InfraSpec, imageTag string, env map[string
 		if !spec.ProcessRunsInRegion(proc, region.Name) {
 			continue
 		}
-		if proc.Schedule != "" {
-			// Scheduled processes become separate batch jobs — skip here
+		if proc.Schedule != "" || proc.Function != nil {
+			// Scheduled and function processes run as separate batch jobs.
 			continue
 		}
 

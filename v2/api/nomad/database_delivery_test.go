@@ -97,6 +97,11 @@ func TestDatabaseDeliveryTemplatesOnEveryTranslationPath(t *testing.T) {
 	secrets := map[string]string{"STRIPE_KEY": "sk_test"}
 	region := spec.ResolvedRegions()[0]
 	service := TranslateForRegionAt(spec, "img:1", secrets, region, 5)
+	for _, group := range service.TaskGroups {
+		if *group.Name == "resize" {
+			t.Fatal("function process was scheduled as a service task")
+		}
+	}
 	periodic := TranslatePeriodicForRegionAt(spec, "nightly", spec.Processes["nightly"], "img:1", secrets, region, 5)
 	function := TranslateBatchAt(spec, "resize", spec.Processes["resize"], "img:1", secrets, "shop-resize-1700000000000", 5)
 	tasks := map[string]*nomadapi.Task{}
