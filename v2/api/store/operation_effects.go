@@ -96,6 +96,16 @@ func (s *PGEffectStore) Reserve(ctx context.Context, reservation effect.Reservat
 	if !errors.Is(err, pgx.ErrNoRows) {
 		return effect.ReservationResult{}, err
 	}
+	if app != "" {
+		var blockingID string
+		err = tx.QueryRow(ctx, `SELECT id FROM operation_effects WHERE authority=$1::uuid AND split_part(resource,'/',2)=$2 AND lifecycle IN ('reserved','launched') LIMIT 1`, reservation.Authority, app).Scan(&blockingID)
+		if err == nil {
+			return effect.ReservationResult{}, &effect.ResourceBlockedError{Resource: reservation.Resource, BlockingEffectID: blockingID}
+		}
+		if !errors.Is(err, pgx.ErrNoRows) {
+			return effect.ReservationResult{}, err
+		}
+	}
 
 	token := effect.Token{EffectID: uuid.NewString(), Generation: reservation.OperationClaim.Generation}
 	result, err := tx.Exec(ctx, `

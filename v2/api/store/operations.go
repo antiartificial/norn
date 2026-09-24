@@ -825,7 +825,7 @@ func (db *DB) RecoverExpiredOperations(ctx context.Context) error {
 		WHERE status = 'running'
 		  AND kind LIKE 'app.%'
 		  AND (locked_until IS NULL OR locked_until < now())
-		  AND attempts < max_attempts
+		  AND (attempts < max_attempts OR kind = 'app.restart')
 		  AND (
 		    kind IN ('app.preflight', 'app.restart')
 		    OR (kind = 'app.deploy' AND NOT EXISTS (
