@@ -255,12 +255,13 @@ type signedEvidence struct {
 // is what permits a completed effect to replay after reboot cleanup removes its
 // cgroup.
 type snapshotResult struct {
-	InputDigest           string `json:"inputDigest"`
-	SupervisorExecutionID string `json:"supervisorExecutionId"`
-	RuntimeInstanceID     string `json:"runtimeInstanceId"`
-	Reference             string `json:"reference"`
-	Digest                string `json:"digest"`
-	Output                []byte `json:"output"`
+	InputDigest           string             `json:"inputDigest"`
+	SupervisorExecutionID string             `json:"supervisorExecutionId"`
+	RuntimeInstanceID     string             `json:"runtimeInstanceId"`
+	Reference             string             `json:"reference"`
+	Digest                string             `json:"digest"`
+	Output                []byte             `json:"output"`
+	Observation           effect.Observation `json:"observation"`
 }
 
 type signedSnapshotResult struct {
@@ -707,15 +708,30 @@ func (m *Manager) ObserveSnapshot(ctx context.Context, reservation effect.Reserv
 		if err != nil {
 			return err
 		}
+		if state.Phase == effect.SupervisorUnknown {
+			stored, storedErr := m.readSnapshotObservation(directory, record)
+			if storedErr == nil {
+				observation = stored
+				return nil
+			}
+			if !errors.Is(storedErr, os.ErrNotExist) {
+				return storedErr
+			}
+		}
 		if state.Phase == effect.SupervisorSucceeded || state.Phase == effect.SupervisorFailed {
 			if !state.ContainmentProven {
 				return fmt.Errorf("snapshot terminal result lacks containment proof")
 			}
-			stable, err := m.writeSnapshotResult(directory, record, descriptor, state.Phase, state.Output)
+			fresh, err := m.observation(record, state)
 			if err != nil {
 				return err
 			}
-			state.Output = stable
+			stable, err := m.writeSnapshotResult(directory, record, descriptor, fresh)
+			if err != nil {
+				return err
+			}
+			observation = stable
+			return nil
 		}
 		observation, err = m.observation(record, state)
 		return err
@@ -1098,87 +1114,106 @@ func (m *Manager) readJournal(directory string) (journal, error) {
 	return envelope.Record, nil
 }
 
-func (m *Manager) writeSnapshotResult(directory string, record journal, descriptor SnapshotDescriptor, phase effect.SupervisorPhase, output []byte) ([]byte, error) {
-	if record.RuntimeInstanceID == "" || int64(len(output)) > maxRunnerStatusBytes {
-		return nil, fmt.Errorf("snapshot terminal result is incomplete")
+func (m *Manager) writeSnapshotResult(directory string, record journal, descriptor SnapshotDescriptor, observation effect.Observation) (effect.Observation, error) {
+	if record.RuntimeInstanceID == "" || int64(len(observation.Output)) > maxRunnerStatusBytes ||
+		(observation.Phase != effect.SupervisorSucceeded && observation.Phase != effect.SupervisorFailed) {
+		return effect.Observation{}, fmt.Errorf("snapshot terminal result is incomplete")
 	}
 	result := snapshotResult{
 		InputDigest: record.InputDigest, SupervisorExecutionID: record.SupervisorExecutionID,
 		RuntimeInstanceID: record.RuntimeInstanceID, Reference: "result/" + record.SupervisorExecutionID,
-		Digest: effect.DigestInput(output), Output: append([]byte(nil), output...),
+		Digest: effect.DigestInput(observation.Output), Output: append([]byte(nil), observation.Output...), Observation: observation,
 	}
 	path := filepath.Join(directory, "snapshot-result.json")
 	if _, err := os.Lstat(path); err == nil {
-		existing, readErr := m.readSnapshotResult(directory, record, result.Reference)
+		existing, readErr := m.readSnapshotObservation(directory, record)
 		if readErr != nil {
-			return nil, readErr
+			return effect.Observation{}, readErr
 		}
-		if err := m.matchSnapshotTerminalResult(record, descriptor, phase, existing, result.Output); err != nil {
-			return nil, err
+		if err := m.matchSnapshotTerminalResult(record, descriptor, existing, observation); err != nil {
+			return effect.Observation{}, err
 		}
 		return existing, nil
 	} else if !errors.Is(err, os.ErrNotExist) {
-		return nil, err
+		return effect.Observation{}, err
 	}
 	encoded, err := json.Marshal(result)
 	if err != nil {
-		return nil, err
+		return effect.Observation{}, err
 	}
 	if err := writeDurableJSON(directory, "snapshot-result.json", signedSnapshotResult{Result: result, MAC: m.mac(encoded)}); err != nil {
-		return nil, err
+		return effect.Observation{}, err
 	}
-	return result.Output, nil
+	return observation, nil
 }
 
-func (m *Manager) matchSnapshotTerminalResult(record journal, descriptor SnapshotDescriptor, phase effect.SupervisorPhase, existing, observed []byte) error {
-	if phase == effect.SupervisorFailed {
-		if !hmac.Equal(existing, observed) {
+func (m *Manager) matchSnapshotTerminalResult(record journal, descriptor SnapshotDescriptor, prior, current effect.Observation) error {
+	if prior.Phase != current.Phase || prior.ExitCode == nil || current.ExitCode == nil || *prior.ExitCode != *current.ExitCode {
+		return fmt.Errorf("snapshot terminal observation changed after durable observation")
+	}
+	if current.Phase == effect.SupervisorFailed {
+		if !hmac.Equal(prior.Output, current.Output) {
 			return fmt.Errorf("snapshot failed terminal result changed after durable observation")
 		}
 		return nil
 	}
-	if phase != effect.SupervisorSucceeded {
+	if current.Phase != effect.SupervisorSucceeded {
 		return fmt.Errorf("snapshot terminal phase is unsupported")
 	}
-	var prior, current SnapshotManifest
-	if err := json.Unmarshal(existing, &prior); err != nil {
+	var priorManifest, currentManifest SnapshotManifest
+	if err := json.Unmarshal(prior.Output, &priorManifest); err != nil {
 		return fmt.Errorf("decode durable snapshot result: %w", err)
 	}
-	if err := json.Unmarshal(observed, &current); err != nil {
+	if err := json.Unmarshal(current.Output, &currentManifest); err != nil {
 		return fmt.Errorf("decode observed snapshot result: %w", err)
 	}
 	key := runnerStatusKey(m.key, record.RuntimeInstanceID)
-	if err := VerifySnapshotManifestForDescriptor(prior, descriptor, key, record.RuntimeInstanceID); err != nil {
+	if err := VerifySnapshotManifestForDescriptor(priorManifest, descriptor, key, record.RuntimeInstanceID); err != nil {
 		return err
 	}
-	if err := VerifySnapshotManifestForDescriptor(current, descriptor, key, record.RuntimeInstanceID); err != nil {
+	if err := VerifySnapshotManifestForDescriptor(currentManifest, descriptor, key, record.RuntimeInstanceID); err != nil {
 		return err
 	}
-	if prior.Artifact != current.Artifact || prior.DescriptorSHA256 != current.DescriptorSHA256 || prior.RuntimeInstanceID != current.RuntimeInstanceID || prior.Protocol != current.Protocol || !prior.ContainmentProven || !current.ContainmentProven {
+	if priorManifest.Artifact != currentManifest.Artifact || priorManifest.DescriptorSHA256 != currentManifest.DescriptorSHA256 || priorManifest.RuntimeInstanceID != currentManifest.RuntimeInstanceID || priorManifest.Protocol != currentManifest.Protocol || !priorManifest.ContainmentProven || !currentManifest.ContainmentProven {
 		return fmt.Errorf("snapshot successful terminal result changed after durable observation")
 	}
 	return nil
 }
 
 func (m *Manager) readSnapshotResult(directory string, record journal, reference string) ([]byte, error) {
-	data, err := readBoundedRegular(filepath.Join(directory, "snapshot-result.json"), maxRunnerStatusBytes)
+	observation, err := m.readSnapshotObservation(directory, record)
 	if err != nil {
 		return nil, err
 	}
+	if reference != "result/"+record.SupervisorExecutionID {
+		return nil, fmt.Errorf("snapshot terminal result authentication failed")
+	}
+	return append([]byte(nil), observation.Output...), nil
+}
+
+func (m *Manager) readSnapshotObservation(directory string, record journal) (effect.Observation, error) {
+	data, err := readBoundedRegular(filepath.Join(directory, "snapshot-result.json"), maxRunnerStatusBytes)
+	if err != nil {
+		return effect.Observation{}, err
+	}
 	var envelope signedSnapshotResult
 	if err := decodeStrict(data, &envelope); err != nil {
-		return nil, fmt.Errorf("snapshot terminal result is malformed")
+		return effect.Observation{}, fmt.Errorf("snapshot terminal result is malformed")
 	}
 	encoded, _ := json.Marshal(envelope.Result)
 	result := envelope.Result
 	if !hmac.Equal([]byte(envelope.MAC), []byte(m.mac(encoded))) ||
 		result.InputDigest != record.InputDigest || result.SupervisorExecutionID != record.SupervisorExecutionID ||
-		result.RuntimeInstanceID != record.RuntimeInstanceID || result.Reference != reference ||
+		result.RuntimeInstanceID != record.RuntimeInstanceID || result.Reference != "result/"+record.SupervisorExecutionID ||
 		int64(len(result.Output)) > maxRunnerStatusBytes ||
 		result.Digest != effect.DigestInput(result.Output) {
-		return nil, fmt.Errorf("snapshot terminal result authentication failed")
+		return effect.Observation{}, fmt.Errorf("snapshot terminal result authentication failed")
 	}
-	return append([]byte(nil), result.Output...), nil
+	if result.Observation.Identity.Supervisor != record.Supervisor || result.Observation.Identity.SupervisorExecutionID != record.SupervisorExecutionID || result.Observation.Identity.RuntimeInstanceID != record.RuntimeInstanceID ||
+		(result.Observation.Phase != effect.SupervisorSucceeded && result.Observation.Phase != effect.SupervisorFailed) || !hmac.Equal(result.Observation.Output, result.Output) || result.Observation.Evidence.Source != evidenceSource || result.Observation.Evidence.Reference == "" || len(result.Observation.Evidence.Payload) == 0 {
+		return effect.Observation{}, fmt.Errorf("snapshot terminal observation authentication failed")
+	}
+	return result.Observation, nil
 }
 
 func (m *Manager) writeTombstone(directory string, record journal) error {

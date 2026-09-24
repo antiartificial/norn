@@ -82,12 +82,73 @@ func TestSnapshotTerminalResultReusesFirstAuthenticatedManifestBeforeCompletion(
 	if string(first) == string(second) {
 		t.Fatal("test manifests must differ by observed timestamp")
 	}
-	if _, err := manager.writeSnapshotResult(manager.root, record, descriptor, effect.SupervisorSucceeded, first); err != nil {
+	exit := 0
+	firstObservation, err := manager.observation(record, BackendState{Phase: effect.SupervisorSucceeded, ExitCode: &exit, Output: first, ContainmentProven: true, EvidenceReference: "first"})
+	if err != nil {
 		t.Fatal(err)
 	}
-	stable, err := manager.writeSnapshotResult(manager.root, record, descriptor, effect.SupervisorSucceeded, second)
-	if err != nil || string(stable) != string(first) {
-		t.Fatalf("interrupted pre-completion replay = %q, %v", stable, err)
+	if _, err := manager.writeSnapshotResult(manager.root, record, descriptor, firstObservation); err != nil {
+		t.Fatal(err)
+	}
+	secondObservation, err := manager.observation(record, BackendState{Phase: effect.SupervisorSucceeded, ExitCode: &exit, Output: second, ContainmentProven: true, EvidenceReference: "second"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	stable, err := manager.writeSnapshotResult(manager.root, record, descriptor, secondObservation)
+	if err != nil || string(stable.Output) != string(first) {
+		t.Fatalf("interrupted pre-completion replay = %+v, %v", stable, err)
+	}
+}
+
+func TestSnapshotObserveReplaysSignedTerminalEvidenceAfterRebootBeforeCompletion(t *testing.T) {
+	backend := newBackendFake()
+	manager := testManager(t, t.TempDir(), backend)
+	if err := manager.SetSnapshotArtifactBudget(MaxSnapshotArtifactBytes); err != nil {
+		t.Fatal(err)
+	}
+	material := SnapshotLaunchMaterial{PGDumpPath: "/usr/bin/pg_dump", PGDumpSHA256: strings.Repeat("a", 64), ServiceName: "demo", ServiceFile: []byte("[demo]\nhost=localhost\nuser=demo\n"), Password: "secret", Subject: "app:demo/db:main@generation:1", Timeout: time.Minute}
+	payload, err := manager.BuildSnapshotDescriptor(material)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var descriptor SnapshotDescriptor
+	if err := json.Unmarshal(payload, &descriptor); err != nil {
+		t.Fatal(err)
+	}
+	reservation := effect.Reservation{Authority: "authority", Resource: "app/demo/snapshot", OperationClaim: effect.OperationClaim{OperationID: "reboot-before-completion", OwnerID: "worker", Generation: 1}, Stage: SnapshotStage, Supervisor: "snapshot-runner", SupervisorExecutionID: "snapshot-reboot-before-completion", LaunchPayload: payload}
+	if reservation.InputDigest, err = effect.ComputeInputDigest(reservation); err != nil {
+		t.Fatal(err)
+	}
+	if err := manager.Prepare(context.Background(), reservation); err != nil {
+		t.Fatal(err)
+	}
+	identity, err := manager.LaunchSnapshot(context.Background(), reservation, material)
+	if err != nil {
+		t.Fatal(err)
+	}
+	digest := mustSnapshotDescriptorDigest(t, descriptor)
+	manifest := SnapshotManifest{Protocol: SnapshotProtocolV1, RuntimeInstanceID: identity.RuntimeInstanceID, DescriptorSHA256: digest, Artifact: SnapshotArtifact{Reference: "snapshot/" + reservation.SupervisorExecutionID, Bytes: 7, SHA256: strings.Repeat("c", 64), Regular: true, NoFollow: true}, ContainmentProven: true, ObservedAt: time.Now().UTC()}
+	encoded, _ := json.Marshal(snapshotManifestPayload{manifest.Protocol, manifest.RuntimeInstanceID, manifest.DescriptorSHA256, manifest.Artifact, manifest.ContainmentProven, manifest.ObservedAt})
+	mac := hmac.New(sha256.New, runnerStatusKey(testSigningKey, identity.RuntimeInstanceID))
+	mac.Write(encoded)
+	manifest.MAC = hex.EncodeToString(mac.Sum(nil))
+	output, _ := json.Marshal(manifest)
+	exit := 0
+	backend.mu.Lock()
+	backend.states[reservation.SupervisorExecutionID] = BackendState{Phase: effect.SupervisorSucceeded, ExitCode: &exit, Output: output, ContainmentProven: true, EvidenceReference: "contained/" + identity.RuntimeInstanceID}
+	backend.mu.Unlock()
+	first, err := manager.ObserveSnapshot(context.Background(), reservation, identity)
+	if err != nil || first.Phase != effect.SupervisorSucceeded {
+		t.Fatalf("first terminal observation = %+v, %v", first, err)
+	}
+	// Completion has not been stored. A reboot loses cgroup containment, so
+	// only the manager-signed terminal observation may carry this forward.
+	backend.mu.Lock()
+	backend.states[reservation.SupervisorExecutionID] = BackendState{Phase: effect.SupervisorUnknown, EvidenceReference: "rebooted"}
+	backend.mu.Unlock()
+	replayed, err := manager.ObserveSnapshot(context.Background(), reservation, identity)
+	if err != nil || replayed.Phase != effect.SupervisorSucceeded || string(replayed.Output) != string(first.Output) || string(replayed.Evidence.Payload) != string(first.Evidence.Payload) {
+		t.Fatalf("reboot observation = %+v, %v", replayed, err)
 	}
 }
 
