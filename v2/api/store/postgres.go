@@ -547,10 +547,15 @@ func NewControlSchemaMigrator(db *DB) (*SchemaMigrator, error) {
 	if db == nil || db.Pool == nil {
 		return nil, fmt.Errorf("control schema database is unavailable")
 	}
-	return NewSchemaMigrator(db.Pool, ControlSchemaMigrations(), BinarySchemaCompatibility{
+	migrator, err := NewSchemaMigrator(db.Pool, ControlSchemaMigrations(), BinarySchemaCompatibility{
 		ReaderVersion: ControlSchemaReaderVersion,
 		WriterVersion: ControlSchemaWriterVersion,
 	}, SchemaMigratorOptions{})
+	if err != nil {
+		return nil, err
+	}
+	migrator.adoptUnversioned = adoptMiniControlSchema
+	return migrator, nil
 }
 
 // Migrate retains the compatibility entry point for existing tests and tools

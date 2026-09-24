@@ -3,6 +3,12 @@
 // not a recovery artifact.
 package controlrecovery
 
+import (
+	"context"
+
+	"github.com/jackc/pgx/v5"
+)
+
 // Column classifies one physical control-table column. Columns absent from the
 // registry fail inspection. Included columns are emitted; excluded columns are
 // intentionally omitted rather than passed through a generic redactor.
@@ -93,4 +99,37 @@ func InspectionRegistry() []Table {
 		}
 	}
 	return result
+}
+
+var miniExtensionTables = []Table{
+	{Name: "external_deployment_nonces", OrderBy: []string{"id"}, Columns: classified(include("id", "app", "environment", "ci_repository", "ci_run_id", "ci_run_attempt", "issuer_subject", "state", "admission_id", "revision", "registration_generation", "issued_at", "expires_at", "registered_at", "claimed_at", "consumed_at", "superseded_at"), "nonce_sha256", "issuer_token_id", "registration_ref", "registration_metadata")},
+	{Name: "external_deployment_admissions", OrderBy: []string{"id"}, Columns: classified(include("id", "app", "environment", "ci_repository", "request_digest", "state", "nonce_id", "nonce_generation", "operation_id", "service_snapshot_id", "service_snapshot_sha256", "service_receipt_sha256", "service_proof_sha256", "service_claim_revision", "service_commit_revision", "service_cleanup_revision", "cleanup_intent_sha256", "absence_proof_sha256", "failure_code", "created_at", "updated_at", "completed_at"), "idempotency_key", "claimed_receipt", "registration_ref", "service_snapshot_ref", "service_retry_lineage")},
+	{Name: "external_deployment_admission_checkpoints", OrderBy: []string{"admission_id", "phase"}, Columns: classified(include("admission_id", "phase", "attempt_id", "checkpoint_id", "evidence_sha256", "created_at"), "evidence_ref")},
+	{Name: "fleet_runner_checkpoint_refs", OrderBy: []string{"admission_id", "phase"}, Columns: classified(include("admission_id", "phase", "attempt_id", "checkpoint_id", "evidence_sha256", "created_at"), "evidence_ref")},
+}
+
+func registryWithMiniExtension(ctx context.Context, tx pgx.Tx, schema string, base []Table) ([]Table, error) {
+	names := []string{"external_deployment_nonces", "external_deployment_admissions", "external_deployment_admission_checkpoints", "fleet_runner_checkpoint_refs"}
+	var present int
+	if err := tx.QueryRow(ctx, `SELECT count(*) FROM pg_catalog.pg_class c JOIN pg_catalog.pg_namespace n ON n.oid=c.relnamespace WHERE n.nspname=$1 AND c.relkind IN ('r','p') AND c.relname=ANY($2)`, schema, names).Scan(&present); err != nil {
+		return nil, err
+	}
+	if present == 0 {
+		return base, nil
+	}
+	if present != len(names) {
+		return base, nil // classification reports the present subset as unknown
+	}
+	registry := append([]Table(nil), base...)
+	for index := range registry {
+		switch registry[index].Name {
+		case "fleet_runner_attempts":
+			registry[index].Columns = classified(registry[index].Columns, "last_error", "metadata")
+			registry[index].Columns = append(registry[index].Columns, include("phase_started_at", "pilot_run_id", "principal_subject", "recovery", "source_dispatch_run_id")...)
+		case "fleet_github_dispatches":
+			registry[index].Columns = append(registry[index].Columns, include("approval_envelope_sha256", "dispatch_state", "pilot_run_id", "rerun_started_at", "run_attempt", "submission_started_at")...)
+		}
+	}
+	registry = append(registry, miniExtensionTables...)
+	return registry, nil
 }
