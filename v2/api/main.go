@@ -303,6 +303,11 @@ func main() {
 		log.Fatalf("configure durable app.scale effects: %v", err)
 	}
 	pipe.ScaleEffects = scaleEffects
+	restartEffects, err := pipeline.NewNomadRestartEffects(db, nomadClient)
+	if err != nil {
+		log.Fatalf("configure durable app.restart effects: %v", err)
+	}
+	pipe.RestartEffects = restartEffects
 	canaryPromotionEffects, err := pipeline.NewNomadCanaryPromotionEffects(db, nomadClient)
 	if err != nil {
 		log.Fatalf("configure durable app.canary-promote effects: %v", err)

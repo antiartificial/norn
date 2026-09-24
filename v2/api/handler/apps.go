@@ -199,16 +199,28 @@ func (h *Handler) GetApp(w http.ResponseWriter, r *http.Request) {
 
 func (h *Handler) RestartApp(w http.ResponseWriter, r *http.Request) {
 	id := chi.URLParam(r, "id")
-	if h.nomad == nil {
-		writeError(w, http.StatusServiceUnavailable, "nomad not connected")
+	if h.pipeline == nil || !h.pipeline.RestartAvailable() {
+		WriteControlProblem(w, r, http.StatusServiceUnavailable, "durable_restart_unavailable", "durable Nomad restart execution is unavailable")
 		return
 	}
-	if err := h.nomad.RestartJob(id); err != nil {
-		writeError(w, http.StatusInternalServerError, err.Error())
+	enqueue, ok := h.pipelineEnqueueRequest(w, r, r.Header.Get("Idempotency-Key"), map[string]interface{}{"app": id})
+	if !ok {
 		return
 	}
-	h.emitAppActivity(r, id, "app.restarted", "App restarted", id+" was restarted", nil)
-	writeJSON(w, map[string]string{"status": "restarted"})
+	now := time.Now().UTC()
+	op := model.Operation{ID: uuid.NewString(), Kind: "app.restart", App: id, SagaID: uuid.NewString(), Ref: id, Status: model.OperationQueued, Risk: "replace active Nomad allocations", Source: "app-control-api", Message: "queued app restart", StartedAt: now, NextAttemptAt: now, MaxAttempts: 1, Payload: map[string]interface{}{"app": id}}
+	accepted, err := h.pipeline.QueueOperation(r.Context(), op, enqueue)
+	if err != nil {
+		writeOperationAcceptanceError(w, r, err)
+		return
+	}
+	accepted.Operation.AttachReceipt()
+	w.Header().Set("Location", "/api/v1/operations/"+accepted.Operation.ID)
+	if accepted.Replayed {
+		writeJSON(w, accepted.Operation)
+		return
+	}
+	writeJSONStatus(w, http.StatusAccepted, accepted.Operation)
 }
 
 func (h *Handler) ScaleApp(w http.ResponseWriter, r *http.Request) {
