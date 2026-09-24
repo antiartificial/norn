@@ -18,13 +18,25 @@ These changes close four paths in the historical [M1 external-effect audit](m1-c
 Cron, forge, ContextDB rollback, function execution, and other effect paths
 still need durable boundaries. Snapshot restore still needs a crash and
 lease-loss rehearsal around its worker subprocess. Concrete PostgreSQL
-consumers and PG-free etcd startup remain open. The Mini's observed schema
-does not yet migrate from its unversioned state without an adoption repair;
-that work is under separate review. **No M0–M3 milestone is signed off and no
+consumers and PG-free etcd startup remain open. At this checkpoint, the Mini's
+observed schema still required an unversioned adoption repair. **No M0–M3 milestone is signed off and no
 v3 deployment is implied by these merges.**
 
-The next review order is: finish the guarded Mini schema adoption and private
-restore evidence; convert the remaining M1 external effects and remove
+PR [#60](https://github.com/antiartificial/norn/pull/60) later merged that
+guarded Mini adoption path. A pinned fingerprint of all 28 pre-v1 tables and
+the control-events sequence matched read-only live Mini PostgreSQL 17 and a
+private schema-only restore on disposable PostgreSQL 16. The restored schema
+migrated through version 13 without changing migration 1's checksum, and
+control-recovery inspection passed. The adoption transaction blocks legacy
+Fleet dispatch inserts and refuses any existing dispatch rows. The full API
+suite passed against a fresh disposable PostgreSQL database with the known
+local Darwin host-metrics sampler excluded; repository CI passed. This is a
+schema-only rehearsal. Representative data/rollback rehearsal, old-worker
+compatibility, growth budgets, and app/route/volume ownership remain M0/M5
+exit work. No Mini database was changed.
+
+The next review order is: complete private representative-data restore and
+rollback evidence; convert the remaining M1 external effects and remove
 concrete PostgreSQL control consumers; qualify M2 retention, database
 bindings, and representative recovery; then finish M3 backend-neutral runtime
 and three-member etcd bootstrap, fault, restore, and soak testing. A loaded
