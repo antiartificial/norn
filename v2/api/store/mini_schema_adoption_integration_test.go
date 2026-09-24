@@ -163,6 +163,21 @@ func TestMiniDispatchLockBlocksLegacyInsertUntilAdoptionTransactionEnds(t *testi
 	}
 }
 
+func TestMiniAdoptionRejectsMissingPinnedSequence(t *testing.T) {
+	pool := schemaMigrationTestPools(t, 1)[0]
+	createMiniPilotFixture(t, pool)
+	migrator := miniFixtureMigrator(t, pool)
+	if _, err := pool.Exec(context.Background(), `DROP SEQUENCE mini_fixture_sequence`); err != nil {
+		t.Fatal(err)
+	}
+	_, err := migrator.Migrate(context.Background())
+	var adoptionErr *MiniSchemaAdoptionError
+	if !errors.As(err, &adoptionErr) {
+		t.Fatalf("error = %T %v, want structural fingerprint refusal", err, err)
+	}
+	assertNoMigrationMetadata(t, pool)
+}
+
 func assertNoMigrationMetadata(t *testing.T, pool *pgxpool.Pool) {
 	t.Helper()
 	var present bool
@@ -175,6 +190,7 @@ func assertNoMigrationMetadata(t *testing.T, pool *pgxpool.Pool) {
 }
 
 const miniPilotFixtureSQL = `
+CREATE SEQUENCE mini_fixture_sequence AS bigint START WITH 1 INCREMENT BY 1 NO MINVALUE NO MAXVALUE CACHE 1;
 CREATE TABLE operations (id text PRIMARY KEY, kind text NOT NULL, app text NOT NULL DEFAULT '', saga_id text NOT NULL DEFAULT '', ref text NOT NULL DEFAULT '', status text NOT NULL DEFAULT 'running', risk text NOT NULL DEFAULT '', source text NOT NULL DEFAULT '', message text NOT NULL DEFAULT '', metadata jsonb NOT NULL DEFAULT '{}', started_at timestamptz NOT NULL DEFAULT now(), updated_at timestamptz NOT NULL DEFAULT now(), finished_at timestamptz, payload jsonb NOT NULL DEFAULT '{}', attempts integer NOT NULL DEFAULT 0, max_attempts integer NOT NULL DEFAULT 1, locked_by text NOT NULL DEFAULT '', locked_until timestamptz, next_attempt_at timestamptz NOT NULL DEFAULT now(), last_error text NOT NULL DEFAULT '');
 CREATE TABLE fleet_runner_attempts (id text PRIMARY KEY, plan_id text NOT NULL REFERENCES operations(id) ON DELETE CASCADE, attempt integer NOT NULL, runner_attempt_id text NOT NULL DEFAULT '', status text NOT NULL DEFAULT 'queued', current_phase text NOT NULL DEFAULT '', commit_sha text NOT NULL DEFAULT '', plan_sha256 text NOT NULL DEFAULT '', workflow_url text NOT NULL DEFAULT '', principal_subject text NOT NULL DEFAULT '', retry_of text NOT NULL DEFAULT '', heartbeat_sequence bigint NOT NULL DEFAULT 0, heartbeat_timeout_seconds integer NOT NULL DEFAULT 120, revision bigint NOT NULL DEFAULT 1, started_at timestamptz NOT NULL DEFAULT now(), heartbeat_at timestamptz NOT NULL DEFAULT now(), updated_at timestamptz NOT NULL DEFAULT now(), finished_at timestamptz, last_error text NOT NULL DEFAULT '', metadata jsonb NOT NULL DEFAULT '{}', root_attempt_id text NOT NULL DEFAULT '', source_dispatch_run_id bigint NOT NULL DEFAULT 0, pilot_run_id text NOT NULL DEFAULT '', recovery boolean NOT NULL DEFAULT false, phase_started_at timestamptz NOT NULL DEFAULT now(), UNIQUE(plan_id,attempt));
 CREATE TABLE fleet_github_dispatches (plan_id text PRIMARY KEY REFERENCES operations(id) ON DELETE CASCADE, plan_run_id bigint NOT NULL, plan_sha256 text NOT NULL, approved_head_sha text NOT NULL, pilot_run_id text NOT NULL DEFAULT '', fleet_environment text NOT NULL, allow_destructive boolean NOT NULL, dispatch_nonce_sha256 text NOT NULL, dispatch_state text NOT NULL DEFAULT 'prepared', submission_started_at timestamptz, run_id bigint NOT NULL DEFAULT 0, workflow_url text NOT NULL DEFAULT '', created_at timestamptz NOT NULL DEFAULT now(), updated_at timestamptz NOT NULL DEFAULT now(), approval_envelope_sha256 text NOT NULL DEFAULT '', run_attempt integer NOT NULL DEFAULT 0, rerun_started_at timestamptz);

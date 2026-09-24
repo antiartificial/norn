@@ -13,8 +13,9 @@ import (
 // This fingerprints the PG17 Mini schema after its schema-only dump is
 // restored into the supported PG16 target. The canonical form omits catalog
 // OIDs while retaining the complete table set, columns, defaults, nullability,
-// constraints, and full index definitions including validity.
-const miniLegacyStructuralFingerprint = "0cfd4a1141491cd72bfbe464760653cbe39a04f76002829e84a637129029dae1"
+// constraints, full index definitions including validity, and sequence
+// properties and ownership.
+const miniLegacyStructuralFingerprint = "568c45d756aab6d7980dc000b34e3a7d5862d30af54967b1aa7811b0e3c0105d"
 
 var miniLegacyTableNames = []string{"access_devices", "access_enrollments", "access_grants", "access_observation_buckets", "access_tokens", "beacon_events", "control_events", "cron_states", "deployment_regions", "deployment_steps", "deployments", "exec_sessions", "external_deployment_admission_checkpoints", "external_deployment_admissions", "external_deployment_nonces", "fleet_github_dispatches", "fleet_runner_attempts", "fleet_runner_checkpoint_refs", "func_executions", "github_actions_assertion_uses", "mutation_audit_events", "mutation_audit_incidents", "notification_channels", "operations", "recovery_drills", "saga_events", "step_up_challenges", "webhook_deliveries"}
 
@@ -117,6 +118,16 @@ func miniSchemaStructuralFingerprint(ctx context.Context, tx pgx.Tx) (string, er
 			FROM pg_catalog.pg_index i JOIN pg_catalog.pg_class c ON c.oid=i.indrelid
 			JOIN pg_catalog.pg_namespace n ON n.oid=c.relnamespace
 			WHERE n.nspname=current_schema() AND c.relkind IN ('r','p')
+			UNION ALL
+			SELECT 'S',s.relname,COALESCE(t.relname,''),pg_catalog.format_type(q.seqtypid,NULL),COALESCE(a.attname,''),
+				concat_ws(',',q.seqstart,q.seqincrement,q.seqmax,q.seqmin,q.seqcache,q.seqcycle)
+			FROM pg_catalog.pg_class s JOIN pg_catalog.pg_namespace n ON n.oid=s.relnamespace
+			JOIN pg_catalog.pg_sequence q ON q.seqrelid=s.oid
+			LEFT JOIN pg_catalog.pg_depend dep ON dep.classid='pg_class'::regclass AND dep.objid=s.oid
+				AND dep.refclassid='pg_class'::regclass AND dep.deptype='a'
+			LEFT JOIN pg_catalog.pg_class t ON t.oid=dep.refobjid
+			LEFT JOIN pg_catalog.pg_attribute a ON a.attrelid=dep.refobjid AND a.attnum=dep.refobjsubid
+			WHERE n.nspname=current_schema() AND s.relkind='S'
 		) signature ORDER BY kind,table_name,column_name,type_name,not_null,definition`)
 	if err != nil {
 		return "", err
