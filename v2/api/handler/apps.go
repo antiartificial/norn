@@ -219,8 +219,9 @@ func (h *Handler) ScaleApp(w http.ResponseWriter, r *http.Request) {
 	}
 
 	var req struct {
-		Group string `json:"group"`
-		Count int    `json:"count"`
+		Group  string `json:"group"`
+		Region string `json:"region"`
+		Count  int    `json:"count"`
 	}
 	if err := decodeJSON(r, &req); err != nil {
 		writeError(w, http.StatusBadRequest, err.Error())
@@ -238,23 +239,43 @@ func (h *Handler) ScaleApp(w http.ResponseWriter, r *http.Request) {
 		WriteControlProblem(w, r, http.StatusInternalServerError, "app_discovery_failed", "failed to discover app intent")
 		return
 	}
-	var found bool
-	for _, spec := range specs {
-		if spec.App == id {
-			_, found = spec.Processes[req.Group]
+	var spec *model.InfraSpec
+	for _, candidate := range specs {
+		if candidate.App == id {
+			spec = candidate
 			break
 		}
 	}
+	if spec == nil {
+		WriteControlProblem(w, r, http.StatusNotFound, "app_process_not_found", "app or process group was not found")
+		return
+	}
+	process, found := spec.Processes[req.Group]
 	if !found {
 		WriteControlProblem(w, r, http.StatusNotFound, "app_process_not_found", "app or process group was not found")
 		return
 	}
-	enqueue, ok := h.pipelineEnqueueRequest(w, r, r.Header.Get("Idempotency-Key"), map[string]interface{}{"app": id, "group": req.Group, "count": req.Count})
+	regions := spec.ResolvedRegions()
+	if req.Region == "" && len(regions) == 1 {
+		req.Region = regions[0].Name
+	}
+	validRegion := false
+	for _, region := range regions {
+		if region.Name == req.Region && spec.ProcessRunsInRegion(process, region.Name) {
+			validRegion = true
+			break
+		}
+	}
+	if !validRegion {
+		WriteControlProblem(w, r, http.StatusBadRequest, "invalid_scale_region", "region is required for this process and must be declared for the app")
+		return
+	}
+	enqueue, ok := h.pipelineEnqueueRequest(w, r, r.Header.Get("Idempotency-Key"), map[string]interface{}{"app": id, "group": req.Group, "region": req.Region, "count": req.Count})
 	if !ok {
 		return
 	}
 	now := time.Now().UTC()
-	op := model.Operation{ID: uuid.NewString(), Kind: "app.scale", App: id, SagaID: uuid.NewString(), Ref: req.Group, Status: model.OperationQueued, Risk: "Nomad task-group scale", Source: "app-control-api", Message: fmt.Sprintf("queued scale for %s process %q to %d", id, req.Group, req.Count), StartedAt: now, MaxAttempts: 1, Payload: map[string]interface{}{"app": id, "group": req.Group, "count": req.Count}}
+	op := model.Operation{ID: uuid.NewString(), Kind: "app.scale", App: id, SagaID: uuid.NewString(), Ref: req.Region + "/" + req.Group, Status: model.OperationQueued, Risk: "Nomad task-group scale", Source: "app-control-api", Message: fmt.Sprintf("queued scale for %s/%s process %q to %d", id, req.Region, req.Group, req.Count), StartedAt: now, MaxAttempts: 1, Payload: map[string]interface{}{"app": id, "group": req.Group, "region": req.Region, "count": req.Count}}
 	accepted, err := h.pipeline.QueueOperation(r.Context(), op, enqueue)
 	if err != nil {
 		writeOperationAcceptanceError(w, r, err)

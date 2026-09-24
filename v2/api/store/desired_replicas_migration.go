@@ -17,3 +17,13 @@ const DesiredReplicaWriterVersion int64 = 8
 func desiredReplicasMigration() SchemaMigration {
 	return SchemaMigration{Version: 11, Name: "durable-app-desired-replicas", SQL: desiredReplicasMigrationSQL, MinimumReaderVersion: EvidenceArchiveReaderVersion, MinimumWriterVersion: DesiredReplicaWriterVersion}
 }
+
+const RegionalDesiredReplicaWriterVersion int64 = 9
+
+func regionalDesiredReplicasMigration() SchemaMigration {
+	return SchemaMigration{Version: 12, Name: "regional-durable-app-desired-replicas", SQL: `
+		ALTER TABLE app_desired_replicas ADD COLUMN region TEXT NOT NULL DEFAULT '';
+		ALTER TABLE app_desired_replicas DROP CONSTRAINT app_desired_replicas_pkey;
+		ALTER TABLE app_desired_replicas ADD PRIMARY KEY (app, process, region);
+	`, MinimumReaderVersion: EvidenceArchiveReaderVersion, MinimumWriterVersion: RegionalDesiredReplicaWriterVersion}
+}

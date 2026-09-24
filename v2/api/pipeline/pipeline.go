@@ -72,7 +72,7 @@ type Pipeline struct {
 	ScaleEffects *NomadScaleEffects
 	// FinishScaleIntent is the claim-fenced atomic desired-replica and terminal
 	// operation write. Tests may inject a transient failure; production uses DB.
-	FinishScaleIntent func(context.Context, store.OperationClaim, string, string, int, string, map[string]interface{}) error
+	FinishScaleIntent func(context.Context, store.OperationClaim, string, string, string, int, string, map[string]interface{}) error
 	// DatabaseTargets binds database-consuming operations to catalog
 	// targets. When nil (no NORN_DATABASE_PROFILE), v2 routing is unchanged.
 	DatabaseTargets *DatabaseTargets

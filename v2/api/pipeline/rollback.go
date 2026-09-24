@@ -147,7 +147,7 @@ func (p *Pipeline) runRollback(ctx context.Context, spec *model.InfraSpec, deplo
 					}
 					revision = material.Revision
 				}
-				desiredCounts, err := p.DB.DesiredReplicaCounts(ctx, spec.App)
+				desiredCounts, err := p.DB.DesiredReplicaCounts(ctx, spec.App, region.Name)
 				if err != nil {
 					return fmt.Errorf("load desired replica intent: %w", err)
 				}

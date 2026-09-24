@@ -118,7 +118,7 @@ func TestScaleStatusRequiresExactSuccessfulDurableOperationEvent(t *testing.T) {
 		}}
 		_ = json.NewEncoder(w).Encode(response)
 	}))
-	desired, matched, evalID, err := client.ScaleStatus("widget", "web", "operation-1", generation, "execution-1", 3, "eval-1")
+	desired, matched, evalID, err := client.ScaleStatus("widget", "web", "us-central", "operation-1", generation, "execution-1", 3, "eval-1")
 	if err != nil || desired != 3 || !matched || evalID != "eval-1" {
 		t.Fatalf("ScaleStatus() = %d, %t, %q, %v", desired, matched, evalID, err)
 	}

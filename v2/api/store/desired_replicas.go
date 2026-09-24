@@ -4,13 +4,14 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"time"
 )
 
 // DesiredReplicaCounts returns explicit operator scale intent. Absence is
 // intentional: callers must fall back to the InfraSpec declared minimum so
 // databases created before this feature retain their historic behavior.
-func (db *DB) DesiredReplicaCounts(ctx context.Context, app string) (map[string]int, error) {
-	rows, err := db.Pool.Query(ctx, `SELECT process, desired_count FROM app_desired_replicas WHERE app=$1`, app)
+func (db *DB) DesiredReplicaCounts(ctx context.Context, app, region string) (map[string]int, error) {
+	rows, err := db.Pool.Query(ctx, `SELECT process, desired_count FROM app_desired_replicas WHERE app=$1 AND region=$2`, app, region)
 	if err != nil {
 		return nil, err
 	}
@@ -33,11 +34,11 @@ func (db *DB) DesiredReplicaCounts(ctx context.Context, app string) (map[string]
 // FinishScaleClaimedOperation atomically persists the acknowledged desired
 // count and the operation terminal receipt. A stale claimant cannot leave a
 // desired-count override behind after losing its operation lease.
-func (db *DB) FinishScaleClaimedOperation(ctx context.Context, claim OperationClaim, app, process string, count int, message string, metadata map[string]interface{}) error {
+func (db *DB) FinishScaleClaimedOperation(ctx context.Context, claim OperationClaim, app, process, region string, count int, message string, metadata map[string]interface{}) error {
 	if err := validateOperationClaim(claim); err != nil {
 		return err
 	}
-	if app == "" || process == "" || count < 0 {
+	if app == "" || process == "" || region == "" || count < 0 {
 		return fmt.Errorf("desired replica intent is invalid")
 	}
 	if metadata == nil {
@@ -49,28 +50,30 @@ func (db *DB) FinishScaleClaimedOperation(ctx context.Context, claim OperationCl
 		return err
 	}
 	defer tx.Rollback(ctx)
-	var updated int
-	err = tx.QueryRow(ctx, `
-		WITH owned AS (
-			SELECT id FROM operations WHERE id=$1 AND status='running' AND locked_by=$2 AND lock_generation=$3 AND locked_until > now() FOR UPDATE
-		), intent AS (
-			INSERT INTO app_desired_replicas (app, process, desired_count, revision, operation_id)
-			SELECT $4,$5,$6,1,$1 FROM owned
-			ON CONFLICT (app, process) DO UPDATE SET desired_count=EXCLUDED.desired_count, revision=app_desired_replicas.revision+1, operation_id=EXCLUDED.operation_id, updated_at=now()
-			RETURNING app
-		), finished AS (
-			UPDATE operations SET status='succeeded', message=$7, metadata=metadata || $8::jsonb, locked_by='', locked_until=NULL, updated_at=now(), finished_at=now()
-			WHERE id=$1 AND EXISTS (SELECT 1 FROM intent) RETURNING id, saga_id, app
-		), outbox AS (
-			INSERT INTO evidence_archive_intents (id, subject_kind, subject_id, app, operation_id, sequence, state)
-			SELECT 'ei-' || gen_random_uuid()::text, 'saga', saga_id, app, id, 1, 'pending' FROM finished WHERE saga_id <> ''
-			ON CONFLICT (subject_kind, subject_id, sequence) DO NOTHING
-		) SELECT count(*) FROM finished`, claim.OperationID(), claim.OwnerID(), claim.Generation(), app, process, count, message, data).Scan(&updated)
-	if err != nil {
+	var status, owner string
+	var generation int64
+	var lockedUntil *time.Time
+	if err = tx.QueryRow(ctx, `SELECT status, locked_by, lock_generation, locked_until FROM operations WHERE id=$1 FOR UPDATE`, claim.OperationID()).Scan(&status, &owner, &generation, &lockedUntil); err != nil {
 		return err
 	}
-	if updated != 1 {
+	var databaseNow time.Time
+	if err = tx.QueryRow(ctx, `SELECT clock_timestamp()`).Scan(&databaseNow); err != nil {
+		return err
+	}
+	if status != "running" || owner != claim.OwnerID() || generation != claim.Generation() || lockedUntil == nil || !lockedUntil.After(databaseNow) {
 		return ownershipLost(claim)
+	}
+	if _, err = tx.Exec(ctx, `INSERT INTO app_desired_replicas (app, process, region, desired_count, revision, operation_id) VALUES ($1,$2,$3,$4,1,$5) ON CONFLICT (app, process, region) DO UPDATE SET desired_count=EXCLUDED.desired_count, revision=app_desired_replicas.revision+1, operation_id=EXCLUDED.operation_id, updated_at=now()`, app, process, region, count, claim.OperationID()); err != nil {
+		return err
+	}
+	var sagaID, operationApp string
+	if err = tx.QueryRow(ctx, `UPDATE operations SET status='succeeded', message=$1, metadata=metadata || $2::jsonb, locked_by='', locked_until=NULL, updated_at=now(), finished_at=now() WHERE id=$3 RETURNING saga_id, app`, message, data, claim.OperationID()).Scan(&sagaID, &operationApp); err != nil {
+		return err
+	}
+	if sagaID != "" {
+		if _, err = tx.Exec(ctx, `INSERT INTO evidence_archive_intents (id, subject_kind, subject_id, app, operation_id, sequence, state) VALUES ('ei-' || gen_random_uuid()::text, 'saga', $1, $2, $3, 1, 'pending') ON CONFLICT (subject_kind, subject_id, sequence) DO NOTHING`, sagaID, operationApp, claim.OperationID()); err != nil {
+			return err
+		}
 	}
 	return tx.Commit(ctx)
 }
