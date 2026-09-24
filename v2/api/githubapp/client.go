@@ -260,7 +260,7 @@ func (c *Client) CreatePullRequest(ctx context.Context, planID, planDigest, pool
 			return nil, getErr
 		}
 		if !bytes.Equal(existing, updated) {
-			return nil, fmt.Errorf("%w: plan branch already exists with different content", ErrPermanentNoWrite)
+			return nil, fmt.Errorf("%w: plan branch already exists with different content", ErrPermanentAfterMutation)
 		}
 	}
 	if existing, _ := c.findPullRequest(ctx, token, branch); existing != nil {

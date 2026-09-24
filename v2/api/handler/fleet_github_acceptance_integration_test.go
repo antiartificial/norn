@@ -58,6 +58,13 @@ func TestFleetGitHubReceiptUsesSignedAtomicAcceptance(t *testing.T) {
 	if _, err := h.reserveFleetGitHubOperation(req, principal, planID, "fleet.github.pull-request", conflictPayload); !errors.Is(err, store.ErrAcceptanceConflict) {
 		t.Fatalf("conflicting reservation error=%v, want ErrAcceptanceConflict", err)
 	}
+	// A temporary GitHub readiness result makes no external mutation. The same
+	// plan must retain its queued reservation and later complete, rather than
+	// being terminalized under the plan-scoped idempotency identity.
+	resumed, err := h.reserveFleetGitHubOperation(req, principal, planID, "fleet.github.pull-request", payload)
+	if err != nil || resumed.ID != first.ID || resumed.Status != model.OperationQueued {
+		t.Fatalf("not-ready retry reservation=%+v err=%v", resumed, err)
+	}
 	result := map[string]interface{}{"planId": planID, "pullRequestNumber": 42, "url": "https://github.example.test/acme/fleet/pull/42", "branch": "norn/fleet-plan", "state": "open"}
 	// Two recovering API requests can reach completion concurrently after an
 	// interrupted GitHub call. Exactly one result becomes durable; the other

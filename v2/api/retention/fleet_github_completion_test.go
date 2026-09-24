@@ -42,4 +42,11 @@ func TestFleetGitHubCompletionRejectsTamperedExposedResult(t *testing.T) {
 	if err := archiver.verifyFleetGitHubCompletion(context.Background(), bundle); err == nil || !strings.Contains(err.Error(), "payload differs") {
 		t.Fatalf("tampered result error=%v", err)
 	}
+	row["payload"].(map[string]interface{})["url"] = result["url"]
+	row["payload"].(map[string]interface{})["unsigned"] = "injected"
+	encoded, _ = json.Marshal(row)
+	bundle.Operation = encoded
+	if err := archiver.verifyFleetGitHubCompletion(context.Background(), bundle); err == nil || !strings.Contains(err.Error(), "unsigned fields") {
+		t.Fatalf("unsigned payload field error=%v", err)
+	}
 }
