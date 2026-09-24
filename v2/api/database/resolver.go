@@ -36,6 +36,17 @@ var engineCapabilities = map[Engine]map[Capability]bool{
 	},
 }
 
+// implementedCapabilities is narrower than catalog vocabulary. A catalog
+// may describe future recovery policy, but accepted work may use only paths
+// implemented by this binary.
+var implementedCapabilities = map[Engine]map[Capability]bool{
+	EnginePostgreSQL: {
+		CapabilityRuntime: true, CapabilityMigration: true, CapabilitySnapshot: true, CapabilityRestore: true,
+		CapabilityHealth: true, CapabilityPITR: true, CapabilityManagedReadiness: true,
+	},
+	EngineMySQL: {CapabilityRuntime: true, CapabilityHealth: true},
+}
+
 var knownCapabilities = map[Capability]bool{
 	CapabilityRuntime: true, CapabilityMigration: true, CapabilitySnapshot: true, CapabilityRestore: true,
 	CapabilityHealth: true, CapabilityPITR: true, CapabilityManagedReadiness: true,
@@ -461,6 +472,12 @@ func (r *Resolver) Resolve(request ResolveRequest) (ResolvedBinding, error) {
 	for _, capability := range request.RequiredCapabilities {
 		if !engineCapabilities[resolved.Target.Engine][capability] {
 			return ResolvedBinding{}, &ResolverError{Code: CodeUnsupportedCapability, Field: "requiredCapabilities", Resource: profileLabel, Reason: "required capability is not supported by the target engine adapter"}
+		}
+		if !implementedCapabilities[resolved.Target.Engine][capability] {
+			return ResolvedBinding{}, &ResolverError{Code: CodeUnsupportedCapability, Field: "requiredCapabilities", Resource: profileLabel, Reason: "required capability has no implemented target engine path in this build"}
+		}
+		if resolved.Target.Engine == EngineMySQL && resolved.TLS.Mode != TLSDisabled && capability == CapabilityRuntime {
+			return ResolvedBinding{}, &ResolverError{Code: CodeUnsupportedCapability, Field: "tls", Resource: profileLabel, Reason: "MySQL TLS runtime material is not implemented in this build"}
 		}
 		if !declared[capability] {
 			return ResolvedBinding{}, &ResolverError{Code: CodeUnsupportedCapability, Field: "requiredCapabilities", Resource: profileLabel, Reason: "required capability is not declared by the target service"}

@@ -40,6 +40,7 @@ import (
 const (
 	databaseSecretsDir   = "norn-databases"
 	databaseItemPrefix   = "norn_db_url_"
+	componentItemPrefix  = "norn_db_component_"
 	targetItemPrefix     = "norn_db_target_"
 	deliveryRevisionItem = "norn_delivery_catalog_revision"
 )
@@ -51,6 +52,11 @@ func DatabaseVariablePath(jobID string) string { return "nomad/jobs/" + jobID }
 // names are [a-z][a-z0-9-]*, so the mapping is injective.
 func DatabaseItemKey(name string) string {
 	return databaseItemPrefix + strings.ReplaceAll(name, "-", "_")
+}
+
+// DatabaseComponentItemKey names one separately delivered connection value.
+func DatabaseComponentItemKey(name, component string) string {
+	return componentItemPrefix + component + "_" + strings.ReplaceAll(name, "-", "_")
 }
 
 // DatabaseTargetItemKey holds the non-secret target identity (JSON) the
@@ -157,7 +163,7 @@ func addDatabaseTemplates(spec *model.InfraSpec, jobID string, revision int64, t
 		}
 		key := DatabaseRevisionItemKey(requirement.Name, revision)
 		if requirement.Runtime.Env != "" {
-			envLines = append(envLines, fmt.Sprintf("%s={{ .%s }}", requirement.Runtime.Env, key))
+			envLines = append(envLines, fmt.Sprintf("%s={{ .%s.Value | toJSON }}", requirement.Runtime.Env, key))
 		}
 		if requirement.Runtime.FileEnv != "" {
 			destination := "secrets/" + databaseSecretsDir + "/" + requirement.Name + ".url"
@@ -166,6 +172,16 @@ func addDatabaseTemplates(spec *model.InfraSpec, jobID string, revision int64, t
 				task.Env = map[string]string{}
 			}
 			task.Env[requirement.Runtime.FileEnv] = "${NOMAD_SECRETS_DIR}/" + databaseSecretsDir + "/" + requirement.Name + ".url"
+		}
+		if components := requirement.Runtime.Components; components != nil {
+			for _, field := range []struct{ component, env string }{
+				{"host", components.Host}, {"user", components.User}, {"password", components.Password}, {"name", components.Name},
+			} {
+				// Component passwords are raw values, unlike percent-encoded
+				// URLs. Nomad's env parser needs JSON quoting for characters
+				// such as spaces, quotes and backslashes.
+				envLines = append(envLines, fmt.Sprintf("%s={{ .%s.Value | toJSON }}", field.env, stagedKey(DatabaseComponentItemKey(requirement.Name, field.component), revision)))
+			}
 		}
 	}
 	if len(envLines) > 0 {
@@ -225,7 +241,7 @@ func (c *Client) DeliverDatabaseVariable(region, jobID string, items map[string]
 	}
 	staged := map[string]string{}
 	for key, value := range items {
-		if !strings.HasPrefix(key, databaseItemPrefix) && !strings.HasPrefix(key, targetItemPrefix) {
+		if !strings.HasPrefix(key, databaseItemPrefix) && !strings.HasPrefix(key, componentItemPrefix) && !strings.HasPrefix(key, targetItemPrefix) {
 			return fmt.Errorf("database delivery for %s has an unexpected item", jobID)
 		}
 		staged[stagedKey(key, catalogRevision)] = value
@@ -299,7 +315,7 @@ func (c *Client) PromoteDatabaseVariable(region, jobID string, catalogRevision i
 			if revision >= promoted {
 				next[key] = value
 			}
-		case strings.HasPrefix(key, databaseItemPrefix), strings.HasPrefix(key, targetItemPrefix), key == deliveryRevisionItem:
+		case strings.HasPrefix(key, databaseItemPrefix), strings.HasPrefix(key, componentItemPrefix), strings.HasPrefix(key, targetItemPrefix), key == deliveryRevisionItem:
 			// replaced by the promoted revision
 		default:
 			next[key] = value
@@ -349,10 +365,11 @@ func stagedRevision(key string) (int64, bool) {
 // DatabaseRevision is one staged revision's material for a job: connection
 // values and target identities by logical database name.
 type DatabaseRevision struct {
-	Revision int64
-	Promoted int64
-	URLs     map[string]string
-	Targets  map[string]string
+	Revision   int64
+	Promoted   int64
+	URLs       map[string]string
+	Components map[string]string
+	Targets    map[string]string
 }
 
 // ReadDatabaseRevision returns a revision's staged items for a job. Readers
@@ -370,7 +387,7 @@ func (c *Client) ReadDatabaseRevision(region, jobID string, revision int64) (Dat
 	if err != nil {
 		return DatabaseRevision{}, err
 	}
-	out := DatabaseRevision{Revision: revision, Promoted: promoted, URLs: map[string]string{}, Targets: map[string]string{}}
+	out := DatabaseRevision{Revision: revision, Promoted: promoted, URLs: map[string]string{}, Components: map[string]string{}, Targets: map[string]string{}}
 	prefix := revisionPrefix(revision)
 	for key, value := range current.Items {
 		if staged, ok := stagedRevision(key); !ok || staged != revision {
@@ -382,6 +399,8 @@ func (c *Client) ReadDatabaseRevision(region, jobID string, revision int64) (Dat
 			out.URLs[strings.TrimPrefix(rest, "db_url_")] = value
 		case strings.HasPrefix(rest, "db_target_"):
 			out.Targets[strings.TrimPrefix(rest, "db_target_")] = value
+		case strings.HasPrefix(rest, "db_component_"):
+			out.Components["norn_"+rest] = value
 		}
 	}
 	return out, nil
@@ -423,12 +442,18 @@ func (c *Client) writeDatabaseVariable(region string, variable *nomadapi.Variabl
 // invocation's templates reference that revision. It returns the items
 // written, for exact-ownership cleanup.
 func (c *Client) CopyDatabaseVariable(region, toJobID string, revision DatabaseRevision) (map[string]string, error) {
-	if revision.Revision < 1 || len(revision.URLs) == 0 {
+	if revision.Revision < 1 || len(revision.URLs)+len(revision.Components) == 0 {
 		return nil, fmt.Errorf("%w for %s: no staged revision to copy", ErrDatabaseVariableConflict, toJobID)
 	}
 	items := map[string]string{deliveryRevisionItem: strconv.FormatInt(revision.Revision, 10)}
 	for name, value := range revision.URLs {
 		items[stagedKey(databaseItemPrefix+name, revision.Revision)] = value
+	}
+	for key, value := range revision.Components {
+		if !strings.HasPrefix(key, componentItemPrefix) {
+			return nil, fmt.Errorf("%w for %s: invalid database component", ErrDatabaseVariableConflict, toJobID)
+		}
+		items[stagedKey(key, revision.Revision)] = value
 	}
 	for name, value := range revision.Targets {
 		items[stagedKey(targetItemPrefix+name, revision.Revision)] = value

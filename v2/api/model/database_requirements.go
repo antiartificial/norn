@@ -26,8 +26,33 @@ type DatabaseRequirement struct {
 // standard URL any ordinary client accepts). FileEnv receives only the path
 // of a private file containing that value. They are never interchangeable.
 type DatabaseRuntime struct {
-	Env     string `yaml:"env,omitempty" json:"env,omitempty"`
-	FileEnv string `yaml:"fileEnv,omitempty" json:"fileEnv,omitempty"`
+	Env        string                     `yaml:"env,omitempty" json:"env,omitempty"`
+	FileEnv    string                     `yaml:"fileEnv,omitempty" json:"fileEnv,omitempty"`
+	Components *DatabaseRuntimeComponents `yaml:"components,omitempty" json:"components,omitempty"`
+}
+
+// DatabaseRuntimeComponents delivers the values ordinary database clients
+// expect as separate variables. WordPress, for example, consumes four
+// WORDPRESS_DB_* variables instead of a connection URL.
+type DatabaseRuntimeComponents struct {
+	Host     string `yaml:"host" json:"host"`
+	User     string `yaml:"user" json:"user"`
+	Password string `yaml:"password" json:"password"`
+	Name     string `yaml:"name" json:"name"`
+}
+
+func (r *DatabaseRuntime) envNames() map[string]string {
+	if r == nil {
+		return nil
+	}
+	names := map[string]string{"env": r.Env, "fileEnv": r.FileEnv}
+	if r.Components != nil {
+		names["components.host"] = r.Components.Host
+		names["components.user"] = r.Components.User
+		names["components.password"] = r.Components.Password
+		names["components.name"] = r.Components.Name
+	}
+	return names
 }
 
 var databaseLogicalNameRe = regexp.MustCompile(`^[a-z][a-z0-9-]{0,62}$`)
@@ -75,7 +100,7 @@ func (s *InfraSpec) DatabaseEnvNames() map[string]string {
 		if requirement.Runtime == nil {
 			continue
 		}
-		for _, name := range []string{requirement.Runtime.Env, requirement.Runtime.FileEnv} {
+		for _, name := range requirement.Runtime.envNames() {
 			if name != "" {
 				names[name] = requirement.Name
 			}
@@ -165,10 +190,13 @@ func validateDatabaseDeclarations(r *ValidationResult, spec *InfraSpec) {
 		if runtime == nil {
 			continue
 		}
-		if runtime.Env == "" && runtime.FileEnv == "" {
-			r.add("error", field+".runtime", "runtime must name env, fileEnv or both")
+		if runtime.Env == "" && runtime.FileEnv == "" && runtime.Components == nil {
+			r.add("error", field+".runtime", "runtime must name env, fileEnv or components")
 		}
-		for key, name := range map[string]string{"env": runtime.Env, "fileEnv": runtime.FileEnv} {
+		if runtime.Components != nil && (runtime.Components.Host == "" || runtime.Components.User == "" || runtime.Components.Password == "" || runtime.Components.Name == "") {
+			r.add("error", field+".runtime.components", "host, user, password and name variables are required together")
+		}
+		for key, name := range runtime.envNames() {
 			if name == "" {
 				continue
 			}

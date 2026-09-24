@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"net"
 	"net/netip"
 	"os"
 	"os/exec"
@@ -146,11 +147,13 @@ func rejectDuplicateKeys(raw []byte) error {
 // Session is private connection material for one resolved target. Its
 // directory holds the libpq service file and TLS files; Close removes it.
 type Session struct {
-	target    TargetIdentity
-	bindingID string
-	directory string
-	password  string
-	config    *pgx.ConnConfig
+	target     TargetIdentity
+	bindingID  string
+	directory  string
+	password   string
+	config     *pgx.ConnConfig
+	endpoint   DatabaseEndpoint
+	mysqlProbe func(context.Context) (ProbeResult, error)
 	// url is the target as a standard connection URL for local processes;
 	// runtimeURL is the same without host-local TLS file paths, empty when
 	// the target cannot be delivered to a runtime (see RuntimeConnectionURL).
@@ -172,6 +175,9 @@ type SnapshotLaunchOptions struct {
 // PostgreSQL has an adapter; control-purpose targets are never opened here.
 func OpenSession(ctx context.Context, resolved ResolvedBinding, secrets SecretSource) (*Session, error) {
 	label := "bindings/" + resolved.Target.BindingID
+	if resolved.Target.Engine == EngineMySQL {
+		return openMySQLSession(ctx, resolved, secrets)
+	}
 	if resolved.Target.Engine != EnginePostgreSQL {
 		return nil, &ResolverError{Code: CodeUnsupportedEngine, Field: "engine", Resource: label, Reason: "no connection adapter is implemented for this engine"}
 	}
@@ -204,7 +210,7 @@ func OpenSession(ctx context.Context, resolved ResolvedBinding, secrets SecretSo
 	if err != nil {
 		return nil, fmt.Errorf("prepare private database material: %w", err)
 	}
-	session := &Session{target: resolved.Target, bindingID: resolved.Target.BindingID, directory: directory, password: secret.Password}
+	session := &Session{target: resolved.Target, bindingID: resolved.Target.BindingID, directory: directory, password: secret.Password, endpoint: endpoint}
 	fail := func(err error) (*Session, error) {
 		_ = session.Close()
 		return nil, err
@@ -292,7 +298,7 @@ func (s *Session) Target() TargetIdentity { return s.target }
 // the supplied value after use. The supervisor validates the resulting
 // material before it can be serialized into its private runner request.
 func (s *Session) WithSnapshotLaunchMaterial(options SnapshotLaunchOptions, launch func(supervisor.SnapshotLaunchMaterial) error) error {
-	if s == nil || s.directory == "" || launch == nil {
+	if s == nil || s.directory == "" || s.target.Engine != EnginePostgreSQL || launch == nil {
 		return fmt.Errorf("snapshot launch material is unavailable")
 	}
 	servicePath := filepath.Join(s.directory, "pg_service.conf")
@@ -416,10 +422,28 @@ func (s *Session) ConnectionURL() string { return s.url }
 // other hosts. TLS targets are refused until TLS runtime delivery (CA file
 // placement in the allocation) is implemented and qualified.
 func (s *Session) RuntimeConnectionURL() (string, error) {
+	if s == nil || s.target.Engine != EnginePostgreSQL {
+		return "", &ResolverError{Code: CodeUnsupportedEngine, Field: "engine", Reason: "this engine requires structured runtime connection values"}
+	}
 	if s.runtimeURL == "" {
 		return "", &ResolverError{Code: CodeInvalidRequest, Field: "tls", Resource: "bindings/" + s.bindingID, Reason: "runtime delivery of TLS targets is not implemented; the CA and client files would have to be placed in the allocation"}
 	}
 	return s.runtimeURL, nil
+}
+
+// RuntimeComponents returns the four ordinary MySQL/WordPress connection
+// values. The caller must deliver them only through private runtime material.
+func (s *Session) RuntimeComponents() (map[string]string, error) {
+	if s == nil || s.directory == "" || s.target.Engine != EngineMySQL {
+		return nil, &ResolverError{Code: CodeUnsupportedEngine, Field: "engine", Reason: "structured runtime connection values are unavailable"}
+	}
+	if s.runtimeURL == "" {
+		return nil, &ResolverError{Code: CodeInvalidRequest, Field: "tls", Resource: "bindings/" + s.bindingID, Reason: "runtime delivery of TLS targets is not implemented"}
+	}
+	return map[string]string{
+		"host": net.JoinHostPort(s.endpoint.Host, strconv.Itoa(s.endpoint.Port)),
+		"user": s.target.Role, "password": s.password, "name": s.target.Database,
+	}, nil
 }
 
 // connectionURL renders a libpq/WHATWG-compatible URL. User and password are
@@ -518,6 +542,9 @@ type ProbeResult struct {
 // Probe connects in-process and proves the session reaches the declared
 // database as the declared role.
 func (s *Session) Probe(ctx context.Context) (ProbeResult, error) {
+	if s != nil && s.mysqlProbe != nil {
+		return s.mysqlProbe(ctx)
+	}
 	if s == nil || s.config == nil {
 		return ProbeResult{}, fmt.Errorf("database target session is closed")
 	}
@@ -549,7 +576,7 @@ func (s *Session) Close() error {
 		return nil
 	}
 	err := os.RemoveAll(s.directory)
-	s.directory, s.config, s.password, s.url, s.runtimeURL = "", nil, "", "", ""
+	s.directory, s.config, s.password, s.url, s.runtimeURL, s.mysqlProbe = "", nil, "", "", "", nil
 	return err
 }
 

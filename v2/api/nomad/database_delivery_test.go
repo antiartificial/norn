@@ -35,6 +35,59 @@ func deliverySpec() *model.InfraSpec {
 	}
 }
 
+func TestWordPressDatabaseDeliveryIsPrivateAndRevisionBound(t *testing.T) {
+	spec := &model.InfraSpec{SchemaVersion: model.AppSchemaV2, App: "wordpress", Processes: map[string]model.Process{
+		"web": {Command: "php-fpm"}, "cron": {Command: "wp cron event run", Schedule: "@hourly"},
+	}, Databases: []model.DatabaseRequirement{{Name: "primary", Purpose: "application", Capabilities: []string{"runtime"}, Runtime: &model.DatabaseRuntime{
+		Components: &model.DatabaseRuntimeComponents{Host: "WORDPRESS_DB_HOST", User: "WORDPRESS_DB_USER", Password: "WORDPRESS_DB_PASSWORD", Name: "WORDPRESS_DB_NAME"},
+	}}}}
+	for _, job := range []*nomadapi.Job{TranslateForRegionAt(spec, "wordpress:test", nil, spec.ResolvedRegions()[0], 7),
+		TranslatePeriodicForRegionAt(spec, "cron", spec.Processes["cron"], "wordpress:test", nil, spec.ResolvedRegions()[0], 7)} {
+		for _, group := range job.TaskGroups {
+			for _, task := range group.Tasks {
+				if len(task.Templates) != 1 || !*task.Templates[0].Envvars || !*task.Templates[0].ErrMissingKey || *task.Templates[0].Perms != "0400" {
+					t.Fatalf("%s private template = %+v", *job.ID, task.Templates)
+				}
+				data := *task.Templates[0].EmbeddedTmpl
+				for field, env := range map[string]string{"host": "WORDPRESS_DB_HOST", "user": "WORDPRESS_DB_USER", "password": "WORDPRESS_DB_PASSWORD", "name": "WORDPRESS_DB_NAME"} {
+					want := env + "={{ ." + stagedKey(DatabaseComponentItemKey("primary", field), 7) + ".Value | toJSON }}"
+					if !strings.Contains(data, want) {
+						t.Fatalf("%s lacks staged %s field: %q", *job.ID, field, data)
+					}
+				}
+				if strings.Contains(data, deliveryCanary) || strings.Contains(data, "{{ .norn_db_component_") {
+					t.Fatalf("%s leaks value or reads mutable database items", *job.ID)
+				}
+			}
+		}
+	}
+	fake := &fakeVariables{variables: map[string]*nomadapi.Variable{}}
+	server := httptest.NewServer(fake)
+	defer server.Close()
+	client, err := NewClient(server.URL)
+	if err != nil {
+		t.Fatal(err)
+	}
+	items := map[string]string{DatabaseTargetItemKey("primary"): `{"bindingId":"wordpress","bindingGeneration":1}`}
+	for field, value := range map[string]string{"host": "mysql.internal:3306", "user": "wp", "password": deliveryCanary, "name": "wordpress"} {
+		items[DatabaseComponentItemKey("primary", field)] = value
+	}
+	if err := client.DeliverDatabaseVariable("west", "wordpress", items, 7); err != nil {
+		t.Fatal(err)
+	}
+	revision, err := client.ReadDatabaseRevision("west", "wordpress", 7)
+	if err != nil || len(revision.URLs) != 0 || len(revision.Components) != 4 || revision.Components[DatabaseComponentItemKey("primary", "password")] != deliveryCanary {
+		t.Fatalf("component revision = %+v, %v", revision, err)
+	}
+	owned, err := client.CopyDatabaseVariable("west", "wordpress-cron-1", revision)
+	if err != nil || owned[stagedKey(DatabaseComponentItemKey("primary", "password"), 7)] != deliveryCanary {
+		t.Fatal("component delivery was not copied to a one-shot job")
+	}
+	if err := client.DeleteDatabaseVariable("west", "wordpress-cron-1", owned); err != nil {
+		t.Fatal(err)
+	}
+}
+
 // Every translation path (web and worker services, cron, function) carries
 // the same private delivery: templates reading only the job's own variable,
 // the value-variable rendered as env, the file-variable holding a path. No
@@ -86,7 +139,7 @@ func TestDatabaseDeliveryTemplatesOnEveryTranslationPath(t *testing.T) {
 				files[*template.DestPath] = data
 			}
 		}
-		if envTemplate == nil || !strings.Contains(*envTemplate.EmbeddedTmpl, "DATABASE_URL={{ .norn_rev5_db_url_primary }}") || strings.Contains(*envTemplate.EmbeddedTmpl, "ANALYTICS") {
+		if envTemplate == nil || !strings.Contains(*envTemplate.EmbeddedTmpl, "DATABASE_URL={{ .norn_rev5_db_url_primary.Value | toJSON }}") || strings.Contains(*envTemplate.EmbeddedTmpl, "ANALYTICS") {
 			t.Fatalf("%s env template = %+v", name, envTemplate)
 		}
 		if !strings.Contains(files["secrets/norn-databases/primary.url"], ".norn_rev5_db_url_primary") || !strings.Contains(files["secrets/norn-databases/analytics-db.url"], ".norn_rev5_db_url_analytics_db") {

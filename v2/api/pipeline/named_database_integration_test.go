@@ -426,8 +426,8 @@ func TestNamedDatabasesSnapshotRestoreInventoryExportAndHealthAreTargetBound(t *
 		t.Fatalf("import/restore reached primary: %q", state)
 	}
 
-	// Health: both PostgreSQL targets prove their identity; the MySQL target
-	// is reported unsupported, never healthy.
+	// Health: both PostgreSQL targets prove their identity. This fixture has
+	// no MySQL server, so its MySQL probe fails without exposing credentials.
 	health, err := f.p.DatabaseHealth(ctx, f.spec)
 	if err != nil || len(health) != 3 {
 		t.Fatalf("health = %+v, %v", health, err)
@@ -439,13 +439,24 @@ func TestNamedDatabasesSnapshotRestoreInventoryExportAndHealthAreTargetBound(t *
 				t.Fatalf("%s health = %+v", entry.Database, entry)
 			}
 		case "reports":
-			if entry.Status != "unsupported" || entry.Engine != "mysql" {
+			if entry.Status != "failed" || entry.Engine != "mysql" {
 				t.Fatalf("reports health = %+v", entry)
 			}
 		}
 		if strings.Contains(fmt.Sprintf("%+v", entry), namedCanary) {
 			t.Fatal("health leaked the credential")
 		}
+	}
+	withoutHealth := *f.spec
+	withoutHealth.Databases = append([]model.DatabaseRequirement(nil), f.spec.Databases...)
+	for i := range withoutHealth.Databases {
+		if withoutHealth.Databases[i].Name == "reports" {
+			withoutHealth.Databases[i].Capabilities = nil
+		}
+	}
+	withoutHealthResult, err := f.p.DatabaseHealth(ctx, &withoutHealth)
+	if err != nil || len(withoutHealthResult) != 3 || withoutHealthResult[2].Database != "reports" || withoutHealthResult[2].Status != "unsupported" {
+		t.Fatalf("undeclared health capability was probed: %+v, %v", withoutHealthResult, err)
 	}
 	// A wrong credential is a failed probe with only a SQLSTATE.
 	if err := os.WriteFile(filepath.Join(f.secretDir, "shop"), []byte(`{"password":"wrong"}`), 0o600); err != nil {
@@ -533,5 +544,43 @@ func TestNamedDatabasesRequireADatabaseProfile(t *testing.T) {
 	}
 	if groups, err := f.p.TargetSnapshots(context.Background(), f.spec); err == nil || groups != nil {
 		t.Fatal("inventory without a profile")
+	}
+}
+
+func TestMySQLTLSRuntimeIsRejectedBeforeDeployAcceptance(t *testing.T) {
+	f := newNamedFixture(t)
+	path := filepath.Join(f.p.AppsDir, f.app, "infraspec.yaml")
+	raw, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	updated := strings.Replace(string(raw), "    capabilities: [health]\n", `    capabilities: [runtime, health]
+    runtime:
+      components:
+        host: WORDPRESS_DB_HOST
+        user: WORDPRESS_DB_USER
+        password: WORDPRESS_DB_PASSWORD
+        name: WORDPRESS_DB_NAME
+`, 1)
+	if updated == string(raw) {
+		t.Fatal("MySQL fixture declaration was not replaced")
+	}
+	if err := os.WriteFile(path, []byte(updated), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	tlsCatalog := f.catalog
+	tlsCatalog.Services = append([]database.DatabaseService(nil), f.catalog.Services...)
+	tlsCatalog.Bindings = append([]database.DatabaseBinding(nil), f.catalog.Bindings...)
+	tlsCatalog.Services[2].Generation++
+	tlsCatalog.Services[2].TLS.MinimumMode = database.TLSVerifyFull
+	tlsCatalog.Bindings[2].Generation++
+	tlsCatalog.Bindings[2].TLS = database.DatabaseTLS{Mode: database.TLSVerifyFull, ServerName: "127.0.0.1", CARef: "secret:mysql/ca"}
+	if _, err := f.db.ActivateDatabaseCatalog(context.Background(), 1, tlsCatalog, "operator"); err != nil {
+		t.Fatal(err)
+	}
+	_, err = f.queue(t, "app.deploy", map[string]interface{}{})
+	var resolverErr *database.ResolverError
+	if !errors.As(err, &resolverErr) || resolverErr.Code != database.CodeUnsupportedCapability {
+		t.Fatalf("TLS MySQL deploy acceptance = %v, want unsupported capability", err)
 	}
 }

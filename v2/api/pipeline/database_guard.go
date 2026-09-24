@@ -304,7 +304,18 @@ func (p *Pipeline) RunningDeliveryRevision(ctx context.Context, spec *model.Infr
 		key := deliveryItemName(requirement.Name)
 		var staged database.TargetIdentity
 		want, recorded := expected[requirement.Name]
-		if material.URLs[key] == "" || json.Unmarshal([]byte(material.Targets[key]), &staged) != nil || !recorded || staged != want {
+		complete := true
+		if requirement.Runtime.Env != "" || requirement.Runtime.FileEnv != "" {
+			complete = material.URLs[key] != ""
+		}
+		if requirement.Runtime.Components != nil {
+			for _, field := range []string{"host", "user", "password", "name"} {
+				if _, ok := material.Components[nomad.DatabaseComponentItemKey(requirement.Name, field)]; !ok {
+					complete = false
+				}
+			}
+		}
+		if !complete || json.Unmarshal([]byte(material.Targets[key]), &staged) != nil || !recorded || staged != want {
 			return nomad.DatabaseRevision{}, &DatabaseTargetError{Reason: fmt.Sprintf("delivery revision %d of %s does not carry the running target of database %q", promoted, jobID, requirement.Name)}
 		}
 	}

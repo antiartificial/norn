@@ -415,7 +415,7 @@ func TestSessionRejectsUnsupportedTargetsAndMalformedSecrets(t *testing.T) {
 		mutate func(*ResolvedBinding)
 		code   ErrorCode
 	}{
-		"mysql":             {func(r *ResolvedBinding) { r.Target.Engine = EngineMySQL }, CodeUnsupportedEngine},
+		"unknown engine":    {func(r *ResolvedBinding) { r.Target.Engine = "cockroachdb" }, CodeUnsupportedEngine},
 		"control purpose":   {func(r *ResolvedBinding) { r.Purpose = PurposeControl }, CodePurposeMismatch},
 		"missing secret":    {func(r *ResolvedBinding) { r.CredentialRef = "secret:absent" }, CodeInvalidRequest},
 		"secret endpoint":   {func(r *ResolvedBinding) { r.CredentialRef = "secret:endpoint" }, CodeInvalidRequest},

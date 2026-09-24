@@ -210,13 +210,21 @@ func TestApplicationAndControlResolutionAreSeparate(t *testing.T) {
 
 func TestEngineCapabilityAndPurposeSupport(t *testing.T) {
 	resolver := mustResolver(t, testCatalog())
-	if _, err := resolver.Resolve(ResolveRequest{DeploymentProfileID: "mini", Purpose: PurposeApplication, LogicalResourceID: "wordpress-db", RequiredCapabilities: []Capability{CapabilitySnapshot}}); err != nil {
-		t.Fatalf("mysql snapshot capability rejected: %v", err)
+	if _, err := resolver.Resolve(ResolveRequest{DeploymentProfileID: "mini", Purpose: PurposeApplication, LogicalResourceID: "wordpress-db", RequiredCapabilities: []Capability{CapabilityRuntime}}); err != nil {
+		t.Fatalf("mysql runtime capability rejected: %v", err)
 	}
-	_, err := resolver.Resolve(ResolveRequest{DeploymentProfileID: "mini", Purpose: PurposeApplication, LogicalResourceID: "wordpress-db", RequiredCapabilities: []Capability{CapabilityPITR}})
+	_, err := resolver.Resolve(ResolveRequest{DeploymentProfileID: "mini", Purpose: PurposeApplication, LogicalResourceID: "wordpress-db", RequiredCapabilities: []Capability{CapabilitySnapshot}})
+	requireCode(t, err, CodeUnsupportedCapability)
+	_, err = resolver.Resolve(ResolveRequest{DeploymentProfileID: "mini", Purpose: PurposeApplication, LogicalResourceID: "wordpress-db", RequiredCapabilities: []Capability{CapabilityPITR}})
 	requireCode(t, err, CodeUnsupportedCapability)
 	_, err = resolver.Resolve(ResolveRequest{DeploymentProfileID: "mini", Purpose: PurposeApplication, LogicalResourceID: "wordpress-db", RequiredCapabilities: []Capability{CapabilityMigration}})
 	requireCode(t, err, CodeUnsupportedCapability) // supported by adapter, not declared by service
+	tlsCatalog := testCatalog()
+	tlsCatalog.Bindings[4].TLS = DatabaseTLS{Mode: TLSVerifyFull, ServerName: "mysql.internal.example", CARef: "secret:mysql/ca"}
+	tlsCatalog.Services[4].Endpoint.Host = "mysql.internal.example"
+	tlsResolver := mustResolver(t, tlsCatalog)
+	_, err = tlsResolver.Resolve(ResolveRequest{DeploymentProfileID: "mini", Purpose: PurposeApplication, LogicalResourceID: "wordpress-db", RequiredCapabilities: []Capability{CapabilityRuntime}})
+	requireCode(t, err, CodeUnsupportedCapability)
 	_, err = resolver.Resolve(ResolveRequest{DeploymentProfileID: "mini", Purpose: PurposeApplication, LogicalResourceID: "shop-db", RequiredCapabilities: []Capability{"logical-replication"}})
 	requireCode(t, err, CodeUnsupportedCapability)
 

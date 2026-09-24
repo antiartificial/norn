@@ -75,6 +75,12 @@ func TestDatabaseDeclarationRejections(t *testing.T) {
 		"runtime w/o block":     {func(s *InfraSpec) { s.Databases[0].Runtime = nil }, "databases[0].runtime"},
 		"block w/o runtime cap": {func(s *InfraSpec) { s.Databases[0].Capabilities = []string{"migration", "snapshot"} }, "databases[0].runtime"},
 		"empty runtime":         {func(s *InfraSpec) { s.Databases[0].Runtime = &DatabaseRuntime{} }, "databases[0].runtime"},
+		"incomplete components": {func(s *InfraSpec) {
+			s.Databases[0].Runtime = &DatabaseRuntime{Components: &DatabaseRuntimeComponents{Host: "WORDPRESS_DB_HOST"}}
+		}, "databases[0].runtime.components"},
+		"component collision": {func(s *InfraSpec) {
+			s.Databases[0].Runtime = &DatabaseRuntime{Components: &DatabaseRuntimeComponents{Host: "WORDPRESS_DB_HOST", User: "WORDPRESS_DB_USER", Password: "WORDPRESS_DB_HOST", Name: "WORDPRESS_DB_NAME"}}
+		}, "databases[0].runtime.components."},
 		"same var for value and path": {func(s *InfraSpec) {
 			s.Databases[0].Runtime.FileEnv = "DATABASE_URL"
 		}, "databases[0].runtime."},
@@ -119,5 +125,15 @@ func TestDatabaseEnvConflictsCoverRuntimeSources(t *testing.T) {
 	}
 	if conflicts := (&InfraSpec{}).DatabaseEnvConflicts(map[string]string{"DATABASE_URL": "x"}); len(conflicts) != 0 {
 		t.Fatalf("v1 spec conflicts = %v", conflicts)
+	}
+}
+
+func TestDatabaseEnvConflictsCoverWordPressComponents(t *testing.T) {
+	spec := &InfraSpec{SchemaVersion: AppSchemaV2, Databases: []DatabaseRequirement{{Name: "wordpress", Runtime: &DatabaseRuntime{Components: &DatabaseRuntimeComponents{
+		Host: "WORDPRESS_DB_HOST", User: "WORDPRESS_DB_USER", Password: "WORDPRESS_DB_PASSWORD", Name: "WORDPRESS_DB_NAME",
+	}}}}}
+	conflicts := spec.DatabaseEnvConflicts(map[string]string{"WORDPRESS_DB_PASSWORD": "shadow"}, map[string]string{"WORDPRESS_DB_HOST": "other"})
+	if strings.Join(conflicts, ",") != "WORDPRESS_DB_HOST,WORDPRESS_DB_PASSWORD" {
+		t.Fatalf("WordPress database variable conflicts = %v", conflicts)
 	}
 }
