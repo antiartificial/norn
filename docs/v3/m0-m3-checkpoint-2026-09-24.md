@@ -100,3 +100,38 @@ The M2/M3 safety and reconciliation slices are merged; **no M0–M3 milestone is
 [PR #54](https://github.com/antiartificial/norn/pull/54) also merged the first M4 foundation: signed, region-scoped app scale operations and durable desired-replica intent consumed by deploy and rollback. A PostgreSQL lock-wait test rejects expired claims; the full API suite passed against disposable PostgreSQL with the known Darwin host-metrics sample skipped. This does not establish loaded 2→3→2 placement, drain, or replacement behavior.
 
 Focused package and repository CI checks passed for both PRs. The merged branch passed `go test ./... -skip '^TestSampleDarwinHostMetrics$' -count=1 -p 1` from `v2/api` on 2026-09-24. The exact Darwin host-metrics sampler exclusion is a known local test-environment issue. Local etcd test members were stopped after verification. No live Norn deployment or provider mutation was performed.
+
+## Grouped release integration continuation
+
+Draft [Norn PR #76](https://github.com/antiartificial/norn/pull/76) groups the
+remaining M0–M3 Norn work; draft
+[Fleet PR #176](https://github.com/antiartificial/norn-fleet/pull/176) groups
+the host etcd bootstrap and recovery work. The separate M2 MySQL PR was merged
+into #76 and closed. These are review containers, not milestone signoff.
+
+- M0: the private Mini migration-17 rehearsal preserved 28 legacy table counts
+  and primary-key fingerprints across 245,383 rows. The read-only app-to-Nomad
+  join resolved 18 names and left eight unresolved. Route and database owners,
+  a sanitized CI fixture, representative growth, rollback, and mixed-version
+  evidence remain open.
+- M1: the etcd canary effect adapter now atomically reserves under a live
+  operation claim and per-app gate, records launch and completion, and supports
+  repeat-safe resolution and recovery. Its tests ran against disposable etcd
+  v3.5.17. Admission/replay policy, a normal etcd app worker, and end-to-end
+  crash/ambiguity qualification remain open; the route is unavailable.
+- M2: local MySQL runtime and verified-TLS health are implemented. Generated
+  service, periodic, and function jobs delivered exact component bytes inside
+  allocations on pinned Nomad 1.9.7. A WordPress image PHP client also
+  connected to disposable MySQL 8.4.11, verified database/account identity,
+  and wrote/read a temporary table; see
+  [the allocation record](m2-nomad-197-allocation-delivery-2026-09-24.md).
+  Full WordPress startup, TLS application runtime, backup/restore, retention
+  reserve, and representative recovery remain open.
+- M3: normal etcd startup and managed-token lifecycle have a narrow PG-free
+  Fleet router. Full app consumers, three-member host bootstrap and restore,
+  quorum/fault behavior, and soak qualification remain open. The host PR's CI
+  contract job was blocked by GitHub account billing status during this
+  checkpoint; that is not a passing host qualification.
+
+No v3 deployment to Mini or Fleet is claimed. M0–M3 still need their exit
+gates before the loaded M4 capacity exercise can rely on these contracts.
