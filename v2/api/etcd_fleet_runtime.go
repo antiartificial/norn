@@ -166,8 +166,17 @@ func etcdFleetPlans(operations *etcdstore.V3OperationStore) http.HandlerFunc {
 }
 func etcdFleetOperation(operations *etcdstore.V3OperationStore) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
+		principal, ok := handler.AccessPrincipalFromRequest(r)
+		if !ok || principal.Source != handler.AccessPrincipalSourceManagedToken || !principal.Allows(handler.ScopeAPIRead) {
+			handler.WriteControlProblem(w, r, http.StatusForbidden, "insufficient_scope", "Fleet capacity-plan reads require a managed api:read principal")
+			return
+		}
 		op, err := operations.GetOperation(r.Context(), chi.URLParam(r, "id"))
 		if err != nil {
+			handler.WriteControlProblem(w, r, http.StatusNotFound, "operation_not_found", "operation not found")
+			return
+		}
+		if op.Kind != "fleet.capacity-plan" {
 			handler.WriteControlProblem(w, r, http.StatusNotFound, "operation_not_found", "operation not found")
 			return
 		}
