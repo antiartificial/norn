@@ -476,8 +476,8 @@ func (r *Resolver) Resolve(request ResolveRequest) (ResolvedBinding, error) {
 		if !implementedCapabilities[resolved.Target.Engine][capability] {
 			return ResolvedBinding{}, &ResolverError{Code: CodeUnsupportedCapability, Field: "requiredCapabilities", Resource: profileLabel, Reason: "required capability has no implemented target engine path in this build"}
 		}
-		if resolved.Target.Engine == EngineMySQL && resolved.TLS.Mode != TLSDisabled {
-			return ResolvedBinding{}, &ResolverError{Code: CodeUnsupportedCapability, Field: "tls", Resource: profileLabel, Reason: "MySQL TLS client and runtime material are not implemented in this build"}
+		if resolved.Target.Engine == EngineMySQL && resolved.TLS.Mode != TLSDisabled && capability == CapabilityRuntime {
+			return ResolvedBinding{}, &ResolverError{Code: CodeUnsupportedCapability, Field: "tls", Resource: profileLabel, Reason: "MySQL TLS runtime material is not implemented in this build"}
 		}
 		if !declared[capability] {
 			return ResolvedBinding{}, &ResolverError{Code: CodeUnsupportedCapability, Field: "requiredCapabilities", Resource: profileLabel, Reason: "required capability is not declared by the target service"}

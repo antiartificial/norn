@@ -71,6 +71,26 @@ func TestMySQLRuntimeComponentsReachDeclaredTarget(t *testing.T) {
 	if err != nil || probe.Database != databaseName || probe.Role != role || probe.ServerVersion == "" {
 		t.Fatalf("MySQL identity probe = %+v, %v", probe, err)
 	}
+	if caPath := os.Getenv("NORN_TEST_MYSQL_CA_PEM"); caPath != "" {
+		caPEM, err := os.ReadFile(caPath)
+		if err != nil {
+			t.Fatal(err)
+		}
+		tlsResolved := resolved
+		tlsResolved.TLS = DatabaseTLS{Mode: TLSVerifyCA, CARef: "secret:mysql-ca"}
+		tlsSession, err := OpenSession(ctx, tlsResolved, literalSecrets{"secret:mysql": `{"password":"` + password + `"}`, "secret:mysql-ca": string(caPEM)})
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer tlsSession.Close()
+		tlsProbe, err := tlsSession.Probe(ctx)
+		if err != nil || tlsProbe.Database != databaseName || tlsProbe.Role != role {
+			t.Fatalf("verified MySQL TLS probe = %+v, %v", tlsProbe, err)
+		}
+		if _, err := tlsSession.RuntimeComponents(); err == nil {
+			t.Fatal("TLS MySQL session exposed runtime components without allocation trust material")
+		}
+	}
 	values, err := session.RuntimeComponents()
 	if err != nil || values["host"] != adminConfig.Addr || values["user"] != role || values["password"] != password || values["name"] != databaseName {
 		t.Fatal("MySQL runtime components do not match the probed target")
