@@ -23,7 +23,9 @@ import (
 
 const (
 	etcdManagedCredentialBootstrapArgument = "--norn-etcd-bootstrap"
-	etcdBootstrapRecordVersion             = 2
+	etcdBootstrapRecordVersion             = 3
+	minimumBootstrapTTL                    = time.Hour
+	minimumBootstrapRemaining              = 30 * time.Minute
 )
 
 type etcdBootstrapRecord struct {
@@ -35,10 +37,7 @@ type etcdBootstrapRecord struct {
 	SigningKeyHash string            `json:"signingKeySHA256"`
 }
 
-const (
-	etcdBootstrapPrepared = "prepared"
-	etcdBootstrapAccepted = "accepted"
-)
+const etcdBootstrapAccepted = "accepted"
 
 type etcdBootstrapRequest struct {
 	Output  string
@@ -84,8 +83,8 @@ func parseEtcdBootstrapRequest(getenv func(string) string) (etcdBootstrapRequest
 	if req.Output == "" || !filepath.IsAbs(req.Output) {
 		return etcdBootstrapRequest{}, fmt.Errorf("%s must be an absolute, new token file path", startup.EtcdBootstrapTokenFileEnv)
 	}
-	if req.Subject == "" || len(req.Scopes) == 0 || err != nil || req.TTL <= 0 || req.TTL > 72*time.Hour {
-		return etcdBootstrapRequest{}, fmt.Errorf("%s, %s, and a 1ns..72h %s are required", startup.EtcdBootstrapSubjectEnv, startup.EtcdBootstrapScopesEnv, startup.EtcdBootstrapTTLEnv)
+	if req.Subject == "" || len(req.Scopes) == 0 || err != nil || req.TTL < minimumBootstrapTTL || req.TTL > 72*time.Hour {
+		return etcdBootstrapRequest{}, fmt.Errorf("%s, %s, and a 1h..72h %s are required", startup.EtcdBootstrapSubjectEnv, startup.EtcdBootstrapScopesEnv, startup.EtcdBootstrapTTLEnv)
 	}
 	return req, nil
 }
@@ -93,6 +92,9 @@ func parseEtcdBootstrapRequest(getenv func(string) string) (etcdBootstrapRequest
 func bootstrapEtcdManagedCredential(ctx context.Context, kv clientv3.KV, prefix, secret string, req etcdBootstrapRequest, publish func(string, string) error) error {
 	record, err := acceptInitialEtcdManagedCredential(ctx, kv, prefix, secret, req)
 	if err != nil {
+		return err
+	}
+	if err := requireUsableInitialEtcdCredential(record, time.Now()); err != nil {
 		return err
 	}
 	token, err := handler.SignManagedAccessToken(secret, &record.Token)
@@ -122,42 +124,12 @@ func acceptInitialEtcdManagedCredential(ctx context.Context, kv clientv3.KV, pre
 		if err := verifyEtcdBootstrapToken(ctx, kv, prefix, marker); err != nil {
 			return nil, err
 		}
-		if marker.State == etcdBootstrapAccepted {
-			return marker, nil
-		}
-		return finalizeInitialEtcdBootstrap(ctx, kv, prefix, marker)
+		return marker, nil
 	}
 
-	// etcd has no range-absence transaction compare. Compare the revision of
-	// every key in the linearizable empty-prefix snapshot and the exclusive
-	// marker in the preparation transaction. Fleet RBAC must grant the bootstrap
-	// principal exclusive write access to this prefix until finalization. A
-	// prepared record fails closed if the post-prepare check finds another key.
-	existing, err := kv.Get(ctx, prefix+"/", clientv3.WithPrefix())
-	if err != nil {
-		return nil, fmt.Errorf("inspect empty etcd prefix: %w", err)
-	}
-	if len(existing.Kvs) != 0 {
-		// A competing bootstrap can have prepared its marker after our first
-		// marker read. Re-read it before treating this as an unrelated writer.
-		marker, err = loadEtcdBootstrapRecord(ctx, kv, markerKey)
-		if err != nil {
-			return nil, err
-		}
-		if marker != nil {
-			if err := marker.matches(req, secret); err != nil {
-				return nil, fmt.Errorf("refusing bootstrap retry: %w", err)
-			}
-			if err := verifyEtcdBootstrapToken(ctx, kv, prefix, marker); err != nil {
-				return nil, err
-			}
-			if marker.State == etcdBootstrapAccepted {
-				return marker, nil
-			}
-			return finalizeInitialEtcdBootstrap(ctx, kv, prefix, marker)
-		}
-		return nil, fmt.Errorf("refusing bootstrap: %s is not empty", startup.EtcdPrefixEnv)
-	}
+	// etcd range comparisons apply atomically at transaction commit. Version=0
+	// across the whole prefix is therefore an actual empty-prefix predicate,
+	// unlike a prior Get followed by per-key comparisons.
 	record, err := newEtcdBootstrapRecord(req, secret, time.Now())
 	if err != nil {
 		return nil, err
@@ -170,23 +142,24 @@ func acceptInitialEtcdManagedCredential(ctx context.Context, kv clientv3.KV, pre
 	if err != nil {
 		return nil, fmt.Errorf("encode bootstrap token record: %w", err)
 	}
-	compares := []clientv3.Cmp{clientv3.Compare(clientv3.CreateRevision(markerKey), "=", 0), clientv3.Compare(clientv3.CreateRevision(etcdBootstrapTokenKey(prefix, record.Token.JTI)), "=", 0)}
-	for _, entry := range existing.Kvs {
-		compares = append(compares, clientv3.Compare(clientv3.ModRevision(string(entry.Key)), "=", entry.ModRevision))
+	compares := []clientv3.Cmp{
+		clientv3.Compare(clientv3.Version(prefix+"/"), "=", 0).WithPrefix(),
+		clientv3.Compare(clientv3.CreateRevision(markerKey), "=", 0),
+		clientv3.Compare(clientv3.CreateRevision(etcdBootstrapTokenKey(prefix, record.Token.JTI)), "=", 0),
 	}
 	accepted, err := kv.Txn(ctx).If(compares...).Then(clientv3.OpPut(markerKey, string(markerValue)), clientv3.OpPut(etcdBootstrapTokenKey(prefix, record.Token.JTI), string(tokenValue))).Commit()
 	if err != nil {
 		return nil, fmt.Errorf("accept initial managed credential: %w", err)
 	}
 	if accepted.Succeeded {
-		return finalizeInitialEtcdBootstrap(ctx, kv, prefix, record)
+		return record, nil
 	}
 	marker, err = loadEtcdBootstrapRecord(ctx, kv, markerKey)
 	if err != nil {
 		return nil, err
 	}
 	if marker == nil {
-		return nil, errors.New("bootstrap acceptance lost without a recoverable marker")
+		return nil, fmt.Errorf("refusing bootstrap: %s is not empty", startup.EtcdPrefixEnv)
 	}
 	if err := marker.matches(req, secret); err != nil {
 		return nil, fmt.Errorf("refusing bootstrap retry: %w", err)
@@ -194,10 +167,7 @@ func acceptInitialEtcdManagedCredential(ctx context.Context, kv clientv3.KV, pre
 	if err := verifyEtcdBootstrapToken(ctx, kv, prefix, marker); err != nil {
 		return nil, err
 	}
-	if marker.State == etcdBootstrapAccepted {
-		return marker, nil
-	}
-	return finalizeInitialEtcdBootstrap(ctx, kv, prefix, marker)
+	return marker, nil
 }
 
 func newEtcdBootstrapRecord(req etcdBootstrapRequest, secret string, now time.Time) (*etcdBootstrapRecord, error) {
@@ -205,11 +175,11 @@ func newEtcdBootstrapRecord(req etcdBootstrapRequest, secret string, now time.Ti
 	if err != nil {
 		return nil, fmt.Errorf("prepare initial managed credential: %w", err)
 	}
-	return &etcdBootstrapRecord{Version: etcdBootstrapRecordVersion, State: etcdBootstrapPrepared, Token: *token, TTLNanoseconds: int64(req.TTL), OutputPathHash: hashBootstrapOutputPath(req.Output), SigningKeyHash: hashBootstrapSigningKey(secret)}, nil
+	return &etcdBootstrapRecord{Version: etcdBootstrapRecordVersion, State: etcdBootstrapAccepted, Token: *token, TTLNanoseconds: int64(req.TTL), OutputPathHash: hashBootstrapOutputPath(req.Output), SigningKeyHash: hashBootstrapSigningKey(secret)}, nil
 }
 
 func (record *etcdBootstrapRecord) matches(req etcdBootstrapRequest, secret string) error {
-	if record == nil || record.Version != etcdBootstrapRecordVersion || (record.State != etcdBootstrapPrepared && record.State != etcdBootstrapAccepted) || record.Token.JTI == "" || record.TTLNanoseconds <= 0 || record.OutputPathHash == "" || record.SigningKeyHash == "" {
+	if record == nil || record.Version != etcdBootstrapRecordVersion || record.State != etcdBootstrapAccepted || record.Token.JTI == "" || record.TTLNanoseconds <= 0 || record.OutputPathHash == "" || record.SigningKeyHash == "" {
 		return errors.New("bootstrap marker has an unsupported or incomplete record")
 	}
 	if record.Token.Subject != req.Subject || record.TTLNanoseconds != int64(req.TTL) || record.OutputPathHash != hashBootstrapOutputPath(req.Output) || record.SigningKeyHash != hashBootstrapSigningKey(secret) {
@@ -223,71 +193,6 @@ func (record *etcdBootstrapRecord) matches(req etcdBootstrapRequest, secret stri
 		return errors.New("accepted bootstrap token metadata differs")
 	}
 	return nil
-}
-
-// finalizeInitialEtcdBootstrap promotes a prepared record only while the
-// prefix contains exactly its marker and token registry entry. This is a
-// fail-closed second phase around etcd's missing range-absence compare. The
-// Fleet bootstrap RBAC contract keeps other writers out of the prefix during
-// both phases; normal Fleet runtime refuses prepared state.
-func finalizeInitialEtcdBootstrap(ctx context.Context, kv clientv3.KV, prefix string, record *etcdBootstrapRecord) (*etcdBootstrapRecord, error) {
-	if record == nil || record.State != etcdBootstrapPrepared {
-		return nil, errors.New("bootstrap record is not prepared")
-	}
-	markerKey := etcdBootstrapMarkerKey(prefix)
-	tokenKey := etcdBootstrapTokenKey(prefix, record.Token.JTI)
-	entries, err := kv.Get(ctx, strings.TrimRight(prefix, "/")+"/", clientv3.WithPrefix())
-	if err != nil {
-		return nil, fmt.Errorf("inspect prepared bootstrap prefix: %w", err)
-	}
-	if len(entries.Kvs) != 2 {
-		return nil, errors.New("prepared bootstrap prefix contains unexpected records")
-	}
-	var markerRevision, tokenRevision int64
-	for _, entry := range entries.Kvs {
-		switch string(entry.Key) {
-		case markerKey:
-			markerRevision = entry.ModRevision
-		case tokenKey:
-			tokenRevision = entry.ModRevision
-		default:
-			return nil, errors.New("prepared bootstrap prefix contains unexpected records")
-		}
-	}
-	if markerRevision == 0 || tokenRevision == 0 {
-		return nil, errors.New("prepared bootstrap record is incomplete")
-	}
-	accepted := *record
-	accepted.State = etcdBootstrapAccepted
-	encoded, err := json.Marshal(&accepted)
-	if err != nil {
-		return nil, fmt.Errorf("encode accepted bootstrap marker: %w", err)
-	}
-	compares := []clientv3.Cmp{
-		clientv3.Compare(clientv3.ModRevision(markerKey), "=", markerRevision),
-		clientv3.Compare(clientv3.ModRevision(tokenKey), "=", tokenRevision),
-	}
-	for _, entry := range entries.Kvs {
-		compares = append(compares, clientv3.Compare(clientv3.ModRevision(string(entry.Key)), "=", entry.ModRevision))
-	}
-	result, err := kv.Txn(ctx).If(compares...).Then(clientv3.OpPut(markerKey, string(encoded))).Commit()
-	if err != nil {
-		return nil, fmt.Errorf("finalize initial managed credential bootstrap: %w", err)
-	}
-	if result.Succeeded {
-		return &accepted, nil
-	}
-	current, err := loadEtcdBootstrapRecord(ctx, kv, markerKey)
-	if err != nil {
-		return nil, err
-	}
-	if current != nil && current.State == etcdBootstrapAccepted {
-		if err := verifyEtcdBootstrapToken(ctx, kv, prefix, current); err != nil {
-			return nil, err
-		}
-		return current, nil
-	}
-	return nil, errors.New("prepared bootstrap changed during finalization")
 }
 
 func loadEtcdBootstrapRecord(ctx context.Context, kv clientv3.KV, key string) (*etcdBootstrapRecord, error) {
@@ -339,7 +244,20 @@ func requireInitialEtcdBootstrap(ctx context.Context, kv clientv3.KV, prefix, si
 	if record.Version != etcdBootstrapRecordVersion || record.State != etcdBootstrapAccepted || record.Token.JTI == "" || record.TTLNanoseconds <= 0 || record.OutputPathHash == "" || record.SigningKeyHash != hashBootstrapSigningKey(signingKey) {
 		return errors.New("initial managed credential bootstrap record is invalid")
 	}
-	return verifyEtcdBootstrapToken(ctx, kv, prefix, record)
+	if err := verifyEtcdBootstrapToken(ctx, kv, prefix, record); err != nil {
+		return err
+	}
+	return requireUsableInitialEtcdCredential(record, time.Now())
+}
+
+func requireUsableInitialEtcdCredential(record *etcdBootstrapRecord, now time.Time) error {
+	if record == nil || record.Token.RevokedAt != nil {
+		return errors.New("initial managed credential is revoked")
+	}
+	if !record.Token.ExpiresAt.After(now.UTC().Add(minimumBootstrapRemaining)) {
+		return fmt.Errorf("initial managed credential must remain valid for at least %s", minimumBootstrapRemaining)
+	}
+	return nil
 }
 
 func sameBootstrapToken(a, b *store.AccessToken) bool {

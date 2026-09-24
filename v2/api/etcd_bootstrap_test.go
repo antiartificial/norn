@@ -198,7 +198,7 @@ func TestEtcdManagedCredentialBootstrapBindsSigningKey(t *testing.T) {
 	}
 }
 
-func TestRequireInitialEtcdBootstrapAllowsExpiredOrRevokedInitialCredential(t *testing.T) {
+func TestRequireInitialEtcdBootstrapRejectsExpiredOrRevokedInitialCredential(t *testing.T) {
 	client := newEtcdBootstrapTestClient(t)
 	prefix := "/norn-test/bootstrap-expired/" + uuid.NewString()
 	t.Cleanup(func() { _, _ = client.Delete(context.Background(), prefix, clientv3.WithPrefix()) })
@@ -222,39 +222,44 @@ func TestRequireInitialEtcdBootstrapAllowsExpiredOrRevokedInitialCredential(t *t
 	if _, err := client.Txn(context.Background()).Then(clientv3.OpPut(etcdBootstrapMarkerKey(prefix), string(marker)), clientv3.OpPut(etcdBootstrapTokenKey(prefix, record.Token.JTI), string(token))).Commit(); err != nil {
 		t.Fatal(err)
 	}
-	if err := requireInitialEtcdBootstrap(context.Background(), client, prefix, secret); err != nil {
-		t.Fatalf("expired/revoked initial credential bricked Fleet runtime: %v", err)
-	}
-}
-
-func TestEtcdManagedCredentialBootstrapFailsClosedOnBetweenScanAndPrepareWrite(t *testing.T) {
-	client := newEtcdBootstrapTestClient(t)
-	prefix := "/norn-test/bootstrap-between-scan-and-prepare/" + uuid.NewString()
-	t.Cleanup(func() { _, _ = client.Delete(context.Background(), prefix, clientv3.WithPrefix()) })
-	secret := "etcd-bootstrap-between-scan-secret-000"
-	req := etcdBootstrapRequest{Output: filepath.Join(t.TempDir(), "initial-token"), Subject: "fleet-bootstrap", Scopes: []string{handler.ScopeAPIRead}, TTL: time.Hour}
-	racing := &bootstrapBetweenScanWriteKV{KV: client, prefix: prefix}
-	err := bootstrapEtcdManagedCredential(context.Background(), racing, prefix, secret, req, func(string, string) error { return nil })
-	if err == nil || !strings.Contains(err.Error(), "unexpected records") {
-		t.Fatalf("between-scan write error=%v", err)
-	}
 	if err := requireInitialEtcdBootstrap(context.Background(), client, prefix, secret); err == nil {
-		t.Fatal("normal Fleet runtime accepted a bootstrap prefix with an injected writer")
+		t.Fatal("Fleet runtime accepted an expired and revoked initial credential")
 	}
 }
 
-type bootstrapBetweenScanWriteKV struct {
-	clientv3.KV
-	prefix string
-	once   sync.Once
+func TestEtcdManagedCredentialBootstrapRangeCompareRejectsWriterBeforeCommit(t *testing.T) {
+	client := newEtcdBootstrapTestClient(t)
+	prefix := "/norn-test/bootstrap-range-compare/" + uuid.NewString()
+	t.Cleanup(func() { _, _ = client.Delete(context.Background(), prefix, clientv3.WithPrefix()) })
+	marker := etcdBootstrapMarkerKey(prefix)
+	txn := client.Txn(context.Background()).If(clientv3.Compare(clientv3.Version(prefix+"/"), "=", 0).WithPrefix()).Then(clientv3.OpPut(marker, "must-not-commit"))
+	if _, err := client.Put(context.Background(), prefix+"/writer-between-plan-and-commit", "unexpected"); err != nil {
+		t.Fatal(err)
+	}
+	result, err := txn.Commit()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.Succeeded {
+		t.Fatal("range absence compare accepted a writer inserted before commit")
+	}
 }
 
-func (kv *bootstrapBetweenScanWriteKV) Get(ctx context.Context, key string, opts ...clientv3.OpOption) (*clientv3.GetResponse, error) {
-	response, err := kv.KV.Get(ctx, key, opts...)
-	if err == nil && key == strings.TrimRight(kv.prefix, "/")+"/" {
-		kv.once.Do(func() { _, _ = kv.KV.Put(ctx, strings.TrimRight(kv.prefix, "/")+"/injected-writer", "unexpected") })
+func TestParseEtcdBootstrapRequestRequiresPracticalTTL(t *testing.T) {
+	values := map[string]string{
+		startup.EtcdBootstrapTokenFileEnv: "/tmp/norn-bootstrap-token",
+		startup.EtcdBootstrapSubjectEnv:   "fleet-bootstrap",
+		startup.EtcdBootstrapScopesEnv:    handler.ScopeAPIRead,
+		startup.EtcdBootstrapTTLEnv:       "1ns",
 	}
-	return response, err
+	getenv := func(key string) string { return values[key] }
+	if _, err := parseEtcdBootstrapRequest(getenv); err == nil {
+		t.Fatal("sub-second bootstrap TTL was accepted")
+	}
+	values[startup.EtcdBootstrapTTLEnv] = minimumBootstrapTTL.String()
+	if _, err := parseEtcdBootstrapRequest(getenv); err != nil {
+		t.Fatalf("practical bootstrap TTL rejected: %v", err)
+	}
 }
 
 func TestPublishBootstrapTokenFileNeverClobbers(t *testing.T) {
