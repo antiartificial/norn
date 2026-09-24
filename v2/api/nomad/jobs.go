@@ -836,15 +836,52 @@ func (c *Client) PromoteDeploymentRegion(jobID, region string) error {
 	if info == nil {
 		return fmt.Errorf("no deployment found for %s", jobID)
 	}
+	return c.PromoteDeploymentIDRegion(info.ID, region)
+}
+
+// PromoteDeploymentIDRegion promotes the exact Nomad deployment selected by a
+// durable control operation. Callers that cross a recovery boundary must not
+// re-resolve "latest": a newer deployment must never be promoted by mistake.
+func (c *Client) PromoteDeploymentIDRegion(deploymentID, region string) error {
+	if deploymentID == "" {
+		return fmt.Errorf("deployment id is required")
+	}
 	var opts *nomadapi.WriteOptions
 	if region != "" {
 		opts = &nomadapi.WriteOptions{Region: region}
 	}
-	_, _, err = c.api.Deployments().PromoteAll(info.ID, opts)
+	_, _, err := c.api.Deployments().PromoteAll(deploymentID, opts)
 	if err != nil {
 		return fmt.Errorf("promote deployment: %w", err)
 	}
 	return nil
+}
+
+// DeploymentByIDRegion returns the current state of one exact deployment.
+// It is used to reconcile an ambiguous promotion submission after recovery.
+func (c *Client) DeploymentByIDRegion(deploymentID, region string) (*DeploymentInfo, error) {
+	if deploymentID == "" {
+		return nil, fmt.Errorf("deployment id is required")
+	}
+	var opts *nomadapi.QueryOptions
+	if region != "" {
+		opts = &nomadapi.QueryOptions{Region: region}
+	}
+	deployment, _, err := c.api.Deployments().Info(deploymentID, opts)
+	if err != nil {
+		return nil, fmt.Errorf("get deployment %s: %w", deploymentID, err)
+	}
+	if deployment == nil {
+		return nil, nil
+	}
+	hasCanary := false
+	for _, tg := range deployment.TaskGroups {
+		if len(tg.PlacedCanaries) > 0 {
+			hasCanary = true
+			break
+		}
+	}
+	return &DeploymentInfo{ID: deployment.ID, JobID: deployment.JobID, Status: deployment.Status, StatusDesc: deployment.StatusDescription, IsCanary: hasCanary}, nil
 }
 
 // FailDeployment marks the latest deployment as failed, triggering auto-revert if configured.

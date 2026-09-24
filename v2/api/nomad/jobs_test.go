@@ -106,7 +106,9 @@ func TestScaleStatusRequiresExactSuccessfulDurableOperationEvent(t *testing.T) {
 			http.Error(w, "unexpected request", http.StatusNotFound)
 			return
 		}
-		if got := r.URL.Query().Get("region"); got != "global" { t.Fatalf("Nomad region=%q, want global", got) }
+		if got := r.URL.Query().Get("region"); got != "global" {
+			t.Fatalf("Nomad region=%q, want global", got)
+		}
 		response := nomadapi.JobScaleStatusResponse{TaskGroups: map[string]nomadapi.TaskGroupScaleStatus{
 			"web": {Desired: 3, Events: []nomadapi.ScalingEvent{
 				{Meta: map[string]interface{}{"norn.operationId": "operation-1", "norn.claimGeneration": "1", "norn.executionId": "wrong-generation"}, Count: int64Pointer(3), EvalID: stringPointer("eval-wrong-generation")},
@@ -122,6 +124,38 @@ func TestScaleStatusRequiresExactSuccessfulDurableOperationEvent(t *testing.T) {
 	desired, matched, evalID, err := client.ScaleStatus("widget", "web", "global", "operation-1", generation, "execution-1", 3, "eval-1")
 	if err != nil || desired != 3 || !matched || evalID != "eval-1" {
 		t.Fatalf("ScaleStatus() = %d, %t, %q, %v", desired, matched, evalID, err)
+	}
+}
+
+func TestExactCanaryPromotionNeverResolvesLatestDeployment(t *testing.T) {
+	t.Parallel()
+	var promoted string
+	client := newTestNomadClient(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch {
+		case r.Method == http.MethodPut && r.URL.Path == "/v1/deployment/promote/deployment-accepted":
+			if got := r.URL.Query().Get("region"); got != "global" {
+				t.Fatalf("Nomad region=%q, want global", got)
+			}
+			promoted = "deployment-accepted"
+			_ = json.NewEncoder(w).Encode(map[string]string{"EvalID": "eval-1"})
+		case r.Method == http.MethodGet && r.URL.Path == "/v1/deployment/deployment-accepted":
+			if got := r.URL.Query().Get("region"); got != "global" {
+				t.Fatalf("Nomad region=%q, want global", got)
+			}
+			_ = json.NewEncoder(w).Encode(&nomadapi.Deployment{ID: "deployment-accepted", JobID: "widgets", Status: "successful"})
+		default:
+			http.Error(w, "unexpected request "+r.Method+" "+r.URL.Path, http.StatusNotFound)
+		}
+	}))
+	if err := client.PromoteDeploymentIDRegion("deployment-accepted", "global"); err != nil {
+		t.Fatalf("PromoteDeploymentIDRegion() = %v", err)
+	}
+	if promoted != "deployment-accepted" {
+		t.Fatalf("promoted = %q", promoted)
+	}
+	info, err := client.DeploymentByIDRegion("deployment-accepted", "global")
+	if err != nil || info == nil || info.ID != "deployment-accepted" || info.JobID != "widgets" || info.Status != "successful" {
+		t.Fatalf("DeploymentByIDRegion() = %#v, %v", info, err)
 	}
 }
 
