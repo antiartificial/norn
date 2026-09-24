@@ -704,9 +704,9 @@ Manage PostgreSQL database snapshots.
 # List snapshots
 norn snapshots <app>
 
-# Legacy synchronous restore by a unique compact UTC timestamp
+# Queue a durable restore by a unique compact UTC timestamp; wait for completion
 norn snapshots <app> restore <timestamp> --yes
-norn snapshots <app> restore <timestamp> --yes --pre-restore
+norn snapshots <app> restore <timestamp> --yes --database primary
 
 # Preview retention
 norn snapshots <app> retention --keep 3
@@ -714,6 +714,7 @@ norn snapshots <app> retention
 
 # Execute retention
 norn snapshots <app> retention --keep 3 --execute --yes
+norn snapshots <app> retention --keep 3 --execute --yes --wait=false
 
 # Remote export/import
 norn snapshots export <app>
@@ -724,8 +725,8 @@ norn snapshots import <app> snapshots/<app>/<filename>.dump
 | Subcommand | Description |
 |------------|-------------|
 | (none) | List available snapshots with timestamps, source commit, created time, size, and filename |
-| `restore` | Restore through the legacy synchronous route using a compact UTC timestamp that matches exactly one inventory entry; requires `--yes` and prints a restore receipt. `--pre-restore` creates a fresh snapshot before the restore. Prefer the versioned `/api/v1` control route or web/native clients for a durable exact-filename restore |
-| `retention` | Preview newest-N retention without deleting snapshots; defaults to `snapshots.keep` from the app spec or 3; add `--execute --yes` to prune and print a receipt |
+| `restore` | Queue a signed restore operation using a compact UTC timestamp that matches one inventory entry; requires `--yes` and waits for completion by default. A safety snapshot is always created. Use `--database` for named databases. The command prints the idempotency key before dispatch so a retry can reuse it. |
+| `retention` | Preview newest-N retention without deleting snapshots; defaults to `snapshots.keep` from the app spec or 3. `--execute --yes` queues a durable prune operation and waits by default. Use `--database` for named databases. |
 | `export` | Upload the latest local snapshot to the app's configured `snapshots.exportBucket` |
 | `remote` | List remote snapshots in the configured export bucket |
 | `import` | Download a remote snapshot key back into the local snapshots directory |
