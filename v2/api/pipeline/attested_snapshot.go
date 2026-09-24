@@ -13,6 +13,7 @@ import (
 	"io/fs"
 	"os"
 	"path/filepath"
+	"strings"
 	"time"
 )
 
@@ -39,6 +40,9 @@ func PublishAttestedSnapshot(location snapshotLocation, at time.Time, artifact A
 	if err := os.MkdirAll(location.dir, 0o750); err != nil {
 		return nil, err
 	}
+	if err := removeAttestedSnapshotStaging(location.dir, artifact.OperationID); err != nil {
+		return nil, err
+	}
 	label := "effect-" + artifact.OperationID
 	if len(label) > 64 {
 		label = label[:64]
@@ -46,6 +50,9 @@ func PublishAttestedSnapshot(location snapshotLocation, at time.Time, artifact A
 	filename := fmt.Sprintf("%s_%s_%s.dump", location.database, label, at.UTC().Format("20060102T150405"))
 	path := filepath.Join(location.dir, filename)
 	if info, err := os.Lstat(path); err == nil {
+		if err := artifact.Fence(); err != nil {
+			return nil, fmt.Errorf("snapshot claim fence before replay: %w", err)
+		}
 		if !info.Mode().IsRegular() || info.Size() != artifact.Size || verifyBoundDump(location, filename, info.Size()) != nil {
 			return nil, fmt.Errorf("existing snapshot publication is unverified")
 		}
@@ -106,6 +113,34 @@ func PublishAttestedSnapshot(location snapshotLocation, at time.Time, artifact A
 		return nil, err
 	}
 	return &dataSnapshot{Filename: filename, Timestamp: at.UTC().Format("20060102T150405"), Size: artifact.Size}, nil
+}
+
+// removeAttestedSnapshotStaging removes only abandoned private staging files
+// for this operation. A live claim is exclusive, so a retry cannot race a
+// second legitimate writer for the same operation; removing these files makes
+// a process crash recoverable without treating local staging bytes as proof.
+func removeAttestedSnapshotStaging(dir, operationID string) error {
+	prefix := ".attested-snapshot-" + operationID + "-"
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		return err
+	}
+	for _, entry := range entries {
+		if !strings.HasPrefix(entry.Name(), prefix) {
+			continue
+		}
+		info, err := entry.Info()
+		if err != nil {
+			return err
+		}
+		if !info.Mode().IsRegular() {
+			return fmt.Errorf("attested snapshot staging entry %s is not a regular file", entry.Name())
+		}
+		if err := os.Remove(filepath.Join(dir, entry.Name())); err != nil {
+			return err
+		}
+	}
+	return nil
 }
 
 func ensureAttestedSidecar(location snapshotLocation, filename, digest string, size int64) error {
