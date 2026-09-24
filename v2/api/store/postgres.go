@@ -540,7 +540,7 @@ func ControlSchemaMigrations() []SchemaMigration {
 		SQL:                  controlSchemaBaselineSQL,
 		MinimumReaderVersion: 0,
 		MinimumWriterVersion: 0,
-	}, operationAcceptanceMigration(), operationEffectsMigration(), operationCheckpointsMigration(), databaseCatalogMigration(), evidenceArchiveMigration(), evidenceArchiveReaderMigration(), evidenceReserveMigration(), eventReplayRetentionMigration(), nonSagaEvidenceMigration(), desiredReplicasMigration(), regionalDesiredReplicasMigration()}
+	}, operationAcceptanceMigration(), operationEffectsMigration(), operationCheckpointsMigration(), databaseCatalogMigration(), evidenceArchiveMigration(), evidenceArchiveReaderMigration(), evidenceReserveMigration(), eventReplayRetentionMigration(), nonSagaEvidenceMigration(), desiredReplicasMigration(), regionalDesiredReplicasMigration(), restartEffectSourcesMigration()}
 }
 
 func NewControlSchemaMigrator(db *DB) (*SchemaMigrator, error) {

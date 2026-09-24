@@ -50,7 +50,7 @@ func TestControlSchemaAdoptsLegacyRowsWithoutReplacingEvidence(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if status.CurrentMigrationVersion != 12 || len(status.AppliedVersions) != 12 || status.AppliedVersions[0] != 1 || status.AppliedVersions[1] != 2 || status.AppliedVersions[2] != 3 || status.AppliedVersions[3] != 4 || status.AppliedVersions[4] != 5 || status.AppliedVersions[5] != 6 || status.AppliedVersions[6] != 7 || status.AppliedVersions[7] != 8 || status.AppliedVersions[8] != 9 || status.AppliedVersions[9] != 10 || status.AppliedVersions[10] != 11 || status.AppliedVersions[11] != 12 || status.MinimumReaderVersion != EvidenceArchiveReaderVersion || status.MinimumWriterVersion != RegionalDesiredReplicaWriterVersion {
+	if status.CurrentMigrationVersion != 13 || len(status.AppliedVersions) != 13 || status.AppliedVersions[0] != 1 || status.AppliedVersions[1] != 2 || status.AppliedVersions[2] != 3 || status.AppliedVersions[3] != 4 || status.AppliedVersions[4] != 5 || status.AppliedVersions[5] != 6 || status.AppliedVersions[6] != 7 || status.AppliedVersions[7] != 8 || status.AppliedVersions[8] != 9 || status.AppliedVersions[9] != 10 || status.AppliedVersions[10] != 11 || status.AppliedVersions[11] != 12 || status.AppliedVersions[12] != 13 || status.MinimumReaderVersion != EvidenceArchiveReaderVersion || status.MinimumWriterVersion != RegionalDesiredReplicaWriterVersion {
 		t.Fatalf("migration status = %#v", status)
 	}
 

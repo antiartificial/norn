@@ -58,14 +58,15 @@ func TestRestartLaunchStopsOnlyPersistedSourceAllocations(t *testing.T) {
 
 func TestRestartAmbiguousStopDefersAndNeverRepeatsStop(t *testing.T) {
 	source := nomad.RestartAllocation{ID: "source-a", JobID: "demo", CreateIndex: 7}
+	other := nomad.RestartAllocation{ID: "source-b", JobID: "demo", CreateIndex: 7}
 	fake := &restartNomadFake{stopErr: errors.New("connection dropped"), status: nomad.RestartStatus{App: "demo", Replaced: false}}
 	supervisor := &nomadRestartSupervisor{client: fake}
-	r := restartReservation(t, []nomad.RestartAllocation{source})
-	if _, err := supervisor.Launch(context.Background(), r, effect.LaunchMaterial{}); err == nil || len(fake.stops) != 1 {
+	r := restartReservation(t, []nomad.RestartAllocation{source, other})
+	if _, err := supervisor.Launch(context.Background(), r, effect.LaunchMaterial{}); err == nil || len(fake.stops) != 2 || fake.stops[1] != other {
 		t.Fatalf("first launch err=%v stops=%+v", err, fake.stops)
 	}
 	observation, err := supervisor.Query(context.Background(), r, effect.ExecutionIdentity{})
-	if err != nil || observation.Phase != effect.SupervisorUnknown || len(fake.stops) != 1 {
+	if err != nil || observation.Phase != effect.SupervisorUnknown || len(fake.stops) != 2 {
 		t.Fatalf("reconciliation observation=%+v stops=%+v err=%v", observation, fake.stops, err)
 	}
 	if _, err := (nomadRestartVerifier{}).Verify(context.Background(), effect.Record{Reservation: r}, observation); err == nil {

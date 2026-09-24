@@ -25,6 +25,7 @@ func TestInspectionRegistryPinsCurrentSchemaAndSensitiveExclusions(t *testing.T)
 		"operation_checkpoints":        {"outputs"},
 		"database_catalog_revisions":   {"catalog"},
 		"operation_effects":            {"claim_owner", "claim_generation", "input_digest", "launch_payload", "supervisor_execution_id", "runtime_instance_id", "result_digest", "result_reference", "evidence_source", "evidence_reference", "evidence_observed_at"},
+		"restart_effect_sources":       {},
 	}
 	byTable := make(map[string]Table, len(registry))
 	for _, table := range registry {

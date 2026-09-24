@@ -94,7 +94,16 @@ func (p *Pipeline) executeRestart(ctx context.Context, op *model.Operation, clai
 		return deferredResult(claim, &effect.PendingError{Resource: restartResource(op.App), Reason: "restart effect lookup failed", Cause: lookupErr})
 	} else if found {
 		// The accepted source set is immutable. A successor claim only observes
-		// this record; it never obtains a new allocation snapshot.
+		// this record; it never obtains a new allocation snapshot. Sources marked
+		// attempted are ambiguous and are never retried; only durably unattempted
+		// sources may be advanced before evidence reconciliation.
+		request, requestErr := restartRequestFromReservation(prior.Reservation)
+		if requestErr != nil {
+			return deferredResult(claim, &effect.PendingError{Resource: restartResource(op.App), Reason: "stored restart descriptor is invalid", Cause: requestErr})
+		}
+		if _, continueErr := (&nomadRestartSupervisor{client: p.RestartEffects.client, db: p.RestartEffects.db}).continueUnattempted(ctx, prior.Reservation, request); continueErr != nil {
+			return deferredResult(claim, &effect.PendingError{Resource: restartResource(op.App), Reason: "restart source continuation is unresolved", Cause: continueErr})
+		}
 		result, err = p.RestartEffects.executor.Recover(ctx, prior)
 	} else {
 		// This read is performed under the claimed operation. The resulting exact
@@ -159,8 +168,15 @@ type nomadRestartSupervisor struct {
 }
 
 func (s *nomadRestartSupervisor) Prepare(_ context.Context, r effect.Reservation) error {
-	_, err := restartRequestFromReservation(r)
-	return err
+	request, err := restartRequestFromReservation(r)
+	if err != nil || s.db == nil {
+		return err
+	}
+	claim, err := store.NewOperationClaim(r.OperationClaim.OperationID, r.OperationClaim.OwnerID, r.OperationClaim.Generation)
+	if err != nil {
+		return err
+	}
+	return s.db.EnsureRestartEffectSources(context.Background(), claim, request.Allocations)
 }
 
 func (s *nomadRestartSupervisor) Launch(ctx context.Context, r effect.Reservation, _ effect.LaunchMaterial) (effect.ExecutionIdentity, error) {
@@ -168,21 +184,47 @@ func (s *nomadRestartSupervisor) Launch(ctx context.Context, r effect.Reservatio
 	if err != nil {
 		return effect.ExecutionIdentity{}, err
 	}
+	return s.continueUnattempted(ctx, r, request)
+}
+func (s *nomadRestartSupervisor) continueUnattempted(ctx context.Context, r effect.Reservation, request restartRequest) (effect.ExecutionIdentity, error) {
+	claim, err := store.NewOperationClaim(r.OperationClaim.OperationID, r.OperationClaim.OwnerID, r.OperationClaim.Generation)
+	if err != nil {
+		return effect.ExecutionIdentity{}, err
+	}
+	states := map[string]store.RestartEffectSource{}
+	if s.db != nil {
+		rows, loadErr := s.db.RestartEffectSources(ctx, claim.OperationID())
+		if loadErr != nil {
+			return effect.ExecutionIdentity{}, loadErr
+		}
+		for _, row := range rows {
+			states[row.Allocation.ID] = row
+		}
+	}
+	var firstErr error
 	for _, source := range request.Allocations {
+		if state, ok := states[source.ID]; ok && state.Attempted {
+			continue
+		}
 		if s.db != nil {
-			claim, claimErr := store.NewOperationClaim(r.OperationClaim.OperationID, r.OperationClaim.OwnerID, r.OperationClaim.Generation)
-			if claimErr != nil {
+			if claimErr := s.db.MarkRestartSourceAttempted(ctx, claim, source); claimErr != nil {
 				return effect.ExecutionIdentity{}, claimErr
-			}
-			if claimErr = s.db.CheckOperationClaim(ctx, claim); claimErr != nil {
-				return effect.ExecutionIdentity{}, fmt.Errorf("restart claim lost before source allocation %s: %w", source.ID, claimErr)
 			}
 		}
 		if err := s.client.StopRestartAllocation(ctx, source); err != nil {
-			// The caller cannot tell whether Nomad accepted this stop. Do not
-			// repeat it; recovery queries the original source lineage instead.
-			return effect.ExecutionIdentity{}, fmt.Errorf("stop source allocation %s: %w", source.ID, err)
+			if firstErr == nil {
+				firstErr = fmt.Errorf("stop source allocation %s: %w", source.ID, err)
+			}
+			continue
 		}
+		if s.db != nil {
+			if ackErr := s.db.MarkRestartSourceAcknowledged(ctx, claim, source); ackErr != nil {
+				return effect.ExecutionIdentity{}, ackErr
+			}
+		}
+	}
+	if firstErr != nil {
+		return effect.ExecutionIdentity{}, firstErr
 	}
 	return effect.ExecutionIdentity{Supervisor: r.Supervisor, SupervisorExecutionID: r.SupervisorExecutionID, RuntimeInstanceID: "nomad-restart:" + r.SupervisorExecutionID}, nil
 }
