@@ -70,6 +70,9 @@ type Pipeline struct {
 	// ScaleEffects fences Nomad's non-idempotent scale endpoint behind a
 	// durable external-effect reservation. It is required for app.scale.
 	ScaleEffects *NomadScaleEffects
+	// CanaryPromotionEffects fences Nomad deployment promotion behind a durable
+	// effect. It is required before accepting app.canary-promote.
+	CanaryPromotionEffects *NomadCanaryPromotionEffects
 	// FinishScaleIntent is the claim-fenced atomic desired-replica and terminal
 	// operation write. Tests may inject a transient failure; production uses DB.
 	FinishScaleIntent func(context.Context, store.OperationClaim, string, string, string, int, string, map[string]interface{}) error
@@ -280,6 +283,9 @@ func (p *Pipeline) ExecuteOperation(ctx context.Context, op *model.Operation, cl
 	}
 	if op.Kind == "app.scale" {
 		return operationOutcome(p.executeScale(ctx, op, claim))
+	}
+	if op.Kind == "app.canary-promote" {
+		return operationOutcome(p.executeCanaryPromotion(ctx, op, claim))
 	}
 	var specs []*model.InfraSpec
 	var err error
