@@ -42,6 +42,15 @@ func TestV3OperationStoreExpiredRecoveryFencesAndClassifiesAmbiguityEtcd(t *test
 		}
 		return adapter
 	}
+	expireOwner := func(operationID string) {
+		owner, err := client.Get(ctx, prefix+"/v3/owners/"+operationID)
+		if err != nil || len(owner.Kvs) != 1 || owner.Kvs[0].Lease == 0 {
+			t.Fatalf("owner lease for %s = %+v, %v", operationID, owner.Kvs, err)
+		}
+		if _, err := client.Revoke(ctx, clientv3.LeaseID(owner.Kvs[0].Lease)); err != nil {
+			t.Fatal(err)
+		}
+	}
 	newAcceptance := func(key string) store.OperationAcceptance {
 		acceptance := store.OperationAcceptance{
 			Identity:  store.OperationRequestIdentity{Authority: authority, Actor: store.OperationActor{Issuer: "etcd-recovery", Subject: "worker"}, Kind: "app.preflight", Resource: "app/recovery", Key: key},
@@ -62,11 +71,11 @@ func TestV3OperationStoreExpiredRecoveryFencesAndClassifiesAmbiguityEtcd(t *test
 		if _, err := adapter.Accept(ctx, acceptance); err != nil {
 			t.Fatal(err)
 		}
-		_, claim, err := adapter.ClaimNextOperation(ctx, "expired-worker", 30*time.Millisecond, nil)
+		claimed, claim, err := adapter.ClaimNextOperation(ctx, "expired-worker", time.Minute, nil)
 		if err != nil {
 			t.Fatal(err)
 		}
-		time.Sleep(60 * time.Millisecond)
+		expireOwner(claimed.ID)
 		if err := adapter.RecoverExpiredOperations(ctx); err != nil {
 			t.Fatal(err)
 		}
@@ -109,10 +118,11 @@ func TestV3OperationStoreExpiredRecoveryFencesAndClassifiesAmbiguityEtcd(t *test
 		if _, err := first.Accept(ctx, acceptance); err != nil {
 			t.Fatal(err)
 		}
-		if _, _, err := first.ClaimNextOperation(ctx, "expired-worker", 30*time.Millisecond, nil); err != nil {
+		claimed, _, err := first.ClaimNextOperation(ctx, "expired-worker", time.Minute, nil)
+		if err != nil {
 			t.Fatal(err)
 		}
-		time.Sleep(60 * time.Millisecond)
+		expireOwner(claimed.ID)
 		var group sync.WaitGroup
 		errs := make(chan error, 2)
 		for _, adapter := range []*etcdstore.V3OperationStore{first, second} {
