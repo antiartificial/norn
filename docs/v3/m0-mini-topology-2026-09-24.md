@@ -56,3 +56,21 @@ sample.
 The next owner review must resolve these unmatched and duplicate records, then
 join the exact jobs to allocations, volumes, routes, and database targets before
 selecting a representative upgrade fixture.
+
+### Exact-job specification scan
+
+The same read-only Mini session inspected all 18 exact-match Nomad job
+specifications and emitted only aggregate flags and job IDs. All 18 declared a
+Nomad service. Five declared group volumes and corresponding task mounts or
+Docker volume entries: `field-harbor`, `norn-cadvisor`, `norn-prometheus`,
+`signal-cli`, and `signal-sideband`. Nine had task environment **key names**
+suggesting a database connection: `field-harbor`, `its-alive-api`,
+`like-trove`, `mail-indexer`, `mail-mcp`, `signal-sideband`,
+`turnkey-offer-intake`, `vigil-gateway`, and `watchtower`. No environment
+values, volume source paths, or job specifications were retained.
+
+These flags identify fixture candidates and owners to contact. An environment
+key is not a validated database target; templates or external secrets may
+carry additional connections. Likewise, a declared Nomad service is not proof
+of a public route or a healthy endpoint. Exact mount source/target ownership,
+database identity, and route-to-listener joins remain open.
