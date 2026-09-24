@@ -77,6 +77,9 @@ type Pipeline struct {
 	// RestartEffects records the exact allocations selected for a replacement
 	// before asking Nomad to stop any of them. It is required for app.restart.
 	RestartEffects *NomadRestartEffects
+	// CronPauseEffects fences periodic-job deregistration and its durable state
+	// transition. It is required before accepting app.cron-pause.
+	CronPauseEffects *NomadCronPauseEffects
 	// RestartAvailability is a test-only admission seam. Production leaves it
 	// nil and requires RestartEffects.
 	RestartAvailability func() bool
@@ -86,6 +89,9 @@ type Pipeline struct {
 	// FinishScaleIntent is the claim-fenced atomic desired-replica and terminal
 	// operation write. Tests may inject a transient failure; production uses DB.
 	FinishScaleIntent func(context.Context, store.OperationClaim, string, string, string, int, string, map[string]interface{}) error
+	// FinishCronPauseIntent atomically records paused cron state and terminalizes
+	// the claimed operation after Nomad has verified the periodic job stopped.
+	FinishCronPauseIntent func(context.Context, store.OperationClaim, string, string, string, string, map[string]interface{}) error
 	// DatabaseTargets binds database-consuming operations to catalog
 	// targets. When nil (no NORN_DATABASE_PROFILE), v2 routing is unchanged.
 	DatabaseTargets *DatabaseTargets
@@ -301,6 +307,9 @@ func (p *Pipeline) ExecuteOperation(ctx context.Context, op *model.Operation, cl
 	}
 	if op.Kind == "app.restart" {
 		return operationOutcome(p.executeRestart(ctx, op, claim))
+	}
+	if op.Kind == "app.cron-pause" {
+		return operationOutcome(p.executeCronPause(ctx, op, claim))
 	}
 	if op.Kind == "app.canary-promote" {
 		return operationOutcome(p.executeCanaryPromotion(ctx, op, claim))

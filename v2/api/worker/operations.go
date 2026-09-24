@@ -30,7 +30,7 @@ func NewOperationWorker(db store.ExecutionStore, p *pipeline.Pipeline) *Operatio
 	return NewOperationWorkerForKinds(db, p, []string{
 		"app.preflight", "app.deploy", "app.rollback", "app.restart", "app.snapshot",
 		"app.snapshot-prune", "app.snapshot-restore", "app.migrate",
-		"app.scale",
+		"app.scale", "app.cron-pause",
 		"app.canary-promote",
 		pipeline.CatalogActivationKind, pipeline.DatabaseBaselineKind,
 	})

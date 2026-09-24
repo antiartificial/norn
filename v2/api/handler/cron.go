@@ -1,16 +1,21 @@
 package handler
 
 import (
+	"errors"
 	"fmt"
 	"net/http"
 	"os"
 	"strings"
+	"time"
 
 	"github.com/go-chi/chi/v5"
+	"github.com/google/uuid"
 	nomadapi "github.com/hashicorp/nomad/api"
+	"github.com/jackc/pgx/v5"
 
 	"norn/v2/api/model"
 	"norn/v2/api/nomad"
+	"norn/v2/api/store"
 )
 
 // periodicJobFor translates a scheduled process for resubmission. For an app
@@ -140,47 +145,58 @@ func (h *Handler) CronPause(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	if h.nomad == nil {
-		writeError(w, http.StatusServiceUnavailable, "nomad not connected")
-		return
-	}
-
-	jobID := fmt.Sprintf("%s-%s", id, req.Process)
-	if err := h.nomad.StopJob(jobID, false); err != nil {
-		writeError(w, http.StatusInternalServerError, err.Error())
-		return
-	}
-
-	// Persist the schedule so we can resume later
 	spec := h.findSpec(id)
-	schedule := ""
-	if spec != nil {
-		if proc, ok := spec.Processes[req.Process]; ok {
-			schedule = proc.Schedule
-		}
+	if spec == nil {
+		WriteControlProblem(w, r, http.StatusNotFound, "app_process_not_found", "app or scheduled process was not found")
+		return
 	}
-	// Check if there's already a custom schedule in DB
-	state, err := h.db.GetCronState(r.Context(), id, req.Process)
-	if err == nil && state.Schedule != "" {
-		schedule = state.Schedule
+	proc, ok := spec.Processes[req.Process]
+	if !ok || proc.Schedule == "" {
+		WriteControlProblem(w, r, http.StatusBadRequest, "scheduled_process_required", "cron pause requires a declared scheduled process")
+		return
 	}
+	if h.pipeline == nil || !h.pipeline.CronPauseAvailable() || h.db == nil {
+		WriteControlProblem(w, r, http.StatusServiceUnavailable, "cron_pause_execution_unavailable", "durable cron pause execution is unavailable")
+		return
+	}
+	// The stored custom schedule is the effective schedule that resume must use.
+	state, stateErr := h.db.GetCronState(r.Context(), id, req.Process)
+	schedule, effectiveErr := cronPauseEffectiveSchedule(proc.Schedule, state, stateErr)
+	if effectiveErr != nil {
+		WriteControlProblem(w, r, http.StatusServiceUnavailable, "cron_state_unavailable", "durable cron state is unavailable")
+		return
+	}
+	enqueue, ok := h.pipelineEnqueueRequest(w, r, r.Header.Get("Idempotency-Key"), map[string]interface{}{"app": id, "process": req.Process, "schedule": schedule, "jobId": id + "-" + req.Process, "action": "pause"})
+	if !ok {
+		return
+	}
+	now := time.Now().UTC()
+	op := model.Operation{ID: uuid.NewString(), Kind: "app.cron-pause", App: id, SagaID: uuid.NewString(), Ref: req.Process, Status: model.OperationQueued, Risk: "stop Nomad periodic job", Source: "app-control-api", Message: fmt.Sprintf("queued cron pause for %s process %q", id, req.Process), StartedAt: now, NextAttemptAt: now, MaxAttempts: 1, Payload: map[string]interface{}{"app": id, "process": req.Process, "schedule": schedule, "jobId": id + "-" + req.Process}}
+	accepted, err := h.pipeline.QueueOperation(r.Context(), op, enqueue)
+	if err != nil {
+		writeOperationAcceptanceError(w, r, err)
+		return
+	}
+	accepted.Operation.AttachReceipt()
+	w.Header().Set("Location", "/api/v1/operations/"+accepted.Operation.ID)
+	if accepted.Replayed {
+		writeJSON(w, accepted.Operation)
+		return
+	}
+	writeJSONStatus(w, http.StatusAccepted, accepted.Operation)
+}
 
-	h.db.UpsertCronState(r.Context(), id, req.Process, true, schedule)
-
-	writeJSON(w, map[string]string{"status": "paused"})
-	h.emitBeacon(r.Context(), model.BeaconEvent{
-		App:       id,
-		Type:      "job.paused",
-		Severity:  model.BeaconWarning,
-		Title:     fmt.Sprintf("%s %s job paused", id, req.Process),
-		Body:      fmt.Sprintf("Cron process %s was paused.", req.Process),
-		DedupeKey: fmt.Sprintf("%s:%s:cron", id, req.Process),
-		Metadata: map[string]interface{}{
-			"process":        req.Process,
-			"schedule":       schedule,
-			"correlationKey": fmt.Sprintf("%s:%s:cron", id, req.Process),
-		},
-	})
+// cronPauseEffectiveSchedule treats a missing override as the declared
+// schedule. Any other read failure makes the signed intent indeterminate, so
+// callers must reject rather than queue with a guessed schedule.
+func cronPauseEffectiveSchedule(declared string, state *store.CronState, err error) (string, error) {
+	if err != nil && !errors.Is(err, pgx.ErrNoRows) {
+		return "", err
+	}
+	if state != nil && state.Schedule != "" {
+		return state.Schedule, nil
+	}
+	return declared, nil
 }
 
 func (h *Handler) CronResume(w http.ResponseWriter, r *http.Request) {
