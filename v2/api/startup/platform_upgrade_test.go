@@ -37,7 +37,7 @@ set -euo pipefail
 [[ "${1:-}" == "--norn-startup-contract" ]]
 [[ "${NORN_DATABASE_URL:-}" == *"127.0.0.1:1"* ]]
 [[ -z "${NORN_API_TOKEN:-}" ]]
-printf '%s\n' '{"name":"norn.startup/v2","schemaModes":["auto","check","migrate-only"],"startupModes":["active","passive"],"passiveRoutes":["/api/health","/api/version","/api/schema"],"schemaContract":{"readerVersion":2,"writerVersion":10,"catalogMigrationVersion":13,"catalogMinimumReaderVersion":2,"catalogMinimumWriterVersion":10}}'
+printf '%s\n' '{"name":"norn.startup/v2","schemaModes":["auto","check","migrate-only"],"startupModes":["active","passive"],"passiveRoutes":["/api/health","/api/version","/api/schema"],"schemaContract":{"readerVersion":2,"writerVersion":11,"catalogMigrationVersion":14,"catalogMinimumReaderVersion":2,"catalogMinimumWriterVersion":11}}'
 `)
 	cmd := exec.Command(platformUpgradePath(t), "startup-contract", binary)
 	cmd.Env = append(os.Environ(), "NORN_API_TOKEN=must-not-reach-probe")
