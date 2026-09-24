@@ -1,5 +1,27 @@
 # M0–M3 integration checkpoint — 2026-09-24
 
+## Further integration update
+
+PRs [#62](https://github.com/antiartificial/norn/pull/62),
+[#63](https://github.com/antiartificial/norn/pull/63), and
+[#64](https://github.com/antiartificial/norn/pull/64) merged into the v3
+integration branch. A source-validation-only preflight now completes signed
+acceptance, an etcd claim and app lock, a claim-fenced source checkpoint, and
+terminalization on real etcd without PostgreSQL. The normal `norn-api`
+startup, handler, and Fleet consumers still require PostgreSQL; this is not a
+PG-free Fleet runtime. A dedicated snapshot helper now attests the exact
+`pg_dump` binary and dump artifact, binds its manifest to the accepted target
+descriptor, and removes temporary connection files. Manual `app.snapshot`
+does not yet use that helper or the durable effect ledger. The M2 reserve can
+optionally cap exact retained signed acceptance payload bytes atomically; it
+does not bound all hot control data, and its reservations cannot be released
+until signed acceptance has an expiry and prune contract.
+
+The [Mini size measurement](m0-mini-measurements-2026-09-24.md) now includes a
+third read-only sample at 18:02 UTC. It is still a short observation. No
+M0–M3 milestone is signed off, and none of these merges deployed v3 to Mini
+or Fleet.
+
 ## Later integration update
 
 PRs [#55](https://github.com/antiartificial/norn/pull/55),
