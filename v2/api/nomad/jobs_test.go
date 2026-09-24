@@ -61,6 +61,26 @@ func TestCronRunHealthDetectsOOMRestartsAndFailedAllocation(t *testing.T) {
 	}
 }
 
+func TestPeriodicJobSchedulePreservesVersionAndModifyIndex(t *testing.T) {
+	jobID, status, schedule, timezone := "widget-nightly", "running", "0 2 * * *", "America/Chicago"
+	version, modifyIndex := uint64(3), uint64(42)
+	client := newTestNomadClient(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodGet || r.URL.Path != "/v1/job/widget-nightly" {
+			http.Error(w, "unexpected request", http.StatusNotFound)
+			return
+		}
+		_ = json.NewEncoder(w).Encode(&nomadapi.Job{ID: &jobID, Status: &status, Version: &version, ModifyIndex: &modifyIndex, Periodic: &nomadapi.PeriodicConfig{Spec: &schedule, TimeZone: &timezone}})
+	}))
+
+	info, err := client.PeriodicJobSchedule(jobID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if info.Version != version || info.ModifyIndex != modifyIndex || info.Schedule != schedule || info.TimeZone != timezone {
+		t.Fatalf("periodic info = %#v", info)
+	}
+}
+
 func TestRestartJobStopsOnlyActiveDesiredAllocations(t *testing.T) {
 	t.Parallel()
 

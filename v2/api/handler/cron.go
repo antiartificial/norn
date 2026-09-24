@@ -166,12 +166,30 @@ func (h *Handler) CronPause(w http.ResponseWriter, r *http.Request) {
 		WriteControlProblem(w, r, http.StatusServiceUnavailable, "cron_state_unavailable", "durable cron state is unavailable")
 		return
 	}
-	enqueue, ok := h.pipelineEnqueueRequest(w, r, r.Header.Get("Idempotency-Key"), map[string]interface{}{"app": id, "process": req.Process, "schedule": schedule, "jobId": id + "-" + req.Process, "action": "pause"})
+	if h.nomad == nil {
+		WriteControlProblem(w, r, http.StatusServiceUnavailable, "cron_pause_nomad_unavailable", "Nomad periodic job state is unavailable")
+		return
+	}
+	jobID := id + "-" + req.Process
+	periodic, err := h.nomad.PeriodicJobSchedule(jobID)
+	if err != nil {
+		WriteControlProblem(w, r, http.StatusServiceUnavailable, "cron_pause_nomad_unavailable", "Nomad periodic job state is unavailable")
+		return
+	}
+	timezone := model.ResolveProcessTimezone(spec, proc)
+	if periodic.Paused || periodic.Schedule != schedule || periodic.TimeZone != timezone || periodic.Version == 0 || periodic.ModifyIndex == 0 {
+		WriteControlProblem(w, r, http.StatusConflict, "cron_pause_intent_stale", "Nomad periodic job no longer matches the requested cron pause intent")
+		return
+	}
+	// Keep uint64 revisions as decimal strings: generic JSON map decoding uses
+	// float64 and would silently lose a Nomad index above 2^53.
+	payload := map[string]interface{}{"app": id, "process": req.Process, "schedule": schedule, "timezone": timezone, "jobId": jobID, "version": fmt.Sprint(periodic.Version), "modifyIndex": fmt.Sprint(periodic.ModifyIndex), "action": "pause"}
+	enqueue, ok := h.pipelineEnqueueRequest(w, r, r.Header.Get("Idempotency-Key"), payload)
 	if !ok {
 		return
 	}
 	now := time.Now().UTC()
-	op := model.Operation{ID: uuid.NewString(), Kind: "app.cron-pause", App: id, SagaID: uuid.NewString(), Ref: req.Process, Status: model.OperationQueued, Risk: "stop Nomad periodic job", Source: "app-control-api", Message: fmt.Sprintf("queued cron pause for %s process %q", id, req.Process), StartedAt: now, NextAttemptAt: now, MaxAttempts: 1, Payload: map[string]interface{}{"app": id, "process": req.Process, "schedule": schedule, "jobId": id + "-" + req.Process}}
+	op := model.Operation{ID: uuid.NewString(), Kind: "app.cron-pause", App: id, SagaID: uuid.NewString(), Ref: req.Process, Status: model.OperationQueued, Risk: "stop Nomad periodic job", Source: "app-control-api", Message: fmt.Sprintf("queued cron pause for %s process %q", id, req.Process), StartedAt: now, NextAttemptAt: now, MaxAttempts: 1, Payload: payload}
 	accepted, err := h.pipeline.QueueOperation(r.Context(), op, enqueue)
 	if err != nil {
 		writeOperationAcceptanceError(w, r, err)

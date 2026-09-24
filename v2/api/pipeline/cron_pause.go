@@ -7,6 +7,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"strconv"
 	"strings"
 	"time"
 
@@ -45,18 +46,21 @@ func (e *NomadCronPauseEffects) available() bool {
 func (p *Pipeline) CronPauseAvailable() bool { return p != nil && p.CronPauseEffects.available() }
 
 type cronPauseRequest struct {
-	App      string `json:"app"`
-	Process  string `json:"process"`
-	Schedule string `json:"schedule"`
-	JobID    string `json:"jobId"`
+	App         string `json:"app"`
+	Process     string `json:"process"`
+	Schedule    string `json:"schedule"`
+	TimeZone    string `json:"timezone"`
+	JobID       string `json:"jobId"`
+	Version     uint64 `json:"version"`
+	ModifyIndex uint64 `json:"modifyIndex"`
 }
 
 func cronPauseRequestFromOperation(op *model.Operation) (cronPauseRequest, error) {
 	if op == nil {
 		return cronPauseRequest{}, fmt.Errorf("cron pause operation is required")
 	}
-	r := cronPauseRequest{App: op.App, Process: stringFromMap(op.Payload, "process"), Schedule: stringFromMap(op.Payload, "schedule"), JobID: stringFromMap(op.Payload, "jobId")}
-	if strings.TrimSpace(r.App) == "" || strings.TrimSpace(r.Process) == "" || strings.TrimSpace(r.Schedule) == "" || r.JobID != r.App+"-"+r.Process {
+	r := cronPauseRequest{App: op.App, Process: stringFromMap(op.Payload, "process"), Schedule: stringFromMap(op.Payload, "schedule"), TimeZone: stringFromMap(op.Payload, "timezone"), JobID: stringFromMap(op.Payload, "jobId"), Version: uint64FromMap(op.Payload, "version"), ModifyIndex: uint64FromMap(op.Payload, "modifyIndex")}
+	if strings.TrimSpace(r.App) == "" || strings.TrimSpace(r.Process) == "" || strings.TrimSpace(r.Schedule) == "" || r.JobID != r.App+"-"+r.Process || r.Version == 0 || r.ModifyIndex == 0 {
 		return cronPauseRequest{}, fmt.Errorf("cron pause descriptor is invalid")
 	}
 	return r, nil
@@ -81,6 +85,29 @@ func (p *Pipeline) executeCronPause(ctx context.Context, op *model.Operation, cl
 	if err := p.DB.CheckOperationClaim(ctx, claim); err != nil {
 		return deferredResult(claim, &effect.PendingError{Resource: cronPauseResource(r), Reason: "cron pause claim is no longer current", Cause: err})
 	}
+	authority, err := p.CronPauseEffects.store.Authority(ctx)
+	if err != nil {
+		return deferredResult(claim, &effect.PendingError{Resource: cronPauseResource(r), Reason: "control authority is unavailable", Cause: err})
+	}
+	// A lease can expire after Nomad accepted StopJob but before the state write.
+	// Recover this operation's exact effect before treating a stopped parent as a
+	// conflicting pause, otherwise the durable intent is stranded forever.
+	if prior, found, lookupErr := p.CronPauseEffects.store.LatestForOperation(ctx, op.ID, nomadCronPauseStage); lookupErr != nil {
+		return deferredResult(claim, &effect.PendingError{Resource: cronPauseResource(r), Reason: "prior cron pause lookup failed", Cause: lookupErr})
+	} else if found {
+		stored, storedErr := cronPauseRequestFromReservation(prior.Reservation)
+		if storedErr != nil || stored != r {
+			return &OperationResult{Claim: claim, Status: model.OperationFailed, Message: "cron pause effect descriptor does not match signed operation intent"}
+		}
+		result, recoverErr := p.CronPauseEffects.executor.Recover(ctx, prior)
+		if recoverErr != nil {
+			return deferredResult(claim, recoverErr)
+		}
+		if result.Outcome != effect.OutcomeSucceeded {
+			return &OperationResult{Claim: claim, Status: model.OperationFailed, Message: "Nomad cron pause request failed"}
+		}
+		return p.completeCronPause(ctx, claim, r, result)
+	}
 	// The periodic parent Stop flag, rather than the generic job status, is the
 	// proof of a pause. A periodic job may be dead because a child completed or
 	// failed, which must never be credited to this pause operation.
@@ -91,9 +118,8 @@ func (p *Pipeline) executeCronPause(ctx context.Context, op *model.Operation, cl
 	if periodic.Paused {
 		return &OperationResult{Claim: claim, Status: model.OperationFailed, Message: "periodic job is already stopped"}
 	}
-	authority, err := p.CronPauseEffects.store.Authority(ctx)
-	if err != nil {
-		return deferredResult(claim, &effect.PendingError{Resource: cronPauseResource(r), Reason: "control authority is unavailable", Cause: err})
+	if !cronPauseIntentMatches(r, periodic, true) {
+		return &OperationResult{Claim: claim, Status: model.OperationFailed, Message: "Nomad periodic job no longer matches cron pause intent"}
 	}
 	payload, _ := json.Marshal(r)
 	reservation := effect.Reservation{Authority: authority, Resource: cronPauseResource(r), OperationClaim: effect.OperationClaim{OperationID: claim.OperationID(), OwnerID: claim.OwnerID(), Generation: claim.Generation()}, Stage: nomadCronPauseStage, Supervisor: "nomad-cron-pause", LaunchPayload: payload}
@@ -106,7 +132,12 @@ func (p *Pipeline) executeCronPause(ctx context.Context, op *model.Operation, cl
 		if blocking, found, lookupErr := p.CronPauseEffects.store.UnresolvedForResource(ctx, authority, reservation.Resource); lookupErr != nil {
 			return deferredResult(claim, &effect.PendingError{Resource: reservation.Resource, Reason: "blocking cron pause lookup failed", Cause: lookupErr})
 		} else if found {
-			_, err = p.CronPauseEffects.executor.Recover(ctx, blocking)
+			if _, recoverErr := p.CronPauseEffects.executor.Recover(ctx, blocking); recoverErr != nil {
+				return deferredResult(claim, recoverErr)
+			}
+			// The recovered result belongs to the blocker, never to this claim.
+			// Retry only after Reserve observes that the resource gate is clear.
+			return deferredResult(claim, &effect.PendingError{Resource: reservation.Resource, Reason: "blocking cron pause reconciled; retry reservation"})
 		}
 	}
 	if err != nil {
@@ -118,8 +149,12 @@ func (p *Pipeline) executeCronPause(ctx context.Context, op *model.Operation, cl
 	if result.Outcome != effect.OutcomeSucceeded {
 		return &OperationResult{Claim: claim, Status: model.OperationFailed, Message: "Nomad cron pause request failed"}
 	}
+	return p.completeCronPause(ctx, claim, r, result)
+}
+
+func (p *Pipeline) completeCronPause(ctx context.Context, claim store.OperationClaim, r cronPauseRequest, result effect.ExecuteResult) *OperationResult {
 	message := fmt.Sprintf("%s cron process %q paused", r.App, r.Process)
-	metadata := map[string]interface{}{"process": r.Process, "schedule": r.Schedule, "jobId": r.JobID, "effectId": result.EffectID, "effectReused": result.Reused}
+	metadata := map[string]interface{}{"process": r.Process, "schedule": r.Schedule, "timezone": r.TimeZone, "jobId": r.JobID, "version": r.Version, "modifyIndex": r.ModifyIndex, "effectId": result.EffectID, "effectReused": result.Reused}
 	if err := p.finishCronPauseIntent(ctx, claim, r, message, metadata); err != nil {
 		return deferredResult(claim, &effect.PendingError{EffectID: result.EffectID, Resource: cronPauseResource(r), Reason: "persist cron pause state", Cause: err})
 	}
@@ -156,6 +191,13 @@ func (s *nomadCronPauseSupervisor) Launch(ctx context.Context, r effect.Reservat
 	if err = s.db.CheckOperationClaim(ctx, claim); err != nil {
 		return effect.ExecutionIdentity{}, err
 	}
+	state, err := s.client.PeriodicJobSchedule(q.JobID)
+	if err != nil {
+		return effect.ExecutionIdentity{}, err
+	}
+	if state.Paused || !cronPauseIntentMatches(q, state, true) {
+		return effect.ExecutionIdentity{}, fmt.Errorf("Nomad periodic job no longer matches cron pause intent")
+	}
 	err = s.client.StopJob(q.JobID, false)
 	if err != nil { // Deregistration may have committed before a transport error; Query is authoritative.
 		if state, checkErr := s.client.PeriodicJobSchedule(q.JobID); checkErr != nil || !state.Paused {
@@ -173,7 +215,13 @@ func (s *nomadCronPauseSupervisor) Query(ctx context.Context, r effect.Reservati
 	if err != nil {
 		return effect.Observation{}, err
 	}
-	out, _ := json.Marshal(map[string]interface{}{"jobId": q.JobID, "status": state.Status, "paused": state.Paused})
+	if !cronPauseIntentMatches(q, state, false) {
+		return effect.Observation{}, fmt.Errorf("Nomad periodic job no longer matches cron pause intent")
+	}
+	// Omit Nomad's mutable status and ModifyIndex from the result: recovery
+	// retrieves this output later and must validate the same stopped evidence
+	// even after Nomad advances bookkeeping indexes.
+	out, _ := json.Marshal(map[string]interface{}{"jobId": q.JobID, "paused": state.Paused, "schedule": state.Schedule, "timezone": state.TimeZone})
 	id.Supervisor, id.SupervisorExecutionID = r.Supervisor, r.SupervisorExecutionID
 	if id.RuntimeInstanceID == "" {
 		id.RuntimeInstanceID = "nomad-cron-pause:" + r.SupervisorExecutionID
@@ -196,7 +244,48 @@ func cronPauseRequestFromReservation(r effect.Reservation) (cronPauseRequest, er
 	if err := json.Unmarshal(r.LaunchPayload, &q); err != nil {
 		return q, err
 	}
-	return cronPauseRequestFromOperation(&model.Operation{App: q.App, Payload: map[string]interface{}{"process": q.Process, "schedule": q.Schedule, "jobId": q.JobID}})
+	return cronPauseRequestFromOperation(&model.Operation{App: q.App, Payload: map[string]interface{}{"process": q.Process, "schedule": q.Schedule, "timezone": q.TimeZone, "jobId": q.JobID, "version": q.Version, "modifyIndex": q.ModifyIndex}})
+}
+
+func cronPauseIntentMatches(q cronPauseRequest, state *nomad.PeriodicJobInfo, requireRevision bool) bool {
+	if state == nil || state.JobID != q.JobID || state.Schedule != q.Schedule || state.TimeZone != q.TimeZone {
+		return false
+	}
+	return !requireRevision || (state.Version == q.Version && state.ModifyIndex == q.ModifyIndex)
+}
+
+func uint64FromMap(values map[string]interface{}, key string) uint64 {
+	if values == nil {
+		return 0
+	}
+	switch v := values[key].(type) {
+	case string:
+		n, err := strconv.ParseUint(v, 10, 64)
+		if err == nil && n > 0 {
+			return n
+		}
+	case uint64:
+		return v
+	case uint:
+		return uint64(v)
+	case int:
+		if v > 0 {
+			return uint64(v)
+		}
+	case int64:
+		if v > 0 {
+			return uint64(v)
+		}
+	case float64:
+		if v > 0 && v == float64(uint64(v)) {
+			return uint64(v)
+		}
+	case json.Number:
+		if n, err := v.Int64(); err == nil && n > 0 {
+			return uint64(n)
+		}
+	}
+	return 0
 }
 
 type nomadCronPauseVerifier struct{}

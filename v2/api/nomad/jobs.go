@@ -539,6 +539,8 @@ type PeriodicJobInfo struct {
 	JobID           string `json:"jobId"`
 	Schedule        string `json:"schedule"`
 	TimeZone        string `json:"timezone,omitempty"`
+	Version         uint64 `json:"version"`
+	ModifyIndex     uint64 `json:"modifyIndex"`
 	SubmittedAt     string `json:"submittedAt,omitempty"`
 	Paused          bool   `json:"paused"`
 	Status          string `json:"status"`
@@ -559,6 +561,12 @@ func (c *Client) PeriodicJobSchedule(jobID string) (*PeriodicJobInfo, error) {
 	info := &PeriodicJobInfo{
 		JobID:  jobID,
 		Status: *job.Status,
+	}
+	if job.Version != nil {
+		info.Version = *job.Version
+	}
+	if job.ModifyIndex != nil {
+		info.ModifyIndex = *job.ModifyIndex
 	}
 	if job.SubmitTime != nil {
 		info.SubmittedAt = time.Unix(0, *job.SubmitTime).Format(time.RFC3339)
