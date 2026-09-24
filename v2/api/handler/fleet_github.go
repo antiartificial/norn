@@ -161,7 +161,7 @@ func (h *Handler) ReconcileFleetGitHubReservation(w http.ResponseWriter, r *http
 		return
 	}
 	defer release()
-	op, found, err := h.existingFleetGitHubOperation(r, plan.ID, kind)
+	op, found, err := h.resolveFleetGitHubOperation(r, plan.ID, kind)
 	if err != nil {
 		writeOperationAcceptanceError(w, r, err)
 		return
@@ -172,12 +172,25 @@ func (h *Handler) ReconcileFleetGitHubReservation(w http.ResponseWriter, r *http
 	}
 	if op.Status.Terminal() {
 		op.AttachReceipt()
-		writeJSON(w, map[string]interface{}{"operation": op, "outcome": "already-terminal"})
+		outcome := "already-terminal"
+		if completion, ok := op.Metadata["fleetGitHubCompletion"].(map[string]interface{}); ok {
+			if result, ok := completion["result"].(map[string]interface{}); ok {
+				if recorded, ok := result["outcome"].(string); ok && recorded != "" {
+					outcome = recorded
+				}
+			}
+		}
+		writeJSON(w, map[string]interface{}{"operation": op, "outcome": outcome})
 		return
 	}
 	var observed *githubapp.Reconciliation
 	if kind == "fleet.github.pull-request" {
-		observed, err = h.fleetGitHub.ReconcilePullRequest(r.Context(), plan.ID)
+		typed, planErr := typedCapacityPlan(plan)
+		if planErr != nil || !h.verifyCapacityPlan(typed) {
+			WriteControlProblem(w, r, http.StatusConflict, "fleet_plan_invalid", "stored fleet capacity plan is invalid")
+			return
+		}
+		observed, err = h.fleetGitHub.ReconcilePullRequest(r.Context(), typed.ID, typed.Digest, typed.Pool, typed.Action, typed.Proposed, typed.SourceDigest)
 	} else {
 		binding, bindErr := h.db.GetFleetGitHubDispatch(r.Context(), plan.ID)
 		if bindErr != nil {
@@ -518,6 +531,25 @@ func (h *Handler) fleetGitHubAcceptanceAudit(r *http.Request) (store.AcceptanceA
 }
 
 func (h *Handler) existingFleetGitHubOperation(r *http.Request, planID, kind string) (*model.Operation, bool, error) {
+	operation, found, err := h.resolveFleetGitHubOperation(r, planID, kind)
+	if err != nil || !found {
+		return operation, found, err
+	}
+	switch operation.Status {
+	case model.OperationSucceeded:
+		return operation, true, nil
+	case model.OperationQueued:
+		return operation, false, nil
+	default:
+		identity, identityErr := h.fleetGitHubOperationIdentity(r.Context(), planID, kind)
+		if identityErr != nil {
+			return nil, false, identityErr
+		}
+		return nil, false, &store.AcceptanceConflictError{Identity: identity}
+	}
+}
+
+func (h *Handler) resolveFleetGitHubOperation(r *http.Request, planID, kind string) (*model.Operation, bool, error) {
 	identity, err := h.fleetGitHubOperationIdentity(r.Context(), planID, kind)
 	if err != nil {
 		return nil, false, err
@@ -536,17 +568,7 @@ func (h *Handler) existingFleetGitHubOperation(r *http.Request, planID, kind str
 	if accepted.Operation.Kind != kind || accepted.Operation.Ref != planID {
 		return nil, false, &store.AcceptanceConflictError{Identity: identity}
 	}
-	switch accepted.Operation.Status {
-	case model.OperationSucceeded:
-		return &accepted.Operation, true, nil
-	case model.OperationQueued:
-		// A process may have crashed after admission. Re-entering the action is
-		// safe because the GitHub clients recover by deterministic branch or
-		// dispatch nonce, and completion rejects a different result.
-		return &accepted.Operation, false, nil
-	default:
-		return nil, false, &store.AcceptanceConflictError{Identity: identity}
-	}
+	return &accepted.Operation, true, nil
 }
 
 // reserveFleetGitHubOperation admits a signed, immutable intent and its

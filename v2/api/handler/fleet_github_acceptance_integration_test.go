@@ -43,6 +43,9 @@ func TestFleetGitHubReceiptUsesSignedAtomicAcceptance(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	if queued, found, err := h.resolveFleetGitHubOperation(req, planID, "fleet.github.pull-request"); err != nil || !found || queued.ID != first.ID || queued.Status != model.OperationQueued {
+		t.Fatalf("queued reconciliation lookup=%+v found=%v err=%v", queued, found, err)
+	}
 	second, err := h.reserveFleetGitHubOperation(req, principal, planID, "fleet.github.pull-request", payload)
 	if err != nil {
 		t.Fatal(err)
@@ -165,6 +168,34 @@ func TestFleetGitHubReceiptUsesSignedAtomicAcceptance(t *testing.T) {
 	}
 	if !strings.Contains(string(canonical), "fleet.github.pull-request") || !strings.Contains(string(canonical), planID) {
 		t.Fatalf("signed receipt does not bind fleet GitHub operation: %s", canonical)
+	}
+}
+
+func TestFleetGitHubVerifiedNoWriteCompletionIsIdempotent(t *testing.T) {
+	db := acceptanceIntegrationDB(t)
+	h := New(db, nil, nil, nil, &config.Config{AuditSigningKey: "fleet-github-no-write-key-0001"}, nil, nil, nil, nil, nil, nil)
+	const planID = "8d4b716d-788a-4e43-8f0b-5d4b8f3a2a4c"
+	if err := db.ReserveMutationAudit(context.Background(), &store.MutationAuditEvent{ID: "receipt-no-write", RequestID: "request-no-write", PrincipalSubject: "operator-1", Method: http.MethodPost, Path: "/api/v1/fleet/plans/{planID}/github/reconcile", StartedAt: time.Now().UTC()}); err != nil {
+		t.Fatal(err)
+	}
+	req := httptest.NewRequest(http.MethodPost, "/api/v1/fleet/plans/"+planID+"/github/reconcile", nil)
+	req = withOperationAcceptanceRequestContext(req, operationAcceptanceRequestContext{ReceiptID: "receipt-no-write", RequestID: "request-no-write", Actor: verifiedOperationActor{Issuer: "https://access.example.test", Subject: "operator-1", CredentialID: "token-1", DeviceID: "device-1", Source: string(AccessPrincipalSourceManagedToken), Scopes: []string{ScopeAPIWrite}}})
+	reserved, err := h.reserveFleetGitHubOperation(req, AccessPrincipal{Subject: "operator-1"}, planID, "fleet.github.pull-request", map[string]interface{}{"planId": planID})
+	if err != nil {
+		t.Fatal(err)
+	}
+	result := map[string]interface{}{"planId": planID, "outcome": "verified-no-write", "verifiedAt": "2026-09-24T12:00:00Z"}
+	first, err := h.finishFleetGitHubReservation(context.Background(), reserved.ID, planID, "fleet.github.pull-request", model.OperationCanceled, "verified no write", result)
+	if err != nil {
+		t.Fatal(err)
+	}
+	second, err := h.finishFleetGitHubReservation(context.Background(), reserved.ID, planID, "fleet.github.pull-request", model.OperationCanceled, "verified no write", result)
+	if err != nil || first.ID != second.ID || second.Status != model.OperationCanceled {
+		t.Fatalf("idempotent completion first=%+v second=%+v err=%v", first, second, err)
+	}
+	resolved, found, err := h.resolveFleetGitHubOperation(req, planID, "fleet.github.pull-request")
+	if err != nil || !found || resolved.Status != model.OperationCanceled {
+		t.Fatalf("terminal reconciliation lookup=%+v found=%v err=%v", resolved, found, err)
 	}
 }
 
