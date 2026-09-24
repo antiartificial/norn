@@ -188,6 +188,7 @@ type Config struct {
 	EvidenceReserve              string        // NORN_EVIDENCE_RESERVE: enforce | disabled
 	EvidenceReserveMaxPending    int           // NORN_EVIDENCE_RESERVE_MAX_PENDING
 	EvidenceReserveMaxPendingAge time.Duration // NORN_EVIDENCE_RESERVE_MAX_PENDING_AGE
+	EvidenceReserveSignedBytes   int64         // NORN_EVIDENCE_RESERVE_MAX_SIGNED_ACCEPTANCE_BYTES (0 disables this narrow gate)
 	EvidenceReserveMinFreeBytes  int64         // NORN_EVIDENCE_RESERVE_MIN_FREE_BYTES (local archive headroom)
 	// Diagnostic log collection (separate from evidence): unset directory
 	// disables it. Limits bound the spool; the oldest output is dropped and
@@ -323,6 +324,7 @@ func Load() *Config {
 		EvidenceReserve:              strings.ToLower(envOr("NORN_EVIDENCE_RESERVE", "enforce")),
 		EvidenceReserveMaxPending:    envIntOr("NORN_EVIDENCE_RESERVE_MAX_PENDING", 10000),
 		EvidenceReserveMaxPendingAge: envDurationOr("NORN_EVIDENCE_RESERVE_MAX_PENDING_AGE", 24*time.Hour),
+		EvidenceReserveSignedBytes:   envInt64Or("NORN_EVIDENCE_RESERVE_MAX_SIGNED_ACCEPTANCE_BYTES", 0),
 		EvidenceReserveMinFreeBytes:  envInt64Or("NORN_EVIDENCE_RESERVE_MIN_FREE_BYTES", 1<<30),
 		LogSpoolDir:                  strings.TrimSpace(os.Getenv("NORN_LOG_SPOOL_DIR")),
 		LogSpoolMaxBytes:             envInt64Or("NORN_LOG_SPOOL_MAX_BYTES", 1<<30),

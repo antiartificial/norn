@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -468,7 +469,7 @@ func TestControlAuthorityIsPersistedAndExpectedMatchIsEnforced(t *testing.T) {
 	if err := dbs[0].Pool.QueryRow(context.Background(), `SELECT current_migration_version,minimum_writer_version FROM norn_schema_compatibility WHERE singleton=true`).Scan(&version, &minimumWriter); err != nil {
 		t.Fatal(err)
 	}
-	if version != 13 || minimumWriter != RestartEffectSourceWriterVersion {
+	if version != 14 || minimumWriter != SignedAcceptanceByteReserveWriterVersion {
 		t.Fatalf("schema version=%d minimum writer=%d", version, minimumWriter)
 	}
 }
@@ -484,12 +485,12 @@ func TestAcceptanceReservesEvidenceAtomicallyAndReplaysDuringExhaustion(t *testi
 	if err != nil {
 		t.Fatal(err)
 	}
-	var pending, operations int
-	if err := dbs[0].Pool.QueryRow(ctx, `SELECT (SELECT count(*) FROM evidence_archive_intents WHERE state = 'pending'), (SELECT count(*) FROM operations)`).Scan(&pending, &operations); err != nil {
+	var pending, operations, reservations int
+	if err := dbs[0].Pool.QueryRow(ctx, `SELECT (SELECT count(*) FROM evidence_archive_intents WHERE state = 'pending'), (SELECT count(*) FROM operations), (SELECT count(*) FROM signed_acceptance_byte_reservations)`).Scan(&pending, &operations, &reservations); err != nil {
 		t.Fatal(err)
 	}
-	if pending != 1 || operations != 1 {
-		t.Fatalf("first acceptance pending=%d operations=%d", pending, operations)
+	if pending != 1 || operations != 1 || reservations != 1 {
+		t.Fatalf("first acceptance pending=%d operations=%d reservations=%d", pending, operations, reservations)
 	}
 	// Identity resolution precedes reserve admission, so a retry remains an
 	// exact replay even when the one-slot reserve is now full.
@@ -503,11 +504,11 @@ func TestAcceptanceReservesEvidenceAtomicallyAndReplaysDuringExhaustion(t *testi
 	if _, err := stores[1].Accept(ctx, second); !errors.As(err, &exhausted) {
 		t.Fatalf("new acceptance under exhaustion error=%v", err)
 	}
-	if err := dbs[0].Pool.QueryRow(ctx, `SELECT (SELECT count(*) FROM evidence_archive_intents WHERE state = 'pending'), (SELECT count(*) FROM operations)`).Scan(&pending, &operations); err != nil {
+	if err := dbs[0].Pool.QueryRow(ctx, `SELECT (SELECT count(*) FROM evidence_archive_intents WHERE state = 'pending'), (SELECT count(*) FROM operations), (SELECT count(*) FROM signed_acceptance_byte_reservations)`).Scan(&pending, &operations, &reservations); err != nil {
 		t.Fatal(err)
 	}
-	if pending != 1 || operations != 1 {
-		t.Fatalf("exhausted acceptance wrote rows pending=%d operations=%d", pending, operations)
+	if pending != 1 || operations != 1 || reservations != 1 {
+		t.Fatalf("exhausted acceptance wrote rows pending=%d operations=%d reservations=%d", pending, operations, reservations)
 	}
 }
 
@@ -555,6 +556,104 @@ func TestAcceptanceEvidenceReservationSerializesConcurrentNewRequests(t *testing
 	}
 	if pending != 1 || operations != 1 {
 		t.Fatalf("concurrent reservation wrote pending=%d operations=%d", pending, operations)
+	}
+}
+
+func TestSignedAcceptanceByteReserveRejectsOversizedPayloadAtomically(t *testing.T) {
+	stores, dbs := acceptanceIntegrationStores(t, 1)
+	ctx := context.Background()
+	if err := dbs[0].SetEvidenceReservePolicy(ctx, EvidenceReservePolicy{
+		Enabled: true, MaxPending: 100, MaxPendingAge: time.Hour,
+		MaxSignedAcceptanceBytes: 1,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	a := newAcceptance(t, stores[0], "byte-oversized", "operator", "byte-oversized", false)
+	var exhausted *EvidenceReserveExhaustedError
+	if _, err := stores[0].Accept(ctx, a); !errors.As(err, &exhausted) {
+		t.Fatalf("oversized acceptance error=%v", err)
+	}
+	var rows int
+	if err := dbs[0].Pool.QueryRow(ctx, `SELECT
+		(SELECT count(*) FROM operation_request_identities) +
+		(SELECT count(*) FROM operations) +
+		(SELECT count(*) FROM operation_acceptance_intents) +
+		(SELECT count(*) FROM signed_acceptance_byte_reservations) +
+		(SELECT count(*) FROM evidence_archive_intents)`).Scan(&rows); err != nil {
+		t.Fatal(err)
+	}
+	if rows != 0 {
+		t.Fatalf("oversized acceptance left %d durable rows", rows)
+	}
+}
+
+func TestSignedAcceptanceByteReserveSerializesConcurrentCapacity(t *testing.T) {
+	stores, dbs := acceptanceIntegrationStores(t, 2)
+	ctx := context.Background()
+	const maxSignedBytes = int64(900 << 10)
+	if err := dbs[0].SetEvidenceReservePolicy(ctx, EvidenceReservePolicy{
+		Enabled: true, MaxPending: 100, MaxPendingAge: time.Hour,
+		MaxSignedAcceptanceBytes: maxSignedBytes,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	requests := []OperationAcceptance{
+		newAcceptance(t, stores[0], "byte-race-one", "operator", "byte-race-one", false),
+		newAcceptance(t, stores[1], "byte-race-two", "operator", "byte-race-two", false),
+	}
+	for index := range requests {
+		requests[index].Semantics["boundedEvidenceFixture"] = strings.Repeat("x", 600<<10)
+		var err error
+		requests[index].Fingerprint, err = CanonicalOperationRequestFingerprint(requests[index])
+		if err != nil {
+			t.Fatal(err)
+		}
+	}
+	errs := make(chan error, len(requests))
+	var wait sync.WaitGroup
+	for index := range requests {
+		wait.Add(1)
+		go func(index int) {
+			defer wait.Done()
+			_, err := stores[index].Accept(ctx, requests[index])
+			errs <- err
+		}(index)
+	}
+	wait.Wait()
+	close(errs)
+	var acceptedCount, exhaustedCount int
+	for err := range errs {
+		switch {
+		case err == nil:
+			acceptedCount++
+		default:
+			var exhausted *EvidenceReserveExhaustedError
+			if !errors.As(err, &exhausted) {
+				t.Fatalf("concurrent byte admission error=%v", err)
+			}
+			exhaustedCount++
+		}
+	}
+	if acceptedCount != 1 || exhaustedCount != 1 {
+		t.Fatalf("concurrent byte outcomes accepted=%d exhausted=%d", acceptedCount, exhaustedCount)
+	}
+	var reservations int
+	var reservedBytes, persistedPayloadBytes int64
+	if err := dbs[0].Pool.QueryRow(ctx, `SELECT count(*), sum(r.reserved_bytes),
+		min(octet_length(i.request_canonical_bytes) + octet_length(i.canonical_bytes) + octet_length(convert_to(i.signature, 'UTF8')))
+		FROM signed_acceptance_byte_reservations r
+		JOIN operation_acceptance_intents i ON i.id = r.acceptance_intent_id`).Scan(&reservations, &reservedBytes, &persistedPayloadBytes); err != nil {
+		t.Fatal(err)
+	}
+	if reservations != 1 || reservedBytes != persistedPayloadBytes || reservedBytes > maxSignedBytes {
+		t.Fatalf("signed acceptance reservations count=%d reserved=%d persistedPayload=%d", reservations, reservedBytes, persistedPayloadBytes)
+	}
+	status, err := dbs[0].EvidenceReserve(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if status.ReservedSignedAcceptanceBytes != reservedBytes || status.MaxSignedAcceptanceBytes != maxSignedBytes {
+		t.Fatalf("reserve status=%+v", status)
 	}
 }
 

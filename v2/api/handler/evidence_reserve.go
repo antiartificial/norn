@@ -32,7 +32,7 @@ func (h *Handler) EvidenceReserveAdmissionMiddleware(next http.Handler) http.Han
 		}
 		if status.Exhausted {
 			w.Header().Set("Retry-After", "60")
-			WriteControlProblem(w, r, http.StatusServiceUnavailable, "evidence_reserve_exhausted", "audited mutations are refused until evidence is archived: "+strings.Join(status.Reasons, "; "))
+			WriteControlProblem(w, r, http.StatusServiceUnavailable, "evidence_reserve_exhausted", "audited mutations are refused until evidence reserve capacity is restored: "+strings.Join(status.Reasons, "; "))
 			return
 		}
 		next.ServeHTTP(w, r)

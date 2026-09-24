@@ -82,6 +82,9 @@ func TestEvidenceReservePolicyIsDurableAndOnlyExplicitlyDisabled(t *testing.T) {
 	if err := applyEvidenceReservePolicy(ctx, cfg, db, true); err != nil || !enabled() {
 		t.Fatalf("archive-configured process = %v, enabled %v", err, enabled())
 	}
+	if status, err := db.EvidenceReserve(ctx); err != nil || status.MaxSignedAcceptanceBytes != 0 {
+		t.Fatalf("default signed-acceptance byte gate = %+v, %v", status, err)
+	}
 	if err := applyEvidenceReservePolicy(ctx, cfg, db, false); err != nil || !enabled() {
 		t.Fatalf("process without an archive lifted the reserve: %v", err)
 	}
