@@ -23,11 +23,13 @@ type AttestedSnapshotArtifact struct {
 	SHA256          string
 	Size            int64
 	Copy            func(io.Writer) error
-	// Fence must prove the operation claim is still live. It is called before
-	// provenance and again immediately before publication; a stale worker may
-	// stage bytes but cannot create a trusted snapshot pair.
-	Fence func() error
+	// Fence holds operation ownership while it runs the sidecar and dump
+	// publication callback. A stale worker may stage bytes but cannot create a
+	// trusted public pair after claim turnover.
+	Fence func(func() error) error
 }
+
+var linkAttestedSnapshot = os.Link
 
 // PublishAttestedSnapshot stages verified node-local bytes and publishes with
 // the existing sidecar-first, no-replace contract. The operation-derived label
@@ -50,7 +52,7 @@ func PublishAttestedSnapshot(location snapshotLocation, at time.Time, artifact A
 	filename := fmt.Sprintf("%s_%s_%s.dump", location.database, label, at.UTC().Format("20060102T150405"))
 	path := filepath.Join(location.dir, filename)
 	if info, err := os.Lstat(path); err == nil {
-		if err := artifact.Fence(); err != nil {
+		if err := artifact.Fence(func() error { return nil }); err != nil {
 			return nil, fmt.Errorf("snapshot claim fence before replay: %w", err)
 		}
 		if !info.Mode().IsRegular() || info.Size() != artifact.Size || verifyBoundDump(location, filename, info.Size()) != nil {
@@ -92,17 +94,14 @@ func PublishAttestedSnapshot(location snapshotLocation, at time.Time, artifact A
 	if err != nil || !info.Mode().IsRegular() || info.Size() != artifact.Size || hex.EncodeToString(hash.Sum(nil)) != artifact.SHA256 {
 		return nil, fmt.Errorf("attested artifact bytes do not match manifest")
 	}
-	if err := artifact.Fence(); err != nil {
-		return nil, fmt.Errorf("snapshot claim fence before provenance: %w", err)
-	}
-	if err := ensureAttestedSidecar(location, filename, artifact.SHA256, artifact.Size); err != nil {
-		return nil, err
-	}
-	if err := artifact.Fence(); err != nil {
-		return nil, fmt.Errorf("snapshot claim fence before publication: %w", err)
-	}
-	if err := os.Link(tmpPath, path); err != nil {
-		if err == fs.ErrExist {
+	err = artifact.Fence(func() error {
+		if err := ensureAttestedSidecar(location, filename, artifact.SHA256, artifact.Size); err != nil {
+			return err
+		}
+		return linkAttestedSnapshot(tmpPath, path)
+	})
+	if err != nil {
+		if errors.Is(err, fs.ErrExist) {
 			if info, e := os.Lstat(path); e == nil && info.Mode().IsRegular() && info.Size() == artifact.Size && verifyBoundDump(location, filename, info.Size()) == nil {
 				if digest, e := fileSHA256(path); e == nil && digest == artifact.SHA256 {
 					return &dataSnapshot{Filename: filename, Timestamp: at.UTC().Format("20060102T150405"), Size: info.Size()}, nil
@@ -110,7 +109,7 @@ func PublishAttestedSnapshot(location snapshotLocation, at time.Time, artifact A
 			}
 			return nil, fmt.Errorf("snapshot publication raced with different bytes")
 		}
-		return nil, err
+		return nil, fmt.Errorf("snapshot claim fence before publication: %w", err)
 	}
 	return &dataSnapshot{Filename: filename, Timestamp: at.UTC().Format("20060102T150405"), Size: artifact.Size}, nil
 }

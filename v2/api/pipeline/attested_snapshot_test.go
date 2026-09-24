@@ -23,7 +23,12 @@ func testAttestedSnapshotLocation(t *testing.T) snapshotLocation {
 
 func testAttestedArtifact(operationID string, data []byte, fence func() error) AttestedSnapshotArtifact {
 	digest := sha256.Sum256(data)
-	return AttestedSnapshotArtifact{OperationID: operationID, ClaimGeneration: 1, SHA256: hex.EncodeToString(digest[:]), Size: int64(len(data)), Copy: func(w io.Writer) error { _, err := w.Write(data); return err }, Fence: fence}
+	return AttestedSnapshotArtifact{OperationID: operationID, ClaimGeneration: 1, SHA256: hex.EncodeToString(digest[:]), Size: int64(len(data)), Copy: func(w io.Writer) error { _, err := w.Write(data); return err }, Fence: func(publish func() error) error {
+		if err := fence(); err != nil {
+			return err
+		}
+		return publish()
+	}}
 }
 
 func TestPublishAttestedSnapshotReconcilesCrashOrphans(t *testing.T) {
@@ -77,7 +82,7 @@ func TestPublishAttestedSnapshotFencesReplay(t *testing.T) {
 	if _, err := PublishAttestedSnapshot(location, at, artifact); err != nil {
 		t.Fatal(err)
 	}
-	artifact.Fence = func() error { return errors.New("claim expired") }
+	artifact.Fence = func(func() error) error { return errors.New("claim expired") }
 	if _, err := PublishAttestedSnapshot(location, at, artifact); err == nil || !strings.Contains(err.Error(), "before replay") {
 		t.Fatalf("stale replay = %v", err)
 	}

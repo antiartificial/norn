@@ -447,6 +447,71 @@ func TestSupervisedPostgresSnapshotReservationReplayAfterPublicationCrash(t *tes
 	}
 }
 
+// This deliberately pauses at os.Link while WithOperationClaimFence holds the
+// operation row. A concurrent claim transition must remain blocked until the
+// public sidecar/dump pair is complete; checking ownership before Link alone
+// would let this test turn the claim over and then publish stale bytes.
+func TestAttestedSnapshotPublicationHoldsClaimFenceThroughLink(t *testing.T) {
+	server := pgtest.Start(t)
+	controlDatabase, targetDatabase := "norn_snapshot_fence_control", "norn_snapshot_fence_target"
+	server.CreateDatabase(t, controlDatabase)
+	server.CreateDatabase(t, targetDatabase)
+	t.Setenv("NORN_TEST_DATABASE_URL", server.URL(controlDatabase))
+	t.Setenv("NORN_TEST_RECOVERY_TARGET_DATABASE_URL", server.URL(targetDatabase))
+	f := newTargetFixture(t)
+	ctx := context.Background()
+	if _, err := f.db.ActivateDatabaseCatalog(ctx, 0, f.catalog, "operator"); err != nil {
+		t.Fatal(err)
+	}
+	op, err := f.queue(t, "app.snapshot", map[string]interface{}{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	claimed, claim, err := f.db.ClaimNextOperation(ctx, "publication-worker", time.Minute, []string{"app.snapshot"})
+	if err != nil || claimed == nil || claimed.ID != op.ID {
+		t.Fatalf("claim = %+v, %v", claimed, err)
+	}
+
+	originalLink := linkAttestedSnapshot
+	enteredLink := make(chan struct{})
+	releaseLink := make(chan struct{})
+	linkAttestedSnapshot = func(oldname, newname string) error {
+		close(enteredLink)
+		<-releaseLink
+		return originalLink(oldname, newname)
+	}
+	t.Cleanup(func() { linkAttestedSnapshot = originalLink })
+
+	artifact := testAttestedArtifact(op.ID, []byte("attested snapshot bytes"), func() error { return nil })
+	artifact.Fence = func(publish func() error) error {
+		return f.db.WithOperationClaimFence(ctx, claim, publish)
+	}
+	location := testAttestedSnapshotLocation(t)
+	published := make(chan error, 1)
+	go func() {
+		_, err := PublishAttestedSnapshot(location, time.Date(2026, 9, 24, 12, 0, 0, 0, time.UTC), artifact)
+		published <- err
+	}()
+	<-enteredLink
+
+	transitioned := make(chan error, 1)
+	go func() {
+		transitioned <- f.db.DeferClaimedOperation(ctx, claim, "claim turnover", time.Now().Add(-time.Second), nil)
+	}()
+	select {
+	case err := <-transitioned:
+		t.Fatalf("claim transitioned while Link was paused: %v", err)
+	case <-time.After(100 * time.Millisecond):
+	}
+	close(releaseLink)
+	if err := <-published; err != nil {
+		t.Fatalf("publication = %v", err)
+	}
+	if err := <-transitioned; err != nil {
+		t.Fatalf("claim transition after publication = %v", err)
+	}
+}
+
 func TestDatabaseTargetsBindAcceptanceAndDriveSnapshotRestoreMigration(t *testing.T) {
 	f := newTargetFixture(t)
 	ctx := context.Background()

@@ -468,6 +468,40 @@ func (db *DB) CheckOperationClaim(ctx context.Context, claim OperationClaim) err
 	return err
 }
 
+// WithOperationClaimFence runs publish while holding the claimed operation
+// row. Claim expiry or replacement therefore cannot pass between the final
+// ownership check and a node-local publication. The callback must stay small:
+// it is deliberately limited to the irreversible publication boundary.
+func (db *DB) WithOperationClaimFence(ctx context.Context, claim OperationClaim, publish func() error) (err error) {
+	if err := validateOperationClaim(claim); err != nil {
+		return err
+	}
+	if publish == nil {
+		return fmt.Errorf("operation claim publication callback is required")
+	}
+	tx, err := db.Pool.Begin(ctx)
+	if err != nil {
+		return err
+	}
+	defer func() {
+		if err != nil {
+			_ = tx.Rollback(ctx)
+			return
+		}
+		err = tx.Commit(ctx)
+	}()
+	var held bool
+	err = tx.QueryRow(ctx, `SELECT true FROM operations WHERE id = $1 AND status = 'running' AND locked_by = $2
+		AND lock_generation = $3 AND locked_until > clock_timestamp() FOR UPDATE`, claim.OperationID(), claim.OwnerID(), claim.Generation()).Scan(&held)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return ownershipLost(claim)
+	}
+	if err != nil {
+		return err
+	}
+	return publish()
+}
+
 func (db *DB) FinishClaimedOperation(ctx context.Context, claim OperationClaim, status model.OperationStatus, message string, metadata map[string]interface{}) error {
 	if err := validateOperationClaim(claim); err != nil {
 		return err
