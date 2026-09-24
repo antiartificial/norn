@@ -34,7 +34,7 @@ func TestCompletedSnapshotOperationsQueriesDurableSuccessesWithRealPostgres(t *t
 		op       *model.Operation
 		identity effect.ExecutionIdentity
 	}
-	complete := func(rootID, executionID string) completed {
+	complete := func(rootID, executionID string, outcome effect.Outcome) completed {
 		op := insertOperationFixture(t, db, "app.snapshot", 1, map[string]interface{}{})
 		claimed, claim, err := db.ClaimNextOperation(ctx, "snapshot-worker", time.Minute, []string{"app.snapshot"})
 		if err != nil || claimed == nil || claimed.ID != op.ID {
@@ -54,8 +54,12 @@ func TestCompletedSnapshotOperationsQueriesDurableSuccessesWithRealPostgres(t *t
 		if err := store.MarkLaunched(ctx, reserved.Record.Token, identity); err != nil {
 			t.Fatal(err)
 		}
-		verification := effectVerification(reservation, identity.RuntimeInstanceID, effect.VerificationSucceeded)
-		if err := store.Complete(ctx, reserved.Record.Token, effect.Completion{Outcome: effect.OutcomeSucceeded, Verification: verification}); err != nil {
+		decision := effect.VerificationSucceeded
+		if outcome == effect.OutcomeFailed {
+			decision = effect.VerificationFailed
+		}
+		verification := effectVerification(reservation, identity.RuntimeInstanceID, decision)
+		if err := store.Complete(ctx, reserved.Record.Token, effect.Completion{Outcome: outcome, Verification: verification}); err != nil {
 			t.Fatal(err)
 		}
 		if err := db.FinishClaimedOperation(ctx, claim, model.OperationSucceeded, "snapshot published", nil); err != nil {
@@ -63,8 +67,9 @@ func TestCompletedSnapshotOperationsQueriesDurableSuccessesWithRealPostgres(t *t
 		}
 		return completed{op: op, identity: identity}
 	}
-	replicaA := complete("root-a", "snapshot-a")
-	_ = complete("root-b", "snapshot-b")
+	replicaA := complete("root-a", "snapshot-a", effect.OutcomeSucceeded)
+	_ = complete("root-b", "snapshot-b", effect.OutcomeSucceeded)
+	_ = complete("root-a", "snapshot-failed", effect.OutcomeFailed)
 	records, err := store.CompletedSnapshotOperations(ctx, "root-a")
 	if err != nil || len(records) != 1 || records[0].Reservation.OperationClaim.OperationID != replicaA.op.ID || records[0].Execution != replicaA.identity {
 		t.Fatalf("completed snapshot records = %+v, %v", records, err)

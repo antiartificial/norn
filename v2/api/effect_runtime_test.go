@@ -209,7 +209,7 @@ func TestConfigureSnapshotEffectsReconcilesPublishedArtifactAfterRestart(t *test
 	if err := effects.MarkLaunched(ctx, reserved.Record.Token, identity); err != nil {
 		t.Fatal(err)
 	}
-	verification := effect.Verification{Decision: effect.VerificationSucceeded, InputDigest: reservation.InputDigest, ResultDigest: effect.DigestInput([]byte("manifest")), ResultReference: "result/" + reservation.SupervisorExecutionID, SupervisorExecutionID: reservation.SupervisorExecutionID, RuntimeInstanceID: identity.RuntimeInstanceID, EvidenceSource: "test", EvidenceReference: "test/" + identity.RuntimeInstanceID, ObservedAt: time.Now().UTC()}
+	verification := effect.Verification{Decision: effect.VerificationSucceeded, InputDigest: reservation.InputDigest, ResultDigest: effect.DigestInput([]byte("manifest")), ResultReference: "result/" + reservation.SupervisorExecutionID, SupervisorExecutionID: reservation.SupervisorExecutionID, RuntimeInstanceID: identity.RuntimeInstanceID, EvidenceSource: "norn-effect-supervisor/v1", EvidenceReference: "test/" + identity.RuntimeInstanceID, ObservedAt: time.Now().UTC()}
 	if err := effects.Complete(ctx, reserved.Record.Token, effect.Completion{Outcome: effect.OutcomeSucceeded, Verification: verification}); err != nil {
 		t.Fatal(err)
 	}
@@ -268,7 +268,7 @@ func TestConfigureSnapshotEffectsReconcilesPublishedArtifactAfterRestart(t *test
 	if err := effects.MarkLaunched(ctx, foreignReserved.Record.Token, foreignIdentity); err != nil {
 		t.Fatal(err)
 	}
-	foreignVerification := effect.Verification{Decision: effect.VerificationSucceeded, InputDigest: foreignReservation.InputDigest, ResultDigest: effect.DigestInput([]byte("manifest")), ResultReference: "result/" + foreignReservation.SupervisorExecutionID, SupervisorExecutionID: foreignReservation.SupervisorExecutionID, RuntimeInstanceID: foreignIdentity.RuntimeInstanceID, EvidenceSource: "test", EvidenceReference: "test/" + foreignIdentity.RuntimeInstanceID, ObservedAt: time.Now().UTC()}
+	foreignVerification := effect.Verification{Decision: effect.VerificationSucceeded, InputDigest: foreignReservation.InputDigest, ResultDigest: effect.DigestInput([]byte("manifest")), ResultReference: "result/" + foreignReservation.SupervisorExecutionID, SupervisorExecutionID: foreignReservation.SupervisorExecutionID, RuntimeInstanceID: foreignIdentity.RuntimeInstanceID, EvidenceSource: "norn-effect-supervisor/v1", EvidenceReference: "test/" + foreignIdentity.RuntimeInstanceID, ObservedAt: time.Now().UTC()}
 	if err := effects.Complete(ctx, foreignReserved.Record.Token, effect.Completion{Outcome: effect.OutcomeSucceeded, Verification: foreignVerification}); err != nil {
 		t.Fatal(err)
 	}
@@ -360,8 +360,9 @@ func TestConfigureSnapshotEffectsReleasesVerifiedFailedAdmissionAfterRestart(t *
 	if err := effects.MarkLaunched(ctx, reserved.Record.Token, identity); err != nil {
 		t.Fatal(err)
 	}
-	verification := effect.Verification{Decision: effect.VerificationFailed, InputDigest: reservation.InputDigest, SupervisorExecutionID: reservation.SupervisorExecutionID, RuntimeInstanceID: identity.RuntimeInstanceID, EvidenceSource: "test", EvidenceReference: "failed/" + identity.RuntimeInstanceID, ObservedAt: time.Now().UTC()}
-	if err := effects.Complete(ctx, reserved.Record.Token, effect.Completion{Outcome: effect.OutcomeFailed, Verification: verification}); err != nil {
+	exit := 1
+	verification := effect.Verification{Decision: effect.VerificationFailed, InputDigest: reservation.InputDigest, ResultDigest: effect.DigestInput([]byte("pg_dump failed")), ResultReference: "result/" + reservation.SupervisorExecutionID, SupervisorExecutionID: reservation.SupervisorExecutionID, RuntimeInstanceID: identity.RuntimeInstanceID, EvidenceSource: "norn-effect-supervisor/v1", EvidenceReference: "failed/" + identity.RuntimeInstanceID, ObservedAt: time.Now().UTC()}
+	if err := effects.Complete(ctx, reserved.Record.Token, effect.Completion{Outcome: effect.OutcomeFailed, ExitCode: &exit, Verification: verification}); err != nil {
 		t.Fatal(err)
 	}
 	digest := sha256.Sum256([]byte(reservation.SupervisorExecutionID))

@@ -225,7 +225,7 @@ func (s *PGEffectStore) CompletedSnapshotOperations(ctx context.Context, supervi
 	if s == nil || s.db == nil || s.db.Pool == nil || strings.TrimSpace(supervisorRootID) == "" {
 		return nil, fmt.Errorf("operation effect lookup is unavailable")
 	}
-	rows, err := s.db.Pool.Query(ctx, `SELECT `+effectColumns+` FROM operation_effects WHERE stage='app.snapshot' AND lifecycle='completed' AND launch_payload->>'supervisorRootId'=$1 AND operation_id IN (SELECT id FROM operations WHERE status='succeeded')`, supervisorRootID)
+	rows, err := s.db.Pool.Query(ctx, `SELECT `+effectColumns+` FROM operation_effects WHERE stage='app.snapshot' AND lifecycle='completed' AND outcome='succeeded' AND launch_payload->>'supervisorRootId'=$1 AND operation_id IN (SELECT id FROM operations WHERE status='succeeded')`, supervisorRootID)
 	if err != nil {
 		return nil, err
 	}

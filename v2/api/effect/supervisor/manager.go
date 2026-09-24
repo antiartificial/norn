@@ -458,15 +458,19 @@ func (m *Manager) DiscardFailedSnapshotArtifact(ctx context.Context, reservation
 // binding before it removes local material. The removal is idempotent so the
 // same durable terminal record can be reconciled on every startup.
 func (m *Manager) DiscardDurablyTerminalSnapshotArtifact(ctx context.Context, record effect.Record) error {
-	if record.Lifecycle != effect.LifecycleCompleted || record.Completion == nil ||
+	if record.Reservation.Stage != SnapshotStage || record.Lifecycle != effect.LifecycleCompleted || record.Completion == nil ||
 		(record.Completion.Outcome != effect.OutcomeSucceeded && record.Completion.Outcome != effect.OutcomeFailed) {
 		return fmt.Errorf("snapshot cleanup requires a durable terminal effect record")
+	}
+	digest, err := effect.ComputeInputDigest(record.Reservation)
+	if err != nil || digest != record.Reservation.InputDigest {
+		return fmt.Errorf("snapshot cleanup reservation digest is invalid")
 	}
 	verification := record.Completion.Verification
 	if verification.InputDigest != record.Reservation.InputDigest ||
 		verification.SupervisorExecutionID != record.Reservation.SupervisorExecutionID ||
 		verification.RuntimeInstanceID != record.Execution.RuntimeInstanceID ||
-		strings.TrimSpace(verification.EvidenceSource) == "" ||
+		verification.EvidenceSource != evidenceSource ||
 		strings.TrimSpace(verification.EvidenceReference) == "" || verification.ObservedAt.IsZero() {
 		return fmt.Errorf("snapshot cleanup terminal record is not bound to the execution")
 	}
@@ -477,6 +481,10 @@ func (m *Manager) DiscardDurablyTerminalSnapshotArtifact(ctx context.Context, re
 	if record.Completion.Outcome == effect.OutcomeSucceeded &&
 		(strings.TrimSpace(verification.ResultDigest) == "" || strings.TrimSpace(verification.ResultReference) == "") {
 		return fmt.Errorf("successful snapshot cleanup lacks durable result evidence")
+	}
+	if record.Completion.Outcome == effect.OutcomeFailed &&
+		(record.Completion.ExitCode == nil || strings.TrimSpace(verification.ResultDigest) == "" || strings.TrimSpace(verification.ResultReference) == "") {
+		return fmt.Errorf("failed snapshot cleanup lacks durable terminal evidence")
 	}
 	if _, err := m.verifySnapshotDescriptor(record.Reservation.LaunchPayload, nil); err != nil {
 		return err
