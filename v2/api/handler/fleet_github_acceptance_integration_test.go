@@ -6,6 +6,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -13,10 +14,10 @@ import (
 	"norn/v2/api/store"
 )
 
-// TestFleetGitHubReceiptUsesSignedAtomicAcceptance covers the receipt written
-// after GitHub has deterministically created or recovered a protected action.
-// It uses PostgreSQL so replay, conflict, and the stored signature are tested
-// at the transaction boundary rather than only through a recording store.
+// TestFleetGitHubReceiptUsesSignedAtomicAcceptance reserves the immutable
+// protected-plan intent before GitHub is called, then permits exactly one
+// recovered result to complete it. PostgreSQL exercises the admission and
+// completion boundaries rather than only an in-memory recording store.
 func TestFleetGitHubReceiptUsesSignedAtomicAcceptance(t *testing.T) {
 	db := acceptanceIntegrationDB(t)
 	const auditKey = "fleet-github-acceptance-signing-key-0001"
@@ -34,13 +35,13 @@ func TestFleetGitHubReceiptUsesSignedAtomicAcceptance(t *testing.T) {
 		Actor: verifiedOperationActor{Issuer: "https://access.example.test", Subject: "operator-1", CredentialID: "token-1", DeviceID: "device-1", Source: string(AccessPrincipalSourceManagedToken), Scopes: []string{ScopeAPIWrite}},
 	})
 	principal := AccessPrincipal{Subject: "operator-1", TokenID: "token-1", DeviceID: "device-1", Source: AccessPrincipalSourceManagedToken, Scopes: []string{ScopeAPIWrite}}
-	payload := map[string]interface{}{"planId": planID, "pullRequestNumber": 42, "url": "https://github.example.test/acme/fleet/pull/42", "branch": "norn/fleet-plan", "state": "open"}
+	payload := map[string]interface{}{"planId": planID, "planDigest": "sha256:plan", "sourceDigest": "sha256:source", "pool": "workers", "action": "scale", "proposed": map[string]interface{}{"desired": 3}}
 
-	first, err := h.recordFleetGitHubOperation(req, principal, planID, "fleet.github.pull-request", "fleet pull request opened", payload)
+	first, err := h.reserveFleetGitHubOperation(req, principal, planID, "fleet.github.pull-request", payload)
 	if err != nil {
 		t.Fatal(err)
 	}
-	second, err := h.recordFleetGitHubOperation(req, principal, planID, "fleet.github.pull-request", "fleet pull request opened", payload)
+	second, err := h.reserveFleetGitHubOperation(req, principal, planID, "fleet.github.pull-request", payload)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -48,9 +49,63 @@ func TestFleetGitHubReceiptUsesSignedAtomicAcceptance(t *testing.T) {
 		t.Fatalf("replay ids first=%q second=%q", first.ID, second.ID)
 	}
 
-	conflictPayload := map[string]interface{}{"planId": planID, "pullRequestNumber": 43, "url": "https://github.example.test/acme/fleet/pull/43", "branch": "norn/fleet-plan", "state": "open"}
-	if _, err := h.recordFleetGitHubOperation(req, principal, planID, "fleet.github.pull-request", "fleet pull request opened", conflictPayload); !errors.Is(err, store.ErrAcceptanceConflict) {
-		t.Fatalf("conflicting recovered receipt error=%v, want ErrAcceptanceConflict", err)
+	if first.Status != "queued" || second.Status != "queued" {
+		t.Fatalf("pre-external receipt statuses first=%q second=%q, want queued", first.Status, second.Status)
+	}
+	conflictPayload := map[string]interface{}{"planId": planID, "planDigest": "sha256:other", "sourceDigest": "sha256:source", "pool": "workers", "action": "scale", "proposed": map[string]interface{}{"desired": 3}}
+	if _, err := h.reserveFleetGitHubOperation(req, principal, planID, "fleet.github.pull-request", conflictPayload); !errors.Is(err, store.ErrAcceptanceConflict) {
+		t.Fatalf("conflicting reservation error=%v, want ErrAcceptanceConflict", err)
+	}
+	result := map[string]interface{}{"planId": planID, "pullRequestNumber": 42, "url": "https://github.example.test/acme/fleet/pull/42", "branch": "norn/fleet-plan", "state": "open"}
+	// Two recovering API requests can reach completion concurrently after an
+	// interrupted GitHub call. Exactly one result becomes durable; the other
+	// must fail rather than rewrite the accepted action.
+	competing := map[string]interface{}{"planId": planID, "pullRequestNumber": 43}
+	start := make(chan struct{})
+	errs := make(chan error, 2)
+	var wg sync.WaitGroup
+	for _, candidate := range []map[string]interface{}{result, competing} {
+		wg.Add(1)
+		go func(candidate map[string]interface{}) {
+			defer wg.Done()
+			<-start
+			_, err := db.FinishReservedFleetGitHubOperation(context.Background(), first.ID, planID, "fleet.github.pull-request", "fleet pull request opened", candidate)
+			errs <- err
+		}(candidate)
+	}
+	close(start)
+	wg.Wait()
+	close(errs)
+	succeeded, rejected := 0, 0
+	for err := range errs {
+		if err == nil {
+			succeeded++
+		} else {
+			rejected++
+		}
+	}
+	if succeeded != 1 || rejected != 1 {
+		t.Fatalf("competing completion outcomes succeeded=%d rejected=%d", succeeded, rejected)
+	}
+	// The queued signed intent and terminal operation must still be a valid
+	// archive bundle after completion. This protects the recovery path from a
+	// pre-dispatch reservation that can never be sealed.
+	if _, err := db.ProcessPendingEvidenceIntent(context.Background(), 0, func(_ context.Context, intent store.EvidenceIntent, source store.EvidenceSource) (store.EvidencePublication, error) {
+		if source.Acceptance == nil || source.OperationKind != "fleet.github.pull-request" {
+			t.Fatalf("archive source missing accepted Fleet GitHub reservation: %+v", source)
+		}
+		if err := store.VerifyArchivedAcceptance(store.ArchivedAcceptance{
+			IntentID: source.Acceptance.IntentID, RequestIdentityID: source.Acceptance.RequestIdentityID, RequestReceiptID: source.Acceptance.RequestReceiptID,
+			FingerprintVersion: source.Acceptance.FingerprintVersion, FingerprintDigest: source.Acceptance.FingerprintDigest,
+			RequestCanonicalBytes: source.Acceptance.RequestCanonicalBytes, CanonicalBytes: source.Acceptance.CanonicalBytes,
+			CanonicalDigest: source.Acceptance.CanonicalDigest, SigningAlgorithm: source.Acceptance.SigningAlgorithm, SigningKeyID: source.Acceptance.SigningKeyID,
+			OperationRow: source.OperationJSON, OperationID: intent.OperationID,
+		}); err != nil {
+			return store.EvidencePublication{}, err
+		}
+		return store.EvidencePublication{ObjectKey: "test/" + intent.ID, ObjectSHA256: "test-sha", ObjectBytes: 1}, nil
+	}); err != nil {
+		t.Fatalf("completed reservation was not archivable: %v", err)
 	}
 
 	var operations, intents int
@@ -85,5 +140,54 @@ func TestFleetGitHubReceiptUsesSignedAtomicAcceptance(t *testing.T) {
 	}
 	if !strings.Contains(string(canonical), "fleet.github.pull-request") || !strings.Contains(string(canonical), planID) {
 		t.Fatalf("signed receipt does not bind fleet GitHub operation: %s", canonical)
+	}
+}
+
+// TestFleetGitHubReservationRefusesArchiveExhaustion verifies the refusal is
+// made while the action is still an admitted intent. A caller therefore has no
+// GitHub result to recover when archive capacity cannot accept the receipt.
+func TestFleetGitHubReservationRefusesArchiveExhaustion(t *testing.T) {
+	db := acceptanceIntegrationDB(t)
+	const auditKey = "fleet-github-reserve-exhaustion-key-0001"
+	h := New(db, nil, nil, nil, &config.Config{AuditSigningKey: auditKey}, nil, nil, nil, nil, nil, nil)
+	if err := db.SetEvidenceReservePolicy(context.Background(), store.EvidenceReservePolicy{Enabled: true, MaxPending: 1, MaxPendingAge: time.Hour}); err != nil {
+		t.Fatal(err)
+	}
+	reserve := func(planID, receiptID string) error {
+		if err := db.ReserveMutationAudit(context.Background(), &store.MutationAuditEvent{
+			ID: receiptID, RequestID: receiptID + "-request", PrincipalSubject: "operator-1",
+			Method: http.MethodPost, Path: "/api/v1/fleet/plans/{planID}/github/pull-request", StartedAt: time.Now().UTC(),
+		}); err != nil {
+			return err
+		}
+		req := httptest.NewRequest(http.MethodPost, "/api/v1/fleet/plans/"+planID+"/github/pull-request", nil)
+		req = withOperationAcceptanceRequestContext(req, operationAcceptanceRequestContext{
+			ReceiptID: receiptID, RequestID: receiptID + "-request",
+			Actor: verifiedOperationActor{Issuer: "https://access.example.test", Subject: "operator-1", CredentialID: "token-1", DeviceID: "device-1", Source: string(AccessPrincipalSourceManagedToken), Scopes: []string{ScopeAPIWrite}},
+		})
+		_, err := h.reserveFleetGitHubOperation(req, AccessPrincipal{Subject: "operator-1"}, planID, "fleet.github.pull-request", map[string]interface{}{
+			"planId": planID, "planDigest": "sha256:plan", "sourceDigest": "sha256:source", "pool": "workers", "action": "scale",
+		})
+		return err
+	}
+	firstPlan := "1d4b716d-788a-4e43-8f0b-5d4b8f3a2a4c"
+	if err := reserve(firstPlan, "reserve-first"); err != nil {
+		t.Fatal(err)
+	}
+	secondPlan := "2d4b716d-788a-4e43-8f0b-5d4b8f3a2a4c"
+	if err := reserve(secondPlan, "reserve-second"); err == nil {
+		t.Fatal("second pre-dispatch reservation succeeded after reserve was exhausted")
+	} else {
+		var exhausted *store.EvidenceReserveExhaustedError
+		if !errors.As(err, &exhausted) {
+			t.Fatalf("second pre-dispatch reservation error=%v, want reserve exhaustion", err)
+		}
+	}
+	var secondOperations int
+	if err := db.Pool.QueryRow(context.Background(), `SELECT count(*) FROM operations WHERE ref=$1`, secondPlan).Scan(&secondOperations); err != nil {
+		t.Fatal(err)
+	}
+	if secondOperations != 0 {
+		t.Fatalf("archive-exhausted reservation persisted %d operations", secondOperations)
 	}
 }

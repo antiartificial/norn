@@ -320,6 +320,55 @@ func (db *DB) InsertCompletedOperation(ctx context.Context, op *model.Operation)
 	return err
 }
 
+// FinishReservedFleetGitHubOperation turns a pre-external, signed Fleet
+// GitHub reservation into its terminal receipt. The accepted payload is the
+// immutable protected-plan intent; the recovered GitHub result is attached as
+// completion metadata. A retry may only return the same result, which keeps a
+// competing or ambiguous remote response from rewriting the reservation.
+func (db *DB) FinishReservedFleetGitHubOperation(ctx context.Context, operationID, planID, kind, message string, result map[string]interface{}) (*model.Operation, error) {
+	if db == nil || db.Pool == nil {
+		return nil, fmt.Errorf("operation store is unavailable")
+	}
+	if operationID == "" || planID == "" || (kind != "fleet.github.pull-request" && kind != "fleet.github.apply-dispatch") {
+		return nil, fmt.Errorf("fleet GitHub reservation is incomplete")
+	}
+	if result == nil {
+		return nil, fmt.Errorf("fleet GitHub result is required")
+	}
+	encoded, err := json.Marshal(result)
+	if err != nil {
+		return nil, err
+	}
+	var completed bool
+	err = db.Pool.QueryRow(ctx, `
+		UPDATE operations
+		SET status='succeeded', message=$1,
+		    metadata=metadata || jsonb_build_object('fleetGitHubResult', $2::jsonb),
+		    updated_at=now(), finished_at=now()
+		WHERE id=$3 AND kind=$4 AND ref=$5 AND saga_id='' AND status='queued'
+		RETURNING true
+	`, message, encoded, operationID, kind, planID).Scan(&completed)
+	if err == nil && completed {
+		return db.GetOperation(ctx, operationID)
+	}
+	if err != nil && !errors.Is(err, pgx.ErrNoRows) {
+		return nil, err
+	}
+	var same bool
+	err = db.Pool.QueryRow(ctx, `SELECT metadata->'fleetGitHubResult' = $1::jsonb
+		FROM operations WHERE id=$2 AND kind=$3 AND ref=$4 AND saga_id='' AND status='succeeded'`, encoded, operationID, kind, planID).Scan(&same)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return nil, fmt.Errorf("fleet GitHub reservation %s is not completable", operationID)
+	}
+	if err != nil {
+		return nil, err
+	}
+	if !same {
+		return nil, fmt.Errorf("fleet GitHub reservation %s has a different completed result", operationID)
+	}
+	return db.GetOperation(ctx, operationID)
+}
+
 // CheckOperationClaim reports ErrOperationOwnershipLost unless the claim is
 // still current by the database's wall clock. It neither extends nor
 // changes the claim; callers use it right before an external write that no

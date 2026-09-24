@@ -58,7 +58,7 @@ func VerifyArchivedAcceptance(a ArchivedAcceptance) error {
 		return fmt.Errorf("decode archived operation row: %w", err)
 	}
 	text := func(key string) string { value, _ := row[key].(string); return value }
-	op := model.Operation{ID: text("id"), Kind: text("kind"), App: text("app"), SagaID: text("saga_id"), Ref: text("ref"), Risk: text("risk"), Source: text("source")}
+	op := model.Operation{ID: text("id"), Kind: text("kind"), App: text("app"), SagaID: text("saga_id"), Ref: text("ref"), Status: model.OperationStatus(text("status")), Risk: text("risk"), Source: text("source")}
 	if number, ok := row["max_attempts"].(json.Number); ok {
 		value, err := number.Int64()
 		if err != nil {
@@ -83,6 +83,13 @@ func VerifyArchivedAcceptance(a ArchivedAcceptance) error {
 	if original.Operation.Kind != op.Kind || original.Operation.App != op.App || original.Operation.Ref != op.Ref || original.Operation.Risk != op.Risk ||
 		original.Operation.Source != op.Source || original.Operation.MaxAttempts != op.MaxAttempts {
 		return fmt.Errorf("archived operation differs from the accepted request")
+	}
+	if original.Operation.Status == string(model.OperationQueued) {
+		if op.Status != model.OperationQueued && op.Status != model.OperationRunning && !op.Status.Terminal() {
+			return fmt.Errorf("archived queued acceptance has invalid lifecycle status")
+		}
+	} else if string(op.Status) != original.Operation.Status {
+		return fmt.Errorf("archived completed acceptance disposition changed")
 	}
 	accepted := OperationAcceptance{Operation: op}
 	if envelope.DeploymentID != "" {
