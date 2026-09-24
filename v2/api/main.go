@@ -298,6 +298,11 @@ func main() {
 		BuildTestEffects:               buildTestEffects,
 		DatabaseTargets:                databaseTargets,
 	}
+	scaleEffects, err := pipeline.NewNomadScaleEffects(db, nomadClient)
+	if err != nil {
+		log.Fatalf("configure durable app.scale effects: %v", err)
+	}
+	pipe.ScaleEffects = scaleEffects
 
 	workerCtx, workerCancel := context.WithCancel(context.Background())
 	defer workerCancel()

@@ -247,8 +247,43 @@ func (c *Client) NodeInfo(nodeID string) (*NodeInfo, error) {
 
 // ScaleJob updates the count for a specific task group.
 func (c *Client) ScaleJob(jobID, group string, count int) error {
-	_, _, err := c.api.Jobs().Scale(jobID, group, &count, "scaled via norn", false, nil, nil)
+	_, err := c.ScaleJobWithMeta(jobID, group, count, nil)
 	return err
+}
+
+// ScaleJobWithMeta applies a scale request and returns Nomad's evaluation ID.
+// The metadata is persisted in Nomad's scaling event and lets a recovering
+// control-plane operation distinguish its own request from another scaler.
+func (c *Client) ScaleJobWithMeta(jobID, group string, count int, meta map[string]interface{}) (string, error) {
+	response, _, err := c.api.Jobs().Scale(jobID, group, &count, "scaled via norn", false, meta, nil)
+	if err != nil {
+		return "", err
+	}
+	return response.EvalID, nil
+}
+
+// ScaleStatus returns Nomad's current desired count and whether it has an
+// event carrying the exact Norn operation identity.
+func (c *Client) ScaleStatus(jobID, group, operationID string) (desired int, matched bool, evalID string, err error) {
+	status, _, err := c.api.Jobs().ScaleStatus(jobID, nil)
+	if err != nil {
+		return 0, false, "", err
+	}
+	target, ok := status.TaskGroups[group]
+	if !ok {
+		return 0, false, "", fmt.Errorf("task group %q not found", group)
+	}
+	for _, event := range target.Events {
+		if event.Meta == nil || fmt.Sprint(event.Meta["norn.operationId"]) != operationID {
+			continue
+		}
+		matched = true
+		if event.EvalID != nil {
+			evalID = *event.EvalID
+		}
+		break
+	}
+	return target.Desired, matched, evalID, nil
 }
 
 // UptimeEntry describes a long-running allocation for the uptime leaderboard.

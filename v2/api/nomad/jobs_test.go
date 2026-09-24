@@ -98,6 +98,25 @@ func TestRestartJobStopsOnlyActiveDesiredAllocations(t *testing.T) {
 	}
 }
 
+func TestScaleStatusRequiresMatchingDurableOperationEvent(t *testing.T) {
+	t.Parallel()
+	client := newTestNomadClient(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodGet || r.URL.Path != "/v1/job/widget/scale" {
+			http.Error(w, "unexpected request", http.StatusNotFound)
+			return
+		}
+		_ = json.NewEncoder(w).Encode(nomadapi.JobScaleStatusResponse{TaskGroups: map[string]nomadapi.TaskGroupScaleStatus{
+			"web": {Desired: 3, Events: []nomadapi.ScalingEvent{{Meta: map[string]interface{}{"norn.operationId": "other"}}, {Meta: map[string]interface{}{"norn.operationId": "operation-1"}, EvalID: stringPointer("eval-1")}}},
+		}})
+	}))
+	desired, matched, evalID, err := client.ScaleStatus("widget", "web", "operation-1")
+	if err != nil || desired != 3 || !matched || evalID != "eval-1" {
+		t.Fatalf("ScaleStatus() = %d, %t, %q, %v", desired, matched, evalID, err)
+	}
+}
+
+func stringPointer(value string) *string { return &value }
+
 func TestRestartJobRequiresActiveAllocation(t *testing.T) {
 	t.Parallel()
 

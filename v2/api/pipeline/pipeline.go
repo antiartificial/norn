@@ -67,6 +67,9 @@ type Pipeline struct {
 	// When nil, the legacy unfenced direct execution is used; startup selects
 	// this explicitly and never falls back from supervised mode.
 	BuildTestEffects *BuildTestEffects
+	// ScaleEffects fences Nomad's non-idempotent scale endpoint behind a
+	// durable external-effect reservation. It is required for app.scale.
+	ScaleEffects *NomadScaleEffects
 	// DatabaseTargets binds database-consuming operations to catalog
 	// targets. When nil (no NORN_DATABASE_PROFILE), v2 routing is unchanged.
 	DatabaseTargets *DatabaseTargets
@@ -271,6 +274,9 @@ func (p *Pipeline) ExecuteOperation(ctx context.Context, op *model.Operation, cl
 	}
 	if op.Kind == CatalogActivationKind {
 		return p.executeCatalogActivation(ctx, op, claim)
+	}
+	if op.Kind == "app.scale" {
+		return operationOutcome(p.executeScale(ctx, op, claim))
 	}
 	var specs []*model.InfraSpec
 	var err error
