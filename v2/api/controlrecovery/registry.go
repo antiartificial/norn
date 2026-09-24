@@ -71,6 +71,7 @@ func InspectionRegistry() []Table {
 		// Checkpoint outputs name source paths, changed files and image
 		// references; inspection keeps only identity and the integrity digest.
 		{Name: "operation_checkpoints", OrderBy: []string{"operation_id", "stage"}, Columns: classified(include("operation_id", "stage", "claim_generation", "outputs_digest", "created_at"), "outputs")},
+		{Name: "app_desired_replicas", OrderBy: []string{"app", "process", "region"}, Columns: include("app", "process", "region", "desired_count", "revision", "operation_id", "updated_at")},
 		// Catalog documents carry credential/TLS references and provider
 		// topology; inspection keeps only revision lineage and digests.
 		{Name: "database_catalog_revisions", OrderBy: []string{"revision"}, Columns: classified(include("revision", "previous_revision", "catalog_digest", "activated_by", "activated_at"), "catalog")},
