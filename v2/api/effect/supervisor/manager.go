@@ -403,6 +403,68 @@ func (m *Manager) DiscardSnapshotArtifact(ctx context.Context, reservation effec
 	})
 }
 
+// DiscardFailedSnapshotArtifact releases the private namespace only after the
+// runner still reports a contained, terminal failure for this exact execution.
+// A missing status, a running helper, or an ambiguous backend observation is
+// deliberately retained: the effect may still need recovery rather than a
+// new admission.
+func (m *Manager) DiscardFailedSnapshotArtifact(ctx context.Context, reservation effect.Reservation, identity effect.ExecutionIdentity) error {
+	d, err := m.verifySnapshotDescriptor(reservation.LaunchPayload, nil)
+	if err != nil {
+		return err
+	}
+	b, ok := m.backend.(SnapshotBackend)
+	if !ok {
+		return fmt.Errorf("snapshot supervisor backend is unavailable")
+	}
+	return m.withExecutionLock(identity.SupervisorExecutionID, func(directory string) error {
+		r, err := m.readBoundJournal(directory, reservation, identity)
+		if err != nil {
+			return err
+		}
+		if r.RuntimeInstanceID == "" {
+			return fmt.Errorf("snapshot failure cleanup has no durable launch identity")
+		}
+		state, err := b.ObserveSnapshot(ctx, backendExecution(r, directory), d)
+		if err != nil {
+			return err
+		}
+		if state.Phase != effect.SupervisorFailed || !state.ContainmentProven {
+			return fmt.Errorf("snapshot failure cleanup requires a contained terminal failure")
+		}
+		private, err := snapshotArtifactDirectory(directory)
+		if errors.Is(err, os.ErrNotExist) {
+			return removeSnapshotAdmission(directory)
+		}
+		if err != nil {
+			return err
+		}
+		if err := removeDisposableSnapshotArtifact(private); err != nil {
+			return err
+		}
+		return removeSnapshotAdmission(directory)
+	})
+}
+
+// DiscardAbandonedSnapshotArtifact releases admission only for an execution
+// whose durable journal proves that no runtime was ever assigned. This is the
+// sole safe cleanup path for a resolved never-launched effect.
+func (m *Manager) DiscardAbandonedSnapshotArtifact(_ context.Context, reservation effect.Reservation, identity effect.ExecutionIdentity) error {
+	if _, err := m.verifySnapshotDescriptor(reservation.LaunchPayload, nil); err != nil {
+		return err
+	}
+	return m.withExecutionLock(identity.SupervisorExecutionID, func(directory string) error {
+		r, err := m.readBoundJournal(directory, reservation, identity)
+		if err != nil {
+			return err
+		}
+		if r.RuntimeInstanceID != "" {
+			return fmt.Errorf("snapshot abandonment cleanup cannot discard a launched execution")
+		}
+		return removeSnapshotAdmission(directory)
+	})
+}
+
 // PublishedSnapshotCorruptionError reports that a disposable private artifact
 // was removed after its public snapshot and successful operation were
 // already durable. Callers may report this without preventing startup.

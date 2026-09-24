@@ -75,6 +75,71 @@ func TestSnapshotAdmissionAccountsForPrivateArtifacts(t *testing.T) {
 	}
 }
 
+func TestFailedSnapshotReleasesAdmissionButLaunchAmbiguityRetainsIt(t *testing.T) {
+	makeReservation := func(t *testing.T, manager *Manager, executionID string) (effect.Reservation, SnapshotLaunchMaterial) {
+		t.Helper()
+		material := SnapshotLaunchMaterial{PGDumpPath: "/usr/bin/pg_dump", PGDumpSHA256: strings.Repeat("a", 64), ServiceName: "demo", ServiceFile: []byte("[demo]\nhost=localhost\nuser=demo\n"), Password: "secret", Subject: "app:demo/db:main@generation:1", Timeout: time.Minute}
+		payload, err := manager.BuildSnapshotDescriptor(material)
+		if err != nil {
+			t.Fatal(err)
+		}
+		reservation := effect.Reservation{Authority: "authority", Resource: "app/demo/app.snapshot", OperationClaim: effect.OperationClaim{OperationID: executionID, OwnerID: "worker", Generation: 1}, Stage: SnapshotStage, Supervisor: "snapshot-runner", SupervisorExecutionID: executionID, LaunchPayload: payload}
+		reservation.InputDigest, err = effect.ComputeInputDigest(reservation)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := manager.Prepare(context.Background(), reservation); err != nil {
+			t.Fatal(err)
+		}
+		return reservation, material
+	}
+	t.Run("verified failure releases the full admission", func(t *testing.T) {
+		backend := newBackendFake()
+		manager := testManager(t, t.TempDir(), backend)
+		if err := manager.SetSnapshotArtifactBudget(MaxSnapshotArtifactBytes); err != nil {
+			t.Fatal(err)
+		}
+		reservation, material := makeReservation(t, manager, "snapshot-failed")
+		identity, err := manager.LaunchSnapshot(context.Background(), reservation, material)
+		if err != nil {
+			t.Fatal(err)
+		}
+		backend.mu.Lock()
+		code := 1
+		backend.states[reservation.SupervisorExecutionID] = BackendState{Phase: effect.SupervisorFailed, ExitCode: &code, ContainmentProven: true, EvidenceReference: "failed/" + identity.RuntimeInstanceID}
+		backend.mu.Unlock()
+		if err := manager.DiscardFailedSnapshotArtifact(context.Background(), reservation, identity); err != nil {
+			t.Fatal(err)
+		}
+		directory := filepath.Join(manager.root, sha256DirectoryName(reservation.SupervisorExecutionID))
+		if _, err := os.Lstat(filepath.Join(directory, "snapshot-admission")); !os.IsNotExist(err) {
+			t.Fatalf("failed snapshot admission remained: %v", err)
+		}
+		if err := manager.withExecutionLock("next", func(string) error { return manager.admitSnapshotArtifact("next") }); err != nil {
+			t.Fatalf("released capacity did not admit retry: %v", err)
+		}
+	})
+	t.Run("launch ambiguity holds the admission", func(t *testing.T) {
+		backend := newBackendFake()
+		backend.snapshotStartErr = errors.New("backend launch acknowledgement lost")
+		manager := testManager(t, t.TempDir(), backend)
+		if err := manager.SetSnapshotArtifactBudget(MaxSnapshotArtifactBytes); err != nil {
+			t.Fatal(err)
+		}
+		reservation, material := makeReservation(t, manager, "snapshot-ambiguous")
+		if _, err := manager.LaunchSnapshot(context.Background(), reservation, material); err == nil {
+			t.Fatal("ambiguous launch unexpectedly succeeded")
+		}
+		directory := filepath.Join(manager.root, sha256DirectoryName(reservation.SupervisorExecutionID))
+		if _, err := os.Lstat(filepath.Join(directory, "snapshot-admission")); err != nil {
+			t.Fatalf("launch ambiguity released admission: %v", err)
+		}
+		if err := manager.withExecutionLock("next", func(string) error { return manager.admitSnapshotArtifact("next") }); err == nil {
+			t.Fatal("launch ambiguity admitted a second full-sized snapshot")
+		}
+	})
+}
+
 func TestDiscardSnapshotArtifactIsIdempotentAfterDurablePublication(t *testing.T) {
 	backend := newBackendFake()
 	manager := testManager(t, t.TempDir(), backend)

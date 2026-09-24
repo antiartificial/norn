@@ -103,6 +103,20 @@ func (s *SnapshotEffects) ReconcilePublishedArtifacts(ctx context.Context) error
 			return err
 		}
 	}
+	failed, abandoned, err := s.Store.TerminalSnapshotCleanupEffects(ctx, s.Manager.RootID())
+	if err != nil {
+		return err
+	}
+	for _, record := range failed {
+		if err := s.Manager.DiscardFailedSnapshotArtifact(ctx, record.Reservation, record.Execution); err != nil {
+			return err
+		}
+	}
+	for _, record := range abandoned {
+		if err := s.Manager.DiscardAbandonedSnapshotArtifact(ctx, record.Reservation, record.Execution); err != nil {
+			return err
+		}
+	}
 	return nil
 }
 
@@ -112,6 +126,17 @@ func (s *SnapshotEffects) DiscardPublishedArtifact(ctx context.Context, operatio
 		return fmt.Errorf("durable snapshot effect record unavailable: %w", err)
 	}
 	return s.Manager.DiscardSnapshotArtifact(ctx, record.Reservation, record.Execution)
+}
+
+func (s *SnapshotEffects) DiscardFailedArtifact(ctx context.Context, operationID string) error {
+	record, found, err := s.Store.LatestForOperation(ctx, operationID, "app.snapshot")
+	if err != nil || !found {
+		return fmt.Errorf("durable snapshot effect record unavailable: %w", err)
+	}
+	if record.Lifecycle != effect.LifecycleCompleted || record.Completion == nil || record.Completion.Outcome != effect.OutcomeFailed {
+		return fmt.Errorf("durable snapshot effect is not a verified terminal failure")
+	}
+	return s.Manager.DiscardFailedSnapshotArtifact(ctx, record.Reservation, record.Execution)
 }
 func (p *Pipeline) executeAttestedSnapshot(ctx context.Context, op *model.Operation, claim store.OperationClaim, bound *boundDatabase, loc snapshotLocation) (*dataSnapshot, effect.ExecuteResult, error) {
 	if !p.SnapshotEffects.available() || p.DB == nil || bound == nil || bound.session == nil {
@@ -143,6 +168,11 @@ func (p *Pipeline) executeAttestedSnapshot(ctx context.Context, op *model.Operat
 		return nil, result, e
 	}
 	if result.Outcome != effect.OutcomeSucceeded {
+		if result.Outcome == effect.OutcomeFailed {
+			if cleanupErr := p.SnapshotEffects.DiscardFailedArtifact(ctx, op.ID); cleanupErr != nil {
+				return nil, result, fmt.Errorf("release failed snapshot artifact admission: %w", cleanupErr)
+			}
+		}
 		return nil, result, fmt.Errorf("snapshot effect failed")
 	}
 	rec, found, e := p.SnapshotEffects.Store.LatestForOperation(ctx, op.ID, "app.snapshot")

@@ -220,12 +220,13 @@ type portableSnapshotArtifact struct {
 // be used by startup or Linux cgroup qualification tests.
 type portableSnapshotBackend struct {
 	artifacts map[string]portableSnapshotArtifact
+	failures  map[string][]byte
 	starts    int
 	failCopy  bool
 }
 
 func newPortableSnapshotBackend() *portableSnapshotBackend {
-	return &portableSnapshotBackend{artifacts: map[string]portableSnapshotArtifact{}}
+	return &portableSnapshotBackend{artifacts: map[string]portableSnapshotArtifact{}, failures: map[string][]byte{}}
 }
 
 func (b *portableSnapshotBackend) Start(context.Context, supervisor.BackendExecution, effect.LaunchMaterial) error {
@@ -263,8 +264,14 @@ func (b *portableSnapshotBackend) StartSnapshot(ctx context.Context, execution s
 	}
 	command := exec.CommandContext(ctx, material.PGDumpPath, "-Fc", "--no-owner", "--no-privileges", "--file", output, "--dbname=service="+material.ServiceName)
 	command.Env = []string{"PATH=/usr/bin:/bin:/usr/sbin:/sbin", "PGSERVICEFILE=" + service, "PGPASSFILE=" + passfile}
-	if output, err := command.CombinedOutput(); err != nil {
-		return fmt.Errorf("portable pg_dump: %w: %s", err, output)
+	outputBytes, commandErr := command.CombinedOutput()
+	b.starts++
+	if commandErr != nil {
+		// The process has exited before this synchronous test backend returns.
+		// Preserve a bounded terminal failure so the effect executor can record
+		// its exact no-replay outcome and release the snapshot admission.
+		b.failures[execution.SupervisorExecutionID] = append([]byte(nil), outputBytes...)
+		return nil
 	}
 	data, err := os.ReadFile(output)
 	if err != nil {
@@ -276,11 +283,14 @@ func (b *portableSnapshotBackend) StartSnapshot(ctx context.Context, execution s
 		return err
 	}
 	descriptorDigest := sha256.Sum256(descriptorBytes)
-	b.starts++
 	b.artifacts[execution.SupervisorExecutionID] = portableSnapshotArtifact{data: data, manifest: supervisor.SnapshotManifest{Protocol: supervisor.SnapshotProtocolV1, RuntimeInstanceID: execution.RuntimeInstanceID, DescriptorSHA256: hex.EncodeToString(descriptorDigest[:]), Artifact: supervisor.SnapshotArtifact{Reference: "portable/" + execution.SupervisorExecutionID, Bytes: int64(len(data)), SHA256: hex.EncodeToString(digest[:]), Regular: true, NoFollow: true}, ContainmentProven: true, ObservedAt: time.Now().UTC()}}
 	return nil
 }
 func (b *portableSnapshotBackend) ObserveSnapshot(_ context.Context, execution supervisor.BackendExecution, _ supervisor.SnapshotDescriptor) (supervisor.BackendState, error) {
+	if output, failed := b.failures[execution.SupervisorExecutionID]; failed {
+		exit := 1
+		return supervisor.BackendState{Phase: effect.SupervisorFailed, ExitCode: &exit, Output: append([]byte(nil), output...), ContainmentProven: true, EvidenceReference: "portable-test-failed/" + execution.RuntimeInstanceID}, nil
+	}
 	artifact, ok := b.artifacts[execution.SupervisorExecutionID]
 	if !ok {
 		return supervisor.BackendState{Phase: effect.SupervisorUnknown, EvidenceReference: "portable-test-missing"}, nil
@@ -291,6 +301,66 @@ func (b *portableSnapshotBackend) ObserveSnapshot(_ context.Context, execution s
 	}
 	exit := 0
 	return supervisor.BackendState{Phase: effect.SupervisorSucceeded, ExitCode: &exit, Output: output, ContainmentProven: true, EvidenceReference: "portable-test/" + execution.RuntimeInstanceID}, nil
+}
+
+func TestSupervisedPostgresSnapshotPGDumpFailureReleasesAdmissionForRetry(t *testing.T) {
+	server := pgtest.Start(t)
+	controlDatabase, targetDatabase := "norn_snapshot_failure_control", "norn_snapshot_failure_target"
+	server.CreateDatabase(t, controlDatabase)
+	server.CreateDatabase(t, targetDatabase)
+	t.Setenv("NORN_TEST_DATABASE_URL", server.URL(controlDatabase))
+	t.Setenv("NORN_TEST_RECOVERY_TARGET_DATABASE_URL", server.URL(targetDatabase))
+	f := newTargetFixture(t)
+	ctx := context.Background()
+	if _, err := f.db.ActivateDatabaseCatalog(ctx, 0, f.catalog, "operator"); err != nil {
+		t.Fatal(err)
+	}
+	// Exercise a real pg_dump connection to the disposable PostgreSQL target,
+	// then force its wrapper to return a terminal non-zero status.
+	real, err := exec.LookPath("pg_dump")
+	if err != nil {
+		t.Fatal(err)
+	}
+	wrapper := filepath.Join(t.TempDir(), "pg_dump-fail")
+	script := fmt.Sprintf("#!/bin/sh\n%q \"$@\"\nexit 1\n", real)
+	if err := os.WriteFile(wrapper, []byte(script), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	bytes, err := os.ReadFile(wrapper)
+	if err != nil {
+		t.Fatal(err)
+	}
+	digest := sha256.Sum256(bytes)
+	f.p.SnapshotEffects.PGDumpPath = wrapper
+	f.p.SnapshotEffects.PGDumpSHA256 = hex.EncodeToString(digest[:])
+	op, err := f.queue(t, "app.snapshot", map[string]interface{}{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result, _, err := f.executeWithClaim(t, op.ID); err == nil || result != nil {
+		t.Fatalf("failed pg_dump snapshot = %+v, %v", result, err)
+	}
+	record, found, err := f.p.SnapshotEffects.Store.LatestForOperation(ctx, op.ID, "app.snapshot")
+	if err != nil || !found || record.Lifecycle != effect.LifecycleCompleted || record.Completion == nil || record.Completion.Outcome != effect.OutcomeFailed {
+		t.Fatalf("failed pg_dump effect = %+v, found=%v, err=%v", record, found, err)
+	}
+	realBytes, err := os.ReadFile(real)
+	if err != nil {
+		t.Fatal(err)
+	}
+	realDigest := sha256.Sum256(realBytes)
+	f.p.SnapshotEffects.PGDumpPath = real
+	f.p.SnapshotEffects.PGDumpSHA256 = hex.EncodeToString(realDigest[:])
+	retry, err := f.queue(t, "app.snapshot", map[string]interface{}{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result, err := f.execute(t, retry.ID); err != nil || result.Status != model.OperationSucceeded {
+		t.Fatalf("snapshot retry after failed pg_dump = %+v, %v", result, err)
+	}
+	if f.snapshotBackend.starts != 2 {
+		t.Fatalf("snapshot retry did not receive a fresh admission: starts=%d", f.snapshotBackend.starts)
+	}
 }
 func (b *portableSnapshotBackend) QuerySnapshot(_ context.Context, execution supervisor.BackendExecution, _ supervisor.SnapshotDescriptor) (supervisor.SnapshotManifest, error) {
 	artifact, ok := b.artifacts[execution.SupervisorExecutionID]

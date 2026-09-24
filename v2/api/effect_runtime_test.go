@@ -54,6 +54,13 @@ func (startupSnapshotBackend) CopySnapshotArtifact(context.Context, supervisor.B
 	return supervisor.SnapshotManifest{}, errors.New("not used")
 }
 
+type startupFailedSnapshotBackend struct{ startupSnapshotBackend }
+
+func (startupFailedSnapshotBackend) ObserveSnapshot(context.Context, supervisor.BackendExecution, supervisor.SnapshotDescriptor) (supervisor.BackendState, error) {
+	exit := 1
+	return supervisor.BackendState{Phase: effect.SupervisorFailed, ExitCode: &exit, Output: []byte("pg_dump failed"), ContainmentProven: true, EvidenceReference: "startup-failed-snapshot"}, nil
+}
+
 func supervisedConfig(t *testing.T) *config.Config {
 	return &config.Config{
 		BuildTestExecution: buildTestSupervised, BuildTestTimeout: 30 * time.Minute, BuildTestPath: "/usr/bin:/bin",
@@ -275,5 +282,84 @@ func TestConfigureSnapshotEffectsReconcilesPublishedArtifactAfterRestart(t *test
 	}
 	if _, err := os.Lstat(foreignArchive); err != nil {
 		t.Fatalf("replica A touched replica B private archive: %v", err)
+	}
+}
+
+func TestConfigureSnapshotEffectsReleasesVerifiedFailedAdmissionAfterRestart(t *testing.T) {
+	server := pgtest.Start(t)
+	server.CreateDatabase(t, "norn_snapshot_failed_reconcile")
+	db, err := store.Connect(server.URL("norn_snapshot_failed_reconcile"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+	if err := store.Migrate(db); err != nil {
+		t.Fatal(err)
+	}
+	ctx := context.Background()
+	root, key := t.TempDir(), strings.Repeat("k", 32)
+	manager, err := supervisor.NewManager(filepath.Join(root, "snapshots"), []byte(key), startupFailedSnapshotBackend{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := manager.SetSnapshotArtifactBudget(supervisor.MaxSnapshotArtifactBytes); err != nil {
+		t.Fatal(err)
+	}
+	op := &model.Operation{ID: uuid.NewString(), Kind: "app.snapshot", App: "demo", Status: model.OperationQueued, Source: "test", Payload: map[string]interface{}{}, Metadata: map[string]interface{}{}, StartedAt: time.Now().UTC(), MaxAttempts: 1}
+	if err := db.InsertOperation(ctx, op); err != nil {
+		t.Fatal(err)
+	}
+	claimed, claim, err := db.ClaimNextOperation(ctx, "snapshot-worker", time.Minute, []string{"app.snapshot"})
+	if err != nil || claimed == nil {
+		t.Fatalf("claim snapshot operation = %+v, %v", claimed, err)
+	}
+	var authority string
+	if err := db.Pool.QueryRow(ctx, `SELECT authority::text FROM control_plane_identity WHERE singleton`).Scan(&authority); err != nil {
+		t.Fatal(err)
+	}
+	material := supervisor.SnapshotLaunchMaterial{PGDumpPath: "/usr/bin/pg_dump", PGDumpSHA256: strings.Repeat("a", 64), ServiceName: "demo", ServiceFile: []byte("[demo]\nhost=localhost\nuser=demo\n"), Password: "secret", Subject: "app:demo/db:main@generation:1", Timeout: time.Minute}
+	payload, err := manager.BuildSnapshotDescriptor(material)
+	if err != nil {
+		t.Fatal(err)
+	}
+	reservation := effect.Reservation{Authority: authority, Resource: "app/demo/snapshot", OperationClaim: effect.OperationClaim{OperationID: claim.OperationID(), OwnerID: claim.OwnerID(), Generation: claim.Generation()}, Stage: "app.snapshot", Supervisor: "snapshot-runner", SupervisorExecutionID: "snapshot-failed-restart", LaunchPayload: payload}
+	if reservation.InputDigest, err = effect.ComputeInputDigest(reservation); err != nil {
+		t.Fatal(err)
+	}
+	effects, err := store.NewPGEffectStore(db)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := manager.Prepare(ctx, reservation); err != nil {
+		t.Fatal(err)
+	}
+	reserved, err := effects.Reserve(ctx, reservation)
+	if err != nil || !reserved.Created {
+		t.Fatalf("reserve = %+v, %v", reserved, err)
+	}
+	identity, err := manager.LaunchSnapshot(ctx, reservation, material)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := effects.MarkLaunched(ctx, reserved.Record.Token, identity); err != nil {
+		t.Fatal(err)
+	}
+	verification := effect.Verification{Decision: effect.VerificationFailed, InputDigest: reservation.InputDigest, SupervisorExecutionID: reservation.SupervisorExecutionID, RuntimeInstanceID: identity.RuntimeInstanceID, EvidenceSource: "test", EvidenceReference: "failed/" + identity.RuntimeInstanceID, ObservedAt: time.Now().UTC()}
+	if err := effects.Complete(ctx, reserved.Record.Token, effect.Completion{Outcome: effect.OutcomeFailed, Verification: verification}); err != nil {
+		t.Fatal(err)
+	}
+	digest := sha256.Sum256([]byte(reservation.SupervisorExecutionID))
+	directory := filepath.Join(root, "snapshots", hex.EncodeToString(digest[:]))
+	if _, err := os.Lstat(filepath.Join(directory, "snapshot-admission")); err != nil {
+		t.Fatalf("failed snapshot did not reserve admission: %v", err)
+	}
+	cfg := &config.Config{SnapshotExecution: "supervised", EffectSupervisorDir: root, EffectSigningKey: key, EffectCgroupRoot: "/test/cgroup", EffectRunnerBinary: "/test/runner", SnapshotPGDumpPath: "/usr/bin/pg_dump", SnapshotPGDumpSHA256: strings.Repeat("a", 64), SnapshotTimeout: time.Minute, SnapshotArtifactBudgetBytes: supervisor.MaxSnapshotArtifactBytes}
+	if _, err := configureSnapshotEffects(cfg, db, func(string, string, string, []byte) (supervisor.Backend, error) {
+		return startupFailedSnapshotBackend{}, nil
+	}); err != nil {
+		t.Fatalf("failed snapshot startup reconciliation = %v", err)
+	}
+	if _, err := os.Lstat(filepath.Join(directory, "snapshot-admission")); !os.IsNotExist(err) {
+		t.Fatalf("verified failed snapshot admission survived restart: %v", err)
 	}
 }

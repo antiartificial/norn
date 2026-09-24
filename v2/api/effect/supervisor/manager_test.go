@@ -25,6 +25,7 @@ type backendFake struct {
 	startEntered     chan struct{}
 	startRelease     chan struct{}
 	snapshotQueryErr error
+	snapshotStartErr error
 }
 
 func newBackendFake() *backendFake {
@@ -46,6 +47,9 @@ func (b *backendFake) Start(_ context.Context, execution BackendExecution, _ eff
 }
 
 func (b *backendFake) StartSnapshot(ctx context.Context, execution BackendExecution, _ SnapshotDescriptor, _ SnapshotLaunchMaterial) error {
+	if b.snapshotStartErr != nil {
+		return b.snapshotStartErr
+	}
 	return b.Start(ctx, execution, effect.LaunchMaterial{})
 }
 func (b *backendFake) ObserveSnapshot(ctx context.Context, execution BackendExecution, _ SnapshotDescriptor) (BackendState, error) {
