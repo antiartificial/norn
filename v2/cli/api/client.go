@@ -1897,28 +1897,40 @@ func (c *Client) ListSnapshots(appID string) ([]Snapshot, error) {
 }
 
 func (c *Client) RestoreSnapshot(appID, ts string, confirm bool, preRestore bool) (*RestoreReceipt, error) {
-	var receipt RestoreReceipt
-	path := "/api/apps/" + appID + "/snapshots/" + ts + "/restore"
-	values := url.Values{}
-	if confirm {
-		values.Set("confirm", "true")
-	}
-	if preRestore {
-		values.Set("preRestore", "true")
-	}
-	if encoded := values.Encode(); encoded != "" {
-		path += "?" + encoded
-	}
-	if err := c.postJSON(path, "{}", &receipt); err != nil {
-		return nil, err
-	}
-	return &receipt, nil
+	return nil, fmt.Errorf("snapshot restore now requires a durable operation; use QueueSnapshotRestore with an idempotency key")
 }
 
-func (c *Client) ApplySnapshotRetention(appID string, keep int, confirm bool) (*SnapshotRetentionReceipt, error) {
-	path := fmt.Sprintf("/api/apps/%s/snapshots/retention?keep=%d", appID, keep)
+func (c *Client) QueueSnapshotRestore(appID, ts, idempotencyKey, database string) (*Operation, error) {
+	path := "/api/apps/" + url.PathEscape(appID) + "/snapshots/" + url.PathEscape(ts) + "/restore?confirm=true"
+	if database != "" {
+		path += "&database=" + url.QueryEscape(database)
+	}
+	var operation Operation
+	if err := c.postJSONWithIdempotency(path, "{}", idempotencyKey, &operation); err != nil {
+		return nil, err
+	}
+	return &operation, nil
+}
+
+func (c *Client) QueueSnapshotPrune(appID string, keep int, idempotencyKey, database string) (*Operation, error) {
+	path := fmt.Sprintf("/api/apps/%s/snapshots/retention?keep=%d&confirm=true", url.PathEscape(appID), keep)
+	if database != "" {
+		path += "&database=" + url.QueryEscape(database)
+	}
+	var operation Operation
+	if err := c.postJSONWithIdempotency(path, "{}", idempotencyKey, &operation); err != nil {
+		return nil, err
+	}
+	return &operation, nil
+}
+
+func (c *Client) ApplySnapshotRetention(appID string, keep int, confirm bool, database string) (*SnapshotRetentionReceipt, error) {
 	if confirm {
-		path += "&confirm=true"
+		return nil, fmt.Errorf("snapshot pruning now requires a durable operation; use QueueSnapshotPrune with an idempotency key")
+	}
+	path := fmt.Sprintf("/api/apps/%s/snapshots/retention?keep=%d", url.PathEscape(appID), keep)
+	if database != "" {
+		path += "&database=" + url.QueryEscape(database)
 	}
 	var receipt SnapshotRetentionReceipt
 	if err := c.postJSON(path, "{}", &receipt); err != nil {
