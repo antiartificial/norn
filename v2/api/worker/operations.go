@@ -87,7 +87,7 @@ func (w *OperationWorker) handle(ctx context.Context, op *model.Operation, claim
 	if lockKey == "" {
 		lockKey = op.Kind + ":" + op.Ref
 	}
-	release, locked, lockErr := w.db.AcquireAppOperationLock(ctx, lockKey)
+	appLock, locked, lockErr := w.db.AcquireAppOperationLock(ctx, lockKey)
 	if lockErr != nil || !locked {
 		message := "another mutable operation is active for this app"
 		if lockErr != nil {
@@ -99,8 +99,8 @@ func (w *OperationWorker) handle(ctx context.Context, op *model.Operation, claim
 		}
 		return
 	}
-	defer release()
-	executionCtx, cancelExecution := context.WithCancel(ctx)
+	defer appLock.Release()
+	executionCtx, cancelExecution := context.WithCancel(appLock.Context())
 	defer cancelExecution()
 	renewalStop := make(chan struct{})
 	renewalDone := make(chan error, 1)
@@ -113,6 +113,12 @@ func (w *OperationWorker) handle(ctx context.Context, op *model.Operation, claim
 		// expired-claim recovery path classifies safe retry versus review after
 		// the executor has stopped and while this app lock is still held.
 		log.Printf("operation worker: ownership renewal stopped %s: %v", op.ID, renewErr)
+		return
+	}
+	if lockErr := appLock.Context().Err(); lockErr != nil {
+		// A backend lease can expire while an executor is unwinding. Its result
+		// cannot be terminalized because a newer holder may have started work.
+		log.Printf("operation worker: app lock ownership stopped %s: %v", op.ID, context.Cause(appLock.Context()))
 		return
 	}
 	if execErr != nil {

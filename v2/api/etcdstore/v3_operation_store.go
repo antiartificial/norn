@@ -29,6 +29,14 @@ type V3OperationStore struct {
 	signer            store.AcceptanceSigner
 }
 
+// appOperationLockLease is renewed well before expiry. The lock's Context is
+// canceled if a renewal cannot establish continued ownership, so callers do
+// not keep executing after an etcd lease becomes uncertain.
+const (
+	appOperationLockLease           = 30 * time.Second
+	appOperationLockRenewalInterval = time.Second
+)
+
 type v3Record struct {
 	Operation  model.Operation `json:"operation"`
 	Generation int64           `json:"generation"`
@@ -63,6 +71,10 @@ func (s *V3OperationStore) opsPrefix() string           { return s.prefix + "/v3
 func (s *V3OperationStore) runningKey(id string) string { return s.prefix + "/v3/running/" + id }
 func (s *V3OperationStore) runningPrefix() string       { return s.prefix + "/v3/running/" }
 func (s *V3OperationStore) ownerKey(id string) string   { return s.prefix + "/v3/owners/" + id }
+func (s *V3OperationStore) appLockKey(app string) string {
+	digest := sha256.Sum256([]byte(app))
+	return s.prefix + "/v3/app-locks/" + hex.EncodeToString(digest[:])
+}
 func claimOwnerValue(owner string, generation int64) string {
 	return fmt.Sprintf("%d:%s", generation, owner)
 }
@@ -552,8 +564,68 @@ func (s *V3OperationStore) RecoverExpiredOperations(ctx context.Context) error {
 	}
 	return nil
 }
-func (s *V3OperationStore) AcquireAppOperationLock(ctx context.Context, app string) (func(), bool, error) {
-	// A lock without an ownership lease can survive a worker crash forever.
-	// The M3 lock must be lease-backed and fenced before app mutations use it.
-	return func() {}, false, fmt.Errorf("etcd app operation lock is not implemented")
+func (s *V3OperationStore) AcquireAppOperationLock(ctx context.Context, app string) (store.AppOperationLock, bool, error) {
+	if s == nil || s.kv == nil || s.lease == nil || strings.TrimSpace(app) == "" {
+		return nil, false, fmt.Errorf("etcd app operation lock is unavailable")
+	}
+	grant, err := s.lease.Grant(ctx, leaseTTL(appOperationLockLease))
+	if err != nil {
+		return nil, false, err
+	}
+	key, owner := s.appLockKey(app), uuid.NewString()
+	txn, err := s.kv.Txn(ctx).
+		If(clientv3.Compare(clientv3.CreateRevision(key), "=", 0)).
+		Then(clientv3.OpPut(key, owner, clientv3.WithLease(grant.ID))).
+		Commit()
+	if err != nil {
+		_, _ = s.lease.Revoke(context.Background(), grant.ID)
+		return nil, false, err
+	}
+	if !txn.Succeeded {
+		_, _ = s.lease.Revoke(context.Background(), grant.ID)
+		return nil, false, nil
+	}
+
+	monitorCtx, stopMonitor := context.WithCancel(context.Background())
+	lock := store.NewAppOperationLock(ctx, func() {
+		stopMonitor()
+		// Deleting only the value we acquired prevents a delayed release from
+		// deleting a successor after expiry and reacquisition.
+		_, _ = s.kv.Txn(context.Background()).
+			If(clientv3.Compare(clientv3.Value(key), "=", owner)).
+			Then(clientv3.OpDelete(key)).
+			Commit()
+		_, _ = s.lease.Revoke(context.Background(), grant.ID)
+	})
+	go s.monitorAppOperationLock(monitorCtx, lock, key, owner, grant.ID)
+	return lock, true, nil
+}
+
+func (s *V3OperationStore) monitorAppOperationLock(ctx context.Context, lock *store.AppOperationLockHandle, key, owner string, leaseID clientv3.LeaseID) {
+	timer := time.NewTimer(appOperationLockRenewalInterval)
+	defer timer.Stop()
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-timer.C:
+			kept, err := s.lease.KeepAliveOnce(ctx, leaseID)
+			if err == nil && (kept == nil || kept.TTL <= 0) {
+				err = fmt.Errorf("etcd returned an expired app lock lease")
+			}
+			if err == nil {
+				current, getErr := s.kv.Get(ctx, key)
+				if getErr != nil {
+					err = getErr
+				} else if len(current.Kvs) != 1 || string(current.Kvs[0].Value) != owner || current.Kvs[0].Lease != int64(leaseID) {
+					err = fmt.Errorf("etcd app lock ownership no longer matches its lease")
+				}
+			}
+			if err != nil {
+				lock.Fail(fmt.Errorf("%w: %v", store.ErrAppOperationLockLost, err))
+				return
+			}
+			timer.Reset(appOperationLockRenewalInterval)
+		}
+	}
 }

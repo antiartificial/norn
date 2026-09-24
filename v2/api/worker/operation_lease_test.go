@@ -23,7 +23,7 @@ type executionStoreFake struct {
 	deferClaim  func(context.Context, store.OperationClaim, string, time.Time, map[string]interface{}) error
 	retry       func(context.Context, store.OperationClaim, string, string, time.Time, map[string]interface{}) error
 	finish      func(context.Context, store.OperationClaim, model.OperationStatus, string, map[string]interface{}) error
-	lock        func(context.Context, string) (func(), bool, error)
+	lock        func(context.Context, string) (store.AppOperationLock, bool, error)
 	finishCalls atomic.Int32
 	deferCalls  atomic.Int32
 }
@@ -59,11 +59,11 @@ func (f *executionStoreFake) FinishClaimedOperation(ctx context.Context, claim s
 	}
 	return nil
 }
-func (f *executionStoreFake) AcquireAppOperationLock(ctx context.Context, app string) (func(), bool, error) {
+func (f *executionStoreFake) AcquireAppOperationLock(ctx context.Context, app string) (store.AppOperationLock, bool, error) {
 	if f.lock != nil {
 		return f.lock(ctx, app)
 	}
-	return func() {}, true, nil
+	return store.NewAppOperationLock(ctx, nil), true, nil
 }
 
 type operationExecutorFunc func(context.Context, *model.Operation, store.OperationClaim) (*pipeline.OperationResult, error)
@@ -119,13 +119,13 @@ func TestOperationRenewalErrorCancelsExecutorBeforeUnlockAndSuppressesSuccess(t 
 		renew: func(context.Context, store.OperationClaim, time.Duration) error {
 			return errors.New("database unavailable")
 		},
-		lock: func(context.Context, string) (func(), bool, error) {
-			return func() {
+		lock: func(ctx context.Context, _ string) (store.AppOperationLock, bool, error) {
+			return store.NewAppOperationLock(ctx, func() {
 				if !executorReturned.Load() {
 					t.Error("app lock released before executor returned")
 				}
 				released.Store(true)
-			}, true, nil
+			}), true, nil
 		},
 	}
 	w := &OperationWorker{db: fake, id: claim.OwnerID(), lease: 30 * time.Millisecond, pipeline: operationExecutorFunc(func(ctx context.Context, _ *model.Operation, _ store.OperationClaim) (*pipeline.OperationResult, error) {
@@ -137,6 +137,30 @@ func TestOperationRenewalErrorCancelsExecutorBeforeUnlockAndSuppressesSuccess(t 
 	if !executorReturned.Load() || !released.Load() {
 		t.Fatalf("executorReturned=%v released=%v", executorReturned.Load(), released.Load())
 	}
+	if fake.finishCalls.Load() != 0 {
+		t.Fatalf("finish calls=%d, want 0", fake.finishCalls.Load())
+	}
+}
+
+func TestOperationAppLockLossSuppressesTerminalization(t *testing.T) {
+	claim := operationClaim(t, "operation", "worker", 1)
+	op := &model.Operation{ID: claim.OperationID(), Kind: "app.deploy", App: "atlas", Attempts: 1, MaxAttempts: 2}
+	var appLock *store.AppOperationLockHandle
+	fake := &executionStoreFake{
+		lock: func(ctx context.Context, _ string) (store.AppOperationLock, bool, error) {
+			appLock = store.NewAppOperationLock(ctx, nil)
+			return appLock, true, nil
+		},
+		finish: func(context.Context, store.OperationClaim, model.OperationStatus, string, map[string]interface{}) error {
+			t.Fatal("lost app lock must suppress terminalization")
+			return nil
+		},
+	}
+	w := &OperationWorker{db: fake, id: claim.OwnerID(), lease: time.Second, pipeline: operationExecutorFunc(func(context.Context, *model.Operation, store.OperationClaim) (*pipeline.OperationResult, error) {
+		appLock.Fail(store.ErrAppOperationLockLost)
+		return &pipeline.OperationResult{Claim: claim, Status: model.OperationSucceeded, Message: "must not commit"}, nil
+	})}
+	w.handle(context.Background(), op, claim)
 	if fake.finishCalls.Load() != 0 {
 		t.Fatalf("finish calls=%d, want 0", fake.finishCalls.Load())
 	}

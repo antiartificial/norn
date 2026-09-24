@@ -176,23 +176,23 @@ func mergeMetadata(op *model.Operation, patch map[string]interface{}) {
 	}
 }
 
-func (s *OperationStore) AcquireAppOperationLock(ctx context.Context, app string) (func(), bool, error) {
+func (s *OperationStore) AcquireAppOperationLock(ctx context.Context, app string) (store.AppOperationLock, bool, error) {
 	if strings.TrimSpace(app) == "" {
-		return func() {}, false, errors.New("app operation lock is unavailable")
+		return nil, false, errors.New("app operation lock is unavailable")
 	}
 	resp, err := s.kv.Txn(ctx).
 		If(clientv3.Compare(clientv3.CreateRevision(s.lockKey(app)), "=", 0)).
 		Then(clientv3.OpPut(s.lockKey(app), "1")).
 		Commit()
 	if err != nil {
-		return func() {}, false, err
+		return nil, false, err
 	}
 	if !resp.Succeeded {
-		return func() {}, false, nil
+		return nil, false, nil
 	}
-	return func() {
+	return store.NewAppOperationLock(ctx, func() {
 		_, _ = s.kv.Delete(context.Background(), s.lockKey(app))
-	}, true, nil
+	}), true, nil
 }
 
 func (s *OperationStore) InsertOperation(ctx context.Context, op *model.Operation) error {

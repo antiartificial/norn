@@ -16,9 +16,9 @@ func TestIncompleteV3RecoveryAndAppLockFailClosed(t *testing.T) {
 	if err := s.RecoverExpiredOperations(context.Background()); err == nil {
 		t.Fatal("incomplete operation recovery must block worker startup")
 	}
-	release, acquired, err := s.AcquireAppOperationLock(context.Background(), "example")
-	if release != nil {
-		release()
+	lock, acquired, err := s.AcquireAppOperationLock(context.Background(), "example")
+	if lock != nil {
+		lock.Release()
 	}
 	if err == nil || acquired {
 		t.Fatalf("incomplete app lock acquired=%v err=%v", acquired, err)
