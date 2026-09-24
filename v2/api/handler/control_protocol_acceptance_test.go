@@ -99,6 +99,16 @@ func TestQueueMaintenanceReplayReturnsOriginalOperation(t *testing.T) {
 	}
 }
 
+func TestQueueMaintenanceReplayExpiryIsStableGone(t *testing.T) {
+	opStore := &recordingOperationStore{authority: "authority-1", err: &store.AcceptanceExpiredError{}}
+	h := &Handler{operationStore: opStore}
+	rec := httptest.NewRecorder()
+	h.queueMaintenanceOperation(rec, acceptedMaintenanceRequest("expired-key"), "platform.smoke", "", "read-only platform assurance", map[string]interface{}{})
+	if rec.Code != http.StatusGone || !strings.Contains(rec.Body.String(), `"code":"idempotency_window_expired"`) {
+		t.Fatalf("status=%d body=%s", rec.Code, rec.Body.String())
+	}
+}
+
 func TestQueueMaintenanceRequiresCallerIdempotencyAndReservedReceipt(t *testing.T) {
 	opStore := &recordingOperationStore{authority: "authority-1"}
 	h := &Handler{operationStore: opStore}

@@ -3,6 +3,7 @@ package store
 import (
 	"context"
 	"errors"
+	"strings"
 	"testing"
 
 	"norn/v2/api/model"
@@ -94,5 +95,12 @@ func TestHMACAcceptanceSignerVerifiesRetainedKeyAndRejectsTamper(t *testing.T) {
 	}
 	if !errors.Is((&AcceptanceSignatureError{}), ErrAcceptanceSignature) {
 		t.Fatal("signature error is not typed")
+	}
+}
+
+func TestOperationStoreRejectsNegativeReplayTTLBeforeRuntimeAssembly(t *testing.T) {
+	_, err := NewPGOperationStore(nil, nil, AcceptancePolicy{ReplayTTL: -1})
+	if !errors.Is(err, ErrAcceptanceInvalid) || !strings.Contains(err.Error(), "replay TTL") {
+		t.Fatalf("error = %v, want replay TTL acceptance validation error", err)
 	}
 }

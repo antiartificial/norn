@@ -236,6 +236,7 @@ paths:
         '400': { $ref: '#/components/responses/Problem' }
         '404': { $ref: '#/components/responses/Problem' }
         '409': { $ref: '#/components/responses/Problem' }
+        '410': { $ref: '#/components/responses/Problem' }
         '503': { $ref: '#/components/responses/Problem' }
   /api/v1/fleet/plans/{planID}/attempts:
     parameters:
@@ -259,6 +260,7 @@ paths:
         '201': { description: Runner attempt created, content: { application/json: { schema: { $ref: '#/components/schemas/FleetRunnerAttempt' } } } }
         '403': { $ref: '#/components/responses/Problem' }
         '409': { $ref: '#/components/responses/Problem' }
+        '410': { $ref: '#/components/responses/Problem' }
   /api/v1/fleet/plans/{planID}/attempts/{attemptID}:
     parameters:
       - { name: planID, in: path, required: true, schema: { type: string, format: uuid } }
@@ -349,6 +351,7 @@ paths:
         '202': { $ref: '#/components/responses/AcceptedOperation' }
         '400': { $ref: '#/components/responses/Problem' }
         '409': { $ref: '#/components/responses/Problem' }
+        '410': { $ref: '#/components/responses/Problem' }
   /api/v1/apps/{id}/releases/deployments:
     parameters: [ { $ref: '#/components/parameters/AppID' } ]
     post:
@@ -363,6 +366,7 @@ paths:
         '202': { $ref: '#/components/responses/AcceptedOperation' }
         '400': { $ref: '#/components/responses/Problem' }
         '409': { $ref: '#/components/responses/Problem' }
+        '410': { $ref: '#/components/responses/Problem' }
   /api/v1/apps/{id}/qualifications:
     parameters: [ { $ref: '#/components/parameters/AppID' } ]
     get:
@@ -384,6 +388,7 @@ paths:
         '201': { description: Signed qualification, content: { application/json: { schema: { $ref: '#/components/schemas/ReleaseQualification' } } } }
         '400': { $ref: '#/components/responses/Problem' }
         '409': { $ref: '#/components/responses/Problem' }
+        '410': { $ref: '#/components/responses/Problem' }
         '503': { $ref: '#/components/responses/Problem' }
   /api/v1/apps/{id}/promotions:
     parameters: [ { $ref: '#/components/parameters/AppID' } ]
@@ -400,6 +405,7 @@ paths:
         '400': { $ref: '#/components/responses/Problem' }
         '403': { $ref: '#/components/responses/Problem' }
         '409': { $ref: '#/components/responses/Problem' }
+        '410': { $ref: '#/components/responses/Problem' }
   /api/v1/apps/{id}/releases/rollbacks:
     parameters: [ { $ref: '#/components/parameters/AppID' } ]
     post:
@@ -415,6 +421,7 @@ paths:
         '400': { $ref: '#/components/responses/Problem' }
         '403': { $ref: '#/components/responses/Problem' }
         '409': { $ref: '#/components/responses/Problem' }
+        '410': { $ref: '#/components/responses/Problem' }
   /api/v1/apps/{id}/snapshots:
     parameters:
       - $ref: '#/components/parameters/AppID'
@@ -439,6 +446,7 @@ paths:
         '202': { $ref: '#/components/responses/AcceptedOperation' }
         '400': { $ref: '#/components/responses/Problem' }
         '409': { $ref: '#/components/responses/Problem' }
+        '410': { $ref: '#/components/responses/Problem' }
   /api/v1/apps/{id}/snapshots/retention:
     post:
       operationId: queueAppSnapshotRetention
@@ -462,6 +470,7 @@ paths:
         '202': { $ref: '#/components/responses/AcceptedOperation' }
         '400': { $ref: '#/components/responses/Problem' }
         '409': { $ref: '#/components/responses/Problem' }
+        '410': { $ref: '#/components/responses/Problem' }
   /api/v1/apps/{id}/snapshots/{snapshot}/restore:
     post:
       operationId: queueAppSnapshotRestore
@@ -484,6 +493,7 @@ paths:
         '202': { $ref: '#/components/responses/AcceptedOperation' }
         '400': { $ref: '#/components/responses/Problem' }
         '409': { $ref: '#/components/responses/Problem' }
+        '410': { $ref: '#/components/responses/Problem' }
   /api/v1/apps/{id}/migrations:
     post:
       operationId: queueAppMigration
@@ -506,6 +516,7 @@ paths:
         '202': { $ref: '#/components/responses/AcceptedOperation' }
         '400': { $ref: '#/components/responses/Problem' }
         '409': { $ref: '#/components/responses/Problem' }
+        '410': { $ref: '#/components/responses/Problem' }
   /api/v1/apps/{id}/databases/health:
     get:
       operationId: getAppDatabaseHealth
@@ -593,6 +604,7 @@ paths:
         '400': { $ref: '#/components/responses/Problem' }
         '403': { $ref: '#/components/responses/Problem' }
         '409': { $ref: '#/components/responses/Problem' }
+        '410': { $ref: '#/components/responses/Problem' }
   /api/v1/database/catalog:
     get:
       operationId: getDatabaseCatalog
@@ -622,6 +634,7 @@ paths:
         '400': { $ref: '#/components/responses/Problem' }
         '403': { $ref: '#/components/responses/Problem' }
         '409': { $ref: '#/components/responses/Problem' }
+        '410': { $ref: '#/components/responses/Problem' }
   /api/v1/apps/{id}/rollbacks:
     post:
       operationId: queueAppRollback
@@ -645,6 +658,7 @@ paths:
         '400': { $ref: '#/components/responses/Problem' }
         '404': { $ref: '#/components/responses/Problem' }
         '409': { $ref: '#/components/responses/Problem' }
+        '410': { $ref: '#/components/responses/Problem' }
   /api/v1/enrollments:
     post:
       operationId: startDeviceEnrollment
@@ -1095,6 +1109,7 @@ paths:
         '202': { $ref: '#/components/responses/AcceptedOperation' }
         '400': { $ref: '#/components/responses/Problem' }
         '409': { $ref: '#/components/responses/Problem' }
+        '410': { $ref: '#/components/responses/Problem' }
         '503': { $ref: '#/components/responses/Problem' }
   /api/v1/platform/upgrades:
     post:
@@ -1110,6 +1125,7 @@ paths:
         '202': { $ref: '#/components/responses/AcceptedOperation' }
         '400': { $ref: '#/components/responses/Problem' }
         '409': { $ref: '#/components/responses/Problem' }
+        '410': { $ref: '#/components/responses/Problem' }
         '503': { $ref: '#/components/responses/Problem' }
   /api/v1/platform/rollbacks:
     post:
@@ -1128,6 +1144,7 @@ paths:
         '202': { $ref: '#/components/responses/AcceptedOperation' }
         '400': { $ref: '#/components/responses/Problem' }
         '409': { $ref: '#/components/responses/Problem' }
+        '410': { $ref: '#/components/responses/Problem' }
         '503': { $ref: '#/components/responses/Problem' }
   /api/v1/platform/smoke:
     post:
@@ -1138,6 +1155,7 @@ paths:
         '202': { $ref: '#/components/responses/AcceptedOperation' }
         '400': { $ref: '#/components/responses/Problem' }
         '409': { $ref: '#/components/responses/Problem' }
+        '410': { $ref: '#/components/responses/Problem' }
         '503': { $ref: '#/components/responses/Problem' }
   /api/v1/host/assurances:
     post:
@@ -1148,6 +1166,7 @@ paths:
         '202': { $ref: '#/components/responses/AcceptedOperation' }
         '400': { $ref: '#/components/responses/Problem' }
         '409': { $ref: '#/components/responses/Problem' }
+        '410': { $ref: '#/components/responses/Problem' }
         '503': { $ref: '#/components/responses/Problem' }
 components:
   securitySchemes:
@@ -1216,6 +1235,7 @@ components:
         - operation_not_cancelable
         - invalid_idempotency_key
         - idempotency_key_reused
+        - idempotency_window_expired
         - app_operation_active
         - postgres_not_configured
         - migration_not_configured

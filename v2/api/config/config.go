@@ -49,6 +49,9 @@ type Config struct {
 	// UUID stored in the control database. It never creates or substitutes for
 	// that database identity; a configured mismatch fails operation acceptance.
 	ControlAuthority string
+	// OperationReplayTTL opts newly accepted request identities into durable
+	// replay expiry. Zero retains indefinite replay.
+	OperationReplayTTL time.Duration
 	// QualificationSigningKey signs portable staging release receipts. Keep it
 	// distinct from mutation-audit integrity material.
 	QualificationSigningKey string
@@ -227,6 +230,7 @@ func Load() *Config {
 		AuditSigningKey:                        os.Getenv("NORN_AUDIT_SIGNING_KEY"),
 		AuditPreviousSigningKeys:               splitNonEmpty(os.Getenv("NORN_AUDIT_PREVIOUS_SIGNING_KEYS")),
 		ControlAuthority:                       strings.TrimSpace(os.Getenv("NORN_CONTROL_AUTHORITY")),
+		OperationReplayTTL:                     envOptionalDuration("NORN_OPERATION_REPLAY_TTL"),
 		AuditRetentionDays:                     envIntOr("NORN_AUDIT_RETENTION_DAYS", 365),
 		QualificationSigningKey:                os.Getenv("NORN_QUALIFICATION_SIGNING_KEY"),
 		TrustedQualificationSigningKeys:        splitNonEmpty(os.Getenv("NORN_TRUSTED_QUALIFICATION_SIGNING_KEYS")),
@@ -474,6 +478,21 @@ func envDurationOr(key string, fallback time.Duration) time.Duration {
 	parsed, err := time.ParseDuration(raw)
 	if err != nil || parsed <= 0 {
 		return fallback
+	}
+	return parsed
+}
+
+// envOptionalDuration distinguishes an absent or explicit zero opt-in from an
+// invalid configured value. Callers reject the negative sentinel and fail
+// closed instead of silently disabling a requested policy.
+func envOptionalDuration(key string) time.Duration {
+	raw := strings.TrimSpace(os.Getenv(key))
+	if raw == "" {
+		return 0
+	}
+	parsed, err := time.ParseDuration(raw)
+	if err != nil || parsed < 0 {
+		return -1
 	}
 	return parsed
 }

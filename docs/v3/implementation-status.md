@@ -157,6 +157,24 @@ Nomad agent.
     `TestSignedAcceptanceByteReserveMigrationBackfillsExistingPayloads`,
     `TestSignedAcceptanceByteReserveRejectsOversizedPayloadAtomically`, and
     `TestSignedAcceptanceByteReserveSerializesConcurrentCapacity`.
+- **Versioned operation replay expiry (first enforceable identity lifecycle).**
+  Migration 15 raises the writer contract to 12 and adds
+  `norn.operation-replay/v1` expiry and tombstone metadata to request
+  identities. `NORN_OPERATION_REPLAY_TTL` is opt in: unset or `0` keeps
+  indefinite replay, and a positive Go duration applies only to identities
+  accepted after it is configured. Malformed or negative values fail startup
+  before the process connects to PostgreSQL or serves traffic.
+  - Passing the deadline alone does not expire a key. PostgreSQL records the
+    durable tombstone only after the operation is terminal, recovery flags are
+    clear, effects are resolved, Fleet attempts are inactive, and any linked
+    deployment is terminal and outside the current/rollback pair. The etcd
+    adapter uses a server lease to prove deadline passage and currently permits
+    expiry only for its read-only `app.preflight` aggregate.
+  - Same-fingerprint retries after tombstoning return HTTP 410 with
+    `idempotency_window_expired`; a changed fingerprint still returns the
+    existing 409 conflict. The identity, fingerprint, signed intent, domain
+    rows, and byte reservation remain hot. This slice releases no namespace or
+    capacity and does not complete M2 retention.
 - **R10: archive-aware listings and payload inventory.**
   `HistoryStore.ListByApp` and `ListRecent` merge pruned bundles, newest
   first, and stop only when no remaining bundle can hold a newer event. A

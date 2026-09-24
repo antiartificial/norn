@@ -203,6 +203,8 @@ func writeOperationAcceptanceError(w http.ResponseWriter, r *http.Request, err e
 		return
 	}
 	switch {
+	case errors.Is(err, store.ErrAcceptanceExpired):
+		WriteControlProblem(w, r, http.StatusGone, "idempotency_window_expired", "Idempotency-Key replay window expired; use a new key for a new operation")
 	case errors.Is(err, store.ErrAcceptanceConflict):
 		WriteControlProblem(w, r, http.StatusConflict, "idempotency_key_reused", "Idempotency-Key was already used for a different operation request")
 	case errors.Is(err, store.ErrLegacyReplayAmbiguous):

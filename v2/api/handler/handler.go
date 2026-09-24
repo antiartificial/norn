@@ -68,6 +68,7 @@ type Handler struct {
 	execWatchIntervalOverride time.Duration
 	accessTokenLineage        accessTokenLineageResolver
 	operationStore            store.OperationStore
+	operationStoreError       error
 }
 
 func New(db *store.DB, n *nomad.Client, c *consul.Client, ws *hub.Hub, cfg *config.Config, p *pipeline.Pipeline, beaconSvc *beacon.Service, sec *secrets.Manager, ss saga.Store, s3 *storage.Client, rp *redpanda.Client) *Handler {
@@ -91,7 +92,12 @@ func New(db *store.DB, n *nomad.Client, c *consul.Client, ws *hub.Hub, cfg *conf
 		h.accessTokenLineage = postgresAccessTokenLineageResolver{db: db}
 		if cfg != nil {
 			if signer, err := store.NewHMACAcceptanceSigner(cfg.AuditSigningKey, cfg.AuditPreviousSigningKeys...); err == nil {
-				h.operationStore, _ = store.NewPGOperationStore(db, signer, store.AcceptancePolicy{ExpectedAuthority: cfg.ControlAuthority})
+				operationStore, storeErr := store.NewPGOperationStore(db, signer, store.AcceptancePolicy{ExpectedAuthority: cfg.ControlAuthority, ReplayTTL: cfg.OperationReplayTTL})
+				if storeErr != nil {
+					h.operationStoreError = storeErr
+				} else {
+					h.operationStore = operationStore
+				}
 			}
 		}
 	}
@@ -109,6 +115,15 @@ func (h *Handler) OperationStore() store.OperationStore {
 		return nil
 	}
 	return h.operationStore
+}
+
+// OperationStoreError reports invalid operation-acceptance policy discovered
+// while assembling the handler. Startup must check it before serving traffic.
+func (h *Handler) OperationStoreError() error {
+	if h == nil {
+		return nil
+	}
+	return h.operationStoreError
 }
 
 func execRuntimeOwnerID() string {

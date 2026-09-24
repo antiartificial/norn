@@ -13,6 +13,7 @@ import (
 const (
 	OperationRequestFingerprintVersion = "norn.operation-request/v1"
 	OperationAcceptanceEnvelopeSchema  = "norn.operation-acceptance/v1"
+	OperationReplayContractVersion     = "norn.operation-replay/v1"
 )
 
 // OperationStore is the authority boundary for accepting durable work. It
@@ -158,11 +159,16 @@ type AcceptancePolicy struct {
 	MaxIdentityKeyBytes int
 	MaxCanonicalBytes   int
 	ResolveTimeout      time.Duration
+	// ReplayTTL opts newly accepted identities into the versioned replay
+	// expiry contract. Zero preserves the historical indefinite replay
+	// behavior, including for every identity accepted before the policy is set.
+	ReplayTTL time.Duration
 }
 
 var (
 	ErrAcceptanceInvalid            = errors.New("operation acceptance is invalid")
 	ErrAcceptanceConflict           = errors.New("operation request identity conflict")
+	ErrAcceptanceExpired            = errors.New("operation request identity replay window expired")
 	ErrAcceptanceNotFound           = errors.New("operation acceptance not found")
 	ErrAcceptanceIndeterminate      = errors.New("operation acceptance outcome is indeterminate")
 	ErrAcceptanceSignature          = errors.New("operation acceptance signature is invalid")
@@ -186,6 +192,16 @@ func (e *AcceptanceConflictError) Error() string {
 	return fmt.Sprintf("operation request identity conflicts for %s/%s", e.Identity.Kind, e.Identity.Resource)
 }
 func (e *AcceptanceConflictError) Unwrap() error { return ErrAcceptanceConflict }
+
+type AcceptanceExpiredError struct {
+	Identity  OperationRequestIdentity
+	ExpiresAt time.Time
+}
+
+func (e *AcceptanceExpiredError) Error() string {
+	return fmt.Sprintf("operation request identity replay window expired for %s/%s", e.Identity.Kind, e.Identity.Resource)
+}
+func (e *AcceptanceExpiredError) Unwrap() error { return ErrAcceptanceExpired }
 
 type AcceptanceNotFoundError struct{ Identity OperationRequestIdentity }
 
