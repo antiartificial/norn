@@ -104,6 +104,11 @@ func (c *Client) requireAtomicJobCAS() error {
 }
 
 func supportsAtomicJobCAS(version string) bool {
+	// A prerelease may predate the server-side CAS fix even when its eventual
+	// release number meets the floor.
+	if strings.Contains(version, "-") {
+		return false
+	}
 	parts := strings.Split(strings.TrimPrefix(strings.TrimSpace(version), "v"), ".")
 	if len(parts) < 3 {
 		return false

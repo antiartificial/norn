@@ -140,15 +140,17 @@ func TestPausePeriodicJobRejectsUnsupportedAtomicCASServer(t *testing.T) {
 
 func TestSupportsAtomicJobCAS(t *testing.T) {
 	for version, want := range map[string]bool{
-		"1.9.7":   false,
-		"1.10.10": false,
-		"1.10.11": true,
-		"1.11.4":  false,
-		"1.11.5":  true,
-		"2.0.0":   false,
-		"2.0.1":   true,
-		"v2.1.0":  true,
-		"unknown": false,
+		"1.9.7":         false,
+		"1.10.10":       false,
+		"1.10.11":       true,
+		"1.11.4":        false,
+		"1.11.5":        true,
+		"2.0.0":         false,
+		"2.0.1":         true,
+		"v2.1.0":        true,
+		"1.10.11-beta1": false,
+		"2.0.1-rc1":     false,
+		"unknown":       false,
 	} {
 		if got := supportsAtomicJobCAS(version); got != want {
 			t.Errorf("supportsAtomicJobCAS(%q) = %t, want %t", version, got, want)
