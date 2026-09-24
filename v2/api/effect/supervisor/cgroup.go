@@ -46,8 +46,17 @@ func (b *cgroupBackend) ObserveSnapshot(_ context.Context, execution BackendExec
 	if err != nil {
 		return BackendState{}, err
 	}
-	if populated || status.Phase == effect.SupervisorRunning {
+	if populated {
 		return BackendState{Phase: effect.SupervisorRunning, EvidenceReference: b.reference(execution)}, nil
+	}
+	if status.Phase == effect.SupervisorRunning {
+		// The helper died before a terminal attestation. Its private service and
+		// pass files cannot be retained for a later claim, and the absence of a
+		// terminal outcome is deliberately unknown rather than retry-safe.
+		if err := RecoverSnapshotPrivateMaterial(execution.StateDirectory, runnerStatusKey(b.key, execution.RuntimeInstanceID), execution.RuntimeInstanceID); err != nil {
+			return BackendState{}, fmt.Errorf("recover dead snapshot private material: %w", err)
+		}
+		return unknown, nil
 	}
 	if status.Phase != effect.SupervisorSucceeded && status.Phase != effect.SupervisorFailed {
 		return unknown, nil
