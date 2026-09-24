@@ -117,7 +117,9 @@ into #76 and closed. These are review containers, not milestone signoff.
 - M1: the etcd canary effect adapter now atomically reserves under a live
   operation claim and per-app gate, records launch and completion, and supports
   repeat-safe resolution and recovery. Its tests ran against disposable etcd
-  v3.5.17. Admission/replay policy, a normal etcd app worker, and end-to-end
+  v3.5.17. Replay expiry holds accepted identities until their effects are
+  terminal, and an opt-in canary-only worker reconciled a lost Nomad response
+  with one external PUT against fake Nomad. Public admission and live Nomad
   crash/ambiguity qualification remain open; the route is unavailable.
 - M2: local MySQL runtime and verified-TLS health are implemented. Generated
   service, periodic, and function jobs delivered exact component bytes inside
@@ -128,7 +130,9 @@ into #76 and closed. These are review containers, not milestone signoff.
   Full WordPress startup, TLS application runtime, backup/restore, retention
   reserve, and representative recovery remain open.
 - M3: normal etcd startup and managed-token lifecycle have a narrow PG-free
-  Fleet router. Full app consumers, three-member host bootstrap and restore,
+  Fleet router. Passive candidate health/schema now rechecks etcd after startup
+  and a real API process passed with a poisoned PostgreSQL URL. Full app
+  consumers, three-member host bootstrap and restore,
   quorum/fault behavior, and soak qualification remain open. The host PR's CI
   contract job was blocked by GitHub account billing status during this
   checkpoint; that is not a passing host qualification.
