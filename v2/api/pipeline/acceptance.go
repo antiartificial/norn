@@ -36,7 +36,7 @@ func (p *Pipeline) acceptOperation(ctx context.Context, request EnqueueRequest, 
 		return store.AcceptedOperation{}, fmt.Errorf("signed operation acceptance is unavailable")
 	}
 	if operation.Kind == "app.snapshot" && (p.SnapshotEffects == nil || !p.SnapshotEffects.available()) {
-		return store.AcceptedOperation{}, fmt.Errorf("durable app.snapshot execution is unavailable")
+		return store.AcceptedOperation{}, &SnapshotExecutionUnavailableError{}
 	}
 	request.Authority = strings.TrimSpace(request.Authority)
 	request.Key = strings.TrimSpace(request.Key)

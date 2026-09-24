@@ -24,6 +24,12 @@ type SnapshotEffects struct {
 	Timeout                  time.Duration
 }
 
+type SnapshotExecutionUnavailableError struct{}
+
+func (*SnapshotExecutionUnavailableError) Error() string {
+	return "durable app.snapshot execution is unavailable"
+}
+
 func (s *SnapshotEffects) available() bool {
 	return s != nil && s.Executor != nil && s.Store != nil && s.Manager != nil && s.PGDumpPath != "" && len(s.PGDumpSHA256) == 64 && s.Timeout > 0
 }
@@ -75,7 +81,7 @@ func snapshotExecutionID(r effect.Reservation) string {
 }
 func (p *Pipeline) executeAttestedSnapshot(ctx context.Context, op *model.Operation, claim store.OperationClaim, bound *boundDatabase, loc snapshotLocation) (*dataSnapshot, effect.ExecuteResult, error) {
 	if !p.SnapshotEffects.available() || p.DB == nil || bound == nil || bound.session == nil {
-		return nil, effect.ExecuteResult{}, fmt.Errorf("durable app.snapshot execution is unavailable")
+		return nil, effect.ExecuteResult{}, &SnapshotExecutionUnavailableError{}
 	}
 	if e := p.DB.CheckOperationClaim(ctx, claim); e != nil {
 		return nil, effect.ExecuteResult{}, &effect.PendingError{Resource: snapshotResource(op.App), Reason: "snapshot claim is no longer current", Cause: e}

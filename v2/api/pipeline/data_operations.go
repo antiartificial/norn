@@ -93,7 +93,7 @@ func (p *Pipeline) executeDataOperation(ctx context.Context, op *model.Operation
 	switch op.Kind {
 	case "app.snapshot":
 		if p.SnapshotEffects == nil || !p.SnapshotEffects.available() {
-			return nil, fmt.Errorf("durable app.snapshot execution is unavailable")
+			return nil, &SnapshotExecutionUnavailableError{}
 		}
 		created, _, err := p.executeAttestedSnapshot(ctx, op, claim, bound, location)
 		if err != nil {
