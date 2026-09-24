@@ -95,6 +95,14 @@ func (h *Handler) CreateFleetGitHubPullRequest(w http.ResponseWriter, r *http.Re
 		WriteControlProblem(w, r, http.StatusConflict, "fleet_github_plan_stale", "GitHub main changed after this Norn capacity plan; create a fresh plan")
 		return
 	}
+	if errors.Is(err, githubapp.ErrPermanentNoWrite) {
+		if _, finishErr := h.finishFleetGitHubReservation(r.Context(), reservation.ID, plan.ID, "fleet.github.pull-request", model.OperationFailed, "fleet pull request was refused before GitHub mutation", map[string]interface{}{"planId": plan.ID, "outcome": "permanent-no-write"}); finishErr != nil {
+			WriteControlProblem(w, r, http.StatusInternalServerError, "fleet_github_receipt_failed", "GitHub refusal could not be durably recorded; retry safely")
+			return
+		}
+		WriteControlProblem(w, r, http.StatusConflict, "fleet_github_pull_request_refused", "GitHub rejected this plan before creating a pull request; create a fresh plan")
+		return
+	}
 	if err != nil {
 		WriteControlProblem(w, r, http.StatusBadGateway, "fleet_github_pull_request_failed", "GitHub could not create or recover the fleet pull request")
 		return
@@ -208,10 +216,6 @@ func (h *Handler) DispatchFleetGitHubApply(w http.ResponseWriter, r *http.Reques
 	approved := &githubapp.Dispatch{PlanRunID: binding.PlanRunID, PlanSHA: binding.PlanSHA256, ApprovedHeadSHA: binding.ApprovedHeadSHA}
 	result, err := h.fleetGitHub.DispatchBoundPlan(r.Context(), plan.ID, fleetEnvironment, request.AllowDestructive, approved, binding.DispatchNonce)
 	if errors.Is(err, githubapp.ErrNotReady) {
-		if _, finishErr := h.finishFleetGitHubReservation(r.Context(), reservation.ID, plan.ID, "fleet.github.apply-dispatch", model.OperationFailed, "protected fleet apply was not dispatched because the plan is not ready", map[string]interface{}{"planId": plan.ID, "outcome": "plan-not-ready"}); finishErr != nil {
-			WriteControlProblem(w, r, http.StatusInternalServerError, "fleet_github_receipt_failed", "not-ready plan outcome could not be durably recorded; retry safely")
-			return
-		}
 		WriteControlProblem(w, r, http.StatusConflict, "fleet_github_plan_not_ready", "merge the fleet pull request and wait for its protected main-branch plan workflow to succeed")
 		return
 	}

@@ -373,6 +373,12 @@ func (a *Archiver) verifyFleetGitHubCompletion(ctx context.Context, bundle *arch
 	if json.Unmarshal(signed.Result, &resultFields) != nil {
 		return fmt.Errorf("archived Fleet GitHub completion result is malformed")
 	}
+	if len(row.Payload) != len(resultFields)+1 {
+		return fmt.Errorf("archived Fleet GitHub operation payload has unsigned fields")
+	}
+	if _, ok := row.Payload["fleetGitHub"]; !ok {
+		return fmt.Errorf("archived Fleet GitHub operation payload is missing its accepted reservation")
+	}
 	for key, value := range resultFields {
 		if !sameJSONValue(row.Payload[key], value) {
 			return fmt.Errorf("archived Fleet GitHub operation payload differs from its signed completion")
