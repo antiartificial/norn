@@ -86,6 +86,38 @@ var _ store.OperationIdentityResolver = (*V3OperationStore)(nil)
 var _ store.ExecutionStore = (*V3OperationStore)(nil)
 var _ store.OperationCheckpointStore = (*V3OperationStore)(nil)
 
+// ListOperations returns a bounded, stable snapshot of accepted operations.
+// It is intentionally a small read surface for the etcd Fleet runtime; callers
+// must apply their own kind and result limits rather than treating etcd as the
+// unrestricted historical query engine used by PostgreSQL deployments.
+func (s *V3OperationStore) ListOperations(ctx context.Context, limit int) ([]model.Operation, error) {
+	if limit <= 0 || limit > 100 {
+		return nil, fmt.Errorf("operation list limit must be between 1 and 100")
+	}
+	response, err := s.kv.Get(ctx, s.opsPrefix(), clientv3.WithPrefix(), clientv3.WithLimit(int64(limit)), clientv3.WithSort(clientv3.SortByKey, clientv3.SortAscend))
+	if err != nil {
+		return nil, err
+	}
+	operations := make([]model.Operation, 0, min(limit, len(response.Kvs)))
+	for _, kv := range response.Kvs {
+		var record v3Record
+		if err := json.Unmarshal(kv.Value, &record); err != nil {
+			return nil, fmt.Errorf("decode operation %q: %w", string(kv.Key), err)
+		}
+		operations = append(operations, record.Operation)
+		if len(operations) == limit {
+			break
+		}
+	}
+	sort.SliceStable(operations, func(i, j int) bool {
+		if operations[i].StartedAt.Equal(operations[j].StartedAt) {
+			return operations[i].ID < operations[j].ID
+		}
+		return operations[i].StartedAt.After(operations[j].StartedAt)
+	})
+	return operations, nil
+}
+
 // GetOperation returns a single accepted operation for the narrow
 // source-validation status surface. It intentionally does not add listing or
 // recovery semantics to the etcd adapter.

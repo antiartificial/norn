@@ -50,11 +50,8 @@ func ParseControlBackend(getenv func(string) string) (ControlBackendConfig, erro
 	return ControlBackendConfig{Backend: backend, EtcdEndpoints: endpoints, EtcdPrefix: prefix, SourceValidation: strings.EqualFold(strings.TrimSpace(getenv(EtcdSourceValidationModeEnv)), "true")}, nil
 }
 
-// RequireRuntimeCapabilities rejects etcd before either executable opens PostgreSQL.
+// RequireRuntimeCapabilities rejects backends that have no normal runtime.
 func RequireRuntimeCapabilities(cfg ControlBackendConfig) error {
-	if cfg.Backend == BackendEtcd {
-		return fmt.Errorf("etcd control backend is not available: operation recovery, lease-backed app locks, and API aggregate consumers are not yet backend-neutral")
-	}
 	return nil
 }
 

@@ -81,6 +81,12 @@ func main() {
 		}
 		return
 	}
+	if backendCfg.Backend == startup.BackendEtcd {
+		if err := runEtcdFleetRuntime(cfg, backendCfg); err != nil {
+			log.Fatalf("etcd fleet runtime: %v", err)
+		}
+		return
+	}
 	if err := startup.RequireRuntimeCapabilities(backendCfg); err != nil {
 		log.Fatalf("control backend: %v", err)
 	}

@@ -1,0 +1,124 @@
+package main
+
+import (
+	"bytes"
+	"context"
+	"encoding/json"
+	"fmt"
+	"net"
+	"net/http"
+	"os"
+	"os/exec"
+	"path/filepath"
+	"strings"
+	"testing"
+	"time"
+
+	"github.com/google/uuid"
+	clientv3 "go.etcd.io/etcd/client/v3"
+
+	"norn/v2/api/etcdstore"
+	"norn/v2/api/handler"
+)
+
+// TestEtcdFleetRuntimeProcess proves the normal norn-api binary starts before
+// touching a poisoned PostgreSQL URL and exposes only the bounded Fleet slice.
+func TestEtcdFleetRuntimeProcess(t *testing.T) {
+	endpoints := strings.TrimSpace(os.Getenv("NORN_TEST_ETCD_ENDPOINTS"))
+	if endpoints == "" {
+		t.Skip("NORN_TEST_ETCD_ENDPOINTS is not set")
+	}
+	client, err := clientv3.New(clientv3.Config{Endpoints: strings.Split(endpoints, ","), DialTimeout: 5 * time.Second})
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = client.Close() })
+	prefix := "/norn-test/fleet-runtime/" + uuid.NewString()
+	t.Cleanup(func() { _, _ = client.Delete(context.Background(), prefix, clientv3.WithPrefix()) })
+	secret := "fleet-runtime-process-token-secret-000"
+	identities := etcdstore.NewAuthStore(client, prefix)
+	token, _, err := handler.IssueManagedAccessToken(context.Background(), secret, identities, "operator", []string{handler.ScopeAPIRead, handler.ScopeFleetOperate}, time.Hour)
+	if err != nil {
+		t.Fatal(err)
+	}
+	configPath := filepath.Join(t.TempDir(), "cluster.yaml")
+	document := []byte("apiVersion: norn.dev/fleet/v1\nkind: Cluster\nmetadata:\n  repository: example/norn-fleet\n  workflowURL: https://example.test/apply\ncluster:\n  name: test\n  provider: digitalocean\n  region: nyc3\nnodePools:\n  control:\n    size: s-2vcpu-4gb\n    min: 3\n    desired: 3\n    max: 5\n    labels: { workload: control-plane }\n    replacement:\n      strategy: blueGreen\n      requireCapacityHeadroom: true\n      requireReadiness: true\n      drainTimeout: 15m\n")
+	if err := os.WriteFile(configPath, document, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	listener, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	port := listener.Addr().(*net.TCPAddr).Port
+	_ = listener.Close()
+	binary := filepath.Join(t.TempDir(), "norn-api")
+	build := exec.Command("go", "build", "-buildvcs=false", "-o", binary, ".")
+	build.Dir = "."
+	if out, err := build.CombinedOutput(); err != nil {
+		t.Fatalf("build: %v\n%s", err, out)
+	}
+	command := exec.Command(binary)
+	var output lockedBuffer
+	command.Stdout, command.Stderr = &output, &output
+	command.Env = append(os.Environ(), "NORN_CONTROL_BACKEND=etcd", "NORN_ETCD_ENDPOINTS="+endpoints, "NORN_ETCD_PREFIX="+prefix, "NORN_CONTROL_AUTHORITY="+uuid.NewString(), "NORN_DATABASE_URL=postgres://poisoned.invalid:1/never-open", "NORN_API_TOKEN="+secret, "NORN_AUDIT_SIGNING_KEY=fleet-runtime-process-audit-key-000", "NORN_REQUIRE_EXPLICIT_AUTH=true", "NORN_BIND_ADDR=127.0.0.1", fmt.Sprintf("NORN_PORT=%d", port), "NORN_FLEET_CONFIG="+configPath, "NORN_UI_DIR=")
+	if err := command.Start(); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = command.Process.Signal(os.Interrupt); _ = command.Wait() })
+	base := fmt.Sprintf("http://127.0.0.1:%d", port)
+	waitForSourceHealth(t, base, &output)
+	request, err := http.NewRequest(http.MethodPost, base+"/api/v1/fleet/node-pools/control/plan", bytes.NewBufferString(`{"desired":4,"reason":"process proof"}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	request.Header.Set("Authorization", "Bearer "+token)
+	request.Header.Set("Idempotency-Key", "fleet-runtime-1")
+	request.Header.Set("Content-Type", "application/json")
+	response, err := http.DefaultClient.Do(request)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer response.Body.Close()
+	if response.StatusCode != http.StatusCreated {
+		t.Fatalf("plan status=%d output=%s", response.StatusCode, output.String())
+	}
+	var plan map[string]interface{}
+	if err := json.NewDecoder(response.Body).Decode(&plan); err != nil {
+		t.Fatal(err)
+	}
+	id, _ := plan["id"].(string)
+	if id == "" {
+		t.Fatalf("plan response missing id: %#v", plan)
+	}
+	request, _ = http.NewRequest(http.MethodPost, base+"/api/v1/fleet/node-pools/control/plan", bytes.NewBufferString(`{"desired":4,"reason":"process proof"}`))
+	request.Header.Set("Authorization", "Bearer "+token)
+	request.Header.Set("Idempotency-Key", "fleet-runtime-1")
+	request.Header.Set("Content-Type", "application/json")
+	response, err = http.DefaultClient.Do(request)
+	if err != nil {
+		t.Fatal(err)
+	}
+	response.Body.Close()
+	if response.StatusCode != http.StatusOK {
+		t.Fatalf("replay status=%d", response.StatusCode)
+	}
+	request, _ = http.NewRequest(http.MethodGet, base+"/api/v1/operations/"+id, nil)
+	request.Header.Set("Authorization", "Bearer "+token)
+	response, err = http.DefaultClient.Do(request)
+	if err != nil {
+		t.Fatal(err)
+	}
+	response.Body.Close()
+	if response.StatusCode != http.StatusOK {
+		t.Fatalf("operation status=%d", response.StatusCode)
+	}
+	response, err = http.Post(base+"/api/v1/apps/demo/releases/deployments", "application/json", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	response.Body.Close()
+	if response.StatusCode != http.StatusNotImplemented {
+		t.Fatalf("unsupported status=%d", response.StatusCode)
+	}
+}
