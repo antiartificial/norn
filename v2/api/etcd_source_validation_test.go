@@ -49,3 +49,31 @@ func TestSourceHealthUnavailableProblemShape(t *testing.T) {
 		t.Fatalf("status=%d", recorder.Code)
 	}
 }
+
+func TestEtcdPassiveHealthTracksQuorumAfterStartup(t *testing.T) {
+	client := &etcdHealthStub{}
+	health := etcdPassiveHealthHandler(client, "/norn/passive")
+	schema := etcdPassiveSchemaHandler(client, "/norn/passive")
+	request := httptest.NewRequest(http.MethodGet, "/api/health", nil)
+	ready := httptest.NewRecorder()
+	health.ServeHTTP(ready, request)
+	if ready.Code != http.StatusOK || client.key != "/norn/passive" {
+		t.Fatalf("initial passive health: status=%d read=%q", ready.Code, client.key)
+	}
+	schemaReady := httptest.NewRecorder()
+	schema.ServeHTTP(schemaReady, httptest.NewRequest(http.MethodGet, "/api/schema", nil))
+	if schemaReady.Code != http.StatusOK {
+		t.Fatalf("initial passive schema status=%d", schemaReady.Code)
+	}
+	client.err = errors.New("quorum unavailable")
+	unavailable := httptest.NewRecorder()
+	health.ServeHTTP(unavailable, request)
+	if unavailable.Code != http.StatusServiceUnavailable {
+		t.Fatalf("passive candidate stayed healthy after quorum loss: status=%d", unavailable.Code)
+	}
+	schemaUnavailable := httptest.NewRecorder()
+	schema.ServeHTTP(schemaUnavailable, httptest.NewRequest(http.MethodGet, "/api/schema", nil))
+	if schemaUnavailable.Code != http.StatusServiceUnavailable {
+		t.Fatalf("passive schema check stayed successful after quorum loss: status=%d", schemaUnavailable.Code)
+	}
+}

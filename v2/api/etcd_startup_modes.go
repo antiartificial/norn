@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"norn/v2/api/config"
+	"norn/v2/api/handler"
 	"norn/v2/api/startup"
 )
 
@@ -49,13 +50,9 @@ func runEtcdPassiveRuntime(cfg *config.Config, backend startup.ControlBackendCon
 		w.Header().Set("Content-Type", "application/json")
 		writeEtcdSourceJSON(w, http.StatusOK, value)
 	}
-	mux.HandleFunc("GET /api/health", func(w http.ResponseWriter, _ *http.Request) {
-		write(w, map[string]any{"status": "passive", "backend": "etcd", "schemaMode": "check"})
-	})
+	mux.HandleFunc("GET /api/health", etcdPassiveHealthHandler(client, backend.EtcdPrefix))
 	mux.HandleFunc("GET /api/version", func(w http.ResponseWriter, _ *http.Request) { write(w, map[string]string{"version": Version}) })
-	mux.HandleFunc("GET /api/schema", func(w http.ResponseWriter, _ *http.Request) {
-		write(w, map[string]any{"backend": "etcd", "startupMode": "passive", "schemaMode": "check", "migration": "not-applicable"})
-	})
+	mux.HandleFunc("GET /api/schema", etcdPassiveSchemaHandler(client, backend.EtcdPrefix))
 	srv := &http.Server{Addr: cfg.BindAddr + ":" + cfg.Port, Handler: mux, ReadHeaderTimeout: 10 * time.Second, IdleTimeout: 30 * time.Second, MaxHeaderBytes: 1 << 16}
 	errCh := make(chan error, 1)
 	go func() {
@@ -73,5 +70,31 @@ func runEtcdPassiveRuntime(cfg *config.Config, backend startup.ControlBackendCon
 		shutdownCtx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 		defer cancel()
 		return srv.Shutdown(shutdownCtx)
+	}
+}
+
+// Passive candidates have no workers, but their health must still represent
+// the selected control store. A one-time startup read cannot prove that a
+// candidate can take over after an etcd quorum loss.
+func etcdPassiveHealthHandler(client etcdHealthClient, prefix string) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		if err := checkEtcdSourceHealth(r.Context(), client, prefix); err != nil {
+			handler.WriteControlProblem(w, r, http.StatusServiceUnavailable, "control_store_unavailable", "etcd is unavailable")
+			return
+		}
+		writeEtcdSourceJSON(w, http.StatusOK, map[string]any{"status": "passive", "backend": "etcd", "schemaMode": "check"})
+	}
+}
+
+// The upgrade controller reads /api/schema after starting a passive
+// candidate. Report check success only while its selected etcd quorum can
+// serve a fresh linearizable read.
+func etcdPassiveSchemaHandler(client etcdHealthClient, prefix string) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		if err := checkEtcdSourceHealth(r.Context(), client, prefix); err != nil {
+			handler.WriteControlProblem(w, r, http.StatusServiceUnavailable, "control_store_unavailable", "etcd is unavailable")
+			return
+		}
+		writeEtcdSourceJSON(w, http.StatusOK, map[string]any{"backend": "etcd", "startupMode": "passive", "schemaMode": "check", "migration": "not-applicable"})
 	}
 }
