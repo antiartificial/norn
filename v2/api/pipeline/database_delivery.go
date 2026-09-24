@@ -69,6 +69,7 @@ func (p *Pipeline) deliverDatabases(ctx context.Context, st *state, sg *saga.Sag
 		return err
 	}
 	urls := map[string]string{}
+	components := map[string]string{}
 	targets := map[string]string{}
 	delivered := []string{}
 	for _, requirement := range st.spec.Databases {
@@ -82,11 +83,22 @@ func (p *Pipeline) deliverDatabases(ctx context.Context, st *state, sg *saga.Sag
 		if err := bound.requireCapabilities(database.CapabilityRuntime); err != nil {
 			return err
 		}
-		value, err := bound.session.RuntimeConnectionURL()
-		if err != nil {
-			return err
+		if requirement.Runtime.Components != nil {
+			values, err := bound.session.RuntimeComponents()
+			if err != nil {
+				return err
+			}
+			for field, value := range values {
+				components[nomad.DatabaseComponentItemKey(requirement.Name, field)] = value
+			}
 		}
-		urls[requirement.Name] = value
+		if requirement.Runtime.Env != "" || requirement.Runtime.FileEnv != "" {
+			value, err := bound.session.RuntimeConnectionURL()
+			if err != nil {
+				return err
+			}
+			urls[requirement.Name] = value
+		}
 		identity, err := json.Marshal(bound.resolved.Target)
 		if err != nil {
 			return err
@@ -95,6 +107,9 @@ func (p *Pipeline) deliverDatabases(ctx context.Context, st *state, sg *saga.Sag
 		delivered = append(delivered, fmt.Sprintf("%s=%s@%d", requirement.Name, bound.resolved.Target.BindingID, bound.resolved.Target.BindingGeneration))
 	}
 	items := nomad.DatabaseVariableItems(urls)
+	for key, value := range components {
+		items[key] = value
+	}
 	for name, identity := range targets {
 		items[nomad.DatabaseTargetItemKey(name)] = identity
 	}

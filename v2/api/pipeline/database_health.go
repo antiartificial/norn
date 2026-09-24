@@ -71,9 +71,9 @@ func (p *Pipeline) probeDatabase(ctx context.Context, spec *model.InfraSpec, nam
 	session, err := database.OpenSession(ctx, resolved, p.DatabaseTargets.Secrets)
 	if err != nil {
 		var resolverErr *database.ResolverError
-		if errors.As(err, &resolverErr) && resolverErr.Code == database.CodeUnsupportedEngine {
+		if errors.As(err, &resolverErr) && (resolverErr.Code == database.CodeUnsupportedEngine || resolverErr.Code == database.CodeUnsupportedCapability) {
 			health.Status = "unsupported"
-			health.Detail = "no connection adapter or health probe is implemented for this engine"
+			health.Detail = "connection adapter or transport is not implemented for this target"
 			return health
 		}
 		health.Detail = err.Error()

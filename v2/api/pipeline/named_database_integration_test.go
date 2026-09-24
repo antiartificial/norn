@@ -426,8 +426,8 @@ func TestNamedDatabasesSnapshotRestoreInventoryExportAndHealthAreTargetBound(t *
 		t.Fatalf("import/restore reached primary: %q", state)
 	}
 
-	// Health: both PostgreSQL targets prove their identity; the MySQL target
-	// is reported unsupported, never healthy.
+	// Health: both PostgreSQL targets prove their identity. This fixture has
+	// no MySQL server, so its MySQL probe fails without exposing credentials.
 	health, err := f.p.DatabaseHealth(ctx, f.spec)
 	if err != nil || len(health) != 3 {
 		t.Fatalf("health = %+v, %v", health, err)
@@ -439,7 +439,7 @@ func TestNamedDatabasesSnapshotRestoreInventoryExportAndHealthAreTargetBound(t *
 				t.Fatalf("%s health = %+v", entry.Database, entry)
 			}
 		case "reports":
-			if entry.Status != "unsupported" || entry.Engine != "mysql" {
+			if entry.Status != "failed" || entry.Engine != "mysql" {
 				t.Fatalf("reports health = %+v", entry)
 			}
 		}

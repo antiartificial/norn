@@ -221,8 +221,21 @@ func (p *Pipeline) bindNamedDatabaseTargets(ctx context.Context, spec *model.Inf
 		if err != nil {
 			return operation, err
 		}
+		if runtime := requirement.Runtime; runtime != nil {
+			switch resolved.Target.Engine {
+			case database.EngineMySQL:
+				if runtime.Components == nil || runtime.Env != "" || runtime.FileEnv != "" {
+					return operation, &DatabaseTargetError{Reason: "MySQL runtime requires only the four structured connection variables"}
+				}
+			case database.EnginePostgreSQL:
+				if runtime.Components != nil {
+					return operation, &DatabaseTargetError{Reason: "PostgreSQL runtime requires URL delivery"}
+				}
+			}
+		}
 		if len(required) != len(requirement.Capabilities) {
-			if err := (&boundDatabase{resolved: resolved}).requireCapabilities(database.CapabilityRestore); err != nil {
+			if _, err := resolver.Resolve(database.ResolveRequest{DeploymentProfileID: p.DatabaseTargets.ProfileID, Purpose: database.PurposeApplication,
+				LogicalResourceID: name, RequiredCapabilities: []database.Capability{database.CapabilityRestore}, Expected: &resolved.Target}); err != nil {
 				return operation, err
 			}
 		}
