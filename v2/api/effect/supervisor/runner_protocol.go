@@ -78,7 +78,22 @@ func (s runnerStatus) terminal() bool {
 // helper deliberately does not claim that the cgroup is empty while it is
 // still a member.
 func RunHelper(input io.Reader) error {
-	request, err := decodeRunnerRequest(input)
+	data, err := readRunnerInput(input)
+	if err != nil {
+		return err
+	}
+	var protocol struct {
+		Protocol string `json:"protocol"`
+	}
+	// This is only a routing header. The selected protocol decoder below is
+	// strict, including unknown-field rejection.
+	if err := json.Unmarshal(data, &protocol); err != nil {
+		return fmt.Errorf("effect runner request is malformed")
+	}
+	if protocol.Protocol == SnapshotProtocolV1 {
+		return runSnapshotHelper(data)
+	}
+	request, err := decodeRunnerRequestBytes(data)
 	if err != nil {
 		return err
 	}
@@ -166,11 +181,24 @@ func (c *boundedCapture) Write(data []byte) (int, error) {
 // decodeRunnerRequest reads one bounded JSON object and nothing else. Errors
 // never echo request content, which contains command text and environment.
 func decodeRunnerRequest(input io.Reader) (runnerRequest, error) {
+	data, err := readRunnerInput(input)
+	if err != nil {
+		return runnerRequest{}, err
+	}
+	return decodeRunnerRequestBytes(data)
+}
+
+func readRunnerInput(input io.Reader) ([]byte, error) {
 	malformed := fmt.Errorf("effect runner request is malformed")
 	data, err := io.ReadAll(io.LimitReader(input, maxRunnerRequestBytes+1))
 	if err != nil || len(data) > maxRunnerRequestBytes {
-		return runnerRequest{}, malformed
+		return nil, malformed
 	}
+	return data, nil
+}
+
+func decodeRunnerRequestBytes(data []byte) (runnerRequest, error) {
+	malformed := fmt.Errorf("effect runner request is malformed")
 	var request runnerRequest
 	if err := decodeStrict(data, &request); err != nil {
 		return runnerRequest{}, malformed
