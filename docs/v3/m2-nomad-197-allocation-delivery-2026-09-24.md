@@ -24,9 +24,26 @@ NORN_TEST_NOMAD_ADDR=http://127.0.0.1:14646 go test ./nomad -run TestGeneratedWo
 PASS
 ```
 
-This proves the generated-job delivery path and exact component bytes on the
-pinned Nomad version. It does not prove a MySQL connection, WordPress startup,
-TLS usage, credential rotation, archive retention, production topology, or
+The first test proves the generated-job delivery path and exact component bytes
+on the pinned Nomad version. By itself, it does not prove a MySQL connection,
+WordPress startup, TLS usage, credential rotation, archive retention, production topology, or
 application rollback. The test is opt-in because it requires a disposable
 Nomad agent with the Docker driver and the specified local image. All jobs
 and variables use unique IDs and are deregistered by test cleanup.
+
+## WordPress image to MySQL runtime probe
+
+A second opt-in test used the same Nomad 1.9.7 agent and WordPress image with a
+disposable MySQL 8.4.11 container. The target was reachable from the allocation
+through `host.docker.internal:13306`. `TestGeneratedWordPressMySQLRuntimeInNomad`
+staged its four components in a job-owned Nomad Variable, ran PHP's `mysqli`
+inside the WordPress image, verified the database and account identity, wrote
+to a temporary table and read the value back. The allocation returned only a
+fixed success marker. It passed in 2.08 seconds; after cleanup, Nomad listed no
+running jobs and MySQL held no probe table.
+
+This is application-image client behavior, not a full WordPress HTTP startup,
+credential rotation, TLS use, or database backup/restore qualification. The
+test requires `NORN_TEST_MYSQL_ALLOCATION_HOST`, `NORN_TEST_MYSQL_USER`,
+`NORN_TEST_MYSQL_PASSWORD`, and `NORN_TEST_MYSQL_DATABASE` in addition to the
+Nomad address. Use only a disposable MySQL target because it runs SQL writes.
