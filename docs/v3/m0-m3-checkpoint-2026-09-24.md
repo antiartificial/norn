@@ -109,7 +109,9 @@ remaining M0–M3 Norn work; draft
 the host etcd bootstrap and recovery work. The separate M2 MySQL PR was merged
 into #76 and closed. These are review containers, not milestone signoff.
 
-- M0: the private Mini migration-17 rehearsal preserved 28 legacy table counts
+- M0: four same-day read-only Mini size samples span about eight hours, with
+  1,564,672 bytes of total database growth; this remains too short for a
+  retention budget. The private migration-17 rehearsal preserved 28 legacy table counts
   and primary-key fingerprints across 245,383 rows. The read-only app-to-Nomad
   join resolved 18 names and left eight unresolved. Route and database owners,
   a sanitized CI fixture, representative growth, rollback, and mixed-version

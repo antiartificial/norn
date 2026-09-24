@@ -37,3 +37,18 @@ Measurements used read-only `psql` queries against `pg_database_size`, `pg_stat_
 A second read-only sample at 2026-09-24 16:30 UTC measured database size 240,422,035 bytes and user-table total 231,407,616 bytes, each 98,304 bytes above the 15:59 UTC sample. Heap size was 144,031,744 bytes, index size 86,310,912 bytes, and the connection snapshot was again one active measurement query plus three idle sessions. This 31-minute delta is a short observation, not a retention or capacity growth rate.
 
 A third read-only sample at 2026-09-24 18:02 UTC measured database size 240,741,523 bytes and user-table total 231,727,104 bytes, each 417,792 bytes above the 15:59 UTC sample. Heap size was 144,236,544 bytes, index size 86,425,600 bytes, and four database connections were observed. The largest tables were `beacon_events` (109,223,936 bytes), `control_events` (79,413,248), `mutation_audit_events` (30,236,672), `saga_events` (9,076,736), `deployment_steps` (1,531,904), and `operations` (761,856). This roughly two-hour observation remains too short to set a retention growth budget or restore capacity target.
+
+A fourth read-only sample at 2026-09-24 23:57 UTC measured database size
+241,888,403 bytes and user-table total 232,873,984 bytes. These are 1,564,672
+bytes above the 15:59 UTC sample, over about eight hours. Heap size was
+144,949,248 bytes, index size 86,859,776 bytes, and four connections were
+observed. The largest tables were `beacon_events` (109,748,224 bytes),
+`control_events` (79,831,040), `mutation_audit_events` (30,441,472),
+`saga_events` (9,076,736), `deployment_steps` (1,531,904), and `operations`
+(761,856). The running API binary SHA-256 remained
+`2fdc974ec8b7234c9f73ec9f2156abf1eee06bd63e3d2853572c6f93f79e6e31`
+and `/api/version` still reported `v2.20.0-platform-30-ga5da8ef`. A fresh
+read-only Norn inventory succeeded and reported 27 app records. No Mini
+database write, release change, or app mutation was made. This same-day
+observation is useful for detecting a gross growth error, but it does not
+capture workload cycles or establish a numeric reserve or retention budget.
