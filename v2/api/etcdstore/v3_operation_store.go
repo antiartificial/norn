@@ -395,10 +395,60 @@ func (s *V3OperationStore) FinishClaimedOperation(ctx context.Context, c store.O
 	})
 }
 
-// Recovery requires the same checkpoint and external-effect classification as
-// the PostgreSQL adapter. Refuse worker startup until that path is implemented.
-func (s *V3OperationStore) RecoverExpiredOperations(context.Context) error {
-	return fmt.Errorf("etcd operation recovery is not implemented")
+// RecoverExpiredOperations never requeues an expired etcd claim. This adapter
+// has no checkpoint or external-effect aggregate yet, so it cannot prove that
+// a prior executor stopped before a mutable side effect. It atomically fences
+// each expired owner by terminalizing the operation for manual recovery and
+// explicitly records unresolved external-effect ambiguity. A concurrent renew,
+// finish, or replacement claim changes the record revision and wins instead.
+func (s *V3OperationStore) RecoverExpiredOperations(ctx context.Context) error {
+	if s == nil || s.kv == nil {
+		return fmt.Errorf("etcd operation recovery is unavailable")
+	}
+	response, err := s.kv.Get(ctx, s.opsPrefix(), clientv3.WithPrefix())
+	if err != nil {
+		return err
+	}
+	now := time.Now().UTC().Truncate(time.Microsecond)
+	for _, entry := range response.Kvs {
+		var record v3Record
+		if err := decodeV3Record(entry.Value, &record); err != nil {
+			return fmt.Errorf("decode etcd operation recovery record %q: %w", string(entry.Key), err)
+		}
+		op := &record.Operation
+		if op.Status != model.OperationRunning || (op.LockedUntil != nil && op.LockedUntil.After(now)) {
+			continue
+		}
+		if op.Metadata == nil {
+			op.Metadata = map[string]interface{}{}
+		}
+		op.Status = model.OperationFailed
+		op.Message = "operation executor lease expired; manual recovery is required before retry"
+		op.LastError = "operation executor lease expired with external effect outcome unresolved"
+		op.Metadata["manualRecoveryRequired"] = true
+		op.Metadata["externalEffectRecoveryPending"] = true
+		op.Metadata["recoveredAfterLeaseExpiry"] = true
+		op.LockedBy = ""
+		op.LockedUntil = nil
+		op.FinishedAt = &now
+		encoded, err := json.Marshal(record)
+		if err != nil {
+			return err
+		}
+		txn, err := s.kv.Txn(ctx).
+			If(clientv3.Compare(clientv3.ModRevision(string(entry.Key)), "=", entry.ModRevision)).
+			Then(clientv3.OpPut(string(entry.Key), string(encoded))).Commit()
+		if err != nil {
+			return err
+		}
+		if !txn.Succeeded {
+			// A concurrent owner renewed, completed, or claimed the operation.
+			// It owns the newer generation; leave it untouched rather than
+			// retrying recovery from a stale observation.
+			continue
+		}
+	}
+	return nil
 }
 func (s *V3OperationStore) AcquireAppOperationLock(ctx context.Context, app string) (func(), bool, error) {
 	// A lock without an ownership lease can survive a worker crash forever.
