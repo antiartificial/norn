@@ -121,10 +121,10 @@ func canaryPromotionRequestFromOperation(op *model.Operation) (canaryPromotionRe
 }
 
 func canaryPromotionResource(request canaryPromotionRequest) string {
-	// Deployment ID prevents a later deployment in the same region from being
-	// mistaken for this accepted effect; the app/region prefix still serializes
-	// competing promotions for a logical app region.
-	return "app/" + request.App + "/canary-promote/" + request.Region + "/" + request.DeploymentID
+	// The gate serializes every promotion for this app's logical region. The
+	// immutable deployment ID remains in the signed payload and input digest,
+	// so recovery can reconcile only its accepted remote identity.
+	return "app/" + request.App + "/canary-promote/" + request.Region
 }
 
 func canaryPromotionExecutionID(r effect.Reservation) string {
@@ -176,7 +176,7 @@ func (s *nomadCanaryPromotionSupervisor) Query(ctx context.Context, r effect.Res
 	phase := effect.SupervisorUnknown
 	switch strings.ToLower(info.Status) {
 	case "successful":
-		if !info.IsCanary {
+		if info.CanaryPromoted {
 			phase = effect.SupervisorSucceeded
 		}
 	case "failed", "cancelled":
@@ -208,8 +208,14 @@ func canaryPromotionRequestFromReservation(r effect.Reservation) (canaryPromotio
 type nomadCanaryPromotionVerifier struct{}
 
 func (nomadCanaryPromotionVerifier) Verify(_ context.Context, record effect.Record, observation effect.Observation) (effect.Verification, error) {
-	if observation.Phase != effect.SupervisorSucceeded || observation.Identity.SupervisorExecutionID != record.Reservation.SupervisorExecutionID || observation.Identity.RuntimeInstanceID == "" {
-		return effect.Verification{}, fmt.Errorf("Nomad canary promotion has no verified terminal success")
+	if observation.Identity.SupervisorExecutionID != record.Reservation.SupervisorExecutionID || observation.Identity.RuntimeInstanceID == "" {
+		return effect.Verification{}, fmt.Errorf("Nomad canary promotion observation identity does not match reservation")
 	}
-	return effect.Verification{Decision: effect.VerificationSucceeded, InputDigest: record.Reservation.InputDigest, ResultDigest: effect.DigestInput(observation.Output), ResultReference: observation.Evidence.Reference, SupervisorExecutionID: observation.Identity.SupervisorExecutionID, RuntimeInstanceID: observation.Identity.RuntimeInstanceID, EvidenceSource: observation.Evidence.Source, EvidenceReference: observation.Evidence.Reference, ObservedAt: time.Now().UTC()}, nil
+	decision := effect.VerificationSucceeded
+	if observation.Phase == effect.SupervisorFailed {
+		decision = effect.VerificationFailed
+	} else if observation.Phase != effect.SupervisorSucceeded {
+		return effect.Verification{}, fmt.Errorf("Nomad canary promotion has no verified terminal outcome")
+	}
+	return effect.Verification{Decision: decision, InputDigest: record.Reservation.InputDigest, ResultDigest: effect.DigestInput(observation.Output), ResultReference: observation.Evidence.Reference, SupervisorExecutionID: observation.Identity.SupervisorExecutionID, RuntimeInstanceID: observation.Identity.RuntimeInstanceID, EvidenceSource: observation.Evidence.Source, EvidenceReference: observation.Evidence.Reference, ObservedAt: time.Now().UTC()}, nil
 }

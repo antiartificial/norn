@@ -159,6 +159,20 @@ func TestExactCanaryPromotionNeverResolvesLatestDeployment(t *testing.T) {
 	}
 }
 
+func TestDeploymentCanaryStateRequiresPromotedTaskGroups(t *testing.T) {
+	groups := map[string]*nomadapi.DeploymentState{
+		"web": {PlacedCanaries: []string{"alloc-1"}, Promoted: true},
+		"api": {PlacedCanaries: []string{"alloc-2"}, Promoted: false},
+	}
+	if has, promoted := deploymentCanaryState(groups); !has || promoted {
+		t.Fatalf("partially promoted canary = has %t promoted %t", has, promoted)
+	}
+	groups["api"].Promoted = true
+	if has, promoted := deploymentCanaryState(groups); !has || !promoted {
+		t.Fatalf("promoted canary = has %t promoted %t", has, promoted)
+	}
+}
+
 func stringPointer(value string) *string { return &value }
 func int64Pointer(value int64) *int64    { return &value }
 
