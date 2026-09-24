@@ -104,6 +104,8 @@ func checkPeriodicDigest(t *testing.T, api *nomadapi.Client, parentID, task, wan
 		}
 		for _, job := range jobs {
 			if strings.HasPrefix(job.ID, parentID+"/periodic-") {
+				childID := job.ID
+				t.Cleanup(func() { _, _, _ = api.Jobs().Deregister(childID, true, nil) })
 				checkAllocationDigest(t, api, job.ID, task, want)
 				return
 			}
