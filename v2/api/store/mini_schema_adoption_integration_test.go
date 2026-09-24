@@ -28,7 +28,7 @@ func TestControlSchemaAdoptsPinnedMiniPilotSchema(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if status.CurrentMigrationVersion != 12 || len(status.AppliedVersions) != 12 {
+	if status.CurrentMigrationVersion != migrations[len(migrations)-1].Version || len(status.AppliedVersions) != len(migrations) {
 		t.Fatalf("status = %#v", status)
 	}
 	var expiry time.Time

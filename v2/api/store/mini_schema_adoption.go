@@ -12,9 +12,9 @@ import (
 
 // This fingerprints the PG17 Mini schema after its schema-only dump is
 // restored into the supported PG16 target. The canonical form omits catalog
-// OIDs, object names and schema qualification while retaining columns,
-// defaults, nullability, constraints and index keys/predicates.
-const miniLegacyStructuralFingerprint = "e34c29d5bd5f0e7171fca07759e3fe472fee916f32aaa53291ed3eb126033acf"
+// OIDs while retaining the complete table set, columns, defaults, nullability,
+// constraints, and full index definitions including validity.
+const miniLegacyStructuralFingerprint = "0cfd4a1141491cd72bfbe464760653cbe39a04f76002829e84a637129029dae1"
 
 var miniLegacyTableNames = []string{"access_devices", "access_enrollments", "access_grants", "access_observation_buckets", "access_tokens", "beacon_events", "control_events", "cron_states", "deployment_regions", "deployment_steps", "deployments", "exec_sessions", "external_deployment_admission_checkpoints", "external_deployment_admissions", "external_deployment_nonces", "fleet_github_dispatches", "fleet_runner_attempts", "fleet_runner_checkpoint_refs", "func_executions", "github_actions_assertion_uses", "mutation_audit_events", "mutation_audit_incidents", "notification_channels", "operations", "recovery_drills", "saga_events", "step_up_challenges", "webhook_deliveries"}
 
@@ -112,11 +112,11 @@ func miniSchemaStructuralFingerprint(ctx context.Context, tx pgx.Tx) (string, er
 			JOIN pg_catalog.pg_namespace n ON n.oid=c.relnamespace
 			WHERE n.nspname=current_schema() AND c.relkind IN ('r','p')
 			UNION ALL
-			SELECT 'I',c.relname,'',concat_ws(',',i.indisunique::text,i.indisprimary::text),'',
-				concat_ws(',',VARIADIC ARRAY(SELECT pg_get_indexdef(i.indexrelid,k,true) FROM generate_series(1,i.indnkeyatts) k)) || '|where=' || COALESCE(pg_get_expr(i.indpred,i.indrelid,true),'')
+			SELECT 'I',c.relname,'',concat_ws(',',i.indisunique::text,i.indisprimary::text,i.indisvalid::text),'',
+				pg_get_indexdef(i.indexrelid)
 			FROM pg_catalog.pg_index i JOIN pg_catalog.pg_class c ON c.oid=i.indrelid
 			JOIN pg_catalog.pg_namespace n ON n.oid=c.relnamespace
-			WHERE n.nspname=current_schema() AND c.relkind IN ('r','p') AND i.indisvalid
+			WHERE n.nspname=current_schema() AND c.relkind IN ('r','p')
 		) signature ORDER BY kind,table_name,column_name,type_name,not_null,definition`)
 	if err != nil {
 		return "", err
