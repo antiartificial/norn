@@ -268,11 +268,16 @@ norn fleet plan app --desired 4 --reason 'launch headroom'
 norn fleet github pr <plan-id>
 # Review and merge the protected pull request and plan workflow.
 norn fleet github apply <plan-id>
+# If a receipt remains queued after an interrupted GitHub request:
+norn fleet github reconcile <plan-id> --kind pull-request
+norn fleet github reconcile <plan-id> --kind apply-dispatch
 ```
 
 Capacity plans are durable, signed in production, and bound to the fleet source
 digest. Retrying GitHub actions recovers the deterministic pull request or
 existing workflow run rather than creating duplicate infrastructure changes.
+Reconciliation seals an observed remote success, cancels only a verified
+no-write pull-request reservation, and leaves ambiguous outcomes queued.
 See [Fleet GitOps](docs/v2/infrastructure/fleet.md) for setup, contraction, and
 reconciliation semantics.
 

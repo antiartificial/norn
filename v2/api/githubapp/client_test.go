@@ -115,6 +115,103 @@ func TestStatusUsesRepositoryScopedShortLivedAuthentication(t *testing.T) {
 	}
 }
 
+func TestReconcilePullRequestClassifiesObservedRemoteState(t *testing.T) {
+	const planID = "11111111-1111-4111-8111-111111111111"
+	for _, test := range []struct {
+		name, pulls string
+		refStatus   int
+		want        string
+	}{
+		{name: "verified no write", pulls: `[]`, refStatus: http.StatusNotFound, want: "verified-no-write"},
+		{name: "branch without pull request is ambiguous", pulls: `[]`, refStatus: http.StatusOK, want: "ambiguous"},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			client := testClient(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				if tokenResponse(w, r, map[string]string{"contents": "read", "pull_requests": "read"}) {
+					return
+				}
+				switch {
+				case r.URL.Path == "/repos/acme/norn-fleet/pulls":
+					fmt.Fprint(w, test.pulls)
+				case strings.HasPrefix(r.URL.Path, "/repos/acme/norn-fleet/git/ref/heads/"):
+					if test.refStatus == http.StatusOK {
+						fmt.Fprint(w, `{"object":{"sha":"0123456789012345678901234567890123456789"}}`)
+					} else {
+						http.NotFound(w, r)
+					}
+				default:
+					http.NotFound(w, r)
+				}
+			}))
+			got, err := client.ReconcilePullRequest(context.Background(), planID, "sha256:plan", "app", "scale", fleet.NodePool{}, "sha256:source")
+			if err != nil || got.Outcome != test.want {
+				t.Fatalf("reconciliation=%+v err=%v, want %s", got, err, test.want)
+			}
+		})
+	}
+}
+
+func TestReconcilePullRequestRejectsTamperedBranchAndAbsenceRace(t *testing.T) {
+	document := []byte("apiVersion: norn.dev/fleet/v1\nkind: Cluster\nmetadata:\n  repository: acme/norn-fleet\n  environment: production\ncluster:\n  name: production-nyc3\n  provider: digitalocean\n  region: nyc3\nnodePools:\n  app:\n    size: s-4vcpu-8gb\n    min: 2\n    desired: 2\n    max: 8\n    replacement:\n      strategy: blueGreen\n      requireCapacityHeadroom: true\n      requireReadiness: true\n")
+	parsed, report := fleet.ParseAndValidate(document)
+	if parsed == nil || report == nil || !report.Valid {
+		t.Fatal("test fleet document invalid")
+	}
+	expectedBranch, err := yaml.Marshal(parsed)
+	if err != nil {
+		t.Fatal(err)
+	}
+	const planID = "11111111-1111-4111-8111-111111111111"
+	expectedTitle := "Fleet: scale app"
+	expectedBody := "Norn capacity plan `" + planID + "`\n\nDigest: `sha256:plan`\n\nThis pull request changes desired infrastructure only. Provider and state credentials remain in the protected runner."
+	for _, tc := range []struct {
+		name           string
+		tampered, race bool
+		want           string
+	}{{"valid", false, false, "remote-success"}, {"tampered", true, false, "ambiguous"}, {"absence race", false, true, "ambiguous"}} {
+		t.Run(tc.name, func(t *testing.T) {
+			pullReads := 0
+			client := testClient(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				if tokenResponse(w, r, map[string]string{"contents": "read", "pull_requests": "read"}) {
+					return
+				}
+				switch {
+				case r.URL.Path == "/repos/acme/norn-fleet/pulls":
+					pullReads++
+					if tc.race && pullReads < 3 {
+						fmt.Fprint(w, `[]`)
+					} else if tc.race {
+						fmt.Fprint(w, `[{"number":42,"state":"open"}]`)
+					} else {
+						_ = json.NewEncoder(w).Encode([]map[string]interface{}{{"number": 42, "html_url": "https://github.com/acme/norn-fleet/pull/42", "state": "open", "title": expectedTitle, "body": expectedBody, "head": map[string]string{"ref": "norn/plan-" + planID, "sha": "0123456789012345678901234567890123456789"}, "base": map[string]string{"ref": "main"}}})
+					}
+				case strings.Contains(r.URL.Path, "/contents/"):
+					content := document
+					if r.URL.Query().Get("ref") != "main" {
+						content = expectedBranch
+					}
+					if tc.tampered && r.URL.Query().Get("ref") != "main" {
+						content = []byte("tampered")
+					}
+					fmt.Fprintf(w, `{"content":%q,"encoding":"base64","sha":"blob","size":%d}`, base64.StdEncoding.EncodeToString(content), len(content))
+				case strings.HasPrefix(r.URL.Path, "/repos/acme/norn-fleet/git/ref/heads/"):
+					if tc.race {
+						http.NotFound(w, r)
+					} else {
+						fmt.Fprint(w, `{"object":{"sha":"0123456789012345678901234567890123456789"}}`)
+					}
+				default:
+					http.NotFound(w, r)
+				}
+			}))
+			got, err := client.ReconcilePullRequest(context.Background(), planID, "sha256:plan", "app", "scale", parsed.NodePools["app"], fleet.Digest(document))
+			if err != nil || got.Outcome != tc.want {
+				t.Fatalf("reconciliation=%+v err=%v, want %s", got, err, tc.want)
+			}
+		})
+	}
+}
+
 func TestCreatePullRequestBindsSourceDigestAndUsesDeterministicBranch(t *testing.T) {
 	document := []byte(`apiVersion: norn.dev/fleet/v1
 kind: Cluster

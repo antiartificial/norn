@@ -1815,6 +1815,23 @@ func (c *Client) DispatchFleetApply(planID string, allowDestructive bool) (*Oper
 	return &operation, nil
 }
 
+type FleetGitHubReconciliation struct {
+	Outcome   string    `json:"outcome"`
+	Operation Operation `json:"operation"`
+}
+
+func (c *Client) ReconcileFleetGitHub(planID, kind string) (*FleetGitHubReconciliation, error) {
+	body, err := json.Marshal(map[string]string{"kind": kind})
+	if err != nil {
+		return nil, err
+	}
+	var result FleetGitHubReconciliation
+	if err := c.postJSON("/api/v1/fleet/plans/"+url.PathEscape(planID)+"/github/reconcile", string(body), &result); err != nil {
+		return nil, err
+	}
+	return &result, nil
+}
+
 func (c *Client) PlanFleetCapacity(pool string, desired *int, size, strategy, reason, idempotencyKey string) (*Operation, error) {
 	request := map[string]interface{}{"size": size, "strategy": strategy, "reason": reason}
 	if desired != nil {
