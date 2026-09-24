@@ -5,10 +5,8 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
-	"errors"
 	"fmt"
 	"io"
-	"log"
 	"time"
 
 	"norn/v2/api/database"
@@ -94,12 +92,7 @@ func (s *SnapshotEffects) ReconcilePublishedArtifacts(ctx context.Context) error
 		return err
 	}
 	for _, record := range records {
-		if err := s.Manager.DiscardSnapshotArtifact(ctx, record.Reservation, record.Execution); err != nil {
-			var corruption *supervisor.PublishedSnapshotCorruptionError
-			if errors.As(err, &corruption) {
-				log.Printf("WARNING: supervised snapshot reconciliation: %v", corruption)
-				continue
-			}
+		if err := s.Manager.DiscardDurablyTerminalSnapshotArtifact(ctx, record); err != nil {
 			return err
 		}
 	}
@@ -108,7 +101,7 @@ func (s *SnapshotEffects) ReconcilePublishedArtifacts(ctx context.Context) error
 		return err
 	}
 	for _, record := range failed {
-		if err := s.Manager.DiscardFailedSnapshotArtifact(ctx, record.Reservation, record.Execution); err != nil {
+		if err := s.Manager.DiscardDurablyTerminalSnapshotArtifact(ctx, record); err != nil {
 			return err
 		}
 	}

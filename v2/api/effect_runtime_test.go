@@ -54,6 +54,20 @@ func (startupSnapshotBackend) CopySnapshotArtifact(context.Context, supervisor.B
 	return supervisor.SnapshotManifest{}, errors.New("not used")
 }
 
+// startupRebootedSnapshotBackend models the post-reboot state where the
+// ephemeral cgroup tree disappeared. Its unknown observation must never be
+// treated as proof that an unresolved helper stopped, but must not prevent
+// cleanup of terminal effects already attested in the durable effect store.
+type startupRebootedSnapshotBackend struct{ startupSnapshotBackend }
+
+func (startupRebootedSnapshotBackend) ObserveSnapshot(context.Context, supervisor.BackendExecution, supervisor.SnapshotDescriptor) (supervisor.BackendState, error) {
+	return supervisor.BackendState{Phase: effect.SupervisorUnknown, EvidenceReference: "rebooted-cgroup-missing"}, nil
+}
+
+func (startupRebootedSnapshotBackend) QuerySnapshot(context.Context, supervisor.BackendExecution, supervisor.SnapshotDescriptor) (supervisor.SnapshotManifest, error) {
+	return supervisor.SnapshotManifest{}, errors.New("snapshot cgroup state disappeared after reboot")
+}
+
 type startupFailedSnapshotBackend struct{ startupSnapshotBackend }
 
 func (startupFailedSnapshotBackend) ObserveSnapshot(context.Context, supervisor.BackendExecution, supervisor.SnapshotDescriptor) (supervisor.BackendState, error) {
@@ -271,7 +285,9 @@ func TestConfigureSnapshotEffectsReconcilesPublishedArtifactAfterRestart(t *test
 		t.Fatal(err)
 	}
 	cfg := &config.Config{SnapshotExecution: "supervised", EffectSupervisorDir: root, EffectSigningKey: key, EffectCgroupRoot: "/test/cgroup", EffectRunnerBinary: "/test/runner", SnapshotPGDumpPath: "/usr/bin/pg_dump", SnapshotPGDumpSHA256: strings.Repeat("a", 64), SnapshotTimeout: time.Minute, SnapshotArtifactBudgetBytes: supervisor.MaxSnapshotArtifactBytes}
-	if _, err := configureSnapshotEffects(cfg, db, func(string, string, string, []byte) (supervisor.Backend, error) { return startupSnapshotBackend{}, nil }); err != nil {
+	if _, err := configureSnapshotEffects(cfg, db, func(string, string, string, []byte) (supervisor.Backend, error) {
+		return startupRebootedSnapshotBackend{}, nil
+	}); err != nil {
 		t.Fatalf("startup snapshot reconciliation = %v", err)
 	}
 	if _, err := os.Lstat(archive); !os.IsNotExist(err) {
@@ -353,13 +369,27 @@ func TestConfigureSnapshotEffectsReleasesVerifiedFailedAdmissionAfterRestart(t *
 	if _, err := os.Lstat(filepath.Join(directory, "snapshot-admission")); err != nil {
 		t.Fatalf("failed snapshot did not reserve admission: %v", err)
 	}
+	private := filepath.Join(directory, ".snapshot-failed")
+	if err := os.MkdirAll(private, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	for _, name := range []string{"archive.dump", "service.conf", "passfile"} {
+		if err := os.WriteFile(filepath.Join(private, name), []byte("private"), 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
 	cfg := &config.Config{SnapshotExecution: "supervised", EffectSupervisorDir: root, EffectSigningKey: key, EffectCgroupRoot: "/test/cgroup", EffectRunnerBinary: "/test/runner", SnapshotPGDumpPath: "/usr/bin/pg_dump", SnapshotPGDumpSHA256: strings.Repeat("a", 64), SnapshotTimeout: time.Minute, SnapshotArtifactBudgetBytes: supervisor.MaxSnapshotArtifactBytes}
 	if _, err := configureSnapshotEffects(cfg, db, func(string, string, string, []byte) (supervisor.Backend, error) {
-		return startupFailedSnapshotBackend{}, nil
+		return startupRebootedSnapshotBackend{}, nil
 	}); err != nil {
 		t.Fatalf("failed snapshot startup reconciliation = %v", err)
 	}
 	if _, err := os.Lstat(filepath.Join(directory, "snapshot-admission")); !os.IsNotExist(err) {
 		t.Fatalf("verified failed snapshot admission survived restart: %v", err)
+	}
+	for _, name := range []string{"archive.dump", "service.conf", "passfile"} {
+		if _, err := os.Lstat(filepath.Join(private, name)); !os.IsNotExist(err) {
+			t.Fatalf("failed snapshot private material %s survived restart cleanup: %v", name, err)
+		}
 	}
 }

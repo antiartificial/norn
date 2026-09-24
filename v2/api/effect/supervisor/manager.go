@@ -446,6 +446,63 @@ func (m *Manager) DiscardFailedSnapshotArtifact(ctx context.Context, reservation
 	})
 }
 
+// DiscardDurablyTerminalSnapshotArtifact releases private snapshot material
+// after the control-plane effect record has durably attested a terminal
+// outcome. It deliberately does not consult the runtime backend: a host
+// reboot can remove the cgroup after the terminal evidence was stored, and
+// the missing cgroup is not evidence about an otherwise unresolved helper.
+//
+// Callers must additionally establish any operation-level precondition (for
+// example, that a successful snapshot's public operation committed). This
+// method verifies the stored terminal record and its local signed launch
+// binding before it removes local material. The removal is idempotent so the
+// same durable terminal record can be reconciled on every startup.
+func (m *Manager) DiscardDurablyTerminalSnapshotArtifact(ctx context.Context, record effect.Record) error {
+	if record.Lifecycle != effect.LifecycleCompleted || record.Completion == nil ||
+		(record.Completion.Outcome != effect.OutcomeSucceeded && record.Completion.Outcome != effect.OutcomeFailed) {
+		return fmt.Errorf("snapshot cleanup requires a durable terminal effect record")
+	}
+	verification := record.Completion.Verification
+	if verification.InputDigest != record.Reservation.InputDigest ||
+		verification.SupervisorExecutionID != record.Reservation.SupervisorExecutionID ||
+		verification.RuntimeInstanceID != record.Execution.RuntimeInstanceID ||
+		strings.TrimSpace(verification.EvidenceSource) == "" ||
+		strings.TrimSpace(verification.EvidenceReference) == "" || verification.ObservedAt.IsZero() {
+		return fmt.Errorf("snapshot cleanup terminal record is not bound to the execution")
+	}
+	if (record.Completion.Outcome == effect.OutcomeSucceeded && verification.Decision != effect.VerificationSucceeded) ||
+		(record.Completion.Outcome == effect.OutcomeFailed && verification.Decision != effect.VerificationFailed) {
+		return fmt.Errorf("snapshot cleanup terminal decision does not prove the recorded outcome")
+	}
+	if record.Completion.Outcome == effect.OutcomeSucceeded &&
+		(strings.TrimSpace(verification.ResultDigest) == "" || strings.TrimSpace(verification.ResultReference) == "") {
+		return fmt.Errorf("successful snapshot cleanup lacks durable result evidence")
+	}
+	if _, err := m.verifySnapshotDescriptor(record.Reservation.LaunchPayload, nil); err != nil {
+		return err
+	}
+	return m.withExecutionLock(record.Execution.SupervisorExecutionID, func(directory string) error {
+		r, err := m.readBoundJournal(directory, record.Reservation, record.Execution)
+		if err != nil {
+			return err
+		}
+		if r.RuntimeInstanceID == "" {
+			return fmt.Errorf("snapshot terminal cleanup has no durable launch identity")
+		}
+		private, err := snapshotArtifactDirectory(directory)
+		if errors.Is(err, os.ErrNotExist) {
+			return removeSnapshotAdmission(directory)
+		}
+		if err != nil {
+			return err
+		}
+		if err := removeDisposableSnapshotArtifact(private); err != nil {
+			return err
+		}
+		return removeSnapshotAdmission(directory)
+	})
+}
+
 // DiscardAbandonedSnapshotArtifact releases admission only for an execution
 // whose durable journal proves that no runtime was ever assigned. This is the
 // sole safe cleanup path for a resolved never-launched effect.
