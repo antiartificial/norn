@@ -124,18 +124,18 @@ func (w *OperationWorker) handle(ctx context.Context, op *model.Operation, claim
 	if execErr != nil {
 		if effect.IsDeferred(execErr) {
 			message := fmt.Sprintf("external effect recovery pending: %v", execErr)
-			if deferErr := w.db.DeferClaimedOperation(ctx, claim, message, time.Now().Add(5*time.Second), map[string]interface{}{
+			if deferErr := w.deferClaimedOperation(ctx, claim, appLock, message, time.Now().Add(5*time.Second), map[string]interface{}{
 				"externalEffectRecoveryPending": true,
 			}); deferErr != nil {
 				log.Printf("operation worker: defer unresolved effect %s: %v", op.ID, deferErr)
 			}
 			return
 		}
-		w.recordFailure(ctx, op, claim, execErr)
+		w.recordFailure(ctx, op, claim, appLock, execErr)
 		return
 	}
 	if result == nil {
-		w.recordFailure(ctx, op, claim, fmt.Errorf("operation executor returned no result"))
+		w.recordFailure(ctx, op, claim, appLock, fmt.Errorf("operation executor returned no result"))
 		return
 	}
 	if result.Finished() {
@@ -151,13 +151,7 @@ func (w *OperationWorker) handle(ctx context.Context, op *model.Operation, claim
 		result.Publish(ctx)
 		return
 	}
-	finish := w.db.FinishClaimedOperation
-	if fenced, ok := w.db.(store.AppLockFencedExecutionStore); ok {
-		finish = func(finishCtx context.Context, finishClaim store.OperationClaim, status model.OperationStatus, message string, metadata map[string]interface{}) error {
-			return fenced.FinishClaimedOperationWithAppLock(finishCtx, finishClaim, appLock, status, message, metadata)
-		}
-	}
-	if finishErr := finish(ctx, claim, result.Status, result.Message, result.Metadata); finishErr != nil {
+	if finishErr := w.finishClaimedOperation(ctx, claim, appLock, result.Status, result.Message, result.Metadata); finishErr != nil {
 		log.Printf("operation worker: finish %s: %v", op.ID, finishErr)
 		return
 	}
@@ -175,11 +169,11 @@ func (w *OperationWorker) execute(ctx context.Context, op *model.Operation, clai
 	return w.pipeline.ExecuteOperation(ctx, op, claim)
 }
 
-func (w *OperationWorker) recordFailure(ctx context.Context, op *model.Operation, claim store.OperationClaim, err error) {
+func (w *OperationWorker) recordFailure(ctx context.Context, op *model.Operation, claim store.OperationClaim, appLock store.AppOperationLock, err error) {
 	message := fmt.Sprintf("%s failed: %v", op.Kind, err)
 	if op.Attempts < op.MaxAttempts && (op.Kind == "app.preflight" || op.Kind == "app.deploy") {
 		delay := retryDelay(op.Attempts)
-		if retryErr := w.db.RetryClaimedOperation(ctx, claim, message, err.Error(), time.Now().Add(delay), map[string]interface{}{
+		if retryErr := w.retryClaimedOperation(ctx, claim, appLock, message, err.Error(), time.Now().Add(delay), map[string]interface{}{
 			"retryDelaySeconds": int(delay.Seconds()),
 		}); retryErr != nil {
 			if !errors.Is(retryErr, store.ErrOperationRetryUnsafe) {
@@ -195,9 +189,30 @@ func (w *OperationWorker) recordFailure(ctx context.Context, op *model.Operation
 	if op.Kind != "app.preflight" {
 		metadata["manualRecoveryRequired"] = true
 	}
-	if finishErr := w.db.FinishClaimedOperation(ctx, claim, model.OperationFailed, message, metadata); finishErr != nil {
+	if finishErr := w.finishClaimedOperation(ctx, claim, appLock, model.OperationFailed, message, metadata); finishErr != nil {
 		log.Printf("operation worker: finish failed %s: %v", op.ID, finishErr)
 	}
+}
+
+func (w *OperationWorker) deferClaimedOperation(ctx context.Context, claim store.OperationClaim, appLock store.AppOperationLock, message string, next time.Time, metadata map[string]interface{}) error {
+	if fenced, ok := w.db.(store.AppLockFencedExecutionStore); ok {
+		return fenced.DeferClaimedOperationWithAppLock(ctx, claim, appLock, message, next, metadata)
+	}
+	return w.db.DeferClaimedOperation(ctx, claim, message, next, metadata)
+}
+
+func (w *OperationWorker) retryClaimedOperation(ctx context.Context, claim store.OperationClaim, appLock store.AppOperationLock, message, lastError string, next time.Time, metadata map[string]interface{}) error {
+	if fenced, ok := w.db.(store.AppLockFencedExecutionStore); ok {
+		return fenced.RetryClaimedOperationWithAppLock(ctx, claim, appLock, message, lastError, next, metadata)
+	}
+	return w.db.RetryClaimedOperation(ctx, claim, message, lastError, next, metadata)
+}
+
+func (w *OperationWorker) finishClaimedOperation(ctx context.Context, claim store.OperationClaim, appLock store.AppOperationLock, status model.OperationStatus, message string, metadata map[string]interface{}) error {
+	if fenced, ok := w.db.(store.AppLockFencedExecutionStore); ok {
+		return fenced.FinishClaimedOperationWithAppLock(ctx, claim, appLock, status, message, metadata)
+	}
+	return w.db.FinishClaimedOperation(ctx, claim, status, message, metadata)
 }
 
 func (w *OperationWorker) renewLease(ctx context.Context, claim store.OperationClaim, cancelExecution context.CancelFunc, stop <-chan struct{}) error {

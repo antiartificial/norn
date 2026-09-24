@@ -30,6 +30,8 @@ type ExecutionStore interface {
 // current app-lock fence. Workers use it when available rather than treating a
 // local context check as proof that no replacement holder exists.
 type AppLockFencedExecutionStore interface {
+	DeferClaimedOperationWithAppLock(context.Context, OperationClaim, AppOperationLock, string, time.Time, map[string]interface{}) error
+	RetryClaimedOperationWithAppLock(context.Context, OperationClaim, AppOperationLock, string, string, time.Time, map[string]interface{}) error
 	FinishClaimedOperationWithAppLock(context.Context, OperationClaim, AppOperationLock, model.OperationStatus, string, map[string]interface{}) error
 }
 

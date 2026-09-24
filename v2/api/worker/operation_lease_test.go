@@ -28,6 +28,32 @@ type executionStoreFake struct {
 	deferCalls  atomic.Int32
 }
 
+type appLockFencedExecutionStoreFake struct {
+	*executionStoreFake
+	deferWithLock  func(context.Context, store.OperationClaim, store.AppOperationLock, string, time.Time, map[string]interface{}) error
+	retryWithLock  func(context.Context, store.OperationClaim, store.AppOperationLock, string, string, time.Time, map[string]interface{}) error
+	finishWithLock func(context.Context, store.OperationClaim, store.AppOperationLock, model.OperationStatus, string, map[string]interface{}) error
+}
+
+func (f *appLockFencedExecutionStoreFake) DeferClaimedOperationWithAppLock(ctx context.Context, claim store.OperationClaim, lock store.AppOperationLock, message string, next time.Time, metadata map[string]interface{}) error {
+	if f.deferWithLock != nil {
+		return f.deferWithLock(ctx, claim, lock, message, next, metadata)
+	}
+	return f.executionStoreFake.DeferClaimedOperation(ctx, claim, message, next, metadata)
+}
+func (f *appLockFencedExecutionStoreFake) RetryClaimedOperationWithAppLock(ctx context.Context, claim store.OperationClaim, lock store.AppOperationLock, message, last string, next time.Time, metadata map[string]interface{}) error {
+	if f.retryWithLock != nil {
+		return f.retryWithLock(ctx, claim, lock, message, last, next, metadata)
+	}
+	return f.executionStoreFake.RetryClaimedOperation(ctx, claim, message, last, next, metadata)
+}
+func (f *appLockFencedExecutionStoreFake) FinishClaimedOperationWithAppLock(ctx context.Context, claim store.OperationClaim, lock store.AppOperationLock, status model.OperationStatus, message string, metadata map[string]interface{}) error {
+	if f.finishWithLock != nil {
+		return f.finishWithLock(ctx, claim, lock, status, message, metadata)
+	}
+	return f.executionStoreFake.FinishClaimedOperation(ctx, claim, status, message, metadata)
+}
+
 func (f *executionStoreFake) RecoverExpiredOperations(context.Context) error { return nil }
 func (f *executionStoreFake) ClaimNextOperation(context.Context, string, time.Duration, []string) (*model.Operation, store.OperationClaim, error) {
 	return nil, store.OperationClaim{}, nil
@@ -163,6 +189,63 @@ func TestOperationAppLockLossSuppressesTerminalization(t *testing.T) {
 	w.handle(context.Background(), op, claim)
 	if fake.finishCalls.Load() != 0 {
 		t.Fatalf("finish calls=%d, want 0", fake.finishCalls.Load())
+	}
+}
+
+func TestOperationDeferredEffectUsesAppLockFenceAtStateTransition(t *testing.T) {
+	claim := operationClaim(t, "operation", "worker", 1)
+	op := &model.Operation{ID: claim.OperationID(), Kind: "app.deploy", App: "atlas", Attempts: 1, MaxAttempts: 2}
+	base := &executionStoreFake{lock: func(ctx context.Context, _ string) (store.AppOperationLock, bool, error) {
+		return store.NewFencedAppOperationLock(ctx, "replaced-fence", nil), true, nil
+	}}
+	deferCalls := 0
+	fake := &appLockFencedExecutionStoreFake{executionStoreFake: base, deferWithLock: func(_ context.Context, got store.OperationClaim, lock store.AppOperationLock, _ string, _ time.Time, _ map[string]interface{}) error {
+		deferCalls++
+		if got != claim || lock.Fence() != "replaced-fence" {
+			t.Fatalf("defer claim/fence=%+v/%q", got, lock.Fence())
+		}
+		// Model an etcd compare that loses to a replacement app lock after the
+		// worker has already observed a healthy local lock context.
+		return store.ErrOperationOwnershipLost
+	}}
+	w := &OperationWorker{db: fake, id: claim.OwnerID(), lease: time.Second, pipeline: operationExecutorFunc(func(context.Context, *model.Operation, store.OperationClaim) (*pipeline.OperationResult, error) {
+		return nil, &effect.PendingError{EffectID: "effect", Resource: "app/atlas/scale/web", Reason: "pending"}
+	})}
+	w.handle(context.Background(), op, claim)
+	if deferCalls != 1 || base.deferCalls.Load() != 0 {
+		t.Fatalf("fenced defers=%d unfenced defers=%d", deferCalls, base.deferCalls.Load())
+	}
+}
+
+func TestOperationFailureRetryAndFinishUseAppLockFenceAtStateTransition(t *testing.T) {
+	claim := operationClaim(t, "operation", "worker", 1)
+	op := &model.Operation{ID: claim.OperationID(), Kind: "app.deploy", App: "atlas", Attempts: 1, MaxAttempts: 2}
+	base := &executionStoreFake{lock: func(ctx context.Context, _ string) (store.AppOperationLock, bool, error) {
+		return store.NewFencedAppOperationLock(ctx, "replaced-fence", nil), true, nil
+	}}
+	retryCalls, finishCalls := 0, 0
+	fake := &appLockFencedExecutionStoreFake{executionStoreFake: base,
+		retryWithLock: func(_ context.Context, _ store.OperationClaim, lock store.AppOperationLock, _ string, _ string, _ time.Time, _ map[string]interface{}) error {
+			retryCalls++
+			if lock.Fence() != "replaced-fence" {
+				t.Fatalf("retry fence=%q", lock.Fence())
+			}
+			return store.ErrOperationRetryUnsafe
+		},
+		finishWithLock: func(_ context.Context, _ store.OperationClaim, lock store.AppOperationLock, status model.OperationStatus, _ string, _ map[string]interface{}) error {
+			finishCalls++
+			if lock.Fence() != "replaced-fence" || status != model.OperationFailed {
+				t.Fatalf("finish fence/status=%q/%q", lock.Fence(), status)
+			}
+			return store.ErrOperationOwnershipLost
+		},
+	}
+	w := &OperationWorker{db: fake, id: claim.OwnerID(), lease: time.Second, pipeline: operationExecutorFunc(func(context.Context, *model.Operation, store.OperationClaim) (*pipeline.OperationResult, error) {
+		return nil, errors.New("executor failed")
+	})}
+	w.handle(context.Background(), op, claim)
+	if retryCalls != 1 || finishCalls != 1 || base.finishCalls.Load() != 0 {
+		t.Fatalf("fenced retry/finish=%d/%d unfenced finish=%d", retryCalls, finishCalls, base.finishCalls.Load())
 	}
 }
 

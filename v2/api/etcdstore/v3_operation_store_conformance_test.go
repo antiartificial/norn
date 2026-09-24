@@ -272,6 +272,12 @@ func TestV3OperationStoreAppOperationLockEtcd(t *testing.T) {
 		}
 		t.Fatalf("stale release erased replacement lock=%v acquired=%v err=%v", third, acquired, err)
 	}
+	if err := first.DeferClaimedOperationWithAppLock(ctx, claim, lock, "must not defer", time.Now().Add(time.Minute), nil); !errors.Is(err, store.ErrOperationOwnershipLost) {
+		t.Fatalf("stale app-lock fence deferred claimed operation: %v", err)
+	}
+	if err := first.RetryClaimedOperationWithAppLock(ctx, claim, lock, "must not retry", "stale", time.Now().Add(time.Minute), nil); !errors.Is(err, store.ErrOperationOwnershipLost) {
+		t.Fatalf("stale app-lock fence retried claimed operation: %v", err)
+	}
 	if err := first.FinishClaimedOperationWithAppLock(ctx, claim, lock, model.OperationSucceeded, "must not commit", nil); !errors.Is(err, store.ErrOperationOwnershipLost) {
 		t.Fatalf("stale app-lock fence terminalized claimed operation: %v", err)
 	}

@@ -451,8 +451,34 @@ func (s *V3OperationStore) DeferClaimedOperation(ctx context.Context, c store.Op
 		}
 	})
 }
+func (s *V3OperationStore) DeferClaimedOperationWithAppLock(ctx context.Context, c store.OperationClaim, lock store.AppOperationLock, msg string, next time.Time, m map[string]interface{}) error {
+	return s.mutateClaimWithAppLock(ctx, c, lock, func(o *model.Operation) {
+		o.Status = model.OperationQueued
+		o.Attempts--
+		o.Message = msg
+		o.NextAttemptAt = next
+		o.LockedBy = ""
+		o.LockedUntil = nil
+		for k, v := range m {
+			o.Metadata[k] = v
+		}
+	})
+}
 func (s *V3OperationStore) RetryClaimedOperation(ctx context.Context, c store.OperationClaim, msg, last string, next time.Time, m map[string]interface{}) error {
 	return s.mutateClaim(ctx, c, func(o *model.Operation) {
+		o.Status = model.OperationQueued
+		o.Message = msg
+		o.LastError = last
+		o.NextAttemptAt = next
+		o.LockedBy = ""
+		o.LockedUntil = nil
+		for k, v := range m {
+			o.Metadata[k] = v
+		}
+	})
+}
+func (s *V3OperationStore) RetryClaimedOperationWithAppLock(ctx context.Context, c store.OperationClaim, lock store.AppOperationLock, msg, last string, next time.Time, m map[string]interface{}) error {
+	return s.mutateClaimWithAppLock(ctx, c, lock, func(o *model.Operation) {
 		o.Status = model.OperationQueued
 		o.Message = msg
 		o.LastError = last
@@ -483,16 +509,7 @@ func (s *V3OperationStore) FinishClaimedOperation(ctx context.Context, c store.O
 // comparisons run in the same transaction as the terminal record write, so a
 // replacement holder cannot race a local Context.Err check.
 func (s *V3OperationStore) FinishClaimedOperationWithAppLock(ctx context.Context, c store.OperationClaim, lock store.AppOperationLock, status model.OperationStatus, msg string, m map[string]interface{}) error {
-	if lock == nil || lock.Fence() == "" {
-		return store.ErrOperationOwnershipLost
-	}
-	return s.mutateClaimWithComparisons(ctx, c, func(o *model.Operation) []clientv3.Cmp {
-		lockKey := o.App
-		if lockKey == "" {
-			lockKey = o.Kind + ":" + o.Ref
-		}
-		return []clientv3.Cmp{clientv3.Compare(clientv3.Value(s.appLockKey(lockKey)), "=", lock.Fence())}
-	}, func(o *model.Operation) {
+	return s.mutateClaimWithAppLock(ctx, c, lock, func(o *model.Operation) {
 		now := time.Now()
 		o.Status = status
 		o.Message = msg
@@ -503,6 +520,19 @@ func (s *V3OperationStore) FinishClaimedOperationWithAppLock(ctx context.Context
 			o.Metadata[k] = v
 		}
 	})
+}
+
+func (s *V3OperationStore) mutateClaimWithAppLock(ctx context.Context, c store.OperationClaim, lock store.AppOperationLock, f func(*model.Operation)) error {
+	if lock == nil || lock.Fence() == "" {
+		return store.ErrOperationOwnershipLost
+	}
+	return s.mutateClaimWithComparisons(ctx, c, func(o *model.Operation) []clientv3.Cmp {
+		lockKey := o.App
+		if lockKey == "" {
+			lockKey = o.Kind + ":" + o.Ref
+		}
+		return []clientv3.Cmp{clientv3.Compare(clientv3.Value(s.appLockKey(lockKey)), "=", lock.Fence())}
+	}, f)
 }
 
 // RecoverExpiredOperations never requeues an expired etcd claim. This adapter
