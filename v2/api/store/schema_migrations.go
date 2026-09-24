@@ -202,11 +202,12 @@ func (e *MigrationApplyError) Unwrap() error { return e.Err }
 
 // SchemaMigrator owns an immutable migration catalog for one PostgreSQL pool.
 type SchemaMigrator struct {
-	pool          *pgxpool.Pool
-	migrations    []SchemaMigration
-	compatibility BinarySchemaCompatibility
-	lockKey       int64
-	lockTimeout   time.Duration
+	pool             *pgxpool.Pool
+	migrations       []SchemaMigration
+	compatibility    BinarySchemaCompatibility
+	lockKey          int64
+	lockTimeout      time.Duration
+	adoptUnversioned func(context.Context, pgx.Tx) error
 }
 
 // NewSchemaMigrator validates and copies definitions before any database work.
@@ -321,6 +322,11 @@ func (m *SchemaMigrator) Migrate(ctx context.Context) (SchemaStatus, error) {
 		return SchemaStatus{}, err
 	}
 	var status SchemaStatus
+	if !hasMetadata && m.adoptUnversioned != nil {
+		if err := m.adoptUnversioned(ctx, tx); err != nil {
+			return SchemaStatus{}, &MigrationApplyError{Phase: "unversioned schema adoption", Err: err}
+		}
+	}
 	if hasMetadata {
 		status, err = loadAndValidateSchemaMetadata(ctx, tx, m.migrations)
 		if err != nil {

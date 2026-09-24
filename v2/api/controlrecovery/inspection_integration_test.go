@@ -104,6 +104,48 @@ func TestInspectionUsesConsistentSnapshotPreservesIntegersAndRedactsSecrets(t *t
 	assertAcceptedSet(t, secondDocument, "concurrent", true)
 }
 
+func TestInspectionClassifiesCompleteMiniEvidenceExtension(t *testing.T) {
+	pool, schema := inspectionTestDatabase(t)
+	ctx := context.Background()
+	if _, err := pool.Exec(ctx, miniInspectionExtensionSQL); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := pool.Exec(ctx, `INSERT INTO external_deployment_nonces(id,app,ci_repository,ci_run_attempt,ci_run_id,environment,expires_at,nonce_sha256,registration_metadata) VALUES ('nonce-1','demo','org/repo','1','2','pilot',now()+interval '1 hour',$1::text,jsonb_build_object('secret',$1::text))`, inspectionCanary); err != nil {
+		t.Fatal(err)
+	}
+	var output bytes.Buffer
+	if err := ExportInspection(ctx, pool, schema, &output); err != nil {
+		t.Fatal(err)
+	}
+	if bytes.Contains(output.Bytes(), []byte(inspectionCanary)) {
+		t.Fatal("Mini evidence inspection leaked excluded data")
+	}
+	if !bytes.Contains(output.Bytes(), []byte(`"external_deployment_nonces"`)) || !bytes.Contains(output.Bytes(), []byte(`"nonce-1"`)) {
+		t.Fatalf("Mini evidence table or stable identity missing: %s", output.String())
+	}
+}
+
+func TestInspectionRejectsPartialMiniEvidenceExtension(t *testing.T) {
+	pool, schema := inspectionTestDatabase(t)
+	if _, err := pool.Exec(context.Background(), `CREATE TABLE external_deployment_nonces(id TEXT PRIMARY KEY)`); err != nil {
+		t.Fatal(err)
+	}
+	var output bytes.Buffer
+	err := ExportInspection(context.Background(), pool, schema, &output)
+	var classificationErr *SchemaClassificationError
+	if !errors.As(err, &classificationErr) || classificationErr.UnknownTables != 1 {
+		t.Fatalf("error = %T %v, want unknown-table classification refusal", err, err)
+	}
+}
+
+const miniInspectionExtensionSQL = `
+ALTER TABLE fleet_runner_attempts ADD COLUMN last_error text NOT NULL DEFAULT '', ADD COLUMN metadata jsonb NOT NULL DEFAULT '{}', ADD COLUMN phase_started_at timestamptz NOT NULL DEFAULT now(), ADD COLUMN pilot_run_id text NOT NULL DEFAULT '', ADD COLUMN principal_subject text NOT NULL DEFAULT '', ADD COLUMN recovery boolean NOT NULL DEFAULT false, ADD COLUMN source_dispatch_run_id bigint NOT NULL DEFAULT 0;
+ALTER TABLE fleet_github_dispatches ADD COLUMN approval_envelope_sha256 text NOT NULL DEFAULT '', ADD COLUMN dispatch_state text NOT NULL DEFAULT 'prepared', ADD COLUMN pilot_run_id text NOT NULL DEFAULT '', ADD COLUMN rerun_started_at timestamptz, ADD COLUMN run_attempt integer NOT NULL DEFAULT 0, ADD COLUMN submission_started_at timestamptz;
+CREATE TABLE external_deployment_nonces (id text PRIMARY KEY, app text NOT NULL, ci_repository text NOT NULL, ci_run_attempt text NOT NULL, ci_run_id text NOT NULL, claimed_at timestamptz, consumed_at timestamptz, environment text NOT NULL, expires_at timestamptz NOT NULL, issued_at timestamptz NOT NULL DEFAULT now(), issuer_subject text NOT NULL DEFAULT '', issuer_token_id text NOT NULL DEFAULT '', nonce_sha256 text NOT NULL, registered_at timestamptz, registration_generation bigint NOT NULL DEFAULT 0, registration_metadata jsonb NOT NULL DEFAULT '{}', registration_ref text NOT NULL DEFAULT '', revision bigint NOT NULL DEFAULT 1, state text NOT NULL DEFAULT 'ready', superseded_at timestamptz, admission_id text NOT NULL DEFAULT '');
+CREATE TABLE external_deployment_admissions (id text PRIMARY KEY, idempotency_key text NOT NULL UNIQUE, app text NOT NULL, environment text NOT NULL, ci_repository text NOT NULL, request_digest text NOT NULL, state text NOT NULL DEFAULT 'initiated', nonce_id text REFERENCES external_deployment_nonces(id), nonce_generation bigint NOT NULL DEFAULT 0, operation_id text REFERENCES operations(id), claimed_receipt jsonb NOT NULL DEFAULT '{}', registration_ref text NOT NULL DEFAULT '', service_snapshot_id text NOT NULL DEFAULT '', service_snapshot_ref text NOT NULL DEFAULT '', service_snapshot_sha256 text NOT NULL DEFAULT '', service_receipt_sha256 text NOT NULL DEFAULT '', service_proof_sha256 text NOT NULL DEFAULT '', service_retry_lineage jsonb NOT NULL DEFAULT '[]', service_claim_revision bigint NOT NULL DEFAULT 0, service_commit_revision bigint NOT NULL DEFAULT 0, service_cleanup_revision bigint NOT NULL DEFAULT 0, cleanup_intent_sha256 text NOT NULL DEFAULT '', absence_proof_sha256 text NOT NULL DEFAULT '', failure_code text NOT NULL DEFAULT '', created_at timestamptz NOT NULL DEFAULT now(), updated_at timestamptz NOT NULL DEFAULT now(), completed_at timestamptz);
+CREATE TABLE external_deployment_admission_checkpoints (admission_id text NOT NULL REFERENCES external_deployment_admissions(id), phase text NOT NULL, attempt_id text NOT NULL, checkpoint_id text NOT NULL, evidence_ref text NOT NULL, evidence_sha256 text NOT NULL DEFAULT '', created_at timestamptz NOT NULL DEFAULT now(), PRIMARY KEY(admission_id,phase));
+CREATE TABLE fleet_runner_checkpoint_refs (admission_id text NOT NULL REFERENCES external_deployment_admissions(id), phase text NOT NULL, attempt_id text NOT NULL, checkpoint_id text NOT NULL, evidence_ref text NOT NULL, evidence_sha256 text NOT NULL DEFAULT '', created_at timestamptz NOT NULL DEFAULT now(), PRIMARY KEY(admission_id,phase));`
+
 func TestInspectionFailsClosedOnUnknownTableWithoutPartialOrSecretOutput(t *testing.T) {
 	pool, schema := inspectionTestDatabase(t)
 	ctx := context.Background()

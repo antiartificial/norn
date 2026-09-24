@@ -101,8 +101,9 @@ func (e *ExportError) Error() string { return "control inspection failed during 
 func (e *ExportError) Unwrap() error { return e.cause }
 
 type exportOptions struct {
-	registry      []Table
-	afterSnapshot func(context.Context) error
+	registry           []Table
+	afterSnapshot      func(context.Context) error
+	allowMiniExtension bool
 }
 
 // ExportInspection writes a deterministic, redacted inspection document for
@@ -110,7 +111,7 @@ type exportOptions struct {
 // an unqualified relation. Validation and database-read failures happen before
 // the first destination write; a failing io.Writer can still accept a prefix.
 func ExportInspection(ctx context.Context, pool *pgxpool.Pool, schema string, destination io.Writer) error {
-	return exportInspection(ctx, pool, schema, destination, exportOptions{registry: InspectionRegistry()})
+	return exportInspection(ctx, pool, schema, destination, exportOptions{registry: InspectionRegistry(), allowMiniExtension: true})
 }
 
 func exportInspection(ctx context.Context, pool *pgxpool.Pool, schema string, destination io.Writer, options exportOptions) error {
@@ -132,6 +133,15 @@ func exportInspection(ctx context.Context, pool *pgxpool.Pool, schema string, de
 		return &ExportError{Phase: "read-only snapshot start", cause: err}
 	}
 	defer func() { _ = tx.Rollback(context.Background()) }()
+	if options.allowMiniExtension {
+		options.registry, err = registryWithMiniExtension(ctx, tx, schema, options.registry)
+		if err != nil {
+			return &ExportError{Phase: "schema classification", cause: err}
+		}
+		if err := validateRegistry(options.registry); err != nil {
+			return &ExportError{Phase: "registry validation", cause: err}
+		}
+	}
 
 	if _, err := tx.Exec(ctx, `SET LOCAL TIME ZONE 'UTC'`); err != nil {
 		return &ExportError{Phase: "snapshot normalization", cause: err}
