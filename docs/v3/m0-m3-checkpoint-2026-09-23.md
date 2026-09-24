@@ -1,5 +1,7 @@
 # M0–M3 integration checkpoint — 2026-09-23
 
+For current status, see the [2026-09-24 checkpoint](m0-m3-checkpoint-2026-09-24.md).
+
 This supersedes the implementation-status portions of the 2026-09-22 pause
 handoff for these milestones. It records the reviewed code on
 `feature/norn-v3-planning-handoff` through `7cabdc9`; it is not a release
