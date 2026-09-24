@@ -2,6 +2,10 @@ package supervisor
 
 import (
 	"context"
+	"crypto/hmac"
+	"crypto/sha256"
+	"encoding/hex"
+	"encoding/json"
 	"errors"
 	"os"
 	"path/filepath"
@@ -50,6 +54,50 @@ func TestManagerLaunchSnapshotUsesPrivateMaterialAndStableDescriptor(t *testing.
 	if starts != 1 {
 		t.Fatalf("snapshot launched %d times", starts)
 	}
+}
+
+func TestSnapshotTerminalResultReusesFirstAuthenticatedManifestBeforeCompletion(t *testing.T) {
+	manager := testManager(t, t.TempDir(), newBackendFake())
+	material := SnapshotLaunchMaterial{PGDumpPath: "/usr/bin/pg_dump", PGDumpSHA256: strings.Repeat("a", 64), ServiceName: "demo", ServiceFile: []byte("[demo]\nhost=localhost\nuser=demo\n"), Password: "secret", Subject: "app:demo/db:main@generation:1", Timeout: time.Minute}
+	payload, err := manager.BuildSnapshotDescriptor(material)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var descriptor SnapshotDescriptor
+	if err := json.Unmarshal(payload, &descriptor); err != nil {
+		t.Fatal(err)
+	}
+	record := journal{InputDigest: "sha256:" + strings.Repeat("b", 64), SupervisorExecutionID: "snapshot-pre-completion", RuntimeInstanceID: "snapshot-runtime"}
+	manifest := func(observedAt time.Time) []byte {
+		m := SnapshotManifest{Protocol: SnapshotProtocolV1, RuntimeInstanceID: record.RuntimeInstanceID, DescriptorSHA256: mustSnapshotDescriptorDigest(t, descriptor), Artifact: SnapshotArtifact{Reference: "snapshot/" + record.SupervisorExecutionID, Bytes: 7, SHA256: strings.Repeat("c", 64), Regular: true, NoFollow: true}, ContainmentProven: true, ObservedAt: observedAt}
+		encoded, _ := json.Marshal(snapshotManifestPayload{m.Protocol, m.RuntimeInstanceID, m.DescriptorSHA256, m.Artifact, m.ContainmentProven, m.ObservedAt})
+		mac := hmac.New(sha256.New, runnerStatusKey(testSigningKey, record.RuntimeInstanceID))
+		mac.Write(encoded)
+		m.MAC = hex.EncodeToString(mac.Sum(nil))
+		output, _ := json.Marshal(m)
+		return output
+	}
+	first := manifest(time.Date(2026, 9, 24, 12, 0, 0, 0, time.UTC))
+	second := manifest(time.Date(2026, 9, 24, 12, 0, 1, 0, time.UTC))
+	if string(first) == string(second) {
+		t.Fatal("test manifests must differ by observed timestamp")
+	}
+	if _, err := manager.writeSnapshotResult(manager.root, record, descriptor, effect.SupervisorSucceeded, first); err != nil {
+		t.Fatal(err)
+	}
+	stable, err := manager.writeSnapshotResult(manager.root, record, descriptor, effect.SupervisorSucceeded, second)
+	if err != nil || string(stable) != string(first) {
+		t.Fatalf("interrupted pre-completion replay = %q, %v", stable, err)
+	}
+}
+
+func mustSnapshotDescriptorDigest(t *testing.T, descriptor SnapshotDescriptor) string {
+	t.Helper()
+	digest, err := snapshotDescriptorDigest(descriptor)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return digest
 }
 
 func TestSnapshotAdmissionAccountsForPrivateArtifacts(t *testing.T) {
