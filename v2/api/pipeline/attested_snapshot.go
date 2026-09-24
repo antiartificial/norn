@@ -21,6 +21,10 @@ type AttestedSnapshotArtifact struct {
 	SHA256          string
 	Size            int64
 	Copy            func(io.Writer) error
+	// Fence must prove the operation claim is still live. It is called before
+	// provenance and again immediately before publication; a stale worker may
+	// stage bytes but cannot create a trusted snapshot pair.
+	Fence func() error
 }
 
 // PublishAttestedSnapshot stages verified node-local bytes and publishes with
@@ -28,7 +32,7 @@ type AttestedSnapshotArtifact struct {
 // makes an accepted replay target one deterministic filename; it may reuse
 // only a bound dump with the exact expected bytes.
 func PublishAttestedSnapshot(location snapshotLocation, at time.Time, artifact AttestedSnapshotArtifact) (*dataSnapshot, error) {
-	if location.bound == nil || artifact.OperationID == "" || artifact.ClaimGeneration <= 0 || artifact.Size <= 0 || len(artifact.SHA256) != 64 || artifact.Copy == nil {
+	if location.bound == nil || artifact.OperationID == "" || artifact.ClaimGeneration <= 0 || artifact.Size <= 0 || len(artifact.SHA256) != 64 || artifact.Copy == nil || artifact.Fence == nil {
 		return nil, fmt.Errorf("attested snapshot publication is incomplete")
 	}
 	if err := os.MkdirAll(location.dir, 0o750); err != nil {
@@ -73,8 +77,14 @@ func PublishAttestedSnapshot(location snapshotLocation, at time.Time, artifact A
 	if err != nil || !info.Mode().IsRegular() || info.Size() != artifact.Size || hex.EncodeToString(hash.Sum(nil)) != artifact.SHA256 {
 		return nil, fmt.Errorf("attested artifact bytes do not match manifest")
 	}
+	if err := artifact.Fence(); err != nil {
+		return nil, fmt.Errorf("snapshot claim fence before provenance: %w", err)
+	}
 	if err := writeSidecarExclusive(location, filename, artifact.SHA256, artifact.Size); err != nil {
 		return nil, err
+	}
+	if err := artifact.Fence(); err != nil {
+		return nil, fmt.Errorf("snapshot claim fence before publication: %w", err)
 	}
 	if err := os.Link(tmpPath, path); err != nil {
 		if err == fs.ErrExist {
