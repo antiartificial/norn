@@ -170,16 +170,14 @@ func (s *nomadScaleSupervisor) Query(ctx context.Context, r effect.Reservation, 
 	if err != nil {
 		return effect.Observation{}, err
 	}
-	desired, matched, evalID, err := s.client.ScaleStatus(request.App, request.Group, r.OperationClaim.OperationID)
+	expectedEvalID := strings.TrimPrefix(identity.RuntimeInstanceID, "nomad-eval:")
+	desired, matched, evalID, err := s.client.ScaleStatus(request.App, request.Group, r.OperationClaim.OperationID, r.OperationClaim.Generation, r.SupervisorExecutionID, request.Count, expectedEvalID)
 	if err != nil {
 		return effect.Observation{}, err
 	}
-	if evalID == "" {
-		evalID = strings.TrimPrefix(identity.RuntimeInstanceID, "nomad-eval:")
-	}
 	output, _ := json.Marshal(map[string]interface{}{"app": request.App, "group": request.Group, "count": request.Count, "desired": desired, "operationId": r.OperationClaim.OperationID, "evalId": evalID, "matched": matched})
 	identity.Supervisor, identity.SupervisorExecutionID = r.Supervisor, r.SupervisorExecutionID
-	if identity.RuntimeInstanceID == "" {
+	if matched && identity.RuntimeInstanceID == "" {
 		identity.RuntimeInstanceID = "nomad-eval:" + evalID
 	}
 	phase := effect.SupervisorUnknown
