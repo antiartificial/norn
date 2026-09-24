@@ -12,8 +12,8 @@ func TestControlSchemaAdoptsLegacyRowsWithoutReplacingEvidence(t *testing.T) {
 	pool := schemaMigrationTestPools(t, 1)[0]
 	ctx := context.Background()
 	migrations := ControlSchemaMigrations()
-	if len(migrations) != 12 || migrations[0].Version != 1 || migrations[1].Version != 2 || migrations[2].Version != 3 || migrations[3].Version != 4 || migrations[4].Version != 5 || migrations[5].Version != 6 || migrations[6].Version != 7 || migrations[7].Version != 8 || migrations[8].Version != 9 || migrations[9].Version != 10 || migrations[10].Version != 11 || migrations[11].Version != 12 {
-		t.Fatalf("control migrations = %#v, want immutable baseline through durable desired replicas migration 11", migrations)
+	if len(migrations) != 13 || migrations[0].Version != 1 || migrations[1].Version != 2 || migrations[2].Version != 3 || migrations[3].Version != 4 || migrations[4].Version != 5 || migrations[5].Version != 6 || migrations[6].Version != 7 || migrations[7].Version != 8 || migrations[8].Version != 9 || migrations[9].Version != 10 || migrations[10].Version != 11 || migrations[11].Version != 12 || migrations[12].Version != 13 {
+		t.Fatalf("control migrations = %#v, want immutable baseline through restart effect source migration 13", migrations)
 	}
 	// Simulate the unversioned v2 database before the migration ledger existed.
 	if _, err := pool.Exec(ctx, migrations[0].SQL); err != nil {
@@ -50,7 +50,7 @@ func TestControlSchemaAdoptsLegacyRowsWithoutReplacingEvidence(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if status.CurrentMigrationVersion != 13 || len(status.AppliedVersions) != 13 || status.AppliedVersions[0] != 1 || status.AppliedVersions[1] != 2 || status.AppliedVersions[2] != 3 || status.AppliedVersions[3] != 4 || status.AppliedVersions[4] != 5 || status.AppliedVersions[5] != 6 || status.AppliedVersions[6] != 7 || status.AppliedVersions[7] != 8 || status.AppliedVersions[8] != 9 || status.AppliedVersions[9] != 10 || status.AppliedVersions[10] != 11 || status.AppliedVersions[11] != 12 || status.AppliedVersions[12] != 13 || status.MinimumReaderVersion != EvidenceArchiveReaderVersion || status.MinimumWriterVersion != RegionalDesiredReplicaWriterVersion {
+	if status.CurrentMigrationVersion != 13 || len(status.AppliedVersions) != 13 || status.AppliedVersions[0] != 1 || status.AppliedVersions[1] != 2 || status.AppliedVersions[2] != 3 || status.AppliedVersions[3] != 4 || status.AppliedVersions[4] != 5 || status.AppliedVersions[5] != 6 || status.AppliedVersions[6] != 7 || status.AppliedVersions[7] != 8 || status.AppliedVersions[8] != 9 || status.AppliedVersions[9] != 10 || status.AppliedVersions[10] != 11 || status.AppliedVersions[11] != 12 || status.AppliedVersions[12] != 13 || status.MinimumReaderVersion != EvidenceArchiveReaderVersion || status.MinimumWriterVersion != RestartEffectSourceWriterVersion {
 		t.Fatalf("migration status = %#v", status)
 	}
 
