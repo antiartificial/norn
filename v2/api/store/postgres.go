@@ -527,8 +527,8 @@ const controlSchemaBaselineSQL = `
 // archive-aware and never serve pruned history as complete.
 const (
 	EvidenceArchiveReaderVersion int64 = 2
-	ControlSchemaReaderVersion   int64 = EvidenceArchiveReaderVersion
-	ControlSchemaWriterVersion   int64 = SnapshotPublicationWriterVersion
+	ControlSchemaReaderVersion   int64 = OperationAcceptanceRetirementReaderVersion
+	ControlSchemaWriterVersion   int64 = OperationAcceptanceRetirementWriterVersion
 )
 
 // ControlSchemaMigrations returns a copy of the ordered, forward-only control
@@ -540,7 +540,7 @@ func ControlSchemaMigrations() []SchemaMigration {
 		SQL:                  controlSchemaBaselineSQL,
 		MinimumReaderVersion: 0,
 		MinimumWriterVersion: 0,
-	}, operationAcceptanceMigration(), operationEffectsMigration(), operationCheckpointsMigration(), databaseCatalogMigration(), evidenceArchiveMigration(), evidenceArchiveReaderMigration(), evidenceReserveMigration(), eventReplayRetentionMigration(), nonSagaEvidenceMigration(), desiredReplicasMigration(), regionalDesiredReplicasMigration(), restartEffectSourcesMigration(), signedAcceptanceByteReserveMigration(), operationReplayExpiryMigration(), snapshotPublicationMigration()}
+	}, operationAcceptanceMigration(), operationEffectsMigration(), operationCheckpointsMigration(), databaseCatalogMigration(), evidenceArchiveMigration(), evidenceArchiveReaderMigration(), evidenceReserveMigration(), eventReplayRetentionMigration(), nonSagaEvidenceMigration(), desiredReplicasMigration(), regionalDesiredReplicasMigration(), restartEffectSourcesMigration(), signedAcceptanceByteReserveMigration(), operationReplayExpiryMigration(), snapshotPublicationMigration(), operationAcceptanceRetirementMigration()}
 }
 
 func NewControlSchemaMigrator(db *DB) (*SchemaMigrator, error) {

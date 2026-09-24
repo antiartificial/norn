@@ -35,9 +35,9 @@ type PayloadRetention struct {
 var PayloadInventory = []PayloadRetention{
 	{"saga_events", ClassArchived, []string{"metadata", "message"}, "operation/deployment/effect holds, rollback candidates, minimum age, reader floor and connected readers"},
 	{"operations", ClassHotEvidence, []string{"payload", "metadata", "last_error"}, "active, indeterminate and manual-recovery work; archived copy exists inside saga bundles and terminal Fleet GitHub receipt bundles"},
-	{"operation_request_identities", ClassHotEvidence, nil, "versioned replay expiry records a durable tombstone but does not delete the identity or release its namespace"},
-	{"operation_acceptance_intents", ClassHotEvidence, []string{"request_canonical_bytes", "canonical_bytes"}, "original signed bytes; archived byte-exact inside saga bundles and terminal Fleet GitHub receipt bundles; hot replay identity remains authoritative"},
-	{"signed_acceptance_byte_reservations", ClassHotEvidence, nil, "logical signed-acceptance byte accounting has no release lifecycle yet"},
+	{"operation_request_identities", ClassHotEvidence, nil, "versioned replay expiry retains the identity/fingerprint namespace tombstone; a matching control database backup is required for operation-receipt index recovery"},
+	{"operation_acceptance_intents", ClassHotEvidence, []string{"request_canonical_bytes", "canonical_bytes"}, "archive-verified expired terminal Fleet GitHub receipts can retire the hot signed payload; other acceptance kinds remain hot"},
+	{"signed_acceptance_byte_reservations", ClassHotEvidence, nil, "logical bytes are released atomically only with eligible archive-backed Fleet GitHub acceptance retirement; other reservations remain hot"},
 	{"operation_effects", ClassHotEvidence, []string{"launch_payload"}, "unresolved effects and retry-safety evidence"},
 	{"restart_effect_sources", ClassHotEvidence, nil, "per-source restart attempt and acknowledgement evidence"},
 	{"operation_checkpoints", ClassHotEvidence, []string{"outputs"}, "retry-safety checkpoints of unresolved operations"},
