@@ -35,6 +35,18 @@ type appLockFencedExecutionStoreFake struct {
 	finishWithLock func(context.Context, store.OperationClaim, store.AppOperationLock, model.OperationStatus, string, map[string]interface{}) error
 }
 
+type cronPauseRecoveryStoreFake struct {
+	*appLockFencedExecutionStoreFake
+	recover func(context.Context, store.OperationClaim, store.AppOperationLock, string, time.Time, map[string]interface{}) (bool, error)
+}
+
+func (f *cronPauseRecoveryStoreFake) DeferOrFailCronPauseClaimedOperation(ctx context.Context, claim store.OperationClaim, lock store.AppOperationLock, message string, next time.Time, metadata map[string]interface{}) (bool, error) {
+	if f.recover == nil {
+		return false, nil
+	}
+	return f.recover(ctx, claim, lock, message, next, metadata)
+}
+
 func (f *appLockFencedExecutionStoreFake) DeferClaimedOperationWithAppLock(ctx context.Context, claim store.OperationClaim, lock store.AppOperationLock, message string, next time.Time, metadata map[string]interface{}) error {
 	if f.deferWithLock != nil {
 		return f.deferWithLock(ctx, claim, lock, message, next, metadata)
@@ -309,6 +321,29 @@ func TestOperationDefersUnresolvedEffectWithoutRetryOrTerminalFailure(t *testing
 	w.handle(context.Background(), op, claim)
 	if fake.deferCalls.Load() != 1 || retryCalls.Load() != 0 || fake.finishCalls.Load() != 0 || !metadataChecked.Load() {
 		t.Fatalf("defer=%d retry=%d finish=%d metadataChecked=%v", fake.deferCalls.Load(), retryCalls.Load(), fake.finishCalls.Load(), metadataChecked.Load())
+	}
+}
+
+func TestCronPauseDeferredEffectUsesBoundedClaimFencedRecovery(t *testing.T) {
+	claim := operationClaim(t, "cron-pause", "worker", 1)
+	op := &model.Operation{ID: claim.OperationID(), Kind: "app.cron-pause", App: "atlas", Attempts: 1, MaxAttempts: 3}
+	base := &executionStoreFake{lock: func(ctx context.Context, _ string) (store.AppOperationLock, bool, error) {
+		return store.NewFencedAppOperationLock(ctx, "cron-fence", nil), true, nil
+	}}
+	recoveryCalls := 0
+	fake := &cronPauseRecoveryStoreFake{appLockFencedExecutionStoreFake: &appLockFencedExecutionStoreFake{executionStoreFake: base}, recover: func(_ context.Context, got store.OperationClaim, lock store.AppOperationLock, message string, next time.Time, metadata map[string]interface{}) (bool, error) {
+		recoveryCalls++
+		if got != claim || lock.Fence() != "cron-fence" || message == "" || next.Before(time.Now()) || metadata["effectId"] != "effect-1" || metadata["effectResource"] != "app/atlas/cron/nightly" {
+			t.Fatalf("bounded recovery claim=%+v fence=%q message=%q metadata=%v", got, lock.Fence(), message, metadata)
+		}
+		return false, nil
+	}}
+	w := &OperationWorker{db: fake, id: claim.OwnerID(), lease: time.Minute, pipeline: operationExecutorFunc(func(context.Context, *model.Operation, store.OperationClaim) (*pipeline.OperationResult, error) {
+		return nil, &effect.PendingError{EffectID: "effect-1", Resource: "app/atlas/cron/nightly", Reason: "Nomad unavailable"}
+	})}
+	w.handle(context.Background(), op, claim)
+	if recoveryCalls != 1 || base.deferCalls.Load() != 0 || base.finishCalls.Load() != 0 {
+		t.Fatalf("bounded=%d genericDefer=%d finish=%d", recoveryCalls, base.deferCalls.Load(), base.finishCalls.Load())
 	}
 }
 

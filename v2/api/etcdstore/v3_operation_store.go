@@ -688,6 +688,42 @@ func (s *V3OperationStore) DeferClaimedOperationWithAppLock(ctx context.Context,
 		}
 	})
 }
+
+// DeferOrFailCronPauseClaimedOperation preserves every claimed recovery
+// attempt. A persistent ambiguous Nomad effect therefore reaches the request
+// budget and becomes a manual-review receipt instead of cycling forever.
+func (s *V3OperationStore) DeferOrFailCronPauseClaimedOperation(ctx context.Context, c store.OperationClaim, lock store.AppOperationLock, msg string, next time.Time, m map[string]interface{}) (bool, error) {
+	terminal := false
+	err := s.mutateClaimWithAppLock(ctx, c, lock, func(o *model.Operation) {
+		for k, v := range m {
+			o.Metadata[k] = v
+		}
+		if o.Attempts >= o.MaxAttempts {
+			now := time.Now().UTC()
+			o.Status = model.OperationFailed
+			o.Message = "cron pause effect recovery retry budget exhausted; manual recovery is required: " + msg
+			o.LastError = msg
+			o.LockedBy = ""
+			o.LockedUntil = nil
+			o.FinishedAt = &now
+			o.Metadata["manualRecoveryRequired"] = true
+			o.Metadata["externalEffectRecoveryPending"] = true
+			o.Metadata["retryBudgetExhausted"] = true
+			terminal = true
+			return
+		}
+		o.Status = model.OperationQueued
+		o.Message = msg
+		o.LastError = msg
+		o.NextAttemptAt = next
+		o.LockedBy = ""
+		o.LockedUntil = nil
+	})
+	if err != nil {
+		return false, err
+	}
+	return terminal, nil
+}
 func (s *V3OperationStore) RetryClaimedOperation(ctx context.Context, c store.OperationClaim, msg, last string, next time.Time, m map[string]interface{}) error {
 	return s.mutateClaim(ctx, c, func(o *model.Operation) {
 		o.Status = model.OperationQueued

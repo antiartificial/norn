@@ -35,6 +35,18 @@ type AppLockFencedExecutionStore interface {
 	FinishClaimedOperationWithAppLock(context.Context, OperationClaim, AppOperationLock, model.OperationStatus, string, map[string]interface{}) error
 }
 
+// CronPauseRecoveryStore makes an unresolved cron-pause effect retryable only
+// while its claimed-attempt budget remains. The final transition is fenced by
+// the operation claim (and, where available, the app-lock fence) so an old
+// worker cannot terminalize a successor's recovery.
+//
+// terminal reports that the retry budget was exhausted and the operation was
+// recorded for manual recovery. Callers must leave the external-effect record
+// intact: it is the evidence needed to reconcile the stopped periodic job.
+type CronPauseRecoveryStore interface {
+	DeferOrFailCronPauseClaimedOperation(context.Context, OperationClaim, AppOperationLock, string, time.Time, map[string]interface{}) (terminal bool, err error)
+}
+
 // AppOperationLock is an app-scoped serialization lease. Callers must execute
 // mutable work using Context and must Release it when that work ends. Context
 // is canceled when the backend can no longer prove that this holder owns the
@@ -583,6 +595,61 @@ func (db *DB) DeferClaimedOperation(ctx context.Context, claim OperationClaim, m
 		return ownershipLost(claim)
 	}
 	return nil
+}
+
+// DeferOrFailCronPauseClaimedOperation requeues an unresolved cron-pause
+// effect without refunding the claim that performed the recovery check. Once
+// MaxAttempts is reached it atomically records a failed/manual-review receipt
+// and its evidence archive intent. It deliberately does not touch
+// operation_effects: that durable effect evidence is required for a later
+// operator reconciliation.
+func (db *DB) DeferOrFailCronPauseClaimedOperation(ctx context.Context, claim OperationClaim, _ AppOperationLock, message string, nextAttemptAt time.Time, metadata map[string]interface{}) (bool, error) {
+	if err := validateOperationClaim(claim); err != nil {
+		return false, err
+	}
+	if metadata == nil {
+		metadata = map[string]interface{}{}
+	}
+	data, _ := json.Marshal(metadata)
+	var terminal bool
+	err := db.Pool.QueryRow(ctx, `
+		WITH owned AS MATERIALIZED (
+			SELECT id, attempts, max_attempts
+			FROM operations
+			WHERE id = $3 AND kind = 'app.cron-pause' AND status = 'running'
+			  AND locked_by = $4 AND lock_generation = $5 AND locked_until > now()
+		), deferred AS (
+			UPDATE operations
+			SET status = 'queued', message = $1, last_error = $1, next_attempt_at = $2,
+			    metadata = metadata || $6::jsonb, locked_by = '', locked_until = NULL, updated_at = now()
+			WHERE id IN (SELECT id FROM owned WHERE attempts < max_attempts)
+			RETURNING false AS terminal, id, saga_id, app
+		), exhausted AS (
+			UPDATE operations
+			SET status = 'failed',
+			    message = 'cron pause effect recovery retry budget exhausted; manual recovery is required: ' || $1,
+			    last_error = $1,
+			    metadata = metadata || $6::jsonb || '{"manualRecoveryRequired":true,"externalEffectRecoveryPending":true,"retryBudgetExhausted":true}'::jsonb,
+			    locked_by = '', locked_until = NULL, updated_at = now(), finished_at = now()
+			WHERE id IN (SELECT id FROM owned WHERE attempts >= max_attempts)
+			RETURNING true AS terminal, id, saga_id, app
+		), changed AS (
+			SELECT * FROM deferred UNION ALL SELECT * FROM exhausted
+		), outbox AS (
+			INSERT INTO evidence_archive_intents (id, subject_kind, subject_id, app, operation_id, sequence, state)
+			SELECT 'ei-' || gen_random_uuid()::text, 'saga', saga_id, app, id, 1, 'pending'
+			FROM changed WHERE terminal AND saga_id <> ''
+			ON CONFLICT (subject_kind, subject_id, sequence) DO NOTHING
+		)
+		SELECT terminal FROM changed
+	`, message, nextAttemptAt, claim.OperationID(), claim.OwnerID(), claim.Generation(), data).Scan(&terminal)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return false, ownershipLost(claim)
+	}
+	if err != nil {
+		return false, err
+	}
+	return terminal, nil
 }
 
 func (db *DB) RetryClaimedOperation(ctx context.Context, claim OperationClaim, message, lastError string, nextAttemptAt time.Time, metadata map[string]interface{}) error {

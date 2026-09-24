@@ -87,3 +87,86 @@ func TestExpiredCronPauseRequeuesForEffectReconciliation(t *testing.T) {
 		t.Fatalf("successor finish = %v", err)
 	}
 }
+
+func TestCronPauseDeferredEffectConsumesRetryBudgetAndPreservesEvidence(t *testing.T) {
+	pools := schemaMigrationTestPools(t, 2)
+	db := &DB{Pool: pools[0]}
+	if err := Migrate(db); err != nil {
+		t.Fatal(err)
+	}
+	ctx := context.Background()
+	op := insertOperationFixture(t, db, "app.cron-pause", 3, map[string]interface{}{"process": "nightly"})
+
+	var authority string
+	if err := db.Pool.QueryRow(ctx, `SELECT authority::text FROM control_plane_identity WHERE singleton`).Scan(&authority); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := db.Pool.Exec(ctx, `
+		INSERT INTO operation_effects (id,generation,authority,resource,operation_id,claim_owner,claim_generation,stage,input_digest,launch_payload,supervisor,supervisor_execution_id,lifecycle)
+		VALUES ('cron-pause-evidence-' || $1,1,$2::uuid,$3,$1,'worker',1,'app.cron-pause.nomad','sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa','{}'::jsonb,'nomad-cron-pause','evidence','reserved')
+	`, op.ID, authority, "app/"+op.App+"/cron/nightly"); err != nil {
+		t.Fatal(err)
+	}
+
+	for attempt := 1; attempt <= 3; attempt++ {
+		claimed, claim, err := (&DB{Pool: pools[attempt%2]}).ClaimNextOperation(ctx, "cron-worker", time.Minute, []string{"app.cron-pause"})
+		if err != nil || claimed == nil || claimed.ID != op.ID || claimed.Attempts != attempt {
+			t.Fatalf("attempt %d claim=%+v err=%v", attempt, claimed, err)
+		}
+		terminal, err := db.DeferOrFailCronPauseClaimedOperation(ctx, claim, nil, "Nomad response remains ambiguous", time.Now().Add(-time.Second), map[string]interface{}{"effectId": "effect-1", "effectResource": "app/" + op.App + "/cron/nightly", "externalEffectRecoveryPending": true})
+		if err != nil || terminal != (attempt == 3) {
+			t.Fatalf("attempt %d terminal=%v err=%v", attempt, terminal, err)
+		}
+		current, err := db.GetOperation(ctx, op.ID)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if attempt < 3 {
+			if current.Status != model.OperationQueued || current.Attempts != attempt || current.Metadata["effectId"] != "effect-1" {
+				t.Fatalf("attempt %d requeue=%+v", attempt, current)
+			}
+			continue
+		}
+		if current.Status != model.OperationFailed || current.Attempts != 3 || current.Metadata["manualRecoveryRequired"] != true || current.Metadata["retryBudgetExhausted"] != true || current.Metadata["effectId"] != "effect-1" {
+			t.Fatalf("budget exhaustion operation=%+v", current)
+		}
+	}
+	var effects, intents int
+	if err := db.Pool.QueryRow(ctx, `SELECT count(*) FROM operation_effects WHERE operation_id=$1`, op.ID).Scan(&effects); err != nil {
+		t.Fatal(err)
+	}
+	if err := db.Pool.QueryRow(ctx, `SELECT count(*) FROM evidence_archive_intents WHERE operation_id=$1 AND state='pending'`, op.ID).Scan(&intents); err != nil {
+		t.Fatal(err)
+	}
+	if effects != 1 || intents != 1 {
+		t.Fatalf("effect evidence=%d archive intents=%d, want 1/1", effects, intents)
+	}
+}
+
+func TestCronPauseDeferredEffectRejectsStaleClaim(t *testing.T) {
+	pools := schemaMigrationTestPools(t, 2)
+	db := &DB{Pool: pools[0]}
+	if err := Migrate(db); err != nil {
+		t.Fatal(err)
+	}
+	op := insertOperationFixture(t, db, "app.cron-pause", 2, map[string]interface{}{})
+	_, stale, err := db.ClaimNextOperation(context.Background(), "old-cron-worker", 50*time.Millisecond, []string{"app.cron-pause"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	time.Sleep(80 * time.Millisecond)
+	if err := (&DB{Pool: pools[1]}).RecoverExpiredOperations(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	_, currentClaim, err := (&DB{Pool: pools[1]}).ClaimNextOperation(context.Background(), "new-cron-worker", time.Minute, []string{"app.cron-pause"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := db.DeferOrFailCronPauseClaimedOperation(context.Background(), stale, nil, "stale", time.Now(), nil); !errors.Is(err, ErrOperationOwnershipLost) {
+		t.Fatalf("stale defer error=%v", err)
+	}
+	current, err := db.GetOperation(context.Background(), op.ID)
+	if err != nil || current.Status != model.OperationRunning || current.LockGeneration != currentClaim.Generation() {
+		t.Fatalf("stale defer changed current operation=%+v err=%v", current, err)
+	}
+}
