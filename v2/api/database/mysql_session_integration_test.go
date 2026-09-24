@@ -38,6 +38,10 @@ func TestMySQLRuntimeComponentsReachDeclaredTarget(t *testing.T) {
 	suffix := strings.ReplaceAll(uuid.NewString()[:8], "-", "")
 	databaseName, role := "norn_"+suffix, "norn_"+suffix
 	const password = "MySQL-runtime-canary!7?"
+	defer func() {
+		_, _ = admin.ExecContext(context.Background(), "DROP DATABASE IF EXISTS `"+databaseName+"`")
+		_, _ = admin.ExecContext(context.Background(), "DROP USER IF EXISTS '"+role+"'@'%'")
+	}()
 	for _, statement := range []string{
 		"CREATE DATABASE `" + databaseName + "` CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci",
 		"CREATE USER '" + role + "'@'%' IDENTIFIED BY '" + password + "'",
@@ -47,10 +51,6 @@ func TestMySQLRuntimeComponentsReachDeclaredTarget(t *testing.T) {
 			t.Fatal("prepare disposable MySQL target failed")
 		}
 	}
-	t.Cleanup(func() {
-		_, _ = admin.ExecContext(context.Background(), "DROP DATABASE IF EXISTS `"+databaseName+"`")
-		_, _ = admin.ExecContext(context.Background(), "DROP USER IF EXISTS '"+role+"'@'%'")
-	})
 	host, portText, err := net.SplitHostPort(adminConfig.Addr)
 	if err != nil {
 		t.Fatal(err)
