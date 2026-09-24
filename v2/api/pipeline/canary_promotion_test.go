@@ -24,6 +24,23 @@ func TestCanaryPromotionRejectsMissingDurableEffectBoundary(t *testing.T) {
 	}
 }
 
+func TestCanaryPromotionEvidenceExcludesMutableDescription(t *testing.T) {
+	request := canaryPromotionRequest{App: "widgets", Region: "us-central", NomadRegion: "global", DeploymentID: "deployment-123"}
+	info := &nomad.DeploymentInfo{ID: request.DeploymentID, Status: "successful", CanaryPromoted: true, StatusDesc: "initial"}
+	first, err := canaryPromotionEvidenceOutput(request, info)
+	if err != nil {
+		t.Fatal(err)
+	}
+	info.StatusDesc = "updated operator description"
+	second, err := canaryPromotionEvidenceOutput(request, info)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(first) != string(second) || effect.DigestInput(first) != effect.DigestInput(second) {
+		t.Fatal("mutable Nomad description changed a completed canary effect result digest")
+	}
+}
+
 func TestCanaryPromotionRequestBindsLogicalAndNomadRegionsAndDeployment(t *testing.T) {
 	op := &model.Operation{App: "widgets", Payload: map[string]interface{}{"region": "us-central", "nomadRegion": "global", "deploymentId": "deployment-123"}}
 	request, err := canaryPromotionRequestFromOperation(op)

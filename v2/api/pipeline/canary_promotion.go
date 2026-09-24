@@ -200,7 +200,7 @@ func (s *nomadCanaryPromotionSupervisor) Query(ctx context.Context, r effect.Res
 	if info == nil || info.ID != request.DeploymentID || info.JobID != request.App {
 		return effect.Observation{}, fmt.Errorf("Nomad deployment identity no longer matches accepted promotion")
 	}
-	output, _ := json.Marshal(map[string]interface{}{"app": request.App, "region": request.Region, "nomadRegion": request.NomadRegion, "deploymentId": info.ID, "status": info.Status, "statusDescription": info.StatusDesc, "canaryPromoted": info.CanaryPromoted})
+	output, _ := canaryPromotionEvidenceOutput(request, info)
 	identity.Supervisor, identity.SupervisorExecutionID = r.Supervisor, r.SupervisorExecutionID
 	if identity.RuntimeInstanceID == "" {
 		identity.RuntimeInstanceID = "nomad-deployment:" + request.DeploymentID
@@ -215,6 +215,13 @@ func (s *nomadCanaryPromotionSupervisor) Query(ctx context.Context, r effect.Res
 		phase = effect.SupervisorFailed
 	}
 	return effect.Observation{Identity: identity, Phase: phase, Output: output, Evidence: effect.RawEvidence{Source: "nomad.deployment", Reference: request.DeploymentID, Payload: output}}, nil
+}
+
+func canaryPromotionEvidenceOutput(request canaryPromotionRequest, info *nomad.DeploymentInfo) ([]byte, error) {
+	// StatusDescription is operator-facing prose and can change after a
+	// terminal result. Completed effect replay validates the exact result
+	// digest, so persist only the stable identity and terminal state fields.
+	return json.Marshal(map[string]interface{}{"app": request.App, "region": request.Region, "nomadRegion": request.NomadRegion, "deploymentId": info.ID, "status": info.Status, "canaryPromoted": info.CanaryPromoted})
 }
 
 func (s *nomadCanaryPromotionSupervisor) Revoke(ctx context.Context, r effect.Reservation, identity effect.ExecutionIdentity) (effect.Observation, error) {
