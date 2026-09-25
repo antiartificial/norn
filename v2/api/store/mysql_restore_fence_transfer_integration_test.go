@@ -151,10 +151,32 @@ func TestMySQLRestoreTransfersSignedSourceFenceWithoutGap(t *testing.T) {
 	if err != nil || ready.Fence.Epoch != transferred.Epoch || ready.Request.Target != target.Target {
 		t.Fatalf("completed signed restore recovery assessment: %+v %v", ready, err)
 	}
+	recoveryInput := MySQLRestoreRecoveryAcceptanceInput{RestoreOperationID: claim.OperationID(),
+		Actor: OperationActor{Issuer: "test-issuer", Subject: "operator"}, Key: "recover-" + uuid.NewString(),
+		Audit: AcceptanceAuditContext{RequestID: "request-" + uuid.NewString(), CredentialID: "token-one", DeviceID: "device-one", Source: "integration-test", Scopes: []string{"write"}}}
+	recovery, err := db.AcceptPrivateMySQLRestoreRecovery(ctx, acceptance, recoveryInput)
+	if err != nil {
+		t.Fatalf("accept signed recovery: %v", err)
+	}
+	verifiedRecovery, err := acceptance.VerifyAcceptedOperation(ctx, recovery.Operation.ID)
+	var signedRecovery MySQLRestoreRecoveryRequest
+	if err != nil || decodeMySQLRestoreRecoveryPayload(verifiedRecovery.Operation.Payload, &signedRecovery) != nil ||
+		signedRecovery.RestoreOperationID != claim.OperationID() || signedRecovery.RuntimeFenceEpoch != transferred.Epoch ||
+		signedRecovery.Target != target.Target || signedRecovery.SourceArtifactOperationID != receipt.OperationID {
+		t.Fatalf("signed recovery did not bind exact lineage: %+v %v", signedRecovery, err)
+	}
+	replayedRecovery, err := db.AcceptPrivateMySQLRestoreRecovery(ctx, acceptance, recoveryInput)
+	if err != nil || replayedRecovery.Operation.ID != recovery.Operation.ID {
+		t.Fatalf("recovery identity replay: %+v %v", replayedRecovery, err)
+	}
 	if _, err := db.Pool.Exec(ctx, `UPDATE runtime_mutation_fence SET owner='replacement-owner' WHERE singleton=true`); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := db.AssessCompletedMySQLRestoreRecovery(ctx, acceptance, claim.OperationID()); !errors.Is(err, ErrMySQLRestoreFence) {
 		t.Fatalf("replaced fence appeared recovery ready: %v", err)
+	}
+	recoveryInput.Key = "new-recovery-" + uuid.NewString()
+	if _, err := db.AcceptPrivateMySQLRestoreRecovery(ctx, acceptance, recoveryInput); !errors.Is(err, ErrMySQLRestoreFence) {
+		t.Fatalf("replaced fence admitted a new recovery: %v", err)
 	}
 }

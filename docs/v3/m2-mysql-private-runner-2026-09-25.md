@@ -114,6 +114,14 @@ rehearsal accepted the completed target and rejected a changed row. These
 observations are not atomic with a later resume. Source-account state, direct
 Nomad starts, and external writers still need independent qualification.
 
+A private recovery admission now signs a one-attempt operator operation derived
+from the completed restore's acceptance digest, catalog revision, exact source
+receipt, target identity, and held fence epoch/owner. Exact request-key replay
+returns the original signed operation; a new admission fails if the fence has
+been replaced. A disposable PostgreSQL test passed both cases. This operation
+currently has no executor, effect checkpoint, account unlock, or fence-release
+path, so accepting it does not resume application writes.
+
 - Qualify bounded memory/disk behavior on representative large data.
 - Wire the launch and mutation gates into every application write and resume
   path, and add signed source-account quiescence before staging the dump.
