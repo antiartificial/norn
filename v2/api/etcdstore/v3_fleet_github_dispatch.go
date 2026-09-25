@@ -182,6 +182,9 @@ func (s *V3OperationStore) FinishFleetGitHubDispatch(ctx context.Context, planID
 	if err != nil {
 		return err
 	}
+	if err := s.VerifyFleetGitHubDispatchReservation(ctx, prepared); err != nil {
+		return err
+	}
 	if nonceSHA256 != prepared.DispatchNonceSHA256 {
 		return fmt.Errorf("fleet GitHub dispatch nonce does not match preparation")
 	}
@@ -246,7 +249,7 @@ func (s *V3OperationStore) FinishFleetGitHubDispatch(ctx context.Context, planID
 	if existing, bindErr := s.loadFleetRunnerDispatch(ctx, prepared.PlanID); bindErr == nil && existing.FleetRunnerDispatchBinding == binding {
 		finished, _, finishErr := s.load(ctx, prepared.OperationID)
 		if finishErr == nil && finished.Operation.Status == model.OperationSucceeded {
-			return nil
+			return s.VerifyFleetGitHubDispatchCompletion(ctx, binding)
 		}
 	}
 	return fmt.Errorf("fleet GitHub dispatch binding already exists or receipt changed")
@@ -295,6 +298,9 @@ func (s *V3OperationStore) VerifyFleetGitHubDispatchCompletion(ctx context.Conte
 	if err != nil {
 		return err
 	}
+	if err := s.VerifyFleetGitHubDispatchReservation(ctx, prepared); err != nil {
+		return err
+	}
 	op, _, err := s.load(ctx, prepared.OperationID)
 	if err != nil {
 		return err
@@ -319,11 +325,12 @@ func (s *V3OperationStore) VerifyFleetGitHubDispatchCompletion(ctx context.Conte
 		Schema, OperationID, PlanID, Kind string
 		Status                            model.OperationStatus
 		Result                            struct {
-			PlanSHA256, ApprovedHeadSHA, URL string
-			RunID                            int64
+			PlanSHA256, ApprovedHeadSHA, URL, FleetEnvironment string
+			RunID, PlanRunID                                   int64
+			AllowDestructive                                   bool
 		}
 	}
-	if err := json.Unmarshal(canonical, &signed); err != nil || signed.Schema != "norn.fleet-github-completion/v1" || signed.OperationID != op.Operation.ID || signed.PlanID != binding.PlanID || signed.Kind != fleetGitHubDispatchOperationKind || signed.Status != model.OperationSucceeded || signed.Result.PlanSHA256 != binding.PlanSHA256 || signed.Result.ApprovedHeadSHA != binding.ApprovedHeadSHA || signed.Result.RunID != binding.RunID || strings.TrimSpace(signed.Result.URL) != binding.WorkflowURL {
+	if err := json.Unmarshal(canonical, &signed); err != nil || signed.Schema != "norn.fleet-github-completion/v1" || signed.OperationID != op.Operation.ID || signed.PlanID != binding.PlanID || signed.Kind != fleetGitHubDispatchOperationKind || signed.Status != model.OperationSucceeded || signed.Result.PlanSHA256 != binding.PlanSHA256 || signed.Result.ApprovedHeadSHA != binding.ApprovedHeadSHA || signed.Result.RunID != binding.RunID || signed.Result.PlanRunID != prepared.PlanRunID || signed.Result.FleetEnvironment != prepared.FleetEnvironment || signed.Result.AllowDestructive != prepared.AllowDestructive || strings.TrimSpace(signed.Result.URL) != binding.WorkflowURL {
 		return fmt.Errorf("fleet GitHub dispatch completion does not bind runner result")
 	}
 	return nil
