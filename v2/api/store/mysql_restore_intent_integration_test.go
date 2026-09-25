@@ -8,6 +8,7 @@ import (
 	"errors"
 	"fmt"
 	"net"
+	"net/url"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -21,6 +22,7 @@ import (
 
 	"norn/v2/api/artifactstore"
 	"norn/v2/api/database"
+	"norn/v2/api/internal/s3emulator"
 )
 
 type mysqlIntentSecrets map[string]string
@@ -285,11 +287,32 @@ func TestMySQLRestoreIntentAgainstDisposableEngines(t *testing.T) {
 	}
 	// Publish the source under its signed retention receipt, then remove the
 	// staging file. The SQL runner below must consume the retained bytes.
-	retainedObjects, err := artifactstore.OpenLocal(filepath.Join(t.TempDir(), "objects"), 64<<20)
+	_, objectServer := s3emulator.Start("norn-artifacts", "artifact-writer")
+	defer objectServer.Close()
+	objectEndpoint, err := url.Parse(objectServer.URL)
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer retainedObjects.Close()
+	publicationSpool := t.TempDir()
+	if err := os.Chmod(publicationSpool, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	objectConfig := artifactstore.S3Config{Endpoint: objectEndpoint.Host, Bucket: "norn-artifacts", Prefix: "mysql/recovery", Region: "us-east-1",
+		AccessKey: "artifact-writer", SecretKey: "test-secret", Transport: objectServer.Client().Transport,
+		SpoolDirectory: publicationSpool, SpoolCapacity: 64 << 20, RetainFor: 24 * time.Hour}
+	retainedObjects, err := artifactstore.OpenS3(ctx, objectConfig)
+	if err != nil {
+		t.Fatal(err)
+	}
+	recoverySpool := t.TempDir()
+	if err := os.Chmod(recoverySpool, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	objectConfig.SpoolDirectory = recoverySpool
+	recoveryObjects, err := artifactstore.OpenS3(ctx, objectConfig)
+	if err != nil {
+		t.Fatal(err)
+	}
 	stagedBytes, err := os.ReadFile(path)
 	if err != nil {
 		t.Fatal(err)
@@ -312,7 +335,7 @@ func TestMySQLRestoreIntentAgainstDisposableEngines(t *testing.T) {
 	if err := os.Mkdir(materializeDirectory, 0o700); err != nil {
 		t.Fatal(err)
 	}
-	if replay, err := control.PrepareClaimedMySQLRestoreFromRetained(ctx, stores[0], claim, request, secrets, retainedObjects, materializeDirectory); err != nil || !replay.Replayed {
+	if replay, err := control.PrepareClaimedMySQLRestoreFromRetained(ctx, stores[0], claim, request, secrets, recoveryObjects, materializeDirectory); err != nil || !replay.Replayed {
 		t.Fatalf("retained prepare without staged file: %+v %v", replay, err)
 	}
 	// The short lease expires while mysql is deliberately delayed. Completion
@@ -343,11 +366,11 @@ func TestMySQLRestoreIntentAgainstDisposableEngines(t *testing.T) {
 	if err == nil {
 		t.Fatal("locked runtime account remained usable; restore credential split was not exercised")
 	}
-	if replay, err := control.PrepareClaimedMySQLRestoreFromRetained(ctx, stores[0], claim, request, secrets, retainedObjects, materializeDirectory); err != nil || !replay.Replayed {
+	if replay, err := control.PrepareClaimedMySQLRestoreFromRetained(ctx, stores[0], claim, request, secrets, recoveryObjects, materializeDirectory); err != nil || !replay.Replayed {
 		t.Fatalf("prepare replay with locked runtime account: %+v %v", replay, err)
 	}
 	runner := MySQLRestoreRunner{Control: control, Acceptance: stores[0], Secrets: secrets, ClaimLease: 120 * time.Millisecond,
-		Objects: retainedObjects, MaterializeDirectory: materializeDirectory,
+		Objects: recoveryObjects, MaterializeDirectory: materializeDirectory,
 		Tool: database.MySQLRestoreTool{Path: delayedTool, SHA256: fmt.Sprintf("%x", restoreSHA)}}
 	if err := runner.RunClaimed(ctx, claim); err != nil {
 		t.Fatalf("supervised MySQL restore: %v", err)
