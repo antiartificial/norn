@@ -157,6 +157,9 @@ func TestClaimedWordPressVerifiedTLSDeployInNomad(t *testing.T) {
 		t.Fatalf("rendered private CA variable was unavailable or did not match the trusted CA: %v", err)
 	}
 	wordpressDeployAssertAllocationPage(t, client, app, true)
+	if quiesceSource {
+		wordpressDeployInstall(t, client, app)
+	}
 	resolver, err := database.NewResolver(catalog)
 	if err != nil {
 		t.Fatal(err)
@@ -230,8 +233,9 @@ func TestClaimedWordPressVerifiedTLSDeployInNomad(t *testing.T) {
 			t.Fatalf("WordPress source intent after staging=%q, %v", sourceState, err)
 		}
 		staged, err := os.ReadFile(receipt.Receipt.ArtifactPath)
-		if err != nil || !bytes.Contains(staged, []byte("source-rehearsal")) {
-			t.Fatalf("staged SQL did not retain the disposable source marker: %v", err)
+		if err != nil || !bytes.Contains(staged, []byte("source-rehearsal")) ||
+			!bytes.Contains(staged, []byte("wp_options")) || !bytes.Contains(staged, []byte("wp_users")) {
+			t.Fatalf("staged SQL did not retain the WordPress tables and disposable source marker: %v", err)
 		}
 		return
 	}
@@ -434,6 +438,35 @@ func wordpressDeployRun(t *testing.T, db *store.DB, worker *OperationWorker, ope
 	}
 	t.Fatalf("operation %s did not finish: %v", operationID, ctx.Err())
 	return nil
+}
+
+func wordpressDeployInstall(t *testing.T, client *nomad.Client, jobID string) {
+	t.Helper()
+	allocations, _, err := client.API().Jobs().Allocations(jobID, false, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, allocation := range allocations {
+		if allocation.ClientStatus != "running" {
+			continue
+		}
+		full, _, err := client.API().Allocations().Info(allocation.ID, nil)
+		if err != nil {
+			t.Fatal(err)
+		}
+		const install = `chdir("/var/www/html"); require "wp-load.php"; require_once ABSPATH . "wp-admin/includes/upgrade.php"; if (!is_blog_installed()) { wp_install("Norn qualification", "norn_operator", "norn@example.invalid", false, "", "disposable-qualification-password"); } echo is_blog_installed() ? "installed" : "missing";`
+		var stdout, stderr bytes.Buffer
+		size := make(chan nomadapi.TerminalSize)
+		close(size)
+		ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+		exit, err := client.API().Allocations().Exec(ctx, full, "web", false, []string{"php", "-r", install}, strings.NewReader(""), &stdout, &stderr, size, nil)
+		cancel()
+		if err != nil || exit != 0 || !strings.Contains(stdout.String(), "installed") {
+			t.Fatalf("WordPress install in verified-TLS allocation failed: exit=%d err=%v output=%s", exit, err, strings.TrimSpace(stdout.String()+" "+stderr.String()))
+		}
+		return
+	}
+	t.Fatal("no running WordPress allocation available for installation")
 }
 
 func wordpressDeployAssertAllocationPage(t *testing.T, client *nomad.Client, jobID string, available bool) {
