@@ -295,6 +295,73 @@ func TestMySQLRuntimeLaunchReservationWaitsForConcurrentRestoreFence(t *testing.
 	}
 }
 
+func TestMySQLSourceStopRequiresExactLaunchedAllocation(t *testing.T) {
+	_, dbs := acceptanceIntegrationStores(t, 1)
+	db, ctx := dbs[0], context.Background()
+	active, err := db.ActivateDatabaseCatalog(ctx, 0, storeTestCatalog(), "source-launch-test")
+	if err != nil {
+		t.Fatal(err)
+	}
+	source := database.TargetIdentity{ServiceID: "mysql-source", ServiceGeneration: 1, BindingID: "source-binding", BindingGeneration: 1, Engine: database.EngineMySQL, Database: "wordpress", Role: "writer"}
+	job := validSourceSnapshotJobIdentity("wordpress", active.Revision, "7", "alloc-1")
+	reservationID := WordPressColdStartReservationID("deploy-operation", job.DeploymentID, job.SpecDigest)
+	if _, err := db.ReserveMySQLRuntimeLaunch(ctx, reservationID, []database.TargetIdentity{source}); err != nil {
+		t.Fatal(err)
+	}
+	if err := db.MarkMySQLRuntimeLaunchLaunched(ctx, reservationID, "alloc-1"); err != nil {
+		t.Fatal(err)
+	}
+	request := MySQLSourceSnapshotRequest{CatalogRevision: active.Revision, Source: source, JobIdentity: job, RuntimeLaunchReservationID: reservationID}
+	tx, err := db.Pool.Begin(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := lockMySQLCatalogGate(ctx, tx); err != nil {
+		t.Fatal(err)
+	}
+	wrong := request
+	wrong.JobIdentity.AllocationIDs = []string{"another-allocation"}
+	if err := verifyMySQLSourceRuntimeLaunch(ctx, tx, active.Catalog, wrong); !errors.Is(err, ErrMySQLSourceSnapshotFence) {
+		t.Fatalf("wrong allocation passed source admission: %v", err)
+	}
+	wrong = request
+	wrong.RuntimeLaunchReservationID = "wordpress-cold-start-wrong"
+	if err := verifyMySQLSourceRuntimeLaunch(ctx, tx, active.Catalog, wrong); !errors.Is(err, ErrMySQLSourceSnapshotFence) {
+		t.Fatalf("wrong launch reservation passed source admission: %v", err)
+	}
+	if err := verifyMySQLSourceRuntimeLaunch(ctx, tx, active.Catalog, request); err != nil {
+		t.Fatalf("exact launched allocation rejected: %v", err)
+	}
+	if err := stopClaimedMySQLSourceRuntimeLaunch(ctx, tx, wrong); !errors.Is(err, ErrMySQLSourceSnapshotFence) {
+		t.Fatalf("wrong launch reservation passed stop: %v", err)
+	}
+	if err := tx.Rollback(ctx); err != nil {
+		t.Fatal(err)
+	}
+	var state string
+	if err := db.Pool.QueryRow(ctx, `SELECT state FROM mysql_runtime_launch_reservations WHERE reservation_id=$1`, reservationID).Scan(&state); err != nil || state != "launched" {
+		t.Fatalf("rejected stop changed launch state: %q, %v", state, err)
+	}
+	tx, err = db.Pool.Begin(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer tx.Rollback(ctx)
+	if err := lockMySQLCatalogGate(ctx, tx); err != nil {
+		t.Fatal(err)
+	}
+	if err := stopClaimedMySQLSourceRuntimeLaunch(ctx, tx, request); err != nil {
+		t.Fatal(err)
+	}
+	if err := tx.Commit(ctx); err != nil {
+		t.Fatal(err)
+	}
+	var proof []byte
+	if err := db.Pool.QueryRow(ctx, `SELECT state,stop_proof FROM mysql_runtime_launch_reservations WHERE reservation_id=$1`, reservationID).Scan(&state, &proof); err != nil || state != "stopped" || len(proof) == 0 {
+		t.Fatalf("exact stop lacked durable proof: state=%q proof=%q err=%v", state, proof, err)
+	}
+}
+
 func seedMySQLRestoreFence(t *testing.T, db *DB, operationID string, source, target database.TargetIdentity) {
 	t.Helper()
 	ctx := context.Background()
