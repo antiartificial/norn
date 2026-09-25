@@ -47,7 +47,10 @@ func (p *Pipeline) QueueRollback(ctx context.Context, spec *model.InfraSpec, cur
 		SourceChanges: prev.SourceChanges,
 		StartedAt:     started,
 	}
-	regions := selectedResolvedRegions(spec, requestedRegions)
+	regions, err := completeRollbackRegions(spec, requestedRegions)
+	if err != nil {
+		return store.AcceptedOperation{}, err
+	}
 
 	operationID := uuid.NewString()
 	payload := map[string]interface{}{
@@ -97,10 +100,13 @@ func (p *Pipeline) QueueRollback(ctx context.Context, spec *model.InfraSpec, cur
 
 func (p *Pipeline) runRollback(ctx context.Context, op *model.Operation, spec *model.InfraSpec, deploy *model.Deployment, sg *saga.Saga, imageTag string, claim store.OperationClaim, attempt int, requestedRegions []string) *OperationResult {
 	operationID := claim.OperationID()
-	regions := selectedResolvedRegions(spec, requestedRegions)
+	regions, regionErr := completeRollbackRegions(spec, requestedRegions)
 	var startErr error
 	failureBody := "Rollback could not start because Nomad is not connected."
-	if !rollbackIntentMatchesDeployment(op, spec, deploy, imageTag) {
+	if regionErr != nil {
+		startErr = regionErr
+		failureBody = "Rollback was blocked because its region selection cannot represent a whole-app deployment."
+	} else if !rollbackIntentMatchesDeployment(op, spec, deploy, imageTag) {
 		startErr = fmt.Errorf("rollback signed intent does not match deployment")
 		failureBody = "Rollback was blocked because its accepted intent no longer matches the deployment."
 	} else if len(regions) == 0 {
@@ -299,4 +305,28 @@ func selectedResolvedRegions(spec *model.InfraSpec, requested []string) []model.
 		}
 	}
 	return selected
+}
+
+// A successful rollback is currently recorded as the app's active deployment.
+// Until the deployment model has regional lineage, every declared region must
+// be restored together; a subset cannot truthfully become that active row.
+func completeRollbackRegions(spec *model.InfraSpec, requested []string) ([]model.ResolvedRegion, error) {
+	all := spec.ResolvedRegions()
+	if len(requested) == 0 {
+		return all, nil
+	}
+	selected := selectedResolvedRegions(spec, requested)
+	if len(selected) != len(all) {
+		return nil, fmt.Errorf("partial regional rollback requires regional deployment lineage")
+	}
+	declared := make(map[string]bool, len(all))
+	for _, region := range all {
+		declared[region.Name] = true
+	}
+	for _, name := range requested {
+		if !declared[name] {
+			return nil, fmt.Errorf("rollback region %q is not declared", name)
+		}
+	}
+	return all, nil
 }
