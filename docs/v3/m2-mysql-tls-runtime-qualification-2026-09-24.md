@@ -36,3 +36,39 @@ verification. Stock WordPress must reject the wrong CA through a supported
 client hook before its MySQL TLS runtime can be qualified. Client-certificate
 authentication, `verify-ca` behavior, production MySQL backup/restore, and a
 release rollout also remain open.
+
+## WordPress `db.php` hook qualification — 2026-09-24
+
+WordPress 6.8.2's `require_wp_db()` loads `wp-content/db.php` after
+`class-wpdb.php` and before it creates the global `$wpdb`. Norn's small,
+version-pinned qualification drop-in subclasses that loaded `wpdb` class. It
+sets `MYSQLI_OPT_SSL_VERIFY_SERVER_CERT`, supplies the allocation-private CA
+file to `mysqli_ssl_set`, and calls `mysqli_real_connect` with
+`MYSQLI_CLIENT_SSL`; therefore the connection uses MySQLi's normal chain and
+server-name verification rather than an application-side allowlist.
+
+The opt-in Nomad test rendered both the Norn revisioned CA template and the
+static drop-in into a disposable allocation, copied the drop-in to
+`wp-content/db.php` before the official image entrypoint, and exercised the
+normal HTTP installation route. Against disposable MySQL 8.4 with
+`require_secure_transport=ON` and a certificate valid for
+`host.docker.internal`, the correct CA returned the installation page. The
+WordPress image was `wordpress:6.8.2-php8.3-apache` at local digest
+`sha256:09ac1315368f234db7559e4f9dcca3178a5efc6f2193b88289252abe18551522`;
+the tested drop-in SHA-256 was
+`498b2a8b79d93172bfedb5fc17cd0ec25160262a3daddba37f76107d2a1fa6d1`.
+A second allocation with an unrelated CA returned WordPress's “Error
+establishing a database connection” page. A third allocation used the trusted
+CA but a reachable endpoint name outside the server certificate SAN. Its
+startup first completed a credential-free TCP connection to that same host and
+port, then WordPress returned that same failure page. The uniquely named jobs
+and their Nomad variables were removed by the test.
+
+This proves the supported WordPress hook plus CA and hostname-mismatch
+negative controls. It does not yet prove an operator-declared InfraSpec can
+select the startup wrapper, that persistent WordPress content storage
+preserves the managed drop-in, or
+that all WordPress images use the same entrypoint and MySQLi implementation.
+The database resolver's MySQL verified-runtime gate remains closed. Enabling
+it requires reviewed product wiring for those boundaries plus repeated
+allocation qualification against the exact supported image digest.

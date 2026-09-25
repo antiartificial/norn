@@ -300,6 +300,12 @@ register_shutdown_function(function () {
 });`
 
 func registerStockWordPressTLSJob(t *testing.T, client *Client, host, user, password, name string, ca []byte, port int) string {
+	return registerStockWordPressTLSJobWithMutation(t, client, host, user, password, name, ca, port, nil)
+}
+
+// registerStockWordPressTLSJobWithMutation changes only this disposable test
+// job before its first registration. Production translation remains untouched.
+func registerStockWordPressTLSJobWithMutation(t *testing.T, client *Client, host, user, password, name string, ca []byte, port int, mutate func(*nomadapi.Job)) string {
 	t.Helper()
 	app := fmt.Sprintf("norn-stock-wordpress-tls-%d", time.Now().UnixNano())
 	spec := &model.InfraSpec{SchemaVersion: model.AppSchemaV2, App: app,
@@ -317,6 +323,9 @@ func registerStockWordPressTLSJob(t *testing.T, client *Client, host, user, pass
 	// Docker networking and private database templates intact.
 	job.TaskGroups[0].Services = nil
 	job.TaskGroups[0].Tasks[0].Config["force_pull"] = false
+	if mutate != nil {
+		mutate(job)
+	}
 	t.Cleanup(func() {
 		_, _, _ = client.api.Jobs().Deregister(jobID, true, nil)
 		_, _ = client.api.Variables().Delete(DatabaseVariablePath(jobID), nil)
@@ -388,6 +397,120 @@ func TestStockWordPressRejectsWrongCAInNomad(t *testing.T) {
 		time.Sleep(time.Second)
 	}
 	t.Fatal("wrong-CA WordPress did not give decisive database connection evidence")
+}
+
+// TestWordPressVerifiedTLSDropInInNomad qualifies the supported WordPress
+// db.php extension hook against a disposable TLS MySQL server. The positive
+// allocation reaches the real installation page. Both an unrelated CA and a
+// trusted-CA hostname mismatch must render WordPress's database-connection
+// failure page over HTTP. The adapter is deliberately a qualification
+// artifact: database's resolver gate remains closed until a production
+// InfraSpec-to-startup wiring is reviewed.
+func TestWordPressVerifiedTLSDropInInNomad(t *testing.T) {
+	address := os.Getenv("NORN_TEST_NOMAD_ADDR")
+	host, user, password, name := os.Getenv("NORN_TEST_MYSQL_ALLOCATION_HOST"), os.Getenv("NORN_TEST_MYSQL_USER"), os.Getenv("NORN_TEST_MYSQL_PASSWORD"), os.Getenv("NORN_TEST_MYSQL_DATABASE")
+	ca, hasCA := qualificationPEM(t, "NORN_TEST_MYSQL_TLS_CA_PEM_B64")
+	wrongCA, hasWrongCA := qualificationPEM(t, "NORN_TEST_MYSQL_TLS_WRONG_CA_PEM_B64")
+	wrongHost := os.Getenv("NORN_TEST_MYSQL_TLS_WRONG_HOST")
+	goodPort, goodPortErr := strconv.Atoi(os.Getenv("NORN_TEST_WORDPRESS_HOST_PORT"))
+	wrongCAPort, wrongCAPortErr := strconv.Atoi(os.Getenv("NORN_TEST_WORDPRESS_WRONG_CA_HOST_PORT"))
+	wrongHostPort, wrongHostPortErr := strconv.Atoi(os.Getenv("NORN_TEST_WORDPRESS_WRONG_HOST_HOST_PORT"))
+	if address == "" || host == "" || wrongHost == "" || user == "" || password == "" || name == "" || !hasCA || !hasWrongCA || goodPortErr != nil || wrongCAPortErr != nil || wrongHostPortErr != nil || goodPort < 1 || wrongCAPort < 1 || wrongHostPort < 1 || goodPort > 65535 || wrongCAPort > 65535 || wrongHostPort > 65535 || goodPort == wrongCAPort || goodPort == wrongHostPort || wrongCAPort == wrongHostPort {
+		t.Skip("set disposable Nomad/MySQL TLS variables, both CA values, a trusted-CA wrong host, and three WordPress host ports for db.php qualification")
+	}
+	client, err := NewClient(address)
+	if err != nil {
+		t.Fatal(err)
+	}
+	goodJob := registerWordPressVerifiedTLSDropInJob(t, client, host, user, password, name, ca, goodPort)
+	assertWordPressDatabasePage(t, client, goodJob, goodPort, true, "verified")
+	wrongCAJob := registerWordPressVerifiedTLSDropInJob(t, client, host, user, password, name, wrongCA, wrongCAPort)
+	assertWordPressDatabasePage(t, client, wrongCAJob, wrongCAPort, false, "wrong-CA")
+	wrongHostJob := registerWordPressVerifiedTLSDropInJob(t, client, wrongHost, user, password, name, ca, wrongHostPort)
+	assertWordPressDatabasePage(t, client, wrongHostJob, wrongHostPort, false, "hostname-mismatch")
+}
+
+func registerWordPressVerifiedTLSDropInJob(t *testing.T, client *Client, host, user, password, name string, ca []byte, port int) string {
+	t.Helper()
+	dropIn, err := os.ReadFile("wordpress_verified_tls_db.php")
+	if err != nil {
+		t.Fatal(err)
+	}
+	data := string(dropIn)
+	return registerStockWordPressTLSJobWithMutation(t, client, host, user, password, name, ca, port, func(job *nomadapi.Job) {
+		task := job.TaskGroups[0].Tasks[0]
+		task.Templates = append(task.Templates, &nomadapi.Template{EmbeddedTmpl: &data, DestPath: strPtr("local/norn-wordpress/db.php"), Perms: strPtr("0444"), ChangeMode: strPtr("restart"), ErrMissingKey: boolPtr(true)})
+		startup := "install -D -m 0444 /local/norn-wordpress/db.php /var/www/html/wp-content/db.php\nexec /usr/local/bin/docker-entrypoint.sh apache2-foreground"
+		task.Config["command"] = "/bin/sh"
+		// The hostname negative uses a Docker host-gateway alias so the TLS
+		// handshake reaches the same server through a name outside its SAN. A
+		// credential-free TCP preflight makes a later WordPress failure evidence
+		// of TLS name verification rather than an unreachable endpoint.
+		if strings.HasPrefix(host, "mysql-mismatch:") {
+			task.Config["extra_hosts"] = []string{"mysql-mismatch:host-gateway"}
+			preflight := `#!/bin/sh
+set -eu
+host="${WORDPRESS_DB_HOST%:*}"
+port="${WORDPRESS_DB_HOST##*:}"
+php -r '$socket = @fsockopen($argv[1], (int) $argv[2], $errno, $errstr, 5); if (!$socket) { fwrite(STDERR, "norn-tls-preflight-unreachable\n"); exit(97); } fclose($socket);' "$host" "$port"
+echo norn-tls-preflight-reachable >&2
+`
+			task.Templates = append(task.Templates, &nomadapi.Template{EmbeddedTmpl: &preflight, DestPath: strPtr("local/norn-wordpress/preflight.sh"), Perms: strPtr("0555"), ChangeMode: strPtr("restart"), ErrMissingKey: boolPtr(true)})
+			startup = "sh /local/norn-wordpress/preflight.sh\n" + startup
+		}
+		task.Config["args"] = []string{"-ec", startup}
+	})
+}
+
+func assertWordPressDatabasePage(t *testing.T, client *Client, jobID string, port int, available bool, control string) {
+	t.Helper()
+	pageURL := fmt.Sprintf("http://127.0.0.1:%d/wp-admin/install.php", port)
+	httpClient := &http.Client{Timeout: 5 * time.Second}
+	deadline := time.Now().Add(120 * time.Second)
+	for time.Now().Before(deadline) {
+		allocations, _, err := client.api.Jobs().Allocations(jobID, false, nil)
+		if err != nil {
+			t.Fatal(err)
+		}
+		for _, allocation := range allocations {
+			if allocation.ClientStatus == "failed" || allocation.ClientStatus == "lost" {
+				if state := allocation.TaskStates["web"]; state != nil {
+					t.Fatalf("WordPress db.php allocation %s: %s (%s)", allocation.ID, allocation.ClientDescription, taskEventSummary(state.Events))
+				}
+				t.Fatalf("WordPress db.php allocation %s: %s", allocation.ID, allocation.ClientDescription)
+			}
+		}
+		response, err := httpClient.Get(pageURL)
+		if err == nil {
+			body, readErr := io.ReadAll(io.LimitReader(response.Body, 256<<10))
+			_ = response.Body.Close()
+			if readErr == nil {
+				text := string(body)
+				if available && response.StatusCode == http.StatusOK && strings.Contains(text, "WordPress") && !strings.Contains(text, "Error establishing a database connection") {
+					return
+				}
+				if !available && strings.Contains(text, "Error establishing a database connection") {
+					return
+				}
+			}
+		}
+		time.Sleep(time.Second)
+	}
+	if available {
+		t.Fatalf("%s WordPress db.php allocation did not reach its installation page", control)
+	}
+	t.Fatalf("%s WordPress db.php allocation did not reject its database connection over HTTP", control)
+}
+
+func taskEventSummary(events []*nomadapi.TaskEvent) string {
+	parts := make([]string, 0, len(events))
+	for _, event := range events {
+		if event == nil {
+			continue
+		}
+		parts = append(parts, strings.TrimSpace(event.Type+": "+event.DisplayMessage+" "+event.Message))
+	}
+	return strings.Join(parts, "; ")
 }
 
 func qualificationPEM(t *testing.T, name string) ([]byte, bool) {
