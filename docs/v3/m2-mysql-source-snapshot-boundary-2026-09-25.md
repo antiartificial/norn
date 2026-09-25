@@ -35,6 +35,15 @@ rechecks the signed metadata, version, modify index, and allocation set before
 mutation, then verifies the exact stopped revision. The stop passed against
 disposable Nomad 2.0.7; full source-to-restore qualification remains open.
 
+Before observing Nomad or accepting that operation, admission also requires
+the deployed catalog revision to remain active and the selected maintenance
+identity to match the exact resolved source binding. An unbound snapshot
+credential and a later catalog revision are rejected by the store integration
+test. The opt-in WordPress deployment test now carries its successful signed
+deployment through private source admission with a live Nomad observer, but
+that added path has not completed a Docker/TLS runtime run: the disposable
+MySQL container could not initialize because Docker storage was full.
+
 `quiesce-intended` is a reservation, **not** a write-stop proof. Before a
 snapshot can be accepted for restore, the signed stop and account-lock proofs,
 staged artifact, and service-signed receipt must be bound to a separate signed

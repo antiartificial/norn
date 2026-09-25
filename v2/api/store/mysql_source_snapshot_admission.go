@@ -113,6 +113,20 @@ func (db *DB) BuildMySQLSourceSnapshotRequest(ctx context.Context, acceptance *P
 	if err != nil {
 		return MySQLSourceSnapshotRequest{}, err
 	}
+	active, err := db.ActiveDatabaseCatalog(ctx)
+	if err != nil || active.Revision != binding.CatalogRevision {
+		return MySQLSourceSnapshotRequest{}, ErrMySQLSourceSnapshotFence
+	}
+	resolver, err := database.NewResolver(active.Catalog)
+	if err != nil {
+		return MySQLSourceSnapshotRequest{}, ErrMySQLSourceSnapshotFence
+	}
+	resolved, err := resolver.Resolve(database.ResolveRequest{DeploymentProfileID: binding.ProfileID,
+		Purpose: database.PurposeApplication, LogicalResourceID: binding.LogicalID, Expected: &binding.Source})
+	if err != nil || resolved.MySQLMaintenance == nil || *resolved.MySQLMaintenance != input.Maintenance ||
+		input.Maintenance.SnapshotRole == "" || input.Maintenance.SnapshotCredentialRef == "" {
+		return MySQLSourceSnapshotRequest{}, ErrMySQLSourceSnapshotFence
+	}
 	want := nomad.MySQLSourceJobObservationRequest{
 		App: binding.App, DeploymentID: binding.DeploymentID, SpecDigest: binding.SpecDigest, Region: binding.Region,
 		NomadRegion: binding.NomadRegion, DatabaseBindingSchema: binding.DatabaseBindingSchema,

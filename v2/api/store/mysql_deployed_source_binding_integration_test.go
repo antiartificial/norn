@@ -28,7 +28,21 @@ func TestVerifySignedDeployedMySQLSourceBinding(t *testing.T) {
 	ctx := context.Background()
 	specDigest := "sha256:" + strings.Repeat("a", 64)
 	source := database.TargetIdentity{ServiceID: "mysql-primary", ServiceGeneration: 3, BindingID: "wordpress-primary", BindingGeneration: 5, Engine: database.EngineMySQL, Database: "wordpress", Role: "wordpress_runtime"}
-	targetSet := mysqlDeployedTargetSet{Schema: mysqlDeployedDatabaseTargetsSchema, ProfileID: "mini", CatalogRevision: 29,
+	maintenance := database.MySQLMaintenanceCredentials{Generation: 1, RuntimeAccountHost: "%", SnapshotRole: "snapshot", SnapshotAccountHost: "%", SnapshotCredentialRef: "secret:snapshot",
+		RestoreRole: "restore", RestoreAccountHost: "%", RestoreCredentialRef: "secret:restore", FenceRole: "fence", FenceAccountHost: "%", FenceCredentialRef: "secret:fence"}
+	catalog := storeTestCatalog()
+	catalog.Services = append(catalog.Services, database.DatabaseService{APIVersion: database.APIVersion, ID: source.ServiceID, Generation: source.ServiceGeneration,
+		Purpose: database.PurposeApplication, Engine: database.EngineMySQL, EngineVersion: "8.4", ProviderRef: "local:mysql-primary",
+		Endpoint: database.DatabaseEndpoint{Host: "127.0.0.1", Port: 3306}, Topology: database.DatabaseTopology{Mode: database.TopologyLocalShared, AvailabilityClass: database.AvailabilitySingleHost},
+		TLS: database.DatabaseTLSPolicy{MinimumMode: database.TLSDisabled}, Recovery: database.RecoveryPolicy{Capabilities: []database.Capability{database.CapabilitySnapshot, database.CapabilityRestore}}})
+	catalog.Bindings = append(catalog.Bindings, database.DatabaseBinding{APIVersion: database.APIVersion, ID: source.BindingID, ServiceID: source.ServiceID,
+		Database: source.Database, Role: source.Role, Generation: source.BindingGeneration, CredentialRef: "secret:runtime", TLS: database.DatabaseTLS{Mode: database.TLSDisabled}, MySQLMaintenance: &maintenance})
+	catalog.Profiles[0].DatabaseBindings["primary"] = source.BindingID
+	active, err := db.ActivateDatabaseCatalog(ctx, 0, catalog, "source-admission-test")
+	if err != nil {
+		t.Fatal(err)
+	}
+	targetSet := mysqlDeployedTargetSet{Schema: mysqlDeployedDatabaseTargetsSchema, ProfileID: "mini", CatalogRevision: active.Revision,
 		Targets: []mysqlDeployedNamedTarget{{Name: "primary", Target: source}}}
 	encoded, err := json.Marshal(targetSet)
 	if err != nil {
@@ -56,7 +70,7 @@ func TestVerifySignedDeployedMySQLSourceBinding(t *testing.T) {
 		t.Fatal(err)
 	}
 	request := MySQLDeployedSourceBindingRequest{DeploymentID: accepted.Deployment.ID, App: "wordpress", SpecDigest: specDigest,
-		Region: "west", NomadRegion: "global", ProfileID: "mini", LogicalID: "primary", CatalogRevision: 29, Source: source}
+		Region: "west", NomadRegion: "global", ProfileID: "mini", LogicalID: "primary", CatalogRevision: active.Revision, Source: source}
 	binding, err := db.VerifySignedDeployedMySQLSourceBinding(ctx, acceptedStore, request)
 	if err != nil {
 		t.Fatal(err)
@@ -71,10 +85,19 @@ func TestVerifySignedDeployedMySQLSourceBinding(t *testing.T) {
 			NomadRegion: want.NomadRegion, JobID: want.App, JobVersion: "8", JobModifyIndex: "44", AllocationIDs: []string{"alloc-1"},
 			DatabaseBindingSchema: want.DatabaseBindingSchema, DatabaseBindingSHA256: want.DatabaseBindingSHA256, DatabaseCatalogRevision: want.DatabaseCatalogRevision}, nil
 	})
-	maintenance := database.MySQLMaintenanceCredentials{Generation: 1, SnapshotRole: "snapshot", SnapshotAccountHost: "%", SnapshotCredentialRef: "secret:snapshot"}
 	snapshot, err := db.BuildMySQLSourceSnapshotRequest(ctx, acceptedStore, observer, MySQLSourceSnapshotAdmissionRequest{Binding: request, Maintenance: maintenance, DumpToolSHA256: strings.Repeat("d", 64)})
 	if err != nil || snapshot.JobIdentity.DeploymentID != accepted.Deployment.ID || snapshot.JobIdentity.JobVersion != "8" || snapshot.JobIdentity.JobModifyIndex != "44" {
 		t.Fatalf("snapshot=%+v err=%v", snapshot, err)
+	}
+	wrongMaintenance := maintenance
+	wrongMaintenance.SnapshotCredentialRef = "secret:unbound-snapshot"
+	noObservationForInvalidMaintenance := mysqlSourceObserverFunc(func(context.Context, nomad.MySQLSourceJobObservationRequest) (nomad.MySQLSourceJobObservation, error) {
+		t.Fatal("unbound maintenance identity reached Nomad observation")
+		return nomad.MySQLSourceJobObservation{}, nil
+	})
+	if _, err := db.BuildMySQLSourceSnapshotRequest(ctx, acceptedStore, noObservationForInvalidMaintenance,
+		MySQLSourceSnapshotAdmissionRequest{Binding: request, Maintenance: wrongMaintenance, DumpToolSHA256: strings.Repeat("d", 64)}); !errors.Is(err, ErrMySQLSourceSnapshotFence) {
+		t.Fatalf("unbound snapshot credential was accepted: %v", err)
 	}
 	snapshotAcceptanceInput := MySQLSourceSnapshotAcceptanceInput{
 		Selection: MySQLSourceSnapshotAdmissionRequest{Binding: request, Maintenance: maintenance, DumpToolSHA256: strings.Repeat("d", 64)},
@@ -129,6 +152,13 @@ func TestVerifySignedDeployedMySQLSourceBinding(t *testing.T) {
 				t.Fatalf("unsafe binding err=%v", err)
 			}
 		})
+	}
+	if _, err := db.ActivateDatabaseCatalog(ctx, active.Revision, catalog, "source-admission-rotate"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := db.BuildMySQLSourceSnapshotRequest(ctx, acceptedStore, noObservationForInvalidMaintenance,
+		MySQLSourceSnapshotAdmissionRequest{Binding: request, Maintenance: maintenance, DumpToolSHA256: strings.Repeat("d", 64)}); !errors.Is(err, ErrMySQLSourceSnapshotFence) {
+		t.Fatalf("stale catalog revision was accepted for source snapshot: %v", err)
 	}
 }
 

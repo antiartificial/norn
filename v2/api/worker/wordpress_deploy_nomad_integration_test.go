@@ -4,6 +4,8 @@ import (
 	"bytes"
 	"context"
 	"encoding/base64"
+	"encoding/json"
+	"errors"
 	"fmt"
 	"net"
 	"net/url"
@@ -142,6 +144,37 @@ func TestClaimedWordPressVerifiedTLSDeployInNomad(t *testing.T) {
 		t.Fatalf("rendered private CA variable was unavailable or did not match the trusted CA: %v", err)
 	}
 	wordpressDeployAssertAllocationPage(t, client, app, true)
+	resolver, err := database.NewResolver(catalog)
+	if err != nil {
+		t.Fatal(err)
+	}
+	source, err := resolver.Resolve(database.ResolveRequest{DeploymentProfileID: "qualification", Purpose: database.PurposeApplication, LogicalResourceID: "primary"})
+	if err != nil || len(accepted.Regions) != 1 || source.MySQLMaintenance == nil {
+		t.Fatalf("deployed WordPress source binding unavailable: %v", err)
+	}
+	selection := store.MySQLSourceSnapshotAdmissionRequest{Binding: store.MySQLDeployedSourceBindingRequest{
+		DeploymentID: deployment.ID, App: app, SpecDigest: deployment.SpecDigest,
+		Region: accepted.Regions[0].Name, NomadRegion: accepted.Regions[0].NomadRegion,
+		ProfileID: "qualification", LogicalID: "primary", CatalogRevision: 1, Source: source.Target},
+		Maintenance: *source.MySQLMaintenance, DumpToolSHA256: strings.Repeat("d", 64)}
+	wrongMaintenance := selection
+	wrongMaintenance.Maintenance.SnapshotCredentialRef = "secret:wp/unbound-snapshot"
+	if _, err := db.AcceptPrivateMySQLSourceSnapshot(context.Background(), operations, client,
+		store.MySQLSourceSnapshotAcceptanceInput{Selection: wrongMaintenance, Actor: request.Actor, Key: "wordpress-unbound-source"}); !errors.Is(err, store.ErrMySQLSourceSnapshotFence) {
+		t.Fatalf("unbound source snapshot credential was accepted: %v", err)
+	}
+	sourceAccepted, err := db.AcceptPrivateMySQLSourceSnapshot(context.Background(), operations, client,
+		store.MySQLSourceSnapshotAcceptanceInput{Selection: selection, Actor: request.Actor, Key: "wordpress-bound-source",
+			Audit: store.AcceptanceAuditContext{Source: "wordpress-deploy-nomad-integration"}})
+	if err != nil {
+		t.Fatalf("deployed WordPress source snapshot admission: %v", err)
+	}
+	var sourceRequest store.MySQLSourceSnapshotRequest
+	encodedSource, err := json.Marshal(sourceAccepted.Operation.Payload)
+	if err != nil || json.Unmarshal(encodedSource, &sourceRequest) != nil || sourceAccepted.Intent.Signature.Value == "" ||
+		sourceRequest.JobIdentity.JobID != app || len(sourceRequest.JobIdentity.AllocationIDs) == 0 || sourceRequest.Source != source.Target {
+		t.Fatalf("signed deployed WordPress source identity was incomplete: %v", err)
+	}
 
 	// Rotate only the private CA reference. The target identity remains the
 	// same, but the control-plane session verifies the new CA before it ever
@@ -295,14 +328,21 @@ func writeDeploySecret(t *testing.T, root, name string, content []byte) {
 }
 
 func wordpressDeployCatalog(host string, port int, role, databaseName, caRef string) database.Catalog {
+	maintenance := wordpressDeployMySQLMaintenance()
 	return database.Catalog{APIVersion: database.APIVersion,
 		Services: []database.DatabaseService{{APIVersion: database.APIVersion, ID: "wp-mysql", Generation: 1, Purpose: database.PurposeApplication, Engine: database.EngineMySQL, EngineVersion: "8.4", ProviderRef: "disposable:mysql",
 			Endpoint: database.DatabaseEndpoint{Host: host, Port: port}, Topology: database.DatabaseTopology{Mode: database.TopologyLocalShared, AvailabilityClass: database.AvailabilitySingleHost},
-			TLS: database.DatabaseTLSPolicy{MinimumMode: database.TLSVerifyFull}, Recovery: database.RecoveryPolicy{Capabilities: []database.Capability{database.CapabilityRuntime}}}},
+			TLS: database.DatabaseTLSPolicy{MinimumMode: database.TLSVerifyFull}, Recovery: database.RecoveryPolicy{Capabilities: []database.Capability{database.CapabilityRuntime, database.CapabilitySnapshot, database.CapabilityRestore}}}},
 		Bindings: []database.DatabaseBinding{{APIVersion: database.APIVersion, ID: "wp-primary", ServiceID: "wp-mysql", Database: databaseName, Role: role, Generation: 1, CredentialRef: "secret:wp/password",
-			TLS: database.DatabaseTLS{Mode: database.TLSVerifyFull, ServerName: host, CARef: caRef}}},
+			TLS: database.DatabaseTLS{Mode: database.TLSVerifyFull, ServerName: host, CARef: caRef}, MySQLMaintenance: &maintenance}},
 		Profiles: []database.DeploymentProfile{{APIVersion: database.APIVersion, ID: "qualification", Topology: database.DeploymentTopologyLocal, AvailabilityClass: database.AvailabilitySingleHost, DatabaseBindings: map[string]string{"primary": "wp-primary"}}},
 	}
+}
+
+func wordpressDeployMySQLMaintenance() database.MySQLMaintenanceCredentials {
+	return database.MySQLMaintenanceCredentials{Generation: 1, RuntimeAccountHost: "%", SnapshotRole: "wp_snapshot", SnapshotAccountHost: "%",
+		SnapshotCredentialRef: "secret:wp/snapshot", RestoreRole: "wp_restore", RestoreAccountHost: "%",
+		RestoreCredentialRef: "secret:wp/restore", FenceRole: "wp_fence", FenceAccountHost: "%", FenceCredentialRef: "secret:wp/fence"}
 }
 
 func wordpressDeployRun(t *testing.T, db *store.DB, worker *OperationWorker, operationID string) *model.Operation {
