@@ -390,13 +390,13 @@ func main() {
 	}
 	functionV3Admission, functionV3Worker, err := configureFunctionV3(cfg, db, pipe, nomadClient, sec, h.OperationStore())
 	if err != nil {
-		log.Fatalf("function v3 preview startup: %v", err)
+		log.Fatalf("function v3 startup: %v", err)
 	}
 	if functionV3Worker != nil && os.Getenv("NORN_SKIP_OPERATION_WORKER") == "true" {
-		log.Fatal("function v3 preview requires the claimed operation worker")
+		log.Fatal("function v3 requires the claimed operation worker")
 	}
 	if functionV3Worker != nil && evidenceArchiver == nil {
-		log.Fatal("function v3 preview requires an evidence archiver")
+		log.Fatal("function v3 requires an evidence archiver")
 	}
 
 	workerCtx, workerCancel := context.WithCancel(context.Background())
@@ -658,11 +658,11 @@ func main() {
 			r.Post("/cron/pause", h.CronPause)
 			r.Post("/cron/resume", h.CronResume)
 			r.Put("/cron/schedule", h.CronUpdateSchedule)
-			if functionV3Admission != nil {
-				r.Post("/invoke", functionV3Admission)
-			} else {
-				r.Post("/invoke", h.InvokeFunction)
-			}
+			// Function invocation has one execution boundary: signed acceptance
+			// followed by the claimed worker. An incomplete capability is an
+			// explicit unavailable endpoint; it must never fall back to the
+			// legacy HTTP-to-Nomad submission path.
+			r.Post("/invoke", functionInvocationRoute(functionV3Admission))
 			r.Get("/function/history", h.FunctionHistory)
 			r.Get("/canary", h.CanaryStatus)
 			r.Post("/promote", h.PromoteCanary)
