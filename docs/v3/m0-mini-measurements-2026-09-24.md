@@ -128,3 +128,13 @@ The interval covers one calendar day at this workload, but no workload-cycle
 classification or timed current-head backup/restore evidence establishes those
 other budgets. Recheck the trend after a representative cycle and review the
 numeric objectives before release approval.
+
+At 2026-09-25 18:44 UTC, a read-only PostgreSQL 17.7 custom-format
+`pg_dump --no-owner --no-privileges` of `norn_v2` streamed directly to a byte
+count on Mini. It emitted **13,163,661 bytes** and completed in **0.82 seconds**
+wall time (`user 0.69`, `sys 0.02`). The shell used `pipefail`; the dump
+process and byte count both exited successfully. No archive bytes or rows were
+copied to this checkout, and the temporary timing text on Mini was removed.
+This measures backup extraction under the observed load. It does not measure
+durable protected-backup publication, retention cost, restore time, validation,
+or application recovery, so it is not an RPO or RTO result.
