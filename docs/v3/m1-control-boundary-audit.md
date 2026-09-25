@@ -126,3 +126,16 @@ remaining real-host and two-process gates. The ContextDB feedback rollback route
 without contacting its remote service. The P1 PostgreSQL aggregate roots
 remain a barrier to a full etcd Fleet API. M1 is still open, including literal
 process crashes and two-replica races for the newly converted effects.
+
+The legacy `RestoreSnapshot` handler now queues `app.snapshot-restore` through
+the same signed durable operation as the versioned restore route; the original
+`pg_restore`-inline row above is historical. Snapshot **export and import**
+remain current inline effects: `handler/snapshots.go` invokes
+`pipeline.ExportTargetSnapshot` and `pipeline.ImportTargetSnapshot` in the
+request path. Export uploads a verified dump followed by its manifest under a
+stable key; a retry after a lost response can upload another manifest version
+with a new `ExportedAt`. Import downloads the manifest and dump and publishes
+the local sidecar/dump pair. Both need an accepted, claim-fenced operation and
+an explicit existing-object/recovery result before they qualify for M1. The
+current target/provenance and digest checks prevent a wrong-target import, but
+they do not make the HTTP effect durable across an ambiguous response.
