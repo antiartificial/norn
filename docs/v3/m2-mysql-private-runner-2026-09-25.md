@@ -219,3 +219,13 @@ unlock, and fence release. `NORN_TEST_NOMAD_ADDR` was unset, so its stopped-sour
 observer was a test fixture; this run did not qualify the concrete Nomad path.
 The container and scratch directory were absent after the run. The provider,
 separate-node, managed WordPress, and live Mini gates above remain open.
+
+A second current-branch run enabled `NORN_TEST_NOMAD_ADDR` against a disposable
+Nomad 2.0.7 development agent with `raw_exec`. The same restore integration
+test passed in 4.35 seconds, this time registering a uniquely named source
+job, binding its observed version, modify index, and allocation to the signed
+request, performing the guarded stop, and using the concrete read-only Nomad
+observer through recovery. The agent, MySQL container, PostgreSQL instance,
+and their scoped scratch data were absent after the run. This qualifies the
+disposable raw-exec source path; it is not a managed WordPress allocation or
+proof of separate-host isolation.
