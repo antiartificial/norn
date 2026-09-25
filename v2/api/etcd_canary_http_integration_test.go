@@ -78,7 +78,12 @@ func TestEtcdCanaryHTTPAdmissionReplaysAcrossTokenRotationAndRunsWorker(t *testi
 			_ = json.NewEncoder(w).Encode(map[string]string{"EvalID": "eval-1"})
 		case r.Method == http.MethodGet && r.URL.Path == "/v1/deployment/deployment-accepted":
 			if !promoted.Load() {
-				http.Error(w, "not promoted", http.StatusConflict)
+				healthyCount := 0
+				if healthy.Load() {
+					healthyCount = 1
+				}
+				_ = json.NewEncoder(w).Encode(&nomadapi.Deployment{ID: "deployment-accepted", JobID: "widgets", Status: "running",
+					TaskGroups: map[string]*nomadapi.DeploymentState{"web": {DesiredCanaries: 1, PlacedCanaries: []string{"alloc-1"}, HealthyAllocs: healthyCount}}})
 				return
 			}
 			_ = json.NewEncoder(w).Encode(&nomadapi.Deployment{ID: "deployment-accepted", JobID: "widgets", Status: "successful",
