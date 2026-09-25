@@ -130,8 +130,10 @@ into #76 and closed. These are review containers, not milestone signoff.
   A separate local Nomad 2.0.7 and etcd 3.5.17 test promoted the exact real
   healthy canary deployment. An earlier 0/1-healthy attempt exposed a gap:
   Nomad rejected promotion and the accepted operation stayed pending. Admission
-  for unready canaries, process-crash, and three-member etcd fault qualification
-  remain open before enabling that preview for release; see
+  now rejects an unready canary before durable acceptance, allowing the same
+  key to be retried after health. Health can still fall between acceptance and
+  Nomad submission, so that race, process-crash, and three-member etcd fault
+  qualification remain open before enabling that preview for release; see
   [the preview gate](etcd-canary-preview.md).
 - M2: local MySQL runtime and verified-TLS health are implemented. Generated
   service, periodic, and function jobs delivered exact component bytes inside
