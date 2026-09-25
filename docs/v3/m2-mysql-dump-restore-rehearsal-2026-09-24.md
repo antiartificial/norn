@@ -59,3 +59,20 @@ also needs encrypted publication and retention controls before release. The
 future lifecycle controller; staging cannot enforce that condition by itself.
 No production restore write path, reconnect verification, retry protocol, or
 point-in-time recovery is claimed.
+
+## Verified snapshot CLI transport
+
+Snapshot staging now passes the source catalog's TLS policy to `mysqldump`.
+It stages CA and optional client certificate/key bytes in the session's
+owner-only directory, forces `VERIFY_CA` or endpoint-bound `VERIFY_IDENTITY`,
+and refuses unsupported modes. Disabled TLS is explicit rather than relying
+on the client's opportunistic default. Session cleanup removes the private
+material.
+
+The disposable MySQL 8.4.11 source user required SSL. With the server CA,
+the actual MySQL 8.0.27 `mysqldump` staged and hashed the expected data; the
+same CLI rejected an unrelated CA. The staging artifact then passed the
+exact-target restore preflight and disposable restore test. This qualifies
+the verify-CA snapshot path only. A live verify-full/client-certificate
+snapshot and TLS-protected restore subprocess remain open, alongside the
+durable recovery lifecycle and protected artifact publication.

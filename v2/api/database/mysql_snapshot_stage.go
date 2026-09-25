@@ -79,6 +79,10 @@ func StageMySQLSQLSnapshot(ctx context.Context, resolved ResolvedBinding, expect
 	if err := writePrivate(options, []byte("[client]\nuser="+expected.Role+"\npassword=\""+escaped+"\"\n")); err != nil {
 		return "", MySQLSQLArtifact{}, fmt.Errorf("MySQL snapshot private client material failed")
 	}
+	tlsArgs, err := mysqlSnapshotTLSArgs(session, resolved.TLS)
+	if err != nil {
+		return "", MySQLSQLArtifact{}, err
+	}
 	file, err := os.CreateTemp(privateDirectory, "mysql-snapshot-*.sql")
 	if err != nil {
 		return "", MySQLSQLArtifact{}, fmt.Errorf("MySQL snapshot artifact staging failed")
@@ -91,9 +95,12 @@ func StageMySQLSQLSnapshot(ctx context.Context, resolved ResolvedBinding, expect
 		}
 	}()
 	writer := &mysqlBoundedDumpWriter{max: MaxMySQLStagedArtifactBytes, file: file, hash: sha256.New()}
-	command := exec.CommandContext(ctx, dumpToolPath, "--defaults-file="+options, "--protocol=tcp", "--host="+resolved.Endpoint.Host,
-		"--port="+strconv.Itoa(resolved.Endpoint.Port), "--single-transaction", "--quick", "--no-tablespaces",
+	args := []string{"--defaults-file=" + options, "--protocol=tcp", "--host=" + resolved.Endpoint.Host,
+		"--port=" + strconv.Itoa(resolved.Endpoint.Port)}
+	args = append(args, tlsArgs...)
+	args = append(args, "--single-transaction", "--quick", "--no-tablespaces",
 		"--set-gtid-purged=OFF", "--hex-blob", "--routines", "--events", "--triggers", expected.Database)
+	command := exec.CommandContext(ctx, dumpToolPath, args...)
 	command.Env = []string{"PATH=" + os.Getenv("PATH"), "LC_ALL=C"}
 	command.Stdout = writer
 	stderr := capture.New(4096, 4096)
@@ -117,6 +124,53 @@ func StageMySQLSQLSnapshot(ctx context.Context, resolved ResolvedBinding, expect
 		return "", MySQLSQLArtifact{}, err
 	}
 	return path, artifact, nil
+}
+
+// mysqlSnapshotTLSArgs binds the subprocess to the same verified transport
+// policy used by the source probe. The PEM files live in Session's owner-only
+// directory and are removed when that session closes.
+func mysqlSnapshotTLSArgs(session *Session, binding DatabaseTLS) ([]string, error) {
+	if session == nil {
+		return nil, fmt.Errorf("MySQL snapshot session is unavailable")
+	}
+	if binding.Mode == TLSDisabled {
+		return []string{"--ssl-mode=DISABLED"}, nil
+	}
+	if binding.Mode != TLSVerifyCA && binding.Mode != TLSVerifyFull {
+		return nil, fmt.Errorf("MySQL snapshot TLS policy is unsupported")
+	}
+	if binding.Mode == TLSVerifyFull && binding.ServerName != session.endpoint.Host {
+		return nil, fmt.Errorf("MySQL snapshot verified host differs from the target endpoint")
+	}
+	ca := session.runtimeTLS["ca"]
+	if len(ca) == 0 {
+		return nil, fmt.Errorf("MySQL snapshot verified CA is unavailable")
+	}
+	caPath := filepath.Join(session.directory, "snapshot-ca.pem")
+	if err := writePrivate(caPath, ca); err != nil {
+		return nil, fmt.Errorf("MySQL snapshot verified CA staging failed")
+	}
+	mode := "VERIFY_CA"
+	if binding.Mode == TLSVerifyFull {
+		mode = "VERIFY_IDENTITY"
+	}
+	args := []string{"--ssl-mode=" + mode, "--ssl-ca=" + caPath, "--tls-version=TLSv1.2,TLSv1.3"}
+	cert, key := session.runtimeTLS["client_cert"], session.runtimeTLS["client_key"]
+	if (len(cert) == 0) != (len(key) == 0) {
+		return nil, fmt.Errorf("MySQL snapshot client TLS material is incomplete")
+	}
+	if len(cert) > 0 {
+		certPath := filepath.Join(session.directory, "snapshot-client.pem")
+		keyPath := filepath.Join(session.directory, "snapshot-client-key.pem")
+		if err := writePrivate(certPath, cert); err != nil {
+			return nil, fmt.Errorf("MySQL snapshot client certificate staging failed")
+		}
+		if err := writePrivate(keyPath, key); err != nil {
+			return nil, fmt.Errorf("MySQL snapshot client key staging failed")
+		}
+		args = append(args, "--ssl-cert="+certPath, "--ssl-key="+keyPath)
+	}
+	return args, nil
 }
 
 func verifyMySQLSnapshotTool(path, digest string) error {

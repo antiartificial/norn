@@ -4,9 +4,12 @@ import (
 	"context"
 	"crypto/sha256"
 	"database/sql"
+	"encoding/pem"
 	"errors"
 	"fmt"
 	"net"
+	"net/http"
+	"net/http/httptest"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -75,6 +78,11 @@ func TestMySQLExactTargetDumpRestore(t *testing.T) {
 			}
 		}
 	}
+	if os.Getenv("NORN_TEST_MYSQL_CA_FILE") != "" {
+		if _, err := admin.ExecContext(ctx, "ALTER USER '"+sourceRole+"'@'%' REQUIRE SSL"); err != nil {
+			t.Fatal("require TLS for the disposable snapshot source failed")
+		}
+	}
 	if _, err := admin.ExecContext(ctx, "CREATE TABLE `"+sourceDB+"`.marker (value VARCHAR(80) NOT NULL)"); err != nil {
 		t.Fatal(err)
 	}
@@ -87,12 +95,24 @@ func TestMySQLExactTargetDumpRestore(t *testing.T) {
 	catalog.Services[4].EngineVersion = "8.4"
 	catalog.Bindings[4].Database, catalog.Bindings[4].Role = sourceDB, sourceRole
 	catalog.Bindings[4].CredentialRef = "secret:recovery/source"
+	caPath := os.Getenv("NORN_TEST_MYSQL_CA_FILE")
+	var caPEM []byte
+	if caPath != "" {
+		caPEM, err = os.ReadFile(caPath)
+		if err != nil {
+			t.Fatal(err)
+		}
+		catalog.Bindings[4].TLS = DatabaseTLS{Mode: TLSVerifyCA, CARef: "secret:recovery/ca"}
+	}
 	catalog.Bindings = append(catalog.Bindings, DatabaseBinding{APIVersion: APIVersion, ID: "recovery-target", ServiceID: "wp-mysql", Database: targetDB, Role: targetRole, Generation: 2, CredentialRef: "secret:recovery/target", TLS: DatabaseTLS{Mode: TLSDisabled}})
 	catalog.Profiles[0].DatabaseBindings["restore-db"] = "recovery-target"
 	resolver := mustResolver(t, catalog)
 	secrets := literalSecrets{
 		"secret:recovery/source": fmt.Sprintf(`{"password":%q}`, sourcePassword),
 		"secret:recovery/target": fmt.Sprintf(`{"password":%q}`, targetPassword),
+	}
+	if caPath != "" {
+		secrets["secret:recovery/ca"] = string(caPEM)
 	}
 	resolve := func(logical string, expected *TargetIdentity) ResolvedBinding {
 		t.Helper()
@@ -171,6 +191,22 @@ func TestMySQLExactTargetDumpRestore(t *testing.T) {
 	dumpPath, artifact, err := StageMySQLSQLSnapshot(ctx, source, source.Target, secrets, dumpTool, fmt.Sprintf("%x", toolChecksum), stageDirectory)
 	if err != nil {
 		t.Fatalf("stage MySQL snapshot: %v", err)
+	}
+	if caPath != "" {
+		// The same mysqldump client must reject an unrelated CA. This is a
+		// negative control for the CLI transport, separate from the Go probe.
+		unrelated := httptest.NewTLSServer(http.HandlerFunc(func(http.ResponseWriter, *http.Request) {}))
+		wrongCA := filepath.Join(t.TempDir(), "wrong-ca.pem")
+		if err := os.WriteFile(wrongCA, pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: unrelated.Certificate().Raw}), 0o600); err != nil {
+			unrelated.Close()
+			t.Fatal(err)
+		}
+		unrelated.Close()
+		wrong := exec.CommandContext(ctx, dumpTool, "--defaults-file="+options(sourceRole, sourcePassword), "--protocol=tcp", "--host="+host,
+			"--port="+strconv.Itoa(port), "--ssl-mode=VERIFY_CA", "--ssl-ca="+wrongCA, sourceDB)
+		if err := wrong.Run(); err == nil {
+			t.Fatal("mysqldump accepted an unrelated CA")
+		}
 	}
 	dumpBytes, err := os.ReadFile(dumpPath)
 	if err != nil || len(dumpBytes) == 0 || !strings.Contains(string(dumpBytes), "source-only-recovery-marker") {

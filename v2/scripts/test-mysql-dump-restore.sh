@@ -4,9 +4,12 @@ set -euo pipefail
 repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 mysql_container="norn-mysql-recovery-$RANDOM-$$"
 root_password="norn-disposable-recovery-root"
+scratch="$(mktemp -d "${TMPDIR:-/tmp}/norn-mysql-recovery.XXXXXX")"
+chmod 700 "$scratch"
 
 cleanup() {
   docker rm --force "$mysql_container" >/dev/null 2>&1 || true
+  rm -rf -- "$scratch"
 }
 if docker container inspect "$mysql_container" >/dev/null 2>&1; then
   echo "refusing to replace existing container $mysql_container" >&2
@@ -27,6 +30,9 @@ done
 docker exec "$mysql_container" mysqladmin ping --host 127.0.0.1 --user root --password="$root_password" --silent >/dev/null
 host_port="$(docker port "$mysql_container" 3306/tcp)"
 host_port="${host_port##*:}"
+docker cp "$mysql_container:/var/lib/mysql/ca.pem" "$scratch/ca.pem"
+chmod 600 "$scratch/ca.pem"
 cd "$repo_root/v2/api"
 NORN_TEST_MYSQL_DSN="root:${root_password}@tcp(127.0.0.1:${host_port})/mysql" \
+  NORN_TEST_MYSQL_CA_FILE="$scratch/ca.pem" \
   go test ./database -run '^TestMySQLExactTargetDumpRestore$' -count=1 -v
