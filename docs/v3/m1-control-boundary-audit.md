@@ -129,13 +129,15 @@ process crashes and two-replica races for the newly converted effects.
 
 The legacy `RestoreSnapshot` handler now queues `app.snapshot-restore` through
 the same signed durable operation as the versioned restore route; the original
-`pg_restore`-inline row above is historical. Snapshot **export and import**
-remain current inline effects: `handler/snapshots.go` invokes
-`pipeline.ExportTargetSnapshot` and `pipeline.ImportTargetSnapshot` in the
-request path. Export uploads a verified dump followed by its manifest under a
-stable key; a retry after a lost response can upload another manifest version
-with a new `ExportedAt`. Import downloads the manifest and dump and publishes
-the local sidecar/dump pair. Both need an accepted, claim-fenced operation and
-an explicit existing-object/recovery result before they qualify for M1. The
-current target/provenance and digest checks prevent a wrong-target import, but
-they do not make the HTTP effect durable across an ambiguous response.
+`pg_restore`-inline row above is historical. Snapshot import now accepts a
+signed `app.snapshot-import` operation for both target-bound and legacy
+snapshots; the worker owns the download and publication. The target-bound
+path retains manifest, target, and digest checks. A lost worker claim is a
+one-attempt failure requiring operator inspection of any published dump or
+sidecar before resubmission. This still needs the two-process crash gate.
+Snapshot **export** remains an inline effect: `handler/snapshots.go` invokes
+`pipeline.ExportTargetSnapshot` in the request path. Export uploads a verified
+dump followed by its manifest under a stable key; a retry after a lost
+response can upload another manifest version with a new `ExportedAt`. Export
+needs an accepted, claim-fenced operation and explicit existing-object
+recovery before it qualifies for M1.

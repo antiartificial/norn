@@ -203,7 +203,7 @@ func (f *targetFixture) executeWithClaim(t *testing.T, operationID string) (*Ope
 	if _, err := f.db.Pool.Exec(ctx, `UPDATE operations SET next_attempt_at = CASE WHEN id=$1 THEN now() - interval '1 second' ELSE now() + interval '1 hour' END WHERE status='queued'`, operationID); err != nil {
 		t.Fatal(err)
 	}
-	claimed, claim, err := f.db.ClaimNextOperation(ctx, "target-worker", 60_000_000_000, []string{"app.snapshot", "app.snapshot-restore", "app.snapshot-prune", "app.migrate", DatabaseBaselineKind})
+	claimed, claim, err := f.db.ClaimNextOperation(ctx, "target-worker", 60_000_000_000, []string{"app.snapshot", "app.snapshot-restore", "app.snapshot-prune", "app.snapshot-import", "app.migrate", DatabaseBaselineKind})
 	if err != nil || claimed == nil || claimed.ID != operationID {
 		t.Fatalf("claim %s = %+v, %v", operationID, claimed, err)
 	}

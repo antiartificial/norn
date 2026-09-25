@@ -334,6 +334,7 @@ func main() {
 		ReleaseRequireSBOM:             cfg.ReleaseRequireSBOM,
 		Beacon:                         beaconSvc,
 		Storage:                        s3Client,
+		SnapshotObjects:                s3Client,
 		Redpanda:                       redpandaClient,
 		BuildTestEffects:               buildTestEffects,
 		SnapshotEffects:                snapshotEffects,

@@ -103,7 +103,7 @@ func containsDatabaseCapability(capabilities []string, want string) bool {
 }
 
 var databaseConsumingKinds = map[string]bool{
-	"app.deploy": true, "app.snapshot": true, "app.snapshot-prune": true, "app.snapshot-restore": true, "app.migrate": true, DatabaseBaselineKind: true,
+	"app.deploy": true, "app.snapshot": true, "app.snapshot-prune": true, "app.snapshot-restore": true, "app.snapshot-import": true, "app.migrate": true, DatabaseBaselineKind: true,
 }
 
 // DatabaseTargetError marks a refusal to route database work: no recorded
@@ -335,7 +335,7 @@ func databasesForOperation(spec *model.InfraSpec, kind string, payload map[strin
 			return nil, &DatabaseTargetError{Reason: "app declares no migration database"}
 		}
 		return []string{name}, requireDeclared(spec, name, "migration", "snapshot")
-	case "app.snapshot", "app.snapshot-prune":
+	case "app.snapshot", "app.snapshot-prune", "app.snapshot-import":
 		name, err := selectedDatabase(spec, payload)
 		if err != nil {
 			return nil, err

@@ -2,6 +2,7 @@ package pipeline
 
 import (
 	"context"
+	"errors"
 	"os"
 	"testing"
 )
@@ -51,5 +52,21 @@ func TestReviewSnapshotImportSupportsExclusiveObjectDownload(t *testing.T) {
 	f.p.DatabaseTargets.SnapshotRoot = t.TempDir()
 	if _, err := f.p.ImportTargetSnapshot(ctx, f.spec, "primary", objects, "review", key); err != nil {
 		t.Fatalf("import incompatible with exclusive object download: %v", err)
+	}
+}
+
+func TestLegacyImportPublishesExclusively(t *testing.T) {
+	directory := t.TempDir()
+	key := "snapshots/demo/shop_abc1234_20260925T120000.dump"
+	objects := reviewSnapshotObjects{key: []byte("dump")}
+	name, err := importLegacySnapshot(context.Background(), objects, "review", key, "demo", "shop", directory)
+	if err != nil || name != "shop_abc1234_20260925T120000.dump" {
+		t.Fatalf("import = %q, %v", name, err)
+	}
+	if _, err := importLegacySnapshot(context.Background(), objects, "review", key, "demo", "shop", directory); !errors.Is(err, os.ErrExist) {
+		t.Fatalf("second import must preserve the first publication: %v", err)
+	}
+	if _, err := importLegacySnapshot(context.Background(), objects, "review", "snapshots/other/shop_abc1234_20260925T120000.dump", "demo", "shop", directory); err == nil {
+		t.Fatal("foreign app key accepted")
 	}
 }

@@ -68,7 +68,7 @@ func (p *Pipeline) executeDataOperation(ctx context.Context, op *model.Operation
 	metadata["database"] = database
 	if bound != nil {
 		required := map[string][]dbCapability{
-			"app.snapshot": {dbSnapshot}, "app.snapshot-prune": {dbSnapshot},
+			"app.snapshot": {dbSnapshot}, "app.snapshot-prune": {dbSnapshot}, "app.snapshot-import": {dbSnapshot},
 			"app.snapshot-restore": {dbRestore, dbSnapshot}, "app.migrate": {dbMigration, dbSnapshot},
 		}[op.Kind]
 		if err := bound.requireCapabilities(required...); err != nil {
@@ -122,6 +122,34 @@ func (p *Pipeline) executeDataOperation(ctx context.Context, op *model.Operation
 		return finish(fmt.Sprintf("snapshot retention kept %d for %s", keep, spec.App), map[string]interface{}{"keep": keep, "pruned": pruned}, func(publishCtx context.Context) {
 			_ = sg.Log(publishCtx, "snapshot.retention", fmt.Sprintf("pruned %d database snapshots", len(pruned)), map[string]string{"database": database, "keep": fmt.Sprintf("%d", keep)})
 			p.broadcastDataEvent("snapshot.retention", spec.App, map[string]string{"database": database, "keep": fmt.Sprintf("%d", keep), "operationId": op.ID})
+		}), nil
+
+	case "app.snapshot-import":
+		if p.SnapshotObjects == nil || spec.Snapshots == nil || spec.Snapshots.ExportBucket == "" {
+			return nil, fmt.Errorf("snapshot import object storage is unavailable")
+		}
+		bucket, key := stringFromMap(op.Payload, "bucket"), stringFromMap(op.Payload, "key")
+		if bucket != spec.Snapshots.ExportBucket || !strings.HasPrefix(key, "snapshots/"+spec.App+"/") || strings.Contains(key, "..") {
+			return nil, fmt.Errorf("signed snapshot import bucket or key differs from current app configuration")
+		}
+		if spec.NamedDatabases() || bound != nil {
+			logical := stringFromMap(op.Payload, "database")
+			manifest, err := p.ImportTargetSnapshot(ctx, spec, logical, p.SnapshotObjects, bucket, key)
+			if err != nil {
+				return nil, err
+			}
+			return finish("snapshot imported for "+spec.App, map[string]interface{}{"snapshot": manifest.Filename, "key": key, "bucket": bucket}, func(publishCtx context.Context) {
+				_ = sg.Log(publishCtx, "snapshot.imported", "target-bound snapshot imported", map[string]string{"snapshot": manifest.Filename, "key": key})
+				p.broadcastDataEvent("snapshot.imported", spec.App, map[string]string{"snapshot": manifest.Filename, "operationId": op.ID})
+			}), nil
+		}
+		filename, err := importLegacySnapshot(ctx, p.SnapshotObjects, bucket, key, spec.App, database, location.dir)
+		if err != nil {
+			return nil, err
+		}
+		return finish("snapshot imported for "+spec.App, map[string]interface{}{"snapshot": filename, "key": key, "bucket": bucket}, func(publishCtx context.Context) {
+			_ = sg.Log(publishCtx, "snapshot.imported", "legacy snapshot imported", map[string]string{"snapshot": filename, "key": key})
+			p.broadcastDataEvent("snapshot.imported", spec.App, map[string]string{"snapshot": filename, "operationId": op.ID})
 		}), nil
 
 	case "app.snapshot-restore":

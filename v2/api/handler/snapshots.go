@@ -210,14 +210,7 @@ func (h *Handler) importTargetSnapshot(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, "key must name a snapshot in this app's export prefix")
 		return
 	}
-	manifest, err := h.pipeline.ImportTargetSnapshot(r.Context(), spec, r.URL.Query().Get("database"), h.s3, spec.Snapshots.ExportBucket, req.Key)
-	if err != nil {
-		writeError(w, http.StatusConflict, fmt.Sprintf("import snapshot: %v", err))
-		return
-	}
-	h.emitSnapshotEvent(r, id, "snapshot.imported", model.BeaconInfo, "snapshot imported",
-		fmt.Sprintf("%s imported snapshot %s", id, manifest.Filename), map[string]interface{}{"key": req.Key, "snapshot": manifest.Filename, "bindingId": manifest.Target.BindingID})
-	writeJSON(w, map[string]interface{}{"status": "imported", "app": id, "snapshot": manifest})
+	h.queueAppDataOperation(w, r, "app.snapshot-import", "snapshot import", map[string]interface{}{"bucket": spec.Snapshots.ExportBucket, "key": req.Key}, 1)
 }
 
 func (h *Handler) RestoreSnapshot(w http.ResponseWriter, r *http.Request) {
@@ -605,36 +598,7 @@ func (h *Handler) ImportSnapshot(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	localPath := filepath.Join("snapshots", filename)
-	if err := os.MkdirAll("snapshots", 0o750); err != nil {
-		writeError(w, http.StatusInternalServerError, fmt.Sprintf("create snapshots dir: %v", err))
-		return
-	}
-	if err := h.s3.GetObject(r.Context(), exportBucket, req.Key, localPath); err != nil {
-		writeError(w, http.StatusInternalServerError, fmt.Sprintf("download snapshot: %v", err))
-		return
-	}
-	info, err := os.Lstat(localPath)
-	if err != nil || !info.Mode().IsRegular() || info.Size() <= 0 {
-		_ = os.Remove(localPath)
-		writeError(w, http.StatusBadGateway, "downloaded snapshot is not a non-empty regular file")
-		return
-	}
-
-	h.emitSnapshotEvent(r, id, "snapshot.imported", model.BeaconInfo, "snapshot imported",
-		fmt.Sprintf("%s imported snapshot %s from %s", id, filename, exportBucket),
-		map[string]interface{}{
-			"bucket":    exportBucket,
-			"key":       req.Key,
-			"localPath": "snapshots/" + filename,
-		})
-
-	writeJSON(w, map[string]interface{}{
-		"status":    "imported",
-		"app":       id,
-		"key":       req.Key,
-		"localPath": "snapshots/" + filename,
-	})
+	h.queueAppDataOperation(w, r, "app.snapshot-import", "snapshot import", map[string]interface{}{"bucket": exportBucket, "key": req.Key}, 1)
 }
 
 func (h *Handler) findSpec(appID string) *model.InfraSpec {

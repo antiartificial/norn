@@ -29,23 +29,26 @@ type Pipeline struct {
 	OperationStore store.OperationStore
 	// CheckpointStore persists source/build identity for executions that do not
 	// use PostgreSQL. When nil, the PostgreSQL DB remains the legacy store.
-	CheckpointStore                store.OperationCheckpointStore
-	Nomad                          *nomad.Client
-	Consul                         *consul.Client
-	WS                             *hub.Hub
-	SagaStore                      saga.Store
-	Secrets                        *secrets.Manager
-	AppsDir                        string
-	GitToken                       string
-	GitSSHKey                      string
-	RegistryURL                    string
-	NetworkMode                    string
-	IngressURL                     string
-	ExternalIngress                bool
-	Production                     bool
-	StrictSecrets                  bool
-	Beacon                         *beacon.Service
-	Storage                        *storage.Client
+	CheckpointStore store.OperationCheckpointStore
+	Nomad           *nomad.Client
+	Consul          *consul.Client
+	WS              *hub.Hub
+	SagaStore       saga.Store
+	Secrets         *secrets.Manager
+	AppsDir         string
+	GitToken        string
+	GitSSHKey       string
+	RegistryURL     string
+	NetworkMode     string
+	IngressURL      string
+	ExternalIngress bool
+	Production      bool
+	StrictSecrets   bool
+	Beacon          *beacon.Service
+	Storage         *storage.Client
+	// SnapshotObjects is the configured export/import object boundary. It is
+	// required for claimed snapshot imports; handlers never download inline.
+	SnapshotObjects                SnapshotObjectStore
 	Redpanda                       *redpanda.Client
 	VerifyArtifact                 func(context.Context, string) error
 	VerifySignature                func(context.Context, string) error
@@ -393,7 +396,7 @@ func (p *Pipeline) ExecuteOperation(ctx context.Context, op *model.Operation, cl
 	switch op.Kind {
 	case "app.deployment-reconcile":
 		return p.executeDeploymentReconciliation(ctx, op, claim, spec, sg)
-	case "app.snapshot", "app.snapshot-prune", "app.snapshot-restore", "app.migrate":
+	case "app.snapshot", "app.snapshot-prune", "app.snapshot-restore", "app.snapshot-import", "app.migrate":
 		return p.executeDataOperation(ctx, op, claim, spec, sg)
 	case DatabaseBaselineKind:
 		return p.executeDatabaseBaseline(ctx, op, claim, spec)
