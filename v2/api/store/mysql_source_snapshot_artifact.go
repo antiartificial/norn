@@ -242,7 +242,13 @@ func (db *DB) LoadSignedMySQLSourceArtifactReceipt(ctx context.Context, acceptan
 		return SignedMySQLSourceArtifactReceipt{}, ErrMySQLSourceArtifactIndeterminate
 	}
 	accepted, err := acceptance.VerifyAcceptedOperation(ctx, operationID)
-	if err != nil || receipt.Schema != MySQLSourceArtifactReceiptSchema || receipt.OperationID != operationID || receipt.AcceptanceIntentID != intentID || receipt.AcceptanceIntentID != accepted.AcceptanceIntentID || receipt.AcceptanceCanonicalDigest != accepted.Intent.CanonicalDigest || receipt.CatalogRevision != revision || receipt.Source != source || receipt.DumpToolSHA256 != toolDigest || receipt.ArtifactPath != path || receipt.Artifact != artifact {
+	if err != nil || accepted.Operation.Kind != MySQLSourceSnapshotOperationKind || accepted.Operation.MaxAttempts != 1 || receipt.Schema != MySQLSourceArtifactReceiptSchema || receipt.OperationID != operationID || receipt.AcceptanceIntentID != intentID || receipt.AcceptanceIntentID != accepted.AcceptanceIntentID || receipt.AcceptanceCanonicalDigest != accepted.Intent.CanonicalDigest || receipt.CatalogRevision != revision || receipt.Source != source || receipt.DumpToolSHA256 != toolDigest || receipt.ArtifactPath != path || receipt.Artifact != artifact {
+		return SignedMySQLSourceArtifactReceipt{}, ErrMySQLSourceArtifactIndeterminate
+	}
+	var sourceRequest MySQLSourceSnapshotRequest
+	encodedPayload, err := json.Marshal(accepted.Operation.Payload)
+	if err != nil || json.Unmarshal(encodedPayload, &sourceRequest) != nil || !sameMySQLSourceSnapshotPayload(accepted.Operation.Payload, sourceRequest) ||
+		sourceRequest.CatalogRevision != receipt.CatalogRevision || sourceRequest.Source != receipt.Source || sourceRequest.DumpToolSHA256 != receipt.DumpToolSHA256 {
 		return SignedMySQLSourceArtifactReceipt{}, ErrMySQLSourceArtifactIndeterminate
 	}
 	return SignedMySQLSourceArtifactReceipt{Receipt: receipt, CanonicalBytes: canonical, SHA256: digest, Signature: sig}, nil

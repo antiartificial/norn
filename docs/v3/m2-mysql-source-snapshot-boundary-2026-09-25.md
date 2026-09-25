@@ -65,8 +65,18 @@ Loading the receipt verifies the exact stored bytes and signature. This is a
 service attestation of staging, not a separately accepted restore decision.
 The local SQL file is not durably retained or replicated by this step; a
 restore must verify its bytes again and must cite the receipt digest in a
-separately signed restore acceptance. The current restore prototype has not
-been wired to require that receipt.
+separately signed restore acceptance. Migration 33 now makes that citation
+mandatory for the private restore request. Prepare and Begin verify the
+persisted service signature, source acceptance lineage, exact source and
+artifact identity, physical source reservation, receipt digest, and current
+owner-only file bytes. Legacy operator-entered `source_quiescence` rows remain
+for audit but cannot qualify a new restore. Provider aliases of the same
+physical MySQL database are rejected as self-restores.
+
+The source operation retains the global runtime fence after staging. A
+separately accepted transfer to the restore operation is still required before
+the private runner can execute; migration 33 does not transfer or release that
+fence. This keeps the restore blocked until the handoff is implemented.
 
 This is still a private implementation step, not a qualified source snapshot
 workflow. The private quiescence runner renews its claim before and throughout

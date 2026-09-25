@@ -253,6 +253,37 @@ func TestMySQLSourceSnapshotIntentReservesSignedPhysicalSource(t *testing.T) {
 	if err != nil || loaded.SHA256 != signed.SHA256 || loaded.Signature != signed.Signature {
 		t.Fatalf("persisted signed receipt=%+v err=%v", loaded, err)
 	}
+	restore := MySQLRestoreRequest{CatalogRevision: active.Revision, Artifact: artifact, ArtifactPath: signed.Receipt.ArtifactPath,
+		SourceArtifact: MySQLRestoreSourceArtifact{OperationID: claim.OperationID(), ReceiptSHA256: signed.SHA256}}
+	tx, err := db.Pool.Begin(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := db.verifyMySQLRestoreSourceArtifact(ctx, tx, acceptedStore, restore); err != nil {
+		t.Fatalf("valid signed source receipt was rejected: %v", err)
+	}
+	_ = tx.Rollback(ctx)
+	forged := restore
+	forged.SourceArtifact.ReceiptSHA256 = strings.Repeat("f", 64)
+	tx, err = db.Pool.Begin(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := db.verifyMySQLRestoreSourceArtifact(ctx, tx, acceptedStore, forged); !errors.Is(err, ErrMySQLRestoreFence) {
+		t.Fatalf("forged receipt digest qualified restore: %v", err)
+	}
+	_ = tx.Rollback(ctx)
+	if err := os.WriteFile(signed.Receipt.ArtifactPath, []byte("-- changed after receipt\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	tx, err = db.Pool.Begin(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := db.verifyMySQLRestoreSourceArtifact(ctx, tx, acceptedStore, restore); !errors.Is(err, ErrMySQLRestoreFence) {
+		t.Fatalf("changed retained artifact bytes qualified restore: %v", err)
+	}
+	_ = tx.Rollback(ctx)
 	if _, err := db.StageClaimedMySQLSourceArtifact(ctx, acceptedStore, claim, request, sourceSecretSource{}, "/usr/bin/true", stageDirectory, stager); err == nil || stageCalls != 1 {
 		t.Fatalf("replay repeated dump: err=%v calls=%d", err, stageCalls)
 	}

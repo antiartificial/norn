@@ -8,8 +8,6 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"strings"
-	"time"
 
 	"github.com/jackc/pgx/v5"
 
@@ -24,26 +22,21 @@ const MySQLRestoreOperationKind = "database.mysql-restore"
 // acceptance. The catalog revision is an additional fence around the stable
 // service and binding generations in Target.
 type MySQLRestoreRequest struct {
-	CatalogRevision  int64                                `json:"catalogRevision"`
-	ProfileID        string                               `json:"profileId"`
-	LogicalID        string                               `json:"logicalId"`
-	Target           database.TargetIdentity              `json:"target"`
-	Maintenance      database.MySQLMaintenanceCredentials `json:"maintenance"`
-	Artifact         database.MySQLSQLArtifact            `json:"artifact"`
-	ArtifactPath     string                               `json:"artifactPath"`
-	SourceQuiescence MySQLRestoreSourceQuiescence         `json:"sourceQuiescence"`
+	CatalogRevision int64                                `json:"catalogRevision"`
+	ProfileID       string                               `json:"profileId"`
+	LogicalID       string                               `json:"logicalId"`
+	Target          database.TargetIdentity              `json:"target"`
+	Maintenance     database.MySQLMaintenanceCredentials `json:"maintenance"`
+	Artifact        database.MySQLSQLArtifact            `json:"artifact"`
+	ArtifactPath    string                               `json:"artifactPath"`
+	SourceArtifact  MySQLRestoreSourceArtifact           `json:"sourceArtifact"`
 }
 
-// MySQLRestoreSourceQuiescence is the operator evidence that the source was
-// quiesced before its dump was accepted for restore. The complete record is
-// signed as part of MySQLRestoreRequest and copied into the durable maintenance
-// fence. It deliberately does not purport to fence an application's writes:
-// that requires the application's runtime write path to consult the fence.
-type MySQLRestoreSourceQuiescence struct {
-	Source         database.TargetIdentity `json:"source"`
-	ObservedAt     time.Time               `json:"observedAt"`
-	Method         string                  `json:"method"`
-	EvidenceSHA256 string                  `json:"evidenceSha256"`
+// MySQLRestoreSourceArtifact identifies the exact service-signed source
+// artifact receipt accepted by a separate source snapshot operation.
+type MySQLRestoreSourceArtifact struct {
+	OperationID   string `json:"operationId"`
+	ReceiptSHA256 string `json:"receiptSha256"`
 }
 
 type MySQLRestoreIntent struct {
@@ -66,7 +59,7 @@ var (
 // retry is idempotent; a different operation cannot consume the same target
 // generation, including after an ambiguous or completed restore.
 func (db *DB) PrepareClaimedMySQLRestore(ctx context.Context, acceptance *PGOperationStore, claim OperationClaim, request MySQLRestoreRequest, secrets database.SecretSource) (MySQLRestoreIntent, error) {
-	if db == nil || db.Pool == nil || acceptance == nil || acceptance.db != db || secrets == nil || request.CatalogRevision <= 0 || !validMySQLRestoreSourceQuiescence(request.SourceQuiescence, request.Artifact.Source) {
+	if db == nil || db.Pool == nil || acceptance == nil || acceptance.db != db || secrets == nil || request.CatalogRevision <= 0 || !validMySQLRestoreSourceArtifact(request.SourceArtifact) {
 		return MySQLRestoreIntent{}, ErrMySQLRestoreFence
 	}
 	if err := validateOperationClaim(claim); err != nil {
@@ -97,6 +90,9 @@ func (db *DB) PrepareClaimedMySQLRestore(ctx context.Context, acceptance *PGOper
 	if err != nil || active.Revision != request.CatalogRevision {
 		return MySQLRestoreIntent{}, ErrDatabaseCatalogRevisionConflict
 	}
+	if mysqlRuntimePhysicalKeyForCatalog(active.Catalog, request.Artifact.Source) == mysqlRuntimePhysicalKeyForCatalog(active.Catalog, request.Target) {
+		return MySQLRestoreIntent{}, ErrMySQLRestoreFence
+	}
 	resolver, err := database.NewResolver(active.Catalog)
 	if err != nil {
 		return MySQLRestoreIntent{}, err
@@ -105,7 +101,7 @@ func (db *DB) PrepareClaimedMySQLRestore(ctx context.Context, acceptance *PGOper
 	if err != nil || resolved.MySQLMaintenance == nil || *resolved.MySQLMaintenance != request.Maintenance {
 		return MySQLRestoreIntent{}, ErrMySQLRestoreFence
 	}
-	if err := rejectMySQLSourceSnapshotIntent(ctx, tx, request.Artifact.Source); err != nil {
+	if err := db.verifyMySQLRestoreSourceArtifact(ctx, tx, acceptance, request); err != nil {
 		return MySQLRestoreIntent{}, ErrMySQLRestoreFence
 	}
 	restore, err := database.MySQLRestoreBinding(resolved)
@@ -124,7 +120,6 @@ func (db *DB) PrepareClaimedMySQLRestore(ctx context.Context, acceptance *PGOper
 	target, _ := json.Marshal(request.Target)
 	artifact, _ := json.Marshal(request.Artifact)
 	key := mysqlRestoreTargetKey(request.Target)
-	quiescence, _ := json.Marshal(request.SourceQuiescence)
 	inserted, err := tx.Exec(ctx, `INSERT INTO mysql_restore_intents
 		(operation_id, acceptance_intent_id, catalog_revision, profile_id, logical_id, target_key, target, artifact, artifact_path, state)
 		VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,'prepared') ON CONFLICT DO NOTHING`,
@@ -159,19 +154,18 @@ func (db *DB) PrepareClaimedMySQLRestore(ctx context.Context, acceptance *PGOper
 	// A target-key collision leaves no row for this operation, so inserting the
 	// fence first would turn the expected rejection into an FK error.
 	if _, err := tx.Exec(ctx, `INSERT INTO mysql_restore_maintenance_fences
-		(operation_id, catalog_revision, source_quiescence)
-		VALUES ($1,$2,$3) ON CONFLICT (operation_id) DO NOTHING`, claim.OperationID(), request.CatalogRevision, quiescence); err != nil {
+		(operation_id, catalog_revision, source_artifact_operation_id, source_artifact_receipt_sha256)
+		VALUES ($1,$2,$3,$4) ON CONFLICT (operation_id) DO NOTHING`, claim.OperationID(), request.CatalogRevision, request.SourceArtifact.OperationID, request.SourceArtifact.ReceiptSHA256); err != nil {
 		return MySQLRestoreIntent{}, err
 	}
-	var savedQuiescence []byte
-	if err := tx.QueryRow(ctx, `SELECT source_quiescence FROM mysql_restore_maintenance_fences WHERE operation_id=$1`, claim.OperationID()).Scan(&savedQuiescence); err != nil || json.Unmarshal(savedQuiescence, &existing.Request.SourceQuiescence) != nil {
+	if err := tx.QueryRow(ctx, `SELECT source_artifact_operation_id,source_artifact_receipt_sha256 FROM mysql_restore_maintenance_fences WHERE operation_id=$1`, claim.OperationID()).Scan(&existing.Request.SourceArtifact.OperationID, &existing.Request.SourceArtifact.ReceiptSHA256); err != nil {
 		return MySQLRestoreIntent{}, ErrMySQLRestoreFence
 	}
 	if !sameMySQLRestoreRequest(existing.Request, request) {
 		return MySQLRestoreIntent{}, ErrMySQLRestoreFence
 	}
 	var fenceMatches bool
-	if err := tx.QueryRow(ctx, `SELECT EXISTS (SELECT 1 FROM mysql_restore_maintenance_fences WHERE operation_id=$1 AND source_quiescence=$2::jsonb)`, claim.OperationID(), quiescence).Scan(&fenceMatches); err != nil || !fenceMatches {
+	if err := tx.QueryRow(ctx, `SELECT EXISTS (SELECT 1 FROM mysql_restore_maintenance_fences WHERE operation_id=$1 AND source_artifact_operation_id=$2 AND source_artifact_receipt_sha256=$3)`, claim.OperationID(), request.SourceArtifact.OperationID, request.SourceArtifact.ReceiptSHA256).Scan(&fenceMatches); err != nil || !fenceMatches {
 		return MySQLRestoreIntent{}, ErrMySQLRestoreFence
 	}
 	existing.OperationID = claim.OperationID()
@@ -199,7 +193,7 @@ func (db *DB) IntendClaimedMySQLRestoreRuntimeLock(ctx context.Context, acceptan
 	}
 	var request MySQLRestoreRequest
 	if accepted.Operation.Kind != MySQLRestoreOperationKind || accepted.Operation.Status != model.OperationRunning || accepted.Operation.MaxAttempts != 1 ||
-		decodeMySQLRestorePayload(accepted.Operation.Payload, &request) != nil || !validMySQLRestoreSourceQuiescence(request.SourceQuiescence, request.Artifact.Source) {
+		decodeMySQLRestorePayload(accepted.Operation.Payload, &request) != nil || !validMySQLRestoreSourceArtifact(request.SourceArtifact) {
 		return MySQLRestoreIntent{}, ErrMySQLRestoreFence
 	}
 	tx, err := db.Pool.BeginTx(ctx, pgx.TxOptions{})
@@ -233,6 +227,9 @@ func (db *DB) IntendClaimedMySQLRestoreRuntimeLock(ctx context.Context, acceptan
 	}
 	resolved, err := resolver.Resolve(database.ResolveRequest{DeploymentProfileID: request.ProfileID, Purpose: database.PurposeApplication, LogicalResourceID: request.LogicalID, Expected: &request.Target})
 	if err != nil || resolved.MySQLMaintenance == nil || *resolved.MySQLMaintenance != request.Maintenance {
+		return MySQLRestoreIntent{}, ErrMySQLRestoreFence
+	}
+	if err := db.verifyMySQLRestoreSourceArtifact(ctx, tx, acceptance, request); err != nil {
 		return MySQLRestoreIntent{}, ErrMySQLRestoreFence
 	}
 	result, err := tx.Exec(ctx, `INSERT INTO mysql_restore_runtime_locks
@@ -308,7 +305,7 @@ func (db *DB) BeginClaimedMySQLRestore(ctx context.Context, acceptance *PGOperat
 		return MySQLRestoreIntent{}, ErrMySQLRestoreFence
 	}
 	var request MySQLRestoreRequest
-	if err := decodeMySQLRestorePayload(accepted.Operation.Payload, &request); err != nil || !validMySQLRestoreSourceQuiescence(request.SourceQuiescence, request.Artifact.Source) {
+	if err := decodeMySQLRestorePayload(accepted.Operation.Payload, &request); err != nil || !validMySQLRestoreSourceArtifact(request.SourceArtifact) {
 		return MySQLRestoreIntent{}, ErrMySQLRestoreFence
 	}
 	tx, err := db.Pool.BeginTx(ctx, pgx.TxOptions{})
@@ -341,9 +338,11 @@ func (db *DB) BeginClaimedMySQLRestore(ctx context.Context, acceptance *PGOperat
 	if json.Unmarshal(targetBytes, &target) != nil || json.Unmarshal(artifactBytes, &artifact) != nil || target != request.Target || artifact != request.Artifact {
 		return MySQLRestoreIntent{}, ErrMySQLRestoreFence
 	}
-	quiescence, _ := json.Marshal(request.SourceQuiescence)
 	var fenceMatches bool
-	if err := tx.QueryRow(ctx, `SELECT source_quiescence=$2::jsonb FROM mysql_restore_maintenance_fences WHERE operation_id=$1 FOR UPDATE`, claim.OperationID(), quiescence).Scan(&fenceMatches); err != nil || !fenceMatches {
+	if err := tx.QueryRow(ctx, `SELECT source_artifact_operation_id=$2 AND source_artifact_receipt_sha256=$3 FROM mysql_restore_maintenance_fences WHERE operation_id=$1 FOR UPDATE`, claim.OperationID(), request.SourceArtifact.OperationID, request.SourceArtifact.ReceiptSHA256).Scan(&fenceMatches); err != nil || !fenceMatches {
+		return MySQLRestoreIntent{}, ErrMySQLRestoreFence
+	}
+	if err := db.verifyMySQLRestoreSourceArtifact(ctx, tx, acceptance, request); err != nil {
 		return MySQLRestoreIntent{}, ErrMySQLRestoreFence
 	}
 	var lockVerified bool
@@ -511,12 +510,38 @@ func decodeMySQLRestorePayload(payload map[string]interface{}, request *MySQLRes
 	return nil
 }
 
-func validMySQLRestoreSourceQuiescence(evidence MySQLRestoreSourceQuiescence, source database.TargetIdentity) bool {
-	if evidence.Source != source || evidence.ObservedAt.IsZero() || strings.TrimSpace(evidence.Method) == "" || len(evidence.Method) > 200 || len(evidence.EvidenceSHA256) != 64 {
+func validMySQLRestoreSourceArtifact(source MySQLRestoreSourceArtifact) bool {
+	if source.OperationID == "" || len(source.ReceiptSHA256) != 64 {
 		return false
 	}
-	if _, err := hex.DecodeString(evidence.EvidenceSHA256); err != nil || strings.ToLower(evidence.EvidenceSHA256) != evidence.EvidenceSHA256 {
-		return false
+	decoded, err := hex.DecodeString(source.ReceiptSHA256)
+	return err == nil && hex.EncodeToString(decoded) == source.ReceiptSHA256
+}
+
+// verifyMySQLRestoreSourceArtifact binds the restore's separately signed
+// payload to the retained, service-signed source receipt and its current file.
+// The source row remains reserved; this check does not unlock or transfer its
+// runtime mutation fence.
+func (db *DB) verifyMySQLRestoreSourceArtifact(ctx context.Context, tx pgx.Tx, acceptance *PGOperationStore, request MySQLRestoreRequest) error {
+	if !validMySQLRestoreSourceArtifact(request.SourceArtifact) {
+		return ErrMySQLRestoreFence
 	}
-	return true
+	var state, digest, sourceKey string
+	if err := tx.QueryRow(ctx, `SELECT state, artifact_receipt_sha256, source_key FROM mysql_source_snapshot_intents
+		WHERE operation_id=$1 FOR SHARE`, request.SourceArtifact.OperationID).Scan(&state, &digest, &sourceKey); err != nil || state != "stage-proved" || digest != request.SourceArtifact.ReceiptSHA256 {
+		return ErrMySQLRestoreFence
+	}
+	active, err := loadActiveDatabaseCatalog(ctx, tx)
+	if err != nil || active.Revision != request.CatalogRevision || sourceKey != mysqlRuntimePhysicalKeyForCatalog(active.Catalog, request.Artifact.Source) {
+		return ErrMySQLRestoreFence
+	}
+	receipt, err := db.LoadSignedMySQLSourceArtifactReceipt(ctx, acceptance, request.SourceArtifact.OperationID)
+	if err != nil || receipt.SHA256 != request.SourceArtifact.ReceiptSHA256 || receipt.Receipt.CatalogRevision != request.CatalogRevision ||
+		receipt.Receipt.Source != request.Artifact.Source || receipt.Receipt.Artifact != request.Artifact || receipt.Receipt.ArtifactPath != request.ArtifactPath {
+		return ErrMySQLRestoreFence
+	}
+	if err := database.VerifyMySQLSQLArtifact(receipt.Receipt.ArtifactPath, receipt.Receipt.Artifact); err != nil {
+		return errors.Join(ErrMySQLRestoreFence, err)
+	}
+	return nil
 }
