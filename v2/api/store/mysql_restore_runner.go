@@ -70,6 +70,12 @@ func (r MySQLRestoreRunner) RunClaimed(ctx context.Context, claim OperationClaim
 	if err != nil {
 		finishErr := r.Control.FinishClaimedMySQLRestore(context.Background(), r.Acceptance, claim, false, "MySQL restore requires inspection")
 		if finishErr != nil {
+			// A stolen or expired claim cannot write an operation receipt. The
+			// external client was already past the durable ambiguity boundary, so
+			// contain the intent without touching the successor's operation claim.
+			if containErr := r.Control.ContainMySQLRestoreForInspection(context.Background(), claim.OperationID()); containErr != nil {
+				return fmt.Errorf("MySQL restore failed (%v), could not record inspection state (%v), and could not contain the executing intent: %w", err, finishErr, containErr)
+			}
 			return fmt.Errorf("MySQL restore failed (%v) and could not record inspection state: %w", err, finishErr)
 		}
 		return err

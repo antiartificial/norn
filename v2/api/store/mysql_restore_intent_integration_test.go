@@ -86,18 +86,18 @@ func TestMySQLRestoreIntentAgainstDisposableEngines(t *testing.T) {
 		t.Fatal(err)
 	}
 	suffix := strings.ReplaceAll(uuid.NewString()[:8], "-", "")
-	sourceDB, targetDB := "intent_src_"+suffix, "intent_dst_"+suffix
-	sourceRole, targetRole := "isrc_"+suffix, "idst_"+suffix
+	sourceDB, targetDB, lostTargetDB := "intent_src_"+suffix, "intent_dst_"+suffix, "intent_lost_"+suffix
+	sourceRole, targetRole, lostTargetRole := "isrc_"+suffix, "idst_"+suffix, "ilst_"+suffix
 	sourcePassword, targetPassword := "source"+suffix, `target\quote"`+suffix
 	defer func() {
-		for _, name := range []string{sourceDB, targetDB} {
+		for _, name := range []string{sourceDB, targetDB, lostTargetDB} {
 			_, _ = admin.ExecContext(context.Background(), "DROP DATABASE IF EXISTS `"+name+"`")
 		}
-		for _, name := range []string{sourceRole, targetRole} {
+		for _, name := range []string{sourceRole, targetRole, lostTargetRole} {
 			_, _ = admin.ExecContext(context.Background(), "DROP USER IF EXISTS '"+name+"'@'%'")
 		}
 	}()
-	for _, item := range []struct{ name, role, password string }{{sourceDB, sourceRole, sourcePassword}, {targetDB, targetRole, targetPassword}} {
+	for _, item := range []struct{ name, role, password string }{{sourceDB, sourceRole, sourcePassword}, {targetDB, targetRole, targetPassword}, {lostTargetDB, lostTargetRole, targetPassword}} {
 		for _, statement := range []string{
 			"CREATE DATABASE `" + item.name + "`",
 			"CREATE USER '" + item.role + "'@'%' IDENTIFIED BY " + mysqlRestoreSQLLiteral(item.password),
@@ -128,9 +128,11 @@ func TestMySQLRestoreIntentAgainstDisposableEngines(t *testing.T) {
 	catalog.Bindings = append(catalog.Bindings,
 		database.DatabaseBinding{APIVersion: database.APIVersion, ID: "intent-source", ServiceID: "intent-mysql", Database: sourceDB, Role: sourceRole, Generation: 1, CredentialRef: "secret:intent/source", TLS: database.DatabaseTLS{Mode: database.TLSDisabled}},
 		database.DatabaseBinding{APIVersion: database.APIVersion, ID: "intent-target", ServiceID: "intent-mysql", Database: targetDB, Role: targetRole, Generation: 1, CredentialRef: "secret:intent/target", TLS: database.DatabaseTLS{Mode: database.TLSDisabled}},
+		database.DatabaseBinding{APIVersion: database.APIVersion, ID: "intent-lost-target", ServiceID: "intent-mysql", Database: lostTargetDB, Role: lostTargetRole, Generation: 1, CredentialRef: "secret:intent/target", TLS: database.DatabaseTLS{Mode: database.TLSDisabled}},
 	)
 	catalog.Profiles[0].DatabaseBindings["intent-source"] = "intent-source"
 	catalog.Profiles[0].DatabaseBindings["intent-target"] = "intent-target"
+	catalog.Profiles[0].DatabaseBindings["intent-lost-target"] = "intent-lost-target"
 	active, err := control.ActivateDatabaseCatalog(ctx, 0, catalog, "test-operator")
 	if err != nil {
 		t.Fatal(err)
@@ -144,6 +146,10 @@ func TestMySQLRestoreIntentAgainstDisposableEngines(t *testing.T) {
 		t.Fatal(err)
 	}
 	target, err := resolver.Resolve(database.ResolveRequest{DeploymentProfileID: "mini", Purpose: database.PurposeApplication, LogicalResourceID: "intent-target"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	lostTarget, err := resolver.Resolve(database.ResolveRequest{DeploymentProfileID: "mini", Purpose: database.PurposeApplication, LogicalResourceID: "intent-lost-target"})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -274,6 +280,96 @@ func TestMySQLRestoreIntentAgainstDisposableEngines(t *testing.T) {
 	var marker string
 	if err := admin.QueryRowContext(ctx, "SELECT value FROM `"+targetDB+"`.marker").Scan(&marker); err != nil || marker != "signed-intent-source" {
 		t.Fatalf("restored marker = %q, %v", marker, err)
+	}
+
+	// Claim theft after the durable intent enters executing must cancel the
+	// private client, leave no success receipt, contain the intent for operator
+	// inspection, and reject any automatic replay under the successor claim.
+	lostRequest := request
+	lostRequest.LogicalID, lostRequest.Target = "intent-lost-target", lostTarget.Target
+	lostEncoded, _ := json.Marshal(lostRequest)
+	lostInput := newAcceptance(t, stores[0], "mysql-intent-claim-loss-"+suffix, "operator", "intent-lost-target", false)
+	lostInput.Identity.Kind, lostInput.Identity.Resource = MySQLRestoreOperationKind, "mysql/"+lostTargetDB
+	lostInput.Operation.Kind, lostInput.Operation.MaxAttempts, lostInput.Operation.Payload = MySQLRestoreOperationKind, 1, nil
+	if err := json.Unmarshal(lostEncoded, &lostInput.Operation.Payload); err != nil {
+		t.Fatal(err)
+	}
+	lostInput.Fingerprint, err = CanonicalOperationRequestFingerprint(lostInput)
+	if err != nil {
+		t.Fatal(err)
+	}
+	lostAccepted, err := stores[0].Accept(ctx, lostInput)
+	if err != nil {
+		t.Fatal(err)
+	}
+	lostClaim, err := NewOperationClaim(lostAccepted.Operation.ID, "mysql-worker-loss", 1)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := control.Pool.Exec(ctx, `UPDATE operations SET status='running', attempts=1, locked_by=$2, lock_generation=1,
+		locked_until=now()+interval '2 minutes' WHERE id=$1`, lostClaim.OperationID(), lostClaim.OwnerID()); err != nil {
+		t.Fatal(err)
+	}
+	if prepared, err := control.PrepareClaimedMySQLRestore(ctx, stores[0], lostClaim, lostRequest, secrets); err != nil || prepared.State != "prepared" {
+		t.Fatalf("claim-loss prepare: %+v %v", prepared, err)
+	}
+	clientStarted := filepath.Join(t.TempDir(), "mysql-client-started")
+	lossTool := filepath.Join(t.TempDir(), "mysql-delayed-claim-loss")
+	if err := os.WriteFile(lossTool, []byte("#!/bin/sh\nprintf started > '"+clientStarted+"'\nsleep 2\nexec "+quotedTool+" \"$@\"\n"), 0700); err != nil {
+		t.Fatal(err)
+	}
+	lossBytes, err := os.ReadFile(lossTool)
+	if err != nil {
+		t.Fatal(err)
+	}
+	lossSHA := sha256.Sum256(lossBytes)
+	lossRunner := MySQLRestoreRunner{Control: control, Acceptance: stores[0], Secrets: secrets, ClaimLease: 90 * time.Millisecond,
+		Tool: database.MySQLRestoreTool{Path: lossTool, SHA256: fmt.Sprintf("%x", lossSHA)}}
+	runResult := make(chan error, 1)
+	go func() { runResult <- lossRunner.RunClaimed(ctx, lostClaim) }()
+	deadline := time.Now().Add(5 * time.Second)
+	for {
+		if _, err := os.Stat(clientStarted); err == nil {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatal("delayed private MySQL client did not start after intent entered executing")
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	if _, err := control.Pool.Exec(ctx, `UPDATE operations SET locked_by='mysql-claim-thief', lock_generation=2,
+		locked_until=now()+interval '2 minutes' WHERE id=$1`, lostClaim.OperationID()); err != nil {
+		t.Fatal(err)
+	}
+	cancelledAt := time.Now()
+	select {
+	case err := <-runResult:
+		if err == nil {
+			t.Fatal("claim loss allowed delayed private MySQL client to succeed")
+		}
+		if elapsed := time.Since(cancelledAt); elapsed >= time.Second {
+			t.Fatalf("claim loss returned after delayed MySQL wrapper could have continued: %s", elapsed)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("claim loss did not cancel delayed private MySQL client")
+	}
+	var lostState, operationStatus string
+	var finishedAt interface{}
+	if err := control.Pool.QueryRow(ctx, `SELECT i.state, o.status, o.finished_at FROM mysql_restore_intents i JOIN operations o ON o.id=i.operation_id WHERE i.operation_id=$1`, lostClaim.OperationID()).Scan(&lostState, &operationStatus, &finishedAt); err != nil {
+		t.Fatal(err)
+	}
+	if lostState != "needs-inspection" || operationStatus == "succeeded" || finishedAt != nil {
+		t.Fatalf("claim-loss containment state=%q operation=%q finished=%v", lostState, operationStatus, finishedAt)
+	}
+	thiefClaim, err := NewOperationClaim(lostClaim.OperationID(), "mysql-claim-thief", 2)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := lossRunner.RunClaimed(ctx, thiefClaim); !errors.Is(err, ErrMySQLRestoreFence) {
+		t.Fatalf("successor replay after inspection containment = %v", err)
+	}
+	if err := control.Pool.QueryRow(ctx, `SELECT state FROM mysql_restore_intents WHERE operation_id=$1`, lostClaim.OperationID()).Scan(&lostState); err != nil || lostState != "needs-inspection" {
+		t.Fatalf("automatic replay changed contained state=%q err=%v", lostState, err)
 	}
 }
 

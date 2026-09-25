@@ -239,6 +239,34 @@ func (db *DB) FinishClaimedMySQLRestore(ctx context.Context, acceptance *PGOpera
 	return tx.Commit(ctx)
 }
 
+// ContainMySQLRestoreForInspection records an ambiguous private SQL client
+// outcome after its operation claim has been lost. It intentionally does not
+// create an operation receipt or alter the successor's claim: an executing
+// restore can have applied an unknown SQL prefix, so containment must remain
+// possible even when the original worker can no longer terminalize it.
+//
+// This is an idempotent, one-way transition. It is kept behind the private
+// runner; MySQL restore has no public capability or HTTP route.
+func (db *DB) ContainMySQLRestoreForInspection(ctx context.Context, operationID string) error {
+	if db == nil || db.Pool == nil || operationID == "" {
+		return ErrMySQLRestoreFence
+	}
+	result, err := db.Pool.Exec(ctx, `UPDATE mysql_restore_intents
+		SET state='needs-inspection'
+		WHERE operation_id=$1 AND state='executing'`, operationID)
+	if err != nil {
+		return err
+	}
+	if result.RowsAffected() == 1 {
+		return nil
+	}
+	var state string
+	if err := db.Pool.QueryRow(ctx, `SELECT state FROM mysql_restore_intents WHERE operation_id=$1`, operationID).Scan(&state); err != nil || state != "needs-inspection" {
+		return ErrMySQLRestoreFence
+	}
+	return nil
+}
+
 func verifyMySQLRestoreClaim(ctx context.Context, tx pgx.Tx, claim OperationClaim) error {
 	var held bool
 	err := tx.QueryRow(ctx, `SELECT true FROM operations WHERE id=$1 AND kind=$2 AND status='running'
