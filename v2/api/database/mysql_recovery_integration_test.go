@@ -1,7 +1,6 @@
 package database
 
 import (
-	"bytes"
 	"context"
 	"crypto/sha256"
 	"database/sql"
@@ -149,29 +148,57 @@ func TestMySQLExactTargetDumpRestore(t *testing.T) {
 		}
 		return path
 	}
-	sourceOptions, targetOptions := options(sourceRole, sourcePassword), options(targetRole, targetPassword)
-	dumpPath := filepath.Join(t.TempDir(), "source.sql")
-	dump, err := os.OpenFile(dumpPath, os.O_CREATE|os.O_EXCL|os.O_WRONLY, 0o600)
+	targetOptions := options(targetRole, targetPassword)
+	dumpTool, err := exec.LookPath("mysqldump")
 	if err != nil {
 		t.Fatal(err)
 	}
-	dumpCommand := exec.CommandContext(ctx, "mysqldump", "--defaults-file="+sourceOptions, "--protocol=tcp", "--host="+host, "--port="+portText, "--single-transaction", "--quick", "--no-tablespaces", "--set-gtid-purged=OFF", sourceDB)
-	dumpCommand.Env = []string{"PATH=" + os.Getenv("PATH"), "LC_ALL=C"}
-	dumpCommand.Stdout = dump
-	var dumpErrors bytes.Buffer
-	dumpCommand.Stderr = &dumpErrors
-	if err := dumpCommand.Run(); err != nil {
-		_ = dump.Close()
-		t.Fatalf("source dump failed: %s", sourceSession.Redact(dumpErrors.Bytes()))
-	}
-	if err := dump.Close(); err != nil {
+	toolBytes, err := os.ReadFile(dumpTool)
+	if err != nil {
 		t.Fatal(err)
+	}
+	toolChecksum := sha256.Sum256(toolBytes)
+	stageDirectory := t.TempDir()
+	if err := os.Chmod(stageDirectory, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if _, _, err := StageMySQLSQLSnapshot(ctx, source, stale, secrets, dumpTool, fmt.Sprintf("%x", toolChecksum), stageDirectory); err == nil {
+		t.Fatal("snapshot staging accepted a different expected target")
+	}
+	if _, _, err := StageMySQLSQLSnapshot(ctx, source, source.Target, secrets, dumpTool, strings.Repeat("0", 64), stageDirectory); err == nil {
+		t.Fatal("snapshot staging accepted a changed tool checksum")
+	}
+	dumpPath, artifact, err := StageMySQLSQLSnapshot(ctx, source, source.Target, secrets, dumpTool, fmt.Sprintf("%x", toolChecksum), stageDirectory)
+	if err != nil {
+		t.Fatalf("stage MySQL snapshot: %v", err)
 	}
 	dumpBytes, err := os.ReadFile(dumpPath)
 	if err != nil || len(dumpBytes) == 0 || !strings.Contains(string(dumpBytes), "source-only-recovery-marker") {
 		t.Fatal("source dump did not contain the expected marker")
 	}
-	checksum := sha256.Sum256(dumpBytes)
+	preparation, err := PrepareMySQLRestore(ctx, resolver, "mini", "restore-db", target.Target, secrets, dumpPath, artifact)
+	if err != nil || preparation.Target != target.Target || preparation.Source != source.Target {
+		t.Fatalf("exact-target restore preflight = %+v, %v", preparation, err)
+	}
+	if _, err := PrepareMySQLRestore(ctx, resolver, "mini", "restore-db", stale, secrets, dumpPath, artifact); err == nil {
+		t.Fatal("stale restore target passed preflight")
+	}
+	badPath := filepath.Join(t.TempDir(), "tampered.sql")
+	badBytes := append([]byte(nil), dumpBytes...)
+	badBytes[len(badBytes)-1] ^= 1
+	if err := os.WriteFile(badPath, badBytes, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := VerifyMySQLSQLArtifact(badPath, artifact); err == nil {
+		t.Fatal("tampered SQL dump passed checksum verification")
+	}
+	symlink := filepath.Join(t.TempDir(), "linked.sql")
+	if err := os.Symlink(dumpPath, symlink); err != nil {
+		t.Fatal(err)
+	}
+	if err := VerifyMySQLSQLArtifact(symlink, artifact); err == nil {
+		t.Fatal("symlink SQL dump passed verification")
+	}
 	input, err := os.Open(dumpPath)
 	if err != nil {
 		t.Fatal(err)
@@ -191,5 +218,8 @@ func TestMySQLExactTargetDumpRestore(t *testing.T) {
 			t.Fatalf("%s marker = %q, %v", db, marker, err)
 		}
 	}
-	t.Logf("disposable MySQL exact-target dump/restore passed: sha256=%x", checksum)
+	if _, err := PrepareMySQLRestore(ctx, resolver, "mini", "restore-db", target.Target, secrets, dumpPath, artifact); err == nil {
+		t.Fatal("nonempty restore target passed preflight")
+	}
+	t.Logf("disposable MySQL exact-target dump/restore passed: sha256=%s", artifact.SHA256)
 }

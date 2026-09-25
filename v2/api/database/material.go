@@ -3,6 +3,7 @@ package database
 import (
 	"bytes"
 	"context"
+	"database/sql/driver"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -147,13 +148,14 @@ func rejectDuplicateKeys(raw []byte) error {
 // Session is private connection material for one resolved target. Its
 // directory holds the libpq service file and TLS files; Close removes it.
 type Session struct {
-	target     TargetIdentity
-	bindingID  string
-	directory  string
-	password   string
-	config     *pgx.ConnConfig
-	endpoint   DatabaseEndpoint
-	mysqlProbe func(context.Context) (ProbeResult, error)
+	target         TargetIdentity
+	bindingID      string
+	directory      string
+	password       string
+	config         *pgx.ConnConfig
+	endpoint       DatabaseEndpoint
+	mysqlProbe     func(context.Context) (ProbeResult, error)
+	mysqlConnector driver.Connector
 	// runtimeTLS is private PEM material for a MySQL allocation. It is only
 	// populated after verified local session construction and remains unusable
 	// while the resolver's MySQL TLS runtime qualification gate is closed.
@@ -599,7 +601,7 @@ func (s *Session) Close() error {
 	for _, value := range s.runtimeTLS {
 		clear(value)
 	}
-	s.directory, s.config, s.password, s.url, s.runtimeURL, s.mysqlProbe, s.runtimeTLS = "", nil, "", "", "", nil, nil
+	s.directory, s.config, s.password, s.url, s.runtimeURL, s.mysqlProbe, s.mysqlConnector, s.runtimeTLS = "", nil, "", "", "", nil, nil, nil
 	return err
 }
 
