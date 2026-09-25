@@ -75,6 +75,10 @@ class DoctorFixtureTest(unittest.TestCase):
         (release / "bin/platform-upgrade").write_text("wrong", encoding="utf-8")
         with self.assertRaises(doctor.CheckFailure):
             doctor.check_candidate_release(args)
+        (release / "bin/platform-upgrade").write_bytes(source_script.read_bytes())
+        binary.write_text("#!/bin/sh\nprintf 'null\\n'\n", encoding="utf-8")
+        with self.assertRaises(doctor.CheckFailure):
+            doctor.check_candidate_release(args)
 
     def test_legacy_release_and_listener_owner_require_exact_match(self):
         sha = "a" * 40

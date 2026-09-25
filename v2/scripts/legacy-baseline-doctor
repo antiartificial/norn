@@ -134,7 +134,11 @@ def check_candidate_release(args):
         contract = json.loads(command(str(binary), "--norn-startup-contract", timeout=8))
     except (ValueError, TypeError) as exc:
         raise CheckFailure("candidate startup contract is invalid") from exc
-    if type(contract) is not dict or contract.get("name") != "norn.startup/v2" or "migrate-only" not in contract.get("schemaModes", []) or "passive" not in contract.get("startupModes", []):
+    if (type(contract) is not dict or contract.get("name") != "norn.startup/v2"
+            or type(contract.get("schemaModes")) is not list
+            or type(contract.get("startupModes")) is not list
+            or "migrate-only" not in contract["schemaModes"]
+            or "passive" not in contract["startupModes"]):
         raise CheckFailure("candidate lacks bounded migrate/passive startup contract")
     return "exact candidate release identity, script and startup contract verified"
 
