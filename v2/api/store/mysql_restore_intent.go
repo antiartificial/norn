@@ -190,6 +190,55 @@ func (db *DB) BeginClaimedMySQLRestore(ctx context.Context, acceptance *PGOperat
 	return MySQLRestoreIntent{OperationID: claim.OperationID(), AcceptanceIntentID: intentID, Request: request, State: "executing"}, nil
 }
 
+// FinishClaimedMySQLRestore atomically records the external result and the
+// operation receipt. A failed or interrupted client is deliberately retained
+// as needs-inspection: a local process exit cannot prove whether MySQL applied
+// a prefix of the SQL stream.
+func (db *DB) FinishClaimedMySQLRestore(ctx context.Context, acceptance *PGOperationStore, claim OperationClaim, succeeded bool, message string) error {
+	if db == nil || db.Pool == nil || acceptance == nil || acceptance.db != db || validateOperationClaim(claim) != nil {
+		return ErrMySQLRestoreFence
+	}
+	accepted, err := acceptance.VerifyAcceptedOperation(ctx, claim.OperationID())
+	if err != nil || accepted.Operation.Kind != MySQLRestoreOperationKind || accepted.Operation.Status != model.OperationRunning || accepted.Operation.MaxAttempts != 1 {
+		return ErrMySQLRestoreFence
+	}
+	tx, err := db.Pool.BeginTx(ctx, pgx.TxOptions{})
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback(context.Background())
+	if err := verifyMySQLRestoreClaim(ctx, tx, claim); err != nil {
+		return err
+	}
+	state := "needs-inspection"
+	status := model.OperationFailed
+	if succeeded {
+		state, status = "completed", model.OperationSucceeded
+	}
+	result, err := tx.Exec(ctx, `UPDATE mysql_restore_intents SET state=$1, completed_at=CASE WHEN $1='completed' THEN clock_timestamp() ELSE NULL END
+		WHERE operation_id=$2 AND acceptance_intent_id=$3 AND state='executing'`, state, claim.OperationID(), accepted.AcceptanceIntentID)
+	if err != nil || result.RowsAffected() != 1 {
+		return ErrMySQLRestoreFence
+	}
+	metadata, err := json.Marshal(map[string]interface{}{"mysqlRestoreState": state, "acceptanceIntentId": accepted.AcceptanceIntentID})
+	if err != nil {
+		return err
+	}
+	result, err = tx.Exec(ctx, `UPDATE operations SET status=$1, message=$2, metadata=metadata || $3::jsonb,
+		locked_by='', locked_until=NULL, updated_at=clock_timestamp(), finished_at=clock_timestamp()
+		WHERE id=$4 AND status='running' AND locked_by=$5 AND lock_generation=$6 AND locked_until>clock_timestamp()`,
+		status, message, metadata, claim.OperationID(), claim.OwnerID(), claim.Generation())
+	if err != nil || result.RowsAffected() != 1 {
+		return ownershipLost(claim)
+	}
+	if _, err := tx.Exec(ctx, `INSERT INTO evidence_archive_intents (id, subject_kind, subject_id, app, operation_id, sequence, state)
+		SELECT 'ei-' || gen_random_uuid()::text, 'saga', saga_id, app, id, 1, 'pending' FROM operations WHERE id=$1 AND saga_id<>''
+		ON CONFLICT (subject_kind, subject_id, sequence) DO NOTHING`, claim.OperationID()); err != nil {
+		return err
+	}
+	return tx.Commit(ctx)
+}
+
 func verifyMySQLRestoreClaim(ctx context.Context, tx pgx.Tx, claim OperationClaim) error {
 	var held bool
 	err := tx.QueryRow(ctx, `SELECT true FROM operations WHERE id=$1 AND kind=$2 AND status='running'

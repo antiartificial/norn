@@ -58,6 +58,10 @@ func TestMySQLRestoreIntentAgainstDisposableEngines(t *testing.T) {
 	if err != nil {
 		t.Skip("mysqldump is unavailable")
 	}
+	restoreTool, err := exec.LookPath("mysql")
+	if err != nil {
+		t.Skip("mysql is unavailable")
+	}
 	config, err := mysql.ParseDSN(os.Getenv("NORN_TEST_MYSQL_DSN"))
 	if err != nil || config.Net != "tcp" {
 		t.Fatal("NORN_TEST_MYSQL_DSN must be a TCP DSN")
@@ -243,15 +247,25 @@ func TestMySQLRestoreIntentAgainstDisposableEngines(t *testing.T) {
 	if _, err := control.Pool.Exec(ctx, `UPDATE mysql_restore_intents SET artifact_path=$2 WHERE operation_id=$1`, claim.OperationID(), path); err != nil {
 		t.Fatal(err)
 	}
-	started, err := control.BeginClaimedMySQLRestore(ctx, stores[0], claim, secrets)
-	if err != nil || started.State != "executing" {
-		t.Fatalf("begin external-effect boundary: %+v %v", started, err)
+	restoreBytes, err := os.ReadFile(restoreTool)
+	if err != nil {
+		t.Fatal(err)
+	}
+	restoreSHA := sha256.Sum256(restoreBytes)
+	runner := MySQLRestoreRunner{Control: control, Acceptance: stores[0], Secrets: secrets,
+		Tool: database.MySQLRestoreTool{Path: restoreTool, SHA256: fmt.Sprintf("%x", restoreSHA)}}
+	if err := runner.RunClaimed(ctx, claim); err != nil {
+		t.Fatalf("supervised MySQL restore: %v", err)
 	}
 	if _, err := control.BeginClaimedMySQLRestore(ctx, stores[0], claim, secrets); !errors.Is(err, ErrMySQLRestoreFence) {
 		t.Fatalf("ambiguous SQL retry was accepted: %v", err)
 	}
 	var state string
-	if err := control.Pool.QueryRow(ctx, `SELECT state FROM mysql_restore_intents WHERE operation_id=$1`, claim.OperationID()).Scan(&state); err != nil || state != "executing" {
+	if err := control.Pool.QueryRow(ctx, `SELECT state FROM mysql_restore_intents WHERE operation_id=$1`, claim.OperationID()).Scan(&state); err != nil || state != "completed" {
 		t.Fatalf("durable state = %q, %v", state, err)
+	}
+	var marker string
+	if err := admin.QueryRowContext(ctx, "SELECT value FROM `"+targetDB+"`.marker").Scan(&marker); err != nil || marker != "signed-intent-source" {
+		t.Fatalf("restored marker = %q, %v", marker, err)
 	}
 }

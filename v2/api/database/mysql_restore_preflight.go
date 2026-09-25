@@ -93,45 +93,63 @@ func PrepareMySQLRestore(ctx context.Context, resolver *Resolver, profileID, log
 // opening the destination connection. A later executor must verify it again
 // while holding its durable target fence and use the same opened inode.
 func VerifyMySQLSQLArtifact(path string, artifact MySQLSQLArtifact) error {
+	file, err := OpenVerifiedMySQLSQLArtifact(path, artifact)
+	if err != nil {
+		return err
+	}
+	return file.Close()
+}
+
+// OpenVerifiedMySQLSQLArtifact returns the already checked inode rather than
+// merely checking its pathname. Restore supervisors pass this descriptor to
+// mysql as stdin, so a path replacement after verification cannot change the
+// bytes that reach the target.
+func OpenVerifiedMySQLSQLArtifact(path string, artifact MySQLSQLArtifact) (*os.File, error) {
 	if artifact.Format != MySQLSQLArtifactV1 || !validMySQLArtifactIdentity(artifact.Source) || artifact.Bytes <= 0 || artifact.Bytes > MaxMySQLStagedArtifactBytes || len(artifact.SHA256) != 64 {
-		return fmt.Errorf("MySQL restore artifact metadata is invalid")
+		return nil, fmt.Errorf("MySQL restore artifact metadata is invalid")
 	}
 	if _, err := hex.DecodeString(artifact.SHA256); err != nil || strings.ToLower(artifact.SHA256) != artifact.SHA256 {
-		return fmt.Errorf("MySQL restore artifact checksum is invalid")
+		return nil, fmt.Errorf("MySQL restore artifact checksum is invalid")
 	}
 	if !strings.HasPrefix(path, "/") {
-		return fmt.Errorf("MySQL restore artifact path must be absolute")
+		return nil, fmt.Errorf("MySQL restore artifact path must be absolute")
 	}
 	file, err := os.OpenFile(path, os.O_RDONLY|syscall.O_NOFOLLOW, 0)
 	if err != nil {
-		return fmt.Errorf("MySQL restore artifact cannot be opened")
+		return nil, fmt.Errorf("MySQL restore artifact cannot be opened")
 	}
-	defer file.Close()
+	fail := func(message string) (*os.File, error) {
+		_ = file.Close()
+		return nil, fmt.Errorf("%s", message)
+	}
 	info, err := file.Stat()
 	if err != nil || !info.Mode().IsRegular() || info.Mode().Perm()&0o077 != 0 || info.Size() != artifact.Bytes {
-		return fmt.Errorf("MySQL restore artifact is not a matching private regular file")
+		return fail("MySQL restore artifact is not a matching private regular file")
 	}
 	stat, ok := info.Sys().(*syscall.Stat_t)
 	if !ok || stat.Uid != uint32(os.Geteuid()) {
-		return fmt.Errorf("MySQL restore artifact ownership is invalid")
+		return fail("MySQL restore artifact ownership is invalid")
 	}
 	hash := sha256.New()
 	read, err := io.Copy(hash, io.LimitReader(file, artifact.Bytes+1))
 	if err != nil || read != artifact.Bytes {
-		return fmt.Errorf("MySQL restore artifact read failed")
+		return fail("MySQL restore artifact read failed")
 	}
 	if !strings.EqualFold(hex.EncodeToString(hash.Sum(nil)), artifact.SHA256) {
-		return fmt.Errorf("MySQL restore artifact checksum differs")
+		return fail("MySQL restore artifact checksum differs")
 	}
 	endInfo, err := file.Stat()
 	if err != nil || !os.SameFile(info, endInfo) || endInfo.Size() != artifact.Bytes || !endInfo.ModTime().Equal(info.ModTime()) {
-		return fmt.Errorf("MySQL restore artifact changed while reading")
+		return fail("MySQL restore artifact changed while reading")
 	}
 	var extra [1]byte
 	if n, err := file.Read(extra[:]); n != 0 || !errors.Is(err, io.EOF) {
-		return fmt.Errorf("MySQL restore artifact changed while reading")
+		return fail("MySQL restore artifact changed while reading")
 	}
-	return nil
+	if _, err := file.Seek(0, io.SeekStart); err != nil {
+		return fail("MySQL restore artifact cannot be rewound")
+	}
+	return file, nil
 }
 
 func validMySQLArtifactIdentity(target TargetIdentity) bool {

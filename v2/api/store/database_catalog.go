@@ -195,6 +195,26 @@ func (db *DB) ActiveDatabaseCatalog(ctx context.Context) (DatabaseCatalogRevisio
 	return loadActiveDatabaseCatalog(ctx, db.Pool)
 }
 
+// DatabaseCatalogRevision returns the immutable catalog accepted by a durable
+// operation. Executors use this rather than following a newer active catalog
+// after an external-effect boundary has been committed.
+func (db *DB) DatabaseCatalogRevision(ctx context.Context, revision int64) (DatabaseCatalogRevision, error) {
+	if db == nil || db.Pool == nil || revision <= 0 {
+		return DatabaseCatalogRevision{}, ErrDatabaseCatalogRevisionConflict
+	}
+	var result DatabaseCatalogRevision
+	var encoded []byte
+	err := db.Pool.QueryRow(ctx, `SELECT revision, catalog, catalog_digest FROM database_catalog_revisions WHERE revision=$1`, revision).
+		Scan(&result.Revision, &encoded, &result.Digest)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return DatabaseCatalogRevision{}, ErrDatabaseCatalogRevisionConflict
+	}
+	if err != nil || json.Unmarshal(encoded, &result.Catalog) != nil {
+		return DatabaseCatalogRevision{}, ErrDatabaseCatalogRevisionConflict
+	}
+	return result, nil
+}
+
 func loadActiveDatabaseCatalog(ctx context.Context, queryer interface {
 	QueryRow(context.Context, string, ...any) pgx.Row
 }) (DatabaseCatalogRevision, error) {
