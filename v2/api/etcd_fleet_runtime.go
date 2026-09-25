@@ -113,6 +113,11 @@ func runEtcdFleetRuntime(cfg *config.Config, backend startup.ControlBackendConfi
 	router.With(read).Get("/api/v1/operations/{id}", etcdFleetOperation(operations, canaryHTTPEnabled))
 	// A credential may retire itself regardless of its application scopes.
 	managed := etcdManagedTokenAuth(cfg, identities)
+	// GitHub's short-lived assertion is the credential for this route; a Norn
+	// bearer token does not exist until the durable exchange succeeds.
+	router.Post("/api/v1/auth/github-actions/exchange", func(w http.ResponseWriter, r *http.Request) {
+		handler.ExchangeFleetGitHubActionsOIDC(cfg, identities, w, r)
+	})
 	router.With(managed).Post("/api/v1/auth/rotate", func(w http.ResponseWriter, r *http.Request) {
 		handler.RotateManagedToken(cfg, identities, nil, w, r)
 	})
@@ -156,8 +161,8 @@ func etcdCanaryPreviewFlags(getenv func(string) string) (workerEnabled, httpEnab
 }
 
 func etcdFleetCapabilities(canaryHTTPEnabled bool) map[string]interface{} {
-	features := []string{"etcd-normal-router-v1", "managed-token-revocation", "managed-token-lifecycle", "signed-operation-acceptance", "fleet-inventory", "durable-fleet-capacity-plans"}
-	endpoints := map[string]string{"fleetNodePools": "/api/v1/fleet/node-pools", "fleetPlans": "/api/v1/fleet/plans", "fleetPlan": "/api/v1/fleet/node-pools/{pool}/plan", "operation": "/api/v1/operations/{id}", "tokenRotate": "/api/v1/auth/rotate", "tokenRevoke": "/api/v1/auth/revoke"}
+	features := []string{"etcd-normal-router-v1", "managed-token-revocation", "managed-token-lifecycle", "fleet-github-oidc-exchange", "signed-operation-acceptance", "fleet-inventory", "durable-fleet-capacity-plans"}
+	endpoints := map[string]string{"fleetNodePools": "/api/v1/fleet/node-pools", "fleetPlans": "/api/v1/fleet/plans", "fleetPlan": "/api/v1/fleet/node-pools/{pool}/plan", "operation": "/api/v1/operations/{id}", "tokenRotate": "/api/v1/auth/rotate", "tokenRevoke": "/api/v1/auth/revoke", "fleetOIDCExchange": "/api/v1/auth/github-actions/exchange"}
 	unsupported := []string{"app-mutations", "fleet-runner-attempts", "fleet-github-bridge", "operation-cancellation"}
 	if canaryHTTPEnabled {
 		features = append(features, "durable-canary-promotion-preview")

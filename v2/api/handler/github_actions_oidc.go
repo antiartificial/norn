@@ -17,6 +17,7 @@ import (
 	"github.com/golang-jwt/jwt/v5"
 	"github.com/google/uuid"
 
+	"norn/v2/api/config"
 	"norn/v2/api/store"
 )
 
@@ -68,7 +69,22 @@ type githubJWK struct {
 // Norn token. It intentionally accepts the assertion only in Authorization so
 // proxy/access logs do not capture it as a JSON field.
 func (h *Handler) ExchangeGitHubActionsOIDC(w http.ResponseWriter, r *http.Request) {
-	if h == nil || h.cfg == nil || h.cfg.APIToken == "" || h.db == nil {
+	if h == nil {
+		WriteControlProblem(w, r, http.StatusServiceUnavailable, "github_actions_oidc_unavailable", "GitHub Actions OIDC exchange is not configured")
+		return
+	}
+	h.exchangeGitHubActionsOIDC(h.db, false, w, r)
+}
+
+// ExchangeFleetGitHubActionsOIDC uses the shared identity policy and durable
+// AuthStore on a PostgreSQL-free Fleet controller. Its route issues only the
+// fleet:operate scope; the normal PG handler retains its release scopes.
+func ExchangeFleetGitHubActionsOIDC(cfg *config.Config, identities store.AuthStore, w http.ResponseWriter, r *http.Request) {
+	(&Handler{cfg: cfg}).exchangeGitHubActionsOIDC(identities, true, w, r)
+}
+
+func (h *Handler) exchangeGitHubActionsOIDC(identities store.IdentityStore, fleetOnly bool, w http.ResponseWriter, r *http.Request) {
+	if h.cfg == nil || h.cfg.APIToken == "" || identities == nil {
 		WriteControlProblem(w, r, http.StatusServiceUnavailable, "github_actions_oidc_unavailable", "GitHub Actions OIDC exchange is not configured")
 		return
 	}
@@ -82,7 +98,7 @@ func (h *Handler) ExchangeGitHubActionsOIDC(w http.ResponseWriter, r *http.Reque
 		return
 	}
 	request.Scope, request.App, request.Environment, request.Intent = strings.TrimSpace(request.Scope), strings.TrimSpace(request.App), strings.TrimSpace(request.Environment), strings.TrimSpace(request.Intent)
-	if !githubActionsExchangeScopeAllowed(request.Scope) || request.Environment != h.cfg.EnvironmentID() || (request.Scope != ScopeFleetOperate && request.App == "") {
+	if !githubActionsExchangeScopeAllowed(request.Scope) || (fleetOnly && request.Scope != ScopeFleetOperate) || request.Environment != h.cfg.EnvironmentID() || (request.Scope != ScopeFleetOperate && request.App == "") {
 		WriteControlProblem(w, r, http.StatusBadRequest, "invalid_github_actions_exchange", "scope, app, and environment are not valid for this exchange")
 		return
 	}
@@ -104,7 +120,7 @@ func (h *Handler) ExchangeGitHubActionsOIDC(w http.ResponseWriter, r *http.Reque
 	// Reserve the verified GitHub issuer+jti before stateless token signing.
 	// If signing/recording later fails the assertion is intentionally burned;
 	// callers can obtain a fresh short-lived GitHub assertion.
-	if err := h.db.ConsumeGitHubActionsAssertion(r.Context(), claims.Issuer, claims.ID, claims.ExpiresAt.Time); err != nil {
+	if err := identities.ConsumeGitHubActionsAssertion(r.Context(), claims.Issuer, claims.ID, claims.ExpiresAt.Time); err != nil {
 		if errors.Is(err, store.ErrGitHubActionsAssertionConsumed) {
 			WriteControlProblem(w, r, http.StatusConflict, "github_actions_assertion_replayed", "GitHub Actions OIDC assertion was already consumed")
 			return
@@ -122,7 +138,7 @@ func (h *Handler) ExchangeGitHubActionsOIDC(w http.ResponseWriter, r *http.Reque
 		WriteControlProblem(w, r, http.StatusInternalServerError, "github_actions_exchange_failed", "failed to sign Norn token")
 		return
 	}
-	if err := h.db.RecordAccessToken(r.Context(), &store.AccessToken{JTI: claimsOut.Jti, Subject: claimsOut.Sub, Scopes: claimsOut.Scopes, IssuedAt: now, ExpiresAt: now.Add(ttl)}); err != nil {
+	if err := identities.RecordAccessToken(r.Context(), &store.AccessToken{JTI: claimsOut.Jti, Subject: claimsOut.Sub, Scopes: claimsOut.Scopes, IssuedAt: now, ExpiresAt: now.Add(ttl)}); err != nil {
 		WriteControlProblem(w, r, http.StatusInternalServerError, "github_actions_exchange_failed", "failed to record Norn token")
 		return
 	}
