@@ -1,6 +1,7 @@
 package nomad
 
 import (
+	"bytes"
 	"context"
 	"crypto/sha256"
 	"encoding/base64"
@@ -441,9 +442,12 @@ func TestWordPressVerifiedTLSDropInInNomad(t *testing.T) {
 //
 // In addition to the normal disposable Nomad/MySQL TLS variables, set
 // NORN_TEST_WORDPRESS_HOST_PORT, NORN_TEST_WORDPRESS_WRONG_CA_HOST_PORT,
+// NORN_TEST_WORDPRESS_WRONG_HOST_HOST_PORT, NORN_TEST_MYSQL_TLS_WRONG_HOST,
 // NORN_TEST_WORDPRESS_CONTENT_HOST_VOLUME, and
 // NORN_TEST_WORDPRESS_CONTENT_SENTINEL_PATH. The sentinel path must be an
 // absolute regular file under the host volume and is read without modification.
+// NORN_TEST_MYSQL_TLS_WRONG_HOST_DOCKER_EXTRA_HOST may supply a Docker host
+// alias such as wrong-wp-host:host-gateway for a reachable wrong hostname.
 func TestWordPressVerifiedTLSStartupAdapterPersistentContentInNomad(t *testing.T) {
 	address := os.Getenv("NORN_TEST_NOMAD_ADDR")
 	host, user, password, name := os.Getenv("NORN_TEST_MYSQL_ALLOCATION_HOST"), os.Getenv("NORN_TEST_MYSQL_USER"), os.Getenv("NORN_TEST_MYSQL_PASSWORD"), os.Getenv("NORN_TEST_MYSQL_DATABASE")
@@ -451,10 +455,13 @@ func TestWordPressVerifiedTLSStartupAdapterPersistentContentInNomad(t *testing.T
 	wrongCA, hasWrongCA := qualificationPEM(t, "NORN_TEST_MYSQL_TLS_WRONG_CA_PEM_B64")
 	port, portErr := strconv.Atoi(os.Getenv("NORN_TEST_WORDPRESS_HOST_PORT"))
 	wrongCAPort, wrongCAPortErr := strconv.Atoi(os.Getenv("NORN_TEST_WORDPRESS_WRONG_CA_HOST_PORT"))
+	wrongHostPort, wrongHostPortErr := strconv.Atoi(os.Getenv("NORN_TEST_WORDPRESS_WRONG_HOST_HOST_PORT"))
+	wrongHost := os.Getenv("NORN_TEST_MYSQL_TLS_WRONG_HOST")
+	wrongHostExtraHost := os.Getenv("NORN_TEST_MYSQL_TLS_WRONG_HOST_DOCKER_EXTRA_HOST")
 	volumeName := os.Getenv("NORN_TEST_WORDPRESS_CONTENT_HOST_VOLUME")
 	sentinelPath := os.Getenv("NORN_TEST_WORDPRESS_CONTENT_SENTINEL_PATH")
-	if address == "" || host == "" || user == "" || password == "" || name == "" || !hasCA || !hasWrongCA || portErr != nil || wrongCAPortErr != nil || port < 1 || wrongCAPort < 1 || port > 65535 || wrongCAPort > 65535 || port == wrongCAPort || volumeName == "" || sentinelPath == "" {
-		t.Skip("set disposable Nomad/MySQL TLS variables, good and wrong-CA WordPress ports, and persistent wp-content host-volume sentinel variables for startup-adapter allocation qualification")
+	if address == "" || host == "" || wrongHost == "" || wrongHost == host || user == "" || password == "" || name == "" || !hasCA || !hasWrongCA || portErr != nil || wrongCAPortErr != nil || wrongHostPortErr != nil || port < 1 || wrongCAPort < 1 || wrongHostPort < 1 || port > 65535 || wrongCAPort > 65535 || wrongHostPort > 65535 || port == wrongCAPort || port == wrongHostPort || wrongCAPort == wrongHostPort || volumeName == "" || sentinelPath == "" {
+		t.Skip("set disposable Nomad/MySQL TLS variables, distinct good/wrong-CA/wrong-host WordPress ports, reachable wrong host, and persistent wp-content host-volume sentinel variables")
 	}
 	if !filepath.IsAbs(sentinelPath) {
 		t.Fatal("NORN_TEST_WORDPRESS_CONTENT_SENTINEL_PATH must be absolute")
@@ -492,6 +499,9 @@ func TestWordPressVerifiedTLSStartupAdapterPersistentContentInNomad(t *testing.T
 		// templates, volume, or WordPress entrypoint path under qualification.
 		job.TaskGroups[0].Services = nil
 		job.TaskGroups[0].Tasks[0].Config["force_pull"] = false
+		if wrongHostExtraHost != "" {
+			job.TaskGroups[0].Tasks[0].Config["extra_hosts"] = []string{wrongHostExtraHost}
+		}
 		return job, region
 	}
 	app := fmt.Sprintf("norn-m2-wordpress-adapter-%d", time.Now().UnixNano())
@@ -527,6 +537,25 @@ func TestWordPressVerifiedTLSStartupAdapterPersistentContentInNomad(t *testing.T
 		t.Fatalf("register product startup-adapter wrong-CA job: %v", err)
 	}
 	assertWordPressDatabasePage(t, client, wrongJobID, wrongCAPort, false, "product startup-adapter wrong-CA")
+	wrongHostJob, wrongHostRegion := newJob(app+"-wrong-host", wrongHostPort)
+	wrongHostJobID := *wrongHostJob.ID
+	t.Cleanup(func() {
+		_, _, _ = client.api.Jobs().Deregister(wrongHostJobID, true, nil)
+		_, _ = client.api.Variables().Delete(DatabaseVariablePath(wrongHostJobID), nil)
+	})
+	wrongHostItems := map[string]string{
+		DatabaseComponentItemKey("primary", "host"): wrongHost, DatabaseComponentItemKey("primary", "user"): user,
+		DatabaseComponentItemKey("primary", "password"): password, DatabaseComponentItemKey("primary", "name"): name,
+		DatabaseTLSItemKey("primary", "ca"): string(ca),
+	}
+	if err := client.DeliverDatabaseVariable(wrongHostRegion.NomadRegion, wrongHostJobID, wrongHostItems, 7); err != nil {
+		t.Fatal(err)
+	}
+	if _, _, err := client.api.Jobs().Register(wrongHostJob, nil); err != nil {
+		t.Fatalf("register product startup-adapter wrong-host job: %v", err)
+	}
+	assertWordPressDatabasePage(t, client, wrongHostJobID, wrongHostPort, false, "product startup-adapter hostname mismatch")
+	assertWordPressAllocationTCPReachable(t, client, wrongHostJobID)
 	register := func() string {
 		t.Helper()
 		if _, _, err := client.api.Jobs().Register(job, nil); err != nil {
@@ -564,6 +593,33 @@ func freeLocalTCPPort(t *testing.T) int {
 		t.Fatal(err)
 	}
 	return port
+}
+
+func assertWordPressAllocationTCPReachable(t *testing.T, client *Client, jobID string) {
+	t.Helper()
+	allocations, _, err := client.api.Jobs().Allocations(jobID, false, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, allocation := range allocations {
+		if allocation.ClientStatus != "running" {
+			continue
+		}
+		full, _, err := client.api.Allocations().Info(allocation.ID, nil)
+		if err != nil {
+			t.Fatal(err)
+		}
+		var stdout, stderr bytes.Buffer
+		probe := `$target = parse_url('tcp://' . getenv('WORDPRESS_DB_HOST')); $socket = @fsockopen($target['host'], $target['port'], $errno, $error, 5); if (!$socket) { fwrite(STDERR, $error); exit(1); } fclose($socket); echo 'reachable';`
+		ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+		exitCode, err := client.api.Allocations().Exec(ctx, full, "web", false, []string{"php", "-r", probe}, strings.NewReader(""), &stdout, &stderr, nil, nil)
+		cancel()
+		if err != nil || exitCode != 0 || stdout.String() != "reachable" {
+			t.Fatalf("wrong-host WordPress allocation TCP reachability: exit=%d stdout=%q stderr=%q err=%v", exitCode, stdout.String(), stderr.String(), err)
+		}
+		return
+	}
+	t.Fatalf("wrong-host WordPress job %s has no running allocation for TCP reachability check", jobID)
 }
 
 func assertWordPressDatabasePageWithSentinel(t *testing.T, client *Client, jobID string, port int, sentinelName string, wantSentinel []byte) string {
