@@ -510,6 +510,11 @@ func TestMySQLRestoreIntentAgainstDisposableEngines(t *testing.T) {
 	if err := recoveryRunner.RunClaimedTargetUnlock(ctx, recoveryClaim); err != nil {
 		t.Fatalf("supervised target unlock: %v", err)
 	}
+	// The short lease exercises supervision during unlock. Give the following
+	// inspection assertions their own lease after the runner stops renewing it.
+	if err := control.RenewOperationClaim(ctx, recoveryClaim, time.Minute); err != nil {
+		t.Fatalf("renew recovery claim after target unlock: %v", err)
+	}
 	if err := recoveryRunner.RunClaimedTargetUnlock(ctx, recoveryClaim); !errors.Is(err, ErrMySQLRestoreFence) {
 		t.Fatalf("one-way target unlock was replayed: %v", err)
 	}
