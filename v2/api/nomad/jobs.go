@@ -20,6 +20,7 @@ var (
 
 const cronPauseEffectMetaKey = "norn.cron-pause.effect-id"
 const cronResumeEffectMetaKey = "norn.cron-resume.effect-id"
+const cronScheduleEffectMetaKey = "norn.cron-schedule.effect-id"
 
 // SubmitJob registers a job with Nomad.
 func (c *Client) SubmitJob(job *nomadapi.Job) (string, error) {
@@ -176,6 +177,46 @@ func (c *Client) ResumePeriodicJobWithReplacement(jobID string, expectedModifyIn
 			return fmt.Errorf("%w for %s: %v", ErrJobRevisionChanged, jobID, err)
 		}
 		return fmt.Errorf("resume periodic job %s with replacement: %w", jobID, err)
+	}
+	return nil
+}
+
+// UpdatePeriodicJobSchedule atomically installs a freshly translated periodic
+// job at the authorized revision. It preserves the parent Stop state: changing
+// a schedule must not silently resume an intentionally paused process.
+func (c *Client) UpdatePeriodicJobSchedule(jobID string, expectedModifyIndex uint64, effectID string, replacement *nomadapi.Job) error {
+	if strings.TrimSpace(jobID) == "" || expectedModifyIndex == 0 || strings.TrimSpace(effectID) == "" || replacement == nil || replacement.ID == nil || *replacement.ID != jobID || replacement.Periodic == nil || replacement.Periodic.Spec == nil || strings.TrimSpace(*replacement.Periodic.Spec) == "" {
+		return fmt.Errorf("periodic schedule update requires a matching job ID, schedule, modify index, and effect ID")
+	}
+	if err := c.requireAtomicJobCAS(); err != nil {
+		return err
+	}
+	current, _, err := c.api.Jobs().Info(jobID, nil)
+	if err != nil {
+		return fmt.Errorf("read periodic job %s for schedule update: %w", jobID, err)
+	}
+	if current == nil || current.Periodic == nil {
+		return fmt.Errorf("job %s is not periodic", jobID)
+	}
+	if current.JobModifyIndex == nil || *current.JobModifyIndex != expectedModifyIndex {
+		return fmt.Errorf("%w for %s", ErrJobRevisionChanged, jobID)
+	}
+	job := *replacement
+	if current.Stop != nil {
+		stopped := *current.Stop
+		job.Stop = &stopped
+	}
+	job.Meta = make(map[string]string, len(replacement.Meta)+1)
+	for key, value := range replacement.Meta {
+		job.Meta[key] = value
+	}
+	job.Meta[cronScheduleEffectMetaKey] = effectID
+	_, _, err = c.api.Jobs().RegisterOpts(&job, &nomadapi.RegisterOptions{EnforceIndex: true, ModifyIndex: expectedModifyIndex}, nil)
+	if err != nil {
+		if strings.Contains(err.Error(), nomadapi.RegisterEnforceIndexErrPrefix) {
+			return fmt.Errorf("%w for %s: %v", ErrJobRevisionChanged, jobID, err)
+		}
+		return fmt.Errorf("update periodic job %s schedule: %w", jobID, err)
 	}
 	return nil
 }
@@ -726,19 +767,20 @@ func (c *Client) PeriodicChildren(parentJobID string) ([]CronRun, error) {
 
 // PeriodicJobInfo holds scheduling metadata for a periodic job.
 type PeriodicJobInfo struct {
-	JobID              string `json:"jobId"`
-	Schedule           string `json:"schedule"`
-	TimeZone           string `json:"timezone,omitempty"`
-	Version            uint64 `json:"version"`
-	ModifyIndex        uint64 `json:"modifyIndex"`
-	SubmittedAt        string `json:"submittedAt,omitempty"`
-	Paused             bool   `json:"paused"`
-	Status             string `json:"status"`
-	CronPauseEffectID  string `json:"cronPauseEffectId,omitempty"`
-	CronResumeEffectID string `json:"cronResumeEffectId,omitempty"`
-	ChildrenPending    int64  `json:"childrenPending,omitempty"`
-	ChildrenRunning    int64  `json:"childrenRunning,omitempty"`
-	ChildrenDead       int64  `json:"childrenDead,omitempty"`
+	JobID                string `json:"jobId"`
+	Schedule             string `json:"schedule"`
+	TimeZone             string `json:"timezone,omitempty"`
+	Version              uint64 `json:"version"`
+	ModifyIndex          uint64 `json:"modifyIndex"`
+	SubmittedAt          string `json:"submittedAt,omitempty"`
+	Paused               bool   `json:"paused"`
+	Status               string `json:"status"`
+	CronPauseEffectID    string `json:"cronPauseEffectId,omitempty"`
+	CronResumeEffectID   string `json:"cronResumeEffectId,omitempty"`
+	CronScheduleEffectID string `json:"cronScheduleEffectId,omitempty"`
+	ChildrenPending      int64  `json:"childrenPending,omitempty"`
+	ChildrenRunning      int64  `json:"childrenRunning,omitempty"`
+	ChildrenDead         int64  `json:"childrenDead,omitempty"`
 }
 
 // PeriodicJobSchedule returns the cron spec and status for a periodic parent job.
@@ -774,6 +816,7 @@ func (c *Client) PeriodicJobSchedule(jobID string) (*PeriodicJobInfo, error) {
 	}
 	info.CronPauseEffectID = job.Meta[cronPauseEffectMetaKey]
 	info.CronResumeEffectID = job.Meta[cronResumeEffectMetaKey]
+	info.CronScheduleEffectID = job.Meta[cronScheduleEffectMetaKey]
 	if jobs, _, listErr := c.api.Jobs().List(&nomadapi.QueryOptions{Prefix: jobID}); listErr == nil {
 		for _, j := range jobs {
 			if j.ID != jobID || j.JobSummary == nil || j.JobSummary.Children == nil {

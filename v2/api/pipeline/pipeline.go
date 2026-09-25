@@ -79,9 +79,10 @@ type Pipeline struct {
 	RestartEffects *NomadRestartEffects
 	// CronPauseEffects fences periodic-job deregistration and its durable state
 	// transition. It is required before accepting app.cron-pause.
-	CronPauseEffects   *NomadCronPauseEffects
-	CronResumeEffects  *NomadCronResumeEffects
-	CronTriggerEffects *CronTriggerEffects
+	CronPauseEffects    *NomadCronPauseEffects
+	CronResumeEffects   *NomadCronResumeEffects
+	CronScheduleEffects *NomadCronScheduleEffects
+	CronTriggerEffects  *CronTriggerEffects
 	// RestartAvailability is a test-only admission seam. Production leaves it
 	// nil and requires RestartEffects.
 	RestartAvailability func() bool
@@ -93,8 +94,9 @@ type Pipeline struct {
 	FinishScaleIntent func(context.Context, store.OperationClaim, string, string, string, int, string, map[string]interface{}) error
 	// FinishCronPauseIntent atomically records paused cron state and terminalizes
 	// the claimed operation after Nomad has verified the periodic job stopped.
-	FinishCronPauseIntent  func(context.Context, store.OperationClaim, string, string, string, string, map[string]interface{}) error
-	FinishCronResumeIntent func(context.Context, store.OperationClaim, string, string, string, string, map[string]interface{}) error
+	FinishCronPauseIntent    func(context.Context, store.OperationClaim, string, string, string, string, map[string]interface{}) error
+	FinishCronResumeIntent   func(context.Context, store.OperationClaim, string, string, string, string, map[string]interface{}) error
+	FinishCronScheduleIntent func(context.Context, store.OperationClaim, string, string, bool, string, string, map[string]interface{}) error
 	// DatabaseTargets binds database-consuming operations to catalog
 	// targets. When nil (no NORN_DATABASE_PROFILE), v2 routing is unchanged.
 	DatabaseTargets *DatabaseTargets
@@ -326,6 +328,9 @@ func (p *Pipeline) ExecuteOperation(ctx context.Context, op *model.Operation, cl
 	}
 	if op.Kind == "app.cron-resume" {
 		return operationOutcome(p.executeCronResume(ctx, op, claim))
+	}
+	if op.Kind == "app.cron-schedule" {
+		return operationOutcome(p.executeCronSchedule(ctx, op, claim))
 	}
 	if op.Kind == "app.cron-trigger" {
 		return operationOutcome(p.executeCronTrigger(ctx, op, claim))

@@ -359,6 +359,11 @@ func main() {
 		log.Fatalf("configure durable app.cron-resume effects: %v", err)
 	}
 	pipe.CronResumeEffects = cronResumeEffects
+	cronScheduleEffects, err := pipeline.NewNomadCronScheduleEffects(db, nomadClient, pipe)
+	if err != nil {
+		log.Fatalf("configure durable app.cron-schedule effects: %v", err)
+	}
+	pipe.CronScheduleEffects = cronScheduleEffects
 	if nomadClient != nil {
 		cronTriggerEffects, triggerErr := pipeline.NewCronTriggerEffects(db, nomadClient)
 		if triggerErr != nil {

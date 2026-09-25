@@ -926,6 +926,13 @@ func (db *DB) FinishCronResumeClaimedOperation(ctx context.Context, claim Operat
 	return db.finishCronClaimedOperation(ctx, claim, app, process, schedule, false, message, metadata)
 }
 
+// FinishCronScheduleClaimedOperation commits a verified periodic replacement,
+// its effective schedule, and its terminal evidence intent in one claim-fenced
+// transaction. The previous state remains intact until this point.
+func (db *DB) FinishCronScheduleClaimedOperation(ctx context.Context, claim OperationClaim, app, process string, paused bool, schedule, message string, metadata map[string]interface{}) error {
+	return db.finishCronClaimedOperation(ctx, claim, app, process, schedule, paused, message, metadata)
+}
+
 func (db *DB) finishCronClaimedOperation(ctx context.Context, claim OperationClaim, app, process, schedule string, paused bool, message string, metadata map[string]interface{}) error {
 	if err := validateOperationClaim(claim); err != nil {
 		return err

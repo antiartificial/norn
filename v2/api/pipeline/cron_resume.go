@@ -334,6 +334,11 @@ func (p *Pipeline) recoverCronBlockingEffect(ctx context.Context, record effect.
 			return effect.ExecuteResult{}, fmt.Errorf("cron resume reconciler is unavailable")
 		}
 		return p.CronResumeEffects.executor.Recover(ctx, record)
+	case nomadCronScheduleStage:
+		if !p.CronScheduleAvailable() {
+			return effect.ExecuteResult{}, fmt.Errorf("cron schedule reconciler is unavailable")
+		}
+		return p.CronScheduleEffects.executor.Recover(ctx, record)
 	default:
 		return effect.ExecuteResult{}, fmt.Errorf("unrecognized cron effect stage %q", record.Reservation.Stage)
 	}

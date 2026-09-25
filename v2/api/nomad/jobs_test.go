@@ -216,6 +216,43 @@ func TestResumePeriodicJobWithReplacementPreservesTranslatedJobAndCAS(t *testing
 	}
 }
 
+func TestUpdatePeriodicJobSchedulePreservesPauseAndUsesEffectMarker(t *testing.T) {
+	jobID, oldSchedule, newSchedule, status := "widget-nightly", "0 2 * * *", "15 2 * * *", "dead"
+	index := uint64(42)
+	stopped := true
+	replacement := &nomadapi.Job{ID: &jobID, Periodic: &nomadapi.PeriodicConfig{Spec: &newSchedule}, Meta: map[string]string{"delivery-revision": "8"}}
+	var wrote bool
+	client := newTestNomadClient(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch {
+		case r.Method == http.MethodGet && r.URL.Path == "/v1/agent/self":
+			_ = json.NewEncoder(w).Encode(&nomadapi.AgentSelf{Config: map[string]interface{}{"Version": map[string]interface{}{"Version": "2.0.7"}}})
+		case r.Method == http.MethodGet && r.URL.Path == "/v1/job/widget-nightly":
+			_ = json.NewEncoder(w).Encode(&nomadapi.Job{ID: &jobID, Status: &status, Stop: &stopped, JobModifyIndex: &index, Periodic: &nomadapi.PeriodicConfig{Spec: &oldSchedule}})
+		case r.Method == http.MethodPut && r.URL.Path == "/v1/jobs":
+			var request nomadapi.JobRegisterRequest
+			if err := json.NewDecoder(r.Body).Decode(&request); err != nil {
+				t.Fatal(err)
+			}
+			if !request.EnforceIndex || request.JobModifyIndex != index || request.Job == nil || request.Job.Stop == nil || !*request.Job.Stop || request.Job.Periodic == nil || request.Job.Periodic.Spec == nil || *request.Job.Periodic.Spec != newSchedule || request.Job.Meta[cronScheduleEffectMetaKey] != "schedule-effect" || request.Job.Meta["delivery-revision"] != "8" {
+				t.Fatalf("guarded schedule replacement did not preserve intent: %+v", request)
+			}
+			wrote = true
+			_ = json.NewEncoder(w).Encode(&nomadapi.JobRegisterResponse{})
+		default:
+			http.Error(w, "unexpected request", http.StatusNotFound)
+		}
+	}))
+	if err := client.UpdatePeriodicJobSchedule(jobID, index, "schedule-effect", replacement); err != nil {
+		t.Fatal(err)
+	}
+	if !wrote {
+		t.Fatal("expected guarded registration")
+	}
+	if replacement.Stop != nil || replacement.Meta[cronScheduleEffectMetaKey] != "" {
+		t.Fatal("caller-owned replacement was modified")
+	}
+}
+
 func TestResumePeriodicJobWithReplacementRejectsStaleRevision(t *testing.T) {
 	jobID, schedule, status := "widget-nightly", "15 3 * * *", "dead"
 	index := uint64(43)
