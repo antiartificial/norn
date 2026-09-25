@@ -17,6 +17,7 @@ import (
 	clientv3 "go.etcd.io/etcd/client/v3"
 
 	"norn/v2/api/effect"
+	"norn/v2/api/fleet"
 	"norn/v2/api/model"
 	"norn/v2/api/store"
 )
@@ -209,6 +210,9 @@ func (s *V3OperationStore) acceptanceKey(i store.OperationRequestIdentity) strin
 	d := sha256.Sum256(b)
 	return s.prefix + "/v3/acceptance/" + hex.EncodeToString(d[:])
 }
+func (s *V3OperationStore) operationAcceptanceIndexKey(operationID string) string {
+	return s.prefix + "/v3/operation-acceptance/" + operationID
+}
 func (s *V3OperationStore) replayLiveKey(acceptanceKey string) string {
 	return acceptanceKey + "/replay-live"
 }
@@ -227,7 +231,10 @@ func (s *V3OperationStore) Accept(ctx context.Context, a store.OperationAcceptan
 	// The current adapter does not yet implement these multi-record admission
 	// aggregates. Refuse them before any write instead of storing a receipt
 	// whose domain state or policy was never enforced.
-	if a.Deployment != nil || len(a.Regions) > 0 || a.Admission.OneActiveMutablePerApp || a.FleetReconciliation != nil || a.FleetRunnerAttempt != nil {
+	if a.FleetRunnerAttempt != nil {
+		return s.acceptFleetRunnerAttempt(ctx, a)
+	}
+	if a.Deployment != nil || len(a.Regions) > 0 || a.Admission.OneActiveMutablePerApp || a.FleetReconciliation != nil {
 		return store.AcceptedOperation{}, &store.AcceptanceValidationError{Reason: "etcd operation aggregate admission is not implemented"}
 	}
 	// Canary promotion has an atomic effect aggregate. Its replay identity may
@@ -281,7 +288,7 @@ func (s *V3OperationStore) Accept(ctx context.Context, a store.OperationAcceptan
 		}
 		return store.AcceptedOperation{}, err
 	}
-	puts := []clientv3.Op{clientv3.OpPut(key, string(av)), clientv3.OpPut(s.opKey(a.Operation.ID), string(ov)), clientv3.OpPut(s.operationKindIndexKey(a.Operation.Kind, acceptedAt, a.Operation.ID), a.Operation.ID)}
+	puts := []clientv3.Op{clientv3.OpPut(key, string(av)), clientv3.OpPut(s.opKey(a.Operation.ID), string(ov)), clientv3.OpPut(s.operationKindIndexKey(a.Operation.Kind, acceptedAt, a.Operation.ID), a.Operation.ID), clientv3.OpPut(s.operationAcceptanceIndexKey(a.Operation.ID), key)}
 	if replayLease != 0 {
 		puts = append(puts, clientv3.OpPut(s.replayLiveKey(key), store.OperationReplayContractVersion, clientv3.WithLease(replayLease)))
 	}
@@ -334,8 +341,28 @@ func (s *V3OperationStore) replay(ctx context.Context, key string, loaded loaded
 	if e != nil {
 		return store.AcceptedOperation{}, &store.AcceptanceSignatureError{Err: fmt.Errorf("load accepted etcd operation: %w", e)}
 	}
-	if e := store.VerifyAcceptanceEvidence(store.AcceptanceEvidence{Identity: identity, IdentityFingerprint: got.Intent.Fingerprint, IdentityOperationID: got.Operation.ID, Intent: got.Intent, Operation: persisted.Operation}); e != nil {
+	var fleetAttempt *fleet.RunnerAttempt
+	var fleetLineageValid bool
+	if got.FleetRunnerAttempt != nil {
+		fleetAttempt, e = s.GetFleetRunnerAttempt(ctx, got.FleetRunnerAttempt.PlanID, got.FleetRunnerAttempt.ID)
+		if e != nil {
+			return store.AcceptedOperation{}, &store.AcceptanceSignatureError{Err: fmt.Errorf("load accepted fleet runner-attempt: %w", e)}
+		}
+		lineage, _, lineageErr := s.listFleetRunnerAttempts(ctx, fleetAttempt.PlanID)
+		if lineageErr != nil {
+			return store.AcceptedOperation{}, &store.AcceptanceSignatureError{Err: fmt.Errorf("load fleet runner-attempt lineage: %w", lineageErr)}
+		}
+		fleetLineageValid = fleetValidateLineage(lineage) == nil
+	}
+	if e := store.VerifyAcceptanceEvidence(store.AcceptanceEvidence{Identity: identity, IdentityFingerprint: got.Intent.Fingerprint, IdentityOperationID: got.Operation.ID, Intent: got.Intent, Operation: persisted.Operation, FleetRunnerAttempt: fleetAttempt, FleetRunnerLineageValid: fleetLineageValid}); e != nil {
 		return store.AcceptedOperation{}, &store.AcceptanceSignatureError{Err: e}
+	}
+	if got.FleetRunnerAttempt != nil {
+		attempt, verifyErr := s.verifyFleetRunnerAttemptReplay(ctx, got)
+		if verifyErr != nil {
+			return store.AcceptedOperation{}, &store.AcceptanceSignatureError{Err: fmt.Errorf("verify fleet runner-attempt replay: %w", verifyErr)}
+		}
+		got.FleetRunnerAttempt = attempt
 	}
 	if record.ReplayContractVersion != "" {
 		if record.ReplayContractVersion != store.OperationReplayContractVersion || record.ReplayExpiresAt == nil {

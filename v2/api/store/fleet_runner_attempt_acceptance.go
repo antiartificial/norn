@@ -89,6 +89,23 @@ func normalizeFleetRunnerAttemptAcceptance(acceptance *OperationAcceptance) erro
 	return nil
 }
 
+// NormalizeFleetRunnerAttemptAcceptance validates the typed runner-attempt
+// portion of an operation acceptance before a backend-specific atomic
+// aggregate is assembled.  Backends must still enforce plan, dispatch, and
+// lineage state atomically with the signed receipt.
+func NormalizeFleetRunnerAttemptAcceptance(acceptance *OperationAcceptance) error {
+	return normalizeFleetRunnerAttemptAcceptance(acceptance)
+}
+
+// BindAcceptedFleetRunnerAttempt attaches the server-derived attempt identity
+// to the acceptance envelope before it is signed.  Callers must only use an
+// attempt they have created in the same atomic admission transaction.
+func BindAcceptedFleetRunnerAttempt(acceptance *OperationAcceptance, attempt *fleet.RunnerAttempt) {
+	if acceptance != nil {
+		acceptance.acceptedFleetRunnerAttempt = attempt
+	}
+}
+
 func trimFleetRunnerAttemptAdmission(admission *FleetRunnerAttemptAdmission) {
 	admission.PlanID = strings.TrimSpace(admission.PlanID)
 	admission.AttemptID = strings.TrimSpace(admission.AttemptID)
@@ -325,6 +342,24 @@ func verifyImmutableFleetRunnerAttempt(expected *FleetRunnerAttemptAdmission, ou
 		return fmt.Errorf("fleet runner-attempt lineage references are missing or inconsistent")
 	}
 	return nil
+}
+
+// VerifyFleetRunnerAttemptEvidence verifies that the signed acceptance
+// envelope still names exactly the immutable fields persisted for its runner
+// attempt.  It is used by non-PostgreSQL backends while replaying a signed
+// acceptance, after they have independently validated the full lineage.
+func VerifyFleetRunnerAttemptEvidence(expected *FleetRunnerAttemptAdmission, canonical []byte, actual *fleet.RunnerAttempt, lineageValid bool) error {
+	if expected == nil {
+		return verifyImmutableFleetRunnerAttempt(nil, nil, actual, lineageValid)
+	}
+	var envelope acceptanceEnvelope
+	if err := json.Unmarshal(canonical, &envelope); err != nil {
+		return fmt.Errorf("decode signed fleet runner-attempt envelope: %w", err)
+	}
+	if envelope.FleetRunnerAttempt == nil || actual == nil {
+		return fmt.Errorf("fleet runner-attempt replay link missing: signed=%t durable=%t", envelope.FleetRunnerAttempt != nil, actual != nil)
+	}
+	return verifyImmutableFleetRunnerAttempt(expected, envelope.FleetRunnerAttempt, actual, lineageValid)
 }
 
 func fleetRunnerAttemptAdmissionError(code, reason string) error {
