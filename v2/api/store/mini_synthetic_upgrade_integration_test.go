@@ -69,16 +69,16 @@ func TestSyntheticMiniControlUpgradeAndReaderBoundary(t *testing.T) {
 	if before != after {
 		t.Fatalf("synthetic legacy reads changed across migration: before=%s after=%s", before, after)
 	}
-	// Migration 17 explicitly retires the preceding reader contract. A
-	// rollback to that reader must refuse startup even though its SQL still
-	// happens to work against these rows.
-	oldReader, err := NewSchemaMigrator(pool, migrations[:16], BinarySchemaCompatibility{ReaderVersion: 2, WriterVersion: 13}, SchemaMigratorOptions{})
+	// Migration 21 retires the preceding reader contract because it cannot
+	// decode function evidence bundles. A rollback to that reader must refuse
+	// startup even though its SQL still works against these legacy rows.
+	oldReader, err := NewSchemaMigrator(pool, migrations[:20], BinarySchemaCompatibility{ReaderVersion: 3, WriterVersion: 17}, SchemaMigratorOptions{})
 	if err != nil {
 		t.Fatal(err)
 	}
 	_, err = oldReader.Check(ctx, SchemaAccessReadOnly)
 	var incompatible *SchemaCompatibilityError
-	if !errors.As(err, &incompatible) || incompatible.Contract != "reader" || incompatible.Required != 3 {
+	if !errors.As(err, &incompatible) || incompatible.Contract != "reader" || incompatible.Required != 4 {
 		t.Fatalf("old reader check = %T %v, want reader compatibility refusal", err, err)
 	}
 	if _, err := migrator.Check(ctx, SchemaAccessReadWrite); err != nil {
