@@ -166,6 +166,13 @@ connected to the claimed worker or HTTP route. Nomad variable ACLs, job-spec
 identity and registration, terminal receipt, and real allocation proof remain
 open. A disposable Nomad 2.0.7 experiment showed that enforced zero-index
 registration rejects a duplicate, but the returned job has server-normalized
-fields that a verified public digest cannot yet compare exactly. The job
-lookup adapter therefore treats an exact 404 as absence and every existing
+fields that need a closed projection before comparison. A dormant function-job
+builder now defines one public Nomad dialect and derives its digest from the
+validated, canonicalized job. A disposable Nomad 2.0.7 register/read-back test
+matched the builder's digest after accepting only the observed server defaults.
+The job lookup adapter still treats an exact 404 as absence and every existing
 job as indeterminate. It does not register jobs or claim recovery evidence.
+The builder is not connected to the worker: its private variable template has
+no proven request-consumption path, and claimed-worker, terminal, and cleanup
+steps remain open. Requalify the closed projection on the release Nomad version
+before enabling submission.
