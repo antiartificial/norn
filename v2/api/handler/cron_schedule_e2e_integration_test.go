@@ -11,12 +11,14 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
 
 	"github.com/go-chi/chi/v5"
 	"github.com/google/uuid"
+	"github.com/jackc/pgx/v5/pgxpool"
 
 	"norn/v2/api/config"
 	"norn/v2/api/effect"
@@ -34,13 +36,16 @@ import (
 // replacement while the client loses its response; recovery must observe the
 // exact effect marker and never register a second replacement.
 func TestCronScheduleHTTPWorkerNomadPostgres(t *testing.T) {
-	testCronScheduleHTTPWorkerNomadPostgres(t, false)
+	testCronScheduleHTTPWorkerNomadPostgres(t, false, false)
 }
 func TestCronScheduleLostNomadResponseReconciles(t *testing.T) {
-	testCronScheduleHTTPWorkerNomadPostgres(t, true)
+	testCronScheduleHTTPWorkerNomadPostgres(t, true, false)
+}
+func TestCronScheduleTwoWorkersSameKey(t *testing.T) {
+	testCronScheduleHTTPWorkerNomadPostgres(t, false, true)
 }
 
-func testCronScheduleHTTPWorkerNomadPostgres(t *testing.T, loseResponse bool) {
+func testCronScheduleHTTPWorkerNomadPostgres(t *testing.T, loseResponse, twoWorkers bool) {
 	address := os.Getenv("NORN_TEST_NOMAD_ADDR")
 	if address == "" || os.Getenv("NORN_TEST_DATABASE_URL") == "" {
 		t.Skip("set NORN_TEST_NOMAD_ADDR and NORN_TEST_DATABASE_URL to disposable services")
@@ -159,13 +164,69 @@ func testCronScheduleHTTPWorkerNomadPostgres(t *testing.T, loseResponse bool) {
 		}
 		return rec.Code, op, rec.Body.String()
 	}
-	status, accepted, body := serve()
+	var status int
+	var accepted model.Operation
+	var body string
+	if twoWorkers {
+		type response struct {
+			status int
+			op     model.Operation
+			body   string
+		}
+		responses := make([]response, 4)
+		start := make(chan struct{})
+		var group sync.WaitGroup
+		for i := range responses {
+			group.Add(1)
+			go func(i int) {
+				defer group.Done()
+				<-start
+				responses[i].status, responses[i].op, responses[i].body = serve()
+			}(i)
+		}
+		close(start)
+		group.Wait()
+		acceptedCount := 0
+		for i, response := range responses {
+			if response.status == http.StatusAccepted {
+				acceptedCount++
+				status, accepted, body = response.status, response.op, response.body
+			} else if response.status != http.StatusOK {
+				t.Fatalf("duplicate request %d: status=%d op=%+v body=%s", i, response.status, response.op, response.body)
+			}
+		}
+		if acceptedCount != 1 {
+			t.Fatalf("concurrent accepts=%d, want one", acceptedCount)
+		}
+		for i, response := range responses {
+			if response.op.ID != accepted.ID {
+				t.Fatalf("duplicate request %d returned operation %s, want %s", i, response.op.ID, accepted.ID)
+			}
+		}
+	} else {
+		status, accepted, body = serve()
+	}
 	if status != http.StatusAccepted || accepted.Kind != "app.cron-schedule" {
 		t.Fatalf("accept status=%d operation=%+v body=%s", status, accepted, body)
 	}
 	workerCtx, cancel := context.WithTimeout(ctx, 25*time.Second)
 	defer cancel()
 	go worker.NewOperationWorkerForKinds(db, p, []string{"app.cron-schedule"}).Run(workerCtx)
+	if twoWorkers {
+		secondPool, poolErr := pgxpool.NewWithConfig(ctx, db.Pool.Config())
+		if poolErr != nil {
+			t.Fatal(poolErr)
+		}
+		defer secondPool.Close()
+		secondDB := &store.DB{Pool: secondPool}
+		secondPipeline := &pipeline.Pipeline{DB: secondDB, Nomad: client, AppsDir: root, SagaStore: saga.NewPostgresStore(secondPool)}
+		secondPipeline.CronScheduleEffects, err = pipeline.NewNomadCronScheduleEffects(secondDB, client, secondPipeline)
+		if err != nil {
+			t.Fatal(err)
+		}
+		secondPipeline.SetOperationStore(h.OperationStore())
+		go worker.NewOperationWorkerForKinds(secondDB, secondPipeline, []string{"app.cron-schedule"}).Run(workerCtx)
+	}
 	var finished *model.Operation
 	for workerCtx.Err() == nil {
 		finished, err = db.GetOperation(ctx, accepted.ID)

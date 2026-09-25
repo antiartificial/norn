@@ -213,6 +213,10 @@ func TestPGEffectStoreBlocksDifferentUnresolvedEffectsForSameApp(t *testing.T) {
 	if _, err := stores[0].Reserve(ctx, second); !errors.Is(err, effect.ErrResourceBlocked) {
 		t.Fatalf("different app effect overlap err=%v", err)
 	}
+	blocking, found, err := stores[0].UnresolvedForResource(ctx, authority, second.Resource)
+	if err != nil || !found || blocking.Token != reserved.Record.Token {
+		t.Fatalf("app-wide blocker = %+v found=%v err=%v", blocking, found, err)
+	}
 	identity := effect.ExecutionIdentity{Supervisor: first.Supervisor, SupervisorExecutionID: first.SupervisorExecutionID, RuntimeInstanceID: "restart-runtime"}
 	if err := stores[0].MarkLaunched(ctx, reserved.Record.Token, identity); err != nil {
 		t.Fatal(err)
