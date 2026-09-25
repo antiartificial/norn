@@ -108,7 +108,7 @@ func TestTLSDatabaseFilesArePrivateAndRevisionBound(t *testing.T) {
 	for material, suffix := range map[string]string{"ca": "ca.pem", "client_cert": "client-cert.pem", "client_key": "client-key.pem"} {
 		destination := "secrets/norn-databases/primary." + suffix
 		key := stagedKey(DatabaseTLSItemKey("primary", material), 7)
-		if !strings.Contains(paths[destination], "."+key) || strings.Contains(paths[destination], "{{ .norn_db_tls_") {
+		if !strings.Contains(paths[destination], "."+key+".Value }}") || strings.Contains(paths[destination], "{{ .norn_db_tls_") {
 			t.Fatalf("TLS template %s = %q", destination, paths[destination])
 		}
 	}
@@ -192,7 +192,7 @@ func TestDatabaseDeliveryTemplatesOnEveryTranslationPath(t *testing.T) {
 		if envTemplate == nil || !strings.Contains(*envTemplate.EmbeddedTmpl, "DATABASE_URL={{ .norn_rev5_db_url_primary.Value | toJSON }}") || strings.Contains(*envTemplate.EmbeddedTmpl, "ANALYTICS") {
 			t.Fatalf("%s env template = %+v", name, envTemplate)
 		}
-		if !strings.Contains(files["secrets/norn-databases/primary.url"], ".norn_rev5_db_url_primary") || !strings.Contains(files["secrets/norn-databases/analytics-db.url"], ".norn_rev5_db_url_analytics_db") {
+		if !strings.Contains(files["secrets/norn-databases/primary.url"], ".norn_rev5_db_url_primary.Value }}") || !strings.Contains(files["secrets/norn-databases/analytics-db.url"], ".norn_rev5_db_url_analytics_db.Value }}") {
 			t.Fatalf("%s file templates = %v", name, files)
 		}
 		for _, template := range task.Templates {
