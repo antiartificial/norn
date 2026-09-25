@@ -37,10 +37,12 @@ import (
 // is only a transport barrier: the periodic parent is registered with, and the
 // first worker read is served by, the supplied live Nomad agent.
 //
-// A replacement worker receives the reserved effect after claim recovery. It
-// must not call Force; after its bounded recovery attempts it leaves a manual
-// review receipt and the unresolved reservation. This is intentionally opt-in:
-// it needs disposable loopback Nomad and PostgreSQL services.
+// Two replacement workers race the recovered receipt after the process crash.
+// The winner receives the reserved effect after claim recovery and must not
+// call Force; its bounded recovery leaves a manual-review receipt and the
+// unresolved reservation. The other replica cannot claim that same receipt.
+// This is intentionally opt-in: it needs disposable loopback Nomad and
+// PostgreSQL services.
 func TestCronTriggerWorkerProcessCrashNomadPostgres(t *testing.T) {
 	if os.Getenv("NORN_CRON_TRIGGER_CRASH_WORKER") == "1" {
 		runCronTriggerCrashWorker(t)
@@ -107,13 +109,23 @@ func TestCronTriggerWorkerProcessCrashNomadPostgres(t *testing.T) {
 	if _, err := db.Pool.Exec(context.Background(), `UPDATE operations SET locked_until=now()-interval '1 second' WHERE id=$1`, accepted.ID); err != nil {
 		t.Fatal(err)
 	}
-	restarted := cronTriggerCrashWorkerCommand(t, databaseURL, schema, address, root)
-	if err := restarted.Start(); err != nil {
-		t.Fatal(err)
+	// Start two independent API-worker processes at the recovered receipt. The
+	// signed acceptance admits only this one mutable app operation, so exactly
+	// one process may reclaim it. The winner must see the first process's
+	// unresolved effect and leave it for review; neither replica may Force the
+	// live Nomad parent a second time.
+	restarted := []*exec.Cmd{
+		cronTriggerCrashWorkerCommand(t, databaseURL, schema, address, root),
+		cronTriggerCrashWorkerCommand(t, databaseURL, schema, address, root),
 	}
-	t.Cleanup(func() { _ = restarted.Process.Kill(); _, _ = restarted.Process.Wait() })
+	for index, command := range restarted {
+		if err := command.Start(); err != nil {
+			t.Fatalf("start recovered worker %d: %v", index+1, err)
+		}
+		t.Cleanup(func() { _ = command.Process.Kill(); _, _ = command.Process.Wait() })
+	}
 	final := cronTriggerCrashWaitForTerminal(t, db, accepted.ID, 25*time.Second)
-	if final.Status != model.OperationFailed || final.Metadata["manualRecoveryRequired"] != true || final.Metadata["externalEffectRecoveryPending"] != true || final.Metadata["retryBudgetExhausted"] != true {
+	if final.Status != model.OperationFailed || final.Attempts != final.MaxAttempts || final.Metadata["manualRecoveryRequired"] != true || final.Metadata["externalEffectRecoveryPending"] != true || final.Metadata["retryBudgetExhausted"] != true {
 		t.Fatalf("restarted receipt=%+v", final)
 	}
 	if err := db.Pool.QueryRow(context.Background(), `SELECT lifecycle FROM operation_effects WHERE operation_id=$1`, accepted.ID).Scan(&lifecycle); err != nil || lifecycle != "reserved" {
