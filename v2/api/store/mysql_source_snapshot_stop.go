@@ -55,8 +55,9 @@ func (db *DB) setClaimedMySQLSourceStopState(ctx context.Context, claim Operatio
 		return err
 	}
 	defer tx.Rollback(context.Background())
-	if err := checkOperationClaimLocked(ctx, tx, claim); err != nil {
-		return err
+	var held bool
+	if err := tx.QueryRow(ctx, `SELECT true FROM operations WHERE id=$1 AND kind=$2 AND status='running' AND locked_by=$3 AND lock_generation=$4 AND locked_until>clock_timestamp() FOR UPDATE`, claim.OperationID(), MySQLSourceSnapshotOperationKind, claim.OwnerID(), claim.Generation()).Scan(&held); err != nil || !held {
+		return ownershipLost(claim)
 	}
 	var tag pgconn.CommandTag
 	if to == "stop-intended" {

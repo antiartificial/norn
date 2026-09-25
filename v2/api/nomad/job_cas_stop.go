@@ -102,6 +102,10 @@ func (c *Client) verifyCASStopped(ctx context.Context, request CASStopJobRequest
 	ticker := time.NewTicker(100 * time.Millisecond)
 	defer ticker.Stop()
 	for {
+		job, _, err := c.api.Jobs().Info(request.JobID, query)
+		if err != nil || job == nil || job.ID == nil || *job.ID != request.JobID || job.Region == nil || *job.Region != request.Region || job.Stop == nil || !*job.Stop {
+			return ErrJobStopVerificationIndeterminate
+		}
 		stubs, _, err := c.api.Jobs().Allocations(request.JobID, true, query)
 		if err == nil && ((len(stubs) == 0) || (exactCASStopAllocations(request, stubs) && allCASStopTerminal(stubs))) {
 			return nil

@@ -15,10 +15,20 @@ retaining the application source identity in the artifact. A disposable MySQL
 test covers a locked runtime account and a successful snapshot with the
 separate reader credential.
 
+Migration 30 adds a private claimed Nomad stop step. It checkpoints
+`stop-intended` before sending a guarded stop for the signed job revision and
+allocation IDs. It records `stop-proved` only after Nomad reports `Stop=true`
+and the exact allocations are terminal or absent. An uncertain result stays
+fenced and cannot automatically repeat the stop. A disposable PostgreSQL
+integration test covers checkpoint order, exact request, and replay refusal;
+Nomad unit tests cover stale revisions, competing allocations, and a job that
+is still running despite terminal allocations. This is not a source write
+lock or a snapshot receipt.
+
 `quiesce-intended` is a reservation, **not** a write-stop proof. Before a
-snapshot can be accepted for restore, the remaining private runner must stop
-the exact Nomad job revision, prove allocations absent, durably checkpoint the
-source account-lock intent and verified session drain, stage the artifact
+snapshot can be accepted for restore, the remaining private runner must
+durably checkpoint the source account-lock intent and verified session drain,
+stage the artifact
 through the snapshot credential, and sign a receipt that binds those proofs to
 the artifact. The existing restore request still accepts an operator-supplied
 source-quiescence reference; that private prototype must be replaced by the

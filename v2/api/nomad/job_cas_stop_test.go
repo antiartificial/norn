@@ -20,7 +20,7 @@ func TestStopJobCASStopsExactObservedRevision(t *testing.T) {
 		case r.URL.Path == "/v1/agent/self":
 			_ = json.NewEncoder(w).Encode(&nomadapi.AgentSelf{Config: map[string]interface{}{"Version": map[string]interface{}{"Version": "1.11.5"}}})
 		case r.URL.Path == "/v1/job/source-db" && r.Method == http.MethodGet:
-			_ = json.NewEncoder(w).Encode(&nomadapi.Job{ID: &jobID, Region: &region, JobModifyIndex: &index})
+			_ = json.NewEncoder(w).Encode(&nomadapi.Job{ID: &jobID, Region: &region, JobModifyIndex: &index, Stop: &written})
 		case r.URL.Path == "/v1/job/source-db/allocations":
 			status := nomadapi.AllocClientStatusRunning
 			if written {
@@ -80,7 +80,7 @@ func TestStopJobCASRejectsCompetingAllocation(t *testing.T) {
 		case r.URL.Path == "/v1/agent/self":
 			_ = json.NewEncoder(w).Encode(&nomadapi.AgentSelf{Config: map[string]interface{}{"Version": map[string]interface{}{"Version": "1.11.5"}}})
 		case r.URL.Path == "/v1/job/source-db":
-			_ = json.NewEncoder(w).Encode(&nomadapi.Job{ID: &jobID, Region: &region, JobModifyIndex: &index})
+			_ = json.NewEncoder(w).Encode(&nomadapi.Job{ID: &jobID, Region: &region, JobModifyIndex: &index, Stop: &written})
 		case r.URL.Path == "/v1/job/source-db/allocations":
 			if !written {
 				_ = json.NewEncoder(w).Encode([]*nomadapi.AllocationListStub{{ID: "alloc-1", JobID: jobID, ClientStatus: nomadapi.AllocClientStatusRunning}})
@@ -97,5 +97,35 @@ func TestStopJobCASRejectsCompetingAllocation(t *testing.T) {
 	err := client.StopJobCAS(context.Background(), CASStopJobRequest{JobID: jobID, Region: region, JobModifyIndex: index, AllocationIDs: []string{"alloc-1"}})
 	if !errors.Is(err, ErrJobStopVerificationIndeterminate) {
 		t.Fatalf("err=%v", err)
+	}
+}
+
+func TestStopJobCASRejectsTerminalAllocationsWithoutStoppedJob(t *testing.T) {
+	jobID, region := "source-db", "global"
+	index := uint64(44)
+	written := false
+	stopped := false
+	client := newTestNomadClient(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/v1/agent/self":
+			_ = json.NewEncoder(w).Encode(&nomadapi.AgentSelf{Config: map[string]interface{}{"Version": map[string]interface{}{"Version": "1.11.5"}}})
+		case "/v1/job/source-db":
+			_ = json.NewEncoder(w).Encode(&nomadapi.Job{ID: &jobID, Region: &region, JobModifyIndex: &index, Stop: &stopped})
+		case "/v1/job/source-db/allocations":
+			status := nomadapi.AllocClientStatusRunning
+			if written {
+				status = nomadapi.AllocClientStatusComplete
+			}
+			_ = json.NewEncoder(w).Encode([]*nomadapi.AllocationListStub{{ID: "alloc-1", JobID: jobID, ClientStatus: status}})
+		case "/v1/jobs":
+			written = true
+			_ = json.NewEncoder(w).Encode(&nomadapi.JobRegisterResponse{})
+		default:
+			http.Error(w, "unexpected", http.StatusNotFound)
+		}
+	}))
+	err := client.StopJobCAS(context.Background(), CASStopJobRequest{JobID: jobID, Region: region, JobModifyIndex: index, AllocationIDs: []string{"alloc-1"}})
+	if !written || !errors.Is(err, ErrJobStopVerificationIndeterminate) {
+		t.Fatalf("written=%v err=%v", written, err)
 	}
 }
