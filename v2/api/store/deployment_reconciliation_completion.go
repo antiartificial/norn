@@ -47,8 +47,8 @@ func (db *DB) CompleteDeploymentReconciliation(ctx context.Context, claim Operat
 	var sourceError string
 	var manual bool
 	if err := tx.QueryRow(ctx, `SELECT status,last_error,COALESCE(metadata->>'manualRecoveryRequired'='true',false)
-		FROM operations WHERE id=$1 AND app=$2 AND saga_id=$3 AND kind IN ('app.deploy','app.rollback')
-		AND payload->>'deploymentId'=$4 FOR UPDATE`, source.ID, d.App, d.SagaID, d.ID).
+		FROM operations WHERE id=$1 AND app=$2 AND saga_id=$3 AND kind=$5
+		AND payload->>'deploymentId'=$4 FOR UPDATE`, source.ID, d.App, d.SagaID, d.ID, source.Kind).
 		Scan(&sourceStatus, &sourceError, &manual); err != nil {
 		return ErrDeploymentReconciliationUnavailable
 	}
