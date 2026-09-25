@@ -1074,7 +1074,7 @@ func (c *Client) DeploymentByIDRegion(deploymentID, region string) (*DeploymentI
 		return nil, nil
 	}
 	hasCanary, canaryPromoted := deploymentCanaryState(deployment.TaskGroups)
-	return &DeploymentInfo{ID: deployment.ID, JobID: deployment.JobID, Status: deployment.Status, StatusDesc: deployment.StatusDescription, IsCanary: hasCanary && !canaryPromoted, CanaryPromoted: canaryPromoted}, nil
+	return &DeploymentInfo{ID: deployment.ID, JobID: deployment.JobID, Status: deployment.Status, StatusDesc: deployment.StatusDescription, IsCanary: hasCanary && !canaryPromoted, CanaryReady: deploymentCanaryReady(deployment.TaskGroups), CanaryPromoted: canaryPromoted}, nil
 }
 
 // deploymentCanaryState distinguishes canaries waiting for promotion from
@@ -1101,7 +1101,13 @@ func deploymentCanaryState(groups map[string]*nomadapi.DeploymentState) (hasCana
 func deploymentCanaryReady(groups map[string]*nomadapi.DeploymentState) bool {
 	hasCanary := false
 	for _, group := range groups {
-		if group == nil || len(group.PlacedCanaries) == 0 {
+		if group == nil {
+			continue
+		}
+		if group.DesiredCanaries > 0 && len(group.PlacedCanaries) < group.DesiredCanaries {
+			return false
+		}
+		if len(group.PlacedCanaries) == 0 {
 			continue
 		}
 		hasCanary = true

@@ -272,9 +272,14 @@ func TestDeploymentCanaryStateRequiresPromotedTaskGroups(t *testing.T) {
 
 func TestDeploymentCanaryReadyRequiresEveryPlacedAllocationHealthy(t *testing.T) {
 	groups := map[string]*nomadapi.DeploymentState{
-		"web": {PlacedCanaries: []string{"web-1"}, HealthyAllocs: 1},
+		"web": {DesiredCanaries: 2, PlacedCanaries: []string{"web-1"}, HealthyAllocs: 1},
 		"api": {PlacedCanaries: []string{"api-1"}, HealthyAllocs: 0},
 	}
+	if deploymentCanaryReady(groups) {
+		t.Fatal("underplaced canary accepted")
+	}
+	groups["web"].PlacedCanaries = append(groups["web"].PlacedCanaries, "web-2")
+	groups["web"].HealthyAllocs = 2
 	if deploymentCanaryReady(groups) {
 		t.Fatal("unhealthy api canary accepted")
 	}

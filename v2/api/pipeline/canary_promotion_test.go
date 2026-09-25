@@ -3,13 +3,62 @@ package pipeline
 import (
 	"context"
 	"encoding/json"
+	"net/http"
+	"net/http/httptest"
+	"sync/atomic"
 	"testing"
+
+	nomadapi "github.com/hashicorp/nomad/api"
 
 	"norn/v2/api/effect"
 	"norn/v2/api/model"
 	"norn/v2/api/nomad"
 	"norn/v2/api/store"
 )
+
+func TestCanaryPromotionRechecksExactDeploymentBeforeReservationAndNomadWrite(t *testing.T) {
+	var healthy atomic.Bool
+	healthy.Store(false)
+	var reads, writes atomic.Int32
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/v1/deployment/deployment-accepted" || r.Method != http.MethodGet {
+			writes.Add(1)
+			http.Error(w, "unexpected request", http.StatusNotFound)
+			return
+		}
+		reads.Add(1)
+		state := &nomadapi.DeploymentState{DesiredCanaries: 2, PlacedCanaries: []string{"alloc-1"}, HealthyAllocs: 1}
+		if healthy.Load() {
+			state.PlacedCanaries = append(state.PlacedCanaries, "alloc-2")
+			state.HealthyAllocs = 2
+		}
+		_ = json.NewEncoder(w).Encode(&nomadapi.Deployment{ID: "deployment-accepted", JobID: "widgets", Status: "running", TaskGroups: map[string]*nomadapi.DeploymentState{"web": state}})
+	}))
+	defer server.Close()
+	client, err := nomad.NewClient(server.URL)
+	if err != nil {
+		t.Fatal(err)
+	}
+	supervisor := &nomadCanaryPromotionSupervisor{client: client}
+	payload, _ := json.Marshal(canaryPromotionRequest{App: "widgets", Region: "us-central", NomadRegion: "global", DeploymentID: "deployment-accepted"})
+	r := effect.Reservation{Authority: "authority", Resource: "app/widgets/canary-promote/us-central", Stage: nomadCanaryPromotionStage, Supervisor: "nomad-canary-promotion", SupervisorExecutionID: "execution-1", LaunchPayload: payload}
+	if err := supervisor.Prepare(context.Background(), r); err == nil {
+		t.Fatal("underplaced canary passed pre-reservation check")
+	}
+	healthy.Store(true)
+	if err := supervisor.Prepare(context.Background(), r); err != nil {
+		t.Fatalf("ready exact deployment refused: %v", err)
+	}
+	// Health can fall again after the reservation; never submit the PUT for
+	// a deployment whose desired canaries are no longer placed and healthy.
+	healthy.Store(false)
+	if _, err := supervisor.Launch(context.Background(), r, effect.LaunchMaterial{}); err == nil {
+		t.Fatal("unready canary promoted after reservation")
+	}
+	if reads.Load() != 3 || writes.Load() != 0 {
+		t.Fatalf("Nomad requests: reads=%d writes=%d", reads.Load(), writes.Load())
+	}
+}
 
 func TestCanaryPromotionRejectsMissingDurableEffectBoundary(t *testing.T) {
 	if _, err := NewNomadCanaryPromotionEffectsWithStore(nil, &nomad.Client{}); err == nil {

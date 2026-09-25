@@ -62,7 +62,7 @@ func NewNomadCanaryPromotionEffectsWithStore(effectStore CanaryPromotionEffectSt
 		return nil, fmt.Errorf("durable canary promotion requires an effect store and Nomad client")
 	}
 	return &NomadCanaryPromotionEffects{store: effectStore, executor: &effect.Executor{
-		Store: effectStore, Supervisor: &nomadCanaryPromotionSupervisor{client: client}, Verifier: nomadCanaryPromotionVerifier{},
+		Store: effectStore, Supervisor: &nomadCanaryPromotionSupervisor{client: client, store: effectStore}, Verifier: nomadCanaryPromotionVerifier{},
 	}}, nil
 }
 
@@ -164,11 +164,43 @@ func canaryPromotionExecutionID(r effect.Reservation) string {
 	return "nomad-canary-promotion-" + hex.EncodeToString(sum[:16])
 }
 
-type nomadCanaryPromotionSupervisor struct{ client *nomad.Client }
+type nomadCanaryPromotionSupervisor struct {
+	client *nomad.Client
+	store  CanaryPromotionEffectStore
+}
 
-func (s *nomadCanaryPromotionSupervisor) Prepare(_ context.Context, r effect.Reservation) error {
-	_, err := canaryPromotionRequestFromReservation(r)
-	return err
+func (s *nomadCanaryPromotionSupervisor) Prepare(ctx context.Context, r effect.Reservation) error {
+	request, err := canaryPromotionRequestFromReservation(r)
+	if err != nil {
+		return err
+	}
+	// Prepare runs before Reserve. Once an effect exists, its exact deployment
+	// must be reconciled even if its canaries have since become unhealthy.
+	if s.store != nil {
+		_, found, err := s.store.UnresolvedForResource(ctx, r.Authority, r.Resource)
+		if err != nil {
+			return err
+		}
+		if found {
+			return nil
+		}
+	}
+	info, err := s.client.DeploymentByIDRegion(request.DeploymentID, request.NomadRegion)
+	if err != nil {
+		return err
+	}
+	if info == nil || info.ID != request.DeploymentID || info.JobID != request.App {
+		return fmt.Errorf("accepted Nomad deployment identity is unavailable")
+	}
+	// Completed reservations can be replayed after the operation result write
+	// was lost. Their exact terminal deployment remains valid evidence.
+	if info.Status == "successful" && info.CanaryPromoted || info.Status == "failed" || info.Status == "cancelled" {
+		return nil
+	}
+	if !info.CanaryReady || !info.IsCanary || info.Status != "running" {
+		return fmt.Errorf("accepted Nomad canary deployment is no longer ready for promotion")
+	}
+	return nil
 }
 
 func (s *nomadCanaryPromotionSupervisor) Launch(ctx context.Context, r effect.Reservation, _ effect.LaunchMaterial) (effect.ExecutionIdentity, error) {
@@ -178,6 +210,21 @@ func (s *nomadCanaryPromotionSupervisor) Launch(ctx context.Context, r effect.Re
 	request, err := canaryPromotionRequestFromReservation(r)
 	if err != nil {
 		return effect.ExecutionIdentity{}, err
+	}
+	info, err := s.client.DeploymentByIDRegion(request.DeploymentID, request.NomadRegion)
+	if err != nil {
+		return effect.ExecutionIdentity{}, err
+	}
+	if info == nil || info.ID != request.DeploymentID || info.JobID != request.App {
+		return effect.ExecutionIdentity{}, fmt.Errorf("accepted Nomad deployment identity is unavailable")
+	}
+	// A deployment can become terminal between Prepare and Launch. Observe
+	// that exact deployment through the reserved effect without another PUT.
+	if info.Status == "successful" && info.CanaryPromoted || info.Status == "failed" || info.Status == "cancelled" {
+		return effect.ExecutionIdentity{Supervisor: r.Supervisor, SupervisorExecutionID: r.SupervisorExecutionID, RuntimeInstanceID: "nomad-deployment:" + request.DeploymentID}, nil
+	}
+	if !info.CanaryReady || !info.IsCanary || info.Status != "running" {
+		return effect.ExecutionIdentity{}, fmt.Errorf("accepted Nomad canary deployment became unready before promotion")
 	}
 	if err := s.client.PromoteDeploymentIDRegion(request.DeploymentID, request.NomadRegion); err != nil {
 		return effect.ExecutionIdentity{}, err

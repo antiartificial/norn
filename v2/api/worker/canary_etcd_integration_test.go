@@ -68,7 +68,8 @@ func TestBackendNeutralCanaryPromotionRecoversAmbiguousNomadWriteEtcd(t *testing
 			}
 		case r.Method == http.MethodGet && r.URL.Path == "/v1/deployment/deployment-accepted":
 			if !promoted.Load() {
-				http.Error(w, "not promoted", http.StatusConflict)
+				_ = json.NewEncoder(w).Encode(&nomadapi.Deployment{ID: "deployment-accepted", JobID: "widgets", Status: "running",
+					TaskGroups: map[string]*nomadapi.DeploymentState{"web": {DesiredCanaries: 1, PlacedCanaries: []string{"alloc-1"}, HealthyAllocs: 1}}})
 				return
 			}
 			_ = json.NewEncoder(w).Encode(&nomadapi.Deployment{ID: "deployment-accepted", JobID: "widgets", Status: "successful",
