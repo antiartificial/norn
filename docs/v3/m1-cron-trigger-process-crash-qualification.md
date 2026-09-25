@@ -12,8 +12,8 @@ read. At that point the PostgreSQL `operation_effects` row is committed with
 `lifecycle=reserved`, the worker is poised between reservation and Nomad
 `PeriodicForce`, and the parent kills that worker with `SIGKILL`.
 
-The parent expires the killed worker's disposable ownership lease and starts a
-new normal operation-worker process against the direct Nomad address. Recovery
+The parent expires the killed worker's disposable ownership lease and starts
+two normal operation-worker processes against the direct Nomad address. Recovery
 must retain the unresolved reservation, issue no `PeriodicForce`, and exhaust
 the cron recovery budget into a terminal receipt with
 `manualRecoveryRequired`, `externalEffectRecoveryPending`, and
@@ -55,3 +55,12 @@ schema. Together they prove the pre-Force reservation boundary and the
 post-Force, pre-acknowledgement, and post-acknowledgement boundaries. The
 success path after acknowledgement is replayed from the durable evaluation
 identity instead of repeating Nomad's non-idempotent Force.
+
+## Current integration branch rerun — 2026-09-25
+
+All three tests above passed on Norn PR #76 after worker claim owners gained a
+per-instance UUID. The disposable endpoints were PostgreSQL 16 on loopback
+and Nomad 2.0.7 in dev mode. This is literal `SIGKILL` and separate-process
+recovery for cron trigger, including a two-process replacement race before
+Force. It does not establish crash recovery for every other operation kind
+or qualify the production Mini/Fleet runtime.
