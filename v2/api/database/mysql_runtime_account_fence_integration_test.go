@@ -75,6 +75,9 @@ func TestMySQLRuntimeAccountFence(t *testing.T) {
 	if err := InspectMySQLRuntimeAccountLockForRestore(ctx, resolved, maintenance, secrets); err == nil {
 		t.Fatal("unlocked runtime account appeared fenced")
 	}
+	if err := InspectMySQLRuntimeAccountUnlockedForRecovery(ctx, resolved, maintenance, secrets); err != nil {
+		t.Fatalf("initially unlocked account inspection: %v", err)
+	}
 
 	clientConfig := mysql.NewConfig()
 	clientConfig.User, clientConfig.Passwd, clientConfig.DBName = runtimeUser, runtimePassword, databaseName
@@ -94,6 +97,9 @@ func TestMySQLRuntimeAccountFence(t *testing.T) {
 	if err := InspectMySQLRuntimeAccountLockForRestore(ctx, resolved, maintenance, secrets); err != nil {
 		t.Fatalf("locked account failed read-only inspection: %v", err)
 	}
+	if err := InspectMySQLRuntimeAccountUnlockedForRecovery(ctx, resolved, maintenance, secrets); err == nil {
+		t.Fatal("locked account appeared unlocked")
+	}
 	var survivingSessions int
 	if err := admin.QueryRowContext(ctx, "SELECT COUNT(*) FROM INFORMATION_SCHEMA.PROCESSLIST WHERE ID = ?", existingSessionID).Scan(&survivingSessions); err != nil || survivingSessions != 0 {
 		t.Fatal("preexisting runtime session was not terminated by fence")
@@ -111,6 +117,9 @@ func TestMySQLRuntimeAccountFence(t *testing.T) {
 	}
 	if err := InspectMySQLRuntimeAccountLockForRestore(ctx, resolved, maintenance, secrets); err == nil {
 		t.Fatal("unfenced runtime account appeared fenced")
+	}
+	if err := InspectMySQLRuntimeAccountUnlockedForRecovery(ctx, resolved, maintenance, secrets); err != nil {
+		t.Fatalf("unfenced account inspection: %v", err)
 	}
 	if err := newClient.PingContext(ctx); err != nil {
 		t.Fatal("runtime account did not authenticate after explicit unfence")

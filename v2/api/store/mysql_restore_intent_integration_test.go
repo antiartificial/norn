@@ -434,6 +434,45 @@ func TestMySQLRestoreIntentAgainstDisposableEngines(t *testing.T) {
 	if _, err := admin.ExecContext(ctx, "UPDATE `"+targetDB+"`.marker SET value='signed-intent-source'"); err != nil {
 		t.Fatal(err)
 	}
+	recoveryInput := MySQLRestoreRecoveryAcceptanceInput{RestoreOperationID: claim.OperationID(),
+		Actor: OperationActor{Issuer: "test-issuer", Subject: "operator"}, Key: "recovery-" + suffix,
+		Audit: AcceptanceAuditContext{RequestID: "recovery-request-" + suffix, CredentialID: "token-one", DeviceID: "device-one", Source: "integration-test", Scopes: []string{"write"}}}
+	recovery, err := control.AcceptPrivateMySQLRestoreRecovery(ctx, stores[0], recoveryInput)
+	if err != nil {
+		t.Fatal(err)
+	}
+	recoveryClaim, err := NewOperationClaim(recovery.Operation.ID, "recovery-worker", 1)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := control.Pool.Exec(ctx, `UPDATE operations SET status='running',attempts=1,locked_by=$2,
+		lock_generation=1,locked_until=now()+interval '2 minutes' WHERE id=$1`, recoveryClaim.OperationID(), recoveryClaim.OwnerID()); err != nil {
+		t.Fatal(err)
+	}
+	recoveryRunner := MySQLRestoreRecoveryRunner{Control: control, Acceptance: stores[0], Observer: stoppedSource,
+		Secrets: secrets, ClaimLease: 120 * time.Millisecond}
+	if err := recoveryRunner.RunClaimedTargetUnlock(ctx, recoveryClaim); err != nil {
+		t.Fatalf("supervised target unlock: %v", err)
+	}
+	if err := recoveryRunner.RunClaimedTargetUnlock(ctx, recoveryClaim); !errors.Is(err, ErrMySQLRestoreFence) {
+		t.Fatalf("one-way target unlock was replayed: %v", err)
+	}
+	var unlockState string
+	if err := control.Pool.QueryRow(ctx, `SELECT state FROM mysql_restore_recovery_intents WHERE operation_id=$1`, recoveryClaim.OperationID()).Scan(&unlockState); err != nil || unlockState != "target-unlock-proved" {
+		t.Fatalf("durable unlock state=%q err=%v", unlockState, err)
+	}
+	if _, err := control.AssessCompletedMySQLRestoreLiveSource(ctx, stores[0], claim.OperationID(), stoppedSource, secrets); err != nil {
+		t.Fatalf("source account or stopped job was released during target unlock: %v", err)
+	}
+	openedTarget, err := database.OpenSession(ctx, target, secrets)
+	if err != nil {
+		t.Fatalf("unlocked target runtime account cannot connect: %v", err)
+	}
+	if _, err := openedTarget.Probe(ctx); err != nil {
+		openedTarget.Close()
+		t.Fatalf("unlocked target runtime account cannot authenticate: %v", err)
+	}
+	openedTarget.Close()
 	insertOperationFixture(t, control, "app.deploy", 1, nil)
 	if claimed, _, err := control.ClaimNextOperation(ctx, "concurrent-deploy", time.Minute, []string{"app.deploy"}); err != nil || claimed != nil {
 		t.Fatalf("restore admitted queued deploy while runtime fence held: %+v %v", claimed, err)

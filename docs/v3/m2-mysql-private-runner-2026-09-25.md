@@ -147,6 +147,17 @@ read-only observations and still need to be repeated under a durable unlock
 effect intent; the test Nomad observer validates plumbing, while the separate
 Nomad tests exercise the concrete client behavior.
 
+Migration 37 adds a one-way destination `target-unlock-intended` checkpoint.
+The private recovery runner renews its signed claim, reobserves the stopped
+and locked source plus the locked destination and target fingerprints, commits
+the checkpoint, then unlocks the exact destination MySQL account. A separate
+read-only proof requires that account to be unlocked and session-free, the
+target fingerprints unchanged, the source still stopped and locked, and the
+original claim/fence still held before recording `target-unlock-proved`. The
+disposable PostgreSQL/MySQL rehearsal passed the effect and rejected replay.
+Any uncertain effect keeps the intent and global fence held. The source account
+remains locked. This still has no fence-release/resume step and is private.
+
 - Qualify bounded memory/disk behavior on representative large data.
 - Wire the launch and mutation gates into every application write and resume
   path, and add signed source-account quiescence before staging the dump.

@@ -6,6 +6,7 @@ import (
 
 	"github.com/jackc/pgx/v5"
 
+	"norn/v2/api/database"
 	"norn/v2/api/model"
 )
 
@@ -112,4 +113,80 @@ func (db *DB) PrepareClaimedMySQLRestoreRecovery(ctx context.Context, acceptance
 	saved.OperationID = claim.OperationID()
 	saved.Replayed = inserted.RowsAffected() == 0
 	return saved, nil
+}
+
+// IntendClaimedMySQLRestoreTargetUnlock is the last control-plane transition
+// before an external ALTER USER. It requires fresh source and destination
+// observations, then commits a one-way intent under the claim, catalog, and
+// exact global-fence locks. No second call may silently retry the effect.
+func (db *DB) IntendClaimedMySQLRestoreTargetUnlock(ctx context.Context, acceptance *PGOperationStore, claim OperationClaim, observer MySQLSourceStoppedObserver, secrets database.SecretSource) (MySQLRestoreRecoveryIntent, error) {
+	if secrets == nil || observer == nil {
+		return MySQLRestoreRecoveryIntent{}, ErrMySQLRestoreFence
+	}
+	prepared, err := db.PrepareClaimedMySQLRestoreRecovery(ctx, acceptance, claim)
+	if err != nil {
+		return MySQLRestoreRecoveryIntent{}, err
+	}
+	source, err := db.AssessCompletedMySQLRestoreLiveSource(ctx, acceptance, prepared.RestoreOperationID, observer, secrets)
+	if err != nil {
+		return MySQLRestoreRecoveryIntent{}, err
+	}
+	target, err := db.AssessCompletedMySQLRestoreLiveRecovery(ctx, acceptance, prepared.RestoreOperationID, secrets)
+	if err != nil || source.Fence != target.Fence || source.Request != target.Request ||
+		source.Request.Artifact.Source.Role == source.Request.Target.Role {
+		return MySQLRestoreRecoveryIntent{}, ErrMySQLRestoreFence
+	}
+	accepted, err := acceptance.VerifyAcceptedOperation(ctx, claim.OperationID())
+	if err != nil || accepted.Operation.Kind != MySQLRestoreRecoveryOperationKind || accepted.Operation.Status != model.OperationRunning {
+		return MySQLRestoreRecoveryIntent{}, ErrMySQLRestoreFence
+	}
+	var signed MySQLRestoreRecoveryRequest
+	if decodeMySQLRestoreRecoveryPayload(accepted.Operation.Payload, &signed) != nil ||
+		signed.RestoreOperationID != prepared.RestoreOperationID || signed.RuntimeFenceEpoch != target.Fence.Epoch || signed.RuntimeFenceOwner != target.Fence.Owner {
+		return MySQLRestoreRecoveryIntent{}, ErrMySQLRestoreFence
+	}
+	tx, err := db.Pool.BeginTx(ctx, pgx.TxOptions{})
+	if err != nil {
+		return MySQLRestoreRecoveryIntent{}, err
+	}
+	defer tx.Rollback(context.Background())
+	if err := lockMySQLCatalogGate(ctx, tx); err != nil {
+		return MySQLRestoreRecoveryIntent{}, err
+	}
+	var held bool
+	if err := tx.QueryRow(ctx, `SELECT true FROM operations WHERE id=$1 AND kind=$2 AND status='running'
+		AND locked_by=$3 AND lock_generation=$4 AND locked_until>clock_timestamp() FOR UPDATE`,
+		claim.OperationID(), MySQLRestoreRecoveryOperationKind, claim.OwnerID(), claim.Generation()).Scan(&held); err != nil || !held {
+		return MySQLRestoreRecoveryIntent{}, ownershipLost(claim)
+	}
+	active, err := loadActiveDatabaseCatalog(ctx, tx)
+	if err != nil || active.Revision != signed.CatalogRevision {
+		return MySQLRestoreRecoveryIntent{}, ErrDatabaseCatalogRevisionConflict
+	}
+	var state, intentID, restoreID, claimOwner, fenceOwner, liveOwner string
+	var revision, epoch, generation, liveEpoch int64
+	var liveActive bool
+	err = tx.QueryRow(ctx, `SELECT r.state,r.acceptance_intent_id,r.restore_operation_id,r.catalog_revision,
+		r.runtime_fence_epoch,r.runtime_fence_owner,r.claim_owner,r.claim_generation,
+		f.active,f.epoch,f.owner
+		FROM mysql_restore_recovery_intents r CROSS JOIN runtime_mutation_fence f
+		WHERE r.operation_id=$1 AND f.singleton=true FOR UPDATE OF r,f`, claim.OperationID()).Scan(
+		&state, &intentID, &restoreID, &revision, &epoch, &fenceOwner, &claimOwner, &generation,
+		&liveActive, &liveEpoch, &liveOwner)
+	if err != nil || state != "prepared" || intentID != accepted.AcceptanceIntentID || restoreID != signed.RestoreOperationID ||
+		revision != signed.CatalogRevision || epoch != signed.RuntimeFenceEpoch || fenceOwner != signed.RuntimeFenceOwner ||
+		claimOwner != claim.OwnerID() || generation != claim.Generation() || !liveActive || liveEpoch != epoch || liveOwner != fenceOwner {
+		return MySQLRestoreRecoveryIntent{}, ErrMySQLRestoreFence
+	}
+	updated, err := tx.Exec(ctx, `UPDATE mysql_restore_recovery_intents
+		SET state='target-unlock-intended',target_unlock_intended_at=clock_timestamp()
+		WHERE operation_id=$1 AND state='prepared' AND target_unlock_intended_at IS NULL`, claim.OperationID())
+	if err != nil || updated.RowsAffected() != 1 {
+		return MySQLRestoreRecoveryIntent{}, ErrMySQLRestoreFence
+	}
+	if err := tx.Commit(ctx); err != nil {
+		return MySQLRestoreRecoveryIntent{}, err
+	}
+	prepared.State = "target-unlock-intended"
+	return prepared, nil
 }

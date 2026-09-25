@@ -51,6 +51,17 @@ func FenceMySQLRuntimeAccountForRestore(ctx context.Context, resolved ResolvedBi
 // and its sessions without changing either. It is a private recovery check;
 // callers must still hold and recheck the durable runtime mutation fence.
 func InspectMySQLRuntimeAccountLockForRestore(ctx context.Context, resolved ResolvedBinding, maintenance MySQLMaintenanceCredentials, secrets SecretSource) error {
+	return inspectMySQLRuntimeAccountState(ctx, resolved, maintenance, secrets, "Y")
+}
+
+// InspectMySQLRuntimeAccountUnlockedForRecovery verifies the same exact
+// account is unlocked and still has no runtime sessions after an explicit
+// recovery effect. It does not authenticate as the runtime account.
+func InspectMySQLRuntimeAccountUnlockedForRecovery(ctx context.Context, resolved ResolvedBinding, maintenance MySQLMaintenanceCredentials, secrets SecretSource) error {
+	return inspectMySQLRuntimeAccountState(ctx, resolved, maintenance, secrets, "N")
+}
+
+func inspectMySQLRuntimeAccountState(ctx context.Context, resolved ResolvedBinding, maintenance MySQLMaintenanceCredentials, secrets SecretSource, wantLocked string) error {
 	fence := mysqlRuntimeAccountFence{
 		FenceUser: maintenance.FenceRole, FenceAccountHost: maintenance.FenceAccountHost,
 		FenceCredentialRef: maintenance.FenceCredentialRef, RuntimeAccountHost: maintenance.RuntimeAccountHost,
@@ -85,8 +96,8 @@ func InspectMySQLRuntimeAccountLockForRestore(ctx context.Context, resolved Reso
 		return err
 	}
 	var locked string
-	if err := db.QueryRowContext(ctx, "SELECT account_locked FROM mysql.user WHERE User = ? AND Host = ?", resolved.Target.Role, fence.RuntimeAccountHost).Scan(&locked); err != nil || locked != "Y" {
-		return errors.New("MySQL runtime account lock verification failed")
+	if err := db.QueryRowContext(ctx, "SELECT account_locked FROM mysql.user WHERE User = ? AND Host = ?", resolved.Target.Role, fence.RuntimeAccountHost).Scan(&locked); err != nil || locked != wantLocked {
+		return errors.New("MySQL runtime account state verification failed")
 	}
 	for i := 0; i < 2; i++ {
 		ids, err := mysqlRuntimeSessionIDs(ctx, db, resolved.Target.Role)
@@ -102,6 +113,16 @@ func InspectMySQLRuntimeAccountLockForRestore(ctx context.Context, resolved Reso
 		}
 	}
 	return nil
+}
+
+// UnfenceMySQLRuntimeAccountForRecovery is a private external-effect primitive.
+// Its caller must commit a signed one-way unlock intent before invoking it.
+func UnfenceMySQLRuntimeAccountForRecovery(ctx context.Context, resolved ResolvedBinding, maintenance MySQLMaintenanceCredentials, secrets SecretSource) error {
+	return unfenceMySQLRuntimeAccount(ctx, resolved, mysqlRuntimeAccountFence{
+		FenceUser: maintenance.FenceRole, FenceAccountHost: maintenance.FenceAccountHost,
+		FenceCredentialRef: maintenance.FenceCredentialRef, RuntimeAccountHost: maintenance.RuntimeAccountHost,
+		DedicatedRuntimeUsername: resolved.Target.Role,
+	}, secrets)
 }
 
 // fenceMySQLRuntimeAccount locks one exact MySQL account, terminates all
@@ -178,6 +199,17 @@ func unfenceMySQLRuntimeAccount(ctx context.Context, resolved ResolvedBinding, f
 	defer db.Close()
 	if err := verifyMySQLFenceIdentity(ctx, db, fence); err != nil {
 		return err
+	}
+	if err := verifyDedicatedMySQLRuntimeUsername(ctx, db, resolved.Target.Role, fence.RuntimeAccountHost); err != nil {
+		return err
+	}
+	var locked string
+	if err := db.QueryRowContext(ctx, "SELECT account_locked FROM mysql.user WHERE User = ? AND Host = ?", resolved.Target.Role, fence.RuntimeAccountHost).Scan(&locked); err != nil || locked != "Y" {
+		return errors.New("MySQL runtime account is not locked for recovery")
+	}
+	ids, err := mysqlRuntimeSessionIDs(ctx, db, resolved.Target.Role)
+	if err != nil || len(ids) != 0 {
+		return errors.New("MySQL runtime account still has sessions")
 	}
 	if _, err := db.ExecContext(ctx, "ALTER USER "+mysqlAccountLiteral(resolved.Target.Role, fence.RuntimeAccountHost)+" ACCOUNT UNLOCK"); err != nil {
 		return errors.New("MySQL runtime account unlock failed")
