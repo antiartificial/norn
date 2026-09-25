@@ -99,6 +99,13 @@ func CanonicalOperationRequestFingerprint(acceptance OperationAcceptance) (Reque
 }
 
 func (s *PGOperationStore) Accept(ctx context.Context, input OperationAcceptance) (AcceptedOperation, error) {
+	if input.Identity.Kind == "app.function-invoke" || input.Operation.Kind == "app.function-invoke" {
+		return AcceptedOperation{}, &AcceptanceValidationError{Reason: "function invocation requires atomic private material acceptance"}
+	}
+	return s.acceptWithPrivateInvocation(ctx, input, nil)
+}
+
+func (s *PGOperationStore) acceptWithPrivateInvocation(ctx context.Context, input OperationAcceptance, private *PrivateInvocationEnvelope) (AcceptedOperation, error) {
 	if s == nil || s.signer == nil || s.db == nil || s.db.Pool == nil {
 		return AcceptedOperation{}, &AcceptanceValidationError{Reason: "operation acceptance store is unavailable"}
 	}
@@ -158,6 +165,11 @@ func (s *PGOperationStore) Accept(ctx context.Context, input OperationAcceptance
 	}
 	if err := insertAcceptedDomain(ctx, tx, acceptance); err != nil {
 		return AcceptedOperation{}, err
+	}
+	if private != nil {
+		if err := insertPrivateInvocation(ctx, tx, acceptance, *private); err != nil {
+			return AcceptedOperation{}, err
+		}
 	}
 	envelope := newAcceptanceEnvelope(acceptance, requestIdentityID, intentID, acceptedAt)
 	canonical, signature, err := s.signEnvelope(ctx, &envelope)

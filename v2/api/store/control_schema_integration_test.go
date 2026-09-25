@@ -12,8 +12,8 @@ func TestControlSchemaAdoptsLegacyRowsWithoutReplacingEvidence(t *testing.T) {
 	pool := schemaMigrationTestPools(t, 1)[0]
 	ctx := context.Background()
 	migrations := ControlSchemaMigrations()
-	if len(migrations) != 17 {
-		t.Fatalf("control migrations = %#v, want immutable baseline through acceptance retirement migration 17", migrations)
+	if len(migrations) != 18 || migrations[16].Version != 17 || migrations[17].Version != 18 {
+		t.Fatalf("control migration catalog = %#v, want immutable baseline through 17 and private material migration 18", migrations)
 	}
 	for index, migration := range migrations {
 		if migration.Version != int64(index+1) {
@@ -55,7 +55,7 @@ func TestControlSchemaAdoptsLegacyRowsWithoutReplacingEvidence(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if status.CurrentMigrationVersion != 17 || len(status.AppliedVersions) != 17 || status.AppliedVersions[16] != 17 || status.MinimumReaderVersion != OperationAcceptanceRetirementReaderVersion || status.MinimumWriterVersion != OperationAcceptanceRetirementWriterVersion {
+	if status.CurrentMigrationVersion != 18 || len(status.AppliedVersions) != 18 || status.AppliedVersions[17] != 18 || status.MinimumReaderVersion != OperationAcceptanceRetirementReaderVersion || status.MinimumWriterVersion != PrivateInvocationWriterVersion {
 		t.Fatalf("migration status = %#v", status)
 	}
 

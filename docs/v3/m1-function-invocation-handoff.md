@@ -1,9 +1,14 @@
 # M1 function invocation: private request and durable Nomad effects
 
-Status: design gate, not implemented or qualified. `InvokeFunction` still
-submits a batch job in the HTTP process. Its current execution-row check and
-request-independent completion watcher reduce two failure windows but do not
-provide signed acceptance, claim fencing, or crash recovery.
+Status: PostgreSQL private-material acceptance foundation implemented and
+tested against disposable PostgreSQL 17.7; route and worker are not wired.
+`InvokeFunction` still submits a batch job in the HTTP process. Its current
+execution-row check and request-independent completion watcher reduce two
+failure windows but do not provide signed acceptance, claim fencing, or crash
+recovery. The new explicit encryption key ring, migration 18, and
+`AcceptPrivateInvocation` are dormant pending key configuration, etcd parity,
+and the effect runner. Migration 18 raises the writer contract to 15, so the
+Mini mixed-version/rollback gate must account for it before deployment.
 
 ## Required contract
 
@@ -108,3 +113,12 @@ all mandatory private material and signed intent are committed.
 This work is an M1/M2 dependency for a release that keeps function invocation
 available. A passing handler unit test or a successful batch-job submission
 alone does not close it.
+
+## Current foundation evidence
+
+On 2026-09-25, `go test ./store -run '^TestPrivateInvocation' -count=1 -v`
+passed with `NORN_TEST_DATABASE_URL` targeting a disposable PostgreSQL 17.7
+container. It covered atomic acceptance/rollback, two-connection same-key
+acceptance race, private material replay/mismatch, no plaintext in the tested
+control rows, key absence, rotation, AAD and ciphertext tampering. This does
+not exercise etcd, real Nomad, route admission, a process crash, or restore.
