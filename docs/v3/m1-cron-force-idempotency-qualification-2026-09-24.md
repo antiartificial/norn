@@ -72,3 +72,20 @@ removed. This is local evidence, not a Mini or Fleet rollout.
 If an ambiguous Force has no provable evaluation ID, Nomad provides no safe
 absence proof on this version. That reservation remains held for operator
 investigation; automatic retry or release would risk a duplicate run.
+
+## Schedule update conversion — 2026-09-25
+
+`CronUpdateSchedule` now queues a signed `app.cron-schedule` operation. The
+claimed worker binds the old and new schedule, parent version/index, spec,
+image, and database delivery revision; it reserves a Nomad effect before a
+CAS registration, then commits cron state, operation receipt, and archive
+intent together. It reconstructs private material in the worker and preserves
+the parent's paused state.
+
+Opt-in HTTP-to-worker tests passed against disposable Nomad 2.0.7 and
+PostgreSQL 17.7 for both an ordinary update and a dropped registration
+response. The tests observed one parent version increment, one forwarded
+registration after the lost response, same-key replay, persisted schedule,
+and paused-state preservation. The unique job and schema were removed and
+both services stopped. Literal process-kill and two-worker schedule races
+remain part of the M1 qualification gate.
