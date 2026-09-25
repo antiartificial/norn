@@ -153,8 +153,25 @@ func TestVerifySignedDeployedMySQLSourceBinding(t *testing.T) {
 			}
 		})
 	}
-	if _, err := db.ActivateDatabaseCatalog(ctx, active.Revision, catalog, "source-admission-rotate"); err != nil {
+	rotatingObserver := mysqlSourceObserverFunc(func(ctx context.Context, want nomad.MySQLSourceJobObservationRequest) (nomad.MySQLSourceJobObservation, error) {
+		if _, err := db.ActivateDatabaseCatalog(ctx, active.Revision, catalog, "source-admission-rotate"); err != nil {
+			return nomad.MySQLSourceJobObservation{}, err
+		}
+		return observer.ObserveMySQLSourceJob(ctx, want)
+	})
+	rotatedAcceptance := snapshotAcceptanceInput
+	rotatedAcceptance.Key = "source-snapshot-after-catalog-rotation"
+	if _, err := db.AcceptPrivateMySQLSourceSnapshot(ctx, acceptedStore, rotatingObserver, rotatedAcceptance); !errors.Is(err, ErrMySQLSourceSnapshotFence) {
+		t.Fatalf("catalog rotation during Nomad observation was accepted: %v", err)
+	}
+	authority, err := acceptedStore.Authority(ctx)
+	if err != nil {
 		t.Fatal(err)
+	}
+	if _, err := acceptedStore.ResolveIdentity(ctx, OperationRequestIdentity{Authority: authority,
+		Actor: rotatedAcceptance.Actor, Kind: MySQLSourceSnapshotOperationKind,
+		Resource: "app/wordpress/database/primary", Key: rotatedAcceptance.Key}); !errors.Is(err, ErrAcceptanceNotFound) {
+		t.Fatalf("stale source operation retained an acceptance identity: %v", err)
 	}
 	if _, err := db.BuildMySQLSourceSnapshotRequest(ctx, acceptedStore, noObservationForInvalidMaintenance,
 		MySQLSourceSnapshotAdmissionRequest{Binding: request, Maintenance: maintenance, DumpToolSHA256: strings.Repeat("d", 64)}); !errors.Is(err, ErrMySQLSourceSnapshotFence) {

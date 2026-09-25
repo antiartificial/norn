@@ -106,6 +106,10 @@ func (s *PGOperationStore) Accept(ctx context.Context, input OperationAcceptance
 }
 
 func (s *PGOperationStore) acceptWithPrivateInvocation(ctx context.Context, input OperationAcceptance, private *PrivateInvocationEnvelope) (AcceptedOperation, error) {
+	return s.acceptWithGuard(ctx, input, private, nil)
+}
+
+func (s *PGOperationStore) acceptWithGuard(ctx context.Context, input OperationAcceptance, private *PrivateInvocationEnvelope, guard func(context.Context, pgx.Tx) error) (AcceptedOperation, error) {
 	if s == nil || s.signer == nil || s.db == nil || s.db.Pool == nil {
 		return AcceptedOperation{}, &AcceptanceValidationError{Reason: "operation acceptance store is unavailable"}
 	}
@@ -145,6 +149,11 @@ func (s *PGOperationStore) acceptWithPrivateInvocation(ctx context.Context, inpu
 	if !inserted {
 		_ = tx.Rollback(context.Background())
 		return s.resolveFresh(acceptance.Identity, acceptance.Fingerprint)
+	}
+	if guard != nil {
+		if err := guard(ctx, tx); err != nil {
+			return AcceptedOperation{}, err
+		}
 	}
 	if acceptance.Admission.OneActiveMutablePerApp {
 		if err := enforceActiveAppAdmission(ctx, tx, acceptance.Operation.App); err != nil {

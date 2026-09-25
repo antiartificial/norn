@@ -8,6 +8,7 @@ import (
 	"strings"
 
 	"github.com/google/uuid"
+	"github.com/jackc/pgx/v5"
 
 	"norn/v2/api/database"
 	"norn/v2/api/model"
@@ -80,7 +81,16 @@ func (db *DB) AcceptPrivateMySQLSourceSnapshot(ctx context.Context, acceptance *
 	if err != nil {
 		return AcceptedOperation{}, err
 	}
-	return acceptance.Accept(ctx, entry)
+	return acceptance.acceptWithGuard(ctx, entry, nil, func(ctx context.Context, tx pgx.Tx) error {
+		if _, err := tx.Exec(ctx, `SELECT pg_advisory_xact_lock(hashtextextended('norn:database-catalog', 0))`); err != nil {
+			return err
+		}
+		active, err := loadActiveDatabaseCatalog(ctx, tx)
+		if err != nil || active.Revision != request.CatalogRevision {
+			return ErrMySQLSourceSnapshotFence
+		}
+		return nil
+	})
 }
 
 func sameMySQLSourceSnapshotSelection(existing AcceptedOperation, selection MySQLSourceSnapshotAdmissionRequest) bool {

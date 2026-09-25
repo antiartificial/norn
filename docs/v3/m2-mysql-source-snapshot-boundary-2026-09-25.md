@@ -44,6 +44,13 @@ deployment through private source admission with a live Nomad observer, but
 that added path has not completed a Docker/TLS runtime run: the disposable
 MySQL container could not initialize because Docker storage was full.
 
+Admission also rechecks the catalog revision inside the signed acceptance
+transaction while holding the same PostgreSQL advisory lock as catalog
+activation. A catalog rotation during Nomad observation now fails before the
+operation or its request identity commits. The store integration test rotates
+the catalog from its observer and verifies that no stale acceptance identity
+survives. Execution still independently rechecks the catalog and job state.
+
 `quiesce-intended` is a reservation, **not** a write-stop proof. Before a
 snapshot can be accepted for restore, the signed stop and account-lock proofs,
 staged artifact, and service-signed receipt must be bound to a separate signed
