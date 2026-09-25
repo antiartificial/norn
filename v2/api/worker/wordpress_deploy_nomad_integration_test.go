@@ -35,7 +35,7 @@ import (
 // path that matters for the supported WordPress database adapter. It accepts
 // a signed app.deploy into PostgreSQL, lets the normal claimed worker resolve
 // a clean immutable Git source and exact prebuilt image, opens the declared
-// MySQL 8.4 verify-full target, renders its CA through a private Nomad
+// declared MySQL verify-full target, renders its CA through a private Nomad
 // Variable, and starts the generated WordPress allocation.
 //
 // The test intentionally takes disposable runtime addresses as input rather
@@ -82,6 +82,9 @@ func TestClaimedWordPressVerifiedTLSDeployInNomad(t *testing.T) {
 	t.Cleanup(func() { _ = secrets.Close() })
 
 	catalog := wordpressDeployCatalog(host, port, user, databaseName, "secret:wp/ca")
+	if engineVersion := os.Getenv("NORN_TEST_WORDPRESS_DEPLOY_MYSQL_ENGINE_VERSION"); engineVersion != "" {
+		catalog.Services[0].EngineVersion = engineVersion
+	}
 	if _, err := db.ActivateDatabaseCatalog(context.Background(), 0, catalog, "wordpress-deploy-qualification"); err != nil {
 		t.Fatal(err)
 	}
@@ -181,6 +184,7 @@ func TestClaimedWordPressVerifiedTLSDeployInNomad(t *testing.T) {
 	// stages a variable. This is intentionally earlier than WordPress startup:
 	// an unrelated CA must not reach an allocation through app.deploy.
 	wrongCatalog := wordpressDeployCatalog(host, port, user, databaseName, "secret:wp/wrong-ca")
+	wrongCatalog.Services[0].EngineVersion = catalog.Services[0].EngineVersion
 	if _, err := db.ActivateDatabaseCatalog(context.Background(), 1, wrongCatalog, "wordpress-deploy-qualification"); err != nil {
 		t.Fatal(err)
 	}

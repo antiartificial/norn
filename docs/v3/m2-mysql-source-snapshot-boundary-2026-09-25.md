@@ -40,9 +40,13 @@ the deployed catalog revision to remain active and the selected maintenance
 identity to match the exact resolved source binding. An unbound snapshot
 credential and a later catalog revision are rejected by the store integration
 test. The opt-in WordPress deployment test now carries its successful signed
-deployment through private source admission with a live Nomad observer, but
-that added path has not completed a Docker/TLS runtime run: the disposable
-MySQL container could not initialize because Docker storage was full.
+deployment through private source admission with a live Nomad observer. It
+passed against a generated WordPress 6.8.2 Docker allocation, disposable
+Nomad 2.0.7 and PostgreSQL 16, and native MySQL 8.0.27 with verified TLS.
+The admitted source request bound the deployment, exact live job and
+allocation, active catalog, and maintenance identity. The test accepts the
+operation but does not run source quiescence or stage an artifact; its
+maintenance accounts are not provisioned in this fixture.
 
 Admission also rechecks the catalog revision inside the signed acceptance
 transaction while holding the same PostgreSQL advisory lock as catalog

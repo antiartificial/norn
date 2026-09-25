@@ -142,6 +142,22 @@ environment and file, and `synthetic-ca-line` in the CA file. This checks
 Nomad's template rendering, not a WordPress/MySQL connection or release
 deployment.
 
+## Claimed WordPress deploy and source admission — 2026-09-25
+
+The opt-in claimed deploy test passed with the generated pinned WordPress
+6.8.2 Docker allocation, native disposable MySQL 8.0.27, Nomad 2.0.7,
+Consul 2.0.4, and PostgreSQL 16. The MySQL server required TLS and used a
+certificate valid for the host address reachable from both the macOS control
+client and Docker allocation. A separate `mysql --ssl-mode=VERIFY_IDENTITY`
+connection confirmed the server identity. The worker completed the signed
+deploy, rendered the private CA, and loaded the WordPress installation page.
+The test then accepted a private source snapshot operation using that
+deployment's signed database binding and Nomad's live job/allocation
+observation; an unbound snapshot credential was refused. Rotating to an
+unrelated CA made the next deploy fail before changing the trusted Nomad
+delivery variable. The fixture was local and disposable. No source stop,
+account lock, dump, restore, or Mini deployment was exercised by this test.
+
 `TestClaimedWordPressVerifiedTLSDeployInNomad` then passed against disposable
 PostgreSQL, MySQL 8.4 TLS, Nomad 2.0.7 and Consul. Signed `app.deploy`
 acceptance led to a claimed worker, clean Git source checkpoint, exact pinned
