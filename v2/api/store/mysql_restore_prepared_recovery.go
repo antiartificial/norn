@@ -60,7 +60,10 @@ func recoverExpiredPreparedMySQLRestores(ctx context.Context, tx pgx.Tx) error {
 		if err != nil {
 			return err
 		}
-		if result.RowsAffected() != 1 {
+		// Migration 25 backfills fences, but a prepared legacy row may have
+		// been inserted by an interrupted older writer. It never crossed SQL,
+		// so releasing it is safe even if no maintenance row exists.
+		if result.RowsAffected() > 1 {
 			return fmt.Errorf("expired prepared MySQL restore maintenance fence changed while recovering: %w", ErrMySQLRestoreFence)
 		}
 		result, err = tx.Exec(ctx, `DELETE FROM mysql_restore_intents WHERE operation_id=$1 AND state='prepared'`, id)

@@ -42,6 +42,19 @@ CREATE TABLE mysql_restore_maintenance_fences (
  source_quiescence JSONB NOT NULL,
  created_at TIMESTAMPTZ NOT NULL DEFAULT now()
 );
+-- Migration 24 could have left private intents during an upgrade. Preserve
+-- them behind a catalog fence. The marker is deliberately explicit: legacy
+-- rows do not gain a claim that source-quiescence evidence was accepted.
+INSERT INTO mysql_restore_maintenance_fences (operation_id, catalog_revision, source_quiescence)
+SELECT operation_id, catalog_revision,
+ jsonb_build_object(
+   'source', artifact->'source',
+   'observedAt', prepared_at,
+   'method', 'legacy intent without accepted source-quiescence evidence',
+   'evidenceSha256', repeat('0', 64)
+ )
+FROM mysql_restore_intents
+ON CONFLICT (operation_id) DO NOTHING;
 `
 
 func mysqlRestoreMaintenanceFenceMigration() SchemaMigration {

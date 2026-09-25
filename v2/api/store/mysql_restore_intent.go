@@ -114,14 +114,6 @@ func (db *DB) PrepareClaimedMySQLRestore(ctx context.Context, acceptance *PGOper
 	if err != nil {
 		return MySQLRestoreIntent{}, err
 	}
-	// The maintenance row survives the short catalog advisory transaction. It
-	// blocks a later catalog activation until this exact restore is completed,
-	// or remains as an explicit operator-inspection fence after ambiguity.
-	if _, err := tx.Exec(ctx, `INSERT INTO mysql_restore_maintenance_fences
-		(operation_id, catalog_revision, source_quiescence)
-		VALUES ($1,$2,$3) ON CONFLICT (operation_id) DO NOTHING`, claim.OperationID(), request.CatalogRevision, quiescence); err != nil {
-		return MySQLRestoreIntent{}, err
-	}
 	var existing MySQLRestoreIntent
 	var savedTarget, savedArtifact []byte
 	err = tx.QueryRow(ctx, `SELECT acceptance_intent_id, catalog_revision, profile_id, logical_id, target, artifact, artifact_path, state
@@ -137,11 +129,22 @@ func (db *DB) PrepareClaimedMySQLRestore(ctx context.Context, acceptance *PGOper
 	if err := json.Unmarshal(savedArtifact, &existing.Request.Artifact); err != nil {
 		return MySQLRestoreIntent{}, ErrMySQLRestoreFence
 	}
+	if existing.AcceptanceIntentID != accepted.AcceptanceIntentID || existing.Request.CatalogRevision != request.CatalogRevision || existing.Request.ProfileID != request.ProfileID || existing.Request.LogicalID != request.LogicalID || existing.Request.Target != request.Target || existing.Request.Artifact != request.Artifact || existing.Request.ArtifactPath != request.ArtifactPath || existing.State != "prepared" {
+		return MySQLRestoreIntent{}, ErrMySQLRestoreFence
+	}
+	// Insert only after confirming that this operation owns the durable intent.
+	// A target-key collision leaves no row for this operation, so inserting the
+	// fence first would turn the expected rejection into an FK error.
+	if _, err := tx.Exec(ctx, `INSERT INTO mysql_restore_maintenance_fences
+		(operation_id, catalog_revision, source_quiescence)
+		VALUES ($1,$2,$3) ON CONFLICT (operation_id) DO NOTHING`, claim.OperationID(), request.CatalogRevision, quiescence); err != nil {
+		return MySQLRestoreIntent{}, err
+	}
 	var savedQuiescence []byte
 	if err := tx.QueryRow(ctx, `SELECT source_quiescence FROM mysql_restore_maintenance_fences WHERE operation_id=$1`, claim.OperationID()).Scan(&savedQuiescence); err != nil || json.Unmarshal(savedQuiescence, &existing.Request.SourceQuiescence) != nil {
 		return MySQLRestoreIntent{}, ErrMySQLRestoreFence
 	}
-	if existing.AcceptanceIntentID != accepted.AcceptanceIntentID || !sameMySQLRestoreRequest(existing.Request, request) || existing.State != "prepared" {
+	if !sameMySQLRestoreRequest(existing.Request, request) {
 		return MySQLRestoreIntent{}, ErrMySQLRestoreFence
 	}
 	var fenceMatches bool
