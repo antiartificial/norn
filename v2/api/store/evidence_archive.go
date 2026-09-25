@@ -402,7 +402,36 @@ func evidenceHolds(ctx context.Context, q interface {
 		reason, query string
 	}{
 		{"operation-active", `SELECT EXISTS (SELECT 1 FROM operations WHERE saga_id = $1 AND status NOT IN ` + terminalStatusSQL + `)`},
-		{"manual-recovery", `SELECT EXISTS (SELECT 1 FROM operations WHERE saga_id = $1 AND (metadata->>'manualRecoveryRequired' = 'true' OR metadata->>'externalEffectRecoveryPending' = 'true'))`},
+		{"manual-recovery", `SELECT EXISTS (
+			SELECT 1 FROM operations o
+			WHERE o.saga_id = $1 AND (
+				COALESCE(o.metadata->>'externalEffectRecoveryPending' = 'true', false)
+				OR (
+					COALESCE(o.metadata->>'manualRecoveryRequired' = 'true', false)
+					AND NOT (
+						o.kind IN ('app.deploy', 'app.rollback')
+						AND o.status = 'failed'
+						AND o.last_error = 'operation executor lease expired'
+						AND EXISTS (
+							SELECT 1
+							FROM operations r
+							JOIN evidence_archive_intents i ON i.subject_kind = 'saga'
+								AND i.subject_id = r.saga_id
+								AND i.operation_id = r.id
+								AND i.state IN ('verified', 'pruned')
+							WHERE r.kind = 'app.deployment-reconcile'
+								AND r.status = 'succeeded'
+								AND r.app = o.app
+								AND r.payload->>'sourceOperationId' = o.id
+								AND r.payload->>'deploymentId' = o.payload->>'deploymentId'
+								AND r.metadata->>'sourceOperationId' = o.id
+								AND r.metadata->>'deploymentId' = o.payload->>'deploymentId'
+								AND EXISTS (SELECT 1 FROM operation_acceptance_intents ai WHERE ai.operation_id = r.id)
+						)
+					)
+				)
+			)
+		)`},
 		{"unresolved-effect", `SELECT EXISTS (SELECT 1 FROM operation_effects f JOIN operations o ON o.id = f.operation_id WHERE o.saga_id = $1 AND f.lifecycle <> 'resolved')`},
 		{"deployment-active", `SELECT EXISTS (SELECT 1 FROM deployments WHERE saga_id = $1 AND status NOT IN ('deployed', 'failed'))`},
 		{"deployment-current-or-rollback", `SELECT EXISTS (SELECT 1 FROM deployments d WHERE d.saga_id = $1 AND d.status = 'deployed' AND d.id IN (

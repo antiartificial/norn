@@ -176,6 +176,89 @@ func (f *retentionFixture) hotCount(sagaID string) int {
 	return count
 }
 
+func TestEvidenceManualRecoveryHoldRequiresVerifiedReconciliationArchive(t *testing.T) {
+	f := newRetentionFixture(t)
+	ctx := context.Background()
+	now := time.Now().UTC()
+	sourceRequest := f.request
+	sourceRequest.Key = "manual-deployment-" + uuid.NewString()
+	source := model.Operation{ID: uuid.NewString(), Kind: "app.deploy", App: "manual-recovery-app", SagaID: uuid.NewString(), Status: model.OperationQueued,
+		Source: "control-api", Payload: map[string]interface{}{"deploymentId": "deployment-1"}, Metadata: map[string]interface{}{}, StartedAt: now, MaxAttempts: 1}
+	acceptedSource, err := f.pipe.QueueOperation(ctx, source, sourceRequest)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := saga.NewWithID(f.hot, source.SagaID, source.App, "pipeline", "deploy").Log(ctx, "deployment.failed", "executor lease expired", nil); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := f.db.Pool.Exec(ctx, `UPDATE operations SET next_attempt_at=now()-interval '1 second' WHERE id=$1`, source.ID); err != nil {
+		t.Fatal(err)
+	}
+	claimed, sourceClaim, err := f.db.ClaimNextOperation(ctx, "retention-worker", time.Minute, []string{"app.deploy"})
+	if err != nil || claimed == nil || claimed.ID != source.ID {
+		t.Fatalf("source claim=%+v err=%v", claimed, err)
+	}
+	if err := f.db.FinishClaimedOperation(ctx, sourceClaim, model.OperationFailed, "operation executor lease expired", map[string]interface{}{"manualRecoveryRequired": true}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := f.db.Pool.Exec(ctx, `UPDATE operations SET last_error='operation executor lease expired' WHERE id=$1`, source.ID); err != nil {
+		t.Fatal(err)
+	}
+	if report, err := f.archiver.RunOnce(ctx); err != nil || report.Published != 1 {
+		t.Fatalf("source archive = %+v, %v", report, err)
+	}
+	sourceIntent := f.intents(source.SagaID)[0]
+	if holds, err := f.db.EvidenceHolds(ctx, sourceIntent, 0); err != nil || len(holds) != 1 || holds[0] != "manual-recovery" {
+		t.Fatalf("source holds before reconciliation = %v, %v", holds, err)
+	}
+
+	reconciliationRequest := f.request
+	reconciliationRequest.Key = "deployment-reconcile-" + uuid.NewString()
+	reconciliation := model.Operation{ID: uuid.NewString(), Kind: "app.deployment-reconcile", App: source.App, SagaID: uuid.NewString(), Ref: source.ID, Status: model.OperationQueued,
+		Source: "operator", Payload: map[string]interface{}{"sourceOperationId": source.ID, "deploymentId": "deployment-1"},
+		Metadata: map[string]interface{}{"sourceOperationId": source.ID, "deploymentId": "deployment-1"}, StartedAt: now, MaxAttempts: 1}
+	acceptedReconciliation, err := f.pipe.QueueOperation(ctx, reconciliation, reconciliationRequest)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := saga.NewWithID(f.hot, reconciliation.SagaID, reconciliation.App, "pipeline", "deployment-reconcile").Log(ctx, "deployment.reconciled", "projection repaired", nil); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := f.db.Pool.Exec(ctx, `UPDATE operations SET next_attempt_at=now()-interval '1 second' WHERE id=$1`, reconciliation.ID); err != nil {
+		t.Fatal(err)
+	}
+	claimed, reconciliationClaim, err := f.db.ClaimNextOperation(ctx, "retention-worker", time.Minute, []string{"app.deployment-reconcile"})
+	if err != nil || claimed == nil || claimed.ID != reconciliation.ID {
+		t.Fatalf("reconciliation claim=%+v err=%v", claimed, err)
+	}
+	if err := f.db.FinishClaimedOperation(ctx, reconciliationClaim, model.OperationSucceeded, "deployment reconciled against live Nomad image", reconciliation.Metadata); err != nil {
+		t.Fatal(err)
+	}
+	if holds, err := f.db.EvidenceHolds(ctx, sourceIntent, 0); err != nil || len(holds) != 1 || holds[0] != "manual-recovery" {
+		t.Fatalf("pending reconciliation archive released source hold: %v, %v", holds, err)
+	}
+	if report, err := f.archiver.RunOnce(ctx); err != nil || report.Published != 1 {
+		t.Fatalf("reconciliation archive = %+v, %v", report, err)
+	}
+	reconciliationIntent := f.intents(reconciliation.SagaID)[0]
+	if reconciliationIntent.State != "verified" || reconciliationIntent.OperationID != acceptedReconciliation.Operation.ID {
+		t.Fatalf("reconciliation archive proof = %+v", reconciliationIntent)
+	}
+	if holds, err := f.db.EvidenceHolds(ctx, sourceIntent, 0); err != nil || len(holds) != 0 {
+		t.Fatalf("verified reconciliation archive did not release source hold: %v, %v", holds, err)
+	}
+	failedSource, err := f.db.GetOperation(ctx, acceptedSource.Operation.ID)
+	if err != nil || failedSource.Status != model.OperationFailed || failedSource.Metadata["manualRecoveryRequired"] != true {
+		t.Fatalf("source receipt changed=%+v err=%v", failedSource, err)
+	}
+	if _, err := f.db.Pool.Exec(ctx, `UPDATE operations SET metadata=metadata || '{"externalEffectRecoveryPending":true}'::jsonb WHERE id=$1`, source.ID); err != nil {
+		t.Fatal(err)
+	}
+	if holds, err := f.db.EvidenceHolds(ctx, sourceIntent, 0); err != nil || len(holds) != 1 || holds[0] != "manual-recovery" {
+		t.Fatalf("external-effect recovery hold released by reconciliation: %v, %v", holds, err)
+	}
+}
+
 func TestEvidenceArchiveLifecycleWithHoldsPruningAndArchiveReads(t *testing.T) {
 	f := newRetentionFixture(t)
 	ctx := context.Background()
