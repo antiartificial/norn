@@ -110,20 +110,20 @@ func TestEtcdFleetGitHubPullRequestProcess(t *testing.T) {
 	}
 	url := base + "/api/v1/fleet/plans/" + plan.ID + "/github/pull-request"
 	first := processJSONRequest(t, http.MethodPost, url, operatorToken, "", nil)
-	if first.StatusCode != http.StatusBadGateway || !bytes.Contains(first.Body, []byte("fleet_github_pull_request_unproven")) || github.Mutations() != 1 {
-		t.Fatalf("lost PR response status=%d body=%s mutations=%d logs=%s", first.StatusCode, first.Body, github.Mutations(), output.String())
+	if first.StatusCode != http.StatusBadGateway || !bytes.Contains(first.Body, []byte("fleet_github_pull_request_unproven")) || github.FleetWrites() != 3 {
+		t.Fatalf("lost PR response status=%d body=%s fleet writes=%d logs=%s", first.StatusCode, first.Body, github.FleetWrites(), output.String())
 	}
 	recovered := processJSONRequest(t, http.MethodPost, url, operatorToken, "", nil)
-	if recovered.StatusCode != http.StatusOK || github.Mutations() != 1 {
-		t.Fatalf("recovery status=%d body=%s mutations=%d", recovered.StatusCode, recovered.Body, github.Mutations())
+	if recovered.StatusCode != http.StatusOK || github.FleetWrites() != 3 {
+		t.Fatalf("recovery status=%d body=%s fleet writes=%d", recovered.StatusCode, recovered.Body, github.FleetWrites())
 	}
 	var operation model.Operation
 	if err := json.Unmarshal(recovered.Body, &operation); err != nil || operation.ID == "" || operation.Kind != "fleet.github.pull-request" || operation.Status != model.OperationSucceeded || operation.Payload["url"] != "https://github.com/acme/norn-fleet/pull/42" || operation.Payload["pullRequestNumber"] != float64(42) {
 		t.Fatalf("CLI operation response=%s err=%v", recovered.Body, err)
 	}
 	replay := processJSONRequest(t, http.MethodPost, url, operatorToken, "", nil)
-	if replay.StatusCode != http.StatusOK || github.Mutations() != 1 {
-		t.Fatalf("replay status=%d body=%s mutations=%d", replay.StatusCode, replay.Body, github.Mutations())
+	if replay.StatusCode != http.StatusOK || github.FleetWrites() != 3 {
+		t.Fatalf("replay status=%d body=%s fleet writes=%d", replay.StatusCode, replay.Body, github.FleetWrites())
 	}
 }
 
@@ -134,7 +134,7 @@ type processFleetGitHubPullRequest struct {
 	branch      []byte
 	branchName  string
 	prCreated   bool
-	mutations   int
+	fleetWrites int
 	title, body string
 }
 
@@ -145,10 +145,12 @@ func newProcessFleetGitHubPullRequest(t *testing.T, main []byte) *processFleetGi
 	return fake
 }
 
-func (f *processFleetGitHubPullRequest) Mutations() int {
+// FleetWrites excludes GitHub App token exchange and counts the protected
+// mutation sequence: branch creation, fleet configuration update, and PR.
+func (f *processFleetGitHubPullRequest) FleetWrites() int {
 	f.mu.Lock()
 	defer f.mu.Unlock()
-	return f.mutations
+	return f.fleetWrites
 }
 
 func (f *processFleetGitHubPullRequest) serveHTTP(w http.ResponseWriter, r *http.Request) {
@@ -190,6 +192,7 @@ func (f *processFleetGitHubPullRequest) serveHTTP(w http.ResponseWriter, r *http
 		}
 		_ = json.NewDecoder(r.Body).Decode(&value)
 		f.branchName = strings.TrimPrefix(value.Ref, "refs/heads/")
+		f.fleetWrites++
 		w.WriteHeader(http.StatusCreated)
 	case r.Method == http.MethodPut && r.URL.Path == "/repos/acme/norn-fleet/contents/environments/staging/nyc3/cluster.yaml":
 		var value struct {
@@ -206,6 +209,7 @@ func (f *processFleetGitHubPullRequest) serveHTTP(w http.ResponseWriter, r *http
 			return
 		}
 		f.branchName, f.branch = value.Branch, decoded
+		f.fleetWrites++
 		w.WriteHeader(http.StatusOK)
 	case r.Method == http.MethodGet && r.URL.Path == "/repos/acme/norn-fleet/pulls":
 		if !f.prCreated {
@@ -226,7 +230,7 @@ func (f *processFleetGitHubPullRequest) serveHTTP(w http.ResponseWriter, r *http
 			http.Error(w, "duplicate pull request", http.StatusConflict)
 			return
 		}
-		f.prCreated, f.mutations, f.title, f.body = true, f.mutations+1, value.Title, value.Body
+		f.prCreated, f.fleetWrites, f.title, f.body = true, f.fleetWrites+1, value.Title, value.Body
 		connection, _, err := w.(http.Hijacker).Hijack()
 		if err == nil {
 			_ = connection.Close()
