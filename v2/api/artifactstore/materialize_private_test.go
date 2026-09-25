@@ -8,10 +8,118 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"testing"
 	"time"
 )
+
+type processMaterializeStore struct {
+	Store
+	entered string
+	release string
+	payload []byte
+}
+
+func (s processMaterializeStore) Materialize(ctx context.Context, _ Descriptor, destination io.Writer) error {
+	if err := os.WriteFile(s.entered, nil, 0o600); err != nil {
+		return err
+	}
+	for {
+		if _, err := os.Stat(s.release); err == nil {
+			_, err = destination.Write(s.payload)
+			return err
+		} else if !os.IsNotExist(err) {
+			return err
+		}
+		select {
+		case <-ctx.Done():
+			return ctx.Err()
+		case <-time.After(10 * time.Millisecond):
+		}
+	}
+}
+
+func TestMaterializePrivateProcessHelper(t *testing.T) {
+	if os.Getenv("NORN_MATERIALIZE_PROCESS_HELPER") != "1" {
+		return
+	}
+	payload := []byte("retained bytes")
+	digest := fmt.Sprintf("%x", sha256.Sum256(payload))
+	descriptor := Descriptor{Key: KeyForSHA256(digest), SHA256: digest, Size: int64(len(payload))}
+	path, err := MaterializePrivate(context.Background(), processMaterializeStore{
+		entered: os.Getenv("NORN_MATERIALIZE_ENTERED"),
+		release: os.Getenv("NORN_MATERIALIZE_RELEASE"), payload: payload,
+	}, descriptor, os.Getenv("NORN_MATERIALIZE_DIRECTORY"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Remove(path); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestMaterializePrivateProcessCrashReleasesDirectoryLock(t *testing.T) {
+	directory := filepath.Join(t.TempDir(), "restore")
+	if err := os.Mkdir(directory, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	release := filepath.Join(t.TempDir(), "release")
+	start := func(marker string) (*exec.Cmd, *bytes.Buffer) {
+		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+		t.Cleanup(cancel)
+		cmd := exec.CommandContext(ctx, os.Args[0], "-test.run=^TestMaterializePrivateProcessHelper$")
+		cmd.Env = append(os.Environ(),
+			"NORN_MATERIALIZE_PROCESS_HELPER=1",
+			"NORN_MATERIALIZE_DIRECTORY="+directory,
+			"NORN_MATERIALIZE_ENTERED="+marker,
+			"NORN_MATERIALIZE_RELEASE="+release,
+		)
+		output := &bytes.Buffer{}
+		cmd.Stdout, cmd.Stderr = output, output
+		if err := cmd.Start(); err != nil {
+			t.Fatal(err)
+		}
+		t.Cleanup(func() { _ = cmd.Process.Kill(); _ = cmd.Wait() })
+		return cmd, output
+	}
+	waitFor := func(path string) {
+		deadline := time.Now().Add(3 * time.Second)
+		for time.Now().Before(deadline) {
+			if _, err := os.Stat(path); err == nil {
+				return
+			}
+			time.Sleep(10 * time.Millisecond)
+		}
+		t.Fatalf("process did not reach materialization: %s", filepath.Base(path))
+	}
+	firstMarker := filepath.Join(t.TempDir(), "first-entered")
+	first, firstOutput := start(firstMarker)
+	waitFor(firstMarker)
+	secondMarker := filepath.Join(t.TempDir(), "second-entered")
+	second, secondOutput := start(secondMarker)
+	time.Sleep(200 * time.Millisecond)
+	if _, err := os.Stat(secondMarker); !os.IsNotExist(err) {
+		t.Fatalf("second process entered while first held lock: %v", err)
+	}
+	if err := first.Process.Kill(); err != nil {
+		t.Fatal(err)
+	}
+	if err := first.Wait(); err == nil {
+		t.Fatalf("first process unexpectedly exited cleanly: %s", firstOutput.String())
+	}
+	waitFor(secondMarker)
+	if err := os.WriteFile(release, nil, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := second.Wait(); err != nil {
+		t.Fatalf("second process could not materialize after crash: %v\n%s", err, secondOutput.String())
+	}
+	leftovers, err := filepath.Glob(filepath.Join(directory, ".norn-artifact-*"))
+	if err != nil || len(leftovers) != 1 {
+		t.Fatalf("expected one inspectable file from killed materialization, got %d: %v", len(leftovers), err)
+	}
+}
 
 type unverifiedMaterializeStore struct {
 	Store
