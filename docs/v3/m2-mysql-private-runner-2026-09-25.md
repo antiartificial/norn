@@ -173,6 +173,14 @@ through the final read-only observations and terminal transaction, without
 repeating `ALTER USER`. The disposable rehearsal invokes that entry point and
 rejects a stale claim before release.
 
+Catalog activation now distinguishes unfinished source/restore rows from a
+signed, released recovery. It permits a later revision only while the recovered
+source and target still resolve to their exact bound identities; a retarget is
+rejected. The source snapshot row remains a durable launch reservation. The
+disposable PostgreSQL/MySQL rehearsal verifies catalog refusal before release,
+retarget refusal afterward, a later unrelated service revision, continued source
+launch refusal, and target launch reservation after release.
+
 - Qualify bounded memory/disk behavior on representative large data.
 - Wire the launch and mutation gates into every application write and resume
   path. Prove signed source-account quiescence and recovery on the actual

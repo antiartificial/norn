@@ -489,6 +489,9 @@ func TestMySQLRestoreIntentAgainstDisposableEngines(t *testing.T) {
 	if claimed, _, err := control.ClaimNextOperation(ctx, "post-restore-deploy", time.Minute, []string{"app.deploy"}); err != nil || claimed != nil {
 		t.Fatalf("completed restore resumed queued deploy without signed recovery: %+v %v", claimed, err)
 	}
+	if _, err := control.ActivateDatabaseCatalog(ctx, active.Revision, catalog, "blocked-during-recovery"); !errors.Is(err, ErrMySQLRestoreMaintenanceFence) {
+		t.Fatalf("catalog changed while restore recovery still held fence: %v", err)
+	}
 	if err := control.RenewOperationClaim(ctx, recoveryClaim, time.Minute); err != nil {
 		t.Fatalf("renew recovery claim before fence release: %v", err)
 	}
@@ -524,6 +527,35 @@ func TestMySQLRestoreIntentAgainstDisposableEngines(t *testing.T) {
 	}
 	if claimed, _, err := control.ClaimNextOperation(ctx, "post-recovery-deploy", time.Minute, []string{"app.deploy"}); err != nil || claimed == nil {
 		t.Fatalf("released fence did not admit queued deploy: %+v %v", claimed, err)
+	}
+	retarget := catalog
+	retarget.Bindings = append([]database.DatabaseBinding(nil), catalog.Bindings...)
+	for index := range retarget.Bindings {
+		if retarget.Bindings[index].ID == "intent-target" {
+			retarget.Bindings[index].Generation++
+			retarget.Bindings[index].Database += "_other"
+		}
+	}
+	if _, err := control.ActivateDatabaseCatalog(ctx, active.Revision, retarget, "blocked-recovered-retarget"); !errors.Is(err, ErrMySQLRestoreMaintenanceFence) {
+		t.Fatalf("catalog retargeted recovered MySQL database: %v", err)
+	}
+	unrelated := catalog
+	unrelated.Services = append([]database.DatabaseService(nil), catalog.Services...)
+	for index := range unrelated.Services {
+		if unrelated.Services[index].ID == "spare-pg" {
+			unrelated.Services[index].Generation++
+			unrelated.Services[index].Endpoint.Host = "/var/run/spare-pg-next"
+		}
+	}
+	advanced, err := control.ActivateDatabaseCatalog(ctx, active.Revision, unrelated, "post-recovery-operator")
+	if err != nil || advanced.Revision != active.Revision+1 {
+		t.Fatalf("unrelated catalog update remained frozen after recovery: %+v %v", advanced, err)
+	}
+	if _, err := control.ReserveMySQLRuntimeLaunch(ctx, "blocked-source-after-recovery", []database.TargetIdentity{source.Target}); !errors.Is(err, ErrMySQLRuntimeLaunchFence) {
+		t.Fatalf("source launch bypassed retained snapshot reservation: %v", err)
+	}
+	if _, err := control.ReserveMySQLRuntimeLaunch(ctx, "allowed-target-after-recovery", []database.TargetIdentity{target.Target}); err != nil {
+		t.Fatalf("target launch stayed fenced after signed recovery: %v", err)
 	}
 	// The later process-kill case uses a separate staged-source fixture.
 	if err := os.WriteFile(path, stagedBytes, 0o600); err != nil {
