@@ -218,14 +218,20 @@ func validateFleetGitHubPullRequestPlanBinding(plan model.Operation, operation m
 		return fmt.Errorf("encode Fleet GitHub pull-request payload: %w", err)
 	}
 	var payload struct {
-		PlanID       string         `json:"planId"`
-		PlanDigest   string         `json:"planDigest"`
-		SourceDigest string         `json:"sourceDigest"`
-		Pool         string         `json:"pool"`
-		Action       string         `json:"action"`
-		Proposed     fleet.NodePool `json:"proposed"`
+		FleetGitHub struct {
+			PlanID       string         `json:"planId"`
+			PlanDigest   string         `json:"planDigest"`
+			SourceDigest string         `json:"sourceDigest"`
+			Pool         string         `json:"pool"`
+			Action       string         `json:"action"`
+			Proposed     fleet.NodePool `json:"proposed"`
+		} `json:"fleetGitHub"`
 	}
-	if err := json.Unmarshal(encodedOperation, &payload); err != nil || !sameFleetGitHubPullRequestReservation(expected, FleetGitHubPullRequestReservation{PlanID: payload.PlanID, PlanDigest: payload.PlanDigest, SourceDigest: payload.SourceDigest, Pool: payload.Pool, Action: payload.Action, Proposed: payload.Proposed}) {
+	if err := json.Unmarshal(encodedOperation, &payload); err != nil {
+		return fmt.Errorf("signed Fleet GitHub pull-request payload does not match the immutable capacity plan")
+	}
+	intent := payload.FleetGitHub
+	if !sameFleetGitHubPullRequestReservation(expected, FleetGitHubPullRequestReservation{PlanID: intent.PlanID, PlanDigest: intent.PlanDigest, SourceDigest: intent.SourceDigest, Pool: intent.Pool, Action: intent.Action, Proposed: intent.Proposed}) {
 		return fmt.Errorf("signed Fleet GitHub pull-request payload does not match the immutable capacity plan")
 	}
 	return nil

@@ -3,7 +3,6 @@ package etcdstore_test
 import (
 	"context"
 	"encoding/json"
-	"errors"
 	"strings"
 	"testing"
 	"time"
@@ -40,8 +39,8 @@ func TestV3FleetGitHubPullRequestReservationAcceptsAndReplaysEtcd(t *testing.T) 
 	}
 	changed := reservation
 	changed.Proposed.Desired = 4
-	if _, err := adapter.AcceptFleetGitHubPullRequest(context.Background(), request, changed); !errors.Is(err, store.ErrAcceptanceConflict) {
-		t.Fatalf("changed replay error=%v, want acceptance conflict", err)
+	if _, err := adapter.AcceptFleetGitHubPullRequest(context.Background(), request, changed); err == nil || !strings.Contains(err.Error(), "reservation differs from accepted intent") {
+		t.Fatalf("changed replay error=%v, want reservation mismatch", err)
 	}
 	other, otherReservation := fleetGitHubPullRequestAcceptance(t, adapter, plan.ID, "operator-b", "pr-b")
 	if _, err := adapter.AcceptFleetGitHubPullRequest(context.Background(), other, otherReservation); err == nil || !strings.Contains(err.Error(), "reservation already exists") {
@@ -59,7 +58,7 @@ func TestV3FleetGitHubPullRequestReservationRejectsPlanAndPayloadMismatchesEtcd(
 	if _, err := adapter.AcceptFleetGitHubPullRequest(context.Background(), mismatchedRequest, mismatchedPlan); err == nil || !strings.Contains(err.Error(), "reservation does not match") {
 		t.Fatalf("plan mismatch error=%v", err)
 	}
-	request.Operation.Payload["pool"] = "control"
+	request.Operation.Payload["fleetGitHub"].(map[string]interface{})["pool"] = "control"
 	var err error
 	request.Fingerprint, err = store.CanonicalOperationRequestFingerprint(request)
 	if err != nil {
@@ -92,7 +91,7 @@ func fleetGitHubPullRequestRequest(t *testing.T, adapter *etcdstore.V3OperationS
 func fleetGitHubPullRequestRequestWithAuthority(t *testing.T, authority string, reservation etcdstore.FleetGitHubPullRequestReservation, subject, key string) store.OperationAcceptance {
 	t.Helper()
 	now := time.Now().UTC().Truncate(time.Microsecond)
-	request := store.OperationAcceptance{Identity: store.OperationRequestIdentity{Authority: authority, Actor: store.OperationActor{Issuer: "test", Subject: subject}, Kind: "fleet.github.pull-request", Resource: reservation.PlanID, Key: key}, Operation: model.Operation{ID: uuid.NewString(), Kind: "fleet.github.pull-request", Ref: reservation.PlanID, Status: model.OperationQueued, Source: "test", Risk: "GitHub PR reservation", StartedAt: now, MaxAttempts: 1, Payload: map[string]interface{}{"planId": reservation.PlanID, "planDigest": reservation.PlanDigest, "sourceDigest": reservation.SourceDigest, "pool": reservation.Pool, "action": reservation.Action, "proposed": reservation.Proposed}, Metadata: map[string]interface{}{}}, Audit: store.AcceptanceAuditContext{Source: "test"}, Semantics: map[string]interface{}{"planId": reservation.PlanID, "planDigest": reservation.PlanDigest, "sourceDigest": reservation.SourceDigest, "pool": reservation.Pool, "action": reservation.Action, "proposed": reservation.Proposed}}
+	request := store.OperationAcceptance{Identity: store.OperationRequestIdentity{Authority: authority, Actor: store.OperationActor{Issuer: "test", Subject: subject}, Kind: "fleet.github.pull-request", Resource: reservation.PlanID, Key: key}, Operation: model.Operation{ID: uuid.NewString(), Kind: "fleet.github.pull-request", Ref: reservation.PlanID, Status: model.OperationQueued, Source: "test", Risk: "GitHub PR reservation", StartedAt: now, MaxAttempts: 1, Payload: map[string]interface{}{"fleetGitHub": map[string]interface{}{"planId": reservation.PlanID, "planDigest": reservation.PlanDigest, "sourceDigest": reservation.SourceDigest, "pool": reservation.Pool, "action": reservation.Action, "proposed": reservation.Proposed}}, Metadata: map[string]interface{}{}}, Audit: store.AcceptanceAuditContext{Source: "test"}, Semantics: map[string]interface{}{"planId": reservation.PlanID, "planDigest": reservation.PlanDigest, "sourceDigest": reservation.SourceDigest, "pool": reservation.Pool, "action": reservation.Action, "proposed": reservation.Proposed}}
 	var err error
 	request.Fingerprint, err = store.CanonicalOperationRequestFingerprint(request)
 	if err != nil {
