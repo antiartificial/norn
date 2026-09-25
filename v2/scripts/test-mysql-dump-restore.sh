@@ -2,6 +2,12 @@
 set -euo pipefail
 
 repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
+for required_tool in docker initdb pg_ctl createdb mysql mysqldump; do
+  if ! command -v "$required_tool" >/dev/null 2>&1; then
+    echo "required disposable restore test tool is unavailable: $required_tool" >&2
+    exit 1
+  fi
+done
 mysql_container="norn-mysql-recovery-$RANDOM-$$"
 root_password="norn-disposable-recovery-root"
 scratch="$(mktemp -d "${TMPDIR:-/tmp}/norn-mysql-recovery.XXXXXX")"
