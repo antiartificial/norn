@@ -101,6 +101,33 @@ func cloneJSONMap(t *testing.T, input map[string]interface{}) map[string]interfa
 	return output
 }
 
+func TestVerifyAcceptedOperationForRecoveryDoesNotRewriteFailedReceipt(t *testing.T) {
+	stores, dbs := acceptanceIntegrationStores(t, 1)
+	ctx := context.Background()
+	input := newAcceptance(t, stores[0], "recovery-acceptance", "operator", "recovery-app", true)
+	accepted, err := stores[0].Accept(ctx, input)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := dbs[0].Pool.Exec(ctx, `UPDATE operations SET status='failed',last_error='operation executor lease expired',
+		metadata=metadata || '{"manualRecoveryRequired":true}'::jsonb,finished_at=now() WHERE id=$1`, accepted.Operation.ID); err != nil {
+		t.Fatal(err)
+	}
+	verified, err := stores[0].VerifyAcceptedOperation(ctx, accepted.Operation.ID)
+	if err != nil || verified.Operation.Status != model.OperationFailed || verified.Deployment == nil || verified.Deployment.ID != accepted.Deployment.ID || verified.Intent.OperationID != accepted.Operation.ID {
+		t.Fatalf("verified recovery source=%+v err=%v", verified, err)
+	}
+	if _, err := dbs[0].Pool.Exec(ctx, `UPDATE operations SET payload=payload || '{"deploymentId":"forged"}'::jsonb WHERE id=$1`, accepted.Operation.ID); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := stores[0].VerifyAcceptedOperation(ctx, accepted.Operation.ID); !errors.Is(err, ErrAcceptanceSignature) {
+		t.Fatalf("forged recovery source err=%v", err)
+	}
+	if _, err := stores[0].VerifyAcceptedOperation(ctx, uuid.NewString()); !errors.Is(err, ErrAcceptanceNotFound) {
+		t.Fatalf("missing recovery source err=%v", err)
+	}
+}
+
 // Indirections keep this test focused while still exercising encoding/json's
 // normal number and nested-map behavior.
 var jsonMarshal = func(value interface{}) ([]byte, error) { return json.Marshal(value) }

@@ -301,6 +301,45 @@ func (s *PGOperationStore) ResolveIdentity(ctx context.Context, identity Operati
 	return s.Resolve(ctx, identity, fingerprint)
 }
 
+// VerifyAcceptedOperation loads signed acceptance by its durable operation
+// identity without consuming or extending the original replay window. Recovery
+// callers must still check the operation and deployment's current state. A
+// retired or missing hot acceptance fails closed until archived evidence can
+// be verified through the recovery path.
+func (s *PGOperationStore) VerifyAcceptedOperation(ctx context.Context, operationID string) (AcceptedOperation, error) {
+	if s == nil || s.signer == nil || s.db == nil || s.db.Pool == nil || operationID == "" {
+		return AcceptedOperation{}, &AcceptanceValidationError{Reason: "operation acceptance store is unavailable"}
+	}
+	var identity OperationRequestIdentity
+	err := s.db.Pool.QueryRow(ctx, `SELECT authority::text,actor_issuer,actor_subject,kind,resource,request_key
+		FROM operation_request_identities WHERE operation_id=$1`, operationID).Scan(
+		&identity.Authority, &identity.Actor.Issuer, &identity.Actor.Subject, &identity.Kind, &identity.Resource, &identity.Key)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return AcceptedOperation{}, &AcceptanceNotFoundError{Identity: identity}
+	}
+	if err != nil {
+		return AcceptedOperation{}, err
+	}
+	record, err := s.loadAcceptance(ctx, identity)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return AcceptedOperation{}, &AcceptanceNotFoundError{Identity: identity}
+	}
+	if err != nil {
+		return AcceptedOperation{}, err
+	}
+	if record.operation.ID != operationID {
+		return AcceptedOperation{}, &AcceptanceSignatureError{Err: fmt.Errorf("acceptance operation identity changed")}
+	}
+	if err := s.verifyLoadedAcceptance(ctx, identity, record); err != nil {
+		return AcceptedOperation{}, err
+	}
+	return AcceptedOperation{
+		Operation: record.operation, Deployment: record.deployment, Regions: record.regions,
+		RequestIdentityID: record.intent.RequestIdentityID, AcceptanceIntentID: record.intent.ID,
+		Intent: record.intent, FleetRunnerAttempt: record.fleetRunnerAttempt,
+	}, nil
+}
+
 func (s *PGOperationStore) normalize(ctx context.Context, input OperationAcceptance) (OperationAcceptance, error) {
 	authority, err := s.Authority(ctx)
 	if err != nil {
