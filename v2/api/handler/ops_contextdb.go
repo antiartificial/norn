@@ -6,12 +6,9 @@ import (
 	"net"
 	"net/http"
 	"net/url"
-	"regexp"
 	"sort"
 	"strings"
 	"time"
-
-	"github.com/go-chi/chi/v5"
 
 	"norn/v2/api/model"
 )
@@ -35,8 +32,6 @@ type contextDBOpsSummary struct {
 	SagaEvents     any                          `json:"sagaEvents,omitempty"`
 	Warnings       []string                     `json:"warnings,omitempty"`
 }
-
-var contextDBIdentifierPattern = regexp.MustCompile(`^[A-Za-z0-9_.-]{1,128}$`)
 
 type contextDBProviderGate struct {
 	Ready               bool   `json:"ready"`
@@ -284,89 +279,12 @@ func (h *Handler) ContextDBOps(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, out)
 }
 
+// ContextDBRollbackFeedback remains an explicit compatibility response while
+// the remote rollback API lacks an atomic idempotency and lookup contract.
+// Sending the old inline POST can duplicate a rollback after an ambiguous
+// response, so v3 fails closed before any service discovery or network call.
 func (h *Handler) ContextDBRollbackFeedback(w http.ResponseWriter, r *http.Request) {
-	namespace := queryDefault(r, "namespace", "hermes-agent")
-	mode := queryDefault(r, "mode", "agent_memory")
-	eventID := chi.URLParam(r, "eventID")
-	if !contextDBIdentifierPattern.MatchString(namespace) || !contextDBIdentifierPattern.MatchString(eventID) {
-		writeError(w, http.StatusBadRequest, "namespace and event id must use only letters, numbers, dots, underscores, or hyphens")
-		return
-	}
-	var req struct {
-		Reason string `json:"reason"`
-		Owner  string `json:"owner"`
-	}
-	if err := decodeJSON(r, &req); err != nil {
-		writeError(w, http.StatusBadRequest, err.Error())
-		return
-	}
-	if strings.TrimSpace(req.Owner) == "" {
-		req.Owner = "norn"
-	}
-	manifest, err := h.buildServiceManifest()
-	if err != nil {
-		writeError(w, http.StatusInternalServerError, err.Error())
-		return
-	}
-	webURL := ""
-	for _, svc := range manifest.Services {
-		if svc.App == "contextdb" && svc.Process == "web" {
-			webURL = firstPrivateServiceInstanceURL(svc)
-			break
-		}
-	}
-	if webURL == "" {
-		writeError(w, http.StatusBadGateway, "contextdb web service unavailable")
-		return
-	}
-	payload, err := json.Marshal(map[string]string{
-		"mode":   mode,
-		"reason": req.Reason,
-		"owner":  req.Owner,
-	})
-	if err != nil {
-		writeError(w, http.StatusInternalServerError, "failed to encode contextdb request")
-		return
-	}
-	baseURL, err := url.Parse(webURL)
-	if err != nil || (baseURL.Scheme != "http" && baseURL.Scheme != "https") || baseURL.Host == "" || baseURL.User != nil || baseURL.Fragment != "" {
-		writeError(w, http.StatusBadGateway, "contextdb web service returned an invalid URL")
-		return
-	}
-	target := fmt.Sprintf("%s/v1/namespaces/%s/feedback/events/%s/rollback",
-		strings.TrimRight(webURL, "/"), url.PathEscape(namespace), url.PathEscape(eventID))
-	// #nosec G704 -- target is built only from literal private/loopback/CGNAT
-	// Consul addresses and strictly validated path identifiers.
-	rollbackRequest, err := http.NewRequestWithContext(r.Context(), http.MethodPost, target, strings.NewReader(string(payload)))
-	if err != nil {
-		writeError(w, http.StatusBadGateway, err.Error())
-		return
-	}
-	rollbackRequest.Header.Set("Content-Type", "application/json")
-	contextDBClient := &http.Client{
-		Timeout: 10 * time.Second,
-		CheckRedirect: func(_ *http.Request, _ []*http.Request) error {
-			return http.ErrUseLastResponse
-		},
-	}
-	// #nosec G704 -- redirects are disabled and the request host passed the
-	// literal private-address allowlist above.
-	resp, err := contextDBClient.Do(rollbackRequest)
-	if err != nil {
-		writeError(w, http.StatusBadGateway, err.Error())
-		return
-	}
-	defer resp.Body.Close()
-	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
-		writeError(w, resp.StatusCode, fmt.Sprintf("contextdb rollback failed: HTTP %d", resp.StatusCode))
-		return
-	}
-	var receipt contextDBFeedbackRollback
-	if err := json.NewDecoder(resp.Body).Decode(&receipt); err != nil {
-		writeError(w, http.StatusBadGateway, err.Error())
-		return
-	}
-	writeJSON(w, receipt)
+	writeError(w, http.StatusNotImplemented, "feedback rollback is unavailable in this release")
 }
 
 func firstPrivateServiceInstanceURL(svc model.ServiceManifestEntry) string {

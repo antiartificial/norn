@@ -140,10 +140,10 @@ into #76 and closed. These are review containers, not milestone signoff.
   reservation but before a confirmed remote effect can still remain pending
   conservatively; that window, process-crash, and three-member etcd fault
   qualification remain open before enabling the preview for release; see
-  [the preview gate](etcd-canary-preview.md). The inline ContextDB feedback
-  rollback remains an M1 release blocker until its remote idempotency contract
-  and durable Norn worker are qualified, or the v3 route is removed and fails
-  closed; see [the cross-service contract](m1-contextdb-feedback-rollback-contract.md).
+  [the preview gate](etcd-canary-preview.md). ContextDB feedback rollback now
+  fails closed with HTTP 501 and is unavailable in the Ops UI because the
+  remote idempotency contract is absent; restoring it requires the
+  [cross-service contract](m1-contextdb-feedback-rollback-contract.md).
 - M2: local MySQL runtime and verified-TLS health are implemented. Generated
   service, periodic, and function jobs delivered exact component bytes inside
   allocations on pinned Nomad 1.9.7. A WordPress image PHP client also

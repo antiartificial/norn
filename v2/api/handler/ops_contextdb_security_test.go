@@ -1,6 +1,8 @@
 package handler
 
 import (
+	"net/http"
+	"net/http/httptest"
 	"testing"
 
 	"norn/v2/api/model"
@@ -25,15 +27,11 @@ func TestFirstPrivateServiceInstanceURLRejectsPublicTargets(t *testing.T) {
 	}
 }
 
-func TestContextDBIdentifiersRejectPathSyntax(t *testing.T) {
-	for _, value := range []string{"hermes-agent", "event_123", "namespace.v2"} {
-		if !contextDBIdentifierPattern.MatchString(value) {
-			t.Fatalf("expected %q to validate", value)
-		}
-	}
-	for _, value := range []string{"../event", "namespace/event", "", "event?redirect=http://example.test"} {
-		if contextDBIdentifierPattern.MatchString(value) {
-			t.Fatalf("expected %q to be rejected", value)
-		}
+func TestContextDBRollbackFailsClosedBeforeServiceDiscovery(t *testing.T) {
+	request := httptest.NewRequest(http.MethodPost, "/api/ops/contextdb/feedback/event-123/rollback", nil)
+	record := httptest.NewRecorder()
+	(&Handler{}).ContextDBRollbackFeedback(record, request)
+	if record.Code != http.StatusNotImplemented {
+		t.Fatalf("rollback status = %d, want fail-closed 501", record.Code)
 	}
 }
