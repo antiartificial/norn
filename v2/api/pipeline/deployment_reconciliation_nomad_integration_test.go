@@ -41,7 +41,8 @@ func TestLiveDeploymentReconciliation(t *testing.T) {
 	region := spec.ResolvedRegions()[0]
 	now := time.Now().UTC().Add(-time.Second)
 	d := &model.Deployment{ID: uuid.NewString(), App: app, SagaID: uuid.NewString(), Status: model.StatusQueued, ImageTag: image,
-		SpecDigest: digest, Environment: "staging", StartedAt: now}
+		SpecDigest: digest, Environment: "staging", StartedAt: now,
+		SourceKind: "git_clone", SourceRef: "0123456789abcdef0123456789abcdef01234567", CommitSHA: "0123456789abcdef0123456789abcdef01234567"}
 	source := model.Operation{ID: uuid.NewString(), Kind: "app.deploy", App: app, SagaID: d.SagaID, Status: model.OperationQueued,
 		StartedAt: now, MaxAttempts: 1, Payload: map[string]interface{}{"deploymentId": d.ID, "specDigest": digest}}
 	request.Key = "source-deployment"
