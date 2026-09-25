@@ -192,3 +192,10 @@ manifest, records the receipt and finishes the original operation. This proves
 the PostgreSQL recovery transition with a local file-backed object store.
 The complete API worker/deploy-step process crash path and provider-backed
 create-only behavior still need qualification.
+The standalone legacy `app.snapshot-export` pipeline route also passed a
+control-PostgreSQL integration test: its first claimed execution left only
+the remote dump and a prepared intent; recovery requeued the operation, and
+`Pipeline.ExecuteOperation` on a successor claim verified that dump, added the
+manifest, recorded the receipt and terminalized the same operation. The
+full `OperationWorker` process and deployment snapshot step remain separate
+qualification work.
