@@ -116,8 +116,12 @@ path still needs real Nomad crash, two-worker, archive-cleanup, and private
 Mini migration-23 rollback qualification before it is a release-ready
 capability. Etcd function parity is absent.
 
-`Forge`/teardown/toggle endpoint remain the largest default inline host
-effects in this audit. The ContextDB feedback rollback route now returns 501
+`Forge`/teardown/toggle endpoint now accept signed `app.cloudflared-mutate`
+operations and execute through a host-bound, claim-fenced effect. The local
+receipt permits exact recovery after a confirmed restart; a crash between
+config write or restart and the receipt remains held for operator review.
+The [host-effect record](m1-cloudflared-host-effects-2026-09-25.md) names the
+remaining real-host and two-process gates. The ContextDB feedback rollback route now returns 501
 without contacting its remote service. The P1 PostgreSQL aggregate roots
 remain a barrier to a full etcd Fleet API. M1 is still open, including literal
 process crashes and two-replica races for the newly converted effects.
