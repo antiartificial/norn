@@ -1,17 +1,14 @@
 # M1 function invocation: private request and durable Nomad effects
 
-Status: PostgreSQL and etcd private-material acceptance foundations implemented
-and tested against disposable PostgreSQL 17.7 and etcd. PostgreSQL now has an
-opt-in, non-production admission/claimed-worker preview; production and etcd
-invocation routing remain disabled.
-`InvokeFunction` still submits a batch job in the HTTP process. Its current
-execution-row check and request-independent completion watcher reduce two
-failure windows but do not provide signed acceptance, claim fencing, or crash
-recovery. The new explicit encryption key ring, migration 18, and
-`AcceptPrivateInvocation` are dormant pending key configuration and the effect
-runner. Migration 19 adds the public pre-call effect-attempt fence and raises
-the writer contract to 16. A private Mini copy has now been rehearsed through
-migration 19; the mixed-version and rollback gates remain before deployment.
+Status: PostgreSQL and etcd private-material acceptance foundations exist.
+The normal `/invoke` route now selects signed PostgreSQL admission and a
+claimed worker only when the full private runtime is configured; otherwise it
+returns 503. The legacy inline HTTP-to-Nomad handler is no longer routed.
+Production can configure the same complete PostgreSQL bundle, but release
+qualification and etcd invocation parity remain open. Migrations 18–22
+implement the private envelope, effect attempts, cleanup and archive contract.
+A private Mini copy has only been rehearsed through migration 19; mixed-version
+and rollback gates remain before deployment.
 
 ## Required contract
 
@@ -248,7 +245,7 @@ reconciliation path, and publishes a redacted terminal receipt. A pre-effect
 failure finishes under the claim and app lock. An ambiguous remote effect
 stays pending.
 
-The non-production preview now also reads Nomad's regional service jobs and
+The opt-in PostgreSQL runtime also reads Nomad's regional service jobs and
 their active allocation job snapshots. It requires the exact deployment image,
 one healthy running allocation per desired replica, and a stable job revision
 across the read. Function-only apps have no service allocation and rely on the
@@ -271,7 +268,7 @@ raises the reader and writer contracts so private function acceptance always
 reserves that archive subject and older readers cannot encounter v2 bundles.
 The archive now seals the signed public operation, terminal
 execution, and public effect-attempt rows as a v2 bundle; old v1 bundles remain
-readable. The cleanup consumer now runs with the non-production preview and
+readable. The cleanup consumer now runs with the enabled PostgreSQL runtime and
 requires an evidence archiver at startup. Private envelope retirement still
 needs a replay/key-retention policy before production
 activation. A Nomad job purge policy, etcd cleanup parity,
@@ -283,3 +280,19 @@ so deploying it retires older writable binaries and needs a roll-forward
 recovery rehearsal before release.
 The receipt dispatcher refuses a claim-only terminal write on lease-fenced
 backends when the app-lock-aware receipt interface is unavailable.
+
+## Claimed runtime qualification — 2026-09-25
+
+`TestClaimedFunctionV3HTTPNomadPostgres` passed against disposable local Nomad
+2.0.7 and PostgreSQL. It exercised signed HTTP admission and same-key replay,
+one claimed worker, an actual private Nomad variable containing the exact
+request body, the deterministic job, terminal receipt, public archive source
+redaction, archive-gated cleanup, and owner-checked variable deletion. Two
+runtime defects found by this test were fixed: evaluation lineage uses
+Nomad's submitted `JobModifyIndex` rather than the later mutable job index,
+and cleanup checks the exact `norn.function-invoke/<operation-id>` owner
+marker written to the variable. The test agent and database were stopped.
+
+This is one local success path. Literal process crashes and two-worker races,
+named database allocation files, Mini migration-22 rollback, key-retention
+restore, and etcd parity still need release evidence.
