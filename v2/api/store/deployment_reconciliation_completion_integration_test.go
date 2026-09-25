@@ -77,6 +77,9 @@ func TestCompleteDeploymentReconciliationPreservesFailedSource(t *testing.T) {
 	if err := dbs[0].CompleteDeploymentReconciliation(ctx, claim, candidate, time.Time{}); err == nil {
 		t.Fatal("missing live observation repaired deployment")
 	}
+	if err := dbs[0].FinishClaimedOperation(ctx, claim, model.OperationSucceeded, "forged reconciliation success", nil); err == nil {
+		t.Fatal("generic completion forged a reconciliation success")
+	}
 	wrongImage := candidate
 	wrongImage.ImageTag = "registry.example/other@sha256:cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc"
 	if err := dbs[0].CompleteDeploymentReconciliation(ctx, claim, wrongImage, time.Now()); err == nil {

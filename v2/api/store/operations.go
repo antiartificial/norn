@@ -526,6 +526,10 @@ func (db *DB) FinishClaimedOperation(ctx context.Context, claim OperationClaim, 
 		metadata = map[string]interface{}{}
 	}
 	data, _ := json.Marshal(metadata)
+	// A successful deployment reconciliation must atomically repair the
+	// deployment projection, its regions, and its terminal receipt. That is
+	// CompleteDeploymentReconciliation's transaction; this generic terminal
+	// path may record a failed reconciliation but cannot forge a success.
 	// The terminal transition and its evidence archive intent (outbox) are
 	// one statement: an operation with a saga cannot become terminal without
 	// a pending intent. The intent seals nothing; the archiver fixes the
@@ -538,6 +542,7 @@ func (db *DB) FinishClaimedOperation(ctx context.Context, claim OperationClaim, 
 			    locked_by = '', locked_until = NULL, updated_at = now(), finished_at = now()
 			WHERE id = $4 AND status = 'running' AND locked_by = $5
 			  AND lock_generation = $6 AND locked_until > now()
+			  AND (kind <> 'app.deployment-reconcile' OR $1 <> 'succeeded')
 			  AND (kind <> 'app.snapshot' OR
 				($1 = 'succeeded' AND EXISTS (
 					SELECT 1 FROM snapshot_publication_intents spi

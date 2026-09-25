@@ -426,7 +426,26 @@ func evidenceHolds(ctx context.Context, q interface {
 								AND r.payload->>'deploymentId' = o.payload->>'deploymentId'
 								AND r.metadata->>'sourceOperationId' = o.id
 								AND r.metadata->>'deploymentId' = o.payload->>'deploymentId'
+								AND r.metadata->>'imageTag' = r.payload->>'imageTag'
+								AND r.metadata->>'specDigest' = r.payload->>'specDigest'
+								AND COALESCE(r.metadata->>'observedAt', '') <> ''
 								AND EXISTS (SELECT 1 FROM operation_acceptance_intents ai WHERE ai.operation_id = r.id)
+								AND EXISTS (
+									SELECT 1 FROM deployments d
+									WHERE d.id = r.payload->>'deploymentId'
+										AND d.app = r.app
+										AND d.saga_id = o.saga_id
+										AND d.status = 'deployed'
+										AND d.finished_at IS NOT NULL
+										AND d.image_tag = r.payload->>'imageTag'
+										AND d.spec_digest = r.payload->>'specDigest'
+										AND EXISTS (SELECT 1 FROM deployment_regions dr WHERE dr.deployment_id = d.id)
+										AND NOT EXISTS (
+											SELECT 1 FROM deployment_regions dr
+											WHERE dr.deployment_id = d.id
+												AND (dr.status <> 'deployed' OR dr.active_weight <> dr.desired_weight OR dr.eval_id = '')
+										)
+								)
 						)
 					)
 				)
