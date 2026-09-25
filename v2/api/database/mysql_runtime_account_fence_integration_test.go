@@ -14,7 +14,7 @@ import (
 	"github.com/google/uuid"
 )
 
-// TestMySQLRuntimeAccountFence is opt-in and requires a disposable MySQL 8.4
+// TestMySQLRuntimeAccountFence is opt-in and requires a disposable MySQL 8.0 or 8.4
 // instance. It proves that the fence locks the exact account, drops a
 // preexisting runtime session, refuses fresh authentication, and only the
 // separate explicit unfence operation restores access.
@@ -35,8 +35,8 @@ func TestMySQLRuntimeAccountFence(t *testing.T) {
 		t.Fatal("disposable MySQL server is unavailable")
 	}
 	var version string
-	if err := admin.QueryRowContext(ctx, "SELECT VERSION()").Scan(&version); err != nil || !strings.HasPrefix(version, "8.4.") {
-		t.Skip("NORN_TEST_MYSQL_DSN is not a disposable MySQL 8.4 server")
+	if err := admin.QueryRowContext(ctx, "SELECT VERSION()").Scan(&version); err != nil || (!strings.HasPrefix(version, "8.0.") && !strings.HasPrefix(version, "8.4.")) {
+		t.Skip("NORN_TEST_MYSQL_DSN is not a disposable MySQL 8.0 or 8.4 server")
 	}
 
 	suffix := strings.ReplaceAll(uuid.NewString()[:8], "-", "")
@@ -71,6 +71,10 @@ func TestMySQLRuntimeAccountFence(t *testing.T) {
 	resolved := ResolvedBinding{Target: TargetIdentity{ServiceID: "mysql-local", ServiceGeneration: 1, BindingID: "runtime-account", BindingGeneration: 1, Engine: EngineMySQL, Database: databaseName, Role: runtimeUser}, Purpose: PurposeApplication, CredentialRef: "secret:runtime", Endpoint: DatabaseEndpoint{Host: host, Port: port}, TLS: DatabaseTLS{Mode: TLSDisabled}}
 	fence := mysqlRuntimeAccountFence{FenceUser: fenceUser, FenceAccountHost: "%", FenceCredentialRef: "secret:fence", RuntimeAccountHost: "%", DedicatedRuntimeUsername: runtimeUser}
 	secrets := literalSecrets{"secret:runtime": `{"password":"` + runtimePassword + `"}`, "secret:fence": `{"password":"` + fencePassword + `"}`}
+	maintenance := MySQLMaintenanceCredentials{FenceRole: fenceUser, FenceAccountHost: "%", FenceCredentialRef: "secret:fence", RuntimeAccountHost: "%"}
+	if err := InspectMySQLRuntimeAccountLockForRestore(ctx, resolved, maintenance, secrets); err == nil {
+		t.Fatal("unlocked runtime account appeared fenced")
+	}
 
 	clientConfig := mysql.NewConfig()
 	clientConfig.User, clientConfig.Passwd, clientConfig.DBName = runtimeUser, runtimePassword, databaseName
@@ -87,6 +91,9 @@ func TestMySQLRuntimeAccountFence(t *testing.T) {
 	if err := fenceMySQLRuntimeAccount(ctx, resolved, fence, secrets); err != nil {
 		t.Fatal("runtime account fence failed")
 	}
+	if err := InspectMySQLRuntimeAccountLockForRestore(ctx, resolved, maintenance, secrets); err != nil {
+		t.Fatalf("locked account failed read-only inspection: %v", err)
+	}
 	var survivingSessions int
 	if err := admin.QueryRowContext(ctx, "SELECT COUNT(*) FROM INFORMATION_SCHEMA.PROCESSLIST WHERE ID = ?", existingSessionID).Scan(&survivingSessions); err != nil || survivingSessions != 0 {
 		t.Fatal("preexisting runtime session was not terminated by fence")
@@ -101,6 +108,9 @@ func TestMySQLRuntimeAccountFence(t *testing.T) {
 	}
 	if err := unfenceMySQLRuntimeAccount(ctx, resolved, fence, secrets); err != nil {
 		t.Fatal("explicit runtime account unfence failed")
+	}
+	if err := InspectMySQLRuntimeAccountLockForRestore(ctx, resolved, maintenance, secrets); err == nil {
+		t.Fatal("unfenced runtime account appeared fenced")
 	}
 	if err := newClient.PingContext(ctx); err != nil {
 		t.Fatal("runtime account did not authenticate after explicit unfence")

@@ -394,6 +394,18 @@ func TestMySQLRestoreIntentAgainstDisposableEngines(t *testing.T) {
 	if err := control.Pool.QueryRow(ctx, `SELECT epoch, owner, active FROM runtime_mutation_fence WHERE singleton=true`).Scan(&mutationFence.Epoch, &mutationFence.Owner, &fenceActive); err != nil || !fenceActive || mutationFence.Owner != "mysql-restore:"+claim.OperationID() {
 		t.Fatalf("restore did not retain its runtime mutation fence: %+v active=%t err=%v", mutationFence, fenceActive, err)
 	}
+	if ready, err := control.AssessCompletedMySQLRestoreLiveRecovery(ctx, stores[0], claim.OperationID(), secrets); err != nil || ready.Fence.Epoch != mutationFence.Epoch {
+		t.Fatalf("live completed restore assessment: %+v %v", ready, err)
+	}
+	if _, err := admin.ExecContext(ctx, "UPDATE `"+targetDB+"`.marker SET value='drifted'"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := control.AssessCompletedMySQLRestoreLiveRecovery(ctx, stores[0], claim.OperationID(), secrets); err == nil {
+		t.Fatal("live recovery assessment accepted changed target contents")
+	}
+	if _, err := admin.ExecContext(ctx, "UPDATE `"+targetDB+"`.marker SET value='signed-intent-source'"); err != nil {
+		t.Fatal(err)
+	}
 	insertOperationFixture(t, control, "app.deploy", 1, nil)
 	if claimed, _, err := control.ClaimNextOperation(ctx, "concurrent-deploy", time.Minute, []string{"app.deploy"}); err != nil || claimed != nil {
 		t.Fatalf("restore admitted queued deploy while runtime fence held: %+v %v", claimed, err)

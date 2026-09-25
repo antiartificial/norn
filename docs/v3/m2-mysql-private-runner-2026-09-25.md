@@ -104,6 +104,16 @@ inspect the live MySQL account or target contents, authorize an unlock, or
 release the fence. It is one prerequisite for a future separately signed,
 operator-observed resume.
 
+The private live assessment now also observes the destination's exact MySQL
+runtime account using the catalog-bound fence credential, confirms it remains
+locked with no sessions in two read-only observations, and recomputes the
+restored target schema and data fingerprints using the restore credential. It
+rechecks the control-plane assessment afterward. A disposable MySQL 8.0 test
+exercised locked and unlocked account states; the PostgreSQL/MySQL restore
+rehearsal accepted the completed target and rejected a changed row. These
+observations are not atomic with a later resume. Source-account state, direct
+Nomad starts, and external writers still need independent qualification.
+
 - Qualify bounded memory/disk behavior on representative large data.
 - Wire the launch and mutation gates into every application write and resume
   path, and add signed source-account quiescence before staging the dump.

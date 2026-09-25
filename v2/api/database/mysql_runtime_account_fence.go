@@ -47,6 +47,63 @@ func FenceMySQLRuntimeAccountForRestore(ctx context.Context, resolved ResolvedBi
 	}, secrets)
 }
 
+// InspectMySQLRuntimeAccountLockForRestore reads the exact destination account
+// and its sessions without changing either. It is a private recovery check;
+// callers must still hold and recheck the durable runtime mutation fence.
+func InspectMySQLRuntimeAccountLockForRestore(ctx context.Context, resolved ResolvedBinding, maintenance MySQLMaintenanceCredentials, secrets SecretSource) error {
+	fence := mysqlRuntimeAccountFence{
+		FenceUser: maintenance.FenceRole, FenceAccountHost: maintenance.FenceAccountHost,
+		FenceCredentialRef: maintenance.FenceCredentialRef, RuntimeAccountHost: maintenance.RuntimeAccountHost,
+		DedicatedRuntimeUsername: resolved.Target.Role,
+	}
+	if resolved.Target.Engine != EngineMySQL || resolved.Purpose != PurposeApplication || !validMySQLFence(resolved, fence) || secrets == nil {
+		return errors.New("MySQL runtime account inspection admission is invalid")
+	}
+	ctx, cancel := context.WithTimeout(ctx, 30*time.Second)
+	defer cancel()
+	raw, err := secrets.Resolve(ctx, fence.FenceCredentialRef)
+	if err != nil {
+		return errors.New("MySQL runtime account inspection credential could not be resolved")
+	}
+	defer clear(raw)
+	secret, err := decodeConnectionSecret(raw)
+	if err != nil || containsLineBreak(secret.Password) {
+		return errors.New("MySQL runtime account inspection credential is invalid")
+	}
+	db, err := openMySQLFenceDB(ctx, resolved, fence.FenceUser, secret.Password, secrets)
+	if err != nil {
+		return errors.New("MySQL runtime account inspection connection material is invalid")
+	}
+	defer db.Close()
+	if err := db.PingContext(ctx); err != nil {
+		return errors.New("MySQL runtime account inspection connection failed")
+	}
+	if err := verifyMySQLFenceIdentity(ctx, db, fence); err != nil {
+		return err
+	}
+	if err := verifyDedicatedMySQLRuntimeUsername(ctx, db, resolved.Target.Role, fence.RuntimeAccountHost); err != nil {
+		return err
+	}
+	var locked string
+	if err := db.QueryRowContext(ctx, "SELECT account_locked FROM mysql.user WHERE User = ? AND Host = ?", resolved.Target.Role, fence.RuntimeAccountHost).Scan(&locked); err != nil || locked != "Y" {
+		return errors.New("MySQL runtime account lock verification failed")
+	}
+	for i := 0; i < 2; i++ {
+		ids, err := mysqlRuntimeSessionIDs(ctx, db, resolved.Target.Role)
+		if err != nil || len(ids) != 0 {
+			return errors.New("MySQL runtime account still has sessions")
+		}
+		if i == 0 {
+			select {
+			case <-ctx.Done():
+				return ctx.Err()
+			case <-time.After(50 * time.Millisecond):
+			}
+		}
+	}
+	return nil
+}
+
 // fenceMySQLRuntimeAccount locks one exact MySQL account, terminates all
 // existing sessions for its dedicated username, and proves the account remains
 // locked with no such sessions. It fails closed on every incomplete proof.

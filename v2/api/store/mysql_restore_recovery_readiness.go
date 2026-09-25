@@ -92,3 +92,43 @@ func (db *DB) AssessCompletedMySQLRestoreRecovery(ctx context.Context, acceptanc
 	}
 	return MySQLRestoreRecoveryReadiness{OperationID: operationID, Fence: fence, Request: request}, nil
 }
+
+// AssessCompletedMySQLRestoreLiveRecovery adds read-only observations of the
+// destination account and target contents. The observations are advisory:
+// an eventual resume must recheck them under its own signed, fenced intent.
+func (db *DB) AssessCompletedMySQLRestoreLiveRecovery(ctx context.Context, acceptance *PGOperationStore, operationID string, secrets database.SecretSource) (MySQLRestoreRecoveryReadiness, error) {
+	if secrets == nil {
+		return MySQLRestoreRecoveryReadiness{}, ErrMySQLRestoreFence
+	}
+	ready, err := db.AssessCompletedMySQLRestoreRecovery(ctx, acceptance, operationID)
+	if err != nil {
+		return MySQLRestoreRecoveryReadiness{}, err
+	}
+	catalog, err := db.DatabaseCatalogRevision(ctx, ready.Request.CatalogRevision)
+	if err != nil {
+		return MySQLRestoreRecoveryReadiness{}, err
+	}
+	resolver, err := database.NewResolver(catalog.Catalog)
+	if err != nil {
+		return MySQLRestoreRecoveryReadiness{}, ErrMySQLRestoreFence
+	}
+	resolved, err := resolver.Resolve(database.ResolveRequest{DeploymentProfileID: ready.Request.ProfileID, Purpose: database.PurposeApplication, LogicalResourceID: ready.Request.LogicalID, Expected: &ready.Request.Target})
+	if err != nil || resolved.MySQLMaintenance == nil || *resolved.MySQLMaintenance != ready.Request.Maintenance {
+		return MySQLRestoreRecoveryReadiness{}, ErrMySQLRestoreFence
+	}
+	if err := database.InspectMySQLRuntimeAccountLockForRestore(ctx, resolved, ready.Request.Maintenance, secrets); err != nil {
+		return MySQLRestoreRecoveryReadiness{}, err
+	}
+	restore, err := database.MySQLRestoreBinding(resolved)
+	if err != nil {
+		return MySQLRestoreRecoveryReadiness{}, err
+	}
+	if err := database.VerifyMySQLRestoreTarget(ctx, restore, secrets, ready.Request.Artifact.Expectation); err != nil {
+		return MySQLRestoreRecoveryReadiness{}, err
+	}
+	latest, err := db.AssessCompletedMySQLRestoreRecovery(ctx, acceptance, operationID)
+	if err != nil || latest.Fence != ready.Fence || latest.Request != ready.Request {
+		return MySQLRestoreRecoveryReadiness{}, ErrMySQLRestoreFence
+	}
+	return latest, nil
+}
