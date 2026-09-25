@@ -105,7 +105,11 @@ func (db *DB) PrepareClaimedMySQLRestore(ctx context.Context, acceptance *PGOper
 	if err != nil || resolved.MySQLMaintenance == nil || *resolved.MySQLMaintenance != request.Maintenance {
 		return MySQLRestoreIntent{}, ErrMySQLRestoreFence
 	}
-	if _, err := database.PrepareMySQLRestore(ctx, resolver, request.ProfileID, request.LogicalID, request.Target, secrets, request.ArtifactPath, request.Artifact); err != nil {
+	restore, err := database.MySQLRestoreBinding(resolved)
+	if err != nil {
+		return MySQLRestoreIntent{}, ErrMySQLRestoreFence
+	}
+	if _, err := database.PrepareMySQLRestoreWithResolvedCredential(ctx, resolved, restore, request.Target, secrets, request.ArtifactPath, request.Artifact); err != nil {
 		return MySQLRestoreIntent{}, err
 	}
 	// The exact signed artifact source can be writable at the instant of the

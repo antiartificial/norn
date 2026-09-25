@@ -288,9 +288,8 @@ func TestMySQLRestoreIntentAgainstDisposableEngines(t *testing.T) {
 		t.Fatal(err)
 	}
 	restoreSHA := sha256.Sum256(restoreBytes)
-	// The initial prepare used the runtime target account while it was still
-	// available. Lock it before Begin: the private restore and its expectation
-	// verification must use the separate restore identity from here on.
+	// Lock runtime access before replay and Begin. Every restore preflight,
+	// import, and expectation check must use the separate restore identity.
 	if _, err := admin.ExecContext(ctx, "ALTER USER '"+targetRole+"'@'%' ACCOUNT LOCK"); err != nil {
 		t.Fatal("lock runtime account after preflight")
 	}
@@ -304,6 +303,9 @@ func TestMySQLRestoreIntentAgainstDisposableEngines(t *testing.T) {
 	}
 	if err == nil {
 		t.Fatal("locked runtime account remained usable; restore credential split was not exercised")
+	}
+	if replay, err := control.PrepareClaimedMySQLRestore(ctx, stores[0], claim, request, secrets); err != nil || !replay.Replayed {
+		t.Fatalf("prepare replay with locked runtime account: %+v %v", replay, err)
 	}
 	runner := MySQLRestoreRunner{Control: control, Acceptance: stores[0], Secrets: secrets, ClaimLease: 120 * time.Millisecond,
 		Tool: database.MySQLRestoreTool{Path: delayedTool, SHA256: fmt.Sprintf("%x", restoreSHA)}}
