@@ -74,3 +74,23 @@ key is not a validated database target; templates or external secrets may
 carry additional connections. Likewise, a declared Nomad service is not proof
 of a public route or a healthy endpoint. Exact mount source/target ownership,
 database identity, and route-to-listener joins remain open.
+
+## Advertised-route join — 2026-09-24 23:57 UTC
+
+A fresh authenticated Mini inventory again returned 27 app records, 44
+manifest process records, and 16 cloudflared ingress hostname entries with
+15 distinct names. Comparing each manifest endpoint URL's hostname to that
+ingress set produced nine exact hostname matches, one manifest app/process
+pair per matched hostname, and six ingress names with no exact manifest
+endpoint hostname. The nine associated app names were
+`context-kitchen-sink`, `its-alive-api`, `like-trove`, `mail-agent`,
+`mail-indexer`, `signal-sideband`, `ticketsite`, `turnkey-offer-intake`, and
+`watchtower`.
+
+The live cloudflared configuration includes listener targets and a repeated
+webhook hostname with a 404 fallback. An endpoint hostname match does not
+prove that the configured target reaches the app's current allocation; the
+six unmatched ingress names may be intentionally non-Norn routes. This pass
+did not export hostname URLs, listener addresses, or the cloudflared file to
+the repository. A port/allocation and owner join is still required before
+selecting public-route upgrade fixtures.
