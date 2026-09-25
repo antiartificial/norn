@@ -19,11 +19,18 @@ const MySQLSourceSnapshotOperationKind = "database.mysql-source-snapshot"
 // MySQLSourceSnapshotJobIdentity is the exact WordPress job revision that a
 // later private runner must stop and reobserve before locking source writes.
 type MySQLSourceSnapshotJobIdentity struct {
-	App            string   `json:"app"`
-	NomadRegion    string   `json:"nomadRegion"`
-	JobID          string   `json:"jobId"`
-	JobModifyIndex string   `json:"jobModifyIndex"`
-	AllocationIDs  []string `json:"allocationIds"`
+	App                     string   `json:"app"`
+	DeploymentID            string   `json:"deploymentId"`
+	SpecDigest              string   `json:"specDigest"`
+	Region                  string   `json:"region"`
+	NomadRegion             string   `json:"nomadRegion"`
+	JobID                   string   `json:"jobId"`
+	JobVersion              string   `json:"jobVersion"`
+	JobModifyIndex          string   `json:"jobModifyIndex"`
+	AllocationIDs           []string `json:"allocationIds"`
+	DatabaseBindingSchema   string   `json:"databaseBindingSchema"`
+	DatabaseBindingSHA256   string   `json:"databaseBindingSha256"`
+	DatabaseCatalogRevision string   `json:"databaseCatalogRevision"`
 }
 
 // MySQLSourceSnapshotRequest is signed before the artifact exists. The source
@@ -116,18 +123,29 @@ func (db *DB) PrepareClaimedMySQLSourceSnapshot(ctx context.Context, acceptance 
 }
 
 func validMySQLSourceSnapshotRequest(request MySQLSourceSnapshotRequest) bool {
-	if request.CatalogRevision <= 0 || strings.TrimSpace(request.ProfileID) == "" || strings.TrimSpace(request.LogicalID) == "" || request.Source.Engine != database.EngineMySQL || request.Source.ServiceGeneration == 0 || request.Source.BindingGeneration == 0 || request.Maintenance.Generation == 0 || request.Maintenance.SnapshotRole == "" || request.Maintenance.SnapshotAccountHost == "" || request.Maintenance.SnapshotCredentialRef == "" || request.JobIdentity.App == "" || request.JobIdentity.NomadRegion == "" || request.JobIdentity.JobID != request.JobIdentity.App || len(request.JobIdentity.AllocationIDs) == 0 || len(request.DumpToolSHA256) != 64 || strings.ToLower(request.DumpToolSHA256) != request.DumpToolSHA256 {
+	job := request.JobIdentity
+	if request.CatalogRevision <= 0 || strings.TrimSpace(request.ProfileID) == "" || strings.TrimSpace(request.LogicalID) == "" || request.Source.Engine != database.EngineMySQL || request.Source.ServiceGeneration == 0 || request.Source.BindingGeneration == 0 || request.Maintenance.Generation == 0 || request.Maintenance.SnapshotRole == "" || request.Maintenance.SnapshotAccountHost == "" || request.Maintenance.SnapshotCredentialRef == "" || job.App == "" || job.DeploymentID == "" || job.Region == "" || job.NomadRegion == "" || job.JobID != job.App || job.DatabaseBindingSchema == "" || job.DatabaseCatalogRevision != strconv.FormatInt(request.CatalogRevision, 10) || len(job.DatabaseBindingSHA256) != 64 || len(job.AllocationIDs) == 0 || len(request.DumpToolSHA256) != 64 || strings.ToLower(request.DumpToolSHA256) != request.DumpToolSHA256 {
 		return false
 	}
-	index, err := strconv.ParseUint(request.JobIdentity.JobModifyIndex, 10, 64)
-	if err != nil || index == 0 || strconv.FormatUint(index, 10) != request.JobIdentity.JobModifyIndex {
+	if !strings.HasPrefix(job.SpecDigest, "sha256:") || len(job.SpecDigest) != 71 || strings.ToLower(job.SpecDigest) != job.SpecDigest {
+		return false
+	}
+	version, versionErr := strconv.ParseUint(job.JobVersion, 10, 64)
+	index, indexErr := strconv.ParseUint(job.JobModifyIndex, 10, 64)
+	if versionErr != nil || strconv.FormatUint(version, 10) != job.JobVersion || indexErr != nil || index == 0 || strconv.FormatUint(index, 10) != job.JobModifyIndex {
+		return false
+	}
+	if _, err := hex.DecodeString(strings.TrimPrefix(job.SpecDigest, "sha256:")); err != nil {
+		return false
+	}
+	if _, err := hex.DecodeString(job.DatabaseBindingSHA256); err != nil || strings.ToLower(job.DatabaseBindingSHA256) != job.DatabaseBindingSHA256 {
 		return false
 	}
 	if _, err := hex.DecodeString(request.DumpToolSHA256); err != nil {
 		return false
 	}
-	seen := make(map[string]bool, len(request.JobIdentity.AllocationIDs))
-	for _, id := range request.JobIdentity.AllocationIDs {
+	seen := make(map[string]bool, len(job.AllocationIDs))
+	for _, id := range job.AllocationIDs {
 		if strings.TrimSpace(id) == "" || seen[id] {
 			return false
 		}

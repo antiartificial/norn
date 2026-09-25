@@ -94,7 +94,7 @@ func TestMySQLSourceSnapshotIntentReservesSignedPhysicalSource(t *testing.T) {
 		t.Fatal(err)
 	}
 	request := MySQLSourceSnapshotRequest{CatalogRevision: active.Revision, ProfileID: "mini", LogicalID: "snapshot-source", Source: source.Target, Maintenance: *source.MySQLMaintenance,
-		JobIdentity: MySQLSourceSnapshotJobIdentity{App: "wordpress", NomadRegion: "global", JobID: "wordpress", JobModifyIndex: "7", AllocationIDs: []string{"alloc-1"}}, DumpToolSHA256: strings.Repeat("a", 64)}
+		JobIdentity: validSourceSnapshotJobIdentity("wordpress", active.Revision, "7", "alloc-1"), DumpToolSHA256: strings.Repeat("a", 64)}
 	accept := func(key string, body MySQLSourceSnapshotRequest) OperationClaim {
 		t.Helper()
 		input := newAcceptance(t, acceptedStore, key, "operator", "wordpress", false)

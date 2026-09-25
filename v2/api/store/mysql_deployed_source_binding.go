@@ -112,6 +112,12 @@ func (db *DB) VerifySignedDeployedMySQLSourceBinding(ctx context.Context, accept
 	if err := db.Pool.QueryRow(ctx, `SELECT kind,resource FROM operation_request_identities WHERE operation_id=$1`, accepted.Operation.ID).Scan(&identityKind, &identityResource); err != nil || identityKind != "app.deploy" || identityResource != request.App {
 		return MySQLDeployedSourceBinding{}, ErrMySQLDeployedSourceBinding
 	}
+	// Source quiescence currently has one writer-stop fence. Refuse a signed
+	// deployment with another configured region until every writer can be
+	// observed and fenced as one accepted set.
+	if len(accepted.Regions) != 1 {
+		return MySQLDeployedSourceBinding{}, ErrMySQLDeployedSourceBinding
+	}
 	configuredRegion := false
 	for _, region := range accepted.Regions {
 		if region.Name == request.Region && region.NomadRegion == request.NomadRegion {

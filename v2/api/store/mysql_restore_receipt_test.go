@@ -127,7 +127,7 @@ func testMySQLSourceArtifactReceipt(t *testing.T, db *DB, acceptance *PGOperatio
 	maintenance := database.MySQLMaintenanceCredentials{Generation: 1, RuntimeAccountHost: "%", SnapshotRole: "snapshot", SnapshotAccountHost: "%", SnapshotCredentialRef: "secret:test/snapshot", RestoreRole: "restore", RestoreAccountHost: "%", RestoreCredentialRef: "secret:test/restore", FenceRole: "fence", FenceAccountHost: "%", FenceCredentialRef: "secret:test/fence"}
 	toolDigest := hex.EncodeToString(make([]byte, 32))
 	request := MySQLSourceSnapshotRequest{CatalogRevision: revision, ProfileID: "mini", LogicalID: "fixture-source", Source: source, Maintenance: maintenance,
-		JobIdentity: MySQLSourceSnapshotJobIdentity{App: "fixture", NomadRegion: "global", JobID: "fixture", JobModifyIndex: "1", AllocationIDs: []string{"fixture-alloc"}}, DumpToolSHA256: toolDigest}
+		JobIdentity: validSourceSnapshotJobIdentity("fixture", revision, "1", "fixture-alloc"), DumpToolSHA256: toolDigest}
 	input := newAcceptance(t, acceptance, "mysql-source-fixture-"+uuid.NewString(), "operator", "fixture-source", false)
 	input.Identity.Kind, input.Identity.Resource = MySQLSourceSnapshotOperationKind, "mysql/"+source.Database
 	input.Operation.Kind, input.Operation.MaxAttempts = MySQLSourceSnapshotOperationKind, 1
