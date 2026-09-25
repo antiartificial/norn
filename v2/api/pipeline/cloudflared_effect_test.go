@@ -12,6 +12,7 @@ import (
 )
 
 type fakeCloudflaredDriver struct {
+	host                     string
 	config                   cloudflared.Config
 	receipts                 map[string][]byte
 	applyCalls, restartCalls int
@@ -53,7 +54,12 @@ func (f *fakeCloudflaredDriver) WriteReceipt(id string, b []byte) error {
 	f.receipts[id] = b
 	return nil
 }
-func (*fakeCloudflaredDriver) Host() string { return "mini-a" }
+func (f *fakeCloudflaredDriver) Host() string {
+	if f.host != "" {
+		return f.host
+	}
+	return "mini-a"
+}
 func (*fakeCloudflaredDriver) Path() string { return "/private/config.yml" }
 
 func cloudflaredTestReservation(t *testing.T, f *fakeCloudflaredDriver) effect.Reservation {
