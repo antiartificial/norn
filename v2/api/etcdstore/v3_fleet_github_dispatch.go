@@ -13,6 +13,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"reflect"
 	"strings"
 	"time"
 
@@ -223,6 +224,14 @@ func (s *V3OperationStore) FinishFleetGitHubDispatch(ctx context.Context, planID
 	now := time.Now().UTC().Truncate(time.Microsecond)
 	completed := op.Operation
 	completed.Status, completed.Message, completed.FinishedAt = model.OperationSucceeded, "protected fleet apply dispatched", &now
+	completed.UpdatedAt = now
+	completed.Payload = make(map[string]interface{}, len(op.Operation.Payload)+len(result))
+	for key, value := range op.Operation.Payload {
+		completed.Payload[key] = value
+	}
+	for key, value := range result {
+		completed.Payload[key] = value
+	}
 	if completed.Metadata == nil {
 		completed.Metadata = map[string]interface{}{}
 	}
@@ -332,6 +341,17 @@ func (s *V3OperationStore) VerifyFleetGitHubDispatchCompletion(ctx context.Conte
 	}
 	if err := json.Unmarshal(canonical, &signed); err != nil || signed.Schema != "norn.fleet-github-completion/v1" || signed.OperationID != op.Operation.ID || signed.PlanID != binding.PlanID || signed.Kind != fleetGitHubDispatchOperationKind || signed.Status != model.OperationSucceeded || signed.Result.PlanSHA256 != binding.PlanSHA256 || signed.Result.ApprovedHeadSHA != binding.ApprovedHeadSHA || signed.Result.RunID != binding.RunID || signed.Result.PlanRunID != prepared.PlanRunID || signed.Result.FleetEnvironment != prepared.FleetEnvironment || signed.Result.AllowDestructive != prepared.AllowDestructive || strings.TrimSpace(signed.Result.URL) != binding.WorkflowURL {
 		return fmt.Errorf("fleet GitHub dispatch completion does not bind runner result")
+	}
+	var resultEnvelope struct {
+		Result map[string]interface{} `json:"result"`
+	}
+	if err := decodeV3Record(canonical, &resultEnvelope); err != nil || len(resultEnvelope.Result) == 0 {
+		return fmt.Errorf("fleet GitHub dispatch completion result is invalid")
+	}
+	for key, value := range resultEnvelope.Result {
+		if !reflect.DeepEqual(op.Operation.Payload[key], value) {
+			return fmt.Errorf("fleet GitHub dispatch operation payload differs from signed completion")
+		}
 	}
 	return nil
 }

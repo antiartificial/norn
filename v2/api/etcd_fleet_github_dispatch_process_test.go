@@ -26,6 +26,7 @@ import (
 
 	"norn/v2/api/etcdstore"
 	"norn/v2/api/handler"
+	"norn/v2/api/model"
 	"norn/v2/api/store"
 )
 
@@ -131,13 +132,8 @@ func TestEtcdFleetGitHubDispatchProcess(t *testing.T) {
 	if recovered.StatusCode != http.StatusCreated || bytes.Contains(recovered.Body, []byte(github.Nonce())) || github.Dispatches() != 1 {
 		t.Fatalf("recovery status=%d body=%s dispatches=%d", recovered.StatusCode, recovered.Body, github.Dispatches())
 	}
-	var dispatched struct {
-		RunID            int64  `json:"runId"`
-		PlanSHA256       string `json:"planSha256"`
-		ApprovedHeadSHA  string `json:"approvedHeadSha"`
-		AllowDestructive bool   `json:"allowDestructive"`
-	}
-	if err := json.Unmarshal(recovered.Body, &dispatched); err != nil || dispatched.RunID != 93 || dispatched.PlanSHA256 != github.planSHA || dispatched.ApprovedHeadSHA != github.headSHA || !dispatched.AllowDestructive {
+	var dispatched model.Operation
+	if err := json.Unmarshal(recovered.Body, &dispatched); err != nil || dispatched.ID == "" || dispatched.Kind != "fleet.github.apply-dispatch" || dispatched.Status != model.OperationSucceeded || dispatched.Payload["runId"] != float64(93) || dispatched.Payload["planSha256"] != github.planSHA || dispatched.Payload["approvedHeadSha"] != github.headSHA || dispatched.Payload["allowDestructive"] != true {
 		t.Fatalf("recovered dispatch=%s err=%v", recovered.Body, err)
 	}
 	replay := processJSONRequest(t, http.MethodPost, dispatchURL, operatorToken, "", map[string]bool{"allowDestructive": true})

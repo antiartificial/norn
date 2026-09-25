@@ -36,16 +36,6 @@ type etcdFleetGitHubDispatchRequest struct {
 	AllowDestructive bool `json:"allowDestructive"`
 }
 
-type etcdFleetGitHubDispatchResponse struct {
-	PlanID           string `json:"planId"`
-	PlanRunID        int64  `json:"planRunId"`
-	PlanSHA256       string `json:"planSha256"`
-	ApprovedHeadSHA  string `json:"approvedHeadSha"`
-	RunID            int64  `json:"runId"`
-	WorkflowURL      string `json:"workflowUrl"`
-	AllowDestructive bool   `json:"allowDestructive"`
-}
-
 // etcdFleetGitHubDispatch is registered by the normal etcd runtime only when
 // its GitHub App client is valid. It never returns a preparation or nonce.
 func etcdFleetGitHubDispatch(cfg *config.Config, operations *etcdstore.V3OperationStore, github etcdFleetGitHubDispatcher) http.HandlerFunc {
@@ -119,7 +109,7 @@ func etcdFleetGitHubDispatch(cfg *config.Config, operations *etcdstore.V3Operati
 				handler.WriteControlProblem(w, r, http.StatusServiceUnavailable, "fleet_github_receipt_failed", "protected dispatch completion receipt is unavailable")
 				return
 			}
-			writeEtcdSourceJSON(w, http.StatusOK, etcdFleetGitHubDispatchResponse{PlanID: bound.PlanID, PlanRunID: prepared.PlanRunID, PlanSHA256: bound.PlanSHA256, ApprovedHeadSHA: bound.ApprovedHeadSHA, RunID: bound.RunID, WorkflowURL: bound.WorkflowURL, AllowDestructive: prepared.AllowDestructive})
+			writeEtcdFleetGitHubDispatchOperation(w, r, operations, prepared.OperationID, http.StatusOK)
 			return
 		} else if !errors.Is(bindErr, etcdstore.ErrNotFound) {
 			handler.WriteControlProblem(w, r, http.StatusServiceUnavailable, "fleet_github_dispatch_unavailable", "protected dispatch binding is unavailable")
@@ -156,10 +146,28 @@ func etcdFleetGitHubDispatch(cfg *config.Config, operations *etcdstore.V3Operati
 			handler.WriteControlProblem(w, r, http.StatusInternalServerError, "fleet_github_receipt_failed", "verified workflow run could not be bound to its durable dispatch")
 			return
 		}
-		w.Header().Set("Cache-Control", "no-store")
-		writeEtcdSourceJSON(w, http.StatusCreated, etcdFleetGitHubDispatchResponse{PlanID: planID, PlanRunID: prepared.PlanRunID, PlanSHA256: prepared.PlanSHA256, ApprovedHeadSHA: prepared.ApprovedHeadSHA, RunID: result.RunID, WorkflowURL: result.URL, AllowDestructive: prepared.AllowDestructive})
+		writeEtcdFleetGitHubDispatchOperation(w, r, operations, prepared.OperationID, http.StatusCreated)
 	}
 }
+
+func writeEtcdFleetGitHubDispatchOperation(w http.ResponseWriter, r *http.Request, operations *etcdstore.V3OperationStore, operationID string, status int) {
+	op, err := operations.GetOperation(r.Context(), operationID)
+	if err != nil || op == nil || op.Kind != fleetGitHubDispatchOperationKindMain || op.Status != model.OperationSucceeded {
+		handler.WriteControlProblem(w, r, http.StatusServiceUnavailable, "fleet_github_receipt_failed", "protected dispatch operation receipt is unavailable")
+		return
+	}
+	bound, err := operations.GetFleetRunnerDispatchBinding(r.Context(), op.Ref)
+	if err != nil || operations.VerifyFleetGitHubDispatchCompletion(r.Context(), bound) != nil {
+		handler.WriteControlProblem(w, r, http.StatusServiceUnavailable, "fleet_github_receipt_failed", "protected dispatch completion receipt is unavailable")
+		return
+	}
+	op.AttachReceipt()
+	w.Header().Set("Cache-Control", "no-store")
+	w.Header().Set("Location", "/api/v1/operations/"+operationID)
+	writeEtcdSourceJSON(w, status, op)
+}
+
+const fleetGitHubDispatchOperationKindMain = "fleet.github.apply-dispatch"
 
 // acceptEtcdFleetGitHubDispatch reserves a signed immutable operation before
 // the first external GitHub write. Its plan-scoped identity makes retries
