@@ -23,5 +23,6 @@ compatibility metadata. It does not run the installed v2 Mini binary, Nomad,
 Consul, workers, app traffic, private restore, or a full upgrade/rollback. The
 private restore rehearsal remains separate because synthetic rows cannot
 establish fidelity to Mini's actual distribution or size.
-The private Mini restore rehearsal currently stops at migration 18; migration
-19 and the mixed-version writer boundary remain a release gate.
+The [private Mini restore rehearsal](m0-mini-private-restore-migration19-rehearsal-2026-09-24.md)
+now reaches migration 19. The mixed-version writer boundary and rollback
+remain release gates.

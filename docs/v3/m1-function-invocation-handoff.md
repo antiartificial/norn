@@ -9,9 +9,8 @@ failure windows but do not provide signed acceptance, claim fencing, or crash
 recovery. The new explicit encryption key ring, migration 18, and
 `AcceptPrivateInvocation` are dormant pending key configuration and the effect
 runner. Migration 19 adds the public pre-call effect-attempt fence and raises
-the writer contract to 16. The private Mini copy was rehearsed only through
-migration 18; it must be rerun through 19, followed by the mixed-version and
-rollback gate, before deployment.
+the writer contract to 16. A private Mini copy has now been rehearsed through
+migration 19; the mixed-version and rollback gates remain before deployment.
 
 ## Required contract
 

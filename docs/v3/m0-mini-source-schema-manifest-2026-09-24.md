@@ -49,4 +49,7 @@ mixed-version and rollback rehearsal remains open.
 Subsequent branch work added migration 19 for the function invocation's
 public pre-call effect-attempt fence and raised the writer minimum to 16.
 The historical checksum table above remains anchored to its stated commit.
-The private Mini copy has not yet been rerun through migration 19.
+The [private Mini copy](m0-mini-private-restore-migration19-rehearsal-2026-09-24.md)
+has now been rerun through migration 19 with the original-table row counts and
+primary-key fingerprints preserved. Mixed-version and rollback evidence is
+still missing.
