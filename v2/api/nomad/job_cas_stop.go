@@ -76,12 +76,17 @@ func validCASStopRequest(request CASStopJobRequest) bool {
 }
 
 func exactCASStopAllocations(request CASStopJobRequest, stubs []*nomadapi.AllocationListStub) bool {
+	// The all=true query includes earlier registrations of the same job ID.
+	// Their terminal allocations are history, while every live allocation
+	// must be named in the signed request before the CAS stop.
 	got := make([]string, 0, len(stubs))
 	for _, stub := range stubs {
 		if stub == nil || stub.ID == "" || stub.JobID != request.JobID {
 			return false
 		}
-		got = append(got, stub.ID)
+		if !casStopTerminal(stub.ClientStatus) {
+			got = append(got, stub.ID)
+		}
 	}
 	want := append([]string(nil), request.AllocationIDs...)
 	sort.Strings(got)
@@ -107,10 +112,10 @@ func (c *Client) verifyCASStopped(ctx context.Context, request CASStopJobRequest
 			return ErrJobStopVerificationIndeterminate
 		}
 		stubs, _, err := c.api.Jobs().Allocations(request.JobID, true, query)
-		if err == nil && ((len(stubs) == 0) || (exactCASStopAllocations(request, stubs) && allCASStopTerminal(stubs))) {
+		if err == nil && knownCASStopAllocations(request, stubs) && allCASStopTerminal(stubs) {
 			return nil
 		}
-		if err != nil || !exactCASStopAllocations(request, stubs) {
+		if err != nil || !knownCASStopAllocations(request, stubs) {
 			return ErrJobStopVerificationIndeterminate
 		}
 		select {
@@ -121,14 +126,36 @@ func (c *Client) verifyCASStopped(ctx context.Context, request CASStopJobRequest
 	}
 }
 
-func allCASStopTerminal(stubs []*nomadapi.AllocationListStub) bool {
+func knownCASStopAllocations(request CASStopJobRequest, stubs []*nomadapi.AllocationListStub) bool {
+	want := make(map[string]bool, len(request.AllocationIDs))
+	for _, id := range request.AllocationIDs {
+		want[id] = true
+	}
+	seen := make(map[string]bool, len(stubs))
 	for _, stub := range stubs {
-		if stub == nil {
+		if stub == nil || stub.ID == "" || stub.JobID != request.JobID || seen[stub.ID] {
 			return false
 		}
-		switch stub.ClientStatus {
-		case nomadapi.AllocClientStatusComplete, nomadapi.AllocClientStatusFailed, nomadapi.AllocClientStatusLost:
-		default:
+		seen[stub.ID] = true
+		if !casStopTerminal(stub.ClientStatus) && !want[stub.ID] {
+			return false
+		}
+	}
+	return true
+}
+
+func casStopTerminal(status string) bool {
+	switch status {
+	case nomadapi.AllocClientStatusComplete, nomadapi.AllocClientStatusFailed, nomadapi.AllocClientStatusLost:
+		return true
+	default:
+		return false
+	}
+}
+
+func allCASStopTerminal(stubs []*nomadapi.AllocationListStub) bool {
+	for _, stub := range stubs {
+		if stub == nil || !casStopTerminal(stub.ClientStatus) {
 			return false
 		}
 	}

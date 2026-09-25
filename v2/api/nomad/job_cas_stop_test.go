@@ -22,11 +22,17 @@ func TestStopJobCASStopsExactObservedRevision(t *testing.T) {
 		case r.URL.Path == "/v1/job/source-db" && r.Method == http.MethodGet:
 			_ = json.NewEncoder(w).Encode(&nomadapi.Job{ID: &jobID, Region: &region, JobModifyIndex: &index, Stop: &written})
 		case r.URL.Path == "/v1/job/source-db/allocations":
+			if r.URL.Query().Get("all") != "true" {
+				t.Fatal("source stop did not inspect allocations from older job registrations")
+			}
 			status := nomadapi.AllocClientStatusRunning
 			if written {
 				status = nomadapi.AllocClientStatusComplete
 			}
-			_ = json.NewEncoder(w).Encode([]*nomadapi.AllocationListStub{{ID: "alloc-1", JobID: jobID, ClientStatus: status}})
+			_ = json.NewEncoder(w).Encode([]*nomadapi.AllocationListStub{
+				{ID: "old-terminal", JobID: jobID, ClientStatus: nomadapi.AllocClientStatusComplete},
+				{ID: "alloc-1", JobID: jobID, ClientStatus: status},
+			})
 		case r.URL.Path == "/v1/jobs" && r.Method == http.MethodPut:
 			var request nomadapi.JobRegisterRequest
 			if err := json.NewDecoder(r.Body).Decode(&request); err != nil {
