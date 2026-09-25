@@ -129,6 +129,9 @@ func (db *DB) activateDatabaseCatalog(ctx context.Context, expectedCurrent int64
 		if err := database.ValidateTransition(current.Catalog, next); err != nil {
 			return DatabaseCatalogRevision{}, err
 		}
+		if err := rejectMySQLRuntimeLaunchCatalogRetarget(ctx, tx, current.Catalog, next); err != nil {
+			return DatabaseCatalogRevision{}, err
+		}
 	}
 	if err := checkRetirementHistory(ctx, tx, next); err != nil {
 		return DatabaseCatalogRevision{}, err

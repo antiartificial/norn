@@ -201,6 +201,13 @@ func TestMySQLRuntimeLaunchReservationUsesCatalogPhysicalProviderIdentity(t *tes
 	if _, err := db.ReserveMySQLRuntimeLaunch(ctx, "physical-generation-2", []database.TargetIdentity{primaryV2}); !errors.Is(err, ErrMySQLRuntimeLaunchFence) {
 		t.Fatalf("service generation rotation bypassed physical provider reservation: %v", err)
 	}
+	retargeted := rotated
+	retargeted.Services = append([]database.DatabaseService(nil), rotated.Services...)
+	retargeted.Services[0].Generation = 3
+	retargeted.Services[0].ProviderRef = "local:replacement-mysql"
+	if _, err := db.ActivateDatabaseCatalog(ctx, active.Revision+1, retargeted, "physical-exclusion-test"); !errors.Is(err, ErrMySQLRuntimeLaunchFence) {
+		t.Fatalf("catalog repointed an active physical launch reservation: %v", err)
+	}
 }
 
 func TestMySQLRestoreMaintenanceFenceUsesCatalogPhysicalProviderIdentity(t *testing.T) {

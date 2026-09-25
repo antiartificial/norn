@@ -408,6 +408,29 @@ func lockMySQLCatalogGate(ctx context.Context, tx pgx.Tx) error {
 	return err
 }
 
+// Catalog activation may rotate a service generation while a runtime launch
+// reservation exists, but it cannot change the provider behind that durable
+// physical key. Otherwise the reservation would become invisible to the next
+// launch check. The catalog advisory lock serializes this with reservation.
+func rejectMySQLRuntimeLaunchCatalogRetarget(ctx context.Context, tx pgx.Tx, current, next database.Catalog) error {
+	rows, err := tx.Query(ctx, `SELECT target FROM mysql_runtime_launch_reservations WHERE state IN ('reserved','launched','needs-inspection')`)
+	if err != nil {
+		return err
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var encoded []byte
+		if err := rows.Scan(&encoded); err != nil {
+			return err
+		}
+		var identity database.TargetIdentity
+		if json.Unmarshal(encoded, &identity) != nil || mysqlRuntimePhysicalKeyForCatalog(current, identity) != mysqlRuntimePhysicalKeyForCatalog(next, identity) {
+			return ErrMySQLRuntimeLaunchFence
+		}
+	}
+	return rows.Err()
+}
+
 func rejectMySQLRestoreMaintenanceFence(ctx context.Context, tx pgx.Tx, identities []database.TargetIdentity, exceptOperationID ...string) error {
 	except := ""
 	if len(exceptOperationID) == 1 {
