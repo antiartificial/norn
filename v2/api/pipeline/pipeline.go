@@ -178,9 +178,13 @@ func (p *Pipeline) QueueReleaseDeployment(ctx context.Context, spec *model.Infra
 	if p == nil || p.DB == nil || p.SagaStore == nil || spec == nil {
 		return store.AcceptedOperation{}, fmt.Errorf("release deployment pipeline is unavailable")
 	}
+	specDigest, err := model.InfraSpecDigest(spec)
+	if err != nil {
+		return store.AcceptedOperation{}, fmt.Errorf("digest release spec: %w", err)
+	}
 	sg := saga.New(p.SagaStore, spec.App, "pipeline", "deploy")
 	now := time.Now().UTC()
-	deployment := &model.Deployment{ID: uuid.NewString(), App: spec.App, CommitSHA: sourceSHA, ImageTag: artifact, Environment: environment, SagaID: sg.ID, Status: model.StatusQueued, SourceRef: sourceSHA, StartedAt: now}
+	deployment := &model.Deployment{ID: uuid.NewString(), App: spec.App, CommitSHA: sourceSHA, ImageTag: artifact, SpecDigest: specDigest, Environment: environment, SagaID: sg.ID, Status: model.StatusQueued, SourceRef: sourceSHA, StartedAt: now}
 	if metadata == nil {
 		metadata = map[string]interface{}{}
 	}
@@ -192,7 +196,7 @@ func (p *Pipeline) QueueReleaseDeployment(ctx context.Context, spec *model.Infra
 		ID: uuid.NewString(), Kind: "app.deploy", App: spec.App, SagaID: sg.ID, Ref: sourceSHA,
 		Status: model.OperationQueued, Risk: "app rolling update", Source: "release-control-api",
 		Message: fmt.Sprintf("queued release deploy for %s", spec.App), StartedAt: now, MaxAttempts: 2,
-		Payload: map[string]interface{}{"deploymentId": deployment.ID, "app": spec.App, "sourceSha": sourceSHA, "artifact": artifact, "candidate": metadata["candidate"]}, Metadata: metadata,
+		Payload: map[string]interface{}{"deploymentId": deployment.ID, "app": spec.App, "sourceSha": sourceSHA, "artifact": artifact, "specDigest": specDigest, "candidate": metadata["candidate"]}, Metadata: metadata,
 	}
 	accepted, err := p.acceptOperation(ctx, request, *op, deployment, spec.ResolvedRegions())
 	if err != nil {
@@ -255,15 +259,20 @@ func (p *Pipeline) Run(ctx context.Context, spec *model.InfraSpec, ref string, r
 	if p == nil || p.DB == nil || p.SagaStore == nil || spec == nil {
 		return store.AcceptedOperation{}, fmt.Errorf("deploy pipeline is unavailable")
 	}
+	specDigest, err := model.InfraSpecDigest(spec)
+	if err != nil {
+		return store.AcceptedOperation{}, fmt.Errorf("digest deploy spec: %w", err)
+	}
 	sg := saga.New(p.SagaStore, spec.App, "pipeline", "deploy")
 	deploy := &model.Deployment{
-		ID:        uuid.New().String(),
-		App:       spec.App,
-		CommitSHA: ref,
-		SagaID:    sg.ID,
-		Status:    model.StatusQueued,
-		SourceRef: ref,
-		StartedAt: time.Now(),
+		ID:         uuid.New().String(),
+		App:        spec.App,
+		CommitSHA:  ref,
+		SpecDigest: specDigest,
+		SagaID:     sg.ID,
+		Status:     model.StatusQueued,
+		SourceRef:  ref,
+		StartedAt:  time.Now(),
 	}
 	operationID := uuid.New().String()
 	operation := model.Operation{
@@ -282,6 +291,7 @@ func (p *Pipeline) Run(ctx context.Context, spec *model.InfraSpec, ref string, r
 			"deploymentId": deploy.ID,
 			"app":          spec.App,
 			"ref":          ref,
+			"specDigest":   specDigest,
 		},
 		Metadata: map[string]interface{}{
 			"deploymentId": deploy.ID,
@@ -375,6 +385,12 @@ func (p *Pipeline) ExecuteOperation(ctx context.Context, op *model.Operation, cl
 		deploy, err := p.DB.GetDeployment(ctx, deploymentID)
 		if err != nil {
 			return nil, fmt.Errorf("load deployment %s: %w", deploymentID, err)
+		}
+		if deploy.SpecDigest != "" || stringFromMap(op.Payload, "specDigest") != "" {
+			currentDigest, digestErr := model.InfraSpecDigest(spec)
+			if digestErr != nil || deploy.SpecDigest == "" || deploy.SpecDigest != stringFromMap(op.Payload, "specDigest") || currentDigest != deploy.SpecDigest {
+				return nil, fmt.Errorf("accepted deployment spec differs from current application spec")
+			}
 		}
 		sg.Log(ctx, "deploy.start", fmt.Sprintf("deploying %s (ref: %s)", spec.App, op.Ref), map[string]string{
 			"operationId":  op.ID,
