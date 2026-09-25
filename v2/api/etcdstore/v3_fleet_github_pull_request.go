@@ -82,6 +82,9 @@ func (s *V3OperationStore) AcceptFleetGitHubPullRequest(ctx context.Context, inp
 	if plan.Operation.Kind != "fleet.capacity-plan" || plan.Operation.Status != model.OperationSucceeded {
 		return store.AcceptedOperation{}, fmt.Errorf("fleet GitHub pull-request requires a successful immutable fleet plan")
 	}
+	if err := validateFleetGitHubPullRequestPlanBinding(plan.Operation, acceptance.Operation, reservation); err != nil {
+		return store.AcceptedOperation{}, err
+	}
 	now := time.Now().UTC().Truncate(time.Microsecond)
 	reservation.OperationID, reservation.CreatedAt = acceptance.Operation.ID, now
 	identityID, intentID := uuid.NewString(), uuid.NewString()
@@ -190,6 +193,40 @@ func validateFleetGitHubPullRequestAcceptance(input store.OperationAcceptance, r
 	}
 	if input.Identity.Kind != fleetGitHubPullRequestOperationKind || input.Identity.Resource != reservation.PlanID || input.Operation.Kind != fleetGitHubPullRequestOperationKind || input.Operation.Ref != reservation.PlanID || input.Operation.Status != model.OperationQueued {
 		return fmt.Errorf("Fleet GitHub pull-request acceptance does not bind the reservation")
+	}
+	return nil
+}
+
+// validateFleetGitHubPullRequestPlanBinding prevents a caller from reserving
+// arbitrary GitHub content under a valid plan ID. Both the reservation and the
+// signed operation payload must reproduce the immutable plan's exact intent.
+func validateFleetGitHubPullRequestPlanBinding(plan model.Operation, operation model.Operation, reservation FleetGitHubPullRequestReservation) error {
+	encodedPlan, err := json.Marshal(plan.Payload)
+	if err != nil {
+		return fmt.Errorf("encode fleet capacity plan: %w", err)
+	}
+	var typedPlan fleet.CapacityPlan
+	if err := json.Unmarshal(encodedPlan, &typedPlan); err != nil || typedPlan.ID != plan.ID || typedPlan.Digest == "" || typedPlan.SourceDigest == "" || typedPlan.Pool == "" || typedPlan.Action == "" {
+		return fmt.Errorf("fleet GitHub pull-request requires a complete immutable capacity plan payload")
+	}
+	expected := FleetGitHubPullRequestReservation{PlanID: typedPlan.ID, PlanDigest: typedPlan.Digest, SourceDigest: typedPlan.SourceDigest, Pool: typedPlan.Pool, Action: typedPlan.Action, Proposed: typedPlan.Proposed}
+	if !sameFleetGitHubPullRequestReservation(expected, reservation) {
+		return fmt.Errorf("Fleet GitHub pull-request reservation does not match the immutable capacity plan")
+	}
+	encodedOperation, err := json.Marshal(operation.Payload)
+	if err != nil {
+		return fmt.Errorf("encode Fleet GitHub pull-request payload: %w", err)
+	}
+	var payload struct {
+		PlanID       string         `json:"planId"`
+		PlanDigest   string         `json:"planDigest"`
+		SourceDigest string         `json:"sourceDigest"`
+		Pool         string         `json:"pool"`
+		Action       string         `json:"action"`
+		Proposed     fleet.NodePool `json:"proposed"`
+	}
+	if err := json.Unmarshal(encodedOperation, &payload); err != nil || !sameFleetGitHubPullRequestReservation(expected, FleetGitHubPullRequestReservation{PlanID: payload.PlanID, PlanDigest: payload.PlanDigest, SourceDigest: payload.SourceDigest, Pool: payload.Pool, Action: payload.Action, Proposed: payload.Proposed}) {
+		return fmt.Errorf("signed Fleet GitHub pull-request payload does not match the immutable capacity plan")
 	}
 	return nil
 }
