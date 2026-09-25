@@ -71,6 +71,10 @@ func StageMySQLSQLSnapshot(ctx context.Context, resolved ResolvedBinding, expect
 	if nontransactional != 0 {
 		return "", MySQLSQLArtifact{}, fmt.Errorf("MySQL snapshot contains nontransactional tables")
 	}
+	before, err := inspectMySQLRestoreExpectationDB(ctx, db, resolved.Target.Database)
+	if err != nil {
+		return "", MySQLSQLArtifact{}, err
+	}
 	if strings.ContainsAny(session.password, "\x00\r\n") {
 		return "", MySQLSQLArtifact{}, fmt.Errorf("MySQL snapshot credential is not supported by private option files")
 	}
@@ -108,6 +112,13 @@ func StageMySQLSQLSnapshot(ctx context.Context, resolved ResolvedBinding, expect
 	if err := command.Run(); err != nil {
 		return "", MySQLSQLArtifact{}, fmt.Errorf("MySQL snapshot tool failed: %s", session.RedactCaptured(stderr))
 	}
+	after, err := inspectMySQLRestoreExpectationDB(ctx, db, resolved.Target.Database)
+	if err != nil {
+		return "", MySQLSQLArtifact{}, err
+	}
+	if before != after {
+		return "", MySQLSQLArtifact{}, fmt.Errorf("MySQL snapshot source changed while staging")
+	}
 	if writer.written == 0 || writer.written > MaxMySQLStagedArtifactBytes {
 		return "", MySQLSQLArtifact{}, fmt.Errorf("MySQL snapshot artifact is empty or oversized")
 	}
@@ -118,7 +129,7 @@ func StageMySQLSQLSnapshot(ctx context.Context, resolved ResolvedBinding, expect
 		return "", MySQLSQLArtifact{}, fmt.Errorf("MySQL snapshot artifact close failed")
 	}
 	file = nil
-	artifact := MySQLSQLArtifact{Format: MySQLSQLArtifactV1, Source: expected, Bytes: writer.written, SHA256: hex.EncodeToString(writer.hash.Sum(nil))}
+	artifact := MySQLSQLArtifact{Format: MySQLSQLArtifactV2, Source: expected, Bytes: writer.written, SHA256: hex.EncodeToString(writer.hash.Sum(nil)), Expectation: after}
 	if err := VerifyMySQLSQLArtifact(path, artifact); err != nil {
 		_ = os.Remove(path)
 		return "", MySQLSQLArtifact{}, err

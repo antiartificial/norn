@@ -192,6 +192,9 @@ func TestMySQLExactTargetDumpRestore(t *testing.T) {
 	if err != nil {
 		t.Fatalf("stage MySQL snapshot: %v", err)
 	}
+	if artifact.Format != MySQLSQLArtifactV2 || !validMySQLRestoreExpectation(artifact.Expectation) || artifact.Expectation.TableCount != 1 {
+		t.Fatalf("staged artifact lacks a valid restore expectation: %+v", artifact.Expectation)
+	}
 	if caPath != "" {
 		// The same mysqldump client must reject an unrelated CA. This is a
 		// negative control for the CLI transport, separate from the Go probe.
@@ -255,6 +258,16 @@ func TestMySQLExactTargetDumpRestore(t *testing.T) {
 		if err := admin.QueryRowContext(ctx, "SELECT value FROM `"+db+"`.marker").Scan(&marker); err != nil || marker != "source-only-recovery-marker" {
 			t.Fatalf("%s marker = %q, %v", db, marker, err)
 		}
+	}
+	if err := VerifyMySQLRestoreTarget(ctx, target, secrets, artifact.Expectation); err != nil {
+		actual, _ := InspectMySQLRestoreExpectation(ctx, target, secrets)
+		t.Fatalf("independent target verification failed: %v (source=%+v target=%+v)", err, artifact.Expectation, actual)
+	}
+	if _, err := admin.ExecContext(ctx, "UPDATE `"+targetDB+"`.marker SET value='post-restore-tamper'"); err != nil {
+		t.Fatal(err)
+	}
+	if err := VerifyMySQLRestoreTarget(ctx, target, secrets, artifact.Expectation); err == nil {
+		t.Fatal("target verification accepted changed restored data")
 	}
 	if _, err := PrepareMySQLRestore(ctx, resolver, "mini", "restore-db", target.Target, secrets, dumpPath, artifact); err == nil {
 		t.Fatal("nonempty restore target passed preflight")

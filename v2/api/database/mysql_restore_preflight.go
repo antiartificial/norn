@@ -13,17 +13,21 @@ import (
 	"syscall"
 )
 
-const MySQLSQLArtifactV1 = "norn.mysql-sql/v1"
+const (
+	MySQLSQLArtifactV1 = "norn.mysql-sql/v1"
+	MySQLSQLArtifactV2 = "norn.mysql-sql/v2"
+)
 const MaxMySQLStagedArtifactBytes int64 = 64 << 30
 
 // MySQLSQLArtifact identifies a local, private SQL dump. A future durable
 // recovery operation must sign and retain this record with its operation and
 // source catalog revision before any restore is allowed.
 type MySQLSQLArtifact struct {
-	Format MySQLSQLArtifactFormat `json:"format"`
-	Source TargetIdentity         `json:"source"`
-	Bytes  int64                  `json:"bytes"`
-	SHA256 string                 `json:"sha256"`
+	Format      MySQLSQLArtifactFormat  `json:"format"`
+	Source      TargetIdentity          `json:"source"`
+	Bytes       int64                   `json:"bytes"`
+	SHA256      string                  `json:"sha256"`
+	Expectation MySQLRestoreExpectation `json:"expectation"`
 }
 
 type MySQLSQLArtifactFormat string
@@ -52,7 +56,7 @@ func PrepareMySQLRestore(ctx context.Context, resolver *Resolver, profileID, log
 	if resolved.Target.Engine != EngineMySQL || resolved.Target != expected {
 		return MySQLRestorePreparation{}, fmt.Errorf("MySQL restore target identity changed")
 	}
-	if artifact.Format != MySQLSQLArtifactV1 || !validMySQLArtifactIdentity(artifact.Source) ||
+	if artifact.Format != MySQLSQLArtifactV2 || !validMySQLArtifactIdentity(artifact.Source) || !validMySQLRestoreExpectation(artifact.Expectation) ||
 		(artifact.Source.ServiceID == expected.ServiceID && artifact.Source.ServiceGeneration == expected.ServiceGeneration && artifact.Source.Database == expected.Database) {
 		return MySQLRestorePreparation{}, fmt.Errorf("MySQL restore artifact source is invalid or equals the target")
 	}
@@ -105,7 +109,7 @@ func VerifyMySQLSQLArtifact(path string, artifact MySQLSQLArtifact) error {
 // mysql as stdin, so a path replacement after verification cannot change the
 // bytes that reach the target.
 func OpenVerifiedMySQLSQLArtifact(path string, artifact MySQLSQLArtifact) (*os.File, error) {
-	if artifact.Format != MySQLSQLArtifactV1 || !validMySQLArtifactIdentity(artifact.Source) || artifact.Bytes <= 0 || artifact.Bytes > MaxMySQLStagedArtifactBytes || len(artifact.SHA256) != 64 {
+	if artifact.Format != MySQLSQLArtifactV2 || !validMySQLArtifactIdentity(artifact.Source) || !validMySQLRestoreExpectation(artifact.Expectation) || artifact.Bytes <= 0 || artifact.Bytes > MaxMySQLStagedArtifactBytes || len(artifact.SHA256) != 64 {
 		return nil, fmt.Errorf("MySQL restore artifact metadata is invalid")
 	}
 	if _, err := hex.DecodeString(artifact.SHA256); err != nil || strings.ToLower(artifact.SHA256) != artifact.SHA256 {
