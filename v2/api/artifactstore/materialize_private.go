@@ -2,13 +2,36 @@ package artifactstore
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"errors"
 	"fmt"
+	"hash"
+	"io"
 	"os"
 	"path/filepath"
 	"syscall"
 	"time"
 )
+
+type boundedMaterializationWriter struct {
+	file  io.Writer
+	hash  hash.Hash
+	limit int64
+	size  int64
+}
+
+func (w *boundedMaterializationWriter) Write(p []byte) (int, error) {
+	if int64(len(p)) > w.limit-w.size {
+		return 0, ErrArtifactCorrupt
+	}
+	n, err := w.file.Write(p)
+	if n > 0 {
+		w.size += int64(n)
+		_, _ = w.hash.Write(p[:n])
+	}
+	return n, err
+}
 
 // MaterializePrivate writes verified retained bytes to a new owner-only file.
 // The caller owns the returned file and must remove it after use. An error
@@ -76,9 +99,14 @@ func MaterializePrivate(ctx context.Context, objects Store, descriptor Descripto
 		_ = file.Close()
 		return "", err
 	}
-	if err := objects.Materialize(ctx, descriptor, file); err != nil {
+	verified := &boundedMaterializationWriter{file: file, hash: sha256.New(), limit: descriptor.Size}
+	if err := objects.Materialize(ctx, descriptor, verified); err != nil {
 		_ = file.Close()
 		return "", err
+	}
+	if verified.size != descriptor.Size || hex.EncodeToString(verified.hash.Sum(nil)) != descriptor.SHA256 {
+		_ = file.Close()
+		return "", ErrArtifactCorrupt
 	}
 	if err := file.Sync(); err != nil {
 		_ = file.Close()

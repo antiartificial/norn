@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"crypto/sha256"
+	"errors"
 	"fmt"
 	"io"
 	"os"
@@ -11,6 +12,47 @@ import (
 	"testing"
 	"time"
 )
+
+type unverifiedMaterializeStore struct {
+	Store
+	payload []byte
+}
+
+func (s unverifiedMaterializeStore) Materialize(_ context.Context, _ Descriptor, destination io.Writer) error {
+	_, err := destination.Write(s.payload)
+	return err
+}
+
+func TestMaterializePrivateChecksFinalBytesIndependently(t *testing.T) {
+	wanted := []byte("retained source bytes")
+	digest := fmt.Sprintf("%x", sha256.Sum256(wanted))
+	descriptor := Descriptor{Key: KeyForSHA256(digest), SHA256: digest, Size: int64(len(wanted))}
+	for name, payload := range map[string][]byte{
+		"short":   wanted[:len(wanted)-1],
+		"long":    append(bytes.Clone(wanted), '!'),
+		"changed": append([]byte("X"), wanted[1:]...),
+	} {
+		t.Run(name, func(t *testing.T) {
+			directory := filepath.Join(t.TempDir(), "restore")
+			if err := os.Mkdir(directory, 0o700); err != nil {
+				t.Fatal(err)
+			}
+			_, err := MaterializePrivate(context.Background(), unverifiedMaterializeStore{payload: payload}, descriptor, directory)
+			if !errors.Is(err, ErrArtifactCorrupt) {
+				t.Fatalf("materialization with %s bytes: %v", name, err)
+			}
+			files, err := os.ReadDir(directory)
+			if err != nil {
+				t.Fatal(err)
+			}
+			for _, file := range files {
+				if file.Name() != ".norn-materialize.lock" {
+					t.Fatalf("unverified materialization left %q", file.Name())
+				}
+			}
+		})
+	}
+}
 
 func TestMaterializePrivateUsesVerifiedRetainedBytes(t *testing.T) {
 	root := t.TempDir()
