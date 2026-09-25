@@ -117,12 +117,19 @@ func (f *fakeNomad) render(t *testing.T, task *nomadapi.Task, secretsDir string)
 	t.Helper()
 	f.mu.Lock()
 	defer f.mu.Unlock()
-	functions := template.FuncMap{"nomadVar": func(path string) (map[string]string, error) {
+	functions := template.FuncMap{"toJSON": func(value any) (string, error) {
+		encoded, err := json.Marshal(value)
+		return string(encoded), err
+	}, "nomadVar": func(path string) (map[string]struct{ Value string }, error) {
 		variable := f.variables[path]
 		if variable == nil {
 			return nil, fmt.Errorf("variable %s missing", path)
 		}
-		return variable.Items, nil
+		items := make(map[string]struct{ Value string }, len(variable.Items))
+		for key, value := range variable.Items {
+			items[key] = struct{ Value string }{Value: value}
+		}
+		return items, nil
 	}}
 	environment := []string{}
 	for key, value := range task.Env {
@@ -140,6 +147,13 @@ func (f *fakeNomad) render(t *testing.T, task *nomadapi.Task, secretsDir string)
 		if tmpl.Envvars != nil && *tmpl.Envvars {
 			for _, line := range strings.Split(out.String(), "\n") {
 				if line = strings.TrimSpace(line); line != "" {
+					key, value, ok := strings.Cut(line, "=")
+					if !ok {
+						t.Fatalf("rendered environment line has no assignment: %q", line)
+					}
+					if decoded, err := strconv.Unquote(value); err == nil {
+						line = key + "=" + decoded
+					}
 					environment = append(environment, line)
 				}
 			}

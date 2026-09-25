@@ -176,7 +176,7 @@ func addDatabaseTemplates(spec *model.InfraSpec, jobID string, revision int64, t
 		}
 		if requirement.Runtime.FileEnv != "" {
 			destination := "secrets/" + databaseSecretsDir + "/" + requirement.Name + ".url"
-			task.Templates = append(task.Templates, databaseTemplate(fmt.Sprintf("{{ with nomadVar %q }}{{ .%s }}{{ end }}", path, key), destination, false))
+			task.Templates = append(task.Templates, databaseTemplate(fmt.Sprintf("{{ with nomadVar %q }}{{ .%s.Value }}{{ end }}", path, key), destination, false))
 			if task.Env == nil {
 				task.Env = map[string]string{}
 			}
@@ -203,7 +203,7 @@ func addDatabaseTemplates(spec *model.InfraSpec, jobID string, revision int64, t
 				}
 				key := stagedKey(DatabaseTLSItemKey(requirement.Name, file.material), revision)
 				destination := "secrets/" + databaseSecretsDir + "/" + requirement.Name + "." + file.suffix
-				task.Templates = append(task.Templates, databaseTemplate(fmt.Sprintf("{{ with nomadVar %q }}{{ .%s }}{{ end }}", path, key), destination, false))
+				task.Templates = append(task.Templates, databaseTemplate(fmt.Sprintf("{{ with nomadVar %q }}{{ .%s.Value }}{{ end }}", path, key), destination, false))
 				if task.Env == nil {
 					task.Env = map[string]string{}
 				}
