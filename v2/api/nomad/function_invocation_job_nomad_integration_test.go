@@ -27,8 +27,12 @@ func TestFunctionInvocationJobNomadReadbackProjection(t *testing.T) {
 	}
 	ctx := context.Background()
 	defer client.Jobs().Deregister(request.JobID, true, (&nomadapi.WriteOptions{Region: "global"}).WithContext(ctx))
-	if _, _, err := client.Jobs().Register(job, (&nomadapi.WriteOptions{Region: "global"}).WithContext(ctx)); err != nil {
+	adapter := &Client{api: client}
+	if err := adapter.CreateFunctionInvocationJob(ctx, "global", job, want); err != nil {
 		t.Fatal(err)
+	}
+	if err := adapter.CreateFunctionInvocationJob(ctx, "global", job, want); err != ErrFunctionJobCreateConflict {
+		t.Fatalf("duplicate create = %v, want conflict", err)
 	}
 	readBack, _, err := client.Jobs().Info(request.JobID, (&nomadapi.QueryOptions{Region: "global"}).WithContext(ctx))
 	if err != nil {
@@ -40,5 +44,9 @@ func TestFunctionInvocationJobNomadReadbackProjection(t *testing.T) {
 	}
 	if got != want {
 		t.Fatalf("read-back digest = %+v, want %+v", got, want)
+	}
+	observed, err := adapter.LookupFunctionInvocationJob(ctx, "global", FunctionInvocationJobIdentity{JobID: request.JobID})
+	if err != nil || observed.State != FunctionInvocationJobFound || observed.JobSpecDigest != want.Digest || !observed.HistoryComplete {
+		t.Fatalf("exact job observation = %+v, %v", observed, err)
 	}
 }

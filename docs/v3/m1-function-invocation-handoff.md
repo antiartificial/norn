@@ -170,9 +170,15 @@ fields that need a closed projection before comparison. A dormant function-job
 builder now defines one public Nomad dialect and derives its digest from the
 validated, canonicalized job. A disposable Nomad 2.0.7 register/read-back test
 matched the builder's digest after accepting only the observed server defaults.
-The job lookup adapter still treats an exact 404 as absence and every existing
-job as indeterminate. It does not register jobs or claim recovery evidence.
-The builder is not connected to the worker: its private variable template has
+The job adapter now uses a zero-index create-only Nomad registration and
+classifies an exact 404 as absence. A found job needs the closed projection,
+one matching version, exact evaluations and allocations, and a stable
+read-back before its public identity can be returned. A disposable Nomad
+2.0.7 server passed create, duplicate-conflict, digest read-back, and found
+observation. A claimed worker job step records the public binding, marks the
+attempt before the remote call, and reconciles lost responses without another
+submit; focused concurrency and race tests passed. The builder is still not
+connected to the operation executor: its private variable template has
 no proven request-consumption path, and claimed-worker, terminal, and cleanup
 steps remain open. Requalify the closed projection on the release Nomad version
 before enabling submission.
