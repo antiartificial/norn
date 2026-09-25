@@ -1,13 +1,14 @@
 # M1 function invocation: private request and durable Nomad effects
 
-Status: PostgreSQL private-material acceptance foundation implemented and
-tested against disposable PostgreSQL 17.7; route and worker are not wired.
+Status: PostgreSQL and etcd private-material acceptance foundations implemented
+and tested against disposable PostgreSQL 17.7 and etcd; route and worker are
+not wired.
 `InvokeFunction` still submits a batch job in the HTTP process. Its current
 execution-row check and request-independent completion watcher reduce two
 failure windows but do not provide signed acceptance, claim fencing, or crash
 recovery. The new explicit encryption key ring, migration 18, and
-`AcceptPrivateInvocation` are dormant pending key configuration, etcd parity,
-and the effect runner. Migration 18 raises the writer contract to 15, so the
+`AcceptPrivateInvocation` are dormant pending key configuration and the effect
+runner. Migration 18 raises the writer contract to 15, so the
 Mini mixed-version/rollback gate must account for it before deployment.
 
 ## Required contract
@@ -120,5 +121,11 @@ On 2026-09-25, `go test ./store -run '^TestPrivateInvocation' -count=1 -v`
 passed with `NORN_TEST_DATABASE_URL` targeting a disposable PostgreSQL 17.7
 container. It covered atomic acceptance/rollback, two-connection same-key
 acceptance race, private material replay/mismatch, no plaintext in the tested
-control rows, key absence, rotation, AAD and ciphertext tampering. This does
-not exercise etcd, real Nomad, route admission, a process crash, or restore.
+control rows, key absence, rotation, AAD and ciphertext tampering.
+
+The etcd adapter uses one compare-and-put transaction for signed acceptance,
+operation, kind index, and encrypted private record. Focused tests against a
+disposable real etcd member covered same-key replay, mismatches, no plaintext
+in stored records, and rejected-transaction cleanup; the etcd race suite also
+passed. Neither backend is connected to the function route or startup key
+preflight. Real Nomad, process-crash, and restore qualification remain open.

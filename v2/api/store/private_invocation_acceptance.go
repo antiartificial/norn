@@ -13,7 +13,9 @@ import (
 	"norn/v2/api/model"
 )
 
-const privateInvocationKind = "app.function-invoke"
+const PrivateInvocationOperationKind = "app.function-invoke"
+
+const privateInvocationKind = PrivateInvocationOperationKind
 
 // AcceptPrivateInvocation joins private material to signed operation
 // acceptance in one PostgreSQL transaction. Key material is supplied
@@ -25,7 +27,7 @@ func (s *PGOperationStore) AcceptPrivateInvocation(ctx context.Context, input Op
 	if input.Deployment != nil || len(input.Regions) != 0 {
 		return AcceptedOperation{}, &AcceptanceValidationError{Reason: "function invocation cannot accept a deployment"}
 	}
-	if err := validatePrivateInvocationPublicInput(input, material); err != nil {
+	if err := ValidatePrivateInvocationPublicInput(input, material); err != nil {
 		return AcceptedOperation{}, err
 	}
 	if prior, err := s.ResolveIdentity(ctx, input.Identity); err == nil {
@@ -46,7 +48,7 @@ func (s *PGOperationStore) AcceptPrivateInvocation(ctx context.Context, input Op
 			return AcceptedOperation{}, &AcceptanceValidationError{Reason: "private invocation payload contains a reserved field"}
 		}
 	}
-	binding := PrivateInvocationBinding{Authority: input.Identity.Authority, OperationID: input.Operation.ID, App: input.Operation.App, Process: privateInvocationProcess(payload)}
+	binding := PrivateInvocationBinding{Authority: input.Identity.Authority, OperationID: input.Operation.ID, App: input.Operation.App, Process: PrivateInvocationProcess(payload)}
 	sealed, err := keys.Seal(binding, material)
 	if err != nil {
 		return AcceptedOperation{}, err
@@ -82,7 +84,10 @@ func (s *PGOperationStore) AcceptPrivateInvocation(ctx context.Context, input Op
 	return s.resolvePrivateInvocationReplay(ctx, input, material, keys, prior)
 }
 
-func validatePrivateInvocationPublicInput(input OperationAcceptance, material PrivateInvocationInput) error {
+// ValidatePrivateInvocationPublicInput prevents request fields and values from
+// entering the signed public acceptance. Backends call it before sealing or
+// persisting their private material.
+func ValidatePrivateInvocationPublicInput(input OperationAcceptance, material PrivateInvocationInput) error {
 	if hasPrivateInvocationField(input.Operation.Payload) || hasPrivateInvocationField(input.Operation.Metadata) || hasPrivateInvocationField(input.Semantics) {
 		return &AcceptanceValidationError{Reason: "private function request fields cannot enter public operation material"}
 	}
@@ -100,6 +105,12 @@ func validatePrivateInvocationPublicInput(input OperationAcceptance, material Pr
 		}
 	}
 	return nil
+}
+
+// Kept for package-local callers while adapters use the exported shared
+// validation boundary above.
+func validatePrivateInvocationPublicInput(input OperationAcceptance, material PrivateInvocationInput) error {
+	return ValidatePrivateInvocationPublicInput(input, material)
 }
 
 func hasPrivateInvocationField(value interface{}) bool {
@@ -125,7 +136,9 @@ func hasPrivateInvocationField(value interface{}) bool {
 	return false
 }
 
-func privateInvocationProcess(payload map[string]interface{}) string {
+// PrivateInvocationProcess returns the public process name bound into the
+// encrypted request envelope's authenticated data.
+func PrivateInvocationProcess(payload map[string]interface{}) string {
 	value, _ := payload["process"].(string)
 	return value
 }
@@ -211,7 +224,7 @@ func (s *PGOperationStore) OpenPrivateInvocation(ctx context.Context, operation 
 	if err != nil {
 		return PrivateInvocationInput{}, err
 	}
-	binding := PrivateInvocationBinding{Authority: authority, OperationID: operation.ID, App: operation.App, Process: privateInvocationProcess(operation.Payload)}
+	binding := PrivateInvocationBinding{Authority: authority, OperationID: operation.ID, App: operation.App, Process: PrivateInvocationProcess(operation.Payload)}
 	result, err := keys.Open(binding, envelope)
 	if err != nil {
 		return PrivateInvocationInput{}, err

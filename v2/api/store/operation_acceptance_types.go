@@ -32,6 +32,15 @@ type OperationIdentityResolver interface {
 	ResolveIdentity(context.Context, OperationRequestIdentity) (AcceptedOperation, error)
 }
 
+// PrivateInvocationStore is the dormant function-invocation admission
+// boundary. Implementations atomically persist the signed public acceptance
+// and its separately encrypted request material before exposing either.
+type PrivateInvocationStore interface {
+	AcceptPrivateInvocation(context.Context, OperationAcceptance, PrivateInvocationInput, *PrivateInvocationKeyRing) (AcceptedOperation, error)
+	OpenPrivateInvocation(context.Context, model.Operation, *PrivateInvocationKeyRing) (PrivateInvocationInput, error)
+	RequiredPrivateInvocationKeys(context.Context) ([]string, error)
+}
+
 type OperationActor struct {
 	Issuer  string `json:"issuer"`
 	Subject string `json:"subject"`

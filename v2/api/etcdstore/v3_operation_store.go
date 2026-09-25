@@ -52,6 +52,15 @@ type v3Acceptance struct {
 	ReplayExpiredAt       *time.Time                     `json:"replayExpiredAt,omitempty"`
 }
 
+// v3PrivateInvocation is deliberately separate from the public acceptance
+// record. Its digest and key ID are duplicated in the signed operation
+// payload, so a swapped, missing, or altered ciphertext cannot be opened.
+type v3PrivateInvocation struct {
+	KeyID            string                          `json:"keyId"`
+	CiphertextDigest string                          `json:"ciphertextDigest"`
+	Envelope         store.PrivateInvocationEnvelope `json:"envelope"`
+}
+
 type loadedV3Acceptance struct {
 	record   v3Acceptance
 	revision int64
@@ -85,6 +94,7 @@ func NewV3OperationStoreWithPolicy(kv leasedKV, prefix, authority string, signer
 
 var _ store.OperationStore = (*V3OperationStore)(nil)
 var _ store.OperationIdentityResolver = (*V3OperationStore)(nil)
+var _ store.PrivateInvocationStore = (*V3OperationStore)(nil)
 var _ store.ExecutionStore = (*V3OperationStore)(nil)
 var _ store.OperationCheckpointStore = (*V3OperationStore)(nil)
 
@@ -201,9 +211,18 @@ func (s *V3OperationStore) acceptanceKey(i store.OperationRequestIdentity) strin
 func (s *V3OperationStore) replayLiveKey(acceptanceKey string) string {
 	return acceptanceKey + "/replay-live"
 }
+func (s *V3OperationStore) privateInvocationKey(id string) string {
+	return s.prefix + "/v3/private-invocations/" + id
+}
+func (s *V3OperationStore) privateInvocationPrefix() string {
+	return s.prefix + "/v3/private-invocations/"
+}
 func (s *V3OperationStore) Authority(context.Context) (string, error) { return s.authority, nil }
 
 func (s *V3OperationStore) Accept(ctx context.Context, a store.OperationAcceptance) (store.AcceptedOperation, error) {
+	if a.Identity.Kind == store.PrivateInvocationOperationKind || a.Operation.Kind == store.PrivateInvocationOperationKind {
+		return store.AcceptedOperation{}, &store.AcceptanceValidationError{Reason: "function invocation requires atomic private material acceptance"}
+	}
 	// The current adapter does not yet implement these multi-record admission
 	// aggregates. Refuse them before any write instead of storing a receipt
 	// whose domain state or policy was never enforced.
