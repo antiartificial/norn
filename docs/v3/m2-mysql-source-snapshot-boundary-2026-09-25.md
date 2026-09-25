@@ -26,17 +26,22 @@ is still running despite terminal allocations. This is not a source write
 lock or a snapshot receipt.
 
 The private request requires the signed job app and job ID to equal the
-accepted operation's app. Release admission still needs a live deployment or
-manifest proof that this exact job owns the selected source binding; naming
-equality alone cannot establish database ownership.
+accepted operation's app. Private admission now proves the selected source
+against a successful signed deployment's exact database target, observes its
+provenance-stamped Nomad job and live allocations, and accepts that derived
+request as one signed operation. It refuses deployments with multiple regions
+until every writer can be stopped together. At execution, the guarded stop
+rechecks the signed metadata, version, modify index, and allocation set before
+mutation, then verifies the exact stopped revision. The stop passed against
+disposable Nomad 2.0.7; full source-to-restore qualification remains open.
 
 `quiesce-intended` is a reservation, **not** a write-stop proof. Before a
 snapshot can be accepted for restore, the signed stop and account-lock proofs,
 staged artifact, and service-signed receipt must be bound to a separate signed
-restore decision. The existing restore request still accepts an operator-supplied
-source-quiescence reference; that private prototype must require the signed
-snapshot receipt. Source unlock/restart needs a separately signed recovery
-operation. No public snapshot or restore capability is enabled.
+restore decision. The private restore request now requires the signed snapshot
+receipt digest and source operation identity. Source unlock/restart needs a
+separately signed recovery operation. No public snapshot or restore capability
+is enabled.
 
 ### Source account lock checkpoint (private)
 
@@ -84,10 +89,9 @@ fence release refuses both the old source owner and the transferred restore
 owner. No source or destination account is automatically unlocked.
 
 This is still a private implementation step, not a qualified source snapshot
-workflow. The private quiescence runner renews its claim before and throughout
-the Nomad stop and account lock. The separate artifact staging step checks the
-claim at its boundaries but does not yet renew it throughout the dump. Release
-qualification needs a supervised staging claim, retained artifact storage and
-availability proof, explicit recovery after an ambiguous effect, and a signed
-resume/unlock decision. Direct host mutations also need qualification against
-the global fence at their actual effect point.
+workflow. The quiescence and artifact-staging runners renew the claim during
+their external effects; renewal loss cancels the dump and forbids a new signed
+receipt. Release qualification still needs retained artifact storage and
+cross-node availability proof, explicit recovery after an ambiguous effect,
+and a signed resume/unlock decision. Direct host mutations also need
+qualification against the global fence at their actual effect point.
