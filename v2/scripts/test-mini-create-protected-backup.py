@@ -46,6 +46,9 @@ class ProtectedBackupProducerTest(unittest.TestCase):
         self.tool("pg_dump", """import json, os, sys
 with open(os.environ['BACKUP_TEST_OBSERVATION'], 'w') as out:
     json.dump({'host':os.environ.get('PGHOST'), 'options':os.environ.get('PGOPTIONS'),
+               'sslmode':os.environ.get('PGSSLMODE'), 'sslrootcert':os.environ.get('PGSSLROOTCERT'),
+               'sslcert':os.environ.get('PGSSLCERT'), 'sslkey':os.environ.get('PGSSLKEY'),
+               'database':os.environ.get('PGDATABASE'), 'ambient':os.environ.get('PGSERVICE'),
                'url_present':'NORN_DATABASE_URL' in os.environ,
                'key_present':'NORN_AUDIT_SIGNING_KEY' in os.environ}, out)
 sys.stdout.buffer.write(b'synthetic custom archive')
@@ -53,6 +56,12 @@ sys.stdout.buffer.write(b'synthetic custom archive')
         self.tool("pg_restore", "import sys\nassert sys.argv[1] == '--list'\n")
         observation = self.root / "observation.json"
         self.env["BACKUP_TEST_OBSERVATION"] = str(observation)
+        self.env["PGSERVICE"] = "must-not-survive"
+        self.env["NORN_DATABASE_URL"] = (
+            f"postgresql://fixture@localhost:5432/control%2Ddb?host={self.socket}"
+            "&sslmode=verify-full&sslrootcert=%2Fprivate%2Fca.pem"
+            "&sslcert=%2Fprivate%2Fclient.crt&sslkey=%2Fprivate%2Fclient.key"
+        )
         result = self.create()
         self.assertEqual(result.returncode, 0, result.stderr)
         artifact, = self.output.glob("*.dump")
@@ -62,6 +71,12 @@ sys.stdout.buffer.write(b'synthetic custom archive')
         observed = json.loads(observation.read_text())
         self.assertEqual(observed["host"], str(self.socket))
         self.assertEqual(observed["options"], "-c default_transaction_read_only=on")
+        self.assertEqual(observed["database"], "control-db")
+        self.assertEqual(observed["sslmode"], "verify-full")
+        self.assertEqual(observed["sslrootcert"], "/private/ca.pem")
+        self.assertEqual(observed["sslcert"], "/private/client.crt")
+        self.assertEqual(observed["sslkey"], "/private/client.key")
+        self.assertIsNone(observed["ambient"])
         self.assertFalse(observed["url_present"] or observed["key_present"])
         verified = subprocess.run([str(VERIFY), str(proof), str(artifact), RELEASE], env=self.env, text=True, capture_output=True, check=False)
         self.assertEqual(verified.returncode, 0, verified.stderr)
@@ -72,6 +87,13 @@ sys.stdout.buffer.write(b'synthetic custom archive')
         self.assertNotEqual(result.returncode, 0)
         self.assertEqual(list(self.output.iterdir()), [])
         self.assertNotIn(KEY, result.stderr)
+
+    def test_rejects_unmapped_connection_parameter_before_dump(self):
+        self.env["NORN_DATABASE_URL"] = self.url + "&options=-c%20search_path%3Dother"
+        result = self.create()
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("unsupported PostgreSQL connection parameters", result.stderr)
+        self.assertEqual(list(self.output.iterdir()), [])
 
 
 if __name__ == "__main__":

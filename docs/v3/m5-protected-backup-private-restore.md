@@ -69,7 +69,9 @@ The helper forces a read-only source transaction, writes both files with mode
 `0600` and exclusive creation, checks the custom archive's listing, computes
 the digest and database-identity HMAC, and calls the independent proof
 verifier before returning their paths and safe fingerprints. It cleans up its
-own partial files on failure. A disposable PostgreSQL 16.15 run passed with a
+own partial files on failure. It passes supported URL connection parameters,
+including TLS CA and client material, to libpq and rejects parameters it
+cannot preserve. A disposable PostgreSQL 16.15 run passed with a
 Unix-socket source and a synthetic row. That run validates the producer and
 verifier, not a Mini production-key backup. Retain and protect the resulting
 artifact off the source host as required by the change record, then run the

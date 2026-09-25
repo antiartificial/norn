@@ -27,15 +27,32 @@ def source_environment(database_url):
     query = urllib.parse.parse_qs(parsed.query, keep_blank_values=True)
     if any(len(values) != 1 for values in query.values()):
         fail("NORN_DATABASE_URL has a repeated query parameter")
+    query_env = {
+        "host": "PGHOST", "hostaddr": "PGHOSTADDR", "port": "PGPORT",
+        "passfile": "PGPASSFILE", "sslmode": "PGSSLMODE",
+        "sslrootcert": "PGSSLROOTCERT", "sslcert": "PGSSLCERT",
+        "sslkey": "PGSSLKEY", "sslpassword": "PGSSLPASSWORD",
+        "sslcrl": "PGSSLCRL", "sslcrldir": "PGSSLCRLDIR",
+        "sslnegotiation": "PGSSLNEGOTIATION", "gssencmode": "PGGSSENCMODE",
+        "channel_binding": "PGCHANNELBINDING",
+        "connect_timeout": "PGCONNECT_TIMEOUT",
+        "target_session_attrs": "PGTARGETSESSIONATTRS",
+        "application_name": "PGAPPNAME",
+    }
+    unsupported = set(query) - set(query_env)
+    if unsupported:
+        fail("NORN_DATABASE_URL has unsupported PostgreSQL connection parameters")
     socket_host = query.get("host", [""])[0]
     host = socket_host or parsed.hostname
     if not host:
         fail("NORN_DATABASE_URL has no PostgreSQL host")
-    if socket_host and (not socket_host.startswith("/") or not os.path.isdir(socket_host)):
+    if socket_host.startswith("/") and not os.path.isdir(socket_host):
         fail("NORN_DATABASE_URL Unix socket directory is unavailable")
     try:
-        port = parsed.port or 5432
+        port = int(query["port"][0]) if "port" in query else (parsed.port or 5432)
     except ValueError:
+        fail("NORN_DATABASE_URL has an invalid port")
+    if not 1 <= port <= 65535:
         fail("NORN_DATABASE_URL has an invalid port")
     env = {key: value for key, value in os.environ.items() if not key.startswith(("PG", "NORN_"))}
     env.update({
@@ -43,10 +60,12 @@ def source_environment(database_url):
         "PGPORT": str(port),
         "PGUSER": urllib.parse.unquote(parsed.username or ""),
         "PGPASSWORD": urllib.parse.unquote(parsed.password or ""),
-        "PGDATABASE": urllib.parse.unquote(parsed.path.lstrip("/")),
-        "PGSSLMODE": query.get("sslmode", ["prefer"])[0],
+        "PGDATABASE": urllib.parse.unquote(parsed.path[1:]),
         "PGOPTIONS": "-c default_transaction_read_only=on",
     })
+    for name, value in query.items():
+        if name not in ("host", "port"):
+            env[query_env[name]] = value[0]
     return env
 
 
