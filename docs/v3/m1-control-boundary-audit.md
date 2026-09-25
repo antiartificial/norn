@@ -135,9 +135,12 @@ snapshots; the worker owns the download and publication. The target-bound
 path retains manifest, target, and digest checks. A lost worker claim is a
 one-attempt failure requiring operator inspection of any published dump or
 sidecar before resubmission. This still needs the two-process crash gate.
-Snapshot **export** remains an inline effect: `handler/snapshots.go` invokes
-`pipeline.ExportTargetSnapshot` in the request path. Export uploads a verified
-dump followed by its manifest under a stable key; a retry after a lost
-response can upload another manifest version with a new `ExportedAt`. Export
-needs an accepted, claim-fenced operation and explicit existing-object
-recovery before it qualifies for M1.
+The target-aware snapshot export HTTP route now pins a filename and queues a
+signed `app.snapshot-export` operation. Its worker uses an operation-specific
+remote key, create-only writes, and remote readback of the dump before it
+publishes the manifest. A lost claim remains a one-attempt failure for
+inspection. The legacy flat export route and automatic predeploy export in
+`pipeline/snapshot.go` still upload inline. The create-only S3 behavior has
+passed the local emulator, including multipart completion, but provider
+qualification and two-process crash recovery remain open. These remaining
+paths keep M1 export incomplete.

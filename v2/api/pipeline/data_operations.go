@@ -68,7 +68,7 @@ func (p *Pipeline) executeDataOperation(ctx context.Context, op *model.Operation
 	metadata["database"] = database
 	if bound != nil {
 		required := map[string][]dbCapability{
-			"app.snapshot": {dbSnapshot}, "app.snapshot-prune": {dbSnapshot}, "app.snapshot-import": {dbSnapshot},
+			"app.snapshot": {dbSnapshot}, "app.snapshot-prune": {dbSnapshot}, "app.snapshot-import": {dbSnapshot}, "app.snapshot-export": {dbSnapshot},
 			"app.snapshot-restore": {dbRestore, dbSnapshot}, "app.migrate": {dbMigration, dbSnapshot},
 		}[op.Kind]
 		if err := bound.requireCapabilities(required...); err != nil {
@@ -150,6 +150,20 @@ func (p *Pipeline) executeDataOperation(ctx context.Context, op *model.Operation
 		return finish("snapshot imported for "+spec.App, map[string]interface{}{"snapshot": filename, "key": key, "bucket": bucket}, func(publishCtx context.Context) {
 			_ = sg.Log(publishCtx, "snapshot.imported", "legacy snapshot imported", map[string]string{"snapshot": filename, "key": key})
 			p.broadcastDataEvent("snapshot.imported", spec.App, map[string]string{"snapshot": filename, "operationId": op.ID})
+		}), nil
+
+	case "app.snapshot-export":
+		if spec.Snapshots == nil || spec.Snapshots.ExportBucket == "" || stringFromMap(op.Payload, "bucket") != spec.Snapshots.ExportBucket {
+			return nil, fmt.Errorf("signed snapshot export bucket differs from current app configuration")
+		}
+		logical, filename := stringFromMap(op.Payload, "database"), stringFromMap(op.Payload, "snapshot")
+		manifest, key, err := p.ExportTargetSnapshotClaimed(ctx, spec, logical, filename, p.SnapshotObjects, spec.Snapshots.ExportBucket, op.ID)
+		if err != nil {
+			return nil, err
+		}
+		return finish("snapshot exported for "+spec.App, map[string]interface{}{"snapshot": manifest.Filename, "key": key, "bucket": spec.Snapshots.ExportBucket}, func(publishCtx context.Context) {
+			_ = sg.Log(publishCtx, "snapshot.exported", "target-bound snapshot exported", map[string]string{"snapshot": manifest.Filename, "key": key})
+			p.broadcastDataEvent("snapshot.exported", spec.App, map[string]string{"snapshot": manifest.Filename, "operationId": op.ID})
 		}), nil
 
 	case "app.snapshot-restore":

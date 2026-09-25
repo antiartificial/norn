@@ -15,6 +15,7 @@ import (
 	"github.com/go-chi/chi/v5"
 
 	"norn/v2/api/model"
+	"norn/v2/api/pipeline"
 	"norn/v2/api/storage"
 )
 
@@ -453,18 +454,40 @@ func (h *Handler) ExportSnapshot(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if h.pipeline != nil && h.pipeline.DatabaseTargets != nil {
-		// The same target-aware layer as restore: only the current target's
-		// dumps; the verified bytes (a private copy) and a provenance
-		// manifest are uploaded.
-		snapshot, key, err := h.pipeline.ExportTargetSnapshot(r.Context(), spec, r.URL.Query().Get("database"), r.URL.Query().Get("snapshot"), h.s3, exportBucket)
+		groups, err := h.pipeline.TargetSnapshots(r.Context(), spec)
 		if err != nil {
-			writeError(w, http.StatusConflict, fmt.Sprintf("export snapshot: %v", err))
+			writeError(w, http.StatusConflict, fmt.Sprintf("snapshot inventory: %v", err))
 			return
 		}
-		h.emitSnapshotEvent(r, id, "snapshot.exported", model.BeaconInfo, "snapshot exported",
-			fmt.Sprintf("%s exported snapshot %s to %s", id, snapshot.Filename, exportBucket),
-			map[string]interface{}{"bucket": exportBucket, "key": key, "snapshot": snapshot.Filename})
-		writeJSON(w, map[string]interface{}{"status": "exported", "app": id, "snapshot": snapshot, "bucket": exportBucket, "key": key})
+		selected := r.URL.Query().Get("database")
+		if selected == "" && len(groups) != 1 {
+			writeError(w, http.StatusBadRequest, "database is required when multiple snapshot targets are declared")
+			return
+		}
+		var group *pipeline.TargetSnapshotGroup
+		for index := range groups {
+			if selected == "" || groups[index].Database == selected {
+				group = &groups[index]
+				break
+			}
+		}
+		if group == nil || group.Unavailable != "" {
+			writeError(w, http.StatusConflict, "selected database snapshot inventory is unavailable")
+			return
+		}
+		filename := r.URL.Query().Get("snapshot")
+		if filename == "" && len(group.Snapshots) > 0 {
+			filename = group.Snapshots[0].Filename
+		}
+		found := false
+		for _, snapshot := range group.Snapshots {
+			found = found || snapshot.Filename == filename
+		}
+		if !found {
+			writeError(w, http.StatusNotFound, "no restorable snapshot of the selected target matches")
+			return
+		}
+		h.queueAppDataOperation(w, r, "app.snapshot-export", "snapshot export", map[string]interface{}{"bucket": exportBucket, "snapshot": filename, "database": group.Database}, 1)
 		return
 	}
 	if spec.NamedDatabases() {

@@ -396,7 +396,7 @@ func (p *Pipeline) ExecuteOperation(ctx context.Context, op *model.Operation, cl
 	switch op.Kind {
 	case "app.deployment-reconcile":
 		return p.executeDeploymentReconciliation(ctx, op, claim, spec, sg)
-	case "app.snapshot", "app.snapshot-prune", "app.snapshot-restore", "app.snapshot-import", "app.migrate":
+	case "app.snapshot", "app.snapshot-prune", "app.snapshot-restore", "app.snapshot-import", "app.snapshot-export", "app.migrate":
 		return p.executeDataOperation(ctx, op, claim, spec, sg)
 	case DatabaseBaselineKind:
 		return p.executeDatabaseBaseline(ctx, op, claim, spec)

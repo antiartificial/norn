@@ -31,7 +31,7 @@ type OperationWorker struct {
 func NewOperationWorker(db store.ExecutionStore, p *pipeline.Pipeline) *OperationWorker {
 	return NewOperationWorkerForKinds(db, p, []string{
 		"app.preflight", "app.deploy", "app.rollback", "app.deployment-reconcile", "app.restart", "app.snapshot",
-		"app.snapshot-prune", "app.snapshot-restore", "app.snapshot-import", "app.migrate",
+		"app.snapshot-prune", "app.snapshot-restore", "app.snapshot-import", "app.snapshot-export", "app.migrate",
 		"app.scale", "app.cron-pause", "app.cron-resume", "app.cron-schedule", "app.cron-trigger", "app.cron-trigger-reconcile",
 		"app.canary-promote", "app.cloudflared-mutate",
 		pipeline.CatalogActivationKind, pipeline.DatabaseBaselineKind,

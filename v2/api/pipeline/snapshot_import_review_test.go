@@ -5,6 +5,7 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"norn/v2/api/model"
@@ -19,6 +20,13 @@ func (s reviewSnapshotObjects) PutObject(_ context.Context, _, key, path string)
 		s[key] = data
 	}
 	return err
+}
+
+func (s reviewSnapshotObjects) PutObjectIfAbsent(ctx context.Context, bucket, key, path string) error {
+	if _, exists := s[key]; exists {
+		return os.ErrExist
+	}
+	return s.PutObject(ctx, bucket, key, path)
 }
 
 func TestClaimedSnapshotImport(t *testing.T) {
@@ -63,6 +71,91 @@ func TestClaimedSnapshotImport(t *testing.T) {
 	}
 	if _, err := f.p.ImportTargetSnapshot(ctx, f.spec, "primary", objects, "review", key); err != nil {
 		t.Fatalf("claimed operation did not publish a valid target snapshot: %v", err)
+	}
+}
+
+func TestClaimedSnapshotExportUsesPrivateRemoteKey(t *testing.T) {
+	f := newNamedFixture(t)
+	op, err := f.queue(t, "app.snapshot", map[string]interface{}{"database": "primary"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := f.execute(t, op.ID); err != nil {
+		t.Fatal(err)
+	}
+	groups, err := f.p.TargetSnapshots(context.Background(), f.spec)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var filename string
+	for _, group := range groups {
+		if group.Database == "primary" && len(group.Snapshots) > 0 {
+			filename = group.Snapshots[0].Filename
+		}
+	}
+	if filename == "" {
+		t.Fatal("snapshot inventory did not find the created dump")
+	}
+	objects := reviewSnapshotObjects{}
+	manifest, key, err := f.p.ExportTargetSnapshotClaimed(context.Background(), f.spec, "primary", filename, objects, "review", op.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(key, "/operations/"+op.ID+"/") || manifest.Filename != filename || len(objects[key]) == 0 || len(objects[key+snapshotManifestSuffix]) == 0 {
+		t.Fatalf("claimed export key=%q manifest=%+v", key, manifest)
+	}
+	if _, _, err := f.p.ExportTargetSnapshotClaimed(context.Background(), f.spec, "primary", filename, objects, "review", op.ID); err == nil {
+		t.Fatal("same operation unexpectedly republished a new manifest")
+	}
+}
+
+func TestClaimedSnapshotExportOperation(t *testing.T) {
+	f := newNamedFixture(t)
+	created, err := f.queue(t, "app.snapshot", map[string]interface{}{"database": "primary"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := f.execute(t, created.ID); err != nil {
+		t.Fatal(err)
+	}
+	groups, err := f.p.TargetSnapshots(context.Background(), f.spec)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var filename string
+	for _, group := range groups {
+		if group.Database == "primary" && len(group.Snapshots) > 0 {
+			filename = group.Snapshots[0].Filename
+		}
+	}
+	if filename == "" {
+		t.Fatal("no pinned snapshot")
+	}
+	path := filepath.Join(f.p.AppsDir, f.app, "infraspec.yaml")
+	data, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(path, append(data, []byte("snapshots:\n  exportBucket: review\n")...), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	f.spec, err = model.LoadInfraSpec(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	objects := reviewSnapshotObjects{}
+	f.p.SnapshotObjects = objects
+	accepted, err := f.queue(t, "app.snapshot-export", map[string]interface{}{"database": "primary", "bucket": "review", "snapshot": filename})
+	if err != nil {
+		t.Fatal(err)
+	}
+	result, err := f.execute(t, accepted.ID)
+	if err != nil || result.Status != model.OperationSucceeded {
+		t.Fatalf("claimed export = %+v, %v", result, err)
+	}
+	key, _ := result.Metadata["key"].(string)
+	if !strings.Contains(key, "/operations/"+accepted.ID+"/") || len(objects[key]) == 0 || len(objects[key+snapshotManifestSuffix]) == 0 {
+		t.Fatalf("claimed export missing verified objects at %q", key)
 	}
 }
 
