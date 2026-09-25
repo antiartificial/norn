@@ -26,6 +26,16 @@ func MaterializePrivate(ctx context.Context, objects Store, descriptor Descripto
 	if stat, ok := info.Sys().(*syscall.Stat_t); ok && int(stat.Uid) != os.Geteuid() {
 		return "", fmt.Errorf("materialization directory must be owned by this process")
 	}
+	// Reject an artifact that cannot fit before opening a private output file.
+	// This is a preflight observation, not a reservation: concurrent filesystem
+	// writes can still exhaust the volume while the bytes are streaming.
+	var filesystem syscall.Statfs_t
+	if err := syscall.Statfs(directory, &filesystem); err != nil {
+		return "", err
+	}
+	if filesystem.Bsize <= 0 || filesystem.Bavail < (uint64(descriptor.Size)+uint64(filesystem.Bsize)-1)/uint64(filesystem.Bsize) {
+		return "", ErrArtifactFull
+	}
 	file, err := os.CreateTemp(directory, ".norn-artifact-*")
 	if err != nil {
 		return "", err
