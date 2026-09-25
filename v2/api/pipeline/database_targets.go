@@ -72,6 +72,36 @@ type recordedNamedTarget struct {
 	Target database.TargetIdentity `json:"target"`
 }
 
+// requireQualifiedMySQLRuntime binds transport capability to the one app
+// client whose actual startup path has passed CA and hostname negative
+// controls. Resolver capability alone cannot establish that an application
+// verifies a delivered CA; stock WordPress does not do so by default.
+func requireQualifiedMySQLRuntime(spec *model.InfraSpec, requirement model.DatabaseRequirement, resolved database.ResolvedBinding) error {
+	if resolved.Target.Engine != database.EngineMySQL || resolved.TLS.Mode == database.TLSDisabled || !containsDatabaseCapability(requirement.Capabilities, string(database.CapabilityRuntime)) {
+		return nil
+	}
+	if spec == nil || spec.StartupAdapter != model.StartupAdapterWordPressVerifiedTLS || requirement.Name != "primary" ||
+		resolved.TLS.Mode != database.TLSVerifyFull || resolved.TLS.ServerName != resolved.Endpoint.Host ||
+		resolved.TLS.CARef == "" || resolved.TLS.ClientCertRef != "" || resolved.TLS.ClientKeyRef != "" {
+		return &DatabaseTargetError{Reason: "verified MySQL runtime requires the qualified WordPress adapter and endpoint-bound verify-full TLS"}
+	}
+	for _, finding := range spec.DatabaseDeclarationFindings() {
+		if finding.Severity == "error" {
+			return &DatabaseTargetError{Reason: fmt.Sprintf("verified MySQL runtime declaration is invalid at %s: %s", finding.Field, finding.Message)}
+		}
+	}
+	return nil
+}
+
+func containsDatabaseCapability(capabilities []string, want string) bool {
+	for _, capability := range capabilities {
+		if capability == want {
+			return true
+		}
+	}
+	return false
+}
+
 var databaseConsumingKinds = map[string]bool{
 	"app.deploy": true, "app.snapshot": true, "app.snapshot-prune": true, "app.snapshot-restore": true, "app.migrate": true, DatabaseBaselineKind: true,
 }
@@ -219,6 +249,9 @@ func (p *Pipeline) bindNamedDatabaseTargets(ctx context.Context, spec *model.Inf
 		resolved, err := resolver.Resolve(database.ResolveRequest{DeploymentProfileID: p.DatabaseTargets.ProfileID, Purpose: database.PurposeApplication,
 			LogicalResourceID: name, RequiredCapabilities: required})
 		if err != nil {
+			return operation, err
+		}
+		if err := requireQualifiedMySQLRuntime(spec, requirement, resolved); err != nil {
 			return operation, err
 		}
 		if runtime := requirement.Runtime; runtime != nil {
@@ -606,6 +639,10 @@ func (p *Pipeline) openNamedTargets(ctx context.Context, recorded *recordedTarge
 		if err != nil {
 			_ = set.Close()
 			return nil, fmt.Errorf("re-resolve accepted database %s: %w", entry.Name, err)
+		}
+		if err := requireQualifiedMySQLRuntime(spec, requirement, resolved); err != nil {
+			_ = set.Close()
+			return nil, err
 		}
 		bound, err := p.openResolved(ctx, resolved, recordedTarget{Schema: recordedTargetSetSchema, ProfileID: recorded.ProfileID, CatalogRevision: recorded.CatalogRevision, Target: entry.Target}, entry.Name)
 		if err != nil {

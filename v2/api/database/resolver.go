@@ -477,11 +477,13 @@ func (r *Resolver) Resolve(request ResolveRequest) (ResolvedBinding, error) {
 			return ResolvedBinding{}, &ResolverError{Code: CodeUnsupportedCapability, Field: "requiredCapabilities", Resource: profileLabel, Reason: "required capability has no implemented target engine path in this build"}
 		}
 		if resolved.Target.Engine == EngineMySQL && capability == CapabilityRuntime && resolved.TLS.Mode != TLSDisabled {
-			// Private CA delivery and an encrypted allocation are insufficient:
-			// stock WordPress's MYSQL_CLIENT_FLAGS hook also accepts a wrong CA.
-			// Keep all verified MySQL runtime targets closed until the consuming
-			// application enforces chain and hostname verification.
-			return ResolvedBinding{}, &ResolverError{Code: CodeUnsupportedCapability, Field: "tls", Resource: profileLabel, Reason: "verified MySQL runtime is not qualified: stock WordPress accepts an unrelated CA"}
+			// The resolver proves the transport shape. The consuming app must
+			// separately prove that its client actually verifies the certificate.
+			// The only qualified runtime shape has a CA, the endpoint's exact
+			// server name, and no client certificate.
+			if resolved.TLS.Mode != TLSVerifyFull || resolved.TLS.ServerName != resolved.Endpoint.Host || resolved.TLS.ClientCertRef != "" || resolved.TLS.ClientKeyRef != "" {
+				return ResolvedBinding{}, &ResolverError{Code: CodeUnsupportedCapability, Field: "tls", Resource: profileLabel, Reason: "MySQL runtime requires endpoint-bound verify-full TLS without a client certificate"}
+			}
 		}
 		if !declared[capability] {
 			return ResolvedBinding{}, &ResolverError{Code: CodeUnsupportedCapability, Field: "requiredCapabilities", Resource: profileLabel, Reason: "required capability is not declared by the target service"}

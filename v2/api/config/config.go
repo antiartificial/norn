@@ -58,9 +58,9 @@ type Config struct {
 	// 32-byte key-encryption key. It is consumed only at startup and is never
 	// written to logs.
 	PrivateInvocationEnabled bool
-	// FunctionV3PreviewEnabled connects the durable admission and claimed
-	// worker for explicit qualification. It is off until cleanup and crash
-	// recovery gates have been exercised on the release runtime.
+	// FunctionV3PreviewEnabled is retained as the environment compatibility
+	// name for function-v3 activation. It connects durable admission and the
+	// claimed worker; enabling it requires the full runtime at startup.
 	FunctionV3PreviewEnabled      bool
 	PrivateInvocationCurrentKeyID string
 	PrivateInvocationKeys         string

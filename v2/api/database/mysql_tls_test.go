@@ -110,8 +110,8 @@ func TestMySQLTLSRuntimeQualification(t *testing.T) {
 	catalog.Bindings[4].TLS.Mode = TLSVerifyFull
 	catalog.Bindings[4].TLS.ServerName = catalog.Services[4].Endpoint.Host
 	resolver = mustResolver(t, catalog)
-	if _, err := resolver.Resolve(request); err == nil {
-		t.Fatal("stock WordPress verify-full runtime admitted despite wrong-CA negative control")
+	if _, err := resolver.Resolve(request); err != nil {
+		t.Fatalf("endpoint-bound verify-full transport was refused: %v", err)
 	}
 }
 

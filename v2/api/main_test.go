@@ -60,8 +60,29 @@ func TestFunctionV3PreviewRequiresPrivatePostgresCapability(t *testing.T) {
 	if admission, claimed, err := configureFunctionV3(&config.Config{}, nil, nil, nil, nil, nil); err != nil || admission != nil || claimed != nil {
 		t.Fatalf("disabled function preview admission=%v worker=%v err=%v", admission, claimed, err)
 	}
-	if _, _, err := configureFunctionV3(&config.Config{Profile: "production", FunctionV3PreviewEnabled: true, PrivateInvocationEnabled: true}, nil, nil, nil, nil, nil); err == nil || !strings.Contains(err.Error(), "non-production") {
-		t.Fatalf("production preview err=%v", err)
+	if _, _, err := configureFunctionV3(&config.Config{Profile: "production", FunctionV3PreviewEnabled: true, PrivateInvocationEnabled: true}, nil, nil, nil, nil, nil); err == nil || !strings.Contains(err.Error(), "requires private acceptance") || strings.Contains(err.Error(), "non-production") {
+		t.Fatalf("production function-v3 capability err=%v", err)
+	}
+}
+
+func TestFunctionInvocationRouteFailsClosedWithoutSignedRuntime(t *testing.T) {
+	invoked := false
+	configured := functionInvocationRoute(func(w http.ResponseWriter, _ *http.Request) {
+		invoked = true
+		w.WriteHeader(http.StatusAccepted)
+	})
+	configuredRec := httptest.NewRecorder()
+	configured(configuredRec, httptest.NewRequest(http.MethodPost, "/api/apps/demo/invoke", strings.NewReader(`{"process":"resize"}`)))
+	if !invoked || configuredRec.Code != http.StatusAccepted {
+		t.Fatalf("configured function route invoked=%v status=%d", invoked, configuredRec.Code)
+	}
+
+	// The disabled route deliberately has no Handler or Nomad client input.
+	// A request therefore cannot reach the legacy HTTP submission path.
+	disabledRec := httptest.NewRecorder()
+	functionInvocationRoute(nil)(disabledRec, httptest.NewRequest(http.MethodPost, "/api/apps/demo/invoke", strings.NewReader(`{"process":"resize"}`)))
+	if disabledRec.Code != http.StatusServiceUnavailable || !strings.Contains(disabledRec.Body.String(), "function_invocation_unavailable") {
+		t.Fatalf("disabled function route status=%d body=%s", disabledRec.Code, disabledRec.Body.String())
 	}
 }
 

@@ -20,23 +20,21 @@ import (
 )
 
 // configureFunctionV3 connects the same runtime resolver to admission and
-// execution. The preview flag keeps this path explicit while cleanup and
-// release-runtime crash qualification are completed.
+// execution. The compatibility-named feature flag keeps activation explicit;
+// once enabled, all required runtime capabilities must be present before this
+// process serves traffic.
 func configureFunctionV3(cfg *config.Config, db *store.DB, pipe *pipeline.Pipeline, remote *nomad.Client, sec *secrets.Manager, operations store.OperationStore) (http.HandlerFunc, *worker.ClaimedFunctionInvocationWorker, error) {
 	if cfg == nil || !cfg.FunctionV3PreviewEnabled {
 		return nil, nil, nil
 	}
-	if cfg.Production() {
-		return nil, nil, fmt.Errorf("function v3 preview requires a non-production profile")
-	}
 	if !cfg.PrivateInvocationEnabled || db == nil || db.Pool == nil || pipe == nil || remote == nil || operations == nil {
-		return nil, nil, fmt.Errorf("function v3 preview requires private acceptance, PostgreSQL, pipeline, and Nomad")
+		return nil, nil, fmt.Errorf("function v3 requires private acceptance, PostgreSQL, pipeline, and Nomad")
 	}
 	identity, okIdentity := operations.(store.OperationIdentityResolver)
 	private, okPrivate := operations.(store.PrivateInvocationStore)
 	verifier, okVerifier := operations.(worker.ClaimedFunctionInvocationVerifier)
 	if !okIdentity || !okPrivate || !okVerifier {
-		return nil, nil, fmt.Errorf("function v3 preview acceptance capabilities are unavailable")
+		return nil, nil, fmt.Errorf("function v3 acceptance capabilities are unavailable")
 	}
 	keys, err := startup.PrivateInvocationKeyRingFromRuntimeConfig(true, cfg.PrivateInvocationCurrentKeyID, cfg.PrivateInvocationKeys)
 	if err != nil {

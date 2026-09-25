@@ -153,9 +153,12 @@ disposable real etcd member covered same-key replay, mismatches, no plaintext
 in stored records, and rejected-transaction cleanup; the etcd race suite also
 passed. The PostgreSQL backend now connects this seam only when
 `NORN_PRIVATE_INVOCATION_ENABLED=true` and
-`NORN_FUNCTION_V3_PREVIEW_ENABLED=true` on a non-production profile. Startup
-preflights required keys. Etcd routing, real Nomad crash, and restore
-qualification remain open.
+`NORN_FUNCTION_V3_PREVIEW_ENABLED=true`. The latter environment name is
+retained for compatibility, but production uses the same complete PostgreSQL
+runtime bundle. Startup preflights required keys and fails before serving if
+the pipeline, Nomad client, durable stores, or claimed-worker dependencies are
+incomplete. Etcd routing, real Nomad crash, and restore qualification remain
+open.
 
 The private variable path is `nomad/jobs/<function-job-id>/invoke`, which
 matches Nomad's implicit task-group variable read scope and stays separate
@@ -221,10 +224,13 @@ full external crash qualification remain open.
 ## Preview composition and remaining release gates
 
 `NORN_FUNCTION_V3_PREVIEW_ENABLED` connects one public-only admission handler
-and one dedicated claimed worker to a shared runtime resolver. It requires
-the private invocation key ring, PostgreSQL operation store, Nomad, and a
-non-production profile; it refuses startup if the normal operation worker is
-skipped. The resolver matches the current spec digest to the latest successful
+and one dedicated claimed worker to a shared runtime resolver. The compatibility
+name does not limit the runtime to non-production: it requires the private
+invocation key ring, PostgreSQL operation store, pipeline, Nomad, and evidence
+archive in every profile, and refuses startup if the normal operation worker is
+skipped. If this complete capability is not enabled, `/invoke` returns an
+explicit 503 and never falls back to the legacy HTTP-to-Nomad submitter. The
+legacy function-history read remains available. The resolver matches the current spec digest to the latest successful
 deployment in this environment, then selects that deployment's digest image
 and the promoted database revision. Migration 22 adds the deployment digest;
 new successful deployments record it with their image and status. Legacy
