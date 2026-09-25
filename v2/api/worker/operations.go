@@ -9,6 +9,8 @@ import (
 	"runtime/debug"
 	"time"
 
+	"github.com/google/uuid"
+
 	"norn/v2/api/effect"
 	"norn/v2/api/model"
 	"norn/v2/api/pipeline"
@@ -47,7 +49,7 @@ func NewOperationWorkerForKinds(db store.ExecutionStore, p *pipeline.Pipeline, k
 	return &OperationWorker{
 		db:       db,
 		pipeline: p,
-		id:       fmt.Sprintf("%s:%d", host, os.Getpid()),
+		id:       fmt.Sprintf("%s:%d:%s", host, os.Getpid(), uuid.NewString()),
 		kinds:    append([]string(nil), kinds...),
 		lease:    90 * time.Second,
 		poll:     2 * time.Second,

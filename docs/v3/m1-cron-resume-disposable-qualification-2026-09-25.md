@@ -43,3 +43,15 @@ the same result on HTTP replay. The old claim cannot finish the operation.
 These tests place durable state at the crash boundaries; they do not kill an
 OS process during a remote write. A literal process-kill rehearsal and two
 API/worker replicas racing remain M1 release gates.
+
+## Distinct worker claim owners — 2026-09-25
+
+Operation and maintenance workers now include a per-instance UUID in their
+claim owner IDs. Hostname and PID alone gave two workers in one process the
+same owner, weakening the two-worker qualification. With separate PostgreSQL
+connections and distinct owner IDs, `TestCronResumeTwoWorkersSameKey` passed
+against disposable Nomad 2.0.7 and PostgreSQL 16. The test observed one
+accepted operation and one guarded Nomad parent-version increment. The full
+five-test cron resume group also passed on those services. This is a
+same-process, two-pool race; separate OS processes and process-kill recovery
+remain open.
