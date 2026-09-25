@@ -26,6 +26,7 @@ import (
 // is safe only when this runtime username is dedicated to this workload.
 type mysqlRuntimeAccountFence struct {
 	FenceUser                string
+	FenceAccountHost         string
 	FenceCredentialRef       string
 	RuntimeAccountHost       string
 	DedicatedRuntimeUsername string
@@ -35,6 +36,8 @@ type mysqlRuntimeAccountFence struct {
 // existing sessions for its dedicated username, and proves the account remains
 // locked with no such sessions. It fails closed on every incomplete proof.
 func fenceMySQLRuntimeAccount(ctx context.Context, resolved ResolvedBinding, fence mysqlRuntimeAccountFence, secrets SecretSource) error {
+	ctx, cancel := context.WithTimeout(ctx, 30*time.Second)
+	defer cancel()
 	label := "bindings/" + resolved.Target.BindingID
 	if resolved.Target.Engine != EngineMySQL || resolved.Purpose != PurposeApplication || !validMySQLFence(resolved, fence) {
 		return &ResolverError{Code: CodeInvalidRequest, Field: "runtimeAccountFence", Resource: label, Reason: "MySQL runtime account fence admission is invalid"}
@@ -60,6 +63,9 @@ func fenceMySQLRuntimeAccount(ctx context.Context, resolved ResolvedBinding, fen
 	if err := db.PingContext(ctx); err != nil {
 		return fmt.Errorf("MySQL runtime account fence connection failed")
 	}
+	if err := verifyMySQLFenceIdentity(ctx, db, fence); err != nil {
+		return err
+	}
 	if err := verifyDedicatedMySQLRuntimeUsername(ctx, db, resolved.Target.Role, fence.RuntimeAccountHost); err != nil {
 		return err
 	}
@@ -79,6 +85,8 @@ func fenceMySQLRuntimeAccount(ctx context.Context, resolved ResolvedBinding, fen
 // unfenceMySQLRuntimeAccount is deliberately separate from fencing. Callers
 // must make an explicit recovery decision before restoring authentication.
 func unfenceMySQLRuntimeAccount(ctx context.Context, resolved ResolvedBinding, fence mysqlRuntimeAccountFence, secrets SecretSource) error {
+	ctx, cancel := context.WithTimeout(ctx, 30*time.Second)
+	defer cancel()
 	if resolved.Target.Engine != EngineMySQL || resolved.Purpose != PurposeApplication || !validMySQLFence(resolved, fence) || secrets == nil {
 		return errors.New("MySQL runtime account unfence admission is invalid")
 	}
@@ -96,6 +104,9 @@ func unfenceMySQLRuntimeAccount(ctx context.Context, resolved ResolvedBinding, f
 		return errors.New("MySQL runtime account unfence connection material is invalid")
 	}
 	defer db.Close()
+	if err := verifyMySQLFenceIdentity(ctx, db, fence); err != nil {
+		return err
+	}
 	if _, err := db.ExecContext(ctx, "ALTER USER "+mysqlAccountLiteral(resolved.Target.Role, fence.RuntimeAccountHost)+" ACCOUNT UNLOCK"); err != nil {
 		return errors.New("MySQL runtime account unlock failed")
 	}
@@ -128,7 +139,15 @@ func validMySQLFence(resolved ResolvedBinding, fence mysqlRuntimeAccountFence) b
 	return validEndpointHost(resolved.Endpoint.Host) && !strings.HasPrefix(resolved.Endpoint.Host, "/") && resolved.Endpoint.Port >= 1 && resolved.Endpoint.Port <= 65535 &&
 		mysqlUserPattern.MatchString(resolved.Target.Role) && mysqlUserPattern.MatchString(fence.FenceUser) &&
 		fence.FenceUser != resolved.Target.Role && fence.FenceCredentialRef != "" && fence.FenceCredentialRef != resolved.CredentialRef &&
-		fence.DedicatedRuntimeUsername == resolved.Target.Role && validMySQLAccountHost(fence.RuntimeAccountHost)
+		fence.DedicatedRuntimeUsername == resolved.Target.Role && validMySQLAccountHost(fence.RuntimeAccountHost) && validMySQLAccountHost(fence.FenceAccountHost)
+}
+
+func verifyMySQLFenceIdentity(ctx context.Context, db *sql.DB, fence mysqlRuntimeAccountFence) error {
+	var authenticated string
+	if err := db.QueryRowContext(ctx, "SELECT CURRENT_USER()").Scan(&authenticated); err != nil || authenticated != fence.FenceUser+"@"+fence.FenceAccountHost {
+		return errors.New("MySQL runtime fence authenticated as an unexpected account")
+	}
+	return nil
 }
 
 func validMySQLAccountHost(host string) bool {

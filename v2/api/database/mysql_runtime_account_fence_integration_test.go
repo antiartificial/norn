@@ -69,7 +69,7 @@ func TestMySQLRuntimeAccountFence(t *testing.T) {
 		t.Fatal("invalid disposable MySQL port")
 	}
 	resolved := ResolvedBinding{Target: TargetIdentity{ServiceID: "mysql-local", ServiceGeneration: 1, BindingID: "runtime-account", BindingGeneration: 1, Engine: EngineMySQL, Database: databaseName, Role: runtimeUser}, Purpose: PurposeApplication, CredentialRef: "secret:runtime", Endpoint: DatabaseEndpoint{Host: host, Port: port}, TLS: DatabaseTLS{Mode: TLSDisabled}}
-	fence := mysqlRuntimeAccountFence{FenceUser: fenceUser, FenceCredentialRef: "secret:fence", RuntimeAccountHost: "%", DedicatedRuntimeUsername: runtimeUser}
+	fence := mysqlRuntimeAccountFence{FenceUser: fenceUser, FenceAccountHost: "%", FenceCredentialRef: "secret:fence", RuntimeAccountHost: "%", DedicatedRuntimeUsername: runtimeUser}
 	secrets := literalSecrets{"secret:runtime": `{"password":"` + runtimePassword + `"}`, "secret:fence": `{"password":"` + fencePassword + `"}`}
 
 	clientConfig := mysql.NewConfig()
@@ -109,15 +109,16 @@ func TestMySQLRuntimeAccountFence(t *testing.T) {
 
 func TestMySQLRuntimeAccountFenceAdmissionFailsClosed(t *testing.T) {
 	resolved := ResolvedBinding{Target: TargetIdentity{Engine: EngineMySQL, BindingID: "runtime", Role: "runtime"}, Purpose: PurposeApplication, CredentialRef: "secret:runtime", Endpoint: DatabaseEndpoint{Host: "127.0.0.1", Port: 3306}}
-	valid := mysqlRuntimeAccountFence{FenceUser: "fence", FenceCredentialRef: "secret:fence", RuntimeAccountHost: "%", DedicatedRuntimeUsername: "runtime"}
+	valid := mysqlRuntimeAccountFence{FenceUser: "fence", FenceAccountHost: "%", FenceCredentialRef: "secret:fence", RuntimeAccountHost: "%", DedicatedRuntimeUsername: "runtime"}
 	if !validMySQLFence(resolved, valid) {
 		t.Fatal("valid dedicated fence admission was rejected")
 	}
 	for _, fence := range []mysqlRuntimeAccountFence{
-		{FenceUser: "fence", FenceCredentialRef: "secret:fence", RuntimeAccountHost: "%"},
-		{FenceUser: "runtime", FenceCredentialRef: "secret:fence", RuntimeAccountHost: "%", DedicatedRuntimeUsername: "runtime"},
-		{FenceUser: "fence", FenceCredentialRef: "secret:runtime", RuntimeAccountHost: "%", DedicatedRuntimeUsername: "runtime"},
-		{FenceUser: "fence", FenceCredentialRef: "secret:fence", RuntimeAccountHost: "bad\nhost", DedicatedRuntimeUsername: "runtime"},
+		{FenceUser: "fence", FenceAccountHost: "%", FenceCredentialRef: "secret:fence", RuntimeAccountHost: "%"},
+		{FenceUser: "runtime", FenceAccountHost: "%", FenceCredentialRef: "secret:fence", RuntimeAccountHost: "%", DedicatedRuntimeUsername: "runtime"},
+		{FenceUser: "fence", FenceAccountHost: "%", FenceCredentialRef: "secret:runtime", RuntimeAccountHost: "%", DedicatedRuntimeUsername: "runtime"},
+		{FenceUser: "fence", FenceAccountHost: "%", FenceCredentialRef: "secret:fence", RuntimeAccountHost: "bad\nhost", DedicatedRuntimeUsername: "runtime"},
+		{FenceUser: "fence", FenceCredentialRef: "secret:fence", RuntimeAccountHost: "%", DedicatedRuntimeUsername: "runtime"},
 	} {
 		if validMySQLFence(resolved, fence) {
 			t.Fatal("unsafe runtime account fence admission was accepted")
