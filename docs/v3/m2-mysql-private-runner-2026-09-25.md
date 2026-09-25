@@ -119,8 +119,15 @@ from the completed restore's acceptance digest, catalog revision, exact source
 receipt, target identity, and held fence epoch/owner. Exact request-key replay
 returns the original signed operation; a new admission fails if the fence has
 been replaced. A disposable PostgreSQL test passed both cases. This operation
-currently has no executor, effect checkpoint, account unlock, or fence-release
+currently has no executor, external-effect checkpoint, account unlock, or fence-release
 path, so accepting it does not resume application writes.
+
+Migration 36 adds a private recovery intent. A claimed signed recovery can now
+commit an exact operation, restore, catalog, fence epoch, owner, and claim
+generation before any external effect. Preparation holds the catalog gate and
+fence row, permits only an identical claim retry, and rejects a successor
+claim. Disposable PostgreSQL migration and recovery tests passed. Execution
+checkpoints, live source reobservation, unlock, and fence release remain open.
 
 - Qualify bounded memory/disk behavior on representative large data.
 - Wire the launch and mutation gates into every application write and resume

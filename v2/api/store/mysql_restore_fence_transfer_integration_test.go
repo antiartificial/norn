@@ -169,6 +169,31 @@ func TestMySQLRestoreTransfersSignedSourceFenceWithoutGap(t *testing.T) {
 	if err != nil || replayedRecovery.Operation.ID != recovery.Operation.ID {
 		t.Fatalf("recovery identity replay: %+v %v", replayedRecovery, err)
 	}
+	recoveryClaim, err := NewOperationClaim(recovery.Operation.ID, "recovery-worker", 1)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := db.Pool.Exec(ctx, `UPDATE operations SET status='running',attempts=1,locked_by=$2,
+		lock_generation=1,locked_until=now()+interval '2 minutes' WHERE id=$1`, recoveryClaim.OperationID(), recoveryClaim.OwnerID()); err != nil {
+		t.Fatal(err)
+	}
+	prepared, err := db.PrepareClaimedMySQLRestoreRecovery(ctx, acceptance, recoveryClaim)
+	if err != nil || prepared.Replayed || prepared.RestoreOperationID != claim.OperationID() {
+		t.Fatalf("prepare claimed recovery: %+v %v", prepared, err)
+	}
+	if replay, err := db.PrepareClaimedMySQLRestoreRecovery(ctx, acceptance, recoveryClaim); err != nil || !replay.Replayed {
+		t.Fatalf("exact-claim recovery prepare replay: %+v %v", replay, err)
+	}
+	stolenRecoveryClaim, err := NewOperationClaim(recovery.Operation.ID, "other-recovery-worker", 2)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := db.Pool.Exec(ctx, `UPDATE operations SET locked_by=$2,lock_generation=2 WHERE id=$1`, recoveryClaim.OperationID(), stolenRecoveryClaim.OwnerID()); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := db.PrepareClaimedMySQLRestoreRecovery(ctx, acceptance, stolenRecoveryClaim); !errors.Is(err, ErrMySQLRestoreFence) {
+		t.Fatalf("successor claim replayed prepared recovery: %v", err)
+	}
 	if _, err := db.Pool.Exec(ctx, `UPDATE runtime_mutation_fence SET owner='replacement-owner' WHERE singleton=true`); err != nil {
 		t.Fatal(err)
 	}
