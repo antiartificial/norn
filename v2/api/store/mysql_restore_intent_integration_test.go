@@ -191,6 +191,18 @@ func TestMySQLRestoreIntentAgainstDisposableEngines(t *testing.T) {
 		t.Fatal(err)
 	}
 	toolSHA := sha256.Sum256(toolBytes)
+	sourceFixture := testMySQLSourceArtifactFixture{LogicalID: "intent-source", Maintenance: *sourceMaintenance}
+	var stoppedSource MySQLSourceStoppedObserver = stoppedSourceObserverFunc(func(_ context.Context, request nomad.CASStopJobRequest) error {
+		if request.JobID != "fixture" || request.JobVersion != 1 || len(request.AllocationIDs) != 1 || request.AllocationIDs[0] != "fixture-alloc" {
+			return errors.New("unexpected signed source job identity")
+		}
+		return nil
+	})
+	if address := os.Getenv("NORN_TEST_NOMAD_ADDR"); address != "" {
+		identity, observer := stoppedDisposableMySQLSourceJob(t, ctx, address, active.Revision)
+		sourceFixture.JobIdentity = &identity
+		stoppedSource = observer
+	}
 	stage := t.TempDir()
 	if err := os.Chmod(stage, 0o700); err != nil {
 		t.Fatal(err)
@@ -202,8 +214,7 @@ func TestMySQLRestoreIntentAgainstDisposableEngines(t *testing.T) {
 	if !strings.HasPrefix(path, filepath.Clean(stage)+string(os.PathSeparator)) {
 		t.Fatal("snapshot escaped private stage")
 	}
-	receipt := testMySQLSourceArtifactReceipt(t, control, stores[0], active.Revision, artifact.Source, path, artifact,
-		testMySQLSourceArtifactFixture{LogicalID: "intent-source", Maintenance: *sourceMaintenance})
+	receipt := testMySQLSourceArtifactReceipt(t, control, stores[0], active.Revision, artifact.Source, path, artifact, sourceFixture)
 	testBindMySQLSourceFence(t, control, receipt)
 	if _, err := admin.ExecContext(ctx, "ALTER USER '"+sourceRole+"'@'%' ACCOUNT LOCK"); err != nil {
 		t.Fatal("lock source runtime account after staging")
@@ -407,12 +418,6 @@ func TestMySQLRestoreIntentAgainstDisposableEngines(t *testing.T) {
 	if ready, err := control.AssessCompletedMySQLRestoreLiveRecovery(ctx, stores[0], claim.OperationID(), secrets); err != nil || ready.Fence.Epoch != mutationFence.Epoch {
 		t.Fatalf("live completed restore assessment: %+v %v", ready, err)
 	}
-	stoppedSource := stoppedSourceObserverFunc(func(_ context.Context, request nomad.CASStopJobRequest) error {
-		if request.JobID != "fixture" || request.JobVersion != 1 || len(request.AllocationIDs) != 1 || request.AllocationIDs[0] != "fixture-alloc" {
-			return errors.New("unexpected signed source job identity")
-		}
-		return nil
-	})
 	if ready, err := control.AssessCompletedMySQLRestoreLiveSource(ctx, stores[0], claim.OperationID(), stoppedSource, secrets); err != nil || ready.Fence.Epoch != mutationFence.Epoch {
 		t.Fatalf("live stopped source account assessment: %+v %v", ready, err)
 	}

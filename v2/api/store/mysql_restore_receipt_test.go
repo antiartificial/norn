@@ -124,6 +124,7 @@ func TestMySQLRestoreRejectsProviderAliasSelfRestore(t *testing.T) {
 type testMySQLSourceArtifactFixture struct {
 	LogicalID   string
 	Maintenance database.MySQLMaintenanceCredentials
+	JobIdentity *MySQLSourceSnapshotJobIdentity
 }
 
 func testMySQLSourceArtifactReceipt(t *testing.T, db *DB, acceptance *PGOperationStore, revision int64, source database.TargetIdentity, path string, artifact database.MySQLSQLArtifact, options ...testMySQLSourceArtifactFixture) MySQLRestoreSourceArtifact {
@@ -140,7 +141,10 @@ func testMySQLSourceArtifactReceipt(t *testing.T, db *DB, acceptance *PGOperatio
 	toolDigest := hex.EncodeToString(make([]byte, 32))
 	request := MySQLSourceSnapshotRequest{CatalogRevision: revision, ProfileID: "mini", LogicalID: logicalID, Source: source, Maintenance: maintenance,
 		JobIdentity: validSourceSnapshotJobIdentity("fixture", revision, "1", "fixture-alloc"), DumpToolSHA256: toolDigest}
-	input := newAcceptance(t, acceptance, "mysql-source-fixture-"+uuid.NewString(), "operator", "fixture-source", false)
+	if len(options) == 1 && options[0].JobIdentity != nil {
+		request.JobIdentity = *options[0].JobIdentity
+	}
+	input := newAcceptance(t, acceptance, "mysql-source-fixture-"+uuid.NewString(), "operator", request.JobIdentity.App, false)
 	input.Identity.Kind, input.Identity.Resource = MySQLSourceSnapshotOperationKind, "mysql/"+source.Database
 	input.Operation.Kind, input.Operation.MaxAttempts = MySQLSourceSnapshotOperationKind, 1
 	encoded, _ := json.Marshal(request)
