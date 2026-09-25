@@ -1,0 +1,287 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+# Rehearse a candidate schema transition against a fresh, read-only copy of a
+# PostgreSQL-backed Mini control database. Run this script on the database host
+# and pass a disposable candidate binary. The live database is only read by
+# pg_dump; every migration and candidate startup uses a private socket-only
+# PostgreSQL cluster.
+
+usage() {
+  printf 'usage: NORN_CANDIDATE_SHA=<40-hex-sha> %s <disposable-candidate-binary>\n' "$0" >&2
+  exit 2
+}
+
+[[ $# -eq 1 ]] || usage
+candidate=$1
+expected_sha=${NORN_CANDIDATE_SHA:-}
+[[ $expected_sha =~ ^[0-9a-f]{40}$ ]] || usage
+[[ -f $candidate && -x $candidate ]] || {
+  printf 'candidate must be an executable regular file: %s\n' "$candidate" >&2
+  exit 2
+}
+
+postgres_bin=${NORN_REHEARSAL_POSTGRES_BIN:-/Applications/Postgres.app/Contents/Versions/latest/bin}
+for tool in initdb pg_ctl createdb pg_dump pg_restore psql; do
+  [[ -x $postgres_bin/$tool ]] || {
+    printf 'missing PostgreSQL tool: %s/%s\n' "$postgres_bin" "$tool" >&2
+    exit 2
+  }
+done
+for tool in shasum curl python3 mktemp; do
+  command -v "$tool" >/dev/null || {
+    printf 'missing required tool: %s\n' "$tool" >&2
+    exit 2
+  }
+done
+
+source_database_url=${NORN_REHEARSAL_SOURCE_DATABASE_URL:-}
+[[ -n $source_database_url ]] || {
+  printf 'NORN_REHEARSAL_SOURCE_DATABASE_URL is required\n' >&2
+  exit 2
+}
+remove_candidate=${NORN_REHEARSAL_REMOVE_CANDIDATE:-false}
+[[ $remove_candidate == true || $remove_candidate == false ]] || {
+  printf 'NORN_REHEARSAL_REMOVE_CANDIDATE must be true or false\n' >&2
+  exit 2
+}
+scratch=$(mktemp -d "${TMPDIR:-/tmp}/norn-mini-private-copy.XXXXXX")
+chmod 700 "$scratch"
+data_dir=$scratch/postgres
+socket_dir=$scratch/socket
+dump_file=$scratch/control.dump
+before_file=$scratch/before.tsv
+after_file=$scratch/after.tsv
+candidate_log=$scratch/candidate.log
+passive_log=$scratch/passive.log
+private_port=55432
+passive_pid=
+postgres_started=false
+
+cleanup() {
+  status=$?
+  trap - EXIT INT TERM HUP
+  if [[ -n $passive_pid ]]; then
+    kill "$passive_pid" >/dev/null 2>&1 || true
+    wait "$passive_pid" >/dev/null 2>&1 || true
+  fi
+  if [[ $postgres_started == true ]]; then
+    "$postgres_bin/pg_ctl" -D "$data_dir" -m fast -w stop >/dev/null 2>&1 || true
+  fi
+  rm -rf -- "$scratch"
+  if [[ $remove_candidate == true ]]; then
+    rm -f -- "$candidate"
+  fi
+  if [[ -e $scratch || ( $remove_candidate == true && -e $candidate ) ]]; then
+    printf 'cleanup verification failed\n' >&2
+    exit 1
+  fi
+  exit "$status"
+}
+trap cleanup EXIT INT TERM HUP
+
+contract=$($candidate --norn-startup-contract)
+contract_values=$(CONTRACT_JSON=$contract python3 - <<'PY'
+import json
+import os
+
+contract = json.loads(os.environ["CONTRACT_JSON"])
+assert contract["name"] == "norn.startup/v2"
+assert "migrate-only" in contract["schemaModes"]
+assert "passive" in contract["startupModes"]
+schema = contract["schemaContract"]
+print(schema["catalogMigrationVersion"], schema["catalogMinimumReaderVersion"], schema["catalogMinimumWriterVersion"])
+PY
+)
+read -r catalog_version minimum_reader minimum_writer <<<"$contract_values"
+
+# Force every source session to be read-only even if the configured role has
+# write privileges. The dump stays owner-only inside the scratch directory.
+source_env=$scratch/source.env
+SOURCE_DATABASE_URL=$source_database_url SOURCE_ENV=$source_env python3 - <<'PY'
+import os
+import shlex
+import urllib.parse
+
+parsed = urllib.parse.urlparse(os.environ["SOURCE_DATABASE_URL"])
+assert parsed.scheme in ("postgres", "postgresql")
+assert parsed.hostname and parsed.path not in ("", "/")
+query = urllib.parse.parse_qs(parsed.query)
+values = {
+    "PGHOST": parsed.hostname,
+    "PGPORT": str(parsed.port or 5432),
+    "PGUSER": urllib.parse.unquote(parsed.username or ""),
+    "PGPASSWORD": urllib.parse.unquote(parsed.password or ""),
+    "PGDATABASE": urllib.parse.unquote(parsed.path.lstrip("/")),
+    "PGSSLMODE": query.get("sslmode", ["prefer"])[-1],
+}
+with open(os.environ["SOURCE_ENV"], "w", encoding="utf-8") as handle:
+    for key, value in values.items():
+        handle.write(f"export {key}={shlex.quote(value)}\n")
+PY
+chmod 600 "$source_env"
+# shellcheck disable=SC1090
+source "$source_env"
+unset source_database_url NORN_REHEARSAL_SOURCE_DATABASE_URL
+PGOPTIONS='-c default_transaction_read_only=on' \
+  "$postgres_bin/pg_dump" --format=custom --no-owner --no-privileges --file="$dump_file"
+unset PGHOST PGPORT PGUSER PGPASSWORD PGDATABASE PGSSLMODE
+chmod 600 "$dump_file"
+
+mkdir -m 700 "$socket_dir"
+"$postgres_bin/initdb" -D "$data_dir" --username=norn --auth=trust --no-sync >/dev/null
+"$postgres_bin/pg_ctl" -D "$data_dir" \
+  -o "-k '$socket_dir' -h '' -p $private_port" -w start >/dev/null
+postgres_started=true
+"$postgres_bin/createdb" -h "$socket_dir" -p "$private_port" -U norn norn_private
+"$postgres_bin/pg_restore" -h "$socket_dir" -p "$private_port" -U norn \
+  --dbname=norn_private --no-owner --no-privileges "$dump_file"
+
+encoded_socket_dir=$(SOCKET_DIR=$socket_dir python3 - <<'PY'
+import os
+import urllib.parse
+print(urllib.parse.quote(os.environ["SOCKET_DIR"], safe=""))
+PY
+)
+private_database_url="postgresql://norn@/norn_private?host=$encoded_socket_dir&port=$private_port&sslmode=disable"
+psql_private=("$postgres_bin/psql" -X -v ON_ERROR_STOP=1 -At -h "$socket_dir" -p "$private_port" -U norn -d norn_private)
+
+mapfile_compat() {
+  # macOS Bash 3 has no mapfile. Emit one table name per line for the caller.
+  "${psql_private[@]}" -c "SELECT tablename FROM pg_tables WHERE schemaname='public' ORDER BY tablename"
+}
+
+original_tables=$scratch/original-tables.txt
+mapfile_compat >"$original_tables"
+original_table_count=$(wc -l <"$original_tables" | tr -d ' ')
+[[ $original_table_count -eq 28 ]] || {
+  printf 'expected 28 original public tables, found %s\n' "$original_table_count" >&2
+  exit 1
+}
+
+fingerprint_tables() {
+  output=$1
+  : >"$output"
+  while IFS= read -r table; do
+    [[ $table =~ ^[a-z_][a-z0-9_]*$ ]] || {
+      printf 'unsafe table name in source schema: %s\n' "$table" >&2
+      exit 1
+    }
+    count=$("${psql_private[@]}" -c "SELECT count(*) FROM public.\"$table\"")
+    pk_columns=$("${psql_private[@]}" -c "SELECT string_agg(quote_ident(a.attname), ', ' ORDER BY array_position(i.indkey, a.attnum)) FROM pg_index i JOIN pg_attribute a ON a.attrelid=i.indrelid AND a.attnum=ANY(i.indkey) WHERE i.indrelid='public.\"$table\"'::regclass AND i.indisprimary")
+    [[ -n $pk_columns ]] || {
+      printf 'original table has no primary key: %s\n' "$table" >&2
+      exit 1
+    }
+    digest=$("${psql_private[@]}" -c "COPY (SELECT row_to_json(pk)::text FROM (SELECT $pk_columns FROM public.\"$table\" ORDER BY $pk_columns) AS pk) TO STDOUT" | shasum -a 256 | awk '{print $1}')
+    printf '%s\t%s\t%s\n' "$table" "$count" "$digest" >>"$output"
+  done <"$original_tables"
+}
+
+fingerprint_tables "$before_file"
+before_rows=$(awk -F '\t' '{sum += $2} END {print sum + 0}' "$before_file")
+
+run_migrate() {
+  NORN_DATABASE_URL=$private_database_url \
+    NORN_SCHEMA_MODE=migrate-only \
+    NORN_STARTUP_MODE=active \
+    NORN_SKIP_OPERATION_RECOVERY=true \
+    NORN_SKIP_OPERATION_WORKER=true \
+    NORN_SKIP_NOMAD_WATCHER=true \
+    "$candidate" >>"$candidate_log" 2>&1
+}
+run_migrate
+run_migrate
+
+ledger=$("${psql_private[@]}" -F '|' -c "SELECT count(*), min(version), max(version), bool_and(length(checksum)=64) FROM norn_schema_migrations")
+IFS='|' read -r ledger_count ledger_min ledger_max ledger_checksums <<<"$ledger"
+[[ $ledger_count -eq $catalog_version && $ledger_min -eq 1 && $ledger_max -eq $catalog_version && $ledger_checksums == t ]] || {
+  printf 'schema ledger mismatch: count=%s min=%s max=%s checksums=%s catalog=%s\n' "$ledger_count" "$ledger_min" "$ledger_max" "$ledger_checksums" "$catalog_version" >&2
+  exit 1
+}
+compatibility=$("${psql_private[@]}" -F '|' -c "SELECT format_version, current_migration_version, minimum_reader_version, minimum_writer_version FROM norn_schema_compatibility WHERE singleton")
+[[ $compatibility == "1|$catalog_version|$minimum_reader|$minimum_writer" ]] || {
+  printf 'schema compatibility mismatch: %s\n' "$compatibility" >&2
+  exit 1
+}
+
+fingerprint_tables "$after_file"
+cmp -s "$before_file" "$after_file" || {
+  printf 'original-table row counts or primary-key fingerprints changed\n' >&2
+  diff -u "$before_file" "$after_file" >&2 || true
+  exit 1
+}
+
+passive_port=$(python3 - <<'PY'
+import socket
+s = socket.socket()
+s.bind(("127.0.0.1", 0))
+print(s.getsockname()[1])
+s.close()
+PY
+)
+NORN_DATABASE_URL=$private_database_url \
+  NORN_SCHEMA_MODE=check \
+  NORN_STARTUP_MODE=passive \
+  NORN_BIND_ADDR=127.0.0.1 \
+  NORN_PORT=$passive_port \
+  NORN_SKIP_OPERATION_RECOVERY=true \
+  NORN_SKIP_OPERATION_WORKER=true \
+  NORN_SKIP_NOMAD_WATCHER=true \
+  "$candidate" >"$passive_log" 2>&1 &
+passive_pid=$!
+
+passive_ready=false
+for _ in $(seq 1 50); do
+  if curl -fsS "http://127.0.0.1:$passive_port/api/health" >"$scratch/health.json" 2>/dev/null; then
+    passive_ready=true
+    break
+  fi
+  kill -0 "$passive_pid" >/dev/null 2>&1 || break
+  sleep 0.1
+done
+[[ $passive_ready == true ]] || {
+  printf 'passive candidate failed to serve health\n' >&2
+  sed -n '1,120p' "$passive_log" >&2
+  exit 1
+}
+curl -fsS "http://127.0.0.1:$passive_port/api/version" >"$scratch/version.json"
+curl -fsS "http://127.0.0.1:$passive_port/api/schema" >"$scratch/schema.json"
+PASSIVE_HEALTH_JSON=$(<"$scratch/health.json") PASSIVE_VERSION_JSON=$(<"$scratch/version.json") SCHEMA_JSON=$(<"$scratch/schema.json") EXPECTED_SHA=$expected_sha CATALOG_VERSION=$catalog_version MINIMUM_READER=$minimum_reader MINIMUM_WRITER=$minimum_writer python3 - <<'PY'
+import json
+import os
+
+expected_sha = os.environ["EXPECTED_SHA"]
+health = json.loads(os.environ["PASSIVE_HEALTH_JSON"])
+version = json.loads(os.environ["PASSIVE_VERSION_JSON"])
+schema = json.loads(os.environ["SCHEMA_JSON"])
+assert health["status"] == "passive"
+assert version == {"version": expected_sha}
+assert schema["version"] == expected_sha
+assert schema["startupContract"] == "norn.startup/v2"
+assert schema["startupMode"] == "passive"
+assert schema["schemaMode"] == "check"
+assert schema["currentMigrationVersion"] == int(os.environ["CATALOG_VERSION"])
+assert schema["minimumReaderVersion"] == int(os.environ["MINIMUM_READER"])
+assert schema["minimumWriterVersion"] == int(os.environ["MINIMUM_WRITER"])
+assert schema["operationRecoveryEnabled"] is False
+assert schema["operationWorkerEnabled"] is False
+assert schema["nomadWatcherEnabled"] is False
+PY
+
+kill "$passive_pid"
+wait "$passive_pid" || true
+passive_pid=
+
+printf 'candidate_sha=%s\n' "$expected_sha"
+printf 'postgres_version=%s\n' "$("$postgres_bin/postgres" --version)"
+printf 'original_tables=%s\n' "$original_table_count"
+printf 'original_rows=%s\n' "$before_rows"
+printf 'ledger_versions=1-%s\n' "$catalog_version"
+printf 'minimum_reader=%s\n' "$minimum_reader"
+printf 'minimum_writer=%s\n' "$minimum_writer"
+printf 'fingerprints=matched\n'
+printf 'second_migrate_only=passed\n'
+printf 'passive_health=passed\n'
+printf 'source_mutations=none-pg-dump-read-only\n'
+printf 'cleanup=scheduled-and-verified\n'
