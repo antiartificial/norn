@@ -177,7 +177,7 @@ func TestMySQLRestoreProcessKillAfterExecutingQualification(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	request := MySQLRestoreRequest{CatalogRevision: active.Revision, ProfileID: "mini", LogicalID: "kill-target", Target: target.Target, Artifact: artifact, ArtifactPath: path}
+	request := MySQLRestoreRequest{CatalogRevision: active.Revision, ProfileID: "mini", LogicalID: "kill-target", Target: target.Target, Artifact: artifact, ArtifactPath: path, SourceQuiescence: mysqlRestoreQuiescence(source.Target)}
 	input := newAcceptance(t, stores[0], "mysql-process-kill-"+suffix, "operator", "kill-target", false)
 	input.Identity.Kind, input.Identity.Resource = MySQLRestoreOperationKind, "mysql/"+targetDB
 	input.Operation.Kind, input.Operation.MaxAttempts = MySQLRestoreOperationKind, 1

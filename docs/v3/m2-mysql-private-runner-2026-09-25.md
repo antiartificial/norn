@@ -39,13 +39,26 @@ atomically failed and its target reservation released; it cannot be confused
 with an executing import. The disposable PostgreSQL recovery test passed both
 cases.
 
+The private request now signs a source-quiescence evidence reference and
+persists a maintenance fence from preparation through execution. Catalog
+activation refuses while any such fence is held. Successful completion releases
+the fence in the receipt transaction; an expired prepared intent releases it
+before SQL, while ambiguous execution retains it. This fence has no production
+application write or write-resume consumer yet. The signed evidence reference
+records what an operator asserted; it does not independently prove quiescence.
+
+A disposable PostgreSQL/MySQL rehearsal killed the separate restore worker and
+its mysql child with OS SIGKILL after the target had received the first table.
+Fresh control-store recovery retained `needs-inspection`, a failed one-attempt
+operation, signed redacted inspection, and no automatic SQL replay. This proves
+the crash classification at that boundary, not safe application write isolation
+or a complete rollback procedure.
+
 ## Still required before a usable restore lane
 
-- Qualify bounded memory/disk behavior on representative large data and the
-  actual process-crash window after SQL begins. The claim-theft case has
-  disposable coverage, but an abrupt OS process kill does not yet.
-- Hold an explicit maintenance fence that covers application writes and catalog
-  activation for the whole restore window.
+- Qualify bounded memory/disk behavior on representative large data.
+- Wire the durable maintenance fence into application write and write-resume
+  paths, and prove quiescence on the actual managed WordPress/MySQL runtime.
 - Bind source quiescence and retained artifact storage to acceptance; the
   current artifact path remains host-local and ephemeral.
 - Define evidence-bound operator reconciliation after inspection. Current
