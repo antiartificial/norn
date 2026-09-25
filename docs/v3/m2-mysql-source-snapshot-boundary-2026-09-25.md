@@ -34,3 +34,20 @@ the artifact. The existing restore request still accepts an operator-supplied
 source-quiescence reference; that private prototype must be replaced by the
 signed snapshot receipt. Source unlock/restart needs a separately signed
 recovery operation. No public snapshot or restore capability is enabled.
+
+### Source account lock checkpoint (private)
+
+The private source operation now binds a durable global runtime mutation fence
+before the signed Nomad CAS stop. A second checkpoint stores `lock-intended`
+before the exact catalog-bound MySQL fence credential locks the runtime account,
+terminates sessions, and proves no sessions remain. Only a successful proof
+records `lock-proved`. An uncertain response, lost claim, or failed proof leaves
+both reservations held. Generic runtime-fence release rejects a bound source
+operation. There is no automatic retry, public route, unlock, or resume.
+
+This is still a private implementation step, not a qualified source snapshot
+workflow. The operation claim is checked around each checkpoint but not renewed
+across the external Nomad/MySQL calls. A production runner needs lease renewal
+and cancellation, signed artifact staging/receipt, explicit recovery after an
+ambiguous effect, and a signed resume/unlock decision. Direct host mutations
+also need qualification against the global fence at their actual effect point.

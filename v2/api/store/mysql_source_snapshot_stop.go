@@ -33,6 +33,9 @@ func (db *DB) StopClaimedMySQLSourceJob(ctx context.Context, acceptance *PGOpera
 	if intent.State != "quiesce-intended" {
 		return ErrMySQLSourceStopIndeterminate
 	}
+	if err := db.EnsureClaimedMySQLSourceRuntimeFence(ctx, acceptance, claim, request); err != nil {
+		return err
+	}
 	if err := db.setClaimedMySQLSourceStopState(ctx, claim, "quiesce-intended", "stop-intended"); err != nil {
 		return err
 	}
@@ -61,9 +64,9 @@ func (db *DB) setClaimedMySQLSourceStopState(ctx context.Context, claim Operatio
 	}
 	var tag pgconn.CommandTag
 	if to == "stop-intended" {
-		tag, err = tx.Exec(ctx, `UPDATE mysql_source_snapshot_intents SET state='stop-intended',stop_intended_at=clock_timestamp() WHERE operation_id=$1 AND state='quiesce-intended'`, claim.OperationID())
+		tag, err = tx.Exec(ctx, `UPDATE mysql_source_snapshot_intents SET state='stop-intended',stop_intended_at=clock_timestamp() WHERE operation_id=$1 AND state='quiesce-intended' AND EXISTS (SELECT 1 FROM runtime_mutation_fence f WHERE f.singleton=true AND f.active=true AND f.epoch=mysql_source_snapshot_intents.runtime_fence_epoch AND f.owner=mysql_source_snapshot_intents.runtime_fence_owner)`, claim.OperationID())
 	} else if to == "stop-proved" {
-		tag, err = tx.Exec(ctx, `UPDATE mysql_source_snapshot_intents SET state='stop-proved',stop_proved_at=clock_timestamp() WHERE operation_id=$1 AND state='stop-intended' AND stop_intended_at IS NOT NULL`, claim.OperationID())
+		tag, err = tx.Exec(ctx, `UPDATE mysql_source_snapshot_intents SET state='stop-proved',stop_proved_at=clock_timestamp() WHERE operation_id=$1 AND state='stop-intended' AND stop_intended_at IS NOT NULL AND EXISTS (SELECT 1 FROM runtime_mutation_fence f WHERE f.singleton=true AND f.active=true AND f.epoch=mysql_source_snapshot_intents.runtime_fence_epoch AND f.owner=mysql_source_snapshot_intents.runtime_fence_owner)`, claim.OperationID())
 	} else {
 		return ErrMySQLSourceSnapshotFence
 	}

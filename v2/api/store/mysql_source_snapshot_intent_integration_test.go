@@ -14,6 +14,18 @@ import (
 	"norn/v2/api/nomad"
 )
 
+type sourceAccountLockerFunc func(context.Context, database.ResolvedBinding, database.MySQLMaintenanceCredentials, database.SecretSource) error
+
+func (f sourceAccountLockerFunc) FenceMySQLRuntimeAccount(ctx context.Context, resolved database.ResolvedBinding, maintenance database.MySQLMaintenanceCredentials, secrets database.SecretSource) error {
+	return f(ctx, resolved, maintenance, secrets)
+}
+
+type sourceSecretSource struct{}
+
+func (sourceSecretSource) Resolve(context.Context, string) ([]byte, error) {
+	return nil, errors.New("unused by fake locker")
+}
+
 type sourceStopperFunc func(context.Context, nomad.CASStopJobRequest) error
 
 func (f sourceStopperFunc) StopJobCAS(ctx context.Context, request nomad.CASStopJobRequest) error {
@@ -164,6 +176,35 @@ func TestMySQLSourceSnapshotIntentReservesSignedPhysicalSource(t *testing.T) {
 	var intended, proved time.Time
 	if err := db.Pool.QueryRow(ctx, `SELECT state,stop_intended_at,stop_proved_at FROM mysql_source_snapshot_intents WHERE operation_id=$1`, claim.OperationID()).Scan(&state, &intended, &proved); err != nil || state != "stop-proved" || proved.Before(intended) {
 		t.Fatalf("stop proof not durable: state=%q intended=%v proved=%v err=%v", state, intended, proved, err)
+	}
+	var fenceEpoch int64
+	var fenceOwner string
+	var fenceActive bool
+	if err := db.Pool.QueryRow(ctx, `SELECT s.runtime_fence_epoch,s.runtime_fence_owner,f.active FROM mysql_source_snapshot_intents s CROSS JOIN runtime_mutation_fence f WHERE s.operation_id=$1`, claim.OperationID()).Scan(&fenceEpoch, &fenceOwner, &fenceActive); err != nil || fenceEpoch <= 0 || fenceOwner != "mysql-source-snapshot:"+claim.OperationID() || !fenceActive {
+		t.Fatalf("source stop lacked durable runtime fence: epoch=%d owner=%q active=%v err=%v", fenceEpoch, fenceOwner, fenceActive, err)
+	}
+	if err := db.ReleaseRuntimeMutationFence(ctx, RuntimeMutationFence{Epoch: fenceEpoch, Owner: fenceOwner}); !errors.Is(err, ErrRuntimeMutationFenceOwnershipLost) {
+		t.Fatalf("generic fence release bypassed reserved source: %v", err)
+	}
+	lockCalls := 0
+	locker := sourceAccountLockerFunc(func(_ context.Context, got database.ResolvedBinding, gotMaintenance database.MySQLMaintenanceCredentials, _ database.SecretSource) error {
+		lockCalls++
+		if got.Target != source.Target || gotMaintenance != request.Maintenance {
+			t.Fatalf("locker received substituted identity: %+v %+v", got.Target, gotMaintenance)
+		}
+		if err := db.Pool.QueryRow(ctx, `SELECT state FROM mysql_source_snapshot_intents WHERE operation_id=$1`, claim.OperationID()).Scan(&state); err != nil || state != "lock-intended" {
+			t.Fatalf("MySQL effect preceded durable lock intent: %q %v", state, err)
+		}
+		return nil
+	})
+	if err := db.LockClaimedMySQLSourceAccount(ctx, acceptedStore, claim, request, sourceSecretSource{}, locker); err != nil {
+		t.Fatal(err)
+	}
+	if err := db.Pool.QueryRow(ctx, `SELECT state FROM mysql_source_snapshot_intents WHERE operation_id=$1`, claim.OperationID()).Scan(&state); err != nil || state != "lock-proved" {
+		t.Fatalf("lock proof not durable: %q %v", state, err)
+	}
+	if err := db.LockClaimedMySQLSourceAccount(ctx, acceptedStore, claim, request, sourceSecretSource{}, locker); !errors.Is(err, ErrMySQLSourceAccountLockIndeterminate) || lockCalls != 1 {
+		t.Fatalf("replay repeated MySQL lock: err=%v calls=%d", err, lockCalls)
 	}
 	if err := db.StopClaimedMySQLSourceJob(ctx, acceptedStore, claim, request, stopper); err == nil || called != 1 {
 		t.Fatalf("replay repeated external stop: err=%v calls=%d", err, called)

@@ -85,6 +85,8 @@ func (db *DB) ReleaseRuntimeMutationFence(ctx context.Context, fence RuntimeMuta
 		UPDATE runtime_mutation_fence
 		SET active=false, owner='', reason='', released_at=clock_timestamp()
 		WHERE singleton=true AND active=true AND epoch=$1 AND owner=$2
+          AND NOT EXISTS (SELECT 1 FROM mysql_source_snapshot_intents
+             WHERE runtime_fence_epoch=$1 AND runtime_fence_owner=$2)
 		RETURNING true`, fence.Epoch, fence.Owner).Scan(&released)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return ErrRuntimeMutationFenceOwnershipLost
