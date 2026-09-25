@@ -15,7 +15,14 @@ import (
 	"github.com/google/uuid"
 
 	"norn/v2/api/database"
+	"norn/v2/api/nomad"
 )
+
+type stoppedSourceObserverFunc func(context.Context, nomad.CASStopJobRequest) error
+
+func (f stoppedSourceObserverFunc) ObserveStoppedMySQLSourceJob(ctx context.Context, request nomad.CASStopJobRequest) error {
+	return f(ctx, request)
+}
 
 func TestMySQLRestoreTransfersSignedSourceFenceWithoutGap(t *testing.T) {
 	stores, dbs := acceptanceIntegrationStores(t, 1)
@@ -150,6 +157,21 @@ func TestMySQLRestoreTransfersSignedSourceFenceWithoutGap(t *testing.T) {
 	ready, err := db.AssessCompletedMySQLRestoreRecovery(ctx, acceptance, claim.OperationID())
 	if err != nil || ready.Fence.Epoch != transferred.Epoch || ready.Request.Target != target.Target {
 		t.Fatalf("completed signed restore recovery assessment: %+v %v", ready, err)
+	}
+	observedSource, err := db.AssessCompletedMySQLRestoreStoppedSource(ctx, acceptance, claim.OperationID(), stoppedSourceObserverFunc(func(_ context.Context, request nomad.CASStopJobRequest) error {
+		if request.JobID != "fixture" || request.JobVersion != 1 || request.JobModifyIndex != 1 ||
+			len(request.AllocationIDs) != 1 || request.AllocationIDs[0] != "fixture-alloc" {
+			return errors.New("source stop identity was not derived from signed request")
+		}
+		return nil
+	}))
+	if err != nil || observedSource.Fence.Epoch != transferred.Epoch {
+		t.Fatalf("signed source stopped assessment: %+v %v", observedSource, err)
+	}
+	if _, err := db.AssessCompletedMySQLRestoreStoppedSource(ctx, acceptance, claim.OperationID(), stoppedSourceObserverFunc(func(context.Context, nomad.CASStopJobRequest) error {
+		return errors.New("source job restarted")
+	})); err == nil {
+		t.Fatal("restarted source was accepted for recovery")
 	}
 	recoveryInput := MySQLRestoreRecoveryAcceptanceInput{RestoreOperationID: claim.OperationID(),
 		Actor: OperationActor{Issuer: "test-issuer", Subject: "operator"}, Key: "recover-" + uuid.NewString(),

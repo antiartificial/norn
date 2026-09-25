@@ -127,7 +127,16 @@ commit an exact operation, restore, catalog, fence epoch, owner, and claim
 generation before any external effect. Preparation holds the catalog gate and
 fence row, permits only an identical claim retry, and rejects a successor
 claim. Disposable PostgreSQL migration and recovery tests passed. Execution
-checkpoints, live source reobservation, unlock, and fence release remain open.
+checkpoints, execution-time source reobservation, unlock, and fence release remain open.
+
+Recovery now has a read-only source reobservation path. It verifies the signed
+source staging receipt and acceptance against the durable stop and account-lock
+checkpoints, then asks Nomad for the exact post-CAS stopped revision and all
+terminal signed allocations. Nomad unit cases reject a restarted or changed
+job, a live or missing signed allocation, and changed deployment provenance;
+the PostgreSQL recovery test verifies the signed job identity is passed to the
+observer. This is not yet wired into an unlock executor, and it does not prove
+the source MySQL account remains locked at the time of resume.
 
 - Qualify bounded memory/disk behavior on representative large data.
 - Wire the launch and mutation gates into every application write and resume
