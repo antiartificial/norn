@@ -86,7 +86,7 @@ func (db *DB) PrepareClaimedMySQLRestore(ctx context.Context, acceptance *PGOper
 		return MySQLRestoreIntent{}, err
 	}
 	defer tx.Rollback(context.Background())
-	if _, err := tx.Exec(ctx, `SELECT pg_advisory_xact_lock(hashtextextended('norn:database-catalog', 0))`); err != nil {
+	if err := lockMySQLCatalogGate(ctx, tx); err != nil {
 		return MySQLRestoreIntent{}, err
 	}
 	if err := verifyMySQLRestoreClaim(ctx, tx, claim); err != nil {
@@ -101,6 +101,12 @@ func (db *DB) PrepareClaimedMySQLRestore(ctx context.Context, acceptance *PGOper
 		return MySQLRestoreIntent{}, err
 	}
 	if _, err := database.PrepareMySQLRestore(ctx, resolver, request.ProfileID, request.LogicalID, request.Target, secrets, request.ArtifactPath, request.Artifact); err != nil {
+		return MySQLRestoreIntent{}, err
+	}
+	// The exact signed artifact source can be writable at the instant of the
+	// restore. A launch reservation must therefore protect both it and the
+	// destination, not only the target named by the restore command.
+	if err := rejectMySQLRuntimeLaunchReservations(ctx, tx, []database.TargetIdentity{request.Artifact.Source, request.Target}); err != nil {
 		return MySQLRestoreIntent{}, err
 	}
 	target, _ := json.Marshal(request.Target)
@@ -186,7 +192,7 @@ func (db *DB) BeginClaimedMySQLRestore(ctx context.Context, acceptance *PGOperat
 		return MySQLRestoreIntent{}, err
 	}
 	defer tx.Rollback(context.Background())
-	if _, err := tx.Exec(ctx, `SELECT pg_advisory_xact_lock(hashtextextended('norn:database-catalog', 0))`); err != nil {
+	if err := lockMySQLCatalogGate(ctx, tx); err != nil {
 		return MySQLRestoreIntent{}, err
 	}
 	if err := verifyMySQLRestoreClaim(ctx, tx, claim); err != nil {
