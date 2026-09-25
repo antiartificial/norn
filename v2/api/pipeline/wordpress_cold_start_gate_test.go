@@ -24,6 +24,22 @@ func TestActiveWordPressAllocationsTreatsOnlyTerminalStatesAsInactive(t *testing
 	}
 }
 
+func TestWordPressColdStartAllocationMatchesSubmittedEvaluation(t *testing.T) {
+	allocation := &nomadapi.AllocationListStub{ID: "alloc-1", JobID: "wordpress", EvalID: "eval-1"}
+	if !matchesWordPressColdStartAllocation(allocation, "wordpress", "eval-1") {
+		t.Fatal("submitted evaluation allocation was rejected")
+	}
+	for _, other := range []*nomadapi.AllocationListStub{
+		{ID: "alloc-1", JobID: "wordpress", EvalID: "eval-other"},
+		{ID: "alloc-1", JobID: "other", EvalID: "eval-1"},
+		{JobID: "wordpress", EvalID: "eval-1"},
+	} {
+		if matchesWordPressColdStartAllocation(other, "wordpress", "eval-1") {
+			t.Fatalf("unrelated allocation was accepted: %#v", other)
+		}
+	}
+}
+
 func TestWordPressColdStartReservationIDBindsClaimDeploymentAndSpec(t *testing.T) {
 	claim, err := store.NewOperationClaim("op-1", "worker", 1)
 	if err != nil {

@@ -54,11 +54,38 @@ operation, signed redacted inspection, and no automatic SQL replay. This proves
 the crash classification at that boundary, not safe application write isolation
 or a complete rollback procedure.
 
+Migration 26 adds a private runtime-launch reservation gate. Reservation and
+restore-fence acquisition serialize on the catalog lock and exclude by physical
+MySQL service generation and database, including aliases through another
+binding. Both the artifact source and destination are checked. A launched or
+ambiguous reservation remains blocking until an explicit stop receipt; a
+reserved launch needs a recorded no-start proof before release. Disposable
+PostgreSQL concurrency tests passed both acquisition orders. A private,
+opt-in WordPress verified-TLS cold-start path reserves before Nomad submit,
+requires an absent job and zero active allocations, and binds the observed
+allocation to the returned evaluation ID. It does not cover rolling deploy,
+rollback, cron, function, canary, host assurance, or direct Nomad starts.
+
+A separate private MySQL 8.4 primitive can lock one dedicated runtime account,
+terminate its existing sessions, verify two zero-session observations, and
+unlock only through an explicit call. A disposable MySQL 8.4 test passed with
+an existing session, rejected new authentication, and a later explicit unlock.
+The fence authenticates as a distinct, exact MySQL account and uses the target
+TLS policy. It currently needs `SELECT` on `mysql.user` to prove username
+uniqueness, which needs narrower provider-specific provisioning before release.
+The immutable catalog and accepted restore request now bind distinct runtime,
+restore, and fence credentials. The restore client verifies its exact account
+and uses the restore credential for import and post-import checks, even while
+runtime authentication is locked. The account-lock primitive is not yet
+connected to the signed restore runner or a durable lock checkpoint.
+
 ## Still required before a usable restore lane
 
 - Qualify bounded memory/disk behavior on representative large data.
-- Wire the durable maintenance fence into application write and write-resume
-  paths, and prove quiescence on the actual managed WordPress/MySQL runtime.
+- Wire the launch gate into every application write and resume
+  path, and the MySQL account lock into source quiescence and restore execution.
+  Prove this on the actual managed WordPress/MySQL runtime, including direct
+  Nomad starts, periodic children, restart policy, and host assurance.
 - Bind source quiescence and retained artifact storage to acceptance; the
   current artifact path remains host-local and ephemeral.
 - Define evidence-bound operator reconciliation after inspection. Current

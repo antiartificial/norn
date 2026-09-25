@@ -58,7 +58,11 @@ func (p *Pipeline) reserveWordPressVerifiedTLSColdStart(ctx context.Context, st 
 // markWordPressVerifiedTLSColdStartLaunched records only an identity observed
 // after this cold start's submit. A lost registration response, an unreadable
 // allocation list, or any multiplicity is ambiguous and remains blocking.
-func (p *Pipeline) markWordPressVerifiedTLSColdStartLaunched(ctx context.Context, gate *wordpressColdStartGate, app string) error {
+func (p *Pipeline) markWordPressVerifiedTLSColdStartLaunched(ctx context.Context, gate *wordpressColdStartGate, app, evalID string) error {
+	if strings.TrimSpace(evalID) == "" {
+		p.containWordPressVerifiedTLSColdStart(ctx, gate)
+		return fmt.Errorf("wordpress verified-TLS cold-start submit returned no evaluation identity")
+	}
 	deadline := time.NewTimer(15 * time.Second)
 	defer deadline.Stop()
 	ticker := time.NewTicker(250 * time.Millisecond)
@@ -70,7 +74,7 @@ func (p *Pipeline) markWordPressVerifiedTLSColdStartLaunched(ctx context.Context
 			return fmt.Errorf("observe WordPress cold-start runtime: %w", err)
 		}
 		active := activeWordPressAllocations(allocations)
-		if len(active) > 1 || (len(active) == 1 && strings.TrimSpace(active[0].ID) == "") {
+		if len(active) > 1 || (len(active) == 1 && !matchesWordPressColdStartAllocation(active[0], app, evalID)) {
 			p.containWordPressVerifiedTLSColdStart(ctx, gate)
 			return fmt.Errorf("wordpress verified-TLS cold-start runtime identity is ambiguous")
 		}
@@ -91,6 +95,10 @@ func (p *Pipeline) markWordPressVerifiedTLSColdStartLaunched(ctx context.Context
 		case <-ticker.C:
 		}
 	}
+}
+
+func matchesWordPressColdStartAllocation(allocation *nomadapi.AllocationListStub, app, evalID string) bool {
+	return allocation != nil && strings.TrimSpace(allocation.ID) != "" && allocation.JobID == app && allocation.EvalID == evalID
 }
 
 func (p *Pipeline) containWordPressVerifiedTLSColdStart(ctx context.Context, gate *wordpressColdStartGate) {

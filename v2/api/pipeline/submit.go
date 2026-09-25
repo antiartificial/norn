@@ -136,7 +136,7 @@ func (p *Pipeline) submit(ctx context.Context, st *state, sg *saga.Saga) error {
 				return fmt.Errorf("submit nomad job in region %s: %w", region.Name, err)
 			}
 			if coldStartGate != nil {
-				if err := p.markWordPressVerifiedTLSColdStartLaunched(ctx, coldStartGate, st.spec.App); err != nil {
+				if err := p.markWordPressVerifiedTLSColdStartLaunched(ctx, coldStartGate, st.spec.App, evalID); err != nil {
 					_ = p.DB.UpdateDeploymentRegion(ctx, st.deploymentID, region.Name, model.StatusFailed, "", err.Error(), 0)
 					return err
 				}
