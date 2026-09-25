@@ -370,6 +370,8 @@ func (p *Pipeline) ExecuteOperation(ctx context.Context, op *model.Operation, cl
 	sg := saga.NewWithID(sagaStore, op.SagaID, spec.App, "pipeline", category)
 
 	switch op.Kind {
+	case "app.deployment-reconcile":
+		return p.executeDeploymentReconciliation(ctx, op, claim, spec, sg)
 	case "app.snapshot", "app.snapshot-prune", "app.snapshot-restore", "app.migrate":
 		return p.executeDataOperation(ctx, op, claim, spec, sg)
 	case DatabaseBaselineKind:

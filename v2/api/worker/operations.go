@@ -28,7 +28,7 @@ type OperationWorker struct {
 
 func NewOperationWorker(db store.ExecutionStore, p *pipeline.Pipeline) *OperationWorker {
 	return NewOperationWorkerForKinds(db, p, []string{
-		"app.preflight", "app.deploy", "app.rollback", "app.restart", "app.snapshot",
+		"app.preflight", "app.deploy", "app.rollback", "app.deployment-reconcile", "app.restart", "app.snapshot",
 		"app.snapshot-prune", "app.snapshot-restore", "app.migrate",
 		"app.scale", "app.cron-pause", "app.cron-resume",
 		"app.canary-promote",
