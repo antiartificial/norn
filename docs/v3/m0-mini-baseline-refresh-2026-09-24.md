@@ -86,3 +86,8 @@ The previous isolated data restore remains useful evidence for migrations
 1–16 only. It did not exercise an API binary, old-reader drain, route/job
 ownership, application databases, or rollback after a writer-14 migration.
 No M0–M3 milestone is signed off by this refresh.
+
+A later [read-only app-to-Nomad and hostname join](m0-mini-workload-join-2026-09-25.md)
+matched the API's live allocation references to Nomad and identified the
+duplicate app, inactive jobs, unmatched hostnames, and volume/database
+references requiring owner review. It does not prove route or data ownership.
