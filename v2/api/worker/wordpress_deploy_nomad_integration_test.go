@@ -454,15 +454,20 @@ func wordpressDeployInstall(t *testing.T, client *nomad.Client, jobID string) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		const install = `chdir("/var/www/html"); require "wp-load.php"; require_once ABSPATH . "wp-admin/includes/upgrade.php"; if (!is_blog_installed()) { wp_install("Norn qualification", "norn_operator", "norn@example.invalid", false, "", "disposable-qualification-password"); } echo is_blog_installed() ? "installed" : "missing";`
+		password := uuid.NewString() + uuid.NewString()
+		command := []string{"curl", "--fail", "--silent", "--show-error", "--max-time", "25", "--request", "POST",
+			"--data-urlencode", "weblog_title=Norn qualification", "--data-urlencode", "user_name=norn_operator",
+			"--data-urlencode", "admin_password=" + password, "--data-urlencode", "admin_password2=" + password,
+			"--data-urlencode", "admin_email=norn@example.invalid", "--data-urlencode", "blog_public=0",
+			"--data-urlencode", "Submit=Install WordPress", "http://127.0.0.1/wp-admin/install.php?step=2"}
 		var stdout, stderr bytes.Buffer
 		size := make(chan nomadapi.TerminalSize)
 		close(size)
 		ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
-		exit, err := client.API().Allocations().Exec(ctx, full, "web", false, []string{"php", "-r", install}, strings.NewReader(""), &stdout, &stderr, size, nil)
+		exit, err := client.API().Allocations().Exec(ctx, full, "web", false, command, strings.NewReader(""), &stdout, &stderr, size, nil)
 		cancel()
-		if err != nil || exit != 0 || !strings.Contains(stdout.String(), "installed") {
-			t.Fatalf("WordPress install in verified-TLS allocation failed: exit=%d err=%v output=%s", exit, err, strings.TrimSpace(stdout.String()+" "+stderr.String()))
+		if err != nil || exit != 0 || !bytes.Contains(stdout.Bytes(), []byte("Success!")) {
+			t.Fatalf("WordPress install in verified-TLS allocation failed: exit=%d err=%v stderr=%s", exit, err, strings.TrimSpace(stderr.String()))
 		}
 		return
 	}
