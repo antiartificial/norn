@@ -156,6 +156,11 @@ into #76 and closed. These are review containers, not milestone signoff.
   resume against the real API. It exposed a nested agent-version response that
   had made the existing pause CAS guard reject supported servers; version
   detection now reads Nomad's actual response shape.
+  A replacement-resume adapter now CAS-registers a freshly built periodic job
+  with an effect marker. A second disposable Nomad run proved schedule
+  replacement and stale-revision refusal. The durable worker still needs to
+  rebuild the exact image, secrets, and database delivery at launch without
+  persisting plaintext material in the accepted operation.
 - M2: local MySQL runtime and verified-TLS health are implemented. Generated
   service, periodic, and function jobs delivered exact component bytes inside
   allocations on pinned Nomad 1.9.7. A WordPress image PHP client also

@@ -48,14 +48,20 @@ func TestPeriodicPauseResumeCASInNomad(t *testing.T) {
 	if err := client.ResumePeriodicJob(id, initial.ModifyIndex, "stale-effect"); !errors.Is(err, ErrJobRevisionChanged) {
 		t.Fatalf("stale resume = %v, want revision conflict", err)
 	}
-	if err := client.ResumePeriodicJob(id, paused.ModifyIndex, "resume-effect"); err != nil {
+	replacement, _, err := client.api.Jobs().Info(id, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	replacementSchedule := "15 1 * * *"
+	replacement.Periodic.Spec = &replacementSchedule
+	if err := client.ResumePeriodicJobWithReplacement(id, paused.ModifyIndex, "resume-effect", replacement); err != nil {
 		t.Fatal(err)
 	}
 	resumed, err := client.PeriodicJobSchedule(id)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if resumed.Paused || resumed.CronResumeEffectID != "resume-effect" || resumed.Schedule != schedule {
+	if resumed.Paused || resumed.CronResumeEffectID != "resume-effect" || resumed.Schedule != replacementSchedule {
 		t.Fatalf("resume not observed: %+v", resumed)
 	}
 }

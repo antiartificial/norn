@@ -135,6 +135,51 @@ func (c *Client) ResumePeriodicJob(jobID string, expectedModifyIndex uint64, eff
 	return nil
 }
 
+// ResumePeriodicJobWithReplacement atomically registers a freshly translated
+// periodic job at the stopped parent's authorized revision. Callers can thus
+// include the current image, secret environment and database delivery in the
+// replacement without putting that material in a durable operation payload.
+// The effect marker is read back from Nomad after an ambiguous response.
+func (c *Client) ResumePeriodicJobWithReplacement(jobID string, expectedModifyIndex uint64, effectID string, replacement *nomadapi.Job) error {
+	if strings.TrimSpace(jobID) == "" || expectedModifyIndex == 0 || strings.TrimSpace(effectID) == "" || replacement == nil || replacement.ID == nil || *replacement.ID != jobID || replacement.Periodic == nil || replacement.Periodic.Spec == nil || strings.TrimSpace(*replacement.Periodic.Spec) == "" {
+		return fmt.Errorf("periodic job replacement requires a matching job ID, schedule, modify index, and effect ID")
+	}
+	if err := c.requireAtomicJobCAS(); err != nil {
+		return err
+	}
+	current, _, err := c.api.Jobs().Info(jobID, nil)
+	if err != nil {
+		return fmt.Errorf("read periodic job %s for resume: %w", jobID, err)
+	}
+	if current == nil || current.Periodic == nil {
+		return fmt.Errorf("job %s is not periodic", jobID)
+	}
+	if current.JobModifyIndex == nil || *current.JobModifyIndex != expectedModifyIndex {
+		return fmt.Errorf("%w for %s", ErrJobRevisionChanged, jobID)
+	}
+	if current.Stop == nil || !*current.Stop {
+		return fmt.Errorf("periodic job %s is not stopped", jobID)
+	}
+	// Copy the translated job so an effect marker never mutates caller-owned
+	// material. Nomad CAS fences a writer between the read and registration.
+	job := *replacement
+	resumed := false
+	job.Stop = &resumed
+	job.Meta = make(map[string]string, len(replacement.Meta)+1)
+	for key, value := range replacement.Meta {
+		job.Meta[key] = value
+	}
+	job.Meta[cronResumeEffectMetaKey] = effectID
+	_, _, err = c.api.Jobs().RegisterOpts(&job, &nomadapi.RegisterOptions{EnforceIndex: true, ModifyIndex: expectedModifyIndex}, nil)
+	if err != nil {
+		if strings.Contains(err.Error(), nomadapi.RegisterEnforceIndexErrPrefix) {
+			return fmt.Errorf("%w for %s: %v", ErrJobRevisionChanged, jobID, err)
+		}
+		return fmt.Errorf("resume periodic job %s with replacement: %w", jobID, err)
+	}
+	return nil
+}
+
 func (c *Client) requireAtomicJobCAS() error {
 	self, err := c.api.Agent().Self()
 	if err != nil {
