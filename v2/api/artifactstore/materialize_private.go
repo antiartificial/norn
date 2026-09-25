@@ -2,10 +2,12 @@ package artifactstore
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
 	"syscall"
+	"time"
 )
 
 // MaterializePrivate writes verified retained bytes to a new owner-only file.
@@ -26,9 +28,32 @@ func MaterializePrivate(ctx context.Context, objects Store, descriptor Descripto
 	if stat, ok := info.Sys().(*syscall.Stat_t); ok && int(stat.Uid) != os.Geteuid() {
 		return "", fmt.Errorf("materialization directory must be owned by this process")
 	}
+	lock, err := os.OpenFile(filepath.Join(directory, ".norn-materialize.lock"), os.O_CREATE|os.O_RDWR|syscall.O_NOFOLLOW, 0o600)
+	if err != nil {
+		return "", err
+	}
+	defer lock.Close()
+	for {
+		if err := ctx.Err(); err != nil {
+			return "", err
+		}
+		err := syscall.Flock(int(lock.Fd()), syscall.LOCK_EX|syscall.LOCK_NB)
+		if err == nil {
+			break
+		}
+		if !errors.Is(err, syscall.EWOULDBLOCK) && !errors.Is(err, syscall.EAGAIN) {
+			return "", err
+		}
+		select {
+		case <-ctx.Done():
+			return "", ctx.Err()
+		case <-time.After(50 * time.Millisecond):
+		}
+	}
+	defer syscall.Flock(int(lock.Fd()), syscall.LOCK_UN)
 	// Reject an artifact that cannot fit before opening a private output file.
-	// This is a preflight observation, not a reservation: concurrent filesystem
-	// writes can still exhaust the volume while the bytes are streaming.
+	// The directory lock serializes Norn materializations here, but unrelated
+	// filesystem writes can still exhaust the volume while bytes are streaming.
 	var filesystem syscall.Statfs_t
 	if err := syscall.Statfs(directory, &filesystem); err != nil {
 		return "", err
