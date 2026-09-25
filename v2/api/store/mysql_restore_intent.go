@@ -140,6 +140,9 @@ func (db *DB) PrepareClaimedMySQLRestore(ctx context.Context, acceptance *PGOper
 	if err := json.Unmarshal(savedArtifact, &existing.Request.Artifact); err != nil {
 		return MySQLRestoreIntent{}, ErrMySQLRestoreFence
 	}
+	// The immutable catalog revision and accepted request carry maintenance
+	// identity; the intent row stores its target and artifact identities.
+	existing.Request.Maintenance = *resolved.MySQLMaintenance
 	if existing.AcceptanceIntentID != accepted.AcceptanceIntentID || existing.Request.CatalogRevision != request.CatalogRevision || existing.Request.ProfileID != request.ProfileID || existing.Request.LogicalID != request.LogicalID || existing.Request.Target != request.Target || existing.Request.Artifact != request.Artifact || existing.Request.ArtifactPath != request.ArtifactPath || existing.State != "prepared" {
 		return MySQLRestoreIntent{}, ErrMySQLRestoreFence
 	}
