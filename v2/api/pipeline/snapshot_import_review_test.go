@@ -41,6 +41,20 @@ type expiringSnapshotObjects struct {
 	writes      int
 }
 
+type inspectingSnapshotObjects struct {
+	reviewSnapshotObjects
+	beforeWrite func(string) error
+}
+
+func (s *inspectingSnapshotObjects) PutObjectIfAbsent(ctx context.Context, bucket, key, path string) error {
+	if s.beforeWrite != nil {
+		if err := s.beforeWrite(key); err != nil {
+			return err
+		}
+	}
+	return s.reviewSnapshotObjects.PutObjectIfAbsent(ctx, bucket, key, path)
+}
+
 func (s *expiringSnapshotObjects) PutObjectIfAbsent(ctx context.Context, bucket, key, path string) error {
 	if err := s.reviewSnapshotObjects.PutObjectIfAbsent(ctx, bucket, key, path); err != nil {
 		return err
@@ -122,7 +136,7 @@ func TestClaimedSnapshotExportUsesPrivateRemoteKey(t *testing.T) {
 		t.Fatal("snapshot inventory did not find the created dump")
 	}
 	objects := reviewSnapshotObjects{}
-	manifest, key, err := f.p.ExportTargetSnapshotClaimed(context.Background(), f.spec, "primary", filename, objects, "review", op.ID)
+	manifest, key, err := f.p.exportTargetSnapshot(context.Background(), f.spec, "primary", filename, objects, "review", op.ID, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -142,13 +156,13 @@ func TestClaimedSnapshotExportUsesPrivateRemoteKey(t *testing.T) {
 	}
 	for _, group := range groups {
 		if group.Database == "analytics" && len(group.Snapshots) > 0 {
-			_, otherKey, err := f.p.ExportTargetSnapshotClaimed(context.Background(), f.spec, "analytics", group.Snapshots[0].Filename, objects, "review", op.ID)
+			_, otherKey, err := f.p.exportTargetSnapshot(context.Background(), f.spec, "analytics", group.Snapshots[0].Filename, objects, "review", op.ID, nil)
 			if err != nil || otherKey == key || !strings.Contains(otherKey, "/databases/analytics/") {
 				t.Fatalf("same deployment operation conflated database keys %q and %q: %v", key, otherKey, err)
 			}
 		}
 	}
-	if _, replayKey, err := f.p.ExportTargetSnapshotClaimed(context.Background(), f.spec, "primary", filename, objects, "review", op.ID); err != nil || replayKey != key {
+	if _, replayKey, err := f.p.exportTargetSnapshot(context.Background(), f.spec, "primary", filename, objects, "review", op.ID, nil); err != nil || replayKey != key {
 		t.Fatalf("same operation did not verify its pinned export: %q, %v", replayKey, err)
 	}
 }
@@ -187,19 +201,33 @@ func TestClaimedSnapshotExportOperation(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	objects := reviewSnapshotObjects{}
+	objects := &inspectingSnapshotObjects{reviewSnapshotObjects: reviewSnapshotObjects{}}
 	f.p.SnapshotObjects = objects
 	accepted, err := f.queue(t, "app.snapshot-export", map[string]interface{}{"database": "primary", "bucket": "review", "snapshot": filename})
 	if err != nil {
 		t.Fatal(err)
+	}
+	objects.beforeWrite = func(key string) error {
+		var state string
+		if err := f.db.Pool.QueryRow(context.Background(), `SELECT state FROM snapshot_export_intents WHERE operation_id=$1 AND object_key=$2`, accepted.ID, strings.TrimSuffix(key, snapshotManifestSuffix)).Scan(&state); err != nil {
+			return err
+		}
+		if state != "prepared" {
+			return fmt.Errorf("remote write began with export intent in state %q", state)
+		}
+		return nil
 	}
 	result, err := f.execute(t, accepted.ID)
 	if err != nil || result.Status != model.OperationSucceeded {
 		t.Fatalf("claimed export = %+v, %v", result, err)
 	}
 	key, _ := result.Metadata["key"].(string)
-	if !strings.Contains(key, "/operations/"+accepted.ID+"/") || len(objects[key]) == 0 || len(objects[key+snapshotManifestSuffix]) == 0 {
+	if !strings.Contains(key, "/operations/"+accepted.ID+"/") || len(objects.reviewSnapshotObjects[key]) == 0 || len(objects.reviewSnapshotObjects[key+snapshotManifestSuffix]) == 0 {
 		t.Fatalf("claimed export missing verified objects at %q", key)
+	}
+	var exportState string
+	if err := f.db.Pool.QueryRow(context.Background(), `SELECT state FROM snapshot_export_intents WHERE operation_id=$1 AND object_key=$2`, accepted.ID, key).Scan(&exportState); err != nil || exportState != "published" {
+		t.Fatalf("claimed export durable receipt = %q, %v", exportState, err)
 	}
 }
 
@@ -354,11 +382,11 @@ func TestClaimedLegacyExportImportVerifiesRemoteBytes(t *testing.T) {
 	}
 	objects := reviewSnapshotObjects{}
 	startedAt := time.Date(2026, 9, 25, 12, 0, 0, 0, time.UTC)
-	key, err := exportLegacySnapshotClaimed(context.Background(), objects, "review", "demo", "shop", name, local, operationID, startedAt)
+	key, err := exportLegacySnapshotClaimed(context.Background(), objects, "review", "demo", "shop", name, local, operationID, startedAt, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if replayKey, err := exportLegacySnapshotClaimed(context.Background(), objects, "review", "demo", "shop", name, local, operationID, startedAt); err != nil || replayKey != key {
+	if replayKey, err := exportLegacySnapshotClaimed(context.Background(), objects, "review", "demo", "shop", name, local, operationID, startedAt, nil); err != nil || replayKey != key {
 		t.Fatalf("legacy export replay = %q, %v", replayKey, err)
 	}
 	if _, err := LegacySnapshotKeyName(key, "demo", "shop"); err != nil {

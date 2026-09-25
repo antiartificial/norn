@@ -168,7 +168,7 @@ func (p *Pipeline) executeDataOperation(ctx context.Context, op *model.Operation
 			if !ok {
 				return nil, fmt.Errorf("legacy snapshot export object store lacks create-only publication")
 			}
-			key, err := exportLegacySnapshotClaimed(ctx, createOnly, spec.Snapshots.ExportBucket, spec.App, database, filename, location.dir, op.ID, op.StartedAt)
+			key, err := exportLegacySnapshotClaimed(ctx, createOnly, spec.Snapshots.ExportBucket, spec.App, database, filename, location.dir, op.ID, op.StartedAt, &snapshotExportJournal{db: p.DB, claim: claim})
 			if err != nil {
 				return nil, err
 			}
@@ -177,7 +177,7 @@ func (p *Pipeline) executeDataOperation(ctx context.Context, op *model.Operation
 				p.broadcastDataEvent("snapshot.exported", spec.App, map[string]string{"snapshot": filename, "operationId": op.ID})
 			}), nil
 		}
-		manifest, key, err := p.ExportTargetSnapshotClaimed(ctx, spec, logical, filename, p.SnapshotObjects, spec.Snapshots.ExportBucket, op.ID)
+		manifest, key, err := p.ExportTargetSnapshotReserved(ctx, spec, logical, filename, p.SnapshotObjects, spec.Snapshots.ExportBucket, claim)
 		if err != nil {
 			return nil, err
 		}

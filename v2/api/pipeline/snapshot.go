@@ -150,9 +150,9 @@ func (p *Pipeline) snapshotTarget(ctx context.Context, st *state, sg *saga.Saga,
 		exportBucket := st.spec.Snapshots.ExportBucket
 		var key string
 		if target != nil {
-			_, key, err = p.ExportTargetSnapshotClaimed(ctx, st.spec, target.name, created.Filename, objects, exportBucket, st.claim.OperationID())
+			_, key, err = p.ExportTargetSnapshotReserved(ctx, st.spec, target.name, created.Filename, objects, exportBucket, st.claim)
 		} else {
-			key, err = exportLegacySnapshotClaimed(ctx, objects, exportBucket, st.spec.App, db, created.Filename, location.dir, st.claim.OperationID(), st.operationStartedAt)
+			key, err = exportLegacySnapshotClaimed(ctx, objects, exportBucket, st.spec.App, db, created.Filename, location.dir, st.claim.OperationID(), st.operationStartedAt, &snapshotExportJournal{db: p.DB, claim: st.claim})
 		}
 		if err != nil {
 			_ = sg.Log(ctx, "snapshot.export_failed", fmt.Sprintf("snapshot export failed: %v", err), map[string]string{"bucket": exportBucket, "snapshot": created.Filename})

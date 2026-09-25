@@ -177,6 +177,14 @@ The pure create-only publisher now has a real subprocess crash test: the child
 exits immediately after writing the dump, leaving no completion manifest; a
 new call rejects changed remote bytes without publishing a manifest, then
 verifies the pinned dump and publishes the matching manifest. This proves
-the remote pair's replay behavior only. It does not add a durable reservation
-to the deployment operation, test claim recovery in two API processes, or
-qualify hosted object storage.
+the remote pair's replay behavior only; it does not test claim recovery in two
+API processes or qualify hosted object storage.
+Migration 39 now stores an immutable per-operation, per-object export intent
+with bucket, key, dump digest and size, and manifest digest. The manual and
+predeploy claimed export paths commit it under the live PostgreSQL claim
+before the first remote write, then mark it published only after both remote
+objects are read back. An integration fixture checks the `prepared` row at
+the write boundary; a store test proves exact adoption after claim turnover
+and rejects changed content. The two-process API recovery gate is still open:
+the worker must discover and reconcile a prepared row after an actual worker
+crash, and provider-backed create-only behavior still needs qualification.

@@ -28,7 +28,7 @@ type legacyExportManifest struct {
 
 // exportLegacySnapshotClaimed retains the flat v1 local namespace while
 // publishing a verified copy under a unique, create-only operation key.
-func exportLegacySnapshotClaimed(ctx context.Context, objects snapshotCreateOnlyObjectStore, bucket, app, database, filename, directory, operationID string, operationStartedAt time.Time) (string, error) {
+func exportLegacySnapshotClaimed(ctx context.Context, objects snapshotCreateOnlyObjectStore, bucket, app, database, filename, directory, operationID string, operationStartedAt time.Time, journal *snapshotExportJournal) (string, error) {
 	if _, err := uuid.Parse(operationID); err != nil {
 		return "", fmt.Errorf("invalid snapshot export operation ID: %w", err)
 	}
@@ -83,7 +83,7 @@ func exportLegacySnapshotClaimed(ctx context.Context, objects snapshotCreateOnly
 		return "", err
 	}
 	key := strings.Join([]string{"snapshots", app, "operations", operationID, filename}, "/")
-	if err := publishClaimedSnapshot(ctx, objects, bucket, key, private, copyPath, manifestPath, encoded, manifest.SHA256, manifest.Size); err != nil {
+	if err := publishClaimedSnapshot(ctx, objects, bucket, key, private, copyPath, manifestPath, encoded, manifest.SHA256, manifest.Size, journal); err != nil {
 		return "", err
 	}
 	return key, nil

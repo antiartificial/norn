@@ -76,7 +76,7 @@ func TestClaimedSnapshotPublicationRecoversAfterProcessCrash(t *testing.T) {
 		data := []byte("pinned dump bytes")
 		digest := sha256.Sum256(data)
 		if err := publishClaimedSnapshot(context.Background(), processCrashSnapshotObjects{root: root, exitAfterDump: true}, bucket, key,
-			private, filepath.Join(private, "dump"), filepath.Join(private, "manifest.json"), []byte("pinned manifest"), hex.EncodeToString(digest[:]), int64(len(data))); err != nil {
+			private, filepath.Join(private, "dump"), filepath.Join(private, "manifest.json"), []byte("pinned manifest"), hex.EncodeToString(digest[:]), int64(len(data)), nil); err != nil {
 			t.Fatal(err)
 		}
 		t.Fatal("child returned without crashing after the dump write")
@@ -113,7 +113,7 @@ func TestClaimedSnapshotPublicationRecoversAfterProcessCrash(t *testing.T) {
 		t.Fatal(err)
 	}
 	if err := publishClaimedSnapshot(context.Background(), processCrashSnapshotObjects{root: root}, bucket, key,
-		retryPrivate, filepath.Join(private, "dump"), filepath.Join(private, "manifest.json"), manifest, hex.EncodeToString(digest[:]), int64(len(data))); err == nil {
+		retryPrivate, filepath.Join(private, "dump"), filepath.Join(private, "manifest.json"), manifest, hex.EncodeToString(digest[:]), int64(len(data)), nil); err == nil {
 		t.Fatal("changed remote dump was accepted after process crash")
 	}
 	if _, err := os.Stat(remoteDump + snapshotManifestSuffix); !errors.Is(err, os.ErrNotExist) {
@@ -124,7 +124,7 @@ func TestClaimedSnapshotPublicationRecoversAfterProcessCrash(t *testing.T) {
 	}
 	resumePrivate := t.TempDir()
 	if err := publishClaimedSnapshot(context.Background(), processCrashSnapshotObjects{root: root}, bucket, key,
-		resumePrivate, filepath.Join(private, "dump"), filepath.Join(private, "manifest.json"), manifest, hex.EncodeToString(digest[:]), int64(len(data))); err != nil {
+		resumePrivate, filepath.Join(private, "dump"), filepath.Join(private, "manifest.json"), manifest, hex.EncodeToString(digest[:]), int64(len(data)), nil); err != nil {
 		t.Fatalf("verified continuation after process crash: %v", err)
 	}
 	if actual, err := os.ReadFile(remoteDump + snapshotManifestSuffix); err != nil || string(actual) != string(manifest) {

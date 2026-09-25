@@ -18,6 +18,7 @@ import (
 
 	"norn/v2/api/database"
 	"norn/v2/api/model"
+	"norn/v2/api/store"
 )
 
 // TargetSnapshotGroup is the restorable inventory of one database target,
@@ -139,14 +140,14 @@ type SnapshotExportManifest struct {
 // manifest (key + ".manifest.json") is uploaded after the dump, so a
 // manifest's presence means the export is complete.
 func (p *Pipeline) ExportTargetSnapshot(ctx context.Context, spec *model.InfraSpec, logical, filename string, objects SnapshotObjectStore, bucket string) (SnapshotExportManifest, string, error) {
-	return p.exportTargetSnapshot(ctx, spec, logical, filename, objects, bucket, "")
+	return p.exportTargetSnapshot(ctx, spec, logical, filename, objects, bucket, "", nil)
 }
 
-// ExportTargetSnapshotClaimed gives each accepted operation its own remote
-// namespace and verifies both create-only objects before returning success.
-func (p *Pipeline) ExportTargetSnapshotClaimed(ctx context.Context, spec *model.InfraSpec, logical, filename string, objects SnapshotObjectStore, bucket, operationID string) (SnapshotExportManifest, string, error) {
-	if operationID == "" || strings.ContainsAny(operationID, "/.\\") {
-		return SnapshotExportManifest{}, "", fmt.Errorf("snapshot export operation identity is invalid")
+// ExportTargetSnapshotReserved commits an exact durable intent before either
+// create-only remote object write and records a receipt after both readbacks.
+func (p *Pipeline) ExportTargetSnapshotReserved(ctx context.Context, spec *model.InfraSpec, logical, filename string, objects SnapshotObjectStore, bucket string, claim store.OperationClaim) (SnapshotExportManifest, string, error) {
+	if p == nil || p.DB == nil {
+		return SnapshotExportManifest{}, "", fmt.Errorf("claimed snapshot export requires a claim store")
 	}
 	if _, ok := objects.(snapshotCreateOnlyObjectStore); !ok {
 		return SnapshotExportManifest{}, "", fmt.Errorf("snapshot object store lacks create-only publication")
@@ -154,10 +155,16 @@ func (p *Pipeline) ExportTargetSnapshotClaimed(ctx context.Context, spec *model.
 	if filename == "" {
 		return SnapshotExportManifest{}, "", fmt.Errorf("claimed snapshot export requires a pinned filename")
 	}
-	return p.exportTargetSnapshot(ctx, spec, logical, filename, objects, bucket, operationID)
+	if err := p.DB.CheckOperationClaim(ctx, claim); err != nil {
+		return SnapshotExportManifest{}, "", err
+	}
+	return p.exportTargetSnapshot(ctx, spec, logical, filename, objects, bucket, claim.OperationID(), &snapshotExportJournal{db: p.DB, claim: claim})
 }
 
-func (p *Pipeline) exportTargetSnapshot(ctx context.Context, spec *model.InfraSpec, logical, filename string, objects SnapshotObjectStore, bucket, operationID string) (SnapshotExportManifest, string, error) {
+func (p *Pipeline) exportTargetSnapshot(ctx context.Context, spec *model.InfraSpec, logical, filename string, objects SnapshotObjectStore, bucket, operationID string, journal *snapshotExportJournal) (SnapshotExportManifest, string, error) {
+	if operationID != "" && (strings.ContainsAny(operationID, "/.\\") || filename == "") {
+		return SnapshotExportManifest{}, "", fmt.Errorf("claimed snapshot export identity or pinned filename is invalid")
+	}
 	if p == nil || p.DatabaseTargets == nil {
 		return SnapshotExportManifest{}, "", &DatabaseTargetError{Reason: "no database profile is configured"}
 	}
@@ -239,13 +246,20 @@ func (p *Pipeline) exportTargetSnapshot(ctx context.Context, spec *model.InfraSp
 		}
 		return manifest, key, nil
 	}
-	if err := publishClaimedSnapshot(ctx, objects.(snapshotCreateOnlyObjectStore), bucket, key, private, copyPath, manifestPath, encoded, manifest.SHA256, manifest.Size); err != nil {
+	if err := publishClaimedSnapshot(ctx, objects.(snapshotCreateOnlyObjectStore), bucket, key, private, copyPath, manifestPath, encoded, manifest.SHA256, manifest.Size, journal); err != nil {
 		return SnapshotExportManifest{}, "", err
 	}
 	return manifest, key, nil
 }
 
-func publishClaimedSnapshot(ctx context.Context, createOnly snapshotCreateOnlyObjectStore, bucket, key, private, copyPath, manifestPath string, encoded []byte, digest string, size int64) error {
+func publishClaimedSnapshot(ctx context.Context, createOnly snapshotCreateOnlyObjectStore, bucket, key, private, copyPath, manifestPath string, encoded []byte, digest string, size int64, journal *snapshotExportJournal) error {
+	var intent store.SnapshotExportIntent
+	if journal != nil {
+		intent = journal.intent(bucket, key, digest, size, encoded)
+		if err := journal.prepare(ctx, intent); err != nil {
+			return fmt.Errorf("reserve snapshot export before remote write: %w", err)
+		}
+	}
 	if err := createOnly.PutObjectIfAbsent(ctx, bucket, key, copyPath); err != nil {
 		if errors.Is(err, errPredeploySnapshotClaimLost) {
 			return err
@@ -278,6 +292,11 @@ func publishClaimedSnapshot(ctx context.Context, createOnly snapshotCreateOnlyOb
 	actual, err := os.ReadFile(remoteManifest)
 	if err != nil || !bytes.Equal(actual, encoded) {
 		return fmt.Errorf("remote snapshot manifest differs from accepted publication: %v", err)
+	}
+	if journal != nil {
+		if err := journal.complete(context.Background(), intent); err != nil {
+			return fmt.Errorf("record verified snapshot export: %w", err)
+		}
 	}
 	return nil
 }
