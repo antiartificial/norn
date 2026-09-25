@@ -85,6 +85,12 @@ func TestMySQLRuntimeLaunchReservationSerializesWithRestoreMaintenanceFence(t *t
 	if _, err := dbs[0].ReserveMySQLRuntimeLaunch(ctx, "alias-launch", []database.TargetIdentity{alias}); !errors.Is(err, ErrMySQLRuntimeLaunchFence) {
 		t.Fatalf("alias binding bypassed physical database reservation: %v", err)
 	}
+	if err := dbs[0].ReconcileMySQLRuntimeLaunch(ctx, "launch-first", MySQLRuntimeLaunchReconciliationProof{Outcome: "never-started", ObservationSource: "supervisor", ObservationExecutionID: "reconcile-launch-first", ObservedAt: time.Now().UTC(), EvidenceSHA256: "dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd"}); err != nil {
+		t.Fatalf("reconcile ambiguous prelaunch reservation: %v", err)
+	}
+	if _, err := dbs[1].ReserveMySQLRuntimeLaunch(ctx, "launch-after-reconcile", []database.TargetIdentity{target}); err != nil {
+		t.Fatalf("reconciled no-start reservation did not reopen target: %v", err)
+	}
 
 	stoppedTarget := target
 	stoppedTarget.Database = "proven-stopped"
@@ -97,6 +103,27 @@ func TestMySQLRuntimeLaunchReservationSerializesWithRestoreMaintenanceFence(t *t
 	proof := MySQLRuntimeLaunchStopProof{RuntimeInstanceID: "runtime-proven-stopped", ObservedAt: time.Now().UTC(), Method: "supervisor allocation absence", EvidenceSHA256: "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"}
 	if err := dbs[0].StopMySQLRuntimeLaunch(ctx, "proven-stopped", proof); err != nil {
 		t.Fatal(err)
+	}
+
+	ambiguousLaunched := target
+	ambiguousLaunched.Database = "ambiguous-launched"
+	if _, err := dbs[0].ReserveMySQLRuntimeLaunch(ctx, "ambiguous-launched", []database.TargetIdentity{ambiguousLaunched}); err != nil {
+		t.Fatal(err)
+	}
+	if err := dbs[0].MarkMySQLRuntimeLaunchLaunched(ctx, "ambiguous-launched", "runtime-ambiguous"); err != nil {
+		t.Fatal(err)
+	}
+	if err := dbs[0].ContainMySQLRuntimeLaunchForInspection(ctx, "ambiguous-launched"); err != nil {
+		t.Fatal(err)
+	}
+	if err := dbs[0].ReconcileMySQLRuntimeLaunch(ctx, "ambiguous-launched", MySQLRuntimeLaunchReconciliationProof{Outcome: "stopped", RuntimeInstanceID: "wrong-runtime", ObservationSource: "supervisor", ObservationExecutionID: "reconcile-wrong-runtime", ObservedAt: time.Now().UTC(), EvidenceSHA256: "eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee"}); !errors.Is(err, ErrMySQLRuntimeLaunchFence) {
+		t.Fatalf("mismatched ambiguous runtime was reconciled: %v", err)
+	}
+	if err := dbs[0].ReconcileMySQLRuntimeLaunch(ctx, "ambiguous-launched", MySQLRuntimeLaunchReconciliationProof{Outcome: "stopped", RuntimeInstanceID: "runtime-ambiguous", ObservationSource: "supervisor", ObservationExecutionID: "reconcile-runtime-ambiguous", ObservedAt: time.Now().UTC(), EvidenceSHA256: "eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee"}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := dbs[1].ReserveMySQLRuntimeLaunch(ctx, "after-ambiguous-launch", []database.TargetIdentity{ambiguousLaunched}); err != nil {
+		t.Fatalf("reconciled launched reservation did not reopen target: %v", err)
 	}
 	tx, err = dbs[0].Pool.Begin(ctx)
 	if err != nil {
