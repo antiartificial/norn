@@ -26,8 +26,19 @@ import (
 )
 
 type lostResponsePullRequester struct {
-	calls  int
-	result githubapp.PullRequest
+	calls                int
+	ambiguousAfterCreate bool
+	result               githubapp.PullRequest
+}
+
+func (f *lostResponsePullRequester) ReconcilePullRequest(context.Context, string, string, string, string, fleet.NodePool, string) (*githubapp.Reconciliation, error) {
+	if f.calls == 0 {
+		return &githubapp.Reconciliation{Outcome: "verified-no-write"}, nil
+	}
+	if f.ambiguousAfterCreate {
+		return &githubapp.Reconciliation{Outcome: "ambiguous"}, nil
+	}
+	return &githubapp.Reconciliation{Outcome: "remote-success", PullRequest: &f.result}, nil
 }
 
 func (f *lostResponsePullRequester) CreatePullRequest(context.Context, string, string, string, string, fleet.NodePool, string) (*githubapp.PullRequest, error) {
@@ -86,10 +97,15 @@ func TestEtcdFleetGitHubPullRequestLostResponseReplaysIndefinitely(t *testing.T)
 	if first := serve(); first.Code != http.StatusBadGateway || fake.calls != 1 {
 		t.Fatalf("lost response status=%d body=%s calls=%d", first.Code, first.Body.String(), fake.calls)
 	}
-	if second := serve(); second.Code != http.StatusCreated || fake.calls != 2 || strings.Contains(second.Body.String(), "credential") {
+	fake.ambiguousAfterCreate = true
+	if ambiguous := serve(); ambiguous.Code != http.StatusBadGateway || fake.calls != 1 {
+		t.Fatalf("ambiguous reconciliation retried create: status=%d body=%s calls=%d", ambiguous.Code, ambiguous.Body.String(), fake.calls)
+	}
+	fake.ambiguousAfterCreate = false
+	if second := serve(); second.Code != http.StatusOK || fake.calls != 1 || strings.Contains(second.Body.String(), "credential") {
 		t.Fatalf("recovery status=%d body=%s calls=%d", second.Code, second.Body.String(), fake.calls)
 	}
-	if replay := serve(); replay.Code != http.StatusOK || fake.calls != 2 {
+	if replay := serve(); replay.Code != http.StatusOK || fake.calls != 1 {
 		t.Fatalf("replay status=%d calls=%d", replay.Code, fake.calls)
 	}
 	reservation, err := operations.GetFleetGitHubPullRequestReservation(context.Background(), plan.ID)

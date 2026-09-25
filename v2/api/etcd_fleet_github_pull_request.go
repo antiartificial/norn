@@ -28,6 +28,7 @@ import (
 
 type etcdFleetGitHubPullRequester interface {
 	CreatePullRequest(context.Context, string, string, string, string, fleet.NodePool, string) (*githubapp.PullRequest, error)
+	ReconcilePullRequest(context.Context, string, string, string, string, fleet.NodePool, string) (*githubapp.Reconciliation, error)
 }
 
 func etcdFleetGitHubPullRequest(cfg *config.Config, operations *etcdstore.V3OperationStore, github etcdFleetGitHubPullRequester) http.HandlerFunc {
@@ -90,6 +91,33 @@ func etcdFleetGitHubPullRequest(cfg *config.Config, operations *etcdstore.V3Oper
 		}
 		if op.Status != model.OperationQueued {
 			handler.WriteControlProblem(w, r, http.StatusConflict, "fleet_github_pull_request_terminal", "fleet pull request reservation is terminal")
+			return
+		}
+		observed, reconcileErr := github.ReconcilePullRequest(r.Context(), reservation.PlanID, reservation.PlanDigest, reservation.Pool, reservation.Action, reservation.Proposed, reservation.SourceDigest)
+		if reconcileErr != nil || observed == nil || observed.Outcome == "ambiguous" {
+			handler.WriteControlProblem(w, r, http.StatusBadGateway, "fleet_github_pull_request_unproven", "GitHub could not authoritatively reconcile the fleet pull request")
+			return
+		}
+		if observed.PullRequest != nil {
+			if observed.Outcome != "remote-success" || !validEtcdFleetGitHubPullRequest(cfg, reservation, observed.PullRequest) {
+				handler.WriteControlProblem(w, r, http.StatusBadGateway, "fleet_github_pull_request_unproven", "GitHub reconciliation did not prove the fleet pull request")
+				return
+			}
+			if err := operations.FinishFleetGitHubPullRequest(r.Context(), reservation, observed.PullRequest); err != nil {
+				handler.WriteControlProblem(w, r, http.StatusInternalServerError, "fleet_github_receipt_failed", "recovered pull request could not be durably recorded; retry safely")
+				return
+			}
+			op, err = operations.GetOperation(r.Context(), reservation.OperationID)
+			if err != nil {
+				handler.WriteControlProblem(w, r, http.StatusInternalServerError, "fleet_github_receipt_failed", "pull request completion could not be loaded")
+				return
+			}
+			w.Header().Set("Cache-Control", "no-store")
+			writeEtcdSourceJSON(w, http.StatusOK, op)
+			return
+		}
+		if observed.Outcome != "verified-no-write" {
+			handler.WriteControlProblem(w, r, http.StatusBadGateway, "fleet_github_pull_request_unproven", "GitHub reconciliation did not prove that no pull request was written")
 			return
 		}
 		result, createErr := github.CreatePullRequest(r.Context(), reservation.PlanID, reservation.PlanDigest, reservation.Pool, reservation.Action, reservation.Proposed, reservation.SourceDigest)

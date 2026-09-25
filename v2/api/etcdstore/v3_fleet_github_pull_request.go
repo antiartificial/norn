@@ -312,10 +312,12 @@ func (s *V3OperationStore) FinishFleetGitHubPullRequest(ctx context.Context, res
 	}
 	now := time.Now().UTC().Truncate(time.Microsecond)
 	done := op.Operation
-	done.Status, done.Message, done.FinishedAt = model.OperationSucceeded, "fleet pull request opened", &now
-	if done.Payload == nil {
-		done.Payload = map[string]interface{}{}
+	done.Status, done.Message, done.FinishedAt, done.UpdatedAt = model.OperationSucceeded, "fleet pull request opened", &now, now
+	payload := make(map[string]interface{}, len(done.Payload)+len(remote))
+	for key, value := range done.Payload {
+		payload[key] = value
 	}
+	done.Payload = payload
 	for key, value := range remote {
 		done.Payload[key] = value
 	}
@@ -360,13 +362,30 @@ func (s *V3OperationStore) VerifyFleetGitHubPullRequestCompletion(ctx context.Co
 		Schema, OperationID, PlanID, Kind string
 		Status                            model.OperationStatus
 		Result                            struct {
-			PullRequestNumber int `json:"pullRequestNumber"`
-			URL, Branch       string
-			Merged            bool
+			PullRequestNumber           int `json:"pullRequestNumber"`
+			URL, Branch, State, HeadSHA string
+			Merged                      bool
 		}
 	}
 	if json.Unmarshal(canonical, &signed) != nil || signed.Schema != "norn.fleet-github-completion/v1" || signed.OperationID != reservation.OperationID || signed.PlanID != reservation.PlanID || signed.Kind != fleetGitHubPullRequestOperationKind || signed.Status != model.OperationSucceeded || expected == nil || signed.Result.PullRequestNumber != expected.Number || signed.Result.URL != strings.TrimSpace(expected.URL) || signed.Result.Branch != strings.TrimSpace(expected.Branch) || signed.Result.Merged != expected.Merged {
 		return fmt.Errorf("fleet GitHub pull-request completion does not bind remote result")
 	}
+	if payloadNumber(op.Operation.Payload["pullRequestNumber"]) != signed.Result.PullRequestNumber || stringValue(op.Operation.Payload["planId"]) != signed.PlanID || stringValue(op.Operation.Payload["url"]) != signed.Result.URL || stringValue(op.Operation.Payload["branch"]) != signed.Result.Branch || stringValue(op.Operation.Payload["state"]) != signed.Result.State || boolValue(op.Operation.Payload["merged"]) != signed.Result.Merged || stringValue(op.Operation.Payload["headSha"]) != signed.Result.HeadSHA {
+		return fmt.Errorf("fleet GitHub pull-request completion does not bind operation payload")
+	}
 	return nil
 }
+
+func payloadNumber(value interface{}) int {
+	switch typed := value.(type) {
+	case int:
+		return typed
+	case int64:
+		return int(typed)
+	case float64:
+		return int(typed)
+	default:
+		return 0
+	}
+}
+func boolValue(value interface{}) bool { result, _ := value.(bool); return result }
