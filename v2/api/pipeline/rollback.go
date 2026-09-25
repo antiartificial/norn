@@ -260,17 +260,12 @@ func (p *Pipeline) runRollback(ctx context.Context, op *model.Operation, spec *m
 		}})
 	}
 
+	completion := make([]store.DeploymentCompletionRegion, 0, len(regions))
 	for _, region := range regions {
-		if err := p.DB.UpdateDeploymentRegion(ctx, deploy.ID, region.Name, model.StatusDeployed, "", "", region.TrafficWeight); err != nil {
-			return &OperationResult{Claim: claim, Status: model.OperationFailed, Message: fmt.Sprintf("record rollback region: %v", err), Metadata: map[string]interface{}{"deploymentId": deploy.ID}}
-		}
+		completion = append(completion, store.DeploymentCompletionRegion{Region: region.Name, ActiveWeight: region.TrafficWeight})
 	}
 	deploy.Status = model.StatusDeployed
-	if deploy.SpecDigest != "" {
-		if err := p.DB.UpdateDeploymentResult(ctx, deploy); err != nil {
-			return &OperationResult{Claim: claim, Status: model.OperationFailed, Message: fmt.Sprintf("record rollback result: %v", err), Metadata: map[string]interface{}{"deploymentId": deploy.ID}}
-		}
-	} else if err := p.DB.UpdateDeployment(ctx, deploy.ID, deploy.Status); err != nil {
+	if err := p.DB.CompleteDeploymentResult(ctx, claim, deploy, completion); err != nil {
 		return &OperationResult{Claim: claim, Status: model.OperationFailed, Message: fmt.Sprintf("record rollback result: %v", err), Metadata: map[string]interface{}{"deploymentId": deploy.ID}}
 	}
 	return &OperationResult{Claim: claim, Status: model.OperationSucceeded, Message: fmt.Sprintf("rollback complete: %s", spec.App), Metadata: map[string]interface{}{"deploymentId": deploy.ID, "imageTag": imageTag}, publish: func(publishCtx context.Context) {
