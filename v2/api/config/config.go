@@ -185,6 +185,10 @@ type Config struct {
 	// v2 database routing (ambient libpq by database name).
 	DatabaseProfile   string // NORN_DATABASE_PROFILE
 	DatabaseSecretDir string // NORN_DATABASE_SECRET_DIR (owner-only; resolves secret: references)
+	// WPColdStartGate opts the qualified WordPress startup
+	// path into the private MySQL writer launch fence. It deliberately defaults
+	// off: ordinary app.deploy retains its rolling-deploy behavior.
+	WPColdStartGate bool // NORN_WORDPRESS_VERIFIED_TLS_COLD_START_GATE
 
 	// Evidence archive (ADR 0001). Unset directory disables archiving; the
 	// default mode is shadow (archive and verify, never delete).
@@ -342,6 +346,7 @@ func Load() *Config {
 		SnapshotArtifactBudgetBytes:  envInt64Or("NORN_SNAPSHOT_ARTIFACT_BUDGET_BYTES", 0),
 		DatabaseProfile:              strings.TrimSpace(os.Getenv("NORN_DATABASE_PROFILE")),
 		DatabaseSecretDir:            strings.TrimSpace(os.Getenv("NORN_DATABASE_SECRET_DIR")),
+		WPColdStartGate:              envBoolOr("NORN_WORDPRESS_VERIFIED_TLS_COLD_START_GATE", false),
 		EvidenceArchiveDir:           strings.TrimSpace(os.Getenv("NORN_EVIDENCE_ARCHIVE_DIR")),
 		EvidenceArchiveMode:          strings.ToLower(envOr("NORN_EVIDENCE_ARCHIVE_MODE", "shadow")),
 		EvidenceMinAge:               envOr("NORN_EVIDENCE_MIN_AGE", "720h"),

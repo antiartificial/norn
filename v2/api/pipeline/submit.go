@@ -89,6 +89,14 @@ func (p *Pipeline) submit(ctx context.Context, st *state, sg *saga.Saga) error {
 			return &DatabaseTargetError{Reason: "no staged database delivery revision for this deploy"}
 		}
 	}
+	// This private mode is intentionally positioned immediately before the
+	// first Nomad job registration. Database-variable staging above is not a
+	// runtime writer; every later registration is covered by this one-allocation
+	// cold-start protocol or refused during reservation.
+	coldStartGate, err := p.reserveWordPressVerifiedTLSColdStart(ctx, st)
+	if err != nil {
+		return err
+	}
 
 	// Check for port conflicts before submitting
 	for _, proc := range st.spec.Processes {
@@ -117,8 +125,15 @@ func (p *Pipeline) submit(ctx context.Context, st *state, sg *saga.Saga) error {
 			nomad.ApplyDesiredReplicaCounts(job, desiredCounts)
 			evalID, err := p.Nomad.SubmitJobRegion(job, region.NomadRegion)
 			if err != nil {
+				p.containWordPressVerifiedTLSColdStart(ctx, coldStartGate)
 				_ = p.DB.UpdateDeploymentRegion(ctx, st.deploymentID, region.Name, model.StatusFailed, "", err.Error(), 0)
 				return fmt.Errorf("submit nomad job in region %s: %w", region.Name, err)
+			}
+			if coldStartGate != nil {
+				if err := p.markWordPressVerifiedTLSColdStartLaunched(ctx, coldStartGate, st.spec.App); err != nil {
+					_ = p.DB.UpdateDeploymentRegion(ctx, st.deploymentID, region.Name, model.StatusFailed, "", err.Error(), 0)
+					return err
+				}
 			}
 			st.regionEvals[region.Name] = evalID
 			_ = p.DB.UpdateDeploymentRegion(ctx, st.deploymentID, region.Name, model.StatusSubmitting, evalID, "", 0)
@@ -134,6 +149,7 @@ func (p *Pipeline) submit(ctx context.Context, st *state, sg *saga.Saga) error {
 			periodicJob := nomad.TranslatePeriodicForRegionAt(st.spec, procName, proc, st.imageTag, env, region, st.deliveryRevision)
 			periodicEvalID, err := p.Nomad.SubmitJobRegion(periodicJob, region.NomadRegion)
 			if err != nil {
+				p.containWordPressVerifiedTLSColdStart(ctx, coldStartGate)
 				_ = p.DB.UpdateDeploymentRegion(ctx, st.deploymentID, region.Name, model.StatusFailed, "", err.Error(), 0)
 				return fmt.Errorf("submit periodic job %s in region %s: %w", procName, region.Name, err)
 			}

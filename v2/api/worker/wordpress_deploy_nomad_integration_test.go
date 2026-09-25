@@ -101,6 +101,7 @@ func TestClaimedWordPressVerifiedTLSDeployInNomad(t *testing.T) {
 		DB: db, OperationStore: operations, CheckpointStore: db, SagaStore: saga.NewPostgresStore(db.Pool),
 		AppsDir: appsDir, Nomad: client, WS: ws, Production: true, RegistryURL: "docker.io/library",
 		DatabaseTargets: &pipeline.DatabaseTargets{ProfileID: "qualification", Catalog: db.ActiveDatabaseCatalog, Secrets: secrets},
+		WPColdStartGate: true,
 		VerifyArtifact: func(_ context.Context, image string) error {
 			if image != model.QualifiedWordPressVerifiedTLSImage {
 				return fmt.Errorf("unqualified image %q", image)

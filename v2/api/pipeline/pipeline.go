@@ -101,6 +101,11 @@ type Pipeline struct {
 	// DatabaseTargets binds database-consuming operations to catalog
 	// targets. When nil (no NORN_DATABASE_PROFILE), v2 routing is unchanged.
 	DatabaseTargets *DatabaseTargets
+	// WPColdStartGate enables the private, one-shot launch
+	// fence for the one qualified WordPress verified-TLS startup shape. It is
+	// intentionally off by default because the fence has no rolling-update
+	// semantics.
+	WPColdStartGate bool
 	// RunBuildCommand is an injectable boundary for Docker build/push.
 	// Production uses exec.CommandContext through runBuildCommand.
 	RunBuildCommand func(context.Context, string, ...string) ([]byte, error)

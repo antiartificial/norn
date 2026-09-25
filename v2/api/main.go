@@ -338,6 +338,7 @@ func main() {
 		BuildTestEffects:               buildTestEffects,
 		SnapshotEffects:                snapshotEffects,
 		DatabaseTargets:                databaseTargets,
+		WPColdStartGate:                cfg.WPColdStartGate,
 	}
 	scaleEffects, err := pipeline.NewNomadScaleEffects(db, nomadClient)
 	if err != nil {
