@@ -92,14 +92,14 @@ func TestSyntheticMiniControlUpgradeAndReaderBoundary(t *testing.T) {
 	if !errors.As(err, &incompatible) || incompatible.Contract != "reader" || incompatible.Required != MySQLRetainedArtifactReaderVersion {
 		t.Fatalf("pre-retention reader check = %T %v, want reader 5 compatibility refusal", err, err)
 	}
-	// Migrations 22 and 28 through 37 raise the writer floor.
+	// Migrations 22 and 28 through 38 raise the writer floor.
 	// A previous binary cannot resume writes against the latest schema.
 	oldWriter, err := NewSchemaMigrator(pool, migrations[:21], BinarySchemaCompatibility{ReaderVersion: MySQLRetainedArtifactReaderVersion, WriterVersion: 18}, SchemaMigratorOptions{})
 	if err != nil {
 		t.Fatal(err)
 	}
 	_, err = oldWriter.Check(ctx, SchemaAccessReadWrite)
-	if !errors.As(err, &incompatible) || incompatible.Contract != "writer" || incompatible.Required != MySQLRestoreRecoveryUnlockWriterVersion {
+	if !errors.As(err, &incompatible) || incompatible.Contract != "writer" || incompatible.Required != MySQLRestoreRecoveryReleaseWriterVersion {
 		t.Fatalf("old writer check = %T %v, want writer compatibility refusal", err, err)
 	}
 	if _, err := migrator.Check(ctx, SchemaAccessReadWrite); err != nil {

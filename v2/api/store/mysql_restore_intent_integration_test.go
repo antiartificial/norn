@@ -449,6 +449,12 @@ func TestMySQLRestoreIntentAgainstDisposableEngines(t *testing.T) {
 		lock_generation=1,locked_until=now()+interval '2 minutes' WHERE id=$1`, recoveryClaim.OperationID(), recoveryClaim.OwnerID()); err != nil {
 		t.Fatal(err)
 	}
+	if err := control.ReleaseClaimedMySQLRestoreRuntimeFence(ctx, stores[0], recoveryClaim, stoppedSource, secrets); err == nil {
+		t.Fatalf("recovery released fence before target unlock proof: %v", err)
+	}
+	if active, err := control.RuntimeMutationFenceActive(ctx); err != nil || !active {
+		t.Fatalf("failed release did not retain fence: %v %v", active, err)
+	}
 	recoveryRunner := MySQLRestoreRecoveryRunner{Control: control, Acceptance: stores[0], Observer: stoppedSource,
 		Secrets: secrets, ClaimLease: 120 * time.Millisecond}
 	if err := recoveryRunner.RunClaimedTargetUnlock(ctx, recoveryClaim); err != nil {
@@ -482,6 +488,42 @@ func TestMySQLRestoreIntentAgainstDisposableEngines(t *testing.T) {
 	}
 	if claimed, _, err := control.ClaimNextOperation(ctx, "post-restore-deploy", time.Minute, []string{"app.deploy"}); err != nil || claimed != nil {
 		t.Fatalf("completed restore resumed queued deploy without signed recovery: %+v %v", claimed, err)
+	}
+	if err := control.RenewOperationClaim(ctx, recoveryClaim, time.Minute); err != nil {
+		t.Fatalf("renew recovery claim before fence release: %v", err)
+	}
+	staleRecoveryClaim, err := NewOperationClaim(recoveryClaim.OperationID(), recoveryClaim.OwnerID(), recoveryClaim.Generation()+1)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := control.ReleaseClaimedMySQLRestoreRuntimeFence(ctx, stores[0], staleRecoveryClaim, stoppedSource, secrets); err == nil {
+		t.Fatal("stale recovery claim released runtime fence")
+	}
+	if active, err := control.RuntimeMutationFenceActive(ctx); err != nil || !active {
+		t.Fatalf("stale claim changed global fence: %v %v", active, err)
+	}
+	if err := control.ReleaseClaimedMySQLRestoreRuntimeFence(ctx, stores[0], recoveryClaim, stoppedSource, secrets); err != nil {
+		t.Fatalf("signed recovery could not release runtime fence: %v", err)
+	}
+	var releaseState, recoveryID, recoveryStatus string
+	if err := control.Pool.QueryRow(ctx, `SELECT r.state,m.recovery_operation_id,o.status
+		FROM mysql_restore_recovery_intents r
+		JOIN mysql_restore_maintenance_fences m ON m.operation_id=r.restore_operation_id
+		JOIN operations o ON o.id=r.operation_id WHERE r.operation_id=$1`, recoveryClaim.OperationID()).Scan(&releaseState, &recoveryID, &recoveryStatus); err != nil ||
+		releaseState != "runtime-released" || recoveryID != recoveryClaim.OperationID() || recoveryStatus != "succeeded" {
+		t.Fatalf("release receipt state=%q recovery=%q status=%q err=%v", releaseState, recoveryID, recoveryStatus, err)
+	}
+	if active, err := control.RuntimeMutationFenceActive(ctx); err != nil || active {
+		t.Fatalf("global fence remains active after atomic release: %v %v", active, err)
+	}
+	if err := database.InspectMySQLRuntimeAccountLockForRestore(ctx, source, *source.MySQLMaintenance, secrets); err != nil {
+		t.Fatalf("source account was unlocked by recovery release: %v", err)
+	}
+	if err := control.ReleaseClaimedMySQLRestoreRuntimeFence(ctx, stores[0], recoveryClaim, stoppedSource, secrets); !errors.Is(err, ErrMySQLRestoreFence) {
+		t.Fatalf("completed recovery replay was accepted: %v", err)
+	}
+	if claimed, _, err := control.ClaimNextOperation(ctx, "post-recovery-deploy", time.Minute, []string{"app.deploy"}); err != nil || claimed == nil {
+		t.Fatalf("released fence did not admit queued deploy: %+v %v", claimed, err)
 	}
 	// The later process-kill case uses a separate staged-source fixture.
 	if err := os.WriteFile(path, stagedBytes, 0o600); err != nil {

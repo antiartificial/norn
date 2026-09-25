@@ -441,7 +441,8 @@ func rejectMySQLRestoreMaintenanceFence(ctx context.Context, tx pgx.Tx, identiti
 		return err
 	}
 	rows, err := tx.Query(ctx, `SELECT i.target, f.source_quiescence->'source'
-		FROM mysql_restore_maintenance_fences f JOIN mysql_restore_intents i ON i.operation_id=f.operation_id`)
+		FROM mysql_restore_maintenance_fences f JOIN mysql_restore_intents i ON i.operation_id=f.operation_id
+		WHERE f.recovery_released_at IS NULL`)
 	if err != nil {
 		return err
 	}

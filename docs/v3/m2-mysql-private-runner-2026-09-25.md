@@ -156,7 +156,16 @@ target fingerprints unchanged, the source still stopped and locked, and the
 original claim/fence still held before recording `target-unlock-proved`. The
 disposable PostgreSQL/MySQL rehearsal passed the effect and rejected replay.
 Any uncertain effect keeps the intent and global fence held. The source account
-remains locked. This still has no fence-release/resume step and is private.
+remains locked. Migration 38 adds a private, claim-bound release after
+`target-unlock-proved`. It reobserves the stopped and locked source, unlocked
+and session-free destination, and target fingerprints. One PostgreSQL
+transaction marks the recovery and maintenance lineage, terminalizes the
+signed recovery operation, and clears the exact global fence epoch. A failed
+transaction leaves the fence held. The disposable PostgreSQL/MySQL rehearsal
+checks that queued app mutations remain blocked before release and can claim
+afterward, while the source account remains locked. This is a local private
+rehearsal; the managed WordPress/runtime path and live release are not yet
+qualified.
 
 - Qualify bounded memory/disk behavior on representative large data.
 - Wire the launch and mutation gates into every application write and resume
