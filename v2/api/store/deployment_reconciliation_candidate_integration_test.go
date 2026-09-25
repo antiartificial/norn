@@ -33,14 +33,21 @@ func TestDeploymentReconciliationCandidateRequiresSignedUnsupersededProvenance(t
 	if _, err := stores[0].DeploymentReconciliationCandidate(ctx, accepted.Operation.ID); !errors.Is(err, ErrDeploymentReconciliationUnavailable) {
 		t.Fatalf("queued deployment became candidate: %v", err)
 	}
-	if _, err := dbs[0].Pool.Exec(ctx, `UPDATE operations SET status='failed',last_error='operation executor lease expired',
-		metadata=metadata || '{"manualRecoveryRequired":true}'::jsonb,finished_at=now() WHERE id=$1`, accepted.Operation.ID); err != nil {
+	claimed, _, err := dbs[0].ClaimNextOperation(ctx, "candidate-worker", time.Minute, []string{"app.deploy"})
+	if err != nil || claimed == nil || claimed.ID != accepted.Operation.ID {
+		t.Fatalf("claim=%+v err=%v", claimed, err)
+	}
+	if err := dbs[0].StartDeploymentStep(ctx, model.DeploymentStep{DeploymentID: accepted.Deployment.ID, App: accepted.Operation.App,
+		SagaID: accepted.Operation.SagaID, Step: "submit", Kind: model.DeploymentStepMutable, Status: model.DeploymentStepRunning, Attempt: 1}); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := dbs[0].Pool.Exec(ctx, `UPDATE deployments SET status='failed',finished_at=now() WHERE id=$1`, accepted.Deployment.ID); err != nil {
+	if err := dbs[0].UpdateDeploymentRegion(ctx, accepted.Deployment.ID, "west", model.StatusSubmitting, "eval-accepted", "", 0); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := dbs[0].Pool.Exec(ctx, `UPDATE deployment_regions SET status='failed' WHERE deployment_id=$1`, accepted.Deployment.ID); err != nil {
+	if _, err := dbs[0].Pool.Exec(ctx, `UPDATE operations SET locked_until=now()-interval '1 second' WHERE id=$1`, accepted.Operation.ID); err != nil {
+		t.Fatal(err)
+	}
+	if err := dbs[0].RecoverExpiredOperations(ctx); err != nil {
 		t.Fatal(err)
 	}
 	candidate, err := stores[0].DeploymentReconciliationCandidate(ctx, accepted.Operation.ID)
@@ -88,11 +95,17 @@ func TestDeploymentReconciliationCandidateUsesVerifiedBuildCheckpoint(t *testing
 	if _, err := dbs[0].RecordOperationCheckpoint(ctx, claim, CheckpointBuild, build); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := dbs[0].Pool.Exec(ctx, `UPDATE operations SET status='failed',last_error='operation executor lease expired',
-		metadata=metadata || '{"manualRecoveryRequired":true}'::jsonb,locked_by='',locked_until=NULL,finished_at=now() WHERE id=$1`, accepted.Operation.ID); err != nil {
+	if err := dbs[0].StartDeploymentStep(ctx, model.DeploymentStep{DeploymentID: accepted.Deployment.ID, App: accepted.Operation.App,
+		SagaID: accepted.Operation.SagaID, Step: "submit", Kind: model.DeploymentStepMutable, Status: model.DeploymentStepRunning, Attempt: 1}); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := dbs[0].Pool.Exec(ctx, `UPDATE deployments SET status='failed',finished_at=now() WHERE id=$1`, accepted.Deployment.ID); err != nil {
+	if err := dbs[0].UpdateDeploymentRegion(ctx, accepted.Deployment.ID, "west", model.StatusSubmitting, "eval-checkpoint", "", 0); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := dbs[0].Pool.Exec(ctx, `UPDATE operations SET locked_until=now()-interval '1 second' WHERE id=$1`, accepted.Operation.ID); err != nil {
+		t.Fatal(err)
+	}
+	if err := dbs[0].RecoverExpiredOperations(ctx); err != nil {
 		t.Fatal(err)
 	}
 	candidate, err := stores[0].DeploymentReconciliationCandidate(ctx, accepted.Operation.ID)

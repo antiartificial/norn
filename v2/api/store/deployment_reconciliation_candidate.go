@@ -42,6 +42,22 @@ func (s *PGOperationStore) DeploymentReconciliationCandidate(ctx context.Context
 	if superseded {
 		return DeploymentReconciliationCandidate{}, ErrDeploymentReconciliationUnavailable
 	}
+	step := "submit"
+	if op.Kind == "app.rollback" {
+		step = "resolve-secrets"
+	}
+	var submitted, archived bool
+	var evaluatedRegions int
+	if err := s.db.Pool.QueryRow(ctx, `SELECT
+		EXISTS(SELECT 1 FROM deployment_steps WHERE deployment_id=$1 AND step=$2 AND kind='mutable' AND status IN ('running','complete')),
+		(SELECT count(*) FROM deployment_regions WHERE deployment_id=$1 AND eval_id<>''),
+		EXISTS(SELECT 1 FROM evidence_archive_intents WHERE operation_id=$3 AND subject_kind='saga' AND subject_id=$4)
+	`, d.ID, step, op.ID, op.SagaID).Scan(&submitted, &evaluatedRegions, &archived); err != nil {
+		return DeploymentReconciliationCandidate{}, err
+	}
+	if !submitted || !archived || evaluatedRegions != len(accepted.Regions) {
+		return DeploymentReconciliationCandidate{}, ErrDeploymentReconciliationUnavailable
+	}
 	image := d.ImageTag
 	if op.Kind == "app.deploy" {
 		checkpoint, err := s.db.LoadOperationCheckpoint(ctx, operationID, CheckpointBuild)
