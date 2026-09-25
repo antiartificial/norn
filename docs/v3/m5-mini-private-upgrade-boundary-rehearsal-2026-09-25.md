@@ -38,8 +38,8 @@ normal protected upgrade cannot promote the candidate while this release is
 its rollback target.
 
 The private dump, temporary source and binaries, fingerprint files, logs, and
-disposable container were removed after the rehearsal. Closing M5 requires a
-reviewed legacy-to-contract baseline transition with a production storage
-backup and restore proof, an explicit rollback or roll-forward boundary, and
-a controlled Mini maintenance rehearsal. This copied-data result does not
-authorize a Mini deployment.
+disposable container were removed after the rehearsal. The guarded
+[legacy-to-contract baseline transition](m5-legacy-baseline-transition.md) now
+provides the required one-way fencing path. Closing M5 still requires a
+production storage backup and restore proof plus a controlled Mini maintenance
+rehearsal. This copied-data result does not authorize a Mini deployment.
