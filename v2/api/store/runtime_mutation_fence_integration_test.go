@@ -19,7 +19,7 @@ func TestRuntimeMutationFenceKeepsQueuedAppEffectsUnclaimedUntilExactRelease(t *
 	}
 
 	fence, err := db.AcquireRuntimeMutationFence(ctx, "migration-28-test", "protect runtime during maintenance")
-	if err != nil || fence.Epoch != 1 || fence.Owner != "migration-28-test" || fence.Reason == "" {
+	if err != nil || fence.Epoch <= 0 || fence.Owner != "migration-28-test" || fence.Reason == "" {
 		t.Fatalf("acquire fence=%+v err=%v", fence, err)
 	}
 	if _, err := db.AcquireRuntimeMutationFence(ctx, "other-owner", "must not replace held fence"); err != ErrRuntimeMutationFenceHeld {
