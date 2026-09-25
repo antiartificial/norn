@@ -48,7 +48,7 @@ func normalizeFleetReconciliationAcceptance(acceptance *OperationAcceptance) err
 	if len(admission.RunnerAttemptID) > 1024 || len(admission.WorkflowURL) > 2048 {
 		return &AcceptanceValidationError{Reason: "fleet reconciliation attempt ownership exceeds configured bounds"}
 	}
-	request, err := reconciliationRequestFromOperation(acceptance.Operation)
+	request, err := FleetReconciliationRequestFromOperation(acceptance.Operation)
 	if err != nil {
 		return err
 	}
@@ -67,6 +67,14 @@ func normalizeFleetReconciliationAcceptance(acceptance *OperationAcceptance) err
 		return &AcceptanceValidationError{Reason: "fleet reconciliation operation status must match evidence status"}
 	}
 	return nil
+}
+
+// NormalizeFleetReconciliationAcceptance validates the typed reconciliation
+// portion before a backend-specific aggregate appends its signed evidence.
+// Backends must still bind the plan, runner attempt, and complete history in
+// the same atomic transaction as the receipt.
+func NormalizeFleetReconciliationAcceptance(acceptance *OperationAcceptance) error {
+	return normalizeFleetReconciliationAcceptance(acceptance)
 }
 
 func enforceFleetReconciliationAdmission(ctx context.Context, tx pgx.Tx, acceptance OperationAcceptance) error {
@@ -93,7 +101,7 @@ func enforceFleetReconciliationAdmission(ctx context.Context, tx pgx.Tx, accepta
 	if err := json.Unmarshal(rawPlan, &planPayload); err != nil {
 		return fleetReconciliationAdmissionError("fleet_plan_invalid", "fleet capacity plan payload is invalid")
 	}
-	request, err := reconciliationRequestFromOperation(acceptance.Operation)
+	request, err := FleetReconciliationRequestFromOperation(acceptance.Operation)
 	if err != nil {
 		return err
 	}
@@ -132,13 +140,15 @@ func enforceFleetReconciliationAdmission(ctx context.Context, tx pgx.Tx, accepta
 		return err
 	}
 	plan := &model.Operation{ID: admission.PlanID, Kind: planKind, Status: planStatus, Payload: planPayload}
-	if err := validateFleetReconciliationAdmissionTransition(plan, existing, request); err != nil {
+	if err := ValidateFleetReconciliationAdmissionTransition(plan, existing, request); err != nil {
 		return fleetReconciliationAdmissionError("fleet_reconciliation_out_of_order", err.Error())
 	}
 	return nil
 }
 
-func reconciliationRequestFromOperation(operation model.Operation) (fleet.ReconciliationRequest, error) {
+// FleetReconciliationRequestFromOperation decodes the canonical checkpoint
+// payload shared by the PostgreSQL and etcd reconciliation aggregates.
+func FleetReconciliationRequestFromOperation(operation model.Operation) (fleet.ReconciliationRequest, error) {
 	encoded, err := json.Marshal(operation.Payload)
 	if err != nil {
 		return fleet.ReconciliationRequest{}, &AcceptanceValidationError{Reason: "encode fleet reconciliation payload: " + err.Error()}
@@ -174,7 +184,9 @@ func loadFleetReconciliationHistory(ctx context.Context, tx pgx.Tx, planID strin
 	return operations, rows.Err()
 }
 
-func validateFleetReconciliationAdmissionTransition(plan *model.Operation, existing []model.Operation, request fleet.ReconciliationRequest) error {
+// ValidateFleetReconciliationAdmissionTransition enforces the append-only
+// checkpoint lineage. The caller supplies the complete durable history.
+func ValidateFleetReconciliationAdmissionTransition(plan *model.Operation, existing []model.Operation, request fleet.ReconciliationRequest) error {
 	succeeded := map[string]bool{}
 	for _, operation := range existing {
 		commit, _ := operation.Payload["commitSha"].(string)

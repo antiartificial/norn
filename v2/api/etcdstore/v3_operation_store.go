@@ -234,7 +234,10 @@ func (s *V3OperationStore) Accept(ctx context.Context, a store.OperationAcceptan
 	if a.FleetRunnerAttempt != nil {
 		return s.acceptFleetRunnerAttempt(ctx, a)
 	}
-	if a.Deployment != nil || len(a.Regions) > 0 || a.Admission.OneActiveMutablePerApp || a.FleetReconciliation != nil {
+	if a.FleetReconciliation != nil {
+		return s.acceptFleetReconciliation(ctx, a)
+	}
+	if a.Deployment != nil || len(a.Regions) > 0 || a.Admission.OneActiveMutablePerApp {
 		return store.AcceptedOperation{}, &store.AcceptanceValidationError{Reason: "etcd operation aggregate admission is not implemented"}
 	}
 	// Canary promotion has an atomic effect aggregate. Its replay identity may

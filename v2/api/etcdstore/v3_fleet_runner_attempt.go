@@ -482,11 +482,11 @@ func fleetPlanRequiresDrain(payload map[string]interface{}) bool {
 	}
 	return action == "scale" && number(proposed["desired"]) < number(current["desired"])
 }
-func fleetInitialPhase(payload map[string]interface{}) string {
-	if fleetPlanRequiresDrain(payload) {
-		return "prechange_verified"
-	}
-	return "provider_applying"
+func fleetInitialPhase(_ map[string]interface{}) string {
+	// Reconciliation admission requires successful prechange evidence before
+	// provider work for every plan shape. Starting later would make that
+	// mandatory checkpoint impossible to append while the attempt is current.
+	return "prechange_verified"
 }
 func fleetProjectExpiredAttempt(item fleet.RunnerAttempt, now time.Time) fleet.RunnerAttempt {
 	if (item.Status == "queued" || item.Status == "running") && item.HeartbeatExpiresAt.Before(now) {
