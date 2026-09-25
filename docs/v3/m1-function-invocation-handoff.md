@@ -235,8 +235,9 @@ The private variable cleanup consumer now supports exact owner and revision
 checked deletion, and PostgreSQL migration 20 stores lease-fenced public
 cleanup intents. Claim eligibility requires terminal receipt, attempted
 variable creation, and verified operation archive evidence. Migration 21
-raises the writer contract so private function acceptance always reserves that
-archive subject. The archive now seals the signed public operation, terminal
+raises the reader and writer contracts so private function acceptance always
+reserves that archive subject and older readers cannot encounter v2 bundles.
+The archive now seals the signed public operation, terminal
 execution, and public effect-attempt rows as a v2 bundle; old v1 bundles remain
 readable. The cleanup consumer now runs with the non-production preview and
 requires an evidence archiver at startup. Private envelope retirement still

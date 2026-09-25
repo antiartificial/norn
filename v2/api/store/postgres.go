@@ -527,7 +527,7 @@ const controlSchemaBaselineSQL = `
 // archive-aware and never serve pruned history as complete.
 const (
 	EvidenceArchiveReaderVersion int64 = 2
-	ControlSchemaReaderVersion   int64 = OperationAcceptanceRetirementReaderVersion
+	ControlSchemaReaderVersion   int64 = FunctionInvocationArchiveReaderVersion
 	ControlSchemaWriterVersion   int64 = FunctionInvocationArchiveWriterVersion
 )
 

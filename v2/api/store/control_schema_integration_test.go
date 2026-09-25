@@ -55,7 +55,7 @@ func TestControlSchemaAdoptsLegacyRowsWithoutReplacingEvidence(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if status.CurrentMigrationVersion != 21 || len(status.AppliedVersions) != 21 || status.AppliedVersions[20] != 21 || status.MinimumReaderVersion != OperationAcceptanceRetirementReaderVersion || status.MinimumWriterVersion != FunctionInvocationArchiveWriterVersion {
+	if status.CurrentMigrationVersion != 21 || len(status.AppliedVersions) != 21 || status.AppliedVersions[20] != 21 || status.MinimumReaderVersion != FunctionInvocationArchiveReaderVersion || status.MinimumWriterVersion != FunctionInvocationArchiveWriterVersion {
 		t.Fatalf("migration status = %#v", status)
 	}
 
