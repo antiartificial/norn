@@ -384,6 +384,9 @@ func payloadNumber(value interface{}) int {
 		return int(typed)
 	case float64:
 		return int(typed)
+	case json.Number:
+		result, _ := typed.Int64()
+		return int(result)
 	default:
 		return 0
 	}

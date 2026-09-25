@@ -102,15 +102,18 @@ func TestEtcdFleetGitHubPullRequestLostResponseReplaysIndefinitely(t *testing.T)
 		t.Fatalf("ambiguous reconciliation retried create: status=%d body=%s calls=%d", ambiguous.Code, ambiguous.Body.String(), fake.calls)
 	}
 	fake.ambiguousAfterCreate = false
-	if second := serve(); second.Code != http.StatusOK || fake.calls != 1 || strings.Contains(second.Body.String(), "credential") {
+	if second := serve(); second.Code != http.StatusOK || fake.calls != 1 || strings.Contains(second.Body.String(), "dispatch_nonce") {
 		t.Fatalf("recovery status=%d body=%s calls=%d", second.Code, second.Body.String(), fake.calls)
-	}
-	if replay := serve(); replay.Code != http.StatusOK || fake.calls != 1 {
-		t.Fatalf("replay status=%d calls=%d", replay.Code, fake.calls)
 	}
 	reservation, err := operations.GetFleetGitHubPullRequestReservation(context.Background(), plan.ID)
 	if err != nil {
 		t.Fatal(err)
+	}
+	if err := operations.VerifyFleetGitHubPullRequestCompletion(context.Background(), reservation, &fake.result); err != nil {
+		t.Fatalf("completion verification after recovery: %v", err)
+	}
+	if replay := serve(); replay.Code != http.StatusOK || fake.calls != 1 {
+		t.Fatalf("replay status=%d calls=%d", replay.Code, fake.calls)
 	}
 	if err := operations.VerifyFleetGitHubPullRequestReservation(context.Background(), reservation); err != nil {
 		t.Fatalf("indefinite replay under default TTL: %v", err)

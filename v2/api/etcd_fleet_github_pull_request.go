@@ -64,7 +64,10 @@ func etcdFleetGitHubPullRequest(cfg *config.Config, operations *etcdstore.V3Oper
 		}
 		reservation, err := operations.GetFleetGitHubPullRequestReservation(r.Context(), planID)
 		if errors.Is(err, etcdstore.ErrNotFound) {
-			_, reservation, err = acceptEtcdFleetGitHubPullRequest(r.Context(), operations, principal, plan, typed)
+			_, _, err = acceptEtcdFleetGitHubPullRequest(r.Context(), operations, principal, plan, typed)
+			if err == nil {
+				reservation, err = operations.GetFleetGitHubPullRequestReservation(r.Context(), planID)
+			}
 		}
 		if err != nil {
 			handler.WriteControlProblem(w, r, http.StatusConflict, "fleet_github_pull_request_reservation_unavailable", "protected pull request reservation is unavailable")
@@ -86,6 +89,7 @@ func etcdFleetGitHubPullRequest(cfg *config.Config, operations *etcdstore.V3Oper
 				return
 			}
 			w.Header().Set("Cache-Control", "no-store")
+			op.AttachReceipt()
 			writeEtcdSourceJSON(w, http.StatusOK, op)
 			return
 		}
@@ -113,6 +117,7 @@ func etcdFleetGitHubPullRequest(cfg *config.Config, operations *etcdstore.V3Oper
 				return
 			}
 			w.Header().Set("Cache-Control", "no-store")
+			op.AttachReceipt()
 			writeEtcdSourceJSON(w, http.StatusOK, op)
 			return
 		}
@@ -136,6 +141,7 @@ func etcdFleetGitHubPullRequest(cfg *config.Config, operations *etcdstore.V3Oper
 		}
 		w.Header().Set("Cache-Control", "no-store")
 		w.Header().Set("Location", "/api/v1/operations/"+op.ID)
+		op.AttachReceipt()
 		writeEtcdSourceJSON(w, http.StatusCreated, op)
 	}
 }
@@ -166,17 +172,30 @@ func pullRequestFromEtcdOperation(op *model.Operation) *githubapp.PullRequest {
 	if op == nil {
 		return nil
 	}
-	number, ok := op.Payload["pullRequestNumber"].(float64)
-	if !ok {
-		return nil
-	}
+	number := etcdFleetPullRequestNumber(op.Payload["pullRequestNumber"])
 	url, _ := op.Payload["url"].(string)
 	branch, _ := op.Payload["branch"].(string)
 	state, _ := op.Payload["state"].(string)
 	merged, _ := op.Payload["merged"].(bool)
 	head, _ := op.Payload["headSha"].(string)
-	if int(number) <= 0 || strings.TrimSpace(url) == "" || strings.TrimSpace(branch) == "" {
+	if number <= 0 || strings.TrimSpace(url) == "" || strings.TrimSpace(branch) == "" {
 		return nil
 	}
-	return &githubapp.PullRequest{Number: int(number), URL: url, Branch: branch, State: state, Merged: merged, HeadSHA: head}
+	return &githubapp.PullRequest{Number: number, URL: url, Branch: branch, State: state, Merged: merged, HeadSHA: head}
+}
+
+func etcdFleetPullRequestNumber(value interface{}) int {
+	switch number := value.(type) {
+	case int:
+		return number
+	case int64:
+		return int(number)
+	case float64:
+		return int(number)
+	case json.Number:
+		parsed, _ := number.Int64()
+		return int(parsed)
+	default:
+		return 0
+	}
 }
