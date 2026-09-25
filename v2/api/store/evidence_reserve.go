@@ -91,6 +91,11 @@ func (e *EvidenceReserveExhaustedError) Error() string {
 func reserveAcceptedEvidence(ctx context.Context, tx pgx.Tx, acceptance OperationAcceptance, intentID string, requestCanonical, canonical []byte, signature AcceptanceSignature) error {
 	subjectKind, subjectID := "", ""
 	switch {
+	case acceptance.Operation.Kind == PrivateInvocationOperationKind:
+		// Function invocations are operation receipts even when the caller
+		// supplied a saga correlation. Their terminal projection is keyed by
+		// operation ID and must travel with the signed acceptance.
+		subjectKind, subjectID = "operation", acceptance.Operation.ID
 	case acceptance.Operation.SagaID != "":
 		subjectKind, subjectID = "saga", acceptance.Operation.SagaID
 	case acceptance.Operation.Kind == "fleet.github.pull-request" || acceptance.Operation.Kind == "fleet.github.apply-dispatch":

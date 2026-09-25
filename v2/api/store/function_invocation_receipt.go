@@ -87,24 +87,25 @@ func (db *DB) FinishClaimedFunctionInvocation(ctx context.Context, claim Operati
 		return ErrFunctionInvocationExecutionConflict
 	}
 
-	var sagaID, operationApp string
+	var operationApp string
 	if err := tx.QueryRow(ctx, `
 		UPDATE operations
 		SET status=$1, message=$2, metadata=metadata || $3::jsonb,
 			locked_by='', locked_until=NULL, updated_at=clock_timestamp(), finished_at=clock_timestamp()
 		WHERE id=$4
-		RETURNING saga_id, app
-	`, status, message, data, claim.OperationID()).Scan(&sagaID, &operationApp); err != nil {
+		RETURNING app
+	`, status, message, data, claim.OperationID()).Scan(&operationApp); err != nil {
 		return err
 	}
-	if sagaID != "" {
-		if _, err := tx.Exec(ctx, `
-			INSERT INTO evidence_archive_intents (id, subject_kind, subject_id, app, operation_id, sequence, state)
-			VALUES ('ei-' || gen_random_uuid()::text, 'saga', $1, $2, $3, 1, 'pending')
-			ON CONFLICT (subject_kind, subject_id, sequence) DO NOTHING
-		`, sagaID, operationApp, claim.OperationID()); err != nil {
-			return err
-		}
+	// Acceptance creates this intent for current writers. Keep the terminal
+	// insert for writers that accepted before that contract, but bind it to the
+	// operation so its terminal func_executions projection can be archived.
+	if _, err := tx.Exec(ctx, `
+		INSERT INTO evidence_archive_intents (id, subject_kind, subject_id, app, operation_id, sequence, state)
+		VALUES ('ei-' || gen_random_uuid()::text, 'operation', $1, $2, $1, 1, 'pending')
+		ON CONFLICT (subject_kind, subject_id, sequence) DO NOTHING
+	`, claim.OperationID(), operationApp); err != nil {
+		return err
 	}
 	return tx.Commit(ctx)
 }

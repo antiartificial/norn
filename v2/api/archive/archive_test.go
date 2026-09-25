@@ -1,6 +1,7 @@
 package archive
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
@@ -227,5 +228,66 @@ func TestOperationBundleBindsSubjectKindToArchivedOperation(t *testing.T) {
 	}
 	if _, err := Open(encoded); err != nil {
 		t.Fatalf("valid operation bundle = %v", err)
+	}
+}
+
+func TestFunctionInvocationBundleContainsOnlyPublicTerminalEvidence(t *testing.T) {
+	now := time.Date(2026, 9, 24, 12, 0, 0, 0, time.UTC)
+	finished := now.Add(time.Second)
+	execution := []byte(`{"id":"op-function-1","app":"shop","process":"resize","status":"complete","exit_code":0,"started_at":"2026-09-24T12:00:00Z","finished_at":"2026-09-24T12:00:01Z","duration_ms":1000}`)
+	attempts := []byte(`[{"operation_id":"op-function-1","stage":"job","target":"shop-resize-op-function-1","input_digest":"sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa","claim_generation":1,"state":"attempted","created_at":"2026-09-24T12:00:00Z","attempted_at":"2026-09-24T12:00:01Z","updated_at":"2026-09-24T12:00:01Z"}]`)
+	bundle := &Bundle{Subject: Subject{Kind: "operation", ID: "op-function-1", App: "shop", OperationID: "op-function-1", OperationKind: "app.function-invoke"}, Sequence: 1, SealedAt: finished,
+		Operation:  []byte(`{"id":"op-function-1","app":"shop","kind":"app.function-invoke","status":"succeeded","payload":{"process":"resize"}}`),
+		Acceptance: &SignedAcceptance{CanonicalBytes: []byte(`{"signed":"public receipt"}`)}, FunctionExecution: execution, FunctionEffectAttempts: attempts}
+	encoded, err := Seal(bundle)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if bytes.Contains(encoded, []byte(`"effects"`)) {
+		t.Fatalf("function archive contained raw effects: %s", encoded)
+	}
+	opened, err := Open(encoded)
+	if err != nil || !bytes.Equal(opened.FunctionExecution, execution) || !bytes.Equal(opened.FunctionEffectAttempts, attempts) {
+		t.Fatalf("function bundle open=%+v err=%v", opened, err)
+	}
+
+	for name, mutate := range map[string]func(*Bundle){
+		"raw effects": func(b *Bundle) { b.Effects = []byte(`[{"request":"private"}]`) },
+		"unknown execution field": func(b *Bundle) {
+			b.FunctionExecution = []byte(`{"id":"op-function-1","app":"shop","process":"resize","status":"complete","exit_code":0,"started_at":"2026-09-24T12:00:00Z","finished_at":"2026-09-24T12:00:01Z","duration_ms":1000,"request":"private"}`)
+		},
+	} {
+		t.Run(name, func(t *testing.T) {
+			forged := *bundle
+			mutate(&forged)
+			if _, err := Seal(&forged); err == nil {
+				t.Fatal("invalid function evidence sealed")
+			}
+		})
+	}
+}
+
+func TestOpenPreservesV1BundleCompatibilityAndRejectsV2FieldsThere(t *testing.T) {
+	bundle := &Bundle{Subject: Subject{Kind: "saga", ID: "legacy-saga", App: "shop"}, Sequence: 1, SealedAt: time.Now().UTC()}
+	encoded, err := Seal(bundle)
+	if err != nil {
+		t.Fatal(err)
+	}
+	legacy := bytes.Replace(encoded, []byte(BundleSchema), []byte(LegacyBundleSchema), 1)
+	opened, err := Open(legacy)
+	if err != nil || opened.Schema != LegacyBundleSchema {
+		t.Fatalf("legacy bundle open=%+v err=%v", opened, err)
+	}
+	var forged map[string]any
+	if err := json.Unmarshal(legacy, &forged); err != nil {
+		t.Fatal(err)
+	}
+	forged["functionExecution"] = map[string]any{}
+	withV2Field, err := json.Marshal(forged)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := Open(withV2Field); err == nil {
+		t.Fatal("v1 bundle accepted v2 function evidence")
 	}
 }

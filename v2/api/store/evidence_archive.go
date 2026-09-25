@@ -63,7 +63,7 @@ func (db *DB) BackfillEvidenceIntents(ctx context.Context, finishedBefore time.D
 		INSERT INTO evidence_archive_intents (id, subject_kind, subject_id, app, operation_id, sequence, state)
 		SELECT 'ei-' || gen_random_uuid()::text, 'saga', o.saga_id, o.app, o.id, 1, 'pending'
 		FROM operations o
-		WHERE o.status IN `+terminalStatusSQL+` AND o.saga_id <> '' AND o.finished_at < now() - $1::interval
+		WHERE o.status IN `+terminalStatusSQL+` AND o.saga_id <> '' AND o.kind <> '`+PrivateInvocationOperationKind+`' AND o.finished_at < now() - $1::interval
 		  AND NOT EXISTS (SELECT 1 FROM evidence_archive_intents i WHERE i.subject_kind = 'saga' AND i.subject_id = o.saga_id)
 		ORDER BY o.finished_at
 		LIMIT $2
@@ -75,18 +75,30 @@ func (db *DB) BackfillEvidenceIntents(ctx context.Context, finishedBefore time.D
 }
 
 // BackfillNonSagaFleetGitHubEvidenceIntents restores archive work for signed
-// terminal Fleet GitHub receipts written before the operation-subject outbox
-// existed. It deliberately joins acceptance evidence: an unsigned operation
-// is not substituted for a protected receipt, and missing signed bytes leave
-// no misleading archive intent behind.
+// terminal operation receipts written before their operation-subject outbox
+// existed. Function invocations are included even when correlated with a saga:
+// their evidence is the exact terminal func_executions projection, never the
+// saga event stream. Every candidate joins acceptance evidence so an unsigned
+// operation is not substituted for a protected receipt.
 func (db *DB) BackfillNonSagaFleetGitHubEvidenceIntents(ctx context.Context, finishedBefore time.Duration, limit int) (int64, error) {
 	result, err := db.Pool.Exec(ctx, `
 		INSERT INTO evidence_archive_intents (id, subject_kind, subject_id, app, operation_id, sequence, state)
 		SELECT 'ei-' || gen_random_uuid()::text, 'operation', o.id, o.app, o.id, 1, 'pending'
 		FROM operations o
 		JOIN operation_acceptance_intents ai ON ai.operation_id = o.id
-		WHERE o.status IN `+terminalStatusSQL+` AND o.saga_id = ''
-		  AND o.kind IN ('fleet.github.pull-request', 'fleet.github.apply-dispatch')
+		WHERE (
+			(o.status IN `+terminalStatusSQL+` AND o.saga_id = ''
+			 AND o.kind IN ('fleet.github.pull-request', 'fleet.github.apply-dispatch'))
+			OR
+			(o.kind = '`+PrivateInvocationOperationKind+`' AND o.status IN ('succeeded', 'failed')
+			 AND EXISTS (
+				SELECT 1 FROM func_executions f
+				WHERE f.id = o.id AND f.app = o.app AND f.process = o.payload->>'process'
+				  AND f.finished_at IS NOT NULL
+				  AND ((o.status = 'succeeded' AND f.status = 'complete')
+				       OR (o.status = 'failed' AND f.status = 'failed'))
+			 ))
+		)
 		  AND o.finished_at < now() - $1::interval
 		  AND NOT EXISTS (SELECT 1 FROM evidence_archive_intents i WHERE i.subject_kind = 'operation' AND i.subject_id = o.id)
 		ORDER BY o.finished_at
@@ -129,10 +141,15 @@ type EvidenceSource struct {
 	OperationKind string
 	// EffectsJSON preserves terminal external-effect outcome and output
 	// references exactly as held by PostgreSQL at archive cutoff.
-	EffectsJSON  json.RawMessage
-	Acceptance   *AcceptanceEvidenceRow
-	DeploymentID string
-	Events       []EvidenceEvent
+	EffectsJSON json.RawMessage
+	// FunctionExecutionJSON and FunctionEffectAttemptsJSON are public terminal
+	// invocation evidence. They intentionally exclude the private invocation
+	// envelope and Nomad variable contents.
+	FunctionExecutionJSON      json.RawMessage
+	FunctionEffectAttemptsJSON json.RawMessage
+	Acceptance                 *AcceptanceEvidenceRow
+	DeploymentID               string
+	Events                     []EvidenceEvent
 }
 
 // AcceptanceEvidenceRow is the persisted signed acceptance, byte-exact.
@@ -188,8 +205,15 @@ func (db *DB) ProcessPendingEvidenceIntent(ctx context.Context, quiet time.Durat
 			OR
 			(i.subject_kind = 'operation'
 			  AND EXISTS (SELECT 1 FROM operations o JOIN operation_acceptance_intents ai ON ai.operation_id = o.id
-			              WHERE o.id = i.operation_id AND o.id = i.subject_id AND o.saga_id = ''
-			                AND o.kind IN ('fleet.github.pull-request', 'fleet.github.apply-dispatch') AND o.status IN `+terminalStatusSQL+`))
+			              WHERE o.id = i.operation_id AND o.id = i.subject_id
+			                AND ((o.saga_id = '' AND o.kind IN ('fleet.github.pull-request', 'fleet.github.apply-dispatch') AND o.status IN `+terminalStatusSQL+`)
+			                     OR (o.kind = '`+PrivateInvocationOperationKind+`' AND o.status IN ('succeeded', 'failed')
+			                         AND EXISTS (SELECT 1 FROM func_executions f
+			                                     WHERE f.id = o.id AND f.app = o.app AND f.process = o.payload->>'process'
+			                                       AND f.finished_at IS NOT NULL
+			                                       AND ((o.status = 'succeeded' AND f.status = 'complete')
+			                                            OR (o.status = 'failed' AND f.status = 'failed'))))))
+			)
 		)
 		ORDER BY i.created_at LIMIT 1 FOR UPDATE SKIP LOCKED`, quiet.String()))
 	if errors.Is(err, pgx.ErrNoRows) {
@@ -282,6 +306,19 @@ func loadEvidenceSource(ctx context.Context, tx pgx.Tx, intent EvidenceIntent) (
 		if err := tx.QueryRow(ctx, `SELECT COALESCE(jsonb_agg(row_to_json(f) ORDER BY f.created_at, f.id), '[]'::jsonb)::text::jsonb
 			FROM operation_effects f WHERE f.operation_id = $1`, intent.OperationID).Scan(&source.EffectsJSON); err != nil {
 			return source, err
+		}
+		if source.OperationKind == PrivateInvocationOperationKind {
+			if err := tx.QueryRow(ctx, `SELECT row_to_json(f)::text::jsonb FROM func_executions f
+				WHERE f.id = $1`, intent.OperationID).Scan(&source.FunctionExecutionJSON); err != nil {
+				if errors.Is(err, pgx.ErrNoRows) {
+					return source, fmt.Errorf("function operation evidence intent %s has no execution projection", intent.ID)
+				}
+				return source, err
+			}
+			if err := tx.QueryRow(ctx, `SELECT COALESCE(jsonb_agg(row_to_json(a) ORDER BY a.stage), '[]'::jsonb)::text::jsonb
+				FROM function_invocation_effect_attempts a WHERE a.operation_id = $1`, intent.OperationID).Scan(&source.FunctionEffectAttemptsJSON); err != nil {
+				return source, err
+			}
 		}
 	}
 	if intent.SubjectKind == "saga" {

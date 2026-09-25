@@ -119,6 +119,20 @@ func (a *Archiver) RunOnce(ctx context.Context) (Report, error) {
 			if a.Mode != ModePrune {
 				continue
 			}
+			if intent.OperationID != "" {
+				operation, err := a.DB.GetOperation(ctx, intent.OperationID)
+				if err != nil {
+					report.PublishErrors = append(report.PublishErrors, fmt.Sprintf("%s: load archived operation: %v", intent.ID, err))
+					continue
+				}
+				if operation.Kind == store.PrivateInvocationOperationKind {
+					// Function execution and attempt fences stay hot until their
+					// dedicated recovery-safe retirement policy exists. Their
+					// archive is evidence, not authorization to retire acceptance.
+					report.Held++
+					continue
+				}
+			}
 			// Retirement is allowed only when this process can verify the
 			// original signature, not merely parse the sealed archive object.
 			if a.Signer == nil {
@@ -197,7 +211,16 @@ func (a *Archiver) publish(ctx context.Context, intent store.EvidenceIntent, sou
 	if err != nil {
 		return store.EvidencePublication{}, err
 	}
-	bundle := &archive.Bundle{Subject: subject, Sequence: intent.Sequence, Operation: source.OperationJSON, Effects: source.EffectsJSON, SealedAt: intent.CreatedAt.UTC(), Events: []saga.Event{}}
+	bundle := &archive.Bundle{Subject: subject, Sequence: intent.Sequence, Operation: source.OperationJSON, SealedAt: intent.CreatedAt.UTC(), Events: []saga.Event{}}
+	if source.OperationKind == store.PrivateInvocationOperationKind {
+		// The private envelope and request are intentionally absent. Archive
+		// only the public terminal execution projection and public attempt
+		// fences, each loaded from their own tables in the store transaction.
+		bundle.FunctionExecution = source.FunctionExecutionJSON
+		bundle.FunctionEffectAttempts = source.FunctionEffectAttemptsJSON
+	} else {
+		bundle.Effects = source.EffectsJSON
+	}
 	if intent.OperationID != "" {
 		bundle.Links = append(bundle.Links, archive.Link{Kind: "operation", ID: intent.OperationID})
 	}
@@ -294,8 +317,44 @@ func (a *Archiver) readBack(ctx context.Context, info archive.ObjectInfo, intent
 }
 
 func operationBundleMatchesSource(bundle *archive.Bundle, source store.EvidenceSource) bool {
+	if source.OperationKind == store.PrivateInvocationOperationKind {
+		return functionInvocationBundleMatchesSource(bundle, source)
+	}
 	if bundle == nil || bundle.Subject.Kind != "operation" || bundle.Subject.OperationKind != source.OperationKind || bundle.Acceptance == nil || source.Acceptance == nil ||
 		!sameJSONBytes(bundle.Operation, source.OperationJSON) || !sameJSONBytes(bundle.Effects, source.EffectsJSON) {
+		return false
+	}
+	a, b := bundle.Acceptance, source.Acceptance
+	return a.IntentID == b.IntentID && a.RequestIdentityID == b.RequestIdentityID && a.RequestReceiptID == b.RequestReceiptID &&
+		a.FingerprintVersion == b.FingerprintVersion && a.FingerprintDigest == b.FingerprintDigest &&
+		bytes.Equal(a.RequestCanonicalBytes, b.RequestCanonicalBytes) && bytes.Equal(a.CanonicalBytes, b.CanonicalBytes) &&
+		a.CanonicalDigest == b.CanonicalDigest && a.SigningAlgorithm == b.SigningAlgorithm && a.SigningKeyID == b.SigningKeyID && a.Signature == b.Signature
+}
+
+func functionInvocationBundleMatchesSource(bundle *archive.Bundle, source store.EvidenceSource) bool {
+	if bundle == nil || bundle.Subject.Kind != "operation" || bundle.Subject.OperationKind != store.PrivateInvocationOperationKind ||
+		len(bytes.TrimSpace(bundle.Operation)) == 0 || len(bytes.TrimSpace(bundle.Effects)) != 0 || bundle.Acceptance == nil ||
+		!sameJSONBytes(bundle.Operation, source.OperationJSON) ||
+		!sameJSONBytes(bundle.FunctionExecution, source.FunctionExecutionJSON) || !sameJSONBytes(bundle.FunctionEffectAttempts, source.FunctionEffectAttemptsJSON) {
+		return false
+	}
+	var operation struct {
+		ID     string `json:"id"`
+		Kind   string `json:"kind"`
+		App    string `json:"app"`
+		Status string `json:"status"`
+	}
+	var execution struct {
+		ID     string `json:"id"`
+		App    string `json:"app"`
+		Status string `json:"status"`
+	}
+	if json.Unmarshal(source.OperationJSON, &operation) != nil || json.Unmarshal(bundle.FunctionExecution, &execution) != nil ||
+		operation.ID != bundle.Subject.OperationID || operation.Kind != store.PrivateInvocationOperationKind || operation.App != bundle.Subject.App ||
+		execution.ID != operation.ID || execution.App != operation.App {
+		return false
+	}
+	if !((operation.Status == "succeeded" && execution.Status == "complete") || (operation.Status == "failed" && execution.Status == "failed")) {
 		return false
 	}
 	a, b := bundle.Acceptance, source.Acceptance
@@ -484,8 +543,19 @@ func subjectMatches(bundle *archive.Bundle, intent store.EvidenceIntent, key str
 }
 
 func bundleSagaID(bundle *archive.Bundle) string {
-	if bundle != nil && bundle.Subject.Kind == "saga" {
+	if bundle == nil {
+		return ""
+	}
+	if bundle.Subject.Kind == "saga" {
 		return bundle.Subject.ID
+	}
+	if bundle.Subject.Kind == "operation" && bundle.Subject.OperationKind == store.PrivateInvocationOperationKind {
+		var row struct {
+			SagaID string `json:"saga_id"`
+		}
+		if json.Unmarshal(bundle.Operation, &row) == nil {
+			return row.SagaID
+		}
 	}
 	return ""
 }

@@ -1,8 +1,10 @@
 package store
 
 import (
+	"bytes"
 	"context"
 	"errors"
+	"strings"
 	"testing"
 	"time"
 
@@ -42,9 +44,56 @@ func TestFinishClaimedFunctionInvocationAtomicallyPublishesProjectionAndReceipt(
 	if err != nil || finished.Status != model.OperationSucceeded || finished.Message != "function completed" || finished.Metadata["allocationId"] != "alloc-1" || finished.FinishedAt == nil || finished.LockedBy != "" {
 		t.Fatalf("receipt=%+v err=%v", finished, err)
 	}
-	var intents int
-	if err := dbs[0].Pool.QueryRow(ctx, `SELECT count(*) FROM evidence_archive_intents WHERE operation_id=$1`, op.ID).Scan(&intents); err != nil || intents != 1 {
-		t.Fatalf("archive intents=%d err=%v", intents, err)
+	var subjectKind, subjectID string
+	if err := dbs[0].Pool.QueryRow(ctx, `SELECT subject_kind, subject_id FROM evidence_archive_intents WHERE operation_id=$1`, op.ID).Scan(&subjectKind, &subjectID); err != nil || subjectKind != "operation" || subjectID != op.ID {
+		t.Fatalf("archive subject=%q/%q err=%v", subjectKind, subjectID, err)
+	}
+}
+
+func TestFunctionOperationEvidenceWaitsForTerminalProjectionAndLoadsOnlyPublicEvidence(t *testing.T) {
+	stores, dbs := acceptanceIntegrationStores(t, 1)
+	ctx := context.Background()
+	keys, err := NewPrivateInvocationKeyRing("invocation-1", map[string][]byte{"invocation-1": bytes.Repeat([]byte{0x77}, 32)})
+	if err != nil {
+		t.Fatal(err)
+	}
+	request := newAcceptance(t, stores[0], "function-archive", "operator", "demo", false)
+	request.Identity.Kind, request.Operation.Kind = PrivateInvocationOperationKind, PrivateInvocationOperationKind
+	request.Operation.Payload = map[string]interface{}{"process": "archive"}
+	accepted, err := stores[0].AcceptPrivateInvocation(ctx, request, PrivateInvocationInput{Body: "private-function-canary", Method: "POST", Path: "/private-canary"}, keys)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var subjectKind, subjectID string
+	if err := dbs[0].Pool.QueryRow(ctx, `SELECT subject_kind, subject_id FROM evidence_archive_intents WHERE operation_id=$1`, accepted.Operation.ID).Scan(&subjectKind, &subjectID); err != nil || subjectKind != "operation" || subjectID != accepted.Operation.ID {
+		t.Fatalf("acceptance archive subject=%q/%q err=%v", subjectKind, subjectID, err)
+	}
+	if _, err := dbs[0].ProcessPendingEvidenceIntent(ctx, 0, func(context.Context, EvidenceIntent, EvidenceSource) (EvidencePublication, error) {
+		t.Fatal("queued function invocation was archivable")
+		return EvidencePublication{}, nil
+	}); !errors.Is(err, ErrNoEvidenceWork) {
+		t.Fatalf("queued function archive error=%v", err)
+	}
+	claimed, claim, err := dbs[0].ClaimNextOperation(ctx, "function-archive-worker", time.Minute, []string{PrivateInvocationOperationKind})
+	if err != nil || claimed == nil || claimed.ID != accepted.Operation.ID {
+		t.Fatalf("claim=%+v receipt=%+v err=%v", claim, claimed, err)
+	}
+	if err := dbs[0].FinishClaimedFunctionInvocation(ctx, claim, functionInvocationProjection(accepted.Operation.ID, accepted.Operation.App, "archive", 0, 4), model.OperationSucceeded, "completed", nil); err != nil {
+		t.Fatal(err)
+	}
+	_, err = dbs[0].ProcessPendingEvidenceIntent(ctx, 0, func(_ context.Context, intent EvidenceIntent, source EvidenceSource) (EvidencePublication, error) {
+		if intent.SubjectKind != "operation" || intent.SubjectID != accepted.Operation.ID || source.OperationKind != PrivateInvocationOperationKind || source.Acceptance == nil || len(source.FunctionExecutionJSON) == 0 || len(source.FunctionEffectAttemptsJSON) == 0 {
+			t.Fatalf("function archive source intent=%+v source=%+v", intent, source)
+		}
+		for _, data := range [][]byte{source.OperationJSON, source.FunctionExecutionJSON, source.FunctionEffectAttemptsJSON, source.Acceptance.CanonicalBytes, source.Acceptance.RequestCanonicalBytes} {
+			if bytes.Contains(data, []byte("private-function-canary")) || bytes.Contains(data, []byte("/private-canary")) {
+				t.Fatal("private invocation material entered archive source")
+			}
+		}
+		return EvidencePublication{ObjectKey: "evidence/function-operation", ObjectSHA256: strings.Repeat("a", 64), ObjectBytes: 1}, nil
+	})
+	if err != nil {
+		t.Fatal(err)
 	}
 }
 

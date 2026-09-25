@@ -234,13 +234,15 @@ stays pending.
 The private variable cleanup consumer now supports exact owner and revision
 checked deletion, and PostgreSQL migration 20 stores lease-fenced public
 cleanup intents. Claim eligibility requires terminal receipt, attempted
-variable creation, and verified or pruned archive evidence. Current function
-operations have no saga ID and the archive worker does not yet handle their
-operation subject, so live function cleanup correctly remains ineligible.
-Add function-specific archive evidence and private-envelope retention policy
-before production activation. A Nomad job purge policy, etcd cleanup parity,
+variable creation, and verified operation archive evidence. Migration 21
+raises the writer contract so private function acceptance always reserves that
+archive subject. The archive now seals the signed public operation, terminal
+execution, and public effect-attempt rows as a v2 bundle; old v1 bundles remain
+readable. The cleanup consumer is not yet scheduled by startup, and private
+envelope retirement still needs a replay/key-retention policy before production
+activation. A Nomad job purge policy, etcd cleanup parity,
 ACL-enabled allocation with database files, literal crash/two-replica tests,
-deployed-spec provenance, and Mini migration 20 mixed-version/rollback
+deployed-spec provenance, and Mini migration 21 mixed-version/rollback
 rehearsal also remain required.
 The receipt dispatcher refuses a claim-only terminal write on lease-fenced
 backends when the app-lock-aware receipt interface is unavailable.

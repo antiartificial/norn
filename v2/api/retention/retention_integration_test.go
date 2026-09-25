@@ -1,6 +1,7 @@
 package retention
 
 import (
+	"bytes"
 	"context"
 	"errors"
 	"os"
@@ -337,6 +338,74 @@ func TestTerminalFleetGitHubReceiptArchivesOriginalSignedBytes(t *testing.T) {
 	intents, err = f.db.EvidenceIntentsForSubject(ctx, "operation", accepted.Operation.ID)
 	if err != nil || intents[0].State != "verified" {
 		t.Fatalf("operation receipt was incorrectly pruned: %+v, %v", intents, err)
+	}
+}
+
+func TestTerminalFunctionInvocationArchivesOnlyPublicExecutionAndAttemptEvidence(t *testing.T) {
+	f := newRetentionFixture(t)
+	ctx := context.Background()
+	keys, err := store.NewPrivateInvocationKeyRing("archive-key", map[string][]byte{"archive-key": bytes.Repeat([]byte{0x42}, 32)})
+	if err != nil {
+		t.Fatal(err)
+	}
+	privateBody := "function-archive-private-body-canary"
+	op := model.Operation{ID: uuid.NewString(), Kind: store.PrivateInvocationOperationKind, App: "function-archive", SagaID: "saga-function-correlation", Ref: "main", Status: model.OperationQueued,
+		Source: "retention-test", Risk: "write", Payload: map[string]interface{}{"process": "resize", "imageTag": "image@sha256:abcdef"}, Metadata: map[string]interface{}{}, MaxAttempts: 1}
+	acceptance := store.OperationAcceptance{
+		Identity:  store.OperationRequestIdentity{Authority: f.request.Authority, Actor: f.request.Actor, Kind: op.Kind, Resource: "app/function-archive/process/resize", Key: "function-archive-" + uuid.NewString()},
+		Operation: op,
+		Audit:     f.request.Audit,
+	}
+	accepted, err := f.operations.AcceptPrivateInvocation(ctx, acceptance, store.PrivateInvocationInput{Body: privateBody, Method: "POST", Path: "/private/function-archive"}, keys)
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, claim, err := f.db.ClaimNextOperation(ctx, "function-archive-worker", time.Minute, []string{store.PrivateInvocationOperationKind})
+	if err != nil {
+		t.Fatal(err)
+	}
+	digest := "sha256:" + strings.Repeat("a", 64)
+	if _, err := f.db.RecordFunctionInvocationEffectStage(ctx, claim, store.FunctionInvocationJobAttempt, "function-archive-resize", digest); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := f.db.MarkFunctionInvocationEffectAttempt(ctx, claim, store.FunctionInvocationJobAttempt, "function-archive-resize", digest); err != nil {
+		t.Fatal(err)
+	}
+	exitCode, duration := 0, int64(12)
+	execution := store.FuncExecution{ID: accepted.Operation.ID, App: accepted.Operation.App, Process: "resize", Status: "complete", ExitCode: &exitCode, DurationMs: &duration, StartedAt: time.Now().UTC().Add(-time.Second)}
+	if err := f.db.FinishClaimedFunctionInvocation(ctx, claim, execution, model.OperationSucceeded, "function completed", map[string]interface{}{"jobId": "function-archive-resize"}); err != nil {
+		t.Fatal(err)
+	}
+
+	report, err := f.archiver.RunOnce(ctx)
+	if err != nil || report.Published != 1 || len(report.PublishErrors) != 0 {
+		t.Fatalf("archive pass=%+v err=%v", report, err)
+	}
+	intents, err := f.db.EvidenceIntentsForSubject(ctx, "operation", accepted.Operation.ID)
+	if err != nil || len(intents) != 1 || intents[0].State != "verified" {
+		t.Fatalf("function archive intent=%+v err=%v", intents, err)
+	}
+	data, _, err := f.objects.Get(ctx, intents[0].ObjectKey, archive.MaxBundleBytes)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if bytes.Contains(data, []byte(privateBody)) || bytes.Contains(data, []byte("/private/function-archive")) || bytes.Contains(data, []byte(`"effects"`)) {
+		t.Fatalf("function archive exposed private request or raw effects: %s", data)
+	}
+	bundle, err := LoadBundle(ctx, f.objects, intents[0])
+	if err != nil || len(bundle.FunctionExecution) == 0 || string(bundle.FunctionEffectAttempts) == "[]" || len(bundle.Operation) == 0 || len(bundle.Effects) != 0 || bundle.Acceptance == nil ||
+		bytes.Contains(bundle.Acceptance.RequestCanonicalBytes, []byte(privateBody)) || bytes.Contains(bundle.Acceptance.RequestCanonicalBytes, []byte("/private/function-archive")) {
+		t.Fatalf("function bundle=%+v err=%v", bundle, err)
+	}
+
+	f.archiver.Mode = ModePrune
+	report, err = f.archiver.RunOnce(ctx)
+	if err != nil || report.Retired != 0 || report.Held != 1 || len(report.PublishErrors) != 0 {
+		t.Fatalf("function retention pass=%+v err=%v", report, err)
+	}
+	var acceptances int
+	if err := f.db.Pool.QueryRow(ctx, `SELECT count(*) FROM operation_acceptance_intents WHERE operation_id=$1`, accepted.Operation.ID).Scan(&acceptances); err != nil || acceptances != 1 {
+		t.Fatalf("function acceptance retirement=%d err=%v", acceptances, err)
 	}
 }
 

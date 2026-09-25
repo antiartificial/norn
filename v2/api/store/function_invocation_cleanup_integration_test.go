@@ -37,10 +37,25 @@ func verifyFunctionInvocationCleanupEvidence(t *testing.T, db *DB, operationID s
 		UPDATE evidence_archive_intents
 		SET state='verified', object_key='evidence/function-cleanup',
 			object_sha256=$2, object_bytes=1, verified_at=clock_timestamp()
-		WHERE operation_id=$1 AND subject_kind='saga' AND state='pending'
+		WHERE operation_id=$1 AND subject_kind='operation' AND subject_id=$1
+		  AND sequence=1 AND state='pending'
 	`, operationID, strings.Repeat("a", 64))
 	if err != nil {
 		t.Fatal(err)
+	}
+}
+
+func TestFunctionInvocationCleanupDoesNotTreatPrunedOperationEvidenceAsVerified(t *testing.T) {
+	dbs, _, _ := setupEffectStores(t, 1)
+	operationID := terminalFunctionInvocationForCleanup(t, dbs[0])
+	if _, err := dbs[0].Pool.Exec(context.Background(), `
+		UPDATE evidence_archive_intents SET state='pruned', object_key='evidence/pruned',
+			object_sha256=$2, object_bytes=1, verified_at=clock_timestamp(), pruned_at=clock_timestamp()
+		WHERE operation_id=$1 AND subject_kind='operation'`, operationID, strings.Repeat("a", 64)); err != nil {
+		t.Fatal(err)
+	}
+	if intent, err := dbs[0].ClaimFunctionInvocationCleanup(context.Background()); err != nil || intent != nil {
+		t.Fatalf("pruned operation evidence cleanup=%+v err=%v", intent, err)
 	}
 }
 

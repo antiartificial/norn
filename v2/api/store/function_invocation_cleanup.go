@@ -46,13 +46,12 @@ func (db *DB) ClaimFunctionInvocationCleanup(ctx context.Context) (*FunctionInvo
 		JOIN function_invocation_effect_attempts a
 		  ON a.operation_id = o.id AND a.stage = 'variable' AND a.state = 'attempted'
 		WHERE o.kind = $1
-		  AND o.status IN ('succeeded', 'failed', 'canceled')
+		  AND o.status IN ('succeeded', 'failed')
 		  AND o.finished_at IS NOT NULL
-		  AND o.saga_id <> ''
 		  AND EXISTS (
 			SELECT 1 FROM evidence_archive_intents e
-			WHERE e.operation_id = o.id AND e.subject_kind = 'saga'
-			  AND e.subject_id = o.saga_id AND e.state IN ('verified', 'pruned')
+			WHERE e.operation_id = o.id AND e.subject_kind = 'operation'
+			  AND e.subject_id = o.id AND e.sequence = 1 AND e.state = 'verified'
 		  )
 		ON CONFLICT (operation_id) DO NOTHING
 	`, PrivateInvocationOperationKind); err != nil {
