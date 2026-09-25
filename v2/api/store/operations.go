@@ -735,6 +735,10 @@ func (db *DB) ClaimNextOperation(ctx context.Context, workerID string, lease tim
 			  AND (NOT acceptance_required OR EXISTS (
 				SELECT 1 FROM operation_acceptance_intents ai WHERE ai.operation_id = operations.id
 			  ))
+			  -- The absent-row case is deliberately false: a database which has
+			  -- not applied the fence migration may not admit app runtime work.
+			  AND (kind NOT IN ('app.deploy','app.restart','app.scale','app.cron-pause','app.cron-resume','app.cron-schedule','app.cron-trigger','app.cron-trigger-reconcile','app.function-invoke')
+			       OR EXISTS (SELECT 1 FROM runtime_mutation_fence WHERE singleton=true AND active=false))
 			  %s
 			ORDER BY started_at ASC
 			LIMIT 1
