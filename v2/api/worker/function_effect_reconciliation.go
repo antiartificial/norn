@@ -54,6 +54,11 @@ type FunctionInvocationJobIdentity struct {
 var functionEffectDigest = regexp.MustCompile(`^sha256:[0-9a-f]{64}$`)
 var functionEffectImage = regexp.MustCompile(`^[^\s@]+@sha256:[0-9a-f]{64}$`)
 
+// FunctionInvocationNoDatabase is the signed target and revision for a
+// function whose pinned InfraSpec has no runtime database. Both fields must
+// use this value together; the executor still verifies that spec condition.
+const FunctionInvocationNoDatabase = "none"
+
 // NewFunctionInvocationJobIdentity derives stable remote names from the
 // authority and operation identity. A retry therefore cannot create a second
 // one-shot job under a new name.
@@ -96,6 +101,9 @@ func validateFunctionInvocationEffectInput(input FunctionInvocationEffectInput, 
 	}
 	if !functionEffectImage.MatchString(input.ImageReference) {
 		return fmt.Errorf("function invocation image reference is not digest-pinned")
+	}
+	if (input.DatabaseTarget == FunctionInvocationNoDatabase) != (input.DatabaseRevision == FunctionInvocationNoDatabase) {
+		return fmt.Errorf("function invocation database target and revision disagree")
 	}
 	return nil
 }

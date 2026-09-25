@@ -181,5 +181,20 @@ expected digest for a multiline body and secret, quotes, backslashes, Unicode
 path, and empty values; the job JSON contained no private values. The builder
 and steps are still disconnected from the claimed operation executor. Named
 database delivery, ACL-enabled allocation proof for the implicit group path,
-terminal receipt, and cleanup remain open. Requalify on the release Nomad version
+terminal receipt integration, and cleanup remain open. Requalify on the release Nomad version
 before enabling submission.
+
+The next pure/read-only slice now projects a terminal result only from one
+exact recovered Nomad allocation, job version, evaluation, and task, with an
+explicit exit code. Lost or widened lineage remains unresolved. PostgreSQL
+atomically inserts the legacy function-history projection and operation
+receipt under the live claim, and rejects stale claims and private receipt
+metadata. These seams are not yet connected to the worker; etcd needs an
+equivalent terminal projection. Cleanup is still unimplemented.
+
+For a spec with no runtime database, the public effect identity uses the paired
+`databaseTarget=none` and `databaseRevision=none` sentinel. A mixed pair is
+rejected before a Nomad effect. The eventual executor must compare that claim
+against the pinned spec and reject a database-bearing spec with the sentinel.
+Named database invocations need an exact accepted target identity and revision
+recheck; a mutable current delivery revision alone is insufficient.

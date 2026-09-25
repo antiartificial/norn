@@ -60,6 +60,22 @@ func TestFunctionInvocationJobIdentityRejectsMutableImage(t *testing.T) {
 	}
 }
 
+func TestFunctionInvocationJobIdentityRequiresPairedDatabaseFreeSentinel(t *testing.T) {
+	input := FunctionInvocationEffectInput{
+		Authority: "control.example", OperationID: "operation-7", App: "widgets", Process: "resize",
+		SpecDigest: "sha256:" + strings.Repeat("a", 64), ImageReference: "registry.example/widgets@sha256:" + strings.Repeat("b", 64),
+		DatabaseTarget: FunctionInvocationNoDatabase, DatabaseRevision: FunctionInvocationNoDatabase,
+		PrivateRecordID: "operation-7", PrivateMaterialDigest: "sha256:" + strings.Repeat("c", 64), PrivateKeyID: "function-kek-2026-09",
+	}
+	if _, err := NewFunctionInvocationJobIdentity(input, "sha256:"+strings.Repeat("d", 64)); err != nil {
+		t.Fatal(err)
+	}
+	input.DatabaseRevision = "14"
+	if _, err := NewFunctionInvocationJobIdentity(input, "sha256:"+strings.Repeat("d", 64)); err == nil {
+		t.Fatal("mixed database-free and bound identity accepted")
+	}
+}
+
 func TestPlanFunctionJobReconciliationUsesOnlyConclusiveAbsenceForSubmit(t *testing.T) {
 	expected := functionIdentity(t)
 	firstJobVersion := uint64(0)
