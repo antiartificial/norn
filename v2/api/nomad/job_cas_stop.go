@@ -17,10 +17,16 @@ var ErrJobStopVerificationIndeterminate = errors.New("Nomad job stop verificatio
 // allocation set observed by its caller. Allocation IDs are never discovered
 // after the mutation because that could adopt a competing deployment.
 type CASStopJobRequest struct {
-	JobID          string
-	Region         string
-	JobModifyIndex uint64
-	AllocationIDs  []string
+	JobID                   string
+	Region                  string
+	JobVersion              uint64
+	JobModifyIndex          uint64
+	AllocationIDs           []string
+	DeploymentID            string
+	SpecDigest              string
+	DatabaseBindingSchema   string
+	DatabaseBindingSHA256   string
+	DatabaseCatalogRevision string
 }
 
 // StopJobCAS sets Stop with Nomad's guarded registration endpoint, then proves
@@ -35,7 +41,7 @@ func (c *Client) StopJobCAS(ctx context.Context, request CASStopJobRequest) erro
 	}
 	query := (&nomadapi.QueryOptions{Region: request.Region}).WithContext(ctx)
 	job, _, err := c.api.Jobs().Info(request.JobID, query)
-	if err != nil || job == nil || job.ID == nil || *job.ID != request.JobID || job.Region == nil || *job.Region != request.Region || job.JobModifyIndex == nil || *job.JobModifyIndex != request.JobModifyIndex {
+	if err != nil || !exactCASStopJob(job, request, request.JobVersion, request.JobModifyIndex, false) {
 		if err == nil {
 			return fmt.Errorf("%w for %s", ErrJobRevisionChanged, request.JobID)
 		}
@@ -48,18 +54,23 @@ func (c *Client) StopJobCAS(ctx context.Context, request CASStopJobRequest) erro
 	stopped := true
 	copy := *job
 	copy.Stop = &stopped
-	_, _, err = c.api.Jobs().RegisterOpts(&copy, &nomadapi.RegisterOptions{EnforceIndex: true, ModifyIndex: request.JobModifyIndex}, (&nomadapi.WriteOptions{Region: request.Region}).WithContext(ctx))
+	registered, _, err := c.api.Jobs().RegisterOpts(&copy, &nomadapi.RegisterOptions{EnforceIndex: true, ModifyIndex: request.JobModifyIndex}, (&nomadapi.WriteOptions{Region: request.Region}).WithContext(ctx))
 	if err != nil {
 		if strings.Contains(err.Error(), nomadapi.RegisterEnforceIndexErrPrefix) {
 			return fmt.Errorf("%w for %s: %v", ErrJobRevisionChanged, request.JobID, err)
 		}
 		return fmt.Errorf("CAS stop job %s: %w", request.JobID, err)
 	}
-	return c.verifyCASStopped(ctx, request)
+	if registered == nil || registered.JobModifyIndex == 0 {
+		return ErrJobStopVerificationIndeterminate
+	}
+	return c.verifyCASStopped(ctx, request, registered.JobModifyIndex)
 }
 
 func validCASStopRequest(request CASStopJobRequest) bool {
-	if strings.TrimSpace(request.JobID) == "" || strings.TrimSpace(request.Region) == "" || request.JobModifyIndex == 0 || len(request.AllocationIDs) == 0 {
+	if strings.TrimSpace(request.JobID) == "" || strings.TrimSpace(request.Region) == "" || request.JobModifyIndex == 0 || len(request.AllocationIDs) == 0 ||
+		strings.TrimSpace(request.DeploymentID) == "" || strings.TrimSpace(request.SpecDigest) == "" || strings.TrimSpace(request.DatabaseBindingSchema) == "" ||
+		strings.TrimSpace(request.DatabaseBindingSHA256) == "" || strings.TrimSpace(request.DatabaseCatalogRevision) == "" {
 		return false
 	}
 	seen := make(map[string]struct{}, len(request.AllocationIDs))
@@ -75,6 +86,14 @@ func validCASStopRequest(request CASStopJobRequest) bool {
 	return true
 }
 
+func exactCASStopJob(job *nomadapi.Job, request CASStopJobRequest, version, modifyIndex uint64, stopped bool) bool {
+	return job != nil && job.ID != nil && *job.ID == request.JobID && job.Region != nil && *job.Region == request.Region &&
+		job.Version != nil && *job.Version == version && job.JobModifyIndex != nil && *job.JobModifyIndex == modifyIndex &&
+		job.Stop != nil && *job.Stop == stopped && job.Meta[DeploymentIDMeta] == request.DeploymentID &&
+		job.Meta[SpecDigestMeta] == request.SpecDigest && job.Meta[DatabaseBindingSchemaMeta] == request.DatabaseBindingSchema &&
+		job.Meta[DatabaseBindingSHA256Meta] == request.DatabaseBindingSHA256 && job.Meta[DatabaseCatalogRevisionMeta] == request.DatabaseCatalogRevision
+}
+
 func exactCASStopAllocations(request CASStopJobRequest, stubs []*nomadapi.AllocationListStub) bool {
 	// The all=true query includes earlier registrations of the same job ID.
 	// Their terminal allocations are history, while every live allocation
@@ -85,6 +104,9 @@ func exactCASStopAllocations(request CASStopJobRequest, stubs []*nomadapi.Alloca
 			return false
 		}
 		if !casStopTerminal(stub.ClientStatus) {
+			if stub.JobVersion != request.JobVersion {
+				return false
+			}
 			got = append(got, stub.ID)
 		}
 	}
@@ -102,13 +124,13 @@ func exactCASStopAllocations(request CASStopJobRequest, stubs []*nomadapi.Alloca
 	return true
 }
 
-func (c *Client) verifyCASStopped(ctx context.Context, request CASStopJobRequest) error {
+func (c *Client) verifyCASStopped(ctx context.Context, request CASStopJobRequest, stoppedModifyIndex uint64) error {
 	query := (&nomadapi.QueryOptions{Region: request.Region}).WithContext(ctx)
 	ticker := time.NewTicker(100 * time.Millisecond)
 	defer ticker.Stop()
 	for {
 		job, _, err := c.api.Jobs().Info(request.JobID, query)
-		if err != nil || job == nil || job.ID == nil || *job.ID != request.JobID || job.Region == nil || *job.Region != request.Region || job.Stop == nil || !*job.Stop {
+		if err != nil || !exactCASStopJob(job, request, request.JobVersion+1, stoppedModifyIndex, true) {
 			return ErrJobStopVerificationIndeterminate
 		}
 		stubs, _, err := c.api.Jobs().Allocations(request.JobID, true, query)

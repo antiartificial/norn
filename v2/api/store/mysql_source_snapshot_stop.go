@@ -40,7 +40,13 @@ func (db *DB) StopClaimedMySQLSourceJob(ctx context.Context, acceptance *PGOpera
 		return err
 	}
 	index, _ := strconv.ParseUint(request.JobIdentity.JobModifyIndex, 10, 64)
-	if err := stopper.StopJobCAS(ctx, nomad.CASStopJobRequest{JobID: request.JobIdentity.JobID, Region: request.JobIdentity.NomadRegion, JobModifyIndex: index, AllocationIDs: append([]string(nil), request.JobIdentity.AllocationIDs...)}); err != nil {
+	version, _ := strconv.ParseUint(request.JobIdentity.JobVersion, 10, 64)
+	if err := stopper.StopJobCAS(ctx, nomad.CASStopJobRequest{
+		JobID: request.JobIdentity.JobID, Region: request.JobIdentity.NomadRegion, JobVersion: version, JobModifyIndex: index,
+		AllocationIDs: append([]string(nil), request.JobIdentity.AllocationIDs...), DeploymentID: request.JobIdentity.DeploymentID,
+		SpecDigest: request.JobIdentity.SpecDigest, DatabaseBindingSchema: request.JobIdentity.DatabaseBindingSchema,
+		DatabaseBindingSHA256: request.JobIdentity.DatabaseBindingSHA256, DatabaseCatalogRevision: request.JobIdentity.DatabaseCatalogRevision,
+	}); err != nil {
 		return errors.Join(ErrMySQLSourceStopIndeterminate, err)
 	}
 	if err := db.setClaimedMySQLSourceStopState(ctx, claim, "stop-intended", "stop-proved"); err != nil {

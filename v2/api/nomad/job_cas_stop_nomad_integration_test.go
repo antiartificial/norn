@@ -24,6 +24,9 @@ func TestStopJobCASInDisposableNomad(t *testing.T) {
 	region, kind, group, task, driver, command := "global", "batch", "work", "sleep", "raw_exec", "/bin/sleep"
 	count := 1
 	job := &nomadapi.Job{ID: &id, Name: &id, Region: &region, Type: &kind, Datacenters: []string{"dc1"}, TaskGroups: []*nomadapi.TaskGroup{{Name: &group, Count: &count, Tasks: []*nomadapi.Task{{Name: task, Driver: driver, Config: map[string]interface{}{"command": command, "args": []string{"30"}}}}}}}
+	if err := BindDeploymentProvenance(job, DeploymentProvenance{DeploymentID: "qualification-deployment", SpecDigest: "sha256:" + repeat("a", 64), DatabaseBindingSchema: "norn.database-targets/v1", DatabaseBindingSHA256: repeat("b", 64), DatabaseCatalogRevision: "1"}); err != nil {
+		t.Fatal(err)
+	}
 	t.Cleanup(func() {
 		_, _, _ = client.api.Jobs().Deregister(id, true, (&nomadapi.WriteOptions{Region: region}).WithContext(context.Background()))
 	})
@@ -52,7 +55,11 @@ func TestStopJobCASInDisposableNomad(t *testing.T) {
 		case <-time.After(200 * time.Millisecond):
 		}
 	}
-	if err := client.StopJobCAS(ctx, CASStopJobRequest{JobID: id, Region: region, JobModifyIndex: *current.JobModifyIndex, AllocationIDs: []string{observed[0].ID}}); err != nil {
+	if current.Version == nil {
+		t.Fatal("job version is unavailable")
+	}
+	if err := client.StopJobCAS(ctx, CASStopJobRequest{JobID: id, Region: region, JobVersion: *current.Version, JobModifyIndex: *current.JobModifyIndex, AllocationIDs: []string{observed[0].ID},
+		DeploymentID: "qualification-deployment", SpecDigest: "sha256:" + repeat("a", 64), DatabaseBindingSchema: "norn.database-targets/v1", DatabaseBindingSHA256: repeat("b", 64), DatabaseCatalogRevision: "1"}); err != nil {
 		t.Fatal(err)
 	}
 }

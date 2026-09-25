@@ -178,7 +178,9 @@ func TestMySQLSourceSnapshotIntentReservesSignedPhysicalSource(t *testing.T) {
 	called := 0
 	stopper := sourceStopperFunc(func(ctx context.Context, got nomad.CASStopJobRequest) error {
 		called++
-		if got.JobID != "wordpress" || got.Region != "global" || got.JobModifyIndex != 7 || len(got.AllocationIDs) != 1 || got.AllocationIDs[0] != "alloc-1" {
+		if got.JobID != "wordpress" || got.Region != "global" || got.JobVersion != 1 || got.JobModifyIndex != 7 || len(got.AllocationIDs) != 1 || got.AllocationIDs[0] != "alloc-1" ||
+			got.DeploymentID != request.JobIdentity.DeploymentID || got.SpecDigest != request.JobIdentity.SpecDigest || got.DatabaseBindingSchema != request.JobIdentity.DatabaseBindingSchema ||
+			got.DatabaseBindingSHA256 != request.JobIdentity.DatabaseBindingSHA256 || got.DatabaseCatalogRevision != request.JobIdentity.DatabaseCatalogRevision {
 			t.Fatalf("Nomad stop request was not signed identity: %+v", got)
 		}
 		if err := db.Pool.QueryRow(ctx, `SELECT state FROM mysql_source_snapshot_intents WHERE operation_id=$1`, claim.OperationID()).Scan(&state); err != nil || state != "stop-intended" {
