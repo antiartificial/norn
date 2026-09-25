@@ -148,6 +148,10 @@ into #76 and closed. These are review containers, not milestone signoff.
   idempotency token: repeated calls created distinct evaluations and children.
   Cron trigger therefore remains an inline-effect conversion gate; see
   [the force qualification](m1-cron-force-idempotency-qualification-2026-09-24.md).
+  The Nomad adapter now has a version-gated atomic resume of a stopped periodic
+  parent with an effect marker for recovery. The HTTP resume path still uses
+  inline resubmission; signed intent, claim-fenced execution, and reconciliation
+  remain required before this primitive closes that route's M1 gate.
 - M2: local MySQL runtime and verified-TLS health are implemented. Generated
   service, periodic, and function jobs delivered exact component bytes inside
   allocations on pinned Nomad 1.9.7. A WordPress image PHP client also
@@ -170,7 +174,7 @@ into #76 and closed. These are review containers, not milestone signoff.
   Fleet router. Passive candidate health/schema now rechecks etcd after startup
   and a real API process passed with a poisoned PostgreSQL URL. Full app
   consumers, three-member host bootstrap and restore,
-  quorum/fault behavior, and soak qualification remain open. The host PR's CI
+  host fault behavior, and soak qualification remain open. The host PR's CI
   contract job was blocked by GitHub account billing status during this
   checkpoint; that is not a passing host qualification.
   A disposable three-member TLS/RBAC cluster now passed the normal API process

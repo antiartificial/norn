@@ -19,6 +19,7 @@ var (
 )
 
 const cronPauseEffectMetaKey = "norn.cron-pause.effect-id"
+const cronResumeEffectMetaKey = "norn.cron-resume.effect-id"
 
 // SubmitJob registers a job with Nomad.
 func (c *Client) SubmitJob(job *nomadapi.Job) (string, error) {
@@ -87,6 +88,49 @@ func (c *Client) PausePeriodicJob(jobID string, expectedModifyIndex uint64, effe
 			return fmt.Errorf("%w for %s: %v", ErrJobRevisionChanged, jobID, err)
 		}
 		return fmt.Errorf("pause periodic job %s: %w", jobID, err)
+	}
+	return nil
+}
+
+// ResumePeriodicJob clears a stopped periodic parent's Stop flag using Nomad's
+// atomic job CAS. The effect marker lets a retry distinguish its own committed
+// write from an unrelated resume after a lost response.
+func (c *Client) ResumePeriodicJob(jobID string, expectedModifyIndex uint64, effectID string) error {
+	if strings.TrimSpace(jobID) == "" || expectedModifyIndex == 0 || strings.TrimSpace(effectID) == "" {
+		return fmt.Errorf("periodic job resume requires a job ID, modify index, and effect ID")
+	}
+	if err := c.requireAtomicJobCAS(); err != nil {
+		return err
+	}
+	job, _, err := c.api.Jobs().Info(jobID, nil)
+	if err != nil {
+		return fmt.Errorf("read periodic job %s for resume: %w", jobID, err)
+	}
+	if job == nil || job.Periodic == nil {
+		return fmt.Errorf("job %s is not periodic", jobID)
+	}
+	if job.JobModifyIndex == nil || *job.JobModifyIndex != expectedModifyIndex {
+		return fmt.Errorf("%w for %s", ErrJobRevisionChanged, jobID)
+	}
+	if job.Stop == nil || !*job.Stop {
+		return fmt.Errorf("periodic job %s is not stopped", jobID)
+	}
+
+	resumed := false
+	job.Stop = &resumed
+	if job.Meta == nil {
+		job.Meta = make(map[string]string)
+	}
+	job.Meta[cronResumeEffectMetaKey] = effectID
+	_, _, err = c.api.Jobs().RegisterOpts(job, &nomadapi.RegisterOptions{
+		EnforceIndex: true,
+		ModifyIndex:  expectedModifyIndex,
+	}, nil)
+	if err != nil {
+		if strings.Contains(err.Error(), nomadapi.RegisterEnforceIndexErrPrefix) {
+			return fmt.Errorf("%w for %s: %v", ErrJobRevisionChanged, jobID, err)
+		}
+		return fmt.Errorf("resume periodic job %s: %w", jobID, err)
 	}
 	return nil
 }
@@ -630,18 +674,19 @@ func (c *Client) PeriodicChildren(parentJobID string) ([]CronRun, error) {
 
 // PeriodicJobInfo holds scheduling metadata for a periodic job.
 type PeriodicJobInfo struct {
-	JobID             string `json:"jobId"`
-	Schedule          string `json:"schedule"`
-	TimeZone          string `json:"timezone,omitempty"`
-	Version           uint64 `json:"version"`
-	ModifyIndex       uint64 `json:"modifyIndex"`
-	SubmittedAt       string `json:"submittedAt,omitempty"`
-	Paused            bool   `json:"paused"`
-	Status            string `json:"status"`
-	CronPauseEffectID string `json:"cronPauseEffectId,omitempty"`
-	ChildrenPending   int64  `json:"childrenPending,omitempty"`
-	ChildrenRunning   int64  `json:"childrenRunning,omitempty"`
-	ChildrenDead      int64  `json:"childrenDead,omitempty"`
+	JobID              string `json:"jobId"`
+	Schedule           string `json:"schedule"`
+	TimeZone           string `json:"timezone,omitempty"`
+	Version            uint64 `json:"version"`
+	ModifyIndex        uint64 `json:"modifyIndex"`
+	SubmittedAt        string `json:"submittedAt,omitempty"`
+	Paused             bool   `json:"paused"`
+	Status             string `json:"status"`
+	CronPauseEffectID  string `json:"cronPauseEffectId,omitempty"`
+	CronResumeEffectID string `json:"cronResumeEffectId,omitempty"`
+	ChildrenPending    int64  `json:"childrenPending,omitempty"`
+	ChildrenRunning    int64  `json:"childrenRunning,omitempty"`
+	ChildrenDead       int64  `json:"childrenDead,omitempty"`
 }
 
 // PeriodicJobSchedule returns the cron spec and status for a periodic parent job.
@@ -676,6 +721,7 @@ func (c *Client) PeriodicJobSchedule(jobID string) (*PeriodicJobInfo, error) {
 		info.Paused = *job.Stop
 	}
 	info.CronPauseEffectID = job.Meta[cronPauseEffectMetaKey]
+	info.CronResumeEffectID = job.Meta[cronResumeEffectMetaKey]
 	if jobs, _, listErr := c.api.Jobs().List(&nomadapi.QueryOptions{Prefix: jobID}); listErr == nil {
 		for _, j := range jobs {
 			if j.ID != jobID || j.JobSummary == nil || j.JobSummary.Children == nil {

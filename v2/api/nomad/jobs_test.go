@@ -70,14 +70,14 @@ func TestPeriodicJobSchedulePreservesVersionAndJobModifyIndex(t *testing.T) {
 			http.Error(w, "unexpected request", http.StatusNotFound)
 			return
 		}
-		_ = json.NewEncoder(w).Encode(&nomadapi.Job{ID: &jobID, Status: &status, Version: &version, ModifyIndex: &genericModifyIndex, JobModifyIndex: &modifyIndex, Meta: map[string]string{cronPauseEffectMetaKey: "effect-1"}, Periodic: &nomadapi.PeriodicConfig{Spec: &schedule, TimeZone: &timezone}})
+		_ = json.NewEncoder(w).Encode(&nomadapi.Job{ID: &jobID, Status: &status, Version: &version, ModifyIndex: &genericModifyIndex, JobModifyIndex: &modifyIndex, Meta: map[string]string{cronPauseEffectMetaKey: "effect-1", cronResumeEffectMetaKey: "effect-2"}, Periodic: &nomadapi.PeriodicConfig{Spec: &schedule, TimeZone: &timezone}})
 	}))
 
 	info, err := client.PeriodicJobSchedule(jobID)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if info.Version != version || info.ModifyIndex != modifyIndex || info.Schedule != schedule || info.TimeZone != timezone || info.CronPauseEffectID != "effect-1" {
+	if info.Version != version || info.ModifyIndex != modifyIndex || info.Schedule != schedule || info.TimeZone != timezone || info.CronPauseEffectID != "effect-1" || info.CronResumeEffectID != "effect-2" {
 		t.Fatalf("periodic info = %#v", info)
 	}
 }
@@ -121,6 +121,60 @@ func TestPausePeriodicJobRejectsMutationBetweenReadAndCASWrite(t *testing.T) {
 	}
 	if !wrote {
 		t.Fatal("expected guarded registration attempt")
+	}
+}
+
+func TestResumePeriodicJobUsesGuardedRegistrationAndEffectMarker(t *testing.T) {
+	jobID, status, schedule := "widget-nightly", "dead", "0 2 * * *"
+	modifyIndex := uint64(42)
+	stopped := true
+	var wrote bool
+	client := newTestNomadClient(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch {
+		case r.Method == http.MethodGet && r.URL.Path == "/v1/agent/self":
+			_ = json.NewEncoder(w).Encode(&nomadapi.AgentSelf{Config: map[string]interface{}{"Version": "2.0.7"}})
+		case r.Method == http.MethodGet && r.URL.Path == "/v1/job/widget-nightly":
+			_ = json.NewEncoder(w).Encode(&nomadapi.Job{ID: &jobID, Status: &status, Stop: &stopped, JobModifyIndex: &modifyIndex, Periodic: &nomadapi.PeriodicConfig{Spec: &schedule}})
+		case r.Method == http.MethodPut && r.URL.Path == "/v1/jobs":
+			var request nomadapi.JobRegisterRequest
+			if err := json.NewDecoder(r.Body).Decode(&request); err != nil {
+				t.Fatal(err)
+			}
+			if !request.EnforceIndex || request.JobModifyIndex != modifyIndex || request.Job == nil || request.Job.Stop == nil || *request.Job.Stop || request.Job.Meta[cronResumeEffectMetaKey] != "resume-effect" {
+				t.Fatalf("resume CAS request = %+v", request)
+			}
+			wrote = true
+			_ = json.NewEncoder(w).Encode(&nomadapi.JobRegisterResponse{})
+		default:
+			http.Error(w, "unexpected request", http.StatusNotFound)
+		}
+	}))
+	if err := client.ResumePeriodicJob(jobID, modifyIndex, "resume-effect"); err != nil {
+		t.Fatal(err)
+	}
+	if !wrote {
+		t.Fatal("expected guarded Nomad registration")
+	}
+}
+
+func TestResumePeriodicJobRejectsRevisionConflict(t *testing.T) {
+	jobID, status, schedule := "widget-nightly", "dead", "0 2 * * *"
+	modifyIndex := uint64(42)
+	stopped := true
+	client := newTestNomadClient(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch {
+		case r.Method == http.MethodGet && r.URL.Path == "/v1/agent/self":
+			_ = json.NewEncoder(w).Encode(&nomadapi.AgentSelf{Config: map[string]interface{}{"Version": "2.0.7"}})
+		case r.Method == http.MethodGet && r.URL.Path == "/v1/job/widget-nightly":
+			_ = json.NewEncoder(w).Encode(&nomadapi.Job{ID: &jobID, Status: &status, Stop: &stopped, JobModifyIndex: &modifyIndex, Periodic: &nomadapi.PeriodicConfig{Spec: &schedule}})
+		case r.Method == http.MethodPut && r.URL.Path == "/v1/jobs":
+			http.Error(w, nomadapi.RegisterEnforceIndexErrPrefix+": job changed", http.StatusConflict)
+		default:
+			http.Error(w, "unexpected request", http.StatusNotFound)
+		}
+	}))
+	if err := client.ResumePeriodicJob(jobID, modifyIndex, "resume-effect"); !errors.Is(err, ErrJobRevisionChanged) {
+		t.Fatalf("ResumePeriodicJob() = %v, want revision conflict", err)
 	}
 }
 
