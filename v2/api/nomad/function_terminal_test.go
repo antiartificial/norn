@@ -27,7 +27,7 @@ func TestProjectFunctionInvocationTerminalRequiresExactLineage(t *testing.T) {
 	expected := terminalExpectation()
 	complete := terminalAllocation()
 	got := ProjectFunctionInvocationTerminal(expected, []FunctionInvocationTerminalAllocation{complete})
-	if got.State != FunctionInvocationTerminalComplete || got.AllocationID != "alloc-1" || got.ExitCode == nil || *got.ExitCode != 0 || got.Duration != 3*time.Second {
+	if got.State != FunctionInvocationTerminalComplete || got.AllocationID != "alloc-1" || got.ExitCode == nil || *got.ExitCode != 0 || !got.StartedAt.Equal(complete.StartedAt) || got.Duration != 3*time.Second {
 		t.Fatalf("complete projection = %+v", got)
 	}
 
@@ -91,7 +91,7 @@ func TestObserveFunctionInvocationTerminalReturnsRedactedExactResult(t *testing.
 		t.Fatal(err)
 	}
 	got, err := client.ObserveFunctionInvocationTerminal(context.Background(), "global", expected)
-	if err != nil || got.State != FunctionInvocationTerminalComplete || got.Duration != 4*time.Second || got.ExitCode == nil || *got.ExitCode != 0 {
+	if err != nil || got.State != FunctionInvocationTerminalComplete || !got.StartedAt.Equal(started) || got.Duration != 4*time.Second || got.ExitCode == nil || *got.ExitCode != 0 {
 		t.Fatalf("observation = %+v, %v", got, err)
 	}
 }

@@ -56,6 +56,7 @@ type FunctionInvocationTerminalObservation struct {
 	State        FunctionInvocationTerminalState
 	AllocationID string
 	ExitCode     *int
+	StartedAt    time.Time
 	Duration     time.Duration
 }
 
@@ -86,7 +87,7 @@ func ProjectFunctionInvocationTerminal(expected FunctionInvocationTerminalExpect
 	if a.TaskState != "dead" || a.StartedAt.IsZero() || a.FinishedAt.IsZero() || a.FinishedAt.Before(a.StartedAt) || a.ExitCode == nil {
 		return FunctionInvocationTerminalObservation{State: FunctionInvocationTerminalIndeterminate}
 	}
-	result := FunctionInvocationTerminalObservation{State: FunctionInvocationTerminalFailed, AllocationID: a.ID, ExitCode: cloneInt(a.ExitCode), Duration: a.FinishedAt.Sub(a.StartedAt)}
+	result := FunctionInvocationTerminalObservation{State: FunctionInvocationTerminalFailed, AllocationID: a.ID, ExitCode: cloneInt(a.ExitCode), StartedAt: a.StartedAt, Duration: a.FinishedAt.Sub(a.StartedAt)}
 	if a.ClientStatus == nomadapi.AllocClientStatusComplete && !a.TaskFailed && a.ExitCode != nil && *a.ExitCode == 0 {
 		result.State = FunctionInvocationTerminalComplete
 	}

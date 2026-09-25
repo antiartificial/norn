@@ -198,3 +198,17 @@ rejected before a Nomad effect. The eventual executor must compare that claim
 against the pinned spec and reject a database-bearing spec with the sentinel.
 Named database invocations need an exact accepted target identity and revision
 recheck; a mutable current delivery revision alone is insufficient.
+
+The public database-binding contract now encodes sorted logical target
+identities and the promoted delivery revision. Its pure recheck compares the
+accepted spec digest, function process, target generations, and delivery
+revision before a private copy is attempted. Database values stay out of the
+public binding. A composed remote step now orders claim-fenced variable
+recovery, one-shot job recovery, and exact terminal observation, deferring
+unknown states without resubmitting. Terminal observations include the task's
+start time for the execution projection. A disposable etcd 3.5.17 member
+passed the new atomic receipt, conflict, private-metadata, and lost-app-lock
+tests; the etcd receipt additionally compares the app-lock fence in its
+transaction. These are implementation seams: acceptance-bound spec and
+database resolution, the dedicated claimed worker, route activation, cleanup,
+and full external crash qualification remain open.
