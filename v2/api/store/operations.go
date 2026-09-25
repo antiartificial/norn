@@ -960,6 +960,7 @@ func (db *DB) RecoverExpiredOperations(ctx context.Context) error {
 		return err
 	}
 	if _, err = tx.Exec(ctx, `
+		WITH failed AS (
 		UPDATE operations
 		SET status = 'failed',
 		    message = CASE
@@ -979,6 +980,14 @@ func (db *DB) RecoverExpiredOperations(ctx context.Context) error {
 		WHERE status = 'running'
 		  AND kind LIKE 'app.%'
 		  AND (locked_until IS NULL OR locked_until < now())
+		RETURNING id,saga_id,app
+		), archive_intents AS (
+			INSERT INTO evidence_archive_intents (id,subject_kind,subject_id,app,operation_id,sequence,state)
+			SELECT 'ei-' || gen_random_uuid()::text,'saga',saga_id,app,id,1,'pending'
+			FROM failed WHERE saga_id <> ''
+			ON CONFLICT (subject_kind,subject_id,sequence) DO NOTHING
+		)
+		SELECT count(*) FROM failed
 	`); err != nil {
 		return err
 	}

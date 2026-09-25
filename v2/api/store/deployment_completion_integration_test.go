@@ -87,3 +87,59 @@ func TestCompleteDeploymentResultIsClaimFencedAndAtomicAcrossRegions(t *testing.
 		t.Fatalf("terminal archive intent count=%d err=%v", archiveIntents, err)
 	}
 }
+
+func TestMutableDeploymentCompletionFailureRequiresArchivedManualRecovery(t *testing.T) {
+	pool := schemaMigrationTestPools(t, 1)[0]
+	db := &DB{Pool: pool}
+	if err := Migrate(db); err != nil {
+		t.Fatal(err)
+	}
+	ctx := context.Background()
+	claim, err := NewOperationClaim("completion-failure-op", "worker-a", 1)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := pool.Exec(ctx, `INSERT INTO operations(id,kind,app,saga_id,status,payload,locked_by,lock_generation,locked_until)
+		VALUES($1,'app.deploy','completion-failure-app','completion-failure-saga','running',
+		'{"deploymentId":"completion-failure-deployment"}'::jsonb,$2,$3,now()+interval '1 minute')`,
+		claim.OperationID(), claim.OwnerID(), claim.Generation()); err != nil {
+		t.Fatal(err)
+	}
+	d := &model.Deployment{ID: "completion-failure-deployment", App: "completion-failure-app", SagaID: "completion-failure-saga",
+		Status: model.StatusQueued, StartedAt: time.Now(), ImageTag: "registry.example/app@sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"}
+	if err := db.InsertDeployment(ctx, d); err != nil {
+		t.Fatal(err)
+	}
+	if err := db.InsertDeploymentRegions(ctx, d.ID, []model.ResolvedRegion{{Name: "east", NomadRegion: "east", TrafficWeight: 100}}); err != nil {
+		t.Fatal(err)
+	}
+	if err := db.StartDeploymentStep(ctx, model.DeploymentStep{DeploymentID: d.ID, App: d.App, SagaID: d.SagaID,
+		Step: "submit", Kind: model.DeploymentStepMutable, Status: model.DeploymentStepComplete, Attempt: 1}); err != nil {
+		t.Fatal(err)
+	}
+	d.Status = model.StatusDeployed
+	if err := db.CompleteDeploymentResult(ctx, claim, d, []DeploymentCompletionRegion{{Region: "missing", ActiveWeight: 100}}, "done", nil); err == nil {
+		t.Fatal("completion succeeded without accepted region")
+	}
+	if _, err := pool.Exec(ctx, `UPDATE operations SET locked_until=now()-interval '1 second' WHERE id=$1`, claim.OperationID()); err != nil {
+		t.Fatal(err)
+	}
+	if err := db.RecoverExpiredOperations(ctx); err != nil {
+		t.Fatal(err)
+	}
+	op, err := db.GetOperation(ctx, claim.OperationID())
+	if err != nil || op.Status != model.OperationFailed || op.Metadata["manualRecoveryRequired"] != true {
+		t.Fatalf("expired mutable operation=%+v err=%v", op, err)
+	}
+	stored, err := db.GetDeployment(ctx, d.ID)
+	if err != nil || stored.Status != model.StatusFailed || len(stored.Regions) != 1 || stored.Regions[0].Status != model.StatusFailed {
+		t.Fatalf("recovered deployment=%+v err=%v", stored, err)
+	}
+	var archiveIntents int
+	if err := pool.QueryRow(ctx, `SELECT count(*) FROM evidence_archive_intents WHERE operation_id=$1 AND subject_id=$2`, claim.OperationID(), d.SagaID).Scan(&archiveIntents); err != nil || archiveIntents != 1 {
+		t.Fatalf("manual recovery archive intent count=%d err=%v", archiveIntents, err)
+	}
+	if err := db.CompleteDeploymentResult(ctx, claim, d, []DeploymentCompletionRegion{{Region: "east", ActiveWeight: 100}}, "late", nil); !errors.Is(err, ErrOperationOwnershipLost) {
+		t.Fatalf("expired owner terminalized after manual recovery: %v", err)
+	}
+}
