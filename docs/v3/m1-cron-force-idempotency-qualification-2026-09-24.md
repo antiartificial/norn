@@ -25,7 +25,7 @@ alone would not establish distinct execution, but the additional child jobs
 do. The token therefore cannot be used as a durable effect identity for
 `CronTrigger` on the tested Nomad version.
 
-Current `handler.CronTrigger` directly calls `PeriodicForce` and returns its
+At the time of this measurement, `handler.CronTrigger` directly called `PeriodicForce` and returned its
 evaluation ID. A signed operation alone would not repair this path: a retry
 after Nomad accepts the force but before the worker receives its response
 could force a second run. The smallest safe conversion needs a deterministic
@@ -42,3 +42,25 @@ reconcile a lost response from the periodic parent, and commit cron state
 with the operation's live claim. The accepted payload must not persist
 plaintext secrets. These are separate work items from the force behavior
 observed here.
+
+## Implementation checkpoint — 2026-09-25
+
+`CronTrigger` now queues a signed operation. A claimed worker reserves the
+one-shot external effect before calling `PeriodicForce`; an ambiguous response
+never causes a second Force call. A bounded retry ends in a failed receipt
+with a manual-recovery hold. The normal HTTP-to-worker route and its Nomad
+evaluation lineage passed in disposable Nomad 2.0.7/PostgreSQL 17.7.
+
+A separate signed `app.cron-trigger-reconcile` operation accepts a positive
+evaluation ID supplied by an operator. Admission and execution verify its
+periodic parent and Nomad trigger type. One fenced PostgreSQL transaction
+completes the reserved effect, correction receipt, and archive intent without
+rewriting the original failed receipt. The evidence hold remains until the
+correction archive is verified. PostgreSQL tests cover mismatched app/effect,
+forged evaluation, stale claim, duplicate evaluation credit, replay, and the
+hold transition; the full store suite passed. The operator correction itself
+still needs a live Nomad rehearsal.
+
+If an ambiguous Force has no provable evaluation ID, Nomad provides no safe
+absence proof on this version. That reservation remains held for operator
+investigation; automatic retry or release would risk a duplicate run.
