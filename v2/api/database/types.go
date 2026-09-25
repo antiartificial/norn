@@ -123,6 +123,24 @@ type DatabaseBinding struct {
 	CredentialRef    string      `json:"credentialRef"`
 	TLS              DatabaseTLS `json:"tls"`
 	ConsistencyGroup string      `json:"consistencyGroup,omitempty"`
+	// MySQLMaintenance is private recovery authority for a MySQL application
+	// binding. It is optional so ordinary application bindings do not acquire
+	// maintenance credentials or capabilities.
+	MySQLMaintenance *MySQLMaintenanceCredentials `json:"mysqlMaintenance,omitempty"`
+}
+
+// MySQLMaintenanceCredentials names the separately provisioned identities a
+// private MySQL restore may use. References are catalog identities, never
+// credential values. Generation makes a maintenance-identity change as
+// explicit as a runtime target change.
+type MySQLMaintenanceCredentials struct {
+	Generation           uint64 `json:"generation"`
+	RuntimeAccountHost   string `json:"runtimeAccountHost"`
+	RestoreRole          string `json:"restoreRole"`
+	RestoreCredentialRef string `json:"restoreCredentialRef"`
+	FenceRole            string `json:"fenceRole"`
+	FenceCredentialRef   string `json:"fenceCredentialRef"`
+	FenceAccountHost     string `json:"fenceAccountHost"`
 }
 
 // LegacyPostgresDefault is the single explicit service through which existing
@@ -209,6 +227,7 @@ type ResolvedBinding struct {
 	Topology          DatabaseTopology
 	Capabilities      []Capability
 	CredentialRef     string
+	MySQLMaintenance  *MySQLMaintenanceCredentials
 	TLSPolicy         DatabaseTLSPolicy
 	TLS               DatabaseTLS
 	Legacy            bool

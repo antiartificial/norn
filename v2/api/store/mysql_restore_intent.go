@@ -24,13 +24,14 @@ const MySQLRestoreOperationKind = "database.mysql-restore"
 // acceptance. The catalog revision is an additional fence around the stable
 // service and binding generations in Target.
 type MySQLRestoreRequest struct {
-	CatalogRevision  int64                        `json:"catalogRevision"`
-	ProfileID        string                       `json:"profileId"`
-	LogicalID        string                       `json:"logicalId"`
-	Target           database.TargetIdentity      `json:"target"`
-	Artifact         database.MySQLSQLArtifact    `json:"artifact"`
-	ArtifactPath     string                       `json:"artifactPath"`
-	SourceQuiescence MySQLRestoreSourceQuiescence `json:"sourceQuiescence"`
+	CatalogRevision  int64                                `json:"catalogRevision"`
+	ProfileID        string                               `json:"profileId"`
+	LogicalID        string                               `json:"logicalId"`
+	Target           database.TargetIdentity              `json:"target"`
+	Maintenance      database.MySQLMaintenanceCredentials `json:"maintenance"`
+	Artifact         database.MySQLSQLArtifact            `json:"artifact"`
+	ArtifactPath     string                               `json:"artifactPath"`
+	SourceQuiescence MySQLRestoreSourceQuiescence         `json:"sourceQuiescence"`
 }
 
 // MySQLRestoreSourceQuiescence is the operator evidence that the source was
@@ -99,6 +100,10 @@ func (db *DB) PrepareClaimedMySQLRestore(ctx context.Context, acceptance *PGOper
 	resolver, err := database.NewResolver(active.Catalog)
 	if err != nil {
 		return MySQLRestoreIntent{}, err
+	}
+	resolved, err := resolver.Resolve(database.ResolveRequest{DeploymentProfileID: request.ProfileID, Purpose: database.PurposeApplication, LogicalResourceID: request.LogicalID, Expected: &request.Target})
+	if err != nil || resolved.MySQLMaintenance == nil || *resolved.MySQLMaintenance != request.Maintenance {
+		return MySQLRestoreIntent{}, ErrMySQLRestoreFence
 	}
 	if _, err := database.PrepareMySQLRestore(ctx, resolver, request.ProfileID, request.LogicalID, request.Target, secrets, request.ArtifactPath, request.Artifact); err != nil {
 		return MySQLRestoreIntent{}, err
@@ -228,6 +233,10 @@ func (db *DB) BeginClaimedMySQLRestore(ctx context.Context, acceptance *PGOperat
 	resolver, err := database.NewResolver(active.Catalog)
 	if err != nil {
 		return MySQLRestoreIntent{}, err
+	}
+	resolved, err := resolver.Resolve(database.ResolveRequest{DeploymentProfileID: request.ProfileID, Purpose: database.PurposeApplication, LogicalResourceID: request.LogicalID, Expected: &request.Target})
+	if err != nil || resolved.MySQLMaintenance == nil || *resolved.MySQLMaintenance != request.Maintenance {
+		return MySQLRestoreIntent{}, ErrMySQLRestoreFence
 	}
 	if _, err := database.PrepareMySQLRestore(ctx, resolver, request.ProfileID, request.LogicalID, request.Target, secrets, request.ArtifactPath, request.Artifact); err != nil {
 		return MySQLRestoreIntent{}, err

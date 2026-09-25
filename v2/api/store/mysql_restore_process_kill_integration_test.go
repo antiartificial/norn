@@ -60,7 +60,8 @@ func TestMySQLRestoreProcessKillWorker(t *testing.T) {
 	}
 	runner := MySQLRestoreRunner{
 		Control: db, Acceptance: acceptance,
-		Secrets:    mysqlIntentSecrets{"secret:kill/source": os.Getenv("NORN_MYSQL_RESTORE_KILL_SOURCE_SECRET"), "secret:kill/target": os.Getenv("NORN_MYSQL_RESTORE_KILL_TARGET_SECRET")},
+		Secrets: mysqlIntentSecrets{"secret:kill/source": os.Getenv("NORN_MYSQL_RESTORE_KILL_SOURCE_SECRET"), "secret:kill/target": os.Getenv("NORN_MYSQL_RESTORE_KILL_TARGET_SECRET"),
+			"secret:kill/restore": os.Getenv("NORN_MYSQL_RESTORE_KILL_RESTORE_SECRET"), "secret:kill/fence": os.Getenv("NORN_MYSQL_RESTORE_KILL_FENCE_SECRET")},
 		Tool:       database.MySQLRestoreTool{Path: os.Getenv("NORN_MYSQL_RESTORE_KILL_TOOL"), SHA256: os.Getenv("NORN_MYSQL_RESTORE_KILL_TOOL_SHA256")},
 		ClaimLease: 30 * time.Second,
 	}
@@ -112,18 +113,26 @@ func TestMySQLRestoreProcessKillAfterExecutingQualification(t *testing.T) {
 	suffix := strings.ReplaceAll(uuid.NewString()[:8], "-", "")
 	sourceDB, targetDB := "kill_src_"+suffix, "kill_dst_"+suffix
 	sourceRole, targetRole := "ksrc_"+suffix, "kdst_"+suffix
-	sourcePassword, targetPassword := "source"+suffix, "target"+suffix
+	restoreRole, fenceRole := "krst_"+suffix, "kfnc_"+suffix
+	sourcePassword, targetPassword, restorePassword, fencePassword := "source"+suffix, "target"+suffix, "restore"+suffix, "fence"+suffix
 	defer func() {
 		_, _ = admin.ExecContext(context.Background(), "DROP DATABASE IF EXISTS `"+sourceDB+"`")
 		_, _ = admin.ExecContext(context.Background(), "DROP DATABASE IF EXISTS `"+targetDB+"`")
 		_, _ = admin.ExecContext(context.Background(), "DROP USER IF EXISTS '"+sourceRole+"'@'%'")
 		_, _ = admin.ExecContext(context.Background(), "DROP USER IF EXISTS '"+targetRole+"'@'%'")
+		_, _ = admin.ExecContext(context.Background(), "DROP USER IF EXISTS '"+restoreRole+"'@'%'")
+		_, _ = admin.ExecContext(context.Background(), "DROP USER IF EXISTS '"+fenceRole+"'@'%'")
 	}()
 	for _, item := range []struct{ name, role, password string }{{sourceDB, sourceRole, sourcePassword}, {targetDB, targetRole, targetPassword}} {
 		for _, statement := range []string{"CREATE DATABASE `" + item.name + "`", "CREATE USER '" + item.role + "'@'%' IDENTIFIED BY " + mysqlRestoreSQLLiteral(item.password), "GRANT ALL PRIVILEGES ON `" + item.name + "`.* TO '" + item.role + "'@'%'"} {
 			if _, err := admin.ExecContext(ctx, statement); err != nil {
 				t.Fatal(err)
 			}
+		}
+	}
+	for _, statement := range []string{"CREATE USER '" + restoreRole + "'@'%' IDENTIFIED BY " + mysqlRestoreSQLLiteral(restorePassword), "CREATE USER '" + fenceRole + "'@'%' IDENTIFIED BY " + mysqlRestoreSQLLiteral(fencePassword), "GRANT ALL PRIVILEGES ON `" + targetDB + "`.* TO '" + restoreRole + "'@'%'"} {
+		if _, err := admin.ExecContext(ctx, statement); err != nil {
+			t.Fatal(err)
 		}
 	}
 	if _, err := admin.ExecContext(ctx, "CREATE TABLE `"+sourceDB+"`.prefix (value VARCHAR(64) NOT NULL)"); err != nil {
@@ -141,9 +150,10 @@ func TestMySQLRestoreProcessKillAfterExecutingQualification(t *testing.T) {
 	}
 	catalog := storeTestCatalog()
 	catalog.Services = append(catalog.Services, database.DatabaseService{APIVersion: database.APIVersion, ID: "kill-mysql", Generation: 1, Purpose: database.PurposeApplication, Engine: database.EngineMySQL, EngineVersion: "8.4", ProviderRef: "local:kill-mysql", Endpoint: database.DatabaseEndpoint{Host: host, Port: port}, Topology: database.DatabaseTopology{Mode: database.TopologyLocalShared, AvailabilityClass: database.AvailabilitySingleHost}, TLS: database.DatabaseTLSPolicy{MinimumMode: database.TLSDisabled}, Recovery: database.RecoveryPolicy{Capabilities: []database.Capability{database.CapabilitySnapshot, database.CapabilityRestore}}})
+	maintenance := &database.MySQLMaintenanceCredentials{Generation: 1, RuntimeAccountHost: "%", RestoreRole: restoreRole, RestoreCredentialRef: "secret:kill/restore", FenceRole: fenceRole, FenceCredentialRef: "secret:kill/fence", FenceAccountHost: "%"}
 	catalog.Bindings = append(catalog.Bindings,
 		database.DatabaseBinding{APIVersion: database.APIVersion, ID: "kill-source", ServiceID: "kill-mysql", Database: sourceDB, Role: sourceRole, Generation: 1, CredentialRef: "secret:kill/source", TLS: database.DatabaseTLS{Mode: database.TLSDisabled}},
-		database.DatabaseBinding{APIVersion: database.APIVersion, ID: "kill-target", ServiceID: "kill-mysql", Database: targetDB, Role: targetRole, Generation: 1, CredentialRef: "secret:kill/target", TLS: database.DatabaseTLS{Mode: database.TLSDisabled}},
+		database.DatabaseBinding{APIVersion: database.APIVersion, ID: "kill-target", ServiceID: "kill-mysql", Database: targetDB, Role: targetRole, Generation: 1, CredentialRef: "secret:kill/target", MySQLMaintenance: maintenance, TLS: database.DatabaseTLS{Mode: database.TLSDisabled}},
 	)
 	catalog.Profiles[0].DatabaseBindings["kill-source"] = "kill-source"
 	catalog.Profiles[0].DatabaseBindings["kill-target"] = "kill-target"
@@ -163,7 +173,7 @@ func TestMySQLRestoreProcessKillAfterExecutingQualification(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	secrets := mysqlIntentSecrets{"secret:kill/source": fmt.Sprintf(`{"password":%q}`, sourcePassword), "secret:kill/target": fmt.Sprintf(`{"password":%q}`, targetPassword)}
+	secrets := mysqlIntentSecrets{"secret:kill/source": fmt.Sprintf(`{"password":%q}`, sourcePassword), "secret:kill/target": fmt.Sprintf(`{"password":%q}`, targetPassword), "secret:kill/restore": fmt.Sprintf(`{"password":%q}`, restorePassword), "secret:kill/fence": fmt.Sprintf(`{"password":%q}`, fencePassword)}
 	dumpBytes, err := os.ReadFile(dumpTool)
 	if err != nil {
 		t.Fatal(err)
@@ -177,7 +187,7 @@ func TestMySQLRestoreProcessKillAfterExecutingQualification(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	request := MySQLRestoreRequest{CatalogRevision: active.Revision, ProfileID: "mini", LogicalID: "kill-target", Target: target.Target, Artifact: artifact, ArtifactPath: path, SourceQuiescence: mysqlRestoreQuiescence(source.Target)}
+	request := MySQLRestoreRequest{CatalogRevision: active.Revision, ProfileID: "mini", LogicalID: "kill-target", Target: target.Target, Maintenance: *target.MySQLMaintenance, Artifact: artifact, ArtifactPath: path, SourceQuiescence: mysqlRestoreQuiescence(source.Target)}
 	input := newAcceptance(t, stores[0], "mysql-process-kill-"+suffix, "operator", "kill-target", false)
 	input.Identity.Kind, input.Identity.Resource = MySQLRestoreOperationKind, "mysql/"+targetDB
 	input.Operation.Kind, input.Operation.MaxAttempts = MySQLRestoreOperationKind, 1
@@ -222,7 +232,7 @@ func TestMySQLRestoreProcessKillAfterExecutingQualification(t *testing.T) {
 	worker.Env = append(os.Environ(),
 		"NORN_MYSQL_RESTORE_KILL_HELPER=1", "NORN_MYSQL_RESTORE_KILL_SCHEMA="+schema,
 		"NORN_MYSQL_RESTORE_KILL_OPERATION="+accepted.Operation.ID, "NORN_MYSQL_RESTORE_KILL_OWNER="+owner,
-		"NORN_MYSQL_RESTORE_KILL_SOURCE_SECRET="+secrets["secret:kill/source"], "NORN_MYSQL_RESTORE_KILL_TARGET_SECRET="+secrets["secret:kill/target"],
+		"NORN_MYSQL_RESTORE_KILL_SOURCE_SECRET="+secrets["secret:kill/source"], "NORN_MYSQL_RESTORE_KILL_TARGET_SECRET="+secrets["secret:kill/target"], "NORN_MYSQL_RESTORE_KILL_RESTORE_SECRET="+secrets["secret:kill/restore"], "NORN_MYSQL_RESTORE_KILL_FENCE_SECRET="+secrets["secret:kill/fence"],
 		"NORN_MYSQL_RESTORE_KILL_TOOL="+tool, "NORN_MYSQL_RESTORE_KILL_TOOL_SHA256="+fmt.Sprintf("%x", toolSHA),
 	)
 	worker.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}

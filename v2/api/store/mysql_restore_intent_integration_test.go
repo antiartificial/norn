@@ -96,12 +96,13 @@ func TestMySQLRestoreIntentAgainstDisposableEngines(t *testing.T) {
 	suffix := strings.ReplaceAll(uuid.NewString()[:8], "-", "")
 	sourceDB, targetDB, lostTargetDB := "intent_src_"+suffix, "intent_dst_"+suffix, "intent_lost_"+suffix
 	sourceRole, targetRole, lostTargetRole := "isrc_"+suffix, "idst_"+suffix, "ilst_"+suffix
-	sourcePassword, targetPassword := "source"+suffix, `target\quote"`+suffix
+	restoreRole, fenceRole := "irst_"+suffix, "ifnc_"+suffix
+	sourcePassword, targetPassword, restorePassword, fencePassword := "source"+suffix, `target\quote"`+suffix, "restore"+suffix, "fence"+suffix
 	defer func() {
 		for _, name := range []string{sourceDB, targetDB, lostTargetDB} {
 			_, _ = admin.ExecContext(context.Background(), "DROP DATABASE IF EXISTS `"+name+"`")
 		}
-		for _, name := range []string{sourceRole, targetRole, lostTargetRole} {
+		for _, name := range []string{sourceRole, targetRole, lostTargetRole, restoreRole, fenceRole} {
 			_, _ = admin.ExecContext(context.Background(), "DROP USER IF EXISTS '"+name+"'@'%'")
 		}
 	}()
@@ -114,6 +115,16 @@ func TestMySQLRestoreIntentAgainstDisposableEngines(t *testing.T) {
 			if _, err := admin.ExecContext(ctx, statement); err != nil {
 				t.Fatal("disposable MySQL fixture setup failed")
 			}
+		}
+	}
+	for _, statement := range []string{
+		"CREATE USER '" + restoreRole + "'@'%' IDENTIFIED BY " + mysqlRestoreSQLLiteral(restorePassword),
+		"CREATE USER '" + fenceRole + "'@'%' IDENTIFIED BY " + mysqlRestoreSQLLiteral(fencePassword),
+		"GRANT ALL PRIVILEGES ON `" + targetDB + "`.* TO '" + restoreRole + "'@'%'",
+		"GRANT ALL PRIVILEGES ON `" + lostTargetDB + "`.* TO '" + restoreRole + "'@'%'",
+	} {
+		if _, err := admin.ExecContext(ctx, statement); err != nil {
+			t.Fatal("disposable MySQL maintenance fixture setup failed")
 		}
 	}
 	if _, err := admin.ExecContext(ctx, "CREATE TABLE `"+sourceDB+"`.marker (value VARCHAR(64) NOT NULL)"); err != nil {
@@ -133,10 +144,11 @@ func TestMySQLRestoreIntentAgainstDisposableEngines(t *testing.T) {
 		TLS:      database.DatabaseTLSPolicy{MinimumMode: database.TLSDisabled},
 		Recovery: database.RecoveryPolicy{Capabilities: []database.Capability{database.CapabilitySnapshot, database.CapabilityRestore}},
 	})
+	maintenance := &database.MySQLMaintenanceCredentials{Generation: 1, RuntimeAccountHost: "%", RestoreRole: restoreRole, RestoreCredentialRef: "secret:intent/restore", FenceRole: fenceRole, FenceCredentialRef: "secret:intent/fence", FenceAccountHost: "%"}
 	catalog.Bindings = append(catalog.Bindings,
 		database.DatabaseBinding{APIVersion: database.APIVersion, ID: "intent-source", ServiceID: "intent-mysql", Database: sourceDB, Role: sourceRole, Generation: 1, CredentialRef: "secret:intent/source", TLS: database.DatabaseTLS{Mode: database.TLSDisabled}},
-		database.DatabaseBinding{APIVersion: database.APIVersion, ID: "intent-target", ServiceID: "intent-mysql", Database: targetDB, Role: targetRole, Generation: 1, CredentialRef: "secret:intent/target", TLS: database.DatabaseTLS{Mode: database.TLSDisabled}},
-		database.DatabaseBinding{APIVersion: database.APIVersion, ID: "intent-lost-target", ServiceID: "intent-mysql", Database: lostTargetDB, Role: lostTargetRole, Generation: 1, CredentialRef: "secret:intent/target", TLS: database.DatabaseTLS{Mode: database.TLSDisabled}},
+		database.DatabaseBinding{APIVersion: database.APIVersion, ID: "intent-target", ServiceID: "intent-mysql", Database: targetDB, Role: targetRole, Generation: 1, CredentialRef: "secret:intent/target", MySQLMaintenance: maintenance, TLS: database.DatabaseTLS{Mode: database.TLSDisabled}},
+		database.DatabaseBinding{APIVersion: database.APIVersion, ID: "intent-lost-target", ServiceID: "intent-mysql", Database: lostTargetDB, Role: lostTargetRole, Generation: 1, CredentialRef: "secret:intent/target", MySQLMaintenance: maintenance, TLS: database.DatabaseTLS{Mode: database.TLSDisabled}},
 	)
 	catalog.Profiles[0].DatabaseBindings["intent-source"] = "intent-source"
 	catalog.Profiles[0].DatabaseBindings["intent-target"] = "intent-target"
@@ -162,8 +174,10 @@ func TestMySQLRestoreIntentAgainstDisposableEngines(t *testing.T) {
 		t.Fatal(err)
 	}
 	secrets := mysqlIntentSecrets{
-		"secret:intent/source": fmt.Sprintf(`{"password":%q}`, sourcePassword),
-		"secret:intent/target": fmt.Sprintf(`{"password":%q}`, targetPassword),
+		"secret:intent/source":  fmt.Sprintf(`{"password":%q}`, sourcePassword),
+		"secret:intent/target":  fmt.Sprintf(`{"password":%q}`, targetPassword),
+		"secret:intent/restore": fmt.Sprintf(`{"password":%q}`, restorePassword),
+		"secret:intent/fence":   fmt.Sprintf(`{"password":%q}`, fencePassword),
 	}
 	toolBytes, err := os.ReadFile(dumpTool)
 	if err != nil {
@@ -181,7 +195,7 @@ func TestMySQLRestoreIntentAgainstDisposableEngines(t *testing.T) {
 	if !strings.HasPrefix(path, filepath.Clean(stage)+string(os.PathSeparator)) {
 		t.Fatal("snapshot escaped private stage")
 	}
-	request := MySQLRestoreRequest{CatalogRevision: active.Revision, ProfileID: "mini", LogicalID: "intent-target", Target: target.Target, Artifact: artifact, ArtifactPath: path,
+	request := MySQLRestoreRequest{CatalogRevision: active.Revision, ProfileID: "mini", LogicalID: "intent-target", Target: target.Target, Maintenance: *target.MySQLMaintenance, Artifact: artifact, ArtifactPath: path,
 		SourceQuiescence: mysqlRestoreQuiescence(artifact.Source)}
 	input := newAcceptance(t, stores[0], "mysql-intent-"+suffix, "operator", "intent-target", false)
 	input.Identity.Kind, input.Identity.Resource = MySQLRestoreOperationKind, "mysql/"+targetDB

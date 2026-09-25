@@ -38,6 +38,10 @@ func RestoreMySQLSQLArtifact(ctx context.Context, resolved ResolvedBinding, secr
 	if resolved.Target.Engine != EngineMySQL || !validMySQLArtifactIdentity(resolved.Target) || tool.Path == "" {
 		return fmt.Errorf("MySQL restore execution contract is invalid")
 	}
+	restore, err := mysqlRestoreResolvedBinding(resolved)
+	if err != nil {
+		return err
+	}
 	artifactFile, err := OpenVerifiedMySQLSQLArtifact(artifactPath, artifact)
 	if err != nil {
 		return err
@@ -52,7 +56,7 @@ func RestoreMySQLSQLArtifact(ctx context.Context, resolved ResolvedBinding, secr
 	if err != nil {
 		return fmt.Errorf("MySQL restore tool stat failed")
 	}
-	session, err := OpenSession(ctx, resolved, secrets)
+	session, err := OpenSession(ctx, restore, secrets)
 	if err != nil {
 		return err
 	}
@@ -65,10 +69,10 @@ func RestoreMySQLSQLArtifact(ctx context.Context, resolved ResolvedBinding, secr
 	}
 	options := filepath.Join(session.directory, "restore.cnf")
 	escaped := strings.NewReplacer(`\`, `\\`, `"`, `\"`).Replace(session.password)
-	if err := writePrivate(options, []byte("[client]\nuser="+resolved.Target.Role+"\npassword=\""+escaped+"\"\n")); err != nil {
+	if err := writePrivate(options, []byte("[client]\nuser="+restore.Target.Role+"\npassword=\""+escaped+"\"\n")); err != nil {
 		return fmt.Errorf("MySQL restore private client material failed")
 	}
-	tlsArgs, err := mysqlRestoreTLSArgs(session, resolved.TLS)
+	tlsArgs, err := mysqlRestoreTLSArgs(session, restore.TLS)
 	if err != nil {
 		return err
 	}
@@ -97,6 +101,23 @@ func RestoreMySQLSQLArtifact(ctx context.Context, resolved ResolvedBinding, secr
 		return fmt.Errorf("MySQL restore tool changed during execution")
 	}
 	return nil
+}
+
+// mysqlRestoreResolvedBinding selects the restore-only identity from an
+// already resolved application binding. It is intentionally private: neither
+// the runtime adapter nor a public route can request maintenance authority.
+func mysqlRestoreResolvedBinding(resolved ResolvedBinding) (ResolvedBinding, error) {
+	maintenance := resolved.MySQLMaintenance
+	if maintenance == nil || maintenance.Generation == 0 ||
+		!mysqlUserPattern.MatchString(maintenance.RestoreRole) ||
+		!referencePattern.MatchString(maintenance.RestoreCredentialRef) ||
+		maintenance.RestoreRole == resolved.Target.Role || maintenance.RestoreCredentialRef == resolved.CredentialRef {
+		return ResolvedBinding{}, fmt.Errorf("MySQL restore maintenance identity is unavailable")
+	}
+	restore := resolved
+	restore.Target.Role = maintenance.RestoreRole
+	restore.CredentialRef = maintenance.RestoreCredentialRef
+	return restore, nil
 }
 
 func mysqlRestoreTLSArgs(session *Session, binding DatabaseTLS) ([]string, error) {
