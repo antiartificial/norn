@@ -2,6 +2,8 @@ package cloudflared
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"fmt"
 	"net"
 	"net/url"
@@ -12,6 +14,18 @@ import (
 
 	"gopkg.in/yaml.v3"
 )
+
+// ConfigDigest binds a host mutation to the exact config observed at admission.
+func ConfigDigest(cfg *Config) (string, error) {
+	data, err := yaml.Marshal(cfg)
+	if err != nil {
+		return "", err
+	}
+	sum := sha256.Sum256(data)
+	return hex.EncodeToString(sum[:]), nil
+}
+
+func ConfigPath() string { return getConfigPath() }
 
 // NormalizeHostname strips the scheme and path from a URL, returning just the
 // hostname. Bare hostnames are returned as-is. This ensures cloudflared ingress
@@ -71,17 +85,26 @@ func getConfigPath() string {
 }
 
 // ReadConfig reads the cloudflared config from the local config file.
-func ReadConfig(_ context.Context) (*Config, error) {
+func ReadConfig(ctx context.Context) (*Config, error) {
+	cfg, _, err := ReadConfigSnapshot(ctx)
+	return cfg, err
+}
+
+// ReadConfigSnapshot hashes the bytes that will be replaced, including fields
+// and comments unknown to this client, so a worker cannot miss an intervening
+// edit to the local file.
+func ReadConfigSnapshot(_ context.Context) (*Config, string, error) {
 	data, err := os.ReadFile(getConfigPath())
 	if err != nil {
-		return nil, fmt.Errorf("read cloudflared config: %w", err)
+		return nil, "", fmt.Errorf("read cloudflared config: %w", err)
 	}
 
 	var cfg Config
 	if err := yaml.Unmarshal(data, &cfg); err != nil {
-		return nil, fmt.Errorf("parse cloudflared config: %w", err)
+		return nil, "", fmt.Errorf("parse cloudflared config: %w", err)
 	}
-	return &cfg, nil
+	sum := sha256.Sum256(data)
+	return &cfg, hex.EncodeToString(sum[:]), nil
 }
 
 // AddIngress adds or updates an ingress rule for the given hostname.

@@ -377,6 +377,11 @@ func main() {
 		log.Fatalf("configure durable app.canary-promote effects: %v", err)
 	}
 	pipe.CanaryPromotionEffects = canaryPromotionEffects
+	cloudflaredEffects, err := pipeline.NewCloudflaredEffects(db)
+	if err != nil {
+		log.Fatalf("configure durable cloudflared effects: %v", err)
+	}
+	pipe.CloudflaredEffects = cloudflaredEffects
 
 	// Construct the acceptance boundary and verify any retained private
 	// invocation envelopes before a worker can claim operations.
