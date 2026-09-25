@@ -1,0 +1,44 @@
+# M1 cron force idempotency qualification — 2026-09-24
+
+This is a local compatibility test, not a release qualification. It was run
+against a disposable Nomad 2.0.7 dev server bound to `127.0.0.1:14646` with a
+periodic `raw_exec` batch job named `norn-cron-force-qual-0924`. The job's
+normal schedule was midnight; no production Norn or Fleet resource was used.
+
+The client package's `Jobs().PeriodicForce(jobID, *WriteOptions)` accepts a
+generic `IdempotencyToken` and sends it as the `idempotency_token` query
+parameter. That API shape suggested it might be possible to retry a forced
+run safely after a worker crash or an ambiguous HTTP response. The actual
+server behavior disproved that assumption:
+
+| Request | Token | HTTP status | Evaluation ID |
+| --- | --- | --- | --- |
+| First force | `norn-cron-force-qual-0924-token` | 200 | `ca9888f7-3147-7911-b26e-8139345a91a8` |
+| Immediate repeat | same | 200 | `3b725958-5eb0-29da-f3be-ef8b0bc32b8f` |
+| Later repeat | same | 200 | `ff624041-f26d-5c7d-8f6e-a6332a48994a` |
+| Final repeat | same | 200 | `0018704c-9a7c-6ce4-e1d0-1fc97a687621` |
+
+After the four requests, the Nomad jobs listing contained **three periodic
+children**. The immediate pair landed in one second and shared a child ID;
+the later requests created additional children. Different evaluation IDs
+alone would not establish distinct execution, but the additional child jobs
+do. The token therefore cannot be used as a durable effect identity for
+`CronTrigger` on the tested Nomad version.
+
+Current `handler.CronTrigger` directly calls `PeriodicForce` and returns its
+evaluation ID. A signed operation alone would not repair this path: a retry
+after Nomad accepts the force but before the worker receives its response
+could force a second run. The smallest safe conversion needs a deterministic
+child/evaluation identity accepted by Nomad or an independently proven way to
+find the exact committed run before any retry. If neither is available, the
+worker must stop at an unresolved effect for operator review rather than
+force again. That still requires a complete reservation, claim, and recovery
+path; queueing an operation that later fails execution is not sufficient.
+
+`CronResume` and `CronUpdateSchedule` use `SubmitJob` rather than force. Their
+candidate conversion must bind the exact job specification and effective
+schedule, use a guarded Nomad registration with a durable effect marker,
+reconcile a lost response from the periodic parent, and commit cron state
+with the operation's live claim. The accepted payload must not persist
+plaintext secrets. These are separate work items from the force behavior
+observed here.
