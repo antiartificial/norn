@@ -1,11 +1,11 @@
 # M1 cron trigger worker process-crash qualification
 
-`TestCronTriggerWorkerProcessCrashNomadPostgres` is an opt-in literal
-process-crash gate for the signed `app.cron-trigger` path. It uses a unique
-periodic job on a disposable loopback Nomad agent and an isolated schema in a
-disposable PostgreSQL 17 database.
+The opt-in literal process-crash gates for the signed `app.cron-trigger` path
+use a unique periodic job on a disposable loopback Nomad agent and an isolated
+schema in a disposable PostgreSQL 17 database.
 
-The test accepts the trigger through the HTTP handler, then starts the normal
+`TestCronTriggerWorkerProcessCrashNomadPostgres` accepts the trigger through
+the HTTP handler, then starts the normal
 `worker.OperationWorker` in a separate Go test process. A transport barrier
 allows its initial parent read through to Nomad, then holds its second parent
 read. At that point the PostgreSQL `operation_effects` row is committed with
@@ -20,15 +20,28 @@ the cron recovery budget into a terminal receipt with
 `retryBudgetExhausted`. The test also proves that the periodic parent has no
 children before or after restart.
 
+`TestCronTriggerWorkerProcessCrashAfterNomadForceNomadPostgres` crosses the
+next boundary. Its test-only proxy forwards the worker's `PeriodicForce` to
+live Nomad, drains the successful response, records the exact `EvalID`, and
+withholds that response. The parent proves the exact evaluation exists against
+the real periodic parent while the durable effect remains `reserved` with no
+runtime ID, then kills that separate worker with `SIGKILL`. A replacement
+normal worker receives the same unresolved reservation through elapsed-lease
+recovery. The proxy rejects and counts any later Force, and the test requires
+exactly one Force call. Recovery exhausts into the same manual-review receipt
+without writing an evaluation acknowledgement. This proves the actual Nomad
+side effect is retained as ambiguous rather than replayed.
+
 Run it only against disposable services:
 
 ```sh
 NORN_TEST_NOMAD_ADDR=http://127.0.0.1:14684 \
 NORN_TEST_DATABASE_URL='postgres://postgres:<test-password>@127.0.0.1:15484/norn_test?sslmode=disable' \
-go test ./handler -run '^TestCronTriggerWorkerProcessCrashNomadPostgres$' -count=1 -v
+go test ./handler -run '^TestCronTriggerWorkerProcessCrash(NomadPostgres|AfterNomadForceNomadPostgres)$' -count=1 -v
 ```
 
-The test deregisters its unique parent and any child jobs and drops its schema.
-It is a before-launch crash proof only. It does not qualify a kill after Nomad
-accepts `PeriodicForce` or after a returned evaluation is awaiting durable
-acknowledgement; those are separate M1 crash boundaries.
+Each test deregisters its unique parent and any child jobs and drops its
+schema. Together they prove the pre-Force reservation boundary and the
+post-Force, pre-acknowledgement boundary. The remaining crash gap is after a
+durable evaluation acknowledgement and before the operation/effect completion
+receipt is committed.
