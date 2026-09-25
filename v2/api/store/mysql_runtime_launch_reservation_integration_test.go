@@ -160,6 +160,49 @@ func TestMySQLRuntimeLaunchReservationFailsClosedForIncompleteIdentity(t *testin
 	}
 }
 
+func TestMySQLRuntimeLaunchReservationUsesCatalogPhysicalProviderIdentity(t *testing.T) {
+	_, dbs := acceptanceIntegrationStores(t, 1)
+	db := dbs[0]
+	ctx := context.Background()
+	service := func(id string, generation uint64) database.DatabaseService {
+		return database.DatabaseService{
+			APIVersion: database.APIVersion, ID: id, Generation: generation,
+			Purpose: database.PurposeApplication, Engine: database.EngineMySQL,
+			EngineVersion: "8.4", ProviderRef: "local:shared-mysql",
+			Endpoint: database.DatabaseEndpoint{Host: "mysql.internal", Port: 3306},
+			Topology: database.DatabaseTopology{Mode: database.TopologyLocalShared, AvailabilityClass: database.AvailabilitySingleHost},
+			TLS:      database.DatabaseTLSPolicy{MinimumMode: database.TLSDisabled},
+			Recovery: database.RecoveryPolicy{Capabilities: []database.Capability{database.CapabilityRuntime, database.CapabilityRestore}},
+		}
+	}
+	catalog := database.Catalog{APIVersion: database.APIVersion, Services: []database.DatabaseService{service("mysql-primary", 1), service("mysql-alias", 1)}}
+	active, err := db.ActivateDatabaseCatalog(ctx, 0, catalog, "physical-exclusion-test")
+	if err != nil {
+		t.Fatal(err)
+	}
+	primary := database.TargetIdentity{ServiceID: "mysql-primary", ServiceGeneration: 1, BindingID: "primary", BindingGeneration: 1, Engine: database.EngineMySQL, Database: "wordpress", Role: "writer"}
+	alias := database.TargetIdentity{ServiceID: "mysql-alias", ServiceGeneration: 1, BindingID: "alias", BindingGeneration: 1, Engine: database.EngineMySQL, Database: "wordpress", Role: "alternate_writer"}
+	if _, err := db.ReserveMySQLRuntimeLaunch(ctx, "physical-primary", []database.TargetIdentity{primary}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := db.ReserveMySQLRuntimeLaunch(ctx, "physical-alias", []database.TargetIdentity{alias}); !errors.Is(err, ErrMySQLRuntimeLaunchFence) {
+		t.Fatalf("catalog service alias bypassed physical provider reservation: %v", err)
+	}
+
+	rotated := catalog
+	rotated.Services = append([]database.DatabaseService(nil), catalog.Services...)
+	rotated.Services[0].Generation = 2
+	rotated.Services[0].EngineVersion = "8.4.1"
+	if _, err := db.ActivateDatabaseCatalog(ctx, active.Revision, rotated, "physical-exclusion-test"); err != nil {
+		t.Fatal(err)
+	}
+	primaryV2 := primary
+	primaryV2.ServiceGeneration = 2
+	if _, err := db.ReserveMySQLRuntimeLaunch(ctx, "physical-generation-2", []database.TargetIdentity{primaryV2}); !errors.Is(err, ErrMySQLRuntimeLaunchFence) {
+		t.Fatalf("service generation rotation bypassed physical provider reservation: %v", err)
+	}
+}
+
 func TestMySQLRuntimeLaunchReservationWaitsForConcurrentRestoreFence(t *testing.T) {
 	_, dbs := acceptanceIntegrationStores(t, 2)
 	ctx := context.Background()

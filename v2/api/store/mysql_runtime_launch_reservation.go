@@ -92,6 +92,10 @@ func (db *DB) ReserveMySQLRuntimeLaunch(ctx context.Context, reservationID strin
 	if err := lockMySQLCatalogGate(ctx, tx); err != nil {
 		return MySQLRuntimeLaunchReservation{}, err
 	}
+	active, err := loadActiveDatabaseCatalog(ctx, tx)
+	if err != nil {
+		return MySQLRuntimeLaunchReservation{}, err
+	}
 	if err := rejectMySQLRestoreMaintenanceFence(ctx, tx, identities); err != nil {
 		return MySQLRuntimeLaunchReservation{}, err
 	}
@@ -133,7 +137,7 @@ func (db *DB) ReserveMySQLRuntimeLaunch(ctx context.Context, reservationID strin
 		encoded, _ := json.Marshal(identity)
 		result, err := tx.Exec(ctx, `INSERT INTO mysql_runtime_launch_reservations
 			(reservation_id, target_key, target, state) VALUES ($1,$2,$3,'reserved')
-			ON CONFLICT (target_key) WHERE state IN ('reserved','launched','needs-inspection') DO NOTHING`, reservationID, mysqlRuntimePhysicalKey(identity), encoded)
+			ON CONFLICT (target_key) WHERE state IN ('reserved','launched','needs-inspection') DO NOTHING`, reservationID, mysqlRuntimePhysicalKeyForCatalog(active.Catalog, identity), encoded)
 		if err != nil {
 			return MySQLRuntimeLaunchReservation{}, err
 		}
@@ -346,6 +350,30 @@ func mysqlRuntimePhysicalKey(identity database.TargetIdentity) string {
 	return hex.EncodeToString(digest[:])
 }
 
+// mysqlRuntimePhysicalKeyForCatalog binds exclusion to the catalog's physical
+// provider identity. Service and binding generations describe immutable signed
+// routing revisions, but a generation rotation can continue to address the
+// same provider database. Multiple catalog services can also intentionally
+// alias one provider. ProviderRef is the stable physical identity in both
+// cases. The legacy identity key remains a fail-closed fallback for synthetic
+// store callers whose service is not present in the active catalog.
+func mysqlRuntimePhysicalKeyForCatalog(catalog database.Catalog, identity database.TargetIdentity) string {
+	for _, service := range catalog.Services {
+		if service.ID != identity.ServiceID || service.Engine != identity.Engine {
+			continue
+		}
+		physical := struct {
+			Engine      database.Engine `json:"engine"`
+			ProviderRef string          `json:"providerRef"`
+			Database    string          `json:"database"`
+		}{identity.Engine, service.ProviderRef, identity.Database}
+		encoded, _ := json.Marshal(physical)
+		digest := sha256.Sum256(encoded)
+		return hex.EncodeToString(digest[:])
+	}
+	return mysqlRuntimePhysicalKey(identity)
+}
+
 func validMySQLRuntimeLaunchStopProof(proof MySQLRuntimeLaunchStopProof) bool {
 	if strings.TrimSpace(proof.RuntimeInstanceID) == "" || proof.ObservedAt.IsZero() || strings.TrimSpace(proof.Method) == "" || len(proof.Method) > 200 || len(proof.EvidenceSHA256) != 64 || strings.ToLower(proof.EvidenceSHA256) != proof.EvidenceSHA256 {
 		return false
@@ -412,10 +440,14 @@ func rejectMySQLRestoreMaintenanceFence(ctx context.Context, tx pgx.Tx, identiti
 }
 
 func rejectMySQLRuntimeLaunchReservations(ctx context.Context, tx pgx.Tx, identities []database.TargetIdentity) error {
+	active, err := loadActiveDatabaseCatalog(ctx, tx)
+	if err != nil {
+		return err
+	}
 	for _, identity := range identities {
 		var blocked bool
 		err := tx.QueryRow(ctx, `SELECT EXISTS (SELECT 1 FROM mysql_runtime_launch_reservations
-		WHERE target_key=$1 AND state IN ('reserved','launched','needs-inspection'))`, mysqlRuntimePhysicalKey(identity)).Scan(&blocked)
+		WHERE target_key=$1 AND state IN ('reserved','launched','needs-inspection'))`, mysqlRuntimePhysicalKeyForCatalog(active.Catalog, identity)).Scan(&blocked)
 		if err != nil {
 			return err
 		}
