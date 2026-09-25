@@ -138,3 +138,21 @@ copied to this checkout, and the temporary timing text on Mini was removed.
 This measures backup extraction under the observed load. It does not measure
 durable protected-backup publication, retention cost, restore time, validation,
 or application recovery, so it is not an RPO or RTO result.
+
+At 2026-09-25 18:46 UTC, a second fresh PostgreSQL 17.7 custom dump streamed
+from Mini directly into a disposable PostgreSQL 17.11 container. Docker
+inspection confirmed `network=none`, no published ports, and tmpfs mounts for
+both `/tmp` (64 MiB) and the database data directory (1 GiB). The owner-only
+dump in container tmpfs was **13,164,164 bytes**. An `--exit-on-error`
+`pg_restore` into a new database completed in **3.81 seconds** wall time.
+The restored target had 28 public base tables and 249,323 total rows; its
+physical database size was 208,172,723 bytes. The container and its tmpfs
+contents were removed after inspection. Mini's source database was only read.
+
+This is a useful lower-bound restore-stage observation for the current data
+volume. It does not include protected-backup retrieval, network transfer to a
+different node, v3 migrations, API startup, application verification, or a
+rollback decision. The target's row count was not matched to a same-snapshot
+source count or full-row fingerprints, so this run alone does not prove data
+equivalence. A release RTO must cover those additional stages and use a
+reviewed threshold.
