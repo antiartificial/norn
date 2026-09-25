@@ -24,8 +24,8 @@ func observedFunctionJob(t *testing.T, identity FunctionInvocationJobIdentity) (
 	if err != nil {
 		t.Fatal(err)
 	}
-	version, modifyIndex := uint64(1), uint64(55)
-	job.Version, job.ModifyIndex = &version, &modifyIndex
+	version, modifyIndex, jobModifyIndex := uint64(1), uint64(55), uint64(54)
+	job.Version, job.ModifyIndex, job.JobModifyIndex = &version, &modifyIndex, &jobModifyIndex
 	return job, digest
 }
 
@@ -39,7 +39,7 @@ func TestFunctionInvocationJobLookupReturnsCompleteExactObservation(t *testing.T
 		case "/v1/job/" + identity.JobID + "/versions":
 			_ = json.NewEncoder(w).Encode(nomadapi.JobVersionsResponse{Versions: []*nomadapi.Job{job}})
 		case "/v1/job/" + identity.JobID + "/evaluations":
-			_ = json.NewEncoder(w).Encode([]*nomadapi.Evaluation{{ID: "eval-2", JobID: identity.JobID, JobModifyIndex: 55}, {ID: "eval-1", JobID: identity.JobID, JobModifyIndex: 55}})
+			_ = json.NewEncoder(w).Encode([]*nomadapi.Evaluation{{ID: "eval-2", JobID: identity.JobID, JobModifyIndex: 54}, {ID: "eval-1", JobID: identity.JobID, JobModifyIndex: 54}})
 		case "/v1/job/" + identity.JobID + "/allocations":
 			_ = json.NewEncoder(w).Encode([]*nomadapi.AllocationListStub{{ID: "alloc-2", JobID: identity.JobID, JobVersion: 1}, {ID: "alloc-1", JobID: identity.JobID, JobVersion: 1}})
 		default:
@@ -103,7 +103,7 @@ func TestFunctionInvocationJobLookupRejectsRevisionChangeDuringHistoryReads(t *t
 		case "/v1/job/" + identity.JobID + "/versions":
 			_ = json.NewEncoder(w).Encode(nomadapi.JobVersionsResponse{Versions: []*nomadapi.Job{job}})
 		case "/v1/job/" + identity.JobID + "/evaluations":
-			_ = json.NewEncoder(w).Encode([]*nomadapi.Evaluation{{ID: "eval-1", JobID: identity.JobID, JobModifyIndex: *job.ModifyIndex}})
+			_ = json.NewEncoder(w).Encode([]*nomadapi.Evaluation{{ID: "eval-1", JobID: identity.JobID, JobModifyIndex: *job.JobModifyIndex}})
 		case "/v1/job/" + identity.JobID + "/allocations":
 			_ = json.NewEncoder(w).Encode([]*nomadapi.AllocationListStub{})
 		default:

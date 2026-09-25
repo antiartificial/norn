@@ -69,7 +69,7 @@ func (c *FunctionInvocationCleanupConsumer) RunOnce(ctx context.Context) error {
 	if err != nil || intent == nil {
 		return err
 	}
-	if strings.TrimSpace(intent.OperationID) == "" || strings.TrimSpace(intent.Token) == "" || intent.Variable.OwnerMarker != intent.OperationID {
+	if strings.TrimSpace(intent.OperationID) == "" || strings.TrimSpace(intent.Token) == "" || intent.Variable.OwnerMarker != "norn.function-invoke/"+intent.OperationID {
 		return fmt.Errorf("function invocation cleanup intent is invalid")
 	}
 	observed, err := c.Remote.LookupFunctionInvocationVariable(ctx, "global", intent.Variable)

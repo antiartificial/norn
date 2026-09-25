@@ -41,7 +41,7 @@ func (db *DB) ClaimFunctionInvocationCleanup(ctx context.Context) (*FunctionInvo
 	// intact until the evidence boundary is durable.
 	if _, err := tx.Exec(ctx, `
 		INSERT INTO function_invocation_cleanup_intents (operation_id, variable_path, owner_marker)
-		SELECT o.id, a.target, o.id
+		SELECT o.id, a.target, 'norn.function-invoke/' || o.id
 		FROM operations o
 		JOIN function_invocation_effect_attempts a
 		  ON a.operation_id = o.id AND a.stage = 'variable' AND a.state = 'attempted'
@@ -96,7 +96,7 @@ func (db *DB) CompleteFunctionInvocationVariableCleanup(ctx context.Context, int
 	if db == nil || db.Pool == nil {
 		return fmt.Errorf("function invocation cleanup store is unavailable")
 	}
-	if intent.OperationID == "" || intent.Token == "" || intent.Variable.Path == "" || intent.Variable.OwnerMarker != intent.OperationID {
+	if intent.OperationID == "" || intent.Token == "" || intent.Variable.Path == "" || intent.Variable.OwnerMarker != "norn.function-invoke/"+intent.OperationID {
 		return ErrFunctionInvocationCleanupOwnershipLost
 	}
 	result, err := db.Pool.Exec(ctx, `

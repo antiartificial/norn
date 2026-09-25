@@ -42,9 +42,9 @@ func (r *cleanupRemoteFake) DeleteFunctionInvocationVariable(_ context.Context, 
 
 func cleanupFixture(state nomad.FunctionInvocationVariableState) (*FunctionInvocationCleanupConsumer, *cleanupStoreFake, *cleanupRemoteFake) {
 	op := "op-123"
-	identity := nomad.FunctionInvocationVariableIdentity{Path: "nomad/jobs/norn-fn-0123456789abcdef0123456789abcdef01234567/invoke", OwnerMarker: op}
+	identity := nomad.FunctionInvocationVariableIdentity{Path: "nomad/jobs/norn-fn-0123456789abcdef0123456789abcdef01234567/invoke", OwnerMarker: "norn.function-invoke/" + op}
 	store := &cleanupStoreFake{intent: &FunctionInvocationCleanup{OperationID: op, Variable: identity, Token: "claim-1"}}
-	remote := &cleanupRemoteFake{observation: nomad.FunctionInvocationVariableObservation{State: state, Path: identity.Path, OwnerMarker: op, ModifyIndex: 42}}
+	remote := &cleanupRemoteFake{observation: nomad.FunctionInvocationVariableObservation{State: state, Path: identity.Path, OwnerMarker: identity.OwnerMarker, ModifyIndex: 42}}
 	return &FunctionInvocationCleanupConsumer{Store: store, Remote: remote}, store, remote
 }
 

@@ -71,7 +71,7 @@ func TestFunctionInvocationCleanupClaimsOnlyAfterTerminalReceiptAndVerifiedArchi
 	if err != nil || intent == nil {
 		t.Fatalf("archived cleanup=%+v err=%v", intent, err)
 	}
-	if intent.OperationID != operationID || intent.Variable.Path != functionInvocationCleanupPath || intent.Variable.OwnerMarker != operationID || intent.Token == "" {
+	if intent.OperationID != operationID || intent.Variable.Path != functionInvocationCleanupPath || intent.Variable.OwnerMarker != "norn.function-invoke/"+operationID || intent.Token == "" {
 		t.Fatalf("cleanup intent=%+v", intent)
 	}
 	if err := dbs[0].CompleteFunctionInvocationVariableCleanup(context.Background(), *intent); err != nil {

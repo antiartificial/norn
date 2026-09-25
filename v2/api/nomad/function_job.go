@@ -62,7 +62,7 @@ func (c *Client) LookupFunctionInvocationJob(ctx context.Context, region string,
 		return indeterminateFunctionJob(ErrFunctionJobLookupIndeterminate)
 	}
 	digest, err := ProjectFunctionInvocationJob(job)
-	if err != nil || job == nil || job.ID == nil || *job.ID != identity.JobID || job.Version == nil || job.ModifyIndex == nil || *job.ModifyIndex == 0 {
+	if err != nil || job == nil || job.ID == nil || *job.ID != identity.JobID || job.Version == nil || job.ModifyIndex == nil || job.JobModifyIndex == nil || *job.ModifyIndex == 0 || *job.JobModifyIndex == 0 {
 		return indeterminateFunctionJob(ErrFunctionJobLookupIndeterminate)
 	}
 	versions, _, _, err := c.api.Jobs().Versions(identity.JobID, false, query)
@@ -70,7 +70,10 @@ func (c *Client) LookupFunctionInvocationJob(ctx context.Context, region string,
 		return indeterminateFunctionJob(ErrFunctionJobLookupIndeterminate)
 	}
 	evaluations, _, err := c.api.Jobs().Evaluations(identity.JobID, query)
-	evaluationIDs, ok := exactFunctionJobEvaluations(identity.JobID, *job.ModifyIndex, evaluations)
+	// Nomad's general ModifyIndex advances as the batch job is evaluated and
+	// allocated. Evaluations retain the immutable JobModifyIndex of the
+	// submitted definition, which is the lineage this read must prove.
+	evaluationIDs, ok := exactFunctionJobEvaluations(identity.JobID, *job.JobModifyIndex, evaluations)
 	if err != nil || !ok {
 		return indeterminateFunctionJob(ErrFunctionJobLookupIndeterminate)
 	}
