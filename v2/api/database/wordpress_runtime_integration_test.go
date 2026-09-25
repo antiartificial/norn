@@ -80,6 +80,12 @@ func TestWordPressImageUsesMySQLRuntimeComponents(t *testing.T) {
 	}
 
 	container := "norn-wordpress-runtime-" + suffix
+	if assigned := os.Getenv("NORN_TEST_WORDPRESS_CONTAINER_NAME"); assigned != "" {
+		if !strings.HasPrefix(assigned, "norn-wordpress-runtime-") || len(assigned) > 63 {
+			t.Fatal("NORN_TEST_WORDPRESS_CONTAINER_NAME must name a qualification container")
+		}
+		container = assigned
+	}
 	args := []string{"run", "--detach", "--name", container, "--add-host", "host.docker.internal:host-gateway", "--publish", "127.0.0.1::80"}
 	for _, pair := range []struct{ name, value string }{
 		{"WORDPRESS_DB_HOST", components["host"]}, {"WORDPRESS_DB_USER", components["user"]},

@@ -5,13 +5,19 @@ repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 mysql_container="norn-wordpress-mysql-runtime"
 mysql_image="mysql:8.4"
 wordpress_image="wordpress:6.8.2-php8.3-apache"
+wordpress_container="norn-wordpress-runtime-$(date +%s)-$$"
 root_password="norn-wordpress-qualification-root"
 
 cleanup() {
+  docker rm --force "$wordpress_container" >/dev/null 2>&1 || true
   docker rm --force "$mysql_container" >/dev/null 2>&1 || true
 }
 if docker container inspect "$mysql_container" >/dev/null 2>&1; then
   echo "refusing to replace existing container $mysql_container" >&2
+  exit 1
+fi
+if docker container inspect "$wordpress_container" >/dev/null 2>&1; then
+  echo "refusing to replace existing container $wordpress_container" >&2
   exit 1
 fi
 trap cleanup EXIT
@@ -35,4 +41,5 @@ cd "$repo_root/v2/api"
 NORN_TEST_MYSQL_DSN="root:${root_password}@tcp(127.0.0.1:${host_port})/mysql" \
 NORN_TEST_WORDPRESS_MYSQL_ENDPOINT="host.docker.internal:${host_port}" \
 NORN_TEST_WORDPRESS_IMAGE="$wordpress_image" \
+NORN_TEST_WORDPRESS_CONTAINER_NAME="$wordpress_container" \
 go test ./database -run '^TestWordPressImageUsesMySQLRuntimeComponents$' -count=1 -v
