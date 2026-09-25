@@ -212,3 +212,5 @@ tests; the etcd receipt additionally compares the app-lock fence in its
 transaction. These are implementation seams: acceptance-bound spec and
 database resolution, the dedicated claimed worker, route activation, cleanup,
 and full external crash qualification remain open.
+The receipt dispatcher refuses a claim-only terminal write on lease-fenced
+backends when the app-lock-aware receipt interface is unavailable.
