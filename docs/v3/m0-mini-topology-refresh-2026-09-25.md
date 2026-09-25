@@ -46,10 +46,31 @@ including `watchtower` and `vigil-gateway`, which have no declared InfraSpec
 PostgreSQL database. Values and connection strings were not inspected or
 recorded.
 
+## Watchtower source ownership follow-up
+
+A read-only 08:23 UTC inventory still returned two `watchtower` records. The
+two source directories are the current `watchtower` checkout and a retained
+`watchtower.pre-git-20260916165652` checkout. The latest deployed Watchtower
+record has source commit `8ea1c575859f3ac507d1e95b5eed76b0ae4bf5f8`,
+matching the current checkout's head. The retained checkout's head is
+`ade8d26`; it also has uncommitted work, so it must not be moved or rewritten
+as an incidental cleanup. This identifies the current checkout as the
+deployed source at this sample, while preserving the retained checkout for
+owner review.
+
+The candidate discovery code now recognizes a regular
+`.norn-discovery-ignore` marker in a source directory. The marker is an
+explicit way to exclude retained source from both deployable and all-app
+inventory. No marker was written on Mini and the installed binary does not
+yet implement it. Before v3 promotion, the source owner must approve the
+retained checkout's exclusion, place the marker without changing its other
+work, and verify that the candidate inventory has one Watchtower record.
+
 ## Owner decisions needed for a representative fixture
 
-1. Name the source owner of the two `watchtower` app records and decide which
-   definition is authoritative before selecting a fixture.
+1. Confirm the current `watchtower` checkout as the intended source owner,
+   explicitly exclude the retained pre-git checkout, and verify one candidate
+   inventory record before selecting a fixture.
 2. Classify the eight app names with no exact job and the dead `its-alive-api`
    job as intentionally inactive or failed desired state. Its ingress listener
    is currently closed.
