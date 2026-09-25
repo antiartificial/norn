@@ -238,6 +238,14 @@ reconciliation path, and publishes a redacted terminal receipt. A pre-effect
 failure finishes under the claim and app lock. An ambiguous remote effect
 stays pending.
 
+The non-production preview now also reads Nomad's regional service jobs and
+their active allocation job snapshots. It requires the exact deployment image,
+one healthy running allocation per desired replica, and a stable job revision
+across the read. Function-only apps have no service allocation and rely on the
+recorded successful deployment plus the digest-pinned one-shot job. A transient
+Nomad mismatch defers a claimed invocation before private material is opened.
+The function-only deployment path no longer submits an empty service job.
+
 The private variable cleanup consumer now supports exact owner and revision
 checked deletion, and PostgreSQL migration 20 stores lease-fenced public
 cleanup intents. Claim eligibility requires terminal receipt, attempted
@@ -251,7 +259,8 @@ requires an evidence archiver at startup. Private envelope retirement still
 needs a replay/key-retention policy before production
 activation. A Nomad job purge policy, etcd cleanup parity,
 ACL-enabled allocation with database files, literal crash/two-replica tests,
-immutable spec recovery for rollback, and Mini migration 22 mixed-version/rollback
+immutable spec recovery for rollback, live release allocation and crash/race
+qualification, and Mini migration 22 mixed-version/rollback
 rehearsal also remain required. Migration 22 raises the minimum writer to 19,
 so deploying it retires older writable binaries and needs a roll-forward
 recovery rehearsal before release.

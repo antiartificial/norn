@@ -131,6 +131,11 @@ func (w *ClaimedFunctionInvocationWorker) RunOnce(ctx context.Context) error {
 
 type functionInvocationPreflightError struct{ reason string }
 
+// ErrFunctionRunningImageUnproven is transient when a rollout or Nomad read
+// prevents a coherent allocation snapshot. The claimed operation is deferred
+// under its app lock rather than permanently failed before a remote effect.
+var ErrFunctionRunningImageUnproven = errors.New("function running image is unproven")
+
 func (e functionInvocationPreflightError) Error() string { return e.reason }
 
 func isFunctionInvocationPreflightError(err error) bool {
@@ -169,6 +174,9 @@ func (w *ClaimedFunctionInvocationWorker) ExecuteClaimed(ctx context.Context, op
 		return functionInvocationPreflightError{"claimed function invocation signed payload is invalid"}
 	}
 	runtime, err := w.Runtime.ResolveClaimedFunctionInvocationRuntime(ctx, input)
+	if errors.Is(err, ErrFunctionRunningImageUnproven) {
+		return &effect.PendingError{EffectID: op.ID, Resource: op.App, Reason: "running function image is not proven"}
+	}
 	if err != nil || !validClaimedFunctionRuntime(input, runtime) {
 		return functionInvocationPreflightError{"claimed function invocation runtime is invalid"}
 	}

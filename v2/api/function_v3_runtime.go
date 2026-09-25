@@ -53,6 +53,7 @@ func configureFunctionV3(cfg *config.Config, db *store.DB, pipe *pipeline.Pipeli
 			}
 			return image, digest, nil
 		}),
+		Running: remote,
 		Delivery: functionruntime.DeliverySourceFunc(func(ctx context.Context, spec *model.InfraSpec) (nomad.DatabaseRevision, error) {
 			return pipe.RunningDeliveryRevision(ctx, spec, "global", spec.App)
 		}),

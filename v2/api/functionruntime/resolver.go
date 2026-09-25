@@ -47,6 +47,13 @@ func (f DeploymentSourceFunc) FunctionDeployment(ctx context.Context, app string
 	return f(ctx, app)
 }
 
+// RunningImageSource proves that every active service allocation is running
+// the image recorded by the successful deployment. Function-only apps have
+// no long-lived service allocation and are handled by the Nomad adapter.
+type RunningImageSource interface {
+	VerifyRunningAppImage(context.Context, *model.InfraSpec, string) error
+}
+
 // DeliverySource returns the exact promoted database revision used for
 // functions. It must revalidate the delivery against the running deployment.
 type DeliverySource interface {
@@ -80,6 +87,7 @@ func (f EnvironmentSourceFunc) FunctionEnvironment(ctx context.Context, app stri
 type Resolver struct {
 	Specs      SpecSource
 	Deployment DeploymentSource
+	Running    RunningImageSource
 	Delivery   DeliverySource
 	SecretEnv  EnvironmentSource
 }
@@ -133,7 +141,7 @@ func (r *Resolver) ResolveClaimedFunctionInvocationRuntime(ctx context.Context, 
 }
 
 func (r *Resolver) resolvePublic(ctx context.Context, app, requestedProcess string) (*model.InfraSpec, string, string, nomad.DatabaseRevision, error) {
-	if r == nil || r.Specs == nil || r.Deployment == nil || strings.TrimSpace(app) == "" {
+	if r == nil || r.Specs == nil || r.Deployment == nil || r.Running == nil || strings.TrimSpace(app) == "" {
 		return nil, "", "", nomad.DatabaseRevision{}, ErrUnavailable
 	}
 	spec, err := r.Specs.FunctionSpec(ctx, app)
@@ -148,6 +156,9 @@ func (r *Resolver) resolvePublic(ctx context.Context, app, requestedProcess stri
 	specDigest, digestErr := model.InfraSpecDigest(spec)
 	if err != nil || digestErr != nil || deployedDigest != specDigest || !validImageReference(image) {
 		return nil, "", "", nomad.DatabaseRevision{}, ErrUnavailable
+	}
+	if err := r.Running.VerifyRunningAppImage(ctx, spec, image); err != nil {
+		return nil, "", "", nomad.DatabaseRevision{}, worker.ErrFunctionRunningImageUnproven
 	}
 	delivery := nomad.DatabaseRevision{}
 	if nomad.HasRuntimeDatabases(spec) {

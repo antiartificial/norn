@@ -152,7 +152,7 @@ func (p *Pipeline) submit(ctx context.Context, st *state, sg *saga.Saga) error {
 func regionalServiceProcessCount(spec *model.InfraSpec, region string) int {
 	count := 0
 	for _, proc := range spec.Processes {
-		if proc.Schedule == "" && spec.ProcessRunsInRegion(proc, region) {
+		if proc.Schedule == "" && proc.Function == nil && spec.ProcessRunsInRegion(proc, region) {
 			count++
 		}
 	}

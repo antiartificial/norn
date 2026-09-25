@@ -222,6 +222,22 @@ func TestClaimedFunctionInvocationRunOnceTerminalizesPreflightBeforeRemoteEffect
 	}
 }
 
+func TestClaimedFunctionInvocationDefersUnprovenRunningImageBeforePrivateRead(t *testing.T) {
+	input := claimedFunctionInput(t)
+	claim, err := store.NewOperationClaim(input.OperationID, "worker-a", 1)
+	if err != nil {
+		t.Fatal(err)
+	}
+	remote := &functionCompositeRemote{functionVariableRemoteFake: &functionVariableRemoteFake{}, functionJobRemoteFake: &functionJobRemoteFake{}}
+	w, private, runtime := claimedFunctionWorker(input, remote, &claimedFunctionReceiptFake{})
+	runtime.err = ErrFunctionRunningImageUnproven
+	lock := store.NewAppOperationLock(context.Background(), nil)
+	defer lock.Release()
+	if err := w.ExecuteClaimed(context.Background(), claimedFunctionOperation(input), claim, lock); !effect.IsDeferred(err) || private.calls != 0 || remote.functionVariableRemoteFake.creates != 0 {
+		t.Fatalf("unproven image crossed private/effect boundary: private=%d remote=%d err=%v", private.calls, remote.functionVariableRemoteFake.creates, err)
+	}
+}
+
 func stringifyClaimedMetadata(metadata map[string]interface{}) string {
 	return strings.TrimSpace(strings.Join([]string{metadata["jobId"].(string), metadata["allocationId"].(string)}, " "))
 }

@@ -35,6 +35,12 @@ func deploymentFor(spec *model.InfraSpec) testDeployment {
 	return testDeployment{image: resolverImage(), digest: digest}
 }
 
+type testRunningImage struct{ err error }
+
+func (s testRunningImage) VerifyRunningAppImage(context.Context, *model.InfraSpec, string) error {
+	return s.err
+}
+
 type testDelivery struct {
 	delivery nomad.DatabaseRevision
 	err      error
@@ -68,7 +74,7 @@ func TestResolverAdmissionAndClaimedRuntimeShareExactBinding(t *testing.T) {
 	spec := resolverSpec()
 	appValues := map[string]string{"APP": "one"}
 	spec.Env = appValues
-	r := &Resolver{Specs: testSpecs{spec: spec}, Deployment: deploymentFor(spec), SecretEnv: testEnvironment{values: map[string]string{"SECRET": "two"}}}
+	r := &Resolver{Specs: testSpecs{spec: spec}, Deployment: deploymentFor(spec), Running: testRunningImage{}, SecretEnv: testEnvironment{values: map[string]string{"SECRET": "two"}}}
 	binding, err := r.ResolveFunctionInvocation(context.Background(), "widgets", "resize")
 	if err != nil {
 		t.Fatal(err)
@@ -89,7 +95,7 @@ func TestResolverAdmissionAndClaimedRuntimeShareExactBinding(t *testing.T) {
 
 func TestResolverUsesStableFirstFunctionForOmittedProcess(t *testing.T) {
 	spec := resolverSpec()
-	r := &Resolver{Specs: testSpecs{spec: spec}, Deployment: deploymentFor(spec)}
+	r := &Resolver{Specs: testSpecs{spec: spec}, Deployment: deploymentFor(spec), Running: testRunningImage{}}
 	binding, err := r.ResolveFunctionInvocation(context.Background(), "widgets", "")
 	if err != nil || binding.Process != "alpha" {
 		t.Fatalf("binding=%+v err=%v", binding, err)
@@ -100,7 +106,7 @@ func TestResolverRejectsImageOutsideAcceptedFunctionReferenceGrammar(t *testing.
 	spec := resolverSpec()
 	deployment := deploymentFor(spec)
 	deployment.image = "registry.example/widgets@sha256:" + strings.Repeat("A", 64)
-	r := &Resolver{Specs: testSpecs{spec: spec}, Deployment: deployment}
+	r := &Resolver{Specs: testSpecs{spec: spec}, Deployment: deployment, Running: testRunningImage{}}
 	if _, err := r.ResolveFunctionInvocation(context.Background(), "widgets", "resize"); !errors.Is(err, ErrUnavailable) {
 		t.Fatalf("uppercase digest err=%v", err)
 	}
@@ -109,7 +115,7 @@ func TestResolverRejectsImageOutsideAcceptedFunctionReferenceGrammar(t *testing.
 func TestResolverRejectsUndeployedSpec(t *testing.T) {
 	spec := resolverSpec()
 	spec.Deploy = false
-	r := &Resolver{Specs: testSpecs{spec: spec}, Deployment: deploymentFor(spec)}
+	r := &Resolver{Specs: testSpecs{spec: spec}, Deployment: deploymentFor(spec), Running: testRunningImage{}}
 	if _, err := r.ResolveFunctionInvocation(context.Background(), "widgets", "resize"); !errors.Is(err, ErrUnavailable) {
 		t.Fatalf("undeployed spec err=%v", err)
 	}
@@ -119,7 +125,7 @@ func TestResolverRejectsSpecWithoutMatchingDeploymentProvenance(t *testing.T) {
 	spec := resolverSpec()
 	deployment := deploymentFor(spec)
 	deployment.digest = ""
-	r := &Resolver{Specs: testSpecs{spec: spec}, Deployment: deployment}
+	r := &Resolver{Specs: testSpecs{spec: spec}, Deployment: deployment, Running: testRunningImage{}}
 	if _, err := r.ResolveFunctionInvocation(context.Background(), "widgets", "resize"); !errors.Is(err, ErrUnavailable) {
 		t.Fatalf("missing deployment digest err=%v", err)
 	}
@@ -130,10 +136,18 @@ func TestResolverRejectsSpecWithoutMatchingDeploymentProvenance(t *testing.T) {
 	}
 }
 
+func TestResolverDefersUnprovenRunningImage(t *testing.T) {
+	spec := resolverSpec()
+	r := &Resolver{Specs: testSpecs{spec: spec}, Deployment: deploymentFor(spec), Running: testRunningImage{err: errors.New("nomad unavailable")}}
+	if _, err := r.ResolveFunctionInvocation(context.Background(), "widgets", "resize"); !errors.Is(err, worker.ErrFunctionRunningImageUnproven) {
+		t.Fatalf("unproven running image err=%v", err)
+	}
+}
+
 func TestResolverRejectsChangedClaimedSpecImageAndDatabaseBinding(t *testing.T) {
 	spec := resolverSpec()
 	delivery := &testDelivery{}
-	r := &Resolver{Specs: testSpecs{spec: spec}, Deployment: deploymentFor(spec), Delivery: delivery}
+	r := &Resolver{Specs: testSpecs{spec: spec}, Deployment: deploymentFor(spec), Running: testRunningImage{}, Delivery: delivery}
 	binding, err := r.ResolveFunctionInvocation(context.Background(), "widgets", "resize")
 	if err != nil {
 		t.Fatal(err)
@@ -155,7 +169,7 @@ func TestResolverRejectsChangedClaimedSpecImageAndDatabaseBinding(t *testing.T) 
 func TestResolverFailsClosedForMissingDeliveryAndDatabaseEnvironmentConflict(t *testing.T) {
 	spec := resolverSpec()
 	spec.Databases = []model.DatabaseRequirement{{Name: "primary", Runtime: &model.DatabaseRuntime{Env: "DATABASE_URL"}}}
-	r := &Resolver{Specs: testSpecs{spec: spec}, Deployment: deploymentFor(spec)}
+	r := &Resolver{Specs: testSpecs{spec: spec}, Deployment: deploymentFor(spec), Running: testRunningImage{}}
 	if _, err := r.ResolveFunctionInvocation(context.Background(), "widgets", "resize"); !errors.Is(err, ErrUnavailable) {
 		t.Fatalf("missing delivery err=%v", err)
 	}
