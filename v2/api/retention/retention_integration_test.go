@@ -188,7 +188,7 @@ func TestEvidenceManualRecoveryHoldRequiresVerifiedReconciliationArchive(t *test
 	sourceAcceptance := store.OperationAcceptance{
 		Identity:   store.OperationRequestIdentity{Authority: f.request.Authority, Actor: f.request.Actor, Kind: source.Kind, Resource: source.App, Key: "manual-deployment-" + uuid.NewString()},
 		Operation:  source,
-		Deployment: &model.Deployment{ID: "deployment-1", App: source.App, CommitSHA: "commit", ImageTag: image, SpecDigest: digest, Environment: "staging", SagaID: source.SagaID, Status: model.StatusQueued, StartedAt: now},
+		Deployment: &model.Deployment{ID: "deployment-1", App: source.App, CommitSHA: strings.Repeat("c", 40), SourceKind: "git_clone", SourceRef: "refs/heads/main", ImageTag: image, SpecDigest: digest, Environment: "staging", SagaID: source.SagaID, Status: model.StatusQueued, StartedAt: now},
 		Regions:    []model.ResolvedRegion{{Name: "west", NomadRegion: "west", Datacenters: []string{"dc1"}, TrafficWeight: 100}},
 		Audit:      store.AcceptanceAuditContext{Source: "retention-test"},
 	}
