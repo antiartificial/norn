@@ -17,6 +17,20 @@ The staged ciphertext SHA-256 remained
 `22268a8f1fe9299d70a0a15efacd4052307afe08b0af253d4f68c43269ba7e64`.
 Neither the URL nor the key is recorded here.
 
+## Installed v2 signing impact
+
+The installed source at `a5da8ef15d12e9eca7561e90b90d96f6dc652a21`
+reads `NORN_AUDIT_SIGNING_KEY` from its environment. Its mutation audit writer
+signs completed future receipts when the key is at least 32 characters. Its
+integrity reader classifies a completed receipt without a digest as
+`unsigned`, independent of the current key; it does not relabel that receipt
+`invalid`. A read-only Mini aggregate found 56,399 completed audit rows: all
+56,399 had no digest, zero had a key ID, and zero were pending. This supports
+adding a first key without a historical-key rotation requirement for this
+specific table. It does not prove every other v2 signing consumer or a service
+restart is qualified. The staged file must stay inactive until the runtime
+binding and restart procedure are reviewed.
+
 The protected-backup producer ran with only those two values decrypted into
 its process environment. It read the live PostgreSQL source with a forced
 read-only transaction and produced an owner-only custom dump and exact proof.
