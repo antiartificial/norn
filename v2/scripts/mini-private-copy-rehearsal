@@ -3,9 +3,9 @@ set -euo pipefail
 
 # Rehearse a candidate schema transition against a fresh, read-only copy of a
 # PostgreSQL-backed Mini control database. Run this script on the database host
-# and pass a disposable candidate binary. The live database is only read by
-# pg_dump; every migration and candidate startup uses a private socket-only
-# PostgreSQL cluster.
+# and pass a disposable candidate binary. With a protected backup input, no
+# source database connection is made. Every migration and candidate startup
+# uses a private socket-only PostgreSQL cluster.
 
 usage() {
   printf 'usage: NORN_CANDIDATE_SHA=<40-hex-sha> %s <disposable-candidate-binary>\n' "$0" >&2
@@ -36,10 +36,23 @@ for tool in shasum curl python3 mktemp; do
 done
 
 source_database_url=${NORN_REHEARSAL_SOURCE_DATABASE_URL:-}
-[[ -n $source_database_url ]] || {
-  printf 'NORN_REHEARSAL_SOURCE_DATABASE_URL is required\n' >&2
-  exit 2
-}
+backup_artifact=${NORN_REHEARSAL_BACKUP_ARTIFACT:-}
+backup_proof=${NORN_REHEARSAL_BACKUP_PROOF:-}
+if [[ -n $backup_artifact || -n $backup_proof ]]; then
+  [[ -n $backup_artifact && -n $backup_proof && -z $source_database_url ]] || {
+    printf 'protected backup mode requires artifact and proof, without a source connection\n' >&2
+    exit 2
+  }
+  [[ ${NORN_REHEARSAL_LEGACY_RELEASE_SHA:-} =~ ^[0-9a-f]{40}$ ]] || {
+    printf 'NORN_REHEARSAL_LEGACY_RELEASE_SHA must be a full lowercase SHA\n' >&2
+    exit 2
+  }
+else
+  [[ -n $source_database_url ]] || {
+    printf 'NORN_REHEARSAL_SOURCE_DATABASE_URL is required\n' >&2
+    exit 2
+  }
+fi
 remove_candidate=${NORN_REHEARSAL_REMOVE_CANDIDATE:-false}
 [[ $remove_candidate == true || $remove_candidate == false ]] || {
   printf 'NORN_REHEARSAL_REMOVE_CANDIDATE must be true or false\n' >&2
@@ -95,10 +108,29 @@ PY
 )
 read -r catalog_version minimum_reader minimum_writer <<<"$contract_values"
 
-# Force every source session to be read-only even if the configured role has
-# write privileges. The dump stays owner-only inside the scratch directory.
-source_env=$scratch/source.env
-SOURCE_DATABASE_URL=$source_database_url SOURCE_ENV=$source_env python3 - <<'PY'
+if [[ -n $backup_artifact ]]; then
+  verify_backup="$(dirname "$0")/mini-verify-protected-backup"
+  [[ -x $verify_backup ]] || { printf 'missing protected backup verifier\n' >&2; exit 2; }
+  backup_identity=$(
+    "$verify_backup" "$backup_proof" "$backup_artifact" "$NORN_REHEARSAL_LEGACY_RELEASE_SHA"
+  )
+  # Preserve the exact verified bytes in private storage, then independently
+  # validate the copy before pg_restore. The source artifact is never modified.
+  cp -- "$backup_artifact" "$dump_file"
+  chmod 600 "$dump_file"
+  copy_identity=$(
+    "$verify_backup" "$backup_proof" "$dump_file" "$NORN_REHEARSAL_LEGACY_RELEASE_SHA"
+  )
+  [[ $copy_identity == "$backup_identity" ]] || {
+    printf 'protected backup changed while copying\n' >&2
+    exit 1
+  }
+  "$postgres_bin/pg_restore" --list "$dump_file" >/dev/null
+else
+  # Force every source session to be read-only even if the configured role has
+  # write privileges. The dump stays owner-only inside the scratch directory.
+  source_env=$scratch/source.env
+  SOURCE_DATABASE_URL=$source_database_url SOURCE_ENV=$source_env python3 - <<'PY'
 import os
 import shlex
 import urllib.parse
@@ -119,14 +151,15 @@ with open(os.environ["SOURCE_ENV"], "w", encoding="utf-8") as handle:
     for key, value in values.items():
         handle.write(f"export {key}={shlex.quote(value)}\n")
 PY
-chmod 600 "$source_env"
-# shellcheck disable=SC1090
-source "$source_env"
-unset source_database_url NORN_REHEARSAL_SOURCE_DATABASE_URL
-PGOPTIONS='-c default_transaction_read_only=on' \
-  "$postgres_bin/pg_dump" --format=custom --no-owner --no-privileges --file="$dump_file"
-unset PGHOST PGPORT PGUSER PGPASSWORD PGDATABASE PGSSLMODE
-chmod 600 "$dump_file"
+  chmod 600 "$source_env"
+  # shellcheck disable=SC1090
+  source "$source_env"
+  unset source_database_url NORN_REHEARSAL_SOURCE_DATABASE_URL
+  PGOPTIONS='-c default_transaction_read_only=on' \
+    "$postgres_bin/pg_dump" --format=custom --no-owner --no-privileges --file="$dump_file"
+  unset PGHOST PGPORT PGUSER PGPASSWORD PGDATABASE PGSSLMODE
+  chmod 600 "$dump_file"
+fi
 
 mkdir -m 700 "$socket_dir"
 "$postgres_bin/initdb" -D "$data_dir" --username=norn --auth=trust --no-sync >/dev/null
@@ -283,5 +316,17 @@ printf 'minimum_writer=%s\n' "$minimum_writer"
 printf 'fingerprints=matched\n'
 printf 'second_migrate_only=passed\n'
 printf 'passive_health=passed\n'
-printf 'source_mutations=none-pg-dump-read-only\n'
+if [[ -n $backup_artifact ]]; then
+  final_identity=$("$verify_backup" "$backup_proof" "$backup_artifact" "$NORN_REHEARSAL_LEGACY_RELEASE_SHA")
+  [[ $final_identity == "$backup_identity" ]] || {
+    printf 'protected backup changed during rehearsal\n' >&2
+    exit 1
+  }
+  printf 'backup_proof=verified\n'
+  printf 'backup_sha256=%s\n' "${backup_identity%% *}"
+  printf 'legacy_source_sha=%s\n' "$NORN_REHEARSAL_LEGACY_RELEASE_SHA"
+  printf 'source_mutations=none-protected-artifact-read-only\n'
+else
+  printf 'source_mutations=none-pg-dump-read-only\n'
+fi
 printf 'cleanup=scheduled-and-verified\n'
