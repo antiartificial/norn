@@ -3,15 +3,15 @@ package handler
 import (
 	"context"
 	"errors"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"testing"
 
 	"github.com/golang-jwt/jwt/v5"
-	"github.com/jackc/pgx/v5"
-
 	"norn/v2/api/auth"
 	"norn/v2/api/config"
+	"norn/v2/api/store"
 )
 
 type staticTokenLineage map[string]string
@@ -20,7 +20,7 @@ func (s staticTokenLineage) RootAccessToken(ctx context.Context, current string)
 	return resolveRootAccessToken(ctx, current, func(_ context.Context, tokenID string) (string, error) {
 		parent, ok := s[tokenID]
 		if !ok {
-			return "", pgx.ErrNoRows
+			return "", store.ErrIdentityNotFound
 		}
 		return parent, nil
 	})
@@ -82,6 +82,17 @@ func TestRootAccessTokenRejectsBrokenAndCyclicLineage(t *testing.T) {
 				t.Fatalf("error=%v, want stable-actor rejection", err)
 			}
 		})
+	}
+}
+
+func TestRootAccessTokenRejectsExcessiveDepth(t *testing.T) {
+	lineage := staticTokenLineage{}
+	for i := 0; i < maxAccessTokenLineageDepth; i++ {
+		lineage[fmt.Sprintf("token-%d", i)] = fmt.Sprintf("token-%d", i+1)
+	}
+	lineage[fmt.Sprintf("token-%d", maxAccessTokenLineageDepth)] = ""
+	if _, err := lineage.RootAccessToken(context.Background(), "token-0"); !errors.Is(err, errOperationActorUnverified) {
+		t.Fatalf("deep lineage error=%v, want stable-actor rejection", err)
 	}
 }
 

@@ -8,8 +8,6 @@ import (
 	"sort"
 	"strings"
 
-	"github.com/jackc/pgx/v5"
-
 	"norn/v2/api/auth"
 	"norn/v2/api/store"
 )
@@ -67,23 +65,6 @@ type accessTokenLineageResolver interface {
 	RootAccessToken(context.Context, string) (string, error)
 }
 
-type postgresAccessTokenLineageResolver struct {
-	db *store.DB
-}
-
-// RootAccessToken follows only durable rotated_from links. A missing parent,
-// cycle, or unreasonably deep chain is ambiguous and therefore fails closed.
-func (r postgresAccessTokenLineageResolver) RootAccessToken(ctx context.Context, current string) (string, error) {
-	if r.db == nil || r.db.Pool == nil || strings.TrimSpace(current) == "" {
-		return "", fmt.Errorf("%w: token lineage store is unavailable", errOperationActorUnverified)
-	}
-	return resolveRootAccessToken(ctx, current, func(ctx context.Context, tokenID string) (string, error) {
-		var parent string
-		err := r.db.Pool.QueryRow(ctx, `SELECT rotated_from FROM access_tokens WHERE jti=$1`, tokenID).Scan(&parent)
-		return parent, err
-	})
-}
-
 func resolveRootAccessToken(ctx context.Context, current string, parentOf func(context.Context, string) (string, error)) (string, error) {
 	seen := make(map[string]struct{}, 8)
 	for depth := 0; depth < maxAccessTokenLineageDepth; depth++ {
@@ -96,7 +77,7 @@ func resolveRootAccessToken(ctx context.Context, current string, parentOf func(c
 		}
 		seen[current] = struct{}{}
 		parent, err := parentOf(ctx, current)
-		if errors.Is(err, pgx.ErrNoRows) {
+		if errors.Is(err, store.ErrIdentityNotFound) {
 			return "", fmt.Errorf("%w: token lineage is incomplete", errOperationActorUnverified)
 		}
 		if err != nil {
@@ -178,7 +159,7 @@ func (h *Handler) resolveVerifiedOperationActor(ctx context.Context, r *http.Req
 		}
 		root, err := h.accessTokenLineage.RootAccessToken(ctx, actor.CredentialID)
 		if err != nil {
-			return verifiedOperationActor{}, err
+			return verifiedOperationActor{}, fmt.Errorf("%w: %v", errOperationActorUnverified, err)
 		}
 		actor.Issuer = authority + "/token-lineage"
 		actor.Subject = root
