@@ -19,6 +19,7 @@ import (
 	mysql "github.com/go-sql-driver/mysql"
 	"github.com/google/uuid"
 
+	"norn/v2/api/artifactstore"
 	"norn/v2/api/database"
 )
 
@@ -282,6 +283,38 @@ func TestMySQLRestoreIntentAgainstDisposableEngines(t *testing.T) {
 	if _, err := control.Pool.Exec(ctx, `UPDATE mysql_restore_intents SET artifact_path=$2 WHERE operation_id=$1`, claim.OperationID(), path); err != nil {
 		t.Fatal(err)
 	}
+	// Publish the source under its signed retention receipt, then remove the
+	// staging file. The SQL runner below must consume the retained bytes.
+	retainedObjects, err := artifactstore.OpenLocal(filepath.Join(t.TempDir(), "objects"), 64<<20)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer retainedObjects.Close()
+	stagedBytes, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	sourceClaim, err := NewOperationClaim(receipt.OperationID, "source-retain", 1)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := control.Pool.Exec(ctx, `UPDATE operations SET status='running',attempts=1,locked_by=$2,lock_generation=1,
+		locked_until=clock_timestamp()+interval '2 minutes' WHERE id=$1`, sourceClaim.OperationID(), sourceClaim.OwnerID()); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := control.RetainClaimedMySQLSourceArtifact(ctx, stores[0], sourceClaim, retainedObjects); err != nil {
+		t.Fatalf("retain signed source: %v", err)
+	}
+	if err := os.Remove(path); err != nil {
+		t.Fatal(err)
+	}
+	materializeDirectory := filepath.Join(t.TempDir(), "materialized")
+	if err := os.Mkdir(materializeDirectory, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if replay, err := control.PrepareClaimedMySQLRestoreFromRetained(ctx, stores[0], claim, request, secrets, retainedObjects, materializeDirectory); err != nil || !replay.Replayed {
+		t.Fatalf("retained prepare without staged file: %+v %v", replay, err)
+	}
 	// The short lease expires while mysql is deliberately delayed. Completion
 	// therefore proves the private runner renewed its claim during the import.
 	delayedTool := filepath.Join(t.TempDir(), "mysql-delayed")
@@ -310,13 +343,17 @@ func TestMySQLRestoreIntentAgainstDisposableEngines(t *testing.T) {
 	if err == nil {
 		t.Fatal("locked runtime account remained usable; restore credential split was not exercised")
 	}
-	if replay, err := control.PrepareClaimedMySQLRestore(ctx, stores[0], claim, request, secrets); err != nil || !replay.Replayed {
+	if replay, err := control.PrepareClaimedMySQLRestoreFromRetained(ctx, stores[0], claim, request, secrets, retainedObjects, materializeDirectory); err != nil || !replay.Replayed {
 		t.Fatalf("prepare replay with locked runtime account: %+v %v", replay, err)
 	}
 	runner := MySQLRestoreRunner{Control: control, Acceptance: stores[0], Secrets: secrets, ClaimLease: 120 * time.Millisecond,
+		Objects: retainedObjects, MaterializeDirectory: materializeDirectory,
 		Tool: database.MySQLRestoreTool{Path: delayedTool, SHA256: fmt.Sprintf("%x", restoreSHA)}}
 	if err := runner.RunClaimed(ctx, claim); err != nil {
 		t.Fatalf("supervised MySQL restore: %v", err)
+	}
+	if _, err := os.Stat(path); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("restore recreated or read staged path: %v", err)
 	}
 	if _, err := control.BeginClaimedMySQLRestore(ctx, stores[0], claim, secrets); !errors.Is(err, ErrMySQLRestoreFence) {
 		t.Fatalf("ambiguous SQL retry was accepted: %v", err)
@@ -343,6 +380,10 @@ func TestMySQLRestoreIntentAgainstDisposableEngines(t *testing.T) {
 	}
 	if claimed, _, err := control.ClaimNextOperation(ctx, "post-restore-deploy", time.Minute, []string{"app.deploy"}); err != nil || claimed != nil {
 		t.Fatalf("completed restore resumed queued deploy without signed recovery: %+v %v", claimed, err)
+	}
+	// The later process-kill case uses a separate staged-source fixture.
+	if err := os.WriteFile(path, stagedBytes, 0o600); err != nil {
+		t.Fatal(err)
 	}
 
 	// Claim theft after the durable intent enters executing must cancel the
