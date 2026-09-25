@@ -270,6 +270,24 @@ func TestDeploymentCanaryStateRequiresPromotedTaskGroups(t *testing.T) {
 	}
 }
 
+func TestDeploymentCanaryReadyRequiresEveryPlacedAllocationHealthy(t *testing.T) {
+	groups := map[string]*nomadapi.DeploymentState{
+		"web": {PlacedCanaries: []string{"web-1"}, HealthyAllocs: 1},
+		"api": {PlacedCanaries: []string{"api-1"}, HealthyAllocs: 0},
+	}
+	if deploymentCanaryReady(groups) {
+		t.Fatal("unhealthy api canary accepted")
+	}
+	groups["api"].HealthyAllocs = 1
+	if !deploymentCanaryReady(groups) {
+		t.Fatal("healthy canaries refused")
+	}
+	groups["web"].Promoted = true
+	if deploymentCanaryReady(groups) {
+		t.Fatal("already promoted group accepted")
+	}
+}
+
 func stringPointer(value string) *string { return &value }
 func int64Pointer(value int64) *int64    { return &value }
 

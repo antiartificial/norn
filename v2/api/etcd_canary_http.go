@@ -93,6 +93,10 @@ func etcdCanaryPromote(cfg *config.Config, operations *etcdstore.V3OperationStor
 			handler.WriteControlProblem(w, r, http.StatusConflict, "no_current_canary", "the current app region has no promotable canary deployment")
 			return
 		}
+		if !info.CanaryReady {
+			handler.WriteControlProblem(w, r, http.StatusConflict, "canary_not_ready", "the current Nomad canary allocations are not healthy yet")
+			return
+		}
 		enqueue.Semantics = map[string]interface{}{"app": app, "region": logicalRegion, "nomadRegion": nomadRegion, "deploymentId": info.ID}
 		now := time.Now().UTC()
 		op := model.Operation{ID: uuid.NewString(), Kind: "app.canary-promote", App: app, SagaID: uuid.NewString(), Ref: logicalRegion + "/" + info.ID,

@@ -29,6 +29,9 @@ run sent the request before the canary allocation was healthy. Nomad rejected
 the promotion with HTTP 500 (`0/1 healthy allocations`), and the accepted
 Norn operation remained queued with `externalEffectRecoveryPending` for 45
 seconds even after the canary became healthy. Admission and recovery for this
-case remain an open release gap. This is a local single-node qualification.
+case motivated an admission guard: a new request is rejected until every
+placed canary allocation is healthy. A canary can still lose health after
+admission and before Nomad accepts the promotion; that race and its durable
+effect recovery remain an open release gap. This is a local single-node qualification.
 It does not prove process-crash windows,
 three-member etcd recovery, live Nomad behavior, or release readiness.

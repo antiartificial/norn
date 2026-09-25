@@ -988,6 +988,7 @@ type DeploymentInfo struct {
 	Status         string `json:"status"`
 	StatusDesc     string `json:"statusDescription"`
 	IsCanary       bool   `json:"isCanary"`
+	CanaryReady    bool   `json:"canaryReady"`
 	CanaryPromoted bool   `json:"canaryPromoted"`
 }
 
@@ -1017,7 +1018,7 @@ func (c *Client) LatestDeploymentRegion(jobID, region string) (*DeploymentInfo, 
 	hasCanary, canaryPromoted := deploymentCanaryState(latest.TaskGroups)
 	return &DeploymentInfo{
 		ID: latest.ID, JobID: latest.JobID, Status: latest.Status, StatusDesc: latest.StatusDescription,
-		IsCanary: hasCanary && !canaryPromoted, CanaryPromoted: canaryPromoted,
+		IsCanary: hasCanary && !canaryPromoted, CanaryReady: deploymentCanaryReady(latest.TaskGroups), CanaryPromoted: canaryPromoted,
 	}, nil
 }
 
@@ -1092,6 +1093,23 @@ func deploymentCanaryState(groups map[string]*nomadapi.DeploymentState) (hasCana
 		}
 	}
 	return hasCanary, hasCanary && promoted
+}
+
+// Nomad rejects manual promotion until every placed canary allocation is
+// healthy. Checking this before durable acceptance avoids a predictable
+// supervisor rejection that would otherwise leave an unresolved effect.
+func deploymentCanaryReady(groups map[string]*nomadapi.DeploymentState) bool {
+	hasCanary := false
+	for _, group := range groups {
+		if group == nil || len(group.PlacedCanaries) == 0 {
+			continue
+		}
+		hasCanary = true
+		if group.Promoted || group.HealthyAllocs < len(group.PlacedCanaries) {
+			return false
+		}
+	}
+	return hasCanary
 }
 
 // FailDeployment marks the latest deployment as failed, triggering auto-revert if configured.

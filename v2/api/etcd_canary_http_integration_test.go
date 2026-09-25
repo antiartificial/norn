@@ -61,12 +61,17 @@ func TestEtcdCanaryHTTPAdmissionReplaysAcrossTokenRotationAndRunsWorker(t *testi
 	}
 	var latestCalls, posts atomic.Int32
 	var promoted atomic.Bool
+	var healthy atomic.Bool
 	nomadServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		switch {
 		case r.Method == http.MethodGet && r.URL.Path == "/v1/job/widgets/deployments":
 			latestCalls.Add(1)
+			healthyCount := 0
+			if healthy.Load() {
+				healthyCount = 1
+			}
 			_ = json.NewEncoder(w).Encode([]*nomadapi.Deployment{{ID: "deployment-accepted", JobID: "widgets", Status: "running", CreateIndex: 10,
-				TaskGroups: map[string]*nomadapi.DeploymentState{"web": {PlacedCanaries: []string{"alloc-1"}, Promoted: false}}}})
+				TaskGroups: map[string]*nomadapi.DeploymentState{"web": {PlacedCanaries: []string{"alloc-1"}, HealthyAllocs: healthyCount, Promoted: false}}}})
 		case r.Method == http.MethodPut && r.URL.Path == "/v1/deployment/promote/deployment-accepted":
 			posts.Add(1)
 			promoted.Store(true)
@@ -126,8 +131,13 @@ func TestEtcdCanaryHTTPAdmissionReplaysAcrossTokenRotationAndRunsWorker(t *testi
 		}
 		return response.StatusCode, got
 	}
+	status, _ := request(rootJWT, "")
+	if status != http.StatusConflict || latestCalls.Load() != 1 || posts.Load() != 0 {
+		t.Fatalf("unhealthy canary admission status=%d latest=%d posts=%d", status, latestCalls.Load(), posts.Load())
+	}
+	healthy.Store(true)
 	status, first := request(rootJWT, "")
-	if status != http.StatusAccepted || first.ID == "" || latestCalls.Load() != 1 || posts.Load() != 0 {
+	if status != http.StatusAccepted || first.ID == "" || latestCalls.Load() != 2 || posts.Load() != 0 {
 		t.Fatalf("first acceptance status=%d operation=%+v latest=%d posts=%d", status, first, latestCalls.Load(), posts.Load())
 	}
 	acceptedIdentity := store.OperationRequestIdentity{Authority: authority, Actor: store.OperationActor{Issuer: authority + "/token-lineage", Subject: rootID}, Kind: "app.canary-promote", Resource: "widgets", Key: "same-intent"}
@@ -147,11 +157,11 @@ func TestEtcdCanaryHTTPAdmissionReplaysAcrossTokenRotationAndRunsWorker(t *testi
 	}
 	rotatedJWT := signedEtcdCanaryTestToken(t, secret, rotatedID)
 	status, duplicate := request(rotatedJWT, "")
-	if status != http.StatusOK || duplicate.ID != first.ID || latestCalls.Load() != 1 || posts.Load() != 0 {
+	if status != http.StatusOK || duplicate.ID != first.ID || latestCalls.Load() != 2 || posts.Load() != 0 {
 		t.Fatalf("rotated duplicate status=%d operation=%+v latest=%d posts=%d", status, duplicate, latestCalls.Load(), posts.Load())
 	}
 	status, _ = request(rotatedJWT, "other-region")
-	if status != http.StatusConflict || latestCalls.Load() != 1 {
+	if status != http.StatusConflict || latestCalls.Load() != 2 {
 		t.Fatalf("conflicting replay status=%d latest=%d", status, latestCalls.Load())
 	}
 	workerCtx, stop := context.WithCancel(ctx)
@@ -176,7 +186,7 @@ func TestEtcdCanaryHTTPAdmissionReplaysAcrossTokenRotationAndRunsWorker(t *testi
 		t.Fatalf("worker did not terminalize accepted promotion: %+v err=%v", current, err)
 	}
 	status, duplicate = request(rotatedJWT, "")
-	if status != http.StatusOK || duplicate.ID != first.ID || latestCalls.Load() != 1 || posts.Load() != 1 {
+	if status != http.StatusOK || duplicate.ID != first.ID || latestCalls.Load() != 2 || posts.Load() != 1 {
 		t.Fatalf("terminal duplicate status=%d operation=%+v latest=%d posts=%d", status, duplicate, latestCalls.Load(), posts.Load())
 	}
 }
