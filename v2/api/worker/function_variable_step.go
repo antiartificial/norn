@@ -24,6 +24,9 @@ type FunctionVariableRemote interface {
 	CreateFunctionInvocationVariable(context.Context, string, nomad.FunctionInvocationVariableIdentity, []byte) error
 }
 
+var _ FunctionVariableRemote = (*nomad.Client)(nil)
+var _ FunctionVariableAttemptStore = (*store.DB)(nil)
+
 // EnsureFunctionInvocationVariable performs one claim-bound variable step.
 // The caller owns privateContent and should clear it when the step returns.
 // Neither the durable binding nor the returned decision contains those bytes.
