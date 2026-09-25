@@ -169,13 +169,15 @@ another remote create. Their fake concurrent callers issued one create each.
 The closed function-job dialect derives its digest from the validated public
 Nomad job. A disposable Nomad 2.0.7 server passed zero-index create, duplicate
 conflict, digest read-back, and found-job observation with exact version,
-evaluations, allocations, and a stable second read. Dialect v2 uses a private
+evaluations, allocations, and a stable second read. Dialect v3 uses a private
 `env=true` template to decode padded base64 JSON and inject
-`NORN_REQUEST_BODY`, `NORN_REQUEST_METHOD`, and `NORN_REQUEST_PATH` with JSON
-quoting. A disposable Docker-enabled Nomad 2.0.7 allocation produced the
-expected digest for a multiline body, quotes, backslashes, Unicode path, and
-empty method; the job JSON contained no request values. The builder and steps
-are still disconnected from the claimed operation executor. App/database
-secret delivery, ACL-enabled allocation proof for the implicit group path,
+`NORN_REQUEST_BODY`, `NORN_REQUEST_METHOD`, `NORN_REQUEST_PATH`, and a validated
+private environment map with JSON quoting. A pure worker encoder merges app,
+secret, and process environment values while rejecting malformed and reserved
+keys. A disposable Docker-enabled Nomad 2.0.7 allocation produced the
+expected digest for a multiline body and secret, quotes, backslashes, Unicode
+path, and empty values; the job JSON contained no private values. The builder
+and steps are still disconnected from the claimed operation executor. Named
+database delivery, ACL-enabled allocation proof for the implicit group path,
 terminal receipt, and cleanup remain open. Requalify on the release Nomad version
 before enabling submission.

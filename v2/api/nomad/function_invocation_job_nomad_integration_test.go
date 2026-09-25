@@ -72,17 +72,18 @@ func TestFunctionInvocationPrivateEnvironmentInNomad(t *testing.T) {
 	}
 	request := functionInvocationJobRequest()
 	request.Image = model.QualifiedWordPressVerifiedTLSImage
-	request.Command = `printf '%s|%s|%s' "$NORN_REQUEST_BODY" "$NORN_REQUEST_METHOD" "$NORN_REQUEST_PATH" | sha256sum; sleep 30`
+	request.Command = `printf '%s|%s|%s|%s|%s' "$NORN_REQUEST_BODY" "$NORN_REQUEST_METHOD" "$NORN_REQUEST_PATH" "$APP_SECRET" "$EMPTY_VALUE" | sha256sum; sleep 30`
 	private := struct {
-		Body   string `json:"body"`
-		Method string `json:"method"`
-		Path   string `json:"path"`
-	}{Body: "line one\nline two with \"quotes\" and \\backslash #hash", Method: "", Path: "/x?q=é"}
+		Body   string            `json:"body"`
+		Method string            `json:"method"`
+		Path   string            `json:"path"`
+		Env    map[string]string `json:"env"`
+	}{Body: "line one\nline two with \"quotes\" and \\backslash #hash", Method: "", Path: "/x?q=é", Env: map[string]string{"APP_SECRET": "private\nvalue=with#hash", "EMPTY_VALUE": ""}}
 	privateJSON, err := json.Marshal(private)
 	if err != nil {
 		t.Fatal(err)
 	}
-	want := sha256.Sum256([]byte(private.Body + "|" + private.Method + "|" + private.Path))
+	want := sha256.Sum256([]byte(private.Body + "|" + private.Method + "|" + private.Path + "|" + private.Env["APP_SECRET"] + "|" + private.Env["EMPTY_VALUE"]))
 	wantHex := hex.EncodeToString(want[:])
 	job, digest, err := BuildFunctionInvocationJob(request)
 	if err != nil {
@@ -92,7 +93,7 @@ func TestFunctionInvocationPrivateEnvironmentInNomad(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	for _, secret := range []string{private.Body, private.Path} {
+	for _, secret := range []string{private.Body, private.Path, private.Env["APP_SECRET"]} {
 		if strings.Contains(string(encodedJob), secret) {
 			t.Fatal("private request appeared in Nomad job JSON")
 		}

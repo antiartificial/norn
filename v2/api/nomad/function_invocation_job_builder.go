@@ -16,7 +16,7 @@ import (
 
 // FunctionInvocationJobDialectVersion changes whenever the closed job shape or
 // its projection changes. It is part of the digest preimage.
-const FunctionInvocationJobDialectVersion = "norn.function-invocation.nomad/v2"
+const FunctionInvocationJobDialectVersion = "norn.function-invocation.nomad/v3"
 
 const (
 	functionInvocationGroupName = "invoke"
@@ -330,7 +330,7 @@ func functionInvocationTemplatePath(t *nomadapi.Template) (string, bool) {
 		return "", false
 	}
 	const prefix = "{{ with nomadVar \""
-	const suffix = "\" }}{{ $p := ." + functionInvocationPrivateItem + ".Value | base64Decode | parseJSON }}NORN_REQUEST_BODY={{ $p.body | toJSON }}\nNORN_REQUEST_METHOD={{ $p.method | toJSON }}\nNORN_REQUEST_PATH={{ $p.path | toJSON }}\n{{ end }}"
+	const suffix = "\" }}{{ $p := ." + functionInvocationPrivateItem + ".Value | base64Decode | parseJSON }}{{ range $key, $value := $p.env }}{{ $key }}={{ $value | toJSON }}\n{{ end }}NORN_REQUEST_BODY={{ $p.body | toJSON }}\nNORN_REQUEST_METHOD={{ $p.method | toJSON }}\nNORN_REQUEST_PATH={{ $p.path | toJSON }}\n{{ end }}"
 	if !strings.HasPrefix(*t.EmbeddedTmpl, prefix) || !strings.HasSuffix(*t.EmbeddedTmpl, suffix) {
 		return "", false
 	}
@@ -338,7 +338,7 @@ func functionInvocationTemplatePath(t *nomadapi.Template) (string, bool) {
 }
 
 func functionInvocationEnvironmentTemplate(path string) string {
-	return fmt.Sprintf("{{ with nomadVar %q }}{{ $p := .%s.Value | base64Decode | parseJSON }}NORN_REQUEST_BODY={{ $p.body | toJSON }}\nNORN_REQUEST_METHOD={{ $p.method | toJSON }}\nNORN_REQUEST_PATH={{ $p.path | toJSON }}\n{{ end }}", path, functionInvocationPrivateItem)
+	return fmt.Sprintf("{{ with nomadVar %q }}{{ $p := .%s.Value | base64Decode | parseJSON }}{{ range $key, $value := $p.env }}{{ $key }}={{ $value | toJSON }}\n{{ end }}NORN_REQUEST_BODY={{ $p.body | toJSON }}\nNORN_REQUEST_METHOD={{ $p.method | toJSON }}\nNORN_REQUEST_PATH={{ $p.path | toJSON }}\n{{ end }}", path, functionInvocationPrivateItem)
 }
 
 func equalString(a, b *string) bool                           { return a != nil && b != nil && *a == *b }
