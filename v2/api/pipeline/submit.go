@@ -97,6 +97,12 @@ func (p *Pipeline) submit(ctx context.Context, st *state, sg *saga.Saga) error {
 	if err != nil {
 		return err
 	}
+	coldStartResolved := coldStartGate == nil
+	defer func() {
+		if !coldStartResolved {
+			p.containWordPressVerifiedTLSColdStart(ctx, coldStartGate)
+		}
+	}()
 
 	// Check for port conflicts before submitting
 	for _, proc := range st.spec.Processes {
@@ -134,6 +140,7 @@ func (p *Pipeline) submit(ctx context.Context, st *state, sg *saga.Saga) error {
 					_ = p.DB.UpdateDeploymentRegion(ctx, st.deploymentID, region.Name, model.StatusFailed, "", err.Error(), 0)
 					return err
 				}
+				coldStartResolved = true
 			}
 			st.regionEvals[region.Name] = evalID
 			_ = p.DB.UpdateDeploymentRegion(ctx, st.deploymentID, region.Name, model.StatusSubmitting, evalID, "", 0)

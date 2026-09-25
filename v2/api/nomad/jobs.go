@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"net/http"
 	"strconv"
 	"strings"
 	"time"
@@ -41,6 +42,46 @@ func (c *Client) SubmitJobRegion(job *nomadapi.Job, region string) (string, erro
 		return "", fmt.Errorf("submit job: %w", err)
 	}
 	return resp.EvalID, nil
+}
+
+// RequireColdStartJobAbsent proves that a job has no registered parent and no
+// in-flight Nomad evaluation in one region. A cold-start launch cannot use a
+// missing allocation list as a substitute for this check: a retained job or
+// pending evaluation can create a writer after that list is read.
+func (c *Client) RequireColdStartJobAbsent(region, jobID string) error {
+	if strings.TrimSpace(jobID) == "" {
+		return fmt.Errorf("cold-start job ID is required")
+	}
+	options := &nomadapi.QueryOptions{Region: region}
+	if _, _, err := c.api.Jobs().Info(jobID, options); err == nil {
+		return fmt.Errorf("cold-start job %s is already registered", jobID)
+	} else if !nomadNotFound(err) {
+		return fmt.Errorf("inspect cold-start job %s: %w", jobID, err)
+	}
+	evaluations, _, err := c.api.Jobs().Evaluations(jobID, options)
+	if err != nil && !nomadNotFound(err) {
+		return fmt.Errorf("inspect cold-start evaluations for %s: %w", jobID, err)
+	}
+	for _, evaluation := range evaluations {
+		if evaluation == nil || !terminalColdStartEvaluation(evaluation.Status) {
+			return fmt.Errorf("cold-start job %s has a pending Nomad evaluation", jobID)
+		}
+	}
+	return nil
+}
+
+func terminalColdStartEvaluation(status string) bool {
+	switch status {
+	case "complete", "failed", "cancelled":
+		return true
+	default:
+		return false
+	}
+}
+
+func nomadNotFound(err error) bool {
+	var response nomadapi.UnexpectedResponseError
+	return errors.As(err, &response) && response.HasStatusCode() && response.StatusCode() == http.StatusNotFound
 }
 
 // StopJob stops a running Nomad job.

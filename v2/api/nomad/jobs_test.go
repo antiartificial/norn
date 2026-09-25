@@ -62,6 +62,45 @@ func TestCronRunHealthDetectsOOMRestartsAndFailedAllocation(t *testing.T) {
 	}
 }
 
+func TestRequireColdStartJobAbsentRequires404AndNoPendingEvaluation(t *testing.T) {
+	for _, test := range []struct {
+		name        string
+		jobStatus   int
+		evalStatus  int
+		evaluations []*nomadapi.Evaluation
+		wantErr     bool
+	}{
+		{name: "absent with completed history", jobStatus: http.StatusNotFound, evalStatus: http.StatusOK, evaluations: []*nomadapi.Evaluation{{Status: "complete"}}},
+		{name: "registered job", jobStatus: http.StatusOK, wantErr: true},
+		{name: "pending evaluation", jobStatus: http.StatusNotFound, evalStatus: http.StatusOK, evaluations: []*nomadapi.Evaluation{{Status: "pending"}}, wantErr: true},
+		{name: "non 404 job failure", jobStatus: http.StatusInternalServerError, wantErr: true},
+		{name: "unreadable evaluations", jobStatus: http.StatusNotFound, evalStatus: http.StatusInternalServerError, wantErr: true},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			client := newTestNomadClient(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				switch r.URL.Path {
+				case "/v1/job/cold-start":
+					w.WriteHeader(test.jobStatus)
+					if test.jobStatus == http.StatusOK {
+						_ = json.NewEncoder(w).Encode(&nomadapi.Job{})
+					}
+				case "/v1/job/cold-start/evaluations":
+					w.WriteHeader(test.evalStatus)
+					if test.evalStatus == http.StatusOK {
+						_ = json.NewEncoder(w).Encode(test.evaluations)
+					}
+				default:
+					http.NotFound(w, r)
+				}
+			}))
+			err := client.RequireColdStartJobAbsent("global", "cold-start")
+			if (err != nil) != test.wantErr {
+				t.Fatalf("RequireColdStartJobAbsent error = %v, wantErr %t", err, test.wantErr)
+			}
+		})
+	}
+}
+
 func TestPeriodicJobSchedulePreservesVersionAndJobModifyIndex(t *testing.T) {
 	jobID, status, schedule, timezone := "widget-nightly", "running", "0 2 * * *", "America/Chicago"
 	version, modifyIndex, genericModifyIndex := uint64(3), uint64(42), uint64(99)

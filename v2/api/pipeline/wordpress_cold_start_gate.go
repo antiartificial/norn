@@ -38,6 +38,9 @@ func (p *Pipeline) reserveWordPressVerifiedTLSColdStart(ctx context.Context, st 
 		return nil, err
 	}
 	region := st.spec.ResolvedRegions()[0]
+	if err := p.Nomad.RequireColdStartJobAbsent(region.NomadRegion, st.spec.App); err != nil {
+		return nil, fmt.Errorf("prove WordPress cold-start job absence: %w", err)
+	}
 	allocations, err := p.Nomad.JobAllocationsRegion(st.spec.App, region.NomadRegion)
 	if err != nil {
 		return nil, fmt.Errorf("inspect WordPress cold-start allocations: %w", err)
