@@ -22,6 +22,13 @@ operation remains readable by ID but that compatibility route cannot replay
 it. Removing that dependency requires an identity-only replay path before
 app-spec validation.
 
+The CLI now prints the idempotency key before sending a mutation and reports
+the queued operation ID. It waits for terminal status by default; `--wait=false`
+returns after acceptance and `--timeout` bounds polling. The UI endpoint
+toggle keeps its key across an unknown acceptance response, reports queued
+status, and refreshes ingress only after the operation succeeds. A queued or
+unresolved effect must not be presented as an already-applied ingress change.
+
 This is a Mini host-local implementation, not a Fleet distributed ingress
 implementation. The receipt directory is local to the same host as the
 cloudflared config. Before release, rehearse actual `launchctl` behavior on a

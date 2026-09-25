@@ -9,6 +9,8 @@ import (
 )
 
 func init() {
+	addIngressOperationFlags(forgeCmd)
+	addIngressOperationFlags(teardownCmd)
 	rootCmd.AddCommand(forgeCmd)
 	rootCmd.AddCommand(teardownCmd)
 }
@@ -21,12 +23,15 @@ var forgeCmd = &cobra.Command{
 		appID := args[0]
 		fmt.Println(style.Title.Render("forging " + appID))
 
-		if err := client.Forge(appID); err != nil {
+		key, err := requestIdempotencyKey(cmd, ingressIdempotencyKey, "norn-forge")
+		if err != nil {
+			return err
+		}
+		op, err := client.Forge(appID, key)
+		if err != nil {
 			return fmt.Errorf("forge failed: %w", err)
 		}
-
-		fmt.Println(style.SuccessBox.Render("cloudflared routing configured"))
-		return nil
+		return handleIngressOperation(cmd, op, "cloudflared forge")
 	},
 }
 
@@ -38,11 +43,14 @@ var teardownCmd = &cobra.Command{
 		appID := args[0]
 		fmt.Println(style.Title.Render("tearing down " + appID))
 
-		if err := client.Teardown(appID); err != nil {
+		key, err := requestIdempotencyKey(cmd, ingressIdempotencyKey, "norn-teardown")
+		if err != nil {
+			return err
+		}
+		op, err := client.Teardown(appID, key)
+		if err != nil {
 			return fmt.Errorf("teardown failed: %w", err)
 		}
-
-		fmt.Println(style.SuccessBox.Render("cloudflared routing removed"))
-		return nil
+		return handleIngressOperation(cmd, op, "cloudflared teardown")
 	},
 }
