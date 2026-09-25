@@ -540,7 +540,7 @@ func ControlSchemaMigrations() []SchemaMigration {
 		SQL:                  controlSchemaBaselineSQL,
 		MinimumReaderVersion: 0,
 		MinimumWriterVersion: 0,
-	}, operationAcceptanceMigration(), operationEffectsMigration(), operationCheckpointsMigration(), databaseCatalogMigration(), evidenceArchiveMigration(), evidenceArchiveReaderMigration(), evidenceReserveMigration(), eventReplayRetentionMigration(), nonSagaEvidenceMigration(), desiredReplicasMigration(), regionalDesiredReplicasMigration(), restartEffectSourcesMigration(), signedAcceptanceByteReserveMigration(), operationReplayExpiryMigration(), snapshotPublicationMigration(), operationAcceptanceRetirementMigration(), privateInvocationMigration(), functionInvocationEffectAttemptsMigration(), functionInvocationCleanupMigration(), functionInvocationArchiveMigration(), functionDeploymentProvenanceMigration(), functionInvocationReaderContractMigration()}
+}, operationAcceptanceMigration(), operationEffectsMigration(), operationCheckpointsMigration(), databaseCatalogMigration(), evidenceArchiveMigration(), evidenceArchiveReaderMigration(), evidenceReserveMigration(), eventReplayRetentionMigration(), nonSagaEvidenceMigration(), desiredReplicasMigration(), regionalDesiredReplicasMigration(), restartEffectSourcesMigration(), signedAcceptanceByteReserveMigration(), operationReplayExpiryMigration(), snapshotPublicationMigration(), operationAcceptanceRetirementMigration(), privateInvocationMigration(), functionInvocationEffectAttemptsMigration(), functionInvocationCleanupMigration(), functionInvocationArchiveMigration(), functionDeploymentProvenanceMigration(), functionInvocationReaderContractMigration(), mysqlRestoreIntentMigration()}
 }
 
 func NewControlSchemaMigrator(db *DB) (*SchemaMigrator, error) {
