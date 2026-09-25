@@ -122,10 +122,9 @@ type FunctionJobObservation struct {
 }
 
 // FunctionJobEffectStage is loaded from the durable effect record. Recorded
-// must be true before this reconciler can authorize a first submit. Once the
-// worker has called Nomad Register, it durably records SubmitAttempted before
-// interpreting any response; a later 404 can therefore never authorize a
-// second one-shot submission.
+// must be true before this reconciler can authorize a first submit. The
+// worker durably records SubmitAttempted before calling Nomad Register; a
+// crash or later 404 can therefore never authorize a second one-shot submit.
 type FunctionJobEffectStage struct {
 	Recorded        bool
 	SubmitAttempted bool
@@ -163,7 +162,7 @@ func ReconcileFunctionJob(expected FunctionInvocationJobIdentity, stage Function
 		return FunctionJobDecision{Action: FunctionJobUnresolved, Reason: "function job effect stage is not durably recorded"}
 	}
 	if observed.State == FunctionJobNotFound {
-		if observed.JobID != "" || observed.OwnerMarker != "" || observed.JobSpecDigest != "" || observed.ModifyIndex != 0 || len(observed.EvaluationIDs) != 0 || len(observed.AllocationIDs) != 0 {
+		if observed.JobID != "" || observed.OwnerMarker != "" || observed.JobSpecDigest != "" || observed.ModifyIndex != 0 || len(observed.EvaluationIDs) != 0 || len(observed.AllocationIDs) != 0 || observed.HistoryComplete {
 			return FunctionJobDecision{Action: FunctionJobUnresolved, Reason: "not-found response includes remote job evidence"}
 		}
 		if stage.SubmitAttempted {

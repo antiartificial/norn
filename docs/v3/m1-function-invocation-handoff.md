@@ -115,6 +115,28 @@ This work is an M1/M2 dependency for a release that keeps function invocation
 available. A passing handler unit test or a successful batch-job submission
 alone does not close it.
 
+## Implementation order and hardening gates
+
+Keep each transition independently testable before adding Nomad I/O:
+
+1. Pure identity and reconciliation decisions for the private variable, job,
+   and terminal receipt. Each decision takes durable effect stage plus an
+   observed remote state and returns one explicit action. An attempted write
+   followed by absence or ambiguous history remains unresolved.
+2. Thin adapters for exact Nomad variable and job reads, create-only writes,
+   and allocation observation. Persist the write-attempt stage before each
+   remote call. Exercise the adapters against disposable Nomad, including
+   lost responses and duplicate workers.
+3. Connect the claimed worker, signed acceptance, private record, effect
+   reservations, and terminal projection. Admit the HTTP route only after the
+   startup capability check proves that entire path is available.
+
+The release gate then includes key-ring backup/restore and pruning rules,
+private-variable cleanup after archived evidence, bounded log/output handling,
+two-replica crash tests, and Mini mixed-version/rollback rehearsal. These
+remain required qualifications; a pure decision test does not imply that the
+external-effect path is safe to enable.
+
 ## Current foundation evidence
 
 On 2026-09-25, `go test ./store -run '^TestPrivateInvocation' -count=1 -v`
