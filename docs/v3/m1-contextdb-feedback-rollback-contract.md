@@ -34,7 +34,9 @@ Before changing the Norn handler, establish and test this ContextDB contract:
    and rollback lookup failure. The last case remains pending and must not
    issue another POST.
 
-Keep this mutation outside the v3 release gate until the ContextDB side of
-the contract and the Norn worker path are verified together. This note does
-not assert that any live ContextDB deployment lacks the endpoint; it records
-the missing source contract required for safe integration.
+This is an M1 release blocker while the rollback route remains available in
+the v3 API. Resolve it by implementing and qualifying both sides of the
+contract, or explicitly removing the route from the v3 capability set and
+verifying that requests fail closed. This note does not assert that any live
+ContextDB deployment lacks the endpoint; it records the missing source
+contract required for safe integration.

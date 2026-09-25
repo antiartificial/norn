@@ -134,7 +134,10 @@ into #76 and closed. These are review containers, not milestone signoff.
   key to be retried after health. Health can still fall between acceptance and
   Nomad submission, so that race, process-crash, and three-member etcd fault
   qualification remain open before enabling that preview for release; see
-  [the preview gate](etcd-canary-preview.md).
+  [the preview gate](etcd-canary-preview.md). The inline ContextDB feedback
+  rollback remains an M1 release blocker until its remote idempotency contract
+  and durable Norn worker are qualified, or the v3 route is removed and fails
+  closed; see [the cross-service contract](m1-contextdb-feedback-rollback-contract.md).
 - M2: local MySQL runtime and verified-TLS health are implemented. Generated
   service, periodic, and function jobs delivered exact component bytes inside
   allocations on pinned Nomad 1.9.7. A WordPress image PHP client also
