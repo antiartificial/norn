@@ -153,32 +153,26 @@ in stored records, and rejected-transaction cleanup; the etcd race suite also
 passed. Neither backend is connected to the function route or startup key
 preflight. Real Nomad, process-crash, and restore qualification remain open.
 
-The function variable adapter now has HTTP-level tests for exact reads,
-create-only Nomad CAS, opaque private-byte round trips, and redacted errors.
-PostgreSQL and etcd effect-attempt stores record immutable public targets
-under live claims and authorize only the first caller to cross each remote
-call boundary. PostgreSQL two-connection and etcd two-client races, stale
-claims, and successor claims passed against disposable real backends. A
-backend-neutral required-key preflight exists. A narrow worker variable step
-uses those attempt stages and an exact remote read to recover a lost write
-response; fake concurrent callers issued only one create. It is not yet
-connected to the claimed worker or HTTP route. Nomad variable ACLs, job-spec
-identity and registration, terminal receipt, and real allocation proof remain
-open. A disposable Nomad 2.0.7 experiment showed that enforced zero-index
-registration rejects a duplicate, but the returned job has server-normalized
-fields that need a closed projection before comparison. A dormant function-job
-builder now defines one public Nomad dialect and derives its digest from the
-validated, canonicalized job. A disposable Nomad 2.0.7 register/read-back test
-matched the builder's digest after accepting only the observed server defaults.
-The job adapter now uses a zero-index create-only Nomad registration and
-classifies an exact 404 as absence. A found job needs the closed projection,
-one matching version, exact evaluations and allocations, and a stable
-read-back before its public identity can be returned. A disposable Nomad
-2.0.7 server passed create, duplicate-conflict, digest read-back, and found
-observation. A claimed worker job step records the public binding, marks the
-attempt before the remote call, and reconciles lost responses without another
-submit; focused concurrency and race tests passed. The builder is still not
-connected to the operation executor: its private variable template has
-no proven request-consumption path, and claimed-worker, terminal, and cleanup
-steps remain open. Requalify the closed projection on the release Nomad version
+The function variable adapter has HTTP-level tests for exact reads,
+create-only Nomad CAS, private-byte round trips, and redacted errors. Its
+writer now uses padded base64 for Nomad's strict template decoder; the reader
+also accepts older unpadded values for recovery. PostgreSQL and etcd
+effect-attempt stores record immutable public targets under live claims and
+authorize only the first caller to cross each remote call boundary. Real
+backend races, stale claims, and successor claims passed. Narrow variable and
+job worker steps use those attempt stages to reconcile lost responses without
+another remote create. Their fake concurrent callers issued one create each.
+
+The closed function-job dialect derives its digest from the validated public
+Nomad job. A disposable Nomad 2.0.7 server passed zero-index create, duplicate
+conflict, digest read-back, and found-job observation with exact version,
+evaluations, allocations, and a stable second read. Dialect v2 uses a private
+`env=true` template to decode padded base64 JSON and inject
+`NORN_REQUEST_BODY`, `NORN_REQUEST_METHOD`, and `NORN_REQUEST_PATH` with JSON
+quoting. A disposable Docker-enabled Nomad 2.0.7 allocation produced the
+expected digest for a multiline body, quotes, backslashes, Unicode path, and
+empty method; the job JSON contained no request values. The builder and steps
+are still disconnected from the claimed operation executor. App/database
+secret delivery, the allocation's ACL for this custom variable path, terminal
+receipt, and cleanup remain open. Requalify on the release Nomad version
 before enabling submission.

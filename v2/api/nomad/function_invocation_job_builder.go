@@ -16,7 +16,7 @@ import (
 
 // FunctionInvocationJobDialectVersion changes whenever the closed job shape or
 // its projection changes. It is part of the digest preimage.
-const FunctionInvocationJobDialectVersion = "norn.function-invocation.nomad/v1"
+const FunctionInvocationJobDialectVersion = "norn.function-invocation.nomad/v2"
 
 const (
 	functionInvocationGroupName = "invoke"
@@ -72,10 +72,10 @@ func BuildFunctionInvocationJob(request FunctionInvocationJobRequest) (*nomadapi
 	diskSize := 300
 	diskSticky, diskMigrate := false, false
 	maxFiles, maxFileSize, logsDisabled := TaskLogMaxFiles, TaskLogMaxFileSizeMB, false
-	templateData := fmt.Sprintf("{{ with nomadVar %q }}{{ .%s }}{{ end }}", request.VariablePath, functionInvocationPrivateItem)
+	templateData := functionInvocationEnvironmentTemplate(request.VariablePath)
 	templateSource, templateDestination := "", functionInvocationTemplate
 	templateMode, templateSignal, templatePerms := "restart", "", "0400"
-	templateOnce, templateEnv, templateErrMissing := false, false, true
+	templateOnce, templateEnv, templateErrMissing := false, true, true
 	templateSplay, templateVaultGrace := 5*time.Second, time.Duration(0)
 	templateLeft, templateRight := "{{", "}}"
 
@@ -326,15 +326,19 @@ func stringSlice(value interface{}) ([]string, bool) {
 }
 
 func functionInvocationTemplatePath(t *nomadapi.Template) (string, bool) {
-	if t == nil || !equalStringValue(t.SourcePath, "") || !equalStringValue(t.DestPath, functionInvocationTemplate) || t.EmbeddedTmpl == nil || !equalStringValue(t.ChangeMode, "restart") || !equalStringValue(t.ChangeSignal, "") || t.ChangeScript != nil || !equalBoolValue(t.Once, false) || !equalDuration(t.Splay, 5*time.Second) || !equalStringValue(t.Perms, "0400") || t.Uid != nil || t.Gid != nil || !equalStringValue(t.LeftDelim, "{{") || !equalStringValue(t.RightDelim, "}}") || !equalBoolValue(t.Envvars, false) || !equalDuration(t.VaultGrace, 0) || t.Wait != nil || !equalBoolValue(t.ErrMissingKey, true) {
+	if t == nil || !equalStringValue(t.SourcePath, "") || !equalStringValue(t.DestPath, functionInvocationTemplate) || t.EmbeddedTmpl == nil || !equalStringValue(t.ChangeMode, "restart") || !equalStringValue(t.ChangeSignal, "") || t.ChangeScript != nil || !equalBoolValue(t.Once, false) || !equalDuration(t.Splay, 5*time.Second) || !equalStringValue(t.Perms, "0400") || t.Uid != nil || t.Gid != nil || !equalStringValue(t.LeftDelim, "{{") || !equalStringValue(t.RightDelim, "}}") || !equalBoolValue(t.Envvars, true) || !equalDuration(t.VaultGrace, 0) || t.Wait != nil || !equalBoolValue(t.ErrMissingKey, true) {
 		return "", false
 	}
 	const prefix = "{{ with nomadVar \""
-	const suffix = "\" }}{{ ." + functionInvocationPrivateItem + " }}{{ end }}"
+	const suffix = "\" }}{{ $p := ." + functionInvocationPrivateItem + ".Value | base64Decode | parseJSON }}NORN_REQUEST_BODY={{ $p.body | toJSON }}\nNORN_REQUEST_METHOD={{ $p.method | toJSON }}\nNORN_REQUEST_PATH={{ $p.path | toJSON }}\n{{ end }}"
 	if !strings.HasPrefix(*t.EmbeddedTmpl, prefix) || !strings.HasSuffix(*t.EmbeddedTmpl, suffix) {
 		return "", false
 	}
 	return strings.TrimSuffix(strings.TrimPrefix(*t.EmbeddedTmpl, prefix), suffix), true
+}
+
+func functionInvocationEnvironmentTemplate(path string) string {
+	return fmt.Sprintf("{{ with nomadVar %q }}{{ $p := .%s.Value | base64Decode | parseJSON }}NORN_REQUEST_BODY={{ $p.body | toJSON }}\nNORN_REQUEST_METHOD={{ $p.method | toJSON }}\nNORN_REQUEST_PATH={{ $p.path | toJSON }}\n{{ end }}", path, functionInvocationPrivateItem)
 }
 
 func equalString(a, b *string) bool                           { return a != nil && b != nil && *a == *b }

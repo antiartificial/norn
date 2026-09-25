@@ -76,7 +76,12 @@ func (c *Client) LookupFunctionInvocationVariable(ctx context.Context, region st
 	if !ok {
 		return FunctionInvocationVariableObservation{State: FunctionInvocationVariableIndeterminate}, ErrFunctionVariableLookupIndeterminate
 	}
-	privateContent, err := base64.RawStdEncoding.DecodeString(encodedPrivateContent)
+	privateContent, err := base64.StdEncoding.DecodeString(encodedPrivateContent)
+	if err != nil {
+		// Existing private variables were written before the padded encoding
+		// contract. Keep their exact-read recovery available during rollout.
+		privateContent, err = base64.RawStdEncoding.DecodeString(encodedPrivateContent)
+	}
 	if err != nil {
 		return FunctionInvocationVariableObservation{State: FunctionInvocationVariableIndeterminate}, ErrFunctionVariableLookupIndeterminate
 	}
@@ -103,7 +108,7 @@ func (c *Client) CreateFunctionInvocationVariable(ctx context.Context, region st
 		Path: identity.Path,
 		Items: nomadapi.VariableItems{
 			functionInvocationOwnerItem:   identity.OwnerMarker,
-			functionInvocationPrivateItem: base64.RawStdEncoding.EncodeToString(privateContent),
+			functionInvocationPrivateItem: base64.StdEncoding.EncodeToString(privateContent),
 		},
 	}
 	_, _, err := c.api.Variables().CheckedCreate(variable, (&nomadapi.WriteOptions{Region: region}).WithContext(ctx))

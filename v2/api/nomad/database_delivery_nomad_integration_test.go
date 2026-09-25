@@ -567,6 +567,11 @@ func checkAllocationOutput(t *testing.T, api *nomadapi.Client, jobID, task, want
 				t.Fatal(err)
 			}
 			frames, errs := api.AllocFS().Logs(alloc, false, task, "stdout", "start", 0, nil, nil)
+			if frames == nil {
+				// A client may garbage-collect a completed allocation before its
+				// logs can be read. Keep the probe bounded by the outer deadline.
+				continue
+			}
 			var output strings.Builder
 			for frame := range frames {
 				output.Write(frame.Data)

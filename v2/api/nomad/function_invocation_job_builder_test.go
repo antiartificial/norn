@@ -47,7 +47,7 @@ func TestBuildFunctionInvocationJobClosedDialectAndStableDigest(t *testing.T) {
 	if *job.Type != "batch" || len(job.TaskGroups) != 1 || len(group.Tasks) != 1 || task.Env != nil || len(task.Config) != 3 || strings.Contains(strings.Join(mapValues(task.Config), " "), "private") {
 		t.Fatalf("job escaped closed dialect: %#v", job)
 	}
-	if got := *task.Templates[0].EmbeddedTmpl; !strings.Contains(got, request.VariablePath) || strings.Contains(got, "NORN_FUNCTION_JOB_PRIVATE") {
+	if got := *task.Templates[0].EmbeddedTmpl; !strings.Contains(got, request.VariablePath) || !strings.Contains(got, "base64Decode | parseJSON") || !strings.Contains(got, "NORN_REQUEST_BODY=") || strings.Contains(got, "NORN_FUNCTION_JOB_PRIVATE") || task.Templates[0].Envvars == nil || !*task.Templates[0].Envvars {
 		t.Fatalf("template = %q", got)
 	}
 }

@@ -75,7 +75,7 @@ func TestFunctionInvocationVariableLookupAndCreateAreBounded(t *testing.T) {
 	if got := stored.Items[functionInvocationOwnerItem]; got != identity.OwnerMarker {
 		t.Fatalf("owner = %q", got)
 	}
-	if got := stored.Items[functionInvocationPrivateItem]; got != base64.RawStdEncoding.EncodeToString(private) {
+	if got := stored.Items[functionInvocationPrivateItem]; got != base64.StdEncoding.EncodeToString(private) {
 		t.Fatal("private content was not written")
 	}
 	observed, err = client.LookupFunctionInvocationVariable(context.Background(), "global", identity)
@@ -83,8 +83,13 @@ func TestFunctionInvocationVariableLookupAndCreateAreBounded(t *testing.T) {
 		t.Fatalf("found observation = %+v, %v", observed, err)
 	}
 	observed.PrivateContent[0] = 'X'
-	if stored.Items[functionInvocationPrivateItem] != base64.RawStdEncoding.EncodeToString(private) {
+	if stored.Items[functionInvocationPrivateItem] != base64.StdEncoding.EncodeToString(private) {
 		t.Fatal("private content escaped without a copy")
+	}
+	stored.Items[functionInvocationPrivateItem] = base64.RawStdEncoding.EncodeToString(private)
+	legacy, err := client.LookupFunctionInvocationVariable(context.Background(), "global", identity)
+	if err != nil || legacy.State != FunctionInvocationVariableFound || string(legacy.PrivateContent) != string(private) {
+		t.Fatalf("legacy unpadded variable could not be reconciled: %+v, %v", legacy, err)
 	}
 	if err := client.CreateFunctionInvocationVariable(context.Background(), "global", identity, private); !errors.Is(err, ErrFunctionVariableCreateConflict) {
 		t.Fatalf("duplicate create = %v", err)
@@ -99,7 +104,7 @@ func TestFunctionInvocationVariableErrorsDoNotExposePrivateContent(t *testing.T)
 			http.Error(w, functionVariableCanary, http.StatusBadGateway)
 			return
 		}
-		if !strings.Contains(string(body), base64.RawStdEncoding.EncodeToString([]byte(functionVariableCanary))) {
+		if !strings.Contains(string(body), base64.StdEncoding.EncodeToString([]byte(functionVariableCanary))) {
 			t.Fatal("test did not send private content")
 		}
 		http.Error(w, functionVariableCanary, http.StatusBadGateway)
