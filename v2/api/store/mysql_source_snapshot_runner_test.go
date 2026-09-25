@@ -10,17 +10,27 @@ import (
 
 func TestMySQLSourceQuiescenceRenewsBeforeStopAndLock(t *testing.T) {
 	var renews atomic.Int32
+	renewedAgain := make(chan struct{})
 	var stopped atomic.Bool
 	var locked atomic.Bool
 	err := runClaimedMySQLSourceQuiescence(context.Background(), 90*time.Millisecond,
-		func(context.Context, time.Duration) error { renews.Add(1); return nil },
+		func(context.Context, time.Duration) error {
+			if renews.Add(1) == 2 {
+				close(renewedAgain)
+			}
+			return nil
+		},
 		func(ctx context.Context) error {
 			if renews.Load() < 1 || ctx.Err() != nil {
 				t.Fatal("source stop began without live renewed claim")
 			}
 			stopped.Store(true)
-			time.Sleep(40 * time.Millisecond)
-			return nil
+			select {
+			case <-renewedAgain:
+				return nil
+			case <-time.After(time.Second):
+				return errors.New("claim was not renewed during source stop")
+			}
 		},
 		func(ctx context.Context) error {
 			if !stopped.Load() || renews.Load() < 2 || ctx.Err() != nil {
