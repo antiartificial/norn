@@ -12,6 +12,9 @@ if docker container inspect "$mysql_container" >/dev/null 2>&1; then
   exit 1
 fi
 cleanup() {
+  if [[ -d "$scratch/pg-data" && -f "$scratch/pg-data/postmaster.pid" ]]; then
+    pg_ctl -D "$scratch/pg-data" -m immediate -w stop >/dev/null 2>&1 || true
+  fi
   docker rm --force "$mysql_container" >/dev/null 2>&1 || true
   rm -r -- "$scratch"
 }
@@ -59,9 +62,19 @@ if ! docker exec "$mysql_container" mysqladmin ping --host 127.0.0.1 --user root
 fi
 host_port="$(docker port "$mysql_container" 3306/tcp)"
 host_port="${host_port##*:}"
+mkdir "$scratch/pg-socket"
+initdb --no-instructions --auth-local=trust --auth-host=reject \
+  --username=norn_test -D "$scratch/pg-data" >/dev/null
+pg_ctl -D "$scratch/pg-data" \
+  -o "-c listen_addresses='' -c unix_socket_directories='$scratch/pg-socket'" \
+  -w start >/dev/null
+createdb -h "$scratch/pg-socket" -U norn_test norn_test
 cd "$repo_root/v2/api"
 NORN_TEST_MYSQL_DSN="root:${root_password}@tcp(127.0.0.1:${host_port})/mysql" \
   NORN_TEST_MYSQL_CA_PEM="$scratch/tls/ca.pem" \
   NORN_TEST_MYSQL_CA_FILE="$scratch/tls/ca.pem" \
   NORN_TEST_MYSQL_SERVER_NAME="127.0.0.1" \
   go test ./database -run '^TestMySQL(RuntimeComponentsReachDeclaredTarget|ExactTargetDumpRestore)$' -count=1 -v
+NORN_TEST_DATABASE_URL="postgresql://norn_test@localhost/norn_test?host=$scratch/pg-socket&sslmode=disable" \
+  NORN_TEST_MYSQL_DSN="root:${root_password}@tcp(127.0.0.1:${host_port})/mysql" \
+  go test ./store -run '^TestMySQLRestoreIntentAgainstDisposableEngines$' -count=1 -v
