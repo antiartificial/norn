@@ -2,8 +2,12 @@ package store
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
@@ -30,6 +34,12 @@ type sourceStopperFunc func(context.Context, nomad.CASStopJobRequest) error
 
 func (f sourceStopperFunc) StopJobCAS(ctx context.Context, request nomad.CASStopJobRequest) error {
 	return f(ctx, request)
+}
+
+type sourceStagerFunc func(context.Context, database.ResolvedBinding, database.TargetIdentity, database.SecretSource, string, string, string) (string, database.MySQLSQLArtifact, error)
+
+func (f sourceStagerFunc) Stage(ctx context.Context, binding database.ResolvedBinding, target database.TargetIdentity, secrets database.SecretSource, tool, digest, directory string) (string, database.MySQLSQLArtifact, error) {
+	return f(ctx, binding, target, secrets, tool, digest, directory)
 }
 
 func TestMySQLSourceSnapshotPayloadPreservesLargeIntegers(t *testing.T) {
@@ -208,5 +218,42 @@ func TestMySQLSourceSnapshotIntentReservesSignedPhysicalSource(t *testing.T) {
 	}
 	if err := db.StopClaimedMySQLSourceJob(ctx, acceptedStore, claim, request, stopper); err == nil || called != 1 {
 		t.Fatalf("replay repeated external stop: err=%v calls=%d", err, called)
+	}
+	stageDirectory := t.TempDir()
+	bytes := []byte("-- bounded disposable SQL artifact\n")
+	checksum := sha256.Sum256(bytes)
+	artifact := database.MySQLSQLArtifact{Format: database.MySQLSQLArtifactV2, Source: source.Target, Bytes: int64(len(bytes)), SHA256: hex.EncodeToString(checksum[:]),
+		Expectation: database.MySQLRestoreExpectation{SchemaSHA256: strings.Repeat("a", 64), DataSHA256: strings.Repeat("b", 64), TableCount: 0}}
+	stageCalls := 0
+	stager := sourceStagerFunc(func(_ context.Context, got database.ResolvedBinding, target database.TargetIdentity, _ database.SecretSource, _, digest, directory string) (string, database.MySQLSQLArtifact, error) {
+		stageCalls++
+		if got.Target != source.Target || got.MySQLMaintenance == nil || *got.MySQLMaintenance != request.Maintenance || target != source.Target || digest != request.DumpToolSHA256 || directory != stageDirectory {
+			t.Fatalf("stager received substituted source: %+v %+v %s", got, target, digest)
+		}
+		if err := db.Pool.QueryRow(ctx, `SELECT state FROM mysql_source_snapshot_intents WHERE operation_id=$1`, claim.OperationID()).Scan(&state); err != nil || state != "stage-intended" {
+			t.Fatalf("dump ran before durable stage intent: %q %v", state, err)
+		}
+		path := filepath.Join(directory, "dump.sql")
+		if err := os.WriteFile(path, bytes, 0o600); err != nil {
+			t.Fatal(err)
+		}
+		return path, artifact, nil
+	})
+	signed, err := db.StageClaimedMySQLSourceArtifact(ctx, acceptedStore, claim, request, sourceSecretSource{}, "/usr/bin/true", stageDirectory, stager)
+	if err != nil || signed.Receipt.Artifact != artifact || signed.Receipt.AcceptanceIntentID != prepared.AcceptanceIntentID || stageCalls != 1 {
+		t.Fatalf("signed artifact receipt=%+v err=%v calls=%d", signed, err, stageCalls)
+	}
+	loaded, err := db.LoadSignedMySQLSourceArtifactReceipt(ctx, acceptedStore, claim.OperationID())
+	if err != nil || loaded.SHA256 != signed.SHA256 || loaded.Signature != signed.Signature {
+		t.Fatalf("persisted signed receipt=%+v err=%v", loaded, err)
+	}
+	if _, err := db.StageClaimedMySQLSourceArtifact(ctx, acceptedStore, claim, request, sourceSecretSource{}, "/usr/bin/true", stageDirectory, stager); err == nil || stageCalls != 1 {
+		t.Fatalf("replay repeated dump: err=%v calls=%d", err, stageCalls)
+	}
+	if _, err := db.Pool.Exec(ctx, `UPDATE mysql_source_snapshot_intents SET artifact_receipt_canonical=artifact_receipt_canonical || decode('20','hex') WHERE operation_id=$1`, claim.OperationID()); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := db.LoadSignedMySQLSourceArtifactReceipt(ctx, acceptedStore, claim.OperationID()); !errors.Is(err, ErrMySQLSourceArtifactIndeterminate) {
+		t.Fatalf("tampered persisted receipt verified: %v", err)
 	}
 }

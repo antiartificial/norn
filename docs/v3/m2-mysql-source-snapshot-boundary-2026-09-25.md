@@ -26,12 +26,12 @@ is still running despite terminal allocations. This is not a source write
 lock or a snapshot receipt.
 
 `quiesce-intended` is a reservation, **not** a write-stop proof. Before a
-snapshot can be accepted for restore, the private runner must stage the artifact through the snapshot credential
-and sign a receipt that binds the durable stop and account-lock proofs to the
-artifact. The existing restore request still accepts an operator-supplied
-source-quiescence reference; that private prototype must be replaced by the
-signed snapshot receipt. Source unlock/restart needs a separately signed
-recovery operation. No public snapshot or restore capability is enabled.
+snapshot can be accepted for restore, the signed stop and account-lock proofs,
+staged artifact, and service-signed receipt must be bound to a separate signed
+restore decision. The existing restore request still accepts an operator-supplied
+source-quiescence reference; that private prototype must require the signed
+snapshot receipt. Source unlock/restart needs a separately signed recovery
+operation. No public snapshot or restore capability is enabled.
 
 ### Source account lock checkpoint (private)
 
@@ -43,10 +43,31 @@ records `lock-proved`. An uncertain response, lost claim, or failed proof leaves
 both reservations held. Generic runtime-fence release rejects a bound source
 operation. There is no automatic retry, public route, unlock, or resume.
 
+### Artifact staging receipt (private)
+
+Migration 32 adds `stage-intended` before the dump tool runs and `stage-proved`
+only after the bounded, owner-only SQL file verifies against its measured size,
+SHA-256, source identity, and source-derived expectation. The production path
+uses the catalog-derived snapshot account and the dump-tool digest from the
+accepted request. It rechecks the live claim, source reservation, catalog
+revision, and global runtime fence before storing the receipt. Any ambiguous
+stage result remains fenced and cannot automatically run the dump again.
+
+The service signs canonical receipt bytes with the acceptance signer. The
+receipt binds the signed acceptance intent and its digest, source identity,
+catalog revision, dump-tool digest, local artifact path, and artifact metadata.
+Loading the receipt verifies the exact stored bytes and signature. This is a
+service attestation of staging, not a separately accepted restore decision.
+The local SQL file is not durably retained or replicated by this step; a
+restore must verify its bytes again and must cite the receipt digest in a
+separately signed restore acceptance. The current restore prototype has not
+been wired to require that receipt.
+
 This is still a private implementation step, not a qualified source snapshot
-workflow. The private quiescence runner renews its operation claim before the Nomad
-stop and throughout stop and account lock. Renewal loss cancels the shared
-context, prevents progression to the next effect, and retains both fences.
-Release qualification still needs signed artifact staging/receipt, explicit
-recovery after an ambiguous effect, and a signed resume/unlock decision. Direct host mutations
-also need qualification against the global fence at their actual effect point.
+workflow. The private quiescence runner renews its claim before and throughout
+the Nomad stop and account lock. The separate artifact staging step checks the
+claim at its boundaries but does not yet renew it throughout the dump. Release
+qualification needs a supervised staging claim, retained artifact storage and
+availability proof, explicit recovery after an ambiguous effect, and a signed
+resume/unlock decision. Direct host mutations also need qualification against
+the global fence at their actual effect point.
