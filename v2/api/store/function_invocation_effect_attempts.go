@@ -36,6 +36,14 @@ type FunctionInvocationEffectAttempt struct {
 	AttemptedAt *time.Time
 }
 
+// FunctionInvocationEffectAttemptStore is the durable pre-call boundary for
+// function workers. Implementations store only the public Nomad binding.
+type FunctionInvocationEffectAttemptStore interface {
+	RecordFunctionInvocationEffectStage(context.Context, OperationClaim, FunctionInvocationEffectAttemptStage, string, string) (FunctionInvocationEffectAttempt, error)
+	MarkFunctionInvocationEffectAttempt(context.Context, OperationClaim, FunctionInvocationEffectAttemptStage, string, string) (FunctionInvocationEffectAttempt, error)
+	LoadFunctionInvocationEffectAttempt(context.Context, string, FunctionInvocationEffectAttemptStage) (*FunctionInvocationEffectAttempt, error)
+}
+
 var (
 	ErrFunctionInvocationEffectConflict = errors.New("function invocation effect stage conflicts with durable record")
 	ErrFunctionInvocationEffectMissing  = errors.New("function invocation effect stage is not durably recorded")

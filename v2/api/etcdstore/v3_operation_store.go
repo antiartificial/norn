@@ -97,6 +97,7 @@ var _ store.OperationIdentityResolver = (*V3OperationStore)(nil)
 var _ store.PrivateInvocationStore = (*V3OperationStore)(nil)
 var _ store.ExecutionStore = (*V3OperationStore)(nil)
 var _ store.OperationCheckpointStore = (*V3OperationStore)(nil)
+var _ store.FunctionInvocationEffectAttemptStore = (*V3OperationStore)(nil)
 
 // ListOperations returns a bounded, stable snapshot of accepted operations.
 // It is intentionally a small read surface for the etcd Fleet runtime; callers
