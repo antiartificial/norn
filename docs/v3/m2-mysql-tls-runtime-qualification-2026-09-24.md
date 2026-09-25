@@ -128,6 +128,20 @@ consumer, altered runtime declaration, and bound release artifacts retain the
 normal signature policy. The trust assertion is embedded in the signed Norn
 binary; a separately attested Norn mirror is later distribution hardening.
 
+## Nomad file-template correction — 2026-09-25
+
+Database URL and TLS file templates now select each revisioned Nomad Variable
+item's `.Value`, matching the existing environment template. The PostgreSQL
+worker integration test rendered the submitted web and cron jobs and ran an
+ordinary Node client through both URL delivery forms; `go test ./worker ./nomad
+-count=1` passed with a disposable PostgreSQL database. A separate disposable
+Nomad 2.0.7 `raw_exec` batch allocation read one revisioned variable through
+the same environment, URL file, and CA file expressions. Its stdout showed
+the URL `postgresql://example.invalid/db?a=1&b=2` identically in the
+environment and file, and `synthetic-ca-line` in the CA file. This checks
+Nomad's template rendering, not a WordPress/MySQL connection or release
+deployment.
+
 `TestClaimedWordPressVerifiedTLSDeployInNomad` then passed against disposable
 PostgreSQL, MySQL 8.4 TLS, Nomad 2.0.7 and Consul. Signed `app.deploy`
 acceptance led to a claimed worker, clean Git source checkpoint, exact pinned
