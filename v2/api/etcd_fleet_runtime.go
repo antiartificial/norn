@@ -70,6 +70,9 @@ func runEtcdFleetRuntime(cfg *config.Config, backend startup.ControlBackendConfi
 	if err != nil {
 		return err
 	}
+	if err := preflightConfiguredPrivateInvocationKeys(context.Background(), cfg, operations); err != nil {
+		return fmt.Errorf("private invocation startup preflight: %w", err)
+	}
 	identities := etcdstore.NewAuthStore(client, backend.EtcdPrefix)
 	workerCtx, stopWorker := context.WithCancel(context.Background())
 	defer stopWorker()

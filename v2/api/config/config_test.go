@@ -61,6 +61,16 @@ func TestAuditVerificationKeyRotationConfig(t *testing.T) {
 	}
 }
 
+func TestPrivateInvocationKeyRingRuntimeConfig(t *testing.T) {
+	t.Setenv("NORN_PRIVATE_INVOCATION_ENABLED", "true")
+	t.Setenv("NORN_PRIVATE_INVOCATION_CURRENT_KEY_ID", "invocation-2026-09")
+	t.Setenv("NORN_PRIVATE_INVOCATION_KEYS", `{"invocation-2026-09":"base64-key-material"}`)
+	cfg := Load()
+	if !cfg.PrivateInvocationEnabled || cfg.PrivateInvocationCurrentKeyID != "invocation-2026-09" || cfg.PrivateInvocationKeys == "" {
+		t.Fatalf("private invocation runtime configuration was not loaded")
+	}
+}
+
 func TestFleetGitHubAppConfig(t *testing.T) {
 	t.Setenv("NORN_FLEET_GITHUB_APP_ID", "Iv1.client")
 	t.Setenv("NORN_FLEET_GITHUB_INSTALLATION_ID", "12345")

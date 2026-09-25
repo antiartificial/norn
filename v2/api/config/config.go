@@ -52,6 +52,14 @@ type Config struct {
 	// OperationReplayTTL opts newly accepted request identities into durable
 	// replay expiry. Zero retains indefinite replay.
 	OperationReplayTTL time.Duration
+	// PrivateInvocationEnabled opts into the dormant private function-invocation
+	// aggregate. Its key ring is deliberately separate from audit signing keys.
+	// NORN_PRIVATE_INVOCATION_KEYS is a JSON object of key ID to base64-encoded
+	// 32-byte key-encryption key. It is consumed only at startup and is never
+	// written to logs.
+	PrivateInvocationEnabled      bool
+	PrivateInvocationCurrentKeyID string
+	PrivateInvocationKeys         string
 	// QualificationSigningKey signs portable staging release receipts. Keep it
 	// distinct from mutation-audit integrity material.
 	QualificationSigningKey string
@@ -238,6 +246,9 @@ func Load() *Config {
 		AuditPreviousSigningKeys:               splitNonEmpty(os.Getenv("NORN_AUDIT_PREVIOUS_SIGNING_KEYS")),
 		ControlAuthority:                       strings.TrimSpace(os.Getenv("NORN_CONTROL_AUTHORITY")),
 		OperationReplayTTL:                     envOptionalDuration("NORN_OPERATION_REPLAY_TTL"),
+		PrivateInvocationEnabled:               envBoolOr("NORN_PRIVATE_INVOCATION_ENABLED", false),
+		PrivateInvocationCurrentKeyID:          strings.TrimSpace(os.Getenv("NORN_PRIVATE_INVOCATION_CURRENT_KEY_ID")),
+		PrivateInvocationKeys:                  os.Getenv("NORN_PRIVATE_INVOCATION_KEYS"),
 		AuditRetentionDays:                     envIntOr("NORN_AUDIT_RETENTION_DAYS", 365),
 		QualificationSigningKey:                os.Getenv("NORN_QUALIFICATION_SIGNING_KEY"),
 		TrustedQualificationSigningKeys:        splitNonEmpty(os.Getenv("NORN_TRUSTED_QUALIFICATION_SIGNING_KEYS")),

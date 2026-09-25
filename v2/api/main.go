@@ -365,6 +365,17 @@ func main() {
 	}
 	pipe.CanaryPromotionEffects = canaryPromotionEffects
 
+	// Construct the acceptance boundary and verify any retained private
+	// invocation envelopes before a worker can claim operations.
+	h := handler.New(db, nomadClient, consulClient, ws, cfg, pipe, beaconSvc, sec, sagaStore, s3Client, redpandaClient)
+	if err := h.OperationStoreError(); err != nil {
+		log.Fatalf("operation acceptance: %v", err)
+	}
+	pipe.SetOperationStore(h.OperationStore())
+	if err := preflightConfiguredPrivateInvocationKeys(context.Background(), cfg, h.OperationStore()); err != nil {
+		log.Fatalf("private invocation startup preflight: %v", err)
+	}
+
 	workerCtx, workerCancel := context.WithCancel(context.Background())
 	defer workerCancel()
 	if os.Getenv("NORN_SKIP_OPERATION_WORKER") == "true" {
@@ -384,12 +395,6 @@ func main() {
 		go nomadWatcher.Run(workerCtx)
 	}
 
-	// Handler
-	h := handler.New(db, nomadClient, consulClient, ws, cfg, pipe, beaconSvc, sec, sagaStore, s3Client, redpandaClient)
-	if err := h.OperationStoreError(); err != nil {
-		log.Fatalf("operation acceptance: %v", err)
-	}
-	pipe.SetOperationStore(h.OperationStore())
 	logSpool, logCollector, err := configureLogCollection(cfg, nomadClient)
 	if err != nil {
 		log.Fatalf("log collection: %v", err)
@@ -675,12 +680,34 @@ func validateControlSecurity(cfg *config.Config) error {
 	return validateControlSecurityForBackend(cfg, startup.ControlBackendConfig{Backend: startup.BackendPostgres})
 }
 
+// preflightConfiguredPrivateInvocationKeys leaves the existing runtime fully
+// dormant unless its capability is explicitly enabled. When enabled, the
+// control store is read before workers or HTTP serving begin so a restored
+// record cannot become unreadable after the process accepts traffic.
+func preflightConfiguredPrivateInvocationKeys(ctx context.Context, cfg *config.Config, operations store.OperationStore) error {
+	if cfg == nil || !cfg.PrivateInvocationEnabled {
+		return nil
+	}
+	ring, err := startup.PrivateInvocationKeyRingFromRuntimeConfig(true, cfg.PrivateInvocationCurrentKeyID, cfg.PrivateInvocationKeys)
+	if err != nil {
+		return err
+	}
+	invocationStore, ok := operations.(store.PrivateInvocationStore)
+	if !ok {
+		return fmt.Errorf("private invocation store is unavailable")
+	}
+	return startup.PreflightPrivateInvocationKeys(ctx, invocationStore, ring)
+}
+
 func validateControlSecurityForBackend(cfg *config.Config, backend startup.ControlBackendConfig) error {
 	if cfg == nil {
 		return fmt.Errorf("configuration is required")
 	}
 	if cfg.OperationReplayTTL < 0 {
 		return fmt.Errorf("NORN_OPERATION_REPLAY_TTL must be zero or a positive Go duration")
+	}
+	if _, err := startup.PrivateInvocationKeyRingFromRuntimeConfig(cfg.PrivateInvocationEnabled, cfg.PrivateInvocationCurrentKeyID, cfg.PrivateInvocationKeys); err != nil {
+		return err
 	}
 	if cfg.APIToken != "" && len(cfg.APIToken) < 32 {
 		return fmt.Errorf("NORN_API_TOKEN must contain at least 32 bytes")

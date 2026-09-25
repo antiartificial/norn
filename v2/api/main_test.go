@@ -2,6 +2,7 @@ package main
 
 import (
 	"bytes"
+	"context"
 	"crypto/ed25519"
 	"crypto/hmac"
 	"crypto/sha256"
@@ -20,8 +21,27 @@ import (
 	"norn/v2/api/auth"
 	"norn/v2/api/config"
 	"norn/v2/api/handler"
+	"norn/v2/api/model"
 	"norn/v2/api/startup"
+	"norn/v2/api/store"
 )
+
+type privateInvocationStartupStore struct {
+	store.OperationStore
+	keyIDs []string
+}
+
+func (s privateInvocationStartupStore) AcceptPrivateInvocation(context.Context, store.OperationAcceptance, store.PrivateInvocationInput, *store.PrivateInvocationKeyRing) (store.AcceptedOperation, error) {
+	panic("unexpected private invocation acceptance during startup preflight")
+}
+
+func (s privateInvocationStartupStore) OpenPrivateInvocation(context.Context, model.Operation, *store.PrivateInvocationKeyRing) (store.PrivateInvocationInput, error) {
+	panic("unexpected private invocation open during startup preflight")
+}
+
+func (s privateInvocationStartupStore) RequiredPrivateInvocationKeys(context.Context) ([]string, error) {
+	return s.keyIDs, nil
+}
 
 func testEd25519Private(ch byte) string {
 	return base64.RawStdEncoding.EncodeToString(bytes.Repeat([]byte{ch}, ed25519.SeedSize))
@@ -298,6 +318,34 @@ func TestInvalidOperationReplayTTLStopsStartupValidation(t *testing.T) {
 				t.Fatalf("startup validation error = %v, want explicit replay TTL rejection", err)
 			}
 		})
+	}
+}
+
+func TestPrivateInvocationStartupPreflightIsCapabilityGated(t *testing.T) {
+	key := base64.StdEncoding.EncodeToString(bytes.Repeat([]byte{0x41}, 32))
+	keys := `{"current":"` + key + `","retired":"` + base64.StdEncoding.EncodeToString(bytes.Repeat([]byte{0x42}, 32)) + `"}`
+	storeWithRetiredKey := privateInvocationStartupStore{keyIDs: []string{"retired", "current"}}
+
+	disabled := &config.Config{PrivateInvocationKeys: "not-json"}
+	if err := preflightConfiguredPrivateInvocationKeys(context.Background(), disabled, storeWithRetiredKey); err != nil {
+		t.Fatalf("disabled private invocation capability preflight = %v", err)
+	}
+
+	enabled := &config.Config{PrivateInvocationEnabled: true, PrivateInvocationCurrentKeyID: "current", PrivateInvocationKeys: keys}
+	if err := preflightConfiguredPrivateInvocationKeys(context.Background(), enabled, storeWithRetiredKey); err != nil {
+		t.Fatalf("enabled private invocation preflight = %v", err)
+	}
+	if err := preflightConfiguredPrivateInvocationKeys(context.Background(), enabled, privateInvocationStartupStore{keyIDs: []string{"missing-retired"}}); err == nil || !strings.Contains(err.Error(), `"missing-retired"`) {
+		t.Fatalf("missing retained key preflight = %v", err)
+	}
+}
+
+func TestPrivateInvocationRuntimeConfigurationStopsStartupValidation(t *testing.T) {
+	const canary = "private-invocation-runtime-canary"
+	cfg := &config.Config{PrivateInvocationEnabled: true, PrivateInvocationCurrentKeyID: "current", PrivateInvocationKeys: `{"current":"` + canary + `"}`}
+	err := validateControlSecurity(cfg)
+	if err == nil || strings.Contains(err.Error(), canary) {
+		t.Fatalf("startup validation error = %v", err)
 	}
 }
 
