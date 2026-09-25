@@ -23,18 +23,33 @@ intent. The runner independently inspects the restored target before recording
 success. It renews its operation claim throughout import and cancels the SQL
 client on known renewal loss. A disposable PostgreSQL 17.7 plus MySQL 8.4 run
 passed with a 120 ms lease and a 350 ms delayed client; a changed-row target
-check was rejected. This is still a private qualification, not a complete
-restore lane.
+check was rejected. A second disposable run stole the claim during a delayed
+client: cancellation returned promptly, no success receipt was written, the
+intent became `needs-inspection`, and successor replay was rejected. The
+private runner bounds pipe draining after cancellation so a wrapper child
+cannot delay that containment indefinitely. This is still a private
+qualification, not a complete restore lane.
+
+Expired executing intents now atomically become `needs-inspection` with a
+failed, manual-recovery operation. A read-scoped inspection endpoint returns
+verified signed acceptance, catalog, target, and artifact identities without
+the private artifact path or profile selector. It cannot retry or acknowledge
+an ambiguous restore. The disposable PostgreSQL recovery test passed.
 
 ## Still required before a usable restore lane
 
-- Qualify claim theft/loss while SQL is in flight and the resulting inspection
-  state, plus bounded memory/disk behavior on representative large data.
+- Qualify bounded memory/disk behavior on representative large data and the
+  actual process-crash window after SQL begins. The claim-theft case has
+  disposable coverage, but an abrupt OS process kill does not yet.
 - Hold an explicit maintenance fence that covers application writes and catalog
   activation for the whole restore window.
 - Bind source quiescence and retained artifact storage to acceptance; the
   current artifact path remains host-local and ephemeral.
-- Reconcile `executing` and `needs-inspection` records after crash, timeout, or
-  process loss with an operator-visible, evidence-bound procedure.
+- Define evidence-bound operator reconciliation after inspection. Current
+  signed identity and target fingerprints cannot prove whether a partial SQL
+  prefix was applied, so no acknowledgement mutation is exposed.
+- Classify a `prepared` intent whose claim expires before the one-way
+  boundary. It currently retains the target reservation and requires manual
+  review; the executing-intent recovery must not be reused for this state.
 
 These gaps keep MySQL restore non-deployable and the public capability closed.

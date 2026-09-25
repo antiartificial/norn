@@ -158,13 +158,6 @@ func (db *DB) BeginClaimedMySQLRestore(ctx context.Context, acceptance *PGOperat
 	if err != nil || active.Revision != request.CatalogRevision {
 		return MySQLRestoreIntent{}, ErrDatabaseCatalogRevisionConflict
 	}
-	resolver, err := database.NewResolver(active.Catalog)
-	if err != nil {
-		return MySQLRestoreIntent{}, err
-	}
-	if _, err := database.PrepareMySQLRestore(ctx, resolver, request.ProfileID, request.LogicalID, request.Target, secrets, request.ArtifactPath, request.Artifact); err != nil {
-		return MySQLRestoreIntent{}, err
-	}
 	var state, intentID, key, profileID, logicalID, artifactPath string
 	var revision int64
 	var targetBytes, artifactBytes []byte
@@ -179,6 +172,16 @@ func (db *DB) BeginClaimedMySQLRestore(ctx context.Context, acceptance *PGOperat
 	var artifact database.MySQLSQLArtifact
 	if json.Unmarshal(targetBytes, &target) != nil || json.Unmarshal(artifactBytes, &artifact) != nil || target != request.Target || artifact != request.Artifact {
 		return MySQLRestoreIntent{}, ErrMySQLRestoreFence
+	}
+	// Reject a consumed or ambiguous intent before touching the target again.
+	// A successor must never run even a read-only restore preflight as a
+	// substitute for operator inspection after external SQL may have started.
+	resolver, err := database.NewResolver(active.Catalog)
+	if err != nil {
+		return MySQLRestoreIntent{}, err
+	}
+	if _, err := database.PrepareMySQLRestore(ctx, resolver, request.ProfileID, request.LogicalID, request.Target, secrets, request.ArtifactPath, request.Artifact); err != nil {
+		return MySQLRestoreIntent{}, err
 	}
 	result, err := tx.Exec(ctx, `UPDATE mysql_restore_intents SET state='executing', started_at=clock_timestamp() WHERE operation_id=$1 AND state='prepared'`, claim.OperationID())
 	if err != nil || result.RowsAffected() != 1 {

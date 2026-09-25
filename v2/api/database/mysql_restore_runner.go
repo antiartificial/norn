@@ -12,6 +12,7 @@ import (
 	"strconv"
 	"strings"
 	"syscall"
+	"time"
 
 	"norn/v2/api/capture"
 )
@@ -75,6 +76,10 @@ func RestoreMySQLSQLArtifact(ctx context.Context, resolved ResolvedBinding, secr
 		"--port=" + strconv.Itoa(resolved.Endpoint.Port), "--database=" + resolved.Target.Database}
 	args = append(args, tlsArgs...)
 	command := exec.CommandContext(ctx, tool.Path, args...)
+	// A client wrapper may leave a child holding stderr open after the parent
+	// is killed on claim loss. Bound pipe draining so the supervisor can record
+	// the ambiguous import promptly instead of waiting for that child.
+	command.WaitDelay = 200 * time.Millisecond
 	command.Env = []string{"PATH=" + os.Getenv("PATH"), "LC_ALL=C"}
 	command.Stdin = artifactFile
 	stderr := capture.New(4096, 4096)
