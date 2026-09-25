@@ -41,10 +41,11 @@ cases.
 
 The private request now signs a source-quiescence evidence reference and
 persists a maintenance fence from preparation through execution. Catalog
-activation refuses while any such fence is held. Successful completion releases
-the fence in the receipt transaction; an expired prepared intent releases it
-before SQL, while ambiguous execution retains it. This fence has no production
-application write or write-resume consumer yet. The signed evidence reference
+activation refuses while any such fence is held. Migration 27 retains the
+fence even after a successful import because runtime authentication remains
+locked pending a separately authorized resume. An expired prepared intent
+releases it only if no account-lock intent exists; every uncertain lock or SQL
+outcome retains it. The signed evidence reference
 records what an operator asserted; it does not independently prove quiescence.
 
 A disposable PostgreSQL/MySQL rehearsal killed the separate restore worker and
@@ -76,14 +77,26 @@ uniqueness, which needs narrower provider-specific provisioning before release.
 The immutable catalog and accepted restore request now bind distinct runtime,
 restore, and fence credentials. The restore client verifies its exact account
 and uses the restore credential for import and post-import checks, even while
-runtime authentication is locked. The account-lock primitive is not yet
-connected to the signed restore runner or a durable lock checkpoint.
+runtime authentication is locked. Migration 27 records `lock-intended` before
+the runner alters the exact runtime account and `verified-lock` after session
+drain. Begin requires that verified checkpoint. A lost claim or uncertain lock
+cannot auto-unlock or begin SQL. This covers the destination account; the
+artifact source has a distinct writer identity and still lacks a proved lock.
+
+Migration 28 adds a global, owner-and-epoch-bound runtime mutation fence. The
+private restore runner acquires it before account locking and leaves it held
+after import or uncertainty. It serializes acquisition with operation claims
+and holds queued deploy, restart, scale, cron, and function invocation
+operations until exact release. Already
+claimed effects, host assurance, direct Nomad actions, and existing allocations
+are not yet gated, so this is an admission boundary rather than complete
+write isolation.
 
 ## Still required before a usable restore lane
 
 - Qualify bounded memory/disk behavior on representative large data.
-- Wire the launch gate into every application write and resume
-  path, and the MySQL account lock into source quiescence and restore execution.
+- Wire the launch and mutation gates into every application write and resume
+  path, and add signed source-account quiescence before staging the dump.
   Prove this on the actual managed WordPress/MySQL runtime, including direct
   Nomad starts, periodic children, restart policy, and host assurance.
 - Bind source quiescence and retained artifact storage to acceptance; the

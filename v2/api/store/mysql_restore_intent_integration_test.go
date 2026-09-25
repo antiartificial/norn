@@ -328,6 +328,24 @@ func TestMySQLRestoreIntentAgainstDisposableEngines(t *testing.T) {
 	if err := admin.QueryRowContext(ctx, "SELECT value FROM `"+targetDB+"`.marker").Scan(&marker); err != nil || marker != "signed-intent-source" {
 		t.Fatalf("restored marker = %q, %v", marker, err)
 	}
+	var mutationFence RuntimeMutationFence
+	var fenceActive bool
+	if err := control.Pool.QueryRow(ctx, `SELECT epoch, owner, active FROM runtime_mutation_fence WHERE singleton=true`).Scan(&mutationFence.Epoch, &mutationFence.Owner, &fenceActive); err != nil || !fenceActive || mutationFence.Owner != "mysql-restore:"+claim.OperationID() {
+		t.Fatalf("restore did not retain its runtime mutation fence: %+v active=%t err=%v", mutationFence, fenceActive, err)
+	}
+	queuedMutation := insertOperationFixture(t, control, "app.deploy", 1, nil)
+	if claimed, _, err := control.ClaimNextOperation(ctx, "concurrent-deploy", time.Minute, []string{"app.deploy"}); err != nil || claimed != nil {
+		t.Fatalf("restore admitted queued deploy while runtime fence held: %+v %v", claimed, err)
+	}
+	// This disposable test runs a second independent restore in the same control
+	// schema. Explicitly reset only the global claim fence after proving the
+	// first runner retained it; production requires a signed resume protocol.
+	if err := control.ReleaseRuntimeMutationFence(ctx, mutationFence); err != nil {
+		t.Fatal(err)
+	}
+	if claimed, _, err := control.ClaimNextOperation(ctx, "post-restore-deploy", time.Minute, []string{"app.deploy"}); err != nil || claimed == nil || claimed.ID != queuedMutation.ID {
+		t.Fatalf("explicit fence release did not resume queued deploy: %+v %v", claimed, err)
+	}
 
 	// Claim theft after the durable intent enters executing must cancel the
 	// private client, leave no success receipt, contain the intent for operator

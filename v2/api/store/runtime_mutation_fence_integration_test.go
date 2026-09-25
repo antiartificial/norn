@@ -4,6 +4,8 @@ import (
 	"context"
 	"testing"
 	"time"
+
+	"github.com/jackc/pgx/v5"
 )
 
 func TestRuntimeMutationFenceKeepsQueuedAppEffectsUnclaimedUntilExactRelease(t *testing.T) {
@@ -49,5 +51,45 @@ func TestRuntimeMutationFenceKeepsQueuedAppEffectsUnclaimedUntilExactRelease(t *
 		if err := db.FinishClaimedOperation(ctx, claim, "succeeded", "test complete", nil); err != nil {
 			t.Fatalf("finish %s: %v", kind, err)
 		}
+	}
+}
+
+func TestRuntimeMutationClaimWaitsForConcurrentFenceCommit(t *testing.T) {
+	db := operationTestStores(t, 1)[0]
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	insertOperationFixture(t, db, "app.deploy", 1, nil)
+	tx, err := db.Pool.BeginTx(ctx, pgx.TxOptions{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer tx.Rollback(context.Background())
+	if _, err := tx.Exec(ctx, `UPDATE runtime_mutation_fence SET epoch=epoch+1, active=true, owner='concurrent-fence', reason='test', held_at=clock_timestamp(), released_at=NULL WHERE singleton=true`); err != nil {
+		t.Fatal(err)
+	}
+	result := make(chan error, 1)
+	go func() {
+		claimed, _, err := db.ClaimNextOperation(ctx, "racing-worker", time.Minute, []string{"app.deploy"})
+		if err == nil && claimed != nil {
+			result <- ErrRuntimeMutationFenceHeld
+			return
+		}
+		result <- err
+	}()
+	select {
+	case err := <-result:
+		t.Fatalf("claim passed uncommitted fence update: %v", err)
+	case <-time.After(100 * time.Millisecond):
+	}
+	if err := tx.Commit(ctx); err != nil {
+		t.Fatal(err)
+	}
+	select {
+	case err := <-result:
+		if err != nil {
+			t.Fatalf("claim after fence commit: %v", err)
+		}
+	case <-ctx.Done():
+		t.Fatal("claim did not resume after fence commit")
 	}
 }

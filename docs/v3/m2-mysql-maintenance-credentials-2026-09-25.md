@@ -20,14 +20,11 @@ to the application runtime credential. Post-import expectation verification
 also uses this restore identity, so the application runtime account may remain
 locked throughout restore.
 
-The existing private runtime-account lock primitive remains disconnected.
-It issues `ALTER USER ... ACCOUNT LOCK` and kills sessions, but this branch
-does not yet have a durable checkpoint that atomically records the intended
-account identity before that external effect, records a verified locked state
-after it, and keeps the restore maintenance fence active on crash or claim
-loss. Wiring it into this runner without those checkpoints could leave an
-account locked with no recoverable receipt, or could incorrectly continue a
-restore after an unknown lock outcome. A later slice must add those durable
-pre-lock and verified-lock checkpoints, bind them to this signed maintenance
-identity and operation claim, then make restore begin depend on the verified
-lock checkpoint. There is no public route or capability for either primitive.
+Migration 27 connects the private runtime-account lock primitive to the
+claimed runner. It commits an exact `lock-intended` checkpoint before
+`ALTER USER`, verifies the lock and two zero-session observations, then commits
+`verified-lock` before SQL can begin. The maintenance fence survives import
+success and every uncertain lock or SQL outcome. No worker unlocks the runtime
+account automatically. A distinct signed resume and source-quiescence protocol
+remain required before this lane can be exposed. There is no public route or
+capability for either primitive.

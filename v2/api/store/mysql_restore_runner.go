@@ -51,6 +51,14 @@ func (r MySQLRestoreRunner) RunClaimed(ctx context.Context, claim OperationClaim
 	if intentErr != nil {
 		return intentErr
 	}
+	// Hold new app mutation claims before altering the database account. This
+	// fence deliberately survives every outcome, including a completed import;
+	// a separately authorized resume must prove writers and unlock readiness.
+	// Existing running effects and direct Nomad writers still need independent
+	// drain/account proofs before this private lane can be exposed.
+	if _, err := r.Control.AcquireRuntimeMutationFence(runCtx, "mysql-restore:"+claim.OperationID(), "MySQL restore runtime account and SQL maintenance"); err != nil {
+		return err
+	}
 	catalog, catalogErr := r.Control.DatabaseCatalogRevision(runCtx, intended.Request.CatalogRevision)
 	if catalogErr != nil {
 		return catalogErr
