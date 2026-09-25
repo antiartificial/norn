@@ -150,3 +150,18 @@ func TestFunctionInvocationVariableNilClientFailsClosed(t *testing.T) {
 		t.Fatalf("nil create = %v", err)
 	}
 }
+
+func TestFunctionInvocationVariableRejectsOversizedPrivateItemsBeforeIO(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(http.ResponseWriter, *http.Request) {
+		t.Error("oversized private variable reached Nomad")
+	}))
+	defer server.Close()
+	client, err := NewClient(server.URL)
+	if err != nil {
+		t.Fatal(err)
+	}
+	err = client.CreateFunctionInvocationVariable(context.Background(), "global", functionVariableIdentity(t), []byte(strings.Repeat("x", maxDatabaseVariableItemBytes)))
+	if !errors.Is(err, ErrFunctionVariableTooLarge) || strings.Contains(err.Error(), "xxx") {
+		t.Fatalf("oversized variable error = %v", err)
+	}
+}

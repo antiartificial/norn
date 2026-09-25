@@ -48,6 +48,7 @@ var (
 	ErrFunctionVariableLookupIndeterminate = errors.New("function variable lookup is indeterminate")
 	ErrFunctionVariableCreateConflict      = errors.New("function variable already exists")
 	ErrFunctionVariableCreateIndeterminate = errors.New("function variable create is indeterminate")
+	ErrFunctionVariableTooLarge            = errors.New("function variable exceeds Nomad's item size limit")
 )
 
 // LookupFunctionInvocationVariable reads only the two items needed to
@@ -98,17 +99,18 @@ func (c *Client) LookupFunctionInvocationVariable(ctx context.Context, region st
 // conflict proves an existing value and is distinct from a transport or other
 // ambiguous create outcome.
 func (c *Client) CreateFunctionInvocationVariable(ctx context.Context, region string, identity FunctionInvocationVariableIdentity, privateContent []byte) error {
-	if err := validateFunctionVariableIdentity(identity); err != nil {
+	if err := ValidateFunctionInvocationVariablePayload(identity, privateContent); err != nil {
 		return err
 	}
 	if c == nil || c.api == nil {
 		return ErrFunctionVariableCreateIndeterminate
 	}
+	encodedPrivateContent := base64.StdEncoding.EncodeToString(privateContent)
 	variable := &nomadapi.Variable{
 		Path: identity.Path,
 		Items: nomadapi.VariableItems{
 			functionInvocationOwnerItem:   identity.OwnerMarker,
-			functionInvocationPrivateItem: base64.StdEncoding.EncodeToString(privateContent),
+			functionInvocationPrivateItem: encodedPrivateContent,
 		},
 	}
 	_, _, err := c.api.Variables().CheckedCreate(variable, (&nomadapi.WriteOptions{Region: region}).WithContext(ctx))
@@ -120,6 +122,19 @@ func (c *Client) CreateFunctionInvocationVariable(ctx context.Context, region st
 		return ErrFunctionVariableCreateConflict
 	}
 	return ErrFunctionVariableCreateIndeterminate
+}
+
+// ValidateFunctionInvocationVariablePayload runs before the durable write
+// attempt is marked so an impossible Nomad Variable cannot strand the effect.
+// The check uses only byte lengths and never formats private content.
+func ValidateFunctionInvocationVariablePayload(identity FunctionInvocationVariableIdentity, privateContent []byte) error {
+	if err := validateFunctionVariableIdentity(identity); err != nil {
+		return err
+	}
+	if len(privateContent) > maxDatabaseVariableItemBytes || len(functionInvocationOwnerItem)+len(identity.OwnerMarker)+len(functionInvocationPrivateItem)+base64.StdEncoding.EncodedLen(len(privateContent)) > maxDatabaseVariableItemBytes {
+		return ErrFunctionVariableTooLarge
+	}
+	return nil
 }
 
 func validateFunctionVariableIdentity(identity FunctionInvocationVariableIdentity) error {

@@ -46,6 +46,9 @@ func EnsureFunctionInvocationVariable(ctx context.Context, attempts FunctionVari
 	sum := sha256.Sum256(binding)
 	digest := "sha256:" + hex.EncodeToString(sum[:])
 	identity := nomad.FunctionInvocationVariableIdentity{Path: expected.VariablePath, OwnerMarker: expected.OwnerMarker}
+	if err := nomad.ValidateFunctionInvocationVariablePayload(identity, privateContent); err != nil {
+		return FunctionVariableDecision{}, err
+	}
 	recorded, err := attempts.RecordFunctionInvocationEffectStage(ctx, claim, store.FunctionInvocationVariableAttempt, expected.VariablePath, digest)
 	if err != nil {
 		return FunctionVariableDecision{}, err

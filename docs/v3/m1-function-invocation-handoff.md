@@ -159,7 +159,9 @@ from the job-level database delivery variable. The function variable adapter
 has HTTP-level tests for exact reads,
 create-only Nomad CAS, private-byte round trips, and redacted errors. Its
 writer now uses padded base64 for Nomad's strict template decoder; the reader
-also accepts older unpadded values for recovery. PostgreSQL and etcd
+also accepts older unpadded values for recovery. The worker rejects an
+oversized private variable before recording a durable effect attempt.
+PostgreSQL and etcd
 effect-attempt stores record immutable public targets under live claims and
 authorize only the first caller to cross each remote call boundary. Real
 backend races, stale claims, and successor claims passed. Narrow variable and

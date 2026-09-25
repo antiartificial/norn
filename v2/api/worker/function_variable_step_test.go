@@ -185,3 +185,12 @@ func TestEnsureFunctionInvocationVariableConcurrentCallersCreateOnce(t *testing.
 		t.Fatalf("remote creates=%d, want one", remote.creates)
 	}
 }
+
+func TestEnsureFunctionInvocationVariableRejectsOversizeBeforeDurableAttempt(t *testing.T) {
+	identity := functionIdentity(t)
+	attempts, remote := &functionVariableAttemptsFake{}, &functionVariableRemoteFake{}
+	_, err := EnsureFunctionInvocationVariable(context.Background(), attempts, remote, functionVariableStepClaim(t, identity), "global", identity, []byte(strings.Repeat("x", 64<<10)))
+	if !errors.Is(err, nomad.ErrFunctionVariableTooLarge) || attempts.recorded || remote.creates != 0 {
+		t.Fatalf("oversized content crossed effect boundary: err=%v recorded=%t creates=%d", err, attempts.recorded, remote.creates)
+	}
+}
