@@ -193,12 +193,25 @@ func TestPlatformUpgradeLegacyBaselineFencesExactLegacyBeforeMigrationAndPromote
 	}
 	fenceState := filepath.Join(fixture.root, "legacy-fence-state.json")
 	fenced := filepath.Join(fixture.root, "legacy-fenced")
+	legacyProcess := exec.Command("sleep", "300")
+	if err := legacyProcess.Start(); err != nil {
+		t.Fatal(err)
+	}
+	legacyExited := make(chan struct{})
+	go func() {
+		_ = legacyProcess.Wait()
+		close(legacyExited)
+	}()
+	t.Cleanup(func() {
+		_ = legacyProcess.Process.Kill()
+		<-legacyExited
+	})
 	writeTestScript(t, filepath.Join(fixture.shimDir, "launchctl"), `#!/usr/bin/env bash
 set -euo pipefail
 case "${1:-}" in
   setenv|unsetenv) exit 0 ;;
-  print) printf 'service = {\n\tpid = 4242\n}\n'; exit 0 ;;
-  kill) : > "$FAKE_FENCED"; exit 0 ;;
+  print) printf 'service = {\n\tpid = %s\n}\n' "$FAKE_LEGACY_PID"; exit 0 ;;
+  kill) : > "$FAKE_FENCED"; /bin/kill -TERM "$FAKE_LEGACY_PID"; exit 0 ;;
   kickstart)
     version="$($NORN_BIN_DIR/norn-api --fake-version)"
     printf '%s 2\n' "$version" > "$FAKE_ACTIVE_STATE"
@@ -209,13 +222,14 @@ exit 2
 	writeTestScript(t, filepath.Join(fixture.shimDir, "lsof"), `#!/usr/bin/env bash
 set -euo pipefail
 if [[ -f "${FAKE_FENCED:-}" ]]; then exit 0; fi
-printf '4242\n'
+printf '%s\n' "$FAKE_LEGACY_PID"
 `)
 	cmd := fixture.command(t)
 	cmd.Args = []string{platformUpgradePath(t), "legacy-baseline", "HEAD", "--legacy-release", legacySHA, "--backup-proof", proofPath, "--backup-artifact", artifactPath}
 	cmd.Env = append(cmd.Env,
 		"NORN_LEGACY_FENCE_STATE_PATH="+fenceState,
 		"FAKE_FENCED="+fenced,
+		fmt.Sprintf("FAKE_LEGACY_PID=%d", legacyProcess.Process.Pid),
 	)
 	out, err := cmd.CombinedOutput()
 	if err != nil {
