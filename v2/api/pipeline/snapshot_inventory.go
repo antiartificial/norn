@@ -247,6 +247,9 @@ func (p *Pipeline) exportTargetSnapshot(ctx context.Context, spec *model.InfraSp
 
 func publishClaimedSnapshot(ctx context.Context, createOnly snapshotCreateOnlyObjectStore, bucket, key, private, copyPath, manifestPath string, encoded []byte, digest string, size int64) error {
 	if err := createOnly.PutObjectIfAbsent(ctx, bucket, key, copyPath); err != nil {
+		if errors.Is(err, errPredeploySnapshotClaimLost) {
+			return err
+		}
 		// A lost response can still mean the create committed. Verification below
 		// decides from the remote bytes, never from the transport error alone.
 		_ = err
@@ -259,6 +262,9 @@ func publishClaimedSnapshot(ctx context.Context, createOnly snapshotCreateOnlyOb
 		return fmt.Errorf("remote snapshot differs from pinned source: %w", err)
 	}
 	if err := createOnly.PutObjectIfAbsent(ctx, bucket, key+snapshotManifestSuffix, manifestPath); err != nil {
+		if errors.Is(err, errPredeploySnapshotClaimLost) {
+			return err
+		}
 		_ = err
 	}
 	remoteManifest := filepath.Join(private, "remote-manifest")

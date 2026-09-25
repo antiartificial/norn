@@ -2,12 +2,34 @@ package pipeline
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"path/filepath"
 
 	"norn/v2/api/model"
 	"norn/v2/api/saga"
 )
+
+var errPredeploySnapshotClaimLost = errors.New("predeploy snapshot claim lost")
+
+type claimGuardedSnapshotObjects struct {
+	snapshotCreateOnlyObjectStore
+	check func(context.Context) error
+}
+
+func (s claimGuardedSnapshotObjects) PutObjectIfAbsent(ctx context.Context, bucket, key, path string) error {
+	if err := s.check(ctx); err != nil {
+		return fmt.Errorf("%w: %w", errPredeploySnapshotClaimLost, err)
+	}
+	return s.snapshotCreateOnlyObjectStore.PutObjectIfAbsent(ctx, bucket, key, path)
+}
+
+func (s claimGuardedSnapshotObjects) PutObject(ctx context.Context, bucket, key, path string) error {
+	if err := s.check(ctx); err != nil {
+		return fmt.Errorf("%w: %w", errPredeploySnapshotClaimLost, err)
+	}
+	return s.snapshotCreateOnlyObjectStore.PutObject(ctx, bucket, key, path)
+}
 
 func (p *Pipeline) snapshot(ctx context.Context, st *state, sg *saga.Saga) error {
 	if !st.spec.DeclaresDatabase() {
@@ -122,6 +144,9 @@ func (p *Pipeline) snapshotTarget(ctx context.Context, st *state, sg *saga.Saga,
 		if err := p.DB.CheckOperationClaim(ctx, st.claim); err != nil {
 			return fmt.Errorf("predeploy snapshot export claim is no longer current: %w", err)
 		}
+		objects = claimGuardedSnapshotObjects{snapshotCreateOnlyObjectStore: objects, check: func(ctx context.Context) error {
+			return p.DB.CheckOperationClaim(ctx, st.claim)
+		}}
 		exportBucket := st.spec.Snapshots.ExportBucket
 		var key string
 		if target != nil {

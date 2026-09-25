@@ -3,6 +3,7 @@ package pipeline
 import (
 	"context"
 	"errors"
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
@@ -35,16 +36,19 @@ func (s reviewSnapshotObjects) PutObjectIfAbsent(ctx context.Context, bucket, ke
 
 type expiringSnapshotObjects struct {
 	reviewSnapshotObjects
-	afterFirst func(context.Context) error
+	afterWrite  func(context.Context) error
+	expireAfter int
+	writes      int
 }
 
 func (s *expiringSnapshotObjects) PutObjectIfAbsent(ctx context.Context, bucket, key, path string) error {
 	if err := s.reviewSnapshotObjects.PutObjectIfAbsent(ctx, bucket, key, path); err != nil {
 		return err
 	}
-	if s.afterFirst != nil {
-		callback := s.afterFirst
-		s.afterFirst = nil
+	s.writes++
+	if s.afterWrite != nil && s.writes == s.expireAfter {
+		callback := s.afterWrite
+		s.afterWrite = nil
 		return callback(ctx)
 	}
 	return nil
@@ -251,36 +255,40 @@ func TestPredeploySnapshotAutoExportUsesClaimedPublication(t *testing.T) {
 }
 
 func TestPredeploySnapshotDoesNotAdvanceAfterClaimLostDuringExport(t *testing.T) {
-	f := newNamedFixture(t)
-	f.spec.Snapshots = &model.SnapshotPolicy{ExportBucket: "review"}
-	op, err := f.queue(t, "app.snapshot", map[string]interface{}{"database": "primary"})
-	if err != nil {
-		t.Fatal(err)
-	}
-	ctx := context.Background()
-	claimed, claim, err := f.db.ClaimNextOperation(ctx, "predeploy-expiry-worker", time.Minute, []string{"app.snapshot"})
-	if err != nil || claimed == nil || claimed.ID != op.ID {
-		t.Fatalf("claim = %+v, %v", claimed, err)
-	}
-	set, err := f.p.openDatabaseTargets(ctx, claimed.Payload, f.spec)
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer set.Close()
-	objects := &expiringSnapshotObjects{reviewSnapshotObjects: reviewSnapshotObjects{}, afterFirst: func(ctx context.Context) error {
-		_, err := f.db.Pool.Exec(ctx, `UPDATE operations SET locked_until = clock_timestamp() - interval '1 second' WHERE id = $1`, op.ID)
-		return err
-	}}
-	f.p.SnapshotObjects = objects
-	st := &state{spec: f.spec, claim: claim, commitSHA: "abc1234", operationStartedAt: op.StartedAt}
-	sg := saga.NewWithID(f.p.SagaStore, op.SagaID, f.app, "pipeline", "deploy")
-	target := set.named["primary"]
-	err = f.p.snapshotTarget(ctx, st, sg, target.resolved.Target.Database, target, "abc1234")
-	if err == nil || !strings.Contains(err.Error(), "export claim is no longer current") {
-		t.Fatalf("stale deploy advanced after remote export: %v", err)
-	}
-	if len(objects.reviewSnapshotObjects) != 2 {
-		t.Fatalf("expected verified remote dump and manifest before post-export claim check, got %d objects", len(objects.reviewSnapshotObjects))
+	for _, expireAfter := range []int{1, 2} {
+		t.Run(fmt.Sprintf("after-remote-write-%d", expireAfter), func(t *testing.T) {
+			f := newNamedFixture(t)
+			f.spec.Snapshots = &model.SnapshotPolicy{ExportBucket: "review"}
+			op, err := f.queue(t, "app.snapshot", map[string]interface{}{"database": "primary"})
+			if err != nil {
+				t.Fatal(err)
+			}
+			ctx := context.Background()
+			claimed, claim, err := f.db.ClaimNextOperation(ctx, "predeploy-expiry-worker", time.Minute, []string{"app.snapshot"})
+			if err != nil || claimed == nil || claimed.ID != op.ID {
+				t.Fatalf("claim = %+v, %v", claimed, err)
+			}
+			set, err := f.p.openDatabaseTargets(ctx, claimed.Payload, f.spec)
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer set.Close()
+			objects := &expiringSnapshotObjects{reviewSnapshotObjects: reviewSnapshotObjects{}, expireAfter: expireAfter, afterWrite: func(ctx context.Context) error {
+				_, err := f.db.Pool.Exec(ctx, `UPDATE operations SET locked_until = clock_timestamp() - interval '1 second' WHERE id = $1`, op.ID)
+				return err
+			}}
+			f.p.SnapshotObjects = objects
+			st := &state{spec: f.spec, claim: claim, commitSHA: "abc1234", operationStartedAt: op.StartedAt}
+			sg := saga.NewWithID(f.p.SagaStore, op.SagaID, f.app, "pipeline", "deploy")
+			target := set.named["primary"]
+			err = f.p.snapshotTarget(ctx, st, sg, target.resolved.Target.Database, target, "abc1234")
+			if err == nil || (expireAfter == 1 && !errors.Is(err, errPredeploySnapshotClaimLost)) || (expireAfter == 2 && !strings.Contains(err.Error(), "export claim is no longer current")) {
+				t.Fatalf("stale deploy advanced after remote export: %v", err)
+			}
+			if len(objects.reviewSnapshotObjects) != expireAfter {
+				t.Fatalf("remote objects after claim loss = %d, want %d", len(objects.reviewSnapshotObjects), expireAfter)
+			}
+		})
 	}
 }
 
