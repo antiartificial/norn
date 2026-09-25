@@ -78,17 +78,28 @@ func TestSyntheticMiniControlUpgradeAndReaderBoundary(t *testing.T) {
 	}
 	_, err = oldReader.Check(ctx, SchemaAccessReadOnly)
 	var incompatible *SchemaCompatibilityError
-	if !errors.As(err, &incompatible) || incompatible.Contract != "reader" || incompatible.Required != 4 {
-		t.Fatalf("old reader check = %T %v, want reader compatibility refusal", err, err)
+	if !errors.As(err, &incompatible) || incompatible.Contract != "reader" || incompatible.Required != MySQLRetainedArtifactReaderVersion {
+		t.Fatalf("old reader check = %T %v, want reader 5 compatibility refusal", err, err)
 	}
-	// Migrations 22 and 28 through 34 raise the writer floor.
+	// Migration 35 retires reader contract 4: that reader can treat a v1
+	// stage-proved local path as sufficient although retention now has an
+	// explicit publish/verify boundary.
+	preRetentionReader, err := NewSchemaMigrator(pool, migrations[:34], BinarySchemaCompatibility{ReaderVersion: 4, WriterVersion: 26}, SchemaMigratorOptions{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, err = preRetentionReader.Check(ctx, SchemaAccessReadOnly)
+	if !errors.As(err, &incompatible) || incompatible.Contract != "reader" || incompatible.Required != MySQLRetainedArtifactReaderVersion {
+		t.Fatalf("pre-retention reader check = %T %v, want reader 5 compatibility refusal", err, err)
+	}
+	// Migrations 22 and 28 through 35 raise the writer floor.
 	// A previous binary cannot resume writes against the latest schema.
-	oldWriter, err := NewSchemaMigrator(pool, migrations[:21], BinarySchemaCompatibility{ReaderVersion: 4, WriterVersion: 18}, SchemaMigratorOptions{})
+	oldWriter, err := NewSchemaMigrator(pool, migrations[:21], BinarySchemaCompatibility{ReaderVersion: MySQLRetainedArtifactReaderVersion, WriterVersion: 18}, SchemaMigratorOptions{})
 	if err != nil {
 		t.Fatal(err)
 	}
 	_, err = oldWriter.Check(ctx, SchemaAccessReadWrite)
-	if !errors.As(err, &incompatible) || incompatible.Contract != "writer" || incompatible.Required != MySQLRestoreFenceTransferWriterVersion {
+	if !errors.As(err, &incompatible) || incompatible.Contract != "writer" || incompatible.Required != MySQLRetainedArtifactWriterVersion {
 		t.Fatalf("old writer check = %T %v, want writer compatibility refusal", err, err)
 	}
 	if _, err := migrator.Check(ctx, SchemaAccessReadWrite); err != nil {

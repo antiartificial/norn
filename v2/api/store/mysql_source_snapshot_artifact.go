@@ -234,7 +234,7 @@ func (db *DB) LoadSignedMySQLSourceArtifactReceipt(ctx context.Context, acceptan
 	 artifact_path,acceptance_intent_id,dump_tool_sha256,state,catalog_revision
 	 FROM mysql_source_snapshot_intents WHERE operation_id=$1`, operationID).Scan(&canonical, &artifactJSON, &sourceJSON, &digest,
 		&algorithm, &keyID, &signature, &path, &intentID, &toolDigest, &state, &revision)
-	if err != nil || state != "stage-proved" {
+	if err != nil || (state != "stage-proved" && state != "publish-intended" && state != "retained-proved") {
 		return SignedMySQLSourceArtifactReceipt{}, ErrMySQLSourceArtifactIndeterminate
 	}
 	hash := sha256.Sum256(canonical)

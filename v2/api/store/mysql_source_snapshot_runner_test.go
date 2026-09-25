@@ -184,3 +184,27 @@ func TestMySQLSourceArtifactStageReturnsNoReceiptAfterRenewalLoss(t *testing.T) 
 		t.Fatalf("late source receipt escaped claim loss: receipt=%+v err=%v", got, err)
 	}
 }
+
+func TestMySQLSourceArtifactRetentionCancelsBeforeReceiptOnRenewalLoss(t *testing.T) {
+	leaseLost := errors.New("claim lost during artifact verification")
+	var renews atomic.Int32
+	var receiptWrites atomic.Int32
+	_, err := runClaimedMySQLSourceArtifactRetention(context.Background(), 45*time.Millisecond,
+		func(context.Context, time.Duration) error {
+			if renews.Add(1) == 1 {
+				return nil
+			}
+			return leaseLost
+		},
+		func(ctx context.Context, ready func() error) (SignedMySQLSourceArtifactRetentionReceipt, error) {
+			<-ctx.Done()
+			if err := ready(); err != nil {
+				return SignedMySQLSourceArtifactRetentionReceipt{}, err
+			}
+			receiptWrites.Add(1)
+			return SignedMySQLSourceArtifactRetentionReceipt{SHA256: "must-not-escape"}, nil
+		})
+	if !errors.Is(err, ErrMySQLSourceClaimLost) || !errors.Is(err, leaseLost) || receiptWrites.Load() != 0 {
+		t.Fatalf("retention renewal loss produced a receipt: err=%v renewals=%d writes=%d", err, renews.Load(), receiptWrites.Load())
+	}
+}

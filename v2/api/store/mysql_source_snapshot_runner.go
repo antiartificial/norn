@@ -136,3 +136,37 @@ func runClaimedMySQLSourceArtifactStage(ctx context.Context, lease time.Duration
 	}
 	return signed, nil
 }
+
+// runClaimedMySQLSourceArtifactRetention has the same ownership boundary as
+// staging, but covers publication and the mandatory full-object Verify pass.
+// A claim loss returns no receipt and leaves publish-intended for inspection.
+func runClaimedMySQLSourceArtifactRetention(ctx context.Context, lease time.Duration, renew func(context.Context, time.Duration) error, retain func(context.Context, func() error) (SignedMySQLSourceArtifactRetentionReceipt, error)) (signed SignedMySQLSourceArtifactRetentionReceipt, runErr error) {
+	if retain == nil {
+		return SignedMySQLSourceArtifactRetentionReceipt{}, ErrMySQLSourceSnapshotFence
+	}
+	supervisor, err := newMySQLRestoreClaimSupervisor(ctx, lease, renew)
+	if err != nil {
+		return SignedMySQLSourceArtifactRetentionReceipt{}, err
+	}
+	if err := supervisor.Start(); err != nil {
+		return SignedMySQLSourceArtifactRetentionReceipt{}, errors.Join(ErrMySQLSourceClaimLost, err)
+	}
+	defer func() {
+		if err := supervisor.Stop(); err != nil {
+			signed = SignedMySQLSourceArtifactRetentionReceipt{}
+			runErr = errors.Join(runErr, ErrMySQLSourceClaimLost, err)
+		}
+	}()
+	runCtx := supervisor.Context()
+	if err := sourceClaimSupervisorReady(supervisor, runCtx); err != nil {
+		return SignedMySQLSourceArtifactRetentionReceipt{}, err
+	}
+	signed, err = retain(runCtx, func() error { return sourceClaimSupervisorReady(supervisor, runCtx) })
+	if err != nil {
+		return SignedMySQLSourceArtifactRetentionReceipt{}, err
+	}
+	if err := sourceClaimSupervisorReady(supervisor, runCtx); err != nil {
+		return SignedMySQLSourceArtifactRetentionReceipt{}, err
+	}
+	return signed, nil
+}

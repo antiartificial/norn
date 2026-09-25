@@ -6,6 +6,7 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"errors"
+	"io"
 	"os"
 	"path/filepath"
 	"strings"
@@ -14,6 +15,7 @@ import (
 
 	"github.com/google/uuid"
 
+	"norn/v2/api/artifactstore"
 	"norn/v2/api/database"
 	"norn/v2/api/nomad"
 )
@@ -40,6 +42,47 @@ type sourceStagerFunc func(context.Context, database.ResolvedBinding, database.T
 
 func (f sourceStagerFunc) Stage(ctx context.Context, binding database.ResolvedBinding, target database.TargetIdentity, secrets database.SecretSource, tool, digest, directory string) (string, database.MySQLSQLArtifact, error) {
 	return f(ctx, binding, target, secrets, tool, digest, directory)
+}
+
+type sourceRetentionStore struct {
+	objects        map[string]artifactstore.Descriptor
+	publishErr     error
+	persistOnError bool
+	publishes      int
+	verifies       int
+}
+
+func (s *sourceRetentionStore) Publish(_ context.Context, expected artifactstore.Descriptor, source io.Reader) (artifactstore.Descriptor, error) {
+	s.publishes++
+	if _, err := io.Copy(io.Discard, source); err != nil {
+		return artifactstore.Descriptor{}, err
+	}
+	if s.objects == nil {
+		s.objects = map[string]artifactstore.Descriptor{}
+	}
+	if s.publishErr == nil || s.persistOnError {
+		s.objects[expected.Key] = expected
+	}
+	if s.publishErr != nil {
+		return artifactstore.Descriptor{}, s.publishErr
+	}
+	return expected, nil
+}
+
+func (s *sourceRetentionStore) Open(context.Context, artifactstore.Descriptor) (io.ReadCloser, error) {
+	return nil, artifactstore.ErrArtifactNotFound
+}
+
+func (s *sourceRetentionStore) Materialize(context.Context, artifactstore.Descriptor, io.Writer) error {
+	return artifactstore.ErrArtifactNotFound
+}
+
+func (s *sourceRetentionStore) Verify(_ context.Context, expected artifactstore.Descriptor) error {
+	s.verifies++
+	if got, ok := s.objects[expected.Key]; !ok || got != expected {
+		return artifactstore.ErrArtifactNotFound
+	}
+	return nil
 }
 
 func TestMySQLSourceSnapshotPayloadPreservesLargeIntegers(t *testing.T) {
@@ -286,6 +329,32 @@ func TestMySQLSourceSnapshotIntentReservesSignedPhysicalSource(t *testing.T) {
 		t.Fatalf("changed retained artifact bytes qualified restore: %v", err)
 	}
 	_ = tx.Rollback(ctx)
+	if err := os.WriteFile(signed.Receipt.ArtifactPath, bytes, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	// A lost upload response is ambiguous. The retention path verifies the
+	// exact content-addressed object before it signs retained-proved, and it
+	// never asks the stager to run the dump again.
+	objects := &sourceRetentionStore{publishErr: errors.New("upload response lost")}
+	if _, err := db.RetainClaimedMySQLSourceArtifact(ctx, acceptedStore, claim, objects); !errors.Is(err, ErrMySQLSourceArtifactRetentionIndeterminate) || objects.publishes != 1 || stageCalls != 1 {
+		t.Fatalf("missing ambiguous upload proof: err=%v publishes=%d stageCalls=%d", err, objects.publishes, stageCalls)
+	}
+	if err := db.Pool.QueryRow(ctx, `SELECT state FROM mysql_source_snapshot_intents WHERE operation_id=$1`, claim.OperationID()).Scan(&state); err != nil || state != "publish-intended" {
+		t.Fatalf("ambiguous upload did not remain publish-intended: state=%q err=%v", state, err)
+	}
+	descriptor := artifactstore.Descriptor{Key: artifactstore.KeyForSHA256(artifact.SHA256), SHA256: artifact.SHA256, Size: artifact.Bytes}
+	objects.objects = map[string]artifactstore.Descriptor{descriptor.Key: descriptor}
+	retained, err := db.RetainClaimedMySQLSourceArtifact(ctx, acceptedStore, claim, objects)
+	if err != nil || retained.Receipt.StagingReceiptSHA256 != signed.SHA256 || retained.Receipt.Artifact.Key != descriptor.Key || objects.publishes != 1 || objects.verifies < 2 || stageCalls != 1 {
+		t.Fatalf("retention after ambiguous upload=%+v err=%v publishes=%d verifies=%d stageCalls=%d", retained, err, objects.publishes, objects.verifies, stageCalls)
+	}
+	loadedRetention, err := db.LoadSignedMySQLSourceArtifactRetentionReceipt(ctx, acceptedStore, claim.OperationID())
+	if err != nil || loadedRetention.SHA256 != retained.SHA256 || loadedRetention.Signature != retained.Signature {
+		t.Fatalf("persisted v2 retention receipt=%+v err=%v", loadedRetention, err)
+	}
+	if err := db.Pool.QueryRow(ctx, `SELECT state FROM mysql_source_snapshot_intents WHERE operation_id=$1`, claim.OperationID()).Scan(&state); err != nil || state != "retained-proved" {
+		t.Fatalf("retention proof state=%q err=%v", state, err)
+	}
 	if _, err := db.StageClaimedMySQLSourceArtifact(ctx, acceptedStore, claim, request, sourceSecretSource{}, "/usr/bin/true", stageDirectory, stager); err == nil || stageCalls != 1 {
 		t.Fatalf("replay repeated dump: err=%v calls=%d", err, stageCalls)
 	}
