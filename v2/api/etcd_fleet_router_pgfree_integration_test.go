@@ -23,6 +23,7 @@ import (
 
 	"norn/v2/api/etcdstore"
 	"norn/v2/api/fleet"
+	"norn/v2/api/githubapp"
 	"norn/v2/api/handler"
 	"norn/v2/api/store"
 )
@@ -131,13 +132,24 @@ func testEtcdFleetRouterPGFreeGitHubConfiguredProcess(t *testing.T, endpoints, d
 	if err != nil {
 		t.Fatal(err)
 	}
-	rawNonce := strings.Repeat("f", 64)
-	nonceDigest := sha256.Sum256([]byte(rawNonce))
-	if err := operations.BindFleetRunnerDispatch(context.Background(), etcdstore.FleetRunnerDispatchBinding{PlanID: plan.ID, PlanSHA256: strings.Repeat("b", 64), ApprovedHeadSHA: ci.SHA, DispatchNonceSHA256: fmt.Sprintf("%x", nonceDigest), RunID: 7, WorkflowURL: "https://github.com/acme/norn-fleet/actions/runs/7"}); err != nil {
+	storedPlan, err := operations.GetOperation(context.Background(), plan.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	encodedPlan, _ := json.Marshal(storedPlan.Payload)
+	var typedPlan fleet.CapacityPlan
+	if err := json.Unmarshal(encodedPlan, &typedPlan); err != nil {
+		t.Fatal(err)
+	}
+	_, prepared, err := acceptEtcdFleetGitHubDispatch(context.Background(), operations, handler.AccessPrincipal{TokenID: "test", Source: handler.AccessPrincipalSourceManagedToken, Scopes: []string{handler.ScopeAPIWrite}}, storedPlan, typedPlan, &githubapp.Dispatch{PlanRunID: 7, PlanSHA: strings.Repeat("b", 64), ApprovedHeadSHA: ci.SHA}, "staging/nyc3", false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := operations.FinishFleetGitHubDispatch(context.Background(), plan.ID, prepared.DispatchNonceSHA256, 7, "https://github.com/acme/norn-fleet/actions/runs/7"); err != nil {
 		t.Fatal(err)
 	}
 	path := base + "/api/v1/fleet/plans/" + plan.ID
-	create := processJSONRequest(t, http.MethodPost, path+"/attempts", runnerToken, "attempt", fleet.RunnerAttemptCreateRequest{SchemaVersion: fleet.RunnerAttemptSchemaVersion, RunnerAttemptID: "github-actions:acme/norn-fleet:7:1", CommitSHA: ci.SHA, PlanSHA256: strings.Repeat("b", 64), WorkflowURL: "https://github.com/acme/norn-fleet/actions/runs/7", DispatchNonce: rawNonce, SourceDispatchRunID: "7", HeartbeatTimeoutSeconds: 120})
+	create := processJSONRequest(t, http.MethodPost, path+"/attempts", runnerToken, "attempt", fleet.RunnerAttemptCreateRequest{SchemaVersion: fleet.RunnerAttemptSchemaVersion, RunnerAttemptID: "github-actions:acme/norn-fleet:7:1", CommitSHA: ci.SHA, PlanSHA256: strings.Repeat("b", 64), WorkflowURL: "https://github.com/acme/norn-fleet/actions/runs/7", DispatchNonce: prepared.DispatchNonce, SourceDispatchRunID: "7", HeartbeatTimeoutSeconds: 120})
 	if create.StatusCode != http.StatusCreated {
 		t.Fatalf("attempt=%d body=%s", create.StatusCode, create.Body)
 	}

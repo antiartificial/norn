@@ -55,53 +55,11 @@ func (s *V3OperationStore) fleetRunnerAttemptPrefix(planID string) string {
 	return s.prefix + "/v3/fleet-runner-attempts/" + planID + "/"
 }
 
-// BindFleetRunnerDispatch records the protected GitHub dispatch outcome that
-// a future runner must match. It never accepts a raw nonce. The binding is
-// immutable: retrying identical evidence is safe, while any rewrite fails.
-func (s *V3OperationStore) BindFleetRunnerDispatch(ctx context.Context, input FleetRunnerDispatchBinding) error {
-	input.PlanID = strings.TrimSpace(input.PlanID)
-	input.PlanSHA256 = strings.TrimSpace(input.PlanSHA256)
-	input.ApprovedHeadSHA = strings.TrimSpace(input.ApprovedHeadSHA)
-	input.DispatchNonceSHA256 = strings.TrimSpace(input.DispatchNonceSHA256)
-	input.WorkflowURL = strings.TrimSpace(input.WorkflowURL)
-	if _, err := uuid.Parse(input.PlanID); err != nil || !fleetLowerHex(input.PlanSHA256, 64) || !fleetLowerHex(input.ApprovedHeadSHA, 40) || !fleetLowerHex(input.DispatchNonceSHA256, 64) || input.RunID <= 0 || !fleetWorkflowURL(input.WorkflowURL) {
-		return fmt.Errorf("fleet runner dispatch binding is invalid")
-	}
-	plan, planRevision, err := s.load(ctx, input.PlanID)
-	if err != nil {
-		return fmt.Errorf("load fleet plan: %w", err)
-	}
-	if plan.Operation.Kind != "fleet.capacity-plan" || plan.Operation.Status != model.OperationSucceeded {
-		return fmt.Errorf("fleet runner dispatch requires a successful immutable fleet plan")
-	}
-	encoded, err := json.Marshal(v3FleetRunnerDispatch{FleetRunnerDispatchBinding: input, CreatedAt: time.Now().UTC().Truncate(time.Microsecond)})
-	if err != nil {
-		return err
-	}
-	state, err := json.Marshal(v3FleetRunnerPlanState{Version: 1})
-	if err != nil {
-		return err
-	}
-	dispatchKey, stateKey := s.fleetRunnerDispatchKey(input.PlanID), s.fleetRunnerPlanStateKey(input.PlanID)
-	txn, err := s.kv.Txn(ctx).If(
-		clientv3.Compare(clientv3.ModRevision(s.opKey(input.PlanID)), "=", planRevision),
-		clientv3.Compare(clientv3.CreateRevision(dispatchKey), "=", 0),
-		clientv3.Compare(clientv3.CreateRevision(stateKey), "=", 0),
-	).Then(clientv3.OpPut(dispatchKey, string(encoded)), clientv3.OpPut(stateKey, string(state))).Commit()
-	if err != nil {
-		return err
-	}
-	if txn.Succeeded {
-		return nil
-	}
-	existing, err := s.loadFleetRunnerDispatch(ctx, input.PlanID)
-	if err == nil && existing.FleetRunnerDispatchBinding == input {
-		return nil
-	}
-	if err != nil && !errors.Is(err, ErrNotFound) {
-		return err
-	}
-	return fmt.Errorf("fleet runner dispatch binding already exists or fleet plan changed")
+// BindFleetRunnerDispatch is retained only as a fail-closed compatibility
+// boundary. A runner binding must be created with its signed dispatch receipt
+// by FinishFleetGitHubDispatch.
+func (s *V3OperationStore) BindFleetRunnerDispatch(context.Context, FleetRunnerDispatchBinding) error {
+	return fmt.Errorf("unsigned fleet runner dispatch binding is no longer supported; use FinishFleetGitHubDispatch")
 }
 
 func (s *V3OperationStore) loadFleetRunnerDispatch(ctx context.Context, planID string) (v3FleetRunnerDispatch, error) {
@@ -175,6 +133,9 @@ func (s *V3OperationStore) acceptFleetRunnerAttempt(ctx context.Context, input s
 	}
 	if dispatch.PlanSHA256 != admission.PlanSHA256 || dispatch.ApprovedHeadSHA != admission.CommitSHA || dispatch.DispatchNonceSHA256 != admission.DispatchNonceSHA256 || admission.SourceDispatchRunID != strconv.FormatInt(dispatch.RunID, 10) {
 		return store.AcceptedOperation{}, fleetAttemptError("fleet_runner_attempt_dispatch_mismatch", "runner attempt does not match protected dispatch")
+	}
+	if err := s.VerifyFleetGitHubDispatchCompletion(ctx, dispatch.FleetRunnerDispatchBinding); err != nil {
+		return store.AcceptedOperation{}, fleetAttemptError("fleet_runner_attempt_dispatch_mismatch", "runner attempt dispatch receipt is not signed and complete")
 	}
 	if admission.WorkloadIntent == "apply" && (admission.WorkloadRunID != strconv.FormatInt(dispatch.RunID, 10) || admission.WorkloadSHA != dispatch.ApprovedHeadSHA) {
 		return store.AcceptedOperation{}, fleetAttemptError("fleet_runner_attempt_identity_mismatch", "apply workload does not match protected dispatch run")

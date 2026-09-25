@@ -2,8 +2,6 @@ package etcdstore_test
 
 import (
 	"context"
-	"crypto/sha256"
-	"encoding/hex"
 	"errors"
 	"os"
 	"strings"
@@ -66,13 +64,25 @@ func fleetRunnerPlan(t *testing.T, adapter *etcdstore.V3OperationStore, action s
 
 func bindFleetRunnerDispatch(t *testing.T, adapter *etcdstore.V3OperationStore, plan model.Operation) string {
 	t.Helper()
-	raw := strings.Repeat("f", 64)
-	digest := sha256.Sum256([]byte(raw))
-	nonce := hex.EncodeToString(digest[:])
-	if err := adapter.BindFleetRunnerDispatch(context.Background(), etcdstore.FleetRunnerDispatchBinding{PlanID: plan.ID, PlanSHA256: strings.Repeat("b", 64), ApprovedHeadSHA: strings.Repeat("c", 40), DispatchNonceSHA256: nonce, RunID: 7, WorkflowURL: "https://github.com/acme/fleet/actions/runs/7"}); err != nil {
+	authority := mustFleetRunnerAuthority(t, adapter)
+	planDigest, _ := plan.Payload["digest"].(string)
+	payload := map[string]interface{}{"planId": plan.ID, "planDigest": planDigest, "sourceDigest": "", "planRunId": int64(7), "planSha256": strings.Repeat("b", 64), "approvedHeadSha": strings.Repeat("c", 40), "fleetEnvironment": "staging/nyc3", "allowDestructive": false}
+	now := time.Now().UTC().Truncate(time.Microsecond)
+	op := model.Operation{ID: uuid.NewString(), Kind: "fleet.github.apply-dispatch", Ref: plan.ID, Status: model.OperationQueued, Source: "test", Risk: "test", StartedAt: now, MaxAttempts: 1, Payload: map[string]interface{}{"fleetGitHub": payload}, Metadata: map[string]interface{}{}}
+	request := store.OperationAcceptance{Identity: store.OperationRequestIdentity{Authority: authority, Actor: store.OperationActor{Issuer: authority + "/fleet-github", Subject: plan.ID}, Kind: op.Kind, Resource: plan.ID, Key: "protected-plan-receipt/v1"}, Operation: op, Audit: store.AcceptanceAuditContext{Source: "test"}, Semantics: map[string]interface{}{"fleetGitHub": payload}}
+	var err error
+	request.Fingerprint, err = store.CanonicalOperationRequestFingerprint(request)
+	if err != nil {
 		t.Fatal(err)
 	}
-	return nonce
+	_, prepared, err := adapter.AcceptFleetGitHubDispatch(context.Background(), request, etcdstore.FleetGitHubDispatchPreparation{PlanID: plan.ID, PlanRunID: 7, PlanSHA256: strings.Repeat("b", 64), ApprovedHeadSHA: strings.Repeat("c", 40), FleetEnvironment: "staging/nyc3"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := adapter.FinishFleetGitHubDispatch(context.Background(), plan.ID, prepared.DispatchNonceSHA256, 7, "https://github.com/acme/fleet/actions/runs/7"); err != nil {
+		t.Fatal(err)
+	}
+	return prepared.DispatchNonceSHA256
 }
 
 func fleetRunnerAcceptance(t *testing.T, adapter *etcdstore.V3OperationStore, planID, nonce, key, runID, intent, predecessor string) store.OperationAcceptance {

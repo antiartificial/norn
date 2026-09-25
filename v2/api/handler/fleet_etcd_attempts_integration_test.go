@@ -72,11 +72,20 @@ func TestEtcdFleetRunnerHTTPAdmissionAndEvidenceGate(t *testing.T) {
 	if _, err := operations.Accept(context.Background(), acceptance); err != nil {
 		t.Fatal(err)
 	}
-	const rawNonce = "ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff"
-	nonceSum := sha256.Sum256([]byte(rawNonce))
 	commitSHA := strings.Repeat("c", 40)
 	planSHA := strings.Repeat("b", 64)
-	if err := operations.BindFleetRunnerDispatch(context.Background(), etcdstore.FleetRunnerDispatchBinding{PlanID: planID, PlanSHA256: planSHA, ApprovedHeadSHA: commitSHA, DispatchNonceSHA256: hex.EncodeToString(nonceSum[:]), RunID: 7, WorkflowURL: "https://github.com/acme/fleet/actions/runs/7"}); err != nil {
+	dispatchPayload := map[string]interface{}{"planId": planID, "planDigest": plan.Digest, "sourceDigest": plan.SourceDigest, "planRunId": int64(7), "planSha256": planSHA, "approvedHeadSha": commitSHA, "fleetEnvironment": "staging/nyc3", "allowDestructive": false}
+	dispatchOperation := model.Operation{ID: uuid.NewString(), Kind: "fleet.github.apply-dispatch", Ref: planID, Status: model.OperationQueued, Source: "test", Risk: "test", Payload: map[string]interface{}{"fleetGitHub": dispatchPayload}, Metadata: map[string]interface{}{}, StartedAt: now, MaxAttempts: 1}
+	dispatchAcceptance := store.OperationAcceptance{Identity: store.OperationRequestIdentity{Authority: authority, Actor: store.OperationActor{Issuer: authority + "/fleet-github", Subject: planID}, Kind: dispatchOperation.Kind, Resource: planID, Key: "protected-plan-receipt/v1"}, Operation: dispatchOperation, Audit: store.AcceptanceAuditContext{Source: "test"}, Semantics: map[string]interface{}{"fleetGitHub": dispatchPayload}}
+	dispatchAcceptance.Fingerprint, err = store.CanonicalOperationRequestFingerprint(dispatchAcceptance)
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, prepared, err := operations.AcceptFleetGitHubDispatch(context.Background(), dispatchAcceptance, etcdstore.FleetGitHubDispatchPreparation{PlanID: planID, PlanRunID: 7, PlanSHA256: planSHA, ApprovedHeadSHA: commitSHA, FleetEnvironment: "staging/nyc3"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := operations.FinishFleetGitHubDispatch(context.Background(), planID, prepared.DispatchNonceSHA256, 7, "https://github.com/acme/fleet/actions/runs/7"); err != nil {
 		t.Fatal(err)
 	}
 	cfg := &config.Config{AuditSigningKey: auditKey, ControlAuthority: authority}
@@ -97,7 +106,7 @@ func TestEtcdFleetRunnerHTTPAdmissionAndEvidenceGate(t *testing.T) {
 		return rec
 	}
 	path := "/api/v1/fleet/plans/" + planID
-	create := fleet.RunnerAttemptCreateRequest{SchemaVersion: fleet.RunnerAttemptSchemaVersion, RunnerAttemptID: canonicalRunnerAttemptID(ci), CommitSHA: commitSHA, PlanSHA256: planSHA, WorkflowURL: canonicalWorkflowRunURL(ci.Repository, ci.RunID), DispatchNonce: rawNonce, SourceDispatchRunID: "7", HeartbeatTimeoutSeconds: 120}
+	create := fleet.RunnerAttemptCreateRequest{SchemaVersion: fleet.RunnerAttemptSchemaVersion, RunnerAttemptID: canonicalRunnerAttemptID(ci), CommitSHA: commitSHA, PlanSHA256: planSHA, WorkflowURL: canonicalWorkflowRunURL(ci.Repository, ci.RunID), DispatchNonce: prepared.DispatchNonce, SourceDispatchRunID: "7", HeartbeatTimeoutSeconds: 120}
 	created := call(path+"/attempts", "create-one", create)
 	if created.Code != http.StatusCreated {
 		t.Fatalf("create: %d %s", created.Code, created.Body.String())
