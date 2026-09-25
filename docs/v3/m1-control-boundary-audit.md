@@ -173,3 +173,10 @@ final claim check refuses to advance. Both cases leave remote objects for
 inspection. This narrows stale publication but does not erase remote objects
 or replace a durable export
 effect reservation and crash recovery.
+The pure create-only publisher now has a real subprocess crash test: the child
+exits immediately after writing the dump, leaving no completion manifest; a
+new call rejects changed remote bytes without publishing a manifest, then
+verifies the pinned dump and publishes the matching manifest. This proves
+the remote pair's replay behavior only. It does not add a durable reservation
+to the deployment operation, test claim recovery in two API processes, or
+qualify hosted object storage.
