@@ -26,7 +26,11 @@ type MySQLRestoreTool struct {
 }
 
 // RestoreMySQLSQLArtifact runs a signed restore's already-open artifact using
-// a private copy of a digest-verified mysql client. The caller must have
+// the configured executable path after checksum-verifying its opened inode.
+// The original path is required because macOS clients may load libraries
+// relative to it. That leaves a path-resolution race that cannot be removed
+// portably with a copied binary or fexecve; a post-run inode mismatch fails
+// closed and leaves the durable intent for inspection. The caller must have
 // committed its durable external-effect boundary first. This primitive does
 // not create that authority and must remain behind a private runner.
 func RestoreMySQLSQLArtifact(ctx context.Context, resolved ResolvedBinding, secrets SecretSource, artifactPath string, artifact MySQLSQLArtifact, tool MySQLRestoreTool) error {
@@ -59,7 +63,7 @@ func RestoreMySQLSQLArtifact(ctx context.Context, resolved ResolvedBinding, secr
 		return fmt.Errorf("MySQL restore credential is not supported by private option files")
 	}
 	options := filepath.Join(session.directory, "restore.cnf")
-	escaped := strings.NewReplacer(`\\`, `\\\\`, `"`, `\\"`).Replace(session.password)
+	escaped := strings.NewReplacer(`\`, `\\`, `"`, `\"`).Replace(session.password)
 	if err := writePrivate(options, []byte("[client]\nuser="+resolved.Target.Role+"\npassword=\""+escaped+"\"\n")); err != nil {
 		return fmt.Errorf("MySQL restore private client material failed")
 	}
@@ -80,8 +84,9 @@ func RestoreMySQLSQLArtifact(ctx context.Context, resolved ResolvedBinding, secr
 	}
 	// macOS clients can load private libraries relative to the installed binary,
 	// so fexecve or a copied binary is not portable. Keep the checked descriptor
-	// open and prove the path still names that inode after execution; if it does
-	// not, the caller records needs-inspection rather than trusting the result.
+	// open and prove the path still names that inode after execution. This does
+	// not prove the exec pathname resolved to that inode; an altered path is
+	// treated as an uncertain restore and the caller records needs-inspection.
 	current, err := os.Stat(tool.Path)
 	if err != nil || !os.SameFile(verifiedTool, current) {
 		return fmt.Errorf("MySQL restore tool changed during execution")

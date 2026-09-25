@@ -88,7 +88,7 @@ func TestMySQLRestoreIntentAgainstDisposableEngines(t *testing.T) {
 	suffix := strings.ReplaceAll(uuid.NewString()[:8], "-", "")
 	sourceDB, targetDB := "intent_src_"+suffix, "intent_dst_"+suffix
 	sourceRole, targetRole := "isrc_"+suffix, "idst_"+suffix
-	sourcePassword, targetPassword := "source"+suffix, "target"+suffix
+	sourcePassword, targetPassword := "source"+suffix, `target\quote"`+suffix
 	defer func() {
 		for _, name := range []string{sourceDB, targetDB} {
 			_, _ = admin.ExecContext(context.Background(), "DROP DATABASE IF EXISTS `"+name+"`")
@@ -100,7 +100,7 @@ func TestMySQLRestoreIntentAgainstDisposableEngines(t *testing.T) {
 	for _, item := range []struct{ name, role, password string }{{sourceDB, sourceRole, sourcePassword}, {targetDB, targetRole, targetPassword}} {
 		for _, statement := range []string{
 			"CREATE DATABASE `" + item.name + "`",
-			"CREATE USER '" + item.role + "'@'%' IDENTIFIED BY '" + item.password + "'",
+			"CREATE USER '" + item.role + "'@'%' IDENTIFIED BY " + mysqlRestoreSQLLiteral(item.password),
 			"GRANT ALL PRIVILEGES ON `" + item.name + "`.* TO '" + item.role + "'@'%'",
 		} {
 			if _, err := admin.ExecContext(ctx, statement); err != nil {
@@ -268,4 +268,8 @@ func TestMySQLRestoreIntentAgainstDisposableEngines(t *testing.T) {
 	if err := admin.QueryRowContext(ctx, "SELECT value FROM `"+targetDB+"`.marker").Scan(&marker); err != nil || marker != "signed-intent-source" {
 		t.Fatalf("restored marker = %q, %v", marker, err)
 	}
+}
+
+func mysqlRestoreSQLLiteral(value string) string {
+	return "'" + strings.NewReplacer(`\`, `\\`, `'`, `''`).Replace(value) + "'"
 }
