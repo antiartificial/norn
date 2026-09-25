@@ -119,14 +119,19 @@ into #76 and closed. These are review containers, not milestone signoff.
 - M1: the etcd canary effect adapter now atomically reserves under a live
   operation claim and per-app gate, records launch and completion, and supports
   repeat-safe resolution and recovery. Its tests ran against disposable etcd
-  v3.5.17. Replay expiry holds accepted identities until their effects are
+  v3.5.17. The handler's managed-token actor lookup now uses the AuthStore
+  lineage contract on both PostgreSQL and etcd instead of querying PostgreSQL
+  from the handler. Replay expiry holds accepted identities until their effects are
   terminal, and an opt-in canary-only worker reconciled a lost Nomad response
   with one external PUT against fake Nomad. The normal etcd router now mounts
   public canary admission only with both the worker and HTTP preview flags.
   A disposable-etcd HTTP-to-worker test covered signed admission, token-rotation
   replay, conflicting intent, and one Nomad promotion against fake Nomad.
-  Live Nomad, process-crash, and three-member etcd fault qualification remain
-  open before enabling that preview for release; see
+  A separate local Nomad 2.0.7 and etcd 3.5.17 test promoted the exact real
+  healthy canary deployment. An earlier 0/1-healthy attempt exposed a gap:
+  Nomad rejected promotion and the accepted operation stayed pending. Admission
+  for unready canaries, process-crash, and three-member etcd fault qualification
+  remain open before enabling that preview for release; see
   [the preview gate](etcd-canary-preview.md).
 - M2: local MySQL runtime and verified-TLS health are implemented. Generated
   service, periodic, and function jobs delivered exact component bytes inside
