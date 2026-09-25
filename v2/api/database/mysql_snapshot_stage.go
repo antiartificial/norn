@@ -42,7 +42,37 @@ func (w *mysqlBoundedDumpWriter) Write(data []byte) (int, error) {
 // publication. The caller must fence the catalog revision and quiesce DDL and
 // writes before invocation; no public snapshot capability is enabled here.
 func StageMySQLSQLSnapshot(ctx context.Context, resolved ResolvedBinding, expected TargetIdentity, secrets SecretSource, dumpToolPath, dumpToolSHA256, privateDirectory string) (string, MySQLSQLArtifact, error) {
-	if !validMySQLArtifactIdentity(expected) || expected != resolved.Target || resolved.Purpose != PurposeApplication {
+	return stageMySQLSQLSnapshot(ctx, resolved, resolved, expected, "", secrets, dumpToolPath, dumpToolSHA256, privateDirectory)
+}
+
+// StageMySQLSQLSnapshotWithMaintenanceCredential stages a source artifact
+// through the catalog-derived snapshot account. The source TargetIdentity is
+// retained in the artifact; the snapshot account is connection material only.
+// A future signed source-snapshot runner must use this path after it has
+// re-resolved and bound the source catalog generation. This function creates
+// no snapshot operation or publication authority.
+func StageMySQLSQLSnapshotWithMaintenanceCredential(ctx context.Context, source ResolvedBinding, expected TargetIdentity, secrets SecretSource, dumpToolPath, dumpToolSHA256, privateDirectory string) (string, MySQLSQLArtifact, error) {
+	snapshot, err := MySQLSnapshotBinding(source)
+	if err != nil {
+		return "", MySQLSQLArtifact{}, err
+	}
+	return StageMySQLSQLSnapshotWithResolvedCredential(ctx, source, snapshot, expected, secrets, dumpToolPath, dumpToolSHA256, privateDirectory)
+}
+
+// StageMySQLSQLSnapshotWithResolvedCredential accepts only the snapshot
+// identity derived from source.MySQLMaintenance. Keeping this explicit gives a
+// signed future runner a narrow credential handoff without allowing callers to
+// replace the source identity recorded in the artifact.
+func StageMySQLSQLSnapshotWithResolvedCredential(ctx context.Context, source, snapshot ResolvedBinding, expected TargetIdentity, secrets SecretSource, dumpToolPath, dumpToolSHA256, privateDirectory string) (string, MySQLSQLArtifact, error) {
+	maintenance := source.MySQLMaintenance
+	if maintenance == nil || snapshot.Target.Role != maintenance.SnapshotRole || snapshot.CredentialRef != maintenance.SnapshotCredentialRef || snapshot.Endpoint != source.Endpoint || snapshot.TLS != source.TLS || snapshot.Purpose != source.Purpose {
+		return "", MySQLSQLArtifact{}, fmt.Errorf("MySQL snapshot credential is not the catalog-derived maintenance identity")
+	}
+	return stageMySQLSQLSnapshot(ctx, source, snapshot, expected, maintenance.SnapshotAccountHost, secrets, dumpToolPath, dumpToolSHA256, privateDirectory)
+}
+
+func stageMySQLSQLSnapshot(ctx context.Context, source, credential ResolvedBinding, expected TargetIdentity, expectedAccountHost string, secrets SecretSource, dumpToolPath, dumpToolSHA256, privateDirectory string) (string, MySQLSQLArtifact, error) {
+	if !validMySQLArtifactIdentity(expected) || expected != source.Target || source.Purpose != PurposeApplication || credential.Target.Engine != EngineMySQL || credential.Target.ServiceID != expected.ServiceID || credential.Target.ServiceGeneration != expected.ServiceGeneration || credential.Target.BindingID != expected.BindingID || credential.Target.BindingGeneration != expected.BindingGeneration || credential.Target.Database != expected.Database {
 		return "", MySQLSQLArtifact{}, fmt.Errorf("MySQL snapshot requires an exact application target")
 	}
 	if err := verifyMySQLSnapshotTool(dumpToolPath, dumpToolSHA256); err != nil {
@@ -51,7 +81,7 @@ func StageMySQLSQLSnapshot(ctx context.Context, resolved ResolvedBinding, expect
 	if err := verifyMySQLPrivateDirectory(privateDirectory); err != nil {
 		return "", MySQLSQLArtifact{}, err
 	}
-	session, err := OpenSession(ctx, resolved, secrets)
+	session, err := OpenSession(ctx, credential, secrets)
 	if err != nil {
 		return "", MySQLSQLArtifact{}, err
 	}
@@ -64,6 +94,11 @@ func StageMySQLSQLSnapshot(ctx context.Context, resolved ResolvedBinding, expect
 	}
 	db := sql.OpenDB(session.mysqlConnector)
 	defer db.Close()
+	if expectedAccountHost != "" {
+		if err := verifyMySQLSnapshotAccount(ctx, db, credential.Target.Role, expectedAccountHost); err != nil {
+			return "", MySQLSQLArtifact{}, err
+		}
+	}
 	var nontransactional int64
 	if err := db.QueryRowContext(ctx, `SELECT COUNT(*) FROM information_schema.TABLES WHERE TABLE_SCHEMA = DATABASE() AND TABLE_TYPE = 'BASE TABLE' AND ENGINE <> 'InnoDB'`).Scan(&nontransactional); err != nil {
 		return "", MySQLSQLArtifact{}, fmt.Errorf("MySQL snapshot engine inspection failed")
@@ -71,7 +106,7 @@ func StageMySQLSQLSnapshot(ctx context.Context, resolved ResolvedBinding, expect
 	if nontransactional != 0 {
 		return "", MySQLSQLArtifact{}, fmt.Errorf("MySQL snapshot contains nontransactional tables")
 	}
-	before, err := inspectMySQLRestoreExpectationDB(ctx, db, resolved.Target.Database)
+	before, err := inspectMySQLRestoreExpectationDB(ctx, db, source.Target.Database)
 	if err != nil {
 		return "", MySQLSQLArtifact{}, err
 	}
@@ -80,10 +115,10 @@ func StageMySQLSQLSnapshot(ctx context.Context, resolved ResolvedBinding, expect
 	}
 	options := filepath.Join(session.directory, "mysql.cnf")
 	escaped := strings.NewReplacer(`\`, `\\`, `"`, `\"`).Replace(session.password)
-	if err := writePrivate(options, []byte("[client]\nuser="+expected.Role+"\npassword=\""+escaped+"\"\n")); err != nil {
+	if err := writePrivate(options, []byte("[client]\nuser="+credential.Target.Role+"\npassword=\""+escaped+"\"\n")); err != nil {
 		return "", MySQLSQLArtifact{}, fmt.Errorf("MySQL snapshot private client material failed")
 	}
-	tlsArgs, err := mysqlSnapshotTLSArgs(session, resolved.TLS)
+	tlsArgs, err := mysqlSnapshotTLSArgs(session, credential.TLS)
 	if err != nil {
 		return "", MySQLSQLArtifact{}, err
 	}
@@ -99,8 +134,8 @@ func StageMySQLSQLSnapshot(ctx context.Context, resolved ResolvedBinding, expect
 		}
 	}()
 	writer := &mysqlBoundedDumpWriter{max: MaxMySQLStagedArtifactBytes, file: file, hash: sha256.New()}
-	args := []string{"--defaults-file=" + options, "--protocol=tcp", "--host=" + resolved.Endpoint.Host,
-		"--port=" + strconv.Itoa(resolved.Endpoint.Port)}
+	args := []string{"--defaults-file=" + options, "--protocol=tcp", "--host=" + source.Endpoint.Host,
+		"--port=" + strconv.Itoa(source.Endpoint.Port)}
 	args = append(args, tlsArgs...)
 	args = append(args, "--single-transaction", "--quick", "--no-tablespaces",
 		"--set-gtid-purged=OFF", "--hex-blob", "--routines", "--events", "--triggers", expected.Database)
@@ -112,7 +147,7 @@ func StageMySQLSQLSnapshot(ctx context.Context, resolved ResolvedBinding, expect
 	if err := command.Run(); err != nil {
 		return "", MySQLSQLArtifact{}, fmt.Errorf("MySQL snapshot tool failed: %s", session.RedactCaptured(stderr))
 	}
-	after, err := inspectMySQLRestoreExpectationDB(ctx, db, resolved.Target.Database)
+	after, err := inspectMySQLRestoreExpectationDB(ctx, db, source.Target.Database)
 	if err != nil {
 		return "", MySQLSQLArtifact{}, err
 	}
@@ -135,6 +170,14 @@ func StageMySQLSQLSnapshot(ctx context.Context, resolved ResolvedBinding, expect
 		return "", MySQLSQLArtifact{}, err
 	}
 	return path, artifact, nil
+}
+
+func verifyMySQLSnapshotAccount(ctx context.Context, db *sql.DB, role, host string) error {
+	var current string
+	if err := db.QueryRowContext(ctx, "SELECT CURRENT_USER()").Scan(&current); err != nil || current != role+"@"+host {
+		return fmt.Errorf("MySQL snapshot authenticated as an unexpected account")
+	}
+	return nil
 }
 
 // mysqlSnapshotTLSArgs binds the subprocess to the same verified transport

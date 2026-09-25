@@ -6,7 +6,8 @@ func TestMySQLMaintenanceCredentialsAreStrictAndGenerationBound(t *testing.T) {
 	base := testCatalog()
 	mysql := &base.Bindings[4]
 	mysql.MySQLMaintenance = &MySQLMaintenanceCredentials{
-		Generation: 1, RuntimeAccountHost: "%", RestoreAccountHost: "%",
+		Generation: 1, RuntimeAccountHost: "%", SnapshotAccountHost: "%", RestoreAccountHost: "%",
+		SnapshotRole: "wordpress_snapshot", SnapshotCredentialRef: "secret:apps/wp-snapshot",
 		RestoreRole: "wordpress_restore", RestoreCredentialRef: "secret:apps/wp-restore",
 		FenceRole: "wordpress_fence", FenceCredentialRef: "secret:apps/wp-fence", FenceAccountHost: "%",
 	}
@@ -27,14 +28,18 @@ func TestMySQLMaintenanceCredentialsAreStrictAndGenerationBound(t *testing.T) {
 	}
 
 	for name, mutate := range map[string]func(*MySQLMaintenanceCredentials){
-		"zero generation":      func(m *MySQLMaintenanceCredentials) { m.Generation = 0 },
-		"runtime role":         func(m *MySQLMaintenanceCredentials) { m.RestoreRole = "wp" },
-		"same roles":           func(m *MySQLMaintenanceCredentials) { m.FenceRole = m.RestoreRole },
-		"runtime credential":   func(m *MySQLMaintenanceCredentials) { m.RestoreCredentialRef = "secret:apps/wp" },
-		"same credentials":     func(m *MySQLMaintenanceCredentials) { m.FenceCredentialRef = m.RestoreCredentialRef },
-		"missing runtime host": func(m *MySQLMaintenanceCredentials) { m.RuntimeAccountHost = "" },
-		"missing restore host": func(m *MySQLMaintenanceCredentials) { m.RestoreAccountHost = "" },
-		"bad fence host":       func(m *MySQLMaintenanceCredentials) { m.FenceAccountHost = "bad\nhost" },
+		"zero generation":          func(m *MySQLMaintenanceCredentials) { m.Generation = 0 },
+		"runtime role":             func(m *MySQLMaintenanceCredentials) { m.RestoreRole = "wp" },
+		"snapshot runtime role":    func(m *MySQLMaintenanceCredentials) { m.SnapshotRole = "wp" },
+		"incomplete snapshot":      func(m *MySQLMaintenanceCredentials) { m.SnapshotCredentialRef = "" },
+		"same snapshot role":       func(m *MySQLMaintenanceCredentials) { m.SnapshotRole = m.RestoreRole },
+		"same snapshot credential": func(m *MySQLMaintenanceCredentials) { m.SnapshotCredentialRef = m.RestoreCredentialRef },
+		"same roles":               func(m *MySQLMaintenanceCredentials) { m.FenceRole = m.RestoreRole },
+		"runtime credential":       func(m *MySQLMaintenanceCredentials) { m.RestoreCredentialRef = "secret:apps/wp" },
+		"same credentials":         func(m *MySQLMaintenanceCredentials) { m.FenceCredentialRef = m.RestoreCredentialRef },
+		"missing runtime host":     func(m *MySQLMaintenanceCredentials) { m.RuntimeAccountHost = "" },
+		"missing restore host":     func(m *MySQLMaintenanceCredentials) { m.RestoreAccountHost = "" },
+		"bad fence host":           func(m *MySQLMaintenanceCredentials) { m.FenceAccountHost = "bad\nhost" },
 	} {
 		t.Run(name, func(t *testing.T) {
 			candidate := cloneCatalog(base)
@@ -47,13 +52,32 @@ func TestMySQLMaintenanceCredentialsAreStrictAndGenerationBound(t *testing.T) {
 	}
 
 	rotated := cloneCatalog(base)
-	rotated.Bindings[4].MySQLMaintenance.RestoreRole = "wordpress_restore_v2"
+	rotated.Bindings[4].MySQLMaintenance.SnapshotRole = "wordpress_snapshot_v2"
 	if err := ValidateTransition(base, rotated); err == nil {
 		t.Fatal("maintenance identity changed without a binding generation bump")
 	}
 	rotated.Bindings[4].Generation++
 	if err := ValidateTransition(base, rotated); err != nil {
 		t.Fatalf("maintenance identity change with binding generation bump rejected: %v", err)
+	}
+}
+
+func TestMySQLSnapshotUsesOnlyMaintenanceCredential(t *testing.T) {
+	resolved := ResolvedBinding{
+		Target:           TargetIdentity{Engine: EngineMySQL, BindingID: "wordpress", Role: "wp", Database: "wordpress"},
+		CredentialRef:    "secret:apps/wp",
+		MySQLMaintenance: &MySQLMaintenanceCredentials{Generation: 3, RuntimeAccountHost: "%", SnapshotRole: "wp_snapshot", SnapshotAccountHost: "%", SnapshotCredentialRef: "secret:apps/wp-snapshot", RestoreRole: "wp_restore", RestoreAccountHost: "%", RestoreCredentialRef: "secret:apps/wp-restore", FenceRole: "wp_fence", FenceCredentialRef: "secret:apps/wp-fence", FenceAccountHost: "%"},
+	}
+	snapshot, err := MySQLSnapshotBinding(resolved)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if snapshot.Target.Role != "wp_snapshot" || snapshot.CredentialRef != "secret:apps/wp-snapshot" || resolved.Target.Role != "wp" || resolved.CredentialRef != "secret:apps/wp" {
+		t.Fatalf("snapshot identity did not isolate runtime credential: %#v", snapshot)
+	}
+	resolved.MySQLMaintenance = nil
+	if _, err := MySQLSnapshotBinding(resolved); err == nil {
+		t.Fatal("snapshot without a separate maintenance credential was accepted")
 	}
 }
 

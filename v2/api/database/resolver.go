@@ -217,17 +217,23 @@ func validateMySQLMaintenance(binding DatabaseBinding, service DatabaseService, 
 	if !validMySQLAccountHost(maintenance.RuntimeAccountHost) || !validMySQLAccountHost(maintenance.RestoreAccountHost) || !validMySQLAccountHost(maintenance.FenceAccountHost) {
 		return invalid("mysqlMaintenance", label, "MySQL maintenance account hosts are invalid")
 	}
+	hasSnapshot := maintenance.SnapshotRole != "" || maintenance.SnapshotAccountHost != "" || maintenance.SnapshotCredentialRef != ""
+	if hasSnapshot && (!mysqlUserPattern.MatchString(maintenance.SnapshotRole) || !validMySQLAccountHost(maintenance.SnapshotAccountHost) || !referencePattern.MatchString(maintenance.SnapshotCredentialRef)) {
+		return invalid("mysqlMaintenance", label, "MySQL snapshot maintenance identity is incomplete or invalid")
+	}
 	if !mysqlUserPattern.MatchString(maintenance.RestoreRole) || !mysqlUserPattern.MatchString(maintenance.FenceRole) {
 		return invalid("mysqlMaintenance", label, "MySQL maintenance roles are invalid")
 	}
 	if !referencePattern.MatchString(maintenance.RestoreCredentialRef) || !referencePattern.MatchString(maintenance.FenceCredentialRef) {
 		return invalid("mysqlMaintenance", label, "MySQL maintenance credential references are invalid")
 	}
-	if maintenance.RestoreRole == binding.Role || maintenance.FenceRole == binding.Role || maintenance.RestoreRole == maintenance.FenceRole {
-		return invalid("mysqlMaintenance", label, "MySQL restore and fence roles must be distinct from the runtime role and each other")
+	if maintenance.RestoreRole == binding.Role || maintenance.FenceRole == binding.Role || maintenance.RestoreRole == maintenance.FenceRole ||
+		(hasSnapshot && (maintenance.SnapshotRole == binding.Role || maintenance.SnapshotRole == maintenance.RestoreRole || maintenance.SnapshotRole == maintenance.FenceRole)) {
+		return invalid("mysqlMaintenance", label, "MySQL snapshot, restore, and fence roles must be distinct from the runtime role and each other")
 	}
-	if maintenance.RestoreCredentialRef == binding.CredentialRef || maintenance.FenceCredentialRef == binding.CredentialRef || maintenance.RestoreCredentialRef == maintenance.FenceCredentialRef {
-		return invalid("mysqlMaintenance", label, "MySQL restore and fence credential references must be distinct from the runtime credential and each other")
+	if maintenance.RestoreCredentialRef == binding.CredentialRef || maintenance.FenceCredentialRef == binding.CredentialRef || maintenance.RestoreCredentialRef == maintenance.FenceCredentialRef ||
+		(hasSnapshot && (maintenance.SnapshotCredentialRef == binding.CredentialRef || maintenance.SnapshotCredentialRef == maintenance.RestoreCredentialRef || maintenance.SnapshotCredentialRef == maintenance.FenceCredentialRef)) {
+		return invalid("mysqlMaintenance", label, "MySQL snapshot, restore, and fence credential references must be distinct from the runtime credential and each other")
 	}
 	return nil
 }

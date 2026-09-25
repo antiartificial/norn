@@ -134,14 +134,17 @@ type DatabaseBinding struct {
 // credential values. Generation makes a maintenance-identity change as
 // explicit as a runtime target change.
 type MySQLMaintenanceCredentials struct {
-	Generation           uint64 `json:"generation"`
-	RuntimeAccountHost   string `json:"runtimeAccountHost"`
-	RestoreRole          string `json:"restoreRole"`
-	RestoreAccountHost   string `json:"restoreAccountHost"`
-	RestoreCredentialRef string `json:"restoreCredentialRef"`
-	FenceRole            string `json:"fenceRole"`
-	FenceCredentialRef   string `json:"fenceCredentialRef"`
-	FenceAccountHost     string `json:"fenceAccountHost"`
+	Generation            uint64 `json:"generation"`
+	RuntimeAccountHost    string `json:"runtimeAccountHost"`
+	SnapshotRole          string `json:"snapshotRole,omitempty"`
+	SnapshotAccountHost   string `json:"snapshotAccountHost,omitempty"`
+	SnapshotCredentialRef string `json:"snapshotCredentialRef,omitempty"`
+	RestoreRole           string `json:"restoreRole"`
+	RestoreAccountHost    string `json:"restoreAccountHost"`
+	RestoreCredentialRef  string `json:"restoreCredentialRef"`
+	FenceRole             string `json:"fenceRole"`
+	FenceCredentialRef    string `json:"fenceCredentialRef"`
+	FenceAccountHost      string `json:"fenceAccountHost"`
 }
 
 // LegacyPostgresDefault is the single explicit service through which existing

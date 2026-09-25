@@ -128,6 +128,24 @@ func MySQLRestoreBinding(resolved ResolvedBinding) (ResolvedBinding, error) {
 	return restore, nil
 }
 
+// MySQLSnapshotBinding derives the optional source-snapshot connection from
+// an immutable resolved application binding. Its target identity remains the
+// runtime source identity; only the private connection account changes.
+func MySQLSnapshotBinding(resolved ResolvedBinding) (ResolvedBinding, error) {
+	maintenance := resolved.MySQLMaintenance
+	if maintenance == nil || maintenance.Generation == 0 ||
+		!mysqlUserPattern.MatchString(maintenance.SnapshotRole) ||
+		!validMySQLAccountHost(maintenance.SnapshotAccountHost) ||
+		!referencePattern.MatchString(maintenance.SnapshotCredentialRef) ||
+		maintenance.SnapshotRole == resolved.Target.Role || maintenance.SnapshotCredentialRef == resolved.CredentialRef {
+		return ResolvedBinding{}, fmt.Errorf("MySQL snapshot maintenance identity is unavailable")
+	}
+	snapshot := resolved
+	snapshot.Target.Role = maintenance.SnapshotRole
+	snapshot.CredentialRef = maintenance.SnapshotCredentialRef
+	return snapshot, nil
+}
+
 func verifyMySQLRestoreAccount(ctx context.Context, session *Session, role, host string) error {
 	if session == nil || session.mysqlConnector == nil {
 		return fmt.Errorf("MySQL restore account verification is unavailable")
