@@ -31,26 +31,28 @@ The focused tests ran against a disposable local
 
 ```text
 NORN_TEST_ETCD_ENDPOINTS=http://127.0.0.1:<random-port> \
-  go test ./etcdstore -run 'TestV3Fleet(Reconciliation|RunnerAttempt)' -count=1 -v
+  go test ./etcdstore -run '^TestV3Fleet(Reconciliation.*|Runner.*)$' -count=1 -v
 ```
 
-All six focused tests passed. They prove signed reconciliation replay and
+All eight focused tests passed. They prove signed reconciliation replay and
 phase-sequenced evidence, reject a wrong attempt, wrong current phase, and
 mismatched evidence binding before an operation is written, and race two
 independent adapters so exactly one reconciliation admission wins. The prior
 runner-attempt replay, revision-CAS, recovery race, and forged-dispatch tests
-also passed in the same fixture.
+also passed in the same fixture. The expanded runner tests refuse an advance
+without signed current-phase evidence and race a phase advance against evidence
+acceptance across two adapters.
 
 ## Release limitation
 
 This is an etcd storage contract, not end-to-end Fleet execution
-qualification. The existing runner phase-update API can still advance a
-durable attempt without requiring a reconciliation acceptance in that same API
-call. A later reconciliation admission fails closed unless its phase and
-complete prerequisite evidence are valid, but the phase-update route itself is
-not yet atomically bound to a signed evidence receipt.
+qualification. An `advance` now checks a signed, successful current-phase
+receipt bound to the same plan, attempt, commit, and plan digest, while its
+plan-state compare-and-swap remains valid. The check is still separate from the
+evidence append transaction: a concurrent append makes the advance CAS lose
+and callers must retry using the new state.
 
 Do not claim provider-safe automated phase progression from this slice. M3
-still requires runner and route wiring that binds phase advancement to signed
-checkpoint acceptance, PG-free runtime coverage, and the host-supervised
-three-member bootstrap, fault, restore, and soak exercises.
+still requires disabled-route review and full runner wiring, PG-free runtime
+coverage, and the host-supervised three-member bootstrap, fault, restore, and
+soak exercises.

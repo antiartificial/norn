@@ -124,6 +124,9 @@ func TestV3FleetRunnerAttemptAcceptanceReplayAndRevisionCASEtcd(t *testing.T) {
 	if _, err := adapter.UpdateFleetRunnerAttempt(context.Background(), plan.ID, first.FleetRunnerAttempt.ID, first.FleetRunnerAttempt.Revision, "cancel", "stale"); !errors.Is(err, etcdstore.ErrNotFound) {
 		t.Fatalf("stale cancel err=%v", err)
 	}
+	if _, err := adapter.Accept(context.Background(), fleetReconciliationAcceptance(t, adapter, plan, *updated, "prechange", "prechange_verified")); err != nil {
+		t.Fatalf("prechange evidence: %v", err)
+	}
 	if _, err := adapter.UpdateFleetRunnerAttempt(context.Background(), plan.ID, first.FleetRunnerAttempt.ID, updated.Revision, "advance", "complete"); err != nil {
 		t.Fatal(err)
 	}

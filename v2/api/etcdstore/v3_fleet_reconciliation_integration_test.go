@@ -183,3 +183,99 @@ func TestV3FleetReconciliationTwoAdapterRaceEtcd(t *testing.T) {
 		t.Fatalf("accepted=%d rejected=%d", accepted, rejected)
 	}
 }
+
+func TestV3FleetRunnerAdvanceRequiresSignedCurrentPhaseEvidenceEtcd(t *testing.T) {
+	adapter, _, _ := fleetRunnerEtcdStore(t)
+	plan := fleetRunnerPlan(t, adapter, "scale")
+	nonce := bindFleetRunnerDispatch(t, adapter, plan)
+	created, err := adapter.Accept(context.Background(), fleetRunnerAcceptance(t, adapter, plan.ID, nonce, "attempt", "7", "apply", ""))
+	if err != nil {
+		t.Fatal(err)
+	}
+	attempt := *created.FleetRunnerAttempt
+	if _, err := adapter.UpdateFleetRunnerAttempt(context.Background(), plan.ID, attempt.ID, attempt.Revision, "advance", "provider_applying"); !errors.Is(err, store.ErrFleetReconciliationAdmission) {
+		t.Fatalf("advance without evidence err=%v", err)
+	}
+	current, err := adapter.GetFleetRunnerAttempt(context.Background(), plan.ID, attempt.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if current.CurrentPhase != "prechange_verified" || current.Revision != attempt.Revision {
+		t.Fatalf("evidence-free advance changed attempt=%#v", current)
+	}
+	if _, err := adapter.Accept(context.Background(), fleetReconciliationAcceptance(t, adapter, plan, *current, "prechange", "prechange_verified")); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := adapter.UpdateFleetRunnerAttempt(context.Background(), plan.ID, current.ID, current.Revision, "advance", "provider_applying"); err != nil {
+		t.Fatalf("advance with signed evidence: %v", err)
+	}
+}
+
+func TestV3FleetRunnerAdvanceRacesReconciliationCASAtomicallyEtcd(t *testing.T) {
+	adapter, client, prefix := fleetRunnerEtcdStore(t)
+	plan := fleetRunnerPlan(t, adapter, "scale")
+	nonce := bindFleetRunnerDispatch(t, adapter, plan)
+	created, err := adapter.Accept(context.Background(), fleetRunnerAcceptance(t, adapter, plan.ID, nonce, "attempt", "7", "apply", ""))
+	if err != nil {
+		t.Fatal(err)
+	}
+	authority, err := adapter.Authority(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	signer, err := store.NewHMACAcceptanceSigner("norn-etcd-fleet-runner-signing-key-000")
+	if err != nil {
+		t.Fatal(err)
+	}
+	second, err := etcdstore.NewV3OperationStore(client, prefix, authority, signer)
+	if err != nil {
+		t.Fatal(err)
+	}
+	attempt := *created.FleetRunnerAttempt
+	evidence := fleetReconciliationAcceptance(t, adapter, plan, attempt, "race-evidence", "prechange_verified")
+	start := make(chan struct{})
+	type result struct {
+		kind string
+		err  error
+	}
+	results := make(chan result, 2)
+	go func() {
+		<-start
+		_, err := adapter.Accept(context.Background(), evidence)
+		results <- result{kind: "evidence", err: err}
+	}()
+	go func() {
+		<-start
+		_, err := second.UpdateFleetRunnerAttempt(context.Background(), plan.ID, attempt.ID, attempt.Revision, "advance", "provider_applying")
+		results <- result{kind: "advance", err: err}
+	}()
+	close(start)
+	first, secondResult := <-results, <-results
+	if first.kind == "evidence" && first.err != nil || secondResult.kind == "evidence" && secondResult.err != nil {
+		t.Fatalf("reconciliation lost concurrent phase race: first=%v second=%v", first, secondResult)
+	}
+	var advanceErr error
+	for _, outcome := range []result{first, secondResult} {
+		if outcome.kind != "advance" || outcome.err == nil {
+			continue
+		}
+		if errors.Is(outcome.err, store.ErrFleetReconciliationAdmission) || errors.Is(outcome.err, etcdstore.ErrNotFound) {
+			advanceErr = outcome.err
+			continue
+		}
+		t.Fatalf("race error=%v", outcome.err)
+	}
+	current, err := adapter.GetFleetRunnerAttempt(context.Background(), plan.ID, attempt.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if current.CurrentPhase == "provider_applying" && advanceErr != nil {
+		t.Fatalf("advance reported %v but phase advanced", advanceErr)
+	}
+	if current.CurrentPhase == "prechange_verified" && advanceErr == nil {
+		t.Fatal("advance succeeded without changing phase")
+	}
+	if current.CurrentPhase != "prechange_verified" && current.CurrentPhase != "provider_applying" {
+		t.Fatalf("unexpected phase after race=%q", current.CurrentPhase)
+	}
+}

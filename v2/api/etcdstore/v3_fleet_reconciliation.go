@@ -10,6 +10,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"sort"
 	"strings"
 	"time"
 
@@ -198,6 +199,41 @@ func (s *V3OperationStore) listFleetReconciliations(ctx context.Context, planID 
 		revisions[record.Operation.ID] = item.ModRevision
 	}
 	return operations, revisions, nil
+}
+
+// ListFleetReconciliations returns at most 100 append-only reconciliation
+// receipts for one plan. It is intentionally a narrow read surface for Fleet
+// status; callers needing admission must use the complete private history.
+func (s *V3OperationStore) ListFleetReconciliations(ctx context.Context, planID string) ([]model.Operation, error) {
+	planID = strings.TrimSpace(planID)
+	if _, err := uuid.Parse(planID); err != nil {
+		return nil, fmt.Errorf("fleet reconciliation plan ID must be a UUID")
+	}
+	response, err := s.kv.Get(ctx, s.fleetReconciliationPrefix(planID), clientv3.WithPrefix(), clientv3.WithLimit(101), clientv3.WithSort(clientv3.SortByKey, clientv3.SortAscend))
+	if err != nil {
+		return nil, err
+	}
+	if len(response.Kvs) > 100 || response.More {
+		return nil, fmt.Errorf("fleet reconciliation history exceeds read limit")
+	}
+	operations := make([]model.Operation, 0, len(response.Kvs))
+	for _, item := range response.Kvs {
+		var record v3Record
+		if err := decodeV3Record(item.Value, &record); err != nil {
+			return nil, err
+		}
+		if record.Operation.ID == "" || record.Operation.Kind != "fleet.reconciliation" || record.Operation.Ref != planID {
+			return nil, fmt.Errorf("fleet reconciliation history is corrupt")
+		}
+		operations = append(operations, record.Operation)
+	}
+	sort.SliceStable(operations, func(i, j int) bool {
+		if operations[i].StartedAt.Equal(operations[j].StartedAt) {
+			return operations[i].ID < operations[j].ID
+		}
+		return operations[i].StartedAt.Before(operations[j].StartedAt)
+	})
+	return operations, nil
 }
 
 func fleetReconciliationError(code, reason string) error {

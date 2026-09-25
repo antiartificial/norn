@@ -122,6 +122,20 @@ func (s *V3OperationStore) loadFleetRunnerDispatch(ctx context.Context, planID s
 	return item, nil
 }
 
+// GetFleetRunnerDispatch returns the immutable protected-dispatch binding for
+// read-only plan inspection. It never exposes a raw dispatch nonce.
+func (s *V3OperationStore) GetFleetRunnerDispatch(ctx context.Context, planID string) (FleetRunnerDispatchBinding, error) {
+	planID = strings.TrimSpace(planID)
+	if _, err := uuid.Parse(planID); err != nil {
+		return FleetRunnerDispatchBinding{}, fmt.Errorf("fleet runner dispatch plan ID must be a UUID")
+	}
+	item, err := s.loadFleetRunnerDispatch(ctx, planID)
+	if err != nil {
+		return FleetRunnerDispatchBinding{}, err
+	}
+	return item.FleetRunnerDispatchBinding, nil
+}
+
 func (s *V3OperationStore) acceptFleetRunnerAttempt(ctx context.Context, input store.OperationAcceptance) (store.AcceptedOperation, error) {
 	if err := store.NormalizeFleetRunnerAttemptAcceptance(&input); err != nil {
 		return store.AcceptedOperation{}, err
@@ -383,6 +397,13 @@ func (s *V3OperationStore) UpdateFleetRunnerAttempt(ctx context.Context, planID,
 			if !ok || !fleetValidPhase(phase) || !item.HeartbeatExpiresAt.After(now) {
 				return nil, ErrNotFound
 			}
+			proven, err := s.hasSignedFleetReconciliationEvidence(ctx, planID, item)
+			if err != nil {
+				return nil, err
+			}
+			if !proven {
+				return nil, fleetReconciliationError("fleet_reconciliation_evidence_required", "runner phase advance requires signed successful reconciliation evidence for its current phase")
+			}
 			item.CurrentPhase = phase
 			item.Status = "running"
 			if phase == "complete" {
@@ -418,6 +439,50 @@ func (s *V3OperationStore) UpdateFleetRunnerAttempt(ctx context.Context, planID,
 		}
 	}
 	return nil, fmt.Errorf("fleet runner attempt update exhausted contention retries")
+}
+
+// hasSignedFleetReconciliationEvidence accepts only an immutable reconciliation
+// receipt whose signed operation matches this runner attempt's current phase.
+// The caller fences its read with the same plan-state CAS used for the phase
+// mutation, so a concurrent reconciliation append causes this update to lose.
+func (s *V3OperationStore) hasSignedFleetReconciliationEvidence(ctx context.Context, planID string, attempt fleet.RunnerAttempt) (bool, error) {
+	history, _, err := s.listFleetReconciliations(ctx, planID)
+	if err != nil {
+		return false, err
+	}
+	for _, operation := range history {
+		if operation.Status != model.OperationSucceeded {
+			continue
+		}
+		request, err := store.FleetReconciliationRequestFromOperation(operation)
+		if err != nil {
+			return false, fmt.Errorf("decode fleet reconciliation evidence: %w", err)
+		}
+		if request.Status != "succeeded" || request.Phase != attempt.CurrentPhase || request.AttemptID != attempt.ID || request.CommitSHA != attempt.CommitSHA || request.PlanSHA256 != attempt.PlanSHA256 {
+			continue
+		}
+		index, err := s.kv.Get(ctx, s.operationAcceptanceIndexKey(operation.ID))
+		if err != nil {
+			return false, err
+		}
+		if len(index.Kvs) != 1 || strings.TrimSpace(string(index.Kvs[0].Value)) == "" {
+			return false, fmt.Errorf("fleet reconciliation evidence acceptance link is missing")
+		}
+		key := string(index.Kvs[0].Value)
+		loaded, err := s.loadAcceptance(ctx, key)
+		if err != nil {
+			return false, fmt.Errorf("load fleet reconciliation acceptance: %w", err)
+		}
+		accepted, err := s.replay(ctx, key, loaded, loaded.record.Identity, loaded.record.Accepted.Intent.Fingerprint)
+		if err != nil {
+			return false, fmt.Errorf("verify fleet reconciliation acceptance: %w", err)
+		}
+		if accepted.Operation.ID != operation.ID || accepted.Operation.Kind != "fleet.reconciliation" || accepted.Operation.Ref != planID {
+			return false, fmt.Errorf("fleet reconciliation signed receipt differs from history")
+		}
+		return true, nil
+	}
+	return false, nil
 }
 
 func (s *V3OperationStore) verifyFleetRunnerAttemptReplay(ctx context.Context, accepted store.AcceptedOperation) (*fleet.RunnerAttempt, error) {
