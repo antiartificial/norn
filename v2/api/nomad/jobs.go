@@ -140,7 +140,14 @@ func (c *Client) requireAtomicJobCAS() error {
 	if err != nil {
 		return fmt.Errorf("inspect Nomad version for atomic job CAS: %w", err)
 	}
-	version, _ := self.Config["Version"].(string)
+	// Nomad's /v1/agent/self nests the release inside config.Version.Version.
+	// The prerelease field is separate and must not satisfy a stable CAS floor.
+	versionInfo, _ := self.Config["Version"].(map[string]interface{})
+	version, _ := versionInfo["Version"].(string)
+	prerelease, _ := versionInfo["VersionPrerelease"].(string)
+	if prerelease != "" {
+		version += "-" + prerelease
+	}
 	if !supportsAtomicJobCAS(version) {
 		return fmt.Errorf("%w: %q requires 1.10.11, 1.11.5, or 2.0.1 and later", ErrAtomicJobCASUnsupported, version)
 	}

@@ -89,7 +89,7 @@ func TestPausePeriodicJobRejectsMutationBetweenReadAndCASWrite(t *testing.T) {
 	client := newTestNomadClient(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		switch {
 		case r.Method == http.MethodGet && r.URL.Path == "/v1/agent/self":
-			_ = json.NewEncoder(w).Encode(&nomadapi.AgentSelf{Config: map[string]interface{}{"Version": "1.11.5"}})
+			_ = json.NewEncoder(w).Encode(&nomadapi.AgentSelf{Config: map[string]interface{}{"Version": map[string]interface{}{"Version": "1.11.5"}}})
 		case r.Method == http.MethodGet && r.URL.Path == "/v1/job/widget-nightly":
 			_ = json.NewEncoder(w).Encode(&nomadapi.Job{ID: &jobID, Status: &status, ModifyIndex: &genericModifyIndex, JobModifyIndex: &modifyIndex, Periodic: &nomadapi.PeriodicConfig{Spec: &schedule}})
 		case r.Method == http.MethodPut && r.URL.Path == "/v1/jobs":
@@ -132,7 +132,7 @@ func TestResumePeriodicJobUsesGuardedRegistrationAndEffectMarker(t *testing.T) {
 	client := newTestNomadClient(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		switch {
 		case r.Method == http.MethodGet && r.URL.Path == "/v1/agent/self":
-			_ = json.NewEncoder(w).Encode(&nomadapi.AgentSelf{Config: map[string]interface{}{"Version": "2.0.7"}})
+			_ = json.NewEncoder(w).Encode(&nomadapi.AgentSelf{Config: map[string]interface{}{"Version": map[string]interface{}{"Version": "2.0.7"}}})
 		case r.Method == http.MethodGet && r.URL.Path == "/v1/job/widget-nightly":
 			_ = json.NewEncoder(w).Encode(&nomadapi.Job{ID: &jobID, Status: &status, Stop: &stopped, JobModifyIndex: &modifyIndex, Periodic: &nomadapi.PeriodicConfig{Spec: &schedule}})
 		case r.Method == http.MethodPut && r.URL.Path == "/v1/jobs":
@@ -164,7 +164,7 @@ func TestResumePeriodicJobRejectsRevisionConflict(t *testing.T) {
 	client := newTestNomadClient(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		switch {
 		case r.Method == http.MethodGet && r.URL.Path == "/v1/agent/self":
-			_ = json.NewEncoder(w).Encode(&nomadapi.AgentSelf{Config: map[string]interface{}{"Version": "2.0.7"}})
+			_ = json.NewEncoder(w).Encode(&nomadapi.AgentSelf{Config: map[string]interface{}{"Version": map[string]interface{}{"Version": "2.0.7"}}})
 		case r.Method == http.MethodGet && r.URL.Path == "/v1/job/widget-nightly":
 			_ = json.NewEncoder(w).Encode(&nomadapi.Job{ID: &jobID, Status: &status, Stop: &stopped, JobModifyIndex: &modifyIndex, Periodic: &nomadapi.PeriodicConfig{Spec: &schedule}})
 		case r.Method == http.MethodPut && r.URL.Path == "/v1/jobs":
@@ -183,7 +183,7 @@ func TestPausePeriodicJobRejectsUnsupportedAtomicCASServer(t *testing.T) {
 		if r.Method != http.MethodGet || r.URL.Path != "/v1/agent/self" {
 			t.Fatalf("unexpected request %s %s", r.Method, r.URL.Path)
 		}
-		_ = json.NewEncoder(w).Encode(&nomadapi.AgentSelf{Config: map[string]interface{}{"Version": "1.9.7"}})
+		_ = json.NewEncoder(w).Encode(&nomadapi.AgentSelf{Config: map[string]interface{}{"Version": map[string]interface{}{"Version": "1.9.7"}}})
 	}))
 
 	err := client.PausePeriodicJob("widget-nightly", 42, "effect-1")

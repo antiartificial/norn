@@ -152,6 +152,10 @@ into #76 and closed. These are review containers, not milestone signoff.
   parent with an effect marker for recovery. The HTTP resume path still uses
   inline resubmission; signed intent, claim-fenced execution, and reconciliation
   remain required before this primitive closes that route's M1 gate.
+  A disposable Nomad 2.0.7 test proved pause, stale-revision refusal, and
+  resume against the real API. It exposed a nested agent-version response that
+  had made the existing pause CAS guard reject supported servers; version
+  detection now reads Nomad's actual response shape.
 - M2: local MySQL runtime and verified-TLS health are implemented. Generated
   service, periodic, and function jobs delivered exact component bytes inside
   allocations on pinned Nomad 1.9.7. A WordPress image PHP client also
