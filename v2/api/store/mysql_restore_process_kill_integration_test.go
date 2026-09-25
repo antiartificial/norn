@@ -130,7 +130,7 @@ func TestMySQLRestoreProcessKillAfterExecutingQualification(t *testing.T) {
 			}
 		}
 	}
-	for _, statement := range []string{"CREATE USER '" + restoreRole + "'@'%' IDENTIFIED BY " + mysqlRestoreSQLLiteral(restorePassword), "CREATE USER '" + fenceRole + "'@'%' IDENTIFIED BY " + mysqlRestoreSQLLiteral(fencePassword), "GRANT ALL PRIVILEGES ON `" + targetDB + "`.* TO '" + restoreRole + "'@'%'"} {
+	for _, statement := range []string{"CREATE USER '" + restoreRole + "'@'%' IDENTIFIED BY " + mysqlRestoreSQLLiteral(restorePassword), "CREATE USER '" + fenceRole + "'@'%' IDENTIFIED BY " + mysqlRestoreSQLLiteral(fencePassword), "GRANT ALL PRIVILEGES ON `" + targetDB + "`.* TO '" + restoreRole + "'@'%'", "GRANT CREATE USER, PROCESS, CONNECTION_ADMIN ON *.* TO '" + fenceRole + "'@'%'", "GRANT SELECT ON mysql.user TO '" + fenceRole + "'@'%'"} {
 		if _, err := admin.ExecContext(ctx, statement); err != nil {
 			t.Fatal(err)
 		}

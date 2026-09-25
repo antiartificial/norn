@@ -714,6 +714,21 @@ func (db *DB) ClaimNextOperation(ctx context.Context, workerID string, lease tim
 	if strings.TrimSpace(workerID) == "" || lease <= 0 {
 		return nil, OperationClaim{}, fmt.Errorf("operation claim owner and lease are required")
 	}
+	// Serialize a claim with fence acquisition. A plain EXISTS read in the
+	// claim statement would admit a concurrent claim from an older snapshot
+	// after the fence's UPDATE commits.
+	tx, err := db.Pool.BeginTx(ctx, pgx.TxOptions{})
+	if err != nil {
+		return nil, OperationClaim{}, err
+	}
+	defer tx.Rollback(context.Background())
+	var fenceSingleton bool
+	if err := tx.QueryRow(ctx, `SELECT singleton FROM runtime_mutation_fence WHERE singleton=true FOR SHARE`).Scan(&fenceSingleton); err != nil {
+		return nil, OperationClaim{}, err
+	}
+	if !fenceSingleton {
+		return nil, OperationClaim{}, ErrRuntimeMutationFenceHeld
+	}
 	args := []interface{}{workerID, lease.Microseconds()}
 	kindClause := ""
 	if len(kinds) > 0 {
@@ -735,8 +750,6 @@ func (db *DB) ClaimNextOperation(ctx context.Context, workerID string, lease tim
 			  AND (NOT acceptance_required OR EXISTS (
 				SELECT 1 FROM operation_acceptance_intents ai WHERE ai.operation_id = operations.id
 			  ))
-			  -- The absent-row case is deliberately false: a database which has
-			  -- not applied the fence migration may not admit app runtime work.
 			  AND (kind NOT IN ('app.deploy','app.restart','app.scale','app.cron-pause','app.cron-resume','app.cron-schedule','app.cron-trigger','app.cron-trigger-reconcile','app.function-invoke')
 			       OR EXISTS (SELECT 1 FROM runtime_mutation_fence WHERE singleton=true AND active=false))
 			  %s
@@ -760,7 +773,7 @@ func (db *DB) ClaimNextOperation(ctx context.Context, workerID string, lease tim
 
 	var op model.Operation
 	var payload, metadata []byte
-	err := db.Pool.QueryRow(ctx, query, args...).Scan(
+	err = tx.QueryRow(ctx, query, args...).Scan(
 		&op.ID, &op.Kind, &op.App, &op.SagaID, &op.Ref, &op.Status, &op.Risk, &op.Source, &op.Message, &payload, &metadata,
 		&op.Attempts, &op.MaxAttempts, &op.LockedBy, &op.LockGeneration, &op.LockedUntil, &op.NextAttemptAt, &op.LastError,
 		&op.StartedAt, &op.UpdatedAt, &op.FinishedAt,
@@ -776,6 +789,9 @@ func (db *DB) ClaimNextOperation(ctx context.Context, workerID string, lease tim
 	}
 	claim, err := NewOperationClaim(op.ID, op.LockedBy, op.LockGeneration)
 	if err != nil {
+		return nil, OperationClaim{}, err
+	}
+	if err := tx.Commit(ctx); err != nil {
 		return nil, OperationClaim{}, err
 	}
 	return &op, claim, nil
