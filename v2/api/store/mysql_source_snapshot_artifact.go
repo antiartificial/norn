@@ -7,6 +7,7 @@ import (
 	"encoding/json"
 	"errors"
 	"path/filepath"
+	"time"
 
 	"github.com/jackc/pgx/v5"
 
@@ -57,9 +58,21 @@ var ErrMySQLSourceArtifactIndeterminate = errors.New("MySQL source artifact stag
 // the dump tool. Any error after that point leaves the source fenced and the
 // stage non-retryable. A successful result is signed and stored atomically.
 func (db *DB) StageClaimedMySQLSourceArtifact(ctx context.Context, acceptance *PGOperationStore, claim OperationClaim, request MySQLSourceSnapshotRequest, secrets database.SecretSource, dumpToolPath, privateDirectory string, stager MySQLSourceArtifactStager) (SignedMySQLSourceArtifactReceipt, error) {
-	if secrets == nil || stager == nil || !filepath.IsAbs(privateDirectory) || !filepath.IsAbs(dumpToolPath) {
+	return db.stageClaimedMySQLSourceArtifactSupervised(ctx, acceptance, claim, request, secrets, dumpToolPath, privateDirectory, stager, 2*time.Minute)
+}
+
+func (db *DB) stageClaimedMySQLSourceArtifactSupervised(ctx context.Context, acceptance *PGOperationStore, claim OperationClaim, request MySQLSourceSnapshotRequest, secrets database.SecretSource, dumpToolPath, privateDirectory string, stager MySQLSourceArtifactStager, lease time.Duration) (SignedMySQLSourceArtifactReceipt, error) {
+	if db == nil || db.Pool == nil || acceptance == nil || acceptance.db != db || validateOperationClaim(claim) != nil || !validMySQLSourceSnapshotRequest(request) || secrets == nil || stager == nil || !filepath.IsAbs(privateDirectory) || !filepath.IsAbs(dumpToolPath) {
 		return SignedMySQLSourceArtifactReceipt{}, ErrMySQLSourceSnapshotFence
 	}
+	return runClaimedMySQLSourceArtifactStage(ctx, lease, func(renewCtx context.Context, duration time.Duration) error {
+		return db.RenewOperationClaim(renewCtx, claim, duration)
+	}, func(runCtx context.Context, ready func() error) (SignedMySQLSourceArtifactReceipt, error) {
+		return db.stageClaimedMySQLSourceArtifact(runCtx, acceptance, claim, request, secrets, dumpToolPath, privateDirectory, stager, ready)
+	})
+}
+
+func (db *DB) stageClaimedMySQLSourceArtifact(ctx context.Context, acceptance *PGOperationStore, claim OperationClaim, request MySQLSourceSnapshotRequest, secrets database.SecretSource, dumpToolPath, privateDirectory string, stager MySQLSourceArtifactStager, ready func() error) (SignedMySQLSourceArtifactReceipt, error) {
 	resolved, accepted, err := db.intendClaimedMySQLSourceArtifact(ctx, acceptance, claim, request)
 	if err != nil {
 		return SignedMySQLSourceArtifactReceipt{}, err
@@ -67,6 +80,9 @@ func (db *DB) StageClaimedMySQLSourceArtifact(ctx context.Context, acceptance *P
 	path, artifact, err := stager.Stage(ctx, resolved, request.Source, secrets, dumpToolPath, request.DumpToolSHA256, privateDirectory)
 	if err != nil {
 		return SignedMySQLSourceArtifactReceipt{}, errors.Join(ErrMySQLSourceArtifactIndeterminate, err)
+	}
+	if err := ready(); err != nil {
+		return SignedMySQLSourceArtifactReceipt{}, err
 	}
 	if filepath.Dir(path) != filepath.Clean(privateDirectory) || artifact.Source != request.Source || database.VerifyMySQLSQLArtifact(path, artifact) != nil {
 		return SignedMySQLSourceArtifactReceipt{}, ErrMySQLSourceArtifactIndeterminate

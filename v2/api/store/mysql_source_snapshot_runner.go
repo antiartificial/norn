@@ -42,6 +42,20 @@ func (r MySQLSourceSnapshotRunner) RunClaimed(ctx context.Context, claim Operati
 		})
 }
 
+// StageClaimed keeps the same operation claim alive through the durable stage
+// intent, external dump, and signed receipt. A renewal loss cancels the dump
+// context and leaves its stage-intended row fenced for inspection.
+func (r MySQLSourceSnapshotRunner) StageClaimed(ctx context.Context, claim OperationClaim, request MySQLSourceSnapshotRequest, dumpToolPath, privateDirectory string, stager MySQLSourceArtifactStager) (SignedMySQLSourceArtifactReceipt, error) {
+	if r.Control == nil || r.Acceptance == nil || r.Acceptance.db != r.Control || r.Secrets == nil || stager == nil || validateOperationClaim(claim) != nil {
+		return SignedMySQLSourceArtifactReceipt{}, ErrMySQLSourceSnapshotFence
+	}
+	lease := r.ClaimLease
+	if lease == 0 {
+		lease = 2 * time.Minute
+	}
+	return r.Control.stageClaimedMySQLSourceArtifactSupervised(ctx, r.Acceptance, claim, request, r.Secrets, dumpToolPath, privateDirectory, stager, lease)
+}
+
 // The same bounded supervisor used by the private restore runner renews before
 // any external effect and cancels the shared context on ownership loss.
 func runClaimedMySQLSourceQuiescence(ctx context.Context, lease time.Duration, renew func(context.Context, time.Duration) error, stop, lock func(context.Context) error) (runErr error) {
@@ -87,4 +101,38 @@ func sourceClaimSupervisorReady(supervisor *mysqlRestoreClaimSupervisor, ctx con
 		return fmt.Errorf("MySQL source snapshot context ended before next effect: %w", err)
 	}
 	return nil
+}
+
+// runClaimedMySQLSourceArtifactStage keeps a source claim alive through the
+// only externally mutable part of staging. It checks the supervisor after the
+// dump returns, before the caller can sign or persist a receipt.
+func runClaimedMySQLSourceArtifactStage(ctx context.Context, lease time.Duration, renew func(context.Context, time.Duration) error, stage func(context.Context, func() error) (SignedMySQLSourceArtifactReceipt, error)) (signed SignedMySQLSourceArtifactReceipt, runErr error) {
+	if stage == nil {
+		return SignedMySQLSourceArtifactReceipt{}, ErrMySQLSourceSnapshotFence
+	}
+	supervisor, err := newMySQLRestoreClaimSupervisor(ctx, lease, renew)
+	if err != nil {
+		return SignedMySQLSourceArtifactReceipt{}, err
+	}
+	if err := supervisor.Start(); err != nil {
+		return SignedMySQLSourceArtifactReceipt{}, errors.Join(ErrMySQLSourceClaimLost, err)
+	}
+	defer func() {
+		if err := supervisor.Stop(); err != nil {
+			signed = SignedMySQLSourceArtifactReceipt{}
+			runErr = errors.Join(runErr, ErrMySQLSourceClaimLost, err)
+		}
+	}()
+	runCtx := supervisor.Context()
+	if err := sourceClaimSupervisorReady(supervisor, runCtx); err != nil {
+		return SignedMySQLSourceArtifactReceipt{}, err
+	}
+	signed, err = stage(runCtx, func() error { return sourceClaimSupervisorReady(supervisor, runCtx) })
+	if err != nil {
+		return SignedMySQLSourceArtifactReceipt{}, err
+	}
+	if err := sourceClaimSupervisorReady(supervisor, runCtx); err != nil {
+		return SignedMySQLSourceArtifactReceipt{}, err
+	}
+	return signed, nil
 }
