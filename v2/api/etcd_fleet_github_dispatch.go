@@ -83,6 +83,17 @@ func etcdFleetGitHubDispatch(cfg *config.Config, operations *etcdstore.V3Operati
 			handler.WriteControlProblem(w, r, http.StatusConflict, "fleet_plan_invalid", "fleet capacity plan is not a verified immutable plan")
 			return
 		}
+		planBytes, _ := json.Marshal(plan.Payload)
+		var typedPlan fleet.CapacityPlan
+		if err := json.Unmarshal(planBytes, &typedPlan); err != nil {
+			handler.WriteControlProblem(w, r, http.StatusConflict, "fleet_plan_invalid", "fleet capacity plan is not a verified immutable plan")
+			return
+		}
+		destructive := typedPlan.Action == "replace" || (typedPlan.Action == "scale" && typedPlan.Proposed.Desired < typedPlan.Current.Desired)
+		if destructive && !request.AllowDestructive {
+			handler.WriteControlProblem(w, r, http.StatusConflict, "fleet_github_destructive_ack_required", "replacement and contraction plans require explicit allowDestructive acknowledgement")
+			return
+		}
 		environment, err := etcdFleetGitHubEnvironment(cfg)
 		if err != nil {
 			handler.WriteControlProblem(w, r, http.StatusServiceUnavailable, "fleet_github_not_configured", "configured Fleet GitHub root is invalid")

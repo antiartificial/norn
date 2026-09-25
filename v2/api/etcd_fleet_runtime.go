@@ -108,9 +108,9 @@ func runEtcdFleetRuntime(cfg *config.Config, backend startup.ControlBackendConfi
 	router.Get("/api/v1/capabilities", func(w http.ResponseWriter, r *http.Request) {
 		writeEtcdSourceJSON(w, http.StatusOK, etcdFleetCapabilities(canaryHTTPEnabled, fleetGitHub != nil))
 	})
-	// Fleet runners carry fleet:operate for their narrowly bound attempt
-	// endpoints.  This normal router does not expose those endpoints, so that
-	// scope must never become a general inventory or receipt-read capability.
+	// Fleet runners carry fleet:operate only for their own attempts and
+	// reconciliation checkpoints. Inventory and general operation reads still
+	// require api:read.
 	read := etcdManagedTokenAuth(cfg, identities, handler.ScopeAPIRead)
 	plan := etcdManagedTokenAuth(cfg, identities, handler.ScopeAPIWrite)
 	router.With(read).Get("/api/v1/fleet/node-pools", etcdFleetInventory(cfg))

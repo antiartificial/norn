@@ -68,7 +68,7 @@ func TestEtcdFleetGitHubDispatchLostResponseReusesPrivateNonceEtcd(t *testing.T)
 	if err != nil {
 		t.Fatal(err)
 	}
-	plan := &fleet.CapacityPlan{SchemaVersion: "norn.fleet-capacity-plan/v1", ID: uuid.NewString(), Pool: "app", Cluster: "staging-nyc3", Action: "scale", SourceDigest: "sha256:" + strings.Repeat("d", 64)}
+	plan := &fleet.CapacityPlan{SchemaVersion: "norn.fleet-capacity-plan/v1", ID: uuid.NewString(), Pool: "app", Cluster: "staging-nyc3", Action: "scale", Current: fleet.NodePool{Desired: 3}, Proposed: fleet.NodePool{Desired: 2}, SourceDigest: "sha256:" + strings.Repeat("d", 64)}
 	if err := refreshEtcdCapacityPlanSignature(plan, cfg.AuditSigningKey); err != nil {
 		t.Fatal(err)
 	}
@@ -102,6 +102,9 @@ func TestEtcdFleetGitHubDispatchLostResponseReusesPrivateNonceEtcd(t *testing.T)
 		recorder := httptest.NewRecorder()
 		route.ServeHTTP(recorder, req)
 		return recorder
+	}
+	if refused := serve(false); refused.Code != http.StatusConflict || !strings.Contains(refused.Body.String(), "fleet_github_destructive_ack_required") || len(fake.nonces) != 0 {
+		t.Fatalf("destructive dispatch without acknowledgement: %d %s", refused.Code, refused.Body.String())
 	}
 	first := serve(true)
 	if first.Code != http.StatusBadGateway || len(fake.nonces) != 1 || strings.Contains(first.Body.String(), fake.nonces[0]) {
