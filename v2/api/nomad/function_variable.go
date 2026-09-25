@@ -38,7 +38,7 @@ type FunctionInvocationVariableObservation struct {
 	PrivateContent []byte
 }
 
-var functionInvocationVariablePath = regexp.MustCompile(`^norn/function-invocation/[0-9a-f]{40}$`)
+var functionInvocationVariablePath = regexp.MustCompile(`^nomad/jobs/norn-fn-[0-9a-f]{40}/invoke$`)
 
 // These errors deliberately carry no Nomad response body. A response may have
 // echoed the private variable content, so callers must use errors.Is rather

@@ -108,7 +108,7 @@ func BuildFunctionInvocationJob(request FunctionInvocationJobRequest) (*nomadapi
 }
 
 func validateFunctionInvocationJobRequest(request FunctionInvocationJobRequest) error {
-	if !functionInvocationJobID.MatchString(request.JobID) || !functionInvocationVariablePath.MatchString(request.VariablePath) || !functionInvocationImageReference.MatchString(request.Image) || strings.TrimSpace(request.OwnerMarker) == "" || strings.TrimSpace(request.Command) == "" || request.CPU < 1 || request.MemoryMB < 10 || strings.ContainsAny(request.OwnerMarker+request.Command, "\r\n\x00") {
+	if !functionInvocationJobID.MatchString(request.JobID) || request.VariablePath != "nomad/jobs/"+request.JobID+"/invoke" || !functionInvocationImageReference.MatchString(request.Image) || strings.TrimSpace(request.OwnerMarker) == "" || strings.TrimSpace(request.Command) == "" || request.CPU < 1 || request.MemoryMB < 10 || strings.ContainsAny(request.OwnerMarker+request.Command, "\r\n\x00") {
 		return ErrFunctionInvocationJobRequest
 	}
 	return nil
@@ -230,7 +230,7 @@ func projectFunctionInvocationJob(job *nomadapi.Job) (functionInvocationJobProje
 		return functionInvocationJobProjection{}, functionInvocationDialectError("task.config")
 	}
 	variablePath, ok := functionInvocationTemplatePath(task.Templates[0])
-	if !ok || !functionInvocationVariablePath.MatchString(variablePath) || !equalMap(job.Meta, map[string]string{functionInvocationOwnerMeta: job.Meta[functionInvocationOwnerMeta]}) || strings.TrimSpace(job.Meta[functionInvocationOwnerMeta]) == "" {
+	if !ok || variablePath != "nomad/jobs/"+*job.ID+"/invoke" || !equalMap(job.Meta, map[string]string{functionInvocationOwnerMeta: job.Meta[functionInvocationOwnerMeta]}) || strings.TrimSpace(job.Meta[functionInvocationOwnerMeta]) == "" {
 		return functionInvocationJobProjection{}, functionInvocationDialectError("task.template")
 	}
 	return functionInvocationJobProjection{Version: FunctionInvocationJobDialectVersion, JobID: *job.ID, OwnerMarker: job.Meta[functionInvocationOwnerMeta], VariablePath: variablePath, Image: image, Command: command, CPU: *task.Resources.CPU, MemoryMB: *task.Resources.MemoryMB}, nil

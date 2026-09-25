@@ -153,7 +153,10 @@ in stored records, and rejected-transaction cleanup; the etcd race suite also
 passed. Neither backend is connected to the function route or startup key
 preflight. Real Nomad, process-crash, and restore qualification remain open.
 
-The function variable adapter has HTTP-level tests for exact reads,
+The private variable path is `nomad/jobs/<function-job-id>/invoke`, which
+matches Nomad's implicit task-group variable read scope and stays separate
+from the job-level database delivery variable. The function variable adapter
+has HTTP-level tests for exact reads,
 create-only Nomad CAS, private-byte round trips, and redacted errors. Its
 writer now uses padded base64 for Nomad's strict template decoder; the reader
 also accepts older unpadded values for recovery. PostgreSQL and etcd
@@ -173,6 +176,6 @@ quoting. A disposable Docker-enabled Nomad 2.0.7 allocation produced the
 expected digest for a multiline body, quotes, backslashes, Unicode path, and
 empty method; the job JSON contained no request values. The builder and steps
 are still disconnected from the claimed operation executor. App/database
-secret delivery, the allocation's ACL for this custom variable path, terminal
-receipt, and cleanup remain open. Requalify on the release Nomad version
+secret delivery, ACL-enabled allocation proof for the implicit group path,
+terminal receipt, and cleanup remain open. Requalify on the release Nomad version
 before enabling submission.

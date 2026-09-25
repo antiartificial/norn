@@ -71,7 +71,7 @@ func NewFunctionInvocationJobIdentity(input FunctionInvocationEffectInput, jobSp
 		DatabaseTarget: input.DatabaseTarget, DatabaseRevision: input.DatabaseRevision,
 		PrivateRecordID: input.PrivateRecordID, PrivateMaterialDigest: input.PrivateMaterialDigest,
 		PrivateKeyID: input.PrivateKeyID, JobID: "norn-fn-" + name,
-		VariablePath:  "norn/function-invocation/" + name,
+		VariablePath:  "nomad/jobs/norn-fn-" + name + "/invoke",
 		OwnerMarker:   "norn.function-invoke/" + input.OperationID,
 		JobSpecDigest: jobSpecDigest,
 	}, nil

@@ -37,6 +37,9 @@ func TestFunctionInvocationJobIdentityIsStableAndHasNoRequestFields(t *testing.T
 	if first.JobID != second.JobID || first.VariablePath != second.VariablePath || first.JobID == "" {
 		t.Fatalf("identity is not stable: first=%+v second=%+v", first, second)
 	}
+	if first.VariablePath != "nomad/jobs/"+first.JobID+"/invoke" {
+		t.Fatalf("private variable path %q is outside the job's implicit group scope", first.VariablePath)
+	}
 	encoded, err := json.Marshal(first)
 	if err != nil {
 		t.Fatal(err)

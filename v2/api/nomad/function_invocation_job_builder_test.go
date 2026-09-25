@@ -9,7 +9,7 @@ import (
 )
 
 func functionInvocationJobRequest() FunctionInvocationJobRequest {
-	return FunctionInvocationJobRequest{JobID: "norn-fn-" + strings.Repeat("a", 40), OwnerMarker: "norn.function-invoke/op-1", VariablePath: "norn/function-invocation/" + strings.Repeat("a", 40), Image: "registry.example/function@sha256:" + strings.Repeat("b", 64), Command: "./function", CPU: 250, MemoryMB: 192}
+	return FunctionInvocationJobRequest{JobID: "norn-fn-" + strings.Repeat("a", 40), OwnerMarker: "norn.function-invoke/op-1", VariablePath: "nomad/jobs/norn-fn-" + strings.Repeat("a", 40) + "/invoke", Image: "registry.example/function@sha256:" + strings.Repeat("b", 64), Command: "./function", CPU: 250, MemoryMB: 192}
 }
 
 func TestProjectFunctionInvocationJobAcceptsKnownNomadReadbackDefaults(t *testing.T) {

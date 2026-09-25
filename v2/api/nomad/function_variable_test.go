@@ -18,7 +18,7 @@ const functionVariableCanary = "NORN_FUNCTION_PRIVATE_9a71"
 
 func functionVariableIdentity(t *testing.T) FunctionInvocationVariableIdentity {
 	t.Helper()
-	return FunctionInvocationVariableIdentity{Path: "norn/function-invocation/" + strings.Repeat("a", 40), OwnerMarker: "norn.function-invoke/operation-123"}
+	return FunctionInvocationVariableIdentity{Path: "nomad/jobs/norn-fn-" + strings.Repeat("a", 40) + "/invoke", OwnerMarker: "norn.function-invoke/operation-123"}
 }
 
 func TestFunctionInvocationVariableLookupAndCreateAreBounded(t *testing.T) {
@@ -126,7 +126,7 @@ func TestFunctionInvocationVariableErrorsDoNotExposePrivateContent(t *testing.T)
 
 func TestFunctionInvocationVariableRejectsForgedIdentityBeforeRemoteCall(t *testing.T) {
 	identity := functionVariableIdentity(t)
-	identity.Path = "norn/function-invocation/forged"
+	identity.Path = "nomad/jobs/norn-fn-forged/invoke"
 	client, err := NewClient("http://127.0.0.1:1")
 	if err != nil {
 		t.Fatal(err)
