@@ -32,16 +32,26 @@ exactly one Force call. Recovery exhausts into the same manual-review receipt
 without writing an evaluation acknowledgement. This proves the actual Nomad
 side effect is retained as ambiguous rather than replayed.
 
+`TestCronTriggerWorkerProcessCrashAfterNomadAcknowledgementNomadPostgres`
+crosses the final normal-worker acknowledgement boundary. Its proxy forwards
+the successful Force response, then holds the exact evaluation read that the
+worker can only make after `MarkLaunched` commits. The parent proves the effect
+is durably `launched` with the exact evaluation ID, kills the worker, and
+releases the evaluation read for a successor still routed through the same
+proxy. That successor re-verifies the recorded evaluation and commits the
+completed receipt without issuing Force a second time; the proxy rejects any
+duplicate Force before it reaches Nomad.
+
 Run it only against disposable services:
 
 ```sh
 NORN_TEST_NOMAD_ADDR=http://127.0.0.1:14684 \
 NORN_TEST_DATABASE_URL='postgres://postgres:<test-password>@127.0.0.1:15484/norn_test?sslmode=disable' \
-go test ./handler -run '^TestCronTriggerWorkerProcessCrash(NomadPostgres|AfterNomadForceNomadPostgres)$' -count=1 -v
+go test ./handler -run '^TestCronTriggerWorkerProcessCrash(NomadPostgres|AfterNomadForceNomadPostgres|AfterNomadAcknowledgementNomadPostgres)$' -count=1 -v
 ```
 
 Each test deregisters its unique parent and any child jobs and drops its
 schema. Together they prove the pre-Force reservation boundary and the
-post-Force, pre-acknowledgement boundary. The remaining crash gap is after a
-durable evaluation acknowledgement and before the operation/effect completion
-receipt is committed.
+post-Force, pre-acknowledgement, and post-acknowledgement boundaries. The
+success path after acknowledgement is replayed from the durable evaluation
+identity instead of repeating Nomad's non-idempotent Force.

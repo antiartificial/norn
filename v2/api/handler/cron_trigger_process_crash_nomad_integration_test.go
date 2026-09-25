@@ -211,6 +211,96 @@ func TestCronTriggerWorkerProcessCrashAfterNomadForceNomadPostgres(t *testing.T)
 	}
 }
 
+// TestCronTriggerWorkerProcessCrashAfterNomadAcknowledgementNomadPostgres
+// kills a distinct normal worker after MarkLaunched has committed the exact
+// Nomad evaluation identity, but before it can verify that evaluation and
+// write the completed effect/operation receipt. The proxy holds only that
+// post-acknowledgement evaluation read, which cannot start until MarkLaunched
+// has returned. A replacement worker must use the durable acknowledgement to
+// complete successfully without forcing the periodic parent a second time.
+func TestCronTriggerWorkerProcessCrashAfterNomadAcknowledgementNomadPostgres(t *testing.T) {
+	address, databaseURL := os.Getenv("NORN_TEST_NOMAD_ADDR"), os.Getenv("NORN_TEST_DATABASE_URL")
+	if address == "" || databaseURL == "" {
+		t.Skip("set disposable NORN_TEST_NOMAD_ADDR and NORN_TEST_DATABASE_URL")
+	}
+	target, err := url.Parse(address)
+	if err != nil || target.Scheme != "http" || net.ParseIP(target.Hostname()) == nil || !net.ParseIP(target.Hostname()).IsLoopback() {
+		t.Fatal("process-crash qualification requires disposable loopback Nomad")
+	}
+
+	db, schema := cronTriggerCrashDB(t, databaseURL)
+	realNomad, err := nomad.NewClient(address)
+	if err != nil {
+		t.Fatal(err)
+	}
+	app, root, jobID := cronTriggerCrashApp(t, realNomad)
+	acknowledged := make(chan string, 1)
+	var forceCalls atomic.Int32
+	var releaseEvaluationRead atomic.Bool
+	proxy := cronTriggerCrashAfterLaunchProxy(t, target, jobID, acknowledged, &forceCalls, &releaseEvaluationRead)
+	t.Cleanup(proxy.Close)
+
+	p := &pipeline.Pipeline{DB: db, Nomad: realNomad, AppsDir: root, SagaStore: saga.NewPostgresStore(db.Pool)}
+	p.CronTriggerEffects, err = pipeline.NewCronTriggerEffects(db, realNomad)
+	if err != nil {
+		t.Fatal(err)
+	}
+	h := New(db, realNomad, nil, nil, &config.Config{AppsDir: root, AuditSigningKey: cronTriggerCrashAuditKey}, p, nil, nil, p.SagaStore, nil, nil)
+	p.SetOperationStore(h.OperationStore())
+	accepted := cronTriggerCrashAccept(t, h, app)
+
+	crashed := cronTriggerCrashWorkerCommand(t, databaseURL, schema, proxy.URL, root)
+	if err := crashed.Start(); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = crashed.Process.Kill(); _, _ = crashed.Process.Wait() })
+	var evalID string
+	select {
+	case evalID = <-acknowledged:
+	case <-time.After(20 * time.Second):
+		t.Fatal("worker did not reach post-acknowledgement evaluation boundary")
+	}
+	if _, err := realNomad.PeriodicForceEvaluation(context.Background(), evalID, jobID); err != nil {
+		t.Fatalf("live Nomad did not retain acknowledged evaluation %q: %v", evalID, err)
+	}
+	var lifecycle, runtimeID string
+	if err := db.Pool.QueryRow(context.Background(), `SELECT lifecycle,COALESCE(runtime_instance_id,'') FROM operation_effects WHERE operation_id=$1`, accepted.ID).Scan(&lifecycle, &runtimeID); err != nil || lifecycle != "launched" || runtimeID != evalID {
+		t.Fatalf("effect before kill lifecycle=%q runtime=%q eval=%q err=%v", lifecycle, runtimeID, evalID, err)
+	}
+	if err := crashed.Process.Kill(); err != nil {
+		t.Fatalf("SIGKILL worker: %v", err)
+	}
+	if err := crashed.Wait(); err == nil {
+		t.Fatal("worker unexpectedly exited cleanly instead of being killed")
+	}
+	if got := forceCalls.Load(); got != 1 {
+		t.Fatalf("live Nomad Force calls before recovery=%d want 1", got)
+	}
+
+	// Keep the successor on the same proxy. Releasing its evaluation read lets
+	// it complete while the proxy still rejects any duplicate Force before it
+	// can reach Nomad.
+	releaseEvaluationRead.Store(true)
+	if _, err := db.Pool.Exec(context.Background(), `UPDATE operations SET locked_until=now()-interval '1 second' WHERE id=$1`, accepted.ID); err != nil {
+		t.Fatal(err)
+	}
+	restarted := cronTriggerCrashWorkerCommand(t, databaseURL, schema, proxy.URL, root)
+	if err := restarted.Start(); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = restarted.Process.Kill(); _, _ = restarted.Process.Wait() })
+	final := cronTriggerCrashWaitForTerminal(t, db, accepted.ID, 25*time.Second)
+	if final.Status != model.OperationSucceeded || final.Metadata["evalId"] != evalID {
+		t.Fatalf("restarted receipt=%+v want eval=%q", final, evalID)
+	}
+	if err := db.Pool.QueryRow(context.Background(), `SELECT lifecycle,COALESCE(runtime_instance_id,'') FROM operation_effects WHERE operation_id=$1`, accepted.ID).Scan(&lifecycle, &runtimeID); err != nil || lifecycle != "completed" || runtimeID != evalID {
+		t.Fatalf("effect after recovery lifecycle=%q runtime=%q eval=%q err=%v", lifecycle, runtimeID, evalID, err)
+	}
+	if got := forceCalls.Load(); got != 1 {
+		t.Fatalf("recovery issued a second Nomad Force: calls=%d", got)
+	}
+}
+
 const cronTriggerCrashAuditKey = "cccccccccccccccccccccccccccccccc"
 
 func runCronTriggerCrashWorker(t *testing.T) {
@@ -373,6 +463,66 @@ func cronTriggerCrashAfterForceProxy(t *testing.T, target *url.URL, jobID string
 			}
 			forced <- evalID
 			<-r.Context().Done()
+			return
+		}
+		for key, values := range response.Header {
+			for _, value := range values {
+				w.Header().Add(key, value)
+			}
+		}
+		w.WriteHeader(response.StatusCode)
+		_, _ = io.Copy(w, response.Body)
+	}))
+}
+
+// cronTriggerCrashAfterLaunchProxy forwards the Force response, then blocks
+// the immediately following evaluation request. That request is issued only
+// after MarkLaunched has committed, making it a deterministic post-acknowledge
+// and pre-completion process-crash boundary.
+func cronTriggerCrashAfterLaunchProxy(t *testing.T, target *url.URL, jobID string, acknowledged chan<- string, forceCalls *atomic.Int32, releaseEvaluationRead *atomic.Bool) *httptest.Server {
+	t.Helper()
+	var evalID atomic.Value
+	return httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		force := r.Method == http.MethodPut && r.URL.Path == "/v1/job/"+jobID+"/periodic/force"
+		if force && forceCalls.Add(1) != 1 {
+			http.Error(w, "second Force rejected by crash qualification", http.StatusConflict)
+			return
+		}
+		if r.Method == http.MethodGet && !releaseEvaluationRead.Load() && strings.HasPrefix(r.URL.Path, "/v1/evaluation/") {
+			if value, ok := evalID.Load().(string); ok && r.URL.Path == "/v1/evaluation/"+value {
+				acknowledged <- value
+				<-r.Context().Done()
+				return
+			}
+		}
+		upstream := r.Clone(r.Context())
+		upstream.URL.Scheme, upstream.URL.Host, upstream.Host, upstream.RequestURI = target.Scheme, target.Host, target.Host, ""
+		response, err := http.DefaultTransport.RoundTrip(upstream)
+		if err != nil {
+			http.Error(w, err.Error(), http.StatusBadGateway)
+			return
+		}
+		defer response.Body.Close()
+		if force {
+			body, err := io.ReadAll(response.Body)
+			if err != nil {
+				t.Errorf("read successful Nomad Force response: %v", err)
+				return
+			}
+			copied := &http.Response{Header: response.Header, Body: io.NopCloser(bytes.NewReader(body))}
+			id, err := cronTriggerCrashEvalID(copied)
+			if err != nil || id == "" {
+				t.Errorf("read successful Nomad Force response: eval=%q err=%v", id, err)
+				return
+			}
+			evalID.Store(id)
+			for key, values := range response.Header {
+				for _, value := range values {
+					w.Header().Add(key, value)
+				}
+			}
+			w.WriteHeader(response.StatusCode)
+			_, _ = w.Write(body)
 			return
 		}
 		for key, values := range response.Header {
