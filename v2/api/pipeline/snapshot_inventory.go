@@ -223,35 +223,41 @@ func (p *Pipeline) exportTargetSnapshot(ctx context.Context, spec *model.InfraSp
 		}
 		return manifest, key, nil
 	}
-	createOnly := objects.(snapshotCreateOnlyObjectStore)
+	if err := publishClaimedSnapshot(ctx, objects.(snapshotCreateOnlyObjectStore), bucket, key, private, copyPath, manifestPath, encoded, manifest.SHA256, manifest.Size); err != nil {
+		return SnapshotExportManifest{}, "", err
+	}
+	return manifest, key, nil
+}
+
+func publishClaimedSnapshot(ctx context.Context, createOnly snapshotCreateOnlyObjectStore, bucket, key, private, copyPath, manifestPath string, encoded []byte, digest string, size int64) error {
 	if err := createOnly.PutObjectIfAbsent(ctx, bucket, key, copyPath); err != nil {
 		// A lost response can still mean the create committed. Verification below
 		// decides from the remote bytes, never from the transport error alone.
 		_ = err
 	}
 	remoteDump := filepath.Join(private, "remote-dump")
-	if err := objects.GetObject(ctx, bucket, key, remoteDump); err != nil {
-		return SnapshotExportManifest{}, "", fmt.Errorf("verify remote snapshot: %w", err)
+	if err := createOnly.GetObject(ctx, bucket, key, remoteDump); err != nil {
+		return fmt.Errorf("verify remote snapshot: %w", err)
 	}
-	if err := verifyRegularFileDigest(remoteDump, manifest.SHA256, manifest.Size); err != nil {
-		return SnapshotExportManifest{}, "", fmt.Errorf("remote snapshot differs from pinned source: %w", err)
+	if err := verifyRegularFileDigest(remoteDump, digest, size); err != nil {
+		return fmt.Errorf("remote snapshot differs from pinned source: %w", err)
 	}
 	if err := createOnly.PutObjectIfAbsent(ctx, bucket, key+snapshotManifestSuffix, manifestPath); err != nil {
 		_ = err
 	}
 	remoteManifest := filepath.Join(private, "remote-manifest")
-	if err := objects.GetObject(ctx, bucket, key+snapshotManifestSuffix, remoteManifest); err != nil {
-		return SnapshotExportManifest{}, "", fmt.Errorf("verify remote snapshot manifest: %w", err)
+	if err := createOnly.GetObject(ctx, bucket, key+snapshotManifestSuffix, remoteManifest); err != nil {
+		return fmt.Errorf("verify remote snapshot manifest: %w", err)
 	}
 	remoteManifestInfo, err := os.Lstat(remoteManifest)
 	if err != nil || !remoteManifestInfo.Mode().IsRegular() || remoteManifestInfo.Size() != int64(len(encoded)) {
-		return SnapshotExportManifest{}, "", fmt.Errorf("remote snapshot manifest has unexpected size or type: %v", err)
+		return fmt.Errorf("remote snapshot manifest has unexpected size or type: %v", err)
 	}
 	actual, err := os.ReadFile(remoteManifest)
 	if err != nil || !bytes.Equal(actual, encoded) {
-		return SnapshotExportManifest{}, "", fmt.Errorf("remote snapshot manifest differs from accepted publication: %v", err)
+		return fmt.Errorf("remote snapshot manifest differs from accepted publication: %v", err)
 	}
-	return manifest, key, nil
+	return nil
 }
 
 // ImportTargetSnapshot recovers an exported snapshot into the current

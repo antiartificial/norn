@@ -8,6 +8,8 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/google/uuid"
+
 	"norn/v2/api/model"
 )
 
@@ -209,5 +211,70 @@ func TestLegacyImportPublishesExclusively(t *testing.T) {
 	}
 	if _, err := importLegacySnapshot(context.Background(), objects, "review", "snapshots/other/shop_abc1234_20260925T120000.dump", "demo", "shop", directory); err == nil {
 		t.Fatal("foreign app key accepted")
+	}
+}
+
+func TestClaimedLegacyExportImportVerifiesRemoteBytes(t *testing.T) {
+	const name = "shop_abc1234_20260925T120000.dump"
+	const operationID = "c348f65c-4a3e-48d9-9d92-03c25a9b42e6"
+	local := t.TempDir()
+	if err := os.WriteFile(filepath.Join(local, name), []byte("verified legacy dump"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	objects := reviewSnapshotObjects{}
+	key, err := exportLegacySnapshotClaimed(context.Background(), objects, "review", "demo", "shop", name, local, operationID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := LegacySnapshotKeyName(key, "demo", "shop"); err != nil {
+		t.Fatal(err)
+	}
+	imported := t.TempDir()
+	if got, err := importLegacySnapshot(context.Background(), objects, "review", key, "demo", "shop", imported); err != nil || got != name {
+		t.Fatalf("verified import = %q, %v", got, err)
+	}
+	objects[key] = []byte("tampered legacy dump")
+	if _, err := importLegacySnapshot(context.Background(), objects, "review", key, "demo", "shop", t.TempDir()); err == nil {
+		t.Fatal("tampered remote legacy dump was imported")
+	}
+}
+
+func TestClaimedLegacyExportOperation(t *testing.T) {
+	p, db, request := acceptancePipelineFixture(t)
+	t.Chdir(t.TempDir())
+	if err := os.MkdirAll("snapshots", 0o750); err != nil {
+		t.Fatal(err)
+	}
+	const name = "shop_abc1234_20260925T120000.dump"
+	if err := os.WriteFile(filepath.Join("snapshots", name), []byte("claimed legacy dump"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	p.AppsDir = t.TempDir()
+	appDir := filepath.Join(p.AppsDir, "demo")
+	if err := os.MkdirAll(appDir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(appDir, "infraspec.yaml"), []byte("name: demo\ndeploy: true\nprocesses:\n  web:\n    command: ./web\ninfrastructure:\n  postgres:\n    database: shop\nsnapshots:\n  exportBucket: review\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	objects := reviewSnapshotObjects{}
+	p.SnapshotObjects = objects
+	operation := model.Operation{ID: uuid.NewString(), Kind: "app.snapshot-export", App: "demo", SagaID: uuid.NewString(), Status: model.OperationQueued,
+		Source: "control-api", Payload: map[string]interface{}{"bucket": "review", "snapshot": name}, Metadata: map[string]interface{}{}, MaxAttempts: 1}
+	accepted, err := p.QueueOperation(context.Background(), operation, request)
+	if err != nil {
+		t.Fatal(err)
+	}
+	claimed, claim, err := db.ClaimNextOperation(context.Background(), "legacy-export-worker", 60_000_000_000, []string{"app.snapshot-export"})
+	if err != nil || claimed == nil || claimed.ID != accepted.Operation.ID {
+		t.Fatalf("claim = %+v, %v", claimed, err)
+	}
+	result, err := p.ExecuteOperation(context.Background(), claimed, claim)
+	if err != nil || result.Status != model.OperationSucceeded {
+		t.Fatalf("legacy claimed export = %+v, %v", result, err)
+	}
+	key, _ := result.Metadata["key"].(string)
+	if !strings.Contains(key, "/operations/"+accepted.Operation.ID+"/") || len(objects[key]) == 0 || len(objects[key+snapshotManifestSuffix]) == 0 {
+		t.Fatalf("legacy claimed export missing objects at %q", key)
 	}
 }

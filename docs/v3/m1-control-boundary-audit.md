@@ -135,12 +135,13 @@ snapshots; the worker owns the download and publication. The target-bound
 path retains manifest, target, and digest checks. A lost worker claim is a
 one-attempt failure requiring operator inspection of any published dump or
 sidecar before resubmission. This still needs the two-process crash gate.
-The target-aware snapshot export HTTP route now pins a filename and queues a
-signed `app.snapshot-export` operation. Its worker uses an operation-specific
-remote key, create-only writes, and remote readback of the dump before it
-publishes the manifest. A lost claim remains a one-attempt failure for
-inspection. The legacy flat export route and automatic predeploy export in
-`pipeline/snapshot.go` still upload inline. The create-only S3 behavior has
-passed the local emulator, including multipart completion, but provider
-qualification and two-process crash recovery remain open. These remaining
-paths keep M1 export incomplete.
+Both target-aware and legacy flat snapshot export HTTP routes now pin a
+filename and queue a signed `app.snapshot-export` operation. The worker uses
+an operation-specific remote key, create-only writes, and remote readback of
+the dump before publishing its manifest. Legacy imports of these new keys
+verify the manifest and dump digest. A lost claim remains a one-attempt
+failure for inspection. Automatic predeploy export in `pipeline/snapshot.go`
+still uploads inline. The create-only S3 behavior has passed the local
+emulator, including multipart completion, but provider qualification and
+two-process crash recovery remain open. These remaining paths keep M1 export
+incomplete.

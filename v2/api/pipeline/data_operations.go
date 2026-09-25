@@ -157,6 +157,20 @@ func (p *Pipeline) executeDataOperation(ctx context.Context, op *model.Operation
 			return nil, fmt.Errorf("signed snapshot export bucket differs from current app configuration")
 		}
 		logical, filename := stringFromMap(op.Payload, "database"), stringFromMap(op.Payload, "snapshot")
+		if bound == nil && !spec.NamedDatabases() {
+			createOnly, ok := p.SnapshotObjects.(snapshotCreateOnlyObjectStore)
+			if !ok {
+				return nil, fmt.Errorf("legacy snapshot export object store lacks create-only publication")
+			}
+			key, err := exportLegacySnapshotClaimed(ctx, createOnly, spec.Snapshots.ExportBucket, spec.App, database, filename, location.dir, op.ID)
+			if err != nil {
+				return nil, err
+			}
+			return finish("snapshot exported for "+spec.App, map[string]interface{}{"snapshot": filename, "key": key, "bucket": spec.Snapshots.ExportBucket}, func(publishCtx context.Context) {
+				_ = sg.Log(publishCtx, "snapshot.exported", "legacy snapshot exported", map[string]string{"snapshot": filename, "key": key})
+				p.broadcastDataEvent("snapshot.exported", spec.App, map[string]string{"snapshot": filename, "operationId": op.ID})
+			}), nil
+		}
 		manifest, key, err := p.ExportTargetSnapshotClaimed(ctx, spec, logical, filename, p.SnapshotObjects, spec.Snapshots.ExportBucket, op.ID)
 		if err != nil {
 			return nil, err

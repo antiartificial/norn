@@ -500,30 +500,19 @@ func (h *Handler) ExportSnapshot(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusNotFound, "no local snapshots available")
 		return
 	}
-	snapshot := snapshots[0] // latest
-
-	key := "snapshots/" + id + "/" + snapshot.Filename
-	localPath := filepath.Join("snapshots", snapshot.Filename)
-	if err := h.s3.PutObject(r.Context(), exportBucket, key, localPath); err != nil {
-		writeError(w, http.StatusInternalServerError, fmt.Sprintf("upload snapshot: %v", err))
+	filename := r.URL.Query().Get("snapshot")
+	if filename == "" {
+		filename = snapshots[0].Filename
+	}
+	found := false
+	for _, snapshot := range snapshots {
+		found = found || snapshot.Filename == filename
+	}
+	if !found {
+		writeError(w, http.StatusNotFound, "no local snapshot matches")
 		return
 	}
-
-	h.emitSnapshotEvent(r, id, "snapshot.exported", model.BeaconInfo, "snapshot exported",
-		fmt.Sprintf("%s exported snapshot %s to %s", id, snapshot.Filename, exportBucket),
-		map[string]interface{}{
-			"bucket":   exportBucket,
-			"key":      key,
-			"snapshot": snapshot.Filename,
-		})
-
-	writeJSON(w, map[string]interface{}{
-		"status":   "exported",
-		"app":      id,
-		"snapshot": snapshot,
-		"bucket":   exportBucket,
-		"key":      key,
-	})
+	h.queueAppDataOperation(w, r, "app.snapshot-export", "snapshot export", map[string]interface{}{"bucket": exportBucket, "snapshot": filename}, 1)
 }
 
 func (h *Handler) ListRemoteSnapshots(w http.ResponseWriter, r *http.Request) {
@@ -614,9 +603,8 @@ func (h *Handler) ImportSnapshot(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusConflict, "app postgres database name is unsafe for snapshot storage")
 		return
 	}
-	expectedPrefix := "snapshots/" + id + "/"
-	filename := filepath.Base(req.Key)
-	if !strings.HasPrefix(req.Key, expectedPrefix) || strings.Contains(strings.TrimPrefix(req.Key, expectedPrefix), "/") || parseSnapshotEntry(dbName, filename, 1) == nil {
+	filename, keyErr := pipeline.LegacySnapshotKeyName(req.Key, id, dbName)
+	if keyErr != nil || parseSnapshotEntry(dbName, filename, 1) == nil {
 		writeError(w, http.StatusBadRequest, "key must name a valid snapshot in this app's export prefix")
 		return
 	}
