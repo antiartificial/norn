@@ -11,7 +11,9 @@ to this identity require the enclosing binding generation to increase.
 The private restore runner resolves the immutable catalog revision recorded by
 the accepted operation. The signed restore payload copies the complete
 maintenance identity, including references but never credential values, and
-the prepare and begin checkpoints reject a mismatch. `mysql` itself connects
+the prepare and begin checkpoints reject a mismatch. Both prepare preflights,
+including an identical replay while runtime access is locked, use the restore
+identity. `mysql` itself connects
 with the restore role and credential reference; it verifies `CURRENT_USER()`
 against the signed restore account before import and cannot silently fall back
 to the application runtime credential. Post-import expectation verification
