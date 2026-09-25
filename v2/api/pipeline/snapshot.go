@@ -65,6 +65,11 @@ func (p *Pipeline) snapshot(ctx context.Context, st *state, sg *saga.Saga) error
 }
 
 func (p *Pipeline) snapshotTarget(ctx context.Context, st *state, sg *saga.Saga, db string, target *boundDatabase, sha string) error {
+	if st.claim.OperationID() != "" && p.DB != nil {
+		if err := p.DB.CheckOperationClaim(ctx, st.claim); err != nil {
+			return fmt.Errorf("predeploy snapshot claim is no longer current: %w", err)
+		}
+	}
 	if target != nil {
 		if err := target.requireCapabilities(dbSnapshot); err != nil {
 			return err
@@ -74,7 +79,16 @@ func (p *Pipeline) snapshotTarget(ctx context.Context, st *state, sg *saga.Saga,
 	if err != nil {
 		return err
 	}
-	created, err := createDataSnapshot(ctx, location, sha)
+	var created *dataSnapshot
+	if target != nil && st.claim.OperationID() != "" && !st.operationStartedAt.IsZero() {
+		// The accepted operation owns one stable safety snapshot name. A
+		// replay can reuse only a dump whose target sidecar verifies, rather
+		// than producing a second snapshot after a worker crash.
+		label := "effect-" + st.claim.OperationID()
+		created, err = createDataSnapshotAt(ctx, location, label, st.operationStartedAt, true)
+	} else {
+		created, err = createDataSnapshot(ctx, location, sha)
+	}
 	if err != nil {
 		return err
 	}

@@ -183,8 +183,20 @@ func (p *Pipeline) exportTargetSnapshot(ctx context.Context, spec *model.InfraSp
 	if chosen == nil {
 		return SnapshotExportManifest{}, "", &DatabaseTargetError{Reason: "no restorable snapshot of the current target matches"}
 	}
+	exportedAt := time.Now().UTC()
+	if operationID != "" {
+		if p.DB == nil {
+			return SnapshotExportManifest{}, "", fmt.Errorf("claimed snapshot export requires an operation store")
+		}
+		operation, err := p.DB.GetOperation(ctx, operationID)
+		if err != nil || operation == nil || operation.StartedAt.IsZero() {
+			return SnapshotExportManifest{}, "", fmt.Errorf("claimed snapshot export operation is unavailable: %v", err)
+		}
+		// A create-only manifest must be byte-identical on an exact replay.
+		exportedAt = operation.StartedAt.UTC()
+	}
 	manifest := SnapshotExportManifest{Schema: snapshotExportSchema, App: spec.App, Database: logical, Filename: chosen.Filename,
-		Target: location.bound.resolved.Target, Provenance: "sidecar", ExportedAt: time.Now().UTC()}
+		Target: location.bound.resolved.Target, Provenance: "sidecar", ExportedAt: exportedAt}
 	switch {
 	case chosen.sidecar != nil:
 		manifest.SHA256, manifest.Size, manifest.CatalogRevision = chosen.sidecar.SHA256, chosen.sidecar.Size, chosen.sidecar.CatalogRevision

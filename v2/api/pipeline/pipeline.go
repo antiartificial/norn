@@ -131,6 +131,8 @@ type state struct {
 	candidate     model.ReleaseCandidate
 	// claim authorizes external effects started by this execution.
 	claim store.OperationClaim
+	// operationStartedAt pins names of replayable predeploy safety snapshots.
+	operationStartedAt time.Time
 	// sourceIdentity is the digest of the operation's recorded source
 	// checkpoint; it is identical on every claim of the operation.
 	sourceIdentity string
@@ -505,24 +507,27 @@ func (p *Pipeline) run(ctx context.Context, spec *model.InfraSpec, deploy *model
 	operationID := claim.OperationID()
 	var candidate model.ReleaseCandidate
 	var payload map[string]interface{}
+	var operationStartedAt time.Time
 	if operationID != "" && p.DB != nil {
 		if op, err := p.DB.GetOperation(ctx, operationID); err == nil {
 			encoded, _ := json.Marshal(op.Metadata["candidate"])
 			_ = json.Unmarshal(encoded, &candidate)
 			payload = op.Payload
+			operationStartedAt = op.StartedAt
 		}
 	}
 	st := &state{
-		spec:             spec,
-		commitSHA:        deploy.CommitSHA,
-		sourceRef:        deploy.CommitSHA,
-		deploymentID:     deploy.ID,
-		regionEvals:      make(map[string]string),
-		imageTag:         deploy.ImageTag,
-		artifactBound:    deploy.ImageTag != "",
-		candidate:        candidate,
-		claim:            claim,
-		operationPayload: payload,
+		spec:               spec,
+		commitSHA:          deploy.CommitSHA,
+		sourceRef:          deploy.CommitSHA,
+		deploymentID:       deploy.ID,
+		regionEvals:        make(map[string]string),
+		imageTag:           deploy.ImageTag,
+		artifactBound:      deploy.ImageTag != "",
+		candidate:          candidate,
+		claim:              claim,
+		operationStartedAt: operationStartedAt,
+		operationPayload:   payload,
 	}
 	defer func() { _ = st.database.Close() }()
 

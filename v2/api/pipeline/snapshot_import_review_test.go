@@ -126,8 +126,8 @@ func TestClaimedSnapshotExportUsesPrivateRemoteKey(t *testing.T) {
 			}
 		}
 	}
-	if _, _, err := f.p.ExportTargetSnapshotClaimed(context.Background(), f.spec, "primary", filename, objects, "review", op.ID); err == nil {
-		t.Fatal("same operation unexpectedly republished a new manifest")
+	if _, replayKey, err := f.p.ExportTargetSnapshotClaimed(context.Background(), f.spec, "primary", filename, objects, "review", op.ID); err != nil || replayKey != key {
+		t.Fatalf("same operation did not verify its pinned export: %q, %v", replayKey, err)
 	}
 }
 
@@ -201,10 +201,21 @@ func TestPredeploySnapshotAutoExportUsesClaimedPublication(t *testing.T) {
 	}
 	defer set.Close()
 	target := set.named["primary"]
-	st := &state{spec: f.spec, claim: claim, commitSHA: "abc1234"}
+	st := &state{spec: f.spec, claim: claim, commitSHA: "abc1234", operationStartedAt: op.StartedAt}
 	sg := saga.NewWithID(f.p.SagaStore, op.SagaID, f.app, "pipeline", "deploy")
 	if err := f.p.snapshotTarget(ctx, st, sg, target.resolved.Target.Database, target, "abc1234"); err != nil {
 		t.Fatal(err)
+	}
+	if err := f.p.snapshotTarget(ctx, st, sg, target.resolved.Target.Database, target, "abc1234"); err != nil {
+		t.Fatalf("predeploy snapshot replay: %v", err)
+	}
+	location, err := f.p.prepareSnapshotLocation(target.resolved.Target.Database, target)
+	if err != nil {
+		t.Fatal(err)
+	}
+	snapshots, err := listDataSnapshots(location)
+	if err != nil || len(snapshots) != 1 {
+		t.Fatalf("replayed predeploy snapshots = %+v, %v", snapshots, err)
 	}
 	found := false
 	for key := range objects {
