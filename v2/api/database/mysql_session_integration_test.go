@@ -96,6 +96,18 @@ func TestMySQLRuntimeComponentsReachDeclaredTarget(t *testing.T) {
 		if material, err := tlsSession.RuntimeTLSMaterial(); err != nil || string(material["ca"]) != string(caPEM) {
 			t.Fatal("TLS MySQL session did not expose matching CA material")
 		}
+		if serverName := os.Getenv("NORN_TEST_MYSQL_SERVER_NAME"); serverName != "" {
+			full := tlsResolved
+			full.TLS = DatabaseTLS{Mode: TLSVerifyFull, CARef: "secret:mysql-ca", ServerName: serverName}
+			fullSession, err := OpenSession(ctx, full, literalSecrets{"secret:mysql": `{"password":"` + password + `"}`, "secret:mysql-ca": string(caPEM)})
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer fullSession.Close()
+			if fullProbe, err := fullSession.Probe(ctx); err != nil || fullProbe.Database != databaseName || fullProbe.Role != role {
+				t.Fatalf("verify-full MySQL identity probe = %+v, %v", fullProbe, err)
+			}
+		}
 		unrelatedServer := httptest.NewTLSServer(http.HandlerFunc(func(http.ResponseWriter, *http.Request) {}))
 		unrelatedCA := pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: unrelatedServer.Certificate().Raw})
 		unrelatedServer.Close()
