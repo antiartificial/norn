@@ -101,3 +101,30 @@ and production readiness `blocked`. It also reported snapshot-retention
 warnings for `field-harbor` and `turnkey-offer-intake`. This observation still
 does not establish a representative workload cycle or a reviewed retention,
 backup-space, or restore-time budget. No Mini mutation was made.
+
+An additional read-only aggregate sample at 2026-09-25 18:41:32 UTC measured
+database size **244,993,171 bytes**, user-table total **235,978,752 bytes**,
+heap **146,866,176 bytes**, and indexes **88,047,616 bytes**. Database size
+grew **4,669,440 bytes** from the 2026-09-24 15:59 UTC baseline over about
+26.71 hours, a linearized **4.00 MiB per day** for this one observed interval.
+The largest tables were `beacon_events` (111,280,128 bytes),
+`control_events` (81,084,416), and `mutation_audit_events` (30,760,960).
+The prior and current 24-hour windows contained 1,501 and 1,500 Beacon
+events, 1,549 and 1,500 control events, and 1,691 and 1,694 mutation audit
+events respectively. These are aggregate counts, not application rows.
+
+At 18:41 UTC, the authenticated read-only inventory still reported signed v2
+API version `v2.20.0-platform-30-ga5da8ef`, 27 app records, zero active
+operations, host status `ok`, and production readiness `blocked`. Mini's data
+volume reported 36 GiB available. No Mini database, app, job, release, or
+provider state was changed.
+
+For planning only, doubling the observed daily byte growth gives an **8 MiB
+per day** control-database growth allowance. Over 30 days that adds about
+240 MiB to the current 234 MiB database; a **512 MiB control-database size
+review threshold** rounds that envelope upward. This is a provisional sizing
+trigger, not a retention policy, backup reserve, RPO, RTO, or M0 exit budget.
+The interval covers one calendar day at this workload, but no workload-cycle
+classification or timed current-head backup/restore evidence establishes those
+other budgets. Recheck the trend after a representative cycle and review the
+numeric objectives before release approval.
