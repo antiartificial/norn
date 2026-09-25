@@ -129,6 +129,9 @@ func (p *Pipeline) submit(ctx context.Context, st *state, sg *saga.Saga) error {
 			}
 			job := nomad.TranslateForRegionAt(st.spec, st.imageTag, env, region, st.deliveryRevision)
 			nomad.ApplyDesiredReplicaCounts(job, desiredCounts)
+			if err := bindDeploymentJobProvenance(job, st.deploymentID, stringFromMap(st.operationPayload, "specDigest"), st.operationPayload); err != nil {
+				return err
+			}
 			evalID, err := p.Nomad.SubmitJobRegion(job, region.NomadRegion)
 			if err != nil {
 				p.containWordPressVerifiedTLSColdStart(ctx, coldStartGate)
@@ -154,6 +157,9 @@ func (p *Pipeline) submit(ctx context.Context, st *state, sg *saga.Saga) error {
 				continue
 			}
 			periodicJob := nomad.TranslatePeriodicForRegionAt(st.spec, procName, proc, st.imageTag, env, region, st.deliveryRevision)
+			if err := bindDeploymentJobProvenance(periodicJob, st.deploymentID, stringFromMap(st.operationPayload, "specDigest"), st.operationPayload); err != nil {
+				return err
+			}
 			periodicEvalID, err := p.Nomad.SubmitJobRegion(periodicJob, region.NomadRegion)
 			if err != nil {
 				p.containWordPressVerifiedTLSColdStart(ctx, coldStartGate)

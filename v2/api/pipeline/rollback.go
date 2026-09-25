@@ -186,6 +186,9 @@ func (p *Pipeline) runRollback(ctx context.Context, op *model.Operation, spec *m
 				}
 				job := nomad.TranslateForRegionAt(spec, imageTag, env, region, revision)
 				nomad.ApplyDesiredReplicaCounts(job, desiredCounts)
+				if err := bindDeploymentJobProvenance(job, deploy.ID, deploy.SpecDigest, op.Payload); err != nil {
+					return err
+				}
 				evalID, err := p.Nomad.SubmitJobRegion(job, region.NomadRegion)
 				if err != nil {
 					_ = p.DB.UpdateDeploymentRegion(ctx, deploy.ID, region.Name, model.StatusFailed, "", err.Error(), 0)
