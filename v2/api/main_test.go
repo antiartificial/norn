@@ -50,6 +50,21 @@ func testEd25519Public(ch byte) string {
 	return base64.RawStdEncoding.EncodeToString(ed25519.NewKeyFromSeed(bytes.Repeat([]byte{ch}, ed25519.SeedSize)).Public().(ed25519.PublicKey))
 }
 
+func TestFunctionV3PreviewRequiresPrivatePostgresCapability(t *testing.T) {
+	if err := validateControlSecurityForBackend(&config.Config{FunctionV3PreviewEnabled: true}, startup.ControlBackendConfig{Backend: startup.BackendPostgres}); err == nil || !strings.Contains(err.Error(), "NORN_FUNCTION_V3_PREVIEW_ENABLED") {
+		t.Fatalf("missing private capability err=%v", err)
+	}
+	if err := validateControlSecurityForBackend(&config.Config{FunctionV3PreviewEnabled: true, PrivateInvocationEnabled: true}, startup.ControlBackendConfig{Backend: startup.BackendEtcd}); err == nil || !strings.Contains(err.Error(), "NORN_FUNCTION_V3_PREVIEW_ENABLED") {
+		t.Fatalf("unsupported backend err=%v", err)
+	}
+	if admission, claimed, err := configureFunctionV3(&config.Config{}, nil, nil, nil, nil, nil); err != nil || admission != nil || claimed != nil {
+		t.Fatalf("disabled function preview admission=%v worker=%v err=%v", admission, claimed, err)
+	}
+	if _, _, err := configureFunctionV3(&config.Config{Profile: "production", FunctionV3PreviewEnabled: true, PrivateInvocationEnabled: true}, nil, nil, nil, nil, nil); err == nil || !strings.Contains(err.Error(), "non-production") {
+		t.Fatalf("production preview err=%v", err)
+	}
+}
+
 func TestFileServerServesRootAndIndexFallback(t *testing.T) {
 	dir := t.TempDir()
 	if err := os.WriteFile(filepath.Join(dir, "index.html"), []byte("<html>Norn</html>"), 0o644); err != nil {

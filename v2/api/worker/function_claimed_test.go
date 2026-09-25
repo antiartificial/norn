@@ -43,6 +43,16 @@ type claimedFunctionRuntimeFake struct {
 	calls   int
 }
 
+type claimedFunctionExecutionFake struct {
+	*appLockFencedExecutionStoreFake
+	op    *model.Operation
+	claim store.OperationClaim
+}
+
+func (f *claimedFunctionExecutionFake) ClaimNextOperation(context.Context, string, time.Duration, []string) (*model.Operation, store.OperationClaim, error) {
+	return f.op, f.claim, nil
+}
+
 func (f *claimedFunctionRuntimeFake) ResolveClaimedFunctionInvocationRuntime(context.Context, FunctionInvocationEffectInput) (ClaimedFunctionInvocationRuntime, error) {
 	f.calls++
 	return f.runtime, f.err
@@ -187,6 +197,28 @@ func TestClaimedFunctionInvocationPreflightFailsWithAppLockAndRedactedReceipt(t 
 	}
 	if !isFunctionInvocationPreflightError(functionInvocationPreflightError{"invalid private material"}) || isFunctionInvocationPreflightError(effect.ErrEffectPending) {
 		t.Fatal("preflight errors crossed remote-effect boundary")
+	}
+}
+
+func TestClaimedFunctionInvocationRunOnceTerminalizesPreflightBeforeRemoteEffect(t *testing.T) {
+	input := claimedFunctionInput(t)
+	claim, err := store.NewOperationClaim(input.OperationID, "worker-a", 1)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var finished bool
+	executions := &claimedFunctionExecutionFake{op: claimedFunctionOperation(input), claim: claim}
+	executions.appLockFencedExecutionStoreFake = &appLockFencedExecutionStoreFake{executionStoreFake: &executionStoreFake{lock: func(context.Context, string) (store.AppOperationLock, bool, error) {
+		return store.NewAppOperationLock(context.Background(), nil), true, nil
+	}}, finishWithLock: func(_ context.Context, got store.OperationClaim, _ store.AppOperationLock, status model.OperationStatus, _ string, _ map[string]interface{}) error {
+		finished = got == claim && status == model.OperationFailed
+		return nil
+	}}
+	remote := &functionCompositeRemote{functionVariableRemoteFake: &functionVariableRemoteFake{}, functionJobRemoteFake: &functionJobRemoteFake{}}
+	w, private, _ := claimedFunctionWorker(input, remote, &claimedFunctionReceiptFake{})
+	w.Store, w.Verifier, w.Keys, w.ID, w.Lease = executions, &claimedFunctionVerifierFake{input: input, err: errors.New("bad signature")}, &store.PrivateInvocationKeyRing{}, "worker-a", time.Second
+	if err := w.RunOnce(context.Background()); err != nil || !finished || private.calls != 0 || remote.functionVariableRemoteFake.creates != 0 {
+		t.Fatalf("preflight crossed effect boundary: finished=%v private=%d remote=%d err=%v", finished, private.calls, remote.functionVariableRemoteFake.creates, err)
 	}
 }
 

@@ -1,8 +1,9 @@
 # M1 function invocation: private request and durable Nomad effects
 
 Status: PostgreSQL and etcd private-material acceptance foundations implemented
-and tested against disposable PostgreSQL 17.7 and etcd; route and worker are
-not wired.
+and tested against disposable PostgreSQL 17.7 and etcd. PostgreSQL now has an
+opt-in, non-production admission/claimed-worker preview; production and etcd
+invocation routing remain disabled.
 `InvokeFunction` still submits a batch job in the HTTP process. Its current
 execution-row check and request-independent completion watcher reduce two
 failure windows but do not provide signed acceptance, claim fencing, or crash
@@ -150,8 +151,11 @@ The etcd adapter uses one compare-and-put transaction for signed acceptance,
 operation, kind index, and encrypted private record. Focused tests against a
 disposable real etcd member covered same-key replay, mismatches, no plaintext
 in stored records, and rejected-transaction cleanup; the etcd race suite also
-passed. Neither backend is connected to the function route or startup key
-preflight. Real Nomad, process-crash, and restore qualification remain open.
+passed. The PostgreSQL backend now connects this seam only when
+`NORN_PRIVATE_INVOCATION_ENABLED=true` and
+`NORN_FUNCTION_V3_PREVIEW_ENABLED=true` on a non-production profile. Startup
+preflights required keys. Etcd routing, real Nomad crash, and restore
+qualification remain open.
 
 The private variable path is `nomad/jobs/<function-job-id>/invoke`, which
 matches Nomad's implicit task-group variable read scope and stays separate
@@ -171,7 +175,7 @@ another remote create. Their fake concurrent callers issued one create each.
 The closed function-job dialect derives its digest from the validated public
 Nomad job. A disposable Nomad 2.0.7 server passed zero-index create, duplicate
 conflict, digest read-back, and found-job observation with exact version,
-evaluations, allocations, and a stable second read. Dialect v3 uses a private
+evaluations, allocations, and a stable second read. Dialect v4 uses a private
 `env=true` template to decode padded base64 JSON and inject
 `NORN_REQUEST_BODY`, `NORN_REQUEST_METHOD`, `NORN_REQUEST_PATH`, and a validated
 private environment map with JSON quoting. A pure worker encoder merges app,
@@ -179,9 +183,9 @@ secret, and process environment values while rejecting malformed and reserved
 keys. A disposable Docker-enabled Nomad 2.0.7 allocation produced the
 expected digest for a multiline body and secret, quotes, backslashes, Unicode
 path, and empty values; the job JSON contained no private values. The builder
-and steps are still disconnected from the claimed operation executor. Named
-database delivery, ACL-enabled allocation proof for the implicit group path,
-terminal receipt integration, and cleanup remain open. Requalify on the release Nomad version
+and steps now connect to the claimed operation executor in the PostgreSQL
+preview. Named database delivery still needs ACL-enabled allocation proof for
+the implicit group path; cleanup remains open. Requalify on the release Nomad version
 before enabling submission.
 
 The next pure/read-only slice now projects a terminal result only from one
@@ -189,8 +193,9 @@ exact recovered Nomad allocation, job version, evaluation, and task, with an
 explicit exit code. Lost or widened lineage remains unresolved. PostgreSQL
 atomically inserts the legacy function-history projection and operation
 receipt under the live claim, and rejects stale claims and private receipt
-metadata. These seams are not yet connected to the worker; etcd needs an
-equivalent terminal projection. Cleanup is still unimplemented.
+metadata. These seams now connect to the claimed worker in the PostgreSQL
+preview; etcd terminal projection exists but is not routed. Cleanup remains
+incomplete.
 
 For a spec with no runtime database, the public effect identity uses the paired
 `databaseTarget=none` and `databaseRevision=none` sentinel. A mixed pair is
@@ -209,8 +214,33 @@ unknown states without resubmitting. Terminal observations include the task's
 start time for the execution projection. A disposable etcd 3.5.17 member
 passed the new atomic receipt, conflict, private-metadata, and lost-app-lock
 tests; the etcd receipt additionally compares the app-lock fence in its
-transaction. These are implementation seams: acceptance-bound spec and
-database resolution, the dedicated claimed worker, route activation, cleanup,
-and full external crash qualification remain open.
+transaction. The shared resolver, dedicated claimed worker, and PostgreSQL
+preview route now connect these seams. Production activation, cleanup, and
+full external crash qualification remain open.
+
+## Preview composition and remaining release gates
+
+`NORN_FUNCTION_V3_PREVIEW_ENABLED` connects one public-only admission handler
+and one dedicated claimed worker to a shared runtime resolver. It requires
+the private invocation key ring, PostgreSQL operation store, Nomad, and a
+non-production profile; it refuses startup if the normal operation worker is
+skipped. The resolver selects a deployed spec, the latest deployed digest
+image, and the promoted database revision. The claimed worker repeats the
+public checks before opening private input, uses the closed variable/job
+reconciliation path, and publishes a redacted terminal receipt. A pre-effect
+failure finishes under the claim and app lock. An ambiguous remote effect
+stays pending.
+
+The private variable cleanup consumer now supports exact owner and revision
+checked deletion, and PostgreSQL migration 20 stores lease-fenced public
+cleanup intents. Claim eligibility requires terminal receipt, attempted
+variable creation, and verified or pruned archive evidence. Current function
+operations have no saga ID and the archive worker does not yet handle their
+operation subject, so live function cleanup correctly remains ineligible.
+Add function-specific archive evidence and private-envelope retention policy
+before production activation. A Nomad job purge policy, etcd cleanup parity,
+ACL-enabled allocation with database files, literal crash/two-replica tests,
+deployed-spec provenance, and Mini migration 20 mixed-version/rollback
+rehearsal also remain required.
 The receipt dispatcher refuses a claim-only terminal write on lease-fenced
 backends when the app-lock-aware receipt interface is unavailable.

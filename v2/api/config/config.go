@@ -57,7 +57,11 @@ type Config struct {
 	// NORN_PRIVATE_INVOCATION_KEYS is a JSON object of key ID to base64-encoded
 	// 32-byte key-encryption key. It is consumed only at startup and is never
 	// written to logs.
-	PrivateInvocationEnabled      bool
+	PrivateInvocationEnabled bool
+	// FunctionV3PreviewEnabled connects the durable admission and claimed
+	// worker for explicit qualification. It is off until cleanup and crash
+	// recovery gates have been exercised on the release runtime.
+	FunctionV3PreviewEnabled      bool
 	PrivateInvocationCurrentKeyID string
 	PrivateInvocationKeys         string
 	// QualificationSigningKey signs portable staging release receipts. Keep it
@@ -247,6 +251,7 @@ func Load() *Config {
 		ControlAuthority:                       strings.TrimSpace(os.Getenv("NORN_CONTROL_AUTHORITY")),
 		OperationReplayTTL:                     envOptionalDuration("NORN_OPERATION_REPLAY_TTL"),
 		PrivateInvocationEnabled:               envBoolOr("NORN_PRIVATE_INVOCATION_ENABLED", false),
+		FunctionV3PreviewEnabled:               envBoolOr("NORN_FUNCTION_V3_PREVIEW_ENABLED", false),
 		PrivateInvocationCurrentKeyID:          strings.TrimSpace(os.Getenv("NORN_PRIVATE_INVOCATION_CURRENT_KEY_ID")),
 		PrivateInvocationKeys:                  os.Getenv("NORN_PRIVATE_INVOCATION_KEYS"),
 		AuditRetentionDays:                     envIntOr("NORN_AUDIT_RETENTION_DAYS", 365),

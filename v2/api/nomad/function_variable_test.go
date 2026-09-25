@@ -165,3 +165,41 @@ func TestFunctionInvocationVariableRejectsOversizedPrivateItemsBeforeIO(t *testi
 		t.Fatalf("oversized variable error = %v", err)
 	}
 }
+
+func TestDeleteFunctionInvocationVariableUsesCheckedRevision(t *testing.T) {
+	identity := functionVariableIdentity(t)
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodDelete || r.URL.Path != "/v1/var/"+identity.Path {
+			t.Fatalf("request = %s %s", r.Method, r.URL.Path)
+		}
+		if got := r.URL.Query().Get("cas"); got != "47" {
+			t.Fatalf("CAS = %q, want 47", got)
+		}
+		w.WriteHeader(http.StatusNoContent)
+	}))
+	defer server.Close()
+	client, err := NewClient(server.URL)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := client.DeleteFunctionInvocationVariable(context.Background(), "global", identity, 47); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestDeleteFunctionInvocationVariableRedactsAndClassifiesConflict(t *testing.T) {
+	identity := functionVariableIdentity(t)
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusConflict)
+		_ = json.NewEncoder(w).Encode(&nomadapi.Variable{Path: identity.Path, ModifyIndex: 48, Items: nomadapi.VariableItems{functionInvocationPrivateItem: functionVariableCanary}})
+	}))
+	defer server.Close()
+	client, err := NewClient(server.URL)
+	if err != nil {
+		t.Fatal(err)
+	}
+	err = client.DeleteFunctionInvocationVariable(context.Background(), "global", identity, 47)
+	if !errors.Is(err, ErrFunctionVariableDeleteConflict) || strings.Contains(err.Error(), functionVariableCanary) {
+		t.Fatalf("delete = %v", err)
+	}
+}

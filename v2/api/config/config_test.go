@@ -63,10 +63,11 @@ func TestAuditVerificationKeyRotationConfig(t *testing.T) {
 
 func TestPrivateInvocationKeyRingRuntimeConfig(t *testing.T) {
 	t.Setenv("NORN_PRIVATE_INVOCATION_ENABLED", "true")
+	t.Setenv("NORN_FUNCTION_V3_PREVIEW_ENABLED", "true")
 	t.Setenv("NORN_PRIVATE_INVOCATION_CURRENT_KEY_ID", "invocation-2026-09")
 	t.Setenv("NORN_PRIVATE_INVOCATION_KEYS", `{"invocation-2026-09":"base64-key-material"}`)
 	cfg := Load()
-	if !cfg.PrivateInvocationEnabled || cfg.PrivateInvocationCurrentKeyID != "invocation-2026-09" || cfg.PrivateInvocationKeys == "" {
+	if !cfg.PrivateInvocationEnabled || !cfg.FunctionV3PreviewEnabled || cfg.PrivateInvocationCurrentKeyID != "invocation-2026-09" || cfg.PrivateInvocationKeys == "" {
 		t.Fatalf("private invocation runtime configuration was not loaded")
 	}
 }

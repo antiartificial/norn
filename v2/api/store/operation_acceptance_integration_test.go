@@ -469,7 +469,7 @@ func TestControlAuthorityIsPersistedAndExpectedMatchIsEnforced(t *testing.T) {
 	if err := dbs[0].Pool.QueryRow(context.Background(), `SELECT current_migration_version,minimum_writer_version FROM norn_schema_compatibility WHERE singleton=true`).Scan(&version, &minimumWriter); err != nil {
 		t.Fatal(err)
 	}
-	if version != 19 || minimumWriter != FunctionInvocationEffectAttemptWriterVersion {
+	if version != 20 || minimumWriter != FunctionInvocationCleanupWriterVersion {
 		t.Fatalf("schema version=%d minimum writer=%d", version, minimumWriter)
 	}
 }

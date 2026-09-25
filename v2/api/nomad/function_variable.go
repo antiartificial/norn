@@ -35,6 +35,7 @@ type FunctionInvocationVariableObservation struct {
 	State          FunctionInvocationVariableState
 	Path           string
 	OwnerMarker    string
+	ModifyIndex    uint64
 	PrivateContent []byte
 }
 
@@ -49,6 +50,8 @@ var (
 	ErrFunctionVariableCreateConflict      = errors.New("function variable already exists")
 	ErrFunctionVariableCreateIndeterminate = errors.New("function variable create is indeterminate")
 	ErrFunctionVariableTooLarge            = errors.New("function variable exceeds Nomad's item size limit")
+	ErrFunctionVariableDeleteConflict      = errors.New("function variable revision changed")
+	ErrFunctionVariableDeleteIndeterminate = errors.New("function variable delete is indeterminate")
 )
 
 // LookupFunctionInvocationVariable reads only the two items needed to
@@ -90,8 +93,30 @@ func (c *Client) LookupFunctionInvocationVariable(ctx context.Context, region st
 		State:          FunctionInvocationVariableFound,
 		Path:           variable.Path,
 		OwnerMarker:    variable.Items[functionInvocationOwnerItem],
+		ModifyIndex:    variable.ModifyIndex,
 		PrivateContent: append([]byte(nil), privateContent...),
 	}, nil
+}
+
+// DeleteFunctionInvocationVariable removes exactly the revision previously
+// read and ownership-checked by the cleanup consumer. CheckedDelete prevents a
+// replacement variable from being removed between observation and deletion.
+func (c *Client) DeleteFunctionInvocationVariable(ctx context.Context, region string, identity FunctionInvocationVariableIdentity, modifyIndex uint64) error {
+	if err := validateFunctionVariableIdentity(identity); err != nil || modifyIndex == 0 {
+		return ErrFunctionVariableIdentity
+	}
+	if c == nil || c.api == nil {
+		return ErrFunctionVariableDeleteIndeterminate
+	}
+	_, err := c.api.Variables().CheckedDelete(identity.Path, modifyIndex, (&nomadapi.WriteOptions{Region: region}).WithContext(ctx))
+	if err == nil || errors.Is(err, nomadapi.ErrVariablePathNotFound) || nomadHTTPStatus(err) == http.StatusNotFound {
+		return nil
+	}
+	var conflict nomadapi.ErrCASConflict
+	if errors.As(err, &conflict) || nomadHTTPStatus(err) == http.StatusConflict {
+		return ErrFunctionVariableDeleteConflict
+	}
+	return ErrFunctionVariableDeleteIndeterminate
 }
 
 // CreateFunctionInvocationVariable creates the reserved private variable with

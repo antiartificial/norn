@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"log"
 	"time"
 
 	"norn/v2/api/effect"
@@ -58,6 +59,28 @@ type ClaimedFunctionInvocationWorker struct {
 	Remote   FunctionInvocationRemote
 	ID       string
 	Lease    time.Duration
+}
+
+// Run polls the dedicated invocation kind until shutdown. RunOnce owns one
+// claim at a time, so a slow or ambiguous remote observation cannot cause this
+// worker instance to submit another job for the same accepted operation.
+func (w *ClaimedFunctionInvocationWorker) Run(ctx context.Context, poll time.Duration) {
+	if poll <= 0 {
+		poll = 2 * time.Second
+	}
+	timer := time.NewTimer(0)
+	defer timer.Stop()
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-timer.C:
+			if err := w.RunOnce(ctx); err != nil && ctx.Err() == nil {
+				log.Printf("function invocation worker: %v", err)
+			}
+			timer.Reset(poll)
+		}
+	}
 }
 
 // RunOnce recovers expired claims, then handles at most one function

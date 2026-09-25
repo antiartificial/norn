@@ -375,6 +375,13 @@ func main() {
 	if err := preflightConfiguredPrivateInvocationKeys(context.Background(), cfg, h.OperationStore()); err != nil {
 		log.Fatalf("private invocation startup preflight: %v", err)
 	}
+	functionV3Admission, functionV3Worker, err := configureFunctionV3(cfg, db, pipe, nomadClient, sec, h.OperationStore())
+	if err != nil {
+		log.Fatalf("function v3 preview startup: %v", err)
+	}
+	if functionV3Worker != nil && os.Getenv("NORN_SKIP_OPERATION_WORKER") == "true" {
+		log.Fatal("function v3 preview requires the claimed operation worker")
+	}
 
 	workerCtx, workerCancel := context.WithCancel(context.Background())
 	defer workerCancel()
@@ -383,6 +390,9 @@ func main() {
 	} else {
 		opWorker := worker.NewOperationWorker(db, pipe)
 		go opWorker.Run(workerCtx)
+		if functionV3Worker != nil {
+			go functionV3Worker.Run(workerCtx, 2*time.Second)
+		}
 	}
 	if evidenceArchiver != nil {
 		log.Printf("evidence archive enabled in %s mode", evidenceArchiver.Mode)
@@ -629,7 +639,11 @@ func main() {
 			r.Post("/cron/pause", h.CronPause)
 			r.Post("/cron/resume", h.CronResume)
 			r.Put("/cron/schedule", h.CronUpdateSchedule)
-			r.Post("/invoke", h.InvokeFunction)
+			if functionV3Admission != nil {
+				r.Post("/invoke", functionV3Admission)
+			} else {
+				r.Post("/invoke", h.InvokeFunction)
+			}
 			r.Get("/function/history", h.FunctionHistory)
 			r.Get("/canary", h.CanaryStatus)
 			r.Post("/promote", h.PromoteCanary)
@@ -702,6 +716,9 @@ func preflightConfiguredPrivateInvocationKeys(ctx context.Context, cfg *config.C
 func validateControlSecurityForBackend(cfg *config.Config, backend startup.ControlBackendConfig) error {
 	if cfg == nil {
 		return fmt.Errorf("configuration is required")
+	}
+	if cfg.FunctionV3PreviewEnabled && (!cfg.PrivateInvocationEnabled || backend.Backend != startup.BackendPostgres) {
+		return fmt.Errorf("NORN_FUNCTION_V3_PREVIEW_ENABLED requires private invocation acceptance on PostgreSQL")
 	}
 	if cfg.OperationReplayTTL < 0 {
 		return fmt.Errorf("NORN_OPERATION_REPLAY_TTL must be zero or a positive Go duration")
