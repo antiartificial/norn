@@ -10,6 +10,9 @@ objects remain locked for at least 24 hours and incur provider storage charges.
 Put the following JSON in an owner-owned mode-`0600` file. The prefix must
 start with `norn-v3-disposable/`; the test adds a fresh UUID below it. Do not
 put credentials in a command argument, repository file, or test output.
+The optional `"insecure": true` is accepted only for a numeric loopback
+endpoint such as `127.0.0.1:19000` during a disposable local server test;
+remote provider runs require TLS.
 
 ```json
 {

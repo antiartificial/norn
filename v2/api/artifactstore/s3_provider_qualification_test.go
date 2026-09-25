@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"errors"
 	"io"
+	"net"
 	"os"
 	"path/filepath"
 	"strings"
@@ -43,6 +44,7 @@ func TestS3RealProviderQualification(t *testing.T) {
 		AccessKey string `json:"accessKey"`
 		SecretKey string `json:"secretKey"`
 		Prefix    string `json:"prefix"`
+		Insecure  bool   `json:"insecure"`
 	}
 	decoder := json.NewDecoder(file)
 	decoder.DisallowUnknownFields()
@@ -57,6 +59,12 @@ func TestS3RealProviderQualification(t *testing.T) {
 		!strings.HasPrefix(input.Prefix, "norn-v3-disposable/") {
 		t.Fatal("provider configuration needs a dedicated norn-v3-disposable/ prefix and complete credentials")
 	}
+	if input.Insecure {
+		host, _, err := net.SplitHostPort(input.Endpoint)
+		if err != nil || net.ParseIP(host) == nil || !net.ParseIP(host).IsLoopback() {
+			t.Fatal("HTTP provider qualification is allowed only on a numeric loopback endpoint")
+		}
+	}
 	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Minute)
 	defer cancel()
 	prefix := strings.TrimSuffix(input.Prefix, "/") + "/" + uuid.NewString()
@@ -68,7 +76,7 @@ func TestS3RealProviderQualification(t *testing.T) {
 		return directory
 	}
 	config := S3Config{Endpoint: input.Endpoint, Bucket: input.Bucket, Prefix: prefix, Region: input.Region,
-		AccessKey: input.AccessKey, SecretKey: input.SecretKey, SpoolDirectory: spool(), SpoolCapacity: 32 << 20,
+		AccessKey: input.AccessKey, SecretKey: input.SecretKey, Insecure: input.Insecure, SpoolDirectory: spool(), SpoolCapacity: 32 << 20,
 		RetainFor: 24 * time.Hour}
 	writer, err := OpenS3(ctx, config)
 	if err != nil {

@@ -302,7 +302,7 @@ func (s *S3Store) publishMultipart(ctx context.Context, expected Descriptor, fil
 	name := s.name(expected)
 	uploadID, err := core.NewMultipartUpload(ctx, s.bucket, name, options)
 	if err != nil {
-		return err
+		return fmt.Errorf("start multipart artifact publication: %w", err)
 	}
 	defer func() {
 		if runErr != nil {
@@ -319,12 +319,20 @@ func (s *S3Store) publishMultipart(ctx context.Context, expected Descriptor, fil
 		length := min(s3PartBytes, expected.Size-offset)
 		part, err := core.PutObjectPart(ctx, s.bucket, name, uploadID, number, io.NewSectionReader(file, offset, length), length, minio.PutObjectPartOptions{})
 		if err != nil {
-			return err
+			return fmt.Errorf("upload multipart artifact part %d: %w", number, err)
 		}
 		parts = append(parts, minio.CompletePart{ETag: part.ETag, PartNumber: number})
 	}
-	_, err = core.CompleteMultipartUpload(ctx, s.bucket, name, uploadID, parts, options)
-	return err
+	// Retention, metadata and content type belong to the initiation request.
+	// Repeating them at completion is rejected by real S3 implementations;
+	// keep only the no-replace precondition on the commit request.
+	completeOptions := minio.PutObjectOptions{}
+	completeOptions.SetMatchETagExcept("*")
+	_, err = core.CompleteMultipartUpload(ctx, s.bucket, name, uploadID, parts, completeOptions)
+	if err != nil {
+		return fmt.Errorf("complete multipart artifact publication: %w", err)
+	}
+	return nil
 }
 
 func (s *S3Store) Open(ctx context.Context, expected Descriptor) (io.ReadCloser, error) {
