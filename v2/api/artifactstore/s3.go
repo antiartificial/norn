@@ -20,7 +20,8 @@ import (
 
 // S3Config uses a dedicated, narrowly scoped bucket credential. The bucket
 // must already exist with versioning and object lock enabled. Norn never
-// creates, deletes, or changes the bucket or its retention policy.
+// creates, deletes, or changes the bucket or its retention policy. A shared
+// SpoolDirectory has one total SpoolCapacity across its publisher processes.
 type S3Config struct {
 	Endpoint       string
 	Bucket         string
@@ -189,6 +190,11 @@ func (s *S3Store) Publish(ctx context.Context, expected Descriptor, source io.Re
 	if err := ctx.Err(); err != nil {
 		return Descriptor{}, err
 	}
+	unlock, err := s.lockSpool(ctx, expected.Size)
+	if err != nil {
+		return Descriptor{}, err
+	}
+	defer unlock()
 	file, err := os.CreateTemp(s.spool, ".norn-upload-*")
 	if err != nil {
 		return Descriptor{}, err
@@ -225,6 +231,67 @@ func (s *S3Store) Publish(ctx context.Context, expected Descriptor, source io.Re
 		return Descriptor{}, errors.Join(ErrArtifactUnverified, err)
 	}
 	return expected, nil
+}
+
+// A spool is shared by every store process using its directory. Hold the
+// filesystem lock through remote verification so simultaneous publishers
+// cannot each consume the full configured capacity. Abandoned upload files
+// retain their capacity charge until an operator inspects and removes them.
+func (s *S3Store) lockSpool(ctx context.Context, size int64) (func(), error) {
+	lock, err := os.OpenFile(filepath.Join(s.spool, ".norn-upload.lock"), os.O_CREATE|os.O_RDWR|syscall.O_NOFOLLOW, 0o600)
+	if err != nil {
+		return nil, err
+	}
+	for {
+		if err := ctx.Err(); err != nil {
+			_ = lock.Close()
+			return nil, err
+		}
+		err = syscall.Flock(int(lock.Fd()), syscall.LOCK_EX|syscall.LOCK_NB)
+		if err == nil {
+			break
+		}
+		if err != syscall.EWOULDBLOCK && err != syscall.EAGAIN {
+			_ = lock.Close()
+			return nil, err
+		}
+		select {
+		case <-ctx.Done():
+			_ = lock.Close()
+			return nil, ctx.Err()
+		case <-time.After(50 * time.Millisecond):
+		}
+	}
+	unlock := func() {
+		_ = syscall.Flock(int(lock.Fd()), syscall.LOCK_UN)
+		_ = lock.Close()
+	}
+	entries, err := os.ReadDir(s.spool)
+	if err != nil {
+		unlock()
+		return nil, err
+	}
+	var used int64
+	for _, entry := range entries {
+		if entry.Name() == ".norn-upload.lock" {
+			continue
+		}
+		if !strings.HasPrefix(entry.Name(), ".norn-upload-") || !entry.Type().IsRegular() {
+			unlock()
+			return nil, fmt.Errorf("S3 artifact spool contains an unexpected entry: %s", entry.Name())
+		}
+		info, err := entry.Info()
+		if err != nil || info.Size() < 0 || info.Size() > s.limit-used {
+			unlock()
+			return nil, ErrArtifactFull
+		}
+		used += info.Size()
+	}
+	if used > s.limit-size {
+		unlock()
+		return nil, ErrArtifactFull
+	}
+	return unlock, nil
 }
 
 // The pinned MinIO high-level PutObject implementation drops custom headers

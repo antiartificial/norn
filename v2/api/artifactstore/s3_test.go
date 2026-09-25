@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"errors"
+	"io"
 	"net/url"
 	"os"
 	"path/filepath"
@@ -113,5 +114,75 @@ func TestS3StoreConditionalMultipartPublication(t *testing.T) {
 	emulator.Configure(func(e *s3emulator.Emulator) { e.CorruptReads = true })
 	if err := store.Verify(context.Background(), expected); !errors.Is(err, ErrArtifactCorrupt) {
 		t.Fatalf("multipart read corruption: %v", err)
+	}
+}
+
+type pausedS3Source struct {
+	reader  io.Reader
+	started chan struct{}
+	release chan struct{}
+}
+
+func (r *pausedS3Source) Read(p []byte) (int, error) {
+	select {
+	case <-r.started:
+	default:
+		close(r.started)
+	}
+	<-r.release
+	return r.reader.Read(p)
+}
+
+func TestS3SpoolCapacityIsSharedAcrossStoreInstances(t *testing.T) {
+	config, _ := s3TestConfig(t)
+	config.SpoolCapacity = 64
+	first, err := OpenS3(context.Background(), config)
+	if err != nil {
+		t.Fatal(err)
+	}
+	second, err := OpenS3(context.Background(), config)
+	if err != nil {
+		t.Fatal(err)
+	}
+	payload := bytes.Repeat([]byte("a"), 40)
+	descriptor := descriptorFor(payload)
+	paused := &pausedS3Source{reader: bytes.NewReader(payload), started: make(chan struct{}), release: make(chan struct{})}
+	done := make(chan error, 1)
+	go func() {
+		_, err := first.Publish(context.Background(), descriptor, paused)
+		done <- err
+	}()
+	select {
+	case <-paused.started:
+	case <-time.After(5 * time.Second):
+		t.Fatal("first publisher did not reach its spool")
+	}
+	waitCtx, cancel := context.WithTimeout(context.Background(), 100*time.Millisecond)
+	defer cancel()
+	if _, err := second.Publish(waitCtx, descriptor, bytes.NewReader(payload)); !errors.Is(err, context.DeadlineExceeded) {
+		t.Fatalf("second publisher bypassed held spool lock: %v", err)
+	}
+	close(paused.release)
+	if err := <-done; err != nil {
+		t.Fatal(err)
+	}
+	abandoned, err := os.CreateTemp(config.SpoolDirectory, ".norn-upload-abandoned-*")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := abandoned.Truncate(30); err != nil {
+		t.Fatal(err)
+	}
+	if err := abandoned.Close(); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := second.Publish(context.Background(), descriptor, bytes.NewReader(payload)); !errors.Is(err, ErrArtifactFull) {
+		t.Fatalf("abandoned spool bytes did not reduce capacity: %v", err)
+	}
+	if err := os.Remove(abandoned.Name()); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := second.Publish(context.Background(), descriptor, bytes.NewReader(payload)); err != nil {
+		t.Fatalf("spool did not reopen after abandoned bytes were removed: %v", err)
 	}
 }
