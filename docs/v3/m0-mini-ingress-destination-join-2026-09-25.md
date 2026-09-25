@@ -18,7 +18,7 @@ its destination.
 
 | Unmatched identity | Destination evidence | Disposition |
 | --- | --- | --- |
-| First and second | Both point to Mini loopback port 8080. TCP accepted a connection, but the listener inventory included both Docker backend and a Python process. The app declarations also reuse port 8080. | Owner and intended service remain unresolved; inspect the exact host/process routing and ask the accountable owner. |
+| First and second | Both point to Mini `localhost:8080`. A later listener check found an IPv4 Python `open-webui` process bound to `*:8080`; the separate Docker backend listener was bound to Mini's LAN address. A loopback HEAD request returned 200 from Uvicorn. | Technical destination is the host Open WebUI process, outside Norn's declared app endpoints. Its accountable owner, supervision, and intended external exposure still need review. |
 | Third | Points to Mini loopback port 8800. `norn-api` owns the listener, and TCP accepted a connection. | Identified as a Norn control API route, outside app endpoint ownership. Public reachability and intended exposure still need review. |
 | Fourth | Points to the current `vigil-gateway` allocation's node address and its declared process port 8144. TCP accepted a connection. | Strong current runtime match to Vigil, although no declared app endpoint names this hostname; owner should record the exception and verify the full route. |
 
@@ -28,8 +28,10 @@ the ordered configuration and requires an owner review of intended matching
 and fallback behavior. A final unnamed fallback rule was outside the named
 hostname count.
 
-These observations resolve two of the four unmatched identities to a
-specific current runtime. The two port-8080 identities remain unassigned.
-The route gate still needs cloudflared-to-service request proof, Consul or
-Traefik ownership where applicable, and an accountable owner decision before
-the Mini upgrade fixture can claim representative traffic coverage.
+These observations identify a current technical destination for all four
+unmatched identities: Open WebUI (two), Norn API (one), and Vigil (one).
+They do not establish accountable ownership or intended external exposure
+for the host Open WebUI and Norn API routes. The route gate still needs
+cloudflared-to-service request proof, Consul or Traefik ownership where
+applicable, and owner decisions before the Mini upgrade fixture can claim
+representative traffic coverage.
