@@ -11,6 +11,16 @@ import (
 // It is required to declare named databases; Fleet documents are unaffected.
 const AppSchemaV2 = "norn.app/v2"
 
+const (
+	// StartupAdapterWordPressVerifiedTLS installs Norn's version-pinned wpdb
+	// drop-in before WordPress's normal Apache entrypoint when an exact OCI
+	// manifest has been independently qualified.
+	StartupAdapterWordPressVerifiedTLS = "wordpress-verified-tls/v1"
+	// QualifiedWordPressVerifiedTLSImage is the Docker Hub OCI index verified
+	// by `docker buildx imagetools inspect` for the allocation qualification.
+	QualifiedWordPressVerifiedTLSImage = "docker.io/library/wordpress:6.8.2-php8.3-apache@sha256:09ac1315368f234db7559e4f9dcca3178a5efc6f2193b88289252abe18551522"
+)
+
 // DatabaseRequirement names one logical database the app consumes. The name
 // is the key of the deployment profile's databaseBindings; the server, role,
 // database name and credentials come only from the database catalog.
@@ -159,6 +169,7 @@ func (s *InfraSpec) DatabaseDeclarationFindings() []ValidationFinding {
 }
 
 func validateDatabaseDeclarations(r *ValidationResult, spec *InfraSpec) {
+	defer validateStartupAdapter(r, spec)
 	switch spec.SchemaVersion {
 	case "", AppSchemaV2:
 	default:
@@ -279,6 +290,57 @@ func validateDatabaseDeclarations(r *ValidationResult, spec *InfraSpec) {
 		} else if requirement, _ := spec.DatabaseByName(migration); !containsString(requirement.Capabilities, "migration") {
 			r.add("error", "migrationDatabase", fmt.Sprintf("database %q must declare the migration capability", migration))
 		}
+	}
+}
+
+// validateStartupAdapter keeps the one supported WordPress verified-TLS
+// startup shape deliberately small. The adapter relies on the official image
+// entrypoint and its db.php extension contract. It is bound to the exact
+// qualified OCI index rather than a mutable WordPress tag.
+func validateStartupAdapter(r *ValidationResult, spec *InfraSpec) {
+	if spec.StartupAdapter == "" {
+		return
+	}
+	if spec.StartupAdapter != StartupAdapterWordPressVerifiedTLS {
+		r.add("error", "startupAdapter", "startupAdapter is unsupported")
+		return
+	}
+	if spec.SchemaVersion != AppSchemaV2 {
+		r.add("error", "startupAdapter", "wordpress verified TLS requires schemaVersion: "+AppSchemaV2)
+	}
+	if spec.Build == nil || spec.Build.Image != QualifiedWordPressVerifiedTLSImage {
+		r.add("error", "build.image", "wordpress verified TLS requires the qualified WordPress OCI image digest")
+	}
+	if len(spec.Processes) != 1 {
+		r.add("error", "processes", "wordpress verified TLS supports exactly one web process")
+	}
+	web, ok := spec.Processes["web"]
+	if !ok {
+		r.add("error", "processes.web", "wordpress verified TLS requires a web process")
+	} else if web.Command != "" || web.Schedule != "" || web.Function != nil {
+		r.add("error", "processes.web", "wordpress verified TLS requires the official image entrypoint without a command, schedule, or function")
+	}
+	if len(spec.Databases) != 1 {
+		r.add("error", "databases", "wordpress verified TLS requires exactly one primary database runtime")
+		return
+	}
+	runtime := spec.Databases[0].Runtime
+	if spec.Databases[0].Name != "primary" || runtime == nil || runtime.Components == nil ||
+		runtime.Components.Host != "WORDPRESS_DB_HOST" || runtime.Components.User != "WORDPRESS_DB_USER" ||
+		runtime.Components.Password != "WORDPRESS_DB_PASSWORD" || runtime.Components.Name != "WORDPRESS_DB_NAME" {
+		r.add("error", "databases[0].runtime.components", "wordpress verified TLS requires primary WORDPRESS_DB_* components")
+	}
+	if runtime == nil || runtime.TLS == nil || runtime.TLS.CAFileEnv != "MYSQL_SSL_CA" || runtime.TLS.ClientCertFileEnv != "" || runtime.TLS.ClientKeyFileEnv != "" {
+		r.add("error", "databases[0].runtime.tls", "wordpress verified TLS requires only the MYSQL_SSL_CA file variable")
+	}
+	contentMounted := false
+	for _, volume := range spec.Volumes {
+		if volume.Mount == "/var/www/html/wp-content" && !volume.ReadOnly {
+			contentMounted = true
+		}
+	}
+	if !contentMounted {
+		r.add("error", "volumes", "wordpress verified TLS requires a writable persistent wp-content volume")
 	}
 }
 

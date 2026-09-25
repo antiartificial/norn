@@ -53,7 +53,7 @@ static drop-in into a disposable allocation, copied the drop-in to
 normal HTTP installation route. Against disposable MySQL 8.4 with
 `require_secure_transport=ON` and a certificate valid for
 `host.docker.internal`, the correct CA returned the installation page. The
-WordPress image was `wordpress:6.8.2-php8.3-apache` at local digest
+WordPress image was `wordpress:6.8.2-php8.3-apache` at digest
 `sha256:09ac1315368f234db7559e4f9dcca3178a5efc6f2193b88289252abe18551522`;
 the tested drop-in SHA-256 was
 `498b2a8b79d93172bfedb5fc17cd0ec25160262a3daddba37f76107d2a1fa6d1`.
@@ -72,3 +72,18 @@ that all WordPress images use the same entrypoint and MySQLi implementation.
 The database resolver's MySQL verified-runtime gate remains closed. Enabling
 it requires reviewed product wiring for those boundaries plus repeated
 allocation qualification against the exact supported image digest.
+
+## Production adapter follow-up
+
+`docker buildx imagetools inspect docker.io/library/wordpress:6.8.2-php8.3-apache`
+also reports `sha256:09ac1315368f234db7559e4f9dcca3178a5efc6f2193b88289252abe18551522`
+as the pullable OCI index digest, correcting the earlier assumption that it
+was only a local image ID. The product InfraSpec now has a narrowly validated
+`wordpress-verified-tls/v1` startup adapter for that exact image, the named
+primary MySQL runtime, and a writable persistent `wp-content` volume. Nomad
+translation embeds the same `db.php` bytes tested above, checks the pinned
+SHA-256 before installation, refuses an altered existing drop-in, and uses a
+same-directory rename for initial installation. Generated-job and local
+startup-script tests pass. The product adapter has **not** yet been rerun in a
+Nomad allocation with persistent content, replacement, rollback, and wrong-CA
+controls. The MySQL verified-runtime resolver gate therefore remains closed.

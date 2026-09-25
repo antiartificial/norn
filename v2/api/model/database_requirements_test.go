@@ -164,3 +164,43 @@ func TestDatabaseRuntimeTLSFilesAreValidatedAndOwned(t *testing.T) {
 		t.Fatal("unpaired TLS client material was accepted")
 	}
 }
+
+func TestWordPressVerifiedTLSStartupAdapterRequiresQualifiedShape(t *testing.T) {
+	base := func() *InfraSpec {
+		return &InfraSpec{
+			SchemaVersion:  AppSchemaV2,
+			App:            "wordpress",
+			StartupAdapter: StartupAdapterWordPressVerifiedTLS,
+			Build:          &BuildSpec{Image: QualifiedWordPressVerifiedTLSImage},
+			Processes:      map[string]Process{"web": {Port: 80}},
+			Volumes:        []VolumeSpec{{Name: "wordpress-content", Mount: "/var/www/html/wp-content"}},
+			Databases: []DatabaseRequirement{{
+				Name: "primary", Purpose: "application", Capabilities: []string{"runtime"},
+				Runtime: &DatabaseRuntime{Components: &DatabaseRuntimeComponents{
+					Host: "WORDPRESS_DB_HOST", User: "WORDPRESS_DB_USER", Password: "WORDPRESS_DB_PASSWORD", Name: "WORDPRESS_DB_NAME",
+				}, TLS: &DatabaseRuntimeTLS{CAFileEnv: "MYSQL_SSL_CA"}},
+			}},
+		}
+	}
+	if result := ValidateSpec(base()); !result.Valid {
+		t.Fatalf("qualified adapter shape rejected: %+v", result.Findings)
+	}
+	for name, mutate := range map[string]func(*InfraSpec){
+		"unqualified image": func(s *InfraSpec) {
+			s.Build.Image = "wordpress:6.8.2-php8.3-apache@sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+		},
+		"custom command": func(s *InfraSpec) { s.Processes["web"] = Process{Port: 80, Command: "apache2-foreground"} },
+		"client cert": func(s *InfraSpec) {
+			s.Databases[0].Runtime.TLS.ClientCertFileEnv = "MYSQL_SSL_CERT"
+			s.Databases[0].Runtime.TLS.ClientKeyFileEnv = "MYSQL_SSL_KEY"
+		},
+		"wrong component":            func(s *InfraSpec) { s.Databases[0].Runtime.Components.Host = "DB_HOST" },
+		"missing persistent content": func(s *InfraSpec) { s.Volumes = nil },
+	} {
+		spec := base()
+		mutate(spec)
+		if result := ValidateSpec(spec); result.Valid {
+			t.Errorf("%s: invalid adapter shape accepted", name)
+		}
+	}
+}

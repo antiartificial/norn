@@ -118,6 +118,7 @@ func TranslateForRegionAt(spec *model.InfraSpec, imageTag string, env map[string
 		// Environment
 		task.Env = mergeProcessEnv(mergedEnv, proc.Env)
 		addDatabaseTemplates(spec, jobID, databaseRevision, task)
+		applyStartupAdapter(spec, procName, imageTag, task)
 
 		// Resources
 		cpu := 100
