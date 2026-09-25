@@ -135,4 +135,26 @@ func TestMySQLRestoreTransfersSignedSourceFenceWithoutGap(t *testing.T) {
 	if _, err := db.TransferClaimedMySQLRestoreRuntimeFence(ctx, acceptance, stolen); !errors.Is(err, ErrMySQLRestoreFence) {
 		t.Fatalf("successor claim resumed transferred fence: %v", err)
 	}
+	if _, err := db.AssessCompletedMySQLRestoreRecovery(ctx, acceptance, claim.OperationID()); !errors.Is(err, ErrMySQLRestoreFence) {
+		t.Fatalf("unfinished restore appeared recovery ready: %v", err)
+	}
+	if _, err := db.Pool.Exec(ctx, `UPDATE mysql_restore_runtime_locks SET state='verified-lock',verified_at=clock_timestamp() WHERE operation_id=$1`, claim.OperationID()); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := db.Pool.Exec(ctx, `UPDATE mysql_restore_intents SET state='completed',started_at=clock_timestamp(),completed_at=clock_timestamp() WHERE operation_id=$1`, claim.OperationID()); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := db.Pool.Exec(ctx, `UPDATE operations SET status='succeeded',locked_by='',locked_until=NULL,finished_at=clock_timestamp() WHERE id=$1`, claim.OperationID()); err != nil {
+		t.Fatal(err)
+	}
+	ready, err := db.AssessCompletedMySQLRestoreRecovery(ctx, acceptance, claim.OperationID())
+	if err != nil || ready.Fence.Epoch != transferred.Epoch || ready.Request.Target != target.Target {
+		t.Fatalf("completed signed restore recovery assessment: %+v %v", ready, err)
+	}
+	if _, err := db.Pool.Exec(ctx, `UPDATE runtime_mutation_fence SET owner='replacement-owner' WHERE singleton=true`); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := db.AssessCompletedMySQLRestoreRecovery(ctx, acceptance, claim.OperationID()); !errors.Is(err, ErrMySQLRestoreFence) {
+		t.Fatalf("replaced fence appeared recovery ready: %v", err)
+	}
 }

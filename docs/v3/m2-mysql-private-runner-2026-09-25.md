@@ -95,6 +95,15 @@ write isolation.
 
 ## Still required before a usable restore lane
 
+A private, read-only completed-restore recovery assessment now checks the
+verified signed acceptance against the completed intent, destination account
+lock checkpoint, source receipt identity, exact claim generation, active
+catalog revision, and still-held global fence. A disposable PostgreSQL test
+rejects an unfinished restore and a replaced fence. This assessment does not
+inspect the live MySQL account or target contents, authorize an unlock, or
+release the fence. It is one prerequisite for a future separately signed,
+operator-observed resume.
+
 - Qualify bounded memory/disk behavior on representative large data.
 - Wire the launch and mutation gates into every application write and resume
   path, and add signed source-account quiescence before staging the dump.
