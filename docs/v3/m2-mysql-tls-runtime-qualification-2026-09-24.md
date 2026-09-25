@@ -84,6 +84,23 @@ primary MySQL runtime, and a writable persistent `wp-content` volume. Nomad
 translation embeds the same `db.php` bytes tested above, checks the pinned
 SHA-256 before installation, refuses an altered existing drop-in, and uses a
 same-directory rename for initial installation. Generated-job and local
-startup-script tests pass. The product adapter has **not** yet been rerun in a
-Nomad allocation with persistent content, replacement, rollback, and wrong-CA
-controls. The MySQL verified-runtime resolver gate therefore remains closed.
+startup-script tests pass.
+
+## Generated adapter allocation — 2026-09-25
+
+`TestWordPressVerifiedTLSStartupAdapterPersistentContentInNomad` exercised the
+product-generated job in disposable local Nomad 2.0.7 with MySQL 8.4 TLS.
+With the trusted CA, the actual WordPress installation route loaded. With an
+unrelated CA, the actual WordPress route rejected the database connection.
+After a distinct replacement allocation, the same persistent `wp-content`
+sentinel remained readable. The test uses a fresh host port on replacement to
+avoid a Docker port-release race after Nomad stops the first allocation.
+Focused model/Nomad tests passed, and the disposable jobs and fixtures were
+removed. The generated startup script also needed `$target` in place of
+`${target}` because Nomad interpreted the braced form while validating the job.
+
+This qualifies the generated adapter's trusted-CA, wrong-CA, and persistent
+replacement paths on the pinned WordPress image. A hostname-mismatch control
+has passed for the underlying hook, but has not yet been rerun through the
+product-generated adapter. Rollback and release rollout remain open. Keep the
+resolver's verified-runtime gate closed until those boundaries are reviewed.
