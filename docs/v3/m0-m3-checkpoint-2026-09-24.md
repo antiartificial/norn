@@ -148,19 +148,22 @@ into #76 and closed. These are review containers, not milestone signoff.
   idempotency token: repeated calls created distinct evaluations and children.
   Cron trigger therefore remains an inline-effect conversion gate; see
   [the force qualification](m1-cron-force-idempotency-qualification-2026-09-24.md).
-  The Nomad adapter now has a version-gated atomic resume of a stopped periodic
-  parent with an effect marker for recovery. The HTTP resume path still uses
-  inline resubmission; signed intent, claim-fenced execution, and reconciliation
-  remain required before this primitive closes that route's M1 gate.
+  Cron resume now accepts a signed, replayable operation; a claimed worker
+  rebuilds the job from a spec bound by digest, the accepted image and database
+  delivery revision, and current private secrets. Its effect reservation and
+  exact Nomad job CAS use a durable marker for uncertain-result reconciliation.
+  The cron state and operation receipt finish in one claim-fenced transaction.
+  CLI pause and resume send idempotency keys and report accepted operation IDs.
   A disposable Nomad 2.0.7 test proved pause, stale-revision refusal, and
   resume against the real API. It exposed a nested agent-version response that
   had made the existing pause CAS guard reject supported servers; version
   detection now reads Nomad's actual response shape.
-  A replacement-resume adapter now CAS-registers a freshly built periodic job
+  A replacement-resume adapter CAS-registers a freshly built periodic job
   with an effect marker. A second disposable Nomad run proved schedule
-  replacement and stale-revision refusal. The durable worker still needs to
-  rebuild the exact image, secrets, and database delivery at launch without
-  persisting plaintext material in the accepted operation.
+  replacement and stale-revision refusal. Focused handler, pipeline, worker,
+  store, and CLI tests pass; the claim-fenced state update also passed against
+  disposable PostgreSQL 17.7. End-to-end handler-to-worker fault qualification
+  against both live Nomad and PostgreSQL remains open.
 - M2: local MySQL runtime and verified-TLS health are implemented. Generated
   service, periodic, and function jobs delivered exact component bytes inside
   allocations on pinned Nomad 1.9.7. A WordPress image PHP client also

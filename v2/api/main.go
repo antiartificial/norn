@@ -354,6 +354,11 @@ func main() {
 		log.Fatalf("configure durable app.cron-pause effects: %v", err)
 	}
 	pipe.CronPauseEffects = cronPauseEffects
+	cronResumeEffects, err := pipeline.NewNomadCronResumeEffects(db, nomadClient, pipe)
+	if err != nil {
+		log.Fatalf("configure durable app.cron-resume effects: %v", err)
+	}
+	pipe.CronResumeEffects = cronResumeEffects
 	canaryPromotionEffects, err := pipeline.NewNomadCanaryPromotionEffects(db, nomadClient)
 	if err != nil {
 		log.Fatalf("configure durable app.canary-promote effects: %v", err)

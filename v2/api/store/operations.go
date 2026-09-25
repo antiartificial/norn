@@ -35,14 +35,14 @@ type AppLockFencedExecutionStore interface {
 	FinishClaimedOperationWithAppLock(context.Context, OperationClaim, AppOperationLock, model.OperationStatus, string, map[string]interface{}) error
 }
 
-// CronPauseRecoveryStore makes an unresolved cron-pause effect retryable only
+// CronPauseRecoveryStore makes an unresolved cron pause or resume effect retryable only
 // while its claimed-attempt budget remains. The final transition is fenced by
 // the operation claim (and, where available, the app-lock fence) so an old
 // worker cannot terminalize a successor's recovery.
 //
 // terminal reports that the retry budget was exhausted and the operation was
 // recorded for manual recovery. Callers must leave the external-effect record
-// intact: it is the evidence needed to reconcile the stopped periodic job.
+// intact: it is the evidence needed to reconcile the periodic job.
 type CronPauseRecoveryStore interface {
 	DeferOrFailCronPauseClaimedOperation(context.Context, OperationClaim, AppOperationLock, string, time.Time, map[string]interface{}) (terminal bool, err error)
 }
@@ -597,7 +597,7 @@ func (db *DB) DeferClaimedOperation(ctx context.Context, claim OperationClaim, m
 	return nil
 }
 
-// DeferOrFailCronPauseClaimedOperation requeues an unresolved cron-pause
+// DeferOrFailCronPauseClaimedOperation requeues an unresolved cron pause or resume
 // effect without refunding the claim that performed the recovery check. Once
 // MaxAttempts is reached it atomically records a failed/manual-review receipt
 // and its evidence archive intent. It deliberately does not touch
@@ -616,7 +616,7 @@ func (db *DB) DeferOrFailCronPauseClaimedOperation(ctx context.Context, claim Op
 		WITH owned AS MATERIALIZED (
 			SELECT id, attempts, max_attempts
 			FROM operations
-			WHERE id = $3 AND kind = 'app.cron-pause' AND status = 'running'
+			WHERE id = $3 AND kind IN ('app.cron-pause', 'app.cron-resume') AND status = 'running'
 			  AND locked_by = $4 AND lock_generation = $5 AND locked_until > now()
 		), deferred AS (
 			UPDATE operations
@@ -627,7 +627,7 @@ func (db *DB) DeferOrFailCronPauseClaimedOperation(ctx context.Context, claim Op
 		), exhausted AS (
 			UPDATE operations
 			SET status = 'failed',
-			    message = 'cron pause effect recovery retry budget exhausted; manual recovery is required: ' || $1,
+			    message = 'cron effect recovery retry budget exhausted; manual recovery is required: ' || $1,
 			    last_error = $1,
 			    metadata = metadata || $6::jsonb || '{"manualRecoveryRequired":true,"externalEffectRecoveryPending":true,"retryBudgetExhausted":true}'::jsonb,
 			    locked_by = '', locked_until = NULL, updated_at = now(), finished_at = now()
@@ -943,7 +943,7 @@ func (db *DB) RecoverExpiredOperations(ctx context.Context) error {
 				WHERE spi.operation_id = operations.id AND spi.state IN ('prepared', 'published')
 			)))
 		  AND (
-		    kind IN ('app.preflight', 'app.restart', 'app.canary-promote', 'app.cron-pause')
+		    kind IN ('app.preflight', 'app.restart', 'app.canary-promote', 'app.cron-pause', 'app.cron-resume')
 		    OR (kind = 'app.snapshot' AND EXISTS (
 		      SELECT 1 FROM snapshot_publication_intents spi
 		      WHERE spi.operation_id = operations.id AND spi.state IN ('prepared', 'published')

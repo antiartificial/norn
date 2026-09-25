@@ -825,7 +825,7 @@ func (s *V3OperationStore) DeferOrFailCronPauseClaimedOperation(ctx context.Cont
 		if o.Attempts >= o.MaxAttempts {
 			now := time.Now().UTC()
 			o.Status = model.OperationFailed
-			o.Message = "cron pause effect recovery retry budget exhausted; manual recovery is required: " + msg
+			o.Message = "cron effect recovery retry budget exhausted; manual recovery is required: " + msg
 			o.LastError = msg
 			o.LockedBy = ""
 			o.LockedUntil = nil

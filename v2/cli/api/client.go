@@ -2046,14 +2046,22 @@ func (c *Client) CronTrigger(appID, process string) error {
 	return c.post("/api/apps/"+appID+"/cron/trigger", body)
 }
 
-func (c *Client) CronPause(appID, process string) error {
+func (c *Client) CronPause(appID, process, idempotencyKey string) (*Operation, error) {
 	body := fmt.Sprintf(`{"process":%q}`, process)
-	return c.post("/api/apps/"+appID+"/cron/pause", body)
+	var operation Operation
+	if err := c.postJSONWithIdempotency("/api/apps/"+appID+"/cron/pause", body, idempotencyKey, &operation); err != nil {
+		return nil, err
+	}
+	return &operation, nil
 }
 
-func (c *Client) CronResume(appID, process string) error {
+func (c *Client) CronResume(appID, process, idempotencyKey string) (*Operation, error) {
 	body := fmt.Sprintf(`{"process":%q}`, process)
-	return c.post("/api/apps/"+appID+"/cron/resume", body)
+	var operation Operation
+	if err := c.postJSONWithIdempotency("/api/apps/"+appID+"/cron/resume", body, idempotencyKey, &operation); err != nil {
+		return nil, err
+	}
+	return &operation, nil
 }
 
 func (c *Client) CronUpdateSchedule(appID, process, schedule string) error {

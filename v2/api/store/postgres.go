@@ -885,6 +885,16 @@ func (db *DB) UpsertCronState(ctx context.Context, app, process string, paused b
 // with its terminal receipt. The operation lease is checked in the same
 // transaction so a superseded worker cannot publish stale cron state.
 func (db *DB) FinishCronPauseClaimedOperation(ctx context.Context, claim OperationClaim, app, process, schedule, message string, metadata map[string]interface{}) error {
+	return db.finishCronClaimedOperation(ctx, claim, app, process, schedule, true, message, metadata)
+}
+
+// FinishCronResumeClaimedOperation commits the verified Nomad resume and the
+// durable unpaused state under one operation claim fence.
+func (db *DB) FinishCronResumeClaimedOperation(ctx context.Context, claim OperationClaim, app, process, schedule, message string, metadata map[string]interface{}) error {
+	return db.finishCronClaimedOperation(ctx, claim, app, process, schedule, false, message, metadata)
+}
+
+func (db *DB) finishCronClaimedOperation(ctx context.Context, claim OperationClaim, app, process, schedule string, paused bool, message string, metadata map[string]interface{}) error {
 	if err := validateOperationClaim(claim); err != nil {
 		return err
 	}
@@ -913,7 +923,7 @@ func (db *DB) FinishCronPauseClaimedOperation(ctx context.Context, claim Operati
 	if status != "running" || owner != claim.OwnerID() || generation != claim.Generation() || lockedUntil == nil || !lockedUntil.After(now) {
 		return ownershipLost(claim)
 	}
-	if _, err = tx.Exec(ctx, `INSERT INTO cron_states (app, process, paused, schedule, updated_at) VALUES ($1,$2,true,$3,now()) ON CONFLICT (app,process) DO UPDATE SET paused=true,schedule=EXCLUDED.schedule,updated_at=now()`, app, process, schedule); err != nil {
+	if _, err = tx.Exec(ctx, `INSERT INTO cron_states (app, process, paused, schedule, updated_at) VALUES ($1,$2,$3,$4,now()) ON CONFLICT (app,process) DO UPDATE SET paused=EXCLUDED.paused,schedule=EXCLUDED.schedule,updated_at=now()`, app, process, paused, schedule); err != nil {
 		return err
 	}
 	var sagaID, operationApp string
