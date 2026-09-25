@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # Disposable TLS/RBAC three-member qualification for the normal etcd Fleet API.
-# Requires Docker, OpenSSL, etcdctl, and Go. Never targets a named/live cluster.
+# Requires Docker, OpenSSL, etcdctl, Go, and Python 3. Never targets a named/live cluster.
 set -euo pipefail
 
 repo_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
@@ -24,6 +24,7 @@ command -v openssl >/dev/null
 command -v etcdctl >/dev/null
 command -v go >/dev/null
 command -v timeout >/dev/null
+command -v python3 >/dev/null
 docker image inspect "$image" >/dev/null
 docker network create "$network" >/dev/null
 
@@ -139,6 +140,24 @@ etcdctl endpoint health >/dev/null
 ETCDCTL_ENDPOINTS="$(endpoint_for m1)" etcdctl snapshot save "$work_dir/snapshot.db" >/dev/null
 etcdctl snapshot status "$work_dir/snapshot.db" >/dev/null
 
+echo 'Corrupted snapshot must be rejected before restore'
+python3 - "$work_dir/snapshot.db" "$work_dir/corrupt.db" <<'PY'
+from pathlib import Path
+import sys
+
+snapshot = bytearray(Path(sys.argv[1]).read_bytes())
+if len(snapshot) < 1024:
+    raise SystemExit("snapshot unexpectedly small")
+snapshot[len(snapshot) // 2] ^= 0xFF
+Path(sys.argv[2]).write_bytes(snapshot)
+PY
+if docker run --rm -v "$work_dir:/qual" "$image" /usr/local/bin/etcdutl snapshot restore /qual/corrupt.db \
+  --name m1 --initial-cluster "$cluster" \
+  --initial-advertise-peer-urls 'https://m1:2380' \
+  --data-dir /qual/corrupt-restore >/dev/null 2>&1; then
+  echo 'corrupted snapshot was accepted' >&2; exit 1
+fi
+
 echo 'Full-cluster restore from snapshot and normal runtime replay'
 for member in m1 m2 m3; do docker rm -f "$network-$member" >/dev/null; done
 containers=()
@@ -159,4 +178,4 @@ etcdctl endpoint health >/dev/null
 value="$(etcdctl get '/norn-test/tls-fleet-runtime/qualification-sentinel' --print-value-only)"
 test "$value" = snapshot-retained
 run_process_test
-echo 'PASS: disposable three-member TLS/RBAC, one loss, quorum refusal, snapshot restore'
+echo 'PASS: disposable three-member TLS/RBAC, one loss, quorum refusal, corruption rejection, snapshot restore'
