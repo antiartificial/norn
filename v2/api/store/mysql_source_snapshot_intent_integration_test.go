@@ -11,7 +11,14 @@ import (
 	"github.com/google/uuid"
 
 	"norn/v2/api/database"
+	"norn/v2/api/nomad"
 )
+
+type sourceStopperFunc func(context.Context, nomad.CASStopJobRequest) error
+
+func (f sourceStopperFunc) StopJobCAS(ctx context.Context, request nomad.CASStopJobRequest) error {
+	return f(ctx, request)
+}
 
 func TestMySQLSourceSnapshotPayloadPreservesLargeIntegers(t *testing.T) {
 	request := MySQLSourceSnapshotRequest{
@@ -139,5 +146,26 @@ func TestMySQLSourceSnapshotIntentReservesSignedPhysicalSource(t *testing.T) {
 	var state string
 	if err := db.Pool.QueryRow(ctx, `SELECT state FROM mysql_source_snapshot_intents WHERE operation_id=$1`, claim.OperationID()).Scan(&state); err != nil || state != "quiesce-intended" {
 		t.Fatalf("source fence after competing operations = %q, %v", state, err)
+	}
+	called := 0
+	stopper := sourceStopperFunc(func(ctx context.Context, got nomad.CASStopJobRequest) error {
+		called++
+		if got.JobID != "wordpress" || got.Region != "global" || got.JobModifyIndex != 7 || len(got.AllocationIDs) != 1 || got.AllocationIDs[0] != "alloc-1" {
+			t.Fatalf("Nomad stop request was not signed identity: %+v", got)
+		}
+		if err := db.Pool.QueryRow(ctx, `SELECT state FROM mysql_source_snapshot_intents WHERE operation_id=$1`, claim.OperationID()).Scan(&state); err != nil || state != "stop-intended" {
+			t.Fatalf("external stop preceded durable checkpoint: state=%q err=%v", state, err)
+		}
+		return nil
+	})
+	if err := db.StopClaimedMySQLSourceJob(ctx, acceptedStore, claim, request, stopper); err != nil {
+		t.Fatal(err)
+	}
+	var intended, proved time.Time
+	if err := db.Pool.QueryRow(ctx, `SELECT state,stop_intended_at,stop_proved_at FROM mysql_source_snapshot_intents WHERE operation_id=$1`, claim.OperationID()).Scan(&state, &intended, &proved); err != nil || state != "stop-proved" || proved.Before(intended) {
+		t.Fatalf("stop proof not durable: state=%q intended=%v proved=%v err=%v", state, intended, proved, err)
+	}
+	if err := db.StopClaimedMySQLSourceJob(ctx, acceptedStore, claim, request, stopper); err == nil || called != 1 {
+		t.Fatalf("replay repeated external stop: err=%v calls=%d", err, called)
 	}
 }
