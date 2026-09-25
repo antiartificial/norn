@@ -134,8 +134,13 @@ into #76 and closed. These are review containers, not milestone signoff.
   connected to disposable MySQL 8.4.11, verified database/account identity,
   and wrote/read a temporary table; see
   [the allocation record](m2-nomad-197-allocation-delivery-2026-09-24.md).
-  Full WordPress startup, TLS application runtime, backup/restore, retention
+  Completed WordPress installation, TLS application runtime, backup/restore, retention
   reserve, and representative recovery remain open.
+  A separate opt-in disposable test now passes the exact four runtime
+  components to pinned, unmodified `wordpress:6.8.2-php8.3-apache` against
+  `mysql:8.4` and verifies the WordPress HTTP installation page. This closes
+  ordinary image-level startup compatibility; TLS application runtime,
+  delivery through a Nomad allocation, and recovery remain open.
 - M3: normal etcd startup and managed-token lifecycle have a narrow PG-free
   Fleet router. Passive candidate health/schema now rechecks etcd after startup
   and a real API process passed with a poisoned PostgreSQL URL. Full app

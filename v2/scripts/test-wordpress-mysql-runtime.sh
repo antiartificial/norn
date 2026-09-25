@@ -10,12 +10,11 @@ root_password="norn-wordpress-qualification-root"
 cleanup() {
   docker rm --force "$mysql_container" >/dev/null 2>&1 || true
 }
-trap cleanup EXIT
-
 if docker container inspect "$mysql_container" >/dev/null 2>&1; then
   echo "refusing to replace existing container $mysql_container" >&2
   exit 1
 fi
+trap cleanup EXIT
 
 docker run --detach --name "$mysql_container" \
   --env "MYSQL_ROOT_PASSWORD=$root_password" \
