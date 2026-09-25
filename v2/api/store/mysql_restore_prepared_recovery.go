@@ -43,6 +43,26 @@ func recoverExpiredPreparedMySQLRestores(ctx context.Context, tx pgx.Tx) error {
 		if state != "prepared" {
 			continue
 		}
+		var lockIntended bool
+		if err := tx.QueryRow(ctx, `SELECT EXISTS (SELECT 1 FROM mysql_restore_runtime_locks WHERE operation_id=$1)`, id).Scan(&lockIntended); err != nil {
+			return err
+		}
+		if lockIntended {
+			// The external account lock may already have taken effect, even if the
+			// worker died before its verification write. Retain both reservations
+			// and fence for manual recovery; never infer that this is reusable.
+			result, err := tx.Exec(ctx, `UPDATE operations SET status='failed',
+				message='MySQL restore runtime account lock requires inspection',
+				last_error='MySQL restore executor lease expired after runtime account lock intent',
+				metadata=metadata || '{"mysqlRestoreState":"runtime-lock-needs-inspection"}'::jsonb,
+				locked_by='', locked_until=NULL, updated_at=clock_timestamp(), finished_at=clock_timestamp()
+				WHERE id=$1 AND kind='database.mysql-restore' AND status='running'
+				  AND (locked_until IS NULL OR locked_until<clock_timestamp())`, id)
+			if err != nil || result.RowsAffected() != 1 {
+				return fmt.Errorf("expired runtime-lock-intended MySQL restore operation changed while recovering: %w", ErrMySQLRestoreFence)
+			}
+			continue
+		}
 		result, err := tx.Exec(ctx, `UPDATE operations SET status='failed',
 			message='MySQL restore preparation expired before SQL; target reservation released',
 			last_error='MySQL restore executor lease expired before execution',

@@ -43,6 +43,32 @@ func (r MySQLRestoreRunner) RunClaimed(ctx context.Context, claim OperationClaim
 		}
 	}()
 	runCtx := supervisor.Context()
+	// The runtime account must be durably intended before the external ALTER
+	// USER, then durably verified before Begin may commit the SQL boundary.
+	// Keep this before Begin so a crash after account lock cannot be recovered as
+	// an unused prepared restore.
+	intended, intentErr := r.Control.IntendClaimedMySQLRestoreRuntimeLock(runCtx, r.Acceptance, claim, r.Secrets)
+	if intentErr != nil {
+		return intentErr
+	}
+	catalog, catalogErr := r.Control.DatabaseCatalogRevision(runCtx, intended.Request.CatalogRevision)
+	if catalogErr != nil {
+		return catalogErr
+	}
+	resolver, resolveErr := database.NewResolver(catalog.Catalog)
+	if resolveErr != nil {
+		return resolveErr
+	}
+	resolved, resolveErr := resolver.Resolve(database.ResolveRequest{DeploymentProfileID: intended.Request.ProfileID, Purpose: database.PurposeApplication, LogicalResourceID: intended.Request.LogicalID, Expected: &intended.Request.Target})
+	if resolveErr != nil || resolved.MySQLMaintenance == nil || *resolved.MySQLMaintenance != intended.Request.Maintenance {
+		return ErrMySQLRestoreFence
+	}
+	if err := database.FenceMySQLRuntimeAccountForRestore(runCtx, resolved, *resolved.MySQLMaintenance, r.Secrets); err != nil {
+		return err
+	}
+	if err := r.Control.VerifyClaimedMySQLRestoreRuntimeLock(runCtx, r.Acceptance, claim); err != nil {
+		return err
+	}
 	intent, err := r.Control.BeginClaimedMySQLRestore(runCtx, r.Acceptance, claim, r.Secrets)
 	if err != nil {
 		return err
@@ -50,7 +76,7 @@ func (r MySQLRestoreRunner) RunClaimed(ctx context.Context, claim OperationClaim
 	// Once Begin committed, every outcome is terminal and inspection-safe. If
 	// this worker dies before it can call Finish, the retained executing row is
 	// itself the fail-closed crash record and cannot be claimed for replay.
-	catalog, err := r.Control.DatabaseCatalogRevision(runCtx, intent.Request.CatalogRevision)
+	catalog, err = r.Control.DatabaseCatalogRevision(runCtx, intent.Request.CatalogRevision)
 	if err == nil {
 		resolver, resolveErr := database.NewResolver(catalog.Catalog)
 		if resolveErr != nil {

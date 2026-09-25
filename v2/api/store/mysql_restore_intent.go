@@ -179,6 +179,113 @@ func (db *DB) PrepareClaimedMySQLRestore(ctx context.Context, acceptance *PGOper
 	return existing, nil
 }
 
+// IntendClaimedMySQLRestoreRuntimeLock records the exact operation, catalog,
+// target, and live claim that is about to lock the destination runtime account.
+// It commits before any external ALTER USER may be issued. A retry is allowed
+// only for the same claim binding; ambiguity is retained for inspection.
+func (db *DB) IntendClaimedMySQLRestoreRuntimeLock(ctx context.Context, acceptance *PGOperationStore, claim OperationClaim, secrets database.SecretSource) (MySQLRestoreIntent, error) {
+	if db == nil || db.Pool == nil || acceptance == nil || acceptance.db != db || secrets == nil {
+		return MySQLRestoreIntent{}, ErrMySQLRestoreFence
+	}
+	if err := validateOperationClaim(claim); err != nil {
+		return MySQLRestoreIntent{}, err
+	}
+	accepted, err := acceptance.VerifyAcceptedOperation(ctx, claim.OperationID())
+	if err != nil {
+		return MySQLRestoreIntent{}, err
+	}
+	var request MySQLRestoreRequest
+	if accepted.Operation.Kind != MySQLRestoreOperationKind || accepted.Operation.Status != model.OperationRunning || accepted.Operation.MaxAttempts != 1 ||
+		decodeMySQLRestorePayload(accepted.Operation.Payload, &request) != nil || !validMySQLRestoreSourceQuiescence(request.SourceQuiescence, request.Artifact.Source) {
+		return MySQLRestoreIntent{}, ErrMySQLRestoreFence
+	}
+	tx, err := db.Pool.BeginTx(ctx, pgx.TxOptions{})
+	if err != nil {
+		return MySQLRestoreIntent{}, err
+	}
+	defer tx.Rollback(context.Background())
+	if err := lockMySQLCatalogGate(ctx, tx); err != nil {
+		return MySQLRestoreIntent{}, err
+	}
+	if err := verifyMySQLRestoreClaim(ctx, tx, claim); err != nil {
+		return MySQLRestoreIntent{}, err
+	}
+	active, err := loadActiveDatabaseCatalog(ctx, tx)
+	if err != nil || active.Revision != request.CatalogRevision {
+		return MySQLRestoreIntent{}, ErrDatabaseCatalogRevisionConflict
+	}
+	var state, intentID string
+	var revision int64
+	var targetBytes []byte
+	if err := tx.QueryRow(ctx, `SELECT state, acceptance_intent_id, catalog_revision, target FROM mysql_restore_intents WHERE operation_id=$1 FOR UPDATE`, claim.OperationID()).Scan(&state, &intentID, &revision, &targetBytes); err != nil || state != "prepared" || intentID != accepted.AcceptanceIntentID || revision != request.CatalogRevision {
+		return MySQLRestoreIntent{}, ErrMySQLRestoreFence
+	}
+	var target database.TargetIdentity
+	if json.Unmarshal(targetBytes, &target) != nil || target != request.Target {
+		return MySQLRestoreIntent{}, ErrMySQLRestoreFence
+	}
+	resolver, err := database.NewResolver(active.Catalog)
+	if err != nil {
+		return MySQLRestoreIntent{}, err
+	}
+	resolved, err := resolver.Resolve(database.ResolveRequest{DeploymentProfileID: request.ProfileID, Purpose: database.PurposeApplication, LogicalResourceID: request.LogicalID, Expected: &request.Target})
+	if err != nil || resolved.MySQLMaintenance == nil || *resolved.MySQLMaintenance != request.Maintenance {
+		return MySQLRestoreIntent{}, ErrMySQLRestoreFence
+	}
+	result, err := tx.Exec(ctx, `INSERT INTO mysql_restore_runtime_locks
+		(operation_id, acceptance_intent_id, catalog_revision, target, claim_owner, claim_generation, state)
+		VALUES ($1,$2,$3,$4,$5,$6,'lock-intended') ON CONFLICT DO NOTHING`, claim.OperationID(), accepted.AcceptanceIntentID, request.CatalogRevision, targetBytes, claim.OwnerID(), claim.Generation())
+	if err != nil {
+		return MySQLRestoreIntent{}, err
+	}
+	var savedIntent, savedOwner, savedState string
+	var savedRevision, savedGeneration int64
+	var savedTarget []byte
+	if err := tx.QueryRow(ctx, `SELECT acceptance_intent_id,catalog_revision,target,claim_owner,claim_generation,state FROM mysql_restore_runtime_locks WHERE operation_id=$1 FOR UPDATE`, claim.OperationID()).Scan(&savedIntent, &savedRevision, &savedTarget, &savedOwner, &savedGeneration, &savedState); err != nil || savedIntent != accepted.AcceptanceIntentID || savedRevision != request.CatalogRevision || !bytes.Equal(savedTarget, targetBytes) || savedOwner != claim.OwnerID() || savedGeneration != claim.Generation() || savedState != "lock-intended" {
+		return MySQLRestoreIntent{}, ErrMySQLRestoreFence
+	}
+	if result.RowsAffected() > 1 {
+		return MySQLRestoreIntent{}, ErrMySQLRestoreFence
+	}
+	if err := tx.Commit(ctx); err != nil {
+		return MySQLRestoreIntent{}, err
+	}
+	return MySQLRestoreIntent{OperationID: claim.OperationID(), AcceptanceIntentID: accepted.AcceptanceIntentID, Request: request, State: "lock-intended"}, nil
+}
+
+// VerifyClaimedMySQLRestoreRuntimeLock persists the post-ALTER verification
+// checkpoint. The primitive itself verifies account lock and session drain;
+// this method binds that proof to the same accepted request and claim.
+func (db *DB) VerifyClaimedMySQLRestoreRuntimeLock(ctx context.Context, acceptance *PGOperationStore, claim OperationClaim) error {
+	if db == nil || db.Pool == nil || acceptance == nil || acceptance.db != db || validateOperationClaim(claim) != nil {
+		return ErrMySQLRestoreFence
+	}
+	accepted, err := acceptance.VerifyAcceptedOperation(ctx, claim.OperationID())
+	if err != nil || accepted.Operation.Kind != MySQLRestoreOperationKind || accepted.Operation.Status != model.OperationRunning {
+		return ErrMySQLRestoreFence
+	}
+	var request MySQLRestoreRequest
+	if decodeMySQLRestorePayload(accepted.Operation.Payload, &request) != nil {
+		return ErrMySQLRestoreFence
+	}
+	target, _ := json.Marshal(request.Target)
+	tx, err := db.Pool.BeginTx(ctx, pgx.TxOptions{})
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback(context.Background())
+	if err := verifyMySQLRestoreClaim(ctx, tx, claim); err != nil {
+		return err
+	}
+	result, err := tx.Exec(ctx, `UPDATE mysql_restore_runtime_locks SET state='verified-lock', verified_at=clock_timestamp()
+		WHERE operation_id=$1 AND acceptance_intent_id=$2 AND catalog_revision=$3 AND target=$4::jsonb
+		  AND claim_owner=$5 AND claim_generation=$6 AND state='lock-intended'`, claim.OperationID(), accepted.AcceptanceIntentID, request.CatalogRevision, target, claim.OwnerID(), claim.Generation())
+	if err != nil || result.RowsAffected() != 1 {
+		return ErrMySQLRestoreFence
+	}
+	return tx.Commit(ctx)
+}
+
 // BeginClaimedMySQLRestore is a one-way ambiguity boundary. The caller must
 // commit this state before starting the external mysql process. Reentry after
 // this point fails closed, even if the worker crashed before issuing SQL: it
@@ -236,6 +343,12 @@ func (db *DB) BeginClaimedMySQLRestore(ctx context.Context, acceptance *PGOperat
 	if err := tx.QueryRow(ctx, `SELECT source_quiescence=$2::jsonb FROM mysql_restore_maintenance_fences WHERE operation_id=$1 FOR UPDATE`, claim.OperationID(), quiescence).Scan(&fenceMatches); err != nil || !fenceMatches {
 		return MySQLRestoreIntent{}, ErrMySQLRestoreFence
 	}
+	var lockVerified bool
+	if err := tx.QueryRow(ctx, `SELECT state='verified-lock' FROM mysql_restore_runtime_locks
+		WHERE operation_id=$1 AND acceptance_intent_id=$2 AND catalog_revision=$3 AND target=$4::jsonb
+		  AND claim_owner=$5 AND claim_generation=$6 FOR UPDATE`, claim.OperationID(), accepted.AcceptanceIntentID, request.CatalogRevision, targetBytes, claim.OwnerID(), claim.Generation()).Scan(&lockVerified); err != nil || !lockVerified {
+		return MySQLRestoreIntent{}, ErrMySQLRestoreFence
+	}
 	// Reject a consumed or ambiguous intent before touching the target again.
 	// A successor must never run even a read-only restore preflight as a
 	// substitute for operator inspection after external SQL may have started.
@@ -288,12 +401,6 @@ func (db *DB) FinishClaimedMySQLRestore(ctx context.Context, acceptance *PGOpera
 	status := model.OperationFailed
 	if succeeded {
 		state, status = "completed", model.OperationSucceeded
-	}
-	if succeeded {
-		result, err := tx.Exec(ctx, `DELETE FROM mysql_restore_maintenance_fences WHERE operation_id=$1`, claim.OperationID())
-		if err != nil || result.RowsAffected() != 1 {
-			return ErrMySQLRestoreFence
-		}
 	}
 	result, err := tx.Exec(ctx, `UPDATE mysql_restore_intents SET state=$1, completed_at=CASE WHEN $1='completed' THEN clock_timestamp() ELSE NULL END
 		WHERE operation_id=$2 AND acceptance_intent_id=$3 AND state='executing'`, state, claim.OperationID(), accepted.AcceptanceIntentID)

@@ -122,6 +122,8 @@ func TestMySQLRestoreIntentAgainstDisposableEngines(t *testing.T) {
 		"CREATE USER '" + fenceRole + "'@'%' IDENTIFIED BY " + mysqlRestoreSQLLiteral(fencePassword),
 		"GRANT ALL PRIVILEGES ON `" + targetDB + "`.* TO '" + restoreRole + "'@'%'",
 		"GRANT ALL PRIVILEGES ON `" + lostTargetDB + "`.* TO '" + restoreRole + "'@'%'",
+		"GRANT CREATE USER, PROCESS, CONNECTION_ADMIN ON *.* TO '" + fenceRole + "'@'%'",
+		"GRANT SELECT ON mysql.user TO '" + fenceRole + "'@'%'",
 	} {
 		if _, err := admin.ExecContext(ctx, statement); err != nil {
 			t.Fatal("disposable MySQL maintenance fixture setup failed")
@@ -261,6 +263,9 @@ func TestMySQLRestoreIntentAgainstDisposableEngines(t *testing.T) {
 	}
 	if _, err := control.PrepareClaimedMySQLRestore(ctx, stores[0], secondClaim, request, secrets); !errors.Is(err, ErrMySQLRestoreFence) {
 		t.Fatalf("second operation consumed the same target: %v", err)
+	}
+	if _, err := control.BeginClaimedMySQLRestore(ctx, stores[0], claim, secrets); !errors.Is(err, ErrMySQLRestoreFence) {
+		t.Fatalf("Begin crossed the SQL boundary without a verified runtime account lock: %v", err)
 	}
 	wrong := request
 	wrong.Target.BindingGeneration++

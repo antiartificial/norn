@@ -32,6 +32,21 @@ type mysqlRuntimeAccountFence struct {
 	DedicatedRuntimeUsername string
 }
 
+// FenceMySQLRuntimeAccountForRestore is the private restore-worker entry point
+// for the runtime-account fence. It deliberately derives every control
+// identity from the already resolved, catalog-bound maintenance credentials;
+// callers cannot substitute a runtime account or a fence principal.
+// Exporting this package boundary does not expose a capability or route.
+func FenceMySQLRuntimeAccountForRestore(ctx context.Context, resolved ResolvedBinding, maintenance MySQLMaintenanceCredentials, secrets SecretSource) error {
+	return fenceMySQLRuntimeAccount(ctx, resolved, mysqlRuntimeAccountFence{
+		FenceUser:                maintenance.FenceRole,
+		FenceAccountHost:         maintenance.FenceAccountHost,
+		FenceCredentialRef:       maintenance.FenceCredentialRef,
+		RuntimeAccountHost:       maintenance.RuntimeAccountHost,
+		DedicatedRuntimeUsername: resolved.Target.Role,
+	}, secrets)
+}
+
 // fenceMySQLRuntimeAccount locks one exact MySQL account, terminates all
 // existing sessions for its dedicated username, and proves the account remains
 // locked with no such sessions. It fails closed on every incomplete proof.

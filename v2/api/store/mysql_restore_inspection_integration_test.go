@@ -75,6 +75,34 @@ func TestExpiredExecutingMySQLRestoreFailsClosedWithVerifiableInspection(t *test
 		prepared.Operation.ID, prepared.AcceptanceIntentID, targetJSON, artifactJSON); err != nil {
 		t.Fatal(err)
 	}
+	lockedInput := newAcceptance(t, stores[0], "mysql-lock-intended-expiry-"+uuid.NewString(), "operator", "mysql/lock-intended", false)
+	lockedInput.Identity.Kind, lockedInput.Identity.Resource = MySQLRestoreOperationKind, "mysql/lock-intended"
+	lockedInput.Operation.Kind, lockedInput.Operation.MaxAttempts = MySQLRestoreOperationKind, 1
+	if err := json.Unmarshal(encoded, &lockedInput.Operation.Payload); err != nil {
+		t.Fatal(err)
+	}
+	lockedInput.Fingerprint, err = CanonicalOperationRequestFingerprint(lockedInput)
+	if err != nil {
+		t.Fatal(err)
+	}
+	locked, err := stores[0].Accept(ctx, lockedInput)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := dbs[0].Pool.Exec(ctx, `UPDATE operations SET status='running',attempts=1,locked_by='expired-after-lock-intent',lock_generation=1,locked_until=now()-interval '1 second' WHERE id=$1`, locked.Operation.ID); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := dbs[0].Pool.Exec(ctx, `INSERT INTO mysql_restore_intents
+		(operation_id,acceptance_intent_id,catalog_revision,profile_id,logical_id,target_key,target,artifact,artifact_path,state)
+		VALUES ($1,$2,1,'private-profile-selector','private-logical-selector','retained-after-lock-intent',$3,$4,'/private/stage/restore.sql','prepared')`,
+		locked.Operation.ID, locked.AcceptanceIntentID, targetJSON, artifactJSON); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := dbs[0].Pool.Exec(ctx, `INSERT INTO mysql_restore_runtime_locks
+		(operation_id,acceptance_intent_id,catalog_revision,target,claim_owner,claim_generation,state)
+		VALUES ($1,$2,1,$3,'expired-after-lock-intent',1,'lock-intended')`, locked.Operation.ID, locked.AcceptanceIntentID, targetJSON); err != nil {
+		t.Fatal(err)
+	}
 
 	if err := dbs[0].RecoverExpiredOperations(ctx); err != nil {
 		t.Fatal(err)
@@ -86,6 +114,16 @@ func TestExpiredExecutingMySQLRestoreFailsClosedWithVerifiableInspection(t *test
 	var preparedRows int
 	if err := dbs[0].Pool.QueryRow(ctx, `SELECT count(*) FROM mysql_restore_intents WHERE operation_id=$1 OR target_key='released-before-sql'`, prepared.Operation.ID).Scan(&preparedRows); err != nil || preparedRows != 0 {
 		t.Fatalf("expired prepared target reservation rows=%d err=%v", preparedRows, err)
+	}
+	var lockedStatus, lockedState string
+	if err := dbs[0].Pool.QueryRow(ctx, `SELECT status, metadata->>'mysqlRestoreState' FROM operations WHERE id=$1`, locked.Operation.ID).Scan(&lockedStatus, &lockedState); err != nil || lockedStatus != "failed" || lockedState != "runtime-lock-needs-inspection" {
+		t.Fatalf("lock-intended recovery status=%q state=%q err=%v", lockedStatus, lockedState, err)
+	}
+	if err := dbs[0].Pool.QueryRow(ctx, `SELECT state FROM mysql_restore_runtime_locks WHERE operation_id=$1`, locked.Operation.ID).Scan(&lockedState); err != nil || lockedState != "lock-intended" {
+		t.Fatalf("lock intent was released by recovery: state=%q err=%v", lockedState, err)
+	}
+	if err := dbs[0].Pool.QueryRow(ctx, `SELECT state FROM mysql_restore_intents WHERE operation_id=$1`, locked.Operation.ID).Scan(&lockedState); err != nil || lockedState != "prepared" {
+		t.Fatalf("prepared intent was released after lock intent: state=%q err=%v", lockedState, err)
 	}
 	inspection, err := stores[0].InspectMySQLRestore(ctx, accepted.Operation.ID)
 	if err != nil {

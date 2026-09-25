@@ -66,3 +66,33 @@ func mysqlRestoreMaintenanceFenceMigration() SchemaMigration {
 		MinimumWriterVersion: FunctionDeploymentProvenanceWriterVersion,
 	}
 }
+
+// A restore cannot safely cross from durable intent into an external account
+// lock without recording that intent first. The row is intentionally retained
+// after success: restoring application authentication requires an explicit
+// operator recovery action, never a worker cleanup path.
+const mysqlRestoreRuntimeLockMigrationSQL = `
+CREATE TABLE mysql_restore_runtime_locks (
+ operation_id TEXT PRIMARY KEY REFERENCES mysql_restore_intents(operation_id) ON DELETE RESTRICT,
+ acceptance_intent_id TEXT NOT NULL,
+ catalog_revision BIGINT NOT NULL REFERENCES database_catalog_revisions(revision) ON DELETE RESTRICT,
+ target JSONB NOT NULL,
+ claim_owner TEXT NOT NULL,
+ claim_generation BIGINT NOT NULL CHECK (claim_generation > 0),
+ state TEXT NOT NULL CHECK (state IN ('lock-intended', 'verified-lock')),
+ intended_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+ verified_at TIMESTAMPTZ,
+ CHECK ((state = 'lock-intended' AND verified_at IS NULL) OR
+        (state = 'verified-lock' AND verified_at IS NOT NULL))
+);
+`
+
+func mysqlRestoreRuntimeLockMigration() SchemaMigration {
+	return SchemaMigration{
+		Version:              27,
+		Name:                 "mysql-restore-runtime-account-locks",
+		SQL:                  mysqlRestoreRuntimeLockMigrationSQL,
+		MinimumReaderVersion: FunctionInvocationArchiveReaderVersion,
+		MinimumWriterVersion: FunctionDeploymentProvenanceWriterVersion,
+	}
+}
