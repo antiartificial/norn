@@ -2,6 +2,7 @@ package nomad
 
 import (
 	"context"
+	"errors"
 	"os"
 	"testing"
 	"time"
@@ -61,5 +62,22 @@ func TestStopJobCASInDisposableNomad(t *testing.T) {
 	if err := client.StopJobCAS(ctx, CASStopJobRequest{JobID: id, Region: region, JobVersion: *current.Version, JobModifyIndex: *current.JobModifyIndex, AllocationIDs: []string{observed[0].ID},
 		DeploymentID: "qualification-deployment", SpecDigest: "sha256:" + repeat("a", 64), DatabaseBindingSchema: "norn.database-targets/v1", DatabaseBindingSHA256: repeat("b", 64), DatabaseCatalogRevision: "1"}); err != nil {
 		t.Fatal(err)
+	}
+	request := CASStopJobRequest{JobID: id, Region: region, JobVersion: *current.Version, JobModifyIndex: *current.JobModifyIndex, AllocationIDs: []string{observed[0].ID},
+		DeploymentID: "qualification-deployment", SpecDigest: "sha256:" + repeat("a", 64), DatabaseBindingSchema: "norn.database-targets/v1", DatabaseBindingSHA256: repeat("b", 64), DatabaseCatalogRevision: "1"}
+	if err := client.ObserveStoppedMySQLSourceJob(ctx, request); err != nil {
+		t.Fatalf("guarded stop was not visible to recovery observer: %v", err)
+	}
+	restarted, _, err := client.api.Jobs().Info(id, (&nomadapi.QueryOptions{Region: region}).WithContext(ctx))
+	if err != nil || restarted == nil {
+		t.Fatalf("read stopped job before direct restart: %v", err)
+	}
+	resume := false
+	restarted.Stop = &resume
+	if _, _, err := client.api.Jobs().Register(restarted, (&nomadapi.WriteOptions{Region: region}).WithContext(ctx)); err != nil {
+		t.Fatalf("direct restart of disposable job: %v", err)
+	}
+	if err := client.ObserveStoppedMySQLSourceJob(ctx, request); !errors.Is(err, ErrMySQLSourceStoppedObservation) {
+		t.Fatalf("recovery observer accepted a directly restarted source: %v", err)
 	}
 }

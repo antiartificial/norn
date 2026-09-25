@@ -147,6 +147,12 @@ were then repeated under the durable unlock effect intent described below. The
 test Nomad observer validates plumbing, while separate Nomad tests exercise
 the concrete client behavior.
 
+The disposable Nomad 2.0.7 guarded-stop test now also calls the concrete
+read-only recovery observer. It accepts the stopped job and terminal signed
+allocation, then rejects the same signed observation after a direct job
+restart. This connects the stop and recovery checks on one real Nomad job; the
+full PostgreSQL/MySQL restore rehearsal still uses a test observer.
+
 Migration 37 adds a one-way destination `target-unlock-intended` checkpoint.
 The private recovery runner renews its signed claim, reobserves the stopped
 and locked source plus the locked destination and target fingerprints, commits
