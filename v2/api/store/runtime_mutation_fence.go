@@ -24,6 +24,17 @@ var ErrRuntimeMutationFenceHeld = errors.New("runtime mutation fence is already 
 var ErrRuntimeMutationFenceBusy = errors.New("runtime mutation operations are still running")
 var ErrRuntimeMutationFenceOwnershipLost = errors.New("runtime mutation fence ownership lost")
 
+// RuntimeMutationFenceActive reads only the singleton state used by claim
+// admission. A missing singleton is an error so callers can fail closed.
+func (db *DB) RuntimeMutationFenceActive(ctx context.Context) (bool, error) {
+	if db == nil || db.Pool == nil {
+		return false, fmt.Errorf("runtime mutation fence database is unavailable")
+	}
+	var active bool
+	err := db.Pool.QueryRow(ctx, `SELECT active FROM runtime_mutation_fence WHERE singleton=true`).Scan(&active)
+	return active, err
+}
+
 // AcquireRuntimeMutationFence installs the next durable epoch. Empty owner or
 // reason is rejected so an active stop is always attributable and explainable.
 func (db *DB) AcquireRuntimeMutationFence(ctx context.Context, owner, reason string) (RuntimeMutationFence, error) {

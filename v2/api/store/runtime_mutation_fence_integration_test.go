@@ -11,7 +11,7 @@ import (
 func TestRuntimeMutationFenceKeepsQueuedAppEffectsUnclaimedUntilExactRelease(t *testing.T) {
 	db := operationTestStores(t, 1)[0]
 	ctx := context.Background()
-	kinds := []string{"app.deploy", "app.rollback", "app.restart", "app.scale", "app.canary-promote", "app.cron-trigger", PrivateInvocationOperationKind}
+	kinds := []string{"app.deploy", "app.rollback", "app.restart", "app.scale", "app.canary-promote", "app.cron-trigger", PrivateInvocationOperationKind, "host.assure"}
 	operations := make(map[string]string, len(kinds))
 	for _, kind := range kinds {
 		op := insertOperationFixture(t, db, kind, 2, map[string]interface{}{"process": "nightly"})
