@@ -98,3 +98,26 @@ split authority and is not an acceptable intermediate runtime mode.
 
 Until these checks pass, M1 has useful canonical interfaces and PostgreSQL
 behavior but is not complete.
+
+## Current delta — 2026-09-25
+
+The table above is the `07ea7d4` audit inventory, not the current route
+map. Restart, scale, canary promotion, cron pause/resume/trigger/schedule,
+and wake now have signed claimed paths. Cron trigger's ambiguous Force result
+stops behind a one-shot effect reservation and has a positive-evaluation
+operator correction; an unknowable result stays held. The normal and
+lost-response schedule updates passed disposable Nomad/PostgreSQL tests.
+
+The `/invoke` route no longer calls legacy `Handler.InvokeFunction`. It
+selects the signed private-invocation admission/claimed worker only when the
+complete PostgreSQL runtime is configured, otherwise returns an explicit
+503. Historical function executions remain readable. The claimed function
+path still needs real Nomad crash, two-worker, archive-cleanup, and private
+Mini migration-22 rollback qualification before it is a release-ready
+capability. Etcd function parity is absent.
+
+`Forge`/teardown/toggle endpoint remain the largest default inline host
+effects in this audit. The ContextDB feedback rollback route now returns 501
+without contacting its remote service. The P1 PostgreSQL aggregate roots
+remain a barrier to a full etcd Fleet API. M1 is still open, including literal
+process crashes and two-replica races for the newly converted effects.
