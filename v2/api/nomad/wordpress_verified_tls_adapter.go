@@ -55,7 +55,7 @@ if [ -e "$target" ]; then
     exit 78
   fi
 else
-  tmp="$(mktemp "${target}.norn.XXXXXX")"
+  tmp="$(mktemp "$target.norn.XXXXXX")"
   trap 'rm -f "$tmp"' EXIT
   install -m 0444 "$source" "$tmp"
   mv -f "$tmp" "$target"

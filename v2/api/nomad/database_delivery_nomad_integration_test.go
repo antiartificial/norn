@@ -7,6 +7,7 @@ import (
 	"encoding/hex"
 	"fmt"
 	"io"
+	"net"
 	"net/http"
 	"os"
 	"path/filepath"
@@ -539,10 +540,30 @@ func TestWordPressVerifiedTLSStartupAdapterPersistentContentInNomad(t *testing.T
 		t.Fatalf("deregister first startup-adapter allocation: %v", err)
 	}
 	waitForNoRunningAllocation(t, client.api, jobID)
+	// Docker can retain the old host-port binding briefly after Nomad reports
+	// the allocation stopped. A fresh port keeps the replacement assertion
+	// focused on the same persisted wp-content, rather than daemon teardown.
+	replacementPort := freeLocalTCPPort(t)
+	replacementJob, _ := newJob(app, replacementPort)
+	job = replacementJob
+	port = replacementPort
 	secondAllocation := register()
 	if secondAllocation == firstAllocation {
 		t.Fatalf("expected a replacement allocation after deregistration, got %s twice", secondAllocation)
 	}
+}
+
+func freeLocalTCPPort(t *testing.T) int {
+	t.Helper()
+	listener, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	port := listener.Addr().(*net.TCPAddr).Port
+	if err := listener.Close(); err != nil {
+		t.Fatal(err)
+	}
+	return port
 }
 
 func assertWordPressDatabasePageWithSentinel(t *testing.T, client *Client, jobID string, port int, sentinelName string, wantSentinel []byte) string {
@@ -558,6 +579,12 @@ func assertWordPressDatabasePageWithSentinel(t *testing.T, client *Client, jobID
 		}
 		for _, allocation := range allocations {
 			if allocation.ClientStatus == "failed" || allocation.ClientStatus == "lost" {
+				full, _, _ := client.api.Allocations().Info(allocation.ID, nil)
+				if full != nil {
+					if state := full.TaskStates["web"]; state != nil {
+						t.Fatalf("product startup-adapter allocation %s: %s (%s)", allocation.ID, allocation.ClientDescription, taskEventSummary(state.Events))
+					}
+				}
 				t.Fatalf("product startup-adapter allocation %s: %s", allocation.ID, allocation.ClientDescription)
 			}
 			if allocation.ClientStatus != "running" {
