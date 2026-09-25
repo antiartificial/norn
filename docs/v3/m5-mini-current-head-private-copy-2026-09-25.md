@@ -43,3 +43,26 @@ the original-column data comparison. M5 remains
 open. The local build copy under `/tmp/norn-v3-m5-current-20260925` remains
 because automatic command review rejected a `rm -f` cleanup command; no
 alternate deletion method was attempted.
+
+## Fresh socket-only source rehearsal
+
+At approximately 2026-09-25 21:00 UTC, the rehearsal ran again with candidate
+source `cd4152b2e2b333c03cf9d4f24e564bb74c4f863a`. The disposable
+Darwin/arm64 binary SHA-256 was
+`47f7c6f76b6edeed5e7985d2d4cb1fa9c724dba30d5e8a8d19dcc2caf9790ef7`.
+The source dump connected to Mini's PostgreSQL 17.7 through its owner-local
+Unix socket using a read-only transaction setting, without a database
+password. The updated rehearsal script accepts the socket directory in the
+PostgreSQL URL's `host` query parameter. It restored the dump into a private
+socket-only PostgreSQL cluster and found **28 original public tables and
+249,771 rows**. Migration 1–38 and the second migrate-only pass succeeded;
+all original-table counts, primary-key digests, and original-column full-row
+digests matched. Passive/check API health and schema checks passed with
+minimum reader 5 and writer 30.
+
+The script removed its private database, dump, and logs. Exact temporary
+candidate/script directories on both Macs were removed and verified absent.
+The live Mini API still reported `v2.20.0-platform-30-ga5da8ef` with healthy
+Consul, Nomad, PostgreSQL, S3, and SOPS. This is copied-data compatibility on
+the current candidate code, not a signed release, protected-backup restore,
+legacy service fence, rollback, or live promotion.

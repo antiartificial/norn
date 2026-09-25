@@ -137,10 +137,15 @@ import urllib.parse
 
 parsed = urllib.parse.urlparse(os.environ["SOURCE_DATABASE_URL"])
 assert parsed.scheme in ("postgres", "postgresql")
-assert parsed.hostname and parsed.path not in ("", "/")
+assert parsed.path not in ("", "/")
 query = urllib.parse.parse_qs(parsed.query)
+socket_host = query.get("host", [""])[-1]
+host = socket_host or parsed.hostname
+assert host
+if socket_host:
+    assert socket_host.startswith("/") and os.path.isdir(socket_host)
 values = {
-    "PGHOST": parsed.hostname,
+    "PGHOST": host,
     "PGPORT": str(parsed.port or 5432),
     "PGUSER": urllib.parse.unquote(parsed.username or ""),
     "PGPASSWORD": urllib.parse.unquote(parsed.password or ""),
