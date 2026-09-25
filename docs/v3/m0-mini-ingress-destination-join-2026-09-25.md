@@ -18,7 +18,7 @@ its destination.
 
 | Unmatched identity | Destination evidence | Disposition |
 | --- | --- | --- |
-| First and second | Both point to Mini `localhost:8080`. A later listener check found an IPv4 Python `open-webui` process bound to `*:8080`; the separate Docker backend listener was bound to Mini's LAN address. A loopback HEAD request returned 200 from Uvicorn. | Technical destination is the host Open WebUI process, outside Norn's declared app endpoints. Its accountable owner, supervision, and intended external exposure still need review. |
+| First and second | Both point to Mini `localhost:8080`. A later listener check found an IPv4 Python `open-webui` process bound to `*:8080`; the separate Docker backend listener was bound to Mini's LAN address. A loopback HEAD request returned 200 from Uvicorn. The Python process was a direct child of launchd, listed under `ai.openwebui.hermes`. | Technical destination is the host Open WebUI service, outside Norn's declared app endpoints. Its accountable owner and intended external exposure still need review. |
 | Third | Points to Mini loopback port 8800. `norn-api` owns the listener, and TCP accepted a connection. | Identified as a Norn control API route, outside app endpoint ownership. Public reachability and intended exposure still need review. |
 | Fourth | Points to the current `vigil-gateway` allocation's node address and its declared process port 8144. TCP accepted a connection. | Strong current runtime match to Vigil, although no declared app endpoint names this hostname; owner should record the exception and verify the full route. |
 
