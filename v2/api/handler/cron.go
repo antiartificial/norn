@@ -177,6 +177,65 @@ func (h *Handler) CronTrigger(w http.ResponseWriter, r *http.Request) {
 	writeJSONStatus(w, http.StatusAccepted, accepted.Operation)
 }
 
+func (h *Handler) QueueCronTriggerReconciliation(w http.ResponseWriter, r *http.Request) {
+	if _, ok := requireControlScope(w, r, ScopeAPIWrite); !ok {
+		return
+	}
+	var req struct {
+		EffectID string `json:"effectId"`
+		EvalID   string `json:"evalId"`
+		Confirm  bool   `json:"confirm"`
+	}
+	if err := decodeControlJSON(w, r, &req); err != nil {
+		WriteControlProblem(w, r, http.StatusBadRequest, "invalid_cron_reconciliation", err.Error())
+		return
+	}
+	if !req.Confirm || req.EffectID == "" || req.EvalID == "" {
+		WriteControlProblem(w, r, http.StatusBadRequest, "confirmation_required", "cron trigger reconciliation requires confirm=true, effectId, and evalId")
+		return
+	}
+	if h.pipeline == nil || !h.pipeline.CronTriggerAvailable() {
+		WriteControlProblem(w, r, http.StatusServiceUnavailable, "cron_reconciliation_unavailable", "durable cron reconciliation is unavailable")
+		return
+	}
+	app, sourceID := chi.URLParam(r, "id"), chi.URLParam(r, "operationID")
+	enqueue, ok := h.pipelineEnqueueRequest(w, r, r.Header.Get("Idempotency-Key"), map[string]interface{}{
+		"action": "cron-trigger-reconciliation", "app": app, "sourceOperationId": sourceID, "effectId": req.EffectID, "evalId": req.EvalID, "confirm": true,
+	})
+	if !ok {
+		return
+	}
+	if previous, err := h.pipeline.ResolveEnqueue(r.Context(), enqueue, "app.cron-trigger-reconcile", app); err == nil {
+		if previous.Operation.Ref != sourceID || previous.Operation.Payload["effectId"] != req.EffectID || previous.Operation.Payload["evalId"] != req.EvalID {
+			WriteControlProblem(w, r, http.StatusConflict, "idempotency_conflict", "idempotency key belongs to another cron trigger correction")
+			return
+		}
+		previous.Operation.AttachReceipt()
+		w.Header().Set("Location", "/api/v1/operations/"+previous.Operation.ID)
+		writeJSON(w, previous.Operation)
+		return
+	} else if !errors.Is(err, store.ErrAcceptanceNotFound) {
+		writeOperationAcceptanceError(w, r, err)
+		return
+	}
+	accepted, err := h.pipeline.QueueCronTriggerReconciliation(r.Context(), app, sourceID, req.EffectID, req.EvalID, enqueue)
+	if errors.Is(err, store.ErrCronTriggerReconciliationUnavailable) {
+		WriteControlProblem(w, r, http.StatusConflict, "cron_reconciliation_unavailable", "source cron trigger effect cannot be reconciled")
+		return
+	}
+	if err != nil {
+		writeOperationAcceptanceError(w, r, err)
+		return
+	}
+	accepted.Operation.AttachReceipt()
+	w.Header().Set("Location", "/api/v1/operations/"+accepted.Operation.ID)
+	if accepted.Replayed {
+		writeJSON(w, accepted.Operation)
+		return
+	}
+	writeJSONStatus(w, http.StatusAccepted, accepted.Operation)
+}
+
 func (h *Handler) CronPause(w http.ResponseWriter, r *http.Request) {
 	id := chi.URLParam(r, "id")
 

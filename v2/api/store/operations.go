@@ -543,6 +543,7 @@ func (db *DB) FinishClaimedOperation(ctx context.Context, claim OperationClaim, 
 			WHERE id = $4 AND status = 'running' AND locked_by = $5
 			  AND lock_generation = $6 AND locked_until > now()
 			  AND (kind <> 'app.deployment-reconcile' OR $1 <> 'succeeded')
+			  AND (kind <> 'app.cron-trigger-reconcile' OR $1 <> 'succeeded')
 			  AND (kind <> 'app.snapshot' OR
 				($1 = 'succeeded' AND EXISTS (
 					SELECT 1 FROM snapshot_publication_intents spi
@@ -948,7 +949,7 @@ func (db *DB) RecoverExpiredOperations(ctx context.Context) error {
 				WHERE spi.operation_id = operations.id AND spi.state IN ('prepared', 'published')
 			)))
 		  AND (
-		    kind IN ('app.preflight', 'app.restart', 'app.canary-promote', 'app.cron-pause', 'app.cron-resume', 'app.cron-trigger', 'app.function-invoke')
+		    kind IN ('app.preflight', 'app.restart', 'app.canary-promote', 'app.cron-pause', 'app.cron-resume', 'app.cron-trigger', 'app.cron-trigger-reconcile', 'app.function-invoke')
 		    OR (kind = 'app.snapshot' AND EXISTS (
 		      SELECT 1 FROM snapshot_publication_intents spi
 		      WHERE spi.operation_id = operations.id AND spi.state IN ('prepared', 'published')

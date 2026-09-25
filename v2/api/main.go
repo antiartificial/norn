@@ -591,6 +591,7 @@ func main() {
 		r.Post("/v1/database/catalog/activations", h.ActivateDatabaseCatalog)
 		r.With(handler.ValidateAppID).Post("/v1/apps/{id}/rollbacks", h.QueueAppRollback)
 		r.With(handler.ValidateAppID).Post("/v1/apps/{id}/operations/{operationID}/deployment-reconciliation", h.QueueDeploymentReconciliation)
+		r.With(handler.ValidateAppID).Post("/v1/apps/{id}/operations/{operationID}/cron-trigger-reconciliation", h.QueueCronTriggerReconciliation)
 		r.Post("/v1/validate/infraspec", h.ValidateInfraSpecDocument)
 		r.Post("/v1/fleet/validate", h.ValidateFleetDocument)
 		r.Get("/v1/fleet/node-pools", h.FleetInventory)

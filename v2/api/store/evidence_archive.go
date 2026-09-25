@@ -387,6 +387,21 @@ func (db *DB) EvidenceIntentsForSubject(ctx context.Context, kind, subjectID str
 func evidenceHolds(ctx context.Context, q interface {
 	QueryRow(context.Context, string, ...any) pgx.Row
 }, intent EvidenceIntent, minAge time.Duration) ([]string, error) {
+	cronTriggerCorrectionProof := `o.kind='app.cron-trigger' AND o.status='failed'
+		AND f.operation_id=o.id AND f.stage='app.cron-trigger.nomad' AND f.lifecycle='completed' AND f.outcome='succeeded'
+		AND EXISTS (
+			SELECT 1 FROM operations r
+			JOIN evidence_archive_intents i ON i.subject_kind='saga' AND i.subject_id=r.saga_id
+				AND i.operation_id=r.id AND i.state IN ('verified','pruned')
+			WHERE r.kind='app.cron-trigger-reconcile' AND r.status='succeeded' AND r.app=o.app
+				AND r.payload->>'sourceOperationId'=o.id AND r.payload->>'effectId'=f.id
+				AND r.payload->>'evalId'=f.runtime_instance_id AND r.payload->>'jobId'=o.payload->>'jobId'
+				AND r.metadata->>'sourceOperationId'=o.id AND r.metadata->>'effectId'=f.id
+				AND r.metadata->>'evalId'=f.runtime_instance_id
+				AND COALESCE(r.metadata->>'observedAt','')<>''
+				AND EXISTS(SELECT 1 FROM operation_acceptance_intents ai WHERE ai.operation_id=r.id)
+		)`
+	cronTriggerManualResolved := `EXISTS(SELECT 1 FROM operation_effects f WHERE f.operation_id=o.id AND (` + cronTriggerCorrectionProof + `))`
 	var holds []string
 	check := func(reason, query string, args ...any) error {
 		var held bool
@@ -449,9 +464,10 @@ func evidenceHolds(ctx context.Context, q interface {
 						)
 					)
 				)
-			)
+			) AND NOT (` + cronTriggerManualResolved + `)
 		)`},
-		{"unresolved-effect", `SELECT EXISTS (SELECT 1 FROM operation_effects f JOIN operations o ON o.id = f.operation_id WHERE o.saga_id = $1 AND f.lifecycle <> 'resolved')`},
+		{"unresolved-effect", `SELECT EXISTS (SELECT 1 FROM operation_effects f JOIN operations o ON o.id = f.operation_id WHERE o.saga_id = $1 AND f.lifecycle <> 'resolved'
+			AND NOT (` + cronTriggerCorrectionProof + `))`},
 		{"deployment-active", `SELECT EXISTS (SELECT 1 FROM deployments WHERE saga_id = $1 AND status NOT IN ('deployed', 'failed'))`},
 		{"deployment-current-or-rollback", `SELECT EXISTS (SELECT 1 FROM deployments d WHERE d.saga_id = $1 AND d.status = 'deployed' AND d.id IN (
 			SELECT id FROM deployments x WHERE x.app = d.app AND x.status = 'deployed' ORDER BY x.started_at DESC LIMIT 2))`},

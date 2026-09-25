@@ -330,6 +330,9 @@ func (p *Pipeline) ExecuteOperation(ctx context.Context, op *model.Operation, cl
 	if op.Kind == "app.cron-trigger" {
 		return operationOutcome(p.executeCronTrigger(ctx, op, claim))
 	}
+	if op.Kind == "app.cron-trigger-reconcile" {
+		return operationOutcome(p.executeCronTriggerReconciliation(ctx, op, claim))
+	}
 	if op.Kind == "app.canary-promote" {
 		return operationOutcome(p.executeCanaryPromotion(ctx, op, claim))
 	}
