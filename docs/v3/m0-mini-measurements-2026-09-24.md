@@ -156,3 +156,15 @@ rollback decision. The target's row count was not matched to a same-snapshot
 source count or full-row fingerprints, so this run alone does not prove data
 equivalence. A release RTO must cover those additional stages and use a
 reviewed threshold.
+
+At 2026-09-25 20:52 UTC, another read-only PostgreSQL aggregate sample measured
+database size **245,370,003 bytes**, user-table total **236,355,584 bytes**,
+heap **147,120,128 bytes**, indexes **88,170,496 bytes**, and five connections
+including the measurement query. The largest tables were `beacon_events`
+(111,460,352 bytes), `control_events` (81,248,256), and
+`mutation_audit_events` (30,793,728). The authenticated Mini inventory still
+reported signed v2 API version `v2.20.0-platform-30-ga5da8ef`, 27 app records,
+zero active operations, host status `ok`, and production readiness `blocked`.
+No Mini state was changed; the temporary local API inventory was removed after
+review. This extends the observation beyond 28 hours but does not establish a
+representative workload-cycle or release capacity budget.

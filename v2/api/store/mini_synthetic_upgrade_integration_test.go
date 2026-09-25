@@ -36,6 +36,33 @@ func TestSyntheticMiniControlUpgradeAndReaderBoundary(t *testing.T) {
 	if _, err := pool.Exec(ctx, fixture); err != nil {
 		t.Fatal(err)
 	}
+	// Mini observed about 1,500 rows per day in each of these three event
+	// families. Keep this synthetic day free of copied payloads and identities.
+	const activityFixture = `
+		INSERT INTO beacon_events(id,app,type,title,occurred_at,metadata)
+			SELECT 'synthetic-beacon-'||n, 'synthetic-app', 'synthetic.event', 'synthetic title',
+				timestamptz '2026-01-01 00:00:00+00' + n * interval '57.6 seconds', jsonb_build_object('sequence',n)
+			FROM generate_series(0,1499) AS n;
+		INSERT INTO control_events(type,app_id,timestamp,payload)
+			SELECT 'synthetic.event', 'synthetic-app',
+				timestamptz '2026-01-01 00:00:00+00' + n * interval '57.6 seconds', jsonb_build_object('sequence',n)
+			FROM generate_series(0,1499) AS n;
+		INSERT INTO mutation_audit_events(id,principal_subject,method,path,status,outcome,started_at,record_digest)
+			SELECT 'synthetic-audit-'||n, 'fixture-operator', 'POST', '/synthetic/mutation', 200, 'succeeded',
+				timestamptz '2026-01-01 00:00:00+00' + n * interval '57.6 seconds', 'synthetic-digest-'||n
+			FROM generate_series(0,1499) AS n;`
+	if _, err := pool.Exec(ctx, activityFixture); err != nil {
+		t.Fatal(err)
+	}
+	const activityRead = `SELECT jsonb_build_object(
+		'beacon', (SELECT jsonb_build_object('count',count(*),'digest',md5(string_agg(id||'|'||type||'|'||metadata::text,',' ORDER BY id))) FROM beacon_events WHERE id LIKE 'synthetic-beacon-%'),
+		'control', (SELECT jsonb_build_object('count',count(*),'digest',md5(string_agg(id::text||'|'||type||'|'||payload::text,',' ORDER BY id))) FROM control_events WHERE app_id='synthetic-app'),
+		'audit', (SELECT jsonb_build_object('count',count(*),'digest',md5(string_agg(id||'|'||method||'|'||path||'|'||record_digest,',' ORDER BY id))) FROM mutation_audit_events WHERE id LIKE 'synthetic-audit-%')
+	)::text`
+	var activityBefore, activityAfter string
+	if err := pool.QueryRow(ctx, activityRead).Scan(&activityBefore); err != nil {
+		t.Fatal(err)
+	}
 	// These are legacy-shape reads: they select only columns present before
 	// the migration ledger, including original IDs and receipt bytes.
 	const legacyRead = `SELECT jsonb_build_object(
@@ -46,7 +73,7 @@ func TestSyntheticMiniControlUpgradeAndReaderBoundary(t *testing.T) {
 		'step', (SELECT jsonb_build_object('step',step,'marker',metadata->>'marker') FROM deployment_steps WHERE deployment_id='deployment-synthetic'),
 		'cron', (SELECT jsonb_build_object('process',process,'paused',paused,'schedule',schedule) FROM cron_states WHERE app='synthetic-app'),
 		'webhook', (SELECT jsonb_build_object('id',id,'marker',payload->>'marker') FROM webhook_deliveries WHERE id='webhook-synthetic'),
-		'event', (SELECT payload->>'marker' FROM control_events WHERE app_id='synthetic-app')
+		'event', (SELECT payload->>'marker' FROM control_events WHERE app_id='synthetic-app' AND payload->>'marker'='synthetic-event')
 	)::text`
 	var before, after string
 	if err := pool.QueryRow(ctx, legacyRead).Scan(&before); err != nil {
@@ -68,6 +95,12 @@ func TestSyntheticMiniControlUpgradeAndReaderBoundary(t *testing.T) {
 	}
 	if before != after {
 		t.Fatalf("synthetic legacy reads changed across migration: before=%s after=%s", before, after)
+	}
+	if err := pool.QueryRow(ctx, activityRead).Scan(&activityAfter); err != nil {
+		t.Fatal(err)
+	}
+	if activityBefore != activityAfter {
+		t.Fatalf("synthetic event-day rows changed across migration: before=%s after=%s", activityBefore, activityAfter)
 	}
 	// Migration 21 retires the preceding reader contract because it cannot
 	// decode function evidence bundles. A rollback to that reader must refuse
