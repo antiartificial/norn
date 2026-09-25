@@ -42,4 +42,6 @@ Later branch work added migration 18 for dormant private function-invocation
 material and raised the writer minimum to 15. The version and checksum table
 above remains the exact historical manifest at the stated commit. Current
 routine CI applies migration 18 to a synthetic fixture, but the private Mini
-restore and mixed-version rehearsal have not yet been repeated through 18.
+restore has now been repeated through 18 on a [private Mini copy](m0-mini-private-restore-migration18-rehearsal-2026-09-24.md),
+with original-table counts and primary-key fingerprints preserved. The
+mixed-version and rollback rehearsal remains open.
