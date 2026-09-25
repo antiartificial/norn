@@ -78,3 +78,33 @@ func TestMySQLRestoreClaimSupervisorStopsCleanlyBeforeNextRenewal(t *testing.T) 
 		t.Fatalf("renewals = %d, want only initial renewal", calls.Load())
 	}
 }
+
+func TestMySQLRestoreClaimSupervisorFailedStartAndRepeatedStopAreSafe(t *testing.T) {
+	startFailure := errors.New("initial claim renewal rejected")
+	supervisor, err := newMySQLRestoreClaimSupervisor(context.Background(), time.Second, func(context.Context, time.Duration) error {
+		return startFailure
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := supervisor.Start(); !errors.Is(err, startFailure) {
+		t.Fatalf("start = %v, want initial renewal failure", err)
+	}
+	for attempt := 0; attempt < 2; attempt++ {
+		if err := supervisor.Stop(); !errors.Is(err, startFailure) {
+			t.Fatalf("stop %d = %v, want initial renewal failure", attempt+1, err)
+		}
+	}
+}
+
+func TestNilMySQLRestoreClaimSupervisorContextFailsClosed(t *testing.T) {
+	var supervisor *mysqlRestoreClaimSupervisor
+	select {
+	case <-supervisor.Context().Done():
+		if !errors.Is(context.Cause(supervisor.Context()), ErrMySQLRestoreFence) {
+			t.Fatalf("nil supervisor cause = %v", context.Cause(supervisor.Context()))
+		}
+	case <-time.After(time.Second):
+		t.Fatal("nil supervisor returned a live context")
+	}
+}

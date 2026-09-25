@@ -25,10 +25,13 @@ type mysqlRestoreClaimSupervisor struct {
 	renew    func(context.Context, time.Duration) error
 
 	stop     chan struct{}
-	done     chan error
+	done     chan struct{}
 	stopOnce sync.Once
 	mu       sync.RWMutex
 	failure  error
+	started  bool
+	finished bool
+	result   error
 }
 
 func newMySQLRestoreClaimSupervisor(parent context.Context, lease time.Duration, renew func(context.Context, time.Duration) error) (*mysqlRestoreClaimSupervisor, error) {
@@ -46,13 +49,15 @@ func newMySQLRestoreClaimSupervisor(parent context.Context, lease time.Duration,
 		interval: maxDuration(lease/3, time.Nanosecond),
 		renew:    renew,
 		stop:     make(chan struct{}),
-		done:     make(chan error, 1),
+		done:     make(chan struct{}),
 	}, nil
 }
 
 func (s *mysqlRestoreClaimSupervisor) Context() context.Context {
 	if s == nil || s.ctx == nil {
-		return context.Background()
+		ctx, cancel := context.WithCancelCause(context.Background())
+		cancel(ErrMySQLRestoreFence)
+		return ctx
 	}
 	return s.ctx
 }
@@ -76,7 +81,19 @@ func (s *mysqlRestoreClaimSupervisor) Start() error {
 	if s == nil {
 		return fmt.Errorf("MySQL restore claim supervisor is unavailable")
 	}
+	s.mu.Lock()
+	if s.started || s.finished {
+		err := s.result
+		s.mu.Unlock()
+		if err == nil {
+			return fmt.Errorf("MySQL restore claim supervisor already started")
+		}
+		return err
+	}
+	s.started = true
+	s.mu.Unlock()
 	if err := s.renewOnce(); err != nil {
+		s.complete(err)
 		return err
 	}
 	go s.run()
@@ -90,8 +107,20 @@ func (s *mysqlRestoreClaimSupervisor) Stop() error {
 	if s == nil {
 		return nil
 	}
+	s.mu.RLock()
+	started := s.started
+	finished := s.finished
+	s.mu.RUnlock()
+	if !started && !finished {
+		s.cancel(ErrMySQLRestoreFence)
+		s.complete(ErrMySQLRestoreFence)
+		return ErrMySQLRestoreFence
+	}
 	s.stopOnce.Do(func() { close(s.stop) })
-	return <-s.done
+	<-s.done
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	return s.result
 }
 
 func (s *mysqlRestoreClaimSupervisor) run() {
@@ -100,18 +129,18 @@ func (s *mysqlRestoreClaimSupervisor) run() {
 	for {
 		select {
 		case <-s.stop:
-			s.done <- nil
+			s.complete(nil)
 			return
 		case <-s.ctx.Done():
 			if cause := context.Cause(s.ctx); cause != nil && cause != context.Canceled && cause != context.DeadlineExceeded {
-				s.done <- cause
+				s.complete(cause)
 			} else {
-				s.done <- nil
+				s.complete(nil)
 			}
 			return
 		case <-ticker.C:
 			if err := s.renewOnce(); err != nil {
-				s.done <- err
+				s.complete(err)
 				return
 			}
 		}
@@ -129,6 +158,21 @@ func (s *mysqlRestoreClaimSupervisor) renewOnce() error {
 		s.cancel(err)
 	}
 	return err
+}
+
+func (s *mysqlRestoreClaimSupervisor) complete(result error) {
+	if s == nil {
+		return
+	}
+	s.mu.Lock()
+	if s.finished {
+		s.mu.Unlock()
+		return
+	}
+	s.finished = true
+	s.result = result
+	s.mu.Unlock()
+	close(s.done)
 }
 
 func maxDuration(left, right time.Duration) time.Duration {
