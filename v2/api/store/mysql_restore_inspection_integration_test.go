@@ -52,9 +52,40 @@ func TestExpiredExecutingMySQLRestoreFailsClosedWithVerifiableInspection(t *test
 		accepted.Operation.ID, accepted.AcceptanceIntentID, uuid.NewString(), targetJSON, artifactJSON); err != nil {
 		t.Fatal(err)
 	}
+	preparedInput := newAcceptance(t, stores[0], "mysql-prepared-expiry-"+uuid.NewString(), "operator", "mysql/prepared", false)
+	preparedInput.Identity.Kind, preparedInput.Identity.Resource = MySQLRestoreOperationKind, "mysql/prepared"
+	preparedInput.Operation.Kind, preparedInput.Operation.MaxAttempts = MySQLRestoreOperationKind, 1
+	if err := json.Unmarshal(encoded, &preparedInput.Operation.Payload); err != nil {
+		t.Fatal(err)
+	}
+	preparedInput.Fingerprint, err = CanonicalOperationRequestFingerprint(preparedInput)
+	if err != nil {
+		t.Fatal(err)
+	}
+	prepared, err := stores[0].Accept(ctx, preparedInput)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := dbs[0].Pool.Exec(ctx, `UPDATE operations SET status='running',attempts=1,locked_by='expired-before-sql',lock_generation=1,locked_until=now()-interval '1 second' WHERE id=$1`, prepared.Operation.ID); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := dbs[0].Pool.Exec(ctx, `INSERT INTO mysql_restore_intents
+		(operation_id,acceptance_intent_id,catalog_revision,profile_id,logical_id,target_key,target,artifact,artifact_path,state)
+		VALUES ($1,$2,1,'private-profile-selector','private-logical-selector','released-before-sql',$3,$4,'/private/stage/restore.sql','prepared')`,
+		prepared.Operation.ID, prepared.AcceptanceIntentID, targetJSON, artifactJSON); err != nil {
+		t.Fatal(err)
+	}
 
 	if err := dbs[0].RecoverExpiredOperations(ctx); err != nil {
 		t.Fatal(err)
+	}
+	var preparedStatus, preparedState string
+	if err := dbs[0].Pool.QueryRow(ctx, `SELECT status, metadata->>'mysqlRestoreState' FROM operations WHERE id=$1`, prepared.Operation.ID).Scan(&preparedStatus, &preparedState); err != nil || preparedStatus != "failed" || preparedState != "abandoned-before-execution" {
+		t.Fatalf("expired prepared restore status=%q state=%q err=%v", preparedStatus, preparedState, err)
+	}
+	var preparedRows int
+	if err := dbs[0].Pool.QueryRow(ctx, `SELECT count(*) FROM mysql_restore_intents WHERE operation_id=$1 OR target_key='released-before-sql'`, prepared.Operation.ID).Scan(&preparedRows); err != nil || preparedRows != 0 {
+		t.Fatalf("expired prepared target reservation rows=%d err=%v", preparedRows, err)
 	}
 	inspection, err := stores[0].InspectMySQLRestore(ctx, accepted.Operation.ID)
 	if err != nil {

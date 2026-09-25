@@ -34,7 +34,10 @@ Expired executing intents now atomically become `needs-inspection` with a
 failed, manual-recovery operation. A read-scoped inspection endpoint returns
 verified signed acceptance, catalog, target, and artifact identities without
 the private artifact path or profile selector. It cannot retry or acknowledge
-an ambiguous restore. The disposable PostgreSQL recovery test passed.
+an ambiguous restore. A `prepared` intent whose claim expired before SQL is
+atomically failed and its target reservation released; it cannot be confused
+with an executing import. The disposable PostgreSQL recovery test passed both
+cases.
 
 ## Still required before a usable restore lane
 
@@ -48,8 +51,5 @@ an ambiguous restore. The disposable PostgreSQL recovery test passed.
 - Define evidence-bound operator reconciliation after inspection. Current
   signed identity and target fingerprints cannot prove whether a partial SQL
   prefix was applied, so no acknowledgement mutation is exposed.
-- Classify a `prepared` intent whose claim expires before the one-way
-  boundary. It currently retains the target reservation and requires manual
-  review; the executing-intent recovery must not be reused for this state.
 
 These gaps keep MySQL restore non-deployable and the public capability closed.

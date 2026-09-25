@@ -931,6 +931,9 @@ func (db *DB) RecoverExpiredOperations(ctx context.Context) error {
 		return err
 	}
 	defer tx.Rollback(ctx)
+	if err := recoverExpiredPreparedMySQLRestores(ctx, tx); err != nil {
+		return err
+	}
 	// A MySQL restore becomes permanently ambiguous as soon as its intent is
 	// executing. Claim expiry must therefore terminalize the operation and mark
 	// the intent for inspection in one transaction. It must never enter the
