@@ -204,8 +204,10 @@ func TestMySQLExactTargetDumpRestore(t *testing.T) {
 		unrelated.Close()
 		wrong := exec.CommandContext(ctx, dumpTool, "--defaults-file="+options(sourceRole, sourcePassword), "--protocol=tcp", "--host="+host,
 			"--port="+strconv.Itoa(port), "--ssl-mode=VERIFY_CA", "--ssl-ca="+wrongCA, sourceDB)
-		if err := wrong.Run(); err == nil {
-			t.Fatal("mysqldump accepted an unrelated CA")
+		output, err := wrong.CombinedOutput()
+		message := strings.ToLower(string(output))
+		if err == nil || (!strings.Contains(message, "ssl") && !strings.Contains(message, "certificate")) {
+			t.Fatalf("mysqldump wrong-CA control did not fail certificate verification: exit=%v", err)
 		}
 	}
 	dumpBytes, err := os.ReadFile(dumpPath)
