@@ -18,11 +18,12 @@ import (
 const MaxArtifactBytes int64 = 64 << 30
 
 var (
-	ErrInvalidDescriptor = errors.New("artifact descriptor is invalid")
-	ErrArtifactTooLarge  = errors.New("artifact exceeds the 64 GiB limit")
-	ErrArtifactCorrupt   = errors.New("artifact does not match its descriptor")
-	ErrArtifactNotFound  = errors.New("artifact not found")
-	ErrArtifactFull      = errors.New("artifact store capacity exhausted")
+	ErrInvalidDescriptor  = errors.New("artifact descriptor is invalid")
+	ErrArtifactTooLarge   = errors.New("artifact exceeds the 64 GiB limit")
+	ErrArtifactCorrupt    = errors.New("artifact does not match its descriptor")
+	ErrArtifactUnverified = errors.New("artifact stream closed before verification completed")
+	ErrArtifactNotFound   = errors.New("artifact not found")
+	ErrArtifactFull       = errors.New("artifact store capacity exhausted")
 )
 
 // Descriptor is an immutable artifact identity. Key is derived exclusively
@@ -66,8 +67,9 @@ func isLowerHex(value string) bool {
 // Store is portable across private local filesystems and future object-store
 // adapters. Publish reads source once and verifies it against expected before
 // immutable publication. Open streams a single artifact; a full read through
-// EOF verifies its exact size and SHA-256. Materialize and Verify always read
-// through EOF and therefore provide complete verification.
+// EOF verifies its exact size and SHA-256; closing sooner returns
+// ErrArtifactUnverified. Materialize and Verify always read through EOF and
+// therefore provide complete verification.
 //
 // All methods reject descriptors above MaxArtifactBytes. A Store never accepts
 // caller-selected keys and never exposes a []byte artifact API.

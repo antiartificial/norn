@@ -89,12 +89,55 @@ func runStoreConformance(t *testing.T, store Store, localRoot string) {
 		if err := os.Chmod(path, 0o600); err != nil {
 			t.Fatal(err)
 		}
+		tampered := append([]byte(nil), payload...)
+		tampered[0] ^= 1
+		if err := os.WriteFile(path, tampered, 0o600); err != nil {
+			t.Fatal(err)
+		}
+		reader, err := store.Open(ctx, expected)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if _, err := io.ReadFull(reader, make([]byte, len(tampered))); err != nil {
+			t.Fatal(err)
+		}
+		if err := reader.Close(); !errors.Is(err, ErrArtifactUnverified) {
+			t.Fatalf("exact-length read closed without EOF proof: %v", err)
+		}
+		if err := store.Verify(ctx, expected); !errors.Is(err, ErrArtifactCorrupt) {
+			t.Fatalf("same-size tampered artifact verify = %v", err)
+		}
 		if err := os.WriteFile(path, append([]byte(nil), payload[:len(payload)-1]...), 0o600); err != nil {
 			t.Fatal(err)
 		}
 		if err := store.Verify(ctx, expected); !errors.Is(err, ErrArtifactCorrupt) {
 			t.Fatalf("tampered artifact verify = %v", err)
 		}
+	}
+}
+
+func TestLocalStoreIdentityAndCapacityScansHonorCancellation(t *testing.T) {
+	root := t.TempDir()
+	if err := os.Chmod(root, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	store, err := OpenLocal(root, 1<<20)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = store.Close() })
+	payload := bytes.Repeat([]byte("artifact"), 1024)
+	expected := descriptorFor(payload)
+	if _, err := store.Publish(context.Background(), expected, bytes.NewReader(payload)); err != nil {
+		t.Fatal(err)
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	if _, err := store.identity(ctx, expected.Key); !errors.Is(err, context.Canceled) {
+		t.Fatalf("identity scan after cancellation = %v", err)
+	}
+	if _, err := store.usage(ctx); !errors.Is(err, context.Canceled) {
+		t.Fatalf("capacity scan after cancellation = %v", err)
 	}
 }
 

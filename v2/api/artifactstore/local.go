@@ -96,7 +96,7 @@ func (s *LocalStore) Publish(ctx context.Context, expected Descriptor, source io
 	if err := s.mkdirDurable(path.Dir(expected.Key)); err != nil {
 		return Descriptor{}, err
 	}
-	if existing, err := s.identity(expected.Key); err == nil {
+	if existing, err := s.identity(ctx, expected.Key); err == nil {
 		if existing != expected {
 			return Descriptor{}, ErrArtifactCorrupt
 		}
@@ -108,7 +108,7 @@ func (s *LocalStore) Publish(ctx context.Context, expected Descriptor, source io
 		return Descriptor{}, err
 	}
 
-	used, err := s.usage()
+	used, err := s.usage(ctx)
 	if err != nil {
 		return Descriptor{}, err
 	}
@@ -145,7 +145,7 @@ func (s *LocalStore) Publish(ctx context.Context, expected Descriptor, source io
 	}
 	if err := s.root.Link(temporary, expected.Key); err != nil {
 		if errors.Is(err, fs.ErrExist) {
-			existing, identityErr := s.identity(expected.Key)
+			existing, identityErr := s.identity(ctx, expected.Key)
 			if identityErr != nil || existing != expected {
 				return Descriptor{}, ErrArtifactCorrupt
 			}
@@ -218,7 +218,7 @@ func (s *LocalStore) open(name string) (*os.File, os.FileInfo, error) {
 	return file, stat, nil
 }
 
-func (s *LocalStore) identity(name string) (Descriptor, error) {
+func (s *LocalStore) identity(ctx context.Context, name string) (Descriptor, error) {
 	file, stat, err := s.open(name)
 	if err != nil {
 		return Descriptor{}, err
@@ -228,16 +228,22 @@ func (s *LocalStore) identity(name string) (Descriptor, error) {
 		return Descriptor{}, ErrArtifactCorrupt
 	}
 	hash := sha256.New()
-	read, err := io.CopyBuffer(hash, io.LimitReader(file, MaxArtifactBytes+1), make([]byte, streamBufferBytes))
+	read, err := io.CopyBuffer(hash, io.LimitReader(contextReader{ctx: ctx, reader: file}, MaxArtifactBytes+1), make([]byte, streamBufferBytes))
 	if err != nil || read != stat.Size() || read > MaxArtifactBytes {
+		if err != nil {
+			return Descriptor{}, err
+		}
 		return Descriptor{}, ErrArtifactCorrupt
 	}
 	return Descriptor{Key: name, SHA256: hex.EncodeToString(hash.Sum(nil)), Size: read}, nil
 }
 
-func (s *LocalStore) usage() (int64, error) {
+func (s *LocalStore) usage(ctx context.Context) (int64, error) {
 	var total int64
 	err := fs.WalkDir(s.root.FS(), ".", func(_ string, entry fs.DirEntry, err error) error {
+		if contextErr := ctx.Err(); contextErr != nil {
+			return contextErr
+		}
 		if err != nil {
 			return err
 		}
@@ -352,6 +358,7 @@ type verifyingReadCloser struct {
 	hash     hash.Hash
 	count    int64
 	err      error
+	verified bool
 }
 
 func (r *verifyingReadCloser) Read(p []byte) (int, error) {
@@ -372,8 +379,18 @@ func (r *verifyingReadCloser) Read(p []byte) (int, error) {
 			r.err = ErrArtifactCorrupt
 			return n, r.err
 		}
+		r.verified = true
 	}
 	return n, err
 }
 
-func (r *verifyingReadCloser) Close() error { return r.closer.Close() }
+func (r *verifyingReadCloser) Close() error {
+	closeErr := r.closer.Close()
+	if r.err != nil {
+		return errors.Join(r.err, closeErr)
+	}
+	if !r.verified {
+		return errors.Join(ErrArtifactUnverified, closeErr)
+	}
+	return closeErr
+}
