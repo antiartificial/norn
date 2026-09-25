@@ -21,6 +21,7 @@ type RuntimeMutationFence struct {
 }
 
 var ErrRuntimeMutationFenceHeld = errors.New("runtime mutation fence is already held")
+var ErrRuntimeMutationFenceBusy = errors.New("runtime mutation operations are still running")
 var ErrRuntimeMutationFenceOwnershipLost = errors.New("runtime mutation fence ownership lost")
 
 // AcquireRuntimeMutationFence installs the next durable epoch. Empty owner or
@@ -29,8 +30,13 @@ func (db *DB) AcquireRuntimeMutationFence(ctx context.Context, owner, reason str
 	if db == nil || db.Pool == nil || strings.TrimSpace(owner) == "" || strings.TrimSpace(reason) == "" {
 		return RuntimeMutationFence{}, fmt.Errorf("runtime mutation fence owner and reason are required")
 	}
+	tx, err := db.Pool.BeginTx(ctx, pgx.TxOptions{})
+	if err != nil {
+		return RuntimeMutationFence{}, err
+	}
+	defer tx.Rollback(context.Background())
 	var fence RuntimeMutationFence
-	err := db.Pool.QueryRow(ctx, `
+	err = tx.QueryRow(ctx, `
 		UPDATE runtime_mutation_fence
 		SET epoch=epoch+1, active=true, owner=$1, reason=$2, held_at=clock_timestamp(), released_at=NULL
 		WHERE singleton=true AND active=false
@@ -38,7 +44,24 @@ func (db *DB) AcquireRuntimeMutationFence(ctx context.Context, owner, reason str
 	if errors.Is(err, pgx.ErrNoRows) {
 		return RuntimeMutationFence{}, ErrRuntimeMutationFenceHeld
 	}
-	return fence, err
+	if err != nil {
+		return RuntimeMutationFence{}, err
+	}
+	var running bool
+	if err := tx.QueryRow(ctx, `SELECT EXISTS (
+		SELECT 1 FROM operations WHERE status='running' AND kind IN
+		('app.deploy','app.rollback','app.restart','app.scale','app.canary-promote',
+		 'app.cron-pause','app.cron-resume','app.cron-schedule','app.cron-trigger',
+		 'app.cron-trigger-reconcile','app.function-invoke'))`).Scan(&running); err != nil {
+		return RuntimeMutationFence{}, err
+	}
+	if running {
+		return RuntimeMutationFence{}, ErrRuntimeMutationFenceBusy
+	}
+	if err := tx.Commit(ctx); err != nil {
+		return RuntimeMutationFence{}, err
+	}
+	return fence, nil
 }
 
 // ReleaseRuntimeMutationFence only clears the precise epoch acquired above.

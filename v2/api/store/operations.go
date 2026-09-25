@@ -750,7 +750,7 @@ func (db *DB) ClaimNextOperation(ctx context.Context, workerID string, lease tim
 			  AND (NOT acceptance_required OR EXISTS (
 				SELECT 1 FROM operation_acceptance_intents ai WHERE ai.operation_id = operations.id
 			  ))
-			  AND (kind NOT IN ('app.deploy','app.restart','app.scale','app.cron-pause','app.cron-resume','app.cron-schedule','app.cron-trigger','app.cron-trigger-reconcile','app.function-invoke')
+			  AND (kind NOT IN ('app.deploy','app.rollback','app.restart','app.scale','app.canary-promote','app.cron-pause','app.cron-resume','app.cron-schedule','app.cron-trigger','app.cron-trigger-reconcile','app.function-invoke')
 			       OR EXISTS (SELECT 1 FROM runtime_mutation_fence WHERE singleton=true AND active=false))
 			  %s
 			ORDER BY started_at ASC

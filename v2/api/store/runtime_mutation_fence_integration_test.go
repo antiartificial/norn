@@ -11,7 +11,7 @@ import (
 func TestRuntimeMutationFenceKeepsQueuedAppEffectsUnclaimedUntilExactRelease(t *testing.T) {
 	db := operationTestStores(t, 1)[0]
 	ctx := context.Background()
-	kinds := []string{"app.deploy", "app.restart", "app.scale", "app.cron-trigger", PrivateInvocationOperationKind}
+	kinds := []string{"app.deploy", "app.rollback", "app.restart", "app.scale", "app.canary-promote", "app.cron-trigger", PrivateInvocationOperationKind}
 	operations := make(map[string]string, len(kinds))
 	for _, kind := range kinds {
 		op := insertOperationFixture(t, db, kind, 2, map[string]interface{}{"process": "nightly"})
@@ -91,5 +91,39 @@ func TestRuntimeMutationClaimWaitsForConcurrentFenceCommit(t *testing.T) {
 		}
 	case <-ctx.Done():
 		t.Fatal("claim did not resume after fence commit")
+	}
+	var epoch int64
+	if err := db.Pool.QueryRow(ctx, `SELECT epoch FROM runtime_mutation_fence WHERE singleton=true AND owner='concurrent-fence'`).Scan(&epoch); err != nil {
+		t.Fatal(err)
+	}
+	if err := db.ReleaseRuntimeMutationFence(ctx, RuntimeMutationFence{Epoch: epoch, Owner: "concurrent-fence"}); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestRuntimeMutationFenceRejectsAlreadyClaimedEffect(t *testing.T) {
+	db := operationTestStores(t, 1)[0]
+	ctx := context.Background()
+	op := insertOperationFixture(t, db, "app.restart", 2, map[string]interface{}{"process": "web"})
+	if _, err := db.Pool.Exec(ctx, `UPDATE operations SET status='running', attempts=1, locked_by='restart-worker', lock_generation=1,
+		locked_until=clock_timestamp()+interval '1 minute' WHERE id=$1`, op.ID); err != nil {
+		t.Fatal(err)
+	}
+	claim, err := NewOperationClaim(op.ID, "restart-worker", 1)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := db.AcquireRuntimeMutationFence(ctx, "migration-test", "drain app effects"); err != ErrRuntimeMutationFenceBusy {
+		t.Fatalf("running restart did not block fence acquisition: %v", err)
+	}
+	if err := db.FinishClaimedOperation(ctx, claim, "succeeded", "test complete", nil); err != nil {
+		t.Fatal(err)
+	}
+	fence, err := db.AcquireRuntimeMutationFence(ctx, "migration-test", "drained app effects")
+	if err != nil {
+		t.Fatalf("drained restart still blocked fence: %v", err)
+	}
+	if err := db.ReleaseRuntimeMutationFence(ctx, fence); err != nil {
+		t.Fatal(err)
 	}
 }

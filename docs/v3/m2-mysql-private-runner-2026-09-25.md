@@ -86,10 +86,11 @@ artifact source has a distinct writer identity and still lacks a proved lock.
 Migration 28 adds a global, owner-and-epoch-bound runtime mutation fence. The
 private restore runner acquires it before account locking and leaves it held
 after import or uncertainty. It serializes acquisition with operation claims
-and holds queued deploy, restart, scale, cron, and function invocation
-operations until exact release. Already
-claimed effects, host assurance, direct Nomad actions, and existing allocations
-are not yet gated, so this is an admission boundary rather than complete
+and holds queued deploy, rollback, restart, scale, canary, cron, and function
+invocation operations until exact release. Acquisition rejects an already
+running claimed operation of these kinds. Host assurance, direct Nomad
+actions, and existing allocations are not yet gated, so this is an admission
+boundary rather than complete
 write isolation.
 
 ## Still required before a usable restore lane
