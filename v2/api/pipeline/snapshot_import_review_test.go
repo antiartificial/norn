@@ -7,6 +7,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/google/uuid"
 
@@ -216,6 +217,10 @@ func TestPredeploySnapshotAutoExportUsesClaimedPublication(t *testing.T) {
 	snapshots, err := listDataSnapshots(location)
 	if err != nil || len(snapshots) != 1 {
 		t.Fatalf("replayed predeploy snapshots = %+v, %v", snapshots, err)
+	}
+	st.operationStartedAt = time.Time{}
+	if err := f.p.snapshotTarget(ctx, st, sg, target.resolved.Target.Database, target, "abc1234"); err == nil || !strings.Contains(err.Error(), "start time is unavailable") {
+		t.Fatalf("missing replay identity = %v", err)
 	}
 	found := false
 	for key := range objects {

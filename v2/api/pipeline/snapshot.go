@@ -80,12 +80,15 @@ func (p *Pipeline) snapshotTarget(ctx context.Context, st *state, sg *saga.Saga,
 		return err
 	}
 	var created *dataSnapshot
-	if target != nil && st.claim.OperationID() != "" && !st.operationStartedAt.IsZero() {
+	if target != nil && st.claim.OperationID() != "" {
+		if st.operationStartedAt.IsZero() {
+			return fmt.Errorf("predeploy snapshot operation start time is unavailable")
+		}
 		// The accepted operation owns one stable safety snapshot name. A
 		// replay can reuse only a dump whose target sidecar verifies, rather
 		// than producing a second snapshot after a worker crash.
 		label := "effect-" + st.claim.OperationID()
-		created, err = createDataSnapshotAt(ctx, location, label, st.operationStartedAt, true)
+		created, err = createPinnedDataSnapshotAt(ctx, location, label, st.operationStartedAt)
 	} else {
 		created, err = createDataSnapshot(ctx, location, sha)
 	}

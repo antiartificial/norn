@@ -265,6 +265,18 @@ func createDataSnapshot(ctx context.Context, location snapshotLocation, label st
 }
 
 func createDataSnapshotAt(ctx context.Context, location snapshotLocation, label string, createdAt time.Time, reuse bool) (*dataSnapshot, error) {
+	return createDataSnapshotAtMode(ctx, location, label, createdAt, reuse, false)
+}
+
+// Pinned publications must never advance to a second filename on replay.
+func createPinnedDataSnapshotAt(ctx context.Context, location snapshotLocation, label string, createdAt time.Time) (*dataSnapshot, error) {
+	if location.bound == nil {
+		return nil, fmt.Errorf("pinned snapshot requires target provenance")
+	}
+	return createDataSnapshotAtMode(ctx, location, label, createdAt, true, true)
+}
+
+func createDataSnapshotAtMode(ctx context.Context, location snapshotLocation, label string, createdAt time.Time, reuse, pinned bool) (*dataSnapshot, error) {
 	database, directory := location.database, location.dir
 	if !model.IsSafePostgresDatabaseName(database) {
 		return nil, fmt.Errorf("unsafe postgres database name")
@@ -287,6 +299,9 @@ func createDataSnapshotAt(ctx context.Context, location snapshotLocation, label 
 			case err == nil:
 				return &dataSnapshot{Filename: filename, Timestamp: timestamp, Size: info.Size()}, nil
 			case errors.Is(err, errSnapshotTargetMismatch):
+				if pinned {
+					return nil, fmt.Errorf("pinned snapshot name belongs to another target: %w", err)
+				}
 				reuse = false
 			default:
 				return nil, err
@@ -350,6 +365,9 @@ func createDataSnapshotAt(ctx context.Context, location snapshotLocation, label 
 	// has its provenance and an interrupted publication leaves at most an
 	// orphan sidecar, never an unbound dump in a target namespace.
 	for offset := 0; offset < 1000; offset++ {
+		if pinned && offset != 0 {
+			return nil, fmt.Errorf("pinned snapshot name is unavailable")
+		}
 		candidateTime := createdAt.UTC().Add(time.Duration(offset) * time.Second)
 		candidateTimestamp := candidateTime.Format("20060102T150405")
 		candidateFilename := fmt.Sprintf("%s_%s_%s.dump", database, label, candidateTimestamp)

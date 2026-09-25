@@ -182,6 +182,9 @@ func TestDatabaseTargetSnapshotPublicationSurvivesInterruption(t *testing.T) {
 	if err := os.WriteFile(path(name(orphanAt)+sidecarSuffix), orphan, 0o600); err != nil {
 		t.Fatal(err)
 	}
+	if _, err := createPinnedDataSnapshotAt(ctx, location, "manual", orphanAt); err == nil || !strings.Contains(err.Error(), "unavailable") {
+		t.Fatalf("pinned publication beside an orphan sidecar = %v", err)
+	}
 	created, err := createDataSnapshotAt(ctx, location, "manual", orphanAt, true)
 	if err != nil || created.Filename != name(orphanAt.Add(time.Second)) {
 		t.Fatalf("retry after orphan sidecar = %+v, %v", created, err)
@@ -228,6 +231,9 @@ func TestDatabaseTargetSnapshotPublicationSurvivesInterruption(t *testing.T) {
 	foreign, _ := json.Marshal(snapshotSidecar{Schema: snapshotSidecarSchema, Target: foreignTarget, CatalogRevision: 1, SHA256: strings.Repeat("1", 64), Size: 12})
 	if err := os.WriteFile(path(name(foreignAt)+sidecarSuffix), foreign, 0o600); err != nil {
 		t.Fatal(err)
+	}
+	if _, err := createPinnedDataSnapshotAt(ctx, location, "manual", foreignAt); err == nil || !strings.Contains(err.Error(), "another target") {
+		t.Fatalf("pinned publication beside a foreign dump = %v", err)
 	}
 	fresh, err := createDataSnapshotAt(ctx, location, "manual", foreignAt, true)
 	if err != nil || fresh.Filename == name(foreignAt) {

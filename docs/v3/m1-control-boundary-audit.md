@@ -150,6 +150,8 @@ predeploy snapshots now use the accepted operation ID and start time for one
 replay name, reuse only a dump with matching target provenance, and pin the
 claimed export manifest timestamp to the same operation. Local PostgreSQL
 tests verified that a second execution reuses the snapshot and remote pair.
+The pinned path now refuses a conflicting target dump, orphan sidecar, or
+missing operation start time instead of advancing to another filename.
 Legacy unbound snapshots still lack that provenance, and a process crash
 between the external effect and durable step completion still needs a separate
 effect reservation and two-process recovery proof. The create-only S3
