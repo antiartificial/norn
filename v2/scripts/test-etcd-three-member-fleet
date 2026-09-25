@@ -143,7 +143,7 @@ echo 'Full-cluster restore from snapshot and normal runtime replay'
 for member in m1 m2 m3; do docker rm -f "$network-$member" >/dev/null; done
 containers=()
 for member in m1 m2 m3; do
-  docker run --rm -v "$work_dir:/qual" "$image" /usr/local/bin/etcdctl snapshot restore /qual/snapshot.db \
+  docker run --rm -v "$work_dir:/qual" "$image" /usr/local/bin/etcdutl snapshot restore /qual/snapshot.db \
     --name "$member" --initial-cluster "$cluster" \
     --initial-advertise-peer-urls "https://$member:2380" \
     --data-dir "/qual/restored-$member" >/dev/null

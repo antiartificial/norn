@@ -173,6 +173,12 @@ into #76 and closed. These are review containers, not milestone signoff.
   quorum/fault behavior, and soak qualification remain open. The host PR's CI
   contract job was blocked by GitHub account billing status during this
   checkpoint; that is not a passing host qualification.
+  A disposable three-member TLS/RBAC cluster now passed the normal API process
+  test with absent and poisoned PostgreSQL DSNs, one-member loss, quorum-loss
+  refusal, and full snapshot restore. This narrows the local transport and
+  recovery gap; host-supervised Fleet bootstrap, partition/disk faults,
+  certificate rotation, and live restore still require qualification. See
+  [the three-member record](m3-three-member-disposable-qualification.md).
 
 No v3 deployment to Mini or Fleet is claimed. M0–M3 still need their exit
 gates before the loaded M4 capacity exercise can rely on these contracts.

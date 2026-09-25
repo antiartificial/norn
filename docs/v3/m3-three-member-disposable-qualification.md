@@ -20,7 +20,7 @@ app routes remain unavailable.
 The script stops a second member and requires a linearizable etcd read and
 write to fail without quorum. After bringing the cluster back, it saves a
 snapshot, discards all three member data directories, restores each member
-from that snapshot, verifies an authenticated sentinel survived, and reruns
+with `etcdutl` from that snapshot, verifies an authenticated sentinel survived, and reruns
 the normal API process test against the restored group.
 
 On 2026-09-24, this disposable run passed all stages, including API process
