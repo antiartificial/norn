@@ -27,3 +27,35 @@ boundary, artifact encryption and retention, checksum verification before
 restore, an empty destination or explicit replace policy, post-restore
 application reconnect checks, retry/crash reconciliation, and TLS-capable
 client material. The test establishes no point-in-time recovery guarantee.
+
+## Read-only restore preparation slice
+
+`database.StageMySQLSQLSnapshot` now supplies a local staging primitive. It
+requires an exact source identity, a SHA-256-pinned `mysqldump` executable,
+and an owner-only staging directory. It probes the source role and database,
+rejects nontransactional tables, uses private client options, bounds the SQL
+output to 64 GiB, syncs the file, and returns a source-bound size and SHA-256
+record. The caller owns removal of the staged file after publication or
+failure reconciliation.
+
+`database.PrepareMySQLRestore` supplies a read-only preflight for a future
+restore executor. It re-resolves the exact expected target identity,
+rejects a source artifact that names the same target, verifies a bounded
+owner-only regular SQL file and its SHA-256, probes the destination database
+and role, and confirms the destination has no tables, views, routines, or
+events. Symlink artifacts, altered bytes, stale generations, and a nonempty
+destination fail in the disposable integration test. No SQL write is performed
+by the preflight, and MySQL snapshot/restore stay out of
+`implementedCapabilities`.
+
+This preparation is not durable authorization. A writer may appear after its
+empty-destination check, and a path may change after checksum verification.
+The eventual executor must hold a durable exclusive target fence, bind a
+signed artifact record to the accepted operation and catalog revision, verify
+the same opened artifact inode immediately before consumption, and reconcile
+crashes before permitting another writer or retry. Private local SQL staging
+also needs encrypted publication and retention controls before release. The
+`--single-transaction` dump assumes InnoDB and requires DDL quiescence from a
+future lifecycle controller; staging cannot enforce that condition by itself.
+No production restore write path, reconnect verification, retry protocol, or
+point-in-time recovery is claimed.

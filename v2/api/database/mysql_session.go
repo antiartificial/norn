@@ -73,6 +73,7 @@ func openMySQLSession(ctx context.Context, resolved ResolvedBinding, secrets Sec
 		_ = session.Close()
 		return nil, &ResolverError{Code: CodeInvalidRequest, Field: "credentialRef", Resource: label, Reason: "MySQL connection material is invalid"}
 	}
+	session.mysqlConnector = connector
 	session.mysqlProbe = func(ctx context.Context) (ProbeResult, error) {
 		db := sql.OpenDB(connector)
 		defer db.Close()
