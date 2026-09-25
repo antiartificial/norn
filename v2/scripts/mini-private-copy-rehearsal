@@ -185,6 +185,8 @@ mapfile_compat() {
 }
 
 original_tables=$scratch/original-tables.txt
+original_columns_dir=$scratch/original-columns
+mkdir -m 700 "$original_columns_dir"
 mapfile_compat >"$original_tables"
 original_table_count=$(wc -l <"$original_tables" | tr -d ' ')
 [[ $original_table_count -eq 28 ]] || {
@@ -194,6 +196,7 @@ original_table_count=$(wc -l <"$original_tables" | tr -d ' ')
 
 fingerprint_tables() {
   output=$1
+  capture_columns=$2
   : >"$output"
   while IFS= read -r table; do
     [[ $table =~ ^[a-z_][a-z0-9_]*$ ]] || {
@@ -206,12 +209,22 @@ fingerprint_tables() {
       printf 'original table has no primary key: %s\n' "$table" >&2
       exit 1
     }
-    digest=$("${psql_private[@]}" -c "COPY (SELECT row_to_json(pk)::text FROM (SELECT $pk_columns FROM public.\"$table\" ORDER BY $pk_columns) AS pk) TO STDOUT" | shasum -a 256 | awk '{print $1}')
-    printf '%s\t%s\t%s\n' "$table" "$count" "$digest" >>"$output"
+    columns_file=$original_columns_dir/$table
+    if [[ $capture_columns == true ]]; then
+      "${psql_private[@]}" -c "SELECT string_agg(quote_ident(attname), ', ' ORDER BY attnum) FROM pg_attribute WHERE attrelid='public.\"$table\"'::regclass AND attnum>0 AND NOT attisdropped" >"$columns_file"
+    fi
+    [[ -s $columns_file ]] || {
+      printf 'original columns are unavailable for table: %s\n' "$table" >&2
+      exit 1
+    }
+    columns=$(<"$columns_file")
+    key_digest=$("${psql_private[@]}" -c "COPY (SELECT row_to_json(pk)::text FROM (SELECT $pk_columns FROM public.\"$table\" ORDER BY $pk_columns) AS pk) TO STDOUT" | shasum -a 256 | awk '{print $1}')
+    row_digest=$("${psql_private[@]}" -c "COPY (SELECT row_to_json(full_row)::text FROM (SELECT $columns FROM public.\"$table\" ORDER BY $pk_columns) AS full_row) TO STDOUT" | shasum -a 256 | awk '{print $1}')
+    printf '%s\t%s\t%s\t%s\n' "$table" "$count" "$key_digest" "$row_digest" >>"$output"
   done <"$original_tables"
 }
 
-fingerprint_tables "$before_file"
+fingerprint_tables "$before_file" true
 before_rows=$(awk -F '\t' '{sum += $2} END {print sum + 0}' "$before_file")
 
 run_migrate() {
@@ -238,10 +251,10 @@ compatibility=$("${psql_private[@]}" -F '|' -c "SELECT format_version, current_m
   exit 1
 }
 
-fingerprint_tables "$after_file"
+fingerprint_tables "$after_file" false
 cmp -s "$before_file" "$after_file" || {
-  printf 'original-table row counts or primary-key fingerprints changed\n' >&2
-  diff -u "$before_file" "$after_file" >&2 || true
+  printf 'original-table row counts, primary keys, or full-row fingerprints changed\n' >&2
+  awk -F '\t' 'NR==FNR {before[$1]=$0; next} before[$1]!=$0 {print "changed original table: " $1 > "/dev/stderr"}' "$before_file" "$after_file"
   exit 1
 }
 
@@ -313,7 +326,7 @@ printf 'original_rows=%s\n' "$before_rows"
 printf 'ledger_versions=1-%s\n' "$catalog_version"
 printf 'minimum_reader=%s\n' "$minimum_reader"
 printf 'minimum_writer=%s\n' "$minimum_writer"
-printf 'fingerprints=matched\n'
+printf 'fingerprints=primary-key-and-full-row-matched\n'
 printf 'second_migrate_only=passed\n'
 printf 'passive_health=passed\n'
 if [[ -n $backup_artifact ]]; then
