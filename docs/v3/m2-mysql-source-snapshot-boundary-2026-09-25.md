@@ -25,6 +25,11 @@ Nomad unit tests cover stale revisions, competing allocations, and a job that
 is still running despite terminal allocations. This is not a source write
 lock or a snapshot receipt.
 
+The private request requires the signed job app and job ID to equal the
+accepted operation's app. Release admission still needs a live deployment or
+manifest proof that this exact job owns the selected source binding; naming
+equality alone cannot establish database ownership.
+
 `quiesce-intended` is a reservation, **not** a write-stop proof. Before a
 snapshot can be accepted for restore, the signed stop and account-lock proofs,
 staged artifact, and service-signed receipt must be bound to a separate signed

@@ -60,7 +60,7 @@ func (db *DB) PrepareClaimedMySQLSourceSnapshot(ctx context.Context, acceptance 
 	if err != nil {
 		return MySQLSourceSnapshotIntent{}, err
 	}
-	if accepted.Operation.Kind != MySQLSourceSnapshotOperationKind || accepted.Operation.Status != model.OperationRunning || accepted.Operation.MaxAttempts != 1 || !sameMySQLSourceSnapshotPayload(accepted.Operation.Payload, request) {
+	if accepted.Operation.Kind != MySQLSourceSnapshotOperationKind || accepted.Operation.Status != model.OperationRunning || accepted.Operation.MaxAttempts != 1 || accepted.Operation.App != request.JobIdentity.App || !sameMySQLSourceSnapshotPayload(accepted.Operation.Payload, request) {
 		return MySQLSourceSnapshotIntent{}, ErrMySQLSourceSnapshotFence
 	}
 	tx, err := db.Pool.BeginTx(ctx, pgx.TxOptions{})
@@ -116,7 +116,7 @@ func (db *DB) PrepareClaimedMySQLSourceSnapshot(ctx context.Context, acceptance 
 }
 
 func validMySQLSourceSnapshotRequest(request MySQLSourceSnapshotRequest) bool {
-	if request.CatalogRevision <= 0 || strings.TrimSpace(request.ProfileID) == "" || strings.TrimSpace(request.LogicalID) == "" || request.Source.Engine != database.EngineMySQL || request.Source.ServiceGeneration == 0 || request.Source.BindingGeneration == 0 || request.Maintenance.Generation == 0 || request.Maintenance.SnapshotRole == "" || request.Maintenance.SnapshotAccountHost == "" || request.Maintenance.SnapshotCredentialRef == "" || request.JobIdentity.App == "" || request.JobIdentity.NomadRegion == "" || request.JobIdentity.JobID == "" || len(request.JobIdentity.AllocationIDs) == 0 || len(request.DumpToolSHA256) != 64 || strings.ToLower(request.DumpToolSHA256) != request.DumpToolSHA256 {
+	if request.CatalogRevision <= 0 || strings.TrimSpace(request.ProfileID) == "" || strings.TrimSpace(request.LogicalID) == "" || request.Source.Engine != database.EngineMySQL || request.Source.ServiceGeneration == 0 || request.Source.BindingGeneration == 0 || request.Maintenance.Generation == 0 || request.Maintenance.SnapshotRole == "" || request.Maintenance.SnapshotAccountHost == "" || request.Maintenance.SnapshotCredentialRef == "" || request.JobIdentity.App == "" || request.JobIdentity.NomadRegion == "" || request.JobIdentity.JobID != request.JobIdentity.App || len(request.JobIdentity.AllocationIDs) == 0 || len(request.DumpToolSHA256) != 64 || strings.ToLower(request.DumpToolSHA256) != request.DumpToolSHA256 {
 		return false
 	}
 	index, err := strconv.ParseUint(request.JobIdentity.JobModifyIndex, 10, 64)

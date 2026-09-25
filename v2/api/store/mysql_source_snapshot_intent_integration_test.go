@@ -123,6 +123,12 @@ func TestMySQLSourceSnapshotIntentReservesSignedPhysicalSource(t *testing.T) {
 		return claim
 	}
 	claim := accept("snapshot-"+uuid.NewString(), request)
+	wrongJob := request
+	wrongJob.JobIdentity.App, wrongJob.JobIdentity.JobID = "another-app", "another-app"
+	wrongClaim := accept("snapshot-"+uuid.NewString(), wrongJob)
+	if _, err := db.PrepareClaimedMySQLSourceSnapshot(ctx, acceptedStore, wrongClaim, wrongJob); !errors.Is(err, ErrMySQLSourceSnapshotFence) {
+		t.Fatalf("source snapshot stopped a job outside the accepted app: %v", err)
+	}
 	const priorLaunch = "source-snapshot-prior-launch"
 	if _, err := db.ReserveMySQLRuntimeLaunch(ctx, priorLaunch, []database.TargetIdentity{source.Target}); err != nil {
 		t.Fatal(err)
