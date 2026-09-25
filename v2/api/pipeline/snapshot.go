@@ -89,21 +89,25 @@ func (p *Pipeline) snapshotTarget(ctx context.Context, st *state, sg *saga.Saga,
 	}
 	_ = sg.Log(ctx, "snapshot.created", fmt.Sprintf("snapshot created: %s", filename), metadata)
 
-	// Auto-export to S3 if configured
-	if st.spec.Snapshots != nil && st.spec.Snapshots.ExportBucket != "" && p.Storage != nil {
-		exportBucket := st.spec.Snapshots.ExportBucket
-		key := snapshotExportKey(st.spec, target, filepath.Base(filename))
-		if err := p.Storage.PutObject(ctx, exportBucket, key, filename); err != nil {
-			_ = sg.Log(ctx, "snapshot.export_failed", fmt.Sprintf("snapshot export failed: %v", err), map[string]string{
-				"bucket": exportBucket,
-				"key":    key,
-			})
-		} else {
-			_ = sg.Log(ctx, "snapshot.exported", fmt.Sprintf("snapshot exported to %s/%s", exportBucket, key), map[string]string{
-				"bucket": exportBucket,
-				"key":    key,
-			})
+	if st.spec.Snapshots != nil && st.spec.Snapshots.ExportBucket != "" {
+		objects, ok := p.SnapshotObjects.(snapshotCreateOnlyObjectStore)
+		if !ok || st.claim.OperationID() == "" {
+			return fmt.Errorf("predeploy snapshot export requires a claimed operation and create-only object storage")
 		}
+		exportBucket := st.spec.Snapshots.ExportBucket
+		var key string
+		if target != nil {
+			_, key, err = p.ExportTargetSnapshotClaimed(ctx, st.spec, target.name, created.Filename, objects, exportBucket, st.claim.OperationID())
+		} else {
+			key, err = exportLegacySnapshotClaimed(ctx, objects, exportBucket, st.spec.App, db, created.Filename, location.dir, st.claim.OperationID())
+		}
+		if err != nil {
+			_ = sg.Log(ctx, "snapshot.export_failed", fmt.Sprintf("snapshot export failed: %v", err), map[string]string{"bucket": exportBucket, "snapshot": created.Filename})
+			return fmt.Errorf("predeploy snapshot export: %w", err)
+		}
+		_ = sg.Log(ctx, "snapshot.exported", fmt.Sprintf("snapshot exported to %s/%s", exportBucket, key), map[string]string{
+			"bucket": exportBucket, "key": key,
+		})
 	}
 	return nil
 }

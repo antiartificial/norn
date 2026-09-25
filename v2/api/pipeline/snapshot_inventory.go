@@ -212,7 +212,11 @@ func (p *Pipeline) exportTargetSnapshot(ctx context.Context, spec *model.InfraSp
 	}
 	key := snapshotExportKey(spec, location.bound, chosen.Filename)
 	if operationID != "" {
-		key = "snapshots/" + spec.App + "/operations/" + operationID + "/" + chosen.Filename
+		key = "snapshots/" + spec.App + "/operations/" + operationID + "/"
+		if logical != "" {
+			key += "databases/" + logical + "/"
+		}
+		key += chosen.Filename
 	}
 	if operationID == "" {
 		if err := objects.PutObject(ctx, bucket, key, copyPath); err != nil {

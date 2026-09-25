@@ -11,6 +11,7 @@ import (
 	"github.com/google/uuid"
 
 	"norn/v2/api/model"
+	"norn/v2/api/saga"
 )
 
 // Match storage.Client.GetObject's exclusive destination publication.
@@ -106,6 +107,25 @@ func TestClaimedSnapshotExportUsesPrivateRemoteKey(t *testing.T) {
 	if !strings.Contains(key, "/operations/"+op.ID+"/") || manifest.Filename != filename || len(objects[key]) == 0 || len(objects[key+snapshotManifestSuffix]) == 0 {
 		t.Fatalf("claimed export key=%q manifest=%+v", key, manifest)
 	}
+	analytics, err := f.queue(t, "app.snapshot", map[string]interface{}{"database": "analytics"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := f.execute(t, analytics.ID); err != nil {
+		t.Fatal(err)
+	}
+	groups, err = f.p.TargetSnapshots(context.Background(), f.spec)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, group := range groups {
+		if group.Database == "analytics" && len(group.Snapshots) > 0 {
+			_, otherKey, err := f.p.ExportTargetSnapshotClaimed(context.Background(), f.spec, "analytics", group.Snapshots[0].Filename, objects, "review", op.ID)
+			if err != nil || otherKey == key || !strings.Contains(otherKey, "/databases/analytics/") {
+				t.Fatalf("same deployment operation conflated database keys %q and %q: %v", key, otherKey, err)
+			}
+		}
+	}
 	if _, _, err := f.p.ExportTargetSnapshotClaimed(context.Background(), f.spec, "primary", filename, objects, "review", op.ID); err == nil {
 		t.Fatal("same operation unexpectedly republished a new manifest")
 	}
@@ -158,6 +178,42 @@ func TestClaimedSnapshotExportOperation(t *testing.T) {
 	key, _ := result.Metadata["key"].(string)
 	if !strings.Contains(key, "/operations/"+accepted.ID+"/") || len(objects[key]) == 0 || len(objects[key+snapshotManifestSuffix]) == 0 {
 		t.Fatalf("claimed export missing verified objects at %q", key)
+	}
+}
+
+func TestPredeploySnapshotAutoExportUsesClaimedPublication(t *testing.T) {
+	f := newNamedFixture(t)
+	f.spec.Snapshots = &model.SnapshotPolicy{ExportBucket: "review"}
+	objects := reviewSnapshotObjects{}
+	f.p.SnapshotObjects = objects
+	op, err := f.queue(t, "app.snapshot", map[string]interface{}{"database": "primary"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	ctx := context.Background()
+	claimed, claim, err := f.db.ClaimNextOperation(ctx, "predeploy-export-worker", 60_000_000_000, []string{"app.snapshot"})
+	if err != nil || claimed == nil || claimed.ID != op.ID {
+		t.Fatalf("claim = %+v, %v", claimed, err)
+	}
+	set, err := f.p.openDatabaseTargets(ctx, claimed.Payload, f.spec)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer set.Close()
+	target := set.named["primary"]
+	st := &state{spec: f.spec, claim: claim, commitSHA: "abc1234"}
+	sg := saga.NewWithID(f.p.SagaStore, op.SagaID, f.app, "pipeline", "deploy")
+	if err := f.p.snapshotTarget(ctx, st, sg, target.resolved.Target.Database, target, "abc1234"); err != nil {
+		t.Fatal(err)
+	}
+	found := false
+	for key := range objects {
+		if strings.Contains(key, "/operations/"+op.ID+"/databases/primary/") && strings.HasSuffix(key, snapshotManifestSuffix) {
+			found = true
+		}
+	}
+	if !found {
+		t.Fatal("predeploy snapshot did not publish an operation-bound manifest")
 	}
 }
 

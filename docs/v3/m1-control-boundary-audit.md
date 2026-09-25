@@ -140,8 +140,12 @@ filename and queue a signed `app.snapshot-export` operation. The worker uses
 an operation-specific remote key, create-only writes, and remote readback of
 the dump before publishing its manifest. Legacy imports of these new keys
 verify the manifest and dump digest. A lost claim remains a one-attempt
-failure for inspection. Automatic predeploy export in `pipeline/snapshot.go`
-still uploads inline. The create-only S3 behavior has passed the local
-emulator, including multipart completion, but provider qualification and
-two-process crash recovery remain open. These remaining paths keep M1 export
-incomplete.
+failure for inspection. Automatic predeploy export now uses the deployment's
+signed claim and the same create-only, read-back-verified publication path;
+an unverified configured export fails the snapshot step before migration or
+job submission. The snapshot creation itself and export are still effects
+inside the deploy step without a separate effect reservation. A crash during
+that step can leave a partial remote key or a local snapshot before a replay
+creates another, so two-process recovery remains open. The create-only S3
+behavior has passed the local emulator, including multipart completion, but
+hosted-provider qualification remains open. M1 export is not yet qualified.
