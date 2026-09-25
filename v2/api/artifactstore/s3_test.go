@@ -93,6 +93,17 @@ func TestS3StoreRejectsMissingImmutabilityAndUnsafeSpool(t *testing.T) {
 	}
 }
 
+func TestS3StoreRejectsRemoteHTTP(t *testing.T) {
+	config, _ := s3TestConfig(t)
+	config.Insecure = true
+	for _, endpoint := range []string{"example.com:9000", "localhost:9000", "10.0.0.1:9000", "[::ffff:10.0.0.1]:9000"} {
+		config.Endpoint = endpoint
+		if _, err := OpenS3(context.Background(), config); err == nil {
+			t.Fatalf("insecure endpoint %q accepted", endpoint)
+		}
+	}
+}
+
 func TestS3StoreConditionalMultipartPublication(t *testing.T) {
 	config, emulator := s3TestConfig(t)
 	emulator.Configure(func(e *s3emulator.Emulator) { e.RequireConditionalComplete = true })

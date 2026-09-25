@@ -6,7 +6,6 @@ import (
 	"encoding/json"
 	"errors"
 	"io"
-	"net"
 	"os"
 	"path/filepath"
 	"strings"
@@ -58,12 +57,6 @@ func TestS3RealProviderQualification(t *testing.T) {
 	if input.Endpoint == "" || input.Bucket == "" || input.Region == "" || input.AccessKey == "" || input.SecretKey == "" ||
 		!strings.HasPrefix(input.Prefix, "norn-v3-disposable/") {
 		t.Fatal("provider configuration needs a dedicated norn-v3-disposable/ prefix and complete credentials")
-	}
-	if input.Insecure {
-		host, _, err := net.SplitHostPort(input.Endpoint)
-		if err != nil || net.ParseIP(host) == nil || !net.ParseIP(host).IsLoopback() {
-			t.Fatal("HTTP provider qualification is allowed only on a numeric loopback endpoint")
-		}
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Minute)
 	defer cancel()

@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"net"
 	"net/http"
 	"os"
 	"path"
@@ -56,6 +57,13 @@ func OpenS3(ctx context.Context, config S3Config) (*S3Store, error) {
 	if config.Endpoint == "" || config.Bucket == "" || config.Region == "" || config.AccessKey == "" || config.SecretKey == "" ||
 		config.SpoolCapacity <= 0 || config.RetainFor < 24*time.Hour || !filepath.IsAbs(config.SpoolDirectory) {
 		return nil, fmt.Errorf("S3 artifact store requires bucket, credentials, private spool, capacity and retention")
+	}
+	if config.Insecure {
+		host, _, err := net.SplitHostPort(config.Endpoint)
+		address := net.ParseIP(host)
+		if err != nil || address == nil || !address.IsLoopback() {
+			return nil, fmt.Errorf("S3 artifact HTTP requires a numeric loopback endpoint")
+		}
 	}
 	if err := checkPrivateDirectory(config.SpoolDirectory); err != nil {
 		return nil, err
