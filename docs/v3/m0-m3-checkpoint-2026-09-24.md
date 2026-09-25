@@ -121,8 +121,13 @@ into #76 and closed. These are review containers, not milestone signoff.
   repeat-safe resolution and recovery. Its tests ran against disposable etcd
   v3.5.17. Replay expiry holds accepted identities until their effects are
   terminal, and an opt-in canary-only worker reconciled a lost Nomad response
-  with one external PUT against fake Nomad. Public admission and live Nomad
-  crash/ambiguity qualification remain open; the route is unavailable.
+  with one external PUT against fake Nomad. The normal etcd router now mounts
+  public canary admission only with both the worker and HTTP preview flags.
+  A disposable-etcd HTTP-to-worker test covered signed admission, token-rotation
+  replay, conflicting intent, and one Nomad promotion against fake Nomad.
+  Live Nomad, process-crash, and three-member etcd fault qualification remain
+  open before enabling that preview for release; see
+  [the preview gate](etcd-canary-preview.md).
 - M2: local MySQL runtime and verified-TLS health are implemented. Generated
   service, periodic, and function jobs delivered exact component bytes inside
   allocations on pinned Nomad 1.9.7. A WordPress image PHP client also
