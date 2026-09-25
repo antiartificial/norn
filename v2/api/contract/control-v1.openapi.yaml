@@ -1083,6 +1083,38 @@ paths:
             application/json:
               schema: { $ref: '#/components/schemas/Operation' }
         '404': { $ref: '#/components/responses/Problem' }
+  /api/v1/operations/{id}/mysql-restore-inspection:
+    get:
+      operationId: getMySQLRestoreInspection
+      description: Returns verified signed identity and redacted status for an executing or ambiguous private MySQL restore. This endpoint cannot retry, complete, or acknowledge a restore.
+      parameters:
+        - $ref: '#/components/parameters/OperationID'
+      responses:
+        '200':
+          description: Verified restore inspection evidence
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [operationId, operationKind, operationStatus, intentState, manualRecoveryRequired, acceptanceIntentId, acceptanceSchema, canonicalDigest, signature, catalogRevision, catalogDigest, target, artifact, startedAt]
+                properties:
+                  operationId: { type: string }
+                  operationKind: { const: database.mysql-restore }
+                  operationStatus: { type: string, enum: [running, failed] }
+                  intentState: { type: string, enum: [executing, needs-inspection] }
+                  manualRecoveryRequired: { type: boolean }
+                  acceptanceIntentId: { type: string }
+                  acceptanceSchema: { type: string }
+                  canonicalDigest: { type: string, pattern: '^[0-9a-f]{64}$' }
+                  signature: { type: object }
+                  catalogRevision: { type: integer, format: int64, minimum: 1 }
+                  catalogDigest: { type: string, pattern: '^sha256:[0-9a-f]{64}$' }
+                  target: { type: object }
+                  artifact: { type: object }
+                  startedAt: { type: string, format: date-time }
+        '404': { $ref: '#/components/responses/Problem' }
+        '409': { $ref: '#/components/responses/Problem' }
+        '503': { $ref: '#/components/responses/Problem' }
   /api/v1/operations/{id}/cancel:
     post:
       operationId: cancelOperation

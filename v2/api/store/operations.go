@@ -931,6 +931,36 @@ func (db *DB) RecoverExpiredOperations(ctx context.Context) error {
 		return err
 	}
 	defer tx.Rollback(ctx)
+	// A MySQL restore becomes permanently ambiguous as soon as its intent is
+	// executing. Claim expiry must therefore terminalize the operation and mark
+	// the intent for inspection in one transaction. It must never enter the
+	// generic retry path.
+	if _, err = tx.Exec(ctx, `
+		WITH ambiguous AS (
+			UPDATE mysql_restore_intents i
+			SET state = 'needs-inspection'
+			FROM operations o
+			WHERE i.operation_id = o.id
+			  AND i.state = 'executing'
+			  AND o.kind = 'database.mysql-restore'
+			  AND o.status = 'running'
+			  AND (o.locked_until IS NULL OR o.locked_until < now())
+			RETURNING i.operation_id, i.acceptance_intent_id
+		)
+		UPDATE operations o
+		SET status = 'failed',
+		    message = 'MySQL restore ownership expired after execution began; inspect signed target and artifact evidence',
+		    last_error = 'MySQL restore executor lease expired',
+		    metadata = o.metadata || jsonb_build_object(
+				'manualRecoveryRequired', true,
+				'mysqlRestoreState', 'needs-inspection',
+				'acceptanceIntentId', ambiguous.acceptance_intent_id),
+		    locked_by = '', locked_until = NULL, updated_at = now(), finished_at = now()
+		FROM ambiguous
+		WHERE o.id = ambiguous.operation_id
+	`); err != nil {
+		return err
+	}
 	if _, err = tx.Exec(ctx, `
 		UPDATE operations
 		SET status = 'queued',

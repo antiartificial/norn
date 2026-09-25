@@ -635,6 +635,7 @@ func main() {
 		r.Get("/v1/events/info", ws.HandleInfo)
 		r.Get("/v1/events", ws.HandleConnect)
 		r.Get("/v1/operations/{id}", h.GetOperation)
+		r.Get("/v1/operations/{id}/mysql-restore-inspection", h.GetMySQLRestoreInspection)
 		r.Post("/v1/operations/{id}/cancel", h.CancelOperation)
 		r.Post("/v1/platform/preflights", h.QueuePlatformPreflight)
 		r.Post("/v1/platform/upgrades", h.QueuePlatformUpgrade)
@@ -1130,7 +1131,7 @@ func writeControlCapabilities(w http.ResponseWriter, cfg *config.Config) {
 		},
 		// #nosec G101 -- this map advertises endpoint paths; it contains no credentials.
 		"endpoints": map[string]string{
-			"events": "/api/v1/events", "operations": "/api/v1/operations/{id}",
+			"events": "/api/v1/events", "operations": "/api/v1/operations/{id}", "mysqlRestoreInspection": "/api/v1/operations/{id}/mysql-restore-inspection",
 			"platformPreflights": "/api/v1/platform/preflights", "platformUpgrades": "/api/v1/platform/upgrades",
 			"platformRollbacks": "/api/v1/platform/rollbacks", "platformSmoke": "/api/v1/platform/smoke", "hostAssurances": "/api/v1/host/assurances",
 			"openapi": "/api/v1/openapi.yaml", "eventInfo": "/api/v1/events/info", "apps": "/api/v1/apps", "appCreation": "/api/v1/apps", "appDeployment": "/api/v1/apps/{id}/deployment",
