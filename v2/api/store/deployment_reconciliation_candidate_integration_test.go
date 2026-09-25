@@ -19,6 +19,9 @@ func TestDeploymentReconciliationCandidateRequiresSignedUnsupersededProvenance(t
 	input := newAcceptance(t, stores[0], "reconcile-candidate", "operator", "reconcile-app", true)
 	input.Deployment.Environment = "staging"
 	input.Deployment.ImageTag = "registry.example/app@sha256:" + strings.Repeat("a", 64)
+	input.Deployment.SourceKind = "git_clone"
+	input.Deployment.SourceRef = "refs/heads/main"
+	input.Deployment.CommitSHA = strings.Repeat("c", 40)
 	input.Deployment.SpecDigest = "sha256:" + strings.Repeat("b", 64)
 	input.Operation.Payload["specDigest"] = input.Deployment.SpecDigest
 	var err error
@@ -83,7 +86,7 @@ func TestDeploymentReconciliationCandidateUsesVerifiedBuildCheckpoint(t *testing
 	if err != nil || claimed == nil || claimed.ID != accepted.Operation.ID {
 		t.Fatalf("claim=%+v err=%v", claimed, err)
 	}
-	source := json.RawMessage(`{"sourceKind":"git_clone","commitSha":"source","treeDigest":"sha256:source"}`)
+	source := json.RawMessage(`{"sourceKind":"git_clone","commitSha":"0123456789abcdef0123456789abcdef01234567","sourceRef":"refs/heads/main","treeDigest":"sha256:source"}`)
 	if _, err := dbs[0].RecordOperationCheckpoint(ctx, claim, CheckpointSource, source); err != nil {
 		t.Fatal(err)
 	}
@@ -109,7 +112,7 @@ func TestDeploymentReconciliationCandidateUsesVerifiedBuildCheckpoint(t *testing
 		t.Fatal(err)
 	}
 	candidate, err := stores[0].DeploymentReconciliationCandidate(ctx, accepted.Operation.ID)
-	if err != nil || candidate.ImageTag != image {
+	if err != nil || candidate.ImageTag != image || candidate.CommitSHA != "0123456789abcdef0123456789abcdef01234567" || candidate.SourceRef != "refs/heads/main" {
 		t.Fatalf("checkpoint candidate=%+v err=%v", candidate, err)
 	}
 	if _, err := dbs[0].Pool.Exec(ctx, `UPDATE operation_checkpoints SET outputs=$2 WHERE operation_id=$1 AND stage='build'`,

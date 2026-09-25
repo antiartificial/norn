@@ -14,8 +14,13 @@ var ErrDeploymentReconciliationUnavailable = errors.New("deployment reconciliati
 // DeploymentReconciliationCandidate is a verified source for a later operator
 // reconciliation. It does not authorize a mutation or assert Nomad health.
 type DeploymentReconciliationCandidate struct {
-	Acceptance AcceptedOperation
-	ImageTag   string
+	Acceptance    AcceptedOperation
+	ImageTag      string
+	CommitSHA     string
+	SourceKind    string
+	SourceRef     string
+	SourceDirty   bool
+	SourceChanges []string
 }
 
 // DeploymentReconciliationCandidate loads immutable acceptance and the exact
@@ -59,6 +64,7 @@ func (s *PGOperationStore) DeploymentReconciliationCandidate(ctx context.Context
 		return DeploymentReconciliationCandidate{}, ErrDeploymentReconciliationUnavailable
 	}
 	image := d.ImageTag
+	candidate := DeploymentReconciliationCandidate{Acceptance: accepted}
 	if op.Kind == "app.deploy" {
 		checkpoint, err := s.db.LoadOperationCheckpoint(ctx, operationID, CheckpointBuild)
 		if err != nil {
@@ -76,18 +82,55 @@ func (s *PGOperationStore) DeploymentReconciliationCandidate(ctx context.Context
 			if err := json.Unmarshal(checkpoint.Outputs, &build); err != nil || source == nil || build.SourceIdentity != checkpointDigest(source.Outputs) || !model.IsContentAddressedImage(build.ImageTag) {
 				return DeploymentReconciliationCandidate{}, ErrDeploymentReconciliationUnavailable
 			}
+			var resolved struct {
+				SourceKind    string   `json:"sourceKind"`
+				CommitSHA     string   `json:"commitSha"`
+				SourceRef     string   `json:"sourceRef"`
+				SourceDirty   bool     `json:"sourceDirty"`
+				SourceChanges []string `json:"sourceChanges"`
+				TreeDigest    string   `json:"treeDigest"`
+			}
+			if err := json.Unmarshal(source.Outputs, &resolved); err != nil || resolved.SourceKind == "" || resolved.CommitSHA == "" || resolved.SourceRef == "" || resolved.TreeDigest == "" {
+				return DeploymentReconciliationCandidate{}, ErrDeploymentReconciliationUnavailable
+			}
+			candidate.CommitSHA, candidate.SourceKind, candidate.SourceRef = resolved.CommitSHA, resolved.SourceKind, resolved.SourceRef
+			candidate.SourceDirty, candidate.SourceChanges = resolved.SourceDirty, resolved.SourceChanges
 			if image != "" && image != build.ImageTag {
 				return DeploymentReconciliationCandidate{}, ErrDeploymentReconciliationUnavailable
 			}
 			image = build.ImageTag
+		} else {
+			// A pinned release may carry immutable source identity at acceptance.
+			// A branch/ref deployment needs its resolved source checkpoint.
+			if d.SourceKind == "" || d.CommitSHA == "" || d.SourceRef == "" {
+				return DeploymentReconciliationCandidate{}, ErrDeploymentReconciliationUnavailable
+			}
+			candidate.CommitSHA, candidate.SourceKind, candidate.SourceRef = d.CommitSHA, d.SourceKind, d.SourceRef
+			candidate.SourceDirty, candidate.SourceChanges = d.SourceDirty, d.SourceChanges
 		}
 	} else if image != stringFromAcceptedPayload(op.Payload, "imageTag") {
 		return DeploymentReconciliationCandidate{}, ErrDeploymentReconciliationUnavailable
+	} else {
+		if d.CommitSHA == "" || d.SourceKind != "rollback" || d.SourceRef == "" || d.SourceRef != stringFromAcceptedPayload(op.Payload, "sourceDeploymentId") {
+			return DeploymentReconciliationCandidate{}, ErrDeploymentReconciliationUnavailable
+		}
+		var valid bool
+		if err := s.db.Pool.QueryRow(ctx, `SELECT EXISTS(SELECT 1 FROM deployments WHERE id=$1 AND app=$2 AND environment=$3
+			AND status='deployed' AND image_tag=$4 AND commit_sha=$5 AND spec_digest=$6)`,
+			d.SourceRef, d.App, d.Environment, image, d.CommitSHA, d.SpecDigest).Scan(&valid); err != nil {
+			return DeploymentReconciliationCandidate{}, err
+		}
+		if !valid {
+			return DeploymentReconciliationCandidate{}, ErrDeploymentReconciliationUnavailable
+		}
+		candidate.CommitSHA, candidate.SourceKind, candidate.SourceRef = d.CommitSHA, d.SourceKind, d.SourceRef
+		candidate.SourceDirty, candidate.SourceChanges = d.SourceDirty, d.SourceChanges
 	}
 	if !model.IsContentAddressedImage(image) {
 		return DeploymentReconciliationCandidate{}, ErrDeploymentReconciliationUnavailable
 	}
-	return DeploymentReconciliationCandidate{Acceptance: accepted, ImageTag: image}, nil
+	candidate.ImageTag = image
+	return candidate, nil
 }
 
 func stringFromAcceptedPayload(payload map[string]interface{}, key string) string {

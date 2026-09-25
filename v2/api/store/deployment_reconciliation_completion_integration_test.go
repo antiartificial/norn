@@ -2,6 +2,7 @@ package store
 
 import (
 	"context"
+	"encoding/json"
 	"testing"
 	"time"
 
@@ -15,7 +16,7 @@ func TestCompleteDeploymentReconciliationPreservesFailedSource(t *testing.T) {
 	ctx := context.Background()
 	source := newAcceptance(t, stores[0], "source-deploy", "operator", "reconcile-final-app", true)
 	source.Deployment.Environment = "staging"
-	source.Deployment.ImageTag = "registry.example/app@sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+	source.Deployment.CommitSHA = "refs/heads/main"
 	source.Deployment.SpecDigest = "sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
 	source.Operation.Payload["specDigest"] = source.Deployment.SpecDigest
 	var err error
@@ -27,8 +28,17 @@ func TestCompleteDeploymentReconciliationPreservesFailedSource(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if claimed, _, err := dbs[0].ClaimNextOperation(ctx, "source-worker", time.Minute, []string{"app.deploy"}); err != nil || claimed == nil || claimed.ID != accepted.Operation.ID {
-		t.Fatalf("source claim=%+v err=%v", claimed, err)
+	claimedSource, sourceClaim, err := dbs[0].ClaimNextOperation(ctx, "source-worker", time.Minute, []string{"app.deploy"})
+	if err != nil || claimedSource == nil || claimedSource.ID != accepted.Operation.ID {
+		t.Fatalf("source claim=%+v err=%v", claimedSource, err)
+	}
+	resolved := json.RawMessage(`{"sourceKind":"git_clone","commitSha":"0123456789abcdef0123456789abcdef01234567","sourceRef":"refs/heads/main","treeDigest":"sha256:source"}`)
+	if _, err := dbs[0].RecordOperationCheckpoint(ctx, sourceClaim, CheckpointSource, resolved); err != nil {
+		t.Fatal(err)
+	}
+	build, _ := json.Marshal(map[string]string{"imageTag": "registry.example/app@sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", "sourceIdentity": checkpointDigest(resolved)})
+	if _, err := dbs[0].RecordOperationCheckpoint(ctx, sourceClaim, CheckpointBuild, build); err != nil {
+		t.Fatal(err)
 	}
 	if err := dbs[0].StartDeploymentStep(ctx, model.DeploymentStep{DeploymentID: accepted.Deployment.ID, App: accepted.Operation.App,
 		SagaID: accepted.Operation.SagaID, Step: "submit", Kind: model.DeploymentStepMutable, Status: model.DeploymentStepComplete, Attempt: 1}); err != nil {
@@ -46,6 +56,9 @@ func TestCompleteDeploymentReconciliationPreservesFailedSource(t *testing.T) {
 	candidate, err := stores[0].DeploymentReconciliationCandidate(ctx, accepted.Operation.ID)
 	if err != nil {
 		t.Fatal(err)
+	}
+	if candidate.CommitSHA == accepted.Deployment.CommitSHA || candidate.CommitSHA != "0123456789abcdef0123456789abcdef01234567" {
+		t.Fatalf("unresolved commit provenance: %+v", candidate)
 	}
 	authority, err := stores[0].Authority(ctx)
 	if err != nil {
@@ -93,7 +106,7 @@ func TestCompleteDeploymentReconciliationPreservesFailedSource(t *testing.T) {
 		t.Fatalf("original receipt changed=%+v err=%v", original, err)
 	}
 	completed, err := dbs[0].GetDeployment(ctx, accepted.Deployment.ID)
-	if err != nil || completed.Status != model.StatusDeployed || completed.ImageTag != candidate.ImageTag || len(completed.Regions) != 1 || completed.Regions[0].Status != model.StatusDeployed {
+	if err != nil || completed.Status != model.StatusDeployed || completed.ImageTag != candidate.ImageTag || completed.CommitSHA != candidate.CommitSHA || completed.SourceKind != candidate.SourceKind || completed.SourceRef != candidate.SourceRef || len(completed.Regions) != 1 || completed.Regions[0].Status != model.StatusDeployed {
 		t.Fatalf("reconciled deployment=%+v err=%v", completed, err)
 	}
 	receipt, err := dbs[0].GetOperation(ctx, repair.Operation.ID)

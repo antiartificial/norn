@@ -19,12 +19,60 @@ func (db *DB) CompleteDeploymentReconciliation(ctx context.Context, claim Operat
 	}
 	source, d := candidate.Acceptance.Operation, candidate.Acceptance.Deployment
 	if d == nil || d.ID == "" || d.App == "" || source.ID == "" || source.App != d.App ||
-		!model.IsContentAddressedImage(candidate.ImageTag) || d.SpecDigest == "" || len(candidate.Acceptance.Regions) == 0 {
+		!model.IsContentAddressedImage(candidate.ImageTag) || candidate.CommitSHA == "" || candidate.SourceKind == "" || candidate.SourceRef == "" ||
+		d.SpecDigest == "" || len(candidate.Acceptance.Regions) == 0 {
 		return ErrDeploymentReconciliationUnavailable
+	}
+	// Re-load checkpoint provenance before writing. The signed accepted branch
+	// ref is not a resolved commit, and must never be presented as one.
+	if source.Kind == "app.deploy" {
+		build, err := db.LoadOperationCheckpoint(ctx, source.ID, CheckpointBuild)
+		if err != nil {
+			return err
+		}
+		if build != nil {
+			resolved, err := db.LoadOperationCheckpoint(ctx, source.ID, CheckpointSource)
+			if err != nil {
+				return err
+			}
+			if resolved == nil {
+				return ErrDeploymentReconciliationUnavailable
+			}
+			var b struct {
+				ImageTag       string `json:"imageTag"`
+				SourceIdentity string `json:"sourceIdentity"`
+			}
+			var s struct {
+				SourceKind    string   `json:"sourceKind"`
+				CommitSHA     string   `json:"commitSha"`
+				SourceRef     string   `json:"sourceRef"`
+				SourceDirty   bool     `json:"sourceDirty"`
+				SourceChanges []string `json:"sourceChanges"`
+				TreeDigest    string   `json:"treeDigest"`
+			}
+			if json.Unmarshal(build.Outputs, &b) != nil || json.Unmarshal(resolved.Outputs, &s) != nil ||
+				b.SourceIdentity != checkpointDigest(resolved.Outputs) || b.ImageTag != candidate.ImageTag ||
+				s.SourceKind != candidate.SourceKind || s.CommitSHA != candidate.CommitSHA || s.SourceRef != candidate.SourceRef ||
+				s.SourceDirty != candidate.SourceDirty || !equalStrings(s.SourceChanges, candidate.SourceChanges) || s.TreeDigest == "" {
+				return ErrDeploymentReconciliationUnavailable
+			}
+		} else if d.SourceKind == "" || d.CommitSHA != candidate.CommitSHA || d.SourceKind != candidate.SourceKind || d.SourceRef != candidate.SourceRef ||
+			d.SourceDirty != candidate.SourceDirty || !equalStrings(d.SourceChanges, candidate.SourceChanges) {
+			return ErrDeploymentReconciliationUnavailable
+		}
+	} else if source.Kind != "app.rollback" || d.CommitSHA != candidate.CommitSHA || d.SourceKind != candidate.SourceKind || d.SourceRef != candidate.SourceRef ||
+		d.SourceDirty != candidate.SourceDirty || !equalStrings(d.SourceChanges, candidate.SourceChanges) {
+		return ErrDeploymentReconciliationUnavailable
+	}
+	changes, err := json.Marshal(candidate.SourceChanges)
+	if err != nil {
+		return err
 	}
 	metadata, err := json.Marshal(map[string]interface{}{
 		"sourceOperationId": source.ID, "deploymentId": d.ID, "imageTag": candidate.ImageTag,
 		"specDigest": d.SpecDigest, "observedAt": observedAt.UTC().Format(time.RFC3339Nano),
+		"commitSha": candidate.CommitSHA, "sourceKind": candidate.SourceKind, "sourceRef": candidate.SourceRef,
+		"sourceDirty": candidate.SourceDirty, "sourceChanges": candidate.SourceChanges,
 	})
 	if err != nil {
 		return err
@@ -79,6 +127,17 @@ func (db *DB) CompleteDeploymentReconciliation(ctx context.Context, claim Operat
 	if status != model.StatusFailed || specDigest != d.SpecDigest || environment != d.Environment || !startedAt.Equal(d.StartedAt) || (image != "" && image != candidate.ImageTag) {
 		return ErrDeploymentReconciliationUnavailable
 	}
+	if source.Kind == "app.rollback" {
+		var sourceValid bool
+		if err := tx.QueryRow(ctx, `SELECT EXISTS(SELECT 1 FROM deployments WHERE id=$1 AND app=$2 AND environment=$3
+			AND status='deployed' AND image_tag=$4 AND commit_sha=$5 AND spec_digest=$6)`,
+			candidate.SourceRef, d.App, environment, candidate.ImageTag, candidate.CommitSHA, d.SpecDigest).Scan(&sourceValid); err != nil {
+			return err
+		}
+		if !sourceValid {
+			return ErrDeploymentReconciliationUnavailable
+		}
+	}
 	var superseded bool
 	if err := tx.QueryRow(ctx, `SELECT EXISTS(SELECT 1 FROM deployments WHERE app=$1 AND environment=$2 AND id<>$3 AND started_at >= $4)`,
 		d.App, environment, d.ID, startedAt).Scan(&superseded); err != nil {
@@ -105,8 +164,10 @@ func (db *DB) CompleteDeploymentReconciliation(ctx context.Context, claim Operat
 			return ErrDeploymentReconciliationUnavailable
 		}
 	}
-	result, err := tx.Exec(ctx, `UPDATE deployments SET status='deployed',image_tag=$2,finished_at=now()
-		WHERE id=$1 AND status='failed'`, d.ID, candidate.ImageTag)
+	result, err := tx.Exec(ctx, `UPDATE deployments SET status='deployed',image_tag=$2,commit_sha=$3,source_kind=$4,
+		source_ref=$5,source_dirty=$6,source_changes=$7,finished_at=now()
+		WHERE id=$1 AND status='failed'`, d.ID, candidate.ImageTag, candidate.CommitSHA, candidate.SourceKind,
+		candidate.SourceRef, candidate.SourceDirty, changes)
 	if err != nil {
 		return err
 	}
