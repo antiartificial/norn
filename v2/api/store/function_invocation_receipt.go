@@ -17,6 +17,13 @@ type FunctionInvocationReceiptStore interface {
 	FinishClaimedFunctionInvocation(context.Context, OperationClaim, FuncExecution, model.OperationStatus, string, map[string]interface{}) error
 }
 
+// FunctionInvocationReceiptWithAppLockStore is required when the execution
+// backend uses lease-fenced app locks. The lock proof joins the claim and
+// immutable projection in the same terminal transaction.
+type FunctionInvocationReceiptWithAppLockStore interface {
+	FinishClaimedFunctionInvocationWithAppLock(context.Context, OperationClaim, AppOperationLock, FuncExecution, model.OperationStatus, string, map[string]interface{}) error
+}
+
 var ErrFunctionInvocationExecutionConflict = errors.New("function invocation execution projection conflicts with durable record")
 
 // FinishClaimedFunctionInvocation atomically publishes a terminal function
