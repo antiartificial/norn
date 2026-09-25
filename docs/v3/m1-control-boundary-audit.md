@@ -157,6 +157,9 @@ operation, so an exact remote replay verifies the same bytes. Legacy
 predeploy snapshots also pin one operation name but refuse to reuse an
 existing unbound dump; that case requires operator inspection. A process crash
 between the external effect and durable step completion still needs a separate
-effect reservation and two-process recovery proof. The create-only S3
+effect reservation and two-process recovery proof. Both claimed export routes
+recheck the live operation lease immediately before remote publication, after
+any predeploy dump work; this closes the known expired-before-upload case but
+does not fence expiry during an upload. The create-only S3
 behavior has passed the local emulator, including multipart completion, but
 hosted-provider qualification remains open. M1 export is not yet qualified.

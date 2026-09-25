@@ -113,6 +113,15 @@ func (p *Pipeline) snapshotTarget(ctx context.Context, st *state, sg *saga.Saga,
 		if !ok || st.claim.OperationID() == "" {
 			return fmt.Errorf("predeploy snapshot export requires a claimed operation and create-only object storage")
 		}
+		// pg_dump may outlive a lease even when it was valid before the dump.
+		// Recheck before starting the remote publication; the durable export
+		// effect reservation remains a separate recovery gate.
+		if p.DB == nil {
+			return fmt.Errorf("predeploy snapshot export requires a claim store")
+		}
+		if err := p.DB.CheckOperationClaim(ctx, st.claim); err != nil {
+			return fmt.Errorf("predeploy snapshot export claim is no longer current: %w", err)
+		}
 		exportBucket := st.spec.Snapshots.ExportBucket
 		var key string
 		if target != nil {

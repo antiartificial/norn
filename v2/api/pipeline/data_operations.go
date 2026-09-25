@@ -156,6 +156,12 @@ func (p *Pipeline) executeDataOperation(ctx context.Context, op *model.Operation
 		if spec.Snapshots == nil || spec.Snapshots.ExportBucket == "" || stringFromMap(op.Payload, "bucket") != spec.Snapshots.ExportBucket {
 			return nil, fmt.Errorf("signed snapshot export bucket differs from current app configuration")
 		}
+		if p.DB == nil {
+			return nil, fmt.Errorf("claimed snapshot export requires a claim store")
+		}
+		if err := p.DB.CheckOperationClaim(ctx, claim); err != nil {
+			return nil, fmt.Errorf("snapshot export claim is no longer current: %w", err)
+		}
 		logical, filename := stringFromMap(op.Payload, "database"), stringFromMap(op.Payload, "snapshot")
 		if bound == nil && !spec.NamedDatabases() {
 			createOnly, ok := p.SnapshotObjects.(snapshotCreateOnlyObjectStore)
