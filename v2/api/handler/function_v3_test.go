@@ -107,6 +107,9 @@ func TestFunctionV3AdmissionSealsPrivateRequestAndAcceptsPublicReceipt(t *testin
 	if s.accepted.Semantics["specDigest"] != functionV3Binding().SpecDigest || s.accepted.Operation.Payload["imageReference"] != functionV3Binding().ImageReference || s.accepted.Operation.Payload["databaseTarget"] != "none" {
 		t.Fatalf("public binding=%+v", s.accepted.Operation.Payload)
 	}
+	if s.accepted.Operation.MaxAttempts != functionV3RecoveryAttempts {
+		t.Fatalf("function recovery attempt budget=%d want %d", s.accepted.Operation.MaxAttempts, functionV3RecoveryAttempts)
+	}
 	if rec.Header().Get("Location") != "/api/v1/operations/"+s.accepted.Operation.ID || rec.Header().Get("Cache-Control") != "no-store" || strings.Contains(rec.Body.String(), privateCanary) {
 		t.Fatalf("headers=%v body=%s", rec.Header(), rec.Body.String())
 	}

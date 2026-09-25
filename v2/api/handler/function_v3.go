@@ -22,6 +22,14 @@ import (
 var functionV3Digest = regexp.MustCompile(`^sha256:[0-9a-f]{64}$`)
 var functionV3Image = regexp.MustCompile(`^[^\s@]+@sha256:[0-9a-f]{64}$`)
 
+// functionV3RecoveryAttempts permits a successor to recover a fenced function
+// claim after an API-worker crash. The variable and job effect ledgers record
+// an attempted write before the remote call, so later claims can only recover
+// an exact remote identity; they cannot submit a second one-shot job. Once the
+// bounded budget is exhausted, generic operation recovery leaves the receipt
+// in manual review rather than guessing about an unproved remote state.
+const functionV3RecoveryAttempts = 3
+
 // FunctionInvocationResolution is the complete public execution binding. The
 // resolver owns reading deployed state and must return the exact pinned spec,
 // immutable image, and canonical database delivery binding selected for this
@@ -135,7 +143,7 @@ func FunctionV3AdmissionHandler(cfg FunctionV3AdmissionConfig) http.HandlerFunc 
 		now := time.Now().UTC()
 		acceptance := store.OperationAcceptance{
 			Identity:  identity,
-			Operation: model.Operation{ID: uuid.NewString(), Kind: store.PrivateInvocationOperationKind, App: app, Status: model.OperationQueued, Risk: "function execution", Source: "control-api", Message: "queued app.function-invoke", Payload: payload, Metadata: map[string]interface{}{}, StartedAt: now, MaxAttempts: 1},
+			Operation: model.Operation{ID: uuid.NewString(), Kind: store.PrivateInvocationOperationKind, App: app, Status: model.OperationQueued, Risk: "function execution", Source: "control-api", Message: "queued app.function-invoke", Payload: payload, Metadata: map[string]interface{}{}, StartedAt: now, MaxAttempts: functionV3RecoveryAttempts},
 			Audit:     store.AcceptanceAuditContext{RequestReceiptID: requestContext.ReceiptID, RequestID: requestContext.RequestID, CredentialID: requestContext.Actor.CredentialID, DeviceID: requestContext.Actor.DeviceID, Source: requestContext.Actor.Source, Scopes: append([]string{}, requestContext.Actor.Scopes...)},
 			// Semantics must remain public. Private request values are compared by
 			// PrivateInvocationStore during atomic replay, never fingerprinted here.
