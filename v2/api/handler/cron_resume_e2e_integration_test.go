@@ -15,6 +15,7 @@ import (
 	"path/filepath"
 	"strconv"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -22,6 +23,7 @@ import (
 	"github.com/go-chi/chi/v5"
 	"github.com/google/uuid"
 	nomadapi "github.com/hashicorp/nomad/api"
+	"github.com/jackc/pgx/v5/pgxpool"
 
 	"norn/v2/api/config"
 	"norn/v2/api/effect"
@@ -37,22 +39,26 @@ import (
 // It drives HTTP acceptance, the claimed worker, the real Nomad CAS effect,
 // and the PostgreSQL cron state and operation receipt in one path.
 func TestCronResumeHTTPWorkerNomadPostgres(t *testing.T) {
-	testCronResumeHTTPWorkerNomadPostgres(t, false, "")
+	testCronResumeHTTPWorkerNomadPostgres(t, false, "", false)
+}
+
+func TestCronResumeTwoWorkersSameKey(t *testing.T) {
+	testCronResumeHTTPWorkerNomadPostgres(t, false, "", true)
 }
 
 func TestCronResumeLostNomadResponseReconciles(t *testing.T) {
-	testCronResumeHTTPWorkerNomadPostgres(t, true, "")
+	testCronResumeHTTPWorkerNomadPostgres(t, true, "", false)
 }
 
 func TestCronResumeCrashAfterReservationRemainsUnresolved(t *testing.T) {
-	testCronResumeHTTPWorkerNomadPostgres(t, false, "reserved")
+	testCronResumeHTTPWorkerNomadPostgres(t, false, "reserved", false)
 }
 
 func TestCronResumeCrashAfterNomadCommitReconciles(t *testing.T) {
-	testCronResumeHTTPWorkerNomadPostgres(t, false, "committed")
+	testCronResumeHTTPWorkerNomadPostgres(t, false, "committed", false)
 }
 
-func testCronResumeHTTPWorkerNomadPostgres(t *testing.T, loseRegistrationResponse bool, crashWindow string) {
+func testCronResumeHTTPWorkerNomadPostgres(t *testing.T, loseRegistrationResponse bool, crashWindow string, twoWorkers bool) {
 	address := os.Getenv("NORN_TEST_NOMAD_ADDR")
 	if address == "" || os.Getenv("NORN_TEST_DATABASE_URL") == "" {
 		t.Skip("set NORN_TEST_NOMAD_ADDR and NORN_TEST_DATABASE_URL to disposable services")
@@ -176,7 +182,48 @@ func testCronResumeHTTPWorkerNomadPostgres(t *testing.T, loseRegistrationRespons
 		}
 		return rec.Code, operation, rec.Body.String()
 	}
-	status, accepted, body := serve("cron-resume-e2e")
+	var status int
+	var accepted model.Operation
+	var body string
+	if twoWorkers {
+		var wg sync.WaitGroup
+		start := make(chan struct{})
+		type response struct {
+			status int
+			op     model.Operation
+			body   string
+		}
+		responses := make([]response, 4)
+		for i := range responses {
+			wg.Add(1)
+			go func(i int) {
+				defer wg.Done()
+				<-start
+				responses[i].status, responses[i].op, responses[i].body = serve("cron-resume-e2e")
+			}(i)
+		}
+		close(start)
+		wg.Wait()
+		acceptedCount := 0
+		for i, got := range responses {
+			if got.status == http.StatusAccepted {
+				acceptedCount++
+				status, accepted, body = got.status, got.op, got.body
+			} else if got.status != http.StatusOK {
+				t.Fatalf("duplicate request %d: status=%d op=%+v body=%s", i, got.status, got.op, got.body)
+			}
+		}
+		if acceptedCount != 1 {
+			t.Fatalf("concurrent accepts=%d, want one", acceptedCount)
+		}
+		for i, got := range responses {
+			if got.op.ID != accepted.ID {
+				t.Fatalf("duplicate request %d returned operation %s, want %s", i, got.op.ID, accepted.ID)
+			}
+		}
+	} else {
+		status, accepted, body = serve("cron-resume-e2e")
+	}
 	if status != http.StatusAccepted || accepted.Kind != "app.cron-resume" {
 		t.Fatalf("accept status=%d op=%+v body=%s", status, accepted, body)
 	}
@@ -188,6 +235,23 @@ func testCronResumeHTTPWorkerNomadPostgres(t *testing.T, loseRegistrationRespons
 	workerCtx, cancel := context.WithTimeout(ctx, 20*time.Second)
 	defer cancel()
 	go operationWorker.Run(workerCtx)
+	if twoWorkers {
+		// A second connection pool models a separate API/worker replica sharing
+		// the durable schema, rather than another goroutine on the first pool.
+		secondPool, poolErr := pgxpool.NewWithConfig(ctx, db.Pool.Config())
+		if poolErr != nil {
+			t.Fatal(poolErr)
+		}
+		defer func() { cancel(); secondPool.Close() }()
+		secondDB := &store.DB{Pool: secondPool}
+		secondPipeline := &pipeline.Pipeline{DB: secondDB, Nomad: nomadClient, AppsDir: root, SagaStore: saga.NewPostgresStore(secondPool)}
+		secondPipeline.CronResumeEffects, err = pipeline.NewNomadCronResumeEffects(secondDB, nomadClient, secondPipeline)
+		if err != nil {
+			t.Fatal(err)
+		}
+		secondPipeline.SetOperationStore(h.OperationStore())
+		go worker.NewOperationWorkerForKinds(secondDB, secondPipeline, []string{"app.cron-resume"}).Run(workerCtx)
+	}
 	var finished *model.Operation
 	for workerCtx.Err() == nil {
 		finished, err = db.GetOperation(ctx, accepted.ID)
@@ -205,6 +269,9 @@ func testCronResumeHTTPWorkerNomadPostgres(t *testing.T, loseRegistrationRespons
 	resumed, err := nomadClient.PeriodicJobSchedule(jobID)
 	if err != nil || resumed.Paused || resumed.CronResumeEffectID == "" {
 		t.Fatalf("Nomad resume=%+v, %v", resumed, err)
+	}
+	if twoWorkers && resumed.Version != paused.Version+1 {
+		t.Fatalf("two workers changed Nomad parent version from %d to %d, want one guarded mutation", paused.Version, resumed.Version)
 	}
 	if loseRegistrationResponse {
 		if got := forwardedRegistrations.Load(); got != 1 {

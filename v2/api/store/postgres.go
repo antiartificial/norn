@@ -682,18 +682,28 @@ func (db *DB) ListDeployments(ctx context.Context, app string, limit int) ([]mod
 	if err != nil {
 		return nil, err
 	}
-	defer rows.Close()
 
 	var deployments []model.Deployment
 	for rows.Next() {
 		var d model.Deployment
 		var changes []byte
 		if err := rows.Scan(&d.ID, &d.App, &d.CommitSHA, &d.ImageTag, &d.Environment, &d.SagaID, &d.Status, &d.SourceKind, &d.SourceRef, &d.SourceDirty, &changes, &d.StartedAt, &d.FinishedAt); err != nil {
+			rows.Close()
 			return nil, err
 		}
 		_ = json.Unmarshal(changes, &d.SourceChanges)
-		d.Regions, _ = db.DeploymentRegions(ctx, d.ID)
 		deployments = append(deployments, d)
+	}
+	if err := rows.Err(); err != nil {
+		rows.Close()
+		return nil, err
+	}
+	// Release the row cursor's connection before fetching regions. Concurrent
+	// readers can otherwise occupy every pool connection with open deployment
+	// cursors and deadlock while each waits for a nested region query.
+	rows.Close()
+	for i := range deployments {
+		deployments[i].Regions, _ = db.DeploymentRegions(ctx, deployments[i].ID)
 	}
 	return deployments, nil
 }
