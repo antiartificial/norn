@@ -44,9 +44,23 @@ deployment through private source admission with a live Nomad observer. It
 passed against a generated WordPress 6.8.2 Docker allocation, disposable
 Nomad 2.0.7 and PostgreSQL 16, and native MySQL 8.0.27 with verified TLS.
 The admitted source request bound the deployment, exact live job and
-allocation, active catalog, and maintenance identity. The test accepts the
-operation but does not run source quiescence or stage an artifact; its
-maintenance accounts are not provisioned in this fixture.
+allocation, active catalog, and maintenance identity.
+
+A second opt-in run provisions separate disposable snapshot and fence accounts
+and continues that accepted operation through the claimed private runner. The
+signed source request binds the WordPress cold-start launch reservation to the
+same deployment and observed allocation. Preparation permits only that exact
+launched reservation. After the guarded Nomad CAS stop proves the signed job
+and allocations stopped, one PostgreSQL transaction records both
+`stop-proved` and a `stopped` launch reservation with its proof. The runner
+then locks and drains the WordPress runtime account and stages a
+service-signed SQL artifact through the separate snapshot credential. The
+disposable MySQL 8.0.27 database contained an InnoDB marker row; the test
+verified that row in the staged SQL, the source intent at `stage-proved`, and
+the launch reservation at `stopped`. This closes the local
+admission-to-source-runner gap for one pinned WordPress allocation. Remote
+retention, restore, signed unlock, and production Mini qualification remain
+open.
 
 Admission also rechecks the catalog revision inside the signed acceptance
 transaction while holding the same PostgreSQL advisory lock as catalog

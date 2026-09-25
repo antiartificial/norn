@@ -2,8 +2,6 @@ package pipeline
 
 import (
 	"context"
-	"crypto/sha256"
-	"encoding/hex"
 	"fmt"
 	"sort"
 	"strings"
@@ -13,6 +11,7 @@ import (
 
 	"norn/v2/api/database"
 	"norn/v2/api/model"
+	"norn/v2/api/store"
 )
 
 // wordpressColdStartGate is deliberately narrower than an ordinary deploy.
@@ -129,9 +128,7 @@ func wordpressAcceptedMySQLWriterTargets(st *state) ([]database.TargetIdentity, 
 }
 
 func wordpressColdStartReservationID(st *state) string {
-	input := strings.Join([]string{"norn.wordpress-verified-tls-cold-start/v1", st.claim.OperationID(), st.deploymentID, stringFromMap(st.operationPayload, "specDigest")}, "\x00")
-	digest := sha256.Sum256([]byte(input))
-	return "wordpress-cold-start-" + hex.EncodeToString(digest[:])
+	return store.WordPressColdStartReservationID(st.claim.OperationID(), st.deploymentID, stringFromMap(st.operationPayload, "specDigest"))
 }
 
 func activeWordPressAllocations(allocations []*nomadapi.AllocationListStub) []*nomadapi.AllocationListStub {

@@ -155,8 +155,12 @@ The test then accepted a private source snapshot operation using that
 deployment's signed database binding and Nomad's live job/allocation
 observation; an unbound snapshot credential was refused. Rotating to an
 unrelated CA made the next deploy fail before changing the trusted Nomad
-delivery variable. The fixture was local and disposable. No source stop,
-account lock, dump, restore, or Mini deployment was exercised by this test.
+delivery variable. The fixture was local and disposable. That default run did
+not stop the source or stage a dump. A separate opt-in source mode now carries
+the same accepted deployment through signed source admission, guarded Nomad
+stop, runtime-account lock, and local SQL staging; see the [source snapshot
+boundary](m2-mysql-source-snapshot-boundary-2026-09-25.md). It did not restore
+or deploy to Mini.
 
 `TestClaimedWordPressVerifiedTLSDeployInNomad` then passed against disposable
 PostgreSQL, MySQL 8.4 TLS, Nomad 2.0.7 and Consul. Signed `app.deploy`

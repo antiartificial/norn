@@ -89,7 +89,7 @@ func (db *DB) AcceptPrivateMySQLSourceSnapshot(ctx context.Context, acceptance *
 		if err != nil || active.Revision != request.CatalogRevision {
 			return ErrMySQLSourceSnapshotFence
 		}
-		return nil
+		return verifyMySQLSourceRuntimeLaunch(ctx, tx, active.Catalog, request)
 	})
 }
 
@@ -146,9 +146,14 @@ func (db *DB) BuildMySQLSourceSnapshotRequest(ctx context.Context, acceptance *P
 	if err != nil || !sameMySQLSourceJobObservation(want, observed) {
 		return MySQLSourceSnapshotRequest{}, ErrMySQLSourceSnapshotFence
 	}
+	launchReservationID, err := db.sourceRuntimeLaunchFromObservation(ctx, active.Catalog, binding, observed)
+	if err != nil {
+		return MySQLSourceSnapshotRequest{}, err
+	}
 	request := MySQLSourceSnapshotRequest{
 		CatalogRevision: binding.CatalogRevision, ProfileID: binding.ProfileID, LogicalID: binding.LogicalID, Source: binding.Source,
 		Maintenance: input.Maintenance, DumpToolSHA256: input.DumpToolSHA256,
+		RuntimeLaunchReservationID: launchReservationID,
 		JobIdentity: MySQLSourceSnapshotJobIdentity{
 			App: observed.App, DeploymentID: observed.DeploymentID, SpecDigest: observed.SpecDigest, Region: observed.Region,
 			NomadRegion: observed.NomadRegion, JobID: observed.JobID, JobVersion: observed.JobVersion,

@@ -513,7 +513,7 @@ func TestDatabaseBaselineResolvesLegacyToNamedTransition(t *testing.T) {
 	// Re-baselining primary onto another target is a move, not a baseline.
 	moved := f.catalog
 	moved.Bindings = append([]database.DatabaseBinding(nil), f.catalog.Bindings...)
-	moved.Bindings[0].ServiceID, moved.Bindings[0].Generation = "reports-mysql", 2
+	moved.Bindings[0].ServiceID, moved.Bindings[0].Generation = "pg-a", 2
 	moved.Bindings[0].Database = "shop2"
 	if _, err := f.db.ActivateDatabaseCatalog(ctx, 1, moved, "operator"); err != nil {
 		t.Fatal(err)
@@ -579,16 +579,16 @@ func TestMySQLTLSRuntimeRemainsClosedAtDeployAcceptance(t *testing.T) {
 		t.Fatal(err)
 	}
 	_, err = f.queue(t, "app.deploy", map[string]interface{}{})
-	var resolverErr *database.ResolverError
-	if !errors.As(err, &resolverErr) || resolverErr.Code != database.CodeUnsupportedCapability {
-		t.Fatalf("TLS MySQL deploy without runtime CA path = %v, want unsupported capability", err)
+	var targetErr *DatabaseTargetError
+	if !errors.As(err, &targetErr) || !strings.Contains(targetErr.Reason, "qualified WordPress adapter") {
+		t.Fatalf("generic TLS MySQL deploy without runtime CA path = %v, want qualified-client rejection", err)
 	}
 	updated = strings.Replace(updated, "    runtime:\n      components:", "    runtime:\n      tls:\n        caFileEnv: MYSQL_SSL_CA\n      components:", 1)
 	if err := os.WriteFile(path, []byte(updated), 0o644); err != nil {
 		t.Fatal(err)
 	}
 	_, err = f.queue(t, "app.deploy", map[string]interface{}{})
-	if !errors.As(err, &resolverErr) || resolverErr.Code != database.CodeUnsupportedCapability {
-		t.Fatalf("TLS MySQL deploy with private CA path = %v, want unsupported capability until app verification is qualified", err)
+	if !errors.As(err, &targetErr) || !strings.Contains(targetErr.Reason, "qualified WordPress adapter") {
+		t.Fatalf("generic TLS MySQL deploy with private CA path = %v, want qualified-client rejection", err)
 	}
 }

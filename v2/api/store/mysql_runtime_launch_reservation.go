@@ -349,6 +349,14 @@ func mysqlRuntimePhysicalKey(identity database.TargetIdentity) string {
 	return hex.EncodeToString(digest[:])
 }
 
+// WordPressColdStartReservationID binds the cold-start launch record to the
+// signed deploy operation, deployment, and immutable spec digest.
+func WordPressColdStartReservationID(operationID, deploymentID, specDigest string) string {
+	input := strings.Join([]string{"norn.wordpress-verified-tls-cold-start/v1", operationID, deploymentID, specDigest}, "\x00")
+	digest := sha256.Sum256([]byte(input))
+	return "wordpress-cold-start-" + hex.EncodeToString(digest[:])
+}
+
 // mysqlRuntimePhysicalKeyForCatalog binds exclusion to the catalog's physical
 // provider identity. Service and binding generations describe immutable signed
 // routing revisions, but a generation rotation can continue to address the

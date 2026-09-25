@@ -2,12 +2,17 @@ package store
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
+	"encoding/json"
 	"errors"
 	"strconv"
+	"time"
 
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgconn"
 
+	"norn/v2/api/database"
 	"norn/v2/api/nomad"
 )
 
@@ -36,7 +41,7 @@ func (db *DB) StopClaimedMySQLSourceJob(ctx context.Context, acceptance *PGOpera
 	if err := db.EnsureClaimedMySQLSourceRuntimeFence(ctx, acceptance, claim, request); err != nil {
 		return err
 	}
-	if err := db.setClaimedMySQLSourceStopState(ctx, claim, "quiesce-intended", "stop-intended"); err != nil {
+	if err := db.setClaimedMySQLSourceStopState(ctx, claim, request, "quiesce-intended", "stop-intended"); err != nil {
 		return err
 	}
 	index, _ := strconv.ParseUint(request.JobIdentity.JobModifyIndex, 10, 64)
@@ -49,13 +54,13 @@ func (db *DB) StopClaimedMySQLSourceJob(ctx context.Context, acceptance *PGOpera
 	}); err != nil {
 		return errors.Join(ErrMySQLSourceStopIndeterminate, err)
 	}
-	if err := db.setClaimedMySQLSourceStopState(ctx, claim, "stop-intended", "stop-proved"); err != nil {
+	if err := db.setClaimedMySQLSourceStopState(ctx, claim, request, "stop-intended", "stop-proved"); err != nil {
 		return errors.Join(ErrMySQLSourceStopIndeterminate, err)
 	}
 	return nil
 }
 
-func (db *DB) setClaimedMySQLSourceStopState(ctx context.Context, claim OperationClaim, from, to string) error {
+func (db *DB) setClaimedMySQLSourceStopState(ctx context.Context, claim OperationClaim, request MySQLSourceSnapshotRequest, from, to string) error {
 	if db == nil || db.Pool == nil || validateOperationClaim(claim) != nil {
 		return ErrMySQLSourceSnapshotFence
 	}
@@ -64,6 +69,9 @@ func (db *DB) setClaimedMySQLSourceStopState(ctx context.Context, claim Operatio
 		return err
 	}
 	defer tx.Rollback(context.Background())
+	if err := lockMySQLCatalogGate(ctx, tx); err != nil {
+		return err
+	}
 	var held bool
 	if err := tx.QueryRow(ctx, `SELECT true FROM operations WHERE id=$1 AND kind=$2 AND status='running' AND locked_by=$3 AND lock_generation=$4 AND locked_until>clock_timestamp() FOR UPDATE`, claim.OperationID(), MySQLSourceSnapshotOperationKind, claim.OwnerID(), claim.Generation()).Scan(&held); err != nil || !held {
 		return ownershipLost(claim)
@@ -72,6 +80,11 @@ func (db *DB) setClaimedMySQLSourceStopState(ctx context.Context, claim Operatio
 	if to == "stop-intended" {
 		tag, err = tx.Exec(ctx, `UPDATE mysql_source_snapshot_intents SET state='stop-intended',stop_intended_at=clock_timestamp() WHERE operation_id=$1 AND state='quiesce-intended' AND EXISTS (SELECT 1 FROM runtime_mutation_fence f WHERE f.singleton=true AND f.active=true AND f.epoch=mysql_source_snapshot_intents.runtime_fence_epoch AND f.owner=mysql_source_snapshot_intents.runtime_fence_owner)`, claim.OperationID())
 	} else if to == "stop-proved" {
+		if request.RuntimeLaunchReservationID != "" {
+			if err := stopClaimedMySQLSourceRuntimeLaunch(ctx, tx, request); err != nil {
+				return err
+			}
+		}
 		tag, err = tx.Exec(ctx, `UPDATE mysql_source_snapshot_intents SET state='stop-proved',stop_proved_at=clock_timestamp() WHERE operation_id=$1 AND state='stop-intended' AND stop_intended_at IS NOT NULL AND EXISTS (SELECT 1 FROM runtime_mutation_fence f WHERE f.singleton=true AND f.active=true AND f.epoch=mysql_source_snapshot_intents.runtime_fence_epoch AND f.owner=mysql_source_snapshot_intents.runtime_fence_owner)`, claim.OperationID())
 	} else {
 		return ErrMySQLSourceSnapshotFence
@@ -83,4 +96,32 @@ func (db *DB) setClaimedMySQLSourceStopState(ctx context.Context, claim Operatio
 		return ErrMySQLSourceStopIndeterminate
 	}
 	return tx.Commit(ctx)
+}
+
+func stopClaimedMySQLSourceRuntimeLaunch(ctx context.Context, tx pgx.Tx, request MySQLSourceSnapshotRequest) error {
+	active, err := loadActiveDatabaseCatalog(ctx, tx)
+	if err != nil || active.Revision != request.CatalogRevision {
+		return ErrMySQLSourceSnapshotFence
+	}
+	key := mysqlRuntimePhysicalKeyForCatalog(active.Catalog, request.Source)
+	var runtimeID string
+	var encoded []byte
+	if err := tx.QueryRow(ctx, `SELECT runtime_instance_id,target FROM mysql_runtime_launch_reservations
+		WHERE reservation_id=$1 AND target_key=$2 AND state='launched' FOR UPDATE`, request.RuntimeLaunchReservationID, key).Scan(&runtimeID, &encoded); err != nil || !containsMySQLSourceAllocation(request.JobIdentity.AllocationIDs, runtimeID) {
+		return ErrMySQLSourceSnapshotFence
+	}
+	var target database.TargetIdentity
+	if json.Unmarshal(encoded, &target) != nil || target != request.Source {
+		return ErrMySQLSourceSnapshotFence
+	}
+	job, _ := json.Marshal(request.JobIdentity)
+	digest := sha256.Sum256(append([]byte("nomad-cas-stop-proved\x00"), job...))
+	proof, _ := json.Marshal(MySQLRuntimeLaunchStopProof{RuntimeInstanceID: runtimeID, ObservedAt: time.Now().UTC(),
+		Method: "exact signed Nomad CAS stop", EvidenceSHA256: hex.EncodeToString(digest[:])})
+	result, err := tx.Exec(ctx, `UPDATE mysql_runtime_launch_reservations SET state='stopped',stop_proof=$3,updated_at=clock_timestamp()
+		WHERE reservation_id=$1 AND target_key=$2 AND state='launched' AND runtime_instance_id=$4`, request.RuntimeLaunchReservationID, key, proof, runtimeID)
+	if err != nil || result.RowsAffected() != 1 {
+		return ErrMySQLSourceSnapshotFence
+	}
+	return nil
 }

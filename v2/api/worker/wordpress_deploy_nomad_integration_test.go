@@ -3,6 +3,7 @@ package worker
 import (
 	"bytes"
 	"context"
+	"crypto/sha256"
 	"encoding/base64"
 	"encoding/json"
 	"errors"
@@ -50,11 +51,16 @@ func TestClaimedWordPressVerifiedTLSDeployInNomad(t *testing.T) {
 	host, serverName := os.Getenv("NORN_TEST_WORDPRESS_DEPLOY_MYSQL_HOST"), os.Getenv("NORN_TEST_WORDPRESS_DEPLOY_MYSQL_SERVER_NAME")
 	user, password, databaseName := os.Getenv("NORN_TEST_WORDPRESS_DEPLOY_MYSQL_USER"), os.Getenv("NORN_TEST_WORDPRESS_DEPLOY_MYSQL_PASSWORD"), os.Getenv("NORN_TEST_WORDPRESS_DEPLOY_MYSQL_DATABASE")
 	volume := os.Getenv("NORN_TEST_WORDPRESS_DEPLOY_CONTENT_VOLUME")
+	quiesceSource := os.Getenv("NORN_TEST_WORDPRESS_DEPLOY_SOURCE_QUIESCE") == "1"
+	snapshotPassword, fencePassword := os.Getenv("NORN_TEST_WORDPRESS_DEPLOY_SNAPSHOT_PASSWORD"), os.Getenv("NORN_TEST_WORDPRESS_DEPLOY_FENCE_PASSWORD")
 	port, portErr := strconv.Atoi(os.Getenv("NORN_TEST_WORDPRESS_DEPLOY_MYSQL_PORT"))
 	ca, goodCA := deployQualificationPEM(t, "NORN_TEST_WORDPRESS_DEPLOY_MYSQL_CA_PEM_B64")
 	wrongCA, badCA := deployQualificationPEM(t, "NORN_TEST_WORDPRESS_DEPLOY_MYSQL_WRONG_CA_PEM_B64")
 	if address == "" || controlURL == "" || host == "" || serverName == "" || host != serverName || user == "" || password == "" || databaseName == "" || volume == "" || !goodCA || !badCA || portErr != nil || port < 1 || port > 65535 || os.Getenv("NORN_TEST_NOMAD_DOCKER") != "1" {
 		t.Skip("set disposable Nomad/PostgreSQL/MySQL TLS variables and NORN_TEST_NOMAD_DOCKER=1 for claimed WordPress deploy qualification")
+	}
+	if quiesceSource && (snapshotPassword == "" || fencePassword == "") {
+		t.Skip("set disposable snapshot and fence account passwords for source quiescence qualification")
 	}
 	endpoint, err := url.Parse(address)
 	if err != nil || endpoint.Scheme != "http" || net.ParseIP(endpoint.Hostname()) == nil || !net.ParseIP(endpoint.Hostname()).IsLoopback() {
@@ -75,6 +81,10 @@ func TestClaimedWordPressVerifiedTLSDeployInNomad(t *testing.T) {
 	writeDeploySecret(t, secretRoot, "wp/password", []byte(fmt.Sprintf(`{"password":%q}`, password)))
 	writeDeploySecret(t, secretRoot, "wp/ca", ca)
 	writeDeploySecret(t, secretRoot, "wp/wrong-ca", wrongCA)
+	if quiesceSource {
+		writeDeploySecret(t, secretRoot, "wp/snapshot", []byte(fmt.Sprintf(`{"password":%q}`, snapshotPassword)))
+		writeDeploySecret(t, secretRoot, "wp/fence", []byte(fmt.Sprintf(`{"password":%q}`, fencePassword)))
+	}
 	secrets, err := database.NewDirectorySecretSource(secretRoot)
 	if err != nil {
 		t.Fatal(err)
@@ -155,11 +165,23 @@ func TestClaimedWordPressVerifiedTLSDeployInNomad(t *testing.T) {
 	if err != nil || len(accepted.Regions) != 1 || source.MySQLMaintenance == nil {
 		t.Fatalf("deployed WordPress source binding unavailable: %v", err)
 	}
+	dumpTool, dumpDigest := "", strings.Repeat("d", 64)
+	if quiesceSource {
+		dumpTool, err = exec.LookPath("mysqldump")
+		if err != nil {
+			t.Fatal(err)
+		}
+		toolBytes, readErr := os.ReadFile(dumpTool)
+		if readErr != nil {
+			t.Fatal(readErr)
+		}
+		dumpDigest = fmt.Sprintf("%x", sha256.Sum256(toolBytes))
+	}
 	selection := store.MySQLSourceSnapshotAdmissionRequest{Binding: store.MySQLDeployedSourceBindingRequest{
 		DeploymentID: deployment.ID, App: app, SpecDigest: deployment.SpecDigest,
 		Region: accepted.Regions[0].Name, NomadRegion: accepted.Regions[0].NomadRegion,
 		ProfileID: "qualification", LogicalID: "primary", CatalogRevision: 1, Source: source.Target},
-		Maintenance: *source.MySQLMaintenance, DumpToolSHA256: strings.Repeat("d", 64)}
+		Maintenance: *source.MySQLMaintenance, DumpToolSHA256: dumpDigest}
 	wrongMaintenance := selection
 	wrongMaintenance.Maintenance.SnapshotCredentialRef = "secret:wp/unbound-snapshot"
 	if _, err := db.AcceptPrivateMySQLSourceSnapshot(context.Background(), operations, client,
@@ -177,6 +199,41 @@ func TestClaimedWordPressVerifiedTLSDeployInNomad(t *testing.T) {
 	if err != nil || json.Unmarshal(encodedSource, &sourceRequest) != nil || sourceAccepted.Intent.Signature.Value == "" ||
 		sourceRequest.JobIdentity.JobID != app || len(sourceRequest.JobIdentity.AllocationIDs) == 0 || sourceRequest.Source != source.Target {
 		t.Fatalf("signed deployed WordPress source identity was incomplete: %v", err)
+	}
+	if quiesceSource {
+		ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
+		defer cancel()
+		claimed, claim, err := db.ClaimNextOperation(ctx, "wordpress-source-qualification", 2*time.Minute, []string{store.MySQLSourceSnapshotOperationKind})
+		if err != nil || claimed == nil || claim.OperationID() != sourceAccepted.Operation.ID {
+			t.Fatalf("claim accepted WordPress source operation: %+v, %v", claimed, err)
+		}
+		runner := store.MySQLSourceSnapshotRunner{Control: db, Acceptance: operations, Secrets: secrets, Stopper: client}
+		if err := runner.RunClaimed(ctx, claim, sourceRequest); err != nil {
+			t.Fatalf("quiesce deployed WordPress source: %v", err)
+		}
+		if err := database.InspectMySQLRuntimeAccountLockForRestore(ctx, source, *source.MySQLMaintenance, secrets); err != nil {
+			t.Fatalf("WordPress runtime account was not locked: %v", err)
+		}
+		stage := t.TempDir()
+		if err := os.Chmod(stage, 0o700); err != nil {
+			t.Fatal(err)
+		}
+		receipt, err := runner.StageClaimed(ctx, claim, sourceRequest, dumpTool, stage, wordpressSourceDatabaseStager{})
+		if err != nil || receipt.Receipt.OperationID != sourceAccepted.Operation.ID || receipt.Receipt.Artifact.Bytes <= 0 || receipt.Signature.Value == "" {
+			t.Fatalf("stage stopped WordPress source: %+v, %v", receipt, err)
+		}
+		var launchState, sourceState string
+		if err := db.Pool.QueryRow(ctx, `SELECT state FROM mysql_runtime_launch_reservations WHERE reservation_id=$1`, sourceRequest.RuntimeLaunchReservationID).Scan(&launchState); err != nil || launchState != "stopped" {
+			t.Fatalf("WordPress launch reservation after signed stop=%q, %v", launchState, err)
+		}
+		if err := db.Pool.QueryRow(ctx, `SELECT state FROM mysql_source_snapshot_intents WHERE operation_id=$1`, sourceAccepted.Operation.ID).Scan(&sourceState); err != nil || sourceState != "stage-proved" {
+			t.Fatalf("WordPress source intent after staging=%q, %v", sourceState, err)
+		}
+		staged, err := os.ReadFile(receipt.Receipt.ArtifactPath)
+		if err != nil || !bytes.Contains(staged, []byte("source-rehearsal")) {
+			t.Fatalf("staged SQL did not retain the disposable source marker: %v", err)
+		}
+		return
 	}
 
 	// Rotate only the private CA reference. The target identity remains the
@@ -201,6 +258,12 @@ func TestClaimedWordPressVerifiedTLSDeployInNomad(t *testing.T) {
 	if err != nil || variable == nil || !bytes.Equal([]byte(variable.Items[nomad.DatabaseTLSItemKey("primary", "ca")]), ca) || variable.Items["norn_rev2_db_tls_ca_primary"] != "" {
 		t.Fatalf("wrong CA reached a Nomad delivery variable or trusted delivery was lost: %v", err)
 	}
+}
+
+type wordpressSourceDatabaseStager struct{}
+
+func (wordpressSourceDatabaseStager) Stage(ctx context.Context, source database.ResolvedBinding, expected database.TargetIdentity, secrets database.SecretSource, tool, digest, directory string) (string, database.MySQLSQLArtifact, error) {
+	return database.StageMySQLSQLSnapshotWithMaintenanceCredential(ctx, source, expected, secrets, tool, digest, directory)
 }
 
 func deployQualificationPEM(t *testing.T, name string) ([]byte, bool) {

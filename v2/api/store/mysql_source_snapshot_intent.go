@@ -36,13 +36,14 @@ type MySQLSourceSnapshotJobIdentity struct {
 // MySQLSourceSnapshotRequest is signed before the artifact exists. The source
 // and maintenance identities cannot be selected by the worker after acceptance.
 type MySQLSourceSnapshotRequest struct {
-	CatalogRevision int64                                `json:"catalogRevision"`
-	ProfileID       string                               `json:"profileId"`
-	LogicalID       string                               `json:"logicalId"`
-	Source          database.TargetIdentity              `json:"source"`
-	Maintenance     database.MySQLMaintenanceCredentials `json:"maintenance"`
-	JobIdentity     MySQLSourceSnapshotJobIdentity       `json:"jobIdentity"`
-	DumpToolSHA256  string                               `json:"dumpToolSha256"`
+	CatalogRevision            int64                                `json:"catalogRevision"`
+	ProfileID                  string                               `json:"profileId"`
+	LogicalID                  string                               `json:"logicalId"`
+	Source                     database.TargetIdentity              `json:"source"`
+	Maintenance                database.MySQLMaintenanceCredentials `json:"maintenance"`
+	JobIdentity                MySQLSourceSnapshotJobIdentity       `json:"jobIdentity"`
+	RuntimeLaunchReservationID string                               `json:"runtimeLaunchReservationId,omitempty"`
+	DumpToolSHA256             string                               `json:"dumpToolSha256"`
 }
 
 type MySQLSourceSnapshotIntent struct {
@@ -94,7 +95,7 @@ func (db *DB) PrepareClaimedMySQLSourceSnapshot(ctx context.Context, acceptance 
 	if err != nil || resolved.MySQLMaintenance == nil || *resolved.MySQLMaintenance != request.Maintenance {
 		return MySQLSourceSnapshotIntent{}, ErrMySQLSourceSnapshotFence
 	}
-	if err := rejectMySQLRuntimeLaunchReservations(ctx, tx, []database.TargetIdentity{request.Source}); err != nil {
+	if err := verifyMySQLSourceRuntimeLaunch(ctx, tx, active.Catalog, request); err != nil {
 		return MySQLSourceSnapshotIntent{}, ErrMySQLSourceSnapshotFence
 	}
 	if err := rejectMySQLRestoreMaintenanceFence(ctx, tx, []database.TargetIdentity{request.Source}, claim.OperationID()); err != nil {
@@ -128,6 +129,9 @@ func validMySQLSourceSnapshotRequest(request MySQLSourceSnapshotRequest) bool {
 		return false
 	}
 	if !strings.HasPrefix(job.SpecDigest, "sha256:") || len(job.SpecDigest) != 71 || strings.ToLower(job.SpecDigest) != job.SpecDigest {
+		return false
+	}
+	if request.RuntimeLaunchReservationID != "" && !strings.HasPrefix(request.RuntimeLaunchReservationID, "wordpress-cold-start-") {
 		return false
 	}
 	version, versionErr := strconv.ParseUint(job.JobVersion, 10, 64)
