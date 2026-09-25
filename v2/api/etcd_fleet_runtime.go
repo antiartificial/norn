@@ -124,6 +124,7 @@ func runEtcdFleetRuntime(cfg *config.Config, backend startup.ControlBackendConfi
 		fleetRunner := handler.NewEtcdFleetRunnerHandler(cfg, operations)
 		runnerAuth := etcdManagedTokenAuth(cfg, identities, handler.ScopeFleetOperate)
 		router.With(plan).Post("/api/v1/fleet/plans/{planID}/github/dispatch", etcdFleetGitHubDispatch(cfg, operations, fleetGitHub))
+		router.With(plan).Post("/api/v1/fleet/plans/{planID}/github/pull-request", etcdFleetGitHubPullRequest(cfg, operations, fleetGitHub))
 		router.With(runnerAuth).Get("/api/v1/fleet/plans/{planID}/attempts", fleetRunner.List)
 		router.With(runnerAuth).Post("/api/v1/fleet/plans/{planID}/attempts", fleetRunner.Create)
 		router.With(runnerAuth).Get("/api/v1/fleet/plans/{planID}/attempts/{attemptID}", fleetRunner.Get)
@@ -187,11 +188,12 @@ func etcdFleetCapabilities(canaryHTTPEnabled bool, githubEnabled ...bool) map[st
 	endpoints := map[string]string{"fleetNodePools": "/api/v1/fleet/node-pools", "fleetPlans": "/api/v1/fleet/plans", "fleetPlan": "/api/v1/fleet/node-pools/{pool}/plan", "operation": "/api/v1/operations/{id}", "tokenRotate": "/api/v1/auth/rotate", "tokenRevoke": "/api/v1/auth/revoke", "fleetOIDCExchange": "/api/v1/auth/github-actions/exchange"}
 	unsupported := []string{"app-mutations", "fleet-runner-attempts", "fleet-github-bridge", "operation-cancellation"}
 	if len(githubEnabled) > 0 && githubEnabled[0] {
-		features = append(features, "fleet-github-protected-dispatch", "fleet-runner-attempts-v1", "fleet-reconciliation-v1")
+		features = append(features, "fleet-github-pull-request", "fleet-github-protected-dispatch", "fleet-runner-attempts-v1", "fleet-reconciliation-v1")
+		endpoints["fleetGitHubPullRequest"] = "/api/v1/fleet/plans/{planID}/github/pull-request"
 		endpoints["fleetGitHubDispatch"] = "/api/v1/fleet/plans/{planID}/github/dispatch"
 		endpoints["fleetRunnerAttempts"] = "/api/v1/fleet/plans/{planID}/attempts"
 		endpoints["fleetReconciliations"] = "/api/v1/fleet/plans/{planID}/reconciliations"
-		unsupported = []string{"app-mutations", "fleet-github-pull-request", "operation-cancellation"}
+		unsupported = []string{"app-mutations", "operation-cancellation"}
 	}
 	if canaryHTTPEnabled {
 		features = append(features, "durable-canary-promotion-preview")

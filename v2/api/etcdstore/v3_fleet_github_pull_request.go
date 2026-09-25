@@ -7,6 +7,7 @@ package etcdstore
 
 import (
 	"context"
+	"encoding/base64"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -18,6 +19,7 @@ import (
 	clientv3 "go.etcd.io/etcd/client/v3"
 
 	"norn/v2/api/fleet"
+	"norn/v2/api/githubapp"
 	"norn/v2/api/model"
 	"norn/v2/api/store"
 )
@@ -50,9 +52,9 @@ func (s *V3OperationStore) AcceptFleetGitHubPullRequest(ctx context.Context, inp
 	if s == nil {
 		return store.AcceptedOperation{}, fmt.Errorf("etcd fleet GitHub pull-request store is unavailable")
 	}
-	if s.policy.ReplayTTL > 0 {
-		return store.AcceptedOperation{}, &store.AcceptanceValidationError{Reason: "etcd Fleet GitHub pull-request replay expiry is not qualified"}
-	}
+	// This aggregate deliberately writes its acceptance record without replay
+	// expiry. A normal router may use a finite default TTL for ordinary work,
+	// but this identity guards an external write and must remain recoverable.
 	reservation = normalizeFleetGitHubPullRequestReservation(reservation)
 	if err := validateFleetGitHubPullRequestAcceptance(input, reservation); err != nil {
 		return store.AcceptedOperation{}, err
@@ -246,4 +248,125 @@ func validateStoredFleetGitHubPullRequestReservation(value FleetGitHubPullReques
 
 func sameFleetGitHubPullRequestReservation(left, right FleetGitHubPullRequestReservation) bool {
 	return left.PlanID == right.PlanID && left.PlanDigest == right.PlanDigest && left.SourceDigest == right.SourceDigest && left.Pool == right.Pool && left.Action == right.Action && reflect.DeepEqual(left.Proposed, right.Proposed)
+}
+
+// VerifyFleetGitHubPullRequestReservation re-proves the signed intent before
+// any recovered reservation is sent to GitHub.
+func (s *V3OperationStore) VerifyFleetGitHubPullRequestReservation(ctx context.Context, reservation FleetGitHubPullRequestReservation) error {
+	if err := validateStoredFleetGitHubPullRequestReservation(reservation); err != nil {
+		return err
+	}
+	index, err := s.kv.Get(ctx, s.operationAcceptanceIndexKey(reservation.OperationID))
+	if err != nil || len(index.Kvs) != 1 {
+		return fmt.Errorf("load fleet GitHub pull-request acceptance: %w", err)
+	}
+	loaded, err := s.loadAcceptance(ctx, string(index.Kvs[0].Value))
+	if err != nil {
+		return err
+	}
+	accepted, err := s.replay(ctx, string(index.Kvs[0].Value), loaded, loaded.record.Identity, loaded.record.Accepted.Intent.Fingerprint)
+	if err != nil {
+		return err
+	}
+	if accepted.Operation.ID != reservation.OperationID || accepted.Operation.Kind != fleetGitHubPullRequestOperationKind || accepted.Operation.Ref != reservation.PlanID {
+		return fmt.Errorf("fleet GitHub pull-request acceptance differs from reservation")
+	}
+	plan, _, err := s.load(ctx, reservation.PlanID)
+	if err != nil {
+		return err
+	}
+	return validateFleetGitHubPullRequestPlanBinding(plan.Operation, accepted.Operation, reservation)
+}
+
+// FinishFleetGitHubPullRequest stores a signed terminal result bound to the
+// exact reservation and remote pull request. It is immutable or identical.
+func (s *V3OperationStore) FinishFleetGitHubPullRequest(ctx context.Context, reservation FleetGitHubPullRequestReservation, result *githubapp.PullRequest) error {
+	if result == nil || result.Number <= 0 || strings.TrimSpace(result.URL) == "" || strings.TrimSpace(result.Branch) != "norn/plan-"+reservation.PlanID {
+		return fmt.Errorf("fleet GitHub pull-request result is invalid")
+	}
+	if err := s.VerifyFleetGitHubPullRequestReservation(ctx, reservation); err != nil {
+		return err
+	}
+	op, rev, err := s.load(ctx, reservation.OperationID)
+	if err != nil {
+		return err
+	}
+	if op.Operation.Status == model.OperationSucceeded {
+		return s.VerifyFleetGitHubPullRequestCompletion(ctx, reservation, result)
+	}
+	if op.Operation.Status != model.OperationQueued {
+		return fmt.Errorf("fleet GitHub pull-request receipt is not queued")
+	}
+	remote := map[string]interface{}{"planId": reservation.PlanID, "pullRequestNumber": result.Number, "url": strings.TrimSpace(result.URL), "branch": strings.TrimSpace(result.Branch), "state": strings.TrimSpace(result.State), "merged": result.Merged, "headSha": strings.TrimSpace(result.HeadSHA)}
+	canonical, err := json.Marshal(struct {
+		Schema, OperationID, PlanID, Kind string
+		Status                            model.OperationStatus
+		Result                            map[string]interface{}
+	}{"norn.fleet-github-completion/v1", op.Operation.ID, reservation.PlanID, fleetGitHubPullRequestOperationKind, model.OperationSucceeded, remote})
+	if err != nil {
+		return err
+	}
+	sig, err := s.signer.Sign(ctx, canonical)
+	if err != nil {
+		return err
+	}
+	now := time.Now().UTC().Truncate(time.Microsecond)
+	done := op.Operation
+	done.Status, done.Message, done.FinishedAt = model.OperationSucceeded, "fleet pull request opened", &now
+	if done.Payload == nil {
+		done.Payload = map[string]interface{}{}
+	}
+	for key, value := range remote {
+		done.Payload[key] = value
+	}
+	if done.Metadata == nil {
+		done.Metadata = map[string]interface{}{}
+	}
+	done.Metadata["fleetGitHubCompletion"] = map[string]interface{}{"schema": "norn.fleet-github-completion/v1", "canonicalBytes": base64.StdEncoding.EncodeToString(canonical), "signingAlgorithm": sig.Algorithm, "signingKeyId": sig.KeyID, "signature": sig.Value, "result": remote}
+	record, err := json.Marshal(v3Record{Operation: done})
+	if err != nil {
+		return err
+	}
+	txn, err := s.kv.Txn(ctx).If(clientv3.Compare(clientv3.ModRevision(s.opKey(reservation.OperationID)), "=", rev)).Then(clientv3.OpPut(s.opKey(reservation.OperationID), string(record))).Commit()
+	if err != nil {
+		return err
+	}
+	if txn.Succeeded {
+		return nil
+	}
+	return s.VerifyFleetGitHubPullRequestCompletion(ctx, reservation, result)
+}
+
+func (s *V3OperationStore) VerifyFleetGitHubPullRequestCompletion(ctx context.Context, reservation FleetGitHubPullRequestReservation, expected *githubapp.PullRequest) error {
+	if err := s.VerifyFleetGitHubPullRequestReservation(ctx, reservation); err != nil {
+		return err
+	}
+	op, _, err := s.load(ctx, reservation.OperationID)
+	if err != nil {
+		return err
+	}
+	completion, ok := op.Operation.Metadata["fleetGitHubCompletion"].(map[string]interface{})
+	if !ok || op.Operation.Status != model.OperationSucceeded {
+		return fmt.Errorf("fleet GitHub pull-request completion is absent")
+	}
+	canonical, err := base64.StdEncoding.DecodeString(stringValue(completion["canonicalBytes"]))
+	if err != nil {
+		return err
+	}
+	if err := s.signer.Verify(ctx, store.AcceptanceSignature{Algorithm: stringValue(completion["signingAlgorithm"]), KeyID: stringValue(completion["signingKeyId"]), Value: stringValue(completion["signature"])}, canonical); err != nil {
+		return err
+	}
+	var signed struct {
+		Schema, OperationID, PlanID, Kind string
+		Status                            model.OperationStatus
+		Result                            struct {
+			PullRequestNumber int `json:"pullRequestNumber"`
+			URL, Branch       string
+			Merged            bool
+		}
+	}
+	if json.Unmarshal(canonical, &signed) != nil || signed.Schema != "norn.fleet-github-completion/v1" || signed.OperationID != reservation.OperationID || signed.PlanID != reservation.PlanID || signed.Kind != fleetGitHubPullRequestOperationKind || signed.Status != model.OperationSucceeded || expected == nil || signed.Result.PullRequestNumber != expected.Number || signed.Result.URL != strings.TrimSpace(expected.URL) || signed.Result.Branch != strings.TrimSpace(expected.Branch) || signed.Result.Merged != expected.Merged {
+		return fmt.Errorf("fleet GitHub pull-request completion does not bind remote result")
+	}
+	return nil
 }
