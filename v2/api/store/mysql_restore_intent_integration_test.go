@@ -502,7 +502,7 @@ func TestMySQLRestoreIntentAgainstDisposableEngines(t *testing.T) {
 	if active, err := control.RuntimeMutationFenceActive(ctx); err != nil || !active {
 		t.Fatalf("stale claim changed global fence: %v %v", active, err)
 	}
-	if err := control.ReleaseClaimedMySQLRestoreRuntimeFence(ctx, stores[0], recoveryClaim, stoppedSource, secrets); err != nil {
+	if err := recoveryRunner.RunClaimedFenceRelease(ctx, recoveryClaim); err != nil {
 		t.Fatalf("signed recovery could not release runtime fence: %v", err)
 	}
 	var releaseState, recoveryID, recoveryStatus string

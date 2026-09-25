@@ -114,20 +114,20 @@ rehearsal accepted the completed target and rejected a changed row. These
 observations are not atomic with a later resume. Source-account state, direct
 Nomad starts, and external writers still need independent qualification.
 
-A private recovery admission now signs a one-attempt operator operation derived
+A private recovery admission signs a one-attempt operator operation derived
 from the completed restore's acceptance digest, catalog revision, exact source
 receipt, target identity, and held fence epoch/owner. Exact request-key replay
 returns the original signed operation; a new admission fails if the fence has
-been replaced. A disposable PostgreSQL test passed both cases. This operation
-currently has no executor, external-effect checkpoint, account unlock, or fence-release
-path, so accepting it does not resume application writes.
+been replaced. A disposable PostgreSQL test passed both cases. At this
+admission checkpoint, accepting it did not yet resume application writes; the
+later executor and release checkpoints are described below.
 
 Migration 36 adds a private recovery intent. A claimed signed recovery can now
 commit an exact operation, restore, catalog, fence epoch, owner, and claim
 generation before any external effect. Preparation holds the catalog gate and
 fence row, permits only an identical claim retry, and rejects a successor
-claim. Disposable PostgreSQL migration and recovery tests passed. Execution
-checkpoints, execution-time source reobservation, unlock, and fence release remain open.
+claim. Disposable PostgreSQL migration and recovery tests passed. The later
+execution-time reobservation, unlock, and release checkpoints follow below.
 
 Recovery now has a read-only source reobservation path. It verifies the signed
 source staging receipt and acceptance against the durable stop and account-lock
@@ -135,17 +135,17 @@ checkpoints, then asks Nomad for the exact post-CAS stopped revision and all
 terminal signed allocations. Nomad unit cases reject a restarted or changed
 job, a live or missing signed allocation, and changed deployment provenance;
 the PostgreSQL recovery test verifies the signed job identity is passed to the
-observer. This stopped-source-only assessment is not yet wired into an unlock
-executor and does not inspect the live source MySQL account.
+observer. At this checkpoint, the stopped-source assessment had not yet been
+wired into the unlock executor or a live source MySQL account check.
 
 A further private live assessment resolves the signed source binding from the
 active catalog, checks its exact MySQL runtime account remains locked and
 session-free through the fence credential, and reobserves the stopped Nomad
 job afterward. The disposable PostgreSQL/MySQL restore rehearsal accepted the
-locked account and rejected it after an explicit test unlock. These are
-read-only observations and still need to be repeated under a durable unlock
-effect intent; the test Nomad observer validates plumbing, while the separate
-Nomad tests exercise the concrete client behavior.
+locked account and rejected it after an explicit test unlock. These observations
+were then repeated under the durable unlock effect intent described below. The
+test Nomad observer validates plumbing, while separate Nomad tests exercise
+the concrete client behavior.
 
 Migration 37 adds a one-way destination `target-unlock-intended` checkpoint.
 The private recovery runner renews its signed claim, reobserves the stopped
@@ -167,13 +167,19 @@ afterward, while the source account remains locked. This is a local private
 rehearsal; the managed WordPress/runtime path and live release are not yet
 qualified.
 
+The private recovery runner now has a separate supervised fence-release entry
+point for the already proved unlock. It renews the original operation claim
+through the final read-only observations and terminal transaction, without
+repeating `ALTER USER`. The disposable rehearsal invokes that entry point and
+rejects a stale claim before release.
+
 - Qualify bounded memory/disk behavior on representative large data.
 - Wire the launch and mutation gates into every application write and resume
-  path, and add signed source-account quiescence before staging the dump.
-  Prove this on the actual managed WordPress/MySQL runtime, including direct
+  path. Prove signed source-account quiescence and recovery on the actual
+  managed WordPress/MySQL runtime, including direct
   Nomad starts, periodic children, restart policy, and host assurance.
-- Bind source quiescence and retained artifact storage to acceptance; the
-  current artifact path remains host-local and ephemeral.
+- Qualify retained artifact publication and materialization against the chosen
+  remote object provider and a separate node, including provider retention.
 - Define evidence-bound operator reconciliation after inspection. Current
   signed identity and target fingerprints cannot prove whether a partial SQL
   prefix was applied, so no acknowledgement mutation is exposed.

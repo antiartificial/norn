@@ -14,8 +14,8 @@ import (
 
 var ErrMySQLRestoreTargetUnlockIndeterminate = errors.New("MySQL restore target unlock may have executed; inspection required")
 
-// MySQLRestoreRecoveryRunner performs only the destination account unlock.
-// It does not release the global fence or unlock the stopped source account.
+// MySQLRestoreRecoveryRunner performs the private destination unlock and
+// separately supervised fence release. It never unlocks the stopped source.
 type MySQLRestoreRecoveryRunner struct {
 	Control    *DB
 	Acceptance *PGOperationStore
@@ -78,6 +78,42 @@ func (r MySQLRestoreRecoveryRunner) RunClaimedTargetUnlock(ctx context.Context, 
 	if err := r.Control.ProveClaimedMySQLRestoreTargetUnlocked(runCtx, r.Acceptance, claim, r.Observer, r.Secrets); err != nil {
 		return errors.Join(ErrMySQLRestoreTargetUnlockIndeterminate, err)
 	}
+	return nil
+}
+
+// RunClaimedFenceRelease resumes an already proved target unlock under the
+// original claim. It renews ownership throughout the fresh observations and
+// atomic terminal receipt; no external account mutation is repeated.
+func (r MySQLRestoreRecoveryRunner) RunClaimedFenceRelease(ctx context.Context, claim OperationClaim) (runErr error) {
+	if r.Control == nil || r.Acceptance == nil || r.Observer == nil || r.Secrets == nil {
+		return ErrMySQLRestoreFence
+	}
+	lease := r.ClaimLease
+	if lease == 0 {
+		lease = 2 * time.Minute
+	}
+	supervisor, err := newMySQLRestoreClaimSupervisor(ctx, lease, func(renewCtx context.Context, duration time.Duration) error {
+		return r.Control.RenewOperationClaim(renewCtx, claim, duration)
+	})
+	if err != nil {
+		return err
+	}
+	if err := supervisor.Start(); err != nil {
+		return err
+	}
+	terminal := false
+	defer func() {
+		if err := supervisor.Stop(); err != nil && !terminal && runErr == nil {
+			runErr = err
+		}
+	}()
+	if err := supervisor.Failure(); err != nil {
+		return err
+	}
+	if err := r.Control.ReleaseClaimedMySQLRestoreRuntimeFence(supervisor.Context(), r.Acceptance, claim, r.Observer, r.Secrets); err != nil {
+		return err
+	}
+	terminal = true
 	return nil
 }
 
