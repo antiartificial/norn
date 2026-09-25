@@ -34,7 +34,7 @@ an ambiguous response from a new request.
 | `handler/forge.go:35-139` | Rewrite cloudflared configuration and restart the service | Queue a host mutation whose effect records the prior config digest, intended config digest, restart result, and rollback boundary. |
 | `handler/snapshots.go:300-319` | Run `pg_restore --clean` in the API process | Route compatibility restore through the existing durable recovery operation, snapshot identity checks, pre-restore safety snapshot, and fenced database effect. |
 | `handler/ops_contextdb.go:287-369` | POST a feedback rollback to ContextDB | Accept an operation keyed by namespace/event/mode and use a durable HTTP effect with a remote idempotency identity and stored receipt. |
-| `handler/function.go:120-179` | Copy a database variable, submit a Nomad batch job, and delete the variable asynchronously | Queue one operation; bind variable ownership and job identity to its claim; recover completion and cleanup after API restart. |
+| `handler/function.go` | Copy a database variable, submit a Nomad batch job, and delete the variable asynchronously | Queue one operation; bind variable ownership and job identity to its claim; recover completion and cleanup after API restart. The [private request-material handoff](m1-function-invocation-handoff.md) defines the encrypted body and key-recovery gate. |
 | `handler/wake_gateway.go:196-225` | Scale a service to one from a request helper | Model wake as an idempotent capacity intent or a fenced effect; concurrent replicas currently have only process-local locking. |
 
 The Fleet GitHub bridge is closer to the target: it serializes by plan and
