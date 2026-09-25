@@ -224,8 +224,15 @@ full external crash qualification remain open.
 and one dedicated claimed worker to a shared runtime resolver. It requires
 the private invocation key ring, PostgreSQL operation store, Nomad, and a
 non-production profile; it refuses startup if the normal operation worker is
-skipped. The resolver selects a deployed spec, the latest deployed digest
-image, and the promoted database revision. The claimed worker repeats the
+skipped. The resolver matches the current spec digest to the latest successful
+deployment in this environment, then selects that deployment's digest image
+and the promoted database revision. Migration 22 adds the deployment digest;
+new successful deployments record it with their image and status. Legacy
+deployments and rollbacks without proven spec provenance refuse function
+admission until a new qualified deployment succeeds. Failed attempts do not
+displace the previous successful deployment; a newer nonterminal attempt
+temporarily blocks admission because it may already have changed the running
+job. The claimed worker repeats the
 public checks before opening private input, uses the closed variable/job
 reconciliation path, and publishes a redacted terminal receipt. A pre-effect
 failure finishes under the claim and app lock. An ambiguous remote effect
@@ -244,7 +251,9 @@ requires an evidence archiver at startup. Private envelope retirement still
 needs a replay/key-retention policy before production
 activation. A Nomad job purge policy, etcd cleanup parity,
 ACL-enabled allocation with database files, literal crash/two-replica tests,
-deployed-spec provenance, and Mini migration 21 mixed-version/rollback
-rehearsal also remain required.
+immutable spec recovery for rollback, and Mini migration 22 mixed-version/rollback
+rehearsal also remain required. Migration 22 raises the minimum writer to 19,
+so deploying it retires older writable binaries and needs a roll-forward
+recovery rehearsal before release.
 The receipt dispatcher refuses a claim-only terminal write on lease-fenced
 backends when the app-lock-aware receipt interface is unavailable.

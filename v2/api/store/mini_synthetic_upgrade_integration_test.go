@@ -60,7 +60,7 @@ func TestSyntheticMiniControlUpgradeAndReaderBoundary(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if status.CurrentMigrationVersion != 21 || len(status.AppliedVersions) != 21 {
+	if status.CurrentMigrationVersion != 22 || len(status.AppliedVersions) != 22 {
 		t.Fatalf("migration status = %+v", status)
 	}
 	if err := pool.QueryRow(ctx, legacyRead).Scan(&after); err != nil {
@@ -80,6 +80,16 @@ func TestSyntheticMiniControlUpgradeAndReaderBoundary(t *testing.T) {
 	var incompatible *SchemaCompatibilityError
 	if !errors.As(err, &incompatible) || incompatible.Contract != "reader" || incompatible.Required != 4 {
 		t.Fatalf("old reader check = %T %v, want reader compatibility refusal", err, err)
+	}
+	// Migration 22 also raises the writer floor. A previous binary cannot
+	// resume writes after the provenance column has been introduced.
+	oldWriter, err := NewSchemaMigrator(pool, migrations[:21], BinarySchemaCompatibility{ReaderVersion: 4, WriterVersion: 18}, SchemaMigratorOptions{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, err = oldWriter.Check(ctx, SchemaAccessReadWrite)
+	if !errors.As(err, &incompatible) || incompatible.Contract != "writer" || incompatible.Required != 19 {
+		t.Fatalf("old writer check = %T %v, want writer compatibility refusal", err, err)
 	}
 	if _, err := migrator.Check(ctx, SchemaAccessReadWrite); err != nil {
 		t.Fatalf("current reader/writer check: %v", err)

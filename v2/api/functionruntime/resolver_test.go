@@ -20,12 +20,20 @@ func (s testSpecs) FunctionSpec(context.Context, string) (*model.InfraSpec, erro
 	return s.spec, s.err
 }
 
-type testImages struct {
-	image string
-	err   error
+type testDeployment struct {
+	image  string
+	digest string
+	err    error
 }
 
-func (s testImages) FunctionImage(context.Context, string) (string, error) { return s.image, s.err }
+func (s testDeployment) FunctionDeployment(context.Context, string) (string, string, error) {
+	return s.image, s.digest, s.err
+}
+
+func deploymentFor(spec *model.InfraSpec) testDeployment {
+	digest, _ := model.InfraSpecDigest(spec)
+	return testDeployment{image: resolverImage(), digest: digest}
+}
 
 type testDelivery struct {
 	delivery nomad.DatabaseRevision
@@ -60,7 +68,7 @@ func TestResolverAdmissionAndClaimedRuntimeShareExactBinding(t *testing.T) {
 	spec := resolverSpec()
 	appValues := map[string]string{"APP": "one"}
 	spec.Env = appValues
-	r := &Resolver{Specs: testSpecs{spec: spec}, Images: testImages{image: resolverImage()}, SecretEnv: testEnvironment{values: map[string]string{"SECRET": "two"}}}
+	r := &Resolver{Specs: testSpecs{spec: spec}, Deployment: deploymentFor(spec), SecretEnv: testEnvironment{values: map[string]string{"SECRET": "two"}}}
 	binding, err := r.ResolveFunctionInvocation(context.Background(), "widgets", "resize")
 	if err != nil {
 		t.Fatal(err)
@@ -80,7 +88,8 @@ func TestResolverAdmissionAndClaimedRuntimeShareExactBinding(t *testing.T) {
 }
 
 func TestResolverUsesStableFirstFunctionForOmittedProcess(t *testing.T) {
-	r := &Resolver{Specs: testSpecs{spec: resolverSpec()}, Images: testImages{image: resolverImage()}}
+	spec := resolverSpec()
+	r := &Resolver{Specs: testSpecs{spec: spec}, Deployment: deploymentFor(spec)}
 	binding, err := r.ResolveFunctionInvocation(context.Background(), "widgets", "")
 	if err != nil || binding.Process != "alpha" {
 		t.Fatalf("binding=%+v err=%v", binding, err)
@@ -88,7 +97,10 @@ func TestResolverUsesStableFirstFunctionForOmittedProcess(t *testing.T) {
 }
 
 func TestResolverRejectsImageOutsideAcceptedFunctionReferenceGrammar(t *testing.T) {
-	r := &Resolver{Specs: testSpecs{spec: resolverSpec()}, Images: testImages{image: "registry.example/widgets@sha256:" + strings.Repeat("A", 64)}}
+	spec := resolverSpec()
+	deployment := deploymentFor(spec)
+	deployment.image = "registry.example/widgets@sha256:" + strings.Repeat("A", 64)
+	r := &Resolver{Specs: testSpecs{spec: spec}, Deployment: deployment}
 	if _, err := r.ResolveFunctionInvocation(context.Background(), "widgets", "resize"); !errors.Is(err, ErrUnavailable) {
 		t.Fatalf("uppercase digest err=%v", err)
 	}
@@ -97,26 +109,43 @@ func TestResolverRejectsImageOutsideAcceptedFunctionReferenceGrammar(t *testing.
 func TestResolverRejectsUndeployedSpec(t *testing.T) {
 	spec := resolverSpec()
 	spec.Deploy = false
-	r := &Resolver{Specs: testSpecs{spec: spec}, Images: testImages{image: resolverImage()}}
+	r := &Resolver{Specs: testSpecs{spec: spec}, Deployment: deploymentFor(spec)}
 	if _, err := r.ResolveFunctionInvocation(context.Background(), "widgets", "resize"); !errors.Is(err, ErrUnavailable) {
 		t.Fatalf("undeployed spec err=%v", err)
+	}
+}
+
+func TestResolverRejectsSpecWithoutMatchingDeploymentProvenance(t *testing.T) {
+	spec := resolverSpec()
+	deployment := deploymentFor(spec)
+	deployment.digest = ""
+	r := &Resolver{Specs: testSpecs{spec: spec}, Deployment: deployment}
+	if _, err := r.ResolveFunctionInvocation(context.Background(), "widgets", "resize"); !errors.Is(err, ErrUnavailable) {
+		t.Fatalf("missing deployment digest err=%v", err)
+	}
+	deployment.digest = "sha256:" + strings.Repeat("b", 64)
+	r.Deployment = deployment
+	if _, err := r.ResolveFunctionInvocation(context.Background(), "widgets", "resize"); !errors.Is(err, ErrUnavailable) {
+		t.Fatalf("mismatched deployment digest err=%v", err)
 	}
 }
 
 func TestResolverRejectsChangedClaimedSpecImageAndDatabaseBinding(t *testing.T) {
 	spec := resolverSpec()
 	delivery := &testDelivery{}
-	r := &Resolver{Specs: testSpecs{spec: spec}, Images: testImages{image: resolverImage()}, Delivery: delivery}
+	r := &Resolver{Specs: testSpecs{spec: spec}, Deployment: deploymentFor(spec), Delivery: delivery}
 	binding, err := r.ResolveFunctionInvocation(context.Background(), "widgets", "resize")
 	if err != nil {
 		t.Fatal(err)
 	}
 	input := worker.FunctionInvocationEffectInput{App: "widgets", Process: binding.Process, SpecDigest: binding.SpecDigest, ImageReference: binding.ImageReference, DatabaseTarget: binding.DatabaseTarget, DatabaseRevision: binding.DatabaseRevision}
-	r.Images = testImages{image: "registry.example/widgets@sha256:" + strings.Repeat("b", 64)}
+	changed := deploymentFor(spec)
+	changed.image = "registry.example/widgets@sha256:" + strings.Repeat("b", 64)
+	r.Deployment = changed
 	if _, err := r.ResolveClaimedFunctionInvocationRuntime(context.Background(), input); !errors.Is(err, ErrUnavailable) {
 		t.Fatalf("changed image err=%v", err)
 	}
-	r.Images = testImages{image: resolverImage()}
+	r.Deployment = deploymentFor(spec)
 	spec.Processes["resize"] = model.Process{Command: "changed", Function: &model.FunctionSpec{}}
 	if _, err := r.ResolveClaimedFunctionInvocationRuntime(context.Background(), input); !errors.Is(err, ErrUnavailable) {
 		t.Fatalf("changed spec err=%v", err)
@@ -126,7 +155,7 @@ func TestResolverRejectsChangedClaimedSpecImageAndDatabaseBinding(t *testing.T) 
 func TestResolverFailsClosedForMissingDeliveryAndDatabaseEnvironmentConflict(t *testing.T) {
 	spec := resolverSpec()
 	spec.Databases = []model.DatabaseRequirement{{Name: "primary", Runtime: &model.DatabaseRuntime{Env: "DATABASE_URL"}}}
-	r := &Resolver{Specs: testSpecs{spec: spec}, Images: testImages{image: resolverImage()}}
+	r := &Resolver{Specs: testSpecs{spec: spec}, Deployment: deploymentFor(spec)}
 	if _, err := r.ResolveFunctionInvocation(context.Background(), "widgets", "resize"); !errors.Is(err, ErrUnavailable) {
 		t.Fatalf("missing delivery err=%v", err)
 	}
@@ -140,6 +169,7 @@ func TestResolverFailsClosedForMissingDeliveryAndDatabaseEnvironmentConflict(t *
 	input := worker.FunctionInvocationEffectInput{App: "widgets", Process: binding.Process, SpecDigest: binding.SpecDigest, ImageReference: binding.ImageReference, DatabaseTarget: binding.DatabaseTarget, DatabaseRevision: binding.DatabaseRevision}
 	spec.Env = map[string]string{"DATABASE_URL": "shadow"}
 	input.SpecDigest, _ = model.InfraSpecDigest(spec)
+	r.Deployment = deploymentFor(spec)
 	if _, err := r.ResolveClaimedFunctionInvocationRuntime(context.Background(), input); !errors.Is(err, ErrUnavailable) {
 		t.Fatalf("environment conflict err=%v", err)
 	}

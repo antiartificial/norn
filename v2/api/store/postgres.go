@@ -528,7 +528,7 @@ const controlSchemaBaselineSQL = `
 const (
 	EvidenceArchiveReaderVersion int64 = 2
 	ControlSchemaReaderVersion   int64 = FunctionInvocationArchiveReaderVersion
-	ControlSchemaWriterVersion   int64 = FunctionInvocationArchiveWriterVersion
+	ControlSchemaWriterVersion   int64 = FunctionDeploymentProvenanceWriterVersion
 )
 
 // ControlSchemaMigrations returns a copy of the ordered, forward-only control
@@ -540,7 +540,7 @@ func ControlSchemaMigrations() []SchemaMigration {
 		SQL:                  controlSchemaBaselineSQL,
 		MinimumReaderVersion: 0,
 		MinimumWriterVersion: 0,
-	}, operationAcceptanceMigration(), operationEffectsMigration(), operationCheckpointsMigration(), databaseCatalogMigration(), evidenceArchiveMigration(), evidenceArchiveReaderMigration(), evidenceReserveMigration(), eventReplayRetentionMigration(), nonSagaEvidenceMigration(), desiredReplicasMigration(), regionalDesiredReplicasMigration(), restartEffectSourcesMigration(), signedAcceptanceByteReserveMigration(), operationReplayExpiryMigration(), snapshotPublicationMigration(), operationAcceptanceRetirementMigration(), privateInvocationMigration(), functionInvocationEffectAttemptsMigration(), functionInvocationCleanupMigration(), functionInvocationArchiveMigration()}
+	}, operationAcceptanceMigration(), operationEffectsMigration(), operationCheckpointsMigration(), databaseCatalogMigration(), evidenceArchiveMigration(), evidenceArchiveReaderMigration(), evidenceReserveMigration(), eventReplayRetentionMigration(), nonSagaEvidenceMigration(), desiredReplicasMigration(), regionalDesiredReplicasMigration(), restartEffectSourcesMigration(), signedAcceptanceByteReserveMigration(), operationReplayExpiryMigration(), snapshotPublicationMigration(), operationAcceptanceRetirementMigration(), privateInvocationMigration(), functionInvocationEffectAttemptsMigration(), functionInvocationCleanupMigration(), functionInvocationArchiveMigration(), functionDeploymentProvenanceMigration()}
 }
 
 func NewControlSchemaMigrator(db *DB) (*SchemaMigrator, error) {
@@ -573,9 +573,9 @@ func Migrate(db *DB) error {
 func (db *DB) InsertDeployment(ctx context.Context, d *model.Deployment) error {
 	changes, _ := json.Marshal(d.SourceChanges)
 	_, err := db.Pool.Exec(ctx,
-		`INSERT INTO deployments (id, app, commit_sha, image_tag, environment, saga_id, status, source_kind, source_ref, source_dirty, source_changes, started_at)
-		 VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12)`,
-		d.ID, d.App, d.CommitSHA, d.ImageTag, d.Environment, d.SagaID, d.Status, d.SourceKind, d.SourceRef, d.SourceDirty, changes, d.StartedAt,
+		`INSERT INTO deployments (id, app, commit_sha, image_tag, spec_digest, environment, saga_id, status, source_kind, source_ref, source_dirty, source_changes, started_at)
+		 VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13)`,
+		d.ID, d.App, d.CommitSHA, d.ImageTag, d.SpecDigest, d.Environment, d.SagaID, d.Status, d.SourceKind, d.SourceRef, d.SourceDirty, changes, d.StartedAt,
 	)
 	return err
 }
@@ -656,18 +656,40 @@ func (db *DB) UpdateDeploymentResult(ctx context.Context, d *model.Deployment) e
 	}
 	_, err := db.Pool.Exec(ctx,
 		`UPDATE deployments
-		 SET status = $1, commit_sha = $2, image_tag = $3, environment = $4, source_kind = $5, source_ref = $6, source_dirty = $7, source_changes = $8, finished_at = $9
-		 WHERE id = $10`,
-		d.Status, d.CommitSHA, d.ImageTag, d.Environment, d.SourceKind, d.SourceRef, d.SourceDirty, changes, finished, d.ID,
+		 SET status = $1, commit_sha = $2, image_tag = $3, environment = $4, source_kind = $5, source_ref = $6, source_dirty = $7, source_changes = $8, finished_at = $9, spec_digest = $10
+		 WHERE id = $11`,
+		d.Status, d.CommitSHA, d.ImageTag, d.Environment, d.SourceKind, d.SourceRef, d.SourceDirty, changes, finished, d.SpecDigest, d.ID,
 	)
 	return err
+}
+
+// FunctionDeploymentBinding returns the active environment's last successful
+// image and the spec digest recorded with that deployment's result. Failed
+// attempts do not displace it. Newer active attempts and unproven rollbacks
+// fail closed because Nomad may already be running a different image.
+func (db *DB) FunctionDeploymentBinding(ctx context.Context, app, environment string) (image, specDigest string, err error) {
+	err = db.Pool.QueryRow(ctx, `SELECT d.image_tag, d.spec_digest FROM deployments d
+		WHERE d.app=$1 AND d.environment=$2 AND d.status='deployed'
+		AND NOT EXISTS (
+			SELECT 1 FROM deployments newer WHERE newer.app=d.app AND newer.environment=d.environment
+			AND (newer.started_at, newer.id) > (d.started_at, d.id)
+			AND newer.status NOT IN ('deployed','failed')
+		)
+		ORDER BY d.started_at DESC, d.id DESC LIMIT 1`, app, environment).Scan(&image, &specDigest)
+	if err != nil {
+		return "", "", err
+	}
+	if image == "" || specDigest == "" {
+		return "", "", fmt.Errorf("function deployment binding unavailable")
+	}
+	return image, specDigest, nil
 }
 
 func (db *DB) ListDeployments(ctx context.Context, app string, limit int) ([]model.Deployment, error) {
 	if limit <= 0 {
 		limit = 20
 	}
-	query := `SELECT id, app, commit_sha, image_tag, environment, saga_id, status, source_kind, source_ref, source_dirty, source_changes, started_at, finished_at
+	query := `SELECT id, app, commit_sha, image_tag, spec_digest, environment, saga_id, status, source_kind, source_ref, source_dirty, source_changes, started_at, finished_at
 		 FROM deployments`
 	args := []interface{}{}
 	if app != "" {
@@ -687,7 +709,7 @@ func (db *DB) ListDeployments(ctx context.Context, app string, limit int) ([]mod
 	for rows.Next() {
 		var d model.Deployment
 		var changes []byte
-		if err := rows.Scan(&d.ID, &d.App, &d.CommitSHA, &d.ImageTag, &d.Environment, &d.SagaID, &d.Status, &d.SourceKind, &d.SourceRef, &d.SourceDirty, &changes, &d.StartedAt, &d.FinishedAt); err != nil {
+		if err := rows.Scan(&d.ID, &d.App, &d.CommitSHA, &d.ImageTag, &d.SpecDigest, &d.Environment, &d.SagaID, &d.Status, &d.SourceKind, &d.SourceRef, &d.SourceDirty, &changes, &d.StartedAt, &d.FinishedAt); err != nil {
 			rows.Close()
 			return nil, err
 		}
@@ -712,11 +734,11 @@ func (db *DB) GetDeployment(ctx context.Context, id string) (*model.Deployment, 
 	var d model.Deployment
 	var changes []byte
 	err := db.Pool.QueryRow(ctx,
-		`SELECT id, app, commit_sha, image_tag, environment, saga_id, status, source_kind, source_ref, source_dirty, source_changes, started_at, finished_at
+		`SELECT id, app, commit_sha, image_tag, spec_digest, environment, saga_id, status, source_kind, source_ref, source_dirty, source_changes, started_at, finished_at
 		 FROM deployments
 		 WHERE id = $1`,
 		id,
-	).Scan(&d.ID, &d.App, &d.CommitSHA, &d.ImageTag, &d.Environment, &d.SagaID, &d.Status, &d.SourceKind, &d.SourceRef, &d.SourceDirty, &changes, &d.StartedAt, &d.FinishedAt)
+	).Scan(&d.ID, &d.App, &d.CommitSHA, &d.ImageTag, &d.SpecDigest, &d.Environment, &d.SagaID, &d.Status, &d.SourceKind, &d.SourceRef, &d.SourceDirty, &changes, &d.StartedAt, &d.FinishedAt)
 	if err != nil {
 		return nil, err
 	}
@@ -729,12 +751,12 @@ func (db *DB) LastSuccessfulDeployment(ctx context.Context, app, excludeID strin
 	var d model.Deployment
 	var changes []byte
 	err := db.Pool.QueryRow(ctx,
-		`SELECT id, app, commit_sha, image_tag, environment, saga_id, status, source_kind, source_ref, source_dirty, source_changes, started_at, finished_at
+		`SELECT id, app, commit_sha, image_tag, spec_digest, environment, saga_id, status, source_kind, source_ref, source_dirty, source_changes, started_at, finished_at
 		 FROM deployments
 		 WHERE app = $1 AND status = 'deployed' AND id != $2
 		 ORDER BY started_at DESC LIMIT 1`,
 		app, excludeID,
-	).Scan(&d.ID, &d.App, &d.CommitSHA, &d.ImageTag, &d.Environment, &d.SagaID, &d.Status, &d.SourceKind, &d.SourceRef, &d.SourceDirty, &changes, &d.StartedAt, &d.FinishedAt)
+	).Scan(&d.ID, &d.App, &d.CommitSHA, &d.ImageTag, &d.SpecDigest, &d.Environment, &d.SagaID, &d.Status, &d.SourceKind, &d.SourceRef, &d.SourceDirty, &changes, &d.StartedAt, &d.FinishedAt)
 	if err != nil {
 		return nil, err
 	}
@@ -748,9 +770,9 @@ func (db *DB) LastSuccessfulDeployment(ctx context.Context, app, excludeID strin
 func (db *DB) LatestSuccessfulDeployment(ctx context.Context, app, environment string) (*model.Deployment, error) {
 	var d model.Deployment
 	var changes []byte
-	err := db.Pool.QueryRow(ctx, `SELECT id, app, commit_sha, image_tag, environment, saga_id, status, source_kind, source_ref, source_dirty, source_changes, started_at, finished_at
+	err := db.Pool.QueryRow(ctx, `SELECT id, app, commit_sha, image_tag, spec_digest, environment, saga_id, status, source_kind, source_ref, source_dirty, source_changes, started_at, finished_at
 		 FROM deployments WHERE app=$1 AND environment=$2 AND status='deployed' ORDER BY started_at DESC LIMIT 1`, app, environment).
-		Scan(&d.ID, &d.App, &d.CommitSHA, &d.ImageTag, &d.Environment, &d.SagaID, &d.Status, &d.SourceKind, &d.SourceRef, &d.SourceDirty, &changes, &d.StartedAt, &d.FinishedAt)
+		Scan(&d.ID, &d.App, &d.CommitSHA, &d.ImageTag, &d.SpecDigest, &d.Environment, &d.SagaID, &d.Status, &d.SourceKind, &d.SourceRef, &d.SourceDirty, &changes, &d.StartedAt, &d.FinishedAt)
 	if err != nil {
 		return nil, err
 	}

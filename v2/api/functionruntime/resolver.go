@@ -34,15 +34,16 @@ func (f SpecSourceFunc) FunctionSpec(ctx context.Context, app string) (*model.In
 	return f(ctx, app)
 }
 
-// ImageSource returns the immutable image of the deployed application.
-type ImageSource interface {
-	FunctionImage(context.Context, string) (string, error)
+// DeploymentSource returns the image and spec digest recorded together when
+// the latest deployment completed.
+type DeploymentSource interface {
+	FunctionDeployment(context.Context, string) (image, specDigest string, err error)
 }
 
-// ImageSourceFunc adapts a deployment-store lookup.
-type ImageSourceFunc func(context.Context, string) (string, error)
+// DeploymentSourceFunc adapts a deployment-store lookup.
+type DeploymentSourceFunc func(context.Context, string) (image, specDigest string, err error)
 
-func (f ImageSourceFunc) FunctionImage(ctx context.Context, app string) (string, error) {
+func (f DeploymentSourceFunc) FunctionDeployment(ctx context.Context, app string) (string, string, error) {
 	return f(ctx, app)
 }
 
@@ -77,10 +78,10 @@ func (f EnvironmentSourceFunc) FunctionEnvironment(ctx context.Context, app stri
 // Resolver shares production runtime selection between HTTP admission and the
 // claimed worker. It is safe to construct before route or worker wiring.
 type Resolver struct {
-	Specs     SpecSource
-	Images    ImageSource
-	Delivery  DeliverySource
-	SecretEnv EnvironmentSource
+	Specs      SpecSource
+	Deployment DeploymentSource
+	Delivery   DeliverySource
+	SecretEnv  EnvironmentSource
 }
 
 var _ handler.FunctionInvocationResolver = (*Resolver)(nil)
@@ -132,7 +133,7 @@ func (r *Resolver) ResolveClaimedFunctionInvocationRuntime(ctx context.Context, 
 }
 
 func (r *Resolver) resolvePublic(ctx context.Context, app, requestedProcess string) (*model.InfraSpec, string, string, nomad.DatabaseRevision, error) {
-	if r == nil || r.Specs == nil || r.Images == nil || strings.TrimSpace(app) == "" {
+	if r == nil || r.Specs == nil || r.Deployment == nil || strings.TrimSpace(app) == "" {
 		return nil, "", "", nomad.DatabaseRevision{}, ErrUnavailable
 	}
 	spec, err := r.Specs.FunctionSpec(ctx, app)
@@ -143,8 +144,9 @@ func (r *Resolver) resolvePublic(ctx context.Context, app, requestedProcess stri
 	if err != nil {
 		return nil, "", "", nomad.DatabaseRevision{}, ErrUnavailable
 	}
-	image, err := r.Images.FunctionImage(ctx, app)
-	if err != nil || !validImageReference(image) {
+	image, deployedDigest, err := r.Deployment.FunctionDeployment(ctx, app)
+	specDigest, digestErr := model.InfraSpecDigest(spec)
+	if err != nil || digestErr != nil || deployedDigest != specDigest || !validImageReference(image) {
 		return nil, "", "", nomad.DatabaseRevision{}, ErrUnavailable
 	}
 	delivery := nomad.DatabaseRevision{}

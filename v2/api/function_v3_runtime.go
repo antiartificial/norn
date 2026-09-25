@@ -46,12 +46,12 @@ func configureFunctionV3(cfg *config.Config, db *store.DB, pipe *pipeline.Pipeli
 		Specs: functionruntime.SpecSourceFunc(func(_ context.Context, app string) (*model.InfraSpec, error) {
 			return deployedFunctionSpec(cfg.AppsDir, app)
 		}),
-		Images: functionruntime.ImageSourceFunc(func(ctx context.Context, app string) (string, error) {
-			deployments, err := db.ListDeployments(ctx, app, 1)
-			if err != nil || len(deployments) != 1 || deployments[0].Status != model.StatusDeployed || deployments[0].ImageTag == "" {
-				return "", functionruntime.ErrUnavailable
+		Deployment: functionruntime.DeploymentSourceFunc(func(ctx context.Context, app string) (string, string, error) {
+			image, digest, err := db.FunctionDeploymentBinding(ctx, app, cfg.EnvironmentID())
+			if err != nil {
+				return "", "", functionruntime.ErrUnavailable
 			}
-			return deployments[0].ImageTag, nil
+			return image, digest, nil
 		}),
 		Delivery: functionruntime.DeliverySourceFunc(func(ctx context.Context, spec *model.InfraSpec) (nomad.DatabaseRevision, error) {
 			return pipe.RunningDeliveryRevision(ctx, spec, "global", spec.App)

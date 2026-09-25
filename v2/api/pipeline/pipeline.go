@@ -606,10 +606,19 @@ func (p *Pipeline) run(ctx context.Context, spec *model.InfraSpec, deploy *model
 	deploy.SourceRef = st.sourceRef
 	deploy.SourceDirty = st.sourceDirty
 	deploy.SourceChanges = st.sourceChanges
-	deploy.Status = model.StatusDeployed
-	p.DB.UpdateDeploymentResult(ctx, deploy)
+	var digestErr error
+	deploy.SpecDigest, digestErr = model.InfraSpecDigest(spec)
+	if digestErr != nil {
+		return &OperationResult{Claim: claim, Status: model.OperationFailed, Message: fmt.Sprintf("record deployment spec digest: %v", digestErr), Metadata: map[string]interface{}{"deploymentId": deploy.ID}}
+	}
 	for _, region := range spec.ResolvedRegions() {
-		_ = p.DB.UpdateDeploymentRegion(ctx, deploy.ID, region.Name, model.StatusDeployed, st.regionEvals[region.Name], "", region.TrafficWeight)
+		if err := p.DB.UpdateDeploymentRegion(ctx, deploy.ID, region.Name, model.StatusDeployed, st.regionEvals[region.Name], "", region.TrafficWeight); err != nil {
+			return &OperationResult{Claim: claim, Status: model.OperationFailed, Message: fmt.Sprintf("record deployment region: %v", err), Metadata: map[string]interface{}{"deploymentId": deploy.ID}}
+		}
+	}
+	deploy.Status = model.StatusDeployed
+	if err := p.DB.UpdateDeploymentResult(ctx, deploy); err != nil {
+		return &OperationResult{Claim: claim, Status: model.OperationFailed, Message: fmt.Sprintf("record deployment result: %v", err), Metadata: map[string]interface{}{"deploymentId": deploy.ID}}
 	}
 	return &OperationResult{Claim: claim, Status: model.OperationSucceeded, Message: fmt.Sprintf("deploy complete: %s", spec.App),
 		Metadata: map[string]interface{}{"deploymentId": deploy.ID, "commitSha": st.commitSHA, "imageTag": st.imageTag},
