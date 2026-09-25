@@ -224,9 +224,7 @@ func TestEngineCapabilityAndPurposeSupport(t *testing.T) {
 	tlsCatalog.Services[4].Endpoint.Host = "mysql.internal.example"
 	tlsResolver := mustResolver(t, tlsCatalog)
 	_, err = tlsResolver.Resolve(ResolveRequest{DeploymentProfileID: "mini", Purpose: PurposeApplication, LogicalResourceID: "wordpress-db", RequiredCapabilities: []Capability{CapabilityRuntime}})
-	if err != nil {
-		t.Fatalf("qualified verify-full MySQL runtime rejected: %v", err)
-	}
+	requireCode(t, err, CodeUnsupportedCapability)
 	for name, mutate := range map[string]func(*Catalog){
 		"verify-ca": func(c *Catalog) { c.Bindings[4].TLS.Mode, c.Bindings[4].TLS.ServerName = TLSVerifyCA, "" },
 		"client certificate": func(c *Catalog) {

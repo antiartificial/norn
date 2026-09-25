@@ -15,9 +15,9 @@ did not expose ordinary WordPress runtime components. The disposable
 server and copied CA file were removed. `go test ./model ./database ./nomad
 ./pipeline -count=1` passed.
 
-Resolver acceptance now admits the narrow CA-only `verify-full` runtime shape
-described in the [runtime checkpoint](m2-mysql-tls-runtime-qualification-2026-09-24.md).
-Client-certificate placement and stock application TLS startup remain
-unqualified. MySQL snapshot, restore and migration
+The [runtime checkpoint](m2-mysql-tls-runtime-qualification-2026-09-24.md)
+adds private CA delivery and a custom-client allocation proof, but a stock
+WordPress wrong-CA control still connected. Resolver acceptance for MySQL TLS
+runtime therefore remains closed. MySQL snapshot, restore and migration
 capabilities also remain disabled. Client-certificate and stock application
-startup tests are required before extending the runtime qualification.
+verification tests are required before extending the runtime qualification.

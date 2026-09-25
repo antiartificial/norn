@@ -7,8 +7,6 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"net/http"
-	"net/http/httptest"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -23,7 +21,6 @@ import (
 	"norn/v2/api/effect/supervisor"
 	"norn/v2/api/internal/pgtest"
 	"norn/v2/api/model"
-	"norn/v2/api/nomad"
 )
 
 const namedCanary = "NORN_NAMED_CANARY_c41"
@@ -550,7 +547,7 @@ func TestNamedDatabasesRequireADatabaseProfile(t *testing.T) {
 	}
 }
 
-func TestMySQLTLSRuntimeRequiresCAFileAtDeployAcceptance(t *testing.T) {
+func TestMySQLTLSRuntimeRemainsClosedAtDeployAcceptance(t *testing.T) {
 	f := newNamedFixture(t)
 	path := filepath.Join(f.p.AppsDir, f.app, "infraspec.yaml")
 	raw, err := os.ReadFile(path)
@@ -582,23 +579,16 @@ func TestMySQLTLSRuntimeRequiresCAFileAtDeployAcceptance(t *testing.T) {
 		t.Fatal(err)
 	}
 	_, err = f.queue(t, "app.deploy", map[string]interface{}{})
-	var targetErr *DatabaseTargetError
-	if !errors.As(err, &targetErr) {
-		t.Fatalf("TLS MySQL deploy without runtime CA path = %v, want database target refusal", err)
+	var resolverErr *database.ResolverError
+	if !errors.As(err, &resolverErr) || resolverErr.Code != database.CodeUnsupportedCapability {
+		t.Fatalf("TLS MySQL deploy without runtime CA path = %v, want unsupported capability", err)
 	}
 	updated = strings.Replace(updated, "    runtime:\n      components:", "    runtime:\n      tls:\n        caFileEnv: MYSQL_SSL_CA\n      components:", 1)
 	if err := os.WriteFile(path, []byte(updated), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	// Acceptance must also prove this fresh app has no unrecorded Nomad
-	// writer. This fake supplies only the read-only absence check.
-	nomadServer := httptest.NewServer(http.NotFoundHandler())
-	defer nomadServer.Close()
-	f.p.Nomad, err = nomad.NewClient(nomadServer.URL)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if _, err := f.queue(t, "app.deploy", map[string]interface{}{}); err != nil {
-		t.Fatalf("qualified CA-only verify-full MySQL deploy acceptance: %v", err)
+	_, err = f.queue(t, "app.deploy", map[string]interface{}{})
+	if !errors.As(err, &resolverErr) || resolverErr.Code != database.CodeUnsupportedCapability {
+		t.Fatalf("TLS MySQL deploy with private CA path = %v, want unsupported capability until app verification is qualified", err)
 	}
 }

@@ -1,11 +1,15 @@
 package nomad
 
 import (
+	"context"
 	"crypto/sha256"
 	"encoding/base64"
 	"encoding/hex"
 	"fmt"
+	"io"
+	"net/http"
 	"os"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -199,6 +203,191 @@ func TestGeneratedWordPressMySQLTLSRuntimeInNomad(t *testing.T) {
 		t.Fatal(err)
 	}
 	checkAllocationOutput(t, client.api, jobID, "web", "mysql-tls-runtime-ok")
+}
+
+// TestStockWordPressMySQLTLSStartupInNomad boots the official WordPress
+// Apache image with its normal entrypoint and wp-config-docker.php. The
+// supported WORDPRESS_CONFIG_EXTRA hook selects MYSQLI_CLIENT_SSL;
+// SSL_CERT_FILE points at Norn's private CA template. This proves encryption
+// only: a separate wrong-CA control demonstrates that these stock hooks do
+// not enforce CA verification. A shutdown observer reports only whether
+// WordPress's own wpdb connection negotiated a cipher.
+//
+// Run against a disposable TLS MySQL target with the variables above plus
+// NORN_TEST_WORDPRESS_HOST_PORT (a free local host port, e.g. 18080).
+func TestStockWordPressMySQLTLSStartupInNomad(t *testing.T) {
+	address := os.Getenv("NORN_TEST_NOMAD_ADDR")
+	host, user, password, name := os.Getenv("NORN_TEST_MYSQL_ALLOCATION_HOST"), os.Getenv("NORN_TEST_MYSQL_USER"), os.Getenv("NORN_TEST_MYSQL_PASSWORD"), os.Getenv("NORN_TEST_MYSQL_DATABASE")
+	ca, hasCA := qualificationPEM(t, "NORN_TEST_MYSQL_TLS_CA_PEM_B64")
+	port, err := strconv.Atoi(os.Getenv("NORN_TEST_WORDPRESS_HOST_PORT"))
+	if address == "" || host == "" || user == "" || password == "" || name == "" || !hasCA || err != nil || port < 1 || port > 65535 {
+		t.Skip("set disposable Nomad/MySQL TLS variables and NORN_TEST_WORDPRESS_HOST_PORT for stock WordPress startup qualification")
+	}
+	client, err := NewClient(address)
+	if err != nil {
+		t.Fatal(err)
+	}
+	jobID := registerStockWordPressTLSJob(t, client, host, user, password, name, ca, port)
+	pageURL := fmt.Sprintf("http://127.0.0.1:%d/wp-admin/install.php", port)
+	httpClient := &http.Client{Timeout: 5 * time.Second}
+	var allocation *nomadapi.Allocation
+	pageReady := false
+	deadline := time.Now().Add(120 * time.Second)
+	for time.Now().Before(deadline) {
+		allocs, _, err := client.api.Jobs().Allocations(jobID, false, nil)
+		if err != nil {
+			t.Fatal(err)
+		}
+		for _, stub := range allocs {
+			if stub.ClientStatus == "failed" || stub.ClientStatus == "lost" {
+				t.Fatalf("stock WordPress allocation %s: %s", stub.ID, stub.ClientDescription)
+			}
+			if stub.ClientStatus == "running" {
+				allocation, _, err = client.api.Allocations().Info(stub.ID, nil)
+				if err != nil {
+					t.Fatal(err)
+				}
+			}
+		}
+		if allocation != nil {
+			response, err := httpClient.Get(pageURL)
+			if err == nil {
+				body, readErr := io.ReadAll(io.LimitReader(response.Body, 256<<10))
+				_ = response.Body.Close()
+				if readErr == nil && response.StatusCode == http.StatusOK && strings.Contains(string(body), "WordPress") {
+					pageReady = true
+					break
+				}
+			}
+		}
+		time.Sleep(time.Second)
+	}
+	if !pageReady || allocation == nil {
+		t.Fatal("stock WordPress installation page did not become ready over HTTP")
+	}
+	// The observer queries the same mysqli handle WordPress used to render
+	// the page; no connection material or cipher name is logged.
+	for attempt := 0; attempt < 10; attempt++ {
+		ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+		frames, errs := client.api.AllocFS().Logs(allocation, false, "web", "stderr", "start", 0, ctx.Done(), nil)
+		var output strings.Builder
+		for frame := range frames {
+			output.Write(frame.Data)
+		}
+		cancel()
+		select {
+		case err := <-errs:
+			if err != nil && err != context.Canceled && err != context.DeadlineExceeded {
+				t.Fatalf("read WordPress allocation logs: %v", err)
+			}
+		default:
+		}
+		if strings.Contains(output.String(), "norn-stock-tls:cipher-nonempty") {
+			return
+		}
+		time.Sleep(time.Second)
+	}
+	t.Fatal("stock WordPress served HTTP but its wpdb session did not report a negotiated TLS cipher")
+}
+
+const stockWordPressTLSConfigExtra = `define('MYSQL_CLIENT_FLAGS', MYSQLI_CLIENT_SSL);
+register_shutdown_function(function () {
+    global $wpdb;
+    if (!isset($wpdb->dbh) || !($wpdb->dbh instanceof mysqli)) { error_log('norn-stock-tls:no-db-handle'); return; }
+    $result = $wpdb->dbh->query('SHOW SESSION STATUS WHERE Variable_name = 0x53736c5f636970686572');
+    if (!$result || !($row = $result->fetch_row())) { error_log('norn-stock-tls:no-cipher-status'); return; }
+    error_log('norn-stock-tls:cipher-' . ($row[1] === '' ? 'empty' : 'nonempty'));
+});`
+
+func registerStockWordPressTLSJob(t *testing.T, client *Client, host, user, password, name string, ca []byte, port int) string {
+	t.Helper()
+	app := fmt.Sprintf("norn-stock-wordpress-tls-%d", time.Now().UnixNano())
+	spec := &model.InfraSpec{SchemaVersion: model.AppSchemaV2, App: app,
+		Env:       map[string]string{"WORDPRESS_CONFIG_EXTRA": stockWordPressTLSConfigExtra},
+		Processes: map[string]model.Process{"web": {Port: 80, HostPort: port, Resources: &model.Resources{CPU: 500, Memory: 512}}},
+		Databases: []model.DatabaseRequirement{{Name: "primary", Purpose: "application", Capabilities: []string{"runtime"}, Runtime: &model.DatabaseRuntime{
+			Components: &model.DatabaseRuntimeComponents{Host: "WORDPRESS_DB_HOST", User: "WORDPRESS_DB_USER", Password: "WORDPRESS_DB_PASSWORD", Name: "WORDPRESS_DB_NAME"},
+			TLS:        &model.DatabaseRuntimeTLS{CAFileEnv: "SSL_CERT_FILE"},
+		}}},
+	}
+	region := spec.ResolvedRegions()[0]
+	job := TranslateForRegionAt(spec, "wordpress:6.8.2-php8.3-apache", nil, region, 7)
+	jobID := *job.ID
+	// This disposable local agent has no Consul server. Keep the generated
+	// Docker networking and private database templates intact.
+	job.TaskGroups[0].Services = nil
+	job.TaskGroups[0].Tasks[0].Config["force_pull"] = false
+	t.Cleanup(func() {
+		_, _, _ = client.api.Jobs().Deregister(jobID, true, nil)
+		_, _ = client.api.Variables().Delete(DatabaseVariablePath(jobID), nil)
+	})
+	items := map[string]string{
+		DatabaseComponentItemKey("primary", "host"): host, DatabaseComponentItemKey("primary", "user"): user,
+		DatabaseComponentItemKey("primary", "password"): password, DatabaseComponentItemKey("primary", "name"): name,
+		DatabaseTLSItemKey("primary", "ca"): string(ca),
+	}
+	if err := client.DeliverDatabaseVariable(region.NomadRegion, jobID, items, 7); err != nil {
+		t.Fatal(err)
+	}
+	if _, _, err := client.api.Jobs().Register(job, nil); err != nil {
+		t.Fatal(err)
+	}
+	return jobID
+}
+
+// TestStockWordPressRejectsWrongCAInNomad is an opt-in release gate, expected
+// to fail for the current stock WordPress MYSQL_CLIENT_FLAGS configuration.
+// An unrelated CA must prevent WordPress from opening its own database
+// connection; a nonempty TLS cipher alone is insufficient evidence.
+// Set NORN_TEST_MYSQL_TLS_WRONG_CA_PEM_B64 and a separate free
+// NORN_TEST_WORDPRESS_WRONG_CA_HOST_PORT in addition to the normal fixture.
+func TestStockWordPressRejectsWrongCAInNomad(t *testing.T) {
+	address := os.Getenv("NORN_TEST_NOMAD_ADDR")
+	host, user, password, name := os.Getenv("NORN_TEST_MYSQL_ALLOCATION_HOST"), os.Getenv("NORN_TEST_MYSQL_USER"), os.Getenv("NORN_TEST_MYSQL_PASSWORD"), os.Getenv("NORN_TEST_MYSQL_DATABASE")
+	wrongCA, hasWrongCA := qualificationPEM(t, "NORN_TEST_MYSQL_TLS_WRONG_CA_PEM_B64")
+	port, err := strconv.Atoi(os.Getenv("NORN_TEST_WORDPRESS_WRONG_CA_HOST_PORT"))
+	if address == "" || host == "" || user == "" || password == "" || name == "" || !hasWrongCA || err != nil || port < 1 || port > 65535 {
+		t.Skip("set disposable Nomad/MySQL TLS variables, unrelated CA, and a separate WordPress host port")
+	}
+	client, err := NewClient(address)
+	if err != nil {
+		t.Fatal(err)
+	}
+	jobID := registerStockWordPressTLSJob(t, client, host, user, password, name, wrongCA, port)
+	pageURL := fmt.Sprintf("http://127.0.0.1:%d/wp-admin/install.php", port)
+	httpClient := &http.Client{Timeout: 5 * time.Second}
+	deadline := time.Now().Add(90 * time.Second)
+	for time.Now().Before(deadline) {
+		allocs, _, err := client.api.Jobs().Allocations(jobID, false, nil)
+		if err != nil {
+			t.Fatal(err)
+		}
+		for _, stub := range allocs {
+			if stub.ClientStatus == "failed" || stub.ClientStatus == "lost" {
+				t.Fatalf("wrong-CA WordPress allocation %s: %s", stub.ID, stub.ClientDescription)
+			}
+			if stub.ClientStatus != "running" {
+				continue
+			}
+			response, err := httpClient.Get(pageURL)
+			if err != nil {
+				continue
+			}
+			body, readErr := io.ReadAll(io.LimitReader(response.Body, 256<<10))
+			_ = response.Body.Close()
+			if readErr != nil {
+				continue
+			}
+			if response.StatusCode == http.StatusOK && strings.Contains(string(body), "WordPress") && !strings.Contains(string(body), "Error establishing a database connection") {
+				t.Fatal("stock WordPress accepted an unrelated MySQL CA and served its installation page; verified TLS runtime must remain gated")
+			}
+			if strings.Contains(string(body), "Error establishing a database connection") {
+				return
+			}
+		}
+		time.Sleep(time.Second)
+	}
+	t.Fatal("wrong-CA WordPress did not give decisive database connection evidence")
 }
 
 func qualificationPEM(t *testing.T, name string) ([]byte, bool) {
