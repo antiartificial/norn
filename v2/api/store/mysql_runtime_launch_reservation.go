@@ -43,12 +43,23 @@ type MySQLRuntimeLaunchStopProof struct {
 	EvidenceSHA256    string    `json:"evidenceSha256"`
 }
 
+// MySQLRuntimeLaunchNoStartProof is evidence from the runtime supervisor that
+// a reserved launch never obtained an instance. It is required to release a
+// reservation; elapsed time and a caller assertion are never sufficient.
+type MySQLRuntimeLaunchNoStartProof struct {
+	ObservedAt     time.Time `json:"observedAt"`
+	Method         string    `json:"method"`
+	EvidenceSHA256 string    `json:"evidenceSha256"`
+}
+
 // ReserveMySQLRuntimeLaunch transactionally reserves the exact MySQL
 // identities before a runtime is started. It uses the same catalog transaction
 // lock as restore maintenance-fence acquisition, so either ordering observes
 // the other durable gate. Reservations remain blocking after a caller loses
 // certainty about launch; only ReleaseMySQLRuntimeLaunchNeverStarted reopens a
-// gate, and only from the pre-launch state.
+// gate, and only from the pre-launch state. This is a private store primitive:
+// it does not itself bind reservationID to a signed claimed operation. Its
+// caller must retain that mapping and invoke it only from the signed executor.
 func (db *DB) ReserveMySQLRuntimeLaunch(ctx context.Context, reservationID string, identities []database.TargetIdentity) (MySQLRuntimeLaunchReservation, error) {
 	if db == nil || db.Pool == nil || strings.TrimSpace(reservationID) == "" {
 		return MySQLRuntimeLaunchReservation{}, ErrMySQLRuntimeLaunchFence
@@ -132,7 +143,7 @@ func (db *DB) MarkMySQLRuntimeLaunchLaunched(ctx context.Context, reservationID,
 	if strings.TrimSpace(runtimeInstanceID) == "" {
 		return ErrMySQLRuntimeLaunchFence
 	}
-	return db.transitionMySQLRuntimeLaunchWithProof(ctx, reservationID, "reserved", "launched", nil, runtimeInstanceID)
+	return db.transitionMySQLRuntimeLaunchWithProof(ctx, reservationID, "reserved", "launched", nil, nil, runtimeInstanceID)
 }
 
 // ContainMySQLRuntimeLaunchForInspection records an ambiguous runtime launch.
@@ -148,21 +159,25 @@ func (db *DB) StopMySQLRuntimeLaunch(ctx context.Context, reservationID string, 
 		return ErrMySQLRuntimeLaunchFence
 	}
 	encoded, _ := json.Marshal(proof)
-	return db.transitionMySQLRuntimeLaunchWithProof(ctx, reservationID, "launched", "stopped", encoded, proof.RuntimeInstanceID)
+	return db.transitionMySQLRuntimeLaunchWithProof(ctx, reservationID, "launched", "stopped", encoded, nil, proof.RuntimeInstanceID)
 }
 
 // ReleaseMySQLRuntimeLaunchNeverStarted releases only a durable reservation
-// that has never been recorded as launched. It is for proof-backed recovery,
-// never timeout cleanup.
-func (db *DB) ReleaseMySQLRuntimeLaunchNeverStarted(ctx context.Context, reservationID string) error {
-	return db.transitionMySQLRuntimeLaunch(ctx, reservationID, "reserved", "released")
+// that has never been recorded as launched and has a retained no-start proof.
+// It never performs timeout cleanup.
+func (db *DB) ReleaseMySQLRuntimeLaunchNeverStarted(ctx context.Context, reservationID string, proof MySQLRuntimeLaunchNoStartProof) error {
+	if db == nil || db.Pool == nil || strings.TrimSpace(reservationID) == "" || !validMySQLRuntimeLaunchNoStartProof(proof) {
+		return ErrMySQLRuntimeLaunchFence
+	}
+	encoded, _ := json.Marshal(proof)
+	return db.transitionMySQLRuntimeLaunchWithProof(ctx, reservationID, "reserved", "released", nil, encoded, "")
 }
 
 func (db *DB) transitionMySQLRuntimeLaunch(ctx context.Context, reservationID, from, to string) error {
-	return db.transitionMySQLRuntimeLaunchWithProof(ctx, reservationID, from, to, nil, "")
+	return db.transitionMySQLRuntimeLaunchWithProof(ctx, reservationID, from, to, nil, nil, "")
 }
 
-func (db *DB) transitionMySQLRuntimeLaunchWithProof(ctx context.Context, reservationID, from, to string, proof []byte, runtimeInstanceID string) error {
+func (db *DB) transitionMySQLRuntimeLaunchWithProof(ctx context.Context, reservationID, from, to string, stopProof, resolutionProof []byte, runtimeInstanceID string) error {
 	if db == nil || db.Pool == nil || strings.TrimSpace(reservationID) == "" {
 		return ErrMySQLRuntimeLaunchFence
 	}
@@ -184,9 +199,9 @@ func (db *DB) transitionMySQLRuntimeLaunchWithProof(ctx context.Context, reserva
 		return ErrMySQLRuntimeLaunchFence
 	}
 	rows.Close()
-	result, err := tx.Exec(ctx, `UPDATE mysql_runtime_launch_reservations SET state=$1, stop_proof=$2,
-		runtime_instance_id=CASE WHEN $5<>'' THEN $5 ELSE runtime_instance_id END, updated_at=clock_timestamp()
-		WHERE reservation_id=$3 AND state=$4 AND ($4 <> 'launched' OR runtime_instance_id=$5)`, to, proof, reservationID, from, runtimeInstanceID)
+	result, err := tx.Exec(ctx, `UPDATE mysql_runtime_launch_reservations SET state=$1, stop_proof=$2, resolution_proof=$3,
+		runtime_instance_id=CASE WHEN $6<>'' THEN $6 ELSE runtime_instance_id END, updated_at=clock_timestamp()
+		WHERE reservation_id=$4 AND state=$5 AND ($5 <> 'launched' OR runtime_instance_id=$6)`, to, stopProof, resolutionProof, reservationID, from, runtimeInstanceID)
 	if err != nil || result.RowsAffected() != int64(total) {
 		return ErrMySQLRuntimeLaunchFence
 	}
@@ -261,6 +276,14 @@ func mysqlRuntimePhysicalKey(identity database.TargetIdentity) string {
 
 func validMySQLRuntimeLaunchStopProof(proof MySQLRuntimeLaunchStopProof) bool {
 	if strings.TrimSpace(proof.RuntimeInstanceID) == "" || proof.ObservedAt.IsZero() || strings.TrimSpace(proof.Method) == "" || len(proof.Method) > 200 || len(proof.EvidenceSHA256) != 64 || strings.ToLower(proof.EvidenceSHA256) != proof.EvidenceSHA256 {
+		return false
+	}
+	_, err := hex.DecodeString(proof.EvidenceSHA256)
+	return err == nil
+}
+
+func validMySQLRuntimeLaunchNoStartProof(proof MySQLRuntimeLaunchNoStartProof) bool {
+	if proof.ObservedAt.IsZero() || strings.TrimSpace(proof.Method) == "" || len(proof.Method) > 200 || len(proof.EvidenceSHA256) != 64 || strings.ToLower(proof.EvidenceSHA256) != proof.EvidenceSHA256 {
 		return false
 	}
 	_, err := hex.DecodeString(proof.EvidenceSHA256)

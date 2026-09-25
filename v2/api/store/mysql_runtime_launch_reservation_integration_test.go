@@ -63,7 +63,7 @@ func TestMySQLRuntimeLaunchReservationSerializesWithRestoreMaintenanceFence(t *t
 	if err := dbs[0].ContainMySQLRuntimeLaunchForInspection(ctx, "launch-first"); err != nil {
 		t.Fatal(err)
 	}
-	if err := dbs[0].ReleaseMySQLRuntimeLaunchNeverStarted(ctx, "launch-first"); !errors.Is(err, ErrMySQLRuntimeLaunchFence) {
+	if err := dbs[0].ReleaseMySQLRuntimeLaunchNeverStarted(ctx, "launch-first", MySQLRuntimeLaunchNoStartProof{}); !errors.Is(err, ErrMySQLRuntimeLaunchFence) {
 		t.Fatalf("ambiguous launch was released: %v", err)
 	}
 	tx, err = dbs[0].Pool.Begin(ctx)
@@ -110,6 +110,19 @@ func TestMySQLRuntimeLaunchReservationSerializesWithRestoreMaintenanceFence(t *t
 	}
 	if err := tx.Rollback(ctx); err != nil {
 		t.Fatal(err)
+	}
+
+	neverStarted := target
+	neverStarted.Database = "proven-never-started"
+	if _, err := dbs[0].ReserveMySQLRuntimeLaunch(ctx, "never-started", []database.TargetIdentity{neverStarted}); err != nil {
+		t.Fatal(err)
+	}
+	noStart := MySQLRuntimeLaunchNoStartProof{ObservedAt: time.Now().UTC(), Method: "supervisor execution lookup", EvidenceSHA256: "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc"}
+	if err := dbs[0].ReleaseMySQLRuntimeLaunchNeverStarted(ctx, "never-started", noStart); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := dbs[1].ReserveMySQLRuntimeLaunch(ctx, "never-started-successor", []database.TargetIdentity{neverStarted}); err != nil {
+		t.Fatalf("proof-backed no-start release did not reopen target: %v", err)
 	}
 }
 
