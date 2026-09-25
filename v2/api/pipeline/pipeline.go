@@ -79,8 +79,9 @@ type Pipeline struct {
 	RestartEffects *NomadRestartEffects
 	// CronPauseEffects fences periodic-job deregistration and its durable state
 	// transition. It is required before accepting app.cron-pause.
-	CronPauseEffects  *NomadCronPauseEffects
-	CronResumeEffects *NomadCronResumeEffects
+	CronPauseEffects   *NomadCronPauseEffects
+	CronResumeEffects  *NomadCronResumeEffects
+	CronTriggerEffects *CronTriggerEffects
 	// RestartAvailability is a test-only admission seam. Production leaves it
 	// nil and requires RestartEffects.
 	RestartAvailability func() bool
@@ -325,6 +326,9 @@ func (p *Pipeline) ExecuteOperation(ctx context.Context, op *model.Operation, cl
 	}
 	if op.Kind == "app.cron-resume" {
 		return operationOutcome(p.executeCronResume(ctx, op, claim))
+	}
+	if op.Kind == "app.cron-trigger" {
+		return operationOutcome(p.executeCronTrigger(ctx, op, claim))
 	}
 	if op.Kind == "app.canary-promote" {
 		return operationOutcome(p.executeCanaryPromotion(ctx, op, claim))

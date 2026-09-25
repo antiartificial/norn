@@ -621,7 +621,7 @@ func (db *DB) DeferOrFailCronPauseClaimedOperation(ctx context.Context, claim Op
 		WITH owned AS MATERIALIZED (
 			SELECT id, attempts, max_attempts
 			FROM operations
-			WHERE id = $3 AND kind IN ('app.cron-pause', 'app.cron-resume') AND status = 'running'
+			WHERE id = $3 AND kind IN ('app.cron-pause', 'app.cron-resume', 'app.cron-trigger') AND status = 'running'
 			  AND locked_by = $4 AND lock_generation = $5 AND locked_until > now()
 		), deferred AS (
 			UPDATE operations
@@ -948,7 +948,7 @@ func (db *DB) RecoverExpiredOperations(ctx context.Context) error {
 				WHERE spi.operation_id = operations.id AND spi.state IN ('prepared', 'published')
 			)))
 		  AND (
-		    kind IN ('app.preflight', 'app.restart', 'app.canary-promote', 'app.cron-pause', 'app.cron-resume', 'app.function-invoke')
+		    kind IN ('app.preflight', 'app.restart', 'app.canary-promote', 'app.cron-pause', 'app.cron-resume', 'app.cron-trigger', 'app.function-invoke')
 		    OR (kind = 'app.snapshot' AND EXISTS (
 		      SELECT 1 FROM snapshot_publication_intents spi
 		      WHERE spi.operation_id = operations.id AND spi.state IN ('prepared', 'published')

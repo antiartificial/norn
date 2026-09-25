@@ -30,7 +30,7 @@ func NewOperationWorker(db store.ExecutionStore, p *pipeline.Pipeline) *Operatio
 	return NewOperationWorkerForKinds(db, p, []string{
 		"app.preflight", "app.deploy", "app.rollback", "app.deployment-reconcile", "app.restart", "app.snapshot",
 		"app.snapshot-prune", "app.snapshot-restore", "app.migrate",
-		"app.scale", "app.cron-pause", "app.cron-resume",
+		"app.scale", "app.cron-pause", "app.cron-resume", "app.cron-trigger",
 		"app.canary-promote",
 		pipeline.CatalogActivationKind, pipeline.DatabaseBaselineKind,
 	})
@@ -134,7 +134,7 @@ func (w *OperationWorker) handle(ctx context.Context, op *model.Operation, claim
 		if effect.IsDeferred(execErr) {
 			message := fmt.Sprintf("external effect recovery pending: %v", execErr)
 			metadata := deferredEffectMetadata(execErr)
-			if op.Kind == "app.cron-pause" || op.Kind == "app.cron-resume" {
+			if op.Kind == "app.cron-pause" || op.Kind == "app.cron-resume" || op.Kind == "app.cron-trigger" {
 				if terminal, deferErr := w.deferOrFailCronPauseClaimedOperation(ctx, claim, appLock, message, time.Now().Add(5*time.Second), metadata); deferErr != nil {
 					log.Printf("operation worker: defer unresolved cron effect %s: %v", op.ID, deferErr)
 				} else if terminal {
