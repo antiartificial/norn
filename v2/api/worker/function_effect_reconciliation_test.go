@@ -48,8 +48,18 @@ func TestFunctionInvocationJobIdentityIsStableAndHasNoRequestFields(t *testing.T
 	}
 }
 
+func TestFunctionInvocationJobIdentityRejectsMutableImage(t *testing.T) {
+	expected := functionIdentity(t)
+	expected.ImageReference = "registry.example/widgets:latest"
+	decision := ReconcileFunctionJob(expected, FunctionJobEffectStage{Recorded: true}, FunctionJobObservation{State: FunctionJobNotFound})
+	if decision.Action != FunctionJobUnresolved {
+		t.Fatalf("mutable image authorized a job submit: %+v", decision)
+	}
+}
+
 func TestPlanFunctionJobReconciliationUsesOnlyConclusiveAbsenceForSubmit(t *testing.T) {
 	expected := functionIdentity(t)
+	firstJobVersion := uint64(0)
 	firstAttempt := FunctionJobEffectStage{Recorded: true}
 	cases := []struct {
 		name string
@@ -60,7 +70,8 @@ func TestPlanFunctionJobReconciliationUsesOnlyConclusiveAbsenceForSubmit(t *test
 		{"indeterminate", FunctionJobObservation{State: FunctionJobIndeterminate}, FunctionJobUnresolved},
 		{"remote mismatch", FunctionJobObservation{State: FunctionJobFound, JobID: expected.JobID, OwnerMarker: "other-owner", JobSpecDigest: expected.JobSpecDigest, ModifyIndex: 11, HistoryComplete: true, EvaluationIDs: []string{"eval-1"}}, FunctionJobUnresolved},
 		{"incomplete history", FunctionJobObservation{State: FunctionJobFound, JobID: expected.JobID, OwnerMarker: expected.OwnerMarker, JobSpecDigest: expected.JobSpecDigest, ModifyIndex: 11}, FunctionJobUnresolved},
-		{"exact remote job", FunctionJobObservation{State: FunctionJobFound, JobID: expected.JobID, OwnerMarker: expected.OwnerMarker, JobSpecDigest: expected.JobSpecDigest, ModifyIndex: 11, HistoryComplete: true, EvaluationIDs: []string{"eval-1"}, AllocationIDs: []string{"alloc-1"}}, FunctionJobRecovered},
+		{"missing job version", FunctionJobObservation{State: FunctionJobFound, JobID: expected.JobID, OwnerMarker: expected.OwnerMarker, JobSpecDigest: expected.JobSpecDigest, ModifyIndex: 11, HistoryComplete: true, EvaluationIDs: []string{"eval-1"}}, FunctionJobUnresolved},
+		{"exact remote job", FunctionJobObservation{State: FunctionJobFound, JobID: expected.JobID, OwnerMarker: expected.OwnerMarker, JobSpecDigest: expected.JobSpecDigest, JobVersion: &firstJobVersion, ModifyIndex: 11, HistoryComplete: true, EvaluationIDs: []string{"eval-1"}, AllocationIDs: []string{"alloc-1"}}, FunctionJobRecovered},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {

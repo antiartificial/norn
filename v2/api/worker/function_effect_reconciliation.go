@@ -52,6 +52,7 @@ type FunctionInvocationJobIdentity struct {
 }
 
 var functionEffectDigest = regexp.MustCompile(`^sha256:[0-9a-f]{64}$`)
+var functionEffectImage = regexp.MustCompile(`^[^\s@]+@sha256:[0-9a-f]{64}$`)
 
 // NewFunctionInvocationJobIdentity derives stable remote names from the
 // authority and operation identity. A retry therefore cannot create a second
@@ -93,6 +94,9 @@ func validateFunctionInvocationEffectInput(input FunctionInvocationEffectInput, 
 			return fmt.Errorf("function invocation digest is invalid")
 		}
 	}
+	if !functionEffectImage.MatchString(input.ImageReference) {
+		return fmt.Errorf("function invocation image reference is not digest-pinned")
+	}
 	return nil
 }
 
@@ -115,6 +119,7 @@ type FunctionJobObservation struct {
 	JobID           string
 	OwnerMarker     string
 	JobSpecDigest   string
+	JobVersion      *uint64
 	ModifyIndex     uint64
 	EvaluationIDs   []string
 	AllocationIDs   []string
@@ -146,6 +151,7 @@ const (
 type FunctionJobDecision struct {
 	Action        FunctionJobAction
 	Reason        string
+	JobVersion    uint64
 	ModifyIndex   uint64
 	EvaluationIDs []string
 	AllocationIDs []string
@@ -162,7 +168,7 @@ func ReconcileFunctionJob(expected FunctionInvocationJobIdentity, stage Function
 		return FunctionJobDecision{Action: FunctionJobUnresolved, Reason: "function job effect stage is not durably recorded"}
 	}
 	if observed.State == FunctionJobNotFound {
-		if observed.JobID != "" || observed.OwnerMarker != "" || observed.JobSpecDigest != "" || observed.ModifyIndex != 0 || len(observed.EvaluationIDs) != 0 || len(observed.AllocationIDs) != 0 || observed.HistoryComplete {
+		if observed.JobID != "" || observed.OwnerMarker != "" || observed.JobSpecDigest != "" || observed.JobVersion != nil || observed.ModifyIndex != 0 || len(observed.EvaluationIDs) != 0 || len(observed.AllocationIDs) != 0 || observed.HistoryComplete {
 			return FunctionJobDecision{Action: FunctionJobUnresolved, Reason: "not-found response includes remote job evidence"}
 		}
 		if stage.SubmitAttempted {
@@ -176,10 +182,10 @@ func ReconcileFunctionJob(expected FunctionInvocationJobIdentity, stage Function
 	if observed.JobID != expected.JobID || observed.OwnerMarker != expected.OwnerMarker || observed.JobSpecDigest != expected.JobSpecDigest {
 		return FunctionJobDecision{Action: FunctionJobUnresolved, Reason: "Nomad job identity does not match reserved effect"}
 	}
-	if observed.ModifyIndex == 0 || !observed.HistoryComplete || len(observed.EvaluationIDs) == 0 {
+	if observed.JobVersion == nil || observed.ModifyIndex == 0 || !observed.HistoryComplete || len(observed.EvaluationIDs) == 0 {
 		return FunctionJobDecision{Action: FunctionJobUnresolved, Reason: "Nomad job history is incomplete"}
 	}
-	return FunctionJobDecision{Action: FunctionJobRecovered, Reason: "exact Nomad job is durably identifiable", ModifyIndex: observed.ModifyIndex,
+	return FunctionJobDecision{Action: FunctionJobRecovered, Reason: "exact Nomad job is durably identifiable", JobVersion: *observed.JobVersion, ModifyIndex: observed.ModifyIndex,
 		EvaluationIDs: append([]string(nil), observed.EvaluationIDs...), AllocationIDs: append([]string(nil), observed.AllocationIDs...)}
 }
 
