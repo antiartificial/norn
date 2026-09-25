@@ -105,5 +105,20 @@ allocation test also used a trusted CA with a reachable hostname outside the
 server certificate SAN. TCP reached MySQL from the same allocation, while
 WordPress rejected the database connection. The disposable jobs, variables,
 Nomad agent, and MySQL fixture were removed. Mini rollback with production
-storage and backup, and release rollout, remain open. Keep the resolver's
-verified-runtime gate closed until those boundaries are reviewed.
+storage and backup, and release rollout, remain open.
+
+## Narrow runtime admission — 2026-09-25
+
+The catalog resolver now accepts MySQL runtime only with `verify-full`, an
+endpoint-matching server name, a CA reference, and no client certificate.
+The named-target binder checks that the consuming app is the exact pinned
+`wordpress-verified-tls/v1` shape at both acceptance and execution. Generic
+consumers, mutable images, missing persistent content, `verify-ca`, and
+client-certificate shapes remain refused. PostgreSQL-backed binder tests
+passed for the qualified declaration and rejection after spec drift; the
+database/model/Nomad/pipeline package tests passed locally. The resolver's
+transport result alone is not permission to deliver an unqualified client.
+
+The signed app-deploy-to-generated-allocation route has not yet been run as
+one live end-to-end test. Mini rollback, MySQL backup/restore, and release
+rollout remain separate gates.
