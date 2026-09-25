@@ -144,6 +144,10 @@ into #76 and closed. These are review containers, not milestone signoff.
   fails closed with HTTP 501 and is unavailable in the Ops UI because the
   remote idempotency contract is absent; restoring it requires the
   [cross-service contract](m1-contextdb-feedback-rollback-contract.md).
+  A disposable Nomad test also showed that periodic force ignores the generic
+  idempotency token: repeated calls created distinct evaluations and children.
+  Cron trigger therefore remains an inline-effect conversion gate; see
+  [the force qualification](m1-cron-force-idempotency-qualification-2026-09-24.md).
 - M2: local MySQL runtime and verified-TLS health are implemented. Generated
   service, periodic, and function jobs delivered exact component bytes inside
   allocations on pinned Nomad 1.9.7. A WordPress image PHP client also
@@ -157,6 +161,11 @@ into #76 and closed. These are review containers, not milestone signoff.
   `mysql:8.4` and verifies the WordPress HTTP installation page. This closes
   ordinary image-level startup compatibility; TLS application runtime,
   delivery through a Nomad allocation, and recovery remain open.
+  A disposable MySQL 8.4 rehearsal now resolves exact source/target bindings,
+  rejects stale generations, and verifies a `mysqldump` artifact restores to
+  the distinct target while source data remains intact. Snapshot and restore
+  capabilities stay gated until a durable recovery lifecycle is implemented;
+  see [the rehearsal](m2-mysql-dump-restore-rehearsal-2026-09-24.md).
 - M3: normal etcd startup and managed-token lifecycle have a narrow PG-free
   Fleet router. Passive candidate health/schema now rechecks etcd after startup
   and a real API process passed with a poisoned PostgreSQL URL. Full app
