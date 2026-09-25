@@ -247,13 +247,20 @@ func TestMySQLRestoreIntentAgainstDisposableEngines(t *testing.T) {
 	if _, err := control.Pool.Exec(ctx, `UPDATE mysql_restore_intents SET artifact_path=$2 WHERE operation_id=$1`, claim.OperationID(), path); err != nil {
 		t.Fatal(err)
 	}
-	restoreBytes, err := os.ReadFile(restoreTool)
+	// The short lease expires while mysql is deliberately delayed. Completion
+	// therefore proves the private runner renewed its claim during the import.
+	delayedTool := filepath.Join(t.TempDir(), "mysql-delayed")
+	quotedTool := "'" + strings.ReplaceAll(restoreTool, "'", "'\\''") + "'"
+	if err := os.WriteFile(delayedTool, []byte("#!/bin/sh\nsleep 0.35\nexec "+quotedTool+" \"$@\"\n"), 0700); err != nil {
+		t.Fatal(err)
+	}
+	restoreBytes, err := os.ReadFile(delayedTool)
 	if err != nil {
 		t.Fatal(err)
 	}
 	restoreSHA := sha256.Sum256(restoreBytes)
-	runner := MySQLRestoreRunner{Control: control, Acceptance: stores[0], Secrets: secrets,
-		Tool: database.MySQLRestoreTool{Path: restoreTool, SHA256: fmt.Sprintf("%x", restoreSHA)}}
+	runner := MySQLRestoreRunner{Control: control, Acceptance: stores[0], Secrets: secrets, ClaimLease: 120 * time.Millisecond,
+		Tool: database.MySQLRestoreTool{Path: delayedTool, SHA256: fmt.Sprintf("%x", restoreSHA)}}
 	if err := runner.RunClaimed(ctx, claim); err != nil {
 		t.Fatalf("supervised MySQL restore: %v", err)
 	}

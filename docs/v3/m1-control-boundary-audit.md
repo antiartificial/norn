@@ -112,8 +112,9 @@ The `/invoke` route no longer calls legacy `Handler.InvokeFunction`. It
 selects the signed private-invocation admission/claimed worker only when the
 complete PostgreSQL runtime is configured, otherwise returns an explicit
 503. Historical function executions remain readable. The claimed function
-path still needs real Nomad crash, two-worker, archive-cleanup, and private
-Mini migration-23 rollback qualification before it is a release-ready
+path passed literal worker-kill/two-successor recovery against disposable
+Nomad 2.0.7 and PostgreSQL 17.7 on 2026-09-25. Archive-cleanup and private
+Mini migration-23 rollback qualification remain before it is a release-ready
 capability. Etcd function parity is absent.
 
 `Forge`/teardown/toggle endpoint now accept signed `app.cloudflared-mutate`
