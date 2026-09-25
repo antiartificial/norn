@@ -441,8 +441,8 @@ func (s *Session) RuntimeComponents() (map[string]string, error) {
 	if s == nil || s.directory == "" || s.target.Engine != EngineMySQL {
 		return nil, &ResolverError{Code: CodeUnsupportedEngine, Field: "engine", Reason: "structured runtime connection values are unavailable"}
 	}
-	if s.runtimeURL == "" {
-		return nil, &ResolverError{Code: CodeInvalidRequest, Field: "tls", Resource: "bindings/" + s.bindingID, Reason: "runtime delivery of TLS targets is not implemented"}
+	if s.runtimeURL != "components" && len(s.runtimeTLS["ca"]) == 0 {
+		return nil, &ResolverError{Code: CodeInvalidRequest, Field: "tls", Resource: "bindings/" + s.bindingID, Reason: "verified MySQL TLS runtime material is unavailable"}
 	}
 	return map[string]string{
 		"host": net.JoinHostPort(s.endpoint.Host, strconv.Itoa(s.endpoint.Port)),

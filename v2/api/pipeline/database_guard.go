@@ -297,6 +297,13 @@ func (p *Pipeline) RunningDeliveryRevision(ctx context.Context, spec *model.Infr
 	if err != nil {
 		return nomad.DatabaseRevision{}, err
 	}
+	if err := validateRunningDatabaseRevision(spec, jobID, material, expected); err != nil {
+		return nomad.DatabaseRevision{}, err
+	}
+	return material, nil
+}
+
+func validateRunningDatabaseRevision(spec *model.InfraSpec, jobID string, material nomad.DatabaseRevision, expected map[string]database.TargetIdentity) error {
 	for _, requirement := range spec.Databases {
 		if requirement.Runtime == nil {
 			continue
@@ -315,11 +322,18 @@ func (p *Pipeline) RunningDeliveryRevision(ctx context.Context, spec *model.Infr
 				}
 			}
 		}
+		if requirement.Runtime.TLS != nil {
+			if material.TLS[nomad.DatabaseTLSItemKey(requirement.Name, "ca")] == "" ||
+				material.TLS[nomad.DatabaseTLSItemKey(requirement.Name, "client_cert")] != "" ||
+				material.TLS[nomad.DatabaseTLSItemKey(requirement.Name, "client_key")] != "" {
+				complete = false
+			}
+		}
 		if !complete || json.Unmarshal([]byte(material.Targets[key]), &staged) != nil || !recorded || staged != want {
-			return nomad.DatabaseRevision{}, &DatabaseTargetError{Reason: fmt.Sprintf("delivery revision %d of %s does not carry the running target of database %q", promoted, jobID, requirement.Name)}
+			return &DatabaseTargetError{Reason: fmt.Sprintf("delivery revision %d of %s does not carry the running target and runtime material of database %q", material.Revision, jobID, requirement.Name)}
 		}
 	}
-	return material, nil
+	return nil
 }
 
 // deliveryItemName is the item suffix nomad uses for a logical name.

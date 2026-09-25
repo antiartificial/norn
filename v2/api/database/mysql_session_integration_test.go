@@ -87,8 +87,11 @@ func TestMySQLRuntimeComponentsReachDeclaredTarget(t *testing.T) {
 		if err != nil || tlsProbe.Database != databaseName || tlsProbe.Role != role {
 			t.Fatalf("verified MySQL TLS probe = %+v, %v", tlsProbe, err)
 		}
-		if _, err := tlsSession.RuntimeComponents(); err == nil {
-			t.Fatal("TLS MySQL session exposed runtime components without allocation trust material")
+		if components, err := tlsSession.RuntimeComponents(); err != nil || components["host"] != adminConfig.Addr {
+			t.Fatalf("TLS MySQL session runtime components = %v, %v", components, err)
+		}
+		if material, err := tlsSession.RuntimeTLSMaterial(); err != nil || string(material["ca"]) != string(caPEM) {
+			t.Fatal("TLS MySQL session did not expose matching CA material")
 		}
 	}
 	values, err := session.RuntimeComponents()

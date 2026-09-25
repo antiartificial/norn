@@ -225,11 +225,21 @@ func (p *Pipeline) bindNamedDatabaseTargets(ctx context.Context, spec *model.Inf
 			switch resolved.Target.Engine {
 			case database.EngineMySQL:
 				if runtime.Components == nil || runtime.Env != "" || runtime.FileEnv != "" {
-					return operation, &DatabaseTargetError{Reason: "MySQL runtime requires only the four structured connection variables"}
+					return operation, &DatabaseTargetError{Reason: "MySQL runtime requires the four structured connection variables rather than a URL"}
+				}
+				if resolved.TLS.Mode != database.TLSDisabled {
+					if runtime.TLS == nil || runtime.TLS.CAFileEnv == "" || runtime.TLS.ClientCertFileEnv != "" || runtime.TLS.ClientKeyFileEnv != "" {
+						return operation, &DatabaseTargetError{Reason: "verified MySQL runtime requires a CA file path variable and no client certificate files"}
+					}
+				} else if runtime.TLS != nil {
+					return operation, &DatabaseTargetError{Reason: "MySQL TLS runtime files require a verified TLS target"}
 				}
 			case database.EnginePostgreSQL:
 				if runtime.Components != nil {
 					return operation, &DatabaseTargetError{Reason: "PostgreSQL runtime requires URL delivery"}
+				}
+				if runtime.TLS != nil {
+					return operation, &DatabaseTargetError{Reason: "PostgreSQL runtime TLS files are delivered through its connection URL"}
 				}
 			}
 		}

@@ -17,8 +17,9 @@ import (
 )
 
 // openMySQLSession supplies local MySQL runtime and verified health adapters.
-// TLS sessions never expose runtime components until allocation trust material
-// is implemented. Snapshot, restore and migration remain separate protocols.
+// Verified TLS material stays private to the session until the caller stages
+// it into a revisioned allocation variable. Snapshot, restore and migration
+// remain separate protocols.
 func openMySQLSession(ctx context.Context, resolved ResolvedBinding, secrets SecretSource) (*Session, error) {
 	label := "bindings/" + resolved.Target.BindingID
 	if resolved.Purpose != PurposeApplication {

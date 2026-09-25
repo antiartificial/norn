@@ -10,15 +10,14 @@ Errors returned to API callers do not include certificate or credential bytes.
 Focused tests used a TLS server to prove an accepted CA, refusal of an
 unrelated CA, exact hostname verification, and refusal of a wrong hostname.
 A disposable `mysql:8.4` server with its generated CA then passed the real
-MySQL identity probe over `verify-ca`. The same test confirmed that the TLS
-session does not expose ordinary WordPress runtime components. The disposable
+MySQL identity probe over `verify-ca`. At this checkpoint, the TLS session
+did not expose ordinary WordPress runtime components. The disposable
 server and copied CA file were removed. `go test ./model ./database ./nomad
 ./pipeline -count=1` passed.
 
-Resolver acceptance continues to reject a MySQL TLS `runtime` capability.
-Only declared `health` can resolve to this TLS adapter: Nomad allocation trust
-material, client certificate placement, and application-specific TLS settings
-are not yet implemented or qualified. MySQL snapshot, restore and migration
-capabilities also remain disabled. A managed service and client-certificate
-integration test is still required before extending this beyond the local
-health boundary.
+Resolver acceptance now admits the narrow CA-only `verify-full` runtime shape
+described in the [runtime checkpoint](m2-mysql-tls-runtime-qualification-2026-09-24.md).
+Client-certificate placement and stock application TLS startup remain
+unqualified. MySQL snapshot, restore and migration
+capabilities also remain disabled. Client-certificate and stock application
+startup tests are required before extending the runtime qualification.

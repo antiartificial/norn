@@ -476,8 +476,13 @@ func (r *Resolver) Resolve(request ResolveRequest) (ResolvedBinding, error) {
 		if !implementedCapabilities[resolved.Target.Engine][capability] {
 			return ResolvedBinding{}, &ResolverError{Code: CodeUnsupportedCapability, Field: "requiredCapabilities", Resource: profileLabel, Reason: "required capability has no implemented target engine path in this build"}
 		}
-		if resolved.Target.Engine == EngineMySQL && resolved.TLS.Mode != TLSDisabled && capability == CapabilityRuntime {
-			return ResolvedBinding{}, &ResolverError{Code: CodeUnsupportedCapability, Field: "tls", Resource: profileLabel, Reason: "MySQL TLS runtime material is not implemented in this build"}
+		if resolved.Target.Engine == EngineMySQL && capability == CapabilityRuntime && resolved.TLS.Mode != TLSDisabled {
+			// The allocation path has been qualified only for CA-backed,
+			// hostname-verified mysqli. A runtime client receives the endpoint
+			// host, not an independent TLS server-name override.
+			if resolved.TLS.Mode != TLSVerifyFull || resolved.TLS.ClientCertRef != "" || resolved.TLS.ClientKeyRef != "" || resolved.TLS.ServerName != resolved.Endpoint.Host {
+				return ResolvedBinding{}, &ResolverError{Code: CodeUnsupportedCapability, Field: "tls", Resource: profileLabel, Reason: "MySQL runtime TLS requires a CA-backed verify-full target whose server name equals the endpoint host; verify-ca and client certificates are not qualified"}
+			}
 		}
 		if !declared[capability] {
 			return ResolvedBinding{}, &ResolverError{Code: CodeUnsupportedCapability, Field: "requiredCapabilities", Resource: profileLabel, Reason: "required capability is not declared by the target service"}

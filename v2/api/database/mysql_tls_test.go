@@ -92,7 +92,7 @@ func TestMySQLVerifiedTLSChecksChainAndHostname(t *testing.T) {
 	}
 }
 
-func TestMySQLTLSHealthMayResolveWhileRuntimeFailsClosed(t *testing.T) {
+func TestMySQLTLSRuntimeQualification(t *testing.T) {
 	catalog := testCatalog()
 	catalog.Services[4].TLS.MinimumMode = TLSVerifyCA
 	catalog.Services[4].Recovery.Capabilities = append(catalog.Services[4].Recovery.Capabilities, CapabilityHealth)
@@ -105,7 +105,13 @@ func TestMySQLTLSHealthMayResolveWhileRuntimeFailsClosed(t *testing.T) {
 	}
 	request.RequiredCapabilities = []Capability{CapabilityRuntime}
 	if _, err := resolver.Resolve(request); err == nil {
-		t.Fatal("unqualified MySQL TLS runtime delivery was accepted")
+		t.Fatal("unqualified verify-ca MySQL runtime delivery was accepted")
+	}
+	catalog.Bindings[4].TLS.Mode = TLSVerifyFull
+	catalog.Bindings[4].TLS.ServerName = catalog.Services[4].Endpoint.Host
+	resolver = mustResolver(t, catalog)
+	if _, err := resolver.Resolve(request); err != nil {
+		t.Fatalf("qualified verify-full MySQL runtime refused: %v", err)
 	}
 }
 
