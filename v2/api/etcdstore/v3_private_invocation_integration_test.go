@@ -117,7 +117,7 @@ func TestV3PrivateInvocationOperationConflictLeavesNoPrivateRecordEtcd(t *testin
 	if _, err := adapter.AcceptPrivateInvocation(ctx, request, store.PrivateInvocationInput{Body: "private"}, keys); !errors.Is(err, store.ErrAcceptanceIndeterminate) {
 		t.Fatalf("conflicting operation err=%v, want indeterminate", err)
 	}
-	for _, key := range []string{adapter.acceptanceKey(request.Identity), adapter.privateInvocationKey(request.Operation.ID)} {
+	for _, key := range []string{adapter.acceptanceKey(request.Identity), adapter.privateInvocationKey(request.Operation.ID), adapter.privateInvocationAcceptanceIndexKey(request.Operation.ID)} {
 		response, err := client.Get(ctx, key)
 		if err != nil || len(response.Kvs) != 0 {
 			t.Fatalf("atomic rejection left key=%q records=%d err=%v", key, len(response.Kvs), err)

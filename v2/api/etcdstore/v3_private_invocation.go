@@ -87,12 +87,15 @@ func (s *V3OperationStore) AcceptPrivateInvocation(ctx context.Context, input st
 		return store.AcceptedOperation{}, err
 	}
 	privateKey := s.privateInvocationKey(acceptance.Operation.ID)
+	acceptanceIndex := s.privateInvocationAcceptanceIndexKey(acceptance.Operation.ID)
 	txn, err := s.kv.Txn(ctx).If(
 		clientv3.Compare(clientv3.CreateRevision(key), "=", 0),
 		clientv3.Compare(clientv3.CreateRevision(s.opKey(acceptance.Operation.ID)), "=", 0),
 		clientv3.Compare(clientv3.CreateRevision(privateKey), "=", 0),
+		clientv3.Compare(clientv3.CreateRevision(acceptanceIndex), "=", 0),
 	).Then(
 		clientv3.OpPut(key, string(acceptanceRecord)),
+		clientv3.OpPut(acceptanceIndex, key),
 		clientv3.OpPut(s.opKey(acceptance.Operation.ID), string(operationRecord)),
 		clientv3.OpPut(s.operationKindIndexKey(acceptance.Operation.Kind, acceptedAt, acceptance.Operation.ID), acceptance.Operation.ID),
 		clientv3.OpPut(privateKey, string(privateRecord)),

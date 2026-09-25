@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"reflect"
 	"regexp"
 	"strings"
@@ -16,13 +17,15 @@ import (
 
 // FunctionInvocationJobDialectVersion changes whenever the closed job shape or
 // its projection changes. It is part of the digest preimage.
-const FunctionInvocationJobDialectVersion = "norn.function-invocation.nomad/v3"
+const FunctionInvocationJobDialectVersion = "norn.function-invocation.nomad/v4"
 
 const (
 	functionInvocationGroupName = "invoke"
 	functionInvocationTaskName  = "invoke"
 	functionInvocationOwnerMeta = "norn.function-invocation.owner"
+	functionInvocationFilesMeta = "norn.function-invocation.files"
 	functionInvocationTemplate  = "secrets/norn-function-invocation"
+	functionInvocationFilesDir  = "norn-function-databases"
 )
 
 var functionInvocationImageReference = regexp.MustCompile(`^[^\s@]+@sha256:[0-9a-f]{64}$`)
@@ -43,6 +46,15 @@ type FunctionInvocationJobRequest struct {
 	Command      string
 	CPU          int
 	MemoryMB     int
+	Files        []FunctionInvocationFileLayout
+}
+
+// FunctionInvocationFileLayout is the public shape of one private runtime
+// file. Key selects bytes from the opaque invocation payload; Env receives
+// only the allocation-local path. Neither field contains private material.
+type FunctionInvocationFileLayout struct {
+	Key string `json:"key"`
+	Env string `json:"env"`
 }
 
 // FunctionInvocationJobDigest is safe to persist and compare with a Nomad
@@ -72,7 +84,8 @@ func BuildFunctionInvocationJob(request FunctionInvocationJobRequest) (*nomadapi
 	diskSize := 300
 	diskSticky, diskMigrate := false, false
 	maxFiles, maxFileSize, logsDisabled := TaskLogMaxFiles, TaskLogMaxFileSizeMB, false
-	templateData := functionInvocationEnvironmentTemplate(request.VariablePath)
+	filesJSON, _ := json.Marshal(request.Files)
+	templateData := functionInvocationEnvironmentTemplate(request.VariablePath, request.Files)
 	templateSource, templateDestination := "", functionInvocationTemplate
 	templateMode, templateSignal, templatePerms := "restart", "", "0400"
 	templateOnce, templateEnv, templateErrMissing := false, true, true
@@ -82,7 +95,7 @@ func BuildFunctionInvocationJob(request FunctionInvocationJobRequest) (*nomadapi
 	job := &nomadapi.Job{
 		ID: &jobID, Name: &jobID, Type: &jobType, Region: &region, Namespace: &namespace,
 		Priority: &priority, AllAtOnce: &allAtOnce, Stop: &stopped, Datacenters: []string{"dc1"},
-		Meta: map[string]string{functionInvocationOwnerMeta: request.OwnerMarker},
+		Meta: map[string]string{functionInvocationOwnerMeta: request.OwnerMarker, functionInvocationFilesMeta: string(filesJSON)},
 	}
 	group := &nomadapi.TaskGroup{
 		Name: &groupName, Count: &count,
@@ -97,6 +110,10 @@ func BuildFunctionInvocationJob(request FunctionInvocationJobRequest) (*nomadapi
 		LogConfig: &nomadapi.LogConfig{MaxFiles: &maxFiles, MaxFileSizeMB: &maxFileSize, Disabled: &logsDisabled},
 		Templates: []*nomadapi.Template{{SourcePath: &templateSource, DestPath: &templateDestination, EmbeddedTmpl: &templateData, ChangeMode: &templateMode, ChangeSignal: &templateSignal, Once: &templateOnce, Splay: &templateSplay, Perms: &templatePerms, LeftDelim: &templateLeft, RightDelim: &templateRight, Envvars: &templateEnv, VaultGrace: &templateVaultGrace, ErrMissingKey: &templateErrMissing}},
 	}
+	for _, file := range request.Files {
+		data, destination, env := functionInvocationFileTemplate(request.VariablePath, file), functionInvocationFileDestination(file.Key), false
+		task.Templates = append(task.Templates, &nomadapi.Template{SourcePath: &templateSource, DestPath: &destination, EmbeddedTmpl: &data, ChangeMode: &templateMode, ChangeSignal: &templateSignal, Once: &templateOnce, Splay: &templateSplay, Perms: &templatePerms, LeftDelim: &templateLeft, RightDelim: &templateRight, Envvars: &env, VaultGrace: &templateVaultGrace, ErrMissingKey: &templateErrMissing})
+	}
 	group.Tasks = []*nomadapi.Task{task}
 	job.TaskGroups = []*nomadapi.TaskGroup{group}
 	job.Canonicalize()
@@ -108,21 +125,22 @@ func BuildFunctionInvocationJob(request FunctionInvocationJobRequest) (*nomadapi
 }
 
 func validateFunctionInvocationJobRequest(request FunctionInvocationJobRequest) error {
-	if !functionInvocationJobID.MatchString(request.JobID) || request.VariablePath != "nomad/jobs/"+request.JobID+"/invoke" || !functionInvocationImageReference.MatchString(request.Image) || strings.TrimSpace(request.OwnerMarker) == "" || strings.TrimSpace(request.Command) == "" || request.CPU < 1 || request.MemoryMB < 10 || strings.ContainsAny(request.OwnerMarker+request.Command, "\r\n\x00") {
+	if !functionInvocationJobID.MatchString(request.JobID) || request.VariablePath != "nomad/jobs/"+request.JobID+"/invoke" || !functionInvocationImageReference.MatchString(request.Image) || strings.TrimSpace(request.OwnerMarker) == "" || strings.TrimSpace(request.Command) == "" || request.CPU < 1 || request.MemoryMB < 10 || strings.ContainsAny(request.OwnerMarker+request.Command, "\r\n\x00") || !validFunctionInvocationFiles(request.Files) {
 		return ErrFunctionInvocationJobRequest
 	}
 	return nil
 }
 
 type functionInvocationJobProjection struct {
-	Version      string `json:"version"`
-	JobID        string `json:"jobId"`
-	OwnerMarker  string `json:"ownerMarker"`
-	VariablePath string `json:"variablePath"`
-	Image        string `json:"image"`
-	Command      string `json:"command"`
-	CPU          int    `json:"cpu"`
-	MemoryMB     int    `json:"memoryMb"`
+	Version      string                         `json:"version"`
+	JobID        string                         `json:"jobId"`
+	OwnerMarker  string                         `json:"ownerMarker"`
+	VariablePath string                         `json:"variablePath"`
+	Image        string                         `json:"image"`
+	Command      string                         `json:"command"`
+	CPU          int                            `json:"cpu"`
+	MemoryMB     int                            `json:"memoryMb"`
+	Files        []FunctionInvocationFileLayout `json:"files"`
 }
 
 // ProjectFunctionInvocationJob accepts only the v1 closed dialect. It checks
@@ -222,18 +240,24 @@ func projectFunctionInvocationJob(job *nomadapi.Job) (functionInvocationJobProje
 	if !matchesLogConfig(task.LogConfig) {
 		return functionInvocationJobProjection{}, functionInvocationDialectError("task.logs")
 	}
-	if len(task.Templates) != 1 {
+	files, ok := functionInvocationFiles(job.Meta[functionInvocationFilesMeta])
+	if !ok || len(task.Templates) != 1+len(files) {
 		return functionInvocationJobProjection{}, functionInvocationDialectError("task.templates")
 	}
 	image, command, ok := functionInvocationTaskConfig(task.Config)
 	if !ok || !functionInvocationImageReference.MatchString(image) {
 		return functionInvocationJobProjection{}, functionInvocationDialectError("task.config")
 	}
-	variablePath, ok := functionInvocationTemplatePath(task.Templates[0])
-	if !ok || variablePath != "nomad/jobs/"+*job.ID+"/invoke" || !equalMap(job.Meta, map[string]string{functionInvocationOwnerMeta: job.Meta[functionInvocationOwnerMeta]}) || strings.TrimSpace(job.Meta[functionInvocationOwnerMeta]) == "" {
+	variablePath, ok := functionInvocationTemplatePath(task.Templates[0], files)
+	if !ok || variablePath != "nomad/jobs/"+*job.ID+"/invoke" || !equalMap(job.Meta, map[string]string{functionInvocationOwnerMeta: job.Meta[functionInvocationOwnerMeta], functionInvocationFilesMeta: job.Meta[functionInvocationFilesMeta]}) || strings.TrimSpace(job.Meta[functionInvocationOwnerMeta]) == "" {
 		return functionInvocationJobProjection{}, functionInvocationDialectError("task.template")
 	}
-	return functionInvocationJobProjection{Version: FunctionInvocationJobDialectVersion, JobID: *job.ID, OwnerMarker: job.Meta[functionInvocationOwnerMeta], VariablePath: variablePath, Image: image, Command: command, CPU: *task.Resources.CPU, MemoryMB: *task.Resources.MemoryMB}, nil
+	for index, file := range files {
+		if !matchesFunctionInvocationFileTemplate(task.Templates[index+1], variablePath, file) {
+			return functionInvocationJobProjection{}, functionInvocationDialectError("task.file-template")
+		}
+	}
+	return functionInvocationJobProjection{Version: FunctionInvocationJobDialectVersion, JobID: *job.ID, OwnerMarker: job.Meta[functionInvocationOwnerMeta], VariablePath: variablePath, Image: image, Command: command, CPU: *task.Resources.CPU, MemoryMB: *task.Resources.MemoryMB, Files: files}, nil
 }
 
 func functionInvocationDialectError(field string) error {
@@ -325,20 +349,68 @@ func stringSlice(value interface{}) ([]string, bool) {
 	return out, true
 }
 
-func functionInvocationTemplatePath(t *nomadapi.Template) (string, bool) {
+func functionInvocationTemplatePath(t *nomadapi.Template, files []FunctionInvocationFileLayout) (string, bool) {
 	if t == nil || !equalStringValue(t.SourcePath, "") || !equalStringValue(t.DestPath, functionInvocationTemplate) || t.EmbeddedTmpl == nil || !equalStringValue(t.ChangeMode, "restart") || !equalStringValue(t.ChangeSignal, "") || t.ChangeScript != nil || !equalBoolValue(t.Once, false) || !equalDuration(t.Splay, 5*time.Second) || !equalStringValue(t.Perms, "0400") || t.Uid != nil || t.Gid != nil || !equalStringValue(t.LeftDelim, "{{") || !equalStringValue(t.RightDelim, "}}") || !equalBoolValue(t.Envvars, true) || !equalDuration(t.VaultGrace, 0) || t.Wait != nil || !equalBoolValue(t.ErrMissingKey, true) {
 		return "", false
 	}
 	const prefix = "{{ with nomadVar \""
-	const suffix = "\" }}{{ $p := ." + functionInvocationPrivateItem + ".Value | base64Decode | parseJSON }}{{ range $key, $value := $p.env }}{{ $key }}={{ $value | toJSON }}\n{{ end }}NORN_REQUEST_BODY={{ $p.body | toJSON }}\nNORN_REQUEST_METHOD={{ $p.method | toJSON }}\nNORN_REQUEST_PATH={{ $p.path | toJSON }}\n{{ end }}"
+	suffix := "\" }}" + functionInvocationEnvironmentTemplateSuffix(files)
 	if !strings.HasPrefix(*t.EmbeddedTmpl, prefix) || !strings.HasSuffix(*t.EmbeddedTmpl, suffix) {
 		return "", false
 	}
 	return strings.TrimSuffix(strings.TrimPrefix(*t.EmbeddedTmpl, prefix), suffix), true
 }
 
-func functionInvocationEnvironmentTemplate(path string) string {
-	return fmt.Sprintf("{{ with nomadVar %q }}{{ $p := .%s.Value | base64Decode | parseJSON }}{{ range $key, $value := $p.env }}{{ $key }}={{ $value | toJSON }}\n{{ end }}NORN_REQUEST_BODY={{ $p.body | toJSON }}\nNORN_REQUEST_METHOD={{ $p.method | toJSON }}\nNORN_REQUEST_PATH={{ $p.path | toJSON }}\n{{ end }}", path, functionInvocationPrivateItem)
+func functionInvocationEnvironmentTemplate(path string, files []FunctionInvocationFileLayout) string {
+	return fmt.Sprintf("{{ with nomadVar %q }}%s", path, functionInvocationEnvironmentTemplateSuffix(files))
+}
+
+func functionInvocationEnvironmentTemplateSuffix(files []FunctionInvocationFileLayout) string {
+	out := fmt.Sprintf("{{ $p := .%s.Value | base64Decode | parseJSON }}{{ range $key, $value := $p.env }}{{ $key }}={{ $value | toJSON }}\n{{ end }}", functionInvocationPrivateItem)
+	for _, file := range files {
+		out += fmt.Sprintf("%s={{ printf \"%%s/%s/%s\" (env \"NOMAD_SECRETS_DIR\") | toJSON }}\n", file.Env, functionInvocationFilesDir, file.Key)
+	}
+	return out + "NORN_REQUEST_BODY={{ $p.body | toJSON }}\nNORN_REQUEST_METHOD={{ $p.method | toJSON }}\nNORN_REQUEST_PATH={{ $p.path | toJSON }}\n{{ end }}"
+}
+
+func functionInvocationFileTemplate(path string, file FunctionInvocationFileLayout) string {
+	return fmt.Sprintf("{{ with nomadVar %q }}{{ $p := .%s.Value | base64Decode | parseJSON }}{{ index $p.files %q }}{{ end }}", path, functionInvocationPrivateItem, file.Key)
+}
+
+func functionInvocationFileDestination(key string) string {
+	return "secrets/" + functionInvocationFilesDir + "/" + key
+}
+
+func matchesFunctionInvocationFileTemplate(t *nomadapi.Template, path string, file FunctionInvocationFileLayout) bool {
+	if t == nil || !equalStringValue(t.SourcePath, "") || !equalStringValue(t.DestPath, functionInvocationFileDestination(file.Key)) || t.EmbeddedTmpl == nil || *t.EmbeddedTmpl != functionInvocationFileTemplate(path, file) || !equalStringValue(t.ChangeMode, "restart") || !equalStringValue(t.ChangeSignal, "") || t.ChangeScript != nil || !equalBoolValue(t.Once, false) || !equalDuration(t.Splay, 5*time.Second) || !equalStringValue(t.Perms, "0400") || t.Uid != nil || t.Gid != nil || !equalStringValue(t.LeftDelim, "{{") || !equalStringValue(t.RightDelim, "}}") || !equalBoolValue(t.Envvars, false) || !equalDuration(t.VaultGrace, 0) || t.Wait != nil || !equalBoolValue(t.ErrMissingKey, true) {
+		return false
+	}
+	return true
+}
+
+var functionInvocationFileKey = regexp.MustCompile(`^[a-z][a-z0-9_]{0,126}$`)
+var functionInvocationEnvName = regexp.MustCompile(`^[A-Za-z_][A-Za-z0-9_]*$`)
+
+func validFunctionInvocationFiles(files []FunctionInvocationFileLayout) bool {
+	seenKeys, seenEnv := map[string]bool{}, map[string]bool{}
+	for index, file := range files {
+		if !functionInvocationFileKey.MatchString(file.Key) || !functionInvocationEnvName.MatchString(file.Env) || strings.HasPrefix(file.Env, "NORN_REQUEST_") || seenKeys[file.Key] || seenEnv[file.Env] || index > 0 && files[index-1].Key >= file.Key {
+			return false
+		}
+		seenKeys[file.Key], seenEnv[file.Env] = true, true
+	}
+	return true
+}
+
+func functionInvocationFiles(encoded string) ([]FunctionInvocationFileLayout, bool) {
+	var files []FunctionInvocationFileLayout
+	decoder := json.NewDecoder(strings.NewReader(encoded))
+	decoder.DisallowUnknownFields()
+	if err := decoder.Decode(&files); err != nil || !errors.Is(decoder.Decode(&struct{}{}), io.EOF) || !validFunctionInvocationFiles(files) {
+		return nil, false
+	}
+	canonical, err := json.Marshal(files)
+	return files, err == nil && string(canonical) == encoded
 }
 
 func equalString(a, b *string) bool                           { return a != nil && b != nil && *a == *b }

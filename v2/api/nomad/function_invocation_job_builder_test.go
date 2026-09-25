@@ -1,6 +1,7 @@
 package nomad
 
 import (
+	"encoding/json"
 	"errors"
 	"strings"
 	"testing"
@@ -35,6 +36,7 @@ func TestProjectFunctionInvocationJobAcceptsKnownNomadReadbackDefaults(t *testin
 
 func TestBuildFunctionInvocationJobClosedDialectAndStableDigest(t *testing.T) {
 	request := functionInvocationJobRequest()
+	request.Files = functionInvocationJobTestFiles()
 	job, want, err := BuildFunctionInvocationJob(request)
 	if err != nil {
 		t.Fatal(err)
@@ -50,6 +52,32 @@ func TestBuildFunctionInvocationJobClosedDialectAndStableDigest(t *testing.T) {
 	if got := *task.Templates[0].EmbeddedTmpl; !strings.Contains(got, request.VariablePath) || !strings.Contains(got, "base64Decode | parseJSON") || !strings.Contains(got, "NORN_REQUEST_BODY=") || strings.Contains(got, "NORN_FUNCTION_JOB_PRIVATE") || task.Templates[0].Envvars == nil || !*task.Templates[0].Envvars {
 		t.Fatalf("template = %q", got)
 	}
+	if len(task.Templates) != 3 || !strings.Contains(*task.Templates[0].EmbeddedTmpl, "MYSQL_SSL_CA") || !strings.Contains(*task.Templates[1].EmbeddedTmpl, `index $p.files "db_tls_ca_primary"`) || *task.Templates[1].Perms != "0400" {
+		t.Fatalf("private file templates = %#v", task.Templates)
+	}
+	encoded, err := json.Marshal(job)
+	if err != nil || strings.Contains(string(encoded), "private-ca-canary") {
+		t.Fatalf("job JSON contains private material: %v", err)
+	}
+}
+
+func TestBuildFunctionInvocationJobRejectsNonCanonicalFileLayout(t *testing.T) {
+	request := functionInvocationJobRequest()
+	request.Files = functionInvocationJobTestFiles()
+	request.Files[0], request.Files[1] = request.Files[1], request.Files[0]
+	if _, _, err := BuildFunctionInvocationJob(request); err != ErrFunctionInvocationJobRequest {
+		t.Fatalf("unsorted files error = %v", err)
+	}
+	request = functionInvocationJobRequest()
+	request.Files = functionInvocationJobTestFiles()
+	request.Files[1].Env = request.Files[0].Env
+	if _, _, err := BuildFunctionInvocationJob(request); err != ErrFunctionInvocationJobRequest {
+		t.Fatalf("duplicate env error = %v", err)
+	}
+}
+
+func functionInvocationJobTestFiles() []FunctionInvocationFileLayout {
+	return []FunctionInvocationFileLayout{{Key: "db_tls_ca_primary", Env: "MYSQL_SSL_CA"}, {Key: "db_url_primary", Env: "DATABASE_URL_FILE"}}
 }
 
 func TestProjectFunctionInvocationJobRejectsUnsupportedMutationSurface(t *testing.T) {

@@ -209,8 +209,14 @@ func completeFunctionRuntimeDelivery(spec *model.InfraSpec, delivery nomad.Datab
 				}
 			}
 		}
-		if requirement.Runtime.TLS != nil && delivery.TLS[nomad.DatabaseTLSItemKey(requirement.Name, "ca")] == "" {
-			return false
+		if tls := requirement.Runtime.TLS; tls != nil {
+			for _, item := range []struct{ declared, material string }{
+				{tls.CAFileEnv, "ca"}, {tls.ClientCertFileEnv, "client_cert"}, {tls.ClientKeyFileEnv, "client_key"},
+			} {
+				if item.declared != "" && delivery.TLS[nomad.DatabaseTLSItemKey(requirement.Name, item.material)] == "" {
+					return false
+				}
+			}
 		}
 	}
 	return true

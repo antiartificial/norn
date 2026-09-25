@@ -136,3 +136,19 @@ func TestFunctionInvocationDatabaseBindingUsesNoDatabaseSentinel(t *testing.T) {
 		t.Fatal("database-free function accepted delivery material")
 	}
 }
+
+func TestFunctionInvocationDatabaseBindingRequiresDeclaredTLSFiles(t *testing.T) {
+	spec, delivery := functionDatabaseBindingSpec(), functionDatabaseBindingDelivery(t)
+	spec.Databases[0].Runtime.TLS = &model.DatabaseRuntimeTLS{CAFileEnv: "DB_CA", ClientCertFileEnv: "DB_CERT", ClientKeyFileEnv: "DB_KEY"}
+	delivery.TLS = map[string]string{
+		nomad.DatabaseTLSItemKey("analytics-db", "ca"):          "ca-pem",
+		nomad.DatabaseTLSItemKey("analytics-db", "client_cert"): "cert-pem",
+	}
+	if _, err := NewFunctionInvocationDatabaseBinding(spec, delivery); err == nil {
+		t.Fatal("missing client key was accepted")
+	}
+	delivery.TLS[nomad.DatabaseTLSItemKey("analytics-db", "client_key")] = "key-pem"
+	if _, err := NewFunctionInvocationDatabaseBinding(spec, delivery); err != nil {
+		t.Fatal(err)
+	}
+}
