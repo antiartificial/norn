@@ -48,6 +48,10 @@ func RestoreMySQLSQLArtifact(ctx context.Context, resolved ResolvedBinding, secr
 		return err
 	}
 	defer artifactFile.Close()
+	verifiedArtifact, err := artifactFile.Stat()
+	if err != nil {
+		return fmt.Errorf("MySQL restore artifact stat failed")
+	}
 	toolFile, err := openVerifiedMySQLRestoreTool(tool)
 	if err != nil {
 		return err
@@ -95,6 +99,9 @@ func RestoreMySQLSQLArtifact(ctx context.Context, resolved ResolvedBinding, secr
 	if err := command.Run(); err != nil {
 		return fmt.Errorf("MySQL restore tool failed: %s", session.RedactCaptured(stderr))
 	}
+	if err := verifyOpenMySQLSQLArtifactAfterImport(artifactFile, artifactPath, artifact, verifiedArtifact); err != nil {
+		return err
+	}
 	// macOS clients can load private libraries relative to the installed binary,
 	// so fexecve or a copied binary is not portable. Keep the checked descriptor
 	// open and prove the path still names that inode after execution. This does
@@ -103,6 +110,38 @@ func RestoreMySQLSQLArtifact(ctx context.Context, resolved ResolvedBinding, secr
 	current, err := os.Stat(tool.Path)
 	if err != nil || !os.SameFile(verifiedTool, current) {
 		return fmt.Errorf("MySQL restore tool changed during execution")
+	}
+	return nil
+}
+
+// The importer reads a verified descriptor, but an in-place write by the
+// owner could still change that inode while mysql is consuming stdin. A
+// mismatch is an ambiguous restore outcome and must remain for inspection.
+func verifyOpenMySQLSQLArtifactAfterImport(file *os.File, path string, artifact MySQLSQLArtifact, before os.FileInfo) error {
+	current, err := file.Stat()
+	if err != nil || !os.SameFile(before, current) || current.Size() != artifact.Bytes || current.Mode().Perm() != before.Mode().Perm() || !current.ModTime().Equal(before.ModTime()) {
+		return fmt.Errorf("MySQL restore artifact changed during import")
+	}
+	beforeStat, beforeOK := before.Sys().(*syscall.Stat_t)
+	currentStat, currentOK := current.Sys().(*syscall.Stat_t)
+	if !beforeOK || !currentOK || beforeStat.Uid != currentStat.Uid {
+		return fmt.Errorf("MySQL restore artifact ownership changed during import")
+	}
+	pathInfo, err := os.Lstat(path)
+	if err != nil || !pathInfo.Mode().IsRegular() || !os.SameFile(before, pathInfo) {
+		return fmt.Errorf("MySQL restore artifact path changed during import")
+	}
+	if _, err := file.Seek(0, io.SeekStart); err != nil {
+		return fmt.Errorf("MySQL restore artifact cannot be rechecked")
+	}
+	digest := sha256.New()
+	size, err := io.Copy(digest, io.LimitReader(file, artifact.Bytes+1))
+	if err != nil || size != artifact.Bytes || hex.EncodeToString(digest.Sum(nil)) != artifact.SHA256 {
+		return fmt.Errorf("MySQL restore artifact bytes changed during import")
+	}
+	end, err := file.Stat()
+	if err != nil || !os.SameFile(before, end) || end.Size() != artifact.Bytes || !end.ModTime().Equal(current.ModTime()) {
+		return fmt.Errorf("MySQL restore artifact changed during post-import check")
 	}
 	return nil
 }
