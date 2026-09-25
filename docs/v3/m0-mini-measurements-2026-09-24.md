@@ -70,3 +70,13 @@ database size 242,166,931 bytes and user-table total 233,152,512 bytes,
 was 145,121,280 bytes and indexes were 86,966,272 bytes. This still does not
 cover a representative workload cycle or establish the retention and restore
 budgets.
+
+A seventh read-only aggregate sample at 2026-09-25 08:27 UTC measured database
+size 243,305,619 bytes and user-table total 234,291,200 bytes. Each is
+2,981,888 bytes above the 15:59 UTC baseline over about 16.5 hours. Heap size
+was 145,809,408 bytes, indexes were 87,416,832 bytes, and four connections
+were observed. The authenticated Mini inventory at 08:23 UTC still reported
+27 app records, zero active operations, 13 active incidents, host status `ok`,
+and production readiness `blocked`. This longer observation still does not
+include a full representative workload cycle or establish a numeric retention,
+backup-space, or restore-time budget.
