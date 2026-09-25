@@ -528,7 +528,7 @@ const controlSchemaBaselineSQL = `
 const (
 	EvidenceArchiveReaderVersion int64 = 2
 	ControlSchemaReaderVersion   int64 = FunctionInvocationArchiveReaderVersion
-	ControlSchemaWriterVersion   int64 = RuntimeMutationFenceWriterVersion
+	ControlSchemaWriterVersion   int64 = MySQLSourceSnapshotWriterVersion
 )
 
 // ControlSchemaMigrations returns a copy of the ordered, forward-only control
@@ -540,7 +540,7 @@ func ControlSchemaMigrations() []SchemaMigration {
 		SQL:                  controlSchemaBaselineSQL,
 		MinimumReaderVersion: 0,
 		MinimumWriterVersion: 0,
-	}, operationAcceptanceMigration(), operationEffectsMigration(), operationCheckpointsMigration(), databaseCatalogMigration(), evidenceArchiveMigration(), evidenceArchiveReaderMigration(), evidenceReserveMigration(), eventReplayRetentionMigration(), nonSagaEvidenceMigration(), desiredReplicasMigration(), regionalDesiredReplicasMigration(), restartEffectSourcesMigration(), signedAcceptanceByteReserveMigration(), operationReplayExpiryMigration(), snapshotPublicationMigration(), operationAcceptanceRetirementMigration(), privateInvocationMigration(), functionInvocationEffectAttemptsMigration(), functionInvocationCleanupMigration(), functionInvocationArchiveMigration(), functionDeploymentProvenanceMigration(), functionInvocationReaderContractMigration(), mysqlRestoreIntentMigration(), mysqlRestoreMaintenanceFenceMigration(), mysqlRuntimeLaunchReservationMigration(), mysqlRestoreRuntimeLockMigration(), runtimeMutationFenceMigration()}
+	}, operationAcceptanceMigration(), operationEffectsMigration(), operationCheckpointsMigration(), databaseCatalogMigration(), evidenceArchiveMigration(), evidenceArchiveReaderMigration(), evidenceReserveMigration(), eventReplayRetentionMigration(), nonSagaEvidenceMigration(), desiredReplicasMigration(), regionalDesiredReplicasMigration(), restartEffectSourcesMigration(), signedAcceptanceByteReserveMigration(), operationReplayExpiryMigration(), snapshotPublicationMigration(), operationAcceptanceRetirementMigration(), privateInvocationMigration(), functionInvocationEffectAttemptsMigration(), functionInvocationCleanupMigration(), functionInvocationArchiveMigration(), functionDeploymentProvenanceMigration(), functionInvocationReaderContractMigration(), mysqlRestoreIntentMigration(), mysqlRestoreMaintenanceFenceMigration(), mysqlRuntimeLaunchReservationMigration(), mysqlRestoreRuntimeLockMigration(), runtimeMutationFenceMigration(), mysqlSourceSnapshotIntentMigration()}
 }
 
 func NewControlSchemaMigrator(db *DB) (*SchemaMigrator, error) {

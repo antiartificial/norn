@@ -63,7 +63,7 @@ func (db *DB) AcquireRuntimeMutationFence(ctx context.Context, owner, reason str
 		SELECT 1 FROM operations WHERE status='running' AND kind IN
 		('app.deploy','app.rollback','app.restart','app.scale','app.canary-promote',
 		 'app.cron-pause','app.cron-resume','app.cron-schedule','app.cron-trigger',
-		 'app.cron-trigger-reconcile','app.function-invoke'))`).Scan(&running); err != nil {
+		 'app.cron-trigger-reconcile','app.function-invoke','host.assure'))`).Scan(&running); err != nil {
 		return RuntimeMutationFence{}, err
 	}
 	if running {

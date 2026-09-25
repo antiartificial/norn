@@ -108,7 +108,7 @@ func (db *DB) activateDatabaseCatalog(ctx context.Context, expectedCurrent int64
 	// maintenance fence spans its private SQL execution, so activation must
 	// refuse while routing and source-quiescence evidence are still in flight.
 	var maintenanceActive bool
-	if err := tx.QueryRow(ctx, `SELECT EXISTS (SELECT 1 FROM mysql_restore_maintenance_fences)`).Scan(&maintenanceActive); err != nil {
+	if err := tx.QueryRow(ctx, `SELECT EXISTS (SELECT 1 FROM mysql_restore_maintenance_fences) OR EXISTS (SELECT 1 FROM mysql_source_snapshot_intents)`).Scan(&maintenanceActive); err != nil {
 		return DatabaseCatalogRevision{}, err
 	}
 	if maintenanceActive {

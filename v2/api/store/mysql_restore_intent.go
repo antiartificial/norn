@@ -105,6 +105,9 @@ func (db *DB) PrepareClaimedMySQLRestore(ctx context.Context, acceptance *PGOper
 	if err != nil || resolved.MySQLMaintenance == nil || *resolved.MySQLMaintenance != request.Maintenance {
 		return MySQLRestoreIntent{}, ErrMySQLRestoreFence
 	}
+	if err := rejectMySQLSourceSnapshotIntent(ctx, tx, request.Artifact.Source); err != nil {
+		return MySQLRestoreIntent{}, ErrMySQLRestoreFence
+	}
 	restore, err := database.MySQLRestoreBinding(resolved)
 	if err != nil {
 		return MySQLRestoreIntent{}, ErrMySQLRestoreFence

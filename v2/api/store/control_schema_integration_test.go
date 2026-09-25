@@ -12,8 +12,8 @@ func TestControlSchemaAdoptsLegacyRowsWithoutReplacingEvidence(t *testing.T) {
 	pool := schemaMigrationTestPools(t, 1)[0]
 	ctx := context.Background()
 	migrations := ControlSchemaMigrations()
-	if len(migrations) != 28 || migrations[16].Version != 17 {
-		t.Fatalf("control migration catalog has %d migrations, want immutable baseline through 17 and appended migrations through 28", len(migrations))
+	if len(migrations) != 29 || migrations[16].Version != 17 {
+		t.Fatalf("control migration catalog has %d migrations, want immutable baseline through 17 and appended migrations through 29", len(migrations))
 	}
 	for index, migration := range migrations {
 		if migration.Version != int64(index+1) {
@@ -55,7 +55,7 @@ func TestControlSchemaAdoptsLegacyRowsWithoutReplacingEvidence(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if status.CurrentMigrationVersion != 28 || len(status.AppliedVersions) != 28 || status.AppliedVersions[27] != 28 || status.MinimumReaderVersion != FunctionInvocationArchiveReaderVersion || status.MinimumWriterVersion != RuntimeMutationFenceWriterVersion {
+	if status.CurrentMigrationVersion != 29 || len(status.AppliedVersions) != 29 || status.AppliedVersions[28] != 29 || status.MinimumReaderVersion != FunctionInvocationArchiveReaderVersion || status.MinimumWriterVersion != MySQLSourceSnapshotWriterVersion {
 		t.Fatalf("migration status = %#v", status)
 	}
 

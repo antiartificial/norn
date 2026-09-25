@@ -381,8 +381,19 @@ func lockMySQLCatalogGate(ctx context.Context, tx pgx.Tx) error {
 	return err
 }
 
-func rejectMySQLRestoreMaintenanceFence(ctx context.Context, tx pgx.Tx, identities []database.TargetIdentity) error {
+func rejectMySQLRestoreMaintenanceFence(ctx context.Context, tx pgx.Tx, identities []database.TargetIdentity, exceptOperationID ...string) error {
+	except := ""
+	if len(exceptOperationID) == 1 {
+		except = exceptOperationID[0]
+	}
 	for _, identity := range identities {
+		var snapshotBlocked bool
+		if err := tx.QueryRow(ctx, `SELECT EXISTS (SELECT 1 FROM mysql_source_snapshot_intents WHERE source_key=$1 AND operation_id<>$2)`, mysqlRuntimePhysicalKey(identity), except).Scan(&snapshotBlocked); err != nil {
+			return err
+		}
+		if snapshotBlocked {
+			return ErrMySQLRuntimeLaunchFence
+		}
 		var blocked bool
 		err := tx.QueryRow(ctx, `SELECT EXISTS (
 			SELECT 1 FROM mysql_restore_maintenance_fences f
