@@ -128,8 +128,17 @@ consumer, altered runtime declaration, and bound release artifacts retain the
 normal signature policy. The trust assertion is embedded in the signed Norn
 binary; a separately attested Norn mirror is later distribution hardening.
 
-The signed app-deploy-to-generated-allocation route has not yet been run as
-one live end-to-end test. The exception does not cover bound release artifact
-rollback/import; that path needs a spec-bound receipt or a qualified mirror.
-Mini rollback, MySQL backup/restore, and release rollout remain separate
-gates.
+`TestClaimedWordPressVerifiedTLSDeployInNomad` then passed against disposable
+PostgreSQL, MySQL 8.4 TLS, Nomad 2.0.7 and Consul. Signed `app.deploy`
+acceptance led to a claimed worker, clean Git source checkpoint, exact pinned
+image admission, verified MySQL target probe, revisioned private CA variable,
+and a generated WordPress allocation with passing HTTP health. The terminal
+operation succeeded. A second signed deployment changed only the CA
+reference to an unrelated CA; it failed at Norn's verify-full target probe
+before staging a new Nomad variable, leaving the trusted revision current.
+The earlier generated-allocation wrong-CA and hostname tests remain the
+application-path negative controls. Jobs and disposable services were removed.
+
+The prebuilt exception does not cover bound release artifact rollback/import;
+that path needs a spec-bound receipt or a qualified mirror. Mini rollback,
+MySQL backup/restore, and release rollout remain separate gates.
