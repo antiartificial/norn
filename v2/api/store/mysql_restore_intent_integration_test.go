@@ -23,6 +23,7 @@ import (
 	"norn/v2/api/artifactstore"
 	"norn/v2/api/database"
 	"norn/v2/api/internal/s3emulator"
+	"norn/v2/api/nomad"
 )
 
 type mysqlIntentSecrets map[string]string
@@ -149,8 +150,10 @@ func TestMySQLRestoreIntentAgainstDisposableEngines(t *testing.T) {
 		Recovery: database.RecoveryPolicy{Capabilities: []database.Capability{database.CapabilitySnapshot, database.CapabilityRestore}},
 	})
 	maintenance := &database.MySQLMaintenanceCredentials{Generation: 1, RuntimeAccountHost: "%", RestoreRole: restoreRole, RestoreAccountHost: "%", RestoreCredentialRef: "secret:intent/restore", FenceRole: fenceRole, FenceCredentialRef: "secret:intent/fence", FenceAccountHost: "%"}
+	sourceMaintenance := &database.MySQLMaintenanceCredentials{Generation: 1, RuntimeAccountHost: "%", SnapshotRole: "snapshot", SnapshotAccountHost: "%", SnapshotCredentialRef: "secret:intent/snapshot",
+		RestoreRole: restoreRole, RestoreAccountHost: "%", RestoreCredentialRef: "secret:intent/restore", FenceRole: fenceRole, FenceAccountHost: "%", FenceCredentialRef: "secret:intent/fence"}
 	catalog.Bindings = append(catalog.Bindings,
-		database.DatabaseBinding{APIVersion: database.APIVersion, ID: "intent-source", ServiceID: "intent-mysql", Database: sourceDB, Role: sourceRole, Generation: 1, CredentialRef: "secret:intent/source", TLS: database.DatabaseTLS{Mode: database.TLSDisabled}},
+		database.DatabaseBinding{APIVersion: database.APIVersion, ID: "intent-source", ServiceID: "intent-mysql", Database: sourceDB, Role: sourceRole, Generation: 1, CredentialRef: "secret:intent/source", MySQLMaintenance: sourceMaintenance, TLS: database.DatabaseTLS{Mode: database.TLSDisabled}},
 		database.DatabaseBinding{APIVersion: database.APIVersion, ID: "intent-target", ServiceID: "intent-mysql", Database: targetDB, Role: targetRole, Generation: 1, CredentialRef: "secret:intent/target", MySQLMaintenance: maintenance, TLS: database.DatabaseTLS{Mode: database.TLSDisabled}},
 		database.DatabaseBinding{APIVersion: database.APIVersion, ID: "intent-lost-target", ServiceID: "intent-mysql", Database: lostTargetDB, Role: lostTargetRole, Generation: 1, CredentialRef: "secret:intent/target", MySQLMaintenance: maintenance, TLS: database.DatabaseTLS{Mode: database.TLSDisabled}},
 	)
@@ -199,8 +202,15 @@ func TestMySQLRestoreIntentAgainstDisposableEngines(t *testing.T) {
 	if !strings.HasPrefix(path, filepath.Clean(stage)+string(os.PathSeparator)) {
 		t.Fatal("snapshot escaped private stage")
 	}
-	receipt := testMySQLSourceArtifactReceipt(t, control, stores[0], active.Revision, artifact.Source, path, artifact)
+	receipt := testMySQLSourceArtifactReceipt(t, control, stores[0], active.Revision, artifact.Source, path, artifact,
+		testMySQLSourceArtifactFixture{LogicalID: "intent-source", Maintenance: *sourceMaintenance})
 	testBindMySQLSourceFence(t, control, receipt)
+	if _, err := admin.ExecContext(ctx, "ALTER USER '"+sourceRole+"'@'%' ACCOUNT LOCK"); err != nil {
+		t.Fatal("lock source runtime account after staging")
+	}
+	defer func() {
+		_, _ = admin.ExecContext(context.Background(), "ALTER USER '"+sourceRole+"'@'%' ACCOUNT UNLOCK")
+	}()
 	request := MySQLRestoreRequest{CatalogRevision: active.Revision, ProfileID: "mini", LogicalID: "intent-target", Target: target.Target, Maintenance: *target.MySQLMaintenance, Artifact: artifact, ArtifactPath: path,
 		SourceArtifact: receipt}
 	input := newAcceptance(t, stores[0], "mysql-intent-"+suffix, "operator", "intent-target", false)
@@ -396,6 +406,24 @@ func TestMySQLRestoreIntentAgainstDisposableEngines(t *testing.T) {
 	}
 	if ready, err := control.AssessCompletedMySQLRestoreLiveRecovery(ctx, stores[0], claim.OperationID(), secrets); err != nil || ready.Fence.Epoch != mutationFence.Epoch {
 		t.Fatalf("live completed restore assessment: %+v %v", ready, err)
+	}
+	stoppedSource := stoppedSourceObserverFunc(func(_ context.Context, request nomad.CASStopJobRequest) error {
+		if request.JobID != "fixture" || request.JobVersion != 1 || len(request.AllocationIDs) != 1 || request.AllocationIDs[0] != "fixture-alloc" {
+			return errors.New("unexpected signed source job identity")
+		}
+		return nil
+	})
+	if ready, err := control.AssessCompletedMySQLRestoreLiveSource(ctx, stores[0], claim.OperationID(), stoppedSource, secrets); err != nil || ready.Fence.Epoch != mutationFence.Epoch {
+		t.Fatalf("live stopped source account assessment: %+v %v", ready, err)
+	}
+	if _, err := admin.ExecContext(ctx, "ALTER USER '"+sourceRole+"'@'%' ACCOUNT UNLOCK"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := control.AssessCompletedMySQLRestoreLiveSource(ctx, stores[0], claim.OperationID(), stoppedSource, secrets); err == nil {
+		t.Fatal("unlocked source account passed live recovery assessment")
+	}
+	if _, err := admin.ExecContext(ctx, "ALTER USER '"+sourceRole+"'@'%' ACCOUNT LOCK"); err != nil {
+		t.Fatal(err)
 	}
 	if _, err := admin.ExecContext(ctx, "UPDATE `"+targetDB+"`.marker SET value='drifted'"); err != nil {
 		t.Fatal(err)

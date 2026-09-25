@@ -135,8 +135,17 @@ checkpoints, then asks Nomad for the exact post-CAS stopped revision and all
 terminal signed allocations. Nomad unit cases reject a restarted or changed
 job, a live or missing signed allocation, and changed deployment provenance;
 the PostgreSQL recovery test verifies the signed job identity is passed to the
-observer. This is not yet wired into an unlock executor, and it does not prove
-the source MySQL account remains locked at the time of resume.
+observer. This stopped-source-only assessment is not yet wired into an unlock
+executor and does not inspect the live source MySQL account.
+
+A further private live assessment resolves the signed source binding from the
+active catalog, checks its exact MySQL runtime account remains locked and
+session-free through the fence credential, and reobserves the stopped Nomad
+job afterward. The disposable PostgreSQL/MySQL restore rehearsal accepted the
+locked account and rejected it after an explicit test unlock. These are
+read-only observations and still need to be repeated under a durable unlock
+effect intent; the test Nomad observer validates plumbing, while the separate
+Nomad tests exercise the concrete client behavior.
 
 - Qualify bounded memory/disk behavior on representative large data.
 - Wire the launch and mutation gates into every application write and resume

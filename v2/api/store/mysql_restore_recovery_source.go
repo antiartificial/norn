@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"strconv"
 
+	"norn/v2/api/database"
 	"norn/v2/api/nomad"
 )
 
@@ -73,6 +74,51 @@ func (db *DB) AssessCompletedMySQLRestoreStoppedSource(ctx context.Context, acce
 		return MySQLRestoreRecoveryReadiness{}, err
 	}
 	latest, err := db.AssessCompletedMySQLRestoreRecovery(ctx, acceptance, operationID)
+	if err != nil || latest.Fence != ready.Fence || latest.Request != ready.Request {
+		return MySQLRestoreRecoveryReadiness{}, ErrMySQLRestoreFence
+	}
+	return latest, nil
+}
+
+// AssessCompletedMySQLRestoreLiveSource adds a read-only check that the exact
+// signed source runtime account remains locked and session-free. The stopped
+// Nomad revision is reobserved afterward; a later unlock must repeat both
+// observations under its own durable effect checkpoint.
+func (db *DB) AssessCompletedMySQLRestoreLiveSource(ctx context.Context, acceptance *PGOperationStore, operationID string, observer MySQLSourceStoppedObserver, secrets database.SecretSource) (MySQLRestoreRecoveryReadiness, error) {
+	if secrets == nil {
+		return MySQLRestoreRecoveryReadiness{}, ErrMySQLRestoreFence
+	}
+	ready, err := db.AssessCompletedMySQLRestoreStoppedSource(ctx, acceptance, operationID, observer)
+	if err != nil {
+		return MySQLRestoreRecoveryReadiness{}, err
+	}
+	accepted, err := acceptance.VerifyAcceptedOperation(ctx, ready.Request.SourceArtifact.OperationID)
+	if err != nil || accepted.Operation.Kind != MySQLSourceSnapshotOperationKind {
+		return MySQLRestoreRecoveryReadiness{}, ErrMySQLRestoreFence
+	}
+	encoded, err := json.Marshal(accepted.Operation.Payload)
+	var source MySQLSourceSnapshotRequest
+	if err != nil || decodeStrictAcceptanceJSON(encoded, &source) != nil || !validMySQLSourceSnapshotRequest(source) ||
+		source.CatalogRevision != ready.Request.CatalogRevision || source.Source != ready.Request.Artifact.Source {
+		return MySQLRestoreRecoveryReadiness{}, ErrMySQLRestoreFence
+	}
+	catalog, err := db.DatabaseCatalogRevision(ctx, source.CatalogRevision)
+	if err != nil {
+		return MySQLRestoreRecoveryReadiness{}, err
+	}
+	resolver, err := database.NewResolver(catalog.Catalog)
+	if err != nil {
+		return MySQLRestoreRecoveryReadiness{}, ErrMySQLRestoreFence
+	}
+	resolved, err := resolver.Resolve(database.ResolveRequest{DeploymentProfileID: source.ProfileID, Purpose: database.PurposeApplication,
+		LogicalResourceID: source.LogicalID, Expected: &source.Source})
+	if err != nil || resolved.MySQLMaintenance == nil || *resolved.MySQLMaintenance != source.Maintenance {
+		return MySQLRestoreRecoveryReadiness{}, ErrMySQLRestoreFence
+	}
+	if err := database.InspectMySQLRuntimeAccountLockForRestore(ctx, resolved, source.Maintenance, secrets); err != nil {
+		return MySQLRestoreRecoveryReadiness{}, err
+	}
+	latest, err := db.AssessCompletedMySQLRestoreStoppedSource(ctx, acceptance, operationID, observer)
 	if err != nil || latest.Fence != ready.Fence || latest.Request != ready.Request {
 		return MySQLRestoreRecoveryReadiness{}, ErrMySQLRestoreFence
 	}

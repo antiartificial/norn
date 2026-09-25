@@ -121,12 +121,24 @@ func TestMySQLRestoreRejectsProviderAliasSelfRestore(t *testing.T) {
 // This fixture creates an accepted source operation and a service-signed
 // stage-proved row. Source stop and lock behavior has separate integration
 // coverage; restore tests start with an already staged artifact.
-func testMySQLSourceArtifactReceipt(t *testing.T, db *DB, acceptance *PGOperationStore, revision int64, source database.TargetIdentity, path string, artifact database.MySQLSQLArtifact) MySQLRestoreSourceArtifact {
+type testMySQLSourceArtifactFixture struct {
+	LogicalID   string
+	Maintenance database.MySQLMaintenanceCredentials
+}
+
+func testMySQLSourceArtifactReceipt(t *testing.T, db *DB, acceptance *PGOperationStore, revision int64, source database.TargetIdentity, path string, artifact database.MySQLSQLArtifact, options ...testMySQLSourceArtifactFixture) MySQLRestoreSourceArtifact {
 	t.Helper()
 	ctx := context.Background()
 	maintenance := database.MySQLMaintenanceCredentials{Generation: 1, RuntimeAccountHost: "%", SnapshotRole: "snapshot", SnapshotAccountHost: "%", SnapshotCredentialRef: "secret:test/snapshot", RestoreRole: "restore", RestoreAccountHost: "%", RestoreCredentialRef: "secret:test/restore", FenceRole: "fence", FenceAccountHost: "%", FenceCredentialRef: "secret:test/fence"}
+	logicalID := "fixture-source"
+	if len(options) > 1 {
+		t.Fatal("only one source artifact fixture override is supported")
+	}
+	if len(options) == 1 {
+		logicalID, maintenance = options[0].LogicalID, options[0].Maintenance
+	}
 	toolDigest := hex.EncodeToString(make([]byte, 32))
-	request := MySQLSourceSnapshotRequest{CatalogRevision: revision, ProfileID: "mini", LogicalID: "fixture-source", Source: source, Maintenance: maintenance,
+	request := MySQLSourceSnapshotRequest{CatalogRevision: revision, ProfileID: "mini", LogicalID: logicalID, Source: source, Maintenance: maintenance,
 		JobIdentity: validSourceSnapshotJobIdentity("fixture", revision, "1", "fixture-alloc"), DumpToolSHA256: toolDigest}
 	input := newAcceptance(t, acceptance, "mysql-source-fixture-"+uuid.NewString(), "operator", "fixture-source", false)
 	input.Identity.Kind, input.Identity.Resource = MySQLSourceSnapshotOperationKind, "mysql/"+source.Database
@@ -174,8 +186,8 @@ func testMySQLSourceArtifactReceipt(t *testing.T, db *DB, acceptance *PGOperatio
 		(operation_id,acceptance_intent_id,catalog_revision,profile_id,logical_id,source_key,source,maintenance,job_identity,dump_tool_sha256,state,
 		 stop_intended_at,stop_proved_at,lock_intended_at,lock_proved_at,stage_intended_at,stage_proved_at,artifact_path,artifact,
 		 artifact_receipt_canonical,artifact_receipt_sha256,artifact_receipt_signing_algorithm,artifact_receipt_signing_key_id,artifact_receipt_signature)
-		 VALUES ($1,$2,$3,'mini','fixture-source',$4,$5,$6,$7,$8,'stage-proved',now(),now(),now(),now(),now(),now(),$9,$10,$11,$12,$13,$14,$15)`,
-		accepted.Operation.ID, verified.AcceptanceIntentID, revision, key, sourceJSON, maintenanceJSON, jobJSON, toolDigest, path, artifactJSON,
+		 VALUES ($1,$2,$3,'mini',$4,$5,$6,$7,$8,$9,'stage-proved',now(),now(),now(),now(),now(),now(),$10,$11,$12,$13,$14,$15,$16)`,
+		accepted.Operation.ID, verified.AcceptanceIntentID, revision, logicalID, key, sourceJSON, maintenanceJSON, jobJSON, toolDigest, path, artifactJSON,
 		canonical, hex.EncodeToString(digest[:]), signature.Algorithm, signature.KeyID, signature.Value)
 	if err != nil {
 		t.Fatal(err)
