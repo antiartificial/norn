@@ -1026,6 +1026,8 @@ func (db *DB) RecoverExpiredOperations(ctx context.Context) error {
 		      WHEN kind = 'app.deploy' THEN 'deploy interrupted after mutable stage; manual review required before retry'
 		      WHEN kind = 'app.snapshot-prune' THEN 'snapshot pruning was interrupted; inspect retained files before retrying'
 		      WHEN kind = 'app.snapshot-restore' THEN 'snapshot restore was interrupted; verify database integrity before retrying'
+		      WHEN kind = 'app.snapshot-import' THEN 'snapshot import was interrupted; inspect local dump and provenance before retrying'
+		      WHEN kind = 'app.snapshot-export' THEN 'snapshot export was interrupted; inspect remote dump and manifest before retrying'
 		      WHEN kind = 'app.migrate' THEN 'schema migration was interrupted; inspect migration and database state before retrying'
 		      WHEN kind = 'app.rollback' THEN 'rollback was interrupted; inspect regional deployment state before retrying'
 		      ELSE 'operation interrupted after a non-retryable stage; manual review required'

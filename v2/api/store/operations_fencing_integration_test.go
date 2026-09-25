@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"os"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -294,9 +295,16 @@ func TestExpiredOperationRecoveryPreservesLiveAndClassifiesSafeWork(t *testing.T
 		t.Fatal(err)
 	}
 	unsafeData := insertOperationFixture(t, stores[0], "app.migrate", 5, map[string]interface{}{})
+	unsafeImport := insertOperationFixture(t, stores[0], "app.snapshot-import", 1, map[string]interface{}{})
+	unsafeExport := insertOperationFixture(t, stores[0], "app.snapshot-export", 1, map[string]interface{}{})
 	maintenance := insertOperationFixture(t, stores[0], "platform.upgrade", 5, map[string]interface{}{})
 	if _, _, err := stores[0].ClaimNextOperation(ctx, "data-owner", 100*time.Millisecond, []string{"app.migrate"}); err != nil {
 		t.Fatal(err)
+	}
+	for _, kind := range []string{"app.snapshot-import", "app.snapshot-export"} {
+		if _, _, err := stores[0].ClaimNextOperation(ctx, "snapshot-owner", 100*time.Millisecond, []string{kind}); err != nil {
+			t.Fatal(err)
+		}
 	}
 	if _, _, err := stores[0].ClaimNextOperation(ctx, "maintenance-owner", 100*time.Millisecond, []string{"platform.upgrade"}); err != nil {
 		t.Fatal(err)
@@ -307,10 +315,16 @@ func TestExpiredOperationRecoveryPreservesLiveAndClassifiesSafeWork(t *testing.T
 	}
 	assertOperationDeploymentStatus(t, stores[1], safeOp.ID, safeDeployment.ID, model.OperationQueued, model.StatusQueued)
 	assertOperationDeploymentStatus(t, stores[1], unsafeOp.ID, unsafeDeployment.ID, model.OperationFailed, model.StatusFailed)
-	for _, id := range []string{unsafeData.ID, maintenance.ID} {
+	for _, id := range []string{unsafeData.ID, unsafeImport.ID, unsafeExport.ID, maintenance.ID} {
 		got, err := stores[1].GetOperation(ctx, id)
 		if err != nil || got.Status != model.OperationFailed || got.Metadata["manualRecoveryRequired"] != true {
 			t.Fatalf("manual recovery operation %s = %+v err=%v", id, got, err)
+		}
+		if id == unsafeImport.ID && !strings.Contains(got.Message, "local dump and provenance") {
+			t.Fatalf("import recovery did not identify local inspection: %q", got.Message)
+		}
+		if id == unsafeExport.ID && !strings.Contains(got.Message, "remote dump and manifest") {
+			t.Fatalf("export recovery did not identify remote inspection: %q", got.Message)
 		}
 	}
 }
