@@ -54,9 +54,11 @@ func TestEtcdFleetGitHubDispatchLostResponseReusesPrivateNonceEtcd(t *testing.T)
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer client.Close()
 	prefix := "/norn-etcd-fleet-github-dispatch/" + uuid.NewString()
-	t.Cleanup(func() { _, _ = client.Delete(context.Background(), prefix, clientv3.WithPrefix()) })
+	t.Cleanup(func() {
+		_, _ = client.Delete(context.Background(), prefix, clientv3.WithPrefix())
+		_ = client.Close()
+	})
 	cfg := &config.Config{AuditSigningKey: "norn-etcd-fleet-github-dispatch-signing-key", FleetGitHubRepository: "acme/norn-fleet", FleetGitHubConfigPath: "environments/staging/nyc3/cluster.yaml"}
 	signer, err := store.NewHMACAcceptanceSigner(cfg.AuditSigningKey)
 	if err != nil {
@@ -90,8 +92,9 @@ func TestEtcdFleetGitHubDispatchLostResponseReusesPrivateNonceEtcd(t *testing.T)
 	}
 	fake := &lostResponseFleetGitHub{approved: githubapp.Dispatch{PlanRunID: 91, PlanSHA: strings.Repeat("a", 64), ApprovedHeadSHA: strings.Repeat("b", 40)}}
 	route := etcdFleetGitHubDispatch(cfg, operations, fake)
-	serve := func() *httptest.ResponseRecorder {
-		req := httptest.NewRequest(http.MethodPost, "/api/v1/fleet/plans/"+plan.ID+"/github/dispatch", bytes.NewBufferString(`{"allowDestructive":true}`))
+	serve := func(allowDestructive bool) *httptest.ResponseRecorder {
+		body, _ := json.Marshal(etcdFleetGitHubDispatchRequest{AllowDestructive: allowDestructive})
+		req := httptest.NewRequest(http.MethodPost, "/api/v1/fleet/plans/"+plan.ID+"/github/dispatch", bytes.NewReader(body))
 		routeContext := chi.NewRouteContext()
 		routeContext.URLParams.Add("planID", plan.ID)
 		req = req.WithContext(context.WithValue(req.Context(), chi.RouteCtxKey, routeContext))
@@ -100,11 +103,14 @@ func TestEtcdFleetGitHubDispatchLostResponseReusesPrivateNonceEtcd(t *testing.T)
 		route.ServeHTTP(recorder, req)
 		return recorder
 	}
-	first := serve()
+	first := serve(true)
 	if first.Code != http.StatusBadGateway || len(fake.nonces) != 1 || strings.Contains(first.Body.String(), fake.nonces[0]) {
 		t.Fatalf("lost response status=%d body=%s nonces=%v", first.Code, first.Body.String(), fake.nonces)
 	}
-	second := serve()
+	if changed := serve(false); changed.Code != http.StatusConflict || len(fake.nonces) != 1 {
+		t.Fatalf("changed destructive intent after ambiguous dispatch: %d %s", changed.Code, changed.Body.String())
+	}
+	second := serve(true)
 	if second.Code != http.StatusCreated || len(fake.nonces) != 2 || fake.nonces[0] != fake.nonces[1] || strings.Contains(second.Body.String(), fake.nonces[0]) {
 		t.Fatalf("recovery status=%d body=%s nonces=%v", second.Code, second.Body.String(), fake.nonces)
 	}
@@ -112,8 +118,11 @@ func TestEtcdFleetGitHubDispatchLostResponseReusesPrivateNonceEtcd(t *testing.T)
 	if err != nil || bound.RunID != 93 || bound.PlanSHA256 != fake.approved.PlanSHA || bound.ApprovedHeadSHA != fake.approved.ApprovedHeadSHA {
 		t.Fatalf("bound=%+v err=%v", bound, err)
 	}
-	third := serve()
+	third := serve(true)
 	if third.Code != http.StatusOK || len(fake.nonces) != 2 || strings.Contains(third.Body.String(), fake.nonces[0]) {
 		t.Fatalf("replay status=%d body=%s nonces=%v", third.Code, third.Body.String(), fake.nonces)
+	}
+	if changed := serve(false); changed.Code != http.StatusConflict || len(fake.nonces) != 2 {
+		t.Fatalf("changed destructive intent after binding: %d %s", changed.Code, changed.Body.String())
 	}
 }

@@ -89,7 +89,16 @@ func etcdFleetGitHubDispatch(cfg *config.Config, operations *etcdstore.V3Operati
 			return
 		}
 		if bound, bindErr := operations.GetFleetRunnerDispatchBinding(r.Context(), planID); bindErr == nil {
-			writeEtcdSourceJSON(w, http.StatusOK, etcdFleetGitHubDispatchResponse{PlanID: bound.PlanID, PlanSHA256: bound.PlanSHA256, ApprovedHeadSHA: bound.ApprovedHeadSHA, RunID: bound.RunID, WorkflowURL: bound.WorkflowURL, AllowDestructive: request.AllowDestructive})
+			prepared, prepErr := operations.GetFleetGitHubDispatchPreparation(r.Context(), planID)
+			if prepErr != nil {
+				handler.WriteControlProblem(w, r, http.StatusServiceUnavailable, "fleet_github_dispatch_preparation_unavailable", "protected dispatch preparation is unavailable")
+				return
+			}
+			if prepared.FleetEnvironment != environment || prepared.AllowDestructive != request.AllowDestructive {
+				handler.WriteControlProblem(w, r, http.StatusConflict, "fleet_github_dispatch_binding_mismatch", "this plan already has a different protected dispatch binding")
+				return
+			}
+			writeEtcdSourceJSON(w, http.StatusOK, etcdFleetGitHubDispatchResponse{PlanID: bound.PlanID, PlanRunID: prepared.PlanRunID, PlanSHA256: bound.PlanSHA256, ApprovedHeadSHA: bound.ApprovedHeadSHA, RunID: bound.RunID, WorkflowURL: bound.WorkflowURL, AllowDestructive: prepared.AllowDestructive})
 			return
 		} else if !errors.Is(bindErr, etcdstore.ErrNotFound) {
 			handler.WriteControlProblem(w, r, http.StatusServiceUnavailable, "fleet_github_dispatch_unavailable", "protected dispatch binding is unavailable")
@@ -106,6 +115,10 @@ func etcdFleetGitHubDispatch(cfg *config.Config, operations *etcdstore.V3Operati
 		}
 		if prepErr != nil {
 			handler.WriteControlProblem(w, r, http.StatusConflict, "fleet_github_dispatch_preparation_unavailable", "protected dispatch preparation is unavailable")
+			return
+		}
+		if prepared.FleetEnvironment != environment || prepared.AllowDestructive != request.AllowDestructive {
+			handler.WriteControlProblem(w, r, http.StatusConflict, "fleet_github_dispatch_binding_mismatch", "this plan already has a different protected dispatch binding")
 			return
 		}
 		approved := &githubapp.Dispatch{PlanRunID: prepared.PlanRunID, PlanSHA: prepared.PlanSHA256, ApprovedHeadSHA: prepared.ApprovedHeadSHA}
