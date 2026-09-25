@@ -119,6 +119,17 @@ passed for the qualified declaration and rejection after spec drift; the
 database/model/Nomad/pipeline package tests passed locally. The resolver's
 transport result alone is not permission to deliver an unqualified client.
 
+Production artifact admission now has one code-bound upstream prebuilt case:
+the exact qualified WordPress adapter and OCI index digest may pass without a
+`norn.git.sha` image signature, which an app source repository cannot
+truthfully assert for Docker Official WordPress. Registry digest lookup and
+vulnerability scanning still run. Missing content, changed image, generic
+consumer, altered runtime declaration, and bound release artifacts retain the
+normal signature policy. The trust assertion is embedded in the signed Norn
+binary; a separately attested Norn mirror is later distribution hardening.
+
 The signed app-deploy-to-generated-allocation route has not yet been run as
-one live end-to-end test. Mini rollback, MySQL backup/restore, and release
-rollout remain separate gates.
+one live end-to-end test. The exception does not cover bound release artifact
+rollback/import; that path needs a spec-bound receipt or a qualified mirror.
+Mini rollback, MySQL backup/restore, and release rollout remain separate
+gates.
