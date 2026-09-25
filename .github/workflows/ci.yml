@@ -96,6 +96,10 @@ jobs:
         env:
           NORN_TEST_DATABASE_URL: postgres://norn_fixture:norn_fixture@127.0.0.1:5432/norn_fixture?sslmode=disable
         run: go test ./store -run '^TestSyntheticMiniControlUpgradeAndReaderBoundary$' -count=1 -v
+      - name: Verify Mini protected backup producer and proof
+        run: |
+          python3 v2/scripts/test-mini-create-protected-backup.py
+          python3 v2/scripts/test-mini-protected-backup.py
 
   web:
     name: web

@@ -16,6 +16,10 @@ change record.
 Create the verified control database backup as a nonempty regular file owned
 by the invoking user, at an absolute private path with mode exactly `0600`.
 Create a separate mode-`0600`, user-owned, absolute-path JSON backup proof.
+The [protected backup helper](m5-protected-backup-private-restore.md#create-the-protected-input)
+can create and verify both files after the protected maintenance environment
+has the exact runtime database URL and audit key. Retain the artifact outside
+the source host and separately prove its private restore before maintenance.
 The proof contains exactly these fields:
 
 ```json

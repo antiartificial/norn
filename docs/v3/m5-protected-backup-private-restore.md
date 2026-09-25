@@ -48,3 +48,30 @@ Do not commit the artifact, proof, database URL, or signing key. A passing
 private restore still leaves the scheduled maintenance, actual service fence,
 promotion, traffic observation, and supported rollback/roll-forward procedure
 as separate gates.
+
+## Create the protected input
+
+The checked
+[`mini-create-protected-backup`](../../v2/scripts/mini-create-protected-backup)
+helper creates a custom-format dump and exact proof in an existing absolute
+directory owned by the invoking user with mode `0700`. It requires the same
+`NORN_DATABASE_URL` and `NORN_AUDIT_SIGNING_KEY` that the maintenance command
+will use. Load those values through the protected environment; do not type
+them into shared shell history. With the exact installed legacy SHA:
+
+```sh
+v2/scripts/mini-create-protected-backup \
+  --legacy-release <full-installed-release-sha> \
+  --output-dir /absolute/private/backup-directory
+```
+
+The helper forces a read-only source transaction, writes both files with mode
+`0600` and exclusive creation, checks the custom archive's listing, computes
+the digest and database-identity HMAC, and calls the independent proof
+verifier before returning their paths and safe fingerprints. It cleans up its
+own partial files on failure. A disposable PostgreSQL 16.15 run passed with a
+Unix-socket source and a synthetic row. That run validates the producer and
+verifier, not a Mini production-key backup. Retain and protect the resulting
+artifact off the source host as required by the change record, then run the
+private restore against those exact bytes. Mini's current launcher lacks the
+required URL and audit key, so no production-key artifact has yet been made.

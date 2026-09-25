@@ -1,0 +1,143 @@
+#!/usr/bin/env python3
+"""Create an owner-only Mini control dump and exact legacy backup proof."""
+
+import argparse
+import datetime
+import hashlib
+import hmac
+import json
+import os
+from pathlib import Path
+import re
+import secrets
+import stat
+import subprocess
+import sys
+import urllib.parse
+
+
+def fail(message):
+    raise SystemExit(message)
+
+
+def source_environment(database_url):
+    parsed = urllib.parse.urlparse(database_url)
+    if parsed.scheme not in ("postgres", "postgresql") or not parsed.path or parsed.path == "/" or parsed.fragment:
+        fail("NORN_DATABASE_URL must identify one PostgreSQL database")
+    query = urllib.parse.parse_qs(parsed.query, keep_blank_values=True)
+    if any(len(values) != 1 for values in query.values()):
+        fail("NORN_DATABASE_URL has a repeated query parameter")
+    socket_host = query.get("host", [""])[0]
+    host = socket_host or parsed.hostname
+    if not host:
+        fail("NORN_DATABASE_URL has no PostgreSQL host")
+    if socket_host and (not socket_host.startswith("/") or not os.path.isdir(socket_host)):
+        fail("NORN_DATABASE_URL Unix socket directory is unavailable")
+    try:
+        port = parsed.port or 5432
+    except ValueError:
+        fail("NORN_DATABASE_URL has an invalid port")
+    env = {key: value for key, value in os.environ.items() if not key.startswith(("PG", "NORN_"))}
+    env.update({
+        "PGHOST": host,
+        "PGPORT": str(port),
+        "PGUSER": urllib.parse.unquote(parsed.username or ""),
+        "PGPASSWORD": urllib.parse.unquote(parsed.password or ""),
+        "PGDATABASE": urllib.parse.unquote(parsed.path.lstrip("/")),
+        "PGSSLMODE": query.get("sslmode", ["prefer"])[0],
+        "PGOPTIONS": "-c default_transaction_read_only=on",
+    })
+    return env
+
+
+def run_checked(argv, **kwargs):
+    try:
+        result = subprocess.run(argv, stderr=subprocess.PIPE, timeout=300, check=False, **kwargs)
+    except (OSError, subprocess.TimeoutExpired):
+        fail("protected backup tool failed or timed out")
+    if result.returncode:
+        fail("protected backup tool failed")
+    return result
+
+
+def main():
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("--legacy-release", required=True)
+    parser.add_argument("--output-dir", type=Path, required=True)
+    parser.add_argument("--postgres-bin", type=Path, default=Path("/Applications/Postgres.app/Contents/Versions/latest/bin"))
+    args = parser.parse_args()
+    if not re.fullmatch(r"[0-9a-f]{40}", args.legacy_release):
+        fail("legacy release must be a full lowercase SHA")
+    database_url = os.environ.get("NORN_DATABASE_URL", "")
+    signing_key = os.environ.get("NORN_AUDIT_SIGNING_KEY", "")
+    if not database_url or len(signing_key) < 32:
+        fail("NORN_DATABASE_URL and a 32-byte NORN_AUDIT_SIGNING_KEY are required")
+    source_env = source_environment(database_url)
+    if not args.output_dir.is_absolute():
+        fail("output directory must be absolute")
+    directory = os.open(args.output_dir, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
+    try:
+        info = os.fstat(directory)
+        if info.st_uid != os.geteuid() or stat.S_IMODE(info.st_mode) != 0o700:
+            fail("output directory must be invoking-user owned with mode 0700")
+        stamp = datetime.datetime.now(datetime.timezone.utc).strftime("%Y%m%dT%H%M%SZ")
+        basename = f"control-{stamp}-{secrets.token_hex(4)}"
+        artifact_name, proof_name = basename + ".dump", basename + ".proof.json"
+        artifact = args.output_dir / artifact_name
+        proof = args.output_dir / proof_name
+        created = []
+        try:
+            artifact_fd = os.open(artifact_name, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, 0o600, dir_fd=directory)
+            created.append(artifact_name)
+            with os.fdopen(artifact_fd, "wb") as output:
+                run_checked([str(args.postgres_bin / "pg_dump"), "--format=custom", "--no-owner", "--no-privileges"], stdout=output, env=source_env)
+                output.flush()
+                os.fsync(output.fileno())
+            run_checked([str(args.postgres_bin / "pg_restore"), "--list", str(artifact)], stdout=subprocess.DEVNULL, env={"PATH": os.environ.get("PATH", "")})
+            digest = hashlib.sha256()
+            with open(artifact, "rb") as handle:
+                for chunk in iter(lambda: handle.read(1024 * 1024), b""):
+                    digest.update(chunk)
+            size = artifact.stat().st_size
+            if size <= 0:
+                fail("protected backup artifact is empty")
+            identity = "hmac-sha256:" + hmac.new(
+                signing_key.encode(), b"norn.database-identity/v1\0" + database_url.encode(), hashlib.sha256
+            ).hexdigest()
+            document = {
+                "schema": "norn.legacy-control-backup/v1",
+                "sourceReleaseSHA": args.legacy_release,
+                "databaseIdentity": identity,
+                "backupSHA256": digest.hexdigest(),
+                "backupBytes": size,
+                "createdAt": datetime.datetime.now(datetime.timezone.utc).isoformat(),
+            }
+            proof_fd = os.open(proof_name, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, 0o600, dir_fd=directory)
+            created.append(proof_name)
+            with os.fdopen(proof_fd, "w", encoding="utf-8") as output:
+                json.dump(document, output, separators=(",", ":"))
+                output.write("\n")
+                output.flush()
+                os.fsync(output.fileno())
+            os.fsync(directory)
+            verifier = Path(__file__).with_name("mini-verify-protected-backup")
+            result = run_checked([str(verifier), str(proof), str(artifact), args.legacy_release], stdout=subprocess.PIPE)
+            if result.stdout.decode().strip() != f"{digest.hexdigest()} {size}":
+                fail("protected backup verifier returned a different artifact identity")
+            print(f"backup_artifact={artifact}")
+            print(f"backup_proof={proof}")
+            print(f"backup_sha256={digest.hexdigest()}")
+            print(f"backup_bytes={size}")
+        except BaseException:
+            for name in reversed(created):
+                try:
+                    os.unlink(name, dir_fd=directory)
+                except OSError:
+                    pass
+            raise
+    finally:
+        os.close(directory)
+
+
+if __name__ == "__main__":
+    main()
