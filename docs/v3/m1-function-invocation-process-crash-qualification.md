@@ -32,3 +32,10 @@ go test ./api -run '^TestClaimedFunctionV3WorkerProcessCrashNomadPostgres$' -cou
 The test is not a full deployment qualification. It leaves protected GitHub,
 OIDC, real multi-replica control APIs, and production backup/restore evidence
 to their respective release gates.
+
+On 2026-09-25, the test passed at Norn commit `593d856` against disposable
+Nomad 2.0.7 and PostgreSQL 17.7, using the local content-addressed BusyBox
+image. The test reported `PASS` in 41.98 seconds. The temporary Nomad agent
+and PostgreSQL container were removed afterward. This qualifies the literal
+worker-kill/two-successor recovery case on that code revision; it does not
+qualify Mini launchd behavior or a protected Fleet rollout.
