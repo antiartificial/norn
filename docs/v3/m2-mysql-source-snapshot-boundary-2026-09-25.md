@@ -26,11 +26,9 @@ is still running despite terminal allocations. This is not a source write
 lock or a snapshot receipt.
 
 `quiesce-intended` is a reservation, **not** a write-stop proof. Before a
-snapshot can be accepted for restore, the remaining private runner must
-durably checkpoint the source account-lock intent and verified session drain,
-stage the artifact
-through the snapshot credential, and sign a receipt that binds those proofs to
-the artifact. The existing restore request still accepts an operator-supplied
+snapshot can be accepted for restore, the private runner must stage the artifact through the snapshot credential
+and sign a receipt that binds the durable stop and account-lock proofs to the
+artifact. The existing restore request still accepts an operator-supplied
 source-quiescence reference; that private prototype must be replaced by the
 signed snapshot receipt. Source unlock/restart needs a separately signed
 recovery operation. No public snapshot or restore capability is enabled.
@@ -46,8 +44,9 @@ both reservations held. Generic runtime-fence release rejects a bound source
 operation. There is no automatic retry, public route, unlock, or resume.
 
 This is still a private implementation step, not a qualified source snapshot
-workflow. The operation claim is checked around each checkpoint but not renewed
-across the external Nomad/MySQL calls. A production runner needs lease renewal
-and cancellation, signed artifact staging/receipt, explicit recovery after an
-ambiguous effect, and a signed resume/unlock decision. Direct host mutations
+workflow. The private quiescence runner renews its operation claim before the Nomad
+stop and throughout stop and account lock. Renewal loss cancels the shared
+context, prevents progression to the next effect, and retains both fences.
+Release qualification still needs signed artifact staging/receipt, explicit
+recovery after an ambiguous effect, and a signed resume/unlock decision. Direct host mutations
 also need qualification against the global fence at their actual effect point.
