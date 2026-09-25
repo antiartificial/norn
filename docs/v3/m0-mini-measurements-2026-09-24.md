@@ -80,3 +80,13 @@ were observed. The authenticated Mini inventory at 08:23 UTC still reported
 and production readiness `blocked`. This longer observation still does not
 include a full representative workload cycle or establish a numeric retention,
 backup-space, or restore-time budget.
+
+An eighth read-only aggregate sample at 2026-09-25 09:58 UTC measured database
+size 243,559,571 bytes and user-table total 234,545,152 bytes. Each is
+3,235,840 bytes above the 2026-09-24 15:59 UTC baseline over about 18 hours.
+Heap size was 145,973,248 bytes and indexes were 87,506,944 bytes. An
+authenticated, read-only inventory at the same time reported API version
+`v2.20.0-platform-30-ga5da8ef`, healthy control services, 27 app records,
+zero active operations, host status `ok`, production readiness `blocked`, and
+`fleet_node_pools.configured=false`. This remains an observation rather than
+a representative workload-cycle rate or a numeric release budget.
