@@ -12,8 +12,8 @@ func TestControlSchemaAdoptsLegacyRowsWithoutReplacingEvidence(t *testing.T) {
 	pool := schemaMigrationTestPools(t, 1)[0]
 	ctx := context.Background()
 	migrations := ControlSchemaMigrations()
-	if len(migrations) != 22 || migrations[16].Version != 17 || migrations[17].Version != 18 || migrations[18].Version != 19 || migrations[19].Version != 20 || migrations[20].Version != 21 || migrations[21].Version != 22 {
-		t.Fatalf("control migration catalog has %d migrations, want immutable baseline through 17 and function migrations 18 through 22", len(migrations))
+	if len(migrations) != 23 || migrations[16].Version != 17 || migrations[17].Version != 18 || migrations[18].Version != 19 || migrations[19].Version != 20 || migrations[20].Version != 21 || migrations[21].Version != 22 || migrations[22].Version != 23 {
+		t.Fatalf("control migration catalog has %d migrations, want immutable baseline through 17 and function migrations 18 through 23", len(migrations))
 	}
 	for index, migration := range migrations {
 		if migration.Version != int64(index+1) {
@@ -55,7 +55,7 @@ func TestControlSchemaAdoptsLegacyRowsWithoutReplacingEvidence(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if status.CurrentMigrationVersion != 22 || len(status.AppliedVersions) != 22 || status.AppliedVersions[21] != 22 || status.MinimumReaderVersion != FunctionInvocationArchiveReaderVersion || status.MinimumWriterVersion != FunctionDeploymentProvenanceWriterVersion {
+	if status.CurrentMigrationVersion != 23 || len(status.AppliedVersions) != 23 || status.AppliedVersions[22] != 23 || status.MinimumReaderVersion != FunctionInvocationArchiveReaderVersion || status.MinimumWriterVersion != FunctionDeploymentProvenanceWriterVersion {
 		t.Fatalf("migration status = %#v", status)
 	}
 

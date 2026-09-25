@@ -113,7 +113,7 @@ selects the signed private-invocation admission/claimed worker only when the
 complete PostgreSQL runtime is configured, otherwise returns an explicit
 503. Historical function executions remain readable. The claimed function
 path still needs real Nomad crash, two-worker, archive-cleanup, and private
-Mini migration-22 rollback qualification before it is a release-ready
+Mini migration-23 rollback qualification before it is a release-ready
 capability. Etcd function parity is absent.
 
 `Forge`/teardown/toggle endpoint remain the largest default inline host

@@ -6,11 +6,6 @@ package store
 // a function invocation without reserving archive capacity.
 const FunctionInvocationArchiveWriterVersion int64 = 18
 
-// FunctionInvocationArchiveReaderVersion is the first reader that accepts v2
-// evidence bundles while retaining v1 compatibility. Migration 21 excludes
-// older readers before any v2 function bundle can be published.
-const FunctionInvocationArchiveReaderVersion int64 = 4
-
 const functionInvocationArchiveMigrationSQL = `
 CREATE INDEX idx_function_invocation_archive_intents
  ON evidence_archive_intents (operation_id, state)
@@ -19,10 +14,12 @@ CREATE INDEX idx_function_invocation_archive_intents
 
 func functionInvocationArchiveMigration() SchemaMigration {
 	return SchemaMigration{
-		Version:              21,
-		Name:                 "function-invocation-operation-evidence",
-		SQL:                  functionInvocationArchiveMigrationSQL,
-		MinimumReaderVersion: FunctionInvocationArchiveReaderVersion,
+		Version: 21,
+		Name:    "function-invocation-operation-evidence",
+		SQL:     functionInvocationArchiveMigrationSQL,
+		// This value is frozen by the published migration-21 checksum. The
+		// reader floor for function evidence is raised by migration 23.
+		MinimumReaderVersion: OperationAcceptanceRetirementReaderVersion,
 		MinimumWriterVersion: FunctionInvocationArchiveWriterVersion,
 	}
 }

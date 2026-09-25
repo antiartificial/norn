@@ -5,7 +5,7 @@ The normal `/invoke` route now selects signed PostgreSQL admission and a
 claimed worker only when the full private runtime is configured; otherwise it
 returns 503. The legacy inline HTTP-to-Nomad handler is no longer routed.
 Production can configure the same complete PostgreSQL bundle, but release
-qualification and etcd invocation parity remain open. Migrations 18–22
+qualification and etcd invocation parity remain open. Migrations 18–23
 implement the private envelope, effect attempts, cleanup and archive contract.
 A private Mini copy has only been rehearsed through migration 19; mixed-version
 and rollback gates remain before deployment.
@@ -263,9 +263,10 @@ process-crash evidence.
 The private variable cleanup consumer now supports exact owner and revision
 checked deletion, and PostgreSQL migration 20 stores lease-fenced public
 cleanup intents. Claim eligibility requires terminal receipt, attempted
-variable creation, and verified operation archive evidence. Migration 21
-raises the reader and writer contracts so private function acceptance always
-reserves that archive subject and older readers cannot encounter v2 bundles.
+variable creation, and verified operation archive evidence. Migration 21 keeps
+its published archive contract; migration 23 records the reader floor in a
+forward-only ledger entry so older readers cannot encounter v2 bundles without
+changing an applied checksum.
 The archive now seals the signed public operation, terminal
 execution, and public effect-attempt rows as a v2 bundle; old v1 bundles remain
 readable. The cleanup consumer now runs with the enabled PostgreSQL runtime and
@@ -274,7 +275,7 @@ needs a replay/key-retention policy before production
 activation. A Nomad job purge policy, etcd cleanup parity,
 ACL-enabled allocation with database files, literal crash/two-replica tests,
 immutable spec recovery for changed-spec rollback, live release allocation and crash/race
-qualification, and Mini migration 22 mixed-version/rollback
+qualification, and Mini migration 23 mixed-version/rollback
 rehearsal also remain required. Migration 22 raises the minimum writer to 19,
 so deploying it retires older writable binaries and needs a roll-forward
 recovery rehearsal before release.
@@ -294,5 +295,5 @@ and cleanup checks the exact `norn.function-invoke/<operation-id>` owner
 marker written to the variable. The test agent and database were stopped.
 
 This is one local success path. Literal process crashes and two-worker races,
-named database allocation files, Mini migration-22 rollback, key-retention
+named database allocation files, Mini migration-23 rollback, key-retention
 restore, and etcd parity still need release evidence.
