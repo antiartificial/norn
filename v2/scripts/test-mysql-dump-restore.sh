@@ -43,5 +43,6 @@ docker cp "$mysql_container:/var/lib/mysql/ca.pem" "$scratch/ca.pem"
 chmod 600 "$scratch/ca.pem"
 cd "$repo_root/v2/api"
 NORN_TEST_MYSQL_DSN="root:${root_password}@tcp(127.0.0.1:${host_port})/mysql" \
+  NORN_TEST_MYSQL_CA_PEM="$scratch/ca.pem" \
   NORN_TEST_MYSQL_CA_FILE="$scratch/ca.pem" \
-  go test ./database -run '^TestMySQLExactTargetDumpRestore$' -count=1 -v
+  go test ./database -run '^TestMySQL(RuntimeComponentsReachDeclaredTarget|ExactTargetDumpRestore)$' -count=1 -v

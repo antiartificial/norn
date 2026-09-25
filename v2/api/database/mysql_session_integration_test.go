@@ -4,8 +4,11 @@ import (
 	"context"
 	"database/sql"
 	"database/sql/driver"
+	"encoding/pem"
 	"fmt"
 	"net"
+	"net/http"
+	"net/http/httptest"
 	"os"
 	"strconv"
 	"strings"
@@ -92,6 +95,27 @@ func TestMySQLRuntimeComponentsReachDeclaredTarget(t *testing.T) {
 		}
 		if material, err := tlsSession.RuntimeTLSMaterial(); err != nil || string(material["ca"]) != string(caPEM) {
 			t.Fatal("TLS MySQL session did not expose matching CA material")
+		}
+		unrelatedServer := httptest.NewTLSServer(http.HandlerFunc(func(http.ResponseWriter, *http.Request) {}))
+		unrelatedCA := pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: unrelatedServer.Certificate().Raw})
+		unrelatedServer.Close()
+		wrongCASession, err := OpenSession(ctx, tlsResolved, literalSecrets{"secret:mysql": `{"password":"` + password + `"}`, "secret:mysql-ca": string(unrelatedCA)})
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer wrongCASession.Close()
+		if _, err := wrongCASession.Probe(ctx); err == nil {
+			t.Fatal("MySQL adapter accepted an unrelated CA")
+		}
+		wrongHost := tlsResolved
+		wrongHost.TLS = DatabaseTLS{Mode: TLSVerifyFull, CARef: "secret:mysql-ca", ServerName: "wrong.example"}
+		wrongHostSession, err := OpenSession(ctx, wrongHost, literalSecrets{"secret:mysql": `{"password":"` + password + `"}`, "secret:mysql-ca": string(caPEM)})
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer wrongHostSession.Close()
+		if _, err := wrongHostSession.Probe(ctx); err == nil {
+			t.Fatal("MySQL adapter accepted a wrong server name")
 		}
 	}
 	values, err := session.RuntimeComponents()
