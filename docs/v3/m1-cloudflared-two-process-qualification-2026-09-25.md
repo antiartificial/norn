@@ -36,3 +36,12 @@ No live Mini config or service was touched. Remaining release proof: actual
 Mini `launchctl` behavior on a private copy, host receipt recovery after host
 replacement, and multi-host Fleet ingress design. This qualification is for
 the PostgreSQL Mini host-local path.
+
+## Current integration branch rerun — 2026-09-25
+
+The two-API-process handler test and both wrong-host pipeline process tests
+passed on Norn PR #76 against disposable PostgreSQL 16. The first uses two
+separate API and worker processes against one schema and a fake `launchctl`;
+the latter tests exercise wrong-host refusal and later correct-host reclaim.
+The result refreshes local process-boundary evidence on the current branch.
+It does not exercise Mini's actual `launchctl` service or Fleet ingress.
