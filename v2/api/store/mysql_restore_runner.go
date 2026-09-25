@@ -3,8 +3,10 @@ package store
 import (
 	"context"
 	"fmt"
+	"os"
 	"time"
 
+	"norn/v2/api/artifactstore"
 	"norn/v2/api/database"
 )
 
@@ -12,11 +14,13 @@ import (
 // capability calls it; the caller must supply a live claimed operation that
 // was already accepted and prepared through the signed durable-intent path.
 type MySQLRestoreRunner struct {
-	Control    *DB
-	Acceptance *PGOperationStore
-	Secrets    database.SecretSource
-	Tool       database.MySQLRestoreTool
-	ClaimLease time.Duration
+	Control              *DB
+	Acceptance           *PGOperationStore
+	Secrets              database.SecretSource
+	Tool                 database.MySQLRestoreTool
+	Objects              artifactstore.Store
+	MaterializeDirectory string
+	ClaimLease           time.Duration
 }
 
 func (r MySQLRestoreRunner) RunClaimed(ctx context.Context, claim OperationClaim) (runErr error) {
@@ -43,6 +47,26 @@ func (r MySQLRestoreRunner) RunClaimed(ctx context.Context, claim OperationClaim
 		}
 	}()
 	runCtx := supervisor.Context()
+	materializedPath := ""
+	if r.Objects != nil {
+		materializedPath, err = r.Control.MaterializeClaimedMySQLRestoreArtifact(runCtx, r.Acceptance, claim, r.Objects, r.MaterializeDirectory)
+		if err != nil {
+			return err
+		}
+		defer os.Remove(materializedPath)
+	} else {
+		// A retained source must never fall back to its historical staging
+		// path. The legacy private stage-only path remains for existing tests.
+		accepted, acceptErr := r.Acceptance.VerifyAcceptedOperation(runCtx, claim.OperationID())
+		var request MySQLRestoreRequest
+		if acceptErr != nil || decodeMySQLRestorePayload(accepted.Operation.Payload, &request) != nil {
+			return ErrMySQLRestoreFence
+		}
+		var sourceState string
+		if err := r.Control.Pool.QueryRow(runCtx, `SELECT state FROM mysql_source_snapshot_intents WHERE operation_id=$1`, request.SourceArtifact.OperationID).Scan(&sourceState); err != nil || sourceState != "stage-proved" {
+			return ErrMySQLRestoreFence
+		}
+	}
 	// The separately accepted restore takes the source's active runtime fence
 	// in one transaction. No app mutation claim may slip between source staging
 	// and destination maintenance. A retry is bound to the same live claim.
@@ -77,7 +101,12 @@ func (r MySQLRestoreRunner) RunClaimed(ctx context.Context, claim OperationClaim
 	if err := r.Control.VerifyClaimedMySQLRestoreRuntimeLock(runCtx, r.Acceptance, claim); err != nil {
 		return err
 	}
-	intent, err := r.Control.BeginClaimedMySQLRestore(runCtx, r.Acceptance, claim, r.Secrets)
+	var intent MySQLRestoreIntent
+	if materializedPath != "" {
+		intent, err = r.Control.BeginClaimedMySQLRestore(runCtx, r.Acceptance, claim, r.Secrets, materializedPath)
+	} else {
+		intent, err = r.Control.BeginClaimedMySQLRestore(runCtx, r.Acceptance, claim, r.Secrets)
+	}
 	if err != nil {
 		return err
 	}
@@ -94,7 +123,11 @@ func (r MySQLRestoreRunner) RunClaimed(ctx context.Context, claim OperationClaim
 			if resolveErr != nil {
 				err = resolveErr
 			} else {
-				err = database.RestoreMySQLSQLArtifact(runCtx, resolved, r.Secrets, intent.Request.ArtifactPath, intent.Request.Artifact, r.Tool)
+				artifactPath := intent.Request.ArtifactPath
+				if materializedPath != "" {
+					artifactPath = materializedPath
+				}
+				err = database.RestoreMySQLSQLArtifact(runCtx, resolved, r.Secrets, artifactPath, intent.Request.Artifact, r.Tool)
 				if err == nil {
 					restore, restoreErr := database.MySQLRestoreBinding(resolved)
 					if restoreErr != nil {

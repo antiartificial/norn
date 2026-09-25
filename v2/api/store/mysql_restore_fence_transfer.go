@@ -87,7 +87,7 @@ func (db *DB) TransferClaimedMySQLRestoreRuntimeFence(ctx context.Context, accep
 	if err := tx.QueryRow(ctx, `SELECT runtime_fence_epoch,runtime_fence_owner,state,
 		stop_proved_at IS NOT NULL,lock_proved_at IS NOT NULL FROM mysql_source_snapshot_intents
 		WHERE operation_id=$1 FOR UPDATE`, sourceOperation).Scan(&sourceEpoch, &sourceOwner, &sourceState, &stopped, &locked); err != nil ||
-		sourceState != "stage-proved" || !stopped || !locked || sourceEpoch != fence.Epoch || sourceOwner != "mysql-source-snapshot:"+sourceOperation {
+		(sourceState != "stage-proved" && sourceState != "retained-proved") || !stopped || !locked || sourceEpoch != fence.Epoch || sourceOwner != "mysql-source-snapshot:"+sourceOperation {
 		return RuntimeMutationFence{}, ErrMySQLRestoreFence
 	}
 	restoreOwner := "mysql-restore:" + claim.OperationID()

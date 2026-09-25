@@ -58,7 +58,7 @@ var (
 // This creates no SQL write against the application target. An identical
 // retry is idempotent; a different operation cannot consume the same target
 // generation, including after an ambiguous or completed restore.
-func (db *DB) PrepareClaimedMySQLRestore(ctx context.Context, acceptance *PGOperationStore, claim OperationClaim, request MySQLRestoreRequest, secrets database.SecretSource) (MySQLRestoreIntent, error) {
+func (db *DB) PrepareClaimedMySQLRestore(ctx context.Context, acceptance *PGOperationStore, claim OperationClaim, request MySQLRestoreRequest, secrets database.SecretSource, materializedPath ...string) (MySQLRestoreIntent, error) {
 	if db == nil || db.Pool == nil || acceptance == nil || acceptance.db != db || secrets == nil || request.CatalogRevision <= 0 || !validMySQLRestoreSourceArtifact(request.SourceArtifact) {
 		return MySQLRestoreIntent{}, ErrMySQLRestoreFence
 	}
@@ -108,7 +108,14 @@ func (db *DB) PrepareClaimedMySQLRestore(ctx context.Context, acceptance *PGOper
 	if err != nil {
 		return MySQLRestoreIntent{}, ErrMySQLRestoreFence
 	}
-	if _, err := database.PrepareMySQLRestoreWithResolvedCredential(ctx, resolved, restore, request.Target, secrets, request.ArtifactPath, request.Artifact); err != nil {
+	preflightPath := request.ArtifactPath
+	if len(materializedPath) > 1 {
+		return MySQLRestoreIntent{}, ErrMySQLRestoreFence
+	}
+	if len(materializedPath) == 1 {
+		preflightPath = materializedPath[0]
+	}
+	if _, err := database.PrepareMySQLRestoreWithResolvedCredential(ctx, resolved, restore, request.Target, secrets, preflightPath, request.Artifact); err != nil {
 		return MySQLRestoreIntent{}, err
 	}
 	// The exact signed artifact source can be writable at the instant of the
@@ -296,7 +303,7 @@ func (db *DB) VerifyClaimedMySQLRestoreRuntimeLock(ctx context.Context, acceptan
 // commit this state before starting the external mysql process. Reentry after
 // this point fails closed, even if the worker crashed before issuing SQL: it
 // is impossible to distinguish that case from a partially applied dump.
-func (db *DB) BeginClaimedMySQLRestore(ctx context.Context, acceptance *PGOperationStore, claim OperationClaim, secrets database.SecretSource) (MySQLRestoreIntent, error) {
+func (db *DB) BeginClaimedMySQLRestore(ctx context.Context, acceptance *PGOperationStore, claim OperationClaim, secrets database.SecretSource, materializedPath ...string) (MySQLRestoreIntent, error) {
 	if db == nil || db.Pool == nil || acceptance == nil || acceptance.db != db || secrets == nil {
 		return MySQLRestoreIntent{}, ErrMySQLRestoreFence
 	}
@@ -375,7 +382,14 @@ func (db *DB) BeginClaimedMySQLRestore(ctx context.Context, acceptance *PGOperat
 	if err != nil {
 		return MySQLRestoreIntent{}, ErrMySQLRestoreFence
 	}
-	if _, err := database.PrepareMySQLRestoreWithResolvedCredential(ctx, resolved, restore, request.Target, secrets, request.ArtifactPath, request.Artifact); err != nil {
+	preflightPath := request.ArtifactPath
+	if len(materializedPath) > 1 {
+		return MySQLRestoreIntent{}, ErrMySQLRestoreFence
+	}
+	if len(materializedPath) == 1 {
+		preflightPath = materializedPath[0]
+	}
+	if _, err := database.PrepareMySQLRestoreWithResolvedCredential(ctx, resolved, restore, request.Target, secrets, preflightPath, request.Artifact); err != nil {
 		return MySQLRestoreIntent{}, err
 	}
 	result, err := tx.Exec(ctx, `UPDATE mysql_restore_intents SET state='executing', started_at=clock_timestamp() WHERE operation_id=$1 AND state='prepared'`, claim.OperationID())
@@ -528,7 +542,9 @@ func validMySQLRestoreSourceArtifact(source MySQLRestoreSourceArtifact) bool {
 }
 
 // verifyMySQLRestoreSourceArtifact binds the restore's separately signed
-// payload to the retained, service-signed source receipt and its current file.
+// payload to the source's signed staging receipt and, once published, its
+// signed retained-object receipt. The staged file is no longer restore
+// authority after retention is proved.
 // The source row remains reserved; this check does not unlock or transfer its
 // runtime mutation fence.
 func (db *DB) verifyMySQLRestoreSourceArtifact(ctx context.Context, tx pgx.Tx, acceptance *PGOperationStore, request MySQLRestoreRequest) error {
@@ -537,7 +553,7 @@ func (db *DB) verifyMySQLRestoreSourceArtifact(ctx context.Context, tx pgx.Tx, a
 	}
 	var state, digest, sourceKey string
 	if err := tx.QueryRow(ctx, `SELECT state, artifact_receipt_sha256, source_key FROM mysql_source_snapshot_intents
-		WHERE operation_id=$1 FOR SHARE`, request.SourceArtifact.OperationID).Scan(&state, &digest, &sourceKey); err != nil || state != "stage-proved" || digest != request.SourceArtifact.ReceiptSHA256 {
+		WHERE operation_id=$1 FOR SHARE`, request.SourceArtifact.OperationID).Scan(&state, &digest, &sourceKey); err != nil || (state != "stage-proved" && state != "retained-proved") || digest != request.SourceArtifact.ReceiptSHA256 {
 		return ErrMySQLRestoreFence
 	}
 	active, err := loadActiveDatabaseCatalog(ctx, tx)
@@ -549,7 +565,12 @@ func (db *DB) verifyMySQLRestoreSourceArtifact(ctx context.Context, tx pgx.Tx, a
 		receipt.Receipt.Source != request.Artifact.Source || receipt.Receipt.Artifact != request.Artifact || receipt.Receipt.ArtifactPath != request.ArtifactPath {
 		return ErrMySQLRestoreFence
 	}
-	if err := database.VerifyMySQLSQLArtifact(receipt.Receipt.ArtifactPath, receipt.Receipt.Artifact); err != nil {
+	if state == "retained-proved" {
+		retained, err := db.LoadSignedMySQLSourceArtifactRetentionReceipt(ctx, acceptance, request.SourceArtifact.OperationID)
+		if err != nil || retained.Receipt.StagingReceiptSHA256 != receipt.SHA256 || retained.Receipt.Artifact.SHA256 != request.Artifact.SHA256 || retained.Receipt.Artifact.Size != request.Artifact.Bytes {
+			return ErrMySQLRestoreFence
+		}
+	} else if err := database.VerifyMySQLSQLArtifact(receipt.Receipt.ArtifactPath, receipt.Receipt.Artifact); err != nil {
 		return errors.Join(ErrMySQLRestoreFence, err)
 	}
 	return nil

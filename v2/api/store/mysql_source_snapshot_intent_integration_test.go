@@ -355,6 +355,70 @@ func TestMySQLSourceSnapshotIntentReservesSignedPhysicalSource(t *testing.T) {
 	if err := db.Pool.QueryRow(ctx, `SELECT state FROM mysql_source_snapshot_intents WHERE operation_id=$1`, claim.OperationID()).Scan(&state); err != nil || state != "retained-proved" {
 		t.Fatalf("retention proof state=%q err=%v", state, err)
 	}
+	if err := os.Remove(signed.Receipt.ArtifactPath); err != nil {
+		t.Fatal(err)
+	}
+	retainedObjects, err := artifactstore.OpenLocal(filepath.Join(t.TempDir(), "objects"), 1024)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer retainedObjects.Close()
+	if _, err := retainedObjects.Publish(ctx, descriptor, strings.NewReader(string(bytes))); err != nil {
+		t.Fatal(err)
+	}
+	restoreInput := newAcceptance(t, acceptedStore, "retained-restore-"+uuid.NewString(), "operator", "target", false)
+	restoreInput.Identity.Kind, restoreInput.Identity.Resource = MySQLRestoreOperationKind, "mysql/target"
+	restoreInput.Operation.Kind, restoreInput.Operation.MaxAttempts = MySQLRestoreOperationKind, 1
+	encodedRestore, _ := json.Marshal(restore)
+	restoreInput.Operation.Payload = nil
+	if err := json.Unmarshal(encodedRestore, &restoreInput.Operation.Payload); err != nil {
+		t.Fatal(err)
+	}
+	restoreInput.Fingerprint, err = CanonicalOperationRequestFingerprint(restoreInput)
+	if err != nil {
+		t.Fatal(err)
+	}
+	acceptedRestore, err := acceptedStore.Accept(ctx, restoreInput)
+	if err != nil {
+		t.Fatal(err)
+	}
+	restoreClaim, err := NewOperationClaim(acceptedRestore.Operation.ID, "restore-worker", 1)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := db.Pool.Exec(ctx, `UPDATE operations SET status='running',attempts=1,locked_by=$2,lock_generation=1,
+		locked_until=clock_timestamp()+interval '2 minutes' WHERE id=$1`, restoreClaim.OperationID(), restoreClaim.OwnerID()); err != nil {
+		t.Fatal(err)
+	}
+	materializeDirectory := filepath.Join(t.TempDir(), "materialized")
+	if err := os.Mkdir(materializeDirectory, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	materialized, err := db.MaterializeClaimedMySQLRestoreArtifact(ctx, acceptedStore, restoreClaim, retainedObjects, materializeDirectory)
+	if err != nil {
+		t.Fatalf("retained materialization after stage removal: %v", err)
+	}
+	if content, err := os.ReadFile(materialized); err != nil || string(content) != string(bytes) {
+		t.Fatalf("materialized retained bytes=%q err=%v", content, err)
+	}
+	_ = os.Remove(materialized)
+	if _, err := db.Pool.Exec(ctx, `UPDATE mysql_source_snapshot_intents SET retention_receipt_canonical=retention_receipt_canonical || decode('20','hex') WHERE operation_id=$1`, claim.OperationID()); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := db.MaterializeClaimedMySQLRestoreArtifact(ctx, acceptedStore, restoreClaim, retainedObjects, materializeDirectory); !errors.Is(err, ErrMySQLRestoreFence) {
+		t.Fatalf("tampered retained receipt qualified restore: %v", err)
+	}
+	if _, err := db.Pool.Exec(ctx, `UPDATE mysql_source_snapshot_intents SET retention_receipt_canonical=$2 WHERE operation_id=$1`, claim.OperationID(), loadedRetention.CanonicalBytes); err != nil {
+		t.Fatal(err)
+	}
+	tx, err = db.Pool.Begin(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := db.verifyMySQLRestoreSourceArtifact(ctx, tx, acceptedStore, restore); err != nil {
+		t.Fatalf("retained receipt did not qualify after staged file removal: %v", err)
+	}
+	_ = tx.Rollback(ctx)
 	if _, err := db.StageClaimedMySQLSourceArtifact(ctx, acceptedStore, claim, request, sourceSecretSource{}, "/usr/bin/true", stageDirectory, stager); err == nil || stageCalls != 1 {
 		t.Fatalf("replay repeated dump: err=%v calls=%d", err, stageCalls)
 	}
