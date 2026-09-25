@@ -151,12 +151,15 @@ The disposable Nomad 2.0.7 guarded-stop test now also calls the concrete
 read-only recovery observer. It accepts the stopped job and terminal signed
 allocation, then rejects the same signed observation after a direct job
 restart. The PostgreSQL/MySQL restore rehearsal also has an opt-in disposable
-Nomad path: it records the actual guarded-stop job version, modify index, and
-allocation ID in the signed source receipt, then uses the concrete observer
-through target unlock and fence release. This three-service run passed on
-PostgreSQL 16, MySQL 8.0.27, and Nomad 2.0.7. The Nomad task is a `raw_exec`
-sleep fixture; this does not qualify a managed WordPress source allocation or
-prove that the test's source SQL account was locked before dump staging.
+Nomad path: a signed source operation binds the observed job version, modify
+index, and allocation ID; the private source runner performs the guarded stop,
+locks and verifies the runtime account, stages through a distinct snapshot
+credential, and signs the artifact receipt. Restore, recovery unlock, and
+fence release then use the concrete Nomad observer. This three-service run
+passed on PostgreSQL 16, MySQL 8.0.27, and Nomad 2.0.7. Its source acceptance
+is constructed by the test rather than derived from a successful deployed
+WordPress revision, and the Nomad task is a `raw_exec` sleep fixture. Managed
+WordPress source allocation and admission qualification remain open.
 
 Migration 37 adds a one-way destination `target-unlock-intended` checkpoint.
 The private recovery runner renews its signed claim, reobserves the stopped

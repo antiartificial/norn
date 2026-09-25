@@ -99,13 +99,13 @@ func TestMySQLRestoreIntentAgainstDisposableEngines(t *testing.T) {
 	suffix := strings.ReplaceAll(uuid.NewString()[:8], "-", "")
 	sourceDB, targetDB, lostTargetDB := "intent_src_"+suffix, "intent_dst_"+suffix, "intent_lost_"+suffix
 	sourceRole, targetRole, lostTargetRole := "isrc_"+suffix, "idst_"+suffix, "ilst_"+suffix
-	restoreRole, fenceRole := "irst_"+suffix, "ifnc_"+suffix
-	sourcePassword, targetPassword, restorePassword, fencePassword := "source"+suffix, `target\quote"`+suffix, "restore"+suffix, "fence"+suffix
+	restoreRole, fenceRole, snapshotRole := "irst_"+suffix, "ifnc_"+suffix, "isnp_"+suffix
+	sourcePassword, targetPassword, restorePassword, fencePassword, snapshotPassword := "source"+suffix, `target\quote"`+suffix, "restore"+suffix, "fence"+suffix, "snapshot"+suffix
 	defer func() {
 		for _, name := range []string{sourceDB, targetDB, lostTargetDB} {
 			_, _ = admin.ExecContext(context.Background(), "DROP DATABASE IF EXISTS `"+name+"`")
 		}
-		for _, name := range []string{sourceRole, targetRole, lostTargetRole, restoreRole, fenceRole} {
+		for _, name := range []string{sourceRole, targetRole, lostTargetRole, restoreRole, fenceRole, snapshotRole} {
 			_, _ = admin.ExecContext(context.Background(), "DROP USER IF EXISTS '"+name+"'@'%'")
 		}
 	}()
@@ -123,6 +123,8 @@ func TestMySQLRestoreIntentAgainstDisposableEngines(t *testing.T) {
 	for _, statement := range []string{
 		"CREATE USER '" + restoreRole + "'@'%' IDENTIFIED BY " + mysqlRestoreSQLLiteral(restorePassword),
 		"CREATE USER '" + fenceRole + "'@'%' IDENTIFIED BY " + mysqlRestoreSQLLiteral(fencePassword),
+		"CREATE USER '" + snapshotRole + "'@'%' IDENTIFIED BY " + mysqlRestoreSQLLiteral(snapshotPassword),
+		"GRANT SELECT, SHOW VIEW, TRIGGER, EVENT ON `" + sourceDB + "`.* TO '" + snapshotRole + "'@'%'",
 		"GRANT ALL PRIVILEGES ON `" + targetDB + "`.* TO '" + restoreRole + "'@'%'",
 		"GRANT ALL PRIVILEGES ON `" + lostTargetDB + "`.* TO '" + restoreRole + "'@'%'",
 		"GRANT CREATE USER, PROCESS, CONNECTION_ADMIN ON *.* TO '" + fenceRole + "'@'%'",
@@ -150,7 +152,7 @@ func TestMySQLRestoreIntentAgainstDisposableEngines(t *testing.T) {
 		Recovery: database.RecoveryPolicy{Capabilities: []database.Capability{database.CapabilitySnapshot, database.CapabilityRestore}},
 	})
 	maintenance := &database.MySQLMaintenanceCredentials{Generation: 1, RuntimeAccountHost: "%", RestoreRole: restoreRole, RestoreAccountHost: "%", RestoreCredentialRef: "secret:intent/restore", FenceRole: fenceRole, FenceCredentialRef: "secret:intent/fence", FenceAccountHost: "%"}
-	sourceMaintenance := &database.MySQLMaintenanceCredentials{Generation: 1, RuntimeAccountHost: "%", SnapshotRole: "snapshot", SnapshotAccountHost: "%", SnapshotCredentialRef: "secret:intent/snapshot",
+	sourceMaintenance := &database.MySQLMaintenanceCredentials{Generation: 1, RuntimeAccountHost: "%", SnapshotRole: snapshotRole, SnapshotAccountHost: "%", SnapshotCredentialRef: "secret:intent/snapshot",
 		RestoreRole: restoreRole, RestoreAccountHost: "%", RestoreCredentialRef: "secret:intent/restore", FenceRole: fenceRole, FenceAccountHost: "%", FenceCredentialRef: "secret:intent/fence"}
 	catalog.Bindings = append(catalog.Bindings,
 		database.DatabaseBinding{APIVersion: database.APIVersion, ID: "intent-source", ServiceID: "intent-mysql", Database: sourceDB, Role: sourceRole, Generation: 1, CredentialRef: "secret:intent/source", MySQLMaintenance: sourceMaintenance, TLS: database.DatabaseTLS{Mode: database.TLSDisabled}},
@@ -181,43 +183,86 @@ func TestMySQLRestoreIntentAgainstDisposableEngines(t *testing.T) {
 		t.Fatal(err)
 	}
 	secrets := mysqlIntentSecrets{
-		"secret:intent/source":  fmt.Sprintf(`{"password":%q}`, sourcePassword),
-		"secret:intent/target":  fmt.Sprintf(`{"password":%q}`, targetPassword),
-		"secret:intent/restore": fmt.Sprintf(`{"password":%q}`, restorePassword),
-		"secret:intent/fence":   fmt.Sprintf(`{"password":%q}`, fencePassword),
+		"secret:intent/source":   fmt.Sprintf(`{"password":%q}`, sourcePassword),
+		"secret:intent/snapshot": fmt.Sprintf(`{"password":%q}`, snapshotPassword),
+		"secret:intent/target":   fmt.Sprintf(`{"password":%q}`, targetPassword),
+		"secret:intent/restore":  fmt.Sprintf(`{"password":%q}`, restorePassword),
+		"secret:intent/fence":    fmt.Sprintf(`{"password":%q}`, fencePassword),
 	}
 	toolBytes, err := os.ReadFile(dumpTool)
 	if err != nil {
 		t.Fatal(err)
 	}
 	toolSHA := sha256.Sum256(toolBytes)
-	sourceFixture := testMySQLSourceArtifactFixture{LogicalID: "intent-source", Maintenance: *sourceMaintenance}
 	var stoppedSource MySQLSourceStoppedObserver = stoppedSourceObserverFunc(func(_ context.Context, request nomad.CASStopJobRequest) error {
 		if request.JobID != "fixture" || request.JobVersion != 1 || len(request.AllocationIDs) != 1 || request.AllocationIDs[0] != "fixture-alloc" {
 			return errors.New("unexpected signed source job identity")
 		}
 		return nil
 	})
-	if address := os.Getenv("NORN_TEST_NOMAD_ADDR"); address != "" {
-		identity, observer := stoppedDisposableMySQLSourceJob(t, ctx, address, active.Revision)
-		sourceFixture.JobIdentity = &identity
-		stoppedSource = observer
-	}
 	stage := t.TempDir()
 	if err := os.Chmod(stage, 0o700); err != nil {
 		t.Fatal(err)
 	}
-	path, artifact, err := database.StageMySQLSQLSnapshot(ctx, source, source.Target, secrets, dumpTool, fmt.Sprintf("%x", toolSHA), stage)
-	if err != nil {
-		t.Fatal(err)
+	var path string
+	var artifact database.MySQLSQLArtifact
+	var receipt MySQLRestoreSourceArtifact
+	if address := os.Getenv("NORN_TEST_NOMAD_ADDR"); address != "" {
+		identity, observer := disposableMySQLSourceJob(t, ctx, address, active.Revision)
+		stoppedSource = observer
+		sourceRequest := MySQLSourceSnapshotRequest{CatalogRevision: active.Revision, ProfileID: "mini", LogicalID: "intent-source",
+			Source: source.Target, Maintenance: *sourceMaintenance, JobIdentity: identity, DumpToolSHA256: fmt.Sprintf("%x", toolSHA)}
+		sourceInput := newAcceptance(t, stores[0], "mysql-source-intent-"+suffix, "operator", identity.App, false)
+		sourceInput.Identity.Kind, sourceInput.Identity.Resource = MySQLSourceSnapshotOperationKind, "mysql/"+sourceDB
+		sourceInput.Operation.Kind, sourceInput.Operation.MaxAttempts = MySQLSourceSnapshotOperationKind, 1
+		encodedSource, _ := json.Marshal(sourceRequest)
+		sourceInput.Operation.Payload = nil
+		if err := json.Unmarshal(encodedSource, &sourceInput.Operation.Payload); err != nil {
+			t.Fatal(err)
+		}
+		sourceInput.Fingerprint, err = CanonicalOperationRequestFingerprint(sourceInput)
+		if err != nil {
+			t.Fatal(err)
+		}
+		sourceAccepted, err := stores[0].Accept(ctx, sourceInput)
+		if err != nil {
+			t.Fatal(err)
+		}
+		sourceClaim, err := NewOperationClaim(sourceAccepted.Operation.ID, "mysql-source-worker", 1)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if _, err := control.Pool.Exec(ctx, `UPDATE operations SET status='running', attempts=1, locked_by=$2,
+			lock_generation=1, locked_until=clock_timestamp()+interval '2 minutes' WHERE id=$1`, sourceClaim.OperationID(), sourceClaim.OwnerID()); err != nil {
+			t.Fatal(err)
+		}
+		sourceRunner := MySQLSourceSnapshotRunner{Control: control, Acceptance: stores[0], Secrets: secrets, Stopper: observer}
+		if err := sourceRunner.RunClaimed(ctx, sourceClaim, sourceRequest); err != nil {
+			t.Fatalf("private source quiescence failed: %v", err)
+		}
+		if err := database.InspectMySQLRuntimeAccountLockForRestore(ctx, source, *source.MySQLMaintenance, secrets); err != nil {
+			t.Fatalf("source runtime account was not locked before staging: %v", err)
+		}
+		signed, err := sourceRunner.StageClaimed(ctx, sourceClaim, sourceRequest, dumpTool, stage, mysqlSourceDatabaseStager{})
+		if err != nil {
+			t.Fatalf("private source staging failed: %v", err)
+		}
+		path, artifact = signed.Receipt.ArtifactPath, signed.Receipt.Artifact
+		receipt = MySQLRestoreSourceArtifact{OperationID: sourceClaim.OperationID(), ReceiptSHA256: signed.SHA256}
+	} else {
+		path, artifact, err = database.StageMySQLSQLSnapshot(ctx, source, source.Target, secrets, dumpTool, fmt.Sprintf("%x", toolSHA), stage)
+		if err != nil {
+			t.Fatal(err)
+		}
+		receipt = testMySQLSourceArtifactReceipt(t, control, stores[0], active.Revision, artifact.Source, path, artifact,
+			testMySQLSourceArtifactFixture{LogicalID: "intent-source", Maintenance: *sourceMaintenance})
+		testBindMySQLSourceFence(t, control, receipt)
+		if _, err := admin.ExecContext(ctx, "ALTER USER '"+sourceRole+"'@'%' ACCOUNT LOCK"); err != nil {
+			t.Fatal("lock source runtime account after staging")
+		}
 	}
 	if !strings.HasPrefix(path, filepath.Clean(stage)+string(os.PathSeparator)) {
 		t.Fatal("snapshot escaped private stage")
-	}
-	receipt := testMySQLSourceArtifactReceipt(t, control, stores[0], active.Revision, artifact.Source, path, artifact, sourceFixture)
-	testBindMySQLSourceFence(t, control, receipt)
-	if _, err := admin.ExecContext(ctx, "ALTER USER '"+sourceRole+"'@'%' ACCOUNT LOCK"); err != nil {
-		t.Fatal("lock source runtime account after staging")
 	}
 	defer func() {
 		_, _ = admin.ExecContext(context.Background(), "ALTER USER '"+sourceRole+"'@'%' ACCOUNT UNLOCK")

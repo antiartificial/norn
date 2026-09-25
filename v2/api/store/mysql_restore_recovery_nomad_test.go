@@ -13,8 +13,9 @@ import (
 )
 
 // The disposable raw_exec job is an exact Nomad stop/observation fixture.
+// The claimed source runner stops it after the signed request is accepted.
 // It does not stand in for a managed WordPress allocation or source SQL writer.
-func stoppedDisposableMySQLSourceJob(t *testing.T, parent context.Context, address string, revision int64) (MySQLSourceSnapshotJobIdentity, MySQLSourceStoppedObserver) {
+func disposableMySQLSourceJob(t *testing.T, parent context.Context, address string, revision int64) (MySQLSourceSnapshotJobIdentity, *nomad.Client) {
 	t.Helper()
 	raw, err := nomadapi.NewClient(&nomadapi.Config{Address: address})
 	if err != nil {
@@ -66,19 +67,6 @@ func stoppedDisposableMySQLSourceJob(t *testing.T, parent context.Context, addre
 			t.Fatal("disposable source job did not produce an allocation")
 		case <-time.After(100 * time.Millisecond):
 		}
-	}
-	version, _ := strconv.ParseUint(identity.JobVersion, 10, 64)
-	index, _ := strconv.ParseUint(identity.JobModifyIndex, 10, 64)
-	stop := nomad.CASStopJobRequest{JobID: identity.JobID, Region: identity.NomadRegion,
-		JobVersion: version, JobModifyIndex: index, AllocationIDs: identity.AllocationIDs,
-		DeploymentID: identity.DeploymentID, SpecDigest: identity.SpecDigest,
-		DatabaseBindingSchema: identity.DatabaseBindingSchema, DatabaseBindingSHA256: identity.DatabaseBindingSHA256,
-		DatabaseCatalogRevision: identity.DatabaseCatalogRevision}
-	if err := observer.StopJobCAS(ctx, stop); err != nil {
-		t.Fatalf("guarded stop of disposable source job: %v", err)
-	}
-	if err := observer.ObserveStoppedMySQLSourceJob(ctx, stop); err != nil {
-		t.Fatalf("stopped disposable source job was not observable: %v", err)
 	}
 	return identity, observer
 }
