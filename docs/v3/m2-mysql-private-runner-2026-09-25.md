@@ -207,3 +207,15 @@ launch refusal, and target launch reservation after release.
   prefix was applied, so no acknowledgement mutation is exposed.
 
 These gaps keep MySQL restore non-deployable and the public capability closed.
+
+## Current-head disposable replay — 2026-09-25
+
+`TestMySQLRestoreIntentAgainstDisposableEngines` passed on the PR #76 head
+`ff164c2` with isolated PostgreSQL 16.15 and a disposable MySQL 8.4 container.
+MySQL data lived in an owner-local bind mount because Docker's internal volume
+allocation was full. The test exercised the signed source and restore intent,
+local S3-emulated retention and materialization, target verification, recovery
+unlock, and fence release. `NORN_TEST_NOMAD_ADDR` was unset, so its stopped-source
+observer was a test fixture; this run did not qualify the concrete Nomad path.
+The container and scratch directory were absent after the run. The provider,
+separate-node, managed WordPress, and live Mini gates above remain open.
