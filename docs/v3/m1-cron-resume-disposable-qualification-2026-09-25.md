@@ -32,5 +32,14 @@ record, a terminal operation receipt, and same-key HTTP replay with one
 accepted operation. It can run alongside the normal-path test with
 `-run '^TestCronResume(HTTPWorkerNomadPostgres|LostNomadResponseReconciles)$'`.
 
-Process death between effect reservation and remote write, claim expiry during
-that write, and two API/worker replicas racing remain M1 release gates.
+Two further deterministic boundary tests passed twice against the same live
+disposable services. They abandon an old operation claim after durable effect
+reservation, expire the claim in PostgreSQL, and let a successor claim recover.
+Before any Nomad write, recovery leaves the effect unresolved and makes no
+remote mutation. After one guarded Nomad write but before effect completion,
+the successor observes the exact marker, completes the receipt, and returns
+the same result on HTTP replay. The old claim cannot finish the operation.
+
+These tests place durable state at the crash boundaries; they do not kill an
+OS process during a remote write. A literal process-kill rehearsal and two
+API/worker replicas racing remain M1 release gates.

@@ -166,8 +166,10 @@ into #76 and closed. These are review containers, not milestone signoff.
   passed HTTP acceptance through the real claimed worker, Nomad 2.0.7, the
   PostgreSQL receipt, and same-key replay. A second integrated run dropped
   Nomad's response after its guarded write and proved effect-marker
-  reconciliation with one remote mutation. Process-crash, lease-expiry, and
-  two-replica race qualification remain open.
+  reconciliation with one remote mutation. Deterministic crash-boundary tests
+  now prove conservative unresolved state after reservation-only and exact
+  successor-claim reconciliation after one Nomad commit. Literal process kill
+  during the write and two-replica race qualification remain open.
 - M2: local MySQL runtime and verified-TLS health are implemented. Generated
   service, periodic, and function jobs delivered exact component bytes inside
   allocations on pinned Nomad 1.9.7. A WordPress image PHP client also

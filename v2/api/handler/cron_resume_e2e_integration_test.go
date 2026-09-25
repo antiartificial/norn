@@ -3,13 +3,17 @@ package handler
 import (
 	"bytes"
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
+	"fmt"
 	"io"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"sync/atomic"
 	"testing"
@@ -17,6 +21,7 @@ import (
 
 	"github.com/go-chi/chi/v5"
 	"github.com/google/uuid"
+	nomadapi "github.com/hashicorp/nomad/api"
 
 	"norn/v2/api/config"
 	"norn/v2/api/effect"
@@ -32,14 +37,22 @@ import (
 // It drives HTTP acceptance, the claimed worker, the real Nomad CAS effect,
 // and the PostgreSQL cron state and operation receipt in one path.
 func TestCronResumeHTTPWorkerNomadPostgres(t *testing.T) {
-	testCronResumeHTTPWorkerNomadPostgres(t, false)
+	testCronResumeHTTPWorkerNomadPostgres(t, false, "")
 }
 
 func TestCronResumeLostNomadResponseReconciles(t *testing.T) {
-	testCronResumeHTTPWorkerNomadPostgres(t, true)
+	testCronResumeHTTPWorkerNomadPostgres(t, true, "")
 }
 
-func testCronResumeHTTPWorkerNomadPostgres(t *testing.T, loseRegistrationResponse bool) {
+func TestCronResumeCrashAfterReservationRemainsUnresolved(t *testing.T) {
+	testCronResumeHTTPWorkerNomadPostgres(t, false, "reserved")
+}
+
+func TestCronResumeCrashAfterNomadCommitReconciles(t *testing.T) {
+	testCronResumeHTTPWorkerNomadPostgres(t, false, "committed")
+}
+
+func testCronResumeHTTPWorkerNomadPostgres(t *testing.T, loseRegistrationResponse bool, crashWindow string) {
 	address := os.Getenv("NORN_TEST_NOMAD_ADDR")
 	if address == "" || os.Getenv("NORN_TEST_DATABASE_URL") == "" {
 		t.Skip("set NORN_TEST_NOMAD_ADDR and NORN_TEST_DATABASE_URL to disposable services")
@@ -167,6 +180,10 @@ func testCronResumeHTTPWorkerNomadPostgres(t *testing.T, loseRegistrationRespons
 	if status != http.StatusAccepted || accepted.Kind != "app.cron-resume" {
 		t.Fatalf("accept status=%d op=%+v body=%s", status, accepted, body)
 	}
+	if crashWindow != "" {
+		testCronResumeCrashWindow(t, ctx, db, p, nomadClient, job, paused, accepted, serve, crashWindow)
+		return
+	}
 	operationWorker := worker.NewOperationWorkerForKinds(db, p, []string{"app.cron-resume"})
 	workerCtx, cancel := context.WithTimeout(ctx, 20*time.Second)
 	defer cancel()
@@ -224,5 +241,108 @@ func testCronResumeHTTPWorkerNomadPostgres(t *testing.T, loseRegistrationRespons
 	}
 	if count != 1 {
 		t.Fatalf("resume operation count=%d, want 1", count)
+	}
+}
+
+// Recreate a process death at the two durable boundaries without relying on
+// goroutine timing. The first owner is deliberately abandoned after Reserve;
+// in the committed case Nomad performs the exact guarded write before that
+// owner can persist its effect completion or operation receipt.
+func testCronResumeCrashWindow(t *testing.T, ctx context.Context, db *store.DB, p *pipeline.Pipeline, client *nomad.Client, replacement *nomadapi.Job, paused *nomad.PeriodicJobInfo, accepted model.Operation, serve func(string) (int, model.Operation, string), window string) {
+	t.Helper()
+	claimed, oldClaim, err := db.ClaimNextOperation(ctx, "crashed-cron-worker", time.Minute, []string{"app.cron-resume"})
+	if err != nil || claimed == nil || claimed.ID != accepted.ID {
+		t.Fatalf("first claim=%+v, %v", claimed, err)
+	}
+	es, err := store.NewPGEffectStore(db)
+	if err != nil {
+		t.Fatal(err)
+	}
+	authority, err := es.Authority(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	parse := func(name string) uint64 {
+		value, err := strconv.ParseUint(fmt.Sprint(accepted.Payload[name]), 10, 64)
+		if err != nil {
+			t.Fatalf("parse %s: %v", name, err)
+		}
+		return value
+	}
+	jobID := fmt.Sprint(accepted.Payload["jobId"])
+	payload, err := json.Marshal(map[string]interface{}{
+		"app": accepted.App, "process": "nightly", "schedule": paused.Schedule,
+		"timezone": paused.TimeZone, "jobId": jobID,
+		"imageTag": accepted.Payload["imageTag"], "specDigest": accepted.Payload["specDigest"],
+		"deliveryRevision": parse("deliveryRevision"), "version": parse("version"), "modifyIndex": parse("modifyIndex"),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	reservation := effect.Reservation{Authority: authority, Resource: "app/" + accepted.App + "/cron/nightly", OperationClaim: effect.OperationClaim{OperationID: oldClaim.OperationID(), OwnerID: oldClaim.OwnerID(), Generation: oldClaim.Generation()}, Stage: "app.cron-resume.nomad", Supervisor: "nomad-cron-resume", LaunchPayload: payload}
+	reservation.InputDigest, err = effect.ComputeInputDigest(reservation)
+	if err != nil {
+		t.Fatal(err)
+	}
+	sum := sha256.Sum256([]byte(reservation.Authority + "\x00" + reservation.OperationClaim.OperationID + "\x00" + reservation.InputDigest + "\x00" + fmt.Sprint(reservation.OperationClaim.Generation)))
+	reservation.SupervisorExecutionID = "nomad-cron-resume-" + hex.EncodeToString(sum[:16])
+	reserved, err := es.Reserve(ctx, reservation)
+	if err != nil || !reserved.Created || reserved.Record.Lifecycle != effect.LifecycleReserved {
+		t.Fatalf("effect reservation=%+v, %v", reserved, err)
+	}
+	if window == "committed" {
+		if err := client.ResumePeriodicJobWithReplacement(jobID, paused.ModifyIndex, reservation.SupervisorExecutionID, replacement); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if _, err := db.Pool.Exec(ctx, `UPDATE operations SET locked_until=clock_timestamp()-interval '1 second' WHERE id=$1`, accepted.ID); err != nil {
+		t.Fatal(err)
+	}
+	if err := db.RecoverExpiredOperations(ctx); err != nil {
+		t.Fatal(err)
+	}
+	if err := db.CheckOperationClaim(ctx, oldClaim); err == nil {
+		t.Fatal("expired worker retained claim")
+	}
+	queued, err := db.GetOperation(ctx, accepted.ID)
+	if err != nil || queued.Status != model.OperationQueued {
+		t.Fatalf("recovered operation=%+v, %v", queued, err)
+	}
+	successor, claim, err := db.ClaimNextOperation(ctx, "successor-cron-worker", time.Minute, []string{"app.cron-resume"})
+	if err != nil || successor == nil || claim.Generation() <= oldClaim.Generation() {
+		t.Fatalf("successor claim=%+v, %v", successor, err)
+	}
+	result, err := p.ExecuteOperation(ctx, successor, claim)
+	state, stateErr := client.PeriodicJobSchedule(jobID)
+	if stateErr != nil {
+		t.Fatal(stateErr)
+	}
+	if state.Version != paused.Version+map[bool]uint64{true: 1, false: 0}[window == "committed"] {
+		t.Fatalf("Nomad version after recovery=%d, paused version=%d", state.Version, paused.Version)
+	}
+	if window == "reserved" {
+		if !effect.IsDeferred(err) || result != nil || !state.Paused {
+			t.Fatalf("reserved crash was not conservative: result=%+v err=%v Nomad=%+v", result, err, state)
+		}
+		record, found, lookupErr := es.LatestForOperation(ctx, accepted.ID, reservation.Stage)
+		if lookupErr != nil || !found || record.Lifecycle != effect.LifecycleReserved {
+			t.Fatalf("unresolved reservation=%+v found=%v err=%v", record, found, lookupErr)
+		}
+		cronState, stateErr := db.GetCronState(ctx, accepted.App, "nightly")
+		if stateErr != nil || !cronState.Paused {
+			t.Fatalf("cron state changed after reserved crash: %+v, %v", cronState, stateErr)
+		}
+		return
+	}
+	if err != nil || result == nil || result.Status != model.OperationSucceeded || !result.Finished() || state.Paused || state.CronResumeEffectID != reservation.SupervisorExecutionID {
+		t.Fatalf("committed crash did not reconcile: result=%+v err=%v Nomad=%+v", result, err, state)
+	}
+	finished, err := db.GetOperation(ctx, accepted.ID)
+	if err != nil || finished.Status != model.OperationSucceeded || finished.Metadata["effectId"] != reserved.Record.Token.EffectID {
+		t.Fatalf("recovered receipt=%+v, %v", finished, err)
+	}
+	status, replay, body := serve("cron-resume-e2e")
+	if status != http.StatusOK || replay.ID != accepted.ID || replay.Receipt == nil {
+		t.Fatalf("replay status=%d op=%+v body=%s", status, replay, body)
 	}
 }
