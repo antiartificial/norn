@@ -344,6 +344,25 @@ func validateStartupAdapter(r *ValidationResult, spec *InfraSpec) {
 	}
 }
 
+// IsQualifiedWordPressVerifiedTLSPrebuilt identifies the one reviewed
+// upstream image whose generated startup adapter has passed actual allocation
+// CA and hostname rejection tests. The app source did not build this image,
+// so a norn.git.sha publisher signature would misstate its provenance. This
+// predicate is deliberately exact; callers still verify registry presence
+// and the vulnerability policy before using the image.
+func IsQualifiedWordPressVerifiedTLSPrebuilt(spec *InfraSpec, resolvedImage string) bool {
+	if spec == nil || spec.Build == nil || spec.StartupAdapter != StartupAdapterWordPressVerifiedTLS ||
+		spec.Build.Image != QualifiedWordPressVerifiedTLSImage || resolvedImage != QualifiedWordPressVerifiedTLSImage {
+		return false
+	}
+	for _, finding := range spec.DatabaseDeclarationFindings() {
+		if finding.Severity == "error" {
+			return false
+		}
+	}
+	return true
+}
+
 func containsString(values []string, want string) bool {
 	for _, value := range values {
 		if value == want {

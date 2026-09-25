@@ -81,8 +81,14 @@ func (p *Pipeline) artifactAdmission(ctx context.Context, st *state, _ *saga.Sag
 	if err := p.verifyRegistryArtifact(ctx, st.imageTag); err != nil {
 		return fmt.Errorf("production artifact admission blocked: registry digest verification failed: %w", err)
 	}
-	if err := p.verifyArtifactSignature(ctx, st); err != nil {
-		return fmt.Errorf("production artifact admission blocked: publisher signature verification failed: %w", err)
+	// The exact qualified WordPress image is a code-reviewed upstream prebuilt:
+	// it cannot truthfully carry this app repository's norn.git.sha annotation.
+	// Bound release artifacts and every other prebuilt keep the normal signature
+	// gate. Registry digest and vulnerability checks still apply below.
+	if !(st.spec != nil && !st.artifactBound && model.IsQualifiedWordPressVerifiedTLSPrebuilt(st.spec, st.imageTag)) {
+		if err := p.verifyArtifactSignature(ctx, st); err != nil {
+			return fmt.Errorf("production artifact admission blocked: publisher signature verification failed: %w", err)
+		}
 	}
 	if err := p.scanArtifactVulnerabilities(ctx, st.imageTag); err != nil {
 		return fmt.Errorf("production artifact admission blocked: vulnerability policy failed: %w", err)
