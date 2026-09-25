@@ -11,9 +11,68 @@ import (
 
 	"norn/v2/api/etcdstore"
 	"norn/v2/api/fleet"
+	"norn/v2/api/githubapp"
 	"norn/v2/api/model"
 	"norn/v2/api/store"
 )
+
+func TestV3FleetGitHubPullRequestCompletionRejectsTamperedReceiptEtcd(t *testing.T) {
+	adapter, client, prefix := fleetRunnerEtcdStore(t)
+	plan := fleetGitHubPullRequestPlan(t, adapter)
+	request, reservation := fleetGitHubPullRequestAcceptance(t, adapter, plan.ID, "operator-a", "pr-completion")
+	accepted, err := adapter.AcceptFleetGitHubPullRequest(context.Background(), request, reservation)
+	if err != nil {
+		t.Fatal(err)
+	}
+	reservation, err = adapter.GetFleetGitHubPullRequestReservation(context.Background(), plan.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	result := &githubapp.PullRequest{Number: 42, URL: "https://github.com/acme/norn-fleet/pull/42", Branch: "norn/plan-" + plan.ID, State: "open", HeadSHA: strings.Repeat("c", 40)}
+	if err := adapter.FinishFleetGitHubPullRequest(context.Background(), reservation, result); err != nil {
+		t.Fatal(err)
+	}
+	if err := adapter.VerifyFleetGitHubPullRequestCompletion(context.Background(), reservation, result); err != nil {
+		t.Fatalf("signed completion: %v", err)
+	}
+	key := prefix + "/v3/operations/" + accepted.Operation.ID
+	stored, err := client.Get(context.Background(), key)
+	if err != nil || len(stored.Kvs) != 1 {
+		t.Fatalf("load completion: %v", err)
+	}
+	var tampered map[string]interface{}
+	if err := json.Unmarshal(stored.Kvs[0].Value, &tampered); err != nil {
+		t.Fatal(err)
+	}
+	operation := tampered["operation"].(map[string]interface{})
+	operation["payload"].(map[string]interface{})["url"] = "https://github.com/acme/norn-fleet/pull/99"
+	encoded, err := json.Marshal(tampered)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := client.Put(context.Background(), key, string(encoded)); err != nil {
+		t.Fatal(err)
+	}
+	if err := adapter.VerifyFleetGitHubPullRequestCompletion(context.Background(), reservation, result); err == nil {
+		t.Fatal("tampered operation result verified against signed completion")
+	}
+	if _, err := client.Put(context.Background(), key, string(stored.Kvs[0].Value)); err != nil {
+		t.Fatal(err)
+	}
+	completion := operation["metadata"].(map[string]interface{})["fleetGitHubCompletion"].(map[string]interface{})
+	completion["signature"] = "00"
+	operation["payload"].(map[string]interface{})["url"] = result.URL
+	encoded, err = json.Marshal(tampered)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := client.Put(context.Background(), key, string(encoded)); err != nil {
+		t.Fatal(err)
+	}
+	if err := adapter.VerifyFleetGitHubPullRequestCompletion(context.Background(), reservation, result); err == nil {
+		t.Fatal("tampered signed completion verified")
+	}
+}
 
 func TestV3FleetGitHubPullRequestReservationAcceptsAndReplaysEtcd(t *testing.T) {
 	adapter, _, _ := fleetRunnerEtcdStore(t)
