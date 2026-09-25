@@ -156,8 +156,8 @@ Legacy claimed exports now pin their manifest timestamp to the accepted
 operation, so an exact remote replay verifies the same bytes. Legacy
 predeploy snapshots also pin one operation name but refuse to reuse an
 existing unbound dump; that case requires operator inspection. A process crash
-between the external effect and durable step completion still needs a separate
-effect reservation and two-process recovery proof. Both claimed export routes
+between the external effect and durable step completion motivated the durable
+intent and recovery work below. Both claimed export routes
 recheck the live operation lease immediately before remote publication, after
 any predeploy dump work; this closes the known expired-before-upload case but
 does not fence expiry during an upload. The create-only S3
@@ -170,9 +170,7 @@ claim immediately before each remote write. An isolated PostgreSQL test
 expires the claim after either remote write. After the dump write, the step
 refuses to publish the completion manifest; after the manifest write, its
 final claim check refuses to advance. Both cases leave remote objects for
-inspection. This narrows stale publication but does not erase remote objects
-or replace a durable export
-effect reservation and crash recovery.
+inspection. This narrows stale publication but does not erase remote objects.
 The pure create-only publisher now has a real subprocess crash test: the child
 exits immediately after writing the dump, leaving no completion manifest; a
 new call rejects changed remote bytes without publishing a manifest, then
@@ -185,6 +183,12 @@ predeploy claimed export paths commit it under the live PostgreSQL claim
 before the first remote write, then mark it published only after both remote
 objects are read back. An integration fixture checks the `prepared` row at
 the write boundary; a store test proves exact adoption after claim turnover
-and rejects changed content. The two-process API recovery gate is still open:
-the worker must discover and reconcile a prepared row after an actual worker
-crash, and provider-backed create-only behavior still needs qualification.
+and rejects changed content. Expired standalone `app.snapshot-export` operations
+with a prepared or published intent now receive a bounded successor claim;
+unreserved exports retain the one-attempt inspection outcome. A literal child
+process reserves the intent, writes only the dump and exits; the successor
+claims the original operation, verifies the existing dump, publishes the
+manifest, records the receipt and finishes the original operation. This proves
+the PostgreSQL recovery transition with a local file-backed object store.
+The complete API worker/deploy-step process crash path and provider-backed
+create-only behavior still need qualification.
