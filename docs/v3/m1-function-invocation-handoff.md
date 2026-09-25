@@ -155,9 +155,17 @@ preflight. Real Nomad, process-crash, and restore qualification remain open.
 
 The function variable adapter now has HTTP-level tests for exact reads,
 create-only Nomad CAS, opaque private-byte round trips, and redacted errors.
-The PostgreSQL effect-attempt store records immutable public targets under a
-live claim and authorizes only the first caller to cross each remote-call
-boundary. Its two-connection race and stale-claim tests passed against a
-disposable PostgreSQL 17.7 instance. A backend-neutral required-key preflight
-exists. None of these pieces is connected to the HTTP route or claimed worker;
-etcd effect-attempt parity, Nomad ACLs, and real allocation proof remain open.
+PostgreSQL and etcd effect-attempt stores record immutable public targets
+under live claims and authorize only the first caller to cross each remote
+call boundary. PostgreSQL two-connection and etcd two-client races, stale
+claims, and successor claims passed against disposable real backends. A
+backend-neutral required-key preflight exists. A narrow worker variable step
+uses those attempt stages and an exact remote read to recover a lost write
+response; fake concurrent callers issued only one create. It is not yet
+connected to the claimed worker or HTTP route. Nomad variable ACLs, job-spec
+identity and registration, terminal receipt, and real allocation proof remain
+open. A disposable Nomad 2.0.7 experiment showed that enforced zero-index
+registration rejects a duplicate, but the returned job has server-normalized
+fields that a verified public digest cannot yet compare exactly. The job
+lookup adapter therefore treats an exact 404 as absence and every existing
+job as indeterminate. It does not register jobs or claim recovery evidence.
