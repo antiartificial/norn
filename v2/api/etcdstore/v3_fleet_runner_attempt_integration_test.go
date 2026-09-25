@@ -51,7 +51,7 @@ func fleetRunnerPlan(t *testing.T, adapter *etcdstore.V3OperationStore, action s
 	}
 	now := time.Now().UTC().Truncate(time.Microsecond)
 	finished := now
-	plan := model.Operation{ID: uuid.NewString(), Kind: "fleet.capacity-plan", Ref: "app", Status: model.OperationSucceeded, Source: "test", Risk: "plan", StartedAt: now, FinishedAt: &finished, MaxAttempts: 1, Payload: map[string]interface{}{"id": "pending", "action": action, "current": map[string]interface{}{"desired": 2}, "proposed": map[string]interface{}{"desired": 3}}, Metadata: map[string]interface{}{}}
+	plan := model.Operation{ID: uuid.NewString(), Kind: "fleet.capacity-plan", Ref: "app", Status: model.OperationSucceeded, Source: "test", Risk: "plan", StartedAt: now, FinishedAt: &finished, MaxAttempts: 1, Payload: map[string]interface{}{"id": "pending", "digest": "test-plan-digest", "action": action, "current": map[string]interface{}{"desired": 2}, "proposed": map[string]interface{}{"desired": 3}}, Metadata: map[string]interface{}{}}
 	plan.Payload["id"] = plan.ID
 	request := store.OperationAcceptance{Identity: store.OperationRequestIdentity{Authority: authority, Actor: store.OperationActor{Issuer: "test", Subject: "operator"}, Kind: plan.Kind, Resource: plan.Ref, Key: "plan-" + plan.ID}, Operation: plan, Audit: store.AcceptanceAuditContext{Source: "test"}, Semantics: map[string]interface{}{"action": "fleet.capacity-plan"}}
 	request.Fingerprint, err = store.CanonicalOperationRequestFingerprint(request)

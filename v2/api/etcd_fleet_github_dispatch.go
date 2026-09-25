@@ -13,6 +13,7 @@ import (
 	"io"
 	"net/http"
 	"strings"
+	"time"
 
 	"github.com/go-chi/chi/v5"
 	"github.com/google/uuid"
@@ -23,6 +24,7 @@ import (
 	"norn/v2/api/githubapp"
 	"norn/v2/api/handler"
 	"norn/v2/api/model"
+	"norn/v2/api/store"
 )
 
 type etcdFleetGitHubDispatcher interface {
@@ -105,8 +107,16 @@ func etcdFleetGitHubDispatch(cfg *config.Config, operations *etcdstore.V3Operati
 				handler.WriteControlProblem(w, r, http.StatusServiceUnavailable, "fleet_github_dispatch_preparation_unavailable", "protected dispatch preparation is unavailable")
 				return
 			}
-			if prepared.FleetEnvironment != environment || prepared.AllowDestructive != request.AllowDestructive {
+			if prepared.OperationID == "" || prepared.FleetEnvironment != environment || prepared.AllowDestructive != request.AllowDestructive {
 				handler.WriteControlProblem(w, r, http.StatusConflict, "fleet_github_dispatch_binding_mismatch", "this plan already has a different protected dispatch binding")
+				return
+			}
+			if reservationErr := operations.VerifyFleetGitHubDispatchReservation(r.Context(), prepared); reservationErr != nil {
+				handler.WriteControlProblem(w, r, http.StatusServiceUnavailable, "fleet_github_receipt_failed", "signed protected dispatch receipt is unavailable")
+				return
+			}
+			if completionErr := operations.VerifyFleetGitHubDispatchCompletion(r.Context(), bound); completionErr != nil {
+				handler.WriteControlProblem(w, r, http.StatusServiceUnavailable, "fleet_github_receipt_failed", "protected dispatch completion receipt is unavailable")
 				return
 			}
 			writeEtcdSourceJSON(w, http.StatusOK, etcdFleetGitHubDispatchResponse{PlanID: bound.PlanID, PlanRunID: prepared.PlanRunID, PlanSHA256: bound.PlanSHA256, ApprovedHeadSHA: bound.ApprovedHeadSHA, RunID: bound.RunID, WorkflowURL: bound.WorkflowURL, AllowDestructive: prepared.AllowDestructive})
@@ -122,14 +132,18 @@ func etcdFleetGitHubDispatch(cfg *config.Config, operations *etcdstore.V3Operati
 				handler.WriteControlProblem(w, r, http.StatusBadGateway, "fleet_github_plan_unproven", "GitHub could not prove the approved immutable fleet plan")
 				return
 			}
-			prepared, _, prepErr = operations.PrepareFleetGitHubDispatch(r.Context(), etcdstore.FleetGitHubDispatchPreparation{PlanID: planID, PlanRunID: approved.PlanRunID, PlanSHA256: approved.PlanSHA, ApprovedHeadSHA: approved.ApprovedHeadSHA, FleetEnvironment: environment, AllowDestructive: request.AllowDestructive})
+			_, prepared, prepErr = acceptEtcdFleetGitHubDispatch(r.Context(), operations, principal, plan, typedPlan, approved, environment, request.AllowDestructive)
 		}
 		if prepErr != nil {
 			handler.WriteControlProblem(w, r, http.StatusConflict, "fleet_github_dispatch_preparation_unavailable", "protected dispatch preparation is unavailable")
 			return
 		}
-		if prepared.FleetEnvironment != environment || prepared.AllowDestructive != request.AllowDestructive {
+		if prepared.OperationID == "" || prepared.FleetEnvironment != environment || prepared.AllowDestructive != request.AllowDestructive {
 			handler.WriteControlProblem(w, r, http.StatusConflict, "fleet_github_dispatch_binding_mismatch", "this plan already has a different protected dispatch binding")
+			return
+		}
+		if err := operations.VerifyFleetGitHubDispatchReservation(r.Context(), prepared); err != nil {
+			handler.WriteControlProblem(w, r, http.StatusServiceUnavailable, "fleet_github_receipt_failed", "signed protected dispatch receipt is unavailable")
 			return
 		}
 		approved := &githubapp.Dispatch{PlanRunID: prepared.PlanRunID, PlanSHA: prepared.PlanSHA256, ApprovedHeadSHA: prepared.ApprovedHeadSHA}
@@ -145,6 +159,25 @@ func etcdFleetGitHubDispatch(cfg *config.Config, operations *etcdstore.V3Operati
 		w.Header().Set("Cache-Control", "no-store")
 		writeEtcdSourceJSON(w, http.StatusCreated, etcdFleetGitHubDispatchResponse{PlanID: planID, PlanRunID: prepared.PlanRunID, PlanSHA256: prepared.PlanSHA256, ApprovedHeadSHA: prepared.ApprovedHeadSHA, RunID: result.RunID, WorkflowURL: result.URL, AllowDestructive: prepared.AllowDestructive})
 	}
+}
+
+// acceptEtcdFleetGitHubDispatch reserves a signed immutable operation before
+// the first external GitHub write. Its plan-scoped identity makes retries
+// recover the exact same receipt and private nonce.
+func acceptEtcdFleetGitHubDispatch(ctx context.Context, operations *etcdstore.V3OperationStore, principal handler.AccessPrincipal, plan *model.Operation, typed fleet.CapacityPlan, approved *githubapp.Dispatch, environment string, allowDestructive bool) (store.AcceptedOperation, etcdstore.FleetGitHubDispatchPreparation, error) {
+	authority, err := operations.Authority(ctx)
+	if err != nil {
+		return store.AcceptedOperation{}, etcdstore.FleetGitHubDispatchPreparation{}, err
+	}
+	payload := map[string]interface{}{"planId": plan.ID, "planDigest": typed.Digest, "sourceDigest": typed.SourceDigest, "planRunId": approved.PlanRunID, "planSha256": approved.PlanSHA, "approvedHeadSha": approved.ApprovedHeadSHA, "fleetEnvironment": environment, "allowDestructive": allowDestructive}
+	now := time.Now().UTC().Truncate(time.Microsecond)
+	op := model.Operation{ID: uuid.NewString(), Kind: "fleet.github.apply-dispatch", Ref: plan.ID, Status: model.OperationQueued, Source: "etcd-normal-fleet", Risk: "GitOps mutation only; provider credentials remain in protected GitHub environments", Message: "protected Fleet GitHub dispatch reserved", Payload: map[string]interface{}{"fleetGitHub": payload}, Metadata: map[string]interface{}{}, StartedAt: now, UpdatedAt: now, MaxAttempts: 1}
+	acceptance := store.OperationAcceptance{Identity: store.OperationRequestIdentity{Authority: authority, Actor: store.OperationActor{Issuer: authority + "/fleet-github", Subject: plan.ID}, Kind: op.Kind, Resource: plan.ID, Key: "protected-plan-receipt/v1"}, Operation: op, Audit: store.AcceptanceAuditContext{CredentialID: principal.TokenID, DeviceID: principal.DeviceID, Source: "etcd-normal-fleet", Scopes: append([]string(nil), principal.Scopes...)}, Semantics: map[string]interface{}{"fleetGitHub": payload}}
+	acceptance.Fingerprint, err = store.CanonicalOperationRequestFingerprint(acceptance)
+	if err != nil {
+		return store.AcceptedOperation{}, etcdstore.FleetGitHubDispatchPreparation{}, err
+	}
+	return operations.AcceptFleetGitHubDispatch(ctx, acceptance, etcdstore.FleetGitHubDispatchPreparation{PlanID: plan.ID, PlanRunID: approved.PlanRunID, PlanSHA256: approved.PlanSHA, ApprovedHeadSHA: approved.ApprovedHeadSHA, FleetEnvironment: environment, AllowDestructive: allowDestructive})
 }
 
 func validEtcdFleetGitHubApproved(value *githubapp.Dispatch) bool {
