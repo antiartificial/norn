@@ -37,3 +37,9 @@ Checksums below are computed by `store.MigrationChecksum` from the exact `Contro
 ## Evidence boundary before M0 exit
 
 The local PostgreSQL integration test applies migrations 1–17 to a synthetic unversioned baseline and checks selected legacy rows. The current [private-data migration-17 rehearsal](m0-mini-private-restore-migration17-rehearsal-2026-09-24.md) applied migrations 1–17 to a copied Mini database in a network-disabled PostgreSQL 17 target. All 28 legacy table counts and primary-key fingerprints matched before and after, and a second migration application changed neither the ledger nor compatibility metadata. It did not run either API binary, compare application runtime identity, or exercise rollback after writer contract 14. Old-worker compatibility remains unproven. M0 still needs app/job/route/volume/database ownership, a retained sanitized CI fixture, measured budgets, ADR decisions, and named acceptance.
+
+Later branch work added migration 18 for dormant private function-invocation
+material and raised the writer minimum to 15. The version and checksum table
+above remains the exact historical manifest at the stated commit. Current
+routine CI applies migration 18 to a synthetic fixture, but the private Mini
+restore and mixed-version rehearsal have not yet been repeated through 18.

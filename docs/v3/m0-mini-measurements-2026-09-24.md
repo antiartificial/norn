@@ -63,3 +63,10 @@ bytes above the 15:59 UTC baseline, over about nine hours. Heap size was
 used PostgreSQL aggregate size functions only; it read no application rows or
 credentials. The interval remains too short to set a representative growth
 or restore reserve.
+
+A sixth read-only PostgreSQL aggregate sample at 2026-09-25 01:46 UTC measured
+database size 242,166,931 bytes and user-table total 233,152,512 bytes,
+1,843,200 bytes above the 15:59 UTC baseline over about ten hours. Heap size
+was 145,121,280 bytes and indexes were 86,966,272 bytes. This still does not
+cover a representative workload cycle or establish the retention and restore
+budgets.
