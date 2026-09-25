@@ -245,6 +245,13 @@ across the read. Function-only apps have no service allocation and rely on the
 recorded successful deployment plus the digest-pinned one-shot job. A transient
 Nomad mismatch defers a claimed invocation before private material is opened.
 The function-only deployment path no longer submits an empty service job.
+The opt-in `TestVerifyRunningAppImageInNomad` passed on 2026-09-25 against a
+disposable local Nomad 2.0.7 dev agent with Docker and the locally pinned
+`alpine@sha256:d9e853e87e55526f6b2917df91a2115c36dd7c696a35be12163d44e6e2a4b6bc`
+image. It observed a real healthy allocation and refused a wrong image. The
+test owns and purges its uniquely named job; the agent was stopped afterward.
+This is a single-node local read-back qualification, not release topology or
+process-crash evidence.
 
 The private variable cleanup consumer now supports exact owner and revision
 checked deletion, and PostgreSQL migration 20 stores lease-fenced public
