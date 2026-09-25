@@ -90,3 +90,14 @@ authenticated, read-only inventory at the same time reported API version
 zero active operations, host status `ok`, production readiness `blocked`, and
 `fleet_node_pools.configured=false`. This remains an observation rather than
 a representative workload-cycle rate or a numeric release budget.
+
+A ninth read-only aggregate sample at 2026-09-25 13:55 UTC measured database
+size 244,206,739 bytes and user-table total 235,192,320 bytes. Each is
+3,883,008 bytes above the 2026-09-24 15:59 UTC baseline over about 22 hours.
+Heap size was 146,374,656 bytes and indexes were 87,752,704 bytes. A fresh
+authenticated inventory at 13:54 UTC still reported the v2.20.0 API, 27 app
+records (including the duplicate Watchtower source), zero active operations,
+and production readiness `blocked`. It also reported snapshot-retention
+warnings for `field-harbor` and `turnkey-offer-intake`. This observation still
+does not establish a representative workload cycle or a reviewed retention,
+backup-space, or restore-time budget. No Mini mutation was made.
