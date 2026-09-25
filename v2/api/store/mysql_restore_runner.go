@@ -43,6 +43,12 @@ func (r MySQLRestoreRunner) RunClaimed(ctx context.Context, claim OperationClaim
 		}
 	}()
 	runCtx := supervisor.Context()
+	// The separately accepted restore takes the source's active runtime fence
+	// in one transaction. No app mutation claim may slip between source staging
+	// and destination maintenance. A retry is bound to the same live claim.
+	if _, err := r.Control.TransferClaimedMySQLRestoreRuntimeFence(runCtx, r.Acceptance, claim); err != nil {
+		return err
+	}
 	// The runtime account must be durably intended before the external ALTER
 	// USER, then durably verified before Begin may commit the SQL boundary.
 	// Keep this before Begin so a crash after account lock cannot be recovered as
@@ -51,14 +57,8 @@ func (r MySQLRestoreRunner) RunClaimed(ctx context.Context, claim OperationClaim
 	if intentErr != nil {
 		return intentErr
 	}
-	// Hold new app mutation claims before altering the database account. This
-	// fence deliberately survives every outcome, including a completed import;
-	// a separately authorized resume must prove writers and unlock readiness.
-	// Existing running effects and direct Nomad writers still need independent
-	// drain/account proofs before this private lane can be exposed.
-	if _, err := r.Control.AcquireRuntimeMutationFence(runCtx, "mysql-restore:"+claim.OperationID(), "MySQL restore runtime account and SQL maintenance"); err != nil {
-		return err
-	}
+	// The transferred fence survives every outcome, including a completed
+	// import. A separately authorized resume must prove unlock readiness.
 	catalog, catalogErr := r.Control.DatabaseCatalogRevision(runCtx, intended.Request.CatalogRevision)
 	if catalogErr != nil {
 		return catalogErr

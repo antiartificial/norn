@@ -196,8 +196,10 @@ func TestMySQLRestoreIntentAgainstDisposableEngines(t *testing.T) {
 	if !strings.HasPrefix(path, filepath.Clean(stage)+string(os.PathSeparator)) {
 		t.Fatal("snapshot escaped private stage")
 	}
+	receipt := testMySQLSourceArtifactReceipt(t, control, stores[0], active.Revision, artifact.Source, path, artifact)
+	testBindMySQLSourceFence(t, control, receipt)
 	request := MySQLRestoreRequest{CatalogRevision: active.Revision, ProfileID: "mini", LogicalID: "intent-target", Target: target.Target, Maintenance: *target.MySQLMaintenance, Artifact: artifact, ArtifactPath: path,
-		SourceArtifact: testMySQLSourceArtifactReceipt(t, control, stores[0], active.Revision, artifact.Source, path, artifact)}
+		SourceArtifact: receipt}
 	input := newAcceptance(t, stores[0], "mysql-intent-"+suffix, "operator", "intent-target", false)
 	input.Identity.Kind, input.Identity.Resource = MySQLRestoreOperationKind, "mysql/"+targetDB
 	input.Operation.Kind, input.Operation.MaxAttempts = MySQLRestoreOperationKind, 1
@@ -332,27 +334,33 @@ func TestMySQLRestoreIntentAgainstDisposableEngines(t *testing.T) {
 	if err := control.Pool.QueryRow(ctx, `SELECT epoch, owner, active FROM runtime_mutation_fence WHERE singleton=true`).Scan(&mutationFence.Epoch, &mutationFence.Owner, &fenceActive); err != nil || !fenceActive || mutationFence.Owner != "mysql-restore:"+claim.OperationID() {
 		t.Fatalf("restore did not retain its runtime mutation fence: %+v active=%t err=%v", mutationFence, fenceActive, err)
 	}
-	queuedMutation := insertOperationFixture(t, control, "app.deploy", 1, nil)
+	insertOperationFixture(t, control, "app.deploy", 1, nil)
 	if claimed, _, err := control.ClaimNextOperation(ctx, "concurrent-deploy", time.Minute, []string{"app.deploy"}); err != nil || claimed != nil {
 		t.Fatalf("restore admitted queued deploy while runtime fence held: %+v %v", claimed, err)
 	}
-	// This disposable test runs a second independent restore in the same control
-	// schema. Explicitly reset only the global claim fence after proving the
-	// first runner retained it; production requires a signed resume protocol.
-	if err := control.ReleaseRuntimeMutationFence(ctx, mutationFence); err != nil {
-		t.Fatal(err)
+	if err := control.ReleaseRuntimeMutationFence(ctx, mutationFence); !errors.Is(err, ErrRuntimeMutationFenceOwnershipLost) {
+		t.Fatalf("generic release bypassed transferred source/restore fence: %v", err)
 	}
-	if claimed, _, err := control.ClaimNextOperation(ctx, "post-restore-deploy", time.Minute, []string{"app.deploy"}); err != nil || claimed == nil || claimed.ID != queuedMutation.ID {
-		t.Fatalf("explicit fence release did not resume queued deploy: %+v %v", claimed, err)
+	if claimed, _, err := control.ClaimNextOperation(ctx, "post-restore-deploy", time.Minute, []string{"app.deploy"}); err != nil || claimed != nil {
+		t.Fatalf("completed restore resumed queued deploy without signed recovery: %+v %v", claimed, err)
 	}
 
 	// Claim theft after the durable intent enters executing must cancel the
 	// private client, leave no success receipt, contain the intent for operator
 	// inspection, and reject any automatic replay under the successor claim.
+	lossStores, lossDBs := acceptanceIntegrationStores(t, 1)
+	lossControl := lossDBs[0]
+	lossCatalog, err := lossControl.ActivateDatabaseCatalog(ctx, 0, catalog, "test-operator-loss")
+	if err != nil {
+		t.Fatal(err)
+	}
 	lostRequest := request
+	lostRequest.CatalogRevision = lossCatalog.Revision
+	lostRequest.SourceArtifact = testMySQLSourceArtifactReceipt(t, lossControl, lossStores[0], lossCatalog.Revision, artifact.Source, path, artifact)
+	testBindMySQLSourceFence(t, lossControl, lostRequest.SourceArtifact)
 	lostRequest.LogicalID, lostRequest.Target = "intent-lost-target", lostTarget.Target
 	lostEncoded, _ := json.Marshal(lostRequest)
-	lostInput := newAcceptance(t, stores[0], "mysql-intent-claim-loss-"+suffix, "operator", "intent-lost-target", false)
+	lostInput := newAcceptance(t, lossStores[0], "mysql-intent-claim-loss-"+suffix, "operator", "intent-lost-target", false)
 	lostInput.Identity.Kind, lostInput.Identity.Resource = MySQLRestoreOperationKind, "mysql/"+lostTargetDB
 	lostInput.Operation.Kind, lostInput.Operation.MaxAttempts, lostInput.Operation.Payload = MySQLRestoreOperationKind, 1, nil
 	if err := json.Unmarshal(lostEncoded, &lostInput.Operation.Payload); err != nil {
@@ -362,7 +370,7 @@ func TestMySQLRestoreIntentAgainstDisposableEngines(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	lostAccepted, err := stores[0].Accept(ctx, lostInput)
+	lostAccepted, err := lossStores[0].Accept(ctx, lostInput)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -370,11 +378,11 @@ func TestMySQLRestoreIntentAgainstDisposableEngines(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := control.Pool.Exec(ctx, `UPDATE operations SET status='running', attempts=1, locked_by=$2, lock_generation=1,
+	if _, err := lossControl.Pool.Exec(ctx, `UPDATE operations SET status='running', attempts=1, locked_by=$2, lock_generation=1,
 		locked_until=now()+interval '2 minutes' WHERE id=$1`, lostClaim.OperationID(), lostClaim.OwnerID()); err != nil {
 		t.Fatal(err)
 	}
-	if prepared, err := control.PrepareClaimedMySQLRestore(ctx, stores[0], lostClaim, lostRequest, secrets); err != nil || prepared.State != "prepared" {
+	if prepared, err := lossControl.PrepareClaimedMySQLRestore(ctx, lossStores[0], lostClaim, lostRequest, secrets); err != nil || prepared.State != "prepared" {
 		t.Fatalf("claim-loss prepare: %+v %v", prepared, err)
 	}
 	clientStarted := filepath.Join(t.TempDir(), "mysql-client-started")
@@ -387,7 +395,7 @@ func TestMySQLRestoreIntentAgainstDisposableEngines(t *testing.T) {
 		t.Fatal(err)
 	}
 	lossSHA := sha256.Sum256(lossBytes)
-	lossRunner := MySQLRestoreRunner{Control: control, Acceptance: stores[0], Secrets: secrets, ClaimLease: 90 * time.Millisecond,
+	lossRunner := MySQLRestoreRunner{Control: lossControl, Acceptance: lossStores[0], Secrets: secrets, ClaimLease: 90 * time.Millisecond,
 		Tool: database.MySQLRestoreTool{Path: lossTool, SHA256: fmt.Sprintf("%x", lossSHA)}}
 	runResult := make(chan error, 1)
 	go func() { runResult <- lossRunner.RunClaimed(ctx, lostClaim) }()
@@ -401,7 +409,7 @@ func TestMySQLRestoreIntentAgainstDisposableEngines(t *testing.T) {
 		}
 		time.Sleep(10 * time.Millisecond)
 	}
-	if _, err := control.Pool.Exec(ctx, `UPDATE operations SET locked_by='mysql-claim-thief', lock_generation=2,
+	if _, err := lossControl.Pool.Exec(ctx, `UPDATE operations SET locked_by='mysql-claim-thief', lock_generation=2,
 		locked_until=now()+interval '2 minutes' WHERE id=$1`, lostClaim.OperationID()); err != nil {
 		t.Fatal(err)
 	}
@@ -419,7 +427,7 @@ func TestMySQLRestoreIntentAgainstDisposableEngines(t *testing.T) {
 	}
 	var lostState, operationStatus string
 	var finishedAt interface{}
-	if err := control.Pool.QueryRow(ctx, `SELECT i.state, o.status, o.finished_at FROM mysql_restore_intents i JOIN operations o ON o.id=i.operation_id WHERE i.operation_id=$1`, lostClaim.OperationID()).Scan(&lostState, &operationStatus, &finishedAt); err != nil {
+	if err := lossControl.Pool.QueryRow(ctx, `SELECT i.state, o.status, o.finished_at FROM mysql_restore_intents i JOIN operations o ON o.id=i.operation_id WHERE i.operation_id=$1`, lostClaim.OperationID()).Scan(&lostState, &operationStatus, &finishedAt); err != nil {
 		t.Fatal(err)
 	}
 	if lostState != "needs-inspection" || operationStatus == "succeeded" || finishedAt != nil {
@@ -432,7 +440,7 @@ func TestMySQLRestoreIntentAgainstDisposableEngines(t *testing.T) {
 	if err := lossRunner.RunClaimed(ctx, thiefClaim); !errors.Is(err, ErrMySQLRestoreFence) {
 		t.Fatalf("successor replay after inspection containment = %v", err)
 	}
-	if err := control.Pool.QueryRow(ctx, `SELECT state FROM mysql_restore_intents WHERE operation_id=$1`, lostClaim.OperationID()).Scan(&lostState); err != nil || lostState != "needs-inspection" {
+	if err := lossControl.Pool.QueryRow(ctx, `SELECT state FROM mysql_restore_intents WHERE operation_id=$1`, lostClaim.OperationID()).Scan(&lostState); err != nil || lostState != "needs-inspection" {
 		t.Fatalf("automatic replay changed contained state=%q err=%v", lostState, err)
 	}
 }

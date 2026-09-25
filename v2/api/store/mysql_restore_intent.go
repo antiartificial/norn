@@ -232,6 +232,9 @@ func (db *DB) IntendClaimedMySQLRestoreRuntimeLock(ctx context.Context, acceptan
 	if err := db.verifyMySQLRestoreSourceArtifact(ctx, tx, acceptance, request); err != nil {
 		return MySQLRestoreIntent{}, ErrMySQLRestoreFence
 	}
+	if err := verifyClaimedMySQLRestoreTransferredFence(ctx, tx, claim, request); err != nil {
+		return MySQLRestoreIntent{}, err
+	}
 	result, err := tx.Exec(ctx, `INSERT INTO mysql_restore_runtime_locks
 		(operation_id, acceptance_intent_id, catalog_revision, target, claim_owner, claim_generation, state)
 		VALUES ($1,$2,$3,$4,$5,$6,'lock-intended') ON CONFLICT DO NOTHING`, claim.OperationID(), accepted.AcceptanceIntentID, request.CatalogRevision, targetBytes, claim.OwnerID(), claim.Generation())
@@ -275,6 +278,9 @@ func (db *DB) VerifyClaimedMySQLRestoreRuntimeLock(ctx context.Context, acceptan
 	}
 	defer tx.Rollback(context.Background())
 	if err := verifyMySQLRestoreClaim(ctx, tx, claim); err != nil {
+		return err
+	}
+	if err := verifyClaimedMySQLRestoreTransferredFence(ctx, tx, claim, request); err != nil {
 		return err
 	}
 	result, err := tx.Exec(ctx, `UPDATE mysql_restore_runtime_locks SET state='verified-lock', verified_at=clock_timestamp()
@@ -344,6 +350,9 @@ func (db *DB) BeginClaimedMySQLRestore(ctx context.Context, acceptance *PGOperat
 	}
 	if err := db.verifyMySQLRestoreSourceArtifact(ctx, tx, acceptance, request); err != nil {
 		return MySQLRestoreIntent{}, ErrMySQLRestoreFence
+	}
+	if err := verifyClaimedMySQLRestoreTransferredFence(ctx, tx, claim, request); err != nil {
+		return MySQLRestoreIntent{}, err
 	}
 	var lockVerified bool
 	if err := tx.QueryRow(ctx, `SELECT state='verified-lock' FROM mysql_restore_runtime_locks

@@ -132,6 +132,7 @@ func testMySQLSourceArtifactReceipt(t *testing.T, db *DB, acceptance *PGOperatio
 	input.Identity.Kind, input.Identity.Resource = MySQLSourceSnapshotOperationKind, "mysql/"+source.Database
 	input.Operation.Kind, input.Operation.MaxAttempts = MySQLSourceSnapshotOperationKind, 1
 	encoded, _ := json.Marshal(request)
+	input.Operation.Payload = nil
 	if err := json.Unmarshal(encoded, &input.Operation.Payload); err != nil {
 		t.Fatal(err)
 	}
@@ -180,4 +181,17 @@ func testMySQLSourceArtifactReceipt(t *testing.T, db *DB, acceptance *PGOperatio
 		t.Fatal(err)
 	}
 	return MySQLRestoreSourceArtifact{OperationID: accepted.Operation.ID, ReceiptSHA256: hex.EncodeToString(digest[:])}
+}
+
+func testBindMySQLSourceFence(t *testing.T, db *DB, receipt MySQLRestoreSourceArtifact) RuntimeMutationFence {
+	t.Helper()
+	ctx := context.Background()
+	fence, err := db.AcquireRuntimeMutationFence(ctx, "mysql-source-snapshot:"+receipt.OperationID, "quiesce MySQL source for signed snapshot")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := db.Pool.Exec(ctx, `UPDATE mysql_source_snapshot_intents SET runtime_fence_epoch=$2,runtime_fence_owner=$3 WHERE operation_id=$1`, receipt.OperationID, fence.Epoch, fence.Owner); err != nil {
+		t.Fatal(err)
+	}
+	return fence
 }

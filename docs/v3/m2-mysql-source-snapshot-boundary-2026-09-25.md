@@ -73,10 +73,15 @@ owner-only file bytes. Legacy operator-entered `source_quiescence` rows remain
 for audit but cannot qualify a new restore. Provider aliases of the same
 physical MySQL database are rejected as self-restores.
 
-The source operation retains the global runtime fence after staging. A
-separately accepted transfer to the restore operation is still required before
-the private runner can execute; migration 33 does not transfer or release that
-fence. This keeps the restore blocked until the handoff is implemented.
+Migration 34 transfers the active global runtime fence from the stage-proved
+source to the separately accepted restore inside one PostgreSQL transaction.
+It keeps the same epoch and never clears the claim gate. The transfer records
+the exact source receipt and restore claim binding, permits only an exact
+same-claim retry, and blocks a successor claim from silently resuming. The
+private restore runner must transfer before intending the destination account
+lock; its later checkpoints verify the transferred owner and epoch. Generic
+fence release refuses both the old source owner and the transferred restore
+owner. No source or destination account is automatically unlocked.
 
 This is still a private implementation step, not a qualified source snapshot
 workflow. The private quiescence runner renews its claim before and throughout
