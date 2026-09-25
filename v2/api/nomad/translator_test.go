@@ -12,6 +12,31 @@ import (
 
 func testIntPointer(value int) *int { return &value }
 
+func TestTranslatePreservesEveryVolume(t *testing.T) {
+	spec := &model.InfraSpec{
+		App:       "demo",
+		Processes: map[string]model.Process{"web": {Port: 8080}},
+		Volumes: []model.VolumeSpec{
+			{Name: "content", Mount: "/var/www/html/wp-content"},
+			{Name: "cache", Mount: "/var/cache/demo"},
+		},
+	}
+	jobs := map[string]*nomadapi.Job{
+		"service":  Translate(spec, "demo:test", nil),
+		"periodic": TranslatePeriodic(spec, "tick", model.Process{Schedule: "0 * * * *", Command: "true"}, "demo:test", nil),
+		"batch":    TranslateBatch(spec, "run", model.Process{Command: "true"}, "demo:test", nil, "demo-run-1"),
+	}
+	for kind, job := range jobs {
+		group := job.TaskGroups[0]
+		if len(group.Volumes) != 2 || group.Volumes["content"] == nil || group.Volumes["cache"] == nil {
+			t.Fatalf("%s volumes = %+v", kind, group.Volumes)
+		}
+		if got := len(group.Tasks[0].VolumeMounts); got != 2 {
+			t.Fatalf("%s mounts = %d, want 2", kind, got)
+		}
+	}
+}
+
 func TestTranslatePreservesContentAddressedImage(t *testing.T) {
 	image := "registry.example.test/norn/demo@sha256:" + strings.Repeat("a", 64)
 	spec := &model.InfraSpec{
