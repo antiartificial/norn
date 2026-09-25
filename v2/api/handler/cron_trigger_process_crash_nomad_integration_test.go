@@ -352,6 +352,11 @@ func cronTriggerCrashProxy(t *testing.T, target *url.URL, jobID string, beforeLa
 func cronTriggerCrashAfterForceProxy(t *testing.T, target *url.URL, jobID string, forced chan<- string, forceCalls *atomic.Int32) *httptest.Server {
 	t.Helper()
 	return httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		force := r.Method == http.MethodPut && r.URL.Path == "/v1/job/"+jobID+"/periodic/force"
+		if force && forceCalls.Add(1) != 1 {
+			http.Error(w, "second Force rejected by crash qualification", http.StatusConflict)
+			return
+		}
 		upstream := r.Clone(r.Context())
 		upstream.URL.Scheme, upstream.URL.Host, upstream.Host, upstream.RequestURI = target.Scheme, target.Host, target.Host, ""
 		response, err := http.DefaultTransport.RoundTrip(upstream)
@@ -360,11 +365,7 @@ func cronTriggerCrashAfterForceProxy(t *testing.T, target *url.URL, jobID string
 			return
 		}
 		defer response.Body.Close()
-		if r.Method == http.MethodPut && r.URL.Path == "/v1/job/"+jobID+"/periodic/force" {
-			if forceCalls.Add(1) != 1 {
-				http.Error(w, "second Force rejected by crash qualification", http.StatusConflict)
-				return
-			}
+		if force {
 			evalID, err := cronTriggerCrashEvalID(response)
 			if err != nil || evalID == "" {
 				t.Errorf("read successful Nomad Force response: eval=%q err=%v", evalID, err)
@@ -382,6 +383,35 @@ func cronTriggerCrashAfterForceProxy(t *testing.T, target *url.URL, jobID string
 		w.WriteHeader(response.StatusCode)
 		_, _ = io.Copy(w, response.Body)
 	}))
+}
+
+func TestCronTriggerCrashAfterForceProxyRejectsReplayBeforeNomad(t *testing.T) {
+	var upstreamCalls atomic.Int32
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		upstreamCalls.Add(1)
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer upstream.Close()
+	target, err := url.Parse(upstream.URL)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var forceCalls atomic.Int32
+	forceCalls.Store(1)
+	proxy := cronTriggerCrashAfterForceProxy(t, target, "test-parent", make(chan string, 1), &forceCalls)
+	defer proxy.Close()
+	req, err := http.NewRequest(http.MethodPut, proxy.URL+"/v1/job/test-parent/periodic/force", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	response, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	response.Body.Close()
+	if response.StatusCode != http.StatusConflict || forceCalls.Load() != 2 || upstreamCalls.Load() != 0 {
+		t.Fatalf("replay status=%d calls=%d upstream=%d", response.StatusCode, forceCalls.Load(), upstreamCalls.Load())
+	}
 }
 
 func cronTriggerCrashEvalID(response *http.Response) (string, error) {
