@@ -133,6 +133,11 @@ func (p *Pipeline) snapshotTarget(ctx context.Context, st *state, sg *saga.Saga,
 			_ = sg.Log(ctx, "snapshot.export_failed", fmt.Sprintf("snapshot export failed: %v", err), map[string]string{"bucket": exportBucket, "snapshot": created.Filename})
 			return fmt.Errorf("predeploy snapshot export: %w", err)
 		}
+		// The remote copy can outlive the operation lease. A verified export
+		// must not let a stale deploy advance to migration or job submission.
+		if err := p.DB.CheckOperationClaim(ctx, st.claim); err != nil {
+			return fmt.Errorf("predeploy snapshot export claim is no longer current: %w", err)
+		}
 		_ = sg.Log(ctx, "snapshot.exported", fmt.Sprintf("snapshot exported to %s/%s", exportBucket, key), map[string]string{
 			"bucket": exportBucket, "key": key,
 		})

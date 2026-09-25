@@ -163,3 +163,10 @@ any predeploy dump work; this closes the known expired-before-upload case but
 does not fence expiry during an upload. The create-only S3
 behavior has passed the local emulator, including multipart completion, but
 hosted-provider qualification remains open. M1 export is not yet qualified.
+The predeploy path now checks the live operation claim again after the remote
+dump and manifest have been verified, before deploy may advance to migration
+or job submission. An isolated PostgreSQL test expires the claim during the
+first remote write and proves the step returns an ownership error despite the
+two verified remote objects. This prevents stale deploy progression in that
+window; it does not erase the remote objects or replace a durable export
+effect reservation and crash recovery.
