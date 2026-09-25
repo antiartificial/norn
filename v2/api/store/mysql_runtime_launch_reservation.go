@@ -8,7 +8,6 @@ import (
 	"errors"
 	"fmt"
 	"sort"
-	"strconv"
 	"strings"
 	"time"
 
@@ -414,26 +413,47 @@ func rejectMySQLRestoreMaintenanceFence(ctx context.Context, tx pgx.Tx, identiti
 	if len(exceptOperationID) == 1 {
 		except = exceptOperationID[0]
 	}
+	active, err := loadActiveDatabaseCatalog(ctx, tx)
+	if err != nil {
+		return err
+	}
+	rows, err := tx.Query(ctx, `SELECT i.target, f.source_quiescence->'source'
+		FROM mysql_restore_maintenance_fences f JOIN mysql_restore_intents i ON i.operation_id=f.operation_id`)
+	if err != nil {
+		return err
+	}
+	var restoreIdentities []database.TargetIdentity
+	for rows.Next() {
+		var targetJSON, sourceJSON []byte
+		if err := rows.Scan(&targetJSON, &sourceJSON); err != nil {
+			rows.Close()
+			return err
+		}
+		var target, source database.TargetIdentity
+		if json.Unmarshal(targetJSON, &target) != nil || json.Unmarshal(sourceJSON, &source) != nil {
+			rows.Close()
+			return ErrMySQLRuntimeLaunchFence
+		}
+		restoreIdentities = append(restoreIdentities, target, source)
+	}
+	if err := rows.Err(); err != nil {
+		rows.Close()
+		return err
+	}
+	rows.Close()
 	for _, identity := range identities {
+		physicalKey := mysqlRuntimePhysicalKeyForCatalog(active.Catalog, identity)
 		var snapshotBlocked bool
-		if err := tx.QueryRow(ctx, `SELECT EXISTS (SELECT 1 FROM mysql_source_snapshot_intents WHERE source_key=$1 AND operation_id<>$2)`, mysqlRuntimePhysicalKey(identity), except).Scan(&snapshotBlocked); err != nil {
+		if err := tx.QueryRow(ctx, `SELECT EXISTS (SELECT 1 FROM mysql_source_snapshot_intents WHERE source_key=$1 AND operation_id<>$2)`, physicalKey, except).Scan(&snapshotBlocked); err != nil {
 			return err
 		}
 		if snapshotBlocked {
 			return ErrMySQLRuntimeLaunchFence
 		}
-		var blocked bool
-		err := tx.QueryRow(ctx, `SELECT EXISTS (
-			SELECT 1 FROM mysql_restore_maintenance_fences f
-			JOIN mysql_restore_intents i ON i.operation_id=f.operation_id
-			WHERE (i.target->>'engine'=$1 AND i.target->>'serviceId'=$2 AND i.target->>'serviceGeneration'=$3 AND i.target->>'database'=$4)
-			   OR (f.source_quiescence->'source'->>'engine'=$1 AND f.source_quiescence->'source'->>'serviceId'=$2 AND f.source_quiescence->'source'->>'serviceGeneration'=$3 AND f.source_quiescence->'source'->>'database'=$4)
-		)`, identity.Engine, identity.ServiceID, strconv.FormatUint(identity.ServiceGeneration, 10), identity.Database).Scan(&blocked)
-		if err != nil {
-			return err
-		}
-		if blocked {
-			return ErrMySQLRuntimeLaunchFence
+		for _, restoreIdentity := range restoreIdentities {
+			if mysqlRuntimePhysicalKeyForCatalog(active.Catalog, restoreIdentity) == physicalKey {
+				return ErrMySQLRuntimeLaunchFence
+			}
 		}
 	}
 	return nil

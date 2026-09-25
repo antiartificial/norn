@@ -96,7 +96,7 @@ func (db *DB) PrepareClaimedMySQLSourceSnapshot(ctx context.Context, acceptance 
 	source, _ := json.Marshal(request.Source)
 	maintenance, _ := json.Marshal(request.Maintenance)
 	job, _ := json.Marshal(request.JobIdentity)
-	key := mysqlRuntimePhysicalKey(request.Source)
+	key := mysqlRuntimePhysicalKeyForCatalog(active.Catalog, request.Source)
 	inserted, err := tx.Exec(ctx, `INSERT INTO mysql_source_snapshot_intents
 		(operation_id,acceptance_intent_id,catalog_revision,profile_id,logical_id,source_key,source,maintenance,job_identity,dump_tool_sha256,state)
 		VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,'quiesce-intended') ON CONFLICT DO NOTHING`, claim.OperationID(), accepted.AcceptanceIntentID, request.CatalogRevision, request.ProfileID, request.LogicalID, key, source, maintenance, job, request.DumpToolSHA256)
@@ -155,8 +155,12 @@ func sameJSON(left, right []byte) bool {
 }
 
 func rejectMySQLSourceSnapshotIntent(ctx context.Context, tx pgx.Tx, source database.TargetIdentity) error {
+	active, err := loadActiveDatabaseCatalog(ctx, tx)
+	if err != nil {
+		return err
+	}
 	var blocked bool
-	if err := tx.QueryRow(ctx, `SELECT EXISTS (SELECT 1 FROM mysql_source_snapshot_intents WHERE source_key=$1)`, mysqlRuntimePhysicalKey(source)).Scan(&blocked); err != nil {
+	if err := tx.QueryRow(ctx, `SELECT EXISTS (SELECT 1 FROM mysql_source_snapshot_intents WHERE source_key=$1)`, mysqlRuntimePhysicalKeyForCatalog(active.Catalog, source)).Scan(&blocked); err != nil {
 		return err
 	}
 	if blocked {

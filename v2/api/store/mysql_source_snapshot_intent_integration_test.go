@@ -46,6 +46,9 @@ func TestMySQLSourceSnapshotIntentReservesSignedPhysicalSource(t *testing.T) {
 		TLS:      database.DatabaseTLSPolicy{MinimumMode: database.TLSDisabled},
 		Recovery: database.RecoveryPolicy{Capabilities: []database.Capability{database.CapabilitySnapshot}},
 	})
+	aliasService := catalog.Services[len(catalog.Services)-1]
+	aliasService.ID = "snapshot-mysql-alias"
+	catalog.Services = append(catalog.Services, aliasService)
 	maintenance := &database.MySQLMaintenanceCredentials{Generation: 1, RuntimeAccountHost: "%", SnapshotRole: "snapshot_reader", SnapshotAccountHost: "%", SnapshotCredentialRef: "secret:snapshot/reader", RestoreRole: "snapshot_restore", RestoreAccountHost: "%", RestoreCredentialRef: "secret:snapshot/restore", FenceRole: "snapshot_fence", FenceCredentialRef: "secret:snapshot/fence", FenceAccountHost: "%"}
 	catalog.Bindings = append(catalog.Bindings, database.DatabaseBinding{APIVersion: database.APIVersion, ID: "snapshot-source", ServiceID: "snapshot-mysql", Database: "wordpress", Role: "snapshot_runtime", Generation: 1, CredentialRef: "secret:snapshot/runtime", MySQLMaintenance: maintenance, TLS: database.DatabaseTLS{Mode: database.TLSDisabled}})
 	catalog.Profiles[0].DatabaseBindings["snapshot-source"] = "snapshot-source"
@@ -119,6 +122,16 @@ func TestMySQLSourceSnapshotIntentReservesSignedPhysicalSource(t *testing.T) {
 	}
 	if _, err := db.ReserveMySQLRuntimeLaunch(ctx, "snapshot-race", []database.TargetIdentity{source.Target}); !errors.Is(err, ErrMySQLRuntimeLaunchFence) {
 		t.Fatalf("runtime launch passed source fence: %v", err)
+	}
+	aliasSource := source.Target
+	aliasSource.ServiceID, aliasSource.BindingID, aliasSource.Role = "snapshot-mysql-alias", "snapshot-source-alias", "snapshot_runtime_alias"
+	if _, err := db.ReserveMySQLRuntimeLaunch(ctx, "snapshot-alias-race", []database.TargetIdentity{aliasSource}); !errors.Is(err, ErrMySQLRuntimeLaunchFence) {
+		t.Fatalf("catalog service alias passed source fence: %v", err)
+	}
+	rotatedSource := source.Target
+	rotatedSource.ServiceGeneration++
+	if _, err := db.ReserveMySQLRuntimeLaunch(ctx, "snapshot-generation-race", []database.TargetIdentity{rotatedSource}); !errors.Is(err, ErrMySQLRuntimeLaunchFence) {
+		t.Fatalf("service generation rotation passed source fence: %v", err)
 	}
 	if _, err := db.ActivateDatabaseCatalog(ctx, active.Revision, catalog, "operator"); !errors.Is(err, ErrMySQLRestoreMaintenanceFence) {
 		t.Fatalf("catalog activation passed source fence: %v", err)

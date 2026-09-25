@@ -203,6 +203,47 @@ func TestMySQLRuntimeLaunchReservationUsesCatalogPhysicalProviderIdentity(t *tes
 	}
 }
 
+func TestMySQLRestoreMaintenanceFenceUsesCatalogPhysicalProviderIdentity(t *testing.T) {
+	_, dbs := acceptanceIntegrationStores(t, 1)
+	db := dbs[0]
+	ctx := context.Background()
+	service := func(id string) database.DatabaseService {
+		return database.DatabaseService{
+			APIVersion: database.APIVersion, ID: id, Generation: 1,
+			Purpose: database.PurposeApplication, Engine: database.EngineMySQL,
+			EngineVersion: "8.4", ProviderRef: "local:restore-shared-mysql",
+			Endpoint: database.DatabaseEndpoint{Host: "mysql.internal", Port: 3306},
+			Topology: database.DatabaseTopology{Mode: database.TopologyLocalShared, AvailabilityClass: database.AvailabilitySingleHost},
+			TLS:      database.DatabaseTLSPolicy{MinimumMode: database.TLSDisabled},
+			Recovery: database.RecoveryPolicy{Capabilities: []database.Capability{database.CapabilityRuntime, database.CapabilityRestore}},
+		}
+	}
+	catalog := database.Catalog{APIVersion: database.APIVersion, Services: []database.DatabaseService{service("restore-primary"), service("restore-alias")}}
+	active, err := db.ActivateDatabaseCatalog(ctx, 0, catalog, "restore-physical-exclusion-test")
+	if err != nil {
+		t.Fatal(err)
+	}
+	primary := database.TargetIdentity{ServiceID: "restore-primary", ServiceGeneration: 1, BindingID: "primary", BindingGeneration: 1, Engine: database.EngineMySQL, Database: "wordpress", Role: "writer"}
+	tx, err := db.Pool.Begin(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	insertMySQLRestoreFence(t, ctx, tx, "physical-restore", active.Revision, primary, primary)
+	if err := tx.Commit(ctx); err != nil {
+		t.Fatal(err)
+	}
+	alias := primary
+	alias.ServiceID, alias.BindingID, alias.Role = "restore-alias", "alias", "alternate_writer"
+	if _, err := db.ReserveMySQLRuntimeLaunch(ctx, "restore-alias-launch", []database.TargetIdentity{alias}); !errors.Is(err, ErrMySQLRuntimeLaunchFence) {
+		t.Fatalf("catalog service alias passed restore maintenance fence: %v", err)
+	}
+	rotated := primary
+	rotated.ServiceGeneration++
+	if _, err := db.ReserveMySQLRuntimeLaunch(ctx, "restore-generation-launch", []database.TargetIdentity{rotated}); !errors.Is(err, ErrMySQLRuntimeLaunchFence) {
+		t.Fatalf("service generation rotation passed restore maintenance fence: %v", err)
+	}
+}
+
 func TestMySQLRuntimeLaunchReservationWaitsForConcurrentRestoreFence(t *testing.T) {
 	_, dbs := acceptanceIntegrationStores(t, 2)
 	ctx := context.Background()
