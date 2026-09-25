@@ -34,6 +34,9 @@ four had no declared app endpoint match. This is a hostname correlation only.
 The inventory API does not expose the cloudflared destination rule, and this
 check did not prove DNS, proxy routing, listener ownership, or successful
 traffic for any hostname.
+The later [destination join](m0-mini-ingress-destination-join-2026-09-25.md)
+matched two of those four to the current Norn API and Vigil runtime; two
+loopback-port routes remain unassigned.
 
 The 37 base Nomad job definitions contained eight jobs with declared volumes
 and mounts. Five were service jobs: `field-harbor` (one), `norn-cadvisor`
