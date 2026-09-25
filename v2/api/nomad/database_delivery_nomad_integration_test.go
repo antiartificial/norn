@@ -2,6 +2,7 @@ package nomad
 
 import (
 	"crypto/sha256"
+	"encoding/base64"
 	"encoding/hex"
 	"fmt"
 	"os"
@@ -134,6 +135,83 @@ func TestGeneratedWordPressMySQLRuntimeInNomad(t *testing.T) {
 		t.Fatal(err)
 	}
 	checkAllocationOutput(t, client.api, jobID, "web", "mysql-runtime-ok")
+}
+
+// TestGeneratedWordPressMySQLTLSRuntimeInNomad is the opt-in allocation
+// qualification for the dormant MySQL TLS file-delivery contract. It proves
+// that Nomad renders the CA and optional client PEM files below the allocation
+// secrets directory, mysqli consumes those paths, and the connection actually
+// negotiated TLS. It deliberately does not change database's resolver gate:
+// that gate can move only after this test is run successfully against the
+// exact supported image and disposable verified-TLS MySQL target.
+//
+// Set NORN_TEST_NOMAD_ADDR, NORN_TEST_MYSQL_{ALLOCATION_HOST,USER,PASSWORD,
+// DATABASE}, and NORN_TEST_MYSQL_TLS_CA_PEM_B64. If the server requires a
+// client certificate, also set NORN_TEST_MYSQL_TLS_{CLIENT_CERT,CLIENT_KEY}_B64.
+func TestGeneratedWordPressMySQLTLSRuntimeInNomad(t *testing.T) {
+	address := os.Getenv("NORN_TEST_NOMAD_ADDR")
+	host, user, password, name := os.Getenv("NORN_TEST_MYSQL_ALLOCATION_HOST"), os.Getenv("NORN_TEST_MYSQL_USER"), os.Getenv("NORN_TEST_MYSQL_PASSWORD"), os.Getenv("NORN_TEST_MYSQL_DATABASE")
+	ca, ok := qualificationPEM(t, "NORN_TEST_MYSQL_TLS_CA_PEM_B64")
+	if address == "" || host == "" || user == "" || password == "" || name == "" || !ok {
+		t.Skip("set Nomad, disposable MySQL, and base64 CA variables to run verified TLS allocation qualification")
+	}
+	cert, hasCert := qualificationPEM(t, "NORN_TEST_MYSQL_TLS_CLIENT_CERT_B64")
+	key, hasKey := qualificationPEM(t, "NORN_TEST_MYSQL_TLS_CLIENT_KEY_B64")
+	if hasCert != hasKey {
+		t.Fatal("NORN_TEST_MYSQL_TLS_CLIENT_CERT_B64 and NORN_TEST_MYSQL_TLS_CLIENT_KEY_B64 must be set together")
+	}
+	client, err := NewClient(address)
+	if err != nil {
+		t.Fatal(err)
+	}
+	app := fmt.Sprintf("norn-m2-mysql-tls-%d", time.Now().UnixNano())
+	const command = `php -r '$m=mysqli_init(); mysqli_options($m, MYSQLI_OPT_SSL_VERIFY_SERVER_CERT, true); mysqli_ssl_set($m, getenv("MYSQL_SSL_KEY") ?: null, getenv("MYSQL_SSL_CERT") ?: null, getenv("MYSQL_SSL_CA"), null, null); if(!mysqli_real_connect($m, getenv("WORDPRESS_DB_HOST"), getenv("WORDPRESS_DB_USER"), getenv("WORDPRESS_DB_PASSWORD"), getenv("WORDPRESS_DB_NAME"), null, null, MYSQLI_CLIENT_SSL)){exit(2);} $q=$m->query("SHOW STATUS LIKE 0x53736c5f636970686572"); if(!$q || !($r=$q->fetch_row()) || $r[1]===""){exit(3);} $identity=$m->query("SELECT DATABASE() AS db, SUBSTRING_INDEX(CURRENT_USER(), 0x40, 1) AS role"); if(!$identity || !($row=$identity->fetch_assoc()) || $row["db"]!==getenv("WORDPRESS_DB_NAME") || $row["role"]!==getenv("WORDPRESS_DB_USER")){exit(4);} echo "mysql-tls-runtime-ok\\n";'`
+	runtimeTLS := &model.DatabaseRuntimeTLS{CAFileEnv: "MYSQL_SSL_CA"}
+	if hasCert {
+		runtimeTLS.ClientCertFileEnv, runtimeTLS.ClientKeyFileEnv = "MYSQL_SSL_CERT", "MYSQL_SSL_KEY"
+	}
+	spec := &model.InfraSpec{SchemaVersion: model.AppSchemaV2, App: app,
+		Processes: map[string]model.Process{"web": {Command: command + " && sleep 30"}},
+		Databases: []model.DatabaseRequirement{{Name: "primary", Purpose: "application", Capabilities: []string{"runtime"}, Runtime: &model.DatabaseRuntime{
+			Components: &model.DatabaseRuntimeComponents{Host: "WORDPRESS_DB_HOST", User: "WORDPRESS_DB_USER", Password: "WORDPRESS_DB_PASSWORD", Name: "WORDPRESS_DB_NAME"}, TLS: runtimeTLS,
+		}}},
+	}
+	job := TranslateForRegionAt(spec, "wordpress:latest", nil, spec.ResolvedRegions()[0], 7)
+	jobID := *job.ID
+	t.Cleanup(func() {
+		_, _, _ = client.api.Jobs().Deregister(jobID, true, nil)
+		_, _ = client.api.Variables().Delete(DatabaseVariablePath(jobID), nil)
+	})
+	items := map[string]string{
+		DatabaseComponentItemKey("primary", "host"): host, DatabaseComponentItemKey("primary", "user"): user,
+		DatabaseComponentItemKey("primary", "password"): password, DatabaseComponentItemKey("primary", "name"): name,
+		DatabaseTLSItemKey("primary", "ca"): string(ca),
+	}
+	if hasCert {
+		items[DatabaseTLSItemKey("primary", "client_cert")] = string(cert)
+		items[DatabaseTLSItemKey("primary", "client_key")] = string(key)
+	}
+	region := spec.ResolvedRegions()[0]
+	if err := client.DeliverDatabaseVariable(region.NomadRegion, jobID, items, 7); err != nil {
+		t.Fatal(err)
+	}
+	if _, _, err := client.api.Jobs().Register(job, nil); err != nil {
+		t.Fatal(err)
+	}
+	checkAllocationOutput(t, client.api, jobID, "web", "mysql-tls-runtime-ok")
+}
+
+func qualificationPEM(t *testing.T, name string) ([]byte, bool) {
+	t.Helper()
+	raw := os.Getenv(name)
+	if raw == "" {
+		return nil, false
+	}
+	decoded, err := base64.StdEncoding.DecodeString(raw)
+	if err != nil || len(decoded) == 0 || len(decoded) > maxDatabaseVariableItemBytes {
+		t.Fatalf("%s must be a non-empty base64 PEM within the Nomad item limit", name)
+	}
+	return decoded, true
 }
 
 func checkPeriodicDigest(t *testing.T, api *nomadapi.Client, parentID, task, want string) {

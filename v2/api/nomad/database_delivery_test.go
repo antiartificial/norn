@@ -88,6 +88,51 @@ func TestWordPressDatabaseDeliveryIsPrivateAndRevisionBound(t *testing.T) {
 	}
 }
 
+func TestTLSDatabaseFilesArePrivateAndRevisionBound(t *testing.T) {
+	spec := &model.InfraSpec{SchemaVersion: model.AppSchemaV2, App: "wordpress", Processes: map[string]model.Process{"web": {Command: "php-fpm"}}, Databases: []model.DatabaseRequirement{{
+		Name: "primary", Purpose: "application", Capabilities: []string{"runtime"}, Runtime: &model.DatabaseRuntime{
+			Components: &model.DatabaseRuntimeComponents{Host: "WORDPRESS_DB_HOST", User: "WORDPRESS_DB_USER", Password: "WORDPRESS_DB_PASSWORD", Name: "WORDPRESS_DB_NAME"},
+			TLS:        &model.DatabaseRuntimeTLS{CAFileEnv: "MYSQL_SSL_CA", ClientCertFileEnv: "MYSQL_SSL_CERT", ClientKeyFileEnv: "MYSQL_SSL_KEY"},
+		},
+	}}}
+	task := TranslateForRegionAt(spec, "wordpress:test", nil, spec.ResolvedRegions()[0], 7).TaskGroups[0].Tasks[0]
+	paths := map[string]string{}
+	for _, template := range task.Templates {
+		if !*template.Envvars {
+			paths[*template.DestPath] = *template.EmbeddedTmpl
+			if *template.Perms != "0400" || !*template.ErrMissingKey || *template.ChangeMode != "restart" {
+				t.Fatalf("TLS template is not private/restarting: %+v", template)
+			}
+		}
+	}
+	for material, suffix := range map[string]string{"ca": "ca.pem", "client_cert": "client-cert.pem", "client_key": "client-key.pem"} {
+		destination := "secrets/norn-databases/primary." + suffix
+		key := stagedKey(DatabaseTLSItemKey("primary", material), 7)
+		if !strings.Contains(paths[destination], "."+key) || strings.Contains(paths[destination], "{{ .norn_db_tls_") {
+			t.Fatalf("TLS template %s = %q", destination, paths[destination])
+		}
+	}
+	if task.Env["MYSQL_SSL_CA"] != "${NOMAD_SECRETS_DIR}/norn-databases/primary.ca.pem" || task.Env["MYSQL_SSL_CERT"] != "${NOMAD_SECRETS_DIR}/norn-databases/primary.client-cert.pem" || task.Env["MYSQL_SSL_KEY"] != "${NOMAD_SECRETS_DIR}/norn-databases/primary.client-key.pem" {
+		t.Fatalf("TLS environment paths = %v", task.Env)
+	}
+	client, _ := newFakeVariableClient(t)
+	items := map[string]string{
+		DatabaseComponentItemKey("primary", "host"): "mysql.internal:3306",
+		DatabaseTLSItemKey("primary", "ca"):         "test-ca", DatabaseTLSItemKey("primary", "client_cert"): "test-cert", DatabaseTLSItemKey("primary", "client_key"): "test-key",
+	}
+	if err := client.DeliverDatabaseVariable("west", "wordpress", items, 7); err != nil {
+		t.Fatal(err)
+	}
+	revision, err := client.ReadDatabaseRevision("west", "wordpress", 7)
+	if err != nil || revision.TLS[DatabaseTLSItemKey("primary", "client_key")] != "test-key" {
+		t.Fatalf("TLS revision = %+v, %v", revision, err)
+	}
+	owned, err := client.CopyDatabaseVariable("west", "wordpress-fn-1", revision)
+	if err != nil || owned[stagedKey(DatabaseTLSItemKey("primary", "ca"), 7)] != "test-ca" {
+		t.Fatalf("TLS function delivery = %v, %v", owned, err)
+	}
+}
+
 // Every translation path (web and worker services, cron, function) carries
 // the same private delivery: templates reading only the job's own variable,
 // the value-variable rendered as env, the file-variable holding a path. No

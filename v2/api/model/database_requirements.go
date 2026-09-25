@@ -29,6 +29,7 @@ type DatabaseRuntime struct {
 	Env        string                     `yaml:"env,omitempty" json:"env,omitempty"`
 	FileEnv    string                     `yaml:"fileEnv,omitempty" json:"fileEnv,omitempty"`
 	Components *DatabaseRuntimeComponents `yaml:"components,omitempty" json:"components,omitempty"`
+	TLS        *DatabaseRuntimeTLS        `yaml:"tls,omitempty" json:"tls,omitempty"`
 }
 
 // DatabaseRuntimeComponents delivers the values ordinary database clients
@@ -41,6 +42,19 @@ type DatabaseRuntimeComponents struct {
 	Name     string `yaml:"name" json:"name"`
 }
 
+// DatabaseRuntimeTLS names environment variables that carry paths to
+// allocation-private PEM files. The files are rendered by Nomad, never put in
+// a job specification or environment value. An application must explicitly
+// configure its database client to use these paths.
+//
+// This declares delivery shape only. Database adapters remain responsible for
+// deciding when verified TLS runtime delivery is qualified and available.
+type DatabaseRuntimeTLS struct {
+	CAFileEnv         string `yaml:"caFileEnv" json:"caFileEnv"`
+	ClientCertFileEnv string `yaml:"clientCertFileEnv,omitempty" json:"clientCertFileEnv,omitempty"`
+	ClientKeyFileEnv  string `yaml:"clientKeyFileEnv,omitempty" json:"clientKeyFileEnv,omitempty"`
+}
+
 func (r *DatabaseRuntime) envNames() map[string]string {
 	if r == nil {
 		return nil
@@ -51,6 +65,11 @@ func (r *DatabaseRuntime) envNames() map[string]string {
 		names["components.user"] = r.Components.User
 		names["components.password"] = r.Components.Password
 		names["components.name"] = r.Components.Name
+	}
+	if r.TLS != nil {
+		names["tls.caFileEnv"] = r.TLS.CAFileEnv
+		names["tls.clientCertFileEnv"] = r.TLS.ClientCertFileEnv
+		names["tls.clientKeyFileEnv"] = r.TLS.ClientKeyFileEnv
 	}
 	return names
 }
@@ -195,6 +214,14 @@ func validateDatabaseDeclarations(r *ValidationResult, spec *InfraSpec) {
 		}
 		if runtime.Components != nil && (runtime.Components.Host == "" || runtime.Components.User == "" || runtime.Components.Password == "" || runtime.Components.Name == "") {
 			r.add("error", field+".runtime.components", "host, user, password and name variables are required together")
+		}
+		if runtime.TLS != nil {
+			if runtime.TLS.CAFileEnv == "" {
+				r.add("error", field+".runtime.tls.caFileEnv", "a CA file variable is required when TLS runtime files are declared")
+			}
+			if (runtime.TLS.ClientCertFileEnv == "") != (runtime.TLS.ClientKeyFileEnv == "") {
+				r.add("error", field+".runtime.tls", "client certificate and key file variables are required together")
+			}
 		}
 		for key, name := range runtime.envNames() {
 			if name == "" {

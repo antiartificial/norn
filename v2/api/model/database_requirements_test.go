@@ -137,3 +137,30 @@ func TestDatabaseEnvConflictsCoverWordPressComponents(t *testing.T) {
 		t.Fatalf("WordPress database variable conflicts = %v", conflicts)
 	}
 }
+
+func TestDatabaseRuntimeTLSFilesAreValidatedAndOwned(t *testing.T) {
+	spec := &InfraSpec{SchemaVersion: AppSchemaV2, Databases: []DatabaseRequirement{{
+		Name: "primary", Purpose: "application", Capabilities: []string{"runtime"},
+		Runtime: &DatabaseRuntime{Components: &DatabaseRuntimeComponents{Host: "DB_HOST", User: "DB_USER", Password: "DB_PASSWORD", Name: "DB_NAME"}, TLS: &DatabaseRuntimeTLS{
+			CAFileEnv: "MYSQL_SSL_CA", ClientCertFileEnv: "MYSQL_SSL_CERT", ClientKeyFileEnv: "MYSQL_SSL_KEY",
+		}},
+	}}}
+	if findings := spec.DatabaseDeclarationFindings(); len(findings) != 0 {
+		t.Fatalf("TLS runtime declaration findings = %+v", findings)
+	}
+	if names := spec.DatabaseEnvNames(); names["MYSQL_SSL_CA"] != "primary" || names["MYSQL_SSL_CERT"] != "primary" || names["MYSQL_SSL_KEY"] != "primary" {
+		t.Fatalf("TLS file variables not owned = %v", names)
+	}
+	broken := *spec
+	broken.Databases = append([]DatabaseRequirement(nil), spec.Databases...)
+	broken.Databases[0].Runtime = &DatabaseRuntime{Components: spec.Databases[0].Runtime.Components, TLS: &DatabaseRuntimeTLS{CAFileEnv: "MYSQL_SSL_CA", ClientCertFileEnv: "MYSQL_SSL_CERT"}}
+	found := false
+	for _, finding := range broken.DatabaseDeclarationFindings() {
+		if finding.Field == "databases[0].runtime.tls" {
+			found = true
+		}
+	}
+	if !found {
+		t.Fatal("unpaired TLS client material was accepted")
+	}
+}

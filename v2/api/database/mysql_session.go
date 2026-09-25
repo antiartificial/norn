@@ -61,6 +61,11 @@ func openMySQLSession(ctx context.Context, resolved ResolvedBinding, secrets Sec
 			_ = session.Close()
 			return nil, &ResolverError{Code: CodeInvalidRequest, Field: "tls", Resource: label, Reason: "MySQL TLS material is invalid or unavailable"}
 		}
+		session.runtimeTLS, err = mysqlRuntimeTLSMaterial(ctx, resolved.TLS, secrets)
+		if err != nil {
+			_ = session.Close()
+			return nil, &ResolverError{Code: CodeInvalidRequest, Field: "tls", Resource: label, Reason: "MySQL TLS material is invalid or unavailable"}
+		}
 	}
 	connector, err := mysql.NewConnector(config)
 	if err != nil {
@@ -84,6 +89,33 @@ func openMySQLSession(ctx context.Context, resolved ResolvedBinding, secrets Sec
 		return result, nil
 	}
 	return session, nil
+}
+
+func mysqlRuntimeTLSMaterial(ctx context.Context, binding DatabaseTLS, secrets SecretSource) (map[string][]byte, error) {
+	if binding.Mode != TLSVerifyCA && binding.Mode != TLSVerifyFull {
+		return nil, errors.New("unsupported MySQL TLS mode")
+	}
+	refs := map[string]string{"ca": binding.CARef, "client_cert": binding.ClientCertRef, "client_key": binding.ClientKeyRef}
+	if refs["ca"] == "" || (refs["client_cert"] == "") != (refs["client_key"] == "") {
+		return nil, errors.New("incomplete MySQL TLS material")
+	}
+	material := make(map[string][]byte, len(refs))
+	for name, reference := range refs {
+		if reference == "" {
+			continue
+		}
+		value, err := secrets.Resolve(ctx, reference)
+		if err != nil || len(value) == 0 || len(value) > maxSecretDocument {
+			clear(value)
+			for _, copied := range material {
+				clear(copied)
+			}
+			return nil, errors.New("invalid MySQL TLS material")
+		}
+		material[name] = append([]byte(nil), value...)
+		clear(value)
+	}
+	return material, nil
 }
 
 // mysqlVerifiedTLS creates a private, per-connector TLS configuration. The

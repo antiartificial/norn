@@ -108,3 +108,18 @@ func TestMySQLTLSHealthMayResolveWhileRuntimeFailsClosed(t *testing.T) {
 		t.Fatal("unqualified MySQL TLS runtime delivery was accepted")
 	}
 }
+
+func TestMySQLRuntimeTLSMaterialCopiesAndClears(t *testing.T) {
+	session := &Session{target: TargetIdentity{Engine: EngineMySQL}, bindingID: "wordpress", directory: t.TempDir(), runtimeTLS: map[string][]byte{"ca": []byte("ca"), "client_key": []byte("key")}}
+	material, err := session.RuntimeTLSMaterial()
+	if err != nil || string(material["ca"]) != "ca" || string(material["client_key"]) != "key" {
+		t.Fatalf("runtime TLS material = %q, %v", material, err)
+	}
+	material["ca"][0] = 'X'
+	if string(session.runtimeTLS["ca"]) != "ca" {
+		t.Fatal("runtime TLS material aliases session-private bytes")
+	}
+	if err := session.Close(); err != nil || session.runtimeTLS != nil {
+		t.Fatalf("close runtime TLS material: %v, %v", err, session.runtimeTLS)
+	}
+}

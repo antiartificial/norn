@@ -41,6 +41,7 @@ const (
 	databaseSecretsDir   = "norn-databases"
 	databaseItemPrefix   = "norn_db_url_"
 	componentItemPrefix  = "norn_db_component_"
+	tlsItemPrefix        = "norn_db_tls_"
 	targetItemPrefix     = "norn_db_target_"
 	deliveryRevisionItem = "norn_delivery_catalog_revision"
 	// Nomad limits the sum of unencrypted Variable item key and value bytes.
@@ -59,6 +60,12 @@ func DatabaseItemKey(name string) string {
 // DatabaseComponentItemKey names one separately delivered connection value.
 func DatabaseComponentItemKey(name, component string) string {
 	return componentItemPrefix + component + "_" + strings.ReplaceAll(name, "-", "_")
+}
+
+// DatabaseTLSItemKey names one PEM value rendered into an allocation-private
+// file. material is one of ca, client_cert, or client_key.
+func DatabaseTLSItemKey(name, material string) string {
+	return tlsItemPrefix + material + "_" + strings.ReplaceAll(name, "-", "_")
 }
 
 // DatabaseTargetItemKey holds the non-secret target identity (JSON) the
@@ -185,6 +192,24 @@ func addDatabaseTemplates(spec *model.InfraSpec, jobID string, revision int64, t
 				envLines = append(envLines, fmt.Sprintf("%s={{ .%s.Value | toJSON }}", field.env, stagedKey(DatabaseComponentItemKey(requirement.Name, field.component), revision)))
 			}
 		}
+		if tls := requirement.Runtime.TLS; tls != nil {
+			for _, file := range []struct{ material, env, suffix string }{
+				{"ca", tls.CAFileEnv, "ca.pem"},
+				{"client_cert", tls.ClientCertFileEnv, "client-cert.pem"},
+				{"client_key", tls.ClientKeyFileEnv, "client-key.pem"},
+			} {
+				if file.env == "" {
+					continue
+				}
+				key := stagedKey(DatabaseTLSItemKey(requirement.Name, file.material), revision)
+				destination := "secrets/" + databaseSecretsDir + "/" + requirement.Name + "." + file.suffix
+				task.Templates = append(task.Templates, databaseTemplate(fmt.Sprintf("{{ with nomadVar %q }}{{ .%s }}{{ end }}", path, key), destination, false))
+				if task.Env == nil {
+					task.Env = map[string]string{}
+				}
+				task.Env[file.env] = "${NOMAD_SECRETS_DIR}/" + databaseSecretsDir + "/" + requirement.Name + "." + file.suffix
+			}
+		}
 	}
 	if len(envLines) > 0 {
 		data := fmt.Sprintf("{{ with nomadVar %q }}\n%s\n{{ end }}\n", path, strings.Join(envLines, "\n"))
@@ -247,7 +272,7 @@ func (c *Client) DeliverDatabaseVariable(region, jobID string, items map[string]
 	}
 	staged := map[string]string{}
 	for key, value := range items {
-		if !strings.HasPrefix(key, databaseItemPrefix) && !strings.HasPrefix(key, componentItemPrefix) && !strings.HasPrefix(key, targetItemPrefix) {
+		if !strings.HasPrefix(key, databaseItemPrefix) && !strings.HasPrefix(key, componentItemPrefix) && !strings.HasPrefix(key, tlsItemPrefix) && !strings.HasPrefix(key, targetItemPrefix) {
 			return fmt.Errorf("database delivery for %s has an unexpected item", jobID)
 		}
 		staged[stagedKey(key, catalogRevision)] = value
@@ -321,7 +346,7 @@ func (c *Client) PromoteDatabaseVariable(region, jobID string, catalogRevision i
 			if revision >= promoted {
 				next[key] = value
 			}
-		case strings.HasPrefix(key, databaseItemPrefix), strings.HasPrefix(key, componentItemPrefix), strings.HasPrefix(key, targetItemPrefix), key == deliveryRevisionItem:
+		case strings.HasPrefix(key, databaseItemPrefix), strings.HasPrefix(key, componentItemPrefix), strings.HasPrefix(key, tlsItemPrefix), strings.HasPrefix(key, targetItemPrefix), key == deliveryRevisionItem:
 			// replaced by the promoted revision
 		default:
 			next[key] = value
@@ -375,6 +400,7 @@ type DatabaseRevision struct {
 	Promoted   int64
 	URLs       map[string]string
 	Components map[string]string
+	TLS        map[string]string
 	Targets    map[string]string
 }
 
@@ -393,7 +419,7 @@ func (c *Client) ReadDatabaseRevision(region, jobID string, revision int64) (Dat
 	if err != nil {
 		return DatabaseRevision{}, err
 	}
-	out := DatabaseRevision{Revision: revision, Promoted: promoted, URLs: map[string]string{}, Components: map[string]string{}, Targets: map[string]string{}}
+	out := DatabaseRevision{Revision: revision, Promoted: promoted, URLs: map[string]string{}, Components: map[string]string{}, TLS: map[string]string{}, Targets: map[string]string{}}
 	prefix := revisionPrefix(revision)
 	for key, value := range current.Items {
 		if staged, ok := stagedRevision(key); !ok || staged != revision {
@@ -407,6 +433,8 @@ func (c *Client) ReadDatabaseRevision(region, jobID string, revision int64) (Dat
 			out.Targets[strings.TrimPrefix(rest, "db_target_")] = value
 		case strings.HasPrefix(rest, "db_component_"):
 			out.Components["norn_"+rest] = value
+		case strings.HasPrefix(rest, "db_tls_"):
+			out.TLS["norn_"+rest] = value
 		}
 	}
 	return out, nil
@@ -463,7 +491,7 @@ func checkDatabaseVariableItemSize(items map[string]string) error {
 // invocation's templates reference that revision. It returns the items
 // written, for exact-ownership cleanup.
 func (c *Client) CopyDatabaseVariable(region, toJobID string, revision DatabaseRevision) (map[string]string, error) {
-	if revision.Revision < 1 || len(revision.URLs)+len(revision.Components) == 0 {
+	if revision.Revision < 1 || len(revision.URLs)+len(revision.Components)+len(revision.TLS) == 0 {
 		return nil, fmt.Errorf("%w for %s: no staged revision to copy", ErrDatabaseVariableConflict, toJobID)
 	}
 	items := map[string]string{deliveryRevisionItem: strconv.FormatInt(revision.Revision, 10)}
@@ -473,6 +501,12 @@ func (c *Client) CopyDatabaseVariable(region, toJobID string, revision DatabaseR
 	for key, value := range revision.Components {
 		if !strings.HasPrefix(key, componentItemPrefix) {
 			return nil, fmt.Errorf("%w for %s: invalid database component", ErrDatabaseVariableConflict, toJobID)
+		}
+		items[stagedKey(key, revision.Revision)] = value
+	}
+	for key, value := range revision.TLS {
+		if !strings.HasPrefix(key, tlsItemPrefix) {
+			return nil, fmt.Errorf("%w for %s: invalid database TLS material", ErrDatabaseVariableConflict, toJobID)
 		}
 		items[stagedKey(key, revision.Revision)] = value
 	}

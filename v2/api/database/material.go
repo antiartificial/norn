@@ -154,6 +154,10 @@ type Session struct {
 	config     *pgx.ConnConfig
 	endpoint   DatabaseEndpoint
 	mysqlProbe func(context.Context) (ProbeResult, error)
+	// runtimeTLS is private PEM material for a MySQL allocation. It is only
+	// populated after verified local session construction and remains unusable
+	// while the resolver's MySQL TLS runtime qualification gate is closed.
+	runtimeTLS map[string][]byte
 	// url is the target as a standard connection URL for local processes;
 	// runtimeURL is the same without host-local TLS file paths, empty when
 	// the target cannot be delivered to a runtime (see RuntimeConnectionURL).
@@ -446,6 +450,22 @@ func (s *Session) RuntimeComponents() (map[string]string, error) {
 	}, nil
 }
 
+// RuntimeTLSMaterial returns copies of the MySQL CA and optional client PEM
+// documents intended for private allocation files. The caller must keep the
+// returned bytes out of job specifications, logs, and ordinary environment
+// values. This accessor does not authorize runtime delivery; resolver-level
+// qualification remains the authority for that decision.
+func (s *Session) RuntimeTLSMaterial() (map[string][]byte, error) {
+	if s == nil || s.directory == "" || s.target.Engine != EngineMySQL || len(s.runtimeTLS) == 0 {
+		return nil, &ResolverError{Code: CodeInvalidRequest, Field: "tls", Resource: "bindings/" + s.bindingID, Reason: "verified MySQL TLS runtime material is unavailable"}
+	}
+	material := make(map[string][]byte, len(s.runtimeTLS))
+	for name, value := range s.runtimeTLS {
+		material[name] = append([]byte(nil), value...)
+	}
+	return material, nil
+}
+
 // connectionURL renders a libpq/WHATWG-compatible URL. User and password are
 // percent-encoded outside RFC 3986 unreserved characters, so the value is a
 // single shell- and env-file-safe token. A socket directory is carried as the
@@ -576,7 +596,10 @@ func (s *Session) Close() error {
 		return nil
 	}
 	err := os.RemoveAll(s.directory)
-	s.directory, s.config, s.password, s.url, s.runtimeURL, s.mysqlProbe = "", nil, "", "", "", nil
+	for _, value := range s.runtimeTLS {
+		clear(value)
+	}
+	s.directory, s.config, s.password, s.url, s.runtimeURL, s.mysqlProbe, s.runtimeTLS = "", nil, "", "", "", nil, nil
 	return err
 }
 
