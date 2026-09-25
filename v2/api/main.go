@@ -382,6 +382,9 @@ func main() {
 	if functionV3Worker != nil && os.Getenv("NORN_SKIP_OPERATION_WORKER") == "true" {
 		log.Fatal("function v3 preview requires the claimed operation worker")
 	}
+	if functionV3Worker != nil && evidenceArchiver == nil {
+		log.Fatal("function v3 preview requires an evidence archiver")
+	}
 
 	workerCtx, workerCancel := context.WithCancel(context.Background())
 	defer workerCancel()
@@ -392,6 +395,7 @@ func main() {
 		go opWorker.Run(workerCtx)
 		if functionV3Worker != nil {
 			go functionV3Worker.Run(workerCtx, 2*time.Second)
+			go (&worker.FunctionInvocationCleanupConsumer{Store: db, Remote: nomadClient}).Run(workerCtx, 5*time.Second)
 		}
 	}
 	if evidenceArchiver != nil {

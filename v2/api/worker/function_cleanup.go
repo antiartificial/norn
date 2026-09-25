@@ -4,7 +4,9 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"log"
 	"strings"
+	"time"
 
 	"norn/v2/api/nomad"
 	"norn/v2/api/store"
@@ -36,6 +38,27 @@ var ErrFunctionInvocationCleanupConflict = errors.New("function invocation clean
 type FunctionInvocationCleanupConsumer struct {
 	Store  FunctionInvocationCleanupStore
 	Remote FunctionInvocationCleanupRemote
+}
+
+// Run polls independently of invocation execution. A failed or ambiguous
+// deletion leaves the durable intent for another fenced attempt.
+func (c *FunctionInvocationCleanupConsumer) Run(ctx context.Context, poll time.Duration) {
+	if poll <= 0 {
+		poll = 5 * time.Second
+	}
+	timer := time.NewTimer(0)
+	defer timer.Stop()
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-timer.C:
+			if err := c.RunOnce(ctx); err != nil && ctx.Err() == nil {
+				log.Printf("function invocation cleanup: %v", err)
+			}
+			timer.Reset(poll)
+		}
+	}
 }
 
 func (c *FunctionInvocationCleanupConsumer) RunOnce(ctx context.Context) error {

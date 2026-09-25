@@ -238,8 +238,9 @@ variable creation, and verified operation archive evidence. Migration 21
 raises the writer contract so private function acceptance always reserves that
 archive subject. The archive now seals the signed public operation, terminal
 execution, and public effect-attempt rows as a v2 bundle; old v1 bundles remain
-readable. The cleanup consumer is not yet scheduled by startup, and private
-envelope retirement still needs a replay/key-retention policy before production
+readable. The cleanup consumer now runs with the non-production preview and
+requires an evidence archiver at startup. Private envelope retirement still
+needs a replay/key-retention policy before production
 activation. A Nomad job purge policy, etcd cleanup parity,
 ACL-enabled allocation with database files, literal crash/two-replica tests,
 deployed-spec provenance, and Mini migration 21 mixed-version/rollback
