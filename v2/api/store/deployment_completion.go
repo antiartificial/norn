@@ -19,16 +19,23 @@ type DeploymentCompletionRegion struct {
 	ActiveWeight int
 }
 
-// CompleteDeploymentResult commits the deployment result and all accepted
-// regional statuses under the same live operation claim. A failed write leaves
-// every row in its preceding state for recovery or diagnosis.
-func (db *DB) CompleteDeploymentResult(ctx context.Context, claim OperationClaim, d *model.Deployment, regions []DeploymentCompletionRegion) error {
+// CompleteDeploymentResult commits the deployment, every accepted region, the
+// terminal operation receipt, and its archive intent under one live claim.
+// A failed write leaves every row in its preceding state for recovery.
+func (db *DB) CompleteDeploymentResult(ctx context.Context, claim OperationClaim, d *model.Deployment, regions []DeploymentCompletionRegion, message string, metadata map[string]interface{}) error {
 	if db == nil || db.Pool == nil || !claim.valid() || d == nil || d.ID == "" || d.App == "" || d.Status != model.StatusDeployed || len(regions) == 0 {
 		return fmt.Errorf("deployment completion is invalid")
 	}
 	changes, err := json.Marshal(d.SourceChanges)
 	if err != nil {
 		return fmt.Errorf("encode deployment source changes: %w", err)
+	}
+	if metadata == nil {
+		metadata = map[string]interface{}{}
+	}
+	receipt, err := json.Marshal(metadata)
+	if err != nil {
+		return fmt.Errorf("encode deployment receipt metadata: %w", err)
 	}
 	tx, err := db.Pool.Begin(ctx)
 	if err != nil {
@@ -83,6 +90,26 @@ func (db *DB) CompleteDeploymentResult(ctx context.Context, claim OperationClaim
 	}
 	if err := deploymentCompletionClaim(ctx, tx, claim, d.App, d.ID); err != nil {
 		return err
+	}
+	var finished int
+	if err := tx.QueryRow(ctx, `WITH finished AS (
+		UPDATE operations SET status='succeeded',message=$1,metadata=metadata || $2::jsonb,
+		locked_by='',locked_until=NULL,updated_at=now(),finished_at=now()
+		WHERE id=$3 AND app=$4 AND kind IN ('app.deploy','app.rollback')
+		AND payload->>'deploymentId'=$5 AND status='running' AND locked_by=$6
+		AND lock_generation=$7 AND locked_until > clock_timestamp()
+		RETURNING id,saga_id,app
+	), outbox AS (
+		INSERT INTO evidence_archive_intents (id,subject_kind,subject_id,app,operation_id,sequence,state)
+		SELECT 'ei-' || gen_random_uuid()::text,'saga',saga_id,app,id,1,'pending'
+		FROM finished WHERE saga_id <> ''
+		ON CONFLICT (subject_kind,subject_id,sequence) DO NOTHING
+	)
+	SELECT count(*) FROM finished`, message, receipt, claim.OperationID(), d.App, d.ID, claim.OwnerID(), claim.Generation()).Scan(&finished); err != nil {
+		return err
+	}
+	if finished != 1 {
+		return ErrOperationOwnershipLost
 	}
 	return tx.Commit(ctx)
 }

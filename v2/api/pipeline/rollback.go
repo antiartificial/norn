@@ -271,10 +271,12 @@ func (p *Pipeline) runRollback(ctx context.Context, op *model.Operation, spec *m
 		completion = append(completion, store.DeploymentCompletionRegion{Region: region.Name, ActiveWeight: region.TrafficWeight})
 	}
 	deploy.Status = model.StatusDeployed
-	if err := p.DB.CompleteDeploymentResult(ctx, claim, deploy, completion); err != nil {
+	message := fmt.Sprintf("rollback complete: %s", spec.App)
+	metadata := map[string]interface{}{"deploymentId": deploy.ID, "imageTag": imageTag}
+	if err := p.DB.CompleteDeploymentResult(ctx, claim, deploy, completion, message, metadata); err != nil {
 		return &OperationResult{Claim: claim, Status: model.OperationFailed, Message: fmt.Sprintf("record rollback result: %v", err), Metadata: map[string]interface{}{"deploymentId": deploy.ID}}
 	}
-	return &OperationResult{Claim: claim, Status: model.OperationSucceeded, Message: fmt.Sprintf("rollback complete: %s", spec.App), Metadata: map[string]interface{}{"deploymentId": deploy.ID, "imageTag": imageTag}, publish: func(publishCtx context.Context) {
+	return &OperationResult{Claim: claim, Status: model.OperationSucceeded, Message: message, Metadata: metadata, finished: true, publish: func(publishCtx context.Context) {
 		_ = sg.Log(publishCtx, "rollback.complete", fmt.Sprintf("rollback complete: %s -> %s", spec.App, imageTag), nil)
 		p.WS.Broadcast(hub.Event{Type: "deploy.completed", AppID: spec.App, Payload: map[string]string{"sagaId": sg.ID, "imageTag": imageTag}})
 		p.emitBeacon(publishCtx, model.BeaconEvent{App: spec.App, Type: "rollback.succeeded", Severity: model.BeaconInfo, Title: fmt.Sprintf("%s rollback succeeded", spec.App), Body: fmt.Sprintf("Rollback to %s completed successfully.", imageTag), DedupeKey: fmt.Sprintf("%s:rollback", spec.App), Metadata: map[string]interface{}{"deploymentId": deploy.ID, "sagaId": sg.ID, "imageTag": imageTag, "correlationKey": fmt.Sprintf("%s:rollback", spec.App)}})

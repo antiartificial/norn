@@ -616,11 +616,12 @@ func (p *Pipeline) run(ctx context.Context, spec *model.InfraSpec, deploy *model
 		completion = append(completion, store.DeploymentCompletionRegion{Region: region.Name, EvalID: st.regionEvals[region.Name], ActiveWeight: region.TrafficWeight})
 	}
 	deploy.Status = model.StatusDeployed
-	if err := p.DB.CompleteDeploymentResult(ctx, claim, deploy, completion); err != nil {
+	message := fmt.Sprintf("deploy complete: %s", spec.App)
+	metadata := map[string]interface{}{"deploymentId": deploy.ID, "commitSha": st.commitSHA, "imageTag": st.imageTag}
+	if err := p.DB.CompleteDeploymentResult(ctx, claim, deploy, completion, message, metadata); err != nil {
 		return &OperationResult{Claim: claim, Status: model.OperationFailed, Message: fmt.Sprintf("record deployment result: %v", err), Metadata: map[string]interface{}{"deploymentId": deploy.ID}}
 	}
-	return &OperationResult{Claim: claim, Status: model.OperationSucceeded, Message: fmt.Sprintf("deploy complete: %s", spec.App),
-		Metadata: map[string]interface{}{"deploymentId": deploy.ID, "commitSha": st.commitSHA, "imageTag": st.imageTag},
+	return &OperationResult{Claim: claim, Status: model.OperationSucceeded, Message: message, Metadata: metadata, finished: true,
 		publish: func(publishCtx context.Context) {
 			sg.Log(publishCtx, "deploy.complete", fmt.Sprintf("deploy complete: %s → %s", spec.App, st.imageTag), map[string]string{"commitSha": st.commitSHA, "imageTag": st.imageTag, "sourceKind": st.sourceKind, "sourceRef": st.sourceRef})
 			p.WS.Broadcast(hub.Event{Type: "deploy.completed", AppID: spec.App, Payload: map[string]string{"sagaId": sg.ID, "imageTag": st.imageTag}})

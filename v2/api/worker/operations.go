@@ -163,7 +163,8 @@ func (w *OperationWorker) handle(ctx context.Context, op *model.Operation, claim
 			log.Printf("operation worker: refusing unfenced pre-finished result %s", op.ID)
 			return
 		}
-		// Committed atomically with the effect (catalog activation).
+		// Committed atomically with the effect (catalog activation or
+		// PostgreSQL deployment completion).
 		result.Publish(ctx)
 		return
 	}
