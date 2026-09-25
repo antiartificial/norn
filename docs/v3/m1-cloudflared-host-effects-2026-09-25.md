@@ -15,6 +15,13 @@ for operator review. It is never automatically replayed. A later ingress
 mutation is blocked by the host-wide reservation until the outcome is
 reconciled.
 
+An identical-key replay resolves the signed receipt before asking Consul or
+Nomad for the current service. The HTTP route still discovers the app spec and
+matches the requested endpoint first; if either disappears, the historical
+operation remains readable by ID but that compatibility route cannot replay
+it. Removing that dependency requires an identity-only replay path before
+app-spec validation.
+
 This is a Mini host-local implementation, not a Fleet distributed ingress
 implementation. The receipt directory is local to the same host as the
 cloudflared config. Before release, rehearse actual `launchctl` behavior on a

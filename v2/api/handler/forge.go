@@ -34,12 +34,7 @@ func (h *Handler) Forge(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, map[string]string{"status": "skipped", "reason": "no public endpoints"})
 		return
 	}
-	service, err := h.cloudflaredService(spec)
-	if err != nil {
-		writeError(w, http.StatusInternalServerError, err.Error())
-		return
-	}
-	h.queueCloudflaredMutation(w, r, spec, "forge", hostnames, service)
+	h.queueCloudflaredMutation(w, r, spec, "forge", hostnames, func() (string, error) { return h.cloudflaredService(spec) })
 }
 
 func (h *Handler) Teardown(w http.ResponseWriter, r *http.Request) {
@@ -57,7 +52,7 @@ func (h *Handler) Teardown(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, map[string]string{"status": "skipped", "reason": "no endpoints"})
 		return
 	}
-	h.queueCloudflaredMutation(w, r, spec, "teardown", hostnames, "")
+	h.queueCloudflaredMutation(w, r, spec, "teardown", hostnames, nil)
 }
 
 func (h *Handler) CloudflaredIngress(w http.ResponseWriter, r *http.Request) {
@@ -106,37 +101,33 @@ func (h *Handler) ToggleEndpoint(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, fmt.Sprintf("hostname %s not configured for app %s", hostname, id))
 		return
 	}
-	action, service := "disable", ""
+	action := "disable"
+	var service func() (string, error)
 	if req.Enabled {
 		if !cloudflared.IsPublicEndpoint(matchedURL) {
 			writeError(w, http.StatusBadRequest, fmt.Sprintf("hostname %s is private and cannot be enabled in cloudflared", hostname))
 			return
 		}
 		action = "enable"
-		var err error
-		service, err = h.cloudflaredService(spec)
-		if err != nil {
-			writeError(w, http.StatusInternalServerError, err.Error())
-			return
-		}
+		service = func() (string, error) { return h.cloudflaredService(spec) }
 	}
 	h.queueCloudflaredMutation(w, r, spec, action, []string{matchedURL}, service)
 }
 
-func (h *Handler) queueCloudflaredMutation(w http.ResponseWriter, r *http.Request, spec *model.InfraSpec, action string, hostnames []string, service string) {
+func (h *Handler) queueCloudflaredMutation(w http.ResponseWriter, r *http.Request, spec *model.InfraSpec, action string, hostnames []string, resolveService func() (string, error)) {
 	if h.pipeline == nil || !h.pipeline.CloudflaredMutationAvailable() {
 		WriteControlProblem(w, r, http.StatusServiceUnavailable, "durable_ingress_unavailable", "durable local ingress mutation is unavailable")
 		return
 	}
 	sort.Strings(hostnames)
-	semantics := map[string]interface{}{"app": spec.App, "action": action, "hostnames": hostnames, "service": service}
+	semantics := map[string]interface{}{"app": spec.App, "action": action, "hostnames": hostnames}
 	enqueue, ok := h.pipelineEnqueueRequest(w, r, r.Header.Get("Idempotency-Key"), semantics)
 	if !ok {
 		return
 	}
 	if accepted, err := h.pipeline.ResolveEnqueue(r.Context(), enqueue, "app.cloudflared-mutate", spec.App); err == nil {
 		if accepted.Operation.Kind != "app.cloudflared-mutate" || accepted.Operation.App != spec.App ||
-			accepted.Operation.Payload["action"] != action || accepted.Operation.Payload["service"] != service ||
+			accepted.Operation.Payload["action"] != action ||
 			!sameCloudflaredHostnames(accepted.Operation.Payload["hostnames"], hostnames) {
 			writeOperationAcceptanceError(w, r, &store.AcceptanceConflictError{Identity: store.OperationRequestIdentity{Kind: "app.cloudflared-mutate", Resource: spec.App}})
 			return
@@ -149,6 +140,16 @@ func (h *Handler) queueCloudflaredMutation(w http.ResponseWriter, r *http.Reques
 		writeOperationAcceptanceError(w, r, err)
 		return
 	}
+	service := ""
+	if resolveService != nil {
+		var err error
+		service, err = resolveService()
+		if err != nil {
+			writeError(w, http.StatusInternalServerError, err.Error())
+			return
+		}
+	}
+	enqueue.Semantics["service"] = service
 	cfg, before, err := cloudflared.ReadConfigSnapshot(r.Context())
 	if err != nil {
 		WriteControlProblem(w, r, http.StatusServiceUnavailable, "ingress_config_unavailable", "local ingress config is unavailable")
