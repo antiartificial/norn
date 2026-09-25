@@ -109,8 +109,8 @@ remaining M0–M3 Norn work; draft
 the host etcd bootstrap and recovery work. The separate M2 MySQL PR was merged
 into #76 and closed. These are review containers, not milestone signoff.
 
-- M0: four same-day read-only Mini size samples span about eight hours, with
-  1,564,672 bytes of total database growth; this remains too short for a
+- M0: five read-only Mini size samples span about nine hours, with
+  1,753,088 bytes of total database growth; this remains too short for a
   retention budget. The private migration-17 rehearsal preserved 28 legacy table counts
   and primary-key fingerprints across 245,383 rows. The read-only app-to-Nomad
   join resolved 18 names and left eight unresolved. Route and database owners,
@@ -162,8 +162,10 @@ into #76 and closed. These are review containers, not milestone signoff.
   with an effect marker. A second disposable Nomad run proved schedule
   replacement and stale-revision refusal. Focused handler, pipeline, worker,
   store, and CLI tests pass; the claim-fenced state update also passed against
-  disposable PostgreSQL 17.7. End-to-end handler-to-worker fault qualification
-  against both live Nomad and PostgreSQL remains open.
+  disposable PostgreSQL 17.7. An [integrated disposable test](m1-cron-resume-disposable-qualification-2026-09-25.md)
+  passed HTTP acceptance through the real claimed worker, Nomad 2.0.7, the
+  PostgreSQL receipt, and same-key replay. Lost-response and process-crash
+  fault qualification remain open.
 - M2: local MySQL runtime and verified-TLS health are implemented. Generated
   service, periodic, and function jobs delivered exact component bytes inside
   allocations on pinned Nomad 1.9.7. A WordPress image PHP client also

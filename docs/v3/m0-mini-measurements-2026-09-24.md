@@ -52,3 +52,14 @@ read-only Norn inventory succeeded and reported 27 app records. No Mini
 database write, release change, or app mutation was made. This same-day
 observation is useful for detecting a gross growth error, but it does not
 capture workload cycles or establish a numeric reserve or retention budget.
+
+A fifth read-only sample at 2026-09-25 01:07 UTC measured database size
+242,076,819 bytes and user-table total 233,062,400 bytes. Both are 1,753,088
+bytes above the 15:59 UTC baseline, over about nine hours. Heap size was
+145,055,744 bytes and indexes were 86,941,696 bytes. The largest tables were
+`beacon_events` (109,838,336 bytes), `control_events` (79,896,576),
+`mutation_audit_events` (30,474,240), `saga_events` (9,076,736),
+`deployment_steps` (1,531,904), and `operations` (761,856). This SSH query
+used PostgreSQL aggregate size functions only; it read no application rows or
+credentials. The interval remains too short to set a representative growth
+or restore reserve.
