@@ -45,3 +45,8 @@ routine CI applies migration 18 to a synthetic fixture, but the private Mini
 restore has now been repeated through 18 on a [private Mini copy](m0-mini-private-restore-migration18-rehearsal-2026-09-24.md),
 with original-table counts and primary-key fingerprints preserved. The
 mixed-version and rollback rehearsal remains open.
+
+Subsequent branch work added migration 19 for the function invocation's
+public pre-call effect-attempt fence and raised the writer minimum to 16.
+The historical checksum table above remains anchored to its stated commit.
+The private Mini copy has not yet been rerun through migration 19.

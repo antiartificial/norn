@@ -8,8 +8,10 @@ execution-row check and request-independent completion watcher reduce two
 failure windows but do not provide signed acceptance, claim fencing, or crash
 recovery. The new explicit encryption key ring, migration 18, and
 `AcceptPrivateInvocation` are dormant pending key configuration and the effect
-runner. Migration 18 raises the writer contract to 15, so the
-Mini mixed-version/rollback gate must account for it before deployment.
+runner. Migration 19 adds the public pre-call effect-attempt fence and raises
+the writer contract to 16. The private Mini copy was rehearsed only through
+migration 18; it must be rerun through 19, followed by the mixed-version and
+rollback gate, before deployment.
 
 ## Required contract
 
@@ -151,3 +153,12 @@ disposable real etcd member covered same-key replay, mismatches, no plaintext
 in stored records, and rejected-transaction cleanup; the etcd race suite also
 passed. Neither backend is connected to the function route or startup key
 preflight. Real Nomad, process-crash, and restore qualification remain open.
+
+The function variable adapter now has HTTP-level tests for exact reads,
+create-only Nomad CAS, opaque private-byte round trips, and redacted errors.
+The PostgreSQL effect-attempt store records immutable public targets under a
+live claim and authorizes only the first caller to cross each remote-call
+boundary. Its two-connection race and stale-claim tests passed against a
+disposable PostgreSQL 17.7 instance. A backend-neutral required-key preflight
+exists. None of these pieces is connected to the HTTP route or claimed worker;
+etcd effect-attempt parity, Nomad ACLs, and real allocation proof remain open.

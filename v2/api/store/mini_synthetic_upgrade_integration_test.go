@@ -60,7 +60,7 @@ func TestSyntheticMiniControlUpgradeAndReaderBoundary(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if status.CurrentMigrationVersion != 18 || len(status.AppliedVersions) != 18 {
+	if status.CurrentMigrationVersion != 19 || len(status.AppliedVersions) != 19 {
 		t.Fatalf("migration status = %+v", status)
 	}
 	if err := pool.QueryRow(ctx, legacyRead).Scan(&after); err != nil {
