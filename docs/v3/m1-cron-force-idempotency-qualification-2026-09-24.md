@@ -58,8 +58,16 @@ completes the reserved effect, correction receipt, and archive intent without
 rewriting the original failed receipt. The evidence hold remains until the
 correction archive is verified. PostgreSQL tests cover mismatched app/effect,
 forged evaluation, stale claim, duplicate evaluation credit, replay, and the
-hold transition; the full store suite passed. The operator correction itself
-still needs a live Nomad rehearsal.
+hold transition; the full store suite passed.
+
+The opt-in live rehearsal then passed against disposable Nomad 2.0.7 and
+PostgreSQL 17.7. A proxy delivered exactly one Force and dropped its response.
+After bounded source retries, the operator submitted the real evaluation ID
+through HTTP; the worker completed the correction while the failed source
+receipt remained unchanged. The local archiver published and read back both
+bundles. The recovery hold stayed until the correction archive was verified,
+then cleared. The child/parent jobs, Nomad agent, and database fixture were
+removed. This is local evidence, not a Mini or Fleet rollout.
 
 If an ambiguous Force has no provable evaluation ID, Nomad provides no safe
 absence proof on this version. That reservation remains held for operator

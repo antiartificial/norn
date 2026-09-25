@@ -100,7 +100,10 @@ removed. The generated startup script also needed `$target` in place of
 `${target}` because Nomad interpreted the braced form while validating the job.
 
 This qualifies the generated adapter's trusted-CA, wrong-CA, and persistent
-replacement paths on the pinned WordPress image. A hostname-mismatch control
-has passed for the underlying hook, but has not yet been rerun through the
-product-generated adapter. Rollback and release rollout remain open. Keep the
-resolver's verified-runtime gate closed until those boundaries are reviewed.
+replacement paths on the pinned WordPress image. A subsequent opt-in generated
+allocation test also used a trusted CA with a reachable hostname outside the
+server certificate SAN. TCP reached MySQL from the same allocation, while
+WordPress rejected the database connection. The disposable jobs, variables,
+Nomad agent, and MySQL fixture were removed. Mini rollback with production
+storage and backup, and release rollout, remain open. Keep the resolver's
+verified-runtime gate closed until those boundaries are reviewed.
