@@ -152,7 +152,10 @@ claimed export manifest timestamp to the same operation. Local PostgreSQL
 tests verified that a second execution reuses the snapshot and remote pair.
 The pinned path now refuses a conflicting target dump, orphan sidecar, or
 missing operation start time instead of advancing to another filename.
-Legacy unbound snapshots still lack that provenance, and a process crash
+Legacy claimed exports now pin their manifest timestamp to the accepted
+operation, so an exact remote replay verifies the same bytes. Legacy
+predeploy snapshots also pin one operation name but refuse to reuse an
+existing unbound dump; that case requires operator inspection. A process crash
 between the external effect and durable step completion still needs a separate
 effect reservation and two-process recovery proof. The create-only S3
 behavior has passed the local emulator, including multipart completion, but

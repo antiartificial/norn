@@ -294,9 +294,13 @@ func TestClaimedLegacyExportImportVerifiesRemoteBytes(t *testing.T) {
 		t.Fatal(err)
 	}
 	objects := reviewSnapshotObjects{}
-	key, err := exportLegacySnapshotClaimed(context.Background(), objects, "review", "demo", "shop", name, local, operationID)
+	startedAt := time.Date(2026, 9, 25, 12, 0, 0, 0, time.UTC)
+	key, err := exportLegacySnapshotClaimed(context.Background(), objects, "review", "demo", "shop", name, local, operationID, startedAt)
 	if err != nil {
 		t.Fatal(err)
+	}
+	if replayKey, err := exportLegacySnapshotClaimed(context.Background(), objects, "review", "demo", "shop", name, local, operationID, startedAt); err != nil || replayKey != key {
+		t.Fatalf("legacy export replay = %q, %v", replayKey, err)
 	}
 	if _, err := LegacySnapshotKeyName(key, "demo", "shop"); err != nil {
 		t.Fatal(err)
@@ -308,6 +312,22 @@ func TestClaimedLegacyExportImportVerifiesRemoteBytes(t *testing.T) {
 	objects[key] = []byte("tampered legacy dump")
 	if _, err := importLegacySnapshot(context.Background(), objects, "review", key, "demo", "shop", t.TempDir()); err == nil {
 		t.Fatal("tampered remote legacy dump was imported")
+	}
+}
+
+func TestPinnedLegacySnapshotRefusesExistingUnboundDump(t *testing.T) {
+	location := snapshotLocation{dir: t.TempDir(), database: "shop"}
+	at := time.Date(2026, 9, 25, 12, 0, 0, 0, time.UTC)
+	name := "shop_effect-accepted_20260925T120000.dump"
+	if err := os.WriteFile(filepath.Join(location.dir, name), []byte("unbound dump"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := createPinnedLegacySnapshotAt(context.Background(), location, "effect-accepted", at); err == nil || !strings.Contains(err.Error(), "inspect before retry") {
+		t.Fatalf("unbound replay = %v", err)
+	}
+	data, err := os.ReadFile(filepath.Join(location.dir, name))
+	if err != nil || string(data) != "unbound dump" {
+		t.Fatalf("existing dump changed: %q, %v", data, err)
 	}
 }
 

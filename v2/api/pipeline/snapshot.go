@@ -80,15 +80,17 @@ func (p *Pipeline) snapshotTarget(ctx context.Context, st *state, sg *saga.Saga,
 		return err
 	}
 	var created *dataSnapshot
-	if target != nil && st.claim.OperationID() != "" {
+	if st.claim.OperationID() != "" {
 		if st.operationStartedAt.IsZero() {
 			return fmt.Errorf("predeploy snapshot operation start time is unavailable")
 		}
-		// The accepted operation owns one stable safety snapshot name. A
-		// replay can reuse only a dump whose target sidecar verifies, rather
-		// than producing a second snapshot after a worker crash.
+		// The accepted operation owns one stable safety snapshot name.
 		label := "effect-" + st.claim.OperationID()
-		created, err = createPinnedDataSnapshotAt(ctx, location, label, st.operationStartedAt)
+		if target != nil {
+			created, err = createPinnedDataSnapshotAt(ctx, location, label, st.operationStartedAt)
+		} else {
+			created, err = createPinnedLegacySnapshotAt(ctx, location, label, st.operationStartedAt)
+		}
 	} else {
 		created, err = createDataSnapshot(ctx, location, sha)
 	}
@@ -116,7 +118,7 @@ func (p *Pipeline) snapshotTarget(ctx context.Context, st *state, sg *saga.Saga,
 		if target != nil {
 			_, key, err = p.ExportTargetSnapshotClaimed(ctx, st.spec, target.name, created.Filename, objects, exportBucket, st.claim.OperationID())
 		} else {
-			key, err = exportLegacySnapshotClaimed(ctx, objects, exportBucket, st.spec.App, db, created.Filename, location.dir, st.claim.OperationID())
+			key, err = exportLegacySnapshotClaimed(ctx, objects, exportBucket, st.spec.App, db, created.Filename, location.dir, st.claim.OperationID(), st.operationStartedAt)
 		}
 		if err != nil {
 			_ = sg.Log(ctx, "snapshot.export_failed", fmt.Sprintf("snapshot export failed: %v", err), map[string]string{"bucket": exportBucket, "snapshot": created.Filename})

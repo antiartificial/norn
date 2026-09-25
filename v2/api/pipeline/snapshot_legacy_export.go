@@ -28,9 +28,12 @@ type legacyExportManifest struct {
 
 // exportLegacySnapshotClaimed retains the flat v1 local namespace while
 // publishing a verified copy under a unique, create-only operation key.
-func exportLegacySnapshotClaimed(ctx context.Context, objects snapshotCreateOnlyObjectStore, bucket, app, database, filename, directory, operationID string) (string, error) {
+func exportLegacySnapshotClaimed(ctx context.Context, objects snapshotCreateOnlyObjectStore, bucket, app, database, filename, directory, operationID string, operationStartedAt time.Time) (string, error) {
 	if _, err := uuid.Parse(operationID); err != nil {
 		return "", fmt.Errorf("invalid snapshot export operation ID: %w", err)
+	}
+	if operationStartedAt.IsZero() {
+		return "", fmt.Errorf("claimed snapshot export operation start time is unavailable")
 	}
 	if _, _, err := legacySnapshotName("snapshots/"+app+"/"+filename, app, database); err != nil {
 		return "", err
@@ -70,7 +73,7 @@ func exportLegacySnapshotClaimed(ctx context.Context, objects snapshotCreateOnly
 		return "", fmt.Errorf("copy pinned legacy snapshot: %v; copied %d of %d bytes", copyErr, size, info.Size())
 	}
 	manifest := legacyExportManifest{Schema: "norn.snapshot-legacy-export/v1", App: app, Database: database, Filename: filename,
-		SHA256: hex.EncodeToString(hash.Sum(nil)), Size: size, ExportedAt: time.Now().UTC()}
+		SHA256: hex.EncodeToString(hash.Sum(nil)), Size: size, ExportedAt: operationStartedAt.UTC()}
 	encoded, err := json.Marshal(manifest)
 	if err != nil {
 		return "", err

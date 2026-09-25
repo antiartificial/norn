@@ -162,7 +162,7 @@ func (p *Pipeline) executeDataOperation(ctx context.Context, op *model.Operation
 			if !ok {
 				return nil, fmt.Errorf("legacy snapshot export object store lacks create-only publication")
 			}
-			key, err := exportLegacySnapshotClaimed(ctx, createOnly, spec.Snapshots.ExportBucket, spec.App, database, filename, location.dir, op.ID)
+			key, err := exportLegacySnapshotClaimed(ctx, createOnly, spec.Snapshots.ExportBucket, spec.App, database, filename, location.dir, op.ID, op.StartedAt)
 			if err != nil {
 				return nil, err
 			}
@@ -276,6 +276,15 @@ func createPinnedDataSnapshotAt(ctx context.Context, location snapshotLocation, 
 	return createDataSnapshotAtMode(ctx, location, label, createdAt, true, true)
 }
 
+// Legacy dumps have no target sidecar. A replay must stop at its operation
+// name instead of trusting existing bytes or creating a second safety dump.
+func createPinnedLegacySnapshotAt(ctx context.Context, location snapshotLocation, label string, createdAt time.Time) (*dataSnapshot, error) {
+	if location.bound != nil {
+		return nil, fmt.Errorf("legacy snapshot must not have a target binding")
+	}
+	return createDataSnapshotAtMode(ctx, location, label, createdAt, false, true)
+}
+
 func createDataSnapshotAtMode(ctx context.Context, location snapshotLocation, label string, createdAt time.Time, reuse, pinned bool) (*dataSnapshot, error) {
 	database, directory := location.database, location.dir
 	if !model.IsSafePostgresDatabaseName(database) {
@@ -288,6 +297,9 @@ func createDataSnapshotAtMode(ctx context.Context, location snapshotLocation, la
 	filename := fmt.Sprintf("%s_%s_%s.dump", database, label, timestamp)
 	path := filepath.Join(directory, filename)
 	if info, err := os.Lstat(path); err == nil {
+		if pinned && location.bound == nil {
+			return nil, fmt.Errorf("pinned legacy snapshot already exists; inspect before retry")
+		}
 		if !info.Mode().IsRegular() {
 			return nil, fmt.Errorf("snapshot target %s is not a regular file", filename)
 		}
