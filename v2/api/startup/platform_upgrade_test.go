@@ -77,6 +77,51 @@ func TestPlatformUpgradeLegacyBaselineRequiresBackupProofBeforeBuild(t *testing.
 	}
 }
 
+func TestPlatformUpgradeLegacyBaselineRequiresBackupArtifactBeforeBuild(t *testing.T) {
+	cmd := exec.Command(platformUpgradePath(t), "legacy-baseline", "--legacy-release", strings.Repeat("a", 40), "--backup-proof", "/private/proof.json")
+	out, err := cmd.CombinedOutput()
+	if err == nil || !strings.Contains(string(out), "requires --backup-artifact") {
+		t.Fatalf("legacy baseline accepted a missing backup artifact: err=%v\n%s", err, out)
+	}
+}
+
+func TestPlatformUpgradeLegacyBaselineRejectsArtifactDigestBeforeBuild(t *testing.T) {
+	root := t.TempDir()
+	legacySHA := strings.Repeat("a", 40)
+	databaseURL := "postgresql://fixture@127.0.0.1:5432/norn_fixture?sslmode=disable"
+	auditKey := strings.Repeat("k", 32)
+	mac := hmac.New(sha256.New, []byte(auditKey))
+	_, _ = mac.Write([]byte("norn.database-identity/v1\x00" + databaseURL))
+	artifactPath := filepath.Join(root, "control-backup.dump")
+	if err := os.WriteFile(artifactPath, []byte("private artifact whose digest differs from proof\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	proofPath := filepath.Join(root, "backup-proof.json")
+	proof, err := json.Marshal(map[string]any{
+		"schema":           "norn.legacy-control-backup/v1",
+		"sourceReleaseSHA": legacySHA,
+		"databaseIdentity": fmt.Sprintf("hmac-sha256:%x", mac.Sum(nil)),
+		"backupSHA256":     strings.Repeat("0", 64),
+		"backupBytes":      len("private artifact whose digest differs from proof\n"),
+		"createdAt":        time.Now().UTC().Format(time.RFC3339),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(proofPath, proof, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	cmd := exec.Command(platformUpgradePath(t), "legacy-baseline", "--legacy-release", legacySHA, "--backup-proof", proofPath, "--backup-artifact", artifactPath)
+	cmd.Env = append(os.Environ(), "NORN_DATABASE_URL="+databaseURL, "NORN_AUDIT_SIGNING_KEY="+auditKey)
+	out, err := cmd.CombinedOutput()
+	if err == nil || !strings.Contains(string(out), "backup proof is invalid") {
+		t.Fatalf("legacy baseline accepted a mismatched artifact digest: err=%v\n%s", err, out)
+	}
+	if strings.Contains(string(out), "building") {
+		t.Fatalf("legacy baseline built a release before rejecting the artifact digest:\n%s", out)
+	}
+}
+
 func TestPlatformUpgradeLegacyBaselineFencesBeforeMigrationAndNeverRestoresLegacy(t *testing.T) {
 	script, err := os.ReadFile(platformUpgradePath(t))
 	if err != nil {
@@ -112,7 +157,7 @@ func TestPlatformUpgradeLegacyBaselineFencesBeforeMigrationAndNeverRestoresLegac
 	if promoteStart < 0 || promoteEnd < 0 || strings.Contains(text[promoteStart:promoteStart+promoteEnd], "restore_release_artifacts") {
 		t.Fatal("legacy baseline promotion can restore an unfenced legacy release")
 	}
-	for _, required := range []string{"backup proof must have mode 0600", "legacy operation drain clear", "legacy service fenced", "candidate postflight failed; legacy binary remains fenced"} {
+	for _, required := range []string{"backup artifact must not be empty", "backup proof size does not match the backup artifact", "backup proof digest does not match the backup artifact", "legacy operation drain clear", "legacy service fenced", "candidate postflight failed; legacy binary remains fenced"} {
 		if !strings.Contains(text, required) {
 			t.Fatalf("legacy baseline is missing fail-closed guard %q", required)
 		}
@@ -126,11 +171,18 @@ func TestPlatformUpgradeLegacyBaselineFencesExactLegacyBeforeMigrationAndPromote
 		t.Fatal(err)
 	}
 	proofPath := filepath.Join(fixture.root, "legacy-backup-proof.json")
-	proof, err := json.Marshal(map[string]string{
+	artifactPath := filepath.Join(fixture.root, "legacy-backup.dump")
+	artifact := []byte("private fixture backup artifact\n")
+	if err := os.WriteFile(artifactPath, artifact, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	artifactDigest := sha256.Sum256(artifact)
+	proof, err := json.Marshal(map[string]any{
 		"schema":           "norn.legacy-control-backup/v1",
 		"sourceReleaseSHA": legacySHA,
 		"databaseIdentity": fixture.databaseID,
-		"backupSHA256":     strings.Repeat("b", 64),
+		"backupSHA256":     fmt.Sprintf("%x", artifactDigest),
+		"backupBytes":      len(artifact),
 		"createdAt":        time.Now().UTC().Format(time.RFC3339),
 	})
 	if err != nil {
@@ -160,7 +212,7 @@ if [[ -f "${FAKE_FENCED:-}" ]]; then exit 0; fi
 printf '4242\n'
 `)
 	cmd := fixture.command(t)
-	cmd.Args = []string{platformUpgradePath(t), "legacy-baseline", "HEAD", "--legacy-release", legacySHA, "--backup-proof", proofPath}
+	cmd.Args = []string{platformUpgradePath(t), "legacy-baseline", "HEAD", "--legacy-release", legacySHA, "--backup-proof", proofPath, "--backup-artifact", artifactPath}
 	cmd.Env = append(cmd.Env,
 		"NORN_LEGACY_FENCE_STATE_PATH="+fenceState,
 		"FAKE_FENCED="+fenced,

@@ -6,7 +6,7 @@ usage() {
 Usage:
   platform-upgrade preflight [ref]
   platform-upgrade upgrade [ref]
-  platform-upgrade legacy-baseline [ref] --legacy-release <full-sha> --backup-proof <path>
+  platform-upgrade legacy-baseline [ref] --legacy-release <full-sha> --backup-proof <path> --backup-artifact <path>
   platform-upgrade releases
   platform-upgrade rollback <sha-prefix>
   platform-upgrade smoke
@@ -78,6 +78,7 @@ esac
 ref="${1:-HEAD}"
 legacy_release_sha=""
 legacy_backup_proof=""
+legacy_backup_artifact=""
 if [[ "$mode" == "legacy-baseline" ]]; then
   ref="HEAD"
   while [[ "$#" -gt 0 ]]; do
@@ -92,6 +93,11 @@ if [[ "$mode" == "legacy-baseline" ]]; then
         legacy_backup_proof="$2"
         shift 2
         ;;
+      --backup-artifact)
+        [[ "$#" -ge 2 ]] || fail "legacy-baseline requires a value after --backup-artifact"
+        legacy_backup_artifact="$2"
+        shift 2
+        ;;
       --*) fail "unknown legacy-baseline option: $1" ;;
       *)
         [[ "$ref" == "HEAD" ]] || fail "legacy-baseline accepts at most one release ref"
@@ -102,6 +108,7 @@ if [[ "$mode" == "legacy-baseline" ]]; then
   done
   [[ -n "$legacy_release_sha" ]] || fail "legacy-baseline requires --legacy-release"
   [[ -n "$legacy_backup_proof" ]] || fail "legacy-baseline requires --backup-proof"
+  [[ -n "$legacy_backup_artifact" ]] || fail "legacy-baseline requires --backup-artifact"
 fi
 script_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 default_repo="$(cd "$script_dir/../.." && pwd)"
@@ -628,7 +635,7 @@ legacy_baseline_validate_backup_proof() {
   [[ "$legacy_backup_max_age_seconds" =~ ^[1-9][0-9]*$ ]] || fail "NORN_LEGACY_BACKUP_MAX_AGE_SECONDS must be a positive integer"
   [[ -n "${NORN_DATABASE_URL:-}" && ${#signing_key} -ge 32 ]] || fail "legacy-baseline requires NORN_DATABASE_URL and a 32-byte NORN_AUDIT_SIGNING_KEY to bind backup proof"
   require_cmd python3
-  if ! python3 - "$legacy_backup_proof" "$legacy_release_sha" "$legacy_backup_max_age_seconds" <<'PY'
+  if ! python3 - "$legacy_backup_proof" "$legacy_backup_artifact" "$legacy_release_sha" "$legacy_backup_max_age_seconds" <<'PY'
 import datetime
 import hashlib
 import hmac
@@ -637,10 +644,19 @@ import os
 import stat
 import sys
 
-path, expected_release, maximum_age = sys.argv[1:]
-mode = stat.S_IMODE(os.stat(path).st_mode)
-if mode != 0o600:
-    raise SystemExit("backup proof must have mode 0600")
+proof_path, artifact_path, expected_release, maximum_age = sys.argv[1:]
+for path, label in ((proof_path, "backup proof"), (artifact_path, "backup artifact")):
+    if not os.path.isabs(path):
+        raise SystemExit(f"{label} must use an absolute path")
+    metadata = os.lstat(path)
+    if not stat.S_ISREG(metadata.st_mode) or stat.S_ISLNK(metadata.st_mode):
+        raise SystemExit(f"{label} must be a regular non-symlink file")
+    if metadata.st_uid != os.geteuid():
+        raise SystemExit(f"{label} must be owned by the invoking user")
+    if stat.S_IMODE(metadata.st_mode) != 0o600:
+        raise SystemExit(f"{label} must have mode 0600")
+    if label == "backup artifact" and metadata.st_size <= 0:
+        raise SystemExit("backup artifact must not be empty")
 
 def strict_object(pairs):
     value = {}
@@ -650,9 +666,9 @@ def strict_object(pairs):
         value[key] = item
     return value
 
-with open(path, encoding="utf-8") as handle:
+with open(proof_path, encoding="utf-8") as handle:
     proof = json.load(handle, object_pairs_hook=strict_object)
-expected_fields = {"schema", "sourceReleaseSHA", "databaseIdentity", "backupSHA256", "createdAt"}
+expected_fields = {"schema", "sourceReleaseSHA", "databaseIdentity", "backupSHA256", "backupBytes", "createdAt"}
 if type(proof) is not dict or set(proof) != expected_fields:
     raise SystemExit("backup proof fields are not exact")
 if proof["schema"] != "norn.legacy-control-backup/v1":
@@ -661,6 +677,14 @@ if proof["sourceReleaseSHA"] != expected_release:
     raise SystemExit("backup proof source release does not match --legacy-release")
 if not isinstance(proof["backupSHA256"], str) or len(proof["backupSHA256"]) != 64 or any(ch not in "0123456789abcdef" for ch in proof["backupSHA256"]):
     raise SystemExit("backup proof digest is invalid")
+if type(proof["backupBytes"]) is not int or proof["backupBytes"] != os.lstat(artifact_path).st_size:
+    raise SystemExit("backup proof size does not match the backup artifact")
+digest = hashlib.sha256()
+with open(artifact_path, "rb") as handle:
+    for chunk in iter(lambda: handle.read(1024 * 1024), b""):
+        digest.update(chunk)
+if not hmac.compare_digest(proof["backupSHA256"], digest.hexdigest()):
+    raise SystemExit("backup proof digest does not match the backup artifact")
 try:
     created = datetime.datetime.fromisoformat(proof["createdAt"].replace("Z", "+00:00"))
 except (TypeError, ValueError):
@@ -1266,6 +1290,7 @@ target_startup_contract="$last_startup_contract"
 if [[ "$mode" == "legacy-baseline" ]]; then
   [[ "$upgrade_mode" == "restart" ]] || fail "legacy-baseline supports only the direct restart lane"
   legacy_baseline_require_drained
+  legacy_baseline_validate_backup_proof
   legacy_baseline_fence_service
   run_schema_migration
   candidate_preflight

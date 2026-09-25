@@ -13,8 +13,10 @@ through the normal maintenance procedure before invoking the command. Keep the
 candidate source ref, the legacy release SHA, and the backup artifact in the
 change record.
 
-Create a private mode-`0600` JSON backup proof beside the verified control
-database backup. It contains exactly these fields:
+Create the verified control database backup as a nonempty regular file owned
+by the invoking user, at an absolute private path with mode exactly `0600`.
+Create a separate mode-`0600`, user-owned, absolute-path JSON backup proof.
+The proof contains exactly these fields:
 
 ```json
 {
@@ -22,6 +24,7 @@ database backup. It contains exactly these fields:
   "sourceReleaseSHA": "<40 lowercase hex legacy release SHA>",
   "databaseIdentity": "hmac-sha256:<database identity>",
   "backupSHA256": "<64 lowercase hex backup digest>",
+  "backupBytes": 12345,
   "createdAt": "<RFC3339 timestamp with offset>"
 }
 ```
@@ -31,8 +34,11 @@ the production `NORN_DATABASE_URL` and `NORN_AUDIT_SIGNING_KEY`. The proof is
 accepted only when its mode is exactly `0600`, its release and database
 identity match the command environment, and it is no more than
 `NORN_LEGACY_BACKUP_MAX_AGE_SECONDS` old (one hour by default). The proof is
-a machine-checkable binding to a backup artifact; the change record still must
-contain a successful restore verification for that artifact.
+a machine-checkable binding to a backup artifact: the command hashes the
+artifact with SHA-256 and requires it to equal `backupSHA256`; it also requires
+the actual file size to equal `backupBytes`. Both checks run before it builds
+and again immediately before it fences the legacy service. The change record
+still must contain a successful restore verification for that artifact.
 
 Run:
 
@@ -40,7 +46,8 @@ Run:
 NORN_DRAIN_MODE=fail \
 v2/scripts/platform-upgrade legacy-baseline <candidate-ref> \
   --legacy-release <legacy-release-sha> \
-  --backup-proof /absolute/private/path/backup-proof.json
+  --backup-proof /absolute/private/path/backup-proof.json \
+  --backup-artifact /absolute/private/path/control-backup.dump
 ```
 
 The command requires an authenticated API token, an exact zero active
