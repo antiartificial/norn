@@ -2,9 +2,15 @@ package store
 
 import (
 	"context"
+	"encoding/json"
+	"errors"
 	"strconv"
+	"strings"
+
+	"github.com/google/uuid"
 
 	"norn/v2/api/database"
+	"norn/v2/api/model"
 	"norn/v2/api/nomad"
 )
 
@@ -16,6 +22,83 @@ type MySQLSourceSnapshotAdmissionRequest struct {
 	Binding        MySQLDeployedSourceBindingRequest
 	Maintenance    database.MySQLMaintenanceCredentials
 	DumpToolSHA256 string
+}
+
+// MySQLSourceSnapshotAcceptanceInput contains only the operator's stable
+// selection and replay identity. The signed job revision and allocation IDs
+// are always derived by the server from Nomad, never supplied by this caller.
+type MySQLSourceSnapshotAcceptanceInput struct {
+	Selection MySQLSourceSnapshotAdmissionRequest
+	Actor     OperationActor
+	Key       string
+	Audit     AcceptanceAuditContext
+}
+
+// AcceptPrivateMySQLSourceSnapshot makes the observation and acceptance one
+// private entry point. An exact replay returns the original signed operation
+// even if Nomad has since changed; execution will refuse that stale revision.
+// The normal operation store provides the atomic request-key conflict check.
+func (db *DB) AcceptPrivateMySQLSourceSnapshot(ctx context.Context, acceptance *PGOperationStore, observer MySQLSourceJobObserver, input MySQLSourceSnapshotAcceptanceInput) (AcceptedOperation, error) {
+	if db == nil || acceptance == nil || acceptance.db != db || observer == nil || strings.TrimSpace(input.Key) == "" ||
+		strings.TrimSpace(input.Actor.Issuer) == "" || strings.TrimSpace(input.Actor.Subject) == "" {
+		return AcceptedOperation{}, ErrMySQLSourceSnapshotFence
+	}
+	authority, err := acceptance.Authority(ctx)
+	if err != nil {
+		return AcceptedOperation{}, err
+	}
+	selection := input.Selection
+	identity := OperationRequestIdentity{Authority: authority, Actor: input.Actor, Kind: MySQLSourceSnapshotOperationKind,
+		Resource: "app/" + selection.Binding.App + "/database/" + selection.Binding.LogicalID, Key: input.Key}
+	if existing, err := acceptance.ResolveIdentity(ctx, identity); err == nil {
+		if !sameMySQLSourceSnapshotSelection(existing, selection) {
+			return AcceptedOperation{}, &AcceptanceConflictError{Identity: identity}
+		}
+		return existing, nil
+	} else if !errors.Is(err, ErrAcceptanceNotFound) {
+		return AcceptedOperation{}, err
+	}
+	request, err := db.BuildMySQLSourceSnapshotRequest(ctx, acceptance, observer, selection)
+	if err != nil {
+		return AcceptedOperation{}, err
+	}
+	encoded, err := json.Marshal(request)
+	if err != nil {
+		return AcceptedOperation{}, err
+	}
+	var payload map[string]interface{}
+	decoder := json.NewDecoder(strings.NewReader(string(encoded)))
+	decoder.UseNumber()
+	if err := decoder.Decode(&payload); err != nil {
+		return AcceptedOperation{}, err
+	}
+	entry := OperationAcceptance{Identity: identity, Audit: input.Audit,
+		Operation: model.Operation{ID: uuid.NewString(), Kind: MySQLSourceSnapshotOperationKind, App: request.JobIdentity.App,
+			Ref: request.JobIdentity.DeploymentID, Status: model.OperationQueued, Risk: "high", Source: "private-mysql-source-snapshot",
+			MaxAttempts: 1, Payload: payload}}
+	entry.Fingerprint, err = CanonicalOperationRequestFingerprint(entry)
+	if err != nil {
+		return AcceptedOperation{}, err
+	}
+	return acceptance.Accept(ctx, entry)
+}
+
+func sameMySQLSourceSnapshotSelection(existing AcceptedOperation, selection MySQLSourceSnapshotAdmissionRequest) bool {
+	if existing.Operation.Kind != MySQLSourceSnapshotOperationKind || existing.Operation.App != selection.Binding.App ||
+		existing.Operation.Status == model.OperationCanceled || existing.Operation.MaxAttempts != 1 {
+		return false
+	}
+	var request MySQLSourceSnapshotRequest
+	encoded, err := json.Marshal(existing.Operation.Payload)
+	if err != nil || decodeStrictAcceptanceJSON(encoded, &request) != nil || !validMySQLSourceSnapshotRequest(request) {
+		return false
+	}
+	binding := selection.Binding
+	return request.CatalogRevision == binding.CatalogRevision && request.ProfileID == binding.ProfileID &&
+		request.LogicalID == binding.LogicalID && request.Source == binding.Source && request.Maintenance == selection.Maintenance &&
+		request.DumpToolSHA256 == selection.DumpToolSHA256 && request.JobIdentity.App == binding.App &&
+		request.JobIdentity.DeploymentID == binding.DeploymentID && request.JobIdentity.SpecDigest == binding.SpecDigest &&
+		request.JobIdentity.Region == binding.Region && request.JobIdentity.NomadRegion == binding.NomadRegion
 }
 
 // BuildMySQLSourceSnapshotRequest is the private admission boundary that

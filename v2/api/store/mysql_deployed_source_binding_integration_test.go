@@ -76,6 +76,29 @@ func TestVerifySignedDeployedMySQLSourceBinding(t *testing.T) {
 	if err != nil || snapshot.JobIdentity.DeploymentID != accepted.Deployment.ID || snapshot.JobIdentity.JobVersion != "8" || snapshot.JobIdentity.JobModifyIndex != "44" {
 		t.Fatalf("snapshot=%+v err=%v", snapshot, err)
 	}
+	snapshotAcceptanceInput := MySQLSourceSnapshotAcceptanceInput{
+		Selection: MySQLSourceSnapshotAdmissionRequest{Binding: request, Maintenance: maintenance, DumpToolSHA256: strings.Repeat("d", 64)},
+		Actor:     OperationActor{Issuer: "test-issuer", Subject: "operator"}, Key: "source-snapshot-one",
+		Audit: AcceptanceAuditContext{Source: "private-test", RequestID: "snapshot-request-one"},
+	}
+	acceptedSnapshot, err := db.AcceptPrivateMySQLSourceSnapshot(ctx, acceptedStore, observer, snapshotAcceptanceInput)
+	if err != nil || acceptedSnapshot.Operation.Status != model.OperationQueued || acceptedSnapshot.Operation.MaxAttempts != 1 ||
+		!sameMySQLSourceSnapshotPayload(acceptedSnapshot.Operation.Payload, snapshot) {
+		t.Fatalf("signed source snapshot acceptance=%+v err=%v", acceptedSnapshot, err)
+	}
+	noObservation := mysqlSourceObserverFunc(func(context.Context, nomad.MySQLSourceJobObservationRequest) (nomad.MySQLSourceJobObservation, error) {
+		t.Fatal("exact replay must not observe a newer Nomad job")
+		return nomad.MySQLSourceJobObservation{}, nil
+	})
+	replay, err := db.AcceptPrivateMySQLSourceSnapshot(ctx, acceptedStore, noObservation, snapshotAcceptanceInput)
+	if err != nil || replay.Operation.ID != acceptedSnapshot.Operation.ID || !replay.Replayed {
+		t.Fatalf("source snapshot replay=%+v err=%v", replay, err)
+	}
+	conflicting := snapshotAcceptanceInput
+	conflicting.Selection.DumpToolSHA256 = strings.Repeat("e", 64)
+	if _, err := db.AcceptPrivateMySQLSourceSnapshot(ctx, acceptedStore, noObservation, conflicting); !errors.Is(err, ErrAcceptanceConflict) {
+		t.Fatalf("changed snapshot intent reused request identity: %v", err)
+	}
 	wrongObserver := mysqlSourceObserverFunc(func(_ context.Context, want nomad.MySQLSourceJobObservationRequest) (nomad.MySQLSourceJobObservation, error) {
 		observed, _ := observer.ObserveMySQLSourceJob(ctx, want)
 		observed.DeploymentID = "another-deployment"
