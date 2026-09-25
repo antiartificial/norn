@@ -104,6 +104,16 @@ func (db *DB) activateDatabaseCatalog(ctx context.Context, expectedCurrent int64
 			return DatabaseCatalogRevision{}, err
 		}
 	}
+	// The advisory lock only serializes this transaction. A restore's durable
+	// maintenance fence spans its private SQL execution, so activation must
+	// refuse while routing and source-quiescence evidence are still in flight.
+	var maintenanceActive bool
+	if err := tx.QueryRow(ctx, `SELECT EXISTS (SELECT 1 FROM mysql_restore_maintenance_fences)`).Scan(&maintenanceActive); err != nil {
+		return DatabaseCatalogRevision{}, err
+	}
+	if maintenanceActive {
+		return DatabaseCatalogRevision{}, ErrMySQLRestoreMaintenanceFence
+	}
 	current, err := loadActiveDatabaseCatalog(ctx, tx)
 	if err != nil && !errors.Is(err, pgx.ErrNoRows) {
 		return DatabaseCatalogRevision{}, err

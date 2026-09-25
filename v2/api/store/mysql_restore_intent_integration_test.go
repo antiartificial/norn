@@ -33,7 +33,8 @@ func (s mysqlIntentSecrets) Resolve(_ context.Context, reference string) ([]byte
 }
 
 func TestMySQLRestoreIntentPayloadExact(t *testing.T) {
-	request := MySQLRestoreRequest{CatalogRevision: 1, ProfileID: "mini", LogicalID: "db"}
+	source := database.TargetIdentity{ServiceID: "source", ServiceGeneration: 1, BindingID: "source-binding", BindingGeneration: 1, Engine: database.EngineMySQL, Database: "source", Role: "reader"}
+	request := MySQLRestoreRequest{CatalogRevision: 1, ProfileID: "mini", LogicalID: "db", SourceQuiescence: mysqlRestoreQuiescence(source)}
 	data, _ := json.Marshal(request)
 	var payload map[string]interface{}
 	_ = json.Unmarshal(data, &payload)
@@ -43,6 +44,13 @@ func TestMySQLRestoreIntentPayloadExact(t *testing.T) {
 	payload["extra"] = "unsigned"
 	if sameMySQLRestorePayload(payload, request) || decodeMySQLRestorePayload(payload, &request) == nil {
 		t.Fatal("extra execution field accepted")
+	}
+	data, _ = json.Marshal(request)
+	_ = json.Unmarshal(data, &payload)
+	quiescence := payload["sourceQuiescence"].(map[string]interface{})
+	quiescence["method"] = "forged-after-acceptance"
+	if sameMySQLRestorePayload(payload, request) {
+		t.Fatal("altered source quiescence evidence was accepted")
 	}
 }
 
@@ -173,7 +181,8 @@ func TestMySQLRestoreIntentAgainstDisposableEngines(t *testing.T) {
 	if !strings.HasPrefix(path, filepath.Clean(stage)+string(os.PathSeparator)) {
 		t.Fatal("snapshot escaped private stage")
 	}
-	request := MySQLRestoreRequest{CatalogRevision: active.Revision, ProfileID: "mini", LogicalID: "intent-target", Target: target.Target, Artifact: artifact, ArtifactPath: path}
+	request := MySQLRestoreRequest{CatalogRevision: active.Revision, ProfileID: "mini", LogicalID: "intent-target", Target: target.Target, Artifact: artifact, ArtifactPath: path,
+		SourceQuiescence: mysqlRestoreQuiescence(artifact.Source)}
 	input := newAcceptance(t, stores[0], "mysql-intent-"+suffix, "operator", "intent-target", false)
 	input.Identity.Kind, input.Identity.Resource = MySQLRestoreOperationKind, "mysql/"+targetDB
 	input.Operation.Kind, input.Operation.MaxAttempts = MySQLRestoreOperationKind, 1
@@ -375,4 +384,11 @@ func TestMySQLRestoreIntentAgainstDisposableEngines(t *testing.T) {
 
 func mysqlRestoreSQLLiteral(value string) string {
 	return "'" + strings.NewReplacer(`\`, `\\`, `'`, `''`).Replace(value) + "'"
+}
+
+func mysqlRestoreQuiescence(source database.TargetIdentity) MySQLRestoreSourceQuiescence {
+	return MySQLRestoreSourceQuiescence{
+		Source: source, ObservedAt: time.Now().UTC(), Method: "private integration fixture quiesced source",
+		EvidenceSHA256: strings.Repeat("a", 64),
+	}
 }

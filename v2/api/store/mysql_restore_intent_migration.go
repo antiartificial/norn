@@ -34,3 +34,22 @@ func mysqlRestoreIntentMigration() SchemaMigration {
 		MinimumWriterVersion: FunctionDeploymentProvenanceWriterVersion,
 	}
 }
+
+const mysqlRestoreMaintenanceFenceMigrationSQL = `
+CREATE TABLE mysql_restore_maintenance_fences (
+ operation_id TEXT PRIMARY KEY REFERENCES mysql_restore_intents(operation_id) ON DELETE RESTRICT,
+ catalog_revision BIGINT NOT NULL REFERENCES database_catalog_revisions(revision) ON DELETE RESTRICT,
+ source_quiescence JSONB NOT NULL,
+ created_at TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+`
+
+func mysqlRestoreMaintenanceFenceMigration() SchemaMigration {
+	return SchemaMigration{
+		Version:              25,
+		Name:                 "mysql-restore-maintenance-fences",
+		SQL:                  mysqlRestoreMaintenanceFenceMigrationSQL,
+		MinimumReaderVersion: FunctionInvocationArchiveReaderVersion,
+		MinimumWriterVersion: FunctionDeploymentProvenanceWriterVersion,
+	}
+}

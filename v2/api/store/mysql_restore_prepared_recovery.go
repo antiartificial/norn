@@ -56,11 +56,15 @@ func recoverExpiredPreparedMySQLRestores(ctx context.Context, tx pgx.Tx) error {
 		if result.RowsAffected() != 1 {
 			return fmt.Errorf("expired prepared MySQL restore operation changed while recovering: %w", ErrMySQLRestoreFence)
 		}
-		result, err = tx.Exec(ctx, `DELETE FROM mysql_restore_intents WHERE operation_id=$1 AND state='prepared'`, id)
+		result, err = tx.Exec(ctx, `DELETE FROM mysql_restore_maintenance_fences WHERE operation_id=$1`, id)
 		if err != nil {
 			return err
 		}
 		if result.RowsAffected() != 1 {
+			return fmt.Errorf("expired prepared MySQL restore maintenance fence changed while recovering: %w", ErrMySQLRestoreFence)
+		}
+		result, err = tx.Exec(ctx, `DELETE FROM mysql_restore_intents WHERE operation_id=$1 AND state='prepared'`, id)
+		if err != nil || result.RowsAffected() != 1 {
 			return fmt.Errorf("expired prepared MySQL restore reservation changed while recovering: %w", ErrMySQLRestoreFence)
 		}
 	}

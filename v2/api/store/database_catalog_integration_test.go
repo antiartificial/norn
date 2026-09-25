@@ -2,7 +2,9 @@ package store
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -179,6 +181,43 @@ func TestClaimedCatalogActivationRequiresTheLiveClaim(t *testing.T) {
 	}
 	if active, err := db.ActiveDatabaseCatalog(ctx); err != nil || active.Revision != 1 {
 		t.Fatalf("active = %+v, %v", active, err)
+	}
+}
+
+func TestCatalogActivationRefusesDurableMySQLRestoreMaintenanceFence(t *testing.T) {
+	dbs, _, _ := setupEffectStores(t, 1)
+	db := dbs[0]
+	ctx := context.Background()
+	active, err := db.ActivateDatabaseCatalog(ctx, 0, storeTestCatalog(), "operator")
+	if err != nil {
+		t.Fatal(err)
+	}
+	op := &model.Operation{ID: uuid.NewString(), Kind: MySQLRestoreOperationKind, Ref: "mysql/target", SagaID: uuid.NewString(), Status: model.OperationRunning,
+		Payload: map[string]interface{}{}, Metadata: map[string]interface{}{}, MaxAttempts: 1, StartedAt: time.Now().UTC()}
+	if err := db.InsertOperation(ctx, op); err != nil {
+		t.Fatal(err)
+	}
+	target := database.TargetIdentity{ServiceID: "mysql-target", ServiceGeneration: 1, BindingID: "mysql-target-binding", BindingGeneration: 1, Engine: database.EngineMySQL, Database: "target", Role: "writer"}
+	source := database.TargetIdentity{ServiceID: "mysql-source", ServiceGeneration: 1, BindingID: "mysql-source-binding", BindingGeneration: 1, Engine: database.EngineMySQL, Database: "source", Role: "reader"}
+	targetJSON, _ := json.Marshal(target)
+	artifactJSON, _ := json.Marshal(database.MySQLSQLArtifact{Format: database.MySQLSQLArtifactV2, Source: source, Bytes: 1, SHA256: strings.Repeat("a", 64), Expectation: database.MySQLRestoreExpectation{TableCount: 1, SchemaSHA256: strings.Repeat("b", 64), DataSHA256: strings.Repeat("c", 64)}})
+	quiescenceJSON, _ := json.Marshal(mysqlRestoreQuiescence(source))
+	if _, err := db.Pool.Exec(ctx, `INSERT INTO mysql_restore_intents
+		(operation_id, acceptance_intent_id, catalog_revision, profile_id, logical_id, target_key, target, artifact, artifact_path, state)
+		VALUES ($1,'accepted',$2,'private','private',$3,$4,$5,'/private/restore.sql','prepared')`, op.ID, active.Revision, uuid.NewString(), targetJSON, artifactJSON); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := db.Pool.Exec(ctx, `INSERT INTO mysql_restore_maintenance_fences (operation_id, catalog_revision, source_quiescence) VALUES ($1,$2,$3)`, op.ID, active.Revision, quiescenceJSON); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := db.ActivateDatabaseCatalog(ctx, active.Revision, storeTestCatalog(), "operator"); !errors.Is(err, ErrMySQLRestoreMaintenanceFence) {
+		t.Fatalf("catalog activation bypassed restore maintenance fence: %v", err)
+	}
+	if _, err := db.Pool.Exec(ctx, `DELETE FROM mysql_restore_maintenance_fences WHERE operation_id=$1`, op.ID); err != nil {
+		t.Fatal(err)
+	}
+	if revision, err := db.ActivateDatabaseCatalog(ctx, active.Revision, storeTestCatalog(), "operator"); err != nil || revision.Revision != active.Revision+1 {
+		t.Fatalf("catalog activation after maintenance fence release = %+v, %v", revision, err)
 	}
 }
 

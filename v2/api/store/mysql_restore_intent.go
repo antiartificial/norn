@@ -8,6 +8,8 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"strings"
+	"time"
 
 	"github.com/jackc/pgx/v5"
 
@@ -22,12 +24,25 @@ const MySQLRestoreOperationKind = "database.mysql-restore"
 // acceptance. The catalog revision is an additional fence around the stable
 // service and binding generations in Target.
 type MySQLRestoreRequest struct {
-	CatalogRevision int64                     `json:"catalogRevision"`
-	ProfileID       string                    `json:"profileId"`
-	LogicalID       string                    `json:"logicalId"`
-	Target          database.TargetIdentity   `json:"target"`
-	Artifact        database.MySQLSQLArtifact `json:"artifact"`
-	ArtifactPath    string                    `json:"artifactPath"`
+	CatalogRevision  int64                        `json:"catalogRevision"`
+	ProfileID        string                       `json:"profileId"`
+	LogicalID        string                       `json:"logicalId"`
+	Target           database.TargetIdentity      `json:"target"`
+	Artifact         database.MySQLSQLArtifact    `json:"artifact"`
+	ArtifactPath     string                       `json:"artifactPath"`
+	SourceQuiescence MySQLRestoreSourceQuiescence `json:"sourceQuiescence"`
+}
+
+// MySQLRestoreSourceQuiescence is the operator evidence that the source was
+// quiesced before its dump was accepted for restore. The complete record is
+// signed as part of MySQLRestoreRequest and copied into the durable maintenance
+// fence. It deliberately does not purport to fence an application's writes:
+// that requires the application's runtime write path to consult the fence.
+type MySQLRestoreSourceQuiescence struct {
+	Source         database.TargetIdentity `json:"source"`
+	ObservedAt     time.Time               `json:"observedAt"`
+	Method         string                  `json:"method"`
+	EvidenceSHA256 string                  `json:"evidenceSha256"`
 }
 
 type MySQLRestoreIntent struct {
@@ -38,7 +53,10 @@ type MySQLRestoreIntent struct {
 	Replayed           bool
 }
 
-var ErrMySQLRestoreFence = errors.New("MySQL restore durable fence rejected the request")
+var (
+	ErrMySQLRestoreFence            = errors.New("MySQL restore durable fence rejected the request")
+	ErrMySQLRestoreMaintenanceFence = errors.New("MySQL restore maintenance fence is active")
+)
 
 // PrepareClaimedMySQLRestore persists the exact signed request while the
 // operation claim and active catalog revision are locked. It repeats the
@@ -47,7 +65,7 @@ var ErrMySQLRestoreFence = errors.New("MySQL restore durable fence rejected the 
 // retry is idempotent; a different operation cannot consume the same target
 // generation, including after an ambiguous or completed restore.
 func (db *DB) PrepareClaimedMySQLRestore(ctx context.Context, acceptance *PGOperationStore, claim OperationClaim, request MySQLRestoreRequest, secrets database.SecretSource) (MySQLRestoreIntent, error) {
-	if db == nil || db.Pool == nil || acceptance == nil || acceptance.db != db || secrets == nil || request.CatalogRevision <= 0 {
+	if db == nil || db.Pool == nil || acceptance == nil || acceptance.db != db || secrets == nil || request.CatalogRevision <= 0 || !validMySQLRestoreSourceQuiescence(request.SourceQuiescence, request.Artifact.Source) {
 		return MySQLRestoreIntent{}, ErrMySQLRestoreFence
 	}
 	if err := validateOperationClaim(claim); err != nil {
@@ -88,11 +106,20 @@ func (db *DB) PrepareClaimedMySQLRestore(ctx context.Context, acceptance *PGOper
 	target, _ := json.Marshal(request.Target)
 	artifact, _ := json.Marshal(request.Artifact)
 	key := mysqlRestoreTargetKey(request.Target)
+	quiescence, _ := json.Marshal(request.SourceQuiescence)
 	inserted, err := tx.Exec(ctx, `INSERT INTO mysql_restore_intents
 		(operation_id, acceptance_intent_id, catalog_revision, profile_id, logical_id, target_key, target, artifact, artifact_path, state)
 		VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,'prepared') ON CONFLICT DO NOTHING`,
 		claim.OperationID(), accepted.AcceptanceIntentID, request.CatalogRevision, request.ProfileID, request.LogicalID, key, target, artifact, request.ArtifactPath)
 	if err != nil {
+		return MySQLRestoreIntent{}, err
+	}
+	// The maintenance row survives the short catalog advisory transaction. It
+	// blocks a later catalog activation until this exact restore is completed,
+	// or remains as an explicit operator-inspection fence after ambiguity.
+	if _, err := tx.Exec(ctx, `INSERT INTO mysql_restore_maintenance_fences
+		(operation_id, catalog_revision, source_quiescence)
+		VALUES ($1,$2,$3) ON CONFLICT (operation_id) DO NOTHING`, claim.OperationID(), request.CatalogRevision, quiescence); err != nil {
 		return MySQLRestoreIntent{}, err
 	}
 	var existing MySQLRestoreIntent
@@ -110,7 +137,15 @@ func (db *DB) PrepareClaimedMySQLRestore(ctx context.Context, acceptance *PGOper
 	if err := json.Unmarshal(savedArtifact, &existing.Request.Artifact); err != nil {
 		return MySQLRestoreIntent{}, ErrMySQLRestoreFence
 	}
-	if existing.AcceptanceIntentID != accepted.AcceptanceIntentID || existing.Request != request || existing.State != "prepared" {
+	var savedQuiescence []byte
+	if err := tx.QueryRow(ctx, `SELECT source_quiescence FROM mysql_restore_maintenance_fences WHERE operation_id=$1`, claim.OperationID()).Scan(&savedQuiescence); err != nil || json.Unmarshal(savedQuiescence, &existing.Request.SourceQuiescence) != nil {
+		return MySQLRestoreIntent{}, ErrMySQLRestoreFence
+	}
+	if existing.AcceptanceIntentID != accepted.AcceptanceIntentID || !sameMySQLRestoreRequest(existing.Request, request) || existing.State != "prepared" {
+		return MySQLRestoreIntent{}, ErrMySQLRestoreFence
+	}
+	var fenceMatches bool
+	if err := tx.QueryRow(ctx, `SELECT EXISTS (SELECT 1 FROM mysql_restore_maintenance_fences WHERE operation_id=$1 AND source_quiescence=$2::jsonb)`, claim.OperationID(), quiescence).Scan(&fenceMatches); err != nil || !fenceMatches {
 		return MySQLRestoreIntent{}, ErrMySQLRestoreFence
 	}
 	existing.OperationID = claim.OperationID()
@@ -140,7 +175,7 @@ func (db *DB) BeginClaimedMySQLRestore(ctx context.Context, acceptance *PGOperat
 		return MySQLRestoreIntent{}, ErrMySQLRestoreFence
 	}
 	var request MySQLRestoreRequest
-	if err := decodeMySQLRestorePayload(accepted.Operation.Payload, &request); err != nil {
+	if err := decodeMySQLRestorePayload(accepted.Operation.Payload, &request); err != nil || !validMySQLRestoreSourceQuiescence(request.SourceQuiescence, request.Artifact.Source) {
 		return MySQLRestoreIntent{}, ErrMySQLRestoreFence
 	}
 	tx, err := db.Pool.BeginTx(ctx, pgx.TxOptions{})
@@ -171,6 +206,11 @@ func (db *DB) BeginClaimedMySQLRestore(ctx context.Context, acceptance *PGOperat
 	var target database.TargetIdentity
 	var artifact database.MySQLSQLArtifact
 	if json.Unmarshal(targetBytes, &target) != nil || json.Unmarshal(artifactBytes, &artifact) != nil || target != request.Target || artifact != request.Artifact {
+		return MySQLRestoreIntent{}, ErrMySQLRestoreFence
+	}
+	quiescence, _ := json.Marshal(request.SourceQuiescence)
+	var fenceMatches bool
+	if err := tx.QueryRow(ctx, `SELECT source_quiescence=$2::jsonb FROM mysql_restore_maintenance_fences WHERE operation_id=$1 FOR UPDATE`, claim.OperationID(), quiescence).Scan(&fenceMatches); err != nil || !fenceMatches {
 		return MySQLRestoreIntent{}, ErrMySQLRestoreFence
 	}
 	// Reject a consumed or ambiguous intent before touching the target again.
@@ -217,6 +257,12 @@ func (db *DB) FinishClaimedMySQLRestore(ctx context.Context, acceptance *PGOpera
 	status := model.OperationFailed
 	if succeeded {
 		state, status = "completed", model.OperationSucceeded
+	}
+	if succeeded {
+		result, err := tx.Exec(ctx, `DELETE FROM mysql_restore_maintenance_fences WHERE operation_id=$1`, claim.OperationID())
+		if err != nil || result.RowsAffected() != 1 {
+			return ErrMySQLRestoreFence
+		}
 	}
 	result, err := tx.Exec(ctx, `UPDATE mysql_restore_intents SET state=$1, completed_at=CASE WHEN $1='completed' THEN clock_timestamp() ELSE NULL END
 		WHERE operation_id=$2 AND acceptance_intent_id=$3 AND state='executing'`, state, claim.OperationID(), accepted.AcceptanceIntentID)
@@ -304,6 +350,12 @@ func sameMySQLRestorePayload(payload map[string]interface{}, request MySQLRestor
 	return err == nil && bytes.Equal(actual, want)
 }
 
+func sameMySQLRestoreRequest(left, right MySQLRestoreRequest) bool {
+	leftEncoded, leftErr := json.Marshal(left)
+	rightEncoded, rightErr := json.Marshal(right)
+	return leftErr == nil && rightErr == nil && bytes.Equal(leftEncoded, rightEncoded)
+}
+
 func decodeMySQLRestorePayload(payload map[string]interface{}, request *MySQLRestoreRequest) error {
 	encoded, err := json.Marshal(payload)
 	if err != nil {
@@ -316,4 +368,14 @@ func decodeMySQLRestorePayload(payload map[string]interface{}, request *MySQLRes
 		return fmt.Errorf("MySQL restore signed payload is not exact")
 	}
 	return nil
+}
+
+func validMySQLRestoreSourceQuiescence(evidence MySQLRestoreSourceQuiescence, source database.TargetIdentity) bool {
+	if evidence.Source != source || evidence.ObservedAt.IsZero() || strings.TrimSpace(evidence.Method) == "" || len(evidence.Method) > 200 || len(evidence.EvidenceSHA256) != 64 {
+		return false
+	}
+	if _, err := hex.DecodeString(evidence.EvidenceSHA256); err != nil || strings.ToLower(evidence.EvidenceSHA256) != evidence.EvidenceSHA256 {
+		return false
+	}
+	return true
 }
