@@ -114,8 +114,12 @@ into #76 and closed. These are review containers, not milestone signoff.
   retention budget. The private migration-17 rehearsal preserved 28 legacy table counts
   and primary-key fingerprints across 245,383 rows. The read-only app-to-Nomad
   join resolved 18 names and left eight unresolved. Route and database owners,
-  a sanitized CI fixture, representative growth, rollback, and mixed-version
+  a fixture covering representative Mini topology, representative growth, rollback, and mixed-version
   evidence remain open.
+  A synthetic, private-data-free fixture now checks selected legacy rows
+  through migrations 1–17 and the reader-version refusal on PostgreSQL 17.7;
+  it runs in a dedicated PR CI job. Installed-binary rollback and full Mini
+  workload compatibility remain open.
 - M1: the etcd canary effect adapter now atomically reserves under a live
   operation claim and per-app gate, records launch and completion, and supports
   repeat-safe resolution and recovery. Its tests ran against disposable etcd
@@ -131,9 +135,11 @@ into #76 and closed. These are review containers, not milestone signoff.
   healthy canary deployment. An earlier 0/1-healthy attempt exposed a gap:
   Nomad rejected promotion and the accepted operation stayed pending. Admission
   now rejects an unready canary before durable acceptance, allowing the same
-  key to be retried after health. Health can still fall between acceptance and
-  Nomad submission, so that race, process-crash, and three-member etcd fault
-  qualification remain open before enabling that preview for release; see
+  key to be retried after health. The worker also rechecks the exact deployment
+  before reserving and before sending the Nomad promotion. A crash after
+  reservation but before a confirmed remote effect can still remain pending
+  conservatively; that window, process-crash, and three-member etcd fault
+  qualification remain open before enabling the preview for release; see
   [the preview gate](etcd-canary-preview.md). The inline ContextDB feedback
   rollback remains an M1 release blocker until its remote idempotency contract
   and durable Norn worker are qualified, or the v3 route is removed and fails

@@ -68,6 +68,35 @@ jobs:
         working-directory: v2/api
         run: go test ./... -run '^TestEtcdFleetRuntimeProductionTLSRBACProcess$' -count=1
 
+  mini-schema-fixture:
+    name: Mini synthetic schema fixture
+    runs-on: ubuntu-24.04
+    services:
+      postgres:
+        image: postgres:17.7
+        env:
+          POSTGRES_USER: norn_fixture
+          POSTGRES_PASSWORD: norn_fixture
+          POSTGRES_DB: norn_fixture
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U norn_fixture -d norn_fixture"
+          --health-interval 2s
+          --health-timeout 5s
+          --health-retries 20
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.0.2
+      - uses: actions/setup-go@924ae3a1cded613372ab5595356fb5720e22ba16 # v6.0.0
+        with:
+          go-version-file: v2/api/go.mod
+          cache-dependency-path: v2/api/go.sum
+      - name: Prove synthetic legacy records and reader boundary through migration 17
+        working-directory: v2/api
+        env:
+          NORN_TEST_DATABASE_URL: postgres://norn_fixture:norn_fixture@127.0.0.1:5432/norn_fixture?sslmode=disable
+        run: go test ./store -run '^TestSyntheticMiniControlUpgradeAndReaderBoundary$' -count=1 -v
+
   web:
     name: web
     runs-on: ubuntu-24.04
