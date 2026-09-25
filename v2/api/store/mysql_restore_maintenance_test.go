@@ -12,7 +12,7 @@ func TestMySQLRestoreSignedPayloadBindsMaintenanceIdentity(t *testing.T) {
 		CatalogRevision: 12,
 		Target:          database.TargetIdentity{ServiceID: "mysql", ServiceGeneration: 2, BindingID: "wordpress", BindingGeneration: 4, Engine: database.EngineMySQL, Database: "wordpress", Role: "wp"},
 		Maintenance: database.MySQLMaintenanceCredentials{
-			Generation: 7, RuntimeAccountHost: "%", RestoreRole: "wp_restore", RestoreCredentialRef: "secret:apps/wp-restore",
+			Generation: 7, RuntimeAccountHost: "%", RestoreRole: "wp_restore", RestoreAccountHost: "%", RestoreCredentialRef: "secret:apps/wp-restore",
 			FenceRole: "wp_fence", FenceCredentialRef: "secret:apps/wp-fence", FenceAccountHost: "%",
 		},
 	}

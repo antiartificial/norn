@@ -56,6 +56,19 @@ func PrepareMySQLRestore(ctx context.Context, resolver *Resolver, profileID, log
 	if resolved.Target.Engine != EngineMySQL || resolved.Target != expected {
 		return MySQLRestorePreparation{}, fmt.Errorf("MySQL restore target identity changed")
 	}
+	return PrepareMySQLRestoreWithResolvedCredential(ctx, resolved, resolved, expected, secrets, path, artifact)
+}
+
+// PrepareMySQLRestoreWithResolvedCredential repeats the private target and
+// artifact preflight with a separately resolved credential. The runtime
+// identity still defines the target fence; only the MySQL connection switches
+// to the restore identity after maintenance has locked runtime access.
+func PrepareMySQLRestoreWithResolvedCredential(ctx context.Context, target, credential ResolvedBinding, expected TargetIdentity, secrets SecretSource, path string, artifact MySQLSQLArtifact) (MySQLRestorePreparation, error) {
+	if target.Target.Engine != EngineMySQL || target.Target != expected || credential.Target.Engine != EngineMySQL ||
+		credential.Target.ServiceID != expected.ServiceID || credential.Target.ServiceGeneration != expected.ServiceGeneration ||
+		credential.Target.BindingID != expected.BindingID || credential.Target.BindingGeneration != expected.BindingGeneration || credential.Target.Database != expected.Database {
+		return MySQLRestorePreparation{}, fmt.Errorf("MySQL restore target identity changed")
+	}
 	if artifact.Format != MySQLSQLArtifactV2 || !validMySQLArtifactIdentity(artifact.Source) || !validMySQLRestoreExpectation(artifact.Expectation) ||
 		(artifact.Source.ServiceID == expected.ServiceID && artifact.Source.ServiceGeneration == expected.ServiceGeneration && artifact.Source.Database == expected.Database) {
 		return MySQLRestorePreparation{}, fmt.Errorf("MySQL restore artifact source is invalid or equals the target")
@@ -63,13 +76,18 @@ func PrepareMySQLRestore(ctx context.Context, resolver *Resolver, profileID, log
 	if err := VerifyMySQLSQLArtifact(path, artifact); err != nil {
 		return MySQLRestorePreparation{}, err
 	}
-	session, err := OpenSession(ctx, resolved, secrets)
+	session, err := OpenSession(ctx, credential, secrets)
 	if err != nil {
 		return MySQLRestorePreparation{}, err
 	}
 	defer session.Close()
 	if _, err := session.Probe(ctx); err != nil {
 		return MySQLRestorePreparation{}, err
+	}
+	if credential.MySQLMaintenance != nil && credential.Target.Role == credential.MySQLMaintenance.RestoreRole {
+		if err := verifyMySQLRestoreAccount(ctx, session, credential.Target.Role, credential.MySQLMaintenance.RestoreAccountHost); err != nil {
+			return MySQLRestorePreparation{}, err
+		}
 	}
 	if session.mysqlConnector == nil {
 		return MySQLRestorePreparation{}, fmt.Errorf("MySQL restore target connector is unavailable")

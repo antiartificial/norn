@@ -6,7 +6,7 @@ func TestMySQLMaintenanceCredentialsAreStrictAndGenerationBound(t *testing.T) {
 	base := testCatalog()
 	mysql := &base.Bindings[4]
 	mysql.MySQLMaintenance = &MySQLMaintenanceCredentials{
-		Generation: 1, RuntimeAccountHost: "%",
+		Generation: 1, RuntimeAccountHost: "%", RestoreAccountHost: "%",
 		RestoreRole: "wordpress_restore", RestoreCredentialRef: "secret:apps/wp-restore",
 		FenceRole: "wordpress_fence", FenceCredentialRef: "secret:apps/wp-fence", FenceAccountHost: "%",
 	}
@@ -33,6 +33,7 @@ func TestMySQLMaintenanceCredentialsAreStrictAndGenerationBound(t *testing.T) {
 		"runtime credential":   func(m *MySQLMaintenanceCredentials) { m.RestoreCredentialRef = "secret:apps/wp" },
 		"same credentials":     func(m *MySQLMaintenanceCredentials) { m.FenceCredentialRef = m.RestoreCredentialRef },
 		"missing runtime host": func(m *MySQLMaintenanceCredentials) { m.RuntimeAccountHost = "" },
+		"missing restore host": func(m *MySQLMaintenanceCredentials) { m.RestoreAccountHost = "" },
 		"bad fence host":       func(m *MySQLMaintenanceCredentials) { m.FenceAccountHost = "bad\nhost" },
 	} {
 		t.Run(name, func(t *testing.T) {
@@ -60,9 +61,9 @@ func TestMySQLRestoreUsesOnlyMaintenanceCredential(t *testing.T) {
 	resolved := ResolvedBinding{
 		Target:           TargetIdentity{Engine: EngineMySQL, BindingID: "wordpress", Role: "wp", Database: "wordpress"},
 		CredentialRef:    "secret:apps/wp",
-		MySQLMaintenance: &MySQLMaintenanceCredentials{Generation: 3, RuntimeAccountHost: "%", RestoreRole: "wp_restore", RestoreCredentialRef: "secret:apps/wp-restore", FenceRole: "wp_fence", FenceCredentialRef: "secret:apps/wp-fence", FenceAccountHost: "%"},
+		MySQLMaintenance: &MySQLMaintenanceCredentials{Generation: 3, RuntimeAccountHost: "%", RestoreRole: "wp_restore", RestoreAccountHost: "%", RestoreCredentialRef: "secret:apps/wp-restore", FenceRole: "wp_fence", FenceCredentialRef: "secret:apps/wp-fence", FenceAccountHost: "%"},
 	}
-	restore, err := mysqlRestoreResolvedBinding(resolved)
+	restore, err := MySQLRestoreBinding(resolved)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -70,7 +71,7 @@ func TestMySQLRestoreUsesOnlyMaintenanceCredential(t *testing.T) {
 		t.Fatalf("restore identity did not isolate runtime credential: %#v", restore)
 	}
 	resolved.MySQLMaintenance = nil
-	if _, err := mysqlRestoreResolvedBinding(resolved); err == nil {
+	if _, err := MySQLRestoreBinding(resolved); err == nil {
 		t.Fatal("restore without a separate maintenance credential was accepted")
 	}
 }

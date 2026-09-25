@@ -214,7 +214,7 @@ func validateMySQLMaintenance(binding DatabaseBinding, service DatabaseService, 
 	if maintenance.Generation == 0 {
 		return invalid("mysqlMaintenance.generation", label, "MySQL maintenance generation must be positive")
 	}
-	if !validMySQLAccountHost(maintenance.RuntimeAccountHost) || !validMySQLAccountHost(maintenance.FenceAccountHost) {
+	if !validMySQLAccountHost(maintenance.RuntimeAccountHost) || !validMySQLAccountHost(maintenance.RestoreAccountHost) || !validMySQLAccountHost(maintenance.FenceAccountHost) {
 		return invalid("mysqlMaintenance", label, "MySQL maintenance account hosts are invalid")
 	}
 	if !mysqlUserPattern.MatchString(maintenance.RestoreRole) || !mysqlUserPattern.MatchString(maintenance.FenceRole) {

@@ -3,6 +3,7 @@ package database
 import (
 	"context"
 	"crypto/sha256"
+	"database/sql"
 	"encoding/hex"
 	"fmt"
 	"io"
@@ -38,7 +39,7 @@ func RestoreMySQLSQLArtifact(ctx context.Context, resolved ResolvedBinding, secr
 	if resolved.Target.Engine != EngineMySQL || !validMySQLArtifactIdentity(resolved.Target) || tool.Path == "" {
 		return fmt.Errorf("MySQL restore execution contract is invalid")
 	}
-	restore, err := mysqlRestoreResolvedBinding(resolved)
+	restore, err := MySQLRestoreBinding(resolved)
 	if err != nil {
 		return err
 	}
@@ -62,6 +63,9 @@ func RestoreMySQLSQLArtifact(ctx context.Context, resolved ResolvedBinding, secr
 	}
 	defer session.Close()
 	if _, err := session.Probe(ctx); err != nil {
+		return err
+	}
+	if err := verifyMySQLRestoreAccount(ctx, session, restore.Target.Role, restore.MySQLMaintenance.RestoreAccountHost); err != nil {
 		return err
 	}
 	if strings.ContainsAny(session.password, "\x00\r\n") {
@@ -106,10 +110,14 @@ func RestoreMySQLSQLArtifact(ctx context.Context, resolved ResolvedBinding, secr
 // mysqlRestoreResolvedBinding selects the restore-only identity from an
 // already resolved application binding. It is intentionally private: neither
 // the runtime adapter nor a public route can request maintenance authority.
-func mysqlRestoreResolvedBinding(resolved ResolvedBinding) (ResolvedBinding, error) {
+// MySQLRestoreBinding derives the restore-only connection from an immutable
+// resolved application binding. It exposes no secret values and is used only
+// by the private durable restore runner for post-import verification.
+func MySQLRestoreBinding(resolved ResolvedBinding) (ResolvedBinding, error) {
 	maintenance := resolved.MySQLMaintenance
 	if maintenance == nil || maintenance.Generation == 0 ||
 		!mysqlUserPattern.MatchString(maintenance.RestoreRole) ||
+		!validMySQLAccountHost(maintenance.RestoreAccountHost) ||
 		!referencePattern.MatchString(maintenance.RestoreCredentialRef) ||
 		maintenance.RestoreRole == resolved.Target.Role || maintenance.RestoreCredentialRef == resolved.CredentialRef {
 		return ResolvedBinding{}, fmt.Errorf("MySQL restore maintenance identity is unavailable")
@@ -118,6 +126,19 @@ func mysqlRestoreResolvedBinding(resolved ResolvedBinding) (ResolvedBinding, err
 	restore.Target.Role = maintenance.RestoreRole
 	restore.CredentialRef = maintenance.RestoreCredentialRef
 	return restore, nil
+}
+
+func verifyMySQLRestoreAccount(ctx context.Context, session *Session, role, host string) error {
+	if session == nil || session.mysqlConnector == nil {
+		return fmt.Errorf("MySQL restore account verification is unavailable")
+	}
+	db := sql.OpenDB(session.mysqlConnector)
+	defer db.Close()
+	var current string
+	if err := db.QueryRowContext(ctx, "SELECT CURRENT_USER()").Scan(&current); err != nil || current != role+"@"+host {
+		return fmt.Errorf("MySQL restore authenticated as an unexpected account")
+	}
+	return nil
 }
 
 func mysqlRestoreTLSArgs(session *Session, binding DatabaseTLS) ([]string, error) {

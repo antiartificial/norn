@@ -140,8 +140,10 @@ func (db *DB) PrepareClaimedMySQLRestore(ctx context.Context, acceptance *PGOper
 	if err := json.Unmarshal(savedArtifact, &existing.Request.Artifact); err != nil {
 		return MySQLRestoreIntent{}, ErrMySQLRestoreFence
 	}
-	// The immutable catalog revision and accepted request carry maintenance
-	// identity; the intent row stores its target and artifact identities.
+	// Maintenance identity is not duplicated in the intent row. The signed
+	// operation and immutable catalog revision are its durable sources; reload
+	// it from the revision resolved under the catalog gate before exact replay
+	// comparison.
 	existing.Request.Maintenance = *resolved.MySQLMaintenance
 	if existing.AcceptanceIntentID != accepted.AcceptanceIntentID || existing.Request.CatalogRevision != request.CatalogRevision || existing.Request.ProfileID != request.ProfileID || existing.Request.LogicalID != request.LogicalID || existing.Request.Target != request.Target || existing.Request.Artifact != request.Artifact || existing.Request.ArtifactPath != request.ArtifactPath || existing.State != "prepared" {
 		return MySQLRestoreIntent{}, ErrMySQLRestoreFence
@@ -241,7 +243,11 @@ func (db *DB) BeginClaimedMySQLRestore(ctx context.Context, acceptance *PGOperat
 	if err != nil || resolved.MySQLMaintenance == nil || *resolved.MySQLMaintenance != request.Maintenance {
 		return MySQLRestoreIntent{}, ErrMySQLRestoreFence
 	}
-	if _, err := database.PrepareMySQLRestore(ctx, resolver, request.ProfileID, request.LogicalID, request.Target, secrets, request.ArtifactPath, request.Artifact); err != nil {
+	restore, err := database.MySQLRestoreBinding(resolved)
+	if err != nil {
+		return MySQLRestoreIntent{}, ErrMySQLRestoreFence
+	}
+	if _, err := database.PrepareMySQLRestoreWithResolvedCredential(ctx, resolved, restore, request.Target, secrets, request.ArtifactPath, request.Artifact); err != nil {
 		return MySQLRestoreIntent{}, err
 	}
 	result, err := tx.Exec(ctx, `UPDATE mysql_restore_intents SET state='executing', started_at=clock_timestamp() WHERE operation_id=$1 AND state='prepared'`, claim.OperationID())

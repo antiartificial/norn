@@ -137,6 +137,7 @@ type MySQLMaintenanceCredentials struct {
 	Generation           uint64 `json:"generation"`
 	RuntimeAccountHost   string `json:"runtimeAccountHost"`
 	RestoreRole          string `json:"restoreRole"`
+	RestoreAccountHost   string `json:"restoreAccountHost"`
 	RestoreCredentialRef string `json:"restoreCredentialRef"`
 	FenceRole            string `json:"fenceRole"`
 	FenceCredentialRef   string `json:"fenceCredentialRef"`

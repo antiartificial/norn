@@ -144,7 +144,7 @@ func TestMySQLRestoreIntentAgainstDisposableEngines(t *testing.T) {
 		TLS:      database.DatabaseTLSPolicy{MinimumMode: database.TLSDisabled},
 		Recovery: database.RecoveryPolicy{Capabilities: []database.Capability{database.CapabilitySnapshot, database.CapabilityRestore}},
 	})
-	maintenance := &database.MySQLMaintenanceCredentials{Generation: 1, RuntimeAccountHost: "%", RestoreRole: restoreRole, RestoreCredentialRef: "secret:intent/restore", FenceRole: fenceRole, FenceCredentialRef: "secret:intent/fence", FenceAccountHost: "%"}
+	maintenance := &database.MySQLMaintenanceCredentials{Generation: 1, RuntimeAccountHost: "%", RestoreRole: restoreRole, RestoreAccountHost: "%", RestoreCredentialRef: "secret:intent/restore", FenceRole: fenceRole, FenceCredentialRef: "secret:intent/fence", FenceAccountHost: "%"}
 	catalog.Bindings = append(catalog.Bindings,
 		database.DatabaseBinding{APIVersion: database.APIVersion, ID: "intent-source", ServiceID: "intent-mysql", Database: sourceDB, Role: sourceRole, Generation: 1, CredentialRef: "secret:intent/source", TLS: database.DatabaseTLS{Mode: database.TLSDisabled}},
 		database.DatabaseBinding{APIVersion: database.APIVersion, ID: "intent-target", ServiceID: "intent-mysql", Database: targetDB, Role: targetRole, Generation: 1, CredentialRef: "secret:intent/target", MySQLMaintenance: maintenance, TLS: database.DatabaseTLS{Mode: database.TLSDisabled}},
@@ -288,6 +288,23 @@ func TestMySQLRestoreIntentAgainstDisposableEngines(t *testing.T) {
 		t.Fatal(err)
 	}
 	restoreSHA := sha256.Sum256(restoreBytes)
+	// The initial prepare used the runtime target account while it was still
+	// available. Lock it before Begin: the private restore and its expectation
+	// verification must use the separate restore identity from here on.
+	if _, err := admin.ExecContext(ctx, "ALTER USER '"+targetRole+"'@'%' ACCOUNT LOCK"); err != nil {
+		t.Fatal("lock runtime account after preflight")
+	}
+	defer func() {
+		_, _ = admin.ExecContext(context.Background(), "ALTER USER '"+targetRole+"'@'%' ACCOUNT UNLOCK")
+	}()
+	lockedSession, err := database.OpenSession(ctx, target, secrets)
+	if err == nil {
+		defer lockedSession.Close()
+		_, err = lockedSession.Probe(ctx)
+	}
+	if err == nil {
+		t.Fatal("locked runtime account remained usable; restore credential split was not exercised")
+	}
 	runner := MySQLRestoreRunner{Control: control, Acceptance: stores[0], Secrets: secrets, ClaimLease: 120 * time.Millisecond,
 		Tool: database.MySQLRestoreTool{Path: delayedTool, SHA256: fmt.Sprintf("%x", restoreSHA)}}
 	if err := runner.RunClaimed(ctx, claim); err != nil {

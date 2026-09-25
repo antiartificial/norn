@@ -62,7 +62,12 @@ func (r MySQLRestoreRunner) RunClaimed(ctx context.Context, claim OperationClaim
 			} else {
 				err = database.RestoreMySQLSQLArtifact(runCtx, resolved, r.Secrets, intent.Request.ArtifactPath, intent.Request.Artifact, r.Tool)
 				if err == nil {
-					err = database.VerifyMySQLRestoreTarget(runCtx, resolved, r.Secrets, intent.Request.Artifact.Expectation)
+					restore, restoreErr := database.MySQLRestoreBinding(resolved)
+					if restoreErr != nil {
+						err = restoreErr
+					} else {
+						err = database.VerifyMySQLRestoreTarget(runCtx, restore, r.Secrets, intent.Request.Artifact.Expectation)
+					}
 				}
 			}
 		}
