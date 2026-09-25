@@ -739,9 +739,17 @@ func TestDatabaseTargetsRejectStaleGenerationAndUnboundWork(t *testing.T) {
 	if _, err := f.db.ActivateDatabaseCatalog(ctx, 1, rotated, "operator"); err != nil {
 		t.Fatal(err)
 	}
-	if result, err := f.execute(t, accepted.ID); err != nil || result.Status != model.OperationSucceeded {
+	result, claim, err := f.executeWithClaim(t, accepted.ID)
+	if err != nil || result == nil || result.Status != model.OperationSucceeded {
 		t.Fatalf("execution after credential rotation = %+v, %v", result, err)
 	}
+	// A completed snapshot effect remains the app's unresolved effect until
+	// the operation's terminal CAS is durable. This test continues with new
+	// work against the same app, so finish the first operation as a worker does.
+	if err := f.db.FinishClaimedOperation(ctx, claim, result.Status, result.Message, result.Metadata); err != nil {
+		t.Fatal(err)
+	}
+	result.Publish(ctx)
 
 	// A target generation bump fences work accepted under the old generation.
 	stale, err := f.queue(t, "app.snapshot", map[string]interface{}{})
