@@ -164,8 +164,10 @@ into #76 and closed. These are review containers, not milestone signoff.
   store, and CLI tests pass; the claim-fenced state update also passed against
   disposable PostgreSQL 17.7. An [integrated disposable test](m1-cron-resume-disposable-qualification-2026-09-25.md)
   passed HTTP acceptance through the real claimed worker, Nomad 2.0.7, the
-  PostgreSQL receipt, and same-key replay. Lost-response and process-crash
-  fault qualification remain open.
+  PostgreSQL receipt, and same-key replay. A second integrated run dropped
+  Nomad's response after its guarded write and proved effect-marker
+  reconciliation with one remote mutation. Process-crash, lease-expiry, and
+  two-replica race qualification remain open.
 - M2: local MySQL runtime and verified-TLS health are implemented. Generated
   service, periodic, and function jobs delivered exact component bytes inside
   allocations on pinned Nomad 1.9.7. A WordPress image PHP client also

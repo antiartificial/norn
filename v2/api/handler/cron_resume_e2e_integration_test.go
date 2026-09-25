@@ -4,11 +4,14 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"io"
 	"net/http"
 	"net/http/httptest"
+	"net/url"
 	"os"
 	"path/filepath"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -16,10 +19,12 @@ import (
 	"github.com/google/uuid"
 
 	"norn/v2/api/config"
+	"norn/v2/api/effect"
 	"norn/v2/api/model"
 	"norn/v2/api/nomad"
 	"norn/v2/api/pipeline"
 	"norn/v2/api/saga"
+	"norn/v2/api/store"
 	"norn/v2/api/worker"
 )
 
@@ -27,6 +32,14 @@ import (
 // It drives HTTP acceptance, the claimed worker, the real Nomad CAS effect,
 // and the PostgreSQL cron state and operation receipt in one path.
 func TestCronResumeHTTPWorkerNomadPostgres(t *testing.T) {
+	testCronResumeHTTPWorkerNomadPostgres(t, false)
+}
+
+func TestCronResumeLostNomadResponseReconciles(t *testing.T) {
+	testCronResumeHTTPWorkerNomadPostgres(t, true)
+}
+
+func testCronResumeHTTPWorkerNomadPostgres(t *testing.T, loseRegistrationResponse bool) {
 	address := os.Getenv("NORN_TEST_NOMAD_ADDR")
 	if address == "" || os.Getenv("NORN_TEST_DATABASE_URL") == "" {
 		t.Skip("set NORN_TEST_NOMAD_ADDR and NORN_TEST_DATABASE_URL to disposable services")
@@ -80,6 +93,50 @@ func TestCronResumeHTTPWorkerNomadPostgres(t *testing.T) {
 	if err := db.InsertDeployment(ctx, deployment); err != nil {
 		t.Fatal(err)
 	}
+	var forwardedRegistrations atomic.Int32
+	if loseRegistrationResponse {
+		target, err := url.Parse(address)
+		if err != nil {
+			t.Fatal(err)
+		}
+		proxy := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			upstream := r.Clone(r.Context())
+			upstream.URL.Scheme = target.Scheme
+			upstream.URL.Host = target.Host
+			upstream.Host = target.Host
+			upstream.RequestURI = ""
+			response, err := http.DefaultTransport.RoundTrip(upstream)
+			if err != nil {
+				http.Error(w, err.Error(), http.StatusBadGateway)
+				return
+			}
+			defer response.Body.Close()
+			if r.Method == http.MethodPut && r.URL.Path == "/v1/jobs" {
+				forwardedRegistrations.Add(1)
+				_, _ = io.Copy(io.Discard, response.Body)
+				// The registration committed in Nomad, but its reply is lost.
+				conn, _, err := w.(http.Hijacker).Hijack()
+				if err != nil {
+					t.Errorf("hijack committed registration response: %v", err)
+					return
+				}
+				_ = conn.Close()
+				return
+			}
+			for name, values := range response.Header {
+				for _, value := range values {
+					w.Header().Add(name, value)
+				}
+			}
+			w.WriteHeader(response.StatusCode)
+			_, _ = io.Copy(w, response.Body)
+		}))
+		t.Cleanup(proxy.Close)
+		nomadClient, err = nomad.NewClient(proxy.URL)
+		if err != nil {
+			t.Fatal(err)
+		}
+	}
 
 	p := &pipeline.Pipeline{DB: db, Nomad: nomadClient, AppsDir: root, SagaStore: saga.NewPostgresStore(db.Pool)}
 	p.CronResumeEffects, err = pipeline.NewNomadCronResumeEffects(db, nomadClient, p)
@@ -132,12 +189,30 @@ func TestCronResumeHTTPWorkerNomadPostgres(t *testing.T) {
 	if err != nil || resumed.Paused || resumed.CronResumeEffectID == "" {
 		t.Fatalf("Nomad resume=%+v, %v", resumed, err)
 	}
+	if loseRegistrationResponse {
+		if got := forwardedRegistrations.Load(); got != 1 {
+			t.Fatalf("forwarded resume registrations=%d, want exactly 1", got)
+		}
+		if resumed.Version != paused.Version+1 {
+			t.Fatalf("Nomad parent version=%d, want one mutation after paused version %d", resumed.Version, paused.Version)
+		}
+	}
 	state, err := db.GetCronState(ctx, app, "nightly")
 	if err != nil || state.Paused || state.Schedule != resumed.Schedule {
 		t.Fatalf("cron state=%+v, %v", state, err)
 	}
 	if finished.Metadata["effectId"] == "" {
 		t.Fatalf("missing atomic effect receipt: %+v", finished)
+	}
+	if loseRegistrationResponse {
+		effects, err := store.NewPGEffectStore(db)
+		if err != nil {
+			t.Fatal(err)
+		}
+		record, found, err := effects.LatestForOperation(ctx, accepted.ID, "app.cron-resume.nomad")
+		if err != nil || !found || record.Lifecycle != effect.LifecycleCompleted || record.Completion == nil || record.Completion.Outcome != effect.OutcomeSucceeded || record.Reservation.SupervisorExecutionID != resumed.CronResumeEffectID {
+			t.Fatalf("reconciled effect=%+v found=%v err=%v", record, found, err)
+		}
 	}
 	replayStatus, replay, replayBody := serve("cron-resume-e2e")
 	if replayStatus != http.StatusOK || replay.ID != accepted.ID || replay.Receipt == nil {

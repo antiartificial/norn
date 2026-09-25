@@ -122,7 +122,7 @@ func (p *Pipeline) cronResumeJob(ctx context.Context, q cronResumeRequest) (*nom
 	if p.Secrets != nil {
 		secretEnv, err := p.Secrets.EnvMap(q.App)
 		if err != nil && !os.IsNotExist(err) {
-			return nil, fmt.Errorf("resolve secrets: %w", err)
+			return nil, fmt.Errorf("resolve private cron environment")
 		}
 		for k, v := range secretEnv {
 			env[k] = v
@@ -199,7 +199,7 @@ func (p *Pipeline) executeCronResume(ctx context.Context, op *model.Operation, c
 	// Build before reserve so deterministic invalid material cannot strand a
 	// resource gate. Launch rebuilds immediately before the guarded CAS.
 	if _, err := p.cronResumeJob(ctx, q); err != nil {
-		return &OperationResult{Claim: claim, Status: model.OperationFailed, Message: "cron resume material unavailable: " + err.Error()}
+		return &OperationResult{Claim: claim, Status: model.OperationFailed, Message: "cron resume launch material is unavailable or changed"}
 	}
 	payload, _ := json.Marshal(q)
 	reservation := effect.Reservation{Authority: authority, Resource: cronResumeResource(q), OperationClaim: effect.OperationClaim{OperationID: claim.OperationID(), OwnerID: claim.OwnerID(), Generation: claim.Generation()}, Stage: nomadCronResumeStage, Supervisor: "nomad-cron-resume", LaunchPayload: payload}

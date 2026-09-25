@@ -20,6 +20,17 @@ go test ./handler -run '^TestCronResumeHTTPWorkerNomadPostgres$' -count=1 -v
 
 The test job and database schema were removed, and the disposable agent and
 database container were stopped. This proves the normal integrated path and
-post-success replay. It does not cover a lost Nomad response, process death
-between effect reservation and remote write, claim expiry during that write,
-or two API/worker replicas racing. Those remain M1 release gates.
+post-success replay.
+
+`TestCronResumeLostNomadResponseReconciles` passed twice against the same
+disposable versions. Its proxy forwards the guarded registration to real
+Nomad, drains Nomad's successful response, then closes the worker-facing
+connection. The worker receives an ambiguous transport failure and resolves
+it from the exact effect marker. The test verifies one forwarded registration,
+one Nomad parent-version increment, a completed successful PostgreSQL effect
+record, a terminal operation receipt, and same-key HTTP replay with one
+accepted operation. It can run alongside the normal-path test with
+`-run '^TestCronResume(HTTPWorkerNomadPostgres|LostNomadResponseReconciles)$'`.
+
+Process death between effect reservation and remote write, claim expiry during
+that write, and two API/worker replicas racing remain M1 release gates.
