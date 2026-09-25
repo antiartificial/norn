@@ -9,6 +9,7 @@ import (
 	"io"
 	"net/http"
 	"os"
+	"path/filepath"
 	"strconv"
 	"strings"
 	"testing"
@@ -428,6 +429,186 @@ func TestWordPressVerifiedTLSDropInInNomad(t *testing.T) {
 	assertWordPressDatabasePage(t, client, wrongCAJob, wrongCAPort, false, "wrong-CA")
 	wrongHostJob := registerWordPressVerifiedTLSDropInJob(t, client, wrongHost, user, password, name, ca, wrongHostPort)
 	assertWordPressDatabasePage(t, client, wrongHostJob, wrongHostPort, false, "hostname-mismatch")
+}
+
+// TestWordPressVerifiedTLSStartupAdapterPersistentContentInNomad exercises the
+// production Translate path, including the exact qualified image and startup
+// adapter. The fixture must provide a writable Nomad host volume and a
+// pre-existing sentinel within that volume. The same sentinel must be served
+// from wp-content before and after a replacement allocation; this makes the
+// host-volume persistence claim observable instead of relying on the job spec.
+//
+// In addition to the normal disposable Nomad/MySQL TLS variables, set
+// NORN_TEST_WORDPRESS_HOST_PORT, NORN_TEST_WORDPRESS_WRONG_CA_HOST_PORT,
+// NORN_TEST_WORDPRESS_CONTENT_HOST_VOLUME, and
+// NORN_TEST_WORDPRESS_CONTENT_SENTINEL_PATH. The sentinel path must be an
+// absolute regular file under the host volume and is read without modification.
+func TestWordPressVerifiedTLSStartupAdapterPersistentContentInNomad(t *testing.T) {
+	address := os.Getenv("NORN_TEST_NOMAD_ADDR")
+	host, user, password, name := os.Getenv("NORN_TEST_MYSQL_ALLOCATION_HOST"), os.Getenv("NORN_TEST_MYSQL_USER"), os.Getenv("NORN_TEST_MYSQL_PASSWORD"), os.Getenv("NORN_TEST_MYSQL_DATABASE")
+	ca, hasCA := qualificationPEM(t, "NORN_TEST_MYSQL_TLS_CA_PEM_B64")
+	wrongCA, hasWrongCA := qualificationPEM(t, "NORN_TEST_MYSQL_TLS_WRONG_CA_PEM_B64")
+	port, portErr := strconv.Atoi(os.Getenv("NORN_TEST_WORDPRESS_HOST_PORT"))
+	wrongCAPort, wrongCAPortErr := strconv.Atoi(os.Getenv("NORN_TEST_WORDPRESS_WRONG_CA_HOST_PORT"))
+	volumeName := os.Getenv("NORN_TEST_WORDPRESS_CONTENT_HOST_VOLUME")
+	sentinelPath := os.Getenv("NORN_TEST_WORDPRESS_CONTENT_SENTINEL_PATH")
+	if address == "" || host == "" || user == "" || password == "" || name == "" || !hasCA || !hasWrongCA || portErr != nil || wrongCAPortErr != nil || port < 1 || wrongCAPort < 1 || port > 65535 || wrongCAPort > 65535 || port == wrongCAPort || volumeName == "" || sentinelPath == "" {
+		t.Skip("set disposable Nomad/MySQL TLS variables, good and wrong-CA WordPress ports, and persistent wp-content host-volume sentinel variables for startup-adapter allocation qualification")
+	}
+	if !filepath.IsAbs(sentinelPath) {
+		t.Fatal("NORN_TEST_WORDPRESS_CONTENT_SENTINEL_PATH must be absolute")
+	}
+	sentinel, err := os.ReadFile(sentinelPath)
+	if err != nil || len(sentinel) == 0 {
+		t.Fatalf("read persistent wp-content sentinel: %v", err)
+	}
+	if info, err := os.Stat(sentinelPath); err != nil || !info.Mode().IsRegular() {
+		t.Fatalf("persistent wp-content sentinel must be a regular file: %v", err)
+	}
+	client, err := NewClient(address)
+	if err != nil {
+		t.Fatal(err)
+	}
+	newJob := func(app string, hostPort int) (*nomadapi.Job, model.ResolvedRegion) {
+		t.Helper()
+		spec := &model.InfraSpec{SchemaVersion: model.AppSchemaV2, App: app,
+			StartupAdapter: model.StartupAdapterWordPressVerifiedTLS,
+			Build:          &model.BuildSpec{Image: model.QualifiedWordPressVerifiedTLSImage},
+			Processes:      map[string]model.Process{"web": {Port: 80, HostPort: hostPort, Resources: &model.Resources{CPU: 500, Memory: 512}}},
+			Volumes:        []model.VolumeSpec{{Name: volumeName, Mount: "/var/www/html/wp-content"}},
+			Databases: []model.DatabaseRequirement{{Name: "primary", Purpose: "application", Capabilities: []string{"runtime"}, Runtime: &model.DatabaseRuntime{
+				Components: &model.DatabaseRuntimeComponents{Host: "WORDPRESS_DB_HOST", User: "WORDPRESS_DB_USER", Password: "WORDPRESS_DB_PASSWORD", Name: "WORDPRESS_DB_NAME"},
+				TLS:        &model.DatabaseRuntimeTLS{CAFileEnv: "MYSQL_SSL_CA"},
+			}}},
+		}
+		if result := model.ValidateSpec(spec); !result.Valid {
+			t.Fatalf("product startup-adapter spec invalid: %+v", result.Findings)
+		}
+		region := spec.ResolvedRegions()[0]
+		job := TranslateForRegionAt(spec, spec.Build.Image, nil, region, 7)
+		// The disposable fixture has no Consul server and may already cache the
+		// immutable image. Neither adjustment changes the translated adapter,
+		// templates, volume, or WordPress entrypoint path under qualification.
+		job.TaskGroups[0].Services = nil
+		job.TaskGroups[0].Tasks[0].Config["force_pull"] = false
+		return job, region
+	}
+	app := fmt.Sprintf("norn-m2-wordpress-adapter-%d", time.Now().UnixNano())
+	job, region := newJob(app, port)
+	jobID := *job.ID
+	t.Cleanup(func() {
+		_, _, _ = client.api.Jobs().Deregister(jobID, true, nil)
+		_, _ = client.api.Variables().Delete(DatabaseVariablePath(jobID), nil)
+	})
+	items := map[string]string{
+		DatabaseComponentItemKey("primary", "host"): host, DatabaseComponentItemKey("primary", "user"): user,
+		DatabaseComponentItemKey("primary", "password"): password, DatabaseComponentItemKey("primary", "name"): name,
+		DatabaseTLSItemKey("primary", "ca"): string(ca),
+	}
+	if err := client.DeliverDatabaseVariable(region.NomadRegion, jobID, items, 7); err != nil {
+		t.Fatal(err)
+	}
+	wrongJob, wrongRegion := newJob(app+"-wrong-ca", wrongCAPort)
+	wrongJobID := *wrongJob.ID
+	t.Cleanup(func() {
+		_, _, _ = client.api.Jobs().Deregister(wrongJobID, true, nil)
+		_, _ = client.api.Variables().Delete(DatabaseVariablePath(wrongJobID), nil)
+	})
+	wrongItems := map[string]string{
+		DatabaseComponentItemKey("primary", "host"): host, DatabaseComponentItemKey("primary", "user"): user,
+		DatabaseComponentItemKey("primary", "password"): password, DatabaseComponentItemKey("primary", "name"): name,
+		DatabaseTLSItemKey("primary", "ca"): string(wrongCA),
+	}
+	if err := client.DeliverDatabaseVariable(wrongRegion.NomadRegion, wrongJobID, wrongItems, 7); err != nil {
+		t.Fatal(err)
+	}
+	if _, _, err := client.api.Jobs().Register(wrongJob, nil); err != nil {
+		t.Fatalf("register product startup-adapter wrong-CA job: %v", err)
+	}
+	assertWordPressDatabasePage(t, client, wrongJobID, wrongCAPort, false, "product startup-adapter wrong-CA")
+	register := func() string {
+		t.Helper()
+		if _, _, err := client.api.Jobs().Register(job, nil); err != nil {
+			t.Fatalf("register product startup-adapter job: %v", err)
+		}
+		allocationID := assertWordPressDatabasePageWithSentinel(t, client, jobID, port, filepath.Base(sentinelPath), sentinel)
+		return allocationID
+	}
+	firstAllocation := register()
+	if _, _, err := client.api.Jobs().Deregister(jobID, true, nil); err != nil {
+		t.Fatalf("deregister first startup-adapter allocation: %v", err)
+	}
+	waitForNoRunningAllocation(t, client.api, jobID)
+	secondAllocation := register()
+	if secondAllocation == firstAllocation {
+		t.Fatalf("expected a replacement allocation after deregistration, got %s twice", secondAllocation)
+	}
+}
+
+func assertWordPressDatabasePageWithSentinel(t *testing.T, client *Client, jobID string, port int, sentinelName string, wantSentinel []byte) string {
+	t.Helper()
+	pageURL := fmt.Sprintf("http://127.0.0.1:%d/wp-admin/install.php", port)
+	sentinelURL := fmt.Sprintf("http://127.0.0.1:%d/wp-content/%s", port, sentinelName)
+	httpClient := &http.Client{Timeout: 5 * time.Second}
+	deadline := time.Now().Add(120 * time.Second)
+	for time.Now().Before(deadline) {
+		allocations, _, err := client.api.Jobs().Allocations(jobID, false, nil)
+		if err != nil {
+			t.Fatal(err)
+		}
+		for _, allocation := range allocations {
+			if allocation.ClientStatus == "failed" || allocation.ClientStatus == "lost" {
+				t.Fatalf("product startup-adapter allocation %s: %s", allocation.ID, allocation.ClientDescription)
+			}
+			if allocation.ClientStatus != "running" {
+				continue
+			}
+			response, err := httpClient.Get(pageURL)
+			if err != nil {
+				continue
+			}
+			body, readErr := io.ReadAll(io.LimitReader(response.Body, 256<<10))
+			_ = response.Body.Close()
+			if readErr != nil || response.StatusCode != http.StatusOK || !strings.Contains(string(body), "WordPress") || strings.Contains(string(body), "Error establishing a database connection") {
+				continue
+			}
+			sentinelResponse, err := httpClient.Get(sentinelURL)
+			if err != nil {
+				continue
+			}
+			gotSentinel, sentinelErr := io.ReadAll(io.LimitReader(sentinelResponse.Body, 64<<10))
+			_ = sentinelResponse.Body.Close()
+			if sentinelErr == nil && sentinelResponse.StatusCode == http.StatusOK && string(gotSentinel) == string(wantSentinel) {
+				return allocation.ID
+			}
+		}
+		time.Sleep(time.Second)
+	}
+	t.Fatalf("product startup-adapter allocation did not serve the WordPress installation page and persistent wp-content sentinel")
+	return ""
+}
+
+func waitForNoRunningAllocation(t *testing.T, api *nomadapi.Client, jobID string) {
+	t.Helper()
+	deadline := time.Now().Add(60 * time.Second)
+	for time.Now().Before(deadline) {
+		allocations, _, err := api.Jobs().Allocations(jobID, false, nil)
+		if err != nil {
+			t.Fatal(err)
+		}
+		running := false
+		for _, allocation := range allocations {
+			if allocation.ClientStatus == "running" || allocation.ClientStatus == "pending" {
+				running = true
+				break
+			}
+		}
+		if !running {
+			return
+		}
+		time.Sleep(time.Second)
+	}
+	t.Fatalf("%s still has a running allocation after deregistration", jobID)
 }
 
 func registerWordPressVerifiedTLSDropInJob(t *testing.T, client *Client, host, user, password, name string, ca []byte, port int) string {
