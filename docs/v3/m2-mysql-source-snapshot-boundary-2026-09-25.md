@@ -95,3 +95,23 @@ receipt. Release qualification still needs retained artifact storage and
 cross-node availability proof, explicit recovery after an ambiguous effect,
 and a signed resume/unlock decision. Direct host mutations also need
 qualification against the global fence at their actual effect point.
+
+### Retained artifact implementation gate
+
+`v2/api/artifactstore` now defines a separate streaming, content-addressed
+64 GiB artifact contract and a bounded private local adapter. It does not use
+the evidence archive's whole-`[]byte` API. Reads authenticate the declared
+size and SHA-256 through EOF; closing early reports an unverified stream.
+The local adapter proves the interface and crash-durable publication on one
+host, but cannot restore after that host or disk is lost.
+
+The existing Garage-backed evidence archive cannot be treated as an immutable
+large-artifact backend merely by switching to multipart upload. Garage's
+published [S3 compatibility list](https://garagehq.deuxfleurs.fr/documentation/reference-manual/s3-compatibility/)
+supports multipart while listing bucket versioning and bucket policies as
+unavailable. An off-host adapter must prove
+its own overwrite/delete and retention guarantees, or use a backend with
+server-enforced object retention. Before restore is enabled, the source
+receipt must bind a remotely retained object identity, and a separate node
+must materialize and verify that object after the publisher's local file is
+removed. Interrupted publish and restore checkpoints need explicit recovery.
