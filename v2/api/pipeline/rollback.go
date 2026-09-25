@@ -21,6 +21,15 @@ func (p *Pipeline) QueueRollback(ctx context.Context, spec *model.InfraSpec, cur
 	if p == nil || p.DB == nil || p.SagaStore == nil || spec == nil || prev == nil {
 		return store.AcceptedOperation{}, fmt.Errorf("rollback pipeline is unavailable")
 	}
+	if current.App != spec.App || prev.App != spec.App || prev.Status != model.StatusDeployed || current.Environment != prev.Environment {
+		return store.AcceptedOperation{}, fmt.Errorf("rollback source and current deployment identity do not match")
+	}
+	if prev.SpecDigest != "" {
+		digest, err := model.InfraSpecDigest(spec)
+		if err != nil || digest != prev.SpecDigest || !model.IsContentAddressedImage(prev.ImageTag) {
+			return store.AcceptedOperation{}, fmt.Errorf("rollback source spec does not match the current application spec")
+		}
+	}
 	sg := saga.New(p.SagaStore, spec.App, "pipeline", "rollback")
 	started := time.Now()
 	deploy := &model.Deployment{
@@ -28,6 +37,7 @@ func (p *Pipeline) QueueRollback(ctx context.Context, spec *model.InfraSpec, cur
 		App:           spec.App,
 		CommitSHA:     prev.CommitSHA,
 		ImageTag:      prev.ImageTag,
+		SpecDigest:    prev.SpecDigest,
 		Environment:   current.Environment,
 		SagaID:        sg.ID,
 		Status:        model.StatusQueued,
@@ -44,6 +54,7 @@ func (p *Pipeline) QueueRollback(ctx context.Context, spec *model.InfraSpec, cur
 		"deploymentId":        deploy.ID,
 		"app":                 spec.App,
 		"imageTag":            prev.ImageTag,
+		"specDigest":          prev.SpecDigest,
 		"sourceDeploymentId":  prev.ID,
 		"currentDeploymentId": current.ID,
 		"regions":             requestedRegions,
@@ -84,12 +95,15 @@ func (p *Pipeline) QueueRollback(ctx context.Context, spec *model.InfraSpec, cur
 	return accepted, nil
 }
 
-func (p *Pipeline) runRollback(ctx context.Context, spec *model.InfraSpec, deploy *model.Deployment, sg *saga.Saga, imageTag string, claim store.OperationClaim, attempt int, requestedRegions []string) *OperationResult {
+func (p *Pipeline) runRollback(ctx context.Context, op *model.Operation, spec *model.InfraSpec, deploy *model.Deployment, sg *saga.Saga, imageTag string, claim store.OperationClaim, attempt int, requestedRegions []string) *OperationResult {
 	operationID := claim.OperationID()
 	regions := selectedResolvedRegions(spec, requestedRegions)
 	var startErr error
 	failureBody := "Rollback could not start because Nomad is not connected."
-	if len(regions) == 0 {
+	if !rollbackIntentMatchesDeployment(op, spec, deploy, imageTag) {
+		startErr = fmt.Errorf("rollback signed intent does not match deployment")
+		failureBody = "Rollback was blocked because its accepted intent no longer matches the deployment."
+	} else if len(regions) == 0 {
 		startErr = fmt.Errorf("rollback has no valid region targets")
 		failureBody = "Rollback was blocked because no valid region target was selected."
 	} else if p.Production && !model.IsContentAddressedImage(imageTag) {
@@ -99,6 +113,19 @@ func (p *Pipeline) runRollback(ctx context.Context, spec *model.InfraSpec, deplo
 		if err := p.verifyRegistryArtifact(ctx, imageTag); err != nil {
 			startErr = fmt.Errorf("production rollback registry verification failed: %w", err)
 			failureBody = "Rollback was blocked because the pinned registry artifact could not be verified."
+		}
+	}
+	if startErr == nil && deploy.SpecDigest != "" {
+		digest, err := model.InfraSpecDigest(spec)
+		if err != nil || digest != deploy.SpecDigest || deploy.ImageTag != imageTag || !model.IsContentAddressedImage(imageTag) || deploy.SourceRef == "" {
+			startErr = fmt.Errorf("rollback source spec provenance changed")
+			failureBody = "Rollback was blocked because its source spec provenance changed."
+		} else {
+			source, lookupErr := p.DB.GetDeployment(ctx, deploy.SourceRef)
+			if lookupErr != nil || source == nil || source.App != spec.App || source.Environment != deploy.Environment || source.SpecDigest != deploy.SpecDigest || source.ImageTag != imageTag || source.Status != model.StatusDeployed {
+				startErr = fmt.Errorf("rollback source deployment provenance is unavailable")
+				failureBody = "Rollback was blocked because its source deployment could not be verified."
+			}
 		}
 	}
 	if startErr == nil && p.Nomad == nil {
@@ -233,16 +260,32 @@ func (p *Pipeline) runRollback(ctx context.Context, spec *model.InfraSpec, deplo
 		}})
 	}
 
-	deploy.Status = model.StatusDeployed
-	_ = p.DB.UpdateDeployment(ctx, deploy.ID, deploy.Status)
 	for _, region := range regions {
-		_ = p.DB.UpdateDeploymentRegion(ctx, deploy.ID, region.Name, model.StatusDeployed, "", "", region.TrafficWeight)
+		if err := p.DB.UpdateDeploymentRegion(ctx, deploy.ID, region.Name, model.StatusDeployed, "", "", region.TrafficWeight); err != nil {
+			return &OperationResult{Claim: claim, Status: model.OperationFailed, Message: fmt.Sprintf("record rollback region: %v", err), Metadata: map[string]interface{}{"deploymentId": deploy.ID}}
+		}
+	}
+	deploy.Status = model.StatusDeployed
+	if deploy.SpecDigest != "" {
+		if err := p.DB.UpdateDeploymentResult(ctx, deploy); err != nil {
+			return &OperationResult{Claim: claim, Status: model.OperationFailed, Message: fmt.Sprintf("record rollback result: %v", err), Metadata: map[string]interface{}{"deploymentId": deploy.ID}}
+		}
+	} else if err := p.DB.UpdateDeployment(ctx, deploy.ID, deploy.Status); err != nil {
+		return &OperationResult{Claim: claim, Status: model.OperationFailed, Message: fmt.Sprintf("record rollback result: %v", err), Metadata: map[string]interface{}{"deploymentId": deploy.ID}}
 	}
 	return &OperationResult{Claim: claim, Status: model.OperationSucceeded, Message: fmt.Sprintf("rollback complete: %s", spec.App), Metadata: map[string]interface{}{"deploymentId": deploy.ID, "imageTag": imageTag}, publish: func(publishCtx context.Context) {
 		_ = sg.Log(publishCtx, "rollback.complete", fmt.Sprintf("rollback complete: %s -> %s", spec.App, imageTag), nil)
 		p.WS.Broadcast(hub.Event{Type: "deploy.completed", AppID: spec.App, Payload: map[string]string{"sagaId": sg.ID, "imageTag": imageTag}})
 		p.emitBeacon(publishCtx, model.BeaconEvent{App: spec.App, Type: "rollback.succeeded", Severity: model.BeaconInfo, Title: fmt.Sprintf("%s rollback succeeded", spec.App), Body: fmt.Sprintf("Rollback to %s completed successfully.", imageTag), DedupeKey: fmt.Sprintf("%s:rollback", spec.App), Metadata: map[string]interface{}{"deploymentId": deploy.ID, "sagaId": sg.ID, "imageTag": imageTag, "correlationKey": fmt.Sprintf("%s:rollback", spec.App)}})
 	}}
+}
+
+func rollbackIntentMatchesDeployment(op *model.Operation, spec *model.InfraSpec, deploy *model.Deployment, imageTag string) bool {
+	return op != nil && spec != nil && deploy != nil && op.Kind == "app.rollback" && op.App == spec.App && deploy.App == spec.App &&
+		stringFromMap(op.Payload, "app") == spec.App && stringFromMap(op.Payload, "deploymentId") == deploy.ID &&
+		stringFromMap(op.Payload, "sourceDeploymentId") == deploy.SourceRef && op.Ref == deploy.SourceRef &&
+		stringFromMap(op.Payload, "imageTag") == imageTag && imageTag == deploy.ImageTag &&
+		stringFromMap(op.Payload, "specDigest") == deploy.SpecDigest
 }
 
 func selectedResolvedRegions(spec *model.InfraSpec, requested []string) []model.ResolvedRegion {

@@ -747,15 +747,15 @@ func (db *DB) GetDeployment(ctx context.Context, id string) (*model.Deployment, 
 	return &d, nil
 }
 
-func (db *DB) LastSuccessfulDeployment(ctx context.Context, app, excludeID string) (*model.Deployment, error) {
+func (db *DB) LastSuccessfulDeployment(ctx context.Context, app, environment, excludeID string) (*model.Deployment, error) {
 	var d model.Deployment
 	var changes []byte
 	err := db.Pool.QueryRow(ctx,
 		`SELECT id, app, commit_sha, image_tag, spec_digest, environment, saga_id, status, source_kind, source_ref, source_dirty, source_changes, started_at, finished_at
 		 FROM deployments
-		 WHERE app = $1 AND status = 'deployed' AND id != $2
+		 WHERE app = $1 AND environment = $2 AND status = 'deployed' AND id != $3
 		 ORDER BY started_at DESC LIMIT 1`,
-		app, excludeID,
+		app, environment, excludeID,
 	).Scan(&d.ID, &d.App, &d.CommitSHA, &d.ImageTag, &d.SpecDigest, &d.Environment, &d.SagaID, &d.Status, &d.SourceKind, &d.SourceRef, &d.SourceDirty, &changes, &d.StartedAt, &d.FinishedAt)
 	if err != nil {
 		return nil, err

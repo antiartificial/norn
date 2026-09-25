@@ -752,9 +752,9 @@ func insertAcceptedDomain(ctx context.Context, tx pgx.Tx, a OperationAcceptance)
 			return err
 		}
 		_, err = tx.Exec(ctx, `INSERT INTO deployments
-			(id,app,commit_sha,image_tag,environment,saga_id,status,source_kind,source_ref,source_dirty,source_changes,started_at,finished_at)
-			VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13)`,
-			a.Deployment.ID, a.Deployment.App, a.Deployment.CommitSHA, a.Deployment.ImageTag, a.Deployment.Environment, a.Deployment.SagaID,
+			(id,app,commit_sha,image_tag,spec_digest,environment,saga_id,status,source_kind,source_ref,source_dirty,source_changes,started_at,finished_at)
+			VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14)`,
+			a.Deployment.ID, a.Deployment.App, a.Deployment.CommitSHA, a.Deployment.ImageTag, a.Deployment.SpecDigest, a.Deployment.Environment, a.Deployment.SagaID,
 			a.Deployment.Status, a.Deployment.SourceKind, a.Deployment.SourceRef, a.Deployment.SourceDirty, changes, a.Deployment.StartedAt, a.Deployment.FinishedAt)
 		if err != nil {
 			return err
@@ -1047,8 +1047,8 @@ type acceptedDeployment struct {
 func (s *PGOperationStore) loadAcceptedDeployment(ctx context.Context, id string) (acceptedDeployment, error) {
 	var d model.Deployment
 	var changes []byte
-	err := s.db.Pool.QueryRow(ctx, `SELECT id,app,commit_sha,image_tag,environment,saga_id,status,source_kind,source_ref,source_dirty,source_changes,started_at,finished_at FROM deployments WHERE id=$1`, id).
-		Scan(&d.ID, &d.App, &d.CommitSHA, &d.ImageTag, &d.Environment, &d.SagaID, &d.Status, &d.SourceKind, &d.SourceRef, &d.SourceDirty, &changes, &d.StartedAt, &d.FinishedAt)
+	err := s.db.Pool.QueryRow(ctx, `SELECT id,app,commit_sha,image_tag,spec_digest,environment,saga_id,status,source_kind,source_ref,source_dirty,source_changes,started_at,finished_at FROM deployments WHERE id=$1`, id).
+		Scan(&d.ID, &d.App, &d.CommitSHA, &d.ImageTag, &d.SpecDigest, &d.Environment, &d.SagaID, &d.Status, &d.SourceKind, &d.SourceRef, &d.SourceDirty, &changes, &d.StartedAt, &d.FinishedAt)
 	if err != nil {
 		return acceptedDeployment{}, err
 	}

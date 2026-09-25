@@ -229,7 +229,11 @@ deployment in this environment, then selects that deployment's digest image
 and the promoted database revision. Migration 22 adds the deployment digest;
 new successful deployments record it with their image and status. Legacy
 deployments and rollbacks without proven spec provenance refuse function
-admission until a new qualified deployment succeeds. Failed attempts do not
+admission until a new qualified deployment succeeds. A rollback whose source
+has a recorded digest now carries that digest through signed acceptance and
+completion, and runs only when the current spec still matches it. A changed
+historical spec must be restored and rehearsed before that rollback can run;
+the digest alone cannot reconstruct it. Failed attempts do not
 displace the previous successful deployment; a newer nonterminal attempt
 temporarily blocks admission because it may already have changed the running
 job. The claimed worker repeats the
@@ -266,7 +270,7 @@ requires an evidence archiver at startup. Private envelope retirement still
 needs a replay/key-retention policy before production
 activation. A Nomad job purge policy, etcd cleanup parity,
 ACL-enabled allocation with database files, literal crash/two-replica tests,
-immutable spec recovery for rollback, live release allocation and crash/race
+immutable spec recovery for changed-spec rollback, live release allocation and crash/race
 qualification, and Mini migration 22 mixed-version/rollback
 rehearsal also remain required. Migration 22 raises the minimum writer to 19,
 so deploying it retires older writable binaries and needs a roll-forward

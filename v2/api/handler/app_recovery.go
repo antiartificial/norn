@@ -149,7 +149,7 @@ func (h *Handler) QueueAppRollback(w http.ResponseWriter, r *http.Request) {
 		WriteControlProblem(w, r, http.StatusNotFound, "rollback_current_deployment_missing", "no current deployment was found")
 		return
 	}
-	previous, err := h.db.LastSuccessfulDeployment(r.Context(), appID, deployments[0].ID)
+	previous, err := h.db.LastSuccessfulDeployment(r.Context(), appID, deployments[0].Environment, deployments[0].ID)
 	if err != nil {
 		WriteControlProblem(w, r, http.StatusNotFound, "rollback_target_missing", "no previous successful deployment is available")
 		return

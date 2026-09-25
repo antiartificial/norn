@@ -41,6 +41,10 @@ func TestFunctionDeploymentBindingRequiresProvenSuccessfulEnvironmentRevision(t 
 	add("proven", "staging", model.StatusDeployed, digest, now.Add(time.Second))
 	add("failed", "staging", model.StatusFailed, "", now.Add(2*time.Second))
 	add("other-environment", "production", model.StatusDeployed, "", now.Add(4*time.Second))
+	previous, err := db.LastSuccessfulDeployment(ctx, "function-fixture", "staging", "proven")
+	if err != nil || previous.ID != "legacy" {
+		t.Fatalf("cross-environment rollback target=%+v err=%v", previous, err)
+	}
 	image, gotDigest, err := db.FunctionDeploymentBinding(ctx, "function-fixture", "staging")
 	if err != nil || image == "" || gotDigest != digest {
 		t.Fatalf("active provenance image=%q digest=%q err=%v", image, gotDigest, err)

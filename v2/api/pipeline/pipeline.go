@@ -406,7 +406,7 @@ func (p *Pipeline) ExecuteOperation(ctx context.Context, op *model.Operation, cl
 			"deploymentId": deploymentID,
 			"attempt":      strconv.Itoa(op.Attempts),
 		})
-		return p.runRollback(ctx, spec, deploy, sg, imageTag, claim, op.Attempts, stringSliceFromMap(op.Payload, "regions")), nil
+		return p.runRollback(ctx, op, spec, deploy, sg, imageTag, claim, op.Attempts, stringSliceFromMap(op.Payload, "regions")), nil
 	case "app.preflight":
 		sg.Log(ctx, "preflight.start", fmt.Sprintf("preflighting %s (ref: %s)", spec.App, op.Ref), map[string]string{
 			"operationId": op.ID,
@@ -566,7 +566,7 @@ func (p *Pipeline) run(ctx context.Context, spec *model.InfraSpec, deploy *model
 						Title: fmt.Sprintf("%s deploy failed", spec.App), Body: fmt.Sprintf("Deploy failed at %s: %v", stepName, stepErr), DedupeKey: fmt.Sprintf("%s:deploy", spec.App),
 						Metadata: map[string]interface{}{"deploymentId": deploy.ID, "sagaId": sg.ID, "commitSha": st.commitSHA, "imageTag": st.imageTag, "step": stepName, "correlationKey": fmt.Sprintf("%s:deploy", spec.App)}})
 					if stepName == "healthy" && spec.AutoRollbackEnabled() {
-						prev, prevErr := p.DB.LastSuccessfulDeployment(publishCtx, deploy.App, deploy.ID)
+						prev, prevErr := p.DB.LastSuccessfulDeployment(publishCtx, deploy.App, deploy.Environment, deploy.ID)
 						if prevErr == nil && prev != nil {
 							enqueue, enqueueErr := p.systemEnqueueRequest(publishCtx, "pipeline:auto-rollback", "auto-rollback:"+operationID, "pipeline-auto-rollback", map[string]interface{}{"parentOperationId": operationID, "failedDeploymentId": deploy.ID, "sourceDeploymentId": prev.ID, "imageTag": prev.ImageTag})
 							if enqueueErr == nil {
