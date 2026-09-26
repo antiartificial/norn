@@ -2,11 +2,16 @@ package main
 
 import (
 	"context"
+	"crypto/sha256"
 	"errors"
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
+
+	"norn/v2/api/database"
+	"norn/v2/api/store"
 )
 
 func TestRecoveryPrivateInputFiles(t *testing.T) {
@@ -39,6 +44,53 @@ func TestRecoveryPrivateInputFiles(t *testing.T) {
 	}
 	if _, err := readPrivateText(private); err == nil {
 		t.Fatal("multiline signing material was accepted")
+	}
+}
+
+func TestRetainedSourceReplayCleansOnlyVerifiedLocalStage(t *testing.T) {
+	directory := t.TempDir()
+	path := filepath.Join(directory, "source.sql")
+	content := []byte("-- private SQL snapshot\n")
+	if err := os.WriteFile(path, content, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	digest := fmt.Sprintf("%x", sha256.Sum256(content))
+	emptyDigest := fmt.Sprintf("%x", sha256.Sum256(nil))
+	stage := store.SignedMySQLSourceArtifactReceipt{SHA256: "stage-digest", Receipt: store.MySQLSourceArtifactReceipt{
+		OperationID: "source-op", ArtifactPath: path,
+		Artifact: database.MySQLSQLArtifact{Format: database.MySQLSQLArtifactV2,
+			Source:      database.TargetIdentity{ServiceID: "mysql", ServiceGeneration: 1, BindingID: "source", BindingGeneration: 1, Engine: database.EngineMySQL, Database: "source", Role: "source"},
+			Expectation: database.MySQLRestoreExpectation{SchemaSHA256: emptyDigest, DataSHA256: emptyDigest},
+			Bytes:       int64(len(content)), SHA256: digest},
+	}}
+	retained := store.SignedMySQLSourceArtifactRetentionReceipt{Receipt: store.MySQLSourceArtifactRetentionReceipt{OperationID: "source-op", StagingReceiptSHA256: stage.SHA256}}
+	wrong := retained
+	wrong.Receipt.StagingReceiptSHA256 = "other-stage"
+	if err := cleanupRetainedSourceStage(directory, stage, wrong); err == nil {
+		t.Fatal("unrelated retention receipt cleaned the local SQL")
+	}
+	if err := os.WriteFile(path, []byte("modified SQL snapshot bytes"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := cleanupRetainedSourceStage(directory, stage, retained); err == nil {
+		t.Fatal("cleanup removed SQL that differs from the signed artifact")
+	}
+	if err := os.WriteFile(path, content, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := cleanupRetainedSourceStage(directory, stage, retained); err != nil {
+		t.Fatalf("cleanup verified stage: %v", err)
+	}
+	if err := cleanupRetainedSourceStage(directory, stage, retained); err != nil {
+		t.Fatalf("terminal replay cleanup is not idempotent: %v", err)
+	}
+	if _, err := os.Stat(path); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("local SQL survived cleanup: %v", err)
+	}
+	outside := filepath.Join(t.TempDir(), "other.sql")
+	stage.Receipt.ArtifactPath = outside
+	if err := cleanupRetainedSourceStage(directory, stage, retained); err == nil {
+		t.Fatal("cleanup accepted a path outside the private stage directory")
 	}
 }
 

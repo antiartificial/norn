@@ -162,13 +162,18 @@ func runSource(ctx context.Context, arguments []string, output io.Writer) error 
 		return fmt.Errorf("signed source admission failed: %w", err)
 	}
 	if accepted.Operation.Status != model.OperationQueued {
-		if _, err := control.LoadSignedMySQLSourceArtifactRetentionReceipt(ctx, acceptance, accepted.Operation.ID); err != nil {
+		retained, err := control.LoadSignedMySQLSourceArtifactRetentionReceipt(ctx, acceptance, accepted.Operation.ID)
+		if err != nil {
 			return errors.New("existing source operation requires inspection")
 		}
 		if accepted.Operation.Status != model.OperationSucceeded {
 			return errors.New("retained source has no successful terminal operation receipt")
 		}
-		_, err := fmt.Fprintf(output, "source_operation_id=%s status=succeeded retention=retained-proved\n", accepted.Operation.ID)
+		stage, err := control.LoadSignedMySQLSourceArtifactReceipt(ctx, acceptance, accepted.Operation.ID)
+		if err != nil || cleanupRetainedSourceStage(*stageDir, stage, retained) != nil {
+			return errors.New("retained source local stage cleanup requires inspection")
+		}
+		_, err = fmt.Fprintf(output, "source_operation_id=%s status=succeeded retention=retained-proved\n", accepted.Operation.ID)
 		return err
 	}
 	if _, err := acceptance.VerifyAcceptedOperation(ctx, accepted.Operation.ID); err != nil {
@@ -202,9 +207,30 @@ func runSource(ctx context.Context, arguments []string, output io.Writer) error 
 	if err := control.FinishClaimedMySQLSourceRetention(ctx, acceptance, claim); err != nil {
 		return fmt.Errorf("source retention terminal receipt requires inspection: %w", err)
 	}
-	if err := os.Remove(staged.Receipt.ArtifactPath); err != nil {
+	if err := cleanupRetainedSourceStage(*stageDir, staged, retained); err != nil {
 		return fmt.Errorf("source retained, but local staged SQL cleanup failed: %w", err)
 	}
 	_, err = fmt.Fprintf(output, "source_operation_id=%s status=succeeded retention=retained-proved\n", accepted.Operation.ID)
 	return err
+}
+
+// A terminal replay can complete cleanup after a crash or failed unlink. It
+// only removes the exact signed dump inside the caller's private stage dir.
+func cleanupRetainedSourceStage(directory string, stage store.SignedMySQLSourceArtifactReceipt, retained store.SignedMySQLSourceArtifactRetentionReceipt) error {
+	path := stage.Receipt.ArtifactPath
+	if stage.Receipt.OperationID != retained.Receipt.OperationID || stage.SHA256 != retained.Receipt.StagingReceiptSHA256 ||
+		!filepath.IsAbs(path) || filepath.Dir(path) != filepath.Clean(directory) {
+		return errors.New("signed local stage path is outside the selected directory")
+	}
+	info, err := os.Lstat(path)
+	if errors.Is(err, os.ErrNotExist) {
+		return nil
+	}
+	if err != nil || !info.Mode().IsRegular() || info.Mode().Perm()&0077 != 0 {
+		return errors.New("signed local stage is not an owner-only regular file")
+	}
+	if err := database.VerifyMySQLSQLArtifact(path, stage.Receipt.Artifact); err != nil {
+		return errors.New("signed local stage differs from the retained artifact")
+	}
+	return os.Remove(path)
 }
