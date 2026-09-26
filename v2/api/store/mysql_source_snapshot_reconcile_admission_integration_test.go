@@ -14,12 +14,19 @@ import (
 
 	"github.com/google/uuid"
 
+	"norn/v2/api/artifactstore"
 	"norn/v2/api/database"
 	"norn/v2/api/model"
 	"norn/v2/api/nomad"
 )
 
 type sourceLockInspectorFunc func(context.Context, database.ResolvedBinding, database.MySQLMaintenanceCredentials, database.SecretSource) error
+
+type sourceArtifactVerifierFunc func(context.Context, artifactstore.Descriptor) error
+
+func (f sourceArtifactVerifierFunc) Verify(ctx context.Context, descriptor artifactstore.Descriptor) error {
+	return f(ctx, descriptor)
+}
 
 func (f sourceLockInspectorFunc) InspectLocked(ctx context.Context, resolved database.ResolvedBinding,
 	maintenance database.MySQLMaintenanceCredentials, secrets database.SecretSource) error {
@@ -29,18 +36,23 @@ func (f sourceLockInspectorFunc) InspectLocked(ctx context.Context, resolved dat
 func TestMySQLSourceReconciliationAdmissionRequiresFailedFencedPredecessor(t *testing.T) {
 	for _, checkpoint := range []string{"stop-intended", "lock-intended"} {
 		t.Run(checkpoint, func(t *testing.T) {
-			testMySQLSourceReconciliationAdmission(t, checkpoint, false, false)
+			testMySQLSourceReconciliationAdmission(t, checkpoint, false, false, "")
 		})
 		t.Run(checkpoint+"-crash-after-transfer", func(t *testing.T) {
-			testMySQLSourceReconciliationAdmission(t, checkpoint, true, false)
+			testMySQLSourceReconciliationAdmission(t, checkpoint, true, false, "")
 		})
 	}
 	t.Run("lock-intended-stage-crash", func(t *testing.T) {
-		testMySQLSourceReconciliationAdmission(t, "lock-intended", false, true)
+		testMySQLSourceReconciliationAdmission(t, "lock-intended", false, true, "")
 	})
+	for _, outcome := range []string{"absent", "verified"} {
+		t.Run("lock-intended-publish-crash-"+outcome, func(t *testing.T) {
+			testMySQLSourceReconciliationAdmission(t, "lock-intended", false, false, outcome)
+		})
+	}
 }
 
-func testMySQLSourceReconciliationAdmission(t *testing.T, checkpoint string, crashAfterTransfer, stageCrash bool) {
+func testMySQLSourceReconciliationAdmission(t *testing.T, checkpoint string, crashAfterTransfer, stageCrash bool, publicationOutcome string) {
 	stores, dbs := acceptanceIntegrationStores(t, 1)
 	acceptance, db := stores[0], dbs[0]
 	ctx := context.Background()
@@ -442,6 +454,167 @@ func testMySQLSourceReconciliationAdmission(t *testing.T, checkpoint string, cra
 		}))
 	if err != nil || staged.Receipt.OperationID != successor.Operation.ID || staged.Receipt.Artifact != stageArtifact {
 		t.Fatalf("successor could not produce signed stage receipt: %+v %v", staged, err)
+	}
+	if publicationOutcome != "" {
+		priorDescriptor := artifactstore.Descriptor{Key: artifactstore.KeyForSHA256(stageArtifact.SHA256),
+			SHA256: stageArtifact.SHA256, Size: stageArtifact.Bytes}
+		priorStageID := successor.Operation.ID
+		_, descriptor, publish, _, err := db.intendClaimedMySQLSourceArtifactRetention(ctx, acceptance, successorClaim)
+		if err != nil || !publish || descriptor != priorDescriptor {
+			t.Fatalf("failed predecessor did not reach exact publication intent: %+v %v", descriptor, err)
+		}
+		if _, err := db.Pool.Exec(ctx, `UPDATE operations SET locked_until=clock_timestamp()-interval '1 second' WHERE id=$1`, priorStageID); err != nil {
+			t.Fatal(err)
+		}
+		if err := db.RecoverExpiredOperations(ctx); err != nil {
+			t.Fatal(err)
+		}
+		successorInput.PriorSourceOperationID = priorStageID
+		successorInput.Key = "recover-publication-" + uuid.NewString()
+		recovered, err := db.AcceptPrivateMySQLSourceReconciliation(ctx, acceptance, successorInput)
+		if err != nil || recovered.Operation.Status != model.OperationQueued {
+			t.Fatalf("publish-intended predecessor rejected signed successor: %+v %v", recovered, err)
+		}
+		claimed, recoveredClaim, err := db.ClaimPrivateMySQLOperation(ctx, recovered.Operation.ID,
+			"publication-recovery-worker", MySQLSourceSnapshotOperationKind, time.Minute)
+		if err != nil || claimed == nil {
+			t.Fatalf("publication successor not claimable: %+v %v", claimed, err)
+		}
+		if err := db.ReconcileClaimedMySQLSourceSnapshot(ctx, acceptance, recoveredClaim,
+			stoppedObservation, inspector, sourceSecretSource{}, sourceArtifactVerifierFunc(func(context.Context, artifactstore.Descriptor) error {
+				return errors.New("object store unavailable")
+			})); !errors.Is(err, ErrMySQLSourceArtifactRetentionIndeterminate) {
+			t.Fatalf("indeterminate object verification transferred fence: %v", err)
+		}
+		if err := db.ReconcileClaimedMySQLSourceSnapshot(ctx, acceptance, recoveredClaim,
+			stoppedObservation, inspector, sourceSecretSource{}, sourceArtifactVerifierFunc(func(context.Context, artifactstore.Descriptor) error {
+				return artifactstore.ErrArtifactCorrupt
+			})); !errors.Is(err, ErrMySQLSourceArtifactRetentionIndeterminate) {
+			t.Fatalf("corrupt object verification transferred fence: %v", err)
+		}
+		var activeState, activeID string
+		if err := db.Pool.QueryRow(ctx, `SELECT operation_id,state FROM mysql_source_snapshot_intents WHERE source_key=$1`,
+			mysqlRuntimePhysicalKeyForCatalog(active.Catalog, request.Source)).Scan(&activeID, &activeState); err != nil ||
+			activeID != priorStageID || activeState != "publish-intended" {
+			t.Fatalf("object outage changed source owner: %s %s %v", activeID, activeState, err)
+		}
+		verifyCount := 0
+		verifier := sourceArtifactVerifierFunc(func(_ context.Context, expected artifactstore.Descriptor) error {
+			verifyCount++
+			if expected != priorDescriptor {
+				return artifactstore.ErrArtifactCorrupt
+			}
+			if publicationOutcome == "absent" {
+				return artifactstore.ErrArtifactNotFound
+			}
+			return nil
+		})
+		if err := db.ReconcileClaimedMySQLSourceSnapshot(ctx, acceptance, recoveredClaim,
+			stoppedObservation, inspector, sourceSecretSource{}, sourceArtifactVerifierFunc(func(ctx context.Context, descriptor artifactstore.Descriptor) error {
+				if err := verifier.Verify(ctx, descriptor); err != nil && !errors.Is(err, artifactstore.ErrArtifactNotFound) {
+					return err
+				}
+				_, err := db.Pool.Exec(ctx, `UPDATE operations SET locked_until=clock_timestamp()-interval '1 second' WHERE id=$1`, recovered.Operation.ID)
+				return err
+			})); err == nil {
+			t.Fatal("claim loss after exact object observation transferred fence")
+		}
+		if err := db.Pool.QueryRow(ctx, `SELECT operation_id,state FROM mysql_source_snapshot_intents WHERE source_key=$1`,
+			mysqlRuntimePhysicalKeyForCatalog(active.Catalog, request.Source)).Scan(&activeID, &activeState); err != nil ||
+			activeID != priorStageID || activeState != "publish-intended" {
+			t.Fatalf("claim loss after object observation changed source: %s %s %v", activeID, activeState, err)
+		}
+		if _, err := db.Pool.Exec(ctx, `UPDATE operations SET locked_until=clock_timestamp()+interval '2 minutes' WHERE id=$1`, recovered.Operation.ID); err != nil {
+			t.Fatal(err)
+		}
+		verifyCount = 0
+		if _, err := db.Pool.Exec(ctx, `CREATE FUNCTION reject_publication_fence_transfer() RETURNS trigger
+			LANGUAGE plpgsql AS $$ BEGIN RAISE EXCEPTION 'disposable publication transfer interruption'; END $$`); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := db.Pool.Exec(ctx, `CREATE TRIGGER reject_publication_fence_transfer
+			BEFORE UPDATE OF owner ON runtime_mutation_fence FOR EACH ROW
+			EXECUTE FUNCTION reject_publication_fence_transfer()`); err != nil {
+			t.Fatal(err)
+		}
+		if err := db.ReconcileClaimedMySQLSourceSnapshot(ctx, acceptance, recoveredClaim,
+			stoppedObservation, inspector, sourceSecretSource{}, verifier); !errors.Is(err, ErrMySQLSourceSnapshotFence) {
+			t.Fatalf("interrupted publication transfer committed: %v", err)
+		}
+		var abortedProofs int
+		if err := db.Pool.QueryRow(ctx, `SELECT operation_id,state,
+			(SELECT count(*) FROM mysql_source_snapshot_reconciliations WHERE prior_operation_id=$2)
+			FROM mysql_source_snapshot_intents WHERE source_key=$1`,
+			mysqlRuntimePhysicalKeyForCatalog(active.Catalog, request.Source), priorStageID).Scan(
+			&activeID, &activeState, &abortedProofs); err != nil || activeID != priorStageID ||
+			activeState != "publish-intended" || abortedProofs != 0 {
+			t.Fatalf("interrupted publication transfer left partial state: %s %s proofs=%d %v", activeID, activeState, abortedProofs, err)
+		}
+		if _, err := db.Pool.Exec(ctx, `DROP TRIGGER reject_publication_fence_transfer ON runtime_mutation_fence`); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := db.Pool.Exec(ctx, `DROP FUNCTION reject_publication_fence_transfer()`); err != nil {
+			t.Fatal(err)
+		}
+		verifyCount = 0
+		if err := db.ReconcileClaimedMySQLSourceSnapshot(ctx, acceptance, recoveredClaim,
+			stoppedObservation, inspector, sourceSecretSource{}, verifier); err != nil || verifyCount != 1 {
+			t.Fatalf("publication outcome %s did not transfer: verifies=%d err=%v", publicationOutcome, verifyCount, err)
+		}
+		var stageTime, stageProof, publishTime, retainedJSON, receiptJSON *string
+		if err := db.Pool.QueryRow(ctx, `SELECT operation_id,state,stage_intended_at::text,
+			artifact_receipt_sha256,artifact_publish_intended_at::text,retained_artifact::text,
+			retention_receipt_sha256 FROM mysql_source_snapshot_intents WHERE source_key=$1`,
+			mysqlRuntimePhysicalKeyForCatalog(active.Catalog, request.Source)).Scan(
+			&activeID, &activeState, &stageTime, &stageProof, &publishTime, &retainedJSON, &receiptJSON); err != nil ||
+			activeID != recovered.Operation.ID || activeState != "lock-proved" || stageTime != nil ||
+			stageProof != nil || publishTime != nil || retainedJSON != nil || receiptJSON != nil {
+			t.Fatalf("publication successor inherited prior artifact: id=%s state=%s err=%v", activeID, activeState, err)
+		}
+		priorInspection, err := db.InspectPrivateMySQLSourceSnapshot(ctx, acceptance, priorStageID)
+		if err != nil || priorInspection.IntentState != "publish-intended" ||
+			priorInspection.ReconciledByOperationID != recovered.Operation.ID ||
+			priorInspection.PublicationObjectAtTransfer != publicationOutcome || !priorInspection.StageReceiptVerified {
+			t.Fatalf("prior publication chain not inspectable: %+v %v", priorInspection, err)
+		}
+		liveObjects := &sourceRetentionStore{}
+		if publicationOutcome == "verified" {
+			liveObjects.objects = map[string]artifactstore.Descriptor{priorDescriptor.Key: priorDescriptor}
+		}
+		livePrior, err := db.InspectPrivateMySQLSourceSnapshotLive(ctx, acceptance, priorStageID,
+			stoppedObservation, sourceSecretSource{}, liveObjects)
+		if err != nil || livePrior.PublicationObjectAtTransfer != publicationOutcome ||
+			livePrior.RetainedObjectVerified != (publicationOutcome == "verified") {
+			t.Fatalf("reconciled publication external inspection lost old object: %+v %v", livePrior, err)
+		}
+		var archivedIntent []byte
+		if err := db.Pool.QueryRow(ctx, `SELECT prior_intent FROM mysql_source_snapshot_reconciliations
+			WHERE prior_operation_id=$1`, priorStageID).Scan(&archivedIntent); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := db.Pool.Exec(ctx, `UPDATE mysql_source_snapshot_reconciliations
+			SET prior_intent=jsonb_set(prior_intent,'{artifact_receipt_sha256}',to_jsonb('tampered'::text))
+			WHERE prior_operation_id=$1`, priorStageID); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := db.InspectPrivateMySQLSourceSnapshot(ctx, acceptance, priorStageID); !errors.Is(err, ErrMySQLSourceSnapshotInspection) {
+			t.Fatalf("tampered archived stage qualified publication predecessor: %v", err)
+		}
+		if _, err := db.Pool.Exec(ctx, `UPDATE mysql_source_snapshot_reconciliations SET prior_intent=$2::jsonb
+			WHERE prior_operation_id=$1`, priorStageID, string(archivedIntent)); err != nil {
+			t.Fatal(err)
+		}
+		fresh, err := db.StageClaimedMySQLSourceArtifact(ctx, acceptance, recoveredClaim, request,
+			sourceSecretSource{}, "/usr/bin/true", stageDirectory,
+			sourceStagerFunc(func(_ context.Context, _ database.ResolvedBinding, _ database.TargetIdentity,
+				_ database.SecretSource, _, _, directory string) (string, database.MySQLSQLArtifact, error) {
+				path := filepath.Join(directory, "fresh-after-publication.sql")
+				return path, stageArtifact, os.WriteFile(path, stageBytes, 0o600)
+			}))
+		if err != nil || fresh.Receipt.OperationID != recovered.Operation.ID || fresh.Receipt.ArtifactPath == staged.Receipt.ArtifactPath {
+			t.Fatalf("publication successor did not create its own stage: %+v %v", fresh, err)
+		}
+		return
 	}
 	if err := db.ReconcileClaimedMySQLSourceSnapshot(ctx, acceptance, successorClaim,
 		sourceStoppedObserverFunc(func(context.Context, nomad.CASStopJobRequest) error {

@@ -2,6 +2,7 @@ package store
 
 import (
 	"context"
+	"encoding/json"
 	"strconv"
 
 	"norn/v2/api/artifactstore"
@@ -75,13 +76,28 @@ func (db *DB) InspectPrivateMySQLSourceSnapshotLive(ctx context.Context, accepta
 		result.RuntimeAccountLocked = database.InspectMySQLRuntimeAccountLockForRestore(ctx, resolved, request.Maintenance, secrets) == nil
 	}
 	if control.IntentState == "publish-intended" {
-		stage, err := db.LoadSignedMySQLSourceArtifactReceipt(ctx, acceptance, operationID)
-		if err != nil {
-			return MySQLSourceSnapshotLiveInspection{}, ErrMySQLSourceSnapshotInspection
-		}
-		descriptor, err := descriptorForStagedMySQLArtifact(stage)
-		if err != nil {
-			return MySQLSourceSnapshotLiveInspection{}, ErrMySQLSourceSnapshotInspection
+		var descriptor artifactstore.Descriptor
+		if control.ReconciledByOperationID != "" {
+			var canonical []byte
+			if err := db.Pool.QueryRow(ctx, `SELECT proof_canonical FROM mysql_source_snapshot_reconciliations
+				WHERE prior_operation_id=$1 AND checkpoint='publish-intended'`, operationID).Scan(&canonical); err != nil {
+				return MySQLSourceSnapshotLiveInspection{}, ErrMySQLSourceSnapshotInspection
+			}
+			var proof MySQLSourceReconciliationProof
+			if json.Unmarshal(canonical, &proof) != nil || proof.PriorArtifact == nil ||
+				proof.PriorArtifact.Validate() != nil {
+				return MySQLSourceSnapshotLiveInspection{}, ErrMySQLSourceSnapshotInspection
+			}
+			descriptor = *proof.PriorArtifact
+		} else {
+			stage, err := db.LoadSignedMySQLSourceArtifactReceipt(ctx, acceptance, operationID)
+			if err != nil {
+				return MySQLSourceSnapshotLiveInspection{}, ErrMySQLSourceSnapshotInspection
+			}
+			descriptor, err = descriptorForStagedMySQLArtifact(stage)
+			if err != nil {
+				return MySQLSourceSnapshotLiveInspection{}, ErrMySQLSourceSnapshotInspection
+			}
 		}
 		result.RetainedObjectVerified = objects.Verify(ctx, descriptor) == nil
 	} else if control.IntentState == "retained-proved" {

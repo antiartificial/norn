@@ -68,6 +68,9 @@ func (db *DB) retainClaimedMySQLSourceArtifact(ctx context.Context, acceptance *
 	if retained != nil {
 		return *retained, nil
 	}
+	if err := atMySQLSourcePublicationCheckpoint(claim.OperationID(), "before-upload"); err != nil {
+		return SignedMySQLSourceArtifactRetentionReceipt{}, errors.Join(ErrMySQLSourceArtifactRetentionIndeterminate, err)
+	}
 	if err := ready(); err != nil {
 		return SignedMySQLSourceArtifactRetentionReceipt{}, err
 	}
@@ -94,6 +97,9 @@ func (db *DB) retainClaimedMySQLSourceArtifact(ctx context.Context, acceptance *
 		return SignedMySQLSourceArtifactRetentionReceipt{}, err
 	}
 	if err := objects.Verify(ctx, descriptor); err != nil {
+		return SignedMySQLSourceArtifactRetentionReceipt{}, errors.Join(ErrMySQLSourceArtifactRetentionIndeterminate, err)
+	}
+	if err := atMySQLSourcePublicationCheckpoint(claim.OperationID(), "verified"); err != nil {
 		return SignedMySQLSourceArtifactRetentionReceipt{}, errors.Join(ErrMySQLSourceArtifactRetentionIndeterminate, err)
 	}
 	if err := ready(); err != nil {

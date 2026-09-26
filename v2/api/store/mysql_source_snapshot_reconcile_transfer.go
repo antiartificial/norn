@@ -11,28 +11,33 @@ import (
 
 	"github.com/jackc/pgx/v5"
 
+	"norn/v2/api/artifactstore"
 	"norn/v2/api/database"
 	"norn/v2/api/model"
 	"norn/v2/api/nomad"
 )
 
 const MySQLSourceReconciliationProofSchema = "norn.mysql-source-reconciliation-proof/v1"
+const MySQLSourceReconciliationPublicationProofSchema = "norn.mysql-source-reconciliation-proof/v2"
 
 // MySQLSourceReconciliationProof is a signed service attestation of fresh
 // external reads. It records the exact accepted identities and observation
 // time, not a provider-issued receipt or permission to release the fence.
 type MySQLSourceReconciliationProof struct {
-	Schema                 string `json:"schema"`
-	PriorSourceOperationID string `json:"priorSourceOperationId"`
-	PriorSourceDigest      string `json:"priorSourceDigest"`
-	SuccessorOperationID   string `json:"successorOperationId"`
-	SuccessorDigest        string `json:"successorDigest"`
-	Checkpoint             string `json:"checkpoint"`
-	RuntimeFenceEpoch      int64  `json:"runtimeFenceEpoch"`
-	RuntimeFenceOwner      string `json:"runtimeFenceOwner"`
-	NomadStoppedVerified   bool   `json:"nomadStoppedVerified"`
-	RuntimeAccountLocked   bool   `json:"runtimeAccountLocked"`
-	ObservedAt             string `json:"observedAt"`
+	Schema                  string                    `json:"schema"`
+	PriorSourceOperationID  string                    `json:"priorSourceOperationId"`
+	PriorSourceDigest       string                    `json:"priorSourceDigest"`
+	SuccessorOperationID    string                    `json:"successorOperationId"`
+	SuccessorDigest         string                    `json:"successorDigest"`
+	Checkpoint              string                    `json:"checkpoint"`
+	RuntimeFenceEpoch       int64                     `json:"runtimeFenceEpoch"`
+	RuntimeFenceOwner       string                    `json:"runtimeFenceOwner"`
+	NomadStoppedVerified    bool                      `json:"nomadStoppedVerified"`
+	RuntimeAccountLocked    bool                      `json:"runtimeAccountLocked"`
+	PriorStageReceiptSHA256 string                    `json:"priorStageReceiptSha256,omitempty"`
+	PriorArtifact           *artifactstore.Descriptor `json:"priorArtifact,omitempty"`
+	PriorObjectState        string                    `json:"priorObjectState,omitempty"`
+	ObservedAt              string                    `json:"observedAt"`
 }
 
 type MySQLSourceAccountLockInspector interface {
@@ -51,7 +56,7 @@ func (mysqlSourceDatabaseLockInspector) InspectLocked(ctx context.Context, resol
 // reservation to a signed successor. It never repeats either external effect.
 func (db *DB) ReconcileClaimedMySQLSourceSnapshot(ctx context.Context, acceptance *PGOperationStore,
 	claim OperationClaim, observer MySQLSourceStoppedObserver, inspector MySQLSourceAccountLockInspector,
-	secrets database.SecretSource) error {
+	secrets database.SecretSource, objects ...MySQLSourceArtifactVerifier) error {
 	if db == nil || db.Pool == nil || acceptance == nil || acceptance.db != db || validateOperationClaim(claim) != nil ||
 		observer == nil || inspector == nil || secrets == nil {
 		return ErrMySQLSourceSnapshotFence
@@ -135,6 +140,31 @@ func (db *DB) ReconcileClaimedMySQLSourceSnapshot(ctx context.Context, acceptanc
 		SuccessorOperationID: claim.OperationID(), SuccessorDigest: successor.Intent.CanonicalDigest,
 		Checkpoint: link.Checkpoint, RuntimeFenceEpoch: epoch, RuntimeFenceOwner: link.RuntimeFenceOwner,
 		NomadStoppedVerified: true, RuntimeAccountLocked: locked, ObservedAt: time.Now().UTC().Format(time.RFC3339Nano)}
+	if link.Checkpoint == "publish-intended" {
+		if len(objects) != 1 || objects[0] == nil || !priorInspection.StageReceiptVerified || priorInspection.RetentionReceiptVerified {
+			return ErrMySQLSourceSnapshotFence
+		}
+		stage, err := db.LoadSignedMySQLSourceArtifactReceipt(ctx, acceptance, prior.Operation.ID)
+		if err != nil {
+			return ErrMySQLSourceSnapshotFence
+		}
+		descriptor, err := descriptorForStagedMySQLArtifact(stage)
+		if err != nil {
+			return ErrMySQLSourceSnapshotFence
+		}
+		outcome := "verified"
+		if err := objects[0].Verify(ctx, descriptor); err != nil {
+			if !errors.Is(err, artifactstore.ErrArtifactNotFound) {
+				return errors.Join(ErrMySQLSourceArtifactRetentionIndeterminate, err)
+			}
+			outcome = "absent"
+		}
+		proof.Schema = MySQLSourceReconciliationPublicationProofSchema
+		proof.PriorStageReceiptSHA256 = stage.SHA256
+		proof.PriorArtifact = &descriptor
+		proof.PriorObjectState = outcome
+		proof.ObservedAt = time.Now().UTC().Format(time.RFC3339Nano)
+	}
 	canonical, err := json.Marshal(proof)
 	if err != nil {
 		return err
@@ -179,20 +209,24 @@ func (db *DB) transferClaimedMySQLSourceReconciliation(ctx context.Context, acce
 		return ErrMySQLSourceSnapshotFence
 	}
 	var priorStatus, checkpoint, intentID, sourceKey, fenceOwner, liveOwner string
-	var manual, fenceActive, stopIntended, stopProved, lockIntended, lockProved, stageIntended, stageReceipt bool
+	var manual, fenceActive, stopIntended, stopProved, lockIntended, lockProved, stageIntended, stageReceipt, publishIntended, retentionReceipt bool
 	var fenceEpoch, liveEpoch, revision int64
-	var sourceJSON, maintenanceJSON, jobJSON, priorIntent []byte
+	var sourceJSON, maintenanceJSON, jobJSON, priorIntent, retainedJSON []byte
+	var stageReceiptSHA *string
 	err = tx.QueryRow(ctx, `SELECT p.status,COALESCE((p.metadata->>'manualRecoveryRequired')::boolean,false),
 		i.state,i.acceptance_intent_id,i.catalog_revision,i.source_key,i.source,i.maintenance,i.job_identity,
 		i.stop_intended_at IS NOT NULL,i.stop_proved_at IS NOT NULL,i.lock_intended_at IS NOT NULL,
 		i.lock_proved_at IS NOT NULL,i.stage_intended_at IS NOT NULL,
-		i.artifact_receipt_canonical IS NOT NULL,
+		i.artifact_receipt_canonical IS NOT NULL,i.artifact_receipt_sha256,
+		i.artifact_publish_intended_at IS NOT NULL,i.retained_artifact,
+		i.retention_receipt_canonical IS NOT NULL,
 		i.runtime_fence_epoch,i.runtime_fence_owner,f.active,f.epoch,f.owner,to_jsonb(i)
 		FROM mysql_source_snapshot_intents i JOIN operations p ON p.id=i.operation_id
 		CROSS JOIN runtime_mutation_fence f WHERE i.operation_id=$1 AND f.singleton=true
 		FOR UPDATE OF p,i,f`, prior.Operation.ID).Scan(&priorStatus, &manual, &checkpoint, &intentID,
 		&revision, &sourceKey, &sourceJSON, &maintenanceJSON, &jobJSON,
 		&stopIntended, &stopProved, &lockIntended, &lockProved, &stageIntended, &stageReceipt,
+		&stageReceiptSHA, &publishIntended, &retainedJSON, &retentionReceipt,
 		&fenceEpoch, &fenceOwner, &fenceActive, &liveEpoch, &liveOwner, &priorIntent)
 	wantSource, _ := json.Marshal(request.Source)
 	wantMaintenance, _ := json.Marshal(request.Maintenance)
@@ -204,9 +238,24 @@ func (db *DB) transferClaimedMySQLSourceReconciliation(ctx context.Context, acce
 		!stopIntended || (mysqlSourceLockCheckpoint(checkpoint) && (!stopProved || !lockIntended)) ||
 		(checkpoint == "stop-proved" && !stopProved) || (checkpoint == "lock-proved" && !lockProved) ||
 		(checkpoint == "stage-intended" && (!lockProved || !stageIntended || stageReceipt)) ||
+		(checkpoint == "publish-intended" && (!lockProved || !stageIntended || !stageReceipt ||
+			!publishIntended || retentionReceipt || proof.Schema != MySQLSourceReconciliationPublicationProofSchema ||
+			proof.PriorStageReceiptSHA256 == "" || stageReceiptSHA == nil || *stageReceiptSHA != proof.PriorStageReceiptSHA256 ||
+			proof.PriorArtifact == nil || proof.PriorArtifact.Validate() != nil ||
+			proof.PriorObjectState != "verified" && proof.PriorObjectState != "absent")) ||
 		!fenceActive || fenceEpoch != proof.RuntimeFenceEpoch || liveEpoch != fenceEpoch ||
 		fenceOwner != proof.RuntimeFenceOwner || liveOwner != fenceOwner {
 		return ErrMySQLSourceSnapshotFence
+	}
+	if checkpoint == "publish-intended" {
+		observedAt, parseErr := time.Parse(time.RFC3339Nano, proof.ObservedAt)
+		if parseErr != nil || time.Since(observedAt) < 0 || time.Since(observedAt) > 5*time.Minute {
+			return ErrMySQLSourceSnapshotFence
+		}
+		want, _ := json.Marshal(proof.PriorArtifact)
+		if !sameJSON(retainedJSON, want) {
+			return ErrMySQLSourceSnapshotFence
+		}
 	}
 	if request.RuntimeLaunchReservationID != "" && checkpoint == "stop-intended" {
 		if err := stopObservedMySQLSourceRuntimeLaunch(ctx, tx, request); err != nil {
@@ -231,7 +280,17 @@ func (db *DB) transferClaimedMySQLSourceReconciliation(ctx context.Context, acce
 		acceptance_intent_id=$3,state=$4,runtime_fence_owner=$5,
 		stop_proved_at=COALESCE(stop_proved_at,clock_timestamp()),
 		lock_proved_at=CASE WHEN $4='lock-proved' THEN clock_timestamp() ELSE lock_proved_at END,
-		stage_intended_at=CASE WHEN $6='stage-intended' THEN NULL ELSE stage_intended_at END
+		stage_intended_at=CASE WHEN $6 IN ('stage-intended','publish-intended') THEN NULL ELSE stage_intended_at END,
+		stage_proved_at=CASE WHEN $6='publish-intended' THEN NULL ELSE stage_proved_at END,
+		artifact_path=CASE WHEN $6='publish-intended' THEN NULL ELSE artifact_path END,
+		artifact=CASE WHEN $6='publish-intended' THEN NULL ELSE artifact END,
+		artifact_receipt_canonical=CASE WHEN $6='publish-intended' THEN NULL ELSE artifact_receipt_canonical END,
+		artifact_receipt_sha256=CASE WHEN $6='publish-intended' THEN NULL ELSE artifact_receipt_sha256 END,
+		artifact_receipt_signing_algorithm=CASE WHEN $6='publish-intended' THEN NULL ELSE artifact_receipt_signing_algorithm END,
+		artifact_receipt_signing_key_id=CASE WHEN $6='publish-intended' THEN NULL ELSE artifact_receipt_signing_key_id END,
+		artifact_receipt_signature=CASE WHEN $6='publish-intended' THEN NULL ELSE artifact_receipt_signature END,
+		artifact_publish_intended_at=CASE WHEN $6='publish-intended' THEN NULL ELSE artifact_publish_intended_at END,
+		retained_artifact=CASE WHEN $6='publish-intended' THEN NULL ELSE retained_artifact END
 		WHERE operation_id=$1 AND state=$6 AND runtime_fence_epoch=$7 AND runtime_fence_owner=$8`,
 		prior.Operation.ID, claim.OperationID(), successor.AcceptanceIntentID, state, successorOwner,
 		checkpoint, fenceEpoch, fenceOwner); err != nil || updated.RowsAffected() != 1 {

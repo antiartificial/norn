@@ -448,7 +448,9 @@ func wordpressSourceThroughCommand(t *testing.T, ctx context.Context, db *store.
 		}
 		crashBeforeCommit := os.Getenv("NORN_TEST_WORDPRESS_SOURCE_CRASH_BEFORE_COMMIT") == "1"
 		crashAfterStage := os.Getenv("NORN_TEST_WORDPRESS_SOURCE_CRASH_AFTER_STAGE") == "1"
-		if os.Getenv("NORN_TEST_WORDPRESS_SOURCE_CRASH_AFTER_TRANSFER") == "1" || crashBeforeCommit || crashAfterStage {
+		crashBeforePublish := os.Getenv("NORN_TEST_WORDPRESS_SOURCE_CRASH_BEFORE_PUBLISH") == "1"
+		crashAfterPublish := os.Getenv("NORN_TEST_WORDPRESS_SOURCE_CRASH_AFTER_PUBLISH") == "1"
+		if os.Getenv("NORN_TEST_WORDPRESS_SOURCE_CRASH_AFTER_TRANSFER") == "1" || crashBeforeCommit || crashAfterStage || crashBeforePublish || crashAfterPublish {
 			firstArgs := append([]string(nil), args...)
 			for i := 0; i < len(firstArgs)-1; i++ {
 				if firstArgs[i] == "--request-key" {
@@ -464,6 +466,10 @@ func wordpressSourceThroughCommand(t *testing.T, ctx context.Context, db *store.
 				markerEnv = "NORN_TEST_SOURCE_BEFORE_COMMIT_MARKER=" + marker
 			} else if crashAfterStage {
 				markerEnv = "NORN_TEST_SOURCE_STAGE_DUMP_MARKER=" + marker
+			} else if crashBeforePublish {
+				markerEnv = "NORN_TEST_SOURCE_PUBLISH_BEFORE_UPLOAD_MARKER=" + marker
+			} else if crashAfterPublish {
+				markerEnv = "NORN_TEST_SOURCE_PUBLISH_AFTER_VERIFY_MARKER=" + marker
 			}
 			command.Env = append(os.Environ(), "SSL_CERT_FILE="+caFile, markerEnv)
 			if err := command.Start(); err != nil {
@@ -522,6 +528,33 @@ func wordpressSourceThroughCommand(t *testing.T, ctx context.Context, db *store.
 					_ = command.Process.Kill()
 					<-done
 					t.Fatalf("stage checkpoint lacks unsigned local dump: %v %+v %v", err, stageInspection, inspectErr)
+				}
+			}
+			if crashBeforePublish || crashAfterPublish {
+				stageInspection, inspectErr := db.InspectPrivateMySQLSourceSnapshot(ctx, operations, firstID)
+				stageReceipt, receiptErr := db.LoadSignedMySQLSourceArtifactReceipt(ctx, operations, firstID)
+				if inspectErr != nil || receiptErr != nil || stageInspection.IntentState != "publish-intended" ||
+					!stageInspection.StageReceiptVerified || stageInspection.RetentionReceiptVerified {
+					_ = command.Process.Kill()
+					<-done
+					t.Fatalf("publication checkpoint lacks signed stage and pending retention: %+v %v %v", stageInspection, inspectErr, receiptErr)
+				}
+				verifier, err := artifactstore.OpenS3ReadOnlyVerifier(ctx, artifactstore.S3Config{
+					Endpoint: endpoint.Host, Bucket: "norn-wordpress-artifacts", Prefix: "mysql/wordpress",
+					Region: "us-east-1", AccessKey: "wordpress-artifact-writer", SecretKey: "test-secret",
+					Transport: server.Client().Transport})
+				if err != nil {
+					_ = command.Process.Kill()
+					<-done
+					t.Fatalf("open exact object verifier: %v", err)
+				}
+				artifact := stageReceipt.Receipt.Artifact
+				descriptor := artifactstore.Descriptor{Key: artifactstore.KeyForSHA256(artifact.SHA256), SHA256: artifact.SHA256, Size: artifact.Bytes}
+				verifyErr := verifier.Verify(ctx, descriptor)
+				if crashBeforePublish && !errors.Is(verifyErr, artifactstore.ErrArtifactNotFound) || crashAfterPublish && verifyErr != nil {
+					_ = command.Process.Kill()
+					<-done
+					t.Fatalf("publication checkpoint object outcome unexpected: before=%t after=%t err=%v", crashBeforePublish, crashAfterPublish, verifyErr)
 				}
 			}
 			if err := command.Process.Kill(); err != nil {

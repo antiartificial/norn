@@ -53,3 +53,17 @@ func mysqlSourceSnapshotStageSuccessorMigration() SchemaMigration {
 		MinimumReaderVersion: MySQLRetainedArtifactReaderVersion,
 		MinimumWriterVersion: SnapshotExportIntentWriterVersion}
 }
+
+// A publication intent is transferable only with a signed exact-object
+// observation. The successor discards predecessor staging and republishes its
+// own freshly signed dump while the source remains fenced.
+func mysqlSourceSnapshotPublishSuccessorMigration() SchemaMigration {
+	return SchemaMigration{Version: 43, Name: "mysql-source-snapshot-publish-successor",
+		SQL: `ALTER TABLE mysql_source_snapshot_reconciliations
+		DROP CONSTRAINT mysql_source_snapshot_reconciliations_checkpoint_check;
+		ALTER TABLE mysql_source_snapshot_reconciliations
+		ADD CONSTRAINT mysql_source_snapshot_reconciliations_checkpoint_check
+		CHECK (checkpoint IN ('stop-intended','lock-intended','stop-proved','lock-proved','stage-intended','publish-intended'));`,
+		MinimumReaderVersion: MySQLRetainedArtifactReaderVersion,
+		MinimumWriterVersion: SnapshotExportIntentWriterVersion}
+}

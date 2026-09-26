@@ -163,7 +163,7 @@ export NORN_TEST_WORDPRESS_DEPLOY_RESTORE_PASSWORD=disposable-restore-runtime
 export NORN_TEST_WORDPRESS_DEPLOY_RESTORE_ROLE_PASSWORD=disposable-restore
 
 cd "$repo_root/v2/api"
-if [[ "${NORN_TEST_WORDPRESS_SOURCE_CRASH_AFTER_TRANSFER:-}" == "1" || "${NORN_TEST_WORDPRESS_SOURCE_CRASH_BEFORE_COMMIT:-}" == "1" || "${NORN_TEST_WORDPRESS_SOURCE_CRASH_AFTER_STAGE:-}" == "1" ]]; then
+if [[ "${NORN_TEST_WORDPRESS_SOURCE_CRASH_AFTER_TRANSFER:-}" == "1" || "${NORN_TEST_WORDPRESS_SOURCE_CRASH_BEFORE_COMMIT:-}" == "1" || "${NORN_TEST_WORDPRESS_SOURCE_CRASH_AFTER_STAGE:-}" == "1" || "${NORN_TEST_WORDPRESS_SOURCE_CRASH_BEFORE_PUBLISH:-}" == "1" || "${NORN_TEST_WORDPRESS_SOURCE_CRASH_AFTER_PUBLISH:-}" == "1" ]]; then
   go build -buildvcs=false -tags norn_test_crash_hooks -o "$fixture_root/norn-mysql-maintenance" ./cmd/norn-mysql-maintenance
 else
   go build -buildvcs=false -o "$fixture_root/norn-mysql-maintenance" ./cmd/norn-mysql-maintenance

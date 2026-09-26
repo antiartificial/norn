@@ -185,7 +185,7 @@ func runReconcileSource(ctx context.Context, arguments []string, output io.Write
 	if err != nil || claimed == nil || claim.OperationID() != accepted.Operation.ID {
 		return fmt.Errorf("signed source successor is not claimable: %w", err)
 	}
-	runner := store.MySQLSourceSnapshotRunner{Control: control, Acceptance: acceptance, Secrets: secrets, Observer: observer}
+	runner := store.MySQLSourceSnapshotRunner{Control: control, Acceptance: acceptance, Secrets: secrets, Observer: observer, Objects: objects}
 	if err := runner.RunClaimedReconciliation(ctx, claim); err != nil {
 		return fmt.Errorf("source successor %s requires inspection: %w", accepted.Operation.ID, err)
 	}

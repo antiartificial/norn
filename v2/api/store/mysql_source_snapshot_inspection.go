@@ -6,9 +6,11 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"errors"
+	"strings"
 
 	"github.com/jackc/pgx/v5"
 
+	"norn/v2/api/database"
 	"norn/v2/api/model"
 )
 
@@ -19,14 +21,15 @@ var ErrMySQLSourceSnapshotInspection = errors.New("MySQL source snapshot inspect
 // locations. External Nomad, MySQL and object-store state require separate
 // observation before any operator reconciliation.
 type MySQLSourceSnapshotInspection struct {
-	OperationID              string                `json:"operationId"`
-	OperationStatus          model.OperationStatus `json:"operationStatus"`
-	IntentState              string                `json:"intentState"`
-	ClaimLeaseCurrent        bool                  `json:"claimLeaseCurrent"`
-	RuntimeFenceHeld         bool                  `json:"runtimeFenceHeld"`
-	StageReceiptVerified     bool                  `json:"stageReceiptVerified"`
-	RetentionReceiptVerified bool                  `json:"retentionReceiptVerified"`
-	ReconciledByOperationID  string                `json:"reconciledByOperationId,omitempty"`
+	OperationID                 string                `json:"operationId"`
+	OperationStatus             model.OperationStatus `json:"operationStatus"`
+	IntentState                 string                `json:"intentState"`
+	ClaimLeaseCurrent           bool                  `json:"claimLeaseCurrent"`
+	RuntimeFenceHeld            bool                  `json:"runtimeFenceHeld"`
+	StageReceiptVerified        bool                  `json:"stageReceiptVerified"`
+	RetentionReceiptVerified    bool                  `json:"retentionReceiptVerified"`
+	ReconciledByOperationID     string                `json:"reconciledByOperationId,omitempty"`
+	PublicationObjectAtTransfer string                `json:"publicationObjectAtTransfer,omitempty"`
 }
 
 func (db *DB) InspectPrivateMySQLSourceSnapshot(ctx context.Context, acceptance *PGOperationStore, operationID string) (MySQLSourceSnapshotInspection, error) {
@@ -116,7 +119,12 @@ func (db *DB) inspectReconciledMySQLSourceSnapshot(ctx context.Context, acceptan
 		return MySQLSourceSnapshotInspection{}, ErrMySQLSourceSnapshotInspection
 	}
 	var proof MySQLSourceReconciliationProof
-	if json.Unmarshal(canonical, &proof) != nil || proof.Schema != MySQLSourceReconciliationProofSchema ||
+	if json.Unmarshal(canonical, &proof) != nil {
+		return MySQLSourceSnapshotInspection{}, ErrMySQLSourceSnapshotInspection
+	}
+	proofSchemaValid := proof.Schema == MySQLSourceReconciliationProofSchema && checkpoint != "publish-intended" ||
+		proof.Schema == MySQLSourceReconciliationPublicationProofSchema && checkpoint == "publish-intended"
+	if !proofSchemaValid ||
 		proof.PriorSourceOperationID != prior.Operation.ID || proof.PriorSourceDigest != prior.Intent.CanonicalDigest ||
 		proof.SuccessorOperationID != successorID || proof.Checkpoint != checkpoint || !proof.NomadStoppedVerified ||
 		(mysqlSourceLockCheckpoint(checkpoint) && !proof.RuntimeAccountLocked) ||
@@ -154,6 +162,45 @@ func (db *DB) inspectReconciledMySQLSourceSnapshot(ctx context.Context, acceptan
 		!sameJSON(row["job_identity"], wantJob) {
 		return MySQLSourceSnapshotInspection{}, ErrMySQLSourceSnapshotInspection
 	}
+	if checkpoint == "publish-intended" {
+		var archivedStageSHA, encodedStage, algorithm, keyID, signature string
+		if json.Unmarshal(row["artifact_receipt_sha256"], &archivedStageSHA) != nil ||
+			json.Unmarshal(row["artifact_receipt_canonical"], &encodedStage) != nil ||
+			json.Unmarshal(row["artifact_receipt_signing_algorithm"], &algorithm) != nil ||
+			json.Unmarshal(row["artifact_receipt_signing_key_id"], &keyID) != nil ||
+			json.Unmarshal(row["artifact_receipt_signature"], &signature) != nil ||
+			archivedStageSHA != proof.PriorStageReceiptSHA256 || proof.PriorArtifact == nil ||
+			proof.PriorArtifact.Validate() != nil ||
+			(proof.PriorObjectState != "verified" && proof.PriorObjectState != "absent") {
+			return MySQLSourceSnapshotInspection{}, ErrMySQLSourceSnapshotInspection
+		}
+		if !strings.HasPrefix(encodedStage, `\x`) {
+			return MySQLSourceSnapshotInspection{}, ErrMySQLSourceSnapshotInspection
+		}
+		archivedStageCanonical, err := hex.DecodeString(strings.TrimPrefix(encodedStage, `\x`))
+		if err != nil {
+			return MySQLSourceSnapshotInspection{}, ErrMySQLSourceSnapshotInspection
+		}
+		stageHash := sha256.Sum256(archivedStageCanonical)
+		if hex.EncodeToString(stageHash[:]) != archivedStageSHA ||
+			acceptance.signer.Verify(ctx, AcceptanceSignature{Algorithm: algorithm, KeyID: keyID, Value: signature}, archivedStageCanonical) != nil {
+			return MySQLSourceSnapshotInspection{}, ErrMySQLSourceSnapshotInspection
+		}
+		var priorStage MySQLSourceArtifactReceipt
+		if json.Unmarshal(archivedStageCanonical, &priorStage) != nil || priorStage.OperationID != prior.Operation.ID ||
+			priorStage.Schema != MySQLSourceArtifactReceiptSchema ||
+			priorStage.AcceptanceIntentID != prior.AcceptanceIntentID || priorStage.AcceptanceCanonicalDigest != prior.Intent.CanonicalDigest ||
+			priorStage.CatalogRevision != request.CatalogRevision || priorStage.Source != request.Source ||
+			priorStage.DumpToolSHA256 != request.DumpToolSHA256 || priorStage.Artifact.Source != request.Source ||
+			priorStage.Artifact.Format != database.MySQLSQLArtifactV2 ||
+			priorStage.Artifact.SHA256 != proof.PriorArtifact.SHA256 || priorStage.Artifact.Bytes != proof.PriorArtifact.Size {
+			return MySQLSourceSnapshotInspection{}, ErrMySQLSourceSnapshotInspection
+		}
+		want, _ := json.Marshal(proof.PriorArtifact)
+		if !sameJSON(row["retained_artifact"], want) {
+			return MySQLSourceSnapshotInspection{}, ErrMySQLSourceSnapshotInspection
+		}
+	}
 	var active bool
 	var epoch int64
 	var activeID string
@@ -168,7 +215,12 @@ func (db *DB) inspectReconciledMySQLSourceSnapshot(ctx context.Context, acceptan
 			return MySQLSourceSnapshotInspection{}, ErrMySQLSourceSnapshotInspection
 		}
 	}
-	return MySQLSourceSnapshotInspection{OperationID: prior.Operation.ID, OperationStatus: prior.Operation.Status,
+	result := MySQLSourceSnapshotInspection{OperationID: prior.Operation.ID, OperationStatus: prior.Operation.Status,
 		IntentState: checkpoint, ReconciledByOperationID: successorID,
-		RuntimeFenceHeld: true}, nil
+		RuntimeFenceHeld: true}
+	if checkpoint == "publish-intended" {
+		result.StageReceiptVerified = true
+		result.PublicationObjectAtTransfer = proof.PriorObjectState
+	}
+	return result, nil
 }

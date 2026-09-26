@@ -2,4 +2,5 @@
 
 package store
 
-func afterMySQLSourceStageDump(string, string) error { return nil }
+func afterMySQLSourceStageDump(string, string) error          { return nil }
+func atMySQLSourcePublicationCheckpoint(string, string) error { return nil }

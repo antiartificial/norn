@@ -19,6 +19,7 @@ type MySQLSourceSnapshotRunner struct {
 	Stopper    MySQLSourceJobStopper
 	Observer   MySQLSourceStoppedObserver
 	Inspector  MySQLSourceAccountLockInspector
+	Objects    MySQLSourceArtifactVerifier
 	ClaimLease time.Duration
 }
 
@@ -56,7 +57,7 @@ func (r MySQLSourceSnapshotRunner) RunClaimedReconciliation(ctx context.Context,
 	if err := sourceClaimSupervisorReady(supervisor, runCtx); err != nil {
 		return err
 	}
-	if err := r.Control.ReconcileClaimedMySQLSourceSnapshot(runCtx, r.Acceptance, claim, r.Observer, inspector, r.Secrets); err != nil {
+	if err := r.Control.ReconcileClaimedMySQLSourceSnapshot(runCtx, r.Acceptance, claim, r.Observer, inspector, r.Secrets, r.Objects); err != nil {
 		return err
 	}
 	return sourceClaimSupervisorReady(supervisor, runCtx)

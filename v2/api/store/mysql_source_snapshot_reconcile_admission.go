@@ -129,7 +129,7 @@ func (db *DB) AcceptPrivateMySQLSourceReconciliation(ctx context.Context, accept
 			return ErrMySQLSourceSnapshotFence
 		}
 		var status, checkpoint, intentID, owner, liveOwner, profileID, logicalID, dumpDigest string
-		var manual, fenceActive, stopIntended, stopProved, lockIntended, lockProved, stageIntended, stageReceipt bool
+		var manual, fenceActive, stopIntended, stopProved, lockIntended, lockProved, stageIntended, stageReceipt, publishIntended, retainedDescriptor, retentionReceipt bool
 		var epoch, liveEpoch, revision int64
 		var savedSource, savedMaintenance, savedJob []byte
 		wantSource, _ := json.Marshal(source.Source)
@@ -140,7 +140,8 @@ func (db *DB) AcceptPrivateMySQLSourceReconciliation(ctx context.Context, accept
 			i.source,i.maintenance,i.job_identity,i.dump_tool_sha256,
 			i.stop_intended_at IS NOT NULL,i.stop_proved_at IS NOT NULL,i.lock_intended_at IS NOT NULL,
 			i.lock_proved_at IS NOT NULL,i.stage_intended_at IS NOT NULL,
-			i.artifact_receipt_canonical IS NOT NULL,
+			i.artifact_receipt_canonical IS NOT NULL,i.artifact_publish_intended_at IS NOT NULL,
+			i.retained_artifact IS NOT NULL,i.retention_receipt_canonical IS NOT NULL,
 			i.runtime_fence_epoch,i.runtime_fence_owner,f.active,f.epoch,f.owner
 			FROM mysql_source_snapshot_intents i JOIN operations p ON p.id=i.operation_id
 			CROSS JOIN runtime_mutation_fence f WHERE i.operation_id=$1 AND f.singleton=true
@@ -148,12 +149,15 @@ func (db *DB) AcceptPrivateMySQLSourceReconciliation(ctx context.Context, accept
 			mysqlRuntimePhysicalKeyForCatalog(active.Catalog, source.Source)).Scan(&status, &manual, &checkpoint, &intentID,
 			&revision, &profileID, &logicalID, &savedSource, &savedMaintenance, &savedJob, &dumpDigest,
 			&stopIntended, &stopProved, &lockIntended, &lockProved, &stageIntended, &stageReceipt,
+			&publishIntended, &retainedDescriptor, &retentionReceipt,
 			&epoch, &owner, &fenceActive, &liveEpoch, &liveOwner)
 		if err != nil || status != "failed" || !manual || checkpoint != link.Checkpoint ||
 			!stopIntended || (mysqlSourceLockCheckpoint(checkpoint) && (!stopProved || !lockIntended)) ||
 			(checkpoint == "stop-proved" && !stopProved) ||
 			(checkpoint == "lock-proved" && !lockProved) ||
 			(checkpoint == "stage-intended" && (!lockProved || !stageIntended || stageReceipt)) ||
+			(checkpoint == "publish-intended" && (!inspection.StageReceiptVerified || !lockProved || !stageIntended ||
+				!stageReceipt || !publishIntended || !retainedDescriptor || retentionReceipt)) ||
 			intentID != prior.AcceptanceIntentID || revision != source.CatalogRevision || profileID != source.ProfileID ||
 			logicalID != source.LogicalID || !sameJSON(savedSource, wantSource) ||
 			!sameJSON(savedMaintenance, wantMaintenance) || !sameJSON(savedJob, wantJob) ||
@@ -200,9 +204,9 @@ func decodeMySQLSourceReconciliationLink(metadata map[string]interface{}, link *
 
 func mysqlSourceReconciliationCheckpoint(checkpoint string) bool {
 	return checkpoint == "stop-intended" || checkpoint == "lock-intended" ||
-		checkpoint == "stop-proved" || checkpoint == "lock-proved" || checkpoint == "stage-intended"
+		checkpoint == "stop-proved" || checkpoint == "lock-proved" || checkpoint == "stage-intended" || checkpoint == "publish-intended"
 }
 
 func mysqlSourceLockCheckpoint(checkpoint string) bool {
-	return checkpoint == "lock-intended" || checkpoint == "lock-proved" || checkpoint == "stage-intended"
+	return checkpoint == "lock-intended" || checkpoint == "lock-proved" || checkpoint == "stage-intended" || checkpoint == "publish-intended"
 }
