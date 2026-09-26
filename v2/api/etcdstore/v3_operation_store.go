@@ -297,10 +297,19 @@ func (s *V3OperationStore) Accept(ctx context.Context, a store.OperationAcceptan
 	}
 	txn, err := s.kv.Txn(ctx).If(clientv3.Compare(clientv3.CreateRevision(key), "=", 0), clientv3.Compare(clientv3.CreateRevision(s.opKey(a.Operation.ID)), "=", 0)).Then(puts...).Commit()
 	if err != nil {
-		if replayLease != 0 {
-			_, _ = s.lease.Revoke(context.Background(), replayLease)
+		// A timed-out transaction can commit after the client loses its answer.
+		// Revoking the lease here could erase a committed replay-live marker.
+		resolveCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cancel()
+		existing, resolveErr := s.loadAcceptance(resolveCtx, key)
+		if resolveErr == nil {
+			resolved, replayErr := s.replay(resolveCtx, key, existing, a.Identity, a.Fingerprint)
+			if replayErr == nil {
+				return resolved, nil
+			}
+			resolveErr = replayErr
 		}
-		return store.AcceptedOperation{}, err
+		return store.AcceptedOperation{}, &store.AcceptanceIndeterminateError{Err: errors.Join(err, resolveErr)}
 	}
 	if !txn.Succeeded {
 		if replayLease != 0 {
