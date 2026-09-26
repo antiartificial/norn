@@ -1,6 +1,8 @@
 # M2 source ambiguity reconciliation contract — 2026-09-26
 
-Status: implementation design; no reconciliation command or state transition is qualified yet.
+Status: the first private admission slice is implemented in draft PR #76. No reconciliation claim, command, external observation, reservation/fence transfer, or successor source continuation is implemented or qualified yet.
+
+The admission slice signs one exact failed/manual-recovery predecessor at `stop-intended` or `lock-intended`, including its original acceptance digest, source request, checkpoint, and fence epoch/owner. A catalog-gated transaction rechecks the predecessor, source row, catalog binding, and held fence; a competing successor request key is rejected. A disposable PostgreSQL test exercised real claim expiry, signed admission, same-key replay, competing-key rejection, and missing-fence rejection. The full `go test ./store -count=1` suite passed against that disposable PostgreSQL instance; the container was removed afterward. Admission alone cannot execute a successor and must not be treated as a recovered source.
 
 ## Observed boundary
 
