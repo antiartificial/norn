@@ -125,7 +125,7 @@ func (s *V3OperationStore) AcceptFleetGitHubDispatch(ctx context.Context, input 
 	key := s.fleetGitHubDispatchPreparationKey(prepared.PlanID)
 	txn, err := s.kv.Txn(ctx).If(clientv3.Compare(clientv3.ModRevision(s.opKey(prepared.PlanID)), "=", planRevision), clientv3.Compare(clientv3.CreateRevision(acceptanceKey), "=", 0), clientv3.Compare(clientv3.CreateRevision(s.opKey(acceptance.Operation.ID)), "=", 0), clientv3.Compare(clientv3.CreateRevision(key), "=", 0), clientv3.Compare(clientv3.CreateRevision(s.fleetRunnerDispatchKey(prepared.PlanID)), "=", 0)).Then(clientv3.OpPut(acceptanceKey, string(acceptanceRecord)), clientv3.OpPut(s.opKey(acceptance.Operation.ID), string(opRecord)), clientv3.OpPut(s.operationKindIndexKey(acceptance.Operation.Kind, now, acceptance.Operation.ID), acceptance.Operation.ID), clientv3.OpPut(s.operationAcceptanceIndexKey(acceptance.Operation.ID), acceptanceKey), clientv3.OpPut(key, string(prepRecord))).Commit()
 	if err != nil {
-		return store.AcceptedOperation{}, FleetGitHubDispatchPreparation{}, err
+		return store.AcceptedOperation{}, FleetGitHubDispatchPreparation{}, &store.AcceptanceIndeterminateError{Err: err}
 	}
 	if txn.Succeeded {
 		return accepted, prepared, nil

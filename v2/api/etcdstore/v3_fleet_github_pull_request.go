@@ -121,7 +121,7 @@ func (s *V3OperationStore) AcceptFleetGitHubPullRequest(ctx context.Context, inp
 		clientv3.OpPut(reservationKey, string(reservationRecord)),
 	).Commit()
 	if err != nil {
-		return store.AcceptedOperation{}, err
+		return store.AcceptedOperation{}, &store.AcceptanceIndeterminateError{Err: err}
 	}
 	if txn.Succeeded {
 		return accepted, nil

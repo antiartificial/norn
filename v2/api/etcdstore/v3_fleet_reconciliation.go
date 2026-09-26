@@ -133,7 +133,7 @@ func (s *V3OperationStore) acceptFleetReconciliation(ctx context.Context, input 
 	}
 	txn, err := s.kv.Txn(ctx).If(compares...).Then(puts...).Commit()
 	if err != nil {
-		return store.AcceptedOperation{}, err
+		return store.AcceptedOperation{}, &store.AcceptanceIndeterminateError{Err: err}
 	}
 	if txn.Succeeded {
 		return accepted, nil

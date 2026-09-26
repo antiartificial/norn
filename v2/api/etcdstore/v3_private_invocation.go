@@ -101,7 +101,7 @@ func (s *V3OperationStore) AcceptPrivateInvocation(ctx context.Context, input st
 		clientv3.OpPut(privateKey, string(privateRecord)),
 	).Commit()
 	if err != nil {
-		return store.AcceptedOperation{}, err
+		return store.AcceptedOperation{}, &store.AcceptanceIndeterminateError{Err: err}
 	}
 	if txn.Succeeded {
 		return accepted, nil

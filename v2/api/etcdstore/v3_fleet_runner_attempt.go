@@ -235,7 +235,7 @@ func (s *V3OperationStore) acceptFleetRunnerAttempt(ctx context.Context, input s
 	puts = append(puts, clientv3.OpPut(key, string(acceptanceRecord)), clientv3.OpPut(s.opKey(acceptance.Operation.ID), string(operationRecord)), clientv3.OpPut(s.operationKindIndexKey(acceptance.Operation.Kind, acceptedAt, acceptance.Operation.ID), acceptance.Operation.ID), clientv3.OpPut(s.operationAcceptanceIndexKey(acceptance.Operation.ID), key), clientv3.OpPut(s.fleetRunnerAttemptKey(admission.PlanID, item.ID), string(attemptRecord)), clientv3.OpPut(s.fleetRunnerPlanStateKey(admission.PlanID), string(nextState)))
 	txn, err := s.kv.Txn(ctx).If(compares...).Then(puts...).Commit()
 	if err != nil {
-		return store.AcceptedOperation{}, err
+		return store.AcceptedOperation{}, &store.AcceptanceIndeterminateError{Err: err}
 	}
 	if txn.Succeeded {
 		return accepted, nil
