@@ -29,6 +29,14 @@ PostgreSQL. `pg_stat_archiver` showed zero archived files. Cluster-wide
 database, so no control-specific WAL retention estimate or 15-minute PITR
 proof follows from them.
 
+A read-only schedule inventory found no control-backup entry in the Mini user's
+crontab, no matching control-backup LaunchAgent among the loaded jobs, and no
+Nomad job named as a Norn/PostgreSQL control backup. A filename-only search of
+the relevant Norn configuration and LaunchAgent trees found one-time repair
+artifacts and the inactive v3 binding stage, not a recurring control dump.
+This inventory does not rule out an external backup system or an undiscovered
+schedule; none is currently evidenced as a 15-minute off-host recovery path.
+
 ## Proposed control-store triggers
 
 | Item | Proposed threshold | Basis and action |
