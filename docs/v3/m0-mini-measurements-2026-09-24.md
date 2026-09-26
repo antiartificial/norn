@@ -168,3 +168,15 @@ zero active operations, host status `ok`, and production readiness `blocked`.
 No Mini state was changed; the temporary local API inventory was removed after
 review. This extends the observation beyond 28 hours but does not establish a
 representative workload-cycle or release capacity budget.
+
+At 2026-09-26 13:39:56 UTC, a further read-only PostgreSQL aggregate sample
+measured database size **248,302,739 bytes**, user-table total **239,288,320
+bytes**, heap **148,987,904 bytes**, indexes **89,235,456 bytes**, and four
+connections. The largest tables were `beacon_events` (112,836,608 bytes),
+`control_events` (82,378,752), `mutation_audit_events` (31,219,712),
+`saga_events` (9,076,736), `deployment_steps` (1,531,904), and `operations`
+(761,856). Compared with the 2026-09-24 15:59 UTC baseline, database size
+increased **7,979,008 bytes** over approximately 45.68 hours, or a linearized
+**4.00 MiB per day**. The trend is consistent with the provisional 8 MiB/day
+planning allowance, but this observation alone does not qualify a workload
+cycle, retention policy, backup reserve, or release RTO.
