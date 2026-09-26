@@ -359,6 +359,24 @@ func TestMySQLSourceSnapshotIntentReservesSignedPhysicalSource(t *testing.T) {
 	if err := db.Pool.QueryRow(ctx, `SELECT state FROM mysql_source_snapshot_intents WHERE operation_id=$1`, claim.OperationID()).Scan(&state); err != nil || state != "retained-proved" {
 		t.Fatalf("retention proof state=%q err=%v", state, err)
 	}
+	if _, err := db.Pool.Exec(ctx, `UPDATE mysql_source_snapshot_intents SET retention_receipt_canonical=retention_receipt_canonical || decode('20','hex') WHERE operation_id=$1`, claim.OperationID()); err != nil {
+		t.Fatal(err)
+	}
+	if err := db.FinishClaimedMySQLSourceRetention(ctx, acceptedStore, claim); err == nil {
+		t.Fatal("tampered retention receipt completed source operation")
+	}
+	if _, err := db.Pool.Exec(ctx, `UPDATE mysql_source_snapshot_intents SET retention_receipt_canonical=$2 WHERE operation_id=$1`, claim.OperationID(), loadedRetention.CanonicalBytes); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := db.Pool.Exec(ctx, `UPDATE operations SET locked_until=clock_timestamp()-interval '1 second' WHERE id=$1`, claim.OperationID()); err != nil {
+		t.Fatal(err)
+	}
+	if err := db.FinishClaimedMySQLSourceRetention(ctx, acceptedStore, claim); err == nil {
+		t.Fatal("expired source claim completed operation")
+	}
+	if _, err := db.Pool.Exec(ctx, `UPDATE operations SET locked_until=clock_timestamp()+interval '2 minutes' WHERE id=$1`, claim.OperationID()); err != nil {
+		t.Fatal(err)
+	}
 	if err := db.FinishClaimedMySQLSourceRetention(ctx, acceptedStore, claim); err != nil {
 		t.Fatalf("signed retained source did not complete: %v", err)
 	}
