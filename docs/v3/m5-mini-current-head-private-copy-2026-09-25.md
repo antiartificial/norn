@@ -66,3 +66,33 @@ The live Mini API still reported `v2.20.0-platform-30-ga5da8ef` with healthy
 Consul, Nomad, PostgreSQL, S3, and SOPS. This is copied-data compatibility on
 the current candidate code, not a signed release, protected-backup restore,
 legacy service fence, rollback, or live promotion.
+
+## 2026-09-26 current PR head
+
+The same checked script passed against a fresh read-only Mini control database
+copy using Norn PR #76 commit `0ecfcf05edb8ffe0fe412aa64b4d9e6ff566517d`.
+The disposable Darwin/arm64 candidate binary had SHA-256
+`4cbc0bbf8de60d0d7228161a05843025df4eaf23fd8daeff8eba8cce755b1b2e`.
+Its candidate migration catalog applied versions 1–39, raised the minimum
+reader to 5 and writer to 31, and applied zero versions on a second pass.
+The private PostgreSQL 17.7 copy contained 28 original tables and 253,463
+rows. Original-table counts, primary-key digests, and original-column full-row
+digests matched before and after migration. Passive/check startup served the
+expected health and schema contract with operation recovery, worker, and
+Nomad watcher disabled.
+
+The dump connected through Mini's owner-local PostgreSQL socket with
+`default_transaction_read_only=on`. The candidate and script ran only against
+a private socket-only PostgreSQL copy; no live database migration, API
+replacement, app job, or provider mutation occurred. The rehearsal removed
+its private database and scratch files. A separate check found no candidate
+transfer directories on either Mac, zero local Docker containers, and the
+live Mini API still at `v2.20.0-platform-30-ga5da8ef`.
+
+Read-only Mini inventory also found no active operations and a blocked
+production-readiness result. The Mini currently has one Nomad server/client,
+one Consul server, no Fleet pools, and several security, offsite backup, and
+drill gates open. This copy rehearsal proves candidate schema preservation and
+passive startup only; it does not approve protected-master merge, live Mini
+upgrade, rollback, remote S3 provider durability, or separate-node MySQL
+recovery.
