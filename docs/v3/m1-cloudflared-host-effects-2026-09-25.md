@@ -94,3 +94,15 @@ returned `OK`. This confirms the current v2 file passes the installed
 validator. It does not validate a v3-generated candidate or exercise the
 restart path. Norn PR #76 checks passed at `04d7ccf`; the live service was not
 changed.
+
+The same day, a synthetic owner-local fixture with a tunnel identifier,
+credentials-file reference, existing ingress `originRequest` field, and
+catch-all rule was read and changed by the v3 `ReadConfigSnapshot` →
+`AddIngress` → `ApplyConfig` path. It updated one service, inserted one new
+rule, and produced a 413-byte candidate that passed the installed Mini
+cloudflared 2026.8.2 `tunnel ingress validate` command. The candidate was
+transferred only to a private temporary file on the Mini and removed after
+validation. It contained no production tunnel identifier or credentials.
+This is parser compatibility evidence for that synthetic shape; the actual
+Mini config rewrite, launchd restart, route health, and receipt recovery still
+require a private rehearsal.
