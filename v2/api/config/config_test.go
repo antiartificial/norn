@@ -229,3 +229,12 @@ func TestRedpandaConfig(t *testing.T) {
 		t.Fatalf("RedpandaRPKPath = %q", cfg.RedpandaRPKPath)
 	}
 }
+
+func TestManagedCloudflaredConfig(t *testing.T) {
+	t.Setenv("NORN_CLOUDFLARED_BIN", "/private/cloudflared")
+	t.Setenv("NORN_CLOUDFLARED_LAUNCH_LABEL", "com.example.cloudflared")
+	cfg := Load()
+	if cfg.CloudflaredBinary != "/private/cloudflared" || cfg.CloudflaredLaunchLabel != "com.example.cloudflared" {
+		t.Fatalf("cloudflared executable or launch label was not retained: binary=%q label=%q", cfg.CloudflaredBinary, cfg.CloudflaredLaunchLabel)
+	}
+}

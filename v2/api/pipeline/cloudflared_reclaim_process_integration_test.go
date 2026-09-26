@@ -50,6 +50,11 @@ func TestCloudflaredWrongHostReclaimProcessPostgres(t *testing.T) {
 	if err := os.WriteFile(filepath.Join(bin, "launchctl"), []byte("#!/bin/sh\ncase \"$1\" in\n  kickstart) printf 'restart\\n' >> \"$NORN_CLOUDFLARED_RESTART_LOG\" ;;\n  print) printf 'state = running\\n' ;;\n  *) exit 1 ;;\nesac\n"), 0700); err != nil {
 		t.Fatal(err)
 	}
+	validator := filepath.Join(bin, "cloudflared")
+	if err := os.WriteFile(validator, []byte("#!/bin/sh\nexit 0\n"), 0700); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("NORN_CLOUDFLARED_BIN", validator)
 	prior := cloudflared.ConfigPath()
 	cloudflared.SetConfigPath(configPath)
 	t.Cleanup(func() { cloudflared.SetConfigPath(prior) })

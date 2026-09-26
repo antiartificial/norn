@@ -171,6 +171,8 @@ func main() {
 	}()
 
 	cloudflared.SetConfigPath(cfg.CloudflaredConfig)
+	cloudflared.SetBinaryPath(cfg.CloudflaredBinary)
+	cloudflared.SetLaunchLabel(cfg.CloudflaredLaunchLabel)
 
 	if err := db.ReconcileExecSessions(context.Background()); err != nil {
 		log.Printf("WARNING: exec session lease recovery: %v", err)

@@ -38,9 +38,15 @@ func TestReadConfigSnapshotBindsUnknownFieldBytes(t *testing.T) {
 
 func TestIngressEditPreservesUnknownYAMLAndMatchesPublishedDigest(t *testing.T) {
 	prior := configPath
+	priorBinary := binaryPath
 	path := filepath.Join(t.TempDir(), "config.yml")
 	SetConfigPath(path)
-	t.Cleanup(func() { SetConfigPath(prior) })
+	validator := filepath.Join(t.TempDir(), "cloudflared")
+	if err := os.WriteFile(validator, []byte("#!/bin/sh\nexit 0\n"), 0700); err != nil {
+		t.Fatal(err)
+	}
+	SetBinaryPath(validator)
+	t.Cleanup(func() { configPath, binaryPath = prior, priorBinary })
 	original := "# Mini tunnel\ntunnel: demo\nunknown-option: keep-me # owner note\ningress:\n  - hostname: existing.example.com # existing host\n    service: http://127.0.0.1:8080\n    originRequest:\n      noTLSVerify: true\n  - service: http_status:404 # fallback\n"
 	if err := os.WriteFile(path, []byte(original), 0600); err != nil {
 		t.Fatal(err)

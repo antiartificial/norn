@@ -68,6 +68,18 @@ PATH-scoped launchctl test passed with the exact `kickstart -k` arguments.
 This was read-only host inspection and a local command-shape test; the live
 service was not restarted, so actual Mini recovery remains open.
 
+The live Mini checkout also validates a candidate with
+`cloudflared --config <file> tunnel ingress validate` before replacing the
+config, and loads the executable and launch label from host settings. The v3
+branch had lost those safeguards. It now validates the owner-only temporary
+file before the atomic rename, validates the published file before kickstart,
+and uses the configured binary and launch label with the managed label as
+default. A failed validator leaves the previous config intact in the local
+test. Cloudflared/config tests and the PostgreSQL-backed two-process
+pipeline/handler cases passed. This restores source compatibility with the
+live host contract; it does not certify the v3 binary against Mini's actual
+config or restart the live tunnel.
+
 The helper now waits up to ten seconds for `launchctl print` to report that
 the managed agent is running before it lets the supervisor write a success
 receipt. A waiting agent fails the bounded local test. The cloudflared package

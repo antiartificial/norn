@@ -67,6 +67,11 @@ func TestCloudflaredTwoAPIProcessRacePostgres(t *testing.T) {
 	if err := os.WriteFile(filepath.Join(bin, "launchctl"), []byte(stub), 0700); err != nil {
 		t.Fatal(err)
 	}
+	validator := filepath.Join(bin, "cloudflared")
+	if err := os.WriteFile(validator, []byte("#!/bin/sh\nexit 0\n"), 0700); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("NORN_CLOUDFLARED_BIN", validator)
 	first := startCloudflaredRaceChild(t, schema, apps, configPath, restarts, bin)
 	second := startCloudflaredRaceChild(t, schema, apps, configPath, restarts, bin)
 	if first.cmd.Process.Pid == second.cmd.Process.Pid {
