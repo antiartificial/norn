@@ -20,10 +20,10 @@ import (
 )
 
 // Execution checkpoints make an accepted operation's source and build outputs
-// immutable across claims. They are enabled with supervised build.test, where
-// a deferred test effect is resumed by a later claim: that claim must act on
-// the same source and reuse the same build instead of repeating Docker
-// build/push or authorizing a test run against different content.
+// immutable across claims. The API wires the checkpoint store even when
+// build.test uses its explicit legacy mode, so a later claim can resume a
+// predeploy snapshot only against the same source and pinned image. Supervised
+// build.test also uses these checkpoints to avoid repeating build/push.
 
 type sourceCheckpoint struct {
 	SourceKind    string   `json:"sourceKind"`

@@ -309,6 +309,7 @@ func main() {
 	// Deploy pipeline
 	pipe := &pipeline.Pipeline{
 		DB:                             db,
+		CheckpointStore:                db,
 		Nomad:                          nomadClient,
 		Consul:                         consulClient,
 		WS:                             ws,

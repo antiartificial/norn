@@ -209,10 +209,12 @@ An expired deploy may now be requeued within its existing attempt budget only
 when its snapshot step is still running, an immutable export intent exists,
 source and content-addressed build checkpoints are present, and no other
 mutable deployment step has started. Prebuilt and bound images now record the
-same build checkpoint as a built image. A store test keeps deploys that reached
-migration, lack an export intent or checkpoints, or name a mutable image in
-manual review. Corrupt build-checkpoint bytes also fail that deploy closed
-without blocking recovery of another safe operation. A disposable two-target
+same build checkpoint as a built image. The API wires its PostgreSQL checkpoint
+store in both supervised and explicit legacy build.test modes, so the
+snapshot retry rule can be met in either configuration. A store test keeps
+deploys that reached migration, lack an export intent or checkpoints, or name
+a mutable image in manual review. Corrupt build-checkpoint bytes also fail
+that deploy closed without blocking recovery of another safe operation. A disposable two-target
 PostgreSQL test exercises a successor deploy claim through `snapshotTarget`:
 it reuses the operation-pinned local
 snapshot and verifies the remote dump before publishing the manifest and
