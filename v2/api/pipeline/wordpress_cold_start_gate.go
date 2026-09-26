@@ -73,11 +73,21 @@ func (p *Pipeline) markWordPressVerifiedTLSColdStartLaunched(ctx context.Context
 			return fmt.Errorf("observe WordPress cold-start runtime: %w", err)
 		}
 		active := activeWordPressAllocations(allocations)
-		if len(active) > 1 || (len(active) == 1 && !matchesWordPressColdStartAllocation(active[0], app, evalID)) {
+		if len(active) > 1 || (len(active) == 1 && (active[0].ID == "" || active[0].JobID != app)) {
 			p.containWordPressVerifiedTLSColdStart(ctx, gate)
 			return fmt.Errorf("wordpress verified-TLS cold-start runtime identity is ambiguous")
 		}
 		if len(active) == 1 {
+			if !matchesWordPressColdStartAllocation(active[0], app, evalID) {
+				proved, err := p.Nomad.ProveColdStartEvaluationLineage(gate.region.NomadRegion, app, evalID, active[0].EvalID)
+				if err != nil || !proved {
+					p.containWordPressVerifiedTLSColdStart(ctx, gate)
+					if err != nil {
+						return fmt.Errorf("inspect WordPress cold-start evaluation lineage: %w", err)
+					}
+					return fmt.Errorf("wordpress verified-TLS cold-start evaluation lineage is ambiguous")
+				}
+			}
 			if err := p.DB.MarkMySQLRuntimeLaunchLaunched(ctx, gate.reservationID, active[0].ID); err != nil {
 				p.containWordPressVerifiedTLSColdStart(ctx, gate)
 				return fmt.Errorf("record WordPress cold-start runtime identity: %w", err)

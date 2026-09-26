@@ -101,6 +101,42 @@ func TestRequireColdStartJobAbsentRequires404AndNoPendingEvaluation(t *testing.T
 	}
 }
 
+func TestProveColdStartEvaluationLineage(t *testing.T) {
+	root := &nomadapi.Evaluation{ID: "submitted", JobID: "wordpress", Namespace: "default", JobModifyIndex: 12}
+	child := &nomadapi.Evaluation{ID: "continued", JobID: "wordpress", Namespace: "default", JobModifyIndex: 12, PreviousEval: "submitted"}
+	for _, test := range []struct {
+		name  string
+		child *nomadapi.Evaluation
+		want  bool
+	}{
+		{name: "scheduler continuation", child: child, want: true},
+		{name: "different job", child: &nomadapi.Evaluation{ID: "continued", JobID: "other", Namespace: "default", JobModifyIndex: 12, PreviousEval: "submitted"}},
+		{name: "different revision", child: &nomadapi.Evaluation{ID: "continued", JobID: "wordpress", Namespace: "default", JobModifyIndex: 13, PreviousEval: "submitted"}},
+		{name: "unlinked", child: &nomadapi.Evaluation{ID: "continued", JobID: "wordpress", Namespace: "default", JobModifyIndex: 12}},
+		{name: "cyclic", child: &nomadapi.Evaluation{ID: "continued", JobID: "wordpress", Namespace: "default", JobModifyIndex: 12, PreviousEval: "continued"}},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			client := newTestNomadClient(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				if r.URL.Query().Get("region") != "global" {
+					t.Errorf("evaluation query has no region: %s", r.URL)
+				}
+				switch r.URL.Path {
+				case "/v1/evaluation/submitted":
+					_ = json.NewEncoder(w).Encode(root)
+				case "/v1/evaluation/continued":
+					_ = json.NewEncoder(w).Encode(test.child)
+				default:
+					http.NotFound(w, r)
+				}
+			}))
+			got, err := client.ProveColdStartEvaluationLineage("global", "wordpress", "submitted", "continued")
+			if err != nil || got != test.want {
+				t.Fatalf("lineage = %t, %v; want %t", got, err, test.want)
+			}
+		})
+	}
+}
+
 func TestPeriodicJobSchedulePreservesVersionAndJobModifyIndex(t *testing.T) {
 	jobID, status, schedule, timezone := "widget-nightly", "running", "0 2 * * *", "America/Chicago"
 	version, modifyIndex, genericModifyIndex := uint64(3), uint64(42), uint64(99)

@@ -62,6 +62,19 @@ admission-to-source-runner gap for one pinned WordPress allocation. Remote
 retention, restore, signed unlock, and production Mini qualification remain
 open.
 
+On 2026-09-26, the strengthened opt-in test passed on the current PR head with
+the pinned stock WordPress 6.8.2 allocation, HTTP installation, disposable
+MySQL 8.4.11 requiring verified TLS, PostgreSQL 16, Nomad 2.0.7, and Consul
+2.0.4. The staged SQL contained the disposable marker and the installed
+`wp_options` and `wp_users` tables. Nomad scheduled the allocation from a
+continuation evaluation whose `PreviousEval` pointed to the registration
+evaluation. The cold-start gate now checks that bounded ancestry, the same job,
+namespace, and job modify index before recording the launched allocation; it
+still contains any missing or unrelated lineage for manual inspection. The
+test's temporary services, containers, and newly created volumes were removed.
+Remote retention, WordPress artifact restore, signed recovery, and live Mini
+qualification remain open.
+
 Admission also rechecks the catalog revision inside the signed acceptance
 transaction while holding the same PostgreSQL advisory lock as catalog
 activation. A catalog rotation during Nomad observation now fails before the

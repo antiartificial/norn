@@ -79,6 +79,44 @@ func terminalColdStartEvaluation(status string) bool {
 	}
 }
 
+// ProveColdStartEvaluationLineage accepts a scheduler continuation only when
+// Nomad links it back to the submitted evaluation for the same job revision.
+// The bounded walk fails closed on missing, cyclic, or unrelated history.
+func (c *Client) ProveColdStartEvaluationLineage(region, jobID, submittedID, allocationID string) (bool, error) {
+	if jobID == "" || submittedID == "" || allocationID == "" {
+		return false, nil
+	}
+	options := &nomadapi.QueryOptions{Region: region}
+	root, _, err := c.api.Evaluations().Info(submittedID, options)
+	if err != nil {
+		return false, fmt.Errorf("inspect submitted cold-start evaluation: %w", err)
+	}
+	if root == nil || root.ID != submittedID || root.JobID != jobID || root.JobModifyIndex == 0 {
+		return false, nil
+	}
+	currentID := allocationID
+	seen := make(map[string]bool)
+	for range 16 {
+		if seen[currentID] || currentID == "" {
+			return false, nil
+		}
+		seen[currentID] = true
+		if currentID == submittedID {
+			return true, nil
+		}
+		current, _, err := c.api.Evaluations().Info(currentID, options)
+		if err != nil {
+			return false, fmt.Errorf("inspect cold-start continuation evaluation: %w", err)
+		}
+		if current == nil || current.ID != currentID || current.JobID != jobID ||
+			current.JobModifyIndex != root.JobModifyIndex || current.Namespace != root.Namespace {
+			return false, nil
+		}
+		currentID = current.PreviousEval
+	}
+	return false, nil
+}
+
 func nomadNotFound(err error) bool {
 	var response nomadapi.UnexpectedResponseError
 	return errors.As(err, &response) && response.HasStatusCode() && response.StatusCode() == http.StatusNotFound

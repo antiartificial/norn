@@ -44,8 +44,12 @@ import (
 // those processes and supplies a Nomad agent with the declared host volume.
 // Set all NORN_TEST_WORDPRESS_DEPLOY_* variables named below, plus
 // NORN_TEST_NOMAD_ADDR and NORN_TEST_DATABASE_URL. Values must describe only
-// loopback disposable services. The test deregisters its uniquely named job,
-// deletes its Nomad Variable, and drops its PostgreSQL schema.
+// disposable services. Source-quiescence mode also requires a row containing
+// "source-rehearsal" in the disposable database, a snapshot account with
+// SELECT/SHOW VIEW/TRIGGER/EVENT/LOCK TABLES, and a fence account allowed to
+// inspect mysql.user and lock the runtime account. The test deregisters its
+// uniquely named job, deletes its Nomad Variable, and drops its PostgreSQL
+// schema.
 func TestClaimedWordPressVerifiedTLSDeployInNomad(t *testing.T) {
 	address, controlURL := os.Getenv("NORN_TEST_NOMAD_ADDR"), os.Getenv("NORN_TEST_DATABASE_URL")
 	host, serverName := os.Getenv("NORN_TEST_WORDPRESS_DEPLOY_MYSQL_HOST"), os.Getenv("NORN_TEST_WORDPRESS_DEPLOY_MYSQL_SERVER_NAME")
@@ -145,6 +149,16 @@ func TestClaimedWordPressVerifiedTLSDeployInNomad(t *testing.T) {
 	worker := &OperationWorker{db: db, pipeline: pipe, id: "wordpress-deploy-qualification", kinds: []string{"app.deploy"}, lease: time.Minute, poll: time.Second}
 	completed := wordpressDeployRun(t, db, worker, accepted.Operation.ID)
 	if completed.Status != model.OperationSucceeded {
+		if allocations, _, inspectErr := client.API().Jobs().Allocations(app, false, nil); inspectErr == nil {
+			for _, allocation := range allocations {
+				t.Logf("failed deploy allocation: id=%s job=%s eval=%s desired=%s client=%s", allocation.ID, allocation.JobID, allocation.EvalID, allocation.DesiredStatus, allocation.ClientStatus)
+				if evaluation, _, evalErr := client.API().Evaluations().Info(allocation.EvalID, nil); evalErr == nil {
+					t.Logf("allocation evaluation: id=%s job=%s previous=%s next=%s jobIndex=%d", evaluation.ID, evaluation.JobID, evaluation.PreviousEval, evaluation.NextEval, evaluation.JobModifyIndex)
+				}
+			}
+		} else {
+			t.Logf("failed deploy allocation inspection: %v", inspectErr)
+		}
 		t.Fatalf("good-CA deploy = %s: %s", completed.Status, completed.Message)
 	}
 	deploymentID, _ := accepted.Operation.Payload["deploymentId"].(string)
@@ -235,7 +249,8 @@ func TestClaimedWordPressVerifiedTLSDeployInNomad(t *testing.T) {
 		staged, err := os.ReadFile(receipt.Receipt.ArtifactPath)
 		if err != nil || !bytes.Contains(staged, []byte("source-rehearsal")) ||
 			!bytes.Contains(staged, []byte("wp_options")) || !bytes.Contains(staged, []byte("wp_users")) {
-			t.Fatalf("staged SQL did not retain the WordPress tables and disposable source marker: %v", err)
+			t.Fatalf("staged SQL did not retain the WordPress tables and disposable source marker: read=%v marker=%t options=%t users=%t", err,
+				bytes.Contains(staged, []byte("source-rehearsal")), bytes.Contains(staged, []byte("wp_options")), bytes.Contains(staged, []byte("wp_users")))
 		}
 		return
 	}
