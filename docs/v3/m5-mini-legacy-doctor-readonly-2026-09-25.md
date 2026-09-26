@@ -24,3 +24,23 @@ observations. The production-key backup, exact signed candidate, and scheduled
 one-way fence remain required before a Mini upgrade. The fresh copied-data
 rehearsal is recorded separately in
 [M5 current-head private-copy rehearsal](m5-mini-current-head-private-copy-2026-09-25.md).
+
+## Read-only Mini refresh — 2026-09-26 17:22 UTC
+
+The standard authenticated Norn inventory ran against Mini without changing
+services or provider state. The API reported `v2.20.0-platform-30-ga5da8ef`;
+the current release resolved to source
+`a5da8ef15d12e9eca7561e90b90d96f6dc652a21`. The API and host health
+reported `ok`, active operations were zero, and Fleet had zero node pools and
+zero plans. This confirms the installed release has not become the v3 candidate
+since the doctor run. The inventory does not revalidate the doctor's launcher,
+listener ownership, production-key, or backup checks.
+
+The installed v2 production-readiness endpoint returned `blocked` with 7 pass,
+1 warning, and 19 failed checks. Its failures include the production profile,
+Nomad/Consul quorum and TLS, external database/PITR, offsite snapshots, and
+recovery drills. Those checks describe the current single-host v2 substrate;
+they are not a substitute for the M5 upgrade gate or the separate fresh Fleet
+M3 qualification. The next M5 action remains binding the exact signed
+candidate and protected production-key backup to the private upgrade/rollback
+rehearsal, then rerunning the legacy-transition doctor against those artifacts.
