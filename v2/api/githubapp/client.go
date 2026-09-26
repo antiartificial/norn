@@ -636,7 +636,7 @@ func (c *Client) ObserveApplyRun(ctx context.Context, planID, fleetEnvironment s
 	if err := c.verifyApplyRun(run, planID, fleetEnvironment, allowDestructive, bound, nonce, actor); err != nil {
 		return nil, err
 	}
-	if run.RunAttempt <= 0 || run.Status == "" || (run.Status == "completed" && run.Conclusion == "") || (run.Status != "completed" && run.Conclusion != "") {
+	if run.RunAttempt <= 0 || !validApplyRunObservationState(run.Status, run.Conclusion) {
 		return nil, fmt.Errorf("GitHub apply run state is incomplete or inconsistent")
 	}
 	return &ApplyRunObservation{RunID: run.ID, RunAttempt: run.RunAttempt, Status: run.Status, Conclusion: run.Conclusion, ObservedAt: c.now().UTC()}, nil
@@ -674,7 +674,7 @@ func (c *Client) ObserveApplyRunAttempt(ctx context.Context, planID, fleetEnviro
 	if err := c.verifyApplyRun(&exact, planID, fleetEnvironment, allowDestructive, bound, nonce, actor); err != nil {
 		return nil, err
 	}
-	if exact.RunAttempt != attemptNumber || exact.Status == "" || (exact.Status == "completed" && exact.Conclusion == "") || (exact.Status != "completed" && exact.Conclusion != "") {
+	if exact.RunAttempt != attemptNumber || !validApplyRunObservationState(exact.Status, exact.Conclusion) {
 		return nil, fmt.Errorf("GitHub apply run attempt state is incomplete or inconsistent")
 	}
 	latest, err := c.getApplyRun(ctx, token, bound.RunID)
@@ -694,6 +694,24 @@ func (c *Client) ObserveApplyRunAttempt(ctx context.Context, planID, fleetEnviro
 		return nil, fmt.Errorf("protected apply run attempt observations disagree")
 	}
 	return &ApplyRunObservation{RunID: exact.ID, RunAttempt: exact.RunAttempt, Status: exact.Status, Conclusion: exact.Conclusion, ObservedAt: c.now().UTC()}, nil
+}
+
+func validApplyRunObservationState(status, conclusion string) bool {
+	if status == "completed" {
+		switch conclusion {
+		case "success", "failure", "cancelled", "timed_out", "neutral", "skipped", "action_required", "stale", "startup_failure":
+			return true
+		}
+		return false
+	}
+	if conclusion != "" {
+		return false
+	}
+	switch status {
+	case "queued", "in_progress", "requested", "waiting", "pending":
+		return true
+	}
+	return false
 }
 
 func (c *Client) getApplyRun(ctx context.Context, token string, runID int64) (*applyRun, error) {

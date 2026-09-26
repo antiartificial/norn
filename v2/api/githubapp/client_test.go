@@ -121,6 +121,17 @@ func TestObserveApplyRunBindsProtectedIdentityAndTerminalState(t *testing.T) {
 	if err != nil || observed.Status != "in_progress" || observed.Conclusion != "" {
 		t.Fatalf("active observation=%+v err=%v", observed, err)
 	}
+	status = "unrecognized"
+	if _, err := observe(); err == nil {
+		t.Fatal("unrecognized workflow status was accepted")
+	}
+	if _, err := client.ObserveApplyRunAttempt(context.Background(), planID, "production/nyc3", true, bound, nonce, 2); err == nil {
+		t.Fatal("unrecognized numbered-attempt status was accepted")
+	}
+	status, conclusion = "completed", "unrecognized"
+	if _, err := observe(); err == nil {
+		t.Fatal("unrecognized workflow conclusion was accepted")
+	}
 	status, conclusion, attempt, latestAttempt = "completed", "failure", 0, 0
 	if _, err := observe(); err == nil {
 		t.Fatal("run without a numbered attempt was accepted")
