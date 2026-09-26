@@ -4,9 +4,13 @@
 signed, successful deployment and a fresh Nomad observation. It claims that
 exact signed one-attempt operation, stops the selected job, locks its runtime
 MySQL account, stages SQL with the catalog-bound snapshot credential, then
-publishes and verifies an immutable S3 artifact. It removes the local SQL
-stage only after the signed retention receipt is durable. A same-key replay
-returns the retained operation ID without repeating external effects.
+publishes and verifies an immutable S3 artifact. It completes the operation
+under its exact live claim only after the signed retention receipt is durable,
+then removes the local SQL stage. Completion preserves the source runtime fence
+and locked MySQL account for the separately accepted restore. A same-key replay
+requires the successful terminal receipt and returns the source operation ID
+without repeating external effects. If terminalization or local cleanup fails,
+the command leaves the source fenced for inspection.
 
 Build from `v2/api`:
 
@@ -46,7 +50,10 @@ the app. The S3 bucket must already have object lock and versioning enabled,
 and the credential must permit the conditional-create probe and publication.
 For a disposable numeric loopback S3 endpoint only, add `--s3-loopback-http`.
 
-The disposable WordPress fixture passed with the compiled source, restore,
+The PostgreSQL-backed source intent test rejects completion before retention,
+proves terminal success after signed retention, keeps the runtime fence held,
+and verifies expired-operation recovery cannot change the result. The
+disposable WordPress fixture passed with the compiled source, restore,
 and recovery commands. It rejected a wrong source database before consuming
 the queued operation, proved a same-key retained replay, restored the retained
 bytes, and served WordPress from the recovered database. This remains a local

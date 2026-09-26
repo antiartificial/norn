@@ -17,6 +17,7 @@ import (
 
 	"norn/v2/api/artifactstore"
 	"norn/v2/api/database"
+	"norn/v2/api/model"
 	"norn/v2/api/nomad"
 )
 
@@ -335,6 +336,9 @@ func TestMySQLSourceSnapshotIntentReservesSignedPhysicalSource(t *testing.T) {
 	// A lost upload response is ambiguous. The retention path verifies the
 	// exact content-addressed object before it signs retained-proved, and it
 	// never asks the stager to run the dump again.
+	if err := db.FinishClaimedMySQLSourceRetention(ctx, acceptedStore, claim); err == nil {
+		t.Fatal("source completed without signed retention proof")
+	}
 	objects := &sourceRetentionStore{publishErr: errors.New("upload response lost")}
 	if _, err := db.RetainClaimedMySQLSourceArtifact(ctx, acceptedStore, claim, objects); !errors.Is(err, ErrMySQLSourceArtifactRetentionIndeterminate) || objects.publishes != 1 || stageCalls != 1 {
 		t.Fatalf("missing ambiguous upload proof: err=%v publishes=%d stageCalls=%d", err, objects.publishes, stageCalls)
@@ -354,6 +358,26 @@ func TestMySQLSourceSnapshotIntentReservesSignedPhysicalSource(t *testing.T) {
 	}
 	if err := db.Pool.QueryRow(ctx, `SELECT state FROM mysql_source_snapshot_intents WHERE operation_id=$1`, claim.OperationID()).Scan(&state); err != nil || state != "retained-proved" {
 		t.Fatalf("retention proof state=%q err=%v", state, err)
+	}
+	if err := db.FinishClaimedMySQLSourceRetention(ctx, acceptedStore, claim); err != nil {
+		t.Fatalf("signed retained source did not complete: %v", err)
+	}
+	completed, err := db.GetOperation(ctx, claim.OperationID())
+	if err != nil || completed.Status != model.OperationSucceeded {
+		t.Fatalf("source terminal receipt=%+v err=%v", completed, err)
+	}
+	if err := db.Pool.QueryRow(ctx, `SELECT active,owner FROM runtime_mutation_fence WHERE singleton=true`).Scan(&fenceActive, &fenceOwner); err != nil || !fenceActive || fenceOwner != "mysql-source-snapshot:"+claim.OperationID() {
+		t.Fatalf("source completion released runtime fence: active=%v owner=%q err=%v", fenceActive, fenceOwner, err)
+	}
+	if err := db.RecoverExpiredOperations(ctx); err != nil {
+		t.Fatalf("source recovery after completion: %v", err)
+	}
+	completed, err = db.GetOperation(ctx, claim.OperationID())
+	if err != nil || completed.Status != model.OperationSucceeded {
+		t.Fatalf("recovery changed source terminal receipt=%+v err=%v", completed, err)
+	}
+	if err := db.FinishClaimedMySQLSourceRetention(ctx, acceptedStore, claim); err == nil {
+		t.Fatal("stale source claim completed twice")
 	}
 	if err := os.Remove(signed.Receipt.ArtifactPath); err != nil {
 		t.Fatal(err)

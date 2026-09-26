@@ -15,15 +15,15 @@ M0–M3 are the current grouped integration scope. M4–M9 remain the app-capaci
 - The `norn-fleet` checkout at `/Users/arti/Desktop/Claude/norn-fleet` is `main`, ahead 4 and behind 157 relative to `origin/main`. Do not reset or clean it as part of PR work without inspecting its commits and worktrees.
 - Norn worktree inventory at this snapshot: main `/Users/arti/Desktop/Claude/norn` on `feature/durable-app-recovery-ui`; detached `norn-platform-pilot260908a`; active PR worktree above. Preserve dirty worktrees and remove a worktree only after verifying it is no longer active and contains no unique work.
 
-## Working local change — not yet verified or published
+## Source completion slice
 
-The active PR worktree has three uncommitted files:
+The source completion change closes the local command gap in three code files:
 
 - `v2/api/store/mysql_source_snapshot_completion.go` (new): attempts to terminalize a retained, signed MySQL source snapshot operation as `succeeded` under its exact live claim while retaining the source runtime fence and locked MySQL account.
 - `v2/api/cmd/norn-mysql-maintenance/source.go`: invokes that completion after retention proof; same-key replay requires terminal success and reports `status=succeeded retention=retained-proved`.
 - `v2/api/worker/wordpress_deploy_nomad_integration_test.go`: expects terminal success and asserts expired-operation recovery does not change it.
 
-The gap is real: the source command currently retains its artifact but leaves its operation `running` after exit; generic expiry recovery has no source-operation branch. The proposed fix is **unreviewed and untested**. Do not present it as completed. Finish the store integration test (reject completion before retention; accept after signed proof; verify fence stays held and terminal state survives recovery), run `gofmt`, focused tests, and the disposable `v2/scripts/test-wordpress-restore-qualification.sh` fixture. Review the SQL/claim race boundary, update the source-command and main handoff docs, then selectively commit and push if green. Use only the configured human Git identity and no AI/coauthor trailers. Check PR #76 CI at the resulting exact head.
+The gap was real: the source command retained its artifact but left its operation `running` after exit; generic expiry recovery has no source-operation branch. The PostgreSQL-backed source intent test now rejects completion before retention, accepts it after signed proof, verifies the fence remains held, and checks that recovery preserves terminal success. The disposable compiled-command WordPress source/restore/resume fixture passed on 2026-09-26. Check PR #76 CI at the final published head before treating this as a reviewed PR slice. The change does not qualify a remote provider or live Mini/Fleet runtime.
 
 ## Evidence and remaining gates
 
@@ -36,6 +36,6 @@ The gap is real: the source command currently retains its artifact but leaves it
 ## First actions in the next session
 
 1. Read this file and `git status --short --branch` in the Norn PR worktree; verify PR #76/#176 heads and checks.
-2. Complete and test the uncommitted source-operation fix, then update/push the focused PR slice only if it passes.
+2. Check the source-operation completion slice and exact PR #76 CI head, then continue the next focused implementation gate.
 3. Continue the pure/local M2 and M3 qualification that does not require new cloud resources. Keep provider, separate-node, managed DB, and live Mini/Fleet gates explicitly pending until their own evidence exists.
 4. Refresh the gate disposition after each slice; report milestone progress by passed/open gates rather than a guessed percentage.

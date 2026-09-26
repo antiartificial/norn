@@ -165,7 +165,10 @@ func runSource(ctx context.Context, arguments []string, output io.Writer) error 
 		if _, err := control.LoadSignedMySQLSourceArtifactRetentionReceipt(ctx, acceptance, accepted.Operation.ID); err != nil {
 			return errors.New("existing source operation requires inspection")
 		}
-		_, err := fmt.Fprintf(output, "source_operation_id=%s status=retained-proved\n", accepted.Operation.ID)
+		if accepted.Operation.Status != model.OperationSucceeded {
+			return errors.New("retained source has no successful terminal operation receipt")
+		}
+		_, err := fmt.Fprintf(output, "source_operation_id=%s status=succeeded retention=retained-proved\n", accepted.Operation.ID)
 		return err
 	}
 	if _, err := acceptance.VerifyAcceptedOperation(ctx, accepted.Operation.ID); err != nil {
@@ -196,9 +199,12 @@ func runSource(ctx context.Context, arguments []string, output io.Writer) error 
 	if retained.Receipt.StagingReceiptSHA256 != staged.SHA256 {
 		return errors.New("retained source receipt differs from staged receipt")
 	}
+	if err := control.FinishClaimedMySQLSourceRetention(ctx, acceptance, claim); err != nil {
+		return fmt.Errorf("source retention terminal receipt requires inspection: %w", err)
+	}
 	if err := os.Remove(staged.Receipt.ArtifactPath); err != nil {
 		return fmt.Errorf("source retained, but local staged SQL cleanup failed: %w", err)
 	}
-	_, err = fmt.Fprintf(output, "source_operation_id=%s status=retained-proved\n", accepted.Operation.ID)
+	_, err = fmt.Fprintf(output, "source_operation_id=%s status=succeeded retention=retained-proved\n", accepted.Operation.ID)
 	return err
 }

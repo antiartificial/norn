@@ -423,9 +423,20 @@ func wordpressSourceThroughCommand(t *testing.T, ctx context.Context, db *store.
 		t.Fatalf("private source accepted wrong database: %v: %s", err, output)
 	}
 	for attempt := 0; attempt < 2; attempt++ {
-		if output, err := run(args); err != nil || !bytes.Contains(output, []byte("source_operation_id="+sourceID+" status=retained-proved")) {
+		if output, err := run(args); err != nil || !bytes.Contains(output, []byte("source_operation_id="+sourceID+" status=succeeded retention=retained-proved")) {
 			t.Fatalf("private source invocation %d: %v: %s", attempt+1, err, output)
 		}
+	}
+	completed, err := db.GetOperation(ctx, sourceID)
+	if err != nil || completed.Status != model.OperationSucceeded {
+		t.Fatalf("retained source operation is not terminal: %+v, %v", completed, err)
+	}
+	if err := db.RecoverExpiredOperations(ctx); err != nil {
+		t.Fatalf("source completion did not survive operation recovery: %v", err)
+	}
+	completed, err = db.GetOperation(ctx, sourceID)
+	if err != nil || completed.Status != model.OperationSucceeded {
+		t.Fatalf("operation recovery changed retained source terminal state: %+v, %v", completed, err)
 	}
 	receipt, err := db.LoadSignedMySQLSourceArtifactReceipt(ctx, operations, sourceID)
 	if err != nil || receipt.Receipt.Artifact.Bytes <= 0 {
