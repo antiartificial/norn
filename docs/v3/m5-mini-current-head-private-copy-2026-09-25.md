@@ -1,5 +1,33 @@
 # M5 current-head Mini private-copy rehearsal — 2026-09-25
 
+## 2026-09-26 job and route definition preservation
+
+PR #76 commit `d8dec11fe9e8982e8295ed693023df74ed71d9a9` added an
+optional read-only live-state check to the private-copy script. A
+Darwin/arm64 candidate built with that exact SHA embedded had binary SHA-256
+`0376eb7203c72e4a35e59534ac0811d9a2d9e278112224c2042905b91677df6a`.
+The checked script on Mini had SHA-256
+`59a8bf607635e80afbfb322cc3cff643050aa3edf3dfebd0b4914f7d89995036`.
+
+The rehearsal read Mini's 37 base Nomad job IDs and `JobModifyIndex` values,
+plus the bytes of the owner-local cloudflared config, immediately before and
+after the isolated candidate run. Both fingerprints matched. Periodic child
+jobs were excluded; allocation health and external route traffic were not
+part of this comparison. The source dump used a read-only PostgreSQL session.
+The private PostgreSQL 17.7 copy contained 28 original tables and 254,983
+rows. Candidate migrations 1–43, a second migrate-only pass, original-row
+count/key/full-row fingerprints, and passive health/schema checks all passed;
+the resulting reader/writer floor was 5/31. The private database and scratch
+were removed and verified absent. Transferred candidate/script files and the
+local build were removed. The installed Mini API still reported signed
+`v2.20.0-platform-30-ga5da8ef` afterward.
+
+This closes the narrow private-copy check that base job definitions and the
+cloudflared config did not change during this rehearsal. It does not prove
+application data restore, allocation continuity through a real upgrade,
+public route availability, protected off-host backup, the one-way legacy
+fence, rollback, or M5 sign-off.
+
 The checked `mini-private-copy-rehearsal` script passed against a fresh
 read-only dump of the current Mini control database using a locally built
 candidate from Norn PR #76 commit
