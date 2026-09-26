@@ -2,6 +2,7 @@ package store
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"strings"
 	"testing"
@@ -137,7 +138,8 @@ func TestDeploySnapshotExportRecoveryStopsBeforeOtherMutableSteps(t *testing.T) 
 		t.Fatal(err)
 	}
 	ctx := context.Background()
-	makeExpired := func(worker string, withIntent, laterMutable bool) (*model.Deployment, *model.Operation) {
+	pinnedImage := "registry.example/demo@sha256:" + strings.Repeat("a", 64)
+	makeExpired := func(worker string, withIntent, laterMutable bool, imageRef string) (*model.Deployment, *model.Operation) {
 		t.Helper()
 		deployment, op := insertDeploymentOperationFixture(t, db, 2)
 		claimed, claim, err := db.ClaimNextOperation(ctx, worker, time.Minute, []string{"app.deploy"})
@@ -155,6 +157,20 @@ func TestDeploySnapshotExportRecoveryStopsBeforeOtherMutableSteps(t *testing.T) 
 				t.Fatal(err)
 			}
 		}
+		if imageRef != "" {
+			for _, stage := range []string{CheckpointSource, CheckpointBuild} {
+				payload := json.RawMessage(`{"pinned":true}`)
+				if stage == CheckpointBuild {
+					payload, err = json.Marshal(map[string]string{"imageTag": imageRef})
+					if err != nil {
+						t.Fatal(err)
+					}
+				}
+				if _, err := db.RecordOperationCheckpoint(ctx, claim, stage, payload); err != nil {
+					t.Fatal(err)
+				}
+			}
+		}
 		if laterMutable {
 			if err := db.StartDeploymentStep(ctx, model.DeploymentStep{DeploymentID: deployment.ID, App: deployment.App,
 				SagaID: deployment.SagaID, Step: "migrate", Kind: model.DeploymentStepMutable, Status: model.DeploymentStepRunning, Attempt: 1}); err != nil {
@@ -166,7 +182,7 @@ func TestDeploySnapshotExportRecoveryStopsBeforeOtherMutableSteps(t *testing.T) 
 		}
 		return deployment, op
 	}
-	_, safe := makeExpired("snapshot-export-worker", true, false)
+	_, safe := makeExpired("snapshot-export-worker", true, false, pinnedImage)
 	if err := db.RecoverExpiredOperations(ctx); err != nil {
 		t.Fatal(err)
 	}
@@ -181,12 +197,14 @@ func TestDeploySnapshotExportRecoveryStopsBeforeOtherMutableSteps(t *testing.T) 
 	if _, err := db.Pool.Exec(ctx, `UPDATE operations SET status='failed',locked_by='',locked_until=NULL,finished_at=now() WHERE id=$1`, safe.ID); err != nil {
 		t.Fatal(err)
 	}
-	_, advanced := makeExpired("advanced-deploy-worker", true, true)
-	_, unreserved := makeExpired("unreserved-deploy-worker", false, false)
+	_, advanced := makeExpired("advanced-deploy-worker", true, true, pinnedImage)
+	_, unreserved := makeExpired("unreserved-deploy-worker", false, false, pinnedImage)
+	_, uncheckpointed := makeExpired("uncheckpointed-deploy-worker", true, false, "")
+	_, mutableImage := makeExpired("mutable-image-deploy-worker", true, false, "demo:latest")
 	if err := db.RecoverExpiredOperations(ctx); err != nil {
 		t.Fatal(err)
 	}
-	for _, op := range []*model.Operation{advanced, unreserved} {
+	for _, op := range []*model.Operation{advanced, unreserved, uncheckpointed, mutableImage} {
 		got, err := db.GetOperation(ctx, op.ID)
 		if err != nil || got.Status != model.OperationFailed {
 			t.Fatalf("unsafe deploy recovery = %+v, %v", got, err)

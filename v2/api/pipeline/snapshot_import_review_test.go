@@ -12,8 +12,10 @@ import (
 
 	"github.com/google/uuid"
 
+	"norn/v2/api/hub"
 	"norn/v2/api/model"
 	"norn/v2/api/saga"
+	"norn/v2/api/store"
 )
 
 // Match storage.Client.GetObject's exclusive destination publication.
@@ -333,7 +335,8 @@ func TestPredeploySnapshotExportReplaysAfterDeployClaimRecovery(t *testing.T) {
 	if specText == string(specBytes) {
 		t.Fatal("reports fixture requirement was not found")
 	}
-	if err := os.WriteFile(specPath, []byte(specText+"snapshots:\n  exportBucket: review\n"), 0o644); err != nil {
+	pinnedImage := "registry.example/demo@sha256:" + strings.Repeat("a", 64)
+	if err := os.WriteFile(specPath, []byte(specText+"build:\n  image: "+pinnedImage+"\nsnapshots:\n  exportBucket: review\n"), 0o644); err != nil {
 		t.Fatal(err)
 	}
 	f.spec, err = model.LoadInfraSpec(specPath)
@@ -366,6 +369,15 @@ func TestPredeploySnapshotExportReplaysAfterDeployClaimRecovery(t *testing.T) {
 	first, firstClaim, err := f.db.ClaimNextOperation(ctx, "first-predeploy-worker", time.Minute, []string{"app.deploy"})
 	if err != nil || first == nil || first.ID != accepted.Operation.ID {
 		t.Fatalf("first deploy claim = %+v, %v", first, err)
+	}
+	for _, stage := range []string{store.CheckpointSource, store.CheckpointBuild} {
+		payload := []byte(`{"pinned":true}`)
+		if stage == store.CheckpointBuild {
+			payload = []byte(fmt.Sprintf(`{"imageTag":%q}`, pinnedImage))
+		}
+		if _, err := f.db.RecordOperationCheckpoint(ctx, firstClaim, stage, payload); err != nil {
+			t.Fatal(err)
+		}
 	}
 	if err := f.db.StartDeploymentStep(ctx, model.DeploymentStep{DeploymentID: accepted.Intent.DeploymentID,
 		App: f.app, SagaID: first.SagaID, Step: "snapshot", Kind: model.DeploymentStepMutable,
@@ -418,6 +430,118 @@ func TestPredeploySnapshotExportReplaysAfterDeployClaimRecovery(t *testing.T) {
 	}
 	if err := f.db.Pool.QueryRow(ctx, `SELECT state FROM snapshot_export_intents WHERE operation_id=$1 AND object_key=$2`, first.ID, key).Scan(&exportState); err != nil || exportState != "published" {
 		t.Fatalf("successor predeploy receipt = %q, %v", exportState, err)
+	}
+}
+
+func TestDeployRunReplaysSnapshotExportBeforeMigration(t *testing.T) {
+	f := newNamedFixture(t)
+	specPath := filepath.Join(f.p.AppsDir, f.app, "infraspec.yaml")
+	specBytes, err := os.ReadFile(specPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	specText := strings.Replace(string(specBytes), "  - name: reports\n    purpose: application\n    capabilities: [health]\n", "", 1)
+	if specText == string(specBytes) {
+		t.Fatal("reports fixture requirement was not found")
+	}
+	pinnedImage := "registry.example/demo@sha256:" + strings.Repeat("a", 64)
+	if err := os.WriteFile(specPath, []byte(specText+"build:\n  image: "+pinnedImage+"\nsnapshots:\n  exportBucket: review\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	f.spec, err = model.LoadInfraSpec(specPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	ctx := context.Background()
+	delete(f.catalog.Profiles[0].DatabaseBindings, "reports")
+	if _, err := f.db.ActivateDatabaseCatalog(ctx, 1, f.catalog, "operator"); err != nil {
+		t.Fatal(err)
+	}
+	baseline, err := f.queue(t, DatabaseBaselineKind, map[string]interface{}{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	baselineResult, err := f.execute(t, baseline.ID)
+	if err != nil || baselineResult.Status != model.OperationSucceeded {
+		t.Fatalf("database baseline = %+v, %v", baselineResult, err)
+	}
+	if err := f.db.FinishClaimedOperation(ctx, baselineResult.Claim, baselineResult.Status, baselineResult.Message, baselineResult.Metadata); err != nil {
+		t.Fatal(err)
+	}
+	accepted, err := f.p.Run(ctx, f.spec, "abc1234", f.request)
+	if err != nil {
+		t.Fatal(err)
+	}
+	objects := &expiringSnapshotObjects{reviewSnapshotObjects: reviewSnapshotObjects{}, expireAfter: 1,
+		afterWrite: func(context.Context) error { panic("simulated process exit after dump write") }}
+	f.p.SnapshotObjects = objects
+	f.p.CheckpointStore = f.db
+	f.p.WS = hub.New(nil)
+	first, firstClaim, err := f.db.ClaimNextOperation(ctx, "first-full-deploy-worker", time.Minute, []string{"app.deploy"})
+	if err != nil || first == nil || first.ID != accepted.Operation.ID {
+		t.Fatalf("first deploy claim = %+v, %v", first, err)
+	}
+	crashed := false
+	func() {
+		defer func() {
+			if recovered := recover(); recovered != nil {
+				crashed = true
+			}
+		}()
+		_, _ = f.p.ExecuteOperation(ctx, first, firstClaim)
+	}()
+	if !crashed {
+		t.Fatal("first deploy did not stop at the remote dump write")
+	}
+	sourceBefore, err := f.db.LoadOperationCheckpoint(ctx, first.ID, store.CheckpointSource)
+	if err != nil || sourceBefore == nil || sourceBefore.ClaimGeneration != firstClaim.Generation() {
+		t.Fatalf("first deploy source checkpoint = %+v, %v", sourceBefore, err)
+	}
+	var key, exportState string
+	if err := f.db.Pool.QueryRow(ctx, `SELECT object_key,state FROM snapshot_export_intents WHERE operation_id=$1`, first.ID).Scan(&key, &exportState); err != nil || exportState != "prepared" {
+		t.Fatalf("first full deploy export = %q %q, %v", key, exportState, err)
+	}
+	if len(objects.reviewSnapshotObjects[key]) == 0 || len(objects.reviewSnapshotObjects[key+snapshotManifestSuffix]) != 0 {
+		t.Fatal("first full deploy did not stop between dump and manifest")
+	}
+	var snapshotStatus string
+	if err := f.db.Pool.QueryRow(ctx, `SELECT status FROM deployment_steps WHERE deployment_id=$1 AND step='snapshot'`, accepted.Intent.DeploymentID).Scan(&snapshotStatus); err != nil || snapshotStatus != "running" {
+		t.Fatalf("crashed snapshot step = %q, %v", snapshotStatus, err)
+	}
+	if _, err := f.db.Pool.Exec(ctx, `UPDATE operations SET locked_until=clock_timestamp()-interval '1 second' WHERE id=$1`, first.ID); err != nil {
+		t.Fatal(err)
+	}
+	if err := f.db.RecoverExpiredOperations(ctx); err != nil {
+		t.Fatal(err)
+	}
+	objects.afterWrite = nil
+	second, secondClaim, err := f.db.ClaimNextOperation(ctx, "successor-full-deploy-worker", time.Minute, []string{"app.deploy"})
+	if err != nil || second == nil || second.ID != first.ID || secondClaim.Generation() == firstClaim.Generation() {
+		t.Fatalf("successor deploy claim = %+v, %+v, %v", second, secondClaim, err)
+	}
+	stopBeforeMigration := errors.New("stop after reconciled snapshot for this test")
+	f.p.StartDeploymentStep = func(ctx context.Context, step model.DeploymentStep) error {
+		if step.Step == "migrate" {
+			return stopBeforeMigration
+		}
+		return f.db.StartDeploymentStep(ctx, step)
+	}
+	result, err := f.p.ExecuteOperation(ctx, second, secondClaim)
+	if err != nil || result == nil || result.Status != model.OperationFailed || !strings.Contains(result.Message, stopBeforeMigration.Error()) {
+		t.Fatalf("successor full deploy prefix = %+v, %v", result, err)
+	}
+	if len(objects.reviewSnapshotObjects[key+snapshotManifestSuffix]) == 0 {
+		t.Fatal("successor full deploy did not publish manifest")
+	}
+	if err := f.db.Pool.QueryRow(ctx, `SELECT state FROM snapshot_export_intents WHERE operation_id=$1 AND object_key=$2`, first.ID, key).Scan(&exportState); err != nil || exportState != "published" {
+		t.Fatalf("successor full deploy receipt = %q, %v", exportState, err)
+	}
+	if err := f.db.Pool.QueryRow(ctx, `SELECT status FROM deployment_steps WHERE deployment_id=$1 AND step='snapshot'`, accepted.Intent.DeploymentID).Scan(&snapshotStatus); err != nil || snapshotStatus != "complete" {
+		t.Fatalf("successor snapshot step = %q, %v", snapshotStatus, err)
+	}
+	sourceAfter, err := f.db.LoadOperationCheckpoint(ctx, first.ID, store.CheckpointSource)
+	if err != nil || sourceAfter == nil || sourceAfter.ClaimGeneration != firstClaim.Generation() || sourceAfter.OutputsDigest != sourceBefore.OutputsDigest {
+		t.Fatalf("successor changed pinned source checkpoint = %+v, %v", sourceAfter, err)
 	}
 }
 

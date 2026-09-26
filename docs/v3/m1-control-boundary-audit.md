@@ -206,11 +206,17 @@ records both a published intent and a succeeded operation. This uses a local
 file-backed object store and disposable PostgreSQL. Deployment snapshot-step
 recovery and hosted provider behavior remain open.
 An expired deploy may now be requeued within its existing attempt budget only
-when its snapshot step is still running, at least one immutable export intent
-exists, and no other mutable deployment step has started. A store test keeps
-deploys that reached migration and snapshots without an export intent in
+when its snapshot step is still running, an immutable export intent exists,
+source and content-addressed build checkpoints are present, and no other
+mutable deployment step has started. Prebuilt and bound images now record the
+same build checkpoint as a built image. A store test keeps deploys that reached
+migration, lack an export intent or checkpoints, or name a mutable image in
 manual review. A disposable two-target PostgreSQL test exercises a successor
 deploy claim through `snapshotTarget`: it reuses the operation-pinned local
 snapshot and verifies the remote dump before publishing the manifest and
-receipt. Full `Pipeline.run` replay through later deployment steps and a
-literal deploy worker process crash remain unqualified.
+receipt. A second test enters full `Pipeline.run`, simulates a process stop
+after the dump write, and replays clone, admission, build, test and snapshot
+under a successor claim. The source checkpoint remains unchanged and the
+snapshot step completes; the test deliberately stops before migration.
+Replay through later deployment steps and a literal deploy worker process
+crash remain unqualified.
