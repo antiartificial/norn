@@ -239,6 +239,39 @@ func testMySQLSourceReconciliationAdmission(t *testing.T, checkpoint string) {
 			t.Fatalf("unlocked account transferred source: %v", err)
 		}
 	}
+	// Fail after the intent owner has changed inside the transaction but before
+	// the fence owner can change. PostgreSQL must roll back the entire transfer.
+	if _, err := db.Pool.Exec(ctx, `CREATE FUNCTION reject_source_fence_transfer() RETURNS trigger
+		LANGUAGE plpgsql AS $$ BEGIN RAISE EXCEPTION 'disposable transfer interruption'; END $$`); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := db.Pool.Exec(ctx, `CREATE TRIGGER reject_source_fence_transfer
+		BEFORE UPDATE OF owner ON runtime_mutation_fence FOR EACH ROW
+		EXECUTE FUNCTION reject_source_fence_transfer()`); err != nil {
+		t.Fatal(err)
+	}
+	if err := db.ReconcileClaimedMySQLSourceSnapshot(ctx, acceptance, successorClaim, stoppedObservation,
+		inspector, sourceSecretSource{}); !errors.Is(err, ErrMySQLSourceSnapshotFence) {
+		t.Fatalf("interrupted transfer unexpectedly committed: %v", err)
+	}
+	var interruptedOwner string
+	var interruptedProofs int
+	if err := db.Pool.QueryRow(ctx, `SELECT i.operation_id,i.state,f.owner,
+		(SELECT count(*) FROM mysql_source_snapshot_reconciliations WHERE prior_operation_id=$2)
+		FROM mysql_source_snapshot_intents i CROSS JOIN runtime_mutation_fence f
+		WHERE i.source_key=$1 AND f.singleton=true`, mysqlRuntimePhysicalKeyForCatalog(active.Catalog, request.Source),
+		prior.Operation.ID).Scan(&activeOperation, &state, &interruptedOwner, &interruptedProofs); err != nil ||
+		activeOperation != prior.Operation.ID || state != checkpoint ||
+		interruptedOwner != "mysql-source-snapshot:"+prior.Operation.ID || interruptedProofs != 0 {
+		t.Fatalf("interrupted transfer left partial ownership: source=%q state=%q fence=%q proofs=%d err=%v",
+			activeOperation, state, interruptedOwner, interruptedProofs, err)
+	}
+	if _, err := db.Pool.Exec(ctx, `DROP TRIGGER reject_source_fence_transfer ON runtime_mutation_fence`); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := db.Pool.Exec(ctx, `DROP FUNCTION reject_source_fence_transfer()`); err != nil {
+		t.Fatal(err)
+	}
 	if err := db.ReconcileClaimedMySQLSourceSnapshot(ctx, acceptance, successorClaim, stoppedObservation,
 		inspector, sourceSecretSource{}); err != nil {
 		t.Fatalf("proved stopped source did not transfer: %v", err)
@@ -247,7 +280,7 @@ func testMySQLSourceReconciliationAdmission(t *testing.T, checkpoint string) {
 	wantState := "stop-proved"
 	wantInspections := 0
 	if checkpoint == "lock-intended" {
-		wantState, wantInspections = "lock-proved", 2
+		wantState, wantInspections = "lock-proved", 3
 	}
 	if err := db.Pool.QueryRow(ctx, `SELECT i.operation_id,i.state,f.owner FROM mysql_source_snapshot_intents i
 		CROSS JOIN runtime_mutation_fence f WHERE i.source_key=$1 AND f.singleton=true`,
@@ -325,6 +358,10 @@ func testMySQLSourceReconciliationAdmission(t *testing.T, checkpoint string) {
 	}
 	if err := db.RecoverExpiredOperations(ctx); err != nil {
 		t.Fatal(err)
+	}
+	successorInput.Key = "after-transferred-claim-expired-" + uuid.NewString()
+	if _, err := db.AcceptPrivateMySQLSourceReconciliation(ctx, acceptance, successorInput); !errors.Is(err, ErrMySQLSourceSnapshotFence) {
+		t.Fatalf("expired transferred successor admitted another source owner: %v", err)
 	}
 	successorInput.Key = originalKey
 	failedReplay, err := db.AcceptPrivateMySQLSourceReconciliation(ctx, acceptance, successorInput)
