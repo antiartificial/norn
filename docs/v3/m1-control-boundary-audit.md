@@ -222,5 +222,10 @@ receipt. A second test enters full `Pipeline.run`, simulates a process stop
 after the dump write, and replays clone, admission, build, test and snapshot
 under a successor claim. The source checkpoint remains unchanged and the
 snapshot step completes; the test deliberately stops before migration.
-Replay through later deployment steps and a literal deploy worker process
-crash remain unqualified.
+A separate disposable PostgreSQL test exits the first `Pipeline.ExecuteOperation`
+process immediately after the remote dump write, recovers the expired claim,
+and runs a successor claim in the parent process. It verifies the manifest,
+published receipt and completed snapshot step before deliberately stopping
+ahead of migration. This qualifies the process boundary for the deployment
+snapshot prefix; a full `OperationWorker` process and replay through later
+deployment steps remain unqualified.
