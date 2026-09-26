@@ -22,6 +22,28 @@ type followingLogServer struct {
 	flood bool
 }
 
+func TestLatestLogAllocationIgnoresResponseOrder(t *testing.T) {
+	older := &nomadapi.AllocationListStub{ID: "older", ClientStatus: "running", CreateTime: 1}
+	newer := &nomadapi.AllocationListStub{ID: "newer", ClientStatus: "running", CreateTime: 2}
+	stopped := &nomadapi.AllocationListStub{ID: "stopped", ClientStatus: "complete", CreateTime: 3}
+	for _, allocs := range [][]*nomadapi.AllocationListStub{
+		{older, stopped, newer}, {newer, older, stopped}, {stopped, newer, older},
+	} {
+		if got := latestLogAllocation(allocs); got != newer {
+			t.Fatalf("selected %+v instead of latest running allocation", got)
+		}
+	}
+	if got := latestLogAllocation([]*nomadapi.AllocationListStub{nil, {ID: "", CreateTime: 9}, stopped, older}); got != older {
+		t.Fatalf("selected %+v with unusable candidates", got)
+	}
+	if got := latestLogAllocation([]*nomadapi.AllocationListStub{nil, {ID: ""}}); got != nil {
+		t.Fatalf("selected unusable allocation %+v", got)
+	}
+	if got := latestLogAllocation([]*nomadapi.AllocationListStub{stopped, {ID: "later", ClientStatus: "complete", CreateTime: 4}}); got == nil || got.ID != "later" {
+		t.Fatalf("did not select latest historical allocation: %+v", got)
+	}
+}
+
 func (s *followingLogServer) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	switch {
 	case r.URL.Path == "/v1/job/shop/allocations":

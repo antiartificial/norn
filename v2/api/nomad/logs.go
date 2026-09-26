@@ -22,16 +22,9 @@ func (c *Client) StreamLogs(ctx context.Context, jobID string, follow bool) (io.
 		return nil, fmt.Errorf("no allocations for job %s", jobID)
 	}
 
-	// Find the most recent running allocation
-	var target *nomadapi.AllocationListStub
-	for _, a := range allocs {
-		if a.ClientStatus == "running" {
-			target = a
-			break
-		}
-	}
+	target := latestLogAllocation(allocs)
 	if target == nil {
-		target = allocs[0]
+		return nil, fmt.Errorf("no usable allocations for job %s", jobID)
 	}
 
 	alloc, _, err := c.api.Allocations().Info(target.ID, query)
@@ -124,6 +117,24 @@ func (c *Client) StreamLogs(ctx context.Context, jobID string, follow bool) (io.
 	}()
 
 	return &logStream{PipeReader: r, stop: stop}, nil
+}
+
+func latestLogAllocation(allocs []*nomadapi.AllocationListStub) *nomadapi.AllocationListStub {
+	var best *nomadapi.AllocationListStub
+	for _, candidate := range allocs {
+		if candidate == nil || candidate.ID == "" {
+			continue
+		}
+		if best == nil ||
+			(candidate.ClientStatus == "running" && best.ClientStatus != "running") ||
+			(candidate.ClientStatus == "running") == (best.ClientStatus == "running") &&
+				(candidate.CreateTime > best.CreateTime ||
+					candidate.CreateTime == best.CreateTime && (candidate.CreateIndex > best.CreateIndex ||
+						candidate.CreateIndex == best.CreateIndex && candidate.ID > best.ID)) {
+			best = candidate
+		}
+	}
+	return best
 }
 
 func drainLogFrames(frames <-chan *nomadapi.StreamFrame, errs <-chan error) {
