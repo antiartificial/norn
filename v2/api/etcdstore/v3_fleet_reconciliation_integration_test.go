@@ -127,6 +127,10 @@ func TestV3FleetReconciliationRefusesWrongAttemptPhaseAndEvidenceEtcd(t *testing
 	}
 }
 
+// Distinct keys for the same successful phase may both be admitted when the
+// second adapter observes the first commit. If both read the same snapshot,
+// the plan-state CAS rejects one. Either schedule must preserve every accepted
+// receipt without an unaccepted write.
 func TestV3FleetReconciliationTwoAdapterRaceEtcd(t *testing.T) {
 	adapter, client, prefix := fleetRunnerEtcdStore(t)
 	plan := fleetRunnerPlan(t, adapter, "scale")
@@ -151,7 +155,11 @@ func TestV3FleetReconciliationTwoAdapterRaceEtcd(t *testing.T) {
 		fleetReconciliationAcceptance(t, adapter, plan, *created.FleetRunnerAttempt, "race-a", "prechange_verified"),
 		fleetReconciliationAcceptance(t, second, plan, *created.FleetRunnerAttempt, "race-b", "prechange_verified"),
 	}
-	start, outcomes := make(chan struct{}), make(chan error, len(requests))
+	type outcome struct {
+		operationID string
+		err         error
+	}
+	start, outcomes := make(chan struct{}), make(chan outcome, len(requests))
 	var wait sync.WaitGroup
 	for index, request := range requests {
 		current := adapter
@@ -162,25 +170,40 @@ func TestV3FleetReconciliationTwoAdapterRaceEtcd(t *testing.T) {
 		go func(current *etcdstore.V3OperationStore, request store.OperationAcceptance) {
 			defer wait.Done()
 			<-start
-			_, err := current.Accept(context.Background(), request)
-			outcomes <- err
+			accepted, err := current.Accept(context.Background(), request)
+			outcomes <- outcome{operationID: accepted.Operation.ID, err: err}
 		}(current, request)
 	}
 	close(start)
 	wait.Wait()
 	close(outcomes)
-	accepted, rejected := 0, 0
-	for err := range outcomes {
-		if err == nil {
-			accepted++
-		} else if errors.Is(err, store.ErrFleetReconciliationAdmission) {
+	accepted, rejected := map[string]bool{}, 0
+	for result := range outcomes {
+		if result.err == nil {
+			if result.operationID == "" || accepted[result.operationID] {
+				t.Fatalf("accepted reconciliation identity is missing or repeated: %q", result.operationID)
+			}
+			accepted[result.operationID] = true
+		} else if errors.Is(result.err, store.ErrFleetReconciliationAdmission) {
 			rejected++
 		} else {
-			t.Fatalf("race error=%v", err)
+			t.Fatalf("race error=%v", result.err)
 		}
 	}
-	if accepted != 1 || rejected != 1 {
-		t.Fatalf("accepted=%d rejected=%d", accepted, rejected)
+	if len(accepted) < 1 || len(accepted)+rejected != len(requests) {
+		t.Fatalf("accepted=%d rejected=%d", len(accepted), rejected)
+	}
+	history, err := adapter.ListFleetReconciliations(context.Background(), plan.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(history) != len(accepted) {
+		t.Fatalf("durable receipts=%d accepted=%d", len(history), len(accepted))
+	}
+	for _, operation := range history {
+		if !accepted[operation.ID] || operation.Kind != "fleet.reconciliation" || operation.Status != model.OperationSucceeded {
+			t.Fatalf("unaccepted or invalid durable reconciliation: %+v", operation)
+		}
 	}
 }
 
