@@ -645,37 +645,76 @@ func wordpressRestoreStagedSource(t *testing.T, ctx context.Context, db *store.D
 	if err != nil || target.MySQLMaintenance == nil || target.Target.Database != targetDatabase {
 		t.Fatalf("WordPress restore target is unavailable: %v", err)
 	}
-	request := store.MySQLRestoreRequest{CatalogRevision: 1, ProfileID: "qualification", LogicalID: "restore", Target: target.Target,
-		Maintenance: *target.MySQLMaintenance, Artifact: staged.Receipt.Artifact, ArtifactPath: staged.Receipt.ArtifactPath,
-		SourceArtifact: store.MySQLRestoreSourceArtifact{OperationID: sourceOperationID, ReceiptSHA256: staged.SHA256}}
-	payloadBytes, err := json.Marshal(request)
-	if err != nil {
-		t.Fatal(err)
-	}
-	var payload map[string]interface{}
-	if err := json.Unmarshal(payloadBytes, &payload); err != nil {
-		t.Fatal(err)
-	}
 	authority, err := operations.Authority(ctx)
 	if err != nil {
 		t.Fatal(err)
 	}
-	operation := model.Operation{ID: uuid.NewString(), Kind: store.MySQLRestoreOperationKind, App: targetDatabase, SagaID: uuid.NewString(),
-		Ref: "mysql/" + targetDatabase, Status: model.OperationQueued, Risk: "mutating", Source: "wordpress-deploy-nomad-integration",
-		MaxAttempts: 1, StartedAt: time.Now().UTC(), Payload: payload}
-	acceptance := store.OperationAcceptance{Identity: store.OperationRequestIdentity{Authority: authority,
-		Actor: store.OperationActor{Issuer: authority + "/qualification", Subject: "operator"}, Kind: store.MySQLRestoreOperationKind,
-		Resource: "mysql/" + targetDatabase, Key: "wordpress-restore-" + operation.ID}, Operation: operation,
-		Audit: store.AcceptanceAuditContext{Source: "wordpress-deploy-nomad-integration"}}
-	acceptance.Fingerprint, err = store.CanonicalOperationRequestFingerprint(acceptance)
-	if err != nil {
+	actor := store.OperationActor{Issuer: authority + "/qualification", Subject: "operator"}
+	privateInput := t.TempDir()
+	if err := os.Chmod(privateInput, 0o700); err != nil {
 		t.Fatal(err)
 	}
-	accepted, err := operations.Accept(ctx, acceptance)
-	if err != nil || accepted.Intent.Signature.Value == "" {
-		t.Fatalf("signed WordPress restore acceptance: %v", err)
+	databaseURLFile := filepath.Join(privateInput, "database-url")
+	auditKeyFile := filepath.Join(privateInput, "audit-key")
+	for path, value := range map[string]string{databaseURLFile: controlURL, auditKeyFile: "wordpress-deploy-qualification-signing-key"} {
+		if err := os.WriteFile(path, []byte(value), 0o600); err != nil {
+			t.Fatal(err)
+		}
 	}
-	restoreID := accepted.Operation.ID
+	var schema string
+	if err := db.Pool.QueryRow(ctx, `SELECT current_schema()`).Scan(&schema); err != nil {
+		t.Fatal(err)
+	}
+	admitArgs := []string{"admit-restore", "--database-url-file", databaseURLFile, "--audit-key-file", auditKeyFile,
+		"--authority", authority, "--schema", schema, "--source-operation-id", sourceOperationID,
+		"--target-profile", "qualification", "--target-logical-id", "restore", "--target-database", targetDatabase,
+		"--actor-issuer", actor.Issuer, "--actor-subject", actor.Subject, "--request-key", "wordpress-restore-" + sourceOperationID}
+	wrongAdmission := append([]string(nil), admitArgs...)
+	for index := range wrongAdmission {
+		if wrongAdmission[index] == "--target-database" {
+			wrongAdmission[index+1] += "_wrong"
+			break
+		}
+	}
+	if output, err := exec.CommandContext(ctx, os.Getenv("NORN_TEST_WORDPRESS_MAINTENANCE_CLI"), wrongAdmission...).CombinedOutput(); err == nil {
+		t.Fatalf("private restore admission accepted wrong target: %s", output)
+	}
+	var restoreID string
+	for attempt := 0; attempt < 2; attempt++ {
+		output, err := exec.CommandContext(ctx, os.Getenv("NORN_TEST_WORDPRESS_MAINTENANCE_CLI"), admitArgs...).CombinedOutput()
+		if err != nil || !bytes.Contains(output, []byte(" status=queued")) {
+			t.Fatalf("private restore admission %d: %v: %s", attempt+1, err, output)
+		}
+		fields := strings.Fields(string(output))
+		if len(fields) != 2 || !strings.HasPrefix(fields[0], "restore_operation_id=") {
+			t.Fatalf("restore admission output: %s", output)
+		}
+		id := strings.TrimPrefix(fields[0], "restore_operation_id=")
+		if restoreID != "" && restoreID != id {
+			t.Fatalf("restore admission replay changed identity: %s", output)
+		}
+		restoreID = id
+	}
+	conflictingSource := append([]string(nil), admitArgs...)
+	for index := range conflictingSource {
+		if conflictingSource[index] == "--source-operation-id" {
+			conflictingSource[index+1] = uuid.NewString()
+			break
+		}
+	}
+	if output, err := exec.CommandContext(ctx, os.Getenv("NORN_TEST_WORDPRESS_MAINTENANCE_CLI"), conflictingSource...).CombinedOutput(); err == nil || !bytes.Contains(output, []byte("conflict")) {
+		t.Fatalf("restore admission changed a signed request identity's source: %v: %s", err, output)
+	}
+	accepted, err := operations.VerifyAcceptedOperation(ctx, restoreID)
+	if err != nil || accepted.Operation.Kind != store.MySQLRestoreOperationKind || accepted.Intent.Signature.Value == "" {
+		t.Fatalf("signed WordPress restore admission unavailable: %v", err)
+	}
+	var signedRequest store.MySQLRestoreRequest
+	encoded, err := json.Marshal(accepted.Operation.Payload)
+	if err != nil || json.Unmarshal(encoded, &signedRequest) != nil || signedRequest.Target != target.Target ||
+		signedRequest.Artifact != staged.Receipt.Artifact || signedRequest.SourceArtifact.ReceiptSHA256 != staged.SHA256 {
+		t.Fatalf("restore admission selected wrong target or artifact: %v", err)
+	}
 	materialized := t.TempDir()
 	if err := os.Chmod(materialized, 0o700); err != nil {
 		t.Fatal(err)
@@ -729,22 +768,12 @@ func wordpressRestoreStagedSource(t *testing.T, ctx context.Context, db *store.D
 	if err != nil {
 		t.Fatal(err)
 	}
-	privateInput := t.TempDir()
-	if err := os.Chmod(privateInput, 0o700); err != nil {
-		t.Fatal(err)
-	}
-	databaseURLFile := filepath.Join(privateInput, "database-url")
-	auditKeyFile := filepath.Join(privateInput, "audit-key")
 	accessFile := filepath.Join(privateInput, "s3-access")
 	secretFile := filepath.Join(privateInput, "s3-secret")
-	for path, value := range map[string]string{databaseURLFile: controlURL, auditKeyFile: "wordpress-deploy-qualification-signing-key", accessFile: objectConfig.AccessKey, secretFile: objectConfig.SecretKey} {
+	for path, value := range map[string]string{accessFile: objectConfig.AccessKey, secretFile: objectConfig.SecretKey} {
 		if err := os.WriteFile(path, []byte(value), 0o600); err != nil {
 			t.Fatal(err)
 		}
-	}
-	var schema string
-	if err := db.Pool.QueryRow(ctx, `SELECT current_schema()`).Scan(&schema); err != nil {
-		t.Fatal(err)
 	}
 	restoreArgs := []string{"restore", "--database-url-file", databaseURLFile, "--audit-key-file", auditKeyFile,
 		"--authority", authority, "--schema", schema, "--secrets-dir", secretRoot,
@@ -796,7 +825,7 @@ func wordpressRestoreStagedSource(t *testing.T, ctx context.Context, db *store.D
 	cliArgs := []string{"recover", "--database-url-file", databaseURLFile, "--audit-key-file", auditKeyFile,
 		"--authority", authority, "--schema", schema, "--secrets-dir", secretRoot, "--nomad-url", os.Getenv("NORN_TEST_NOMAD_ADDR"),
 		"--restore-operation-id", restoreID, "--target-database", targetDatabase,
-		"--actor-issuer", acceptance.Identity.Actor.Issuer, "--actor-subject", acceptance.Identity.Actor.Subject,
+		"--actor-issuer", actor.Issuer, "--actor-subject", actor.Subject,
 		"--request-key", "wordpress-recovery-" + restoreID}
 	wrongTarget := append([]string(nil), cliArgs...)
 	for index := range wrongTarget {
@@ -808,7 +837,7 @@ func wordpressRestoreStagedSource(t *testing.T, ctx context.Context, db *store.D
 	if output, err := exec.CommandContext(ctx, os.Getenv("NORN_TEST_WORDPRESS_MAINTENANCE_CLI"), wrongTarget...).CombinedOutput(); err == nil || !bytes.Contains(output, []byte("expected target database")) {
 		t.Fatalf("private recovery accepted a wrong target selection: %v: %s", err, output)
 	}
-	identity := store.OperationRequestIdentity{Authority: authority, Actor: acceptance.Identity.Actor,
+	identity := store.OperationRequestIdentity{Authority: authority, Actor: actor,
 		Kind: store.MySQLRestoreRecoveryOperationKind, Resource: "mysql-restore/" + restoreID,
 		Key: "wordpress-recovery-" + restoreID}
 	if _, err := operations.ResolveIdentity(ctx, identity); !errors.Is(err, store.ErrAcceptanceNotFound) {

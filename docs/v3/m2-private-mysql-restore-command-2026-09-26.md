@@ -40,9 +40,9 @@ access; object lock and versioning are checked before the operation is claimed.
 For a disposable numeric loopback endpoint only, add `--s3-loopback-http`.
 
 The preceding [source command](m2-private-mysql-source-command-2026-09-26.md)
-can produce the signed retained artifact. This restore command does not accept
-a restore request or choose a target itself.
-Restore admission remains a private library call. An interrupted import is
+can produce the signed retained artifact, and [restore admission](m2-private-mysql-restore-admission-2026-09-26.md)
+selects its catalog target. This restore command does not accept a restore
+request or choose a target itself. An interrupted import is
 inspection-only; do not rerun the one-attempt operation. A successful command
 is only a local restore proof until the remote-provider and separate-node gates
 are qualified.
