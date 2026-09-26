@@ -3,13 +3,17 @@ package handler
 import (
 	"bytes"
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
+	"fmt"
 	"io"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -18,6 +22,7 @@ import (
 
 	"github.com/go-chi/chi/v5"
 	"github.com/google/uuid"
+	nomadapi "github.com/hashicorp/nomad/api"
 	"github.com/jackc/pgx/v5/pgxpool"
 
 	"norn/v2/api/config"
@@ -36,16 +41,22 @@ import (
 // replacement while the client loses its response; recovery must observe the
 // exact effect marker and never register a second replacement.
 func TestCronScheduleHTTPWorkerNomadPostgres(t *testing.T) {
-	testCronScheduleHTTPWorkerNomadPostgres(t, false, false)
+	testCronScheduleHTTPWorkerNomadPostgres(t, false, false, "")
 }
 func TestCronScheduleLostNomadResponseReconciles(t *testing.T) {
-	testCronScheduleHTTPWorkerNomadPostgres(t, true, false)
+	testCronScheduleHTTPWorkerNomadPostgres(t, true, false, "")
 }
 func TestCronScheduleTwoWorkersSameKey(t *testing.T) {
-	testCronScheduleHTTPWorkerNomadPostgres(t, false, true)
+	testCronScheduleHTTPWorkerNomadPostgres(t, false, true, "")
+}
+func TestCronScheduleCrashAfterReservationRemainsUnresolved(t *testing.T) {
+	testCronScheduleHTTPWorkerNomadPostgres(t, false, false, "reserved")
+}
+func TestCronScheduleCrashAfterNomadCommitReconciles(t *testing.T) {
+	testCronScheduleHTTPWorkerNomadPostgres(t, false, false, "committed")
 }
 
-func testCronScheduleHTTPWorkerNomadPostgres(t *testing.T, loseResponse, twoWorkers bool) {
+func testCronScheduleHTTPWorkerNomadPostgres(t *testing.T, loseResponse, twoWorkers bool, crashWindow string) {
 	address := os.Getenv("NORN_TEST_NOMAD_ADDR")
 	if address == "" || os.Getenv("NORN_TEST_DATABASE_URL") == "" {
 		t.Skip("set NORN_TEST_NOMAD_ADDR and NORN_TEST_DATABASE_URL to disposable services")
@@ -209,6 +220,10 @@ func testCronScheduleHTTPWorkerNomadPostgres(t *testing.T, loseResponse, twoWork
 	if status != http.StatusAccepted || accepted.Kind != "app.cron-schedule" {
 		t.Fatalf("accept status=%d operation=%+v body=%s", status, accepted, body)
 	}
+	if crashWindow != "" {
+		testCronScheduleCrashWindow(t, ctx, db, p, client, job, paused, accepted, serve, crashWindow)
+		return
+	}
 	workerCtx, cancel := context.WithTimeout(ctx, 25*time.Second)
 	defer cancel()
 	go worker.NewOperationWorkerForKinds(db, p, []string{"app.cron-schedule"}).Run(workerCtx)
@@ -278,5 +293,118 @@ func testCronScheduleHTTPWorkerNomadPostgres(t *testing.T, loseResponse, twoWork
 	}
 	if count != 1 {
 		t.Fatalf("schedule operation count=%d want 1", count)
+	}
+}
+
+// Abandon the first claimed worker at either side of the Nomad write. A
+// replacement must never issue another schedule update for an unknown result.
+func testCronScheduleCrashWindow(t *testing.T, ctx context.Context, db *store.DB, p *pipeline.Pipeline, client *nomad.Client, originalJob *nomadapi.Job, paused *nomad.PeriodicJobInfo, accepted model.Operation, serve func() (int, model.Operation, string), window string) {
+	t.Helper()
+	claimed, oldClaim, err := db.ClaimNextOperation(ctx, "crashed-schedule-worker", time.Minute, []string{"app.cron-schedule"})
+	if err != nil || claimed == nil || claimed.ID != accepted.ID {
+		t.Fatalf("first claim=%+v err=%v", claimed, err)
+	}
+	es, err := store.NewPGEffectStore(db)
+	if err != nil {
+		t.Fatal(err)
+	}
+	authority, err := es.Authority(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	parse := func(name string) uint64 {
+		value, e := strconv.ParseUint(fmt.Sprint(accepted.Payload[name]), 10, 64)
+		if e != nil {
+			t.Fatalf("parse %s: %v", name, e)
+		}
+		return value
+	}
+	jobID := fmt.Sprint(accepted.Payload["jobId"])
+	launchPayload, err := json.Marshal(map[string]interface{}{
+		"app": accepted.App, "process": "nightly", "previousSchedule": paused.Schedule,
+		"schedule": "15 2 * * *", "timezone": paused.TimeZone, "jobId": jobID,
+		"imageTag": accepted.Payload["imageTag"], "specDigest": accepted.Payload["specDigest"],
+		"deliveryRevision": parse("deliveryRevision"), "version": parse("version"),
+		"modifyIndex": parse("modifyIndex"), "paused": true,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	reservation := effect.Reservation{Authority: authority, Resource: "app/" + accepted.App + "/cron/nightly", OperationClaim: effect.OperationClaim{OperationID: oldClaim.OperationID(), OwnerID: oldClaim.OwnerID(), Generation: oldClaim.Generation()}, Stage: "app.cron-schedule.nomad", Supervisor: "nomad-cron-schedule", LaunchPayload: launchPayload}
+	reservation.InputDigest, err = effect.ComputeInputDigest(reservation)
+	if err != nil {
+		t.Fatal(err)
+	}
+	sum := sha256.Sum256([]byte(reservation.Authority + "\x00" + reservation.OperationClaim.OperationID + "\x00" + reservation.InputDigest + "\x00" + fmt.Sprint(reservation.OperationClaim.Generation)))
+	reservation.SupervisorExecutionID = "nomad-cron-schedule-" + hex.EncodeToString(sum[:16])
+	reserved, err := es.Reserve(ctx, reservation)
+	if err != nil || !reserved.Created || reserved.Record.Lifecycle != effect.LifecycleReserved {
+		t.Fatalf("effect reservation=%+v err=%v", reserved, err)
+	}
+	if window == "committed" {
+		replacement := *originalJob
+		periodic := *originalJob.Periodic
+		schedule := "15 2 * * *"
+		periodic.Spec = &schedule
+		replacement.Periodic = &periodic
+		if err := client.UpdatePeriodicJobSchedule(jobID, paused.ModifyIndex, reservation.SupervisorExecutionID, &replacement); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if _, err := db.Pool.Exec(ctx, `UPDATE operations SET locked_until=clock_timestamp()-interval '1 second' WHERE id=$1`, accepted.ID); err != nil {
+		t.Fatal(err)
+	}
+	if err := db.RecoverExpiredOperations(ctx); err != nil {
+		t.Fatal(err)
+	}
+	if err := db.CheckOperationClaim(ctx, oldClaim); err == nil {
+		t.Fatal("expired worker retained claim")
+	}
+	recovered, err := db.GetOperation(ctx, accepted.ID)
+	if err != nil || recovered.Status != model.OperationQueued {
+		t.Fatalf("recovered operation=%+v err=%v", recovered, err)
+	}
+	var successor *model.Operation
+	var claim store.OperationClaim
+	deadline := time.Now().Add(10 * time.Second)
+	for time.Now().Before(deadline) {
+		successor, claim, err = db.ClaimNextOperation(ctx, "successor-schedule-worker", time.Minute, []string{"app.cron-schedule"})
+		if err != nil || successor != nil {
+			break
+		}
+		time.Sleep(100 * time.Millisecond)
+	}
+	if err != nil || successor == nil || claim.Generation() <= oldClaim.Generation() {
+		t.Fatalf("successor claim=%+v err=%v recovered=%+v", successor, err, recovered)
+	}
+	result, execErr := p.ExecuteOperation(ctx, successor, claim)
+	state, err := client.PeriodicJobSchedule(jobID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if window == "reserved" {
+		if !effect.IsDeferred(execErr) || result != nil || state.Version != paused.Version || state.Schedule != paused.Schedule {
+			t.Fatalf("unproved reservation advanced: result=%+v err=%v Nomad=%+v", result, execErr, state)
+		}
+		record, found, lookupErr := es.LatestForOperation(ctx, accepted.ID, reservation.Stage)
+		if lookupErr != nil || !found || record.Lifecycle != effect.LifecycleReserved {
+			t.Fatalf("unresolved reservation=%+v found=%v err=%v", record, found, lookupErr)
+		}
+		return
+	}
+	if execErr != nil || result == nil || result.Status != model.OperationSucceeded || !result.Finished() || state.Version != paused.Version+1 || state.Schedule != "15 2 * * *" || !state.Paused || state.CronScheduleEffectID != reservation.SupervisorExecutionID {
+		t.Fatalf("committed schedule was not reconciled: result=%+v err=%v Nomad=%+v", result, execErr, state)
+	}
+	finished, err := db.GetOperation(ctx, accepted.ID)
+	if err != nil || finished.Status != model.OperationSucceeded || finished.Metadata["effectId"] != reserved.Record.Token.EffectID {
+		t.Fatalf("recovered receipt=%+v err=%v", finished, err)
+	}
+	cronState, err := db.GetCronState(ctx, accepted.App, "nightly")
+	if err != nil || !cronState.Paused || cronState.Schedule != "15 2 * * *" {
+		t.Fatalf("recovered cron state=%+v err=%v", cronState, err)
+	}
+	status, replay, body := serve()
+	if status != http.StatusOK || replay.ID != accepted.ID || replay.Receipt == nil {
+		t.Fatalf("replay status=%d operation=%+v body=%s", status, replay, body)
 	}
 }

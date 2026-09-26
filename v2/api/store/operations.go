@@ -1052,7 +1052,7 @@ func (db *DB) RecoverExpiredOperations(ctx context.Context) error {
 				  AND ds.kind = 'mutable' AND ds.step <> 'snapshot'
 			)))
 		  AND (
-		    kind IN ('app.preflight', 'app.restart', 'app.canary-promote', 'app.cron-pause', 'app.cron-resume', 'app.cron-trigger', 'app.cron-trigger-reconcile', 'app.function-invoke')
+		    kind IN ('app.preflight', 'app.restart', 'app.canary-promote', 'app.cron-pause', 'app.cron-resume', 'app.cron-schedule', 'app.cron-trigger', 'app.cron-trigger-reconcile', 'app.function-invoke')
 		    OR (kind = 'app.snapshot' AND EXISTS (
 		      SELECT 1 FROM snapshot_publication_intents spi
 		      WHERE spi.operation_id = operations.id AND spi.state IN ('prepared', 'published')
