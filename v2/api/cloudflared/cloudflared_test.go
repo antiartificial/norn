@@ -7,6 +7,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 )
 
 func TestIsPublicEndpoint(t *testing.T) {
@@ -37,11 +38,12 @@ func TestRestartTargetsManagedCloudflaredAgent(t *testing.T) {
 	bin := t.TempDir()
 	output := filepath.Join(t.TempDir(), "launchctl-args")
 	stub := filepath.Join(bin, "launchctl")
-	if err := os.WriteFile(stub, []byte("#!/bin/sh\nprintf '%s\\n' \"$@\" > \"$NORN_TEST_LAUNCHCTL_ARGS\"\n"), 0700); err != nil {
+	if err := os.WriteFile(stub, []byte("#!/bin/sh\ncase \"$1\" in\n  kickstart) printf '%s\\n' \"$@\" > \"$NORN_TEST_LAUNCHCTL_ARGS\" ;;\n  print) printf 'state = %s\\n' \"$NORN_TEST_LAUNCHCTL_STATE\" ;;\n  *) exit 1 ;;\nesac\n"), 0700); err != nil {
 		t.Fatal(err)
 	}
 	t.Setenv("PATH", bin+string(os.PathListSeparator)+os.Getenv("PATH"))
 	t.Setenv("NORN_TEST_LAUNCHCTL_ARGS", output)
+	t.Setenv("NORN_TEST_LAUNCHCTL_STATE", "running")
 	if err := Restart(context.Background()); err != nil {
 		t.Fatal(err)
 	}
@@ -52,6 +54,12 @@ func TestRestartTargetsManagedCloudflaredAgent(t *testing.T) {
 	want := fmt.Sprintf("kickstart\n-k\ngui/%d/com.norn.cloudflared\n", os.Getuid())
 	if string(data) != want {
 		t.Fatalf("launchctl args=%q want=%q", strings.TrimSpace(string(data)), strings.TrimSpace(want))
+	}
+	t.Setenv("NORN_TEST_LAUNCHCTL_STATE", "waiting")
+	ctx, cancel := context.WithTimeout(context.Background(), 150*time.Millisecond)
+	defer cancel()
+	if err := Restart(ctx); err == nil {
+		t.Fatal("waiting managed agent was treated as restarted")
 	}
 }
 

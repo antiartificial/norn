@@ -11,6 +11,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"strings"
+	"time"
 
 	"gopkg.in/yaml.v3"
 )
@@ -288,11 +289,28 @@ func ApplyConfig(_ context.Context, cfg *Config) error {
 // which kills the running process and immediately relaunches it with
 // the updated config. This avoids the KeepAlive/SuccessfulExit issue
 // where a clean SIGTERM exit (code 0) would not trigger auto-restart.
-func Restart(_ context.Context) error {
+func Restart(ctx context.Context) error {
 	label := fmt.Sprintf("gui/%d/com.norn.cloudflared", os.Getuid())
-	cmd := exec.Command("launchctl", "kickstart", "-k", label)
-	if out, err := cmd.CombinedOutput(); err != nil {
-		return fmt.Errorf("launchctl kickstart cloudflared: %s: %w", string(out), err)
+	ctx, cancel := context.WithTimeout(ctx, 10*time.Second)
+	defer cancel()
+	if err := exec.CommandContext(ctx, "launchctl", "kickstart", "-k", label).Run(); err != nil {
+		return fmt.Errorf("launchctl kickstart managed cloudflared: %w", err)
 	}
-	return nil
+	ticker := time.NewTicker(100 * time.Millisecond)
+	defer ticker.Stop()
+	for {
+		output, err := exec.CommandContext(ctx, "launchctl", "print", label).Output()
+		if err == nil {
+			for _, line := range strings.Split(string(output), "\n") {
+				if strings.TrimSpace(line) == "state = running" {
+					return nil
+				}
+			}
+		}
+		select {
+		case <-ctx.Done():
+			return fmt.Errorf("managed cloudflared did not report running after kickstart: %w", ctx.Err())
+		case <-ticker.C:
+		}
+	}
 }

@@ -67,3 +67,10 @@ uses the current process UID and the managed `com.norn.cloudflared` label. A
 PATH-scoped launchctl test passed with the exact `kickstart -k` arguments.
 This was read-only host inspection and a local command-shape test; the live
 service was not restarted, so actual Mini recovery remains open.
+
+The helper now waits up to ten seconds for `launchctl print` to report that
+the managed agent is running before it lets the supervisor write a success
+receipt. A waiting agent fails the bounded local test. The cloudflared package
+and the PostgreSQL-backed pipeline/handler cases passed with command-scoped
+launchctl stubs. This proves launchd state handling, not tunnel connectivity
+or public endpoint health; those remain part of the private Mini rehearsal.

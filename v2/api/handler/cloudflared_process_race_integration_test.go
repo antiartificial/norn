@@ -63,7 +63,7 @@ func TestCloudflaredTwoAPIProcessRacePostgres(t *testing.T) {
 		t.Fatal(err)
 	}
 	restarts := filepath.Join(root, "restarts.log")
-	stub := "#!/bin/sh\nprintf 'restart\\n' >> \"$NORN_CLOUDFLARED_RESTART_LOG\"\n"
+	stub := "#!/bin/sh\ncase \"$1\" in\n  kickstart) printf 'restart\\n' >> \"$NORN_CLOUDFLARED_RESTART_LOG\" ;;\n  print) printf 'state = running\\n' ;;\n  *) exit 1 ;;\nesac\n"
 	if err := os.WriteFile(filepath.Join(bin, "launchctl"), []byte(stub), 0700); err != nil {
 		t.Fatal(err)
 	}
