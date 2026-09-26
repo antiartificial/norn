@@ -2,8 +2,10 @@ package cloudflared
 
 import (
 	"context"
+	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 )
 
@@ -28,6 +30,28 @@ func TestIsPublicEndpoint(t *testing.T) {
 				t.Fatalf("IsPublicEndpoint(%q) = %t, want %t", test.endpoint, got, test.want)
 			}
 		})
+	}
+}
+
+func TestRestartTargetsManagedCloudflaredAgent(t *testing.T) {
+	bin := t.TempDir()
+	output := filepath.Join(t.TempDir(), "launchctl-args")
+	stub := filepath.Join(bin, "launchctl")
+	if err := os.WriteFile(stub, []byte("#!/bin/sh\nprintf '%s\\n' \"$@\" > \"$NORN_TEST_LAUNCHCTL_ARGS\"\n"), 0700); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("PATH", bin+string(os.PathListSeparator)+os.Getenv("PATH"))
+	t.Setenv("NORN_TEST_LAUNCHCTL_ARGS", output)
+	if err := Restart(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	data, err := os.ReadFile(output)
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := fmt.Sprintf("kickstart\n-k\ngui/%d/com.norn.cloudflared\n", os.Getuid())
+	if string(data) != want {
+		t.Fatalf("launchctl args=%q want=%q", strings.TrimSpace(string(data)), strings.TrimSpace(want))
 	}
 }
 

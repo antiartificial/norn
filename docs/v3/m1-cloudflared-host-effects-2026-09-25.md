@@ -52,3 +52,18 @@ existing service update and a new rule; the cloudflared pipeline and handler
 cases passed against disposable PostgreSQL 16. Actual Mini config and
 `launchctl` recovery remain unqualified. General etcd app route parity remains
 outside this slice.
+
+## Read-only Mini service identity — 2026-09-26
+
+The live Mini inventory showed no active Norn operations and no Fleet pools.
+Its cloudflared config was owner UID 501, mode `0600`, 1,393 bytes, and had
+only the known `tunnel`, `credentials-file`, and `ingress` top-level keys. The
+v3 receipt directory does not yet exist on that v2 host. The running service
+is `gui/501/com.norn.cloudflared`; `gui/501/homebrew.mxcl.cloudflared` is not
+registered. The Norn API process also runs as UID 501.
+
+The v3 restart helper previously targeted that absent Homebrew label. It now
+uses the current process UID and the managed `com.norn.cloudflared` label. A
+PATH-scoped launchctl test passed with the exact `kickstart -k` arguments.
+This was read-only host inspection and a local command-shape test; the live
+service was not restarted, so actual Mini recovery remains open.

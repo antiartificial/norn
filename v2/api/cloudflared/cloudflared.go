@@ -289,7 +289,8 @@ func ApplyConfig(_ context.Context, cfg *Config) error {
 // the updated config. This avoids the KeepAlive/SuccessfulExit issue
 // where a clean SIGTERM exit (code 0) would not trigger auto-restart.
 func Restart(_ context.Context) error {
-	cmd := exec.Command("launchctl", "kickstart", "-k", "gui/501/homebrew.mxcl.cloudflared")
+	label := fmt.Sprintf("gui/%d/com.norn.cloudflared", os.Getuid())
+	cmd := exec.Command("launchctl", "kickstart", "-k", label)
 	if out, err := cmd.CombinedOutput(); err != nil {
 		return fmt.Errorf("launchctl kickstart cloudflared: %s: %w", string(out), err)
 	}
