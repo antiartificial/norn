@@ -50,11 +50,14 @@ func main() {
 }
 
 func run(ctx context.Context, arguments []string, output io.Writer) error {
+	if len(arguments) > 0 && arguments[0] == "source" {
+		return runSource(ctx, arguments[1:], output)
+	}
 	if len(arguments) > 0 && arguments[0] == "restore" {
 		return runRestore(ctx, arguments[1:], output)
 	}
 	if len(arguments) == 0 || arguments[0] != "recover" {
-		return errors.New("usage: norn-mysql-maintenance {restore|recover} [private options]")
+		return errors.New("usage: norn-mysql-maintenance {source|restore|recover} [private options]")
 	}
 	flags := flag.NewFlagSet("recover", flag.ContinueOnError)
 	flags.SetOutput(io.Discard)

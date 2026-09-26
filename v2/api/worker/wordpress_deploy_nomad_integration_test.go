@@ -10,6 +10,7 @@ import (
 	"errors"
 	"fmt"
 	"net"
+	"net/http/httptest"
 	"net/url"
 	"os"
 	"os/exec"
@@ -255,6 +256,17 @@ func TestClaimedWordPressVerifiedTLSDeployInNomad(t *testing.T) {
 		if _, _, err := db.ClaimPrivateMySQLOperation(ctx, uuid.NewString(), "wordpress-foreign-source", store.MySQLSourceSnapshotOperationKind, time.Minute); !errors.Is(err, store.ErrMySQLMaintenanceClaimUnavailable) {
 			t.Fatalf("exact private claim selected an unrelated queued source operation: %v", err)
 		}
+		if restoreSource {
+			emulator, server, receipt := wordpressSourceThroughCommand(t, ctx, db, operations, selection,
+				sourceAccepted.Operation.ID, dumpTool, secretRoot, controlURL, authority, request.Actor)
+			if err := database.InspectMySQLRuntimeAccountLockForRestore(ctx, source, *source.MySQLMaintenance, secrets); err != nil {
+				t.Fatalf("WordPress source runtime account was not locked: %v", err)
+			}
+			wordpressRestoreStagedSource(t, ctx, db, operations, client, secrets, secretRoot, controlURL, catalog,
+				sourceAccepted.Operation.ID, store.OperationClaim{}, receipt, restoreDatabase, emulator, server)
+			wordpressDeployRecovered(t, ctx, db, client, pipe, request, app, volume, secrets)
+			return
+		}
 		claimed, claim, err := db.ClaimPrivateMySQLOperation(ctx, sourceAccepted.Operation.ID, "wordpress-source-qualification", store.MySQLSourceSnapshotOperationKind, 2*time.Minute)
 		if err != nil || claimed == nil || claim.OperationID() != sourceAccepted.Operation.ID {
 			t.Fatalf("claim accepted WordPress source operation: %+v, %v", claimed, err)
@@ -287,31 +299,6 @@ func TestClaimedWordPressVerifiedTLSDeployInNomad(t *testing.T) {
 			t.Fatalf("staged SQL did not retain the WordPress tables and disposable source marker: read=%v marker=%t options=%t users=%t", err,
 				bytes.Contains(staged, []byte("source-rehearsal")), bytes.Contains(staged, []byte("wp_options")), bytes.Contains(staged, []byte("wp_users")))
 		}
-		if restoreSource {
-			wordpressRestoreStagedSource(t, ctx, db, operations, client, secrets, secretRoot, controlURL, catalog, sourceAccepted.Operation.ID, claim, receipt, restoreDatabase)
-			recoveredApp := app + "-recovered"
-			recoveredAppsDir, recoveredSpec := wordpressDeploySource(t, recoveredApp, volume)
-			recoveredPipe := *pipe
-			recoveredPipe.AppsDir = recoveredAppsDir
-			recoveredPipe.DatabaseTargets = &pipeline.DatabaseTargets{ProfileID: "qualification-recovered", Catalog: db.ActiveDatabaseCatalog, Secrets: secrets}
-			recoveredRequest := request
-			recoveredRequest.Key = "wordpress-restored-target"
-			recoveredAccepted, err := recoveredPipe.Run(ctx, recoveredSpec, "HEAD", recoveredRequest)
-			if err != nil {
-				t.Fatalf("signed WordPress deploy against recovered MySQL target: %v", err)
-			}
-			t.Cleanup(func() {
-				_, _, _ = client.API().Jobs().Deregister(recoveredApp, true, nil)
-				_, _ = client.API().Variables().Delete(nomad.DatabaseVariablePath(recoveredApp), nil)
-			})
-			recoveredWorker := &OperationWorker{db: db, pipeline: &recoveredPipe, id: "wordpress-recovered-qualification",
-				kinds: []string{"app.deploy"}, lease: time.Minute, poll: time.Second}
-			recoveredOperation := wordpressDeployRun(t, db, recoveredWorker, recoveredAccepted.Operation.ID)
-			if recoveredOperation.Status != model.OperationSucceeded {
-				t.Fatalf("recovered WordPress deploy = %s: %s", recoveredOperation.Status, recoveredOperation.Message)
-			}
-			wordpressDeployAssertAllocationPage(t, client, recoveredApp, true)
-		}
 		return
 	}
 
@@ -343,6 +330,114 @@ type wordpressSourceDatabaseStager struct{}
 
 func (wordpressSourceDatabaseStager) Stage(ctx context.Context, source database.ResolvedBinding, expected database.TargetIdentity, secrets database.SecretSource, tool, digest, directory string) (string, database.MySQLSQLArtifact, error) {
 	return database.StageMySQLSQLSnapshotWithMaintenanceCredential(ctx, source, expected, secrets, tool, digest, directory)
+}
+
+func wordpressDeployRecovered(t *testing.T, ctx context.Context, db *store.DB, client *nomad.Client,
+	pipe *pipeline.Pipeline, request pipeline.EnqueueRequest, app, volume string, secrets database.SecretSource) {
+	t.Helper()
+	recoveredApp := app + "-recovered"
+	recoveredAppsDir, recoveredSpec := wordpressDeploySource(t, recoveredApp, volume)
+	recoveredPipe := *pipe
+	recoveredPipe.AppsDir = recoveredAppsDir
+	recoveredPipe.DatabaseTargets = &pipeline.DatabaseTargets{ProfileID: "qualification-recovered", Catalog: db.ActiveDatabaseCatalog, Secrets: secrets}
+	recoveredRequest := request
+	recoveredRequest.Key = "wordpress-restored-target"
+	recoveredAccepted, err := recoveredPipe.Run(ctx, recoveredSpec, "HEAD", recoveredRequest)
+	if err != nil {
+		t.Fatalf("signed WordPress deploy against recovered MySQL target: %v", err)
+	}
+	t.Cleanup(func() {
+		_, _, _ = client.API().Jobs().Deregister(recoveredApp, true, nil)
+		_, _ = client.API().Variables().Delete(nomad.DatabaseVariablePath(recoveredApp), nil)
+	})
+	recoveredWorker := &OperationWorker{db: db, pipeline: &recoveredPipe, id: "wordpress-recovered-qualification",
+		kinds: []string{"app.deploy"}, lease: time.Minute, poll: time.Second}
+	recoveredOperation := wordpressDeployRun(t, db, recoveredWorker, recoveredAccepted.Operation.ID)
+	if recoveredOperation.Status != model.OperationSucceeded {
+		t.Fatalf("recovered WordPress deploy = %s: %s", recoveredOperation.Status, recoveredOperation.Message)
+	}
+	wordpressDeployAssertAllocationPage(t, client, recoveredApp, true)
+}
+
+func wordpressSourceThroughCommand(t *testing.T, ctx context.Context, db *store.DB, operations *store.PGOperationStore,
+	selection store.MySQLSourceSnapshotAdmissionRequest, sourceID, dumpTool, secretRoot, controlURL, authority string,
+	actor store.OperationActor) (*s3emulator.Emulator, *httptest.Server, store.SignedMySQLSourceArtifactReceipt) {
+	t.Helper()
+	emulator, server := s3emulator.Start("norn-wordpress-artifacts", "wordpress-artifact-writer")
+	t.Cleanup(server.Close)
+	endpoint, err := url.Parse(server.URL)
+	if err != nil {
+		t.Fatal(err)
+	}
+	private := t.TempDir()
+	stage := t.TempDir()
+	spool := t.TempDir()
+	for _, directory := range []string{private, stage, spool} {
+		if err := os.Chmod(directory, 0o700); err != nil {
+			t.Fatal(err)
+		}
+	}
+	selectionJSON, err := json.Marshal(selection)
+	if err != nil {
+		t.Fatal(err)
+	}
+	selectionFile := filepath.Join(private, "selection.json")
+	databaseURLFile := filepath.Join(private, "database-url")
+	auditKeyFile := filepath.Join(private, "audit-key")
+	accessFile := filepath.Join(private, "s3-access")
+	secretFile := filepath.Join(private, "s3-secret")
+	caFile := filepath.Join(private, "s3-ca.pem")
+	for path, value := range map[string][]byte{selectionFile: selectionJSON, databaseURLFile: []byte(controlURL),
+		auditKeyFile: []byte("wordpress-deploy-qualification-signing-key"), accessFile: []byte("wordpress-artifact-writer"),
+		secretFile: []byte("test-secret"), caFile: pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: server.Certificate().Raw})} {
+		if err := os.WriteFile(path, value, 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	var schema string
+	if err := db.Pool.QueryRow(ctx, `SELECT current_schema()`).Scan(&schema); err != nil {
+		t.Fatal(err)
+	}
+	args := []string{"source", "--database-url-file", databaseURLFile, "--audit-key-file", auditKeyFile,
+		"--authority", authority, "--schema", schema, "--secrets-dir", secretRoot,
+		"--nomad-url", os.Getenv("NORN_TEST_NOMAD_ADDR"), "--selection-file", selectionFile,
+		"--source-database", selection.Binding.Source.Database, "--actor-issuer", actor.Issuer,
+		"--actor-subject", actor.Subject, "--request-key", "wordpress-bound-source",
+		"--stage-dir", stage, "--dump-tool-path", dumpTool, "--s3-endpoint", endpoint.Host,
+		"--s3-bucket", "norn-wordpress-artifacts", "--s3-prefix", "mysql/wordpress", "--s3-region", "us-east-1",
+		"--s3-access-key-file", accessFile, "--s3-secret-key-file", secretFile,
+		"--s3-spool-dir", spool, "--s3-spool-capacity", fmt.Sprint(64 << 20)}
+	run := func(input []string) ([]byte, error) {
+		command := exec.CommandContext(ctx, os.Getenv("NORN_TEST_WORDPRESS_MAINTENANCE_CLI"), input...)
+		command.Env = append(os.Environ(), "SSL_CERT_FILE="+caFile)
+		return command.CombinedOutput()
+	}
+	wrong := append([]string(nil), args...)
+	for index := range wrong {
+		if wrong[index] == "--source-database" {
+			wrong[index+1] += "_wrong"
+			break
+		}
+	}
+	if output, err := run(wrong); err == nil || !bytes.Contains(output, []byte("different database")) {
+		t.Fatalf("private source accepted wrong database: %v: %s", err, output)
+	}
+	for attempt := 0; attempt < 2; attempt++ {
+		if output, err := run(args); err != nil || !bytes.Contains(output, []byte("source_operation_id="+sourceID+" status=retained-proved")) {
+			t.Fatalf("private source invocation %d: %v: %s", attempt+1, err, output)
+		}
+	}
+	receipt, err := db.LoadSignedMySQLSourceArtifactReceipt(ctx, operations, sourceID)
+	if err != nil || receipt.Receipt.Artifact.Bytes <= 0 {
+		t.Fatalf("signed source stage unavailable: %v", err)
+	}
+	if _, err := db.LoadSignedMySQLSourceArtifactRetentionReceipt(ctx, operations, sourceID); err != nil {
+		t.Fatalf("signed source retention unavailable: %v", err)
+	}
+	if _, err := os.Stat(receipt.Receipt.ArtifactPath); !os.IsNotExist(err) {
+		t.Fatalf("local SQL stage was not cleaned after retention: %v", err)
+	}
+	return emulator, server, receipt
 }
 
 func deployQualificationPEM(t *testing.T, name string) ([]byte, bool) {
@@ -496,10 +591,13 @@ func wordpressDeployMySQLMaintenance() database.MySQLMaintenanceCredentials {
 // share only the disposable network endpoint and signed object descriptor.
 func wordpressRestoreStagedSource(t *testing.T, ctx context.Context, db *store.DB, operations *store.PGOperationStore,
 	client *nomad.Client, secrets database.SecretSource, secretRoot, controlURL string, catalog database.Catalog, sourceOperationID string, sourceClaim store.OperationClaim,
-	staged store.SignedMySQLSourceArtifactReceipt, targetDatabase string) {
+	staged store.SignedMySQLSourceArtifactReceipt, targetDatabase string, objectEmulator *s3emulator.Emulator, objectServer *httptest.Server) {
 	t.Helper()
-	objectEmulator, objectServer := s3emulator.Start("norn-wordpress-artifacts", "wordpress-artifact-writer")
-	defer objectServer.Close()
+	alreadyRetained := objectServer != nil
+	if !alreadyRetained {
+		objectEmulator, objectServer = s3emulator.Start("norn-wordpress-artifacts", "wordpress-artifact-writer")
+		defer objectServer.Close()
+	}
 	objectEndpoint, err := url.Parse(objectServer.URL)
 	if err != nil {
 		t.Fatal(err)
@@ -518,17 +616,22 @@ func wordpressRestoreStagedSource(t *testing.T, ctx context.Context, db *store.D
 	objectConfig := artifactstore.S3Config{Endpoint: objectEndpoint.Host, Bucket: "norn-wordpress-artifacts", Prefix: "mysql/wordpress",
 		Region: "us-east-1", AccessKey: "wordpress-artifact-writer", SecretKey: "test-secret",
 		Transport: objectServer.Client().Transport, SpoolDirectory: publishSpool, SpoolCapacity: capacity, RetainFor: 24 * time.Hour}
-	publisher, err := artifactstore.OpenS3(ctx, objectConfig)
-	if err != nil {
-		t.Fatal(err)
+	var publisher artifactstore.Store
+	if !alreadyRetained {
+		publisher, err = artifactstore.OpenS3(ctx, objectConfig)
+		if err != nil {
+			t.Fatal(err)
+		}
 	}
 	objectConfig.SpoolDirectory = readerSpool
 	reader, err := artifactstore.OpenS3(ctx, objectConfig)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := db.RetainClaimedMySQLSourceArtifact(ctx, operations, sourceClaim, publisher); err != nil {
-		t.Fatalf("retain signed WordPress source artifact: %v", err)
+	if !alreadyRetained {
+		if _, err := db.RetainClaimedMySQLSourceArtifact(ctx, operations, sourceClaim, publisher); err != nil {
+			t.Fatalf("retain signed WordPress source artifact: %v", err)
+		}
 	}
 	resolver, err := database.NewResolver(catalog)
 	if err != nil {
@@ -573,13 +676,6 @@ func wordpressRestoreStagedSource(t *testing.T, ctx context.Context, db *store.D
 		t.Fatalf("signed WordPress restore acceptance: %v", err)
 	}
 	restoreID := accepted.Operation.ID
-	stagedBytes, err := os.ReadFile(staged.Receipt.ArtifactPath)
-	if err != nil || len(stagedBytes) == 0 {
-		t.Fatalf("read WordPress staging bytes before retained-only restore: %v", err)
-	}
-	if err := os.Remove(staged.Receipt.ArtifactPath); err != nil {
-		t.Fatalf("remove WordPress staging copy before retained restore: %v", err)
-	}
 	materialized := t.TempDir()
 	if err := os.Chmod(materialized, 0o700); err != nil {
 		t.Fatal(err)
@@ -589,6 +685,31 @@ func wordpressRestoreStagedSource(t *testing.T, ctx context.Context, db *store.D
 		t.Fatalf("load signed WordPress retention receipt: %v", err)
 	}
 	objectKey := "mysql/wordpress/" + retained.Receipt.Artifact.Key
+	stagedBytes := []byte(nil)
+	if alreadyRetained {
+		path, err := artifactstore.MaterializePrivate(ctx, reader, retained.Receipt.Artifact, materialized)
+		if err != nil {
+			t.Fatalf("materialize retained source before tamper test: %v", err)
+		}
+		stagedBytes, err = os.ReadFile(path)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := os.Remove(path); err != nil {
+			t.Fatal(err)
+		}
+	} else {
+		stagedBytes, err = os.ReadFile(staged.Receipt.ArtifactPath)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := os.Remove(staged.Receipt.ArtifactPath); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if len(stagedBytes) == 0 {
+		t.Fatal("retained source bytes are empty")
+	}
 	tampered := append([]byte(nil), stagedBytes...)
 	tampered[0] ^= 1
 	objectEmulator.Tamper(objectKey, tampered)

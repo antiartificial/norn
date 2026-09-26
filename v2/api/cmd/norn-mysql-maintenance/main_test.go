@@ -43,7 +43,7 @@ func TestRecoveryPrivateInputFiles(t *testing.T) {
 }
 
 func TestRecoveryRequiresExplicitSelection(t *testing.T) {
-	for _, args := range [][]string{nil, {"recover"}, {"recover", "--restore-operation-id", "not-an-id"}, {"restore"}, {"restore", "--restore-operation-id", "not-an-id"}, {"unknown"}} {
+	for _, args := range [][]string{nil, {"recover"}, {"recover", "--restore-operation-id", "not-an-id"}, {"restore"}, {"restore", "--restore-operation-id", "not-an-id"}, {"source"}, {"source", "--selection-file", "missing"}, {"unknown"}} {
 		if err := run(context.Background(), args, &strings.Builder{}); err == nil || errors.Is(err, context.Canceled) {
 			t.Fatalf("incomplete recovery arguments %+v were accepted: %v", args, err)
 		}
