@@ -44,6 +44,9 @@ and mounts. Five were service jobs: `field-harbor` (one), `norn-cadvisor`
 (one). Three periodic `field-harbor` jobs each declared one volume and mount.
 The check counted definitions; it did not inspect source paths, persistent
 contents, or backup ownership.
+The later [host-volume join](m0-mini-host-volume-join-2026-09-26.md) resolved
+these declarations to five distinct node-local sources and measured the four
+writable directories. Their application-level restore ownership remains open.
 
 Twenty-eight base jobs carried database-related environment **key names**.
 Among service jobs these were `field-harbor`, `its-alive-api`, `like-trove`,
