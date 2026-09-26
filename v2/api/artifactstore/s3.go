@@ -205,12 +205,30 @@ func s3ArtifactError(err error) error {
 	}
 	response := minio.ToErrorResponse(err)
 	switch {
-	case response.StatusCode == http.StatusNotFound || response.Code == "NoSuchKey":
+	case response.Code == "NoSuchKey" || response.Code == "NoSuchVersion":
 		return ErrArtifactNotFound
 	case response.StatusCode == http.StatusInsufficientStorage || response.Code == "XMinioStorageFull" || response.Code == "QuotaExceeded":
 		return errors.Join(ErrArtifactFull, err)
 	}
 	return err
+}
+
+// A HEAD 404 may mean the object is absent, but it may also mean the bucket
+// disappeared. Only classify object absence after confirming the bucket still
+// exists; reconciliation must not sign a provider outage as an absent object.
+func (s *S3Store) objectReadError(ctx context.Context, err error) error {
+	response := minio.ToErrorResponse(err)
+	if response.StatusCode != http.StatusNotFound {
+		return s3ArtifactError(err)
+	}
+	if response.Code == "NoSuchBucket" {
+		return errors.Join(ErrArtifactUnverified, err)
+	}
+	exists, bucketErr := s.client.BucketExists(ctx, s.bucket)
+	if bucketErr != nil || !exists {
+		return errors.Join(ErrArtifactUnverified, err, bucketErr)
+	}
+	return ErrArtifactNotFound
 }
 
 // Publish verifies the source into a bounded private spool before the remote
@@ -376,7 +394,7 @@ func (s *S3Store) Open(ctx context.Context, expected Descriptor) (io.ReadCloser,
 	}
 	stat, err := s.client.StatObject(ctx, s.bucket, s.name(expected), minio.StatObjectOptions{})
 	if err != nil {
-		return nil, s3ArtifactError(err)
+		return nil, s.objectReadError(ctx, err)
 	}
 	if stat.Size != expected.Size || stat.Size > MaxArtifactBytes {
 		return nil, ErrArtifactCorrupt
@@ -399,7 +417,7 @@ func (s *S3Store) Open(ctx context.Context, expected Descriptor) (io.ReadCloser,
 	}
 	object, err := s.client.GetObject(ctx, s.bucket, s.name(expected), options)
 	if err != nil {
-		return nil, s3ArtifactError(err)
+		return nil, s.objectReadError(ctx, err)
 	}
 	return &verifyingReadCloser{reader: contextReader{ctx: ctx, reader: object}, closer: object, expected: expected, hash: sha256.New()}, nil
 }

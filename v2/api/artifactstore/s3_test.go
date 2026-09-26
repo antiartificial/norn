@@ -96,6 +96,23 @@ func TestS3ReadOnlyVerifierOpensWhenWritesAreDenied(t *testing.T) {
 	}
 }
 
+func TestS3ReadOnlyVerifierDistinguishesMissingObjectFromMissingBucket(t *testing.T) {
+	config, emulator := s3TestConfig(t)
+	verifier, err := OpenS3ReadOnlyVerifier(context.Background(), config)
+	if err != nil {
+		t.Fatal(err)
+	}
+	descriptor := descriptorFor([]byte("missing-source-artifact"))
+	if err := verifier.Verify(context.Background(), descriptor); !errors.Is(err, ErrArtifactNotFound) {
+		t.Fatalf("missing object in available bucket = %v", err)
+	}
+	emulator.Configure(func(e *s3emulator.Emulator) { e.Bucket = "different-bucket" })
+	if err := verifier.Verify(context.Background(), descriptor); !errors.Is(err, ErrArtifactUnverified) ||
+		errors.Is(err, ErrArtifactNotFound) {
+		t.Fatalf("missing bucket was classified as absent object: %v", err)
+	}
+}
+
 func TestS3RetainedMaterializationAcrossProcesses(t *testing.T) {
 	payload := []byte("signed retained MySQL source bytes for process recovery")
 	descriptor := descriptorFor(payload)
