@@ -35,3 +35,25 @@ for the host Open WebUI and Norn API routes. The route gate still needs
 cloudflared-to-service request proof, Consul or Traefik ownership where
 applicable, and owner decisions before the Mini upgrade fixture can claim
 representative traffic coverage.
+
+## HTTPS request-path refresh — 2026-09-26 23:10 UTC
+
+The owner-local cloudflared config SHA-256 was unchanged at
+`da95d8bc386cefbfa19ff194cb8e82d1049ade912c1c5b12e97f84c944210d22`.
+A read-only probe from Mini used each of the four unmatched configured HTTPS
+hostnames and printed only destination class and status:
+
+| Destination class | Request path | Result |
+| --- | --- | --- |
+| Open WebUI, first route | `/` | HTTP 200 |
+| Open WebUI, second route | `/` | HTTP 200 |
+| Norn control API | `/api/health` | HTTP 200 |
+| Vigil gateway | `/health` | HTTP 200 |
+
+Vigil's `/` returned HTTP 404; its checked-in gateway registers `/health`, so
+the path-specific probe is the relevant one. These results add a current
+hostname-to-response check from Mini to the prior destination/listener join.
+They do not prove response-body identity, reachability from an independent
+external network, every auth path, DNS propagation, or intended exposure.
+Open WebUI and Norn API route owners still need to accept their external
+exposure, and the duplicate ordered Norn hostname rule still needs review.
