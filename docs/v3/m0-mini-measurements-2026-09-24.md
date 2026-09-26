@@ -180,3 +180,16 @@ increased **7,979,008 bytes** over approximately 45.68 hours, or a linearized
 **4.00 MiB per day**. The trend is consistent with the provisional 8 MiB/day
 planning allowance, but this observation alone does not qualify a workload
 cycle, retention policy, backup reserve, or release RTO.
+
+At 2026-09-26 21:42:22 UTC, another read-only aggregate sample measured
+database size **249,793,683 bytes**, user-table total **240,779,264 bytes**,
+heap **151,044,096 bytes**, indexes **89,735,168 bytes**, and five connections
+including the measurement query. The largest tables were `beacon_events`
+(113,451,008 bytes), `control_events` (82,960,384), and
+`mutation_audit_events` (31,514,624). From the 2026-09-24 15:59 UTC baseline,
+database size rose **9,469,952 bytes** over 2.2384 days, or a linearized
+**4.04 MiB/day**. The last 8.04 hours added **1,490,944 bytes** (4.24 MiB/day
+linearized). This spans two calendar days and supports the provisional
+8 MiB/day planning allowance at the observed workload; it does not measure
+peak bursts, archive growth, protected-backup size, or release RTO. An owner
+must still accept the numeric threshold and the recovery budget before M0 exit.
