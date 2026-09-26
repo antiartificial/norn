@@ -13,7 +13,7 @@ The authenticated Mini inventory was collected at 21:38 UTC with the Norn platfo
 | Host status | `ok` |
 | Production readiness | `blocked` for the current v2 profile |
 
-The app inventory still shows `ad-asset-verifier`, `ft-trove`, and `hello-norn` without a live base job. `its-alive-api` is still dead. The duplicate `watchtower` records both show one healthy allocation in the inventory; this does not identify the canonical app source. The latest [workload join](m0-mini-workload-join-2026-09-25.md) remains the detailed point-in-time app/job/route correlation. This refresh checks that its key exceptions persist; it does not re-prove every join.
+The app inventory still shows `ad-asset-verifier`, `ft-trove`, and `hello-norn` without a live base job. `its-alive-api` is still dead. The duplicate `watchtower` records both show one healthy allocation in the inventory; the [source join](m0-watchtower-source-join-2026-09-26.md) identifies their differing web commands and retained checkout. The latest [workload join](m0-mini-workload-join-2026-09-25.md) remains the detailed point-in-time app/job/route correlation. This refresh checks that its key exceptions persist; it does not re-prove every join.
 
 Snapshot retention warnings remain for `field-harbor` and `turnkey-offer-intake`. The readiness result describes the current v2 development/compatibility posture; it is not a v3 candidate failure result. No active operation means the queue was clear at the instant of collection, not that a future upgrade drain is complete.
 
