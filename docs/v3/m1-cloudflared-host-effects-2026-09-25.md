@@ -16,11 +16,14 @@ mutation is blocked by the host-wide reservation until the outcome is
 reconciled.
 
 An identical-key replay resolves the signed receipt before asking Consul or
-Nomad for the current service. The HTTP route still discovers the app spec and
-matches the requested endpoint first; if either disappears, the historical
-operation remains readable by ID but that compatibility route cannot replay
-it. Removing that dependency requires an identity-only replay path before
-app-spec validation.
+Nomad for the current service. The HTTP route now also resolves an existing
+receipt by the authenticated actor, app and key when the app spec or selected
+endpoint has disappeared. Forge and teardown replays bind the original action;
+toggle replay additionally binds the requested hostname. A mismatched action
+or hostname conflicts rather than borrowing the old receipt. New mutations
+still require the live spec and ordinary preflight. A disposable PostgreSQL 16
+integration test passed these missing-spec replay and conflict cases; this
+does not qualify live Mini launchctl behavior.
 
 The CLI now prints the idempotency key before sending a mutation and reports
 the queued operation ID. It waits for terminal status by default; `--wait=false`

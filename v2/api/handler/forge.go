@@ -21,6 +21,9 @@ func (h *Handler) Forge(w http.ResponseWriter, r *http.Request) {
 	id := chi.URLParam(r, "id")
 	spec := h.findSpec(id)
 	if spec == nil {
+		if h.replayCloudflaredWithoutSpec(w, r, id, "forge", "") {
+			return
+		}
 		writeError(w, http.StatusNotFound, fmt.Sprintf("app %s not found", id))
 		return
 	}
@@ -31,6 +34,9 @@ func (h *Handler) Forge(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 	if len(hostnames) == 0 {
+		if h.replayCloudflaredWithoutSpec(w, r, id, "forge", "") {
+			return
+		}
 		writeJSON(w, map[string]string{"status": "skipped", "reason": "no public endpoints"})
 		return
 	}
@@ -41,6 +47,9 @@ func (h *Handler) Teardown(w http.ResponseWriter, r *http.Request) {
 	id := chi.URLParam(r, "id")
 	spec := h.findSpec(id)
 	if spec == nil {
+		if h.replayCloudflaredWithoutSpec(w, r, id, "teardown", "") {
+			return
+		}
 		writeError(w, http.StatusNotFound, fmt.Sprintf("app %s not found", id))
 		return
 	}
@@ -49,6 +58,9 @@ func (h *Handler) Teardown(w http.ResponseWriter, r *http.Request) {
 		hostnames = append(hostnames, endpoint.URL)
 	}
 	if len(hostnames) == 0 {
+		if h.replayCloudflaredWithoutSpec(w, r, id, "teardown", "") {
+			return
+		}
 		writeJSON(w, map[string]string{"status": "skipped", "reason": "no endpoints"})
 		return
 	}
@@ -86,6 +98,9 @@ func (h *Handler) ToggleEndpoint(w http.ResponseWriter, r *http.Request) {
 	}
 	spec := h.findSpec(id)
 	if spec == nil {
+		if h.replayCloudflaredWithoutSpec(w, r, id, cloudflaredToggleAction(req.Enabled), cloudflared.NormalizeHostname(req.Hostname)) {
+			return
+		}
 		writeError(w, http.StatusNotFound, fmt.Sprintf("app %s not found", id))
 		return
 	}
@@ -98,6 +113,9 @@ func (h *Handler) ToggleEndpoint(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 	if matchedURL == "" {
+		if h.replayCloudflaredWithoutSpec(w, r, id, cloudflaredToggleAction(req.Enabled), hostname) {
+			return
+		}
 		writeError(w, http.StatusBadRequest, fmt.Sprintf("hostname %s not configured for app %s", hostname, id))
 		return
 	}
@@ -112,6 +130,52 @@ func (h *Handler) ToggleEndpoint(w http.ResponseWriter, r *http.Request) {
 		service = func() (string, error) { return h.cloudflaredService(spec) }
 	}
 	h.queueCloudflaredMutation(w, r, spec, action, []string{matchedURL}, service)
+}
+
+func cloudflaredToggleAction(enabled bool) string {
+	if enabled {
+		return "enable"
+	}
+	return "disable"
+}
+
+// replayCloudflaredWithoutSpec resolves only an existing signed acceptance.
+// Forge and teardown carry no request hostname; toggle binds its hostname and
+// action before returning the historical receipt. New work still needs a live
+// spec and the ordinary mutation preflight.
+func (h *Handler) replayCloudflaredWithoutSpec(w http.ResponseWriter, r *http.Request, app, action, hostname string) bool {
+	if r.Header.Get("Idempotency-Key") == "" || h.pipeline == nil || !h.pipeline.CloudflaredMutationAvailable() {
+		return false
+	}
+	enqueue, ok := h.pipelineEnqueueRequest(w, r, r.Header.Get("Idempotency-Key"), nil)
+	if !ok {
+		return true
+	}
+	accepted, err := h.pipeline.ResolveEnqueue(r.Context(), enqueue, "app.cloudflared-mutate", app)
+	if errors.Is(err, store.ErrAcceptanceNotFound) {
+		return false
+	}
+	if err != nil {
+		writeOperationAcceptanceError(w, r, err)
+		return true
+	}
+	valid := accepted.Operation.Kind == "app.cloudflared-mutate" && accepted.Operation.App == app && accepted.Operation.Payload["action"] == action
+	if hostname != "" {
+		items, ok := accepted.Operation.Payload["hostnames"].([]interface{})
+		valid = valid && ok && len(items) == 1
+		if valid {
+			stored, ok := items[0].(string)
+			valid = ok && cloudflared.NormalizeHostname(stored) == hostname
+		}
+	}
+	if !valid {
+		writeOperationAcceptanceError(w, r, &store.AcceptanceConflictError{Identity: store.OperationRequestIdentity{Kind: "app.cloudflared-mutate", Resource: app}})
+		return true
+	}
+	accepted.Operation.AttachReceipt()
+	w.Header().Set("Location", "/api/v1/operations/"+accepted.Operation.ID)
+	writeJSON(w, accepted.Operation)
+	return true
 }
 
 func (h *Handler) queueCloudflaredMutation(w http.ResponseWriter, r *http.Request, spec *model.InfraSpec, action string, hostnames []string, resolveService func() (string, error)) {
