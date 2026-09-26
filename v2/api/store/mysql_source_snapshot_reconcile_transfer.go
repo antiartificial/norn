@@ -124,7 +124,7 @@ func (db *DB) ReconcileClaimedMySQLSourceSnapshot(ctx context.Context, acceptanc
 	}); err != nil {
 		return errors.Join(ErrMySQLSourceStopIndeterminate, err)
 	}
-	locked := link.Checkpoint == "lock-intended"
+	locked := mysqlSourceLockCheckpoint(link.Checkpoint)
 	if locked {
 		if err := inspector.InspectLocked(ctx, resolved, request.Maintenance, secrets); err != nil {
 			return errors.Join(ErrMySQLSourceAccountLockIndeterminate, err)
@@ -179,18 +179,19 @@ func (db *DB) transferClaimedMySQLSourceReconciliation(ctx context.Context, acce
 		return ErrMySQLSourceSnapshotFence
 	}
 	var priorStatus, checkpoint, intentID, sourceKey, fenceOwner, liveOwner string
-	var manual, fenceActive, stopIntended, stopProved, lockIntended bool
+	var manual, fenceActive, stopIntended, stopProved, lockIntended, lockProved bool
 	var fenceEpoch, liveEpoch, revision int64
 	var sourceJSON, maintenanceJSON, jobJSON, priorIntent []byte
 	err = tx.QueryRow(ctx, `SELECT p.status,COALESCE((p.metadata->>'manualRecoveryRequired')::boolean,false),
 		i.state,i.acceptance_intent_id,i.catalog_revision,i.source_key,i.source,i.maintenance,i.job_identity,
 		i.stop_intended_at IS NOT NULL,i.stop_proved_at IS NOT NULL,i.lock_intended_at IS NOT NULL,
+		i.lock_proved_at IS NOT NULL,
 		i.runtime_fence_epoch,i.runtime_fence_owner,f.active,f.epoch,f.owner,to_jsonb(i)
 		FROM mysql_source_snapshot_intents i JOIN operations p ON p.id=i.operation_id
 		CROSS JOIN runtime_mutation_fence f WHERE i.operation_id=$1 AND f.singleton=true
 		FOR UPDATE OF p,i,f`, prior.Operation.ID).Scan(&priorStatus, &manual, &checkpoint, &intentID,
 		&revision, &sourceKey, &sourceJSON, &maintenanceJSON, &jobJSON,
-		&stopIntended, &stopProved, &lockIntended, &fenceEpoch, &fenceOwner, &fenceActive, &liveEpoch, &liveOwner, &priorIntent)
+		&stopIntended, &stopProved, &lockIntended, &lockProved, &fenceEpoch, &fenceOwner, &fenceActive, &liveEpoch, &liveOwner, &priorIntent)
 	wantSource, _ := json.Marshal(request.Source)
 	wantMaintenance, _ := json.Marshal(request.Maintenance)
 	wantJob, _ := json.Marshal(request.JobIdentity)
@@ -198,7 +199,8 @@ func (db *DB) transferClaimedMySQLSourceReconciliation(ctx context.Context, acce
 		intentID != prior.AcceptanceIntentID || revision != request.CatalogRevision ||
 		sourceKey != mysqlRuntimePhysicalKeyForCatalog(active.Catalog, request.Source) ||
 		!sameJSON(sourceJSON, wantSource) || !sameJSON(maintenanceJSON, wantMaintenance) || !sameJSON(jobJSON, wantJob) ||
-		!stopIntended || (checkpoint == "lock-intended" && (!stopProved || !lockIntended)) ||
+		!stopIntended || (mysqlSourceLockCheckpoint(checkpoint) && (!stopProved || !lockIntended)) ||
+		(checkpoint == "stop-proved" && !stopProved) || (checkpoint == "lock-proved" && !lockProved) ||
 		!fenceActive || fenceEpoch != proof.RuntimeFenceEpoch || liveEpoch != fenceEpoch ||
 		fenceOwner != proof.RuntimeFenceOwner || liveOwner != fenceOwner {
 		return ErrMySQLSourceSnapshotFence
@@ -219,7 +221,7 @@ func (db *DB) transferClaimedMySQLSourceReconciliation(ctx context.Context, acce
 	}
 	successorOwner := "mysql-source-snapshot:" + claim.OperationID()
 	state := "stop-proved"
-	if checkpoint == "lock-intended" {
+	if mysqlSourceLockCheckpoint(checkpoint) {
 		state = "lock-proved"
 	}
 	if updated, err := tx.Exec(ctx, `UPDATE mysql_source_snapshot_intents SET operation_id=$2,

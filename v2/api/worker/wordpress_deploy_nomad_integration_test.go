@@ -436,6 +436,42 @@ func wordpressSourceThroughCommand(t *testing.T, ctx context.Context, db *store.
 		if err != nil || prior.Status != model.OperationFailed || prior.Metadata["manualRecoveryRequired"] != true {
 			t.Fatalf("ambiguous source was not fenced for reconciliation: %+v %v", prior, err)
 		}
+		if os.Getenv("NORN_TEST_WORDPRESS_SOURCE_CRASH_AFTER_TRANSFER") == "1" {
+			first, err := db.AcceptPrivateMySQLSourceReconciliation(ctx, operations,
+				store.MySQLSourceReconciliationAcceptanceInput{PriorSourceOperationID: sourceID,
+					Actor: actor, Key: "wordpress-first-reconciliation",
+					Audit: store.AcceptanceAuditContext{Source: "wordpress-deploy-nomad-integration"}})
+			if err != nil {
+				t.Fatalf("accept first successor before process exit: %v", err)
+			}
+			claimed, claim, err := db.ClaimPrivateMySQLOperation(ctx, first.Operation.ID,
+				"wordpress-first-reconciliation", store.MySQLSourceSnapshotOperationKind, time.Minute)
+			if err != nil || claimed == nil {
+				t.Fatalf("claim first successor before process exit: %+v %v", claimed, err)
+			}
+			secrets, err := database.NewDirectorySecretSource(secretRoot)
+			if err != nil {
+				t.Fatal(err)
+			}
+			runner := store.MySQLSourceSnapshotRunner{Control: db, Acceptance: operations, Secrets: secrets, Observer: client}
+			if err := runner.RunClaimedReconciliation(ctx, claim); err != nil {
+				secrets.Close()
+				t.Fatalf("first source transfer before process exit: %v", err)
+			}
+			secrets.Close()
+			if _, err := db.Pool.Exec(ctx, `UPDATE operations SET locked_until=clock_timestamp()-interval '1 second' WHERE id=$1`,
+				first.Operation.ID); err != nil {
+				t.Fatal(err)
+			}
+			if err := db.RecoverExpiredOperations(ctx); err != nil {
+				t.Fatal(err)
+			}
+			failedFirst, err := db.GetOperation(ctx, first.Operation.ID)
+			if err != nil || failedFirst.Status != model.OperationFailed || failedFirst.Metadata["manualRecoveryRequired"] != true {
+				t.Fatalf("transferred successor did not fail closed after process exit: %+v %v", failedFirst, err)
+			}
+			sourceID = first.Operation.ID
+		}
 		args[0] = "reconcile-source"
 		for i := 0; i < len(args)-1; i++ {
 			if args[i] == "--selection-file" {

@@ -25,3 +25,17 @@ func mysqlSourceSnapshotReconciliationMigration() SchemaMigration {
 		MinimumReaderVersion: MySQLRetainedArtifactReaderVersion,
 		MinimumWriterVersion: SnapshotExportIntentWriterVersion}
 }
+
+// A failed successor can itself become the signed predecessor after its
+// transfer committed. Its proved stop/lock state is a safe read-only restart
+// checkpoint; later one-way stage and publication states remain excluded.
+func mysqlSourceSnapshotProvedSuccessorMigration() SchemaMigration {
+	return SchemaMigration{Version: 41, Name: "mysql-source-snapshot-proved-successor",
+		SQL: `ALTER TABLE mysql_source_snapshot_reconciliations
+		DROP CONSTRAINT mysql_source_snapshot_reconciliations_checkpoint_check;
+		ALTER TABLE mysql_source_snapshot_reconciliations
+		ADD CONSTRAINT mysql_source_snapshot_reconciliations_checkpoint_check
+		CHECK (checkpoint IN ('stop-intended','lock-intended','stop-proved','lock-proved'));`,
+		MinimumReaderVersion: MySQLRetainedArtifactReaderVersion,
+		MinimumWriterVersion: SnapshotExportIntentWriterVersion}
+}

@@ -29,12 +29,15 @@ func (f sourceLockInspectorFunc) InspectLocked(ctx context.Context, resolved dat
 func TestMySQLSourceReconciliationAdmissionRequiresFailedFencedPredecessor(t *testing.T) {
 	for _, checkpoint := range []string{"stop-intended", "lock-intended"} {
 		t.Run(checkpoint, func(t *testing.T) {
-			testMySQLSourceReconciliationAdmission(t, checkpoint)
+			testMySQLSourceReconciliationAdmission(t, checkpoint, false)
+		})
+		t.Run(checkpoint+"-crash-after-transfer", func(t *testing.T) {
+			testMySQLSourceReconciliationAdmission(t, checkpoint, true)
 		})
 	}
 }
 
-func testMySQLSourceReconciliationAdmission(t *testing.T, checkpoint string) {
+func testMySQLSourceReconciliationAdmission(t *testing.T, checkpoint string, crashAfterTransfer bool) {
 	stores, dbs := acceptanceIntegrationStores(t, 1)
 	acceptance, db := stores[0], dbs[0]
 	ctx := context.Background()
@@ -300,6 +303,43 @@ func testMySQLSourceReconciliationAdmission(t *testing.T, checkpoint string) {
 	if err != nil || priorInspection.IntentState != checkpoint ||
 		priorInspection.ReconciledByOperationID != successor.Operation.ID || !priorInspection.RuntimeFenceHeld {
 		t.Fatalf("failed predecessor no longer inspectable: %+v %v", priorInspection, err)
+	}
+	if crashAfterTransfer {
+		transferredID := successor.Operation.ID
+		if _, err := db.Pool.Exec(ctx, `UPDATE operations SET locked_until=clock_timestamp()-interval '1 second' WHERE id=$1`, transferredID); err != nil {
+			t.Fatal(err)
+		}
+		if err := db.RecoverExpiredOperations(ctx); err != nil {
+			t.Fatal(err)
+		}
+		successorInput.PriorSourceOperationID = transferredID
+		successorInput.Key = "after-transfer-" + uuid.NewString()
+		continued, err := db.AcceptPrivateMySQLSourceReconciliation(ctx, acceptance, successorInput)
+		if err != nil || continued.Operation.Status != model.OperationQueued {
+			t.Fatalf("failed transferred successor could not admit explicit continuation: %+v %v", continued, err)
+		}
+		claimed, continuedClaim, err := db.ClaimPrivateMySQLOperation(ctx, continued.Operation.ID,
+			"continued-worker", MySQLSourceSnapshotOperationKind, time.Minute)
+		if err != nil || claimed == nil {
+			t.Fatalf("continued successor not claimable: %+v %v", claimed, err)
+		}
+		if err := db.ReconcileClaimedMySQLSourceSnapshot(ctx, acceptance, continuedClaim,
+			stoppedObservation, inspector, sourceSecretSource{}); err != nil {
+			t.Fatalf("continued successor did not transfer: %v", err)
+		}
+		for _, operationID := range []string{prior.Operation.ID, transferredID} {
+			inspection, err := db.InspectPrivateMySQLSourceSnapshot(ctx, acceptance, operationID)
+			if err != nil || !inspection.RuntimeFenceHeld || inspection.ReconciledByOperationID == "" {
+				t.Fatalf("reconciliation chain lost signed predecessor %s: %+v %v", operationID, inspection, err)
+			}
+		}
+		if err := db.Pool.QueryRow(ctx, `SELECT i.operation_id,f.owner FROM mysql_source_snapshot_intents i
+			CROSS JOIN runtime_mutation_fence f WHERE i.source_key=$1 AND f.singleton=true`,
+			mysqlRuntimePhysicalKeyForCatalog(active.Catalog, request.Source)).Scan(&activeOperation, &fenceOwner); err != nil ||
+			activeOperation != continued.Operation.ID || fenceOwner != "mysql-source-snapshot:"+continued.Operation.ID {
+			t.Fatalf("continued source and fence owner mismatch: source=%s fence=%s err=%v", activeOperation, fenceOwner, err)
+		}
+		return
 	}
 	var proofCanonical []byte
 	if err := db.Pool.QueryRow(ctx, `SELECT proof_canonical FROM mysql_source_snapshot_reconciliations

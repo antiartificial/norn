@@ -113,6 +113,17 @@ func TestSyntheticMiniControlUpgradeAndReaderBoundary(t *testing.T) {
 	if _, err := previousCandidate.Check(ctx, SchemaAccessReadWrite); err != nil {
 		t.Fatalf("additive reconciliation history blocked previous binary: %v", err)
 	}
+	// The new proved-successor checkpoint values are only written by the new
+	// binary. Widening the history constraint must preserve the 40-migration
+	// binary's existing 5/31 startup contract during a rollback window.
+	previousReconciliationBinary, err := NewSchemaMigrator(pool, migrations[:40], BinarySchemaCompatibility{
+		ReaderVersion: MySQLRetainedArtifactReaderVersion, WriterVersion: SnapshotExportIntentWriterVersion}, SchemaMigratorOptions{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := previousReconciliationBinary.Check(ctx, SchemaAccessReadWrite); err != nil {
+		t.Fatalf("proved successor migration blocked previous reconciliation binary: %v", err)
+	}
 	// Migration 21 retires the preceding reader contract because it cannot
 	// decode function evidence bundles. A rollback to that reader must refuse
 	// startup even though its SQL still works against these legacy rows.

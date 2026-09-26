@@ -30,7 +30,15 @@ type MySQLSourceSnapshotInspection struct {
 }
 
 func (db *DB) InspectPrivateMySQLSourceSnapshot(ctx context.Context, acceptance *PGOperationStore, operationID string) (MySQLSourceSnapshotInspection, error) {
+	return db.inspectPrivateMySQLSourceSnapshot(ctx, acceptance, operationID, 0)
+}
+
+func (db *DB) inspectPrivateMySQLSourceSnapshot(ctx context.Context, acceptance *PGOperationStore,
+	operationID string, depth int) (MySQLSourceSnapshotInspection, error) {
 	if db == nil || db.Pool == nil || acceptance == nil || acceptance.db != db || operationID == "" {
+		return MySQLSourceSnapshotInspection{}, ErrMySQLSourceSnapshotInspection
+	}
+	if depth > 32 {
 		return MySQLSourceSnapshotInspection{}, ErrMySQLSourceSnapshotInspection
 	}
 	accepted, err := acceptance.VerifyAcceptedOperation(ctx, operationID)
@@ -61,7 +69,7 @@ func (db *DB) InspectPrivateMySQLSourceSnapshot(ctx context.Context, acceptance 
 		&revision, &profileID, &logicalID, &source, &maintenance, &job, &dumpDigest,
 		&result.ClaimLeaseCurrent, &result.RuntimeFenceHeld)
 	if errors.Is(err, pgx.ErrNoRows) {
-		return db.inspectReconciledMySQLSourceSnapshot(ctx, acceptance, accepted, request)
+		return db.inspectReconciledMySQLSourceSnapshot(ctx, acceptance, accepted, request, depth)
 	}
 	if err != nil {
 		return MySQLSourceSnapshotInspection{}, err
@@ -93,7 +101,7 @@ func (db *DB) InspectPrivateMySQLSourceSnapshot(ctx context.Context, acceptance 
 }
 
 func (db *DB) inspectReconciledMySQLSourceSnapshot(ctx context.Context, acceptance *PGOperationStore,
-	prior AcceptedOperation, request MySQLSourceSnapshotRequest) (MySQLSourceSnapshotInspection, error) {
+	prior AcceptedOperation, request MySQLSourceSnapshotRequest, depth int) (MySQLSourceSnapshotInspection, error) {
 	var successorID, checkpoint, digest, algorithm, keyID, signature string
 	var archived, canonical []byte
 	if err := db.Pool.QueryRow(ctx, `SELECT successor_operation_id,prior_intent,checkpoint,proof_canonical,
@@ -111,8 +119,8 @@ func (db *DB) inspectReconciledMySQLSourceSnapshot(ctx context.Context, acceptan
 	if json.Unmarshal(canonical, &proof) != nil || proof.Schema != MySQLSourceReconciliationProofSchema ||
 		proof.PriorSourceOperationID != prior.Operation.ID || proof.PriorSourceDigest != prior.Intent.CanonicalDigest ||
 		proof.SuccessorOperationID != successorID || proof.Checkpoint != checkpoint || !proof.NomadStoppedVerified ||
-		(checkpoint == "lock-intended" && !proof.RuntimeAccountLocked) ||
-		(checkpoint != "stop-intended" && checkpoint != "lock-intended") ||
+		(mysqlSourceLockCheckpoint(checkpoint) && !proof.RuntimeAccountLocked) ||
+		!mysqlSourceReconciliationCheckpoint(checkpoint) ||
 		prior.Operation.Status != model.OperationFailed {
 		return MySQLSourceSnapshotInspection{}, ErrMySQLSourceSnapshotInspection
 	}
@@ -151,10 +159,16 @@ func (db *DB) inspectReconciledMySQLSourceSnapshot(ctx context.Context, acceptan
 	var activeID string
 	if err := db.Pool.QueryRow(ctx, `SELECT i.operation_id,f.active,f.epoch FROM mysql_source_snapshot_intents i
 		CROSS JOIN runtime_mutation_fence f WHERE i.source_key=$1 AND f.singleton=true`, sourceKey).Scan(
-		&activeID, &active, &epoch); err != nil || activeID != successorID {
+		&activeID, &active, &epoch); err != nil || !active || epoch != proof.RuntimeFenceEpoch {
 		return MySQLSourceSnapshotInspection{}, ErrMySQLSourceSnapshotInspection
+	}
+	if activeID != successorID {
+		later, err := db.inspectPrivateMySQLSourceSnapshot(ctx, acceptance, successorID, depth+1)
+		if err != nil || later.ReconciledByOperationID == "" || !later.RuntimeFenceHeld {
+			return MySQLSourceSnapshotInspection{}, ErrMySQLSourceSnapshotInspection
+		}
 	}
 	return MySQLSourceSnapshotInspection{OperationID: prior.Operation.ID, OperationStatus: prior.Operation.Status,
 		IntentState: checkpoint, ReconciledByOperationID: successorID,
-		RuntimeFenceHeld: active && epoch == proof.RuntimeFenceEpoch}, nil
+		RuntimeFenceHeld: true}, nil
 }
