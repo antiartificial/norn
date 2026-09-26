@@ -127,3 +127,13 @@ the reservation. Restoring the database alone must not authorize a replayed
 restart. The local receipt reader now also requires its directory to be owned
 by the API's effective UID, in addition to the existing private-mode and
 regular-file checks.
+
+On 2026-09-26, the v3 `Restart` helper also passed a real local macOS launchd
+rehearsal. A disposable `gui/501/com.norn.v3-rehearsal.*` agent ran
+`/bin/sleep` from a plist kept under the task scratch directory. The helper
+validated a synthetic ingress file with local cloudflared 2026.3.0, called
+`launchctl kickstart -k`, observed `state = running`, and the agent PID changed.
+`launchctl bootout` removed the registration afterward. This proves the helper
+works with the current user's GUI launchd domain and a live supervised
+process; it does not prove the Mini's `com.norn.cloudflared` agent, tunnel
+connectivity, public-route health, or receipt recovery.
