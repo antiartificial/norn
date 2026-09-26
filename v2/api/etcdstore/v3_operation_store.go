@@ -605,7 +605,10 @@ func (s *V3OperationStore) write(ctx context.Context, id string, rev int64, v v3
 		return false, e
 	}
 	r, e := s.kv.Txn(ctx).If(clientv3.Compare(clientv3.ModRevision(s.opKey(id)), "=", rev)).Then(clientv3.OpPut(s.opKey(id), string(b))).Commit()
-	return r.Succeeded, e
+	if e != nil {
+		return false, e
+	}
+	return r.Succeeded, nil
 }
 
 type v3Checkpoint struct {
