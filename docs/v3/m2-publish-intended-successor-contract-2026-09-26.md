@@ -1,0 +1,15 @@
+# M2 publish-intended successor contract — 2026-09-26
+
+Status: design boundary for the next private recovery slice. No successor admission at `publish-intended` is implemented or qualified by this document.
+
+`RetainClaimedMySQLSourceArtifact` records `publish-intended` before opening the object store. After a process death, the exact content-addressed object may be absent, fully retained, or indeterminate. The current operation is one-attempt and its expired claim cannot safely be reused. The predecessor's signed stage receipt belongs to that operation and points to a node-local file, so changing its operation ID or treating an advisory object observation as a retention receipt would break the signed chain.
+
+## Proposed recovery lane
+
+1. Require an explicit private, signed successor naming the failed `publish-intended` operation and its acceptance digest. Keep the source reservation and runtime fence held throughout. A running, successful, changed, or already reconciled predecessor is ineligible.
+2. Freshly prove the exact Nomad job stopped and catalog-bound runtime account locked with sessions drained. Recheck the predecessor's signed stage receipt, descriptor, and stored publish intent. Observe the exact object descriptor with a bounded full verification and record whether it is verified, absent, or indeterminate. An indeterminate observation blocks transfer; a verified object is evidence about the old operation, not a successor receipt.
+3. Under one catalog-gated transaction, recheck the successor claim, predecessor identity/status, source row, signed stage and publish intent, fence owner/epoch, and observation freshness. Archive the predecessor's original row and signed proof. Transfer reservation/fence ownership without a gap and reset stage and publication fields so the successor starts at `lock-proved`.
+4. The successor creates a new signed SQL stage from the still stopped and locked source, then publishes under the new stage digest and signs its own retention receipt. It never imports the predecessor's node-local file or retroactively signs the predecessor's object. A matching content key may be verified idempotently by the store; a different digest gets a different immutable key. Record any predecessor object as an operator-visible orphan until retention policy permits cleanup.
+5. Kill the compiled CLI before upload, after remote upload but before receipt commit, and during the transfer transaction. In each case verify one fence owner, no predecessor receipt promotion, fresh successor bytes and signed provenance, restore from the successor only, and WordPress startup. Test absent, verified, corrupt, unavailable, and mismatched objects; claim loss after observation; same-key replay; and a second failed successor.
+
+This deliberately favors a fresh source dump over bridging a prior operation's stage receipt. That choice consumes extra bounded staging and object capacity but avoids treating node-local bytes or an unsigned publication result as a durable successor artifact. Provider-backed object retention and managed MySQL still require separate qualification before M2 exit.
