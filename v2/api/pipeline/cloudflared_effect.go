@@ -1,15 +1,18 @@
 package pipeline
 
 import (
+	"bytes"
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"os"
 	"path/filepath"
 	"strings"
+	"syscall"
 	"time"
 
 	"norn/v2/api/cloudflared"
@@ -56,7 +59,23 @@ func (localCloudflaredDriver) ReadReceipt(id string) ([]byte, error) {
 	if err := secureCloudflaredReceiptDir(filepath.Dir(cloudflaredReceiptPath(id)), false); err != nil {
 		return nil, err
 	}
-	return os.ReadFile(cloudflaredReceiptPath(id))
+	file, err := os.OpenFile(cloudflaredReceiptPath(id), os.O_RDONLY|syscall.O_NOFOLLOW|syscall.O_NONBLOCK, 0)
+	if err != nil {
+		return nil, err
+	}
+	defer file.Close()
+	info, err := file.Stat()
+	if err != nil || !info.Mode().IsRegular() || info.Mode().Perm() != 0o600 || info.Size() < 1 || info.Size() > 4096 {
+		return nil, fmt.Errorf("cloudflared receipt is not a small owner-only regular file")
+	}
+	if stat, ok := info.Sys().(*syscall.Stat_t); !ok || int(stat.Uid) != os.Geteuid() || stat.Nlink != 1 {
+		return nil, fmt.Errorf("cloudflared receipt owner or link count differs")
+	}
+	data, err := io.ReadAll(io.LimitReader(file, 4097))
+	if err != nil || len(data) > 4096 {
+		return nil, fmt.Errorf("cloudflared receipt is unreadable or too large")
+	}
+	return data, nil
 }
 func (localCloudflaredDriver) WriteReceipt(id string, data []byte) error {
 	path := cloudflaredReceiptPath(id)
@@ -83,8 +102,15 @@ func (localCloudflaredDriver) WriteReceipt(id string, data []byte) error {
 	if err := tmp.Close(); err != nil {
 		return err
 	}
-	if err := os.Rename(tmp.Name(), path); err != nil {
-		return err
+	if err := os.Link(tmp.Name(), path); err != nil {
+		if !errors.Is(err, os.ErrExist) {
+			return err
+		}
+		existing, readErr := (localCloudflaredDriver{}).ReadReceipt(id)
+		if readErr != nil || !bytes.Equal(existing, data) {
+			return fmt.Errorf("existing cloudflared receipt differs from this execution")
+		}
+		return nil
 	}
 	dir, err := os.Open(filepath.Dir(path))
 	if err != nil {

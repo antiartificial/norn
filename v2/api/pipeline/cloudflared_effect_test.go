@@ -5,11 +5,48 @@ import (
 	"encoding/json"
 	"errors"
 	"os"
+	"path/filepath"
 	"testing"
 
 	"norn/v2/api/cloudflared"
 	"norn/v2/api/effect"
 )
+
+func TestLocalCloudflaredReceiptIsCreateOnlyAndPrivate(t *testing.T) {
+	previous := cloudflared.ConfigPath()
+	cloudflared.SetConfigPath(filepath.Join(t.TempDir(), "config.yml"))
+	t.Cleanup(func() { cloudflared.SetConfigPath(previous) })
+	driver := localCloudflaredDriver{}
+	id := "cloudflared-test-receipt"
+	first := []byte(`{"executionId":"cloudflared-test-receipt"}`)
+	if err := driver.WriteReceipt(id, first); err != nil {
+		t.Fatal(err)
+	}
+	if err := driver.WriteReceipt(id, first); err != nil {
+		t.Fatalf("exact receipt retry: %v", err)
+	}
+	if err := driver.WriteReceipt(id, []byte(`{"executionId":"different"}`)); err == nil {
+		t.Fatal("different receipt replaced the original")
+	}
+	actual, err := driver.ReadReceipt(id)
+	if err != nil || string(actual) != string(first) {
+		t.Fatalf("receipt=%q err=%v", actual, err)
+	}
+	link := cloudflaredReceiptPath("cloudflared-symlink")
+	if err := os.Symlink(cloudflaredReceiptPath(id), link); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := driver.ReadReceipt("cloudflared-symlink"); err == nil {
+		t.Fatal("symlink receipt was trusted")
+	}
+	hardlink := cloudflaredReceiptPath("cloudflared-hardlink")
+	if err := os.Link(cloudflaredReceiptPath(id), hardlink); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := driver.ReadReceipt(id); err == nil {
+		t.Fatal("multiply linked receipt was trusted")
+	}
+}
 
 type fakeCloudflaredDriver struct {
 	host                     string

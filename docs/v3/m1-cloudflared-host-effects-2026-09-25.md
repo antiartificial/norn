@@ -15,6 +15,13 @@ for operator review. It is never automatically replayed. A later ingress
 mutation is blocked by the host-wide reservation until the outcome is
 reconciled.
 
+Receipt publication is now create-only: an exact repeated write reads and
+accepts the original private file, while different bytes cannot replace it.
+Receipt reads reject symlinks, hard links, non-private modes, wrong owners,
+non-regular files, and oversized content. The focused local-driver test and
+the PostgreSQL-backed cloudflared pipeline cases passed; exporting the receipt
+with host recovery and testing actual Mini `launchctl` remain open.
+
 An identical-key replay resolves the signed receipt before asking Consul or
 Nomad for the current service. The HTTP route now also resolves an existing
 receipt by the authenticated actor, app and key when the app spec or selected
