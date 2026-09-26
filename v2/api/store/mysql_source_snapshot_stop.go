@@ -99,6 +99,14 @@ func (db *DB) setClaimedMySQLSourceStopState(ctx context.Context, claim Operatio
 }
 
 func stopClaimedMySQLSourceRuntimeLaunch(ctx context.Context, tx pgx.Tx, request MySQLSourceSnapshotRequest) error {
+	return stopMySQLSourceRuntimeLaunchWithProof(ctx, tx, request, "nomad-cas-stop-proved\x00", "exact signed Nomad CAS stop")
+}
+
+func stopObservedMySQLSourceRuntimeLaunch(ctx context.Context, tx pgx.Tx, request MySQLSourceSnapshotRequest) error {
+	return stopMySQLSourceRuntimeLaunchWithProof(ctx, tx, request, "nomad-stopped-observed\x00", "exact signed Nomad stopped observation")
+}
+
+func stopMySQLSourceRuntimeLaunchWithProof(ctx context.Context, tx pgx.Tx, request MySQLSourceSnapshotRequest, domain, method string) error {
 	active, err := loadActiveDatabaseCatalog(ctx, tx)
 	if err != nil || active.Revision != request.CatalogRevision {
 		return ErrMySQLSourceSnapshotFence
@@ -115,9 +123,9 @@ func stopClaimedMySQLSourceRuntimeLaunch(ctx context.Context, tx pgx.Tx, request
 		return ErrMySQLSourceSnapshotFence
 	}
 	job, _ := json.Marshal(request.JobIdentity)
-	digest := sha256.Sum256(append([]byte("nomad-cas-stop-proved\x00"), job...))
+	digest := sha256.Sum256(append([]byte(domain), job...))
 	proof, _ := json.Marshal(MySQLRuntimeLaunchStopProof{RuntimeInstanceID: runtimeID, ObservedAt: time.Now().UTC(),
-		Method: "exact signed Nomad CAS stop", EvidenceSHA256: hex.EncodeToString(digest[:])})
+		Method: method, EvidenceSHA256: hex.EncodeToString(digest[:])})
 	result, err := tx.Exec(ctx, `UPDATE mysql_runtime_launch_reservations SET state='stopped',stop_proof=$3,updated_at=clock_timestamp()
 		WHERE reservation_id=$1 AND target_key=$2 AND state='launched' AND runtime_instance_id=$4`, request.RuntimeLaunchReservationID, key, proof, runtimeID)
 	if err != nil || result.RowsAffected() != 1 {

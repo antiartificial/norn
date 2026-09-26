@@ -17,7 +17,49 @@ type MySQLSourceSnapshotRunner struct {
 	Acceptance *PGOperationStore
 	Secrets    database.SecretSource
 	Stopper    MySQLSourceJobStopper
+	Observer   MySQLSourceStoppedObserver
+	Inspector  MySQLSourceAccountLockInspector
 	ClaimLease time.Duration
+}
+
+// RunClaimedReconciliation keeps the successor claim renewed while observing
+// external state and committing the source/fence transfer. It performs no
+// stop or account-lock mutation; continuation is a separate explicit step.
+func (r MySQLSourceSnapshotRunner) RunClaimedReconciliation(ctx context.Context, claim OperationClaim) (runErr error) {
+	if r.Control == nil || r.Acceptance == nil || r.Acceptance.db != r.Control || r.Secrets == nil ||
+		r.Observer == nil || validateOperationClaim(claim) != nil {
+		return ErrMySQLSourceSnapshotFence
+	}
+	inspector := r.Inspector
+	if inspector == nil {
+		inspector = mysqlSourceDatabaseLockInspector{}
+	}
+	lease := r.ClaimLease
+	if lease == 0 {
+		lease = 2 * time.Minute
+	}
+	supervisor, err := newMySQLRestoreClaimSupervisor(ctx, lease, func(renewCtx context.Context, duration time.Duration) error {
+		return r.Control.RenewOperationClaim(renewCtx, claim, duration)
+	})
+	if err != nil {
+		return err
+	}
+	if err := supervisor.Start(); err != nil {
+		return errors.Join(ErrMySQLSourceClaimLost, err)
+	}
+	defer func() {
+		if err := supervisor.Stop(); err != nil {
+			runErr = errors.Join(runErr, ErrMySQLSourceClaimLost, err)
+		}
+	}()
+	runCtx := supervisor.Context()
+	if err := sourceClaimSupervisorReady(supervisor, runCtx); err != nil {
+		return err
+	}
+	if err := r.Control.ReconcileClaimedMySQLSourceSnapshot(runCtx, r.Acceptance, claim, r.Observer, inspector, r.Secrets); err != nil {
+		return err
+	}
+	return sourceClaimSupervisorReady(supervisor, runCtx)
 }
 
 var ErrMySQLSourceClaimLost = errors.New("MySQL source snapshot claim renewal failed; source remains fenced for inspection")

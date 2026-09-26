@@ -2,8 +2,12 @@ package store
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
@@ -12,9 +16,25 @@ import (
 
 	"norn/v2/api/database"
 	"norn/v2/api/model"
+	"norn/v2/api/nomad"
 )
 
+type sourceLockInspectorFunc func(context.Context, database.ResolvedBinding, database.MySQLMaintenanceCredentials, database.SecretSource) error
+
+func (f sourceLockInspectorFunc) InspectLocked(ctx context.Context, resolved database.ResolvedBinding,
+	maintenance database.MySQLMaintenanceCredentials, secrets database.SecretSource) error {
+	return f(ctx, resolved, maintenance, secrets)
+}
+
 func TestMySQLSourceReconciliationAdmissionRequiresFailedFencedPredecessor(t *testing.T) {
+	for _, checkpoint := range []string{"stop-intended", "lock-intended"} {
+		t.Run(checkpoint, func(t *testing.T) {
+			testMySQLSourceReconciliationAdmission(t, checkpoint)
+		})
+	}
+}
+
+func testMySQLSourceReconciliationAdmission(t *testing.T, checkpoint string) {
 	stores, dbs := acceptanceIntegrationStores(t, 1)
 	acceptance, db := stores[0], dbs[0]
 	ctx := context.Background()
@@ -81,6 +101,19 @@ func TestMySQLSourceReconciliationAdmissionRequiresFailedFencedPredecessor(t *te
 	if err := db.setClaimedMySQLSourceStopState(ctx, claim, request, "quiesce-intended", "stop-intended"); err != nil {
 		t.Fatal(err)
 	}
+	if checkpoint == "lock-intended" {
+		if err := db.setClaimedMySQLSourceStopState(ctx, claim, request, "stop-intended", "stop-proved"); err != nil {
+			t.Fatal(err)
+		}
+		lockFailure := errors.New("MySQL lock response lost")
+		if err := db.LockClaimedMySQLSourceAccount(ctx, acceptance, claim, request, sourceSecretSource{},
+			sourceAccountLockerFunc(func(context.Context, database.ResolvedBinding,
+				database.MySQLMaintenanceCredentials, database.SecretSource) error {
+				return lockFailure
+			})); !errors.Is(err, ErrMySQLSourceAccountLockIndeterminate) || !errors.Is(err, lockFailure) {
+			t.Fatalf("lock ambiguity did not persist: %v", err)
+		}
+	}
 	successorInput := MySQLSourceReconciliationAcceptanceInput{PriorSourceOperationID: prior.Operation.ID,
 		Actor: OperationActor{Issuer: "test-issuer", Subject: "operator"}, Key: "reconcile-" + uuid.NewString(),
 		Audit: AcceptanceAuditContext{Source: "integration-test"}}
@@ -105,7 +138,7 @@ func TestMySQLSourceReconciliationAdmissionRequiresFailedFencedPredecessor(t *te
 	var signed MySQLSourceReconciliationLink
 	if err := decodeMySQLSourceReconciliationLink(successor.Operation.Metadata, &signed); err != nil ||
 		signed.PriorSourceOperationID != prior.Operation.ID || signed.PriorSourceDigest != prior.Intent.CanonicalDigest ||
-		signed.Checkpoint != "stop-intended" || !sameMySQLSourceSnapshotPayload(successor.Operation.Payload, request) {
+		signed.Checkpoint != checkpoint || !sameMySQLSourceSnapshotPayload(successor.Operation.Payload, request) {
 		t.Fatalf("successor did not bind predecessor: %+v %v", signed, err)
 	}
 	replayed, err := db.AcceptPrivateMySQLSourceReconciliation(ctx, acceptance, successorInput)
@@ -126,6 +159,139 @@ func TestMySQLSourceReconciliationAdmissionRequiresFailedFencedPredecessor(t *te
 	claimedReplay, err := db.AcceptPrivateMySQLSourceReconciliation(ctx, acceptance, successorInput)
 	if err != nil || claimedReplay.Operation.ID != successor.Operation.ID {
 		t.Fatalf("claimed successor identity replay: %+v %v", claimedReplay, err)
+	}
+	inspections := 0
+	inspector := sourceLockInspectorFunc(func(context.Context, database.ResolvedBinding,
+		database.MySQLMaintenanceCredentials, database.SecretSource) error {
+		inspections++
+		return nil
+	})
+	deniedObservation := sourceStoppedObserverFunc(func(context.Context, nomad.CASStopJobRequest) error {
+		return errors.New("job still running")
+	})
+	if err := db.ReconcileClaimedMySQLSourceSnapshot(ctx, acceptance, successorClaim, deniedObservation,
+		inspector, sourceSecretSource{}); !errors.Is(err, ErrMySQLSourceStopIndeterminate) {
+		t.Fatalf("running job transferred source: %v", err)
+	}
+	var activeOperation, state string
+	if err := db.Pool.QueryRow(ctx, `SELECT operation_id,state FROM mysql_source_snapshot_intents WHERE source_key=$1`,
+		mysqlRuntimePhysicalKeyForCatalog(active.Catalog, request.Source)).Scan(&activeOperation, &state); err != nil ||
+		activeOperation != prior.Operation.ID || state != checkpoint || inspections != 0 {
+		t.Fatalf("negative observation changed source: operation=%q state=%q inspections=%d err=%v", activeOperation, state, inspections, err)
+	}
+	stoppedObservation := sourceStoppedObserverFunc(func(_ context.Context, got nomad.CASStopJobRequest) error {
+		if got.JobID != request.JobIdentity.JobID || got.JobModifyIndex != 7 || len(got.AllocationIDs) != 1 ||
+			got.AllocationIDs[0] != "alloc-1" {
+			return errors.New("wrong signed job")
+		}
+		return nil
+	})
+	claimLostAfterObservation := sourceStoppedObserverFunc(func(_ context.Context, got nomad.CASStopJobRequest) error {
+		if err := stoppedObservation.ObserveStoppedMySQLSourceJob(ctx, got); err != nil {
+			return err
+		}
+		_, err := db.Pool.Exec(ctx, `UPDATE operations SET locked_until=clock_timestamp()-interval '1 second' WHERE id=$1`,
+			successor.Operation.ID)
+		return err
+	})
+	if err := db.ReconcileClaimedMySQLSourceSnapshot(ctx, acceptance, successorClaim,
+		claimLostAfterObservation, inspector, sourceSecretSource{}); err == nil {
+		t.Fatal("expired successor claim transferred source after observation")
+	}
+	if err := db.Pool.QueryRow(ctx, `SELECT operation_id,state FROM mysql_source_snapshot_intents WHERE source_key=$1`,
+		mysqlRuntimePhysicalKeyForCatalog(active.Catalog, request.Source)).Scan(&activeOperation, &state); err != nil ||
+		activeOperation != prior.Operation.ID || state != checkpoint {
+		t.Fatalf("claim loss changed source: operation=%q state=%q err=%v", activeOperation, state, err)
+	}
+	if _, err := db.Pool.Exec(ctx, `UPDATE operations SET locked_until=clock_timestamp()+interval '2 minutes' WHERE id=$1`,
+		successor.Operation.ID); err != nil {
+		t.Fatal(err)
+	}
+	if checkpoint == "lock-intended" {
+		if err := db.ReconcileClaimedMySQLSourceSnapshot(ctx, acceptance, successorClaim, stoppedObservation,
+			sourceLockInspectorFunc(func(context.Context, database.ResolvedBinding,
+				database.MySQLMaintenanceCredentials, database.SecretSource) error {
+				return errors.New("account still active")
+			}), sourceSecretSource{}); !errors.Is(err, ErrMySQLSourceAccountLockIndeterminate) {
+			t.Fatalf("unlocked account transferred source: %v", err)
+		}
+	}
+	if err := db.ReconcileClaimedMySQLSourceSnapshot(ctx, acceptance, successorClaim, stoppedObservation,
+		inspector, sourceSecretSource{}); err != nil {
+		t.Fatalf("proved stopped source did not transfer: %v", err)
+	}
+	var fenceOwner string
+	wantState := "stop-proved"
+	wantInspections := 0
+	if checkpoint == "lock-intended" {
+		wantState, wantInspections = "lock-proved", 2
+	}
+	if err := db.Pool.QueryRow(ctx, `SELECT i.operation_id,i.state,f.owner FROM mysql_source_snapshot_intents i
+		CROSS JOIN runtime_mutation_fence f WHERE i.source_key=$1 AND f.singleton=true`,
+		mysqlRuntimePhysicalKeyForCatalog(active.Catalog, request.Source)).Scan(&activeOperation, &state, &fenceOwner); err != nil ||
+		activeOperation != successor.Operation.ID || state != wantState ||
+		fenceOwner != "mysql-source-snapshot:"+successor.Operation.ID || inspections != wantInspections {
+		t.Fatalf("source and fence did not transfer atomically: operation=%q state=%q fence=%q inspections=%d err=%v",
+			activeOperation, state, fenceOwner, inspections, err)
+	}
+	var priorState, archivedSuccessor string
+	if err := db.Pool.QueryRow(ctx, `SELECT checkpoint,successor_operation_id FROM mysql_source_snapshot_reconciliations
+		WHERE prior_operation_id=$1`, prior.Operation.ID).Scan(&priorState, &archivedSuccessor); err != nil ||
+		priorState != checkpoint || archivedSuccessor != successor.Operation.ID {
+		t.Fatalf("predecessor proof not retained: state=%q successor=%q err=%v", priorState, archivedSuccessor, err)
+	}
+	priorInspection, err := db.InspectPrivateMySQLSourceSnapshot(ctx, acceptance, prior.Operation.ID)
+	if err != nil || priorInspection.IntentState != checkpoint ||
+		priorInspection.ReconciledByOperationID != successor.Operation.ID || !priorInspection.RuntimeFenceHeld {
+		t.Fatalf("failed predecessor no longer inspectable: %+v %v", priorInspection, err)
+	}
+	var proofCanonical []byte
+	if err := db.Pool.QueryRow(ctx, `SELECT proof_canonical FROM mysql_source_snapshot_reconciliations
+		WHERE prior_operation_id=$1`, prior.Operation.ID).Scan(&proofCanonical); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := db.Pool.Exec(ctx, `UPDATE mysql_source_snapshot_reconciliations
+		SET proof_canonical=proof_canonical || decode('20','hex') WHERE prior_operation_id=$1`, prior.Operation.ID); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := db.InspectPrivateMySQLSourceSnapshot(ctx, acceptance, prior.Operation.ID); !errors.Is(err, ErrMySQLSourceSnapshotInspection) {
+		t.Fatalf("tampered reconciliation proof was accepted: %v", err)
+	}
+	if _, err := db.Pool.Exec(ctx, `UPDATE mysql_source_snapshot_reconciliations SET proof_canonical=$2
+		WHERE prior_operation_id=$1`, prior.Operation.ID, proofCanonical); err != nil {
+		t.Fatal(err)
+	}
+	if checkpoint == "stop-intended" {
+		if err := db.LockClaimedMySQLSourceAccount(ctx, acceptance, successorClaim, request, sourceSecretSource{},
+			sourceAccountLockerFunc(func(context.Context, database.ResolvedBinding,
+				database.MySQLMaintenanceCredentials, database.SecretSource) error {
+				return nil
+			})); err != nil {
+			t.Fatalf("successor could not continue account lock: %v", err)
+		}
+	}
+	stageDirectory := t.TempDir()
+	stageBytes := []byte("-- reconciled source SQL fixture\n")
+	stageDigest := sha256.Sum256(stageBytes)
+	stageArtifact := database.MySQLSQLArtifact{Format: database.MySQLSQLArtifactV2, Source: request.Source,
+		Bytes: int64(len(stageBytes)), SHA256: hex.EncodeToString(stageDigest[:]),
+		Expectation: database.MySQLRestoreExpectation{SchemaSHA256: strings.Repeat("a", 64),
+			DataSHA256: strings.Repeat("b", 64)}}
+	staged, err := db.StageClaimedMySQLSourceArtifact(ctx, acceptance, successorClaim, request,
+		sourceSecretSource{}, "/usr/bin/true", stageDirectory,
+		sourceStagerFunc(func(_ context.Context, _ database.ResolvedBinding, _ database.TargetIdentity,
+			_ database.SecretSource, _, _, directory string) (string, database.MySQLSQLArtifact, error) {
+			path := filepath.Join(directory, "reconciled.sql")
+			return path, stageArtifact, os.WriteFile(path, stageBytes, 0o600)
+		}))
+	if err != nil || staged.Receipt.OperationID != successor.Operation.ID || staged.Receipt.Artifact != stageArtifact {
+		t.Fatalf("successor could not produce signed stage receipt: %+v %v", staged, err)
+	}
+	if err := db.ReconcileClaimedMySQLSourceSnapshot(ctx, acceptance, successorClaim,
+		sourceStoppedObserverFunc(func(context.Context, nomad.CASStopJobRequest) error {
+			return errors.New("replay must use signed durable proof")
+		}), inspector, sourceSecretSource{}); err != nil {
+		t.Fatalf("lost transfer response could not replay without external effect: %v", err)
 	}
 	successorInput.Key = "competing-" + uuid.NewString()
 	if _, err := db.AcceptPrivateMySQLSourceReconciliation(ctx, acceptance, successorInput); !errors.Is(err, ErrMySQLSourceSnapshotFence) {

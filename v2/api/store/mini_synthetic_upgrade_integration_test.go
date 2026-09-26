@@ -102,6 +102,17 @@ func TestSyntheticMiniControlUpgradeAndReaderBoundary(t *testing.T) {
 	if activityBefore != activityAfter {
 		t.Fatalf("synthetic event-day rows changed across migration: before=%s after=%s", activityBefore, activityAfter)
 	}
+	// The reconciliation history table is additive. The previous 5/31
+	// binary contract must still be able to return during the Mini rollback
+	// window before any new reconciliation transfer is performed.
+	previousCandidate, err := NewSchemaMigrator(pool, migrations[:39], BinarySchemaCompatibility{
+		ReaderVersion: MySQLRetainedArtifactReaderVersion, WriterVersion: SnapshotExportIntentWriterVersion}, SchemaMigratorOptions{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := previousCandidate.Check(ctx, SchemaAccessReadWrite); err != nil {
+		t.Fatalf("additive reconciliation history blocked previous binary: %v", err)
+	}
 	// Migration 21 retires the preceding reader contract because it cannot
 	// decode function evidence bundles. A rollback to that reader must refuse
 	// startup even though its SQL still works against these legacy rows.
@@ -125,7 +136,7 @@ func TestSyntheticMiniControlUpgradeAndReaderBoundary(t *testing.T) {
 	if !errors.As(err, &incompatible) || incompatible.Contract != "reader" || incompatible.Required != MySQLRetainedArtifactReaderVersion {
 		t.Fatalf("pre-retention reader check = %T %v, want reader 5 compatibility refusal", err, err)
 	}
-	// Migrations 22 and 28 through 39 raise the writer floor.
+	// Migrations 22 and 28 through 39 raise the writer floor; 40 is additive.
 	// A previous binary cannot resume writes against the latest schema.
 	oldWriter, err := NewSchemaMigrator(pool, migrations[:21], BinarySchemaCompatibility{ReaderVersion: MySQLRetainedArtifactReaderVersion, WriterVersion: 18}, SchemaMigratorOptions{})
 	if err != nil {

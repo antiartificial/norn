@@ -1,0 +1,27 @@
+package store
+
+// A reconciled predecessor remains inspectable after its physical source row
+// moves to a newly signed, one-attempt source operation. The table is additive;
+// migration alone does not retire the Mini rollback reader/writer contract.
+
+const mysqlSourceSnapshotReconciliationMigrationSQL = `
+CREATE TABLE mysql_source_snapshot_reconciliations (
+ prior_operation_id TEXT PRIMARY KEY REFERENCES operations(id) ON DELETE RESTRICT,
+ successor_operation_id TEXT NOT NULL UNIQUE REFERENCES operations(id) ON DELETE RESTRICT,
+ prior_intent JSONB NOT NULL,
+ checkpoint TEXT NOT NULL CHECK (checkpoint IN ('stop-intended','lock-intended')),
+ proof_canonical BYTEA NOT NULL,
+ proof_sha256 TEXT NOT NULL CHECK (proof_sha256 ~ '^[0-9a-f]{64}$'),
+ proof_signing_algorithm TEXT NOT NULL,
+ proof_signing_key_id TEXT NOT NULL,
+ proof_signature TEXT NOT NULL,
+ transferred_at TIMESTAMPTZ NOT NULL DEFAULT clock_timestamp()
+);
+`
+
+func mysqlSourceSnapshotReconciliationMigration() SchemaMigration {
+	return SchemaMigration{Version: 40, Name: "mysql-source-snapshot-reconciled-predecessor",
+		SQL:                  mysqlSourceSnapshotReconciliationMigrationSQL,
+		MinimumReaderVersion: MySQLRetainedArtifactReaderVersion,
+		MinimumWriterVersion: SnapshotExportIntentWriterVersion}
+}
