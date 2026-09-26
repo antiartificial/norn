@@ -40,6 +40,14 @@ python3 v2/scripts/test-mini-protected-backup.py
 bash -n v2/scripts/mini-private-copy-rehearsal
 ```
 
+The read-only source-dump mode now carries supported libpq URL settings,
+including host address and TLS certificate paths, into `pg_dump`. It rejects
+unknown or repeated URL parameters and clears inherited `PG*` variables before
+loading the selected source connection, so a rehearsal cannot silently use an
+unrelated libpq service or endpoint. A fake-`pg_dump` fixture verifies those
+settings and early rejection; it does not replace the fresh Mini copy or
+protected-artifact restore rehearsal.
+
 This command must be run against the **actual protected Mini backup** before
 it counts as M5 restore evidence. Record the artifact digest and size, proof
 creation time, legacy release SHA, candidate source and binary digests,

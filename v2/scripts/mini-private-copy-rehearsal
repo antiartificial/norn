@@ -136,33 +136,55 @@ import shlex
 import urllib.parse
 
 parsed = urllib.parse.urlparse(os.environ["SOURCE_DATABASE_URL"])
-assert parsed.scheme in ("postgres", "postgresql")
-assert parsed.path not in ("", "/")
-query = urllib.parse.parse_qs(parsed.query)
+if parsed.scheme not in ("postgres", "postgresql") or parsed.path in ("", "/") or parsed.fragment:
+    raise SystemExit("source URL must identify one PostgreSQL database")
+query = urllib.parse.parse_qs(parsed.query, keep_blank_values=True)
+query_env = {
+    "host": "PGHOST", "hostaddr": "PGHOSTADDR", "port": "PGPORT",
+    "passfile": "PGPASSFILE", "sslmode": "PGSSLMODE",
+    "sslrootcert": "PGSSLROOTCERT", "sslcert": "PGSSLCERT",
+    "sslkey": "PGSSLKEY", "sslpassword": "PGSSLPASSWORD",
+    "sslcrl": "PGSSLCRL", "sslcrldir": "PGSSLCRLDIR",
+    "sslnegotiation": "PGSSLNEGOTIATION", "gssencmode": "PGGSSENCMODE",
+    "channel_binding": "PGCHANNELBINDING",
+    "connect_timeout": "PGCONNECT_TIMEOUT",
+    "target_session_attrs": "PGTARGETSESSIONATTRS",
+    "application_name": "PGAPPNAME",
+}
+if set(query) - set(query_env) or any(len(values) != 1 for values in query.values()):
+    raise SystemExit("source URL has unsupported or repeated PostgreSQL connection parameters")
 socket_host = query.get("host", [""])[-1]
 host = socket_host or parsed.hostname
-assert host
-if socket_host:
-    assert socket_host.startswith("/") and os.path.isdir(socket_host)
+if not host or (socket_host and (not socket_host.startswith("/") or not os.path.isdir(socket_host))):
+    raise SystemExit("source URL host is unavailable")
+port = int(query["port"][0]) if "port" in query else (parsed.port or 5432)
+if not 1 <= port <= 65535:
+    raise SystemExit("source URL port is invalid")
 values = {
     "PGHOST": host,
-    "PGPORT": str(parsed.port or 5432),
+    "PGPORT": str(port),
     "PGUSER": urllib.parse.unquote(parsed.username or ""),
     "PGPASSWORD": urllib.parse.unquote(parsed.password or ""),
     "PGDATABASE": urllib.parse.unquote(parsed.path.lstrip("/")),
-    "PGSSLMODE": query.get("sslmode", ["prefer"])[-1],
+    "PGSSLMODE": "prefer",
 }
+for name, parameter in query.items():
+    if name not in ("host", "port"):
+        values[query_env[name]] = parameter[0]
 with open(os.environ["SOURCE_ENV"], "w", encoding="utf-8") as handle:
     for key, value in values.items():
         handle.write(f"export {key}={shlex.quote(value)}\n")
 PY
   chmod 600 "$source_env"
+  # An inherited libpq setting must not silently change the source endpoint,
+  # authentication, or TLS mode selected by the exact URL.
+  while IFS= read -r pg_name; do unset "$pg_name"; done < <(compgen -A variable PG)
   # shellcheck disable=SC1090
   source "$source_env"
   unset source_database_url NORN_REHEARSAL_SOURCE_DATABASE_URL
   PGOPTIONS='-c default_transaction_read_only=on' \
     "$postgres_bin/pg_dump" --format=custom --no-owner --no-privileges --file="$dump_file"
-  unset PGHOST PGPORT PGUSER PGPASSWORD PGDATABASE PGSSLMODE
+  unset PGHOST PGHOSTADDR PGPORT PGUSER PGPASSWORD PGPASSFILE PGDATABASE PGSSLMODE PGSSLROOTCERT PGSSLCERT PGSSLKEY PGSSLPASSWORD PGSSLCRL PGSSLCRLDIR PGSSLNEGOTIATION PGGSSENCMODE PGCHANNELBINDING PGCONNECT_TIMEOUT PGTARGETSESSIONATTRS PGAPPNAME
   chmod 600 "$dump_file"
 fi
 

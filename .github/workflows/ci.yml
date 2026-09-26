@@ -100,6 +100,7 @@ jobs:
         run: |
           python3 v2/scripts/test-mini-create-protected-backup.py
           python3 v2/scripts/test-mini-protected-backup.py
+          python3 v2/scripts/test-mini-private-copy-source.py
 
   web:
     name: web
