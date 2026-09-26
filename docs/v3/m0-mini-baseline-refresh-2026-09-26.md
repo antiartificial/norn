@@ -17,6 +17,12 @@ The app inventory still shows `ad-asset-verifier`, `ft-trove`, and `hello-norn` 
 
 Snapshot retention warnings remain for `field-harbor` and `turnkey-offer-intake`. The readiness result describes the current v2 development/compatibility posture; it is not a v3 candidate failure result. No active operation means the queue was clear at the instant of collection, not that a future upgrade drain is complete.
 
+The later [inactive-job classification](m0-mini-inactive-job-classification-2026-09-26.md)
+found all four exceptional source specs still declaring `deploy: true` in
+dirty checkouts. Three have no current Nomad base job; `its-alive-api` has a
+dead job with no current allocation. Their intended ownership and fixture
+disposition still require review.
+
 ## M0 exit work still required
 
 1. Confirm the clean deployed `watchtower` checkout as canonical, then verify the [staged discovery exclusion](m0-watchtower-source-join-2026-09-26.md) through the full v3 candidate API. The installed v2 API still reports both records. Classify the absent/dead jobs before deriving a representative upgrade fixture.
