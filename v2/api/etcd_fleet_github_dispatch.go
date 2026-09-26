@@ -125,6 +125,10 @@ func etcdFleetGitHubDispatch(cfg *config.Config, operations *etcdstore.V3Operati
 			_, prepared, prepErr = acceptEtcdFleetGitHubDispatch(r.Context(), operations, principal, plan, typedPlan, approved, environment, request.AllowDestructive)
 		}
 		if prepErr != nil {
+			if errors.Is(prepErr, store.ErrAcceptanceIndeterminate) {
+				handler.WriteControlProblem(w, r, http.StatusServiceUnavailable, "operation_acceptance_indeterminate", "dispatch preparation outcome is indeterminate; retry the same plan request")
+				return
+			}
 			handler.WriteControlProblem(w, r, http.StatusConflict, "fleet_github_dispatch_preparation_unavailable", "protected dispatch preparation is unavailable")
 			return
 		}

@@ -70,6 +70,10 @@ func etcdFleetGitHubPullRequest(cfg *config.Config, operations *etcdstore.V3Oper
 			}
 		}
 		if err != nil {
+			if errors.Is(err, store.ErrAcceptanceIndeterminate) {
+				handler.WriteControlProblem(w, r, http.StatusServiceUnavailable, "operation_acceptance_indeterminate", "pull request reservation outcome is indeterminate; retry the same plan request")
+				return
+			}
 			handler.WriteControlProblem(w, r, http.StatusConflict, "fleet_github_pull_request_reservation_unavailable", "protected pull request reservation is unavailable")
 			return
 		}
