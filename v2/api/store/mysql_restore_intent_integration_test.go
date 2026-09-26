@@ -434,7 +434,7 @@ func TestMySQLRestoreIntentAgainstDisposableEngines(t *testing.T) {
 	}
 	// Publish the source under its signed retention receipt, then remove the
 	// staging file. The SQL runner below must consume the retained bytes.
-	_, objectServer := s3emulator.Start("norn-artifacts", "artifact-writer")
+	objectEmulator, objectServer := s3emulator.Start("norn-artifacts", "artifact-writer")
 	defer objectServer.Close()
 	objectEndpoint, err := url.Parse(objectServer.URL)
 	if err != nil {
@@ -528,6 +528,24 @@ func TestMySQLRestoreIntentAgainstDisposableEngines(t *testing.T) {
 		"NORN_MYSQL_RETAINED_PREPARE_ENDPOINT="+objectEndpoint.Host,
 		"NORN_MYSQL_RETAINED_PREPARE_SPOOL="+childSpool,
 		"NORN_MYSQL_RETAINED_PREPARE_PRIVATE="+childPrivate)
+	retainedReceipt, err := control.LoadSignedMySQLSourceArtifactRetentionReceipt(ctx, stores[0], receipt.OperationID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	tampered := append([]byte(nil), stagedBytes...)
+	tampered[0] ^= 1
+	objectKey := "mysql/recovery/" + retainedReceipt.Receipt.Artifact.Key
+	objectEmulator.Tamper(objectKey, tampered)
+	corruptChild := exec.Command(os.Args[0], "-test.run=^TestMySQLRestoreIntentAgainstDisposableEngines$")
+	corruptChild.Env = child.Env
+	if output, err := corruptChild.CombinedOutput(); err == nil || !strings.Contains(string(output), artifactstore.ErrArtifactCorrupt.Error()) {
+		t.Fatalf("tampered retained SQL did not fail descriptor verification: %v\n%s", err, output)
+	}
+	var stateBeforeSQL string
+	if err := control.Pool.QueryRow(ctx, `SELECT state FROM mysql_restore_intents WHERE operation_id=$1`, claim.OperationID()).Scan(&stateBeforeSQL); err != nil || stateBeforeSQL != "prepared" {
+		t.Fatalf("tampered retained SQL crossed the import boundary: %q, %v", stateBeforeSQL, err)
+	}
+	objectEmulator.Tamper(objectKey, stagedBytes)
 	if output, err := child.CombinedOutput(); err != nil {
 		t.Fatalf("separate process signed retained prepare: %v\n%s", err, output)
 	}

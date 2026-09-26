@@ -15,7 +15,10 @@ receipts, materializes the S3-emulator object, and replays preparation against
 the disposable MySQL target. A second independent process runs the supervised
 SQL import from retained bytes under the same signed claim, then leaves the
 completed intent and held runtime fence for the parent to inspect. The local
-PostgreSQL 16/MySQL 8.4 harness passed. This is not a separate-node or
+PostgreSQL 16/MySQL 8.4 harness passed. The test also corrupts the retained
+object before a separate-process prepare: descriptor verification rejects it
+while the restore intent remains `prepared`, before SQL execution. It restores
+the test object's original bytes before the successful run. This is not a separate-node or
 hosted-provider restore qualification.
 
 The client executable is checksum-verified through an opened descriptor before
