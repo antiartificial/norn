@@ -137,3 +137,13 @@ validated a synthetic ingress file with local cloudflared 2026.3.0, called
 works with the current user's GUI launchd domain and a live supervised
 process; it does not prove the Mini's `com.norn.cloudflared` agent, tunnel
 connectivity, public-route health, or receipt recovery.
+
+The same v3 helper was then compiled for macOS arm64 and run on the Mini as
+UID 501 against a disposable `gui/501/com.norn.v3-rehearsal.*` LaunchAgent.
+Mini's installed cloudflared 2026.8.2 first accepted the synthetic config.
+The helper's real `launchctl kickstart -k` returned after `state = running`,
+and the disposable agent PID changed. Its registration and private `/tmp`
+files were removed and absence was checked. This narrows the Mini launchd
+compatibility gap without touching the live `com.norn.cloudflared` service.
+The real tunnel rewrite, public endpoint health, and recovery receipt path
+remain unqualified.
