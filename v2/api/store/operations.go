@@ -603,7 +603,7 @@ func (db *DB) DeferClaimedOperation(ctx context.Context, claim OperationClaim, m
 	return nil
 }
 
-// DeferOrFailCronPauseClaimedOperation requeues an unresolved cron pause or resume
+// DeferOrFailCronPauseClaimedOperation requeues an unresolved cron mutation
 // effect without refunding the claim that performed the recovery check. Once
 // MaxAttempts is reached it atomically records a failed/manual-review receipt
 // and its evidence archive intent. It deliberately does not touch
@@ -622,7 +622,7 @@ func (db *DB) DeferOrFailCronPauseClaimedOperation(ctx context.Context, claim Op
 		WITH owned AS MATERIALIZED (
 			SELECT id, attempts, max_attempts
 			FROM operations
-			WHERE id = $3 AND kind IN ('app.cron-pause', 'app.cron-resume', 'app.cron-trigger') AND status = 'running'
+			WHERE id = $3 AND kind IN ('app.cron-pause', 'app.cron-resume', 'app.cron-schedule', 'app.cron-trigger') AND status = 'running'
 			  AND locked_by = $4 AND lock_generation = $5 AND locked_until > now()
 		), deferred AS (
 			UPDATE operations

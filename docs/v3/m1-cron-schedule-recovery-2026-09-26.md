@@ -33,5 +33,16 @@ original receipt, the Nomad parent version advances once, and the proxy
 rejects any second schedule registration. This literal post-commit crash test
 passed against disposable Nomad 2.0.7 and PostgreSQL 16.
 
-A literal pre-write process kill, two replacement OS processes racing recovery,
-and Mini runtime qualification remain open M1 gates.
+A paired literal pre-write test now stops the first worker after its effect
+reservation, on the next Nomad parent read, before any schedule registration.
+Two fresh worker processes race recovery. The winner observes no exact effect
+marker, consumes the bounded recovery attempts, and records a terminal
+manual-review receipt; the effect remains reserved and Nomad's schedule and
+version remain unchanged. This test exposed another omission: the cron retry
+method's ownership-checked SQL did not admit `app.cron-schedule`, so the first
+replacement could not defer its unresolved effect. Adding that kind allowed the
+two-process recovery to terminalize as intended. The test passed on disposable
+Nomad 2.0.7 and PostgreSQL 16.
+
+These local fault gates do not qualify the actual Mini runtime or every M1
+operation kind.

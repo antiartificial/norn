@@ -64,6 +64,13 @@ func TestCronScheduleWorkerProcessCrashAfterNomadCommit(t *testing.T) {
 	}
 	testCronScheduleHTTPWorkerNomadPostgres(t, false, false, "process-committed")
 }
+func TestCronScheduleWorkerProcessCrashBeforeNomadWrite(t *testing.T) {
+	if os.Getenv("NORN_CRON_SCHEDULE_CRASH_WORKER") == "1" {
+		runCronScheduleCrashWorker(t)
+		return
+	}
+	testCronScheduleHTTPWorkerNomadPostgres(t, false, false, "process-reserved")
+}
 
 func testCronScheduleHTTPWorkerNomadPostgres(t *testing.T, loseResponse, twoWorkers bool, crashWindow string) {
 	address := os.Getenv("NORN_TEST_NOMAD_ADDR")
@@ -229,8 +236,8 @@ func testCronScheduleHTTPWorkerNomadPostgres(t *testing.T, loseResponse, twoWork
 	if status != http.StatusAccepted || accepted.Kind != "app.cron-schedule" {
 		t.Fatalf("accept status=%d operation=%+v body=%s", status, accepted, body)
 	}
-	if crashWindow == "process-committed" {
-		testCronScheduleProcessCrashWindow(t, ctx, db, root, address, client, paused, accepted, serve)
+	if crashWindow == "process-committed" || crashWindow == "process-reserved" {
+		testCronScheduleProcessCrashWindow(t, ctx, db, root, address, client, paused, accepted, serve, crashWindow)
 		return
 	}
 	if crashWindow != "" {
@@ -422,21 +429,27 @@ func testCronScheduleCrashWindow(t *testing.T, ctx context.Context, db *store.DB
 	}
 }
 
-// The first normal worker is killed after Nomad commits the CAS replacement,
-// while its HTTP response is withheld. A separate process must reconcile the
-// durable reservation from the exact marker without another Nomad write.
-func testCronScheduleProcessCrashWindow(t *testing.T, ctx context.Context, db *store.DB, appsDir, address string, client *nomad.Client, paused *nomad.PeriodicJobInfo, accepted model.Operation, serve func() (int, model.Operation, string)) {
+// Kill a normal worker on either side of the Nomad write. A replacement may
+// complete only when the exact effect marker proves the guarded write landed.
+func testCronScheduleProcessCrashWindow(t *testing.T, ctx context.Context, db *store.DB, appsDir, address string, client *nomad.Client, paused *nomad.PeriodicJobInfo, accepted model.Operation, serve func() (int, model.Operation, string), window string) {
 	t.Helper()
 	target, err := url.Parse(address)
 	if err != nil || target.Scheme != "http" || net.ParseIP(target.Hostname()) == nil || !net.ParseIP(target.Hostname()).IsLoopback() {
 		t.Fatal("process-crash qualification requires disposable loopback Nomad")
 	}
-	committed := make(chan struct{})
+	boundary := make(chan struct{})
 	var writes atomic.Int32
+	var jobReads atomic.Int32
+	jobID := fmt.Sprint(accepted.Payload["jobId"])
 	proxy := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		isWrite := r.Method == http.MethodPut && r.URL.Path == "/v1/jobs"
-		if isWrite && writes.Add(1) != 1 {
+		if isWrite && (writes.Add(1) != 1 || window == "process-reserved") {
 			http.Error(w, "duplicate schedule update rejected by qualification", http.StatusConflict)
+			return
+		}
+		if window == "process-reserved" && r.Method == http.MethodGet && r.URL.Path == "/v1/job/"+jobID && jobReads.Add(1) == 2 {
+			close(boundary)
+			<-r.Context().Done()
 			return
 		}
 		upstream := r.Clone(r.Context())
@@ -449,7 +462,7 @@ func testCronScheduleProcessCrashWindow(t *testing.T, ctx context.Context, db *s
 		defer response.Body.Close()
 		if isWrite {
 			_, _ = io.Copy(io.Discard, response.Body)
-			close(committed)
+			close(boundary)
 			<-r.Context().Done()
 			return
 		}
@@ -467,7 +480,11 @@ func testCronScheduleProcessCrashWindow(t *testing.T, ctx context.Context, db *s
 		t.Fatal("disposable schema is required")
 	}
 	command := func() *exec.Cmd {
-		cmd := exec.Command(os.Args[0], "-test.run=^TestCronScheduleWorkerProcessCrashAfterNomadCommit$")
+		testName := "TestCronScheduleWorkerProcessCrashAfterNomadCommit"
+		if window == "process-reserved" {
+			testName = "TestCronScheduleWorkerProcessCrashBeforeNomadWrite"
+		}
+		cmd := exec.Command(os.Args[0], "-test.run=^"+testName+"$")
 		cmd.Env = append(os.Environ(), "NORN_CRON_SCHEDULE_CRASH_WORKER=1", "NORN_CRON_SCHEDULE_CRASH_SCHEMA="+schema, "NORN_CRON_SCHEDULE_CRASH_APPS_DIR="+appsDir, "NORN_TEST_NOMAD_ADDR="+proxy.URL)
 		return cmd
 	}
@@ -477,14 +494,20 @@ func testCronScheduleProcessCrashWindow(t *testing.T, ctx context.Context, db *s
 	}
 	t.Cleanup(func() { _ = crashed.Process.Kill(); _, _ = crashed.Process.Wait() })
 	select {
-	case <-committed:
+	case <-boundary:
 	case <-time.After(20 * time.Second):
-		t.Fatal("worker did not reach committed Nomad schedule boundary")
+		t.Fatal("worker did not reach Nomad schedule crash boundary")
 	}
-	jobID := fmt.Sprint(accepted.Payload["jobId"])
 	state, err := client.PeriodicJobSchedule(jobID)
-	if err != nil || state.Version != paused.Version+1 || state.Schedule != "15 2 * * *" || state.CronScheduleEffectID == "" {
-		t.Fatalf("Nomad did not commit exact schedule update: state=%+v err=%v", state, err)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if window == "process-reserved" {
+		if state.Version != paused.Version || state.Schedule != paused.Schedule || writes.Load() != 0 {
+			t.Fatalf("Nomad changed before guarded write: state=%+v writes=%d", state, writes.Load())
+		}
+	} else if state.Version != paused.Version+1 || state.Schedule != "15 2 * * *" || state.CronScheduleEffectID == "" {
+		t.Fatalf("Nomad did not commit exact schedule update: state=%+v", state)
 	}
 	var lifecycle string
 	if err := db.Pool.QueryRow(ctx, `SELECT lifecycle FROM operation_effects WHERE operation_id=$1`, accepted.ID).Scan(&lifecycle); err != nil || lifecycle != "reserved" {
@@ -499,11 +522,17 @@ func testCronScheduleProcessCrashWindow(t *testing.T, ctx context.Context, db *s
 	if _, err := db.Pool.Exec(ctx, `UPDATE operations SET locked_until=now()-interval '1 second' WHERE id=$1`, accepted.ID); err != nil {
 		t.Fatal(err)
 	}
-	restarted := command()
-	if err := restarted.Start(); err != nil {
-		t.Fatal(err)
+	restartCount := 1
+	if window == "process-reserved" {
+		restartCount = 2
 	}
-	t.Cleanup(func() { _ = restarted.Process.Kill(); _, _ = restarted.Process.Wait() })
+	for i := 0; i < restartCount; i++ {
+		restarted := command()
+		if err := restarted.Start(); err != nil {
+			t.Fatal(err)
+		}
+		t.Cleanup(func() { _ = restarted.Process.Kill(); _, _ = restarted.Process.Wait() })
+	}
 	deadline := time.Now().Add(25 * time.Second)
 	var finished *model.Operation
 	for time.Now().Before(deadline) {
@@ -515,6 +544,19 @@ func testCronScheduleProcessCrashWindow(t *testing.T, ctx context.Context, db *s
 			break
 		}
 		time.Sleep(100 * time.Millisecond)
+	}
+	if window == "process-reserved" {
+		if finished == nil || finished.Status != model.OperationFailed || finished.Attempts != finished.MaxAttempts || finished.Metadata["manualRecoveryRequired"] != true || finished.Metadata["externalEffectRecoveryPending"] != true || finished.Metadata["retryBudgetExhausted"] != true || writes.Load() != 0 {
+			t.Fatalf("unproved reservation recovered unsafely: operation=%+v writes=%d err=%v", finished, writes.Load(), err)
+		}
+		state, err = client.PeriodicJobSchedule(jobID)
+		if err != nil || state.Version != paused.Version || state.Schedule != paused.Schedule {
+			t.Fatalf("replacement changed Nomad schedule: state=%+v err=%v", state, err)
+		}
+		if err := db.Pool.QueryRow(ctx, `SELECT lifecycle FROM operation_effects WHERE operation_id=$1`, accepted.ID).Scan(&lifecycle); err != nil || lifecycle != "reserved" {
+			t.Fatalf("unproved effect lifecycle=%q err=%v", lifecycle, err)
+		}
+		return
 	}
 	if finished == nil || finished.Status != model.OperationSucceeded || writes.Load() != 1 {
 		t.Fatalf("restarted operation=%+v writes=%d err=%v", finished, writes.Load(), err)
