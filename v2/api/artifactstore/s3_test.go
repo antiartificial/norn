@@ -3,10 +3,15 @@ package artifactstore
 import (
 	"bytes"
 	"context"
+	"crypto/tls"
+	"crypto/x509"
+	"encoding/pem"
 	"errors"
 	"io"
+	"net/http"
 	"net/url"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"testing"
 	"time"
@@ -38,8 +43,8 @@ func TestS3StoreConformanceAndCrossClientRead(t *testing.T) {
 		t.Fatal(err)
 	}
 	runStoreConformance(t, writer, "")
-	// A second process has no access to the writer's spool. It must recover
-	// the exact retained object from the remote bucket alone.
+	// A second client with a distinct spool must recover the exact retained
+	// object from the remote bucket alone.
 	readerConfig := config
 	readerConfig.SpoolDirectory = t.TempDir()
 	if err := os.Chmod(readerConfig.SpoolDirectory, 0o700); err != nil {
@@ -65,6 +70,86 @@ func TestS3StoreConformanceAndCrossClientRead(t *testing.T) {
 	emulator.Tamper("v3/private/"+descriptor.Key, []byte("cross-node-retained-sourcX"))
 	if err := reader.Verify(context.Background(), descriptor); !errors.Is(err, ErrArtifactCorrupt) {
 		t.Fatalf("remote tampering = %v", err)
+	}
+}
+
+func TestS3RetainedMaterializationAcrossProcesses(t *testing.T) {
+	payload := []byte("signed retained MySQL source bytes for process recovery")
+	descriptor := descriptorFor(payload)
+	if os.Getenv("NORN_S3_MATERIALIZE_CHILD") == "1" {
+		certificate, err := os.ReadFile(os.Getenv("NORN_S3_MATERIALIZE_CA"))
+		if err != nil {
+			t.Fatal(err)
+		}
+		roots := x509.NewCertPool()
+		if !roots.AppendCertsFromPEM(certificate) {
+			t.Fatal("emulator certificate was not trusted")
+		}
+		transport := &http.Transport{TLSClientConfig: &tls.Config{RootCAs: roots}}
+		defer transport.CloseIdleConnections()
+		config := S3Config{Endpoint: os.Getenv("NORN_S3_MATERIALIZE_ENDPOINT"), Bucket: "norn-artifacts",
+			Prefix: "v3/private", Region: "us-east-1", AccessKey: "artifact-writer", SecretKey: "test-secret",
+			Transport: transport, SpoolDirectory: os.Getenv("NORN_S3_MATERIALIZE_SPOOL"),
+			SpoolCapacity: 32 << 20, RetainFor: 24 * time.Hour}
+		reader, err := OpenS3(context.Background(), config)
+		if err != nil {
+			t.Fatal(err)
+		}
+		path, err := MaterializePrivate(context.Background(), reader, descriptor, os.Getenv("NORN_S3_MATERIALIZE_PRIVATE"))
+		if err != nil {
+			t.Fatal(err)
+		}
+		actual, err := os.ReadFile(path)
+		if err != nil || !bytes.Equal(actual, payload) {
+			t.Fatalf("separate process materialization = %q, %v", actual, err)
+		}
+		info, err := os.Stat(path)
+		if err != nil || info.Mode().Perm() != 0o600 {
+			t.Fatalf("private artifact mode = %v, %v", info, err)
+		}
+		return
+	}
+	_, server := s3emulator.Start("norn-artifacts", "artifact-writer")
+	defer server.Close()
+	endpoint, err := url.Parse(server.URL)
+	if err != nil {
+		t.Fatal(err)
+	}
+	writerSpool := t.TempDir()
+	if err := os.Chmod(writerSpool, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	writer, err := OpenS3(context.Background(), S3Config{Endpoint: endpoint.Host, Bucket: "norn-artifacts",
+		Prefix: "v3/private", Region: "us-east-1", AccessKey: "artifact-writer", SecretKey: "test-secret",
+		Transport: server.Client().Transport, SpoolDirectory: writerSpool, SpoolCapacity: 32 << 20,
+		RetainFor: 24 * time.Hour})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := writer.Publish(context.Background(), descriptor, bytes.NewReader(payload)); err != nil {
+		t.Fatal(err)
+	}
+	spool := t.TempDir()
+	private := t.TempDir()
+	for _, directory := range []string{spool, private} {
+		if err := os.Chmod(directory, 0o700); err != nil {
+			t.Fatal(err)
+		}
+	}
+	caPath := filepath.Join(t.TempDir(), "emulator-ca.pem")
+	certificate := pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: server.Certificate().Raw})
+	if err := os.WriteFile(caPath, certificate, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	child := exec.Command(os.Args[0], "-test.run=^TestS3RetainedMaterializationAcrossProcesses$")
+	child.Env = append(os.Environ(), "NORN_S3_MATERIALIZE_CHILD=1", "NORN_S3_MATERIALIZE_CA="+caPath,
+		"NORN_S3_MATERIALIZE_ENDPOINT="+endpoint.Host, "NORN_S3_MATERIALIZE_SPOOL="+spool,
+		"NORN_S3_MATERIALIZE_PRIVATE="+private)
+	if output, err := child.CombinedOutput(); err != nil {
+		t.Fatalf("separate process did not materialize retained object: %v\n%s", err, output)
+	}
+	if entries, err := os.ReadDir(spool); err != nil || len(entries) > 1 {
+		t.Fatalf("reader spool retained unexpected files: %v, %v", entries, err)
 	}
 }
 
