@@ -67,7 +67,7 @@ func TestMySQLRestoreIntentPayloadExact(t *testing.T) {
 // signs the exact request, persists the target fence, and demonstrates that
 // the external-effect ambiguity boundary cannot be entered twice.
 func TestMySQLRestoreIntentAgainstDisposableEngines(t *testing.T) {
-	if os.Getenv("NORN_MYSQL_RETAINED_PREPARE_CHILD") == "1" {
+	if os.Getenv("NORN_MYSQL_RETAINED_PREPARE_CHILD") == "1" || os.Getenv("NORN_MYSQL_RETAINED_RUN_CHILD") == "1" {
 		ctx := context.Background()
 		config, err := pgxpool.ParseConfig(os.Getenv("NORN_MYSQL_RETAINED_PREPARE_DB"))
 		if err != nil {
@@ -121,6 +121,18 @@ func TestMySQLRestoreIntentAgainstDisposableEngines(t *testing.T) {
 			SpoolDirectory: os.Getenv("NORN_MYSQL_RETAINED_PREPARE_SPOOL"), SpoolCapacity: 64 << 20, RetainFor: 24 * time.Hour})
 		if err != nil {
 			t.Fatal(err)
+		}
+		if os.Getenv("NORN_MYSQL_RETAINED_RUN_CHILD") == "1" {
+			runner := MySQLRestoreRunner{Control: control, Acceptance: acceptance, Secrets: secrets, ClaimLease: 120 * time.Millisecond,
+				Objects: objects, MaterializeDirectory: os.Getenv("NORN_MYSQL_RETAINED_PREPARE_PRIVATE"),
+				Tool: database.MySQLRestoreTool{Path: os.Getenv("NORN_MYSQL_RETAINED_TOOL"), SHA256: os.Getenv("NORN_MYSQL_RETAINED_TOOL_SHA")}}
+			if err := runner.RunClaimed(ctx, claim); err != nil {
+				t.Fatalf("separate process supervised MySQL restore: %v", err)
+			}
+			if _, err := os.Stat(request.ArtifactPath); !errors.Is(err, os.ErrNotExist) {
+				t.Fatalf("separate process recreated historical staging path: %v", err)
+			}
+			return
 		}
 		prepared, err := control.PrepareClaimedMySQLRestoreFromRetained(ctx, acceptance, claim, request, secrets, objects, os.Getenv("NORN_MYSQL_RETAINED_PREPARE_PRIVATE"))
 		if err != nil || !prepared.Replayed {
@@ -519,6 +531,15 @@ func TestMySQLRestoreIntentAgainstDisposableEngines(t *testing.T) {
 	if output, err := child.CombinedOutput(); err != nil {
 		t.Fatalf("separate process signed retained prepare: %v\n%s", err, output)
 	}
+	if entries, err := os.ReadDir(childPrivate); err != nil {
+		t.Fatal(err)
+	} else {
+		for _, entry := range entries {
+			if entry.Name() != ".norn-materialize.lock" {
+				t.Fatalf("prepare process left private artifact for SQL runner: %s", entry.Name())
+			}
+		}
+	}
 	// The short lease expires while mysql is deliberately delayed. Completion
 	// therefore proves the private runner renewed its claim during the import.
 	delayedTool := filepath.Join(t.TempDir(), "mysql-delayed")
@@ -550,11 +571,11 @@ func TestMySQLRestoreIntentAgainstDisposableEngines(t *testing.T) {
 	if replay, err := control.PrepareClaimedMySQLRestoreFromRetained(ctx, stores[0], claim, request, secrets, recoveryObjects, materializeDirectory); err != nil || !replay.Replayed {
 		t.Fatalf("prepare replay with locked runtime account: %+v %v", replay, err)
 	}
-	runner := MySQLRestoreRunner{Control: control, Acceptance: stores[0], Secrets: secrets, ClaimLease: 120 * time.Millisecond,
-		Objects: recoveryObjects, MaterializeDirectory: materializeDirectory,
-		Tool: database.MySQLRestoreTool{Path: delayedTool, SHA256: fmt.Sprintf("%x", restoreSHA)}}
-	if err := runner.RunClaimed(ctx, claim); err != nil {
-		t.Fatalf("supervised MySQL restore: %v", err)
+	runnerChild := exec.Command(os.Args[0], "-test.run=^TestMySQLRestoreIntentAgainstDisposableEngines$")
+	runnerChild.Env = append(child.Env, "NORN_MYSQL_RETAINED_RUN_CHILD=1", "NORN_MYSQL_RETAINED_TOOL="+delayedTool,
+		"NORN_MYSQL_RETAINED_TOOL_SHA="+fmt.Sprintf("%x", restoreSHA))
+	if output, err := runnerChild.CombinedOutput(); err != nil {
+		t.Fatalf("separate process supervised MySQL restore: %v\n%s", err, output)
 	}
 	if _, err := os.Stat(path); !errors.Is(err, os.ErrNotExist) {
 		t.Fatalf("restore recreated or read staged path: %v", err)

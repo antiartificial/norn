@@ -12,9 +12,11 @@ The retained-restore integration now removes the original staged SQL file and
 runs an independent process with a separate private spool and trusted TLS
 client. That process verifies the signed acceptance, staging and retention
 receipts, materializes the S3-emulator object, and replays preparation against
-the disposable MySQL target. The local PostgreSQL 16/MySQL 8.4 harness passed.
-The SQL runner itself still executes in the parent process; this is not a
-separate-node or hosted-provider restore qualification.
+the disposable MySQL target. A second independent process runs the supervised
+SQL import from retained bytes under the same signed claim, then leaves the
+completed intent and held runtime fence for the parent to inspect. The local
+PostgreSQL 16/MySQL 8.4 harness passed. This is not a separate-node or
+hosted-provider restore qualification.
 
 The client executable is checksum-verified through an opened descriptor before
 execution and its inode is compared again afterward. The process still executes
