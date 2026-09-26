@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"strconv"
 	"strings"
 
 	"github.com/google/uuid"
@@ -13,17 +14,16 @@ import (
 	"norn/v2/api/model"
 )
 
-const MySQLSourceReconciliationOperationKind = "database.mysql-source-reconciliation"
-
-// MySQLSourceReconciliationRequest fixes the failed source operation and its
-// observed checkpoint before any external reconciliation is attempted.
-type MySQLSourceReconciliationRequest struct {
-	PriorSourceOperationID string                     `json:"priorSourceOperationId"`
-	PriorSourceDigest      string                     `json:"priorSourceDigest"`
-	Checkpoint             string                     `json:"checkpoint"`
-	RuntimeFenceEpoch      int64                      `json:"runtimeFenceEpoch"`
-	RuntimeFenceOwner      string                     `json:"runtimeFenceOwner"`
-	Source                 MySQLSourceSnapshotRequest `json:"source"`
+// MySQLSourceReconciliationLink is signed metadata on a normal source-kind
+// operation. Its payload remains the exact original source request, allowing
+// source staging and retention to use their existing receipt contract after
+// a separately proved transfer.
+type MySQLSourceReconciliationLink struct {
+	PriorSourceOperationID string `json:"priorSourceOperationId"`
+	PriorSourceDigest      string `json:"priorSourceDigest"`
+	Checkpoint             string `json:"checkpoint"`
+	RuntimeFenceEpoch      string `json:"runtimeFenceEpoch"`
+	RuntimeFenceOwner      string `json:"runtimeFenceOwner"`
 }
 
 type MySQLSourceReconciliationAcceptanceInput struct {
@@ -47,13 +47,16 @@ func (db *DB) AcceptPrivateMySQLSourceReconciliation(ctx context.Context, accept
 		return AcceptedOperation{}, err
 	}
 	identity := OperationRequestIdentity{Authority: authority, Actor: input.Actor,
-		Kind:     MySQLSourceReconciliationOperationKind,
+		Kind:     MySQLSourceSnapshotOperationKind,
 		Resource: "mysql-source/reconcile/" + input.PriorSourceOperationID, Key: input.Key}
 	if existing, err := acceptance.ResolveIdentity(ctx, identity); err == nil {
-		var request MySQLSourceReconciliationRequest
-		if existing.Operation.Kind != MySQLSourceReconciliationOperationKind || existing.Operation.MaxAttempts != 1 ||
-			decodeMySQLSourceReconciliationPayload(existing.Operation.Payload, &request) != nil ||
-			request.PriorSourceOperationID != input.PriorSourceOperationID {
+		var link MySQLSourceReconciliationLink
+		_, requestErr := sourceSnapshotRequestFromAccepted(existing)
+		if existing.Operation.Kind != MySQLSourceSnapshotOperationKind || existing.Operation.MaxAttempts != 1 ||
+			existing.Operation.Source != "private-mysql-source-reconciliation" ||
+			requestErr != nil ||
+			decodeMySQLSourceReconciliationLink(existing.Operation.Metadata, &link) != nil ||
+			link.PriorSourceOperationID != input.PriorSourceOperationID {
 			return AcceptedOperation{}, &AcceptanceConflictError{Identity: identity}
 		}
 		return existing, nil
@@ -79,10 +82,10 @@ func (db *DB) AcceptPrivateMySQLSourceReconciliation(ctx context.Context, accept
 		input.PriorSourceOperationID).Scan(&epoch, &owner); err != nil || epoch <= 0 || owner != "mysql-source-snapshot:"+input.PriorSourceOperationID {
 		return AcceptedOperation{}, ErrMySQLSourceSnapshotFence
 	}
-	request := MySQLSourceReconciliationRequest{PriorSourceOperationID: input.PriorSourceOperationID,
+	link := MySQLSourceReconciliationLink{PriorSourceOperationID: input.PriorSourceOperationID,
 		PriorSourceDigest: prior.Intent.CanonicalDigest, Checkpoint: inspection.IntentState,
-		RuntimeFenceEpoch: epoch, RuntimeFenceOwner: owner, Source: source}
-	encoded, err := json.Marshal(request)
+		RuntimeFenceEpoch: strconv.FormatInt(epoch, 10), RuntimeFenceOwner: owner}
+	encoded, err := json.Marshal(source)
 	if err != nil {
 		return AcceptedOperation{}, err
 	}
@@ -92,10 +95,18 @@ func (db *DB) AcceptPrivateMySQLSourceReconciliation(ctx context.Context, accept
 	if err := decoder.Decode(&payload); err != nil {
 		return AcceptedOperation{}, err
 	}
+	encodedMetadata, err := json.Marshal(link)
+	if err != nil {
+		return AcceptedOperation{}, err
+	}
+	var metadata map[string]interface{}
+	if err := json.Unmarshal(encodedMetadata, &metadata); err != nil {
+		return AcceptedOperation{}, err
+	}
 	entry := OperationAcceptance{Identity: identity, Audit: input.Audit,
-		Operation: model.Operation{ID: uuid.NewString(), Kind: MySQLSourceReconciliationOperationKind,
+		Operation: model.Operation{ID: uuid.NewString(), Kind: MySQLSourceSnapshotOperationKind,
 			App: source.JobIdentity.App, Ref: source.JobIdentity.DeploymentID, Status: model.OperationQueued,
-			Risk: "high", Source: "private-mysql-source-reconciliation", MaxAttempts: 1, Payload: payload}}
+			Risk: "high", Source: "private-mysql-source-reconciliation", MaxAttempts: 1, Payload: payload, Metadata: metadata}}
 	entry.Fingerprint, err = CanonicalOperationRequestFingerprint(entry)
 	if err != nil {
 		return AcceptedOperation{}, err
@@ -136,18 +147,18 @@ func (db *DB) AcceptPrivateMySQLSourceReconciliation(ctx context.Context, accept
 			&revision, &profileID, &logicalID, &savedSource, &savedMaintenance, &savedJob, &dumpDigest,
 			&stopIntended, &stopProved, &lockIntended,
 			&epoch, &owner, &fenceActive, &liveEpoch, &liveOwner)
-		if err != nil || status != "failed" || !manual || checkpoint != request.Checkpoint ||
+		if err != nil || status != "failed" || !manual || checkpoint != link.Checkpoint ||
 			!stopIntended || (checkpoint == "lock-intended" && (!stopProved || !lockIntended)) ||
 			intentID != prior.AcceptanceIntentID || revision != source.CatalogRevision || profileID != source.ProfileID ||
 			logicalID != source.LogicalID || !sameJSON(savedSource, wantSource) ||
 			!sameJSON(savedMaintenance, wantMaintenance) || !sameJSON(savedJob, wantJob) ||
-			dumpDigest != source.DumpToolSHA256 || !fenceActive || epoch != request.RuntimeFenceEpoch ||
-			owner != request.RuntimeFenceOwner || liveEpoch != epoch || liveOwner != owner {
+			dumpDigest != source.DumpToolSHA256 || !fenceActive || strconv.FormatInt(epoch, 10) != link.RuntimeFenceEpoch ||
+			owner != link.RuntimeFenceOwner || liveEpoch != epoch || liveOwner != owner {
 			return ErrMySQLSourceSnapshotFence
 		}
 		var competing bool
-		if err := tx.QueryRow(ctx, `SELECT EXISTS (SELECT 1 FROM operations WHERE kind=$1
-			AND payload->>'priorSourceOperationId'=$2)`, MySQLSourceReconciliationOperationKind,
+		if err := tx.QueryRow(ctx, `SELECT EXISTS (SELECT 1 FROM operations WHERE kind=$1 AND source='private-mysql-source-reconciliation'
+			AND metadata->>'priorSourceOperationId'=$2)`, MySQLSourceSnapshotOperationKind,
 			input.PriorSourceOperationID).Scan(&competing); err != nil || competing {
 			return ErrMySQLSourceSnapshotFence
 		}
@@ -155,18 +166,28 @@ func (db *DB) AcceptPrivateMySQLSourceReconciliation(ctx context.Context, accept
 	})
 }
 
-func decodeMySQLSourceReconciliationPayload(payload map[string]interface{}, request *MySQLSourceReconciliationRequest) error {
-	encoded, err := json.Marshal(payload)
+func decodeMySQLSourceReconciliationLink(metadata map[string]interface{}, link *MySQLSourceReconciliationLink) error {
+	keys := []string{"priorSourceOperationId", "priorSourceDigest", "checkpoint", "runtimeFenceEpoch", "runtimeFenceOwner"}
+	signed := make(map[string]interface{}, len(keys))
+	for _, key := range keys {
+		value, ok := metadata[key].(string)
+		if !ok || value == "" {
+			return ErrMySQLSourceSnapshotFence
+		}
+		signed[key] = value
+	}
+	encoded, err := json.Marshal(signed)
 	if err != nil {
 		return err
 	}
-	if err := decodeStrictAcceptanceJSON(encoded, request); err != nil {
+	if err := decodeStrictAcceptanceJSON(encoded, link); err != nil {
 		return err
 	}
-	if request.PriorSourceOperationID == "" || request.PriorSourceDigest == "" ||
-		(request.Checkpoint != "stop-intended" && request.Checkpoint != "lock-intended") ||
-		request.RuntimeFenceEpoch <= 0 || request.RuntimeFenceOwner != "mysql-source-snapshot:"+request.PriorSourceOperationID ||
-		!validMySQLSourceSnapshotRequest(request.Source) {
+	epoch, err := strconv.ParseInt(link.RuntimeFenceEpoch, 10, 64)
+	if link.PriorSourceOperationID == "" || link.PriorSourceDigest == "" ||
+		(link.Checkpoint != "stop-intended" && link.Checkpoint != "lock-intended") ||
+		err != nil || epoch <= 0 || strconv.FormatInt(epoch, 10) != link.RuntimeFenceEpoch ||
+		link.RuntimeFenceOwner != "mysql-source-snapshot:"+link.PriorSourceOperationID {
 		return ErrMySQLSourceSnapshotFence
 	}
 	return nil

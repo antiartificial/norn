@@ -4,7 +4,6 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
-	"reflect"
 	"strings"
 	"testing"
 	"time"
@@ -85,6 +84,7 @@ func TestMySQLSourceReconciliationAdmissionRequiresFailedFencedPredecessor(t *te
 	successorInput := MySQLSourceReconciliationAcceptanceInput{PriorSourceOperationID: prior.Operation.ID,
 		Actor: OperationActor{Issuer: "test-issuer", Subject: "operator"}, Key: "reconcile-" + uuid.NewString(),
 		Audit: AcceptanceAuditContext{Source: "integration-test"}}
+	originalKey := successorInput.Key
 	if _, err := db.AcceptPrivateMySQLSourceReconciliation(ctx, acceptance, successorInput); !errors.Is(err, ErrMySQLSourceSnapshotFence) {
 		t.Fatalf("running predecessor admitted successor: %v", err)
 	}
@@ -102,20 +102,47 @@ func TestMySQLSourceReconciliationAdmissionRequiresFailedFencedPredecessor(t *te
 	if err != nil || successor.Operation.Status != model.OperationQueued || successor.Operation.MaxAttempts != 1 {
 		t.Fatalf("signed successor admission: %+v %v", successor, err)
 	}
-	var signed MySQLSourceReconciliationRequest
-	if err := decodeMySQLSourceReconciliationPayload(successor.Operation.Payload, &signed); err != nil ||
+	var signed MySQLSourceReconciliationLink
+	if err := decodeMySQLSourceReconciliationLink(successor.Operation.Metadata, &signed); err != nil ||
 		signed.PriorSourceOperationID != prior.Operation.ID || signed.PriorSourceDigest != prior.Intent.CanonicalDigest ||
-		signed.Checkpoint != "stop-intended" || !reflect.DeepEqual(signed.Source, request) {
+		signed.Checkpoint != "stop-intended" || !sameMySQLSourceSnapshotPayload(successor.Operation.Payload, request) {
 		t.Fatalf("successor did not bind predecessor: %+v %v", signed, err)
 	}
 	replayed, err := db.AcceptPrivateMySQLSourceReconciliation(ctx, acceptance, successorInput)
 	if err != nil || replayed.Operation.ID != successor.Operation.ID {
 		t.Fatalf("same-key successor replay: %+v %v", replayed, err)
 	}
+	claimedSuccessor, successorClaim, err := db.ClaimPrivateMySQLOperation(ctx, successor.Operation.ID,
+		"reconciliation-worker", MySQLSourceSnapshotOperationKind, time.Minute)
+	if err != nil || claimedSuccessor == nil || successorClaim.OperationID() != successor.Operation.ID ||
+		claimedSuccessor.Source != "private-mysql-source-reconciliation" ||
+		!sameMySQLSourceSnapshotPayload(claimedSuccessor.Payload, request) {
+		t.Fatalf("signed successor was not source-claimable: %+v %+v %v", claimedSuccessor, successorClaim, err)
+	}
+	if _, _, err := db.ClaimPrivateMySQLOperation(ctx, successor.Operation.ID,
+		"second-worker", MySQLSourceSnapshotOperationKind, time.Minute); !errors.Is(err, ErrMySQLMaintenanceClaimUnavailable) {
+		t.Fatalf("successor was claimed twice: %v", err)
+	}
+	claimedReplay, err := db.AcceptPrivateMySQLSourceReconciliation(ctx, acceptance, successorInput)
+	if err != nil || claimedReplay.Operation.ID != successor.Operation.ID {
+		t.Fatalf("claimed successor identity replay: %+v %v", claimedReplay, err)
+	}
 	successorInput.Key = "competing-" + uuid.NewString()
 	if _, err := db.AcceptPrivateMySQLSourceReconciliation(ctx, acceptance, successorInput); !errors.Is(err, ErrMySQLSourceSnapshotFence) {
 		t.Fatalf("competing successor admitted: %v", err)
 	}
+	if _, err := db.Pool.Exec(ctx, `UPDATE operations SET locked_until=clock_timestamp()-interval '1 second' WHERE id=$1`, successor.Operation.ID); err != nil {
+		t.Fatal(err)
+	}
+	if err := db.RecoverExpiredOperations(ctx); err != nil {
+		t.Fatal(err)
+	}
+	successorInput.Key = originalKey
+	failedReplay, err := db.AcceptPrivateMySQLSourceReconciliation(ctx, acceptance, successorInput)
+	if err != nil || failedReplay.Operation.ID != successor.Operation.ID {
+		t.Fatalf("failed successor identity replay: %+v %v", failedReplay, err)
+	}
+	successorInput.Key = "fence-missing-" + uuid.NewString()
 	if _, err := db.Pool.Exec(ctx, `UPDATE runtime_mutation_fence SET active=false,owner='',reason='',released_at=clock_timestamp() WHERE singleton=true`); err != nil {
 		t.Fatal(err)
 	}
