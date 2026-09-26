@@ -34,6 +34,13 @@ PASS
   poisoned PostgreSQL DSN
 ```
 
+The same process test passed again on 2026-09-26 at Norn PR #76 head
+`8b7c4b5`, against a disposable digest-pinned etcd v3.5.17 container. Both
+the absent-DSN and poisoned-DSN subtests passed. The container was removed on
+exit. This rerun checks that the later signed-admission and lost-commit changes
+still permit the ordinary PG-free Fleet API startup and router path; it does
+not expand the single-member fixture's topology or authentication scope.
+
 ## Remaining gaps
 
 This proves normal startup and routing against a disposable unauthenticated
