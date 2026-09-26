@@ -158,7 +158,7 @@ func (db *DB) AcceptPrivateMySQLSourceReconciliation(ctx context.Context, accept
 		}
 		var competing bool
 		if err := tx.QueryRow(ctx, `SELECT EXISTS (SELECT 1 FROM operations WHERE kind=$1 AND source='private-mysql-source-reconciliation'
-			AND metadata->>'priorSourceOperationId'=$2)`, MySQLSourceSnapshotOperationKind,
+			AND metadata->>'priorSourceOperationId'=$2 AND status<>'failed')`, MySQLSourceSnapshotOperationKind,
 			input.PriorSourceOperationID).Scan(&competing); err != nil || competing {
 			return ErrMySQLSourceSnapshotFence
 		}

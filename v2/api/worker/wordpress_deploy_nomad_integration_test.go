@@ -257,13 +257,13 @@ func TestClaimedWordPressVerifiedTLSDeployInNomad(t *testing.T) {
 			t.Fatalf("exact private claim selected an unrelated queued source operation: %v", err)
 		}
 		if restoreSource {
-			emulator, server, receipt := wordpressSourceThroughCommand(t, ctx, db, operations, selection,
-				sourceAccepted.Operation.ID, dumpTool, secretRoot, controlURL, authority, request.Actor)
+			emulator, server, sourceID, receipt := wordpressSourceThroughCommand(t, ctx, db, operations, client, selection,
+				sourceAccepted.Operation.ID, sourceRequest, dumpTool, secretRoot, controlURL, authority, request.Actor)
 			if err := database.InspectMySQLRuntimeAccountLockForRestore(ctx, source, *source.MySQLMaintenance, secrets); err != nil {
 				t.Fatalf("WordPress source runtime account was not locked: %v", err)
 			}
 			wordpressRestoreStagedSource(t, ctx, db, operations, client, secrets, secretRoot, controlURL, catalog,
-				sourceAccepted.Operation.ID, store.OperationClaim{}, receipt, restoreDatabase, emulator, server)
+				sourceID, store.OperationClaim{}, receipt, restoreDatabase, emulator, server)
 			wordpressDeployRecovered(t, ctx, db, client, pipe, request, app, volume, secrets)
 			return
 		}
@@ -359,9 +359,19 @@ func wordpressDeployRecovered(t *testing.T, ctx context.Context, db *store.DB, c
 	wordpressDeployAssertAllocationPage(t, client, recoveredApp, true)
 }
 
+type wordpressStopWithLostResponse struct{ client *nomad.Client }
+
+func (stopper wordpressStopWithLostResponse) StopJobCAS(ctx context.Context, request nomad.CASStopJobRequest) error {
+	if err := stopper.client.StopJobCAS(ctx, request); err != nil {
+		return err
+	}
+	return errors.New("disposable Nomad stop response lost")
+}
+
 func wordpressSourceThroughCommand(t *testing.T, ctx context.Context, db *store.DB, operations *store.PGOperationStore,
-	selection store.MySQLSourceSnapshotAdmissionRequest, sourceID, dumpTool, secretRoot, controlURL, authority string,
-	actor store.OperationActor) (*s3emulator.Emulator, *httptest.Server, store.SignedMySQLSourceArtifactReceipt) {
+	client *nomad.Client, selection store.MySQLSourceSnapshotAdmissionRequest, sourceID string,
+	sourceRequest store.MySQLSourceSnapshotRequest, dumpTool, secretRoot, controlURL, authority string,
+	actor store.OperationActor) (*s3emulator.Emulator, *httptest.Server, string, store.SignedMySQLSourceArtifactReceipt) {
 	t.Helper()
 	emulator, server := s3emulator.Start("norn-wordpress-artifacts", "wordpress-artifact-writer")
 	t.Cleanup(server.Close)
@@ -407,6 +417,35 @@ func wordpressSourceThroughCommand(t *testing.T, ctx context.Context, db *store.
 		"--s3-bucket", "norn-wordpress-artifacts", "--s3-prefix", "mysql/wordpress", "--s3-region", "us-east-1",
 		"--s3-access-key-file", accessFile, "--s3-secret-key-file", secretFile,
 		"--s3-spool-dir", spool, "--s3-spool-capacity", fmt.Sprint(64 << 20)}
+	if os.Getenv("NORN_TEST_WORDPRESS_SOURCE_RECONCILE") == "1" {
+		claimed, claim, err := db.ClaimPrivateMySQLOperation(ctx, sourceID, "wordpress-lost-stop-response", store.MySQLSourceSnapshotOperationKind, time.Minute)
+		if err != nil || claimed == nil {
+			t.Fatalf("claim source before ambiguous stop: %+v %v", claimed, err)
+		}
+		if err := db.StopClaimedMySQLSourceJob(ctx, operations, claim, sourceRequest,
+			wordpressStopWithLostResponse{client: client}); !errors.Is(err, store.ErrMySQLSourceStopIndeterminate) {
+			t.Fatalf("source stop did not preserve ambiguous result: %v", err)
+		}
+		if _, err := db.Pool.Exec(ctx, `UPDATE operations SET locked_until=clock_timestamp()-interval '1 second' WHERE id=$1`, sourceID); err != nil {
+			t.Fatal(err)
+		}
+		if err := db.RecoverExpiredOperations(ctx); err != nil {
+			t.Fatal(err)
+		}
+		prior, err := db.GetOperation(ctx, sourceID)
+		if err != nil || prior.Status != model.OperationFailed || prior.Metadata["manualRecoveryRequired"] != true {
+			t.Fatalf("ambiguous source was not fenced for reconciliation: %+v %v", prior, err)
+		}
+		args[0] = "reconcile-source"
+		for i := 0; i < len(args)-1; i++ {
+			if args[i] == "--selection-file" {
+				args[i], args[i+1] = "--prior-source-operation-id", sourceID
+			}
+			if args[i] == "--request-key" {
+				args[i+1] = "wordpress-bound-source-reconciliation"
+			}
+		}
+	}
 	run := func(input []string) ([]byte, error) {
 		command := exec.CommandContext(ctx, os.Getenv("NORN_TEST_WORDPRESS_MAINTENANCE_CLI"), input...)
 		command.Env = append(os.Environ(), "SSL_CERT_FILE="+caFile)
@@ -419,11 +458,18 @@ func wordpressSourceThroughCommand(t *testing.T, ctx context.Context, db *store.
 			break
 		}
 	}
-	if output, err := run(wrong); err == nil || !bytes.Contains(output, []byte("different database")) {
+	if output, err := run(wrong); err == nil || !bytes.Contains(output, []byte("different")) || !bytes.Contains(output, []byte("database")) {
 		t.Fatalf("private source accepted wrong database: %v: %s", err, output)
 	}
 	for attempt := 0; attempt < 2; attempt++ {
-		if output, err := run(args); err != nil || !bytes.Contains(output, []byte("source_operation_id="+sourceID+" status=succeeded retention=retained-proved")) {
+		output, err := run(args)
+		if attempt == 0 && err == nil && os.Getenv("NORN_TEST_WORDPRESS_SOURCE_RECONCILE") == "1" {
+			fields := strings.Fields(string(output))
+			if len(fields) > 0 {
+				sourceID = strings.TrimPrefix(fields[0], "source_operation_id=")
+			}
+		}
+		if err != nil || !bytes.Contains(output, []byte("source_operation_id="+sourceID+" status=succeeded retention=retained-proved")) {
 			t.Fatalf("private source invocation %d: %v: %s", attempt+1, err, output)
 		}
 	}
@@ -474,7 +520,7 @@ func wordpressSourceThroughCommand(t *testing.T, ctx context.Context, db *store.
 	if _, err := os.Stat(receipt.Receipt.ArtifactPath); !os.IsNotExist(err) {
 		t.Fatalf("local SQL stage was not cleaned after retention: %v", err)
 	}
-	return emulator, server, receipt
+	return emulator, server, sourceID, receipt
 }
 
 func deployQualificationPEM(t *testing.T, name string) ([]byte, bool) {

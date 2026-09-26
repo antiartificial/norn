@@ -95,7 +95,7 @@ func TestRetainedSourceReplayCleansOnlyVerifiedLocalStage(t *testing.T) {
 }
 
 func TestRecoveryRequiresExplicitSelection(t *testing.T) {
-	for _, args := range [][]string{nil, {"recover"}, {"recover", "--restore-operation-id", "not-an-id"}, {"restore"}, {"restore", "--restore-operation-id", "not-an-id"}, {"admit-restore"}, {"source"}, {"source", "--selection-file", "missing"}, {"inspect-source"}, {"inspect-source", "--source-operation-id", "not-an-id"}, {"unknown"}} {
+	for _, args := range [][]string{nil, {"recover"}, {"recover", "--restore-operation-id", "not-an-id"}, {"restore"}, {"restore", "--restore-operation-id", "not-an-id"}, {"admit-restore"}, {"source"}, {"source", "--selection-file", "missing"}, {"inspect-source"}, {"inspect-source", "--source-operation-id", "not-an-id"}, {"reconcile-source"}, {"reconcile-source", "--prior-source-operation-id", "not-an-id"}, {"unknown"}} {
 		if err := run(context.Background(), args, &strings.Builder{}); err == nil || errors.Is(err, context.Canceled) {
 			t.Fatalf("incomplete recovery arguments %+v were accepted: %v", args, err)
 		}

@@ -84,6 +84,42 @@ func (r MySQLSourceSnapshotRunner) RunClaimed(ctx context.Context, claim Operati
 		})
 }
 
+// LockClaimedAfterReconciliation advances only a transferred stop-proved
+// successor. It never sends another Nomad stop after an ambiguous response.
+func (r MySQLSourceSnapshotRunner) LockClaimedAfterReconciliation(ctx context.Context, claim OperationClaim,
+	request MySQLSourceSnapshotRequest) (runErr error) {
+	if r.Control == nil || r.Acceptance == nil || r.Acceptance.db != r.Control || r.Secrets == nil ||
+		validateOperationClaim(claim) != nil {
+		return ErrMySQLSourceSnapshotFence
+	}
+	lease := r.ClaimLease
+	if lease == 0 {
+		lease = 2 * time.Minute
+	}
+	supervisor, err := newMySQLRestoreClaimSupervisor(ctx, lease, func(renewCtx context.Context, duration time.Duration) error {
+		return r.Control.RenewOperationClaim(renewCtx, claim, duration)
+	})
+	if err != nil {
+		return err
+	}
+	if err := supervisor.Start(); err != nil {
+		return errors.Join(ErrMySQLSourceClaimLost, err)
+	}
+	defer func() {
+		if err := supervisor.Stop(); err != nil {
+			runErr = errors.Join(runErr, ErrMySQLSourceClaimLost, err)
+		}
+	}()
+	runCtx := supervisor.Context()
+	if err := sourceClaimSupervisorReady(supervisor, runCtx); err != nil {
+		return err
+	}
+	if err := r.Control.LockClaimedMySQLSourceAccountWithDatabase(runCtx, r.Acceptance, claim, request, r.Secrets); err != nil {
+		return err
+	}
+	return sourceClaimSupervisorReady(supervisor, runCtx)
+}
+
 // StageClaimed keeps the same operation claim alive through the durable stage
 // intent, external dump, and signed receipt. A renewal loss cancels the dump
 // context and leaves its stage-intended row fenced for inspection.

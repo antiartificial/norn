@@ -193,7 +193,15 @@ func runSource(ctx context.Context, arguments []string, output io.Writer) error 
 	if err := runner.RunClaimed(ctx, claim, request); err != nil {
 		return fmt.Errorf("source quiescence requires inspection: %w", err)
 	}
-	staged, err := runner.StageClaimed(ctx, claim, request, *dumpTool, *stageDir, sourceDatabaseStager{})
+	return finishClaimedSource(ctx, control, acceptance, runner, claim, request, *dumpTool, *stageDir, objects, output)
+}
+
+// finishClaimedSource runs only after a signed source claim has proved the
+// stopped job and locked account. It does not choose or repeat either effect.
+func finishClaimedSource(ctx context.Context, control *store.DB, acceptance *store.PGOperationStore,
+	runner store.MySQLSourceSnapshotRunner, claim store.OperationClaim, request store.MySQLSourceSnapshotRequest,
+	dumpTool, stageDir string, objects artifactstore.Store, output io.Writer) error {
+	staged, err := runner.StageClaimed(ctx, claim, request, dumpTool, stageDir, sourceDatabaseStager{})
 	if err != nil {
 		return fmt.Errorf("source staging requires inspection: %w", err)
 	}
@@ -207,10 +215,10 @@ func runSource(ctx context.Context, arguments []string, output io.Writer) error 
 	if err := control.FinishClaimedMySQLSourceRetention(ctx, acceptance, claim); err != nil {
 		return fmt.Errorf("source retention terminal receipt requires inspection: %w", err)
 	}
-	if err := cleanupRetainedSourceStage(*stageDir, staged, retained); err != nil {
+	if err := cleanupRetainedSourceStage(stageDir, staged, retained); err != nil {
 		return fmt.Errorf("source retained, but local staged SQL cleanup failed: %w", err)
 	}
-	_, err = fmt.Fprintf(output, "source_operation_id=%s status=succeeded retention=retained-proved\n", accepted.Operation.ID)
+	_, err = fmt.Fprintf(output, "source_operation_id=%s status=succeeded retention=retained-proved\n", claim.OperationID())
 	return err
 }
 

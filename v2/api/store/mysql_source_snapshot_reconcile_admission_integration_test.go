@@ -179,6 +179,29 @@ func testMySQLSourceReconciliationAdmission(t *testing.T, checkpoint string) {
 		activeOperation != prior.Operation.ID || state != checkpoint || inspections != 0 {
 		t.Fatalf("negative observation changed source: operation=%q state=%q inspections=%d err=%v", activeOperation, state, inspections, err)
 	}
+	failedUntransferredID := successor.Operation.ID
+	if _, err := db.Pool.Exec(ctx, `UPDATE operations SET locked_until=clock_timestamp()-interval '1 second' WHERE id=$1`,
+		failedUntransferredID); err != nil {
+		t.Fatal(err)
+	}
+	if err := db.RecoverExpiredOperations(ctx); err != nil {
+		t.Fatal(err)
+	}
+	if replay, err := db.AcceptPrivateMySQLSourceReconciliation(ctx, acceptance, successorInput); err != nil ||
+		replay.Operation.ID != failedUntransferredID {
+		t.Fatalf("failed untransferred successor did not replay: %+v %v", replay, err)
+	}
+	successorInput.Key = "replacement-" + uuid.NewString()
+	originalKey = successorInput.Key
+	successor, err = db.AcceptPrivateMySQLSourceReconciliation(ctx, acceptance, successorInput)
+	if err != nil || successor.Operation.ID == failedUntransferredID || successor.Operation.Status != model.OperationQueued {
+		t.Fatalf("failed read-only observation blocked signed replacement: %+v %v", successor, err)
+	}
+	claimedSuccessor, successorClaim, err = db.ClaimPrivateMySQLOperation(ctx, successor.Operation.ID,
+		"replacement-worker", MySQLSourceSnapshotOperationKind, time.Minute)
+	if err != nil || claimedSuccessor == nil || successorClaim.OperationID() != successor.Operation.ID {
+		t.Fatalf("replacement successor was not claimable: %+v %+v %v", claimedSuccessor, successorClaim, err)
+	}
 	stoppedObservation := sourceStoppedObserverFunc(func(_ context.Context, got nomad.CASStopJobRequest) error {
 		if got.JobID != request.JobIdentity.JobID || got.JobModifyIndex != 7 || len(got.AllocationIDs) != 1 ||
 			got.AllocationIDs[0] != "alloc-1" {
