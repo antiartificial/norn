@@ -10,7 +10,9 @@ Mini, Fleet, a provider, or an existing etcd endpoint.
 The script creates three TLS client/peer members, enables etcd authentication,
 and grants a non-root API principal write access only to the test prefix. It
 runs `TestEtcdFleetRuntimeProductionTLSRBACProcess` against the three-member
-cluster, then repeats it after stopping one member. That test builds and starts
+cluster, then repeats it while one member is detached from the Docker network
+and again after stopping one member. The detached member is reconnected and
+all endpoints pass health before the stopped-member stage. That test builds and starts
 the normal Norn API binary in production mode with both an absent and a
 poisoned PostgreSQL DSN; bootstraps a managed token; accepts and replays a
 signed Fleet plan; checks the operation receipt; rejects a Fleet runner's
@@ -23,9 +25,14 @@ snapshot, discards all three member data directories, restores each member
 with `etcdutl` from that snapshot, verifies an authenticated sentinel survived, and reruns
 the normal API process test against the restored group.
 
-On 2026-09-24, this disposable run passed all stages, including API process
-tests before loss, with one member down, and after full snapshot restore.
+On 2026-09-26, this disposable run passed twice on PR #76 head `c718de3`,
+including the isolated-member partition and rejoin, the API process test
+before loss, with one member down, and after full snapshot restore. The first
+run left an empty disposable Docker network after the containers stopped; it
+was removed. The cleanup now retries network removal and preserves a failed
+test's exit status. The second run left no qualification containers or network.
 This is evidence for the local transport, auth, quorum, and restore path. It
-does not qualify host-supervised Fleet membership changes, network partitions,
-disk/full-quota behavior, certificate rotation, one-member-at-a-time upgrades,
-soak, or a live Fleet restore. Those remain M3 release gates.
+does not qualify host-supervised Fleet membership changes, asymmetric or
+multi-host partitions, disk/full-quota behavior, certificate rotation,
+one-member-at-a-time upgrades, soak, or a live Fleet restore. Those remain
+M3 release gates.
