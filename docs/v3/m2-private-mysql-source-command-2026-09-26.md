@@ -32,6 +32,18 @@ retention receipt is historical proof; the command does not inspect the live
 Nomad job, MySQL account, or remote object. Those require separate observations
 before any reconciliation or release decision.
 
+Add `--observe-external` to read the exact stopped Nomad revision,
+catalog-bound MySQL account lock, and content-addressed object. It requires
+`--secrets-dir`, `--nomad-url`, `--s3-endpoint`, `--s3-bucket`, `--s3-region`,
+`--s3-access-key-file`, and `--s3-secret-key-file`; `--s3-prefix` selects the
+original artifact namespace. The S3 verifier opens without the publisher's
+conditional-write probe. Each result is an independent advisory boolean: an
+absent object during `publish-intended` remains unresolved, and a present
+object does not itself terminalize the source. Object verification reads the
+whole object; `--observation-timeout` defaults to ten minutes. The optional
+compiled-command WordPress exercise includes all three external checks, but
+has not been rerun for this addition.
+
 Build from `v2/api`:
 
 ```sh
@@ -75,7 +87,9 @@ proves terminal success after signed retention, keeps the runtime fence held,
 and verifies expired-operation recovery cannot change the result. The
 inspection path passed against disposable PostgreSQL 16 on 2026-09-26 for
 stage-proved, ambiguous publish-intended, tampered retention, and terminal
-retained-proved states. The CLI path is also included in the optional compiled
+retained-proved states. The advisory live observation also distinguished an
+absent from a verified object during ambiguous publication without repeating
+the upload. The CLI path is also included in the optional compiled
 WordPress fixture; that fixture has not been rerun for this change. The
 disposable WordPress fixture passed with the compiled source, restore,
 and recovery commands. It rejected a wrong source database before consuming

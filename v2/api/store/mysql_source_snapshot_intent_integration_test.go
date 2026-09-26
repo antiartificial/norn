@@ -39,6 +39,12 @@ func (f sourceStopperFunc) StopJobCAS(ctx context.Context, request nomad.CASStop
 	return f(ctx, request)
 }
 
+type sourceStoppedObserverFunc func(context.Context, nomad.CASStopJobRequest) error
+
+func (f sourceStoppedObserverFunc) ObserveStoppedMySQLSourceJob(ctx context.Context, request nomad.CASStopJobRequest) error {
+	return f(ctx, request)
+}
+
 type sourceStagerFunc func(context.Context, database.ResolvedBinding, database.TargetIdentity, database.SecretSource, string, string, string) (string, database.MySQLSQLArtifact, error)
 
 func (f sourceStagerFunc) Stage(ctx context.Context, binding database.ResolvedBinding, target database.TargetIdentity, secrets database.SecretSource, tool, digest, directory string) (string, database.MySQLSQLArtifact, error) {
@@ -365,8 +371,22 @@ func TestMySQLSourceSnapshotIntentReservesSignedPhysicalSource(t *testing.T) {
 	if err != nil || ambiguousInspection.IntentState != "publish-intended" || !ambiguousInspection.StageReceiptVerified || ambiguousInspection.RetentionReceiptVerified {
 		t.Fatalf("ambiguous source inspection=%+v err=%v", ambiguousInspection, err)
 	}
+	stoppedObserver := sourceStoppedObserverFunc(func(_ context.Context, observed nomad.CASStopJobRequest) error {
+		if observed.JobID != request.JobIdentity.JobID || observed.DeploymentID != request.JobIdentity.DeploymentID {
+			return errors.New("wrong stopped source job")
+		}
+		return nil
+	})
+	liveMissing, err := db.InspectPrivateMySQLSourceSnapshotLive(ctx, acceptedStore, claim.OperationID(), stoppedObserver, sourceSecretSource{}, objects)
+	if err != nil || !liveMissing.NomadStoppedVerified || liveMissing.RuntimeAccountLocked || liveMissing.RetainedObjectVerified {
+		t.Fatalf("ambiguous missing-object observation=%+v err=%v", liveMissing, err)
+	}
 	descriptor := artifactstore.Descriptor{Key: artifactstore.KeyForSHA256(artifact.SHA256), SHA256: artifact.SHA256, Size: artifact.Bytes}
 	objects.objects = map[string]artifactstore.Descriptor{descriptor.Key: descriptor}
+	livePresent, err := db.InspectPrivateMySQLSourceSnapshotLive(ctx, acceptedStore, claim.OperationID(), stoppedObserver, sourceSecretSource{}, objects)
+	if err != nil || !livePresent.NomadStoppedVerified || livePresent.RuntimeAccountLocked || !livePresent.RetainedObjectVerified {
+		t.Fatalf("ambiguous proven-object observation=%+v err=%v", livePresent, err)
+	}
 	retained, err := db.RetainClaimedMySQLSourceArtifact(ctx, acceptedStore, claim, objects)
 	if err != nil || retained.Receipt.StagingReceiptSHA256 != signed.SHA256 || retained.Receipt.Artifact.Key != descriptor.Key || objects.publishes != 1 || objects.verifies < 2 || stageCalls != 1 {
 		t.Fatalf("retention after ambiguous upload=%+v err=%v publishes=%d verifies=%d stageCalls=%d", retained, err, objects.publishes, objects.verifies, stageCalls)

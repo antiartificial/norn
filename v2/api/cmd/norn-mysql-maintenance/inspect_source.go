@@ -6,14 +6,18 @@ import (
 	"errors"
 	"flag"
 	"io"
+	"time"
 
 	"github.com/jackc/pgx/v5/pgxpool"
 
+	"norn/v2/api/artifactstore"
+	"norn/v2/api/database"
+	"norn/v2/api/nomad"
 	"norn/v2/api/store"
 )
 
-// runInspectSource only reads signed control evidence. It does not infer that
-// a job stopped, a MySQL account is locked, or an object still exists.
+// runInspectSource reads signed control evidence and optionally reobserves
+// external state. It never claims an operation or mutates a provider.
 func runInspectSource(ctx context.Context, arguments []string, output io.Writer) error {
 	flags := flag.NewFlagSet("inspect-source", flag.ContinueOnError)
 	flags.SetOutput(io.Discard)
@@ -24,11 +28,26 @@ func runInspectSource(ctx context.Context, arguments []string, output io.Writer)
 	authority := flags.String("authority", "", "expected control authority UUID")
 	schema := flags.String("schema", "public", "control PostgreSQL schema")
 	operationID := flags.String("source-operation-id", "", "exact signed source operation ID")
+	observeExternal := flags.Bool("observe-external", false, "read exact Nomad, MySQL and retained-object state")
+	secretsDir := flags.String("secrets-dir", "", "owner-only MySQL secret directory")
+	nomadURL := flags.String("nomad-url", "", "Nomad endpoint")
+	s3Endpoint := flags.String("s3-endpoint", "", "S3 host:port")
+	s3Bucket := flags.String("s3-bucket", "", "immutable artifact bucket")
+	s3Prefix := flags.String("s3-prefix", "", "artifact prefix")
+	s3Region := flags.String("s3-region", "", "S3 region")
+	s3AccessFile := flags.String("s3-access-key-file", "", "owner-only S3 access key file")
+	s3SecretFile := flags.String("s3-secret-key-file", "", "owner-only S3 secret key file")
+	s3Insecure := flags.Bool("s3-loopback-http", false, "allow HTTP only for numeric loopback S3 endpoint")
+	observationTimeout := flags.Duration("observation-timeout", 10*time.Minute, "bound external read-only checks")
 	if err := flags.Parse(arguments); err != nil || len(flags.Args()) != 0 {
 		return errors.New("invalid source inspection arguments")
 	}
 	if *databaseURLFile == "" || *auditKeyFile == "" || *authority == "" || *operationID == "" || !schemaPattern.MatchString(*schema) {
 		return errors.New("incomplete private source inspection selection")
+	}
+	if *observeExternal && (*secretsDir == "" || *nomadURL == "" || *s3Endpoint == "" || *s3Bucket == "" ||
+		*s3Region == "" || *s3AccessFile == "" || *s3SecretFile == "" || *observationTimeout <= 0) {
+		return errors.New("incomplete external source inspection selection")
 	}
 	databaseURL, err := readPrivateText(*databaseURLFile)
 	if err != nil {
@@ -72,7 +91,40 @@ func runInspectSource(ctx context.Context, arguments []string, output io.Writer)
 	if err != nil {
 		return errors.New("signed acceptance policy is invalid")
 	}
-	inspection, err := db.InspectPrivateMySQLSourceSnapshot(ctx, acceptance, *operationID)
+	if !*observeExternal {
+		inspection, err := db.InspectPrivateMySQLSourceSnapshot(ctx, acceptance, *operationID)
+		if err != nil {
+			return err
+		}
+		return json.NewEncoder(output).Encode(inspection)
+	}
+	secrets, err := database.NewDirectorySecretSource(*secretsDir)
+	if err != nil {
+		return errors.New("MySQL secret directory is unavailable")
+	}
+	defer secrets.Close()
+	observer, err := nomad.NewClient(*nomadURL)
+	if err != nil {
+		return errors.New("Nomad client is unavailable")
+	}
+	access, err := readPrivateText(*s3AccessFile)
+	if err != nil {
+		return errors.New("S3 access key file is not owner-only regular input")
+	}
+	secret, err := readPrivateText(*s3SecretFile)
+	if err != nil {
+		return errors.New("S3 secret key file is not owner-only regular input")
+	}
+	observeCtx, cancel := context.WithTimeout(ctx, *observationTimeout)
+	defer cancel()
+	objects, err := artifactstore.OpenS3ReadOnlyVerifier(observeCtx, artifactstore.S3Config{
+		Endpoint: *s3Endpoint, Bucket: *s3Bucket, Prefix: *s3Prefix, Region: *s3Region,
+		AccessKey: access, SecretKey: secret, Insecure: *s3Insecure,
+	})
+	if err != nil {
+		return errors.New("read-only retained artifact store is unavailable")
+	}
+	inspection, err := db.InspectPrivateMySQLSourceSnapshotLive(observeCtx, acceptance, *operationID, observer, secrets, objects)
 	if err != nil {
 		return err
 	}

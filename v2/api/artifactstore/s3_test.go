@@ -73,6 +73,29 @@ func TestS3StoreConformanceAndCrossClientRead(t *testing.T) {
 	}
 }
 
+func TestS3ReadOnlyVerifierOpensWhenWritesAreDenied(t *testing.T) {
+	config, emulator := s3TestConfig(t)
+	writer, err := OpenS3(context.Background(), config)
+	if err != nil {
+		t.Fatal(err)
+	}
+	payload := []byte("retained-source-inspection")
+	descriptor := descriptorFor(payload)
+	if _, err := writer.Publish(context.Background(), descriptor, bytes.NewReader(payload)); err != nil {
+		t.Fatal(err)
+	}
+	emulator.Configure(func(e *s3emulator.Emulator) { e.FailWrites = true })
+	readOnly := config
+	readOnly.SpoolDirectory, readOnly.SpoolCapacity, readOnly.RetainFor = "", 0, 0
+	verifier, err := OpenS3ReadOnlyVerifier(context.Background(), readOnly)
+	if err != nil {
+		t.Fatalf("read-only verification tried to write: %v", err)
+	}
+	if err := verifier.Verify(context.Background(), descriptor); err != nil {
+		t.Fatalf("read-only verifier rejected exact retained bytes: %v", err)
+	}
+}
+
 func TestS3RetainedMaterializationAcrossProcesses(t *testing.T) {
 	payload := []byte("signed retained MySQL source bytes for process recovery")
 	descriptor := descriptorFor(payload)

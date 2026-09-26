@@ -444,6 +444,19 @@ func wordpressSourceThroughCommand(t *testing.T, ctx context.Context, db *store.
 		!inspection.StageReceiptVerified || !inspection.RetentionReceiptVerified || !inspection.RuntimeFenceHeld {
 		t.Fatalf("private source inspection did not verify retained fence: %s", inspectOutput)
 	}
+	externalArgs := append(append([]string(nil), inspectArgs...), "--observe-external", "--secrets-dir", secretRoot,
+		"--nomad-url", os.Getenv("NORN_TEST_NOMAD_ADDR"), "--s3-endpoint", endpoint.Host,
+		"--s3-bucket", "norn-wordpress-artifacts", "--s3-prefix", "mysql/wordpress", "--s3-region", "us-east-1",
+		"--s3-access-key-file", accessFile, "--s3-secret-key-file", secretFile)
+	externalOutput, err := run(externalArgs)
+	if err != nil {
+		t.Fatalf("private external source inspection command: %v: %s", err, externalOutput)
+	}
+	var external store.MySQLSourceSnapshotLiveInspection
+	if json.Unmarshal(externalOutput, &external) != nil || !external.NomadStoppedVerified ||
+		!external.RuntimeAccountLocked || !external.RetainedObjectVerified || !external.RuntimeFenceHeld {
+		t.Fatalf("external source inspection did not prove stopped, locked and retained: %s", externalOutput)
+	}
 	if err := db.RecoverExpiredOperations(ctx); err != nil {
 		t.Fatalf("source completion did not survive operation recovery: %v", err)
 	}

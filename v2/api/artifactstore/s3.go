@@ -54,8 +54,31 @@ const s3PartBytes int64 = 8 << 20
 // If-None-Match. This does not replace a bucket policy that denies delete and
 // retention-bypass privileges to the Norn artifact credential.
 func OpenS3(ctx context.Context, config S3Config) (*S3Store, error) {
+	return openS3(ctx, config, true)
+}
+
+// S3ReadOnlyVerifier exposes only exact-object verification. Opening it never
+// creates the conditional-write probe used for a publisher admission.
+type S3ReadOnlyVerifier struct{ store *S3Store }
+
+func OpenS3ReadOnlyVerifier(ctx context.Context, config S3Config) (*S3ReadOnlyVerifier, error) {
+	store, err := openS3(ctx, config, false)
+	if err != nil {
+		return nil, err
+	}
+	return &S3ReadOnlyVerifier{store: store}, nil
+}
+
+func (v *S3ReadOnlyVerifier) Verify(ctx context.Context, expected Descriptor) error {
+	if v == nil || v.store == nil {
+		return ErrArtifactNotFound
+	}
+	return v.store.Verify(ctx, expected)
+}
+
+func openS3(ctx context.Context, config S3Config, probe bool) (*S3Store, error) {
 	if config.Endpoint == "" || config.Bucket == "" || config.Region == "" || config.AccessKey == "" || config.SecretKey == "" ||
-		config.SpoolCapacity <= 0 || config.RetainFor < 24*time.Hour || !filepath.IsAbs(config.SpoolDirectory) {
+		(probe && (config.SpoolCapacity <= 0 || config.RetainFor < 24*time.Hour || !filepath.IsAbs(config.SpoolDirectory))) {
 		return nil, fmt.Errorf("S3 artifact store requires bucket, credentials, private spool, capacity and retention")
 	}
 	if config.Insecure {
@@ -65,8 +88,10 @@ func OpenS3(ctx context.Context, config S3Config) (*S3Store, error) {
 			return nil, fmt.Errorf("S3 artifact HTTP requires a numeric loopback endpoint")
 		}
 	}
-	if err := checkPrivateDirectory(config.SpoolDirectory); err != nil {
-		return nil, err
+	if probe {
+		if err := checkPrivateDirectory(config.SpoolDirectory); err != nil {
+			return nil, err
+		}
 	}
 	prefix := strings.Trim(config.Prefix, "/")
 	if prefix != "" && (path.Clean(prefix) != prefix || strings.HasPrefix(prefix, ".") || strings.ContainsAny(prefix, "\\\x00")) {
@@ -104,8 +129,10 @@ func OpenS3(ctx context.Context, config S3Config) (*S3Store, error) {
 		return nil, fmt.Errorf("S3 artifact bucket must have object lock enabled")
 	}
 	store := &S3Store{client: client, bucket: config.Bucket, prefix: prefix, spool: config.SpoolDirectory, limit: config.SpoolCapacity, retain: config.RetainFor}
-	if err := store.probeConditionalCreate(ctx); err != nil {
-		return nil, err
+	if probe {
+		if err := store.probeConditionalCreate(ctx); err != nil {
+			return nil, err
+		}
 	}
 	return store, nil
 }

@@ -109,6 +109,15 @@ func TestRecoveryRejectsCombinedAcceptAndInspection(t *testing.T) {
 	}
 }
 
+func TestExternalSourceInspectionRequiresExplicitProviderSelection(t *testing.T) {
+	err := run(context.Background(), []string{"inspect-source", "--database-url-file", "/private/db",
+		"--audit-key-file", "/private/key", "--authority", "authority", "--source-operation-id", "source-op",
+		"--observe-external"}, &strings.Builder{})
+	if err == nil || !strings.Contains(err.Error(), "incomplete external source inspection selection") {
+		t.Fatalf("external observation accepted missing Nomad, MySQL, and S3 selection: %v", err)
+	}
+}
+
 func TestRestorePrivateDirectories(t *testing.T) {
 	root := t.TempDir()
 	if err := os.Chmod(root, 0o700); err != nil {
