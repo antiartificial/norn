@@ -3,11 +3,15 @@ package store
 import (
 	"context"
 	"crypto/sha256"
+	"crypto/tls"
+	"crypto/x509"
 	"database/sql"
 	"encoding/json"
+	"encoding/pem"
 	"errors"
 	"fmt"
 	"net"
+	"net/http"
 	"net/url"
 	"os"
 	"os/exec"
@@ -19,6 +23,7 @@ import (
 
 	mysql "github.com/go-sql-driver/mysql"
 	"github.com/google/uuid"
+	"github.com/jackc/pgx/v5/pgxpool"
 
 	"norn/v2/api/artifactstore"
 	"norn/v2/api/database"
@@ -62,6 +67,70 @@ func TestMySQLRestoreIntentPayloadExact(t *testing.T) {
 // signs the exact request, persists the target fence, and demonstrates that
 // the external-effect ambiguity boundary cannot be entered twice.
 func TestMySQLRestoreIntentAgainstDisposableEngines(t *testing.T) {
+	if os.Getenv("NORN_MYSQL_RETAINED_PREPARE_CHILD") == "1" {
+		ctx := context.Background()
+		config, err := pgxpool.ParseConfig(os.Getenv("NORN_MYSQL_RETAINED_PREPARE_DB"))
+		if err != nil {
+			t.Fatal(err)
+		}
+		config.ConnConfig.RuntimeParams["search_path"] = os.Getenv("NORN_MYSQL_RETAINED_PREPARE_SCHEMA")
+		pool, err := pgxpool.NewWithConfig(ctx, config)
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer pool.Close()
+		control := &DB{Pool: pool}
+		signer, err := NewHMACAcceptanceSigner(acceptanceTestKey)
+		if err != nil {
+			t.Fatal(err)
+		}
+		acceptance, err := NewPGOperationStore(control, signer, AcceptancePolicy{})
+		if err != nil {
+			t.Fatal(err)
+		}
+		claim, err := NewOperationClaim(os.Getenv("NORN_MYSQL_RETAINED_PREPARE_OPERATION"), os.Getenv("NORN_MYSQL_RETAINED_PREPARE_OWNER"), 1)
+		if err != nil {
+			t.Fatal(err)
+		}
+		accepted, err := acceptance.VerifyAcceptedOperation(ctx, claim.OperationID())
+		if err != nil {
+			t.Fatal(err)
+		}
+		var request MySQLRestoreRequest
+		if err := decodeMySQLRestorePayload(accepted.Operation.Payload, &request); err != nil {
+			t.Fatal(err)
+		}
+		secrets, err := database.NewDirectorySecretSource(os.Getenv("NORN_MYSQL_RETAINED_PREPARE_SECRETS"))
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer secrets.Close()
+		certificate, err := os.ReadFile(os.Getenv("NORN_MYSQL_RETAINED_PREPARE_CA"))
+		if err != nil {
+			t.Fatal(err)
+		}
+		roots := x509.NewCertPool()
+		if !roots.AppendCertsFromPEM(certificate) {
+			t.Fatal("retained object service certificate was not trusted")
+		}
+		transport := &http.Transport{TLSClientConfig: &tls.Config{RootCAs: roots}}
+		defer transport.CloseIdleConnections()
+		objects, err := artifactstore.OpenS3(ctx, artifactstore.S3Config{
+			Endpoint: os.Getenv("NORN_MYSQL_RETAINED_PREPARE_ENDPOINT"), Bucket: "norn-artifacts", Prefix: "mysql/recovery",
+			Region: "us-east-1", AccessKey: "artifact-writer", SecretKey: "test-secret", Transport: transport,
+			SpoolDirectory: os.Getenv("NORN_MYSQL_RETAINED_PREPARE_SPOOL"), SpoolCapacity: 64 << 20, RetainFor: 24 * time.Hour})
+		if err != nil {
+			t.Fatal(err)
+		}
+		prepared, err := control.PrepareClaimedMySQLRestoreFromRetained(ctx, acceptance, claim, request, secrets, objects, os.Getenv("NORN_MYSQL_RETAINED_PREPARE_PRIVATE"))
+		if err != nil || !prepared.Replayed {
+			t.Fatalf("separate process signed retained prepare = %+v, %v", prepared, err)
+		}
+		if _, err := os.Stat(request.ArtifactPath); !errors.Is(err, os.ErrNotExist) {
+			t.Fatalf("separate process used historical staging path: %v", err)
+		}
+		return
+	}
 	if os.Getenv("NORN_TEST_DATABASE_URL") == "" || os.Getenv("NORN_TEST_MYSQL_DSN") == "" {
 		t.Skip("disposable PostgreSQL and MySQL DSNs are required")
 	}
@@ -403,6 +472,52 @@ func TestMySQLRestoreIntentAgainstDisposableEngines(t *testing.T) {
 	}
 	if replay, err := control.PrepareClaimedMySQLRestoreFromRetained(ctx, stores[0], claim, request, secrets, recoveryObjects, materializeDirectory); err != nil || !replay.Replayed {
 		t.Fatalf("retained prepare without staged file: %+v %v", replay, err)
+	}
+	var controlSchema string
+	if err := control.Pool.QueryRow(ctx, `SELECT current_schema()`).Scan(&controlSchema); err != nil {
+		t.Fatal(err)
+	}
+	childSecrets := filepath.Join(t.TempDir(), "secrets")
+	if err := os.Mkdir(childSecrets, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	for reference, value := range secrets {
+		name := strings.TrimPrefix(reference, "secret:")
+		destination := filepath.Join(childSecrets, name)
+		if err := os.MkdirAll(filepath.Dir(destination), 0o700); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(destination, []byte(value), 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	childCA := filepath.Join(t.TempDir(), "object-ca.pem")
+	if err := os.WriteFile(childCA, pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: objectServer.Certificate().Raw}), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	childSpool := t.TempDir()
+	childPrivate := filepath.Join(t.TempDir(), "restore")
+	if err := os.Mkdir(childPrivate, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	for _, directory := range []string{childSpool, childPrivate} {
+		if err := os.Chmod(directory, 0o700); err != nil {
+			t.Fatal(err)
+		}
+	}
+	child := exec.Command(os.Args[0], "-test.run=^TestMySQLRestoreIntentAgainstDisposableEngines$")
+	child.Env = append(os.Environ(), "NORN_MYSQL_RETAINED_PREPARE_CHILD=1",
+		"NORN_MYSQL_RETAINED_PREPARE_DB="+os.Getenv("NORN_TEST_DATABASE_URL"),
+		"NORN_MYSQL_RETAINED_PREPARE_SCHEMA="+controlSchema,
+		"NORN_MYSQL_RETAINED_PREPARE_OPERATION="+claim.OperationID(),
+		"NORN_MYSQL_RETAINED_PREPARE_OWNER="+claim.OwnerID(),
+		"NORN_MYSQL_RETAINED_PREPARE_SECRETS="+childSecrets,
+		"NORN_MYSQL_RETAINED_PREPARE_CA="+childCA,
+		"NORN_MYSQL_RETAINED_PREPARE_ENDPOINT="+objectEndpoint.Host,
+		"NORN_MYSQL_RETAINED_PREPARE_SPOOL="+childSpool,
+		"NORN_MYSQL_RETAINED_PREPARE_PRIVATE="+childPrivate)
+	if output, err := child.CombinedOutput(); err != nil {
+		t.Fatalf("separate process signed retained prepare: %v\n%s", err, output)
 	}
 	// The short lease expires while mysql is deliberately delayed. Completion
 	// therefore proves the private runner renewed its claim during the import.

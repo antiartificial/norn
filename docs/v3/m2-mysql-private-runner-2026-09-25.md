@@ -8,6 +8,14 @@ directory, and terminalizes the intent with its operation receipt. Failure
 after the one-way boundary records `needs-inspection`; a worker crash leaves
 `executing` and cannot be retried as SQL.
 
+The retained-restore integration now removes the original staged SQL file and
+runs an independent process with a separate private spool and trusted TLS
+client. That process verifies the signed acceptance, staging and retention
+receipts, materializes the S3-emulator object, and replays preparation against
+the disposable MySQL target. The local PostgreSQL 16/MySQL 8.4 harness passed.
+The SQL runner itself still executes in the parent process; this is not a
+separate-node or hosted-provider restore qualification.
+
 The client executable is checksum-verified through an opened descriptor before
 execution and its inode is compared again afterward. The process still executes
 the configured path because macOS clients may load libraries relative to that
