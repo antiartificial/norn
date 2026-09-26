@@ -10,6 +10,13 @@ request key returns the original successful recovery operation. An interrupted
 or uncertain effect remains fenced for inspection; the command does not claim
 another queued operation or retry an already running one.
 
+If the private recovery command's claim expires, control-plane recovery marks
+its operation failed with `manualRecoveryRequired` and
+`mysqlMaintenanceState=needs-inspection`, retaining the runtime fence and
+evidence archive intent. The same rule covers an expired private source
+command. This makes an interrupted command visible and terminal; it does not
+automatically retry an ambiguous target unlock or release the fence.
+
 The command requires an expected control authority, restore operation UUID,
 and target database name. Read the PostgreSQL URL and current audit key from
 owner-owned mode-`0600` regular files; provide any previous audit verification

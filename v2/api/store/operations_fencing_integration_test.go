@@ -48,6 +48,55 @@ func insertOperationFixture(t *testing.T, db *DB, kind string, maxAttempts int, 
 	return op
 }
 
+func TestExpiredPrivateMySQLCommandsFailForInspectionWithoutReleasingFence(t *testing.T) {
+	for _, kind := range []string{MySQLSourceSnapshotOperationKind, MySQLRestoreRecoveryOperationKind} {
+		t.Run(kind, func(t *testing.T) {
+			pools := schemaMigrationTestPools(t, 1)
+			db := &DB{Pool: pools[0]}
+			if err := Migrate(db); err != nil {
+				t.Fatal(err)
+			}
+			ctx := context.Background()
+			op := insertOperationFixture(t, db, kind, 1, nil)
+			live := insertOperationFixture(t, db, kind, 1, nil)
+			owner := "mysql-maintenance:" + op.ID
+			if _, err := db.Pool.Exec(ctx, `UPDATE runtime_mutation_fence SET epoch=1,active=true,owner=$1,reason='private MySQL recovery',held_at=clock_timestamp(),released_at=NULL WHERE singleton=true`, owner); err != nil {
+				t.Fatal(err)
+			}
+			if _, err := db.Pool.Exec(ctx, `UPDATE operations SET status='running',attempts=1,locked_by='expired-worker',lock_generation=1,locked_until=clock_timestamp()-interval '1 second' WHERE id=$1`, op.ID); err != nil {
+				t.Fatal(err)
+			}
+			if _, err := db.Pool.Exec(ctx, `UPDATE operations SET status='running',attempts=1,locked_by='live-worker',lock_generation=1,locked_until=clock_timestamp()+interval '2 minutes' WHERE id=$1`, live.ID); err != nil {
+				t.Fatal(err)
+			}
+			if err := db.RecoverExpiredOperations(ctx); err != nil {
+				t.Fatal(err)
+			}
+			var status, maintenanceState, fenceOwner string
+			var manualRecovery, fenceActive bool
+			if err := db.Pool.QueryRow(ctx, `SELECT status,metadata->>'mysqlMaintenanceState',COALESCE((metadata->>'manualRecoveryRequired')::boolean,false) FROM operations WHERE id=$1`, op.ID).Scan(&status, &maintenanceState, &manualRecovery); err != nil || status != "failed" || maintenanceState != "needs-inspection" || !manualRecovery {
+				t.Fatalf("expired %s status=%q state=%q manual=%v err=%v", kind, status, maintenanceState, manualRecovery, err)
+			}
+			if err := db.Pool.QueryRow(ctx, `SELECT active,owner FROM runtime_mutation_fence WHERE singleton=true`).Scan(&fenceActive, &fenceOwner); err != nil || !fenceActive || fenceOwner != owner {
+				t.Fatalf("expired %s released fence: active=%v owner=%q err=%v", kind, fenceActive, fenceOwner, err)
+			}
+			if err := db.Pool.QueryRow(ctx, `SELECT status FROM operations WHERE id=$1`, live.ID).Scan(&status); err != nil || status != "running" {
+				t.Fatalf("live %s owner was failed: status=%q err=%v", kind, status, err)
+			}
+			var archived int
+			if err := db.Pool.QueryRow(ctx, `SELECT count(*) FROM evidence_archive_intents WHERE operation_id=$1 AND state='pending'`, op.ID).Scan(&archived); err != nil || archived != 1 {
+				t.Fatalf("expired %s archive intent count=%d err=%v", kind, archived, err)
+			}
+			if err := db.RecoverExpiredOperations(ctx); err != nil {
+				t.Fatal(err)
+			}
+			if err := db.Pool.QueryRow(ctx, `SELECT count(*) FROM evidence_archive_intents WHERE operation_id=$1`, op.ID).Scan(&archived); err != nil || archived != 1 {
+				t.Fatalf("expired %s recovery replay duplicated archive intent: %d %v", kind, archived, err)
+			}
+		})
+	}
+}
+
 func insertDeploymentOperationFixture(t *testing.T, db *DB, maxAttempts int) (*model.Deployment, *model.Operation) {
 	t.Helper()
 	now := time.Now().UTC().Add(-time.Second)

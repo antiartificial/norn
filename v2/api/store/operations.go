@@ -984,6 +984,34 @@ func (db *DB) RecoverExpiredOperations(ctx context.Context) error {
 	`); err != nil {
 		return err
 	}
+	// Source retention and target unlock are one-way external effects. An
+	// expired private-command claim cannot be requeued or left running: keep
+	// the runtime fence and signed intent for operator observation.
+	if _, err = tx.Exec(ctx, `
+		WITH failed AS (
+			UPDATE operations
+			SET status='failed',
+			    message=CASE kind
+			      WHEN 'database.mysql-source-snapshot' THEN 'MySQL source ownership expired; inspect stop, account lock and retained artifact'
+			      ELSE 'MySQL recovery ownership expired; inspect target unlock and runtime fence'
+			    END,
+			    last_error='private MySQL executor lease expired',
+			    metadata=metadata || jsonb_build_object('manualRecoveryRequired',true,'mysqlMaintenanceState','needs-inspection'),
+			    locked_by='',locked_until=NULL,updated_at=clock_timestamp(),finished_at=clock_timestamp()
+			WHERE status='running'
+			  AND kind IN ('database.mysql-source-snapshot','database.mysql-restore-recovery')
+			  AND (locked_until IS NULL OR locked_until<clock_timestamp())
+			RETURNING id,saga_id,app
+		), archive_intents AS (
+			INSERT INTO evidence_archive_intents (id,subject_kind,subject_id,app,operation_id,sequence,state)
+			SELECT 'ei-' || gen_random_uuid()::text,'saga',saga_id,app,id,1,'pending'
+			FROM failed WHERE saga_id<>''
+			ON CONFLICT (subject_kind,subject_id,sequence) DO NOTHING
+		)
+		SELECT count(*) FROM failed
+	`); err != nil {
+		return err
+	}
 	if _, err = tx.Exec(ctx, `
 		UPDATE operations
 		SET status = 'queued',
