@@ -151,7 +151,7 @@ func (s *V3OperationStore) acceptFleetRunnerAttempt(ctx context.Context, input s
 	if err := decodeV3Record(stateResponse.Kvs[0].Value, &state); err != nil || state.Version <= 0 {
 		return store.AcceptedOperation{}, fmt.Errorf("fleet runner plan state is corrupt")
 	}
-	attempts, attemptRevisions, err := s.listFleetRunnerAttempts(ctx, admission.PlanID)
+	attempts, _, err := s.listFleetRunnerAttempts(ctx, admission.PlanID)
 	if err != nil {
 		return store.AcceptedOperation{}, err
 	}
@@ -166,13 +166,12 @@ func (s *V3OperationStore) acceptFleetRunnerAttempt(ctx context.Context, input s
 			return store.AcceptedOperation{}, fleetAttemptError("fleet_runner_attempt_binding_mismatch", "fleet plan attempts use different reviewed input")
 		}
 	}
-	var predecessor *fleet.RunnerAttempt
 	if len(attempts) == 0 {
 		if admission.Resume || admission.WorkloadIntent != "apply" || admission.ExpectedPredecessorID != "" {
 			return store.AcceptedOperation{}, fleetAttemptError("fleet_runner_attempt_resume_invalid", "fleet recovery requires a prior runner attempt")
 		}
 	} else {
-		predecessor = &attempts[len(attempts)-1]
+		predecessor := &attempts[len(attempts)-1]
 		if admission.ExpectedPredecessorID != predecessor.ID {
 			return store.AcceptedOperation{}, fleetAttemptError("fleet_runner_attempt_stale", "selected predecessor changed")
 		}
@@ -182,35 +181,16 @@ func (s *V3OperationStore) acceptFleetRunnerAttempt(ctx context.Context, input s
 		if predecessor.Status == "succeeded" {
 			return store.AcceptedOperation{}, fleetAttemptError("fleet_runner_attempt_complete", "fleet plan already succeeded")
 		}
+		// A control-record cancellation or expired heartbeat does not establish
+		// that the prior provider-changing workflow stopped. No successor may
+		// start until an independently verified exact-workflow stop proof is
+		// bound to this admission and checked in the same transaction.
+		return store.AcceptedOperation{}, fleetAttemptError("fleet_runner_attempt_external_stop_unproven", "predecessor workflow termination or reconciliation is unproven")
 	}
 	now := time.Now().UTC().Truncate(time.Microsecond)
 	item := fleet.RunnerAttempt{SchemaVersion: fleet.RunnerAttemptSchemaVersion, ID: admission.AttemptID, PlanID: admission.PlanID, Attempt: len(attempts) + 1, RunnerAttemptID: admission.RunnerAttemptID, Status: "queued", CurrentPhase: fleetInitialPhase(plan.Operation.Payload), CommitSHA: admission.CommitSHA, PlanSHA256: admission.PlanSHA256, WorkflowURL: admission.WorkflowURL, RootAttemptID: admission.AttemptID, HeartbeatTimeoutSeconds: admission.HeartbeatTimeoutSeconds, Revision: 1, StartedAt: now, HeartbeatAt: now, HeartbeatExpiresAt: now.Add(time.Duration(admission.HeartbeatTimeoutSeconds) * time.Second), UpdatedAt: now}
 	puts := make([]clientv3.Op, 0, 6)
 	compares := []clientv3.Cmp{clientv3.Compare(clientv3.ModRevision(s.opKey(admission.PlanID)), "=", planRevision), clientv3.Compare(clientv3.ModRevision(s.fleetRunnerDispatchKey(admission.PlanID)), "=", dispatchResponse.Kvs[0].ModRevision), clientv3.Compare(clientv3.ModRevision(s.fleetRunnerPlanStateKey(admission.PlanID)), "=", stateResponse.Kvs[0].ModRevision), clientv3.Compare(clientv3.CreateRevision(key), "=", 0), clientv3.Compare(clientv3.CreateRevision(s.opKey(acceptance.Operation.ID)), "=", 0), clientv3.Compare(clientv3.CreateRevision(s.fleetRunnerAttemptKey(admission.PlanID, item.ID)), "=", 0)}
-	if predecessor != nil {
-		item.RootAttemptID, item.RetryOf = predecessor.RootAttemptID, predecessor.ID
-		if !fleetPlanRequiresDrain(plan.Operation.Payload) {
-			item.CurrentPhase = predecessor.CurrentPhase
-		}
-		compares = append(compares, clientv3.Compare(clientv3.ModRevision(s.fleetRunnerAttemptKey(admission.PlanID, predecessor.ID)), "=", attemptRevisions[predecessor.ID]))
-		if predecessor.Status == "queued" || predecessor.Status == "running" {
-			// This is intentionally parity with the PostgreSQL aggregate. The
-			// resulting message is a release gate: the control record is fenced,
-			// but external runner termination remains unproven until the Fleet
-			// workflow supplies an independently qualified cancellation proof.
-			copy := *predecessor
-			if !copy.HeartbeatExpiresAt.After(now) {
-				copy.Status, copy.LastError = "abandoned", "heartbeat lease expired; external execution termination unproven"
-			} else {
-				copy.Status, copy.LastError = "canceled", "etcd lease superseded by protected recovery; external execution termination unproven"
-			}
-			copy.Revision++
-			copy.UpdatedAt = now
-			copy.FinishedAt = &now
-			encoded, _ := json.Marshal(copy)
-			puts = append(puts, clientv3.OpPut(s.fleetRunnerAttemptKey(admission.PlanID, copy.ID), string(encoded)))
-		}
-	}
 	store.BindAcceptedFleetRunnerAttempt(&acceptance, &item)
 	acceptedAt := now
 	identityID, intentID := uuid.NewString(), uuid.NewString()

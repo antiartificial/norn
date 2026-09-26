@@ -142,7 +142,7 @@ func TestV3FleetRunnerAttemptAcceptanceReplayAndRevisionCASEtcd(t *testing.T) {
 	}
 }
 
-func TestV3FleetRunnerAttemptAcceptsOneConcurrentRecoveryEtcd(t *testing.T) {
+func TestV3FleetRunnerAttemptRejectsConcurrentRecoveryWithoutStopProofEtcd(t *testing.T) {
 	adapter, client, prefix := fleetRunnerEtcdStore(t)
 	plan := fleetRunnerPlan(t, adapter, "scale")
 	nonce := bindFleetRunnerDispatch(t, adapter, plan)
@@ -182,24 +182,23 @@ func TestV3FleetRunnerAttemptAcceptsOneConcurrentRecoveryEtcd(t *testing.T) {
 	close(start)
 	wait.Wait()
 	close(outcomes)
-	accepted, rejected := 0, 0
+	rejected := 0
 	for err := range outcomes {
-		if err == nil {
-			accepted++
-		} else if errors.Is(err, store.ErrFleetRunnerAttemptAdmission) {
+		var admissionErr *store.FleetRunnerAttemptAdmissionError
+		if errors.As(err, &admissionErr) && admissionErr.Code == "fleet_runner_attempt_external_stop_unproven" {
 			rejected++
 		} else {
 			t.Fatalf("recovery err=%v", err)
 		}
 	}
-	if accepted != 1 || rejected != 1 {
-		t.Fatalf("accepted=%d rejected=%d", accepted, rejected)
+	if rejected != 2 {
+		t.Fatalf("rejected=%d, want two unproven successors", rejected)
 	}
 	attempts, err := adapter.ListFleetRunnerAttempts(context.Background(), plan.ID)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(attempts) != 2 || attempts[0].Attempt != 2 || attempts[1].Attempt != 1 {
+	if len(attempts) != 1 || attempts[0].ID != root.FleetRunnerAttempt.ID || attempts[0].Status != "queued" || attempts[0].Revision != root.FleetRunnerAttempt.Revision {
 		t.Fatalf("attempts=%#v", attempts)
 	}
 }

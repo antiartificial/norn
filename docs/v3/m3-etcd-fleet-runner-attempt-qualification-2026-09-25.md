@@ -75,3 +75,15 @@ reconciliation of the exact predecessor workflow, then prove the evidence and
 one-successor rule through the normal API with real protected runner identity.
 Until that proof exists, a green local suite or PR check must not authorize
 protected Fleet adoption or automatic successor dispatch.
+
+The next Norn source change enforces that boundary in the etcd adapter: any
+successor request now fails with
+`fleet_runner_attempt_external_stop_unproven` before creating an acceptance or
+rewriting the predecessor, including when its heartbeat expired or its control
+status is terminal. First-attempt admission, same-identity replay, heartbeat,
+and signed phase advancement remain available. A disposable etcd v3.5.17 run
+passed the focused runner tests, including two concurrent rejected successors
+and an unchanged queued predecessor. The ordinary PG-free Fleet API process
+test also passed with both absent and poisoned PostgreSQL DSNs. This prevents
+unproven automatic recovery; it does not implement the external-stop proof or
+qualify protected provider-changing recovery, so the M3 gate remains open.
