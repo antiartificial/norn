@@ -86,3 +86,11 @@ receipt. A waiting agent fails the bounded local test. The cloudflared package
 and the PostgreSQL-backed pipeline/handler cases passed with command-scoped
 launchctl stubs. This proves launchd state handling, not tunnel connectivity
 or public endpoint health; those remain part of the private Mini rehearsal.
+
+On 2026-09-26, a read-only command on the Mini ran its installed
+`/opt/homebrew/bin/cloudflared` 2026.8.2 against the live
+`/Users/0xadb/.cloudflared/config.yml` with `tunnel ingress validate`; it
+returned `OK`. This confirms the current v2 file passes the installed
+validator. It does not validate a v3-generated candidate or exercise the
+restart path. Norn PR #76 checks passed at `04d7ccf`; the live service was not
+changed.
