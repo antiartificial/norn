@@ -445,18 +445,23 @@ func wordpressSourceThroughCommand(t *testing.T, ctx context.Context, db *store.
 				args[i+1] = "wordpress-bound-source-reconciliation"
 			}
 		}
-		if os.Getenv("NORN_TEST_WORDPRESS_SOURCE_CRASH_AFTER_TRANSFER") == "1" {
+		crashBeforeCommit := os.Getenv("NORN_TEST_WORDPRESS_SOURCE_CRASH_BEFORE_COMMIT") == "1"
+		if os.Getenv("NORN_TEST_WORDPRESS_SOURCE_CRASH_AFTER_TRANSFER") == "1" || crashBeforeCommit {
 			firstArgs := append([]string(nil), args...)
 			for i := 0; i < len(firstArgs)-1; i++ {
 				if firstArgs[i] == "--request-key" {
 					firstArgs[i+1] = "wordpress-first-reconciliation"
 				}
 			}
-			marker := filepath.Join(private, "transfer-committed")
+			marker := filepath.Join(private, "transfer-checkpoint")
 			command := exec.CommandContext(ctx, os.Getenv("NORN_TEST_WORDPRESS_MAINTENANCE_CLI"), firstArgs...)
 			var commandOutput bytes.Buffer
 			command.Stdout, command.Stderr = &commandOutput, &commandOutput
-			command.Env = append(os.Environ(), "SSL_CERT_FILE="+caFile, "NORN_TEST_SOURCE_TRANSFER_MARKER="+marker)
+			markerEnv := "NORN_TEST_SOURCE_TRANSFER_MARKER=" + marker
+			if crashBeforeCommit {
+				markerEnv = "NORN_TEST_SOURCE_BEFORE_COMMIT_MARKER=" + marker
+			}
+			command.Env = append(os.Environ(), "SSL_CERT_FILE="+caFile, markerEnv)
 			if err := command.Start(); err != nil {
 				t.Fatalf("start first reconciliation process: %v", err)
 			}
@@ -489,17 +494,31 @@ func wordpressSourceThroughCommand(t *testing.T, ctx context.Context, db *store.
 					}
 				}
 			}
-			priorInspection, err := db.InspectPrivateMySQLSourceSnapshot(ctx, operations, sourceID)
-			if err != nil || priorInspection.ReconciledByOperationID != firstID || !priorInspection.RuntimeFenceHeld {
-				_ = command.Process.Kill()
-				<-done
-				t.Fatalf("transfer marker lacked committed signed proof: %+v %v", priorInspection, err)
+			if !crashBeforeCommit {
+				priorInspection, err := db.InspectPrivateMySQLSourceSnapshot(ctx, operations, sourceID)
+				if err != nil || priorInspection.ReconciledByOperationID != firstID || !priorInspection.RuntimeFenceHeld {
+					_ = command.Process.Kill()
+					<-done
+					t.Fatalf("transfer marker lacked committed signed proof: %+v %v", priorInspection, err)
+				}
 			}
 			if err := command.Process.Kill(); err != nil {
-				t.Fatalf("kill first reconciliation after committed transfer: %v", err)
+				t.Fatalf("kill first reconciliation at transfer checkpoint: %v", err)
 			}
 			if err := <-done; err == nil {
 				t.Fatal("first reconciliation exited successfully despite process kill")
+			}
+			if crashBeforeCommit {
+				inspection, err := db.InspectPrivateMySQLSourceSnapshot(ctx, operations, sourceID)
+				if err != nil || inspection.ReconciledByOperationID != "" || inspection.IntentState != "stop-intended" ||
+					!inspection.RuntimeFenceHeld {
+					t.Fatalf("killed uncommitted transfer changed predecessor: %+v %v", inspection, err)
+				}
+				var proofCount int
+				if err := db.Pool.QueryRow(ctx, `SELECT count(*) FROM mysql_source_snapshot_reconciliations
+					WHERE prior_operation_id=$1`, sourceID).Scan(&proofCount); err != nil || proofCount != 0 {
+					t.Fatalf("killed uncommitted transfer left proof: %d %v", proofCount, err)
+				}
 			}
 			if _, err := db.Pool.Exec(ctx, `UPDATE operations SET locked_until=clock_timestamp()-interval '1 second' WHERE id=$1`, firstID); err != nil {
 				t.Fatal(err)
@@ -511,10 +530,12 @@ func wordpressSourceThroughCommand(t *testing.T, ctx context.Context, db *store.
 			if err != nil || failedFirst.Status != model.OperationFailed || failedFirst.Metadata["manualRecoveryRequired"] != true {
 				t.Fatalf("killed transferred successor did not fail closed: %+v %v", failedFirst, err)
 			}
-			sourceID = firstID
-			for i := 0; i < len(args)-1; i++ {
-				if args[i] == "--prior-source-operation-id" {
-					args[i+1] = firstID
+			if !crashBeforeCommit {
+				sourceID = firstID
+				for i := 0; i < len(args)-1; i++ {
+					if args[i] == "--prior-source-operation-id" {
+						args[i+1] = firstID
+					}
 				}
 			}
 		}

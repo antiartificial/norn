@@ -247,5 +247,8 @@ func (db *DB) transferClaimedMySQLSourceReconciliation(ctx context.Context, acce
 		claim.OperationID(), hex.EncodeToString(digest[:]), claim.OwnerID(), claim.Generation()); err != nil || updated.RowsAffected() != 1 {
 		return ErrMySQLSourceSnapshotFence
 	}
+	if err := beforeMySQLSourceReconcileCommit(claim.OperationID()); err != nil {
+		return err
+	}
 	return tx.Commit(ctx)
 }
