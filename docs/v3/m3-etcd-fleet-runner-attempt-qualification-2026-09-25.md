@@ -107,3 +107,40 @@ different authenticated recovery run then receives HTTP 409 with
 revision remain unchanged and the plan still has exactly one attempt. This
 proves the API boundary currently rejects unproven recovery. It does not prove
 that a future successful successor can safely apply provider changes.
+
+## Successor proof contract — 2026-09-26
+
+The GitHub App client can now read an exact numbered workflow attempt using
+GitHub's `/actions/runs/{run_id}/attempts/{attempt_number}` endpoint. It checks
+the protected dispatch identity and then reads the current run to reject an
+already visible rerun or disagreeing state. The verifier accepts GitHub's
+default-branch `workflow.yml@branch` path and rejects another ref. Norn PR #76
+head `48a164a` passed the `githubapp` package locally and all repository CI
+jobs. This is still a point-in-time read; it is not an admission proof.
+
+Before allowing a successor in the etcd aggregate, the protected recovery
+lane must provide all of the following evidence, bound to the plan and exact
+predecessor runner attempt:
+
+1. A durable, authenticated observation of the predecessor's numbered GitHub
+   workflow attempt and terminal outcome, with a checked current attempt
+   number. A generic run URL, elapsed heartbeat, or control-record cancel is
+   insufficient.
+2. A fresh provider and backend reconciliation for the exact approved plan and
+   root, identifying completed effects and the safe remainder. The proof must
+   account for any child process or side effect that could outlive a terminal
+   GitHub job.
+3. A fencing rule for a late predecessor or rerun. A new GitHub run attempt
+   must obtain its own Norn admission and cannot reuse the predecessor's signed
+   receipt; provider-changing steps must stop when their authority is lost.
+4. An atomic etcd compare-and-swap that verifies the proof's immutable identity,
+   predecessor revision, plan state revision, and one-successor lineage while
+   accepting the recovery attempt. A failed compare must leave both attempts
+   and the proof unchanged.
+
+The current implementation supplies none of that combined durable proof to
+the adapter. It must continue returning
+`fleet_runner_attempt_external_stop_unproven` for every successor. The Fleet
+GitHub `contract` check is separately blocked before runner assignment by the
+account billing/spending-limit condition; local Fleet tests cannot close that
+hosted CI gate.
