@@ -39,3 +39,21 @@ version 41, running with one running allocation. No deployment, API restart,
 job mutation, or source-content cleanup occurred. The marker prepares
 unambiguous discovery for the v3 candidate; a full candidate API inventory and
 operator review of the retained checkout are still required before M0 sign-off.
+
+## Candidate handler qualification — 2026-09-26
+
+At PR #76 candidate head `afa3fb7`, a compiled Darwin/arm64 `handler` test
+binary invoked the current `ListApps` handler against Mini's actual
+`/Users/0xadb/projects` directory. It returned 26 records and exactly one
+Watchtower record. The API-visible Watchtower spec in that response matched
+the spec loaded from the current `watchtower` checkout. A deterministic local
+fixture separately verifies that a retained checkout with the marker is
+excluded by `ListApps`. The test binary and transfer directory were removed
+from Mini and the local machine after the run.
+
+The handler was constructed without a database or Nomad client. This confirms
+candidate handler discovery and serialization against the present source
+layout, but not authentication, live allocation enrichment, or full candidate
+API startup. Installed v2 continues to report the duplicate until a v3
+release is actually selected. Owner review of the retained checkout and the
+remaining M0 fixture/restore decisions remain open.
