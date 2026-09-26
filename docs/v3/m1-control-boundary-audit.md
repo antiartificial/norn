@@ -205,3 +205,12 @@ as attempt 2, verifies the existing remote dump, publishes the manifest, and
 records both a published intent and a succeeded operation. This uses a local
 file-backed object store and disposable PostgreSQL. Deployment snapshot-step
 recovery and hosted provider behavior remain open.
+An expired deploy may now be requeued within its existing attempt budget only
+when its snapshot step is still running, at least one immutable export intent
+exists, and no other mutable deployment step has started. A store test keeps
+deploys that reached migration and snapshots without an export intent in
+manual review. A disposable two-target PostgreSQL test exercises a successor
+deploy claim through `snapshotTarget`: it reuses the operation-pinned local
+snapshot and verifies the remote dump before publishing the manifest and
+receipt. Full `Pipeline.run` replay through later deployment steps and a
+literal deploy worker process crash remain unqualified.

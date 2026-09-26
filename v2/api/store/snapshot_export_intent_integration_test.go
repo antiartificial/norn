@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"norn/v2/api/internal/pgtest"
+	"norn/v2/api/model"
 )
 
 func TestSnapshotExportIntentSurvivesClaimTurnover(t *testing.T) {
@@ -121,5 +122,74 @@ func TestSnapshotExportRecoveryReclaimsOnlyDurableIntent(t *testing.T) {
 	unreserved, err := db.GetOperation(ctx, withoutIntent.ID)
 	if err != nil || unreserved.Status != "failed" {
 		t.Fatalf("unreserved export recovered automatically: %+v, %v", unreserved, err)
+	}
+}
+
+func TestDeploySnapshotExportRecoveryStopsBeforeOtherMutableSteps(t *testing.T) {
+	server := pgtest.Start(t)
+	server.CreateDatabase(t, "norn_deploy_export_recovery")
+	db, err := Connect(server.URL("norn_deploy_export_recovery"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+	if err := Migrate(db); err != nil {
+		t.Fatal(err)
+	}
+	ctx := context.Background()
+	makeExpired := func(worker string, withIntent, laterMutable bool) (*model.Deployment, *model.Operation) {
+		t.Helper()
+		deployment, op := insertDeploymentOperationFixture(t, db, 2)
+		claimed, claim, err := db.ClaimNextOperation(ctx, worker, time.Minute, []string{"app.deploy"})
+		if err != nil || claimed == nil || claimed.ID != op.ID {
+			t.Fatalf("deploy claim = %+v, %v", claimed, err)
+		}
+		if err := db.StartDeploymentStep(ctx, model.DeploymentStep{DeploymentID: deployment.ID, App: deployment.App,
+			SagaID: deployment.SagaID, Step: "snapshot", Kind: model.DeploymentStepMutable, Status: model.DeploymentStepRunning, Attempt: 1}); err != nil {
+			t.Fatal(err)
+		}
+		if withIntent {
+			want := SnapshotExportIntent{OperationID: op.ID, Bucket: "retained", ObjectKey: "snapshots/" + deployment.App + "/operations/" + op.ID + "/dump",
+				DumpSHA256: strings.Repeat("a", 64), DumpSize: 17, ManifestSHA256: strings.Repeat("b", 64)}
+			if err := db.PrepareSnapshotExportIntent(ctx, claim, want); err != nil {
+				t.Fatal(err)
+			}
+		}
+		if laterMutable {
+			if err := db.StartDeploymentStep(ctx, model.DeploymentStep{DeploymentID: deployment.ID, App: deployment.App,
+				SagaID: deployment.SagaID, Step: "migrate", Kind: model.DeploymentStepMutable, Status: model.DeploymentStepRunning, Attempt: 1}); err != nil {
+				t.Fatal(err)
+			}
+		}
+		if _, err := db.Pool.Exec(ctx, `UPDATE operations SET locked_until=clock_timestamp()-interval '1 second' WHERE id=$1`, op.ID); err != nil {
+			t.Fatal(err)
+		}
+		return deployment, op
+	}
+	_, safe := makeExpired("snapshot-export-worker", true, false)
+	if err := db.RecoverExpiredOperations(ctx); err != nil {
+		t.Fatal(err)
+	}
+	recovered, err := db.GetOperation(ctx, safe.ID)
+	if err != nil || recovered.Status != model.OperationQueued || recovered.Attempts != 1 || recovered.MaxAttempts != 2 {
+		t.Fatalf("snapshot-only deploy recovery = %+v, %v", recovered, err)
+	}
+	claimed, second, err := db.ClaimNextOperation(ctx, "snapshot-export-successor", time.Minute, []string{"app.deploy"})
+	if err != nil || claimed == nil || claimed.ID != safe.ID || second.Generation() < 2 {
+		t.Fatalf("snapshot-only successor = %+v, %+v, %v", claimed, second, err)
+	}
+	if _, err := db.Pool.Exec(ctx, `UPDATE operations SET status='failed',locked_by='',locked_until=NULL,finished_at=now() WHERE id=$1`, safe.ID); err != nil {
+		t.Fatal(err)
+	}
+	_, advanced := makeExpired("advanced-deploy-worker", true, true)
+	_, unreserved := makeExpired("unreserved-deploy-worker", false, false)
+	if err := db.RecoverExpiredOperations(ctx); err != nil {
+		t.Fatal(err)
+	}
+	for _, op := range []*model.Operation{advanced, unreserved} {
+		got, err := db.GetOperation(ctx, op.ID)
+		if err != nil || got.Status != model.OperationFailed {
+			t.Fatalf("unsafe deploy recovery = %+v, %v", got, err)
+		}
 	}
 }

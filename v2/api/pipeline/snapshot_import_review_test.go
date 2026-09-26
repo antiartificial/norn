@@ -320,6 +320,107 @@ func TestPredeploySnapshotDoesNotAdvanceAfterClaimLostDuringExport(t *testing.T)
 	}
 }
 
+func TestPredeploySnapshotExportReplaysAfterDeployClaimRecovery(t *testing.T) {
+	f := newNamedFixture(t)
+	// The fixture's reports service intentionally has no MySQL adapter. Use
+	// the same two-PostgreSQL-target spec on disk and at acceptance.
+	specPath := filepath.Join(f.p.AppsDir, f.app, "infraspec.yaml")
+	specBytes, err := os.ReadFile(specPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	specText := strings.Replace(string(specBytes), "  - name: reports\n    purpose: application\n    capabilities: [health]\n", "", 1)
+	if specText == string(specBytes) {
+		t.Fatal("reports fixture requirement was not found")
+	}
+	if err := os.WriteFile(specPath, []byte(specText+"snapshots:\n  exportBucket: review\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	f.spec, err = model.LoadInfraSpec(specPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	objects := &expiringSnapshotObjects{reviewSnapshotObjects: reviewSnapshotObjects{}, expireAfter: 1,
+		afterWrite: func(context.Context) error { return errPredeploySnapshotClaimLost }}
+	f.p.SnapshotObjects = objects
+	ctx := context.Background()
+	delete(f.catalog.Profiles[0].DatabaseBindings, "reports")
+	if _, err := f.db.ActivateDatabaseCatalog(ctx, 1, f.catalog, "operator"); err != nil {
+		t.Fatal(err)
+	}
+	baseline, err := f.queue(t, DatabaseBaselineKind, map[string]interface{}{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	baselineResult, err := f.execute(t, baseline.ID)
+	if err != nil || baselineResult.Status != model.OperationSucceeded {
+		t.Fatalf("database baseline = %+v, %v", baselineResult, err)
+	}
+	if err := f.db.FinishClaimedOperation(ctx, baselineResult.Claim, baselineResult.Status, baselineResult.Message, baselineResult.Metadata); err != nil {
+		t.Fatal(err)
+	}
+	accepted, err := f.p.Run(ctx, f.spec, "abc1234", f.request)
+	if err != nil {
+		t.Fatal(err)
+	}
+	first, firstClaim, err := f.db.ClaimNextOperation(ctx, "first-predeploy-worker", time.Minute, []string{"app.deploy"})
+	if err != nil || first == nil || first.ID != accepted.Operation.ID {
+		t.Fatalf("first deploy claim = %+v, %v", first, err)
+	}
+	if err := f.db.StartDeploymentStep(ctx, model.DeploymentStep{DeploymentID: accepted.Intent.DeploymentID,
+		App: f.app, SagaID: first.SagaID, Step: "snapshot", Kind: model.DeploymentStepMutable,
+		Status: model.DeploymentStepRunning, Attempt: 1}); err != nil {
+		t.Fatal(err)
+	}
+	firstTargets, err := f.p.openDatabaseTargets(ctx, first.Payload, f.spec)
+	if err != nil {
+		t.Fatal(err)
+	}
+	firstTarget := firstTargets.named["primary"]
+	firstState := &state{spec: f.spec, claim: firstClaim, commitSHA: "abc1234", operationStartedAt: first.StartedAt,
+		deploymentID: accepted.Intent.DeploymentID}
+	sg := saga.NewWithID(f.p.SagaStore, first.SagaID, f.app, "pipeline", "deploy")
+	if err := f.p.snapshotTarget(ctx, firstState, sg, firstTarget.resolved.Target.Database, firstTarget, "abc1234"); !errors.Is(err, errPredeploySnapshotClaimLost) {
+		t.Fatalf("first predeploy export = %v", err)
+	}
+	firstTargets.Close()
+	var key, exportState string
+	if err := f.db.Pool.QueryRow(ctx, `SELECT object_key,state FROM snapshot_export_intents WHERE operation_id=$1`, first.ID).Scan(&key, &exportState); err != nil || exportState != "prepared" {
+		t.Fatalf("first predeploy intent = %q %q, %v", key, exportState, err)
+	}
+	if len(objects.reviewSnapshotObjects[key]) == 0 || len(objects.reviewSnapshotObjects[key+snapshotManifestSuffix]) != 0 {
+		t.Fatal("first predeploy execution did not stop between dump and manifest")
+	}
+	if _, err := f.db.Pool.Exec(ctx, `UPDATE operations SET locked_until=clock_timestamp()-interval '1 second' WHERE id=$1`, first.ID); err != nil {
+		t.Fatal(err)
+	}
+	if err := f.db.RecoverExpiredOperations(ctx); err != nil {
+		t.Fatal(err)
+	}
+	objects.afterWrite = nil
+	second, secondClaim, err := f.db.ClaimNextOperation(ctx, "successor-predeploy-worker", time.Minute, []string{"app.deploy"})
+	if err != nil || second == nil || second.ID != first.ID || secondClaim.Generation() == firstClaim.Generation() {
+		t.Fatalf("successor deploy claim = %+v, %+v, %v", second, secondClaim, err)
+	}
+	secondTargets, err := f.p.openDatabaseTargets(ctx, second.Payload, f.spec)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer secondTargets.Close()
+	secondTarget := secondTargets.named["primary"]
+	secondState := &state{spec: f.spec, claim: secondClaim, commitSHA: "abc1234", operationStartedAt: second.StartedAt,
+		deploymentID: accepted.Intent.DeploymentID}
+	if err := f.p.snapshotTarget(ctx, secondState, sg, secondTarget.resolved.Target.Database, secondTarget, "abc1234"); err != nil {
+		t.Fatalf("successor predeploy snapshot did not reconcile exact export: %v", err)
+	}
+	if len(objects.reviewSnapshotObjects[key+snapshotManifestSuffix]) == 0 {
+		t.Fatal("successor predeploy snapshot did not publish manifest")
+	}
+	if err := f.db.Pool.QueryRow(ctx, `SELECT state FROM snapshot_export_intents WHERE operation_id=$1 AND object_key=$2`, first.ID, key).Scan(&exportState); err != nil || exportState != "published" {
+		t.Fatalf("successor predeploy receipt = %q, %v", exportState, err)
+	}
+}
+
 func (s reviewSnapshotObjects) GetObject(_ context.Context, _, key, path string) error {
 	data, ok := s[key]
 	if !ok {

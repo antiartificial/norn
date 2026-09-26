@@ -1004,6 +1004,17 @@ func (db *DB) RecoverExpiredOperations(ctx context.Context) error {
 			)) OR (kind = 'app.snapshot-export' AND attempts < GREATEST(max_attempts, 3) AND EXISTS (
 				SELECT 1 FROM snapshot_export_intents sei
 				WHERE sei.operation_id = operations.id AND sei.state IN ('prepared', 'published')
+			)) OR (kind = 'app.deploy' AND attempts < max_attempts AND EXISTS (
+				SELECT 1 FROM deployment_steps ds
+				WHERE ds.deployment_id = operations.payload->>'deploymentId'
+				  AND ds.step = 'snapshot' AND ds.status = 'running'
+			) AND EXISTS (
+				SELECT 1 FROM snapshot_export_intents sei
+				WHERE sei.operation_id = operations.id AND sei.state IN ('prepared', 'published')
+			) AND NOT EXISTS (
+				SELECT 1 FROM deployment_steps ds
+				WHERE ds.deployment_id = operations.payload->>'deploymentId'
+				  AND ds.kind = 'mutable' AND ds.step <> 'snapshot'
 			)))
 		  AND (
 		    kind IN ('app.preflight', 'app.restart', 'app.canary-promote', 'app.cron-pause', 'app.cron-resume', 'app.cron-trigger', 'app.cron-trigger-reconcile', 'app.function-invoke')
@@ -1014,6 +1025,18 @@ func (db *DB) RecoverExpiredOperations(ctx context.Context) error {
 		    OR (kind = 'app.snapshot-export' AND attempts < GREATEST(max_attempts, 3) AND EXISTS (
 		      SELECT 1 FROM snapshot_export_intents sei
 		      WHERE sei.operation_id = operations.id AND sei.state IN ('prepared', 'published')
+		    ))
+		    OR (kind = 'app.deploy' AND attempts < max_attempts AND EXISTS (
+		      SELECT 1 FROM deployment_steps ds
+		      WHERE ds.deployment_id = operations.payload->>'deploymentId'
+		        AND ds.step = 'snapshot' AND ds.status = 'running'
+		    ) AND EXISTS (
+		      SELECT 1 FROM snapshot_export_intents sei
+		      WHERE sei.operation_id = operations.id AND sei.state IN ('prepared', 'published')
+		    ) AND NOT EXISTS (
+		      SELECT 1 FROM deployment_steps ds
+		      WHERE ds.deployment_id = operations.payload->>'deploymentId'
+		        AND ds.kind = 'mutable' AND ds.step <> 'snapshot'
 		    ))
 		    OR (kind = 'app.deploy' AND NOT EXISTS (
 		      SELECT 1
