@@ -192,3 +192,26 @@ volume. The test process exited successfully and its disposable services,
 containers, scratch files, and newly created volumes were removed. This is a
 local application-path TLS and content-persistence qualification, not a
 managed MySQL provider, retained-artifact restore, or Mini release gate.
+
+## Signed WordPress artifact restore — 2026-09-26
+
+`v2/scripts/test-wordpress-restore-qualification.sh` passed the opt-in
+`TestClaimedWordPressVerifiedTLSDeployInNomad` restore mode repeatedly, including
+the checked-in script, against the
+pinned WordPress 6.8.2 allocation, disposable MySQL 8.4, PostgreSQL 16,
+Nomad 2.0.7, and Consul 2.0.4. The test installed WordPress through HTTP,
+guardedly stopped its allocation, locked the source runtime account, and
+staged a service-signed SQL artifact. It published that exact artifact to a
+private local retention store, removed the staging copy, then separately
+accepted, claimed, prepared, and ran the signed MySQL restore against a
+distinct empty database. The runner verified the restored schema and data
+digests against the signed source expectation. A separate root read confirmed
+the target contained the `source-rehearsal` marker, populated `wp_options`,
+and an installed `wp_users` row. All runs exited successfully; the fixture
+removed its containers and scratch directory, leaving the prior Docker
+volume inventory untouched.
+
+This closes the local WordPress artifact compatibility check. The local
+retention adapter shares the test host; it does not prove provider durability,
+cross-node materialization, signed recovery/unlock, a managed MySQL service,
+or Mini rollback.

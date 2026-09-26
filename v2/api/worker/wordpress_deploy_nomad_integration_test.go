@@ -23,6 +23,7 @@ import (
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
 
+	"norn/v2/api/artifactstore"
 	"norn/v2/api/database"
 	"norn/v2/api/hub"
 	"norn/v2/api/model"
@@ -49,14 +50,21 @@ import (
 // SELECT/SHOW VIEW/TRIGGER/EVENT/LOCK TABLES, and a fence account allowed to
 // inspect mysql.user and lock the runtime account. The test deregisters its
 // uniquely named job, deletes its Nomad Variable, and drops its PostgreSQL
-// schema.
+// schema. NORN_TEST_WORDPRESS_DEPLOY_RESTORE=1 additionally requires an empty
+// distinct database, a runtime account, and a wp_restore account with import
+// rights. Supply their names/passwords through the RESTORE_DATABASE,
+// RESTORE_USER, RESTORE_PASSWORD, and RESTORE_ROLE_PASSWORD variables. This
+// mode restores the retained signed artifact into that disposable target.
 func TestClaimedWordPressVerifiedTLSDeployInNomad(t *testing.T) {
 	address, controlURL := os.Getenv("NORN_TEST_NOMAD_ADDR"), os.Getenv("NORN_TEST_DATABASE_URL")
 	host, serverName := os.Getenv("NORN_TEST_WORDPRESS_DEPLOY_MYSQL_HOST"), os.Getenv("NORN_TEST_WORDPRESS_DEPLOY_MYSQL_SERVER_NAME")
 	user, password, databaseName := os.Getenv("NORN_TEST_WORDPRESS_DEPLOY_MYSQL_USER"), os.Getenv("NORN_TEST_WORDPRESS_DEPLOY_MYSQL_PASSWORD"), os.Getenv("NORN_TEST_WORDPRESS_DEPLOY_MYSQL_DATABASE")
 	volume := os.Getenv("NORN_TEST_WORDPRESS_DEPLOY_CONTENT_VOLUME")
 	quiesceSource := os.Getenv("NORN_TEST_WORDPRESS_DEPLOY_SOURCE_QUIESCE") == "1"
+	restoreSource := os.Getenv("NORN_TEST_WORDPRESS_DEPLOY_RESTORE") == "1"
 	snapshotPassword, fencePassword := os.Getenv("NORN_TEST_WORDPRESS_DEPLOY_SNAPSHOT_PASSWORD"), os.Getenv("NORN_TEST_WORDPRESS_DEPLOY_FENCE_PASSWORD")
+	restoreDatabase, restoreUser := os.Getenv("NORN_TEST_WORDPRESS_DEPLOY_RESTORE_DATABASE"), os.Getenv("NORN_TEST_WORDPRESS_DEPLOY_RESTORE_USER")
+	restorePassword, restoreRolePassword := os.Getenv("NORN_TEST_WORDPRESS_DEPLOY_RESTORE_PASSWORD"), os.Getenv("NORN_TEST_WORDPRESS_DEPLOY_RESTORE_ROLE_PASSWORD")
 	port, portErr := strconv.Atoi(os.Getenv("NORN_TEST_WORDPRESS_DEPLOY_MYSQL_PORT"))
 	ca, goodCA := deployQualificationPEM(t, "NORN_TEST_WORDPRESS_DEPLOY_MYSQL_CA_PEM_B64")
 	wrongCA, badCA := deployQualificationPEM(t, "NORN_TEST_WORDPRESS_DEPLOY_MYSQL_WRONG_CA_PEM_B64")
@@ -65,6 +73,9 @@ func TestClaimedWordPressVerifiedTLSDeployInNomad(t *testing.T) {
 	}
 	if quiesceSource && (snapshotPassword == "" || fencePassword == "") {
 		t.Skip("set disposable snapshot and fence account passwords for source quiescence qualification")
+	}
+	if restoreSource && (!quiesceSource || restoreDatabase == "" || restoreDatabase == databaseName || restoreUser == "" || restorePassword == "" || restoreRolePassword == "") {
+		t.Skip("set source quiescence and a distinct disposable empty MySQL restore database with runtime and restore credentials")
 	}
 	endpoint, err := url.Parse(address)
 	if err != nil || endpoint.Scheme != "http" || net.ParseIP(endpoint.Hostname()) == nil || !net.ParseIP(endpoint.Hostname()).IsLoopback() {
@@ -89,6 +100,10 @@ func TestClaimedWordPressVerifiedTLSDeployInNomad(t *testing.T) {
 		writeDeploySecret(t, secretRoot, "wp/snapshot", []byte(fmt.Sprintf(`{"password":%q}`, snapshotPassword)))
 		writeDeploySecret(t, secretRoot, "wp/fence", []byte(fmt.Sprintf(`{"password":%q}`, fencePassword)))
 	}
+	if restoreSource {
+		writeDeploySecret(t, secretRoot, "wp/restore-runtime", []byte(fmt.Sprintf(`{"password":%q}`, restorePassword)))
+		writeDeploySecret(t, secretRoot, "wp/restore", []byte(fmt.Sprintf(`{"password":%q}`, restoreRolePassword)))
+	}
 	secrets, err := database.NewDirectorySecretSource(secretRoot)
 	if err != nil {
 		t.Fatal(err)
@@ -98,6 +113,13 @@ func TestClaimedWordPressVerifiedTLSDeployInNomad(t *testing.T) {
 	catalog := wordpressDeployCatalog(host, port, user, databaseName, "secret:wp/ca")
 	if engineVersion := os.Getenv("NORN_TEST_WORDPRESS_DEPLOY_MYSQL_ENGINE_VERSION"); engineVersion != "" {
 		catalog.Services[0].EngineVersion = engineVersion
+	}
+	if restoreSource {
+		maintenance := wordpressDeployMySQLMaintenance()
+		catalog.Bindings = append(catalog.Bindings, database.DatabaseBinding{APIVersion: database.APIVersion, ID: "wp-restore-target", ServiceID: "wp-mysql",
+			Database: restoreDatabase, Role: restoreUser, Generation: 1, CredentialRef: "secret:wp/restore-runtime",
+			TLS: database.DatabaseTLS{Mode: database.TLSVerifyFull, ServerName: host, CARef: "secret:wp/ca"}, MySQLMaintenance: &maintenance})
+		catalog.Profiles[0].DatabaseBindings["restore"] = "wp-restore-target"
 	}
 	if _, err := db.ActivateDatabaseCatalog(context.Background(), 0, catalog, "wordpress-deploy-qualification"); err != nil {
 		t.Fatal(err)
@@ -218,7 +240,7 @@ func TestClaimedWordPressVerifiedTLSDeployInNomad(t *testing.T) {
 		t.Fatalf("signed deployed WordPress source identity was incomplete: %v", err)
 	}
 	if quiesceSource {
-		ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
+		ctx, cancel := context.WithTimeout(context.Background(), 6*time.Minute)
 		defer cancel()
 		claimed, claim, err := db.ClaimNextOperation(ctx, "wordpress-source-qualification", 2*time.Minute, []string{store.MySQLSourceSnapshotOperationKind})
 		if err != nil || claimed == nil || claim.OperationID() != sourceAccepted.Operation.ID {
@@ -251,6 +273,9 @@ func TestClaimedWordPressVerifiedTLSDeployInNomad(t *testing.T) {
 			!bytes.Contains(staged, []byte("wp_options")) || !bytes.Contains(staged, []byte("wp_users")) {
 			t.Fatalf("staged SQL did not retain the WordPress tables and disposable source marker: read=%v marker=%t options=%t users=%t", err,
 				bytes.Contains(staged, []byte("source-rehearsal")), bytes.Contains(staged, []byte("wp_options")), bytes.Contains(staged, []byte("wp_users")))
+		}
+		if restoreSource {
+			wordpressRestoreStagedSource(t, ctx, db, operations, secrets, catalog, sourceAccepted.Operation.ID, claim, receipt, restoreDatabase)
 		}
 		return
 	}
@@ -429,6 +454,103 @@ func wordpressDeployMySQLMaintenance() database.MySQLMaintenanceCredentials {
 	return database.MySQLMaintenanceCredentials{Generation: 1, RuntimeAccountHost: "%", SnapshotRole: "wp_snapshot", SnapshotAccountHost: "%",
 		SnapshotCredentialRef: "secret:wp/snapshot", RestoreRole: "wp_restore", RestoreAccountHost: "%",
 		RestoreCredentialRef: "secret:wp/restore", FenceRole: "wp_fence", FenceAccountHost: "%", FenceCredentialRef: "secret:wp/fence"}
+}
+
+// wordpressRestoreStagedSource consumes the exact source operation and receipt
+// produced by the deployed WordPress allocation. The local object store is a
+// disposable retention boundary for this single-host qualification only.
+func wordpressRestoreStagedSource(t *testing.T, ctx context.Context, db *store.DB, operations *store.PGOperationStore,
+	secrets database.SecretSource, catalog database.Catalog, sourceOperationID string, sourceClaim store.OperationClaim,
+	staged store.SignedMySQLSourceArtifactReceipt, targetDatabase string) {
+	t.Helper()
+	objectRoot := t.TempDir()
+	if err := os.Chmod(objectRoot, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	capacity := staged.Receipt.Artifact.Bytes * 2
+	if capacity < 64<<20 {
+		capacity = 64 << 20
+	}
+	objects, err := artifactstore.OpenLocal(objectRoot, capacity)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer objects.Close()
+	if _, err := db.RetainClaimedMySQLSourceArtifact(ctx, operations, sourceClaim, objects); err != nil {
+		t.Fatalf("retain signed WordPress source artifact: %v", err)
+	}
+	resolver, err := database.NewResolver(catalog)
+	if err != nil {
+		t.Fatal(err)
+	}
+	target, err := resolver.Resolve(database.ResolveRequest{DeploymentProfileID: "qualification", Purpose: database.PurposeApplication, LogicalResourceID: "restore"})
+	if err != nil || target.MySQLMaintenance == nil || target.Target.Database != targetDatabase {
+		t.Fatalf("WordPress restore target is unavailable: %v", err)
+	}
+	request := store.MySQLRestoreRequest{CatalogRevision: 1, ProfileID: "qualification", LogicalID: "restore", Target: target.Target,
+		Maintenance: *target.MySQLMaintenance, Artifact: staged.Receipt.Artifact, ArtifactPath: staged.Receipt.ArtifactPath,
+		SourceArtifact: store.MySQLRestoreSourceArtifact{OperationID: sourceOperationID, ReceiptSHA256: staged.SHA256}}
+	payloadBytes, err := json.Marshal(request)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var payload map[string]interface{}
+	if err := json.Unmarshal(payloadBytes, &payload); err != nil {
+		t.Fatal(err)
+	}
+	authority, err := operations.Authority(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	operation := model.Operation{ID: uuid.NewString(), Kind: store.MySQLRestoreOperationKind, App: targetDatabase, SagaID: uuid.NewString(),
+		Ref: "mysql/" + targetDatabase, Status: model.OperationQueued, Risk: "mutating", Source: "wordpress-deploy-nomad-integration",
+		MaxAttempts: 1, StartedAt: time.Now().UTC(), Payload: payload}
+	acceptance := store.OperationAcceptance{Identity: store.OperationRequestIdentity{Authority: authority,
+		Actor: store.OperationActor{Issuer: authority + "/qualification", Subject: "operator"}, Kind: store.MySQLRestoreOperationKind,
+		Resource: "mysql/" + targetDatabase, Key: "wordpress-restore-" + operation.ID}, Operation: operation,
+		Audit: store.AcceptanceAuditContext{Source: "wordpress-deploy-nomad-integration"}}
+	acceptance.Fingerprint, err = store.CanonicalOperationRequestFingerprint(acceptance)
+	if err != nil {
+		t.Fatal(err)
+	}
+	accepted, err := operations.Accept(ctx, acceptance)
+	if err != nil || accepted.Intent.Signature.Value == "" {
+		t.Fatalf("signed WordPress restore acceptance: %v", err)
+	}
+	claimed, claim, err := db.ClaimNextOperation(ctx, "wordpress-restore-qualification", 2*time.Minute, []string{store.MySQLRestoreOperationKind})
+	if err != nil || claimed == nil || claim.OperationID() != accepted.Operation.ID {
+		t.Fatalf("claim signed WordPress restore: %+v, %v", claimed, err)
+	}
+	if err := os.Remove(staged.Receipt.ArtifactPath); err != nil {
+		t.Fatalf("remove WordPress staging copy before retained restore: %v", err)
+	}
+	materialized := t.TempDir()
+	if err := os.Chmod(materialized, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := db.PrepareClaimedMySQLRestoreFromRetained(ctx, operations, claim, request, secrets, objects, materialized); err != nil {
+		t.Fatalf("prepare signed WordPress restore from retained artifact: %v", err)
+	}
+	toolPath, err := exec.LookPath("mysql")
+	if err != nil {
+		t.Fatal(err)
+	}
+	toolBytes, err := os.ReadFile(toolPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	runner := store.MySQLRestoreRunner{Control: db, Acceptance: operations, Secrets: secrets, Objects: objects,
+		MaterializeDirectory: materialized, Tool: database.MySQLRestoreTool{Path: toolPath, SHA256: fmt.Sprintf("%x", sha256.Sum256(toolBytes))}}
+	if err := runner.RunClaimed(ctx, claim); err != nil {
+		t.Fatalf("restore signed WordPress artifact into empty MySQL target: %v", err)
+	}
+	verified, err := database.MySQLRestoreBinding(target)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := database.VerifyMySQLRestoreTarget(ctx, verified, secrets, staged.Receipt.Artifact.Expectation); err != nil {
+		t.Fatalf("restored WordPress schema/data differs from signed source expectation: %v", err)
+	}
 }
 
 func wordpressDeployRun(t *testing.T, db *store.DB, worker *OperationWorker, operationID string) *model.Operation {
