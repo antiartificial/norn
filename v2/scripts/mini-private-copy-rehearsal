@@ -70,6 +70,48 @@ passive_log=$scratch/passive.log
 private_port=55432
 passive_pid=
 postgres_started=false
+check_live_state=${NORN_REHEARSAL_CHECK_LIVE_STATE:-false}
+[[ $check_live_state == true || $check_live_state == false ]] || {
+  printf 'NORN_REHEARSAL_CHECK_LIVE_STATE must be true or false\n' >&2
+  exit 2
+}
+
+capture_live_state() {
+  local output=$1
+  NORN_REHEARSAL_STATE_OUTPUT=$output python3 - <<'PY'
+import hashlib
+import json
+import os
+from pathlib import Path
+import urllib.parse
+import urllib.request
+
+raw = os.environ.get('NORN_REHEARSAL_NOMAD_URL', '')
+route = os.environ.get('NORN_REHEARSAL_CLOUDFLARED_CONFIG', '')
+parsed = urllib.parse.urlsplit(raw)
+if (parsed.scheme != 'http' or parsed.hostname not in ('127.0.0.1', '::1')
+        or parsed.port is None or parsed.path not in ('', '/') or parsed.query
+        or parsed.fragment or parsed.username or parsed.password or not route):
+    raise SystemExit('live-state check requires numeric-loopback Nomad URL and cloudflared config')
+with urllib.request.urlopen(raw.rstrip('/') + '/v1/jobs', timeout=10) as response:
+    jobs = json.load(response)
+base = sorted((job['ID'], job.get('JobModifyIndex'))
+              for job in jobs if '/periodic-' not in job['ID'])
+if not base or any(index is None for _, index in base):
+    raise SystemExit('Nomad base-job inventory is incomplete')
+route_path = Path(route)
+if not route_path.is_file() or route_path.is_symlink():
+    raise SystemExit('cloudflared config must be a regular file')
+result = {
+    'baseJobCount': len(base),
+    'baseJobDefinitionsSHA256': hashlib.sha256(json.dumps(base, separators=(',', ':')).encode()).hexdigest(),
+    'cloudflaredConfigSHA256': hashlib.sha256(route_path.read_bytes()).hexdigest(),
+}
+with open(os.environ['NORN_REHEARSAL_STATE_OUTPUT'], 'w', encoding='utf-8') as output:
+    json.dump(result, output, sort_keys=True)
+    output.write('\n')
+PY
+}
 
 cleanup() {
   status=$?
@@ -92,6 +134,10 @@ cleanup() {
   exit "$status"
 }
 trap cleanup EXIT INT TERM HUP
+
+if [[ $check_live_state == true ]]; then
+  capture_live_state "$scratch/live-before.json"
+fi
 
 contract=$($candidate --norn-startup-contract)
 contract_values=$(CONTRACT_JSON=$contract python3 - <<'PY'
@@ -342,6 +388,14 @@ assert schema["operationWorkerEnabled"] is False
 assert schema["nomadWatcherEnabled"] is False
 PY
 
+if [[ $check_live_state == true ]]; then
+  capture_live_state "$scratch/live-after.json"
+  cmp -s "$scratch/live-before.json" "$scratch/live-after.json" || {
+    printf 'live Nomad base-job definitions or cloudflared config changed during rehearsal\n' >&2
+    exit 1
+  }
+fi
+
 kill "$passive_pid"
 wait "$passive_pid" || true
 passive_pid=
@@ -356,6 +410,9 @@ printf 'minimum_writer=%s\n' "$minimum_writer"
 printf 'fingerprints=primary-key-and-full-row-matched\n'
 printf 'second_migrate_only=passed\n'
 printf 'passive_health=passed\n'
+if [[ $check_live_state == true ]]; then
+  printf 'live_base_jobs_and_cloudflared_config=unchanged\n'
+fi
 if [[ -n $backup_artifact ]]; then
   final_identity=$("$verify_backup" "$backup_proof" "$backup_artifact" "$NORN_REHEARSAL_LEGACY_RELEASE_SHA")
   [[ $final_identity == "$backup_identity" ]] || {
