@@ -124,3 +124,30 @@ removed and verified absent. Mini's live API still reported
 up. This is current-head copied-data schema and passive-startup evidence. It
 does not prove protected backup restore, application/job/route preservation,
 installed-binary rollback, or a live Mini upgrade; M5 remains open.
+
+## Source-URL fidelity and exact-head refresh — 2026-09-26
+
+After the rehearsal script began preserving supported libpq URL parameters and
+rejecting unknown or repeated parameters, it passed against another fresh
+read-only Mini source copy at PR #76 commit
+`a598196b5da21c36669b03c0e3542460450fec89`. The disposable Darwin/arm64
+binary was built with that SHA embedded in `main.Version`; its SHA-256 was
+`6b1955935cf62f994726a4ba4cbb86a3e61c4a95e8e481b58f22c788f0a167be`.
+The source was accessed through Mini's owner-local PostgreSQL socket as the
+owner account, with `default_transaction_read_only=on` and no database
+password in the command.
+
+The private PostgreSQL 17.7 copy had 28 original public tables and 254,849
+rows. Migrations 1–43, the second migrate-only pass, every original table's
+row count, ordered primary-key digest, original-column full-row digest, and
+passive health/version/schema checks passed. The compatibility floor remained
+reader 5 and writer 31. The rehearsal reported cleanup of its private database,
+dump, and logs. The transferred candidate/script directory on Mini and local
+build directory were removed and independently verified absent. Mini's live API
+still reported `v2.20.0-platform-30-ga5da8ef` and retained its original API
+process.
+
+This verifies the revised read-only source path with Mini's actual Unix-socket
+URL. It does not exercise remote TLS parameters against a live source, a
+protected production-key backup, installed-binary rollback, live application
+traffic, or the scheduled one-way maintenance transition. M5 remains open.
