@@ -33,6 +33,21 @@ The test is not a full deployment qualification. It leaves protected GitHub,
 OIDC, real multi-replica control APIs, and production backup/restore evidence
 to their respective release gates.
 
+For the local pinned BusyBox image, `bash v2/scripts/test-function-v3-crash-qualification.sh`
+starts and removes disposable PostgreSQL 16, Nomad 2.0.7, and Consul 2.0.4.
+It requires an empty Docker context and a locally available `busybox:1.36`
+image with a content digest. The runner checks the fixture ports and removes
+only containers mounted under its own scratch directory plus its named
+PostgreSQL container.
+
+On 2026-09-26, PR #76 head `d76979c` passed the process-kill and
+two-successor test twice, in 42.96 and 42.01 seconds. The test reported one
+recovered terminal operation without a second Nomad registration. The first
+runner version left one exited test allocation container; it was identified
+by its fixture mount and removed. After adding fixture-owned allocation
+cleanup, the repeat run left zero Docker containers, no Nomad or Consul agent,
+and no fixture scratch directory.
+
 On 2026-09-25, the test passed at Norn commit `593d856` against disposable
 Nomad 2.0.7 and PostgreSQL 17.7, using the local content-addressed BusyBox
 image. The test reported `PASS` in 41.98 seconds. The temporary Nomad agent
