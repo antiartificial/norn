@@ -63,6 +63,10 @@ type Emulator struct {
 	CorruptReads bool
 	// FailWrites answers PUT with 503.
 	FailWrites bool
+	// LoseCommitAck stores a completed object but answers 503, simulating an
+	// ambiguous publication response after the durable provider effect.
+	LoseCommitAck  bool
+	CommitAcksLost int
 	// QuotaBytes, when positive, refuses PUTs that would exceed it (507).
 	QuotaBytes int64
 	// Requests counts requests by method.
@@ -273,6 +277,11 @@ func (e *Emulator) completeMultipart(w http.ResponseWriter, r *http.Request, key
 	stored := object{data: data, metadata: upload.metadata, etag: `"` + hex.EncodeToString(digest[:]) + `"`, modified: time.Now().UTC(), retained: upload.retained, mode: upload.mode}
 	e.objects[key] = stored
 	delete(e.uploads, id)
+	if e.LoseCommitAck {
+		e.CommitAcksLost++
+		fail(w, r, http.StatusServiceUnavailable, "ServiceUnavailable")
+		return
+	}
 	w.Header().Set("Content-Type", "application/xml")
 	_, _ = fmt.Fprintf(w, `<CompleteMultipartUploadResult><Bucket>%s</Bucket><Key>%s</Key><ETag>%s</ETag></CompleteMultipartUploadResult>`, e.Bucket, key, stored.etag)
 }
@@ -338,6 +347,11 @@ func (e *Emulator) put(w http.ResponseWriter, r *http.Request, key string) {
 		stored.mode, stored.retained = mode, until
 	}
 	e.objects[key] = stored
+	if e.LoseCommitAck {
+		e.CommitAcksLost++
+		fail(w, r, http.StatusServiceUnavailable, "ServiceUnavailable")
+		return
+	}
 	w.Header().Set("ETag", stored.etag)
 }
 

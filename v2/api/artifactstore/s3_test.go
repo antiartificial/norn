@@ -213,6 +213,71 @@ func TestS3StoreConditionalMultipartPublication(t *testing.T) {
 	}
 }
 
+func TestS3PublicationReconcilesLostCommitAcknowledgement(t *testing.T) {
+	for _, test := range []struct {
+		name string
+		size int
+	}{
+		{name: "single-put", size: 1024},
+		{name: "multipart", size: int(s3PartBytes) + 1024},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			config, emulator := s3TestConfig(t)
+			writer, err := OpenS3(context.Background(), config)
+			if err != nil {
+				t.Fatal(err)
+			}
+			emulator.Configure(func(e *s3emulator.Emulator) {
+				e.LoseCommitAck = true
+				e.RequireConditionalComplete = true
+			})
+			payload := bytes.Repeat([]byte("r"), test.size)
+			descriptor := descriptorFor(payload)
+			if _, err := writer.Publish(context.Background(), descriptor, bytes.NewReader(payload)); err != nil {
+				t.Fatalf("committed object with lost acknowledgement was not reconciled: %v", err)
+			}
+			var lost int
+			emulator.Configure(func(e *s3emulator.Emulator) { lost = e.CommitAcksLost })
+			if lost != 1 {
+				t.Fatalf("lost commit acknowledgements = %d, want 1", lost)
+			}
+			if _, err := writer.Publish(context.Background(), descriptor, bytes.NewReader(payload)); err != nil {
+				t.Fatalf("same-content retry was not idempotent: %v", err)
+			}
+			readerConfig := config
+			readerConfig.SpoolDirectory = t.TempDir()
+			if err := os.Chmod(readerConfig.SpoolDirectory, 0o700); err != nil {
+				t.Fatal(err)
+			}
+			reader, err := OpenS3(context.Background(), readerConfig)
+			if err != nil {
+				t.Fatal(err)
+			}
+			var actual bytes.Buffer
+			if err := reader.Materialize(context.Background(), descriptor, &actual); err != nil || !bytes.Equal(actual.Bytes(), payload) {
+				t.Fatalf("retained object after ambiguous response = %d bytes, %v", actual.Len(), err)
+			}
+		})
+	}
+}
+
+func TestS3PublicationRefusesUncommittedWriteFailure(t *testing.T) {
+	config, emulator := s3TestConfig(t)
+	writer, err := OpenS3(context.Background(), config)
+	if err != nil {
+		t.Fatal(err)
+	}
+	emulator.Configure(func(e *s3emulator.Emulator) { e.FailWrites = true })
+	payload := []byte("uncommitted retained artifact")
+	descriptor := descriptorFor(payload)
+	if _, err := writer.Publish(context.Background(), descriptor, bytes.NewReader(payload)); err == nil {
+		t.Fatal("uncommitted publication was accepted")
+	}
+	if err := writer.Verify(context.Background(), descriptor); !errors.Is(err, ErrArtifactNotFound) {
+		t.Fatalf("failed publication left a visible object: %v", err)
+	}
+}
+
 type pausedS3Source struct {
 	reader  io.Reader
 	started chan struct{}
