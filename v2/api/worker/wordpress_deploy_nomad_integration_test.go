@@ -26,6 +26,7 @@ import (
 	"norn/v2/api/artifactstore"
 	"norn/v2/api/database"
 	"norn/v2/api/hub"
+	"norn/v2/api/internal/s3emulator"
 	"norn/v2/api/model"
 	"norn/v2/api/nomad"
 	"norn/v2/api/pipeline"
@@ -484,26 +485,42 @@ func wordpressDeployMySQLMaintenance() database.MySQLMaintenanceCredentials {
 }
 
 // wordpressRestoreStagedSource consumes the exact source operation and receipt
-// produced by the deployed WordPress allocation. The local object store is a
-// disposable retention boundary for this single-host qualification only.
+// produced by the deployed WordPress allocation. Its independent S3 clients
+// share only the disposable network endpoint and signed object descriptor.
 func wordpressRestoreStagedSource(t *testing.T, ctx context.Context, db *store.DB, operations *store.PGOperationStore,
 	client *nomad.Client, secrets database.SecretSource, catalog database.Catalog, sourceOperationID string, sourceClaim store.OperationClaim,
 	staged store.SignedMySQLSourceArtifactReceipt, targetDatabase string) {
 	t.Helper()
-	objectRoot := t.TempDir()
-	if err := os.Chmod(objectRoot, 0o700); err != nil {
+	objectEmulator, objectServer := s3emulator.Start("norn-wordpress-artifacts", "wordpress-artifact-writer")
+	defer objectServer.Close()
+	objectEndpoint, err := url.Parse(objectServer.URL)
+	if err != nil {
 		t.Fatal(err)
 	}
 	capacity := staged.Receipt.Artifact.Bytes * 2
 	if capacity < 64<<20 {
 		capacity = 64 << 20
 	}
-	objects, err := artifactstore.OpenLocal(objectRoot, capacity)
+	publishSpool := t.TempDir()
+	readerSpool := t.TempDir()
+	for _, spool := range []string{publishSpool, readerSpool} {
+		if err := os.Chmod(spool, 0o700); err != nil {
+			t.Fatal(err)
+		}
+	}
+	objectConfig := artifactstore.S3Config{Endpoint: objectEndpoint.Host, Bucket: "norn-wordpress-artifacts", Prefix: "mysql/wordpress",
+		Region: "us-east-1", AccessKey: "wordpress-artifact-writer", SecretKey: "test-secret",
+		Transport: objectServer.Client().Transport, SpoolDirectory: publishSpool, SpoolCapacity: capacity, RetainFor: 24 * time.Hour}
+	publisher, err := artifactstore.OpenS3(ctx, objectConfig)
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer objects.Close()
-	if _, err := db.RetainClaimedMySQLSourceArtifact(ctx, operations, sourceClaim, objects); err != nil {
+	objectConfig.SpoolDirectory = readerSpool
+	reader, err := artifactstore.OpenS3(ctx, objectConfig)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := db.RetainClaimedMySQLSourceArtifact(ctx, operations, sourceClaim, publisher); err != nil {
 		t.Fatalf("retain signed WordPress source artifact: %v", err)
 	}
 	resolver, err := database.NewResolver(catalog)
@@ -552,6 +569,10 @@ func wordpressRestoreStagedSource(t *testing.T, ctx context.Context, db *store.D
 	if err != nil || claimed == nil || claim.OperationID() != accepted.Operation.ID {
 		t.Fatalf("claim signed WordPress restore: %+v, %v", claimed, err)
 	}
+	stagedBytes, err := os.ReadFile(staged.Receipt.ArtifactPath)
+	if err != nil || len(stagedBytes) == 0 {
+		t.Fatalf("read WordPress staging bytes before retained-only restore: %v", err)
+	}
 	if err := os.Remove(staged.Receipt.ArtifactPath); err != nil {
 		t.Fatalf("remove WordPress staging copy before retained restore: %v", err)
 	}
@@ -559,7 +580,23 @@ func wordpressRestoreStagedSource(t *testing.T, ctx context.Context, db *store.D
 	if err := os.Chmod(materialized, 0o700); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := db.PrepareClaimedMySQLRestoreFromRetained(ctx, operations, claim, request, secrets, objects, materialized); err != nil {
+	retained, err := db.LoadSignedMySQLSourceArtifactRetentionReceipt(ctx, operations, sourceOperationID)
+	if err != nil {
+		t.Fatalf("load signed WordPress retention receipt: %v", err)
+	}
+	objectKey := "mysql/wordpress/" + retained.Receipt.Artifact.Key
+	tampered := append([]byte(nil), stagedBytes...)
+	tampered[0] ^= 1
+	objectEmulator.Tamper(objectKey, tampered)
+	if _, err := db.PrepareClaimedMySQLRestoreFromRetained(ctx, operations, claim, request, secrets, reader, materialized); !errors.Is(err, artifactstore.ErrArtifactCorrupt) {
+		t.Fatalf("tampered retained WordPress SQL was accepted before import: %v", err)
+	}
+	var preparedCount int
+	if err := db.Pool.QueryRow(ctx, `SELECT count(*) FROM mysql_restore_intents WHERE operation_id=$1`, claim.OperationID()).Scan(&preparedCount); err != nil || preparedCount != 0 {
+		t.Fatalf("tampered WordPress artifact crossed durable restore prepare: count=%d err=%v", preparedCount, err)
+	}
+	objectEmulator.Tamper(objectKey, stagedBytes)
+	if _, err := db.PrepareClaimedMySQLRestoreFromRetained(ctx, operations, claim, request, secrets, reader, materialized); err != nil {
 		t.Fatalf("prepare signed WordPress restore from retained artifact: %v", err)
 	}
 	toolPath, err := exec.LookPath("mysql")
@@ -570,7 +607,7 @@ func wordpressRestoreStagedSource(t *testing.T, ctx context.Context, db *store.D
 	if err != nil {
 		t.Fatal(err)
 	}
-	runner := store.MySQLRestoreRunner{Control: db, Acceptance: operations, Secrets: secrets, Objects: objects,
+	runner := store.MySQLRestoreRunner{Control: db, Acceptance: operations, Secrets: secrets, Objects: reader,
 		MaterializeDirectory: materialized, Tool: database.MySQLRestoreTool{Path: toolPath, SHA256: fmt.Sprintf("%x", sha256.Sum256(toolBytes))}}
 	if err := runner.RunClaimed(ctx, claim); err != nil {
 		t.Fatalf("restore signed WordPress artifact into empty MySQL target: %v", err)
