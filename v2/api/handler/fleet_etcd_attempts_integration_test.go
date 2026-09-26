@@ -136,6 +136,26 @@ func TestEtcdFleetRunnerHTTPAdmissionAndEvidenceGate(t *testing.T) {
 	if replay := call(path+"/reconciliations", "checkpoint-one", checkpoint); replay.Code != http.StatusOK {
 		t.Fatalf("checkpoint replay after phase advance: %d %s", replay.Code, replay.Body.String())
 	}
+	beforeRecovery, err := operations.GetFleetRunnerAttempt(context.Background(), planID, attempt.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	principal.CI = &CIIdentity{Provider: "github-actions", Repository: "acme/fleet", RunID: "8", RunAttempt: "1", SHA: commitSHA, Intent: "recover"}
+	recovery := create
+	recovery.RunnerAttemptID = canonicalRunnerAttemptID(principal.CI)
+	recovery.WorkflowURL = canonicalWorkflowRunURL(principal.CI.Repository, principal.CI.RunID)
+	recovery.Resume = true
+	if got := call(path+"/attempts", "recover-eight", recovery); got.Code != http.StatusConflict || !bytes.Contains(got.Body.Bytes(), []byte("fleet_runner_attempt_external_stop_unproven")) {
+		t.Fatalf("unproven successor: %d %s", got.Code, got.Body.String())
+	}
+	afterRecovery, err := operations.GetFleetRunnerAttempt(context.Background(), planID, attempt.ID)
+	if err != nil || afterRecovery.ID != beforeRecovery.ID || afterRecovery.Status != beforeRecovery.Status || afterRecovery.Revision != beforeRecovery.Revision {
+		t.Fatalf("predecessor changed after rejected successor: before=%+v after=%+v err=%v", beforeRecovery, afterRecovery, err)
+	}
+	lineage, err := operations.ListFleetRunnerAttempts(context.Background(), planID)
+	if err != nil || len(lineage) != 1 {
+		t.Fatalf("successor persisted after rejection: attempts=%+v err=%v", lineage, err)
+	}
 	forged := principal
 	forged.CI = &CIIdentity{Provider: "github-actions", Repository: "acme/fleet", RunID: "8", RunAttempt: "1", SHA: commitSHA, Intent: "apply"}
 	principal = forged

@@ -98,3 +98,12 @@ observation: a later rerun can increment `run_attempt`, and GitHub terminal
 state alone does not reconcile provider effects. The next gate is a durable,
 signed exact-run observation plus a rerun/fencing and provider-reconciliation
 contract, checked atomically before enabling successor admission.
+
+The normal runner HTTP integration fixture now exercises the fail-closed
+successor route against disposable etcd v3.5.17. A protected first attempt,
+same-key replay, signed reconciliation checkpoint, and phase advance pass. A
+different authenticated recovery run then receives HTTP 409 with
+`fleet_runner_attempt_external_stop_unproven`; the predecessor's status and
+revision remain unchanged and the plan still has exactly one attempt. This
+proves the API boundary currently rejects unproven recovery. It does not prove
+that a future successful successor can safely apply provider changes.
