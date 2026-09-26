@@ -96,3 +96,31 @@ drill gates open. This copy rehearsal proves candidate schema preservation and
 passive startup only; it does not approve protected-master merge, live Mini
 upgrade, rollback, remote S3 provider durability, or separate-node MySQL
 recovery.
+
+## Current PR head through migration 43 — 2026-09-26
+
+The checked rehearsal passed again against a fresh read-only Mini dump at Norn
+PR #76 commit `1159645e99bdbd214866e14c15e964607e2e11f5`. The disposable
+Darwin/arm64 candidate was built with that exact SHA embedded in `main.Version`;
+its SHA-256 was
+`47faf42d56eafb1fbb7926ad2d74444fcbea9d496c2520246345e4bc0daf6657`.
+An initial candidate built without the embedded version reached passive startup
+but failed the expected `/api/version` assertion. It was replaced before this
+passing run; the failure was a build-label mismatch, not evidence of a failed
+migration.
+
+The source connected over Mini's owner-local PostgreSQL socket with
+`default_transaction_read_only=on`. The private PostgreSQL 17.7 copy contained
+28 original public tables and 254,755 rows. The candidate applied migrations
+1–43, accepted a second migrate-only pass, and preserved every original table's
+row count, ordered primary-key digest, and original-column full-row digest.
+The resulting compatibility floor was reader 5, writer 31. Passive/check
+startup passed health, exact version, schema, and disabled recovery/worker/
+watcher assertions.
+
+The private database, dump, logs, transferred candidate, and local build were
+removed and verified absent. Mini's live API still reported
+`v2.20.0-platform-30-ga5da8ef` with Consul, Nomad, PostgreSQL, S3, and SOPS
+up. This is current-head copied-data schema and passive-startup evidence. It
+does not prove protected backup restore, application/job/route preservation,
+installed-binary rollback, or a live Mini upgrade; M5 remains open.
