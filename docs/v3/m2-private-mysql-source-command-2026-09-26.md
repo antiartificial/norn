@@ -28,9 +28,8 @@ repeating an external effect:
 Its JSON reports operation/intent state, whether the claim lease is current,
 whether the control-plane runtime fence is held, and whether the signed stage
 and retention receipts verify. It omits SQL paths and credentials. A verified
-retention receipt is historical proof; the command does not inspect the live
-Nomad job, MySQL account, or remote object. Those require separate observations
-before any reconciliation or release decision.
+retention receipt is historical proof; this default control-only mode does not
+inspect the live Nomad job, MySQL account, or remote object.
 
 Add `--observe-external` to read the exact stopped Nomad revision,
 catalog-bound MySQL account lock, and content-addressed object. It requires
@@ -40,9 +39,7 @@ original artifact namespace. The S3 verifier opens without the publisher's
 conditional-write probe. Each result is an independent advisory boolean: an
 absent object during `publish-intended` remains unresolved, and a present
 object does not itself terminalize the source. Object verification reads the
-whole object; `--observation-timeout` defaults to ten minutes. The optional
-compiled-command WordPress exercise includes all three external checks, but
-has not been rerun for this addition.
+whole object; `--observation-timeout` defaults to ten minutes.
 
 Build from `v2/api`:
 
@@ -89,11 +86,15 @@ inspection path passed against disposable PostgreSQL 16 on 2026-09-26 for
 stage-proved, ambiguous publish-intended, tampered retention, and terminal
 retained-proved states. The advisory live observation also distinguished an
 absent from a verified object during ambiguous publication without repeating
-the upload. The CLI path is also included in the optional compiled
-WordPress fixture; that fixture has not been rerun for this change. The
-disposable WordPress fixture passed with the compiled source, restore,
-and recovery commands. It rejected a wrong source database before consuming
-the queued operation, proved a same-key retained replay, restored the retained
-bytes, and served WordPress from the recovered database. This remains a local
+the upload. At exact PR head `742bac17fd754d80dea645ab8fd2148d57d10a7b`,
+`bash v2/scripts/test-wordpress-restore-qualification.sh` passed in 77.27
+seconds on 2026-09-26. The compiled CLI verified the signed control state and,
+with `--observe-external`, the exact stopped Nomad job, locked MySQL account,
+and retained S3-emulator object. The same disposable fixture rejected a wrong
+source database before consuming the queued operation, proved a same-key
+retained replay, restored the retained bytes, and served WordPress from the
+recovered database. It reported one source marker and populated `wp_options`
+and `wp_users` on the restored target. Cleanup left zero Docker containers and
+no fixture listeners on ports 13346, 15436, 14646–14648, or 18500. This remains a local
 qualification; remote-provider durability, separate-node materialization,
 managed MySQL, and Mini rollback remain open gates.
