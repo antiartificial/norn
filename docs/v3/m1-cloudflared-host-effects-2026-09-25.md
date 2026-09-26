@@ -44,9 +44,8 @@ implementation. The receipt directory is local to the same host as the
 cloudflared config. Before release, rehearse actual `launchctl` behavior on a
 private Mini copy, persist or export local receipts with host recovery, and
 provide an operator procedure for reconciling ambiguous restart outcomes.
-Test two API processes on one host and a wrong-host worker. The config writer
-now preserves unknown top-level fields, ingress-rule fields, and comments from
-the read YAML document while editing the known ingress entries. A local test
+The config writer now preserves unknown top-level fields, ingress-rule fields,
+and comments from the read YAML document while editing the known ingress entries. A local test
 proves the accepted after-digest equals the published file after both an
 existing service update and a new rule; the cloudflared pipeline and handler
 cases passed against disposable PostgreSQL 16. Actual Mini config and
@@ -106,3 +105,12 @@ validation. It contained no production tunnel identifier or credentials.
 This is parser compatibility evidence for that synthetic shape; the actual
 Mini config rewrite, launchd restart, route health, and receipt recovery still
 require a private rehearsal.
+
+At `e645a62`, three focused PostgreSQL 16 tests passed with separate OS
+processes: two API listeners accepted the same idempotency key as one
+operation/effect and invoked the stub restart once; a wrong-host worker
+deferred before effect reservation or local mutation; and a later accepted-host
+process reclaimed the scheduled operation. The disposable PostgreSQL cluster
+was stopped after the run. These close local two-process and wrong-host
+checks, while the real Mini launchd and public-route checks remain
+open.
