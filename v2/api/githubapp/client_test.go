@@ -62,6 +62,7 @@ func TestObserveApplyRunBindsProtectedIdentityAndTerminalState(t *testing.T) {
 	nonce := strings.Repeat("a", 64)
 	bound := &Dispatch{RunID: 93, PlanRunID: 91, PlanSHA: strings.Repeat("b", 64), ApprovedHeadSHA: strings.Repeat("c", 40)}
 	status, conclusion, attempt := "completed", "cancelled", int64(2)
+	workflowPath := ".github/workflows/apply.yml@main"
 	client := testClient(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if tokenResponse(w, r, map[string]string{"actions": "read"}) {
 			return
@@ -74,7 +75,7 @@ func TestObserveApplyRunBindsProtectedIdentityAndTerminalState(t *testing.T) {
 				"id": 93, "run_attempt": attempt, "status": status, "conclusion": conclusion,
 				"html_url": "https://github.com/acme/norn-fleet/actions/runs/93",
 				"event":    "workflow_dispatch", "head_sha": bound.ApprovedHeadSHA,
-				"head_branch": "main", "path": ".github/workflows/apply.yml",
+				"head_branch": "main", "path": workflowPath,
 				"name": "apply", "display_title": fmt.Sprintf(applyRunDisplayTitleFormat, "production/nyc3", planID, nonce),
 				"inputs": map[string]string{"fleet_environment": "production/nyc3", "plan_run_id": "91", "plan_sha256": bound.PlanSHA, "norn_plan_id": planID, "allow_destructive": "true", "dispatch_nonce": nonce},
 				"actor":  map[string]string{"login": "norn[bot]", "type": "Bot"},
@@ -102,6 +103,10 @@ func TestObserveApplyRunBindsProtectedIdentityAndTerminalState(t *testing.T) {
 	attempt = 2
 	if _, err := client.ObserveApplyRun(context.Background(), planID, "production/nyc3", true, bound, strings.Repeat("d", 64)); err == nil {
 		t.Fatal("run with a different dispatch nonce was accepted")
+	}
+	workflowPath = ".github/workflows/apply.yml@feature"
+	if _, err := observe(); err == nil {
+		t.Fatal("run from another workflow ref was accepted")
 	}
 }
 

@@ -651,7 +651,8 @@ func (c *Client) getApplyRun(ctx context.Context, token string, runID int64) (*a
 }
 
 func (c *Client) verifyApplyRun(run *applyRun, planID, fleetEnvironment string, allowDestructive bool, approved *Dispatch, nonce, appActor string) error {
-	if run == nil || approved == nil || !canonicalWorkflowURL(c.cfg.Repository, run.ID, run.HTMLURL) || run.Event != "workflow_dispatch" || run.HeadBranch != c.cfg.DefaultBranch || run.HeadSHA != approved.ApprovedHeadSHA || run.Path != ".github/workflows/"+c.cfg.ApplyWorkflow || run.Name != "apply" || run.Actor.Type != "Bot" || run.Actor.Login != appActor {
+	workflowPath := ".github/workflows/" + c.cfg.ApplyWorkflow
+	if run == nil || approved == nil || !canonicalWorkflowURL(c.cfg.Repository, run.ID, run.HTMLURL) || run.Event != "workflow_dispatch" || run.HeadBranch != c.cfg.DefaultBranch || run.HeadSHA != approved.ApprovedHeadSHA || (run.Path != workflowPath && run.Path != workflowPath+"@"+c.cfg.DefaultBranch) || run.Name != "apply" || run.Actor.Type != "Bot" || run.Actor.Login != appActor {
 		return fmt.Errorf("GitHub apply run does not match the protected dispatch identity")
 	}
 	expected := map[string]string{
