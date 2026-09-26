@@ -237,7 +237,7 @@ func (p *Pipeline) runRollback(ctx context.Context, op *model.Operation, spec *m
 		elapsed := time.Since(start).Milliseconds()
 		if err != nil {
 			_ = sg.StepFailed(ctx, s.name, err)
-			p.recordDeploymentStepFinish(ctx, deploy.ID, s.name, model.DeploymentStepFailed, elapsed, err.Error(), map[string]interface{}{"operationId": operationID})
+			_ = p.recordDeploymentStepFinish(ctx, deploy.ID, s.name, model.DeploymentStepFailed, elapsed, err.Error(), map[string]interface{}{"operationId": operationID})
 			p.WS.Broadcast(hub.Event{Type: "deploy.step", AppID: spec.App, Payload: map[string]string{
 				"step":       s.name,
 				"sagaId":     sg.ID,
@@ -257,8 +257,12 @@ func (p *Pipeline) runRollback(ctx context.Context, op *model.Operation, spec *m
 			}}
 		}
 
+		if err := p.recordDeploymentStepFinish(ctx, deploy.ID, s.name, model.DeploymentStepComplete, elapsed, "", map[string]interface{}{"operationId": operationID}); err != nil {
+			return &OperationResult{Claim: claim, Status: model.OperationFailed,
+				Message:  fmt.Sprintf("record rollback step %s completion: %v", s.name, err),
+				Metadata: map[string]interface{}{"deploymentId": deploy.ID, "step": s.name, "imageTag": imageTag, "manualRecoveryRequired": true}}
+		}
 		_ = sg.StepComplete(ctx, s.name, elapsed)
-		p.recordDeploymentStepFinish(ctx, deploy.ID, s.name, model.DeploymentStepComplete, elapsed, "", map[string]interface{}{"operationId": operationID})
 		p.WS.Broadcast(hub.Event{Type: "deploy.step", AppID: spec.App, Payload: map[string]string{
 			"step":       s.name,
 			"sagaId":     sg.ID,

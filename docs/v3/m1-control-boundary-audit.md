@@ -229,3 +229,8 @@ published receipt and completed snapshot step before deliberately stopping
 ahead of migration. This qualifies the process boundary for the deployment
 snapshot prefix; a full `OperationWorker` process and replay through later
 deployment steps remain unqualified.
+The deploy and rollback runners now require a persisted step-complete record
+before starting the next step. A missing step row or failed completion write
+stops execution for manual review rather than silently advancing to migration
+or job submission. This is a journal integrity guard, not automatic replay of
+later mutable effects.

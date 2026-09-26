@@ -69,6 +69,9 @@ type Pipeline struct {
 	// StartDeploymentStep is an injectable persistence boundary for tests.
 	// Production uses DB.StartDeploymentStep.
 	StartDeploymentStep func(context.Context, model.DeploymentStep) error
+	// FinishDeploymentStep is an injectable persistence boundary for tests.
+	// Production uses DB.FinishDeploymentStep.
+	FinishDeploymentStep func(context.Context, string, string, model.DeploymentStepStatus, int64, string, map[string]interface{}) error
 	// BuildTestEffects runs build.test through the fenced effect executor.
 	// When nil, the legacy unfenced direct execution is used; startup selects
 	// this explicitly and never falls back from supervised mode.
@@ -588,7 +591,7 @@ func (p *Pipeline) run(ctx context.Context, spec *model.InfraSpec, deploy *model
 		}
 		if err != nil {
 			sg.StepFailed(ctx, s.name, err)
-			p.recordDeploymentStepFinish(ctx, deploy.ID, s.name, model.DeploymentStepFailed, elapsed, err.Error(), map[string]interface{}{
+			_ = p.recordDeploymentStepFinish(ctx, deploy.ID, s.name, model.DeploymentStepFailed, elapsed, err.Error(), map[string]interface{}{
 				"operationId": operationID,
 			})
 			p.WS.Broadcast(hub.Event{Type: "deploy.step", AppID: spec.App, Payload: map[string]string{
@@ -633,10 +636,14 @@ func (p *Pipeline) run(ctx context.Context, spec *model.InfraSpec, deploy *model
 				}}
 		}
 
-		sg.StepComplete(ctx, s.name, elapsed)
-		p.recordDeploymentStepFinish(ctx, deploy.ID, s.name, model.DeploymentStepComplete, elapsed, "", map[string]interface{}{
+		if err := p.recordDeploymentStepFinish(ctx, deploy.ID, s.name, model.DeploymentStepComplete, elapsed, "", map[string]interface{}{
 			"operationId": operationID,
-		})
+		}); err != nil {
+			return &OperationResult{Claim: claim, Status: model.OperationFailed,
+				Message:  fmt.Sprintf("record deploy step %s completion: %v", s.name, err),
+				Metadata: map[string]interface{}{"deploymentId": deploy.ID, "step": s.name, "manualRecoveryRequired": true}}
+		}
+		sg.StepComplete(ctx, s.name, elapsed)
 		p.WS.Broadcast(hub.Event{Type: "deploy.step", AppID: spec.App, Payload: map[string]string{
 			"step":       s.name,
 			"sagaId":     sg.ID,
@@ -704,11 +711,17 @@ func (p *Pipeline) recordDeploymentStepStart(ctx context.Context, deploy *model.
 	return p.DB.StartDeploymentStep(ctx, step)
 }
 
-func (p *Pipeline) recordDeploymentStepFinish(ctx context.Context, deploymentID, stepName string, status model.DeploymentStepStatus, durationMs int64, message string, metadata map[string]interface{}) {
-	if p.DB == nil || deploymentID == "" {
-		return
+func (p *Pipeline) recordDeploymentStepFinish(ctx context.Context, deploymentID, stepName string, status model.DeploymentStepStatus, durationMs int64, message string, metadata map[string]interface{}) error {
+	if deploymentID == "" {
+		return fmt.Errorf("deployment identity is unavailable")
 	}
-	_ = p.DB.FinishDeploymentStep(ctx, deploymentID, stepName, status, durationMs, message, metadata)
+	if p.FinishDeploymentStep != nil {
+		return p.FinishDeploymentStep(ctx, deploymentID, stepName, status, durationMs, message, metadata)
+	}
+	if p.DB == nil {
+		return fmt.Errorf("deployment step store is unavailable")
+	}
+	return p.DB.FinishDeploymentStep(ctx, deploymentID, stepName, status, durationMs, message, metadata)
 }
 
 func (p *Pipeline) emitBeacon(ctx context.Context, event model.BeaconEvent) {
