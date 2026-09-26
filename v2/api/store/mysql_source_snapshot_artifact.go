@@ -81,6 +81,9 @@ func (db *DB) stageClaimedMySQLSourceArtifact(ctx context.Context, acceptance *P
 	if err != nil {
 		return SignedMySQLSourceArtifactReceipt{}, errors.Join(ErrMySQLSourceArtifactIndeterminate, err)
 	}
+	if err := afterMySQLSourceStageDump(claim.OperationID(), path); err != nil {
+		return SignedMySQLSourceArtifactReceipt{}, errors.Join(ErrMySQLSourceArtifactIndeterminate, err)
+	}
 	if err := ready(); err != nil {
 		return SignedMySQLSourceArtifactReceipt{}, err
 	}

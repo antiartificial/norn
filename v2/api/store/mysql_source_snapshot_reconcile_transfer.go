@@ -179,19 +179,21 @@ func (db *DB) transferClaimedMySQLSourceReconciliation(ctx context.Context, acce
 		return ErrMySQLSourceSnapshotFence
 	}
 	var priorStatus, checkpoint, intentID, sourceKey, fenceOwner, liveOwner string
-	var manual, fenceActive, stopIntended, stopProved, lockIntended, lockProved bool
+	var manual, fenceActive, stopIntended, stopProved, lockIntended, lockProved, stageIntended, stageReceipt bool
 	var fenceEpoch, liveEpoch, revision int64
 	var sourceJSON, maintenanceJSON, jobJSON, priorIntent []byte
 	err = tx.QueryRow(ctx, `SELECT p.status,COALESCE((p.metadata->>'manualRecoveryRequired')::boolean,false),
 		i.state,i.acceptance_intent_id,i.catalog_revision,i.source_key,i.source,i.maintenance,i.job_identity,
 		i.stop_intended_at IS NOT NULL,i.stop_proved_at IS NOT NULL,i.lock_intended_at IS NOT NULL,
-		i.lock_proved_at IS NOT NULL,
+		i.lock_proved_at IS NOT NULL,i.stage_intended_at IS NOT NULL,
+		i.artifact_receipt_canonical IS NOT NULL,
 		i.runtime_fence_epoch,i.runtime_fence_owner,f.active,f.epoch,f.owner,to_jsonb(i)
 		FROM mysql_source_snapshot_intents i JOIN operations p ON p.id=i.operation_id
 		CROSS JOIN runtime_mutation_fence f WHERE i.operation_id=$1 AND f.singleton=true
 		FOR UPDATE OF p,i,f`, prior.Operation.ID).Scan(&priorStatus, &manual, &checkpoint, &intentID,
 		&revision, &sourceKey, &sourceJSON, &maintenanceJSON, &jobJSON,
-		&stopIntended, &stopProved, &lockIntended, &lockProved, &fenceEpoch, &fenceOwner, &fenceActive, &liveEpoch, &liveOwner, &priorIntent)
+		&stopIntended, &stopProved, &lockIntended, &lockProved, &stageIntended, &stageReceipt,
+		&fenceEpoch, &fenceOwner, &fenceActive, &liveEpoch, &liveOwner, &priorIntent)
 	wantSource, _ := json.Marshal(request.Source)
 	wantMaintenance, _ := json.Marshal(request.Maintenance)
 	wantJob, _ := json.Marshal(request.JobIdentity)
@@ -201,6 +203,7 @@ func (db *DB) transferClaimedMySQLSourceReconciliation(ctx context.Context, acce
 		!sameJSON(sourceJSON, wantSource) || !sameJSON(maintenanceJSON, wantMaintenance) || !sameJSON(jobJSON, wantJob) ||
 		!stopIntended || (mysqlSourceLockCheckpoint(checkpoint) && (!stopProved || !lockIntended)) ||
 		(checkpoint == "stop-proved" && !stopProved) || (checkpoint == "lock-proved" && !lockProved) ||
+		(checkpoint == "stage-intended" && (!lockProved || !stageIntended || stageReceipt)) ||
 		!fenceActive || fenceEpoch != proof.RuntimeFenceEpoch || liveEpoch != fenceEpoch ||
 		fenceOwner != proof.RuntimeFenceOwner || liveOwner != fenceOwner {
 		return ErrMySQLSourceSnapshotFence
@@ -227,7 +230,8 @@ func (db *DB) transferClaimedMySQLSourceReconciliation(ctx context.Context, acce
 	if updated, err := tx.Exec(ctx, `UPDATE mysql_source_snapshot_intents SET operation_id=$2,
 		acceptance_intent_id=$3,state=$4,runtime_fence_owner=$5,
 		stop_proved_at=COALESCE(stop_proved_at,clock_timestamp()),
-		lock_proved_at=CASE WHEN $4='lock-proved' THEN clock_timestamp() ELSE lock_proved_at END
+		lock_proved_at=CASE WHEN $4='lock-proved' THEN clock_timestamp() ELSE lock_proved_at END,
+		stage_intended_at=CASE WHEN $6='stage-intended' THEN NULL ELSE stage_intended_at END
 		WHERE operation_id=$1 AND state=$6 AND runtime_fence_epoch=$7 AND runtime_fence_owner=$8`,
 		prior.Operation.ID, claim.OperationID(), successor.AcceptanceIntentID, state, successorOwner,
 		checkpoint, fenceEpoch, fenceOwner); err != nil || updated.RowsAffected() != 1 {

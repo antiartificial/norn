@@ -417,6 +417,7 @@ func wordpressSourceThroughCommand(t *testing.T, ctx context.Context, db *store.
 		"--s3-bucket", "norn-wordpress-artifacts", "--s3-prefix", "mysql/wordpress", "--s3-region", "us-east-1",
 		"--s3-access-key-file", accessFile, "--s3-secret-key-file", secretFile,
 		"--s3-spool-dir", spool, "--s3-spool-capacity", fmt.Sprint(64 << 20)}
+	var orphanStagePath string
 	if os.Getenv("NORN_TEST_WORDPRESS_SOURCE_RECONCILE") == "1" {
 		claimed, claim, err := db.ClaimPrivateMySQLOperation(ctx, sourceID, "wordpress-lost-stop-response", store.MySQLSourceSnapshotOperationKind, time.Minute)
 		if err != nil || claimed == nil {
@@ -446,7 +447,8 @@ func wordpressSourceThroughCommand(t *testing.T, ctx context.Context, db *store.
 			}
 		}
 		crashBeforeCommit := os.Getenv("NORN_TEST_WORDPRESS_SOURCE_CRASH_BEFORE_COMMIT") == "1"
-		if os.Getenv("NORN_TEST_WORDPRESS_SOURCE_CRASH_AFTER_TRANSFER") == "1" || crashBeforeCommit {
+		crashAfterStage := os.Getenv("NORN_TEST_WORDPRESS_SOURCE_CRASH_AFTER_STAGE") == "1"
+		if os.Getenv("NORN_TEST_WORDPRESS_SOURCE_CRASH_AFTER_TRANSFER") == "1" || crashBeforeCommit || crashAfterStage {
 			firstArgs := append([]string(nil), args...)
 			for i := 0; i < len(firstArgs)-1; i++ {
 				if firstArgs[i] == "--request-key" {
@@ -460,6 +462,8 @@ func wordpressSourceThroughCommand(t *testing.T, ctx context.Context, db *store.
 			markerEnv := "NORN_TEST_SOURCE_TRANSFER_MARKER=" + marker
 			if crashBeforeCommit {
 				markerEnv = "NORN_TEST_SOURCE_BEFORE_COMMIT_MARKER=" + marker
+			} else if crashAfterStage {
+				markerEnv = "NORN_TEST_SOURCE_STAGE_DUMP_MARKER=" + marker
 			}
 			command.Env = append(os.Environ(), "SSL_CERT_FILE="+caFile, markerEnv)
 			if err := command.Start(); err != nil {
@@ -484,7 +488,7 @@ func wordpressSourceThroughCommand(t *testing.T, ctx context.Context, db *store.
 				case <-ticker.C:
 					content, err := os.ReadFile(marker)
 					if err == nil {
-						firstID = string(content)
+						firstID = strings.SplitN(string(content), "\n", 2)[0]
 						break waitForTransfer
 					}
 					if !os.IsNotExist(err) {
@@ -500,6 +504,24 @@ func wordpressSourceThroughCommand(t *testing.T, ctx context.Context, db *store.
 					_ = command.Process.Kill()
 					<-done
 					t.Fatalf("transfer marker lacked committed signed proof: %+v %v", priorInspection, err)
+				}
+			}
+			if crashAfterStage {
+				content, err := os.ReadFile(marker)
+				parts := strings.SplitN(string(content), "\n", 2)
+				if err != nil || len(parts) != 2 || !filepath.IsAbs(parts[1]) {
+					_ = command.Process.Kill()
+					<-done
+					t.Fatalf("stage marker lacks local artifact: %v", err)
+				}
+				orphanStagePath = parts[1]
+				info, err := os.Stat(orphanStagePath)
+				stageInspection, inspectErr := db.InspectPrivateMySQLSourceSnapshot(ctx, operations, firstID)
+				if err != nil || !info.Mode().IsRegular() || inspectErr != nil ||
+					stageInspection.IntentState != "stage-intended" || stageInspection.StageReceiptVerified {
+					_ = command.Process.Kill()
+					<-done
+					t.Fatalf("stage checkpoint lacks unsigned local dump: %v %+v %v", err, stageInspection, inspectErr)
 				}
 			}
 			if err := command.Process.Kill(); err != nil {
@@ -538,6 +560,9 @@ func wordpressSourceThroughCommand(t *testing.T, ctx context.Context, db *store.
 					}
 				}
 			}
+		}
+		if crashAfterStage {
+			t.Cleanup(func() { _ = os.Remove(orphanStagePath) })
 		}
 	}
 	run := func(input []string) ([]byte, error) {
@@ -607,6 +632,9 @@ func wordpressSourceThroughCommand(t *testing.T, ctx context.Context, db *store.
 	receipt, err := db.LoadSignedMySQLSourceArtifactReceipt(ctx, operations, sourceID)
 	if err != nil || receipt.Receipt.Artifact.Bytes <= 0 {
 		t.Fatalf("signed source stage unavailable: %v", err)
+	}
+	if orphanStagePath != "" && receipt.Receipt.ArtifactPath == orphanStagePath {
+		t.Fatal("successor adopted predecessor's unsigned SQL dump")
 	}
 	if _, err := db.LoadSignedMySQLSourceArtifactRetentionReceipt(ctx, operations, sourceID); err != nil {
 		t.Fatalf("signed source retention unavailable: %v", err)

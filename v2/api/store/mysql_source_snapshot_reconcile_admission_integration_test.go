@@ -29,15 +29,18 @@ func (f sourceLockInspectorFunc) InspectLocked(ctx context.Context, resolved dat
 func TestMySQLSourceReconciliationAdmissionRequiresFailedFencedPredecessor(t *testing.T) {
 	for _, checkpoint := range []string{"stop-intended", "lock-intended"} {
 		t.Run(checkpoint, func(t *testing.T) {
-			testMySQLSourceReconciliationAdmission(t, checkpoint, false)
+			testMySQLSourceReconciliationAdmission(t, checkpoint, false, false)
 		})
 		t.Run(checkpoint+"-crash-after-transfer", func(t *testing.T) {
-			testMySQLSourceReconciliationAdmission(t, checkpoint, true)
+			testMySQLSourceReconciliationAdmission(t, checkpoint, true, false)
 		})
 	}
+	t.Run("lock-intended-stage-crash", func(t *testing.T) {
+		testMySQLSourceReconciliationAdmission(t, "lock-intended", false, true)
+	})
 }
 
-func testMySQLSourceReconciliationAdmission(t *testing.T, checkpoint string, crashAfterTransfer bool) {
+func testMySQLSourceReconciliationAdmission(t *testing.T, checkpoint string, crashAfterTransfer, stageCrash bool) {
 	stores, dbs := acceptanceIntegrationStores(t, 1)
 	acceptance, db := stores[0], dbs[0]
 	ctx := context.Background()
@@ -373,6 +376,63 @@ func testMySQLSourceReconciliationAdmission(t *testing.T, checkpoint string, cra
 		Bytes: int64(len(stageBytes)), SHA256: hex.EncodeToString(stageDigest[:]),
 		Expectation: database.MySQLRestoreExpectation{SchemaSHA256: strings.Repeat("a", 64),
 			DataSHA256: strings.Repeat("b", 64)}}
+	if stageCrash {
+		orphan := filepath.Join(stageDirectory, "unsigned-prior.sql")
+		if _, err := db.StageClaimedMySQLSourceArtifact(ctx, acceptance, successorClaim, request,
+			sourceSecretSource{}, "/usr/bin/true", stageDirectory,
+			sourceStagerFunc(func(context.Context, database.ResolvedBinding, database.TargetIdentity,
+				database.SecretSource, string, string, string) (string, database.MySQLSQLArtifact, error) {
+				if err := os.WriteFile(orphan, stageBytes, 0o600); err != nil {
+					return "", database.MySQLSQLArtifact{}, err
+				}
+				return "", database.MySQLSQLArtifact{}, errors.New("dump response lost")
+			})); !errors.Is(err, ErrMySQLSourceArtifactIndeterminate) {
+			t.Fatalf("stage ambiguity was not fenced: %v", err)
+		}
+		failedStageID := successor.Operation.ID
+		if _, err := db.Pool.Exec(ctx, `UPDATE operations SET locked_until=clock_timestamp()-interval '1 second' WHERE id=$1`, failedStageID); err != nil {
+			t.Fatal(err)
+		}
+		if err := db.RecoverExpiredOperations(ctx); err != nil {
+			t.Fatal(err)
+		}
+		successorInput.PriorSourceOperationID = failedStageID
+		successorInput.Key = "recover-stage-" + uuid.NewString()
+		recovered, err := db.AcceptPrivateMySQLSourceReconciliation(ctx, acceptance, successorInput)
+		if err != nil || recovered.Operation.Status != model.OperationQueued {
+			t.Fatalf("unsigned stage blocked explicit successor: %+v %v", recovered, err)
+		}
+		claimed, recoveredClaim, err := db.ClaimPrivateMySQLOperation(ctx, recovered.Operation.ID,
+			"stage-recovery-worker", MySQLSourceSnapshotOperationKind, time.Minute)
+		if err != nil || claimed == nil {
+			t.Fatalf("stage successor not claimable: %+v %v", claimed, err)
+		}
+		if err := db.ReconcileClaimedMySQLSourceSnapshot(ctx, acceptance, recoveredClaim,
+			stoppedObservation, inspector, sourceSecretSource{}); err != nil {
+			t.Fatalf("stage successor did not prove stopped locked source: %v", err)
+		}
+		var newState string
+		var oldStageTime *time.Time
+		if err := db.Pool.QueryRow(ctx, `SELECT state,stage_intended_at FROM mysql_source_snapshot_intents
+			WHERE operation_id=$1`, recovered.Operation.ID).Scan(&newState, &oldStageTime); err != nil ||
+			newState != "lock-proved" || oldStageTime != nil {
+			t.Fatalf("stage successor inherited unsigned stage: state=%s time=%v err=%v", newState, oldStageTime, err)
+		}
+		if _, err := db.LoadSignedMySQLSourceArtifactReceipt(ctx, acceptance, failedStageID); !errors.Is(err, ErrMySQLSourceArtifactIndeterminate) {
+			t.Fatalf("unsigned predecessor dump gained a signed receipt: %v", err)
+		}
+		fresh, err := db.StageClaimedMySQLSourceArtifact(ctx, acceptance, recoveredClaim, request,
+			sourceSecretSource{}, "/usr/bin/true", stageDirectory,
+			sourceStagerFunc(func(_ context.Context, _ database.ResolvedBinding, _ database.TargetIdentity,
+				_ database.SecretSource, _, _, directory string) (string, database.MySQLSQLArtifact, error) {
+				path := filepath.Join(directory, "fresh-successor.sql")
+				return path, stageArtifact, os.WriteFile(path, stageBytes, 0o600)
+			}))
+		if err != nil || fresh.Receipt.OperationID != recovered.Operation.ID || fresh.Receipt.ArtifactPath == orphan {
+			t.Fatalf("stage successor adopted unsigned bytes: %+v %v", fresh, err)
+		}
+		return
+	}
 	staged, err := db.StageClaimedMySQLSourceArtifact(ctx, acceptance, successorClaim, request,
 		sourceSecretSource{}, "/usr/bin/true", stageDirectory,
 		sourceStagerFunc(func(_ context.Context, _ database.ResolvedBinding, _ database.TargetIdentity,

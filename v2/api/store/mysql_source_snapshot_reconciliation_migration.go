@@ -39,3 +39,17 @@ func mysqlSourceSnapshotProvedSuccessorMigration() SchemaMigration {
 		MinimumReaderVersion: MySQLRetainedArtifactReaderVersion,
 		MinimumWriterVersion: SnapshotExportIntentWriterVersion}
 }
+
+// An unsigned local dump may exist at stage-intended. It is never adopted as
+// a source receipt; a freshly proved successor stages new bytes under its own
+// operation after the original stopped/locked source is observed again.
+func mysqlSourceSnapshotStageSuccessorMigration() SchemaMigration {
+	return SchemaMigration{Version: 42, Name: "mysql-source-snapshot-stage-successor",
+		SQL: `ALTER TABLE mysql_source_snapshot_reconciliations
+		DROP CONSTRAINT mysql_source_snapshot_reconciliations_checkpoint_check;
+		ALTER TABLE mysql_source_snapshot_reconciliations
+		ADD CONSTRAINT mysql_source_snapshot_reconciliations_checkpoint_check
+		CHECK (checkpoint IN ('stop-intended','lock-intended','stop-proved','lock-proved','stage-intended'));`,
+		MinimumReaderVersion: MySQLRetainedArtifactReaderVersion,
+		MinimumWriterVersion: SnapshotExportIntentWriterVersion}
+}
