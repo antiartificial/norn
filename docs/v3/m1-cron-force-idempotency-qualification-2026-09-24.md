@@ -87,5 +87,22 @@ PostgreSQL 17.7 for both an ordinary update and a dropped registration
 response. The tests observed one parent version increment, one forwarded
 registration after the lost response, same-key replay, persisted schedule,
 and paused-state preservation. The unique job and schema were removed and
-both services stopped. Literal process-kill and two-worker schedule races
-remain part of the M1 qualification gate.
+both services stopped. At that checkpoint, literal process-kill and
+two-worker schedule races still required a run.
+
+## Exact-head schedule recovery rerun — 2026-09-26
+
+At Norn PR #76 head `279db19`, seven opt-in `handler` schedule tests passed
+against disposable loopback Nomad 2.0.7 and PostgreSQL 16.15. They covered
+the ordinary HTTP-to-worker update, a lost Nomad registration response,
+two workers using the same idempotency key, recovery after reservation,
+recovery after Nomad commit, and literal separate-worker `SIGKILL` before
+the Nomad write and after the Nomad commit. The tests used unique periodic
+jobs and isolated PostgreSQL schemas. Their job/schema cleanup ran, and the
+disposable Nomad agent, PostgreSQL cluster, and scratch directory were
+stopped and removed after the run.
+
+This closes the named local schedule crash and two-worker test gap for this
+candidate head. It does not close M1: the broader mutation inventory,
+two-process backend invariants, Mini runtime, and Fleet authority/fencing
+gates remain separate.
