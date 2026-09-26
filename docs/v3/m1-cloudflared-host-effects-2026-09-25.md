@@ -148,6 +148,18 @@ compatibility gap without touching the live `com.norn.cloudflared` service.
 The real tunnel rewrite, public endpoint health, and recovery receipt path
 remain unqualified.
 
+The config publisher now treats failure to open, sync, or close the parent
+directory after atomic rename as an ambiguous write error, so the supervisor
+does not proceed to restart or issue a success receipt. First creation of the
+private receipt directory syncs its parent before a receipt can be published.
+On Mini, directory fsync worked for the actual `.cloudflared` directory; a
+rebuilt v3 helper again changed and validated a private copy while the live
+config digest stayed unchanged, and the compiled focused receipt publication
+test passed on Mini. The local cloudflared tests and PostgreSQL-backed
+pipeline/handler cloudflared cases also passed. These checks improve local
+crash durability reporting; they do not export receipts off-host or resolve a
+restart that returns ambiguously before its receipt is durable.
+
 The private-copy and disposable-agent paths were then run together on Mini.
 The v3 writer read a mode-0600 copy of the live 17-rule config, inserted one
 dummy `.invalid` rule before the catch-all, atomically published a mode-0600

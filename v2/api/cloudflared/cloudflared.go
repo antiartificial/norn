@@ -321,9 +321,17 @@ func ApplyConfig(ctx context.Context, cfg *Config) error {
 	if err := os.Rename(temporaryPath, path); err != nil {
 		return fmt.Errorf("publish cloudflared config: %w", err)
 	}
-	if directory, err := os.Open(filepath.Dir(path)); err == nil {
-		_ = directory.Sync()
-		_ = directory.Close()
+	directory, err := os.Open(filepath.Dir(path))
+	if err != nil {
+		return fmt.Errorf("open cloudflared config directory after publish: %w", err)
+	}
+	syncErr := directory.Sync()
+	closeErr := directory.Close()
+	if syncErr != nil {
+		return fmt.Errorf("sync cloudflared config directory after publish: %w", syncErr)
+	}
+	if closeErr != nil {
+		return fmt.Errorf("close cloudflared config directory after publish: %w", closeErr)
 	}
 	return nil
 }

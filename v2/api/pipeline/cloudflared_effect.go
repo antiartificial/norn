@@ -122,7 +122,20 @@ func (localCloudflaredDriver) WriteReceipt(id string, data []byte) error {
 
 func secureCloudflaredReceiptDir(path string, create bool) error {
 	if create {
-		if err := os.MkdirAll(path, 0700); err != nil {
+		if err := os.Mkdir(path, 0700); err == nil {
+			parent, openErr := os.Open(filepath.Dir(path))
+			if openErr != nil {
+				return fmt.Errorf("open cloudflared receipt parent after create: %w", openErr)
+			}
+			syncErr := parent.Sync()
+			closeErr := parent.Close()
+			if syncErr != nil {
+				return fmt.Errorf("sync cloudflared receipt parent after create: %w", syncErr)
+			}
+			if closeErr != nil {
+				return fmt.Errorf("close cloudflared receipt parent after create: %w", closeErr)
+			}
+		} else if !errors.Is(err, os.ErrExist) {
 			return err
 		}
 	}
