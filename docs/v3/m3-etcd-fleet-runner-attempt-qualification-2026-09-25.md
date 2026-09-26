@@ -87,3 +87,14 @@ and an unchanged queued predecessor. The ordinary PG-free Fleet API process
 test also passed with both absent and poisoned PostgreSQL DSNs. This prevents
 unproven automatic recovery; it does not implement the external-stop proof or
 qualify protected provider-changing recovery, so the M3 gate remains open.
+
+The GitHub App client now has a read-only `ObserveApplyRun` seam for the exact
+signed-dispatch binding. It verifies the repository URL, workflow path, branch,
+commit, app actor, plan inputs, and private dispatch nonce before returning
+GitHub's run attempt, status, conclusion, and observation time. Its focused
+fake-GitHub test rejects a different nonce and an unnumbered run; the full
+`githubapp` package passes. A `completed` response is only a point-in-time
+observation: a later rerun can increment `run_attempt`, and GitHub terminal
+state alone does not reconcile provider effects. The next gate is a durable,
+signed exact-run observation plus a rerun/fencing and provider-reconciliation
+contract, checked atomically before enabling successor admission.

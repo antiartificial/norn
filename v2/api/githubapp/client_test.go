@@ -57,6 +57,54 @@ func TestApplyRunDisplayTitleUsesNonceContract(t *testing.T) {
 	}
 }
 
+func TestObserveApplyRunBindsProtectedIdentityAndTerminalState(t *testing.T) {
+	planID := "11111111-1111-4111-8111-111111111111"
+	nonce := strings.Repeat("a", 64)
+	bound := &Dispatch{RunID: 93, PlanRunID: 91, PlanSHA: strings.Repeat("b", 64), ApprovedHeadSHA: strings.Repeat("c", 40)}
+	status, conclusion, attempt := "completed", "cancelled", int64(2)
+	client := testClient(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if tokenResponse(w, r, map[string]string{"actions": "read"}) {
+			return
+		}
+		switch r.URL.Path {
+		case "/app":
+			fmt.Fprint(w, `{"slug":"norn"}`)
+		case "/repos/acme/norn-fleet/actions/runs/93":
+			_ = json.NewEncoder(w).Encode(map[string]interface{}{
+				"id": 93, "run_attempt": attempt, "status": status, "conclusion": conclusion,
+				"html_url": "https://github.com/acme/norn-fleet/actions/runs/93",
+				"event":    "workflow_dispatch", "head_sha": bound.ApprovedHeadSHA,
+				"head_branch": "main", "path": ".github/workflows/apply.yml",
+				"name": "apply", "display_title": fmt.Sprintf(applyRunDisplayTitleFormat, "production/nyc3", planID, nonce),
+				"inputs": map[string]string{"fleet_environment": "production/nyc3", "plan_run_id": "91", "plan_sha256": bound.PlanSHA, "norn_plan_id": planID, "allow_destructive": "true", "dispatch_nonce": nonce},
+				"actor":  map[string]string{"login": "norn[bot]", "type": "Bot"},
+			})
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	observe := func() (*ApplyRunObservation, error) {
+		return client.ObserveApplyRun(context.Background(), planID, "production/nyc3", true, bound, nonce)
+	}
+	observed, err := observe()
+	if err != nil || observed.RunID != 93 || observed.RunAttempt != 2 || observed.Status != "completed" || observed.Conclusion != "cancelled" || observed.ObservedAt.IsZero() {
+		t.Fatalf("terminal observation=%+v err=%v", observed, err)
+	}
+	status, conclusion = "in_progress", ""
+	observed, err = observe()
+	if err != nil || observed.Status != "in_progress" || observed.Conclusion != "" {
+		t.Fatalf("active observation=%+v err=%v", observed, err)
+	}
+	status, conclusion, attempt = "completed", "failure", 0
+	if _, err := observe(); err == nil {
+		t.Fatal("run without a numbered attempt was accepted")
+	}
+	attempt = 2
+	if _, err := client.ObserveApplyRun(context.Background(), planID, "production/nyc3", true, bound, strings.Repeat("d", 64)); err == nil {
+		t.Fatal("run with a different dispatch nonce was accepted")
+	}
+}
+
 func tokenResponse(w http.ResponseWriter, r *http.Request, permissions map[string]string) bool {
 	if r.URL.Path != "/app/installations/5678/access_tokens" {
 		return false

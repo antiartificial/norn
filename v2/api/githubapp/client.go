@@ -108,6 +108,17 @@ type Dispatch struct {
 	Existing        bool   `json:"existing"`
 }
 
+// ApplyRunObservation is a point-in-time GitHub view of one protected apply
+// run. A completed observation alone does not authorize a successor: GitHub
+// can rerun a workflow, and provider state still needs reconciliation.
+type ApplyRunObservation struct {
+	RunID      int64     `json:"runId"`
+	RunAttempt int64     `json:"runAttempt"`
+	Status     string    `json:"status"`
+	Conclusion string    `json:"conclusion,omitempty"`
+	ObservedAt time.Time `json:"observedAt"`
+}
+
 type Reconciliation struct {
 	Outcome     string       `json:"outcome"`
 	PullRequest *PullRequest `json:"pullRequest,omitempty"`
@@ -580,6 +591,9 @@ func (c *Client) findApplyRun(ctx context.Context, token, planID, fleetEnvironme
 
 type applyRun struct {
 	ID           int64             `json:"id"`
+	RunAttempt   int64             `json:"run_attempt"`
+	Status       string            `json:"status"`
+	Conclusion   string            `json:"conclusion"`
 	HTMLURL      string            `json:"html_url"`
 	Event        string            `json:"event"`
 	HeadSHA      string            `json:"head_sha"`
@@ -592,6 +606,37 @@ type applyRun struct {
 		Login string `json:"login"`
 		Type  string `json:"type"`
 	} `json:"actor"`
+}
+
+// ObserveApplyRun reads the exact protected run bound to a signed dispatch.
+// It never cancels or dispatches work and does not itself prove provider stop.
+func (c *Client) ObserveApplyRun(ctx context.Context, planID, fleetEnvironment string, allowDestructive bool, bound *Dispatch, nonce string) (*ApplyRunObservation, error) {
+	configuredEnvironment, err := c.fleetEnvironment()
+	if err != nil || fleetEnvironment != configuredEnvironment {
+		return nil, fmt.Errorf("requested fleet environment is not the configured fleet root")
+	}
+	if bound == nil || bound.RunID <= 0 || bound.PlanRunID <= 0 || !sha256Re.MatchString(bound.PlanSHA) || !commitSHARe.MatchString(bound.ApprovedHeadSHA) || !dispatchNonceRe.MatchString(nonce) {
+		return nil, fmt.Errorf("protected apply run binding is invalid")
+	}
+	token, err := c.installationToken(ctx, map[string]string{"actions": "read"})
+	if err != nil {
+		return nil, err
+	}
+	actor, err := c.appActorLogin(ctx)
+	if err != nil {
+		return nil, err
+	}
+	run, err := c.getApplyRun(ctx, token, bound.RunID)
+	if err != nil {
+		return nil, err
+	}
+	if err := c.verifyApplyRun(run, planID, fleetEnvironment, allowDestructive, bound, nonce, actor); err != nil {
+		return nil, err
+	}
+	if run.RunAttempt <= 0 || run.Status == "" || (run.Status == "completed" && run.Conclusion == "") || (run.Status != "completed" && run.Conclusion != "") {
+		return nil, fmt.Errorf("GitHub apply run state is incomplete or inconsistent")
+	}
+	return &ApplyRunObservation{RunID: run.ID, RunAttempt: run.RunAttempt, Status: run.Status, Conclusion: run.Conclusion, ObservedAt: c.now().UTC()}, nil
 }
 
 func (c *Client) getApplyRun(ctx context.Context, token string, runID int64) (*applyRun, error) {
