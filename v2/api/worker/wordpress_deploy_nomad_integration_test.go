@@ -54,7 +54,9 @@ import (
 // distinct database, a runtime account, and a wp_restore account with import
 // rights. Supply their names/passwords through the RESTORE_DATABASE,
 // RESTORE_USER, RESTORE_PASSWORD, and RESTORE_ROLE_PASSWORD variables. This
-// mode restores the retained signed artifact into that disposable target.
+// mode restores the retained signed artifact into that disposable target,
+// completes signed target unlock/fence release, then deploys a fresh pinned
+// WordPress allocation against the recovered target profile.
 func TestClaimedWordPressVerifiedTLSDeployInNomad(t *testing.T) {
 	address, controlURL := os.Getenv("NORN_TEST_NOMAD_ADDR"), os.Getenv("NORN_TEST_DATABASE_URL")
 	host, serverName := os.Getenv("NORN_TEST_WORDPRESS_DEPLOY_MYSQL_HOST"), os.Getenv("NORN_TEST_WORDPRESS_DEPLOY_MYSQL_SERVER_NAME")
@@ -120,6 +122,9 @@ func TestClaimedWordPressVerifiedTLSDeployInNomad(t *testing.T) {
 			Database: restoreDatabase, Role: restoreUser, Generation: 1, CredentialRef: "secret:wp/restore-runtime",
 			TLS: database.DatabaseTLS{Mode: database.TLSVerifyFull, ServerName: host, CARef: "secret:wp/ca"}, MySQLMaintenance: &maintenance})
 		catalog.Profiles[0].DatabaseBindings["restore"] = "wp-restore-target"
+		catalog.Profiles = append(catalog.Profiles, database.DeploymentProfile{APIVersion: database.APIVersion, ID: "qualification-recovered",
+			Topology: database.DeploymentTopologyLocal, AvailabilityClass: database.AvailabilitySingleHost,
+			DatabaseBindings: map[string]string{"primary": "wp-restore-target"}})
 	}
 	if _, err := db.ActivateDatabaseCatalog(context.Background(), 0, catalog, "wordpress-deploy-qualification"); err != nil {
 		t.Fatal(err)
@@ -275,7 +280,29 @@ func TestClaimedWordPressVerifiedTLSDeployInNomad(t *testing.T) {
 				bytes.Contains(staged, []byte("source-rehearsal")), bytes.Contains(staged, []byte("wp_options")), bytes.Contains(staged, []byte("wp_users")))
 		}
 		if restoreSource {
-			wordpressRestoreStagedSource(t, ctx, db, operations, secrets, catalog, sourceAccepted.Operation.ID, claim, receipt, restoreDatabase)
+			wordpressRestoreStagedSource(t, ctx, db, operations, client, secrets, catalog, sourceAccepted.Operation.ID, claim, receipt, restoreDatabase)
+			recoveredApp := app + "-recovered"
+			recoveredAppsDir, recoveredSpec := wordpressDeploySource(t, recoveredApp, volume)
+			recoveredPipe := *pipe
+			recoveredPipe.AppsDir = recoveredAppsDir
+			recoveredPipe.DatabaseTargets = &pipeline.DatabaseTargets{ProfileID: "qualification-recovered", Catalog: db.ActiveDatabaseCatalog, Secrets: secrets}
+			recoveredRequest := request
+			recoveredRequest.Key = "wordpress-restored-target"
+			recoveredAccepted, err := recoveredPipe.Run(ctx, recoveredSpec, "HEAD", recoveredRequest)
+			if err != nil {
+				t.Fatalf("signed WordPress deploy against recovered MySQL target: %v", err)
+			}
+			t.Cleanup(func() {
+				_, _, _ = client.API().Jobs().Deregister(recoveredApp, true, nil)
+				_, _ = client.API().Variables().Delete(nomad.DatabaseVariablePath(recoveredApp), nil)
+			})
+			recoveredWorker := &OperationWorker{db: db, pipeline: &recoveredPipe, id: "wordpress-recovered-qualification",
+				kinds: []string{"app.deploy"}, lease: time.Minute, poll: time.Second}
+			recoveredOperation := wordpressDeployRun(t, db, recoveredWorker, recoveredAccepted.Operation.ID)
+			if recoveredOperation.Status != model.OperationSucceeded {
+				t.Fatalf("recovered WordPress deploy = %s: %s", recoveredOperation.Status, recoveredOperation.Message)
+			}
+			wordpressDeployAssertAllocationPage(t, client, recoveredApp, true)
 		}
 		return
 	}
@@ -460,7 +487,7 @@ func wordpressDeployMySQLMaintenance() database.MySQLMaintenanceCredentials {
 // produced by the deployed WordPress allocation. The local object store is a
 // disposable retention boundary for this single-host qualification only.
 func wordpressRestoreStagedSource(t *testing.T, ctx context.Context, db *store.DB, operations *store.PGOperationStore,
-	secrets database.SecretSource, catalog database.Catalog, sourceOperationID string, sourceClaim store.OperationClaim,
+	client *nomad.Client, secrets database.SecretSource, catalog database.Catalog, sourceOperationID string, sourceClaim store.OperationClaim,
 	staged store.SignedMySQLSourceArtifactReceipt, targetDatabase string) {
 	t.Helper()
 	objectRoot := t.TempDir()
@@ -482,6 +509,10 @@ func wordpressRestoreStagedSource(t *testing.T, ctx context.Context, db *store.D
 	resolver, err := database.NewResolver(catalog)
 	if err != nil {
 		t.Fatal(err)
+	}
+	source, err := resolver.Resolve(database.ResolveRequest{DeploymentProfileID: "qualification", Purpose: database.PurposeApplication, LogicalResourceID: "primary"})
+	if err != nil || source.MySQLMaintenance == nil {
+		t.Fatalf("WordPress recovery source binding is unavailable: %v", err)
 	}
 	target, err := resolver.Resolve(database.ResolveRequest{DeploymentProfileID: "qualification", Purpose: database.PurposeApplication, LogicalResourceID: "restore"})
 	if err != nil || target.MySQLMaintenance == nil || target.Target.Database != targetDatabase {
@@ -550,6 +581,54 @@ func wordpressRestoreStagedSource(t *testing.T, ctx context.Context, db *store.D
 	}
 	if err := database.VerifyMySQLRestoreTarget(ctx, verified, secrets, staged.Receipt.Artifact.Expectation); err != nil {
 		t.Fatalf("restored WordPress schema/data differs from signed source expectation: %v", err)
+	}
+	if active, err := db.RuntimeMutationFenceActive(ctx); err != nil || !active {
+		t.Fatalf("WordPress restore did not retain its runtime fence: active=%t err=%v", active, err)
+	}
+	if _, err := db.AssessCompletedMySQLRestoreLiveSource(ctx, operations, claim.OperationID(), client, secrets); err != nil {
+		t.Fatalf("restored WordPress source stop and account lock were not live: %v", err)
+	}
+	if _, err := db.AssessCompletedMySQLRestoreLiveRecovery(ctx, operations, claim.OperationID(), secrets); err != nil {
+		t.Fatalf("restored WordPress target was not ready for signed recovery: %v", err)
+	}
+	recovery, err := db.AcceptPrivateMySQLRestoreRecovery(ctx, operations, store.MySQLRestoreRecoveryAcceptanceInput{
+		RestoreOperationID: claim.OperationID(), Actor: acceptance.Identity.Actor, Key: "wordpress-recovery-" + claim.OperationID(),
+		Audit: store.AcceptanceAuditContext{Source: "wordpress-deploy-nomad-integration"}})
+	if err != nil || recovery.Intent.Signature.Value == "" {
+		t.Fatalf("signed WordPress restore recovery acceptance: %v", err)
+	}
+	claimedRecovery, recoveryClaim, err := db.ClaimNextOperation(ctx, "wordpress-recovery-qualification", 2*time.Minute,
+		[]string{store.MySQLRestoreRecoveryOperationKind})
+	if err != nil || claimedRecovery == nil || recoveryClaim.OperationID() != recovery.Operation.ID {
+		t.Fatalf("claim signed WordPress restore recovery: %+v, %v", claimedRecovery, err)
+	}
+	recoveryRunner := store.MySQLRestoreRecoveryRunner{Control: db, Acceptance: operations, Observer: client, Secrets: secrets}
+	if err := recoveryRunner.RunClaimedTargetUnlock(ctx, recoveryClaim); err != nil {
+		t.Fatalf("unlock restored WordPress runtime account: %v", err)
+	}
+	if active, err := db.RuntimeMutationFenceActive(ctx); err != nil || !active {
+		t.Fatalf("target unlock released WordPress runtime fence before signed recovery: active=%t err=%v", active, err)
+	}
+	if err := recoveryRunner.RunClaimedFenceRelease(ctx, recoveryClaim); err != nil {
+		t.Fatalf("release signed WordPress restore runtime fence: %v", err)
+	}
+	if active, err := db.RuntimeMutationFenceActive(ctx); err != nil || active {
+		t.Fatalf("signed WordPress recovery left runtime fence active: active=%t err=%v", active, err)
+	}
+	recoveredOperation, err := db.GetOperation(ctx, recovery.Operation.ID)
+	if err != nil || recoveredOperation.Status != model.OperationSucceeded {
+		t.Fatalf("signed WordPress recovery did not terminalize successfully: operation=%+v err=%v", recoveredOperation, err)
+	}
+	if err := database.InspectMySQLRuntimeAccountLockForRestore(ctx, source, *source.MySQLMaintenance, secrets); err != nil {
+		t.Fatalf("signed recovery unlocked the stopped WordPress source account: %v", err)
+	}
+	session, err := database.OpenSession(ctx, target, secrets)
+	if err != nil {
+		t.Fatalf("recovered WordPress target runtime credential cannot connect: %v", err)
+	}
+	defer session.Close()
+	if _, err := session.Probe(ctx); err != nil {
+		t.Fatalf("recovered WordPress target runtime credential cannot authenticate: %v", err)
 	}
 }
 

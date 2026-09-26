@@ -212,6 +212,24 @@ removed its containers and scratch directory, leaving the prior Docker
 volume inventory untouched.
 
 This closes the local WordPress artifact compatibility check. The local
-retention adapter shares the test host; it does not prove provider durability,
-cross-node materialization, signed recovery/unlock, a managed MySQL service,
-or Mini rollback.
+retention adapter shares the test host. Provider durability, cross-node
+materialization, a managed MySQL service, and Mini rollback remain open.
+
+## Local signed recovery and WordPress resume — 2026-09-26
+
+The same disposable fixture now continues after import. The separately signed
+recovery observes the exact stopped source allocation and locked source and
+target accounts, proves the restored target's schema/data fingerprints,
+unlocks the target runtime account, and releases the exact global mutation
+fence under its original claim. The source runtime account remains locked.
+The test then uses a second deployment profile, declared before source
+admission, to sign and run a fresh pinned WordPress deployment whose `primary`
+binding is the recovered database. Its generated allocation serves the
+WordPress HTTP installation route without a database connection error. The
+fixture passed with disposable MySQL 8.4, PostgreSQL 16, Nomad 2.0.7, and
+Consul 2.0.4; cleanup returned Docker to zero containers and 290 preexisting
+volumes.
+
+This is a local WordPress restore-to-runtime rehearsal. It does not prove
+remote object durability, separate-node materialization, managed MySQL
+behavior, failure reconciliation, or a Mini rollback.
