@@ -61,6 +61,11 @@ application concerns, not proof that the control-store budget is satisfied.
    15-minute backup-only RPO or a separately stated target. Record the chosen
    backup cadence, off-host destination, immutable/retention behavior, and
    restore test.
+   The existing [Linux HA lab](../v2/operations/ha-lab.md) has a proved
+   pgBackRest-to-versioned-Space PITR drill with `archive_timeout=60s`, but its
+   Patroni/Linux configuration is not a deployable Mini Postgres.app plan.
+   Reuse its restore checks and failure cases only after adapting and testing
+   the Mac ownership, credentials, startup, and off-host storage boundary.
 2. Measure WAL or full-backup growth on the chosen mechanism and reserve its
    actual off-host bytes. A single 13.2 MB dump and cluster-wide WAL counter
    cannot size that store.
