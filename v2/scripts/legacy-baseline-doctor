@@ -1,0 +1,273 @@
+#!/usr/bin/env python3
+"""Read-only preflight for the one-way Mini legacy-baseline transition.
+
+Output contains check names and fixed, non-secret messages only. No process is
+stopped, no database is opened for writing, and no release is built/imported.
+"""
+
+import argparse
+import ast
+import hashlib
+import hmac
+import json
+import os
+from pathlib import Path
+import re
+import subprocess
+import sys
+import urllib.parse
+import urllib.request
+import urllib.error
+
+
+SHA = re.compile(r"[0-9a-f]{40}\Z")
+
+
+class CheckFailure(Exception):
+    pass
+
+
+def command(*argv, env=None, timeout=15):
+    try:
+        result = subprocess.run(argv, env=env, capture_output=True, timeout=timeout, check=False)
+    except (OSError, subprocess.TimeoutExpired) as exc:
+        raise CheckFailure("required read-only command is unavailable") from exc
+    if result.returncode:
+        # Command diagnostics can contain a URL, bearer token, or key path.
+        raise CheckFailure("required read-only command failed")
+    return result.stdout
+
+
+def launcher_sops_path(path):
+    try:
+        tree = ast.parse(Path(path).read_text(encoding="utf-8"))
+    except (OSError, SyntaxError) as exc:
+        raise CheckFailure("launcher is unavailable or invalid") from exc
+    path_literal = None
+    has_sops_decrypt = False
+    has_execve = False
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Assign) and any(isinstance(t, ast.Name) and t.id == "env_file" for t in node.targets):
+            value = node.value
+            if isinstance(value, ast.Constant) and isinstance(value.value, str):
+                path_literal = value.value
+            elif isinstance(value, ast.Call) and value.args and isinstance(value.args[0], ast.Constant) and isinstance(value.args[0].value, str):
+                path_literal = value.args[0].value
+        if isinstance(node, ast.Call) and isinstance(node.func, ast.Attribute):
+            if node.func.attr == "check_output":
+                has_sops_decrypt = any(isinstance(item, ast.Constant) and item.value == "--decrypt" for arg in node.args if isinstance(arg, (ast.List, ast.Tuple)) for item in arg.elts)
+            if node.func.attr == "execve":
+                has_execve = True
+    if not path_literal or not has_sops_decrypt or not has_execve:
+        raise CheckFailure("launcher SOPS execution contract is not recognized")
+    return Path(os.path.expanduser(path_literal)).resolve()
+
+
+def check_binding(args):
+    if launcher_sops_path(args.launcher) != args.sops_env.resolve():
+        raise CheckFailure("launcher uses a different SOPS environment file")
+    raw = command(args.sops, "--decrypt", "--output-type", "json", str(args.sops_env))
+    try:
+        runtime = json.loads(raw)
+    except (ValueError, TypeError) as exc:
+        raise CheckFailure("launcher SOPS environment is invalid") from exc
+    if type(runtime) is not dict:
+        raise CheckFailure("launcher SOPS environment is invalid")
+    for name in ("NORN_DATABASE_URL", "NORN_AUDIT_SIGNING_KEY"):
+        maintenance = os.environ.get(name, "")
+        configured = runtime.get(name)
+        if not maintenance or not isinstance(configured, str) or not configured:
+            raise CheckFailure("database URL or audit key is absent from launcher or maintenance environment")
+        if not hmac.compare_digest(maintenance.encode(), configured.encode()):
+            raise CheckFailure("launcher and maintenance database URL or audit key differ")
+    if len(os.environ["NORN_AUDIT_SIGNING_KEY"]) < 32:
+        raise CheckFailure("audit key is shorter than 32 bytes")
+    return "launcher and maintenance URL/key are present and equal"
+
+
+def check_backup(args):
+    if not args.backup_proof or not args.backup_artifact:
+        raise CheckFailure("protected backup proof or artifact is unspecified")
+    verifier = Path(__file__).with_name("mini-verify-protected-backup")
+    if not verifier.is_file():
+        raise CheckFailure("backup verifier is absent beside doctor")
+    command(str(verifier), str(args.backup_proof), str(args.backup_artifact), args.legacy_release)
+    return "artifact digest, size, age, source and database identity verified"
+
+
+def check_reviewed_script(args):
+    if not args.reviewed_script or not args.reviewed_script.is_file() or not os.access(args.reviewed_script, os.X_OK):
+        raise CheckFailure("reviewed platform-upgrade script is absent")
+    resolved = command("git", "-C", str(args.repo), "rev-parse", "--verify", f"{args.candidate_sha}^{{commit}}").decode().strip()
+    if resolved != args.candidate_sha:
+        raise CheckFailure("candidate source SHA does not resolve exactly")
+    reviewed = command("git", "-C", str(args.repo), "show", f"{args.candidate_sha}:v2/scripts/platform-upgrade")
+    if args.reviewed_script.read_bytes() != reviewed or b"legacy-baseline" not in reviewed:
+        raise CheckFailure("platform-upgrade script does not match candidate source")
+    return "script bytes match exact candidate source commit"
+
+
+def release_sha(path):
+    try:
+        rows = Path(path).read_text(encoding="utf-8").splitlines()
+    except OSError as exc:
+        raise CheckFailure("release identity file is absent") from exc
+    matches = [row.split("=", 1)[1] for row in rows if row.startswith("NORN_RELEASE_SHA=")]
+    if len(matches) != 1 or not SHA.fullmatch(matches[0]):
+        raise CheckFailure("release identity file is invalid")
+    return matches[0]
+
+
+def check_candidate_release(args):
+    release = args.releases / args.candidate_sha
+    if not release.is_dir():
+        raise CheckFailure("exact candidate release is not installed")
+    if release_sha(release / "release.env") != args.candidate_sha:
+        raise CheckFailure("candidate release identity differs from reviewed commit")
+    binary = release / "bin/norn-api"
+    script = release / "bin/platform-upgrade"
+    if not os.access(binary, os.X_OK) or not script.is_file():
+        raise CheckFailure("candidate release binary or script is absent")
+    if script.read_bytes() != args.reviewed_script.read_bytes():
+        raise CheckFailure("candidate release script differs from reviewed script")
+    try:
+        contract = json.loads(command(str(binary), "--norn-startup-contract", timeout=8))
+    except (ValueError, TypeError) as exc:
+        raise CheckFailure("candidate startup contract is invalid") from exc
+    if (type(contract) is not dict or contract.get("name") != "norn.startup/v2"
+            or type(contract.get("schemaModes")) is not list
+            or type(contract.get("startupModes")) is not list
+            or "migrate-only" not in contract["schemaModes"]
+            or "passive" not in contract["startupModes"]):
+        raise CheckFailure("candidate lacks bounded migrate/passive startup contract")
+    return "exact candidate release identity, script and startup contract verified"
+
+
+def check_signed_release(args):
+    verifier = args.release_verifier or args.current_link / "bin/platform-release-manifest"
+    if not os.access(verifier, os.X_OK):
+        raise CheckFailure("trusted installed release verifier is absent")
+    release = args.releases / args.candidate_sha
+    current = args.releases / args.legacy_release
+    for path, sha in ((current, args.legacy_release), (release, args.candidate_sha)):
+        result = command(str(verifier), "verify", "--release", str(path), "--expected-sha", sha, timeout=20)
+        if result.strip() != b"signed":
+            raise CheckFailure("release signature verification did not report signed")
+    return "installed verifier reports signed legacy and candidate releases"
+
+
+def check_legacy_release(args):
+    if (args.legacy_api.parent / ".norn-legacy-baseline-fence.json").exists():
+        raise CheckFailure("a persistent legacy fence record already exists")
+    if not args.current_link.is_symlink():
+        raise CheckFailure("current release link is absent")
+    expected = (args.releases / args.legacy_release).resolve()
+    if args.current_link.resolve() != expected or not expected.is_dir():
+        raise CheckFailure("current link does not name declared legacy release")
+    if release_sha(expected / "release.env") != args.legacy_release:
+        raise CheckFailure("legacy release identity differs from declaration")
+    binary = expected / "bin/norn-api"
+    if not binary.is_file() or not args.legacy_api.is_file():
+        raise CheckFailure("legacy release or launch executable is absent")
+    if hashlib.sha256(binary.read_bytes()).digest() != hashlib.sha256(args.legacy_api.read_bytes()).digest():
+        raise CheckFailure("launch executable differs from declared legacy release")
+    return "current release and launch executable match declared legacy SHA"
+
+
+def direct_port(api_base):
+    parsed = urllib.parse.urlsplit(api_base)
+    try:
+        port = parsed.port
+    except ValueError as exc:
+        raise CheckFailure("API base is not a direct numeric loopback address") from exc
+    if parsed.scheme != "http" or parsed.hostname not in ("127.0.0.1", "::1") or port is None or parsed.path not in ("", "/") or parsed.query or parsed.fragment or parsed.username or parsed.password:
+        raise CheckFailure("API base is not a direct numeric loopback address")
+    return port
+
+
+def check_listener(args):
+    port = direct_port(args.api_base)
+    state = command("launchctl", "print", f"gui/{os.geteuid()}/{args.launch_label}").decode(errors="replace")
+    match = re.search(r"^\s*pid = ([1-9][0-9]+)\s*$", state, re.MULTILINE)
+    if not match:
+        raise CheckFailure("legacy launchd service has no running PID")
+    pids = command("lsof", "-nP", f"-iTCP:{port}", "-sTCP:LISTEN", "-t").decode().split()
+    if pids != [match.group(1)]:
+        raise CheckFailure("API listener is not solely owned by legacy launchd PID")
+    return "direct loopback listener is solely owned by legacy launchd PID"
+
+
+def check_drain(args):
+    direct_port(args.api_base)
+    if os.environ.get("NORN_DRAIN_MODE") != "fail" or os.environ.get("NORN_PLATFORM_UPGRADE_MODE", "restart") != "restart":
+        raise CheckFailure("maintenance must use fail drain and direct restart mode")
+    token = os.environ.get("NORN_TOKEN") or os.environ.get("NORN_API_TOKEN")
+    if not token:
+        raise CheckFailure("authenticated operation-drain token is absent")
+    request = urllib.request.Request(args.api_base.rstrip("/") + "/api/operations/active", headers={"Authorization": "Bearer " + token})
+    class NoRedirect(urllib.request.HTTPRedirectHandler):
+        def redirect_request(self, request, fp, code, msg, headers, newurl):
+            return None
+
+    try:
+        with urllib.request.build_opener(urllib.request.ProxyHandler({}), NoRedirect()).open(request, timeout=5) as response:
+            payload = json.load(response)
+    except (OSError, ValueError) as exc:
+        raise CheckFailure("authenticated active-operation query failed") from exc
+    if type(payload) is not dict or type(payload.get("count")) is not int:
+        raise CheckFailure("active-operation response has no exact count")
+    if payload["count"] != 0:
+        raise CheckFailure("active operations are not zero")
+    return "authenticated active-operation count is zero"
+
+
+def parse_args():
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("--candidate-sha", required=True)
+    parser.add_argument("--legacy-release", required=True)
+    parser.add_argument("--backup-proof", type=Path)
+    parser.add_argument("--backup-artifact", type=Path)
+    parser.add_argument("--reviewed-script", type=Path)
+    parser.add_argument("--repo", type=Path, default=Path.home() / "projects/norn")
+    parser.add_argument("--launcher", type=Path, default=Path.home() / "bin/norn-api-sops-launcher")
+    parser.add_argument("--sops-env", type=Path, default=Path.home() / ".config/norn/api.env.enc.json")
+    parser.add_argument("--sops", default="sops")
+    parser.add_argument("--releases", type=Path, default=Path.home() / "norn/releases")
+    parser.add_argument("--current-link", type=Path, default=Path.home() / "norn/current")
+    parser.add_argument("--legacy-api", type=Path, default=Path.home() / "go/bin/norn-api")
+    parser.add_argument("--release-verifier", type=Path, help="trusted installed platform-release-manifest executable")
+    parser.add_argument("--api-base", default="http://127.0.0.1:8800")
+    parser.add_argument("--launch-label", default="com.norn.api")
+    args = parser.parse_args()
+    if not SHA.fullmatch(args.candidate_sha) or not SHA.fullmatch(args.legacy_release):
+        parser.error("both release identifiers must be full lowercase SHAs")
+    return args
+
+
+def main():
+    args = parse_args()
+    checks = (
+        ("runtime_binding", check_binding),
+        ("backup_proof", check_backup),
+        ("reviewed_script", check_reviewed_script),
+        ("candidate_release", check_candidate_release),
+        ("legacy_release", check_legacy_release),
+        ("signed_release", check_signed_release),
+        ("listener_owner", check_listener),
+        ("operation_drain", check_drain),
+    )
+    results = []
+    for name, function in checks:
+        try:
+            message = function(args)
+            results.append({"id": name, "status": "pass", "message": message})
+        except (CheckFailure, OSError, ValueError, KeyError) as exc:
+            message = str(exc) if isinstance(exc, CheckFailure) else "read-only check could not be completed"
+            results.append({"id": name, "status": "block", "message": message})
+    ready = all(item["status"] == "pass" for item in results)
+    print(json.dumps({"schema": "norn.legacy-baseline-doctor/v1", "ready": ready, "checks": results}, separators=(",", ":")))
+    return 0 if ready else 1
+
+
+if __name__ == "__main__":
+    sys.exit(main())

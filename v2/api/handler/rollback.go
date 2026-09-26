@@ -68,7 +68,7 @@ func (h *Handler) Rollback(w http.ResponseWriter, r *http.Request) {
 	}
 	current := deployments[0]
 
-	prev, err := h.db.LastSuccessfulDeployment(ctx, id, current.ID)
+	prev, err := h.db.LastSuccessfulDeployment(ctx, id, current.Environment, current.ID)
 	if err != nil {
 		writeError(w, http.StatusNotFound, "no previous successful deployment to roll back to")
 		return

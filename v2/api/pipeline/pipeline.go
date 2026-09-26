@@ -29,23 +29,26 @@ type Pipeline struct {
 	OperationStore store.OperationStore
 	// CheckpointStore persists source/build identity for executions that do not
 	// use PostgreSQL. When nil, the PostgreSQL DB remains the legacy store.
-	CheckpointStore                store.OperationCheckpointStore
-	Nomad                          *nomad.Client
-	Consul                         *consul.Client
-	WS                             *hub.Hub
-	SagaStore                      saga.Store
-	Secrets                        *secrets.Manager
-	AppsDir                        string
-	GitToken                       string
-	GitSSHKey                      string
-	RegistryURL                    string
-	NetworkMode                    string
-	IngressURL                     string
-	ExternalIngress                bool
-	Production                     bool
-	StrictSecrets                  bool
-	Beacon                         *beacon.Service
-	Storage                        *storage.Client
+	CheckpointStore store.OperationCheckpointStore
+	Nomad           *nomad.Client
+	Consul          *consul.Client
+	WS              *hub.Hub
+	SagaStore       saga.Store
+	Secrets         *secrets.Manager
+	AppsDir         string
+	GitToken        string
+	GitSSHKey       string
+	RegistryURL     string
+	NetworkMode     string
+	IngressURL      string
+	ExternalIngress bool
+	Production      bool
+	StrictSecrets   bool
+	Beacon          *beacon.Service
+	Storage         *storage.Client
+	// SnapshotObjects is the configured export/import object boundary. It is
+	// required for claimed snapshot imports; handlers never download inline.
+	SnapshotObjects                SnapshotObjectStore
 	Redpanda                       *redpanda.Client
 	VerifyArtifact                 func(context.Context, string) error
 	VerifySignature                func(context.Context, string) error
@@ -66,6 +69,9 @@ type Pipeline struct {
 	// StartDeploymentStep is an injectable persistence boundary for tests.
 	// Production uses DB.StartDeploymentStep.
 	StartDeploymentStep func(context.Context, model.DeploymentStep) error
+	// FinishDeploymentStep is an injectable persistence boundary for tests.
+	// Production uses DB.FinishDeploymentStep.
+	FinishDeploymentStep func(context.Context, string, string, model.DeploymentStepStatus, int64, string, map[string]interface{}) error
 	// BuildTestEffects runs build.test through the fenced effect executor.
 	// When nil, the legacy unfenced direct execution is used; startup selects
 	// this explicitly and never falls back from supervised mode.
@@ -79,22 +85,33 @@ type Pipeline struct {
 	RestartEffects *NomadRestartEffects
 	// CronPauseEffects fences periodic-job deregistration and its durable state
 	// transition. It is required before accepting app.cron-pause.
-	CronPauseEffects *NomadCronPauseEffects
+	CronPauseEffects    *NomadCronPauseEffects
+	CronResumeEffects   *NomadCronResumeEffects
+	CronScheduleEffects *NomadCronScheduleEffects
+	CronTriggerEffects  *CronTriggerEffects
 	// RestartAvailability is a test-only admission seam. Production leaves it
 	// nil and requires RestartEffects.
 	RestartAvailability func() bool
 	// CanaryPromotionEffects fences Nomad deployment promotion behind a durable
 	// effect. It is required before accepting app.canary-promote.
 	CanaryPromotionEffects *NomadCanaryPromotionEffects
+	CloudflaredEffects     *CloudflaredEffects
 	// FinishScaleIntent is the claim-fenced atomic desired-replica and terminal
 	// operation write. Tests may inject a transient failure; production uses DB.
 	FinishScaleIntent func(context.Context, store.OperationClaim, string, string, string, int, string, map[string]interface{}) error
 	// FinishCronPauseIntent atomically records paused cron state and terminalizes
 	// the claimed operation after Nomad has verified the periodic job stopped.
-	FinishCronPauseIntent func(context.Context, store.OperationClaim, string, string, string, string, map[string]interface{}) error
+	FinishCronPauseIntent    func(context.Context, store.OperationClaim, string, string, string, string, map[string]interface{}) error
+	FinishCronResumeIntent   func(context.Context, store.OperationClaim, string, string, string, string, map[string]interface{}) error
+	FinishCronScheduleIntent func(context.Context, store.OperationClaim, string, string, bool, string, string, map[string]interface{}) error
 	// DatabaseTargets binds database-consuming operations to catalog
 	// targets. When nil (no NORN_DATABASE_PROFILE), v2 routing is unchanged.
 	DatabaseTargets *DatabaseTargets
+	// WPColdStartGate enables the private, one-shot launch
+	// fence for the one qualified WordPress verified-TLS startup shape. It is
+	// intentionally off by default because the fence has no rolling-update
+	// semantics.
+	WPColdStartGate bool
 	// RunBuildCommand is an injectable boundary for Docker build/push.
 	// Production uses exec.CommandContext through runBuildCommand.
 	RunBuildCommand func(context.Context, string, ...string) ([]byte, error)
@@ -117,6 +134,8 @@ type state struct {
 	candidate     model.ReleaseCandidate
 	// claim authorizes external effects started by this execution.
 	claim store.OperationClaim
+	// operationStartedAt pins names of replayable predeploy safety snapshots.
+	operationStartedAt time.Time
 	// sourceIdentity is the digest of the operation's recorded source
 	// checkpoint; it is identical on every claim of the operation.
 	sourceIdentity string
@@ -176,9 +195,13 @@ func (p *Pipeline) QueueReleaseDeployment(ctx context.Context, spec *model.Infra
 	if p == nil || p.DB == nil || p.SagaStore == nil || spec == nil {
 		return store.AcceptedOperation{}, fmt.Errorf("release deployment pipeline is unavailable")
 	}
+	specDigest, err := model.InfraSpecDigest(spec)
+	if err != nil {
+		return store.AcceptedOperation{}, fmt.Errorf("digest release spec: %w", err)
+	}
 	sg := saga.New(p.SagaStore, spec.App, "pipeline", "deploy")
 	now := time.Now().UTC()
-	deployment := &model.Deployment{ID: uuid.NewString(), App: spec.App, CommitSHA: sourceSHA, ImageTag: artifact, Environment: environment, SagaID: sg.ID, Status: model.StatusQueued, SourceRef: sourceSHA, StartedAt: now}
+	deployment := &model.Deployment{ID: uuid.NewString(), App: spec.App, CommitSHA: sourceSHA, ImageTag: artifact, SpecDigest: specDigest, Environment: environment, SagaID: sg.ID, Status: model.StatusQueued, SourceRef: sourceSHA, StartedAt: now}
 	if metadata == nil {
 		metadata = map[string]interface{}{}
 	}
@@ -190,7 +213,7 @@ func (p *Pipeline) QueueReleaseDeployment(ctx context.Context, spec *model.Infra
 		ID: uuid.NewString(), Kind: "app.deploy", App: spec.App, SagaID: sg.ID, Ref: sourceSHA,
 		Status: model.OperationQueued, Risk: "app rolling update", Source: "release-control-api",
 		Message: fmt.Sprintf("queued release deploy for %s", spec.App), StartedAt: now, MaxAttempts: 2,
-		Payload: map[string]interface{}{"deploymentId": deployment.ID, "app": spec.App, "sourceSha": sourceSHA, "artifact": artifact, "candidate": metadata["candidate"]}, Metadata: metadata,
+		Payload: map[string]interface{}{"deploymentId": deployment.ID, "app": spec.App, "sourceSha": sourceSHA, "artifact": artifact, "specDigest": specDigest, "candidate": metadata["candidate"]}, Metadata: metadata,
 	}
 	accepted, err := p.acceptOperation(ctx, request, *op, deployment, spec.ResolvedRegions())
 	if err != nil {
@@ -253,15 +276,20 @@ func (p *Pipeline) Run(ctx context.Context, spec *model.InfraSpec, ref string, r
 	if p == nil || p.DB == nil || p.SagaStore == nil || spec == nil {
 		return store.AcceptedOperation{}, fmt.Errorf("deploy pipeline is unavailable")
 	}
+	specDigest, err := model.InfraSpecDigest(spec)
+	if err != nil {
+		return store.AcceptedOperation{}, fmt.Errorf("digest deploy spec: %w", err)
+	}
 	sg := saga.New(p.SagaStore, spec.App, "pipeline", "deploy")
 	deploy := &model.Deployment{
-		ID:        uuid.New().String(),
-		App:       spec.App,
-		CommitSHA: ref,
-		SagaID:    sg.ID,
-		Status:    model.StatusQueued,
-		SourceRef: ref,
-		StartedAt: time.Now(),
+		ID:         uuid.New().String(),
+		App:        spec.App,
+		CommitSHA:  ref,
+		SpecDigest: specDigest,
+		SagaID:     sg.ID,
+		Status:     model.StatusQueued,
+		SourceRef:  ref,
+		StartedAt:  time.Now(),
 	}
 	operationID := uuid.New().String()
 	operation := model.Operation{
@@ -280,6 +308,7 @@ func (p *Pipeline) Run(ctx context.Context, spec *model.InfraSpec, ref string, r
 			"deploymentId": deploy.ID,
 			"app":          spec.App,
 			"ref":          ref,
+			"specDigest":   specDigest,
 		},
 		Metadata: map[string]interface{}{
 			"deploymentId": deploy.ID,
@@ -311,8 +340,23 @@ func (p *Pipeline) ExecuteOperation(ctx context.Context, op *model.Operation, cl
 	if op.Kind == "app.cron-pause" {
 		return operationOutcome(p.executeCronPause(ctx, op, claim))
 	}
+	if op.Kind == "app.cron-resume" {
+		return operationOutcome(p.executeCronResume(ctx, op, claim))
+	}
+	if op.Kind == "app.cron-schedule" {
+		return operationOutcome(p.executeCronSchedule(ctx, op, claim))
+	}
+	if op.Kind == "app.cron-trigger" {
+		return operationOutcome(p.executeCronTrigger(ctx, op, claim))
+	}
+	if op.Kind == "app.cron-trigger-reconcile" {
+		return operationOutcome(p.executeCronTriggerReconciliation(ctx, op, claim))
+	}
 	if op.Kind == "app.canary-promote" {
 		return operationOutcome(p.executeCanaryPromotion(ctx, op, claim))
+	}
+	if op.Kind == cloudflaredMutationKind {
+		return operationOutcome(p.executeCloudflaredMutation(ctx, op, claim))
 	}
 	var specs []*model.InfraSpec
 	var err error
@@ -355,7 +399,9 @@ func (p *Pipeline) ExecuteOperation(ctx context.Context, op *model.Operation, cl
 	sg := saga.NewWithID(sagaStore, op.SagaID, spec.App, "pipeline", category)
 
 	switch op.Kind {
-	case "app.snapshot", "app.snapshot-prune", "app.snapshot-restore", "app.migrate":
+	case "app.deployment-reconcile":
+		return p.executeDeploymentReconciliation(ctx, op, claim, spec, sg)
+	case "app.snapshot", "app.snapshot-prune", "app.snapshot-restore", "app.snapshot-import", "app.snapshot-export", "app.migrate":
 		return p.executeDataOperation(ctx, op, claim, spec, sg)
 	case DatabaseBaselineKind:
 		return p.executeDatabaseBaseline(ctx, op, claim, spec)
@@ -370,6 +416,12 @@ func (p *Pipeline) ExecuteOperation(ctx context.Context, op *model.Operation, cl
 		deploy, err := p.DB.GetDeployment(ctx, deploymentID)
 		if err != nil {
 			return nil, fmt.Errorf("load deployment %s: %w", deploymentID, err)
+		}
+		if deploy.SpecDigest != "" || stringFromMap(op.Payload, "specDigest") != "" {
+			currentDigest, digestErr := model.InfraSpecDigest(spec)
+			if digestErr != nil || deploy.SpecDigest == "" || deploy.SpecDigest != stringFromMap(op.Payload, "specDigest") || currentDigest != deploy.SpecDigest {
+				return nil, fmt.Errorf("accepted deployment spec differs from current application spec")
+			}
 		}
 		sg.Log(ctx, "deploy.start", fmt.Sprintf("deploying %s (ref: %s)", spec.App, op.Ref), map[string]string{
 			"operationId":  op.ID,
@@ -401,7 +453,7 @@ func (p *Pipeline) ExecuteOperation(ctx context.Context, op *model.Operation, cl
 			"deploymentId": deploymentID,
 			"attempt":      strconv.Itoa(op.Attempts),
 		})
-		return p.runRollback(ctx, spec, deploy, sg, imageTag, claim, op.Attempts, stringSliceFromMap(op.Payload, "regions")), nil
+		return p.runRollback(ctx, op, spec, deploy, sg, imageTag, claim, op.Attempts, stringSliceFromMap(op.Payload, "regions")), nil
 	case "app.preflight":
 		sg.Log(ctx, "preflight.start", fmt.Sprintf("preflighting %s (ref: %s)", spec.App, op.Ref), map[string]string{
 			"operationId": op.ID,
@@ -458,24 +510,27 @@ func (p *Pipeline) run(ctx context.Context, spec *model.InfraSpec, deploy *model
 	operationID := claim.OperationID()
 	var candidate model.ReleaseCandidate
 	var payload map[string]interface{}
+	var operationStartedAt time.Time
 	if operationID != "" && p.DB != nil {
 		if op, err := p.DB.GetOperation(ctx, operationID); err == nil {
 			encoded, _ := json.Marshal(op.Metadata["candidate"])
 			_ = json.Unmarshal(encoded, &candidate)
 			payload = op.Payload
+			operationStartedAt = op.StartedAt
 		}
 	}
 	st := &state{
-		spec:             spec,
-		commitSHA:        deploy.CommitSHA,
-		sourceRef:        deploy.CommitSHA,
-		deploymentID:     deploy.ID,
-		regionEvals:      make(map[string]string),
-		imageTag:         deploy.ImageTag,
-		artifactBound:    deploy.ImageTag != "",
-		candidate:        candidate,
-		claim:            claim,
-		operationPayload: payload,
+		spec:               spec,
+		commitSHA:          deploy.CommitSHA,
+		sourceRef:          deploy.CommitSHA,
+		deploymentID:       deploy.ID,
+		regionEvals:        make(map[string]string),
+		imageTag:           deploy.ImageTag,
+		artifactBound:      deploy.ImageTag != "",
+		candidate:          candidate,
+		claim:              claim,
+		operationStartedAt: operationStartedAt,
+		operationPayload:   payload,
 	}
 	defer func() { _ = st.database.Close() }()
 
@@ -536,7 +591,7 @@ func (p *Pipeline) run(ctx context.Context, spec *model.InfraSpec, deploy *model
 		}
 		if err != nil {
 			sg.StepFailed(ctx, s.name, err)
-			p.recordDeploymentStepFinish(ctx, deploy.ID, s.name, model.DeploymentStepFailed, elapsed, err.Error(), map[string]interface{}{
+			_ = p.recordDeploymentStepFinish(ctx, deploy.ID, s.name, model.DeploymentStepFailed, elapsed, err.Error(), map[string]interface{}{
 				"operationId": operationID,
 			})
 			p.WS.Broadcast(hub.Event{Type: "deploy.step", AppID: spec.App, Payload: map[string]string{
@@ -561,7 +616,7 @@ func (p *Pipeline) run(ctx context.Context, spec *model.InfraSpec, deploy *model
 						Title: fmt.Sprintf("%s deploy failed", spec.App), Body: fmt.Sprintf("Deploy failed at %s: %v", stepName, stepErr), DedupeKey: fmt.Sprintf("%s:deploy", spec.App),
 						Metadata: map[string]interface{}{"deploymentId": deploy.ID, "sagaId": sg.ID, "commitSha": st.commitSHA, "imageTag": st.imageTag, "step": stepName, "correlationKey": fmt.Sprintf("%s:deploy", spec.App)}})
 					if stepName == "healthy" && spec.AutoRollbackEnabled() {
-						prev, prevErr := p.DB.LastSuccessfulDeployment(publishCtx, deploy.App, deploy.ID)
+						prev, prevErr := p.DB.LastSuccessfulDeployment(publishCtx, deploy.App, deploy.Environment, deploy.ID)
 						if prevErr == nil && prev != nil {
 							enqueue, enqueueErr := p.systemEnqueueRequest(publishCtx, "pipeline:auto-rollback", "auto-rollback:"+operationID, "pipeline-auto-rollback", map[string]interface{}{"parentOperationId": operationID, "failedDeploymentId": deploy.ID, "sourceDeploymentId": prev.ID, "imageTag": prev.ImageTag})
 							if enqueueErr == nil {
@@ -581,10 +636,14 @@ func (p *Pipeline) run(ctx context.Context, spec *model.InfraSpec, deploy *model
 				}}
 		}
 
-		sg.StepComplete(ctx, s.name, elapsed)
-		p.recordDeploymentStepFinish(ctx, deploy.ID, s.name, model.DeploymentStepComplete, elapsed, "", map[string]interface{}{
+		if err := p.recordDeploymentStepFinish(ctx, deploy.ID, s.name, model.DeploymentStepComplete, elapsed, "", map[string]interface{}{
 			"operationId": operationID,
-		})
+		}); err != nil {
+			return &OperationResult{Claim: claim, Status: model.OperationFailed,
+				Message:  fmt.Sprintf("record deploy step %s completion: %v", s.name, err),
+				Metadata: map[string]interface{}{"deploymentId": deploy.ID, "step": s.name, "manualRecoveryRequired": true}}
+		}
+		sg.StepComplete(ctx, s.name, elapsed)
 		p.WS.Broadcast(hub.Event{Type: "deploy.step", AppID: spec.App, Payload: map[string]string{
 			"step":       s.name,
 			"sagaId":     sg.ID,
@@ -601,13 +660,22 @@ func (p *Pipeline) run(ctx context.Context, spec *model.InfraSpec, deploy *model
 	deploy.SourceRef = st.sourceRef
 	deploy.SourceDirty = st.sourceDirty
 	deploy.SourceChanges = st.sourceChanges
-	deploy.Status = model.StatusDeployed
-	p.DB.UpdateDeploymentResult(ctx, deploy)
-	for _, region := range spec.ResolvedRegions() {
-		_ = p.DB.UpdateDeploymentRegion(ctx, deploy.ID, region.Name, model.StatusDeployed, st.regionEvals[region.Name], "", region.TrafficWeight)
+	var digestErr error
+	deploy.SpecDigest, digestErr = model.InfraSpecDigest(spec)
+	if digestErr != nil {
+		return &OperationResult{Claim: claim, Status: model.OperationFailed, Message: fmt.Sprintf("record deployment spec digest: %v", digestErr), Metadata: map[string]interface{}{"deploymentId": deploy.ID}}
 	}
-	return &OperationResult{Claim: claim, Status: model.OperationSucceeded, Message: fmt.Sprintf("deploy complete: %s", spec.App),
-		Metadata: map[string]interface{}{"deploymentId": deploy.ID, "commitSha": st.commitSHA, "imageTag": st.imageTag},
+	completion := make([]store.DeploymentCompletionRegion, 0, len(spec.ResolvedRegions()))
+	for _, region := range spec.ResolvedRegions() {
+		completion = append(completion, store.DeploymentCompletionRegion{Region: region.Name, EvalID: st.regionEvals[region.Name], ActiveWeight: region.TrafficWeight})
+	}
+	deploy.Status = model.StatusDeployed
+	message := fmt.Sprintf("deploy complete: %s", spec.App)
+	metadata := map[string]interface{}{"deploymentId": deploy.ID, "commitSha": st.commitSHA, "imageTag": st.imageTag}
+	if err := p.DB.CompleteDeploymentResult(ctx, claim, deploy, completion, message, metadata); err != nil {
+		return &OperationResult{Claim: claim, Status: model.OperationFailed, Message: fmt.Sprintf("record deployment result: %v", err), Metadata: map[string]interface{}{"deploymentId": deploy.ID}}
+	}
+	return &OperationResult{Claim: claim, Status: model.OperationSucceeded, Message: message, Metadata: metadata, finished: true,
 		publish: func(publishCtx context.Context) {
 			sg.Log(publishCtx, "deploy.complete", fmt.Sprintf("deploy complete: %s → %s", spec.App, st.imageTag), map[string]string{"commitSha": st.commitSHA, "imageTag": st.imageTag, "sourceKind": st.sourceKind, "sourceRef": st.sourceRef})
 			p.WS.Broadcast(hub.Event{Type: "deploy.completed", AppID: spec.App, Payload: map[string]string{"sagaId": sg.ID, "imageTag": st.imageTag}})
@@ -643,11 +711,17 @@ func (p *Pipeline) recordDeploymentStepStart(ctx context.Context, deploy *model.
 	return p.DB.StartDeploymentStep(ctx, step)
 }
 
-func (p *Pipeline) recordDeploymentStepFinish(ctx context.Context, deploymentID, stepName string, status model.DeploymentStepStatus, durationMs int64, message string, metadata map[string]interface{}) {
-	if p.DB == nil || deploymentID == "" {
-		return
+func (p *Pipeline) recordDeploymentStepFinish(ctx context.Context, deploymentID, stepName string, status model.DeploymentStepStatus, durationMs int64, message string, metadata map[string]interface{}) error {
+	if deploymentID == "" {
+		return fmt.Errorf("deployment identity is unavailable")
 	}
-	_ = p.DB.FinishDeploymentStep(ctx, deploymentID, stepName, status, durationMs, message, metadata)
+	if p.FinishDeploymentStep != nil {
+		return p.FinishDeploymentStep(ctx, deploymentID, stepName, status, durationMs, message, metadata)
+	}
+	if p.DB == nil {
+		return fmt.Errorf("deployment step store is unavailable")
+	}
+	return p.DB.FinishDeploymentStep(ctx, deploymentID, stepName, status, durationMs, message, metadata)
 }
 
 func (p *Pipeline) emitBeacon(ctx context.Context, event model.BeaconEvent) {

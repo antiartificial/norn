@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"sort"
+	"strings"
 	"time"
 
 	clientv3 "go.etcd.io/etcd/client/v3"
@@ -41,6 +42,35 @@ func NewAuthStore(kv clientv3.KV, prefix string) *AuthStore {
 }
 
 var _ store.AuthStore = (*AuthStore)(nil)
+
+// RootAccessToken resolves the immutable actor for a managed token lineage.
+// Rotated credentials share one operation idempotency namespace; a missing
+// ancestor or cycle is ambiguous and therefore refuses acceptance.
+func (s *AuthStore) RootAccessToken(ctx context.Context, current string) (string, error) {
+	if s == nil || s.kv == nil {
+		return "", fmt.Errorf("managed token lineage is unavailable")
+	}
+	seen := make(map[string]struct{}, 8)
+	for depth := 0; depth < 64; depth++ {
+		current = strings.TrimSpace(current)
+		if current == "" {
+			return "", fmt.Errorf("managed token lineage has an empty identifier")
+		}
+		if _, exists := seen[current]; exists {
+			return "", fmt.Errorf("managed token lineage contains a cycle")
+		}
+		seen[current] = struct{}{}
+		token, _, err := s.loadToken(ctx, current)
+		if err != nil {
+			return "", fmt.Errorf("managed token lineage is incomplete: %w", err)
+		}
+		if strings.TrimSpace(token.RotatedFrom) == "" {
+			return current, nil
+		}
+		current = token.RotatedFrom
+	}
+	return "", fmt.Errorf("managed token lineage exceeds 64 links")
+}
 
 func (s *AuthStore) deviceKey(id string) string { return s.prefix + "/auth/device/" + id }
 func (s *AuthStore) devicePrefix() string       { return s.prefix + "/auth/device/" }
@@ -718,10 +748,13 @@ func (s *AuthStore) RotateAccessToken(ctx context.Context, previousJTI string, t
 	for attempt := 0; attempt < 32; attempt++ {
 		prev, prevRev, err := s.loadToken(ctx, previousJTI)
 		if err != nil {
+			if errors.Is(err, ErrNotFound) {
+				return nil, errors.Join(err, store.ErrIdentityNotFound)
+			}
 			return nil, err
 		}
 		if prev.RevokedAt != nil || !prev.ExpiresAt.After(time.Now()) {
-			return nil, ErrNotFound
+			return nil, errors.Join(ErrNotFound, store.ErrIdentityNotFound)
 		}
 		now := time.Now()
 		prev.RevokedAt = &now
@@ -757,6 +790,9 @@ func (s *AuthStore) RevokeAccessToken(ctx context.Context, jti string) ([]string
 	for attempt := 0; attempt < 32; attempt++ {
 		tok, rev, err := s.loadToken(ctx, jti)
 		if err != nil {
+			if errors.Is(err, ErrNotFound) {
+				return nil, errors.Join(err, store.ErrIdentityNotFound)
+			}
 			return nil, err
 		}
 		if tok.RevokedAt == nil {

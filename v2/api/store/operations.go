@@ -35,14 +35,14 @@ type AppLockFencedExecutionStore interface {
 	FinishClaimedOperationWithAppLock(context.Context, OperationClaim, AppOperationLock, model.OperationStatus, string, map[string]interface{}) error
 }
 
-// CronPauseRecoveryStore makes an unresolved cron-pause effect retryable only
+// CronPauseRecoveryStore makes an unresolved cron pause or resume effect retryable only
 // while its claimed-attempt budget remains. The final transition is fenced by
 // the operation claim (and, where available, the app-lock fence) so an old
 // worker cannot terminalize a successor's recovery.
 //
 // terminal reports that the retry budget was exhausted and the operation was
 // recorded for manual recovery. Callers must leave the external-effect record
-// intact: it is the evidence needed to reconcile the stopped periodic job.
+// intact: it is the evidence needed to reconcile the periodic job.
 type CronPauseRecoveryStore interface {
 	DeferOrFailCronPauseClaimedOperation(context.Context, OperationClaim, AppOperationLock, string, time.Time, map[string]interface{}) (terminal bool, err error)
 }
@@ -289,9 +289,9 @@ func (db *DB) InsertRollbackOperation(ctx context.Context, deployment *model.Dep
 		return fmt.Errorf("encode rollback source changes: %w", err)
 	}
 	if _, err = tx.Exec(ctx, `INSERT INTO deployments
-		(id, app, commit_sha, image_tag, environment, saga_id, status, source_kind, source_ref, source_dirty, source_changes, started_at)
-		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12)`,
-		deployment.ID, deployment.App, deployment.CommitSHA, deployment.ImageTag, deployment.Environment, deployment.SagaID, deployment.Status,
+		(id, app, commit_sha, image_tag, spec_digest, environment, saga_id, status, source_kind, source_ref, source_dirty, source_changes, started_at)
+		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13)`,
+		deployment.ID, deployment.App, deployment.CommitSHA, deployment.ImageTag, deployment.SpecDigest, deployment.Environment, deployment.SagaID, deployment.Status,
 		deployment.SourceKind, deployment.SourceRef, deployment.SourceDirty, changes, deployment.StartedAt); err != nil {
 		return err
 	}
@@ -333,9 +333,9 @@ func (db *DB) InsertDeploymentOperation(ctx context.Context, deployment *model.D
 	}
 	defer tx.Rollback(ctx)
 	if _, err = tx.Exec(ctx, `INSERT INTO deployments
-		(id, app, commit_sha, image_tag, environment, saga_id, status, source_kind, source_ref, source_dirty, source_changes, started_at)
-		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12)`,
-		deployment.ID, deployment.App, deployment.CommitSHA, deployment.ImageTag, deployment.Environment, deployment.SagaID, deployment.Status,
+		(id, app, commit_sha, image_tag, spec_digest, environment, saga_id, status, source_kind, source_ref, source_dirty, source_changes, started_at)
+		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13)`,
+		deployment.ID, deployment.App, deployment.CommitSHA, deployment.ImageTag, deployment.SpecDigest, deployment.Environment, deployment.SagaID, deployment.Status,
 		deployment.SourceKind, deployment.SourceRef, deployment.SourceDirty, changes, deployment.StartedAt); err != nil {
 		return err
 	}
@@ -526,6 +526,10 @@ func (db *DB) FinishClaimedOperation(ctx context.Context, claim OperationClaim, 
 		metadata = map[string]interface{}{}
 	}
 	data, _ := json.Marshal(metadata)
+	// A successful deployment reconciliation must atomically repair the
+	// deployment projection, its regions, and its terminal receipt. That is
+	// CompleteDeploymentReconciliation's transaction; this generic terminal
+	// path may record a failed reconciliation but cannot forge a success.
 	// The terminal transition and its evidence archive intent (outbox) are
 	// one statement: an operation with a saga cannot become terminal without
 	// a pending intent. The intent seals nothing; the archiver fixes the
@@ -538,6 +542,8 @@ func (db *DB) FinishClaimedOperation(ctx context.Context, claim OperationClaim, 
 			    locked_by = '', locked_until = NULL, updated_at = now(), finished_at = now()
 			WHERE id = $4 AND status = 'running' AND locked_by = $5
 			  AND lock_generation = $6 AND locked_until > now()
+			  AND (kind <> 'app.deployment-reconcile' OR $1 <> 'succeeded')
+			  AND (kind <> 'app.cron-trigger-reconcile' OR $1 <> 'succeeded')
 			  AND (kind <> 'app.snapshot' OR
 				($1 = 'succeeded' AND EXISTS (
 					SELECT 1 FROM snapshot_publication_intents spi
@@ -597,7 +603,7 @@ func (db *DB) DeferClaimedOperation(ctx context.Context, claim OperationClaim, m
 	return nil
 }
 
-// DeferOrFailCronPauseClaimedOperation requeues an unresolved cron-pause
+// DeferOrFailCronPauseClaimedOperation requeues an unresolved cron pause or resume
 // effect without refunding the claim that performed the recovery check. Once
 // MaxAttempts is reached it atomically records a failed/manual-review receipt
 // and its evidence archive intent. It deliberately does not touch
@@ -616,7 +622,7 @@ func (db *DB) DeferOrFailCronPauseClaimedOperation(ctx context.Context, claim Op
 		WITH owned AS MATERIALIZED (
 			SELECT id, attempts, max_attempts
 			FROM operations
-			WHERE id = $3 AND kind = 'app.cron-pause' AND status = 'running'
+			WHERE id = $3 AND kind IN ('app.cron-pause', 'app.cron-resume', 'app.cron-trigger') AND status = 'running'
 			  AND locked_by = $4 AND lock_generation = $5 AND locked_until > now()
 		), deferred AS (
 			UPDATE operations
@@ -627,7 +633,7 @@ func (db *DB) DeferOrFailCronPauseClaimedOperation(ctx context.Context, claim Op
 		), exhausted AS (
 			UPDATE operations
 			SET status = 'failed',
-			    message = 'cron pause effect recovery retry budget exhausted; manual recovery is required: ' || $1,
+			    message = 'cron effect recovery retry budget exhausted; manual recovery is required: ' || $1,
 			    last_error = $1,
 			    metadata = metadata || $6::jsonb || '{"manualRecoveryRequired":true,"externalEffectRecoveryPending":true,"retryBudgetExhausted":true}'::jsonb,
 			    locked_by = '', locked_until = NULL, updated_at = now(), finished_at = now()
@@ -708,6 +714,21 @@ func (db *DB) ClaimNextOperation(ctx context.Context, workerID string, lease tim
 	if strings.TrimSpace(workerID) == "" || lease <= 0 {
 		return nil, OperationClaim{}, fmt.Errorf("operation claim owner and lease are required")
 	}
+	// Serialize a claim with fence acquisition. A plain EXISTS read in the
+	// claim statement would admit a concurrent claim from an older snapshot
+	// after the fence's UPDATE commits.
+	tx, err := db.Pool.BeginTx(ctx, pgx.TxOptions{})
+	if err != nil {
+		return nil, OperationClaim{}, err
+	}
+	defer tx.Rollback(context.Background())
+	var fenceSingleton bool
+	if err := tx.QueryRow(ctx, `SELECT singleton FROM runtime_mutation_fence WHERE singleton=true FOR SHARE`).Scan(&fenceSingleton); err != nil {
+		return nil, OperationClaim{}, err
+	}
+	if !fenceSingleton {
+		return nil, OperationClaim{}, ErrRuntimeMutationFenceHeld
+	}
 	args := []interface{}{workerID, lease.Microseconds()}
 	kindClause := ""
 	if len(kinds) > 0 {
@@ -729,6 +750,8 @@ func (db *DB) ClaimNextOperation(ctx context.Context, workerID string, lease tim
 			  AND (NOT acceptance_required OR EXISTS (
 				SELECT 1 FROM operation_acceptance_intents ai WHERE ai.operation_id = operations.id
 			  ))
+			  AND (kind NOT IN ('app.deploy','app.rollback','app.restart','app.scale','app.canary-promote','app.cron-pause','app.cron-resume','app.cron-schedule','app.cron-trigger','app.cron-trigger-reconcile','app.function-invoke','host.assure')
+			       OR EXISTS (SELECT 1 FROM runtime_mutation_fence WHERE singleton=true AND active=false))
 			  %s
 			ORDER BY started_at ASC
 			LIMIT 1
@@ -750,7 +773,7 @@ func (db *DB) ClaimNextOperation(ctx context.Context, workerID string, lease tim
 
 	var op model.Operation
 	var payload, metadata []byte
-	err := db.Pool.QueryRow(ctx, query, args...).Scan(
+	err = tx.QueryRow(ctx, query, args...).Scan(
 		&op.ID, &op.Kind, &op.App, &op.SagaID, &op.Ref, &op.Status, &op.Risk, &op.Source, &op.Message, &payload, &metadata,
 		&op.Attempts, &op.MaxAttempts, &op.LockedBy, &op.LockGeneration, &op.LockedUntil, &op.NextAttemptAt, &op.LastError,
 		&op.StartedAt, &op.UpdatedAt, &op.FinishedAt,
@@ -766,6 +789,9 @@ func (db *DB) ClaimNextOperation(ctx context.Context, workerID string, lease tim
 	}
 	claim, err := NewOperationClaim(op.ID, op.LockedBy, op.LockGeneration)
 	if err != nil {
+		return nil, OperationClaim{}, err
+	}
+	if err := tx.Commit(ctx); err != nil {
 		return nil, OperationClaim{}, err
 	}
 	return &op, claim, nil
@@ -925,11 +951,73 @@ func (db *DB) RecoverExpiredOperations(ctx context.Context) error {
 		return err
 	}
 	defer tx.Rollback(ctx)
+	if err := recoverExpiredPreparedMySQLRestores(ctx, tx); err != nil {
+		return err
+	}
+	// A MySQL restore becomes permanently ambiguous as soon as its intent is
+	// executing. Claim expiry must therefore terminalize the operation and mark
+	// the intent for inspection in one transaction. It must never enter the
+	// generic retry path.
+	if _, err = tx.Exec(ctx, `
+		WITH ambiguous AS (
+			UPDATE mysql_restore_intents i
+			SET state = 'needs-inspection'
+			FROM operations o
+			WHERE i.operation_id = o.id
+			  AND i.state = 'executing'
+			  AND o.kind = 'database.mysql-restore'
+			  AND o.status = 'running'
+			  AND (o.locked_until IS NULL OR o.locked_until < now())
+			RETURNING i.operation_id, i.acceptance_intent_id
+		)
+		UPDATE operations o
+		SET status = 'failed',
+		    message = 'MySQL restore ownership expired after execution began; inspect signed target and artifact evidence',
+		    last_error = 'MySQL restore executor lease expired',
+		    metadata = o.metadata || jsonb_build_object(
+				'manualRecoveryRequired', true,
+				'mysqlRestoreState', 'needs-inspection',
+				'acceptanceIntentId', ambiguous.acceptance_intent_id),
+		    locked_by = '', locked_until = NULL, updated_at = now(), finished_at = now()
+		FROM ambiguous
+		WHERE o.id = ambiguous.operation_id
+	`); err != nil {
+		return err
+	}
+	// Source retention and target unlock are one-way external effects. An
+	// expired private-command claim cannot be requeued or left running: keep
+	// the runtime fence and signed intent for operator observation.
+	if _, err = tx.Exec(ctx, `
+		WITH failed AS (
+			UPDATE operations
+			SET status='failed',
+			    message=CASE kind
+			      WHEN 'database.mysql-source-snapshot' THEN 'MySQL source ownership expired; inspect stop, account lock and retained artifact'
+			      ELSE 'MySQL recovery ownership expired; inspect target unlock and runtime fence'
+			    END,
+			    last_error='private MySQL executor lease expired',
+			    metadata=metadata || jsonb_build_object('manualRecoveryRequired',true,'mysqlMaintenanceState','needs-inspection'),
+			    locked_by='',locked_until=NULL,updated_at=clock_timestamp(),finished_at=clock_timestamp()
+			WHERE status='running'
+			  AND kind IN ('database.mysql-source-snapshot','database.mysql-restore-recovery')
+			  AND (locked_until IS NULL OR locked_until<clock_timestamp())
+			RETURNING id,saga_id,app
+		), archive_intents AS (
+			INSERT INTO evidence_archive_intents (id,subject_kind,subject_id,app,operation_id,sequence,state)
+			SELECT 'ei-' || gen_random_uuid()::text,'saga',saga_id,app,id,1,'pending'
+			FROM failed WHERE saga_id<>''
+			ON CONFLICT (subject_kind,subject_id,sequence) DO NOTHING
+		)
+		SELECT count(*) FROM failed
+	`); err != nil {
+		return err
+	}
 	if _, err = tx.Exec(ctx, `
 		UPDATE operations
 		SET status = 'queued',
 		    message = 'operation recovered after API restart and queued for a safe retry',
 		    metadata = metadata || '{"recoveredAfterRestart":true}'::jsonb,
+		    max_attempts = CASE WHEN kind = 'app.snapshot-export' THEN GREATEST(max_attempts, 3) ELSE max_attempts END,
 		    locked_by = '',
 		    locked_until = NULL,
 		    next_attempt_at = now(),
@@ -941,12 +1029,56 @@ func (db *DB) RecoverExpiredOperations(ctx context.Context) error {
 			(kind = 'app.snapshot' AND EXISTS (
 				SELECT 1 FROM snapshot_publication_intents spi
 				WHERE spi.operation_id = operations.id AND spi.state IN ('prepared', 'published')
+			)) OR (kind = 'app.snapshot-export' AND attempts < GREATEST(max_attempts, 3) AND EXISTS (
+				SELECT 1 FROM snapshot_export_intents sei
+				WHERE sei.operation_id = operations.id AND sei.state IN ('prepared', 'published')
+			)) OR (kind = 'app.deploy' AND attempts < max_attempts AND EXISTS (
+				SELECT 1 FROM deployment_steps ds
+				WHERE ds.deployment_id = operations.payload->>'deploymentId'
+				  AND ds.step = 'snapshot' AND ds.status = 'running'
+			) AND EXISTS (
+				SELECT 1 FROM snapshot_export_intents sei
+				WHERE sei.operation_id = operations.id AND sei.state IN ('prepared', 'published')
+			) AND EXISTS (
+				SELECT 1 FROM operation_checkpoints oc
+				WHERE oc.operation_id = operations.id AND oc.stage = 'source'
+			) AND EXISTS (
+				SELECT 1 FROM operation_checkpoints oc
+				WHERE oc.operation_id = operations.id AND oc.stage = 'build'
+				  AND encode(oc.outputs,'escape') ~ '"imageTag"[[:space:]]*:[[:space:]]*"[^"]+@sha256:[0-9A-Fa-f]{64}"'
+			) AND NOT EXISTS (
+				SELECT 1 FROM deployment_steps ds
+				WHERE ds.deployment_id = operations.payload->>'deploymentId'
+				  AND ds.kind = 'mutable' AND ds.step <> 'snapshot'
 			)))
 		  AND (
-		    kind IN ('app.preflight', 'app.restart', 'app.canary-promote', 'app.cron-pause')
+		    kind IN ('app.preflight', 'app.restart', 'app.canary-promote', 'app.cron-pause', 'app.cron-resume', 'app.cron-schedule', 'app.cron-trigger', 'app.cron-trigger-reconcile', 'app.function-invoke')
 		    OR (kind = 'app.snapshot' AND EXISTS (
 		      SELECT 1 FROM snapshot_publication_intents spi
 		      WHERE spi.operation_id = operations.id AND spi.state IN ('prepared', 'published')
+		    ))
+		    OR (kind = 'app.snapshot-export' AND attempts < GREATEST(max_attempts, 3) AND EXISTS (
+		      SELECT 1 FROM snapshot_export_intents sei
+		      WHERE sei.operation_id = operations.id AND sei.state IN ('prepared', 'published')
+		    ))
+		    OR (kind = 'app.deploy' AND attempts < max_attempts AND EXISTS (
+		      SELECT 1 FROM deployment_steps ds
+		      WHERE ds.deployment_id = operations.payload->>'deploymentId'
+		        AND ds.step = 'snapshot' AND ds.status = 'running'
+		    ) AND EXISTS (
+		      SELECT 1 FROM snapshot_export_intents sei
+		      WHERE sei.operation_id = operations.id AND sei.state IN ('prepared', 'published')
+		    ) AND EXISTS (
+		      SELECT 1 FROM operation_checkpoints oc
+		      WHERE oc.operation_id = operations.id AND oc.stage = 'source'
+		    ) AND EXISTS (
+		      SELECT 1 FROM operation_checkpoints oc
+		      WHERE oc.operation_id = operations.id AND oc.stage = 'build'
+		        AND encode(oc.outputs,'escape') ~ '"imageTag"[[:space:]]*:[[:space:]]*"[^"]+@sha256:[0-9A-Fa-f]{64}"'
+		    ) AND NOT EXISTS (
+		      SELECT 1 FROM deployment_steps ds
+		      WHERE ds.deployment_id = operations.payload->>'deploymentId'
+		        AND ds.kind = 'mutable' AND ds.step <> 'snapshot'
 		    ))
 		    OR (kind = 'app.deploy' AND NOT EXISTS (
 		      SELECT 1
@@ -960,12 +1092,15 @@ func (db *DB) RecoverExpiredOperations(ctx context.Context) error {
 		return err
 	}
 	if _, err = tx.Exec(ctx, `
+		WITH failed AS (
 		UPDATE operations
 		SET status = 'failed',
 		    message = CASE
 		      WHEN kind = 'app.deploy' THEN 'deploy interrupted after mutable stage; manual review required before retry'
 		      WHEN kind = 'app.snapshot-prune' THEN 'snapshot pruning was interrupted; inspect retained files before retrying'
 		      WHEN kind = 'app.snapshot-restore' THEN 'snapshot restore was interrupted; verify database integrity before retrying'
+		      WHEN kind = 'app.snapshot-import' THEN 'snapshot import was interrupted; inspect local dump and provenance before retrying'
+		      WHEN kind = 'app.snapshot-export' THEN 'snapshot export was interrupted; inspect remote dump and manifest before retrying'
 		      WHEN kind = 'app.migrate' THEN 'schema migration was interrupted; inspect migration and database state before retrying'
 		      WHEN kind = 'app.rollback' THEN 'rollback was interrupted; inspect regional deployment state before retrying'
 		      ELSE 'operation interrupted after a non-retryable stage; manual review required'
@@ -979,6 +1114,14 @@ func (db *DB) RecoverExpiredOperations(ctx context.Context) error {
 		WHERE status = 'running'
 		  AND kind LIKE 'app.%'
 		  AND (locked_until IS NULL OR locked_until < now())
+		RETURNING id,saga_id,app
+		), archive_intents AS (
+			INSERT INTO evidence_archive_intents (id,subject_kind,subject_id,app,operation_id,sequence,state)
+			SELECT 'ei-' || gen_random_uuid()::text,'saga',saga_id,app,id,1,'pending'
+			FROM failed WHERE saga_id <> ''
+			ON CONFLICT (subject_kind,subject_id,sequence) DO NOTHING
+		)
+		SELECT count(*) FROM failed
 	`); err != nil {
 		return err
 	}

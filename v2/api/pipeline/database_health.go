@@ -57,12 +57,27 @@ func (p *Pipeline) probeDatabase(ctx context.Context, spec *model.InfraSpec, nam
 	if name == "" {
 		resolved, _, err = p.DatabaseTargets.resolve(ctx, spec, nil, nil)
 	} else {
+		requirement, found := spec.DatabaseByName(name)
+		declared := false
+		for _, capability := range requirement.Capabilities {
+			declared = declared || capability == string(database.CapabilityHealth)
+		}
+		if !found || !declared {
+			health.Status = "unsupported"
+			health.Detail = "health capability is not declared by the app"
+			return health
+		}
 		var resolver *database.Resolver
 		if resolver, _, err = p.DatabaseTargets.resolverAt(ctx); err == nil {
-			resolved, err = resolver.Resolve(database.ResolveRequest{DeploymentProfileID: p.DatabaseTargets.ProfileID, Purpose: database.PurposeApplication, LogicalResourceID: name})
+			resolved, err = resolver.Resolve(database.ResolveRequest{DeploymentProfileID: p.DatabaseTargets.ProfileID, Purpose: database.PurposeApplication,
+				LogicalResourceID: name, RequiredCapabilities: []database.Capability{database.CapabilityHealth}})
 		}
 	}
 	if err != nil {
+		var resolverErr *database.ResolverError
+		if errors.As(err, &resolverErr) && resolverErr.Code == database.CodeUnsupportedCapability {
+			health.Status = "unsupported"
+		}
 		health.Detail = err.Error()
 		return health
 	}
@@ -71,9 +86,9 @@ func (p *Pipeline) probeDatabase(ctx context.Context, spec *model.InfraSpec, nam
 	session, err := database.OpenSession(ctx, resolved, p.DatabaseTargets.Secrets)
 	if err != nil {
 		var resolverErr *database.ResolverError
-		if errors.As(err, &resolverErr) && resolverErr.Code == database.CodeUnsupportedEngine {
+		if errors.As(err, &resolverErr) && (resolverErr.Code == database.CodeUnsupportedEngine || resolverErr.Code == database.CodeUnsupportedCapability) {
 			health.Status = "unsupported"
-			health.Detail = "no connection adapter or health probe is implemented for this engine"
+			health.Detail = "connection adapter or transport is not implemented for this target"
 			return health
 		}
 		health.Detail = err.Error()

@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"net/http"
 	"strconv"
 	"strings"
 	"time"
@@ -19,6 +20,8 @@ var (
 )
 
 const cronPauseEffectMetaKey = "norn.cron-pause.effect-id"
+const cronResumeEffectMetaKey = "norn.cron-resume.effect-id"
+const cronScheduleEffectMetaKey = "norn.cron-schedule.effect-id"
 
 // SubmitJob registers a job with Nomad.
 func (c *Client) SubmitJob(job *nomadapi.Job) (string, error) {
@@ -39,6 +42,84 @@ func (c *Client) SubmitJobRegion(job *nomadapi.Job, region string) (string, erro
 		return "", fmt.Errorf("submit job: %w", err)
 	}
 	return resp.EvalID, nil
+}
+
+// RequireColdStartJobAbsent proves that a job has no registered parent and no
+// in-flight Nomad evaluation in one region. A cold-start launch cannot use a
+// missing allocation list as a substitute for this check: a retained job or
+// pending evaluation can create a writer after that list is read.
+func (c *Client) RequireColdStartJobAbsent(region, jobID string) error {
+	if strings.TrimSpace(jobID) == "" {
+		return fmt.Errorf("cold-start job ID is required")
+	}
+	options := &nomadapi.QueryOptions{Region: region}
+	if _, _, err := c.api.Jobs().Info(jobID, options); err == nil {
+		return fmt.Errorf("cold-start job %s is already registered", jobID)
+	} else if !nomadNotFound(err) {
+		return fmt.Errorf("inspect cold-start job %s: %w", jobID, err)
+	}
+	evaluations, _, err := c.api.Jobs().Evaluations(jobID, options)
+	if err != nil && !nomadNotFound(err) {
+		return fmt.Errorf("inspect cold-start evaluations for %s: %w", jobID, err)
+	}
+	for _, evaluation := range evaluations {
+		if evaluation == nil || !terminalColdStartEvaluation(evaluation.Status) {
+			return fmt.Errorf("cold-start job %s has a pending Nomad evaluation", jobID)
+		}
+	}
+	return nil
+}
+
+func terminalColdStartEvaluation(status string) bool {
+	switch status {
+	case "complete", "failed", "cancelled":
+		return true
+	default:
+		return false
+	}
+}
+
+// ProveColdStartEvaluationLineage accepts a scheduler continuation only when
+// Nomad links it back to the submitted evaluation for the same job revision.
+// The bounded walk fails closed on missing, cyclic, or unrelated history.
+func (c *Client) ProveColdStartEvaluationLineage(region, jobID, submittedID, allocationID string) (bool, error) {
+	if jobID == "" || submittedID == "" || allocationID == "" {
+		return false, nil
+	}
+	options := &nomadapi.QueryOptions{Region: region}
+	root, _, err := c.api.Evaluations().Info(submittedID, options)
+	if err != nil {
+		return false, fmt.Errorf("inspect submitted cold-start evaluation: %w", err)
+	}
+	if root == nil || root.ID != submittedID || root.JobID != jobID || root.JobModifyIndex == 0 {
+		return false, nil
+	}
+	currentID := allocationID
+	seen := make(map[string]bool)
+	for range 16 {
+		if seen[currentID] || currentID == "" {
+			return false, nil
+		}
+		seen[currentID] = true
+		if currentID == submittedID {
+			return true, nil
+		}
+		current, _, err := c.api.Evaluations().Info(currentID, options)
+		if err != nil {
+			return false, fmt.Errorf("inspect cold-start continuation evaluation: %w", err)
+		}
+		if current == nil || current.ID != currentID || current.JobID != jobID ||
+			current.JobModifyIndex != root.JobModifyIndex || current.Namespace != root.Namespace {
+			return false, nil
+		}
+		currentID = current.PreviousEval
+	}
+	return false, nil
+}
+
+func nomadNotFound(err error) bool {
+	var response nomadapi.UnexpectedResponseError
+	return errors.As(err, &response) && response.HasStatusCode() && response.StatusCode() == http.StatusNotFound
 }
 
 // StopJob stops a running Nomad job.
@@ -91,12 +172,147 @@ func (c *Client) PausePeriodicJob(jobID string, expectedModifyIndex uint64, effe
 	return nil
 }
 
+// ResumePeriodicJob clears a stopped periodic parent's Stop flag using Nomad's
+// atomic job CAS. The effect marker lets a retry distinguish its own committed
+// write from an unrelated resume after a lost response.
+func (c *Client) ResumePeriodicJob(jobID string, expectedModifyIndex uint64, effectID string) error {
+	if strings.TrimSpace(jobID) == "" || expectedModifyIndex == 0 || strings.TrimSpace(effectID) == "" {
+		return fmt.Errorf("periodic job resume requires a job ID, modify index, and effect ID")
+	}
+	if err := c.requireAtomicJobCAS(); err != nil {
+		return err
+	}
+	job, _, err := c.api.Jobs().Info(jobID, nil)
+	if err != nil {
+		return fmt.Errorf("read periodic job %s for resume: %w", jobID, err)
+	}
+	if job == nil || job.Periodic == nil {
+		return fmt.Errorf("job %s is not periodic", jobID)
+	}
+	if job.JobModifyIndex == nil || *job.JobModifyIndex != expectedModifyIndex {
+		return fmt.Errorf("%w for %s", ErrJobRevisionChanged, jobID)
+	}
+	if job.Stop == nil || !*job.Stop {
+		return fmt.Errorf("periodic job %s is not stopped", jobID)
+	}
+
+	resumed := false
+	job.Stop = &resumed
+	if job.Meta == nil {
+		job.Meta = make(map[string]string)
+	}
+	job.Meta[cronResumeEffectMetaKey] = effectID
+	_, _, err = c.api.Jobs().RegisterOpts(job, &nomadapi.RegisterOptions{
+		EnforceIndex: true,
+		ModifyIndex:  expectedModifyIndex,
+	}, nil)
+	if err != nil {
+		if strings.Contains(err.Error(), nomadapi.RegisterEnforceIndexErrPrefix) {
+			return fmt.Errorf("%w for %s: %v", ErrJobRevisionChanged, jobID, err)
+		}
+		return fmt.Errorf("resume periodic job %s: %w", jobID, err)
+	}
+	return nil
+}
+
+// ResumePeriodicJobWithReplacement atomically registers a freshly translated
+// periodic job at the stopped parent's authorized revision. Callers can thus
+// include the current image, secret environment and database delivery in the
+// replacement without putting that material in a durable operation payload.
+// The effect marker is read back from Nomad after an ambiguous response.
+func (c *Client) ResumePeriodicJobWithReplacement(jobID string, expectedModifyIndex uint64, effectID string, replacement *nomadapi.Job) error {
+	if strings.TrimSpace(jobID) == "" || expectedModifyIndex == 0 || strings.TrimSpace(effectID) == "" || replacement == nil || replacement.ID == nil || *replacement.ID != jobID || replacement.Periodic == nil || replacement.Periodic.Spec == nil || strings.TrimSpace(*replacement.Periodic.Spec) == "" {
+		return fmt.Errorf("periodic job replacement requires a matching job ID, schedule, modify index, and effect ID")
+	}
+	if err := c.requireAtomicJobCAS(); err != nil {
+		return err
+	}
+	current, _, err := c.api.Jobs().Info(jobID, nil)
+	if err != nil {
+		return fmt.Errorf("read periodic job %s for resume: %w", jobID, err)
+	}
+	if current == nil || current.Periodic == nil {
+		return fmt.Errorf("job %s is not periodic", jobID)
+	}
+	if current.JobModifyIndex == nil || *current.JobModifyIndex != expectedModifyIndex {
+		return fmt.Errorf("%w for %s", ErrJobRevisionChanged, jobID)
+	}
+	if current.Stop == nil || !*current.Stop {
+		return fmt.Errorf("periodic job %s is not stopped", jobID)
+	}
+	// Copy the translated job so an effect marker never mutates caller-owned
+	// material. Nomad CAS fences a writer between the read and registration.
+	job := *replacement
+	resumed := false
+	job.Stop = &resumed
+	job.Meta = make(map[string]string, len(replacement.Meta)+1)
+	for key, value := range replacement.Meta {
+		job.Meta[key] = value
+	}
+	job.Meta[cronResumeEffectMetaKey] = effectID
+	_, _, err = c.api.Jobs().RegisterOpts(&job, &nomadapi.RegisterOptions{EnforceIndex: true, ModifyIndex: expectedModifyIndex}, nil)
+	if err != nil {
+		if strings.Contains(err.Error(), nomadapi.RegisterEnforceIndexErrPrefix) {
+			return fmt.Errorf("%w for %s: %v", ErrJobRevisionChanged, jobID, err)
+		}
+		return fmt.Errorf("resume periodic job %s with replacement: %w", jobID, err)
+	}
+	return nil
+}
+
+// UpdatePeriodicJobSchedule atomically installs a freshly translated periodic
+// job at the authorized revision. It preserves the parent Stop state: changing
+// a schedule must not silently resume an intentionally paused process.
+func (c *Client) UpdatePeriodicJobSchedule(jobID string, expectedModifyIndex uint64, effectID string, replacement *nomadapi.Job) error {
+	if strings.TrimSpace(jobID) == "" || expectedModifyIndex == 0 || strings.TrimSpace(effectID) == "" || replacement == nil || replacement.ID == nil || *replacement.ID != jobID || replacement.Periodic == nil || replacement.Periodic.Spec == nil || strings.TrimSpace(*replacement.Periodic.Spec) == "" {
+		return fmt.Errorf("periodic schedule update requires a matching job ID, schedule, modify index, and effect ID")
+	}
+	if err := c.requireAtomicJobCAS(); err != nil {
+		return err
+	}
+	current, _, err := c.api.Jobs().Info(jobID, nil)
+	if err != nil {
+		return fmt.Errorf("read periodic job %s for schedule update: %w", jobID, err)
+	}
+	if current == nil || current.Periodic == nil {
+		return fmt.Errorf("job %s is not periodic", jobID)
+	}
+	if current.JobModifyIndex == nil || *current.JobModifyIndex != expectedModifyIndex {
+		return fmt.Errorf("%w for %s", ErrJobRevisionChanged, jobID)
+	}
+	job := *replacement
+	if current.Stop != nil {
+		stopped := *current.Stop
+		job.Stop = &stopped
+	}
+	job.Meta = make(map[string]string, len(replacement.Meta)+1)
+	for key, value := range replacement.Meta {
+		job.Meta[key] = value
+	}
+	job.Meta[cronScheduleEffectMetaKey] = effectID
+	_, _, err = c.api.Jobs().RegisterOpts(&job, &nomadapi.RegisterOptions{EnforceIndex: true, ModifyIndex: expectedModifyIndex}, nil)
+	if err != nil {
+		if strings.Contains(err.Error(), nomadapi.RegisterEnforceIndexErrPrefix) {
+			return fmt.Errorf("%w for %s: %v", ErrJobRevisionChanged, jobID, err)
+		}
+		return fmt.Errorf("update periodic job %s schedule: %w", jobID, err)
+	}
+	return nil
+}
+
 func (c *Client) requireAtomicJobCAS() error {
 	self, err := c.api.Agent().Self()
 	if err != nil {
 		return fmt.Errorf("inspect Nomad version for atomic job CAS: %w", err)
 	}
-	version, _ := self.Config["Version"].(string)
+	// Nomad's /v1/agent/self nests the release inside config.Version.Version.
+	// The prerelease field is separate and must not satisfy a stable CAS floor.
+	versionInfo, _ := self.Config["Version"].(map[string]interface{})
+	version, _ := versionInfo["Version"].(string)
+	prerelease, _ := versionInfo["VersionPrerelease"].(string)
+	if prerelease != "" {
+		version += "-" + prerelease
+	}
 	if !supportsAtomicJobCAS(version) {
 		return fmt.Errorf("%w: %q requires 1.10.11, 1.11.5, or 2.0.1 and later", ErrAtomicJobCASUnsupported, version)
 	}
@@ -630,18 +846,20 @@ func (c *Client) PeriodicChildren(parentJobID string) ([]CronRun, error) {
 
 // PeriodicJobInfo holds scheduling metadata for a periodic job.
 type PeriodicJobInfo struct {
-	JobID             string `json:"jobId"`
-	Schedule          string `json:"schedule"`
-	TimeZone          string `json:"timezone,omitempty"`
-	Version           uint64 `json:"version"`
-	ModifyIndex       uint64 `json:"modifyIndex"`
-	SubmittedAt       string `json:"submittedAt,omitempty"`
-	Paused            bool   `json:"paused"`
-	Status            string `json:"status"`
-	CronPauseEffectID string `json:"cronPauseEffectId,omitempty"`
-	ChildrenPending   int64  `json:"childrenPending,omitempty"`
-	ChildrenRunning   int64  `json:"childrenRunning,omitempty"`
-	ChildrenDead      int64  `json:"childrenDead,omitempty"`
+	JobID                string `json:"jobId"`
+	Schedule             string `json:"schedule"`
+	TimeZone             string `json:"timezone,omitempty"`
+	Version              uint64 `json:"version"`
+	ModifyIndex          uint64 `json:"modifyIndex"`
+	SubmittedAt          string `json:"submittedAt,omitempty"`
+	Paused               bool   `json:"paused"`
+	Status               string `json:"status"`
+	CronPauseEffectID    string `json:"cronPauseEffectId,omitempty"`
+	CronResumeEffectID   string `json:"cronResumeEffectId,omitempty"`
+	CronScheduleEffectID string `json:"cronScheduleEffectId,omitempty"`
+	ChildrenPending      int64  `json:"childrenPending,omitempty"`
+	ChildrenRunning      int64  `json:"childrenRunning,omitempty"`
+	ChildrenDead         int64  `json:"childrenDead,omitempty"`
 }
 
 // PeriodicJobSchedule returns the cron spec and status for a periodic parent job.
@@ -676,6 +894,8 @@ func (c *Client) PeriodicJobSchedule(jobID string) (*PeriodicJobInfo, error) {
 		info.Paused = *job.Stop
 	}
 	info.CronPauseEffectID = job.Meta[cronPauseEffectMetaKey]
+	info.CronResumeEffectID = job.Meta[cronResumeEffectMetaKey]
+	info.CronScheduleEffectID = job.Meta[cronScheduleEffectMetaKey]
 	if jobs, _, listErr := c.api.Jobs().List(&nomadapi.QueryOptions{Prefix: jobID}); listErr == nil {
 		for _, j := range jobs {
 			if j.ID != jobID || j.JobSummary == nil || j.JobSummary.Children == nil {
@@ -988,6 +1208,7 @@ type DeploymentInfo struct {
 	Status         string `json:"status"`
 	StatusDesc     string `json:"statusDescription"`
 	IsCanary       bool   `json:"isCanary"`
+	CanaryReady    bool   `json:"canaryReady"`
 	CanaryPromoted bool   `json:"canaryPromoted"`
 }
 
@@ -1017,7 +1238,7 @@ func (c *Client) LatestDeploymentRegion(jobID, region string) (*DeploymentInfo, 
 	hasCanary, canaryPromoted := deploymentCanaryState(latest.TaskGroups)
 	return &DeploymentInfo{
 		ID: latest.ID, JobID: latest.JobID, Status: latest.Status, StatusDesc: latest.StatusDescription,
-		IsCanary: hasCanary && !canaryPromoted, CanaryPromoted: canaryPromoted,
+		IsCanary: hasCanary && !canaryPromoted, CanaryReady: deploymentCanaryReady(latest.TaskGroups), CanaryPromoted: canaryPromoted,
 	}, nil
 }
 
@@ -1073,7 +1294,7 @@ func (c *Client) DeploymentByIDRegion(deploymentID, region string) (*DeploymentI
 		return nil, nil
 	}
 	hasCanary, canaryPromoted := deploymentCanaryState(deployment.TaskGroups)
-	return &DeploymentInfo{ID: deployment.ID, JobID: deployment.JobID, Status: deployment.Status, StatusDesc: deployment.StatusDescription, IsCanary: hasCanary && !canaryPromoted, CanaryPromoted: canaryPromoted}, nil
+	return &DeploymentInfo{ID: deployment.ID, JobID: deployment.JobID, Status: deployment.Status, StatusDesc: deployment.StatusDescription, IsCanary: hasCanary && !canaryPromoted, CanaryReady: deploymentCanaryReady(deployment.TaskGroups), CanaryPromoted: canaryPromoted}, nil
 }
 
 // deploymentCanaryState distinguishes canaries waiting for promotion from
@@ -1092,6 +1313,29 @@ func deploymentCanaryState(groups map[string]*nomadapi.DeploymentState) (hasCana
 		}
 	}
 	return hasCanary, hasCanary && promoted
+}
+
+// Nomad rejects manual promotion until every placed canary allocation is
+// healthy. Checking this before durable acceptance avoids a predictable
+// supervisor rejection that would otherwise leave an unresolved effect.
+func deploymentCanaryReady(groups map[string]*nomadapi.DeploymentState) bool {
+	hasCanary := false
+	for _, group := range groups {
+		if group == nil {
+			continue
+		}
+		if group.DesiredCanaries > 0 && len(group.PlacedCanaries) < group.DesiredCanaries {
+			return false
+		}
+		if len(group.PlacedCanaries) == 0 {
+			continue
+		}
+		hasCanary = true
+		if group.Promoted || group.HealthyAllocs < len(group.PlacedCanaries) {
+			return false
+		}
+	}
+	return hasCanary
 }
 
 // FailDeployment marks the latest deployment as failed, triggering auto-revert if configured.

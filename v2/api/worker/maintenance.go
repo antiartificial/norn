@@ -12,6 +12,8 @@ import (
 	"strings"
 	"time"
 
+	"github.com/google/uuid"
+
 	"norn/v2/api/capture"
 	"norn/v2/api/hub"
 	"norn/v2/api/model"
@@ -161,7 +163,7 @@ func NewMaintenanceWorker(execution store.ExecutionStore, events interface {
 		host = "unknown-host"
 	}
 	return &MaintenanceWorker{
-		db: execution, events: events, executor: executor, id: fmt.Sprintf("host-agent:%s:%d", host, os.Getpid()),
+		db: execution, events: events, executor: executor, id: fmt.Sprintf("host-agent:%s:%d:%s", host, os.Getpid(), uuid.NewString()),
 		kinds: []string{"platform.preflight", "platform.upgrade", "platform.rollback", "platform.smoke", "host.assure"},
 		lease: 5 * time.Minute, poll: 2 * time.Second,
 	}

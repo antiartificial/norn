@@ -13,8 +13,12 @@ import (
 	"norn/v2/api/saga"
 )
 
-// BundleSchema versions the immutable evidence bundle.
-const BundleSchema = "norn.evidence-bundle/v1"
+// BundleSchema versions newly written immutable evidence bundles.
+const BundleSchema = "norn.evidence-bundle/v2"
+
+// LegacyBundleSchema remains readable so already archived evidence is not
+// invalidated by the function invocation projection addition.
+const LegacyBundleSchema = "norn.evidence-bundle/v1"
 
 // MaxBundleBytes bounds a single bundle (writes and reads).
 const MaxBundleBytes = 16 << 20
@@ -38,6 +42,12 @@ type Bundle struct {
 	// output references. It is retained with the signed acceptance rather than
 	// reconstructed from a later projection.
 	Effects json.RawMessage `json:"effects,omitempty"`
+	// FunctionExecution and FunctionEffectAttempts are the public terminal
+	// execution projection and public pre-call attempt fences respectively.
+	// A function bundle also retains its signed public operation receipt; the
+	// private invocation envelope is never part of this format.
+	FunctionExecution      json.RawMessage `json:"functionExecution,omitempty"`
+	FunctionEffectAttempts json.RawMessage `json:"functionEffectAttempts,omitempty"`
 	// Acceptance carries the original signed acceptance bytes, never
 	// reconstructed from reformatted JSON.
 	Acceptance   *SignedAcceptance `json:"acceptance,omitempty"`
@@ -157,8 +167,11 @@ func Open(data []byte) (*Bundle, error) {
 	decoder.DisallowUnknownFields()
 	var bundle Bundle
 	var trailing json.RawMessage
-	if decoder.Decode(&bundle) != nil || decoder.Decode(&trailing) != io.EOF || bundle.Schema != BundleSchema {
+	if decoder.Decode(&bundle) != nil || decoder.Decode(&trailing) != io.EOF || (bundle.Schema != BundleSchema && bundle.Schema != LegacyBundleSchema) {
 		return nil, fmt.Errorf("%w: malformed bundle", ErrObjectCorrupt)
+	}
+	if bundle.Schema == LegacyBundleSchema && (len(bytes.TrimSpace(bundle.FunctionExecution)) != 0 || len(bytes.TrimSpace(bundle.FunctionEffectAttempts)) != 0) {
+		return nil, fmt.Errorf("%w: v1 bundle contains v2 function evidence", ErrObjectCorrupt)
 	}
 	events, err := json.Marshal(bundle.Events)
 	if err != nil {
@@ -192,19 +205,99 @@ func validateOperationBundle(bundle *Bundle) error {
 	if bundle == nil || bundle.Subject.Kind != "operation" {
 		return nil
 	}
-	if len(bundle.Events) != 0 || len(bytes.TrimSpace(bundle.Operation)) == 0 || bundle.Acceptance == nil {
-		return fmt.Errorf("operation evidence bundle requires an operation, signed acceptance and no saga events")
-	}
 	switch bundle.Subject.OperationKind {
 	case "fleet.github.pull-request", "fleet.github.apply-dispatch":
+		if len(bytes.TrimSpace(bundle.FunctionExecution)) != 0 || len(bytes.TrimSpace(bundle.FunctionEffectAttempts)) != 0 {
+			return fmt.Errorf("Fleet operation evidence bundle cannot contain function invocation evidence")
+		}
+		if len(bundle.Events) != 0 || len(bytes.TrimSpace(bundle.Operation)) == 0 || bundle.Acceptance == nil {
+			return fmt.Errorf("operation evidence bundle requires an operation, signed acceptance and no saga events")
+		}
+		var operation struct {
+			Kind string `json:"kind"`
+		}
+		if err := json.Unmarshal(bundle.Operation, &operation); err != nil || operation.Kind != bundle.Subject.OperationKind {
+			return fmt.Errorf("operation evidence subject kind differs from archived operation")
+		}
+		return nil
+	case "app.function-invoke":
+		return validateFunctionInvocationBundle(bundle)
 	default:
 		return fmt.Errorf("operation evidence bundle kind is not supported")
 	}
-	var operation struct {
-		Kind string `json:"kind"`
+}
+
+func validateFunctionInvocationBundle(bundle *Bundle) error {
+	if len(bundle.Events) != 0 || len(bytes.TrimSpace(bundle.Operation)) == 0 || len(bytes.TrimSpace(bundle.Effects)) != 0 || bundle.Acceptance == nil {
+		return fmt.Errorf("function invocation evidence bundle requires its signed public operation receipt and excludes raw effects")
 	}
-	if err := json.Unmarshal(bundle.Operation, &operation); err != nil || operation.Kind != bundle.Subject.OperationKind {
-		return fmt.Errorf("operation evidence subject kind differs from archived operation")
+	var operation struct {
+		ID      string `json:"id"`
+		Kind    string `json:"kind"`
+		App     string `json:"app"`
+		Status  string `json:"status"`
+		Payload struct {
+			Process string `json:"process"`
+		} `json:"payload"`
+	}
+	if json.Unmarshal(bundle.Operation, &operation) != nil || operation.ID != bundle.Subject.OperationID || operation.Kind != bundle.Subject.OperationKind || operation.App != bundle.Subject.App ||
+		(operation.Status != "succeeded" && operation.Status != "failed") || operation.Payload.Process == "" {
+		return fmt.Errorf("function invocation evidence bundle has an invalid terminal operation receipt")
+	}
+	var execution struct {
+		ID         string     `json:"id"`
+		App        string     `json:"app"`
+		Process    string     `json:"process"`
+		Status     string     `json:"status"`
+		ExitCode   *int       `json:"exit_code"`
+		StartedAt  time.Time  `json:"started_at"`
+		FinishedAt *time.Time `json:"finished_at"`
+		DurationMs *int64     `json:"duration_ms"`
+	}
+	if err := strictUnmarshal(bundle.FunctionExecution, &execution); err != nil || execution.ID != bundle.Subject.OperationID || execution.App != bundle.Subject.App || execution.Process == "" ||
+		(execution.Status != "complete" && execution.Status != "failed") || execution.ExitCode == nil || execution.StartedAt.IsZero() || execution.FinishedAt == nil || execution.DurationMs == nil || *execution.DurationMs < 0 {
+		return fmt.Errorf("function invocation evidence bundle requires its exact terminal public execution projection")
+	}
+	if operation.Payload.Process != execution.Process || (operation.Status == "succeeded") != (execution.Status == "complete") {
+		return fmt.Errorf("function invocation evidence bundle operation and execution projections differ")
+	}
+	var attempts []struct {
+		OperationID     string     `json:"operation_id"`
+		Stage           string     `json:"stage"`
+		Target          string     `json:"target"`
+		InputDigest     string     `json:"input_digest"`
+		ClaimGeneration int64      `json:"claim_generation"`
+		State           string     `json:"state"`
+		CreatedAt       time.Time  `json:"created_at"`
+		AttemptedAt     *time.Time `json:"attempted_at"`
+		UpdatedAt       time.Time  `json:"updated_at"`
+	}
+	if err := strictUnmarshal(bundle.FunctionEffectAttempts, &attempts); err != nil || attempts == nil {
+		return fmt.Errorf("function invocation evidence bundle requires public attempt rows")
+	}
+	seen := make(map[string]bool, len(attempts))
+	for _, attempt := range attempts {
+		if attempt.OperationID != bundle.Subject.OperationID || (attempt.Stage != "variable" && attempt.Stage != "job") || attempt.Target == "" ||
+			!functionAttemptDigest.MatchString(attempt.InputDigest) || attempt.ClaimGeneration < 1 || attempt.CreatedAt.IsZero() || attempt.UpdatedAt.IsZero() || seen[attempt.Stage] ||
+			(attempt.State != "recorded" && attempt.State != "attempted") || (attempt.State == "recorded" && attempt.AttemptedAt != nil) || (attempt.State == "attempted" && attempt.AttemptedAt == nil) {
+			return fmt.Errorf("function invocation evidence bundle has invalid public attempt rows")
+		}
+		seen[attempt.Stage] = true
+	}
+	return nil
+}
+
+var functionAttemptDigest = regexp.MustCompile(`^sha256:[0-9a-f]{64}$`)
+
+func strictUnmarshal(data []byte, target any) error {
+	decoder := json.NewDecoder(bytes.NewReader(data))
+	decoder.DisallowUnknownFields()
+	if err := decoder.Decode(target); err != nil {
+		return err
+	}
+	var trailing json.RawMessage
+	if err := decoder.Decode(&trailing); err != io.EOF {
+		return fmt.Errorf("trailing JSON")
 	}
 	return nil
 }

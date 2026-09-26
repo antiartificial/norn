@@ -30,10 +30,19 @@ import (
 	"norn/v2/api/config"
 	"norn/v2/api/etcdstore"
 	"norn/v2/api/fleet"
+	"norn/v2/api/githubapp"
 	"norn/v2/api/handler"
 	"norn/v2/api/model"
+	"norn/v2/api/nomad"
+	"norn/v2/api/pipeline"
 	"norn/v2/api/startup"
 	"norn/v2/api/store"
+	"norn/v2/api/worker"
+)
+
+const (
+	etcdCanaryWorkerEnv      = "NORN_ETCD_CANARY_WORKER"
+	etcdCanaryHTTPPreviewEnv = "NORN_ETCD_CANARY_HTTP_PREVIEW"
 )
 
 func runEtcdFleetRuntime(cfg *config.Config, backend startup.ControlBackendConfig) error {
@@ -55,11 +64,40 @@ func runEtcdFleetRuntime(cfg *config.Config, backend startup.ControlBackendConfi
 	if err := checkEtcdSourceHealth(context.Background(), client, backend.EtcdPrefix); err != nil {
 		return fmt.Errorf("etcd availability: %w", err)
 	}
+	if err := requireInitialEtcdBootstrap(context.Background(), client, backend.EtcdPrefix, cfg.APIToken); err != nil {
+		return fmt.Errorf("etcd bootstrap: %w", err)
+	}
 	operations, err := etcdstore.NewV3OperationStoreWithPolicy(client, backend.EtcdPrefix, cfg.ControlAuthority, signer, store.AcceptancePolicy{ReplayTTL: cfg.OperationReplayTTL})
 	if err != nil {
 		return err
 	}
+	if err := preflightConfiguredPrivateInvocationKeys(context.Background(), cfg, operations); err != nil {
+		return fmt.Errorf("private invocation startup preflight: %w", err)
+	}
 	identities := etcdstore.NewAuthStore(client, backend.EtcdPrefix)
+	githubConfig := githubapp.Config{AppID: cfg.FleetGitHubAppID, InstallationID: cfg.FleetGitHubInstallationID, PrivateKeyFile: cfg.FleetGitHubPrivateKeyFile, Repository: cfg.FleetGitHubRepository, DefaultBranch: cfg.FleetGitHubDefaultBranch, ConfigPath: cfg.FleetGitHubConfigPath, PlanWorkflow: cfg.FleetGitHubPlanWorkflow, ApplyWorkflow: cfg.FleetGitHubApplyWorkflow, APIBaseURL: cfg.FleetGitHubAPIBaseURL, Production: cfg.Production()}
+	var fleetGitHub *githubapp.Client
+	if githubapp.Configured(githubConfig) {
+		fleetGitHub, err = githubapp.New(githubConfig, nil)
+		if err != nil {
+			return fmt.Errorf("configure Fleet GitHub App: %w", err)
+		}
+	}
+	workerCtx, stopWorker := context.WithCancel(context.Background())
+	defer stopWorker()
+	workerEnabled, canaryHTTPEnabled, err := etcdCanaryPreviewFlags(os.Getenv)
+	if err != nil {
+		return err
+	}
+	var canary *etcdCanaryRuntime
+	if workerEnabled {
+		canary, err = newEtcdCanaryRuntime(cfg, operations)
+		if err != nil {
+			return fmt.Errorf("configure etcd canary worker: %w", err)
+		}
+		go canary.worker.Run(workerCtx)
+		log.Printf("etcd canary operation worker enabled; HTTP preview=%t", canaryHTTPEnabled)
+	}
 
 	router := chi.NewRouter()
 	router.Use(middleware.RequestID, middleware.Recoverer)
@@ -68,22 +106,47 @@ func runEtcdFleetRuntime(cfg *config.Config, backend startup.ControlBackendConfi
 		writeEtcdSourceJSON(w, http.StatusOK, map[string]string{"version": Version})
 	})
 	router.Get("/api/v1/capabilities", func(w http.ResponseWriter, r *http.Request) {
-		writeEtcdSourceJSON(w, http.StatusOK, map[string]interface{}{
-			"protocolVersion": 1, "serverVersion": Version, "backend": "etcd", "mode": "normal-fleet",
-			"features":    []string{"etcd-normal-router-v1", "managed-token-revocation", "signed-operation-acceptance", "fleet-inventory", "durable-fleet-capacity-plans"},
-			"endpoints":   map[string]string{"fleetNodePools": "/api/v1/fleet/node-pools", "fleetPlans": "/api/v1/fleet/plans", "fleetPlan": "/api/v1/fleet/node-pools/{pool}/plan", "operation": "/api/v1/operations/{id}"},
-			"unsupported": []string{"app-mutations", "fleet-runner-attempts", "fleet-github-bridge", "operation-cancellation"},
-		})
+		writeEtcdSourceJSON(w, http.StatusOK, etcdFleetCapabilities(canaryHTTPEnabled, fleetGitHub != nil))
 	})
-	// Fleet runners carry fleet:operate for their narrowly bound attempt
-	// endpoints.  This normal router does not expose those endpoints, so that
-	// scope must never become a general inventory or receipt-read capability.
+	// Fleet runners carry fleet:operate only for their own attempts and
+	// reconciliation checkpoints. Inventory and general operation reads still
+	// require api:read.
 	read := etcdManagedTokenAuth(cfg, identities, handler.ScopeAPIRead)
 	plan := etcdManagedTokenAuth(cfg, identities, handler.ScopeAPIWrite)
 	router.With(read).Get("/api/v1/fleet/node-pools", etcdFleetInventory(cfg))
 	router.With(read).Get("/api/v1/fleet/plans", etcdFleetPlans(operations))
 	router.With(plan).Post("/api/v1/fleet/node-pools/{pool}/plan", etcdFleetPlan(cfg, operations))
-	router.With(read).Get("/api/v1/operations/{id}", etcdFleetOperation(operations))
+	if canaryHTTPEnabled {
+		router.With(plan).Post("/api/v1/apps/{id}/promote", etcdCanaryPromote(cfg, operations, identities, canary))
+	}
+	router.With(read).Get("/api/v1/operations/{id}", etcdFleetOperation(operations, canaryHTTPEnabled))
+	if fleetGitHub != nil {
+		fleetRunner := handler.NewEtcdFleetRunnerHandler(cfg, operations)
+		runnerAuth := etcdManagedTokenAuth(cfg, identities, handler.ScopeFleetOperate)
+		router.With(plan).Post("/api/v1/fleet/plans/{planID}/github/dispatch", etcdFleetGitHubDispatch(cfg, operations, fleetGitHub))
+		router.With(plan).Post("/api/v1/fleet/plans/{planID}/github/pull-request", etcdFleetGitHubPullRequest(cfg, operations, fleetGitHub))
+		router.With(runnerAuth).Get("/api/v1/fleet/plans/{planID}/attempts", fleetRunner.List)
+		router.With(runnerAuth).Post("/api/v1/fleet/plans/{planID}/attempts", fleetRunner.Create)
+		router.With(runnerAuth).Get("/api/v1/fleet/plans/{planID}/attempts/{attemptID}", fleetRunner.Get)
+		router.With(runnerAuth).Post("/api/v1/fleet/plans/{planID}/attempts/{attemptID}/heartbeat", fleetRunner.Heartbeat)
+		router.With(runnerAuth).Post("/api/v1/fleet/plans/{planID}/attempts/{attemptID}/advance", fleetRunner.Advance)
+		router.With(runnerAuth).Post("/api/v1/fleet/plans/{planID}/attempts/{attemptID}/cancel", fleetRunner.Cancel)
+		router.With(runnerAuth).Get("/api/v1/fleet/plans/{planID}/reconciliations", fleetRunner.ListReconciliations)
+		router.With(runnerAuth).Post("/api/v1/fleet/plans/{planID}/reconciliations", fleetRunner.Reconcile)
+	}
+	// A credential may retire itself regardless of its application scopes.
+	managed := etcdManagedTokenAuth(cfg, identities)
+	// GitHub's short-lived assertion is the credential for this route; a Norn
+	// bearer token does not exist until the durable exchange succeeds.
+	router.Post("/api/v1/auth/github-actions/exchange", func(w http.ResponseWriter, r *http.Request) {
+		handler.ExchangeFleetGitHubActionsOIDC(cfg, identities, w, r)
+	})
+	router.With(managed).Post("/api/v1/auth/rotate", func(w http.ResponseWriter, r *http.Request) {
+		handler.RotateManagedToken(cfg, identities, nil, w, r)
+	})
+	router.With(managed).Post("/api/v1/auth/revoke", func(w http.ResponseWriter, r *http.Request) {
+		handler.RevokeManagedToken(identities, nil, w, r)
+	})
 	router.NotFound(func(w http.ResponseWriter, r *http.Request) {
 		if strings.HasPrefix(r.URL.Path, "/api/") || r.URL.Path == "/ws" {
 			handler.WriteControlProblem(w, r, http.StatusNotImplemented, "backend_route_unsupported", "route is not implemented by the etcd normal Fleet capability set")
@@ -109,6 +172,61 @@ func runEtcdFleetRuntime(cfg *config.Config, backend startup.ControlBackendConfi
 		defer cancel()
 		return srv.Shutdown(ctx)
 	}
+}
+
+func etcdCanaryPreviewFlags(getenv func(string) string) (workerEnabled, httpEnabled bool, err error) {
+	workerEnabled = strings.EqualFold(strings.TrimSpace(getenv(etcdCanaryWorkerEnv)), "true")
+	httpEnabled = strings.EqualFold(strings.TrimSpace(getenv(etcdCanaryHTTPPreviewEnv)), "true")
+	if httpEnabled && !workerEnabled {
+		return false, false, fmt.Errorf("%s requires %s=true", etcdCanaryHTTPPreviewEnv, etcdCanaryWorkerEnv)
+	}
+	return workerEnabled, httpEnabled, nil
+}
+
+func etcdFleetCapabilities(canaryHTTPEnabled bool, githubEnabled ...bool) map[string]interface{} {
+	features := []string{"etcd-normal-router-v1", "managed-token-revocation", "managed-token-lifecycle", "fleet-github-oidc-exchange", "signed-operation-acceptance", "fleet-inventory", "durable-fleet-capacity-plans"}
+	endpoints := map[string]string{"fleetNodePools": "/api/v1/fleet/node-pools", "fleetPlans": "/api/v1/fleet/plans", "fleetPlan": "/api/v1/fleet/node-pools/{pool}/plan", "operation": "/api/v1/operations/{id}", "tokenRotate": "/api/v1/auth/rotate", "tokenRevoke": "/api/v1/auth/revoke", "fleetOIDCExchange": "/api/v1/auth/github-actions/exchange"}
+	unsupported := []string{"app-mutations", "fleet-runner-attempts", "fleet-github-bridge", "operation-cancellation"}
+	if len(githubEnabled) > 0 && githubEnabled[0] {
+		features = append(features, "fleet-github-pull-request", "fleet-github-protected-dispatch", "fleet-runner-attempts-v1", "fleet-reconciliation-v1")
+		endpoints["fleetGitHubPullRequest"] = "/api/v1/fleet/plans/{planID}/github/pull-request"
+		endpoints["fleetGitHubDispatch"] = "/api/v1/fleet/plans/{planID}/github/dispatch"
+		endpoints["fleetRunnerAttempts"] = "/api/v1/fleet/plans/{planID}/attempts"
+		endpoints["fleetReconciliations"] = "/api/v1/fleet/plans/{planID}/reconciliations"
+		unsupported = []string{"app-mutations", "operation-cancellation"}
+	}
+	if canaryHTTPEnabled {
+		features = append(features, "durable-canary-promotion-preview")
+		endpoints["appCanaryPromote"] = "/api/v1/apps/{id}/promote"
+		unsupported[0] = "other-app-mutations"
+	}
+	return map[string]interface{}{"protocolVersion": 1, "serverVersion": Version, "backend": "etcd", "mode": "normal-fleet", "features": features, "endpoints": endpoints, "unsupported": unsupported}
+}
+
+type etcdCanaryRuntime struct {
+	worker   *worker.OperationWorker
+	pipeline *pipeline.Pipeline
+	nomad    *nomad.Client
+}
+
+func newEtcdCanaryRuntime(cfg *config.Config, operations *etcdstore.V3OperationStore) (*etcdCanaryRuntime, error) {
+	if cfg == nil || operations == nil || strings.TrimSpace(cfg.NomadAddr) == "" {
+		return nil, fmt.Errorf("etcd canary worker requires configured Nomad and operation stores")
+	}
+	nomadClient, err := nomad.NewClient(cfg.NomadAddr)
+	if err != nil {
+		return nil, err
+	}
+	effectStore, err := etcdstore.NewV3CanaryEffectReservations(operations)
+	if err != nil {
+		return nil, err
+	}
+	effects, err := pipeline.NewNomadCanaryPromotionEffectsWithStore(effectStore, nomadClient)
+	if err != nil {
+		return nil, err
+	}
+	p := &pipeline.Pipeline{OperationStore: operations, Nomad: nomadClient, CanaryPromotionEffects: effects}
+	return &etcdCanaryRuntime{worker: worker.NewOperationWorkerForKinds(operations, p, []string{"app.canary-promote"}), pipeline: p, nomad: nomadClient}, nil
 }
 
 func etcdFleetInventory(cfg *config.Config) http.HandlerFunc {
@@ -162,7 +280,7 @@ func etcdFleetPlans(operations *etcdstore.V3OperationStore) http.HandlerFunc {
 		writeEtcdSourceJSON(w, http.StatusOK, map[string]interface{}{"plans": plans, "count": len(plans)})
 	}
 }
-func etcdFleetOperation(operations *etcdstore.V3OperationStore) http.HandlerFunc {
+func etcdFleetOperation(operations *etcdstore.V3OperationStore, allowCanary bool) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		principal, ok := handler.AccessPrincipalFromRequest(r)
 		if !ok || principal.Source != handler.AccessPrincipalSourceManagedToken || !principal.Allows(handler.ScopeAPIRead) {
@@ -174,7 +292,7 @@ func etcdFleetOperation(operations *etcdstore.V3OperationStore) http.HandlerFunc
 			handler.WriteControlProblem(w, r, http.StatusNotFound, "operation_not_found", "operation not found")
 			return
 		}
-		if op.Kind != "fleet.capacity-plan" {
+		if op.Kind != "fleet.capacity-plan" && !(allowCanary && op.Kind == "app.canary-promote") {
 			handler.WriteControlProblem(w, r, http.StatusNotFound, "operation_not_found", "operation not found")
 			return
 		}

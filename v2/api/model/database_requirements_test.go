@@ -75,6 +75,12 @@ func TestDatabaseDeclarationRejections(t *testing.T) {
 		"runtime w/o block":     {func(s *InfraSpec) { s.Databases[0].Runtime = nil }, "databases[0].runtime"},
 		"block w/o runtime cap": {func(s *InfraSpec) { s.Databases[0].Capabilities = []string{"migration", "snapshot"} }, "databases[0].runtime"},
 		"empty runtime":         {func(s *InfraSpec) { s.Databases[0].Runtime = &DatabaseRuntime{} }, "databases[0].runtime"},
+		"incomplete components": {func(s *InfraSpec) {
+			s.Databases[0].Runtime = &DatabaseRuntime{Components: &DatabaseRuntimeComponents{Host: "WORDPRESS_DB_HOST"}}
+		}, "databases[0].runtime.components"},
+		"component collision": {func(s *InfraSpec) {
+			s.Databases[0].Runtime = &DatabaseRuntime{Components: &DatabaseRuntimeComponents{Host: "WORDPRESS_DB_HOST", User: "WORDPRESS_DB_USER", Password: "WORDPRESS_DB_HOST", Name: "WORDPRESS_DB_NAME"}}
+		}, "databases[0].runtime.components."},
 		"same var for value and path": {func(s *InfraSpec) {
 			s.Databases[0].Runtime.FileEnv = "DATABASE_URL"
 		}, "databases[0].runtime."},
@@ -119,5 +125,82 @@ func TestDatabaseEnvConflictsCoverRuntimeSources(t *testing.T) {
 	}
 	if conflicts := (&InfraSpec{}).DatabaseEnvConflicts(map[string]string{"DATABASE_URL": "x"}); len(conflicts) != 0 {
 		t.Fatalf("v1 spec conflicts = %v", conflicts)
+	}
+}
+
+func TestDatabaseEnvConflictsCoverWordPressComponents(t *testing.T) {
+	spec := &InfraSpec{SchemaVersion: AppSchemaV2, Databases: []DatabaseRequirement{{Name: "wordpress", Runtime: &DatabaseRuntime{Components: &DatabaseRuntimeComponents{
+		Host: "WORDPRESS_DB_HOST", User: "WORDPRESS_DB_USER", Password: "WORDPRESS_DB_PASSWORD", Name: "WORDPRESS_DB_NAME",
+	}}}}}
+	conflicts := spec.DatabaseEnvConflicts(map[string]string{"WORDPRESS_DB_PASSWORD": "shadow"}, map[string]string{"WORDPRESS_DB_HOST": "other"})
+	if strings.Join(conflicts, ",") != "WORDPRESS_DB_HOST,WORDPRESS_DB_PASSWORD" {
+		t.Fatalf("WordPress database variable conflicts = %v", conflicts)
+	}
+}
+
+func TestDatabaseRuntimeTLSFilesAreValidatedAndOwned(t *testing.T) {
+	spec := &InfraSpec{SchemaVersion: AppSchemaV2, Databases: []DatabaseRequirement{{
+		Name: "primary", Purpose: "application", Capabilities: []string{"runtime"},
+		Runtime: &DatabaseRuntime{Components: &DatabaseRuntimeComponents{Host: "DB_HOST", User: "DB_USER", Password: "DB_PASSWORD", Name: "DB_NAME"}, TLS: &DatabaseRuntimeTLS{
+			CAFileEnv: "MYSQL_SSL_CA", ClientCertFileEnv: "MYSQL_SSL_CERT", ClientKeyFileEnv: "MYSQL_SSL_KEY",
+		}},
+	}}}
+	if findings := spec.DatabaseDeclarationFindings(); len(findings) != 0 {
+		t.Fatalf("TLS runtime declaration findings = %+v", findings)
+	}
+	if names := spec.DatabaseEnvNames(); names["MYSQL_SSL_CA"] != "primary" || names["MYSQL_SSL_CERT"] != "primary" || names["MYSQL_SSL_KEY"] != "primary" {
+		t.Fatalf("TLS file variables not owned = %v", names)
+	}
+	broken := *spec
+	broken.Databases = append([]DatabaseRequirement(nil), spec.Databases...)
+	broken.Databases[0].Runtime = &DatabaseRuntime{Components: spec.Databases[0].Runtime.Components, TLS: &DatabaseRuntimeTLS{CAFileEnv: "MYSQL_SSL_CA", ClientCertFileEnv: "MYSQL_SSL_CERT"}}
+	found := false
+	for _, finding := range broken.DatabaseDeclarationFindings() {
+		if finding.Field == "databases[0].runtime.tls" {
+			found = true
+		}
+	}
+	if !found {
+		t.Fatal("unpaired TLS client material was accepted")
+	}
+}
+
+func TestWordPressVerifiedTLSStartupAdapterRequiresQualifiedShape(t *testing.T) {
+	base := func() *InfraSpec {
+		return &InfraSpec{
+			SchemaVersion:  AppSchemaV2,
+			App:            "wordpress",
+			StartupAdapter: StartupAdapterWordPressVerifiedTLS,
+			Build:          &BuildSpec{Image: QualifiedWordPressVerifiedTLSImage},
+			Processes:      map[string]Process{"web": {Port: 80}},
+			Volumes:        []VolumeSpec{{Name: "wordpress-content", Mount: "/var/www/html/wp-content"}},
+			Databases: []DatabaseRequirement{{
+				Name: "primary", Purpose: "application", Capabilities: []string{"runtime"},
+				Runtime: &DatabaseRuntime{Components: &DatabaseRuntimeComponents{
+					Host: "WORDPRESS_DB_HOST", User: "WORDPRESS_DB_USER", Password: "WORDPRESS_DB_PASSWORD", Name: "WORDPRESS_DB_NAME",
+				}, TLS: &DatabaseRuntimeTLS{CAFileEnv: "MYSQL_SSL_CA"}},
+			}},
+		}
+	}
+	if result := ValidateSpec(base()); !result.Valid {
+		t.Fatalf("qualified adapter shape rejected: %+v", result.Findings)
+	}
+	for name, mutate := range map[string]func(*InfraSpec){
+		"unqualified image": func(s *InfraSpec) {
+			s.Build.Image = "wordpress:6.8.2-php8.3-apache@sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+		},
+		"custom command": func(s *InfraSpec) { s.Processes["web"] = Process{Port: 80, Command: "apache2-foreground"} },
+		"client cert": func(s *InfraSpec) {
+			s.Databases[0].Runtime.TLS.ClientCertFileEnv = "MYSQL_SSL_CERT"
+			s.Databases[0].Runtime.TLS.ClientKeyFileEnv = "MYSQL_SSL_KEY"
+		},
+		"wrong component":            func(s *InfraSpec) { s.Databases[0].Runtime.Components.Host = "DB_HOST" },
+		"missing persistent content": func(s *InfraSpec) { s.Volumes = nil },
+	} {
+		spec := base()
+		mutate(spec)
+		if result := ValidateSpec(spec); result.Valid {
+			t.Errorf("%s: invalid adapter shape accepted", name)
+		}
 	}
 }

@@ -68,7 +68,7 @@ func (p *Pipeline) executeDataOperation(ctx context.Context, op *model.Operation
 	metadata["database"] = database
 	if bound != nil {
 		required := map[string][]dbCapability{
-			"app.snapshot": {dbSnapshot}, "app.snapshot-prune": {dbSnapshot},
+			"app.snapshot": {dbSnapshot}, "app.snapshot-prune": {dbSnapshot}, "app.snapshot-import": {dbSnapshot}, "app.snapshot-export": {dbSnapshot},
 			"app.snapshot-restore": {dbRestore, dbSnapshot}, "app.migrate": {dbMigration, dbSnapshot},
 		}[op.Kind]
 		if err := bound.requireCapabilities(required...); err != nil {
@@ -122,6 +122,68 @@ func (p *Pipeline) executeDataOperation(ctx context.Context, op *model.Operation
 		return finish(fmt.Sprintf("snapshot retention kept %d for %s", keep, spec.App), map[string]interface{}{"keep": keep, "pruned": pruned}, func(publishCtx context.Context) {
 			_ = sg.Log(publishCtx, "snapshot.retention", fmt.Sprintf("pruned %d database snapshots", len(pruned)), map[string]string{"database": database, "keep": fmt.Sprintf("%d", keep)})
 			p.broadcastDataEvent("snapshot.retention", spec.App, map[string]string{"database": database, "keep": fmt.Sprintf("%d", keep), "operationId": op.ID})
+		}), nil
+
+	case "app.snapshot-import":
+		if p.SnapshotObjects == nil || spec.Snapshots == nil || spec.Snapshots.ExportBucket == "" {
+			return nil, fmt.Errorf("snapshot import object storage is unavailable")
+		}
+		bucket, key := stringFromMap(op.Payload, "bucket"), stringFromMap(op.Payload, "key")
+		if bucket != spec.Snapshots.ExportBucket || !strings.HasPrefix(key, "snapshots/"+spec.App+"/") || strings.Contains(key, "..") {
+			return nil, fmt.Errorf("signed snapshot import bucket or key differs from current app configuration")
+		}
+		if spec.NamedDatabases() || bound != nil {
+			logical := stringFromMap(op.Payload, "database")
+			manifest, err := p.ImportTargetSnapshot(ctx, spec, logical, p.SnapshotObjects, bucket, key)
+			if err != nil {
+				return nil, err
+			}
+			return finish("snapshot imported for "+spec.App, map[string]interface{}{"snapshot": manifest.Filename, "key": key, "bucket": bucket}, func(publishCtx context.Context) {
+				_ = sg.Log(publishCtx, "snapshot.imported", "target-bound snapshot imported", map[string]string{"snapshot": manifest.Filename, "key": key})
+				p.broadcastDataEvent("snapshot.imported", spec.App, map[string]string{"snapshot": manifest.Filename, "operationId": op.ID})
+			}), nil
+		}
+		filename, err := importLegacySnapshot(ctx, p.SnapshotObjects, bucket, key, spec.App, database, location.dir)
+		if err != nil {
+			return nil, err
+		}
+		return finish("snapshot imported for "+spec.App, map[string]interface{}{"snapshot": filename, "key": key, "bucket": bucket}, func(publishCtx context.Context) {
+			_ = sg.Log(publishCtx, "snapshot.imported", "legacy snapshot imported", map[string]string{"snapshot": filename, "key": key})
+			p.broadcastDataEvent("snapshot.imported", spec.App, map[string]string{"snapshot": filename, "operationId": op.ID})
+		}), nil
+
+	case "app.snapshot-export":
+		if spec.Snapshots == nil || spec.Snapshots.ExportBucket == "" || stringFromMap(op.Payload, "bucket") != spec.Snapshots.ExportBucket {
+			return nil, fmt.Errorf("signed snapshot export bucket differs from current app configuration")
+		}
+		if p.DB == nil {
+			return nil, fmt.Errorf("claimed snapshot export requires a claim store")
+		}
+		if err := p.DB.CheckOperationClaim(ctx, claim); err != nil {
+			return nil, fmt.Errorf("snapshot export claim is no longer current: %w", err)
+		}
+		logical, filename := stringFromMap(op.Payload, "database"), stringFromMap(op.Payload, "snapshot")
+		if bound == nil && !spec.NamedDatabases() {
+			createOnly, ok := p.SnapshotObjects.(snapshotCreateOnlyObjectStore)
+			if !ok {
+				return nil, fmt.Errorf("legacy snapshot export object store lacks create-only publication")
+			}
+			key, err := exportLegacySnapshotClaimed(ctx, createOnly, spec.Snapshots.ExportBucket, spec.App, database, filename, location.dir, op.ID, op.StartedAt, &snapshotExportJournal{db: p.DB, claim: claim})
+			if err != nil {
+				return nil, err
+			}
+			return finish("snapshot exported for "+spec.App, map[string]interface{}{"snapshot": filename, "key": key, "bucket": spec.Snapshots.ExportBucket}, func(publishCtx context.Context) {
+				_ = sg.Log(publishCtx, "snapshot.exported", "legacy snapshot exported", map[string]string{"snapshot": filename, "key": key})
+				p.broadcastDataEvent("snapshot.exported", spec.App, map[string]string{"snapshot": filename, "operationId": op.ID})
+			}), nil
+		}
+		manifest, key, err := p.ExportTargetSnapshotReserved(ctx, spec, logical, filename, p.SnapshotObjects, spec.Snapshots.ExportBucket, claim)
+		if err != nil {
+			return nil, err
+		}
+		return finish("snapshot exported for "+spec.App, map[string]interface{}{"snapshot": manifest.Filename, "key": key, "bucket": spec.Snapshots.ExportBucket}, func(publishCtx context.Context) {
+			_ = sg.Log(publishCtx, "snapshot.exported", "target-bound snapshot exported", map[string]string{"snapshot": manifest.Filename, "key": key})
+			p.broadcastDataEvent("snapshot.exported", spec.App, map[string]string{"snapshot": manifest.Filename, "operationId": op.ID})
 		}), nil
 
 	case "app.snapshot-restore":
@@ -209,6 +271,27 @@ func createDataSnapshot(ctx context.Context, location snapshotLocation, label st
 }
 
 func createDataSnapshotAt(ctx context.Context, location snapshotLocation, label string, createdAt time.Time, reuse bool) (*dataSnapshot, error) {
+	return createDataSnapshotAtMode(ctx, location, label, createdAt, reuse, false)
+}
+
+// Pinned publications must never advance to a second filename on replay.
+func createPinnedDataSnapshotAt(ctx context.Context, location snapshotLocation, label string, createdAt time.Time) (*dataSnapshot, error) {
+	if location.bound == nil {
+		return nil, fmt.Errorf("pinned snapshot requires target provenance")
+	}
+	return createDataSnapshotAtMode(ctx, location, label, createdAt, true, true)
+}
+
+// Legacy dumps have no target sidecar. A replay must stop at its operation
+// name instead of trusting existing bytes or creating a second safety dump.
+func createPinnedLegacySnapshotAt(ctx context.Context, location snapshotLocation, label string, createdAt time.Time) (*dataSnapshot, error) {
+	if location.bound != nil {
+		return nil, fmt.Errorf("legacy snapshot must not have a target binding")
+	}
+	return createDataSnapshotAtMode(ctx, location, label, createdAt, false, true)
+}
+
+func createDataSnapshotAtMode(ctx context.Context, location snapshotLocation, label string, createdAt time.Time, reuse, pinned bool) (*dataSnapshot, error) {
 	database, directory := location.database, location.dir
 	if !model.IsSafePostgresDatabaseName(database) {
 		return nil, fmt.Errorf("unsafe postgres database name")
@@ -220,6 +303,9 @@ func createDataSnapshotAt(ctx context.Context, location snapshotLocation, label 
 	filename := fmt.Sprintf("%s_%s_%s.dump", database, label, timestamp)
 	path := filepath.Join(directory, filename)
 	if info, err := os.Lstat(path); err == nil {
+		if pinned && location.bound == nil {
+			return nil, fmt.Errorf("pinned legacy snapshot already exists; inspect before retry")
+		}
 		if !info.Mode().IsRegular() {
 			return nil, fmt.Errorf("snapshot target %s is not a regular file", filename)
 		}
@@ -231,6 +317,9 @@ func createDataSnapshotAt(ctx context.Context, location snapshotLocation, label 
 			case err == nil:
 				return &dataSnapshot{Filename: filename, Timestamp: timestamp, Size: info.Size()}, nil
 			case errors.Is(err, errSnapshotTargetMismatch):
+				if pinned {
+					return nil, fmt.Errorf("pinned snapshot name belongs to another target: %w", err)
+				}
 				reuse = false
 			default:
 				return nil, err
@@ -294,6 +383,9 @@ func createDataSnapshotAt(ctx context.Context, location snapshotLocation, label 
 	// has its provenance and an interrupted publication leaves at most an
 	// orphan sidecar, never an unbound dump in a target namespace.
 	for offset := 0; offset < 1000; offset++ {
+		if pinned && offset != 0 {
+			return nil, fmt.Errorf("pinned snapshot name is unavailable")
+		}
 		candidateTime := createdAt.UTC().Add(time.Duration(offset) * time.Second)
 		candidateTimestamp := candidateTime.Format("20060102T150405")
 		candidateFilename := fmt.Sprintf("%s_%s_%s.dump", database, label, candidateTimestamp)

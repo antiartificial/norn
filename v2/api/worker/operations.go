@@ -9,6 +9,8 @@ import (
 	"runtime/debug"
 	"time"
 
+	"github.com/google/uuid"
+
 	"norn/v2/api/effect"
 	"norn/v2/api/model"
 	"norn/v2/api/pipeline"
@@ -28,10 +30,10 @@ type OperationWorker struct {
 
 func NewOperationWorker(db store.ExecutionStore, p *pipeline.Pipeline) *OperationWorker {
 	return NewOperationWorkerForKinds(db, p, []string{
-		"app.preflight", "app.deploy", "app.rollback", "app.restart", "app.snapshot",
-		"app.snapshot-prune", "app.snapshot-restore", "app.migrate",
-		"app.scale", "app.cron-pause",
-		"app.canary-promote",
+		"app.preflight", "app.deploy", "app.rollback", "app.deployment-reconcile", "app.restart", "app.snapshot",
+		"app.snapshot-prune", "app.snapshot-restore", "app.snapshot-import", "app.snapshot-export", "app.migrate",
+		"app.scale", "app.cron-pause", "app.cron-resume", "app.cron-schedule", "app.cron-trigger", "app.cron-trigger-reconcile",
+		"app.canary-promote", "app.cloudflared-mutate",
 		pipeline.CatalogActivationKind, pipeline.DatabaseBaselineKind,
 	})
 }
@@ -47,7 +49,7 @@ func NewOperationWorkerForKinds(db store.ExecutionStore, p *pipeline.Pipeline, k
 	return &OperationWorker{
 		db:       db,
 		pipeline: p,
-		id:       fmt.Sprintf("%s:%d", host, os.Getpid()),
+		id:       fmt.Sprintf("%s:%d:%s", host, os.Getpid(), uuid.NewString()),
 		kinds:    append([]string(nil), kinds...),
 		lease:    90 * time.Second,
 		poll:     2 * time.Second,
@@ -134,11 +136,11 @@ func (w *OperationWorker) handle(ctx context.Context, op *model.Operation, claim
 		if effect.IsDeferred(execErr) {
 			message := fmt.Sprintf("external effect recovery pending: %v", execErr)
 			metadata := deferredEffectMetadata(execErr)
-			if op.Kind == "app.cron-pause" {
+			if op.Kind == "app.cron-pause" || op.Kind == "app.cron-resume" || op.Kind == "app.cron-schedule" || op.Kind == "app.cron-trigger" {
 				if terminal, deferErr := w.deferOrFailCronPauseClaimedOperation(ctx, claim, appLock, message, time.Now().Add(5*time.Second), metadata); deferErr != nil {
-					log.Printf("operation worker: defer unresolved cron pause effect %s: %v", op.ID, deferErr)
+					log.Printf("operation worker: defer unresolved cron effect %s: %v", op.ID, deferErr)
 				} else if terminal {
-					log.Printf("operation worker: cron pause effect retry budget exhausted %s", op.ID)
+					log.Printf("operation worker: cron effect retry budget exhausted %s", op.ID)
 				}
 				return
 			}
@@ -163,7 +165,8 @@ func (w *OperationWorker) handle(ctx context.Context, op *model.Operation, claim
 			log.Printf("operation worker: refusing unfenced pre-finished result %s", op.ID)
 			return
 		}
-		// Committed atomically with the effect (catalog activation).
+		// Committed atomically with the effect (catalog activation or
+		// PostgreSQL deployment completion).
 		result.Publish(ctx)
 		return
 	}

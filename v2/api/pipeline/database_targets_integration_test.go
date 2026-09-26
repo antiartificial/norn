@@ -203,7 +203,7 @@ func (f *targetFixture) executeWithClaim(t *testing.T, operationID string) (*Ope
 	if _, err := f.db.Pool.Exec(ctx, `UPDATE operations SET next_attempt_at = CASE WHEN id=$1 THEN now() - interval '1 second' ELSE now() + interval '1 hour' END WHERE status='queued'`, operationID); err != nil {
 		t.Fatal(err)
 	}
-	claimed, claim, err := f.db.ClaimNextOperation(ctx, "target-worker", 60_000_000_000, []string{"app.snapshot", "app.snapshot-restore", "app.snapshot-prune", "app.migrate", DatabaseBaselineKind})
+	claimed, claim, err := f.db.ClaimNextOperation(ctx, "target-worker", 60_000_000_000, []string{"app.snapshot", "app.snapshot-restore", "app.snapshot-prune", "app.snapshot-import", "app.snapshot-export", "app.migrate", DatabaseBaselineKind})
 	if err != nil || claimed == nil || claimed.ID != operationID {
 		t.Fatalf("claim %s = %+v, %v", operationID, claimed, err)
 	}
@@ -739,9 +739,17 @@ func TestDatabaseTargetsRejectStaleGenerationAndUnboundWork(t *testing.T) {
 	if _, err := f.db.ActivateDatabaseCatalog(ctx, 1, rotated, "operator"); err != nil {
 		t.Fatal(err)
 	}
-	if result, err := f.execute(t, accepted.ID); err != nil || result.Status != model.OperationSucceeded {
+	result, claim, err := f.executeWithClaim(t, accepted.ID)
+	if err != nil || result == nil || result.Status != model.OperationSucceeded {
 		t.Fatalf("execution after credential rotation = %+v, %v", result, err)
 	}
+	// A completed snapshot effect remains the app's unresolved effect until
+	// the operation's terminal CAS is durable. This test continues with new
+	// work against the same app, so finish the first operation as a worker does.
+	if err := f.db.FinishClaimedOperation(ctx, claim, result.Status, result.Message, result.Metadata); err != nil {
+		t.Fatal(err)
+	}
+	result.Publish(ctx)
 
 	// A target generation bump fences work accepted under the old generation.
 	stale, err := f.queue(t, "app.snapshot", map[string]interface{}{})

@@ -104,6 +104,39 @@ func (db *DB) activateDatabaseCatalog(ctx context.Context, expectedCurrent int64
 			return DatabaseCatalogRevision{}, err
 		}
 	}
+	// Unfinished maintenance and source quiescence block catalog changes. A
+	// completed signed recovery retains both rows for audit, but may permit
+	// unrelated catalog changes if its source and target bindings stay exact.
+	var maintenanceActive bool
+	if err := tx.QueryRow(ctx, `WITH valid_release AS (
+		SELECT m.operation_id,m.source_artifact_operation_id
+		FROM mysql_restore_maintenance_fences m
+		JOIN mysql_restore_recovery_intents r ON r.operation_id=m.recovery_operation_id
+			AND r.restore_operation_id=m.operation_id AND r.state='runtime-released'
+		JOIN operations o ON o.id=r.operation_id AND o.status='succeeded'
+		WHERE m.recovery_released_at IS NOT NULL
+		UNION
+		SELECT m.operation_id,m.source_artifact_operation_id
+		FROM mysql_restore_maintenance_fences m
+		JOIN operations o ON o.id=m.recovery_operation_id AND o.status='succeeded'
+			AND o.kind='database.mysql-restore-recovery' AND o.source='private-mysql-restore-reconciliation'
+			AND o.metadata->>'mysqlRestoreRecoveryState'='reconciled-runtime-released'
+		JOIN mysql_restore_recovery_intents r ON r.operation_id=o.metadata->>'priorRecoveryOperationId'
+			AND r.restore_operation_id=m.operation_id AND r.state IN ('target-unlock-intended','target-unlock-proved')
+		JOIN operations p ON p.id=r.operation_id AND p.status='failed'
+			AND p.metadata->>'reconciledByOperationId'=o.id
+		WHERE m.recovery_released_at IS NOT NULL
+	)
+	SELECT EXISTS (SELECT 1 FROM mysql_restore_maintenance_fences m WHERE NOT EXISTS (
+		SELECT 1 FROM valid_release v WHERE v.operation_id=m.operation_id
+	)) OR EXISTS (SELECT 1 FROM mysql_source_snapshot_intents s WHERE NOT EXISTS (
+		SELECT 1 FROM valid_release v WHERE v.source_artifact_operation_id=s.operation_id
+	))`).Scan(&maintenanceActive); err != nil {
+		return DatabaseCatalogRevision{}, err
+	}
+	if maintenanceActive {
+		return DatabaseCatalogRevision{}, ErrMySQLRestoreMaintenanceFence
+	}
 	current, err := loadActiveDatabaseCatalog(ctx, tx)
 	if err != nil && !errors.Is(err, pgx.ErrNoRows) {
 		return DatabaseCatalogRevision{}, err
@@ -117,6 +150,12 @@ func (db *DB) activateDatabaseCatalog(ctx context.Context, expectedCurrent int64
 	}
 	if currentRevision > 0 {
 		if err := database.ValidateTransition(current.Catalog, next); err != nil {
+			return DatabaseCatalogRevision{}, err
+		}
+		if err := rejectMySQLRuntimeLaunchCatalogRetarget(ctx, tx, current.Catalog, next); err != nil {
+			return DatabaseCatalogRevision{}, err
+		}
+		if err := rejectRecoveredMySQLCatalogRetarget(ctx, tx, next); err != nil {
 			return DatabaseCatalogRevision{}, err
 		}
 	}
@@ -149,6 +188,47 @@ func (db *DB) activateDatabaseCatalog(ctx context.Context, expectedCurrent int64
 		return DatabaseCatalogRevision{}, err
 	}
 	return activated, nil
+}
+
+// Historical source and restore rows remain physical launch reservations
+// after recovery. Keep their logical bindings and exact target generations
+// resolvable so a catalog edit cannot strand or bypass those reservations.
+func rejectRecoveredMySQLCatalogRetarget(ctx context.Context, tx pgx.Tx, next database.Catalog) error {
+	rows, err := tx.Query(ctx, `SELECT s.profile_id,s.logical_id,s.source,i.profile_id,i.logical_id,i.target
+		FROM mysql_restore_maintenance_fences m
+		JOIN mysql_source_snapshot_intents s ON s.operation_id=m.source_artifact_operation_id
+		JOIN mysql_restore_intents i ON i.operation_id=m.operation_id
+		WHERE m.recovery_released_at IS NOT NULL`)
+	if err != nil {
+		return err
+	}
+	defer rows.Close()
+	resolver, err := database.NewResolver(next)
+	if err != nil {
+		return err
+	}
+	for rows.Next() {
+		var sourceProfile, sourceLogical, targetProfile, targetLogical string
+		var sourceJSON, targetJSON []byte
+		if err := rows.Scan(&sourceProfile, &sourceLogical, &sourceJSON, &targetProfile, &targetLogical, &targetJSON); err != nil {
+			return err
+		}
+		var source, target database.TargetIdentity
+		if json.Unmarshal(sourceJSON, &source) != nil || json.Unmarshal(targetJSON, &target) != nil {
+			return ErrMySQLRestoreMaintenanceFence
+		}
+		for _, binding := range []struct {
+			profile, logical string
+			identity         database.TargetIdentity
+		}{{sourceProfile, sourceLogical, source}, {targetProfile, targetLogical, target}} {
+			resolved, err := resolver.Resolve(database.ResolveRequest{DeploymentProfileID: binding.profile,
+				Purpose: database.PurposeApplication, LogicalResourceID: binding.logical, Expected: &binding.identity})
+			if err != nil || resolved.Target != binding.identity {
+				return ErrMySQLRestoreMaintenanceFence
+			}
+		}
+	}
+	return rows.Err()
 }
 
 // checkRetirementHistory enforces the durable history independently of the
@@ -193,6 +273,26 @@ func checkRetirementHistory(ctx context.Context, tx pgx.Tx, next database.Catalo
 // (pgx.ErrNoRows) when no catalog has been activated.
 func (db *DB) ActiveDatabaseCatalog(ctx context.Context) (DatabaseCatalogRevision, error) {
 	return loadActiveDatabaseCatalog(ctx, db.Pool)
+}
+
+// DatabaseCatalogRevision returns the immutable catalog accepted by a durable
+// operation. Executors use this rather than following a newer active catalog
+// after an external-effect boundary has been committed.
+func (db *DB) DatabaseCatalogRevision(ctx context.Context, revision int64) (DatabaseCatalogRevision, error) {
+	if db == nil || db.Pool == nil || revision <= 0 {
+		return DatabaseCatalogRevision{}, ErrDatabaseCatalogRevisionConflict
+	}
+	var result DatabaseCatalogRevision
+	var encoded []byte
+	err := db.Pool.QueryRow(ctx, `SELECT revision, catalog, catalog_digest FROM database_catalog_revisions WHERE revision=$1`, revision).
+		Scan(&result.Revision, &encoded, &result.Digest)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return DatabaseCatalogRevision{}, ErrDatabaseCatalogRevisionConflict
+	}
+	if err != nil || json.Unmarshal(encoded, &result.Catalog) != nil {
+		return DatabaseCatalogRevision{}, ErrDatabaseCatalogRevisionConflict
+	}
+	return result, nil
 }
 
 func loadActiveDatabaseCatalog(ctx context.Context, queryer interface {

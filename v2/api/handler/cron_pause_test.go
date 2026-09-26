@@ -27,6 +27,21 @@ func TestCronPauseReplayResolvesBeforeLiveNomadState(t *testing.T) {
 	}
 }
 
+func TestCronResumeReplayResolvesBeforeLiveNomadState(t *testing.T) {
+	accepted := store.AcceptedOperation{Operation: model.Operation{ID: "resume-1", Kind: "app.cron-resume", App: "widgets", Ref: "nightly", Payload: map[string]interface{}{"process": "nightly", "schedule": "0 2 * * *", "modifyIndex": "9007199254740993"}}}
+	p := &pipeline.Pipeline{}
+	p.SetOperationStore(canaryReplayStore{accepted: accepted})
+	h := &Handler{pipeline: p}
+	request := pipeline.EnqueueRequest{Authority: "authority", Actor: store.OperationActor{Issuer: "issuer", Subject: "subject"}, Key: "same-key"}
+	got, replayed, err := h.resolveCronResumeReplay(context.Background(), request, "widgets", "nightly")
+	if err != nil || !replayed || got.Operation.ID != "resume-1" {
+		t.Fatalf("cron resume replay = %+v, replayed=%v, err=%v", got, replayed, err)
+	}
+	if _, _, err := h.resolveCronResumeReplay(context.Background(), request, "widgets", "different"); !errors.Is(err, store.ErrAcceptanceConflict) {
+		t.Fatalf("changed process replay = %v", err)
+	}
+}
+
 func TestCronPauseEffectiveScheduleRejectsStateReadFailure(t *testing.T) {
 	if _, err := cronPauseEffectiveSchedule("0 2 * * *", nil, errors.New("database unavailable")); err == nil {
 		t.Fatal("database read failure fell back to declared schedule")

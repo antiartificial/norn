@@ -231,14 +231,11 @@ func IssueManagedAccessToken(ctx context.Context, secret string, identities stor
 	if secret == "" || identities == nil || ttl <= 0 || ttl > 72*time.Hour {
 		return "", nil, fmt.Errorf("managed token issuance is unavailable")
 	}
-	normalized, err := normalizeAccessTokenScopes(scopes)
+	record, err := NewManagedAccessTokenRecord(subject, scopes, ttl, time.Now())
 	if err != nil {
 		return "", nil, err
 	}
-	now := time.Now().UTC()
-	record := &store.AccessToken{JTI: "norn_" + uuid.NewString(), Subject: subject, Scopes: normalized, IssuedAt: now, ExpiresAt: now.Add(ttl)}
-	claims := tokenClaims{Sub: subject, Iss: "norn", Aud: "norn-control", Use: "access", Managed: true, Iat: now.Unix(), Exp: record.ExpiresAt.Unix(), Jti: record.JTI, Scopes: normalized}
-	token, err := signToken(secret, claims)
+	token, err := SignManagedAccessToken(secret, record)
 	if err != nil {
 		return "", nil, err
 	}
@@ -246,6 +243,44 @@ func IssueManagedAccessToken(ctx context.Context, secret string, identities stor
 		return "", nil, err
 	}
 	return token, record, nil
+}
+
+// NewManagedAccessTokenRecord prepares the non-secret durable state for a
+// managed access token. The caller chooses when to make it durable and when to
+// publish its signed bearer.
+func NewManagedAccessTokenRecord(subject string, scopes []string, ttl time.Duration, issuedAt time.Time) (*store.AccessToken, error) {
+	if ttl <= 0 || ttl > 72*time.Hour || issuedAt.IsZero() {
+		return nil, fmt.Errorf("managed token issuance is unavailable")
+	}
+	normalized, err := normalizeAccessTokenScopes(scopes)
+	if err != nil {
+		return nil, err
+	}
+	issuedAt = issuedAt.UTC()
+	return &store.AccessToken{JTI: "norn_" + uuid.NewString(), Subject: subject, Scopes: normalized, IssuedAt: issuedAt, ExpiresAt: issuedAt.Add(ttl)}, nil
+}
+
+// SignManagedAccessToken recreates the opaque bearer for a durable managed
+// token record. The record deliberately contains no bearer material: its
+// stable identity, issuance time, expiry and normalized scopes are enough to
+// produce the same signed JWT after a crash between durable acceptance and
+// local secret-file publication.
+//
+// Callers that create new credentials must make the record durable before
+// publishing the returned token. This function does not write identity state.
+func SignManagedAccessToken(secret string, record *store.AccessToken) (string, error) {
+	if secret == "" || record == nil || record.JTI == "" || record.ExpiresAt.IsZero() || record.IssuedAt.IsZero() || record.RevokedAt != nil || record.RotatedFrom != "" {
+		return "", fmt.Errorf("managed token signing is unavailable")
+	}
+	normalized, err := normalizeAccessTokenScopes(record.Scopes)
+	if err != nil {
+		return "", err
+	}
+	if record.ExpiresAt.Before(record.IssuedAt) || record.ExpiresAt.Equal(record.IssuedAt) {
+		return "", fmt.Errorf("managed token expiry must follow issuance")
+	}
+	claims := tokenClaims{Sub: record.Subject, Iss: "norn", Aud: "norn-control", Use: "access", Managed: true, Iat: record.IssuedAt.Unix(), Exp: record.ExpiresAt.Unix(), Jti: record.JTI, Scopes: normalized}
+	return signToken(secret, claims)
 }
 
 func (h *Handler) CreateAccessToken(w http.ResponseWriter, r *http.Request) {

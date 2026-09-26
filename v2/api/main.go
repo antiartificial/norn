@@ -171,6 +171,8 @@ func main() {
 	}()
 
 	cloudflared.SetConfigPath(cfg.CloudflaredConfig)
+	cloudflared.SetBinaryPath(cfg.CloudflaredBinary)
+	cloudflared.SetLaunchLabel(cfg.CloudflaredLaunchLabel)
 
 	if err := db.ReconcileExecSessions(context.Background()); err != nil {
 		log.Printf("WARNING: exec session lease recovery: %v", err)
@@ -309,6 +311,7 @@ func main() {
 	// Deploy pipeline
 	pipe := &pipeline.Pipeline{
 		DB:                             db,
+		CheckpointStore:                db,
 		Nomad:                          nomadClient,
 		Consul:                         consulClient,
 		WS:                             ws,
@@ -334,10 +337,12 @@ func main() {
 		ReleaseRequireSBOM:             cfg.ReleaseRequireSBOM,
 		Beacon:                         beaconSvc,
 		Storage:                        s3Client,
+		SnapshotObjects:                s3Client,
 		Redpanda:                       redpandaClient,
 		BuildTestEffects:               buildTestEffects,
 		SnapshotEffects:                snapshotEffects,
 		DatabaseTargets:                databaseTargets,
+		WPColdStartGate:                cfg.WPColdStartGate,
 	}
 	scaleEffects, err := pipeline.NewNomadScaleEffects(db, nomadClient)
 	if err != nil {
@@ -354,11 +359,55 @@ func main() {
 		log.Fatalf("configure durable app.cron-pause effects: %v", err)
 	}
 	pipe.CronPauseEffects = cronPauseEffects
+	cronResumeEffects, err := pipeline.NewNomadCronResumeEffects(db, nomadClient, pipe)
+	if err != nil {
+		log.Fatalf("configure durable app.cron-resume effects: %v", err)
+	}
+	pipe.CronResumeEffects = cronResumeEffects
+	cronScheduleEffects, err := pipeline.NewNomadCronScheduleEffects(db, nomadClient, pipe)
+	if err != nil {
+		log.Fatalf("configure durable app.cron-schedule effects: %v", err)
+	}
+	pipe.CronScheduleEffects = cronScheduleEffects
+	if nomadClient != nil {
+		cronTriggerEffects, triggerErr := pipeline.NewCronTriggerEffects(db, nomadClient)
+		if triggerErr != nil {
+			log.Printf("WARNING: cron trigger effects unavailable: %v", triggerErr)
+		} else {
+			pipe.CronTriggerEffects = cronTriggerEffects
+		}
+	}
 	canaryPromotionEffects, err := pipeline.NewNomadCanaryPromotionEffects(db, nomadClient)
 	if err != nil {
 		log.Fatalf("configure durable app.canary-promote effects: %v", err)
 	}
 	pipe.CanaryPromotionEffects = canaryPromotionEffects
+	cloudflaredEffects, err := pipeline.NewCloudflaredEffects(db)
+	if err != nil {
+		log.Fatalf("configure durable cloudflared effects: %v", err)
+	}
+	pipe.CloudflaredEffects = cloudflaredEffects
+
+	// Construct the acceptance boundary and verify any retained private
+	// invocation envelopes before a worker can claim operations.
+	h := handler.New(db, nomadClient, consulClient, ws, cfg, pipe, beaconSvc, sec, sagaStore, s3Client, redpandaClient)
+	if err := h.OperationStoreError(); err != nil {
+		log.Fatalf("operation acceptance: %v", err)
+	}
+	pipe.SetOperationStore(h.OperationStore())
+	if err := preflightConfiguredPrivateInvocationKeys(context.Background(), cfg, h.OperationStore()); err != nil {
+		log.Fatalf("private invocation startup preflight: %v", err)
+	}
+	functionV3Admission, functionV3Worker, err := configureFunctionV3(cfg, db, pipe, nomadClient, sec, h.OperationStore())
+	if err != nil {
+		log.Fatalf("function v3 startup: %v", err)
+	}
+	if functionV3Worker != nil && os.Getenv("NORN_SKIP_OPERATION_WORKER") == "true" {
+		log.Fatal("function v3 requires the claimed operation worker")
+	}
+	if functionV3Worker != nil && evidenceArchiver == nil {
+		log.Fatal("function v3 requires an evidence archiver")
+	}
 
 	workerCtx, workerCancel := context.WithCancel(context.Background())
 	defer workerCancel()
@@ -367,6 +416,10 @@ func main() {
 	} else {
 		opWorker := worker.NewOperationWorker(db, pipe)
 		go opWorker.Run(workerCtx)
+		if functionV3Worker != nil {
+			go functionV3Worker.Run(workerCtx, 2*time.Second)
+			go (&worker.FunctionInvocationCleanupConsumer{Store: db, Remote: nomadClient}).Run(workerCtx, 5*time.Second)
+		}
 	}
 	if evidenceArchiver != nil {
 		log.Printf("evidence archive enabled in %s mode", evidenceArchiver.Mode)
@@ -379,12 +432,6 @@ func main() {
 		go nomadWatcher.Run(workerCtx)
 	}
 
-	// Handler
-	h := handler.New(db, nomadClient, consulClient, ws, cfg, pipe, beaconSvc, sec, sagaStore, s3Client, redpandaClient)
-	if err := h.OperationStoreError(); err != nil {
-		log.Fatalf("operation acceptance: %v", err)
-	}
-	pipe.SetOperationStore(h.OperationStore())
 	logSpool, logCollector, err := configureLogCollection(cfg, nomadClient)
 	if err != nil {
 		log.Fatalf("log collection: %v", err)
@@ -558,6 +605,8 @@ func main() {
 		r.Get("/v1/database/catalog", h.GetDatabaseCatalog)
 		r.Post("/v1/database/catalog/activations", h.ActivateDatabaseCatalog)
 		r.With(handler.ValidateAppID).Post("/v1/apps/{id}/rollbacks", h.QueueAppRollback)
+		r.With(handler.ValidateAppID).Post("/v1/apps/{id}/operations/{operationID}/deployment-reconciliation", h.QueueDeploymentReconciliation)
+		r.With(handler.ValidateAppID).Post("/v1/apps/{id}/operations/{operationID}/cron-trigger-reconciliation", h.QueueCronTriggerReconciliation)
 		r.Post("/v1/validate/infraspec", h.ValidateInfraSpecDocument)
 		r.Post("/v1/fleet/validate", h.ValidateFleetDocument)
 		r.Get("/v1/fleet/node-pools", h.FleetInventory)
@@ -591,6 +640,7 @@ func main() {
 		r.Get("/v1/events/info", ws.HandleInfo)
 		r.Get("/v1/events", ws.HandleConnect)
 		r.Get("/v1/operations/{id}", h.GetOperation)
+		r.Get("/v1/operations/{id}/mysql-restore-inspection", h.GetMySQLRestoreInspection)
 		r.Post("/v1/operations/{id}/cancel", h.CancelOperation)
 		r.Post("/v1/platform/preflights", h.QueuePlatformPreflight)
 		r.Post("/v1/platform/upgrades", h.QueuePlatformUpgrade)
@@ -619,7 +669,11 @@ func main() {
 			r.Post("/cron/pause", h.CronPause)
 			r.Post("/cron/resume", h.CronResume)
 			r.Put("/cron/schedule", h.CronUpdateSchedule)
-			r.Post("/invoke", h.InvokeFunction)
+			// Function invocation has one execution boundary: signed acceptance
+			// followed by the claimed worker. An incomplete capability is an
+			// explicit unavailable endpoint; it must never fall back to the
+			// legacy HTTP-to-Nomad submission path.
+			r.Post("/invoke", functionInvocationRoute(functionV3Admission))
 			r.Get("/function/history", h.FunctionHistory)
 			r.Get("/canary", h.CanaryStatus)
 			r.Post("/promote", h.PromoteCanary)
@@ -670,12 +724,37 @@ func validateControlSecurity(cfg *config.Config) error {
 	return validateControlSecurityForBackend(cfg, startup.ControlBackendConfig{Backend: startup.BackendPostgres})
 }
 
+// preflightConfiguredPrivateInvocationKeys leaves the existing runtime fully
+// dormant unless its capability is explicitly enabled. When enabled, the
+// control store is read before workers or HTTP serving begin so a restored
+// record cannot become unreadable after the process accepts traffic.
+func preflightConfiguredPrivateInvocationKeys(ctx context.Context, cfg *config.Config, operations store.OperationStore) error {
+	if cfg == nil || !cfg.PrivateInvocationEnabled {
+		return nil
+	}
+	ring, err := startup.PrivateInvocationKeyRingFromRuntimeConfig(true, cfg.PrivateInvocationCurrentKeyID, cfg.PrivateInvocationKeys)
+	if err != nil {
+		return err
+	}
+	invocationStore, ok := operations.(store.PrivateInvocationStore)
+	if !ok {
+		return fmt.Errorf("private invocation store is unavailable")
+	}
+	return startup.PreflightPrivateInvocationKeys(ctx, invocationStore, ring)
+}
+
 func validateControlSecurityForBackend(cfg *config.Config, backend startup.ControlBackendConfig) error {
 	if cfg == nil {
 		return fmt.Errorf("configuration is required")
 	}
+	if cfg.FunctionV3PreviewEnabled && (!cfg.PrivateInvocationEnabled || backend.Backend != startup.BackendPostgres) {
+		return fmt.Errorf("NORN_FUNCTION_V3_PREVIEW_ENABLED requires private invocation acceptance on PostgreSQL")
+	}
 	if cfg.OperationReplayTTL < 0 {
 		return fmt.Errorf("NORN_OPERATION_REPLAY_TTL must be zero or a positive Go duration")
+	}
+	if _, err := startup.PrivateInvocationKeyRingFromRuntimeConfig(cfg.PrivateInvocationEnabled, cfg.PrivateInvocationCurrentKeyID, cfg.PrivateInvocationKeys); err != nil {
+		return err
 	}
 	if cfg.APIToken != "" && len(cfg.APIToken) < 32 {
 		return fmt.Errorf("NORN_API_TOKEN must contain at least 32 bytes")
@@ -1057,7 +1136,7 @@ func writeControlCapabilities(w http.ResponseWriter, cfg *config.Config) {
 		},
 		// #nosec G101 -- this map advertises endpoint paths; it contains no credentials.
 		"endpoints": map[string]string{
-			"events": "/api/v1/events", "operations": "/api/v1/operations/{id}",
+			"events": "/api/v1/events", "operations": "/api/v1/operations/{id}", "mysqlRestoreInspection": "/api/v1/operations/{id}/mysql-restore-inspection",
 			"platformPreflights": "/api/v1/platform/preflights", "platformUpgrades": "/api/v1/platform/upgrades",
 			"platformRollbacks": "/api/v1/platform/rollbacks", "platformSmoke": "/api/v1/platform/smoke", "hostAssurances": "/api/v1/host/assurances",
 			"openapi": "/api/v1/openapi.yaml", "eventInfo": "/api/v1/events/info", "apps": "/api/v1/apps", "appCreation": "/api/v1/apps", "appDeployment": "/api/v1/apps/{id}/deployment",

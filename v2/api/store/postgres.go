@@ -527,8 +527,8 @@ const controlSchemaBaselineSQL = `
 // archive-aware and never serve pruned history as complete.
 const (
 	EvidenceArchiveReaderVersion int64 = 2
-	ControlSchemaReaderVersion   int64 = OperationAcceptanceRetirementReaderVersion
-	ControlSchemaWriterVersion   int64 = OperationAcceptanceRetirementWriterVersion
+	ControlSchemaReaderVersion   int64 = MySQLRetainedArtifactReaderVersion
+	ControlSchemaWriterVersion   int64 = SnapshotExportIntentWriterVersion
 )
 
 // ControlSchemaMigrations returns a copy of the ordered, forward-only control
@@ -540,7 +540,7 @@ func ControlSchemaMigrations() []SchemaMigration {
 		SQL:                  controlSchemaBaselineSQL,
 		MinimumReaderVersion: 0,
 		MinimumWriterVersion: 0,
-	}, operationAcceptanceMigration(), operationEffectsMigration(), operationCheckpointsMigration(), databaseCatalogMigration(), evidenceArchiveMigration(), evidenceArchiveReaderMigration(), evidenceReserveMigration(), eventReplayRetentionMigration(), nonSagaEvidenceMigration(), desiredReplicasMigration(), regionalDesiredReplicasMigration(), restartEffectSourcesMigration(), signedAcceptanceByteReserveMigration(), operationReplayExpiryMigration(), snapshotPublicationMigration(), operationAcceptanceRetirementMigration()}
+	}, operationAcceptanceMigration(), operationEffectsMigration(), operationCheckpointsMigration(), databaseCatalogMigration(), evidenceArchiveMigration(), evidenceArchiveReaderMigration(), evidenceReserveMigration(), eventReplayRetentionMigration(), nonSagaEvidenceMigration(), desiredReplicasMigration(), regionalDesiredReplicasMigration(), restartEffectSourcesMigration(), signedAcceptanceByteReserveMigration(), operationReplayExpiryMigration(), snapshotPublicationMigration(), operationAcceptanceRetirementMigration(), privateInvocationMigration(), functionInvocationEffectAttemptsMigration(), functionInvocationCleanupMigration(), functionInvocationArchiveMigration(), functionDeploymentProvenanceMigration(), functionInvocationReaderContractMigration(), mysqlRestoreIntentMigration(), mysqlRestoreMaintenanceFenceMigration(), mysqlRuntimeLaunchReservationMigration(), mysqlRestoreRuntimeLockMigration(), runtimeMutationFenceMigration(), mysqlSourceSnapshotIntentMigration(), mysqlSourceSnapshotStopMigration(), mysqlSourceSnapshotAccountLockMigration(), mysqlSourceSnapshotArtifactMigration(), mysqlRestoreReceiptMigration(), mysqlRestoreFenceTransferMigration(), mysqlSourceSnapshotRetentionMigration(), mysqlRestoreRecoveryMigration(), mysqlRestoreRecoveryUnlockMigration(), mysqlRestoreRecoveryReleaseMigration(), snapshotExportIntentMigration(), mysqlSourceSnapshotReconciliationMigration(), mysqlSourceSnapshotProvedSuccessorMigration(), mysqlSourceSnapshotStageSuccessorMigration(), mysqlSourceSnapshotPublishSuccessorMigration()}
 }
 
 func NewControlSchemaMigrator(db *DB) (*SchemaMigrator, error) {
@@ -573,9 +573,9 @@ func Migrate(db *DB) error {
 func (db *DB) InsertDeployment(ctx context.Context, d *model.Deployment) error {
 	changes, _ := json.Marshal(d.SourceChanges)
 	_, err := db.Pool.Exec(ctx,
-		`INSERT INTO deployments (id, app, commit_sha, image_tag, environment, saga_id, status, source_kind, source_ref, source_dirty, source_changes, started_at)
-		 VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12)`,
-		d.ID, d.App, d.CommitSHA, d.ImageTag, d.Environment, d.SagaID, d.Status, d.SourceKind, d.SourceRef, d.SourceDirty, changes, d.StartedAt,
+		`INSERT INTO deployments (id, app, commit_sha, image_tag, spec_digest, environment, saga_id, status, source_kind, source_ref, source_dirty, source_changes, started_at)
+		 VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13)`,
+		d.ID, d.App, d.CommitSHA, d.ImageTag, d.SpecDigest, d.Environment, d.SagaID, d.Status, d.SourceKind, d.SourceRef, d.SourceDirty, changes, d.StartedAt,
 	)
 	return err
 }
@@ -656,18 +656,40 @@ func (db *DB) UpdateDeploymentResult(ctx context.Context, d *model.Deployment) e
 	}
 	_, err := db.Pool.Exec(ctx,
 		`UPDATE deployments
-		 SET status = $1, commit_sha = $2, image_tag = $3, environment = $4, source_kind = $5, source_ref = $6, source_dirty = $7, source_changes = $8, finished_at = $9
-		 WHERE id = $10`,
-		d.Status, d.CommitSHA, d.ImageTag, d.Environment, d.SourceKind, d.SourceRef, d.SourceDirty, changes, finished, d.ID,
+		 SET status = $1, commit_sha = $2, image_tag = $3, environment = $4, source_kind = $5, source_ref = $6, source_dirty = $7, source_changes = $8, finished_at = $9, spec_digest = $10
+		 WHERE id = $11`,
+		d.Status, d.CommitSHA, d.ImageTag, d.Environment, d.SourceKind, d.SourceRef, d.SourceDirty, changes, finished, d.SpecDigest, d.ID,
 	)
 	return err
+}
+
+// FunctionDeploymentBinding returns the active environment's last successful
+// image and the spec digest recorded with that deployment's result. Failed
+// attempts do not displace it. Newer active attempts and unproven rollbacks
+// fail closed because Nomad may already be running a different image.
+func (db *DB) FunctionDeploymentBinding(ctx context.Context, app, environment string) (image, specDigest string, err error) {
+	err = db.Pool.QueryRow(ctx, `SELECT d.image_tag, d.spec_digest FROM deployments d
+		WHERE d.app=$1 AND d.environment=$2 AND d.status='deployed'
+		AND NOT EXISTS (
+			SELECT 1 FROM deployments newer WHERE newer.app=d.app AND newer.environment=d.environment
+			AND (newer.started_at, newer.id) > (d.started_at, d.id)
+			AND newer.status NOT IN ('deployed','failed')
+		)
+		ORDER BY d.started_at DESC, d.id DESC LIMIT 1`, app, environment).Scan(&image, &specDigest)
+	if err != nil {
+		return "", "", err
+	}
+	if image == "" || specDigest == "" {
+		return "", "", fmt.Errorf("function deployment binding unavailable")
+	}
+	return image, specDigest, nil
 }
 
 func (db *DB) ListDeployments(ctx context.Context, app string, limit int) ([]model.Deployment, error) {
 	if limit <= 0 {
 		limit = 20
 	}
-	query := `SELECT id, app, commit_sha, image_tag, environment, saga_id, status, source_kind, source_ref, source_dirty, source_changes, started_at, finished_at
+	query := `SELECT id, app, commit_sha, image_tag, spec_digest, environment, saga_id, status, source_kind, source_ref, source_dirty, source_changes, started_at, finished_at
 		 FROM deployments`
 	args := []interface{}{}
 	if app != "" {
@@ -682,18 +704,28 @@ func (db *DB) ListDeployments(ctx context.Context, app string, limit int) ([]mod
 	if err != nil {
 		return nil, err
 	}
-	defer rows.Close()
 
 	var deployments []model.Deployment
 	for rows.Next() {
 		var d model.Deployment
 		var changes []byte
-		if err := rows.Scan(&d.ID, &d.App, &d.CommitSHA, &d.ImageTag, &d.Environment, &d.SagaID, &d.Status, &d.SourceKind, &d.SourceRef, &d.SourceDirty, &changes, &d.StartedAt, &d.FinishedAt); err != nil {
+		if err := rows.Scan(&d.ID, &d.App, &d.CommitSHA, &d.ImageTag, &d.SpecDigest, &d.Environment, &d.SagaID, &d.Status, &d.SourceKind, &d.SourceRef, &d.SourceDirty, &changes, &d.StartedAt, &d.FinishedAt); err != nil {
+			rows.Close()
 			return nil, err
 		}
 		_ = json.Unmarshal(changes, &d.SourceChanges)
-		d.Regions, _ = db.DeploymentRegions(ctx, d.ID)
 		deployments = append(deployments, d)
+	}
+	if err := rows.Err(); err != nil {
+		rows.Close()
+		return nil, err
+	}
+	// Release the row cursor's connection before fetching regions. Concurrent
+	// readers can otherwise occupy every pool connection with open deployment
+	// cursors and deadlock while each waits for a nested region query.
+	rows.Close()
+	for i := range deployments {
+		deployments[i].Regions, _ = db.DeploymentRegions(ctx, deployments[i].ID)
 	}
 	return deployments, nil
 }
@@ -702,11 +734,11 @@ func (db *DB) GetDeployment(ctx context.Context, id string) (*model.Deployment, 
 	var d model.Deployment
 	var changes []byte
 	err := db.Pool.QueryRow(ctx,
-		`SELECT id, app, commit_sha, image_tag, environment, saga_id, status, source_kind, source_ref, source_dirty, source_changes, started_at, finished_at
+		`SELECT id, app, commit_sha, image_tag, spec_digest, environment, saga_id, status, source_kind, source_ref, source_dirty, source_changes, started_at, finished_at
 		 FROM deployments
 		 WHERE id = $1`,
 		id,
-	).Scan(&d.ID, &d.App, &d.CommitSHA, &d.ImageTag, &d.Environment, &d.SagaID, &d.Status, &d.SourceKind, &d.SourceRef, &d.SourceDirty, &changes, &d.StartedAt, &d.FinishedAt)
+	).Scan(&d.ID, &d.App, &d.CommitSHA, &d.ImageTag, &d.SpecDigest, &d.Environment, &d.SagaID, &d.Status, &d.SourceKind, &d.SourceRef, &d.SourceDirty, &changes, &d.StartedAt, &d.FinishedAt)
 	if err != nil {
 		return nil, err
 	}
@@ -715,16 +747,16 @@ func (db *DB) GetDeployment(ctx context.Context, id string) (*model.Deployment, 
 	return &d, nil
 }
 
-func (db *DB) LastSuccessfulDeployment(ctx context.Context, app, excludeID string) (*model.Deployment, error) {
+func (db *DB) LastSuccessfulDeployment(ctx context.Context, app, environment, excludeID string) (*model.Deployment, error) {
 	var d model.Deployment
 	var changes []byte
 	err := db.Pool.QueryRow(ctx,
-		`SELECT id, app, commit_sha, image_tag, environment, saga_id, status, source_kind, source_ref, source_dirty, source_changes, started_at, finished_at
+		`SELECT id, app, commit_sha, image_tag, spec_digest, environment, saga_id, status, source_kind, source_ref, source_dirty, source_changes, started_at, finished_at
 		 FROM deployments
-		 WHERE app = $1 AND status = 'deployed' AND id != $2
+		 WHERE app = $1 AND environment = $2 AND status = 'deployed' AND id != $3
 		 ORDER BY started_at DESC LIMIT 1`,
-		app, excludeID,
-	).Scan(&d.ID, &d.App, &d.CommitSHA, &d.ImageTag, &d.Environment, &d.SagaID, &d.Status, &d.SourceKind, &d.SourceRef, &d.SourceDirty, &changes, &d.StartedAt, &d.FinishedAt)
+		app, environment, excludeID,
+	).Scan(&d.ID, &d.App, &d.CommitSHA, &d.ImageTag, &d.SpecDigest, &d.Environment, &d.SagaID, &d.Status, &d.SourceKind, &d.SourceRef, &d.SourceDirty, &changes, &d.StartedAt, &d.FinishedAt)
 	if err != nil {
 		return nil, err
 	}
@@ -738,9 +770,9 @@ func (db *DB) LastSuccessfulDeployment(ctx context.Context, app, excludeID strin
 func (db *DB) LatestSuccessfulDeployment(ctx context.Context, app, environment string) (*model.Deployment, error) {
 	var d model.Deployment
 	var changes []byte
-	err := db.Pool.QueryRow(ctx, `SELECT id, app, commit_sha, image_tag, environment, saga_id, status, source_kind, source_ref, source_dirty, source_changes, started_at, finished_at
+	err := db.Pool.QueryRow(ctx, `SELECT id, app, commit_sha, image_tag, spec_digest, environment, saga_id, status, source_kind, source_ref, source_dirty, source_changes, started_at, finished_at
 		 FROM deployments WHERE app=$1 AND environment=$2 AND status='deployed' ORDER BY started_at DESC LIMIT 1`, app, environment).
-		Scan(&d.ID, &d.App, &d.CommitSHA, &d.ImageTag, &d.Environment, &d.SagaID, &d.Status, &d.SourceKind, &d.SourceRef, &d.SourceDirty, &changes, &d.StartedAt, &d.FinishedAt)
+		Scan(&d.ID, &d.App, &d.CommitSHA, &d.ImageTag, &d.SpecDigest, &d.Environment, &d.SagaID, &d.Status, &d.SourceKind, &d.SourceRef, &d.SourceDirty, &changes, &d.StartedAt, &d.FinishedAt)
 	if err != nil {
 		return nil, err
 	}
@@ -885,6 +917,23 @@ func (db *DB) UpsertCronState(ctx context.Context, app, process string, paused b
 // with its terminal receipt. The operation lease is checked in the same
 // transaction so a superseded worker cannot publish stale cron state.
 func (db *DB) FinishCronPauseClaimedOperation(ctx context.Context, claim OperationClaim, app, process, schedule, message string, metadata map[string]interface{}) error {
+	return db.finishCronClaimedOperation(ctx, claim, app, process, schedule, true, message, metadata)
+}
+
+// FinishCronResumeClaimedOperation commits the verified Nomad resume and the
+// durable unpaused state under one operation claim fence.
+func (db *DB) FinishCronResumeClaimedOperation(ctx context.Context, claim OperationClaim, app, process, schedule, message string, metadata map[string]interface{}) error {
+	return db.finishCronClaimedOperation(ctx, claim, app, process, schedule, false, message, metadata)
+}
+
+// FinishCronScheduleClaimedOperation commits a verified periodic replacement,
+// its effective schedule, and its terminal evidence intent in one claim-fenced
+// transaction. The previous state remains intact until this point.
+func (db *DB) FinishCronScheduleClaimedOperation(ctx context.Context, claim OperationClaim, app, process string, paused bool, schedule, message string, metadata map[string]interface{}) error {
+	return db.finishCronClaimedOperation(ctx, claim, app, process, schedule, paused, message, metadata)
+}
+
+func (db *DB) finishCronClaimedOperation(ctx context.Context, claim OperationClaim, app, process, schedule string, paused bool, message string, metadata map[string]interface{}) error {
 	if err := validateOperationClaim(claim); err != nil {
 		return err
 	}
@@ -913,7 +962,7 @@ func (db *DB) FinishCronPauseClaimedOperation(ctx context.Context, claim Operati
 	if status != "running" || owner != claim.OwnerID() || generation != claim.Generation() || lockedUntil == nil || !lockedUntil.After(now) {
 		return ownershipLost(claim)
 	}
-	if _, err = tx.Exec(ctx, `INSERT INTO cron_states (app, process, paused, schedule, updated_at) VALUES ($1,$2,true,$3,now()) ON CONFLICT (app,process) DO UPDATE SET paused=true,schedule=EXCLUDED.schedule,updated_at=now()`, app, process, schedule); err != nil {
+	if _, err = tx.Exec(ctx, `INSERT INTO cron_states (app, process, paused, schedule, updated_at) VALUES ($1,$2,$3,$4,now()) ON CONFLICT (app,process) DO UPDATE SET paused=EXCLUDED.paused,schedule=EXCLUDED.schedule,updated_at=now()`, app, process, paused, schedule); err != nil {
 		return err
 	}
 	var sagaID, operationApp string

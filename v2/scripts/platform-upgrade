@@ -6,6 +6,7 @@ usage() {
 Usage:
   platform-upgrade preflight [ref]
   platform-upgrade upgrade [ref]
+  platform-upgrade legacy-baseline [ref] --legacy-release <full-sha> --backup-proof <path> --backup-artifact <path>
   platform-upgrade releases
   platform-upgrade rollback <sha-prefix>
   platform-upgrade smoke
@@ -43,6 +44,9 @@ Environment:
   NORN_PROXY_RELOAD        Set true to reload caddy after proxy-switch.
   NORN_API_ENV_FILE        SOPS JSON env file for smoke/env-exec.
   NORN_NODE_BIN            Node.js 24 executable used for UI release builds.
+  NORN_LEGACY_API_PATH     Legacy LaunchAgent executable. Defaults to NORN_BIN_DIR/norn-api.
+  NORN_LEGACY_BACKUP_MAX_AGE_SECONDS Maximum permitted backup-proof age. Defaults to 3600.
+  NORN_LEGACY_FENCE_STATE_PATH Persistent legacy-fence record. Defaults beside NORN_LEGACY_API_PATH.
 USAGE
 }
 
@@ -67,11 +71,45 @@ fi
 shift || true
 
 case "$mode" in
-  preflight|upgrade|releases|rollback|smoke|env-exec|startup-contract|proxy-plan|proxy-status|proxy-render|proxy-switch) ;;
+  preflight|upgrade|legacy-baseline|releases|rollback|smoke|env-exec|startup-contract|proxy-plan|proxy-status|proxy-render|proxy-switch) ;;
   *) usage >&2; exit 2 ;;
 esac
 
 ref="${1:-HEAD}"
+legacy_release_sha=""
+legacy_backup_proof=""
+legacy_backup_artifact=""
+if [[ "$mode" == "legacy-baseline" ]]; then
+  ref="HEAD"
+  while [[ "$#" -gt 0 ]]; do
+    case "$1" in
+      --legacy-release)
+        [[ "$#" -ge 2 ]] || fail "legacy-baseline requires a value after --legacy-release"
+        legacy_release_sha="$2"
+        shift 2
+        ;;
+      --backup-proof)
+        [[ "$#" -ge 2 ]] || fail "legacy-baseline requires a value after --backup-proof"
+        legacy_backup_proof="$2"
+        shift 2
+        ;;
+      --backup-artifact)
+        [[ "$#" -ge 2 ]] || fail "legacy-baseline requires a value after --backup-artifact"
+        legacy_backup_artifact="$2"
+        shift 2
+        ;;
+      --*) fail "unknown legacy-baseline option: $1" ;;
+      *)
+        [[ "$ref" == "HEAD" ]] || fail "legacy-baseline accepts at most one release ref"
+        ref="$1"
+        shift
+        ;;
+    esac
+  done
+  [[ -n "$legacy_release_sha" ]] || fail "legacy-baseline requires --legacy-release"
+  [[ -n "$legacy_backup_proof" ]] || fail "legacy-baseline requires --backup-proof"
+  [[ -n "$legacy_backup_artifact" ]] || fail "legacy-baseline requires --backup-artifact"
+fi
 script_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 default_repo="$(cd "$script_dir/../.." && pwd)"
 repo="${NORN_PLATFORM_REPO:-$default_repo}"
@@ -79,6 +117,9 @@ v2="$repo/v2"
 releases="${NORN_RELEASES_DIR:-$HOME/norn/releases}"
 current_link="${NORN_CURRENT_LINK:-$HOME/norn/current}"
 bin_dir="${NORN_BIN_DIR:-$HOME/go/bin}"
+legacy_api_path="${NORN_LEGACY_API_PATH:-$bin_dir/norn-api}"
+legacy_backup_max_age_seconds="${NORN_LEGACY_BACKUP_MAX_AGE_SECONDS:-3600}"
+legacy_fence_state_path="${NORN_LEGACY_FENCE_STATE_PATH:-$(dirname "$legacy_api_path")/.norn-legacy-baseline-fence.json}"
 host_agent_bin="${NORN_HOST_AGENT_BIN:-$HOME/.config/norn/host/bin/norn-host-agent}"
 platform_script_bin="${NORN_PLATFORM_SCRIPT_BIN:-$HOME/.config/norn/host/bin/platform-upgrade}"
 host_runtime_bin="${NORN_HOST_RUNTIME_BIN:-$HOME/.config/norn/host/bin/host-runtime}"
@@ -561,6 +602,195 @@ release_version() {
     fi
   fi
   printf '%s\n' "$fallback"
+}
+
+release_sha() {
+  local target="$1" declared="" output=""
+  if [[ -f "$target/release.env" ]]; then
+    declared="$(grep '^NORN_RELEASE_SHA=' "$target/release.env" | head -1 | cut -d= -f2- || true)"
+  fi
+  output="${declared:-$(basename "$target")}"
+  printf '%s\n' "$output"
+}
+
+direct_loopback_api_port() {
+  require_cmd python3
+  python3 - "$api_base" <<'PY'
+import sys
+import urllib.parse
+
+parsed = urllib.parse.urlsplit(sys.argv[1])
+if parsed.scheme != "http" or parsed.hostname not in {"127.0.0.1", "::1"} or parsed.username or parsed.password:
+    raise SystemExit(1)
+if parsed.path not in {"", "/"} or parsed.query or parsed.fragment or parsed.port is None:
+    raise SystemExit(1)
+print(parsed.port)
+PY
+}
+
+legacy_baseline_validate_backup_proof() {
+  local signing_key="${NORN_AUDIT_SIGNING_KEY:-}"
+  [[ "$legacy_release_sha" =~ ^[0-9a-f]{40}$ ]] || fail "legacy-baseline requires a lowercase 40-character --legacy-release SHA"
+  [[ -n "$legacy_backup_proof" && -f "$legacy_backup_proof" ]] || fail "legacy-baseline requires an existing --backup-proof file"
+  [[ "$legacy_backup_max_age_seconds" =~ ^[1-9][0-9]*$ ]] || fail "NORN_LEGACY_BACKUP_MAX_AGE_SECONDS must be a positive integer"
+  [[ -n "${NORN_DATABASE_URL:-}" && ${#signing_key} -ge 32 ]] || fail "legacy-baseline requires NORN_DATABASE_URL and a 32-byte NORN_AUDIT_SIGNING_KEY to bind backup proof"
+  require_cmd python3
+  if ! python3 - "$legacy_backup_proof" "$legacy_backup_artifact" "$legacy_release_sha" "$legacy_backup_max_age_seconds" <<'PY'
+import datetime
+import hashlib
+import hmac
+import json
+import os
+import stat
+import sys
+
+proof_path, artifact_path, expected_release, maximum_age = sys.argv[1:]
+for path, label in ((proof_path, "backup proof"), (artifact_path, "backup artifact")):
+    if not os.path.isabs(path):
+        raise SystemExit(f"{label} must use an absolute path")
+    metadata = os.lstat(path)
+    if not stat.S_ISREG(metadata.st_mode) or stat.S_ISLNK(metadata.st_mode):
+        raise SystemExit(f"{label} must be a regular non-symlink file")
+    if metadata.st_uid != os.geteuid():
+        raise SystemExit(f"{label} must be owned by the invoking user")
+    if stat.S_IMODE(metadata.st_mode) != 0o600:
+        raise SystemExit(f"{label} must have mode 0600")
+    if label == "backup artifact" and metadata.st_size <= 0:
+        raise SystemExit("backup artifact must not be empty")
+
+def strict_object(pairs):
+    value = {}
+    for key, item in pairs:
+        if key in value:
+            raise ValueError("duplicate proof field")
+        value[key] = item
+    return value
+
+with open(proof_path, encoding="utf-8") as handle:
+    proof = json.load(handle, object_pairs_hook=strict_object)
+expected_fields = {"schema", "sourceReleaseSHA", "databaseIdentity", "backupSHA256", "backupBytes", "createdAt"}
+if type(proof) is not dict or set(proof) != expected_fields:
+    raise SystemExit("backup proof fields are not exact")
+if proof["schema"] != "norn.legacy-control-backup/v1":
+    raise SystemExit("backup proof schema is unsupported")
+if proof["sourceReleaseSHA"] != expected_release:
+    raise SystemExit("backup proof source release does not match --legacy-release")
+if not isinstance(proof["backupSHA256"], str) or len(proof["backupSHA256"]) != 64 or any(ch not in "0123456789abcdef" for ch in proof["backupSHA256"]):
+    raise SystemExit("backup proof digest is invalid")
+if type(proof["backupBytes"]) is not int or proof["backupBytes"] != os.lstat(artifact_path).st_size:
+    raise SystemExit("backup proof size does not match the backup artifact")
+digest = hashlib.sha256()
+with open(artifact_path, "rb") as handle:
+    for chunk in iter(lambda: handle.read(1024 * 1024), b""):
+        digest.update(chunk)
+if not hmac.compare_digest(proof["backupSHA256"], digest.hexdigest()):
+    raise SystemExit("backup proof digest does not match the backup artifact")
+try:
+    created = datetime.datetime.fromisoformat(proof["createdAt"].replace("Z", "+00:00"))
+except (TypeError, ValueError):
+    raise SystemExit("backup proof timestamp is invalid")
+if created.tzinfo is None:
+    raise SystemExit("backup proof timestamp needs an offset")
+age = (datetime.datetime.now(datetime.timezone.utc) - created.astimezone(datetime.timezone.utc)).total_seconds()
+if age < -300 or age > int(maximum_age):
+    raise SystemExit("backup proof is outside the permitted age")
+database_url = os.environ["NORN_DATABASE_URL"].encode()
+signing_key = os.environ["NORN_AUDIT_SIGNING_KEY"].encode()
+expected_identity = "hmac-sha256:" + hmac.new(signing_key, b"norn.database-identity/v1\0" + database_url, hashlib.sha256).hexdigest()
+if not isinstance(proof["databaseIdentity"], str) or not hmac.compare_digest(proof["databaseIdentity"], expected_identity):
+    raise SystemExit("backup proof database identity does not match this upgrade")
+PY
+  then
+    fail "legacy-baseline backup proof is invalid or does not bind the current control database"
+  fi
+}
+
+legacy_baseline_require_drained() {
+  [[ "$drain_mode" == "fail" ]] || fail "legacy-baseline requires NORN_DRAIN_MODE=fail"
+  [[ -n "${NORN_TOKEN:-${NORN_API_TOKEN:-}}" ]] || fail "legacy-baseline requires an authenticated operation-drain token"
+  local count
+  if ! count="$(active_operation_count)"; then
+    fail "legacy-baseline cannot verify the legacy operation drain"
+  fi
+  [[ "$count" =~ ^[0-9]+$ ]] || fail "legacy-baseline received an invalid legacy operation count"
+  [[ "$count" == "0" ]] || fail "legacy-baseline requires zero active operations before fencing"
+  log "legacy operation drain clear"
+}
+
+legacy_baseline_fence_service() {
+  [[ -L "$current_link" ]] || fail "legacy-baseline requires a current release link"
+  local legacy_release legacy_binary configured_sha launch_state legacy_pid listener_pids active_port
+  legacy_release="$(readlink "$current_link")"
+  [[ -d "$legacy_release" ]] || fail "legacy-baseline current release link is invalid: $legacy_release"
+  configured_sha="$(release_sha "$legacy_release")"
+  [[ "$configured_sha" == "$legacy_release_sha" ]] || fail "--legacy-release does not match the current release identity"
+  legacy_binary="$legacy_release/bin/norn-api"
+  [[ -x "$legacy_binary" && -x "$legacy_api_path" ]] || fail "legacy-baseline requires both release and LaunchAgent API binaries"
+  require_cmd cmp
+  if ! cmp -s "$legacy_binary" "$legacy_api_path"; then
+    fail "legacy LaunchAgent API binary does not exactly match the declared current release"
+  fi
+  require_cmd launchctl
+  require_cmd lsof
+  if ! active_port="$(direct_loopback_api_port)"; then
+    fail "legacy-baseline supports only a direct numeric-loopback restart lane; proxy or remote API binding is not proven"
+  fi
+  if ! launch_state="$(launchctl print "gui/$(id -u)/$launch_label" 2>/dev/null)"; then
+    fail "legacy-baseline cannot inspect launchd service $launch_label"
+  fi
+  legacy_pid="$(awk '/^[[:space:]]*pid = [0-9]+/{print $3; exit}' <<<"$launch_state")"
+  [[ "$legacy_pid" =~ ^[1-9][0-9]+$ ]] || fail "legacy-baseline launchd service has no running legacy PID"
+  listener_pids="$(lsof -nP -iTCP:"$active_port" -sTCP:LISTEN -t 2>/dev/null | sort -u || true)"
+  [[ "$listener_pids" == "$legacy_pid" ]] || fail "legacy-baseline API listener is not owned solely by the launchd legacy PID"
+
+  local fence_dir staged
+  fence_dir="$(dirname "$legacy_api_path")"
+  mkdir -p "$fence_dir"
+  mkdir -p "$(dirname "$legacy_fence_state_path")"
+  staged="$fence_dir/.norn-api-legacy-fence.$$"
+  umask 077
+  printf '%s\n' '#!/usr/bin/env bash' 'printf "norn legacy baseline fence active; candidate recovery is required\n" >&2' 'exit 78' > "$staged"
+  chmod 0755 "$staged"
+  mv -f "$staged" "$legacy_api_path"
+  printf '{"schema":"norn.legacy-baseline-fence/v1","legacyReleaseSHA":"%s","legacyPID":%s,"state":"legacy-fenced"}\n' "$legacy_release_sha" "$legacy_pid" > "$legacy_fence_state_path"
+  chmod 0600 "$legacy_fence_state_path"
+  if ! launchctl kill SIGTERM "gui/$(id -u)/$launch_label"; then
+    fail "legacy baseline fence is installed but launchd did not accept termination; legacy binary remains fenced"
+  fi
+  for _ in $(seq 1 30); do
+    if ! kill -0 "$legacy_pid" >/dev/null 2>&1; then
+      break
+    fi
+    sleep 1
+  done
+  if kill -0 "$legacy_pid" >/dev/null 2>&1; then
+    fail "legacy baseline fence is installed but the original legacy PID did not exit"
+  fi
+  listener_pids="$(lsof -nP -iTCP:"$active_port" -sTCP:LISTEN -t 2>/dev/null | sort -u || true)"
+  [[ -z "$listener_pids" ]] || fail "legacy baseline fence is installed but a control API listener remains"
+  log "legacy service fenced; its old binary cannot restart from $legacy_api_path"
+}
+
+promote_legacy_baseline_release() {
+  [[ -f "$legacy_fence_state_path" ]] || fail "legacy baseline fence state is missing; refusing candidate promotion"
+  log "promoting $release after legacy service fence"
+  ln -sfn "$release" "$current_link"
+  install_effect_runner "$release"
+  install -m 0755 "$release/bin/norn-api" "$bin_dir/norn-api"
+  install -m 0755 "$release/bin/norn" "$bin_dir/norn"
+  mkdir -p "$(dirname "$host_agent_bin")"
+  install -m 0755 "$release/bin/norn-host-agent" "$host_agent_bin"
+  install -m 0755 "$release/bin/platform-upgrade" "$platform_script_bin"
+  install -m 0755 "$release/bin/host-runtime" "$host_runtime_bin"
+  restart_api
+  if ! postflight; then
+    printf '{"schema":"norn.legacy-baseline-fence/v1","legacyReleaseSHA":"%s","state":"candidate-postflight-failed"}\n' "$legacy_release_sha" > "$legacy_fence_state_path"
+    chmod 0600 "$legacy_fence_state_path"
+    fail "legacy baseline candidate postflight failed; legacy binary remains fenced and must not be restored after schema migration"
+  fi
+  printf '{"schema":"norn.legacy-baseline-fence/v1","legacyReleaseSHA":"%s","state":"candidate-promoted"}\n' "$legacy_release_sha" > "$legacy_fence_state_path"
+  chmod 0600 "$legacy_fence_state_path"
+  log "legacy baseline upgrade complete: $version"
 }
 
 validate_prospective_schema_transition() {
@@ -1049,11 +1279,24 @@ if [[ "$mode" == "rollback" ]]; then
   exit 0
 fi
 
+if [[ "$mode" == "legacy-baseline" ]]; then
+  legacy_baseline_validate_backup_proof
+fi
+
 build_release
 probe_startup_contract "$release/bin/norn-api"
 target_startup_contract="$last_startup_contract"
 
-if [[ "$mode" == "upgrade" ]]; then
+if [[ "$mode" == "legacy-baseline" ]]; then
+  [[ "$upgrade_mode" == "restart" ]] || fail "legacy-baseline supports only the direct restart lane"
+  legacy_baseline_require_drained
+  legacy_baseline_validate_backup_proof
+  legacy_baseline_fence_service
+  run_schema_migration
+  candidate_preflight
+  stop_candidate
+  promote_legacy_baseline_release
+elif [[ "$mode" == "upgrade" ]]; then
   validate_prospective_schema_transition "$target_startup_contract"
   drain_check
   validate_current_rollback_target

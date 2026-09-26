@@ -57,6 +57,103 @@ func TestApplyRunDisplayTitleUsesNonceContract(t *testing.T) {
 	}
 }
 
+func TestObserveApplyRunBindsProtectedIdentityAndTerminalState(t *testing.T) {
+	planID := "11111111-1111-4111-8111-111111111111"
+	nonce := strings.Repeat("a", 64)
+	bound := &Dispatch{RunID: 93, PlanRunID: 91, PlanSHA: strings.Repeat("b", 64), ApprovedHeadSHA: strings.Repeat("c", 40)}
+	status, conclusion, attempt := "completed", "cancelled", int64(2)
+	latestAttempt := int64(2)
+	latestStatus := ""
+	responseID := int64(93)
+	workflowPath := ".github/workflows/apply.yml@main"
+	client := testClient(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if tokenResponse(w, r, map[string]string{"actions": "read"}) {
+			return
+		}
+		switch r.URL.Path {
+		case "/app":
+			fmt.Fprint(w, `{"slug":"norn"}`)
+		case "/repos/acme/norn-fleet/actions/runs/93", "/repos/acme/norn-fleet/actions/runs/93/attempts/2":
+			responseAttempt := attempt
+			responseStatus := status
+			if r.URL.Path == "/repos/acme/norn-fleet/actions/runs/93" {
+				responseAttempt = latestAttempt
+				if latestStatus != "" {
+					responseStatus = latestStatus
+				}
+			}
+			_ = json.NewEncoder(w).Encode(map[string]interface{}{
+				"id": responseID, "run_attempt": responseAttempt, "status": responseStatus, "conclusion": conclusion,
+				"html_url": fmt.Sprintf("https://github.com/acme/norn-fleet/actions/runs/%d", responseID),
+				"event":    "workflow_dispatch", "head_sha": bound.ApprovedHeadSHA,
+				"head_branch": "main", "path": workflowPath,
+				"name": "apply", "display_title": fmt.Sprintf(applyRunDisplayTitleFormat, "production/nyc3", planID, nonce),
+				"inputs": map[string]string{"fleet_environment": "production/nyc3", "plan_run_id": "91", "plan_sha256": bound.PlanSHA, "norn_plan_id": planID, "allow_destructive": "true", "dispatch_nonce": nonce},
+				"actor":  map[string]string{"login": "norn[bot]", "type": "Bot"},
+			})
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	observe := func() (*ApplyRunObservation, error) {
+		return client.ObserveApplyRun(context.Background(), planID, "production/nyc3", true, bound, nonce)
+	}
+	observed, err := observe()
+	if err != nil || observed.RunID != 93 || observed.RunAttempt != 2 || observed.Status != "completed" || observed.Conclusion != "cancelled" || observed.ObservedAt.IsZero() {
+		t.Fatalf("terminal observation=%+v err=%v", observed, err)
+	}
+	observed, err = client.ObserveApplyRunAttempt(context.Background(), planID, "production/nyc3", true, bound, nonce, 2)
+	if err != nil || observed.RunAttempt != 2 || observed.Conclusion != "cancelled" {
+		t.Fatalf("numbered attempt observation=%+v err=%v", observed, err)
+	}
+	latestStatus = "in_progress"
+	if _, err := client.ObserveApplyRunAttempt(context.Background(), planID, "production/nyc3", true, bound, nonce, 2); err == nil {
+		t.Fatal("disagreeing latest run state was accepted")
+	}
+	latestStatus = ""
+	latestAttempt = 3
+	if _, err := client.ObserveApplyRunAttempt(context.Background(), planID, "production/nyc3", true, bound, nonce, 2); err == nil {
+		t.Fatal("older attempt was accepted after a rerun")
+	}
+	latestAttempt = 2
+	status, conclusion = "in_progress", ""
+	observed, err = observe()
+	if err != nil || observed.Status != "in_progress" || observed.Conclusion != "" {
+		t.Fatalf("active observation=%+v err=%v", observed, err)
+	}
+	status = "unrecognized"
+	if _, err := observe(); err == nil {
+		t.Fatal("unrecognized workflow status was accepted")
+	}
+	if _, err := client.ObserveApplyRunAttempt(context.Background(), planID, "production/nyc3", true, bound, nonce, 2); err == nil {
+		t.Fatal("unrecognized numbered-attempt status was accepted")
+	}
+	status, conclusion = "completed", "unrecognized"
+	if _, err := observe(); err == nil {
+		t.Fatal("unrecognized workflow conclusion was accepted")
+	}
+	status, conclusion, attempt, latestAttempt = "completed", "failure", 0, 0
+	if _, err := observe(); err == nil {
+		t.Fatal("run without a numbered attempt was accepted")
+	}
+	attempt, latestAttempt = 2, 2
+	if _, err := client.ObserveApplyRun(context.Background(), planID, "production/nyc3", true, bound, strings.Repeat("d", 64)); err == nil {
+		t.Fatal("run with a different dispatch nonce was accepted")
+	}
+	workflowPath = ".github/workflows/apply.yml@feature"
+	if _, err := observe(); err == nil {
+		t.Fatal("run from another workflow ref was accepted")
+	}
+	workflowPath = ".github/workflows/apply.yml@main"
+	responseID = 94
+	if _, err := observe(); err == nil {
+		t.Fatal("run returned under a different ID was accepted")
+	}
+	if _, err := client.ObserveApplyRunAttempt(context.Background(), planID, "production/nyc3", true, bound, nonce, 2); err == nil {
+		t.Fatal("numbered attempt returned under a different ID was accepted")
+	}
+}
+
 func tokenResponse(w http.ResponseWriter, r *http.Request, permissions map[string]string) bool {
 	if r.URL.Path != "/app/installations/5678/access_tokens" {
 		return false

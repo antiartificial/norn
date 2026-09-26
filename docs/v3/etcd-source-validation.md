@@ -58,10 +58,34 @@ norn-api --norn-etcd-bootstrap
 
 It requires `NORN_ETCD_BOOTSTRAP_TOKEN_FILE` (an absolute new path),
 `NORN_ETCD_BOOTSTRAP_SUBJECT`, `NORN_ETCD_BOOTSTRAP_SCOPES`, and
-`NORN_ETCD_BOOTSTRAP_TTL` (at most 72 hours). The command reserves the empty
-prefix, records the managed token, and writes the opaque token only to the new
-owner-only file. It neither prints the token nor runs a server. A second run or
-a non-empty prefix is refused.
+`NORN_ETCD_BOOTSTRAP_TTL` (from one to 72 hours). It accepts a versioned,
+non-secret marker and its managed-token registry entry in one etcd transaction.
+That transaction compares `Version(prefix)=0` across the full etcd key range,
+so a writer inserted after planning but before commit makes acceptance fail. It
+then writes the opaque token only to the exclusive owner-only file. File data
+and the directory are fsynced, then Norn records a compare-and-swap publication
+receipt in the marker. It neither prints the token nor runs a server.
+
+If the process fails after the etcd transaction and before publication, rerun
+with the same subject, scopes, TTL, and output path: Norn verifies the durable
+record and recreates the identical signed bearer. It refuses a changed request,
+a changed signing key, a marker/token mismatch, or a non-empty unbootstrapped
+prefix. An existing owner-only file containing the exact accepted bearer is
+fsynced again and treated as a resumed publication; any other existing path is
+refused and never overwritten. The bootstrap marker binds a SHA-256 fingerprint
+of the signing key, so changing `NORN_API_TOKEN` requires a deliberate future
+credential-rotation procedure rather than silently producing another bearer.
+
+The normal Fleet router verifies this marker and the matching token-registry
+entry before it constructs its control stores, so it cannot become the first
+Norn writer in a fresh prefix. It requires the publication receipt; an accepted
+but undistributed token is not fresh-Fleet readiness. Initial publication also
+requires an unrevoked bearer with at least 30 minutes remaining. Later normal
+restarts validate the durable receipt and immutable marker/token identity even
+after the initial bearer expires or is revoked. Revocation remains in the
+authoritative token-registry record and prevents bootstrap re-publication, but
+does not mutate the delivery receipt. Replacement credential rotation is a
+separate release requirement.
 
 `NORN_STARTUP_MODE=passive` with `NORN_SCHEMA_MODE=check` serves only the
 loopback `/api/health`, `/api/version`, and `/api/schema` status routes.

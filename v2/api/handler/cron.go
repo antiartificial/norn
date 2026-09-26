@@ -5,7 +5,6 @@ import (
 	"errors"
 	"fmt"
 	"net/http"
-	"os"
 	"strings"
 	"time"
 
@@ -96,7 +95,6 @@ func (h *Handler) CronHistory(w http.ResponseWriter, r *http.Request) {
 
 func (h *Handler) CronTrigger(w http.ResponseWriter, r *http.Request) {
 	id := chi.URLParam(r, "id")
-
 	var req struct {
 		Process string `json:"process"`
 	}
@@ -104,36 +102,137 @@ func (h *Handler) CronTrigger(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, err.Error())
 		return
 	}
-
-	if h.nomad == nil {
-		writeError(w, http.StatusServiceUnavailable, "nomad not connected")
+	if h.pipeline == nil || !h.pipeline.CronTriggerAvailable() {
+		WriteControlProblem(w, r, http.StatusServiceUnavailable, "cron_trigger_execution_unavailable", "durable cron trigger execution is unavailable")
 		return
 	}
-
-	jobID := fmt.Sprintf("%s-%s", id, req.Process)
-	evalID, err := h.nomad.PeriodicForce(jobID)
+	enqueue, ok := h.pipelineEnqueueRequest(w, r, r.Header.Get("Idempotency-Key"), map[string]interface{}{"app": id, "process": req.Process, "action": "trigger"})
+	if !ok {
+		return
+	}
+	previous, err := h.pipeline.ResolveEnqueue(r.Context(), enqueue, "app.cron-trigger", id)
+	if err == nil {
+		if previous.Operation.Ref != req.Process || previous.Operation.Payload["process"] != req.Process {
+			writeOperationAcceptanceError(w, r, &store.AcceptanceConflictError{Identity: store.OperationRequestIdentity{Kind: "app.cron-trigger", Resource: id}})
+			return
+		}
+		previous.Operation.AttachReceipt()
+		w.Header().Set("Location", "/api/v1/operations/"+previous.Operation.ID)
+		writeJSON(w, previous.Operation)
+		return
+	}
+	if !errors.Is(err, store.ErrAcceptanceNotFound) {
+		writeOperationAcceptanceError(w, r, err)
+		return
+	}
+	spec := h.findSpec(id)
+	if spec == nil {
+		WriteControlProblem(w, r, http.StatusNotFound, "app_process_not_found", "app or scheduled process was not found")
+		return
+	}
+	proc, exists := spec.Processes[req.Process]
+	if !exists || proc.Schedule == "" {
+		WriteControlProblem(w, r, http.StatusBadRequest, "scheduled_process_required", "cron trigger requires a declared scheduled process")
+		return
+	}
+	digest, err := model.InfraSpecDigest(spec)
 	if err != nil {
-		writeError(w, http.StatusInternalServerError, err.Error())
+		WriteControlProblem(w, r, http.StatusServiceUnavailable, "cron_trigger_spec_unavailable", "scheduled process spec cannot be fingerprinted")
 		return
 	}
+	state, stateErr := h.db.GetCronState(r.Context(), id, req.Process)
+	schedule, err := cronPauseEffectiveSchedule(proc.Schedule, state, stateErr)
+	if err != nil {
+		WriteControlProblem(w, r, http.StatusServiceUnavailable, "cron_state_unavailable", "durable cron state is unavailable")
+		return
+	}
+	jobID := id + "-" + req.Process
+	periodic, err := h.nomad.PeriodicJobSchedule(jobID)
+	if err != nil {
+		WriteControlProblem(w, r, http.StatusServiceUnavailable, "cron_trigger_nomad_unavailable", "Nomad periodic job state is unavailable")
+		return
+	}
+	timezone := model.ResolveProcessTimezone(spec, proc)
+	if periodic.Paused || periodic.Schedule != schedule || periodic.TimeZone != timezone || periodic.ModifyIndex == 0 {
+		WriteControlProblem(w, r, http.StatusConflict, "cron_trigger_intent_stale", "Nomad periodic job no longer matches the requested trigger intent")
+		return
+	}
+	payload := map[string]interface{}{"app": id, "process": req.Process, "jobId": jobID, "schedule": schedule, "timezone": timezone, "specDigest": digest, "version": fmt.Sprint(periodic.Version), "modifyIndex": fmt.Sprint(periodic.ModifyIndex), "action": "trigger"}
+	enqueue.Semantics = payload
+	enqueue.Admission.OneActiveMutablePerApp = true
+	now := time.Now().UTC()
+	op := model.Operation{ID: uuid.NewString(), Kind: "app.cron-trigger", App: id, SagaID: uuid.NewString(), Ref: req.Process, Status: model.OperationQueued, Risk: "trigger Nomad periodic job", Source: "app-control-api", Message: fmt.Sprintf("queued cron trigger for %s process %q", id, req.Process), StartedAt: now, NextAttemptAt: now, MaxAttempts: 3, Payload: payload}
+	accepted, err := h.pipeline.QueueOperation(r.Context(), op, enqueue)
+	if err != nil {
+		writeOperationAcceptanceError(w, r, err)
+		return
+	}
+	accepted.Operation.AttachReceipt()
+	w.Header().Set("Location", "/api/v1/operations/"+accepted.Operation.ID)
+	if accepted.Replayed {
+		writeJSON(w, accepted.Operation)
+		return
+	}
+	writeJSONStatus(w, http.StatusAccepted, accepted.Operation)
+}
 
-	writeJSON(w, map[string]string{
-		"status": "triggered",
-		"evalId": evalID,
+func (h *Handler) QueueCronTriggerReconciliation(w http.ResponseWriter, r *http.Request) {
+	if _, ok := requireControlScope(w, r, ScopeAPIWrite); !ok {
+		return
+	}
+	var req struct {
+		EffectID string `json:"effectId"`
+		EvalID   string `json:"evalId"`
+		Confirm  bool   `json:"confirm"`
+	}
+	if err := decodeControlJSON(w, r, &req); err != nil {
+		WriteControlProblem(w, r, http.StatusBadRequest, "invalid_cron_reconciliation", err.Error())
+		return
+	}
+	if !req.Confirm || req.EffectID == "" || req.EvalID == "" {
+		WriteControlProblem(w, r, http.StatusBadRequest, "confirmation_required", "cron trigger reconciliation requires confirm=true, effectId, and evalId")
+		return
+	}
+	if h.pipeline == nil || !h.pipeline.CronTriggerAvailable() {
+		WriteControlProblem(w, r, http.StatusServiceUnavailable, "cron_reconciliation_unavailable", "durable cron reconciliation is unavailable")
+		return
+	}
+	app, sourceID := chi.URLParam(r, "id"), chi.URLParam(r, "operationID")
+	enqueue, ok := h.pipelineEnqueueRequest(w, r, r.Header.Get("Idempotency-Key"), map[string]interface{}{
+		"action": "cron-trigger-reconciliation", "app": app, "sourceOperationId": sourceID, "effectId": req.EffectID, "evalId": req.EvalID, "confirm": true,
 	})
-	h.emitBeacon(r.Context(), model.BeaconEvent{
-		App:       id,
-		Type:      "job.triggered",
-		Severity:  model.BeaconInfo,
-		Title:     fmt.Sprintf("%s %s job triggered", id, req.Process),
-		Body:      fmt.Sprintf("Cron process %s was triggered manually.", req.Process),
-		DedupeKey: fmt.Sprintf("%s:%s:cron", id, req.Process),
-		Metadata: map[string]interface{}{
-			"process":        req.Process,
-			"evalId":         evalID,
-			"correlationKey": fmt.Sprintf("%s:%s:cron", id, req.Process),
-		},
-	})
+	if !ok {
+		return
+	}
+	if previous, err := h.pipeline.ResolveEnqueue(r.Context(), enqueue, "app.cron-trigger-reconcile", app); err == nil {
+		if previous.Operation.Ref != sourceID || previous.Operation.Payload["effectId"] != req.EffectID || previous.Operation.Payload["evalId"] != req.EvalID {
+			WriteControlProblem(w, r, http.StatusConflict, "idempotency_conflict", "idempotency key belongs to another cron trigger correction")
+			return
+		}
+		previous.Operation.AttachReceipt()
+		w.Header().Set("Location", "/api/v1/operations/"+previous.Operation.ID)
+		writeJSON(w, previous.Operation)
+		return
+	} else if !errors.Is(err, store.ErrAcceptanceNotFound) {
+		writeOperationAcceptanceError(w, r, err)
+		return
+	}
+	accepted, err := h.pipeline.QueueCronTriggerReconciliation(r.Context(), app, sourceID, req.EffectID, req.EvalID, enqueue)
+	if errors.Is(err, store.ErrCronTriggerReconciliationUnavailable) {
+		WriteControlProblem(w, r, http.StatusConflict, "cron_reconciliation_unavailable", "source cron trigger effect cannot be reconciled")
+		return
+	}
+	if err != nil {
+		writeOperationAcceptanceError(w, r, err)
+		return
+	}
+	accepted.Operation.AttachReceipt()
+	w.Header().Set("Location", "/api/v1/operations/"+accepted.Operation.ID)
+	if accepted.Replayed {
+		writeJSON(w, accepted.Operation)
+		return
+	}
+	writeJSONStatus(w, http.StatusAccepted, accepted.Operation)
 }
 
 func (h *Handler) CronPause(w http.ResponseWriter, r *http.Request) {
@@ -260,85 +359,118 @@ func (h *Handler) CronResume(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, err.Error())
 		return
 	}
-
-	if h.nomad == nil {
-		writeError(w, http.StatusServiceUnavailable, "nomad not connected")
+	if h.pipeline == nil {
+		WriteControlProblem(w, r, http.StatusServiceUnavailable, "cron_resume_execution_unavailable", "durable cron resume execution is unavailable")
 		return
 	}
-
+	enqueue, ok := h.pipelineEnqueueRequest(w, r, r.Header.Get("Idempotency-Key"), map[string]interface{}{"app": id, "process": req.Process, "action": "resume"})
+	if !ok {
+		return
+	}
+	if previous, replayed, err := h.resolveCronResumeReplay(r.Context(), enqueue, id, req.Process); err != nil {
+		writeOperationAcceptanceError(w, r, err)
+		return
+	} else if replayed {
+		previous.Operation.AttachReceipt()
+		w.Header().Set("Location", "/api/v1/operations/"+previous.Operation.ID)
+		writeJSON(w, previous.Operation)
+		return
+	}
 	spec := h.findSpec(id)
 	if spec == nil {
-		writeError(w, http.StatusNotFound, fmt.Sprintf("app %s not found", id))
+		WriteControlProblem(w, r, http.StatusNotFound, "app_process_not_found", "app or scheduled process was not found")
 		return
 	}
-
 	proc, ok := spec.Processes[req.Process]
-	if !ok {
-		writeError(w, http.StatusNotFound, fmt.Sprintf("process %s not found", req.Process))
+	if !ok || proc.Schedule == "" {
+		WriteControlProblem(w, r, http.StatusBadRequest, "scheduled_process_required", "cron resume requires a declared scheduled process")
 		return
 	}
-
-	// Check for custom schedule
-	state, err := h.db.GetCronState(r.Context(), id, req.Process)
-	if err == nil && state.Schedule != "" {
-		proc.Schedule = state.Schedule
+	specDigest, err := model.InfraSpecDigest(spec)
+	if err != nil {
+		WriteControlProblem(w, r, http.StatusServiceUnavailable, "cron_resume_spec_unavailable", "scheduled process spec cannot be fingerprinted")
+		return
 	}
-
-	// Resolve image tag from last deployment
+	if !h.pipeline.CronResumeAvailable() || h.db == nil || h.nomad == nil {
+		WriteControlProblem(w, r, http.StatusServiceUnavailable, "cron_resume_execution_unavailable", "durable cron resume execution is unavailable")
+		return
+	}
+	state, stateErr := h.db.GetCronState(r.Context(), id, req.Process)
+	schedule, effectiveErr := cronPauseEffectiveSchedule(proc.Schedule, state, stateErr)
+	if effectiveErr != nil {
+		WriteControlProblem(w, r, http.StatusServiceUnavailable, "cron_state_unavailable", "durable cron state is unavailable")
+		return
+	}
+	if state == nil || !state.Paused {
+		WriteControlProblem(w, r, http.StatusConflict, "cron_resume_intent_stale", "durable cron state is not paused")
+		return
+	}
+	jobID := id + "-" + req.Process
+	periodic, err := h.nomad.PeriodicJobSchedule(jobID)
+	if err != nil {
+		WriteControlProblem(w, r, http.StatusServiceUnavailable, "cron_resume_nomad_unavailable", "Nomad periodic job state is unavailable")
+		return
+	}
+	timezone := model.ResolveProcessTimezone(spec, proc)
+	if !periodic.Paused || periodic.Schedule != schedule || periodic.TimeZone != timezone || periodic.Version == 0 || periodic.ModifyIndex == 0 {
+		WriteControlProblem(w, r, http.StatusConflict, "cron_resume_intent_stale", "Nomad periodic job no longer matches the requested cron resume intent")
+		return
+	}
 	deps, err := h.db.ListDeployments(r.Context(), id, 1)
-	if err != nil || len(deps) == 0 {
-		writeError(w, http.StatusBadRequest, "no previous deployment found")
+	if err != nil || len(deps) == 0 || strings.TrimSpace(deps[0].ImageTag) == "" {
+		WriteControlProblem(w, r, http.StatusConflict, "cron_resume_image_unavailable", "no previous deployment image was found")
 		return
 	}
-	imageTag := deps[0].ImageTag
-
-	// Resolve secrets
-	env := make(map[string]string)
-	if h.secrets != nil {
-		secretEnv, err := h.secrets.EnvMap(id)
-		if err != nil && !os.IsNotExist(err) {
-			writeError(w, http.StatusInternalServerError, fmt.Sprintf("resolve secrets: %v", err))
+	deliveryRevision := int64(0)
+	if spec.NamedDatabases() && nomad.HasRuntimeDatabases(spec) {
+		if h.pipeline.DatabaseTargets == nil {
+			WriteControlProblem(w, r, http.StatusServiceUnavailable, "cron_resume_database_unavailable", "named database delivery is unavailable")
 			return
 		}
-		for k, v := range secretEnv {
-			env[k] = v
+		regions := spec.ResolvedRegions()
+		if len(regions) == 0 {
+			WriteControlProblem(w, r, http.StatusConflict, "cron_resume_region_unavailable", "scheduled process has no region")
+			return
 		}
+		material, err := h.pipeline.RunningDeliveryRevision(r.Context(), spec, regions[0].NomadRegion, jobID)
+		if err != nil {
+			WriteControlProblem(w, r, http.StatusConflict, "cron_resume_database_unavailable", "running database delivery is unavailable")
+			return
+		}
+		deliveryRevision = material.Revision
 	}
-
-	// Re-submit periodic job; its templates read the delivery variable the
-	// latest deploy wrote, which no secret may shadow.
-	if conflicts := spec.DatabaseEnvConflicts(env); len(conflicts) > 0 {
-		writeError(w, http.StatusConflict, fmt.Sprintf("%s delivered by the database binding must not also come from app secrets", strings.Join(conflicts, ", ")))
-		return
-	}
-	periodicJob, err := h.periodicJobFor(r, spec, req.Process, proc, imageTag, env)
+	// The image reference is public deployment identity. Secret values and
+	// database delivery material are reconstructed only in the claimed worker.
+	payload := map[string]interface{}{"app": id, "process": req.Process, "schedule": schedule, "timezone": timezone, "jobId": jobID, "imageTag": deps[0].ImageTag, "specDigest": specDigest, "deliveryRevision": fmt.Sprint(deliveryRevision), "version": fmt.Sprint(periodic.Version), "modifyIndex": fmt.Sprint(periodic.ModifyIndex), "action": "resume"}
+	enqueue.Semantics = payload
+	now := time.Now().UTC()
+	op := model.Operation{ID: uuid.NewString(), Kind: "app.cron-resume", App: id, SagaID: uuid.NewString(), Ref: req.Process, Status: model.OperationQueued, Risk: "resume Nomad periodic job", Source: "app-control-api", Message: fmt.Sprintf("queued cron resume for %s process %q", id, req.Process), StartedAt: now, NextAttemptAt: now, MaxAttempts: 3, Payload: payload}
+	accepted, err := h.pipeline.QueueOperation(r.Context(), op, enqueue)
 	if err != nil {
-		writeError(w, http.StatusConflict, err.Error())
+		writeOperationAcceptanceError(w, r, err)
 		return
 	}
-	_, err = h.nomad.SubmitJob(periodicJob)
+	accepted.Operation.AttachReceipt()
+	w.Header().Set("Location", "/api/v1/operations/"+accepted.Operation.ID)
+	if accepted.Replayed {
+		writeJSON(w, accepted.Operation)
+		return
+	}
+	writeJSONStatus(w, http.StatusAccepted, accepted.Operation)
+}
+
+func (h *Handler) resolveCronResumeReplay(ctx context.Context, request pipeline.EnqueueRequest, app, process string) (store.AcceptedOperation, bool, error) {
+	previous, err := h.pipeline.ResolveEnqueue(ctx, request, "app.cron-resume", app)
+	if errors.Is(err, store.ErrAcceptanceNotFound) {
+		return store.AcceptedOperation{}, false, nil
+	}
 	if err != nil {
-		writeError(w, http.StatusInternalServerError, err.Error())
-		return
+		return store.AcceptedOperation{}, false, err
 	}
-
-	h.db.UpsertCronState(r.Context(), id, req.Process, false, proc.Schedule)
-
-	writeJSON(w, map[string]string{"status": "resumed"})
-	h.emitBeacon(r.Context(), model.BeaconEvent{
-		App:       id,
-		Type:      "job.resumed",
-		Severity:  model.BeaconInfo,
-		Title:     fmt.Sprintf("%s %s job resumed", id, req.Process),
-		Body:      fmt.Sprintf("Cron process %s was resumed.", req.Process),
-		DedupeKey: fmt.Sprintf("%s:%s:cron", id, req.Process),
-		Metadata: map[string]interface{}{
-			"process":        req.Process,
-			"schedule":       proc.Schedule,
-			"imageTag":       imageTag,
-			"correlationKey": fmt.Sprintf("%s:%s:cron", id, req.Process),
-		},
-	})
+	if previous.Operation.Kind != "app.cron-resume" || previous.Operation.App != app || previous.Operation.Ref != process || previous.Operation.Payload["process"] != process {
+		return store.AcceptedOperation{}, false, &store.AcceptanceConflictError{Identity: store.OperationRequestIdentity{Kind: "app.cron-resume", Resource: app}}
+	}
+	return previous, true, nil
 }
 
 func (h *Handler) CronUpdateSchedule(w http.ResponseWriter, r *http.Request) {
@@ -353,81 +485,107 @@ func (h *Handler) CronUpdateSchedule(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	if h.nomad == nil {
-		writeError(w, http.StatusServiceUnavailable, "nomad not connected")
+	if h.pipeline == nil || !h.pipeline.CronScheduleAvailable() || h.db == nil || h.nomad == nil {
+		WriteControlProblem(w, r, http.StatusServiceUnavailable, "cron_schedule_execution_unavailable", "durable cron schedule execution is unavailable")
 		return
 	}
-
+	enqueue, ok := h.pipelineEnqueueRequest(w, r, r.Header.Get("Idempotency-Key"), map[string]interface{}{"app": id, "process": req.Process, "schedule": req.Schedule, "action": "schedule"})
+	if !ok {
+		return
+	}
+	if previous, replayed, err := h.resolveCronScheduleReplay(r.Context(), enqueue, id, req.Process); err != nil {
+		writeOperationAcceptanceError(w, r, err)
+		return
+	} else if replayed {
+		previous.Operation.AttachReceipt()
+		w.Header().Set("Location", "/api/v1/operations/"+previous.Operation.ID)
+		writeJSON(w, previous.Operation)
+		return
+	}
 	spec := h.findSpec(id)
 	if spec == nil {
-		writeError(w, http.StatusNotFound, fmt.Sprintf("app %s not found", id))
+		WriteControlProblem(w, r, http.StatusNotFound, "app_process_not_found", "app or scheduled process was not found")
 		return
 	}
-
 	proc, ok := spec.Processes[req.Process]
-	if !ok {
-		writeError(w, http.StatusNotFound, fmt.Sprintf("process %s not found", req.Process))
+	if !ok || strings.TrimSpace(proc.Schedule) == "" || strings.TrimSpace(req.Schedule) == "" {
+		WriteControlProblem(w, r, http.StatusBadRequest, "scheduled_process_required", "schedule updates require a declared process and non-empty schedule")
 		return
 	}
-
-	// Use the new schedule
-	proc.Schedule = req.Schedule
-
-	// Resolve image tag from last deployment
+	specDigest, err := model.InfraSpecDigest(spec)
+	if err != nil {
+		WriteControlProblem(w, r, http.StatusServiceUnavailable, "cron_schedule_spec_unavailable", "scheduled process spec cannot be fingerprinted")
+		return
+	}
+	state, stateErr := h.db.GetCronState(r.Context(), id, req.Process)
+	previousSchedule, err := cronPauseEffectiveSchedule(proc.Schedule, state, stateErr)
+	if err != nil {
+		WriteControlProblem(w, r, http.StatusServiceUnavailable, "cron_state_unavailable", "durable cron state is unavailable")
+		return
+	}
+	paused := state != nil && state.Paused
+	jobID := id + "-" + req.Process
+	periodic, err := h.nomad.PeriodicJobSchedule(jobID)
+	if err != nil {
+		WriteControlProblem(w, r, http.StatusServiceUnavailable, "cron_schedule_nomad_unavailable", "Nomad periodic job state is unavailable")
+		return
+	}
+	timezone := model.ResolveProcessTimezone(spec, proc)
+	if periodic.Schedule != previousSchedule || periodic.TimeZone != timezone || periodic.Paused != paused || periodic.Version == 0 || periodic.ModifyIndex == 0 {
+		WriteControlProblem(w, r, http.StatusConflict, "cron_schedule_intent_stale", "Nomad periodic job no longer matches the requested schedule update intent")
+		return
+	}
 	deps, err := h.db.ListDeployments(r.Context(), id, 1)
-	if err != nil || len(deps) == 0 {
-		writeError(w, http.StatusBadRequest, "no previous deployment found")
+	if err != nil || len(deps) == 0 || strings.TrimSpace(deps[0].ImageTag) == "" {
+		WriteControlProblem(w, r, http.StatusConflict, "cron_schedule_image_unavailable", "no previous deployment image was found")
 		return
 	}
-	imageTag := deps[0].ImageTag
-
-	// Resolve secrets
-	env := make(map[string]string)
-	if h.secrets != nil {
-		secretEnv, err := h.secrets.EnvMap(id)
-		if err != nil && !os.IsNotExist(err) {
-			writeError(w, http.StatusInternalServerError, fmt.Sprintf("resolve secrets: %v", err))
+	deliveryRevision := int64(0)
+	if spec.NamedDatabases() && nomad.HasRuntimeDatabases(spec) {
+		if h.pipeline.DatabaseTargets == nil {
+			WriteControlProblem(w, r, http.StatusServiceUnavailable, "cron_schedule_database_unavailable", "named database delivery is unavailable")
 			return
 		}
-		for k, v := range secretEnv {
-			env[k] = v
+		regions := spec.ResolvedRegions()
+		if len(regions) == 0 {
+			WriteControlProblem(w, r, http.StatusConflict, "cron_schedule_region_unavailable", "scheduled process has no region")
+			return
 		}
+		material, e := h.pipeline.RunningDeliveryRevision(r.Context(), spec, regions[0].NomadRegion, jobID)
+		if e != nil {
+			WriteControlProblem(w, r, http.StatusConflict, "cron_schedule_database_unavailable", "running database delivery is unavailable")
+			return
+		}
+		deliveryRevision = material.Revision
 	}
-
-	// Re-submit periodic job with new schedule (same delivery rule as resume)
-	if conflicts := spec.DatabaseEnvConflicts(env); len(conflicts) > 0 {
-		writeError(w, http.StatusConflict, fmt.Sprintf("%s delivered by the database binding must not also come from app secrets", strings.Join(conflicts, ", ")))
-		return
-	}
-	periodicJob, err := h.periodicJobFor(r, spec, req.Process, proc, imageTag, env)
+	payload := map[string]interface{}{"app": id, "process": req.Process, "previousSchedule": previousSchedule, "schedule": req.Schedule, "timezone": timezone, "jobId": jobID, "imageTag": deps[0].ImageTag, "specDigest": specDigest, "deliveryRevision": fmt.Sprint(deliveryRevision), "version": fmt.Sprint(periodic.Version), "modifyIndex": fmt.Sprint(periodic.ModifyIndex), "paused": paused, "action": "schedule"}
+	enqueue.Semantics = payload
+	now := time.Now().UTC()
+	op := model.Operation{ID: uuid.NewString(), Kind: "app.cron-schedule", App: id, SagaID: uuid.NewString(), Ref: req.Process, Status: model.OperationQueued, Risk: "replace Nomad periodic schedule", Source: "app-control-api", Message: fmt.Sprintf("queued cron schedule update for %s process %q", id, req.Process), StartedAt: now, NextAttemptAt: now, MaxAttempts: 3, Payload: payload}
+	accepted, err := h.pipeline.QueueOperation(r.Context(), op, enqueue)
 	if err != nil {
-		writeError(w, http.StatusConflict, err.Error())
+		writeOperationAcceptanceError(w, r, err)
 		return
 	}
-	_, err = h.nomad.SubmitJob(periodicJob)
+	accepted.Operation.AttachReceipt()
+	w.Header().Set("Location", "/api/v1/operations/"+accepted.Operation.ID)
+	if accepted.Replayed {
+		writeJSON(w, accepted.Operation)
+		return
+	}
+	writeJSONStatus(w, http.StatusAccepted, accepted.Operation)
+}
+
+func (h *Handler) resolveCronScheduleReplay(ctx context.Context, request pipeline.EnqueueRequest, app, process string) (store.AcceptedOperation, bool, error) {
+	previous, err := h.pipeline.ResolveEnqueue(ctx, request, "app.cron-schedule", app)
+	if errors.Is(err, store.ErrAcceptanceNotFound) {
+		return store.AcceptedOperation{}, false, nil
+	}
 	if err != nil {
-		writeError(w, http.StatusInternalServerError, err.Error())
-		return
+		return store.AcceptedOperation{}, false, err
 	}
-
-	h.db.UpsertCronState(r.Context(), id, req.Process, false, req.Schedule)
-
-	writeJSON(w, map[string]string{
-		"status":   "updated",
-		"schedule": req.Schedule,
-	})
-	h.emitBeacon(r.Context(), model.BeaconEvent{
-		App:       id,
-		Type:      "job.schedule_updated",
-		Severity:  model.BeaconInfo,
-		Title:     fmt.Sprintf("%s %s schedule updated", id, req.Process),
-		Body:      fmt.Sprintf("Cron process %s schedule changed.", req.Process),
-		DedupeKey: fmt.Sprintf("%s:%s:cron", id, req.Process),
-		Metadata: map[string]interface{}{
-			"process":        req.Process,
-			"schedule":       req.Schedule,
-			"imageTag":       imageTag,
-			"correlationKey": fmt.Sprintf("%s:%s:cron", id, req.Process),
-		},
-	})
+	if previous.Operation.Kind != "app.cron-schedule" || previous.Operation.App != app || previous.Operation.Ref != process || previous.Operation.Payload["process"] != process {
+		return store.AcceptedOperation{}, false, &store.AcceptanceConflictError{Identity: store.OperationRequestIdentity{Kind: "app.cron-schedule", Resource: app}}
+	}
+	return previous, true, nil
 }

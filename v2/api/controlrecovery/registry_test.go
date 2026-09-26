@@ -4,29 +4,30 @@ import "testing"
 
 func TestInspectionRegistryPinsCurrentSchemaAndSensitiveExclusions(t *testing.T) {
 	registry := InspectionRegistry()
-	if len(registry) != 41 {
-		t.Fatalf("registry has %d tables, want 41", len(registry))
+	if len(registry) != 42 {
+		t.Fatalf("registry has %d tables, want 42", len(registry))
 	}
 	if err := validateRegistry(registry); err != nil {
 		t.Fatalf("registry validation: %v", err)
 	}
 
 	wantExcluded := map[string][]string{
-		"operations":                   {"payload", "metadata", "message", "last_error"},
-		"operation_request_identities": {"request_key"},
-		"operation_acceptance_intents": {"request_canonical_bytes", "canonical_bytes", "signature"},
-		"fleet_github_dispatches":      {"dispatch_nonce", "workflow_url"},
-		"notification_channels":        {"url", "token", "user_key"},
-		"access_enrollments":           {"code_hash", "verifier_hash", "source_hash"},
-		"step_up_challenges":           {"token_jti", "resource", "nonce_hash"},
-		"exec_sessions":                {"command", "owner_token"},
-		"webhook_deliveries":           {"payload", "metadata"},
-		"recovery_drills":              {"evidence"},
-		"operation_checkpoints":        {"outputs"},
-		"database_catalog_revisions":   {"catalog"},
-		"operation_effects":            {"claim_owner", "claim_generation", "input_digest", "launch_payload", "supervisor_execution_id", "runtime_instance_id", "result_digest", "result_reference", "evidence_source", "evidence_reference", "evidence_observed_at"},
-		"restart_effect_sources":       {},
-		"snapshot_publication_intents": {"input_digest", "supervisor_root_id", "supervisor_execution_id", "target", "namespace", "filename"},
+		"operations":                          {"payload", "metadata", "message", "last_error"},
+		"operation_request_identities":        {"request_key"},
+		"operation_acceptance_intents":        {"request_canonical_bytes", "canonical_bytes", "signature"},
+		"fleet_github_dispatches":             {"dispatch_nonce", "workflow_url"},
+		"notification_channels":               {"url", "token", "user_key"},
+		"access_enrollments":                  {"code_hash", "verifier_hash", "source_hash"},
+		"step_up_challenges":                  {"token_jti", "resource", "nonce_hash"},
+		"exec_sessions":                       {"command", "owner_token"},
+		"webhook_deliveries":                  {"payload", "metadata"},
+		"recovery_drills":                     {"evidence"},
+		"operation_checkpoints":               {"outputs"},
+		"database_catalog_revisions":          {"catalog"},
+		"operation_effects":                   {"claim_owner", "claim_generation", "input_digest", "launch_payload", "supervisor_execution_id", "runtime_instance_id", "result_digest", "result_reference", "evidence_source", "evidence_reference", "evidence_observed_at"},
+		"restart_effect_sources":              {},
+		"function_invocation_effect_attempts": {},
+		"snapshot_publication_intents":        {"input_digest", "supervisor_root_id", "supervisor_execution_id", "target", "namespace", "filename"},
 	}
 	byTable := make(map[string]Table, len(registry))
 	for _, table := range registry {

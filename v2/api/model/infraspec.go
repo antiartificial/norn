@@ -45,6 +45,10 @@ type InfraSpec struct {
 	PrimaryRegion string                  `yaml:"primaryRegion,omitempty" json:"primaryRegion,omitempty"`
 	DeployPolicy  *DeployPolicy           `yaml:"deployPolicy,omitempty" json:"deployPolicy,omitempty"`
 	Placement     *PlacementSpec          `yaml:"placement,omitempty" json:"placement,omitempty"`
+	// StartupAdapter selects a narrowly qualified container startup adapter.
+	// It is explicit because adapters can change an image's entrypoint and
+	// should never be inferred from its database variables alone.
+	StartupAdapter string `yaml:"startupAdapter,omitempty" json:"startupAdapter,omitempty"`
 }
 
 // PlacementSpec keeps infrastructure ownership out of the application spec.

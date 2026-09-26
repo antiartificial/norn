@@ -143,14 +143,14 @@ func TestArchiveRecoveryCommandsVerifyAndReindexWithoutHistoricalDatabase(t *tes
 	dsn := writeFile(t, filepath.Join(directory, "restored.url"), []byte(server.URL("restored_control")), 0o600)
 	result = runCLI(t, append([]string{"archive-reindex", "--database-url-file", dsn, "--identity-file", identity, "--recovery-keys-file", keys}, local...)...)
 	var recovery retention.IndexRecovery
-	if result.err != nil || json.Unmarshal(result.stdout, &recovery) != nil || recovery.Restored != 1 {
+	if result.err != nil || json.Unmarshal(result.stdout, &recovery) != nil || recovery.Restored != 1 || !recovery.SignaturesVerified {
 		t.Fatalf("reindex = %s %s %v", result.stdout, result.stderr, result.err)
 	}
 	history := &retention.HistoryStore{Hot: saga.NewPostgresStore(restored.Pool), DB: restored, Archive: objects}
 	if events, err := history.ListBySaga(context.Background(), sagaID); err != nil || len(events) != 3 || events[2].Message != "three" {
 		t.Fatalf("restored history = %+v, %v", events, err)
 	}
-	if again := runCLI(t, append([]string{"archive-reindex", "--database-url-file", dsn}, local...)...); again.err != nil || !strings.Contains(string(again.stdout), `"existing":1`) {
+	if again := runCLI(t, append([]string{"archive-reindex", "--database-url-file", dsn}, local...)...); again.err != nil || json.Unmarshal(again.stdout, &recovery) != nil || recovery.Existing != 1 || recovery.SignaturesVerified {
 		t.Fatalf("repeated reindex = %s %s %v", again.stdout, again.stderr, again.err)
 	}
 
@@ -171,7 +171,7 @@ func TestArchiveRecoveryCommandsVerifyAndReindexWithoutHistoricalDatabase(t *tes
 
 // The same commands open the Fleet object profile (emulated here; this is
 // not qualification of any real object service).
-func TestArchiveVerifyOpensTheObjectProfile(t *testing.T) {
+func TestArchiveRecoveryCommandsUseObjectReaderWithoutPUTs(t *testing.T) {
 	server := pgtest.Start(t)
 	source := archiveControlDB(t, server, "object_source")
 	emulator, objectServer := s3emulator.Start("norn-evidence", "archive-reader")
@@ -202,6 +202,24 @@ func TestArchiveVerifyOpensTheObjectProfile(t *testing.T) {
 	emulator.Configure(func(e *s3emulator.Emulator) {
 		if e.Requests["PUT"] != putsBefore {
 			t.Fatalf("read-only verify issued %d PUTs", e.Requests["PUT"]-putsBefore)
+		}
+	})
+
+	// A Get/List-only archive identity can rebuild saga history as a
+	// checksum-only recovery. The report must make that trust boundary
+	// explicit, and no remote write may be attempted even while PUT is denied.
+	archiveControlDB(t, server, "object_restored")
+	dsn := writeFile(t, filepath.Join(directory, "object-restored.url"), []byte(server.URL("object_restored")), 0o600)
+	reindexFlags := append([]string{"archive-reindex"}, flags[1:]...)
+	reindexFlags = append(reindexFlags, "--database-url-file", dsn)
+	result = runCLI(t, reindexFlags...)
+	var recovery retention.IndexRecovery
+	if result.err != nil || json.Unmarshal(result.stdout, &recovery) != nil || recovery.Restored != 1 || recovery.SignaturesVerified {
+		t.Fatalf("object checksum-only reindex = %s %s %v", result.stdout, result.stderr, result.err)
+	}
+	emulator.Configure(func(e *s3emulator.Emulator) {
+		if e.Requests["PUT"] != putsBefore {
+			t.Fatalf("read-only reindex issued %d PUTs", e.Requests["PUT"]-putsBefore)
 		}
 	})
 	emulator.Configure(func(e *s3emulator.Emulator) { e.CorruptReads = true })

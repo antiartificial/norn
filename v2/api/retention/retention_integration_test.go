@@ -1,10 +1,12 @@
 package retention
 
 import (
+	"bytes"
 	"context"
 	"errors"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -175,6 +177,151 @@ func (f *retentionFixture) hotCount(sagaID string) int {
 	return count
 }
 
+func TestEvidenceManualRecoveryHoldRequiresVerifiedReconciliationArchive(t *testing.T) {
+	f := newRetentionFixture(t)
+	ctx := context.Background()
+	now := time.Now().UTC()
+	image := "registry.example/manual@sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+	digest := "sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+	source := model.Operation{ID: uuid.NewString(), Kind: "app.deploy", App: "manual-recovery-app", SagaID: uuid.NewString(), Status: model.OperationQueued,
+		Source: "control-api", Payload: map[string]interface{}{"deploymentId": "deployment-1", "specDigest": digest}, Metadata: map[string]interface{}{}, StartedAt: now, MaxAttempts: 1}
+	sourceAcceptance := store.OperationAcceptance{
+		Identity:   store.OperationRequestIdentity{Authority: f.request.Authority, Actor: f.request.Actor, Kind: source.Kind, Resource: source.App, Key: "manual-deployment-" + uuid.NewString()},
+		Operation:  source,
+		Deployment: &model.Deployment{ID: "deployment-1", App: source.App, CommitSHA: strings.Repeat("c", 40), SourceKind: "git_clone", SourceRef: "refs/heads/main", ImageTag: image, SpecDigest: digest, Environment: "staging", SagaID: source.SagaID, Status: model.StatusQueued, StartedAt: now},
+		Regions:    []model.ResolvedRegion{{Name: "west", NomadRegion: "west", Datacenters: []string{"dc1"}, TrafficWeight: 100}},
+		Audit:      store.AcceptanceAuditContext{Source: "retention-test"},
+	}
+	var err error
+	sourceAcceptance.Fingerprint, err = store.CanonicalOperationRequestFingerprint(sourceAcceptance)
+	if err != nil {
+		t.Fatal(err)
+	}
+	acceptedSource, err := f.operations.Accept(ctx, sourceAcceptance)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := saga.NewWithID(f.hot, source.SagaID, source.App, "pipeline", "deploy").Log(ctx, "deployment.failed", "executor lease expired", nil); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := f.db.Pool.Exec(ctx, `UPDATE operations SET next_attempt_at=now()-interval '1 second' WHERE id=$1`, source.ID); err != nil {
+		t.Fatal(err)
+	}
+	claimed, _, err := f.db.ClaimNextOperation(ctx, "retention-worker", time.Minute, []string{"app.deploy"})
+	if err != nil || claimed == nil || claimed.ID != source.ID {
+		t.Fatalf("source claim=%+v err=%v", claimed, err)
+	}
+	if err := f.db.StartDeploymentStep(ctx, model.DeploymentStep{DeploymentID: acceptedSource.Deployment.ID, App: source.App, SagaID: source.SagaID,
+		Step: "submit", Kind: model.DeploymentStepMutable, Status: model.DeploymentStepComplete, Attempt: 1}); err != nil {
+		t.Fatal(err)
+	}
+	if err := f.db.UpdateDeploymentRegion(ctx, acceptedSource.Deployment.ID, "west", model.StatusSubmitting, "eval-source", "", 0); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := f.db.Pool.Exec(ctx, `UPDATE operations SET locked_until=now()-interval '1 second' WHERE id=$1`, source.ID); err != nil {
+		t.Fatal(err)
+	}
+	if err := f.db.RecoverExpiredOperations(ctx); err != nil {
+		t.Fatal(err)
+	}
+	candidate, err := f.operations.DeploymentReconciliationCandidate(ctx, source.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if report, err := f.archiver.RunOnce(ctx); err != nil || report.Published != 1 {
+		t.Fatalf("source archive = %+v, %v", report, err)
+	}
+	sourceIntent := f.intents(source.SagaID)[0]
+	if holds, err := f.db.EvidenceHolds(ctx, sourceIntent, 0); err != nil || len(holds) != 1 || holds[0] != "manual-recovery" {
+		t.Fatalf("source holds before reconciliation = %v, %v", holds, err)
+	}
+
+	// A normal claimed-operation completion cannot manufacture a successful
+	// reconciliation receipt, even when its signed request carries a source
+	// link. CompleteDeploymentReconciliation is the only success path.
+	forged := store.OperationAcceptance{
+		Identity: store.OperationRequestIdentity{Authority: f.request.Authority, Actor: f.request.Actor, Kind: "app.deployment-reconcile", Resource: source.App, Key: "forged-reconciliation-" + uuid.NewString()},
+		Operation: model.Operation{ID: uuid.NewString(), Kind: "app.deployment-reconcile", App: source.App, Ref: source.ID, Status: model.OperationQueued, Source: "operator", StartedAt: now, MaxAttempts: 1,
+			Payload:  map[string]interface{}{"sourceOperationId": source.ID, "deploymentId": acceptedSource.Deployment.ID, "imageTag": image, "specDigest": digest},
+			Metadata: map[string]interface{}{"sourceOperationId": source.ID, "deploymentId": acceptedSource.Deployment.ID, "imageTag": image, "specDigest": digest, "observedAt": now.Format(time.RFC3339Nano)}},
+		Audit: store.AcceptanceAuditContext{Source: "retention-test"},
+	}
+	forged.Fingerprint, err = store.CanonicalOperationRequestFingerprint(forged)
+	if err != nil {
+		t.Fatal(err)
+	}
+	acceptedForged, err := f.operations.Accept(ctx, forged)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := f.db.Pool.Exec(ctx, `UPDATE operations SET next_attempt_at=now()-interval '1 second' WHERE id=$1`, acceptedForged.Operation.ID); err != nil {
+		t.Fatal(err)
+	}
+	claimed, forgedClaim, err := f.db.ClaimNextOperation(ctx, "retention-worker", time.Minute, []string{"app.deployment-reconcile"})
+	if err != nil || claimed == nil || claimed.ID != acceptedForged.Operation.ID {
+		t.Fatalf("forged reconciliation claim=%+v err=%v", claimed, err)
+	}
+	if err := f.db.FinishClaimedOperation(ctx, forgedClaim, model.OperationSucceeded, "forged reconciliation success", forged.Operation.Metadata); err == nil {
+		t.Fatal("generic completion forged a reconciliation success")
+	}
+	if err := f.db.FinishClaimedOperation(ctx, forgedClaim, model.OperationFailed, "forged reconciliation refused", nil); err != nil {
+		t.Fatal(err)
+	}
+
+	reconciliation := store.OperationAcceptance{
+		Identity: store.OperationRequestIdentity{Authority: f.request.Authority, Actor: f.request.Actor, Kind: "app.deployment-reconcile", Resource: source.App, Key: "deployment-reconcile-" + uuid.NewString()},
+		Operation: model.Operation{ID: uuid.NewString(), Kind: "app.deployment-reconcile", App: source.App, SagaID: uuid.NewString(), Ref: source.ID, Status: model.OperationQueued, Source: "operator", StartedAt: now, MaxAttempts: 1,
+			Payload:  map[string]interface{}{"sourceOperationId": source.ID, "deploymentId": acceptedSource.Deployment.ID, "imageTag": candidate.ImageTag, "specDigest": digest},
+			Metadata: map[string]interface{}{"sourceOperationId": source.ID, "deploymentId": acceptedSource.Deployment.ID}},
+		Audit:     store.AcceptanceAuditContext{Source: "retention-test"},
+		Admission: store.OperationAdmissionPolicy{OneActiveMutablePerApp: true},
+	}
+	reconciliation.Fingerprint, err = store.CanonicalOperationRequestFingerprint(reconciliation)
+	if err != nil {
+		t.Fatal(err)
+	}
+	acceptedReconciliation, err := f.operations.Accept(ctx, reconciliation)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := saga.NewWithID(f.hot, reconciliation.Operation.SagaID, reconciliation.Operation.App, "pipeline", "deployment-reconcile").Log(ctx, "deployment.reconciled", "projection repaired", nil); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := f.db.Pool.Exec(ctx, `UPDATE operations SET next_attempt_at=now()-interval '1 second' WHERE id=$1`, reconciliation.Operation.ID); err != nil {
+		t.Fatal(err)
+	}
+	claimed, reconciliationClaim, err := f.db.ClaimNextOperation(ctx, "retention-worker", time.Minute, []string{"app.deployment-reconcile"})
+	if err != nil || claimed == nil || claimed.ID != reconciliation.Operation.ID {
+		t.Fatalf("reconciliation claim=%+v err=%v", claimed, err)
+	}
+	if err := f.db.CompleteDeploymentReconciliation(ctx, reconciliationClaim, candidate, time.Now()); err != nil {
+		t.Fatal(err)
+	}
+	if holds, err := f.db.EvidenceHolds(ctx, sourceIntent, 0); err != nil || !slices.Contains(holds, "manual-recovery") {
+		t.Fatalf("pending reconciliation archive released source hold: %v, %v", holds, err)
+	}
+	if report, err := f.archiver.RunOnce(ctx); err != nil || report.Published != 1 {
+		t.Fatalf("reconciliation archive = %+v, %v", report, err)
+	}
+	reconciliationIntent := f.intents(reconciliation.Operation.SagaID)[0]
+	if reconciliationIntent.State != "verified" || reconciliationIntent.OperationID != acceptedReconciliation.Operation.ID {
+		t.Fatalf("reconciliation archive proof = %+v", reconciliationIntent)
+	}
+	if holds, err := f.db.EvidenceHolds(ctx, sourceIntent, 0); err != nil || slices.Contains(holds, "manual-recovery") {
+		t.Fatalf("verified reconciliation archive did not release manual hold: %v, %v", holds, err)
+	}
+	failedSource, err := f.db.GetOperation(ctx, acceptedSource.Operation.ID)
+	if err != nil || failedSource.Status != model.OperationFailed || failedSource.Metadata["manualRecoveryRequired"] != true {
+		t.Fatalf("source receipt changed=%+v err=%v", failedSource, err)
+	}
+	if _, err := f.db.Pool.Exec(ctx, `UPDATE operations SET metadata=metadata || '{"externalEffectRecoveryPending":true}'::jsonb WHERE id=$1`, source.ID); err != nil {
+		t.Fatal(err)
+	}
+	if holds, err := f.db.EvidenceHolds(ctx, sourceIntent, 0); err != nil || !slices.Contains(holds, "manual-recovery") {
+		t.Fatalf("external-effect recovery hold released by reconciliation: %v, %v", holds, err)
+	}
+}
+
 func TestEvidenceArchiveLifecycleWithHoldsPruningAndArchiveReads(t *testing.T) {
 	f := newRetentionFixture(t)
 	ctx := context.Background()
@@ -337,6 +484,74 @@ func TestTerminalFleetGitHubReceiptArchivesOriginalSignedBytes(t *testing.T) {
 	intents, err = f.db.EvidenceIntentsForSubject(ctx, "operation", accepted.Operation.ID)
 	if err != nil || intents[0].State != "verified" {
 		t.Fatalf("operation receipt was incorrectly pruned: %+v, %v", intents, err)
+	}
+}
+
+func TestTerminalFunctionInvocationArchivesOnlyPublicExecutionAndAttemptEvidence(t *testing.T) {
+	f := newRetentionFixture(t)
+	ctx := context.Background()
+	keys, err := store.NewPrivateInvocationKeyRing("archive-key", map[string][]byte{"archive-key": bytes.Repeat([]byte{0x42}, 32)})
+	if err != nil {
+		t.Fatal(err)
+	}
+	privateBody := "function-archive-private-body-canary"
+	op := model.Operation{ID: uuid.NewString(), Kind: store.PrivateInvocationOperationKind, App: "function-archive", SagaID: "saga-function-correlation", Ref: "main", Status: model.OperationQueued,
+		Source: "retention-test", Risk: "write", Payload: map[string]interface{}{"process": "resize", "imageTag": "image@sha256:abcdef"}, Metadata: map[string]interface{}{}, MaxAttempts: 1}
+	acceptance := store.OperationAcceptance{
+		Identity:  store.OperationRequestIdentity{Authority: f.request.Authority, Actor: f.request.Actor, Kind: op.Kind, Resource: "app/function-archive/process/resize", Key: "function-archive-" + uuid.NewString()},
+		Operation: op,
+		Audit:     f.request.Audit,
+	}
+	accepted, err := f.operations.AcceptPrivateInvocation(ctx, acceptance, store.PrivateInvocationInput{Body: privateBody, Method: "POST", Path: "/private/function-archive"}, keys)
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, claim, err := f.db.ClaimNextOperation(ctx, "function-archive-worker", time.Minute, []string{store.PrivateInvocationOperationKind})
+	if err != nil {
+		t.Fatal(err)
+	}
+	digest := "sha256:" + strings.Repeat("a", 64)
+	if _, err := f.db.RecordFunctionInvocationEffectStage(ctx, claim, store.FunctionInvocationJobAttempt, "function-archive-resize", digest); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := f.db.MarkFunctionInvocationEffectAttempt(ctx, claim, store.FunctionInvocationJobAttempt, "function-archive-resize", digest); err != nil {
+		t.Fatal(err)
+	}
+	exitCode, duration := 0, int64(12)
+	execution := store.FuncExecution{ID: accepted.Operation.ID, App: accepted.Operation.App, Process: "resize", Status: "complete", ExitCode: &exitCode, DurationMs: &duration, StartedAt: time.Now().UTC().Add(-time.Second)}
+	if err := f.db.FinishClaimedFunctionInvocation(ctx, claim, execution, model.OperationSucceeded, "function completed", map[string]interface{}{"jobId": "function-archive-resize"}); err != nil {
+		t.Fatal(err)
+	}
+
+	report, err := f.archiver.RunOnce(ctx)
+	if err != nil || report.Published != 1 || len(report.PublishErrors) != 0 {
+		t.Fatalf("archive pass=%+v err=%v", report, err)
+	}
+	intents, err := f.db.EvidenceIntentsForSubject(ctx, "operation", accepted.Operation.ID)
+	if err != nil || len(intents) != 1 || intents[0].State != "verified" {
+		t.Fatalf("function archive intent=%+v err=%v", intents, err)
+	}
+	data, _, err := f.objects.Get(ctx, intents[0].ObjectKey, archive.MaxBundleBytes)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if bytes.Contains(data, []byte(privateBody)) || bytes.Contains(data, []byte("/private/function-archive")) || bytes.Contains(data, []byte(`"effects"`)) {
+		t.Fatalf("function archive exposed private request or raw effects: %s", data)
+	}
+	bundle, err := LoadBundle(ctx, f.objects, intents[0])
+	if err != nil || len(bundle.FunctionExecution) == 0 || string(bundle.FunctionEffectAttempts) == "[]" || len(bundle.Operation) == 0 || len(bundle.Effects) != 0 || bundle.Acceptance == nil ||
+		bytes.Contains(bundle.Acceptance.RequestCanonicalBytes, []byte(privateBody)) || bytes.Contains(bundle.Acceptance.RequestCanonicalBytes, []byte("/private/function-archive")) {
+		t.Fatalf("function bundle=%+v err=%v", bundle, err)
+	}
+
+	f.archiver.Mode = ModePrune
+	report, err = f.archiver.RunOnce(ctx)
+	if err != nil || report.Retired != 0 || report.Held != 1 || len(report.PublishErrors) != 0 {
+		t.Fatalf("function retention pass=%+v err=%v", report, err)
+	}
+	var acceptances int
+	if err := f.db.Pool.QueryRow(ctx, `SELECT count(*) FROM operation_acceptance_intents WHERE operation_id=$1`, accepted.Operation.ID).Scan(&acceptances); err != nil || acceptances != 1 {
+		t.Fatalf("function acceptance retirement=%d err=%v", acceptances, err)
 	}
 }
 

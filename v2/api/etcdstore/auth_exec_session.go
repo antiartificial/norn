@@ -405,7 +405,10 @@ func (s *AuthStore) RenewExecSession(ctx context.Context, id, ownerID, ownerToke
 		return false, err
 	}
 	txn, err := s.kv.Txn(ctx).If(clientv3.Compare(clientv3.ModRevision(s.sessionKey(id)), "=", resp.Kvs[0].ModRevision)).Then(op).Commit()
-	return txn.Succeeded, err
+	if err != nil {
+		return false, err
+	}
+	return txn.Succeeded, nil
 }
 
 func (s *AuthStore) FinishOwnedExecSession(ctx context.Context, id, ownerID, ownerToken, status string, exitCode *int, errorCode string) (bool, error) {
@@ -434,7 +437,10 @@ func (s *AuthStore) FinishOwnedExecSession(ctx context.Context, id, ownerID, own
 		return false, err
 	}
 	txn, err := s.kv.Txn(ctx).If(clientv3.Compare(clientv3.ModRevision(s.sessionKey(id)), "=", resp.Kvs[0].ModRevision)).Then(op).Commit()
-	return txn.Succeeded, err
+	if err != nil {
+		return false, err
+	}
+	return txn.Succeeded, nil
 }
 
 // RecoverExpiredExecSessions fails only sessions whose private owner lease expired.

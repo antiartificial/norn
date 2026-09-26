@@ -37,3 +37,159 @@ Measurements used read-only `psql` queries against `pg_database_size`, `pg_stat_
 A second read-only sample at 2026-09-24 16:30 UTC measured database size 240,422,035 bytes and user-table total 231,407,616 bytes, each 98,304 bytes above the 15:59 UTC sample. Heap size was 144,031,744 bytes, index size 86,310,912 bytes, and the connection snapshot was again one active measurement query plus three idle sessions. This 31-minute delta is a short observation, not a retention or capacity growth rate.
 
 A third read-only sample at 2026-09-24 18:02 UTC measured database size 240,741,523 bytes and user-table total 231,727,104 bytes, each 417,792 bytes above the 15:59 UTC sample. Heap size was 144,236,544 bytes, index size 86,425,600 bytes, and four database connections were observed. The largest tables were `beacon_events` (109,223,936 bytes), `control_events` (79,413,248), `mutation_audit_events` (30,236,672), `saga_events` (9,076,736), `deployment_steps` (1,531,904), and `operations` (761,856). This roughly two-hour observation remains too short to set a retention growth budget or restore capacity target.
+
+A fourth read-only sample at 2026-09-24 23:57 UTC measured database size
+241,888,403 bytes and user-table total 232,873,984 bytes. These are 1,564,672
+bytes above the 15:59 UTC sample, over about eight hours. Heap size was
+144,949,248 bytes, index size 86,859,776 bytes, and four connections were
+observed. The largest tables were `beacon_events` (109,748,224 bytes),
+`control_events` (79,831,040), `mutation_audit_events` (30,441,472),
+`saga_events` (9,076,736), `deployment_steps` (1,531,904), and `operations`
+(761,856). The running API binary SHA-256 remained
+`2fdc974ec8b7234c9f73ec9f2156abf1eee06bd63e3d2853572c6f93f79e6e31`
+and `/api/version` still reported `v2.20.0-platform-30-ga5da8ef`. A fresh
+read-only Norn inventory succeeded and reported 27 app records. No Mini
+database write, release change, or app mutation was made. This same-day
+observation is useful for detecting a gross growth error, but it does not
+capture workload cycles or establish a numeric reserve or retention budget.
+
+A fifth read-only sample at 2026-09-25 01:07 UTC measured database size
+242,076,819 bytes and user-table total 233,062,400 bytes. Both are 1,753,088
+bytes above the 15:59 UTC baseline, over about nine hours. Heap size was
+145,055,744 bytes and indexes were 86,941,696 bytes. The largest tables were
+`beacon_events` (109,838,336 bytes), `control_events` (79,896,576),
+`mutation_audit_events` (30,474,240), `saga_events` (9,076,736),
+`deployment_steps` (1,531,904), and `operations` (761,856). This SSH query
+used PostgreSQL aggregate size functions only; it read no application rows or
+credentials. The interval remains too short to set a representative growth
+or restore reserve.
+
+A sixth read-only PostgreSQL aggregate sample at 2026-09-25 01:46 UTC measured
+database size 242,166,931 bytes and user-table total 233,152,512 bytes,
+1,843,200 bytes above the 15:59 UTC baseline over about ten hours. Heap size
+was 145,121,280 bytes and indexes were 86,966,272 bytes. This still does not
+cover a representative workload cycle or establish the retention and restore
+budgets.
+
+A seventh read-only aggregate sample at 2026-09-25 08:27 UTC measured database
+size 243,305,619 bytes and user-table total 234,291,200 bytes. Each is
+2,981,888 bytes above the 15:59 UTC baseline over about 16.5 hours. Heap size
+was 145,809,408 bytes, indexes were 87,416,832 bytes, and four connections
+were observed. The authenticated Mini inventory at 08:23 UTC still reported
+27 app records, zero active operations, 13 active incidents, host status `ok`,
+and production readiness `blocked`. This longer observation still does not
+include a full representative workload cycle or establish a numeric retention,
+backup-space, or restore-time budget.
+
+An eighth read-only aggregate sample at 2026-09-25 09:58 UTC measured database
+size 243,559,571 bytes and user-table total 234,545,152 bytes. Each is
+3,235,840 bytes above the 2026-09-24 15:59 UTC baseline over about 18 hours.
+Heap size was 145,973,248 bytes and indexes were 87,506,944 bytes. An
+authenticated, read-only inventory at the same time reported API version
+`v2.20.0-platform-30-ga5da8ef`, healthy control services, 27 app records,
+zero active operations, host status `ok`, production readiness `blocked`, and
+`fleet_node_pools.configured=false`. This remains an observation rather than
+a representative workload-cycle rate or a numeric release budget.
+
+A ninth read-only aggregate sample at 2026-09-25 13:55 UTC measured database
+size 244,206,739 bytes and user-table total 235,192,320 bytes. Each is
+3,883,008 bytes above the 2026-09-24 15:59 UTC baseline over about 22 hours.
+Heap size was 146,374,656 bytes and indexes were 87,752,704 bytes. A fresh
+authenticated inventory at 13:54 UTC still reported the v2.20.0 API, 27 app
+records (including the duplicate Watchtower source), zero active operations,
+and production readiness `blocked`. It also reported snapshot-retention
+warnings for `field-harbor` and `turnkey-offer-intake`. This observation still
+does not establish a representative workload cycle or a reviewed retention,
+backup-space, or restore-time budget. No Mini mutation was made.
+
+An additional read-only aggregate sample at 2026-09-25 18:41:32 UTC measured
+database size **244,993,171 bytes**, user-table total **235,978,752 bytes**,
+heap **146,866,176 bytes**, and indexes **88,047,616 bytes**. Database size
+grew **4,669,440 bytes** from the 2026-09-24 15:59 UTC baseline over about
+26.71 hours, a linearized **4.00 MiB per day** for this one observed interval.
+The largest tables were `beacon_events` (111,280,128 bytes),
+`control_events` (81,084,416), and `mutation_audit_events` (30,760,960).
+The prior and current 24-hour windows contained 1,501 and 1,500 Beacon
+events, 1,549 and 1,500 control events, and 1,691 and 1,694 mutation audit
+events respectively. These are aggregate counts, not application rows.
+
+At 18:41 UTC, the authenticated read-only inventory still reported signed v2
+API version `v2.20.0-platform-30-ga5da8ef`, 27 app records, zero active
+operations, host status `ok`, and production readiness `blocked`. Mini's data
+volume reported 36 GiB available. No Mini database, app, job, release, or
+provider state was changed.
+
+For planning only, doubling the observed daily byte growth gives an **8 MiB
+per day** control-database growth allowance. Over 30 days that adds about
+240 MiB to the current 234 MiB database; a **512 MiB control-database size
+review threshold** rounds that envelope upward. This is a provisional sizing
+trigger, not a retention policy, backup reserve, RPO, RTO, or M0 exit budget.
+The interval covers one calendar day at this workload, but no workload-cycle
+classification or timed current-head backup/restore evidence establishes those
+other budgets. Recheck the trend after a representative cycle and review the
+numeric objectives before release approval.
+
+At 2026-09-25 18:44 UTC, a read-only PostgreSQL 17.7 custom-format
+`pg_dump --no-owner --no-privileges` of `norn_v2` streamed directly to a byte
+count on Mini. It emitted **13,163,661 bytes** and completed in **0.82 seconds**
+wall time (`user 0.69`, `sys 0.02`). The shell used `pipefail`; the dump
+process and byte count both exited successfully. No archive bytes or rows were
+copied to this checkout, and the temporary timing text on Mini was removed.
+This measures backup extraction under the observed load. It does not measure
+durable protected-backup publication, retention cost, restore time, validation,
+or application recovery, so it is not an RPO or RTO result.
+
+At 2026-09-25 18:46 UTC, a second fresh PostgreSQL 17.7 custom dump streamed
+from Mini directly into a disposable PostgreSQL 17.11 container. Docker
+inspection confirmed `network=none`, no published ports, and tmpfs mounts for
+both `/tmp` (64 MiB) and the database data directory (1 GiB). The owner-only
+dump in container tmpfs was **13,164,164 bytes**. An `--exit-on-error`
+`pg_restore` into a new database completed in **3.81 seconds** wall time.
+The restored target had 28 public base tables and 249,323 total rows; its
+physical database size was 208,172,723 bytes. The container and its tmpfs
+contents were removed after inspection. Mini's source database was only read.
+
+This is a useful lower-bound restore-stage observation for the current data
+volume. It does not include protected-backup retrieval, network transfer to a
+different node, v3 migrations, API startup, application verification, or a
+rollback decision. The target's row count was not matched to a same-snapshot
+source count or full-row fingerprints, so this run alone does not prove data
+equivalence. A release RTO must cover those additional stages and use a
+reviewed threshold.
+
+At 2026-09-25 20:52 UTC, another read-only PostgreSQL aggregate sample measured
+database size **245,370,003 bytes**, user-table total **236,355,584 bytes**,
+heap **147,120,128 bytes**, indexes **88,170,496 bytes**, and five connections
+including the measurement query. The largest tables were `beacon_events`
+(111,460,352 bytes), `control_events` (81,248,256), and
+`mutation_audit_events` (30,793,728). The authenticated Mini inventory still
+reported signed v2 API version `v2.20.0-platform-30-ga5da8ef`, 27 app records,
+zero active operations, host status `ok`, and production readiness `blocked`.
+No Mini state was changed; the temporary local API inventory was removed after
+review. This extends the observation beyond 28 hours but does not establish a
+representative workload-cycle or release capacity budget.
+
+At 2026-09-26 13:39:56 UTC, a further read-only PostgreSQL aggregate sample
+measured database size **248,302,739 bytes**, user-table total **239,288,320
+bytes**, heap **148,987,904 bytes**, indexes **89,235,456 bytes**, and four
+connections. The largest tables were `beacon_events` (112,836,608 bytes),
+`control_events` (82,378,752), `mutation_audit_events` (31,219,712),
+`saga_events` (9,076,736), `deployment_steps` (1,531,904), and `operations`
+(761,856). Compared with the 2026-09-24 15:59 UTC baseline, database size
+increased **7,979,008 bytes** over approximately 45.68 hours, or a linearized
+**4.00 MiB per day**. The trend is consistent with the provisional 8 MiB/day
+planning allowance, but this observation alone does not qualify a workload
+cycle, retention policy, backup reserve, or release RTO.
+
+At 2026-09-26 21:42:22 UTC, another read-only aggregate sample measured
+database size **249,793,683 bytes**, user-table total **240,779,264 bytes**,
+heap **151,044,096 bytes**, indexes **89,735,168 bytes**, and five connections
+including the measurement query. The largest tables were `beacon_events`
+(113,451,008 bytes), `control_events` (82,960,384), and
+`mutation_audit_events` (31,514,624). From the 2026-09-24 15:59 UTC baseline,
+database size rose **9,469,952 bytes** over 2.2384 days, or a linearized
+**4.04 MiB/day**. The last 8.04 hours added **1,490,944 bytes** (4.24 MiB/day
+linearized). This spans two calendar days and supports the provisional
+8 MiB/day planning allowance at the observed workload; it does not measure
+peak bursts, archive growth, protected-backup size, or release RTO. An owner
+must still accept the numeric threshold and the recovery budget before M0 exit.

@@ -132,7 +132,7 @@ func (p *Pipeline) executeCronPause(ctx context.Context, op *model.Operation, cl
 		if blocking, found, lookupErr := p.CronPauseEffects.store.UnresolvedForResource(ctx, authority, reservation.Resource); lookupErr != nil {
 			return deferredResult(claim, &effect.PendingError{Resource: reservation.Resource, Reason: "blocking cron pause lookup failed", Cause: lookupErr})
 		} else if found {
-			if _, recoverErr := p.CronPauseEffects.executor.Recover(ctx, blocking); recoverErr != nil {
+			if _, recoverErr := p.recoverCronBlockingEffect(ctx, blocking); recoverErr != nil {
 				return deferredResult(claim, recoverErr)
 			}
 			// The recovered result belongs to the blocker, never to this claim.

@@ -2,6 +2,7 @@ import { createContext, useCallback, useContext, useEffect, useMemo, useRef, use
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { ApiError, apiAuthority, apiFetch } from '../lib/api.ts'
 import { clearDurableIntent, durableIntent } from '../lib/durableIntent.ts'
+import { pollIngressOperation, validateIngressAcceptance } from '../lib/ingressOperation.ts'
 import { appGroups } from '../lib/format.ts'
 import { applyDurableOperationSnapshot, useDeployProgress } from '../hooks/useDeployProgress.ts'
 import { useHubEvents } from '../hooks/useHubEvents.ts'
@@ -204,6 +205,7 @@ function RuntimeInner({ children }: { children: (runtime: RuntimeContext & { con
   const [activity, setActivity] = useState<ActivityEntry[]>([])
   const activityId = useRef(0)
   const lastToastedRun = useRef<string | null>(null)
+  const pendingIngress = useRef(new Set<string>())
   const { toast } = useToast()
   const queryClient = useQueryClient()
   const { deployState, setDeployState, applyDeployEvent } = useDeployProgressContext()
@@ -259,13 +261,44 @@ function RuntimeInner({ children }: { children: (runtime: RuntimeContext & { con
 	const releasePipelineAvailable = ['release-provenance-v1', 'release-qualifications-v2', 'release-promotions-v1'].every((feature) => capabilities.data?.features.includes(feature))
 
   const toggleEndpoint = useCallback(async (appId: string, hostname: string, enabled: boolean) => {
-    await apiFetch(`/api/apps/${appId}/endpoints/toggle`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ hostname, enabled }),
-    })
-    queryClient.invalidateQueries({ queryKey: ['cloudflared', 'ingress'] })
-  }, [queryClient])
+    const pendingKey = `${appId}:${hostname}`
+    if (pendingIngress.current.has(pendingKey)) return
+    pendingIngress.current.add(pendingKey)
+    const body = { hostname, enabled }
+    const intent = durableIntent(`${apiAuthority()}:ingress:${appId}`, body)
+    let accepted: Operation
+    try {
+      accepted = validateIngressAcceptance(await apiFetch<Operation>(`/api/apps/${encodeURIComponent(appId)}/endpoints/toggle`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', 'Idempotency-Key': intent.key },
+        body: JSON.stringify(body),
+      }))
+      clearDurableIntent(intent)
+    } catch (error) {
+      pendingIngress.current.delete(pendingKey)
+      toast({ kind: 'error', title: 'Ingress acceptance unknown', description: `${hostname}: retry uses the same request key. ${error instanceof Error ? error.message : String(error)}` })
+      return
+    }
+    if (!accepted.id) {
+      pendingIngress.current.delete(pendingKey)
+      toast({ kind: 'info', title: `Ingress ${accepted.status}`, description: hostname })
+      return
+    }
+    toast({ kind: 'info', title: 'Ingress change queued', description: `${hostname} · operation ${accepted.id}` })
+    try {
+      const result = await pollIngressOperation(accepted, (id) => apiFetch<Operation>(`/api/v1/operations/${encodeURIComponent(id)}`))
+      if (result.status === 'succeeded') {
+        await queryClient.invalidateQueries({ queryKey: ['cloudflared', 'ingress'] })
+        toast({ kind: 'success', title: 'Ingress updated', description: hostname })
+      } else if (result.status === 'failed' || result.status === 'canceled') {
+        toast({ kind: 'error', title: `Ingress ${result.status}`, description: result.message ?? `Operation ${accepted.id}` })
+      } else {
+        toast({ kind: 'info', title: 'Ingress change still pending', description: `Check operation ${accepted.id}` })
+      }
+    } finally {
+      pendingIngress.current.delete(pendingKey)
+    }
+  }, [queryClient, toast])
 	const toggleDeployment = useCallback(async (appId: string, enabled: boolean) => {
 		await apiFetch(`/api/v1/apps/${appId}/deployment`, { method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ enabled }) })
 		await queryClient.invalidateQueries({ queryKey: ['apps'] })

@@ -127,10 +127,17 @@ func testEtcdFleetRuntimeProcess(t *testing.T, databaseURL string, fixture etcdF
 	secret := "fleet-runtime-process-token-secret-000"
 	authority := uuid.NewString()
 	identities := etcdstore.NewAuthStore(client, prefix)
-	token, _, err := handler.IssueManagedAccessToken(context.Background(), secret, identities, "operator", []string{handler.ScopeAPIRead, handler.ScopeAPIWrite}, time.Hour)
+	bootstrapFile := filepath.Join(t.TempDir(), "initial-token")
+	if err := bootstrapEtcdManagedCredential(context.Background(), client, prefix, secret, etcdBootstrapRequest{
+		Output: bootstrapFile, Subject: "operator", Scopes: []string{handler.ScopeAPIRead, handler.ScopeAPIWrite}, TTL: time.Hour,
+	}, publishBootstrapTokenFile); err != nil {
+		t.Fatal(err)
+	}
+	tokenBytes, err := os.ReadFile(bootstrapFile)
 	if err != nil {
 		t.Fatal(err)
 	}
+	token := strings.TrimSpace(string(tokenBytes))
 	runnerToken, _, err := handler.IssueManagedAccessToken(context.Background(), secret, identities, "fleet-runner", []string{handler.ScopeFleetOperate}, time.Hour)
 	if err != nil {
 		t.Fatal(err)

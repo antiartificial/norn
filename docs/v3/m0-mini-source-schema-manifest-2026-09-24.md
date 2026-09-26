@@ -1,6 +1,6 @@
 # Mini source-to-schema compatibility manifest — 2026-09-24
 
-This is a review manifest for the v3 integration branch at `6f04b6f113f1568cce72c52d333a0e2b4d0404aa`. It identifies the exact observed Mini source and the candidate's immutable migration catalog. It does not certify a Mini upgrade or rollback.
+This is a review manifest for the v3 integration branch at `f9aad413e430addf4f14617e45bde8e3c52beca0`. It identifies the exact observed Mini source and the candidate's immutable migration catalog. It does not certify a Mini upgrade or rollback.
 
 ## Observed source and legacy database
 
@@ -10,9 +10,9 @@ The candidate's [adoption guard](../../v2/api/store/mini_schema_adoption.go) req
 
 ## Candidate migration contract
 
-The current candidate catalog is migrations 1–16, reader contract 2, writer contract 13. These are schema compatibility numbers, not product versions. The startup contract probe reports current migration 16, minimum reader 2, and minimum writer 13. A writer with an older contract cannot be assumed to run safely after migration 16; rollback and mixed-version windows require separate evidence from a representative data restore.
+The current candidate catalog is migrations 1–17, reader contract 3, writer contract 14. These are schema compatibility numbers, not product versions. A writer or reader with an older contract cannot be assumed to run safely after migration 17; rollback and mixed-version windows require separate evidence from a representative data restore.
 
-Checksums below are computed by `store.MigrationChecksum` from the exact `ControlSchemaMigrations()` definitions at `6f04b6f`. The ledger compares them on every schema check or migration; definitions must not be edited after application.
+Checksums below are computed by `store.MigrationChecksum` from the exact `ControlSchemaMigrations()` definitions at `f9aad413e430addf4f14617e45bde8e3c52beca0`. The ledger compares them on every schema check or migration; definitions must not be edited after application.
 
 | Version | Migration | Checksum | Minimum reader | Minimum writer |
 | ---: | --- | --- | ---: | ---: |
@@ -32,7 +32,24 @@ Checksums below are computed by `store.MigrationChecksum` from the exact `Contro
 | 14 | signed-acceptance-byte-reserve | `56cb305a3d4cb2a3d8c0e2b89dd75584dee58cfb0e5c307912b45908456b0e1d` | 2 | 11 |
 | 15 | operation-replay-expiry | `43066af7ce262edd8fd2f578f024bb05c6bcd5623721c6028546781337ecb287` | 2 | 12 |
 | 16 | snapshot-publication-intents | `3286426f2a2e3b48585596c0c831a27fdbc57587814291063b8da253079eada7` | 2 | 13 |
+| 17 | archive-backed-operation-acceptance-retirement | `5e449c3ebaa5f6630bb7c3cdb75fba027581ae83b77ff62551e5951effd59a79` | 3 | 14 |
 
 ## Evidence boundary before M0 exit
 
-The local PostgreSQL integration test applies migrations 1–16 to a synthetic unversioned baseline and checks selected legacy rows. The later [private-data restore rehearsal](m0-mini-private-restore-rehearsal-2026-09-24.md) applied migrations 1–16 to a copied Mini database in a network-disabled target container. All 28 legacy table counts and seven selected-field hashes matched before and after, but the hash query was not retained for reproduction. It did not run either API binary, compare application runtime identity, or exercise rollback after writer contract 13. Old-worker compatibility remains unproven. M0 still needs app/job/route/volume/database ownership, a retained sanitized CI fixture, measured budgets, ADR decisions, and named acceptance.
+The local PostgreSQL integration test applies migrations 1–17 to a synthetic unversioned baseline and checks selected legacy rows. The current [private-data migration-17 rehearsal](m0-mini-private-restore-migration17-rehearsal-2026-09-24.md) applied migrations 1–17 to a copied Mini database in a network-disabled PostgreSQL 17 target. All 28 legacy table counts and primary-key fingerprints matched before and after, and a second migration application changed neither the ledger nor compatibility metadata. It did not run either API binary, compare application runtime identity, or exercise rollback after writer contract 14. Old-worker compatibility remains unproven. M0 still needs app/job/route/volume/database ownership, a retained sanitized CI fixture, measured budgets, ADR decisions, and named acceptance.
+
+Later branch work added migration 18 for dormant private function-invocation
+material and raised the writer minimum to 15. The version and checksum table
+above remains the exact historical manifest at the stated commit. Current
+routine CI applies migration 18 to a synthetic fixture, but the private Mini
+restore has now been repeated through 18 on a [private Mini copy](m0-mini-private-restore-migration18-rehearsal-2026-09-24.md),
+with original-table counts and primary-key fingerprints preserved. The
+mixed-version and rollback rehearsal remains open.
+
+Subsequent branch work added migration 19 for the function invocation's
+public pre-call effect-attempt fence and raised the writer minimum to 16.
+The historical checksum table above remains anchored to its stated commit.
+The [private Mini copy](m0-mini-private-restore-migration19-rehearsal-2026-09-24.md)
+has now been rerun through migration 19 with the original-table row counts and
+primary-key fingerprints preserved. Mixed-version and rollback evidence is
+still missing.

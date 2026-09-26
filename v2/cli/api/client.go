@@ -1708,12 +1708,20 @@ func (c *Client) SecretsMigrationPlanApps(app string) ([]MigrationPlanApp, error
 	return resp.Apps, nil
 }
 
-func (c *Client) Forge(appID string) error {
-	return c.post("/api/apps/"+appID+"/forge", "{}")
+func (c *Client) Forge(appID, idempotencyKey string) (*Operation, error) {
+	var operation Operation
+	if err := c.postJSONWithIdempotency("/api/apps/"+url.PathEscape(appID)+"/forge", "{}", idempotencyKey, &operation); err != nil {
+		return nil, err
+	}
+	return &operation, nil
 }
 
-func (c *Client) Teardown(appID string) error {
-	return c.post("/api/apps/"+appID+"/teardown", "{}")
+func (c *Client) Teardown(appID, idempotencyKey string) (*Operation, error) {
+	var operation Operation
+	if err := c.postJSONWithIdempotency("/api/apps/"+url.PathEscape(appID)+"/teardown", "{}", idempotencyKey, &operation); err != nil {
+		return nil, err
+	}
+	return &operation, nil
 }
 
 func (c *Client) CloudflaredIngress() ([]string, error) {
@@ -1726,9 +1734,13 @@ func (c *Client) CloudflaredIngress() ([]string, error) {
 	return resp.Hostnames, nil
 }
 
-func (c *Client) ToggleEndpoint(appID, hostname string, enabled bool) error {
+func (c *Client) ToggleEndpoint(appID, hostname string, enabled bool, idempotencyKey string) (*Operation, error) {
 	body := fmt.Sprintf(`{"hostname":%q,"enabled":%t}`, hostname, enabled)
-	return c.post("/api/apps/"+appID+"/endpoints/toggle", body)
+	var operation Operation
+	if err := c.postJSONWithIdempotency("/api/apps/"+url.PathEscape(appID)+"/endpoints/toggle", body, idempotencyKey, &operation); err != nil {
+		return nil, err
+	}
+	return &operation, nil
 }
 
 func (c *Client) ValidateAll(strictSecrets bool) ([]ValidationResult, error) {
@@ -2046,14 +2058,22 @@ func (c *Client) CronTrigger(appID, process string) error {
 	return c.post("/api/apps/"+appID+"/cron/trigger", body)
 }
 
-func (c *Client) CronPause(appID, process string) error {
+func (c *Client) CronPause(appID, process, idempotencyKey string) (*Operation, error) {
 	body := fmt.Sprintf(`{"process":%q}`, process)
-	return c.post("/api/apps/"+appID+"/cron/pause", body)
+	var operation Operation
+	if err := c.postJSONWithIdempotency("/api/apps/"+appID+"/cron/pause", body, idempotencyKey, &operation); err != nil {
+		return nil, err
+	}
+	return &operation, nil
 }
 
-func (c *Client) CronResume(appID, process string) error {
+func (c *Client) CronResume(appID, process, idempotencyKey string) (*Operation, error) {
 	body := fmt.Sprintf(`{"process":%q}`, process)
-	return c.post("/api/apps/"+appID+"/cron/resume", body)
+	var operation Operation
+	if err := c.postJSONWithIdempotency("/api/apps/"+appID+"/cron/resume", body, idempotencyKey, &operation); err != nil {
+		return nil, err
+	}
+	return &operation, nil
 }
 
 func (c *Client) CronUpdateSchedule(appID, process, schedule string) error {

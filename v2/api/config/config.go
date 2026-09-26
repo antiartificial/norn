@@ -52,6 +52,18 @@ type Config struct {
 	// OperationReplayTTL opts newly accepted request identities into durable
 	// replay expiry. Zero retains indefinite replay.
 	OperationReplayTTL time.Duration
+	// PrivateInvocationEnabled opts into the dormant private function-invocation
+	// aggregate. Its key ring is deliberately separate from audit signing keys.
+	// NORN_PRIVATE_INVOCATION_KEYS is a JSON object of key ID to base64-encoded
+	// 32-byte key-encryption key. It is consumed only at startup and is never
+	// written to logs.
+	PrivateInvocationEnabled bool
+	// FunctionV3PreviewEnabled is retained as the environment compatibility
+	// name for function-v3 activation. It connects durable admission and the
+	// claimed worker; enabling it requires the full runtime at startup.
+	FunctionV3PreviewEnabled      bool
+	PrivateInvocationCurrentKeyID string
+	PrivateInvocationKeys         string
 	// QualificationSigningKey signs portable staging release receipts. Keep it
 	// distinct from mutation-audit integrity material.
 	QualificationSigningKey string
@@ -143,6 +155,8 @@ type Config struct {
 
 	WebhookSecret          string // NORN_WEBHOOK_SECRET
 	CloudflaredConfig      string // NORN_CLOUDFLARED_CONFIG
+	CloudflaredBinary      string // NORN_CLOUDFLARED_BIN
+	CloudflaredLaunchLabel string // NORN_CLOUDFLARED_LAUNCH_LABEL
 	CloudflareAPIToken     string // NORN_CLOUDFLARE_API_TOKEN
 	CloudflareZoneID       string // NORN_CLOUDFLARE_ZONE_ID
 	CloudflareLogpushToken string // NORN_CLOUDFLARE_LOGPUSH_TOKEN
@@ -173,6 +187,10 @@ type Config struct {
 	// v2 database routing (ambient libpq by database name).
 	DatabaseProfile   string // NORN_DATABASE_PROFILE
 	DatabaseSecretDir string // NORN_DATABASE_SECRET_DIR (owner-only; resolves secret: references)
+	// WPColdStartGate opts the qualified WordPress startup
+	// path into the private MySQL writer launch fence. It deliberately defaults
+	// off: ordinary app.deploy retains its rolling-deploy behavior.
+	WPColdStartGate bool // NORN_WORDPRESS_VERIFIED_TLS_COLD_START_GATE
 
 	// Evidence archive (ADR 0001). Unset directory disables archiving; the
 	// default mode is shadow (archive and verify, never delete).
@@ -238,6 +256,10 @@ func Load() *Config {
 		AuditPreviousSigningKeys:               splitNonEmpty(os.Getenv("NORN_AUDIT_PREVIOUS_SIGNING_KEYS")),
 		ControlAuthority:                       strings.TrimSpace(os.Getenv("NORN_CONTROL_AUTHORITY")),
 		OperationReplayTTL:                     envOptionalDuration("NORN_OPERATION_REPLAY_TTL"),
+		PrivateInvocationEnabled:               envBoolOr("NORN_PRIVATE_INVOCATION_ENABLED", false),
+		FunctionV3PreviewEnabled:               envBoolOr("NORN_FUNCTION_V3_PREVIEW_ENABLED", false),
+		PrivateInvocationCurrentKeyID:          strings.TrimSpace(os.Getenv("NORN_PRIVATE_INVOCATION_CURRENT_KEY_ID")),
+		PrivateInvocationKeys:                  os.Getenv("NORN_PRIVATE_INVOCATION_KEYS"),
 		AuditRetentionDays:                     envIntOr("NORN_AUDIT_RETENTION_DAYS", 365),
 		QualificationSigningKey:                os.Getenv("NORN_QUALIFICATION_SIGNING_KEY"),
 		TrustedQualificationSigningKeys:        splitNonEmpty(os.Getenv("NORN_TRUSTED_QUALIFICATION_SIGNING_KEYS")),
@@ -306,6 +328,8 @@ func Load() *Config {
 
 		WebhookSecret:          os.Getenv("NORN_WEBHOOK_SECRET"),
 		CloudflaredConfig:      envOr("NORN_CLOUDFLARED_CONFIG", os.Getenv("HOME")+"/.cloudflared/config.yml"),
+		CloudflaredBinary:      os.Getenv("NORN_CLOUDFLARED_BIN"),
+		CloudflaredLaunchLabel: envOr("NORN_CLOUDFLARED_LAUNCH_LABEL", "com.norn.cloudflared"),
 		CloudflareAPIToken:     firstEnv("NORN_CLOUDFLARE_API_TOKEN", "CLOUDFLARE_API_TOKEN"),
 		CloudflareZoneID:       firstEnv("NORN_CLOUDFLARE_ZONE_ID", "CLOUDFLARE_ZONE_ID"),
 		CloudflareLogpushToken: os.Getenv("NORN_CLOUDFLARE_LOGPUSH_TOKEN"),
@@ -326,6 +350,7 @@ func Load() *Config {
 		SnapshotArtifactBudgetBytes:  envInt64Or("NORN_SNAPSHOT_ARTIFACT_BUDGET_BYTES", 0),
 		DatabaseProfile:              strings.TrimSpace(os.Getenv("NORN_DATABASE_PROFILE")),
 		DatabaseSecretDir:            strings.TrimSpace(os.Getenv("NORN_DATABASE_SECRET_DIR")),
+		WPColdStartGate:              envBoolOr("NORN_WORDPRESS_VERIFIED_TLS_COLD_START_GATE", false),
 		EvidenceArchiveDir:           strings.TrimSpace(os.Getenv("NORN_EVIDENCE_ARCHIVE_DIR")),
 		EvidenceArchiveMode:          strings.ToLower(envOr("NORN_EVIDENCE_ARCHIVE_MODE", "shadow")),
 		EvidenceMinAge:               envOr("NORN_EVIDENCE_MIN_AGE", "720h"),

@@ -14,11 +14,12 @@ cgroup tests passed; a deployed Mini/Fleet runner and restore qualification
 remain open. PR [#70](https://github.com/antiartificial/norn/pull/70) recorded
 the exact Mini source-to-schema mapping through candidate migration 16.
 
-A subsequent [private-data restore rehearsal](m0-mini-private-restore-rehearsal-2026-09-24.md)
-restored a copied Mini control database into an isolated PostgreSQL 16
-container, applied migrations 1–16, and preserved all 28 legacy table counts
-and selected stable-field hashes. It did not start either API, exercise
-rollback, or verify app/job/route/volume/database ownership. **No M0–M3
+A subsequent [private-data migration-17 rehearsal](m0-mini-private-restore-migration17-rehearsal-2026-09-24.md)
+restored a copied Mini control database into an isolated PostgreSQL 17
+container, applied migrations 1–17, and preserved all 28 legacy table counts
+and primary-key fingerprints. The second migrator invocation applied no
+versions and did not change compatibility metadata. It did not start either
+API, exercise rollback, or verify app/job/route/volume/database ownership. **No M0–M3
 milestone gate is signed off, and no v3 code was deployed to Mini or Fleet.**
 
 ## Further integration update
@@ -78,8 +79,8 @@ schema-only rehearsal. Representative data/rollback rehearsal, old-worker
 compatibility, growth budgets, and app/route/volume ownership remain M0/M5
 exit work. No Mini database was changed.
 
-The next review order is: complete private representative-data restore and
-rollback evidence; convert the remaining M1 external effects and remove
+The next review order is: complete private rollback and mixed-version
+evidence; convert the remaining M1 external effects and remove
 concrete PostgreSQL control consumers; qualify M2 retention, database
 bindings, and representative recovery; then finish M3 backend-neutral runtime
 and three-member etcd bootstrap, fault, restore, and soak testing. A loaded
@@ -89,7 +90,7 @@ This updates the [2026-09-23 checkpoint](m0-m3-checkpoint-2026-09-23.md) after M
 
 | Milestone | Added evidence | Remaining exit gate |
 | --- | --- | --- |
-| M0 | [Mini control-store measurements](m0-mini-measurements-2026-09-24.md) bind the running binary to an exact signed release/source SHA and record active PostgreSQL identity, schema-only dump hash, bytes, and two short-interval samples. A [topology comparison](m0-mini-topology-2026-09-24.md) records app, manifest, ingress counts, and unresolved duplicate/inactive cases. The [decision register](decision-register-2026-09-24.md) reconciles accepted ADR 0007 with six proposed ADRs. | Prove schema migration/version mapping; measure representative growth; map jobs/routes/volumes/database owners; make sanitized CI and isolated private restore fixtures; review proposed ADRs, owners, and numeric budgets. |
+| M0 | [Mini control-store measurements](m0-mini-measurements-2026-09-24.md) bind the running binary to an exact signed release/source SHA and record active PostgreSQL identity, schema-only dump hash, bytes, and two short-interval samples. A [migration-17 private restore rehearsal](m0-mini-private-restore-migration17-rehearsal-2026-09-24.md) preserves all legacy row counts and primary-key fingerprints, and proves migration idempotence in a network-disabled PostgreSQL 17 target. A [topology comparison](m0-mini-topology-2026-09-24.md) records app, manifest, ingress counts, and unresolved duplicate/inactive cases. The [decision register](decision-register-2026-09-24.md) reconciles accepted ADR 0007 with six proposed ADRs. | Measure representative growth; map jobs/routes/volumes/database owners; make a retained sanitized CI fixture; rehearse rollback and mixed-version compatibility; review proposed ADRs, owners, and numeric budgets. |
 | M1 | Signed acceptance, fencing, and auth boundaries remain integrated. The [external-effect audit](m1-control-boundary-audit.md) still identifies inline effectful paths. | Convert each live external effect to a durable accepted/reserved/reconciled execution path; qualify two-replica races and old-data compatibility; remove concrete PostgreSQL consumers. The app-restart candidate is isolated because it would accept a request only to fail it without executing a restart. |
 | M2 | Fleet GitHub PR/apply reserves a signed plan-scoped intent and archive capacity **before** external dispatch. A separately signed completion binds the operation, plan, status, and GitHub result; archive verification checks the exact exposed payload. [PR #52](https://github.com/antiartificial/norn/pull/52) adds operator reconciliation of queued reservations through signed acceptance and idempotent verified no-write completion. Focused PostgreSQL acceptance and archive tests passed. | Bound hot receipt/identity lifetime and byte reserve; cover remaining non-saga domains; qualify live GitHub crash boundaries, MySQL, Nomad, object service, growth, and restore. |
 | M3 | Etcd operation claims use server leases, generation-fenced mutations, a running index, and paginated recovery. [PR #53](https://github.com/antiartificial/norn/pull/53) adds leased app locks and atomic lock-fence comparison on success, defer, retry, and failed terminalization. Local live-etcd race and recovery tests and repository CI passed. | Drain or explicitly migrate pre-lease etcd running records before mixed-version rollout. Implement checkpoint/effect aggregates, backend-neutral consumers, and PG-free startup; qualify TLS three-member Fleet, quorum faults, restore, and soak. |
@@ -99,3 +100,107 @@ The M2/M3 safety and reconciliation slices are merged; **no M0–M3 milestone is
 [PR #54](https://github.com/antiartificial/norn/pull/54) also merged the first M4 foundation: signed, region-scoped app scale operations and durable desired-replica intent consumed by deploy and rollback. A PostgreSQL lock-wait test rejects expired claims; the full API suite passed against disposable PostgreSQL with the known Darwin host-metrics sample skipped. This does not establish loaded 2→3→2 placement, drain, or replacement behavior.
 
 Focused package and repository CI checks passed for both PRs. The merged branch passed `go test ./... -skip '^TestSampleDarwinHostMetrics$' -count=1 -p 1` from `v2/api` on 2026-09-24. The exact Darwin host-metrics sampler exclusion is a known local test-environment issue. Local etcd test members were stopped after verification. No live Norn deployment or provider mutation was performed.
+
+## Grouped release integration continuation
+
+Draft [Norn PR #76](https://github.com/antiartificial/norn/pull/76) groups the
+remaining M0–M3 Norn work; draft
+[Fleet PR #176](https://github.com/antiartificial/norn-fleet/pull/176) groups
+the host etcd bootstrap and recovery work. The separate M2 MySQL PR was merged
+into #76 and closed. These are review containers, not milestone signoff.
+
+- M0: five read-only Mini size samples span about nine hours, with
+  1,753,088 bytes of total database growth; this remains too short for a
+  retention budget. The private migration-17 rehearsal preserved 28 legacy table counts
+  and primary-key fingerprints across 245,383 rows. The read-only app-to-Nomad
+  join resolved 18 names and left eight unresolved. Route and database owners,
+  a fixture covering representative Mini topology, representative growth, rollback, and mixed-version
+  evidence remain open.
+  A synthetic, private-data-free fixture now checks selected legacy rows
+  through migrations 1–17 and the reader-version refusal on PostgreSQL 17.7;
+  it runs in a dedicated PR CI job. Installed-binary rollback and full Mini
+  workload compatibility remain open.
+- M1: the etcd canary effect adapter now atomically reserves under a live
+  operation claim and per-app gate, records launch and completion, and supports
+  repeat-safe resolution and recovery. Its tests ran against disposable etcd
+  v3.5.17. The handler's managed-token actor lookup now uses the AuthStore
+  lineage contract on both PostgreSQL and etcd instead of querying PostgreSQL
+  from the handler. Replay expiry holds accepted identities until their effects are
+  terminal, and an opt-in canary-only worker reconciled a lost Nomad response
+  with one external PUT against fake Nomad. The normal etcd router now mounts
+  public canary admission only with both the worker and HTTP preview flags.
+  A disposable-etcd HTTP-to-worker test covered signed admission, token-rotation
+  replay, conflicting intent, and one Nomad promotion against fake Nomad.
+  A separate local Nomad 2.0.7 and etcd 3.5.17 test promoted the exact real
+  healthy canary deployment. An earlier 0/1-healthy attempt exposed a gap:
+  Nomad rejected promotion and the accepted operation stayed pending. Admission
+  now rejects an unready canary before durable acceptance, allowing the same
+  key to be retried after health. The worker also rechecks the exact deployment
+  before reserving and before sending the Nomad promotion. A crash after
+  reservation but before a confirmed remote effect can still remain pending
+  conservatively; that window, process-crash, and three-member etcd fault
+  qualification remain open before enabling the preview for release; see
+  [the preview gate](etcd-canary-preview.md). ContextDB feedback rollback now
+  fails closed with HTTP 501 and is unavailable in the Ops UI because the
+  remote idempotency contract is absent; restoring it requires the
+  [cross-service contract](m1-contextdb-feedback-rollback-contract.md).
+  A disposable Nomad test also showed that periodic force ignores the generic
+  idempotency token: repeated calls created distinct evaluations and children.
+  Cron trigger therefore remains an inline-effect conversion gate; see
+  [the force qualification](m1-cron-force-idempotency-qualification-2026-09-24.md).
+  Cron resume now accepts a signed, replayable operation; a claimed worker
+  rebuilds the job from a spec bound by digest, the accepted image and database
+  delivery revision, and current private secrets. Its effect reservation and
+  exact Nomad job CAS use a durable marker for uncertain-result reconciliation.
+  The cron state and operation receipt finish in one claim-fenced transaction.
+  CLI pause and resume send idempotency keys and report accepted operation IDs.
+  A disposable Nomad 2.0.7 test proved pause, stale-revision refusal, and
+  resume against the real API. It exposed a nested agent-version response that
+  had made the existing pause CAS guard reject supported servers; version
+  detection now reads Nomad's actual response shape.
+  A replacement-resume adapter CAS-registers a freshly built periodic job
+  with an effect marker. A second disposable Nomad run proved schedule
+  replacement and stale-revision refusal. Focused handler, pipeline, worker,
+  store, and CLI tests pass; the claim-fenced state update also passed against
+  disposable PostgreSQL 17.7. An [integrated disposable test](m1-cron-resume-disposable-qualification-2026-09-25.md)
+  passed HTTP acceptance through the real claimed worker, Nomad 2.0.7, the
+  PostgreSQL receipt, and same-key replay. A second integrated run dropped
+  Nomad's response after its guarded write and proved effect-marker
+  reconciliation with one remote mutation. Deterministic crash-boundary tests
+  now prove conservative unresolved state after reservation-only and exact
+  successor-claim reconciliation after one Nomad commit. Literal process kill
+  during the write and two-replica race qualification remain open.
+- M2: local MySQL runtime and verified-TLS health are implemented. Generated
+  service, periodic, and function jobs delivered exact component bytes inside
+  allocations on pinned Nomad 1.9.7. A WordPress image PHP client also
+  connected to disposable MySQL 8.4.11, verified database/account identity,
+  and wrote/read a temporary table; see
+  [the allocation record](m2-nomad-197-allocation-delivery-2026-09-24.md).
+  Completed WordPress installation, TLS application runtime, backup/restore, retention
+  reserve, and representative recovery remain open.
+  A separate opt-in disposable test now passes the exact four runtime
+  components to pinned, unmodified `wordpress:6.8.2-php8.3-apache` against
+  `mysql:8.4` and verifies the WordPress HTTP installation page. This closes
+  ordinary image-level startup compatibility; TLS application runtime,
+  delivery through a Nomad allocation, and recovery remain open.
+  A disposable MySQL 8.4 rehearsal now resolves exact source/target bindings,
+  rejects stale generations, and verifies a `mysqldump` artifact restores to
+  the distinct target while source data remains intact. Snapshot and restore
+  capabilities stay gated until a durable recovery lifecycle is implemented;
+  see [the rehearsal](m2-mysql-dump-restore-rehearsal-2026-09-24.md).
+- M3: normal etcd startup and managed-token lifecycle have a narrow PG-free
+  Fleet router. Passive candidate health/schema now rechecks etcd after startup
+  and a real API process passed with a poisoned PostgreSQL URL. Full app
+  consumers, three-member host bootstrap and restore,
+  host fault behavior, and soak qualification remain open. The host PR's CI
+  contract job was blocked by GitHub account billing status during this
+  checkpoint; that is not a passing host qualification.
+  A disposable three-member TLS/RBAC cluster now passed the normal API process
+  test with absent and poisoned PostgreSQL DSNs, one-member loss, quorum-loss
+  refusal, and full snapshot restore. This narrows the local transport and
+  recovery gap; host-supervised Fleet bootstrap, partition/disk faults,
+  certificate rotation, and live restore still require qualification. See
+  [the three-member record](m3-three-member-disposable-qualification.md).
+
+No v3 deployment to Mini or Fleet is claimed. M0–M3 still need their exit
+gates before the loaded M4 capacity exercise can rely on these contracts.

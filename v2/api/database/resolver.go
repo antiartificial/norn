@@ -36,6 +36,17 @@ var engineCapabilities = map[Engine]map[Capability]bool{
 	},
 }
 
+// implementedCapabilities is narrower than catalog vocabulary. A catalog
+// may describe future recovery policy, but accepted work may use only paths
+// implemented by this binary.
+var implementedCapabilities = map[Engine]map[Capability]bool{
+	EnginePostgreSQL: {
+		CapabilityRuntime: true, CapabilityMigration: true, CapabilitySnapshot: true, CapabilityRestore: true,
+		CapabilityHealth: true, CapabilityPITR: true, CapabilityManagedReadiness: true,
+	},
+	EngineMySQL: {CapabilityRuntime: true, CapabilityHealth: true},
+}
+
 var knownCapabilities = map[Capability]bool{
 	CapabilityRuntime: true, CapabilityMigration: true, CapabilitySnapshot: true, CapabilityRestore: true,
 	CapabilityHealth: true, CapabilityPITR: true, CapabilityManagedReadiness: true,
@@ -121,6 +132,9 @@ func ValidateCatalog(catalog Catalog) error {
 		if !referencePattern.MatchString(binding.CredentialRef) {
 			return invalid("credentialRef", label, "credential reference is missing or malformed")
 		}
+		if err := validateMySQLMaintenance(binding, service, label); err != nil {
+			return err
+		}
 		if binding.ConsistencyGroup != "" && !identifierPattern.MatchString(binding.ConsistencyGroup) {
 			return invalid("consistencyGroup", label, "consistency group is invalid")
 		}
@@ -185,6 +199,41 @@ func validateRetired(catalog Catalog, services map[string]DatabaseService, bindi
 		if profile.LegacyPostgres != nil && retired[RetiredResource{Kind: RetiredBinding, ID: profile.LegacyPostgres.MappingID}] {
 			return invalid("legacyPostgres.mappingId", resourceLabel("profiles", index, profile.ID), "a retired binding ID cannot be reused as a legacy mapping")
 		}
+	}
+	return nil
+}
+
+func validateMySQLMaintenance(binding DatabaseBinding, service DatabaseService, label string) error {
+	maintenance := binding.MySQLMaintenance
+	if maintenance == nil {
+		return nil
+	}
+	if service.Engine != EngineMySQL || service.Purpose != PurposeApplication {
+		return invalid("mysqlMaintenance", label, "MySQL maintenance credentials require an application MySQL binding")
+	}
+	if maintenance.Generation == 0 {
+		return invalid("mysqlMaintenance.generation", label, "MySQL maintenance generation must be positive")
+	}
+	if !validMySQLAccountHost(maintenance.RuntimeAccountHost) || !validMySQLAccountHost(maintenance.RestoreAccountHost) || !validMySQLAccountHost(maintenance.FenceAccountHost) {
+		return invalid("mysqlMaintenance", label, "MySQL maintenance account hosts are invalid")
+	}
+	hasSnapshot := maintenance.SnapshotRole != "" || maintenance.SnapshotAccountHost != "" || maintenance.SnapshotCredentialRef != ""
+	if hasSnapshot && (!mysqlUserPattern.MatchString(maintenance.SnapshotRole) || !validMySQLAccountHost(maintenance.SnapshotAccountHost) || !referencePattern.MatchString(maintenance.SnapshotCredentialRef)) {
+		return invalid("mysqlMaintenance", label, "MySQL snapshot maintenance identity is incomplete or invalid")
+	}
+	if !mysqlUserPattern.MatchString(maintenance.RestoreRole) || !mysqlUserPattern.MatchString(maintenance.FenceRole) {
+		return invalid("mysqlMaintenance", label, "MySQL maintenance roles are invalid")
+	}
+	if !referencePattern.MatchString(maintenance.RestoreCredentialRef) || !referencePattern.MatchString(maintenance.FenceCredentialRef) {
+		return invalid("mysqlMaintenance", label, "MySQL maintenance credential references are invalid")
+	}
+	if maintenance.RestoreRole == binding.Role || maintenance.FenceRole == binding.Role || maintenance.RestoreRole == maintenance.FenceRole ||
+		(hasSnapshot && (maintenance.SnapshotRole == binding.Role || maintenance.SnapshotRole == maintenance.RestoreRole || maintenance.SnapshotRole == maintenance.FenceRole)) {
+		return invalid("mysqlMaintenance", label, "MySQL snapshot, restore, and fence roles must be distinct from the runtime role and each other")
+	}
+	if maintenance.RestoreCredentialRef == binding.CredentialRef || maintenance.FenceCredentialRef == binding.CredentialRef || maintenance.RestoreCredentialRef == maintenance.FenceCredentialRef ||
+		(hasSnapshot && (maintenance.SnapshotCredentialRef == binding.CredentialRef || maintenance.SnapshotCredentialRef == maintenance.RestoreCredentialRef || maintenance.SnapshotCredentialRef == maintenance.FenceCredentialRef)) {
+		return invalid("mysqlMaintenance", label, "MySQL snapshot, restore, and fence credential references must be distinct from the runtime credential and each other")
 	}
 	return nil
 }
@@ -462,6 +511,18 @@ func (r *Resolver) Resolve(request ResolveRequest) (ResolvedBinding, error) {
 		if !engineCapabilities[resolved.Target.Engine][capability] {
 			return ResolvedBinding{}, &ResolverError{Code: CodeUnsupportedCapability, Field: "requiredCapabilities", Resource: profileLabel, Reason: "required capability is not supported by the target engine adapter"}
 		}
+		if !implementedCapabilities[resolved.Target.Engine][capability] {
+			return ResolvedBinding{}, &ResolverError{Code: CodeUnsupportedCapability, Field: "requiredCapabilities", Resource: profileLabel, Reason: "required capability has no implemented target engine path in this build"}
+		}
+		if resolved.Target.Engine == EngineMySQL && capability == CapabilityRuntime && resolved.TLS.Mode != TLSDisabled {
+			// The resolver proves the transport shape. The consuming app must
+			// separately prove that its client actually verifies the certificate.
+			// The only qualified runtime shape has a CA, the endpoint's exact
+			// server name, and no client certificate.
+			if resolved.TLS.Mode != TLSVerifyFull || resolved.TLS.ServerName != resolved.Endpoint.Host || resolved.TLS.ClientCertRef != "" || resolved.TLS.ClientKeyRef != "" {
+				return ResolvedBinding{}, &ResolverError{Code: CodeUnsupportedCapability, Field: "tls", Resource: profileLabel, Reason: "MySQL runtime requires endpoint-bound verify-full TLS without a client certificate"}
+			}
+		}
 		if !declared[capability] {
 			return ResolvedBinding{}, &ResolverError{Code: CodeUnsupportedCapability, Field: "requiredCapabilities", Resource: profileLabel, Reason: "required capability is not declared by the target service"}
 		}
@@ -483,7 +544,7 @@ func (r *Resolver) resolveNamed(profile DeploymentProfile, logical string) (Reso
 	}
 	binding := r.bindings[bindingID]
 	service := r.services[binding.ServiceID]
-	return r.resolved(profile, service, logical, binding.ID, binding.Generation, binding.Database, binding.Role, binding.CredentialRef, binding.TLS, false), nil
+	return r.resolved(profile, service, logical, binding.ID, binding.Generation, binding.Database, binding.Role, binding.CredentialRef, binding.MySQLMaintenance, binding.TLS, false), nil
 }
 
 func (r *Resolver) resolveLegacy(profile DeploymentProfile, databaseName string) (ResolvedBinding, error) {
@@ -508,11 +569,11 @@ func (r *Resolver) resolveLegacy(profile DeploymentProfile, databaseName string)
 			return ResolvedBinding{}, &ResolverError{Code: CodePurposeMismatch, Field: "legacyPostgres.database", Resource: profileLabel, Reason: "legacy application declaration names a control database"}
 		}
 	}
-	return r.resolved(profile, service, "", legacy.MappingID, legacy.Generation, databaseName, legacy.Role, legacy.CredentialRef, legacy.TLS, true), nil
+	return r.resolved(profile, service, "", legacy.MappingID, legacy.Generation, databaseName, legacy.Role, legacy.CredentialRef, nil, legacy.TLS, true), nil
 }
 
-func (r *Resolver) resolved(profile DeploymentProfile, service DatabaseService, logical, bindingID string, bindingGeneration uint64, databaseName, role, credentialRef string, tls DatabaseTLS, legacy bool) ResolvedBinding {
-	return ResolvedBinding{
+func (r *Resolver) resolved(profile DeploymentProfile, service DatabaseService, logical, bindingID string, bindingGeneration uint64, databaseName, role, credentialRef string, maintenance *MySQLMaintenanceCredentials, tls DatabaseTLS, legacy bool) ResolvedBinding {
+	result := ResolvedBinding{
 		Target: TargetIdentity{
 			ServiceID: service.ID, ServiceGeneration: service.Generation, BindingID: bindingID, BindingGeneration: bindingGeneration,
 			Engine: service.Engine, Database: databaseName, Role: role,
@@ -521,6 +582,11 @@ func (r *Resolver) resolved(profile DeploymentProfile, service DatabaseService, 
 		Topology: service.Topology, Capabilities: append([]Capability(nil), service.Recovery.Capabilities...),
 		CredentialRef: credentialRef, TLSPolicy: service.TLS, TLS: tls, Legacy: legacy,
 	}
+	if maintenance != nil {
+		copy := *maintenance
+		result.MySQLMaintenance = &copy
+	}
+	return result
 }
 
 // ValidateTransition checks that next may replace previous without silently
@@ -636,7 +702,8 @@ func ValidateTransition(previous, next Catalog) error {
 		}
 		if err := checkTargetGeneration(label, before.Generation, after.Generation,
 			before.ServiceID == after.ServiceID && before.Database == after.Database && before.Role == after.Role &&
-				before.ConsistencyGroup == after.ConsistencyGroup && sameTLSTarget(before.TLS, after.TLS)); err != nil {
+				before.ConsistencyGroup == after.ConsistencyGroup && sameTLSTarget(before.TLS, after.TLS) &&
+				sameMySQLMaintenanceIdentity(before.MySQLMaintenance, after.MySQLMaintenance)); err != nil {
 			return err
 		}
 	}
@@ -653,6 +720,13 @@ func ValidateTransition(previous, next Catalog) error {
 		}
 	}
 	return nil
+}
+
+func sameMySQLMaintenanceIdentity(left, right *MySQLMaintenanceCredentials) bool {
+	if left == nil || right == nil {
+		return left == right
+	}
+	return *left == *right
 }
 
 // legacyMappings indexes legacy defaults by MappingID. ValidateCatalog
@@ -777,7 +851,13 @@ func cloneCatalog(catalog Catalog) Catalog {
 		service.Recovery.Capabilities = append([]Capability(nil), service.Recovery.Capabilities...)
 		out.Services = append(out.Services, service)
 	}
-	out.Bindings = append(out.Bindings, catalog.Bindings...)
+	for _, binding := range catalog.Bindings {
+		if binding.MySQLMaintenance != nil {
+			maintenance := *binding.MySQLMaintenance
+			binding.MySQLMaintenance = &maintenance
+		}
+		out.Bindings = append(out.Bindings, binding)
+	}
 	for _, profile := range catalog.Profiles {
 		if profile.DatabaseBindings != nil {
 			mapping := make(map[string]string, len(profile.DatabaseBindings))

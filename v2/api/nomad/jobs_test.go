@@ -62,6 +62,81 @@ func TestCronRunHealthDetectsOOMRestartsAndFailedAllocation(t *testing.T) {
 	}
 }
 
+func TestRequireColdStartJobAbsentRequires404AndNoPendingEvaluation(t *testing.T) {
+	for _, test := range []struct {
+		name        string
+		jobStatus   int
+		evalStatus  int
+		evaluations []*nomadapi.Evaluation
+		wantErr     bool
+	}{
+		{name: "absent with completed history", jobStatus: http.StatusNotFound, evalStatus: http.StatusOK, evaluations: []*nomadapi.Evaluation{{Status: "complete"}}},
+		{name: "registered job", jobStatus: http.StatusOK, wantErr: true},
+		{name: "pending evaluation", jobStatus: http.StatusNotFound, evalStatus: http.StatusOK, evaluations: []*nomadapi.Evaluation{{Status: "pending"}}, wantErr: true},
+		{name: "non 404 job failure", jobStatus: http.StatusInternalServerError, wantErr: true},
+		{name: "unreadable evaluations", jobStatus: http.StatusNotFound, evalStatus: http.StatusInternalServerError, wantErr: true},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			client := newTestNomadClient(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				switch r.URL.Path {
+				case "/v1/job/cold-start":
+					w.WriteHeader(test.jobStatus)
+					if test.jobStatus == http.StatusOK {
+						_ = json.NewEncoder(w).Encode(&nomadapi.Job{})
+					}
+				case "/v1/job/cold-start/evaluations":
+					w.WriteHeader(test.evalStatus)
+					if test.evalStatus == http.StatusOK {
+						_ = json.NewEncoder(w).Encode(test.evaluations)
+					}
+				default:
+					http.NotFound(w, r)
+				}
+			}))
+			err := client.RequireColdStartJobAbsent("global", "cold-start")
+			if (err != nil) != test.wantErr {
+				t.Fatalf("RequireColdStartJobAbsent error = %v, wantErr %t", err, test.wantErr)
+			}
+		})
+	}
+}
+
+func TestProveColdStartEvaluationLineage(t *testing.T) {
+	root := &nomadapi.Evaluation{ID: "submitted", JobID: "wordpress", Namespace: "default", JobModifyIndex: 12}
+	child := &nomadapi.Evaluation{ID: "continued", JobID: "wordpress", Namespace: "default", JobModifyIndex: 12, PreviousEval: "submitted"}
+	for _, test := range []struct {
+		name  string
+		child *nomadapi.Evaluation
+		want  bool
+	}{
+		{name: "scheduler continuation", child: child, want: true},
+		{name: "different job", child: &nomadapi.Evaluation{ID: "continued", JobID: "other", Namespace: "default", JobModifyIndex: 12, PreviousEval: "submitted"}},
+		{name: "different revision", child: &nomadapi.Evaluation{ID: "continued", JobID: "wordpress", Namespace: "default", JobModifyIndex: 13, PreviousEval: "submitted"}},
+		{name: "unlinked", child: &nomadapi.Evaluation{ID: "continued", JobID: "wordpress", Namespace: "default", JobModifyIndex: 12}},
+		{name: "cyclic", child: &nomadapi.Evaluation{ID: "continued", JobID: "wordpress", Namespace: "default", JobModifyIndex: 12, PreviousEval: "continued"}},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			client := newTestNomadClient(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				if r.URL.Query().Get("region") != "global" {
+					t.Errorf("evaluation query has no region: %s", r.URL)
+				}
+				switch r.URL.Path {
+				case "/v1/evaluation/submitted":
+					_ = json.NewEncoder(w).Encode(root)
+				case "/v1/evaluation/continued":
+					_ = json.NewEncoder(w).Encode(test.child)
+				default:
+					http.NotFound(w, r)
+				}
+			}))
+			got, err := client.ProveColdStartEvaluationLineage("global", "wordpress", "submitted", "continued")
+			if err != nil || got != test.want {
+				t.Fatalf("lineage = %t, %v; want %t", got, err, test.want)
+			}
+		})
+	}
+}
+
 func TestPeriodicJobSchedulePreservesVersionAndJobModifyIndex(t *testing.T) {
 	jobID, status, schedule, timezone := "widget-nightly", "running", "0 2 * * *", "America/Chicago"
 	version, modifyIndex, genericModifyIndex := uint64(3), uint64(42), uint64(99)
@@ -70,14 +145,14 @@ func TestPeriodicJobSchedulePreservesVersionAndJobModifyIndex(t *testing.T) {
 			http.Error(w, "unexpected request", http.StatusNotFound)
 			return
 		}
-		_ = json.NewEncoder(w).Encode(&nomadapi.Job{ID: &jobID, Status: &status, Version: &version, ModifyIndex: &genericModifyIndex, JobModifyIndex: &modifyIndex, Meta: map[string]string{cronPauseEffectMetaKey: "effect-1"}, Periodic: &nomadapi.PeriodicConfig{Spec: &schedule, TimeZone: &timezone}})
+		_ = json.NewEncoder(w).Encode(&nomadapi.Job{ID: &jobID, Status: &status, Version: &version, ModifyIndex: &genericModifyIndex, JobModifyIndex: &modifyIndex, Meta: map[string]string{cronPauseEffectMetaKey: "effect-1", cronResumeEffectMetaKey: "effect-2"}, Periodic: &nomadapi.PeriodicConfig{Spec: &schedule, TimeZone: &timezone}})
 	}))
 
 	info, err := client.PeriodicJobSchedule(jobID)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if info.Version != version || info.ModifyIndex != modifyIndex || info.Schedule != schedule || info.TimeZone != timezone || info.CronPauseEffectID != "effect-1" {
+	if info.Version != version || info.ModifyIndex != modifyIndex || info.Schedule != schedule || info.TimeZone != timezone || info.CronPauseEffectID != "effect-1" || info.CronResumeEffectID != "effect-2" {
 		t.Fatalf("periodic info = %#v", info)
 	}
 }
@@ -89,7 +164,7 @@ func TestPausePeriodicJobRejectsMutationBetweenReadAndCASWrite(t *testing.T) {
 	client := newTestNomadClient(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		switch {
 		case r.Method == http.MethodGet && r.URL.Path == "/v1/agent/self":
-			_ = json.NewEncoder(w).Encode(&nomadapi.AgentSelf{Config: map[string]interface{}{"Version": "1.11.5"}})
+			_ = json.NewEncoder(w).Encode(&nomadapi.AgentSelf{Config: map[string]interface{}{"Version": map[string]interface{}{"Version": "1.11.5"}}})
 		case r.Method == http.MethodGet && r.URL.Path == "/v1/job/widget-nightly":
 			_ = json.NewEncoder(w).Encode(&nomadapi.Job{ID: &jobID, Status: &status, ModifyIndex: &genericModifyIndex, JobModifyIndex: &modifyIndex, Periodic: &nomadapi.PeriodicConfig{Spec: &schedule}})
 		case r.Method == http.MethodPut && r.URL.Path == "/v1/jobs":
@@ -124,12 +199,190 @@ func TestPausePeriodicJobRejectsMutationBetweenReadAndCASWrite(t *testing.T) {
 	}
 }
 
+func TestResumePeriodicJobUsesGuardedRegistrationAndEffectMarker(t *testing.T) {
+	jobID, status, schedule := "widget-nightly", "dead", "0 2 * * *"
+	modifyIndex := uint64(42)
+	stopped := true
+	var wrote bool
+	client := newTestNomadClient(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch {
+		case r.Method == http.MethodGet && r.URL.Path == "/v1/agent/self":
+			_ = json.NewEncoder(w).Encode(&nomadapi.AgentSelf{Config: map[string]interface{}{"Version": map[string]interface{}{"Version": "2.0.7"}}})
+		case r.Method == http.MethodGet && r.URL.Path == "/v1/job/widget-nightly":
+			_ = json.NewEncoder(w).Encode(&nomadapi.Job{ID: &jobID, Status: &status, Stop: &stopped, JobModifyIndex: &modifyIndex, Periodic: &nomadapi.PeriodicConfig{Spec: &schedule}})
+		case r.Method == http.MethodPut && r.URL.Path == "/v1/jobs":
+			var request nomadapi.JobRegisterRequest
+			if err := json.NewDecoder(r.Body).Decode(&request); err != nil {
+				t.Fatal(err)
+			}
+			if !request.EnforceIndex || request.JobModifyIndex != modifyIndex || request.Job == nil || request.Job.Stop == nil || *request.Job.Stop || request.Job.Meta[cronResumeEffectMetaKey] != "resume-effect" {
+				t.Fatalf("resume CAS request = %+v", request)
+			}
+			wrote = true
+			_ = json.NewEncoder(w).Encode(&nomadapi.JobRegisterResponse{})
+		default:
+			http.Error(w, "unexpected request", http.StatusNotFound)
+		}
+	}))
+	if err := client.ResumePeriodicJob(jobID, modifyIndex, "resume-effect"); err != nil {
+		t.Fatal(err)
+	}
+	if !wrote {
+		t.Fatal("expected guarded Nomad registration")
+	}
+}
+
+func TestResumePeriodicJobRejectsRevisionConflict(t *testing.T) {
+	jobID, status, schedule := "widget-nightly", "dead", "0 2 * * *"
+	modifyIndex := uint64(42)
+	stopped := true
+	client := newTestNomadClient(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch {
+		case r.Method == http.MethodGet && r.URL.Path == "/v1/agent/self":
+			_ = json.NewEncoder(w).Encode(&nomadapi.AgentSelf{Config: map[string]interface{}{"Version": map[string]interface{}{"Version": "2.0.7"}}})
+		case r.Method == http.MethodGet && r.URL.Path == "/v1/job/widget-nightly":
+			_ = json.NewEncoder(w).Encode(&nomadapi.Job{ID: &jobID, Status: &status, Stop: &stopped, JobModifyIndex: &modifyIndex, Periodic: &nomadapi.PeriodicConfig{Spec: &schedule}})
+		case r.Method == http.MethodPut && r.URL.Path == "/v1/jobs":
+			http.Error(w, nomadapi.RegisterEnforceIndexErrPrefix+": job changed", http.StatusConflict)
+		default:
+			http.Error(w, "unexpected request", http.StatusNotFound)
+		}
+	}))
+	if err := client.ResumePeriodicJob(jobID, modifyIndex, "resume-effect"); !errors.Is(err, ErrJobRevisionChanged) {
+		t.Fatalf("ResumePeriodicJob() = %v, want revision conflict", err)
+	}
+}
+
+func TestResumePeriodicJobWithReplacementPreservesTranslatedJobAndCAS(t *testing.T) {
+	jobID, schedule, status := "widget-nightly", "15 3 * * *", "dead"
+	index := uint64(42)
+	stopped := true
+	image := "registry.example/widget:new"
+	replacement := &nomadapi.Job{ID: &jobID, Periodic: &nomadapi.PeriodicConfig{Spec: &schedule}, Meta: map[string]string{"delivery-revision": "8"}, TaskGroups: []*nomadapi.TaskGroup{{Name: &jobID, Tasks: []*nomadapi.Task{{Name: "widget", Driver: "docker", Config: map[string]interface{}{"image": image}, Env: map[string]string{"API_TOKEN": "secret-value"}}}}}}
+	var wrote bool
+	client := newTestNomadClient(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch {
+		case r.Method == http.MethodGet && r.URL.Path == "/v1/agent/self":
+			_ = json.NewEncoder(w).Encode(&nomadapi.AgentSelf{Config: map[string]interface{}{"Version": map[string]interface{}{"Version": "2.0.7"}}})
+		case r.Method == http.MethodGet && r.URL.Path == "/v1/job/widget-nightly":
+			_ = json.NewEncoder(w).Encode(&nomadapi.Job{ID: &jobID, Status: &status, Stop: &stopped, JobModifyIndex: &index, Periodic: &nomadapi.PeriodicConfig{Spec: &schedule}})
+		case r.Method == http.MethodPut && r.URL.Path == "/v1/jobs":
+			var request nomadapi.JobRegisterRequest
+			if err := json.NewDecoder(r.Body).Decode(&request); err != nil {
+				t.Fatal(err)
+			}
+			if !request.EnforceIndex || request.JobModifyIndex != index || request.Job == nil || request.Job.Stop == nil || *request.Job.Stop || request.Job.Meta[cronResumeEffectMetaKey] != "resume-effect" || request.Job.Meta["delivery-revision"] != "8" || request.Job.TaskGroups[0].Tasks[0].Env["API_TOKEN"] != "secret-value" || request.Job.TaskGroups[0].Tasks[0].Config["image"] != image {
+				t.Fatalf("guarded replacement did not preserve translated job: %+v", request)
+			}
+			wrote = true
+			_ = json.NewEncoder(w).Encode(&nomadapi.JobRegisterResponse{})
+		default:
+			http.Error(w, "unexpected request", http.StatusNotFound)
+		}
+	}))
+	if err := client.ResumePeriodicJobWithReplacement(jobID, index, "resume-effect", replacement); err != nil {
+		t.Fatal(err)
+	}
+	if !wrote {
+		t.Fatal("expected guarded registration")
+	}
+	if replacement.Stop != nil || replacement.Meta[cronResumeEffectMetaKey] != "" {
+		t.Fatal("caller-owned replacement was modified")
+	}
+}
+
+func TestUpdatePeriodicJobSchedulePreservesPauseAndUsesEffectMarker(t *testing.T) {
+	jobID, oldSchedule, newSchedule, status := "widget-nightly", "0 2 * * *", "15 2 * * *", "dead"
+	index := uint64(42)
+	stopped := true
+	replacement := &nomadapi.Job{ID: &jobID, Periodic: &nomadapi.PeriodicConfig{Spec: &newSchedule}, Meta: map[string]string{"delivery-revision": "8"}}
+	var wrote bool
+	client := newTestNomadClient(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch {
+		case r.Method == http.MethodGet && r.URL.Path == "/v1/agent/self":
+			_ = json.NewEncoder(w).Encode(&nomadapi.AgentSelf{Config: map[string]interface{}{"Version": map[string]interface{}{"Version": "2.0.7"}}})
+		case r.Method == http.MethodGet && r.URL.Path == "/v1/job/widget-nightly":
+			_ = json.NewEncoder(w).Encode(&nomadapi.Job{ID: &jobID, Status: &status, Stop: &stopped, JobModifyIndex: &index, Periodic: &nomadapi.PeriodicConfig{Spec: &oldSchedule}})
+		case r.Method == http.MethodPut && r.URL.Path == "/v1/jobs":
+			var request nomadapi.JobRegisterRequest
+			if err := json.NewDecoder(r.Body).Decode(&request); err != nil {
+				t.Fatal(err)
+			}
+			if !request.EnforceIndex || request.JobModifyIndex != index || request.Job == nil || request.Job.Stop == nil || !*request.Job.Stop || request.Job.Periodic == nil || request.Job.Periodic.Spec == nil || *request.Job.Periodic.Spec != newSchedule || request.Job.Meta[cronScheduleEffectMetaKey] != "schedule-effect" || request.Job.Meta["delivery-revision"] != "8" {
+				t.Fatalf("guarded schedule replacement did not preserve intent: %+v", request)
+			}
+			wrote = true
+			_ = json.NewEncoder(w).Encode(&nomadapi.JobRegisterResponse{})
+		default:
+			http.Error(w, "unexpected request", http.StatusNotFound)
+		}
+	}))
+	if err := client.UpdatePeriodicJobSchedule(jobID, index, "schedule-effect", replacement); err != nil {
+		t.Fatal(err)
+	}
+	if !wrote {
+		t.Fatal("expected guarded registration")
+	}
+	if replacement.Stop != nil || replacement.Meta[cronScheduleEffectMetaKey] != "" {
+		t.Fatal("caller-owned replacement was modified")
+	}
+}
+
+func TestResumePeriodicJobWithReplacementRejectsStaleRevision(t *testing.T) {
+	jobID, schedule, status := "widget-nightly", "15 3 * * *", "dead"
+	index := uint64(43)
+	stopped := true
+	client := newTestNomadClient(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch {
+		case r.Method == http.MethodGet && r.URL.Path == "/v1/agent/self":
+			_ = json.NewEncoder(w).Encode(&nomadapi.AgentSelf{Config: map[string]interface{}{"Version": map[string]interface{}{"Version": "2.0.7"}}})
+		case r.Method == http.MethodGet && r.URL.Path == "/v1/job/widget-nightly":
+			_ = json.NewEncoder(w).Encode(&nomadapi.Job{ID: &jobID, Status: &status, Stop: &stopped, JobModifyIndex: &index, Periodic: &nomadapi.PeriodicConfig{Spec: &schedule}})
+		default:
+			t.Fatalf("unexpected mutation %s %s", r.Method, r.URL.Path)
+		}
+	}))
+	err := client.ResumePeriodicJobWithReplacement(jobID, 42, "resume-effect", &nomadapi.Job{ID: &jobID, Periodic: &nomadapi.PeriodicConfig{Spec: &schedule}})
+	if !errors.Is(err, ErrJobRevisionChanged) {
+		t.Fatalf("got %v, want stale revision", err)
+	}
+}
+
+func TestResumePeriodicJobWithReplacementRejectsConcurrentNomadWrite(t *testing.T) {
+	jobID, schedule, status := "widget-nightly", "15 3 * * *", "dead"
+	index := uint64(42)
+	stopped := true
+	client := newTestNomadClient(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch {
+		case r.Method == http.MethodGet && r.URL.Path == "/v1/agent/self":
+			_ = json.NewEncoder(w).Encode(&nomadapi.AgentSelf{Config: map[string]interface{}{"Version": map[string]interface{}{"Version": "2.0.7"}}})
+		case r.Method == http.MethodGet && r.URL.Path == "/v1/job/widget-nightly":
+			_ = json.NewEncoder(w).Encode(&nomadapi.Job{ID: &jobID, Status: &status, Stop: &stopped, JobModifyIndex: &index, Periodic: &nomadapi.PeriodicConfig{Spec: &schedule}})
+		case r.Method == http.MethodPut && r.URL.Path == "/v1/jobs":
+			var request nomadapi.JobRegisterRequest
+			if err := json.NewDecoder(r.Body).Decode(&request); err != nil {
+				t.Fatal(err)
+			}
+			if !request.EnforceIndex || request.JobModifyIndex != index {
+				t.Fatalf("unguarded registration: %+v", request)
+			}
+			http.Error(w, nomadapi.RegisterEnforceIndexErrPrefix+": job changed", http.StatusConflict)
+		default:
+			t.Fatalf("unexpected request %s %s", r.Method, r.URL.Path)
+		}
+	}))
+	err := client.ResumePeriodicJobWithReplacement(jobID, index, "resume-effect", &nomadapi.Job{ID: &jobID, Periodic: &nomadapi.PeriodicConfig{Spec: &schedule}})
+	if !errors.Is(err, ErrJobRevisionChanged) {
+		t.Fatalf("got %v, want concurrent revision conflict", err)
+	}
+}
+
 func TestPausePeriodicJobRejectsUnsupportedAtomicCASServer(t *testing.T) {
 	client := newTestNomadClient(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.Method != http.MethodGet || r.URL.Path != "/v1/agent/self" {
 			t.Fatalf("unexpected request %s %s", r.Method, r.URL.Path)
 		}
-		_ = json.NewEncoder(w).Encode(&nomadapi.AgentSelf{Config: map[string]interface{}{"Version": "1.9.7"}})
+		_ = json.NewEncoder(w).Encode(&nomadapi.AgentSelf{Config: map[string]interface{}{"Version": map[string]interface{}{"Version": "1.9.7"}}})
 	}))
 
 	err := client.PausePeriodicJob("widget-nightly", 42, "effect-1")
@@ -267,6 +520,29 @@ func TestDeploymentCanaryStateRequiresPromotedTaskGroups(t *testing.T) {
 	groups["api"].Promoted = true
 	if has, promoted := deploymentCanaryState(groups); !has || !promoted {
 		t.Fatalf("promoted canary = has %t promoted %t", has, promoted)
+	}
+}
+
+func TestDeploymentCanaryReadyRequiresEveryPlacedAllocationHealthy(t *testing.T) {
+	groups := map[string]*nomadapi.DeploymentState{
+		"web": {DesiredCanaries: 2, PlacedCanaries: []string{"web-1"}, HealthyAllocs: 1},
+		"api": {PlacedCanaries: []string{"api-1"}, HealthyAllocs: 0},
+	}
+	if deploymentCanaryReady(groups) {
+		t.Fatal("underplaced canary accepted")
+	}
+	groups["web"].PlacedCanaries = append(groups["web"].PlacedCanaries, "web-2")
+	groups["web"].HealthyAllocs = 2
+	if deploymentCanaryReady(groups) {
+		t.Fatal("unhealthy api canary accepted")
+	}
+	groups["api"].HealthyAllocs = 1
+	if !deploymentCanaryReady(groups) {
+		t.Fatal("healthy canaries refused")
+	}
+	groups["web"].Promoted = true
+	if deploymentCanaryReady(groups) {
+		t.Fatal("already promoted group accepted")
 	}
 }
 

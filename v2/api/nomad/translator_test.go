@@ -2,6 +2,7 @@ package nomad
 
 import (
 	"encoding/json"
+	"reflect"
 	"strings"
 	"testing"
 
@@ -11,6 +12,31 @@ import (
 )
 
 func testIntPointer(value int) *int { return &value }
+
+func TestTranslatePreservesEveryVolume(t *testing.T) {
+	spec := &model.InfraSpec{
+		App:       "demo",
+		Processes: map[string]model.Process{"web": {Port: 8080}},
+		Volumes: []model.VolumeSpec{
+			{Name: "content", Mount: "/var/www/html/wp-content"},
+			{Name: "cache", Mount: "/var/cache/demo"},
+		},
+	}
+	jobs := map[string]*nomadapi.Job{
+		"service":  Translate(spec, "demo:test", nil),
+		"periodic": TranslatePeriodic(spec, "tick", model.Process{Schedule: "0 * * * *", Command: "true"}, "demo:test", nil),
+		"batch":    TranslateBatch(spec, "run", model.Process{Command: "true"}, "demo:test", nil, "demo-run-1"),
+	}
+	for kind, job := range jobs {
+		group := job.TaskGroups[0]
+		if len(group.Volumes) != 2 || group.Volumes["content"] == nil || group.Volumes["cache"] == nil {
+			t.Fatalf("%s volumes = %+v", kind, group.Volumes)
+		}
+		if got := len(group.Tasks[0].VolumeMounts); got != 2 {
+			t.Fatalf("%s mounts = %d, want 2", kind, got)
+		}
+	}
+}
 
 func TestTranslatePreservesContentAddressedImage(t *testing.T) {
 	image := "registry.example.test/norn/demo@sha256:" + strings.Repeat("a", 64)
@@ -24,6 +50,45 @@ func TestTranslatePreservesContentAddressedImage(t *testing.T) {
 	}
 	if got := job.TaskGroups[0].Tasks[0].Config["image"]; got != image {
 		t.Fatalf("translated image = %v, want %s", got, image)
+	}
+}
+
+func TestTranslateInstallsQualifiedWordPressVerifiedTLSStartupAdapter(t *testing.T) {
+	spec := &model.InfraSpec{
+		SchemaVersion: model.AppSchemaV2, App: "wordpress", StartupAdapter: model.StartupAdapterWordPressVerifiedTLS,
+		Build:     &model.BuildSpec{Image: model.QualifiedWordPressVerifiedTLSImage},
+		Processes: map[string]model.Process{"web": {Port: 80}},
+		Volumes:   []model.VolumeSpec{{Name: "wordpress-content", Mount: "/var/www/html/wp-content"}},
+		Databases: []model.DatabaseRequirement{{Name: "primary", Purpose: "application", Capabilities: []string{"runtime"}, Runtime: &model.DatabaseRuntime{
+			Components: &model.DatabaseRuntimeComponents{Host: "WORDPRESS_DB_HOST", User: "WORDPRESS_DB_USER", Password: "WORDPRESS_DB_PASSWORD", Name: "WORDPRESS_DB_NAME"},
+			TLS:        &model.DatabaseRuntimeTLS{CAFileEnv: "MYSQL_SSL_CA"},
+		}}},
+	}
+	if result := model.ValidateSpec(spec); !result.Valid {
+		t.Fatalf("adapter spec invalid: %+v", result.Findings)
+	}
+	image := spec.Build.Image
+	job := Translate(spec, image, nil)
+	task := job.TaskGroups[0].Tasks[0]
+	if task.Config["image"] != image || task.Config["command"] != "/bin/sh" {
+		t.Fatalf("adapter task config = %#v", task.Config)
+	}
+	args, ok := task.Config["args"].([]string)
+	if !ok || len(args) != 2 || !strings.Contains(args[1], "refusing to replace unrecognized WordPress db.php") || !strings.Contains(args[1], "mktemp") || !strings.Contains(args[1], "mv -f") || !strings.Contains(args[1], "/usr/local/bin/docker-entrypoint.sh apache2-foreground") {
+		t.Fatalf("adapter args = %#v", task.Config["args"])
+	}
+	foundDropIn := false
+	for _, template := range task.Templates {
+		if template != nil && template.DestPath != nil && *template.DestPath == wordpressVerifiedTLSDropInDestination {
+			foundDropIn = template.Perms != nil && *template.Perms == "0444" && template.EmbeddedTmpl != nil && strings.Contains(*template.EmbeddedTmpl, "MYSQLI_OPT_SSL_VERIFY_SERVER_CERT")
+		}
+	}
+	if !foundDropIn {
+		t.Fatal("verified TLS drop-in template was not rendered")
+	}
+	job = Translate(spec, "docker.io/library/wordpress:6.8.2-php8.3-apache@sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", nil)
+	if got := job.TaskGroups[0].Tasks[0].Config["args"]; !reflect.DeepEqual(got, []string{"-ec", "exit 78"}) {
+		t.Fatalf("unqualified image was not failed closed: %v", got)
 	}
 }
 

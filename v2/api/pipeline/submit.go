@@ -89,6 +89,20 @@ func (p *Pipeline) submit(ctx context.Context, st *state, sg *saga.Saga) error {
 			return &DatabaseTargetError{Reason: "no staged database delivery revision for this deploy"}
 		}
 	}
+	// This private mode is intentionally positioned immediately before the
+	// first Nomad job registration. Database-variable staging above is not a
+	// runtime writer; every later registration is covered by this one-allocation
+	// cold-start protocol or refused during reservation.
+	coldStartGate, err := p.reserveWordPressVerifiedTLSColdStart(ctx, st)
+	if err != nil {
+		return err
+	}
+	coldStartResolved := coldStartGate == nil
+	defer func() {
+		if !coldStartResolved {
+			p.containWordPressVerifiedTLSColdStart(ctx, coldStartGate)
+		}
+	}()
 
 	// Check for port conflicts before submitting
 	for _, proc := range st.spec.Processes {
@@ -115,10 +129,21 @@ func (p *Pipeline) submit(ctx context.Context, st *state, sg *saga.Saga) error {
 			}
 			job := nomad.TranslateForRegionAt(st.spec, st.imageTag, env, region, st.deliveryRevision)
 			nomad.ApplyDesiredReplicaCounts(job, desiredCounts)
+			if err := bindDeploymentJobProvenance(job, st.deploymentID, stringFromMap(st.operationPayload, "specDigest"), st.operationPayload); err != nil {
+				return err
+			}
 			evalID, err := p.Nomad.SubmitJobRegion(job, region.NomadRegion)
 			if err != nil {
+				p.containWordPressVerifiedTLSColdStart(ctx, coldStartGate)
 				_ = p.DB.UpdateDeploymentRegion(ctx, st.deploymentID, region.Name, model.StatusFailed, "", err.Error(), 0)
 				return fmt.Errorf("submit nomad job in region %s: %w", region.Name, err)
+			}
+			if coldStartGate != nil {
+				if err := p.markWordPressVerifiedTLSColdStartLaunched(ctx, coldStartGate, st.spec.App, evalID); err != nil {
+					_ = p.DB.UpdateDeploymentRegion(ctx, st.deploymentID, region.Name, model.StatusFailed, "", err.Error(), 0)
+					return err
+				}
+				coldStartResolved = true
 			}
 			st.regionEvals[region.Name] = evalID
 			_ = p.DB.UpdateDeploymentRegion(ctx, st.deploymentID, region.Name, model.StatusSubmitting, evalID, "", 0)
@@ -132,8 +157,12 @@ func (p *Pipeline) submit(ctx context.Context, st *state, sg *saga.Saga) error {
 				continue
 			}
 			periodicJob := nomad.TranslatePeriodicForRegionAt(st.spec, procName, proc, st.imageTag, env, region, st.deliveryRevision)
+			if err := bindDeploymentJobProvenance(periodicJob, st.deploymentID, stringFromMap(st.operationPayload, "specDigest"), st.operationPayload); err != nil {
+				return err
+			}
 			periodicEvalID, err := p.Nomad.SubmitJobRegion(periodicJob, region.NomadRegion)
 			if err != nil {
+				p.containWordPressVerifiedTLSColdStart(ctx, coldStartGate)
 				_ = p.DB.UpdateDeploymentRegion(ctx, st.deploymentID, region.Name, model.StatusFailed, "", err.Error(), 0)
 				return fmt.Errorf("submit periodic job %s in region %s: %w", procName, region.Name, err)
 			}
@@ -152,7 +181,7 @@ func (p *Pipeline) submit(ctx context.Context, st *state, sg *saga.Saga) error {
 func regionalServiceProcessCount(spec *model.InfraSpec, region string) int {
 	count := 0
 	for _, proc := range spec.Processes {
-		if proc.Schedule == "" && spec.ProcessRunsInRegion(proc, region) {
+		if proc.Schedule == "" && proc.Function == nil && spec.ProcessRunsInRegion(proc, region) {
 			count++
 		}
 	}

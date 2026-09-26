@@ -15,6 +15,7 @@ import (
 	"github.com/go-chi/chi/v5"
 
 	"norn/v2/api/model"
+	"norn/v2/api/pipeline"
 	"norn/v2/api/storage"
 )
 
@@ -210,14 +211,7 @@ func (h *Handler) importTargetSnapshot(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, "key must name a snapshot in this app's export prefix")
 		return
 	}
-	manifest, err := h.pipeline.ImportTargetSnapshot(r.Context(), spec, r.URL.Query().Get("database"), h.s3, spec.Snapshots.ExportBucket, req.Key)
-	if err != nil {
-		writeError(w, http.StatusConflict, fmt.Sprintf("import snapshot: %v", err))
-		return
-	}
-	h.emitSnapshotEvent(r, id, "snapshot.imported", model.BeaconInfo, "snapshot imported",
-		fmt.Sprintf("%s imported snapshot %s", id, manifest.Filename), map[string]interface{}{"key": req.Key, "snapshot": manifest.Filename, "bindingId": manifest.Target.BindingID})
-	writeJSON(w, map[string]interface{}{"status": "imported", "app": id, "snapshot": manifest})
+	h.queueAppDataOperation(w, r, "app.snapshot-import", "snapshot import", map[string]interface{}{"bucket": spec.Snapshots.ExportBucket, "key": req.Key}, 1)
 }
 
 func (h *Handler) RestoreSnapshot(w http.ResponseWriter, r *http.Request) {
@@ -460,18 +454,40 @@ func (h *Handler) ExportSnapshot(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if h.pipeline != nil && h.pipeline.DatabaseTargets != nil {
-		// The same target-aware layer as restore: only the current target's
-		// dumps; the verified bytes (a private copy) and a provenance
-		// manifest are uploaded.
-		snapshot, key, err := h.pipeline.ExportTargetSnapshot(r.Context(), spec, r.URL.Query().Get("database"), r.URL.Query().Get("snapshot"), h.s3, exportBucket)
+		groups, err := h.pipeline.TargetSnapshots(r.Context(), spec)
 		if err != nil {
-			writeError(w, http.StatusConflict, fmt.Sprintf("export snapshot: %v", err))
+			writeError(w, http.StatusConflict, fmt.Sprintf("snapshot inventory: %v", err))
 			return
 		}
-		h.emitSnapshotEvent(r, id, "snapshot.exported", model.BeaconInfo, "snapshot exported",
-			fmt.Sprintf("%s exported snapshot %s to %s", id, snapshot.Filename, exportBucket),
-			map[string]interface{}{"bucket": exportBucket, "key": key, "snapshot": snapshot.Filename})
-		writeJSON(w, map[string]interface{}{"status": "exported", "app": id, "snapshot": snapshot, "bucket": exportBucket, "key": key})
+		selected := r.URL.Query().Get("database")
+		if selected == "" && len(groups) != 1 {
+			writeError(w, http.StatusBadRequest, "database is required when multiple snapshot targets are declared")
+			return
+		}
+		var group *pipeline.TargetSnapshotGroup
+		for index := range groups {
+			if selected == "" || groups[index].Database == selected {
+				group = &groups[index]
+				break
+			}
+		}
+		if group == nil || group.Unavailable != "" {
+			writeError(w, http.StatusConflict, "selected database snapshot inventory is unavailable")
+			return
+		}
+		filename := r.URL.Query().Get("snapshot")
+		if filename == "" && len(group.Snapshots) > 0 {
+			filename = group.Snapshots[0].Filename
+		}
+		found := false
+		for _, snapshot := range group.Snapshots {
+			found = found || snapshot.Filename == filename
+		}
+		if !found {
+			writeError(w, http.StatusNotFound, "no restorable snapshot of the selected target matches")
+			return
+		}
+		h.queueAppDataOperation(w, r, "app.snapshot-export", "snapshot export", map[string]interface{}{"bucket": exportBucket, "snapshot": filename, "database": group.Database}, 1)
 		return
 	}
 	if spec.NamedDatabases() {
@@ -484,30 +500,19 @@ func (h *Handler) ExportSnapshot(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusNotFound, "no local snapshots available")
 		return
 	}
-	snapshot := snapshots[0] // latest
-
-	key := "snapshots/" + id + "/" + snapshot.Filename
-	localPath := filepath.Join("snapshots", snapshot.Filename)
-	if err := h.s3.PutObject(r.Context(), exportBucket, key, localPath); err != nil {
-		writeError(w, http.StatusInternalServerError, fmt.Sprintf("upload snapshot: %v", err))
+	filename := r.URL.Query().Get("snapshot")
+	if filename == "" {
+		filename = snapshots[0].Filename
+	}
+	found := false
+	for _, snapshot := range snapshots {
+		found = found || snapshot.Filename == filename
+	}
+	if !found {
+		writeError(w, http.StatusNotFound, "no local snapshot matches")
 		return
 	}
-
-	h.emitSnapshotEvent(r, id, "snapshot.exported", model.BeaconInfo, "snapshot exported",
-		fmt.Sprintf("%s exported snapshot %s to %s", id, snapshot.Filename, exportBucket),
-		map[string]interface{}{
-			"bucket":   exportBucket,
-			"key":      key,
-			"snapshot": snapshot.Filename,
-		})
-
-	writeJSON(w, map[string]interface{}{
-		"status":   "exported",
-		"app":      id,
-		"snapshot": snapshot,
-		"bucket":   exportBucket,
-		"key":      key,
-	})
+	h.queueAppDataOperation(w, r, "app.snapshot-export", "snapshot export", map[string]interface{}{"bucket": exportBucket, "snapshot": filename}, 1)
 }
 
 func (h *Handler) ListRemoteSnapshots(w http.ResponseWriter, r *http.Request) {
@@ -598,43 +603,13 @@ func (h *Handler) ImportSnapshot(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusConflict, "app postgres database name is unsafe for snapshot storage")
 		return
 	}
-	expectedPrefix := "snapshots/" + id + "/"
-	filename := filepath.Base(req.Key)
-	if !strings.HasPrefix(req.Key, expectedPrefix) || strings.Contains(strings.TrimPrefix(req.Key, expectedPrefix), "/") || parseSnapshotEntry(dbName, filename, 1) == nil {
+	filename, keyErr := pipeline.LegacySnapshotKeyName(req.Key, id, dbName)
+	if keyErr != nil || parseSnapshotEntry(dbName, filename, 1) == nil {
 		writeError(w, http.StatusBadRequest, "key must name a valid snapshot in this app's export prefix")
 		return
 	}
 
-	localPath := filepath.Join("snapshots", filename)
-	if err := os.MkdirAll("snapshots", 0o750); err != nil {
-		writeError(w, http.StatusInternalServerError, fmt.Sprintf("create snapshots dir: %v", err))
-		return
-	}
-	if err := h.s3.GetObject(r.Context(), exportBucket, req.Key, localPath); err != nil {
-		writeError(w, http.StatusInternalServerError, fmt.Sprintf("download snapshot: %v", err))
-		return
-	}
-	info, err := os.Lstat(localPath)
-	if err != nil || !info.Mode().IsRegular() || info.Size() <= 0 {
-		_ = os.Remove(localPath)
-		writeError(w, http.StatusBadGateway, "downloaded snapshot is not a non-empty regular file")
-		return
-	}
-
-	h.emitSnapshotEvent(r, id, "snapshot.imported", model.BeaconInfo, "snapshot imported",
-		fmt.Sprintf("%s imported snapshot %s from %s", id, filename, exportBucket),
-		map[string]interface{}{
-			"bucket":    exportBucket,
-			"key":       req.Key,
-			"localPath": "snapshots/" + filename,
-		})
-
-	writeJSON(w, map[string]interface{}{
-		"status":    "imported",
-		"app":       id,
-		"key":       req.Key,
-		"localPath": "snapshots/" + filename,
-	})
+	h.queueAppDataOperation(w, r, "app.snapshot-import", "snapshot import", map[string]interface{}{"bucket": exportBucket, "key": req.Key}, 1)
 }
 
 func (h *Handler) findSpec(appID string) *model.InfraSpec {

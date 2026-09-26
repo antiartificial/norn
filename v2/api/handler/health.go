@@ -10,11 +10,20 @@ import (
 
 func (h *Handler) Health(w http.ResponseWriter, r *http.Request) {
 	services := map[string]string{}
+	runtimeMutationFence := "unknown"
 
 	if err := h.db.Healthy(r.Context()); err != nil {
 		services["postgres"] = "down"
 	} else {
 		services["postgres"] = "up"
+		active, err := h.db.RuntimeMutationFenceActive(r.Context())
+		if err == nil {
+			if active {
+				runtimeMutationFence = "active"
+			} else {
+				runtimeMutationFence = "inactive"
+			}
+		}
 	}
 
 	if h.nomad != nil {
@@ -70,8 +79,9 @@ func (h *Handler) Health(w http.ResponseWriter, r *http.Request) {
 	}
 
 	writeJSON(w, map[string]interface{}{
-		"status":   status,
-		"services": services,
+		"status":               status,
+		"services":             services,
+		"runtimeMutationFence": runtimeMutationFence,
 		"network": map[string]string{
 			"mode":       h.cfg.NetworkMode,
 			"bindAddr":   h.cfg.BindAddr,

@@ -186,10 +186,15 @@ func (h *HistoryStore) SagaApp(ctx context.Context, sagaID string) (string, erro
 
 // IndexRecovery reports a RestoreIndex run.
 type IndexRecovery struct {
-	Objects  int      `json:"objects"`
-	Restored int      `json:"restored"`
-	Existing int      `json:"existing"`
-	Rejected []string `json:"rejected,omitempty"`
+	Objects  int `json:"objects"`
+	Restored int `json:"restored"`
+	Existing int `json:"existing"`
+	// SignaturesVerified distinguishes an integrity-only index rebuild from
+	// authenticated recovery using independently recovered acceptance keys.
+	// Operation receipts still always require a signer and restored replay
+	// identity, even when this flag is false for saga-only archives.
+	SignaturesVerified bool     `json:"signaturesVerified"`
+	Rejected           []string `json:"rejected,omitempty"`
 }
 
 // RestoreIndex rebuilds the evidence index from archive objects. Saga history
@@ -198,7 +203,7 @@ type IndexRecovery struct {
 // and a signer; otherwise recovery fails closed before accepting new writes.
 // Existing index rows are never overwritten.
 func RestoreIndex(ctx context.Context, db *store.DB, objects archive.Reader, signer store.AcceptanceSigner) (IndexRecovery, error) {
-	var recovery IndexRecovery
+	recovery := IndexRecovery{SignaturesVerified: signer != nil}
 	keys, err := objects.List(ctx, "evidence/")
 	if err != nil {
 		return recovery, err

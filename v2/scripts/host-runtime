@@ -713,6 +713,19 @@ run_managed_norn() {
   NORN_PLATFORM_REPO="$repo" "$norn_copy" "$@"
 }
 
+# Host recovery has no database credentials. The control API projects the
+# durable singleton state through health; an unavailable or malformed response
+# is fenced so this script never starts or updates an app writer on uncertainty.
+runtime_mutation_fence_allows_writes() {
+  runtime_curl norn /api/health -fsS --max-time 3 2>/dev/null | python3 -c '
+import json, sys
+try:
+    raise SystemExit(0 if json.load(sys.stdin).get("runtimeMutationFence") == "inactive" else 1)
+except Exception:
+    raise SystemExit(1)
+' >/dev/null 2>&1
+}
+
 assure_required_service() {
   local app="$1" process="$2" service="$app-$process" attempt=0 action=""
   while [ "$attempt" -lt 3 ]; do
@@ -726,6 +739,10 @@ assure_required_service() {
 
   if job_exists "$app"; then
     action="restart"
+    if ! runtime_mutation_fence_allows_writes; then
+      record_assurance_failure "runtime mutation fence is active or unproven; refusing to restart required app $app"
+      return 1
+    fi
     note "repair: restarting unhealthy required app $app"
     if ! run_managed_norn restart "$app"; then
       record_assurance_failure "could not restart required app $app"
@@ -733,6 +750,10 @@ assure_required_service() {
     fi
   else
     action="deploy"
+    if ! runtime_mutation_fence_allows_writes; then
+      record_assurance_failure "runtime mutation fence is active or unproven; refusing to deploy required app $app"
+      return 1
+    fi
     note "repair: deploying absent required app $app"
     if ! run_managed_norn deploy "$app" HEAD; then
       record_assurance_failure "could not deploy absent required app $app"
@@ -793,6 +814,10 @@ reconcile_serve_routes() {
     port="${spec%%=*}"
     target="${spec#*=}"
     target="${target//\{address\}/$detected}"
+    if ! runtime_mutation_fence_allows_writes; then
+      record_assurance_failure "runtime mutation fence is active or unproven; refusing to reconcile Tailscale Serve :$port"
+      continue
+    fi
     if "$tailscale_bin" serve --bg --https="$port" "$target" >/dev/null; then
       note "ok: Tailscale Serve :$port -> $target"
     else
@@ -806,6 +831,10 @@ reconcile_forge_routes() {
   local app
   while IFS= read -r app; do
     [ -n "$app" ] || continue
+    if ! runtime_mutation_fence_allows_writes; then
+      record_assurance_failure "runtime mutation fence is active or unproven; refusing to reconcile public routes for $app"
+      continue
+    fi
     if run_managed_norn forge "$app"; then
       note "ok: public routes reconciled for $app"
     else
@@ -1067,6 +1096,10 @@ run_catchups() {
       note "warning: ignoring invalid catch-up entry: $app:$process${extra:+:$extra}"
       continue
     }
+    if ! runtime_mutation_fence_allows_writes; then
+      note "warning: runtime mutation fence is active or unproven; skipping recovery catch-up $app:$process"
+      continue
+    fi
     if NORN_PLATFORM_REPO="$repo" "$norn_copy" platform env -- "$norn_copy" cron trigger "$app" "$process"; then
       note "triggered recovery catch-up $app:$process"
     else

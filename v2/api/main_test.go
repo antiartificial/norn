@@ -2,6 +2,7 @@ package main
 
 import (
 	"bytes"
+	"context"
 	"crypto/ed25519"
 	"crypto/hmac"
 	"crypto/sha256"
@@ -20,14 +21,69 @@ import (
 	"norn/v2/api/auth"
 	"norn/v2/api/config"
 	"norn/v2/api/handler"
+	"norn/v2/api/model"
 	"norn/v2/api/startup"
+	"norn/v2/api/store"
 )
+
+type privateInvocationStartupStore struct {
+	store.OperationStore
+	keyIDs []string
+}
+
+func (s privateInvocationStartupStore) AcceptPrivateInvocation(context.Context, store.OperationAcceptance, store.PrivateInvocationInput, *store.PrivateInvocationKeyRing) (store.AcceptedOperation, error) {
+	panic("unexpected private invocation acceptance during startup preflight")
+}
+
+func (s privateInvocationStartupStore) OpenPrivateInvocation(context.Context, model.Operation, *store.PrivateInvocationKeyRing) (store.PrivateInvocationInput, error) {
+	panic("unexpected private invocation open during startup preflight")
+}
+
+func (s privateInvocationStartupStore) RequiredPrivateInvocationKeys(context.Context) ([]string, error) {
+	return s.keyIDs, nil
+}
 
 func testEd25519Private(ch byte) string {
 	return base64.RawStdEncoding.EncodeToString(bytes.Repeat([]byte{ch}, ed25519.SeedSize))
 }
 func testEd25519Public(ch byte) string {
 	return base64.RawStdEncoding.EncodeToString(ed25519.NewKeyFromSeed(bytes.Repeat([]byte{ch}, ed25519.SeedSize)).Public().(ed25519.PublicKey))
+}
+
+func TestFunctionV3PreviewRequiresPrivatePostgresCapability(t *testing.T) {
+	if err := validateControlSecurityForBackend(&config.Config{FunctionV3PreviewEnabled: true}, startup.ControlBackendConfig{Backend: startup.BackendPostgres}); err == nil || !strings.Contains(err.Error(), "NORN_FUNCTION_V3_PREVIEW_ENABLED") {
+		t.Fatalf("missing private capability err=%v", err)
+	}
+	if err := validateControlSecurityForBackend(&config.Config{FunctionV3PreviewEnabled: true, PrivateInvocationEnabled: true}, startup.ControlBackendConfig{Backend: startup.BackendEtcd}); err == nil || !strings.Contains(err.Error(), "NORN_FUNCTION_V3_PREVIEW_ENABLED") {
+		t.Fatalf("unsupported backend err=%v", err)
+	}
+	if admission, claimed, err := configureFunctionV3(&config.Config{}, nil, nil, nil, nil, nil); err != nil || admission != nil || claimed != nil {
+		t.Fatalf("disabled function preview admission=%v worker=%v err=%v", admission, claimed, err)
+	}
+	if _, _, err := configureFunctionV3(&config.Config{Profile: "production", FunctionV3PreviewEnabled: true, PrivateInvocationEnabled: true}, nil, nil, nil, nil, nil); err == nil || !strings.Contains(err.Error(), "requires private acceptance") || strings.Contains(err.Error(), "non-production") {
+		t.Fatalf("production function-v3 capability err=%v", err)
+	}
+}
+
+func TestFunctionInvocationRouteFailsClosedWithoutSignedRuntime(t *testing.T) {
+	invoked := false
+	configured := functionInvocationRoute(func(w http.ResponseWriter, _ *http.Request) {
+		invoked = true
+		w.WriteHeader(http.StatusAccepted)
+	})
+	configuredRec := httptest.NewRecorder()
+	configured(configuredRec, httptest.NewRequest(http.MethodPost, "/api/apps/demo/invoke", strings.NewReader(`{"process":"resize"}`)))
+	if !invoked || configuredRec.Code != http.StatusAccepted {
+		t.Fatalf("configured function route invoked=%v status=%d", invoked, configuredRec.Code)
+	}
+
+	// The disabled route deliberately has no Handler or Nomad client input.
+	// A request therefore cannot reach the legacy HTTP submission path.
+	disabledRec := httptest.NewRecorder()
+	functionInvocationRoute(nil)(disabledRec, httptest.NewRequest(http.MethodPost, "/api/apps/demo/invoke", strings.NewReader(`{"process":"resize"}`)))
+	if disabledRec.Code != http.StatusServiceUnavailable || !strings.Contains(disabledRec.Body.String(), "function_invocation_unavailable") {
+		t.Fatalf("disabled function route status=%d body=%s", disabledRec.Code, disabledRec.Body.String())
+	}
 }
 
 func TestFileServerServesRootAndIndexFallback(t *testing.T) {
@@ -298,6 +354,34 @@ func TestInvalidOperationReplayTTLStopsStartupValidation(t *testing.T) {
 				t.Fatalf("startup validation error = %v, want explicit replay TTL rejection", err)
 			}
 		})
+	}
+}
+
+func TestPrivateInvocationStartupPreflightIsCapabilityGated(t *testing.T) {
+	key := base64.StdEncoding.EncodeToString(bytes.Repeat([]byte{0x41}, 32))
+	keys := `{"current":"` + key + `","retired":"` + base64.StdEncoding.EncodeToString(bytes.Repeat([]byte{0x42}, 32)) + `"}`
+	storeWithRetiredKey := privateInvocationStartupStore{keyIDs: []string{"retired", "current"}}
+
+	disabled := &config.Config{PrivateInvocationKeys: "not-json"}
+	if err := preflightConfiguredPrivateInvocationKeys(context.Background(), disabled, storeWithRetiredKey); err != nil {
+		t.Fatalf("disabled private invocation capability preflight = %v", err)
+	}
+
+	enabled := &config.Config{PrivateInvocationEnabled: true, PrivateInvocationCurrentKeyID: "current", PrivateInvocationKeys: keys}
+	if err := preflightConfiguredPrivateInvocationKeys(context.Background(), enabled, storeWithRetiredKey); err != nil {
+		t.Fatalf("enabled private invocation preflight = %v", err)
+	}
+	if err := preflightConfiguredPrivateInvocationKeys(context.Background(), enabled, privateInvocationStartupStore{keyIDs: []string{"missing-retired"}}); err == nil || !strings.Contains(err.Error(), `"missing-retired"`) {
+		t.Fatalf("missing retained key preflight = %v", err)
+	}
+}
+
+func TestPrivateInvocationRuntimeConfigurationStopsStartupValidation(t *testing.T) {
+	const canary = "private-invocation-runtime-canary"
+	cfg := &config.Config{PrivateInvocationEnabled: true, PrivateInvocationCurrentKeyID: "current", PrivateInvocationKeys: `{"current":"` + canary + `"}`}
+	err := validateControlSecurity(cfg)
+	if err == nil || strings.Contains(err.Error(), canary) {
+		t.Fatalf("startup validation error = %v", err)
 	}
 }
 

@@ -7,6 +7,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"reflect"
 	"strings"
 	"time"
 
@@ -23,8 +24,20 @@ const nomadCanaryPromotionStage = "app.canary-promote.nomad"
 // for Nomad's non-idempotent deployment-promotion endpoint.
 type NomadCanaryPromotionEffects struct {
 	executor *effect.Executor
-	store    *store.PGEffectStore
+	store    CanaryPromotionEffectStore
 }
+
+// CanaryPromotionEffectStore is the single-authority boundary for a promotion.
+// Reserve must validate the operation claim and acquire the app gate in the
+// same durable transaction. An etcd implementation must satisfy this contract
+// before the etcd runtime can admit canary promotions.
+type CanaryPromotionEffectStore interface {
+	effect.Store
+	effect.RecoveryStore
+	Authority(context.Context) (string, error)
+}
+
+var _ CanaryPromotionEffectStore = (*store.PGEffectStore)(nil)
 
 func NewNomadCanaryPromotionEffects(db *store.DB, client *nomad.Client) (*NomadCanaryPromotionEffects, error) {
 	if client == nil {
@@ -34,8 +47,22 @@ func NewNomadCanaryPromotionEffects(db *store.DB, client *nomad.Client) (*NomadC
 	if err != nil {
 		return nil, err
 	}
+	return NewNomadCanaryPromotionEffectsWithStore(effectStore, client)
+}
+
+// NewNomadCanaryPromotionEffectsWithStore permits a control backend to supply
+// its own atomic claim/effect store. A missing store is rejected rather than
+// allowing an unfenced Nomad write.
+func NewNomadCanaryPromotionEffectsWithStore(effectStore CanaryPromotionEffectStore, client *nomad.Client) (*NomadCanaryPromotionEffects, error) {
+	if effectStore == nil || client == nil {
+		return nil, fmt.Errorf("durable canary promotion requires an effect store and Nomad client")
+	}
+	value := reflect.ValueOf(effectStore)
+	if value.Kind() == reflect.Ptr && value.IsNil() {
+		return nil, fmt.Errorf("durable canary promotion requires an effect store and Nomad client")
+	}
 	return &NomadCanaryPromotionEffects{store: effectStore, executor: &effect.Executor{
-		Store: effectStore, Supervisor: &nomadCanaryPromotionSupervisor{client: client}, Verifier: nomadCanaryPromotionVerifier{},
+		Store: effectStore, Supervisor: &nomadCanaryPromotionSupervisor{client: client, store: effectStore}, Verifier: nomadCanaryPromotionVerifier{},
 	}}, nil
 }
 
@@ -137,11 +164,43 @@ func canaryPromotionExecutionID(r effect.Reservation) string {
 	return "nomad-canary-promotion-" + hex.EncodeToString(sum[:16])
 }
 
-type nomadCanaryPromotionSupervisor struct{ client *nomad.Client }
+type nomadCanaryPromotionSupervisor struct {
+	client *nomad.Client
+	store  CanaryPromotionEffectStore
+}
 
-func (s *nomadCanaryPromotionSupervisor) Prepare(_ context.Context, r effect.Reservation) error {
-	_, err := canaryPromotionRequestFromReservation(r)
-	return err
+func (s *nomadCanaryPromotionSupervisor) Prepare(ctx context.Context, r effect.Reservation) error {
+	request, err := canaryPromotionRequestFromReservation(r)
+	if err != nil {
+		return err
+	}
+	// Prepare runs before Reserve. Once an effect exists, its exact deployment
+	// must be reconciled even if its canaries have since become unhealthy.
+	if s.store != nil {
+		_, found, err := s.store.UnresolvedForResource(ctx, r.Authority, r.Resource)
+		if err != nil {
+			return err
+		}
+		if found {
+			return nil
+		}
+	}
+	info, err := s.client.DeploymentByIDRegion(request.DeploymentID, request.NomadRegion)
+	if err != nil {
+		return err
+	}
+	if info == nil || info.ID != request.DeploymentID || info.JobID != request.App {
+		return fmt.Errorf("accepted Nomad deployment identity is unavailable")
+	}
+	// Completed reservations can be replayed after the operation result write
+	// was lost. Their exact terminal deployment remains valid evidence.
+	if info.Status == "successful" && info.CanaryPromoted || info.Status == "failed" || info.Status == "cancelled" {
+		return nil
+	}
+	if !info.CanaryReady || !info.IsCanary || info.Status != "running" {
+		return fmt.Errorf("accepted Nomad canary deployment is no longer ready for promotion")
+	}
+	return nil
 }
 
 func (s *nomadCanaryPromotionSupervisor) Launch(ctx context.Context, r effect.Reservation, _ effect.LaunchMaterial) (effect.ExecutionIdentity, error) {
@@ -151,6 +210,21 @@ func (s *nomadCanaryPromotionSupervisor) Launch(ctx context.Context, r effect.Re
 	request, err := canaryPromotionRequestFromReservation(r)
 	if err != nil {
 		return effect.ExecutionIdentity{}, err
+	}
+	info, err := s.client.DeploymentByIDRegion(request.DeploymentID, request.NomadRegion)
+	if err != nil {
+		return effect.ExecutionIdentity{}, err
+	}
+	if info == nil || info.ID != request.DeploymentID || info.JobID != request.App {
+		return effect.ExecutionIdentity{}, fmt.Errorf("accepted Nomad deployment identity is unavailable")
+	}
+	// A deployment can become terminal between Prepare and Launch. Observe
+	// that exact deployment through the reserved effect without another PUT.
+	if info.Status == "successful" && info.CanaryPromoted || info.Status == "failed" || info.Status == "cancelled" {
+		return effect.ExecutionIdentity{Supervisor: r.Supervisor, SupervisorExecutionID: r.SupervisorExecutionID, RuntimeInstanceID: "nomad-deployment:" + request.DeploymentID}, nil
+	}
+	if !info.CanaryReady || !info.IsCanary || info.Status != "running" {
+		return effect.ExecutionIdentity{}, fmt.Errorf("accepted Nomad canary deployment became unready before promotion")
 	}
 	if err := s.client.PromoteDeploymentIDRegion(request.DeploymentID, request.NomadRegion); err != nil {
 		return effect.ExecutionIdentity{}, err
@@ -173,7 +247,7 @@ func (s *nomadCanaryPromotionSupervisor) Query(ctx context.Context, r effect.Res
 	if info == nil || info.ID != request.DeploymentID || info.JobID != request.App {
 		return effect.Observation{}, fmt.Errorf("Nomad deployment identity no longer matches accepted promotion")
 	}
-	output, _ := json.Marshal(map[string]interface{}{"app": request.App, "region": request.Region, "nomadRegion": request.NomadRegion, "deploymentId": info.ID, "status": info.Status, "statusDescription": info.StatusDesc, "canaryPromoted": info.CanaryPromoted})
+	output, _ := canaryPromotionEvidenceOutput(request, info)
 	identity.Supervisor, identity.SupervisorExecutionID = r.Supervisor, r.SupervisorExecutionID
 	if identity.RuntimeInstanceID == "" {
 		identity.RuntimeInstanceID = "nomad-deployment:" + request.DeploymentID
@@ -188,6 +262,13 @@ func (s *nomadCanaryPromotionSupervisor) Query(ctx context.Context, r effect.Res
 		phase = effect.SupervisorFailed
 	}
 	return effect.Observation{Identity: identity, Phase: phase, Output: output, Evidence: effect.RawEvidence{Source: "nomad.deployment", Reference: request.DeploymentID, Payload: output}}, nil
+}
+
+func canaryPromotionEvidenceOutput(request canaryPromotionRequest, info *nomad.DeploymentInfo) ([]byte, error) {
+	// StatusDescription is operator-facing prose and can change after a
+	// terminal result. Completed effect replay validates the exact result
+	// digest, so persist only the stable identity and terminal state fields.
+	return json.Marshal(map[string]interface{}{"app": request.App, "region": request.Region, "nomadRegion": request.NomadRegion, "deploymentId": info.ID, "status": info.Status, "canaryPromoted": info.CanaryPromoted})
 }
 
 func (s *nomadCanaryPromotionSupervisor) Revoke(ctx context.Context, r effect.Reservation, identity effect.ExecutionIdentity) (effect.Observation, error) {

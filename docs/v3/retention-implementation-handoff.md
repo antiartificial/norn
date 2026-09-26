@@ -1,6 +1,6 @@
 # M2 retention implementation handoff
 
-Status: source-reviewed implementation preparation, 2026-09-22. No archive,
+Status: source-reviewed implementation preparation, refreshed 2026-09-26. No archive,
 collector or pruning qualification is implied. Parent: [ADR 0001](adrs/0001-state-evidence-and-observability.md).
 
 ## Separate logs from evidence
@@ -14,23 +14,22 @@ and operation history out of PG is evidence archival, not stdout log rotation.
 
 ### Collector and bounded-capture implementation entry points
 
-Source recheck during batch-four review:
+Source recheck after the bounded-output and log-stream changes:
 
 - `nomad/logs.go:StreamLogs` selects one running allocation and the first task
-  found in the job, then merges stdout/stderr without source labels. Replace
+  in that allocation's task group, then merges stdout/stderr without source labels. Replace
   this implicit selection with allocation/task/stream identity for collection;
   historical retrieval must retain those labels and handle allocation turnover.
-- The stream creates a Nomad cancellation channel but returning/closing the
-  pipe reader does not close that channel. Collection must cancel upstream on
-  request cancellation, consumer close and write failure. Closed frame/error
-  channels must be removed from the select loop to avoid busy spinning.
-- No explicit `LogConfig`, `MaxFiles` or `MaxFileSizeMB` occurs in the current
-  Nomad translation package. Define and test actual submitted rotation limits;
-  do not infer bounded platform retention from undocumented runtime defaults.
-- `worker/maintenance.go:CommandMaintenanceExecutor.Execute` uses
-  `CombinedOutput` and only truncates to 64 KiB after exit. This bounds persisted
-  metadata, not process memory. Stream into a bounded capture/spool while
-  draining output; preserve exit status and explicit truncation metadata.
+- `nomad/logs.go:StreamLogs` now cancels upstream requests when the caller
+  closes its reader or context; focused cancellation tests pass. Historical
+  collection still needs source labels and allocation-turnover handling.
+- `nomad/translator.go` now sets and tests a five-file, 10 MiB-per-file Nomad
+  rotation limit per task; function jobs use the same limit. This does not
+  establish historical archive capacity or retrieval behavior.
+- `worker/maintenance.go:CommandMaintenanceExecutor.Execute` now drains into
+  a bounded capture and records total bytes, truncation and exit code. Focused
+  tests pass. Other production subprocesses still need an output and
+  secret-destination audit.
 - Migration and other subprocess call sites also use `CombinedOutput`.
   Inventory their output destinations before archival: diagnostic bytes,
   durable outcome evidence and credentials need different treatment. Test

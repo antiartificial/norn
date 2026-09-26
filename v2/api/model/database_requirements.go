@@ -11,6 +11,16 @@ import (
 // It is required to declare named databases; Fleet documents are unaffected.
 const AppSchemaV2 = "norn.app/v2"
 
+const (
+	// StartupAdapterWordPressVerifiedTLS installs Norn's version-pinned wpdb
+	// drop-in before WordPress's normal Apache entrypoint when an exact OCI
+	// manifest has been independently qualified.
+	StartupAdapterWordPressVerifiedTLS = "wordpress-verified-tls/v1"
+	// QualifiedWordPressVerifiedTLSImage is the Docker Hub OCI index verified
+	// by `docker buildx imagetools inspect` for the allocation qualification.
+	QualifiedWordPressVerifiedTLSImage = "docker.io/library/wordpress:6.8.2-php8.3-apache@sha256:09ac1315368f234db7559e4f9dcca3178a5efc6f2193b88289252abe18551522"
+)
+
 // DatabaseRequirement names one logical database the app consumes. The name
 // is the key of the deployment profile's databaseBindings; the server, role,
 // database name and credentials come only from the database catalog.
@@ -26,8 +36,52 @@ type DatabaseRequirement struct {
 // standard URL any ordinary client accepts). FileEnv receives only the path
 // of a private file containing that value. They are never interchangeable.
 type DatabaseRuntime struct {
-	Env     string `yaml:"env,omitempty" json:"env,omitempty"`
-	FileEnv string `yaml:"fileEnv,omitempty" json:"fileEnv,omitempty"`
+	Env        string                     `yaml:"env,omitempty" json:"env,omitempty"`
+	FileEnv    string                     `yaml:"fileEnv,omitempty" json:"fileEnv,omitempty"`
+	Components *DatabaseRuntimeComponents `yaml:"components,omitempty" json:"components,omitempty"`
+	TLS        *DatabaseRuntimeTLS        `yaml:"tls,omitempty" json:"tls,omitempty"`
+}
+
+// DatabaseRuntimeComponents delivers the values ordinary database clients
+// expect as separate variables. WordPress, for example, consumes four
+// WORDPRESS_DB_* variables instead of a connection URL.
+type DatabaseRuntimeComponents struct {
+	Host     string `yaml:"host" json:"host"`
+	User     string `yaml:"user" json:"user"`
+	Password string `yaml:"password" json:"password"`
+	Name     string `yaml:"name" json:"name"`
+}
+
+// DatabaseRuntimeTLS names environment variables that carry paths to
+// allocation-private PEM files. The files are rendered by Nomad, never put in
+// a job specification or environment value. An application must explicitly
+// configure its database client to use these paths.
+//
+// This declares delivery shape only. Database adapters remain responsible for
+// deciding when verified TLS runtime delivery is qualified and available.
+type DatabaseRuntimeTLS struct {
+	CAFileEnv         string `yaml:"caFileEnv" json:"caFileEnv"`
+	ClientCertFileEnv string `yaml:"clientCertFileEnv,omitempty" json:"clientCertFileEnv,omitempty"`
+	ClientKeyFileEnv  string `yaml:"clientKeyFileEnv,omitempty" json:"clientKeyFileEnv,omitempty"`
+}
+
+func (r *DatabaseRuntime) envNames() map[string]string {
+	if r == nil {
+		return nil
+	}
+	names := map[string]string{"env": r.Env, "fileEnv": r.FileEnv}
+	if r.Components != nil {
+		names["components.host"] = r.Components.Host
+		names["components.user"] = r.Components.User
+		names["components.password"] = r.Components.Password
+		names["components.name"] = r.Components.Name
+	}
+	if r.TLS != nil {
+		names["tls.caFileEnv"] = r.TLS.CAFileEnv
+		names["tls.clientCertFileEnv"] = r.TLS.ClientCertFileEnv
+		names["tls.clientKeyFileEnv"] = r.TLS.ClientKeyFileEnv
+	}
+	return names
 }
 
 var databaseLogicalNameRe = regexp.MustCompile(`^[a-z][a-z0-9-]{0,62}$`)
@@ -75,7 +129,7 @@ func (s *InfraSpec) DatabaseEnvNames() map[string]string {
 		if requirement.Runtime == nil {
 			continue
 		}
-		for _, name := range []string{requirement.Runtime.Env, requirement.Runtime.FileEnv} {
+		for _, name := range requirement.Runtime.envNames() {
 			if name != "" {
 				names[name] = requirement.Name
 			}
@@ -115,6 +169,7 @@ func (s *InfraSpec) DatabaseDeclarationFindings() []ValidationFinding {
 }
 
 func validateDatabaseDeclarations(r *ValidationResult, spec *InfraSpec) {
+	defer validateStartupAdapter(r, spec)
 	switch spec.SchemaVersion {
 	case "", AppSchemaV2:
 	default:
@@ -165,10 +220,21 @@ func validateDatabaseDeclarations(r *ValidationResult, spec *InfraSpec) {
 		if runtime == nil {
 			continue
 		}
-		if runtime.Env == "" && runtime.FileEnv == "" {
-			r.add("error", field+".runtime", "runtime must name env, fileEnv or both")
+		if runtime.Env == "" && runtime.FileEnv == "" && runtime.Components == nil {
+			r.add("error", field+".runtime", "runtime must name env, fileEnv or components")
 		}
-		for key, name := range map[string]string{"env": runtime.Env, "fileEnv": runtime.FileEnv} {
+		if runtime.Components != nil && (runtime.Components.Host == "" || runtime.Components.User == "" || runtime.Components.Password == "" || runtime.Components.Name == "") {
+			r.add("error", field+".runtime.components", "host, user, password and name variables are required together")
+		}
+		if runtime.TLS != nil {
+			if runtime.TLS.CAFileEnv == "" {
+				r.add("error", field+".runtime.tls.caFileEnv", "a CA file variable is required when TLS runtime files are declared")
+			}
+			if (runtime.TLS.ClientCertFileEnv == "") != (runtime.TLS.ClientKeyFileEnv == "") {
+				r.add("error", field+".runtime.tls", "client certificate and key file variables are required together")
+			}
+		}
+		for key, name := range runtime.envNames() {
 			if name == "" {
 				continue
 			}
@@ -225,6 +291,76 @@ func validateDatabaseDeclarations(r *ValidationResult, spec *InfraSpec) {
 			r.add("error", "migrationDatabase", fmt.Sprintf("database %q must declare the migration capability", migration))
 		}
 	}
+}
+
+// validateStartupAdapter keeps the one supported WordPress verified-TLS
+// startup shape deliberately small. The adapter relies on the official image
+// entrypoint and its db.php extension contract. It is bound to the exact
+// qualified OCI index rather than a mutable WordPress tag.
+func validateStartupAdapter(r *ValidationResult, spec *InfraSpec) {
+	if spec.StartupAdapter == "" {
+		return
+	}
+	if spec.StartupAdapter != StartupAdapterWordPressVerifiedTLS {
+		r.add("error", "startupAdapter", "startupAdapter is unsupported")
+		return
+	}
+	if spec.SchemaVersion != AppSchemaV2 {
+		r.add("error", "startupAdapter", "wordpress verified TLS requires schemaVersion: "+AppSchemaV2)
+	}
+	if spec.Build == nil || spec.Build.Image != QualifiedWordPressVerifiedTLSImage {
+		r.add("error", "build.image", "wordpress verified TLS requires the qualified WordPress OCI image digest")
+	}
+	if len(spec.Processes) != 1 {
+		r.add("error", "processes", "wordpress verified TLS supports exactly one web process")
+	}
+	web, ok := spec.Processes["web"]
+	if !ok {
+		r.add("error", "processes.web", "wordpress verified TLS requires a web process")
+	} else if web.Command != "" || web.Schedule != "" || web.Function != nil {
+		r.add("error", "processes.web", "wordpress verified TLS requires the official image entrypoint without a command, schedule, or function")
+	}
+	if len(spec.Databases) != 1 {
+		r.add("error", "databases", "wordpress verified TLS requires exactly one primary database runtime")
+		return
+	}
+	runtime := spec.Databases[0].Runtime
+	if spec.Databases[0].Name != "primary" || runtime == nil || runtime.Components == nil ||
+		runtime.Components.Host != "WORDPRESS_DB_HOST" || runtime.Components.User != "WORDPRESS_DB_USER" ||
+		runtime.Components.Password != "WORDPRESS_DB_PASSWORD" || runtime.Components.Name != "WORDPRESS_DB_NAME" {
+		r.add("error", "databases[0].runtime.components", "wordpress verified TLS requires primary WORDPRESS_DB_* components")
+	}
+	if runtime == nil || runtime.TLS == nil || runtime.TLS.CAFileEnv != "MYSQL_SSL_CA" || runtime.TLS.ClientCertFileEnv != "" || runtime.TLS.ClientKeyFileEnv != "" {
+		r.add("error", "databases[0].runtime.tls", "wordpress verified TLS requires only the MYSQL_SSL_CA file variable")
+	}
+	contentMounted := false
+	for _, volume := range spec.Volumes {
+		if volume.Mount == "/var/www/html/wp-content" && !volume.ReadOnly {
+			contentMounted = true
+		}
+	}
+	if !contentMounted {
+		r.add("error", "volumes", "wordpress verified TLS requires a writable persistent wp-content volume")
+	}
+}
+
+// IsQualifiedWordPressVerifiedTLSPrebuilt identifies the one reviewed
+// upstream image whose generated startup adapter has passed actual allocation
+// CA and hostname rejection tests. The app source did not build this image,
+// so a norn.git.sha publisher signature would misstate its provenance. This
+// predicate is deliberately exact; callers still verify registry presence
+// and the vulnerability policy before using the image.
+func IsQualifiedWordPressVerifiedTLSPrebuilt(spec *InfraSpec, resolvedImage string) bool {
+	if spec == nil || spec.Build == nil || spec.StartupAdapter != StartupAdapterWordPressVerifiedTLS ||
+		spec.Build.Image != QualifiedWordPressVerifiedTLSImage || resolvedImage != QualifiedWordPressVerifiedTLSImage {
+		return false
+	}
+	for _, finding := range spec.DatabaseDeclarationFindings() {
+		if finding.Severity == "error" {
+			return false
+		}
+	}
+	return true
 }
 
 func containsString(values []string, want string) bool {

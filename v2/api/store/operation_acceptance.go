@@ -99,6 +99,17 @@ func CanonicalOperationRequestFingerprint(acceptance OperationAcceptance) (Reque
 }
 
 func (s *PGOperationStore) Accept(ctx context.Context, input OperationAcceptance) (AcceptedOperation, error) {
+	if input.Identity.Kind == "app.function-invoke" || input.Operation.Kind == "app.function-invoke" {
+		return AcceptedOperation{}, &AcceptanceValidationError{Reason: "function invocation requires atomic private material acceptance"}
+	}
+	return s.acceptWithPrivateInvocation(ctx, input, nil)
+}
+
+func (s *PGOperationStore) acceptWithPrivateInvocation(ctx context.Context, input OperationAcceptance, private *PrivateInvocationEnvelope) (AcceptedOperation, error) {
+	return s.acceptWithGuard(ctx, input, private, nil)
+}
+
+func (s *PGOperationStore) acceptWithGuard(ctx context.Context, input OperationAcceptance, private *PrivateInvocationEnvelope, guard func(context.Context, pgx.Tx) error) (AcceptedOperation, error) {
 	if s == nil || s.signer == nil || s.db == nil || s.db.Pool == nil {
 		return AcceptedOperation{}, &AcceptanceValidationError{Reason: "operation acceptance store is unavailable"}
 	}
@@ -139,6 +150,11 @@ func (s *PGOperationStore) Accept(ctx context.Context, input OperationAcceptance
 		_ = tx.Rollback(context.Background())
 		return s.resolveFresh(acceptance.Identity, acceptance.Fingerprint)
 	}
+	if guard != nil {
+		if err := guard(ctx, tx); err != nil {
+			return AcceptedOperation{}, err
+		}
+	}
 	if acceptance.Admission.OneActiveMutablePerApp {
 		if err := enforceActiveAppAdmission(ctx, tx, acceptance.Operation.App); err != nil {
 			return AcceptedOperation{}, err
@@ -158,6 +174,11 @@ func (s *PGOperationStore) Accept(ctx context.Context, input OperationAcceptance
 	}
 	if err := insertAcceptedDomain(ctx, tx, acceptance); err != nil {
 		return AcceptedOperation{}, err
+	}
+	if private != nil {
+		if err := insertPrivateInvocation(ctx, tx, acceptance, *private); err != nil {
+			return AcceptedOperation{}, err
+		}
 	}
 	envelope := newAcceptanceEnvelope(acceptance, requestIdentityID, intentID, acceptedAt)
 	canonical, signature, err := s.signEnvelope(ctx, &envelope)
@@ -287,6 +308,45 @@ func (s *PGOperationStore) ResolveIdentity(ctx context.Context, identity Operati
 		return AcceptedOperation{}, err
 	}
 	return s.Resolve(ctx, identity, fingerprint)
+}
+
+// VerifyAcceptedOperation loads signed acceptance by its durable operation
+// identity without consuming or extending the original replay window. Recovery
+// callers must still check the operation and deployment's current state. A
+// retired or missing hot acceptance fails closed until archived evidence can
+// be verified through the recovery path.
+func (s *PGOperationStore) VerifyAcceptedOperation(ctx context.Context, operationID string) (AcceptedOperation, error) {
+	if s == nil || s.signer == nil || s.db == nil || s.db.Pool == nil || operationID == "" {
+		return AcceptedOperation{}, &AcceptanceValidationError{Reason: "operation acceptance store is unavailable"}
+	}
+	var identity OperationRequestIdentity
+	err := s.db.Pool.QueryRow(ctx, `SELECT authority::text,actor_issuer,actor_subject,kind,resource,request_key
+		FROM operation_request_identities WHERE operation_id=$1`, operationID).Scan(
+		&identity.Authority, &identity.Actor.Issuer, &identity.Actor.Subject, &identity.Kind, &identity.Resource, &identity.Key)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return AcceptedOperation{}, &AcceptanceNotFoundError{Identity: identity}
+	}
+	if err != nil {
+		return AcceptedOperation{}, err
+	}
+	record, err := s.loadAcceptance(ctx, identity)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return AcceptedOperation{}, &AcceptanceNotFoundError{Identity: identity}
+	}
+	if err != nil {
+		return AcceptedOperation{}, err
+	}
+	if record.operation.ID != operationID {
+		return AcceptedOperation{}, &AcceptanceSignatureError{Err: fmt.Errorf("acceptance operation identity changed")}
+	}
+	if err := s.verifyLoadedAcceptance(ctx, identity, record); err != nil {
+		return AcceptedOperation{}, err
+	}
+	return AcceptedOperation{
+		Operation: record.operation, Deployment: record.deployment, Regions: record.regions,
+		RequestIdentityID: record.intent.RequestIdentityID, AcceptanceIntentID: record.intent.ID,
+		Intent: record.intent, FleetRunnerAttempt: record.fleetRunnerAttempt,
+	}, nil
 }
 
 func (s *PGOperationStore) normalize(ctx context.Context, input OperationAcceptance) (OperationAcceptance, error) {
@@ -740,9 +800,9 @@ func insertAcceptedDomain(ctx context.Context, tx pgx.Tx, a OperationAcceptance)
 			return err
 		}
 		_, err = tx.Exec(ctx, `INSERT INTO deployments
-			(id,app,commit_sha,image_tag,environment,saga_id,status,source_kind,source_ref,source_dirty,source_changes,started_at,finished_at)
-			VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13)`,
-			a.Deployment.ID, a.Deployment.App, a.Deployment.CommitSHA, a.Deployment.ImageTag, a.Deployment.Environment, a.Deployment.SagaID,
+			(id,app,commit_sha,image_tag,spec_digest,environment,saga_id,status,source_kind,source_ref,source_dirty,source_changes,started_at,finished_at)
+			VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14)`,
+			a.Deployment.ID, a.Deployment.App, a.Deployment.CommitSHA, a.Deployment.ImageTag, a.Deployment.SpecDigest, a.Deployment.Environment, a.Deployment.SagaID,
 			a.Deployment.Status, a.Deployment.SourceKind, a.Deployment.SourceRef, a.Deployment.SourceDirty, changes, a.Deployment.StartedAt, a.Deployment.FinishedAt)
 		if err != nil {
 			return err
@@ -1035,8 +1095,8 @@ type acceptedDeployment struct {
 func (s *PGOperationStore) loadAcceptedDeployment(ctx context.Context, id string) (acceptedDeployment, error) {
 	var d model.Deployment
 	var changes []byte
-	err := s.db.Pool.QueryRow(ctx, `SELECT id,app,commit_sha,image_tag,environment,saga_id,status,source_kind,source_ref,source_dirty,source_changes,started_at,finished_at FROM deployments WHERE id=$1`, id).
-		Scan(&d.ID, &d.App, &d.CommitSHA, &d.ImageTag, &d.Environment, &d.SagaID, &d.Status, &d.SourceKind, &d.SourceRef, &d.SourceDirty, &changes, &d.StartedAt, &d.FinishedAt)
+	err := s.db.Pool.QueryRow(ctx, `SELECT id,app,commit_sha,image_tag,spec_digest,environment,saga_id,status,source_kind,source_ref,source_dirty,source_changes,started_at,finished_at FROM deployments WHERE id=$1`, id).
+		Scan(&d.ID, &d.App, &d.CommitSHA, &d.ImageTag, &d.SpecDigest, &d.Environment, &d.SagaID, &d.Status, &d.SourceKind, &d.SourceRef, &d.SourceDirty, &changes, &d.StartedAt, &d.FinishedAt)
 	if err != nil {
 		return acceptedDeployment{}, err
 	}

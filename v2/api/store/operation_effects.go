@@ -179,18 +179,40 @@ func (s *PGEffectStore) Authority(ctx context.Context) (string, error) {
 }
 
 // UnresolvedForResource returns the reserved or launched effect holding the
-// resource gate, regardless of which operation owns it.
+// resource gate, regardless of which operation owns it. Mutable app effects
+// share an app-wide reservation gate, so a different resource in the same app
+// is also returned when it is the actual blocker. Callers must reconcile that
+// returned record rather than assuming their requested resource owns the gate.
 func (s *PGEffectStore) UnresolvedForResource(ctx context.Context, authority, resource string) (effect.Record, bool, error) {
 	record, err := queryEffectRecord(ctx, s.db.Pool, `
 		SELECT `+effectColumns+`
 		FROM operation_effects
 		WHERE authority=$1::uuid AND resource=$2 AND lifecycle IN ('reserved','launched')
+		ORDER BY created_at ASC
+		LIMIT 1
 	`, authority, resource)
-	if errors.Is(err, pgx.ErrNoRows) {
-		return effect.Record{}, false, nil
-	}
 	if err != nil {
-		return effect.Record{}, false, err
+		if !errors.Is(err, pgx.ErrNoRows) {
+			return effect.Record{}, false, err
+		}
+		app := appEffectResource(resource)
+		if app == "" {
+			return effect.Record{}, false, nil
+		}
+		record, err = queryEffectRecord(ctx, s.db.Pool, `
+			SELECT `+effectColumns+`
+			FROM operation_effects
+			WHERE authority=$1::uuid AND split_part(resource,'/',2)=$2
+			  AND lifecycle IN ('reserved','launched')
+			ORDER BY created_at ASC
+			LIMIT 1
+		`, authority, app)
+		if errors.Is(err, pgx.ErrNoRows) {
+			return effect.Record{}, false, nil
+		}
+		if err != nil {
+			return effect.Record{}, false, err
+		}
 	}
 	return record, true, nil
 }

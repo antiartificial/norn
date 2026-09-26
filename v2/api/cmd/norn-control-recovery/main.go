@@ -213,7 +213,8 @@ func run(ctx context.Context, arguments []string) error {
 //	                 rejected object after printing the report.
 //	archive-reindex  rebuild the evidence index of a control schema from the
 //	                 archive alone (restore without historical PostgreSQL);
-//	                 existing index rows are never overwritten.
+//	                 existing index rows are never overwritten. Its report
+//	                 states whether acceptance signatures were verified.
 func runArchiveCommand(ctx context.Context, command string, arguments []string) error {
 	flags := flag.NewFlagSet(command, flag.ContinueOnError)
 	settings := archive.Settings{}
@@ -228,7 +229,7 @@ func runArchiveCommand(ctx context.Context, command string, arguments []string) 
 	flags.StringVar(&settings.SecretKeyFile, "archive-secret-key-file", "", "owner-only archive secret key file")
 	flags.StringVar(&settings.CAFile, "archive-ca-file", "", "owner-only CA bundle for the object archive")
 	identityFile := flags.String("identity-file", "", "mode-0600 age identity file (with --recovery-keys-file)")
-	recoveryKeysFile := flags.String("recovery-keys-file", "", "age-encrypted recovery verification keys (verifies acceptance signatures)")
+	recoveryKeysFile := flags.String("recovery-keys-file", "", "age-encrypted recovery verification keys (otherwise reports checksum-only recovery; operation receipts require these keys)")
 	dsnFile := flags.String("database-url-file", "", "mode-0600 PostgreSQL URL file (archive-reindex)")
 	schema := flags.String("schema", "public", "control schema (archive-reindex)")
 	if err := flags.Parse(arguments); err != nil {

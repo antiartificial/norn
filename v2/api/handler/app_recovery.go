@@ -4,6 +4,7 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net/http"
 	"regexp"
@@ -39,6 +40,58 @@ type appMigrationRequest struct {
 type appRollbackRequest struct {
 	Regions []string `json:"regions,omitempty"`
 	Confirm bool     `json:"confirm"`
+}
+
+// QueueDeploymentReconciliation records a separate operator correction for a
+// failed deployment whose live image can still be proven by the worker.
+func (h *Handler) QueueDeploymentReconciliation(w http.ResponseWriter, r *http.Request) {
+	if _, ok := requireControlScope(w, r, ScopeAPIWrite); !ok {
+		return
+	}
+	var request appRecoveryConfirmRequest
+	if err := decodeControlJSON(w, r, &request); err != nil {
+		WriteControlProblem(w, r, http.StatusBadRequest, "invalid_reconciliation_request", err.Error())
+		return
+	}
+	if !request.Confirm {
+		WriteControlProblem(w, r, http.StatusBadRequest, "confirmation_required", "deployment reconciliation requires confirm=true")
+		return
+	}
+	appID, sourceID := chi.URLParam(r, "id"), chi.URLParam(r, "operationID")
+	spec := h.findSpec(appID)
+	if spec == nil {
+		WriteControlProblem(w, r, http.StatusNotFound, "app_not_found", "app was not found or deployment is disabled")
+		return
+	}
+	enqueue, ok := h.pipelineEnqueueRequest(w, r, r.Header.Get("Idempotency-Key"), map[string]interface{}{
+		"action": "deployment-reconciliation", "app": appID, "sourceOperationId": sourceID, "confirm": true,
+	})
+	if !ok {
+		return
+	}
+	if replayed, err := h.pipeline.ResolveEnqueue(r.Context(), enqueue, "app.deployment-reconcile", appID); err == nil {
+		if replayed.Operation.Ref != sourceID {
+			WriteControlProblem(w, r, http.StatusConflict, "idempotency_conflict", "idempotency key belongs to another source operation")
+			return
+		}
+		w.Header().Set("Location", "/api/v1/operations/"+replayed.Operation.ID)
+		writeJSON(w, replayed.Operation)
+		return
+	} else if !errors.Is(err, store.ErrAcceptanceNotFound) {
+		writeOperationAcceptanceError(w, r, err)
+		return
+	}
+	accepted, err := h.pipeline.QueueDeploymentReconciliation(r.Context(), spec, sourceID, enqueue)
+	if err != nil {
+		writeOperationAcceptanceError(w, r, err)
+		return
+	}
+	w.Header().Set("Location", "/api/v1/operations/"+accepted.Operation.ID)
+	if accepted.Replayed {
+		writeJSON(w, accepted.Operation)
+		return
+	}
+	writeJSONStatus(w, http.StatusAccepted, accepted.Operation)
 }
 
 func (h *Handler) QueueAppSnapshot(w http.ResponseWriter, r *http.Request) {
@@ -149,7 +202,7 @@ func (h *Handler) QueueAppRollback(w http.ResponseWriter, r *http.Request) {
 		WriteControlProblem(w, r, http.StatusNotFound, "rollback_current_deployment_missing", "no current deployment was found")
 		return
 	}
-	previous, err := h.db.LastSuccessfulDeployment(r.Context(), appID, deployments[0].ID)
+	previous, err := h.db.LastSuccessfulDeployment(r.Context(), appID, deployments[0].Environment, deployments[0].ID)
 	if err != nil {
 		WriteControlProblem(w, r, http.StatusNotFound, "rollback_target_missing", "no previous successful deployment is available")
 		return

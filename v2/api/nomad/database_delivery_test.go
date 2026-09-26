@@ -35,6 +35,104 @@ func deliverySpec() *model.InfraSpec {
 	}
 }
 
+func TestWordPressDatabaseDeliveryIsPrivateAndRevisionBound(t *testing.T) {
+	spec := &model.InfraSpec{SchemaVersion: model.AppSchemaV2, App: "wordpress", Processes: map[string]model.Process{
+		"web": {Command: "php-fpm"}, "cron": {Command: "wp cron event run", Schedule: "@hourly"},
+	}, Databases: []model.DatabaseRequirement{{Name: "primary", Purpose: "application", Capabilities: []string{"runtime"}, Runtime: &model.DatabaseRuntime{
+		Components: &model.DatabaseRuntimeComponents{Host: "WORDPRESS_DB_HOST", User: "WORDPRESS_DB_USER", Password: "WORDPRESS_DB_PASSWORD", Name: "WORDPRESS_DB_NAME"},
+	}}}}
+	for _, job := range []*nomadapi.Job{TranslateForRegionAt(spec, "wordpress:test", nil, spec.ResolvedRegions()[0], 7),
+		TranslatePeriodicForRegionAt(spec, "cron", spec.Processes["cron"], "wordpress:test", nil, spec.ResolvedRegions()[0], 7)} {
+		for _, group := range job.TaskGroups {
+			for _, task := range group.Tasks {
+				if len(task.Templates) != 1 || !*task.Templates[0].Envvars || !*task.Templates[0].ErrMissingKey || *task.Templates[0].Perms != "0400" {
+					t.Fatalf("%s private template = %+v", *job.ID, task.Templates)
+				}
+				data := *task.Templates[0].EmbeddedTmpl
+				for field, env := range map[string]string{"host": "WORDPRESS_DB_HOST", "user": "WORDPRESS_DB_USER", "password": "WORDPRESS_DB_PASSWORD", "name": "WORDPRESS_DB_NAME"} {
+					want := env + "={{ ." + stagedKey(DatabaseComponentItemKey("primary", field), 7) + ".Value | toJSON }}"
+					if !strings.Contains(data, want) {
+						t.Fatalf("%s lacks staged %s field: %q", *job.ID, field, data)
+					}
+				}
+				if strings.Contains(data, deliveryCanary) || strings.Contains(data, "{{ .norn_db_component_") {
+					t.Fatalf("%s leaks value or reads mutable database items", *job.ID)
+				}
+			}
+		}
+	}
+	fake := &fakeVariables{variables: map[string]*nomadapi.Variable{}}
+	server := httptest.NewServer(fake)
+	defer server.Close()
+	client, err := NewClient(server.URL)
+	if err != nil {
+		t.Fatal(err)
+	}
+	items := map[string]string{DatabaseTargetItemKey("primary"): `{"bindingId":"wordpress","bindingGeneration":1}`}
+	for field, value := range map[string]string{"host": "mysql.internal:3306", "user": "wp", "password": deliveryCanary, "name": "wordpress"} {
+		items[DatabaseComponentItemKey("primary", field)] = value
+	}
+	if err := client.DeliverDatabaseVariable("west", "wordpress", items, 7); err != nil {
+		t.Fatal(err)
+	}
+	revision, err := client.ReadDatabaseRevision("west", "wordpress", 7)
+	if err != nil || len(revision.URLs) != 0 || len(revision.Components) != 4 || revision.Components[DatabaseComponentItemKey("primary", "password")] != deliveryCanary {
+		t.Fatalf("component revision = %+v, %v", revision, err)
+	}
+	owned, err := client.CopyDatabaseVariable("west", "wordpress-cron-1", revision)
+	if err != nil || owned[stagedKey(DatabaseComponentItemKey("primary", "password"), 7)] != deliveryCanary {
+		t.Fatal("component delivery was not copied to a one-shot job")
+	}
+	if err := client.DeleteDatabaseVariable("west", "wordpress-cron-1", owned); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestTLSDatabaseFilesArePrivateAndRevisionBound(t *testing.T) {
+	spec := &model.InfraSpec{SchemaVersion: model.AppSchemaV2, App: "wordpress", Processes: map[string]model.Process{"web": {Command: "php-fpm"}}, Databases: []model.DatabaseRequirement{{
+		Name: "primary", Purpose: "application", Capabilities: []string{"runtime"}, Runtime: &model.DatabaseRuntime{
+			Components: &model.DatabaseRuntimeComponents{Host: "WORDPRESS_DB_HOST", User: "WORDPRESS_DB_USER", Password: "WORDPRESS_DB_PASSWORD", Name: "WORDPRESS_DB_NAME"},
+			TLS:        &model.DatabaseRuntimeTLS{CAFileEnv: "MYSQL_SSL_CA", ClientCertFileEnv: "MYSQL_SSL_CERT", ClientKeyFileEnv: "MYSQL_SSL_KEY"},
+		},
+	}}}
+	task := TranslateForRegionAt(spec, "wordpress:test", nil, spec.ResolvedRegions()[0], 7).TaskGroups[0].Tasks[0]
+	paths := map[string]string{}
+	for _, template := range task.Templates {
+		if !*template.Envvars {
+			paths[*template.DestPath] = *template.EmbeddedTmpl
+			if *template.Perms != "0400" || !*template.ErrMissingKey || *template.ChangeMode != "restart" {
+				t.Fatalf("TLS template is not private/restarting: %+v", template)
+			}
+		}
+	}
+	for material, suffix := range map[string]string{"ca": "ca.pem", "client_cert": "client-cert.pem", "client_key": "client-key.pem"} {
+		destination := "secrets/norn-databases/primary." + suffix
+		key := stagedKey(DatabaseTLSItemKey("primary", material), 7)
+		if !strings.Contains(paths[destination], "."+key+".Value }}") || strings.Contains(paths[destination], "{{ .norn_db_tls_") {
+			t.Fatalf("TLS template %s = %q", destination, paths[destination])
+		}
+	}
+	if task.Env["MYSQL_SSL_CA"] != "${NOMAD_SECRETS_DIR}/norn-databases/primary.ca.pem" || task.Env["MYSQL_SSL_CERT"] != "${NOMAD_SECRETS_DIR}/norn-databases/primary.client-cert.pem" || task.Env["MYSQL_SSL_KEY"] != "${NOMAD_SECRETS_DIR}/norn-databases/primary.client-key.pem" {
+		t.Fatalf("TLS environment paths = %v", task.Env)
+	}
+	client, _ := newFakeVariableClient(t)
+	items := map[string]string{
+		DatabaseComponentItemKey("primary", "host"): "mysql.internal:3306",
+		DatabaseTLSItemKey("primary", "ca"):         "test-ca", DatabaseTLSItemKey("primary", "client_cert"): "test-cert", DatabaseTLSItemKey("primary", "client_key"): "test-key",
+	}
+	if err := client.DeliverDatabaseVariable("west", "wordpress", items, 7); err != nil {
+		t.Fatal(err)
+	}
+	revision, err := client.ReadDatabaseRevision("west", "wordpress", 7)
+	if err != nil || revision.TLS[DatabaseTLSItemKey("primary", "client_key")] != "test-key" {
+		t.Fatalf("TLS revision = %+v, %v", revision, err)
+	}
+	owned, err := client.CopyDatabaseVariable("west", "wordpress-fn-1", revision)
+	if err != nil || owned[stagedKey(DatabaseTLSItemKey("primary", "ca"), 7)] != "test-ca" {
+		t.Fatalf("TLS function delivery = %v, %v", owned, err)
+	}
+}
+
 // Every translation path (web and worker services, cron, function) carries
 // the same private delivery: templates reading only the job's own variable,
 // the value-variable rendered as env, the file-variable holding a path. No
@@ -44,6 +142,11 @@ func TestDatabaseDeliveryTemplatesOnEveryTranslationPath(t *testing.T) {
 	secrets := map[string]string{"STRIPE_KEY": "sk_test"}
 	region := spec.ResolvedRegions()[0]
 	service := TranslateForRegionAt(spec, "img:1", secrets, region, 5)
+	for _, group := range service.TaskGroups {
+		if *group.Name == "resize" {
+			t.Fatal("function process was scheduled as a service task")
+		}
+	}
 	periodic := TranslatePeriodicForRegionAt(spec, "nightly", spec.Processes["nightly"], "img:1", secrets, region, 5)
 	function := TranslateBatchAt(spec, "resize", spec.Processes["resize"], "img:1", secrets, "shop-resize-1700000000000", 5)
 	tasks := map[string]*nomadapi.Task{}
@@ -86,10 +189,10 @@ func TestDatabaseDeliveryTemplatesOnEveryTranslationPath(t *testing.T) {
 				files[*template.DestPath] = data
 			}
 		}
-		if envTemplate == nil || !strings.Contains(*envTemplate.EmbeddedTmpl, "DATABASE_URL={{ .norn_rev5_db_url_primary }}") || strings.Contains(*envTemplate.EmbeddedTmpl, "ANALYTICS") {
+		if envTemplate == nil || !strings.Contains(*envTemplate.EmbeddedTmpl, "DATABASE_URL={{ .norn_rev5_db_url_primary.Value | toJSON }}") || strings.Contains(*envTemplate.EmbeddedTmpl, "ANALYTICS") {
 			t.Fatalf("%s env template = %+v", name, envTemplate)
 		}
-		if !strings.Contains(files["secrets/norn-databases/primary.url"], ".norn_rev5_db_url_primary") || !strings.Contains(files["secrets/norn-databases/analytics-db.url"], ".norn_rev5_db_url_analytics_db") {
+		if !strings.Contains(files["secrets/norn-databases/primary.url"], ".norn_rev5_db_url_primary.Value }}") || !strings.Contains(files["secrets/norn-databases/analytics-db.url"], ".norn_rev5_db_url_analytics_db.Value }}") {
 			t.Fatalf("%s file templates = %v", name, files)
 		}
 		for _, template := range task.Templates {
@@ -216,6 +319,24 @@ func newFakeVariableClient(t *testing.T) (*Client, *fakeVariables) {
 		t.Fatal(err)
 	}
 	return client, fake
+}
+
+func TestDatabaseDeliveryRejectsOversizedStagedVariableBeforeWrite(t *testing.T) {
+	client, fake := newFakeVariableClient(t)
+	secret := strings.Repeat("x", maxDatabaseVariableItemBytes/2)
+	items := map[string]string{DatabaseComponentItemKey("primary", "password"): secret}
+	err := client.DeliverDatabaseVariable("global", "shop", items, 7)
+	if !errors.Is(err, ErrDatabaseVariableTooLarge) || strings.Contains(err.Error(), secret) || fake.writes != 0 {
+		t.Fatalf("oversized initial delivery: err=%v writes=%d", err, fake.writes)
+	}
+	if err := client.DeliverDatabaseVariable("global", "shop", map[string]string{DatabaseComponentItemKey("primary", "password"): strings.Repeat("s", 30_000)}, 7); err != nil {
+		t.Fatal(err)
+	}
+	before := fake.writes
+	err = client.DeliverDatabaseVariable("global", "shop", map[string]string{DatabaseComponentItemKey("primary", "password"): strings.Repeat("y", 6_000)}, 8)
+	if !errors.Is(err, ErrDatabaseVariableTooLarge) || fake.writes != before {
+		t.Fatalf("oversized second revision: err=%v writes=%d", err, fake.writes)
+	}
 }
 
 func TestDatabaseVariableWritesAreCheckedIdempotentAndRedacted(t *testing.T) {

@@ -149,3 +149,87 @@ func TestProductionArtifactAdmissionEnforcesSignatureAndVulnerabilityPolicy(t *t
 		t.Fatalf("vulnerability policy error=%v", err)
 	}
 }
+
+func TestQualifiedWordPressPrebuiltKeepsRegistryAndVulnerabilityGates(t *testing.T) {
+	ref := model.QualifiedWordPressVerifiedTLSImage
+	registryCalls, signatureCalls, scanCalls := 0, 0, 0
+	p := &Pipeline{Production: true,
+		VerifyArtifact: func(_ context.Context, image string) error {
+			registryCalls++
+			if image != ref {
+				t.Fatalf("registry image=%q", image)
+			}
+			return nil
+		},
+		VerifySignature: func(context.Context, string) error { signatureCalls++; return errors.New("unsigned upstream image") },
+		ScanArtifact: func(_ context.Context, image string) error {
+			scanCalls++
+			if image != ref {
+				t.Fatalf("scan image=%q", image)
+			}
+			return nil
+		},
+	}
+	st := &state{spec: qualifiedWordPressRuntimeSpec(), imageTag: ref}
+	if err := p.artifactAdmission(context.Background(), st, nil); err != nil {
+		t.Fatalf("exact qualified upstream image rejected: %v", err)
+	}
+	if registryCalls != 1 || signatureCalls != 0 || scanCalls != 1 {
+		t.Fatalf("artifact gates registry=%d signature=%d scan=%d", registryCalls, signatureCalls, scanCalls)
+	}
+	p.VerifyArtifact = func(context.Context, string) error { return errors.New("missing manifest") }
+	if err := p.artifactAdmission(context.Background(), st, nil); err == nil || !strings.Contains(err.Error(), "missing manifest") {
+		t.Fatalf("missing qualified manifest accepted: %v", err)
+	}
+	p.VerifyArtifact = func(context.Context, string) error { return nil }
+	p.ScanArtifact = func(context.Context, string) error { return errors.New("vulnerability denied") }
+	if err := p.artifactAdmission(context.Background(), st, nil); err == nil || !strings.Contains(err.Error(), "vulnerability denied") {
+		t.Fatalf("vulnerable qualified artifact accepted: %v", err)
+	}
+}
+
+func TestProductionAdmissionAcceptsQualifiedWordPressPrebuilt(t *testing.T) {
+	spec := qualifiedWordPressRuntimeSpec()
+	spec.Repo = &model.RepoSpec{URL: "https://example.test/wordpress-config.git"}
+	web := spec.Processes["web"]
+	web.Health = &model.HealthSpec{Path: "/"}
+	spec.Processes["web"] = web
+	p := &Pipeline{Production: true, NetworkMode: "tailnet", RegistryURL: "registry.example.test/norn"}
+	st := &state{sourceKind: "git_clone", spec: spec, imageTag: model.QualifiedWordPressVerifiedTLSImage}
+	if err := p.admission(context.Background(), st, nil); err != nil {
+		t.Fatalf("qualified prebuilt production source admission failed: %v", err)
+	}
+}
+
+func TestQualifiedWordPressPrebuiltExceptionIsExact(t *testing.T) {
+	ref := model.QualifiedWordPressVerifiedTLSImage
+	for name, mutate := range map[string]func(*state){
+		"missing spec":        func(s *state) { s.spec = nil },
+		"generic consumer":    func(s *state) { s.spec.StartupAdapter = "" },
+		"different image":     func(s *state) { s.imageTag = "docker.io/library/wordpress@sha256:" + strings.Repeat("a", 64) },
+		"spec image mismatch": func(s *state) { s.spec.Build.Image = "docker.io/library/wordpress@sha256:" + strings.Repeat("a", 64) },
+		"mutable spec image":  func(s *state) { s.spec.Build.Image = "wordpress:6.8.2-php8.3-apache" },
+		"missing content":     func(s *state) { s.spec.Volumes = nil },
+		"custom command":      func(s *state) { s.spec.Processes["web"] = model.Process{Command: "apache2-foreground"} },
+		"wrong runtime":       func(s *state) { s.spec.Databases[0].Runtime.Components.Host = "OTHER_DB_HOST" },
+		"missing ca":          func(s *state) { s.spec.Databases[0].Runtime.TLS = nil },
+		"client certificate":  func(s *state) { s.spec.Databases[0].Runtime.TLS.ClientCertFileEnv = "MYSQL_SSL_CERT" },
+		"extra process":       func(s *state) { s.spec.Processes["worker"] = model.Process{Command: "true"} },
+		"bound release":       func(s *state) { s.artifactBound = true },
+	} {
+		t.Run(name, func(t *testing.T) {
+			signatureCalls := 0
+			p := &Pipeline{Production: true, VerifyArtifact: func(context.Context, string) error { return nil },
+				VerifySignature: func(context.Context, string) error { signatureCalls++; return errors.New("unsigned upstream image") },
+				ScanArtifact:    func(context.Context, string) error { return nil }}
+			st := &state{spec: qualifiedWordPressRuntimeSpec(), imageTag: ref}
+			mutate(st)
+			if err := p.artifactAdmission(context.Background(), st, nil); err == nil {
+				t.Fatal("near-miss artifact passed production admission")
+			}
+			if signatureCalls != 1 {
+				t.Fatalf("near-miss signature calls=%d", signatureCalls)
+			}
+		})
+	}
+}

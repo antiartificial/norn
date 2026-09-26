@@ -61,6 +61,17 @@ func TestAuditVerificationKeyRotationConfig(t *testing.T) {
 	}
 }
 
+func TestPrivateInvocationKeyRingRuntimeConfig(t *testing.T) {
+	t.Setenv("NORN_PRIVATE_INVOCATION_ENABLED", "true")
+	t.Setenv("NORN_FUNCTION_V3_PREVIEW_ENABLED", "true")
+	t.Setenv("NORN_PRIVATE_INVOCATION_CURRENT_KEY_ID", "invocation-2026-09")
+	t.Setenv("NORN_PRIVATE_INVOCATION_KEYS", `{"invocation-2026-09":"base64-key-material"}`)
+	cfg := Load()
+	if !cfg.PrivateInvocationEnabled || !cfg.FunctionV3PreviewEnabled || cfg.PrivateInvocationCurrentKeyID != "invocation-2026-09" || cfg.PrivateInvocationKeys == "" {
+		t.Fatalf("private invocation runtime configuration was not loaded")
+	}
+}
+
 func TestFleetGitHubAppConfig(t *testing.T) {
 	t.Setenv("NORN_FLEET_GITHUB_APP_ID", "Iv1.client")
 	t.Setenv("NORN_FLEET_GITHUB_INSTALLATION_ID", "12345")
@@ -216,5 +227,14 @@ func TestRedpandaConfig(t *testing.T) {
 	}
 	if cfg.RedpandaRPKPath != "/opt/redpanda/bin/rpk" {
 		t.Fatalf("RedpandaRPKPath = %q", cfg.RedpandaRPKPath)
+	}
+}
+
+func TestManagedCloudflaredConfig(t *testing.T) {
+	t.Setenv("NORN_CLOUDFLARED_BIN", "/private/cloudflared")
+	t.Setenv("NORN_CLOUDFLARED_LAUNCH_LABEL", "com.example.cloudflared")
+	cfg := Load()
+	if cfg.CloudflaredBinary != "/private/cloudflared" || cfg.CloudflaredLaunchLabel != "com.example.cloudflared" {
+		t.Fatalf("cloudflared executable or launch label was not retained: binary=%q label=%q", cfg.CloudflaredBinary, cfg.CloudflaredLaunchLabel)
 	}
 }

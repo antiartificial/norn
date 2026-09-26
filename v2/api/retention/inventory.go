@@ -41,6 +41,7 @@ var PayloadInventory = []PayloadRetention{
 	{"retired_operation_acceptances", ClassCurrentState, nil, "permanent operation, replay-identity, audit-receipt and archive linkage after hot payload retirement"},
 	{"operation_effects", ClassHotEvidence, []string{"launch_payload"}, "unresolved effects and retry-safety evidence"},
 	{"restart_effect_sources", ClassHotEvidence, nil, "per-source restart attempt and acknowledgement evidence"},
+	{"function_invocation_effect_attempts", ClassHotEvidence, nil, "variable and job pre-call fences; retained while an invocation can require recovery or manual review"},
 	{"snapshot_publication_intents", ClassHotEvidence, []string{"target", "namespace", "filename"}, "snapshot publication and retry-safety intent; retained until object/copy recovery is qualified"},
 	{"operation_checkpoints", ClassHotEvidence, []string{"outputs"}, "retry-safety checkpoints of unresolved operations"},
 	{"deployments", ClassHotEvidence, []string{"source_changes"}, "current and rollback candidates, routing state"},

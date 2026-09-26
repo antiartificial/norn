@@ -1,0 +1,183 @@
+package store
+
+import (
+	"context"
+	"errors"
+	"testing"
+)
+
+// This deliberately synthetic fixture exercises common Mini control records.
+// It contains no copied Mini rows, keys, endpoints, or credentials.
+func TestSyntheticMiniControlUpgradeAndReaderBoundary(t *testing.T) {
+	pool := schemaMigrationTestPools(t, 1)[0]
+	ctx := context.Background()
+	migrations := ControlSchemaMigrations()
+	if _, err := pool.Exec(ctx, migrations[0].SQL); err != nil {
+		t.Fatal(err)
+	}
+	const fixture = `
+		INSERT INTO access_devices(id,name,public_key) VALUES ('device-synthetic','operator','synthetic-public-key');
+		INSERT INTO access_tokens(jti,device_id,subject,scopes,issued_at,expires_at)
+			VALUES ('token-synthetic','device-synthetic','fixture-operator','["app:read"]',now(),now()+interval '1 day');
+		INSERT INTO operations(id,kind,app,status,payload,metadata,lock_generation)
+			VALUES ('operation-synthetic','app.deploy','synthetic-app','succeeded','{"image":"sha256:synthetic"}','{"receipt":"synthetic-receipt"}',4);
+		INSERT INTO deployments(id,app,commit_sha,image_tag,saga_id,status)
+			VALUES ('deployment-synthetic','synthetic-app','synthetic-commit','sha256:synthetic','saga-synthetic','succeeded');
+		INSERT INTO deployment_regions(deployment_id,region,nomad_region,status,desired_weight,active_weight)
+			VALUES ('deployment-synthetic','synthetic-region','synthetic-nomad-region','succeeded',100,100);
+		INSERT INTO deployment_steps(deployment_id,app,saga_id,step,status,metadata)
+			VALUES ('deployment-synthetic','synthetic-app','saga-synthetic','promote','succeeded','{"marker":"synthetic-step"}');
+		INSERT INTO cron_states(app,process,paused,schedule)
+			VALUES ('synthetic-app','hourly',true,'0 * * * *');
+		INSERT INTO webhook_deliveries(id,provider,delivery_id,app,status,payload)
+			VALUES ('webhook-synthetic','synthetic','delivery-synthetic','synthetic-app','processed','{"marker":"synthetic-webhook"}');
+		INSERT INTO control_events(type,app_id,payload)
+			VALUES ('synthetic.event','synthetic-app','{"marker":"synthetic-event"}');`
+	if _, err := pool.Exec(ctx, fixture); err != nil {
+		t.Fatal(err)
+	}
+	// Mini observed about 1,500 rows per day in each of these three event
+	// families. Keep this synthetic day free of copied payloads and identities.
+	const activityFixture = `
+		INSERT INTO beacon_events(id,app,type,title,occurred_at,metadata)
+			SELECT 'synthetic-beacon-'||n, 'synthetic-app', 'synthetic.event', 'synthetic title',
+				timestamptz '2026-01-01 00:00:00+00' + n * interval '57.6 seconds', jsonb_build_object('sequence',n)
+			FROM generate_series(0,1499) AS n;
+		INSERT INTO control_events(type,app_id,timestamp,payload)
+			SELECT 'synthetic.event', 'synthetic-app',
+				timestamptz '2026-01-01 00:00:00+00' + n * interval '57.6 seconds', jsonb_build_object('sequence',n)
+			FROM generate_series(0,1499) AS n;
+		INSERT INTO mutation_audit_events(id,principal_subject,method,path,status,outcome,started_at,record_digest)
+			SELECT 'synthetic-audit-'||n, 'fixture-operator', 'POST', '/synthetic/mutation', 200, 'succeeded',
+				timestamptz '2026-01-01 00:00:00+00' + n * interval '57.6 seconds', 'synthetic-digest-'||n
+			FROM generate_series(0,1499) AS n;`
+	if _, err := pool.Exec(ctx, activityFixture); err != nil {
+		t.Fatal(err)
+	}
+	const activityRead = `SELECT jsonb_build_object(
+		'beacon', (SELECT jsonb_build_object('count',count(*),'digest',md5(string_agg(id||'|'||type||'|'||metadata::text,',' ORDER BY id))) FROM beacon_events WHERE id LIKE 'synthetic-beacon-%'),
+		'control', (SELECT jsonb_build_object('count',count(*),'digest',md5(string_agg(id::text||'|'||type||'|'||payload::text,',' ORDER BY id))) FROM control_events WHERE app_id='synthetic-app'),
+		'audit', (SELECT jsonb_build_object('count',count(*),'digest',md5(string_agg(id||'|'||method||'|'||path||'|'||record_digest,',' ORDER BY id))) FROM mutation_audit_events WHERE id LIKE 'synthetic-audit-%')
+	)::text`
+	var activityBefore, activityAfter string
+	if err := pool.QueryRow(ctx, activityRead).Scan(&activityBefore); err != nil {
+		t.Fatal(err)
+	}
+	// These are legacy-shape reads: they select only columns present before
+	// the migration ledger, including original IDs and receipt bytes.
+	const legacyRead = `SELECT jsonb_build_object(
+		'token', (SELECT jsonb_build_object('jti',jti,'device',device_id,'scopes',scopes) FROM access_tokens WHERE jti='token-synthetic'),
+		'operation', (SELECT jsonb_build_object('id',id,'status',status,'receipt',metadata->>'receipt','generation',lock_generation) FROM operations WHERE id='operation-synthetic'),
+		'deployment', (SELECT jsonb_build_object('id',id,'image',image_tag,'status',status) FROM deployments WHERE id='deployment-synthetic'),
+		'region', (SELECT jsonb_build_object('region',region,'weight',active_weight) FROM deployment_regions WHERE deployment_id='deployment-synthetic'),
+		'step', (SELECT jsonb_build_object('step',step,'marker',metadata->>'marker') FROM deployment_steps WHERE deployment_id='deployment-synthetic'),
+		'cron', (SELECT jsonb_build_object('process',process,'paused',paused,'schedule',schedule) FROM cron_states WHERE app='synthetic-app'),
+		'webhook', (SELECT jsonb_build_object('id',id,'marker',payload->>'marker') FROM webhook_deliveries WHERE id='webhook-synthetic'),
+		'event', (SELECT payload->>'marker' FROM control_events WHERE app_id='synthetic-app' AND payload->>'marker'='synthetic-event')
+	)::text`
+	var before, after string
+	if err := pool.QueryRow(ctx, legacyRead).Scan(&before); err != nil {
+		t.Fatal(err)
+	}
+	migrator, err := NewControlSchemaMigrator(&DB{Pool: pool})
+	if err != nil {
+		t.Fatal(err)
+	}
+	status, err := migrator.Migrate(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if status.CurrentMigrationVersion != migrations[len(migrations)-1].Version || len(status.AppliedVersions) != len(migrations) {
+		t.Fatalf("migration status = %+v", status)
+	}
+	if err := pool.QueryRow(ctx, legacyRead).Scan(&after); err != nil {
+		t.Fatal(err)
+	}
+	if before != after {
+		t.Fatalf("synthetic legacy reads changed across migration: before=%s after=%s", before, after)
+	}
+	if err := pool.QueryRow(ctx, activityRead).Scan(&activityAfter); err != nil {
+		t.Fatal(err)
+	}
+	if activityBefore != activityAfter {
+		t.Fatalf("synthetic event-day rows changed across migration: before=%s after=%s", activityBefore, activityAfter)
+	}
+	// The reconciliation history table is additive. The previous 5/31
+	// binary contract must still be able to return during the Mini rollback
+	// window before any new reconciliation transfer is performed.
+	previousCandidate, err := NewSchemaMigrator(pool, migrations[:39], BinarySchemaCompatibility{
+		ReaderVersion: MySQLRetainedArtifactReaderVersion, WriterVersion: SnapshotExportIntentWriterVersion}, SchemaMigratorOptions{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := previousCandidate.Check(ctx, SchemaAccessReadWrite); err != nil {
+		t.Fatalf("additive reconciliation history blocked previous binary: %v", err)
+	}
+	// The new proved-successor checkpoint values are only written by the new
+	// binary. Widening the history constraint must preserve the 40-migration
+	// binary's existing 5/31 startup contract during a rollback window.
+	previousReconciliationBinary, err := NewSchemaMigrator(pool, migrations[:40], BinarySchemaCompatibility{
+		ReaderVersion: MySQLRetainedArtifactReaderVersion, WriterVersion: SnapshotExportIntentWriterVersion}, SchemaMigratorOptions{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := previousReconciliationBinary.Check(ctx, SchemaAccessReadWrite); err != nil {
+		t.Fatalf("proved successor migration blocked previous reconciliation binary: %v", err)
+	}
+	previousProvedSuccessorBinary, err := NewSchemaMigrator(pool, migrations[:41], BinarySchemaCompatibility{
+		ReaderVersion: MySQLRetainedArtifactReaderVersion, WriterVersion: SnapshotExportIntentWriterVersion}, SchemaMigratorOptions{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := previousProvedSuccessorBinary.Check(ctx, SchemaAccessReadWrite); err != nil {
+		t.Fatalf("stage successor migration blocked previous proved-successor binary: %v", err)
+	}
+	previousStageSuccessorBinary, err := NewSchemaMigrator(pool, migrations[:42], BinarySchemaCompatibility{
+		ReaderVersion: MySQLRetainedArtifactReaderVersion, WriterVersion: SnapshotExportIntentWriterVersion}, SchemaMigratorOptions{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := previousStageSuccessorBinary.Check(ctx, SchemaAccessReadWrite); err != nil {
+		t.Fatalf("publish successor migration blocked previous stage-successor binary: %v", err)
+	}
+	// Migration 21 retires the preceding reader contract because it cannot
+	// decode function evidence bundles. A rollback to that reader must refuse
+	// startup even though its SQL still works against these legacy rows.
+	oldReader, err := NewSchemaMigrator(pool, migrations[:20], BinarySchemaCompatibility{ReaderVersion: 3, WriterVersion: 17}, SchemaMigratorOptions{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, err = oldReader.Check(ctx, SchemaAccessReadOnly)
+	var incompatible *SchemaCompatibilityError
+	if !errors.As(err, &incompatible) || incompatible.Contract != "reader" || incompatible.Required != MySQLRetainedArtifactReaderVersion {
+		t.Fatalf("old reader check = %T %v, want reader 5 compatibility refusal", err, err)
+	}
+	// Migration 35 retires reader contract 4: that reader can treat a v1
+	// stage-proved local path as sufficient although retention now has an
+	// explicit publish/verify boundary.
+	preRetentionReader, err := NewSchemaMigrator(pool, migrations[:34], BinarySchemaCompatibility{ReaderVersion: 4, WriterVersion: 26}, SchemaMigratorOptions{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, err = preRetentionReader.Check(ctx, SchemaAccessReadOnly)
+	if !errors.As(err, &incompatible) || incompatible.Contract != "reader" || incompatible.Required != MySQLRetainedArtifactReaderVersion {
+		t.Fatalf("pre-retention reader check = %T %v, want reader 5 compatibility refusal", err, err)
+	}
+	// Migrations 22 and 28 through 39 raise the writer floor; 40 is additive.
+	// A previous binary cannot resume writes against the latest schema.
+	oldWriter, err := NewSchemaMigrator(pool, migrations[:21], BinarySchemaCompatibility{ReaderVersion: MySQLRetainedArtifactReaderVersion, WriterVersion: 18}, SchemaMigratorOptions{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, err = oldWriter.Check(ctx, SchemaAccessReadWrite)
+	if !errors.As(err, &incompatible) || incompatible.Contract != "writer" || incompatible.Required != SnapshotExportIntentWriterVersion {
+		t.Fatalf("old writer check = %T %v, want writer compatibility refusal", err, err)
+	}
+	if _, err := migrator.Check(ctx, SchemaAccessReadWrite); err != nil {
+		t.Fatalf("current reader/writer check: %v", err)
+	}
+	repeat, err := migrator.Migrate(ctx)
+	if err != nil || len(repeat.AppliedVersions) != 0 {
+		t.Fatalf("repeat migration status=%+v error=%v", repeat, err)
+	}
+}

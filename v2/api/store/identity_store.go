@@ -2,8 +2,13 @@ package store
 
 import (
 	"context"
+	"errors"
 	"time"
 )
+
+// ErrIdentityNotFound is returned by backend-neutral credential operations
+// when a token is absent or is no longer active.
+var ErrIdentityNotFound = errors.New("identity not found")
 
 // IdentityStore is the control boundary for enrollment, managed devices,
 // bearer-token lifecycle, replay tombstones, and IP access grants.
@@ -30,6 +35,7 @@ type IdentityStore interface {
 	RecordAccessToken(ctx context.Context, token *AccessToken) error
 	RotateAccessToken(ctx context.Context, previousJTI string, token *AccessToken) ([]string, error)
 	AccessTokenActive(ctx context.Context, jti string) (bool, error)
+	RootAccessToken(ctx context.Context, jti string) (string, error)
 	RevokeAccessToken(ctx context.Context, jti string) ([]string, error)
 
 	ConsumeGitHubActionsAssertion(ctx context.Context, issuer, jti string, expiresAt time.Time) error

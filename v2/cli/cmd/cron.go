@@ -90,25 +90,44 @@ var cronPauseCmd = &cobra.Command{
 	Short: "Pause a cron job",
 	Args:  cobra.ExactArgs(2),
 	RunE: func(cmd *cobra.Command, args []string) error {
-		if err := client.CronPause(args[0], args[1]); err != nil {
+		key, err := requestIdempotencyKey(cmd, cronPauseIdempotencyKey, "cron-pause-"+args[0]+"-"+args[1])
+		if err != nil {
+			return err
+		}
+		op, err := client.CronPause(args[0], args[1], key)
+		if err != nil {
 			return fmt.Errorf("pause failed: %w", err)
 		}
-		fmt.Println(style.SuccessBox.Render("paused " + args[1]))
+		fmt.Println(style.SuccessBox.Render("cron pause accepted: " + op.ID))
 		return nil
 	},
 }
+
+var cronPauseIdempotencyKey string
 
 var cronResumeCmd = &cobra.Command{
 	Use:   "resume <app> <process>",
 	Short: "Resume a paused cron job",
 	Args:  cobra.ExactArgs(2),
 	RunE: func(cmd *cobra.Command, args []string) error {
-		if err := client.CronResume(args[0], args[1]); err != nil {
+		key, err := requestIdempotencyKey(cmd, cronResumeIdempotencyKey, "cron-resume-"+args[0]+"-"+args[1])
+		if err != nil {
+			return err
+		}
+		op, err := client.CronResume(args[0], args[1], key)
+		if err != nil {
 			return fmt.Errorf("resume failed: %w", err)
 		}
-		fmt.Println(style.SuccessBox.Render("resumed " + args[1]))
+		fmt.Println(style.SuccessBox.Render("cron resume accepted: " + op.ID))
 		return nil
 	},
+}
+
+var cronResumeIdempotencyKey string
+
+func init() {
+	cronPauseCmd.Flags().StringVar(&cronPauseIdempotencyKey, "idempotency-key", "", "Stable retry key (generated and printed when omitted)")
+	cronResumeCmd.Flags().StringVar(&cronResumeIdempotencyKey, "idempotency-key", "", "Stable retry key (generated and printed when omitted)")
 }
 
 var cronScheduleCmd = &cobra.Command{

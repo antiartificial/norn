@@ -68,7 +68,7 @@ func (p *Pipeline) deliverDatabases(ctx context.Context, st *state, sg *saga.Sag
 	if err := p.requireDistinctJobIDs(st.spec); err != nil {
 		return err
 	}
-	urls := map[string]string{}
+	items := map[string]string{}
 	targets := map[string]string{}
 	delivered := []string{}
 	for _, requirement := range st.spec.Databases {
@@ -82,11 +82,13 @@ func (p *Pipeline) deliverDatabases(ctx context.Context, st *state, sg *saga.Sag
 		if err := bound.requireCapabilities(database.CapabilityRuntime); err != nil {
 			return err
 		}
-		value, err := bound.session.RuntimeConnectionURL()
+		connection, err := databaseConnectionItems(requirement, bound)
 		if err != nil {
 			return err
 		}
-		urls[requirement.Name] = value
+		for key, value := range connection {
+			items[key] = value
+		}
 		identity, err := json.Marshal(bound.resolved.Target)
 		if err != nil {
 			return err
@@ -94,7 +96,6 @@ func (p *Pipeline) deliverDatabases(ctx context.Context, st *state, sg *saga.Sag
 		targets[requirement.Name] = string(identity)
 		delivered = append(delivered, fmt.Sprintf("%s=%s@%d", requirement.Name, bound.resolved.Target.BindingID, bound.resolved.Target.BindingGeneration))
 	}
-	items := nomad.DatabaseVariableItems(urls)
 	for name, identity := range targets {
 		items[nomad.DatabaseTargetItemKey(name)] = identity
 	}
@@ -116,6 +117,53 @@ func (p *Pipeline) deliverDatabases(ctx context.Context, st *state, sg *saga.Sag
 	}
 	st.deliveryRevision = set.revision
 	return nil
+}
+
+// databaseConnectionItems transfers only the declared runtime shape from a
+// probed, bound session. The CA bytes become a private, revisioned Nomad
+// Variable item; the job spec contains only its file path template.
+func databaseConnectionItems(requirement model.DatabaseRequirement, bound *boundDatabase) (map[string]string, error) {
+	items := map[string]string{}
+	if requirement.Runtime == nil || bound == nil || bound.session == nil {
+		return nil, &DatabaseTargetError{Reason: fmt.Sprintf("database %q has no opened runtime target", requirement.Name)}
+	}
+	if requirement.Runtime.Components != nil {
+		values, err := bound.session.RuntimeComponents()
+		if err != nil {
+			return nil, err
+		}
+		for field, value := range values {
+			items[nomad.DatabaseComponentItemKey(requirement.Name, field)] = value
+		}
+	}
+	if requirement.Runtime.TLS != nil {
+		if bound.resolved.Target.Engine != database.EngineMySQL || bound.resolved.TLS.Mode != database.TLSVerifyFull || bound.resolved.TLS.ClientCertRef != "" || bound.resolved.TLS.ClientKeyRef != "" || bound.resolved.TLS.ServerName != bound.resolved.Endpoint.Host || requirement.Runtime.TLS.CAFileEnv == "" || requirement.Runtime.TLS.ClientCertFileEnv != "" || requirement.Runtime.TLS.ClientKeyFileEnv != "" {
+			return nil, &DatabaseTargetError{Reason: fmt.Sprintf("database %q has an unqualified runtime TLS declaration", requirement.Name)}
+		}
+		material, err := bound.session.RuntimeTLSMaterial()
+		if err != nil {
+			return nil, err
+		}
+		ca := material["ca"]
+		if len(ca) == 0 || len(material) != 1 {
+			for _, value := range material {
+				clear(value)
+			}
+			return nil, &DatabaseTargetError{Reason: fmt.Sprintf("database %q has incomplete or unqualified runtime TLS material", requirement.Name)}
+		}
+		items[nomad.DatabaseTLSItemKey(requirement.Name, "ca")] = string(ca)
+		clear(ca)
+	} else if bound.resolved.Target.Engine == database.EngineMySQL && bound.resolved.TLS.Mode != database.TLSDisabled {
+		return nil, &DatabaseTargetError{Reason: fmt.Sprintf("database %q requires a runtime TLS CA file declaration", requirement.Name)}
+	}
+	if requirement.Runtime.Env != "" || requirement.Runtime.FileEnv != "" {
+		value, err := bound.session.RuntimeConnectionURL()
+		if err != nil {
+			return nil, err
+		}
+		items[nomad.DatabaseItemKey(requirement.Name)] = value
+	}
+	return items, nil
 }
 
 // promoteDatabases makes the staged delivery current once the rollout is

@@ -210,13 +210,38 @@ func TestApplicationAndControlResolutionAreSeparate(t *testing.T) {
 
 func TestEngineCapabilityAndPurposeSupport(t *testing.T) {
 	resolver := mustResolver(t, testCatalog())
-	if _, err := resolver.Resolve(ResolveRequest{DeploymentProfileID: "mini", Purpose: PurposeApplication, LogicalResourceID: "wordpress-db", RequiredCapabilities: []Capability{CapabilitySnapshot}}); err != nil {
-		t.Fatalf("mysql snapshot capability rejected: %v", err)
+	if _, err := resolver.Resolve(ResolveRequest{DeploymentProfileID: "mini", Purpose: PurposeApplication, LogicalResourceID: "wordpress-db", RequiredCapabilities: []Capability{CapabilityRuntime}}); err != nil {
+		t.Fatalf("mysql runtime capability rejected: %v", err)
 	}
-	_, err := resolver.Resolve(ResolveRequest{DeploymentProfileID: "mini", Purpose: PurposeApplication, LogicalResourceID: "wordpress-db", RequiredCapabilities: []Capability{CapabilityPITR}})
+	_, err := resolver.Resolve(ResolveRequest{DeploymentProfileID: "mini", Purpose: PurposeApplication, LogicalResourceID: "wordpress-db", RequiredCapabilities: []Capability{CapabilitySnapshot}})
+	requireCode(t, err, CodeUnsupportedCapability)
+	_, err = resolver.Resolve(ResolveRequest{DeploymentProfileID: "mini", Purpose: PurposeApplication, LogicalResourceID: "wordpress-db", RequiredCapabilities: []Capability{CapabilityPITR}})
 	requireCode(t, err, CodeUnsupportedCapability)
 	_, err = resolver.Resolve(ResolveRequest{DeploymentProfileID: "mini", Purpose: PurposeApplication, LogicalResourceID: "wordpress-db", RequiredCapabilities: []Capability{CapabilityMigration}})
 	requireCode(t, err, CodeUnsupportedCapability) // supported by adapter, not declared by service
+	tlsCatalog := testCatalog()
+	tlsCatalog.Bindings[4].TLS = DatabaseTLS{Mode: TLSVerifyFull, ServerName: "mysql.internal.example", CARef: "secret:mysql/ca"}
+	tlsCatalog.Services[4].Endpoint.Host = "mysql.internal.example"
+	tlsResolver := mustResolver(t, tlsCatalog)
+	_, err = tlsResolver.Resolve(ResolveRequest{DeploymentProfileID: "mini", Purpose: PurposeApplication, LogicalResourceID: "wordpress-db", RequiredCapabilities: []Capability{CapabilityRuntime}})
+	if err != nil {
+		t.Fatalf("endpoint-bound verify-full MySQL transport rejected: %v", err)
+	}
+	for name, mutate := range map[string]func(*Catalog){
+		"verify-ca": func(c *Catalog) { c.Bindings[4].TLS.Mode, c.Bindings[4].TLS.ServerName = TLSVerifyCA, "" },
+		"client certificate": func(c *Catalog) {
+			c.Bindings[4].TLS.ClientCertRef, c.Bindings[4].TLS.ClientKeyRef = "secret:mysql/cert", "secret:mysql/key"
+		},
+		"different server name": func(c *Catalog) { c.Bindings[4].TLS.ServerName = "other.internal.example" },
+	} {
+		t.Run(name, func(t *testing.T) {
+			catalog := tlsCatalog
+			catalog.Bindings = append([]DatabaseBinding(nil), tlsCatalog.Bindings...)
+			mutate(&catalog)
+			_, err := mustResolver(t, catalog).Resolve(ResolveRequest{DeploymentProfileID: "mini", Purpose: PurposeApplication, LogicalResourceID: "wordpress-db", RequiredCapabilities: []Capability{CapabilityRuntime}})
+			requireCode(t, err, CodeUnsupportedCapability)
+		})
+	}
 	_, err = resolver.Resolve(ResolveRequest{DeploymentProfileID: "mini", Purpose: PurposeApplication, LogicalResourceID: "shop-db", RequiredCapabilities: []Capability{"logical-replication"}})
 	requireCode(t, err, CodeUnsupportedCapability)
 

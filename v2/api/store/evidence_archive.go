@@ -63,7 +63,7 @@ func (db *DB) BackfillEvidenceIntents(ctx context.Context, finishedBefore time.D
 		INSERT INTO evidence_archive_intents (id, subject_kind, subject_id, app, operation_id, sequence, state)
 		SELECT 'ei-' || gen_random_uuid()::text, 'saga', o.saga_id, o.app, o.id, 1, 'pending'
 		FROM operations o
-		WHERE o.status IN `+terminalStatusSQL+` AND o.saga_id <> '' AND o.finished_at < now() - $1::interval
+		WHERE o.status IN `+terminalStatusSQL+` AND o.saga_id <> '' AND o.kind <> '`+PrivateInvocationOperationKind+`' AND o.finished_at < now() - $1::interval
 		  AND NOT EXISTS (SELECT 1 FROM evidence_archive_intents i WHERE i.subject_kind = 'saga' AND i.subject_id = o.saga_id)
 		ORDER BY o.finished_at
 		LIMIT $2
@@ -75,18 +75,30 @@ func (db *DB) BackfillEvidenceIntents(ctx context.Context, finishedBefore time.D
 }
 
 // BackfillNonSagaFleetGitHubEvidenceIntents restores archive work for signed
-// terminal Fleet GitHub receipts written before the operation-subject outbox
-// existed. It deliberately joins acceptance evidence: an unsigned operation
-// is not substituted for a protected receipt, and missing signed bytes leave
-// no misleading archive intent behind.
+// terminal operation receipts written before their operation-subject outbox
+// existed. Function invocations are included even when correlated with a saga:
+// their evidence is the exact terminal func_executions projection, never the
+// saga event stream. Every candidate joins acceptance evidence so an unsigned
+// operation is not substituted for a protected receipt.
 func (db *DB) BackfillNonSagaFleetGitHubEvidenceIntents(ctx context.Context, finishedBefore time.Duration, limit int) (int64, error) {
 	result, err := db.Pool.Exec(ctx, `
 		INSERT INTO evidence_archive_intents (id, subject_kind, subject_id, app, operation_id, sequence, state)
 		SELECT 'ei-' || gen_random_uuid()::text, 'operation', o.id, o.app, o.id, 1, 'pending'
 		FROM operations o
 		JOIN operation_acceptance_intents ai ON ai.operation_id = o.id
-		WHERE o.status IN `+terminalStatusSQL+` AND o.saga_id = ''
-		  AND o.kind IN ('fleet.github.pull-request', 'fleet.github.apply-dispatch')
+		WHERE (
+			(o.status IN `+terminalStatusSQL+` AND o.saga_id = ''
+			 AND o.kind IN ('fleet.github.pull-request', 'fleet.github.apply-dispatch'))
+			OR
+			(o.kind = '`+PrivateInvocationOperationKind+`' AND o.status IN ('succeeded', 'failed')
+			 AND EXISTS (
+				SELECT 1 FROM func_executions f
+				WHERE f.id = o.id AND f.app = o.app AND f.process = o.payload->>'process'
+				  AND f.finished_at IS NOT NULL
+				  AND ((o.status = 'succeeded' AND f.status = 'complete')
+				       OR (o.status = 'failed' AND f.status = 'failed'))
+			 ))
+		)
 		  AND o.finished_at < now() - $1::interval
 		  AND NOT EXISTS (SELECT 1 FROM evidence_archive_intents i WHERE i.subject_kind = 'operation' AND i.subject_id = o.id)
 		ORDER BY o.finished_at
@@ -129,10 +141,15 @@ type EvidenceSource struct {
 	OperationKind string
 	// EffectsJSON preserves terminal external-effect outcome and output
 	// references exactly as held by PostgreSQL at archive cutoff.
-	EffectsJSON  json.RawMessage
-	Acceptance   *AcceptanceEvidenceRow
-	DeploymentID string
-	Events       []EvidenceEvent
+	EffectsJSON json.RawMessage
+	// FunctionExecutionJSON and FunctionEffectAttemptsJSON are public terminal
+	// invocation evidence. They intentionally exclude the private invocation
+	// envelope and Nomad variable contents.
+	FunctionExecutionJSON      json.RawMessage
+	FunctionEffectAttemptsJSON json.RawMessage
+	Acceptance                 *AcceptanceEvidenceRow
+	DeploymentID               string
+	Events                     []EvidenceEvent
 }
 
 // AcceptanceEvidenceRow is the persisted signed acceptance, byte-exact.
@@ -188,8 +205,15 @@ func (db *DB) ProcessPendingEvidenceIntent(ctx context.Context, quiet time.Durat
 			OR
 			(i.subject_kind = 'operation'
 			  AND EXISTS (SELECT 1 FROM operations o JOIN operation_acceptance_intents ai ON ai.operation_id = o.id
-			              WHERE o.id = i.operation_id AND o.id = i.subject_id AND o.saga_id = ''
-			                AND o.kind IN ('fleet.github.pull-request', 'fleet.github.apply-dispatch') AND o.status IN `+terminalStatusSQL+`))
+			              WHERE o.id = i.operation_id AND o.id = i.subject_id
+			                AND ((o.saga_id = '' AND o.kind IN ('fleet.github.pull-request', 'fleet.github.apply-dispatch') AND o.status IN `+terminalStatusSQL+`)
+			                     OR (o.kind = '`+PrivateInvocationOperationKind+`' AND o.status IN ('succeeded', 'failed')
+			                         AND EXISTS (SELECT 1 FROM func_executions f
+			                                     WHERE f.id = o.id AND f.app = o.app AND f.process = o.payload->>'process'
+			                                       AND f.finished_at IS NOT NULL
+			                                       AND ((o.status = 'succeeded' AND f.status = 'complete')
+			                                            OR (o.status = 'failed' AND f.status = 'failed'))))))
+			)
 		)
 		ORDER BY i.created_at LIMIT 1 FOR UPDATE SKIP LOCKED`, quiet.String()))
 	if errors.Is(err, pgx.ErrNoRows) {
@@ -283,6 +307,19 @@ func loadEvidenceSource(ctx context.Context, tx pgx.Tx, intent EvidenceIntent) (
 			FROM operation_effects f WHERE f.operation_id = $1`, intent.OperationID).Scan(&source.EffectsJSON); err != nil {
 			return source, err
 		}
+		if source.OperationKind == PrivateInvocationOperationKind {
+			if err := tx.QueryRow(ctx, `SELECT row_to_json(f)::text::jsonb FROM func_executions f
+				WHERE f.id = $1`, intent.OperationID).Scan(&source.FunctionExecutionJSON); err != nil {
+				if errors.Is(err, pgx.ErrNoRows) {
+					return source, fmt.Errorf("function operation evidence intent %s has no execution projection", intent.ID)
+				}
+				return source, err
+			}
+			if err := tx.QueryRow(ctx, `SELECT COALESCE(jsonb_agg(row_to_json(a) ORDER BY a.stage), '[]'::jsonb)::text::jsonb
+				FROM function_invocation_effect_attempts a WHERE a.operation_id = $1`, intent.OperationID).Scan(&source.FunctionEffectAttemptsJSON); err != nil {
+				return source, err
+			}
+		}
 	}
 	if intent.SubjectKind == "saga" {
 		_ = tx.QueryRow(ctx, `SELECT id FROM deployments WHERE saga_id = $1 ORDER BY started_at DESC LIMIT 1`, intent.SubjectID).Scan(&source.DeploymentID)
@@ -350,6 +387,21 @@ func (db *DB) EvidenceIntentsForSubject(ctx context.Context, kind, subjectID str
 func evidenceHolds(ctx context.Context, q interface {
 	QueryRow(context.Context, string, ...any) pgx.Row
 }, intent EvidenceIntent, minAge time.Duration) ([]string, error) {
+	cronTriggerCorrectionProof := `o.kind='app.cron-trigger' AND o.status='failed'
+		AND f.operation_id=o.id AND f.stage='app.cron-trigger.nomad' AND f.lifecycle='completed' AND f.outcome='succeeded'
+		AND EXISTS (
+			SELECT 1 FROM operations r
+			JOIN evidence_archive_intents i ON i.subject_kind='saga' AND i.subject_id=r.saga_id
+				AND i.operation_id=r.id AND i.state IN ('verified','pruned')
+			WHERE r.kind='app.cron-trigger-reconcile' AND r.status='succeeded' AND r.app=o.app
+				AND r.payload->>'sourceOperationId'=o.id AND r.payload->>'effectId'=f.id
+				AND r.payload->>'evalId'=f.runtime_instance_id AND r.payload->>'jobId'=o.payload->>'jobId'
+				AND r.metadata->>'sourceOperationId'=o.id AND r.metadata->>'effectId'=f.id
+				AND r.metadata->>'evalId'=f.runtime_instance_id
+				AND COALESCE(r.metadata->>'observedAt','')<>''
+				AND EXISTS(SELECT 1 FROM operation_acceptance_intents ai WHERE ai.operation_id=r.id)
+		)`
+	cronTriggerManualResolved := `EXISTS(SELECT 1 FROM operation_effects f WHERE f.operation_id=o.id AND (` + cronTriggerCorrectionProof + `))`
 	var holds []string
 	check := func(reason, query string, args ...any) error {
 		var held bool
@@ -365,8 +417,57 @@ func evidenceHolds(ctx context.Context, q interface {
 		reason, query string
 	}{
 		{"operation-active", `SELECT EXISTS (SELECT 1 FROM operations WHERE saga_id = $1 AND status NOT IN ` + terminalStatusSQL + `)`},
-		{"manual-recovery", `SELECT EXISTS (SELECT 1 FROM operations WHERE saga_id = $1 AND (metadata->>'manualRecoveryRequired' = 'true' OR metadata->>'externalEffectRecoveryPending' = 'true'))`},
-		{"unresolved-effect", `SELECT EXISTS (SELECT 1 FROM operation_effects f JOIN operations o ON o.id = f.operation_id WHERE o.saga_id = $1 AND f.lifecycle <> 'resolved')`},
+		{"manual-recovery", `SELECT EXISTS (
+			SELECT 1 FROM operations o
+			WHERE o.saga_id = $1 AND (
+				COALESCE(o.metadata->>'externalEffectRecoveryPending' = 'true', false)
+				OR (
+					COALESCE(o.metadata->>'manualRecoveryRequired' = 'true', false)
+					AND NOT (
+						o.kind IN ('app.deploy', 'app.rollback')
+						AND o.status = 'failed'
+						AND o.last_error = 'operation executor lease expired'
+						AND EXISTS (
+							SELECT 1
+							FROM operations r
+							JOIN evidence_archive_intents i ON i.subject_kind = 'saga'
+								AND i.subject_id = r.saga_id
+								AND i.operation_id = r.id
+								AND i.state IN ('verified', 'pruned')
+							WHERE r.kind = 'app.deployment-reconcile'
+								AND r.status = 'succeeded'
+								AND r.app = o.app
+								AND r.payload->>'sourceOperationId' = o.id
+								AND r.payload->>'deploymentId' = o.payload->>'deploymentId'
+								AND r.metadata->>'sourceOperationId' = o.id
+								AND r.metadata->>'deploymentId' = o.payload->>'deploymentId'
+								AND r.metadata->>'imageTag' = r.payload->>'imageTag'
+								AND r.metadata->>'specDigest' = r.payload->>'specDigest'
+								AND COALESCE(r.metadata->>'observedAt', '') <> ''
+								AND EXISTS (SELECT 1 FROM operation_acceptance_intents ai WHERE ai.operation_id = r.id)
+								AND EXISTS (
+									SELECT 1 FROM deployments d
+									WHERE d.id = r.payload->>'deploymentId'
+										AND d.app = r.app
+										AND d.saga_id = o.saga_id
+										AND d.status = 'deployed'
+										AND d.finished_at IS NOT NULL
+										AND d.image_tag = r.payload->>'imageTag'
+										AND d.spec_digest = r.payload->>'specDigest'
+										AND EXISTS (SELECT 1 FROM deployment_regions dr WHERE dr.deployment_id = d.id)
+										AND NOT EXISTS (
+											SELECT 1 FROM deployment_regions dr
+											WHERE dr.deployment_id = d.id
+												AND (dr.status <> 'deployed' OR dr.active_weight <> dr.desired_weight OR dr.eval_id = '')
+										)
+								)
+						)
+					)
+				)
+			) AND NOT (` + cronTriggerManualResolved + `)
+		)`},
+		{"unresolved-effect", `SELECT EXISTS (SELECT 1 FROM operation_effects f JOIN operations o ON o.id = f.operation_id WHERE o.saga_id = $1 AND f.lifecycle <> 'resolved'
+			AND NOT (` + cronTriggerCorrectionProof + `))`},
 		{"deployment-active", `SELECT EXISTS (SELECT 1 FROM deployments WHERE saga_id = $1 AND status NOT IN ('deployed', 'failed'))`},
 		{"deployment-current-or-rollback", `SELECT EXISTS (SELECT 1 FROM deployments d WHERE d.saga_id = $1 AND d.status = 'deployed' AND d.id IN (
 			SELECT id FROM deployments x WHERE x.app = d.app AND x.status = 'deployed' ORDER BY x.started_at DESC LIMIT 2))`},

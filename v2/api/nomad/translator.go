@@ -54,8 +54,8 @@ func TranslateForRegionAt(spec *model.InfraSpec, imageTag string, env map[string
 		if !spec.ProcessRunsInRegion(proc, region.Name) {
 			continue
 		}
-		if proc.Schedule != "" {
-			// Scheduled processes become separate batch jobs — skip here
+		if proc.Schedule != "" || proc.Function != nil {
+			// Scheduled and function processes run as separate batch jobs.
 			continue
 		}
 
@@ -118,6 +118,7 @@ func TranslateForRegionAt(spec *model.InfraSpec, imageTag string, env map[string
 		// Environment
 		task.Env = mergeProcessEnv(mergedEnv, proc.Env)
 		addDatabaseTemplates(spec, jobID, databaseRevision, task)
+		applyStartupAdapter(spec, procName, imageTag, task)
 
 		// Resources
 		cpu := 100
@@ -149,14 +150,13 @@ func TranslateForRegionAt(spec *model.InfraSpec, imageTag string, env map[string
 		}
 
 		// Volume mounts
+		tg.Volumes = make(map[string]*nomadapi.VolumeRequest, len(spec.Volumes))
 		for _, vol := range spec.Volumes {
-			tg.Volumes = map[string]*nomadapi.VolumeRequest{
-				vol.Name: {
-					Name:     vol.Name,
-					Type:     "host",
-					Source:   vol.Name,
-					ReadOnly: vol.ReadOnly,
-				},
+			tg.Volumes[vol.Name] = &nomadapi.VolumeRequest{
+				Name:     vol.Name,
+				Type:     "host",
+				Source:   vol.Name,
+				ReadOnly: vol.ReadOnly,
 			}
 			task.VolumeMounts = append(task.VolumeMounts, &nomadapi.VolumeMount{
 				Volume:      &vol.Name,
@@ -374,14 +374,13 @@ func TranslatePeriodicForRegionAt(spec *model.InfraSpec, procName string, proc m
 	}
 
 	// Volume mounts for periodic jobs
+	tg.Volumes = make(map[string]*nomadapi.VolumeRequest, len(spec.Volumes))
 	for _, vol := range spec.Volumes {
-		tg.Volumes = map[string]*nomadapi.VolumeRequest{
-			vol.Name: {
-				Name:     vol.Name,
-				Type:     "host",
-				Source:   vol.Name,
-				ReadOnly: vol.ReadOnly,
-			},
+		tg.Volumes[vol.Name] = &nomadapi.VolumeRequest{
+			Name:     vol.Name,
+			Type:     "host",
+			Source:   vol.Name,
+			ReadOnly: vol.ReadOnly,
 		}
 		task.VolumeMounts = append(task.VolumeMounts, &nomadapi.VolumeMount{
 			Volume:      &vol.Name,
@@ -460,14 +459,13 @@ func TranslateBatchAt(spec *model.InfraSpec, procName string, proc model.Process
 	}
 
 	// Volume mounts for batch jobs
+	tg.Volumes = make(map[string]*nomadapi.VolumeRequest, len(spec.Volumes))
 	for _, vol := range spec.Volumes {
-		tg.Volumes = map[string]*nomadapi.VolumeRequest{
-			vol.Name: {
-				Name:     vol.Name,
-				Type:     "host",
-				Source:   vol.Name,
-				ReadOnly: vol.ReadOnly,
-			},
+		tg.Volumes[vol.Name] = &nomadapi.VolumeRequest{
+			Name:     vol.Name,
+			Type:     "host",
+			Source:   vol.Name,
+			ReadOnly: vol.ReadOnly,
 		}
 		task.VolumeMounts = append(task.VolumeMounts, &nomadapi.VolumeMount{
 			Volume:      &vol.Name,

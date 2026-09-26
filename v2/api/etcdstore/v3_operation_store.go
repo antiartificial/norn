@@ -16,6 +16,8 @@ import (
 	"github.com/google/uuid"
 	clientv3 "go.etcd.io/etcd/client/v3"
 
+	"norn/v2/api/effect"
+	"norn/v2/api/fleet"
 	"norn/v2/api/model"
 	"norn/v2/api/store"
 )
@@ -51,6 +53,15 @@ type v3Acceptance struct {
 	ReplayExpiredAt       *time.Time                     `json:"replayExpiredAt,omitempty"`
 }
 
+// v3PrivateInvocation is deliberately separate from the public acceptance
+// record. Its digest and key ID are duplicated in the signed operation
+// payload, so a swapped, missing, or altered ciphertext cannot be opened.
+type v3PrivateInvocation struct {
+	KeyID            string                          `json:"keyId"`
+	CiphertextDigest string                          `json:"ciphertextDigest"`
+	Envelope         store.PrivateInvocationEnvelope `json:"envelope"`
+}
+
 type loadedV3Acceptance struct {
 	record   v3Acceptance
 	revision int64
@@ -84,8 +95,10 @@ func NewV3OperationStoreWithPolicy(kv leasedKV, prefix, authority string, signer
 
 var _ store.OperationStore = (*V3OperationStore)(nil)
 var _ store.OperationIdentityResolver = (*V3OperationStore)(nil)
+var _ store.PrivateInvocationStore = (*V3OperationStore)(nil)
 var _ store.ExecutionStore = (*V3OperationStore)(nil)
 var _ store.OperationCheckpointStore = (*V3OperationStore)(nil)
+var _ store.FunctionInvocationEffectAttemptStore = (*V3OperationStore)(nil)
 
 // ListOperations returns a bounded, stable snapshot of accepted operations.
 // It is intentionally a small read surface for the etcd Fleet runtime; callers
@@ -197,23 +210,41 @@ func (s *V3OperationStore) acceptanceKey(i store.OperationRequestIdentity) strin
 	d := sha256.Sum256(b)
 	return s.prefix + "/v3/acceptance/" + hex.EncodeToString(d[:])
 }
+func (s *V3OperationStore) operationAcceptanceIndexKey(operationID string) string {
+	return s.prefix + "/v3/operation-acceptance/" + operationID
+}
 func (s *V3OperationStore) replayLiveKey(acceptanceKey string) string {
 	return acceptanceKey + "/replay-live"
+}
+func (s *V3OperationStore) privateInvocationKey(id string) string {
+	return s.prefix + "/v3/private-invocations/" + id
+}
+func (s *V3OperationStore) privateInvocationPrefix() string {
+	return s.prefix + "/v3/private-invocations/"
 }
 func (s *V3OperationStore) Authority(context.Context) (string, error) { return s.authority, nil }
 
 func (s *V3OperationStore) Accept(ctx context.Context, a store.OperationAcceptance) (store.AcceptedOperation, error) {
+	if a.Identity.Kind == store.PrivateInvocationOperationKind || a.Operation.Kind == store.PrivateInvocationOperationKind {
+		return store.AcceptedOperation{}, &store.AcceptanceValidationError{Reason: "function invocation requires atomic private material acceptance"}
+	}
 	// The current adapter does not yet implement these multi-record admission
 	// aggregates. Refuse them before any write instead of storing a receipt
 	// whose domain state or policy was never enforced.
-	if a.Deployment != nil || len(a.Regions) > 0 || a.Admission.OneActiveMutablePerApp || a.FleetReconciliation != nil || a.FleetRunnerAttempt != nil {
+	if a.FleetRunnerAttempt != nil {
+		return s.acceptFleetRunnerAttempt(ctx, a)
+	}
+	if a.FleetReconciliation != nil {
+		return s.acceptFleetReconciliation(ctx, a)
+	}
+	if a.Deployment != nil || len(a.Regions) > 0 || a.Admission.OneActiveMutablePerApp {
 		return store.AcceptedOperation{}, &store.AcceptanceValidationError{Reason: "etcd operation aggregate admission is not implemented"}
 	}
-	// This adapter has no external-effect aggregate. Replay expiry is therefore
-	// limited to the read-only operation kind it executes today; a future kind
-	// must add its own authoritative hold before it can opt in.
-	if s.policy.ReplayTTL > 0 && strings.TrimSpace(a.Operation.Kind) != "app.preflight" && strings.TrimSpace(a.Operation.Kind) != "fleet.capacity-plan" {
-		return store.AcceptedOperation{}, &store.AcceptanceValidationError{Reason: "etcd replay expiry is implemented only for app.preflight and fleet.capacity-plan"}
+	// Canary promotion has an atomic effect aggregate. Its replay identity may
+	// expire only after the operation and every reserved Nomad effect are
+	// terminal; all other mutable kinds remain refused by this policy.
+	if s.policy.ReplayTTL > 0 && strings.TrimSpace(a.Operation.Kind) != "app.preflight" && strings.TrimSpace(a.Operation.Kind) != "fleet.capacity-plan" && strings.TrimSpace(a.Operation.Kind) != "app.canary-promote" {
+		return store.AcceptedOperation{}, &store.AcceptanceValidationError{Reason: "etcd replay expiry is implemented only for app.preflight, fleet.capacity-plan, and app.canary-promote"}
 	}
 	var err error
 	if a, err = s.normalize(a); err != nil {
@@ -260,16 +291,25 @@ func (s *V3OperationStore) Accept(ctx context.Context, a store.OperationAcceptan
 		}
 		return store.AcceptedOperation{}, err
 	}
-	puts := []clientv3.Op{clientv3.OpPut(key, string(av)), clientv3.OpPut(s.opKey(a.Operation.ID), string(ov)), clientv3.OpPut(s.operationKindIndexKey(a.Operation.Kind, acceptedAt, a.Operation.ID), a.Operation.ID)}
+	puts := []clientv3.Op{clientv3.OpPut(key, string(av)), clientv3.OpPut(s.opKey(a.Operation.ID), string(ov)), clientv3.OpPut(s.operationKindIndexKey(a.Operation.Kind, acceptedAt, a.Operation.ID), a.Operation.ID), clientv3.OpPut(s.operationAcceptanceIndexKey(a.Operation.ID), key)}
 	if replayLease != 0 {
 		puts = append(puts, clientv3.OpPut(s.replayLiveKey(key), store.OperationReplayContractVersion, clientv3.WithLease(replayLease)))
 	}
 	txn, err := s.kv.Txn(ctx).If(clientv3.Compare(clientv3.CreateRevision(key), "=", 0), clientv3.Compare(clientv3.CreateRevision(s.opKey(a.Operation.ID)), "=", 0)).Then(puts...).Commit()
 	if err != nil {
-		if replayLease != 0 {
-			_, _ = s.lease.Revoke(context.Background(), replayLease)
+		// A timed-out transaction can commit after the client loses its answer.
+		// Revoking the lease here could erase a committed replay-live marker.
+		resolveCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cancel()
+		existing, resolveErr := s.loadAcceptance(resolveCtx, key)
+		if resolveErr == nil {
+			resolved, replayErr := s.replay(resolveCtx, key, existing, a.Identity, a.Fingerprint)
+			if replayErr == nil {
+				return resolved, nil
+			}
+			resolveErr = replayErr
 		}
-		return store.AcceptedOperation{}, err
+		return store.AcceptedOperation{}, &store.AcceptanceIndeterminateError{Err: errors.Join(err, resolveErr)}
 	}
 	if !txn.Succeeded {
 		if replayLease != 0 {
@@ -313,8 +353,28 @@ func (s *V3OperationStore) replay(ctx context.Context, key string, loaded loaded
 	if e != nil {
 		return store.AcceptedOperation{}, &store.AcceptanceSignatureError{Err: fmt.Errorf("load accepted etcd operation: %w", e)}
 	}
-	if e := store.VerifyAcceptanceEvidence(store.AcceptanceEvidence{Identity: identity, IdentityFingerprint: got.Intent.Fingerprint, IdentityOperationID: got.Operation.ID, Intent: got.Intent, Operation: persisted.Operation}); e != nil {
+	var fleetAttempt *fleet.RunnerAttempt
+	var fleetLineageValid bool
+	if got.FleetRunnerAttempt != nil {
+		fleetAttempt, e = s.GetFleetRunnerAttempt(ctx, got.FleetRunnerAttempt.PlanID, got.FleetRunnerAttempt.ID)
+		if e != nil {
+			return store.AcceptedOperation{}, &store.AcceptanceSignatureError{Err: fmt.Errorf("load accepted fleet runner-attempt: %w", e)}
+		}
+		lineage, _, lineageErr := s.listFleetRunnerAttempts(ctx, fleetAttempt.PlanID)
+		if lineageErr != nil {
+			return store.AcceptedOperation{}, &store.AcceptanceSignatureError{Err: fmt.Errorf("load fleet runner-attempt lineage: %w", lineageErr)}
+		}
+		fleetLineageValid = fleetValidateLineage(lineage) == nil
+	}
+	if e := store.VerifyAcceptanceEvidence(store.AcceptanceEvidence{Identity: identity, IdentityFingerprint: got.Intent.Fingerprint, IdentityOperationID: got.Operation.ID, Intent: got.Intent, Operation: persisted.Operation, FleetRunnerAttempt: fleetAttempt, FleetRunnerLineageValid: fleetLineageValid}); e != nil {
 		return store.AcceptedOperation{}, &store.AcceptanceSignatureError{Err: e}
+	}
+	if got.FleetRunnerAttempt != nil {
+		attempt, verifyErr := s.verifyFleetRunnerAttemptReplay(ctx, got)
+		if verifyErr != nil {
+			return store.AcceptedOperation{}, &store.AcceptanceSignatureError{Err: fmt.Errorf("verify fleet runner-attempt replay: %w", verifyErr)}
+		}
+		got.FleetRunnerAttempt = attempt
 	}
 	if record.ReplayContractVersion != "" {
 		if record.ReplayContractVersion != store.OperationReplayContractVersion || record.ReplayExpiresAt == nil {
@@ -327,7 +387,16 @@ func (s *V3OperationStore) replay(ctx context.Context, key string, loaded loaded
 		if err != nil {
 			return store.AcceptedOperation{}, err
 		}
-		if len(live.Kvs) == 0 && replayOperationEligible(persisted.Operation) {
+		if len(live.Kvs) == 0 {
+			eligible, err := s.replayOperationEligible(ctx, persisted.Operation)
+			if err != nil {
+				return store.AcceptedOperation{}, err
+			}
+			if !eligible {
+				got.Operation = persisted.Operation
+				got.Replayed = true
+				return got, nil
+			}
 			now := time.Now().UTC().Truncate(time.Microsecond)
 			record.ReplayExpiredAt = &now
 			value, err := json.Marshal(record)
@@ -388,6 +457,51 @@ func replayOperationEligible(operation model.Operation) bool {
 		return false
 	}
 	return operation.Metadata["manualRecoveryRequired"] != true && operation.Metadata["externalEffectRecoveryPending"] != true
+}
+
+func (s *V3OperationStore) replayOperationEligible(ctx context.Context, operation model.Operation) (bool, error) {
+	if operation.Kind != "app.canary-promote" {
+		return replayOperationEligible(operation), nil
+	}
+	if !operation.Status.Terminal() || operation.Metadata["manualRecoveryRequired"] == true {
+		return false, nil
+	}
+	input := canaryEffectInput{App: operation.App, Region: effectPayloadString(operation.Payload, "region"), NomadRegion: effectPayloadString(operation.Payload, "nomadRegion"), DeploymentID: effectPayloadString(operation.Payload, "deploymentId")}
+	if input.App == "" || input.Region == "" || input.NomadRegion == "" || input.DeploymentID == "" {
+		return false, fmt.Errorf("terminal canary promotion lacks accepted effect identity")
+	}
+	data, err := json.Marshal(input)
+	if err != nil {
+		return false, err
+	}
+	reservation := effect.Reservation{Resource: "app/" + input.App + "/canary-promote/" + input.Region, Stage: "app.canary-promote.nomad", Supervisor: "nomad-canary-promotion", LaunchPayload: data,
+		OperationClaim: effect.OperationClaim{OperationID: operation.ID}}
+	reservation.InputDigest, err = effect.ComputeInputDigest(reservation)
+	if err != nil {
+		return false, err
+	}
+	effects := &V3CanaryEffectReservations{operations: s}
+	response, err := s.kv.Get(ctx, effects.effectPrefix(reservation), clientv3.WithPrefix())
+	if err != nil {
+		return false, err
+	}
+	if len(response.Kvs) == 0 {
+		// Terminal state without a durable effect receipt cannot prove no
+		// external write was attempted, even if the operation row says success.
+		return false, nil
+	}
+	for _, item := range response.Kvs {
+		var record effect.Record
+		if err := json.Unmarshal(item.Value, &record); err != nil {
+			return false, fmt.Errorf("decode canary replay effect: %w", err)
+		}
+		if record.Reservation.Authority != s.authority || record.Reservation.OperationClaim.OperationID != operation.ID ||
+			record.Reservation.InputDigest != reservation.InputDigest ||
+			(record.Lifecycle != effect.LifecycleCompleted && record.Lifecycle != effect.LifecycleResolved) {
+			return false, nil
+		}
+	}
+	return true, nil
 }
 
 // normalize accepts only the narrow operation aggregate implemented by this
@@ -500,7 +614,10 @@ func (s *V3OperationStore) write(ctx context.Context, id string, rev int64, v v3
 		return false, e
 	}
 	r, e := s.kv.Txn(ctx).If(clientv3.Compare(clientv3.ModRevision(s.opKey(id)), "=", rev)).Then(clientv3.OpPut(s.opKey(id), string(b))).Commit()
-	return r.Succeeded, e
+	if e != nil {
+		return false, e
+	}
+	return r.Succeeded, nil
 }
 
 type v3Checkpoint struct {
@@ -770,7 +887,7 @@ func (s *V3OperationStore) DeferOrFailCronPauseClaimedOperation(ctx context.Cont
 		if o.Attempts >= o.MaxAttempts {
 			now := time.Now().UTC()
 			o.Status = model.OperationFailed
-			o.Message = "cron pause effect recovery retry budget exhausted; manual recovery is required: " + msg
+			o.Message = "cron effect recovery retry budget exhausted; manual recovery is required: " + msg
 			o.LastError = msg
 			o.LockedBy = ""
 			o.LockedUntil = nil
@@ -864,12 +981,11 @@ func (s *V3OperationStore) mutateClaimWithAppLock(ctx context.Context, c store.O
 	}, f)
 }
 
-// RecoverExpiredOperations never requeues an expired etcd claim. This adapter
-// has no checkpoint or external-effect aggregate yet, so it cannot prove that
-// a prior executor stopped before a mutable side effect. It atomically fences
-// each expired owner by terminalizing the operation for manual recovery and
-// explicitly records unresolved external-effect ambiguity. A concurrent renew,
-// finish, or replacement claim changes the record revision and wins instead.
+// RecoverExpiredOperations requeues only the canary operation whose Nomad
+// effect has an atomic etcd reservation and a read-only reconciliation path.
+// Other expired claims remain manual recovery until their mutable effects have
+// equivalent durable boundaries. A concurrent renew or finish changes the
+// record revision and wins instead.
 func (s *V3OperationStore) RecoverExpiredOperations(ctx context.Context) error {
 	if s == nil || s.kv == nil || s.lease == nil {
 		return fmt.Errorf("etcd operation recovery is unavailable")
@@ -922,15 +1038,26 @@ func (s *V3OperationStore) RecoverExpiredOperations(ctx context.Context) error {
 			if op.Metadata == nil {
 				op.Metadata = map[string]interface{}{}
 			}
-			op.Status = model.OperationFailed
-			op.Message = "operation executor lease expired; manual recovery is required before retry"
-			op.LastError = "operation executor lease expired with external effect outcome unresolved"
-			op.Metadata["manualRecoveryRequired"] = true
-			op.Metadata["externalEffectRecoveryPending"] = true
-			op.Metadata["recoveredAfterLeaseExpiry"] = true
+			if op.Kind == "app.canary-promote" {
+				op.Status = model.OperationQueued
+				if op.Attempts > 0 {
+					op.Attempts--
+				}
+				op.NextAttemptAt = now
+				op.Message = "canary promotion owner lease expired; effect reconciliation pending"
+				op.Metadata["externalEffectRecoveryPending"] = true
+				op.Metadata["recoveredAfterLeaseExpiry"] = true
+			} else {
+				op.Status = model.OperationFailed
+				op.Message = "operation executor lease expired; manual recovery is required before retry"
+				op.LastError = "operation executor lease expired with external effect outcome unresolved"
+				op.Metadata["manualRecoveryRequired"] = true
+				op.Metadata["externalEffectRecoveryPending"] = true
+				op.Metadata["recoveredAfterLeaseExpiry"] = true
+				op.FinishedAt = &now
+			}
 			op.LockedBy = ""
 			op.LockedUntil = nil
-			op.FinishedAt = &now
 			op.UpdatedAt = now
 			encoded, err := json.Marshal(record)
 			if err != nil {

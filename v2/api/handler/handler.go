@@ -89,7 +89,7 @@ func New(db *store.DB, n *nomad.Client, c *consul.Client, ws *hub.Hub, cfg *conf
 		execOwnerID: execRuntimeOwnerID(),
 	}
 	if db != nil && db.Pool != nil {
-		h.accessTokenLineage = postgresAccessTokenLineageResolver{db: db}
+		h.accessTokenLineage = db
 		if cfg != nil {
 			if signer, err := store.NewHMACAcceptanceSigner(cfg.AuditSigningKey, cfg.AuditPreviousSigningKeys...); err == nil {
 				operationStore, storeErr := store.NewPGOperationStore(db, signer, store.AcceptancePolicy{ExpectedAuthority: cfg.ControlAuthority, ReplayTTL: cfg.OperationReplayTTL})

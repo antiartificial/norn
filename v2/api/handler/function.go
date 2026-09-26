@@ -1,6 +1,7 @@
 package handler
 
 import (
+	"context"
 	"fmt"
 	"net/http"
 	"os"
@@ -61,6 +62,10 @@ func (h *Handler) InvokeFunction(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusNotFound, fmt.Sprintf("process %s not found", procName))
 		return
 	}
+	if proc.Function == nil {
+		writeError(w, http.StatusBadRequest, fmt.Sprintf("process %s is not a function", procName))
+		return
+	}
 
 	// Resolve image tag from last deployment
 	deps, err := h.db.ListDeployments(r.Context(), id, 1)
@@ -96,7 +101,7 @@ func (h *Handler) InvokeFunction(w http.ResponseWriter, r *http.Request) {
 
 	// Create unique job ID
 	execID := uuid.New().String()
-	jobID := fmt.Sprintf("%s-%s-%d", id, procName, time.Now().UnixMilli())
+	jobID := fmt.Sprintf("%s-%s-%s", id, procName, execID)
 
 	// Record execution
 	fe := &store.FuncExecution{
@@ -106,7 +111,10 @@ func (h *Handler) InvokeFunction(w http.ResponseWriter, r *http.Request) {
 		Status:    "running",
 		StartedAt: time.Now(),
 	}
-	h.db.InsertFuncExecution(r.Context(), fe)
+	if err := h.db.InsertFuncExecution(r.Context(), fe); err != nil {
+		writeError(w, http.StatusServiceUnavailable, "cannot record function execution")
+		return
+	}
 
 	// Named databases reach the invocation only through its own private,
 	// create-only copy of the app's promoted delivery revision, revalidated
@@ -158,6 +166,8 @@ func (h *Handler) InvokeFunction(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// Async wait for completion
+	// Once Nomad accepted the job, the completion watcher must outlive the
+	// HTTP request that created it. Its own deadline is bounded below.
 	go func() {
 		timeout := 30 * time.Second
 		if proc.Function != nil && proc.Function.Timeout != "" {
@@ -167,10 +177,17 @@ func (h *Handler) InvokeFunction(w http.ResponseWriter, r *http.Request) {
 		}
 
 		start := time.Now()
-		status, exitCode, _ := h.nomad.WaitBatchComplete(r.Context(), jobID, timeout)
+		watchCtx, cancel := context.WithTimeout(context.Background(), timeout+time.Minute)
+		defer cancel()
+		status, exitCode, waitErr := h.nomad.WaitBatchComplete(watchCtx, jobID, timeout)
 		durationMs := time.Since(start).Milliseconds()
+		if waitErr != nil && status == "" {
+			status = "unknown"
+		}
 
-		h.db.UpdateFuncExecution(r.Context(), execID, status, exitCode, durationMs)
+		updateCtx, updateCancel := context.WithTimeout(context.Background(), 10*time.Second)
+		defer updateCancel()
+		h.db.UpdateFuncExecution(updateCtx, execID, status, exitCode, durationMs)
 		if owned != nil && (status == "complete" || status == "failed") {
 			// The one-shot job was purged; its copy of the connection goes.
 			// Any other outcome leaves the copy, which only this unique job
