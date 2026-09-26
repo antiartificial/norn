@@ -23,6 +23,12 @@ dirty checkouts. Three have no current Nomad base job; `its-alive-api` has a
 dead job with no current allocation. Their intended ownership and fixture
 disposition still require review.
 
+The later [Trove and bookmark workload check](m0-mini-trove-bookmark-workload-check-2026-09-26.md)
+confirmed a completed Like Trove daily-capture child and a successful
+bookmark-session read. It keeps the running `like-trove` workload separate
+from the absent `ft-trove` declaration. Paid X API credit balance remains
+unmeasured.
+
 ## M0 exit work still required
 
 1. Confirm the clean deployed `watchtower` checkout as canonical, then verify the [staged discovery exclusion](m0-watchtower-source-join-2026-09-26.md) through the full v3 candidate API. The installed v2 API still reports both records. Classify the absent/dead jobs before deriving a representative upgrade fixture.
