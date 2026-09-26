@@ -13,3 +13,10 @@ This is a reconciliation of the v3 planning ADRs and the accepted auth-aggregate
 | [0007: Auth aggregate and revocation](adrs/0007-auth-aggregate-and-revocation.md) | Accepted on durable branch; reconciled here | Qualify cross-process crash/partition and execution-boundary fencing; acceptance of invariant is not runtime sign-off. |
 
 ADR owners and numeric acceptance budgets still need explicit review. This register prevents a code checkpoint from silently changing a proposed decision to accepted or claiming release readiness.
+
+The [Mini control-store budget proposal](m0-mini-control-budget-proposal-2026-09-26.md)
+uses the observed 4.04 MiB/day growth to propose 384/512 MiB warning/action
+triggers and a private-restore scratch reserve. The draft 15-minute backup-only
+RPO needs an explicit decision and mechanism: Mini currently has PostgreSQL
+WAL archiving disabled. Neither the proposal nor local restore timings accept
+ADR 0001, close M0/M5, or establish a release RPO/RTO.

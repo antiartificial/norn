@@ -22,6 +22,6 @@ Snapshot retention warnings remain for `field-harbor` and `turnkey-offer-intake`
 1. Name the canonical `watchtower` record and classify the absent/dead jobs before deriving a representative upgrade fixture.
 2. Assign owners and restore boundaries for the app volumes and database targets identified by the workload join; confirm unmatched ingress routes through destination and listener checks.
 3. Retain a sanitized CI fixture and a separately protected private-data rehearsal plan. Re-run source/schema compatibility against the eventual exact candidate, including old-reader and rollback behavior.
-4. Measure and accept byte, growth, capacity, and recovery budgets; resolve the proposed ADRs, named owners, and acceptance targets in the [decision register](decision-register-2026-09-24.md).
+4. Review the measured [control-store budget proposal](m0-mini-control-budget-proposal-2026-09-26.md), including the unsupported draft 15-minute backup RPO; accept byte, growth, capacity, and recovery budgets only after choosing and testing the backup mechanism. Resolve the proposed ADRs, named owners, and acceptance targets in the [decision register](decision-register-2026-09-24.md).
 
 M0 has not passed. This refresh makes the next decisions concrete but does not authorize a Mini upgrade or Fleet provisioning.
