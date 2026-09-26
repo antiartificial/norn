@@ -53,7 +53,12 @@ hostnames and printed only destination class and status:
 Vigil's `/` returned HTTP 404; its checked-in gateway registers `/health`, so
 the path-specific probe is the relevant one. These results add a current
 hostname-to-response check from Mini to the prior destination/listener join.
-They do not prove response-body identity, reachability from an independent
-external network, every auth path, DNS propagation, or intended exposure.
+A second bounded GET compared each public response body with a fresh request
+to its exact configured local destination and path. All four pairs matched
+byte-for-byte (Open WebUI 11,027 bytes each, Norn health 293 bytes, Vigil
+health 29 bytes); bodies were compared in process and not retained in this
+repository. This is strong current destination identity evidence from Mini.
+It does not prove reachability from an independent external network, every
+auth path, DNS propagation, or intended exposure.
 Open WebUI and Norn API route owners still need to accept their external
 exposure, and the duplicate ordered Norn hostname rule still needs review.
