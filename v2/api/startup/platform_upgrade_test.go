@@ -251,6 +251,88 @@ printf '%s\n' "$FAKE_LEGACY_PID"
 	}
 }
 
+func TestPlatformUpgradeLegacyBaselinePostflightFailureKeepsLegacyFenced(t *testing.T) {
+	fixture := newSchemaTransitionFixture(t, 2)
+	legacySHA := strings.Repeat("a", 40)
+	if err := os.WriteFile(filepath.Join(fixture.previousRelease, "release.env"), []byte("NORN_RELEASE_SHA="+legacySHA+"\nNORN_RELEASE_VERSION=v-current-test\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	artifact := []byte("private fixture backup artifact\n")
+	artifactPath := filepath.Join(fixture.root, "legacy-backup.dump")
+	if err := os.WriteFile(artifactPath, artifact, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	artifactDigest := sha256.Sum256(artifact)
+	proof, err := json.Marshal(map[string]any{
+		"schema": "norn.legacy-control-backup/v1", "sourceReleaseSHA": legacySHA,
+		"databaseIdentity": fixture.databaseID, "backupSHA256": fmt.Sprintf("%x", artifactDigest),
+		"backupBytes": len(artifact), "createdAt": time.Now().UTC().Format(time.RFC3339),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	proofPath := filepath.Join(fixture.root, "legacy-backup-proof.json")
+	if err := os.WriteFile(proofPath, proof, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	fenceState := filepath.Join(fixture.root, "legacy-fence-state.json")
+	fenced := filepath.Join(fixture.root, "legacy-fenced")
+	legacyProcess := exec.Command("sleep", "300")
+	if err := legacyProcess.Start(); err != nil {
+		t.Fatal(err)
+	}
+	legacyExited := make(chan struct{})
+	go func() {
+		_ = legacyProcess.Wait()
+		close(legacyExited)
+	}()
+	t.Cleanup(func() {
+		_ = legacyProcess.Process.Kill()
+		<-legacyExited
+	})
+	writeTestScript(t, filepath.Join(fixture.shimDir, "launchctl"), `#!/usr/bin/env bash
+set -euo pipefail
+case "${1:-}" in
+  setenv|unsetenv) exit 0 ;;
+  print) printf 'service = {\n\tpid = %s\n}\n' "$FAKE_LEGACY_PID"; exit 0 ;;
+  kill) : > "$FAKE_FENCED"; /bin/kill -TERM "$FAKE_LEGACY_PID"; exit 0 ;;
+  kickstart) printf 'v-broken-postflight 2\n' > "$FAKE_ACTIVE_STATE"; exit 0 ;;
+esac
+exit 2
+`)
+	writeTestScript(t, filepath.Join(fixture.shimDir, "lsof"), `#!/usr/bin/env bash
+set -euo pipefail
+if [[ -f "${FAKE_FENCED:-}" ]]; then exit 0; fi
+printf '%s\n' "$FAKE_LEGACY_PID"
+`)
+	cmd := fixture.command(t)
+	cmd.Args = []string{platformUpgradePath(t), "legacy-baseline", "HEAD", "--legacy-release", legacySHA, "--backup-proof", proofPath, "--backup-artifact", artifactPath}
+	cmd.Env = append(cmd.Env, "NORN_LEGACY_FENCE_STATE_PATH="+fenceState, "FAKE_FENCED="+fenced,
+		fmt.Sprintf("FAKE_LEGACY_PID=%d", legacyProcess.Process.Pid))
+	out, err := cmd.CombinedOutput()
+	if err == nil || !strings.Contains(string(out), "candidate postflight failed") {
+		t.Fatalf("failed candidate postflight was not reported: err=%v\n%s", err, out)
+	}
+	if _, err := os.Stat(fixture.migrationMarker); err != nil {
+		t.Fatalf("postflight failed before migration: %v\n%s", err, out)
+	}
+	if _, err := os.Stat(fenced); err != nil {
+		t.Fatalf("legacy process was not fenced: %v\n%s", err, out)
+	}
+	state, err := os.ReadFile(fenceState)
+	if err != nil || !strings.Contains(string(state), `"state":"candidate-postflight-failed"`) {
+		t.Fatalf("failed postflight did not retain fence state: %v %s", err, state)
+	}
+	installed, err := os.ReadFile(filepath.Join(fixture.binDir, "norn-api"))
+	if err != nil || !strings.Contains(string(installed), "v-target-test") || strings.Contains(string(installed), "v-current-test") {
+		t.Fatalf("legacy binary was restored after migration: %v\n%s", err, installed)
+	}
+	linked, err := os.Readlink(fixture.currentLink)
+	if err != nil || linked == fixture.previousRelease {
+		t.Fatalf("legacy release link was restored after migration: %q, %v", linked, err)
+	}
+}
+
 func TestPlatformUpgradeRejectsExactContractWithNonzeroExit(t *testing.T) {
 	binary := writeExecutable(t, `#!/usr/bin/env bash
 printf '%s\n' '{"name":"norn.startup/v2","schemaModes":["auto","check","migrate-only"],"startupModes":["active","passive"],"passiveRoutes":["/api/health","/api/version","/api/schema"],"schemaContract":{"readerVersion":1,"writerVersion":3,"catalogMigrationVersion":3,"catalogMinimumReaderVersion":1,"catalogMinimumWriterVersion":3}}'

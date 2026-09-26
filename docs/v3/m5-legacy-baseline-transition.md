@@ -76,7 +76,11 @@ roll forward with a contract-aware candidate; do not restore or directly run
 the legacy binary against the migrated control database.
 
 The transition has focused fixture coverage for proof rejection, service
-fencing before migration, candidate promotion, and retained fence state. It
-does not qualify a Mini deployment on its own. The remaining M5 gate is a
+fencing before migration, candidate promotion, and retained fence state. A
+postflight-failure fixture now forces a bad candidate response after migration
+and verifies that the legacy process was fenced, the failure state persisted,
+and neither the installed binary nor current release link reverted to legacy.
+The full `startup` package passed locally. This fixture uses simulated launchd
+and API responses; it does not qualify a Mini deployment on its own. The remaining M5 gate is a
 scheduled Mini rehearsal using a fresh read-only copy, a verified restore of
 the actual protected backup, and the complete maintenance/fencing procedure.
