@@ -17,7 +17,7 @@ import (
 
 // ConfigDigest binds a host mutation to the exact config observed at admission.
 func ConfigDigest(cfg *Config) (string, error) {
-	data, err := yaml.Marshal(cfg)
+	data, err := marshalConfig(cfg)
 	if err != nil {
 		return "", err
 	}
@@ -62,11 +62,87 @@ type Config struct {
 	Tunnel          string        `yaml:"tunnel"`
 	CredentialsFile string        `yaml:"credentials-file"`
 	Ingress         []IngressRule `yaml:"ingress"`
+	rawDocument     []byte
 }
 
 type IngressRule struct {
 	Hostname string `yaml:"hostname,omitempty"`
 	Service  string `yaml:"service"`
+}
+
+// marshalConfig keeps fields and comments outside the ingress edit when the
+// config came from disk. A newly constructed Config still uses the normal
+// typed representation.
+func marshalConfig(cfg *Config) ([]byte, error) {
+	if cfg == nil {
+		return nil, fmt.Errorf("cloudflared config is nil")
+	}
+	if len(cfg.rawDocument) == 0 {
+		return yaml.Marshal(cfg)
+	}
+	var document yaml.Node
+	if err := yaml.Unmarshal(cfg.rawDocument, &document); err != nil {
+		return nil, err
+	}
+	if len(document.Content) != 1 || document.Content[0].Kind != yaml.MappingNode {
+		return nil, fmt.Errorf("cloudflared config root is not a mapping")
+	}
+	root := document.Content[0]
+	var ingress *yaml.Node
+	for i := 0; i+1 < len(root.Content); i += 2 {
+		if root.Content[i].Value == "ingress" {
+			ingress = root.Content[i+1]
+			break
+		}
+	}
+	if ingress == nil {
+		ingress = &yaml.Node{Kind: yaml.SequenceNode, Tag: "!!seq"}
+		root.Content = append(root.Content, &yaml.Node{Kind: yaml.ScalarNode, Tag: "!!str", Value: "ingress"}, ingress)
+	}
+	if ingress.Kind != yaml.SequenceNode {
+		return nil, fmt.Errorf("cloudflared ingress is not a sequence")
+	}
+	original := ingress.Content
+	used := make([]bool, len(original))
+	updated := make([]*yaml.Node, 0, len(cfg.Ingress))
+	for _, desired := range cfg.Ingress {
+		var rule *yaml.Node
+		for i, candidate := range original {
+			if used[i] || candidate.Kind != yaml.MappingNode {
+				continue
+			}
+			var existing IngressRule
+			if err := candidate.Decode(&existing); err != nil {
+				return nil, err
+			}
+			if existing.Hostname == desired.Hostname {
+				used[i], rule = true, candidate
+				break
+			}
+		}
+		if rule == nil {
+			rule = &yaml.Node{Kind: yaml.MappingNode, Tag: "!!map"}
+		}
+		if desired.Hostname != "" {
+			setCloudflaredScalar(rule, "hostname", desired.Hostname)
+		}
+		setCloudflaredScalar(rule, "service", desired.Service)
+		updated = append(updated, rule)
+	}
+	ingress.Content = updated
+	return yaml.Marshal(&document)
+}
+
+func setCloudflaredScalar(mapping *yaml.Node, key, value string) {
+	for i := 0; i+1 < len(mapping.Content); i += 2 {
+		if mapping.Content[i].Value == key {
+			mapping.Content[i+1].Value = value
+			return
+		}
+	}
+	mapping.Content = append(mapping.Content,
+		&yaml.Node{Kind: yaml.ScalarNode, Tag: "!!str", Value: key},
+		&yaml.Node{Kind: yaml.ScalarNode, Tag: "!!str", Value: value})
 }
 
 var configPath string
@@ -103,6 +179,7 @@ func ReadConfigSnapshot(_ context.Context) (*Config, string, error) {
 	if err := yaml.Unmarshal(data, &cfg); err != nil {
 		return nil, "", fmt.Errorf("parse cloudflared config: %w", err)
 	}
+	cfg.rawDocument = append([]byte(nil), data...)
 	sum := sha256.Sum256(data)
 	return &cfg, hex.EncodeToString(sum[:]), nil
 }
@@ -175,7 +252,7 @@ func PrunePrivateIngress(cfg *Config) bool {
 
 // ApplyConfig writes the config to the local cloudflared config file.
 func ApplyConfig(_ context.Context, cfg *Config) error {
-	data, err := yaml.Marshal(cfg)
+	data, err := marshalConfig(cfg)
 	if err != nil {
 		return fmt.Errorf("marshal config: %w", err)
 	}

@@ -37,6 +37,11 @@ implementation. The receipt directory is local to the same host as the
 cloudflared config. Before release, rehearse actual `launchctl` behavior on a
 private Mini copy, persist or export local receipts with host recovery, and
 provide an operator procedure for reconciling ambiguous restart outcomes.
-Test two API processes on one host and a wrong-host worker. The current parser
-rewrites known config fields and should be hardened to preserve unknown YAML
-fields/comments. General etcd app route parity remains outside this slice.
+Test two API processes on one host and a wrong-host worker. The config writer
+now preserves unknown top-level fields, ingress-rule fields, and comments from
+the read YAML document while editing the known ingress entries. A local test
+proves the accepted after-digest equals the published file after both an
+existing service update and a new rule; the cloudflared pipeline and handler
+cases passed against disposable PostgreSQL 16. Actual Mini config and
+`launchctl` recovery remain unqualified. General etcd app route parity remains
+outside this slice.
