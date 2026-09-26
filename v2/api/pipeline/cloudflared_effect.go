@@ -136,6 +136,10 @@ func secureCloudflaredReceiptDir(path string, create bool) error {
 	if !info.IsDir() || info.Mode().Perm()&0077 != 0 {
 		return fmt.Errorf("cloudflared receipt directory is not private")
 	}
+	stat, ok := info.Sys().(*syscall.Stat_t)
+	if !ok || int(stat.Uid) != os.Geteuid() {
+		return fmt.Errorf("cloudflared receipt directory owner differs")
+	}
 	return nil
 }
 

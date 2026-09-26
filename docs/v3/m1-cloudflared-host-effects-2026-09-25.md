@@ -114,3 +114,16 @@ process reclaimed the scheduled operation. The disposable PostgreSQL cluster
 was stopped after the run. These close local two-process and wrong-host
 checks, while the real Mini launchd and public-route checks remain
 open.
+
+The control recovery bundle currently contains the PostgreSQL dump and its
+signed manifest, including a count of unresolved external effects. Passive
+restore always reports `activationReady:false`; it does not carry the
+host-local `.norn-cloudflared-receipts` directory. A host loss can therefore
+leave a cloudflared effect unresolved even when the control database restores
+cleanly. Before a live release, either preserve and verify the exact private
+receipt with host recovery or define an operator reconciliation that proves
+the observed config, managed-agent state, and public route before clearing
+the reservation. Restoring the database alone must not authorize a replayed
+restart. The local receipt reader now also requires its directory to be owned
+by the API's effective UID, in addition to the existing private-mode and
+regular-file checks.
