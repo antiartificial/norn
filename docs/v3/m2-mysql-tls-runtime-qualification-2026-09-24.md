@@ -176,3 +176,19 @@ application-path negative controls. Jobs and disposable services were removed.
 The prebuilt exception does not cover bound release artifact rollback/import;
 that path needs a spec-bound receipt or a qualified mirror. Mini rollback,
 MySQL backup/restore, and release rollout remain separate gates.
+
+## Current-head application-path negative controls — 2026-09-26
+
+`TestWordPressVerifiedTLSStartupAdapterPersistentContentInNomad` passed on the
+current PR head with the pinned WordPress 6.8.2 image, disposable MySQL 8.4.11
+requiring TLS, Nomad 2.0.7, and a generated certificate with the fixture host
+IP in its SAN. The production `TranslateForRegionAt` startup-adapter path
+served the installation page with the trusted CA. The same WordPress HTTP path
+showed a database connection failure with an unrelated CA and with a reachable
+wrong hostname using the trusted CA; the wrong-host test also proved TCP
+reachability to the MySQL endpoint. After deregistration and replacement, the
+new allocation served the same `wp-content` sentinel from the Nomad host
+volume. The test process exited successfully and its disposable services,
+containers, scratch files, and newly created volumes were removed. This is a
+local application-path TLS and content-persistence qualification, not a
+managed MySQL provider, retained-artifact restore, or Mini release gate.
