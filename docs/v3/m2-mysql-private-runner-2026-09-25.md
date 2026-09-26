@@ -101,10 +101,15 @@ private restore runner acquires it before account locking and leaves it held
 after import or uncertainty. It serializes acquisition with operation claims
 and holds queued deploy, rollback, restart, scale, canary, cron, and function
 invocation operations until exact release. Acquisition rejects an already
-running claimed operation of these kinds. Host assurance, direct Nomad
-actions, and existing allocations are not yet gated, so this is an admission
-boundary rather than complete
-write isolation.
+running claimed operation of these kinds. Direct Nomad actions and existing
+allocations are not yet gated, so this is an admission boundary rather than
+complete write isolation.
+
+The queued `host.assure` claim is now included in that admission fence, and
+the host script reads the API's fence projection before required-app repair,
+recovery catch-up, Tailscale Serve, and Forge route writes. These script checks
+are read-before-effect guards; direct Nomad actions and existing allocations
+remain outside an atomic global write fence.
 
 ## Still required before a usable restore lane
 

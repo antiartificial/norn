@@ -814,6 +814,10 @@ reconcile_serve_routes() {
     port="${spec%%=*}"
     target="${spec#*=}"
     target="${target//\{address\}/$detected}"
+    if ! runtime_mutation_fence_allows_writes; then
+      record_assurance_failure "runtime mutation fence is active or unproven; refusing to reconcile Tailscale Serve :$port"
+      continue
+    fi
     if "$tailscale_bin" serve --bg --https="$port" "$target" >/dev/null; then
       note "ok: Tailscale Serve :$port -> $target"
     else
@@ -827,6 +831,10 @@ reconcile_forge_routes() {
   local app
   while IFS= read -r app; do
     [ -n "$app" ] || continue
+    if ! runtime_mutation_fence_allows_writes; then
+      record_assurance_failure "runtime mutation fence is active or unproven; refusing to reconcile public routes for $app"
+      continue
+    fi
     if run_managed_norn forge "$app"; then
       note "ok: public routes reconciled for $app"
     else
