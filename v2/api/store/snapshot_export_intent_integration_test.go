@@ -201,13 +201,21 @@ func TestDeploySnapshotExportRecoveryStopsBeforeOtherMutableSteps(t *testing.T) 
 	_, unreserved := makeExpired("unreserved-deploy-worker", false, false, pinnedImage)
 	_, uncheckpointed := makeExpired("uncheckpointed-deploy-worker", true, false, "")
 	_, mutableImage := makeExpired("mutable-image-deploy-worker", true, false, "demo:latest")
+	_, corruptCheckpoint := makeExpired("corrupt-checkpoint-deploy-worker", true, false, pinnedImage)
+	if _, err := db.Pool.Exec(ctx, `UPDATE operation_checkpoints SET outputs=decode('fffe','hex') WHERE operation_id=$1 AND stage='build'`, corruptCheckpoint.ID); err != nil {
+		t.Fatal(err)
+	}
+	_, otherSafe := makeExpired("other-safe-deploy-worker", true, false, pinnedImage)
 	if err := db.RecoverExpiredOperations(ctx); err != nil {
 		t.Fatal(err)
 	}
-	for _, op := range []*model.Operation{advanced, unreserved, uncheckpointed, mutableImage} {
+	for _, op := range []*model.Operation{advanced, unreserved, uncheckpointed, mutableImage, corruptCheckpoint} {
 		got, err := db.GetOperation(ctx, op.ID)
 		if err != nil || got.Status != model.OperationFailed {
 			t.Fatalf("unsafe deploy recovery = %+v, %v", got, err)
 		}
+	}
+	if got, err := db.GetOperation(ctx, otherSafe.ID); err != nil || got.Status != model.OperationQueued {
+		t.Fatalf("corrupt checkpoint blocked another safe deploy's recovery: %+v, %v", got, err)
 	}
 }

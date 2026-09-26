@@ -211,8 +211,10 @@ source and content-addressed build checkpoints are present, and no other
 mutable deployment step has started. Prebuilt and bound images now record the
 same build checkpoint as a built image. A store test keeps deploys that reached
 migration, lack an export intent or checkpoints, or name a mutable image in
-manual review. A disposable two-target PostgreSQL test exercises a successor
-deploy claim through `snapshotTarget`: it reuses the operation-pinned local
+manual review. Corrupt build-checkpoint bytes also fail that deploy closed
+without blocking recovery of another safe operation. A disposable two-target
+PostgreSQL test exercises a successor deploy claim through `snapshotTarget`:
+it reuses the operation-pinned local
 snapshot and verifies the remote dump before publishing the manifest and
 receipt. A second test enters full `Pipeline.run`, simulates a process stop
 after the dump write, and replays clone, admission, build, test and snapshot

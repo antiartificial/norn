@@ -1017,7 +1017,7 @@ func (db *DB) RecoverExpiredOperations(ctx context.Context) error {
 			) AND EXISTS (
 				SELECT 1 FROM operation_checkpoints oc
 				WHERE oc.operation_id = operations.id AND oc.stage = 'build'
-				  AND (convert_from(oc.outputs,'UTF8')::jsonb ->> 'imageTag') ~ '@sha256:[0-9A-Fa-f]{64}$'
+				  AND encode(oc.outputs,'escape') ~ '"imageTag"[[:space:]]*:[[:space:]]*"[^"]+@sha256:[0-9A-Fa-f]{64}"'
 			) AND NOT EXISTS (
 				SELECT 1 FROM deployment_steps ds
 				WHERE ds.deployment_id = operations.payload->>'deploymentId'
@@ -1046,7 +1046,7 @@ func (db *DB) RecoverExpiredOperations(ctx context.Context) error {
 		    ) AND EXISTS (
 		      SELECT 1 FROM operation_checkpoints oc
 		      WHERE oc.operation_id = operations.id AND oc.stage = 'build'
-		        AND (convert_from(oc.outputs,'UTF8')::jsonb ->> 'imageTag') ~ '@sha256:[0-9A-Fa-f]{64}$'
+		        AND encode(oc.outputs,'escape') ~ '"imageTag"[[:space:]]*:[[:space:]]*"[^"]+@sha256:[0-9A-Fa-f]{64}"'
 		    ) AND NOT EXISTS (
 		      SELECT 1 FROM deployment_steps ds
 		      WHERE ds.deployment_id = operations.payload->>'deploymentId'
