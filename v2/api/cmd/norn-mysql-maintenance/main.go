@@ -73,6 +73,7 @@ func run(ctx context.Context, arguments []string, output io.Writer) error {
 	secretsDir := flags.String("secrets-dir", "", "owner-only MySQL secret directory")
 	nomadURL := flags.String("nomad-url", "", "Nomad API endpoint for stopped source observation")
 	restoreID := flags.String("restore-operation-id", "", "completed signed restore operation UUID")
+	priorRecoveryID := flags.String("reconcile-prior-recovery-id", "", "failed signed recovery to reconcile without repeating unlock")
 	targetDatabase := flags.String("target-database", "", "expected restored MySQL database")
 	actorIssuer := flags.String("actor-issuer", "", "operator actor issuer")
 	actorSubject := flags.String("actor-subject", "", "operator actor subject")
@@ -151,6 +152,9 @@ func run(ctx context.Context, arguments []string, output io.Writer) error {
 	actor := store.OperationActor{Issuer: *actorIssuer, Subject: *actorSubject}
 	identity := store.OperationRequestIdentity{Authority: liveAuthority, Actor: actor,
 		Kind: store.MySQLRestoreRecoveryOperationKind, Resource: "mysql-restore/" + *restoreID, Key: *requestKey}
+	if *priorRecoveryID != "" {
+		identity.Resource += "/reconcile/" + *priorRecoveryID
+	}
 	existing, identityErr := acceptance.ResolveIdentity(ctx, identity)
 	if errors.Is(identityErr, store.ErrAcceptanceNotFound) {
 		if *inspectOnly {
@@ -171,7 +175,7 @@ func run(ctx context.Context, arguments []string, output io.Writer) error {
 		accepted = existing
 	} else {
 		accepted, err = control.AcceptPrivateMySQLRestoreRecovery(ctx, acceptance, store.MySQLRestoreRecoveryAcceptanceInput{
-			RestoreOperationID: *restoreID, Actor: actor,
+			RestoreOperationID: *restoreID, PriorRecoveryOperationID: *priorRecoveryID, Actor: actor,
 			Key: *requestKey, Audit: store.AcceptanceAuditContext{Source: "private-mysql-maintenance-cli"}})
 		if err != nil {
 			return fmt.Errorf("signed recovery acceptance failed: %w", err)
@@ -183,7 +187,7 @@ func run(ctx context.Context, arguments []string, output io.Writer) error {
 	encoded, err := json.Marshal(accepted.Operation.Payload)
 	var signedRequest store.MySQLRestoreRecoveryRequest
 	if err != nil || json.Unmarshal(encoded, &signedRequest) != nil || signedRequest.RestoreOperationID != *restoreID ||
-		signedRequest.Target.Database != *targetDatabase {
+		signedRequest.Target.Database != *targetDatabase || signedRequest.PriorRecoveryOperationID != *priorRecoveryID {
 		return errors.New("expected target database does not match signed recovery")
 	}
 	if *acceptOnly {
@@ -200,6 +204,27 @@ func run(ctx context.Context, arguments []string, output io.Writer) error {
 			return fmt.Errorf("signed recovery inspection failed: %w", err)
 		}
 		return json.NewEncoder(output).Encode(inspection)
+	}
+	if *priorRecoveryID != "" {
+		owner := fmt.Sprintf("mysql-reconcile:%d:%s", os.Getpid(), accepted.Operation.ID)
+		claimed, claim, err := control.ClaimPrivateMySQLOperation(ctx, accepted.Operation.ID, owner, store.MySQLRestoreRecoveryOperationKind, 2*time.Minute)
+		if err != nil || claimed == nil || claim.OperationID() != accepted.Operation.ID {
+			return fmt.Errorf("signed reconciliation operation is not claimable: %w", err)
+		}
+		runner := store.MySQLRestoreRecoveryRunner{Control: control, Acceptance: acceptance, Observer: observer, Secrets: secrets}
+		if err := runner.RunClaimedReconciliation(ctx, claim); err != nil {
+			return fmt.Errorf("target unlock reconciliation requires inspection: %w", err)
+		}
+		finished, err := control.GetOperation(ctx, accepted.Operation.ID)
+		if err != nil || finished.Status != model.OperationSucceeded {
+			return errors.New("signed reconciliation terminal receipt is unavailable")
+		}
+		active, err := control.RuntimeMutationFenceActive(ctx)
+		if err != nil || active {
+			return errors.New("runtime mutation fence was not proved released")
+		}
+		_, err = fmt.Fprintf(output, "recovery_operation_id=%s status=succeeded reconciled_prior=%s\n", accepted.Operation.ID, *priorRecoveryID)
+		return err
 	}
 	if _, err := control.AssessCompletedMySQLRestoreLiveSource(ctx, acceptance, *restoreID, observer, secrets); err != nil {
 		return fmt.Errorf("stopped source is not ready for signed recovery: %w", err)

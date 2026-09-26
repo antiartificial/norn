@@ -115,6 +115,17 @@ func (db *DB) activateDatabaseCatalog(ctx context.Context, expectedCurrent int64
 			AND r.restore_operation_id=m.operation_id AND r.state='runtime-released'
 		JOIN operations o ON o.id=r.operation_id AND o.status='succeeded'
 		WHERE m.recovery_released_at IS NOT NULL
+		UNION
+		SELECT m.operation_id,m.source_artifact_operation_id
+		FROM mysql_restore_maintenance_fences m
+		JOIN operations o ON o.id=m.recovery_operation_id AND o.status='succeeded'
+			AND o.kind='database.mysql-restore-recovery' AND o.source='private-mysql-restore-reconciliation'
+			AND o.metadata->>'mysqlRestoreRecoveryState'='reconciled-runtime-released'
+		JOIN mysql_restore_recovery_intents r ON r.operation_id=o.metadata->>'priorRecoveryOperationId'
+			AND r.restore_operation_id=m.operation_id AND r.state IN ('target-unlock-intended','target-unlock-proved')
+		JOIN operations p ON p.id=r.operation_id AND p.status='failed'
+			AND p.metadata->>'reconciledByOperationId'=o.id
+		WHERE m.recovery_released_at IS NOT NULL
 	)
 	SELECT EXISTS (SELECT 1 FROM mysql_restore_maintenance_fences m WHERE NOT EXISTS (
 		SELECT 1 FROM valid_release v WHERE v.operation_id=m.operation_id

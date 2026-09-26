@@ -20,7 +20,7 @@ func (db *DB) ReleaseClaimedMySQLRestoreRuntimeFence(ctx context.Context, accept
 	accepted, err := acceptance.VerifyAcceptedOperation(ctx, claim.OperationID())
 	var signed MySQLRestoreRecoveryRequest
 	if err != nil || accepted.Operation.Kind != MySQLRestoreRecoveryOperationKind || accepted.Operation.Status != model.OperationRunning ||
-		accepted.Operation.MaxAttempts != 1 || decodeMySQLRestoreRecoveryPayload(accepted.Operation.Payload, &signed) != nil {
+		accepted.Operation.MaxAttempts != 1 || decodeMySQLRestoreRecoveryPayload(accepted.Operation.Payload, &signed) != nil || signed.PriorRecoveryOperationID != "" {
 		return ErrMySQLRestoreFence
 	}
 	restore, err := acceptance.VerifyAcceptedOperation(ctx, signed.RestoreOperationID)

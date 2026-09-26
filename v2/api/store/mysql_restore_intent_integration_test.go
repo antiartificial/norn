@@ -664,7 +664,7 @@ func TestMySQLRestoreIntentAgainstDisposableEngines(t *testing.T) {
 		t.Fatalf("failed release did not retain fence: %v %v", active, err)
 	}
 	recoveryRunner := MySQLRestoreRecoveryRunner{Control: control, Acceptance: stores[0], Observer: stoppedSource,
-		Secrets: secrets, ClaimLease: 120 * time.Millisecond}
+		Secrets: secrets, ClaimLease: time.Second}
 	if err := recoveryRunner.RunClaimedTargetUnlock(ctx, recoveryClaim); err != nil {
 		t.Fatalf("supervised target unlock: %v", err)
 	}
@@ -723,16 +723,71 @@ func TestMySQLRestoreIntentAgainstDisposableEngines(t *testing.T) {
 	if active, err := control.RuntimeMutationFenceActive(ctx); err != nil || !active {
 		t.Fatalf("stale claim changed global fence: %v %v", active, err)
 	}
-	if err := recoveryRunner.RunClaimedFenceRelease(ctx, recoveryClaim); err != nil {
-		t.Fatalf("signed recovery could not release runtime fence: %v", err)
+	if _, err := control.Pool.Exec(ctx, `UPDATE operations SET locked_until=clock_timestamp()-interval '1 second' WHERE id=$1`, recoveryClaim.OperationID()); err != nil {
+		t.Fatal(err)
+	}
+	if err := control.RecoverExpiredOperations(ctx); err != nil {
+		t.Fatalf("expired unlock recovery: %v", err)
+	}
+	priorInspection, err := control.InspectPrivateMySQLRestoreRecovery(ctx, stores[0], recoveryClaim.OperationID(), stoppedSource, secrets)
+	if err != nil || priorInspection.OperationStatus != "failed" || priorInspection.IntentState != "target-unlock-proved" ||
+		!priorInspection.SourceVerified || !priorInspection.TargetDataVerified || priorInspection.TargetAccountState != "unlocked" {
+		t.Fatalf("expired target unlock inspection=%+v err=%v", priorInspection, err)
+	}
+	if err := recoveryRunner.RunClaimedFenceRelease(ctx, recoveryClaim); err == nil {
+		t.Fatal("expired original recovery claim released runtime fence")
+	}
+	reconcileInput := recoveryInput
+	reconcileInput.Key = "reconcile-" + suffix
+	reconcileInput.PriorRecoveryOperationID = recoveryClaim.OperationID()
+	reconciled, err := control.AcceptPrivateMySQLRestoreRecovery(ctx, stores[0], reconcileInput)
+	if err != nil {
+		t.Fatalf("sign observed target unlock reconciliation: %v", err)
+	}
+	claimedReconcile, reconcileClaim, err := control.ClaimPrivateMySQLOperation(ctx, reconciled.Operation.ID, "reconcile-worker", MySQLRestoreRecoveryOperationKind, time.Minute)
+	if err != nil || claimedReconcile == nil {
+		t.Fatalf("claim signed reconciliation: %+v %v", claimedReconcile, err)
+	}
+	if _, err := admin.ExecContext(ctx, "ALTER USER '"+target.Target.Role+"'@'%' ACCOUNT LOCK"); err != nil {
+		t.Fatal(err)
+	}
+	if err := recoveryRunner.RunClaimedReconciliation(ctx, reconcileClaim); err == nil {
+		t.Fatal("locked target account released recovery fence")
+	}
+	if _, err := admin.ExecContext(ctx, "ALTER USER '"+target.Target.Role+"'@'%' ACCOUNT UNLOCK"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := admin.ExecContext(ctx, "UPDATE `"+targetDB+"`.marker SET value='drifted'"); err != nil {
+		t.Fatal(err)
+	}
+	if err := recoveryRunner.RunClaimedReconciliation(ctx, reconcileClaim); err == nil {
+		t.Fatal("changed target data released recovery fence")
+	}
+	if active, err := control.RuntimeMutationFenceActive(ctx); err != nil || !active {
+		t.Fatalf("failed reconciliation released runtime fence: %v %v", active, err)
+	}
+	if _, err := admin.ExecContext(ctx, "UPDATE `"+targetDB+"`.marker SET value='signed-intent-source'"); err != nil {
+		t.Fatal(err)
+	}
+	if err := recoveryRunner.RunClaimedReconciliation(ctx, reconcileClaim); err != nil {
+		t.Fatalf("signed observed-unlock reconciliation: %v", err)
 	}
 	var releaseState, recoveryID, recoveryStatus string
 	if err := control.Pool.QueryRow(ctx, `SELECT r.state,m.recovery_operation_id,o.status
 		FROM mysql_restore_recovery_intents r
 		JOIN mysql_restore_maintenance_fences m ON m.operation_id=r.restore_operation_id
 		JOIN operations o ON o.id=r.operation_id WHERE r.operation_id=$1`, recoveryClaim.OperationID()).Scan(&releaseState, &recoveryID, &recoveryStatus); err != nil ||
-		releaseState != "runtime-released" || recoveryID != recoveryClaim.OperationID() || recoveryStatus != "succeeded" {
+		releaseState != "target-unlock-proved" || recoveryID != reconcileClaim.OperationID() || recoveryStatus != "failed" {
 		t.Fatalf("release receipt state=%q recovery=%q status=%q err=%v", releaseState, recoveryID, recoveryStatus, err)
+	}
+	if operation, err := control.GetOperation(ctx, reconcileClaim.OperationID()); err != nil || operation.Status != "succeeded" {
+		t.Fatalf("reconciliation operation did not succeed: %+v %v", operation, err)
+	}
+	if _, err := stores[0].VerifyAcceptedOperation(ctx, recoveryClaim.OperationID()); err != nil {
+		t.Fatalf("failed predecessor lost signed acceptance after reconciliation: %v", err)
+	}
+	if _, err := stores[0].VerifyAcceptedOperation(ctx, reconcileClaim.OperationID()); err != nil {
+		t.Fatalf("reconciliation lost signed acceptance after release: %v", err)
 	}
 	if active, err := control.RuntimeMutationFenceActive(ctx); err != nil || active {
 		t.Fatalf("global fence remains active after atomic release: %v %v", active, err)

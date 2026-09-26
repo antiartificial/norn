@@ -49,6 +49,19 @@ or `indeterminate`). An unavailable live check is reported as unverified;
 the inspection result does not authorize a retry or fence release. A recovery
 that succeeded already returns its terminal operation ID.
 
+If an earlier recovery claim expired after target unlock intent, first use
+`--inspect-only` with that earlier request key. When the target account is
+independently observed **unlocked**, target data still matches the signed
+artifact, and the source job/account remain stopped and locked, run a new
+request key with `--reconcile-prior-recovery-id PRIOR_RECOVERY_UUID`. This
+accepts a separate signed one-attempt operation bound to the failed recovery's
+canonical digest and exact held fence. It rechecks the live evidence under
+its own claim, releases the fence and writes a terminal receipt atomically.
+It never repeats `ALTER USER`; the prior operation remains failed with a link
+to its successful reconciliation. A locked or indeterminate target, changed
+data, lost source stop, changed catalog, or stale fence keeps the fence held
+for inspection. `--accept-only` can sign this reconciliation before execution.
+
 Run the build from `v2/api`. The opt-in WordPress fixture builds this binary and passed the complete
 signed deploy, guarded source stop, S3-emulated retention, restore, command
 recovery, same-key replay, and fresh WordPress deployment on the recovered

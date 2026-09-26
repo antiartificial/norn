@@ -31,7 +31,7 @@ func (db *DB) PrepareClaimedMySQLRestoreRecovery(ctx context.Context, acceptance
 	}
 	var request MySQLRestoreRecoveryRequest
 	if accepted.Operation.Kind != MySQLRestoreRecoveryOperationKind || accepted.Operation.Status != model.OperationRunning || accepted.Operation.MaxAttempts != 1 ||
-		decodeMySQLRestoreRecoveryPayload(accepted.Operation.Payload, &request) != nil {
+		decodeMySQLRestoreRecoveryPayload(accepted.Operation.Payload, &request) != nil || request.PriorRecoveryOperationID != "" {
 		return MySQLRestoreRecoveryIntent{}, ErrMySQLRestoreFence
 	}
 	ready, err := db.AssessCompletedMySQLRestoreRecovery(ctx, acceptance, request.RestoreOperationID)
@@ -142,7 +142,7 @@ func (db *DB) IntendClaimedMySQLRestoreTargetUnlock(ctx context.Context, accepta
 	}
 	var signed MySQLRestoreRecoveryRequest
 	if decodeMySQLRestoreRecoveryPayload(accepted.Operation.Payload, &signed) != nil ||
-		signed.RestoreOperationID != prepared.RestoreOperationID || signed.RuntimeFenceEpoch != target.Fence.Epoch || signed.RuntimeFenceOwner != target.Fence.Owner {
+		signed.PriorRecoveryOperationID != "" || signed.RestoreOperationID != prepared.RestoreOperationID || signed.RuntimeFenceEpoch != target.Fence.Epoch || signed.RuntimeFenceOwner != target.Fence.Owner {
 		return MySQLRestoreRecoveryIntent{}, ErrMySQLRestoreFence
 	}
 	tx, err := db.Pool.BeginTx(ctx, pgx.TxOptions{})

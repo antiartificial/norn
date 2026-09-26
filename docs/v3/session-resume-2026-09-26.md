@@ -36,6 +36,6 @@ The gap was real: the source command retained its artifact but left its operatio
 ## First actions in the next session
 
 1. Read this file and `git status --short --branch` in the Norn PR worktree; verify PR #76/#176 heads and checks.
-2. Check the exact PR #76 CI head. Continue the signed operator-observed recovery protocol after an ambiguous target unlock; the inspection path is advisory and cannot reclaim an expired one-attempt operation.
+2. Check the exact PR #76 CI head. The signed reconciliation path handles an expired recovery whose target is independently proved unlocked; a locked or indeterminate target remains fenced. Continue failure qualification for ambiguous stop, account lock, publication, transfer, import, and cleanup.
 3. Continue the pure/local M2 and M3 qualification that does not require new cloud resources. Keep provider, separate-node, managed DB, and live Mini/Fleet gates explicitly pending until their own evidence exists.
 4. Refresh the gate disposition after each slice; report milestone progress by passed/open gates rather than a guessed percentage.

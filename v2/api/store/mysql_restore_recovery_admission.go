@@ -19,6 +19,8 @@ const MySQLRestoreRecoveryOperationKind = "database.mysql-restore-recovery"
 type MySQLRestoreRecoveryRequest struct {
 	RestoreOperationID        string                  `json:"restoreOperationId"`
 	RestoreAcceptanceDigest   string                  `json:"restoreAcceptanceDigest"`
+	PriorRecoveryOperationID  string                  `json:"priorRecoveryOperationId,omitempty"`
+	PriorRecoveryDigest       string                  `json:"priorRecoveryDigest,omitempty"`
 	CatalogRevision           int64                   `json:"catalogRevision"`
 	RuntimeFenceEpoch         int64                   `json:"runtimeFenceEpoch"`
 	RuntimeFenceOwner         string                  `json:"runtimeFenceOwner"`
@@ -28,10 +30,11 @@ type MySQLRestoreRecoveryRequest struct {
 }
 
 type MySQLRestoreRecoveryAcceptanceInput struct {
-	RestoreOperationID string
-	Actor              OperationActor
-	Key                string
-	Audit              AcceptanceAuditContext
+	RestoreOperationID       string
+	PriorRecoveryOperationID string
+	Actor                    OperationActor
+	Key                      string
+	Audit                    AcceptanceAuditContext
 }
 
 // AcceptPrivateMySQLRestoreRecovery signs the exact completed restore and
@@ -48,10 +51,14 @@ func (db *DB) AcceptPrivateMySQLRestoreRecovery(ctx context.Context, acceptance 
 	}
 	identity := OperationRequestIdentity{Authority: authority, Actor: input.Actor, Kind: MySQLRestoreRecoveryOperationKind,
 		Resource: "mysql-restore/" + input.RestoreOperationID, Key: input.Key}
+	if input.PriorRecoveryOperationID != "" {
+		identity.Resource += "/reconcile/" + input.PriorRecoveryOperationID
+	}
 	if existing, err := acceptance.ResolveIdentity(ctx, identity); err == nil {
 		var request MySQLRestoreRecoveryRequest
 		if existing.Operation.Kind != MySQLRestoreRecoveryOperationKind || existing.Operation.MaxAttempts != 1 ||
-			decodeMySQLRestoreRecoveryPayload(existing.Operation.Payload, &request) != nil || request.RestoreOperationID != input.RestoreOperationID {
+			decodeMySQLRestoreRecoveryPayload(existing.Operation.Payload, &request) != nil || request.RestoreOperationID != input.RestoreOperationID ||
+			request.PriorRecoveryOperationID != input.PriorRecoveryOperationID {
 			return AcceptedOperation{}, &AcceptanceConflictError{Identity: identity}
 		}
 		return existing, nil
@@ -72,6 +79,28 @@ func (db *DB) AcceptPrivateMySQLRestoreRecovery(ctx context.Context, acceptance 
 		RuntimeFenceOwner: ready.Fence.Owner, SourceArtifactOperationID: ready.Request.SourceArtifact.OperationID,
 		SourceReceiptSHA256: ready.Request.SourceArtifact.ReceiptSHA256, Target: ready.Request.Target,
 	}
+	if input.PriorRecoveryOperationID != "" {
+		prior, err := acceptance.VerifyAcceptedOperation(ctx, input.PriorRecoveryOperationID)
+		if err != nil || prior.Operation.Kind != MySQLRestoreRecoveryOperationKind || prior.Operation.Status != model.OperationFailed {
+			return AcceptedOperation{}, ErrMySQLRestoreFence
+		}
+		var priorRequest MySQLRestoreRecoveryRequest
+		if decodeMySQLRestoreRecoveryPayload(prior.Operation.Payload, &priorRequest) != nil || priorRequest.PriorRecoveryOperationID != "" ||
+			priorRequest.RestoreOperationID != request.RestoreOperationID || priorRequest.RestoreAcceptanceDigest != request.RestoreAcceptanceDigest ||
+			priorRequest.CatalogRevision != request.CatalogRevision || priorRequest.RuntimeFenceEpoch != request.RuntimeFenceEpoch ||
+			priorRequest.RuntimeFenceOwner != request.RuntimeFenceOwner || priorRequest.SourceArtifactOperationID != request.SourceArtifactOperationID ||
+			priorRequest.SourceReceiptSHA256 != request.SourceReceiptSHA256 || priorRequest.Target != request.Target {
+			return AcceptedOperation{}, ErrMySQLRestoreFence
+		}
+		var state string
+		if err := db.Pool.QueryRow(ctx, `SELECT state FROM mysql_restore_recovery_intents WHERE operation_id=$1 AND restore_operation_id=$2 AND acceptance_intent_id=$3`,
+			input.PriorRecoveryOperationID, input.RestoreOperationID, prior.AcceptanceIntentID).Scan(&state); err != nil ||
+			(state != "target-unlock-intended" && state != "target-unlock-proved") {
+			return AcceptedOperation{}, ErrMySQLRestoreFence
+		}
+		request.PriorRecoveryOperationID = input.PriorRecoveryOperationID
+		request.PriorRecoveryDigest = prior.Intent.CanonicalDigest
+	}
 	encoded, err := json.Marshal(request)
 	if err != nil {
 		return AcceptedOperation{}, err
@@ -82,9 +111,13 @@ func (db *DB) AcceptPrivateMySQLRestoreRecovery(ctx context.Context, acceptance 
 	if err := decoder.Decode(&payload); err != nil {
 		return AcceptedOperation{}, err
 	}
+	source := "private-mysql-restore-recovery"
+	if input.PriorRecoveryOperationID != "" {
+		source = "private-mysql-restore-reconciliation"
+	}
 	entry := OperationAcceptance{Identity: identity, Audit: input.Audit,
 		Operation: model.Operation{ID: uuid.NewString(), Kind: MySQLRestoreRecoveryOperationKind, Status: model.OperationQueued,
-			Risk: "high", Source: "private-mysql-restore-recovery", MaxAttempts: 1, Payload: payload}}
+			Risk: "high", Source: source, MaxAttempts: 1, Payload: payload}}
 	entry.Fingerprint, err = CanonicalOperationRequestFingerprint(entry)
 	if err != nil {
 		return AcceptedOperation{}, err
@@ -103,6 +136,9 @@ func decodeMySQLRestoreRecoveryPayload(payload map[string]interface{}, request *
 	if request.RestoreOperationID == "" || request.RestoreAcceptanceDigest == "" || request.CatalogRevision <= 0 ||
 		request.RuntimeFenceEpoch <= 0 || request.RuntimeFenceOwner != "mysql-restore:"+request.RestoreOperationID ||
 		request.SourceArtifactOperationID == "" || request.SourceReceiptSHA256 == "" || request.Target.Engine != database.EngineMySQL {
+		return ErrMySQLRestoreFence
+	}
+	if (request.PriorRecoveryOperationID == "") != (request.PriorRecoveryDigest == "") {
 		return ErrMySQLRestoreFence
 	}
 	return nil

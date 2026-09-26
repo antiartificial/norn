@@ -144,7 +144,7 @@ func (db *DB) ProveClaimedMySQLRestoreTargetUnlocked(ctx context.Context, accept
 	accepted, err := acceptance.VerifyAcceptedOperation(ctx, claim.OperationID())
 	var signed MySQLRestoreRecoveryRequest
 	if err != nil || accepted.Operation.Kind != MySQLRestoreRecoveryOperationKind || accepted.Operation.Status != model.OperationRunning ||
-		decodeMySQLRestoreRecoveryPayload(accepted.Operation.Payload, &signed) != nil {
+		decodeMySQLRestoreRecoveryPayload(accepted.Operation.Payload, &signed) != nil || signed.PriorRecoveryOperationID != "" {
 		return ErrMySQLRestoreFence
 	}
 	ready, err := db.AssessCompletedMySQLRestoreLiveSource(ctx, acceptance, signed.RestoreOperationID, observer, secrets)
