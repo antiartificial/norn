@@ -57,3 +57,21 @@ safe for provider changes until the Fleet workflow supplies a signed,
 independently verified external cancellation or reconciliation proof. M3 still
 requires that proof, end-to-end runner wiring, PG-free Fleet runtime coverage,
 and the host-supervised three-member bootstrap, restore, and fault exercises.
+
+## Current-head route audit — 2026-09-26
+
+At Norn PR #76 head `c3d437d`, the normal etcd Fleet router registers the
+attempt create, heartbeat, advance, and cancel routes in
+`v2/api/etcd_fleet_runtime.go`. Its capability response also advertises
+`fleet-runner-attempts-v1`. The adapter's `TestV3FleetRunnerAttemptAcceptsOneConcurrentRecoveryEtcd`
+asserts that one of two successors is accepted while the predecessor remains
+queued; the accepted transaction changes that predecessor's control record to
+`canceled` and states that external execution termination is unproven.
+
+This is a **merge/release blocker** for provider-changing recovery, not merely
+a missing fault test. Before those routes and capability can be qualified for
+v3, bind recovery admission to independently verified termination or
+reconciliation of the exact predecessor workflow, then prove the evidence and
+one-successor rule through the normal API with real protected runner identity.
+Until that proof exists, a green local suite or PR check must not authorize
+protected Fleet adoption or automatic successor dispatch.
