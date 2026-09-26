@@ -189,6 +189,9 @@ func runReconcileSource(ctx context.Context, arguments []string, output io.Write
 	if err := runner.RunClaimedReconciliation(ctx, claim); err != nil {
 		return fmt.Errorf("source successor %s requires inspection: %w", accepted.Operation.ID, err)
 	}
+	if err := afterReconcileSourceTransfer(accepted.Operation.ID); err != nil {
+		return fmt.Errorf("source successor %s transfer checkpoint failed: %w", accepted.Operation.ID, err)
+	}
 	priorInspection, err := control.InspectPrivateMySQLSourceSnapshot(ctx, acceptance, *priorID)
 	if err != nil || priorInspection.ReconciledByOperationID != accepted.Operation.ID || !priorInspection.RuntimeFenceHeld {
 		return errors.New("source predecessor transfer proof requires inspection")

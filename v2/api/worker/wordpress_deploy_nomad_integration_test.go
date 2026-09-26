@@ -436,42 +436,6 @@ func wordpressSourceThroughCommand(t *testing.T, ctx context.Context, db *store.
 		if err != nil || prior.Status != model.OperationFailed || prior.Metadata["manualRecoveryRequired"] != true {
 			t.Fatalf("ambiguous source was not fenced for reconciliation: %+v %v", prior, err)
 		}
-		if os.Getenv("NORN_TEST_WORDPRESS_SOURCE_CRASH_AFTER_TRANSFER") == "1" {
-			first, err := db.AcceptPrivateMySQLSourceReconciliation(ctx, operations,
-				store.MySQLSourceReconciliationAcceptanceInput{PriorSourceOperationID: sourceID,
-					Actor: actor, Key: "wordpress-first-reconciliation",
-					Audit: store.AcceptanceAuditContext{Source: "wordpress-deploy-nomad-integration"}})
-			if err != nil {
-				t.Fatalf("accept first successor before process exit: %v", err)
-			}
-			claimed, claim, err := db.ClaimPrivateMySQLOperation(ctx, first.Operation.ID,
-				"wordpress-first-reconciliation", store.MySQLSourceSnapshotOperationKind, time.Minute)
-			if err != nil || claimed == nil {
-				t.Fatalf("claim first successor before process exit: %+v %v", claimed, err)
-			}
-			secrets, err := database.NewDirectorySecretSource(secretRoot)
-			if err != nil {
-				t.Fatal(err)
-			}
-			runner := store.MySQLSourceSnapshotRunner{Control: db, Acceptance: operations, Secrets: secrets, Observer: client}
-			if err := runner.RunClaimedReconciliation(ctx, claim); err != nil {
-				secrets.Close()
-				t.Fatalf("first source transfer before process exit: %v", err)
-			}
-			secrets.Close()
-			if _, err := db.Pool.Exec(ctx, `UPDATE operations SET locked_until=clock_timestamp()-interval '1 second' WHERE id=$1`,
-				first.Operation.ID); err != nil {
-				t.Fatal(err)
-			}
-			if err := db.RecoverExpiredOperations(ctx); err != nil {
-				t.Fatal(err)
-			}
-			failedFirst, err := db.GetOperation(ctx, first.Operation.ID)
-			if err != nil || failedFirst.Status != model.OperationFailed || failedFirst.Metadata["manualRecoveryRequired"] != true {
-				t.Fatalf("transferred successor did not fail closed after process exit: %+v %v", failedFirst, err)
-			}
-			sourceID = first.Operation.ID
-		}
 		args[0] = "reconcile-source"
 		for i := 0; i < len(args)-1; i++ {
 			if args[i] == "--selection-file" {
@@ -479,6 +443,79 @@ func wordpressSourceThroughCommand(t *testing.T, ctx context.Context, db *store.
 			}
 			if args[i] == "--request-key" {
 				args[i+1] = "wordpress-bound-source-reconciliation"
+			}
+		}
+		if os.Getenv("NORN_TEST_WORDPRESS_SOURCE_CRASH_AFTER_TRANSFER") == "1" {
+			firstArgs := append([]string(nil), args...)
+			for i := 0; i < len(firstArgs)-1; i++ {
+				if firstArgs[i] == "--request-key" {
+					firstArgs[i+1] = "wordpress-first-reconciliation"
+				}
+			}
+			marker := filepath.Join(private, "transfer-committed")
+			command := exec.CommandContext(ctx, os.Getenv("NORN_TEST_WORDPRESS_MAINTENANCE_CLI"), firstArgs...)
+			var commandOutput bytes.Buffer
+			command.Stdout, command.Stderr = &commandOutput, &commandOutput
+			command.Env = append(os.Environ(), "SSL_CERT_FILE="+caFile, "NORN_TEST_SOURCE_TRANSFER_MARKER="+marker)
+			if err := command.Start(); err != nil {
+				t.Fatalf("start first reconciliation process: %v", err)
+			}
+			t.Cleanup(func() { _ = command.Process.Kill() })
+			done := make(chan error, 1)
+			go func() { done <- command.Wait() }()
+			var firstID string
+			deadline := time.After(30 * time.Second)
+			ticker := time.NewTicker(20 * time.Millisecond)
+			defer ticker.Stop()
+		waitForTransfer:
+			for {
+				select {
+				case err := <-done:
+					t.Fatalf("first reconciliation exited before transfer marker: %v: %s", err, commandOutput.String())
+				case <-deadline:
+					_ = command.Process.Kill()
+					<-done
+					t.Fatalf("first reconciliation did not reach transfer marker: %s", commandOutput.String())
+				case <-ticker.C:
+					content, err := os.ReadFile(marker)
+					if err == nil {
+						firstID = string(content)
+						break waitForTransfer
+					}
+					if !os.IsNotExist(err) {
+						_ = command.Process.Kill()
+						<-done
+						t.Fatalf("read transfer marker: %v", err)
+					}
+				}
+			}
+			priorInspection, err := db.InspectPrivateMySQLSourceSnapshot(ctx, operations, sourceID)
+			if err != nil || priorInspection.ReconciledByOperationID != firstID || !priorInspection.RuntimeFenceHeld {
+				_ = command.Process.Kill()
+				<-done
+				t.Fatalf("transfer marker lacked committed signed proof: %+v %v", priorInspection, err)
+			}
+			if err := command.Process.Kill(); err != nil {
+				t.Fatalf("kill first reconciliation after committed transfer: %v", err)
+			}
+			if err := <-done; err == nil {
+				t.Fatal("first reconciliation exited successfully despite process kill")
+			}
+			if _, err := db.Pool.Exec(ctx, `UPDATE operations SET locked_until=clock_timestamp()-interval '1 second' WHERE id=$1`, firstID); err != nil {
+				t.Fatal(err)
+			}
+			if err := db.RecoverExpiredOperations(ctx); err != nil {
+				t.Fatal(err)
+			}
+			failedFirst, err := db.GetOperation(ctx, firstID)
+			if err != nil || failedFirst.Status != model.OperationFailed || failedFirst.Metadata["manualRecoveryRequired"] != true {
+				t.Fatalf("killed transferred successor did not fail closed: %+v %v", failedFirst, err)
+			}
+			sourceID = firstID
+			for i := 0; i < len(args)-1; i++ {
+				if args[i] == "--prior-source-operation-id" {
+					args[i+1] = firstID
+				}
 			}
 		}
 	}
