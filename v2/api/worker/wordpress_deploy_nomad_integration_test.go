@@ -876,14 +876,47 @@ func wordpressRestoreStagedSource(t *testing.T, ctx context.Context, db *store.D
 	if active, err := db.RuntimeMutationFenceActive(ctx); err != nil || !active {
 		t.Fatalf("acceptance or inspection released the WordPress fence: %v %v", active, err)
 	}
+	recoveryArgs := cliArgs
+	if os.Getenv("NORN_TEST_WORDPRESS_RECONCILE") == "1" {
+		claimed, priorClaim, err := db.ClaimPrivateMySQLOperation(ctx, acceptedRecovery.Operation.ID, "wordPress-interrupted-recovery", store.MySQLRestoreRecoveryOperationKind, 2*time.Minute)
+		if err != nil || claimed == nil {
+			t.Fatalf("claim prior signed WordPress recovery: %+v %v", claimed, err)
+		}
+		priorRunner := store.MySQLRestoreRecoveryRunner{Control: db, Acceptance: operations, Observer: client, Secrets: secrets}
+		if err := priorRunner.RunClaimedTargetUnlock(ctx, priorClaim); err != nil {
+			t.Fatalf("unlock prior WordPress target before interruption: %v", err)
+		}
+		if _, err := db.Pool.Exec(ctx, `UPDATE operations SET locked_until=clock_timestamp()-interval '1 second' WHERE id=$1`, priorClaim.OperationID()); err != nil {
+			t.Fatal(err)
+		}
+		if err := db.RecoverExpiredOperations(ctx); err != nil {
+			t.Fatalf("expire interrupted WordPress recovery: %v", err)
+		}
+		observedOutput, err := exec.CommandContext(ctx, os.Getenv("NORN_TEST_WORDPRESS_MAINTENANCE_CLI"), inspectArgs...).CombinedOutput()
+		var observed store.MySQLRestoreRecoveryInspection
+		if err != nil || json.Unmarshal(observedOutput, &observed) != nil || observed.OperationStatus != model.OperationFailed ||
+			observed.IntentState != "target-unlock-proved" || !observed.SourceVerified || !observed.TargetDataVerified || observed.TargetAccountState != "unlocked" {
+			t.Fatalf("interrupted WordPress recovery inspection=%+v err=%v output=%s", observed, err, observedOutput)
+		}
+		if active, err := db.RuntimeMutationFenceActive(ctx); err != nil || !active {
+			t.Fatalf("interrupted WordPress recovery released fence: %v %v", active, err)
+		}
+		recoveryArgs = append(append([]string(nil), cliArgs...), "--reconcile-prior-recovery-id", priorClaim.OperationID())
+		for index := range recoveryArgs {
+			if recoveryArgs[index] == "--request-key" {
+				recoveryArgs[index+1] = "wordpress-reconcile-" + restoreID
+				break
+			}
+		}
+	}
 	var recoveryID string
 	for attempt := 0; attempt < 2; attempt++ {
-		output, err := exec.CommandContext(ctx, os.Getenv("NORN_TEST_WORDPRESS_MAINTENANCE_CLI"), cliArgs...).CombinedOutput()
+		output, err := exec.CommandContext(ctx, os.Getenv("NORN_TEST_WORDPRESS_MAINTENANCE_CLI"), recoveryArgs...).CombinedOutput()
 		if err != nil || !bytes.Contains(output, []byte(" status=succeeded")) {
 			t.Fatalf("private signed WordPress recovery invocation %d: %v: %s", attempt+1, err, output)
 		}
 		fields := strings.Fields(string(output))
-		if len(fields) != 2 || !strings.HasPrefix(fields[0], "recovery_operation_id=") {
+		if len(fields) < 2 || len(fields) > 3 || !strings.HasPrefix(fields[0], "recovery_operation_id=") || fields[1] != "status=succeeded" {
 			t.Fatalf("private recovery output is invalid: %s", output)
 		}
 		id := strings.TrimPrefix(fields[0], "recovery_operation_id=")

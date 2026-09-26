@@ -71,6 +71,13 @@ recovery operation. Docker returned to zero containers and the original
 290 volumes after the run. The fixture does not prove a real remote provider,
 separate-node recovery, managed MySQL, or Mini rollback.
 
+The opt-in `NORN_TEST_WORDPRESS_RECONCILE=1` variant also passed on 2026-09-26.
+It claimed the accepted recovery, unlocked the target, expired that claim,
+and inspected the failed operation with the global fence still held. The
+compiled command then reconciled that exact prior operation under a new signed
+request key, proved same-key replay, and served WordPress HTTP from the
+restored database. This is disposable local reconciliation evidence only.
+
 This subcommand is limited to recovery. Separate [source](m2-private-mysql-source-command-2026-09-26.md),
 [restore admission](m2-private-mysql-restore-admission-2026-09-26.md), and
 [restore](m2-private-mysql-restore-command-2026-09-26.md) commands handle the
