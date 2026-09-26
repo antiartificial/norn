@@ -227,8 +227,11 @@ process immediately after the remote dump write, recovers the expired claim,
 and runs a successor claim in the parent process. It verifies the manifest,
 published receipt and completed snapshot step before deliberately stopping
 ahead of migration. This qualifies the process boundary for the deployment
-snapshot prefix; a full `OperationWorker` process and replay through later
-deployment steps remain unqualified.
+snapshot prefix. A further test runs the first `OperationWorker` in a child
+process with its app lock and lease renewal, exits after the remote dump write,
+and lets a successor worker perform its own expiry recovery, claim and replay.
+It verifies the published receipt and completed snapshot step before stopping
+ahead of migration. Replay through later deployment steps remains unqualified.
 The deploy and rollback runners now require a persisted step-complete record
 before starting the next step. A missing step row or failed completion write
 stops execution for manual review rather than silently advancing to migration
