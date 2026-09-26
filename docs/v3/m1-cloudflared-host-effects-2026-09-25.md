@@ -147,3 +147,15 @@ files were removed and absence was checked. This narrows the Mini launchd
 compatibility gap without touching the live `com.norn.cloudflared` service.
 The real tunnel rewrite, public endpoint health, and recovery receipt path
 remain unqualified.
+
+The private-copy and disposable-agent paths were then run together on Mini.
+The v3 writer read a mode-0600 copy of the live 17-rule config, inserted one
+dummy `.invalid` rule before the catch-all, atomically published a mode-0600
+candidate whose digest matched its accepted target, and validated it with
+Mini's cloudflared 2026.8.2. The v3 restart helper validated that same
+private candidate and restarted only the disposable LaunchAgent; its PID
+changed. The live config SHA-256 was unchanged, and the test registration,
+copied config, and helper binaries were removed and checked absent. This is
+an end-to-end private rehearsal of the Mini config shape and launchd command,
+but the live tunnel, route health, receipt publication, and host recovery
+remain unqualified.
