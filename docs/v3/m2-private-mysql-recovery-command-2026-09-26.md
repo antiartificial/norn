@@ -42,7 +42,8 @@ recovery operation. Docker returned to zero containers and the original
 290 volumes after the run. The fixture does not prove a real remote provider,
 separate-node recovery, managed MySQL, or Mini rollback.
 
-This command is limited to recovery. Source snapshot admission/execution and
-restore admission/execution still use private library calls only; no production
-CLI or worker is wired for them yet. The public restore capability remains
-closed until those entry points and the remaining M2 release gates are proven.
+This subcommand is limited to recovery. The separate [private restore command](m2-private-mysql-restore-command-2026-09-26.md)
+now executes an already signed retained restore. Source snapshot
+admission/execution and restore admission still use private library calls. The
+public restore capability remains closed until those entry points and the
+remaining M2 release gates are proven.

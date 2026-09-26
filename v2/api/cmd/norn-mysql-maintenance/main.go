@@ -50,8 +50,11 @@ func main() {
 }
 
 func run(ctx context.Context, arguments []string, output io.Writer) error {
+	if len(arguments) > 0 && arguments[0] == "restore" {
+		return runRestore(ctx, arguments[1:], output)
+	}
 	if len(arguments) == 0 || arguments[0] != "recover" {
-		return errors.New("usage: norn-mysql-maintenance recover --database-url-file PATH --audit-key-file PATH --authority UUID --secrets-dir PATH --nomad-url URL --restore-operation-id UUID --target-database NAME --actor-issuer ISSUER --actor-subject SUBJECT --request-key KEY")
+		return errors.New("usage: norn-mysql-maintenance {restore|recover} [private options]")
 	}
 	flags := flag.NewFlagSet("recover", flag.ContinueOnError)
 	flags.SetOutput(io.Discard)

@@ -43,9 +43,35 @@ func TestRecoveryPrivateInputFiles(t *testing.T) {
 }
 
 func TestRecoveryRequiresExplicitSelection(t *testing.T) {
-	for _, args := range [][]string{nil, {"recover"}, {"recover", "--restore-operation-id", "not-an-id"}, {"unknown"}} {
+	for _, args := range [][]string{nil, {"recover"}, {"recover", "--restore-operation-id", "not-an-id"}, {"restore"}, {"restore", "--restore-operation-id", "not-an-id"}, {"unknown"}} {
 		if err := run(context.Background(), args, &strings.Builder{}); err == nil || errors.Is(err, context.Canceled) {
 			t.Fatalf("incomplete recovery arguments %+v were accepted: %v", args, err)
 		}
+	}
+}
+
+func TestRestorePrivateDirectories(t *testing.T) {
+	root := t.TempDir()
+	if err := os.Chmod(root, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := privateDirectory(root); err != nil {
+		t.Fatalf("owner-only directory rejected: %v", err)
+	}
+	if err := os.Chmod(root, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := privateDirectory(root); err == nil {
+		t.Fatal("public materialization directory accepted")
+	}
+	if err := os.Chmod(root, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	link := filepath.Join(t.TempDir(), "link")
+	if err := os.Symlink(root, link); err != nil {
+		t.Fatal(err)
+	}
+	if err := privateDirectory(link); err == nil {
+		t.Fatal("symlinked materialization directory accepted")
 	}
 }
