@@ -40,6 +40,15 @@ go build -buildvcs=false -o ./norn-mysql-maintenance ./cmd/norn-mysql-maintenanc
   --request-key STABLE_RECOVERY_REQUEST_KEY
 ```
 
+Add `--accept-only` to sign and return the recovery operation without claiming
+it or changing MySQL. Then use `--inspect-only` with the same exact identity to observe the existing
+signed recovery without accepting, claiming, unlocking, or releasing
+anything. It returns the durable intent state and advisory checks for the
+stopped source, target data, and target runtime account (`locked`, `unlocked`,
+or `indeterminate`). An unavailable live check is reported as unverified;
+the inspection result does not authorize a retry or fence release. A recovery
+that succeeded already returns its terminal operation ID.
+
 Run the build from `v2/api`. The opt-in WordPress fixture builds this binary and passed the complete
 signed deploy, guarded source stop, S3-emulated retention, restore, command
 recovery, same-key replay, and fresh WordPress deployment on the recovered

@@ -50,6 +50,13 @@ func TestRecoveryRequiresExplicitSelection(t *testing.T) {
 	}
 }
 
+func TestRecoveryRejectsCombinedAcceptAndInspection(t *testing.T) {
+	err := run(context.Background(), []string{"recover", "--accept-only", "--inspect-only"}, &strings.Builder{})
+	if err == nil || !strings.Contains(err.Error(), "separate actions") {
+		t.Fatalf("combined recovery modes were accepted: %v", err)
+	}
+}
+
 func TestRestorePrivateDirectories(t *testing.T) {
 	root := t.TempDir()
 	if err := os.Chmod(root, 0o700); err != nil {

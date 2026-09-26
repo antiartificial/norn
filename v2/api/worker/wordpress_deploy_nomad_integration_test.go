@@ -854,6 +854,28 @@ func wordpressRestoreStagedSource(t *testing.T, ctx context.Context, db *store.D
 	if _, err := operations.ResolveIdentity(ctx, identity); !errors.Is(err, store.ErrAcceptanceNotFound) {
 		t.Fatalf("wrong target selection created a signed recovery operation: %v", err)
 	}
+	inspectArgs := append(append([]string(nil), cliArgs...), "--inspect-only")
+	if output, err := exec.CommandContext(ctx, os.Getenv("NORN_TEST_WORDPRESS_MAINTENANCE_CLI"), inspectArgs...).CombinedOutput(); err == nil || !bytes.Contains(output, []byte("inspection requires an existing signed recovery")) {
+		t.Fatalf("inspection accepted a missing recovery identity: %v: %s", err, output)
+	}
+	acceptArgs := append(append([]string(nil), cliArgs...), "--accept-only")
+	acceptedOutput, err := exec.CommandContext(ctx, os.Getenv("NORN_TEST_WORDPRESS_MAINTENANCE_CLI"), acceptArgs...).CombinedOutput()
+	if err != nil || !bytes.Contains(acceptedOutput, []byte(" status=queued")) {
+		t.Fatalf("private recovery acceptance: %v: %s", err, acceptedOutput)
+	}
+	acceptedRecovery, err := operations.ResolveIdentity(ctx, identity)
+	if err != nil || !bytes.Contains(acceptedOutput, []byte("recovery_operation_id="+acceptedRecovery.Operation.ID)) {
+		t.Fatalf("accept-only did not retain exact signed identity: %+v %v: %s", acceptedRecovery, err, acceptedOutput)
+	}
+	inspectionOutput, err := exec.CommandContext(ctx, os.Getenv("NORN_TEST_WORDPRESS_MAINTENANCE_CLI"), inspectArgs...).CombinedOutput()
+	var inspection store.MySQLRestoreRecoveryInspection
+	if err != nil || json.Unmarshal(inspectionOutput, &inspection) != nil || inspection.RecoveryOperationID != acceptedRecovery.Operation.ID ||
+		inspection.IntentState != "not-started" || !inspection.SourceVerified || !inspection.TargetDataVerified || inspection.TargetAccountState != "locked" {
+		t.Fatalf("private recovery inspection=%+v err=%v output=%s", inspection, err, inspectionOutput)
+	}
+	if active, err := db.RuntimeMutationFenceActive(ctx); err != nil || !active {
+		t.Fatalf("acceptance or inspection released the WordPress fence: %v %v", active, err)
+	}
 	var recoveryID string
 	for attempt := 0; attempt < 2; attempt++ {
 		output, err := exec.CommandContext(ctx, os.Getenv("NORN_TEST_WORDPRESS_MAINTENANCE_CLI"), cliArgs...).CombinedOutput()

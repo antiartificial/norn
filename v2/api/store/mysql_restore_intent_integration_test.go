@@ -656,6 +656,10 @@ func TestMySQLRestoreIntentAgainstDisposableEngines(t *testing.T) {
 	if err := control.ReleaseClaimedMySQLRestoreRuntimeFence(ctx, stores[0], recoveryClaim, stoppedSource, secrets); err == nil {
 		t.Fatalf("recovery released fence before target unlock proof: %v", err)
 	}
+	beforeUnlock, err := control.InspectPrivateMySQLRestoreRecovery(ctx, stores[0], recoveryClaim.OperationID(), stoppedSource, secrets)
+	if err != nil || beforeUnlock.IntentState != "not-started" || !beforeUnlock.SourceVerified || !beforeUnlock.TargetDataVerified || beforeUnlock.TargetAccountState != "locked" {
+		t.Fatalf("pre-unlock recovery inspection=%+v err=%v", beforeUnlock, err)
+	}
 	if active, err := control.RuntimeMutationFenceActive(ctx); err != nil || !active {
 		t.Fatalf("failed release did not retain fence: %v %v", active, err)
 	}
@@ -669,12 +673,17 @@ func TestMySQLRestoreIntentAgainstDisposableEngines(t *testing.T) {
 	if err := control.RenewOperationClaim(ctx, recoveryClaim, time.Minute); err != nil {
 		t.Fatalf("renew recovery claim after target unlock: %v", err)
 	}
+	recoveryRunner.ClaimLease = time.Minute
 	if err := recoveryRunner.RunClaimedTargetUnlock(ctx, recoveryClaim); !errors.Is(err, ErrMySQLRestoreFence) {
 		t.Fatalf("one-way target unlock was replayed: %v", err)
 	}
 	var unlockState string
 	if err := control.Pool.QueryRow(ctx, `SELECT state FROM mysql_restore_recovery_intents WHERE operation_id=$1`, recoveryClaim.OperationID()).Scan(&unlockState); err != nil || unlockState != "target-unlock-proved" {
 		t.Fatalf("durable unlock state=%q err=%v", unlockState, err)
+	}
+	afterUnlock, err := control.InspectPrivateMySQLRestoreRecovery(ctx, stores[0], recoveryClaim.OperationID(), stoppedSource, secrets)
+	if err != nil || afterUnlock.IntentState != "target-unlock-proved" || !afterUnlock.SourceVerified || !afterUnlock.TargetDataVerified || afterUnlock.TargetAccountState != "unlocked" {
+		t.Fatalf("post-unlock recovery inspection=%+v err=%v", afterUnlock, err)
 	}
 	if _, err := control.AssessCompletedMySQLRestoreLiveSource(ctx, stores[0], claim.OperationID(), stoppedSource, secrets); err != nil {
 		t.Fatalf("source account or stopped job was released during target unlock: %v", err)

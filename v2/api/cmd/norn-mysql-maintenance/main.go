@@ -77,8 +77,13 @@ func run(ctx context.Context, arguments []string, output io.Writer) error {
 	actorIssuer := flags.String("actor-issuer", "", "operator actor issuer")
 	actorSubject := flags.String("actor-subject", "", "operator actor subject")
 	requestKey := flags.String("request-key", "", "stable idempotency key")
+	inspectOnly := flags.Bool("inspect-only", false, "observe an existing signed recovery without mutation")
+	acceptOnly := flags.Bool("accept-only", false, "sign recovery intent without claiming or unlocking")
 	if err := flags.Parse(arguments[1:]); err != nil || len(flags.Args()) != 0 {
 		return errors.New("invalid recovery arguments")
+	}
+	if *inspectOnly && *acceptOnly {
+		return errors.New("recovery inspection and acceptance are separate actions")
 	}
 	if *databaseURLFile == "" || *auditKeyFile == "" || *authority == "" || *secretsDir == "" || *nomadURL == "" ||
 		*restoreID == "" || *targetDatabase == "" || *actorIssuer == "" || *actorSubject == "" || *requestKey == "" ||
@@ -146,7 +151,11 @@ func run(ctx context.Context, arguments []string, output io.Writer) error {
 	actor := store.OperationActor{Issuer: *actorIssuer, Subject: *actorSubject}
 	identity := store.OperationRequestIdentity{Authority: liveAuthority, Actor: actor,
 		Kind: store.MySQLRestoreRecoveryOperationKind, Resource: "mysql-restore/" + *restoreID, Key: *requestKey}
-	if _, err := acceptance.ResolveIdentity(ctx, identity); errors.Is(err, store.ErrAcceptanceNotFound) {
+	existing, identityErr := acceptance.ResolveIdentity(ctx, identity)
+	if errors.Is(identityErr, store.ErrAcceptanceNotFound) {
+		if *inspectOnly {
+			return errors.New("inspection requires an existing signed recovery operation")
+		}
 		ready, readyErr := control.AssessCompletedMySQLRestoreRecovery(ctx, acceptance, *restoreID)
 		if readyErr != nil {
 			return fmt.Errorf("completed restore is not ready for signed recovery: %w", readyErr)
@@ -154,14 +163,19 @@ func run(ctx context.Context, arguments []string, output io.Writer) error {
 		if ready.Request.Target.Database != *targetDatabase {
 			return errors.New("expected target database does not match signed restore")
 		}
-	} else if err != nil {
-		return fmt.Errorf("recovery request identity is unavailable: %w", err)
+	} else if identityErr != nil {
+		return fmt.Errorf("recovery request identity is unavailable: %w", identityErr)
 	}
-	accepted, err := control.AcceptPrivateMySQLRestoreRecovery(ctx, acceptance, store.MySQLRestoreRecoveryAcceptanceInput{
-		RestoreOperationID: *restoreID, Actor: actor,
-		Key: *requestKey, Audit: store.AcceptanceAuditContext{Source: "private-mysql-maintenance-cli"}})
-	if err != nil {
-		return fmt.Errorf("signed recovery acceptance failed: %w", err)
+	var accepted store.AcceptedOperation
+	if *inspectOnly {
+		accepted = existing
+	} else {
+		accepted, err = control.AcceptPrivateMySQLRestoreRecovery(ctx, acceptance, store.MySQLRestoreRecoveryAcceptanceInput{
+			RestoreOperationID: *restoreID, Actor: actor,
+			Key: *requestKey, Audit: store.AcceptanceAuditContext{Source: "private-mysql-maintenance-cli"}})
+		if err != nil {
+			return fmt.Errorf("signed recovery acceptance failed: %w", err)
+		}
 	}
 	if _, err := acceptance.VerifyAcceptedOperation(ctx, accepted.Operation.ID); err != nil {
 		return fmt.Errorf("signed recovery verification failed: %w", err)
@@ -172,9 +186,20 @@ func run(ctx context.Context, arguments []string, output io.Writer) error {
 		signedRequest.Target.Database != *targetDatabase {
 		return errors.New("expected target database does not match signed recovery")
 	}
+	if *acceptOnly {
+		_, err := fmt.Fprintf(output, "recovery_operation_id=%s status=%s\n", accepted.Operation.ID, accepted.Operation.Status)
+		return err
+	}
 	if accepted.Operation.Status == model.OperationSucceeded {
 		_, err := fmt.Fprintf(output, "recovery_operation_id=%s status=succeeded\n", accepted.Operation.ID)
 		return err
+	}
+	if *inspectOnly {
+		inspection, err := control.InspectPrivateMySQLRestoreRecovery(ctx, acceptance, accepted.Operation.ID, observer, secrets)
+		if err != nil {
+			return fmt.Errorf("signed recovery inspection failed: %w", err)
+		}
+		return json.NewEncoder(output).Encode(inspection)
 	}
 	if _, err := control.AssessCompletedMySQLRestoreLiveSource(ctx, acceptance, *restoreID, observer, secrets); err != nil {
 		return fmt.Errorf("stopped source is not ready for signed recovery: %w", err)
