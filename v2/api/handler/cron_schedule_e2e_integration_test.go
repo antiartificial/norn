@@ -8,10 +8,12 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"net"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strconv"
 	"strings"
@@ -54,6 +56,13 @@ func TestCronScheduleCrashAfterReservationRemainsUnresolved(t *testing.T) {
 }
 func TestCronScheduleCrashAfterNomadCommitReconciles(t *testing.T) {
 	testCronScheduleHTTPWorkerNomadPostgres(t, false, false, "committed")
+}
+func TestCronScheduleWorkerProcessCrashAfterNomadCommit(t *testing.T) {
+	if os.Getenv("NORN_CRON_SCHEDULE_CRASH_WORKER") == "1" {
+		runCronScheduleCrashWorker(t)
+		return
+	}
+	testCronScheduleHTTPWorkerNomadPostgres(t, false, false, "process-committed")
 }
 
 func testCronScheduleHTTPWorkerNomadPostgres(t *testing.T, loseResponse, twoWorkers bool, crashWindow string) {
@@ -219,6 +228,10 @@ func testCronScheduleHTTPWorkerNomadPostgres(t *testing.T, loseResponse, twoWork
 	}
 	if status != http.StatusAccepted || accepted.Kind != "app.cron-schedule" {
 		t.Fatalf("accept status=%d operation=%+v body=%s", status, accepted, body)
+	}
+	if crashWindow == "process-committed" {
+		testCronScheduleProcessCrashWindow(t, ctx, db, root, address, client, paused, accepted, serve)
+		return
 	}
 	if crashWindow != "" {
 		testCronScheduleCrashWindow(t, ctx, db, p, client, job, paused, accepted, serve, crashWindow)
@@ -407,4 +420,135 @@ func testCronScheduleCrashWindow(t *testing.T, ctx context.Context, db *store.DB
 	if status != http.StatusOK || replay.ID != accepted.ID || replay.Receipt == nil {
 		t.Fatalf("replay status=%d operation=%+v body=%s", status, replay, body)
 	}
+}
+
+// The first normal worker is killed after Nomad commits the CAS replacement,
+// while its HTTP response is withheld. A separate process must reconcile the
+// durable reservation from the exact marker without another Nomad write.
+func testCronScheduleProcessCrashWindow(t *testing.T, ctx context.Context, db *store.DB, appsDir, address string, client *nomad.Client, paused *nomad.PeriodicJobInfo, accepted model.Operation, serve func() (int, model.Operation, string)) {
+	t.Helper()
+	target, err := url.Parse(address)
+	if err != nil || target.Scheme != "http" || net.ParseIP(target.Hostname()) == nil || !net.ParseIP(target.Hostname()).IsLoopback() {
+		t.Fatal("process-crash qualification requires disposable loopback Nomad")
+	}
+	committed := make(chan struct{})
+	var writes atomic.Int32
+	proxy := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		isWrite := r.Method == http.MethodPut && r.URL.Path == "/v1/jobs"
+		if isWrite && writes.Add(1) != 1 {
+			http.Error(w, "duplicate schedule update rejected by qualification", http.StatusConflict)
+			return
+		}
+		upstream := r.Clone(r.Context())
+		upstream.URL.Scheme, upstream.URL.Host, upstream.Host, upstream.RequestURI = target.Scheme, target.Host, target.Host, ""
+		response, e := http.DefaultTransport.RoundTrip(upstream)
+		if e != nil {
+			http.Error(w, e.Error(), http.StatusBadGateway)
+			return
+		}
+		defer response.Body.Close()
+		if isWrite {
+			_, _ = io.Copy(io.Discard, response.Body)
+			close(committed)
+			<-r.Context().Done()
+			return
+		}
+		for key, values := range response.Header {
+			for _, value := range values {
+				w.Header().Add(key, value)
+			}
+		}
+		w.WriteHeader(response.StatusCode)
+		_, _ = io.Copy(w, response.Body)
+	}))
+	t.Cleanup(proxy.Close)
+	schema := db.Pool.Config().ConnConfig.RuntimeParams["search_path"]
+	if schema == "" {
+		t.Fatal("disposable schema is required")
+	}
+	command := func() *exec.Cmd {
+		cmd := exec.Command(os.Args[0], "-test.run=^TestCronScheduleWorkerProcessCrashAfterNomadCommit$")
+		cmd.Env = append(os.Environ(), "NORN_CRON_SCHEDULE_CRASH_WORKER=1", "NORN_CRON_SCHEDULE_CRASH_SCHEMA="+schema, "NORN_CRON_SCHEDULE_CRASH_APPS_DIR="+appsDir, "NORN_TEST_NOMAD_ADDR="+proxy.URL)
+		return cmd
+	}
+	crashed := command()
+	if err := crashed.Start(); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = crashed.Process.Kill(); _, _ = crashed.Process.Wait() })
+	select {
+	case <-committed:
+	case <-time.After(20 * time.Second):
+		t.Fatal("worker did not reach committed Nomad schedule boundary")
+	}
+	jobID := fmt.Sprint(accepted.Payload["jobId"])
+	state, err := client.PeriodicJobSchedule(jobID)
+	if err != nil || state.Version != paused.Version+1 || state.Schedule != "15 2 * * *" || state.CronScheduleEffectID == "" {
+		t.Fatalf("Nomad did not commit exact schedule update: state=%+v err=%v", state, err)
+	}
+	var lifecycle string
+	if err := db.Pool.QueryRow(ctx, `SELECT lifecycle FROM operation_effects WHERE operation_id=$1`, accepted.ID).Scan(&lifecycle); err != nil || lifecycle != "reserved" {
+		t.Fatalf("pre-kill effect lifecycle=%q err=%v", lifecycle, err)
+	}
+	if err := crashed.Process.Kill(); err != nil {
+		t.Fatalf("SIGKILL worker: %v", err)
+	}
+	if err := crashed.Wait(); err == nil {
+		t.Fatal("worker exited cleanly before SIGKILL")
+	}
+	if _, err := db.Pool.Exec(ctx, `UPDATE operations SET locked_until=now()-interval '1 second' WHERE id=$1`, accepted.ID); err != nil {
+		t.Fatal(err)
+	}
+	restarted := command()
+	if err := restarted.Start(); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = restarted.Process.Kill(); _, _ = restarted.Process.Wait() })
+	deadline := time.Now().Add(25 * time.Second)
+	var finished *model.Operation
+	for time.Now().Before(deadline) {
+		finished, err = db.GetOperation(ctx, accepted.ID)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if !finished.Active() {
+			break
+		}
+		time.Sleep(100 * time.Millisecond)
+	}
+	if finished == nil || finished.Status != model.OperationSucceeded || writes.Load() != 1 {
+		t.Fatalf("restarted operation=%+v writes=%d err=%v", finished, writes.Load(), err)
+	}
+	state, err = client.PeriodicJobSchedule(jobID)
+	if err != nil || state.Version != paused.Version+1 || state.CronScheduleEffectID == "" {
+		t.Fatalf("recovery repeated or lost Nomad update: state=%+v err=%v", state, err)
+	}
+	if err := db.Pool.QueryRow(ctx, `SELECT lifecycle FROM operation_effects WHERE operation_id=$1`, accepted.ID).Scan(&lifecycle); err != nil || lifecycle != "completed" {
+		t.Fatalf("post-recovery effect lifecycle=%q err=%v", lifecycle, err)
+	}
+	status, replay, body := serve()
+	if status != http.StatusOK || replay.ID != accepted.ID || replay.Receipt == nil {
+		t.Fatalf("replay status=%d operation=%+v body=%s", status, replay, body)
+	}
+}
+
+func runCronScheduleCrashWorker(t *testing.T) {
+	t.Helper()
+	db, err := openCronTriggerCrashDB(os.Getenv("NORN_TEST_DATABASE_URL"), os.Getenv("NORN_CRON_SCHEDULE_CRASH_SCHEMA"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+	client, err := nomad.NewClient(os.Getenv("NORN_TEST_NOMAD_ADDR"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	p := &pipeline.Pipeline{DB: db, Nomad: client, AppsDir: os.Getenv("NORN_CRON_SCHEDULE_CRASH_APPS_DIR"), SagaStore: saga.NewPostgresStore(db.Pool)}
+	p.CronScheduleEffects, err = pipeline.NewNomadCronScheduleEffects(db, client, p)
+	if err != nil {
+		t.Fatal(err)
+	}
+	h := New(db, client, nil, nil, &config.Config{AppsDir: p.AppsDir, AuditSigningKey: strings.Repeat("c", 32)}, p, nil, nil, p.SagaStore, nil, nil)
+	p.SetOperationStore(h.OperationStore())
+	worker.NewOperationWorkerForKinds(db, p, []string{"app.cron-schedule"}).Run(context.Background())
 }
