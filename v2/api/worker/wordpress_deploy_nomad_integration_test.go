@@ -431,6 +431,19 @@ func wordpressSourceThroughCommand(t *testing.T, ctx context.Context, db *store.
 	if err != nil || completed.Status != model.OperationSucceeded {
 		t.Fatalf("retained source operation is not terminal: %+v, %v", completed, err)
 	}
+	inspectArgs := []string{"inspect-source", "--database-url-file", databaseURLFile,
+		"--audit-key-file", auditKeyFile, "--authority", authority, "--schema", schema,
+		"--source-operation-id", sourceID}
+	inspectOutput, err := run(inspectArgs)
+	if err != nil {
+		t.Fatalf("private source inspection command: %v: %s", err, inspectOutput)
+	}
+	var inspection store.MySQLSourceSnapshotInspection
+	if json.Unmarshal(inspectOutput, &inspection) != nil || inspection.OperationID != sourceID ||
+		inspection.OperationStatus != model.OperationSucceeded || inspection.IntentState != "retained-proved" ||
+		!inspection.StageReceiptVerified || !inspection.RetentionReceiptVerified || !inspection.RuntimeFenceHeld {
+		t.Fatalf("private source inspection did not verify retained fence: %s", inspectOutput)
+	}
 	if err := db.RecoverExpiredOperations(ctx); err != nil {
 		t.Fatalf("source completion did not survive operation recovery: %v", err)
 	}

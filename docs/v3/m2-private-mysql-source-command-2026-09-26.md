@@ -9,8 +9,28 @@ under its exact live claim only after the signed retention receipt is durable,
 then removes the local SQL stage. Completion preserves the source runtime fence
 and locked MySQL account for the separately accepted restore. A same-key replay
 requires the successful terminal receipt and returns the source operation ID
-without repeating external effects. If terminalization or local cleanup fails,
-the command leaves the source fenced for inspection.
+without repeating external effects. A terminal replay also retries cleanup of
+the exact signed local SQL stage if it remains. If terminalization or cleanup
+fails, the source stays fenced for inspection.
+
+`inspect-source` reads one explicit source operation without claiming it or
+repeating an external effect:
+
+```sh
+./norn-mysql-maintenance inspect-source \
+  --database-url-file /private/control-url \
+  --audit-key-file /private/audit-key \
+  --authority CONTROL_AUTHORITY_UUID \
+  --schema public \
+  --source-operation-id EXACT_SOURCE_OPERATION_ID
+```
+
+Its JSON reports operation/intent state, whether the claim lease is current,
+whether the control-plane runtime fence is held, and whether the signed stage
+and retention receipts verify. It omits SQL paths and credentials. A verified
+retention receipt is historical proof; the command does not inspect the live
+Nomad job, MySQL account, or remote object. Those require separate observations
+before any reconciliation or release decision.
 
 Build from `v2/api`:
 
@@ -53,6 +73,10 @@ For a disposable numeric loopback S3 endpoint only, add `--s3-loopback-http`.
 The PostgreSQL-backed source intent test rejects completion before retention,
 proves terminal success after signed retention, keeps the runtime fence held,
 and verifies expired-operation recovery cannot change the result. The
+inspection path passed against disposable PostgreSQL 16 on 2026-09-26 for
+stage-proved, ambiguous publish-intended, tampered retention, and terminal
+retained-proved states. The CLI path is also included in the optional compiled
+WordPress fixture; that fixture has not been rerun for this change. The
 disposable WordPress fixture passed with the compiled source, restore,
 and recovery commands. It rejected a wrong source database before consuming
 the queued operation, proved a same-key retained replay, restored the retained

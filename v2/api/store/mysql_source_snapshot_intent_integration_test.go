@@ -299,6 +299,21 @@ func TestMySQLSourceSnapshotIntentReservesSignedPhysicalSource(t *testing.T) {
 	if err != nil || loaded.SHA256 != signed.SHA256 || loaded.Signature != signed.Signature {
 		t.Fatalf("persisted signed receipt=%+v err=%v", loaded, err)
 	}
+	stageInspection, err := db.InspectPrivateMySQLSourceSnapshot(ctx, acceptedStore, claim.OperationID())
+	if err != nil || stageInspection.IntentState != "stage-proved" || !stageInspection.StageReceiptVerified ||
+		stageInspection.RetentionReceiptVerified || !stageInspection.RuntimeFenceHeld || !stageInspection.ClaimLeaseCurrent {
+		t.Fatalf("signed source stage inspection=%+v err=%v", stageInspection, err)
+	}
+	if _, err := db.Pool.Exec(ctx, `UPDATE mysql_source_snapshot_intents SET job_identity=job_identity || '{"jobId":"tampered"}'::jsonb WHERE operation_id=$1`, claim.OperationID()); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := db.InspectPrivateMySQLSourceSnapshot(ctx, acceptedStore, claim.OperationID()); !errors.Is(err, ErrMySQLSourceSnapshotInspection) {
+		t.Fatalf("inspection accepted altered source job identity: %v", err)
+	}
+	jobIdentity, _ := json.Marshal(request.JobIdentity)
+	if _, err := db.Pool.Exec(ctx, `UPDATE mysql_source_snapshot_intents SET job_identity=$2::jsonb WHERE operation_id=$1`, claim.OperationID(), string(jobIdentity)); err != nil {
+		t.Fatal(err)
+	}
 	restore := MySQLRestoreRequest{CatalogRevision: active.Revision, Artifact: artifact, ArtifactPath: signed.Receipt.ArtifactPath,
 		SourceArtifact: MySQLRestoreSourceArtifact{OperationID: claim.OperationID(), ReceiptSHA256: signed.SHA256}}
 	tx, err := db.Pool.Begin(ctx)
@@ -346,6 +361,10 @@ func TestMySQLSourceSnapshotIntentReservesSignedPhysicalSource(t *testing.T) {
 	if err := db.Pool.QueryRow(ctx, `SELECT state FROM mysql_source_snapshot_intents WHERE operation_id=$1`, claim.OperationID()).Scan(&state); err != nil || state != "publish-intended" {
 		t.Fatalf("ambiguous upload did not remain publish-intended: state=%q err=%v", state, err)
 	}
+	ambiguousInspection, err := db.InspectPrivateMySQLSourceSnapshot(ctx, acceptedStore, claim.OperationID())
+	if err != nil || ambiguousInspection.IntentState != "publish-intended" || !ambiguousInspection.StageReceiptVerified || ambiguousInspection.RetentionReceiptVerified {
+		t.Fatalf("ambiguous source inspection=%+v err=%v", ambiguousInspection, err)
+	}
 	descriptor := artifactstore.Descriptor{Key: artifactstore.KeyForSHA256(artifact.SHA256), SHA256: artifact.SHA256, Size: artifact.Bytes}
 	objects.objects = map[string]artifactstore.Descriptor{descriptor.Key: descriptor}
 	retained, err := db.RetainClaimedMySQLSourceArtifact(ctx, acceptedStore, claim, objects)
@@ -361,6 +380,9 @@ func TestMySQLSourceSnapshotIntentReservesSignedPhysicalSource(t *testing.T) {
 	}
 	if _, err := db.Pool.Exec(ctx, `UPDATE mysql_source_snapshot_intents SET retention_receipt_canonical=retention_receipt_canonical || decode('20','hex') WHERE operation_id=$1`, claim.OperationID()); err != nil {
 		t.Fatal(err)
+	}
+	if _, err := db.InspectPrivateMySQLSourceSnapshot(ctx, acceptedStore, claim.OperationID()); !errors.Is(err, ErrMySQLSourceSnapshotInspection) {
+		t.Fatalf("inspection accepted tampered retention receipt: %v", err)
 	}
 	if err := db.FinishClaimedMySQLSourceRetention(ctx, acceptedStore, claim); err == nil {
 		t.Fatal("tampered retention receipt completed source operation")
@@ -383,6 +405,11 @@ func TestMySQLSourceSnapshotIntentReservesSignedPhysicalSource(t *testing.T) {
 	completed, err := db.GetOperation(ctx, claim.OperationID())
 	if err != nil || completed.Status != model.OperationSucceeded {
 		t.Fatalf("source terminal receipt=%+v err=%v", completed, err)
+	}
+	completedInspection, err := db.InspectPrivateMySQLSourceSnapshot(ctx, acceptedStore, claim.OperationID())
+	if err != nil || completedInspection.OperationStatus != model.OperationSucceeded || completedInspection.IntentState != "retained-proved" ||
+		!completedInspection.StageReceiptVerified || !completedInspection.RetentionReceiptVerified || !completedInspection.RuntimeFenceHeld || completedInspection.ClaimLeaseCurrent {
+		t.Fatalf("completed source inspection=%+v err=%v", completedInspection, err)
 	}
 	if err := db.Pool.QueryRow(ctx, `SELECT active,owner FROM runtime_mutation_fence WHERE singleton=true`).Scan(&fenceActive, &fenceOwner); err != nil || !fenceActive || fenceOwner != "mysql-source-snapshot:"+claim.OperationID() {
 		t.Fatalf("source completion released runtime fence: active=%v owner=%q err=%v", fenceActive, fenceOwner, err)
