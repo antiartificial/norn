@@ -163,6 +163,8 @@ export NORN_TEST_WORDPRESS_DEPLOY_RESTORE_PASSWORD=disposable-restore-runtime
 export NORN_TEST_WORDPRESS_DEPLOY_RESTORE_ROLE_PASSWORD=disposable-restore
 
 cd "$repo_root/v2/api"
+go build -buildvcs=false -o "$fixture_root/norn-mysql-maintenance" ./cmd/norn-mysql-maintenance
+export NORN_TEST_WORDPRESS_MAINTENANCE_CLI="$fixture_root/norn-mysql-maintenance"
 go test ./worker -run '^TestClaimedWordPressVerifiedTLSDeployInNomad$' -count=1 -v
 restored_marker="$(docker exec "$mysql_container" mysql -u root -p"$mysql_root_password" -Nse "SELECT COUNT(*) FROM wp_restore_target.source_rehearsal WHERE value='source-rehearsal'" 2>/dev/null)"
 restored_options="$(docker exec "$mysql_container" mysql -u root -p"$mysql_root_password" -Nse 'SELECT COUNT(*) FROM wp_restore_target.wp_options' 2>/dev/null)"
