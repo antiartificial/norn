@@ -42,3 +42,25 @@ from the same mode-`0600` owner file, and neither values nor bookmark content
 were copied into this record. This proves the bookmark session worked at the
 refresh instant. Job completion and the progress marker do not by themselves
 prove every downstream enrichment stage or future credential validity.
+
+## Read-only refresh — 2026-09-27 10:38 UTC
+
+The X Developer Console for the account listing `trovely` showed **$9.79
+remaining prepaid X API credit**, **$6.37 current spend** in the Sep 19–Oct 19
+billing cycle, an **Unlimited** cycle cap, and **Auto Recharge Off**. Credit is
+available now; the balance has fallen $0.21 since the earlier console check.
+The console does not attribute that change to Like Trove.
+
+Mini's `like-trove` service and daily-capture periodic parent were running.
+The latest retained daily-capture child, launched Sep 27 at 03:17
+America/Chicago, had a complete allocation and exit code 0. The Field Harbor
+AM/PM periodic parents were running; the PM parent listed its next launch for
+Sep 27 at 20:10 America/Chicago. The bookmark marker remained at
+`lastIncrementalSyncAt=2026-09-27T01:21:30.256Z` and **41,150 bookmarks**;
+there had been no later scheduled AM/PM sync at this check.
+
+A fresh read-only X `Bookmarks` GraphQL GET with `count=1` returned HTTP 200,
+data present, and zero GraphQL errors. The probe loaded session values inside
+Mini from the owner mode-`0600` file and emitted only status flags. This proves
+the stored session was valid for this read at the check instant. It does not
+guarantee the next sync or the future credit balance.
