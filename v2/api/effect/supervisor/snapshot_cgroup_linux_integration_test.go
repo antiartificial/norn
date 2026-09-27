@@ -7,6 +7,7 @@ import (
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
+	"encoding/json"
 	"errors"
 	"io"
 	"os"
@@ -275,6 +276,149 @@ func TestLinuxCgroupMigrationHelperDeath(t *testing.T) {
 	privateDirs, err := filepath.Glob(filepath.Join(manager.root, sha256DirectoryName(reservation.SupervisorExecutionID), ".migration-*"))
 	if err != nil || len(privateDirs) != 0 {
 		t.Fatalf("orphan migration private files remain: %v, %v", privateDirs, err)
+	}
+}
+
+// A real API process can disappear after the database write commits but
+// before it records the runner's completion. Its successor must read the
+// original execution journal and observe that runner without launching SQL
+// a second time.
+func TestLinuxCgroupMigrationAPIProcessExit(t *testing.T) {
+	if os.Getenv("NORN_REAL_CGROUP_TEST") != "1" {
+		t.Skip("set NORN_REAL_CGROUP_TEST=1 in the privileged Linux container harness")
+	}
+	runner := requireExecutable(t, "NORN_EFFECT_RUNNER_BINARY")
+	psql := requireExecutable(t, "NORN_TEST_PSQL")
+	root := filepath.Join("/sys/fs/cgroup", "norn-migration-api-exit")
+	journal := filepath.Join(os.TempDir(), "norn-migration-api-exit-journal")
+	marker := filepath.Join(os.TempDir(), "norn-migration-api-exit-committed")
+	identityPath := filepath.Join(os.TempDir(), "norn-migration-api-exit-identity")
+	key := bytes.Repeat([]byte("migration-api-exit-key-"), 2)
+	command := shellQuote(psql) + " -X -v ON_ERROR_STOP=1 -h /tmp/norn-snapshot-pg -p 55432 -U postgres -d postgres -c " +
+		shellQuote("INSERT INTO norn_migration_api_exit_probe (id) VALUES (1)") +
+		" >/dev/null && printf committed > " + shellQuote(marker) + " && sleep 3"
+	open := func() (*Manager, effect.Reservation) {
+		backend, err := NewCgroupBackend(root, runner, fileSHA256(t, runner), key)
+		if err != nil {
+			t.Fatal(err)
+		}
+		manager, err := NewManager(journal, key, backend)
+		if err != nil {
+			t.Fatal(err)
+		}
+		intent := testMigrationIntent()
+		digest := sha256.Sum256([]byte(command))
+		intent.CommandSHA256 = hex.EncodeToString(digest[:])
+		intent.TimeoutMillis = 30_000
+		payload, err := manager.BuildMigrationDescriptor(intent)
+		if err != nil {
+			t.Fatal(err)
+		}
+		reservation := effect.Reservation{Authority: "linux-integration", Resource: "app/integration/migrate",
+			OperationClaim: effect.OperationClaim{OperationID: "api-exit", OwnerID: "test", Generation: 1},
+			Stage:          MigrationStage, Supervisor: "norn-effect-runner", SupervisorExecutionID: "migration-api-exit", LaunchPayload: payload}
+		reservation.InputDigest, err = effect.ComputeInputDigest(reservation)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return manager, reservation
+	}
+	material := MigrationLaunchMaterial{Command: command, Directory: "/tmp", Environment: []string{"PATH=/usr/bin:/bin"}}
+	if os.Getenv("NORN_MIGRATION_API_EXIT_CHILD") == "1" {
+		manager, reservation := open()
+		if err := manager.Prepare(context.Background(), reservation); err != nil {
+			t.Fatal(err)
+		}
+		identity, err := manager.LaunchMigration(context.Background(), reservation, material)
+		if err != nil {
+			t.Fatal(err)
+		}
+		encoded, err := json.Marshal(identity)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(identityPath, encoded, 0o600); err != nil {
+			t.Fatal(err)
+		}
+		deadline := time.Now().Add(5 * time.Second)
+		for {
+			if _, err := os.Stat(marker); err == nil {
+				os.Exit(47)
+			}
+			if time.Now().After(deadline) {
+				t.Fatal("migration did not commit before API exit")
+			}
+			time.Sleep(10 * time.Millisecond)
+		}
+	}
+	if err := os.Mkdir(root, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() {
+		_ = os.WriteFile(filepath.Join(root, "cgroup.kill"), []byte("1\n"), 0o200)
+		_ = os.Remove(root)
+	})
+	setup := exec.Command(psql, "-X", "-v", "ON_ERROR_STOP=1", "-h", "/tmp/norn-snapshot-pg", "-p", "55432", "-U", "postgres", "-d", "postgres", "-c", "CREATE TABLE norn_migration_api_exit_probe (id integer PRIMARY KEY)")
+	if output, err := setup.CombinedOutput(); err != nil {
+		t.Fatalf("prepare disposable migration database: %v: %s", err, output)
+	}
+	child := exec.Command(os.Args[0], "-test.run=^TestLinuxCgroupMigrationAPIProcessExit$")
+	child.Env = append(os.Environ(), "NORN_MIGRATION_API_EXIT_CHILD=1")
+	if output, err := child.CombinedOutput(); err == nil {
+		t.Fatalf("API process returned without exiting: %s", output)
+	} else {
+		var exit *exec.ExitError
+		if !errors.As(err, &exit) || exit.ExitCode() != 47 {
+			t.Fatalf("API process exit = %v: %s", err, output)
+		}
+	}
+	encoded, err := os.ReadFile(identityPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var original effect.ExecutionIdentity
+	if err := json.Unmarshal(encoded, &original); err != nil {
+		t.Fatal(err)
+	}
+	cgroupDigest := sha256.Sum256([]byte(original.RuntimeInstanceID))
+	commandCgroup := filepath.Join(root, hex.EncodeToString(cgroupDigest[:]), "command")
+	if populated, err := cgroupPopulated(commandCgroup); err != nil || !populated {
+		t.Fatalf("runner did not survive API process exit: populated=%v err=%v", populated, err)
+	}
+	manager, reservation := open()
+	resumed, err := manager.LaunchMigration(context.Background(), reservation, material)
+	if err != nil || resumed.RuntimeInstanceID != original.RuntimeInstanceID {
+		t.Fatalf("successor launch = %+v, original=%+v, err=%v", resumed, original, err)
+	}
+	deadline := time.Now().Add(8 * time.Second)
+	var observation effect.Observation
+	for {
+		observation, err = manager.ObserveMigration(context.Background(), reservation, resumed)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if observation.Phase == effect.SupervisorSucceeded {
+			break
+		}
+		if observation.Phase != effect.SupervisorRunning || time.Now().After(deadline) {
+			t.Fatalf("successor observation = %+v", observation)
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+	query := exec.Command(psql, "-X", "-At", "-h", "/tmp/norn-snapshot-pg", "-p", "55432", "-U", "postgres", "-d", "postgres", "-c", "SELECT count(*) FROM norn_migration_api_exit_probe")
+	if output, err := query.CombinedOutput(); err != nil || strings.TrimSpace(string(output)) != "1" {
+		t.Fatalf("migration write count = %q, err=%v", output, err)
+	}
+	intent := testMigrationIntent()
+	checker := &migrationCheckerFake{result: MigrationPostconditionResult{TargetSHA256: intent.TargetSHA256,
+		PostconditionSHA256: intent.PostconditionSHA256, Satisfied: true}}
+	verifier, err := NewMigrationVerifier(manager, checker)
+	if err != nil {
+		t.Fatal(err)
+	}
+	verification, err := verifier.Verify(context.Background(), effect.Record{Reservation: reservation}, observation)
+	if err != nil || verification.Decision != effect.VerificationSucceeded || verification.RuntimeInstanceID != original.RuntimeInstanceID || checker.checks != 1 {
+		t.Fatalf("successor verification = %+v, checks=%d, err=%v", verification, checker.checks, err)
 	}
 }
 

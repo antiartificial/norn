@@ -60,6 +60,14 @@ PostgreSQL; it passed on 2026-09-27 without installing packages in Docker.
 The protected-runtime crash and database-write reconciliation rehearsal is
 still required for M1 qualification.
 
+The disposable Linux harness now also kills the API test process after a
+PostgreSQL migration write commits while its command cgroup remains active.
+A newly started process reopens the supervisor journal, receives the same
+runtime identity without launching a second command, observes contained zero
+exit, and finds exactly one committed row. This qualifies the local runner
+process boundary; it does not exercise the full deployment claim/store path
+or replace the protected Mini/Fleet rehearsal.
+
 ## Current behavior and risk
 
 Migrations without a reviewed postcondition still execute with host `sh -c`

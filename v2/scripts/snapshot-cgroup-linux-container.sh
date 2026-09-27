@@ -17,4 +17,4 @@ NORN_EFFECT_RUNNER_BINARY=/runner \
 NORN_TEST_PG_DUMP=/usr/lib/postgresql/16/bin/pg_dump \
 NORN_TEST_PG_SERVICE=integration \
 NORN_TEST_PSQL=/usr/lib/postgresql/16/bin/psql \
-/supervisor.test -test.run '^TestLinuxCgroup(SnapshotRunner|MigrationDescendantTimeout|MigrationHelperDeath)$' -test.v
+/supervisor.test -test.run '^TestLinuxCgroup(SnapshotRunner|MigrationDescendantTimeout|MigrationHelperDeath|MigrationAPIProcessExit)$' -test.v
