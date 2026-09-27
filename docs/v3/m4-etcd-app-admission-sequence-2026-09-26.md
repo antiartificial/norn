@@ -241,6 +241,11 @@ active pre-index work must first drain or reconcile it.
    local etcd member, including forged app and payload refusals. A dedicated
    deployment worker must call it while holding a live claim and app lock;
    the existing general `app.deploy` worker still enters the PG pipeline.
+   A private worker helper now derives the runtime-only target map and catalog
+   revision from that verified acceptance plus the pinned InfraSpec digest;
+   migration-only or snapshot-only signed databases do not become runtime
+   delivery keys. It still needs a resolver that reopens and probes those
+   exact targets before Nomad preparation.
 
    The next opt-in `ingress.RenderWeightedRoute` slice emits one file-provider
    hostname router and a weighted service referencing those exact
