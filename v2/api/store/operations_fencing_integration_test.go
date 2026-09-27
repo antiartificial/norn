@@ -493,6 +493,51 @@ func TestExpiredMigrationRequeuesOnlyWithPinnedSourceAndDurableEffect(t *testing
 	}
 }
 
+func TestExpiredDeploymentMigrationRequiresManualReviewEvenWithDurableEffect(t *testing.T) {
+	stores := operationTestStores(t, 2)
+	ctx := context.Background()
+	effects, err := NewPGEffectStore(stores[0])
+	if err != nil {
+		t.Fatal(err)
+	}
+	authority, err := effects.Authority(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	deployment, op := insertDeploymentOperationFixture(t, stores[0], 3)
+	_, claim, err := stores[0].ClaimNextOperation(ctx, "deployment-migration-owner", 100*time.Millisecond, []string{"app.deploy"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := stores[0].RecordOperationCheckpoint(ctx, claim, CheckpointSource, json.RawMessage(`{"treeDigest":"sha256:pinned"}`)); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := stores[0].Pool.Exec(ctx, `INSERT INTO deployment_steps(deployment_id,app,saga_id,step,kind,status,attempt) VALUES($1,$2,$3,'migrate','mutable','running',1)`, deployment.ID, deployment.App, deployment.SagaID); err != nil {
+		t.Fatal(err)
+	}
+	reservation := effectReservation(t, authority, "database/binding-1/migration", "deployment-migration-"+op.ID, claim)
+	reservation.Stage, reservation.Supervisor = "app.migrate", "migration-runner"
+	reservation.InputDigest, err = effect.ComputeInputDigest(reservation)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := effects.Reserve(ctx, reservation); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() {
+		_, _ = stores[0].Pool.Exec(context.Background(), `DELETE FROM operation_effects WHERE operation_id=$1`, op.ID)
+	})
+	time.Sleep(180 * time.Millisecond)
+	if err := stores[1].RecoverExpiredOperations(ctx); err != nil {
+		t.Fatal(err)
+	}
+	got, err := stores[1].GetOperation(ctx, op.ID)
+	if err != nil || got.Status != model.OperationFailed || got.Metadata["manualRecoveryRequired"] != true {
+		t.Fatalf("deployment migration replayed earlier stages: %+v, %v", got, err)
+	}
+	assertOperationDeploymentStatus(t, stores[1], op.ID, deployment.ID, model.OperationFailed, model.StatusFailed)
+}
+
 func TestExpiredRestartRequeuesForDurableEffectReconciliation(t *testing.T) {
 	stores := operationTestStores(t, 2)
 	ctx := context.Background()
