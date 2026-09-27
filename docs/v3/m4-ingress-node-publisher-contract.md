@@ -45,7 +45,10 @@ attempt fails closed. The runner's revision-fenced transition to `succeeded`
 now atomically selects the active ingress inventory for its cluster and
 environment when that attempt carries a valid inventory. The server-owned
 active-inventory readback refuses an unrelated plan and carries the pointer
-revision for later route-intent comparison.
+and cluster-epoch revisions for later route-intent comparison. A later
+successful plan without ingress evidence withdraws existing pointers for its
+cluster in that same terminal transaction; an equal provider state serial is
+accepted only when the ingress inventory digest is unchanged.
 The result includes the plan-state and checkpoint etcd revisions needed for
 terminal fencing. The control worker must bind that Fleet plan and attempt to
 its accepted deployment, compare those revisions again at completion,

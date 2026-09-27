@@ -16,18 +16,19 @@ import (
 // The deployment worker must still bind the Fleet plan to its accepted app
 // intent and recheck this evidence before terminal traffic completion.
 type FleetIngressInventoryEvidence struct {
-	PlanID                string
-	Cluster               string
-	Environment           string
-	ActivePointerRevision int64
-	AttemptID             string
-	AttemptRevision       int64
-	PlanStateModRevision  int64
-	CheckpointID          string
-	CheckpointModRevision int64
-	StateSerial           int64
-	Digest                string
-	Nodes                 []ingress.IngressNode
+	PlanID                     string
+	Cluster                    string
+	Environment                string
+	ActivePointerRevision      int64
+	ActiveClusterEpochRevision int64
+	AttemptID                  string
+	AttemptRevision            int64
+	PlanStateModRevision       int64
+	CheckpointID               string
+	CheckpointModRevision      int64
+	StateSerial                int64
+	Digest                     string
+	Nodes                      []ingress.IngressNode
 }
 
 func (s *V3OperationStore) fleetIngressInventoryCompares(evidence FleetIngressInventoryEvidence) ([]clientv3.Cmp, error) {
@@ -39,10 +40,12 @@ func (s *V3OperationStore) fleetIngressInventoryCompares(evidence FleetIngressIn
 		clientv3.Compare(clientv3.ModRevision(s.fleetReconciliationKey(evidence.PlanID, evidence.CheckpointID)), "=", evidence.CheckpointModRevision),
 	}
 	if evidence.ActivePointerRevision > 0 {
-		if evidence.Cluster == "" || evidence.Environment == "" {
+		if evidence.Cluster == "" || evidence.Environment == "" || evidence.ActiveClusterEpochRevision <= 0 {
 			return nil, fmt.Errorf("active Fleet ingress inventory identity is incomplete")
 		}
-		compares = append(compares, clientv3.Compare(clientv3.ModRevision(s.activeFleetIngressKey(evidence.Cluster, evidence.Environment)), "=", evidence.ActivePointerRevision))
+		compares = append(compares,
+			clientv3.Compare(clientv3.ModRevision(s.activeFleetIngressKey(evidence.Cluster, evidence.Environment)), "=", evidence.ActivePointerRevision),
+			clientv3.Compare(clientv3.ModRevision(s.activeFleetIngressClusterEpochKey(evidence.Cluster)), "=", evidence.ActiveClusterEpochRevision))
 	}
 	return compares, nil
 }

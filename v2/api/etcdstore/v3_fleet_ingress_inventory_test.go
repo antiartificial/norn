@@ -50,9 +50,9 @@ func TestResolveFleetIngressInventoryRequiresLatestCompletedAttempt(t *testing.T
 	if err != nil || len(compares) != 2 {
 		t.Fatalf("inventory terminal compares = %d, %v", len(compares), err)
 	}
-	evidence.Cluster, evidence.Environment, evidence.ActivePointerRevision = "norn-staging", "staging/nyc3", 44
+	evidence.Cluster, evidence.Environment, evidence.ActivePointerRevision, evidence.ActiveClusterEpochRevision = "norn-staging", "staging/nyc3", 44, 45
 	compares, err = (&V3OperationStore{prefix: "/test"}).fleetIngressInventoryCompares(*evidence)
-	if err != nil || len(compares) != 3 {
+	if err != nil || len(compares) != 4 {
 		t.Fatalf("active inventory pointer compare = %d, %v", len(compares), err)
 	}
 	incomplete := *evidence
