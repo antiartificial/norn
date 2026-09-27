@@ -85,11 +85,12 @@ UI dependencies in a temporary copy so a worktree's `node_modules` symlink
 cannot mutate another checkout. Re-review this expanded workflow diff against
 protected `master` at the final candidate head before signing. The observer
 has no Fleet installation or traffic-publication authority yet.
-The older `platform_upgrade_integration_test.py` synthetic API fixture remains
-red at its existing `NORN_SKIP_CANDIDATE_API=true` setting because current
-schema-safe preflight requires a passive candidate API and active schema
-identity. Its fixture must be modernized before it can support an M5 claim;
-the passing bundle rehearsal does not cover that upgrade lane.
+The `platform_upgrade_integration_test.py` fixture now boots its synthetic
+candidate API in passive/check mode. Its signed fetch/import test passed
+locally with global Git config disabled, reaching schema-safe preflight and
+verifying the imported release. The fixture uses a synthetic API and ephemeral
+signing key, so it does not establish representative Mini state, production
+signature, off-host restore, or rollback for M5.
 
 The production rollback entrypoint also lacked the durable-dependency guard
 used by the shared release queue. An authorized request could reach a nil

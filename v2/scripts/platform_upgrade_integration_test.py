@@ -30,8 +30,11 @@ class PlatformUpgradeIntegrationTests(unittest.TestCase):
         self.write_fixture_repo()
         self.git("init")
         self.git("add", ".")
+        author_name = subprocess.check_output(["git", "-C", str(SCRIPT_DIR), "log", "-1", "--format=%an"], text=True).strip()
+        author_email = subprocess.check_output(["git", "-C", str(SCRIPT_DIR), "log", "-1", "--format=%ae"], text=True).strip()
+        self.fixture_author = (f"user.name={author_name}", f"user.email={author_email}")
         self.git(
-            "-c", "user.name=Norn Test", "-c", "user.email=norn@example.invalid",
+            "-c", self.fixture_author[0], "-c", self.fixture_author[1],
             "commit", "-m", "fixture",
         )
         self.sha = self.git("rev-parse", "HEAD").stdout.strip()
@@ -260,7 +263,7 @@ func main() {
         self.write("release-marker.txt", "next platform build\n")
         self.git("add", "release-marker.txt")
         self.git(
-            "-c", "user.name=Norn Test", "-c", "user.email=norn@example.invalid",
+            "-c", self.fixture_author[0], "-c", self.fixture_author[1],
             "commit", "-m", "next platform build",
         )
         next_sha = self.git("rev-parse", "HEAD").stdout.strip()
