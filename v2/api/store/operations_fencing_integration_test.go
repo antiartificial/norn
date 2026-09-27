@@ -37,6 +37,17 @@ func operationTestStores(t *testing.T, count int) []*DB {
 	return stores
 }
 
+func expireOperationForRecovery(t *testing.T, db *DB, operationID string) {
+	t.Helper()
+	result, err := db.Pool.Exec(context.Background(), `UPDATE operations SET locked_until=clock_timestamp()-interval '1 second' WHERE id=$1 AND status='running'`, operationID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.RowsAffected() != 1 {
+		t.Fatalf("expire running operation %s: rows=%d", operationID, result.RowsAffected())
+	}
+}
+
 func insertOperationFixture(t *testing.T, db *DB, kind string, maxAttempts int, payload map[string]interface{}) *model.Operation {
 	t.Helper()
 	// PostgreSQL in a disposable container can lag the host clock slightly.
@@ -403,7 +414,7 @@ func TestExpiredMigrationRequeuesOnlyWithPinnedSourceAndDurableEffect(t *testing
 		t.Fatal(err)
 	}
 	op := insertOperationFixture(t, stores[0], "app.migrate", 1, map[string]interface{}{"ref": "abc1234"})
-	_, claim, err := stores[0].ClaimNextOperation(ctx, "migration-owner", 100*time.Millisecond, []string{"app.migrate"})
+	_, claim, err := stores[0].ClaimNextOperation(ctx, "migration-owner", time.Minute, []string{"app.migrate"})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -422,7 +433,7 @@ func TestExpiredMigrationRequeuesOnlyWithPinnedSourceAndDurableEffect(t *testing
 	t.Cleanup(func() {
 		_, _ = stores[0].Pool.Exec(context.Background(), `DELETE FROM operation_effects WHERE operation_id=$1`, op.ID)
 	})
-	time.Sleep(180 * time.Millisecond)
+	expireOperationForRecovery(t, stores[0], op.ID)
 	if err := stores[1].RecoverExpiredOperations(ctx); err != nil {
 		t.Fatal(err)
 	}
@@ -467,7 +478,7 @@ func TestExpiredMigrationRequeuesOnlyWithPinnedSourceAndDurableEffect(t *testing
 		}
 	}
 	withoutSource := insertOperationFixture(t, stores[0], "app.migrate", 1, map[string]interface{}{"ref": "abc1234"})
-	_, missingClaim, err := stores[0].ClaimNextOperation(ctx, "uncheckpointed-owner", 100*time.Millisecond, []string{"app.migrate"})
+	_, missingClaim, err := stores[0].ClaimNextOperation(ctx, "uncheckpointed-owner", time.Minute, []string{"app.migrate"})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -483,7 +494,7 @@ func TestExpiredMigrationRequeuesOnlyWithPinnedSourceAndDurableEffect(t *testing
 	t.Cleanup(func() {
 		_, _ = stores[0].Pool.Exec(context.Background(), `DELETE FROM operation_effects WHERE operation_id=$1`, withoutSource.ID)
 	})
-	time.Sleep(180 * time.Millisecond)
+	expireOperationForRecovery(t, stores[0], withoutSource.ID)
 	if err := stores[1].RecoverExpiredOperations(ctx); err != nil {
 		t.Fatal(err)
 	}
@@ -505,7 +516,7 @@ func TestExpiredDeploymentMigrationRequiresManualReviewEvenWithDurableEffect(t *
 		t.Fatal(err)
 	}
 	deployment, op := insertDeploymentOperationFixture(t, stores[0], 3)
-	_, claim, err := stores[0].ClaimNextOperation(ctx, "deployment-migration-owner", 100*time.Millisecond, []string{"app.deploy"})
+	_, claim, err := stores[0].ClaimNextOperation(ctx, "deployment-migration-owner", time.Minute, []string{"app.deploy"})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -527,7 +538,7 @@ func TestExpiredDeploymentMigrationRequiresManualReviewEvenWithDurableEffect(t *
 	t.Cleanup(func() {
 		_, _ = stores[0].Pool.Exec(context.Background(), `DELETE FROM operation_effects WHERE operation_id=$1`, op.ID)
 	})
-	time.Sleep(180 * time.Millisecond)
+	expireOperationForRecovery(t, stores[0], op.ID)
 	if err := stores[1].RecoverExpiredOperations(ctx); err != nil {
 		t.Fatal(err)
 	}
@@ -550,7 +561,7 @@ func TestExpiredDeploymentMigrationRequeuesOnlyWithPinnedPredecessors(t *testing
 		t.Fatal(err)
 	}
 	deployment, op := insertDeploymentOperationFixture(t, stores[0], 3)
-	_, claim, err := stores[0].ClaimNextOperation(ctx, "deployment-migration-owner", 100*time.Millisecond, []string{"app.deploy"})
+	_, claim, err := stores[0].ClaimNextOperation(ctx, "deployment-migration-owner", time.Minute, []string{"app.deploy"})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -579,7 +590,7 @@ func TestExpiredDeploymentMigrationRequeuesOnlyWithPinnedPredecessors(t *testing
 	t.Cleanup(func() {
 		_, _ = stores[0].Pool.Exec(context.Background(), `DELETE FROM operation_effects WHERE operation_id=$1`, op.ID)
 	})
-	time.Sleep(180 * time.Millisecond)
+	expireOperationForRecovery(t, stores[0], op.ID)
 	if err := stores[1].RecoverExpiredOperations(ctx); err != nil {
 		t.Fatal(err)
 	}
@@ -619,7 +630,7 @@ func TestExpiredDeploymentMigrationWithoutReservedEffectRequiresManualRecovery(t
 	stores := operationTestStores(t, 2)
 	ctx := context.Background()
 	deployment, op := insertDeploymentOperationFixture(t, stores[0], 3)
-	_, claim, err := stores[0].ClaimNextOperation(ctx, "deployment-before-launch", 100*time.Millisecond, []string{"app.deploy"})
+	_, claim, err := stores[0].ClaimNextOperation(ctx, "deployment-before-launch", time.Minute, []string{"app.deploy"})
 	if err != nil {
 		t.Fatal(err)
 	}
