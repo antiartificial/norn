@@ -404,6 +404,9 @@ func (s *V3OperationStore) replay(ctx context.Context, key string, loaded loaded
 	if e := store.VerifyAcceptanceEvidence(store.AcceptanceEvidence{Identity: identity, IdentityFingerprint: got.Intent.Fingerprint, IdentityOperationID: got.Operation.ID, Intent: got.Intent, Operation: persisted.Operation, Deployment: deployment, Regions: regions, FleetRunnerAttempt: fleetAttempt, FleetRunnerLineageValid: fleetLineageValid}); e != nil {
 		return store.AcceptedOperation{}, &store.AcceptanceSignatureError{Err: e}
 	}
+	if e := s.verifyTerminalDeploymentProjection(ctx, persisted.Operation, deployment, regions); e != nil {
+		return store.AcceptedOperation{}, &store.AcceptanceSignatureError{Err: e}
+	}
 	got.Deployment, got.Regions = deployment, regions
 	if got.FleetRunnerAttempt != nil {
 		attempt, verifyErr := s.verifyFleetRunnerAttemptReplay(ctx, got)

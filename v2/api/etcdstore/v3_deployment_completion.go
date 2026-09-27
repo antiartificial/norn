@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"sort"
 	"time"
 
 	clientv3 "go.etcd.io/etcd/client/v3"
@@ -16,8 +17,75 @@ type v3DeploymentRegionResult struct {
 	Result model.DeploymentRegion `json:"result"`
 }
 
+func validDeploymentStatus(status model.DeployStatus) bool {
+	switch status {
+	case model.StatusQueued, model.StatusBuilding, model.StatusTesting, model.StatusMigrating, model.StatusSubmitting, model.StatusHealthy, model.StatusDeployed, model.StatusFailed:
+		return true
+	default:
+		return false
+	}
+}
+
 func (s *V3OperationStore) deploymentRegionResultKey(id, name string) string {
 	return s.prefix + "/v3/deployment-region-results/" + deploymentKeyPart(id) + "/" + deploymentKeyPart(name)
+}
+
+func (s *V3OperationStore) deploymentRegionResultPrefix(id string) string {
+	return s.prefix + "/v3/deployment-region-results/" + deploymentKeyPart(id) + "/"
+}
+
+func (s *V3OperationStore) loadDeploymentRegionResults(ctx context.Context, id string) ([]model.DeploymentRegion, error) {
+	response, err := s.kv.Get(ctx, s.deploymentRegionResultPrefix(id), clientv3.WithPrefix())
+	if err != nil {
+		return nil, err
+	}
+	results := make([]model.DeploymentRegion, 0, len(response.Kvs))
+	seen := map[string]bool{}
+	for _, item := range response.Kvs {
+		var record v3DeploymentRegionResult
+		if err := decodeV3Record(item.Value, &record); err != nil || record.Result.DeploymentID != id || record.Result.Region == "" || seen[record.Result.Region] || string(item.Key) != s.deploymentRegionResultKey(id, record.Result.Region) {
+			return nil, fmt.Errorf("deployment region result record is invalid")
+		}
+		seen[record.Result.Region] = true
+		results = append(results, record.Result)
+	}
+	sort.Slice(results, func(i, j int) bool { return results[i].Region < results[j].Region })
+	return results, nil
+}
+
+func (s *V3OperationStore) verifyTerminalDeploymentProjection(ctx context.Context, op model.Operation, deployment *model.Deployment, regions []model.ResolvedRegion) error {
+	if deployment == nil || !op.Status.Terminal() {
+		return nil
+	}
+	pendingRecovery := op.Metadata["manualRecoveryRequired"] == true || op.Metadata["externalEffectRecoveryPending"] == true
+	results, err := s.loadDeploymentRegionResults(ctx, deployment.ID)
+	if err != nil {
+		return err
+	}
+	if pendingRecovery && len(results) == 0 && deployment.Status != model.StatusDeployed && deployment.Status != model.StatusFailed {
+		// Lease-expiry recovery may terminalize the operation before any
+		// deployment result exists. Its app admission hold remains in place.
+		return nil
+	}
+	if (op.Status == model.OperationSucceeded && deployment.Status != model.StatusDeployed) || (op.Status == model.OperationFailed && deployment.Status != model.StatusFailed) {
+		return fmt.Errorf("terminal operation and deployment statuses differ")
+	}
+	if len(results) != len(regions) {
+		return fmt.Errorf("terminal deployment region results are incomplete")
+	}
+	for i, expected := range regions {
+		actual := results[i]
+		if actual.Region != expected.Name || actual.NomadRegion != expected.NomadRegion || actual.DesiredWeight != expected.TrafficWeight || actual.ActiveWeight < 0 || actual.ActiveWeight > expected.TrafficWeight || actual.UpdatedAt.IsZero() {
+			return fmt.Errorf("terminal deployment region result differs from accepted placement")
+		}
+		if op.Status == model.OperationSucceeded && (actual.Status != model.StatusDeployed || actual.ActiveWeight != expected.TrafficWeight) {
+			return fmt.Errorf("successful deployment region is incomplete")
+		}
+		if op.Status == model.OperationFailed && !pendingRecovery && actual.Status != model.StatusFailed {
+			return fmt.Errorf("failed deployment region is unresolved without a recovery hold")
+		}
+	}
+	return nil
 }
 
 // finishClaimedDeployment is private until the etcd deploy worker verifies
@@ -122,9 +190,7 @@ func (s *V3OperationStore) finishClaimedDeployment(ctx context.Context, claim st
 		if !found || region.NomadRegion != expected.NomadRegion || region.DesiredWeight != expected.TrafficWeight || region.ActiveWeight < 0 || region.ActiveWeight > expected.TrafficWeight {
 			return fmt.Errorf("deployment region result differs from accepted placement")
 		}
-		switch region.Status {
-		case model.StatusQueued, model.StatusBuilding, model.StatusTesting, model.StatusMigrating, model.StatusSubmitting, model.StatusHealthy, model.StatusDeployed, model.StatusFailed:
-		default:
+		if !validDeploymentStatus(region.Status) {
 			return fmt.Errorf("deployment region result status is invalid")
 		}
 		if status == model.OperationSucceeded && (region.Status != model.StatusDeployed || region.ActiveWeight != expected.TrafficWeight) {

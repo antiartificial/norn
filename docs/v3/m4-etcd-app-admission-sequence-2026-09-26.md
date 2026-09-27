@@ -12,7 +12,9 @@ the signed operation, deployment, resolved regions, and app gate for real-etcd
 contract tests; it is not exposed to the API or worker. A private terminal
 transaction now writes deployment and region results with a live claim and app
 lock, and releases the app gate only with the terminal operation. Generic
-operation completion refuses accepted deployments. The store indexes
+operation completion refuses accepted deployments. A signed-identity lookup
+reconstructs queued and terminal deployment views from etcd, and replay
+rejects missing or changed terminal region results. The store indexes
 queued app operations, enforces exclusive app admission in the acceptance
 transaction, and releases the index in claim-fenced terminal
 transactions. Private invocation acceptance and completion participate, and

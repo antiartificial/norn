@@ -44,6 +44,10 @@ func TestV3PrivateDeploymentCompletionFencesAndReleasesEtcd(t *testing.T) {
 	if err != nil || deployment.Status != model.StatusDeployed || len(resolved) != 1 {
 		t.Fatalf("terminal deployment=%+v regions=%v err=%v", deployment, resolved, err)
 	}
+	lookup, err := adapter.GetDeployment(ctx, result.ID)
+	if err != nil || lookup.Status != model.StatusDeployed || len(lookup.Regions) != 1 || lookup.Regions[0].Status != model.StatusDeployed || lookup.Regions[0].EvalID != "eval-1" {
+		t.Fatalf("terminal deployment lookup=%+v err=%v", lookup, err)
+	}
 	regionResult, err := client.Get(ctx, adapter.deploymentRegionResultKey(result.ID, "west"))
 	if err != nil || len(regionResult.Kvs) != 1 {
 		t.Fatalf("region result count=%d err=%v", len(regionResult.Kvs), err)
@@ -55,6 +59,12 @@ func TestV3PrivateDeploymentCompletionFencesAndReleasesEtcd(t *testing.T) {
 	replayed, err := adapter.ResolveIdentity(ctx, request.Identity)
 	if err != nil || replayed.Deployment.Status != model.StatusDeployed || replayed.Operation.Status != model.OperationSucceeded {
 		t.Fatalf("completed deployment replay=%+v err=%v", replayed, err)
+	}
+	if _, err := client.Delete(ctx, adapter.deploymentRegionResultKey(result.ID, "west")); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := adapter.ResolveIdentity(ctx, request.Identity); !errors.Is(err, store.ErrAcceptanceSignature) {
+		t.Fatalf("missing terminal region result did not fail replay: %v", err)
 	}
 }
 
@@ -155,6 +165,15 @@ func TestV3PrivateDeploymentCompletionRetainsUnresolvedEffectHoldEtcd(t *testing
 	active, err := client.Get(ctx, adapter.appAdmissionActiveKey("demo", accepted.Operation.ID))
 	if err != nil || len(active.Kvs) != 1 {
 		t.Fatalf("unresolved effect lost app hold: %d records, %v", len(active.Kvs), err)
+	}
+	if _, err := adapter.ResolveIdentity(ctx, request.Identity); err != nil {
+		t.Fatalf("unresolved deployment replay: %v", err)
+	}
+	if _, err := client.Delete(ctx, adapter.deploymentRegionResultKey(result.ID, "west")); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := adapter.ResolveIdentity(ctx, request.Identity); !errors.Is(err, store.ErrAcceptanceSignature) {
+		t.Fatalf("missing unresolved region result did not fail replay: %v", err)
 	}
 	second := deploymentAdmissionRequest(t, adapter.authority)
 	second.Identity.Key = "deploy-two"

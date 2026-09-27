@@ -49,6 +49,10 @@ func TestV3PrivateDeploymentAggregateAtomicReplayEtcd(t *testing.T) {
 	if accepted.Intent.DeploymentID != request.Deployment.ID || accepted.Deployment == nil || len(accepted.Regions) != 1 {
 		t.Fatalf("accepted deployment is incomplete: %+v", accepted)
 	}
+	queued, err := adapter.GetDeployment(ctx, request.Deployment.ID)
+	if err != nil || queued.Status != model.StatusQueued || len(queued.Regions) != 1 || queued.Regions[0].Status != model.StatusQueued || queued.Regions[0].DesiredWeight != 100 {
+		t.Fatalf("queued deployment lookup=%+v err=%v", queued, err)
+	}
 	replayed, err := adapter.acceptDeploymentAggregate(ctx, request)
 	if err != nil || !replayed.Replayed || replayed.Operation.ID != accepted.Operation.ID || replayed.Deployment.ID != accepted.Deployment.ID {
 		t.Fatalf("deployment replay=%+v err=%v", replayed, err)
