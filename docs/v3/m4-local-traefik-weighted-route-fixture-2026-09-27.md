@@ -73,6 +73,29 @@ checks the same bounded expected response. A local dial fixture covers its
 request and rejection behavior, but no actual public Fleet path has been
 probed. One public response cannot establish load-balancer distribution.
 
+## Combined local proxy rehearsal after probe additions
+
+On 2026-09-27, the disposable Traefik 3.7.13 and Consul 2.0.4 fixture was
+rerun against the current ingress package. Both revision backends returned
+the same exact `orders-ready-v3` body at `/readyz`, while their `/` responses
+remained distinct. One local Traefik process accepted the generation-1
+published route; exact file readback and effective `/api/rawdata` observation
+matched the desired route. `ProbeRenderedRouteNodes` then passed through
+Traefik at `127.0.0.1:18080` with `Host: orders.example.test` and the
+expected readiness-body SHA-256
+`bc818941dca083541d792be73c4fe1ae1ac2eedd04267a6b73f26b9db00c885d`.
+One hundred root requests returned 70 old and 30 new. Generation-2
+withdrawal passed file readback and `ObserveWithdrawnRoute`; the original
+public-host request returned 404. The shell rehearsal exited zero and all
+five fixture listeners were gone afterward.
+
+This combines the local publisher, effective-route observer, per-node probe,
+and withdrawal check in one real proxy process. It still uses one loopback
+ingress node and unprotected local HTTP. It does not run
+`ProbeRenderedRoutePublic` through real DNS or a public load balancer, test
+TLS on Fleet, prove simultaneous multi-node propagation, or connect a durable
+controller intent to `ActiveWeight`.
+
 `ingress.PublishRenderedRoute` writes one canonical weighted route into a
 trusted file-provider directory under a cross-process lock. It fsyncs a
 private temporary file, atomically renames it, and syncs the directory.
