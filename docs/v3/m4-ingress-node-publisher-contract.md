@@ -20,8 +20,13 @@ publish or authorize a route, and supplies no public-path or inventory proof.
 The control-side `ObservePublishedRenderedRoute` now joins the expected local
 file generation/digest with Traefik rawdata on every supplied node and rejects
 a generation change during readback. Its node list is caller supplied; durable
-Fleet inventory, authenticated client configuration, endpoint probes and
+Fleet inventory, deployment-bound credentials, endpoint probes and
 public-path proof are still required before any terminal traffic result.
+`ObservePublishedRenderedRouteWithTLS` now rejects plaintext node origins and
+uses a supplied CA and client certificate to make mutual-TLS readback requests.
+Local tests reach a server that verifies the client URI and reject an untrusted
+server CA. This is a control-side transport primitive, not worker integration
+or proof that the supplied node set equals Fleet inventory.
 
 ## Authority and host boundary
 
