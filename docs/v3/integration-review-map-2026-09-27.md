@@ -72,6 +72,12 @@ decoding the request when either dependency is absent. Focused handler tests
 cover both cases and the response cache policy. This is an entrypoint
 availability fix, not a rollback or release-gate qualification.
 
+The staging qualification entrypoint similarly now rejects a missing release
+pipeline with 503 before parsing or accepting a request. Focused tests cover
+the unavailable dependency and no-store header. PR #77 checks at exact head
+`4f8f7bd591c380536c5c22f28f36edc405f16eea` all completed without a
+reported failure; recheck CI on subsequent heads.
+
 ## Immediate blocking decisions
 
 1. Choose Mini control-store RPO, off-host destination, and retention in the

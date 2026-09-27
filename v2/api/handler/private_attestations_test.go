@@ -181,6 +181,20 @@ func TestReleaseRollbackFailsClosedWithoutDurableDependencies(t *testing.T) {
 	}
 }
 
+func TestReleaseQualificationFailsClosedWithoutPipeline(t *testing.T) {
+	h := &Handler{cfg: &config.Config{Environment: "staging"}, db: &store.DB{}}
+	principal := AccessPrincipal{Scopes: []string{ScopeReleaseQualify}, App: "private-route", Environment: "staging"}
+	request := WithAccessPrincipal(httptest.NewRequest(http.MethodPost, "/api/v1/apps/private-route/qualifications", nil), &principal)
+	recorder := httptest.NewRecorder()
+	router := chi.NewRouter()
+	router.Post("/api/v1/apps/{id}/qualifications", h.CreateReleaseQualification)
+	router.ServeHTTP(recorder, request)
+	requirePrivateRouteProblem(t, recorder, http.StatusServiceUnavailable, "qualification_signing_unavailable")
+	if recorder.Header().Get("Cache-Control") != "no-store" {
+		t.Fatalf("qualification cache policy=%q", recorder.Header().Get("Cache-Control"))
+	}
+}
+
 func TestQualificationListIsRecentBoundedAndUnexpired(t *testing.T) {
 	now := time.Now().UTC()
 	filter := releaseQualificationListFilter("private-route")

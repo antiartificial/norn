@@ -494,7 +494,7 @@ func (h *Handler) CreateReleaseQualification(w http.ResponseWriter, r *http.Requ
 		WriteControlProblem(w, r, http.StatusConflict, "qualification_environment_invalid", "qualifications may only be issued by a staging control plane")
 		return
 	}
-	if h.db == nil {
+	if h.db == nil || h.pipeline == nil {
 		WriteControlProblem(w, r, http.StatusServiceUnavailable, "qualification_signing_unavailable", "staging qualification signing is not configured")
 		return
 	}
