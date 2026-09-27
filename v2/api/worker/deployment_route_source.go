@@ -7,6 +7,7 @@ import (
 	"slices"
 
 	"norn/v2/api/model"
+	"norn/v2/api/store"
 )
 
 // VerifiedFleetRouteSource comes from the exact InfraSpec pinned by a signed,
@@ -15,6 +16,9 @@ import (
 type VerifiedFleetRouteSource struct {
 	App                string
 	ControlEnvironment string
+	FleetCluster       string
+	FleetEnvironment   string
+	TargetGeneration   uint64
 	OperationID        string
 	DeploymentID       string
 	AcceptanceID       string
@@ -68,6 +72,11 @@ func VerifyClaimedFleetRouteSource(ctx context.Context, verifier ClaimedDeployme
 	if acceptedRegion == nil || acceptedRegion.NomadRegion != sourceRegion.NomadRegion || acceptedRegion.TrafficWeight != sourceRegion.TrafficWeight || !slices.Equal(acceptedRegion.Datacenters, sourceRegion.Datacenters) {
 		return VerifiedFleetRouteSource{}, fmt.Errorf("fleet route region differs from signed placement")
 	}
+	target := accepted.FleetAppTarget
+	if target == nil || target.SchemaVersion != store.FleetAppTargetSchema || target.App != spec.App || target.ControlEnvironment != accepted.Deployment.Environment || target.Region != region ||
+		target.Cluster == "" || target.FleetEnvironment == "" || target.Generation == 0 || target.NomadRegion != acceptedRegion.NomadRegion || !slices.Equal(target.Datacenters, acceptedRegion.Datacenters) {
+		return VerifiedFleetRouteSource{}, fmt.Errorf("fleet route source lacks a matching signed Fleet target")
+	}
 	var selected *model.Endpoint
 	for i := range spec.Endpoints {
 		ep := &spec.Endpoints[i]
@@ -90,7 +99,7 @@ func VerifyClaimedFleetRouteSource(ctx context.Context, verifier ClaimedDeployme
 	if err != nil || u.Scheme != "https" || u.Hostname() == "" || u.Port() != "" || u.User != nil || u.RawQuery != "" || u.Fragment != "" || u.Path != "" || u.RawPath != "" {
 		return VerifiedFleetRouteSource{}, fmt.Errorf("fleet route endpoint must be an HTTPS origin")
 	}
-	return VerifiedFleetRouteSource{App: spec.App, ControlEnvironment: accepted.Deployment.Environment, OperationID: claimed.ID, DeploymentID: accepted.Deployment.ID,
+	return VerifiedFleetRouteSource{App: spec.App, ControlEnvironment: accepted.Deployment.Environment, FleetCluster: target.Cluster, FleetEnvironment: target.FleetEnvironment, TargetGeneration: target.Generation, OperationID: claimed.ID, DeploymentID: accepted.Deployment.ID,
 		AcceptanceID: accepted.Intent.ID, AcceptanceDigest: accepted.Intent.CanonicalDigest,
 		Region: region, NomadRegion: acceptedRegion.NomadRegion, DesiredWeight: acceptedRegion.TrafficWeight,
 		Endpoint: selected.URL, Process: selected.Process, Port: process.Port, SpecDigest: accepted.Deployment.SpecDigest}, nil

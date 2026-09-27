@@ -150,7 +150,8 @@ the first v3 Fleet. It remains a proposal until review and implementation.
 The private etcd acceptance path now snapshots a generation-fenced Fleet app
 target and verifies it against signed request semantics under a target-revision
 CAS. Its writer remains private; route intent and prior-route authority are
-still absent.
+still absent. The claimed route-source resolver carries that verified target's
+Fleet cluster, environment and generation for a future route-intent transaction.
 
 The worker must create a durable route-intent record before any publish. It
 must contain a schema version; app, operation, deployment and region IDs; the

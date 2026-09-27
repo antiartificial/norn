@@ -15,21 +15,11 @@ import (
 	"norn/v2/api/store"
 )
 
-const fleetAppTargetSchema = "norn.fleet-app-target/v1"
+const fleetAppTargetSchema = store.FleetAppTargetSchema
 
 // FleetAppTarget is control-owned configuration. A deployment request cannot
 // create or select one; a future authenticated operator path must own writes.
-type FleetAppTarget struct {
-	SchemaVersion      string   `json:"schemaVersion"`
-	App                string   `json:"app"`
-	ControlEnvironment string   `json:"controlEnvironment"`
-	Cluster            string   `json:"cluster"`
-	FleetEnvironment   string   `json:"fleetEnvironment"`
-	Region             string   `json:"region"`
-	NomadRegion        string   `json:"nomadRegion"`
-	Datacenters        []string `json:"datacenters"`
-	Generation         uint64   `json:"generation"`
-}
+type FleetAppTarget = store.FleetAppTarget
 
 func (s *V3OperationStore) fleetAppTargetKey(app, environment string) string {
 	sum := sha256.Sum256([]byte(app + "\x00" + environment))

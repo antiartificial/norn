@@ -88,4 +88,7 @@ Replay checks the stored target snapshot against the signed request even after
 the current target changes. A disposable etcd test covers a forged cluster,
 target replacement, replay and snapshot tampering. The target writer is private
 to the store and tests; an authenticated operator configuration path is still
-required. No normal etcd deployment route or positive traffic path was enabled.
+required. The claimed route-source resolver now consumes the verified accepted
+target and refuses a mismatched app, control environment, region, Nomad target
+or missing Fleet cluster. No normal etcd deployment route or positive traffic
+path was enabled.

@@ -134,7 +134,7 @@ func TestV3PrivateDeploymentRejectsUnboundFleetTargetEtcd(t *testing.T) {
 	if err := json.Unmarshal(stored.Kvs[0].Value, &record); err != nil {
 		t.Fatal(err)
 	}
-	record.FleetAppTarget.Cluster = "forged"
+	record.Accepted.FleetAppTarget.Cluster = "forged"
 	encoded, err := json.Marshal(record)
 	if err != nil {
 		t.Fatal(err)

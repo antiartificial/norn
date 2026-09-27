@@ -152,6 +152,23 @@ type SignedAcceptanceIntent struct {
 	Audit                 AcceptanceAuditContext `json:"audit"`
 }
 
+const FleetAppTargetSchema = "norn.fleet-app-target/v1"
+
+// FleetAppTarget is an immutable snapshot of the control-owned target selected
+// at private etcd deployment admission. It is verified against the signed
+// request and can be consumed by a claimed deployment worker.
+type FleetAppTarget struct {
+	SchemaVersion      string   `json:"schemaVersion"`
+	App                string   `json:"app"`
+	ControlEnvironment string   `json:"controlEnvironment"`
+	Cluster            string   `json:"cluster"`
+	FleetEnvironment   string   `json:"fleetEnvironment"`
+	Region             string   `json:"region"`
+	NomadRegion        string   `json:"nomadRegion"`
+	Datacenters        []string `json:"datacenters"`
+	Generation         uint64   `json:"generation"`
+}
+
 type AcceptedOperation struct {
 	Operation          model.Operation        `json:"operation"`
 	Deployment         *model.Deployment      `json:"deployment,omitempty"`
@@ -161,6 +178,7 @@ type AcceptedOperation struct {
 	Replayed           bool                   `json:"replayed"`
 	Intent             SignedAcceptanceIntent `json:"intent"`
 	FleetRunnerAttempt *fleet.RunnerAttempt   `json:"fleetRunnerAttempt,omitempty"`
+	FleetAppTarget     *FleetAppTarget        `json:"fleetAppTarget,omitempty"`
 }
 
 type AcceptancePolicy struct {
