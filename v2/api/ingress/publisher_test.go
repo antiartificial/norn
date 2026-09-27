@@ -127,3 +127,51 @@ func TestPublishRenderedRouteRejectsAlteredDesiredContent(t *testing.T) {
 		t.Fatal("unscoped route name accepted")
 	}
 }
+
+func TestRemovePublishedRouteRequiresExactCurrentRevision(t *testing.T) {
+	directory := t.TempDir()
+	input := WeightedRoute{App: "orders", Process: "web", Region: "iad", Endpoint: "https://orders.example.com", Backends: []WeightedBackend{{DeploymentID: "old", Weight: 100}}}
+	first, err := RenderWeightedRoute(input)
+	if err != nil {
+		t.Fatal(err)
+	}
+	path := filepath.Join(directory, first.RouterName+".yaml")
+	if err := RemovePublishedRoute(directory, first.RouterName, first.SHA256); err == nil {
+		t.Fatal("missing route removal succeeded")
+	}
+	if err := PublishRenderedRoute(directory, first, ""); err != nil {
+		t.Fatal(err)
+	}
+	input.Backends = []WeightedBackend{{DeploymentID: "new", Weight: 100}}
+	second, err := RenderWeightedRoute(input)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := PublishRenderedRoute(directory, second, first.SHA256); err != nil {
+		t.Fatal(err)
+	}
+	if err := RemovePublishedRoute(directory, first.RouterName, first.SHA256); err == nil {
+		t.Fatal("stale revision removed successor route")
+	}
+	if err := os.Remove(path); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(filepath.Join(directory, "victim"), path); err != nil {
+		t.Fatal(err)
+	}
+	if err := RemovePublishedRoute(directory, first.RouterName, second.SHA256); err == nil {
+		t.Fatal("symlink route removed")
+	}
+	if err := os.Remove(path); err != nil {
+		t.Fatal(err)
+	}
+	if err := PublishRenderedRoute(directory, second, ""); err != nil {
+		t.Fatal(err)
+	}
+	if err := RemovePublishedRoute(directory, first.RouterName, second.SHA256); err != nil {
+		t.Fatal(err)
+	}
+	if revision, err := ReadPublishedRouteRevision(directory, first.RouterName); err != nil || revision != "" {
+		t.Fatalf("route still present after rollback: %q, %v", revision, err)
+	}
+}

@@ -74,3 +74,22 @@ found no processes on the five fixture ports. The fixture used one loopback
 Traefik, one Consul, local HTTP, and an unprotected loopback management route;
 it still does not establish multi-node propagation, protected management
 access, public TLS/LB behavior, or rollback.
+
+## First-publication rollback primitive
+
+`RemovePublishedRoute` now removes a route file only when its exact current
+SHA-256 matches the expected value under the same local cross-process lock;
+it refuses missing, changed, symlinked or oversized files and syncs the
+directory after removal. Race tests cover stale-revision refusal and deletion
+readback. This supports restoring the prior **absent** state on one node.
+For a prior populated route, the existing publisher can restore its retained
+rendered revision with an expected current digest. Neither operation has been
+run against multiple ingress nodes or through Fleet.
+
+Content-hash CAS is not an executor fence: after an A→B→A rollback, a stale
+writer expecting A could match again. The Fleet node agent must check a
+durable, monotonic operation generation or equivalent claim immediately
+before each local publish/removal; lost claims must not apply. A coordinator
+must retain the prior per-node revision, verify exact file and effective
+Traefik readback after rollback, and keep active traffic evidence pending if
+any node disagrees.

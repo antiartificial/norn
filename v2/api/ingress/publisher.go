@@ -23,7 +23,9 @@ var publishedRouteName = regexp.MustCompile(`^norn-route-[0-9a-f]{32}$`)
 // provider directory. expectedSHA256 is the version last observed on this
 // node, or empty when no route exists. The caller must coordinate all ingress
 // nodes and verify effective configuration and endpoints before activating
-// traffic. The directory must be a dedicated, locally trusted path.
+// traffic. A hash can repeat after rollback, so a node agent must also check
+// a durable operation generation to fence stale executors. The directory
+// must be a dedicated, locally trusted path.
 func PublishRenderedRoute(directory string, desired RenderedRoute, expectedSHA256 string) error {
 	if !filepath.IsAbs(directory) || !publishedRouteName.MatchString(desired.RouterName) || desired.ServiceName != desired.RouterName || len(desired.YAML) == 0 || len(desired.YAML) > maxPublishedRouteBytes {
 		return fmt.Errorf("invalid route publication")
@@ -194,4 +196,66 @@ func ReadPublishedRouteRevision(directory, routerName string) (string, error) {
 	}
 	digest := sha256.Sum256(body)
 	return hex.EncodeToString(digest[:]), nil
+}
+
+// RemovePublishedRoute removes an exact route file after a first-publication
+// rollback. It refuses missing, changed, symlinked, or oversized routes. The
+// expected digest is a local content guard, not an executor fence: the node
+// controller must independently validate its durable operation generation.
+func RemovePublishedRoute(directory, routerName, expectedSHA256 string) error {
+	if !filepath.IsAbs(directory) || !publishedRouteName.MatchString(routerName) || !validRouteSHA(expectedSHA256) {
+		return fmt.Errorf("invalid route removal")
+	}
+	info, err := os.Lstat(directory)
+	if err != nil || !info.IsDir() || info.Mode().Perm()&0o022 != 0 {
+		return fmt.Errorf("route directory must exist without group or world write access")
+	}
+	root, err := os.OpenRoot(directory)
+	if err != nil {
+		return err
+	}
+	defer root.Close()
+	lock, err := root.OpenFile("."+routerName+".lock", os.O_CREATE|os.O_RDWR|syscall.O_NOFOLLOW, 0o600)
+	if err != nil {
+		return fmt.Errorf("open route removal lock: %w", err)
+	}
+	defer lock.Close()
+	lockInfo, err := lock.Stat()
+	if err != nil || !lockInfo.Mode().IsRegular() || lockInfo.Mode().Perm()&0o077 != 0 {
+		return fmt.Errorf("route removal lock is not private and regular")
+	}
+	if err := syscall.Flock(int(lock.Fd()), syscall.LOCK_EX); err != nil {
+		return err
+	}
+	defer syscall.Flock(int(lock.Fd()), syscall.LOCK_UN)
+	file, err := root.OpenFile(routerName+".yaml", os.O_RDONLY|syscall.O_NOFOLLOW, 0)
+	if err != nil {
+		return fmt.Errorf("open route for removal: %w", err)
+	}
+	fileInfo, err := file.Stat()
+	if err != nil || !fileInfo.Mode().IsRegular() || fileInfo.Size() > maxPublishedRouteBytes {
+		file.Close()
+		return fmt.Errorf("route for removal is not a bounded regular file")
+	}
+	body, readErr := io.ReadAll(io.LimitReader(file, maxPublishedRouteBytes+1))
+	closeErr := file.Close()
+	if readErr != nil || closeErr != nil || len(body) > maxPublishedRouteBytes {
+		return fmt.Errorf("read route for removal: %v, %v", readErr, closeErr)
+	}
+	digest := sha256.Sum256(body)
+	if hex.EncodeToString(digest[:]) != expectedSHA256 {
+		return fmt.Errorf("route removal revision conflict")
+	}
+	if err := root.Remove(routerName + ".yaml"); err != nil {
+		return err
+	}
+	dir, err := os.Open(directory)
+	if err != nil {
+		return err
+	}
+	syncErr, closeErr := dir.Sync(), dir.Close()
+	if syncErr != nil || closeErr != nil {
+		return fmt.Errorf("sync route removal directory: %v, %v", syncErr, closeErr)
+	}
+	return nil
 }
