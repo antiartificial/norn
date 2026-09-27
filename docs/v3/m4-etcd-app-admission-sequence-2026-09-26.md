@@ -229,9 +229,12 @@ active pre-index work must first drain or reconcile it.
    must resolve the accepted targets, obtain their probed connection material,
    and invoke the private delivery path. That path now refuses missing or extra
    runtime database items and a target identity that differs from the signed
-   plan before staging the revision. Dispatch must call the secret source
-   adapter and managed descriptor constructor as well; no normal managed job
-   path is enabled by the private verifier alone.
+   plan before staging the revision. A private preparation entry point now
+   combines the descriptor constructor, rendered job, secret source, exact
+   database items, both checked deliveries and a readback. It preflights all
+   local inputs before either write. Dispatch still must resolve and probe
+   the accepted targets and invoke that entry point; no normal managed job
+   path is enabled by this private preparation alone.
 
    The next opt-in `ingress.RenderWeightedRoute` slice emits one file-provider
    hostname router and a weighted service referencing those exact

@@ -12,6 +12,16 @@ func (c *Client) StageManagedJobDatabaseInputs(region string, plan ManagedJobInp
 	if c == nil || c.api == nil || region == "" || plan.JobID == "" || plan.VariablePath != DatabaseVariablePath(plan.JobID) {
 		return fmt.Errorf("managed database delivery is incomplete")
 	}
+	if err := validateManagedJobDatabaseItems(plan, items, expectedTargets); err != nil {
+		return err
+	}
+	if len(plan.RuntimeDatabaseNames) == 0 {
+		return nil
+	}
+	return c.DeliverDatabaseVariable(region, plan.JobID, items, plan.DatabaseRevision)
+}
+
+func validateManagedJobDatabaseItems(plan ManagedJobInputRequirements, items, expectedTargets map[string]string) error {
 	if len(plan.RuntimeDatabaseNames) == 0 {
 		if len(items) != 0 || len(expectedTargets) != 0 {
 			return fmt.Errorf("managed job has unexpected database material")
@@ -50,5 +60,5 @@ func (c *Client) StageManagedJobDatabaseInputs(region string, plan ManagedJobInp
 			return fmt.Errorf("managed database target differs for %s", name)
 		}
 	}
-	return c.DeliverDatabaseVariable(region, plan.JobID, items, plan.DatabaseRevision)
+	return nil
 }
