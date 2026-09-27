@@ -148,13 +148,23 @@ def check_signed_release(args):
     verifier = args.release_verifier or args.current_link / "bin/platform-release-manifest"
     if not os.access(verifier, os.X_OK):
         raise CheckFailure("trusted installed release verifier is absent")
+    artifact_verifier = args.artifact_verifier
+    public_key = args.public_key or (Path(os.environ["NORN_RELEASE_PUBLIC_KEY"]) if os.environ.get("NORN_RELEASE_PUBLIC_KEY") else None)
+    if not artifact_verifier or not artifact_verifier.is_file() or not os.access(artifact_verifier, os.X_OK):
+        raise CheckFailure("reviewed release artifact verifier is absent")
+    if not public_key or not public_key.is_absolute() or not public_key.is_file():
+        raise CheckFailure("pinned release public key is absent")
+    reviewed = command("git", "-C", str(args.repo), "show", f"{args.candidate_sha}:v2/scripts/platform-release-artifact")
+    if artifact_verifier.read_bytes() != reviewed:
+        raise CheckFailure("release artifact verifier differs from candidate source")
     release = args.releases / args.candidate_sha
     current = args.releases / args.legacy_release
     for path, sha in ((current, args.legacy_release), (release, args.candidate_sha)):
         result = command(str(verifier), "verify", "--release", str(path), "--expected-sha", sha, timeout=20)
         if result.strip() != b"signed":
-            raise CheckFailure("release signature verification did not report signed")
-    return "installed verifier reports signed legacy and candidate releases"
+            raise CheckFailure("release manifest did not report signed")
+        command(str(artifact_verifier), "verify", "--release-dir", str(path), "--public-key", str(public_key), "--quiet", timeout=60)
+    return "manifest state and Ed25519 signatures verified for both exact releases"
 
 
 def check_legacy_release(args):
@@ -265,6 +275,8 @@ def parse_args():
     parser.add_argument("--current-link", type=Path, default=Path.home() / "norn/current")
     parser.add_argument("--legacy-api", type=Path, default=Path.home() / "go/bin/norn-api")
     parser.add_argument("--release-verifier", type=Path, help="trusted installed platform-release-manifest executable")
+    parser.add_argument("--artifact-verifier", type=Path, help="executable platform-release-artifact matching the exact candidate source")
+    parser.add_argument("--public-key", type=Path, help="absolute pinned Ed25519 public key path; defaults to NORN_RELEASE_PUBLIC_KEY")
     parser.add_argument("--api-base", default="http://127.0.0.1:8800")
     parser.add_argument("--launch-label", default="com.norn.api")
     args = parser.parse_args()

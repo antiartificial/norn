@@ -13,15 +13,19 @@ v2/scripts/platform-upgrade env-exec -- \
     --legacy-release <installed-full-sha> \
     --backup-proof /absolute/private/control-proof.json \
     --backup-artifact /absolute/private/control.dump \
-    --reviewed-script /absolute/reviewed/platform-upgrade
+    --reviewed-script /absolute/reviewed/platform-upgrade \
+    --artifact-verifier /absolute/reviewed/platform-release-artifact \
+    --public-key /absolute/protected/release-signing.pub
 ```
 
 It compares the exact `NORN_DATABASE_URL` and `NORN_AUDIT_SIGNING_KEY` bytes
 in the launcher SOPS JSON with those in the maintenance process without
 printing either value. The backup verifier checks the proof/artifact binding.
 The doctor checks the reviewed script against the exact candidate Git commit,
-the candidate release identity and startup contract, and both release
-signatures using the currently installed verifier. It also checks the current
+the candidate release identity and startup contract. It requires an artifact
+verifier whose bytes match the exact candidate Git commit and a pinned Ed25519
+public key. It checks the signed manifest state and cryptographically verifies
+the installed file inventory and signature of both exact releases. It also checks the current
 release and launch executable, sole launchd ownership of the direct loopback
 listener, that the running API process started after the launcher and active
 SOPS file last changed, and that its mapped executable inode matches the

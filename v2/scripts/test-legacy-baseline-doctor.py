@@ -97,10 +97,6 @@ class DoctorFixtureTest(unittest.TestCase):
         verifier.chmod(0o755)
         args = types.SimpleNamespace(releases=releases, legacy_release=sha, candidate_sha="b" * 40, current_link=current, legacy_api=installed, api_base="http://127.0.0.1:8800", launch_label="com.norn.api", release_verifier=None)
         self.assertIn("match", doctor.check_legacy_release(args))
-        self.assertIn("signed", doctor.check_signed_release(args))
-        verifier.write_text("#!/bin/sh\nprintf 'unsigned\\n'\n", encoding="utf-8")
-        with self.assertRaises(doctor.CheckFailure):
-            doctor.check_signed_release(args)
         with mock.patch.object(doctor, "command", side_effect=[b"    pid = 12345\n", b"12345\n"]):
             self.assertIn("solely", doctor.check_listener(args))
         with mock.patch.object(doctor, "command", side_effect=[b"    pid = 12345\n", b"98765\n"]):
@@ -109,6 +105,39 @@ class DoctorFixtureTest(unittest.TestCase):
         installed.write_bytes(b"other")
         with self.assertRaises(doctor.CheckFailure):
             doctor.check_legacy_release(args)
+
+    def test_signed_release_requires_reviewed_crypto_verifier_and_key(self):
+        repo = self.root / "repo"
+        source = repo / "v2/scripts/platform-release-artifact"
+        source.parent.mkdir(parents=True)
+        source.write_text("#!/bin/sh\n[ \"${NORN_FIXTURE_SIGNATURE_VALID:-yes}\" = yes ]\n", encoding="utf-8")
+        source.chmod(0o755)
+        subprocess.run(["git", "-C", str(repo), "init", "-q"], check=True)
+        for setting in ("user.name", "user.email"):
+            configured = subprocess.check_output(["git", "config", "--get", setting], text=True).strip()
+            subprocess.run(["git", "-C", str(repo), "config", setting, configured], check=True)
+        subprocess.run(["git", "-C", str(repo), "add", "."], check=True)
+        subprocess.run(["git", "-C", str(repo), "commit", "-qm", "fixture"], check=True)
+        sha = subprocess.check_output(["git", "-C", str(repo), "rev-parse", "HEAD"], text=True).strip()
+        manifest = self.root / "manifest"
+        manifest.write_text("#!/bin/sh\nprintf 'signed\\n'\n", encoding="utf-8")
+        manifest.chmod(0o755)
+        key = self.root / "release.pub"
+        key.write_text("fixture", encoding="utf-8")
+        args = types.SimpleNamespace(repo=repo, candidate_sha=sha, legacy_release="a" * 40,
+                                     releases=self.root / "releases", current_link=self.root / "current",
+                                     release_verifier=manifest, artifact_verifier=source, public_key=key)
+        self.assertIn("Ed25519", doctor.check_signed_release(args))
+        with mock.patch.dict(os.environ, {"NORN_FIXTURE_SIGNATURE_VALID": "no"}):
+            with self.assertRaises(doctor.CheckFailure):
+                doctor.check_signed_release(args)
+        source.write_text("#!/bin/sh\nexit 1\n", encoding="utf-8")
+        with self.assertRaisesRegex(doctor.CheckFailure, "differs from candidate source"):
+            doctor.check_signed_release(args)
+        source.write_text("#!/bin/sh\nexit 0\n", encoding="utf-8")
+        key.unlink()
+        with self.assertRaisesRegex(doctor.CheckFailure, "public key is absent"):
+            doctor.check_signed_release(args)
 
     def test_runtime_process_must_start_after_binding_change(self):
         installed = self.root / "norn-api"

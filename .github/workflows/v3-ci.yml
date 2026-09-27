@@ -131,6 +131,7 @@ jobs:
           python3 v2/scripts/test-mini-create-protected-backup.py
           python3 v2/scripts/test-mini-protected-backup.py
           python3 v2/scripts/test-mini-private-copy-source.py
+          python3 v2/scripts/test-legacy-baseline-doctor.py
 
   web:
     name: web
