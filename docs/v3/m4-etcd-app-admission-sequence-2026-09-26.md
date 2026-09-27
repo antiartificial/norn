@@ -75,6 +75,12 @@ active pre-index work must first drain or reconcile it.
    projection and comparison with the reserved digest are still required
    before the supervisor can settle an ambiguous submission or release the
    app gate. The readback passed against disposable Nomad 2.0.7.
+   An experimental full-job JSON hash failed readback against that same Nomad:
+   the server populated job and task-group defaults and runtime fields absent
+   from the submitted shape. The experiment was removed. A digest projection
+   must normalize those fields while covering every mutable workload field,
+   including environment, templates, volumes, networking, and task config;
+   a marker-only or source-spec digest is insufficient.
 4. Move the deploy pipeline's direct `*store.DB` dependencies behind explicit
    domain interfaces, then wire the normal etcd router and worker. Admission
    must reject an unavailable build, database binding, secret delivery,
