@@ -45,6 +45,11 @@ The result includes the plan-state and checkpoint etcd revisions needed for
 terminal fencing. The control worker must bind that Fleet plan and attempt to
 its accepted deployment, compare those revisions again at completion,
 and reject host replacement between observation and deployment completion.
+`ObserveCurrentFleetIngressRoute` now reads the completed inventory, performs
+mutual-TLS file/Traefik readback on every member, and rereads inventory to
+reject a replacement during observation. This result is not a terminal
+traffic proof: app endpoint probes, public load-balancer behavior, accepted
+deployment binding and the completion transaction are still outstanding.
 
 ## Authority and host boundary
 
