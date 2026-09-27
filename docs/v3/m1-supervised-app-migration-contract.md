@@ -91,6 +91,12 @@ join the child cgroup. Do not treat the current supervisor-only process-crash
 test as full-pipeline proof. The next fixture should start its PostgreSQL
 servers outside the test process as `postgres`, then run the pipeline/API crash
 case as root against those disposable servers and the real cgroup backend.
+That fixture is now available through
+`v2/scripts/test-pipeline-cgroup-linux.sh`: it starts three socket-only
+PostgreSQL servers as `postgres` in container tmpfs, then runs the existing
+joined replay test as root. The Linux run passed. This verifies the fixture
+boundary and original snapshot replay only; the test still seeds its migration
+effect, so actual command-exit reconciliation remains to be implemented.
 
 ## Current behavior and risk
 

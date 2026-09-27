@@ -40,6 +40,13 @@ type Server struct {
 	CAPEM []byte
 }
 
+// AttachExternal describes a disposable server started by a test harness.
+// The caller owns its lifecycle. This lets a root-owned cgroup test use
+// PostgreSQL processes started separately as the postgres OS user.
+func AttachExternal(socketDir string, port int, user, dataDir string) *Server {
+	return &Server{SocketDir: socketDir, Port: port, User: user, dataDir: dataDir}
+}
+
 // Start skips the test when initdb or pg_ctl are not installed.
 func Start(t testing.TB) *Server {
 	t.Helper()
@@ -162,13 +169,7 @@ func (s *Server) CreatePasswordRole(t testing.TB, role, password, ownedDatabase 
 	if err := os.WriteFile(hba, append([]byte(rule), existing...), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	pgCtl, err := exec.LookPath("pg_ctl")
-	if err != nil {
-		t.Fatal(err)
-	}
-	if output, err := command(pgCtl, "-D", s.dataDir, "reload").CombinedOutput(); err != nil {
-		t.Fatalf("pg_ctl reload: %v\n%s", err, output)
-	}
+	s.Exec(t, "postgres", "SELECT pg_reload_conf()")
 	// Reload is asynchronous; wait until the rule is in effect.
 	for attempt := 0; attempt < 50; attempt++ {
 		var active bool

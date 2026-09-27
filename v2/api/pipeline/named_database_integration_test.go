@@ -44,8 +44,19 @@ func newNamedFixture(t *testing.T) *namedFixture {
 	}
 	p, db, request := acceptancePipelineFixture(t)
 	servers := map[string]*pgtest.Server{}
+	externalRoot := os.Getenv("NORN_PIPELINE_EXTERNAL_PG_ROOT")
 	for _, name := range []string{"primary", "analytics"} {
-		server := pgtest.Start(t)
+		var server *pgtest.Server
+		if externalRoot == "" {
+			server = pgtest.Start(t)
+		} else {
+			port := 55433
+			if name == "analytics" {
+				port = 55434
+			}
+			root := filepath.Join(externalRoot, name)
+			server = pgtest.AttachExternal(root, port, "postgres", filepath.Join(root, "data"))
+		}
 		server.CreateDatabase(t, "shop")
 		server.CreatePasswordRole(t, "shop_app", namedCanary, "shop")
 		server.Exec(t, "shop", fmt.Sprintf(`CREATE TABLE orders (id int, state text); INSERT INTO orders VALUES (1, '%s-original'); ALTER TABLE orders OWNER TO shop_app`, name))
