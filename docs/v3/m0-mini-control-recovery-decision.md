@@ -14,6 +14,12 @@ private local dump/restore was fast, but no protected production-key off-host
 restore or end-to-end RTO has passed. The release draft says RTO ≤30 minutes
 and backup-only RPO ≤15 minutes; both remain unqualified.
 
+A later read-only Mini check on 2026-09-26 still found `archive_mode=off` and
+`archive_timeout=0`; no PostgreSQL control-backup job was found in the inspected
+user schedule. A separate [synthetic Postgres.app PITR fixture](m0-mini-postgresapp-disposable-pitr-2026-09-26.md)
+proved local Mac base-backup/WAL recovery mechanics, including a timestamped
+recovery boundary. It did not use off-host storage or production control data.
+
 ## Decision options
 
 | Option | User-visible data-loss bound after a host/storage loss | Implementation to qualify | Practical trade-off |

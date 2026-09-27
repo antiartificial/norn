@@ -10,7 +10,7 @@ are substantial but cannot sign a broader gate.
 
 | Gate | Current disposition | Next decisive evidence |
 | --- | --- | --- |
-| M0 contracts and Mini baseline | Open. Mini source-copy and size/growth observations exist; the 15-minute control RPO and 30-minute RTO are unqualified. | Owner chooses the [control recovery target](m0-mini-control-recovery-decision.md), off-host destination and retention; prove protected clean-host restore and measured end-to-end time. |
+| M0 contracts and Mini baseline | Open. Mini source-copy and size/growth observations exist. A synthetic Postgres.app PITR fixture passed, but live WAL archiving remains off; the 15-minute control RPO and 30-minute RTO are unqualified. | Owner chooses the [control recovery target](m0-mini-control-recovery-decision.md), off-host destination and retention; prove protected clean-host restore and measured end-to-end time. |
 | M1 shared control behavior | Open. Durable acceptance, claims, schema and passive startup have local tests. | Finish external-effect fencing/reconciliation coverage and Mini runtime compatibility/rollback checks. |
 | M2 profiles, databases and retention | Open. Local PostgreSQL/MySQL, WordPress and S3-emulator rehearsals passed. | Prove real-provider retention and separate-node restore, managed MySQL behavior, complete archive/accounting and profile parity. |
 | M3 etcd and fresh Fleet | Open. Disposable three-member and host-unit rehearsals exist; the normal etcd router remains narrow. | Protected separate-host empty-Fleet bootstrap, quorum/fault/restore/soak, no control-PG dependency, and hosted Fleet contract check. |
