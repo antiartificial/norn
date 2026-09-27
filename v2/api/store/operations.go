@@ -1058,10 +1058,14 @@ func (db *DB) RecoverExpiredOperations(ctx context.Context) error {
 	        WHERE ds.deployment_id = operations.payload->>'deploymentId'
 	          AND ds.step = 'migrate' AND ds.status = 'running'
 	      ) THEN '{"replayMigration":true}'::jsonb ELSE '{}'::jsonb END,
-		    max_attempts = CASE
-		      WHEN kind = 'app.snapshot-export' THEN GREATEST(max_attempts, 3)
-		      WHEN kind = 'app.migrate' THEN GREATEST(max_attempts, 3)
-		      ELSE max_attempts END,
+	    max_attempts = CASE
+	      WHEN kind = 'app.snapshot-export' THEN GREATEST(max_attempts, 3)
+	      WHEN kind = 'app.migrate' THEN GREATEST(max_attempts, 3)
+	      WHEN kind = 'app.deploy' AND EXISTS (
+	        SELECT 1 FROM deployment_steps ds WHERE ds.deployment_id = operations.payload->>'deploymentId'
+	          AND ds.step = 'migrate' AND ds.status = 'running'
+	      ) THEN GREATEST(max_attempts, 3)
+	      ELSE max_attempts END,
 		    locked_by = '',
 		    locked_until = NULL,
 		    next_attempt_at = now(),
@@ -1080,7 +1084,7 @@ func (db *DB) RecoverExpiredOperations(ctx context.Context) error {
 				  AND oe.resource LIKE 'database/%/migration'
 				  AND oe.lifecycle IN ('reserved','launched','completed')
 			)) OR
-			(kind = 'app.deploy' AND attempts < max_attempts AND EXISTS (
+			(kind = 'app.deploy' AND attempts < GREATEST(max_attempts, 3) AND EXISTS (
 				SELECT 1 FROM deployment_steps ds WHERE ds.deployment_id = operations.payload->>'deploymentId'
 				  AND ds.step = 'migrate' AND ds.status = 'running'
 			) AND EXISTS (

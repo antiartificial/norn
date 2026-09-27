@@ -597,8 +597,18 @@ func TestExpiredDeploymentMigrationRequeuesOnlyWithPinnedPredecessors(t *testing
 	if err != nil || reused.Created || reused.Record.Reservation.OperationClaim.Generation != claim.Generation() {
 		t.Fatalf("replacement deployment reused wrong migration effect: %+v, %v", reused, err)
 	}
-	if err := stores[1].FinishClaimedOperation(ctx, next, model.OperationFailed, "fixture completed without launching migration", nil); err != nil {
+	if _, err := stores[0].Pool.Exec(ctx, `DELETE FROM operation_effects WHERE operation_id=$1`, op.ID); err != nil {
 		t.Fatal(err)
+	}
+	if _, err := stores[0].Pool.Exec(ctx, `UPDATE operations SET locked_until=clock_timestamp()-interval '1 second' WHERE id=$1`, op.ID); err != nil {
+		t.Fatal(err)
+	}
+	if err := stores[1].RecoverExpiredOperations(ctx); err != nil {
+		t.Fatal(err)
+	}
+	missing, err := stores[1].GetOperation(ctx, op.ID)
+	if err != nil || missing.Status != model.OperationFailed || missing.Metadata["manualRecoveryRequired"] != true {
+		t.Fatalf("missing original effect after successor exit = %+v, %v", missing, err)
 	}
 	if _, err := stores[0].Pool.Exec(ctx, `DELETE FROM operation_checkpoints WHERE operation_id=$1`, op.ID); err != nil {
 		t.Fatal(err)

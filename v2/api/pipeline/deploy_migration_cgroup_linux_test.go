@@ -48,19 +48,35 @@ func configureProcessCrashMigrationEffects(t *testing.T, p *Pipeline) {
 // These are opt-in because the command runner requires a disposable privileged
 // cgroup-v2 container.
 func TestDeployMigrationRecoversAfterLiteralProcessExit(t *testing.T) {
-	runDeployMigrationProcessExit(t, false)
+	runDeployMigrationProcessExit(t, false, false)
 }
 
 func TestDeployMigrationWaitsForOriginalTransactionAfterAPIExit(t *testing.T) {
-	runDeployMigrationProcessExit(t, true)
+	runDeployMigrationProcessExit(t, true, false)
 }
 
-func runDeployMigrationProcessExit(t *testing.T, duringWrite bool) {
+func TestDeployMigrationRecoversAfterSuccessorAPIExit(t *testing.T) {
+	runDeployMigrationProcessExit(t, false, true)
+}
+
+func runDeployMigrationProcessExit(t *testing.T, duringWrite, successorExit bool) {
 	t.Helper()
 	if os.Getenv("NORN_REAL_CGROUP_TEST") != "1" || os.Getenv("NORN_PIPELINE_EXTERNAL_PG_ROOT") == "" {
 		t.Skip("run with the disposable Linux pipeline cgroup harness")
 	}
 	marker := os.Getenv("NORN_DEPLOY_MIGRATION_MARKER")
+	if os.Getenv("NORN_DEPLOY_MIGRATION_SUCCESSOR_CHILD") == "1" {
+		p, db := deploySnapshotProcessPipeline(t, false)
+		go p.WS.Run()
+		operation, claim, err := db.ClaimNextOperation(context.Background(), "interrupted-migration-successor", time.Minute, []string{"app.deploy"})
+		if err != nil || operation == nil || claim.Generation() < 2 {
+			t.Fatalf("interrupted successor claim = %+v, %v", operation, err)
+		}
+		if result, err := p.ExecuteOperation(context.Background(), operation, claim); result != nil || err == nil {
+			t.Fatalf("original command did not defer interrupted successor: %+v, %v", result, err)
+		}
+		os.Exit(48)
+	}
 	if os.Getenv("NORN_DEPLOY_MIGRATION_CHILD") == "1" {
 		p, db := deploySnapshotProcessPipeline(t, false)
 		operation, claim, err := db.ClaimNextOperation(context.Background(), "first-migration-process", time.Minute, []string{"app.deploy"})
@@ -92,6 +108,9 @@ func runDeployMigrationProcessExit(t *testing.T, duringWrite bool) {
 	}
 	marker = filepath.Join(t.TempDir(), "migration-progress")
 	command := fmt.Sprintf("psql \"$DATABASE_URL\" -X -v ON_ERROR_STOP=1 -c 'INSERT INTO migration_probe (id) VALUES (1)' >/dev/null && printf committed > %q && sleep 3", marker)
+	if successorExit {
+		command = fmt.Sprintf("psql \"$DATABASE_URL\" -X -v ON_ERROR_STOP=1 -c 'INSERT INTO migration_probe (id) VALUES (1)' >/dev/null && printf committed > %q && sleep 6", marker)
+	}
 	if duringWrite {
 		command = fmt.Sprintf("psql \"$DATABASE_URL\" -X -v ON_ERROR_STOP=1 -c 'BEGIN; INSERT INTO migration_probe (id) VALUES (1); SELECT pg_sleep(3); COMMIT' >/dev/null & writer=$!; sleep 0.4; printf running > %q; wait \"$writer\"", marker)
 	}
@@ -137,15 +156,17 @@ func runDeployMigrationProcessExit(t *testing.T, duringWrite bool) {
 		_ = os.Remove(cgroupRoot)
 	})
 	journal := t.TempDir()
+	snapshotJournal, snapshotObjects := t.TempDir(), t.TempDir()
 	t.Setenv("NORN_DEPLOY_MIGRATION_CGROUP", cgroupRoot)
 	t.Setenv("NORN_DEPLOY_MIGRATION_JOURNAL", journal)
-	child := exec.Command(os.Args[0], "-test.run=^"+t.Name()+"$")
-	child.Env = append(os.Environ(),
-		"NORN_DEPLOY_MIGRATION_CHILD=1", "NORN_DEPLOY_MIGRATION_MARKER="+marker,
+	childEnv := append(os.Environ(),
+		"NORN_DEPLOY_MIGRATION_MARKER="+marker,
 		"NORN_DEPLOY_CRASH_DB="+os.Getenv("NORN_TEST_DATABASE_URL"), "NORN_DEPLOY_CRASH_SCHEMA="+schema,
 		"NORN_DEPLOY_CRASH_APPS="+f.p.AppsDir, "NORN_DEPLOY_CRASH_SECRETS="+f.secretDir,
-		"NORN_DEPLOY_CRASH_SNAPSHOTS="+f.snapshots, "NORN_DEPLOY_CRASH_SUPERVISOR="+t.TempDir(),
-		"NORN_DEPLOY_CRASH_OBJECTS="+t.TempDir())
+		"NORN_DEPLOY_CRASH_SNAPSHOTS="+f.snapshots, "NORN_DEPLOY_CRASH_SUPERVISOR="+snapshotJournal,
+		"NORN_DEPLOY_CRASH_OBJECTS="+snapshotObjects)
+	child := exec.Command(os.Args[0], "-test.run=^"+t.Name()+"$")
+	child.Env = append(childEnv, "NORN_DEPLOY_MIGRATION_CHILD=1")
 	if output, err := child.CombinedOutput(); err == nil {
 		t.Fatalf("first API process did not exit: %s", output)
 	} else {
@@ -194,12 +215,38 @@ func runDeployMigrationProcessExit(t *testing.T, duringWrite bool) {
 	if err := f.db.RecoverExpiredOperations(ctx); err != nil {
 		t.Fatal(err)
 	}
+	if successorExit {
+		interrupted := exec.Command(os.Args[0], "-test.run=^"+t.Name()+"$")
+		interrupted.Env = append(childEnv, "NORN_DEPLOY_MIGRATION_SUCCESSOR_CHILD=1")
+		if output, err := interrupted.CombinedOutput(); err == nil {
+			t.Fatalf("successor API did not exit: %s", output)
+		} else {
+			var exit *exec.ExitError
+			if !errors.As(err, &exit) || exit.ExitCode() != 48 {
+				t.Fatalf("successor API exit = %v: %s", err, output)
+			}
+		}
+		if _, err := f.db.Pool.Exec(ctx, `UPDATE operations SET locked_until=clock_timestamp()-interval '1 second' WHERE id=$1`, accepted.Operation.ID); err != nil {
+			t.Fatal(err)
+		}
+		if err := f.db.RecoverExpiredOperations(ctx); err != nil {
+			t.Fatal(err)
+		}
+		recovered, err := f.db.GetOperation(ctx, accepted.Operation.ID)
+		if err != nil || recovered.Status != model.OperationQueued || recovered.MaxAttempts != 3 || recovered.Metadata["replayMigration"] != true {
+			t.Fatalf("second guarded migration recovery = %+v, %v", recovered, err)
+		}
+	}
 	configureProcessCrashMigrationEffects(t, f.p)
 	f.p.CheckpointStore = f.db
 	f.p.WS = hub.New(nil)
 	go f.p.WS.Run()
 	second, claim, err := f.db.ClaimNextOperation(ctx, "successor-migration-process", time.Minute, []string{"app.deploy"})
-	if err != nil || second == nil || second.ID != accepted.Operation.ID || claim.Generation() < 2 {
+	wantGeneration := int64(2)
+	if successorExit {
+		wantGeneration = 3
+	}
+	if err != nil || second == nil || second.ID != accepted.Operation.ID || claim.Generation() < wantGeneration {
 		t.Fatalf("successor claim = %+v, %v", second, err)
 	}
 	deadline := time.Now().Add(10 * time.Second)

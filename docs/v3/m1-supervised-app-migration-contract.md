@@ -107,7 +107,14 @@ original PostgreSQL transaction is still open: the row is not yet visible,
 `pg_stat_activity` shows the original writer active, and the successor waits
 for that contained command to commit before completing the same effect. It
 also records one row, one completed migration step and no surviving writer.
-All three Linux tests passed on 2026-09-27.
+The Linux harness now also exits a second API process while it is observing
+the still-running original command. The guarded recovery path grants this
+deployment one additional attempt (up to three total) only while the original
+migration step and required predecessor/effect evidence are present. A third
+claim completes that same effect and records one database write; the four
+Linux harness cases pass. A PostgreSQL store negative control removes the
+original effect after the second claim and confirms recovery fails to manual
+review instead of using the extra attempt to launch new work.
 An additional PostgreSQL store test covers the boundary before effect
 reservation: even with source/build checkpoints and a completed snapshot, an
 expired claim whose `migrate` step is running but has no effect remains failed
