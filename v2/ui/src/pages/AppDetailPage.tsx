@@ -117,9 +117,9 @@ function AppOverviewTab({ app, services, idleCandidates }: { app: AppStatus; ser
         {scale.isLoading ? <Skeleton /> : scale.error ? <ErrorState message="Replica status is unavailable" onRetry={() => scale.refetch()} /> :
           <div className="compact-list">{(scale.data ?? []).map((row) => <div className="compact-row" key={`${row.region}/${row.process}`}>
             <span>{row.region} / {row.process}</span>
-            <StatusChip tone={!row.nomadPresent || row.nomadDesired !== row.desired ? 'danger' : row.placed !== row.desired || row.running !== row.desired ? 'warning' : 'success'}
-              label={!row.nomadPresent ? 'group missing' : row.nomadDesired !== row.desired ? 'intent drift' : row.placed !== row.desired || row.running !== row.desired ? 'changing' : 'matched'} />
-            <small>{row.intentSource === 'accepted-scale' ? 'accepted' : 'declared'} {row.desired} · Nomad {row.nomadPresent ? `${row.nomadDesired} desired, ${row.placed} placed, ${row.running} running` : 'group missing'}</small>
+            <StatusChip tone={!row.nomadPresent || row.nomadDesired !== row.desired ? 'danger' : row.placed !== row.desired || row.running !== row.desired || row.healthy !== row.desired ? 'warning' : 'success'}
+              label={!row.nomadPresent ? 'group missing' : row.nomadDesired !== row.desired ? 'intent drift' : row.placed !== row.desired || row.running !== row.desired ? 'changing' : row.healthy !== row.desired ? 'unhealthy' : 'matched'} />
+            <small>{row.intentSource === 'accepted-scale' ? 'accepted' : 'declared'} {row.desired} · Nomad {row.nomadPresent ? `${row.nomadDesired} desired, ${row.placed} placed, ${row.running} running, ${row.healthy} healthy` : 'group missing'}</small>
           </div>)}</div>}
       </Panel>
       <Panel title="Infrastructure"><div className="compact-list">{Object.keys(app.spec.infrastructure ?? {}).length === 0 ? <EmptyState icon="·" title="No backing services" hint="This app declares no infrastructure." /> : Object.keys(app.spec.infrastructure ?? {}).map((key) => <span key={key} className="process-badge">{key}</span>)}</div></Panel>
