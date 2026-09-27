@@ -28,6 +28,15 @@ uses a supplied CA and client certificate to make mutual-TLS readback requests.
 Local tests reach a server that verifies the client URI and reject an untrusted
 server CA. This is a control-side transport primitive, not worker integration
 or proof that the supplied node set equals Fleet inventory.
+Fleet draft PR #177 now emits a private, Terraform-derived ingress host
+snapshot with a digest in its hook evidence. Norn's
+`ParseFleetIngressInventory` checks exact snapshot bytes, cluster,
+environment, canonical schema and private host membership; the
+`ObserveFleetIngressInventory` helper uses every derived host for mutual-TLS
+file/Traefik readback. The snapshot digest is still an input to the helper,
+not a durable authorized inventory revision. The control worker must obtain
+the digest from a trusted Fleet attempt, persist and compare its revision,
+and reject host replacement between observation and deployment completion.
 
 ## Authority and host boundary
 
