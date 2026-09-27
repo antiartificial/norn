@@ -2,7 +2,11 @@
 // repository contract. It deliberately contains no cloud-provider clients.
 package fleet
 
-import "time"
+import (
+	"encoding/hex"
+	"strings"
+	"time"
+)
 
 const (
 	APIVersion = "norn.dev/fleet/v1"
@@ -133,7 +137,22 @@ type ReconciliationRequest struct {
 	PlanSHA256     string `json:"planSha256"`
 	StateSerial    int64  `json:"stateSerial,omitempty"`
 	EvidenceDigest string `json:"evidenceDigest"`
-	Message        string `json:"message,omitempty"`
+	// IngressInventoryDigest binds a private Fleet hook snapshot to the
+	// successful nodes_configured checkpoint. The snapshot bytes stay private.
+	IngressInventoryDigest string `json:"ingressInventoryDigest,omitempty"`
+	Message                string `json:"message,omitempty"`
+}
+
+func ValidIngressInventoryCheckpoint(request ReconciliationRequest) bool {
+	if request.IngressInventoryDigest == "" {
+		return true
+	}
+	if request.Phase != "nodes_configured" || request.Status != "succeeded" || !strings.HasPrefix(request.IngressInventoryDigest, "sha256:") || len(request.IngressInventoryDigest) != len("sha256:")+64 {
+		return false
+	}
+	value := strings.TrimPrefix(request.IngressInventoryDigest, "sha256:")
+	decoded, err := hex.DecodeString(value)
+	return err == nil && hex.EncodeToString(decoded) == value
 }
 
 const RunnerAttemptSchemaVersion = "norn.fleet-runner-attempt/v1"

@@ -566,6 +566,9 @@ func validateFleetReconciliationRequest(request fleet.ReconciliationRequest) err
 	if !fleetEvidenceDigestRe.MatchString(request.EvidenceDigest) {
 		return fmt.Errorf("evidenceDigest must use sha256:<64 lowercase hex characters>")
 	}
+	if request.IngressInventoryDigest != "" && (request.Phase != "nodes_configured" || request.Status != "succeeded" || !fleetEvidenceDigestRe.MatchString(request.IngressInventoryDigest)) {
+		return fmt.Errorf("ingressInventoryDigest requires a successful nodes_configured phase and sha256:<64 lowercase hex characters>")
+	}
 	if strings.TrimSpace(request.AttemptID) == "" {
 		return fmt.Errorf("attemptId is required for protected reconciliation evidence")
 	}

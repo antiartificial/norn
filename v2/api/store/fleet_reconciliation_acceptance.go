@@ -52,6 +52,9 @@ func normalizeFleetReconciliationAcceptance(acceptance *OperationAcceptance) err
 	if err != nil {
 		return err
 	}
+	if !fleet.ValidIngressInventoryCheckpoint(request) {
+		return &AcceptanceValidationError{Reason: "fleet ingress inventory digest is invalid for this checkpoint"}
+	}
 	validPhase := false
 	for _, phase := range []string{"prechange_verified", "provider_applying", "infrastructure_applied", "inventory_generated", "nodes_configured", "nodes_enrolled", "readiness_verified", "old_nodes_drained", "complete"} {
 		validPhase = validPhase || request.Phase == phase

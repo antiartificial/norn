@@ -235,6 +235,31 @@ nodePools:
 	}
 }
 
+func TestFleetIngressInventoryDigestOnlyBindsSuccessfulConfiguration(t *testing.T) {
+	request := fleet.ReconciliationRequest{
+		SchemaVersion: fleet.ReconciliationSchemaVersion, AttemptID: uuid.NewString(),
+		Phase: "nodes_configured", Status: "succeeded", CommitSHA: strings.Repeat("a", 40),
+		PlanSHA256: strings.Repeat("b", 64), EvidenceDigest: "sha256:" + strings.Repeat("c", 64),
+		IngressInventoryDigest: "sha256:" + strings.Repeat("d", 64),
+	}
+	if err := validateFleetReconciliationRequest(request); err != nil {
+		t.Fatal(err)
+	}
+	for _, invalid := range []fleet.ReconciliationRequest{
+		func() fleet.ReconciliationRequest { copy := request; copy.Phase = "readiness_verified"; return copy }(),
+		func() fleet.ReconciliationRequest { copy := request; copy.Status = "failed"; return copy }(),
+		func() fleet.ReconciliationRequest {
+			copy := request
+			copy.IngressInventoryDigest = "sha256:" + strings.Repeat("D", 64)
+			return copy
+		}(),
+	} {
+		if err := validateFleetReconciliationRequest(invalid); err == nil {
+			t.Fatalf("invalid inventory checkpoint accepted: %+v", invalid)
+		}
+	}
+}
+
 func TestFleetReconciliationRequestAndTransitionAreBoundAndOrdered(t *testing.T) {
 	request := fleet.ReconciliationRequest{
 		SchemaVersion: fleet.ReconciliationSchemaVersion,
